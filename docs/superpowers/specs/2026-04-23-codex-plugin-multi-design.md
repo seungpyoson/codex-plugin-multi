@@ -1,141 +1,161 @@
 # codex-plugin-multi — Design
 
-- **Date:** 2026-04-23
-- **Status:** Draft v3 (post-empirical-verification), pending user review
+- **Date:** 2026-04-23 (v3) / **revised 2026-04-24 (v4 — full empirical re-verification)**
+- **Status:** Draft v4, pre-adversarial-review
 - **Repo:** [`seungpyoson/codex-plugin-multi`](https://github.com/seungpyoson/codex-plugin-multi)
 - **License:** Apache-2.0 (mirrors upstream)
-- **Reference:** [`openai/codex-plugin-cc`](https://github.com/openai/codex-plugin-cc) (Apache-2.0); [`openai/plugins`](https://github.com/openai/plugins) (canonical Codex monorepo pattern)
+- **Reference:** [`openai/codex-plugin-cc`](https://github.com/openai/codex-plugin-cc) (MIT — Claude Code plugin calling Codex); [`openai/plugins`](https://github.com/openai/plugins) (canonical Codex monorepo pattern)
+
+## What changed in v4 (from v3)
+
+Every load-bearing assertion was re-verified empirically or against codex-rs source. 17 corrections / additions, summarized at the end of this section. Key reversals:
+
+- **Slash commands are BARE, not namespaced.** `/claude-rescue`, not `/claude:rescue`. Source: `openai/plugins` ships 100+ plugins using bare command names (`/implement-from-figma`, `/deploy`).
+- **`--bare` is incompatible with OAuth.** Per Claude `--help`: "OAuth and keychain are never read." Replaced with `--setting-sources ""` which strips CLAUDE.md while preserving OAuth.
+- **Gemini read-only enforcement requires TOML `--policy` files.** Plan mode auto-escalates to YOLO in non-interactive mode (per Gemini docs `plan-mode.md:487-495`). Policy files are the only reliable layer.
+- **Supported Codex hook events are exactly 5**: `PreToolUse`, `PostToolUse`, `SessionStart`, `Stop`, `UserPromptSubmit`. No `SessionEnd`. Source: `codex-rs/core/config.schema.json:868-896`.
+- **`allowed-tools` command-frontmatter is advisory**, not enforced. Enforcement lives in the target CLI (Claude `--disallowedTools`, Gemini `--policy`).
+- **Plugin commands are TUI-only.** `codex exec "/claude-rescue ..."` sends the string as literal prompt text, not a command invocation. Verified empirically.
 
 ---
 
 ## 1. Context & goal
 
-Upstream `openai/codex-plugin-cc` lets Claude Code delegate to Codex via `/codex:rescue`, `/codex:review`, `/codex:adversarial-review`, `/codex:status`, `/codex:result`, `/codex:cancel`, `/codex:setup`. This project is the symmetric inverse: **two Codex plugins that let Codex delegate to Claude Code and Gemini CLI**, feature-parity with upstream.
+Upstream `openai/codex-plugin-cc` is a **Claude Code plugin** that lets Claude Code delegate to Codex (e.g., `/codex:rescue`). This project is the symmetric inverse: **two Codex plugins** that let Codex delegate to Claude Code and Gemini CLI, feature-parity with upstream's command set.
 
 **Why two plugins (not one):**
 
 1. **Parity:** upstream is one plugin per target. Mirroring that gives minimum structural deviation.
-2. **Empirical safety:** a Gemini call in `--approval-mode plan` autonomously rewrote 20+ files in our repo during a supposed read-only ping (§4.5). Separate plugins = separate trust boundaries.
+2. **Empirical safety:** Gemini in `--approval-mode plan` autonomously rewrote 20+ files during a supposed read-only ping (§4.5 / 4.17). Separate plugins = separate trust boundaries + independent disable.
 3. **Independent release cadence:** Claude and Gemini CLIs evolve independently; breaking one shouldn't force retesting the other.
-4. **Codex natively supports monorepos of multiple plugins** (§4.13): `openai/plugins` ships 100+ plugins from one repo via `.agents/plugins/marketplace.json`.
+4. **Codex natively supports multi-plugin monorepos** (§4.13): `openai/plugins` ships 100+ plugins from one repo via `.agents/plugins/marketplace.json`.
 
 ## 2. Decisions (locked)
 
 | # | Decision | Choice |
 |---|----------|--------|
 | 1 | Packaging | Two plugins (`plugins/claude/`, `plugins/gemini/`) in one monorepo. Each is standalone. Registered via a single `.agents/plugins/marketplace.json` at repo root. |
-| 2 | Command namespacing | Per-target `/claude:rescue`, `/gemini:review`, etc. Each plugin has its own `status`/`result`/`cancel`. Mirrors upstream. |
+| 2 | Slash-command naming | **Bare names, not namespaced:** `/claude-rescue`, `/gemini-review`, etc. Avoid collisions with Codex builtins (`stop`, `plan`, `clear`, `fast`, `settings`, `apps`, `plugins`, `collab`, `personality`, `realtime`). |
 | 3 | Repo | `seungpyoson/codex-plugin-multi`, Apache-2.0, public GitHub. |
-| 4 | Prompting skills | One per plugin: `plugins/<target>/skills/<target>-prompting/`. Each mirrors upstream's `gpt-5-4-prompting` structure. |
+| 4 | Prompting skills | One per plugin: `plugins/<target>/skills/<target>-prompting/`. Mirrors upstream's `gpt-5-4-prompting` structure. |
 | 5 | Auth | OAuth / subscription only. Plugin never reads or writes `*_API_KEY` env vars. |
-| 6 | Primary user-facing surface | Native `commands/*.md` slash commands (`/claude:rescue`, `/gemini:review`, …) — NOT user-level `~/.codex/prompts/` shims. Codex plugins natively support `commands/` (§4.13). |
+| 6 | Primary user-facing surface | Native `commands/*.md` slash commands via Codex TUI. `codex exec` cannot invoke them (TUI-only; verified §4.18). |
+| 7 | Shared-lib port strategy | Parametrize upstream's 10 lib files for target-neutrality; duplicate per plugin (two physical copies; content-identical except for target name). See §6.2. |
 
 ## 3. Non-goals (v1)
 
 - **No MCP server.**
 - **No API-key management.** No cost tracking, quota, batch API, or model-pricing optimization.
 - **No droid / other CLI targets.** Claude Code + Gemini CLI only.
-- **No cross-target handoff chains** (Claude → Gemini → Claude).
-- **No ACP (Agent Client Protocol) mode.** Verified Gemini exposes JSON-RPC via `--acp` but it requires `protocolVersion` negotiation; v1 uses process-level `spawn`. Defer to v2.
+- **No cross-target handoff chains.**
+- **No ACP mode.** v1 uses process-level `spawn`. Defer to v2.
 - **No OS-level sandbox.** Neither target CLI exposes one. Layered defense + post-hoc detection is best-effort (§10).
-- **No user-level `~/.codex/prompts/` shims.** Commands live inside the plugin's `commands/` directory. Dropped from v1 as unnecessary.
+- **No user-level `~/.codex/prompts/` shims.** Commands live in the plugin's `commands/`.
+- **No hook-based review gate (v1).** Upstream's stop-review-gate hook is deferred; hook timeout is enforced (default 5 s, verified §4.19) and makes a gated workflow fragile.
 
 ## 4. Empirical evidence
 
-Every design choice below is anchored to a smoke test or inspected source. Tests ran 2026-04-23 on `spson@local`, versions: **Claude Code 2.1.118**, **Gemini CLI 0.39.0**, **Codex CLI 0.123.0**.
+Every design choice below is anchored to a source citation or live test. Environment 2026-04-23 / 2026-04-24: **Claude Code 2.1.118**, **Gemini CLI 0.39.0** (docs), **Codex CLI 0.123.0**, codex-rs source inspected at `github.com/openai/codex@main`.
 
 ### 4.1 Binaries and flag surface
 
-- `claude -p|--print` headless. Flags: `--model <id>`, `--permission-mode acceptEdits|auto|bypassPermissions|default|dontAsk|plan`, `--session-id <uuid>` (UP-FRONT), `--resume <uuid>`, `--fork-session`, `--output-format text|json|stream-json`, `--input-format text|stream-json`, `--bare`, `--add-dir <dirs...>`, `--allowedTools`, `--disallowedTools`, `--no-session-persistence`, `--append-system-prompt`, `--verbose`.
-- `gemini -p|--prompt` headless. Flags: `-m|--model`, `--approval-mode default|auto_edit|yolo|plan`, `-s|--sandbox` (bool), `-r|--resume <latest|index|uuid>`, `--output-format text|json|stream-json`, `--include-directories`, `--list-sessions`, `--delete-session`, `--policy`, `--acp`, `-y|--yolo`.
+**Claude `-p|--print`:** `--model <id>`, `--permission-mode acceptEdits|auto|bypassPermissions|default|dontAsk|plan`, `--session-id <uuid>` (up-front client-generated), `--resume <uuid>`, `--fork-session`, `--output-format text|json|stream-json`, `--input-format text|stream-json`, `--bare` ⚠️ breaks OAuth, `--setting-sources <user,project,local|"">`, `--add-dir <dirs...>`, `--allowedTools <tools...>`, `--disallowedTools <tools...>`, `--no-session-persistence`, `--append-system-prompt`, `--json-schema <schema>`, `--verbose`, `--include-hook-events`, `--include-partial-messages`.
 
-### 4.2 Model availability (this user's OAuth plan, 2026-04-23)
+**Gemini `-p|--prompt`:** `-m|--model <id>`, `--approval-mode default|auto_edit|yolo|plan` ⚠️ auto-escalates to YOLO non-interactively, `-s|--sandbox`, `-r|--resume <latest|index|uuid>`, `--output-format text|json|stream-json`, `--include-directories`, `--policy <files>` (TOML), `--admin-policy`, `--acp`, `-y|--yolo`, `--list-sessions`, `--delete-session`, `--allowed-tools` (deprecated — use `--policy`).
+
+### 4.2 Model availability (OAuth subscription, 2026-04-23)
 
 | Tier | Claude | Gemini |
 |---|---|---|
-| cheap (pings) | `claude-haiku-4-5` (~$0.02 / trivial ping) | `gemini-3-flash-preview` |
-| medium | `claude-sonnet-4-6` | `gemini-3.1-pro-preview` (only available mid-tier) |
-| default (smartest) | `claude-opus-4-7` (~$0.26 / trivial ping) | `gemini-3.1-pro-preview` |
+| cheap (pings/doctor) | `claude-haiku-4-5-20251001` | `gemini-3-flash-preview` |
+| medium | `claude-sonnet-4-6` | `gemini-3.1-pro-preview` |
+| default (smartest) | `claude-opus-4-7` | `gemini-3.1-pro-preview` |
 
-Unavailable: `gemini-2.5-flash`, `gemini-2.5-pro` (HTTP 429 "No capacity"); `gemini-3-flash`, `gemini-3.1-flash`, `gemini-3-pro`, `gemini-3.1-flash-preview` (ModelNotFoundError).
-
-**Aliases unreliable.** `claude --model haiku` silently resolved to `claude-sonnet-4-6` under subscription. **Design uses full model IDs only.**
+Aliases silently substitute (`claude --model haiku` → `claude-sonnet-4-6`). **Full model IDs only.**
 
 ### 4.3 Unknown model IDs fail cleanly
 
-- Claude: plaintext error `"There's an issue with the selected model (<id>). It may not exist or you may not have access to it."`, non-zero exit.
-- Gemini: `ModelNotFoundError: Requested entity was not found.` + error-report dumped to `/var/folders/.../T/gemini-client-error-*.json`.
+- Claude: plaintext error, non-zero exit.
+- Gemini: `ModelNotFoundError` + error-report dumped to `/tmp/gemini-client-error-*.json`.
 
-Companion detects by JSON-parse failure OR non-zero exit.
+Companion detects via JSON-parse failure OR non-zero exit.
 
-### 4.4 Session continuation
+### 4.4 Session continuation — verified live
 
-- Claude: `--session-id <uuid>` sets ID up front, `--resume <uuid>` resumes. Verified — context preserved across invocations.
-- Gemini: no `--session-id`; server mints UUID returned in JSON (`response.session_id`). `--resume <uuid>` works despite help text claiming ordinal-only. Verified end-to-end.
+- **Claude:** client generates UUID → passes `--session-id <uuid>` up-front → result echoes same UUID → next call uses `--resume <same-uuid>` and recalls prior turn. Verified end-to-end 2026-04-24.
+- **Gemini:** server mints UUID returned in JSON `session_id`. `--resume latest` and `--resume <index>` confirmed. `--resume <uuid>` works but JSON output schema varies — prefer `latest`/index for programmatic reliability.
 
-### 4.5 Read-only enforcement — ⚠️ SOFT on Claude, BROKEN on Gemini
+### 4.5 Read-only enforcement — layered
 
-- `claude --permission-mode plan`: model-compliance based, not a sandbox.
-  - Opus-class models: typically decline writes verbally.
-  - `claude-haiku-4-5`: observed to IGNORE plan mode and WRITE the target file when prompt emphasized tools.
-  - `--allowedTools ""` (docs: "disable all tools"): observed FAIL — file still written.
-  - `--disallowedTools "Write Edit Bash NotebookEdit MultiEdit"`: observed to block in one test. Most reliable layer found.
-- `gemini --approval-mode plan`: **actively unsafe**.
-  - During concurrent smoke test, two `gemini -p "Reply: GEM_X"` calls in plan mode ignored the prompt, inherited project context, and autonomously invoked `write_file`/`invoke_agent`. Created 20+ files. One call: 43 API requests / 1.76M prompt tokens / 263 s.
-  - Plan mode is NOT a guarantee on Gemini.
-- Design consequence (§10): layered defense with multiple independent mechanisms + post-hoc detection + `--dispose` (worktree/copy isolation).
+**Claude (target CLI):**
+- `--permission-mode plan` — model-compliance-based; haiku tier occasionally writes.
+- `--disallowedTools "Write Edit MultiEdit NotebookEdit Bash WebFetch Agent Task mcp__*"` — hard blocklist, most reliable layer.
+- `--allowedTools "Read Glob Grep"` — safer inversion.
+- `permission_denials[]` in result reports tool-call rejections. Model-pre-emption (plan-mode refusal before attempting tool) does NOT appear here — only actual tool calls that got denied.
 
-### 4.6 Context inheritance
+**Gemini (target CLI):**
+- `--approval-mode plan` alone is **not sufficient** — docs (`plan-mode.md:487-495`) confirm it auto-switches to YOLO in non-interactive mode.
+- `--policy <toml-file>` with `[[rule]] decision = "deny"` rules is the **real enforcement layer**. Verified 2026-04-24: deny rules for `write_file`, `replace`, `run_shell_command` blocked direct tool calls AND subagent fallback (`LocalAgentExecutor] Blocked call: Unauthorized tool call`). No file created.
 
-- `claude -p` default: inherits cwd's `CLAUDE.md`, memory, skills. Verified — returned first rule of current project's CLAUDE.md verbatim.
-- `claude --bare -p`: strips CLAUDE.md auto-discovery, hooks, plugin sync, auto-memory, keychain reads. Verified — "No, there is no CLAUDE.md file in the current system context."
-- `gemini -p` (default from project dir): inherits project context fully.
-- `gemini -p` from `/tmp`: verified — "no" when asked about project files. No `--bare` flag; neutral-cwd is the in-CLI mechanism.
+**Codex plugin command frontmatter** (`allowed-tools: [...]`) is **advisory to the model, NOT enforced.** No enforcement code exists in `codex-rs`; the field is only referenced in `core/templates/memories/consolidation.md:688`. Enforcement lives at the target-CLI layer.
 
-### 4.7 Structured output (JSON)
+### 4.6 Context isolation — what strips CLAUDE.md vs what doesn't
 
-Claude `--output-format json` fields: `result`, `session_id`, `model` (via `modelUsage` keys), `total_cost_usd`, `duration_ms`, `duration_api_ms`, `num_turns`, `usage.*`, `permission_denials`, `is_error`, `terminal_reason`, `uuid`.
+Live test 2026-04-24 with `/tmp/bare-test/CLAUDE.md` containing a unique secret + user-level `~/.claude/CLAUDE.md`:
 
-Gemini `--output-format json` fields: `session_id`, `response`, `stats.models.<id>.{api.*, tokens.*, roles.main.*}`.
+| Option | Project CLAUDE.md | User CLAUDE.md | OAuth |
+|---|---|---|---|
+| `--bare` | stripped | stripped | **❌ breaks** |
+| `--setting-sources ""` | stripped | stripped | ✅ works |
+| `--setting-sources user` | stripped | loaded | ✅ works |
+| cwd without CLAUDE.md | n/a | loaded | ✅ works |
+| `--add-dir <dir>` | not auto-loaded | loaded | ✅ works |
 
-### 4.8 stream-json output
+**Decision:** use `--setting-sources ""` as the drop-in replacement for `--bare`. OAuth preserved; all CLAUDE.md context stripped.
 
-Claude `--output-format stream-json --verbose` emits `{"type":"system","subtype":"hook_started"|"hook_response"|...}` for every hook, then assistant-message events, then final `{"type":"result",...}`. Observed 80+ KB of events for a trivial prompt due to many user hooks. **Design:** companion uses `--output-format json` (single final object) for most cases; only uses `stream-json` for rescue background jobs that want progressive UI. Filter to `type=assistant`/`type=result`.
+For Gemini: no equivalent flag. Run from `/tmp` (neutral cwd) + scoped `--include-directories` to re-grant access to needed files.
 
-### 4.9 Concurrency
+### 4.7 Structured output
 
-- Claude: two parallel `claude -p` calls from same cwd — two distinct `session_id`s, both completed, no contention. ✓
-- Gemini: concurrent calls ran to completion at the process level, but **both semantically failed** — ignored prompts, used tools destructively. Concurrency is safe at process layer; unsafe at semantic layer.
+- **Claude `--output-format json`:** fields include `result` (text), `session_id`, `total_cost_usd`, `usage.*`, `permission_denials[]`, `is_error`, `terminal_reason`, `apiKeySource`, **`structured_output`** (when `--json-schema` is passed — schema-compliant JSON lands HERE, not in `result`).
+- **Gemini `--output-format json`:** `session_id`, `response`, `stats.models.<id>.{api.*, tokens.*}`.
 
-### 4.10 argv length
+### 4.8 `--json-schema` — soft contract
 
-Claude with 100 000-byte argv prompt + "What was the first character?" — worked, `result: "The first character in your message was A"`, `input_tokens: 10` (cache dedup). argv at 100 KB is viable.
+Claude accepts `--json-schema <schema>`. When used, schema-compliant JSON lands in `structured_output`, `result` is empty. Verified 2026-04-24 with sonnet-4-6 + a realistic review schema. **Consumers must read `structured_output`, not `result`.** Treat as soft contract — model may still produce non-conforming output; code must tolerate and fall back to text parsing or retry.
 
-### 4.11 Prompt transport — per-target
+### 4.9 stream-json output
 
-- **Claude:** stdin-text is NOT read when `-p` lacks an argument (error: "Input must be provided either through stdin or as a prompt argument"). Stdin IS read only via `--input-format stream-json` (which requires `--output-format stream-json` — verbose event stream). **Decision: pass prompts via argv.** Verified safe at 100 KB; `child_process.spawn(cmd, [..., prompt])` never invokes shell.
-- **Gemini:** `-p` explicitly "Appended to input on stdin" per `--help`. Verified — `echo "EXTRA: banana42" | gemini -p "what word followed 'EXTRA'?"` returned "banana42". **Decision: pass prompts via stdin** (empty `-p ''` positional, full prompt piped on stdin).
+Claude `--output-format stream-json --verbose` emits events: `{"type":"system","subtype":"init"}` (carries `session_id`, tools, model, plugins, agents, skills), `{"type":"assistant","message":{content:[thinking|text]}}` events, final `{"type":"result",...}`. Design uses `--output-format json` (single final object) for most cases; stream-json reserved for long-running background rescues that want progressive UI.
+
+### 4.10 Concurrency
+
+Two parallel `claude -p` calls from same cwd — distinct `session_id`s, both complete, no contention. Gemini concurrent calls run to completion at the process layer but can both semantically fail (both wrote files during a supposed read-only test, §4.17).
+
+### 4.11 Prompt transport — per-target (verified live)
+
+- **Claude:** stdin-text is NOT read with `-p` + positional; stdin only read via `--input-format stream-json`. **Use argv** — `child_process.spawn('claude', [..., promptText])` never invokes shell, safe at 100 KB (verified).
+- **Gemini:** `-p '' + stdin` works; stdin is appended to (empty) `-p` positional. Verified: `echo "READY prompt" | gemini -p ""` returned "READY". **Use stdin.**
 
 ### 4.12 Hooks non-interference
 
-`claude -p` / `gemini -p` invoked from this Claude Code session did NOT trigger this session's hooks. Verified implicitly — 15+ CLI spawns without hook blockage. Companion can invoke child CLIs freely.
+`claude -p` / `gemini -p` invoked from within a Claude Code session do NOT trigger that host session's hooks. 15+ CLI spawns across verification without host-hook interference.
 
-### 4.13 Codex plugin surface — fuller than I initially thought
+### 4.13 Codex plugin surface — verified from `openai/plugins` monorepo
 
-Verified by inspecting `openai/plugins` (canonical monorepo, 100+ plugins). Codex plugins support ALL of:
+Codex plugins support:
 
-- **`plugin-root/.codex-plugin/plugin.json`** — per-plugin manifest. Fields: `name` (kebab-case), `version`, `description`, `author`, `homepage`, `repository`, `license`, `keywords`, `skills` (pointer), `mcpServers`, `apps`, `interface.{displayName, shortDescription, longDescription, category, capabilities, URLs, defaultPrompt, brandColor, composerIcon, logo, screenshots}`.
-- **`plugin-root/commands/<name>.md`** — slash commands. Verified in `plugins/build-macos-apps/commands/`, `plugins/vercel/commands/`, `plugins/figma/commands/`, `plugins/cloudflare/commands/`, `plugins/expo/commands/`. YAML frontmatter optional (`description`); body is Markdown instructions; `$ARGUMENTS` variable for user args; first-line heading (`# /name`) identifies the command.
-- **`plugin-root/agents/<name>.md`** — plugin-level subagents. Verified in `plugins/superpowers/agents/code-reviewer.md`: YAML frontmatter (`name`, `description`, `model: inherit | <id>`) + Markdown system prompt. Other plugins use `agents/openai.yaml` (OpenAI-specific config). Our choice: `.md` + frontmatter (Claude-Code-style), parity with upstream.
-- **`plugin-root/skills/<name>/SKILL.md`** — description-triggered skills (internal or opt-in).
-- **`plugin-root/hooks/hooks.json`** — lifecycle hooks.
-- **`plugin-root/prompts/<name>.md`** — canonical subagent/command system prompts retrieved by skills/commands.
-- **`plugin-root/schemas/*.schema.json`** — JSON schemas for validating output.
-- **`plugin-root/.app.json`, `plugin-root/.mcp.json`** — optional integration configs.
+- **`plugin-root/.codex-plugin/plugin.json`** — per-plugin manifest. Fields: `name` (kebab-case), `version`, `description`, `author`, `homepage`, `repository`, `license`, `keywords`, `skills` (pointer), `apps` (pointer to `.app.json`), `interface.{displayName, shortDescription, longDescription, developerName, category, capabilities, websiteURL, privacyPolicyURL, termsOfServiceURL, defaultPrompt, brandColor, composerIcon, logo, screenshots}`. `apps` and `.mcp.json` are optional — we ship neither.
+- **`plugin-root/commands/<name>.md`** — slash commands. Frontmatter is **optional**; when present, recognized keys are `description`, `argument-hint`, `allowed-tools` (advisory). `$ARGUMENTS` in body text is substituted with user's arg string (model-side — not shell substitution, no injection risk at transport). Figma commands use no frontmatter; Vercel/Cloudflare use minimal.
+- **`plugin-root/agents/<name>.md`** — plugin-level subagents. Frontmatter: `name`, `description`, `model: inherit | <id>`, `tools: <comma-separated>`, `skills: <list>`. Verified from `plugins/superpowers/agents/code-reviewer.md` and upstream `plugins/codex/agents/codex-rescue.md`.
+- **`plugin-root/skills/<name>/SKILL.md`** — description-triggered skills. Frontmatter: `name`, `description`, `disable-model-invocation` (optional), `user-invocable` (optional).
+- **`plugin-root/hooks/hooks.json` or `plugin-root/hooks.json`** — either location works; both observed in `openai/plugins`. Supported events (authoritative from `codex-rs/core/config.schema.json:868-896`): **`PreToolUse`, `PostToolUse`, `SessionStart`, `Stop`, `UserPromptSubmit`**. NOT supported: `SessionEnd`, `Notification`, `SubagentStop`, `PreCompact`. Hooks run with **cwd = plugin root** (observed: figma uses relative `./scripts/foo.sh`). **No `${CODEX_PLUGIN_ROOT}` env var is exposed.**
+- **`plugin-root/prompts/<name>.md`** — canonical system prompts retrieved by commands/agents.
+- **`plugin-root/schemas/*.schema.json`** — JSON schemas. Not consumed by Codex directly; used by our runtime for `--json-schema` validation.
 
-**Slash-command namespace:** Codex exposes `/<plugin-name>:<command-name>`. So `plugins/claude/commands/rescue.md` → `/claude:rescue ...`. No shim needed.
+**Slash command namespace (verified):** Codex exposes **bare** command names (`/deploy`, `/implement-from-figma`). No `plugin:command` namespacing. Names that collide with Codex builtins are shadowed by the builtin. Source: `codex-rs/tui/src/bottom_pane/slash_commands.rs`.
 
-**Multi-plugin repo registration** — canonical file is `<repo-root>/.agents/plugins/marketplace.json`. Verified from `~/.codex/.tmp/plugins/.agents/plugins/marketplace.json` (the openai/plugins monorepo). Schema:
+**Multi-plugin registration (verified live):** `<repo-root>/.agents/plugins/marketplace.json`:
 
 ```json
 {
@@ -145,140 +165,206 @@ Verified by inspecting `openai/plugins` (canonical monorepo, 100+ plugins). Code
     {
       "name": "<plugin-name>",
       "source": { "source": "local", "path": "./plugins/<name>" },
-      "policy": { "installation": "AVAILABLE", "authentication": "ON_INSTALL" },
-      "category": "Productivity"
+      "policy": { "installation": "AVAILABLE", "authentication": "ON_USE" },
+      "category": "Coding"
     }
   ]
 }
 ```
 
-Install command: `codex plugin marketplace add github:seungpyoson/codex-plugin-multi` — loads the marketplace, exposes both plugins. User installs each via Codex's plugin UI or `codex plugin marketplace add <url> --sparse plugins/<name>` for individual install.
+**`authentication` accepts only `"ON_INSTALL"` or `"ON_USE"`.** `"NEVER"` rejected at install. Use `ON_USE` for plugins that require no auth.
 
-### 4.14 Apache-2.0 upstream runtime (reference for port)
+**Install:** `codex plugin marketplace add seungpyoson/codex-plugin-multi` (owner/repo shorthand resolves to `https://github.com/owner/repo.git`). Registered name comes from the `name` field of the marketplace.json, NOT the URL — important for scripting `remove`. Verified live 2026-04-24.
 
-Relevant files in upstream `openai/codex-plugin-cc` (MIT; we port under Apache-2.0 with attribution):
+`--sparse <path>` flag **only works for git sources**, not local paths. Users install the whole marketplace and enable individual plugins via Codex TUI (`/plugins` command — Space to toggle, Enter for details). Config-based enable also works: `-c 'plugins."name@marketplace".enabled=true'`.
+
+### 4.14 Upstream reference — files to port (Apache-2.0 port of MIT)
+
+`openai/codex-plugin-cc` structure (note: it's a **Claude Code** plugin, uses `.claude-plugin/plugin.json`):
 
 ```
 plugins/codex/
   commands/{rescue,review,adversarial-review,status,result,cancel,setup}.md
   agents/codex-rescue.md
   scripts/
-    codex-companion.mjs                          # entry
-    session-lifecycle-hook.mjs                   # [PORT]
-    stop-review-gate-hook.mjs                    # [PORT]
+    codex-companion.mjs
+    session-lifecycle-hook.mjs
+    stop-review-gate-hook.mjs
     lib/
       workspace.mjs tracked-jobs.mjs state.mjs render.mjs
-      process.mjs args.mjs fs.mjs git.mjs job-control.mjs prompts.mjs  # [COPY-VERBATIM]
-      codex.mjs                                  # [REPLACE] → claude.mjs / gemini.mjs
+      process.mjs args.mjs fs.mjs git.mjs job-control.mjs prompts.mjs
+      codex.mjs                                  # REPLACE → claude.mjs / gemini.mjs
       app-server-broker.mjs broker-endpoint.mjs broker-lifecycle.mjs
-      app-server.mjs app-server-protocol.d.ts    # [DROP] — no equivalent transport for Claude/Gemini
+      app-server.mjs app-server-protocol.d.ts    # DROP (no ACP analog for Claude/Gemini v1)
   prompts/{adversarial-review,stop-review-gate}.md
   hooks/hooks.json
   schemas/review-output.schema.json
   skills/{codex-cli-runtime,codex-result-handling,gpt-5-4-prompting}/
 ```
 
-**Plugin-root self-resolution:** `path.resolve(fileURLToPath(new URL("..", import.meta.url)))` in `codex-companion.mjs:65`. ES-modules locate themselves; no env var needed.
+**Shared-lib target-agnostic audit (grep results 2026-04-24):**
+
+| File | Codex refs | Action |
+|---|---|---|
+| `workspace.mjs` | 0 | copy verbatim |
+| `process.mjs` | 0 | copy verbatim |
+| `args.mjs` | 0 | copy verbatim |
+| `git.mjs` | 0 | copy verbatim |
+| `job-control.mjs` | 0 | copy verbatim |
+| `prompts.mjs` | 0 | copy verbatim |
+| `state.mjs` | 2 (`FALLBACK_STATE_ROOT_DIR = "codex-companion"`, `SESSION_ID_ENV = "CODEX_COMPANION_SESSION_ID"`) | parametrize: accept `{tmpdirPrefix, sessionIdEnv}` at module init |
+| `tracked-jobs.mjs` | 1 (stderr prefix `[codex]`) | parametrize: accept `{stderrPrefix}` |
+| `fs.mjs` | 1 (`createTempDir(prefix = "codex-plugin-")`) | parametrize: accept `{tmpPrefix}` |
+| `render.mjs` | 22 (display strings like `"# Codex Setup"`, `"# Codex Status"`, `"codex resume"`) | per-plugin copy with target-specific strings |
+
+**Plugin-root self-resolution:** `path.resolve(fileURLToPath(new URL("..", import.meta.url)))` in `codex-companion.mjs:65`. ES-modules locate themselves; no env var needed. This works because no `${CODEX_PLUGIN_ROOT}` is exposed (§4.13).
+
+### 4.15 User-message wire format (verified live via session jsonl)
+
+Codex sends user messages as:
+
+```json
+{"type":"message","role":"user","content":[{"type":"input_text","text":"..."}]}
+```
+
+`AGENTS.md` gets prepended as a separate user message. In TUI, command `.md` body text is injected into `input_text` on each invocation. **Command bodies are consumed in full per invocation** → keep them concise; push detail to skills that get retrieved on demand.
+
+### 4.16 `$ARGUMENTS` substitution
+
+Only documented reference in codex-rs source is `core/templates/memories/consolidation.md:693`: "Use `$ARGUMENTS`, `$ARGUMENTS[N]`, or `$N` for user-provided arguments." **No shell substitution.** The model sees the placeholder text + user args in-turn and interpolates from context. No shell-injection surface at transport (our stdin/argv safety holds). Normal LLM prompt-injection surface remains.
+
+### 4.17 Gemini plan-mode escalation (documented)
+
+Per `~/.npm-global/lib/node_modules/@google/gemini-cli/bundle/docs/cli/plan-mode.md:487-495`:
+
+> "Automated implementation: When exiting Plan Mode to execute the plan, Gemini CLI automatically switches to YOLO mode instead of the standard Default mode. This allows the CLI to execute the implementation steps automatically without hanging on interactive tool approvals."
+
+This explains the v3 "20 files rewritten" incident. Plan mode is **not** a sandbox headlessly. The real safety layer is `--policy` TOML deny rules.
+
+### 4.18 TUI-only command invocation (verified)
+
+`codex exec "/claude-rescue investigate X"` sent the literal string as user prompt; no command dispatch occurred. Session jsonl confirms: user message was `{"text":"reply ok"}` verbatim (I passed `"reply ok"` in the retest). Plugin commands are **TUI-only**. Implication: our commands are invoked by users via Codex TUI, and there's no programmatic path for Codex-CI-style invocation.
+
+### 4.19 Hook timeout — enforced
+
+Live probe 2026-04-24 with `$CODEX_HOME/hooks.json` defining UserPromptSubmit hook = `sleep 8`, `timeout: 2`:
+- Hook fired (start-of-run timestamp logged).
+- Process killed at 2 s (no end timestamp).
+- Codex turn completed successfully despite hook kill.
+
+**Consequence:** hooks are given a budget; killed hooks produce no output (e.g., `{"decision":"block"}` emitted after timeout is lost). Set generous timeouts for any gate that does real work (upstream's stop-review-gate used 900 s).
+
+### 4.20 Cost attribution under OAuth
+
+Claude call with OAuth: `apiKeySource: None`, `total_cost_usd: 0.011` reported. The cost figure under OAuth is the equivalent API cost, **not** a billing line — calls count against the subscription's quota. For our design, this means the plugin never surfaces a billing number; cost is visible only as the `total_cost_usd` field in debug output.
+
+---
 
 ## 5. Plugin surface
 
-### Primary: native slash commands
+### 5.1 Native slash commands (bare names)
 
-Each plugin's `commands/<name>.md` exposes a slash command namespaced by plugin name:
+Each plugin ships `commands/<name>.md` files; Codex exposes them as bare slash commands (§4.13). **14 total:**
 
-- `plugins/claude/commands/rescue.md` → `/claude:rescue <args>`
-- `plugins/claude/commands/review.md` → `/claude:review <args>`
-- `plugins/claude/commands/adversarial-review.md` → `/claude:adversarial-review <args>`
-- `plugins/claude/commands/setup.md` → `/claude:setup`
-- `plugins/claude/commands/status.md` → `/claude:status`
-- `plugins/claude/commands/result.md` → `/claude:result <job-id>`
-- `plugins/claude/commands/cancel.md` → `/claude:cancel <job-id>`
+| Claude | Gemini |
+|---|---|
+| `/claude-rescue` | `/gemini-rescue` |
+| `/claude-review` | `/gemini-review` |
+| `/claude-adversarial-review` | `/gemini-adversarial-review` |
+| `/claude-setup` | `/gemini-setup` |
+| `/claude-status` | `/gemini-status` |
+| `/claude-result` | `/gemini-result` |
+| `/claude-cancel` | `/gemini-cancel` |
 
-Symmetric for `plugins/gemini/`. 14 slash commands total.
+Names verified non-colliding with Codex builtins. Avoided: `stop`, `plan`, `clear`, `fast`, `settings`, `apps`, `plugins`, `collab`, `personality`, `realtime`.
 
-### Secondary: description-triggered skills (internal)
+### 5.2 Description-triggered skills (internal, per plugin)
 
-Skills are retrieved by the command files (via `@skill-name` references in body) or activate when a natural-language trigger matches. Three internal skills per plugin:
-
-- `<target>-cli-runtime` — documents the companion-CLI contract for commands/agents to reference.
+- `<target>-cli-runtime` — companion-CLI invocation contract retrieved by commands.
 - `<target>-result-handling` — how to render companion output back to Codex.
-- `<target>-prompting` — target-specific prompting guidance. Parity with upstream `gpt-5-4-prompting`.
+- `<target>-prompting` — target-specific prompting guidance (parity with upstream `gpt-5-4-prompting`).
 
-User-facing skill triggers are also tuned for natural-language invocation (e.g., "rescue this with Claude" → command equivalent), but the slash commands are canonical.
+All marked `user-invocable: false` (internal only; retrieved by commands/agents).
+
+### 5.3 Subagents (one per plugin)
+
+- `agents/claude-rescue.md` — long-running rescue subagent.
+- `agents/gemini-rescue.md` — long-running rescue subagent.
+
+Review and adversarial-review run single-turn in the calling Codex session (no subagent).
 
 ## 6. File layout
 
 ```
-codex-plugin-multi/                      # monorepo
+codex-plugin-multi/
   README.md
-  LICENSE                                # Apache-2.0
-  NOTICE                                 # attribution to upstream (MIT)
-  CHANGELOG.md                           # monorepo-level
-  package.json                           # workspaces: ["plugins/*"]
+  LICENSE                                        # Apache-2.0
+  NOTICE                                         # attribution to upstream (MIT)
+  CHANGELOG.md
+  package.json                                   # workspaces: ["plugins/*"]
   .agents/
     plugins/
-      marketplace.json                   # registers both plugins; see §4.13 schema
+      marketplace.json                           # §4.13 schema, auth: ON_USE
   plugins/
     claude/
-      .codex-plugin/plugin.json          # name="claude", version, description, interface.displayName="Claude"
+      .codex-plugin/plugin.json                  # name="claude"
       LICENSE NOTICE CHANGELOG.md
-      commands/                          # native slash commands
-        rescue.md                        # /claude:rescue
-        review.md                        # /claude:review
-        adversarial-review.md            # /claude:adversarial-review
-        setup.md                         # /claude:setup
-        status.md                        # /claude:status
-        result.md                        # /claude:result
-        cancel.md                        # /claude:cancel
+      commands/
+        rescue.md review.md adversarial-review.md
+        setup.md status.md result.md cancel.md   # 7 files; bare names via frontmatter
       agents/
-        claude-rescue.md                 # subagent for rescue; mirror of upstream codex-rescue.md
+        claude-rescue.md
       skills/
-        claude-cli-runtime/SKILL.md      # internal — companion-CLI contract
-        claude-result-handling/SKILL.md  # internal — output formatting
-        claude-prompting/SKILL.md        # internal — prompting guidance
-          references/
-            claude-prompt-antipatterns.md
-            claude-prompt-blocks.md
+        claude-cli-runtime/SKILL.md
+        claude-result-handling/SKILL.md
+        claude-prompting/
+          SKILL.md
+          references/{claude-prompt-antipatterns.md,claude-prompt-blocks.md}
       scripts/
-        claude-companion.mjs             # entry; path.resolve(fileURLToPath(new URL("..", import.meta.url)))
-        session-lifecycle-hook.mjs       # port from upstream
-        stop-review-gate-hook.mjs        # port from upstream
+        claude-companion.mjs                     # entry
+        session-lifecycle-hook.mjs               # ported (if adopted; v1 may skip)
         lib/
           workspace.mjs tracked-jobs.mjs state.mjs render.mjs
-          args.mjs fs.mjs git.mjs job-control.mjs prompts.mjs process.mjs   # COPY-VERBATIM
-          claude.mjs                     # replaces upstream codex.mjs; spawns `claude -p` via argv
+          args.mjs fs.mjs git.mjs job-control.mjs prompts.mjs process.mjs
+          claude.mjs                             # replaces upstream codex.mjs
       prompts/
-        rescue.md                        # canonical rescue system prompt
-        review.md
-        adversarial-review.md
-        stop-review-gate.md
-      hooks/hooks.json
+        rescue.md review.md adversarial-review.md
+      hooks/hooks.json                           # optional; v1 ships with no hooks
       schemas/review-output.schema.json
-    gemini/                              # symmetric — s/claude/gemini/g; lib/gemini.mjs spawns via stdin
-      .codex-plugin/plugin.json          # name="gemini"
-      commands/…  agents/gemini-rescue.md  skills/…  scripts/…  prompts/…  hooks/  schemas/
+      config/
+        models.json                              # tiered IDs
+        min-versions.json                        # CLI version floor
+    gemini/                                      # symmetric
+      .codex-plugin/plugin.json                  # name="gemini"
+      commands/ agents/ skills/ scripts/ prompts/ hooks/ schemas/ config/
+      policies/
+        read-only.toml                           # deny write_file/replace/run_shell_command
   tests/
-    unit/
-      jobs.test.mjs                      # workspace scoping, atomic writes, PID checks
-      process.test.mjs                   # spawn argv safety, stdin transport, timeout, signals
-      render.test.mjs                    # output formatting
-      workspace.test.mjs                 # resolveWorkspaceRoot edge cases
-      args.test.mjs                      # arg parsing, mutual-exclusion
-    smoke/                               # CLI_COMPANION_MOCK=1 with fixture binaries
-      claude-mock.mjs gemini-mock.mjs
-      claude-companion.smoke.test.mjs gemini-companion.smoke.test.mjs
-    e2e/                                 # real CLIs, local-only (skipped in CI)
-      claude.e2e.test.mjs gemini.e2e.test.mjs
-  .github/workflows/pull-request-ci.yml  # lint + unit + smoke (no e2e)
+    unit/ smoke/ e2e/
+  .github/workflows/pull-request-ci.yml          # lint + unit + smoke
 ```
 
-**Counts:** 2 plugins. 7 slash commands × 2 = **14 commands**. 1 rescue subagent × 2 = **2 agents**. 3 internal skills × 2 = **6 skills**. Plus `.agents/plugins/marketplace.json` at repo root registers both.
+**Counts:** 2 plugins. 14 commands. 2 subagents. 6 skills. 1 top-level marketplace.json.
+
+### 6.2 Shared-lib port strategy
+
+10 upstream lib files are copied per plugin (two physical copies — one under `plugins/claude/scripts/lib/`, one under `plugins/gemini/scripts/lib/`). Six are copy-verbatim (target-neutral); four require parametrization at module init (§4.14):
+
+```js
+// lib/state.mjs becomes:
+export function createState({ tmpdirPrefix, sessionIdEnv }) { ... }
+// plugins/claude/scripts/claude-companion.mjs:
+import { createState } from './lib/state.mjs';
+const state = createState({ tmpdirPrefix: 'claude-companion', sessionIdEnv: 'CLAUDE_COMPANION_SESSION_ID' });
+```
+
+Same pattern for `tracked-jobs.mjs` (`stderrPrefix`), `fs.mjs` (`tmpPrefix`). `render.mjs` is the most divergent — per-plugin copies with target-specific display strings ("# Claude Setup" vs "# Gemini Setup").
+
+Upstream files explicitly dropped: `app-server*.mjs`, `broker*.mjs` (Codex's ACP transport has no analog for Claude/Gemini in v1).
 
 ## 7. Runtime — `<target>-companion.mjs`
 
-Each plugin has its own companion entry, structurally parallel to upstream `codex-companion.mjs`. Target-specific branches live in `lib/<target>.mjs`.
-
-### 7.1 Subcommand surface (identical across both companions)
+### 7.1 Subcommand surface
 
 ```
 <target>-companion.mjs run \
@@ -287,370 +373,388 @@ Each plugin has its own companion entry, structurally parallel to upstream `code
   [--model <full-id>] \
   [--cwd <path>] \
   [--isolated] [--dispose] \
-  <prompt-source-varies-by-target>        # argv for Claude, stdin for Gemini
+  <prompt-source: argv for Claude, stdin for Gemini>
 
-<target>-companion.mjs continue \
-  --job <job-id> \
-  <prompt-source-varies-by-target>
-
+<target>-companion.mjs continue --job <job-id> <prompt>
 <target>-companion.mjs status [--job <id>]
 <target>-companion.mjs result --job <id>
 <target>-companion.mjs cancel --job <id> [--force]
-<target>-companion.mjs ping                # OAuth health probe, cheap-tier model
-<target>-companion.mjs doctor              # verbose diagnostics
+<target>-companion.mjs ping
+<target>-companion.mjs doctor
 ```
 
-### 7.2 Dispatch — per-target
-
-**Claude (`lib/claude.mjs`) — prompt via argv:**
+### 7.2 Dispatch — Claude (argv transport)
 
 ```js
-// Transport: prompt is the last positional argument (argv). Verified safe at 100 KB.
-spawn('claude', [
-  '-p', promptText,                      // positional prompt — safe because spawn bypasses shell
+const jobId = crypto.randomUUID();
+const args = [
+  '-p', promptText,                          // argv — safe via spawn (no shell)
   '--output-format', 'json',
-  '--no-session-persistence',            // companion manages session state
-  '--session-id', jobId,                 // UUID up front
+  '--no-session-persistence',
+  '--session-id', jobId,
   '--model', resolvedModel,
-  '--permission-mode', modeToPolicy(mode),  // 'plan' for review*, 'acceptEdits' for rescue
-  ...(isReview(mode)
-    ? ['--disallowedTools', 'Write Edit Bash NotebookEdit MultiEdit']
-    : []),
-  ...(isolated ? ['--bare'] : ['--add-dir', cwd]),
-], { cwd: isolated ? '/tmp' : cwd, stdio: ['ignore', 'pipe', 'pipe'] });
+  '--setting-sources', '',                   // strips CLAUDE.md; OAuth preserved (§4.6)
+];
+if (mode === 'rescue') {
+  args.push('--permission-mode', 'acceptEdits');
+  if (addDir) args.push('--add-dir', addDir);
+} else {
+  // review / adversarial-review
+  args.push('--permission-mode', 'plan');
+  args.push('--disallowedTools',
+            'Write Edit MultiEdit NotebookEdit Bash WebFetch Agent Task mcp__*');
+  if (reviewSchema) args.push('--json-schema', JSON.stringify(reviewSchema));
+}
+spawn('claude', args, { cwd: isolated ? '/tmp' : cwd, stdio: ['ignore', 'pipe', 'pipe'] });
 ```
 
-**Gemini (`lib/gemini.mjs`) — prompt via stdin:**
+Parse `result` for text output; if `--json-schema` was used, parse `structured_output` for the schema-compliant JSON (§4.8). Check `permission_denials[]` for tool rejections.
+
+### 7.3 Dispatch — Gemini (stdin transport + TOML policy)
 
 ```js
-// Transport: `-p ''` empty positional, prompt on stdin. Verified (§4.11).
-const child = spawn('gemini', [
-  '-p', '',
+const args = [
+  '-p', '',                                  // empty; prompt appended on stdin
   '-m', resolvedModel,
-  '--approval-mode', modeToApproval(mode),  // 'plan' for review*, 'auto_edit' for rescue
   '--output-format', 'json',
-  ...(resume ? ['--resume', sessionId] : []),
-  ...(isReview(mode) ? ['-s'] : []),       // sandbox flag for reviews
-], { cwd: isolated ? '/tmp' : cwd, stdio: ['pipe', 'pipe', 'pipe'] });
+];
+if (mode === 'rescue') {
+  args.push('--approval-mode', 'auto_edit');
+} else {
+  // review / adversarial-review — policy file is THE enforcement
+  args.push('--policy', `${pluginRoot}/policies/read-only.toml`);
+  args.push('--approval-mode', 'plan');       // soft second layer
+  args.push('-s');                            // sandbox flag (best available)
+}
+if (resume) args.push('--resume', sessionId);  // prefer 'latest' or captured UUID (§4.4)
+const child = spawn('gemini', args, {
+  cwd: isolated ? '/tmp' : cwd,
+  stdio: ['pipe', 'pipe', 'pipe'],
+});
 child.stdin.write(promptText); child.stdin.end();
 ```
 
-### 7.3 Background job lifecycle
+**`plugins/gemini/policies/read-only.toml`:**
 
-1. `run --background` fork-execs the target CLI with stdio redirected to `<workspace>/.codex-plugin-<target>/jobs/<id>/{stdout,stderr}.log`.
-2. Parent writes initial `meta.json`, returns `{event: "launched", job_id, pid}` JSON on stdout, exits.
-3. A detached wrapper (`detached: true` + `child.unref()`, inline in companion) waits on child, writes terminal `meta.json` (status, exit_code, ended_at).
+```toml
+[[rule]]
+toolName = "write_file"
+decision = "deny"
+priority = 100
 
-No daemon, no IPC beyond files. Mirrors upstream.
+[[rule]]
+toolName = "replace"
+decision = "deny"
+priority = 100
 
-### 7.4 OAuth health probe — `ping`
+[[rule]]
+toolName = "run_shell_command"
+decision = "deny"
+priority = 100
 
-`<target>-companion.mjs ping` runs a minimal prompt with **cheap-tier model** (haiku / flash-preview) with 15 s timeout. Result categories:
+[[rule]]
+toolName = "edit"
+decision = "deny"
+priority = 100
+```
 
-- `ok` — JSON parsed, `is_error:false`/`response` non-empty.
-- `not_authed` — non-zero exit + non-JSON stdout + stderr content. Companion surfaces stderr verbatim + hint: "run `<target>` interactively to complete OAuth." No hard-coded patterns (they change per version).
-- `not_found` — `ENOENT` spawning. Print install URL.
+Verified live 2026-04-24: blocks direct tool calls AND subagent fallback attempts.
+
+### 7.4 Background job lifecycle
+
+Identical to upstream: parent fork-execs target CLI, stdio redirected to `<workspace>/.codex-plugin-<target>/jobs/<id>/{stdout,stderr}.log`, returns `{event: "launched", job_id, pid}`, exits. Detached wrapper waits on child and writes terminal `meta.json`. No daemon, no IPC beyond files.
+
+### 7.5 OAuth health probe — `ping`
+
+- `ok` — JSON parsed, `is_error:false` / `response` non-empty.
+- `not_authed` — non-zero exit + non-JSON stdout + stderr content. Surface stderr verbatim + "run `<target>` interactively to complete OAuth."
+- `not_found` — `ENOENT`. Print install URL.
 - `rate_limited` — 429 in stderr. Gemini-specific retry guidance.
-- `error:<raw>` — anything else, raw stderr shown.
+- `error:<raw>` — anything else.
 
 ## 8. Model selection policy
 
-Three tiers, full IDs only (aliases unreliable — §4.2):
+Three tiers, full IDs only (§4.2). Config file `config/models.json`:
 
-| Tier | Claude | Gemini |
-|---|---|---|
-| cheap (ping, doctor) | `claude-haiku-4-5` | `gemini-3-flash-preview` |
-| medium | `claude-sonnet-4-6` | `gemini-3.1-pro-preview` |
-| default (smartest) | `claude-opus-4-7` | `gemini-3.1-pro-preview` |
+```json
+{"cheap": "<id>", "medium": "<id>", "default": "<id>"}
+```
 
-- **Rescue, review, adversarial-review:** `default` tier unless user overrides.
-- **Ping, doctor:** `cheap` tier.
-- **User override:** every command accepts `--model=<id>` argument.
-- **Unknown IDs:** companion detects (JSON-parse failure OR non-zero exit) and surfaces raw error. No fallback.
-- **Config file:** `plugins/<target>/config/models.json` — easy to update as availability changes.
+- Rescue / review / adversarial-review default to `default` tier; user overrides via `--model=<id>`.
+- Ping / doctor use `cheap`.
+- Unknown IDs fail with raw error; no fallback (`claude-haiku-4-5-20251001` is the canonical haiku, not the `haiku` alias).
 
-## 9. Context isolation strategy
-
-Two needs:
-
-- **Rescue** wants project context (Claude/Gemini should know the cwd).
-- **Review / adversarial-review** wants neutrality (reviewer unbiased by project-local rules).
+## 9. Context isolation
 
 | Target | Rescue | Review / adversarial-review |
 |---|---|---|
-| Claude | default cwd, `--add-dir <cwd>` | `--bare` (strips CLAUDE.md, memory, skills, hooks) ✓ verified |
-| Gemini | default cwd | run from `/tmp` neutral cwd ✓ verified; no `--bare` equivalent exists. Optionally `--include-directories <specific-files>` to re-include scoped files |
-
-When `--isolated` flag is passed (default for review paths), companion:
-
-1. Spawns child with `cwd: /tmp` (or ephemeral tempdir).
-2. Passes specific files via `--add-dir <file>` (Claude) or `--include-directories <file>` (Gemini).
-3. Output captured via JSON.
-4. Never writes back into target-cwd unless rescue mode with explicit ask.
+| Claude | cwd inherited, `--add-dir <cwd>` | `--setting-sources ""` (strips CLAUDE.md; OAuth preserved). Optionally `cwd = disposable worktree`. |
+| Gemini | cwd inherited | `cwd = /tmp` + `--include-directories <scoped-files>` + TOML `--policy` (real enforcement) |
 
 ## 10. Read-only enforcement — layered defense
 
-Upstream has Codex's OS-level sandbox (`sandbox: "read-only"`). We have no equivalent. We layer mechanisms.
+Upstream had Codex OS-level sandbox; we don't. Layering per target (§4.5):
 
-**Claude review/adversarial-review:**
+**Claude review:**
 ```
 claude -p <prompt>
-  --bare                                 # Layer 1: strip cwd context (no CLAUDE.md bias)
-  --permission-mode plan                 # Layer 2: soft system-instruction
-  --disallowedTools "Write Edit Bash NotebookEdit MultiEdit"  # Layer 3: tool allowlist exclusion (most reliable)
-  --no-session-persistence
-  --output-format json
-  --session-id <job-id>
+  --setting-sources ""                           # Layer 1: strip CLAUDE.md bias
+  --permission-mode plan                         # Layer 2: soft
+  --disallowedTools "Write Edit MultiEdit NotebookEdit Bash WebFetch Agent Task mcp__*"
+                                                 # Layer 3: hard blocklist
+  --add-dir <worktree>                           # Layer 4: scoped read
+  --session-id <job-uuid>
   --model <id>
+  --no-session-persistence
+  --output-format json [--json-schema <schema>]
 ```
 
-**Gemini review/adversarial-review:**
+**Gemini review:**
 ```
 gemini -p ''
-  -s                                     # Layer 1: --sandbox flag (best available — not process-level sandbox)
-  --approval-mode plan                   # Layer 2: soft instruction (proven unreliable alone)
+  --policy <plugin-root>/policies/read-only.toml # Layer 1 — REAL enforcement
+  --approval-mode plan                           # Layer 2 — soft (auto-escalates to YOLO; do not trust alone)
+  -s                                             # Layer 3 — sandbox flag
+  --include-directories <scoped-files>           # Layer 4 — scoped access
+  cwd = /tmp                                     # Layer 5 — neutral cwd
   -m <id>
   --output-format json
-  cwd = /tmp                             # Layer 3: neutral cwd — no project context
   prompt via stdin
 ```
 
-**Post-hoc detection (both targets):**
+**Post-hoc detection (both):** `git status -s --untracked-files=all` before + after; diff non-empty → warn user prominently, do not auto-revert.
 
-- Before review call: snapshot `git status -s --untracked-files=all` of target cwd → `<job>/git-status-before.txt`.
-- After: re-snapshot → `git-status-after.txt`.
-- If diff non-empty:
-  1. Surface prominently in result: `⚠️ <N> file(s) modified during a read-only review.`
-  2. List changed files.
-  3. Do not auto-revert; user decides (`git checkout -- .` or keep).
+**`--dispose` (default ON for review paths):** `git worktree add --detach <cache>/<job-id>` (git repos) or `cp -a` (non-git). Target CLI runs against the disposable copy; mutations happen on throwaway. Verified 2026-04-24: probe.txt written to worktree, main tree `git status` clean.
 
-**Escape hatch — `--dispose` (review paths, default-ON):** clones target cwd into `~/.cache/codex-plugin-<target>/disposable/<job-id>/`. Uses `git worktree add --detach` if git repo, else `cp -a`. Target CLI runs against the disposable copy; any mutation happens on throwaway. Opt-out with `--no-dispose` when user explicitly trusts the review run.
-
-**README disclosure:** "Reviews are best-effort read-only. Gemini CLI does not expose a hard sandbox; plan-mode is model-compliance-based. Use `--dispose` (default) or commit changes before review to detect mutations."
+**README disclosure:** "Reviews are best-effort read-only. Gemini's only reliable enforcement layer is the TOML policy. Plan mode alone is NOT a sandbox (Gemini docs confirm auto-escalation to YOLO in non-interactive mode). Use `--dispose` (default) or commit changes before review to detect mutations."
 
 ## 11. Session continuation
 
-- **Claude:** companion sets `--session-id <job-id>` on first launch (UUID v4 via `crypto.randomUUID()`). `continue --job <id>` runs `claude --resume <job-id> -p <followup>`. **No `-c` / last-session fallback ever.**
-- **Gemini:** server mints session UUID returned in JSON; companion captures to `meta.json > session_id`. `continue --job <id>` runs `gemini --resume <captured-uuid> -p '' < stdin`. **No ordinal-index or `latest` fallback.**
-- If `meta.json.session_id` missing/empty: `continue` fails closed with `SESSION_UNAVAILABLE`. User must start new job.
+- **Claude:** client generates UUID via `crypto.randomUUID()`. `run` passes `--session-id <uuid>`. `continue --job <id>` runs `claude --resume <uuid> -p <followup>`. Verified round-trip §4.4.
+- **Gemini:** server mints UUID, captured from result JSON `session_id` into `meta.json`. `continue` prefers `--resume latest` within the same cwd; falls back to `--resume <captured-uuid>` if available. Never `--resume <index>` (not stable across sessions).
+- If session_id missing: `continue` fails closed with `SESSION_UNAVAILABLE`.
 
 ## 12. Job store — per-target, workspace-scoped
 
 **Location:** `<workspace-root>/.codex-plugin-<target>/jobs/<job-id>/`
 
-- `workspace-root` = `resolveWorkspaceRoot(cwd)` from ported upstream `lib/workspace.mjs`. Git-repo root if in git, else cwd.
-- Each target has independent subtree; Claude failure can't corrupt Gemini's.
+`workspace-root` = `resolveWorkspaceRoot(cwd)` from ported `lib/workspace.mjs` (git-repo root if in git, else cwd). Per-target subtree — Claude can't corrupt Gemini.
 
-**Layout:**
 ```
 <workspace>/.codex-plugin-claude/jobs/<uuid>/
-  meta.json
-  stdout.log
-  stderr.log
-  session.json                           # UUID + target-specific session metadata
-  git-status-before.txt                  # review paths only
-  git-status-after.txt                   # review paths only
-  dispose-path.txt                       # --dispose path if used
+  meta.json stdout.log stderr.log session.json
+  git-status-before.txt git-status-after.txt     # review only
+  dispose-path.txt                               # --dispose only
 ```
 
 **`meta.json`:**
 ```json
 {
-  "id": "ae1df79e-9cec-4213-a0db-0b367ee16345",
-  "target": "claude",
-  "mode": "rescue|review|adversarial-review",
-  "status": "running|done|failed|canceled",
-  "pid": 12345,
-  "exit_code": null,
-  "started_at": "2026-04-23T14:22:00Z",
-  "ended_at": null,
-  "cwd": "/absolute/path",
-  "workspace_root": "/absolute/git-root",
-  "isolated": true,
-  "disposed": true,
-  "dispose_path": "/Users/spson/.cache/codex-plugin-claude/disposable/ae1df79e-...",
-  "model": "claude-opus-4-7",
-  "session_id": "ae1df79e-9cec-4213-a0db-0b367ee16345",
-  "parent_job": null,
-  "prompt_head": "First 200 chars...",
-  "schema_version": 1
+  "id": "<uuid>", "target": "claude", "mode": "rescue|review|adversarial-review",
+  "status": "running|done|failed|canceled", "pid": 12345, "exit_code": null,
+  "started_at": "...", "ended_at": null, "cwd": "...", "workspace_root": "...",
+  "isolated": true, "disposed": true, "dispose_path": "...",
+  "model": "claude-opus-4-7", "session_id": "<uuid>", "parent_job": null,
+  "prompt_head": "...", "schema_version": 1
 }
 ```
 
-**ID format:** UUID v4 (required for Claude `--session-id`). Minted via `crypto.randomUUID()`.
+UUID v4 IDs. Atomic writes via `rename()` (POSIX). Port upstream's `tracked-jobs.mjs` (parametrized per §6.2). PID liveness check (PID alive + cmdline matches binary) guards against PID reuse.
 
-**Atomic writes:** `meta.json.tmp` then `rename()` (POSIX atomic). Port upstream's `tracked-jobs.mjs` verbatim.
+No auto-GC in v1.
 
-**PID liveness:** `status`/`cancel` verify PID alive AND its cmdline matches expected target binary before trust/signal. Defends against PID reuse.
+## 13. Slash commands — command-file structure
 
-**Retention:** no auto-GC in v1. `cli-companion prune --older-than 30d` can be added later.
+Each `commands/<name>.md` uses this frontmatter (based on `openai/plugins` convention):
 
-## 13. Slash commands — inventory (per plugin; `claude` shown)
-
-Each commands/*.md file mirrors upstream's `commands/<name>.md` structure: YAML frontmatter with `description:`, then Markdown body with instructions, `$ARGUMENTS` for user args, and references to skills/subagents.
-
-| Command | Purpose | Behavior |
-|---|---|---|
-| `/claude:rescue` | Investigate/fix via Claude Code | Invokes `claude-rescue` subagent (in `agents/claude-rescue.md`). Subagent runs `claude-companion run --mode=rescue`. `--background` by default for rescues expected >3 min. |
-| `/claude:review` | Get Claude's review of current diff | Foreground `claude-companion run --mode=review --isolated --dispose`. |
-| `/claude:adversarial-review` | Force Claude to challenge design | Foreground `claude-companion run --mode=adversarial-review --isolated --dispose`. |
-| `/claude:setup` | Check Claude readiness, no shims | (1) `which claude` (2) `claude-companion ping` cheap model (3) version floor (4) suggest smoke test. No shim install — commands are native. |
-| `/claude:status` | List running/recent Claude jobs | `claude-companion status` — table. Defaults to current workspace. |
-| `/claude:result` | Show result of job by ID | `claude-companion result --job <id>` — stdout + meta + git-status diff if review mode. |
-| `/claude:cancel` | Cancel a background Claude job | `claude-companion cancel --job <id>`. Confirms before SIGTERM. `--force` for SIGKILL. |
-
-Symmetric for `plugins/gemini/`.
-
-**Command file body structure (parity with upstream):**
-- Brief purpose line
-- `## Arguments` (if any)
-- `## Workflow` (numbered steps — each step may call `claude-companion` or retrieve an internal skill)
-- `## Guardrails` (no-go conditions)
-
-## 14. Subagents — `claude-rescue`, `gemini-rescue` (one per plugin)
-
-Plugin-level `agents/<target>-rescue.md`. YAML frontmatter + Markdown system prompt. Parity with upstream `agents/codex-rescue.md`.
-
+```yaml
+---
+description: One-line user-visible description.
+argument-hint: "[--flag] [subject]"
+---
 ```
+
+No `allowed-tools` (advisory only, §4.13). No `disable-model-invocation` (CC-only field).
+
+**Body structure (kept concise — bodies are consumed in full per invocation, §4.15):**
+
+```markdown
+Brief purpose line.
+
+## Arguments
+`$ARGUMENTS` — <what the user passed>
+
+## Workflow
+1. Retrieve the `<target>-cli-runtime` skill for invocation contract.
+2. Call `node "<plugin-root>/scripts/<target>-companion.mjs" <subcommand> ...`
+3. Render result via the `<target>-result-handling` skill.
+
+## Guardrails
+- <mode-specific no-go conditions>
+```
+
+**Inventory (per plugin, `claude` shown):**
+
+| Command | Mode | Subagent? | Typical duration |
+|---|---|---|---|
+| `/claude-rescue <task>` | rescue | claude-rescue | minutes (background) |
+| `/claude-review [<focus>]` | review | — | <60 s foreground |
+| `/claude-adversarial-review [<focus>]` | adversarial-review | — | <90 s foreground |
+| `/claude-setup` | — | — | <10 s |
+| `/claude-status [<id>]` | — | — | <1 s |
+| `/claude-result <id>` | — | — | <1 s |
+| `/claude-cancel <id>` | — | — | <1 s |
+
+## 14. Subagents — `claude-rescue`, `gemini-rescue`
+
+`agents/<target>-rescue.md`:
+
+```yaml
 ---
 name: claude-rescue
-description: Delegate investigation, an explicit fix request, or follow-up rescue work to Claude Code through the shared plugin runtime.
+description: Delegate investigation or follow-up rescue work to Claude Code through the plugin runtime.
 model: inherit
+tools: Bash
+skills:
+  - claude-cli-runtime
+  - claude-result-handling
+  - claude-prompting
 ---
-
-[System prompt: retrieve claude-cli-runtime, claude-result-handling, claude-prompting skills. Enforces: background for long rescues, surface job ID, poll status, report via result, pass stderr on failure. Bash-only tool access.]
 ```
 
-Only rescue uses a subagent. Review and adversarial-review run in calling Codex session (single-turn). Mirrors upstream.
+Body: selection guidance, forwarding rules, response style. Parity with upstream `codex-rescue.md`. Review and adversarial-review do NOT use a subagent (single-turn in calling session).
 
-## 15. Setup — `/claude:setup`, `/gemini:setup`
+## 15. Setup — `/<target>-setup`
 
-Steps (no API keys, ever):
+1. **Binary check** — `which <target>`. Missing → install URL, stop.
+2. **OAuth ping** — `<target>-companion ping` (cheap tier). Not authed → instruct user to run `<target>` interactively; stop.
+3. **Version floor** — `<target> --version` vs `config/min-versions.json`. Below floor → warn, continue.
+4. **Gemini-only rate-limit probe** — ping cheap + default tiers, report serving.
+5. **Smoke-test hint** — print a one-liner the user can paste (e.g., `/claude-review`).
 
-1. **Binary check** — `which <target>`. Missing → print install URL, stop.
-2. **OAuth ping** — `<target>-companion ping` (cheap model). If not authed → print `<target>` (bare interactive command), stop.
-3. **Version floor check** — `<target> --version` vs `plugins/<target>/config/min-versions.json`. Below floor → warn, continue.
-4. **Rate-limit probe (Gemini only)** — ping cheap and default tiers, report which are currently serving (helps debug 429 intermittents).
-5. **Smoke-test suggestion** — print a one-liner the user can paste (e.g., `/claude:review`) to validate E2E.
-
-**Hard rules:**
-
-- Never read/write `ANTHROPIC_API_KEY`, `GEMINI_API_KEY`, `OPENAI_API_KEY`, `GOOGLE_API_KEY`, or any `*_API_KEY` env var.
-- Never programmatic auth; always instruct user to run CLI interactively.
-- Never persist tokens/credentials.
-- **No user-level `~/.codex/prompts/` shim install — commands are native via `commands/*.md`.**
+**Hard rules:** never read/write any `*_API_KEY`; never programmatic auth; never persist tokens.
 
 ## 16. Data contracts
 
-### 16.1 Command → companion invocation
+### 16.1 Companion invocation from commands
 
-Each `commands/*.md` file includes an invocation snippet (retrieved content from `<target>-cli-runtime` skill). Per-target transport:
+`commands/*.md` body retrieves `<target>-cli-runtime` skill, which contains the invocation snippet. Per-target:
 
 **Claude (argv):**
 ```bash
-node "$PLUGIN_ROOT/scripts/claude-companion.mjs" run --mode=review --isolated --dispose -- "$PROMPT_TEXT"
+node "<plugin-root>/scripts/claude-companion.mjs" run --mode=review --isolated --dispose -- "$ARGUMENTS"
 ```
-
-Prompt text is the last argv positional. No shell concat risk — `spawn(cmd, [args])` in JS passes argv as separate C-strings; shell metacharacters are just bytes. Verified safe at 100 KB.
 
 **Gemini (stdin):**
 ```bash
-printf '%s' "$PROMPT_TEXT" | node "$PLUGIN_ROOT/scripts/gemini-companion.mjs" run --mode=review --isolated --dispose
+printf '%s' "$ARGUMENTS" | node "<plugin-root>/scripts/gemini-companion.mjs" run --mode=review --isolated --dispose
 ```
 
-Prompt text on stdin. `gemini -p ''` empty positional forces stdin-append mode.
-
-`$PLUGIN_ROOT` resolved inside companion via `path.resolve(fileURLToPath(new URL("..", import.meta.url)))` (upstream pattern). Commands and subagents never need to know the plugin-root path.
+`<plugin-root>` resolved inside the companion via `path.resolve(fileURLToPath(new URL("..", import.meta.url)))`. Commands and subagents never compute plugin-root.
 
 ### 16.2 Companion stdout
 
-**Foreground:** single JSON object (per target's native `--output-format json`) with added fields (`job_id`, `workspace_root`, `git_status_diff` if review).
-
-**Background mode:** single launch event JSON, then exit:
-```json
-{"event":"launched","job_id":"ae1df79e-...","target":"claude","mode":"rescue","pid":12345,"started_at":"..."}
-```
-
-**status/result/cancel:** JSON default; `--human` flag for table output (used by `commands/status.md` default rendering).
+- **Foreground:** single JSON with target-native fields + added `{job_id, workspace_root, git_status_diff}`. For schema runs, include parsed `structured_output`.
+- **Background:** `{event:"launched", job_id, target, mode, pid, started_at}` + exit.
+- **status / result / cancel:** JSON default; `--human` flag for table output.
 
 ### 16.3 Prompt templates per mode
 
-Canonical templates in `plugins/<target>/prompts/` — parity with upstream:
+`plugins/<target>/prompts/`:
+- `rescue.md` — tool access granted, investigate/fix.
+- `review.md` — read-only, find correctness/safety/subtle-logic issues. Structured output.
+- `adversarial-review.md` — challenge the design; no style nits.
 
-- `rescue.md` — "You are on a rescue mission. Investigate / fix. Tool access granted."
-- `review.md` — "You are reviewing a diff / file. Read-only. Find correctness, safety, subtle-logic issues. Return structured findings."
-- `adversarial-review.md` — "Challenge the design. Assume the author is wrong; find failure modes, assumption violations, missing edge cases. No style nits."
+User text appended. Review output (when `--json-schema` supplied) validated against `schemas/review-output.schema.json`.
 
-User text appended after template. Output validated against `schemas/review-output.schema.json`.
+### 16.4 Prompting skill content
 
-### 16.4 Subscription-scoped prompting skills
+`plugins/<target>/skills/<target>-prompting/SKILL.md` + references:
+- Model-tier rationale per mode.
+- Target-specific caveats: Claude (aliases unreliable, `-c` forbidden, session-UUID pattern), Gemini (plan-mode auto-escalates to YOLO, policy files are the real layer, `--resume` prefer latest).
+- No SDK/API/batch content (irrelevant under OAuth).
 
-`plugins/<target>/skills/<target>-prompting/SKILL.md`:
-
-- **Claude:** model-tier rationale per mode, extended-thinking patterns, prompt-cache-friendly structure, `-c` forbidden, session-UUID patterns.
-- **Gemini:** model-tier rationale, `--approval-mode` semantics ("plan is NOT a sandbox, never trust it"), `--resume` UUID support (undocumented but works), context-inheritance caveat.
-- **Both** exclude SDK/API/batch-API content — irrelevant under subscription.
-
-## 17. Testing strategy
+## 17. Testing
 
 ### 17.1 Unit (`tests/unit/`)
-
-- `jobs.test.mjs` — workspace scoping on git/non-git dirs, atomic meta-writes, status transitions, PID-liveness + cmdline verification.
-- `process.test.mjs` — spawn argv isolation (no shell), Claude-argv vs Gemini-stdin transport, timeout, SIGTERM→SIGKILL escalation.
-- `workspace.test.mjs` — `resolveWorkspaceRoot` on git root, subdir, worktree, non-git cwd, symlinks.
-- `render.test.mjs` — table formatting, truncation at terminal width, git-status-diff prominence.
+- `jobs.test.mjs` — workspace scoping (git/non-git), atomic meta, status transitions, PID-liveness + cmdline.
+- `process.test.mjs` — argv vs stdin transport, timeout, SIGTERM→SIGKILL.
+- `workspace.test.mjs` — `resolveWorkspaceRoot` on git root, subdir, worktree, non-git, symlinks.
+- `render.test.mjs` — table formatting, terminal-width truncation, git-diff prominence.
 - `args.test.mjs` — parsing, unknown-flag rejection, mutex enforcement.
+- `policy.test.mjs` — Gemini policy TOML syntax validation.
 
 ### 17.2 Smoke (`tests/smoke/`)
-
-`claude-mock.mjs`, `gemini-mock.mjs` — deterministic JSON fixtures keyed on `--model` + prompt. Installed via `PATH=tests/smoke:$PATH`. Smoke tests exercise the companion E2E without real API spend.
-
-Per-plugin: 7 smoke tests (one per command). 2 plugins × 7 = 14 smoke tests.
+`claude-mock.mjs`, `gemini-mock.mjs` — deterministic JSON fixtures keyed on model + prompt. `PATH=tests/smoke:$PATH`. Per plugin: 7 commands × 2 = **14 smoke tests**.
 
 ### 17.3 E2E (`tests/e2e/`)
+Real CLIs. Live OAuth required. Not in CI. `npm run e2e:claude` / `npm run e2e:gemini`.
 
-Real `claude -p` / `gemini -p`. Requires live OAuth. **Not in CI.** `npm run e2e:claude` / `npm run e2e:gemini`.
-
-### 17.4 Self-adversarial-review
-
-Before any release, run `/codex:adversarial-review` (upstream) against our spec and code. Respond to findings.
+### 17.4 Self adversarial review
+Before v0.1.0: run upstream `/codex:adversarial-review` against this repo. Address findings.
 
 ## 18. Risks
 
 | # | Risk | Mitigation |
 |---|------|------------|
-| R1 | Gemini plan mode is actively unsafe (§4.5). | Belt+suspenders: `-s`, neutral cwd, plan mode, `--dispose` copy. README warns. |
-| R2 | Claude plan mode is soft — model may ignore. | `--bare`, `--disallowedTools`, `--dispose` default, pre/post `git status` diff. |
-| R3 | Model aliases silently substitute. | Full IDs only; allowlist in `config/models.json`; reject unknown with clear error. |
-| R4 | Gemini 429 intermittent on 2.5 models. | Companion retries with backoff; setup probes and reports serving tiers. |
-| R5 | Plugin-root path resolution on hash-versioned installs. | Resolved — use `path.resolve(fileURLToPath(new URL("..", import.meta.url)))` (upstream pattern, `codex-companion.mjs:65`). |
-| R6 | Concurrent Gemini at semantic layer (both runs wrote files during a supposed read-only test). | `--dispose` default for reviews + strong README warning. Serialize Gemini jobs per workspace via simple lockfile if observed to matter in practice. |
-| R7 | `commands/*.md` description triggers may fuzzy-match (e.g., "review" activates adversarial-review). | Tuned descriptions; slash-command invocation (`/claude:review`) is canonical and unambiguous; natural-language as fallback only. |
-| R8 | Multi-plugin repo install: does `codex plugin marketplace add github:<url>` install both from one repo? | Resolved — verified via `openai/plugins` (100+ plugins in one repo, uses `.agents/plugins/marketplace.json`). Our marketplace.json follows the same schema. |
-| R9 | Apache-2.0 port of MIT upstream. | `NOTICE` includes full MIT text of upstream + attribution. Our deltas Apache-2.0. |
-| R10 | ACP mode deferred to v2. Background/cancel may prove flaky. | v1 uses process signals + file-polling (upstream pattern). Revisit if cancel reliability is insufficient. |
+| R1 | Gemini plan mode is actively unsafe (auto-escalates to YOLO headlessly). | TOML `--policy` deny rules (verified real). `--dispose` default. README disclosure. |
+| R2 | Claude plan mode is soft; haiku tier occasionally ignores. | `--disallowedTools` blocklist; `--dispose` default; pre/post git-status diff. Default to `medium` or `default` tier for reviews. |
+| R3 | Model aliases silently substitute. | Full IDs only; `config/models.json` allowlist. |
+| R4 | Gemini 429 intermittent on 2.5-series models. | Retry + report serving tiers in `setup`. |
+| R5 | Plugin-root resolution on hash-versioned installs. | `path.resolve(fileURLToPath(new URL("..", import.meta.url)))` (upstream pattern). |
+| R6 | Concurrent Gemini at semantic layer. | `--dispose` default + policy file. Serialize per workspace via lockfile if observed in practice. |
+| R7 | Command name collision with Codex builtins (`stop`, `plan`, …). | Bare names enumerated §5.1; none collide. Spec pins the list. |
+| R8 | Multi-plugin install UX. | Verified live: `codex plugin marketplace add owner/repo` resolves to git clone; `.agents/plugins/marketplace.json` schema validated; user enables per-plugin in TUI. |
+| R9 | Apache-2.0 port of MIT upstream. | `NOTICE` includes full MIT text + attribution. Our deltas Apache-2.0. |
+| R10 | `--bare` OAuth incompatibility would have broken Claude calls in v3. | Resolved in v4: `--setting-sources ""`. |
+| R11 | Hook timeout enforcement means gate hooks with real work will silently fail. | v1 ships no hooks. Review-gate feature deferred. |
+| R12 | `--json-schema` is soft contract. | Parse `structured_output`; fall back to text-parse + retry once. |
+| R13 | Plugin commands are TUI-only; no programmatic `codex exec` invocation. | Documented. Consumers invoke via Codex TUI. CI/automation use companion directly (`node companion.mjs run ...`). |
+| R14 | Shared-lib parametrization introduces upstream-drift risk. | Minimal surface (4 files need init-arg; 6 copy-verbatim). Upstream tracking via a `UPSTREAM.md` noting last-synced commit. |
 
-## 19. Milestones (preview — `writing-plans` will expand)
+## 19. Milestones (preview — writing-plans will expand)
 
-- **M0 — skeleton + install-path verification:** two-plugin monorepo, `.agents/plugins/marketplace.json`, `.codex-plugin/plugin.json` per plugin (manifests only), empty `<target>-companion.mjs` entries, one trivial `commands/setup.md` per plugin. Verify `codex plugin marketplace add github:seungpyoson/codex-plugin-multi` installs BOTH plugins cleanly. Verify `import.meta.url` plugin-root resolution.
-- **M1 — shared lib port:** copy-verbatim `workspace.mjs`, `tracked-jobs.mjs`, `state.mjs`, `render.mjs`, `args.mjs`, `fs.mjs`, `git.mjs`, `job-control.mjs`, `prompts.mjs`, `process.mjs` from upstream. Duplicated per plugin directory (symmetric monorepo structure, 100% identical copies).
-- **M2 — Claude foreground runtime:** implement `claude.mjs` (spawn argv, JSON parse, session-id set). `run --mode=review --foreground`, `status`, `result`, `cancel` working.
-- **M3 — Claude commands + agent:** port `commands/{rescue,review,adversarial-review,status,result,cancel,setup}.md` from upstream structure. Implement `agents/claude-rescue.md` subagent. Foreground flow end-to-end.
-- **M4 — Claude background + continue:** `run --background`, detached lifecycle, `continue --job <id>`, session-id resume.
-- **M5 — Claude review isolation:** `--isolated` (`--bare`), `--dispose` (git worktree / cp -a), pre/post `git status` diff capture.
-- **M6 — Claude prompting skill:** write `skills/claude-prompting/SKILL.md` + references.
-- **M7 — Gemini port:** `plugins/gemini/` mirrors `plugins/claude/` with target-specific swaps in `gemini.mjs` (stdin transport, `/tmp` cwd for isolation, `-s`).
+- **M0 — skeleton + install-path smoke.** Two plugins + `.agents/plugins/marketplace.json`. Single `/<target>-ping` command that prints "ok". Live-install from github, enable in TUI, invoke command, see "ok".
+- **M1 — shared-lib port + parametrization.** Port 10 upstream lib files per plugin; parametrize the 4 coupled ones. Unit tests for `workspace`, `process`, `jobs`, `args`, `render`.
+- **M2 — Claude foreground runtime (review mode).** `claude-companion run --mode=review --foreground` with `--setting-sources ""` + `--disallowedTools`. Foreground flow end-to-end with a mock CLI. `/claude-review` command invokes it.
+- **M3 — Claude commands + rescue subagent.** Port `commands/*.md`, `agents/claude-rescue.md`. Status/result/cancel commands. Foreground review + adversarial-review + setup work.
+- **M4 — Claude background + continue.** `run --background`, detached lifecycle, `continue --job`. Session-id roundtrip.
+- **M5 — Claude isolation + dispose.** `--isolated`, `--dispose` (git worktree / cp -a), pre/post git-status capture.
+- **M6 — Claude prompting skill.** `skills/claude-prompting/SKILL.md` + references.
+- **M7 — Gemini port (policy-first).** `plugins/gemini/`. `policies/read-only.toml`. stdin transport. `/tmp` cwd for isolation.
 - **M8 — Gemini rescue + background.**
-- **M9 — tests: unit + smoke (mock CLIs) + E2E.** CI pipeline (lint + unit + smoke).
-- **M10 — docs, CHANGELOG, v0.1.0 release tag.** Run upstream `/codex:adversarial-review` on this repo; respond to findings.
+- **M9 — Tests.** Full unit + smoke (mock CLIs) + CI (lint + unit + smoke). E2E manual.
+- **M10 — Docs, CHANGELOG, v0.1.0.** Self adversarial review. Tag release.
 
-Each milestone has an adversarial-review gate before the next begins.
+Adversarial-review gate between milestones where risk warrants.
 
 ## 20. Success criteria
 
-- `codex plugin marketplace add github:seungpyoson/codex-plugin-multi` installs both plugins on a fresh machine. Codex surfaces `/claude:*` and `/gemini:*` slash commands.
-- `/claude:rescue investigate why the test is failing` launches a background Claude job, returns job ID, and `/claude:result <id>` eventually renders a usable result — no knowledge of companion script required.
-- `/gemini:review` returns a review in `--isolated --dispose` mode. If the run causes any file mutation in the user's working tree, it's reported prominently as WARNING, never auto-reverted.
-- All 7 actions (rescue, review, adversarial-review, status, result, cancel, setup) work for both targets.
-- Passes its own adversarial review on itself (findings addressed or justified).
-- No API keys touched. No `*_API_KEY` env vars read or written.
+- `codex plugin marketplace add seungpyoson/codex-plugin-multi` installs the marketplace. User enables each plugin via TUI. Bare slash commands (`/claude-rescue`, `/gemini-review`, …) appear in the palette.
+- `/claude-rescue <task>` launches a background Claude job, returns job ID, `/claude-result <id>` renders usable output. User never sees companion internals.
+- `/gemini-review` returns a review under `--policy` + `--dispose`. Any file mutation in the user's working tree is reported as WARNING, never auto-reverted.
+- All 7 actions × 2 targets work.
+- Passes self adversarial review.
+- No API keys touched; no `*_API_KEY` env var read or written.
+
+---
+
+## Appendix: v4 change log (v3 → v4)
+
+1. Slash commands: **bare names** (v4) vs namespaced `/target:command` (v3).
+2. Marketplace `authentication: "ON_USE"` (v4) vs `"ON_INSTALL"` (v3).
+3. Claude isolation: **`--setting-sources ""`** (v4) vs `--bare` (v3 — breaks OAuth).
+4. Gemini isolation: **TOML `--policy` deny rules** (v4) vs `--approval-mode plan` alone (v3).
+5. Hook events enumerated (5 supported).
+6. `allowed-tools` frontmatter documented as advisory.
+7. `--json-schema` → `structured_output` field (soft contract).
+8. Command bodies kept concise (consumed per invocation).
+9. Shared-lib parametrization strategy specified (§6.2).
+10. Hooks use relative paths; no `${CODEX_PLUGIN_ROOT}` exists.
+11. `--sparse` limited to git sources.
+12. Removed `@skill-name` retrieval syntax (doesn't exist in Codex).
+13. `--resume` strategy: Gemini prefers `latest`/captured-UUID; never ordinal index.
+14. Denial detection parses both `permission_denials[]` and result text (plan-mode pre-emption not in denials array).
+15. Hook timeout enforced; v1 ships no hooks.
+16. Cost attribution: OAuth reports `apiKeySource: None`; quota-based.
+17. TUI-only command invocation documented (no `codex exec` path).
