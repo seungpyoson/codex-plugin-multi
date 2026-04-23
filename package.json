@@ -1,0 +1,23 @@
+{
+  "name": "codex-plugin-multi",
+  "version": "0.0.1",
+  "description": "Codex plugins that delegate to Claude Code and Gemini CLI. Symmetric inverse of openai/codex-plugin-cc.",
+  "private": true,
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/seungpyoson/codex-plugin-multi.git"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "workspaces": [
+    "plugins/claude",
+    "plugins/gemini"
+  ],
+  "scripts": {
+    "lint": "node scripts/ci/check-manifests.mjs",
+    "lint:self-test": "node scripts/ci/check-manifests-self-test.mjs",
+    "test": "node scripts/ci/run-tests.mjs"
+  }
+}

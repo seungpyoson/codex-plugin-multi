@@ -1,0 +1,35 @@
+name: pull-request-ci
+
+on:
+  pull_request:
+    branches: [main, "docs/**"]
+  push:
+    branches: [main, "docs/**", "feat/**"]
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - run: npm ci --ignore-scripts || npm install --ignore-scripts
+      - run: npm run lint
+      - run: npm run lint:self-test
+
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - run: npm ci --ignore-scripts || npm install --ignore-scripts
+      - name: Run unit tests (allow empty for M0)
+        run: |
+          if compgen -G "tests/unit/**/*.test.mjs" > /dev/null; then
+            npm test
+          else
+            echo "No unit tests yet (pre-M1)"
+          fi

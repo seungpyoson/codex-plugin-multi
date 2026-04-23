@@ -1,0 +1,7 @@
+{
+  "name": "codex-plugin-multi-gemini",
+  "version": "0.0.1",
+  "private": true,
+  "license": "Apache-2.0",
+  "description": "Codex plugin that delegates to Gemini CLI (sub-workspace of codex-plugin-multi)."
+}

@@ -1,0 +1,35 @@
+{
+  "name": "claude",
+  "version": "0.0.1",
+  "description": "Delegate investigation, review, and adversarial review to Claude Code from within Codex.",
+  "author": {
+    "name": "seungpyoson"
+  },
+  "homepage": "https://github.com/seungpyoson/codex-plugin-multi",
+  "repository": "https://github.com/seungpyoson/codex-plugin-multi",
+  "license": "Apache-2.0",
+  "keywords": [
+    "claude",
+    "claude-code",
+    "delegation",
+    "rescue",
+    "review"
+  ],
+  "interface": {
+    "displayName": "Claude",
+    "shortDescription": "Delegate to Claude Code from Codex.",
+    "longDescription": "Invoke Claude Code headlessly from Codex for investigation, rescue, review, and adversarial-review workflows. Uses OAuth subscription (no API keys). Mirrors openai/codex-plugin-cc's command surface, inverted: Codex delegates to Claude instead of the reverse.",
+    "developerName": "seungpyoson",
+    "category": "Coding",
+    "capabilities": [
+      "Interactive",
+      "Read",
+      "Write"
+    ],
+    "defaultPrompt": [
+      "Ask Claude Code to review the current diff",
+      "Have Claude Code investigate a failing test",
+      "Get an adversarial review from Claude Code"
+    ]
+  }
+}

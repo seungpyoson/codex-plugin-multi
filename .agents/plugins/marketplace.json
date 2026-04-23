@@ -1,0 +1,32 @@
+{
+  "name": "codex-plugin-multi",
+  "interface": {
+    "displayName": "Codex ↔ Claude/Gemini"
+  },
+  "plugins": [
+    {
+      "name": "claude",
+      "source": {
+        "source": "local",
+        "path": "./plugins/claude"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_USE"
+      },
+      "category": "Coding"
+    },
+    {
+      "name": "gemini",
+      "source": {
+        "source": "local",
+        "path": "./plugins/gemini"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_USE"
+      },
+      "category": "Coding"
+    }
+  ]
+}
