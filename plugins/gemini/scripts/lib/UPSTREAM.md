@@ -1,0 +1,66 @@
+# Upstream provenance — plugins/gemini/scripts/lib/
+
+All files in this directory are ported from
+[`openai/codex-plugin-cc`](https://github.com/openai/codex-plugin-cc) (MIT license)
+into this repository (Apache-2.0). Per the MIT text, the upstream copyright notice
+is preserved in the repository's top-level `NOTICE` file. Per the Apache License,
+each modified file carries a "modified from upstream" comment header indicating
+the source path and synced commit.
+
+**Synced commit:** `807e03ac9d5aa23bc395fdec8c3767500a86b3cf` (2026-04-18, "fix: bump plugin version to 1.0.4 (#244)")
+
+**Upstream path:** `plugins/codex/scripts/lib/` in the referenced SHA above.
+
+## Port classification
+
+Six files are copied verbatim (target-neutral; no Codex-specific references):
+
+| File | Upstream role |
+|---|---|
+| `workspace.mjs` | Resolves workspace root via git. |
+| `process.mjs`   | Generic child-process helpers (spawn, timeout, SIGTERM→SIGKILL). |
+| `args.mjs`      | Argument parsing / mutex enforcement. |
+| `git.mjs`       | Git helpers (status, branch, worktree). |
+| `job-control.mjs` | PID-liveness + cmdline match. |
+| `prompts.mjs`   | Prompt-template loader. |
+
+Three files are parametrized at module init to remove hardcoded Codex strings
+(see file-level comment headers). We use a module-level mutable `CONFIG` with
+a `configure*()` setter rather than the factory pattern in spec §6.2 —
+factories would force rewriting every upstream import site, so we keep the
+named-export API and set config once at companion startup.
+
+| File | Parametrization | Setter |
+|---|---|---|
+| `state.mjs`        | `pluginDataEnv`, `fallbackStateRootDir`, `sessionIdEnv` | `configureState({...})` |
+| `tracked-jobs.mjs` | Reads `sessionIdEnv` from `state.mjs` (single source of truth); own `stderrPrefix` | `configureTrackedJobs({stderrPrefix})` |
+| `fs.mjs`           | `createTempDir(prefix)` — target-specific default (see note below) | — |
+
+**Note on `fs.mjs`:** the default prefix is `claude-companion-` (Claude) or
+`gemini-companion-` (Gemini). This is the one verbatim-diverging line between
+the two plugin copies. Callers should pass an explicit prefix; the default
+exists only to preserve the upstream signature for ad-hoc callers.
+
+One file is target-specific (per-plugin copy with different display strings):
+
+| File | Variant |
+|---|---|
+| `render.mjs` | Claude/Gemini display strings (section titles, command hints). |
+
+Dropped from the port (no analog in v1):
+
+- `app-server.mjs`, `app-server-protocol.d.ts`, `broker-*.mjs` — Codex ACP
+  transport has no Claude/Gemini equivalent in v1.
+- `codex.mjs` — replaced by per-plugin `lib/claude.mjs` / `lib/gemini.mjs`
+  (lands in M2 / M7).
+
+## Re-sync procedure
+
+When upstream releases a new version:
+
+1. Update the "Synced commit" line above.
+2. For each verbatim file, diff against upstream and re-copy if changed. Any new
+   Codex-specific string triggers a promotion to the "parametrized" list.
+3. For each parametrized file, re-apply the parametrization delta manually; each
+   file's header includes the exact transformation so the delta is obvious.
+4. Re-run `npm test` + CI.
