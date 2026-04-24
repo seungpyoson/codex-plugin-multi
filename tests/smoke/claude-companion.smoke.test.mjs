@@ -189,6 +189,78 @@ test("continue --job: resumes a prior session via --resume", () => {
   }
 });
 
+test("run --isolated --dispose: creates and removes a git worktree", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "smoke-iso-"));
+  spawnSync("git", ["init", "-q"], { cwd });
+  spawnSync("bash", ["-c", "echo seed > seed && git add seed && git -c user.email=t@t -c user.name=t commit -q -m seed"], { cwd });
+  const { stdout, status, stderr, dataDir } = runCompanion(
+    ["run", "--mode=review", "--foreground", "--isolated", "--dispose",
+     "--model", "claude-haiku-4-5-20251001",
+     "--cwd", cwd, "--", "review this"],
+    { cwd }
+  );
+  try {
+    assert.equal(status, 0, `exit ${status}: ${stderr}`);
+    const result = JSON.parse(stdout);
+    assert.equal(result.ok, true);
+    // Source worktree should still exist; isolated worktree should be disposed.
+    const worktreeList = spawnSync("git", ["-C", cwd, "worktree", "list"], { encoding: "utf8" }).stdout;
+    // Exactly one entry (the source repo itself) — temp worktree removed.
+    assert.equal(worktreeList.trim().split("\n").length, 1, `unexpected worktrees:\n${worktreeList}`);
+  } finally {
+    cleanup(dataDir);
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("run --isolated without --dispose: worktree persists and path is recorded", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "smoke-iso2-"));
+  spawnSync("git", ["init", "-q"], { cwd });
+  spawnSync("bash", ["-c", "echo seed > seed && git add seed && git -c user.email=t@t -c user.name=t commit -q -m seed"], { cwd });
+  // Rescue defaults to --no-dispose; use rescue so the test stays short.
+  const { stdout, status, stderr, dataDir } = runCompanion(
+    ["run", "--mode=rescue", "--foreground", "--isolated",
+     "--model", "claude-haiku-4-5-20251001",
+     "--cwd", cwd, "--", "work"],
+    { cwd }
+  );
+  try {
+    assert.equal(status, 0, stderr);
+    const { job_id } = JSON.parse(stdout);
+    const stateRoot = path.join(dataDir, "state");
+    let meta = null;
+    for (const dir of readdirSync(stateRoot)) {
+      const metaPath = path.join(stateRoot, dir, "jobs", `${job_id}.json`);
+      if (existsSync(metaPath)) { meta = JSON.parse(readFileSync(metaPath, "utf8")); break; }
+    }
+    assert.ok(meta.worktree_path, "worktree_path should be recorded when not disposed");
+    assert.ok(existsSync(meta.worktree_path), `recorded worktree ${meta.worktree_path} should exist`);
+    // Clean up after assert so the test doesn't leak.
+    spawnSync("git", ["-C", cwd, "worktree", "remove", "--force", meta.worktree_path]);
+  } finally {
+    cleanup(dataDir);
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("run --isolated on a non-git cwd: returns isolation_failed", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "smoke-iso3-"));
+  // No git init — --isolated should refuse.
+  const { stderr, status, dataDir } = runCompanion(
+    ["run", "--mode=review", "--foreground", "--isolated",
+     "--model", "claude-haiku-4-5-20251001",
+     "--cwd", cwd, "--", "x"],
+    { cwd }
+  );
+  try {
+    assert.notEqual(status, 0);
+    assert.match(stderr, /isolated requires a git repository/);
+  } finally {
+    cleanup(dataDir);
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
 test("run: pre/post git-status sidecars written in a git cwd", () => {
   const cwd = mkdtempSync(path.join(tmpdir(), "smoke-git-"));
   // Make a minimal git repo with a seed file so git status has meaningful output.

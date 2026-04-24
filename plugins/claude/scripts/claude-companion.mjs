@@ -17,7 +17,8 @@
 import { fileURLToPath } from "node:url";
 import { dirname, resolve as resolvePath } from "node:path";
 import { randomUUID } from "node:crypto";
-import { writeFileSync, mkdirSync, existsSync } from "node:fs";
+import { writeFileSync, mkdirSync, existsSync, mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { execFileSync, spawn } from "node:child_process";
 
 import { parseArgs } from "./lib/args.mjs";
@@ -57,13 +58,63 @@ function fail(code, message, details = {}) {
 // Wraps git command; returns "" on error so we never crash on non-git cwds.
 // Uses execFileSync with an argv array (no shell) to prevent command injection
 // through the cwd argument (audit HIGH finding, M2 gate).
+// Strip inherited git env vars (GIT_DIR, GIT_INDEX_FILE, ...) so subprocess
+// git invocations aren't hijacked by a parent git-hook's repo context. Same
+// reason `setupWorktree` uses a clean env (see below).
+function cleanGitEnv() {
+  const env = { ...process.env };
+  for (const k of ["GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_COMMON_DIR", "GIT_PREFIX"]) {
+    delete env[k];
+  }
+  return env;
+}
+
 function tryGit(args, cwd) {
   try {
     return execFileSync("git", ["-C", cwd, ...args], {
       encoding: "utf8",
       stdio: ["ignore", "pipe", "ignore"],
+      env: cleanGitEnv(),
     });
   } catch { return ""; }
+}
+
+// Creates an isolated git worktree off the source repo's current HEAD.
+// Returns {path, cleanup}. Cleanup removes the worktree via `git worktree
+// remove --force` with an rmSync fallback for cases where the source repo is
+// gone (tests). Callers are responsible for calling cleanup when `dispose` is
+// true — executeRun owns that contract.
+function setupWorktree(sourceCwd) {
+  const isGit = tryGit(["rev-parse", "--is-inside-work-tree"], sourceCwd).trim() === "true";
+  if (!isGit) {
+    throw new Error(`--isolated requires a git repository at ${sourceCwd}`);
+  }
+  const worktreePath = mkdtempSync(`${tmpdir()}/claude-worktree-`);
+  // Scrub inherited git env — if the companion was spawned from inside a
+  // pre-commit hook (or any repo-scoped git operation), GIT_DIR/GIT_INDEX_FILE
+  // leak in and hijack our worktree command with "fatal: .git/index: Not a
+  // directory". Spec §4.10 calls this out; upstream Codex port hit the same.
+  const cleanEnv = cleanGitEnv();
+  // --detach: no branch ref; worktree stays disposable. HEAD: point at current
+  // commit so the reviewer sees exactly the state the caller is in.
+  execFileSync("git", ["-C", sourceCwd, "worktree", "add", "--detach", worktreePath, "HEAD"], {
+    stdio: ["ignore", "pipe", "pipe"],
+    env: cleanEnv,
+  });
+  return {
+    path: worktreePath,
+    cleanup() {
+      try {
+        execFileSync("git", ["-C", sourceCwd, "worktree", "remove", "--force", worktreePath], {
+          stdio: ["ignore", "pipe", "ignore"],
+          env: cleanEnv,
+        });
+      } catch {
+        // Source repo gone or worktree already detached — fall back to plain rm.
+      }
+      try { rmSync(worktreePath, { recursive: true, force: true }); } catch { /* best-effort */ }
+    },
+  };
 }
 
 // ——— subcommand: run ———
@@ -162,7 +213,25 @@ async function cmdRun(rest) {
 // worker re-invokes it after reading meta.json. Terminal meta + sidecars are
 // written by this function; emits the final JSON only when foreground.
 async function executeRun(baseRecord, { foreground }) {
-  const { id: sessionId, mode, model, cwd, workspaceRoot, isolated, prompt } = baseRecord;
+  const { id: sessionId, mode, model, cwd, workspaceRoot, isolated, prompt, disposed } = baseRecord;
+
+  // Isolation: spin up a detached git worktree off HEAD so the review sees a
+  // pristine copy, not the live working tree.
+  let worktree = null;
+  if (isolated) {
+    try {
+      worktree = setupWorktree(cwd);
+    } catch (e) {
+      const errorRecord = { ...baseRecord, status: "failed", pid: null,
+        errorMessage: e.message, exit_code: null, ended_at: new Date().toISOString() };
+      writeJobFile(workspaceRoot, sessionId, errorRecord);
+      upsertJob(workspaceRoot, errorRecord);
+      if (foreground) fail("isolation_failed", e.message, { job_id: sessionId });
+      process.exit(2);
+    }
+  }
+  const childCwd = worktree ? worktree.path : cwd;
+  const addDir = worktree ? worktree.path : cwd;
 
   // Pre-snapshot for review paths (§10 post-hoc detection).
   let gitStatusBefore = null;
@@ -173,8 +242,6 @@ async function executeRun(baseRecord, { foreground }) {
     }
   }
 
-  // Dispatch. M5 will add --dispose worktree; M2 runs directly against cwd.
-  const childCwd = isolated ? "/tmp" : cwd;
   let execution;
   try {
     execution = await spawnClaude({
@@ -182,7 +249,7 @@ async function executeRun(baseRecord, { foreground }) {
       model,
       promptText: prompt,
       sessionId,
-      addDir: isolated ? null : cwd,
+      addDir,
       cwd: childCwd,
       binary: baseRecord.binary,
       jsonSchema: baseRecord.schema ?? null,
@@ -194,6 +261,7 @@ async function executeRun(baseRecord, { foreground }) {
       exit_code: null, ended_at: new Date().toISOString() };
     writeJobFile(workspaceRoot, sessionId, errorRecord);
     upsertJob(workspaceRoot, errorRecord);
+    if (worktree && disposed) worktree.cleanup();
     if (foreground) fail("spawn_failed", e.message, { job_id: sessionId });
     process.exit(2);
   }
@@ -233,6 +301,17 @@ async function executeRun(baseRecord, { foreground }) {
   // Write stdout/stderr to sidecar logs (tests + operator can inspect).
   writeSidecar(workspaceRoot, sessionId, "stdout.log", execution.stdout);
   writeSidecar(workspaceRoot, sessionId, "stderr.log", execution.stderr);
+
+  // Dispose worktree after run — review paths default ON, rescue default OFF
+  // (callers may override via --no-dispose). Kept AFTER sidecar writes so any
+  // failure traces survive.
+  if (worktree && disposed) {
+    worktree.cleanup();
+    writeJobFile(workspaceRoot, sessionId, { ...finalRecord, worktree_cleaned: true });
+  } else if (worktree) {
+    // Persist worktree path for operator debugging when dispose is off.
+    writeJobFile(workspaceRoot, sessionId, { ...finalRecord, worktree_path: worktree.path });
+  }
 
   if (foreground) {
     printJson({
