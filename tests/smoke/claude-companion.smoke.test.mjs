@@ -161,89 +161,12 @@ test("run: rejects bad --mode", () => {
   }
 });
 
-test("run --background: emits launched event and terminal meta arrives", async () => {
-  const cwd = mkdtempSync(path.join(tmpdir(), "smoke-bg-"));
-  const { stdout, status, dataDir } = runCompanion(
-    ["run", "--mode=rescue", "--background", "--model", "claude-haiku-4-5-20251001",
-     "--cwd", cwd, "--", "bg task"],
-    { cwd }
-  );
-  try {
-    assert.equal(status, 0);
-    const ev = JSON.parse(stdout);
-    assert.equal(ev.event, "launched");
-    assert.ok(ev.job_id);
-    assert.equal(ev.target, "claude");
-    // Poll for terminal state written by detached worker.
-    const stateRoot = path.join(dataDir, "state");
-    const deadline = Date.now() + 5000;
-    let meta = null;
-    while (Date.now() < deadline) {
-      for (const dir of readdirSync(stateRoot)) {
-        const metaPath = path.join(stateRoot, dir, "jobs", `${ev.job_id}.json`);
-        if (existsSync(metaPath)) {
-          const parsed = JSON.parse(readFileSync(metaPath, "utf8"));
-          if (parsed.status === "completed" || parsed.status === "failed") { meta = parsed; break; }
-        }
-      }
-      if (meta) break;
-      await new Promise((r) => setTimeout(r, 100));
-    }
-    assert.ok(meta, "worker never wrote terminal meta");
-    assert.equal(meta.id, ev.job_id);
-    assert.ok(["completed", "failed"].includes(meta.status));
-    // T7.4 / finding #1-H1 regression: the background worker's terminal
-    // JobRecord MUST carry the result, not just status. Before T7.4, these
-    // fields were dropped on the foreground→worker split, leaving cmdResult
-    // with an unpopulated meta file.
-    assert.equal(meta.result, "Mock Claude response.",
-      "background worker must persist parsed.result on the JobRecord");
-    assert.deepEqual(meta.permission_denials, [],
-      "background worker must persist permission_denials on the JobRecord");
-    assert.ok("mutations" in meta, "background JobRecord carries mutations array");
-    assert.ok("cost_usd" in meta, "background JobRecord carries cost_usd");
-    assert.equal(meta.schema_version, 5);
-  } finally {
-    cleanup(dataDir);
-    rmSync(cwd, { recursive: true, force: true });
-  }
-});
-
-test("T7.4 / §21.3.1: full prompt must not appear on any persisted record", () => {
-  const cwd = mkdtempSync(path.join(tmpdir(), "smoke-prompt-"));
-  seedMinimalRepo(cwd);
-  const LONG_PROMPT = "review this code: " + "x".repeat(300); // >200 chars
-  const { stdout, dataDir } = runCompanion(
-    ["run", "--mode=review", "--foreground", "--model", "claude-haiku-4-5-20251001",
-     "--cwd", cwd, "--", LONG_PROMPT],
-    { cwd }
-  );
-  try {
-    const { job_id } = JSON.parse(stdout);
-    const stateRoot = path.join(dataDir, "state");
-    let metaPath = null;
-    for (const dir of readdirSync(stateRoot)) {
-      const p = path.join(stateRoot, dir, "jobs", `${job_id}.json`);
-      if (existsSync(p)) { metaPath = p; break; }
-    }
-    assert.ok(metaPath, "meta.json missing");
-    const raw = readFileSync(metaPath, "utf8");
-    const meta = JSON.parse(raw);
-    assert.equal("prompt" in meta, false,
-      "§21.3.1: persisted record MUST NOT carry a full `prompt` field");
-    assert.equal(meta.prompt_head.length <= 200, true,
-      "prompt_head must be ≤200 chars");
-    // Defense in depth: the raw JSON must not contain the tail of the prompt.
-    // (If the prompt leaked via a non-field property, the JSON bytes would
-    // still contain the "xxxx..." payload.)
-    const tail = "x".repeat(250);
-    assert.equal(raw.includes(tail), false,
-      "§21.3.1: full prompt text must not appear anywhere in persisted JSON");
-  } finally {
-    cleanup(dataDir);
-    rmSync(cwd, { recursive: true, force: true });
-  }
-});
+// NOTE — T7.6 relocations:
+//   - "run --background: ... terminal meta arrives" (finding #1-H1)  → invariants.test.mjs
+//   - "T7.4 / §21.3.1: full prompt must not appear ..." (finding #9) → invariants.test.mjs
+// This file keeps the behaviors unique to companion-level smoke (prompt
+// sidecar cleanup, status/result/cancel/ping/etc.) The finding-scoped
+// regressions have exactly one home: tests/smoke/invariants.test.mjs.
 
 test("T7.4 / §21.3.2: prompt sidecar is deleted after worker consumes it", async () => {
   const cwd = mkdtempSync(path.join(tmpdir(), "smoke-bg-sidecar-"));
@@ -338,29 +261,11 @@ function readStdoutLog(dataDir, jobId) {
   throw new Error(`no stdout.log for job ${jobId}`);
 }
 
-test("review sees dirty working tree (M6 finding #4)", () => {
-  const cwd = mkdtempSync(path.join(tmpdir(), "smoke-dirty-"));
-  seedDirtyRepo(cwd);
-  const { stdout, status, stderr, dataDir } = runCompanion(
-    ["run", "--mode=review", "--foreground",
-     "--model", "claude-haiku-4-5-20251001",
-     "--cwd", cwd, "--", "focus"],
-    { cwd, env: { CLAUDE_MOCK_ASSERT_FILE: "seed.txt" } }
-  );
-  try {
-    assert.equal(status, 0, `exit ${status}: ${stderr}`);
-    const result = JSON.parse(stdout);
-    const fx = readStdoutLog(dataDir, result.job_id);
-    assert.equal(fx.t7_saw_file, true,
-      `review should see dirty seed.txt under --add-dir; add_dir=${fx.t7_add_dir}`);
-    // --add-dir must be the worktree tempdir, not the source cwd.
-    assert.notEqual(fx.t7_add_dir, cwd,
-      "review's containment=worktree should NOT pass sourceCwd as --add-dir");
-  } finally {
-    cleanup(dataDir);
-    rmSync(cwd, { recursive: true, force: true });
-  }
-});
+// NOTE — T7.6 relocation:
+//   "review sees dirty working tree (M6 finding #4)"  →  invariants.test.mjs
+// Canonical home is the regression matrix. The adversarial-review /
+// rescue / dispose tests below remain here — they exercise containment +
+// scope combinations that are wider than a single finding.
 
 test("adversarial-review scope=branch-diff: only changed files appear in --add-dir", () => {
   const cwd = mkdtempSync(path.join(tmpdir(), "smoke-adv-"));

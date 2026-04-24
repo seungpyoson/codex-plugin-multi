@@ -168,6 +168,44 @@ if (process.env.CLAUDE_MOCK_LIST_ADDDIR && addDir) {
   fixture.t7_add_dir_files = walk(addDir);
 }
 
-// Emit the final result event and exit. Matches `--output-format=json`.
-process.stdout.write(JSON.stringify(fixture) + "\n");
-process.exit(0);
+// T7.6 test oracle: `CLAUDE_MOCK_MUTATE_FILE=<relpath-or-abspath>` — before
+// emitting the result, write a small file to disk so the companion's
+// mutation-detection path (tryGit pre/post snapshot) has something to
+// observe. Absolute paths are used verbatim; relative paths resolve against
+// `process.cwd()` first, with a fallback to `addDir` when they differ
+// (worktree containment). Keeps the hook additive: leaving the env unset
+// is identical to pre-T7.6 behavior.
+const mutateRel = process.env.CLAUDE_MOCK_MUTATE_FILE;
+if (mutateRel) {
+  const { writeFileSync: wf, mkdirSync: mk } = await import("node:fs");
+  const { isAbsolute, dirname: dn } = await import("node:path");
+  let target;
+  if (isAbsolute(mutateRel)) {
+    target = mutateRel;
+  } else {
+    // Prefer addDir when it differs from cwd (review's worktree containment
+    // puts addDir ≠ cwd). When they match (rescue / containment=none), both
+    // resolve to the same directory.
+    const base = addDir && addDir !== process.cwd() ? addDir : process.cwd();
+    target = resolve(base, mutateRel);
+  }
+  try { mk(dn(target), { recursive: true }); } catch { /* best-effort */ }
+  wf(target, "mock-mutation\n", "utf8");
+  fixture.t7_mutate_wrote = target;
+}
+
+// T7.6 test oracle: `CLAUDE_MOCK_DELAY_MS=<n>` — delay N ms before emitting
+// stdout + exiting. Exercises the `timeoutMs` branch in `spawnClaude`, which
+// has no regression coverage today (M6 reviewer flagged "timeoutMs never
+// exercised"). Delay < timeout = normal completion; delay > timeout = SIGTERM.
+const delayMs = Number(process.env.CLAUDE_MOCK_DELAY_MS ?? "0");
+if (Number.isFinite(delayMs) && delayMs > 0) {
+  setTimeout(() => {
+    process.stdout.write(JSON.stringify(fixture) + "\n");
+    process.exit(0);
+  }, delayMs);
+} else {
+  // Emit the final result event and exit. Matches `--output-format=json`.
+  process.stdout.write(JSON.stringify(fixture) + "\n");
+  process.exit(0);
+}
