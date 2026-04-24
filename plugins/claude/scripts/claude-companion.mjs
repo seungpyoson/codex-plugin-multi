@@ -18,7 +18,7 @@ import { fileURLToPath } from "node:url";
 import { dirname, resolve as resolvePath } from "node:path";
 import { randomUUID } from "node:crypto";
 import { writeFileSync, mkdirSync, existsSync } from "node:fs";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 
 import { parseArgs } from "./lib/args.mjs";
 import { configureState, getStateConfig, resolveJobsDir, resolveJobFile, writeJobFile, upsertJob, listJobs } from "./lib/state.mjs";
@@ -81,10 +81,6 @@ async function cmdRun(rest) {
   if (options.background && options.foreground) {
     fail("bad_args", "--background and --foreground are mutually exclusive");
   }
-  if (options.background) {
-    fail("not_implemented", "run --background lands in M4");
-  }
-
   const models = loadModels();
   const model = options.model ?? models[mode === "rescue" ? "default" : "default"] ?? null;
   if (!model) {
@@ -111,7 +107,7 @@ async function cmdRun(rest) {
     id: sessionId,
     target: "claude",
     mode,
-    status: "running",
+    status: options.background ? "queued" : "running",
     pid: process.pid,
     startedAt,
     cwd,
@@ -121,10 +117,52 @@ async function cmdRun(rest) {
     model,
     session_id: sessionId,
     prompt_head: prompt.slice(0, 200),
+    prompt,
+    binary: options.binary ?? process.env.CLAUDE_BINARY ?? "claude",
+    schema: options.schema ?? null,
     schema_version: 1,
   };
   writeJobFile(workspaceRoot, sessionId, baseRecord);
   upsertJob(workspaceRoot, baseRecord);
+
+  if (options.background) {
+    // Detach a worker process that will execute the run and overwrite the
+    // terminal-state meta when done (spec §7.3 / M4).
+    const child = spawn(process.execPath, [
+      fileURLToPath(import.meta.url),
+      "_run-worker",
+      "--cwd", cwd,
+      "--job", sessionId,
+    ], {
+      cwd,
+      env: process.env,
+      detached: true,
+      stdio: "ignore",
+      windowsHide: true,
+    });
+    child.unref();
+    const launchedRecord = { ...baseRecord, pid: child.pid ?? null };
+    writeJobFile(workspaceRoot, sessionId, launchedRecord);
+    upsertJob(workspaceRoot, launchedRecord);
+    printJson({
+      event: "launched",
+      job_id: sessionId,
+      target: "claude",
+      mode,
+      pid: child.pid ?? null,
+      workspace_root: workspaceRoot,
+    });
+    process.exit(0);
+  }
+
+  await executeRun(baseRecord, { foreground: true });
+}
+
+// Shared execution body: foreground path calls this directly, background
+// worker re-invokes it after reading meta.json. Terminal meta + sidecars are
+// written by this function; emits the final JSON only when foreground.
+async function executeRun(baseRecord, { foreground }) {
+  const { id: sessionId, mode, model, cwd, workspaceRoot, isolated, prompt } = baseRecord;
 
   // Pre-snapshot for review paths (§10 post-hoc detection).
   let gitStatusBefore = null;
@@ -146,8 +184,9 @@ async function cmdRun(rest) {
       sessionId,
       addDir: isolated ? null : cwd,
       cwd: childCwd,
-      binary: options.binary ?? process.env.CLAUDE_BINARY ?? "claude",
-      jsonSchema: options.schema ?? null,
+      binary: baseRecord.binary,
+      jsonSchema: baseRecord.schema ?? null,
+      resumeId: baseRecord.resume_id ?? null,
       timeoutMs: 0,
     });
   } catch (e) {
@@ -155,7 +194,8 @@ async function cmdRun(rest) {
       exit_code: null, ended_at: new Date().toISOString() };
     writeJobFile(workspaceRoot, sessionId, errorRecord);
     upsertJob(workspaceRoot, errorRecord);
-    fail("spawn_failed", e.message, { job_id: sessionId });
+    if (foreground) fail("spawn_failed", e.message, { job_id: sessionId });
+    process.exit(2);
   }
 
   // Post-snapshot for mutation detection.
@@ -194,18 +234,109 @@ async function cmdRun(rest) {
   writeSidecar(workspaceRoot, sessionId, "stdout.log", execution.stdout);
   writeSidecar(workspaceRoot, sessionId, "stderr.log", execution.stderr);
 
-  printJson({
-    ok: completedStatus === "completed",
-    job_id: sessionId,
-    mode,
-    model,
-    workspace_root: workspaceRoot,
-    result: execution.parsed.result,
-    structured_output: execution.parsed.structured,
-    permission_denials: execution.parsed.denials,
-    ...(mutations.length > 0 ? { warning: "mutation_detected", mutated_files: mutations } : {}),
-  });
+  if (foreground) {
+    printJson({
+      ok: completedStatus === "completed",
+      job_id: sessionId,
+      mode,
+      model,
+      workspace_root: workspaceRoot,
+      result: execution.parsed.result,
+      structured_output: execution.parsed.structured,
+      permission_denials: execution.parsed.denials,
+      ...(mutations.length > 0 ? { warning: "mutation_detected", mutated_files: mutations } : {}),
+    });
+  }
   process.exit(completedStatus === "completed" ? 0 : 2);
+}
+
+// ——— subcommand: _run-worker (hidden; detached worker for --background) ———
+async function cmdRunWorker(rest) {
+  const { options } = parseArgs(rest, {
+    valueOptions: ["cwd", "job"],
+    booleanOptions: [],
+  });
+  if (!options.cwd || !options.job) {
+    fail("bad_args", "_run-worker requires --cwd and --job");
+  }
+  const workspaceRoot = resolveWorkspaceRoot(options.cwd);
+  let meta;
+  try {
+    const jobFile = resolveJobFile(workspaceRoot, options.job);
+    if (!existsSync(jobFile)) fail("not_found", `no meta.json for job ${options.job}`);
+    meta = JSON.parse(_readFileSync(jobFile, "utf8"));
+  } catch (e) {
+    fail("bad_args", e.message);
+  }
+  const baseRecord = { ...meta, status: "running", pid: process.pid };
+  writeJobFile(workspaceRoot, options.job, baseRecord);
+  upsertJob(workspaceRoot, baseRecord);
+  await executeRun(baseRecord, { foreground: false });
+}
+
+// ——— subcommand: continue (resume a prior session with --resume) ———
+async function cmdContinue(rest) {
+  const { options, positionals } = parseArgs(rest, {
+    valueOptions: ["job", "cwd", "model", "binary"],
+    booleanOptions: ["background", "foreground"],
+  });
+  if (!options.job) fail("bad_args", "--job <id> is required");
+  const cwd = options.cwd ?? process.cwd();
+  const workspaceRoot = resolveWorkspaceRoot(cwd);
+  let prior;
+  try {
+    const jobFile = resolveJobFile(workspaceRoot, options.job);
+    if (!existsSync(jobFile)) fail("not_found", `no meta.json for job ${options.job}`);
+    prior = JSON.parse(_readFileSync(jobFile, "utf8"));
+  } catch (e) {
+    fail("bad_args", e.message);
+  }
+  const prompt = positionals.join(" ").trim();
+  if (!prompt) fail("bad_args", "prompt is required (pass after -- separator)");
+  const resumeId = prior.session_id;
+  if (!resumeId) fail("bad_args", `prior job ${options.job} has no session_id to resume`);
+  const newSessionId = randomUUID();
+  const model = options.model ?? prior.model;
+  const baseRecord = {
+    id: newSessionId,
+    target: "claude",
+    mode: prior.mode,
+    status: options.background ? "queued" : "running",
+    pid: process.pid,
+    startedAt: new Date().toISOString(),
+    cwd,
+    workspaceRoot,
+    isolated: Boolean(prior.isolated),
+    disposed: Boolean(prior.disposed),
+    model,
+    session_id: newSessionId,
+    parent_job_id: options.job,
+    resume_id: resumeId,
+    prompt_head: prompt.slice(0, 200),
+    prompt,
+    binary: options.binary ?? process.env.CLAUDE_BINARY ?? "claude",
+    schema: prior.schema ?? null,
+    schema_version: 1,
+  };
+  writeJobFile(workspaceRoot, newSessionId, baseRecord);
+  upsertJob(workspaceRoot, baseRecord);
+
+  if (options.background) {
+    const child = spawn(process.execPath, [
+      fileURLToPath(import.meta.url),
+      "_run-worker",
+      "--cwd", cwd,
+      "--job", newSessionId,
+    ], { cwd, env: process.env, detached: true, stdio: "ignore", windowsHide: true });
+    child.unref();
+    const launched = { ...baseRecord, pid: child.pid ?? null };
+    writeJobFile(workspaceRoot, newSessionId, launched);
+    upsertJob(workspaceRoot, launched);
+    printJson({ event: "launched", job_id: newSessionId, target: "claude", mode: prior.mode,
+      parent_job_id: options.job, pid: child.pid ?? null, workspace_root: workspaceRoot });
+    process.exit(0);
+  }
+  await executeRun(baseRecord, { foreground: true });
 }
 
 function writeSidecar(workspaceRoot, jobId, name, contents) {
@@ -365,7 +496,8 @@ async function main() {
     case "status":  return cmdStatus(rest);
     case "result":  return cmdResult(rest);
     case "cancel":  return cmdCancel(rest);
-    case "continue":
+    case "continue": return cmdContinue(rest);
+    case "_run-worker": return cmdRunWorker(rest);
     case "doctor":
       return cmdNotImplemented(sub);
     case "--help":

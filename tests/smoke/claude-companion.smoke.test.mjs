@@ -124,18 +124,67 @@ test("run: rejects bad --mode", () => {
   }
 });
 
-test("run --background: returns not_implemented at M2", () => {
-  const cwd = mkdtempSync(path.join(tmpdir(), "smoke-cwd-"));
-  const { stderr, status, dataDir } = runCompanion(
+test("run --background: emits launched event and terminal meta arrives", async () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "smoke-bg-"));
+  const { stdout, status, dataDir } = runCompanion(
     ["run", "--mode=rescue", "--background", "--model", "claude-haiku-4-5-20251001",
-     "--cwd", cwd, "--", "x"],
+     "--cwd", cwd, "--", "bg task"],
     { cwd }
   );
   try {
-    assert.notEqual(status, 0);
-    assert.match(stderr, /M4/);
+    assert.equal(status, 0);
+    const ev = JSON.parse(stdout);
+    assert.equal(ev.event, "launched");
+    assert.ok(ev.job_id);
+    assert.equal(ev.target, "claude");
+    // Poll for terminal state written by detached worker.
+    const stateRoot = path.join(dataDir, "state");
+    const deadline = Date.now() + 5000;
+    let meta = null;
+    while (Date.now() < deadline) {
+      for (const dir of readdirSync(stateRoot)) {
+        const metaPath = path.join(stateRoot, dir, "jobs", `${ev.job_id}.json`);
+        if (existsSync(metaPath)) {
+          const parsed = JSON.parse(readFileSync(metaPath, "utf8"));
+          if (parsed.status === "completed" || parsed.status === "failed") { meta = parsed; break; }
+        }
+      }
+      if (meta) break;
+      await new Promise((r) => setTimeout(r, 100));
+    }
+    assert.ok(meta, "worker never wrote terminal meta");
+    assert.equal(meta.id, ev.job_id);
+    assert.ok(["completed", "failed"].includes(meta.status));
   } finally {
     cleanup(dataDir);
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("continue --job: resumes a prior session via --resume", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "smoke-continue-"));
+  const dataDir = mkdtempSync(path.join(tmpdir(), "continue-data-"));
+  try {
+    const runRes = spawnSync("node", [
+      path.join(REPO_ROOT, "plugins/claude/scripts/claude-companion.mjs"),
+      "run", "--mode=rescue", "--foreground",
+      "--model", "claude-haiku-4-5-20251001",
+      "--cwd", cwd, "--", "seed",
+    ], { cwd, encoding: "utf8",
+        env: { ...process.env, CLAUDE_BINARY: MOCK, CLAUDE_PLUGIN_DATA: dataDir } });
+    const { job_id } = JSON.parse(runRes.stdout);
+    const contRes = spawnSync("node", [
+      path.join(REPO_ROOT, "plugins/claude/scripts/claude-companion.mjs"),
+      "continue", "--job", job_id, "--foreground",
+      "--cwd", cwd, "--", "follow-up",
+    ], { cwd, encoding: "utf8",
+        env: { ...process.env, CLAUDE_BINARY: MOCK, CLAUDE_PLUGIN_DATA: dataDir } });
+    assert.equal(contRes.status, 0, contRes.stderr);
+    const out = JSON.parse(contRes.stdout);
+    assert.notEqual(out.job_id, job_id, "continue must mint a new job_id");
+    assert.equal(out.ok, true);
+  } finally {
+    rmSync(dataDir, { recursive: true, force: true });
     rmSync(cwd, { recursive: true, force: true });
   }
 });
@@ -169,18 +218,16 @@ test("run: pre/post git-status sidecars written in a git cwd", () => {
   }
 });
 
-test("continue/doctor: return not_implemented (pre-M4/M10)", () => {
+test("doctor: returns not_implemented (pre-M10)", () => {
   const cwd = mkdtempSync(path.join(tmpdir(), "smoke-cwd-"));
-  for (const sub of ["continue", "doctor"]) {
-    const { stderr, status, dataDir } = runCompanion([sub], { cwd });
-    try {
-      assert.notEqual(status, 0, `${sub} should exit non-zero`);
-      assert.match(stderr, /later milestone/);
-    } finally {
-      cleanup(dataDir);
-    }
+  const { stderr, status, dataDir } = runCompanion(["doctor"], { cwd });
+  try {
+    assert.notEqual(status, 0);
+    assert.match(stderr, /later milestone/);
+  } finally {
+    cleanup(dataDir);
+    rmSync(cwd, { recursive: true, force: true });
   }
-  rmSync(cwd, { recursive: true, force: true });
 });
 
 test("ping: returns status=ok with the mock claude binary", () => {

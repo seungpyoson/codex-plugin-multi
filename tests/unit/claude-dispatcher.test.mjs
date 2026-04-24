@@ -85,6 +85,28 @@ test("buildClaudeArgs: rejects non-UUIDv4 session IDs", () => {
   );
 });
 
+test("buildClaudeArgs: resumeId emits --resume and omits --session-id", () => {
+  const args = buildClaudeArgs({
+    mode: "rescue", model: "claude-haiku-4-5-20251001",
+    promptText: "continue work", sessionId: UUID,
+    resumeId: "11111111-2222-4333-8444-555555555555",
+  });
+  assert.ok(args.includes("--resume"));
+  assert.ok(!args.includes("--session-id"));
+  const idx = args.indexOf("--resume");
+  assert.equal(args[idx + 1], "11111111-2222-4333-8444-555555555555");
+});
+
+test("buildClaudeArgs: rejects non-UUIDv4 resumeId", () => {
+  assert.throws(
+    () => buildClaudeArgs({
+      mode: "rescue", model: "claude-haiku-4-5-20251001",
+      promptText: "x", sessionId: UUID, resumeId: "not-a-uuid",
+    }),
+    /resumeId must be UUID v4/
+  );
+});
+
 test("buildClaudeArgs: rejects unknown mode", () => {
   assert.throws(
     () => buildClaudeArgs({

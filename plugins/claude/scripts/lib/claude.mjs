@@ -28,6 +28,7 @@ export function buildClaudeArgs({
   model,                // full model ID (e.g., claude-haiku-4-5-20251001)
   promptText,
   sessionId,
+  resumeId = null,      // if set, uses --resume <uuid> instead of --session-id (for `continue`)
   addDir = null,        // workspace path to grant read access
   jsonSchema = null,    // optional JSON Schema string for structured output
   stripContext = true,  // false = keep CLAUDE.md (used by rescue when caller wants inherited context)
@@ -35,7 +36,10 @@ export function buildClaudeArgs({
   if (typeof promptText !== "string" || promptText.length === 0) {
     throw new Error("buildClaudeArgs: promptText is required");
   }
-  if (!isUuidV4(sessionId)) {
+  if (resumeId !== null && !isUuidV4(resumeId)) {
+    throw new Error(`buildClaudeArgs: resumeId must be UUID v4; got ${JSON.stringify(resumeId)}`);
+  }
+  if (resumeId === null && !isUuidV4(sessionId)) {
     throw new Error(`buildClaudeArgs: sessionId must be UUID v4; got ${JSON.stringify(sessionId)}`);
   }
   if (typeof model !== "string" || !model) {
@@ -46,9 +50,15 @@ export function buildClaudeArgs({
     "-p", promptText,
     "--output-format", "json",
     "--no-session-persistence",
-    "--session-id", sessionId,
     "--model", model,
   ];
+  if (resumeId) {
+    // --resume continues a prior Claude session; a fresh --session-id must NOT
+    // also be passed or Claude rejects the argv.
+    args.push("--resume", resumeId);
+  } else {
+    args.push("--session-id", sessionId);
+  }
 
   // Layer 1: strip CLAUDE.md bias. --setting-sources "" keeps OAuth working
   // (unlike --bare which disables OAuth). Verified spec §4.6.
@@ -112,6 +122,7 @@ export async function spawnClaude({
   model,
   promptText,
   sessionId = randomUUID(),
+  resumeId = null,
   addDir = null,
   jsonSchema = null,
   stripContext = true,
@@ -120,7 +131,7 @@ export async function spawnClaude({
   timeoutMs = 0,                 // 0 = no timeout
   binary = "claude",
 } = {}) {
-  const args = buildClaudeArgs({ mode, model, promptText, sessionId, addDir, jsonSchema, stripContext });
+  const args = buildClaudeArgs({ mode, model, promptText, sessionId, resumeId, addDir, jsonSchema, stripContext });
   return new Promise((resolve, reject) => {
     const child = spawn(binary, args, { cwd, env, stdio: ["ignore", "pipe", "pipe"] });
     let stdout = "";
