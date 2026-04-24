@@ -218,10 +218,11 @@ test("continue --job: resumes a prior session via --resume", () => {
     ], { cwd, encoding: "utf8",
         env: { ...process.env, CLAUDE_BINARY: MOCK, CLAUDE_PLUGIN_DATA: dataDir } });
     const { job_id } = JSON.parse(runRes.stdout);
+    // T7.8: continue does NOT accept --cwd; cwd is inherited from prior.cwd.
     const contRes = spawnSync("node", [
       path.join(REPO_ROOT, "plugins/claude/scripts/claude-companion.mjs"),
       "continue", "--job", job_id, "--foreground",
-      "--cwd", cwd, "--", "follow-up",
+      "--", "follow-up",
     ], { cwd, encoding: "utf8",
         env: { ...process.env, CLAUDE_BINARY: MOCK, CLAUDE_PLUGIN_DATA: dataDir } });
     assert.equal(contRes.status, 0, contRes.stderr);
@@ -352,9 +353,11 @@ test("review worktree disposed by profile default (dispose_default=true)", () =>
   }
 });
 
-test("run: pre/post git-status sidecars written in a git cwd", () => {
+// T7.8: pre-snapshot is gone — the baseline commit IS the before-state.
+// git-status-after.txt is the remaining sidecar, captured from childCwd
+// (the worktree, not sourceCwd).
+test("run: post-run git-status sidecar written for plan-mode jobs", () => {
   const cwd = mkdtempSync(path.join(tmpdir(), "smoke-git-"));
-  // Make a minimal git repo with a seed file so git status has meaningful output.
   spawnSync("git", ["init", "-q"], { cwd });
   spawnSync("bash", ["-c", "echo seed > seed && git add seed && git -c user.email=t@t -c user.name=t commit -q -m seed"], { cwd });
   const { stdout, dataDir } = runCompanion(
@@ -371,9 +374,9 @@ test("run: pre/post git-status sidecars written in a git cwd", () => {
       if (existsSync(candidate)) { jobsDir = candidate; break; }
     }
     assert.ok(jobsDir, `job sidecar dir not found under ${stateRoot}`);
-    // Both snapshots written (may be empty strings for a clean seeded repo — that's OK).
-    assert.ok(existsSync(path.join(jobsDir, "git-status-before.txt")), "before snapshot missing");
     assert.ok(existsSync(path.join(jobsDir, "git-status-after.txt")), "after snapshot missing");
+    assert.equal(existsSync(path.join(jobsDir, "git-status-before.txt")), false,
+      "T7.8: no before sidecar — baseline commit is the before-state");
     assert.ok(existsSync(path.join(jobsDir, "stdout.log")), "stdout.log missing");
   } finally {
     cleanup(dataDir);

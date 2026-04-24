@@ -36,8 +36,9 @@ import { spawnClaude } from "./lib/claude.mjs";
 import { resolveProfile, resolveModelForProfile } from "./lib/mode-profiles.mjs";
 import { setupContainment } from "./lib/containment.mjs";
 import { populateScope } from "./lib/scope.mjs";
-import { newJobId, verifyPidInfo } from "./lib/identity.mjs";
+import { newJobId, verifyPidInfo, capturePidInfo } from "./lib/identity.mjs";
 import { buildJobRecord } from "./lib/job-record.mjs";
+import { terminateProcessTree } from "./lib/process.mjs";
 import { readFileSync as _readFileSync } from "node:fs";
 
 // ——— plugin-root self-resolution (upstream pattern, spec §4.14) ———
@@ -297,6 +298,29 @@ async function executeRun(invocation, prompt, { foreground }) {
   // Re-resolve the profile from the persisted mode NAME (spec §21.2).
   const profile = resolveProfile(invocation.mode_profile_name);
 
+  // T7.8 / §21: write a running-state record so cmdCancel can discover the
+  // live owner process and signal it. Owner is `process.pid` — the worker
+  // (background) or the companion itself (foreground). cmdCancel reads
+  // pid_info from this record, verifies it with verifyPidInfo, and calls
+  // terminateProcessTree(pidInfo.pid).
+  //
+  // Pre-T7.8 the companion never wrote status=running; every cmdCancel hit
+  // the "already_terminal" gate immediately and no live job could be stopped.
+  try {
+    const ownerPidInfo = capturePidInfo(process.pid);
+    const runningRecord = buildJobRecord(invocation, {
+      runningMarker: true,
+      pidInfo: ownerPidInfo,
+      claudeSessionId: null,
+    }, []);
+    writeJobFile(workspaceRoot, jobId, runningRecord);
+    upsertJob(workspaceRoot, runningRecord);
+  } catch {
+    // capturePidInfo platform error or disk write failure — proceed without
+    // the running record. Cancel will see status=queued and report
+    // "already_terminal". Degraded but not unsafe.
+  }
+
   // T7.2: containment + scope are two independent per-profile decisions.
   let containment = null;
   try {
@@ -322,15 +346,40 @@ async function executeRun(invocation, prompt, { foreground }) {
   const childCwd = containment.path;
   const addDir = containment.path;
 
-  // Pre-snapshot for review-style paths (§10 post-hoc mutation detection).
-  // Profile-driven: plan-mode paths are supposed to be read-only, so we
-  // snapshot before/after and surface drift via record.mutations.
+  // T7.8 / §10 post-hoc mutation detection. Plan-mode profiles are supposed
+  // to be read-only; we observe whether Claude held to that by committing a
+  // baseline of childCwd BEFORE the run, then reading `git status` after.
+  //
+  // Detection runs in childCwd (where Claude actually writes under worktree
+  // containment), NOT cwd (sourceCwd). Pre-T7.8 code looked at cwd, which
+  // could never see changes Claude made inside its sandbox.
+  //
+  // For scope=head childCwd is already a registered worktree with its own
+  // HEAD — skip init, diff against that. For every other scope, populateScope
+  // leaves a bare directory copy with no git metadata; init + add -A + commit
+  // sets up a baseline so post-run `git status` shows exactly what Claude
+  // touched across all three classes (add / edit / delete).
   const checkMutations = profile.permission_mode === "plan";
-  let gitStatusBefore = null;
+  let baselineReady = false;
   if (checkMutations) {
-    gitStatusBefore = tryGit(["status", "-s", "--untracked-files=all"], cwd);
-    if (gitStatusBefore || gitStatusBefore === "") {
-      writeSidecar(workspaceRoot, jobId, "git-status-before.txt", gitStatusBefore);
+    const isRepo =
+      tryGit(["rev-parse", "--is-inside-work-tree"], childCwd).trim() === "true";
+    if (isRepo) {
+      baselineReady = true;
+    } else {
+      try {
+        execFileSync("git", ["-C", childCwd, "init", "-q", "-b", "claude-baseline"],
+          { stdio: ["ignore", "pipe", "ignore"], env: cleanGitEnv() });
+        execFileSync("git", ["-C", childCwd, "add", "-A"],
+          { stdio: ["ignore", "pipe", "ignore"], env: cleanGitEnv() });
+        execFileSync("git", ["-C", childCwd,
+          "-c", "user.email=claude-companion@local",
+          "-c", "user.name=claude-companion",
+          "-c", "commit.gpgsign=false",
+          "commit", "-q", "--allow-empty", "-m", "claude-baseline"],
+          { stdio: ["ignore", "pipe", "ignore"], env: cleanGitEnv() });
+        baselineReady = true;
+      } catch { /* baseline setup failed; mutations[] stays [] */ }
     }
   }
 
@@ -368,29 +417,37 @@ async function executeRun(invocation, prompt, { foreground }) {
     process.exit(2);
   }
 
-  // Post-snapshot for mutation detection.
+  // Post-run mutation read. `git status -s --untracked-files=all` in childCwd
+  // shows everything diverged from the baseline commit — each line preserves
+  // its 2-char XY prefix (e.g., "?? foo.md", " M seed.txt", " D old.txt") so
+  // consumers can distinguish add / edit / delete without re-parsing.
+  //
+  // `tryGit` (defined at top of this file, uses cleanGitEnv helper at :~76)
+  // returns "" on any failure, but guard with `|| ""` regardless so a
+  // future refactor of that helper can't silently NPE this call site.
   let mutations = [];
-  if (checkMutations && gitStatusBefore !== null) {
-    const gitStatusAfter = tryGit(["status", "-s", "--untracked-files=all"], cwd);
+  if (checkMutations && baselineReady) {
+    const gitStatusAfter =
+      tryGit(["status", "-s", "--untracked-files=all"], childCwd) || "";
     writeSidecar(workspaceRoot, jobId, "git-status-after.txt", gitStatusAfter);
-    if (gitStatusAfter && gitStatusAfter !== gitStatusBefore) {
-      const beforeLines = new Set(
-        gitStatusBefore.split("\n").map((l) => l.trim()).filter(Boolean)
-      );
-      mutations = gitStatusAfter.split("\n")
-        .map((l) => l.trim())
-        .filter((l) => l && !beforeLines.has(l));
-    }
+    mutations = gitStatusAfter.split("\n").filter(Boolean);
   }
 
   // ONE buildJobRecord call — spec §21.3.2 convergence. Foreground prints
   // what we persist; cmdResult reads the same file; skill renders the same
   // schema. No hand-assembly anywhere.
+  //
+  // §21.1 identity invariant: claude_session_id comes from Claude's echo,
+  // never from a fallback. When Claude returned no parseable session_id
+  // (parse error, garbage stdout, crash), null MUST propagate — aliasing
+  // `resumeId` or `jobId` fabricated identity and was the finding #1 / H1
+  // regression class. The T7.8 bypass-guard tests in tests/smoke/
+  // invariants.test.mjs enforce this at the static + runtime layers.
   const finalRecord = buildJobRecord(invocation, {
     exitCode: execution.exitCode,
     parsed: execution.parsed,
     pidInfo: execution.pidInfo,
-    claudeSessionId: execution.claudeSessionId ?? resumeId ?? jobId,
+    claudeSessionId: execution.claudeSessionId,
   }, mutations);
   writeJobFile(workspaceRoot, jobId, finalRecord);
   upsertJob(workspaceRoot, finalRecord);
@@ -453,14 +510,29 @@ async function cmdRunWorker(rest) {
 }
 
 // ——— subcommand: continue (resume a prior session with --resume) ———
+//
+// T7.8 / §21: --cwd is FORBIDDEN on continue. The caller (Codex) does not
+// pick the execution cwd — the prior record does. Accepting --cwd invited
+// a class of bug where Codex's cwd diverged from the original run's cwd,
+// which silently broke Claude's session context. The new invocation's cwd
+// comes from `prior.cwd`; process.cwd() is only used to locate the prior
+// record (which is a workspace-lookup concern, not a session concern).
 async function cmdContinue(rest) {
+  // Explicit rejection of --cwd: parseArgs would otherwise ignore unknown
+  // flags silently, and we want a loud error if a caller tries this.
+  if (rest.some((t) => t === "--cwd" || t.startsWith("--cwd="))) {
+    fail("bad_args",
+      "continue does not accept --cwd; cwd is inherited from the prior record. " +
+      "If you need to change execution cwd, start a fresh `run` instead.");
+  }
   const { options, positionals } = parseArgs(rest, {
-    valueOptions: ["job", "cwd", "model", "binary"],
+    valueOptions: ["job", "model", "binary"],
     booleanOptions: ["background", "foreground"],
   });
   if (!options.job) fail("bad_args", "--job <id> is required");
-  const cwd = options.cwd ?? process.cwd();
-  const workspaceRoot = resolveWorkspaceRoot(cwd);
+  // Workspace lookup: use process.cwd() to find the prior record. The prior
+  // record then authoritatively supplies the execution cwd.
+  const workspaceRoot = resolveWorkspaceRoot(process.cwd());
   let prior;
   try {
     const jobFile = resolveJobFile(workspaceRoot, options.job);
@@ -469,11 +541,16 @@ async function cmdContinue(rest) {
   } catch (e) {
     fail("bad_args", e.message);
   }
+  if (!prior.cwd) {
+    fail("bad_state",
+      `prior job ${options.job} has no cwd field; cannot inherit execution cwd`);
+  }
+  const cwd = prior.cwd;
   const prompt = positionals.join(" ").trim();
   if (!prompt) fail("bad_args", "prompt is required (pass after -- separator)");
   // §21.1: read the PRIOR `claude_session_id`. Legacy `session_id` fallback
-  // covers pre-T7.3 records; same caveat as before — first-gen resumes work,
-  // resume-from-resume on legacy records hits a dead UUID.
+  // covers pre-T7.3 records; first-gen resumes work, resume-from-resume on
+  // legacy records hits a dead UUID.
   const priorClaudeSessionId = prior.claude_session_id ?? prior.session_id ?? null;
   if (!priorClaudeSessionId) {
     fail("bad_args",
@@ -648,11 +725,19 @@ async function cmdResult(rest) {
 
 // ——— subcommand: cancel (signal a running job) ———
 //
-// §21.1: signal target is resolved through `pid_info = {pid, starttime, argv0}`,
-// not through `pid` alone. The `ps`/`/proc` re-read is both the liveness
-// check AND the ownership proof — if starttime or argv0 drift, we refuse
-// to signal (`stale_pid`) because the pid has been reused by an unrelated
-// process. This is finding #7.
+// T7.8 / §21 cancel flow (Design A — upstream parity with codex-plugin-cc):
+//
+//   1. Load the prior record. Refuse if not status=running.
+//   2. verifyPidInfo re-reads ps/proc and compares {starttime, argv0} to
+//      the saved tuple. Mismatch / process_gone → stale-repair: write a
+//      status=stale record and exit. The §21.1 ownership proof (finding #7).
+//   3. On a live match, terminateProcessTree signals the process group
+//      (detached bg worker → kills worker + claude child together). If the
+//      group-kill reports not-delivered (fg companion not a group leader),
+//      fall back to a direct process.kill.
+//   4. Write a status=cancelled record AFTER signaling. cmdCancel is the
+//      authoritative writer; the signaled worker dies before it can
+//      overwrite with a terminal completed/failed record.
 async function cmdCancel(rest) {
   const { options } = parseArgs(rest, {
     valueOptions: ["job", "cwd"],
@@ -661,18 +746,20 @@ async function cmdCancel(rest) {
   if (!options.job) fail("bad_args", "--job <id> is required");
   const cwd = options.cwd ?? process.cwd();
   const workspaceRoot = resolveWorkspaceRoot(cwd);
-  const jobs = listJobs(workspaceRoot);
-  const job = jobs.find((j) => j.id === options.job);
-  if (!job) fail("not_found", `no job with id ${options.job}`);
-  if (job.status !== "running") {
-    printJson({ ok: true, status: "already_terminal", job_status: job.status, job_id: options.job });
+  let prior;
+  try {
+    const jobFile = resolveJobFile(workspaceRoot, options.job);
+    if (!existsSync(jobFile)) fail("not_found", `no meta.json for job ${options.job}`);
+    prior = JSON.parse(_readFileSync(jobFile, "utf8"));
+  } catch (e) {
+    fail("bad_args", e.message);
+  }
+  if (prior.status !== "running") {
+    printJson({ ok: true, status: "already_terminal", job_status: prior.status, job_id: options.job });
     return;
   }
-  const pidInfo = job.pid_info ?? null;
+  const pidInfo = prior.pid_info ?? null;
   if (!pidInfo || !Number.isInteger(pidInfo.pid)) {
-    // Legacy records (pre-T7.3) or races where the spawn aborted before
-    // pidInfo was persisted. Operators must decide manually; refusing to
-    // signal is the safe default — a bare `pid` is not an ownership proof.
     printJson({
       ok: false,
       status: "no_pid_info",
@@ -681,17 +768,30 @@ async function cmdCancel(rest) {
     });
     return;
   }
-  // Non-throwing ownership check: compares {starttime, argv0} of the live
-  // process against the tuple captured at spawn. Mismatch → refuse.
+
   const check = verifyPidInfo(pidInfo);
   if (!check.match) {
+    // Stale-repair: the record says running but the owner is gone or replaced.
+    // Write a status=stale record so subsequent queries see the truth. For
+    // process_gone keep the legacy "already_dead" reply shape so ops tooling
+    // keeps parsing it. invocationFromRecord is inside the try: a malformed
+    // prior record would otherwise escape unhandled.
+    try {
+      const priorInvocation = invocationFromRecord(prior);
+      const staleRecord = buildJobRecord(priorInvocation, {
+        staleMarker: true,
+        pidInfo,
+        claudeSessionId: prior.claude_session_id ?? null,
+        errorMessage: `stale_pid: ${check.reason}`,
+      }, Array.isArray(prior.mutations) ? prior.mutations : []);
+      writeJobFile(workspaceRoot, options.job, staleRecord);
+      upsertJob(workspaceRoot, staleRecord);
+    } catch { /* best-effort; reply still reflects the stale state */ }
+
     if (check.reason === "process_gone") {
-      // Nothing alive at that pid — safely terminal. Legacy behavior emitted
-      // "already_dead"; preserve so ops tooling keeps parsing.
       printJson({ ok: true, status: "already_dead", job_id: options.job, pid: pidInfo.pid });
       return;
     }
-    // starttime_mismatch / argv0_mismatch / invalid — PID reuse or tampering.
     process.stderr.write(
       `claude-companion: stale_pid (${check.reason}) — refusing to signal pid ${pidInfo.pid}\n`
     );
@@ -704,13 +804,58 @@ async function cmdCancel(rest) {
     });
     process.exit(2);
   }
-  const signal = options.force ? "SIGKILL" : "SIGTERM";
-  try {
-    process.kill(pidInfo.pid, signal);
-  } catch (e) {
-    fail("signal_failed", e.message, { pid: pidInfo.pid, signal });
+
+  // Live match — terminate the owner's process tree. Track actual delivery
+  // separately so the response truthfully reports null when both attempts
+  // ESRCH'd out (process exited in the window between verifyPidInfo and
+  // the signal — cancel still completes via the cancelled record write).
+  let deliveryMethod = null;
+  const tree = terminateProcessTree(pidInfo.pid);
+  if (tree.delivered) {
+    deliveryMethod = tree.method;
+  } else {
+    // Group-kill couldn't reach anything (foreground companion isn't a group
+    // leader). Fall back to a direct signal.
+    try {
+      process.kill(pidInfo.pid, "SIGTERM");
+      deliveryMethod = "process-direct";
+    } catch (e) {
+      if (e.code !== "ESRCH") fail("signal_failed", e.message, { pid: pidInfo.pid });
+      // ESRCH — process exited between verifyPidInfo and this kill. Leave
+      // deliveryMethod=null so the response reflects reality.
+    }
   }
-  printJson({ ok: true, status: "signaled", signal, job_id: options.job, pid: pidInfo.pid });
+  if (options.force) {
+    // Escalate to SIGKILL for both group and direct pid. Best-effort.
+    try { process.kill(-pidInfo.pid, "SIGKILL"); } catch { /* */ }
+    try { process.kill(pidInfo.pid, "SIGKILL"); } catch { /* */ }
+  }
+
+  // Authoritative cancelled record. Worker process may already be dead or
+  // dying; this write is how observers learn the outcome.
+  // invocationFromRecord inside the try: a malformed prior (race-written
+  // partial JSON) would otherwise escape and leave the job stuck in running.
+  try {
+    const priorInvocation = invocationFromRecord(prior);
+    const cancelledRecord = buildJobRecord(priorInvocation, {
+      cancelMarker: true,
+      pidInfo,
+      claudeSessionId: prior.claude_session_id ?? null,
+      errorMessage: "cancelled by user via claude-companion cancel",
+    }, Array.isArray(prior.mutations) ? prior.mutations : []);
+    writeJobFile(workspaceRoot, options.job, cancelledRecord);
+    upsertJob(workspaceRoot, cancelledRecord);
+  } catch (e) {
+    fail("cancel_write_failed", e.message, { job_id: options.job });
+  }
+
+  printJson({
+    ok: true,
+    status: "cancelled",
+    job_id: options.job,
+    pid: pidInfo.pid,
+    method: deliveryMethod,
+  });
 }
 
 // ——— dispatch ———

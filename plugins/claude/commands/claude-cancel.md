@@ -11,9 +11,10 @@ argument-hint: "<job-id> [--force]"
    node "<plugin-root>/scripts/claude-companion.mjs" cancel --job "$ARGUMENTS"
    ```
 3. Report the response JSON:
-   - `status: "signaled"` → job received SIGTERM/SIGKILL.
-   - `status: "already_terminal"` → nothing to do.
-   - `status: "already_dead"` → PID gone; state will reconcile.
+   - `status: "cancelled"` → job received SIGTERM (and SIGKILL with `--force`); cmdCancel wrote the authoritative cancelled JobRecord.
+   - `status: "already_terminal"` → job already reached completed / failed / cancelled / stale; nothing to do.
+   - `status: "already_dead"` → PID gone; the companion wrote a `status=stale` record so observers reconcile.
+   - `status: "stale_pid"` → PID reused by an unrelated process (starttime / argv0 drift). Refused signaling; record set to `status=stale`.
 
 ## Guardrails
 

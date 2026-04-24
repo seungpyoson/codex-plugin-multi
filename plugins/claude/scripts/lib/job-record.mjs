@@ -80,24 +80,45 @@ const EXPECTED_KEYS_SET = new Set(EXPECTED_KEYS);
  *
  * Status derivation (spec §21.3):
  *   queued      — no execution yet (background launch, pre-worker).
+ *   running     — runningMarker=true (executeRun entry, before spawnClaude).
+ *   cancelled   — cancelMarker=true (cmdCancel wrote it after signaling).
+ *   stale       — staleMarker=true (cmdCancel found pidInfo points nowhere).
  *   completed   — exitCode === 0 AND parsed.ok === true.
  *   failed      — anything else.
  *
+ * The three T7.8 markers route call sites (cmdRun/worker for running;
+ * cmdCancel for cancelled + stale) through the SAME builder so every
+ * lifecycle transition produces one canonical JobRecord — no hand-assembly
+ * bypassing the schema.
+ *
  * error_code classification:
- *   null           — completed.
- *   spawn_failed   — execution.errorMessage set (spawn threw before Claude ran).
- *   parse_error    — parsed.ok === false with reason starting "json_parse"/"empty_stdout".
- *   claude_error   — exitCode !== 0 with parseable JSON (Claude's is_error=true).
- *                    Also covers exitCode === 0 but parsed.ok === false with
- *                    is_error semantics.
- *   unknown_error  — catch-all; should be rare.
+ *   null             — queued, running, completed.
+ *   cancelled_by_user — cancelled via cmdCancel.
+ *   stale_pid        — stale-repair (pid_info mismatch or process gone).
+ *   spawn_failed     — execution.errorMessage set (spawn threw before Claude ran).
+ *   parse_error      — parsed.ok === false with reason "json_parse"/"empty_stdout".
+ *   claude_error     — exitCode !== 0 with parseable JSON (Claude's is_error=true).
+ *   unknown_error    — catch-all; should be rare.
  */
 function classifyExecution(execution) {
   if (!execution) {
+    return { status: "queued", error_code: null, error_message: null };
+  }
+  if (execution.runningMarker) {
+    return { status: "running", error_code: null, error_message: null };
+  }
+  if (execution.cancelMarker) {
     return {
-      status: "queued",
-      error_code: null,
-      error_message: null,
+      status: "cancelled",
+      error_code: "cancelled_by_user",
+      error_message: execution.errorMessage ?? null,
+    };
+  }
+  if (execution.staleMarker) {
+    return {
+      status: "stale",
+      error_code: "stale_pid",
+      error_message: execution.errorMessage ?? null,
     };
   }
   if (execution.errorMessage) {
@@ -221,7 +242,12 @@ export function buildJobRecord(invocation, execution, mutations) {
     // Lifecycle
     status,
     started_at: invocation.started_at,
-    ended_at: execution ? new Date().toISOString() : null,
+    // ended_at is stamped only for TERMINAL states. queued + running are
+    // non-terminal (the job is still in flight) so ended_at stays null even
+    // when an execution tuple is present (the runningMarker case).
+    ended_at: (status === "queued" || status === "running")
+      ? null
+      : new Date().toISOString(),
     exit_code: execution?.exitCode ?? null,
     error_code,
     error_message,
