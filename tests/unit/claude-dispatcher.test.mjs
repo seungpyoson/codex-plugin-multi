@@ -1,12 +1,19 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+
 import {
   buildClaudeArgs,
   parseClaudeResult,
+  spawnClaude,
   _internal,
 } from "../../plugins/claude/scripts/lib/claude.mjs";
 import { resolveProfile } from "../../plugins/claude/scripts/lib/mode-profiles.mjs";
+
+const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
+const MOCK = path.join(REPO_ROOT, "tests/smoke/claude-mock.mjs");
 
 const UUID = "550e8400-e29b-41d4-a716-446655440000";
 
@@ -166,6 +173,31 @@ test("parseClaudeResult: surfaces permission_denials", () => {
   const r = parseClaudeResult(payload);
   assert.equal(r.denials.length, 1);
   assert.equal(r.denials[0].tool, "Bash");
+});
+
+test("spawnClaude: returns claudeSessionId from stdout and pidInfo tuple", async () => {
+  const result = await spawnClaude(resolveProfile("rescue"), {
+    model: "claude-haiku-4-5-20251001",
+    promptText: "hello",
+    sessionId: UUID,
+    binary: MOCK,
+  });
+  assert.equal(result.exitCode, 0, `mock exited ${result.exitCode}: ${result.stderr}`);
+  // Claude echoes back --session-id as session_id; mock does the same.
+  assert.equal(result.claudeSessionId, UUID,
+    "claudeSessionId must come from parsed.session_id, not what we sent");
+  // sessionIdSent preserves what we passed (legacy name was `sessionId`).
+  assert.equal(result.sessionIdSent, UUID);
+  // pidInfo tuple captured at spawn.
+  assert.ok(result.pidInfo, "pidInfo must be present");
+  assert.equal(typeof result.pidInfo.pid, "number");
+  // pidInfo.starttime / argv0 may be null if the child exited too fast to
+  // capture (normal for this tiny mock) — we accept a `capture_error` record
+  // but the pid itself is always present.
+  assert.ok(
+    "starttime" in result.pidInfo && "argv0" in result.pidInfo,
+    "pidInfo always has starttime/argv0 keys (may be null)"
+  );
 });
 
 test("_internal.isUuidV4: accepts/rejects expected cases", () => {

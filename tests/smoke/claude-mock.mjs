@@ -86,7 +86,20 @@ if (parsed.positional.length > 0) {
 
 const model = parsed.flags["--model"] ?? "unknown";
 const sessionId = parsed.flags["--session-id"] ?? "00000000-0000-4000-8000-000000000000";
+const resumeId = parsed.flags["--resume"] ?? null;
 const promptSha = createHash("sha256").update(prompt).digest("hex").slice(0, 16);
+
+// T7.3 test oracle: when CLAUDE_MOCK_RECORD_RESUME=1, record the `--resume`
+// (or `--session-id` fallback) UUID to a sink path. Smoke tests read it back
+// to assert the companion passed the *correct* UUID (§21.1 identity contract,
+// guards against finding #6 regression).
+if (process.env.CLAUDE_MOCK_RECORD_RESUME === "1") {
+  const sink = process.env.CLAUDE_MOCK_RESUME_SINK ?? "/tmp/claude-mock-last-resume-id.txt";
+  // Prefer --resume when set (continue path); else --session-id (fresh run).
+  // Writing both branches lets tests distinguish.
+  const { writeFileSync } = await import("node:fs");
+  writeFileSync(sink, (resumeId ?? sessionId) + "\n", "utf8");
+}
 
 // Fixture key: "<model>-<promptSha>.json". Fall back to "<model>-default.json".
 const candidates = [
@@ -111,9 +124,12 @@ if (!fixturePath) {
 const fixture = JSON.parse(readFileSync(fixturePath, "utf8"));
 
 // Stamp session_id so consumers testing round-trip continuation see the exact
-// UUID they passed. Real Claude does this too.
-fixture.session_id = sessionId;
-fixture.uuid = fixture.uuid ?? sessionId;
+// UUID they passed. Real Claude does this too. On --resume, the echoed
+// session_id is the resumed one (the fresh --session-id is omitted by the
+// companion on resume), so prefer resumeId when set.
+const echoedId = resumeId ?? sessionId;
+fixture.session_id = echoedId;
+fixture.uuid = fixture.uuid ?? echoedId;
 
 // T7.2 test oracle: when CLAUDE_MOCK_ASSERT_FILE=<relpath> is set, the mock
 // checks whether that file exists under --add-dir (the path Claude actually

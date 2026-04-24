@@ -111,10 +111,20 @@ test("run: meta.json persisted to workspace state", () => {
     assert.ok(found, `meta.json not found under ${stateRoot}`);
     const meta = JSON.parse(readFileSync(found, "utf8"));
     assert.equal(meta.id, job_id);
+    assert.equal(meta.job_id, job_id,
+      "T7.3: new records carry job_id distinct from any session UUID");
     assert.equal(meta.target, "claude");
     assert.equal(meta.status, "completed");
     assert.equal(meta.mode, "review");
-    assert.equal(meta.session_id, job_id);
+    // Claude echoes back --session-id as session_id in its JSON output, so on
+    // a fresh run where the companion passes job_id as --session-id, the mock
+    // (and real CLI) return that same UUID. The persisted field is the
+    // stdout-captured value, not the sent one — see spec §21.1.
+    assert.equal(meta.claude_session_id, job_id,
+      "claude_session_id must be set from parsed.session_id");
+    // Forbidden: the legacy `session_id` alias that duplicated job_id.
+    assert.equal(meta.session_id, undefined,
+      "legacy session_id field must not be present on new-shape records");
   } finally {
     cleanup(dataDir);
     rmSync(cwd, { recursive: true, force: true });

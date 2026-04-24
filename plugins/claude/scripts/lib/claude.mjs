@@ -11,6 +11,8 @@
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 
+import { capturePidInfo } from "./identity.mjs";
+
 // Claude requires UUIDv4 for --session-id. We always pass one up-front so we
 // know the session ID before the call returns and can --resume later.
 function isUuidV4(s) {
@@ -178,6 +180,16 @@ export async function spawnClaude(profile, runtimeInputs = {}) {
 
   return new Promise((resolve, reject) => {
     const child = spawn(binary, args, { cwd, env, stdio: ["ignore", "pipe", "pipe"] });
+    // Capture pidInfo at spawn — this is the ownership proof the companion
+    // uses on cancel (§21.1). Short-lived children may exit before `ps` /
+    // `/proc` can be read; in that case we keep the pid and record a
+    // capture_error instead of crashing the run.
+    let pidInfo;
+    try {
+      pidInfo = capturePidInfo(child.pid);
+    } catch (e) {
+      pidInfo = { pid: child.pid, starttime: null, argv0: null, capture_error: e.message };
+    }
     let stdout = "";
     let stderr = "";
     let timedOut = false;
@@ -204,7 +216,18 @@ export async function spawnClaude(profile, runtimeInputs = {}) {
         timedOut,
         stdout,
         stderr,
-        sessionId,
+        // What the companion SENT as --session-id (or null on resume). Not a
+        // durable identity — persisted records store claudeSessionId instead.
+        sessionIdSent: resumeId ? null : sessionId,
+        // What Claude's JSON echoed back — the claude_session_id per §21.1.
+        // On a fresh run this equals sessionIdSent; on resume it equals the
+        // resume UUID. Either way, this is the value to persist.
+        claudeSessionId: parsed.sessionId ?? null,
+        // pidInfo {pid, starttime, argv0} for PID-reuse-safe cancel.
+        pidInfo,
+        // Backwards-compat alias — some call sites still read `.sessionId`.
+        // Will be dropped in T7.4; for now keep so legacy reads don't break.
+        sessionId: parsed.sessionId ?? sessionId,
         parsed,
       });
     });
