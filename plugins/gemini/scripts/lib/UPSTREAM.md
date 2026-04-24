@@ -13,7 +13,7 @@ the source path and synced commit.
 
 ## Port classification
 
-Six files are copied verbatim (target-neutral; no Codex-specific references):
+Four files are copied verbatim (target-neutral; no Codex-specific references):
 
 | File | Upstream role |
 |---|---|
@@ -21,8 +21,13 @@ Six files are copied verbatim (target-neutral; no Codex-specific references):
 | `process.mjs`   | Generic child-process helpers (spawn, timeout, SIGTERM→SIGKILL). |
 | `args.mjs`      | Argument parsing / mutex enforcement. |
 | `git.mjs`       | Git helpers (status, branch, worktree). |
-| `job-control.mjs` | PID-liveness + cmdline match. |
-| `prompts.mjs`   | Prompt-template loader. |
+
+Removed in T7.5 (§21.5 "zero importers → deleted"):
+
+- `job-control.mjs` — imported `./codex.mjs` which does not exist in this port;
+  had no production consumer.
+- `prompts.mjs` — prompt-template loader with no production caller.
+- `render.mjs` — display-string renderer with no production importer.
 
 Three files are parametrized at module init to remove hardcoded Codex strings
 (see file-level comment headers). We use a module-level mutable `CONFIG` with
@@ -41,18 +46,14 @@ named-export API and set config once at companion startup.
 the two plugin copies. Callers should pass an explicit prefix; the default
 exists only to preserve the upstream signature for ad-hoc callers.
 
-One file is target-specific (per-plugin copy with different display strings):
-
-| File | Variant |
-|---|---|
-| `render.mjs` | Claude/Gemini display strings (section titles, command hints). |
-
 Dropped from the port (no analog in v1):
 
 - `app-server.mjs`, `app-server-protocol.d.ts`, `broker-*.mjs` — Codex ACP
   transport has no Claude/Gemini equivalent in v1.
 - `codex.mjs` — replaced by per-plugin `lib/claude.mjs` / `lib/gemini.mjs`
   (lands in M2 / M7).
+- `render.mjs`, `job-control.mjs`, `prompts.mjs` — see "Removed in T7.5"
+  section above.
 
 ## Re-sync procedure
 

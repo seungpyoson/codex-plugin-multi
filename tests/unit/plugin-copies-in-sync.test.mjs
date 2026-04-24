@@ -1,7 +1,13 @@
 // Guards against silent drift between the two plugins' copy-verbatim lib
-// files. The 6 files listed below MUST be byte-identical between
+// files. The files listed below MUST be byte-identical between
 // plugins/claude/scripts/lib/ and plugins/gemini/scripts/lib/.
 // If this test fails after a legitimate upstream re-sync, update BOTH copies.
+//
+// §21.5 requirement: only modules that are actually consumed in production
+// ship. `job-control.mjs`, `prompts.mjs`, and `render.mjs` were removed in
+// T7.5 because they had zero production consumers — the class of problem
+// that makes byte-identity insufficient (both copies equally broken or
+// equally dead). See tests/unit/lib-imports.test.mjs for the new contract.
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -16,8 +22,6 @@ const VERBATIM_FILES = [
   "process.mjs",
   "args.mjs",
   "git.mjs",
-  "job-control.mjs",
-  "prompts.mjs",
 ];
 
 for (const file of VERBATIM_FILES) {
@@ -34,33 +38,5 @@ for (const file of VERBATIM_FILES) {
   });
 }
 
-test("render.mjs: no surviving Codex refs outside upstream attribution", () => {
-  for (const plugin of ["claude", "gemini"]) {
-    const text = readFileSync(
-      path.join(REPO_ROOT, `plugins/${plugin}/scripts/lib/render.mjs`),
-      "utf8"
-    );
-    // Allow Codex refs inside lines that cite upstream (header comments).
-    const offenders = text
-      .split("\n")
-      .filter((ln) => /\b[Cc]odex\b/.test(ln))
-      .filter(
-        (ln) =>
-          !ln.includes("codex-plugin-cc") &&
-          !ln.includes("codex-rs") &&
-          !ln.includes("openai/codex") &&
-          // Our port-header block explicitly documents the substitutions
-          // ("Codex → Claude", "/codex:NAME → /<target>-NAME"). Those lines
-          // are instructional, not actual display strings.
-          !ln.includes("Codex → ") &&
-          !ln.includes("/codex:NAME") &&
-          !ln.includes("codex resume →") &&
-          !ln.includes(".codex. →")
-      );
-    assert.equal(
-      offenders.length,
-      0,
-      `${plugin} render.mjs still references Codex:\n${offenders.slice(0, 3).join("\n")}`
-    );
-  }
-});
+// The previous render.mjs guard ("no surviving Codex refs") was removed
+// together with render.mjs itself in T7.5 — see header comment above.
