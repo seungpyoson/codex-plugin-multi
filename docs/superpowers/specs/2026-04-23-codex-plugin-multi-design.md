@@ -1,10 +1,29 @@
 # codex-plugin-multi — Design
 
-- **Date:** 2026-04-23 (v3) / **revised 2026-04-24 (v4 — full empirical re-verification)**
-- **Status:** Draft v4, pre-adversarial-review
+- **Date:** 2026-04-23 (v3) / 2026-04-24 (v4 — full empirical re-verification) / **2026-04-24 (v5 — architectural invariants)**
+- **Status:** Draft v5, post-M6 cross-model review
 - **Repo:** [`seungpyoson/codex-plugin-multi`](https://github.com/seungpyoson/codex-plugin-multi)
 - **License:** Apache-2.0 (mirrors upstream)
 - **Reference:** [`openai/codex-plugin-cc`](https://github.com/openai/codex-plugin-cc) (MIT — Claude Code plugin calling Codex); [`openai/plugins`](https://github.com/openai/plugins) (canonical Codex monorepo pattern)
+
+## What changed in v5 (from v4)
+
+After M6 a cross-model review (Codex + Gemini + Claude) surfaced eight merge-blocker-class defects in the Claude path. Each was individually small, but they collapsed to four structural gaps where the v4 spec left invariants **implicit**. v5 makes those invariants **explicit** and load-bearing — the same code cannot be written twice and drift apart, because the type/contract names the rule.
+
+Four new invariants, §§21.1–21.4 below:
+
+- **§21.1 — Identity types are distinct.** `job_id`, `claude_session_id`, `resume_chain`, and `pid_info` are four different things; the code has one field per identity, never conflated.
+- **§21.2 — Mode is the only source of mode-specific defaults.** All mode-correlated knobs (model tier, stripContext, permission mode, disallowed tools, containment, scope, dispose default) live in a single `ModeProfile` table. `spawnClaude` / `spawnGemini` take a profile, not individual knobs with defaults.
+- **§21.3 — One `JobRecord` shape, persisted and returned.** The file `cmdResult` reads is the same shape the foreground stdout prints and the skill documentation describes. No per-path hand-assembled blobs.
+- **§21.4 — Containment and scope are orthogonal.** `containment` ∈ {none, worktree} answers "where does Claude write." `scope` ∈ {working-tree, staged, branch-diff, head, custom} answers "what does Claude see." Each mode picks both; a review of a dirty working tree actually reviews the dirty working tree.
+
+Plus one operational invariant:
+
+- **§21.5 — Shared-lib contract is importability + behavior, not byte-identity.** Byte-identity catches drift but misses dead modules with broken imports (v4 shipped one). v5 requires every shared lib to pass `await import(…)` plus a per-module smoke.
+
+§§21.1–21.5 are what the M7+ code is judged against. Existing §§4, 6, 9, 10, 11, 16 remain authoritative for CLI mechanics; §21 governs architecture.
+
+---
 
 ## What changed in v4 (from v3)
 
@@ -40,7 +59,8 @@ Upstream `openai/codex-plugin-cc` is a **Claude Code plugin** that lets Claude C
 | 4 | Prompting skills | One per plugin: `plugins/<target>/skills/<target>-prompting/`. Mirrors upstream's `gpt-5-4-prompting` structure. |
 | 5 | Auth | OAuth / subscription only. Plugin never reads or writes `*_API_KEY` env vars. |
 | 6 | Primary user-facing surface | Native `commands/*.md` slash commands via Codex TUI. `codex exec` cannot invoke them (TUI-only; verified §4.18). |
-| 7 | Shared-lib port strategy | Parametrize upstream's 10 lib files for target-neutrality; duplicate per plugin (two physical copies; content-identical except for target name). See §6.2. |
+| 7 | Shared-lib port strategy | Parametrize upstream's 10 lib files for target-neutrality; duplicate per plugin (two physical copies; content-identical except for target name). See §6.2 + §21.5. |
+| 8 | Architectural invariants | §21 (v5) is load-bearing. All five invariants (21.1–21.5) MUST hold; a PR that violates one is a spec defect, not a code defect. |
 
 ## 3. Non-goals (v1)
 
@@ -739,6 +759,210 @@ Adversarial-review gate between milestones where risk warrants.
 
 ---
 
+## 21. Architectural invariants (v5)
+
+These are the rules M7+ code is judged against. Each invariant names a class of mistake that the M6 cross-model review surfaced. Violating one is a spec defect, not a code bug — fix the spec or fix the code to match it. Do not patch around it.
+
+### 21.1 Identity types are distinct
+
+**Rule:** every durable record names four identities separately:
+
+| Field | Owner | Lifetime | Source |
+|---|---|---|---|
+| `job_id` | companion | per invocation | `randomUUID()` in companion |
+| `claude_session_id` (or `gemini_session_id`) | target CLI | per CLI session | **read from CLI stdout `parsed.session_id`**, not minted by companion |
+| `resume_chain[]` | companion | across `continue` calls | list of prior `*_session_id`s, newest-last |
+| `pid_info = {pid, starttime, argv0}` | OS | while process lives | `ps`/`/proc` at spawn time |
+
+**Forbidden patterns:**
+
+- Using `randomUUID()` as both `job_id` and `session_id` on the same record.
+- Storing `session_id: newSessionId` on a resume job when the new UUID was never passed to the CLI.
+- Using `pid` alone as a signal target or ownership proof.
+
+**Required patterns:**
+
+- On `run`: companion generates `job_id`, passes `job_id` to Claude as `--session-id` for a new session, then records `claude_session_id = parsed.session_id` (Claude echoes it back). When Claude creates its own session ID without input, the record stores what Claude returned — never what the companion sent.
+- On `continue`: companion generates a fresh `job_id`, looks up the prior job's `resume_chain[-1]` (or `claude_session_id`) as the `--resume` UUID, appends it to the new record's `resume_chain`, records the new `claude_session_id` from stdout after the run.
+- On `cancel`: read `pid_info` tuple, re-verify `starttime` + `argv0` match before signaling. Mismatch → refuse with `stale_pid` error.
+
+**Why:** Finding #6 (chained continue breaks), #7 (PID-reuse kill), parts of #3 (result lost) all trace to identity conflation. The type rule makes the mistake unrepresentable.
+
+---
+
+### 21.2 Mode is the only source of mode-specific defaults
+
+**Rule:** every knob whose correct value is determined by mode lives in exactly one `ModeProfile` table. Dispatcher libraries (`lib/claude.mjs`, `lib/gemini.mjs`) accept a profile; they do **not** take individual flag knobs with defaults.
+
+**The table** (one row per mode, sourced from §4.5, §9, §8):
+
+```
+ModeProfile {
+  name:            "review" | "adversarial-review" | "rescue" | "ping"
+  model_tier:      "cheap" | "medium" | "default"        // §8
+  permission_mode: "plan" | "acceptEdits"                // §4.5
+  strip_context:   boolean                               // §4.6 — strip CLAUDE.md?
+  disallowed_tools: string[]                             // §4.5 hard blocklist
+  containment:     "none" | "worktree"                   // §21.4
+  scope:           "working-tree" | "staged" | "branch-diff" | "head" | "custom"  // §21.4
+  dispose_default: boolean                               // §10
+  add_dir:         boolean                               // pass --add-dir at all?
+  schema_allowed:  boolean                               // is --json-schema meaningful?
+}
+```
+
+**Canonical values (v5):**
+
+| Mode | tier | perm | strip | containment | scope | dispose | add_dir |
+|---|---|---|---|---|---|---|---|
+| review | cheap | plan | true | worktree | working-tree | true | yes |
+| adversarial-review | medium | plan | true | worktree | branch-diff | true | yes |
+| rescue | default | acceptEdits | **false** | none | working-tree | false | yes |
+| ping | cheap | plan | true | none | head (no setup) | false | no |
+
+**Forbidden patterns:**
+
+- `const stripContext = true` as a default in `buildClaudeArgs` or `spawnClaude` signature.
+- `models[mode === "rescue" ? "default" : "default"]` — any model resolution that branches on mode outside the profile table.
+- `--dispose` default resolved in the companion's argv parser ("review mode ⇒ dispose"); it belongs in the profile.
+
+**Required patterns:**
+
+- `cmdRun` resolves `mode → profile` exactly once at entry. No downstream code branches on `mode` to pick a flag.
+- `spawnClaude(profile, runtimeInputs)` — where `runtimeInputs = {prompt, cwd, addDir, sessionId, resumeId, jsonSchema?}`. Everything else comes from the profile.
+- Adding a new mode is adding one row to the table. Nothing else changes.
+
+**Why:** Finding C2 (silent Opus billing) and the Gemini review's "Rescue mode strips CLAUDE.md" are both symptoms of defaults outside the profile winning on omission. The table centralizes the truth.
+
+---
+
+### 21.3 One `JobRecord` shape, persisted and returned
+
+**Rule:** exactly one schema describes everything the companion durably persists about one invocation. The same schema is what `cmdResult` returns, what the `run --foreground` stdout prints (success path), and what the `claude-result-handling` / `gemini-result-handling` skills describe.
+
+**The schema (v5):**
+
+```
+JobRecord {
+  // Identity (§21.1) — required
+  job_id, target, claude_session_id | gemini_session_id
+  parent_job_id?, resume_chain[]?
+  pid_info? = { pid, starttime, argv0 }
+
+  // Invocation (§21.2) — required
+  mode_profile_name, model, cwd, workspace_root
+  isolation = { containment, scope, dispose }
+  prompt_head               // first 200 chars — see §21.3.1 below
+  schema_spec?              // --json-schema value if used
+  binary                    // claude | gemini | <override>
+
+  // Lifecycle — required
+  status: "queued" | "running" | "completed" | "failed" | "cancelled" | "stale"
+  started_at, ended_at?, exit_code?
+  error_code?, error_message?      // failed | stale only
+
+  // Result (was missing in v4) — required when status = completed or failed
+  result?: string
+  structured_output?: object
+  permission_denials[]
+  mutations[]               // { path, status } entries from post-hoc git diff
+  cost_usd?, usage?
+
+  // Bookkeeping — required
+  schema_version: 5
+}
+```
+
+#### 21.3.1 — `prompt_head` only, no full prompt persisted
+
+The full prompt MUST NOT be persisted to `JobRecord`. `prompt_head` (≤200 chars) is sufficient for human display. Reasons:
+
+- Prompts routinely contain credentials, private incident context, full file contents pasted by the user.
+- The full prompt is never needed for `continue` (that path uses `resume_id`, not the original text).
+- The full prompt is never needed for display (`result` is the answer; the prompt is input).
+
+If a later feature legitimately needs the original prompt text (e.g., reproducible rerun), it lives in a **private sidecar** (`<job>/prompt.txt`, mode `0600`) and is an explicit opt-in flag, not the default.
+
+#### 21.3.2 — Foreground and background paths converge
+
+- **Foreground:** `executeRun` writes the complete `JobRecord` to `<job>.json`, then `cmdRun` reads it back and prints it. Stdout blob is NOT hand-assembled from in-memory execution vars.
+- **Background:** `_run-worker` writes the complete `JobRecord` on exit. `cmdResult` reads the same file.
+
+**Forbidden patterns:**
+
+- `printJson({ok, result, structured_output, …})` assembled from `execution.parsed.*` in-memory, diverging from what goes to disk.
+- A `finalRecord` that omits `result`/`structured_output`/`denials`/`mutations`.
+- A `prompt` field on the record (distinct from `prompt_head`).
+
+**Required patterns:**
+
+- One `buildJobRecord(baseRecord, execution, mutations)` helper; both paths call it.
+- The `*-result-handling` skill's "success path" section renders the fields of `JobRecord` verbatim — no fields present in the skill that aren't in the schema, no fields in the schema that the skill fails to mention.
+
+**Why:** Finding #1/H1 (background result lost), #9 (full prompt persisted), and docs drift (H1) collapse to one problem: three different places hand-assemble three different shapes. One schema, one helper, no drift.
+
+---
+
+### 21.4 Containment and scope are orthogonal
+
+**Rule:** two separate decisions, two separate fields in `ModeProfile`:
+
+- **`containment`** answers "where does Claude write, and what gets cleaned up?"
+  - `none` — Claude runs directly in the user's `cwd`. Writes land in the user's tree. (Rescue default.)
+  - `worktree` — a fresh temp dir is created; Claude runs there; dir is deleted on dispose. (Review default.)
+
+- **`scope`** answers "what content does Claude see?"
+  - `working-tree` — everything in the user's tree, including uncommitted and untracked files. Populated into the worktree via `git checkout-index -a --prefix=<worktree>/` + a targeted copy of untracked files (or directly as `cwd` if containment=none).
+  - `staged` — index contents only. `git checkout-index --stage=2`.
+  - `branch-diff` — files changed between HEAD and some base ref (default `main`). Populated by checking out the merge-base, then applying the diff.
+  - `head` — `git worktree add HEAD` (the v4 default, kept as a named option for explicit HEAD-reviews).
+  - `custom` — caller passes `--scope-paths <glob>…`; only matching files are populated.
+
+**Setup pipeline:**
+
+1. If `containment = worktree`, create an empty tempdir.
+2. Populate it according to `scope` (or if `containment = none`, skip populate).
+3. Pass `--add-dir <containment-path>` to Claude.
+4. On completion, if `dispose`, remove the tempdir + source-repo worktree registration.
+
+**Forbidden patterns:**
+
+- A single `--isolated` flag that means "containment=worktree AND scope=head." The two decisions must be settable independently.
+- Hard-coding `git worktree add --detach HEAD` as the only population method.
+
+**Required patterns:**
+
+- `setupContainment(profile, cwd)` returns `{path, populate, cleanup}`. `populate` takes the scope and fills the path. The two functions are testable in isolation.
+- `review` with dirty working tree is reviewable, because `scope: working-tree` copies the dirty state. This is the default, not an escape hatch.
+
+**Why:** Finding #4 (review can't see uncommitted changes) is not a bug in `--isolated`; it's the spec-level conflation of two orthogonal concerns. Splitting them makes review-of-dirty-tree the default.
+
+---
+
+### 21.5 Shared-lib contract is importability + behavior
+
+**Rule:** each file under `plugins/<target>/scripts/lib/` MUST:
+
+1. Import cleanly when loaded in isolation (`await import(lib_url)` succeeds without side effects).
+2. Pass a per-module smoke test exercising its public exports.
+3. Be byte-identical to its sibling (per `plugin-copies-in-sync.test.mjs`).
+
+**Rules (2) and (3) together catch what v4 missed:** `job-control.mjs` passed byte-identity (both copies equally broken), but would have failed importability (depends on a missing `./codex.mjs`).
+
+**Forbidden patterns:**
+
+- Shared libs that are shipped but not imported by any entry point. If nothing uses it, it gets deleted; no "staging" state.
+- Relying on byte-identity as the sole portability guarantee.
+
+**Required patterns:**
+
+- `tests/unit/lib-imports.test.mjs` iterates every `plugins/*/scripts/lib/*.mjs`, `await import()`s each, asserts every declared export is a function/value (not `undefined`).
+- Each public export has at least one behavioral test. If the export has no downstream caller and no test, it's dead — delete it before shipping.
+
+**Why:** Finding #10 (broken `job-control.mjs` duplicated). The test that CI ran (byte-identity) cannot catch "both copies broken the same way."
+
+---
+
 ## Appendix: v4 change log (v3 → v4)
 
 1. Slash commands: **bare names** (v4) vs namespaced `/target:command` (v3).
@@ -758,3 +982,15 @@ Adversarial-review gate between milestones where risk warrants.
 15. Hook timeout enforced; v1 ships no hooks.
 16. Cost attribution: OAuth reports `apiKeySource: None`; quota-based.
 17. TUI-only command invocation documented (no `codex exec` path).
+
+## Appendix: v5 change log (v4 → v5)
+
+Triggered by the M6 cross-model review (Codex + Gemini + Claude). v5 adds no new CLI empirical facts; it adds architectural invariants that the v4 code silently violated.
+
+1. **§21.1 — Identity types.** `job_id`, `claude_session_id`, `resume_chain`, `pid_info` are four distinct identities with four distinct sources. `randomUUID()` is never used for anything except a fresh `job_id`. `session_id` is **read back** from the CLI's stdout, not minted by the companion.
+2. **§21.2 — `ModeProfile`.** All mode-correlated knobs (model tier, strip_context, permission_mode, disallowed_tools, containment, scope, dispose_default, add_dir) live in one table. Dispatcher libraries take a profile, not individual knob-defaults.
+3. **§21.3 — One `JobRecord` shape.** The persisted record is the contract surface for foreground stdout, `cmdResult`, and skill docs. No hand-assembled shapes per path. `prompt_head` only; no full `prompt` field.
+4. **§21.4 — Containment ⊥ Scope.** `--isolated` is retired as an atomic flag. `containment ∈ {none, worktree}` and `scope ∈ {working-tree, staged, branch-diff, head, custom}` are independent. `review` defaults to `{worktree, working-tree}` so dirty trees are reviewable.
+5. **§21.5 — Shared-lib contract.** Byte-identity + importability + behavioral smoke, not just byte-identity.
+
+M6 code violated 1–4. M7 code must comply with all five; v5 is the judge.
