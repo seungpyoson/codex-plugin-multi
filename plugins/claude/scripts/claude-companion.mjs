@@ -5,20 +5,28 @@
 //
 // Subcommands (see spec §7.1):
 //   run      --mode=review|adversarial-review|rescue [--background|--foreground]
-//            [--model ID] [--cwd PATH] [--isolated] [--dispose] -- PROMPT
+//            [--model ID] [--cwd PATH] [--scope-base REF]
+//            [--scope-paths G1,G2,…] [--override-dispose|--no-override-dispose]
+//            -- PROMPT
 //   status   [--job ID]
 //   result   --job ID
 //   cancel   --job ID [--force]
 //   ping
 //   doctor
 //
+// Containment (where Claude writes) and scope (what Claude sees) are NOT
+// user-facing flags — they are per-profile decisions carried by
+// lib/mode-profiles.mjs (spec §21.4). `--isolated` / `--dispose` /
+// `--no-dispose` are retired. The only escape hatch is
+// `--override-dispose <bool>`, intentionally undocumented in command-file
+// snippets.
+//
 // Only `run --foreground` is implemented at M2; later milestones extend.
 
 import { fileURLToPath } from "node:url";
 import { dirname, resolve as resolvePath } from "node:path";
 import { randomUUID } from "node:crypto";
-import { writeFileSync, mkdirSync, existsSync, mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { writeFileSync, mkdirSync, existsSync } from "node:fs";
 import { execFileSync, spawn } from "node:child_process";
 
 import { parseArgs } from "./lib/args.mjs";
@@ -27,6 +35,8 @@ import { configureTrackedJobs } from "./lib/tracked-jobs.mjs";
 import { resolveWorkspaceRoot } from "./lib/workspace.mjs";
 import { spawnClaude } from "./lib/claude.mjs";
 import { resolveProfile, resolveModelForProfile } from "./lib/mode-profiles.mjs";
+import { setupContainment } from "./lib/containment.mjs";
+import { populateScope } from "./lib/scope.mjs";
 import { readFileSync as _readFileSync } from "node:fs";
 
 // ——— plugin-root self-resolution (upstream pattern, spec §4.14) ———
@@ -61,7 +71,7 @@ function fail(code, message, details = {}) {
 // through the cwd argument (audit HIGH finding, M2 gate).
 // Strip inherited git env vars (GIT_DIR, GIT_INDEX_FILE, ...) so subprocess
 // git invocations aren't hijacked by a parent git-hook's repo context. Same
-// reason `setupWorktree` uses a clean env (see below).
+// discipline applies in lib/containment.mjs and lib/scope.mjs.
 function cleanGitEnv() {
   const env = { ...process.env };
   for (const k of ["GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_COMMON_DIR", "GIT_PREFIX"]) {
@@ -80,49 +90,15 @@ function tryGit(args, cwd) {
   } catch { return ""; }
 }
 
-// Creates an isolated git worktree off the source repo's current HEAD.
-// Returns {path, cleanup}. Cleanup removes the worktree via `git worktree
-// remove --force` with an rmSync fallback for cases where the source repo is
-// gone (tests). Callers are responsible for calling cleanup when `dispose` is
-// true — executeRun owns that contract.
-function setupWorktree(sourceCwd) {
-  const isGit = tryGit(["rev-parse", "--is-inside-work-tree"], sourceCwd).trim() === "true";
-  if (!isGit) {
-    throw new Error(`--isolated requires a git repository at ${sourceCwd}`);
-  }
-  const worktreePath = mkdtempSync(`${tmpdir()}/claude-worktree-`);
-  // Scrub inherited git env — if the companion was spawned from inside a
-  // pre-commit hook (or any repo-scoped git operation), GIT_DIR/GIT_INDEX_FILE
-  // leak in and hijack our worktree command with "fatal: .git/index: Not a
-  // directory". Spec §4.10 calls this out; upstream Codex port hit the same.
-  const cleanEnv = cleanGitEnv();
-  // --detach: no branch ref; worktree stays disposable. HEAD: point at current
-  // commit so the reviewer sees exactly the state the caller is in.
-  execFileSync("git", ["-C", sourceCwd, "worktree", "add", "--detach", worktreePath, "HEAD"], {
-    stdio: ["ignore", "pipe", "pipe"],
-    env: cleanEnv,
-  });
-  return {
-    path: worktreePath,
-    cleanup() {
-      try {
-        execFileSync("git", ["-C", sourceCwd, "worktree", "remove", "--force", worktreePath], {
-          stdio: ["ignore", "pipe", "ignore"],
-          env: cleanEnv,
-        });
-      } catch {
-        // Source repo gone or worktree already detached — fall back to plain rm.
-      }
-      try { rmSync(worktreePath, { recursive: true, force: true }); } catch { /* best-effort */ }
-    },
-  };
-}
+// setupWorktree was deleted in T7.2. Containment lives in
+// lib/containment.mjs; scope population lives in lib/scope.mjs. Both are
+// per-profile decisions (spec §21.4).
 
 // ——— subcommand: run ———
 async function cmdRun(rest) {
   const { options, positionals } = parseArgs(rest, {
-    valueOptions: ["mode", "model", "cwd", "schema", "binary"],
-    booleanOptions: ["background", "foreground", "isolated", "dispose", "no-dispose"],
+    valueOptions: ["mode", "model", "cwd", "schema", "binary", "scope-base", "scope-paths", "override-dispose"],
+    booleanOptions: ["background", "foreground"],
     aliasMap: {},
   });
 
@@ -149,10 +125,24 @@ async function cmdRun(rest) {
 
   const cwd = options.cwd ?? process.cwd();
   const workspaceRoot = resolveWorkspaceRoot(cwd);
-  const isolated = Boolean(options.isolated);
+
   // Dispose default lives in the profile (§21.2 field `dispose_default`).
-  // `--no-dispose` overrides to false; explicit `--dispose` wins otherwise.
-  const dispose = options["no-dispose"] ? false : (options.dispose ?? profile.dispose_default);
+  // --override-dispose is an advanced escape hatch (operators debugging a
+  // failed review want to keep the worktree); it's deliberately not mentioned
+  // in command-file snippets. Accepts "true"/"false"; anything else is the
+  // profile default.
+  const disposeEffective = (() => {
+    if (options["override-dispose"] === undefined) return profile.dispose_default;
+    const v = String(options["override-dispose"]).toLowerCase();
+    if (v === "true" || v === "1") return true;
+    if (v === "false" || v === "0") return false;
+    return profile.dispose_default;
+  })();
+
+  // Scope knobs carried through executeRun → populateScope.
+  const scopePaths = options["scope-paths"]
+    ? String(options["scope-paths"]).split(",").map((s) => s.trim()).filter(Boolean)
+    : null;
 
   const prompt = positionals.join(" ").trim();
   if (!prompt) {
@@ -166,6 +156,10 @@ async function cmdRun(rest) {
   // NOTE: we persist `mode` (the profile NAME), not the resolved profile object
   // itself. executeRun / cmdContinue re-resolves at execution time so spec
   // changes to the profile table propagate to in-flight jobs on reread.
+  //
+  // T7.2: record the (containment, scope, dispose_effective) tuple instead
+  // of the legacy `isolated` boolean. The profile is re-resolved from
+  // `mode_profile_name` on any downstream read.
   const baseRecord = {
     id: sessionId,
     target: "claude",
@@ -176,8 +170,11 @@ async function cmdRun(rest) {
     startedAt,
     cwd,
     workspaceRoot,
-    isolated,
-    disposed: dispose,
+    containment: profile.containment,
+    scope: profile.scope,
+    dispose_effective: disposeEffective,
+    scope_base: options["scope-base"] ?? null,
+    scope_paths: scopePaths,
     model,
     session_id: sessionId,
     prompt_head: prompt.slice(0, 200),
@@ -226,29 +223,34 @@ async function cmdRun(rest) {
 // worker re-invokes it after reading meta.json. Terminal meta + sidecars are
 // written by this function; emits the final JSON only when foreground.
 async function executeRun(baseRecord, { foreground }) {
-  const { id: sessionId, mode, model, cwd, workspaceRoot, isolated, prompt, disposed } = baseRecord;
+  const { id: sessionId, mode, model, cwd, workspaceRoot, prompt } = baseRecord;
+  const disposeEffective = baseRecord.dispose_effective ?? false;
 
   // Re-resolve the profile from the persisted mode NAME (spec §21.2 — the
   // table is the single source of truth; we don't clone it onto records).
   const profile = resolveProfile(baseRecord.mode_profile_name ?? mode);
 
-  // Isolation: spin up a detached git worktree off HEAD so the review sees a
-  // pristine copy, not the live working tree.
-  let worktree = null;
-  if (isolated) {
-    try {
-      worktree = setupWorktree(cwd);
-    } catch (e) {
-      const errorRecord = { ...baseRecord, status: "failed", pid: null,
-        errorMessage: e.message, exit_code: null, ended_at: new Date().toISOString() };
-      writeJobFile(workspaceRoot, sessionId, errorRecord);
-      upsertJob(workspaceRoot, errorRecord);
-      if (foreground) fail("isolation_failed", e.message, { job_id: sessionId });
-      process.exit(2);
-    }
+  // T7.2: containment + scope are two independent per-profile decisions
+  // (spec §21.4). setupContainment owns "where does Claude write"; populateScope
+  // owns "what content does Claude see". Neither branches on mode directly.
+  let containment = null;
+  try {
+    containment = setupContainment(profile, cwd);
+    populateScope(profile, cwd, containment.path, {
+      scopeBase: baseRecord.scope_base,
+      scopePaths: baseRecord.scope_paths,
+    }, containment);
+  } catch (e) {
+    if (containment) { try { containment.cleanup(); } catch { /* best-effort */ } }
+    const errorRecord = { ...baseRecord, status: "failed", pid: null,
+      errorMessage: e.message, exit_code: null, ended_at: new Date().toISOString() };
+    writeJobFile(workspaceRoot, sessionId, errorRecord);
+    upsertJob(workspaceRoot, errorRecord);
+    if (foreground) fail("scope_setup_failed", e.message, { job_id: sessionId });
+    process.exit(2);
   }
-  const childCwd = worktree ? worktree.path : cwd;
-  const addDir = worktree ? worktree.path : cwd;
+  const childCwd = containment.path;
+  const addDir = containment.path;
 
   // Pre-snapshot for review-style paths (§10 post-hoc mutation detection).
   // Profile-driven: plan-mode paths are supposed to be read-only, so we
@@ -281,7 +283,7 @@ async function executeRun(baseRecord, { foreground }) {
       exit_code: null, ended_at: new Date().toISOString() };
     writeJobFile(workspaceRoot, sessionId, errorRecord);
     upsertJob(workspaceRoot, errorRecord);
-    if (worktree && disposed) worktree.cleanup();
+    if (disposeEffective) containment.cleanup();
     if (foreground) fail("spawn_failed", e.message, { job_id: sessionId });
     process.exit(2);
   }
@@ -322,15 +324,17 @@ async function executeRun(baseRecord, { foreground }) {
   writeSidecar(workspaceRoot, sessionId, "stdout.log", execution.stdout);
   writeSidecar(workspaceRoot, sessionId, "stderr.log", execution.stderr);
 
-  // Dispose worktree after run — review paths default ON, rescue default OFF
-  // (callers may override via --no-dispose). Kept AFTER sidecar writes so any
-  // failure traces survive.
-  if (worktree && disposed) {
-    worktree.cleanup();
-    writeJobFile(workspaceRoot, sessionId, { ...finalRecord, worktree_cleaned: true });
-  } else if (worktree) {
-    // Persist worktree path for operator debugging when dispose is off.
-    writeJobFile(workspaceRoot, sessionId, { ...finalRecord, worktree_path: worktree.path });
+  // Dispose containment after run — review/adversarial-review default ON via
+  // profile.dispose_default; rescue default OFF. `--override-dispose` is the
+  // only escape hatch. Kept AFTER sidecar writes so any failure traces
+  // survive. For containment=none, `disposed` is always false and cleanup is
+  // a no-op; no branch needed.
+  if (containment.disposed && disposeEffective) {
+    containment.cleanup();
+    writeJobFile(workspaceRoot, sessionId, { ...finalRecord, containment_cleaned: true });
+  } else if (containment.disposed) {
+    // Non-disposed worktree — persist path for operator debugging.
+    writeJobFile(workspaceRoot, sessionId, { ...finalRecord, containment_path: containment.path });
   }
 
   if (foreground) {
@@ -411,8 +415,15 @@ async function cmdContinue(rest) {
     startedAt: new Date().toISOString(),
     cwd,
     workspaceRoot,
-    isolated: Boolean(prior.isolated),
-    disposed: Boolean(prior.disposed),
+    // T7.2: inherit containment/scope from the profile freshly — not from
+    // prior (which may have been recorded under the old `isolated` schema).
+    // dispose_effective carries from prior so a --no-override-dispose on the
+    // original run persists across resumes.
+    containment: priorProfile.containment,
+    scope: priorProfile.scope,
+    dispose_effective: prior.dispose_effective ?? priorProfile.dispose_default,
+    scope_base: prior.scope_base ?? null,
+    scope_paths: prior.scope_paths ?? null,
     model,
     session_id: newSessionId,
     parent_job_id: options.job,

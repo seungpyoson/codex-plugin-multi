@@ -18,7 +18,8 @@ Commands resolve the companion via the `<plugin-root>` placeholder. In practice,
 claude-companion.mjs run     --mode=review|adversarial-review|rescue
                              [--foreground|--background]
                              [--model <full-id>] [--cwd <path>]
-                             [--isolated] [--dispose|--no-dispose]
+                             [--scope-base <ref>] [--scope-paths <g1,g2,…>]
+                             [--override-dispose <true|false>]
                              [--schema <json>] [--binary <path>]
                              -- <prompt>
 
@@ -53,4 +54,4 @@ Companion stdout is always a single JSON object:
 
 - Do NOT set `ANTHROPIC_API_KEY` or any `*_API_KEY` env var. The companion explicitly relies on OAuth via the `claude` binary.
 - Do NOT call `claude` directly from command bodies. Everything goes through the companion so the job store, mutation detection, and session ID roundtrip work.
-- Do NOT disable `--dispose` without explicit user ask on review paths.
+- Do NOT pass `--override-dispose false` without explicit user ask on review paths — containment/scope/dispose are per-profile decisions (spec §21.4) and the default should only be overridden for operator debugging.

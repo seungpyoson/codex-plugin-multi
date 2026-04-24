@@ -14,8 +14,9 @@ Review via Claude Code. Read-only; changes detected post-hoc, never auto-reverte
 1. Consult the `claude-prompting` skill for review-mode prompt framing and schema hints.
 2. Run:
    ```
-   node "<plugin-root>/scripts/claude-companion.mjs" run --mode=review --foreground --isolated --dispose -- "$ARGUMENTS"
+   node "<plugin-root>/scripts/claude-companion.mjs" run --mode=review --foreground -- "$ARGUMENTS"
    ```
+   (Containment + scope + dispose are all carried by the review profile — spec §21.4.)
 3. Render the returned JSON:
    - If `warning: "mutation_detected"` appears, surface the `mutated_files` list prominently. Do not auto-revert.
    - If `structured_output` is populated (schema runs), render its verdict + findings.
@@ -24,5 +25,5 @@ Review via Claude Code. Read-only; changes detected post-hoc, never auto-reverte
 ## Guardrails
 
 - Do not relax `--disallowedTools` without explicit user ask.
-- Do not disable `--dispose`; the disposable worktree is the main containment layer.
+- Do not pass `--override-dispose false`; the disposable worktree is the main containment layer and the profile handles cleanup.
 - If Claude returns `is_error: true`, surface stderr verbatim.

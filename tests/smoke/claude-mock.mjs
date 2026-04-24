@@ -115,6 +115,43 @@ const fixture = JSON.parse(readFileSync(fixturePath, "utf8"));
 fixture.session_id = sessionId;
 fixture.uuid = fixture.uuid ?? sessionId;
 
+// T7.2 test oracle: when CLAUDE_MOCK_ASSERT_FILE=<relpath> is set, the mock
+// checks whether that file exists under --add-dir (the path Claude actually
+// sees) and embeds the answer in the fixture's `result`. Smoke tests use this
+// to verify that populateScope put the right content in front of Claude.
+// CLAUDE_MOCK_ASSERT_CWD=<abspath> checks process.cwd() equality (for
+// containment=none verification). Both are deliberately lightweight; they
+// exist only so smoke tests can interrogate what the mock received.
+const assertFileRel = process.env.CLAUDE_MOCK_ASSERT_FILE;
+const assertCwdAbs = process.env.CLAUDE_MOCK_ASSERT_CWD;
+const addDir = parsed.flags["--add-dir"] ?? null;
+if (assertFileRel) {
+  const target = addDir ? resolve(addDir, assertFileRel) : null;
+  fixture.t7_saw_file = target ? existsSync(target) : false;
+  fixture.t7_add_dir = addDir;
+}
+if (assertCwdAbs) {
+  fixture.t7_cwd_match = process.cwd() === assertCwdAbs;
+  fixture.t7_cwd = process.cwd();
+}
+if (process.env.CLAUDE_MOCK_LIST_ADDDIR && addDir) {
+  // Emit a sorted list of entries under addDir, for branch-diff verification.
+  // Uses readdirSync recursively, pruning .git.
+  const { readdirSync: rd, statSync: st } = await import("node:fs");
+  function walk(dir, prefix = "") {
+    const out = [];
+    for (const name of rd(dir)) {
+      if (name === ".git") continue;
+      const full = resolve(dir, name);
+      const rel = prefix ? `${prefix}/${name}` : name;
+      if (st(full).isDirectory()) out.push(...walk(full, rel));
+      else out.push(rel);
+    }
+    return out.sort();
+  }
+  fixture.t7_add_dir_files = walk(addDir);
+}
+
 // Emit the final result event and exit. Matches `--output-format=json`.
 process.stdout.write(JSON.stringify(fixture) + "\n");
 process.exit(0);

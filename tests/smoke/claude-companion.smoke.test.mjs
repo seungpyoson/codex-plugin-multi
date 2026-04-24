@@ -7,7 +7,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 // spawnSync is reused for git init in the mutation-detection smoke.
-import { mkdtempSync, rmSync, existsSync, readFileSync, readdirSync } from "node:fs";
+import { mkdtempSync, rmSync, existsSync, readFileSync, readdirSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -37,8 +37,20 @@ function cleanup(dataDir) {
   rmSync(dataDir, { recursive: true, force: true });
 }
 
+// T7.2: review mode's profile has scope=working-tree, which populates via
+// `git ls-files` + copy. Non-git cwds can no longer run review (spec §21.4).
+// Helper seeds a minimal git repo so the tests can focus on the companion
+// contract, not setup ceremony.
+function seedMinimalRepo(cwd) {
+  spawnSync("git", ["init", "-q", "-b", "main"], { cwd });
+  spawnSync("bash", ["-c",
+    "echo seed > seed.txt && git add seed.txt && " +
+    "git -c user.email=t@t -c user.name=t commit -q -m seed"], { cwd });
+}
+
 test("run --mode=review --foreground: emits JSON with ok:true", () => {
   const cwd = mkdtempSync(path.join(tmpdir(), "smoke-cwd-"));
+  seedMinimalRepo(cwd);
   const { stdout, stderr, status, dataDir } = runCompanion(
     ["run", "--mode=review", "--foreground", "--model", "claude-haiku-4-5-20251001",
      "--cwd", cwd, "--", "review: x=1"],
@@ -81,6 +93,7 @@ test("run --mode=rescue: uses default model from config/models.json", () => {
 
 test("run: meta.json persisted to workspace state", () => {
   const cwd = mkdtempSync(path.join(tmpdir(), "smoke-cwd-"));
+  seedMinimalRepo(cwd);
   const { stdout, dataDir } = runCompanion(
     ["run", "--mode=review", "--foreground", "--model", "claude-haiku-4-5-20251001",
      "--cwd", cwd, "--", "hello"],
@@ -189,72 +202,134 @@ test("continue --job: resumes a prior session via --resume", () => {
   }
 });
 
-test("run --isolated --dispose: creates and removes a git worktree", () => {
-  const cwd = mkdtempSync(path.join(tmpdir(), "smoke-iso-"));
-  spawnSync("git", ["init", "-q"], { cwd });
-  spawnSync("bash", ["-c", "echo seed > seed && git add seed && git -c user.email=t@t -c user.name=t commit -q -m seed"], { cwd });
+// ————— T7.2 containment/scope smoke tests —————
+// The three `run --isolated*` tests from M5 are GONE — `--isolated` is no
+// longer a CLI flag. The four tests below replace them and additionally lock
+// down M6 finding #4 (review can't see dirty tree).
+
+// Helper: seed a git repo with one committed file, then modify it uncommitted.
+function seedDirtyRepo(cwd) {
+  spawnSync("git", ["init", "-q", "-b", "main"], { cwd });
+  spawnSync("bash", ["-c",
+    "echo original > seed.txt && git add seed.txt && " +
+    "git -c user.email=t@t -c user.name=t commit -q -m seed && " +
+    "echo modified > seed.txt"], { cwd });
+}
+
+// Helper: read stdout.log sidecar (contains the mock's full fixture JSON
+// including the T7.2 oracle fields: t7_saw_file, t7_cwd_match, t7_add_dir_files).
+function readStdoutLog(dataDir, jobId) {
+  const stateRoot = path.join(dataDir, "state");
+  for (const dir of readdirSync(stateRoot)) {
+    const p = path.join(stateRoot, dir, "jobs", jobId, "stdout.log");
+    if (existsSync(p)) return JSON.parse(readFileSync(p, "utf8"));
+  }
+  throw new Error(`no stdout.log for job ${jobId}`);
+}
+
+test("review sees dirty working tree (M6 finding #4)", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "smoke-dirty-"));
+  seedDirtyRepo(cwd);
   const { stdout, status, stderr, dataDir } = runCompanion(
-    ["run", "--mode=review", "--foreground", "--isolated", "--dispose",
+    ["run", "--mode=review", "--foreground",
      "--model", "claude-haiku-4-5-20251001",
-     "--cwd", cwd, "--", "review this"],
-    { cwd }
+     "--cwd", cwd, "--", "focus"],
+    { cwd, env: { CLAUDE_MOCK_ASSERT_FILE: "seed.txt" } }
   );
   try {
     assert.equal(status, 0, `exit ${status}: ${stderr}`);
     const result = JSON.parse(stdout);
-    assert.equal(result.ok, true);
-    // Source worktree should still exist; isolated worktree should be disposed.
-    const worktreeList = spawnSync("git", ["-C", cwd, "worktree", "list"], { encoding: "utf8" }).stdout;
-    // Exactly one entry (the source repo itself) — temp worktree removed.
-    assert.equal(worktreeList.trim().split("\n").length, 1, `unexpected worktrees:\n${worktreeList}`);
+    const fx = readStdoutLog(dataDir, result.job_id);
+    assert.equal(fx.t7_saw_file, true,
+      `review should see dirty seed.txt under --add-dir; add_dir=${fx.t7_add_dir}`);
+    // --add-dir must be the worktree tempdir, not the source cwd.
+    assert.notEqual(fx.t7_add_dir, cwd,
+      "review's containment=worktree should NOT pass sourceCwd as --add-dir");
   } finally {
     cleanup(dataDir);
     rmSync(cwd, { recursive: true, force: true });
   }
 });
 
-test("run --isolated without --dispose: worktree persists and path is recorded", () => {
-  const cwd = mkdtempSync(path.join(tmpdir(), "smoke-iso2-"));
-  spawnSync("git", ["init", "-q"], { cwd });
-  spawnSync("bash", ["-c", "echo seed > seed && git add seed && git -c user.email=t@t -c user.name=t commit -q -m seed"], { cwd });
-  // Rescue defaults to --no-dispose; use rescue so the test stays short.
+test("adversarial-review scope=branch-diff: only changed files appear in --add-dir", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "smoke-adv-"));
+  // main: has old.md. feature: adds foo.md.
+  spawnSync("git", ["init", "-q", "-b", "main"], { cwd });
+  spawnSync("bash", ["-c",
+    "echo old > old.md && git add old.md && " +
+    "git -c user.email=t@t -c user.name=t commit -q -m main && " +
+    "git checkout -qb feature && " +
+    "echo foo > foo.md && git add foo.md && " +
+    "git -c user.email=t@t -c user.name=t commit -q -m feature"], { cwd });
   const { stdout, status, stderr, dataDir } = runCompanion(
-    ["run", "--mode=rescue", "--foreground", "--isolated",
+    ["run", "--mode=adversarial-review", "--foreground",
      "--model", "claude-haiku-4-5-20251001",
-     "--cwd", cwd, "--", "work"],
-    { cwd }
+     "--cwd", cwd, "--", "focus"],
+    { cwd, env: { CLAUDE_MOCK_LIST_ADDDIR: "1" } }
+  );
+  try {
+    assert.equal(status, 0, `exit ${status}: ${stderr}`);
+    const result = JSON.parse(stdout);
+    const fx = readStdoutLog(dataDir, result.job_id);
+    const files = fx.t7_add_dir_files ?? [];
+    assert.ok(files.includes("foo.md"),
+      `branch-diff scope missing foo.md; saw: ${files.join(",")}`);
+    assert.ok(!files.includes("old.md"),
+      `branch-diff scope leaked old.md; saw: ${files.join(",")}`);
+  } finally {
+    cleanup(dataDir);
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("rescue runs in sourceCwd (containment=none): --add-dir === cwd", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "smoke-rescue-"));
+  seedDirtyRepo(cwd);
+  const { stdout, status, stderr, dataDir } = runCompanion(
+    ["run", "--mode=rescue", "--foreground",
+     "--model", "claude-haiku-4-5-20251001",
+     "--cwd", cwd, "--", "fix"],
+    { cwd, env: { CLAUDE_MOCK_ASSERT_FILE: "seed.txt" } }
   );
   try {
     assert.equal(status, 0, stderr);
-    const { job_id } = JSON.parse(stdout);
-    const stateRoot = path.join(dataDir, "state");
-    let meta = null;
-    for (const dir of readdirSync(stateRoot)) {
-      const metaPath = path.join(stateRoot, dir, "jobs", `${job_id}.json`);
-      if (existsSync(metaPath)) { meta = JSON.parse(readFileSync(metaPath, "utf8")); break; }
-    }
-    assert.ok(meta.worktree_path, "worktree_path should be recorded when not disposed");
-    assert.ok(existsSync(meta.worktree_path), `recorded worktree ${meta.worktree_path} should exist`);
-    // Clean up after assert so the test doesn't leak.
-    spawnSync("git", ["-C", cwd, "worktree", "remove", "--force", meta.worktree_path]);
+    const result = JSON.parse(stdout);
+    const fx = readStdoutLog(dataDir, result.job_id);
+    // On macOS, /var/folders/... symlinks to /private/var/folders/...;
+    // so Claude's --add-dir path may be either form. Accept both.
+    const realCwd = realpathSync(cwd);
+    assert.ok(fx.t7_add_dir === cwd || fx.t7_add_dir === realCwd,
+      `rescue must pass sourceCwd as --add-dir; got ${fx.t7_add_dir}, expected ${cwd} or ${realCwd}`);
+    assert.equal(fx.t7_saw_file, true, "rescue should see the dirty file in sourceCwd");
   } finally {
     cleanup(dataDir);
     rmSync(cwd, { recursive: true, force: true });
   }
 });
 
-test("run --isolated on a non-git cwd: returns isolation_failed", () => {
-  const cwd = mkdtempSync(path.join(tmpdir(), "smoke-iso3-"));
-  // No git init — --isolated should refuse.
-  const { stderr, status, dataDir } = runCompanion(
-    ["run", "--mode=review", "--foreground", "--isolated",
+test("review worktree disposed by profile default (dispose_default=true)", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "smoke-dispose-"));
+  spawnSync("git", ["init", "-q", "-b", "main"], { cwd });
+  spawnSync("bash", ["-c",
+    "echo seed > seed && git add seed && " +
+    "git -c user.email=t@t -c user.name=t commit -q -m seed"], { cwd });
+  // ASSERT_FILE env triggers the mock to record t7_add_dir into its fixture
+  // (which the companion persists into stdout.log). Without it the mock has
+  // no reason to echo the path back and the test can't inspect it.
+  const { stdout, status, stderr, dataDir } = runCompanion(
+    ["run", "--mode=review", "--foreground",
      "--model", "claude-haiku-4-5-20251001",
-     "--cwd", cwd, "--", "x"],
-    { cwd }
+     "--cwd", cwd, "--", "review"],
+    { cwd, env: { CLAUDE_MOCK_ASSERT_FILE: "seed" } }
   );
   try {
-    assert.notEqual(status, 0);
-    assert.match(stderr, /isolated requires a git repository/);
+    assert.equal(status, 0, stderr);
+    const result = JSON.parse(stdout);
+    const fx = readStdoutLog(dataDir, result.job_id);
+    // The worktree path the mock saw must no longer exist on disk.
+    assert.ok(fx.t7_add_dir, "mock didn't record add_dir");
+    assert.equal(existsSync(fx.t7_add_dir), false,
+      `review worktree ${fx.t7_add_dir} should be disposed (dispose_default=true)`);
   } finally {
     cleanup(dataDir);
     rmSync(cwd, { recursive: true, force: true });
@@ -334,6 +409,7 @@ test("status: empty workspace returns empty jobs list", () => {
 
 test("status: lists a job after a review run", () => {
   const cwd = mkdtempSync(path.join(tmpdir(), "smoke-status2-"));
+  seedMinimalRepo(cwd);
   const dataDir = mkdtempSync(path.join(tmpdir(), "status2-data-"));
   try {
     // Run a review to seed a job.
@@ -369,6 +445,7 @@ test("status: lists a job after a review run", () => {
 
 test("result --job: returns meta for a finished job", () => {
   const cwd = mkdtempSync(path.join(tmpdir(), "smoke-result-"));
+  seedMinimalRepo(cwd);
   const dataDir = mkdtempSync(path.join(tmpdir(), "result-data-"));
   try {
     const runRes = spawnSync("node", [
@@ -415,6 +492,7 @@ test("result --job with unknown id: returns not_found", () => {
 
 test("cancel: already_terminal for a completed job", () => {
   const cwd = mkdtempSync(path.join(tmpdir(), "smoke-cancel-"));
+  seedMinimalRepo(cwd);
   const dataDir = mkdtempSync(path.join(tmpdir(), "cancel-data-"));
   try {
     const runRes = spawnSync("node", [

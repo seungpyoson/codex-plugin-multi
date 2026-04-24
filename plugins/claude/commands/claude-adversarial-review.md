@@ -14,8 +14,9 @@ Adversarial review via Claude Code. Assumes the author is wrong; looks for failu
 1. Consult the `claude-prompting` skill for adversarial prompt framing.
 2. Run:
    ```
-   node "<plugin-root>/scripts/claude-companion.mjs" run --mode=adversarial-review --foreground --isolated --dispose -- "$ARGUMENTS"
+   node "<plugin-root>/scripts/claude-companion.mjs" run --mode=adversarial-review --foreground -- "$ARGUMENTS"
    ```
+   (Containment=worktree, scope=branch-diff, dispose=true all come from the profile — spec §21.4.)
 3. Render findings by severity. Do not downgrade Claude's concerns even if you (Codex) disagree — the job is to surface them.
 4. Watch for `warning: "mutation_detected"` in the result and surface any `mutated_files` list.
 

@@ -21,5 +21,5 @@ Delegate long-running investigation or fix work to the `claude-rescue` subagent.
 ## Guardrails
 
 - Rescue runs with `--permission-mode acceptEdits` — writes are allowed. This is intentional.
-- Do not pass `--isolated` by default — rescue expects project context.
+- Rescue's profile sets `containment=none` (writes land in the user's tree by design, spec §21.4). There is no flag to "sandbox" rescue — that would be a different mode.
 - Only escalate to SIGKILL on user request via `/claude-cancel <id> --force`.
