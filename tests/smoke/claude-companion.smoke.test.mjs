@@ -218,11 +218,10 @@ test("continue --job: resumes a prior session via --resume", () => {
     ], { cwd, encoding: "utf8",
         env: { ...process.env, CLAUDE_BINARY: MOCK, CLAUDE_PLUGIN_DATA: dataDir } });
     const { job_id } = JSON.parse(runRes.stdout);
-    // T7.7 B4: continue inherits prior.cwd by default; --cwd is rejected.
     const contRes = spawnSync("node", [
       path.join(REPO_ROOT, "plugins/claude/scripts/claude-companion.mjs"),
       "continue", "--job", job_id, "--foreground",
-      "--", "follow-up",
+      "--cwd", cwd, "--", "follow-up",
     ], { cwd, encoding: "utf8",
         env: { ...process.env, CLAUDE_BINARY: MOCK, CLAUDE_PLUGIN_DATA: dataDir } });
     assert.equal(contRes.status, 0, contRes.stderr);

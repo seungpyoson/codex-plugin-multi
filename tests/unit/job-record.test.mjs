@@ -71,7 +71,7 @@ test("EXPECTED_KEYS is the spec §21.3 canonical list", () => {
 test("buildJobRecord: foreground success path has EXACTLY the expected keys", () => {
   const rec = buildJobRecord(makeInvocation(), {
     exitCode: 0,
-    parsed: { ok: true, sessionId: CLAUDE_UUID, result: "done", structured: null, denials: [],
+    parsed: { ok: true, result: "done", structured: null, denials: [],
       costUsd: 0.001, usage: { input_tokens: 10 } },
     pidInfo: makePidInfo(),
     claudeSessionId: CLAUDE_UUID,
@@ -163,7 +163,7 @@ test("buildJobRecord: mutations pass through verbatim", () => {
   const mutations = ["M foo.md", "?? bar.js"];
   const rec = buildJobRecord(makeInvocation(), {
     exitCode: 0,
-    parsed: { ok: true, sessionId: CLAUDE_UUID, result: "done", structured: null, denials: [],
+    parsed: { ok: true, result: "done", structured: null, denials: [],
       costUsd: null, usage: null },
     pidInfo: makePidInfo(),
     claudeSessionId: CLAUDE_UUID,
@@ -177,7 +177,7 @@ test("buildJobRecord: structured_output populated when schema run succeeded", ()
   const rec = buildJobRecord(makeInvocation(), {
     exitCode: 0,
     parsed: {
-      ok: true, sessionId: CLAUDE_UUID, result: "",
+      ok: true, result: "",
       structured: { verdict: "approve", summary: "ok", findings: [] },
       denials: [],
       costUsd: 0.002, usage: { input_tokens: 20 },
@@ -207,55 +207,6 @@ test("buildJobRecord: rejects invocation with a `prompt` field (defense in depth
     /prompt/i,
     "Passing a full `prompt` in invocation MUST throw — §21.3.1",
   );
-});
-
-// T7.7 C1 / B1 — §21.1 invariant: claude_session_id must be echoed by Claude
-// or be null. NEVER fall back to resumeId or jobId. These three tests enforce
-// the class-of-problem: no silent identity substitution across types.
-test("T7.7 B1: buildJobRecord rejects claudeSessionId when parsed.sessionId was not echoed", () => {
-  // Parse failed (empty stdout) → parsed.sessionId is null. Passing a non-null
-  // claudeSessionId here is the legacy ?? resumeId ?? jobId fallback that
-  // §21.1 forbids. Must throw.
-  assert.throws(
-    () => buildJobRecord(makeInvocation(), {
-      exitCode: 0,
-      parsed: { ok: false, reason: "empty_stdout", sessionId: null,
-        result: null, structured: null, denials: [] },
-      pidInfo: makePidInfo(),
-      // Legacy fallback would have plugged in resumeId or jobId here.
-      claudeSessionId: "99999999-8888-4777-8666-555555555555",
-    }, []),
-    /§21\.1|identity|fallback|parsed\.sessionId/i,
-    "§21.1: claudeSessionId MUST equal parsed.sessionId (or both null) — no cross-type fallback",
-  );
-});
-
-test("T7.7 B1: buildJobRecord accepts claudeSessionId that matches parsed.sessionId", () => {
-  // Positive baseline — parsed.sessionId echoed by Claude, companion carries
-  // the same value through. This is the canonical happy path.
-  const rec = buildJobRecord(makeInvocation(), {
-    exitCode: 0,
-    parsed: { ok: true, sessionId: CLAUDE_UUID, result: "done",
-      structured: null, denials: [], costUsd: null, usage: null },
-    pidInfo: makePidInfo(),
-    claudeSessionId: CLAUDE_UUID,
-  }, []);
-  assert.equal(rec.claude_session_id, CLAUDE_UUID);
-});
-
-test("T7.7 B1: buildJobRecord accepts null claudeSessionId when parsed.sessionId is null (parse-failure case)", () => {
-  // Valid state: Claude's stdout unparseable → parsed.sessionId=null →
-  // companion persists claude_session_id=null. Record still builds.
-  const rec = buildJobRecord(makeInvocation(), {
-    exitCode: 2,
-    parsed: { ok: false, reason: "json_parse_error", sessionId: null,
-      result: null, structured: null, denials: [] },
-    pidInfo: makePidInfo(),
-    claudeSessionId: null,
-  }, []);
-  assert.equal(rec.claude_session_id, null);
-  assert.equal(rec.status, "failed");
-  assert.equal(rec.error_code, "parse_error");
 });
 
 test("schema parity — every EXPECTED_KEYS field is documented in claude-result-handling/SKILL.md", () => {

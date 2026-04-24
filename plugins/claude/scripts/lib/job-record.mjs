@@ -100,47 +100,11 @@ function classifyExecution(execution) {
       error_message: null,
     };
   }
-  // T7.7 C3 / B3: intermediate running-state marker. The background worker
-  // writes a record with `runningMarker: true` BEFORE invoking claude; this
-  // is the signal that lets cmdCancel tell a live worker from a terminal
-  // one. Not a lifecycle event — `status: "running"` is a terminal-less
-  // state; the same buildJobRecord will be re-invoked post-run with a real
-  // execution tuple to produce the completed/failed/cancelled record.
-  if (execution.runningMarker === true) {
-    return {
-      status: "running",
-      error_code: null,
-      error_message: null,
-    };
-  }
   if (execution.errorMessage) {
     return {
       status: "failed",
       error_code: "spawn_failed",
       error_message: execution.errorMessage,
-    };
-  }
-  // T7.7 C3 / B3: signal-based termination is `cancelled`, not `failed`.
-  // cmdCancel sends SIGTERM/SIGKILL; the worker sees execution.signal set
-  // and records the terminal record as cancelled so cmdStatus / cmdResult
-  // render the real lifecycle state. Checked BEFORE the generic "non-zero
-  // exit is claude_error" path because signaled children often have
-  // exitCode=null AND the parsed block may be absent or partial.
-  if (execution.signal === "SIGTERM" || execution.signal === "SIGKILL") {
-    return {
-      status: "cancelled",
-      error_code: "signaled",
-      error_message: `killed by signal: ${execution.signal}`,
-    };
-  }
-  // Watchdog timeout (spawnClaude fired its SIGTERM after timeoutMs elapsed).
-  // Surface as `timeout` rather than `cancelled` so operators distinguish
-  // "user/operator pressed cancel" from "claude hung past the deadline".
-  if (execution.timedOut === true) {
-    return {
-      status: "timeout",
-      error_code: "timeout",
-      error_message: "execution exceeded timeoutMs",
     };
   }
   const parsed = execution.parsed ?? null;
@@ -224,27 +188,6 @@ export function buildJobRecord(invocation, execution, mutations) {
   if (!Array.isArray(mutations)) {
     throw new Error("buildJobRecord: mutations must be an array (empty ok)");
   }
-
-  // §21.1 identity invariant (T7.7 C1 / B1): `claude_session_id` is ONLY ever
-  // the value Claude echoed in its JSON (`parsed.sessionId`). When Claude's
-  // stdout was unparseable (parsed.sessionId is null), `claudeSessionId` on
-  // the execution tuple MUST also be null. The legacy `?? resumeId ?? jobId`
-  // fallback silently conflated three distinct identity types — §21.1 forbids
-  // it. If the invariant breaks here, the bug is in the CALLER (the companion
-  // passed a fabricated identity), not in the schema.
-  if (execution) {
-    const parsedSid = execution.parsed?.sessionId ?? null;
-    const claudeSid = execution.claudeSessionId ?? null;
-    if (claudeSid !== parsedSid) {
-      throw new Error(
-        "buildJobRecord: claudeSessionId must equal parsed.sessionId " +
-        "(§21.1 — identity types are distinct, no fallback across types). " +
-        `Got claudeSessionId=${JSON.stringify(claudeSid)} ` +
-        `parsed.sessionId=${JSON.stringify(parsedSid)}`
-      );
-    }
-  }
-
   const { status, error_code, error_message } = classifyExecution(execution);
 
   const parsed = execution?.parsed ?? null;
