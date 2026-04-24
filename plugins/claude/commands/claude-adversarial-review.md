@@ -11,7 +11,7 @@ Adversarial review via Claude Code. Assumes the author is wrong; looks for failu
 
 ## Workflow
 
-1. Consult the `claude-prompting` skill for adversarial prompt framing (if present).
+1. Consult the `claude-prompting` skill for adversarial prompt framing.
 2. Run:
    ```
    node "<plugin-root>/scripts/claude-companion.mjs" run --mode=adversarial-review --foreground --isolated --dispose -- "$ARGUMENTS"

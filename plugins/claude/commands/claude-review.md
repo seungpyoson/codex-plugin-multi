@@ -11,7 +11,7 @@ Review via Claude Code. Read-only; changes detected post-hoc, never auto-reverte
 
 ## Workflow
 
-1. Consult the `claude-prompting` skill (if present) for model-tier selection.
+1. Consult the `claude-prompting` skill for review-mode prompt framing and schema hints.
 2. Run:
    ```
    node "<plugin-root>/scripts/claude-companion.mjs" run --mode=review --foreground --isolated --dispose -- "$ARGUMENTS"
