@@ -25,7 +25,7 @@
 
 import { fileURLToPath } from "node:url";
 import { dirname, resolve as resolvePath } from "node:path";
-import { writeFileSync, mkdirSync, existsSync } from "node:fs";
+import { writeFileSync, mkdirSync, existsSync, chmodSync, unlinkSync } from "node:fs";
 import { execFileSync, spawn } from "node:child_process";
 
 import { parseArgs } from "./lib/args.mjs";
@@ -37,6 +37,7 @@ import { resolveProfile, resolveModelForProfile } from "./lib/mode-profiles.mjs"
 import { setupContainment } from "./lib/containment.mjs";
 import { populateScope } from "./lib/scope.mjs";
 import { newJobId, verifyPidInfo } from "./lib/identity.mjs";
+import { buildJobRecord } from "./lib/job-record.mjs";
 import { readFileSync as _readFileSync } from "node:fs";
 
 // ——— plugin-root self-resolution (upstream pattern, spec §4.14) ———
@@ -94,6 +95,79 @@ function tryGit(args, cwd) {
 // lib/containment.mjs; scope population lives in lib/scope.mjs. Both are
 // per-profile decisions (spec §21.4).
 
+// ——— invocation helpers (T7.4, spec §21.3) ———
+//
+// `invocation` is the frozen subset of a JobRecord that exists at cmdRun/
+// cmdContinue entry — before Claude runs. It carries identity + invocation +
+// prompt_head fields, and nothing else. Feeding it to buildJobRecord
+// (execution=null) produces the queued record we persist pre-run. Feeding
+// it again post-run with the execution tuple produces the terminal record.
+
+// Project an invocation out of a JobRecord (used by the background worker
+// when it re-enters executeRun). Only the invocation-phase fields are
+// carried — lifecycle/result fields get re-derived from the fresh execution.
+function invocationFromRecord(record) {
+  return {
+    job_id: record.job_id,
+    target: record.target,
+    parent_job_id: record.parent_job_id ?? null,
+    resume_chain: record.resume_chain ?? [],
+    mode_profile_name: record.mode_profile_name,
+    mode: record.mode,
+    model: record.model,
+    cwd: record.cwd,
+    workspace_root: record.workspace_root,
+    containment: record.containment,
+    scope: record.scope,
+    dispose_effective: record.dispose_effective ?? false,
+    scope_base: record.scope_base ?? null,
+    scope_paths: record.scope_paths ?? null,
+    prompt_head: record.prompt_head,
+    schema_spec: record.schema_spec ?? null,
+    binary: record.binary,
+    started_at: record.started_at,
+  };
+}
+
+// Prompt handoff for background jobs. The full prompt is NEVER part of the
+// JobRecord (§21.3.1). The detached worker does need it to re-invoke claude,
+// so we write it to a private sidecar file `<job>/prompt.txt` with mode 0600
+// and DELETE it after the worker reads it. This is a handoff buffer, not a
+// persistent store — it lives only for the window between launcher exit and
+// worker start, typically milliseconds.
+//
+// Design choice — sidecar vs stdin: stdio piping would avoid the disk
+// round-trip but requires keeping child.stdin open until the worker calls
+// readFileSync(0). Node's `detached: true` + `stdio: "ignore"` pattern is
+// the stable way to background-launch on macOS/Linux; mixing in an inherited
+// stdin complicates orphan cleanup and makes the worker's --version/--help
+// debug path harder to test. The 0600 sidecar is simpler, auditable (one
+// well-known path), and the worker can be re-run for diagnosis by re-seeding
+// the file. The "full prompt text doesn't reach disk" invariant is preserved
+// by the unlink-after-read: at no point is the prompt persisted alongside
+// the record.
+function promptSidecarPath(workspaceRoot, jobId) {
+  return `${resolveJobsDir(workspaceRoot)}/${jobId}/prompt.txt`;
+}
+
+function writePromptSidecar(workspaceRoot, jobId, prompt) {
+  const dir = `${resolveJobsDir(workspaceRoot)}/${jobId}`;
+  mkdirSync(dir, { recursive: true });
+  const p = promptSidecarPath(workspaceRoot, jobId);
+  writeFileSync(p, prompt, { mode: 0o600, encoding: "utf8" });
+  try { chmodSync(p, 0o600); } catch { /* best-effort on non-POSIX */ }
+}
+
+// Read-and-delete. Returns null if the sidecar is missing (e.g., foreground
+// rerun of a stale queued record, or a pre-T7.4 meta).
+function consumePromptSidecar(workspaceRoot, jobId) {
+  const p = promptSidecarPath(workspaceRoot, jobId);
+  if (!existsSync(p)) return null;
+  const prompt = _readFileSync(p, "utf8");
+  try { unlinkSync(p); } catch { /* already gone */ }
+  return prompt;
+}
+
 // ——— subcommand: run ———
 async function cmdRun(rest) {
   const { options, positionals } = parseArgs(rest, {
@@ -127,10 +201,6 @@ async function cmdRun(rest) {
   const workspaceRoot = resolveWorkspaceRoot(cwd);
 
   // Dispose default lives in the profile (§21.2 field `dispose_default`).
-  // --override-dispose is an advanced escape hatch (operators debugging a
-  // failed review want to keep the worktree); it's deliberately not mentioned
-  // in command-file snippets. Accepts "true"/"false"; anything else is the
-  // profile default.
   const disposeEffective = (() => {
     if (options["override-dispose"] === undefined) return profile.dispose_default;
     const v = String(options["override-dispose"]).toLowerCase();
@@ -139,7 +209,6 @@ async function cmdRun(rest) {
     return profile.dispose_default;
   })();
 
-  // Scope knobs carried through executeRun → populateScope.
   const scopePaths = options["scope-paths"]
     ? String(options["scope-paths"]).split(",").map((s) => s.trim()).filter(Boolean)
     : null;
@@ -152,51 +221,43 @@ async function cmdRun(rest) {
   const jobId = newJobId();
   const startedAt = new Date().toISOString();
 
-  // Provisional record — marks status=running so parallel `status` can see it.
-  //
-  // §21.1 identity types: the record stores FOUR distinct identities —
-  //   job_id            (companion UUID, this invocation)
-  //   claude_session_id (populated from stdout after run; null while pending)
-  //   resume_chain      ([] on first run; grown by cmdContinue)
-  //   pid_info          ({pid, starttime, argv0} — populated on spawn)
-  //
-  // `id` is an alias for job_id kept for upstream job-store APIs. NO
-  // `session_id` field is written — that was the legacy conflation §21.1
-  // forbids.
-  const baseRecord = {
-    id: jobId,
+  // The single invocation object — frozen, passed unchanged through the
+  // pre-run and post-run buildJobRecord calls. No downstream code mutates
+  // invocation; adding new invocation fields is a one-place change.
+  const invocation = Object.freeze({
     job_id: jobId,
     target: "claude",
-    mode,
+    parent_job_id: null,
+    resume_chain: [],
     mode_profile_name: profile.name,
-    status: options.background ? "queued" : "running",
-    startedAt,
+    mode,
+    model,
     cwd,
-    workspaceRoot,
+    workspace_root: workspaceRoot,
     containment: profile.containment,
     scope: profile.scope,
     dispose_effective: disposeEffective,
     scope_base: options["scope-base"] ?? null,
     scope_paths: scopePaths,
-    model,
-    // §21.1 identity types — four separate fields.
-    claude_session_id: null,       // set post-run from parsed.session_id
-    resume_chain: [],              // grown by cmdContinue
-    pid_info: null,                // set by executeRun post-spawn
-    prompt_head: prompt.slice(0, 200),
-    prompt,
+    prompt_head: prompt.slice(0, 200),          // §21.3.1 — no full prompt
+    schema_spec: options.schema ?? null,
     binary: options.binary ?? process.env.CLAUDE_BINARY ?? "claude",
-    schema: options.schema ?? null,
-    schema_version: 1,
-  };
-  writeJobFile(workspaceRoot, jobId, baseRecord);
-  upsertJob(workspaceRoot, baseRecord);
+    started_at: startedAt,
+  });
+
+  // Pre-run record: status=queued. Goes to disk + state before any child
+  // process is launched, so a concurrent `status` can see the new job.
+  const queuedRecord = buildJobRecord(invocation, null, []);
+  writeJobFile(workspaceRoot, jobId, queuedRecord);
+  upsertJob(workspaceRoot, queuedRecord);
 
   if (options.background) {
+    // Write prompt to private sidecar (§21.3.1 handoff buffer). Worker reads
+    // and deletes — prompt text does NOT live on the JobRecord.
+    writePromptSidecar(workspaceRoot, jobId, prompt);
+
     // Detach a worker process that will execute the run and overwrite the
-    // terminal-state meta when done (spec §7.3 / M4). The worker's own
-    // pid_info is captured when spawnClaude runs inside the worker; here we
-    // only record the launcher pid for diagnostics.
+    // terminal-state meta when done (spec §7.3 / M4).
     const child = spawn(process.execPath, [
       fileURLToPath(import.meta.url),
       "_run-worker",
@@ -210,9 +271,6 @@ async function cmdRun(rest) {
       windowsHide: true,
     });
     child.unref();
-    const launchedRecord = { ...baseRecord, launcher_pid: child.pid ?? null };
-    writeJobFile(workspaceRoot, jobId, launchedRecord);
-    upsertJob(workspaceRoot, launchedRecord);
     printJson({
       event: "launched",
       job_id: jobId,
@@ -224,37 +282,41 @@ async function cmdRun(rest) {
     process.exit(0);
   }
 
-  await executeRun(baseRecord, { foreground: true });
+  await executeRun(invocation, prompt, { foreground: true });
 }
 
-// Shared execution body: foreground path calls this directly, background
-// worker re-invokes it after reading meta.json. Terminal meta + sidecars are
-// written by this function; emits the final JSON only when foreground.
-async function executeRun(baseRecord, { foreground }) {
-  const { id: jobId, mode, model, cwd, workspaceRoot, prompt } = baseRecord;
-  const disposeEffective = baseRecord.dispose_effective ?? false;
+// Shared execution body. Foreground path calls this directly with the live
+// prompt; background worker calls it after reading the prompt sidecar.
+// EXACTLY ONE buildJobRecord call per terminal state — §21.3.2 convergence.
+async function executeRun(invocation, prompt, { foreground }) {
+  const {
+    job_id: jobId, mode, model, cwd, workspace_root: workspaceRoot,
+    dispose_effective: disposeEffective,
+  } = invocation;
 
-  // Re-resolve the profile from the persisted mode NAME (spec §21.2 — the
-  // table is the single source of truth; we don't clone it onto records).
-  const profile = resolveProfile(baseRecord.mode_profile_name ?? mode);
+  // Re-resolve the profile from the persisted mode NAME (spec §21.2).
+  const profile = resolveProfile(invocation.mode_profile_name);
 
-  // T7.2: containment + scope are two independent per-profile decisions
-  // (spec §21.4). setupContainment owns "where does Claude write"; populateScope
-  // owns "what content does Claude see". Neither branches on mode directly.
+  // T7.2: containment + scope are two independent per-profile decisions.
   let containment = null;
   try {
     containment = setupContainment(profile, cwd);
     populateScope(profile, cwd, containment.path, {
-      scopeBase: baseRecord.scope_base,
-      scopePaths: baseRecord.scope_paths,
+      scopeBase: invocation.scope_base,
+      scopePaths: invocation.scope_paths,
     }, containment);
   } catch (e) {
     if (containment) { try { containment.cleanup(); } catch { /* best-effort */ } }
-    const errorRecord = { ...baseRecord, status: "failed",
-      errorMessage: e.message, exit_code: null, ended_at: new Date().toISOString() };
+    const errorRecord = buildJobRecord(invocation, {
+      exitCode: null, parsed: null, pidInfo: null, claudeSessionId: null,
+      errorMessage: e.message,
+    }, []);
     writeJobFile(workspaceRoot, jobId, errorRecord);
     upsertJob(workspaceRoot, errorRecord);
-    if (foreground) fail("scope_setup_failed", e.message, { job_id: jobId });
+    if (foreground) {
+      printJson(errorRecord);
+      process.exit(2);
+    }
     process.exit(2);
   }
   const childCwd = containment.path;
@@ -262,8 +324,7 @@ async function executeRun(baseRecord, { foreground }) {
 
   // Pre-snapshot for review-style paths (§10 post-hoc mutation detection).
   // Profile-driven: plan-mode paths are supposed to be read-only, so we
-  // snapshot before/after and warn on drift. Rescue (acceptEdits) intentionally
-  // writes, so no snapshot.
+  // snapshot before/after and surface drift via record.mutations.
   const checkMutations = profile.permission_mode === "plan";
   let gitStatusBefore = null;
   if (checkMutations) {
@@ -273,43 +334,46 @@ async function executeRun(baseRecord, { foreground }) {
     }
   }
 
+  // Resume is carried on invocation.resume_chain[last] via cmdContinue. For
+  // fresh runs this is null and sessionId=jobId is passed instead.
+  const resumeId = invocation.resume_chain && invocation.resume_chain.length > 0
+    ? invocation.resume_chain[invocation.resume_chain.length - 1]
+    : null;
+
   let execution;
   try {
     execution = await spawnClaude(profile, {
       model,
       promptText: prompt,
-      // §21.1: pass job_id as the --session-id on fresh runs. Claude echoes
-      // this back as parsed.session_id, which we then store as
-      // claude_session_id (below). On resumes, baseRecord.resume_id is set
-      // and spawnClaude uses --resume instead; --session-id is omitted.
       sessionId: jobId,
       addDirPath: addDir,
       cwd: childCwd,
-      binary: baseRecord.binary,
-      jsonSchema: baseRecord.schema ?? null,
-      resumeId: baseRecord.resume_id ?? null,
+      binary: invocation.binary,
+      jsonSchema: invocation.schema_spec,
+      resumeId,
       timeoutMs: 0,
     });
   } catch (e) {
-    const errorRecord = { ...baseRecord, status: "failed", errorMessage: e.message,
-      exit_code: null, ended_at: new Date().toISOString() };
+    const errorRecord = buildJobRecord(invocation, {
+      exitCode: null, parsed: null, pidInfo: null, claudeSessionId: null,
+      errorMessage: e.message,
+    }, []);
     writeJobFile(workspaceRoot, jobId, errorRecord);
     upsertJob(workspaceRoot, errorRecord);
     if (disposeEffective) containment.cleanup();
-    if (foreground) fail("spawn_failed", e.message, { job_id: jobId });
+    if (foreground) {
+      printJson(errorRecord);
+      process.exit(2);
+    }
     process.exit(2);
   }
 
   // Post-snapshot for mutation detection.
-  let gitStatusAfter = null;
   let mutations = [];
   if (checkMutations && gitStatusBefore !== null) {
-    gitStatusAfter = tryGit(["status", "-s", "--untracked-files=all"], cwd);
+    const gitStatusAfter = tryGit(["status", "-s", "--untracked-files=all"], cwd);
     writeSidecar(workspaceRoot, jobId, "git-status-after.txt", gitStatusAfter);
     if (gitStatusAfter && gitStatusAfter !== gitStatusBefore) {
-      // Line-set diff, not substring diff (audit finding): a new "M foo.js"
-      // line shouldn't be considered pre-existing just because "foo" appeared
-      // in some other line earlier.
       const beforeLines = new Set(
         gitStatusBefore.split("\n").map((l) => l.trim()).filter(Boolean)
       );
@@ -319,56 +383,36 @@ async function executeRun(baseRecord, { foreground }) {
     }
   }
 
-  const completedStatus = execution.exitCode === 0 && execution.parsed.ok ? "completed" : "failed";
-  // §21.1: claude_session_id is read from Claude's stdout, not minted here.
-  // Fall back to what we sent (job_id on fresh run, resume_id on resume) if
-  // the CLI didn't echo — preserves downstream resume-chain behavior.
-  const claudeSessionIdObserved =
-    execution.claudeSessionId ?? baseRecord.resume_id ?? jobId;
-  const finalRecord = {
-    ...baseRecord,
-    status: completedStatus,
-    claude_session_id: claudeSessionIdObserved,
-    pid_info: execution.pidInfo ?? null,
-    exit_code: execution.exitCode,
-    ended_at: new Date().toISOString(),
-    cost_usd: execution.parsed.costUsd,
-    usage: execution.parsed.usage,
-  };
+  // ONE buildJobRecord call — spec §21.3.2 convergence. Foreground prints
+  // what we persist; cmdResult reads the same file; skill renders the same
+  // schema. No hand-assembly anywhere.
+  const finalRecord = buildJobRecord(invocation, {
+    exitCode: execution.exitCode,
+    parsed: execution.parsed,
+    pidInfo: execution.pidInfo,
+    claudeSessionId: execution.claudeSessionId ?? resumeId ?? jobId,
+  }, mutations);
   writeJobFile(workspaceRoot, jobId, finalRecord);
   upsertJob(workspaceRoot, finalRecord);
 
-  // Write stdout/stderr to sidecar logs (tests + operator can inspect).
+  // Sidecar logs (not part of JobRecord — operator diagnostics).
   writeSidecar(workspaceRoot, jobId, "stdout.log", execution.stdout);
   writeSidecar(workspaceRoot, jobId, "stderr.log", execution.stderr);
 
-  // Dispose containment after run — review/adversarial-review default ON via
-  // profile.dispose_default; rescue default OFF. `--override-dispose` is the
-  // only escape hatch. Kept AFTER sidecar writes so any failure traces
-  // survive. For containment=none, `disposed` is always false and cleanup is
-  // a no-op; no branch needed.
+  // Dispose containment after run (§10 / profile.dispose_default). Kept
+  // AFTER sidecar writes so failure traces survive.
   if (containment.disposed && disposeEffective) {
     containment.cleanup();
-    writeJobFile(workspaceRoot, jobId, { ...finalRecord, containment_cleaned: true });
-  } else if (containment.disposed) {
-    // Non-disposed worktree — persist path for operator debugging.
-    writeJobFile(workspaceRoot, jobId, { ...finalRecord, containment_path: containment.path });
   }
+  // Note: `containment_path` / `containment_cleaned` were legacy sidechannel
+  // fields on the record that pre-dated the JobRecord schema. Containment
+  // state is now either "disposed" (path gone from disk) or derivable from
+  // workspace inspection; not part of the schema.
 
   if (foreground) {
-    printJson({
-      ok: completedStatus === "completed",
-      job_id: jobId,
-      mode,
-      model,
-      workspace_root: workspaceRoot,
-      result: execution.parsed.result,
-      structured_output: execution.parsed.structured,
-      permission_denials: execution.parsed.denials,
-      ...(mutations.length > 0 ? { warning: "mutation_detected", mutated_files: mutations } : {}),
-    });
+    printJson(finalRecord);
   }
-  process.exit(completedStatus === "completed" ? 0 : 2);
+  process.exit(finalRecord.status === "completed" ? 0 : 2);
 }
 
 // ——— subcommand: _run-worker (hidden; detached worker for --background) ———
@@ -389,14 +433,23 @@ async function cmdRunWorker(rest) {
   } catch (e) {
     fail("bad_args", e.message);
   }
-  // Worker marks status=running; pid_info for the actual claude CLI child
-  // is captured by spawnClaude inside executeRun. No `pid: process.pid`
-  // — that was the legacy conflation where the worker PID pretended to be
-  // the CLI's PID, defeating the point of ownership verification.
-  const baseRecord = { ...meta, status: "running" };
-  writeJobFile(workspaceRoot, options.job, baseRecord);
-  upsertJob(workspaceRoot, baseRecord);
-  await executeRun(baseRecord, { foreground: false });
+
+  // Read+delete the prompt sidecar (§21.3.1 handoff buffer). Missing sidecar
+  // means either the launcher crashed before writing it, or this is a
+  // pre-T7.4 legacy record — either way, we can't run.
+  const prompt = consumePromptSidecar(workspaceRoot, options.job);
+  if (!prompt) {
+    const errorRecord = buildJobRecord(invocationFromRecord(meta), {
+      exitCode: null, parsed: null, pidInfo: null, claudeSessionId: null,
+      errorMessage: "worker: prompt sidecar missing; job cannot resume",
+    }, []);
+    writeJobFile(workspaceRoot, options.job, errorRecord);
+    upsertJob(workspaceRoot, errorRecord);
+    fail("bad_state", "prompt sidecar missing for job " + options.job);
+  }
+
+  const invocation = invocationFromRecord(meta);
+  await executeRun(invocation, prompt, { foreground: false });
 }
 
 // ——— subcommand: continue (resume a prior session with --resume) ———
@@ -418,17 +471,9 @@ async function cmdContinue(rest) {
   }
   const prompt = positionals.join(" ").trim();
   if (!prompt) fail("bad_args", "prompt is required (pass after -- separator)");
-  // §21.1: read the PRIOR `claude_session_id` (the UUID Claude actually ran
-  // under), NOT `prior.session_id` (which was the companion-minted job_id on
-  // legacy records — a different UUID that was never passed to Claude).
-  //
-  // Fallback: legacy records from pre-T7.3 only have `session_id` and it
-  // happened to equal the --session-id the companion sent, so for FIRST
-  // generation resumes that fallback still names a live session. For chained
-  // resumes on legacy records the fallback points at a dead intermediate
-  // UUID — that's the pre-existing bug, not worth an error here because the
-  // bug only manifests on resume-from-resume. We prefer the correct field
-  // whenever it's available.
+  // §21.1: read the PRIOR `claude_session_id`. Legacy `session_id` fallback
+  // covers pre-T7.3 records; same caveat as before — first-gen resumes work,
+  // resume-from-resume on legacy records hits a dead UUID.
   const priorClaudeSessionId = prior.claude_session_id ?? prior.session_id ?? null;
   if (!priorClaudeSessionId) {
     fail("bad_args",
@@ -437,51 +482,43 @@ async function cmdContinue(rest) {
   }
   const newJobId_ = newJobId();
   const model = options.model ?? prior.model;
-  // Re-resolve the profile from the prior job's mode name, not from a
-  // persisted profile blob. This keeps behavior fresh against spec changes
-  // in the profile table — see §21.2.
   const priorModeName = prior.mode_profile_name ?? prior.mode;
   const priorProfile = resolveProfile(priorModeName);
-  // §21.1: resume_chain grows newest-last. A second `continue` off this job
-  // will read the new record's claude_session_id (populated post-run), so
-  // this chain always reflects the actual session history.
   const priorResumeChain = Array.isArray(prior.resume_chain) ? prior.resume_chain : [];
-  const baseRecord = {
-    id: newJobId_,
+
+  // §21.1: resume_chain grows newest-last. The LAST entry is the UUID that
+  // executeRun passes to spawnClaude via --resume (see the resumeId
+  // derivation in executeRun). Do NOT persist a separate `resume_id` field
+  // on the invocation — the chain is the source of truth.
+  const invocation = Object.freeze({
     job_id: newJobId_,
     target: "claude",
-    mode: priorModeName,
+    parent_job_id: options.job,
+    resume_chain: [...priorResumeChain, priorClaudeSessionId],
     mode_profile_name: priorProfile.name,
-    status: options.background ? "queued" : "running",
-    startedAt: new Date().toISOString(),
+    mode: priorModeName,
+    model,
     cwd,
-    workspaceRoot,
-    // T7.2: inherit containment/scope from the profile freshly — not from
-    // prior (which may have been recorded under the old `isolated` schema).
-    // dispose_effective carries from prior so a --no-override-dispose on the
-    // original run persists across resumes.
+    workspace_root: workspaceRoot,
+    // T7.2: inherit containment/scope from the profile freshly. dispose_effective
+    // carries from prior so an --override-dispose on the original run persists.
     containment: priorProfile.containment,
     scope: priorProfile.scope,
     dispose_effective: prior.dispose_effective ?? priorProfile.dispose_default,
     scope_base: prior.scope_base ?? null,
     scope_paths: prior.scope_paths ?? null,
-    model,
-    // §21.1 identity types.
-    claude_session_id: null,                             // set post-run
-    resume_chain: [...priorResumeChain, priorClaudeSessionId],
-    pid_info: null,                                      // set post-spawn
-    parent_job_id: options.job,
-    resume_id: priorClaudeSessionId,                     // passed as --resume
-    prompt_head: prompt.slice(0, 200),
-    prompt,
+    prompt_head: prompt.slice(0, 200),    // §21.3.1 — no full prompt
+    schema_spec: prior.schema_spec ?? prior.schema ?? null,
     binary: options.binary ?? process.env.CLAUDE_BINARY ?? "claude",
-    schema: prior.schema ?? null,
-    schema_version: 1,
-  };
-  writeJobFile(workspaceRoot, newJobId_, baseRecord);
-  upsertJob(workspaceRoot, baseRecord);
+    started_at: new Date().toISOString(),
+  });
+
+  const queuedRecord = buildJobRecord(invocation, null, []);
+  writeJobFile(workspaceRoot, newJobId_, queuedRecord);
+  upsertJob(workspaceRoot, queuedRecord);
 
   if (options.background) {
+    writePromptSidecar(workspaceRoot, newJobId_, prompt);
     const child = spawn(process.execPath, [
       fileURLToPath(import.meta.url),
       "_run-worker",
@@ -489,14 +526,12 @@ async function cmdContinue(rest) {
       "--job", newJobId_,
     ], { cwd, env: process.env, detached: true, stdio: "ignore", windowsHide: true });
     child.unref();
-    const launched = { ...baseRecord, launcher_pid: child.pid ?? null };
-    writeJobFile(workspaceRoot, newJobId_, launched);
-    upsertJob(workspaceRoot, launched);
-    printJson({ event: "launched", job_id: newJobId_, target: "claude", mode: prior.mode,
-      parent_job_id: options.job, pid: child.pid ?? null, workspace_root: workspaceRoot });
+    printJson({ event: "launched", job_id: newJobId_, target: "claude",
+      mode: priorModeName, parent_job_id: options.job, pid: child.pid ?? null,
+      workspace_root: workspaceRoot });
     process.exit(0);
   }
-  await executeRun(baseRecord, { foreground: true });
+  await executeRun(invocation, prompt, { foreground: true });
 }
 
 function writeSidecar(workspaceRoot, jobId, name, contents) {
@@ -545,7 +580,10 @@ async function cmdPing(rest) {
   }
   // Classify. Real Claude error texts change per version; match on signals only.
   if (execution.parsed.ok && (execution.parsed.result || execution.parsed.structured)) {
-    printJson({ status: "ok", model, session_id: execution.sessionId,
+    // T7.4: drop the legacy `.sessionId` alias. Ping uses claudeSessionId
+    // (Claude's echo) with sessionIdSent fallback when the mock short-circuits.
+    printJson({ status: "ok", model,
+      session_id: execution.claudeSessionId ?? execution.sessionIdSent,
       cost_usd: execution.parsed.costUsd, usage: execution.parsed.usage });
     process.exit(0);
   }

@@ -48,7 +48,7 @@ function seedMinimalRepo(cwd) {
     "git -c user.email=t@t -c user.name=t commit -q -m seed"], { cwd });
 }
 
-test("run --mode=review --foreground: emits JSON with ok:true", () => {
+test("run --mode=review --foreground: emits JobRecord with status=completed", () => {
   const cwd = mkdtempSync(path.join(tmpdir(), "smoke-cwd-"));
   seedMinimalRepo(cwd);
   const { stdout, stderr, status, dataDir } = runCompanion(
@@ -58,13 +58,21 @@ test("run --mode=review --foreground: emits JSON with ok:true", () => {
   );
   try {
     assert.equal(status, 0, `exit ${status}: stderr=${stderr}`);
+    // T7.4 (§21.3.2): foreground stdout is a JobRecord — no `ok` top-level.
     const result = JSON.parse(stdout);
-    assert.equal(result.ok, true);
+    assert.equal(result.status, "completed");
     assert.equal(result.mode, "review");
     assert.equal(result.model, "claude-haiku-4-5-20251001");
     assert.ok(result.job_id, "job_id set");
     assert.equal(result.result, "Mock Claude response.");
     assert.deepEqual(result.permission_denials, []);
+    assert.equal(result.schema_version, 5, "T7.4: schema_version bumped to 5");
+    assert.equal("prompt" in result, false,
+      "§21.3.1: full prompt must not appear on JobRecord");
+    assert.equal("ok" in result, false,
+      "§21.3.2: no hand-assembled `ok` field; consumers derive from status");
+    assert.equal("warning" in result, false,
+      "§21.3: no top-level warning; mutations array is the signal");
   } finally {
     cleanup(dataDir);
     rmSync(cwd, { recursive: true, force: true });
@@ -125,6 +133,12 @@ test("run: meta.json persisted to workspace state", () => {
     // Forbidden: the legacy `session_id` alias that duplicated job_id.
     assert.equal(meta.session_id, undefined,
       "legacy session_id field must not be present on new-shape records");
+    // T7.4 (§21.3): schema_version bumped to 5 and full prompt absent.
+    assert.equal(meta.schema_version, 5);
+    assert.equal("prompt" in meta, false,
+      "§21.3.1: full `prompt` field must not be persisted");
+    // T7.4: result field populated on foreground completion (symmetry with bg).
+    assert.equal(meta.result, "Mock Claude response.");
   } finally {
     cleanup(dataDir);
     rmSync(cwd, { recursive: true, force: true });
@@ -178,6 +192,91 @@ test("run --background: emits launched event and terminal meta arrives", async (
     assert.ok(meta, "worker never wrote terminal meta");
     assert.equal(meta.id, ev.job_id);
     assert.ok(["completed", "failed"].includes(meta.status));
+    // T7.4 / finding #1-H1 regression: the background worker's terminal
+    // JobRecord MUST carry the result, not just status. Before T7.4, these
+    // fields were dropped on the foreground→worker split, leaving cmdResult
+    // with an unpopulated meta file.
+    assert.equal(meta.result, "Mock Claude response.",
+      "background worker must persist parsed.result on the JobRecord");
+    assert.deepEqual(meta.permission_denials, [],
+      "background worker must persist permission_denials on the JobRecord");
+    assert.ok("mutations" in meta, "background JobRecord carries mutations array");
+    assert.ok("cost_usd" in meta, "background JobRecord carries cost_usd");
+    assert.equal(meta.schema_version, 5);
+  } finally {
+    cleanup(dataDir);
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("T7.4 / §21.3.1: full prompt must not appear on any persisted record", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "smoke-prompt-"));
+  seedMinimalRepo(cwd);
+  const LONG_PROMPT = "review this code: " + "x".repeat(300); // >200 chars
+  const { stdout, dataDir } = runCompanion(
+    ["run", "--mode=review", "--foreground", "--model", "claude-haiku-4-5-20251001",
+     "--cwd", cwd, "--", LONG_PROMPT],
+    { cwd }
+  );
+  try {
+    const { job_id } = JSON.parse(stdout);
+    const stateRoot = path.join(dataDir, "state");
+    let metaPath = null;
+    for (const dir of readdirSync(stateRoot)) {
+      const p = path.join(stateRoot, dir, "jobs", `${job_id}.json`);
+      if (existsSync(p)) { metaPath = p; break; }
+    }
+    assert.ok(metaPath, "meta.json missing");
+    const raw = readFileSync(metaPath, "utf8");
+    const meta = JSON.parse(raw);
+    assert.equal("prompt" in meta, false,
+      "§21.3.1: persisted record MUST NOT carry a full `prompt` field");
+    assert.equal(meta.prompt_head.length <= 200, true,
+      "prompt_head must be ≤200 chars");
+    // Defense in depth: the raw JSON must not contain the tail of the prompt.
+    // (If the prompt leaked via a non-field property, the JSON bytes would
+    // still contain the "xxxx..." payload.)
+    const tail = "x".repeat(250);
+    assert.equal(raw.includes(tail), false,
+      "§21.3.1: full prompt text must not appear anywhere in persisted JSON");
+  } finally {
+    cleanup(dataDir);
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("T7.4 / §21.3.2: prompt sidecar is deleted after worker consumes it", async () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "smoke-bg-sidecar-"));
+  const { stdout, status, dataDir } = runCompanion(
+    ["run", "--mode=rescue", "--background", "--model", "claude-haiku-4-5-20251001",
+     "--cwd", cwd, "--", "bg sidecar task"],
+    { cwd }
+  );
+  try {
+    assert.equal(status, 0);
+    const ev = JSON.parse(stdout);
+    const stateRoot = path.join(dataDir, "state");
+    // Poll until the record is terminal.
+    const deadline = Date.now() + 5000;
+    let done = false;
+    let jobDir = null;
+    while (Date.now() < deadline && !done) {
+      for (const dir of readdirSync(stateRoot)) {
+        const metaPath = path.join(stateRoot, dir, "jobs", `${ev.job_id}.json`);
+        jobDir = path.join(stateRoot, dir, "jobs", ev.job_id);
+        if (existsSync(metaPath)) {
+          const parsed = JSON.parse(readFileSync(metaPath, "utf8"));
+          if (parsed.status === "completed" || parsed.status === "failed") {
+            done = true; break;
+          }
+        }
+      }
+      if (!done) await new Promise((r) => setTimeout(r, 100));
+    }
+    assert.ok(done, "worker never finished");
+    // After the worker consumed the prompt, the sidecar must be gone.
+    assert.equal(existsSync(path.join(jobDir, "prompt.txt")), false,
+      "§21.3.1: prompt sidecar must be deleted after worker consumes it");
   } finally {
     cleanup(dataDir);
     rmSync(cwd, { recursive: true, force: true });
@@ -205,7 +304,9 @@ test("continue --job: resumes a prior session via --resume", () => {
     assert.equal(contRes.status, 0, contRes.stderr);
     const out = JSON.parse(contRes.stdout);
     assert.notEqual(out.job_id, job_id, "continue must mint a new job_id");
-    assert.equal(out.ok, true);
+    // T7.4 (§21.3): foreground stdout is a JobRecord, not an ok-envelope.
+    assert.equal(out.status, "completed");
+    assert.equal(out.parent_job_id, job_id, "resume carries parent_job_id");
   } finally {
     rmSync(dataDir, { recursive: true, force: true });
     rmSync(cwd, { recursive: true, force: true });

@@ -225,9 +225,10 @@ export async function spawnClaude(profile, runtimeInputs = {}) {
         claudeSessionId: parsed.sessionId ?? null,
         // pidInfo {pid, starttime, argv0} for PID-reuse-safe cancel.
         pidInfo,
-        // Backwards-compat alias — some call sites still read `.sessionId`.
-        // Will be dropped in T7.4; for now keep so legacy reads don't break.
-        sessionId: parsed.sessionId ?? sessionId,
+        // T7.4 DROPPED: the legacy `.sessionId` alias. Call sites now read
+        // `claudeSessionId` (Claude's echo) or `sessionIdSent` (what we
+        // passed). Keeping both aliases invited silent reads of the wrong
+        // value — exactly the conflation §21.1 forbids.
         parsed,
       });
     });
