@@ -18,7 +18,7 @@ Review via Claude Code. Read-only; changes detected post-hoc, never auto-reverte
    ```
    (Containment + scope + dispose are all carried by the review profile — spec §21.4.)
 3. Render the returned JSON:
-   - If `warning: "mutation_detected"` appears, surface the `mutated_files` list prominently. Do not auto-revert.
+   - If `mutations` is a non-empty array, surface the git-status lines prominently (each entry is a raw `git status -s` line, e.g. `?? foo.md`). Do not auto-revert.
    - If `structured_output` is populated (schema runs), render its verdict + findings.
    - Otherwise render `result` as Markdown.
 

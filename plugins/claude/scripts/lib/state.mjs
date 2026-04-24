@@ -340,3 +340,28 @@ export function resolveJobFile(cwd, jobId) {
   ensureStateDir(cwd);
   return path.join(resolveJobsDir(cwd), `${jobId}.json`);
 }
+
+// T7.7 C2 / B4: cmdContinue needs to locate a prior job's meta without
+// knowing its workspace root (that's what we're trying to read FROM the
+// meta). Walks every `<slug>-<hash>` subdir of the plugin-data state root
+// and returns the first `<jobId>.json` found. Returns null if not found.
+//
+// Rejects traversal via assertSafeJobId. Does not mkdir anything — this is
+// a read-only lookup; absent dirs simply yield null.
+export function findJobMetaAnywhere(jobId) {
+  assertSafeJobId(jobId);
+  const pluginDataDir = process.env[CONFIG.pluginDataEnv];
+  const stateRoot = pluginDataDir ? path.join(pluginDataDir, "state") : CONFIG.fallbackStateRootDir;
+  let entries;
+  try {
+    entries = fs.readdirSync(stateRoot, { withFileTypes: true });
+  } catch {
+    return null; // no state root yet — nothing to find
+  }
+  for (const ent of entries) {
+    if (!ent.isDirectory()) continue;
+    const candidate = path.join(stateRoot, ent.name, JOBS_DIR_NAME, `${jobId}.json`);
+    if (fs.existsSync(candidate)) return candidate;
+  }
+  return null;
+}

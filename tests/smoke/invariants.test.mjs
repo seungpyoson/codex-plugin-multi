@@ -41,11 +41,14 @@ export const MATRIX_FINDINGS = Object.freeze([
   { id: "C2",  fragment: "M6-finding-C2: silent Opus billing" },
   { id: "G-HIGH", fragment: "M6-finding-G-HIGH: rescue keeps CLAUDE.md context" },
   { id: "4",   fragment: "M6-finding-4: review sees dirty working tree" },
+  { id: "4-containment", fragment: "M6-finding-4-containment: mutation detection catches writes to childCwd" },
   { id: "6",   fragment: "M6-finding-6: continue chain resumes LATEST claude_session_id" },
   { id: "7",   fragment: "M6-finding-7: PID-reuse cancel refused" },
+  { id: "7-pipeline", fragment: "M6-finding-7-pipeline: cancel on a real running background job" },
   { id: "1-H1", fragment: "M6-finding-1-H1: background worker persists parsed.result" },
   { id: "9",   fragment: "M6-finding-9: full prompt never persisted" },
   { id: "10",  fragment: "M6-finding-10: every lib is importable and has a consumer" },
+  { id: "cwd-inherit", fragment: "M6-finding-cwd-inherit: cmdContinue inherits prior.cwd" },
 ]);
 
 export const MOCK_GAPS = Object.freeze([
@@ -269,8 +272,9 @@ test("M6-finding-6: continue chain resumes LATEST claude_session_id, not an inte
       "legacy session_id field must not be present on new-shape records");
 
     // Run 2 — continue from job1. Companion mints job_2, passes --resume=<claudeSid1>.
+    // T7.7 B4: continue inherits prior.cwd by default; no --cwd flag.
     const r2 = runCompanion(
-      ["continue", "--job", job1, "--foreground", "--cwd", cwd, "--", "followup"],
+      ["continue", "--job", job1, "--foreground", "--", "followup"],
       { cwd, dataDir,
         env: { CLAUDE_MOCK_RECORD_RESUME: "1", CLAUDE_MOCK_RESUME_SINK: resumeSink } });
     assert.equal(r2.status, 0, r2.stderr);
@@ -290,7 +294,7 @@ test("M6-finding-6: continue chain resumes LATEST claude_session_id, not an inte
     const claudeSid2 = meta2.claude_session_id;
     assert.ok(claudeSid2, "run 2 must have captured claude_session_id");
     const r3 = runCompanion(
-      ["continue", "--job", job2, "--foreground", "--cwd", cwd, "--", "third"],
+      ["continue", "--job", job2, "--foreground", "--", "third"],
       { cwd, dataDir,
         env: { CLAUDE_MOCK_RECORD_RESUME: "1", CLAUDE_MOCK_RESUME_SINK: resumeSink } });
     assert.equal(r3.status, 0, r3.stderr);
@@ -498,20 +502,21 @@ test("M6-mock-gap: timeoutMs fires SIGTERM when claude hangs (no coverage pre-T7
 });
 
 // Mutation-detection gap: rescue mode does not run mutation-detection (plan
-// modes only). Review mode runs mutation-detection against sourceCwd, but
-// claude writes inside the worktree. The gap test uses an absolute
-// CLAUDE_MOCK_MUTATE_FILE so the mock writes directly into sourceCwd, then
-// asserts the JobRecord's mutations[] array captures the new file.
+// modes only). Review mode runs mutation-detection against childCwd (T7.7 C2),
+// so a relative CLAUDE_MOCK_MUTATE_FILE lands inside the worktree and is
+// caught by the tryGit(childCwd) pre/post snapshot. This gap test exercises
+// the "mock can drive a mutation at all" contract; "4-containment" above
+// exercises the specific childCwd invariant.
 
 test("M6-mock-gap: mutation detected when claude writes a file (no coverage pre-T7.6)", () => {
   const cwd = mkdtempSync(path.join(tmpdir(), "inv-mut-"));
   seedMinimalRepo(cwd);
-  const target = path.join(cwd, "foo.md"); // absolute — lands in sourceCwd
+  // Relative — mock resolves into addDir (childCwd) under containment=worktree.
   const { stdout, status, stderr, dataDir } = runCompanion(
     ["run", "--mode=review", "--foreground",
      "--model", "claude-haiku-4-5-20251001",
      "--cwd", cwd, "--", "review"],
-    { cwd, env: { CLAUDE_MOCK_MUTATE_FILE: target } }
+    { cwd, env: { CLAUDE_MOCK_MUTATE_FILE: "foo.md" } }
   );
   try {
     assert.equal(status, 0, `exit ${status}: ${stderr}`);
@@ -522,6 +527,235 @@ test("M6-mock-gap: mutation detected when claude writes a file (no coverage pre-
     const saw = record.mutations.some((l) => l.includes("foo.md"));
     assert.ok(saw,
       `mutations[] must mention foo.md; got ${JSON.stringify(record.mutations)}`);
+  } finally {
+    rmSync(dataDir, { recursive: true, force: true });
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// T7.7 C2 / B2 — mutation detection runs against childCwd, not sourceCwd.
+//
+// Under containment=worktree (review / adversarial-review), Claude writes to
+// `childCwd = containment.path` — the copied worktree, NOT the user's sourceCwd.
+// Pre-T7.7, `tryGit` was called with sourceCwd on both pre/post snapshots, so
+// any file Claude created inside the worktree was invisible to the diff. The
+// fix is one-line: pass childCwd to both tryGit calls.
+//
+// Oracle: pass a RELATIVE CLAUDE_MOCK_MUTATE_FILE so the mock writes into addDir
+// (the worktree, since addDir!=cwd under review). Assert mutations[] non-empty.
+//
+// Contrast with "M6-mock-gap: mutation detected ..." above, which uses an
+// ABSOLUTE target to write directly into sourceCwd — that exercises the old
+// (broken) detection path. This test exercises the containment-aware path.
+
+test("M6-finding-4-containment: mutation detection catches writes to childCwd under containment=worktree", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "inv-mut-child-"));
+  seedMinimalRepo(cwd);
+  // Relative path — the mock resolves against addDir (childCwd) when
+  // addDir != process.cwd(), which is true under containment=worktree.
+  const { stdout, status, stderr, dataDir } = runCompanion(
+    ["run", "--mode=review", "--foreground",
+     "--model", "claude-haiku-4-5-20251001",
+     "--cwd", cwd, "--", "review"],
+    { cwd, env: { CLAUDE_MOCK_MUTATE_FILE: "child-only.md" } }
+  );
+  try {
+    assert.equal(status, 0, `exit ${status}: ${stderr}`);
+    const record = JSON.parse(stdout);
+    assert.ok(Array.isArray(record.mutations),
+      "JobRecord must carry a mutations array");
+    const saw = record.mutations.some((l) => l.includes("child-only.md"));
+    assert.ok(saw,
+      `mutations[] must detect writes into childCwd (containment=worktree); ` +
+      `got ${JSON.stringify(record.mutations)}`);
+  } finally {
+    rmSync(dataDir, { recursive: true, force: true });
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// T7.7 C2 / B4 — cmdContinue inherits prior.cwd.
+//
+// Pre-T7.7, cmdContinue read `options.cwd ?? process.cwd()`, ignoring the
+// directory the prior job was anchored to. Claude's session memory is keyed
+// to that cwd; a continue from an unrelated shell cwd resumed the session
+// against the wrong tree. The fix is two-part:
+//   - default: cwd = prior.cwd
+//   - explicit override: --override-cwd <path>
+//   - --cwd on continue: reject, point to --override-cwd
+//
+// Three tests cover the class: default inheritance, explicit override accepted,
+// --cwd rejected.
+
+test("M6-finding-cwd-inherit: cmdContinue inherits prior.cwd when --cwd/--override-cwd omitted", () => {
+  const cwd1 = mkdtempSync(path.join(tmpdir(), "inv-cont-prior-"));
+  const cwd2 = mkdtempSync(path.join(tmpdir(), "inv-cont-caller-"));
+  const dataDir = mkdtempSync(path.join(tmpdir(), "inv-cont-data-"));
+  try {
+    seedMinimalRepo(cwd1);
+    seedMinimalRepo(cwd2);
+    // Prior job anchored to cwd1.
+    const r1 = runCompanion(
+      ["run", "--mode=rescue", "--foreground",
+       "--model", "claude-haiku-4-5-20251001",
+       "--cwd", cwd1, "--", "seed"],
+      { cwd: cwd1, dataDir });
+    assert.equal(r1.status, 0, r1.stderr);
+    const job1 = JSON.parse(r1.stdout).job_id;
+    // Continue from cwd2 (no --cwd, no --override-cwd).
+    const r2 = runCompanion(
+      ["continue", "--job", job1, "--foreground", "--", "followup"],
+      { cwd: cwd2, dataDir });
+    assert.equal(r2.status, 0, r2.stderr);
+    const job2 = JSON.parse(r2.stdout).job_id;
+    const meta2 = JSON.parse(readFileSync(findMetaPath(dataDir, job2), "utf8"));
+    assert.equal(meta2.cwd, cwd1,
+      `continue must inherit prior.cwd=${cwd1}; got ${meta2.cwd}`);
+  } finally {
+    rmSync(dataDir, { recursive: true, force: true });
+    rmSync(cwd1, { recursive: true, force: true });
+    rmSync(cwd2, { recursive: true, force: true });
+  }
+});
+
+test("T7.7 B4: cmdContinue rejects --cwd with pointer to --override-cwd", () => {
+  const cwd1 = mkdtempSync(path.join(tmpdir(), "inv-cont-rej-prior-"));
+  const cwd2 = mkdtempSync(path.join(tmpdir(), "inv-cont-rej-caller-"));
+  const dataDir = mkdtempSync(path.join(tmpdir(), "inv-cont-rej-data-"));
+  try {
+    seedMinimalRepo(cwd1);
+    const r1 = runCompanion(
+      ["run", "--mode=rescue", "--foreground",
+       "--model", "claude-haiku-4-5-20251001",
+       "--cwd", cwd1, "--", "seed"],
+      { cwd: cwd1, dataDir });
+    assert.equal(r1.status, 0, r1.stderr);
+    const job1 = JSON.parse(r1.stdout).job_id;
+    const r2 = runCompanion(
+      ["continue", "--job", job1, "--foreground",
+       "--cwd", cwd2, "--", "followup"],
+      { cwd: cwd2, dataDir });
+    assert.notEqual(r2.status, 0,
+      `continue with --cwd must fail; got exit ${r2.status}`);
+    assert.match(r2.stderr, /--override-cwd/,
+      `stderr must reference --override-cwd; got: ${r2.stderr}`);
+  } finally {
+    rmSync(dataDir, { recursive: true, force: true });
+    rmSync(cwd1, { recursive: true, force: true });
+    rmSync(cwd2, { recursive: true, force: true });
+  }
+});
+
+test("T7.7 B4: cmdContinue accepts --override-cwd to resume against a different directory", () => {
+  const cwd1 = mkdtempSync(path.join(tmpdir(), "inv-cont-ov-prior-"));
+  const cwd2 = mkdtempSync(path.join(tmpdir(), "inv-cont-ov-new-"));
+  const dataDir = mkdtempSync(path.join(tmpdir(), "inv-cont-ov-data-"));
+  try {
+    seedMinimalRepo(cwd1);
+    seedMinimalRepo(cwd2);
+    const r1 = runCompanion(
+      ["run", "--mode=rescue", "--foreground",
+       "--model", "claude-haiku-4-5-20251001",
+       "--cwd", cwd1, "--", "seed"],
+      { cwd: cwd1, dataDir });
+    assert.equal(r1.status, 0, r1.stderr);
+    const job1 = JSON.parse(r1.stdout).job_id;
+    const r2 = runCompanion(
+      ["continue", "--job", job1, "--foreground",
+       "--override-cwd", cwd2, "--", "followup"],
+      { cwd: cwd1, dataDir });
+    assert.equal(r2.status, 0, r2.stderr);
+    const job2 = JSON.parse(r2.stdout).job_id;
+    const meta2 = JSON.parse(readFileSync(findMetaPath(dataDir, job2), "utf8"));
+    assert.equal(meta2.cwd, cwd2,
+      `--override-cwd must set cwd to ${cwd2}; got ${meta2.cwd}`);
+  } finally {
+    rmSync(dataDir, { recursive: true, force: true });
+    rmSync(cwd1, { recursive: true, force: true });
+    rmSync(cwd2, { recursive: true, force: true });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// T7.7 C3 / B3 — cancel on a real running background job.
+//
+// Pre-T7.7, `cmdCancel` gated on `job.status !== "running"` and returned
+// `already_terminal` otherwise. But nothing ever wrote `status: "running"`
+// — `buildJobRecord(invocation, null)` writes `queued`, post-run records
+// are terminal. So cancel always short-circuited to `already_terminal`,
+// regardless of whether a worker was actually alive.
+//
+// The fix: the background worker writes an intermediate `status: "running"`
+// record between the queued-meta read and `executeRun`. Classification of
+// execution.signal=SIGTERM/SIGKILL is `"cancelled"` (not `"failed"`) so
+// the terminal meta reflects reality. This end-to-end test drives a real
+// running background job (delayed via CLAUDE_MOCK_DELAY_MS), observes the
+// running state in meta, cancels, and verifies the cancelled status.
+//
+// Contrast with "M6-finding-7: PID-reuse cancel refused" above which
+// manually patches running state to test the stale_pid guard in isolation.
+// Both regressions matter — they exercise different parts of the pipeline.
+
+test("M6-finding-7-pipeline: cancel on a real running background job transitions to cancelled", async () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "inv-cancel-pipe-"));
+  const dataDir = mkdtempSync(path.join(tmpdir(), "inv-cancel-pipe-data-"));
+  try {
+    seedMinimalRepo(cwd);
+    // Launch background job with a delayed mock so we have time to observe
+    // running state and issue a cancel before the worker naturally exits.
+    const launchRes = runCompanion(
+      ["run", "--mode=rescue", "--background",
+       "--model", "claude-haiku-4-5-20251001",
+       "--cwd", cwd, "--", "long-running task"],
+      { cwd, dataDir, env: { CLAUDE_MOCK_DELAY_MS: "10000" } });
+    assert.equal(launchRes.status, 0, launchRes.stderr);
+    const ev = JSON.parse(launchRes.stdout);
+    assert.equal(ev.event, "launched");
+    const jobId = ev.job_id;
+
+    // Poll for `status: "running"` up to 3s. If this times out with status
+    // still `queued`, the pipeline never writes running — the B3 bug.
+    const runningDeadline = Date.now() + 3000;
+    let observedRunning = false;
+    while (Date.now() < runningDeadline) {
+      try {
+        const metaPath = findMetaPath(dataDir, jobId);
+        const meta = JSON.parse(readFileSync(metaPath, "utf8"));
+        if (meta.status === "running") { observedRunning = true; break; }
+        if (meta.status === "completed" || meta.status === "failed" || meta.status === "cancelled") {
+          break; // finished before we saw running — unexpected
+        }
+      } catch { /* meta not written yet */ }
+      await new Promise((r) => setTimeout(r, 100));
+    }
+    assert.ok(observedRunning,
+      "B3: meta never reached status=running — worker must write running record before executeRun");
+
+    // Cancel. Must succeed, not return `already_terminal`.
+    const cancelRes = runCompanion(
+      ["cancel", "--job", jobId], { cwd, dataDir });
+    const cancelOut = JSON.parse(cancelRes.stdout);
+    assert.notEqual(cancelOut.status, "already_terminal",
+      "B3: cancel on a running job must not short-circuit to already_terminal");
+    assert.equal(cancelRes.status, 0,
+      `cancel should succeed; got exit ${cancelRes.status}: ${cancelRes.stderr}`);
+
+    // Poll for terminal `cancelled` status up to 2s.
+    const terminalDeadline = Date.now() + 2000;
+    let finalMeta = null;
+    while (Date.now() < terminalDeadline) {
+      try {
+        const metaPath = findMetaPath(dataDir, jobId);
+        const meta = JSON.parse(readFileSync(metaPath, "utf8"));
+        if (meta.status === "cancelled") { finalMeta = meta; break; }
+      } catch { /* meta not written yet */ }
+      await new Promise((r) => setTimeout(r, 100));
+    }
+    assert.ok(finalMeta,
+      `B3: terminal status must become "cancelled" after SIGTERM; last status was different`);
+    assert.equal(finalMeta.status, "cancelled");
   } finally {
     rmSync(dataDir, { recursive: true, force: true });
     rmSync(cwd, { recursive: true, force: true });

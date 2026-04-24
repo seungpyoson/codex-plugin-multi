@@ -29,14 +29,14 @@ import { writeFileSync, mkdirSync, existsSync, chmodSync, unlinkSync } from "nod
 import { execFileSync, spawn } from "node:child_process";
 
 import { parseArgs } from "./lib/args.mjs";
-import { configureState, getStateConfig, resolveJobsDir, resolveJobFile, writeJobFile, upsertJob, listJobs } from "./lib/state.mjs";
+import { configureState, getStateConfig, resolveJobsDir, resolveJobFile, writeJobFile, upsertJob, listJobs, findJobMetaAnywhere } from "./lib/state.mjs";
 import { configureTrackedJobs } from "./lib/tracked-jobs.mjs";
 import { resolveWorkspaceRoot } from "./lib/workspace.mjs";
 import { spawnClaude } from "./lib/claude.mjs";
 import { resolveProfile, resolveModelForProfile } from "./lib/mode-profiles.mjs";
 import { setupContainment } from "./lib/containment.mjs";
 import { populateScope } from "./lib/scope.mjs";
-import { newJobId, verifyPidInfo } from "./lib/identity.mjs";
+import { newJobId, verifyPidInfo, capturePidInfo } from "./lib/identity.mjs";
 import { buildJobRecord } from "./lib/job-record.mjs";
 import { readFileSync as _readFileSync } from "node:fs";
 
@@ -325,10 +325,42 @@ async function executeRun(invocation, prompt, { foreground }) {
   // Pre-snapshot for review-style paths (§10 post-hoc mutation detection).
   // Profile-driven: plan-mode paths are supposed to be read-only, so we
   // snapshot before/after and surface drift via record.mutations.
+  //
+  // T7.7 C2 / B2: snapshot runs against childCwd (the worktree Claude writes
+  // into), NOT sourceCwd. Under containment=worktree, Claude cannot reach
+  // sourceCwd — any write it does lands in childCwd. Using sourceCwd here
+  // made mutation detection a no-op for exactly the modes that need it.
+  //
+  // For mutation detection to observe anything, childCwd must be a git
+  // working tree. Under containment=none (rescue), childCwd === sourceCwd
+  // which is already the user's repo — no setup needed. Under
+  // containment=worktree, populateScope may have produced either a real
+  // git worktree (scope=head uses `git worktree add`) or a plain tree of
+  // copied files (scope=working-tree|staged|branch-diff|custom). For the
+  // plain-tree cases we `git init` + commit a baseline so the pre/post
+  // status diff surfaces Claude's writes. Minimum-viable init: no commit
+  // is needed if we use `git status -s --untracked-files=all` which reports
+  // all unstaged/untracked changes — after init the current contents are
+  // "untracked" in the baseline, so we compare post-run untracked set
+  // against pre-run instead (the existing diff logic already does this via
+  // `!beforeLines.has(l)`).
   const checkMutations = profile.permission_mode === "plan";
   let gitStatusBefore = null;
   if (checkMutations) {
-    gitStatusBefore = tryGit(["status", "-s", "--untracked-files=all"], cwd);
+    // Ensure childCwd is a git repo so tryGit returns a meaningful diff.
+    // If it already is (scope=head), git init is a no-op ("Reinitialized
+    // existing Git repository"). If it's not (other scopes), we init.
+    const insideGit = tryGit(["rev-parse", "--is-inside-work-tree"], childCwd).trim();
+    if (insideGit !== "true") {
+      try {
+        execFileSync("git", ["-C", childCwd, "init", "-q", "-b", "main"], {
+          encoding: "utf8",
+          stdio: ["ignore", "pipe", "ignore"],
+          env: cleanGitEnv(),
+        });
+      } catch { /* best-effort — mutation detection will simply report "" */ }
+    }
+    gitStatusBefore = tryGit(["status", "-s", "--untracked-files=all"], childCwd);
     if (gitStatusBefore || gitStatusBefore === "") {
       writeSidecar(workspaceRoot, jobId, "git-status-before.txt", gitStatusBefore);
     }
@@ -369,9 +401,10 @@ async function executeRun(invocation, prompt, { foreground }) {
   }
 
   // Post-snapshot for mutation detection.
+  // T7.7 C2 / B2: matched pair with the pre-snapshot — runs against childCwd.
   let mutations = [];
   if (checkMutations && gitStatusBefore !== null) {
-    const gitStatusAfter = tryGit(["status", "-s", "--untracked-files=all"], cwd);
+    const gitStatusAfter = tryGit(["status", "-s", "--untracked-files=all"], childCwd);
     writeSidecar(workspaceRoot, jobId, "git-status-after.txt", gitStatusAfter);
     if (gitStatusAfter && gitStatusAfter !== gitStatusBefore) {
       const beforeLines = new Set(
@@ -386,11 +419,17 @@ async function executeRun(invocation, prompt, { foreground }) {
   // ONE buildJobRecord call — spec §21.3.2 convergence. Foreground prints
   // what we persist; cmdResult reads the same file; skill renders the same
   // schema. No hand-assembly anywhere.
+  //
+  // §21.1 (T7.7 C1 / B1): `claude_session_id` is ONLY what Claude echoed back
+  // in its JSON — never resumeId, never jobId. If Claude's stdout was
+  // unparseable, `execution.claudeSessionId` is null and we persist null.
+  // The legacy `?? resumeId ?? jobId` fallback silently conflated three
+  // distinct identity types; buildJobRecord now asserts this invariant.
   const finalRecord = buildJobRecord(invocation, {
     exitCode: execution.exitCode,
     parsed: execution.parsed,
     pidInfo: execution.pidInfo,
-    claudeSessionId: execution.claudeSessionId ?? resumeId ?? jobId,
+    claudeSessionId: execution.claudeSessionId ?? null,
   }, mutations);
   writeJobFile(workspaceRoot, jobId, finalRecord);
   upsertJob(workspaceRoot, finalRecord);
@@ -449,26 +488,121 @@ async function cmdRunWorker(rest) {
   }
 
   const invocation = invocationFromRecord(meta);
+
+  // T7.7 C3 / B3: the background worker MUST write an intermediate
+  // `status: "running"` record BEFORE executeRun() so cmdCancel can
+  // distinguish a live worker from a terminal one. Pre-T7.7 the
+  // running state was never persisted, which meant cmdCancel always
+  // returned `already_terminal` (the queued state short-circuited
+  // the `status !== "running"` gate). pid_info is captured against
+  // the WORKER'S own pid — that's the process cmdCancel will signal
+  // via verifyPidInfo tuple matching.
+  //
+  // We build the running record by re-running classifyExecution with a
+  // synthesized "running-marker" execution tuple. This keeps the single-
+  // builder invariant (§21.3.2) intact — every record flows through
+  // buildJobRecord. The `running` status is an extension to the
+  // classifyExecution return set; see job-record.mjs.
+  let workerPidInfo;
+  try {
+    workerPidInfo = capturePidInfo(process.pid);
+  } catch (e) {
+    workerPidInfo = { pid: process.pid, starttime: null, argv0: null, capture_error: e.message };
+  }
+  const runningRecord = buildJobRecord(invocation, {
+    exitCode: null,
+    parsed: null,
+    pidInfo: workerPidInfo,
+    claudeSessionId: null,
+    // Marker so classifyExecution emits status=running. See job-record.mjs.
+    runningMarker: true,
+  }, []);
+  writeJobFile(workspaceRoot, options.job, runningRecord);
+  upsertJob(workspaceRoot, runningRecord);
+
+  // T7.7 C3 / B3: handle SIGTERM from cmdCancel. executeRun is awaiting the
+  // spawned claude child; the default Node handler would terminate the
+  // worker abruptly without writing a terminal record. Instead, we install
+  // a one-shot handler that writes a cancelled terminal meta and exits.
+  // This runs BEFORE executeRun's normal finalRecord write if the signal
+  // arrives mid-flight; otherwise executeRun's write wins on natural exit.
+  let cancelled = false;
+  process.on("SIGTERM", () => {
+    if (cancelled) return;
+    cancelled = true;
+    const cancelRecord = buildJobRecord(invocation, {
+      exitCode: null,
+      signal: "SIGTERM",
+      parsed: null,
+      pidInfo: workerPidInfo,
+      claudeSessionId: null,
+    }, []);
+    try {
+      writeJobFile(workspaceRoot, options.job, cancelRecord);
+      upsertJob(workspaceRoot, cancelRecord);
+    } catch { /* best-effort — if we can't write, we still must exit */ }
+    process.exit(143); // 128 + SIGTERM(15)
+  });
+
   await executeRun(invocation, prompt, { foreground: false });
 }
 
 // ——— subcommand: continue (resume a prior session with --resume) ———
 async function cmdContinue(rest) {
   const { options, positionals } = parseArgs(rest, {
-    valueOptions: ["job", "cwd", "model", "binary"],
+    // T7.7 C2 / B4: `--cwd` is accepted by the parser so we can emit a helpful
+    // error, then rejected downstream. `--override-cwd` is the sanctioned
+    // escape hatch when the caller genuinely wants to resume against a
+    // different directory.
+    valueOptions: ["job", "cwd", "override-cwd", "model", "binary"],
     booleanOptions: ["background", "foreground"],
   });
   if (!options.job) fail("bad_args", "--job <id> is required");
-  const cwd = options.cwd ?? process.cwd();
-  const workspaceRoot = resolveWorkspaceRoot(cwd);
-  let prior;
-  try {
-    const jobFile = resolveJobFile(workspaceRoot, options.job);
-    if (!existsSync(jobFile)) fail("not_found", `no meta.json for job ${options.job}`);
-    prior = JSON.parse(_readFileSync(jobFile, "utf8"));
-  } catch (e) {
-    fail("bad_args", e.message);
+
+  // T7.7 C2 / B4: `--cwd` is disallowed on continue — Claude's session memory
+  // is anchored to the ORIGINAL cwd, and silently re-anchoring breaks
+  // context. Point the caller to the explicit escape hatch.
+  if (options.cwd !== undefined) {
+    fail("bad_args",
+      "--cwd not allowed on continue; use --override-cwd <path> to resume " +
+      "against a different directory");
   }
+
+  // T7.7 C2 / B4: we don't know the prior job's workspace yet (that's what
+  // we're reading FROM the meta). findJobMetaAnywhere scans every state dir
+  // under the plugin-data root and returns the first match. Falls back to
+  // the current-cwd workspace lookup for the legacy path.
+  let prior;
+  const foundMeta = findJobMetaAnywhere(options.job);
+  if (foundMeta) {
+    try {
+      prior = JSON.parse(_readFileSync(foundMeta, "utf8"));
+    } catch (e) {
+      fail("bad_args", `prior job meta unreadable: ${e.message}`);
+    }
+  } else {
+    // Fallback: current-cwd workspace (covers the case where the job is in
+    // the same workspace as the caller's cwd).
+    const workspaceForLookup = resolveWorkspaceRoot(
+      options["override-cwd"] ?? process.cwd()
+    );
+    try {
+      const jobFile = resolveJobFile(workspaceForLookup, options.job);
+      if (!existsSync(jobFile)) fail("not_found", `no meta.json for job ${options.job}`);
+      prior = JSON.parse(_readFileSync(jobFile, "utf8"));
+    } catch (e) {
+      fail("bad_args", e.message);
+    }
+  }
+
+  // T7.7 C2 / B4: default to prior.cwd; --override-cwd wins when set.
+  // NEVER fall back to process.cwd() — that's the bug being fixed.
+  const cwd = options["override-cwd"] ?? prior.cwd;
+  if (!cwd) {
+    fail("bad_state",
+      `prior job ${options.job} has no cwd on record; cannot resume without --override-cwd`);
+  }
+  const workspaceRoot = resolveWorkspaceRoot(cwd);
   const prompt = positionals.join(" ").trim();
   if (!prompt) fail("bad_args", "prompt is required (pass after -- separator)");
   // §21.1: read the PRIOR `claude_session_id`. Legacy `session_id` fallback
@@ -620,7 +754,12 @@ async function cmdStatus(rest) {
     printJson(match);
     return;
   }
-  const filtered = options.all ? jobs : jobs.filter((j) => j.status === "running" || j.status === "completed" || j.status === "failed");
+  // T7.7 C3 / B3: include cancelled + timeout in the default view — they
+  // are real terminal states now that the worker writes intermediate
+  // running records and classifyExecution maps signals.
+  const filtered = options.all ? jobs : jobs.filter((j) =>
+    j.status === "running" || j.status === "completed" || j.status === "failed" ||
+    j.status === "cancelled" || j.status === "timeout");
   printJson({ workspace_root: workspaceRoot, jobs: filtered });
 }
 
