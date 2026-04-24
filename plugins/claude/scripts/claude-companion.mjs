@@ -26,6 +26,7 @@ import { configureState, getStateConfig, resolveJobsDir, resolveJobFile, writeJo
 import { configureTrackedJobs } from "./lib/tracked-jobs.mjs";
 import { resolveWorkspaceRoot } from "./lib/workspace.mjs";
 import { spawnClaude } from "./lib/claude.mjs";
+import { resolveProfile, resolveModelForProfile } from "./lib/mode-profiles.mjs";
 import { readFileSync as _readFileSync } from "node:fs";
 
 // ——— plugin-root self-resolution (upstream pattern, spec §4.14) ———
@@ -132,8 +133,16 @@ async function cmdRun(rest) {
   if (options.background && options.foreground) {
     fail("bad_args", "--background and --foreground are mutually exclusive");
   }
-  const models = loadModels();
-  const model = options.model ?? models[mode === "rescue" ? "default" : "default"] ?? null;
+
+  // Mode → profile, resolved EXACTLY ONCE at entry (spec §21.2). No downstream
+  // code branches on `mode` to pick a flag — everything flows from `profile`.
+  const profile = resolveProfile(mode);
+
+  // Model resolution goes through the profile's tier — the historical
+  // ternary that branched on mode but returned "default" on both sides
+  // (silent Opus billing, Claude-review finding C2) is gone. `--model`
+  // override still wins.
+  const model = options.model ?? resolveModelForProfile(profile, loadModels()) ?? null;
   if (!model) {
     fail("no_model", "no model resolved; pass --model or populate config/models.json");
   }
@@ -141,9 +150,9 @@ async function cmdRun(rest) {
   const cwd = options.cwd ?? process.cwd();
   const workspaceRoot = resolveWorkspaceRoot(cwd);
   const isolated = Boolean(options.isolated);
-  // Spec §10: --dispose default-ON for review paths, off for rescue.
-  const disposeDefault = mode !== "rescue";
-  const dispose = options["no-dispose"] ? false : (options.dispose ?? disposeDefault);
+  // Dispose default lives in the profile (§21.2 field `dispose_default`).
+  // `--no-dispose` overrides to false; explicit `--dispose` wins otherwise.
+  const dispose = options["no-dispose"] ? false : (options.dispose ?? profile.dispose_default);
 
   const prompt = positionals.join(" ").trim();
   if (!prompt) {
@@ -154,10 +163,14 @@ async function cmdRun(rest) {
   const startedAt = new Date().toISOString();
 
   // Provisional record — marks status=running so parallel `status` can see it.
+  // NOTE: we persist `mode` (the profile NAME), not the resolved profile object
+  // itself. executeRun / cmdContinue re-resolves at execution time so spec
+  // changes to the profile table propagate to in-flight jobs on reread.
   const baseRecord = {
     id: sessionId,
     target: "claude",
     mode,
+    mode_profile_name: profile.name,
     status: options.background ? "queued" : "running",
     pid: process.pid,
     startedAt,
@@ -215,6 +228,10 @@ async function cmdRun(rest) {
 async function executeRun(baseRecord, { foreground }) {
   const { id: sessionId, mode, model, cwd, workspaceRoot, isolated, prompt, disposed } = baseRecord;
 
+  // Re-resolve the profile from the persisted mode NAME (spec §21.2 — the
+  // table is the single source of truth; we don't clone it onto records).
+  const profile = resolveProfile(baseRecord.mode_profile_name ?? mode);
+
   // Isolation: spin up a detached git worktree off HEAD so the review sees a
   // pristine copy, not the live working tree.
   let worktree = null;
@@ -233,9 +250,13 @@ async function executeRun(baseRecord, { foreground }) {
   const childCwd = worktree ? worktree.path : cwd;
   const addDir = worktree ? worktree.path : cwd;
 
-  // Pre-snapshot for review paths (§10 post-hoc detection).
+  // Pre-snapshot for review-style paths (§10 post-hoc mutation detection).
+  // Profile-driven: plan-mode paths are supposed to be read-only, so we
+  // snapshot before/after and warn on drift. Rescue (acceptEdits) intentionally
+  // writes, so no snapshot.
+  const checkMutations = profile.permission_mode === "plan";
   let gitStatusBefore = null;
-  if (mode !== "rescue") {
+  if (checkMutations) {
     gitStatusBefore = tryGit(["status", "-s", "--untracked-files=all"], cwd);
     if (gitStatusBefore || gitStatusBefore === "") {
       writeSidecar(workspaceRoot, sessionId, "git-status-before.txt", gitStatusBefore);
@@ -244,12 +265,11 @@ async function executeRun(baseRecord, { foreground }) {
 
   let execution;
   try {
-    execution = await spawnClaude({
-      mode,
+    execution = await spawnClaude(profile, {
       model,
       promptText: prompt,
       sessionId,
-      addDir,
+      addDirPath: addDir,
       cwd: childCwd,
       binary: baseRecord.binary,
       jsonSchema: baseRecord.schema ?? null,
@@ -269,7 +289,7 @@ async function executeRun(baseRecord, { foreground }) {
   // Post-snapshot for mutation detection.
   let gitStatusAfter = null;
   let mutations = [];
-  if (mode !== "rescue" && gitStatusBefore !== null) {
+  if (checkMutations && gitStatusBefore !== null) {
     gitStatusAfter = tryGit(["status", "-s", "--untracked-files=all"], cwd);
     writeSidecar(workspaceRoot, sessionId, "git-status-after.txt", gitStatusAfter);
     if (gitStatusAfter && gitStatusAfter !== gitStatusBefore) {
@@ -376,10 +396,16 @@ async function cmdContinue(rest) {
   if (!resumeId) fail("bad_args", `prior job ${options.job} has no session_id to resume`);
   const newSessionId = randomUUID();
   const model = options.model ?? prior.model;
+  // Re-resolve the profile from the prior job's mode name, not from a
+  // persisted profile blob. This keeps behavior fresh against spec changes
+  // in the profile table — see §21.2.
+  const priorModeName = prior.mode_profile_name ?? prior.mode;
+  const priorProfile = resolveProfile(priorModeName);
   const baseRecord = {
     id: newSessionId,
     target: "claude",
-    mode: prior.mode,
+    mode: priorModeName,
+    mode_profile_name: priorProfile.name,
     status: options.background ? "queued" : "running",
     pid: process.pid,
     startedAt: new Date().toISOString(),
@@ -435,20 +461,18 @@ async function cmdPing(rest) {
     valueOptions: ["model", "binary", "timeout-ms"],
     booleanOptions: [],
   });
-  const models = loadModels();
-  const model = options.model ?? models.cheap;
+  const profile = resolveProfile("ping");
+  const model = options.model ?? resolveModelForProfile(profile, loadModels());
   if (!model) fail("no_model", "no model resolved for ping; pass --model or populate config/models.json");
   const binary = options.binary ?? process.env.CLAUDE_BINARY ?? "claude";
   const timeoutMs = Number(options["timeout-ms"] ?? 15000);
   const sessionId = randomUUID();
   let execution;
   try {
-    execution = await spawnClaude({
-      mode: "rescue",            // lightest flag stack; we only care that auth works
+    execution = await spawnClaude(profile, {
       model,
       promptText: "reply with exactly: pong",
       sessionId,
-      stripContext: true,
       cwd: process.cwd(),
       binary,
       timeoutMs,

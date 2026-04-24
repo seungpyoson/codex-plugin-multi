@@ -6,12 +6,12 @@ import {
   parseClaudeResult,
   _internal,
 } from "../../plugins/claude/scripts/lib/claude.mjs";
+import { resolveProfile } from "../../plugins/claude/scripts/lib/mode-profiles.mjs";
 
 const UUID = "550e8400-e29b-41d4-a716-446655440000";
 
 test("buildClaudeArgs: review mode passes --disallowedTools + plan + setting-sources", () => {
-  const args = buildClaudeArgs({
-    mode: "review",
+  const args = buildClaudeArgs(resolveProfile("review"), {
     model: "claude-haiku-4-5-20251001",
     promptText: "hi",
     sessionId: UUID,
@@ -28,8 +28,7 @@ test("buildClaudeArgs: review mode passes --disallowedTools + plan + setting-sou
 });
 
 test("buildClaudeArgs: rescue mode uses acceptEdits, no disallowedTools", () => {
-  const args = buildClaudeArgs({
-    mode: "rescue",
+  const args = buildClaudeArgs(resolveProfile("rescue"), {
     model: "claude-opus-4-7",
     promptText: "fix it",
     sessionId: UUID,
@@ -39,8 +38,7 @@ test("buildClaudeArgs: rescue mode uses acceptEdits, no disallowedTools", () => 
 });
 
 test("buildClaudeArgs: adversarial-review mirrors review", () => {
-  const args = buildClaudeArgs({
-    mode: "adversarial-review",
+  const args = buildClaudeArgs(resolveProfile("adversarial-review"), {
     model: "claude-sonnet-4-6",
     promptText: "challenge",
     sessionId: UUID,
@@ -51,8 +49,8 @@ test("buildClaudeArgs: adversarial-review mirrors review", () => {
 
 test("buildClaudeArgs: --json-schema passed for review when supplied", () => {
   const schema = '{"type":"object"}';
-  const args = buildClaudeArgs({
-    mode: "review", model: "claude-haiku-4-5-20251001", promptText: "x",
+  const args = buildClaudeArgs(resolveProfile("review"), {
+    model: "claude-haiku-4-5-20251001", promptText: "x",
     sessionId: UUID, jsonSchema: schema,
   });
   assert.ok(args.includes("--json-schema"));
@@ -60,25 +58,25 @@ test("buildClaudeArgs: --json-schema passed for review when supplied", () => {
 });
 
 test("buildClaudeArgs: --add-dir scoped to provided path", () => {
-  const args = buildClaudeArgs({
-    mode: "review", model: "claude-haiku-4-5-20251001", promptText: "x",
-    sessionId: UUID, addDir: "/tmp/some/dir",
+  const args = buildClaudeArgs(resolveProfile("review"), {
+    model: "claude-haiku-4-5-20251001", promptText: "x",
+    sessionId: UUID, addDirPath: "/tmp/some/dir",
   });
   assert.equal(args[args.indexOf("--add-dir") + 1], "/tmp/some/dir");
 });
 
-test("buildClaudeArgs: stripContext=false omits --setting-sources", () => {
-  const args = buildClaudeArgs({
-    mode: "rescue", model: "claude-opus-4-7", promptText: "hi",
-    sessionId: UUID, stripContext: false,
+test("buildClaudeArgs: rescue profile omits --setting-sources (strip_context=false lives in the profile)", () => {
+  const args = buildClaudeArgs(resolveProfile("rescue"), {
+    model: "claude-opus-4-7", promptText: "hi",
+    sessionId: UUID,
   });
   assert.ok(!args.includes("--setting-sources"));
 });
 
 test("buildClaudeArgs: rejects non-UUIDv4 session IDs", () => {
   assert.throws(
-    () => buildClaudeArgs({
-      mode: "review", model: "claude-haiku-4-5-20251001",
+    () => buildClaudeArgs(resolveProfile("review"), {
+      model: "claude-haiku-4-5-20251001",
       promptText: "x", sessionId: "not-a-uuid",
     }),
     /UUID v4/
@@ -86,8 +84,8 @@ test("buildClaudeArgs: rejects non-UUIDv4 session IDs", () => {
 });
 
 test("buildClaudeArgs: resumeId emits --resume and omits --session-id", () => {
-  const args = buildClaudeArgs({
-    mode: "rescue", model: "claude-haiku-4-5-20251001",
+  const args = buildClaudeArgs(resolveProfile("rescue"), {
+    model: "claude-haiku-4-5-20251001",
     promptText: "continue work", sessionId: UUID,
     resumeId: "11111111-2222-4333-8444-555555555555",
   });
@@ -99,28 +97,25 @@ test("buildClaudeArgs: resumeId emits --resume and omits --session-id", () => {
 
 test("buildClaudeArgs: rejects non-UUIDv4 resumeId", () => {
   assert.throws(
-    () => buildClaudeArgs({
-      mode: "rescue", model: "claude-haiku-4-5-20251001",
+    () => buildClaudeArgs(resolveProfile("rescue"), {
+      model: "claude-haiku-4-5-20251001",
       promptText: "x", sessionId: UUID, resumeId: "not-a-uuid",
     }),
     /resumeId must be UUID v4/
   );
 });
 
-test("buildClaudeArgs: rejects unknown mode", () => {
+test("resolveProfile: rejects unknown mode", () => {
   assert.throws(
-    () => buildClaudeArgs({
-      mode: "chaos", model: "claude-haiku-4-5-20251001",
-      promptText: "x", sessionId: UUID,
-    }),
-    /unknown mode/
+    () => resolveProfile("chaos"),
+    /unknown mode|unknown profile/i,
   );
 });
 
 test("buildClaudeArgs: rejects empty prompt", () => {
   assert.throws(
-    () => buildClaudeArgs({
-      mode: "review", model: "claude-haiku-4-5-20251001",
+    () => buildClaudeArgs(resolveProfile("review"), {
+      model: "claude-haiku-4-5-20251001",
       promptText: "", sessionId: UUID,
     }),
     /promptText is required/
@@ -129,8 +124,8 @@ test("buildClaudeArgs: rejects empty prompt", () => {
 
 test("buildClaudeArgs: requires model (no alias fallback)", () => {
   assert.throws(
-    () => buildClaudeArgs({
-      mode: "review", model: "", promptText: "x", sessionId: UUID,
+    () => buildClaudeArgs(resolveProfile("review"), {
+      model: "", promptText: "x", sessionId: UUID,
     }),
     /model is required/
   );
