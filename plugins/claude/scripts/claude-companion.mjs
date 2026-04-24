@@ -21,7 +21,7 @@ import { writeFileSync, mkdirSync, existsSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 
 import { parseArgs } from "./lib/args.mjs";
-import { configureState, getStateConfig, resolveJobsDir, resolveJobFile, writeJobFile, upsertJob } from "./lib/state.mjs";
+import { configureState, getStateConfig, resolveJobsDir, resolveJobFile, writeJobFile, upsertJob, listJobs } from "./lib/state.mjs";
 import { configureTrackedJobs } from "./lib/tracked-jobs.mjs";
 import { resolveWorkspaceRoot } from "./lib/workspace.mjs";
 import { spawnClaude } from "./lib/claude.mjs";
@@ -219,6 +219,141 @@ async function cmdNotImplemented(name) {
   fail("not_implemented", `'${name}' lands in a later milestone; only 'run --foreground' is wired at M2`);
 }
 
+// ——— subcommand: ping (OAuth health probe per spec §7.5) ———
+async function cmdPing(rest) {
+  const { options } = parseArgs(rest, {
+    valueOptions: ["model", "binary", "timeout-ms"],
+    booleanOptions: [],
+  });
+  const models = loadModels();
+  const model = options.model ?? models.cheap;
+  if (!model) fail("no_model", "no model resolved for ping; pass --model or populate config/models.json");
+  const binary = options.binary ?? process.env.CLAUDE_BINARY ?? "claude";
+  const timeoutMs = Number(options["timeout-ms"] ?? 15000);
+  const sessionId = randomUUID();
+  let execution;
+  try {
+    execution = await spawnClaude({
+      mode: "rescue",            // lightest flag stack; we only care that auth works
+      model,
+      promptText: "reply with exactly: pong",
+      sessionId,
+      stripContext: true,
+      cwd: process.cwd(),
+      binary,
+      timeoutMs,
+    });
+  } catch (e) {
+    if (e.code === "ENOENT") {
+      printJson({ status: "not_found", detail: `claude binary not found on PATH (or CLAUDE_BINARY override)`,
+        install_url: "https://claude.com/claude-code" });
+      process.exit(2);
+    }
+    printJson({ status: "error", detail: e.message });
+    process.exit(2);
+  }
+  // Classify. Real Claude error texts change per version; match on signals only.
+  if (execution.parsed.ok && (execution.parsed.result || execution.parsed.structured)) {
+    printJson({ status: "ok", model, session_id: execution.sessionId,
+      cost_usd: execution.parsed.costUsd, usage: execution.parsed.usage });
+    process.exit(0);
+  }
+  if (execution.exitCode !== 0) {
+    const stderr = execution.stderr ?? "";
+    if (/rate limit|429|overloaded/i.test(stderr)) {
+      printJson({ status: "rate_limited", detail: stderr.trim().slice(0, 500) });
+      process.exit(2);
+    }
+    if (/auth|login|credential|oauth|unauthenticated/i.test(stderr)) {
+      printJson({ status: "not_authed", detail: stderr.trim().slice(0, 500),
+        hint: "Run `claude` interactively to complete OAuth. Do not set ANTHROPIC_API_KEY." });
+      process.exit(2);
+    }
+    printJson({ status: "error", exit_code: execution.exitCode, detail: stderr.trim().slice(0, 500) });
+    process.exit(2);
+  }
+  printJson({ status: "error", detail: "parsed result missing", raw: execution.parsed.raw });
+  process.exit(2);
+}
+
+// ——— subcommand: status (list running + recent jobs) ———
+async function cmdStatus(rest) {
+  const { options } = parseArgs(rest, {
+    valueOptions: ["job", "cwd"],
+    booleanOptions: ["all"],
+  });
+  const cwd = options.cwd ?? process.cwd();
+  const workspaceRoot = resolveWorkspaceRoot(cwd);
+  const jobs = listJobs(workspaceRoot);
+  if (options.job) {
+    const match = jobs.find((j) => j.id === options.job);
+    if (!match) fail("not_found", `no job with id ${options.job} in workspace ${workspaceRoot}`);
+    printJson(match);
+    return;
+  }
+  const filtered = options.all ? jobs : jobs.filter((j) => j.status === "running" || j.status === "completed" || j.status === "failed");
+  printJson({ workspace_root: workspaceRoot, jobs: filtered });
+}
+
+// ——— subcommand: result (render result of a finished job) ———
+async function cmdResult(rest) {
+  const { options } = parseArgs(rest, {
+    valueOptions: ["job", "cwd"],
+    booleanOptions: [],
+  });
+  if (!options.job) fail("bad_args", "--job <id> is required");
+  const cwd = options.cwd ?? process.cwd();
+  const workspaceRoot = resolveWorkspaceRoot(cwd);
+  // Validate jobId before resolving to file path (belt + suspenders;
+  // resolveJobFile asserts too).
+  let jobFile;
+  try {
+    jobFile = resolveJobFile(workspaceRoot, options.job);
+  } catch (e) {
+    fail("bad_args", e.message);
+  }
+  if (!existsSync(jobFile)) fail("not_found", `no meta.json for job ${options.job}`);
+  const meta = JSON.parse(_readFileSync(jobFile, "utf8"));
+  printJson(meta);
+}
+
+// ——— subcommand: cancel (signal a running job) ———
+async function cmdCancel(rest) {
+  const { options } = parseArgs(rest, {
+    valueOptions: ["job", "cwd"],
+    booleanOptions: ["force"],
+  });
+  if (!options.job) fail("bad_args", "--job <id> is required");
+  const cwd = options.cwd ?? process.cwd();
+  const workspaceRoot = resolveWorkspaceRoot(cwd);
+  const jobs = listJobs(workspaceRoot);
+  const job = jobs.find((j) => j.id === options.job);
+  if (!job) fail("not_found", `no job with id ${options.job}`);
+  if (job.status !== "running") {
+    printJson({ ok: true, status: "already_terminal", job_status: job.status, job_id: options.job });
+    return;
+  }
+  if (!job.pid) {
+    printJson({ ok: false, status: "no_pid", detail: "job record has no pid; cannot signal" });
+    return;
+  }
+  // PID-liveness check (upstream pattern — guard against PID reuse).
+  try {
+    // 0 means "check, don't signal"
+    process.kill(job.pid, 0);
+  } catch {
+    printJson({ ok: true, status: "already_dead", job_id: options.job, pid: job.pid });
+    return;
+  }
+  const signal = options.force ? "SIGKILL" : "SIGTERM";
+  try {
+    process.kill(job.pid, signal);
+  } catch (e) {
+    fail("signal_failed", e.message, { pid: job.pid, signal });
+  }
+  printJson({ ok: true, status: "signaled", signal, job_id: options.job, pid: job.pid });
+}
+
 // ——— dispatch ———
 async function main() {
   const argv = process.argv.slice(2);
@@ -226,11 +361,11 @@ async function main() {
   const rest = argv.slice(1);
   switch (sub) {
     case "run":     return cmdRun(rest);
-    case "status":
-    case "result":
-    case "cancel":
+    case "ping":    return cmdPing(rest);
+    case "status":  return cmdStatus(rest);
+    case "result":  return cmdResult(rest);
+    case "cancel":  return cmdCancel(rest);
     case "continue":
-    case "ping":
     case "doctor":
       return cmdNotImplemented(sub);
     case "--help":

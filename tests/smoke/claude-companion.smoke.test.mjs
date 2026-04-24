@@ -169,9 +169,9 @@ test("run: pre/post git-status sidecars written in a git cwd", () => {
   }
 });
 
-test("status/result/cancel: return not_implemented at M2", () => {
+test("continue/doctor: return not_implemented (pre-M4/M10)", () => {
   const cwd = mkdtempSync(path.join(tmpdir(), "smoke-cwd-"));
-  for (const sub of ["status", "result", "cancel", "continue", "ping", "doctor"]) {
+  for (const sub of ["continue", "doctor"]) {
     const { stderr, status, dataDir } = runCompanion([sub], { cwd });
     try {
       assert.notEqual(status, 0, `${sub} should exit non-zero`);
@@ -181,4 +181,145 @@ test("status/result/cancel: return not_implemented at M2", () => {
     }
   }
   rmSync(cwd, { recursive: true, force: true });
+});
+
+test("ping: returns status=ok with the mock claude binary", () => {
+  const { stdout, status, dataDir } = runCompanion(
+    ["ping", "--model", "claude-haiku-4-5-20251001"],
+    { cwd: tmpdir() }
+  );
+  try {
+    assert.equal(status, 0, `ping exit ${status}`);
+    const result = JSON.parse(stdout);
+    assert.equal(result.status, "ok");
+    assert.equal(result.model, "claude-haiku-4-5-20251001");
+    assert.ok(result.session_id);
+  } finally {
+    cleanup(dataDir);
+  }
+});
+
+test("status: empty workspace returns empty jobs list", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "smoke-status-"));
+  const { stdout, status, dataDir } = runCompanion(["status", "--cwd", cwd], { cwd });
+  try {
+    assert.equal(status, 0);
+    const result = JSON.parse(stdout);
+    assert.equal(result.jobs.length, 0);
+    assert.ok(result.workspace_root);
+  } finally {
+    cleanup(dataDir);
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("status: lists a job after a review run", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "smoke-status2-"));
+  const dataDir = mkdtempSync(path.join(tmpdir(), "status2-data-"));
+  try {
+    // Run a review to seed a job.
+    const runRes = spawnSync("node", [
+      path.join(REPO_ROOT, "plugins/claude/scripts/claude-companion.mjs"),
+      "run", "--mode=review", "--foreground",
+      "--model", "claude-haiku-4-5-20251001",
+      "--cwd", cwd, "--", "seed",
+    ], {
+      cwd, encoding: "utf8",
+      env: { ...process.env, CLAUDE_BINARY: MOCK, CLAUDE_PLUGIN_DATA: dataDir },
+    });
+    assert.equal(runRes.status, 0, runRes.stderr);
+    const { job_id } = JSON.parse(runRes.stdout);
+    // Status should list it.
+    const statusRes = spawnSync("node", [
+      path.join(REPO_ROOT, "plugins/claude/scripts/claude-companion.mjs"),
+      "status", "--cwd", cwd,
+    ], {
+      cwd, encoding: "utf8",
+      env: { ...process.env, CLAUDE_PLUGIN_DATA: dataDir },
+    });
+    assert.equal(statusRes.status, 0, statusRes.stderr);
+    const statusObj = JSON.parse(statusRes.stdout);
+    const match = statusObj.jobs.find((j) => j.id === job_id);
+    assert.ok(match, `job ${job_id} not in status output`);
+    assert.equal(match.status, "completed");
+  } finally {
+    rmSync(dataDir, { recursive: true, force: true });
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("result --job: returns meta for a finished job", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "smoke-result-"));
+  const dataDir = mkdtempSync(path.join(tmpdir(), "result-data-"));
+  try {
+    const runRes = spawnSync("node", [
+      path.join(REPO_ROOT, "plugins/claude/scripts/claude-companion.mjs"),
+      "run", "--mode=review", "--foreground",
+      "--model", "claude-haiku-4-5-20251001",
+      "--cwd", cwd, "--", "seed",
+    ], {
+      cwd, encoding: "utf8",
+      env: { ...process.env, CLAUDE_BINARY: MOCK, CLAUDE_PLUGIN_DATA: dataDir },
+    });
+    const { job_id } = JSON.parse(runRes.stdout);
+    const resultRes = spawnSync("node", [
+      path.join(REPO_ROOT, "plugins/claude/scripts/claude-companion.mjs"),
+      "result", "--job", job_id, "--cwd", cwd,
+    ], {
+      cwd, encoding: "utf8",
+      env: { ...process.env, CLAUDE_PLUGIN_DATA: dataDir },
+    });
+    assert.equal(resultRes.status, 0, resultRes.stderr);
+    const meta = JSON.parse(resultRes.stdout);
+    assert.equal(meta.id, job_id);
+    assert.equal(meta.status, "completed");
+  } finally {
+    rmSync(dataDir, { recursive: true, force: true });
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("result --job with unknown id: returns not_found", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "smoke-result404-"));
+  const { stderr, status, dataDir } = runCompanion(
+    ["result", "--job", "00000000-0000-4000-8000-000000000000", "--cwd", cwd],
+    { cwd }
+  );
+  try {
+    assert.notEqual(status, 0);
+    assert.match(stderr, /no meta.json/);
+  } finally {
+    cleanup(dataDir);
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("cancel: already_terminal for a completed job", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "smoke-cancel-"));
+  const dataDir = mkdtempSync(path.join(tmpdir(), "cancel-data-"));
+  try {
+    const runRes = spawnSync("node", [
+      path.join(REPO_ROOT, "plugins/claude/scripts/claude-companion.mjs"),
+      "run", "--mode=review", "--foreground",
+      "--model", "claude-haiku-4-5-20251001",
+      "--cwd", cwd, "--", "seed",
+    ], {
+      cwd, encoding: "utf8",
+      env: { ...process.env, CLAUDE_BINARY: MOCK, CLAUDE_PLUGIN_DATA: dataDir },
+    });
+    const { job_id } = JSON.parse(runRes.stdout);
+    const cancelRes = spawnSync("node", [
+      path.join(REPO_ROOT, "plugins/claude/scripts/claude-companion.mjs"),
+      "cancel", "--job", job_id, "--cwd", cwd,
+    ], {
+      cwd, encoding: "utf8",
+      env: { ...process.env, CLAUDE_PLUGIN_DATA: dataDir },
+    });
+    assert.equal(cancelRes.status, 0);
+    const response = JSON.parse(cancelRes.stdout);
+    assert.equal(response.status, "already_terminal");
+  } finally {
+    rmSync(dataDir, { recursive: true, force: true });
+    rmSync(cwd, { recursive: true, force: true });
+  }
 });
