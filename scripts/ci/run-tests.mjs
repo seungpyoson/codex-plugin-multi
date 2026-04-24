@@ -8,7 +8,12 @@ import { resolve, dirname, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
-const TESTS_DIR = resolve(REPO_ROOT, "tests/unit");
+// Walks tests/unit AND tests/smoke. Smoke tests can be skipped by pointing
+// CODEX_PLUGIN_SKIP_SMOKE=1 (CI sets this when a smoke fixture is missing).
+const TEST_DIRS = [
+  resolve(REPO_ROOT, "tests/unit"),
+  ...(process.env.CODEX_PLUGIN_SKIP_SMOKE ? [] : [resolve(REPO_ROOT, "tests/smoke")]),
+];
 
 // Directories never walked — avoid picking up fixture deps or generated trees.
 const SKIP_DIRS = new Set(["node_modules", "fixtures", ".git", "coverage"]);
@@ -31,9 +36,10 @@ async function walk(dir) {
   return out;
 }
 
-const files = await walk(TESTS_DIR);
+const files = [];
+for (const dir of TEST_DIRS) files.push(...await walk(dir));
 if (files.length === 0) {
-  process.stdout.write("(no tests/unit/**/*.test.mjs yet — skipping.)\n");
+  process.stdout.write("(no test files yet — skipping.)\n");
   process.exit(0);
 }
 
