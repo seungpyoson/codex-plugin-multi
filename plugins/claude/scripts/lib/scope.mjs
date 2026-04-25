@@ -17,7 +17,7 @@
 //   "custom"       — caller-supplied globs via runtimeInputs.scopePaths.
 //
 // When containment=none, the targetPath IS sourceCwd and populateScope is a
-// no-op. The caller (claude-companion.executeRun) always calls
+// no-op. The caller always calls
 // setupContainment first and populateScope second; this module trusts that
 // order.
 //
@@ -30,11 +30,12 @@ import { execFileSync } from "node:child_process";
 import {
   mkdirSync, copyFileSync, writeFileSync,
   statSync, lstatSync, realpathSync, readlinkSync, unlinkSync,
-  readdirSync,
+  readdirSync, openSync, closeSync,
 } from "node:fs";
 import path from "node:path";
 
 const VALID_SCOPES = new Set(["working-tree", "staged", "branch-diff", "head", "custom"]);
+const MAX_GIT_SYMLINK_HOPS = 40;
 
 function cleanGitEnv() {
   const env = { ...process.env };
@@ -56,6 +57,7 @@ function git(sourceCwd, args, opts = {}) {
 
 function gitBuffer(sourceCwd, args, opts = {}) {
   return execFileSync("git", ["-C", sourceCwd, ...args], {
+    encoding: null,
     stdio: ["ignore", "pipe", opts.stderrInherit ? "inherit" : "pipe"],
     env: cleanGitEnv(),
     maxBuffer: 1024 * 1024 * 64,
@@ -74,13 +76,20 @@ function assertGitWorktree(sourceCwd) {
 }
 
 function isInsidePath(root, candidate) {
-  return candidate === root || candidate.startsWith(root + path.sep);
+  const rel = path.relative(root, candidate);
+  return rel === "" || (!rel.startsWith("..") && !path.isAbsolute(rel));
 }
 
 function unsafeSymlink(rel, reason) {
   throw new Error(`unsafe_symlink: ${rel} ${reason}`);
 }
 
+function scopePopulationFailed(message) {
+  throw new Error(`scope_population_failed: ${message}`);
+}
+
+// Resolve absolute symlink targets through the existing filesystem prefix so
+// sourceCwd may itself be a symlink while the final leaf is snapshot-backed.
 function realpathExistingPrefix(candidate) {
   const suffix = [];
   let current = candidate;
@@ -161,52 +170,92 @@ function indexBlob(sourceCwd, rel) {
   return gitBuffer(sourceCwd, ["show", `:${rel}`]);
 }
 
-function writeHeadBlob(sourceCwd, targetPath, rel) {
-  const dst = path.join(targetPath, rel);
+function writeGitBlobToFile(sourceCwd, objectSpec, dst) {
   mkdirSync(path.dirname(dst), { recursive: true });
-  writeFileSync(dst, headBlob(sourceCwd, rel));
+  const fd = openSync(dst, "w");
+  try {
+    execFileSync("git", ["-C", sourceCwd, "show", objectSpec], {
+      stdio: ["ignore", fd, "pipe"],
+      env: cleanGitEnv(),
+    });
+  } catch (err) {
+    try { unlinkSync(dst); } catch { /* absent or already cleaned */ }
+    scopePopulationFailed(`cannot copy git blob ${objectSpec}: ${err.message}`);
+  } finally {
+    closeSync(fd);
+  }
 }
 
-function resolveGitSnapshotSymlinkTarget(sourceCwd, rel, linkTarget, sourceRoot, entryMode, snapshotName) {
-  const baseDir = path.join(sourceRoot, ...path.posix.dirname(rel).split("/").filter(Boolean));
-  const targetAbs = path.isAbsolute(linkTarget)
-    ? realpathExistingPrefix(linkTarget)
-    : path.resolve(baseDir, linkTarget);
-  if (!isInsidePath(sourceRoot, targetAbs)) {
-    unsafeSymlink(rel, "resolves outside source root");
+function writeHeadBlobToPath(sourceCwd, rel, dst) {
+  writeGitBlobToFile(sourceCwd, `HEAD:${rel}`, dst);
+}
+
+function writeIndexBlobToPath(sourceCwd, rel, dst) {
+  writeGitBlobToFile(sourceCwd, `:${rel}`, dst);
+}
+
+function writeHeadBlob(sourceCwd, targetPath, rel) {
+  writeHeadBlobToPath(sourceCwd, rel, path.join(targetPath, rel));
+}
+
+function resolveGitSnapshotSymlinkTarget(sourceCwd, rel, linkTarget, sourceRoot, entryMode, blob, snapshotName) {
+  let currentRel = rel;
+  let currentTarget = linkTarget;
+  const visited = new Set();
+  for (let hops = 0; hops < MAX_GIT_SYMLINK_HOPS; hops++) {
+    if (visited.has(currentRel)) {
+      unsafeSymlink(rel, `cycle in ${snapshotName}`);
+    }
+    visited.add(currentRel);
+    const baseDir = path.join(sourceRoot, ...path.posix.dirname(currentRel).split("/").filter(Boolean));
+    const targetAbs = path.isAbsolute(currentTarget)
+      ? realpathExistingPrefix(currentTarget)
+      : path.resolve(baseDir, currentTarget);
+    if (!isInsidePath(sourceRoot, targetAbs)) {
+      unsafeSymlink(rel, "resolves outside source root");
+    }
+    const targetRel = path.relative(sourceRoot, targetAbs).split(path.sep).join("/");
+    if (targetRel === "") {
+      unsafeSymlink(rel, `does not resolve to a regular file in ${snapshotName}`);
+    }
+    const targetMode = entryMode(sourceCwd, targetRel);
+    if (targetMode === null) {
+      unsafeSymlink(rel, `is dangling in ${snapshotName}`);
+    }
+    if (isRegularGitFileMode(targetMode)) {
+      return targetRel;
+    }
+    if (targetMode !== "120000") {
+      unsafeSymlink(rel, `does not resolve to a regular file in ${snapshotName}`);
+    }
+    currentRel = targetRel;
+    try {
+      currentTarget = blob(sourceCwd, targetRel).toString("utf8");
+    } catch {
+      unsafeSymlink(rel, `cannot be read in ${snapshotName}`);
+    }
   }
-  const targetRel = path.relative(sourceRoot, targetAbs).split(path.sep).join("/");
-  if (targetRel === "") {
-    unsafeSymlink(rel, `does not resolve to a regular file in ${snapshotName}`);
-  }
-  const targetMode = entryMode(sourceCwd, targetRel);
-  if (targetMode === null) {
-    unsafeSymlink(rel, `is dangling in ${snapshotName}`);
-  }
-  if (!isRegularGitFileMode(targetMode)) {
-    unsafeSymlink(rel, `does not resolve to a regular file in ${snapshotName}`);
-  }
-  return targetRel;
+  unsafeSymlink(rel, `exceeds symlink depth limit in ${snapshotName}`);
 }
 
 function materializeHeadSymlink(sourceCwd, targetPath, rel, sourceRoot) {
   const linkTarget = headBlob(sourceCwd, rel).toString("utf8");
   const targetRel = resolveGitSnapshotSymlinkTarget(
-    sourceCwd, rel, linkTarget, sourceRoot, headEntryMode, "HEAD"
+    sourceCwd, rel, linkTarget, sourceRoot, headEntryMode, headBlob, "HEAD"
   );
   const dst = path.join(targetPath, rel);
-  mkdirSync(path.dirname(dst), { recursive: true });
-  writeFileSync(dst, headBlob(sourceCwd, targetRel));
+  writeHeadBlobToPath(sourceCwd, targetRel, dst);
 }
 
-function materializeGitSnapshotSymlinks(sourceCwd, targetPath, sourceRoot, entryMode, blob, snapshotName) {
+function materializeGitSnapshotSymlinks(sourceCwd, targetPath, sourceRoot, entryMode, blob, writeBlob, snapshotName) {
   const symlinks = [];
   function walk(absDir, relDir = "") {
     let entries;
     try {
       entries = readdirSync(absDir, { withFileTypes: true });
-    } catch {
-      return;
+    } catch (err) {
+      if (err?.code === "ENOENT") return;
+      scopePopulationFailed(`cannot read directory ${relDir || "."}: ${err.message}`);
     }
     for (const ent of entries) {
       if (ent.name === ".git") continue;
@@ -228,10 +277,9 @@ function materializeGitSnapshotSymlinks(sourceCwd, targetPath, sourceRoot, entry
   }
   for (const { abs, rel, linkTarget } of symlinks) {
     const targetRel = resolveGitSnapshotSymlinkTarget(
-      sourceCwd, rel, linkTarget, sourceRoot, entryMode, snapshotName
+      sourceCwd, rel, linkTarget, sourceRoot, entryMode, blob, snapshotName
     );
-    mkdirSync(path.dirname(abs), { recursive: true });
-    writeFileSync(abs, blob(sourceCwd, targetRel));
+    writeBlob(sourceCwd, targetRel, abs);
   }
 }
 
@@ -241,8 +289,9 @@ function listLiveWorkingTreeFiles(sourceCwd) {
     let entries;
     try {
       entries = readdirSync(absDir, { withFileTypes: true });
-    } catch {
-      return;
+    } catch (err) {
+      if (err?.code === "ENOENT") return;
+      scopePopulationFailed(`cannot read directory ${relDir || "."}: ${err.message}`);
     }
     for (const ent of entries) {
       if (ent.name === ".git") continue;
@@ -281,7 +330,7 @@ function scopeStaged(sourceCwd, targetPath) {
   mkdirSync(targetPath, { recursive: true });
   git(sourceCwd, ["checkout-index", "-a", "-f", `--prefix=${prefix}`]);
   materializeGitSnapshotSymlinks(
-    sourceCwd, targetPath, realpathSync(sourceCwd), indexEntryMode, indexBlob, "INDEX"
+    sourceCwd, targetPath, realpathSync(sourceCwd), indexEntryMode, indexBlob, writeIndexBlobToPath, "INDEX"
   );
 }
 
@@ -303,17 +352,17 @@ function scopeBranchDiff(sourceCwd, targetPath, scopeBase) {
   for (const rel of files) {
     const mode = headEntryMode(sourceCwd, rel);
     if (mode === null) continue; // deleted in HEAD vs base — nothing to copy
+    if (mode === "160000") continue; // gitlink/submodule entries have no blob to copy
     if (mode === "120000") {
       materializeHeadSymlink(sourceCwd, targetPath, rel, sourceRoot);
       continue;
     }
-    // Content at HEAD. `git show HEAD:<file>` emits raw bytes; we must use
-    // buffer mode (encoding: null) to avoid mangling binary files.
-    try {
-      writeHeadBlob(sourceCwd, targetPath, rel);
-    } catch {
-      continue; // deleted in HEAD vs base — nothing to copy
+    if (!isRegularGitFileMode(mode)) {
+      scopePopulationFailed(`unsupported git entry ${rel} mode ${mode}`);
     }
+    // Content at HEAD. Stream raw `git show HEAD:<file>` bytes into the
+    // snapshot so large or binary files are not buffered or re-encoded.
+    writeHeadBlob(sourceCwd, targetPath, rel);
   }
 }
 
@@ -332,7 +381,7 @@ function scopeHead(sourceCwd, targetPath, containmentHandle) {
   // Tell the containment handle to also unregister the worktree on cleanup.
   if (containmentHandle) containmentHandle._scopeHeadOf = sourceCwd;
   materializeGitSnapshotSymlinks(
-    sourceCwd, targetPath, realpathSync(sourceCwd), headEntryMode, headBlob, "HEAD"
+    sourceCwd, targetPath, realpathSync(sourceCwd), headEntryMode, headBlob, writeHeadBlobToPath, "HEAD"
   );
 }
 

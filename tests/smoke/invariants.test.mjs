@@ -291,6 +291,7 @@ test("scope population failure prevents spawning Claude target CLI", () => {
     assert.equal(status, 2, `exit ${status}: ${stderr}`);
     const record = JSON.parse(stdout);
     assert.equal(record.status, "failed");
+    assert.equal(record.exit_code, null);
     assert.match(record.error_message, /unsafe_symlink/);
     assert.equal(existsSync(marker), false, "target CLI marker proves Claude binary was spawned");
   } finally {

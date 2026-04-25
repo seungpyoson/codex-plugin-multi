@@ -12,7 +12,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   mkdtempSync, rmSync, existsSync, writeFileSync, readFileSync, mkdirSync,
-  symlinkSync, lstatSync, readdirSync,
+  symlinkSync, lstatSync, readdirSync, chmodSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { spawnSync } from "node:child_process";
@@ -82,6 +82,16 @@ function assertNoSymlinkAt(abs) {
   assert.equal(lst.isSymbolicLink(), false, `target snapshot preserved symlink: ${abs}`);
 }
 
+function writeLargeFile(abs, size = 64 * 1024 * 1024 + 1) {
+  writeFileSync(abs, Buffer.alloc(size, 0x61));
+}
+
+function removeGitObject(repo, objectId) {
+  rmSync(path.join(repo, ".git", "objects", objectId.slice(0, 2), objectId.slice(2)), {
+    force: true,
+  });
+}
+
 const profile = (scope) => Object.freeze({
   name: "test", containment: "worktree", scope, dispose_default: true,
 });
@@ -119,7 +129,7 @@ test("populateScope scope=working-tree: includes ignored untracked files", () =>
     git(src, "add", ".");
     git(src, "commit", "-qm", "seed");
     // Drop an ignored file. Spec §21.4 says working-tree means everything
-    // Claude could see or mutate in the user's tree, including ignored files.
+    // the target CLI could see or mutate in the user's tree, including ignored files.
     writeFileSync(path.join(src, "ignored.log"), "garbage\n");
 
     populateScope(profile("working-tree"), src, tgt);
@@ -248,6 +258,63 @@ test("populateScope scope=working-tree: supports non-git folders", () => {
   }
 });
 
+test("populateScope scope=working-tree: materializes non-git in-tree file symlinks", () => {
+  const src = mkdtempSync(path.join(tmpdir(), "scope-src-nongit-"));
+  const tgt = mkTarget();
+  try {
+    writeFileSync(path.join(src, "target.txt"), "target\n");
+    symlinkSync("target.txt", path.join(src, "link.txt"));
+
+    populateScope(profile("working-tree"), src, tgt);
+
+    assert.equal(lstatSync(path.join(tgt, "link.txt")).isSymbolicLink(), false);
+    assert.equal(readFileSync(path.join(tgt, "link.txt"), "utf8"), "target\n");
+    assertNoSymlinks(tgt);
+  } finally {
+    cleanup(src, tgt);
+  }
+});
+
+test("populateScope scope=working-tree: rejects non-git symlink escaping source root", () => {
+  const src = mkdtempSync(path.join(tmpdir(), "scope-src-nongit-"));
+  const tgt = mkTarget();
+  const outside = mkdtempSync(path.join(tmpdir(), "scope-outside-"));
+  try {
+    mkdirSync(path.join(src, "nested"));
+    writeFileSync(path.join(outside, "secret.txt"), "outside\n");
+    symlinkSync("../../" + path.basename(outside) + "/secret.txt", path.join(src, "nested", "escape.txt"));
+
+    assert.throws(
+      () => populateScope(profile("working-tree"), src, tgt),
+      /unsafe_symlink/,
+    );
+  } finally {
+    cleanup(src, tgt, outside);
+  }
+});
+
+test("populateScope scope=working-tree: fails closed when a directory cannot be read", () => {
+  if (process.platform === "win32" || process.getuid?.() === 0) {
+    return;
+  }
+  const src = mkdtempSync(path.join(tmpdir(), "scope-src-nongit-"));
+  const tgt = mkTarget();
+  const unreadable = path.join(src, "unreadable");
+  try {
+    mkdirSync(unreadable);
+    writeFileSync(path.join(unreadable, "hidden.txt"), "hidden\n");
+    chmodSync(unreadable, 0o000);
+
+    assert.throws(
+      () => populateScope(profile("working-tree"), src, tgt),
+      /scope_population_failed/,
+    );
+  } finally {
+    try { chmodSync(unreadable, 0o700); } catch {}
+    cleanup(src, tgt);
+  }
+});
+
 test("populateScope scope=staged: requires a git worktree", () => {
   const src = mkdtempSync(path.join(tmpdir(), "scope-src-nongit-"));
   const tgt = mkTarget();
@@ -256,7 +323,7 @@ test("populateScope scope=staged: requires a git worktree", () => {
 
     assert.throws(
       () => populateScope(profile("staged"), src, tgt),
-      /scope_(requires_git|git_required)/,
+      /scope_requires_git/,
     );
   } finally {
     cleanup(src, tgt);
@@ -299,6 +366,44 @@ test("populateScope scope=staged: materializes in-snapshot file symlinks as regu
 
     assert.equal(lstatSync(path.join(tgt, "link.txt")).isSymbolicLink(), false);
     assert.equal(readFileSync(path.join(tgt, "link.txt"), "utf8"), "target\n");
+    assertNoSymlinks(tgt);
+  } finally {
+    cleanup(src, tgt);
+  }
+});
+
+test("populateScope scope=staged: materializes safe symlink chains from index content", () => {
+  const src = seedRepo();
+  const tgt = mkTarget();
+  try {
+    writeFileSync(path.join(src, "target.txt"), "staged-chain\n");
+    symlinkSync("target.txt", path.join(src, "link2.txt"));
+    symlinkSync("link2.txt", path.join(src, "link1.txt"));
+    git(src, "add", "target.txt", "link2.txt", "link1.txt");
+    writeFileSync(path.join(src, "target.txt"), "dirty-live\n");
+
+    populateScope(profile("staged"), src, tgt);
+
+    assert.equal(lstatSync(path.join(tgt, "link1.txt")).isSymbolicLink(), false);
+    assert.equal(readFileSync(path.join(tgt, "link1.txt"), "utf8"), "staged-chain\n");
+    assertNoSymlinks(tgt);
+  } finally {
+    cleanup(src, tgt);
+  }
+});
+
+test("populateScope scope=staged: materializes symlink targets larger than exec buffer", () => {
+  const src = seedRepo();
+  const tgt = mkTarget();
+  try {
+    writeLargeFile(path.join(src, "large.bin"));
+    symlinkSync("large.bin", path.join(src, "large-link.bin"));
+    git(src, "add", "large.bin", "large-link.bin");
+
+    populateScope(profile("staged"), src, tgt);
+
+    assert.equal(lstatSync(path.join(tgt, "large-link.bin")).isSymbolicLink(), false);
+    assert.equal(lstatSync(path.join(tgt, "large-link.bin")).size, 64 * 1024 * 1024 + 1);
     assertNoSymlinks(tgt);
   } finally {
     cleanup(src, tgt);
@@ -398,6 +503,24 @@ test("populateScope scope=staged: rejects symlink escaping source root", () => {
   }
 });
 
+test("populateScope scope=staged: rejects relative symlink escaping source root", () => {
+  const src = seedRepo();
+  const tgt = mkTarget();
+  try {
+    mkdirSync(path.join(src, "nested"));
+    symlinkSync("../../secret.txt", path.join(src, "nested", "escape.txt"));
+    git(src, "add", "nested/escape.txt");
+
+    assert.throws(
+      () => populateScope(profile("staged"), src, tgt),
+      /unsafe_symlink/,
+    );
+    assertNoSymlinkAt(path.join(tgt, "nested", "escape.txt"));
+  } finally {
+    cleanup(src, tgt);
+  }
+});
+
 test("populateScope scope=staged: materializes absolute in-source file symlinks from index content", () => {
   const src = seedRepo();
   const tgt = mkTarget();
@@ -478,7 +601,7 @@ test("populateScope scope=branch-diff: requires a git worktree", () => {
 
     assert.throws(
       () => populateScope(profile("branch-diff"), src, tgt),
-      /scope_(requires_git|git_required)/,
+      /scope_requires_git/,
     );
   } finally {
     cleanup(src, tgt);
@@ -506,6 +629,76 @@ test("populateScope scope=branch-diff: materializes symlink target content from 
     assert.equal(readFileSync(path.join(tgt, "link.txt"), "utf8"), "head-content\n",
       "branch-diff symlink materialization must use HEAD target content, not dirty working tree content");
     assertNoSymlinks(tgt);
+  } finally {
+    cleanup(src, tgt);
+  }
+});
+
+test("populateScope scope=branch-diff: materializes safe symlink chains from HEAD content", () => {
+  const src = seedRepo();
+  const tgt = mkTarget();
+  try {
+    writeFileSync(path.join(src, "target.txt"), "head-chain\n");
+    git(src, "add", "target.txt");
+    git(src, "commit", "-qm", "main");
+
+    git(src, "checkout", "-qb", "feature");
+    symlinkSync("target.txt", path.join(src, "link2.txt"));
+    symlinkSync("link2.txt", path.join(src, "link1.txt"));
+    git(src, "add", "link2.txt", "link1.txt");
+    git(src, "commit", "-qm", "add symlink chain");
+    writeFileSync(path.join(src, "target.txt"), "dirty-live\n");
+
+    populateScope(profile("branch-diff"), src, tgt, { scopeBase: "main" });
+
+    assert.equal(lstatSync(path.join(tgt, "link1.txt")).isSymbolicLink(), false);
+    assert.equal(readFileSync(path.join(tgt, "link1.txt"), "utf8"), "head-chain\n");
+    assertNoSymlinks(tgt);
+  } finally {
+    cleanup(src, tgt);
+  }
+});
+
+test("populateScope scope=branch-diff: copies regular files larger than exec buffer", () => {
+  const src = seedRepo();
+  const tgt = mkTarget();
+  try {
+    git(src, "commit", "-qm", "main", "--allow-empty");
+
+    git(src, "checkout", "-qb", "feature");
+    writeLargeFile(path.join(src, "large.bin"));
+    git(src, "add", "large.bin");
+    git(src, "commit", "-qm", "large");
+
+    populateScope(profile("branch-diff"), src, tgt, { scopeBase: "main" });
+
+    assert.equal(lstatSync(path.join(tgt, "large.bin")).size, 64 * 1024 * 1024 + 1);
+    assertNoSymlinks(tgt);
+  } finally {
+    cleanup(src, tgt);
+  }
+});
+
+test("populateScope scope=branch-diff: removes destination file when git blob copy fails", () => {
+  const src = seedRepo();
+  const tgt = mkTarget();
+  try {
+    git(src, "commit", "-qm", "main", "--allow-empty");
+
+    git(src, "checkout", "-qb", "feature");
+    writeFileSync(path.join(src, "broken.txt"), "broken\n");
+    git(src, "add", "broken.txt");
+    git(src, "commit", "-qm", "broken blob");
+    const raw = git(src, "ls-tree", "HEAD", "--", "broken.txt").trim();
+    const objectId = raw.split(/\s+/)[2];
+    removeGitObject(src, objectId);
+
+    assert.throws(
+      () => populateScope(profile("branch-diff"), src, tgt, { scopeBase: "main" }),
+      /scope_population_failed/,
+    );
+    assert.equal(existsSync(path.join(tgt, "broken.txt")), false,
+      "failed git blob copy must not leave a partial destination file");
   } finally {
     cleanup(src, tgt);
   }
@@ -570,6 +763,52 @@ test("populateScope scope=branch-diff: rejects symlink loop as unsafe", () => {
   }
 });
 
+test("populateScope scope=branch-diff: skips submodule entries", () => {
+  const src = seedRepo();
+  const submoduleRepo = seedRepo();
+  const tgt = mkTarget();
+  try {
+    writeFileSync(path.join(src, "seed.txt"), "seed\n");
+    git(src, "add", "seed.txt");
+    git(src, "commit", "-qm", "main");
+    writeFileSync(path.join(submoduleRepo, "sub.txt"), "sub\n");
+    git(submoduleRepo, "add", "sub.txt");
+    git(submoduleRepo, "commit", "-qm", "sub");
+
+    git(src, "checkout", "-qb", "feature");
+    git(src, "-c", "protocol.file.allow=always", "submodule", "add", "-q", submoduleRepo, "sub");
+    git(src, "commit", "-qm", "add submodule");
+
+    populateScope(profile("branch-diff"), src, tgt, { scopeBase: "main" });
+
+    assert.equal(existsSync(path.join(tgt, "sub")), false,
+      "branch-diff must not materialize gitlink entries as text files");
+    assertNoSymlinks(tgt);
+  } finally {
+    cleanup(src, submoduleRepo, tgt);
+  }
+});
+
+test("populateScope scope=branch-diff: rejects relative symlink escaping source root", () => {
+  const src = seedRepo();
+  const tgt = mkTarget();
+  try {
+    git(src, "commit", "-qm", "main", "--allow-empty");
+    git(src, "checkout", "-qb", "feature");
+    mkdirSync(path.join(src, "nested"));
+    symlinkSync("../../secret.txt", path.join(src, "nested", "escape.txt"));
+    git(src, "add", "nested/escape.txt");
+    git(src, "commit", "-qm", "relative escape symlink");
+
+    assert.throws(
+      () => populateScope(profile("branch-diff"), src, tgt, { scopeBase: "main" }),
+      /unsafe_symlink/,
+    );
+  } finally {
+    cleanup(src, tgt);
+  }
+});
+
 test("populateScope scope=branch-diff: throws scope_base_missing when base ref is absent", () => {
   const src = seedRepo();
   const tgt = mkTarget();
@@ -617,7 +856,7 @@ test("populateScope scope=head: requires a git worktree", () => {
 
     assert.throws(
       () => populateScope(profile("head"), src, tgt),
-      /scope_(requires_git|git_required)/,
+      /scope_requires_git/,
     );
   } finally {
     cleanup(src, parent);
@@ -647,6 +886,50 @@ test("populateScope scope=head: faithful HEAD checkout via git worktree", () => 
     // Clean up the worktree registration so the src removal succeeds.
     spawnSync("git", ["-C", src, "worktree", "remove", "--force", tgt]);
   } finally {
+    cleanup(src, parent);
+  }
+});
+
+test("populateScope scope=head: materializes safe symlink chains from HEAD content", () => {
+  const src = seedRepo();
+  const parent = mkdtempSync(path.join(tmpdir(), "scope-head-parent-"));
+  const tgt = path.join(parent, "wt");
+  try {
+    writeFileSync(path.join(src, "target.txt"), "head-chain\n");
+    symlinkSync("target.txt", path.join(src, "link2.txt"));
+    symlinkSync("link2.txt", path.join(src, "link1.txt"));
+    git(src, "add", "target.txt", "link2.txt", "link1.txt");
+    git(src, "commit", "-qm", "symlink chain");
+    writeFileSync(path.join(src, "target.txt"), "dirty-live\n");
+
+    populateScope(profile("head"), src, tgt);
+
+    assert.equal(lstatSync(path.join(tgt, "link1.txt")).isSymbolicLink(), false);
+    assert.equal(readFileSync(path.join(tgt, "link1.txt"), "utf8"), "head-chain\n");
+    assertNoSymlinks(tgt);
+  } finally {
+    spawnSync("git", ["-C", src, "worktree", "remove", "--force", tgt]);
+    cleanup(src, parent);
+  }
+});
+
+test("populateScope scope=head: materializes symlink targets larger than exec buffer", () => {
+  const src = seedRepo();
+  const parent = mkdtempSync(path.join(tmpdir(), "scope-head-parent-"));
+  const tgt = path.join(parent, "wt");
+  try {
+    writeLargeFile(path.join(src, "large.bin"));
+    symlinkSync("large.bin", path.join(src, "large-link.bin"));
+    git(src, "add", "large.bin", "large-link.bin");
+    git(src, "commit", "-qm", "large symlink");
+
+    populateScope(profile("head"), src, tgt);
+
+    assert.equal(lstatSync(path.join(tgt, "large-link.bin")).isSymbolicLink(), false);
+    assert.equal(lstatSync(path.join(tgt, "large-link.bin")).size, 64 * 1024 * 1024 + 1);
+    assertNoSymlinks(tgt);
+  } finally {
+    spawnSync("git", ["-C", src, "worktree", "remove", "--force", tgt]);
     cleanup(src, parent);
   }
 });
@@ -803,6 +1086,27 @@ test("populateScope scope=head: rejects symlink escaping source root", () => {
   } finally {
     spawnSync("git", ["-C", src, "worktree", "remove", "--force", tgt]);
     cleanup(src, parent, outside);
+  }
+});
+
+test("populateScope scope=head: rejects relative symlink escaping source root", () => {
+  const src = seedRepo();
+  const parent = mkdtempSync(path.join(tmpdir(), "scope-head-parent-"));
+  const tgt = path.join(parent, "wt");
+  try {
+    mkdirSync(path.join(src, "nested"));
+    symlinkSync("../../secret.txt", path.join(src, "nested", "escape.txt"));
+    git(src, "add", "nested/escape.txt");
+    git(src, "commit", "-qm", "relative escape symlink");
+
+    assert.throws(
+      () => populateScope(profile("head"), src, tgt),
+      /unsafe_symlink/,
+    );
+    assertNoSymlinkAt(path.join(tgt, "nested", "escape.txt"));
+  } finally {
+    spawnSync("git", ["-C", src, "worktree", "remove", "--force", tgt]);
+    cleanup(src, parent);
   }
 });
 
@@ -966,6 +1270,43 @@ test("populateScope scope=custom: works in non-git folders", () => {
     assertNoSymlinks(tgt);
   } finally {
     cleanup(src, tgt);
+  }
+});
+
+test("populateScope scope=custom: materializes non-git in-tree file symlinks", () => {
+  const src = mkdtempSync(path.join(tmpdir(), "scope-src-nongit-"));
+  const tgt = mkTarget();
+  try {
+    writeFileSync(path.join(src, "target.txt"), "target\n");
+    symlinkSync("target.txt", path.join(src, "link.txt"));
+
+    populateScope(profile("custom"), src, tgt, {
+      scopePaths: ["link.txt"],
+    });
+
+    assert.equal(lstatSync(path.join(tgt, "link.txt")).isSymbolicLink(), false);
+    assert.equal(readFileSync(path.join(tgt, "link.txt"), "utf8"), "target\n");
+    assertNoSymlinks(tgt);
+  } finally {
+    cleanup(src, tgt);
+  }
+});
+
+test("populateScope scope=custom: rejects non-git symlink escaping source root", () => {
+  const src = mkdtempSync(path.join(tmpdir(), "scope-src-nongit-"));
+  const tgt = mkTarget();
+  const outside = mkdtempSync(path.join(tmpdir(), "scope-outside-"));
+  try {
+    mkdirSync(path.join(src, "nested"));
+    writeFileSync(path.join(outside, "secret.txt"), "outside\n");
+    symlinkSync("../../" + path.basename(outside) + "/secret.txt", path.join(src, "nested", "escape.txt"));
+
+    assert.throws(
+      () => populateScope(profile("custom"), src, tgt, { scopePaths: ["nested/escape.txt"] }),
+      /unsafe_symlink/,
+    );
+  } finally {
+    cleanup(src, tgt, outside);
   }
 });
 

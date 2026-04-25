@@ -118,6 +118,7 @@ test("gemini scope population failure skips target CLI spawn", () => {
     assert.equal(res.status, 2, `exit ${res.status}: ${res.stderr}`);
     const record = JSON.parse(res.stdout);
     assert.equal(record.status, "failed");
+    assert.equal(record.exit_code, null);
     assert.match(record.error_message, /unsafe_symlink/);
     assert.equal(existsSync(marker), false, "target CLI marker proves Gemini binary was spawned");
   } finally {
