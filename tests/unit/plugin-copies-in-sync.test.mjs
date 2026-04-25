@@ -22,6 +22,7 @@ const VERBATIM_FILES = [
   "process.mjs",
   "args.mjs",
   "git.mjs",
+  "scope.mjs",
 ];
 
 for (const file of VERBATIM_FILES) {

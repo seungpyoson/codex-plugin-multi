@@ -23,7 +23,7 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import {
   mkdtempSync, rmSync, existsSync, readFileSync, writeFileSync,
-  readdirSync,
+  readdirSync, chmodSync, mkdirSync, symlinkSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -95,6 +95,19 @@ function seedDirtyRepo(cwd) {
     "echo original > seed.txt && git add seed.txt && " +
     "git -c user.email=t@t -c user.name=t commit -q -m seed && " +
     "echo modified > seed.txt"], { cwd });
+}
+
+function writeMarkerBinary(dir, markerPath) {
+  const binary = path.join(dir, "target-cli");
+  writeFileSync(binary, [
+    "#!/bin/sh",
+    `printf spawned > ${JSON.stringify(markerPath)}`,
+    "printf '{\"session_id\":\"00000000-0000-4000-8000-000000000000\",\"result\":\"spawned\"}\\n'",
+    "exit 0",
+    "",
+  ].join("\n"));
+  chmodSync(binary, 0o755);
+  return binary;
 }
 
 function findMetaPath(dataDir, jobId) {
@@ -251,6 +264,35 @@ test("M6-finding-4: review sees dirty working tree — worktree contains uncommi
       `review should see dirty seed.txt under --add-dir; add_dir=${fx.t7_add_dir}`);
     assert.notEqual(fx.t7_add_dir, cwd,
       "review's containment=worktree should NOT pass sourceCwd as --add-dir");
+  } finally {
+    rmSync(dataDir, { recursive: true, force: true });
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("scope population failure prevents spawning Claude target CLI", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "inv-scope-abort-cwd-"));
+  const dataDir = mkdtempSync(path.join(tmpdir(), "inv-scope-abort-data-"));
+  const marker = path.join(dataDir, "spawned.marker");
+  const binary = writeMarkerBinary(dataDir, marker);
+  try {
+    seedMinimalRepo(cwd);
+    mkdirSync(path.join(cwd, "target-dir"));
+    writeFileSync(path.join(cwd, "target-dir/file.txt"), "nested\n");
+    symlinkSync("target-dir", path.join(cwd, "dir-link"));
+
+    const { stdout, status, stderr } = runCompanion(
+      ["run", "--mode=review", "--foreground",
+       "--model", "claude-haiku-4-5-20251001",
+       "--cwd", cwd, "--", "focus"],
+      { cwd, dataDir, env: { CLAUDE_BINARY: binary } },
+    );
+
+    assert.equal(status, 2, `exit ${status}: ${stderr}`);
+    const record = JSON.parse(stdout);
+    assert.equal(record.status, "failed");
+    assert.match(record.error_message, /unsafe_symlink/);
+    assert.equal(existsSync(marker), false, "target CLI marker proves Claude binary was spawned");
   } finally {
     rmSync(dataDir, { recursive: true, force: true });
     rmSync(cwd, { recursive: true, force: true });

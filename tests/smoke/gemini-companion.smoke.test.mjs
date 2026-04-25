@@ -1,7 +1,10 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, rmSync, readFileSync, existsSync, readdirSync, realpathSync } from "node:fs";
+import {
+  mkdtempSync, rmSync, readFileSync, existsSync, readdirSync, realpathSync,
+  writeFileSync, chmodSync, mkdirSync, symlinkSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -30,6 +33,19 @@ function runCompanion(args, { cwd, env = {} } = {}) {
     },
   });
   return { ...res, dataDir };
+}
+
+function writeMarkerBinary(dir, markerPath) {
+  const binary = path.join(dir, "target-cli");
+  writeFileSync(binary, [
+    "#!/bin/sh",
+    `printf spawned > ${JSON.stringify(markerPath)}`,
+    "printf '{\"session_id\":\"22222222-3333-4444-9555-666666666666\",\"response\":\"spawned\"}\\n'",
+    "exit 0",
+    "",
+  ].join("\n"));
+  chmodSync(binary, 0o755);
+  return binary;
 }
 
 function readStdoutLog(dataDir, jobId) {
@@ -70,6 +86,40 @@ test("gemini review foreground: policy-first, stdin transport, /tmp cwd, scoped 
     assert.equal(fx.t7_sandbox, true, "Gemini review must pass the sandbox flag");
     assert.equal(fx.t7_skip_trust, true, "Gemini review must pass --skip-trust so plan approval is not downgraded");
     assert.equal(fx.t7_prompt_from_stdin, true, "Gemini prompt must arrive on stdin, not argv");
+  } finally {
+    rmSync(dataDir, { recursive: true, force: true });
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("gemini scope population failure skips target CLI spawn", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "gemini-scope-abort-cwd-"));
+  const dataDir = mkdtempSync(path.join(tmpdir(), "gemini-scope-abort-data-"));
+  const marker = path.join(dataDir, "spawned.marker");
+  const binary = writeMarkerBinary(dataDir, marker);
+  seedMinimalRepo(cwd);
+  mkdirSync(path.join(cwd, "target-dir"));
+  writeFileSync(path.join(cwd, "target-dir/file.txt"), "nested\n");
+  symlinkSync("target-dir", path.join(cwd, "dir-link"));
+  const res = spawnSync("node", [
+    COMPANION, "run", "--mode=review", "--foreground",
+    "--model", "gemini-3-flash-preview",
+    "--cwd", cwd, "--", "focus",
+  ], {
+    cwd,
+    encoding: "utf8",
+    env: {
+      ...process.env,
+      GEMINI_BINARY: binary,
+      GEMINI_PLUGIN_DATA: dataDir,
+    },
+  });
+  try {
+    assert.equal(res.status, 2, `exit ${res.status}: ${res.stderr}`);
+    const record = JSON.parse(res.stdout);
+    assert.equal(record.status, "failed");
+    assert.match(record.error_message, /unsafe_symlink/);
+    assert.equal(existsSync(marker), false, "target CLI marker proves Gemini binary was spawned");
   } finally {
     rmSync(dataDir, { recursive: true, force: true });
     rmSync(cwd, { recursive: true, force: true });
