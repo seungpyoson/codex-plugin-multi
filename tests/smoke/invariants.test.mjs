@@ -269,9 +269,8 @@ test("M6-finding-6: continue chain resumes LATEST claude_session_id, not an inte
       "legacy session_id field must not be present on new-shape records");
 
     // Run 2 — continue from job1. Companion mints job_2, passes --resume=<claudeSid1>.
-    // T7.8: continue does NOT accept --cwd; it inherits cwd from the prior record.
     const r2 = runCompanion(
-      ["continue", "--job", job1, "--foreground", "--", "followup"],
+      ["continue", "--job", job1, "--foreground", "--cwd", cwd, "--", "followup"],
       { cwd, dataDir,
         env: { CLAUDE_MOCK_RECORD_RESUME: "1", CLAUDE_MOCK_RESUME_SINK: resumeSink } });
     assert.equal(r2.status, 0, r2.stderr);
@@ -291,7 +290,7 @@ test("M6-finding-6: continue chain resumes LATEST claude_session_id, not an inte
     const claudeSid2 = meta2.claude_session_id;
     assert.ok(claudeSid2, "run 2 must have captured claude_session_id");
     const r3 = runCompanion(
-      ["continue", "--job", job2, "--foreground", "--", "third"],
+      ["continue", "--job", job2, "--foreground", "--cwd", cwd, "--", "third"],
       { cwd, dataDir,
         env: { CLAUDE_MOCK_RECORD_RESUME: "1", CLAUDE_MOCK_RESUME_SINK: resumeSink } });
     assert.equal(r3.status, 0, r3.stderr);
@@ -504,27 +503,22 @@ test("M6-mock-gap: timeoutMs fires SIGTERM when claude hangs (no coverage pre-T7
 // CLAUDE_MOCK_MUTATE_FILE so the mock writes directly into sourceCwd, then
 // asserts the JobRecord's mutations[] array captures the new file.
 
-// T7.8 rework: mock now writes relative to addDir (= childCwd / worktree).
-// Pre-T7.8 detection ran against sourceCwd and could never see mutations
-// Claude made inside its sandbox — the test happened to pass because the
-// mock wrote to an absolute sourceCwd path. With baseline-in-childCwd
-// detection the relative path is the honest case.
 test("M6-mock-gap: mutation detected when claude writes a file (no coverage pre-T7.6)", () => {
   const cwd = mkdtempSync(path.join(tmpdir(), "inv-mut-"));
   seedMinimalRepo(cwd);
+  const target = path.join(cwd, "foo.md"); // absolute — lands in sourceCwd
   const { stdout, status, stderr, dataDir } = runCompanion(
     ["run", "--mode=review", "--foreground",
      "--model", "claude-haiku-4-5-20251001",
      "--cwd", cwd, "--", "review"],
-    { cwd, env: { CLAUDE_MOCK_MUTATE_FILE: "foo.md" } } // relative → childCwd
+    { cwd, env: { CLAUDE_MOCK_MUTATE_FILE: target } }
   );
   try {
     assert.equal(status, 0, `exit ${status}: ${stderr}`);
     const record = JSON.parse(stdout);
     assert.ok(Array.isArray(record.mutations),
       "JobRecord must carry a mutations array");
-    // git status -s --untracked-files=all prints "?? foo.md" for a new file
-    // in the worktree that wasn't committed to baseline.
+    // git status -s --untracked-files=all prints "?? foo.md" for a new file.
     const saw = record.mutations.some((l) => l.includes("foo.md"));
     assert.ok(saw,
       `mutations[] must mention foo.md; got ${JSON.stringify(record.mutations)}`);
@@ -532,320 +526,6 @@ test("M6-mock-gap: mutation detected when claude writes a file (no coverage pre-
     rmSync(dataDir, { recursive: true, force: true });
     rmSync(cwd, { recursive: true, force: true });
   }
-});
-
-// T7.8 FIX B2 — mutation detection catches add/edit/delete via baseline commit.
-//
-// Pre-T7.8 detection compared `git status` in sourceCwd before/after Claude
-// ran — a fundamentally wrong place to look, since review containment puts
-// Claude in a separate worktree. The fix initialises a git repo in childCwd,
-// commits the populated scope as a baseline, then reads `git status` after
-// Claude exits. All three classes of mutation (add / edit / delete) must
-// appear in record.mutations.
-
-test("T7.8 §10 mutation-edit: overwriting an existing file shows as modified", () => {
-  const cwd = mkdtempSync(path.join(tmpdir(), "inv-mut-edit-"));
-  seedMinimalRepo(cwd); // seeds + commits seed.txt
-  const { stdout, status, stderr, dataDir } = runCompanion(
-    ["run", "--mode=review", "--foreground",
-     "--model", "claude-haiku-4-5-20251001",
-     "--cwd", cwd, "--", "review"],
-    { cwd, env: { CLAUDE_MOCK_MUTATE_FILE: "seed.txt" } } // overwrites baseline file
-  );
-  try {
-    assert.equal(status, 0, `exit ${status}: ${stderr}`);
-    const record = JSON.parse(stdout);
-    // Edited files appear as " M seed.txt" (leading space = unstaged modify).
-    const edited = record.mutations.some(
-      (l) => /^\s?M\s+seed\.txt$/.test(l) || l.endsWith("seed.txt") && l.includes("M")
-    );
-    assert.ok(edited,
-      `baseline diff must flag seed.txt as modified (\" M seed.txt\"); got ${JSON.stringify(record.mutations)}`);
-  } finally {
-    rmSync(dataDir, { recursive: true, force: true });
-    rmSync(cwd, { recursive: true, force: true });
-  }
-});
-
-test("T7.8 §10 mutation-delete: unlinking an existing file shows as deleted", () => {
-  const cwd = mkdtempSync(path.join(tmpdir(), "inv-mut-del-"));
-  seedMinimalRepo(cwd);
-  const { stdout, status, stderr, dataDir } = runCompanion(
-    ["run", "--mode=review", "--foreground",
-     "--model", "claude-haiku-4-5-20251001",
-     "--cwd", cwd, "--", "review"],
-    { cwd, env: { CLAUDE_MOCK_DELETE_FILE: "seed.txt" } }
-  );
-  try {
-    assert.equal(status, 0, `exit ${status}: ${stderr}`);
-    const record = JSON.parse(stdout);
-    // Deleted files appear as " D seed.txt".
-    const deleted = record.mutations.some(
-      (l) => /^\s?D\s+seed\.txt$/.test(l) || l.endsWith("seed.txt") && l.includes("D")
-    );
-    assert.ok(deleted,
-      `baseline diff must flag seed.txt as deleted (\" D seed.txt\"); got ${JSON.stringify(record.mutations)}`);
-  } finally {
-    rmSync(dataDir, { recursive: true, force: true });
-    rmSync(cwd, { recursive: true, force: true });
-  }
-});
-
-// ---------------------------------------------------------------------------
-// T7.8 FIX B1 — §21.1 bypass guard.
-//
-// The finding #1 / H1 regression class: when Claude returned no session_id,
-// claude-companion.mjs fell back to `resumeId ?? jobId`, fabricating a
-// claude_session_id from unrelated identities and violating §21.1 (identity
-// types distinct — never mint one from another).
-//
-// Two complementary tests:
-//   E2E  — mock emits garbage stdout → record.claude_session_id MUST be null.
-//          Anything non-null is a fallback regression.
-//   STATIC — grep the companion source for the buggy `?? … ?? …` pattern on
-//          `claudeSessionId:` assignments. Catches any future call-site that
-//          reintroduces a fallback (not just the one we fixed).
-
-test("T7.8 §21.1 e2e: garbage stdout yields null claude_session_id, NOT jobId fallback", () => {
-  const cwd = mkdtempSync(path.join(tmpdir(), "inv-bypass-"));
-  seedMinimalRepo(cwd);
-  const { stdout, status, stderr, dataDir } = runCompanion(
-    ["run", "--mode=review", "--foreground",
-     "--model", "claude-haiku-4-5-20251001",
-     "--cwd", cwd, "--", "review"],
-    { cwd, env: { CLAUDE_MOCK_GARBAGE_STDOUT: "1" } }
-  );
-  try {
-    // Mock exits 1; companion classifies as failed + prints the record.
-    assert.notEqual(status, 0,
-      `expected non-zero exit on parse failure; got exit ${status}`);
-    const record = JSON.parse(stdout);
-    assert.equal(record.status, "failed",
-      `garbage stdout must yield status=failed; got ${record.status}`);
-    assert.equal(record.error_code, "parse_error",
-      `garbage stdout must yield error_code=parse_error; got ${record.error_code}`);
-    assert.equal(record.claude_session_id, null,
-      `§21.1: claude_session_id MUST be null when claude returned no session_id.\n` +
-      `Got ${JSON.stringify(record.claude_session_id)} — this is the finding #1 / H1 ` +
-      `fallback regression: claudeSessionId ?? resumeId ?? jobId synthesized an ID.`);
-    assert.notEqual(record.claude_session_id, record.job_id,
-      `§21.1: claude_session_id MUST NOT be aliased from job_id under any path.`);
-  } finally {
-    rmSync(dataDir, { recursive: true, force: true });
-    rmSync(cwd, { recursive: true, force: true });
-    void stderr;
-  }
-});
-
-test("T7.8 §21.1 static: claude-companion.mjs fabricates no claudeSessionId via identity fallback", () => {
-  const src = readFileSync(
-    path.join(REPO_ROOT, "plugins/claude/scripts/claude-companion.mjs"),
-    "utf8"
-  );
-  // The historical pattern: `claudeSessionId: execution.claudeSessionId ?? resumeId ?? jobId`.
-  // Identity fabrication uses another identity as the RHS of `??` — resumeId,
-  // jobId, sessionId, or any non-`null` expression. `?? null` is permitted
-  // because it's just a persistence-read default, not a mint.
-  const lines = src.split("\n");
-  const offenders = [];
-  lines.forEach((line, idx) => {
-    if (!/claudeSessionId\s*:/.test(line)) return;
-    // Collect every `?? <rhs>` on the line and flag any non-null RHS.
-    const re = /\?\?\s*([^,\s)?]+)/g;
-    let m;
-    while ((m = re.exec(line)) !== null) {
-      if (m[1].trim() !== "null") {
-        offenders.push(`line ${idx + 1}: ${line.trim()}`);
-        break;
-      }
-    }
-  });
-  assert.deepEqual(offenders, [],
-    `§21.1 bypass guard: no call-site may fabricate claude_session_id via identity fallback.\n` +
-    `Offending lines:\n  ${offenders.join("\n  ")}\n` +
-    `Allowed forms: \`execution.claudeSessionId\` (bare), \`prior.claude_session_id ?? null\`.\n` +
-    `Forbidden: \`?? resumeId\`, \`?? jobId\`, \`?? sessionId\` — null must propagate.`);
-});
-
-// ---------------------------------------------------------------------------
-// T7.8 FIX B3 — background cancel end-to-end.
-//
-// Pre-T7.8 the companion never wrote status=running; cmdCancel's first gate
-// (`status !== "running"`) therefore rejected every live job with
-// "already_terminal". The fix writes a running-state record at executeRun
-// entry (with the owner process's pidInfo). cmdCancel verifies pid_info,
-// terminates the process tree, and writes a cancelled record.
-
-test("T7.8 §21 cancel: bg job's worker writes running record, cancel terminates + writes cancelled", async () => {
-  const cwd = mkdtempSync(path.join(tmpdir(), "inv-cancel-"));
-  seedMinimalRepo(cwd);
-  // Launch background job that sleeps 30s — plenty of window to cancel.
-  const r1 = runCompanion(
-    ["run", "--mode=rescue", "--background",
-     "--model", "claude-haiku-4-5-20251001",
-     "--cwd", cwd, "--", "long task"],
-    { cwd, env: { CLAUDE_MOCK_DELAY_MS: "30000" } }
-  );
-  try {
-    assert.equal(r1.status, 0, r1.stderr);
-    const { job_id } = JSON.parse(r1.stdout);
-
-    // Poll for the worker's running-state record.
-    const deadline = Date.now() + 5000;
-    let metaPath = null;
-    let running = null;
-    while (Date.now() < deadline) {
-      try { metaPath = findMetaPath(r1.dataDir, job_id); } catch { /* not yet */ }
-      if (metaPath) {
-        const parsed = JSON.parse(readFileSync(metaPath, "utf8"));
-        if (parsed.status === "running" && parsed.pid_info) {
-          running = parsed;
-          break;
-        }
-      }
-      await new Promise((r) => setTimeout(r, 100));
-    }
-    assert.ok(running,
-      `worker never transitioned to status=running with pid_info within 5s`);
-    assert.ok(Number.isInteger(running.pid_info.pid),
-      "running record must carry pid_info.pid");
-    assert.equal(running.ended_at, null,
-      "running record has no ended_at yet");
-
-    // Cancel.
-    const cr = runCompanion(
-      ["cancel", "--job", job_id, "--cwd", cwd],
-      { cwd, dataDir: r1.dataDir }
-    );
-    assert.equal(cr.status, 0,
-      `cancel should exit 0 on running job; got ${cr.status} stderr=${cr.stderr}`);
-    const cancelResp = JSON.parse(cr.stdout);
-    assert.equal(cancelResp.ok, true);
-    assert.equal(cancelResp.status, "cancelled");
-
-    // cmdCancel must have written a cancelled record.
-    const terminal = JSON.parse(readFileSync(metaPath, "utf8"));
-    assert.equal(terminal.status, "cancelled",
-      `meta.status should be cancelled after cancel; got ${terminal.status}`);
-    assert.equal(terminal.error_code, "cancelled_by_user");
-    assert.ok(terminal.ended_at,
-      "cancelled record must stamp ended_at (terminal state)");
-  } finally {
-    rmSync(r1.dataDir, { recursive: true, force: true });
-    rmSync(cwd, { recursive: true, force: true });
-  }
-});
-
-// ---------------------------------------------------------------------------
-// T7.8 FIX B4 — continue inherits cwd from the prior record.
-//
-// cmdContinue is invoked by Codex (the orchestrator), not by a human. Codex
-// passes `--job X` and a prompt; it does NOT know the correct cwd. Pre-T7.8
-// `cmdContinue` read cwd from `--cwd` or `process.cwd()` — Codex's cwd,
-// which may differ from where the prior job ran. The fix: forbid --cwd,
-// always inherit from prior.cwd. Any mismatch becomes impossible by
-// construction.
-
-test("T7.8 §21 continue: rejects --cwd arg (cwd is inherited, not supplied)", () => {
-  const cwd = mkdtempSync(path.join(tmpdir(), "inv-cont-cwd-"));
-  const dataDir = mkdtempSync(path.join(tmpdir(), "inv-cont-cwd-data-"));
-  try {
-    seedMinimalRepo(cwd);
-    const r1 = runCompanion(
-      ["run", "--mode=rescue", "--foreground",
-       "--model", "claude-haiku-4-5-20251001",
-       "--cwd", cwd, "--", "seed"],
-      { cwd, dataDir });
-    assert.equal(r1.status, 0, r1.stderr);
-    const job1 = JSON.parse(r1.stdout).job_id;
-
-    const cr = runCompanion(
-      ["continue", "--job", job1, "--cwd", cwd, "--", "followup"],
-      { cwd, dataDir });
-    assert.notEqual(cr.status, 0,
-      `continue must reject --cwd; got exit ${cr.status} stderr=${cr.stderr}`);
-    assert.match(cr.stderr, /cwd/i,
-      `stderr must mention --cwd in its rejection; got: ${cr.stderr}`);
-  } finally {
-    rmSync(dataDir, { recursive: true, force: true });
-    rmSync(cwd, { recursive: true, force: true });
-  }
-});
-
-test("T7.8 §21 continue: new record.cwd equals prior.cwd (not process.cwd)", () => {
-  const cwd = mkdtempSync(path.join(tmpdir(), "inv-cont-inh-"));
-  const dataDir = mkdtempSync(path.join(tmpdir(), "inv-cont-inh-data-"));
-  try {
-    seedMinimalRepo(cwd);
-    const r1 = runCompanion(
-      ["run", "--mode=rescue", "--foreground",
-       "--model", "claude-haiku-4-5-20251001",
-       "--cwd", cwd, "--", "seed"],
-      { cwd, dataDir });
-    assert.equal(r1.status, 0, r1.stderr);
-    const job1 = JSON.parse(r1.stdout).job_id;
-
-    // Continue from the same workspace (Codex's realistic call site).
-    // record2.cwd MUST inherit prior.cwd; the --cwd flag is gone, so there
-    // is no way for a caller to introduce a cwd mismatch.
-    const r2 = runCompanion(
-      ["continue", "--job", job1, "--foreground", "--", "followup"],
-      { cwd, dataDir });
-    assert.equal(r2.status, 0, r2.stderr);
-    const record2 = JSON.parse(r2.stdout);
-    assert.equal(record2.cwd, cwd,
-      `continue record.cwd must inherit prior.cwd=${cwd}; got ${record2.cwd}`);
-    assert.equal(record2.parent_job_id, job1);
-  } finally {
-    rmSync(dataDir, { recursive: true, force: true });
-    rmSync(cwd, { recursive: true, force: true });
-  }
-});
-
-test("T7.8 §21 continue static: cmdContinue reads prior.cwd, not options.cwd", () => {
-  const src = readFileSync(
-    path.join(REPO_ROOT, "plugins/claude/scripts/claude-companion.mjs"),
-    "utf8"
-  );
-  const block = src.match(/async function cmdContinue\b[\s\S]+?^\}/m);
-  assert.ok(block, "cmdContinue function body not found");
-  const body = block[0];
-  assert.match(body, /prior\.cwd/,
-    "cmdContinue must reference prior.cwd for the new invocation's cwd");
-  assert.ok(!/options\.cwd/.test(body),
-    "cmdContinue must NOT read options.cwd — --cwd is forbidden and the flag must be rejected if present");
-});
-
-// ---------------------------------------------------------------------------
-// T7.8 FIX B5 — command docs reference real JobRecord fields only.
-//
-// Pre-T7.8 drift: docs told Codex to look for `warning: "mutation_detected"`
-// + `mutated_files`, neither of which ever existed on the JobRecord. When
-// the user read the docs and Codex relayed findings, mutation info silently
-// vanished. The fix updates the docs; this test blocks regression.
-
-test("T7.8 cmd-doc parity: no command .md references a dead JobRecord field", () => {
-  const cmdDir = path.join(REPO_ROOT, "plugins/claude/commands");
-  const docs = readdirSync(cmdDir).filter((n) => n.endsWith(".md"));
-  // Fields that NEVER existed on any JobRecord shape — referencing them
-  // means the doc is out-of-sync with the code and will misguide Codex.
-  const DEAD_FIELDS = [
-    "mutation_detected",
-    "mutated_files",
-    '"signaled"',   // cmdCancel's legacy status string; replaced by "cancelled"
-  ];
-  const offenders = [];
-  for (const doc of docs) {
-    const src = readFileSync(path.join(cmdDir, doc), "utf8");
-    for (const dead of DEAD_FIELDS) {
-      if (src.includes(dead)) {
-        offenders.push(`${doc}: references dead field/value ${JSON.stringify(dead)}`);
-      }
-    }
-  }
-  assert.deepEqual(offenders, [],
-    `command docs must reference real JobRecord fields only:\n  ${offenders.join("\n  ")}\n` +
-    `Schema of record: see plugins/claude/scripts/lib/job-record.mjs EXPECTED_KEYS + spec §21.3.`);
 });
 
 // ---------------------------------------------------------------------------

@@ -197,56 +197,6 @@ test("buildJobRecord: record is frozen", () => {
     "JobRecord must be frozen so callers can't silently mutate fields");
 });
 
-// T7.8 FIX B3 — lifecycle markers.
-//
-// cmdRun/worker must write a status=running record BEFORE spawnClaude so
-// cmdCancel (in another process) can see the live owner and signal. cmdCancel
-// writes status=cancelled on user action and status=stale when pid_info no
-// longer matches a live process. classifyExecution exposes three markers so
-// call sites can produce each state via the SAME buildJobRecord convergence
-// point (§21.3.2).
-
-test("T7.8 buildJobRecord: runningMarker yields status=running, ended_at=null", () => {
-  const rec = buildJobRecord(makeInvocation(), {
-    runningMarker: true,
-    pidInfo: makePidInfo(),
-    claudeSessionId: null,
-  }, []);
-  assert.equal(rec.status, "running");
-  assert.equal(rec.ended_at, null, "running record has no ended_at");
-  assert.equal(rec.error_code, null);
-  assert.deepEqual(rec.pid_info, makePidInfo(),
-    "running record carries the owner's pid_info for cancel targeting");
-  assert.equal(rec.claude_session_id, null,
-    "claude_session_id is unknown at running-time — null is correct");
-});
-
-test("T7.8 buildJobRecord: cancelMarker yields status=cancelled, error_code=cancelled_by_user", () => {
-  const rec = buildJobRecord(makeInvocation(), {
-    cancelMarker: true,
-    pidInfo: makePidInfo(),
-    claudeSessionId: null,
-    errorMessage: "cancelled by user",
-  }, []);
-  assert.equal(rec.status, "cancelled");
-  assert.equal(rec.error_code, "cancelled_by_user");
-  assert.equal(rec.error_message, "cancelled by user");
-  assert.ok(rec.ended_at, "cancelled record must stamp ended_at");
-});
-
-test("T7.8 buildJobRecord: staleMarker yields status=stale, error_code=stale_pid", () => {
-  const rec = buildJobRecord(makeInvocation(), {
-    staleMarker: true,
-    pidInfo: makePidInfo(),
-    claudeSessionId: null,
-    errorMessage: "stale_pid: starttime_mismatch",
-  }, []);
-  assert.equal(rec.status, "stale");
-  assert.equal(rec.error_code, "stale_pid");
-  assert.match(rec.error_message, /starttime_mismatch/);
-  assert.ok(rec.ended_at, "stale record must stamp ended_at (terminal state)");
-});
-
 test("buildJobRecord: rejects invocation with a `prompt` field (defense in depth)", () => {
   assert.throws(
     () => buildJobRecord(

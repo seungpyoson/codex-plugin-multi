@@ -89,15 +89,6 @@ const sessionId = parsed.flags["--session-id"] ?? "00000000-0000-4000-8000-00000
 const resumeId = parsed.flags["--resume"] ?? null;
 const promptSha = createHash("sha256").update(prompt).digest("hex").slice(0, 16);
 
-// T7.8 / §21.1 test oracle — `CLAUDE_MOCK_GARBAGE_STDOUT=1`: emit unparseable
-// stdout and exit non-zero. Exercises the "claude returned no session_id"
-// path so the companion's bypass-guard can prove that claude_session_id
-// stays null (no fallback minting from job_id / resume_chain).
-if (process.env.CLAUDE_MOCK_GARBAGE_STDOUT === "1") {
-  process.stdout.write("not a json document — claude crashed mid-response\n");
-  process.exit(1);
-}
-
 // T7.3 test oracle: when CLAUDE_MOCK_RECORD_RESUME=1, record the `--resume`
 // (or `--session-id` fallback) UUID to a sink path. Smoke tests read it back
 // to assert the companion passed the *correct* UUID (§21.1 identity contract,
@@ -177,39 +168,30 @@ if (process.env.CLAUDE_MOCK_LIST_ADDDIR && addDir) {
   fixture.t7_add_dir_files = walk(addDir);
 }
 
-// T7.6 / T7.8 test oracle: `CLAUDE_MOCK_MUTATE_FILE=<relpath-or-abspath>` —
-// write a file so the companion's mutation-detection path has something to
+// T7.6 test oracle: `CLAUDE_MOCK_MUTATE_FILE=<relpath-or-abspath>` — before
+// emitting the result, write a small file to disk so the companion's
+// mutation-detection path (tryGit pre/post snapshot) has something to
 // observe. Absolute paths are used verbatim; relative paths resolve against
-// `addDir` when it differs from `process.cwd()` (review's worktree
-// containment), else against `process.cwd()`. Leaving the env unset is
-// identical to pre-T7.6 behavior.
-//
-// T7.8 `CLAUDE_MOCK_DELETE_FILE=<relpath-or-abspath>` — delete an existing
-// file (resolved the same way). Covers the delete class of mutation so the
-// git-baseline detection proves it catches ` D <file>`.
+// `process.cwd()` first, with a fallback to `addDir` when they differ
+// (worktree containment). Keeps the hook additive: leaving the env unset
+// is identical to pre-T7.6 behavior.
 const mutateRel = process.env.CLAUDE_MOCK_MUTATE_FILE;
-const deleteRel = process.env.CLAUDE_MOCK_DELETE_FILE;
-if (mutateRel || deleteRel) {
-  const { writeFileSync: wf, mkdirSync: mk, unlinkSync: un } = await import("node:fs");
+if (mutateRel) {
+  const { writeFileSync: wf, mkdirSync: mk } = await import("node:fs");
   const { isAbsolute, dirname: dn } = await import("node:path");
-  function resolveMockTarget(rel) {
-    if (isAbsolute(rel)) return rel;
-    // addDir ≠ cwd in worktree containment (review). When equal (rescue /
-    // containment=none), both resolve to the same directory.
+  let target;
+  if (isAbsolute(mutateRel)) {
+    target = mutateRel;
+  } else {
+    // Prefer addDir when it differs from cwd (review's worktree containment
+    // puts addDir ≠ cwd). When they match (rescue / containment=none), both
+    // resolve to the same directory.
     const base = addDir && addDir !== process.cwd() ? addDir : process.cwd();
-    return resolve(base, rel);
+    target = resolve(base, mutateRel);
   }
-  if (mutateRel) {
-    const target = resolveMockTarget(mutateRel);
-    try { mk(dn(target), { recursive: true }); } catch { /* best-effort */ }
-    wf(target, "mock-mutation\n", "utf8");
-    fixture.t7_mutate_wrote = target;
-  }
-  if (deleteRel) {
-    const target = resolveMockTarget(deleteRel);
-    try { un(target); fixture.t7_mutate_deleted = target; }
-    catch (e) { fixture.t7_mutate_delete_error = e.message; }
-  }
+  try { mk(dn(target), { recursive: true }); } catch { /* best-effort */ }
+  wf(target, "mock-mutation\n", "utf8");
+  fixture.t7_mutate_wrote = target;
 }
 
 // T7.6 test oracle: `CLAUDE_MOCK_DELAY_MS=<n>` — delay N ms before emitting

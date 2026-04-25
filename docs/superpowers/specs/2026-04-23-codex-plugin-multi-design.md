@@ -845,36 +845,27 @@ ModeProfile {
 ```
 JobRecord {
   // Identity (§21.1) — required
-  id                               // legacy alias for job_id (kept until T8 drop)
   job_id, target, claude_session_id | gemini_session_id
   parent_job_id?, resume_chain[]?
   pid_info? = { pid, starttime, argv0 }
 
-  // Invocation (§21.2) — required. Fields are FLAT (the pre-T7.4 draft used
-  // a nested `isolation = {containment, scope, dispose}` object; code has
-  // always stored these as sibling fields. Spec tracks code, not the draft).
-  mode, mode_profile_name, model, cwd, workspace_root
-  containment, scope, dispose_effective
-  scope_base?, scope_paths?        // scope=branch-diff / scope=custom only
-  prompt_head                      // first 200 chars — see §21.3.1 below
-  schema_spec?                     // --json-schema value if used
-  binary                           // claude | gemini | <override>
+  // Invocation (§21.2) — required
+  mode_profile_name, model, cwd, workspace_root
+  isolation = { containment, scope, dispose }
+  prompt_head               // first 200 chars — see §21.3.1 below
+  schema_spec?              // --json-schema value if used
+  binary                    // claude | gemini | <override>
 
   // Lifecycle — required
   status: "queued" | "running" | "completed" | "failed" | "cancelled" | "stale"
   started_at, ended_at?, exit_code?
-  error_code?, error_message?      // failed | cancelled | stale only
+  error_code?, error_message?      // failed | stale only
 
   // Result (was missing in v4) — required when status = completed or failed
   result?: string
   structured_output?: object
   permission_denials[]
-  mutations[]: string              // raw `git status -s --untracked-files=all`
-                                   // lines against the baseline commit in
-                                   // childCwd. Each line preserves its 2-char
-                                   // XY prefix: "?? foo.md" (untracked add),
-                                   // " M bar.ts" (unstaged edit),
-                                   // " D old.md" (unstaged delete).
+  mutations[]               // { path, status } entries from post-hoc git diff
   cost_usd?, usage?
 
   // Bookkeeping — required

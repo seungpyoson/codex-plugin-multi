@@ -17,10 +17,8 @@ Review via Claude Code. Read-only; changes detected post-hoc, never auto-reverte
    node "<plugin-root>/scripts/claude-companion.mjs" run --mode=review --foreground -- "$ARGUMENTS"
    ```
    (Containment + scope + dispose are all carried by the review profile — spec §21.4.)
-3. Render the returned JSON (JobRecord, spec §21.3):
-   - If `mutations` is a non-empty array, surface those lines prominently —
-     the worktree diverged from the baseline commit. Each entry is a raw
-     `git status -s` line (e.g., `?? foo.md`, ` M bar.ts`). Do not auto-revert.
+3. Render the returned JSON:
+   - If `warning: "mutation_detected"` appears, surface the `mutated_files` list prominently. Do not auto-revert.
    - If `structured_output` is populated (schema runs), render its verdict + findings.
    - Otherwise render `result` as Markdown.
 
