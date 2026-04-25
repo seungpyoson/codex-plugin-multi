@@ -11,9 +11,7 @@
 //                    left out.
 //   "branch-diff"  — files touched between a base ref (default "main") and
 //                    HEAD. The files are copied at HEAD content.
-//   "head"         — a real `git worktree add HEAD` (registers with source
-//                    repo; populate writes `_scopeHeadOf` on the containment
-//                    handle so cleanup can unregister).
+//   "head"         — files from HEAD, rooted at sourceCwd.
 //   "custom"       — caller-supplied globs via runtimeInputs.scopePaths.
 //
 // When containment=none, the targetPath IS sourceCwd and populateScope is a
@@ -32,9 +30,9 @@
 
 import { execFileSync } from "node:child_process";
 import {
-  mkdirSync, copyFileSync, chmodSync,
-  statSync, lstatSync, realpathSync, unlinkSync,
-  readdirSync, openSync, closeSync,
+  mkdirSync, copyFileSync, chmodSync, writeFileSync,
+  statSync, lstatSync, realpathSync, readFileSync, readlinkSync, symlinkSync, unlinkSync,
+  readdirSync, mkdtempSync, rmSync, existsSync,
 } from "node:fs";
 import path from "node:path";
 
@@ -115,16 +113,7 @@ function chmodGitMode(dst, mode) {
     if (mode === "100755") chmodSync(dst, 0o755);
     else if (mode === "100644") chmodSync(dst, 0o644);
   } catch (err) {
-    scopePopulationFailed(`cannot chmod git blob ${dst}: ${err.message}`);
-  }
-}
-
-function removePartialGitBlob(dst, objectSpec) {
-  try {
-    unlinkSync(dst);
-  } catch (err) {
-    if (err?.code === "ENOENT") return;
-    scopePopulationFailed(`cannot remove partial git blob ${objectSpec}: ${err.message}`);
+    scopePopulationFailed(`cannot chmod git file ${dst}: ${err.message}`);
   }
 }
 
@@ -152,12 +141,6 @@ function startsWithParts(parts, prefix) {
 
 function gitSourcePrefixes(sourceCwd, sourceRoot) {
   const prefixes = [path.resolve(sourceCwd), path.resolve(sourceRoot)];
-  try {
-    prefixes.push(path.resolve(git(sourceCwd, ["rev-parse", "--show-toplevel"]).trim()));
-  } catch {
-    // assertGitWorktree runs before git-derived scope population; keep this
-    // helper side-effect free if git becomes unavailable mid-population.
-  }
   for (const prefix of [...prefixes]) {
     if (prefix.startsWith("/private/")) {
       prefixes.push(prefix.slice("/private".length));
@@ -246,6 +229,31 @@ function indexEntryMode(sourceCwd, rel) {
   return null;
 }
 
+function gitScopeContext(sourceCwd) {
+  const sourceRoot = realpathSync(sourceCwd);
+  const gitRoot = path.resolve(git(sourceCwd, ["rev-parse", "--show-toplevel"]).trim());
+  const rawPrefix = git(sourceCwd, ["rev-parse", "--show-prefix"]).trim();
+  const sourcePrefix = rawPrefix.replace(/\/+$/, "");
+  return {
+    gitRoot,
+    sourceRoot,
+    sourcePrefix,
+    sourcePrefixes: gitSourcePrefixes(sourceCwd, sourceRoot),
+  };
+}
+
+function toGitRel(ctx, snapshotRel) {
+  return ctx.sourcePrefix ? `${ctx.sourcePrefix}/${snapshotRel}` : snapshotRel;
+}
+
+function toSnapshotRel(ctx, gitRel) {
+  if (!ctx.sourcePrefix) return gitRel;
+  if (gitRel === ctx.sourcePrefix) return "";
+  const prefix = `${ctx.sourcePrefix}/`;
+  if (!gitRel.startsWith(prefix)) return null;
+  return gitRel.slice(prefix.length);
+}
+
 function isRegularGitFileMode(mode) {
   return mode === "100644" || mode === "100755";
 }
@@ -277,66 +285,322 @@ function parseGitEntryList(raw) {
     const tab = entry.indexOf("\t");
     if (tab === -1) return null;
     const meta = entry.slice(0, tab).split(/\s+/);
-    return { mode: meta[0], rel: entry.slice(tab + 1) };
+    return { mode: meta[0], object: meta[1], stage: meta[2], rel: entry.slice(tab + 1) };
   }).filter(Boolean);
 }
 
+function indexEntries(sourceCwd) {
+  return parseGitEntryList(git(sourceCwd, ["ls-files", "-s", "-z"]));
+}
+
 function indexSymlinkEntries(sourceCwd) {
-  return parseGitEntryList(git(sourceCwd, ["ls-files", "-s", "-z"]))
+  return indexEntries(sourceCwd)
+    .filter((entry) => entry.stage === "0")
     .filter((entry) => entry.mode === "120000")
     .map((entry) => entry.rel);
+}
+
+function headEntries(sourceCwd) {
+  return parseGitEntryList(git(sourceCwd, ["ls-tree", "-r", "-z", "HEAD"]));
 }
 
 function headSymlinkEntries(sourceCwd) {
-  return parseGitEntryList(git(sourceCwd, ["ls-tree", "-r", "-z", "HEAD"]))
+  return headEntries(sourceCwd)
     .filter((entry) => entry.mode === "120000")
     .map((entry) => entry.rel);
 }
 
-function writeGitBlobToFile(sourceCwd, objectSpec, dst, mode = null) {
-  mkdirSync(path.dirname(dst), { recursive: true });
-  const fd = openSync(dst, "w");
-  let execError = null;
-  let closeError = null;
+function scopedGitEntries(ctx, entries) {
+  return entries.map((entry) => ({
+    ...entry,
+    snapshotRel: toSnapshotRel(ctx, entry.rel),
+  })).filter((entry) => entry.snapshotRel && isSafeSnapshotRel(entry.snapshotRel));
+}
+
+function assertNoUnmergedIndexEntries(ctx, entries) {
+  for (const entry of entries) {
+    if (entry.stage === "0") continue;
+    const snapshotRel = toSnapshotRel(ctx, entry.rel);
+    if (snapshotRel && isSafeSnapshotRel(snapshotRel)) {
+      scopePopulationFailed(`unmerged index entry ${snapshotRel}`);
+    }
+  }
+}
+
+function indexAccess(ctx) {
+  return {
+    entryMode: (_sourceCwd, rel) => indexEntryMode(ctx.gitRoot, toGitRel(ctx, rel)),
+    blob: (_sourceCwd, rel) => indexBlob(ctx.gitRoot, toGitRel(ctx, rel)),
+    hasPathPrefix: (_sourceCwd, rel) => indexPathPrefixExists(ctx.gitRoot, toGitRel(ctx, rel)),
+  };
+}
+
+function headAccess(ctx) {
+  return {
+    entryMode: (_sourceCwd, rel) => headEntryMode(ctx.gitRoot, toGitRel(ctx, rel)),
+    blob: (_sourceCwd, rel) => headBlob(ctx.gitRoot, toGitRel(ctx, rel)),
+    hasPathPrefix: (_sourceCwd, rel) => headPathPrefixExists(ctx.gitRoot, toGitRel(ctx, rel)),
+  };
+}
+
+function checkoutBase(ctx, checkoutRoot) {
+  if (!ctx.sourcePrefix) return checkoutRoot;
+  return path.join(checkoutRoot, ...ctx.sourcePrefix.split("/"));
+}
+
+function uniqueSorted(values) {
+  return [...new Set(values.filter(Boolean))].sort();
+}
+
+function attributeGitRelCandidates(gitRel) {
+  const parts = gitRel.split("/");
+  const out = [".gitattributes"];
+  for (let i = 1; i < parts.length; i++) {
+    out.push(`${parts.slice(0, i).join("/")}/.gitattributes`);
+  }
+  return out;
+}
+
+function checkoutGitRelsWithAttributes(ctx, snapshotRels, entryMode) {
+  const gitRels = uniqueSorted(snapshotRels.map((rel) => toGitRel(ctx, rel)));
+  const attrs = uniqueSorted(gitRels.flatMap(attributeGitRelCandidates))
+    .filter((rel) => isRegularGitFileMode(entryMode(ctx.gitRoot, rel)));
+  return uniqueSorted([...attrs, ...gitRels]);
+}
+
+function tempCheckoutDir(targetPath, label) {
+  return mkdtempSync(path.join(path.dirname(targetPath), `${path.basename(targetPath)}-${label}-`));
+}
+
+function writeIndexAttributeFiles(ctx, checkoutRoot, attrs) {
+  for (const rel of attrs) {
+    const dst = path.join(checkoutRoot, rel);
+    try {
+      mkdirSync(path.dirname(dst), { recursive: true });
+      writeFileSync(dst, gitBuffer(ctx.gitRoot, ["show", `:${rel}`]));
+    } catch (err) {
+      scopePopulationFailed(`cannot checkout INDEX attributes ${rel}: ${err.message}`);
+    }
+  }
+}
+
+function gitPath(sourceCwd, rel) {
+  const raw = git(sourceCwd, ["rev-parse", "--git-path", rel]).trim();
+  return path.isAbsolute(raw) ? raw : path.resolve(sourceCwd, raw);
+}
+
+function shellQuote(value) {
+  return `'${value.replaceAll("'", "'\\''")}'`;
+}
+
+function absolutizeRelativeFilterCommand(command, sourceRoot) {
+  const match = command.match(/^(\s*)(\.{1,2}\/\S+)(.*)$/);
+  if (!match) return command;
+  return `${match[1]}${shellQuote(path.resolve(sourceRoot, match[2]))}${match[3]}`;
+}
+
+function rewriteRelativeFilterCommands(configPath, sourceRoot) {
+  if (!existsSync(configPath)) return;
+  const lines = readFileSync(configPath, "utf8").split("\n");
+  let inFilterSection = false;
+  const rewritten = lines.map((line) => {
+    const section = line.match(/^\s*\[([^\]]+)\]\s*$/);
+    if (section) {
+      inFilterSection = section[1].trim().startsWith("filter ");
+      return line;
+    }
+    if (!inFilterSection) return line;
+    const eq = line.indexOf("=");
+    if (eq === -1) return line;
+    const key = line.slice(0, eq).trim();
+    if (!new Set(["clean", "smudge", "process"]).has(key)) return line;
+    return `${line.slice(0, eq + 1)}${absolutizeRelativeFilterCommand(line.slice(eq + 1), sourceRoot)}`;
+  }).join("\n");
+  writeFileSync(configPath, rewritten);
+}
+
+function prepareIndexCheckoutGitDir(ctx, checkoutRoot) {
+  const gitDir = path.join(checkoutRoot, ".git");
+  mkdirSync(path.join(gitDir, "objects", "info"), { recursive: true });
+  mkdirSync(path.join(gitDir, "refs", "heads"), { recursive: true });
+  writeFileSync(path.join(gitDir, "HEAD"), "ref: refs/heads/snapshot\n");
+  copyFileSync(gitPath(ctx.gitRoot, "index"), path.join(gitDir, "index"));
+  const configPath = gitPath(ctx.gitRoot, "config");
+  if (existsSync(configPath)) {
+    copyFileSync(configPath, path.join(gitDir, "config"));
+  } else {
+    writeFileSync(path.join(gitDir, "config"), "[core]\n\trepositoryformatversion = 0\n\tbare = false\n");
+  }
+  rewriteRelativeFilterCommands(path.join(gitDir, "config"), ctx.gitRoot);
+  const worktreeConfigPath = gitPath(ctx.gitRoot, "config.worktree");
+  if (existsSync(worktreeConfigPath)) {
+    copyFileSync(worktreeConfigPath, path.join(gitDir, "config.worktree"));
+    rewriteRelativeFilterCommands(path.join(gitDir, "config.worktree"), ctx.gitRoot);
+  }
+  writeFileSync(path.join(gitDir, "objects", "info", "alternates"), `${gitPath(ctx.gitRoot, "objects")}\n`);
+  return gitDir;
+}
+
+function checkoutIndexToTemp(ctx, targetPath, gitRels) {
+  const checkoutRoot = tempCheckoutDir(targetPath, "index");
   try {
-    execFileSync("git", ["-C", sourceCwd, "show", objectSpec], {
-      stdio: ["ignore", fd, "pipe"],
+    if (gitRels.length > 0) {
+      const gitDir = prepareIndexCheckoutGitDir(ctx, checkoutRoot);
+      const attrs = gitRels.filter((rel) => rel === ".gitattributes" || rel.endsWith("/.gitattributes"));
+      if (attrs.length > 0) {
+        writeIndexAttributeFiles(ctx, checkoutRoot, attrs);
+      }
+      execFileSync("git", ["-c", "core.attributesFile=/dev/null", "checkout-index", "-f", "--", ...gitRels], {
+        cwd: ctx.gitRoot,
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "pipe"],
+        env: {
+          ...cleanGitEnv(),
+          GIT_DIR: gitDir,
+          GIT_WORK_TREE: checkoutRoot,
+          GIT_ATTR_NOSYSTEM: "1",
+        },
+        maxBuffer: 1024 * 1024 * 64,
+      });
+    }
+    return checkoutRoot;
+  } catch (err) {
+    rmSync(checkoutRoot, { recursive: true, force: true });
+    scopePopulationFailed(`cannot checkout INDEX: ${err.message}`);
+  }
+}
+
+function checkoutHeadToTemp(ctx, targetPath, gitRels) {
+  const checkoutRoot = tempCheckoutDir(targetPath, "head");
+  try {
+    execFileSync("git", ["-C", ctx.gitRoot, "worktree", "add", "--detach", "--no-checkout", "--force", checkoutRoot, "HEAD"], {
+      stdio: ["ignore", "pipe", "pipe"],
       env: cleanGitEnv(),
     });
+    if (gitRels.length > 0) {
+      execFileSync("git", ["-C", checkoutRoot, "checkout", "--force", "HEAD", "--", ...gitRels], {
+        stdio: ["ignore", "pipe", "pipe"],
+        env: cleanGitEnv(),
+      });
+    }
+    return checkoutRoot;
   } catch (err) {
-    execError = err;
+    removeHeadCheckout(ctx, checkoutRoot);
+    scopePopulationFailed(`cannot checkout HEAD: ${err.message}`);
+  }
+}
+
+function removeHeadCheckout(ctx, checkoutRoot) {
+  try {
+    execFileSync("git", ["-C", ctx.gitRoot, "worktree", "remove", "--force", checkoutRoot], {
+      stdio: ["ignore", "pipe", "ignore"],
+      env: cleanGitEnv(),
+    });
+  } catch {
+    // Fall through to rmSync; the registration will be pruned by git later if needed.
+  }
+  rmSync(checkoutRoot, { recursive: true, force: true });
+}
+
+function copyCheckoutTreeToTarget(ctx, checkoutRoot, targetPath) {
+  const srcRoot = checkoutBase(ctx, checkoutRoot);
+  try {
+    rmSync(targetPath, { recursive: true, force: true });
+    mkdirSync(targetPath, { recursive: true });
+  } catch (err) {
+    scopePopulationFailed(`cannot prepare checkout target: ${err.message}`);
+  }
+  if (!lstatForScope(srcRoot, ".")) return;
+  function copyEntry(src, dst, rel) {
+    const lst = lstatForScope(src, rel);
+    if (!lst) return;
+    if (lst.isSymbolicLink()) {
+      try {
+        mkdirSync(path.dirname(dst), { recursive: true });
+        symlinkSync(readlinkSync(src), dst);
+      } catch (err) {
+        scopePopulationFailed(`cannot copy checkout symlink ${rel}: ${err.message}`);
+      }
+      return;
+    }
+    if (lst.isDirectory()) {
+      try {
+        mkdirSync(dst, { recursive: true });
+      } catch (err) {
+        scopePopulationFailed(`cannot create checkout directory ${rel}: ${err.message}`);
+      }
+      let entries;
+      try {
+        entries = readdirSync(src, { withFileTypes: true });
+      } catch (err) {
+        if (err?.code === "ENOENT") return;
+        scopePopulationFailed(`cannot read checkout directory ${rel || "."}: ${err.message}`);
+      }
+      for (const ent of entries) {
+        if (ent.name === ".git") continue;
+        const childRel = rel ? `${rel}/${ent.name}` : ent.name;
+        copyEntry(path.join(src, ent.name), path.join(dst, ent.name), childRel);
+      }
+      return;
+    }
+    try {
+      mkdirSync(path.dirname(dst), { recursive: true });
+      copyFileSync(src, dst);
+    } catch (err) {
+      scopePopulationFailed(`cannot copy checkout file ${rel}: ${err.message}`);
+    }
+  }
+  let entries;
+  try {
+    entries = readdirSync(srcRoot, { withFileTypes: true });
+  } catch (err) {
+    if (err?.code === "ENOENT") return;
+    scopePopulationFailed(`cannot read checkout directory .: ${err.message}`);
+  }
+  for (const ent of entries) {
+    if (ent.name === ".git") continue;
+    copyEntry(path.join(srcRoot, ent.name), path.join(targetPath, ent.name), ent.name);
+  }
+}
+
+function writeCheckoutFile(ctx, checkoutRoot, rel, dst, mode = null) {
+  const src = path.join(checkoutBase(ctx, checkoutRoot), rel);
+  const lst = lstatForScope(src, rel);
+  if (!lst) scopePopulationFailed(`cannot copy checkout file ${rel}: missing from checkout`);
+  if (!lst.isFile()) scopePopulationFailed(`cannot copy checkout file ${rel}: checkout entry is not a regular file`);
+  try {
+    mkdirSync(path.dirname(dst), { recursive: true });
+  } catch (err) {
+    scopePopulationFailed(`cannot create checkout file directory ${rel}: ${err.message}`);
   }
   try {
-    closeSync(fd);
+    copyFileSync(src, dst);
   } catch (err) {
-    closeError = err;
-  }
-  if (execError) {
-    removePartialGitBlob(dst, objectSpec);
-    scopePopulationFailed(`cannot copy git blob ${objectSpec}: ${execError.message}`);
-  }
-  if (closeError) {
-    removePartialGitBlob(dst, objectSpec);
-    scopePopulationFailed(`cannot close git blob ${objectSpec}: ${closeError.message}`);
+    unlinkIfExists(dst, rel);
+    scopePopulationFailed(`cannot copy checkout file ${rel}: ${err.message}`);
   }
   try {
     chmodGitMode(dst, mode);
   } catch (err) {
-    removePartialGitBlob(dst, objectSpec);
+    unlinkIfExists(dst, rel);
     throw err;
   }
 }
 
-function writeHeadBlobToPath(sourceCwd, rel, dst, mode = null) {
-  writeGitBlobToFile(sourceCwd, `HEAD:${rel}`, dst, mode);
+function indexAccessFromCheckout(ctx, checkoutRoot) {
+  const access = indexAccess(ctx);
+  return {
+    ...access,
+    writeBlob: (_sourceCwd, rel, dst, mode) => writeCheckoutFile(ctx, checkoutRoot, rel, dst, mode),
+  };
 }
 
-function writeIndexBlobToPath(sourceCwd, rel, dst, mode = null) {
-  writeGitBlobToFile(sourceCwd, `:${rel}`, dst, mode);
-}
-
-function writeHeadBlob(sourceCwd, targetPath, rel, mode = null) {
-  writeHeadBlobToPath(sourceCwd, rel, path.join(targetPath, rel), mode);
+function headAccessFromCheckout(ctx, checkoutRoot) {
+  const access = headAccess(ctx);
+  return {
+    ...access,
+    writeBlob: (_sourceCwd, rel, dst, mode) => writeCheckoutFile(ctx, checkoutRoot, rel, dst, mode),
+  };
 }
 
 function snapshotTargetComponents(sourcePrefixes, currentRel, linkTarget) {
@@ -415,19 +679,18 @@ function resolveGitSnapshotSymlinkTarget(sourceCwd, rel, linkTarget, sourcePrefi
   unsafeSymlink(rel, `does not resolve to a regular file in ${snapshotName}`);
 }
 
-function materializeHeadSymlink(sourceCwd, targetPath, rel, sourceRoot) {
-  const linkTarget = headBlob(sourceCwd, rel).toString("utf8");
-  const sourcePrefixes = gitSourcePrefixes(sourceCwd, sourceRoot);
+function materializeHeadSymlink(ctx, targetPath, rel, access) {
+  const linkTarget = access.blob(ctx.gitRoot, rel).toString("utf8");
   const target = resolveGitSnapshotSymlinkTarget(
-    sourceCwd, rel, linkTarget, sourcePrefixes, headEntryMode, headBlob, headPathPrefixExists, "HEAD"
+    ctx.gitRoot, rel, linkTarget, ctx.sourcePrefixes,
+    access.entryMode, access.blob, access.hasPathPrefix, "HEAD"
   );
   const dst = path.join(targetPath, rel);
-  writeHeadBlobToPath(sourceCwd, target.rel, dst, target.mode);
+  access.writeBlob(ctx.gitRoot, target.rel, dst, target.mode);
 }
 
-function materializeGitSnapshotSymlinks(sourceCwd, targetPath, sourceRoot, entryMode, blob, hasPathPrefix, writeBlob, symlinkEntries, snapshotName) {
+function materializeGitSnapshotSymlinks(ctx, targetPath, entryMode, blob, hasPathPrefix, writeBlob, symlinkEntries, snapshotName) {
   const symlinkRels = new Set(symlinkEntries);
-  const sourcePrefixes = gitSourcePrefixes(sourceCwd, sourceRoot);
   function walk(absDir, relDir = "") {
     let entries;
     try {
@@ -462,14 +725,14 @@ function materializeGitSnapshotSymlinks(sourceCwd, targetPath, sourceRoot, entry
   for (const rel of [...symlinkEntries].sort()) {
     let linkTarget;
     try {
-      linkTarget = blob(sourceCwd, rel).toString("utf8");
+      linkTarget = blob(ctx.gitRoot, rel).toString("utf8");
     } catch {
       unsafeSymlink(rel, `cannot be read in ${snapshotName}`);
     }
     const target = resolveGitSnapshotSymlinkTarget(
-      sourceCwd, rel, linkTarget, sourcePrefixes, entryMode, blob, hasPathPrefix, snapshotName
+      ctx.gitRoot, rel, linkTarget, ctx.sourcePrefixes, entryMode, blob, hasPathPrefix, snapshotName
     );
-    writeBlob(sourceCwd, target.rel, path.join(targetPath, rel), target.mode);
+    writeBlob(ctx.gitRoot, target.rel, path.join(targetPath, rel), target.mode);
   }
 }
 
@@ -512,68 +775,125 @@ function scopeWorkingTree(sourceCwd, targetPath) {
 
 function scopeStaged(sourceCwd, targetPath) {
   assertGitWorktree(sourceCwd);
-  // checkout-index --all populates the tree matching the INDEX under prefix.
-  // Trailing slash on prefix is required — git treats the last path-segment
-  // as a filename otherwise.
-  const prefix = targetPath.endsWith(path.sep) ? targetPath : targetPath + path.sep;
-  mkdirSync(targetPath, { recursive: true });
-  git(sourceCwd, ["checkout-index", "-a", "-f", `--prefix=${prefix}`]);
-  materializeGitSnapshotSymlinks(
-    sourceCwd, targetPath, realpathSync(sourceCwd), indexEntryMode, indexBlob,
-    indexPathPrefixExists, writeIndexBlobToPath, indexSymlinkEntries(sourceCwd), "INDEX"
+  const ctx = gitScopeContext(sourceCwd);
+  const entries = indexEntries(ctx.gitRoot);
+  assertNoUnmergedIndexEntries(ctx, entries);
+  const unsupported = scopedGitEntries(ctx, entries)
+    .filter((entry) => entry.stage === "0")
+    .find((entry) => !isRegularGitFileMode(entry.mode) && entry.mode !== "120000" && entry.mode !== "160000");
+  if (unsupported) {
+    scopePopulationFailed(`unsupported git entry ${unsupported.snapshotRel} mode ${unsupported.mode}`);
+  }
+  const scopedEntries = scopedGitEntries(ctx, entries)
+    .filter((entry) => entry.stage === "0")
+    .filter((entry) => isRegularGitFileMode(entry.mode) || entry.mode === "120000");
+  const checkoutRoot = checkoutIndexToTemp(
+    ctx,
+    targetPath,
+    checkoutGitRelsWithAttributes(ctx, scopedEntries.map((entry) => entry.snapshotRel), indexEntryMode),
   );
+  try {
+    copyCheckoutTreeToTarget(ctx, checkoutRoot, targetPath);
+    const access = indexAccessFromCheckout(ctx, checkoutRoot);
+    materializeGitSnapshotSymlinks(
+      ctx, targetPath, access.entryMode, access.blob, access.hasPathPrefix,
+      access.writeBlob, scopedGitEntries(ctx, indexSymlinkEntries(ctx.gitRoot).map((rel) => ({ rel }))).map((entry) => entry.snapshotRel), "INDEX"
+    );
+  } finally {
+    rmSync(checkoutRoot, { recursive: true, force: true });
+  }
 }
 
 function scopeBranchDiff(sourceCwd, targetPath, scopeBase) {
   assertGitWorktree(sourceCwd);
+  const ctx = gitScopeContext(sourceCwd);
   const base = scopeBase ?? "main";
   // Verify base exists. `rev-parse --verify` exits non-zero if not.
   try {
-    git(sourceCwd, ["rev-parse", "--verify", "--quiet", base]);
+    git(ctx.gitRoot, ["rev-parse", "--verify", "--quiet", base]);
   } catch {
     throw new Error(`scope_base_missing: base ref ${JSON.stringify(base)} does not exist in ${sourceCwd}`);
   }
   // Files changed between base..HEAD. Use merge-base range to avoid picking
   // up files that moved on the base side only.
-  const mergeBase = git(sourceCwd, ["merge-base", base, "HEAD"]).trim();
-  const raw = git(sourceCwd, ["diff", "--name-only", "-z", `${mergeBase}..HEAD`]);
-  const files = raw.split("\0").filter(Boolean);
-  const sourceRoot = realpathSync(sourceCwd);
-  for (const rel of files) {
-    const mode = headEntryMode(sourceCwd, rel);
-    if (mode === null) continue; // deleted in HEAD vs base — nothing to copy
-    if (mode === "160000") continue; // gitlink/submodule entries have no blob to copy
+  const mergeBase = git(ctx.gitRoot, ["merge-base", base, "HEAD"]).trim();
+  const raw = git(ctx.gitRoot, ["diff", "--name-only", "-z", `${mergeBase}..HEAD`]);
+  const files = raw.split("\0").filter(Boolean)
+    .map((gitRel) => ({ gitRel, snapshotRel: toSnapshotRel(ctx, gitRel) }))
+    .filter((entry) => entry.snapshotRel && isSafeSnapshotRel(entry.snapshotRel));
+  if (files.length === 0) return;
+  const access = headAccess(ctx);
+  const materializations = [];
+  const checkoutSnapshotRels = [];
+  for (const { gitRel, snapshotRel } of files) {
+    const mode = headEntryMode(ctx.gitRoot, gitRel);
+    if (mode === null || mode === "160000") {
+      materializations.push({ gitRel, snapshotRel, mode });
+      continue;
+    }
     if (mode === "120000") {
-      materializeHeadSymlink(sourceCwd, targetPath, rel, sourceRoot);
+      const linkTarget = access.blob(ctx.gitRoot, snapshotRel).toString("utf8");
+      const target = resolveGitSnapshotSymlinkTarget(
+        ctx.gitRoot, snapshotRel, linkTarget, ctx.sourcePrefixes,
+        access.entryMode, access.blob, access.hasPathPrefix, "HEAD"
+      );
+      checkoutSnapshotRels.push(target.rel);
+      materializations.push({ gitRel, snapshotRel, mode, target });
       continue;
     }
     if (!isRegularGitFileMode(mode)) {
-      scopePopulationFailed(`unsupported git entry ${rel} mode ${mode}`);
+      scopePopulationFailed(`unsupported git entry ${snapshotRel} mode ${mode}`);
     }
-    // Content at HEAD. Stream raw `git show HEAD:<file>` bytes into the
-    // snapshot so large or binary files are not buffered or re-encoded.
-    writeHeadBlob(sourceCwd, targetPath, rel, mode);
+    checkoutSnapshotRels.push(snapshotRel);
+    materializations.push({ gitRel, snapshotRel, mode });
+  }
+  const checkoutRoot = checkoutHeadToTemp(
+    ctx,
+    targetPath,
+    checkoutGitRelsWithAttributes(ctx, checkoutSnapshotRels, headEntryMode),
+  );
+  try {
+    const checkoutAccess = headAccessFromCheckout(ctx, checkoutRoot);
+    for (const { gitRel, snapshotRel, mode } of materializations) {
+      if (mode === null) continue; // deleted in HEAD vs base — nothing to copy
+      if (mode === "160000") continue; // gitlink/submodule entries have no blob to copy
+      if (mode === "120000") {
+        materializeHeadSymlink(ctx, targetPath, snapshotRel, checkoutAccess);
+        continue;
+      }
+      checkoutAccess.writeBlob(ctx.gitRoot, snapshotRel, path.join(targetPath, snapshotRel), mode);
+    }
+  } finally {
+    removeHeadCheckout(ctx, checkoutRoot);
   }
 }
 
 function scopeHead(sourceCwd, targetPath, containmentHandle) {
   assertGitWorktree(sourceCwd);
-  // `git worktree add` CREATES the target path; it must not pre-exist as a
-  // non-empty directory. setupContainment's tempdir is empty — git accepts
-  // that (it treats empty dirs the same as not-yet-existing).
-  // Use --detach so we don't mint a branch ref; --force to tolerate git's
-  // "already exists" complaint if setupContainment's mkdtemp left the dir
-  // present.
-  execFileSync("git", ["-C", sourceCwd, "worktree", "add", "--detach", "--force", targetPath, "HEAD"], {
-    stdio: ["ignore", "pipe", "pipe"],
-    env: cleanGitEnv(),
-  });
-  // Tell the containment handle to also unregister the worktree on cleanup.
-  if (containmentHandle) containmentHandle._scopeHeadOf = sourceCwd;
-  materializeGitSnapshotSymlinks(
-    sourceCwd, targetPath, realpathSync(sourceCwd), headEntryMode, headBlob,
-    headPathPrefixExists, writeHeadBlobToPath, headSymlinkEntries(sourceCwd), "HEAD"
+  const ctx = gitScopeContext(sourceCwd);
+  const unsupported = scopedGitEntries(ctx, headEntries(ctx.gitRoot))
+    .find((entry) => !isRegularGitFileMode(entry.mode) && entry.mode !== "120000" && entry.mode !== "160000");
+  if (unsupported) {
+    scopePopulationFailed(`unsupported git entry ${unsupported.snapshotRel} mode ${unsupported.mode}`);
+  }
+  const scopedEntries = scopedGitEntries(ctx, headEntries(ctx.gitRoot))
+    .filter((entry) => isRegularGitFileMode(entry.mode) || entry.mode === "120000");
+  const checkoutRoot = checkoutHeadToTemp(
+    ctx,
+    targetPath,
+    checkoutGitRelsWithAttributes(ctx, scopedEntries.map((entry) => entry.snapshotRel), headEntryMode),
   );
+  try {
+    copyCheckoutTreeToTarget(ctx, checkoutRoot, targetPath);
+    const access = headAccessFromCheckout(ctx, checkoutRoot);
+    materializeGitSnapshotSymlinks(
+      ctx, targetPath, access.entryMode, access.blob, access.hasPathPrefix,
+      access.writeBlob, scopedGitEntries(ctx, headSymlinkEntries(ctx.gitRoot).map((rel) => ({ rel }))).map((entry) => entry.snapshotRel), "HEAD"
+    );
+  } finally {
+    removeHeadCheckout(ctx, checkoutRoot);
+  }
+  if (containmentHandle) containmentHandle._scopeHeadOf = null;
 }
 
 function matchGlob(rel, pattern) {

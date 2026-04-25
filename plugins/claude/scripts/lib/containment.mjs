@@ -19,20 +19,17 @@
 //   `path`      — the directory Claude's --add-dir should point at. For
 //                 containment=none this IS sourceCwd.
 //   `cleanup()` — idempotent. Removes the tempdir (containment=worktree) or
-//                 is a no-op (containment=none). Also tries `git worktree
-//                 remove` if populateScope later registered the path with
-//                 the source repo (scope=head), but that call is
-//                 best-effort — if git has never heard of the path we just
-//                 fall through to rmSync.
+//                 is a no-op (containment=none). Also tolerates older
+//                 populateScope implementations that registered the path
+//                 with `git worktree add` for scope=head; cleanup removes
+//                 the directory either way.
 //   `disposed`  — true when cleanup() did real work (caller uses this to
 //                 record a `worktree_cleaned` flag on the job record).
 //
-// This module intentionally has NO dependency on git. populateScope may
-// invoke `git worktree add` (scope=head), which registers the path; cleanup
-// handles both shapes by trying worktree-remove against every plausible
-// source repo and falling back to rmSync. populateScope communicates the
-// "this path is now a git worktree of <sourceCwd>" fact by storing
-// `_scopeHeadOf` on the containment object.
+// This module intentionally has no role in deciding scope contents. The
+// `_scopeHeadOf` hook remains for compatibility with older scope=head
+// implementations that used `git worktree add`; current scope population
+// writes ordinary files into this tempdir.
 
 import { mkdtempSync, rmSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
