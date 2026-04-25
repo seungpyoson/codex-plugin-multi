@@ -1,4 +1,4 @@
-// scope.mjs — "what content does Claude see?" (spec §21.4). Strictly
+// scope.mjs — "what content does the target CLI see?" (spec §21.4). Strictly
 // orthogonal to containment.mjs: this file does not create / destroy
 // directories; it only populates the directory the caller provides.
 //
@@ -224,7 +224,7 @@ export function populateScope(profile, sourceCwd, targetPath, runtimeInputs = {}
     throw new Error(`invalid_profile: unknown scope ${JSON.stringify(profile.scope)} (expected: ${[...VALID_SCOPES].join(", ")})`);
   }
 
-  // containment=none short-circuits: Claude reads directly from sourceCwd,
+  // containment=none short-circuits: the target CLI reads directly from sourceCwd,
   // nothing to populate. This check is structural (target === source), not
   // profile-field-based, so the caller's convention of "pass cwd as target
   // when containment=none" is the single source of truth.

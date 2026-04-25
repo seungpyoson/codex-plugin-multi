@@ -9,7 +9,6 @@
 // the profile is the only source of those. See lib/mode-profiles.mjs.
 
 import { spawn } from "node:child_process";
-import { randomUUID } from "node:crypto";
 
 import { capturePidInfo } from "./identity.mjs";
 
@@ -164,7 +163,7 @@ export async function spawnClaude(profile, runtimeInputs = {}) {
   const {
     model,
     promptText,
-    sessionId = randomUUID(),
+    sessionId,
     resumeId = null,
     addDirPath = null,
     jsonSchema = null,

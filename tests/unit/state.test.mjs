@@ -1,6 +1,6 @@
 import { test, before, afterEach } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import fs, { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
@@ -151,6 +151,37 @@ test("writeJobFile: rejects traversal in jobId", () => {
   try {
     assert.throws(() => writeJobFile(dir, "..", { x: 1 }), /Unsafe jobId/);
   } finally {
+    cleanup(dir);
+  }
+});
+
+test("writeJobFile: writes through a sibling tmp file then renames", () => {
+  const dir = freshStateDir();
+  const originalWrite = fs.writeFileSync;
+  const originalRename = fs.renameSync;
+  const writes = [];
+  const renames = [];
+  try {
+    fs.writeFileSync = function patchedWrite(filePath, ...args) {
+      writes.push(String(filePath));
+      return originalWrite.call(this, filePath, ...args);
+    };
+    fs.renameSync = function patchedRename(from, to) {
+      renames.push({ from: String(from), to: String(to) });
+      return originalRename.call(this, from, to);
+    };
+
+    const jobFile = writeJobFile(dir, "job-atomic", { ok: true });
+
+    assert.equal(writes.includes(jobFile), false,
+      "writeJobFile must not write partial JSON directly to the final job file");
+    assert.equal(renames.length, 1, `expected one rename; got ${JSON.stringify(renames)}`);
+    assert.equal(renames[0].to, jobFile);
+    assert.ok(renames[0].from.startsWith(`${jobFile}.`), `tmp file should be sibling of final file; got ${renames[0].from}`);
+    assert.ok(renames[0].from.endsWith(".tmp"), `tmp file should end in .tmp; got ${renames[0].from}`);
+  } finally {
+    fs.writeFileSync = originalWrite;
+    fs.renameSync = originalRename;
     cleanup(dir);
   }
 });

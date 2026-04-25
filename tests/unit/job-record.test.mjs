@@ -16,6 +16,10 @@ import {
   EXPECTED_KEYS,
   SCHEMA_VERSION,
 } from "../../plugins/claude/scripts/lib/job-record.mjs";
+import {
+  buildJobRecord as buildGeminiJobRecord,
+  SCHEMA_VERSION as GEMINI_SCHEMA_VERSION,
+} from "../../plugins/gemini/scripts/lib/job-record.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const SKILL_MD = resolvePath(HERE, "..", "..",
@@ -23,6 +27,12 @@ const SKILL_MD = resolvePath(HERE, "..", "..",
 
 const UUID = "550e8400-e29b-41d4-a716-446655440000";
 const CLAUDE_UUID = "11111111-2222-4333-8444-555555555555";
+const GEMINI_UUID = "22222222-3333-4444-9555-666666666666";
+
+test("JobRecord schema_version is bumped for gemini_session_id parity", () => {
+  assert.equal(SCHEMA_VERSION, 6);
+  assert.equal(GEMINI_SCHEMA_VERSION, 6);
+});
 
 // Helper — minimal valid invocation captured at cmdRun entry.
 function makeInvocation(overrides = {}) {
@@ -55,7 +65,7 @@ function makePidInfo() {
 
 test("EXPECTED_KEYS is the spec §21.3 canonical list", () => {
   const required = [
-    "id", "job_id", "target", "parent_job_id", "claude_session_id",
+    "id", "job_id", "target", "parent_job_id", "claude_session_id", "gemini_session_id",
     "resume_chain", "pid_info",
     "mode", "mode_profile_name", "model", "cwd", "workspace_root",
     "containment", "scope", "dispose_effective", "scope_base", "scope_paths",
@@ -91,6 +101,7 @@ test("buildJobRecord: foreground success path has EXACTLY the expected keys", ()
     "§21.3.1 forbids a full `prompt` field on persisted records");
   assert.equal(rec.claude_session_id, CLAUDE_UUID,
     "claude_session_id must come from execution, never minted here");
+  assert.equal(rec.gemini_session_id, null);
   assert.equal(rec.cost_usd, 0.001);
   assert.equal(rec.exit_code, 0);
   assert.equal(rec.error_code, null);
@@ -113,8 +124,30 @@ test("buildJobRecord: queued/pre-run state (no execution)", () => {
   assert.equal(rec.usage, null);
   assert.equal(rec.pid_info, null);
   assert.equal(rec.claude_session_id, null);
+  assert.equal(rec.gemini_session_id, null);
   assert.equal(rec.error_code, null);
   assert.equal(rec.error_message, null);
+});
+
+test("buildJobRecord: gemini success path stores gemini_session_id, not claude_session_id", () => {
+  const rec = buildJobRecord(makeInvocation({
+    target: "gemini",
+    model: "gemini-3-flash-preview",
+    binary: "gemini",
+  }), {
+    exitCode: 0,
+    parsed: { ok: true, result: "done", structured: null, denials: [],
+      costUsd: null, usage: { totalTokenCount: 10 } },
+    pidInfo: { pid: 12345, starttime: "Thu Apr 24 12:00:00 2026", argv0: "gemini" },
+    geminiSessionId: GEMINI_UUID,
+    stdout: "", stderr: "",
+  }, []);
+
+  assert.deepEqual(Object.keys(rec).sort(), [...EXPECTED_KEYS].sort());
+  assert.equal(rec.target, "gemini");
+  assert.equal(rec.claude_session_id, null);
+  assert.equal(rec.gemini_session_id, GEMINI_UUID,
+    "gemini_session_id must come from Gemini JSON stdout, never from companion UUIDs");
 });
 
 test("buildJobRecord: failure path — claude exited non-zero", () => {
@@ -131,6 +164,23 @@ test("buildJobRecord: failure path — claude exited non-zero", () => {
   assert.equal(rec.exit_code, 1);
   // Readable stdout can still ride along on a failure.
   assert.equal(rec.result, "partial output");
+});
+
+test("gemini buildJobRecord: failure path uses gemini_error, not claude_error", () => {
+  const rec = buildGeminiJobRecord(makeInvocation({
+    target: "gemini",
+    model: "gemini-3-flash-preview",
+    binary: "gemini",
+  }), {
+    exitCode: 1,
+    parsed: { ok: false, reason: "is_error", result: "partial output",
+      structured: null, denials: [], costUsd: null, usage: null },
+    pidInfo: { pid: 12345, starttime: "Thu Apr 24 12:00:00 2026", argv0: "gemini" },
+    geminiSessionId: null,
+    stdout: "", stderr: "",
+  }, []);
+  assert.equal(rec.status, "failed");
+  assert.equal(rec.error_code, "gemini_error");
 });
 
 test("buildJobRecord: spawn_failed path (execution threw before claude)", () => {

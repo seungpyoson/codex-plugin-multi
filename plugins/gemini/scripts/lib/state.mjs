@@ -286,7 +286,14 @@ export function writeJobFile(cwd, jobId, payload) {
   assertSafeJobId(jobId);
   ensureStateDir(cwd);
   const jobFile = resolveJobFile(cwd, jobId);
-  fs.writeFileSync(jobFile, `${JSON.stringify(payload, null, 2)}\n`, "utf8");
+  const tmpFile = `${jobFile}.${process.pid}.${Date.now()}.tmp`;
+  try {
+    fs.writeFileSync(tmpFile, `${JSON.stringify(payload, null, 2)}\n`, "utf8");
+    fs.renameSync(tmpFile, jobFile);
+  } catch (e) {
+    try { fs.unlinkSync(tmpFile); } catch { /* already gone */ }
+    throw e;
+  }
   return jobFile;
 }
 

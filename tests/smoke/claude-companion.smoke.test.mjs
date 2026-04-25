@@ -66,7 +66,7 @@ test("run --mode=review --foreground: emits JobRecord with status=completed", ()
     assert.ok(result.job_id, "job_id set");
     assert.equal(result.result, "Mock Claude response.");
     assert.deepEqual(result.permission_denials, []);
-    assert.equal(result.schema_version, 5, "T7.4: schema_version bumped to 5");
+    assert.equal(result.schema_version, 6, "schema_version bumped for Gemini session parity");
     assert.equal("prompt" in result, false,
       "§21.3.1: full prompt must not appear on JobRecord");
     assert.equal("ok" in result, false,
@@ -133,12 +133,34 @@ test("run: meta.json persisted to workspace state", () => {
     // Forbidden: the legacy `session_id` alias that duplicated job_id.
     assert.equal(meta.session_id, undefined,
       "legacy session_id field must not be present on new-shape records");
-    // T7.4 (§21.3): schema_version bumped to 5 and full prompt absent.
-    assert.equal(meta.schema_version, 5);
+    // JobRecord schema version and full-prompt omission stay explicit.
+    assert.equal(meta.schema_version, 6);
     assert.equal("prompt" in meta, false,
       "§21.3.1: full `prompt` field must not be persisted");
     // T7.4: result field populated on foreground completion (symmetry with bg).
     assert.equal(meta.result, "Mock Claude response.");
+  } finally {
+    cleanup(dataDir);
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("run: missing Claude stdout session_id persists null, not job or resume identity", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "smoke-cwd-"));
+  seedMinimalRepo(cwd);
+  const { stdout, status, stderr, dataDir } = runCompanion(
+    ["run", "--mode=review", "--foreground", "--model", "claude-haiku-4-5-20251001",
+     "--cwd", cwd, "--", "hello"],
+    { cwd, env: { CLAUDE_MOCK_OMIT_SESSION_ID: "1" } }
+  );
+  try {
+    assert.equal(status, 0, `exit ${status}: stderr=${stderr}`);
+    const result = JSON.parse(stdout);
+    assert.equal(result.status, "completed");
+    assert.equal(result.claude_session_id, null,
+      "claude_session_id must come only from parsed Claude stdout session_id");
+    assert.notEqual(result.claude_session_id, result.job_id,
+      "job_id must not be fabricated as claude_session_id");
   } finally {
     cleanup(dataDir);
     rmSync(cwd, { recursive: true, force: true });

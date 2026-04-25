@@ -77,7 +77,7 @@ test("populateScope scope=working-tree: copies modified + untracked files", () =
   }
 });
 
-test("populateScope scope=working-tree: respects .gitignore", () => {
+test("populateScope scope=working-tree: includes ignored untracked files", () => {
   const src = seedRepo();
   const tgt = mkTarget();
   try {
@@ -85,14 +85,33 @@ test("populateScope scope=working-tree: respects .gitignore", () => {
     writeFileSync(path.join(src, "A.txt"), "a\n");
     git(src, "add", ".");
     git(src, "commit", "-qm", "seed");
-    // Drop an ignored file — should NOT be copied.
+    // Drop an ignored file. Spec §21.4 says working-tree means everything
+    // Claude could see or mutate in the user's tree, including ignored files.
     writeFileSync(path.join(src, "ignored.log"), "garbage\n");
 
     populateScope(profile("working-tree"), src, tgt);
 
     assert.ok(existsSync(path.join(tgt, "A.txt")));
-    assert.equal(existsSync(path.join(tgt, "ignored.log")), false,
-      ".gitignored file leaked into scope");
+    assert.equal(readFileSync(path.join(tgt, "ignored.log"), "utf8"), "garbage\n",
+      ".gitignored files are still part of working-tree scope");
+  } finally {
+    cleanup(src, tgt);
+  }
+});
+
+test("populateScope scope=working-tree: skips nested .git directories", () => {
+  const src = seedRepo();
+  const tgt = mkTarget();
+  try {
+    mkdirSync(path.join(src, "vendor/pkg/.git"), { recursive: true });
+    writeFileSync(path.join(src, "vendor/pkg/.git/config"), "[core]\n");
+    writeFileSync(path.join(src, "vendor/pkg/data.txt"), "data\n");
+
+    populateScope(profile("working-tree"), src, tgt);
+
+    assert.equal(existsSync(path.join(tgt, "vendor/pkg/data.txt")), true);
+    assert.equal(existsSync(path.join(tgt, "vendor/pkg/.git/config")), false,
+      "nested .git metadata must not be copied into scoped working-tree snapshots");
   } finally {
     cleanup(src, tgt);
   }

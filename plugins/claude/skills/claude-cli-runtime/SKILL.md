@@ -33,15 +33,16 @@ claude-companion.mjs cancel  --job <id> [--cwd <path>] [--force]
 
 - **Argv transport** (Claude-specific): the prompt text is the last argv positional after `--`. No shell interpolation — `child_process.spawn` passes argv bytes verbatim. Verified safe at 100 KB (spec §4.10).
 - **No aliases**: pass full model IDs (`claude-opus-4-7`, `claude-sonnet-4-6`, `claude-haiku-4-5-20251001`). Aliases silently substitute (spec §4.2).
-- **Session IDs**: generated client-side (UUID v4). Companion creates a new one per run; callers do not supply one.
+- **Session IDs**: the companion mints a UUID v4 `job_id`, passes it to fresh Claude runs as `--session-id`, then persists `claude_session_id` from Claude's JSON stdout. Callers do not supply session IDs.
 - **Timeouts**: companion does not enforce a wall-clock timeout by default. Tests pass `--timeout-ms` to the process wrapper directly.
+- **Cancel scope**: `cancel` is for background jobs only. Foreground runs stay attached to the active terminal and should be interrupted with Ctrl+C.
 
 ## Flag-stack per mode (enforced by `lib/claude.mjs`)
 
 Callers do not pass the inner flags — the companion adds them. This is documentation of what the child `claude -p` actually receives.
 
 - **review / adversarial-review**: `--setting-sources "" --permission-mode plan --disallowedTools "Write Edit MultiEdit NotebookEdit Bash WebFetch Agent Task mcp__*" --no-session-persistence --output-format json --session-id <uuid> --model <id>`. Optionally `--add-dir <cwd>` + `--json-schema <schema>`.
-- **rescue**: `--setting-sources "" --permission-mode acceptEdits --no-session-persistence --output-format json --session-id <uuid> --model <id> --add-dir <cwd>`. No disallowed-tools blocklist — rescue is write-capable by design.
+- **rescue**: `--permission-mode acceptEdits --no-session-persistence --output-format json --session-id <uuid> --model <id> --add-dir <cwd>`. No disallowed-tools blocklist and no `--setting-sources ""` — rescue is write-capable and keeps project context by design.
 
 ## Output contract
 

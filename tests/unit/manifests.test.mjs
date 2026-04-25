@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -45,5 +45,18 @@ test("both plugins declared in marketplace match filesystem layout", () => {
   for (const p of m.plugins) {
     const manifest = readJson(`plugins/${p.name}/.codex-plugin/plugin.json`);
     assert.equal(manifest.name, p.name, `${p.name} directory plugin.json name mismatch`);
+  }
+});
+
+test("claude and gemini expose the full v0.1 command surface", () => {
+  const commands = [
+    "ping", "review", "adversarial-review", "rescue",
+    "setup", "status", "result", "cancel",
+  ];
+  for (const plugin of ["claude", "gemini"]) {
+    for (const command of commands) {
+      const rel = `plugins/${plugin}/commands/${plugin}-${command}.md`;
+      assert.equal(existsSync(path.join(REPO_ROOT, rel)), true, `${rel} missing`);
+    }
   }
 });

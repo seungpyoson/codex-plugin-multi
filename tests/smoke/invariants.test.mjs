@@ -53,6 +53,10 @@ export const MOCK_GAPS = Object.freeze([
   { id: "mutation", fragment: "M6-mock-gap: mutation detected when claude writes a file" },
 ]);
 
+export const PRE_M7_BLOCKERS = Object.freeze([
+  { id: "session-id-source", fragment: "Pre-M7 blocker: spawnClaude requires caller-provided sessionId" },
+]);
+
 // ---------------------------------------------------------------------------
 // Shared harness — mirrors the pattern used in claude-companion.smoke.test.mjs
 // and identity-resume-chain.smoke.test.mjs. Kept local to this file so the
@@ -211,6 +215,18 @@ test("M6-finding-G-HIGH: rescue keeps CLAUDE.md context — no --setting-sources
   assert.ok(i >= 0, `review argv must include --setting-sources; got: ${revArgv.join(" ")}`);
   assert.equal(revArgv[i + 1], "",
     `review's --setting-sources value must be "" (empty); got ${JSON.stringify(revArgv[i + 1])}`);
+});
+
+test("Pre-M7 blocker: spawnClaude requires caller-provided sessionId instead of minting one", async () => {
+  const review = resolveProfile("review");
+  await assert.rejects(
+    () => spawnClaude(review, {
+      model: "claude-haiku-4-5-20251001",
+      promptText: "review this",
+      binary: "/definitely/not/a/real/claude",
+    }),
+    /sessionId must be UUID v4/,
+  );
 });
 
 // ---------------------------------------------------------------------------
@@ -394,7 +410,7 @@ test("M6-finding-1-H1: background worker persists parsed.result on terminal JobR
     assert.deepEqual(meta.permission_denials, []);
     assert.ok("mutations" in meta, "background JobRecord carries mutations array");
     assert.ok("cost_usd" in meta, "background JobRecord carries cost_usd");
-    assert.equal(meta.schema_version, 5);
+    assert.equal(meta.schema_version, 6);
   } finally {
     rmSync(dataDir, { recursive: true, force: true });
     rmSync(cwd, { recursive: true, force: true });
@@ -547,8 +563,8 @@ test("M6-matrix: every MATRIX_FINDINGS + MOCK_GAPS row is covered in this file",
   const re = /^test(?:\.skip|\.todo)?\(\s*"([^"]+)"/gm;
   let m;
   while ((m = re.exec(src)) !== null) testNames.push(m[1]);
-  assert.ok(testNames.length >= MATRIX_FINDINGS.length + MOCK_GAPS.length,
-    `expected ≥${MATRIX_FINDINGS.length + MOCK_GAPS.length} tests in this file; got ${testNames.length}`);
+  assert.ok(testNames.length >= MATRIX_FINDINGS.length + MOCK_GAPS.length + PRE_M7_BLOCKERS.length,
+    `expected ≥${MATRIX_FINDINGS.length + MOCK_GAPS.length + PRE_M7_BLOCKERS.length} tests in this file; got ${testNames.length}`);
   for (const row of MATRIX_FINDINGS) {
     const hit = testNames.some((n) => n.includes(row.fragment));
     assert.ok(hit,
@@ -559,5 +575,9 @@ test("M6-matrix: every MATRIX_FINDINGS + MOCK_GAPS row is covered in this file",
   for (const row of MOCK_GAPS) {
     const hit = testNames.some((n) => n.includes(row.fragment));
     assert.ok(hit, `MOCK_GAPS row "${row.id}" has no test with fragment "${row.fragment}"`);
+  }
+  for (const row of PRE_M7_BLOCKERS) {
+    const hit = testNames.some((n) => n.includes(row.fragment));
+    assert.ok(hit, `PRE_M7_BLOCKERS row "${row.id}" has no test with fragment "${row.fragment}"`);
   }
 });

@@ -18,7 +18,7 @@ Adversarial review via Claude Code. Assumes the author is wrong; looks for failu
    ```
    (Containment=worktree, scope=branch-diff, dispose=true all come from the profile — spec §21.4.)
 3. Render findings by severity. Do not downgrade Claude's concerns even if you (Codex) disagree — the job is to surface them.
-4. Watch for `warning: "mutation_detected"` in the result and surface any `mutated_files` list.
+4. Watch for a non-empty `mutations` list in the result and surface it.
 
 ## Guardrails
 

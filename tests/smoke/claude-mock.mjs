@@ -128,7 +128,9 @@ const fixture = JSON.parse(readFileSync(fixturePath, "utf8"));
 // session_id is the resumed one (the fresh --session-id is omitted by the
 // companion on resume), so prefer resumeId when set.
 const echoedId = resumeId ?? sessionId;
-fixture.session_id = echoedId;
+if (process.env.CLAUDE_MOCK_OMIT_SESSION_ID !== "1") {
+  fixture.session_id = echoedId;
+}
 fixture.uuid = fixture.uuid ?? echoedId;
 
 // T7.2 test oracle: when CLAUDE_MOCK_ASSERT_FILE=<relpath> is set, the mock

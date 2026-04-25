@@ -6,7 +6,7 @@
 //   2. printJson   — foreground stdout, hand-assembled from execution vars.
 //   3. finalRecord — persisted terminal meta, omitted result/denials/mutations.
 //
-// Consumers (cmdResult, claude-result-handling skill) couldn't render a
+// Consumers (cmdResult, result-handling skill) couldn't render a
 // background job's result because the persisted record didn't carry it
 // (finding #1/H1). The full prompt was persisted at 0644, leaking user
 // context (finding #9). Skill docs described fields that never existed.
@@ -86,9 +86,9 @@ const EXPECTED_KEYS_SET = new Set(EXPECTED_KEYS);
  *
  * error_code classification:
  *   null           — completed.
- *   spawn_failed   — execution.errorMessage set (spawn threw before Claude ran).
+ *   spawn_failed   — execution.errorMessage set (spawn threw before Gemini ran).
  *   parse_error    — parsed.ok === false with reason starting "json_parse"/"empty_stdout".
- *   claude_error   — exitCode !== 0 with parseable JSON (Claude's is_error=true).
+ *   gemini_error   — exitCode !== 0 with parseable JSON from Gemini.
  *                    Also covers exitCode === 0 but parsed.ok === false with
  *                    is_error semantics.
  *   unknown_error  — catch-all; should be rare.
@@ -123,14 +123,14 @@ function classifyExecution(execution) {
     }
     return {
       status: "failed",
-      error_code: "claude_error",
+      error_code: "gemini_error",
       error_message: parsed.error ?? null,
     };
   }
-  // Non-zero exit with no parsed JSON diagnostic — treat as claude_error.
+  // Non-zero exit with no parsed JSON diagnostic — treat as gemini_error.
   return {
     status: "failed",
-    error_code: "claude_error",
+    error_code: "gemini_error",
     error_message: null,
   };
 }

@@ -22,6 +22,7 @@ comes back to you.
   "target":              "claude",
   "parent_job_id":       null | "<uuid>",   // set by `continue`; null on fresh runs
   "claude_session_id":   null | "<uuid>",   // from Claude's stdout, not minted
+  "gemini_session_id":   null,              // present for schema parity; Gemini uses it
   "resume_chain":        ["<uuid>", ...],   // newest-last; [] on first run
   "pid_info":            null | { "pid": N, "starttime": "...", "argv0": "..." },
 
@@ -54,7 +55,7 @@ comes back to you.
   "cost_usd":            null | 0.001,
   "usage":               null | { "input_tokens": N, ... },
 
-  "schema_version":      5
+  "schema_version":      6
 }
 ```
 

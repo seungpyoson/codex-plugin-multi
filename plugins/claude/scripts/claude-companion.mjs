@@ -25,7 +25,7 @@
 
 import { fileURLToPath } from "node:url";
 import { dirname, resolve as resolvePath } from "node:path";
-import { writeFileSync, mkdirSync, existsSync, chmodSync, unlinkSync } from "node:fs";
+import { writeFileSync, mkdirSync, existsSync, chmodSync, renameSync, unlinkSync } from "node:fs";
 import { execFileSync, spawn } from "node:child_process";
 
 import { parseArgs } from "./lib/args.mjs";
@@ -390,7 +390,7 @@ async function executeRun(invocation, prompt, { foreground }) {
     exitCode: execution.exitCode,
     parsed: execution.parsed,
     pidInfo: execution.pidInfo,
-    claudeSessionId: execution.claudeSessionId ?? resumeId ?? jobId,
+    claudeSessionId: execution.claudeSessionId ?? null,
   }, mutations);
   writeJobFile(workspaceRoot, jobId, finalRecord);
   upsertJob(workspaceRoot, finalRecord);
@@ -538,7 +538,15 @@ function writeSidecar(workspaceRoot, jobId, name, contents) {
   const jobsDir = resolveJobsDir(workspaceRoot);
   const dir = `${jobsDir}/${jobId}`;
   mkdirSync(dir, { recursive: true });
-  writeFileSync(`${dir}/${name}`, contents ?? "", "utf8");
+  const file = `${dir}/${name}`;
+  const tmpFile = `${file}.${process.pid}.${Date.now()}.tmp`;
+  try {
+    writeFileSync(tmpFile, contents ?? "", "utf8");
+    renameSync(tmpFile, file);
+  } catch (e) {
+    try { unlinkSync(tmpFile); } catch { /* already gone */ }
+    throw e;
+  }
 }
 
 async function cmdNotImplemented(name) {
