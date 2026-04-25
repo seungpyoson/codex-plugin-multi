@@ -25,11 +25,15 @@
 // was launched from inside a pre-commit hook, GIT_DIR etc. would otherwise
 // hijack every `git -C <path>` into the parent repo. Same discipline as the
 // pre-T7.2 setupWorktree helper.
+//
+// Failure tags emitted by populateScope include: invalid_profile,
+// scope_requires_git, scope_base_missing, scope_paths_required,
+// unsafe_symlink, and scope_population_failed.
 
 import { execFileSync } from "node:child_process";
 import {
-  mkdirSync, copyFileSync, writeFileSync,
-  statSync, lstatSync, realpathSync, readlinkSync, unlinkSync,
+  mkdirSync, copyFileSync, chmodSync,
+  statSync, lstatSync, realpathSync, unlinkSync,
   readdirSync, openSync, closeSync,
 } from "node:fs";
 import path from "node:path";
@@ -77,7 +81,7 @@ function assertGitWorktree(sourceCwd) {
 
 function isInsidePath(root, candidate) {
   const rel = path.relative(root, candidate);
-  return rel === "" || (!rel.startsWith("..") && !path.isAbsolute(rel));
+  return rel === "" || (rel !== ".." && !rel.startsWith(".." + path.sep) && !path.isAbsolute(rel));
 }
 
 function unsafeSymlink(rel, reason) {
@@ -88,33 +92,104 @@ function scopePopulationFailed(message) {
   throw new Error(`scope_population_failed: ${message}`);
 }
 
-// Resolve absolute symlink targets through the existing filesystem prefix so
-// sourceCwd may itself be a symlink while the final leaf is snapshot-backed.
-function realpathExistingPrefix(candidate) {
-  const suffix = [];
-  let current = candidate;
-  for (;;) {
-    try {
-      return path.join(realpathSync(current), ...suffix.reverse());
-    } catch {
-      const parent = path.dirname(current);
-      if (parent === current) return path.normalize(candidate);
-      suffix.push(path.basename(current));
-      current = parent;
+function lstatForScope(abs, rel) {
+  try {
+    return lstatSync(abs);
+  } catch (err) {
+    if (err?.code === "ENOENT") return null;
+    scopePopulationFailed(`cannot stat ${rel || "."}: ${err.message}`);
+  }
+}
+
+function unlinkIfExists(abs, rel) {
+  try {
+    unlinkSync(abs);
+  } catch (err) {
+    if (err?.code === "ENOENT") return;
+    scopePopulationFailed(`cannot remove ${rel}: ${err.message}`);
+  }
+}
+
+function chmodGitMode(dst, mode) {
+  try {
+    if (mode === "100755") chmodSync(dst, 0o755);
+    else if (mode === "100644") chmodSync(dst, 0o644);
+  } catch (err) {
+    scopePopulationFailed(`cannot chmod git blob ${dst}: ${err.message}`);
+  }
+}
+
+function removePartialGitBlob(dst, objectSpec) {
+  try {
+    unlinkSync(dst);
+  } catch (err) {
+    if (err?.code === "ENOENT") return;
+    scopePopulationFailed(`cannot remove partial git blob ${objectSpec}: ${err.message}`);
+  }
+}
+
+function isSafeSnapshotRel(rel) {
+  return rel !== "" && rel !== "." && rel !== ".." &&
+    !rel.startsWith("../") && !path.posix.isAbsolute(rel);
+}
+
+function splitAbsolutePath(absPath) {
+  const root = path.parse(absPath).root;
+  if (!root) return null;
+  return {
+    root,
+    parts: absPath.slice(root.length).split(/[\\/]+/).filter(Boolean),
+  };
+}
+
+function startsWithParts(parts, prefix) {
+  if (prefix.length > parts.length) return false;
+  for (let i = 0; i < prefix.length; i++) {
+    if (parts[i] !== prefix[i]) return false;
+  }
+  return true;
+}
+
+function gitSourcePrefixes(sourceCwd, sourceRoot) {
+  const prefixes = [path.resolve(sourceCwd), path.resolve(sourceRoot)];
+  try {
+    prefixes.push(path.resolve(git(sourceCwd, ["rev-parse", "--show-toplevel"]).trim()));
+  } catch {
+    // assertGitWorktree runs before git-derived scope population; keep this
+    // helper side-effect free if git becomes unavailable mid-population.
+  }
+  for (const prefix of [...prefixes]) {
+    if (prefix.startsWith("/private/")) {
+      prefixes.push(prefix.slice("/private".length));
     }
   }
+  return [...new Set(prefixes)];
+}
+
+function absoluteSnapshotTargetParts(sourcePrefixes, absTarget) {
+  if (!path.isAbsolute(absTarget)) return null;
+  const target = splitAbsolutePath(absTarget);
+  if (!target) return null;
+
+  for (const prefixPath of sourcePrefixes) {
+    const prefix = splitAbsolutePath(prefixPath);
+    if (!prefix || prefix.root !== target.root) continue;
+    if (startsWithParts(target.parts, prefix.parts)) {
+      return target.parts.slice(prefix.parts.length);
+    }
+  }
+  return null;
 }
 
 // Copy file `rel` from sourceCwd's live filesystem into targetPath/rel.
 // Symlinks are never preserved in the target snapshot.
-function copyLiveFile(sourceCwd, targetPath, rel, sourceRoot = realpathSync(sourceCwd)) {
+function copyLiveFile(sourceCwd, targetPath, rel, sourceRoot) {
   const src = path.join(sourceCwd, rel);
   const dst = path.join(targetPath, rel);
-  let lst;
   // lstat (not stat) so symlinks report as symlinks rather than whatever
   // they point to.
-  try { lst = lstatSync(src); }
-  catch { return; } // raced away; skip
+  const lst = lstatForScope(src, rel);
+  if (!lst) return; // raced away before we could inspect it
   mkdirSync(path.dirname(dst), { recursive: true });
   if (lst.isSymbolicLink()) {
     let resolved;
@@ -126,18 +201,31 @@ function copyLiveFile(sourceCwd, targetPath, rel, sourceRoot = realpathSync(sour
     if (!isInsidePath(sourceRoot, resolved)) {
       unsafeSymlink(rel, "resolves outside source root");
     }
-    const resolvedStat = statSync(resolved);
+    let resolvedStat;
+    try {
+      resolvedStat = statSync(resolved);
+    } catch (err) {
+      scopePopulationFailed(`cannot stat ${rel}: ${err.message}`);
+    }
     if (!resolvedStat.isFile()) {
       unsafeSymlink(rel, "does not resolve to a regular file");
     }
-    copyFileSync(resolved, dst);
+    try {
+      copyFileSync(resolved, dst);
+    } catch (err) {
+      scopePopulationFailed(`cannot copy ${rel}: ${err.message}`);
+    }
     return;
   }
   if (lst.isDirectory()) {
     mkdirSync(dst, { recursive: true });
     return;
   }
-  copyFileSync(src, dst);
+  try {
+    copyFileSync(src, dst);
+  } catch (err) {
+    scopePopulationFailed(`cannot copy ${rel}: ${err.message}`);
+  }
 }
 
 function headEntryMode(sourceCwd, rel) {
@@ -162,6 +250,10 @@ function isRegularGitFileMode(mode) {
   return mode === "100644" || mode === "100755";
 }
 
+function isTreeGitMode(mode) {
+  return mode === "040000";
+}
+
 function headBlob(sourceCwd, rel) {
   return gitBuffer(sourceCwd, ["show", `HEAD:${rel}`]);
 }
@@ -170,85 +262,172 @@ function indexBlob(sourceCwd, rel) {
   return gitBuffer(sourceCwd, ["show", `:${rel}`]);
 }
 
-function writeGitBlobToFile(sourceCwd, objectSpec, dst) {
+function headPathPrefixExists(sourceCwd, rel) {
+  if (!isSafeSnapshotRel(rel)) return false;
+  return git(sourceCwd, ["ls-tree", "-r", "-z", "--name-only", "HEAD", "--", `${rel}/`]) !== "";
+}
+
+function indexPathPrefixExists(sourceCwd, rel) {
+  if (!isSafeSnapshotRel(rel)) return false;
+  return git(sourceCwd, ["ls-files", "-z", "--", `${rel}/`]) !== "";
+}
+
+function parseGitEntryList(raw) {
+  return raw.split("\0").filter(Boolean).map((entry) => {
+    const tab = entry.indexOf("\t");
+    if (tab === -1) return null;
+    const meta = entry.slice(0, tab).split(/\s+/);
+    return { mode: meta[0], rel: entry.slice(tab + 1) };
+  }).filter(Boolean);
+}
+
+function indexSymlinkEntries(sourceCwd) {
+  return parseGitEntryList(git(sourceCwd, ["ls-files", "-s", "-z"]))
+    .filter((entry) => entry.mode === "120000")
+    .map((entry) => entry.rel);
+}
+
+function headSymlinkEntries(sourceCwd) {
+  return parseGitEntryList(git(sourceCwd, ["ls-tree", "-r", "-z", "HEAD"]))
+    .filter((entry) => entry.mode === "120000")
+    .map((entry) => entry.rel);
+}
+
+function writeGitBlobToFile(sourceCwd, objectSpec, dst, mode = null) {
   mkdirSync(path.dirname(dst), { recursive: true });
   const fd = openSync(dst, "w");
+  let execError = null;
+  let closeError = null;
   try {
     execFileSync("git", ["-C", sourceCwd, "show", objectSpec], {
       stdio: ["ignore", fd, "pipe"],
       env: cleanGitEnv(),
     });
   } catch (err) {
-    try { unlinkSync(dst); } catch { /* absent or already cleaned */ }
-    scopePopulationFailed(`cannot copy git blob ${objectSpec}: ${err.message}`);
-  } finally {
+    execError = err;
+  }
+  try {
     closeSync(fd);
+  } catch (err) {
+    closeError = err;
+  }
+  if (execError) {
+    removePartialGitBlob(dst, objectSpec);
+    scopePopulationFailed(`cannot copy git blob ${objectSpec}: ${execError.message}`);
+  }
+  if (closeError) {
+    removePartialGitBlob(dst, objectSpec);
+    scopePopulationFailed(`cannot close git blob ${objectSpec}: ${closeError.message}`);
+  }
+  try {
+    chmodGitMode(dst, mode);
+  } catch (err) {
+    removePartialGitBlob(dst, objectSpec);
+    throw err;
   }
 }
 
-function writeHeadBlobToPath(sourceCwd, rel, dst) {
-  writeGitBlobToFile(sourceCwd, `HEAD:${rel}`, dst);
+function writeHeadBlobToPath(sourceCwd, rel, dst, mode = null) {
+  writeGitBlobToFile(sourceCwd, `HEAD:${rel}`, dst, mode);
 }
 
-function writeIndexBlobToPath(sourceCwd, rel, dst) {
-  writeGitBlobToFile(sourceCwd, `:${rel}`, dst);
+function writeIndexBlobToPath(sourceCwd, rel, dst, mode = null) {
+  writeGitBlobToFile(sourceCwd, `:${rel}`, dst, mode);
 }
 
-function writeHeadBlob(sourceCwd, targetPath, rel) {
-  writeHeadBlobToPath(sourceCwd, rel, path.join(targetPath, rel));
+function writeHeadBlob(sourceCwd, targetPath, rel, mode = null) {
+  writeHeadBlobToPath(sourceCwd, rel, path.join(targetPath, rel), mode);
 }
 
-function resolveGitSnapshotSymlinkTarget(sourceCwd, rel, linkTarget, sourceRoot, entryMode, blob, snapshotName) {
-  let currentRel = rel;
-  let currentTarget = linkTarget;
+function snapshotTargetComponents(sourcePrefixes, currentRel, linkTarget) {
+  if (path.isAbsolute(linkTarget)) {
+    return absoluteSnapshotTargetParts(sourcePrefixes, linkTarget);
+  }
+  const baseDir = path.posix.dirname(currentRel);
+  const base = baseDir === "." ? [] : baseDir.split("/");
+  return [...base, ...linkTarget.split("/")];
+}
+
+function resolveGitSnapshotSymlinkTarget(sourceCwd, rel, linkTarget, sourcePrefixes, entryMode, blob, hasPathPrefix, snapshotName) {
+  let pending = snapshotTargetComponents(sourcePrefixes, rel, linkTarget);
+  if (!pending) unsafeSymlink(rel, "resolves outside source root");
+  const resolved = [];
   const visited = new Set();
-  for (let hops = 0; hops < MAX_GIT_SYMLINK_HOPS; hops++) {
-    if (visited.has(currentRel)) {
-      unsafeSymlink(rel, `cycle in ${snapshotName}`);
+  let hops = 1;
+  while (pending.length > 0) {
+    const part = pending.shift();
+    if (part === "" || part === ".") continue;
+    if (part === "..") {
+      if (resolved.length === 0) unsafeSymlink(rel, "resolves outside source root");
+      resolved.pop();
+      continue;
     }
-    visited.add(currentRel);
-    const baseDir = path.join(sourceRoot, ...path.posix.dirname(currentRel).split("/").filter(Boolean));
-    const targetAbs = path.isAbsolute(currentTarget)
-      ? realpathExistingPrefix(currentTarget)
-      : path.resolve(baseDir, currentTarget);
-    if (!isInsidePath(sourceRoot, targetAbs)) {
-      unsafeSymlink(rel, "resolves outside source root");
-    }
-    const targetRel = path.relative(sourceRoot, targetAbs).split(path.sep).join("/");
-    if (targetRel === "") {
-      unsafeSymlink(rel, `does not resolve to a regular file in ${snapshotName}`);
-    }
+    const targetRel = [...resolved, part].join("/");
+    if (!isSafeSnapshotRel(targetRel)) unsafeSymlink(rel, "resolves outside source root");
     const targetMode = entryMode(sourceCwd, targetRel);
-    if (targetMode === null) {
-      unsafeSymlink(rel, `is dangling in ${snapshotName}`);
+    if (targetMode === "120000") {
+      if (visited.has(targetRel)) unsafeSymlink(rel, `cycle in ${snapshotName}`);
+      if (hops >= MAX_GIT_SYMLINK_HOPS) {
+        unsafeSymlink(rel, `exceeds symlink depth limit in ${snapshotName}`);
+      }
+      visited.add(targetRel);
+      hops += 1;
+      let nextTarget;
+      try {
+        nextTarget = blob(sourceCwd, targetRel).toString("utf8");
+      } catch {
+        unsafeSymlink(rel, `cannot be read in ${snapshotName}`);
+      }
+      const nextPending = snapshotTargetComponents(sourcePrefixes, targetRel, nextTarget);
+      if (!nextPending) unsafeSymlink(rel, "resolves outside source root");
+      pending = [...nextPending, ...pending];
+      resolved.length = 0;
+      continue;
     }
     if (isRegularGitFileMode(targetMode)) {
-      return targetRel;
+      if (pending.length > 0) {
+        unsafeSymlink(rel, `does not resolve to a regular file in ${snapshotName}`);
+      }
+      return { rel: targetRel, mode: targetMode };
     }
-    if (targetMode !== "120000") {
-      unsafeSymlink(rel, `does not resolve to a regular file in ${snapshotName}`);
+    if (isTreeGitMode(targetMode)) {
+      if (pending.length === 0) {
+        unsafeSymlink(rel, `does not resolve to a regular file in ${snapshotName}`);
+      }
+      resolved.push(part);
+      continue;
     }
-    currentRel = targetRel;
-    try {
-      currentTarget = blob(sourceCwd, targetRel).toString("utf8");
-    } catch {
-      unsafeSymlink(rel, `cannot be read in ${snapshotName}`);
+    if (targetMode === null) {
+      if (pending.length === 0) {
+        if (hasPathPrefix(sourceCwd, targetRel)) {
+          unsafeSymlink(rel, `does not resolve to a regular file in ${snapshotName}`);
+        }
+        unsafeSymlink(rel, `is dangling in ${snapshotName}`);
+      }
+      if (!hasPathPrefix(sourceCwd, targetRel)) {
+        unsafeSymlink(rel, `is dangling in ${snapshotName}`);
+      }
+      resolved.push(part);
+      continue;
     }
+    unsafeSymlink(rel, `does not resolve to a regular file in ${snapshotName}`);
   }
-  unsafeSymlink(rel, `exceeds symlink depth limit in ${snapshotName}`);
+  unsafeSymlink(rel, `does not resolve to a regular file in ${snapshotName}`);
 }
 
 function materializeHeadSymlink(sourceCwd, targetPath, rel, sourceRoot) {
   const linkTarget = headBlob(sourceCwd, rel).toString("utf8");
-  const targetRel = resolveGitSnapshotSymlinkTarget(
-    sourceCwd, rel, linkTarget, sourceRoot, headEntryMode, headBlob, "HEAD"
+  const sourcePrefixes = gitSourcePrefixes(sourceCwd, sourceRoot);
+  const target = resolveGitSnapshotSymlinkTarget(
+    sourceCwd, rel, linkTarget, sourcePrefixes, headEntryMode, headBlob, headPathPrefixExists, "HEAD"
   );
   const dst = path.join(targetPath, rel);
-  writeHeadBlobToPath(sourceCwd, targetRel, dst);
+  writeHeadBlobToPath(sourceCwd, target.rel, dst, target.mode);
 }
 
-function materializeGitSnapshotSymlinks(sourceCwd, targetPath, sourceRoot, entryMode, blob, writeBlob, snapshotName) {
-  const symlinks = [];
+function materializeGitSnapshotSymlinks(sourceCwd, targetPath, sourceRoot, entryMode, blob, hasPathPrefix, writeBlob, symlinkEntries, snapshotName) {
+  const symlinkRels = new Set(symlinkEntries);
+  const sourcePrefixes = gitSourcePrefixes(sourceCwd, sourceRoot);
   function walk(absDir, relDir = "") {
     let entries;
     try {
@@ -261,25 +440,36 @@ function materializeGitSnapshotSymlinks(sourceCwd, targetPath, sourceRoot, entry
       if (ent.name === ".git") continue;
       const rel = relDir ? `${relDir}/${ent.name}` : ent.name;
       const abs = path.join(absDir, ent.name);
-      let lst;
-      try { lst = lstatSync(abs); }
-      catch { continue; }
+      const lst = lstatForScope(abs, rel);
+      if (!lst) continue;
       if (lst.isSymbolicLink()) {
-        symlinks.push({ abs, rel, linkTarget: readlinkSync(abs) });
+        symlinkRels.add(rel);
       } else if (lst.isDirectory()) {
         walk(abs, rel);
       }
     }
   }
   walk(targetPath);
-  for (const { abs } of symlinks) {
-    unlinkSync(abs);
+  for (const rel of [...symlinkRels].sort()) {
+    const abs = path.join(targetPath, rel);
+    const lst = lstatForScope(abs, rel);
+    if (!lst) continue;
+    if (lst.isDirectory()) {
+      scopePopulationFailed(`cannot replace symlink entry ${rel}: destination is a directory`);
+    }
+    unlinkIfExists(abs, rel);
   }
-  for (const { abs, rel, linkTarget } of symlinks) {
-    const targetRel = resolveGitSnapshotSymlinkTarget(
-      sourceCwd, rel, linkTarget, sourceRoot, entryMode, blob, snapshotName
+  for (const rel of [...symlinkEntries].sort()) {
+    let linkTarget;
+    try {
+      linkTarget = blob(sourceCwd, rel).toString("utf8");
+    } catch {
+      unsafeSymlink(rel, `cannot be read in ${snapshotName}`);
+    }
+    const target = resolveGitSnapshotSymlinkTarget(
+      sourceCwd, rel, linkTarget, sourcePrefixes, entryMode, blob, hasPathPrefix, snapshotName
     );
-    writeBlob(sourceCwd, targetRel, abs);
+    writeBlob(sourceCwd, target.rel, path.join(targetPath, rel), target.mode);
   }
 }
 
@@ -297,9 +487,8 @@ function listLiveWorkingTreeFiles(sourceCwd) {
       if (ent.name === ".git") continue;
       const rel = relDir ? `${relDir}/${ent.name}` : ent.name;
       const abs = path.join(absDir, ent.name);
-      let lst;
-      try { lst = lstatSync(abs); }
-      catch { continue; }
+      const lst = lstatForScope(abs, rel);
+      if (!lst) continue;
       if (lst.isDirectory()) {
         walk(abs, rel);
       } else {
@@ -330,7 +519,8 @@ function scopeStaged(sourceCwd, targetPath) {
   mkdirSync(targetPath, { recursive: true });
   git(sourceCwd, ["checkout-index", "-a", "-f", `--prefix=${prefix}`]);
   materializeGitSnapshotSymlinks(
-    sourceCwd, targetPath, realpathSync(sourceCwd), indexEntryMode, indexBlob, writeIndexBlobToPath, "INDEX"
+    sourceCwd, targetPath, realpathSync(sourceCwd), indexEntryMode, indexBlob,
+    indexPathPrefixExists, writeIndexBlobToPath, indexSymlinkEntries(sourceCwd), "INDEX"
   );
 }
 
@@ -362,7 +552,7 @@ function scopeBranchDiff(sourceCwd, targetPath, scopeBase) {
     }
     // Content at HEAD. Stream raw `git show HEAD:<file>` bytes into the
     // snapshot so large or binary files are not buffered or re-encoded.
-    writeHeadBlob(sourceCwd, targetPath, rel);
+    writeHeadBlob(sourceCwd, targetPath, rel, mode);
   }
 }
 
@@ -381,14 +571,16 @@ function scopeHead(sourceCwd, targetPath, containmentHandle) {
   // Tell the containment handle to also unregister the worktree on cleanup.
   if (containmentHandle) containmentHandle._scopeHeadOf = sourceCwd;
   materializeGitSnapshotSymlinks(
-    sourceCwd, targetPath, realpathSync(sourceCwd), headEntryMode, headBlob, writeHeadBlobToPath, "HEAD"
+    sourceCwd, targetPath, realpathSync(sourceCwd), headEntryMode, headBlob,
+    headPathPrefixExists, writeHeadBlobToPath, headSymlinkEntries(sourceCwd), "HEAD"
   );
 }
 
 function matchGlob(rel, pattern) {
   // Minimal glob: supports '*' (no /) and '**' (any), '?' (single). Good
   // enough for scope=custom's "<dir>/*.md" and "**/*.js" shapes; we avoid
-  // pulling in a full micromatch dep.
+  // pulling in a full micromatch dep. This is a small supported subset, not a
+  // claim of full shell-glob compatibility.
   // Translate to regex.
   let re = "^";
   for (let i = 0; i < pattern.length; i++) {
