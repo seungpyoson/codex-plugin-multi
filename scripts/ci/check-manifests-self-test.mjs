@@ -23,6 +23,8 @@ async function fixture(name, setup) {
       "plugins/gemini/.codex-plugin/plugin.json",
       "plugins/claude/commands/claude-ping.md",
       "plugins/gemini/commands/gemini-ping.md",
+      "plugins/claude/skills/claude-cli-runtime/SKILL.md",
+      "plugins/claude/agents/claude-rescue.md",
     ]) {
       await mkdir(dirname(join(dir, f)), { recursive: true });
       await cp(resolve(REPO_ROOT, f), join(dir, f));
@@ -128,6 +130,32 @@ await expectFail(
     await writeFile(p, JSON.stringify(m, null, 2));
   },
   `semver`
+);
+
+// Case 7: skill with unknown frontmatter key.
+await expectFail(
+  "skill-unknown-frontmatter",
+  async (dir) => {
+    const p = join(dir, "plugins/claude/skills/claude-cli-runtime/SKILL.md");
+    await writeFile(
+      p,
+      `---\nname: claude-cli-runtime\ndescription: ok\nuser-invocable: false\nextra-key: nope\n---\nBody\n`
+    );
+  },
+  `unknown frontmatter key`
+);
+
+// Case 8: agent with unknown frontmatter key.
+await expectFail(
+  "agent-unknown-frontmatter",
+  async (dir) => {
+    const p = join(dir, "plugins/claude/agents/claude-rescue.md");
+    await writeFile(
+      p,
+      `---\nname: claude-rescue\ndescription: ok\nmodel: inherit\ntools: Bash\nskills:\n  - claude-cli-runtime\nextra-key: nope\n---\nBody\n`
+    );
+  },
+  `unknown frontmatter key`
 );
 
 if (failed > 0) {

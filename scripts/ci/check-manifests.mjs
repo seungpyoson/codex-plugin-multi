@@ -1,6 +1,6 @@
 #!/usr/bin/env node
-// Manifest linter — validates marketplace.json, both plugin.json files, and
-// every commands/*.md file's frontmatter. Exits non-zero on any violation.
+// Manifest linter — validates marketplace.json, plugin.json files, and plugin
+// markdown frontmatter. Exits non-zero on any violation.
 // Run in CI and locally via `npm run lint`.
 
 import { readFile, readdir } from "node:fs/promises";
@@ -25,6 +25,20 @@ const COMMAND_FRONTMATTER_KEYS = new Set([
   "description",
   "argument-hint",
   "allowed-tools",
+]);
+
+const SKILL_FRONTMATTER_KEYS = new Set([
+  "name",
+  "description",
+  "user-invocable",
+]);
+
+const AGENT_FRONTMATTER_KEYS = new Set([
+  "name",
+  "description",
+  "model",
+  "tools",
+  "skills",
 ]);
 
 // Allowed installation / authentication values per marketplace schema
@@ -172,6 +186,7 @@ function parseFrontmatter(text, path) {
   const fm = {};
   for (const line of block.split("\n")) {
     if (!line.trim() || line.trim().startsWith("#")) continue;
+    if (/^\s/.test(line)) continue;
     const colonIdx = line.indexOf(":");
     if (colonIdx === -1) {
       err(path, `frontmatter line missing ":" → ${JSON.stringify(line)}`);
@@ -213,6 +228,25 @@ async function checkCommandFile(plugin, filename) {
   if (!body) err(rel, `command body is empty`);
 }
 
+async function checkMarkdownFrontmatterFile(rel, allowedKeys) {
+  let text;
+  try {
+    text = await readFile(resolve(REPO_ROOT, rel), "utf8");
+  } catch (e) {
+    err(rel, `could not read: ${e.message}`);
+    return;
+  }
+  const parsed = parseFrontmatter(text, rel);
+  if (parsed == null) return;
+  for (const key of Object.keys(parsed.fm)) {
+    if (!allowedKeys.has(key)) {
+      err(rel, `unknown frontmatter key "${key}"; allowed: ${[...allowedKeys].join("|")}`);
+    }
+  }
+  const body = text.slice(parsed.bodyStart).trim();
+  if (!body) err(rel, `body is empty`);
+}
+
 async function checkCommandsDir(plugin) {
   const dir = resolve(REPO_ROOT, `plugins/${plugin}/commands`);
   let entries;
@@ -228,6 +262,49 @@ async function checkCommandsDir(plugin) {
   }
 }
 
+async function checkAgentsDir(plugin) {
+  const dir = resolve(REPO_ROOT, `plugins/${plugin}/agents`);
+  let entries;
+  try {
+    entries = await readdir(dir);
+  } catch {
+    return;
+  }
+  for (const e of entries) {
+    if (e.startsWith(".")) continue;
+    const rel = `plugins/${plugin}/agents/${e}`;
+    if (!e.endsWith(".md")) {
+      err(rel, `agent file extension must be .md`);
+      continue;
+    }
+    const stem = basename(e, ".md");
+    checkBareName(stem, rel, "agent filename stem");
+    await checkMarkdownFrontmatterFile(rel, AGENT_FRONTMATTER_KEYS);
+  }
+}
+
+async function checkSkillsDir(plugin) {
+  const dir = resolve(REPO_ROOT, `plugins/${plugin}/skills`);
+  let entries;
+  try {
+    entries = await readdir(dir, { withFileTypes: true });
+  } catch {
+    return;
+  }
+  for (const e of entries) {
+    if (e.name.startsWith(".")) continue;
+    if (!e.isDirectory()) {
+      err(`plugins/${plugin}/skills/${e.name}`, "skill entry must be a directory containing SKILL.md");
+      continue;
+    }
+    checkBareName(e.name, `plugins/${plugin}/skills/${e.name}`, "skill directory name");
+    await checkMarkdownFrontmatterFile(
+      `plugins/${plugin}/skills/${e.name}/SKILL.md`,
+      SKILL_FRONTMATTER_KEYS
+    );
+  }
+}
+
 // Discover plugins from marketplace.json rather than hardcoding names.
 // This way, adding a new plugin to the marketplace automatically subjects
 // it to manifest + command-file validation without touching the linter.
@@ -235,6 +312,8 @@ const declaredPlugins = await checkMarketplace();
 for (const name of declaredPlugins) {
   await checkPluginManifest(name);
   await checkCommandsDir(name);
+  await checkSkillsDir(name);
+  await checkAgentsDir(name);
 }
 
 if (errors.length > 0) {
@@ -242,4 +321,4 @@ if (errors.length > 0) {
   for (const e of errors) process.stderr.write("  ✗ " + e + "\n");
   process.exit(1);
 }
-process.stdout.write("✓ All manifests + command files valid\n");
+process.stdout.write("✓ All manifests + plugin markdown files valid\n");
