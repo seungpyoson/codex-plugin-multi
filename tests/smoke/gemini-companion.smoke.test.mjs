@@ -14,6 +14,7 @@ const COMPANION = path.join(REPO_ROOT, "plugins/gemini/scripts/gemini-companion.
 const MOCK = path.join(REPO_ROOT, "tests/smoke/gemini-mock.mjs");
 const GEMINI_SESSION_ID = "22222222-3333-4444-9555-666666666666";
 const RESUMED_GEMINI_SESSION_ID = "77777777-8888-4999-aaaa-bbbbbbbbbbbb";
+const GEMINI_SMOKE_POLL_TIMEOUT_MS = Number(process.env.GEMINI_SMOKE_POLL_TIMEOUT_MS ?? 5000);
 
 function seedMinimalRepo(cwd) {
   spawnSync("git", ["init", "-q", "-b", "main"], { cwd });
@@ -88,7 +89,7 @@ test("gemini rescue background: launched event and terminal JobRecord", async ()
     assert.equal(Number.isInteger(launched.pid), true);
 
     const stateRoot = path.join(dataDir, "state");
-    const deadline = Date.now() + 5000;
+    const deadline = Date.now() + GEMINI_SMOKE_POLL_TIMEOUT_MS;
     let meta = null;
     while (Date.now() < deadline) {
       for (const dir of readdirSync(stateRoot)) {
@@ -178,7 +179,7 @@ test("gemini continue background: launched event and resumed terminal JobRecord"
     assert.equal(Number.isInteger(launched.pid), true);
 
     const stateRoot = path.join(first.dataDir, "state");
-    const deadline = Date.now() + 5000;
+    const deadline = Date.now() + GEMINI_SMOKE_POLL_TIMEOUT_MS;
     let meta = null;
     while (Date.now() < deadline) {
       for (const dir of readdirSync(stateRoot)) {
@@ -231,7 +232,7 @@ test("gemini _run-worker refuses terminal JobRecord without overwriting it", asy
     assert.equal(status, 0, `exit ${status}: ${stderr}`);
     const launched = JSON.parse(stdout);
     const stateRoot = path.join(dataDir, "state");
-    const deadline = Date.now() + 5000;
+    const deadline = Date.now() + GEMINI_SMOKE_POLL_TIMEOUT_MS;
     let meta = null;
     let metaPath = null;
     while (Date.now() < deadline) {
