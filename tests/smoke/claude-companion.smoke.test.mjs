@@ -37,6 +37,22 @@ function cleanup(dataDir) {
   rmSync(dataDir, { recursive: true, force: true });
 }
 
+function readOnlyJobRecord(dataDir) {
+  const stateRoot = path.join(dataDir, "state");
+  const records = [];
+  for (const workspaceDir of readdirSync(stateRoot)) {
+    const jobsDir = path.join(stateRoot, workspaceDir, "jobs");
+    if (!existsSync(jobsDir)) continue;
+    for (const entry of readdirSync(jobsDir)) {
+      if (!entry.endsWith(".json")) continue;
+      const metaPath = path.join(jobsDir, entry);
+      records.push({ metaPath, record: JSON.parse(readFileSync(metaPath, "utf8")) });
+    }
+  }
+  assert.equal(records.length, 1, `expected exactly one JobRecord, got ${records.length}`);
+  return records[0];
+}
+
 // T7.2: review mode's profile has scope=working-tree, which populates via
 // `git ls-files` + copy. Non-git cwds can no longer run review (spec §21.4).
 // Helper seeds a minimal git repo so the tests can focus on the companion
@@ -264,6 +280,37 @@ test("T7.4 / §21.3.2: prompt sidecar is deleted after worker consumes it", asyn
     // After the worker consumed the prompt, the sidecar must be gone.
     assert.equal(existsSync(path.join(jobDir, "prompt.txt")), false,
       "§21.3.1: prompt sidecar must be deleted after worker consumes it");
+  } finally {
+    cleanup(dataDir);
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("run --background: worker spawn failure writes failed JobRecord instead of launched", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "smoke-bg-spawn-fail-runner-"));
+  const missingCwd = path.join(cwd, "missing-cwd");
+  const { stdout, stderr, status, dataDir } = runCompanion(
+    ["run", "--mode=rescue", "--background", "--model", "claude-haiku-4-5-20251001",
+     "--cwd", missingCwd, "--", "bg sidecar task"],
+    { cwd },
+  );
+  try {
+    assert.notEqual(status, 0, "launcher must fail instead of emitting a false launched event");
+    const error = JSON.parse(stdout);
+    assert.equal(error.error, "spawn_failed");
+    assert.match(error.message, /background worker spawn failed/);
+    assert.match(stderr, /background worker spawn failed/);
+
+    const { metaPath, record } = readOnlyJobRecord(dataDir);
+    assert.equal(record.status, "failed");
+    assert.equal(record.cwd, missingCwd);
+    assert.match(record.error_message, /background worker spawn failed/);
+    assert.equal("prompt" in record, false, "full prompt must not appear on JobRecord");
+    assert.equal(
+      existsSync(path.join(path.dirname(metaPath), record.job_id, "prompt.txt")),
+      false,
+      "prompt sidecar must be removed when the worker never launches",
+    );
   } finally {
     cleanup(dataDir);
     rmSync(cwd, { recursive: true, force: true });

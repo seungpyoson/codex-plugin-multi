@@ -37,6 +37,22 @@ function runCompanion(args, { cwd, env = {}, dataDir = mkdtempSync(path.join(tmp
   return { ...res, dataDir };
 }
 
+function readOnlyJobRecord(dataDir) {
+  const stateRoot = path.join(dataDir, "state");
+  const records = [];
+  for (const workspaceDir of readdirSync(stateRoot)) {
+    const jobsDir = path.join(stateRoot, workspaceDir, "jobs");
+    if (!existsSync(jobsDir)) continue;
+    for (const entry of readdirSync(jobsDir)) {
+      if (!entry.endsWith(".json")) continue;
+      const metaPath = path.join(jobsDir, entry);
+      records.push({ metaPath, record: JSON.parse(readFileSync(metaPath, "utf8")) });
+    }
+  }
+  assert.equal(records.length, 1, `expected exactly one JobRecord, got ${records.length}`);
+  return records[0];
+}
+
 function writeMarkerBinary(dir, markerPath) {
   const binary = path.join(dir, "target-cli");
   writeFileSync(binary, [
@@ -111,6 +127,37 @@ test("gemini rescue background: launched event and terminal JobRecord", async ()
     assert.equal(meta.result, "Mock Gemini response.");
     assert.equal(meta.gemini_session_id, GEMINI_SESSION_ID);
     assert.equal("prompt" in meta, false, "full prompt must not appear on JobRecord");
+  } finally {
+    rmSync(dataDir, { recursive: true, force: true });
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("gemini background worker spawn failure writes failed JobRecord instead of launched", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "gemini-bg-spawn-fail-runner-"));
+  const missingCwd = path.join(cwd, "missing-cwd");
+  const { stdout, stderr, status, dataDir } = runCompanion(
+    ["run", "--mode=rescue", "--background", "--model", "gemini-3-flash-preview",
+     "--cwd", missingCwd, "--", "background rescue task"],
+    { cwd },
+  );
+  try {
+    assert.notEqual(status, 0, "launcher must fail instead of emitting a false launched event");
+    const error = JSON.parse(stdout);
+    assert.equal(error.error, "spawn_failed");
+    assert.match(error.message, /background worker spawn failed/);
+    assert.match(stderr, /background worker spawn failed/);
+
+    const { metaPath, record } = readOnlyJobRecord(dataDir);
+    assert.equal(record.status, "failed");
+    assert.equal(record.cwd, missingCwd);
+    assert.match(record.error_message, /background worker spawn failed/);
+    assert.equal("prompt" in record, false, "full prompt must not appear on JobRecord");
+    assert.equal(
+      existsSync(path.join(path.dirname(metaPath), record.job_id, "prompt.txt")),
+      false,
+      "prompt sidecar must be removed when the worker never launches",
+    );
   } finally {
     rmSync(dataDir, { recursive: true, force: true });
     rmSync(cwd, { recursive: true, force: true });

@@ -105,6 +105,57 @@ function consumePromptSidecar(workspaceRoot, jobId) {
   return prompt;
 }
 
+async function spawnDetachedWorker(cwd, jobId) {
+  let child;
+  try {
+    child = spawn(process.execPath, [
+      fileURLToPath(import.meta.url),
+      "_run-worker",
+      "--cwd", cwd,
+      "--job", jobId,
+    ], {
+      cwd,
+      env: process.env,
+      detached: true,
+      stdio: "ignore",
+      windowsHide: true,
+    });
+  } catch (error) {
+    return { child: null, error };
+  }
+
+  return await new Promise((resolve) => {
+    let settled = false;
+    const settle = (result) => {
+      if (settled) return;
+      settled = true;
+      child.off("spawn", onSpawn);
+      child.off("error", onError);
+      if (!result.error) child.unref();
+      resolve(result);
+    };
+    const onSpawn = () => settle({ child, error: null });
+    const onError = (error) => settle({ child, error });
+    child.once("spawn", onSpawn);
+    child.once("error", onError);
+  });
+}
+
+function failBackgroundWorkerSpawn(workspaceRoot, invocation, error) {
+  consumePromptSidecar(workspaceRoot, invocation.job_id);
+  const message = `background worker spawn failed: ${error?.code ? `${error.code}: ` : ""}${error?.message ?? String(error)}`;
+  const errorRecord = buildJobRecord(invocation, {
+    exitCode: null,
+    parsed: null,
+    pidInfo: null,
+    geminiSessionId: null,
+    errorMessage: message,
+  }, []);
+  writeJobFile(workspaceRoot, invocation.job_id, errorRecord);
+  upsertJob(workspaceRoot, errorRecord);
+  fail("spawn_failed", message, { error_code: error?.code ?? null });
+}
+
 async function cmdRun(rest) {
   const { options, positionals } = parseArgs(rest, {
     valueOptions: ["mode", "model", "cwd", "binary", "scope-base", "scope-paths", "override-dispose"],
@@ -165,19 +216,8 @@ async function cmdRun(rest) {
 
   if (options.background) {
     writePromptSidecar(workspaceRoot, jobId, prompt);
-    const child = spawn(process.execPath, [
-      fileURLToPath(import.meta.url),
-      "_run-worker",
-      "--cwd", cwd,
-      "--job", jobId,
-    ], {
-      cwd,
-      env: process.env,
-      detached: true,
-      stdio: "ignore",
-      windowsHide: true,
-    });
-    child.unref();
+    const { child, error } = await spawnDetachedWorker(cwd, jobId);
+    if (error) failBackgroundWorkerSpawn(workspaceRoot, invocation, error);
     printJson({
       event: "launched",
       job_id: jobId,
@@ -404,13 +444,8 @@ async function cmdContinue(rest) {
 
   if (options.background) {
     writePromptSidecar(workspaceRoot, newJobId_, prompt);
-    const child = spawn(process.execPath, [
-      fileURLToPath(import.meta.url),
-      "_run-worker",
-      "--cwd", cwd,
-      "--job", newJobId_,
-    ], { cwd, env: process.env, detached: true, stdio: "ignore", windowsHide: true });
-    child.unref();
+    const { child, error } = await spawnDetachedWorker(cwd, newJobId_);
+    if (error) failBackgroundWorkerSpawn(workspaceRoot, invocation, error);
     printJson({
       event: "launched",
       job_id: newJobId_,
