@@ -65,3 +65,24 @@ test("spec does not reference an unshipped Gemini result-handling skill", () => 
   assert.doesNotMatch(spec, /gemini-result-handling/);
   assert.match(spec, /Gemini result command docs/);
 });
+
+test("README documents shipped install path, first commands, and safety posture", () => {
+  const readme = readRepoFile("README.md");
+
+  assert.doesNotMatch(readme, /M0|M2\+|Planned surface/i);
+  assert.match(readme, /codex plugin marketplace add seungpyoson\/codex-plugin-multi/);
+  assert.match(readme, /\/plugins/);
+  assert.match(readme, /\/claude-setup/);
+  assert.match(readme, /\/gemini-setup/);
+  assert.match(readme, /\/claude-ping/);
+  assert.match(readme, /\/gemini-ping/);
+  assert.match(readme, /\/claude-review/);
+  assert.match(readme, /\/gemini-review/);
+  assert.match(readme, /\/claude-rescue/);
+  assert.match(readme, /\/gemini-rescue/);
+  assert.match(readme, /Gemini plan-mode is NOT a sandbox/);
+  assert.match(readme, /read-only\.toml/);
+  assert.match(readme, /--dispose/);
+  assert.match(readme, /Gemini `cancel`.*deferred/i);
+  assert.match(readme, /docs\/e2e\.md/);
+});

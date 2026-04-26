@@ -1,70 +1,145 @@
 # codex-plugin-multi
 
-Two Codex plugins that let Codex delegate work to **Claude Code** and **Gemini CLI**. Symmetric inverse of [`openai/codex-plugin-cc`](https://github.com/openai/codex-plugin-cc), which lets Claude Code delegate to Codex.
+Two Codex plugins that let Codex delegate work to **Claude Code** and
+**Gemini CLI**. This repository is the Codex-side counterpart to
+[`openai/codex-plugin-cc`](https://github.com/openai/codex-plugin-cc), which
+lets Claude Code delegate to Codex.
 
-- **License:** Apache-2.0 (ports portions of MIT-licensed upstream with attribution in `NOTICE`)
-- **Status:** M0 — install-path scaffold only. Runtime ships in M2+.
+- **License:** Apache-2.0. Portions are ported from MIT-licensed upstream code;
+  see `NOTICE`.
+- **State:** active development. Claude and Gemini review/rescue/status/result
+  flows are implemented and covered by mock smoke tests. Gemini `cancel` is deferred.
 
-## Status (as of M0)
+## Requirements
 
-This milestone ships the install-path + diagnostic ping only. Runtime commands (`rescue`, `review`, etc.) arrive in later milestones per `docs/superpowers/plans/`.
+- Codex with plugin marketplace support.
+- Git and Node.js available on `PATH`.
+- Claude Code installed and authenticated if you enable the Claude plugin.
+- Gemini CLI installed and authenticated if you enable the Gemini plugin.
 
-What works today:
-- `codex plugin marketplace add seungpyoson/codex-plugin-multi` installs the marketplace.
-- Enable either plugin via Codex TUI (`/plugins` → Space to toggle).
-- `/claude-ping` and `/gemini-ping` each reply `ok` to prove the dispatch path.
+The plugins use each target CLI's native OAuth login. They do not read
+`ANTHROPIC_API_KEY`, `GEMINI_API_KEY`, or any `*_API_KEY` environment variable.
 
-## Planned surface (v0.1.0 target — see spec for details)
+## Install
 
-| Command | Behavior |
-|---|---|
-| `/claude-rescue <task>` / `/gemini-rescue <task>` | Background investigation or fix by the target CLI. |
-| `/claude-review [<focus>]` / `/gemini-review [<focus>]` | Read-only review of current diff/files. |
-| `/claude-adversarial-review` / `/gemini-adversarial-review` | Forced-dissent review that challenges assumptions. |
-| `/claude-setup` / `/gemini-setup` | OAuth readiness probe, no API keys touched. |
-| `/claude-status` / `/gemini-status` | List running and recent jobs. |
-| `/claude-result <id>` / `/gemini-result <id>` | Render the result of a job by ID. |
-| `/claude-cancel <id>` / `/gemini-cancel <id>` | Stop a background job. |
+From Codex:
+
+```bash
+codex plugin marketplace add seungpyoson/codex-plugin-multi
+```
+
+Then enable the plugins you want:
+
+```text
+/plugins
+```
+
+In the plugin picker, enable `claude` and/or `gemini`. You can enable one
+without the other.
+
+## First commands
+
+Run setup checks first:
+
+```text
+/claude-setup
+/gemini-setup
+```
+
+Then verify dispatch:
+
+```text
+/claude-ping
+/gemini-ping
+```
+
+Each ping should return `ok`. A first useful review command is:
+
+```text
+/claude-review check this diff for regressions
+/gemini-review check this diff for regressions
+```
+
+## Command inventory
+
+| Command | Status | Behavior |
+|---|---|---|
+| `/claude-ping` / `/gemini-ping` | Shipped | Diagnostic plugin dispatch check. |
+| `/claude-setup` / `/gemini-setup` | Shipped | Target CLI availability and OAuth readiness check. |
+| `/claude-review [focus]` / `/gemini-review [focus]` | Shipped | Read-only review profile over the selected scope. |
+| `/claude-adversarial-review [focus]` / `/gemini-adversarial-review [focus]` | Shipped | Read-only forced-dissent review profile. |
+| `/claude-rescue <task>` / `/gemini-rescue <task>` | Shipped | Background investigation or fix by the target CLI. |
+| `/claude-status` / `/gemini-status` | Shipped | List active and recent jobs for the current workspace. |
+| `/claude-result <job-id>` / `/gemini-result <job-id>` | Shipped | Show the persisted result for a job. |
+| `/claude-cancel <job-id>` | Shipped | Cancel a running Claude background job. Use Ctrl+C for foreground runs. |
+| `/gemini-cancel <job-id>` | Deferred | Gemini `cancel` currently returns `not_implemented`; use Ctrl+C for foreground runs. |
+
+Background jobs return a `job_id`. Use `/<target>-status` to list jobs and
+`/<target>-result <job-id>` to inspect the terminal record.
 
 ## Safety posture
 
-- **OAuth only.** Never reads `ANTHROPIC_API_KEY`, `GEMINI_API_KEY`, or any `*_API_KEY` env var. OAuth is delegated to each target CLI's native login flow.
-- **Read-only reviews are best-effort.** Neither Claude Code nor Gemini CLI exposes an OS-level sandbox. Review paths layer defenses (Claude `--disallowedTools`; Gemini TOML `--policy` deny rules) + run under `--dispose` (default) which clones the workspace into a throwaway git worktree. Mutations to the user's working tree are detected and reported, never auto-reverted.
-- **Gemini plan-mode is NOT a sandbox.** Per Gemini's own docs (`plan-mode.md:487-495`), non-interactive plan mode auto-escalates to YOLO when exiting. The only reliable Gemini enforcement layer is a `--policy` file with `decision = "deny"` rules. See `plugins/gemini/policies/read-only.toml` once M7 ships.
-- **Claude `--bare` is incompatible with OAuth.** Verified against Claude Code 2.1.118: `--bare` disables OAuth reads. This plugin uses `--setting-sources ""` instead to strip CLAUDE.md bias while preserving OAuth.
-- **Worktree isolation.** `--dispose` uses `git worktree add --detach` (verified 2026-04-24: probe writes land in worktree, main tree stays clean).
+- **Review modes are defensive, not magical.** Claude review paths use
+  `--disallowedTools`; Gemini review paths use
+  `plugins/gemini/policies/read-only.toml`. Mutations are detected and reported
+  rather than auto-reverted.
+- **Gemini plan-mode is NOT a sandbox.** Gemini's plan mode alone is not the
+  enforcement layer for this plugin. The TOML policy file is the real read-only
+  control used by Gemini review and adversarial-review paths.
+- **`--dispose` is the default for review profiles.** Disposable containment
+  materializes the selected scope outside the user's active working tree and
+  cleans it up after the run.
+- **Rescue is write-capable.** Rescue modes are intended for investigation and
+  fixes. Review and adversarial-review are the safer choices when you only want
+  critique.
+- **Foreground cancellation is terminal-owned.** Use Ctrl+C for foreground
+  target runs. Companion cancellation is for background jobs.
 
-## Installation (M0 scope)
+## Manual E2E
+
+CI uses deterministic mock target CLIs. Real Claude Code and Gemini CLI checks
+are opt-in because they require local OAuth state. See `docs/e2e.md` for the
+manual runbook:
 
 ```bash
-# From Codex:
-codex plugin marketplace add seungpyoson/codex-plugin-multi
-# Then enable both plugins:
-# - Open Codex TUI, type /plugins, Space to toggle "claude" and "gemini"
-# Test:
-# - /claude-ping → "ok"
-# - /gemini-ping → "ok"
+CLAUDE_LIVE_E2E=1 npm run e2e:claude
+GEMINI_LIVE_E2E=1 npm run e2e:gemini
 ```
 
-## Repository layout
+Without the live env vars, those E2E tests skip by design.
 
+## Development
+
+Common checks:
+
+```bash
+npm run lint
+npm run lint:self-test
+npm test
 ```
+
+Useful focused checks:
+
+```bash
+npm run smoke:claude
+npm run smoke:gemini
+COVERAGE_ENFORCE_TARGET=1 npm run test:coverage
+```
+
+Repository layout:
+
+```text
 codex-plugin-multi/
-  .agents/plugins/marketplace.json       # registers both plugins
-  plugins/claude/                        # Codex plugin: claude
-  plugins/gemini/                        # Codex plugin: gemini
+  .agents/plugins/marketplace.json
+  plugins/claude/
+  plugins/gemini/
+  docs/e2e.md
   docs/superpowers/
-    specs/    # design spec (v4 — empirically verified)
-    plans/    # implementation plan (M0-M10, 47 tasks)
-  scripts/ci/check-manifests.mjs         # manifest linter
+  scripts/ci/check-manifests.mjs
+  tests/
 ```
-
-## Contributing / development
-
-- **Plan-driven.** Every commit's message ends with `Plan-task: T<N.M>` referencing `docs/superpowers/plans/`.
-- **Test strategy.** Unit + smoke-with-mock-CLIs in CI. Real-CLI E2E runs manually (OAuth required).
-- **Upstream tracking.** `plugins/<target>/scripts/lib/UPSTREAM.md` records the synced commit SHA from `openai/codex-plugin-cc` when libs land in M1.
 
 ## Attribution
 
-Ports portions of [`openai/codex-plugin-cc`](https://github.com/openai/codex-plugin-cc) (MIT) to Apache-2.0. See `NOTICE` for full upstream MIT text and attribution.
+Ports portions of [`openai/codex-plugin-cc`](https://github.com/openai/codex-plugin-cc)
+from MIT to Apache-2.0. See `NOTICE` for upstream text and attribution.
