@@ -919,7 +919,7 @@ If a later feature legitimately needs the original prompt text (e.g., reproducib
   - `head` — raw HEAD tree entries under `sourceCwd`, using the same object-pure materialization rules as `staged`.
   - `custom` — caller passes `--scope-paths <glob>…`; only matching files are populated.
 
-Git-derived scopes (`staged`, `branch-diff`, `head`) are **object-pure snapshots**. They do not run `git checkout`, `git checkout-index`, checkout filters, clean/smudge/process filters, LFS smudge, textconv, hooks, `.gitattributes` transformations, replace refs, grafts, or config-defined shell commands during scope population. They represent canonical git object bytes, not post-filter working-tree bytes. Use `working-tree` or `custom` when the target must see the user's live filesystem representation.
+Git-derived scopes (`staged`, `branch-diff`, `head`) are **object-pure snapshots**. They do not run `git checkout`, `git checkout-index`, checkout filters, clean/smudge/process filters, LFS smudge, textconv, hooks, `.gitattributes` transformations, replace refs, grafts, or config-defined shell commands during scope population. They represent canonical git object bytes, not post-filter working-tree bytes. The companion assumes Git 2.x or newer for these object-pure environment controls. Use `working-tree` or `custom` when the target must see the user's live filesystem representation.
 
 **Setup pipeline:**
 

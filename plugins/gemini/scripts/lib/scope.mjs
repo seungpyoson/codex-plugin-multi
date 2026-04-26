@@ -48,6 +48,8 @@ const OBJECT_PURE_GIT_CONFIG = [
   "--no-replace-objects",
   "-c", "core.fsmonitor=false",
   "-c", "core.hooksPath=/dev/null",
+  "-c", "core.gvfs=false",
+  "-c", "core.virtualFilesystem=false",
 ];
 
 function cleanGitEnv() {
@@ -60,10 +62,15 @@ function cleanGitEnv() {
   };
   for (const k of [
     "GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_COMMON_DIR", "GIT_PREFIX",
-    "GIT_CONFIG_GLOBAL", "GIT_CONFIG_SYSTEM", "GIT_CONFIG_PARAMETERS", "GIT_ATTR_SOURCE",
+    "GIT_CONFIG_GLOBAL", "GIT_CONFIG_SYSTEM", "GIT_CONFIG_PARAMETERS", "GIT_CONFIG_COUNT",
+    "GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_REPLACE_REF_BASE",
+    "GIT_ATTR_SOURCE",
     "GIT_EXTERNAL_DIFF", "GIT_PAGER", "GIT_PAGER_IN_USE", "PAGER",
   ]) {
     delete env[k];
+  }
+  for (const k of Object.keys(env)) {
+    if (/^GIT_CONFIG_(KEY|VALUE)_\d+$/.test(k)) delete env[k];
   }
   return env;
 }
@@ -640,6 +647,7 @@ function scopeBranchDiff(sourceCwd, targetPath, scopeBase) {
   } catch {
     throw new Error(`scope_base_missing: base ref ${JSON.stringify(base)} has no merge-base with HEAD in ${sourceCwd}`);
   }
+  prepareGitSnapshotTarget(sourceCwd, targetPath);
   const raw = git(ctx.gitRoot, ["diff", "--name-only", "-z", `${mergeBase}..HEAD`]);
   const files = [];
   for (const gitRel of raw.split("\0").filter(Boolean)) {
@@ -650,7 +658,6 @@ function scopeBranchDiff(sourceCwd, targetPath, scopeBase) {
     }
     files.push({ gitRel, snapshotRel });
   }
-  prepareGitSnapshotTarget(sourceCwd, targetPath);
   if (files.length === 0) return;
   const materializations = [];
   const entriesByRel = entryMap(scopedGitEntries(ctx, headEntries(ctx.gitRoot)));

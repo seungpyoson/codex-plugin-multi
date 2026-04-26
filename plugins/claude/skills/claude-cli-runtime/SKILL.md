@@ -33,6 +33,7 @@ claude-companion.mjs cancel  --job <id> [--cwd <path>] [--force]
 
 - **Argv transport** (Claude-specific): the prompt text is the last argv positional after `--`. No shell interpolation — `child_process.spawn` passes argv bytes verbatim. Verified safe at 100 KB (spec §4.10).
 - **No aliases**: pass full model IDs (`claude-opus-4-7`, `claude-sonnet-4-6`, `claude-haiku-4-5-20251001`). Aliases silently substitute (spec §4.2).
+- **Git-derived scopes**: `staged`, `head`, and `branch-diff` are object-pure; checkout filters, replace refs, and grafts are ignored. Use `working-tree` or `custom` for live filesystem content.
 - **Session IDs**: the companion mints a UUID v4 `job_id`, passes it to fresh Claude runs as `--session-id`, then persists `claude_session_id` from Claude's JSON stdout. Callers do not supply session IDs.
 - **Timeouts**: companion does not enforce a wall-clock timeout by default. Tests pass `--timeout-ms` to the process wrapper directly.
 - **Cancel scope**: `cancel` is for background jobs only. Foreground runs stay attached to the active terminal and should be interrupted with Ctrl+C.

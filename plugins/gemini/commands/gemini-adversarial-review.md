@@ -11,5 +11,6 @@ Run:
 ```
 node "<plugin-root>/scripts/gemini-companion.mjs" run --mode=adversarial-review --foreground -- "$ARGUMENTS"
 ```
+`branch-diff` is object-pure: checkout filters, replace refs, and grafts are ignored.
 
 Render findings by severity. If `mutations` is non-empty, surface it prominently and do not auto-revert.

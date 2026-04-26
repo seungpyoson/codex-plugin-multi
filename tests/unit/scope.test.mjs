@@ -721,6 +721,38 @@ test("populateScope scope=staged: ignores live info and global attributes", () =
   }
 });
 
+test("populateScope scope=staged: ignores inherited git config and object directory env", () => {
+  const src = seedRepo();
+  const tgt = mkTarget();
+  const envRoot = mkdtempSync(path.join(tmpdir(), "scope-git-env-"));
+  const old = {
+    GIT_CONFIG_COUNT: process.env.GIT_CONFIG_COUNT,
+    GIT_CONFIG_KEY_0: process.env.GIT_CONFIG_KEY_0,
+    GIT_CONFIG_VALUE_0: process.env.GIT_CONFIG_VALUE_0,
+    GIT_OBJECT_DIRECTORY: process.env.GIT_OBJECT_DIRECTORY,
+    GIT_ALTERNATE_OBJECT_DIRECTORIES: process.env.GIT_ALTERNATE_OBJECT_DIRECTORIES,
+  };
+  try {
+    writeFileSync(path.join(src, "target.txt"), "INDEX\n");
+    git(src, "add", "target.txt");
+    process.env.GIT_CONFIG_COUNT = "1";
+    delete process.env.GIT_CONFIG_KEY_0;
+    delete process.env.GIT_CONFIG_VALUE_0;
+    process.env.GIT_OBJECT_DIRECTORY = path.join(envRoot, "missing-objects");
+    process.env.GIT_ALTERNATE_OBJECT_DIRECTORIES = path.join(envRoot, "missing-alternates");
+
+    populateScope(profile("staged"), src, tgt);
+
+    assert.equal(readFileSync(path.join(tgt, "target.txt"), "utf8"), "INDEX\n");
+  } finally {
+    for (const [key, value] of Object.entries(old)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+    cleanup(src, tgt, envRoot);
+  }
+});
+
 test("populateScope scope=staged: does not execute configured filter drivers", () => {
   const src = seedRepo();
   const tgt = mkTarget();
@@ -962,6 +994,22 @@ test("populateScope scope=staged: rejects dangling symlink as unsafe", () => {
   try {
     symlinkSync("missing.txt", path.join(src, "dangling.txt"));
     git(src, "add", "dangling.txt");
+
+    assert.throws(
+      () => populateScope(profile("staged"), src, tgt),
+      /unsafe_symlink/,
+    );
+  } finally {
+    cleanup(src, tgt);
+  }
+});
+
+test("populateScope scope=staged: rejects empty symlink blobs as unsafe", () => {
+  const src = seedRepo();
+  const tgt = mkTarget();
+  try {
+    const empty = gitStdin(src, "", "hash-object", "-w", "--stdin").trim();
+    git(src, "update-index", "--add", "--cacheinfo", `120000,${empty},empty-link.txt`);
 
     assert.throws(
       () => populateScope(profile("staged"), src, tgt),
@@ -1374,6 +1422,29 @@ test("populateScope scope=branch-diff: rejects malicious HEAD .git path componen
     git(src, "checkout", "-qb", "feature");
     const malicious = maliciousDotGitCommit(src, base, ".Git");
     git(src, "update-ref", "HEAD", malicious);
+
+    assert.throws(
+      () => populateScope(profile("branch-diff"), src, tgt, { scopeBase: "main" }),
+      /scope_population_failed/,
+    );
+    assertEmptyOrMissing(tgt);
+  } finally {
+    cleanup(src, tgt);
+  }
+});
+
+test("populateScope scope=branch-diff: clears stale target after unsafe diff path", () => {
+  const src = seedRepo();
+  const tgt = mkTarget();
+  try {
+    writeFileSync(path.join(src, "base.txt"), "base\n");
+    git(src, "add", "base.txt");
+    git(src, "commit", "-qm", "base");
+    const base = git(src, "rev-parse", "HEAD").trim();
+    git(src, "checkout", "-qb", "feature");
+    const malicious = maliciousDotGitCommit(src, base, ".Git");
+    git(src, "update-ref", "HEAD", malicious);
+    writeFileSync(path.join(tgt, "stale.txt"), "stale\n");
 
     assert.throws(
       () => populateScope(profile("branch-diff"), src, tgt, { scopeBase: "main" }),
