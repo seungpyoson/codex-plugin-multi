@@ -2977,6 +2977,24 @@ test("populateScope scope=custom: copies only matching glob paths", () => {
   }
 });
 
+test("populateScope scope=custom: treats glob brackets as literals", () => {
+  const src = seedRepo();
+  const tgt = mkTarget();
+  try {
+    writeFileSync(path.join(src, "[abc].md"), "literal\n");
+    writeFileSync(path.join(src, "a.md"), "class\n");
+
+    populateScope(profile("custom"), src, tgt, {
+      scopePaths: ["[abc].md"],
+    });
+
+    assert.equal(readFileSync(path.join(tgt, "[abc].md"), "utf8"), "literal\n");
+    assert.equal(existsSync(path.join(tgt, "a.md")), false);
+  } finally {
+    cleanup(src, tgt);
+  }
+});
+
 test("populateScope scope=custom: materializes in-source file symlinks as regular files", () => {
   const src = seedRepo();
   const tgt = mkTarget();

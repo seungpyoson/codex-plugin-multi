@@ -733,7 +733,6 @@ function scopeHead(sourceCwd, targetPath, containmentHandle) {
     cleanupGitSnapshotTarget(sourceCwd, targetPath);
     throw err;
   }
-  if (containmentHandle) containmentHandle._scopeHeadOf = null;
 }
 
 function matchGlob(rel, pattern) {
@@ -755,7 +754,7 @@ function matchGlob(rel, pattern) {
         re += "[^/]*";
       }
     } else if (c === "?") re += "[^/]";
-    else if (".^$+(){}|\\".includes(c)) re += "\\" + c;
+    else if (".^$+(){}|\\[]".includes(c)) re += "\\" + c;
     else re += c;
   }
   re += "$";

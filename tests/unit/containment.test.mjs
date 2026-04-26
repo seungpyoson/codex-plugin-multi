@@ -43,6 +43,8 @@ test("setupContainment containment=worktree: returns fresh tempdir under os.tmpd
       // Must live under the OS tempdir (no stray dirs under user's home).
       assert.ok(result.path.startsWith(tmpdir()),
         `worktree path ${result.path} not under ${tmpdir()}`);
+      assert.equal("_scopeHeadOf" in result, false,
+        "legacy scope=head worktree cleanup hook should not be exposed");
     } finally {
       result.cleanup();
     }

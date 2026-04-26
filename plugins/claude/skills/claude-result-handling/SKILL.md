@@ -71,9 +71,14 @@ ignored. `working-tree` and `custom` reflect live filesystem content.
 ## Rendering order
 
 1. **Mutation warning (derived — not a top-level field).** If
-   `mutations.length > 0`: render a **prominent** warning block:
-   > ⚠️ Mutation status changed or could not be verified during a read-only review:
-   > - `<entry>`
+   `mutations.length > 0`: render a **prominent** warning block. Partition
+   entries beginning with `mutation_detection_failed:` from ordinary git-status
+   entries:
+   > ⚠️ Mutation detection could not be verified during a read-only review:
+   > - `mutation_detection_failed: <reason>`
+   >
+   > ⚠️ Mutation status changed during a read-only review:
+   > - `M path`
    > Do NOT auto-revert. The user decides.
 
    There is NO `warning` field on the JobRecord. The `mutations` array IS

@@ -32,6 +32,11 @@ test("gemini companion surfaces mutation git-status capture failure", () => {
   const source = readRepoFile("plugins/gemini/scripts/gemini-companion.mjs");
   assert.doesNotMatch(source, /catch\s*\{\s*return\s+"";\s*\}/);
   assert.match(source, /mutation_detection_failed/);
+  assert.match(
+    source,
+    /catch\s*\(e\)\s*\{[\s\S]*?buildJobRecord\(invocation,[\s\S]*?\}, mutations\)/,
+    "spawn-failure records after mutation detection starts must preserve accumulated mutations",
+  );
 });
 
 test("gemini operational lib comments do not refer to Claude as the running target", () => {

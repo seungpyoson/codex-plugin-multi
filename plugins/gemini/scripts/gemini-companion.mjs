@@ -56,10 +56,10 @@ function gitStatus(args, cwd) {
   });
 }
 
-function mutationDetectionFailure(error) {
+function mutationDetectionFailure(error, context = null) {
   const stderr = String(error?.stderr ?? "").trim().split("\n").find(Boolean);
-  const message = stderr ?? String(error?.message ?? error).split("\n")[0];
-  return `mutation_detection_failed: ${message}`;
+  const message = stderr ?? String(error?.message || error).split("\n").find(Boolean) ?? "unknown error";
+  return `mutation_detection_failed: ${context ? `${context}: ` : ""}${message}`;
 }
 
 function invocationFromRecord(record) {
@@ -174,6 +174,10 @@ async function executeRun(invocation, prompt, { foreground }) {
   if (checkMutations) {
     try {
       neutralCwd = mkdtempSync(joinPath("/tmp", "gemini-neutral-cwd-"));
+    } catch (e) {
+      mutations.push(mutationDetectionFailure(e, "neutral cwd setup failed"));
+    }
+    try {
       gitStatusBefore = gitStatus(["status", "-s", "--untracked-files=all"], cwd);
       writeSidecar(workspaceRoot, jobId, "git-status-before.txt", gitStatusBefore);
     } catch (e) {

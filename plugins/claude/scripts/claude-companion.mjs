@@ -97,7 +97,7 @@ function tryGit(args, cwd) {
 
 function mutationDetectionFailure(error) {
   const stderr = String(error?.stderr ?? "").trim().split("\n").find(Boolean);
-  const message = stderr ?? String(error?.message ?? error).split("\n")[0];
+  const message = stderr ?? String(error?.message || error).split("\n").find(Boolean) ?? "unknown error";
   return `mutation_detection_failed: ${message}`;
 }
 
