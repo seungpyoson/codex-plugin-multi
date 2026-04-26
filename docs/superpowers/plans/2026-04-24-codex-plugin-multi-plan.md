@@ -20,6 +20,27 @@ M10 Tests + CI (was M9)
 M11 Release (was M10)
 ```
 
+## Current branch state (2026-04-26)
+
+This plan is the canonical roadmap. The spec preview in
+`docs/superpowers/specs/2026-04-23-codex-plugin-multi-design.md` still uses the
+old M7-M10 preview numbering; do not use that preview to choose the next task.
+
+Current implementation state on `feat/012-t7-6-regression-matrix`:
+
+- M7 Object-Pure/invariants refactor is complete.
+- M8 Gemini foreground port is complete.
+- M9 Gemini background + `continue --job` is complete through `fbf3937`.
+- Gemini `cancel` is intentionally not part of completed M9; treat it as an
+  explicit lifecycle-parity slice if prioritized, not as hidden unfinished M9
+  work.
+- Next roadmap step is gate-4 review, then M10. Start M10 with T10.0 if any
+  shared lifecycle hardening findings are still open; otherwise start T10.1.
+
+Fresh-session rule: before changing code, read this section, `git log -8`, and
+`docs/superpowers/plans/2026-04-26-m8-hardening-backlog.md`. Do not suggest PR,
+release, or closeout while M10/M11 remain.
+
 ## How to use this plan
 
 Each task is a single commit (or tight PR). A fresh session given **only this plan + the spec** should be able to pick up any task N and execute it without re-deriving decisions. Tasks are ordered by dependency. Spec section references use `§N` format.
@@ -661,6 +682,25 @@ M11 release      → T11.1 → T11.2 → T11.3 → T11.4              (was M10)
 ## M10 — Tests + CI
 
 **Milestone goal:** comprehensive test surface; CI blocks regressions.
+
+### T10.0 — shared background lifecycle hardening triage
+
+- **Goal:** Resolve cross-target lifecycle findings before final CI hardening.
+  This is where shared launcher reliability issues belong, not inside Gemini M9
+  unless the defect is Gemini-only.
+- **Files:**
+  - `plugins/claude/scripts/claude-companion.mjs`
+  - `plugins/gemini/scripts/gemini-companion.mjs`
+  - shared smoke/unit tests as needed
+  - `docs/superpowers/plans/2026-04-26-m8-hardening-backlog.md`
+- **Acceptance:** Each open shared lifecycle finding is either fixed for both
+  targets with tests, or explicitly documented as not applicable with evidence.
+  In particular, revisit detached worker `child.on("error")` handling only if
+  the launcher can fail after a queued JobRecord/prompt sidecar is created but
+  before the worker is running. A proper fix must define the JobRecord contract,
+  prompt-sidecar cleanup, and whether users see a launched event.
+- **Spec ref:** §7.4, §21.3.2.
+- **Depends on:** T9.3 and gate-4.
 
 ### T10.1 — unit-test coverage floor
 
