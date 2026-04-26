@@ -1,6 +1,6 @@
 ---
 description: Get Claude Code to adversarially challenge the current design. Not a linter — a "why will this break" pass.
-argument-hint: "[--base <ref>] [focus area]"
+argument-hint: "[--scope-base <ref>] [focus area]"
 ---
 
 Adversarial review via Claude Code. Assumes the author is wrong; looks for failure modes, hidden assumptions, missing edge cases.

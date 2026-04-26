@@ -1,6 +1,6 @@
 ---
 description: Get Gemini CLI to adversarially challenge the current design under read-only policy.
-argument-hint: "[--base <ref>] [focus area]"
+argument-hint: "[--scope-base <ref>] [focus area]"
 ---
 
 Adversarial review via Gemini CLI. Assumes the author is wrong; looks for failure modes, hidden assumptions, and missing edge cases.

@@ -32,3 +32,22 @@ test("claude review command docs use current mutation schema fields", () => {
   assert.doesNotMatch(docs, /warning:\s*"mutation_detected"/);
   assert.doesNotMatch(docs, /mutated_files/);
 });
+
+test("review command docs advertise --scope-base, not legacy --base", () => {
+  const docs = [
+    readRepoFile("plugins/claude/commands/claude-review.md"),
+    readRepoFile("plugins/claude/commands/claude-adversarial-review.md"),
+    readRepoFile("plugins/gemini/commands/gemini-review.md"),
+    readRepoFile("plugins/gemini/commands/gemini-adversarial-review.md"),
+  ].join("\n");
+
+  assert.match(docs, /--scope-base <ref>/);
+  assert.doesNotMatch(docs, /--base <ref>/);
+});
+
+test("spec does not reference an unshipped Gemini result-handling skill", () => {
+  const spec = readRepoFile("docs/superpowers/specs/2026-04-23-codex-plugin-multi-design.md");
+
+  assert.doesNotMatch(spec, /gemini-result-handling/);
+  assert.match(spec, /Gemini result command docs/);
+});

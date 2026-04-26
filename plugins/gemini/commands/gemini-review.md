@@ -1,6 +1,6 @@
 ---
 description: Get Gemini CLI's read-only review of the current diff, files, or focus area. Runs with TOML policy enforcement.
-argument-hint: "[--base <ref>] [focus area]"
+argument-hint: "[--scope-base <ref>] [focus area]"
 ---
 
 Review via Gemini CLI. Read-only policy is mandatory; changes detected post-hoc, never auto-reverted.

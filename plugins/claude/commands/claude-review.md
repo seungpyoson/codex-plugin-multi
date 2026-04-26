@@ -1,6 +1,6 @@
 ---
 description: Get Claude Code's read-only review of the current diff, files, or focus area. Runs in a disposable worktree (default).
-argument-hint: "[--base <ref>] [focus area]"
+argument-hint: "[--scope-base <ref>] [focus area]"
 ---
 
 Review via Claude Code. Read-only; changes detected post-hoc, never auto-reverted.

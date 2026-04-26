@@ -839,7 +839,7 @@ ModeProfile {
 
 ### 21.3 One `JobRecord` shape, persisted and returned
 
-**Rule:** exactly one schema describes everything the companion durably persists about one invocation. The same schema is what `cmdResult` returns, what the `run --foreground` stdout prints (success path), and what the `claude-result-handling` / `gemini-result-handling` skills describe.
+**Rule:** exactly one schema describes everything the companion durably persists about one invocation. The same schema is what `cmdResult` returns, what the `run --foreground` stdout prints (success path), and what the Claude result-handling skill and Gemini result command docs describe.
 
 **The schema (v6):**
 

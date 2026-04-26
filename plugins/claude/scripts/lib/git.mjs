@@ -111,7 +111,7 @@ export function detectDefaultBranch(cwd) {
     }
   }
 
-  throw new Error("Unable to detect the repository default branch. Pass --base <ref> or use --scope working-tree.");
+  throw new Error("Unable to detect the repository default branch. Pass --scope-base <ref> or use --scope working-tree.");
 }
 
 export function getCurrentBranch(cwd) {
@@ -158,7 +158,7 @@ export function resolveReviewTarget(cwd, options = {}) {
 
   if (!supportedScopes.has(requestedScope)) {
     throw new Error(
-      `Unsupported review scope "${requestedScope}". Use one of: auto, working-tree, branch, or pass --base <ref>.`
+      `Unsupported review scope "${requestedScope}". Use one of: auto, working-tree, branch, or pass --scope-base <ref>.`
     );
   }
 
