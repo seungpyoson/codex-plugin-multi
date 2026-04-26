@@ -13,7 +13,7 @@ The companion returns the SAME JSON shape from three entry points — foreground
 (spec §21.3). Nothing is hand-assembled in memory; what goes to disk is what
 comes back to you.
 
-## Success path — JobRecord schema (v5)
+## Success path — JobRecord schema (v6)
 
 ```json
 {
@@ -62,6 +62,11 @@ comes back to you.
 **Every field above is ALWAYS present** (nullable fields hold `null`, not
 `undefined`). If a field you see in this doc is missing from a record you
 received, the companion has a bug — don't paper over it.
+
+`staged`, `head`, and `branch-diff` scopes are git object-pure snapshots:
+checkout filters, LFS smudge, EOL conversion, textconv, hooks, and
+config-defined shell commands are not applied. `working-tree` and `custom`
+reflect live filesystem content.
 
 ## Rendering order
 

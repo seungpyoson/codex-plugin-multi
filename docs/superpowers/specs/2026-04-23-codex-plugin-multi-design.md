@@ -392,7 +392,8 @@ Upstream files explicitly dropped: `app-server*.mjs`, `broker*.mjs` (Codex's ACP
   [--background | --foreground] \
   [--model <full-id>] \
   [--cwd <path>] \
-  [--isolated] [--dispose] \
+  [--scope-base <ref>] [--scope-paths <glob,...>] \
+  [--override-dispose <bool>] \
   <prompt-source: argv for Claude, stdin for Gemini>
 
 <target>-companion.mjs continue --job <job-id> <prompt>
@@ -544,9 +545,9 @@ gemini -p ''
 
 **Post-hoc detection (both):** `git status -s --untracked-files=all` before + after; diff non-empty → warn user prominently, do not auto-revert.
 
-**`--dispose` (default ON for review paths):** `git worktree add --detach <cache>/<job-id>` (git repos) or `cp -a` (non-git). Target CLI runs against the disposable copy; mutations happen on throwaway. Verified 2026-04-24: probe.txt written to worktree, main tree `git status` clean.
+**Profile-driven disposal (default ON for review paths):** create a fresh tempdir and populate it according to `scope`. Target CLI runs against the disposable copy; mutations happen on throwaway. Verified 2026-04-24: probe.txt written to disposable containment, main tree `git status` clean.
 
-**README disclosure:** "Reviews are best-effort read-only. Gemini's only reliable enforcement layer is the TOML policy. Plan mode alone is NOT a sandbox (Gemini docs confirm auto-escalation to YOLO in non-interactive mode). Use `--dispose` (default) or commit changes before review to detect mutations."
+**README disclosure:** "Reviews are best-effort read-only. Gemini's only reliable enforcement layer is the TOML policy. Plan mode alone is NOT a sandbox (Gemini docs confirm auto-escalation to YOLO in non-interactive mode). Review profiles use disposable containment by default; commit changes before review to make mutation detection easier to interpret."
 
 ## 11. Session continuation
 
@@ -564,7 +565,7 @@ gemini -p ''
 <workspace>/.codex-plugin-claude/jobs/<uuid>/
   meta.json stdout.log stderr.log session.json
   git-status-before.txt git-status-after.txt     # review only
-  dispose-path.txt                               # --dispose only
+  dispose-path.txt                               # disposable containment only
 ```
 
 **`meta.json`:**
@@ -662,12 +663,12 @@ Body: selection guidance, forwarding rules, response style. Parity with upstream
 
 **Claude (argv):**
 ```bash
-node "<plugin-root>/scripts/claude-companion.mjs" run --mode=review --isolated --dispose -- "$ARGUMENTS"
+node "<plugin-root>/scripts/claude-companion.mjs" run --mode=review -- "$ARGUMENTS"
 ```
 
 **Gemini (stdin):**
 ```bash
-printf '%s' "$ARGUMENTS" | node "<plugin-root>/scripts/gemini-companion.mjs" run --mode=review --isolated --dispose
+printf '%s' "$ARGUMENTS" | node "<plugin-root>/scripts/gemini-companion.mjs" run --mode=review
 ```
 
 `<plugin-root>` resolved inside the companion via `path.resolve(fileURLToPath(new URL("..", import.meta.url)))`. Commands and subagents never compute plugin-root.
@@ -717,12 +718,12 @@ Before v0.1.0: run upstream `/codex:adversarial-review` against this repo. Addre
 
 | # | Risk | Mitigation |
 |---|------|------------|
-| R1 | Gemini plan mode is actively unsafe (auto-escalates to YOLO headlessly). | TOML `--policy` deny rules (verified real). `--dispose` default. README disclosure. |
-| R2 | Claude plan mode is soft; haiku tier occasionally ignores. | `--disallowedTools` blocklist; `--dispose` default; pre/post git-status diff. Default to `medium` or `default` tier for reviews. |
+| R1 | Gemini plan mode is actively unsafe (auto-escalates to YOLO headlessly). | TOML `--policy` deny rules (verified real). Disposable containment default. README disclosure. |
+| R2 | Claude plan mode is soft; haiku tier occasionally ignores. | `--disallowedTools` blocklist; disposable containment default; pre/post git-status diff. Default to `medium` or `default` tier for reviews. |
 | R3 | Model aliases silently substitute. | Full IDs only; `config/models.json` allowlist. |
 | R4 | Gemini 429 intermittent on 2.5-series models. | Retry + report serving tiers in `setup`. |
 | R5 | Plugin-root resolution on hash-versioned installs. | `path.resolve(fileURLToPath(new URL("..", import.meta.url)))` (upstream pattern). |
-| R6 | Concurrent Gemini at semantic layer. | `--dispose` default + policy file. Serialize per workspace via lockfile if observed in practice. |
+| R6 | Concurrent Gemini at semantic layer. | Disposable containment default + policy file. Serialize per workspace via lockfile if observed in practice. |
 | R7 | Command name collision with Codex builtins (`stop`, `plan`, …). | Bare names enumerated §5.1; none collide. Spec pins the list. |
 | R8 | Multi-plugin install UX. | Verified live: `codex plugin marketplace add owner/repo` resolves to git clone; `.agents/plugins/marketplace.json` schema validated; user enables per-plugin in TUI. |
 | R9 | Apache-2.0 port of MIT upstream. | `NOTICE` includes full MIT text + attribution. Our deltas Apache-2.0. |
@@ -739,7 +740,7 @@ Before v0.1.0: run upstream `/codex:adversarial-review` against this repo. Addre
 - **M2 — Claude foreground runtime (review mode).** `claude-companion run --mode=review --foreground` with `--setting-sources ""` + `--disallowedTools`. Foreground flow end-to-end with a mock CLI. `/claude-review` command invokes it.
 - **M3 — Claude commands + rescue subagent.** Port `commands/*.md`, `agents/claude-rescue.md`. Status/result/cancel commands. Foreground review + adversarial-review + setup work.
 - **M4 — Claude background + continue.** `run --background`, detached lifecycle, `continue --job`. Session-id roundtrip.
-- **M5 — Claude isolation + dispose.** `--isolated`, `--dispose` (git worktree / cp -a), pre/post git-status capture.
+- **M5 — Claude containment + dispose.** `containment=worktree`, profile-driven disposal, pre/post git-status capture.
 - **M6 — Claude prompting skill.** `skills/claude-prompting/SKILL.md` + references.
 - **M7 — Gemini port (policy-first).** `plugins/gemini/`. `policies/read-only.toml`. stdin transport. `/tmp` cwd for isolation.
 - **M8 — Gemini rescue + background.**
@@ -752,7 +753,7 @@ Adversarial-review gate between milestones where risk warrants.
 
 - `codex plugin marketplace add seungpyoson/codex-plugin-multi` installs the marketplace. User enables each plugin via TUI. Bare slash commands (`/claude-rescue`, `/gemini-review`, …) appear in the palette.
 - `/claude-rescue <task>` launches a background Claude job, returns job ID, `/claude-result <id>` renders usable output. User never sees companion internals.
-- `/gemini-review` returns a review under `--policy` + `--dispose`. Any file mutation in the user's working tree is reported as WARNING, never auto-reverted.
+- `/gemini-review` returns a review under `--policy` + disposable containment. Any file mutation in the user's working tree is reported as WARNING, never auto-reverted.
 - All 7 actions × 2 targets work.
 - Passes self adversarial review.
 - No API keys touched; no `*_API_KEY` env var read or written.
@@ -840,7 +841,7 @@ ModeProfile {
 
 **Rule:** exactly one schema describes everything the companion durably persists about one invocation. The same schema is what `cmdResult` returns, what the `run --foreground` stdout prints (success path), and what the `claude-result-handling` / `gemini-result-handling` skills describe.
 
-**The schema (v5):**
+**The schema (v6):**
 
 ```
 JobRecord {
@@ -869,7 +870,7 @@ JobRecord {
   cost_usd?, usage?
 
   // Bookkeeping — required
-  schema_version: 5
+  schema_version: 6
 }
 ```
 
@@ -912,18 +913,20 @@ If a later feature legitimately needs the original prompt text (e.g., reproducib
   - `worktree` — a fresh temp dir is created; Claude runs there; dir is deleted on dispose. (Review default.)
 
 - **`scope`** answers "what content does Claude see?"
-  - `working-tree` — everything in the user's tree, including uncommitted and untracked files. Populated into the worktree via `git checkout-index -a --prefix=<worktree>/` + a targeted copy of untracked files (or directly as `cwd` if containment=none).
-  - `staged` — index contents only. `git checkout-index --stage=2`.
-  - `branch-diff` — files changed between HEAD and some base ref (default `main`). Populated by checking out the merge-base, then applying the diff.
-  - `head` — `git worktree add HEAD` (the v4 default, kept as a named option for explicit HEAD-reviews).
+  - `working-tree` — everything in the user's live tree, including tracked, untracked, ignored, and locally smudged files. Symlinks are materialized as regular files when safe.
+  - `staged` — stage-0 index entries under `sourceCwd`. Regular blobs are copied byte-for-byte from the INDEX, executable mode is preserved from git mode, and symlink blobs are resolved structurally against INDEX metadata only.
+  - `branch-diff` — files changed between the merge-base of HEAD and some base ref (default `main`), materialized from raw HEAD object content. Deletions and gitlinks are not copied.
+  - `head` — raw HEAD tree entries under `sourceCwd`, using the same object-pure materialization rules as `staged`.
   - `custom` — caller passes `--scope-paths <glob>…`; only matching files are populated.
+
+Git-derived scopes (`staged`, `branch-diff`, `head`) are **object-pure snapshots**. They do not run `git checkout`, `git checkout-index`, checkout filters, clean/smudge/process filters, LFS smudge, textconv, hooks, `.gitattributes` transformations, or config-defined shell commands during scope population. They represent canonical git object bytes, not post-filter working-tree bytes. Use `working-tree` or `custom` when the target must see the user's live filesystem representation.
 
 **Setup pipeline:**
 
 1. If `containment = worktree`, create an empty tempdir.
 2. Populate it according to `scope` (or if `containment = none`, skip populate).
 3. Pass `--add-dir <containment-path>` to Claude.
-4. On completion, if `dispose`, remove the tempdir + source-repo worktree registration.
+4. On completion, if `dispose`, remove the tempdir.
 
 **Forbidden patterns:**
 

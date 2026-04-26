@@ -11,3 +11,8 @@ node "<plugin-root>/scripts/gemini-companion.mjs" result --job "$ARGUMENTS"
 ```
 
 Render the returned JobRecord. Do not expose sidecar file paths unless the user asks.
+
+For `staged`, `head`, and `branch-diff` scopes, the scoped tree is a git
+object-pure snapshot: checkout filters, LFS smudge, EOL conversion, textconv,
+hooks, and config-defined shell commands are not applied. `working-tree` and
+`custom` reflect live filesystem content.

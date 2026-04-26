@@ -7,12 +7,17 @@
 //   "working-tree" — tracked + untracked + ignored files from the live
 //                    source tree. Lets review see the dirty state the user
 //                    is actually working on (M6 finding #4).
-//   "staged"       — the git index contents; modified-unstaged lines are
-//                    left out.
+//   "staged"       — raw git object content from the git index; modified-
+//                    unstaged lines are left out.
 //   "branch-diff"  — files touched between a base ref (default "main") and
-//                    HEAD. The files are copied at HEAD content.
-//   "head"         — files from HEAD, rooted at sourceCwd.
+//                    HEAD. The files are copied as raw HEAD object content.
+//   "head"         — raw HEAD object content, rooted at sourceCwd.
 //   "custom"       — caller-supplied globs via runtimeInputs.scopePaths.
+//
+// Git-derived scopes (staged, branch-diff, head) are object-pure: regular
+// blobs are streamed directly from INDEX/HEAD, 120000 symlink blobs are
+// resolved only through INDEX/HEAD metadata, and checkout filters, attributes,
+// LFS smudge, textconv, hooks, and config-defined shell commands are not run.
 //
 // When containment=none, the targetPath IS sourceCwd and populateScope is a
 // no-op. The caller always calls
@@ -25,22 +30,23 @@
 // pre-T7.2 setupWorktree helper.
 //
 // Failure tags emitted by populateScope include: invalid_profile,
-// scope_requires_git, scope_base_missing, scope_paths_required,
+// scope_requires_git, scope_requires_head, scope_base_missing, scope_paths_required,
 // unsafe_symlink, and scope_population_failed.
 
 import { execFileSync } from "node:child_process";
 import {
-  mkdirSync, copyFileSync, chmodSync, writeFileSync,
-  statSync, lstatSync, realpathSync, readFileSync, readlinkSync, symlinkSync, unlinkSync,
-  readdirSync, mkdtempSync, rmSync, existsSync,
+  mkdirSync, copyFileSync, chmodSync,
+  statSync, lstatSync, realpathSync, unlinkSync, openSync, closeSync,
+  readdirSync, rmSync,
 } from "node:fs";
 import path from "node:path";
 
 const VALID_SCOPES = new Set(["working-tree", "staged", "branch-diff", "head", "custom"]);
 const MAX_GIT_SYMLINK_HOPS = 40;
+const OBJECT_PURE_GIT_CONFIG = ["-c", "core.fsmonitor=false"];
 
 function cleanGitEnv() {
-  const env = { ...process.env };
+  const env = { ...process.env, GIT_NO_LAZY_FETCH: "1" };
   for (const k of ["GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_COMMON_DIR", "GIT_PREFIX"]) {
     delete env[k];
   }
@@ -48,7 +54,7 @@ function cleanGitEnv() {
 }
 
 function git(sourceCwd, args, opts = {}) {
-  return execFileSync("git", ["-C", sourceCwd, ...args], {
+  return execFileSync("git", [...OBJECT_PURE_GIT_CONFIG, "-C", sourceCwd, ...args], {
     encoding: "utf8",
     stdio: ["ignore", "pipe", opts.stderrInherit ? "inherit" : "pipe"],
     env: cleanGitEnv(),
@@ -58,7 +64,7 @@ function git(sourceCwd, args, opts = {}) {
 }
 
 function gitBuffer(sourceCwd, args, opts = {}) {
-  return execFileSync("git", ["-C", sourceCwd, ...args], {
+  return execFileSync("git", [...OBJECT_PURE_GIT_CONFIG, "-C", sourceCwd, ...args], {
     encoding: null,
     stdio: ["ignore", "pipe", opts.stderrInherit ? "inherit" : "pipe"],
     env: cleanGitEnv(),
@@ -75,6 +81,15 @@ function assertGitWorktree(sourceCwd) {
     // Fall through to the stable, scope-level error below.
   }
   throw new Error(`scope_requires_git: scope requires a git worktree at ${sourceCwd}`);
+}
+
+function assertGitHead(ctx, sourceCwd) {
+  try {
+    git(ctx.gitRoot, ["rev-parse", "--verify", "--quiet", "HEAD^{commit}"]);
+    return;
+  } catch {
+    throw new Error(`scope_requires_head: scope requires a committed HEAD at ${sourceCwd}`);
+  }
 }
 
 function isInsidePath(root, candidate) {
@@ -118,8 +133,10 @@ function chmodGitMode(dst, mode) {
 }
 
 function isSafeSnapshotRel(rel) {
-  return rel !== "" && rel !== "." && rel !== ".." &&
-    !rel.startsWith("../") && !path.posix.isAbsolute(rel);
+  if (rel === "" || path.posix.isAbsolute(rel)) return false;
+  return rel.split("/").every((part) =>
+    part !== "" && part !== "." && part !== ".." && part !== ".git"
+  );
 }
 
 function splitAbsolutePath(absPath) {
@@ -211,24 +228,6 @@ function copyLiveFile(sourceCwd, targetPath, rel, sourceRoot) {
   }
 }
 
-function headEntryMode(sourceCwd, rel) {
-  const entry = git(sourceCwd, ["ls-tree", "-z", "HEAD", "--", rel]);
-  if (!entry) return null;
-  return entry.slice(0, entry.indexOf(" ")); // mode from "<mode> <type> <object>\t<path>"
-}
-
-function indexEntryMode(sourceCwd, rel) {
-  const entries = git(sourceCwd, ["ls-files", "-s", "-z", "--", rel]).split("\0").filter(Boolean);
-  for (const entry of entries) {
-    const tab = entry.indexOf("\t");
-    if (tab === -1) continue;
-    const entryPath = entry.slice(tab + 1);
-    if (entryPath !== rel) continue;
-    return entry.slice(0, entry.indexOf(" ")); // mode from "<mode> <object> <stage>\t<path>"
-  }
-  return null;
-}
-
 function gitScopeContext(sourceCwd) {
   const sourceRoot = realpathSync(sourceCwd);
   const gitRoot = path.resolve(git(sourceCwd, ["rev-parse", "--show-toplevel"]).trim());
@@ -262,29 +261,14 @@ function isTreeGitMode(mode) {
   return mode === "040000";
 }
 
-function headBlob(sourceCwd, rel) {
-  return gitBuffer(sourceCwd, ["show", `HEAD:${rel}`]);
-}
-
-function indexBlob(sourceCwd, rel) {
-  return gitBuffer(sourceCwd, ["show", `:${rel}`]);
-}
-
-function headPathPrefixExists(sourceCwd, rel) {
-  if (!isSafeSnapshotRel(rel)) return false;
-  return git(sourceCwd, ["ls-tree", "-r", "-z", "--name-only", "HEAD", "--", `${rel}/`]) !== "";
-}
-
-function indexPathPrefixExists(sourceCwd, rel) {
-  if (!isSafeSnapshotRel(rel)) return false;
-  return git(sourceCwd, ["ls-files", "-z", "--", `${rel}/`]) !== "";
-}
-
 function parseGitEntryList(raw) {
   return raw.split("\0").filter(Boolean).map((entry) => {
     const tab = entry.indexOf("\t");
     if (tab === -1) return null;
     const meta = entry.slice(0, tab).split(/\s+/);
+    if (meta[1] === "blob" || meta[1] === "tree" || meta[1] === "commit") {
+      return { mode: meta[0], type: meta[1], object: meta[2], stage: null, rel: entry.slice(tab + 1) };
+    }
     return { mode: meta[0], object: meta[1], stage: meta[2], rel: entry.slice(tab + 1) };
   }).filter(Boolean);
 }
@@ -311,10 +295,16 @@ function headSymlinkEntries(sourceCwd) {
 }
 
 function scopedGitEntries(ctx, entries) {
-  return entries.map((entry) => ({
-    ...entry,
-    snapshotRel: toSnapshotRel(ctx, entry.rel),
-  })).filter((entry) => entry.snapshotRel && isSafeSnapshotRel(entry.snapshotRel));
+  const out = [];
+  for (const entry of entries) {
+    const snapshotRel = toSnapshotRel(ctx, entry.rel);
+    if (!snapshotRel) continue;
+    if (!isSafeSnapshotRel(snapshotRel)) {
+      scopePopulationFailed(`unsafe git entry path ${snapshotRel}`);
+    }
+    out.push({ ...entry, snapshotRel });
+  }
+  return out;
 }
 
 function assertNoUnmergedIndexEntries(ctx, entries) {
@@ -327,257 +317,62 @@ function assertNoUnmergedIndexEntries(ctx, entries) {
   }
 }
 
-function indexAccess(ctx) {
+function entryMap(entries) {
+  return new Map(entries.map((entry) => [entry.snapshotRel, entry]));
+}
+
+function snapshotAccess(ctx, entriesByRel) {
   return {
-    entryMode: (_sourceCwd, rel) => indexEntryMode(ctx.gitRoot, toGitRel(ctx, rel)),
-    blob: (_sourceCwd, rel) => indexBlob(ctx.gitRoot, toGitRel(ctx, rel)),
-    hasPathPrefix: (_sourceCwd, rel) => indexPathPrefixExists(ctx.gitRoot, toGitRel(ctx, rel)),
+    entryMode: (_sourceCwd, rel) => entriesByRel.get(rel)?.mode ?? null,
+    blob: (_sourceCwd, rel) => {
+      const entry = entriesByRel.get(rel);
+      if (!entry?.object) throw new Error(`missing object for ${rel}`);
+      return gitBuffer(ctx.gitRoot, ["show", entry.object]);
+    },
+    hasPathPrefix: (_sourceCwd, rel) => {
+      if (!isSafeSnapshotRel(rel)) return false;
+      const prefix = `${rel}/`;
+      for (const key of entriesByRel.keys()) {
+        if (key.startsWith(prefix)) return true;
+      }
+      return false;
+    },
+    writeObject: (_sourceCwd, object, dst, mode, rel) => writeGitBlobToFile(ctx.gitRoot, object, dst, mode, rel),
   };
 }
 
-function headAccess(ctx) {
-  return {
-    entryMode: (_sourceCwd, rel) => headEntryMode(ctx.gitRoot, toGitRel(ctx, rel)),
-    blob: (_sourceCwd, rel) => headBlob(ctx.gitRoot, toGitRel(ctx, rel)),
-    hasPathPrefix: (_sourceCwd, rel) => headPathPrefixExists(ctx.gitRoot, toGitRel(ctx, rel)),
-  };
-}
-
-function checkoutBase(ctx, checkoutRoot) {
-  if (!ctx.sourcePrefix) return checkoutRoot;
-  return path.join(checkoutRoot, ...ctx.sourcePrefix.split("/"));
-}
-
-function uniqueSorted(values) {
-  return [...new Set(values.filter(Boolean))].sort();
-}
-
-function attributeGitRelCandidates(gitRel) {
-  const parts = gitRel.split("/");
-  const out = [".gitattributes"];
-  for (let i = 1; i < parts.length; i++) {
-    out.push(`${parts.slice(0, i).join("/")}/.gitattributes`);
-  }
-  return out;
-}
-
-function checkoutGitRelsWithAttributes(ctx, snapshotRels, entryMode) {
-  const gitRels = uniqueSorted(snapshotRels.map((rel) => toGitRel(ctx, rel)));
-  const attrs = uniqueSorted(gitRels.flatMap(attributeGitRelCandidates))
-    .filter((rel) => isRegularGitFileMode(entryMode(ctx.gitRoot, rel)));
-  return uniqueSorted([...attrs, ...gitRels]);
-}
-
-function tempCheckoutDir(targetPath, label) {
-  return mkdtempSync(path.join(path.dirname(targetPath), `${path.basename(targetPath)}-${label}-`));
-}
-
-function writeIndexAttributeFiles(ctx, checkoutRoot, attrs) {
-  for (const rel of attrs) {
-    const dst = path.join(checkoutRoot, rel);
-    try {
-      mkdirSync(path.dirname(dst), { recursive: true });
-      writeFileSync(dst, gitBuffer(ctx.gitRoot, ["show", `:${rel}`]));
-    } catch (err) {
-      scopePopulationFailed(`cannot checkout INDEX attributes ${rel}: ${err.message}`);
-    }
-  }
-}
-
-function gitPath(sourceCwd, rel) {
-  const raw = git(sourceCwd, ["rev-parse", "--git-path", rel]).trim();
-  return path.isAbsolute(raw) ? raw : path.resolve(sourceCwd, raw);
-}
-
-function shellQuote(value) {
-  return `'${value.replaceAll("'", "'\\''")}'`;
-}
-
-function absolutizeRelativeFilterCommand(command, sourceRoot) {
-  const match = command.match(/^(\s*)(\.{1,2}\/\S+)(.*)$/);
-  if (!match) return command;
-  return `${match[1]}${shellQuote(path.resolve(sourceRoot, match[2]))}${match[3]}`;
-}
-
-function rewriteRelativeFilterCommands(configPath, sourceRoot) {
-  if (!existsSync(configPath)) return;
-  const lines = readFileSync(configPath, "utf8").split("\n");
-  let inFilterSection = false;
-  const rewritten = lines.map((line) => {
-    const section = line.match(/^\s*\[([^\]]+)\]\s*$/);
-    if (section) {
-      inFilterSection = section[1].trim().startsWith("filter ");
-      return line;
-    }
-    if (!inFilterSection) return line;
-    const eq = line.indexOf("=");
-    if (eq === -1) return line;
-    const key = line.slice(0, eq).trim();
-    if (!new Set(["clean", "smudge", "process"]).has(key)) return line;
-    return `${line.slice(0, eq + 1)}${absolutizeRelativeFilterCommand(line.slice(eq + 1), sourceRoot)}`;
-  }).join("\n");
-  writeFileSync(configPath, rewritten);
-}
-
-function prepareIndexCheckoutGitDir(ctx, checkoutRoot) {
-  const gitDir = path.join(checkoutRoot, ".git");
-  mkdirSync(path.join(gitDir, "objects", "info"), { recursive: true });
-  mkdirSync(path.join(gitDir, "refs", "heads"), { recursive: true });
-  writeFileSync(path.join(gitDir, "HEAD"), "ref: refs/heads/snapshot\n");
-  copyFileSync(gitPath(ctx.gitRoot, "index"), path.join(gitDir, "index"));
-  const configPath = gitPath(ctx.gitRoot, "config");
-  if (existsSync(configPath)) {
-    copyFileSync(configPath, path.join(gitDir, "config"));
-  } else {
-    writeFileSync(path.join(gitDir, "config"), "[core]\n\trepositoryformatversion = 0\n\tbare = false\n");
-  }
-  rewriteRelativeFilterCommands(path.join(gitDir, "config"), ctx.gitRoot);
-  const worktreeConfigPath = gitPath(ctx.gitRoot, "config.worktree");
-  if (existsSync(worktreeConfigPath)) {
-    copyFileSync(worktreeConfigPath, path.join(gitDir, "config.worktree"));
-    rewriteRelativeFilterCommands(path.join(gitDir, "config.worktree"), ctx.gitRoot);
-  }
-  writeFileSync(path.join(gitDir, "objects", "info", "alternates"), `${gitPath(ctx.gitRoot, "objects")}\n`);
-  return gitDir;
-}
-
-function checkoutIndexToTemp(ctx, targetPath, gitRels) {
-  const checkoutRoot = tempCheckoutDir(targetPath, "index");
-  try {
-    if (gitRels.length > 0) {
-      const gitDir = prepareIndexCheckoutGitDir(ctx, checkoutRoot);
-      const attrs = gitRels.filter((rel) => rel === ".gitattributes" || rel.endsWith("/.gitattributes"));
-      if (attrs.length > 0) {
-        writeIndexAttributeFiles(ctx, checkoutRoot, attrs);
-      }
-      execFileSync("git", ["-c", "core.attributesFile=/dev/null", "checkout-index", "-f", "--", ...gitRels], {
-        cwd: ctx.gitRoot,
-        encoding: "utf8",
-        stdio: ["ignore", "pipe", "pipe"],
-        env: {
-          ...cleanGitEnv(),
-          GIT_DIR: gitDir,
-          GIT_WORK_TREE: checkoutRoot,
-          GIT_ATTR_NOSYSTEM: "1",
-        },
-        maxBuffer: 1024 * 1024 * 64,
-      });
-    }
-    return checkoutRoot;
-  } catch (err) {
-    rmSync(checkoutRoot, { recursive: true, force: true });
-    scopePopulationFailed(`cannot checkout INDEX: ${err.message}`);
-  }
-}
-
-function checkoutHeadToTemp(ctx, targetPath, gitRels) {
-  const checkoutRoot = tempCheckoutDir(targetPath, "head");
-  try {
-    execFileSync("git", ["-C", ctx.gitRoot, "worktree", "add", "--detach", "--no-checkout", "--force", checkoutRoot, "HEAD"], {
-      stdio: ["ignore", "pipe", "pipe"],
-      env: cleanGitEnv(),
-    });
-    if (gitRels.length > 0) {
-      execFileSync("git", ["-C", checkoutRoot, "checkout", "--force", "HEAD", "--", ...gitRels], {
-        stdio: ["ignore", "pipe", "pipe"],
-        env: cleanGitEnv(),
-      });
-    }
-    return checkoutRoot;
-  } catch (err) {
-    removeHeadCheckout(ctx, checkoutRoot);
-    scopePopulationFailed(`cannot checkout HEAD: ${err.message}`);
-  }
-}
-
-function removeHeadCheckout(ctx, checkoutRoot) {
-  try {
-    execFileSync("git", ["-C", ctx.gitRoot, "worktree", "remove", "--force", checkoutRoot], {
-      stdio: ["ignore", "pipe", "ignore"],
-      env: cleanGitEnv(),
-    });
-  } catch {
-    // Fall through to rmSync; the registration will be pruned by git later if needed.
-  }
-  rmSync(checkoutRoot, { recursive: true, force: true });
-}
-
-function copyCheckoutTreeToTarget(ctx, checkoutRoot, targetPath) {
-  const srcRoot = checkoutBase(ctx, checkoutRoot);
-  try {
-    rmSync(targetPath, { recursive: true, force: true });
-    mkdirSync(targetPath, { recursive: true });
-  } catch (err) {
-    scopePopulationFailed(`cannot prepare checkout target: ${err.message}`);
-  }
-  if (!lstatForScope(srcRoot, ".")) return;
-  function copyEntry(src, dst, rel) {
-    const lst = lstatForScope(src, rel);
-    if (!lst) return;
-    if (lst.isSymbolicLink()) {
-      try {
-        mkdirSync(path.dirname(dst), { recursive: true });
-        symlinkSync(readlinkSync(src), dst);
-      } catch (err) {
-        scopePopulationFailed(`cannot copy checkout symlink ${rel}: ${err.message}`);
-      }
-      return;
-    }
-    if (lst.isDirectory()) {
-      try {
-        mkdirSync(dst, { recursive: true });
-      } catch (err) {
-        scopePopulationFailed(`cannot create checkout directory ${rel}: ${err.message}`);
-      }
-      let entries;
-      try {
-        entries = readdirSync(src, { withFileTypes: true });
-      } catch (err) {
-        if (err?.code === "ENOENT") return;
-        scopePopulationFailed(`cannot read checkout directory ${rel || "."}: ${err.message}`);
-      }
-      for (const ent of entries) {
-        if (ent.name === ".git") continue;
-        const childRel = rel ? `${rel}/${ent.name}` : ent.name;
-        copyEntry(path.join(src, ent.name), path.join(dst, ent.name), childRel);
-      }
-      return;
-    }
-    try {
-      mkdirSync(path.dirname(dst), { recursive: true });
-      copyFileSync(src, dst);
-    } catch (err) {
-      scopePopulationFailed(`cannot copy checkout file ${rel}: ${err.message}`);
-    }
-  }
-  let entries;
-  try {
-    entries = readdirSync(srcRoot, { withFileTypes: true });
-  } catch (err) {
-    if (err?.code === "ENOENT") return;
-    scopePopulationFailed(`cannot read checkout directory .: ${err.message}`);
-  }
-  for (const ent of entries) {
-    if (ent.name === ".git") continue;
-    copyEntry(path.join(srcRoot, ent.name), path.join(targetPath, ent.name), ent.name);
-  }
-}
-
-function writeCheckoutFile(ctx, checkoutRoot, rel, dst, mode = null) {
-  const src = path.join(checkoutBase(ctx, checkoutRoot), rel);
-  const lst = lstatForScope(src, rel);
-  if (!lst) scopePopulationFailed(`cannot copy checkout file ${rel}: missing from checkout`);
-  if (!lst.isFile()) scopePopulationFailed(`cannot copy checkout file ${rel}: checkout entry is not a regular file`);
+function writeGitBlobToFile(sourceCwd, objectSpec, dst, mode, rel = objectSpec) {
   try {
     mkdirSync(path.dirname(dst), { recursive: true });
   } catch (err) {
-    scopePopulationFailed(`cannot create checkout file directory ${rel}: ${err.message}`);
+    scopePopulationFailed(`cannot create git blob directory ${rel}: ${err.message}`);
   }
+  let fd;
   try {
-    copyFileSync(src, dst);
+    fd = openSync(dst, "w");
   } catch (err) {
+    scopePopulationFailed(`cannot open git blob ${rel}: ${err.message}`);
+  }
+  let copyFailed = false;
+  try {
+    execFileSync("git", [...OBJECT_PURE_GIT_CONFIG, "-C", sourceCwd, "show", objectSpec], {
+      stdio: ["ignore", fd, "pipe"],
+      env: cleanGitEnv(),
+      maxBuffer: 1024 * 1024 * 64,
+    });
+  } catch (err) {
+    copyFailed = true;
     unlinkIfExists(dst, rel);
-    scopePopulationFailed(`cannot copy checkout file ${rel}: ${err.message}`);
+    scopePopulationFailed(`cannot copy git blob ${rel}: ${err.message}`);
+  } finally {
+    try {
+      closeSync(fd);
+    } catch (err) {
+      if (!copyFailed) {
+        unlinkIfExists(dst, rel);
+        scopePopulationFailed(`cannot close git blob ${rel}: ${err.message}`);
+      }
+    }
   }
   try {
     chmodGitMode(dst, mode);
@@ -587,20 +382,19 @@ function writeCheckoutFile(ctx, checkoutRoot, rel, dst, mode = null) {
   }
 }
 
-function indexAccessFromCheckout(ctx, checkoutRoot) {
-  const access = indexAccess(ctx);
-  return {
-    ...access,
-    writeBlob: (_sourceCwd, rel, dst, mode) => writeCheckoutFile(ctx, checkoutRoot, rel, dst, mode),
-  };
+function prepareGitSnapshotTarget(sourceCwd, targetPath) {
+  if (path.resolve(sourceCwd) === path.resolve(targetPath)) return;
+  try {
+    rmSync(targetPath, { recursive: true, force: true });
+    mkdirSync(targetPath, { recursive: true });
+  } catch (err) {
+    scopePopulationFailed(`cannot prepare git snapshot target: ${err.message}`);
+  }
 }
 
-function headAccessFromCheckout(ctx, checkoutRoot) {
-  const access = headAccess(ctx);
-  return {
-    ...access,
-    writeBlob: (_sourceCwd, rel, dst, mode) => writeCheckoutFile(ctx, checkoutRoot, rel, dst, mode),
-  };
+function cleanupGitSnapshotTarget(sourceCwd, targetPath) {
+  if (path.resolve(sourceCwd) === path.resolve(targetPath)) return;
+  rmSync(targetPath, { recursive: true, force: true });
 }
 
 function snapshotTargetComponents(sourcePrefixes, currentRel, linkTarget) {
@@ -679,17 +473,19 @@ function resolveGitSnapshotSymlinkTarget(sourceCwd, rel, linkTarget, sourcePrefi
   unsafeSymlink(rel, `does not resolve to a regular file in ${snapshotName}`);
 }
 
-function materializeHeadSymlink(ctx, targetPath, rel, access) {
+function materializeHeadSymlink(ctx, targetPath, rel, access, entriesByRel) {
   const linkTarget = access.blob(ctx.gitRoot, rel).toString("utf8");
   const target = resolveGitSnapshotSymlinkTarget(
     ctx.gitRoot, rel, linkTarget, ctx.sourcePrefixes,
     access.entryMode, access.blob, access.hasPathPrefix, "HEAD"
   );
+  const targetEntry = entriesByRel.get(target.rel);
+  if (!targetEntry?.object) unsafeSymlink(rel, "cannot be read in HEAD");
   const dst = path.join(targetPath, rel);
-  access.writeBlob(ctx.gitRoot, target.rel, dst, target.mode);
+  access.writeObject(ctx.gitRoot, targetEntry.object, dst, target.mode, target.rel);
 }
 
-function materializeGitSnapshotSymlinks(ctx, targetPath, entryMode, blob, hasPathPrefix, writeBlob, symlinkEntries, snapshotName) {
+function materializeGitSnapshotSymlinks(ctx, targetPath, entryMode, blob, hasPathPrefix, writeObject, symlinkEntries, entriesByRel, snapshotName) {
   const symlinkRels = new Set(symlinkEntries);
   function walk(absDir, relDir = "") {
     let entries;
@@ -732,7 +528,9 @@ function materializeGitSnapshotSymlinks(ctx, targetPath, entryMode, blob, hasPat
     const target = resolveGitSnapshotSymlinkTarget(
       ctx.gitRoot, rel, linkTarget, ctx.sourcePrefixes, entryMode, blob, hasPathPrefix, snapshotName
     );
-    writeBlob(ctx.gitRoot, target.rel, path.join(targetPath, rel), target.mode);
+    const targetEntry = entriesByRel.get(target.rel);
+    if (!targetEntry?.object) unsafeSymlink(rel, `cannot be read in ${snapshotName}`);
+    writeObject(ctx.gitRoot, targetEntry.object, path.join(targetPath, rel), target.mode, target.rel);
   }
 }
 
@@ -787,26 +585,30 @@ function scopeStaged(sourceCwd, targetPath) {
   const scopedEntries = scopedGitEntries(ctx, entries)
     .filter((entry) => entry.stage === "0")
     .filter((entry) => isRegularGitFileMode(entry.mode) || entry.mode === "120000");
-  const checkoutRoot = checkoutIndexToTemp(
-    ctx,
-    targetPath,
-    checkoutGitRelsWithAttributes(ctx, scopedEntries.map((entry) => entry.snapshotRel), indexEntryMode),
-  );
+  const entriesByRel = entryMap(scopedEntries);
+  const access = snapshotAccess(ctx, entriesByRel);
+  prepareGitSnapshotTarget(sourceCwd, targetPath);
   try {
-    copyCheckoutTreeToTarget(ctx, checkoutRoot, targetPath);
-    const access = indexAccessFromCheckout(ctx, checkoutRoot);
+    const symlinkSnapshotRels = scopedGitEntries(ctx, indexSymlinkEntries(ctx.gitRoot).map((rel) => ({ rel })))
+      .map((entry) => entry.snapshotRel);
+    for (const entry of scopedEntries) {
+      if (entry.mode === "120000") continue;
+      access.writeObject(ctx.gitRoot, entry.object, path.join(targetPath, entry.snapshotRel), entry.mode, entry.snapshotRel);
+    }
     materializeGitSnapshotSymlinks(
       ctx, targetPath, access.entryMode, access.blob, access.hasPathPrefix,
-      access.writeBlob, scopedGitEntries(ctx, indexSymlinkEntries(ctx.gitRoot).map((rel) => ({ rel }))).map((entry) => entry.snapshotRel), "INDEX"
+      access.writeObject, symlinkSnapshotRels, entriesByRel, "INDEX"
     );
-  } finally {
-    rmSync(checkoutRoot, { recursive: true, force: true });
+  } catch (err) {
+    cleanupGitSnapshotTarget(sourceCwd, targetPath);
+    throw err;
   }
 }
 
 function scopeBranchDiff(sourceCwd, targetPath, scopeBase) {
   assertGitWorktree(sourceCwd);
   const ctx = gitScopeContext(sourceCwd);
+  assertGitHead(ctx, sourceCwd);
   const base = scopeBase ?? "main";
   // Verify base exists. `rev-parse --verify` exits non-zero if not.
   try {
@@ -816,17 +618,29 @@ function scopeBranchDiff(sourceCwd, targetPath, scopeBase) {
   }
   // Files changed between base..HEAD. Use merge-base range to avoid picking
   // up files that moved on the base side only.
-  const mergeBase = git(ctx.gitRoot, ["merge-base", base, "HEAD"]).trim();
+  let mergeBase;
+  try {
+    mergeBase = git(ctx.gitRoot, ["merge-base", base, "HEAD"]).trim();
+  } catch {
+    throw new Error(`scope_base_missing: base ref ${JSON.stringify(base)} has no merge-base with HEAD in ${sourceCwd}`);
+  }
   const raw = git(ctx.gitRoot, ["diff", "--name-only", "-z", `${mergeBase}..HEAD`]);
-  const files = raw.split("\0").filter(Boolean)
-    .map((gitRel) => ({ gitRel, snapshotRel: toSnapshotRel(ctx, gitRel) }))
-    .filter((entry) => entry.snapshotRel && isSafeSnapshotRel(entry.snapshotRel));
+  const files = [];
+  for (const gitRel of raw.split("\0").filter(Boolean)) {
+    const snapshotRel = toSnapshotRel(ctx, gitRel);
+    if (!snapshotRel) continue;
+    if (!isSafeSnapshotRel(snapshotRel)) {
+      scopePopulationFailed(`unsafe git entry path ${snapshotRel}`);
+    }
+    files.push({ gitRel, snapshotRel });
+  }
   if (files.length === 0) return;
-  const access = headAccess(ctx);
   const materializations = [];
-  const checkoutSnapshotRels = [];
+  const entriesByRel = entryMap(scopedGitEntries(ctx, headEntries(ctx.gitRoot)));
+  const access = snapshotAccess(ctx, entriesByRel);
   for (const { gitRel, snapshotRel } of files) {
-    const mode = headEntryMode(ctx.gitRoot, gitRel);
+    const entry = entriesByRel.get(snapshotRel);
+    const mode = entry?.mode ?? null;
     if (mode === null || mode === "160000") {
       materializations.push({ gitRel, snapshotRel, mode });
       continue;
@@ -837,61 +651,62 @@ function scopeBranchDiff(sourceCwd, targetPath, scopeBase) {
         ctx.gitRoot, snapshotRel, linkTarget, ctx.sourcePrefixes,
         access.entryMode, access.blob, access.hasPathPrefix, "HEAD"
       );
-      checkoutSnapshotRels.push(target.rel);
       materializations.push({ gitRel, snapshotRel, mode, target });
       continue;
     }
     if (!isRegularGitFileMode(mode)) {
       scopePopulationFailed(`unsupported git entry ${snapshotRel} mode ${mode}`);
     }
-    checkoutSnapshotRels.push(snapshotRel);
     materializations.push({ gitRel, snapshotRel, mode });
   }
-  const checkoutRoot = checkoutHeadToTemp(
-    ctx,
-    targetPath,
-    checkoutGitRelsWithAttributes(ctx, checkoutSnapshotRels, headEntryMode),
-  );
+  prepareGitSnapshotTarget(sourceCwd, targetPath);
   try {
-    const checkoutAccess = headAccessFromCheckout(ctx, checkoutRoot);
-    for (const { gitRel, snapshotRel, mode } of materializations) {
+    for (const { snapshotRel, mode } of materializations) {
       if (mode === null) continue; // deleted in HEAD vs base — nothing to copy
       if (mode === "160000") continue; // gitlink/submodule entries have no blob to copy
       if (mode === "120000") {
-        materializeHeadSymlink(ctx, targetPath, snapshotRel, checkoutAccess);
+        materializeHeadSymlink(ctx, targetPath, snapshotRel, access, entriesByRel);
         continue;
       }
-      checkoutAccess.writeBlob(ctx.gitRoot, snapshotRel, path.join(targetPath, snapshotRel), mode);
+      const entry = entriesByRel.get(snapshotRel);
+      if (!entry?.object) scopePopulationFailed(`cannot find HEAD object for ${snapshotRel}`);
+      access.writeObject(ctx.gitRoot, entry.object, path.join(targetPath, snapshotRel), mode, snapshotRel);
     }
-  } finally {
-    removeHeadCheckout(ctx, checkoutRoot);
+  } catch (err) {
+    cleanupGitSnapshotTarget(sourceCwd, targetPath);
+    throw err;
   }
 }
 
 function scopeHead(sourceCwd, targetPath, containmentHandle) {
   assertGitWorktree(sourceCwd);
   const ctx = gitScopeContext(sourceCwd);
-  const unsupported = scopedGitEntries(ctx, headEntries(ctx.gitRoot))
+  assertGitHead(ctx, sourceCwd);
+  const entries = headEntries(ctx.gitRoot);
+  const unsupported = scopedGitEntries(ctx, entries)
     .find((entry) => !isRegularGitFileMode(entry.mode) && entry.mode !== "120000" && entry.mode !== "160000");
   if (unsupported) {
     scopePopulationFailed(`unsupported git entry ${unsupported.snapshotRel} mode ${unsupported.mode}`);
   }
-  const scopedEntries = scopedGitEntries(ctx, headEntries(ctx.gitRoot))
+  const scopedEntries = scopedGitEntries(ctx, entries)
     .filter((entry) => isRegularGitFileMode(entry.mode) || entry.mode === "120000");
-  const checkoutRoot = checkoutHeadToTemp(
-    ctx,
-    targetPath,
-    checkoutGitRelsWithAttributes(ctx, scopedEntries.map((entry) => entry.snapshotRel), headEntryMode),
-  );
+  const entriesByRel = entryMap(scopedEntries);
+  const access = snapshotAccess(ctx, entriesByRel);
+  prepareGitSnapshotTarget(sourceCwd, targetPath);
   try {
-    copyCheckoutTreeToTarget(ctx, checkoutRoot, targetPath);
-    const access = headAccessFromCheckout(ctx, checkoutRoot);
+    const symlinkSnapshotRels = scopedGitEntries(ctx, headSymlinkEntries(ctx.gitRoot).map((rel) => ({ rel })))
+      .map((entry) => entry.snapshotRel);
+    for (const entry of scopedEntries) {
+      if (entry.mode === "120000") continue;
+      access.writeObject(ctx.gitRoot, entry.object, path.join(targetPath, entry.snapshotRel), entry.mode, entry.snapshotRel);
+    }
     materializeGitSnapshotSymlinks(
       ctx, targetPath, access.entryMode, access.blob, access.hasPathPrefix,
-      access.writeBlob, scopedGitEntries(ctx, headSymlinkEntries(ctx.gitRoot).map((rel) => ({ rel }))).map((entry) => entry.snapshotRel), "HEAD"
+      access.writeObject, symlinkSnapshotRels, entriesByRel, "HEAD"
     );
-  } finally {
-    removeHeadCheckout(ctx, checkoutRoot);
+  } catch (err) {
+    cleanupGitSnapshotTarget(sourceCwd, targetPath);
+    throw err;
   }
   if (containmentHandle) containmentHandle._scopeHeadOf = null;
 }
