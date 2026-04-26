@@ -41,10 +41,13 @@ Current implementation state on `feat/012-t7-6-regression-matrix`:
   verified, while live maintainer execution remains an explicit manual step.
 - T10.4 manifest + schema lint matrix is complete through `24c9b84`;
   `lint:self-test` covers malformed command, skill, and agent frontmatter.
+- T10.5 README + install instructions is complete through `4303d63`; README
+  now documents shipped install, first commands, command inventory, safety
+  posture, and manual E2E pointers.
 - Gemini `cancel` is intentionally not part of completed M9; treat it as an
   explicit lifecycle-parity slice if prioritized, not as hidden unfinished M9
   work.
-- Next roadmap step is T10.5 README + install instructions.
+- Next roadmap step is T11.1 CHANGELOG + version bump.
 
 Fresh-session rule: before changing code, read this section, `git log -8`, and
 `docs/superpowers/plans/2026-04-26-m8-hardening-backlog.md`. Do not suggest PR,
