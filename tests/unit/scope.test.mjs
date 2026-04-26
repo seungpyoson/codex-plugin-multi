@@ -1941,6 +1941,44 @@ test("populateScope scope=branch-diff: ignores grafts that connect unrelated his
   }
 });
 
+test("populateScope scope=branch-diff: ignores inherited namespace, shallow, and discovery env", () => {
+  const src = seedRepo();
+  const tgt = mkTarget();
+  const envRoot = mkdtempSync(path.join(tmpdir(), "scope-branch-env-"));
+  const old = {
+    GIT_NAMESPACE: process.env.GIT_NAMESPACE,
+    GIT_CEILING_DIRECTORIES: process.env.GIT_CEILING_DIRECTORIES,
+    GIT_DISCOVERY_ACROSS_FILESYSTEM: process.env.GIT_DISCOVERY_ACROSS_FILESYSTEM,
+    GIT_SHALLOW_FILE: process.env.GIT_SHALLOW_FILE,
+  };
+  try {
+    writeFileSync(path.join(src, "target.txt"), "BASE\n");
+    git(src, "add", "target.txt");
+    git(src, "commit", "-qm", "main");
+
+    git(src, "checkout", "-qb", "feature");
+    writeFileSync(path.join(src, "target.txt"), "HEAD\n");
+    git(src, "add", "target.txt");
+    git(src, "commit", "-qm", "feature");
+
+    process.env.GIT_NAMESPACE = "evil";
+    process.env.GIT_CEILING_DIRECTORIES = path.dirname(src);
+    process.env.GIT_DISCOVERY_ACROSS_FILESYSTEM = "false";
+    process.env.GIT_SHALLOW_FILE = path.join(envRoot, "shallow");
+    writeFileSync(process.env.GIT_SHALLOW_FILE, `${git(src, "rev-parse", "HEAD").trim()}\n`);
+
+    populateScope(profile("branch-diff"), src, tgt, { scopeBase: "main" });
+
+    assert.equal(readFileSync(path.join(tgt, "target.txt"), "utf8"), "HEAD\n");
+  } finally {
+    for (const [key, value] of Object.entries(old)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+    cleanup(src, tgt, envRoot);
+  }
+});
+
 test("populateScope scope=branch-diff: rejects symlink escaping source root", () => {
   const src = seedRepo();
   const tgt = mkTarget();
@@ -2256,6 +2294,23 @@ test("populateScope scope=head: rejects malicious HEAD .git path components case
     assertEmptyOrMissing(tgt);
   } finally {
     cleanup(src, parent);
+  }
+});
+
+test("populateScope scope=head: cannot construct regular tree entries from non-blob objects", () => {
+  const src = seedRepo();
+  try {
+    writeFileSync(path.join(src, "seed.txt"), "seed\n");
+    git(src, "add", "seed.txt");
+    git(src, "commit", "-qm", "seed");
+    const commitObject = git(src, "rev-parse", "HEAD").trim();
+
+    assert.throws(
+      () => gitStdin(src, `100644 blob ${commitObject}\tbad.txt\n`, "mktree"),
+      /object .* is a commit but specified type was \(blob\)|object type \(commit\) doesn't match mode type \(blob\)/,
+    );
+  } finally {
+    cleanup(src);
   }
 });
 

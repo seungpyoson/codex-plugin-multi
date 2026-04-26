@@ -50,6 +50,7 @@ const OBJECT_PURE_GIT_CONFIG = [
   "-c", "core.hooksPath=/dev/null",
   "-c", "core.gvfs=false",
   "-c", "core.virtualFilesystem=false",
+  "-c", "advice.graftFileDeprecated=false",
 ];
 
 function cleanGitEnv() {
@@ -64,6 +65,7 @@ function cleanGitEnv() {
     "GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_COMMON_DIR", "GIT_PREFIX",
     "GIT_CONFIG_GLOBAL", "GIT_CONFIG_SYSTEM", "GIT_CONFIG_PARAMETERS", "GIT_CONFIG_COUNT",
     "GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_REPLACE_REF_BASE",
+    "GIT_NAMESPACE", "GIT_CEILING_DIRECTORIES", "GIT_DISCOVERY_ACROSS_FILESYSTEM", "GIT_SHALLOW_FILE",
     "GIT_ATTR_SOURCE",
     "GIT_EXTERNAL_DIFF", "GIT_PAGER", "GIT_PAGER_IN_USE", "PAGER",
   ]) {
