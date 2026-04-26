@@ -52,6 +52,7 @@ const fixture = {
   t7_sandbox: parsed.flags["-s"] === true || parsed.flags["--sandbox"] === true,
   t7_skip_trust: parsed.flags["--skip-trust"] === true,
   t7_prompt_from_stdin: promptArg === "" && stdin.length > 0 && prompt.length > 0,
+  t7_resume_id: parsed.flags["--resume"] ?? null,
   t7_include_dirs: includeDirs,
 };
 

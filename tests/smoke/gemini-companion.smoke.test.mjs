@@ -20,8 +20,7 @@ function seedMinimalRepo(cwd) {
     "git -c user.email=t@t -c user.name=t commit -q -m seed"], { cwd });
 }
 
-function runCompanion(args, { cwd, env = {} } = {}) {
-  const dataDir = mkdtempSync(path.join(tmpdir(), "gemini-smoke-data-"));
+function runCompanion(args, { cwd, env = {}, dataDir = mkdtempSync(path.join(tmpdir(), "gemini-smoke-data-")) } = {}) {
   const res = spawnSync("node", [COMPANION, ...args], {
     cwd,
     encoding: "utf8",
@@ -69,6 +68,154 @@ function readStdoutLog(dataDir, jobId) {
   }
   throw new Error(`no stdout.log for ${jobId}`);
 }
+
+test("gemini rescue background: launched event and terminal JobRecord", async () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "gemini-bg-cwd-"));
+  seedMinimalRepo(cwd);
+  const { stdout, stderr, status, dataDir } = runCompanion(
+    ["run", "--mode=rescue", "--background", "--model", "gemini-3-flash-preview",
+     "--cwd", cwd, "--", "background rescue task"],
+    { cwd },
+  );
+  try {
+    assert.equal(status, 0, `exit ${status}: ${stderr}`);
+    const launched = JSON.parse(stdout);
+    assert.equal(launched.event, "launched");
+    assert.equal(launched.target, "gemini");
+    assert.equal(typeof launched.job_id, "string");
+    assert.equal(Number.isInteger(launched.pid), true);
+
+    const stateRoot = path.join(dataDir, "state");
+    const deadline = Date.now() + 5000;
+    let meta = null;
+    while (Date.now() < deadline) {
+      for (const dir of readdirSync(stateRoot)) {
+        const metaPath = path.join(stateRoot, dir, "jobs", `${launched.job_id}.json`);
+        if (existsSync(metaPath)) {
+          const parsed = JSON.parse(readFileSync(metaPath, "utf8"));
+          if (parsed.status === "completed" || parsed.status === "failed") {
+            meta = parsed;
+            break;
+          }
+        }
+      }
+      if (meta) break;
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+
+    assert.ok(meta, "worker never wrote terminal meta");
+    assert.equal(meta.status, "completed");
+    assert.equal(meta.result, "Mock Gemini response.");
+    assert.equal(meta.gemini_session_id, "22222222-3333-4444-9555-666666666666");
+    assert.equal("prompt" in meta, false, "full prompt must not appear on JobRecord");
+  } finally {
+    rmSync(dataDir, { recursive: true, force: true });
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("gemini continue foreground: resumes prior job session", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "gemini-continue-cwd-"));
+  seedMinimalRepo(cwd);
+  const first = runCompanion(
+    ["run", "--mode=rescue", "--foreground", "--model", "gemini-3-flash-preview",
+     "--cwd", cwd, "--", "initial rescue task"],
+    { cwd },
+  );
+  try {
+    assert.equal(first.status, 0, `exit ${first.status}: ${first.stderr}`);
+    const prior = JSON.parse(first.stdout);
+    assert.equal(prior.status, "completed");
+    assert.equal(prior.gemini_session_id, "22222222-3333-4444-9555-666666666666");
+
+    const continued = runCompanion(
+      ["continue", "--job", prior.job_id, "--foreground", "--cwd", cwd, "--", "continue rescue task"],
+      { cwd, dataDir: first.dataDir },
+    );
+    assert.equal(continued.status, 0, `exit ${continued.status}: ${continued.stderr}`);
+    const record = JSON.parse(continued.stdout);
+    assert.equal(record.target, "gemini");
+    assert.equal(record.status, "completed");
+    assert.equal(record.parent_job_id, prior.job_id);
+    assert.deepEqual(record.resume_chain, [prior.gemini_session_id]);
+    assert.equal(record.gemini_session_id, "22222222-3333-4444-9555-666666666666");
+
+    const fx = readStdoutLog(first.dataDir, record.job_id);
+    assert.equal(fx.t7_resume_id, prior.gemini_session_id);
+    assert.equal(fx.t7_prompt_from_stdin, true, "Gemini continue prompt must arrive on stdin, not argv");
+    assert.equal("prompt" in record, false, "full prompt must not appear on JobRecord");
+  } finally {
+    rmSync(first.dataDir, { recursive: true, force: true });
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("gemini continue background: launched event and resumed terminal JobRecord", async () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "gemini-continue-bg-cwd-"));
+  seedMinimalRepo(cwd);
+  const first = runCompanion(
+    ["run", "--mode=rescue", "--foreground", "--model", "gemini-3-flash-preview",
+     "--cwd", cwd, "--", "initial rescue task"],
+    { cwd },
+  );
+  try {
+    assert.equal(first.status, 0, `exit ${first.status}: ${first.stderr}`);
+    const prior = JSON.parse(first.stdout);
+    assert.equal(prior.gemini_session_id, "22222222-3333-4444-9555-666666666666");
+
+    const continued = runCompanion(
+      ["continue", "--job", prior.job_id, "--background", "--cwd", cwd, "--", "background continue task"],
+      { cwd, dataDir: first.dataDir },
+    );
+    assert.equal(continued.status, 0, `exit ${continued.status}: ${continued.stderr}`);
+    const launched = JSON.parse(continued.stdout);
+    assert.equal(launched.event, "launched");
+    assert.equal(launched.target, "gemini");
+    assert.equal(launched.parent_job_id, prior.job_id);
+    assert.equal(typeof launched.job_id, "string");
+    assert.equal(Number.isInteger(launched.pid), true);
+
+    const stateRoot = path.join(first.dataDir, "state");
+    const deadline = Date.now() + 5000;
+    let meta = null;
+    while (Date.now() < deadline) {
+      for (const dir of readdirSync(stateRoot)) {
+        const metaPath = path.join(stateRoot, dir, "jobs", `${launched.job_id}.json`);
+        if (existsSync(metaPath)) {
+          const parsed = JSON.parse(readFileSync(metaPath, "utf8"));
+          if (parsed.status === "completed" || parsed.status === "failed") {
+            meta = parsed;
+            break;
+          }
+        }
+      }
+      if (meta) break;
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+
+    assert.ok(meta, "worker never wrote terminal meta");
+    assert.equal(meta.status, "completed");
+    assert.equal(meta.parent_job_id, prior.job_id);
+    assert.deepEqual(meta.resume_chain, [prior.gemini_session_id]);
+    assert.equal(meta.result, "Mock Gemini response.");
+    assert.equal(meta.gemini_session_id, "22222222-3333-4444-9555-666666666666");
+
+    let fx = null;
+    while (Date.now() < deadline && !fx) {
+      try {
+        fx = readStdoutLog(first.dataDir, meta.job_id);
+      } catch {
+        await new Promise((resolve) => setTimeout(resolve, 100));
+      }
+    }
+    assert.ok(fx, "worker never wrote stdout.log");
+    assert.equal(fx.t7_resume_id, prior.gemini_session_id);
+    assert.equal("prompt" in meta, false, "full prompt must not appear on JobRecord");
+  } finally {
+    rmSync(first.dataDir, { recursive: true, force: true });
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
 
 test("gemini review foreground: policy-first, stdin transport, /tmp cwd, scoped include dir", () => {
   const cwd = mkdtempSync(path.join(tmpdir(), "gemini-review-cwd-"));

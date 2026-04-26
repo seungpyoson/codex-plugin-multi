@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 import { fileURLToPath } from "node:url";
 import { dirname, join as joinPath, resolve as resolvePath } from "node:path";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
-import { execFileSync } from "node:child_process";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, unlinkSync, writeFileSync, chmodSync } from "node:fs";
+import { execFileSync, spawn } from "node:child_process";
 
 import { parseArgs } from "./lib/args.mjs";
 import { configureState, resolveJobsDir, resolveJobFile, writeJobFile, upsertJob, listJobs } from "./lib/state.mjs";
@@ -85,6 +85,26 @@ function invocationFromRecord(record) {
   };
 }
 
+function promptSidecarPath(workspaceRoot, jobId) {
+  return `${resolveJobsDir(workspaceRoot)}/${jobId}/prompt.txt`;
+}
+
+function writePromptSidecar(workspaceRoot, jobId, prompt) {
+  const dir = `${resolveJobsDir(workspaceRoot)}/${jobId}`;
+  mkdirSync(dir, { recursive: true });
+  const p = promptSidecarPath(workspaceRoot, jobId);
+  writeFileSync(p, prompt, { mode: 0o600, encoding: "utf8" });
+  try { chmodSync(p, 0o600); } catch { /* best-effort on non-POSIX */ }
+}
+
+function consumePromptSidecar(workspaceRoot, jobId) {
+  const p = promptSidecarPath(workspaceRoot, jobId);
+  if (!existsSync(p)) return null;
+  const prompt = readFileSync(p, "utf8");
+  try { unlinkSync(p); } catch { /* already gone */ }
+  return prompt;
+}
+
 async function cmdRun(rest) {
   const { options, positionals } = parseArgs(rest, {
     valueOptions: ["mode", "model", "cwd", "binary", "scope-base", "scope-paths", "override-dispose"],
@@ -94,8 +114,8 @@ async function cmdRun(rest) {
   if (!mode || !["review", "adversarial-review", "rescue"].includes(mode)) {
     fail("bad_args", `--mode must be one of review|adversarial-review|rescue; got ${JSON.stringify(mode)}`);
   }
-  if (options.background) {
-    fail("not_implemented", "Gemini background jobs land in M8; use --foreground for M7");
+  if (options.background && options.foreground) {
+    fail("bad_args", "--background and --foreground are mutually exclusive");
   }
   const profile = resolveProfile(mode);
   const model = options.model ?? resolveModelForProfile(profile, loadModels()) ?? null;
@@ -142,6 +162,33 @@ async function cmdRun(rest) {
   const queuedRecord = buildJobRecord(invocation, null, []);
   writeJobFile(workspaceRoot, jobId, queuedRecord);
   upsertJob(workspaceRoot, queuedRecord);
+
+  if (options.background) {
+    writePromptSidecar(workspaceRoot, jobId, prompt);
+    const child = spawn(process.execPath, [
+      fileURLToPath(import.meta.url),
+      "_run-worker",
+      "--cwd", cwd,
+      "--job", jobId,
+    ], {
+      cwd,
+      env: process.env,
+      detached: true,
+      stdio: "ignore",
+      windowsHide: true,
+    });
+    child.unref();
+    printJson({
+      event: "launched",
+      job_id: jobId,
+      target: "gemini",
+      mode,
+      pid: child.pid ?? null,
+      workspace_root: workspaceRoot,
+    });
+    process.exit(0);
+  }
+
   await executeRun(invocation, prompt, { foreground: true });
 }
 
@@ -185,6 +232,10 @@ async function executeRun(invocation, prompt, { foreground }) {
     }
   }
 
+  const resumeId = invocation.resume_chain && invocation.resume_chain.length > 0
+    ? invocation.resume_chain[invocation.resume_chain.length - 1]
+    : null;
+
   let execution;
   try {
     execution = await spawnGemini(profile, {
@@ -194,6 +245,7 @@ async function executeRun(invocation, prompt, { foreground }) {
       includeDirPath: containment.path,
       cwd: neutralCwd ?? containment.path,
       binary: invocation.binary,
+      resumeId,
     });
   } catch (e) {
     const errorRecord = buildJobRecord(invocation, {
@@ -251,6 +303,123 @@ function writeSidecar(workspaceRoot, jobId, name, contents) {
     try { unlinkSync(tmpFile); } catch { /* already gone */ }
     throw e;
   }
+}
+
+async function cmdRunWorker(rest) {
+  const { options } = parseArgs(rest, {
+    valueOptions: ["cwd", "job"],
+    booleanOptions: [],
+  });
+  if (!options.cwd || !options.job) {
+    fail("bad_args", "_run-worker requires --cwd and --job");
+  }
+
+  const workspaceRoot = resolveWorkspaceRoot(options.cwd);
+  let meta;
+  try {
+    const jobFile = resolveJobFile(workspaceRoot, options.job);
+    if (!existsSync(jobFile)) fail("not_found", `no meta.json for job ${options.job}`);
+    meta = JSON.parse(readFileSync(jobFile, "utf8"));
+  } catch (e) {
+    fail("bad_args", e.message);
+  }
+
+  const prompt = consumePromptSidecar(workspaceRoot, options.job);
+  if (!prompt) {
+    const errorRecord = buildJobRecord(invocationFromRecord(meta), {
+      exitCode: null, parsed: null, pidInfo: null, geminiSessionId: null,
+      errorMessage: "worker: prompt sidecar missing; job cannot resume",
+    }, []);
+    writeJobFile(workspaceRoot, options.job, errorRecord);
+    upsertJob(workspaceRoot, errorRecord);
+    fail("bad_state", "prompt sidecar missing for job " + options.job);
+  }
+
+  const invocation = invocationFromRecord(meta);
+  await executeRun(invocation, prompt, { foreground: false });
+}
+
+async function cmdContinue(rest) {
+  const { options, positionals } = parseArgs(rest, {
+    valueOptions: ["job", "cwd", "model", "binary"],
+    booleanOptions: ["background", "foreground"],
+  });
+  if (!options.job) fail("bad_args", "--job <id> is required");
+  if (options.background && options.foreground) {
+    fail("bad_args", "--background and --foreground are mutually exclusive");
+  }
+
+  const cwd = options.cwd ?? process.cwd();
+  const workspaceRoot = resolveWorkspaceRoot(cwd);
+  let prior;
+  try {
+    const jobFile = resolveJobFile(workspaceRoot, options.job);
+    if (!existsSync(jobFile)) fail("not_found", `no meta.json for job ${options.job}`);
+    prior = JSON.parse(readFileSync(jobFile, "utf8"));
+  } catch (e) {
+    fail("bad_args", e.message);
+  }
+
+  const prompt = positionals.join(" ").trim();
+  if (!prompt) fail("bad_args", "prompt is required (pass after -- separator)");
+
+  const priorGeminiSessionId = prior.gemini_session_id ?? null;
+  if (!priorGeminiSessionId) {
+    fail("bad_args", `prior job ${options.job} has no gemini_session_id to resume`);
+  }
+
+  const newJobId_ = newJobId();
+  const model = options.model ?? prior.model;
+  const priorModeName = prior.mode_profile_name ?? prior.mode;
+  const priorProfile = resolveProfile(priorModeName);
+  const priorResumeChain = Array.isArray(prior.resume_chain) ? prior.resume_chain : [];
+  const invocation = Object.freeze({
+    job_id: newJobId_,
+    target: "gemini",
+    parent_job_id: options.job,
+    resume_chain: [...priorResumeChain, priorGeminiSessionId],
+    mode_profile_name: priorProfile.name,
+    mode: priorModeName,
+    model,
+    cwd,
+    workspace_root: workspaceRoot,
+    containment: priorProfile.containment,
+    scope: priorProfile.scope,
+    dispose_effective: prior.dispose_effective ?? priorProfile.dispose_default,
+    scope_base: prior.scope_base ?? null,
+    scope_paths: prior.scope_paths ?? null,
+    prompt_head: prompt.slice(0, 200),
+    schema_spec: prior.schema_spec ?? null,
+    binary: options.binary ?? process.env.GEMINI_BINARY ?? "gemini",
+    started_at: new Date().toISOString(),
+  });
+
+  const queuedRecord = buildJobRecord(invocation, null, []);
+  writeJobFile(workspaceRoot, newJobId_, queuedRecord);
+  upsertJob(workspaceRoot, queuedRecord);
+
+  if (options.background) {
+    writePromptSidecar(workspaceRoot, newJobId_, prompt);
+    const child = spawn(process.execPath, [
+      fileURLToPath(import.meta.url),
+      "_run-worker",
+      "--cwd", cwd,
+      "--job", newJobId_,
+    ], { cwd, env: process.env, detached: true, stdio: "ignore", windowsHide: true });
+    child.unref();
+    printJson({
+      event: "launched",
+      job_id: newJobId_,
+      target: "gemini",
+      mode: priorModeName,
+      parent_job_id: options.job,
+      pid: child.pid ?? null,
+      workspace_root: workspaceRoot,
+    });
+    process.exit(0);
+  }
+
+  await executeRun(invocation, prompt, { foreground: true });
 }
 
 async function cmdStatus(rest) {
@@ -316,10 +485,11 @@ async function main() {
   const rest = argv.slice(1);
   switch (sub) {
     case "run": return cmdRun(rest);
+    case "_run-worker": return cmdRunWorker(rest);
     case "ping": return cmdPing(rest);
     case "status": return cmdStatus(rest);
     case "result": return cmdResult(rest);
-    case "continue":
+    case "continue": return cmdContinue(rest);
     case "cancel":
     case "doctor":
       return fail("not_implemented", `'${sub}' lands in a later milestone`);
