@@ -7,7 +7,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import fs, { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
@@ -22,10 +23,145 @@ import * as GeminiIdentity from "../../plugins/gemini/scripts/lib/identity.mjs";
 const UUID_V4 =
   /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/;
 const SKIP_PS_UNDER_COVERAGE = {
-  skip: process.env.CODEX_PLUGIN_COVERAGE === "1"
-    ? "NODE_V8_COVERAGE can make macOS sandbox deny ps; regular npm test covers PID ownership"
+  skip: process.env.CODEX_PLUGIN_COVERAGE === "1" || process.platform === "darwin"
+    ? "macOS sandboxing can deny ps; shimmed Darwin tests cover parser and ownership comparison"
     : false,
 };
+const ORIGINAL_PLATFORM_DESCRIPTOR = Object.getOwnPropertyDescriptor(process, "platform");
+
+function setPlatform(value) {
+  Object.defineProperty(process, "platform", {
+    value,
+    enumerable: ORIGINAL_PLATFORM_DESCRIPTOR?.enumerable ?? true,
+    configurable: true,
+  });
+}
+
+function restorePlatform() {
+  Object.defineProperty(process, "platform", ORIGINAL_PLATFORM_DESCRIPTOR);
+}
+
+function withPlatformAndFs(platform, methods, fn) {
+  const originals = {};
+  for (const name of Object.keys(methods)) {
+    originals[name] = fs[name];
+    fs[name] = methods[name];
+  }
+  syncBuiltinESMExports();
+  setPlatform(platform);
+  try {
+    return fn();
+  } finally {
+    restorePlatform();
+    for (const [name, value] of Object.entries(originals)) {
+      fs[name] = value;
+    }
+    syncBuiltinESMExports();
+  }
+}
+
+function assertLinuxIdentityBranches(identity) {
+  const afterComm = ["S", ...Array.from({ length: 18 }, (_, i) => String(i + 1)), "98765", "tail"];
+  const stat = `123 (node worker) ${afterComm.join(" ")}`;
+
+  withPlatformAndFs("linux", {
+    existsSync: (file) => file === "/proc/123/stat" || file === "/proc/123/cmdline",
+    readFileSync: (file) => {
+      if (file === "/proc/123/stat") return stat;
+      if (file === "/proc/123/cmdline") return "/usr/bin/node\0--worker";
+      throw new Error(`unexpected file ${file}`);
+    },
+  }, () => {
+    assert.deepEqual(identity.capturePidInfo(123), {
+      pid: 123,
+      starttime: "98765",
+      argv0: "/usr/bin/node",
+    });
+  });
+
+  withPlatformAndFs("linux", {
+    existsSync: (file) => file === "/proc/124/stat",
+    readFileSync: (file) => {
+      if (file === "/proc/124/stat") return stat.replace("123", "124");
+      throw new Error(`unexpected file ${file}`);
+    },
+  }, () => {
+    assert.deepEqual(identity.capturePidInfo(124), {
+      pid: 124,
+      starttime: "98765",
+      argv0: "node worker",
+    });
+  });
+
+  withPlatformAndFs("linux", {
+    existsSync: () => false,
+    readFileSync: () => {
+      throw new Error("should not read missing proc files");
+    },
+  }, () => {
+    assert.throws(() => identity.capturePidInfo(125), /process_gone: no \/proc\/125\/stat/);
+    assert.deepEqual(identity.verifyPidInfo({
+      pid: 125,
+      starttime: "x",
+      argv0: "x",
+    }), { match: false, reason: "process_gone" });
+  });
+
+  withPlatformAndFs("linux", {
+    existsSync: () => true,
+    readFileSync: () => "malformed",
+  }, () => {
+    assert.throws(() => identity.capturePidInfo(126), /process_gone: malformed/);
+  });
+
+  withPlatformAndFs("linux", {
+    existsSync: () => true,
+    readFileSync: (file) => {
+      if (file.endsWith("/stat")) return "127 (node) S 1 2";
+      return "";
+    },
+  }, () => {
+    assert.throws(() => identity.capturePidInfo(127), /process_gone: no starttime/);
+  });
+
+  withPlatformAndFs("linux", {
+    existsSync: () => true,
+    readFileSync: (file) => {
+      if (file.endsWith("/stat")) return `) ${afterComm.join(" ")}`;
+      return "";
+    },
+  }, () => {
+    assert.throws(() => identity.capturePidInfo(127), /process_gone: no argv0\/comm/);
+  });
+
+  withPlatformAndFs("linux", {
+    existsSync: () => true,
+    readFileSync: () => {
+      throw new Error("permission denied");
+    },
+  }, () => {
+    assert.throws(() => identity.capturePidInfo(128), /process_gone: permission denied/);
+  });
+
+  withPlatformAndFs("win32", {}, () => {
+    assert.throws(() => identity.capturePidInfo(129), /platform win32 not supported/);
+  });
+
+  withPlatformAndFs("linux", {
+    existsSync: () => {
+      throw new Error("stat probe crashed");
+    },
+  }, () => {
+    assert.deepEqual(identity.verifyPidInfo({
+      pid: 130,
+      starttime: "x",
+      argv0: "x",
+    }), { match: false, reason: "capture_error" });
+  });
+
+  assert.deepEqual(identity.verifyPidInfo(null), { match: false, reason: "invalid_saved" });
+  assert.deepEqual(identity.verifyPidInfo({ pid: 0 }), { match: false, reason: "invalid_pid" });
+}
 
 test("newJobId: returns a UUID v4", () => {
   const id = newJobId();
@@ -219,4 +355,15 @@ test("gemini capturePidInfo parses Darwin ps output through the same shim", {
     process.env.PATH = originalPath;
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+test("capturePidInfo: Linux, unsupported platform, and verify error branches", () => {
+  assertLinuxIdentityBranches({
+    capturePidInfo,
+    verifyPidInfo,
+  });
+});
+
+test("gemini capturePidInfo: Linux, unsupported platform, and verify error branches", () => {
+  assertLinuxIdentityBranches(GeminiIdentity);
 });

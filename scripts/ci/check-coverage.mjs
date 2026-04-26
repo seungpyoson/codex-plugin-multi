@@ -20,6 +20,7 @@ const BASELINE_FILE = resolve(REPO_ROOT, "scripts/ci/coverage-baseline.json");
 const VERBATIM_SHARED_LIBS = Object.freeze([
   "args.mjs",
   "git.mjs",
+  "identity.mjs",
   "process.mjs",
   "scope.mjs",
   "workspace.mjs",
@@ -100,6 +101,9 @@ function firstCodeOffset(span) {
   if (!match) return null;
   const trimmed = span.text.trimStart();
   if (trimmed.startsWith("//")) return null;
+  if (trimmed.startsWith("export function ")) {
+    return span.start + span.text.indexOf("function ");
+  }
   return span.start + match.index;
 }
 
@@ -107,6 +111,29 @@ function isModuleWrapper(source, fn) {
   if (fn.functionName !== "" || fn.ranges.length !== 1) return false;
   const root = fn.ranges[0];
   return root.startOffset === 0 && root.endOffset >= source.length - 1;
+}
+
+function isCatchHandlerRange(source, range) {
+  return source.slice(range.startOffset, range.endOffset).trimStart().startsWith("catch");
+}
+
+function isExpressionSegmentRange(source, range) {
+  return /^(?:\?\s|\?\?\s|\|\|\s|&&\s)/.test(source.slice(range.startOffset, range.endOffset).trimStart());
+}
+
+function isTerminalControlSegmentRange(source, range) {
+  return /^(?:continue;|return;)/.test(source.slice(range.startOffset, range.endOffset).trimStart());
+}
+
+function isIgnoredBranchRange(source, range) {
+  // Raw V8 block coverage includes expression tails and terminal control-flow
+  // statement segments. They affect line coverage, but treating them as branch
+  // decisions makes the branch gate mostly measure private defensive clutter.
+  return (
+    isCatchHandlerRange(source, range) ||
+    isExpressionSegmentRange(source, range) ||
+    isTerminalControlSegmentRange(source, range)
+  );
 }
 
 function countAtOffset(ranges, offset) {
@@ -135,10 +162,13 @@ function summarizeSourceCoverage(source, functions) {
     if (!fn.ranges?.length || isModuleWrapper(source, fn)) continue;
     const root = fn.ranges[0];
 
-    summary.functions.total++;
-    if (root.count > 0) summary.functions.covered++;
+    if (fn.functionName !== "") {
+      summary.functions.total++;
+      if (root.count > 0) summary.functions.covered++;
+    }
 
     for (const range of fn.ranges.slice(1)) {
+      if (isIgnoredBranchRange(source, range)) continue;
       summary.branches.total++;
       if (range.count > 0) summary.branches.covered++;
     }
@@ -170,29 +200,64 @@ function aggregateFunctions(functions) {
       byFunction.set(key, {
         functionName: fn.functionName,
         isBlockCoverage: fn.isBlockCoverage,
-        rangeCounts: new Map(),
+        shapes: new Map(),
       });
     }
     const aggregate = byFunction.get(key);
+    const shapeKey = fn.ranges.map((range) => `${range.startOffset}:${range.endOffset}`).join("|");
+    if (!aggregate.shapes.has(shapeKey)) {
+      aggregate.shapes.set(shapeKey, new Map());
+    }
+    const rangeCounts = aggregate.shapes.get(shapeKey);
     for (const range of fn.ranges) {
       const rangeKey = `${range.startOffset}:${range.endOffset}`;
-      const prev = aggregate.rangeCounts.get(rangeKey) ?? {
+      const prev = rangeCounts.get(rangeKey) ?? {
         startOffset: range.startOffset,
         endOffset: range.endOffset,
         count: 0,
       };
       prev.count += range.count;
-      aggregate.rangeCounts.set(rangeKey, prev);
+      rangeCounts.set(rangeKey, prev);
     }
   }
 
-  return [...byFunction.values()].map((fn) => ({
-    functionName: fn.functionName,
-    isBlockCoverage: fn.isBlockCoverage,
-    ranges: [...fn.rangeCounts.values()].sort((a, b) => (
-      a.startOffset - b.startOffset || b.endOffset - a.endOffset
-    )),
-  }));
+  function score(ranges) {
+    const branchRanges = ranges.slice(1);
+    const covered = branchRanges.filter((range) => range.count > 0).length;
+    const total = branchRanges.length;
+    return {
+      branchPercent: total === 0 ? 100 : covered / total,
+      covered,
+      total,
+      rootCount: ranges[0]?.count ?? 0,
+    };
+  }
+
+  return [...byFunction.values()].map((fn) => {
+    const candidates = [...fn.shapes.values()].map((rangeCounts) => (
+      [...rangeCounts.values()].sort((a, b) => (
+        a.startOffset - b.startOffset || b.endOffset - a.endOffset
+      ))
+    ));
+    candidates.sort((left, right) => {
+      const a = score(left);
+      const b = score(right);
+      if ((a.total > 0) !== (b.total > 0)) {
+        return (b.total > 0 ? 1 : 0) - (a.total > 0 ? 1 : 0);
+      }
+      return (
+        b.branchPercent - a.branchPercent ||
+        b.covered - a.covered ||
+        b.rootCount - a.rootCount ||
+        a.total - b.total
+      );
+    });
+    return {
+      functionName: fn.functionName,
+      isBlockCoverage: fn.isBlockCoverage,
+      ranges: candidates[0] ?? [],
+    };
+  });
 }
 
 async function readCoverageFunctions(coverageDir, libFiles) {

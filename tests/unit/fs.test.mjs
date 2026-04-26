@@ -96,6 +96,25 @@ test("gemini fs helpers use gemini defaults and preserve shared behavior", () =>
   }
 });
 
+test("gemini fs helpers cover path, JSON, safe read, and tempdir branches", () => {
+  const dir = GeminiFs.createTempDir("gemini-custom-");
+  try {
+    assert.ok(path.basename(dir).startsWith("gemini-custom-"));
+    assert.equal(GeminiFs.ensureAbsolutePath("/cwd", "/already/abs"), "/already/abs");
+    assert.equal(GeminiFs.safeReadFile(path.join(dir, "missing.txt")), "");
+    assert.throws(() => GeminiFs.safeReadFile(dir), /EISDIR|illegal operation|is a directory/i);
+
+    const jsonFile = path.join(dir, "round-trip.json");
+    GeminiFs.writeJsonFile(jsonFile, { ok: true, nested: { target: "gemini" } });
+    assert.deepEqual(GeminiFs.readJsonFile(jsonFile), {
+      ok: true,
+      nested: { target: "gemini" },
+    });
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("readStdinIfPiped: returns empty for TTY and reads fd 0 when piped", () => {
   const originalIsTTY = process.stdin.isTTY;
   const originalRead = fs.readFileSync;

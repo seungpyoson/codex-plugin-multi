@@ -82,6 +82,10 @@ function runCompanion(args, { cwd, env = {}, dataDir } = {}) {
   return { ...res, dataDir: dd };
 }
 
+function rmTempTree(p) {
+  rmSync(p, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+}
+
 function seedMinimalRepo(cwd) {
   spawnSync("git", ["init", "-q", "-b", "main"], { cwd });
   spawnSync("bash", ["-c",
@@ -188,8 +192,8 @@ test("M6-finding-C2: silent Opus billing — review with no --model uses cheap t
     assert.equal(record.model, "claude-haiku-4-5-20251001",
       "drift check: cheap tier pinned to haiku in config/models.json");
   } finally {
-    rmSync(dataDir, { recursive: true, force: true });
-    rmSync(cwd, { recursive: true, force: true });
+    rmTempTree(dataDir);
+    rmTempTree(cwd);
   }
 });
 
@@ -265,8 +269,8 @@ test("M6-finding-4: review sees dirty working tree — worktree contains uncommi
     assert.notEqual(fx.t7_add_dir, cwd,
       "review's containment=worktree should NOT pass sourceCwd as --add-dir");
   } finally {
-    rmSync(dataDir, { recursive: true, force: true });
-    rmSync(cwd, { recursive: true, force: true });
+    rmTempTree(dataDir);
+    rmTempTree(cwd);
   }
 });
 
@@ -295,8 +299,8 @@ test("scope population failure prevents spawning Claude target CLI", () => {
     assert.match(record.error_message, /unsafe_symlink/);
     assert.equal(existsSync(marker), false, "target CLI marker proves Claude binary was spawned");
   } finally {
-    rmSync(dataDir, { recursive: true, force: true });
-    rmSync(cwd, { recursive: true, force: true });
+    rmTempTree(dataDir);
+    rmTempTree(cwd);
   }
 });
 
@@ -362,8 +366,8 @@ test("M6-finding-6: continue chain resumes LATEST claude_session_id, not an inte
       `chained --resume must be claudeSid2=${claudeSid2}; got ${resumeRecv2} ` +
       `(legacy bug would have used job2=${job2})`);
   } finally {
-    rmSync(dataDir, { recursive: true, force: true });
-    rmSync(cwd, { recursive: true, force: true });
+    rmTempTree(dataDir);
+    rmTempTree(cwd);
   }
 });
 
@@ -410,8 +414,8 @@ test("M6-finding-7: PID-reuse cancel refused — tampered starttime halts signal
       `stderr must mention stale_pid; got: ${cancelRes.stderr}`);
     assert.equal(process.killed ?? false, false);
   } finally {
-    rmSync(dataDir, { recursive: true, force: true });
-    rmSync(cwd, { recursive: true, force: true });
+    rmTempTree(dataDir);
+    rmTempTree(cwd);
   }
 });
 
@@ -459,8 +463,8 @@ test("M6-finding-1-H1: background worker persists parsed.result on terminal JobR
     assert.ok("cost_usd" in meta, "background JobRecord carries cost_usd");
     assert.equal(meta.schema_version, 6);
   } finally {
-    rmSync(dataDir, { recursive: true, force: true });
-    rmSync(cwd, { recursive: true, force: true });
+    rmTempTree(dataDir);
+    rmTempTree(cwd);
   }
 });
 
@@ -490,8 +494,8 @@ test("M6-finding-9: full prompt never persisted — only prompt_head ≤200 char
     assert.equal(raw.includes(tail), false,
       "§21.3.1: full prompt text must not appear anywhere in persisted JSON");
   } finally {
-    rmSync(dataDir, { recursive: true, force: true });
-    rmSync(cwd, { recursive: true, force: true });
+    rmTempTree(dataDir);
+    rmTempTree(cwd);
   }
 });
 
@@ -586,8 +590,8 @@ test("M6-mock-gap: mutation detected when claude writes a file (no coverage pre-
     assert.ok(saw,
       `mutations[] must mention foo.md; got ${JSON.stringify(record.mutations)}`);
   } finally {
-    rmSync(dataDir, { recursive: true, force: true });
-    rmSync(cwd, { recursive: true, force: true });
+    rmTempTree(dataDir);
+    rmTempTree(cwd);
   }
 });
 

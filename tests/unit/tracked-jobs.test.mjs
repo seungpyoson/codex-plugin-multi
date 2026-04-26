@@ -1,6 +1,6 @@
 import { test, before, afterEach } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, unlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
@@ -88,6 +88,21 @@ for (const [target, tracked, state] of [
   ["claude", ClaudeTracked, ClaudeState],
   ["gemini", GeminiTracked, GeminiState],
 ]) {
+  test(`${target} tracked jobs: session env and per-call env overrides are honored`, () => {
+    const fixture = freshTrackedFixture(target, tracked, state);
+    try {
+      process.env[fixture.sessionEnv] = `${target}-session`;
+      assert.equal(tracked.getSessionIdEnv(), fixture.sessionEnv);
+      assert.equal(tracked.createJobRecord({ id: "job-session" }).sessionId, `${target}-session`);
+      assert.equal(tracked.createJobRecord(
+        { id: "job-env" },
+        { env: { CUSTOM_SESSION: "custom" }, sessionIdEnv: "CUSTOM_SESSION" },
+      ).sessionId, "custom");
+    } finally {
+      cleanupFixture(fixture);
+    }
+  });
+
   test(`${target} tracked jobs: log helpers write lines and blocks`, () => {
     const fixture = freshTrackedFixture(target, tracked, state);
     try {
@@ -144,6 +159,43 @@ for (const [target, tracked, state] of [
       assert.match(log, /Details\n detail body|Details\ndetail body/);
     } finally {
       process.stderr.write = originalWrite;
+      cleanupFixture(fixture);
+    }
+  });
+
+  test(`${target} tracked jobs: progress reporter normalizes string and sparse object events`, () => {
+    const fixture = freshTrackedFixture(target, tracked, state);
+    const events = [];
+    try {
+      const logFile = tracked.createJobLogFile(fixture.dir, "job-progress-sparse");
+      const reporter = tracked.createProgressReporter({
+        logFile,
+        onEvent(event) {
+          events.push(event);
+        },
+      });
+      reporter("  plain message  ");
+      reporter({
+        message: null,
+        phase: "   ",
+        threadId: "",
+        turnId: "",
+        stderrMessage: null,
+        logTitle: "",
+        logBody: null,
+      });
+
+      assert.equal(events[0].message, "plain message");
+      assert.equal(events[0].stderrMessage, "plain message");
+      assert.equal(events[1].message, "");
+      assert.equal(events[1].phase, null);
+      assert.equal(events[1].threadId, null);
+      assert.equal(events[1].turnId, null);
+      assert.equal(events[1].stderrMessage, null);
+      assert.equal(events[1].logTitle, null);
+      assert.equal(events[1].logBody, null);
+      assert.match(readFileSync(logFile, "utf8"), /plain message/);
+    } finally {
       cleanupFixture(fixture);
     }
   });
@@ -229,6 +281,48 @@ for (const [target, tracked, state] of [
       assert.equal(failed.errorMessage, "runner exploded");
       assert.equal(failed.pid, null);
       assert.equal(existsSync(state.resolveJobFile(fixture.dir, "job-fail")), true);
+    } finally {
+      cleanupFixture(fixture);
+    }
+  });
+
+  test(`${target} tracked jobs: runTrackedJob records nonzero exits and missing-file thrown errors`, async () => {
+    const fixture = freshTrackedFixture(target, tracked, state);
+    try {
+      await tracked.runTrackedJob({
+        id: "job-nonzero",
+        workspaceRoot: fixture.dir,
+        status: "queued",
+      }, async () => ({
+        exitStatus: 2,
+        threadId: null,
+        turnId: null,
+        payload: { ok: false },
+        rendered: "",
+        summary: "nonzero summary",
+      }));
+      const nonzero = state.readJobFileById(fixture.dir, "job-nonzero");
+      assert.equal(nonzero.status, "failed");
+      assert.equal(nonzero.phase, "failed");
+      assert.deepEqual(nonzero.result, { ok: false });
+      assert.equal(state.listJobs(fixture.dir)[0].summary, "nonzero summary");
+
+      await assert.rejects(
+        () => tracked.runTrackedJob({
+          id: "job-string-fail",
+          workspaceRoot: fixture.dir,
+          status: "queued",
+        }, async () => {
+          unlinkSync(state.resolveJobFile(fixture.dir, "job-string-fail"));
+          throw "string failure";
+        }),
+        /string failure/,
+      );
+      const failed = state.readJobFileById(fixture.dir, "job-string-fail");
+      assert.equal(failed.status, "failed");
+      assert.equal(failed.phase, "failed");
+      assert.equal(failed.errorMessage, "string failure");
+      assert.equal(failed.logFile, null);
     } finally {
       cleanupFixture(fixture);
     }

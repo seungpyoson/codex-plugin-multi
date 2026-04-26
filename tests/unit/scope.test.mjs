@@ -199,6 +199,35 @@ test("populateScope scope=working-tree: copies modified + untracked files", () =
   }
 });
 
+test("populateScope scope=head: scrubs numbered git config env", () => {
+  const src = seedRepo();
+  const tgt = mkTarget();
+  const saved = new Map([
+    "GIT_CONFIG_COUNT",
+    "GIT_CONFIG_KEY_0",
+    "GIT_CONFIG_VALUE_0",
+  ].map((key) => [key, process.env[key]]));
+  try {
+    writeFileSync(path.join(src, "A.txt"), "a\n");
+    git(src, "add", ".");
+    git(src, "commit", "-qm", "seed");
+
+    process.env.GIT_CONFIG_COUNT = "1";
+    process.env.GIT_CONFIG_KEY_0 = "bad key";
+    process.env.GIT_CONFIG_VALUE_0 = "true";
+
+    populateScope(profile("head"), src, tgt);
+
+    assert.equal(readFileSync(path.join(tgt, "A.txt"), "utf8"), "a\n");
+  } finally {
+    for (const [key, value] of saved) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+    cleanup(src, tgt);
+  }
+});
+
 test("populateScope scope=working-tree: includes ignored untracked files", () => {
   const src = seedRepo();
   const tgt = mkTarget();
@@ -3059,6 +3088,31 @@ test("populateScope scope=custom: rejects symlink loop as unsafe", () => {
   }
 });
 
+test("populateScope scope=custom: supports question mark and globstar-root patterns", () => {
+  const src = seedRepo();
+  const tgt = mkTarget();
+  try {
+    writeFileSync(path.join(src, "file1.txt"), "one\n");
+    writeFileSync(path.join(src, "file-long.txt"), "long\n");
+    writeFileSync(path.join(src, "root.js"), "root\n");
+    mkdirSync(path.join(src, "nested"));
+    writeFileSync(path.join(src, "nested", "deep.js"), "deep\n");
+    git(src, "add", ".");
+    git(src, "commit", "-qm", "seed");
+
+    populateScope(profile("custom"), src, tgt, {
+      scopePaths: ["file?.txt", "**/*.js"],
+    });
+
+    assert.equal(readFileSync(path.join(tgt, "file1.txt"), "utf8"), "one\n");
+    assert.equal(readFileSync(path.join(tgt, "root.js"), "utf8"), "root\n");
+    assert.equal(readFileSync(path.join(tgt, "nested", "deep.js"), "utf8"), "deep\n");
+    assert.equal(existsSync(path.join(tgt, "file-long.txt")), false);
+  } finally {
+    cleanup(src, tgt);
+  }
+});
+
 test("populateScope scope=custom: rejects symlink escaping source root", () => {
   const src = seedRepo();
   const tgt = mkTarget();
@@ -3206,6 +3260,19 @@ test("populateScope: unknown scope value throws", () => {
     assert.throws(
       () => populateScope(profile("nonsense"), src, tgt),
       /invalid_profile: unknown scope/,
+    );
+  } finally {
+    cleanup(src, tgt);
+  }
+});
+
+test("populateScope: missing profile throws", () => {
+  const src = seedRepo();
+  const tgt = mkTarget();
+  try {
+    assert.throws(
+      () => populateScope(null, src, tgt),
+      /invalid_profile: profile.scope is required/,
     );
   } finally {
     cleanup(src, tgt);

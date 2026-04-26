@@ -52,6 +52,176 @@ test("coverage threshold checker fails any lib file below the configured floor",
   ]);
 });
 
+test("coverage function metric ignores anonymous callback helpers", () => {
+  const source = [
+    "export function validate(xs) {",
+    "  const bad = xs.filter((x) => x < 0);",
+    "  return bad.length === 0;",
+    "}",
+    "",
+  ].join("\n");
+  const callbackStart = source.indexOf("(x) =>");
+  const functions = [
+    {
+      functionName: "validate",
+      ranges: [{ startOffset: 0, endOffset: source.length, count: 1 }],
+      isBlockCoverage: true,
+    },
+    {
+      functionName: "",
+      ranges: [{ startOffset: callbackStart, endOffset: callbackStart + "(x) => x < 0".length, count: 0 }],
+      isBlockCoverage: true,
+    },
+  ];
+
+  const summary = _internal.summarizeSourceCoverage(source, functions);
+
+  assert.equal(summary.functions.total, 1);
+  assert.equal(summary.functions.covered, 1);
+});
+
+test("coverage aggregator does not let alternate zero-count range shapes lower branch totals", () => {
+  const source = [
+    "export function choose(flag) {",
+    "  if (flag) return 1;",
+    "  return 0;",
+    "}",
+    "",
+  ].join("\n");
+  const fullStart = source.indexOf("return 0");
+  const alternateStart = source.indexOf("if (flag)");
+  const functions = [
+    {
+      functionName: "choose",
+      ranges: [
+        { startOffset: 0, endOffset: source.length, count: 2 },
+        { startOffset: fullStart, endOffset: fullStart + "return 0".length, count: 1 },
+      ],
+      isBlockCoverage: true,
+    },
+    {
+      functionName: "choose",
+      ranges: [
+        { startOffset: 0, endOffset: source.length, count: 1 },
+        { startOffset: alternateStart, endOffset: alternateStart + "if (flag) return 1;".length, count: 0 },
+        { startOffset: fullStart, endOffset: fullStart + "return 0".length, count: 0 },
+      ],
+      isBlockCoverage: true,
+    },
+  ];
+
+  const summary = _internal.summarizeSourceCoverage(
+    source,
+    _internal.aggregateFunctions(functions),
+  );
+
+  assert.equal(summary.branches.total, 1);
+  assert.equal(summary.branches.covered, 1);
+});
+
+test("coverage line metric treats export function declarations as executable function lines", () => {
+  const source = [
+    "export function named() {",
+    "  return 1;",
+    "}",
+    "",
+  ].join("\n");
+  const functionStart = source.indexOf("function named");
+  const functions = [{
+    functionName: "named",
+    ranges: [{ startOffset: functionStart, endOffset: source.length, count: 1 }],
+    isBlockCoverage: true,
+  }];
+
+  const summary = _internal.summarizeSourceCoverage(source, functions);
+
+  assert.equal(summary.lines.covered, summary.lines.total);
+});
+
+test("coverage branch metric ignores catch-handler ranges", () => {
+  const source = [
+    "export function guarded() {",
+    "  try {",
+    "    return 1;",
+    "  } catch (e) {",
+    "    return 0;",
+    "  }",
+    "}",
+    "",
+  ].join("\n");
+  const functionStart = source.indexOf("function guarded");
+  const catchStart = source.indexOf("catch");
+  const functions = [{
+    functionName: "guarded",
+    ranges: [
+      { startOffset: functionStart, endOffset: source.length, count: 1 },
+      { startOffset: catchStart, endOffset: source.indexOf("  }", catchStart), count: 0 },
+    ],
+    isBlockCoverage: true,
+  }];
+
+  const summary = _internal.summarizeSourceCoverage(source, functions);
+
+  assert.equal(summary.branches.total, 0);
+  assert.equal(summary.branches.covered, 0);
+});
+
+test("coverage branch metric ignores V8 expression segment ranges", () => {
+  const source = [
+    "export function pick(flag, fallback) {",
+    "  return flag ? \"yes\" : fallback || \"no\";",
+    "}",
+    "",
+  ].join("\n");
+  const functionStart = source.indexOf("function pick");
+  const ternaryStart = source.indexOf("? \"yes\"");
+  const orStart = source.indexOf("|| \"no\"");
+  const functions = [{
+    functionName: "pick",
+    ranges: [
+      { startOffset: functionStart, endOffset: source.length, count: 1 },
+      { startOffset: ternaryStart, endOffset: ternaryStart + "? \"yes\"".length, count: 0 },
+      { startOffset: orStart, endOffset: orStart + "|| \"no\"".length, count: 0 },
+    ],
+    isBlockCoverage: true,
+  }];
+
+  const summary = _internal.summarizeSourceCoverage(source, functions);
+
+  assert.equal(summary.branches.total, 0);
+  assert.equal(summary.branches.covered, 0);
+});
+
+test("coverage branch metric ignores terminal control-only segment ranges", () => {
+  const source = [
+    "export function scan(items, stop) {",
+    "  for (const item of items) {",
+    "    if (item === stop) return;",
+    "    if (item === null) continue;",
+    "  }",
+    "  return 1;",
+    "}",
+    "",
+  ].join("\n");
+  const functionStart = source.indexOf("function scan");
+  const returnStart = source.indexOf("return;");
+  const continueStart = source.indexOf("continue;");
+  const functions = [{
+    functionName: "scan",
+    ranges: [
+      { startOffset: functionStart, endOffset: source.length, count: 1 },
+      { startOffset: returnStart, endOffset: returnStart + "return;".length, count: 0 },
+      { startOffset: continueStart, endOffset: continueStart + "continue;".length, count: 0 },
+    ],
+    isBlockCoverage: true,
+  }];
+
+  const summary = _internal.summarizeSourceCoverage(source, functions);
+
+  assert.equal(summary.branches.total, 0);
+  assert.equal(summary.branches.covered, 0);
+});
+
 test("coverage baseline checker fails regressions below stored values", () => {
   const regressions = _internal.baselineFailures([
     {

@@ -131,3 +131,44 @@ test("gemini setupContainment rejects invalid profiles", () => {
   assert.throws(() => setupGeminiContainment(null, tmpdir()), /invalid_profile/);
   assert.throws(() => setupGeminiContainment({ containment: "bad" }, tmpdir()), /unknown containment/);
 });
+
+test("gemini setupContainment containment=none cleanup never removes source cwd", () => {
+  const src = mkdtempSync(path.join(tmpdir(), "gemini-contain-none-"));
+  try {
+    const result = setupGeminiContainment(profile("none"), src);
+    assert.equal(result.path, src);
+    assert.equal(result.disposed, false);
+    result.cleanup();
+    result.cleanup();
+    assert.ok(existsSync(src));
+  } finally {
+    rmSync(src, { recursive: true, force: true });
+  }
+});
+
+test("gemini setupContainment containment=worktree returns empty tempdir and cleans idempotently", () => {
+  const src = mkdtempSync(path.join(tmpdir(), "gemini-contain-empty-src-"));
+  try {
+    const result = setupGeminiContainment(profile("worktree"), src);
+    try {
+      assert.notEqual(result.path, src);
+      assert.ok(result.path.startsWith(tmpdir()));
+      assert.ok(path.basename(result.path).startsWith("gemini-worktree-"));
+      assert.ok(statSync(result.path).isDirectory());
+      assert.deepEqual(readdirSync(result.path), []);
+      assert.equal(result.disposed, true);
+    } finally {
+      result.cleanup();
+    }
+    assert.equal(existsSync(result.path), false);
+    result.cleanup();
+  } finally {
+    rmSync(src, { recursive: true, force: true });
+  }
+});
+
+test("gemini setupContainment rejects missing and non-string containment fields", () => {
+  assert.throws(() => setupGeminiContainment(undefined, tmpdir()), /profile\.containment/);
+  assert.throws(() => setupGeminiContainment({}, tmpdir()), /profile\.containment/);
+  assert.throws(() => setupGeminiContainment({ containment: 42 }, tmpdir()), /profile\.containment/);
+});

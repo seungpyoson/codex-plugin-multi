@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { realpathSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { realpathSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
@@ -157,6 +157,78 @@ test("git helpers fail clearly outside a repository or without a detectable base
     runGit(dir, ["config", "user.email", "test@example.com"]);
     runGit(dir, ["config", "user.name", "Test User"]);
     assert.throws(() => detectDefaultBranch(dir), /Unable to detect/);
+  } finally {
+    cleanup(dir);
+  }
+});
+
+test("detectDefaultBranch: supports origin HEAD, remote fallback, and detached HEAD", () => {
+  const dir = initRepo();
+  try {
+    runGit(dir, ["update-ref", "refs/remotes/origin/main", "HEAD"]);
+    runGit(dir, ["symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main"]);
+    assert.equal(detectDefaultBranch(dir), "main");
+
+    runGit(dir, ["checkout", "--detach", "HEAD"], { stdio: ["ignore", "ignore", "pipe"] });
+    assert.equal(getCurrentBranch(dir), "HEAD");
+  } finally {
+    cleanup(dir);
+  }
+
+  const remoteOnly = mkdtempSync(path.join(tmpdir(), "git-lib-remote-only-"));
+  try {
+    runGit(remoteOnly, ["init"]);
+    runGit(remoteOnly, ["config", "user.email", "test@example.com"]);
+    runGit(remoteOnly, ["config", "user.name", "Test User"]);
+    runGit(remoteOnly, ["checkout", "-b", "feature"]);
+    writeFileSync(path.join(remoteOnly, "base.txt"), "base\n", "utf8");
+    runGit(remoteOnly, ["add", "base.txt"]);
+    runGit(remoteOnly, ["commit", "-m", "base"]);
+    runGit(remoteOnly, ["update-ref", "refs/remotes/origin/master", "HEAD"]);
+    assert.equal(detectDefaultBranch(remoteOnly), "origin/master");
+  } finally {
+    cleanup(remoteOnly);
+  }
+});
+
+test("collectReviewContext: auto mode chooses inline or self-collect by file and byte limits", () => {
+  const dir = initRepo();
+  try {
+    writeFileSync(path.join(dir, "one.txt"), "one\n", "utf8");
+    writeFileSync(path.join(dir, "two.txt"), "two\n", "utf8");
+    runGit(dir, ["add", "one.txt", "two.txt"]);
+
+    const byFileLimit = collectReviewContext(dir, { mode: "working-tree" }, {
+      maxInlineFiles: 1,
+      maxInlineDiffBytes: 1024 * 1024,
+    });
+    assert.equal(byFileLimit.inputMode, "self-collect");
+
+    const byByteLimit = collectReviewContext(dir, { mode: "working-tree" }, {
+      maxInlineFiles: 10,
+      maxInlineDiffBytes: 1,
+    });
+    assert.equal(byByteLimit.inputMode, "self-collect");
+
+    const inline = collectReviewContext(dir, { mode: "working-tree" }, {
+      maxInlineFiles: 10,
+      maxInlineDiffBytes: 1024 * 1024,
+    });
+    assert.equal(inline.inputMode, "inline-diff");
+  } finally {
+    cleanup(dir);
+  }
+});
+
+test("collectReviewContext: large untracked files and broken symlinks are summarized safely", () => {
+  const dir = initRepo();
+  try {
+    writeFileSync(path.join(dir, "large.txt"), "x".repeat(24 * 1024 + 1), "utf8");
+    symlinkSync("missing-target", path.join(dir, "broken-link"));
+
+    const context = collectReviewContext(dir, { mode: "working-tree" }, { includeDiff: true });
+    assert.match(context.content, /large\.txt\n\(skipped: 24577 bytes exceeds 24576 byte limit\)/);
+    assert.match(context.content, /broken-link\n\(skipped: broken symlink or unreadable file\)/);
   } finally {
     cleanup(dir);
   }

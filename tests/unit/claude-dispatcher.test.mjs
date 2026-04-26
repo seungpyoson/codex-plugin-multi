@@ -138,6 +138,24 @@ test("buildClaudeArgs: requires model (no alias fallback)", () => {
   );
 });
 
+test("buildClaudeArgs: rejects invalid profile shapes and ignores disabled optional inputs", () => {
+  assert.throws(() => buildClaudeArgs(null, {}), /mode profile object/);
+  assert.throws(
+    () => buildClaudeArgs({ name: "bad" }, { promptText: "x", model: "m", sessionId: UUID }),
+    /missing required field/,
+  );
+
+  const pingArgs = buildClaudeArgs(resolveProfile("ping"), {
+    model: "claude-haiku-4-5-20251001",
+    promptText: "ping",
+    sessionId: UUID,
+    addDirPath: "/tmp/ignored",
+    jsonSchema: '{"type":"object"}',
+  });
+  assert.ok(!pingArgs.includes("--add-dir"));
+  assert.ok(!pingArgs.includes("--json-schema"));
+});
+
 test("parseClaudeResult: empty stdout returns error", () => {
   const r = parseClaudeResult("");
   assert.equal(r.ok, false);
@@ -173,6 +191,29 @@ test("parseClaudeResult: surfaces permission_denials", () => {
   const r = parseClaudeResult(payload);
   assert.equal(r.denials.length, 1);
   assert.equal(r.denials[0].tool, "Bash");
+});
+
+test("parseClaudeResult: covers non-string result, newline JSON, and optional metadata defaults", () => {
+  const r = parseClaudeResult([
+    "debug line",
+    JSON.stringify({
+      type: "result",
+      is_error: true,
+      result: { not: "text" },
+      session_id: null,
+      permission_denials: "not-array",
+      apiKeySource: "oauth",
+      usage: { input_tokens: 1 },
+      total_cost_usd: 0.25,
+    }),
+  ].join("\n"));
+
+  assert.equal(r.ok, false);
+  assert.equal(r.result, null);
+  assert.deepEqual(r.denials, []);
+  assert.equal(r.apiKeySource, "oauth");
+  assert.deepEqual(r.usage, { input_tokens: 1 });
+  assert.equal(r.costUsd, 0.25);
 });
 
 test("spawnClaude: returns claudeSessionId from stdout and pidInfo tuple", async () => {

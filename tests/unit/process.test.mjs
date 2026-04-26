@@ -33,6 +33,10 @@ test("runCommandChecked: returns successful result and throws formatted failures
     () => runCommandChecked(process.execPath, ["-e", "process.stderr.write('bad'); process.exit(7)"]),
     /exit=7: bad/,
   );
+  assert.throws(
+    () => runCommandChecked("/definitely/missing/codex-plugin-test-binary"),
+    /ENOENT/,
+  );
 });
 
 test("binaryAvailable: reports available, missing, and non-zero binaries", () => {
@@ -44,6 +48,24 @@ test("binaryAvailable: reports available, missing, and non-zero binaries", () =>
     "process.stderr.write('nope'); process.exit(9)",
   ]);
   assert.deepEqual(unavailable, { available: false, detail: "nope" });
+
+  const stdoutDetail = binaryAvailable(process.execPath, [
+    "-e",
+    "process.stdout.write('stdout detail'); process.exit(8)",
+  ]);
+  assert.deepEqual(stdoutDetail, { available: false, detail: "stdout detail" });
+
+  const exitDetail = binaryAvailable(process.execPath, [
+    "-e",
+    "process.exit(6)",
+  ]);
+  assert.deepEqual(exitDetail, { available: false, detail: "exit 6" });
+
+  const stderrOk = binaryAvailable(process.execPath, [
+    "-e",
+    "process.stderr.write('version on stderr')",
+  ]);
+  assert.deepEqual(stderrOk, { available: true, detail: "version on stderr" });
 });
 
 test("terminateProcessTree: rejects non-finite pids without signaling", () => {
@@ -156,6 +178,50 @@ test("terminateProcessTree: Windows and POSIX error branches stay explicit", () 
     },
   });
   assert.deepEqual(fallbackGone, { attempted: true, delivered: false, method: "process" });
+
+  const windowsFallbackGone = terminateProcessTree(63, {
+    platform: "win32",
+    runCommandImpl(command, args) {
+      const error = new Error("missing taskkill");
+      error.code = "ENOENT";
+      return { command, args, status: 1, stdout: "", stderr: "", error };
+    },
+    killImpl() {
+      const error = new Error("gone");
+      error.code = "ESRCH";
+      throw error;
+    },
+  });
+  assert.deepEqual(windowsFallbackGone, { attempted: true, delivered: false, method: "kill" });
+
+  assert.throws(
+    () => terminateProcessTree(64, {
+      platform: "win32",
+      runCommandImpl(command, args) {
+        const error = new Error("missing taskkill");
+        error.code = "ENOENT";
+        return { command, args, status: 1, stdout: "", stderr: "", error };
+      },
+      killImpl() {
+        const error = new Error("kill denied");
+        error.code = "EPERM";
+        throw error;
+      },
+    }),
+    /kill denied/,
+  );
+
+  assert.throws(
+    () => terminateProcessTree(65, {
+      platform: "linux",
+      killImpl(pid) {
+        const error = new Error(pid < 0 ? "group denied" : "process denied");
+        error.code = "EPERM";
+        throw error;
+      },
+    }),
+    /process denied/,
+  );
 });
 
 test("formatCommandFailure: includes signal, stderr, or stdout detail", () => {

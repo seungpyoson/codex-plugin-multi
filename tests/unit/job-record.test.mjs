@@ -249,6 +249,63 @@ test("gemini buildJobRecord: spawn, parse, and prompt-defense paths", () => {
   );
 });
 
+test("gemini buildJobRecord: default, validation, and non-parse failure branches", () => {
+  const invocation = makeInvocation({
+    target: "gemini",
+    parent_job_id: undefined,
+    resume_chain: undefined,
+    model: "gemini-3-flash-preview",
+    binary: "gemini",
+    dispose_effective: undefined,
+    scope_base: undefined,
+    scope_paths: undefined,
+    schema_spec: undefined,
+  });
+  const queued = buildGeminiJobRecord(invocation, null, []);
+  assert.equal(queued.parent_job_id, null);
+  assert.deepEqual(queued.resume_chain, []);
+  assert.equal(queued.dispose_effective, false);
+  assert.equal(queued.scope_base, null);
+  assert.equal(queued.scope_paths, null);
+  assert.equal(queued.schema_spec, null);
+  assert.equal(Object.isFrozen(queued), true);
+
+  const noParsed = buildGeminiJobRecord(invocation, {
+    exitCode: 2,
+    parsed: null,
+    pidInfo: null,
+    geminiSessionId: null,
+  }, []);
+  assert.equal(noParsed.status, "failed");
+  assert.equal(noParsed.error_code, "gemini_error");
+  assert.equal(noParsed.error_message, null);
+
+  const emptyStdout = buildGeminiJobRecord(invocation, {
+    exitCode: 0,
+    parsed: { ok: false, reason: "empty_stdout", error: "no output", denials: "bad" },
+    pidInfo: null,
+    geminiSessionId: null,
+  }, []);
+  assert.equal(emptyStdout.error_code, "parse_error");
+  assert.equal(emptyStdout.error_message, "no output");
+  assert.deepEqual(emptyStdout.permission_denials, []);
+
+  const targetError = buildGeminiJobRecord(invocation, {
+    exitCode: 0,
+    parsed: { ok: false, reason: "is_error", error: "blocked", result: null, structured: null, denials: [] },
+    pidInfo: null,
+    geminiSessionId: null,
+  }, []);
+  assert.equal(targetError.error_code, "gemini_error");
+  assert.equal(targetError.error_message, "blocked");
+
+  const missingMode = makeInvocation(invocation);
+  delete missingMode.mode;
+  assert.throws(() => buildGeminiJobRecord(null, null, []), /invocation object required/);
+  assert.throws(() => buildGeminiJobRecord(missingMode, null, []), /missing required field "mode"/);
+  assert.throws(() => buildGeminiJobRecord(invocation, null, null), /mutations must be an array/);
+});
+
 test("buildJobRecord: spawn_failed path (execution threw before claude)", () => {
   const rec = buildJobRecord(makeInvocation(), {
     exitCode: null,

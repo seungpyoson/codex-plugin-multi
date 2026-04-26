@@ -393,3 +393,220 @@ test("gemini state: malformed state, prune, and async guards mirror Claude", () 
     cleanupGemini(dir);
   }
 });
+
+test("gemini state: fallback root, malformed variants, and config defaults", () => {
+  const dir = mkdtempSync(path.join(tmpdir(), "gemini-state-fallback-"));
+  const fallback = path.join(dir, "fb");
+  try {
+    GeminiState.configureState({
+      pluginDataEnv: "UNLIKELY_GEMINI_ENV_" + Date.now(),
+      fallbackStateRootDir: fallback,
+    });
+    assert.ok(GeminiState.resolveStateDir(dir).startsWith(fallback + path.sep));
+    assert.equal(GeminiState.loadState(dir).config.stopReviewGate, false);
+
+    fs.mkdirSync(path.dirname(GeminiState.resolveStateFile(dir)), { recursive: true });
+    for (const body of ["not json", "null", "[]", "{\"jobs\":\"bad\",\"config\":{\"stopReviewGate\":true}}"]) {
+      fs.writeFileSync(GeminiState.resolveStateFile(dir), body, "utf8");
+      const state = GeminiState.loadState(dir);
+      assert.equal(state.version, 1);
+      assert.deepEqual(state.jobs, []);
+      assert.equal(typeof state.config.stopReviewGate, "boolean");
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("gemini state: job id validation, raw read validation, and generated ids", () => {
+  const dir = freshGeminiStateDir();
+  try {
+    assert.throws(() => GeminiState.resolveJobFile(dir, "/etc/passwd"), /Unsafe jobId/);
+    assert.throws(() => GeminiState.resolveJobFile(dir, "a\\b"), /Unsafe jobId/);
+    assert.throws(() => GeminiState.resolveJobLogFile(dir, "../../bad"), /Unsafe jobId/);
+    assert.throws(() => GeminiState.writeJobFile(dir, "..", { ok: true }), /Unsafe jobId/);
+
+    const uuid = "123e4567-e89b-12d3-a456-426614174000";
+    assert.ok(GeminiState.resolveJobFile(dir, uuid));
+    const generated = GeminiState.generateJobId("gemini");
+    assert.match(generated, /^gemini-[a-z0-9]+-[a-z0-9]+$/);
+    assert.ok(GeminiState.resolveJobFile(dir, generated));
+
+    GeminiState.writeJobFile(dir, "gemini-read", { id: "gemini-read", ok: true });
+    assert.deepEqual(GeminiState.readJobFileById(dir, "gemini-read"), { id: "gemini-read", ok: true });
+    assert.throws(() => GeminiState.readJobFile(path.join(tmpdir(), "outside-gemini-job.json")), /outside known state roots/);
+    assert.throws(() => GeminiState.readJobFile(""), /non-empty string/);
+  } finally {
+    cleanupGemini(dir);
+  }
+});
+
+test("gemini state: unsafe stale ids, directory logs, and rename cleanup are guarded", () => {
+  const dir = freshGeminiStateDir();
+  const originalRename = fs.renameSync;
+  try {
+    const outsideLog = path.join(dir, "outside.log");
+    const directoryLog = GeminiState.resolveJobLogFile(dir, "gemini-dir-log");
+    fs.writeFileSync(outsideLog, "outside", "utf8");
+    fs.mkdirSync(directoryLog);
+    GeminiState.saveState(dir, {
+      jobs: [
+        { id: "../unsafe", updatedAt: "2000-01-01T00:00:00.000Z", logFile: outsideLog },
+        { id: "gemini-dir-log", updatedAt: "2000-01-01T00:00:01.000Z", logFile: directoryLog },
+      ],
+    });
+    GeminiState.saveState(dir, { jobs: [] });
+    assert.equal(fs.existsSync(outsideLog), true);
+    assert.equal(fs.existsSync(directoryLog), true);
+
+    fs.renameSync = function patchedRename() {
+      throw new Error("gemini rename failed");
+    };
+    assert.throws(
+      () => GeminiState.writeJobFile(dir, "gemini-rename-fail", { ok: true }),
+      /gemini rename failed/,
+    );
+    fs.renameSync = originalRename;
+    const jobsDir = path.dirname(GeminiState.resolveJobFile(dir, "gemini-rename-fail"));
+    const leftovers = fs.readdirSync(jobsDir).filter((name) => (
+      name.includes("gemini-rename-fail") && name.endsWith(".tmp")
+    ));
+    assert.deepEqual(leftovers, []);
+  } finally {
+    fs.renameSync = originalRename;
+    cleanupGemini(dir);
+  }
+});
+
+for (const [target, state, fresh, cleanupTarget] of [
+  ["claude", {
+    configureState,
+    saveState,
+    loadState,
+    listJobs,
+    resolveStateDir,
+    resolveStateFile,
+    resolveJobFile,
+    resolveJobLogFile,
+    writeJobFile,
+    readJobFile,
+    readJobFileById,
+  }, freshStateDir, cleanup],
+  ["gemini", GeminiState, freshGeminiStateDir, cleanupGemini],
+]) {
+  test(`${target} state: retained jobs, same timestamps, missing stale files, and null jobs`, () => {
+    const dir = fresh();
+    try {
+      state.writeJobFile(dir, "keep-job", { id: "keep-job" });
+      state.writeJobFile(dir, "drop-job", { id: "drop-job" });
+      const missingLog = state.resolveJobLogFile(dir, "missing-log");
+      state.saveState(dir, {
+        config: null,
+        jobs: [
+          { id: "keep-job", updatedAt: "2026-04-24T00:00:00.000Z", logFile: null },
+          { id: "drop-job", updatedAt: "2026-04-24T00:00:00.000Z", logFile: missingLog },
+        ],
+      });
+      state.saveState(dir, {
+        jobs: [
+          { id: "keep-job", updatedAt: "2026-04-24T00:00:00.000Z", logFile: null },
+        ],
+      });
+      assert.equal(fs.existsSync(state.resolveJobFile(dir, "keep-job")), true);
+      assert.equal(fs.existsSync(state.resolveJobFile(dir, "drop-job")), false);
+      assert.deepEqual(state.listJobs(dir).map((job) => job.id), ["keep-job"]);
+
+      state.saveState(dir, { jobs: null });
+      assert.deepEqual(state.listJobs(dir), []);
+    } finally {
+      cleanupTarget(dir);
+    }
+  });
+
+  test(`${target} state: fallback raw reads and saveState tmp cleanup on rename failure`, () => {
+    const dir = mkdtempSync(path.join(tmpdir(), `${target}-state-branch-`));
+    const fallback = path.join(dir, "fallback");
+    const originalRename = fs.renameSync;
+    try {
+      state.configureState({
+        pluginDataEnv: `NO_${target.toUpperCase()}_PLUGIN_DATA_${Date.now()}`,
+        fallbackStateRootDir: fallback,
+      });
+      state.writeJobFile(dir, "fallback-read", { id: "fallback-read", ok: true });
+      assert.deepEqual(state.readJobFileById(dir, "fallback-read"), { id: "fallback-read", ok: true });
+      assert.deepEqual(
+        state.readJobFile(state.resolveJobFile(dir, "fallback-read")),
+        { id: "fallback-read", ok: true },
+      );
+
+      fs.renameSync = function patchedRename() {
+        throw new Error(`${target} state rename failed`);
+      };
+      assert.throws(
+        () => state.saveState(dir, { jobs: [{ id: "rename-state" }] }),
+        new RegExp(`${target} state rename failed`),
+      );
+      fs.renameSync = originalRename;
+      const stateDir = path.dirname(state.resolveStateFile(dir));
+      const leftovers = fs.existsSync(stateDir)
+        ? fs.readdirSync(stateDir).filter((name) => name.endsWith(".tmp"))
+        : [];
+      assert.deepEqual(leftovers, []);
+    } finally {
+      fs.renameSync = originalRename;
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test(`${target} state: resolve fallbacks, missing config, untimestamped jobs, and tmp cleanup failures`, () => {
+    const dir = mkdtempSync(path.join(tmpdir(), `${target}-state-fallbacks-`));
+    const special = path.join(dir, "!!!");
+    const fallback = path.join(dir, "fallback");
+    const originalRename = fs.renameSync;
+    const originalUnlink = fs.unlinkSync;
+    try {
+      fs.mkdirSync(special);
+      state.configureState({
+        pluginDataEnv: `NO_${target.toUpperCase()}_PLUGIN_DATA_FALLBACK_${Date.now()}`,
+        fallbackStateRootDir: fallback,
+      });
+      assert.match(state.resolveStateDir(path.join(dir, "missing-workspace")), /missing-workspace-/);
+      assert.match(state.resolveStateDir(special), /workspace-/);
+      assert.match(state.resolveStateDir(path.parse(special).root), /workspace-/);
+
+      fs.mkdirSync(path.dirname(state.resolveStateFile(special)), { recursive: true });
+      fs.writeFileSync(state.resolveStateFile(special), "{\"jobs\":[]}", "utf8");
+      assert.equal(state.loadState(special).config.stopReviewGate, false);
+
+      state.saveState(special, {
+        jobs: [
+          { id: "first-no-updated" },
+          { id: "second-no-updated" },
+        ],
+      });
+      assert.deepEqual(state.listJobs(special).map((job) => job.id), [
+        "first-no-updated",
+        "second-no-updated",
+      ]);
+
+      fs.renameSync = function patchedRename() {
+        throw new Error(`${target} forced rename failure`);
+      };
+      fs.unlinkSync = function patchedUnlink() {
+        throw new Error(`${target} forced unlink failure`);
+      };
+      assert.throws(
+        () => state.saveState(special, { jobs: [] }),
+        new RegExp(`${target} forced rename failure`),
+      );
+      assert.throws(
+        () => state.writeJobFile(special, "tmp-cleanup-fail", { ok: true }),
+        new RegExp(`${target} forced rename failure`),
+      );
+    } finally {
+      fs.renameSync = originalRename;
+      fs.unlinkSync = originalUnlink;
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+}

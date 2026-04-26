@@ -49,7 +49,7 @@ export function capturePidInfo(pid) {
     return captureDarwin(pid);
   }
   // Other platforms (win32, freebsd, ...) unsupported at this milestone.
-  // Claude-companion is used on macOS/Linux in practice; error explicitly so
+  // Target companions are used on macOS/Linux in practice; error explicitly so
   // a silent-pass policy never disguises a platform regression.
   throw new Error(
     `process_gone: platform ${process.platform} not supported by capturePidInfo`

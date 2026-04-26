@@ -398,3 +398,69 @@ test("gemini resolveProfile and model-tier lookup mirror Claude semantics", () =
   assert.equal(GeminiProfiles.resolveModelForProfile(GeminiProfiles.MODE_PROFILES.review, null), null);
   assert.throws(() => GeminiProfiles.resolveModelForProfile(null, {}), /profile\.model_tier/);
 });
+
+test("gemini profile rows have the canonical field set and values", () => {
+  for (const name of ["review", "adversarial-review", "rescue", "ping"]) {
+    assert.deepEqual(
+      Object.keys(GeminiProfiles.MODE_PROFILES[name]).sort(),
+      REQUIRED_FIELDS,
+      `field set mismatch for Gemini ${name}`,
+    );
+  }
+  assert.deepEqual(GeminiProfiles.MODE_PROFILES.review, {
+    name: "review",
+    model_tier: "cheap",
+    permission_mode: "plan",
+    strip_context: true,
+    disallowed_tools: REVIEW_DISALLOWED,
+    containment: "worktree",
+    scope: "working-tree",
+    dispose_default: true,
+    add_dir: true,
+    schema_allowed: true,
+  });
+  assert.deepEqual(GeminiProfiles.MODE_PROFILES["adversarial-review"], {
+    name: "adversarial-review",
+    model_tier: "medium",
+    permission_mode: "plan",
+    strip_context: true,
+    disallowed_tools: REVIEW_DISALLOWED,
+    containment: "worktree",
+    scope: "branch-diff",
+    dispose_default: true,
+    add_dir: true,
+    schema_allowed: true,
+  });
+  assert.deepEqual(GeminiProfiles.MODE_PROFILES.rescue, {
+    name: "rescue",
+    model_tier: "default",
+    permission_mode: "acceptEdits",
+    strip_context: false,
+    disallowed_tools: [],
+    containment: "none",
+    scope: "working-tree",
+    dispose_default: false,
+    add_dir: true,
+    schema_allowed: false,
+  });
+  assert.deepEqual(GeminiProfiles.MODE_PROFILES.ping, {
+    name: "ping",
+    model_tier: "cheap",
+    permission_mode: "plan",
+    strip_context: true,
+    disallowed_tools: REVIEW_DISALLOWED,
+    containment: "none",
+    scope: "head",
+    dispose_default: false,
+    add_dir: false,
+    schema_allowed: false,
+  });
+});
+
+test("gemini resolveModelForProfile resolves every mode tier", () => {
+  const cfg = { cheap: "gemini-flash", medium: "gemini-pro", default: "gemini-default" };
+  assert.equal(GeminiProfiles.resolveModelForProfile(GeminiProfiles.MODE_PROFILES.review, cfg), "gemini-flash");
+  assert.equal(GeminiProfiles.resolveModelForProfile(GeminiProfiles.MODE_PROFILES["adversarial-review"], cfg), "gemini-pro");
+  assert.equal(GeminiProfiles.resolveModelForProfile(GeminiProfiles.MODE_PROFILES.rescue, cfg), "gemini-default");
+  assert.equal(GeminiProfiles.resolveModelForProfile(GeminiProfiles.MODE_PROFILES.ping, cfg), "gemini-flash");
+});
