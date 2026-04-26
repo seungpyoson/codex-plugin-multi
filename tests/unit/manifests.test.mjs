@@ -60,3 +60,17 @@ test("claude and gemini expose the full v0.1 command surface", () => {
     }
   }
 });
+
+test("release metadata documents v0.1.0 for both plugins", () => {
+  const changelog = readFileSync(path.join(REPO_ROOT, "CHANGELOG.md"), "utf8");
+  for (const plugin of ["claude", "gemini"]) {
+    const manifest = readJson(`plugins/${plugin}/.codex-plugin/plugin.json`);
+    assert.equal(manifest.version, "0.1.0");
+  }
+
+  assert.match(changelog, /## 0\.1\.0/);
+  assert.match(changelog, /Features shipped/i);
+  assert.match(changelog, /Known limitations/i);
+  assert.match(changelog, /Upstream attribution/i);
+  assert.match(changelog, /openai\/codex-plugin-cc/);
+});
