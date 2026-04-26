@@ -18,6 +18,7 @@
   "scripts": {
     "lint": "node scripts/ci/check-manifests.mjs",
     "lint:self-test": "node scripts/ci/check-manifests-self-test.mjs",
-    "test": "node scripts/ci/run-tests.mjs"
+    "test": "node scripts/ci/run-tests.mjs",
+    "test:coverage": "node scripts/ci/check-coverage.mjs"
   }
 }

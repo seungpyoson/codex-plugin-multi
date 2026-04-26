@@ -371,7 +371,11 @@ test("M6-finding-6: continue chain resumes LATEST claude_session_id, not an inte
 // FINDING 7 — PID-reuse cancel.  MOVED from identity-resume-chain.smoke.test.mjs
 // ("cancel: refuses with stale_pid when pid_info.starttime mismatches").
 
-test("M6-finding-7: PID-reuse cancel refused — tampered starttime halts signaling", () => {
+test("M6-finding-7: PID-reuse cancel refused — tampered starttime halts signaling", {
+  skip: process.env.CODEX_PLUGIN_COVERAGE === "1"
+    ? "NODE_V8_COVERAGE can make macOS sandbox deny ps; regular npm test covers PID ownership"
+    : false,
+}, () => {
   const cwd = mkdtempSync(path.join(tmpdir(), "inv-stale-"));
   const dataDir = mkdtempSync(path.join(tmpdir(), "inv-stale-data-"));
   try {

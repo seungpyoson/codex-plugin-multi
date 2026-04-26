@@ -17,6 +17,11 @@ import {
 
 const UUID_V4 =
   /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/;
+const SKIP_PS_UNDER_COVERAGE = {
+  skip: process.env.CODEX_PLUGIN_COVERAGE === "1"
+    ? "NODE_V8_COVERAGE can make macOS sandbox deny ps; regular npm test covers PID ownership"
+    : false,
+};
 
 test("newJobId: returns a UUID v4", () => {
   const id = newJobId();
@@ -29,7 +34,7 @@ test("newJobId: two calls return distinct values", () => {
   assert.notEqual(a, b);
 });
 
-test("capturePidInfo: current process returns {pid, starttime, argv0}", () => {
+test("capturePidInfo: current process returns {pid, starttime, argv0}", SKIP_PS_UNDER_COVERAGE, () => {
   const info = capturePidInfo(process.pid);
   assert.equal(info.pid, process.pid);
   assert.equal(typeof info.starttime, "string");
@@ -51,13 +56,13 @@ test("capturePidInfo: non-existent pid throws process_gone", () => {
   assert.throws(() => capturePidInfo(2147483646), /process_gone/);
 });
 
-test("verifyPidInfo: self-compare returns {match: true}", () => {
+test("verifyPidInfo: self-compare returns {match: true}", SKIP_PS_UNDER_COVERAGE, () => {
   const saved = capturePidInfo(process.pid);
   const check = verifyPidInfo(saved);
   assert.equal(check.match, true);
 });
 
-test("verifyPidInfo: starttime mismatch returns match:false starttime_mismatch", () => {
+test("verifyPidInfo: starttime mismatch returns match:false starttime_mismatch", SKIP_PS_UNDER_COVERAGE, () => {
   const saved = capturePidInfo(process.pid);
   const tampered = { ...saved, starttime: "Fri Jan  1 00:00:00 1970" };
   const check = verifyPidInfo(tampered);
@@ -65,7 +70,7 @@ test("verifyPidInfo: starttime mismatch returns match:false starttime_mismatch",
   assert.equal(check.reason, "starttime_mismatch");
 });
 
-test("verifyPidInfo: argv0 mismatch returns match:false argv0_mismatch", () => {
+test("verifyPidInfo: argv0 mismatch returns match:false argv0_mismatch", SKIP_PS_UNDER_COVERAGE, () => {
   const saved = capturePidInfo(process.pid);
   const tampered = { ...saved, argv0: "definitely-not-node" };
   const check = verifyPidInfo(tampered);

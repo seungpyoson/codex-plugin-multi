@@ -31,11 +31,15 @@ Current implementation state on `feat/012-t7-6-regression-matrix`:
 - M7 Object-Pure/invariants refactor is complete.
 - M8 Gemini foreground port is complete.
 - M9 Gemini background + `continue --job` is complete through `fbf3937`.
+- Gate-4 review disposition is recorded in `.autonomous/findings-gate-4.md`.
+- T10.0 shared background lifecycle hardening is complete through `44e2f9b`.
+- T10.1 coverage work has an initial baseline gate in progress. Do not mark
+  T10.1 complete until the 85% target gate passes, not just the regression
+  baseline.
 - Gemini `cancel` is intentionally not part of completed M9; treat it as an
   explicit lifecycle-parity slice if prioritized, not as hidden unfinished M9
   work.
-- Next roadmap step is gate-4 review, then M10. Start M10 with T10.0 if any
-  shared lifecycle hardening findings are still open; otherwise start T10.1.
+- Next roadmap step is continuing T10.1 coverage uplift toward the 85% target.
 
 Fresh-session rule: before changing code, read this section, `git log -8`, and
 `docs/superpowers/plans/2026-04-26-m8-hardening-backlog.md`. Do not suggest PR,
@@ -706,8 +710,12 @@ M11 release      → T11.1 → T11.2 → T11.3 → T11.4              (was M10)
 
 - **Files:**
   - Extend existing unit tests to hit >85 % branch coverage on all `lib/*.mjs` files (both plugins).
-  - `scripts/ci/check-coverage.mjs`: parses c8 output, fails CI below threshold.
+  - `scripts/ci/check-coverage.mjs`: parses raw V8 coverage output, fails CI below threshold.
 - **Acceptance:** `npm run test:coverage` reports >85 %. CI fails on regression.
+- **Progress note (2026-04-26):** `npm run test:coverage` now exists as a
+  dependency-free V8 baseline regression gate because `c8` is not available in
+  the sandbox. It reports the 85% target separately. T10.1 remains incomplete
+  until `COVERAGE_ENFORCE_TARGET=1 npm run test:coverage` passes.
 - **Spec ref:** §17.1.
 - **Depends on:** T9.3
 
