@@ -27,9 +27,26 @@ jobs:
           node-version: "20"
       - run: npm ci --ignore-scripts || npm install --ignore-scripts
       - name: Run unit tests (allow empty for M0)
+        env:
+          CODEX_PLUGIN_SKIP_SMOKE: "1"
         run: |
           if compgen -G "tests/unit/**/*.test.mjs" > /dev/null; then
             npm test
           else
             echo "No unit tests yet (pre-M1)"
           fi
+
+  smoke:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [claude, gemini]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - run: npm ci --ignore-scripts || npm install --ignore-scripts
+      - name: Run ${{ matrix.target }} smoke tests
+        run: npm run smoke:${{ matrix.target }}
