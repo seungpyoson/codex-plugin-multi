@@ -17,7 +17,8 @@
 // Git-derived scopes (staged, branch-diff, head) are object-pure: regular
 // blobs are streamed directly from INDEX/HEAD, 120000 symlink blobs are
 // resolved only through INDEX/HEAD metadata, and checkout filters, attributes,
-// LFS smudge, textconv, hooks, and config-defined shell commands are not run.
+// LFS smudge, textconv, hooks, replace refs, and config-defined shell commands
+// are not run or honored.
 //
 // When containment=none, the targetPath IS sourceCwd and populateScope is a
 // no-op. The caller always calls
@@ -43,11 +44,24 @@ import path from "node:path";
 
 const VALID_SCOPES = new Set(["working-tree", "staged", "branch-diff", "head", "custom"]);
 const MAX_GIT_SYMLINK_HOPS = 40;
-const OBJECT_PURE_GIT_CONFIG = ["-c", "core.fsmonitor=false"];
+const OBJECT_PURE_GIT_CONFIG = [
+  "--no-replace-objects",
+  "-c", "core.fsmonitor=false",
+  "-c", "core.hooksPath=/dev/null",
+];
 
 function cleanGitEnv() {
-  const env = { ...process.env, GIT_NO_LAZY_FETCH: "1" };
-  for (const k of ["GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_COMMON_DIR", "GIT_PREFIX"]) {
+  const env = {
+    ...process.env,
+    GIT_NO_LAZY_FETCH: "1",
+    GIT_NO_REPLACE_OBJECTS: "1",
+    GIT_CONFIG_NOSYSTEM: "1",
+  };
+  for (const k of [
+    "GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_COMMON_DIR", "GIT_PREFIX",
+    "GIT_CONFIG_GLOBAL", "GIT_CONFIG_SYSTEM", "GIT_CONFIG_PARAMETERS", "GIT_ATTR_SOURCE",
+    "GIT_EXTERNAL_DIFF", "GIT_PAGER", "GIT_PAGER_IN_USE", "PAGER",
+  ]) {
     delete env[k];
   }
   return env;
@@ -127,6 +141,7 @@ function chmodGitMode(dst, mode) {
   try {
     if (mode === "100755") chmodSync(dst, 0o755);
     else if (mode === "100644") chmodSync(dst, 0o644);
+    else scopePopulationFailed(`unsupported git file mode ${mode} for ${dst}`);
   } catch (err) {
     scopePopulationFailed(`cannot chmod git file ${dst}: ${err.message}`);
   }
@@ -135,7 +150,7 @@ function chmodGitMode(dst, mode) {
 function isSafeSnapshotRel(rel) {
   if (rel === "" || path.posix.isAbsolute(rel)) return false;
   return rel.split("/").every((part) =>
-    part !== "" && part !== "." && part !== ".." && part !== ".git"
+    part !== "" && part !== "." && part !== ".." && part.toLowerCase() !== ".git"
   );
 }
 
@@ -327,7 +342,7 @@ function snapshotAccess(ctx, entriesByRel) {
     blob: (_sourceCwd, rel) => {
       const entry = entriesByRel.get(rel);
       if (!entry?.object) throw new Error(`missing object for ${rel}`);
-      return gitBuffer(ctx.gitRoot, ["show", entry.object]);
+      return gitBuffer(ctx.gitRoot, ["cat-file", "blob", entry.object]);
     },
     hasPathPrefix: (_sourceCwd, rel) => {
       if (!isSafeSnapshotRel(rel)) return false;
@@ -355,7 +370,7 @@ function writeGitBlobToFile(sourceCwd, objectSpec, dst, mode, rel = objectSpec) 
   }
   let copyFailed = false;
   try {
-    execFileSync("git", [...OBJECT_PURE_GIT_CONFIG, "-C", sourceCwd, "show", objectSpec], {
+    execFileSync("git", [...OBJECT_PURE_GIT_CONFIG, "-C", sourceCwd, "cat-file", "blob", objectSpec], {
       stdio: ["ignore", fd, "pipe"],
       env: cleanGitEnv(),
       maxBuffer: 1024 * 1024 * 64,
@@ -496,7 +511,7 @@ function materializeGitSnapshotSymlinks(ctx, targetPath, entryMode, blob, hasPat
       scopePopulationFailed(`cannot read directory ${relDir || "."}: ${err.message}`);
     }
     for (const ent of entries) {
-      if (ent.name === ".git") continue;
+      if (ent.name.toLowerCase() === ".git") continue;
       const rel = relDir ? `${relDir}/${ent.name}` : ent.name;
       const abs = path.join(absDir, ent.name);
       const lst = lstatForScope(abs, rel);
@@ -545,7 +560,7 @@ function listLiveWorkingTreeFiles(sourceCwd) {
       scopePopulationFailed(`cannot read directory ${relDir || "."}: ${err.message}`);
     }
     for (const ent of entries) {
-      if (ent.name === ".git") continue;
+      if (ent.name.toLowerCase() === ".git") continue;
       const rel = relDir ? `${relDir}/${ent.name}` : ent.name;
       const abs = path.join(absDir, ent.name);
       const lst = lstatForScope(abs, rel);
@@ -634,6 +649,7 @@ function scopeBranchDiff(sourceCwd, targetPath, scopeBase) {
     }
     files.push({ gitRel, snapshotRel });
   }
+  prepareGitSnapshotTarget(sourceCwd, targetPath);
   if (files.length === 0) return;
   const materializations = [];
   const entriesByRel = entryMap(scopedGitEntries(ctx, headEntries(ctx.gitRoot)));
@@ -659,7 +675,6 @@ function scopeBranchDiff(sourceCwd, targetPath, scopeBase) {
     }
     materializations.push({ gitRel, snapshotRel, mode });
   }
-  prepareGitSnapshotTarget(sourceCwd, targetPath);
   try {
     for (const { snapshotRel, mode } of materializations) {
       if (mode === null) continue; // deleted in HEAD vs base — nothing to copy

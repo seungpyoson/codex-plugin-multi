@@ -65,8 +65,8 @@ received, the companion has a bug — don't paper over it.
 
 `staged`, `head`, and `branch-diff` scopes are git object-pure snapshots:
 checkout filters, LFS smudge, EOL conversion, textconv, hooks, and
-config-defined shell commands are not applied. `working-tree` and `custom`
-reflect live filesystem content.
+config-defined shell commands are not applied, and replace refs are ignored.
+`working-tree` and `custom` reflect live filesystem content.
 
 ## Rendering order
 

@@ -105,7 +105,7 @@ function assertNoGitMetadata(root) {
     if (!existsSync(abs)) return;
     for (const ent of readdirSync(abs, { withFileTypes: true })) {
       const child = path.join(abs, ent.name);
-      assert.notEqual(ent.name, ".git", `snapshot preserved git metadata: ${path.relative(root, child)}`);
+      assert.notEqual(ent.name.toLowerCase(), ".git", `snapshot preserved git metadata: ${path.relative(root, child)}`);
       if (ent.isDirectory()) walk(child);
     }
   }
@@ -158,10 +158,15 @@ function removeGitObject(repo, objectId) {
   });
 }
 
-function maliciousDotGitCommit(repo, parent = null) {
+function replaceObjectWithBlob(repo, originalObject, content) {
+  const replacement = gitStdin(repo, content, "hash-object", "-w", "--stdin").trim();
+  git(repo, "replace", originalObject, replacement);
+}
+
+function maliciousDotGitCommit(repo, parent = null, gitDirName = ".git") {
   const blob = gitStdin(repo, "payload\n", "hash-object", "-w", "--stdin").trim();
   const dotGitTree = gitStdin(repo, `100644 blob ${blob}\tconfig\n`, "mktree").trim();
-  const rootTree = gitStdin(repo, `040000 tree ${dotGitTree}\t.git\n`, "mktree").trim();
+  const rootTree = gitStdin(repo, `040000 tree ${dotGitTree}\t${gitDirName}\n`, "mktree").trim();
   const args = parent ? ["commit-tree", rootTree, "-p", parent] : ["commit-tree", rootTree];
   return gitStdin(repo, "malicious tree\n", ...args).trim();
 }
@@ -487,6 +492,23 @@ test("populateScope scope=staged: copies staged index only, not untracked", () =
   }
 });
 
+test("populateScope scope=staged: ignores replace refs for regular blobs", () => {
+  const src = seedRepo();
+  const tgt = mkTarget();
+  try {
+    writeFileSync(path.join(src, "target.txt"), "ORIGINAL\n");
+    git(src, "add", "target.txt");
+    const object = git(src, "rev-parse", ":target.txt").trim();
+    replaceObjectWithBlob(src, object, "REPLACED\n");
+
+    populateScope(profile("staged"), src, tgt);
+
+    assert.equal(readFileSync(path.join(tgt, "target.txt"), "utf8"), "ORIGINAL\n");
+  } finally {
+    cleanup(src, tgt);
+  }
+});
+
 test("populateScope scope=staged: handles high-cardinality path lists without argv E2BIG", () => {
   const src = seedRepo();
   const tgt = mkTarget();
@@ -509,6 +531,26 @@ test("populateScope scope=staged: materializes in-snapshot file symlinks as regu
     writeFileSync(path.join(src, "target.txt"), "target\n");
     symlinkSync("target.txt", path.join(src, "link.txt"));
     git(src, "add", "target.txt", "link.txt");
+
+    populateScope(profile("staged"), src, tgt);
+
+    assert.equal(lstatSync(path.join(tgt, "link.txt")).isSymbolicLink(), false);
+    assert.equal(readFileSync(path.join(tgt, "link.txt"), "utf8"), "target\n");
+    assertNoSymlinks(tgt);
+  } finally {
+    cleanup(src, tgt);
+  }
+});
+
+test("populateScope scope=staged: ignores replace refs for symlink blobs", () => {
+  const src = seedRepo();
+  const tgt = mkTarget();
+  try {
+    writeFileSync(path.join(src, "target.txt"), "target\n");
+    symlinkSync("target.txt", path.join(src, "link.txt"));
+    git(src, "add", "target.txt", "link.txt");
+    const object = git(src, "rev-parse", ":link.txt").trim();
+    replaceObjectWithBlob(src, object, "missing.txt");
 
     populateScope(profile("staged"), src, tgt);
 
@@ -1189,6 +1231,43 @@ test("populateScope scope=branch-diff: copies files changed vs base, not unrelat
   }
 });
 
+test("populateScope scope=branch-diff: clears stale target content when diff is empty", () => {
+  const src = seedRepo();
+  const tgt = mkTarget();
+  try {
+    writeFileSync(path.join(src, "A.txt"), "a\n");
+    git(src, "add", "A.txt");
+    git(src, "commit", "-qm", "main");
+    writeFileSync(path.join(tgt, "stale.txt"), "stale\n");
+
+    populateScope(profile("branch-diff"), src, tgt, { scopeBase: "main" });
+
+    assert.deepEqual(readdirSync(tgt).sort(), []);
+  } finally {
+    cleanup(src, tgt);
+  }
+});
+
+test("populateScope scope=branch-diff: ignores replace refs for regular blobs", () => {
+  const src = seedRepo();
+  const tgt = mkTarget();
+  try {
+    git(src, "commit", "-qm", "main", "--allow-empty");
+    git(src, "checkout", "-qb", "feature");
+    writeFileSync(path.join(src, "target.txt"), "ORIGINAL\n");
+    git(src, "add", "target.txt");
+    git(src, "commit", "-qm", "feature");
+    const object = git(src, "rev-parse", "HEAD:target.txt").trim();
+    replaceObjectWithBlob(src, object, "REPLACED\n");
+
+    populateScope(profile("branch-diff"), src, tgt, { scopeBase: "main" });
+
+    assert.equal(readFileSync(path.join(tgt, "target.txt"), "utf8"), "ORIGINAL\n");
+  } finally {
+    cleanup(src, tgt);
+  }
+});
+
 test("populateScope scope=branch-diff: handles high-cardinality path lists without argv E2BIG", () => {
   const src = seedRepo();
   const tgt = mkTarget();
@@ -1284,6 +1363,28 @@ test("populateScope scope=branch-diff: rejects malicious HEAD .git path componen
   }
 });
 
+test("populateScope scope=branch-diff: rejects malicious HEAD .git path components case-insensitively", () => {
+  const src = seedRepo();
+  const tgt = mkTarget();
+  try {
+    writeFileSync(path.join(src, "base.txt"), "base\n");
+    git(src, "add", "base.txt");
+    git(src, "commit", "-qm", "base");
+    const base = git(src, "rev-parse", "HEAD").trim();
+    git(src, "checkout", "-qb", "feature");
+    const malicious = maliciousDotGitCommit(src, base, ".Git");
+    git(src, "update-ref", "HEAD", malicious);
+
+    assert.throws(
+      () => populateScope(profile("branch-diff"), src, tgt, { scopeBase: "main" }),
+      /scope_population_failed/,
+    );
+    assertEmptyOrMissing(tgt);
+  } finally {
+    cleanup(src, tgt);
+  }
+});
+
 test("populateScope scope=branch-diff: materializes symlink target content from HEAD", () => {
   const src = seedRepo();
   const tgt = mkTarget();
@@ -1304,6 +1405,31 @@ test("populateScope scope=branch-diff: materializes symlink target content from 
     assert.equal(lstatSync(path.join(tgt, "link.txt")).isSymbolicLink(), false);
     assert.equal(readFileSync(path.join(tgt, "link.txt"), "utf8"), "head-content\n",
       "branch-diff symlink materialization must use HEAD target content, not dirty working tree content");
+    assertNoSymlinks(tgt);
+  } finally {
+    cleanup(src, tgt);
+  }
+});
+
+test("populateScope scope=branch-diff: ignores replace refs for symlink blobs", () => {
+  const src = seedRepo();
+  const tgt = mkTarget();
+  try {
+    writeFileSync(path.join(src, "target.txt"), "target\n");
+    git(src, "add", "target.txt");
+    git(src, "commit", "-qm", "main");
+
+    git(src, "checkout", "-qb", "feature");
+    symlinkSync("target.txt", path.join(src, "link.txt"));
+    git(src, "add", "link.txt");
+    git(src, "commit", "-qm", "add symlink");
+    const object = git(src, "rev-parse", "HEAD:link.txt").trim();
+    replaceObjectWithBlob(src, object, "missing.txt");
+
+    populateScope(profile("branch-diff"), src, tgt, { scopeBase: "main" });
+
+    assert.equal(lstatSync(path.join(tgt, "link.txt")).isSymbolicLink(), false);
+    assert.equal(readFileSync(path.join(tgt, "link.txt"), "utf8"), "target\n");
     assertNoSymlinks(tgt);
   } finally {
     cleanup(src, tgt);
@@ -2015,6 +2141,24 @@ test("populateScope scope=head: rejects malicious HEAD .git path components", ()
   }
 });
 
+test("populateScope scope=head: rejects malicious HEAD .git path components case-insensitively", () => {
+  const src = seedRepo();
+  const parent = mkdtempSync(path.join(tmpdir(), "scope-head-parent-"));
+  const tgt = path.join(parent, "wt");
+  try {
+    const malicious = maliciousDotGitCommit(src, null, ".Git");
+    git(src, "update-ref", "HEAD", malicious);
+
+    assert.throws(
+      () => populateScope(profile("head"), src, tgt),
+      /scope_population_failed/,
+    );
+    assertEmptyOrMissing(tgt);
+  } finally {
+    cleanup(src, parent);
+  }
+});
+
 test("populateScope scope=head: materializes raw HEAD snapshot", () => {
   const src = seedRepo();
   const parent = mkdtempSync(path.join(tmpdir(), "scope-head-parent-"));
@@ -2034,6 +2178,25 @@ test("populateScope scope=head: materializes raw HEAD snapshot", () => {
       "scope=head must reflect HEAD, not the dirty working tree");
     assert.equal(existsSync(path.join(tgt, "untracked.txt")), false);
     assertNoGitMetadata(tgt);
+  } finally {
+    cleanup(src, parent);
+  }
+});
+
+test("populateScope scope=head: ignores replace refs for regular blobs", () => {
+  const src = seedRepo();
+  const parent = mkdtempSync(path.join(tmpdir(), "scope-head-parent-"));
+  const tgt = path.join(parent, "wt");
+  try {
+    writeFileSync(path.join(src, "target.txt"), "ORIGINAL\n");
+    git(src, "add", "target.txt");
+    git(src, "commit", "-qm", "seed");
+    const object = git(src, "rev-parse", "HEAD:target.txt").trim();
+    replaceObjectWithBlob(src, object, "REPLACED\n");
+
+    populateScope(profile("head"), src, tgt);
+
+    assert.equal(readFileSync(path.join(tgt, "target.txt"), "utf8"), "ORIGINAL\n");
   } finally {
     cleanup(src, parent);
   }
@@ -2093,6 +2256,28 @@ test("populateScope scope=head: materializes safe symlink chains from HEAD conte
 
     assert.equal(lstatSync(path.join(tgt, "link1.txt")).isSymbolicLink(), false);
     assert.equal(readFileSync(path.join(tgt, "link1.txt"), "utf8"), "head-chain\n");
+    assertNoSymlinks(tgt);
+  } finally {
+    cleanup(src, parent);
+  }
+});
+
+test("populateScope scope=head: ignores replace refs for symlink blobs", () => {
+  const src = seedRepo();
+  const parent = mkdtempSync(path.join(tmpdir(), "scope-head-parent-"));
+  const tgt = path.join(parent, "wt");
+  try {
+    writeFileSync(path.join(src, "target.txt"), "target\n");
+    symlinkSync("target.txt", path.join(src, "link.txt"));
+    git(src, "add", "target.txt", "link.txt");
+    git(src, "commit", "-qm", "seed");
+    const object = git(src, "rev-parse", "HEAD:link.txt").trim();
+    replaceObjectWithBlob(src, object, "missing.txt");
+
+    populateScope(profile("head"), src, tgt);
+
+    assert.equal(lstatSync(path.join(tgt, "link.txt")).isSymbolicLink(), false);
+    assert.equal(readFileSync(path.join(tgt, "link.txt"), "utf8"), "target\n");
     assertNoSymlinks(tgt);
   } finally {
     cleanup(src, parent);
