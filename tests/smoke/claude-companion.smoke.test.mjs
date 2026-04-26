@@ -7,7 +7,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 // spawnSync is reused for git init in the mutation-detection smoke.
-import { mkdtempSync, rmSync, existsSync, readFileSync, readdirSync, realpathSync } from "node:fs";
+import { mkdtempSync, rmSync, existsSync, readFileSync, readdirSync, realpathSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -73,6 +73,48 @@ test("run --mode=review --foreground: emits JobRecord with status=completed", ()
       "§21.3.2: no hand-assembled `ok` field; consumers derive from status");
     assert.equal("warning" in result, false,
       "§21.3: no top-level warning; mutations array is the signal");
+  } finally {
+    cleanup(dataDir);
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("run --mode=review --foreground: surfaces mutation detection failure without dropping result", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "smoke-mut-fail-cwd-"));
+  seedMinimalRepo(cwd);
+  const { stdout, stderr, status, dataDir } = runCompanion(
+    ["run", "--mode=review", "--foreground", "--model", "claude-haiku-4-5-20251001",
+     "--cwd", cwd, "--", "review"],
+    { cwd, env: { CLAUDE_MOCK_MUTATE_FILE: path.join(cwd, ".git", "index") } }
+  );
+  try {
+    assert.equal(status, 0, `exit ${status}: stderr=${stderr}`);
+    const result = JSON.parse(stdout);
+    assert.equal(result.status, "completed");
+    assert.equal(result.result, "Mock Claude response.");
+    assert.ok(result.mutations.some((m) => m.startsWith("mutation_detection_failed:")),
+      `mutation detection failure must be surfaced, got ${JSON.stringify(result.mutations)}`);
+  } finally {
+    cleanup(dataDir);
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("run --mode=review --foreground: preserves mutation detection failure when spawn fails", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "smoke-mut-spawn-fail-cwd-"));
+  seedMinimalRepo(cwd);
+  writeFileSync(path.join(cwd, ".git", "index"), "corrupt index");
+  const { stdout, stderr, status, dataDir } = runCompanion(
+    ["run", "--mode=review", "--foreground", "--model", "claude-haiku-4-5-20251001",
+     "--binary", path.join(cwd, "missing-claude"), "--cwd", cwd, "--", "review"],
+    { cwd }
+  );
+  try {
+    assert.equal(status, 2, `exit ${status}: stderr=${stderr}`);
+    const result = JSON.parse(stdout);
+    assert.equal(result.status, "failed");
+    assert.ok(result.mutations.some((m) => m.startsWith("mutation_detection_failed:")),
+      `mutation detection failure must survive spawn failure, got ${JSON.stringify(result.mutations)}`);
   } finally {
     cleanup(dataDir);
     rmSync(cwd, { recursive: true, force: true });

@@ -51,7 +51,7 @@ comes back to you.
   "result":              null | "<text from Claude>",  // null on queued; "" allowed on schema runs
   "structured_output":   null | { ... },                // populated on --json-schema runs
   "permission_denials":  [{ "tool": "Bash", ... }, ...],
-  "mutations":           ["M path", "?? path", ...],    // empty [] when none
+  "mutations":           ["M path", "?? path", "mutation_detection_failed: ...", ...],
   "cost_usd":            null | 0.001,
   "usage":               null | { "input_tokens": N, ... },
 
@@ -72,8 +72,8 @@ ignored. `working-tree` and `custom` reflect live filesystem content.
 
 1. **Mutation warning (derived — not a top-level field).** If
    `mutations.length > 0`: render a **prominent** warning block:
-   > ⚠️ <N> file(s) mutated during a read-only review:
-   > - `<path>`
+   > ⚠️ Mutation status changed or could not be verified during a read-only review:
+   > - `<entry>`
    > Do NOT auto-revert. The user decides.
 
    There is NO `warning` field on the JobRecord. The `mutations` array IS

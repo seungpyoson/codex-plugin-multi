@@ -67,7 +67,8 @@ function fail(code, message, details = {}) {
   process.exit(1);
 }
 
-// Wraps git command; returns "" on error so we never crash on non-git cwds.
+// Wraps git command; reports failure separately from successful empty output
+// so mutation detection can warn instead of silently reporting "clean".
 // Uses execFileSync with an argv array (no shell) to prevent command injection
 // through the cwd argument (audit HIGH finding, M2 gate).
 // Strip inherited git env vars (GIT_DIR, GIT_INDEX_FILE, ...) so subprocess
@@ -83,12 +84,21 @@ function cleanGitEnv() {
 
 function tryGit(args, cwd) {
   try {
-    return execFileSync("git", ["-C", cwd, ...args], {
+    const stdout = execFileSync("git", ["-C", cwd, ...args], {
       encoding: "utf8",
-      stdio: ["ignore", "pipe", "ignore"],
+      stdio: ["ignore", "pipe", "pipe"],
       env: cleanGitEnv(),
     });
-  } catch { return ""; }
+    return { ok: true, stdout };
+  } catch (error) {
+    return { ok: false, error };
+  }
+}
+
+function mutationDetectionFailure(error) {
+  const stderr = String(error?.stderr ?? "").trim().split("\n").find(Boolean);
+  const message = stderr ?? String(error?.message ?? error).split("\n")[0];
+  return `mutation_detection_failed: ${message}`;
 }
 
 // setupWorktree was deleted in T7.2. Containment lives in
@@ -327,10 +337,14 @@ async function executeRun(invocation, prompt, { foreground }) {
   // snapshot before/after and surface drift via record.mutations.
   const checkMutations = profile.permission_mode === "plan";
   let gitStatusBefore = null;
+  const mutations = [];
   if (checkMutations) {
-    gitStatusBefore = tryGit(["status", "-s", "--untracked-files=all"], cwd);
-    if (gitStatusBefore || gitStatusBefore === "") {
+    const before = tryGit(["status", "-s", "--untracked-files=all"], cwd);
+    if (before.ok) {
+      gitStatusBefore = before.stdout;
       writeSidecar(workspaceRoot, jobId, "git-status-before.txt", gitStatusBefore);
+    } else {
+      mutations.push(mutationDetectionFailure(before.error));
     }
   }
 
@@ -357,7 +371,7 @@ async function executeRun(invocation, prompt, { foreground }) {
     const errorRecord = buildJobRecord(invocation, {
       exitCode: null, parsed: null, pidInfo: null, claudeSessionId: null,
       errorMessage: e.message,
-    }, []);
+    }, mutations);
     writeJobFile(workspaceRoot, jobId, errorRecord);
     upsertJob(workspaceRoot, errorRecord);
     if (disposeEffective) containment.cleanup();
@@ -369,17 +383,21 @@ async function executeRun(invocation, prompt, { foreground }) {
   }
 
   // Post-snapshot for mutation detection.
-  let mutations = [];
   if (checkMutations && gitStatusBefore !== null) {
-    const gitStatusAfter = tryGit(["status", "-s", "--untracked-files=all"], cwd);
-    writeSidecar(workspaceRoot, jobId, "git-status-after.txt", gitStatusAfter);
-    if (gitStatusAfter && gitStatusAfter !== gitStatusBefore) {
-      const beforeLines = new Set(
-        gitStatusBefore.split("\n").map((l) => l.trim()).filter(Boolean)
-      );
-      mutations = gitStatusAfter.split("\n")
-        .map((l) => l.trim())
-        .filter((l) => l && !beforeLines.has(l));
+    const after = tryGit(["status", "-s", "--untracked-files=all"], cwd);
+    if (after.ok) {
+      const gitStatusAfter = after.stdout;
+      writeSidecar(workspaceRoot, jobId, "git-status-after.txt", gitStatusAfter);
+      if (gitStatusAfter && gitStatusAfter !== gitStatusBefore) {
+        const beforeLines = new Set(
+          gitStatusBefore.split("\n").map((l) => l.trim()).filter(Boolean)
+        );
+        mutations.push(...gitStatusAfter.split("\n")
+          .map((l) => l.trim())
+          .filter((l) => l && !beforeLines.has(l)));
+      }
+    } else {
+      mutations.push(mutationDetectionFailure(after.error));
     }
   }
 

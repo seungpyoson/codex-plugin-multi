@@ -56,6 +56,12 @@ function gitStatus(args, cwd) {
   });
 }
 
+function mutationDetectionFailure(error) {
+  const stderr = String(error?.stderr ?? "").trim().split("\n").find(Boolean);
+  const message = stderr ?? String(error?.message ?? error).split("\n")[0];
+  return `mutation_detection_failed: ${message}`;
+}
+
 function invocationFromRecord(record) {
   return {
     job_id: record.job_id,
@@ -164,21 +170,14 @@ async function executeRun(invocation, prompt, { foreground }) {
   const checkMutations = profile.permission_mode === "plan";
   let gitStatusBefore = null;
   let neutralCwd = null;
+  const mutations = [];
   if (checkMutations) {
     try {
+      neutralCwd = mkdtempSync(joinPath("/tmp", "gemini-neutral-cwd-"));
       gitStatusBefore = gitStatus(["status", "-s", "--untracked-files=all"], cwd);
       writeSidecar(workspaceRoot, jobId, "git-status-before.txt", gitStatusBefore);
-      neutralCwd = mkdtempSync(joinPath("/tmp", "gemini-neutral-cwd-"));
     } catch (e) {
-      const errorRecord = buildJobRecord(invocation, {
-        exitCode: null, parsed: null, pidInfo: null, geminiSessionId: null,
-        errorMessage: `mutation_detection_failed: ${e.message}`,
-      }, []);
-      writeJobFile(workspaceRoot, jobId, errorRecord);
-      upsertJob(workspaceRoot, errorRecord);
-      if (containment.disposed && disposeEffective) containment.cleanup();
-      if (foreground) printJson(errorRecord);
-      process.exit(2);
+      mutations.push(mutationDetectionFailure(e));
     }
   }
 
@@ -196,7 +195,7 @@ async function executeRun(invocation, prompt, { foreground }) {
     const errorRecord = buildJobRecord(invocation, {
       exitCode: null, parsed: null, pidInfo: null, geminiSessionId: null,
       errorMessage: e.message,
-    }, []);
+    }, mutations);
     writeJobFile(workspaceRoot, jobId, errorRecord);
     upsertJob(workspaceRoot, errorRecord);
     if (neutralCwd) rmSync(neutralCwd, { recursive: true, force: true });
@@ -205,27 +204,18 @@ async function executeRun(invocation, prompt, { foreground }) {
     process.exit(2);
   }
 
-  let mutations = [];
   if (checkMutations && gitStatusBefore !== null) {
     let gitStatusAfter;
     try {
       gitStatusAfter = gitStatus(["status", "-s", "--untracked-files=all"], cwd);
       writeSidecar(workspaceRoot, jobId, "git-status-after.txt", gitStatusAfter);
     } catch (e) {
-      const errorRecord = buildJobRecord(invocation, {
-        exitCode: null, parsed: null, pidInfo: null, geminiSessionId: null,
-        errorMessage: `mutation_detection_failed: ${e.message}`,
-      }, []);
-      writeJobFile(workspaceRoot, jobId, errorRecord);
-      upsertJob(workspaceRoot, errorRecord);
-      if (neutralCwd) rmSync(neutralCwd, { recursive: true, force: true });
-      if (containment.disposed && disposeEffective) containment.cleanup();
-      if (foreground) printJson(errorRecord);
-      process.exit(2);
+      mutations.push(mutationDetectionFailure(e));
+      gitStatusAfter = null;
     }
     if (gitStatusAfter && gitStatusAfter !== gitStatusBefore) {
       const beforeLines = new Set(gitStatusBefore.split("\n").map((l) => l.trim()).filter(Boolean));
-      mutations = gitStatusAfter.split("\n").map((l) => l.trim()).filter((l) => l && !beforeLines.has(l));
+      mutations.push(...gitStatusAfter.split("\n").map((l) => l.trim()).filter((l) => l && !beforeLines.has(l)));
     }
   }
 

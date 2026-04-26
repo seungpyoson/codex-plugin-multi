@@ -48,6 +48,19 @@ function writeMarkerBinary(dir, markerPath) {
   return binary;
 }
 
+function writeIndexCorruptingBinary(dir, repoPath) {
+  const binary = path.join(dir, "corrupt-index-cli");
+  writeFileSync(binary, [
+    "#!/bin/sh",
+    `printf corrupt > ${JSON.stringify(path.join(repoPath, ".git", "index"))}`,
+    "printf '{\"session_id\":\"22222222-3333-4444-9555-666666666666\",\"response\":\"spawned after corrupting index\"}\\n'",
+    "exit 0",
+    "",
+  ].join("\n"));
+  chmodSync(binary, 0o755);
+  return binary;
+}
+
 function readStdoutLog(dataDir, jobId) {
   const stateRoot = path.join(dataDir, "state");
   for (const dir of readdirSync(stateRoot)) {
@@ -86,6 +99,77 @@ test("gemini review foreground: policy-first, stdin transport, /tmp cwd, scoped 
     assert.equal(fx.t7_sandbox, true, "Gemini review must pass the sandbox flag");
     assert.equal(fx.t7_skip_trust, true, "Gemini review must pass --skip-trust so plan approval is not downgraded");
     assert.equal(fx.t7_prompt_from_stdin, true, "Gemini prompt must arrive on stdin, not argv");
+  } finally {
+    rmSync(dataDir, { recursive: true, force: true });
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("gemini review preserves result when pre-run mutation detection is unavailable", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "gemini-mut-pre-cwd-"));
+  seedMinimalRepo(cwd);
+  writeFileSync(path.join(cwd, ".git", "index"), "corrupt index");
+  const { stdout, stderr, status, dataDir } = runCompanion(
+    ["run", "--mode=review", "--foreground", "--cwd", cwd, "--", "review"],
+    { cwd },
+  );
+  try {
+    assert.equal(status, 0, `exit ${status}: ${stderr}`);
+    const record = JSON.parse(stdout);
+    assert.equal(record.status, "completed");
+    assert.equal(record.result, "Mock Gemini response.");
+    assert.ok(record.mutations.some((m) => m.startsWith("mutation_detection_failed:")),
+      `mutation detection failure must be surfaced, got ${JSON.stringify(record.mutations)}`);
+  } finally {
+    rmSync(dataDir, { recursive: true, force: true });
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("gemini review preserves pre-run mutation detection failure when target spawn fails", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "gemini-mut-spawn-fail-cwd-"));
+  seedMinimalRepo(cwd);
+  writeFileSync(path.join(cwd, ".git", "index"), "corrupt index");
+  const { stdout, stderr, status, dataDir } = runCompanion(
+    ["run", "--mode=review", "--foreground", "--binary", path.join(cwd, "missing-gemini"), "--cwd", cwd, "--", "review"],
+    { cwd },
+  );
+  try {
+    assert.equal(status, 2, `exit ${status}: ${stderr}`);
+    const record = JSON.parse(stdout);
+    assert.equal(record.status, "failed");
+    assert.ok(record.mutations.some((m) => m.startsWith("mutation_detection_failed:")),
+      `mutation detection failure must survive spawn failure, got ${JSON.stringify(record.mutations)}`);
+  } finally {
+    rmSync(dataDir, { recursive: true, force: true });
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("gemini review preserves result when post-run mutation detection is unavailable", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "gemini-mut-post-cwd-"));
+  const dataDir = mkdtempSync(path.join(tmpdir(), "gemini-mut-post-data-"));
+  seedMinimalRepo(cwd);
+  const binary = writeIndexCorruptingBinary(dataDir, cwd);
+  const res = spawnSync("node", [
+    COMPANION, "run", "--mode=review", "--foreground",
+    "--binary", binary,
+    "--cwd", cwd, "--", "review",
+  ], {
+    cwd,
+    encoding: "utf8",
+    env: {
+      ...process.env,
+      GEMINI_PLUGIN_DATA: dataDir,
+    },
+  });
+  try {
+    assert.equal(res.status, 0, `exit ${res.status}: ${res.stderr}`);
+    const record = JSON.parse(res.stdout);
+    assert.equal(record.status, "completed");
+    assert.equal(record.result, "spawned after corrupting index");
+    assert.ok(record.mutations.some((m) => m.startsWith("mutation_detection_failed:")),
+      `mutation detection failure must be surfaced, got ${JSON.stringify(record.mutations)}`);
   } finally {
     rmSync(dataDir, { recursive: true, force: true });
     rmSync(cwd, { recursive: true, force: true });

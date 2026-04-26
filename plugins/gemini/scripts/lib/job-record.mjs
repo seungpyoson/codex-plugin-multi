@@ -180,7 +180,8 @@ function assertInvocation(invocation) {
  *                    claudeSessionId?, geminiSessionId?, pidInfo,
  *                    errorMessage?, stdout?, stderr? }
  *
- *   mutations  — array of git-status line strings from T7.2's mutation
+ *   mutations  — array of git-status line strings or
+ *                mutation_detection_failed entries from T7.2's mutation
  *                detection. Empty array when not applicable.
  *
  * Returns a frozen object whose keys === EXPECTED_KEYS exactly.

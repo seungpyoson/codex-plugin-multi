@@ -28,7 +28,7 @@ test("gemini companion passes read-only policy only for plan modes", () => {
   assert.match(source, /policyPath:\s*profile\.permission_mode\s*===\s*"plan"\s*\?\s*READ_ONLY_POLICY\s*:\s*null/);
 });
 
-test("gemini companion fails closed if mutation git-status capture fails", () => {
+test("gemini companion surfaces mutation git-status capture failure", () => {
   const source = readRepoFile("plugins/gemini/scripts/gemini-companion.mjs");
   assert.doesNotMatch(source, /catch\s*\{\s*return\s+"";\s*\}/);
   assert.match(source, /mutation_detection_failed/);

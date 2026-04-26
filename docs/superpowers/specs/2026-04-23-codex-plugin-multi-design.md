@@ -866,7 +866,7 @@ JobRecord {
   result?: string
   structured_output?: object
   permission_denials[]
-  mutations[]               // { path, status } entries from post-hoc git diff
+  mutations[]               // git-status line strings, or mutation_detection_failed: <reason>
   cost_usd?, usage?
 
   // Bookkeeping — required
