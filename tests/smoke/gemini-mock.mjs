@@ -37,9 +37,12 @@ const includeDirs = String(parsed.flags["--include-directories"] ?? "")
   .split(",")
   .map((s) => s.trim())
   .filter(Boolean);
+const sessionId = parsed.flags["--resume"]
+  ? "77777777-8888-4999-aaaa-bbbbbbbbbbbb"
+  : "22222222-3333-4444-9555-666666666666";
 
 const fixture = {
-  session_id: "22222222-3333-4444-9555-666666666666",
+  session_id: sessionId,
   response: "Mock Gemini response.",
   stats: {
     models: {

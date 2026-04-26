@@ -45,6 +45,20 @@ test("review command docs advertise --scope-base, not legacy --base", () => {
   assert.doesNotMatch(docs, /--base <ref>/);
 });
 
+test("gemini command docs match background/continue runtime and deferred cancel", () => {
+  const rescue = readRepoFile("plugins/gemini/commands/gemini-rescue.md");
+  const cancel = readRepoFile("plugins/gemini/commands/gemini-cancel.md");
+
+  assert.match(rescue, /--background/);
+  assert.match(rescue, /--foreground/);
+  assert.doesNotMatch(rescue, /foreground only/i);
+  assert.doesNotMatch(rescue, /background support lands/i);
+
+  assert.match(cancel, /not_implemented/);
+  assert.match(cancel, /deferred/i);
+  assert.doesNotMatch(cancel, /M8 wires background cancel/i);
+});
+
 test("spec does not reference an unshipped Gemini result-handling skill", () => {
   const spec = readRepoFile("docs/superpowers/specs/2026-04-23-codex-plugin-multi-design.md");
 

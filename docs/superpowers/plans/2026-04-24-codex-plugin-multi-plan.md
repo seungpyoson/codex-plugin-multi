@@ -628,19 +628,21 @@ M11 release      → T11.1 → T11.2 → T11.3 → T11.4              (was M10)
 
 **Milestone goal:** Gemini rescue works detached with session continuation.
 
+**Runtime alignment:** As of `3bf78d4`, Gemini `run --background` plus foreground/background `continue --job` are implemented. Gemini `cancel` remains deferred.
+
 ### T9.1 — Gemini `run --background` + detached wrapper
 
 - **Files:**
-  - `plugins/gemini/scripts/gemini-companion.mjs` (extend): same lifecycle as claude (§7.4). Gemini-specific: capture server-minted session UUID from result JSON into `meta.json.session_id`.
-- **Acceptance:** Background rescue returns `launched` event, terminal meta appears with valid `session_id` captured.
+  - `plugins/gemini/scripts/gemini-companion.mjs` (extend): same lifecycle as Claude (§7.4). Gemini-specific: capture server-minted session UUID from result JSON into `gemini_session_id`.
+- **Acceptance:** Background rescue returns `launched` event, terminal meta appears with valid `gemini_session_id` captured.
 - **Spec ref:** §7.4, §11.
 - **Depends on:** T8.5
 
-### T9.2 — `continue --job <id>` with `--resume latest`/UUID
+### T9.2 — `continue --job <id>` with captured UUID
 
 - **Files:**
-  - `plugins/gemini/scripts/gemini-companion.mjs` (extend): `continue` prefers `--resume latest` within same cwd; falls back to captured UUID from meta.json. Never ordinal index.
-- **Acceptance:** After rescue, `continue` recalls prior turn in fixture-based test. Missing `session_id` → `SESSION_UNAVAILABLE`.
+  - `plugins/gemini/scripts/gemini-companion.mjs` (extend): `continue` reads the prior JobRecord's `gemini_session_id`, appends it to `resume_chain`, and passes the newest chain entry as `--resume <uuid>`. Never use ordinal indexes.
+- **Acceptance:** After rescue, `continue` resumes the prior session in fixture-based foreground and background tests. Missing `gemini_session_id` fails closed.
 - **Spec ref:** §11, §4.4.
 - **Depends on:** T9.1
 

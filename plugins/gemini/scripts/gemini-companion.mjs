@@ -324,6 +324,10 @@ async function cmdRunWorker(rest) {
     fail("bad_args", e.message);
   }
 
+  if (["completed", "failed", "cancelled", "stale"].includes(meta.status)) {
+    fail("bad_state", `_run-worker refuses terminal job ${options.job}`);
+  }
+
   const prompt = consumePromptSidecar(workspaceRoot, options.job);
   if (!prompt) {
     const errorRecord = buildJobRecord(invocationFromRecord(meta), {

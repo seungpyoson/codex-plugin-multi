@@ -103,7 +103,7 @@ Companion detects via JSON-parse failure OR non-zero exit.
 ### 4.4 Session continuation — verified live
 
 - **Claude:** client generates UUID → passes `--session-id <uuid>` up-front → result echoes same UUID → next call uses `--resume <same-uuid>` and recalls prior turn. Verified end-to-end 2026-04-24.
-- **Gemini:** server mints UUID returned in JSON `session_id`. `--resume latest` and `--resume <index>` confirmed. `--resume <uuid>` works but JSON output schema varies — prefer `latest`/index for programmatic reliability.
+- **Gemini:** server mints UUID returned in JSON `session_id`. The companion records it as `gemini_session_id` and uses captured UUIDs for `--resume`; ordinal indexes and `latest` are not stable enough for persisted JobRecord chains.
 
 ### 4.5 Read-only enforcement — layered
 
@@ -552,8 +552,8 @@ gemini -p ''
 ## 11. Session continuation
 
 - **Claude:** client generates UUID via `crypto.randomUUID()`. `run` passes `--session-id <uuid>`. `continue --job <id>` runs `claude --resume <uuid> -p <followup>`. Verified round-trip §4.4.
-- **Gemini:** server mints UUID, captured from result JSON `session_id` into `meta.json`. `continue` prefers `--resume latest` within the same cwd; falls back to `--resume <captured-uuid>` if available. Never `--resume <index>` (not stable across sessions).
-- If session_id missing: `continue` fails closed with `SESSION_UNAVAILABLE`.
+- **Gemini:** server mints UUID, captured from result JSON `session_id` into `gemini_session_id` on the JobRecord. `continue` reads the prior `gemini_session_id`, appends it to `resume_chain`, and passes the newest chain entry as `--resume <captured-uuid>`. Never `--resume <index>` (not stable across sessions).
+- If `gemini_session_id` is missing: `continue` fails closed.
 
 ## 12. Job store — per-target, workspace-scoped
 
@@ -743,7 +743,7 @@ Before v0.1.0: run upstream `/codex:adversarial-review` against this repo. Addre
 - **M5 — Claude containment + dispose.** `containment=worktree`, profile-driven disposal, pre/post git-status capture.
 - **M6 — Claude prompting skill.** `skills/claude-prompting/SKILL.md` + references.
 - **M7 — Gemini port (policy-first).** `plugins/gemini/`. `policies/read-only.toml`. stdin transport. `/tmp` cwd for isolation.
-- **M8 — Gemini rescue + background.**
+- **M8 — Gemini rescue background + continue.** `run --background`, detached worker lifecycle, and `continue --job` using captured `gemini_session_id`. Gemini `cancel` remains deferred.
 - **M9 — Tests.** Full unit + smoke (mock CLIs) + CI (lint + unit + smoke). E2E manual.
 - **M10 — Docs, CHANGELOG, v0.1.0.** Self adversarial review. Tag release.
 
@@ -784,7 +784,7 @@ These are the rules M7+ code is judged against. Each invariant names a class of 
 **Required patterns:**
 
 - On `run`: companion generates `job_id`, passes `job_id` to Claude as `--session-id` for a new session, then records `claude_session_id = parsed.session_id` (Claude echoes it back). When Claude creates its own session ID without input, the record stores what Claude returned — never what the companion sent.
-- On `continue`: companion generates a fresh `job_id`, looks up the prior job's `resume_chain[-1]` (or `claude_session_id`) as the `--resume` UUID, appends it to the new record's `resume_chain`, records the new `claude_session_id` from stdout after the run.
+- On `continue`: companion generates a fresh `job_id`, looks up the prior target session ID (`claude_session_id` or `gemini_session_id`) as the `--resume` UUID, appends it to the new record's `resume_chain`, records the new target session ID from stdout after the run.
 - On `cancel`: read `pid_info` tuple, re-verify `starttime` + `argv0` match before signaling. Mismatch → refuse with `stale_pid` error.
 
 **Why:** Finding #6 (chained continue breaks), #7 (PID-reuse kill), parts of #3 (result lost) all trace to identity conflation. The type rule makes the mistake unrepresentable.
@@ -879,7 +879,7 @@ JobRecord {
 The full prompt MUST NOT be persisted to `JobRecord`. `prompt_head` (≤200 chars) is sufficient for human display. Reasons:
 
 - Prompts routinely contain credentials, private incident context, full file contents pasted by the user.
-- The full prompt is never needed for `continue` (that path uses `resume_id`, not the original text).
+- The original full prompt is never needed for `continue` (that path uses `resume_chain` plus the new follow-up prompt, not the original text).
 - The full prompt is never needed for display (`result` is the answer; the prompt is input).
 
 If a later feature legitimately needs the original prompt text (e.g., reproducible rerun), it lives in a **private sidecar** (`<job>/prompt.txt`, mode `0600`) and is an explicit opt-in flag, not the default.

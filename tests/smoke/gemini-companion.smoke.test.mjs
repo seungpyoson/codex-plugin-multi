@@ -12,6 +12,8 @@ import { fileURLToPath } from "node:url";
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const COMPANION = path.join(REPO_ROOT, "plugins/gemini/scripts/gemini-companion.mjs");
 const MOCK = path.join(REPO_ROOT, "tests/smoke/gemini-mock.mjs");
+const GEMINI_SESSION_ID = "22222222-3333-4444-9555-666666666666";
+const RESUMED_GEMINI_SESSION_ID = "77777777-8888-4999-aaaa-bbbbbbbbbbbb";
 
 function seedMinimalRepo(cwd) {
   spawnSync("git", ["init", "-q", "-b", "main"], { cwd });
@@ -106,7 +108,7 @@ test("gemini rescue background: launched event and terminal JobRecord", async ()
     assert.ok(meta, "worker never wrote terminal meta");
     assert.equal(meta.status, "completed");
     assert.equal(meta.result, "Mock Gemini response.");
-    assert.equal(meta.gemini_session_id, "22222222-3333-4444-9555-666666666666");
+    assert.equal(meta.gemini_session_id, GEMINI_SESSION_ID);
     assert.equal("prompt" in meta, false, "full prompt must not appear on JobRecord");
   } finally {
     rmSync(dataDir, { recursive: true, force: true });
@@ -126,7 +128,7 @@ test("gemini continue foreground: resumes prior job session", () => {
     assert.equal(first.status, 0, `exit ${first.status}: ${first.stderr}`);
     const prior = JSON.parse(first.stdout);
     assert.equal(prior.status, "completed");
-    assert.equal(prior.gemini_session_id, "22222222-3333-4444-9555-666666666666");
+    assert.equal(prior.gemini_session_id, GEMINI_SESSION_ID);
 
     const continued = runCompanion(
       ["continue", "--job", prior.job_id, "--foreground", "--cwd", cwd, "--", "continue rescue task"],
@@ -138,7 +140,7 @@ test("gemini continue foreground: resumes prior job session", () => {
     assert.equal(record.status, "completed");
     assert.equal(record.parent_job_id, prior.job_id);
     assert.deepEqual(record.resume_chain, [prior.gemini_session_id]);
-    assert.equal(record.gemini_session_id, "22222222-3333-4444-9555-666666666666");
+    assert.equal(record.gemini_session_id, RESUMED_GEMINI_SESSION_ID);
 
     const fx = readStdoutLog(first.dataDir, record.job_id);
     assert.equal(fx.t7_resume_id, prior.gemini_session_id);
@@ -161,7 +163,7 @@ test("gemini continue background: launched event and resumed terminal JobRecord"
   try {
     assert.equal(first.status, 0, `exit ${first.status}: ${first.stderr}`);
     const prior = JSON.parse(first.stdout);
-    assert.equal(prior.gemini_session_id, "22222222-3333-4444-9555-666666666666");
+    assert.equal(prior.gemini_session_id, GEMINI_SESSION_ID);
 
     const continued = runCompanion(
       ["continue", "--job", prior.job_id, "--background", "--cwd", cwd, "--", "background continue task"],
@@ -198,7 +200,7 @@ test("gemini continue background: launched event and resumed terminal JobRecord"
     assert.equal(meta.parent_job_id, prior.job_id);
     assert.deepEqual(meta.resume_chain, [prior.gemini_session_id]);
     assert.equal(meta.result, "Mock Gemini response.");
-    assert.equal(meta.gemini_session_id, "22222222-3333-4444-9555-666666666666");
+    assert.equal(meta.gemini_session_id, RESUMED_GEMINI_SESSION_ID);
 
     let fx = null;
     while (Date.now() < deadline && !fx) {
@@ -213,6 +215,118 @@ test("gemini continue background: launched event and resumed terminal JobRecord"
     assert.equal("prompt" in meta, false, "full prompt must not appear on JobRecord");
   } finally {
     rmSync(first.dataDir, { recursive: true, force: true });
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("gemini _run-worker refuses terminal JobRecord without overwriting it", async () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "gemini-worker-reentry-cwd-"));
+  seedMinimalRepo(cwd);
+  const { stdout, stderr, status, dataDir } = runCompanion(
+    ["run", "--mode=rescue", "--background", "--model", "gemini-3-flash-preview",
+     "--cwd", cwd, "--", "background rescue task"],
+    { cwd },
+  );
+  try {
+    assert.equal(status, 0, `exit ${status}: ${stderr}`);
+    const launched = JSON.parse(stdout);
+    const stateRoot = path.join(dataDir, "state");
+    const deadline = Date.now() + 5000;
+    let meta = null;
+    let metaPath = null;
+    while (Date.now() < deadline) {
+      for (const dir of readdirSync(stateRoot)) {
+        const candidate = path.join(stateRoot, dir, "jobs", `${launched.job_id}.json`);
+        if (existsSync(candidate)) {
+          const parsed = JSON.parse(readFileSync(candidate, "utf8"));
+          if (parsed.status === "completed" || parsed.status === "failed") {
+            meta = parsed;
+            metaPath = candidate;
+            break;
+          }
+        }
+      }
+      if (meta) break;
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    assert.ok(meta, "worker never wrote terminal meta");
+    assert.equal(meta.status, "completed");
+
+    const rerun = spawnSync("node", [
+      COMPANION, "_run-worker", "--cwd", cwd, "--job", launched.job_id,
+    ], {
+      cwd,
+      encoding: "utf8",
+      env: { ...process.env, GEMINI_BINARY: MOCK, GEMINI_PLUGIN_DATA: dataDir },
+    });
+    assert.notEqual(rerun.status, 0, "manual _run-worker re-entry should fail");
+    const after = JSON.parse(readFileSync(metaPath, "utf8"));
+    assert.equal(after.status, "completed");
+    assert.equal(after.result, "Mock Gemini response.");
+    assert.equal(after.gemini_session_id, GEMINI_SESSION_ID);
+  } finally {
+    rmSync(dataDir, { recursive: true, force: true });
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("gemini _run-worker writes failed JobRecord when queued prompt sidecar is missing", async () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "gemini-worker-missing-prompt-cwd-"));
+  const dataDir = mkdtempSync(path.join(tmpdir(), "gemini-worker-missing-prompt-data-"));
+  seedMinimalRepo(cwd);
+  const previous = process.env.GEMINI_PLUGIN_DATA;
+  process.env.GEMINI_PLUGIN_DATA = dataDir;
+  try {
+    const state = await import("../../plugins/gemini/scripts/lib/state.mjs");
+    const { newJobId } = await import("../../plugins/gemini/scripts/lib/identity.mjs");
+    const { buildJobRecord } = await import("../../plugins/gemini/scripts/lib/job-record.mjs");
+    const { resolveProfile } = await import("../../plugins/gemini/scripts/lib/mode-profiles.mjs");
+    state.configureState({
+      pluginDataEnv: "GEMINI_PLUGIN_DATA",
+      sessionIdEnv: "GEMINI_COMPANION_SESSION_ID",
+    });
+    const profile = resolveProfile("rescue");
+    const jobId = newJobId();
+    const invocation = Object.freeze({
+      job_id: jobId,
+      target: "gemini",
+      parent_job_id: null,
+      resume_chain: [],
+      mode_profile_name: profile.name,
+      mode: "rescue",
+      model: "gemini-3-flash-preview",
+      cwd,
+      workspace_root: cwd,
+      containment: profile.containment,
+      scope: profile.scope,
+      dispose_effective: profile.dispose_default,
+      scope_base: null,
+      scope_paths: null,
+      prompt_head: "missing sidecar",
+      schema_spec: null,
+      binary: MOCK,
+      started_at: new Date().toISOString(),
+    });
+    const queued = buildJobRecord(invocation, null, []);
+    state.writeJobFile(cwd, jobId, queued);
+    state.upsertJob(cwd, queued);
+
+    const worker = spawnSync("node", [
+      COMPANION, "_run-worker", "--cwd", cwd, "--job", jobId,
+    ], {
+      cwd,
+      encoding: "utf8",
+      env: { ...process.env, GEMINI_BINARY: MOCK, GEMINI_PLUGIN_DATA: dataDir },
+    });
+    assert.notEqual(worker.status, 0, "worker should fail without prompt sidecar");
+    const finalRecord = JSON.parse(readFileSync(state.resolveJobFile(cwd, jobId), "utf8"));
+    assert.equal(finalRecord.status, "failed");
+    assert.match(finalRecord.error_message, /prompt sidecar missing/);
+    assert.equal("prompt" in finalRecord, false, "full prompt must not appear on JobRecord");
+  } finally {
+    if (previous === undefined) delete process.env.GEMINI_PLUGIN_DATA;
+    else process.env.GEMINI_PLUGIN_DATA = previous;
+    rmSync(dataDir, { recursive: true, force: true });
     rmSync(cwd, { recursive: true, force: true });
   }
 });
@@ -232,7 +346,7 @@ test("gemini review foreground: policy-first, stdin transport, /tmp cwd, scoped 
     assert.equal(record.status, "completed");
     assert.equal(record.result, "Mock Gemini response.");
     assert.equal(record.claude_session_id, null);
-    assert.equal(record.gemini_session_id, "22222222-3333-4444-9555-666666666666");
+    assert.equal(record.gemini_session_id, GEMINI_SESSION_ID);
     assert.equal(record.containment, "worktree");
     assert.equal(record.scope, "working-tree");
 
@@ -400,7 +514,7 @@ test("gemini ping returns ok with the mock gemini binary", () => {
     const parsed = JSON.parse(stdout);
     assert.equal(parsed.status, "ok");
     assert.equal(parsed.model, "gemini-3-flash-preview");
-    assert.equal(parsed.session_id, "22222222-3333-4444-9555-666666666666");
+    assert.equal(parsed.session_id, GEMINI_SESSION_ID);
   } finally {
     rmSync(dataDir, { recursive: true, force: true });
     rmSync(cwd, { recursive: true, force: true });

@@ -261,7 +261,7 @@
 - `lib-imports.test.mjs` enforces production-consumer checks for both Claude and Gemini lib files.
 - Gemini policy test asserts the deny list contains every currently known destructive tool in `read-only.toml`.
 - Gemini smoke coverage includes `review`, `adversarial-review`, `rescue`, `ping`, `status`, and `result` where M7 supports them.
-- Gemini background and cancel remain documented as M8/not implemented; tests assert the explicit not-implemented behavior.
+- Historical M7 boundary: Gemini background and cancel remained documented as not implemented. Current runtime after `3bf78d4`: Gemini background and continue are implemented; Gemini cancel remains deferred.
 
 **TDD Steps:**
 - [ ] Add a failing lib-imports test for Gemini production consumers.
@@ -269,11 +269,11 @@
 - [ ] Update production-consumer traversal so both plugin companions and lib-to-lib imports are handled per target.
 - [ ] Add policy completeness assertions for every deny rule present in `plugins/gemini/policies/read-only.toml`.
 - [ ] Add Gemini smoke cases for adversarial-review and rescue with the mock CLI.
-- [ ] Add tests asserting Gemini background/cancel return `not_implemented`.
+- [ ] Add or update tests for the current Gemini lifecycle surface: background/continue should pass; cancel should remain explicit `not_implemented` until implemented.
 - [ ] Run `npm test -- tests/unit/lib-imports.test.mjs tests/unit/policy.test.mjs tests/smoke/gemini-companion.smoke.test.mjs`.
 
 **Implementation Notes:**
-- Do not add M8 behavior here; background/cancel should stay explicit not-implemented for Gemini.
+- Do not add cancel behavior here; Gemini background/continue are now implemented, while cancel should stay explicit `not_implemented` until its own milestone.
 - Keep smoke tests mock-based; live Gemini OAuth verification is Task 7.
 
 **Commit:**
@@ -325,4 +325,3 @@ After Task 7 passes, generate one self-contained M0-M7 adversarial audit prompt 
 - Instruction to list every non-blocker, including nit/cosmetic/low findings.
 
 Do not propose merging after this audit prompt. The user decides when external review is complete and when merge is appropriate.
-
