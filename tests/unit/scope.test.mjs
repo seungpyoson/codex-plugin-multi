@@ -1841,6 +1841,35 @@ test("populateScope scope=branch-diff: throws scope_base_missing when base has n
   }
 });
 
+test("populateScope scope=branch-diff: ignores grafts that connect unrelated histories", () => {
+  const src = seedRepo();
+  const tgt = mkTarget();
+  try {
+    writeFileSync(path.join(src, "main.txt"), "main\n");
+    git(src, "add", "main.txt");
+    git(src, "commit", "-qm", "main");
+    const mainCommit = git(src, "rev-parse", "main").trim();
+
+    git(src, "checkout", "--orphan", "feature");
+    rmSync(path.join(src, "main.txt"), { force: true });
+    writeFileSync(path.join(src, "feature.txt"), "FEATURE\n");
+    git(src, "add", ".");
+    git(src, "commit", "-qm", "feature");
+    const featureCommit = git(src, "rev-parse", "HEAD").trim();
+
+    mkdirSync(path.join(src, ".git", "info"), { recursive: true });
+    writeFileSync(path.join(src, ".git", "info", "grafts"), `${featureCommit} ${mainCommit}\n`);
+
+    assert.throws(
+      () => populateScope(profile("branch-diff"), src, tgt, { scopeBase: "main" }),
+      /scope_base_missing/,
+    );
+    assertEmptyOrMissing(tgt);
+  } finally {
+    cleanup(src, tgt);
+  }
+});
+
 test("populateScope scope=branch-diff: rejects symlink escaping source root", () => {
   const src = seedRepo();
   const tgt = mkTarget();

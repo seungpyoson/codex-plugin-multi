@@ -17,8 +17,8 @@
 // Git-derived scopes (staged, branch-diff, head) are object-pure: regular
 // blobs are streamed directly from INDEX/HEAD, 120000 symlink blobs are
 // resolved only through INDEX/HEAD metadata, and checkout filters, attributes,
-// LFS smudge, textconv, hooks, replace refs, and config-defined shell commands
-// are not run or honored.
+// LFS smudge, textconv, hooks, replace refs, grafts, and config-defined shell
+// commands are not run or honored.
 //
 // When containment=none, the targetPath IS sourceCwd and populateScope is a
 // no-op. The caller always calls
@@ -55,6 +55,7 @@ function cleanGitEnv() {
     ...process.env,
     GIT_NO_LAZY_FETCH: "1",
     GIT_NO_REPLACE_OBJECTS: "1",
+    GIT_GRAFT_FILE: process.platform === "win32" ? "NUL" : "/dev/null",
     GIT_CONFIG_NOSYSTEM: "1",
   };
   for (const k of [
