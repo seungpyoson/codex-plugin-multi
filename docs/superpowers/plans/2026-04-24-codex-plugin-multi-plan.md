@@ -20,7 +20,7 @@ M10 Tests + CI (was M9)
 M11 Release (was M10)
 ```
 
-## Current branch state (2026-04-26)
+## Current branch state (2026-04-27)
 
 This plan is the canonical roadmap. The spec preview in
 `docs/superpowers/specs/2026-04-23-codex-plugin-multi-design.md` still uses the
@@ -35,10 +35,16 @@ Current implementation state on `feat/012-t7-6-regression-matrix`:
 - T10.0 shared background lifecycle hardening is complete through `44e2f9b`.
 - T10.1 coverage work is complete through `c122d6e`; the enforced 85% target
   gate passes with `COVERAGE_ENFORCE_TARGET=1 npm run test:coverage`.
+- T10.2 smoke-test matrix is complete through `48787ac`; CI runs unit tests
+  separately from per-target Claude/Gemini smoke jobs.
+- T10.3 manual E2E runbook is complete through `f90bc20`; the opt-in harness is
+  verified, while live maintainer execution remains an explicit manual step.
+- T10.4 manifest + schema lint matrix is complete through `24c9b84`;
+  `lint:self-test` covers malformed command, skill, and agent frontmatter.
 - Gemini `cancel` is intentionally not part of completed M9; treat it as an
   explicit lifecycle-parity slice if prioritized, not as hidden unfinished M9
   work.
-- Next roadmap step is T10.2 smoke-test matrix in CI.
+- Next roadmap step is T10.5 README + install instructions.
 
 Fresh-session rule: before changing code, read this section, `git log -8`, and
 `docs/superpowers/plans/2026-04-26-m8-hardening-backlog.md`. Do not suggest PR,
