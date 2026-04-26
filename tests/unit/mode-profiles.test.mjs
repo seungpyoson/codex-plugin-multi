@@ -11,6 +11,7 @@ import {
   resolveProfile,
   resolveModelForProfile,
 } from "../../plugins/claude/scripts/lib/mode-profiles.mjs";
+import * as GeminiProfiles from "../../plugins/gemini/scripts/lib/mode-profiles.mjs";
 
 import { buildClaudeArgs } from "../../plugins/claude/scripts/lib/claude.mjs";
 
@@ -155,6 +156,12 @@ test("resolveModelForProfile returns the tier's model from config", () => {
 
 test("resolveModelForProfile returns null when tier missing from config", () => {
   assert.equal(resolveModelForProfile(MODE_PROFILES.review, {}), null);
+});
+
+test("resolveModelForProfile rejects invalid profiles and null configs", () => {
+  assert.throws(() => resolveModelForProfile(null, {}), /profile\.model_tier/);
+  assert.throws(() => resolveModelForProfile({}, {}), /profile\.model_tier/);
+  assert.equal(resolveModelForProfile(MODE_PROFILES.review, null), null);
 });
 
 // ——————————————————————————————————————————————————————————————
@@ -367,4 +374,27 @@ test("buildClaudeArgs rejects when neither sessionId nor resumeId is given", () 
     }),
     /session|resume/i,
   );
+});
+
+test("gemini MODE_PROFILES preserves the canonical frozen mode table", () => {
+  assert.deepEqual(Object.keys(GeminiProfiles.MODE_PROFILES).sort(), ["adversarial-review", "ping", "rescue", "review"]);
+  assert.deepEqual(GeminiProfiles.MODE_PROFILES.review, MODE_PROFILES.review);
+  assert.deepEqual(GeminiProfiles.MODE_PROFILES["adversarial-review"], MODE_PROFILES["adversarial-review"]);
+  assert.deepEqual(GeminiProfiles.MODE_PROFILES.rescue, MODE_PROFILES.rescue);
+  assert.deepEqual(GeminiProfiles.MODE_PROFILES.ping, MODE_PROFILES.ping);
+  assert.ok(Object.isFrozen(GeminiProfiles.MODE_PROFILES));
+  for (const profile of Object.values(GeminiProfiles.MODE_PROFILES)) {
+    assert.ok(Object.isFrozen(profile));
+    assert.ok(Object.isFrozen(profile.disallowed_tools));
+  }
+});
+
+test("gemini resolveProfile and model-tier lookup mirror Claude semantics", () => {
+  assert.deepEqual([...GeminiProfiles.MODEL_TIERS].sort(), ["cheap", "default", "medium"]);
+  assert.equal(GeminiProfiles.resolveProfile("review"), GeminiProfiles.MODE_PROFILES.review);
+  assert.throws(() => GeminiProfiles.resolveProfile("unknown"), /unknown mode|unknown profile/i);
+  assert.equal(GeminiProfiles.resolveModelForProfile(GeminiProfiles.MODE_PROFILES.review, { cheap: "flash" }), "flash");
+  assert.equal(GeminiProfiles.resolveModelForProfile(GeminiProfiles.MODE_PROFILES.rescue, { cheap: "flash" }), null);
+  assert.equal(GeminiProfiles.resolveModelForProfile(GeminiProfiles.MODE_PROFILES.review, null), null);
+  assert.throws(() => GeminiProfiles.resolveModelForProfile(null, {}), /profile\.model_tier/);
 });

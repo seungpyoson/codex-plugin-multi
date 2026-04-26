@@ -13,6 +13,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 
 import { setupContainment } from "../../plugins/claude/scripts/lib/containment.mjs";
+import { setupContainment as setupGeminiContainment } from "../../plugins/gemini/scripts/lib/containment.mjs";
 
 const profile = (containment, scope = "head") => Object.freeze({
   name: "test", containment, scope, dispose_default: true,
@@ -99,4 +100,34 @@ test("setupContainment: does NOT populate — caller must run populateScope sepa
   } finally {
     rmSync(src, { recursive: true, force: true });
   }
+});
+
+test("gemini setupContainment mirrors behavior with gemini worktree prefix", () => {
+  const src = mkdtempSync(path.join(tmpdir(), "gemini-contain-src-"));
+  try {
+    const none = setupGeminiContainment(profile("none"), src);
+    assert.equal(none.path, src);
+    assert.equal(none.disposed, false);
+    none.cleanup();
+    assert.ok(existsSync(src));
+
+    const worktree = setupGeminiContainment(profile("worktree"), src);
+    try {
+      assert.notEqual(worktree.path, src);
+      assert.ok(path.basename(worktree.path).startsWith("gemini-worktree-"));
+      assert.ok(existsSync(worktree.path));
+      assert.equal(worktree.disposed, true);
+    } finally {
+      worktree.cleanup();
+      worktree.cleanup();
+    }
+    assert.equal(existsSync(worktree.path), false);
+  } finally {
+    rmSync(src, { recursive: true, force: true });
+  }
+});
+
+test("gemini setupContainment rejects invalid profiles", () => {
+  assert.throws(() => setupGeminiContainment(null, tmpdir()), /invalid_profile/);
+  assert.throws(() => setupGeminiContainment({ containment: "bad" }, tmpdir()), /unknown containment/);
 });

@@ -2,31 +2,135 @@
   "target_percent": 85,
   "note": "Current non-regression baseline for T10.1. The target remains 85%; raise these values as unit coverage expands.",
   "files": {
-    "plugins/claude/scripts/lib/args.mjs": { "lines": 91.43, "branches": 86.00, "functions": 100.00 },
-    "plugins/claude/scripts/lib/claude.mjs": { "lines": 96.48, "branches": 76.36, "functions": 91.67 },
-    "plugins/claude/scripts/lib/containment.mjs": { "lines": 96.55, "branches": 88.89, "functions": 100.00 },
-    "plugins/claude/scripts/lib/fs.mjs": { "lines": 37.14, "branches": 66.67, "functions": 71.43 },
-    "plugins/claude/scripts/lib/git.mjs": { "lines": 3.34, "branches": 28.57, "functions": 10.00 },
-    "plugins/claude/scripts/lib/identity.mjs": { "lines": 32.99, "branches": 35.71, "functions": 83.33 },
-    "plugins/claude/scripts/lib/job-record.mjs": { "lines": 82.76, "branches": 78.33, "functions": 60.00 },
-    "plugins/claude/scripts/lib/mode-profiles.mjs": { "lines": 73.33, "branches": 60.00, "functions": 100.00 },
-    "plugins/claude/scripts/lib/process.mjs": { "lines": 17.09, "branches": 0.00, "functions": 16.67 },
-    "plugins/claude/scripts/lib/scope.mjs": { "lines": 90.34, "branches": 74.90, "functions": 98.61 },
-    "plugins/claude/scripts/lib/state.mjs": { "lines": 57.61, "branches": 31.43, "functions": 77.14 },
-    "plugins/claude/scripts/lib/tracked-jobs.mjs": { "lines": 8.02, "branches": 60.00, "functions": 33.33 },
-    "plugins/claude/scripts/lib/workspace.mjs": { "lines": 85.71, "branches": 100.00, "functions": 100.00 },
-    "plugins/gemini/scripts/lib/args.mjs": { "lines": 34.29, "branches": 52.63, "functions": 50.00 },
-    "plugins/gemini/scripts/lib/containment.mjs": { "lines": 37.93, "branches": 0.00, "functions": 66.67 },
-    "plugins/gemini/scripts/lib/fs.mjs": { "lines": 0.00, "branches": 100.00, "functions": 0.00 },
-    "plugins/gemini/scripts/lib/gemini.mjs": { "lines": 83.82, "branches": 34.38, "functions": 81.82 },
-    "plugins/gemini/scripts/lib/git.mjs": { "lines": 2.34, "branches": 0.00, "functions": 10.00 },
-    "plugins/gemini/scripts/lib/identity.mjs": { "lines": 15.46, "branches": 0.00, "functions": 50.00 },
-    "plugins/gemini/scripts/lib/job-record.mjs": { "lines": 55.17, "branches": 58.70, "functions": 60.00 },
-    "plugins/gemini/scripts/lib/mode-profiles.mjs": { "lines": 53.33, "branches": 0.00, "functions": 100.00 },
-    "plugins/gemini/scripts/lib/process.mjs": { "lines": 17.09, "branches": 0.00, "functions": 16.67 },
-    "plugins/gemini/scripts/lib/scope.mjs": { "lines": 8.47, "branches": 30.00, "functions": 17.02 },
-    "plugins/gemini/scripts/lib/state.mjs": { "lines": 52.26, "branches": 25.00, "functions": 64.71 },
-    "plugins/gemini/scripts/lib/tracked-jobs.mjs": { "lines": 1.60, "branches": 0.00, "functions": 8.33 },
-    "plugins/gemini/scripts/lib/workspace.mjs": { "lines": 57.14, "branches": 0.00, "functions": 100.00 }
+    "plugins/claude/scripts/lib/args.mjs": {
+      "lines": 91.43,
+      "branches": 86.0,
+      "functions": 100.0
+    },
+    "plugins/claude/scripts/lib/claude.mjs": {
+      "lines": 96.48,
+      "branches": 76.36,
+      "functions": 91.67
+    },
+    "plugins/claude/scripts/lib/containment.mjs": {
+      "lines": 96.55,
+      "branches": 88.89,
+      "functions": 100.0
+    },
+    "plugins/claude/scripts/lib/fs.mjs": {
+      "lines": 80.0,
+      "branches": 100.0,
+      "functions": 100.0
+    },
+    "plugins/claude/scripts/lib/git.mjs": {
+      "lines": 85.95,
+      "branches": 64.41,
+      "functions": 100.0
+    },
+    "plugins/claude/scripts/lib/identity.mjs": {
+      "lines": 48.45,
+      "branches": 55.56,
+      "functions": 83.33
+    },
+    "plugins/claude/scripts/lib/job-record.mjs": {
+      "lines": 91.38,
+      "branches": 86.36,
+      "functions": 60.0
+    },
+    "plugins/claude/scripts/lib/mode-profiles.mjs": {
+      "lines": 86.67,
+      "branches": 100.0,
+      "functions": 100.0
+    },
+    "plugins/claude/scripts/lib/process.mjs": {
+      "lines": 84.62,
+      "branches": 77.08,
+      "functions": 100.0
+    },
+    "plugins/claude/scripts/lib/scope.mjs": {
+      "lines": 90.34,
+      "branches": 74.9,
+      "functions": 98.61
+    },
+    "plugins/claude/scripts/lib/state.mjs": {
+      "lines": 88.48,
+      "branches": 66.67,
+      "functions": 100.0
+    },
+    "plugins/claude/scripts/lib/tracked-jobs.mjs": {
+      "lines": 93.58,
+      "branches": 73.85,
+      "functions": 100.0
+    },
+    "plugins/claude/scripts/lib/workspace.mjs": {
+      "lines": 85.71,
+      "branches": 100.0,
+      "functions": 100.0
+    },
+    "plugins/gemini/scripts/lib/args.mjs": {
+      "lines": 91.43,
+      "branches": 86.0,
+      "functions": 100.0
+    },
+    "plugins/gemini/scripts/lib/containment.mjs": {
+      "lines": 55.17,
+      "branches": 66.67,
+      "functions": 100.0
+    },
+    "plugins/gemini/scripts/lib/fs.mjs": {
+      "lines": 71.43,
+      "branches": 66.67,
+      "functions": 100.0
+    },
+    "plugins/gemini/scripts/lib/gemini.mjs": {
+      "lines": 96.32,
+      "branches": 88.0,
+      "functions": 81.82
+    },
+    "plugins/gemini/scripts/lib/git.mjs": {
+      "lines": 85.95,
+      "branches": 64.41,
+      "functions": 100.0
+    },
+    "plugins/gemini/scripts/lib/identity.mjs": {
+      "lines": 25.77,
+      "branches": 0.0,
+      "functions": 83.33
+    },
+    "plugins/gemini/scripts/lib/job-record.mjs": {
+      "lines": 82.76,
+      "branches": 78.33,
+      "functions": 60.0
+    },
+    "plugins/gemini/scripts/lib/mode-profiles.mjs": {
+      "lines": 66.67,
+      "branches": 88.89,
+      "functions": 100.0
+    },
+    "plugins/gemini/scripts/lib/process.mjs": {
+      "lines": 84.62,
+      "branches": 77.08,
+      "functions": 100.0
+    },
+    "plugins/gemini/scripts/lib/scope.mjs": {
+      "lines": 90.34,
+      "branches": 74.9,
+      "functions": 98.61
+    },
+    "plugins/gemini/scripts/lib/state.mjs": {
+      "lines": 79.01,
+      "branches": 41.67,
+      "functions": 97.22
+    },
+    "plugins/gemini/scripts/lib/tracked-jobs.mjs": {
+      "lines": 88.24,
+      "branches": 72.13,
+      "functions": 85.71
+    },
+    "plugins/gemini/scripts/lib/workspace.mjs": {
+      "lines": 85.71,
+      "branches": 100.0,
+      "functions": 100.0
+    }
   }
 }

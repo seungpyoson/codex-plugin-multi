@@ -7,6 +7,9 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
+import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
 
 import {
   newJobId,
@@ -14,6 +17,7 @@ import {
   verifyPidInfo,
   appendResumeLink,
 } from "../../plugins/claude/scripts/lib/identity.mjs";
+import * as GeminiIdentity from "../../plugins/gemini/scripts/lib/identity.mjs";
 
 const UUID_V4 =
   /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/;
@@ -136,4 +140,83 @@ test("appendResumeLink: records without resume_chain get one initialized", () =>
   assert.deepEqual(next.resume_chain, ["first"]);
   // Original record untouched (no new key leaked onto it).
   assert.equal("resume_chain" in rec, false);
+});
+
+test("capturePidInfo: Darwin ps output can be parsed through a PATH shim", {
+  skip: process.platform !== "darwin",
+}, () => {
+  const dir = mkdtempSync(path.join(tmpdir(), "identity-ps-"));
+  const originalPath = process.env.PATH;
+  try {
+    const ps = path.join(dir, "ps");
+    writeFileSync(ps, "#!/bin/sh\necho 'Thu Apr 24 12:34:56 2026 /bin/fake-node'\n", "utf8");
+    chmodSync(ps, 0o755);
+    process.env.PATH = `${dir}${path.delimiter}${originalPath ?? ""}`;
+
+    assert.deepEqual(capturePidInfo(12345), {
+      pid: 12345,
+      starttime: "Thu Apr 24 12:34:56 2026",
+      argv0: "/bin/fake-node",
+    });
+    assert.deepEqual(verifyPidInfo({
+      pid: 12345,
+      starttime: "Thu Apr 24 12:34:56 2026",
+      argv0: "/bin/fake-node",
+    }), { match: true });
+    assert.deepEqual(verifyPidInfo({
+      pid: 12345,
+      starttime: "Thu Apr 24 12:34:56 2026",
+      argv0: "/bin/other",
+    }), { match: false, reason: "argv0_mismatch" });
+  } finally {
+    process.env.PATH = originalPath;
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("capturePidInfo: Darwin ps malformed output is treated as process_gone", {
+  skip: process.platform !== "darwin",
+}, () => {
+  const dir = mkdtempSync(path.join(tmpdir(), "identity-ps-bad-"));
+  const originalPath = process.env.PATH;
+  try {
+    const ps = path.join(dir, "ps");
+    writeFileSync(ps, "#!/bin/sh\necho 'too short'\n", "utf8");
+    chmodSync(ps, 0o755);
+    process.env.PATH = `${dir}${path.delimiter}${originalPath ?? ""}`;
+
+    assert.throws(() => capturePidInfo(12345), /process_gone: ps output too short/);
+  } finally {
+    process.env.PATH = originalPath;
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("gemini identity mirrors job ids and resume-chain semantics", () => {
+  assert.match(GeminiIdentity.newJobId(), UUID_V4);
+  const rec = { id: "g1", resume_chain: ["first"] };
+  const next = GeminiIdentity.appendResumeLink(rec, "second");
+  assert.deepEqual(next.resume_chain, ["first", "second"]);
+  assert.deepEqual(rec.resume_chain, ["first"]);
+});
+
+test("gemini capturePidInfo parses Darwin ps output through the same shim", {
+  skip: process.platform !== "darwin",
+}, () => {
+  const dir = mkdtempSync(path.join(tmpdir(), "gemini-identity-ps-"));
+  const originalPath = process.env.PATH;
+  try {
+    const ps = path.join(dir, "ps");
+    writeFileSync(ps, "#!/bin/sh\necho 'Fri Apr 25 01:02:03 2026 /bin/gemini-fake'\n", "utf8");
+    chmodSync(ps, 0o755);
+    process.env.PATH = `${dir}${path.delimiter}${originalPath ?? ""}`;
+
+    const info = GeminiIdentity.capturePidInfo(56789);
+    assert.equal(info.starttime, "Fri Apr 25 01:02:03 2026");
+    assert.equal(info.argv0, "/bin/gemini-fake");
+    assert.deepEqual(GeminiIdentity.verifyPidInfo(info), { match: true });
+  } finally {
+    process.env.PATH = originalPath;
+    rmSync(dir, { recursive: true, force: true });
+  }
 });

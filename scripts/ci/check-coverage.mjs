@@ -17,6 +17,13 @@ const SKIP_DIRS = new Set(["node_modules", "fixtures", ".git", "coverage"]);
 const COVERAGE_TARGET = Number(process.env.COVERAGE_TARGET ?? 85);
 const COVERAGE_TOLERANCE = Number(process.env.COVERAGE_TOLERANCE ?? 1);
 const BASELINE_FILE = resolve(REPO_ROOT, "scripts/ci/coverage-baseline.json");
+const VERBATIM_SHARED_LIBS = Object.freeze([
+  "args.mjs",
+  "git.mjs",
+  "process.mjs",
+  "scope.mjs",
+  "workspace.mjs",
+]);
 
 async function walk(dir, predicate) {
   const out = [];
@@ -203,8 +210,30 @@ async function readCoverageFunctions(coverageDir, libFiles) {
   return wanted;
 }
 
+async function shareCoverageForVerbatimPairs(byFile, libFiles, readText = readFile) {
+  const byRepoPath = new Map(libFiles.map((file) => [toRepoRelative(file), resolve(file)]));
+  for (const fileName of VERBATIM_SHARED_LIBS) {
+    const claudeFile = byRepoPath.get(`plugins/claude/scripts/lib/${fileName}`);
+    const geminiFile = byRepoPath.get(`plugins/gemini/scripts/lib/${fileName}`);
+    if (!claudeFile || !geminiFile) continue;
+    const [claudeSource, geminiSource] = await Promise.all([
+      readText(claudeFile, "utf8"),
+      readText(geminiFile, "utf8"),
+    ]);
+    if (String(claudeSource) !== String(geminiSource)) continue;
+    const merged = [
+      ...(byFile.get(claudeFile) ?? []),
+      ...(byFile.get(geminiFile) ?? []),
+    ];
+    byFile.set(claudeFile, merged);
+    byFile.set(geminiFile, merged);
+  }
+  return byFile;
+}
+
 async function coverageSummaries(coverageDir, libFiles) {
   const byFile = await readCoverageFunctions(coverageDir, libFiles);
+  await shareCoverageForVerbatimPairs(byFile, libFiles);
   const summaries = [];
   for (const file of libFiles) {
     const source = await readFile(file, "utf8");
@@ -322,6 +351,7 @@ export const _internal = {
   coverageSummaries,
   discoverLibFiles,
   discoverTestFiles,
+  shareCoverageForVerbatimPairs,
   summarizeSourceCoverage,
 };
 

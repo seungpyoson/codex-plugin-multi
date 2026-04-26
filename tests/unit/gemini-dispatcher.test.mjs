@@ -51,6 +51,26 @@ test("buildGeminiArgs: continue passes captured session UUID via --resume", () =
   assert.equal(args[args.indexOf("--resume") + 1], "22222222-3333-4444-9555-666666666666");
 });
 
+test("buildGeminiArgs: rejects invalid profile and missing read-only inputs", () => {
+  assert.throws(() => buildGeminiArgs(null, {}), /profile object/);
+  assert.throws(() => buildGeminiArgs({ name: "review" }, {}), /missing required field/);
+  assert.throws(() => buildGeminiArgs(resolveProfile("review"), { policyPath: POLICY }), /model is required/);
+  assert.throws(
+    () => buildGeminiArgs(resolveProfile("review"), { model: "gemini-3-flash-preview" }),
+    /policyPath is required/,
+  );
+});
+
+test("buildGeminiArgs: omits include dir when profile disables add_dir", () => {
+  const args = buildGeminiArgs(resolveProfile("ping"), {
+    model: "gemini-3-flash-preview",
+    policyPath: POLICY,
+    includeDirPath: "/tmp/ignored",
+  });
+
+  assert.equal(args.includes("--include-directories"), false);
+});
+
 test("parseGeminiResult: extracts response, session_id, and stats", () => {
   const parsed = parseGeminiResult(JSON.stringify({
     session_id: "22222222-3333-4444-9555-666666666666",
@@ -105,4 +125,38 @@ test("parseGeminiResult: preserves stderr-only Gemini API failures as Gemini err
   assert.equal(parsed.reason, "gemini_stderr");
   assert.equal(parsed.error.includes("PERMISSION_DENIED"), true);
   assert.equal(parsed.raw, "");
+});
+
+test("parseGeminiResult: covers empty, malformed, and newline-delimited JSON outputs", () => {
+  assert.deepEqual(parseGeminiResult(""), { ok: false, reason: "empty_stdout", raw: "" });
+
+  const malformed = parseGeminiResult("{not-json");
+  assert.equal(malformed.ok, false);
+  assert.equal(malformed.reason, "json_parse_error");
+  assert.equal(malformed.raw, "{not-json");
+
+  const parsed = parseGeminiResult(`noise line
+{"session_id":"abc","result":"fallback result","permission_denials":["Write"],"total_cost_usd":1.25,"structured_output":{"ok":true}}
+`);
+  assert.equal(parsed.ok, true);
+  assert.equal(parsed.sessionId, "abc");
+  assert.equal(parsed.result, "fallback result");
+  assert.deepEqual(parsed.denials, ["Write"]);
+  assert.equal(parsed.costUsd, 1.25);
+  assert.deepEqual(parsed.structured, { ok: true });
+});
+
+test("parseGeminiResult: summarizes long stderr and object/string error payloads", () => {
+  const longError = parseGeminiResult("", "x".repeat(4100));
+  assert.equal(longError.ok, false);
+  assert.equal(longError.error.length, 4003);
+  assert.equal(longError.error.endsWith("..."), true);
+
+  const stringError = parseGeminiResult(JSON.stringify({ error: "plain error" }));
+  assert.equal(stringError.ok, false);
+  assert.equal(stringError.error, "plain error");
+
+  const objectError = parseGeminiResult(JSON.stringify({ error: { code: 403, message: "denied" } }));
+  assert.equal(objectError.ok, false);
+  assert.equal(objectError.error, '{"code":403,"message":"denied"}');
 });

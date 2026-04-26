@@ -1,5 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { resolve } from "node:path";
 
 import { _internal } from "../../scripts/ci/check-coverage.mjs";
 
@@ -78,4 +79,20 @@ test("coverage baseline checker fails regressions below stored values", () => {
     "plugins/claude/scripts/lib/ok.mjs: branches coverage 86.90% < baseline 88.00%",
     "plugins/gemini/scripts/lib/missing.mjs: missing from coverage report",
   ]);
+});
+
+test("coverage merger shares raw V8 functions for byte-identical shared lib pairs", async () => {
+  const claudeArgs = resolve("plugins/claude/scripts/lib/args.mjs");
+  const geminiArgs = resolve("plugins/gemini/scripts/lib/args.mjs");
+  const claudeFn = { functionName: "parseArgs", ranges: [{ startOffset: 0, endOffset: 10, count: 1 }] };
+  const geminiFn = { functionName: "parseArgs", ranges: [{ startOffset: 0, endOffset: 10, count: 0 }] };
+  const byFile = new Map([
+    [claudeArgs, [claudeFn]],
+    [geminiArgs, [geminiFn]],
+  ]);
+
+  await _internal.shareCoverageForVerbatimPairs(byFile, [claudeArgs, geminiArgs], async () => "same source");
+
+  assert.deepEqual(byFile.get(claudeArgs), [claudeFn, geminiFn]);
+  assert.deepEqual(byFile.get(geminiArgs), [claudeFn, geminiFn]);
 });

@@ -183,6 +183,72 @@ test("gemini buildJobRecord: failure path uses gemini_error, not claude_error", 
   assert.equal(rec.error_code, "gemini_error");
 });
 
+test("gemini buildJobRecord: queued, success, and structured output paths", () => {
+  const invocation = makeInvocation({
+    target: "gemini",
+    model: "gemini-3-flash-preview",
+    binary: "gemini",
+  });
+  const queued = buildGeminiJobRecord(invocation, null, []);
+  assert.deepEqual(Object.keys(queued).sort(), [...EXPECTED_KEYS].sort());
+  assert.equal(queued.status, "queued");
+  assert.equal(queued.claude_session_id, null);
+  assert.equal(queued.gemini_session_id, null);
+
+  const completed = buildGeminiJobRecord(invocation, {
+    exitCode: 0,
+    parsed: {
+      ok: true,
+      result: "",
+      structured: { verdict: "pass" },
+      denials: ["Write"],
+      costUsd: 0.5,
+      usage: { totalTokenCount: 42 },
+    },
+    pidInfo: { pid: 12345, starttime: "Thu Apr 24 12:00:00 2026", argv0: "gemini" },
+    geminiSessionId: GEMINI_UUID,
+  }, ["M file.txt"]);
+  assert.equal(completed.status, "completed");
+  assert.equal(completed.gemini_session_id, GEMINI_UUID);
+  assert.deepEqual(completed.structured_output, { verdict: "pass" });
+  assert.deepEqual(completed.permission_denials, ["Write"]);
+  assert.deepEqual(completed.mutations, ["M file.txt"]);
+  assert.equal(completed.cost_usd, 0.5);
+  assert.deepEqual(completed.usage, { totalTokenCount: 42 });
+});
+
+test("gemini buildJobRecord: spawn, parse, and prompt-defense paths", () => {
+  const invocation = makeInvocation({
+    target: "gemini",
+    model: "gemini-3-flash-preview",
+    binary: "gemini",
+  });
+  const spawnFailed = buildGeminiJobRecord(invocation, {
+    exitCode: null,
+    parsed: null,
+    pidInfo: null,
+    geminiSessionId: null,
+    errorMessage: "spawn gemini ENOENT",
+  }, []);
+  assert.equal(spawnFailed.status, "failed");
+  assert.equal(spawnFailed.error_code, "spawn_failed");
+  assert.equal(spawnFailed.error_message, "spawn gemini ENOENT");
+
+  const parseFailed = buildGeminiJobRecord(invocation, {
+    exitCode: 0,
+    parsed: { ok: false, reason: "json_parse_error", result: null, structured: null, denials: [] },
+    pidInfo: null,
+    geminiSessionId: null,
+  }, []);
+  assert.equal(parseFailed.status, "failed");
+  assert.equal(parseFailed.error_code, "parse_error");
+
+  assert.throws(
+    () => buildGeminiJobRecord(makeInvocation({ ...invocation, prompt: "secret" }), null, []),
+    /prompt/i,
+  );
+});
+
 test("buildJobRecord: spawn_failed path (execution threw before claude)", () => {
   const rec = buildJobRecord(makeInvocation(), {
     exitCode: null,
@@ -257,6 +323,41 @@ test("buildJobRecord: rejects invocation with a `prompt` field (defense in depth
     /prompt/i,
     "Passing a full `prompt` in invocation MUST throw — §21.3.1",
   );
+});
+
+test("buildJobRecord: validates invocation shape and mutation array", () => {
+  const missingJob = makeInvocation();
+  delete missingJob.job_id;
+  assert.throws(() => buildJobRecord(null, null, []), /invocation object required/);
+  assert.throws(
+    () => buildJobRecord(missingJob, null, []),
+    /missing required field "job_id"/,
+  );
+  assert.throws(
+    () => buildJobRecord(makeInvocation(), null, null),
+    /mutations must be an array/,
+  );
+});
+
+test("buildJobRecord: non-parse failures classify as target errors or unknown", () => {
+  const noParsed = buildJobRecord(makeInvocation(), {
+    exitCode: 2,
+    parsed: null,
+    pidInfo: makePidInfo(),
+    claudeSessionId: null,
+  }, []);
+  assert.equal(noParsed.status, "failed");
+  assert.equal(noParsed.error_code, "claude_error");
+  assert.equal(noParsed.error_message, null);
+
+  const parsedTargetError = buildJobRecord(makeInvocation(), {
+    exitCode: 0,
+    parsed: { ok: false, reason: "is_error", error: "tool denied", result: null, structured: null, denials: [] },
+    pidInfo: makePidInfo(),
+    claudeSessionId: null,
+  }, []);
+  assert.equal(parsedTargetError.error_code, "claude_error");
+  assert.equal(parsedTargetError.error_message, "tool denied");
 });
 
 test("schema parity — every EXPECTED_KEYS field is documented in claude-result-handling/SKILL.md", () => {
