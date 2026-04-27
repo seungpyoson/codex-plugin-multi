@@ -2,12 +2,21 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 
 import { resolveProfile } from "../../plugins/gemini/scripts/lib/mode-profiles.mjs";
-import { buildGeminiArgs, parseGeminiResult } from "../../plugins/gemini/scripts/lib/gemini.mjs";
+import { buildGeminiArgs, parseGeminiResult, spawnGemini } from "../../plugins/gemini/scripts/lib/gemini.mjs";
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const POLICY = path.join(REPO_ROOT, "plugins/gemini/policies/read-only.toml");
+
+function writeExecutable(dir, name, source) {
+  const bin = path.join(dir, name);
+  writeFileSync(bin, source, "utf8");
+  chmodSync(bin, 0o755);
+  return bin;
+}
 
 test("buildGeminiArgs: review uses policy, plan mode, sandbox, include-directories, and stdin prompt", () => {
   const args = buildGeminiArgs(resolveProfile("review"), {
@@ -159,4 +168,94 @@ test("parseGeminiResult: summarizes long stderr and object/string error payloads
   const objectError = parseGeminiResult(JSON.stringify({ error: { code: 403, message: "denied" } }));
   assert.equal(objectError.ok, false);
   assert.equal(objectError.error, '{"code":403,"message":"denied"}');
+});
+
+test("spawnGemini: sends prompt over stdin, captures pidInfo, and reports parsed result", async () => {
+  const dir = mkdtempSync(path.join(tmpdir(), "gemini-spawn-unit-"));
+  try {
+    const bin = writeExecutable(dir, "gemini-ok.mjs", `#!/usr/bin/env node
+const chunks = [];
+process.stdin.on("data", (chunk) => chunks.push(chunk));
+process.stdin.on("end", () => {
+  const prompt = Buffer.concat(chunks).toString("utf8");
+  process.stdout.write(JSON.stringify({
+    session_id: "22222222-3333-4444-9555-666666666666",
+    response: prompt,
+    stats: { tokens: { total: 3 } }
+  }) + "\\n");
+});
+`);
+    let spawnedPidInfo = null;
+    const execution = await spawnGemini(resolveProfile("rescue"), {
+      model: "gemini-3-flash-preview",
+      promptText: "hello from stdin",
+      includeDirPath: dir,
+      cwd: dir,
+      binary: bin,
+      onSpawn: (pidInfo) => { spawnedPidInfo = pidInfo; },
+    });
+
+    assert.equal(execution.exitCode, 0);
+    assert.equal(execution.parsed.ok, true);
+    assert.equal(execution.geminiSessionId, "22222222-3333-4444-9555-666666666666");
+    assert.equal(execution.parsed.result, "hello from stdin");
+    assert.equal(Number.isInteger(execution.pidInfo.pid), true);
+    assert.equal(spawnedPidInfo.pid, execution.pidInfo.pid);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("spawnGemini: callback failures and process failures stay explicit", async () => {
+  const dir = mkdtempSync(path.join(tmpdir(), "gemini-spawn-failure-unit-"));
+  try {
+    const okBin = writeExecutable(dir, "gemini-ok.mjs", `#!/usr/bin/env node
+process.stdin.resume();
+process.stdout.write(JSON.stringify({ session_id: "22222222-3333-4444-9555-666666666666", response: "ok" }) + "\\n");
+`);
+    const callbackResult = await spawnGemini(resolveProfile("rescue"), {
+      model: "gemini-3-flash-preview",
+      promptText: "callback throws",
+      cwd: dir,
+      binary: okBin,
+      onSpawn: () => { throw new Error("boom"); },
+    });
+    assert.equal(callbackResult.parsed.ok, true);
+    assert.equal(callbackResult.parsed.result, "ok");
+
+    const hangBin = writeExecutable(dir, "gemini-hang.mjs", `#!/usr/bin/env node
+process.stdin.resume();
+setTimeout(() => {}, 10000);
+`);
+    const timedOut = await spawnGemini(resolveProfile("rescue"), {
+      model: "gemini-3-flash-preview",
+      promptText: "timeout",
+      cwd: dir,
+      binary: hangBin,
+      timeoutMs: 20,
+    });
+    assert.equal(timedOut.timedOut, true);
+    assert.equal(timedOut.parsed.ok, false);
+
+    await assert.rejects(
+      () => spawnGemini(resolveProfile("rescue"), {
+        model: "gemini-3-flash-preview",
+        promptText: "missing binary",
+        cwd: dir,
+        binary: path.join(dir, "missing-gemini"),
+      }),
+      /spawn .* failed/,
+    );
+    await assert.rejects(
+      () => spawnGemini(resolveProfile("rescue"), {
+        model: "gemini-3-flash-preview",
+        promptText: "",
+        cwd: dir,
+        binary: okBin,
+      }),
+      /promptText is required/,
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });

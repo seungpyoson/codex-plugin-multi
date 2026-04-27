@@ -26,6 +26,7 @@ test("pull-request CI runs unit tests and per-target smoke matrix separately", (
 
 test("pull-request CI runs the enforced coverage gate", () => {
   assert.match(workflow, /COVERAGE_ENFORCE_TARGET:\s*"1"/);
+  assert.match(workflow, /Run coverage gate[\s\S]*CODEX_PLUGIN_SKIP_SMOKE:\s*"1"/);
   assert.match(workflow, /npm run test:coverage/);
 });
 

@@ -33,6 +33,7 @@ jobs:
       - name: Run coverage gate
         env:
           COVERAGE_ENFORCE_TARGET: "1"
+          CODEX_PLUGIN_SKIP_SMOKE: "1"
         run: npm run test:coverage
 
   smoke:

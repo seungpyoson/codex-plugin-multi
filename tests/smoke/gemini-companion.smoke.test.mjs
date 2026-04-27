@@ -164,13 +164,13 @@ test("gemini rescue background: active job appears in default status", async () 
     const terminalDeadline = Date.now() + 7000;
     let terminal = null;
     while (Date.now() < terminalDeadline && !terminal) {
-      const allRes = spawnSync("node", [COMPANION, "status", "--all", "--cwd", cwd], {
+      const statusRes = spawnSync("node", [COMPANION, "status", "--cwd", cwd], {
         cwd,
         encoding: "utf8",
         env: { ...process.env, GEMINI_PLUGIN_DATA: dataDir },
       });
-      assert.equal(allRes.status, 0, `exit ${allRes.status}: ${allRes.stderr}`);
-      const parsed = JSON.parse(allRes.stdout);
+      assert.equal(statusRes.status, 0, `exit ${statusRes.status}: ${statusRes.stderr}`);
+      const parsed = JSON.parse(statusRes.stdout);
       terminal = parsed.jobs.find((job) => job.job_id === launched.job_id && job.status !== "running");
       if (!terminal) await new Promise((resolve) => setTimeout(resolve, 100));
     }
