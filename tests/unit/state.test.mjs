@@ -745,6 +745,41 @@ for (const [target, state, fresh, cleanupTarget] of [
     }
   });
 
+  test(`${target} state: lock owner read errors fail closed`, () => {
+    const dir = fresh();
+    const originalReadFile = fs.readFileSync;
+    try {
+      state.configureState({ lockTimeoutMs: 200, lockStaleMs: 100 });
+      state.writeJobFile(dir, "seed-job", { id: "seed-job" });
+      const lockDir = path.join(state.resolveStateDir(dir), ".state.lock");
+      const ownerPath = path.join(lockDir, "owner.json");
+      fs.mkdirSync(lockDir);
+      fs.writeFileSync(ownerPath, `${JSON.stringify({
+        pid: findDeadPid(),
+        hostname: hostname(),
+        startedAt: new Date(Date.now() - 60_000).toISOString(),
+        token: "unreadable-owner-token",
+      })}\n`, "utf8");
+
+      fs.readFileSync = function patchedReadFile(file, ...args) {
+        if (path.resolve(String(file)) === ownerPath) {
+          const err = new Error("owner read denied");
+          err.code = "EACCES";
+          throw err;
+        }
+        return originalReadFile.apply(this, [file, ...args]);
+      };
+
+      assert.throws(
+        () => state.upsertJob(dir, { id: "blocked-by-owner-read-error", status: "completed" }),
+        /state_lock_timeout/,
+      );
+    } finally {
+      fs.readFileSync = originalReadFile;
+      cleanupTarget(dir);
+    }
+  });
+
   test(`${target} state: release closure preserves a lock owned by a different token`, () => {
     // Regression: the release closure used to fs.rmSync(lockDir, ...) without
     // proving ownership. If a recovery path ever (mistakenly) reclaimed our
