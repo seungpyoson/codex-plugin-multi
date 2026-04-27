@@ -12,24 +12,48 @@ import { spawn } from "node:child_process";
 
 import { capturePidInfo } from "./identity.mjs";
 
+// Provider credential / routing scrub policy.
+//
+// We strip three categories before launching the target CLI:
+//   1. *_API_KEY suffixes — covers ANTHROPIC_API_KEY, CLAUDE_API_KEY,
+//      OPENAI_API_KEY, GEMINI_API_KEY, GOOGLE_API_KEY, etc.
+//   2. Whole provider namespaces by prefix — every var that selects or
+//      authenticates a provider region/project/profile.
+//   3. A small list of explicit non-prefixed selectors that don't fit (1)
+//      or (2) but still steer providers (e.g. GOOGLE_GENAI_USE_VERTEXAI).
+//
+// Anything not on this list — PATH, HOME, terminal vars, NODE_*, target
+// CLI config dirs (CLAUDE_CONFIG_DIR, GEMINI_CONFIG_DIR), etc. — is passed
+// through so OAuth / on-disk creds keep working.
+const PROVIDER_PREFIXES = [
+  "ANTHROPIC_",
+  "CLAUDE_CODE_USE_",   // CLAUDE_CODE_USE_BEDROCK, CLAUDE_CODE_USE_VERTEX
+  "OPENAI_",            // OPENAI_BASE_URL, OPENAI_PROJECT, OPENAI_ORG_ID, ...
+  "AWS_",               // creds + AWS_REGION + AWS_PROFILE + AWS_SESSION_TOKEN
+  "AZURE_",             // AZURE_CLIENT_*, AZURE_TENANT_ID
+  "VERTEX_",            // VERTEX_PROJECT, VERTEX_LOCATION
+  "GOOGLE_CLOUD_",      // GOOGLE_CLOUD_PROJECT*, GOOGLE_CLOUD_REGION, ...
+];
 const PROVIDER_ENV_DENYLIST = new Set([
-  "ANTHROPIC_AUTH_TOKEN",
-  "ANTHROPIC_BASE_URL",
-  "ANTHROPIC_API_URL",
-  "ANTHROPIC_VERTEX_PROJECT_ID",
-  "CLAUDE_CODE_USE_BEDROCK",
-  "CLAUDE_CODE_USE_VERTEX",
-  "CLOUD_ML_REGION",
   "GOOGLE_APPLICATION_CREDENTIALS",
-  "GOOGLE_CLOUD_PROJECT",
   "GOOGLE_GENAI_USE_VERTEXAI",
+  "CLOUD_ML_REGION",
 ]);
+
+function isDeniedEnvKey(key) {
+  const upper = key.toUpperCase();
+  if (upper.endsWith("_API_KEY")) return true;
+  if (PROVIDER_ENV_DENYLIST.has(upper)) return true;
+  for (const prefix of PROVIDER_PREFIXES) {
+    if (upper.startsWith(prefix)) return true;
+  }
+  return false;
+}
 
 function sanitizeTargetEnv(env) {
   const sanitized = {};
   for (const [key, value] of Object.entries(env ?? {})) {
-    const upper = key.toUpperCase();
-    if (upper.endsWith("_API_KEY") || PROVIDER_ENV_DENYLIST.has(upper)) continue;
+    if (isDeniedEnvKey(key)) continue;
     sanitized[key] = value;
   }
   return sanitized;

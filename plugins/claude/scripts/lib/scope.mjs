@@ -4,9 +4,14 @@
 //
 // Five scope values (spec §21.4):
 //
-//   "working-tree" — tracked + untracked + ignored files from the live
+//   "working-tree" — tracked + untracked-non-ignored files from the live
 //                    source tree. Lets review see the dirty state the user
-//                    is actually working on (M6 finding #4).
+//                    is actually working on (M6 finding #4) without exposing
+//                    private/secret files matched by .gitignore (e.g. `.env`).
+//                    Non-git source folders fall back to a full filesystem
+//                    walk because there is no .gitignore to consult.
+//                    Use `custom` with explicit globs when a caller needs
+//                    to deliberately include ignored files.
 //   "staged"       — raw git object content from the git index; modified-
 //                    unstaged lines are left out.
 //   "branch-diff"  — files touched between a base ref (default "main") and
@@ -586,12 +591,55 @@ function listLiveWorkingTreeFiles(sourceCwd) {
   return out;
 }
 
+function hasGitMetadataInAncestry(sourceCwd) {
+  let current = path.resolve(sourceCwd);
+  while (true) {
+    try {
+      lstatSync(path.join(current, ".git"));
+      return true;
+    } catch (err) {
+      if (err?.code !== "ENOENT" && err?.code !== "ENOTDIR") {
+        return true;
+      }
+    }
+    const parent = path.dirname(current);
+    if (parent === current) return false;
+    current = parent;
+  }
+}
+
+// Returns the set of UNTRACKED-ignored repo-relative paths under sourceCwd,
+// using `git ls-files --others --ignored --exclude-standard -z -- .`. Tracked-
+// but-gitignored files (rare) are NOT filtered because `--others` already
+// excludes index entries, preserving modified tracked files in review scope.
+function listIgnoredUntrackedFiles(sourceCwd) {
+  try {
+    const raw = git(sourceCwd, [
+      "ls-files", "--others", "--ignored", "--exclude-standard", "-z", "--", ".",
+    ]);
+    return new Set(
+      raw.split("\0").filter(Boolean).map((rel) => rel.replace(/\\/g, "/")),
+    );
+  } catch (err) {
+    if (hasGitMetadataInAncestry(sourceCwd)) {
+      scopePopulationFailed(`cannot evaluate gitignored files for working-tree scope: ${err.message}`);
+    }
+    return null;
+  }
+}
+
 function scopeWorkingTree(sourceCwd, targetPath) {
-  // Spec §21.4 says working-tree is everything in the user's live tree,
-  // including tracked, untracked, and ignored files. A filesystem walk also
-  // supports ordinary non-git directories.
+  // Default review must not expose ignored/private files like `.env` (PR #14
+  // blocker 3). Walk the live filesystem and then drop any file that git
+  // considers an ignored untracked entry. If the source is a git worktree but
+  // ignore evaluation fails, fail closed before the target CLI sees the scope.
+  // Non-git folders keep the unfiltered walk because there is no .gitignore
+  // contract to enforce.
   const sourceRoot = realpathSync(sourceCwd);
-  for (const rel of listLiveWorkingTreeFiles(sourceCwd)) {
+  const all = listLiveWorkingTreeFiles(sourceCwd);
+  const ignored = listIgnoredUntrackedFiles(sourceCwd);
+  const rels = ignored == null ? all : all.filter((rel) => !ignored.has(rel));
+  for (const rel of rels) {
     copyLiveFile(sourceCwd, targetPath, rel, sourceRoot);
   }
 }

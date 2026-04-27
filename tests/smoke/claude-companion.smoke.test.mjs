@@ -115,7 +115,7 @@ test("run --mode=review --foreground: surfaces mutation detection failure withou
   }
 });
 
-test("run --mode=review --foreground: preserves mutation detection failure when spawn fails", () => {
+test("run --mode=review --foreground: corrupt index fails closed before target spawn", () => {
   const cwd = mkdtempSync(path.join(tmpdir(), "smoke-mut-spawn-fail-cwd-"));
   seedMinimalRepo(cwd);
   writeFileSync(path.join(cwd, ".git", "index"), "corrupt index");
@@ -128,8 +128,9 @@ test("run --mode=review --foreground: preserves mutation detection failure when 
     assert.equal(status, 2, `exit ${status}: stderr=${stderr}`);
     const result = JSON.parse(stdout);
     assert.equal(result.status, "failed");
-    assert.ok(result.mutations.some((m) => m.startsWith("mutation_detection_failed:")),
-      `mutation detection failure must survive spawn failure, got ${JSON.stringify(result.mutations)}`);
+    assert.match(result.error_message, /scope_population_failed: cannot evaluate gitignored files/);
+    assert.deepEqual(result.mutations, [],
+      "scope filtering fails before mutation detection and target spawn");
   } finally {
     cleanup(dataDir);
     rmSync(cwd, { recursive: true, force: true });

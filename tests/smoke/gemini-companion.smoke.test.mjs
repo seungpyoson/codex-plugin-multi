@@ -533,7 +533,7 @@ test("gemini review foreground: policy-first, stdin transport, /tmp cwd, scoped 
   }
 });
 
-test("gemini review preserves result when pre-run mutation detection is unavailable", () => {
+test("gemini review fails closed when pre-run ignore filtering is unavailable", () => {
   const cwd = mkdtempSync(path.join(tmpdir(), "gemini-mut-pre-cwd-"));
   seedMinimalRepo(cwd);
   writeFileSync(path.join(cwd, ".git", "index"), "corrupt index");
@@ -542,19 +542,19 @@ test("gemini review preserves result when pre-run mutation detection is unavaila
     { cwd },
   );
   try {
-    assert.equal(status, 0, `exit ${status}: ${stderr}`);
+    assert.equal(status, 2, `exit ${status}: ${stderr}`);
     const record = JSON.parse(stdout);
-    assert.equal(record.status, "completed");
-    assert.equal(record.result, "Mock Gemini response.");
-    assert.ok(record.mutations.some((m) => m.startsWith("mutation_detection_failed:")),
-      `mutation detection failure must be surfaced, got ${JSON.stringify(record.mutations)}`);
+    assert.equal(record.status, "failed");
+    assert.match(record.error_message, /scope_population_failed: cannot evaluate gitignored files/);
+    assert.deepEqual(record.mutations, [],
+      "scope filtering fails before mutation detection and target spawn");
   } finally {
     rmTree(dataDir);
     rmTree(cwd);
   }
 });
 
-test("gemini review preserves pre-run mutation detection failure when target spawn fails", () => {
+test("gemini review corrupt index fails closed before target spawn", () => {
   const cwd = mkdtempSync(path.join(tmpdir(), "gemini-mut-spawn-fail-cwd-"));
   seedMinimalRepo(cwd);
   writeFileSync(path.join(cwd, ".git", "index"), "corrupt index");
@@ -566,8 +566,9 @@ test("gemini review preserves pre-run mutation detection failure when target spa
     assert.equal(status, 2, `exit ${status}: ${stderr}`);
     const record = JSON.parse(stdout);
     assert.equal(record.status, "failed");
-    assert.ok(record.mutations.some((m) => m.startsWith("mutation_detection_failed:")),
-      `mutation detection failure must survive spawn failure, got ${JSON.stringify(record.mutations)}`);
+    assert.match(record.error_message, /scope_population_failed: cannot evaluate gitignored files/);
+    assert.deepEqual(record.mutations, [],
+      "scope filtering fails before mutation detection and target spawn");
   } finally {
     rmTree(dataDir);
     rmTree(cwd);

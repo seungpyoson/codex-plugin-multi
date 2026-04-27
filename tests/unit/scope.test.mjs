@@ -240,23 +240,73 @@ test("populateScope scope=head: scrubs numbered git config env", () => {
   }
 });
 
-test("populateScope scope=working-tree: includes ignored untracked files", () => {
+test("populateScope scope=working-tree: excludes gitignored files (privacy)", () => {
+  // PR #14 blocker 3: default review must not expose ignored files like
+  // `.env`. Tracked files modified after the gitignore commit must still be
+  // copied; untracked non-ignored files must still be copied; gitignored
+  // files (whether tracked-as-ignored, in this test the .env / ignored.log
+  // shape) must not appear in the snapshot.
   const src = seedRepo();
   const tgt = mkTarget();
   try {
-    writeFileSync(path.join(src, ".gitignore"), "ignored.log\n");
-    writeFileSync(path.join(src, "A.txt"), "a\n");
+    writeFileSync(path.join(src, ".gitignore"), ".env\nignored.log\n");
+    writeFileSync(path.join(src, "tracked.txt"), "original\n");
     git(src, "add", ".");
     git(src, "commit", "-qm", "seed");
-    // Drop an ignored file. Spec §21.4 says working-tree means everything
-    // the target CLI could see or mutate in the user's tree, including ignored files.
+
+    // Modify a tracked file → must appear with dirty content.
+    writeFileSync(path.join(src, "tracked.txt"), "modified\n");
+    // Add an untracked non-ignored file → must appear.
+    writeFileSync(path.join(src, "new.txt"), "untracked\n");
+    // Add gitignored files → must NOT appear.
+    writeFileSync(path.join(src, ".env"), "SECRET=value\n");
     writeFileSync(path.join(src, "ignored.log"), "garbage\n");
+
+    // Sanity: confirm git agrees those files are ignored.
+    const ignoreCheck = spawnSync("git", ["-C", src, "check-ignore", "-v", ".env", "ignored.log"], {
+      encoding: "utf8", timeout: GIT_TEST_TIMEOUT_MS,
+    });
+    assert.equal(ignoreCheck.status, 0, `expected git check-ignore to confirm ignore: ${ignoreCheck.stderr}`);
 
     populateScope(profile("working-tree"), src, tgt);
 
-    assert.ok(existsSync(path.join(tgt, "A.txt")));
-    assert.equal(readFileSync(path.join(tgt, "ignored.log"), "utf8"), "garbage\n",
-      ".gitignored files are still part of working-tree scope");
+    assert.equal(readFileSync(path.join(tgt, "tracked.txt"), "utf8"), "modified\n",
+      "modified tracked files must appear with dirty content");
+    assert.equal(readFileSync(path.join(tgt, "new.txt"), "utf8"), "untracked\n",
+      "untracked non-ignored files must appear");
+    assert.equal(existsSync(path.join(tgt, ".env")), false,
+      ".env (gitignored) must not be exposed by default working-tree scope");
+    assert.equal(existsSync(path.join(tgt, "ignored.log")), false,
+      "gitignored untracked files must not be exposed by default working-tree scope");
+  } finally {
+    cleanup(src, tgt);
+  }
+});
+
+test("populateScope scope=working-tree (gemini copy): excludes gitignored files", async () => {
+  // Mirror of the previous test against the gemini copy of populateScope.
+  // Both plugin copies are byte-identical (enforced by
+  // tests/unit/plugin-copies-in-sync.test.mjs) but exercising both keeps the
+  // privacy fix observable from each plugin's import path.
+  const { populateScope: geminiPopulate } = await import(
+    "../../plugins/gemini/scripts/lib/scope.mjs"
+  );
+  const src = seedRepo();
+  const tgt = mkTarget();
+  try {
+    writeFileSync(path.join(src, ".gitignore"), ".env\n");
+    writeFileSync(path.join(src, "tracked.txt"), "a\n");
+    git(src, "add", ".");
+    git(src, "commit", "-qm", "seed");
+    writeFileSync(path.join(src, ".env"), "SECRET=value\n");
+    writeFileSync(path.join(src, "new.txt"), "u\n");
+
+    geminiPopulate(profile("working-tree"), src, tgt);
+
+    assert.ok(existsSync(path.join(tgt, "tracked.txt")));
+    assert.ok(existsSync(path.join(tgt, "new.txt")));
+    assert.equal(existsSync(path.join(tgt, ".env")), false,
+      "gemini scope=working-tree must also exclude gitignored files");
   } finally {
     cleanup(src, tgt);
   }

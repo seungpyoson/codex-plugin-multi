@@ -251,16 +251,48 @@ test("spawnClaude: returns claudeSessionId from stdout and pidInfo tuple", async
   );
 });
 
-test("spawnClaude: strips API-key env before launching target CLI", async () => {
+test("spawnClaude: strips provider creds and routing env before launching target CLI", async () => {
   const dir = mkdtempSync(path.join(tmpdir(), "claude-env-sanitize-unit-"));
   try {
     const bin = writeExecutable(dir, "claude-env-check.mjs", `#!/usr/bin/env node
 const forbidden = [
+  // *_API_KEY suffix
   "ANTHROPIC_API_KEY",
   "CLAUDE_API_KEY",
   "OPENAI_API_KEY",
+  "GEMINI_API_KEY",
+  "GOOGLE_API_KEY",
+  // ANTHROPIC_* prefix
   "ANTHROPIC_AUTH_TOKEN",
   "ANTHROPIC_BASE_URL",
+  "ANTHROPIC_API_URL",
+  "ANTHROPIC_VERTEX_PROJECT_ID",
+  // CLAUDE_CODE_USE_* prefix
+  "CLAUDE_CODE_USE_BEDROCK",
+  "CLAUDE_CODE_USE_VERTEX",
+  // OPENAI_* prefix
+  "OPENAI_BASE_URL",
+  "OPENAI_PROJECT",
+  "OPENAI_ORG_ID",
+  // AWS_* prefix
+  "AWS_ACCESS_KEY_ID",
+  "AWS_SECRET_ACCESS_KEY",
+  "AWS_SESSION_TOKEN",
+  "AWS_PROFILE",
+  "AWS_REGION",
+  // AZURE_* prefix
+  "AZURE_CLIENT_SECRET",
+  "AZURE_TENANT_ID",
+  "AZURE_CLIENT_ID",
+  // VERTEX_* prefix
+  "VERTEX_PROJECT",
+  "VERTEX_LOCATION",
+  // GOOGLE_CLOUD_* prefix and explicit Google selectors
+  "GOOGLE_CLOUD_PROJECT",
+  "GOOGLE_CLOUD_REGION",
+  "GOOGLE_APPLICATION_CREDENTIALS",
+  "GOOGLE_GENAI_USE_VERTEXAI",
+  "CLOUD_ML_REGION",
 ];
 const leaked = forbidden.filter((key) => process.env[key]);
 if (leaked.length > 0) {
@@ -270,6 +302,10 @@ if (leaked.length > 0) {
 if (process.env.CLAUDE_CONFIG_DIR !== "kept-config") {
   process.stderr.write("missing kept oauth/config env\\n");
   process.exit(43);
+}
+if (process.env.PATH !== ${JSON.stringify(process.env.PATH ?? "")} || process.env.HOME !== ${JSON.stringify(process.env.HOME ?? "")}) {
+  process.stderr.write("PATH/HOME must pass through unchanged\\n");
+  process.exit(44);
 }
 const sessionIdx = process.argv.indexOf("--session-id");
 const sessionId = sessionIdx >= 0 ? process.argv[sessionIdx + 1] : null;
@@ -281,14 +317,47 @@ process.stdout.write(JSON.stringify({ type: "result", is_error: false, result: "
       sessionId: UUID,
       binary: bin,
       env: {
+        // Pass-through environment (must remain visible).
         PATH: process.env.PATH,
         HOME: process.env.HOME,
         CLAUDE_CONFIG_DIR: "kept-config",
+        // *_API_KEY suffix.
         ANTHROPIC_API_KEY: "must-not-leak",
         CLAUDE_API_KEY: "must-not-leak",
         OPENAI_API_KEY: "must-not-leak",
+        GEMINI_API_KEY: "must-not-leak",
+        GOOGLE_API_KEY: "must-not-leak",
+        // ANTHROPIC_* prefix.
         ANTHROPIC_AUTH_TOKEN: "must-not-leak",
         ANTHROPIC_BASE_URL: "https://example.invalid",
+        ANTHROPIC_API_URL: "https://example.invalid",
+        ANTHROPIC_VERTEX_PROJECT_ID: "must-not-leak",
+        // CLAUDE_CODE_USE_* prefix.
+        CLAUDE_CODE_USE_BEDROCK: "1",
+        CLAUDE_CODE_USE_VERTEX: "1",
+        // OPENAI_* prefix.
+        OPENAI_BASE_URL: "https://example.invalid",
+        OPENAI_PROJECT: "must-not-leak",
+        OPENAI_ORG_ID: "must-not-leak",
+        // AWS_* prefix.
+        AWS_ACCESS_KEY_ID: "must-not-leak",
+        AWS_SECRET_ACCESS_KEY: "must-not-leak",
+        AWS_SESSION_TOKEN: "must-not-leak",
+        AWS_PROFILE: "must-not-leak",
+        AWS_REGION: "us-east-1",
+        // AZURE_* prefix.
+        AZURE_CLIENT_SECRET: "must-not-leak",
+        AZURE_TENANT_ID: "must-not-leak",
+        AZURE_CLIENT_ID: "must-not-leak",
+        // VERTEX_* prefix.
+        VERTEX_PROJECT: "must-not-leak",
+        VERTEX_LOCATION: "us-central1",
+        // GOOGLE_CLOUD_* prefix and explicit Google selectors.
+        GOOGLE_CLOUD_PROJECT: "must-not-leak",
+        GOOGLE_CLOUD_REGION: "us-central1",
+        GOOGLE_APPLICATION_CREDENTIALS: "/tmp/must-not-leak.json",
+        GOOGLE_GENAI_USE_VERTEXAI: "true",
+        CLOUD_ML_REGION: "us-central1",
       },
     });
 

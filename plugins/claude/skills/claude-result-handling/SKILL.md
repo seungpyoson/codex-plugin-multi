@@ -66,7 +66,11 @@ received, the companion has a bug — don't paper over it.
 `staged`, `head`, and `branch-diff` scopes are git object-pure snapshots:
 checkout filters, LFS smudge, EOL conversion, textconv, hooks, and
 config-defined shell commands are not applied, and replace refs and grafts are
-ignored. `working-tree` and `custom` reflect live filesystem content.
+ignored. `working-tree` reflects live filesystem content for **tracked +
+untracked-non-ignored** files only — gitignored files (e.g. `.env`) are
+excluded by default to avoid exposing secrets to the target model. Use
+`custom` with explicit globs when a caller deliberately needs to include
+ignored files.
 
 ## Rendering order
 

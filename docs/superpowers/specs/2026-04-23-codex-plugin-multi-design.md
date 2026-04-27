@@ -959,7 +959,7 @@ If a later feature legitimately needs the original prompt text (e.g., reproducib
   - `worktree` — a fresh temp dir is created; Claude runs there; dir is deleted on dispose. (Review default.)
 
 - **`scope`** answers "what content does Claude see?"
-  - `working-tree` — everything in the user's live tree, including tracked, untracked, ignored, and locally smudged files. Symlinks are materialized as regular files when safe.
+  - `working-tree` — tracked + untracked-non-ignored files from the user's live tree, including locally smudged content. Symlinks are materialized as regular files when safe. **Gitignored files (e.g. `.env`) are excluded by default** so review does not expose secrets to the target model. When the caller deliberately needs to include ignored files, use `custom` with explicit globs.
   - `staged` — stage-0 index entries under `sourceCwd`. Regular blobs are copied byte-for-byte from the INDEX, executable mode is preserved from git mode, and symlink blobs are resolved structurally against INDEX metadata only.
   - `branch-diff` — files changed between the merge-base of HEAD and some base ref (default `main`), materialized from raw HEAD object content. Deletions and gitlinks are not copied.
   - `head` — raw HEAD tree entries under `sourceCwd`, using the same object-pure materialization rules as `staged`.

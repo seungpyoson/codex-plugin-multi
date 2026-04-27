@@ -10,7 +10,7 @@
 // To re-use this module for a different target, call configureState() once at
 // companion startup.
 
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -21,9 +21,9 @@ const STATE_VERSION = 1;
 const STATE_FILE_NAME = "state.json";
 const JOBS_DIR_NAME = "jobs";
 const STATE_LOCK_DIR_NAME = ".state.lock";
-const STATE_LOCK_TIMEOUT_MS = 5000;
+const DEFAULT_STATE_LOCK_TIMEOUT_MS = 5000;
 const STATE_LOCK_POLL_MS = 25;
-const STATE_LOCK_STALE_MS = 30000;
+const DEFAULT_STATE_LOCK_STALE_MS = 30000;
 const STATE_LOCK_OWNER_FILE = "owner.json";
 const MAX_JOBS = 50;
 const ACTIVE_JOB_STATUSES = new Set(["queued", "running"]);
@@ -32,16 +32,26 @@ const HELD_STATE_LOCKS = new Set();
 
 // Mutable module config. Defaults to the gemini port values; other targets
 // MUST call configureState() before any state read/write to override.
+// `lockTimeoutMs` / `lockStaleMs` are exposed for tests so the deterministic
+// regression suite can simulate live old locks without 30s sleeps.
 const CONFIG = {
   pluginDataEnv: "GEMINI_PLUGIN_DATA",
   fallbackStateRootDir: path.join(os.tmpdir(), "gemini-companion"),
   sessionIdEnv: "GEMINI_COMPANION_SESSION_ID",
+  lockTimeoutMs: DEFAULT_STATE_LOCK_TIMEOUT_MS,
+  lockStaleMs: DEFAULT_STATE_LOCK_STALE_MS,
 };
 
 export function configureState(next = {}) {
   if (next.pluginDataEnv != null) CONFIG.pluginDataEnv = next.pluginDataEnv;
   if (next.fallbackStateRootDir != null) CONFIG.fallbackStateRootDir = next.fallbackStateRootDir;
   if (next.sessionIdEnv != null) CONFIG.sessionIdEnv = next.sessionIdEnv;
+  if (Number.isFinite(next.lockTimeoutMs) && next.lockTimeoutMs >= 0) {
+    CONFIG.lockTimeoutMs = next.lockTimeoutMs;
+  }
+  if (Number.isFinite(next.lockStaleMs) && next.lockStaleMs >= 0) {
+    CONFIG.lockStaleMs = next.lockStaleMs;
+  }
 }
 
 export function getStateConfig() {
@@ -234,21 +244,53 @@ function lockAgeMs(lockDir, owner) {
   }
 }
 
-function writeLockOwner(lockDir) {
+function writeLockOwner(lockDir, token) {
   const owner = {
     pid: process.pid,
     hostname: os.hostname(),
     startedAt: new Date().toISOString(),
+    token,
   };
   fs.writeFileSync(path.join(lockDir, STATE_LOCK_OWNER_FILE), `${JSON.stringify(owner)}\n`, "utf8");
 }
 
+function ownerMatchesToken(lockDir, token) {
+  const owner = readLockOwner(lockDir);
+  return owner != null
+    && owner.token === token
+    && owner.pid === process.pid
+    && owner.hostname === os.hostname();
+}
+
+// Reclaim policy (security):
+//   - Same-host owner with a LIVE pid: never reclaim, regardless of age. The
+//     bug this guards against is mutual-exclusion loss when a writer holds
+//     the lock for >30s while alive — the previous implementation would
+//     steal the lock and let the second writer overwrite the first.
+//   - Same-host owner with a DEAD pid: reclaim immediately. The owner is
+//     gone; the dir is just litter.
+//   - Cross-host owner OR missing/corrupt owner metadata: conservative
+//     age-based reclaim only when older than the configured stale window.
+//     We can't probe a remote pid; we can't trust an unparseable owner file;
+//     in both cases we wait until the lock is plausibly orphaned.
 function tryReclaimStaleLock(lockDir) {
   const owner = readLockOwner(lockDir);
-  const sameHost = owner?.hostname === os.hostname();
-  const ownerDead = sameHost && Number.isInteger(owner?.pid) && !isProcessAlive(owner.pid);
-  const tooOld = lockAgeMs(lockDir, owner) > STATE_LOCK_STALE_MS;
-  if (!ownerDead && !tooOld) return false;
+  const sameHost = owner != null && owner.hostname === os.hostname();
+  const ownerPidValid = owner != null && Number.isInteger(owner.pid);
+  const sameHostAlive = sameHost && ownerPidValid && isProcessAlive(owner.pid);
+  if (sameHostAlive) return false;
+  const ownerDead = sameHost && ownerPidValid && !isProcessAlive(owner.pid);
+
+  let canReclaim;
+  if (ownerDead) {
+    canReclaim = true;
+  } else {
+    // Cross-host owner, or missing/corrupt owner metadata. Use the age fall
+    // back, conservatively: the dir must be older than the stale window
+    // before we touch it.
+    canReclaim = lockAgeMs(lockDir, owner) > CONFIG.lockStaleMs;
+  }
+  if (!canReclaim) return false;
 
   const orphanDir = `${lockDir}.orphaned-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
   try {
@@ -268,20 +310,32 @@ function acquireStateLock(cwd) {
   if (HELD_STATE_LOCKS.has(lockKey)) {
     throw new Error(`state_lock_reentrant: already holding ${lockDir}`);
   }
-  const deadline = Date.now() + STATE_LOCK_TIMEOUT_MS;
+  const deadline = Date.now() + CONFIG.lockTimeoutMs;
   while (true) {
     try {
       fs.mkdirSync(lockDir);
+      const token = randomUUID();
       try {
-        writeLockOwner(lockDir);
+        writeLockOwner(lockDir, token);
       } catch (e) {
+        // We just created lockDir and never registered ownership — safe to
+        // remove. No other writer can have stolen it: tryReclaimStaleLock
+        // refuses to reclaim a fresh empty dir (no owner.json + age 0 < stale).
         try { fs.rmSync(lockDir, { recursive: true, force: true }); } catch { /* best-effort */ }
         throw e;
       }
       HELD_STATE_LOCKS.add(lockKey);
       return () => {
         HELD_STATE_LOCKS.delete(lockKey);
-        try { fs.rmSync(lockDir, { recursive: true, force: true }); } catch { /* best-effort */ }
+        // Defense in depth: if reclaim ever (mistakenly) steals our lock and
+        // a different writer recreates the dir under their own token, our
+        // release closure must not delete that other writer's lock. Verify
+        // the on-disk owner still matches our token before removing.
+        try {
+          if (ownerMatchesToken(lockDir, token)) {
+            fs.rmSync(lockDir, { recursive: true, force: true });
+          }
+        } catch { /* best-effort */ }
       };
     } catch (e) {
       if (e.code !== "EEXIST") {

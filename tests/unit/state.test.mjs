@@ -657,6 +657,104 @@ for (const [target, state, fresh, cleanupTarget] of [
     }
   });
 
+  test(`${target} state: live old same-host lock is not reclaimed by age`, () => {
+    // Regression: tryReclaimStaleLock used to steal a same-host lock as long
+    // as it was older than STATE_LOCK_STALE_MS, even when the owning pid was
+    // still alive. That allowed two writers to "hold" the lock simultaneously
+    // and the slower one's write to overwrite the other's. Reclaim must now
+    // refuse a live same-host owner regardless of age.
+    const dir = fresh();
+    try {
+      state.configureState({ lockTimeoutMs: 200, lockStaleMs: 100 });
+      state.writeJobFile(dir, "seed-job", { id: "seed-job" });
+      const lockDir = path.join(state.resolveStateDir(dir), ".state.lock");
+      fs.mkdirSync(lockDir);
+      fs.writeFileSync(path.join(lockDir, "owner.json"), `${JSON.stringify({
+        pid: process.pid,
+        hostname: hostname(),
+        startedAt: new Date(Date.now() - 60_000).toISOString(),
+        token: "live-owner-token",
+      })}\n`, "utf8");
+
+      assert.throws(
+        () => state.upsertJob(dir, { id: "writer-b", status: "completed" }),
+        /state_lock_timeout/,
+      );
+      assert.equal(fs.existsSync(lockDir), true,
+        "live same-host lock must remain intact even when older than the stale window");
+      assert.equal(
+        state.listJobs(dir).some((job) => job.id === "writer-b"), false,
+        "writer B must not be able to commit while writer A's live lock is still held",
+      );
+    } finally {
+      cleanupTarget(dir);
+    }
+  });
+
+  test(`${target} state: release closure preserves a lock owned by a different token`, () => {
+    // Regression: the release closure used to fs.rmSync(lockDir, ...) without
+    // proving ownership. If a recovery path ever (mistakenly) reclaimed our
+    // lock and a new writer took it, our release would silently delete the
+    // new writer's lock, opening a second race window. Release must now
+    // verify the on-disk owner token still matches before deleting.
+    const dir = fresh();
+    try {
+      state.updateState(dir, (currentState) => {
+        const lockDir = path.join(state.resolveStateDir(dir), ".state.lock");
+        // Simulate another writer stealing the lock (this should never happen
+        // with the live-owner guard above, but the release closure must still
+        // not blindly delete what it doesn't own).
+        fs.writeFileSync(path.join(lockDir, "owner.json"), `${JSON.stringify({
+          pid: process.pid,
+          hostname: hostname(),
+          startedAt: new Date().toISOString(),
+          token: "different-writer-token",
+        })}\n`, "utf8");
+        currentState.jobs.push({ id: "race-test", status: "completed" });
+      });
+
+      const lockDir = path.join(state.resolveStateDir(dir), ".state.lock");
+      assert.equal(fs.existsSync(lockDir), true,
+        "release closure must leave a lock owned by a different token in place");
+    } finally {
+      cleanupTarget(dir);
+    }
+  });
+
+  test(`${target} state: missing/corrupt owner metadata is reclaimed only when too old`, () => {
+    const dir = fresh();
+    try {
+      // Tight timeout, conservative stale window: a young corrupt-owner lock
+      // must time out (no reclaim) within ~250ms even though the stale window
+      // is much higher than the timeout.
+      state.configureState({ lockTimeoutMs: 250, lockStaleMs: 60_000 });
+      state.writeJobFile(dir, "seed-job", { id: "seed-job" });
+      const lockDir = path.join(state.resolveStateDir(dir), ".state.lock");
+      fs.mkdirSync(lockDir);
+      // Corrupt owner.json with no parseable pid/hostname. Without an owner
+      // we fall through to age-based reclaim, which must keep its hands off
+      // a young dir (mtime ≈ now).
+      fs.writeFileSync(path.join(lockDir, "owner.json"), "not json", "utf8");
+      assert.throws(
+        () => state.upsertJob(dir, { id: "blocked-by-corrupt-owner", status: "completed" }),
+        /state_lock_timeout/,
+      );
+      assert.equal(fs.existsSync(lockDir), true,
+        "corrupt-owner lock that is still young must not be reclaimed");
+
+      // Backdate the dir well past the stale window; reclaim must succeed.
+      const old = new Date(Date.now() - 120_000);
+      fs.utimesSync(lockDir, old, old);
+      state.upsertJob(dir, { id: "after-corrupt-owner-stale", status: "completed" });
+      assert.equal(
+        state.listJobs(dir).some((job) => job.id === "after-corrupt-owner-stale"), true,
+        "missing/corrupt owner metadata must remain age-reclaimable when too old",
+      );
+    } finally {
+      cleanupTarget(dir);
+    }
+  });
+
   test(`${target} state: reentrant lock attempts fail fast`, () => {
     const dir = fresh();
     try {
