@@ -213,7 +213,18 @@ function absoluteSnapshotTargetParts(sourcePrefixes, absTarget) {
 
 // Copy file `rel` from sourceCwd's live filesystem into targetPath/rel.
 // Symlinks are never preserved in the target snapshot.
-function copyLiveFile(sourceCwd, targetPath, rel, sourceRoot) {
+function isIgnoredLiveRel(ignored, rel) {
+  if (ignored == null || rel === "") return false;
+  const normalized = rel.replace(/\\/g, "/");
+  if (ignored.has(normalized)) return true;
+  const prefix = `${normalized}/`;
+  for (const ignoredRel of ignored) {
+    if (ignoredRel.startsWith(prefix)) return true;
+  }
+  return false;
+}
+
+function copyLiveFile(sourceCwd, targetPath, rel, sourceRoot, ignored = null) {
   const src = path.join(sourceCwd, rel);
   const dst = path.join(targetPath, rel);
   // lstat (not stat) so symlinks report as symlinks rather than whatever
@@ -231,6 +242,8 @@ function copyLiveFile(sourceCwd, targetPath, rel, sourceRoot) {
     if (!isInsidePath(sourceRoot, resolved)) {
       unsafeSymlink(rel, "resolves outside source root");
     }
+    const resolvedRel = path.relative(sourceRoot, resolved).replace(/\\/g, "/");
+    if (isIgnoredLiveRel(ignored, resolvedRel)) return;
     let resolvedStat;
     try {
       resolvedStat = statSync(resolved);
@@ -638,9 +651,9 @@ function scopeWorkingTree(sourceCwd, targetPath) {
   const sourceRoot = realpathSync(sourceCwd);
   const all = listLiveWorkingTreeFiles(sourceCwd);
   const ignored = listIgnoredUntrackedFiles(sourceCwd);
-  const rels = ignored == null ? all : all.filter((rel) => !ignored.has(rel));
+  const rels = ignored == null ? all : all.filter((rel) => !isIgnoredLiveRel(ignored, rel));
   for (const rel of rels) {
-    copyLiveFile(sourceCwd, targetPath, rel, sourceRoot);
+    copyLiveFile(sourceCwd, targetPath, rel, sourceRoot, ignored);
   }
 }
 

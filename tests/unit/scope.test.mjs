@@ -261,6 +261,8 @@ test("populateScope scope=working-tree: excludes gitignored files (privacy)", ()
     // Add gitignored files → must NOT appear.
     writeFileSync(path.join(src, ".env"), "SECRET=value\n");
     writeFileSync(path.join(src, "ignored.log"), "garbage\n");
+    // A non-ignored symlink must not bypass the ignored target filter.
+    symlinkSync(".env", path.join(src, "config-link"));
 
     // Sanity: confirm git agrees those files are ignored.
     const ignoreCheck = spawnSync("git", ["-C", src, "check-ignore", "-v", ".env", "ignored.log"], {
@@ -276,6 +278,8 @@ test("populateScope scope=working-tree: excludes gitignored files (privacy)", ()
       "untracked non-ignored files must appear");
     assert.equal(existsSync(path.join(tgt, ".env")), false,
       ".env (gitignored) must not be exposed by default working-tree scope");
+    assert.equal(existsSync(path.join(tgt, "config-link")), false,
+      "symlinks resolving to gitignored targets must not expose ignored content");
     assert.equal(existsSync(path.join(tgt, "ignored.log")), false,
       "gitignored untracked files must not be exposed by default working-tree scope");
   } finally {
@@ -299,12 +303,15 @@ test("populateScope scope=working-tree (gemini copy): excludes gitignored files"
     git(src, "add", ".");
     git(src, "commit", "-qm", "seed");
     writeFileSync(path.join(src, ".env"), "SECRET=value\n");
+    symlinkSync(".env", path.join(src, "config-link"));
     writeFileSync(path.join(src, "new.txt"), "u\n");
 
     geminiPopulate(profile("working-tree"), src, tgt);
 
     assert.ok(existsSync(path.join(tgt, "tracked.txt")));
     assert.ok(existsSync(path.join(tgt, "new.txt")));
+    assert.equal(existsSync(path.join(tgt, "config-link")), false,
+      "gemini scope=working-tree must also exclude symlinks to ignored targets");
     assert.equal(existsSync(path.join(tgt, ".env")), false,
       "gemini scope=working-tree must also exclude gitignored files");
   } finally {

@@ -691,6 +691,60 @@ for (const [target, state, fresh, cleanupTarget] of [
     }
   });
 
+  test(`${target} state: stale reclaim aborts if lock owner changes before rename`, () => {
+    // Regression: two reclaimers can both inspect the same stale lock. If one
+    // reclaims and recreates a live lock before the other reaches renameSync,
+    // the second must not delete the live lock and enter its own critical
+    // section. Re-validate owner.json after rename before deleting the orphan.
+    const dir = fresh();
+    const originalRename = fs.renameSync;
+    try {
+      state.configureState({ lockTimeoutMs: 200, lockStaleMs: 100 });
+      state.writeJobFile(dir, "seed-job", { id: "seed-job" });
+      const lockDir = path.join(state.resolveStateDir(dir), ".state.lock");
+      fs.mkdirSync(lockDir);
+      fs.writeFileSync(path.join(lockDir, "owner.json"), `${JSON.stringify({
+        pid: findDeadPid(),
+        hostname: hostname(),
+        startedAt: new Date(Date.now() - 60_000).toISOString(),
+        token: "dead-owner-token",
+      })}\n`, "utf8");
+
+      let injected = false;
+      fs.renameSync = function patchedRename(from, to) {
+        if (!injected && from === lockDir && String(to).includes(".orphaned-")) {
+          injected = true;
+          fs.rmSync(lockDir, { recursive: true, force: true });
+          fs.mkdirSync(lockDir);
+          fs.writeFileSync(path.join(lockDir, "owner.json"), `${JSON.stringify({
+            pid: process.pid,
+            hostname: hostname(),
+            startedAt: new Date().toISOString(),
+            token: "live-replacement-token",
+          })}\n`, "utf8");
+        }
+        return originalRename.apply(this, arguments);
+      };
+
+      assert.throws(
+        () => state.upsertJob(dir, { id: "writer-b", status: "completed" }),
+        /state_lock_timeout/,
+      );
+      fs.renameSync = originalRename;
+
+      const owner = JSON.parse(fs.readFileSync(path.join(lockDir, "owner.json"), "utf8"));
+      assert.equal(owner.token, "live-replacement-token",
+        "reclaim must restore the live lock it found at rename time");
+      assert.equal(
+        state.listJobs(dir).some((job) => job.id === "writer-b"), false,
+        "writer B must not commit after racing with a replacement live lock",
+      );
+    } finally {
+      fs.renameSync = originalRename;
+      cleanupTarget(dir);
+    }
+  });
+
   test(`${target} state: release closure preserves a lock owned by a different token`, () => {
     // Regression: the release closure used to fs.rmSync(lockDir, ...) without
     // proving ownership. If a recovery path ever (mistakenly) reclaimed our

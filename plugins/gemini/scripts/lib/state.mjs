@@ -234,6 +234,15 @@ function readLockOwner(lockDir) {
   }
 }
 
+function readLockOwnerRaw(lockDir) {
+  try {
+    return fs.readFileSync(path.join(lockDir, STATE_LOCK_OWNER_FILE), "utf8");
+  } catch (err) {
+    if (err?.code === "ENOENT") return null;
+    return undefined;
+  }
+}
+
 function lockAgeMs(lockDir, owner) {
   const startedAt = owner?.startedAt ? Date.parse(owner.startedAt) : NaN;
   if (Number.isFinite(startedAt)) return Date.now() - startedAt;
@@ -274,6 +283,8 @@ function ownerMatchesToken(lockDir, token) {
 //     We can't probe a remote pid; we can't trust an unparseable owner file;
 //     in both cases we wait until the lock is plausibly orphaned.
 function tryReclaimStaleLock(lockDir) {
+  const ownerRaw = readLockOwnerRaw(lockDir);
+  if (ownerRaw === undefined) return false;
   const owner = readLockOwner(lockDir);
   const sameHost = owner != null && owner.hostname === os.hostname();
   const ownerPidValid = owner != null && Number.isInteger(owner.pid);
@@ -295,6 +306,15 @@ function tryReclaimStaleLock(lockDir) {
   const orphanDir = `${lockDir}.orphaned-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
   try {
     fs.renameSync(lockDir, orphanDir);
+    if (readLockOwnerRaw(orphanDir) !== ownerRaw) {
+      try {
+        fs.renameSync(orphanDir, lockDir);
+      } catch {
+        // A different process may already have recreated lockDir. Leave the
+        // orphan intact rather than deleting a lock we no longer own.
+      }
+      return false;
+    }
     fs.rmSync(orphanDir, { recursive: true, force: true });
     return true;
   } catch (e) {

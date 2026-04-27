@@ -34,7 +34,7 @@
 
 **Behavior Contract:**
 - `working-tree` must support normal non-git folders by walking the live filesystem.
-- In git repos, `working-tree` must include tracked, untracked, and ignored files.
+- In git repos, `working-tree` must include tracked files and untracked non-ignored files; use `custom` for deliberate ignored-file inclusion.
 - Snapshot population must never leave a symlink in the disposable target tree.
 - A symlink to a regular file inside `sourceCwd` is materialized as a regular file copy.
 - A symlink to a directory, a dangling symlink, a symlink loop, or any symlink resolving outside `sourceCwd` throws `unsafe_symlink`.
