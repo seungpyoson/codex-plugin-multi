@@ -255,12 +255,11 @@ test("verifyPidInfo: vanished process returns match:false process_gone (no throw
   });
 });
 
-test("capturePidInfo: Darwin ps output can be parsed through a PATH shim", {
-  skip: process.platform !== "darwin",
-}, () => {
+test("capturePidInfo: Darwin ps output can be parsed through a PATH shim", () => {
   const dir = mkdtempSync(path.join(tmpdir(), "identity-ps-"));
   const originalPath = process.env.PATH;
   try {
+    setPlatform("darwin");
     const ps = path.join(dir, "ps");
     writeFileSync(ps, "#!/bin/sh\necho 'Thu Apr 24 12:34:56 2026 /bin/fake-node'\n", "utf8");
     chmodSync(ps, 0o755);
@@ -282,17 +281,17 @@ test("capturePidInfo: Darwin ps output can be parsed through a PATH shim", {
       argv0: "/bin/other",
     }), { match: false, reason: "argv0_mismatch" });
   } finally {
+    restorePlatform();
     process.env.PATH = originalPath;
     rmSync(dir, { recursive: true, force: true });
   }
 });
 
-test("capturePidInfo: Darwin ps malformed output is treated as process_gone", {
-  skip: process.platform !== "darwin",
-}, () => {
+test("capturePidInfo: Darwin ps malformed output is treated as process_gone", () => {
   const dir = mkdtempSync(path.join(tmpdir(), "identity-ps-bad-"));
   const originalPath = process.env.PATH;
   try {
+    setPlatform("darwin");
     const ps = path.join(dir, "ps");
     writeFileSync(ps, "#!/bin/sh\necho 'too short'\n", "utf8");
     chmodSync(ps, 0o755);
@@ -300,6 +299,7 @@ test("capturePidInfo: Darwin ps malformed output is treated as process_gone", {
 
     assert.throws(() => capturePidInfo(12345), /process_gone: ps output too short/);
   } finally {
+    restorePlatform();
     process.env.PATH = originalPath;
     rmSync(dir, { recursive: true, force: true });
   }
@@ -309,12 +309,11 @@ test("gemini identity mirrors job id semantics", () => {
   assert.match(GeminiIdentity.newJobId(), UUID_V4);
 });
 
-test("gemini capturePidInfo parses Darwin ps output through the same shim", {
-  skip: process.platform !== "darwin",
-}, () => {
+test("gemini capturePidInfo parses Darwin ps output through the same shim", () => {
   const dir = mkdtempSync(path.join(tmpdir(), "gemini-identity-ps-"));
   const originalPath = process.env.PATH;
   try {
+    setPlatform("darwin");
     const ps = path.join(dir, "ps");
     writeFileSync(ps, "#!/bin/sh\necho 'Fri Apr 25 01:02:03 2026 /bin/gemini-fake'\n", "utf8");
     chmodSync(ps, 0o755);
@@ -325,6 +324,7 @@ test("gemini capturePidInfo parses Darwin ps output through the same shim", {
     assert.equal(info.argv0, "/bin/gemini-fake");
     assert.deepEqual(GeminiIdentity.verifyPidInfo(info), { match: true });
   } finally {
+    restorePlatform();
     process.env.PATH = originalPath;
     rmSync(dir, { recursive: true, force: true });
   }
