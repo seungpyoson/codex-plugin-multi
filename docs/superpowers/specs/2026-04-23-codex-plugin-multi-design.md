@@ -1,12 +1,23 @@
 # codex-plugin-multi — Design
 
 - **Date:** 2026-04-23 (v3) / 2026-04-24 (v4 — full empirical re-verification) / **2026-04-24 (v5 — architectural invariants)**
-- **Status:** Draft v5, post-M6 cross-model review
+- **Status:** Draft v5, post-M6 cross-model review; corrected after 2026-04-27 fresh-install verification
 - **Repo:** [`seungpyoson/codex-plugin-multi`](https://github.com/seungpyoson/codex-plugin-multi)
 - **License:** Apache-2.0 (mirrors upstream)
 - **Reference:** [`openai/codex-plugin-cc`](https://github.com/openai/codex-plugin-cc) (MIT — Claude Code plugin calling Codex); [`openai/plugins`](https://github.com/openai/plugins) (canonical Codex monorepo pattern)
 
 ## What changed in v5 (from v4)
+
+> 2026-04-27 correction for Codex CLI 0.125.0: the slash-command assumptions
+> in this historical design are not true for the verified release build. The
+> marketplace installs and enables both plugins, and command files are packaged,
+> but Codex CLI 0.125.0 does not currently expose plugin `commands/*.md` files as
+> TUI slash commands. Upstream TUI dispatch only matches built-in
+> `SlashCommand` values via `find_builtin_command`; the plugin manifest/loader
+> surface imports skills, apps, and MCP servers, not `commands/`. v0.1.0 exposes
+> user-invocable delegation skills as the supported local fallback. Treat native
+> slash commands below as the intended/future surface, not a verified v0.1.0
+> runtime surface.
 
 After M6 a cross-model review (Codex + Gemini + Claude) surfaced eight merge-blocker-class defects in the Claude path. Each was individually small, but they collapsed to four structural gaps where the v4 spec left invariants **implicit**. v5 makes those invariants **explicit** and load-bearing — the same code cannot be written twice and drift apart, because the type/contract names the rule.
 
@@ -29,12 +40,12 @@ Plus one operational invariant:
 
 Every load-bearing assertion was re-verified empirically or against codex-rs source. 17 corrections / additions, summarized at the end of this section. Key reversals:
 
-- **Slash commands are BARE, not namespaced.** `/claude-rescue`, not `/claude:rescue`. Source: `openai/plugins` ships 100+ plugins using bare command names (`/implement-from-figma`, `/deploy`).
+- **Slash command naming, if/when supported, is BARE, not namespaced.** `/claude-rescue`, not `/claude:rescue`. The 2026-04-27 fresh-install check found that Codex CLI 0.125.0 does not register plugin command files at all.
 - **`--bare` is incompatible with OAuth.** Per Claude `--help`: "OAuth and keychain are never read." Replaced with `--setting-sources ""` which strips CLAUDE.md while preserving OAuth.
 - **Gemini read-only enforcement requires TOML `--policy` files.** Plan mode auto-escalates to YOLO in non-interactive mode (per Gemini docs `plan-mode.md:487-495`). Policy files are the only reliable layer.
 - **Supported Codex hook events are exactly 5**: `PreToolUse`, `PostToolUse`, `SessionStart`, `Stop`, `UserPromptSubmit`. No `SessionEnd`. Source: `codex-rs/core/config.schema.json:868-896`.
 - **`allowed-tools` command-frontmatter is advisory**, not enforced. Enforcement lives in the target CLI (Claude `--disallowedTools`, Gemini `--policy`).
-- **Plugin commands are TUI-only.** `codex exec "/claude-rescue ..."` sends the string as literal prompt text, not a command invocation. Verified empirically.
+- **Plugin command invocation is blocked in Codex CLI 0.125.0.** `codex exec "/claude-rescue ..."` sends the string as literal prompt text, and the TUI rejects `/claude-ping` as an unrecognized built-in command. The command docs remain packaged for a future/compatible command surface.
 
 ---
 
@@ -54,11 +65,11 @@ Upstream `openai/codex-plugin-cc` is a **Claude Code plugin** that lets Claude C
 | # | Decision | Choice |
 |---|----------|--------|
 | 1 | Packaging | Two plugins (`plugins/claude/`, `plugins/gemini/`) in one monorepo. Each is standalone. Registered via a single `.agents/plugins/marketplace.json` at repo root. |
-| 2 | Slash-command naming | **Bare names, not namespaced:** `/claude-rescue`, `/gemini-review`, etc. Avoid collisions with Codex builtins (`stop`, `plan`, `clear`, `fast`, `settings`, `apps`, `plugins`, `collab`, `personality`, `realtime`). |
+| 2 | Slash-command naming | Intended surface uses **bare names, not namespaced:** `/claude-rescue`, `/gemini-review`, etc. Codex CLI 0.125.0 does not currently register plugin command files. |
 | 3 | Repo | `seungpyoson/codex-plugin-multi`, Apache-2.0, public GitHub. |
 | 4 | Prompting skills | One per plugin: `plugins/<target>/skills/<target>-prompting/`. Mirrors upstream's `gpt-5-4-prompting` structure. |
 | 5 | Auth | OAuth / subscription only. Plugin never reads or writes `*_API_KEY` env vars. |
-| 6 | Primary user-facing surface | Native `commands/*.md` slash commands via Codex TUI. `codex exec` cannot invoke them (TUI-only; verified §4.18). |
+| 6 | Primary user-facing surface | User-invocable delegation skills and companion scripts in v0.1.0. Native `commands/*.md` slash commands are blocked on Codex TUI support in CLI 0.125.0; non-ping command docs are packaged for the intended future surface. |
 | 7 | Shared-lib port strategy | Parametrize upstream's 10 lib files for target-neutrality; duplicate per plugin (two physical copies; content-identical except for target name). See §6.2 + §21.5. |
 | 8 | Architectural invariants | §21 (v5) is load-bearing. All five invariants (21.1–21.5) MUST hold; a PR that violates one is a spec defect, not a code defect. |
 
@@ -166,14 +177,26 @@ Two parallel `claude -p` calls from same cwd — distinct `session_id`s, both co
 Codex plugins support:
 
 - **`plugin-root/.codex-plugin/plugin.json`** — per-plugin manifest. Fields: `name` (kebab-case), `version`, `description`, `author`, `homepage`, `repository`, `license`, `keywords`, `skills` (pointer), `apps` (pointer to `.app.json`), `interface.{displayName, shortDescription, longDescription, developerName, category, capabilities, websiteURL, privacyPolicyURL, termsOfServiceURL, defaultPrompt, brandColor, composerIcon, logo, screenshots}`. `apps` and `.mcp.json` are optional — we ship neither.
-- **`plugin-root/commands/<name>.md`** — slash commands. Frontmatter is **optional**; when present, recognized keys are `description`, `argument-hint`, `allowed-tools` (advisory). `$ARGUMENTS` in body text is substituted with user's arg string (model-side — not shell substitution, no injection risk at transport). Figma commands use no frontmatter; Vercel/Cloudflare use minimal.
+- **`plugin-root/commands/<name>.md`** — command docs used by existing
+  marketplace plugins. Fresh-install verification found that Codex CLI 0.125.0
+  does not load these files into the TUI slash-command registry. Frontmatter is
+  **optional**; when present, recognized keys are `description`,
+  `argument-hint`, `allowed-tools` (advisory). `$ARGUMENTS` in body text is
+  substituted with user's arg string (model-side — not shell substitution, no
+  injection risk at transport). Figma commands use no frontmatter;
+  Vercel/Cloudflare use minimal.
 - **`plugin-root/agents/<name>.md`** — plugin-level subagents. Frontmatter: `name`, `description`, `model: inherit | <id>`, `tools: <comma-separated>`, `skills: <list>`. Verified from `plugins/superpowers/agents/code-reviewer.md` and upstream `plugins/codex/agents/codex-rescue.md`.
 - **`plugin-root/skills/<name>/SKILL.md`** — description-triggered skills. Frontmatter: `name`, `description`, `disable-model-invocation` (optional), `user-invocable` (optional).
 - **`plugin-root/hooks/hooks.json` or `plugin-root/hooks.json`** — either location works; both observed in `openai/plugins`. Supported events (authoritative from `codex-rs/core/config.schema.json:868-896`): **`PreToolUse`, `PostToolUse`, `SessionStart`, `Stop`, `UserPromptSubmit`**. NOT supported: `SessionEnd`, `Notification`, `SubagentStop`, `PreCompact`. Hooks run with **cwd = plugin root** (observed: figma uses relative `./scripts/foo.sh`). **No `${CODEX_PLUGIN_ROOT}` env var is exposed.**
 - **`plugin-root/prompts/<name>.md`** — canonical system prompts retrieved by commands/agents.
 - **`plugin-root/schemas/*.schema.json`** — JSON schemas. Not consumed by Codex directly; used by our runtime for `--json-schema` validation.
 
-**Slash command namespace (verified):** Codex exposes **bare** command names (`/deploy`, `/implement-from-figma`). No `plugin:command` namespacing. Names that collide with Codex builtins are shadowed by the builtin. Source: `codex-rs/tui/src/bottom_pane/slash_commands.rs`.
+**Slash command namespace (intended, not exposed in Codex CLI 0.125.0):** if
+plugin commands are registered by a future or compatible Codex build, this
+project uses **bare** command names (`/claude-rescue`), not
+`plugin:command` namespacing. Names that collide with Codex builtins would be
+shadowed by the builtin. Codex CLI 0.125.0 currently filters slash commands
+through built-ins only.
 
 **Multi-plugin registration (verified live):** `<repo-root>/.agents/plugins/marketplace.json`:
 
@@ -247,7 +270,11 @@ Codex sends user messages as:
 {"type":"message","role":"user","content":[{"type":"input_text","text":"..."}]}
 ```
 
-`AGENTS.md` gets prepended as a separate user message. In TUI, command `.md` body text is injected into `input_text` on each invocation. **Command bodies are consumed in full per invocation** → keep them concise; push detail to skills that get retrieved on demand.
+`AGENTS.md` gets prepended as a separate user message. The intended command
+surface injects command `.md` body text into `input_text` on each invocation,
+which means command bodies would be consumed in full per invocation. Codex CLI
+0.125.0 does not currently expose that plugin command path; keep packaged
+command docs concise anyway so they are safe if upstream support lands.
 
 ### 4.16 `$ARGUMENTS` substitution
 
@@ -261,9 +288,15 @@ Per `~/.npm-global/lib/node_modules/@google/gemini-cli/bundle/docs/cli/plan-mode
 
 This explains the v3 "20 files rewritten" incident. Plan mode is **not** a sandbox headlessly. The real safety layer is `--policy` TOML deny rules.
 
-### 4.18 TUI-only command invocation (verified)
+### 4.18 Command invocation gap (verified)
 
-`codex exec "/claude-rescue investigate X"` sent the literal string as user prompt; no command dispatch occurred. Session jsonl confirms: user message was `{"text":"reply ok"}` verbatim (I passed `"reply ok"` in the retest). Plugin commands are **TUI-only**. Implication: our commands are invoked by users via Codex TUI, and there's no programmatic path for Codex-CI-style invocation.
+`codex exec "/claude-rescue investigate X"` sent the literal string as user prompt; no command dispatch occurred. Session jsonl confirms: user message was `{"text":"reply ok"}` verbatim (I passed `"reply ok"` in the retest).
+
+Fresh-install verification on 2026-04-27 added the missing TUI side of this fact:
+Codex CLI 0.125.0 also rejects `/claude-ping` in the TUI because plugin command
+files are not registered in the built-in slash-command dispatcher. Implication:
+v0.1.0 packages command docs, but there is no verified Codex TUI or `codex exec`
+path for invoking them in CLI 0.125.0.
 
 ### 4.19 Hook timeout — enforced
 
@@ -282,9 +315,12 @@ Claude call with OAuth: `apiKeySource: None`, `total_cost_usd: 0.011` reported. 
 
 ## 5. Plugin surface
 
-### 5.1 Native slash commands (bare names)
+### 5.1 Packaged command docs (intended bare slash names)
 
-Each plugin ships `commands/<name>.md` files; Codex exposes them as bare slash commands (§4.13). **14 total:**
+Each plugin ships `commands/<name>.md` files for the intended bare slash-command
+surface. Codex CLI 0.125.0 packages them but does not expose them as TUI slash
+commands. Diagnostic ping command docs are deferred until upstream command
+registration exists. **12 total:**
 
 | Claude | Gemini |
 |---|---|
@@ -298,13 +334,19 @@ Each plugin ships `commands/<name>.md` files; Codex exposes them as bare slash c
 
 Names verified non-colliding with Codex builtins. Avoided: `stop`, `plan`, `clear`, `fast`, `settings`, `apps`, `plugins`, `collab`, `personality`, `realtime`.
 
-### 5.2 Description-triggered skills (internal, per plugin)
+### 5.2 Description-triggered skills
 
-- `<target>-cli-runtime` — companion-CLI invocation contract retrieved by commands.
-- `<target>-result-handling` — how to render companion output back to Codex.
-- `<target>-prompting` — target-specific prompting guidance (parity with upstream `gpt-5-4-prompting`).
+- `claude-delegation` / `gemini-delegation` — user-invocable skill fallback for
+  setup, review, adversarial-review, rescue, status, result, and cancel-aware
+  workflows while slash-command registration is unavailable.
+- `claude-cli-runtime` — companion-CLI invocation contract retrieved by commands
+  and the Claude rescue subagent.
+- `claude-result-handling` — how to render Claude companion output back to Codex.
+- `claude-prompting` — target-specific prompting guidance (parity with upstream
+  `gpt-5-4-prompting`).
 
-All marked `user-invocable: false` (internal only; retrieved by commands/agents).
+Only the delegation skills are `user-invocable: true`; the Claude runtime,
+result-handling, and prompting skills remain internal.
 
 ### 5.3 Subagents (one per plugin)
 
@@ -331,10 +373,11 @@ codex-plugin-multi/
       LICENSE NOTICE CHANGELOG.md
       commands/
         rescue.md review.md adversarial-review.md
-        setup.md status.md result.md cancel.md   # 7 files; bare names via frontmatter
+        setup.md status.md result.md cancel.md   # 6 files; ping deferred
       agents/
         claude-rescue.md
       skills/
+        claude-delegation/SKILL.md               # user-invocable fallback
         claude-cli-runtime/SKILL.md
         claude-result-handling/SKILL.md
         claude-prompting/
@@ -357,6 +400,7 @@ codex-plugin-multi/
     gemini/                                      # symmetric
       .codex-plugin/plugin.json                  # name="gemini"
       commands/ agents/ skills/ scripts/ prompts/ hooks/ schemas/ config/
+      skills/gemini-delegation/SKILL.md          # user-invocable fallback
       policies/
         read-only.toml                           # deny write_file/replace/run_shell_command
   tests/
@@ -364,7 +408,7 @@ codex-plugin-multi/
   .github/workflows/pull-request-ci.yml          # lint + unit + smoke
 ```
 
-**Counts:** 2 plugins. 14 commands. 2 subagents. 6 skills. 1 top-level marketplace.json.
+**Counts:** 2 plugins. 12 packaged command docs. 2 subagents. 5 skills. 1 top-level marketplace.json.
 
 ### 6.2 Shared-lib port strategy
 
@@ -706,7 +750,9 @@ User text appended. Review output (when `--json-schema` supplied) validated agai
 - `policy.test.mjs` — Gemini policy TOML syntax validation.
 
 ### 17.2 Smoke (`tests/smoke/`)
-`claude-mock.mjs`, `gemini-mock.mjs` — deterministic JSON fixtures keyed on model + prompt. `PATH=tests/smoke:$PATH`. Per plugin: 7 commands × 2 = **14 smoke tests**.
+`claude-mock.mjs`, `gemini-mock.mjs` — deterministic JSON fixtures keyed on
+model + prompt. `PATH=tests/smoke:$PATH`. Per plugin: 7 companion subcommands ×
+2 = **14 smoke tests**.
 
 ### 17.3 E2E (`tests/e2e/`)
 Real CLIs. Live OAuth required. Not in CI. `npm run e2e:claude` / `npm run e2e:gemini`.
@@ -730,12 +776,12 @@ Before v0.1.0: run upstream `/codex:adversarial-review` against this repo. Addre
 | R10 | `--bare` OAuth incompatibility would have broken Claude calls in v3. | Resolved in v4: `--setting-sources ""`. |
 | R11 | Hook timeout enforcement means gate hooks with real work will silently fail. | v1 ships no hooks. Review-gate feature deferred. |
 | R12 | `--json-schema` is soft contract. | Parse `structured_output`; fall back to text-parse + retry once. |
-| R13 | Plugin commands are TUI-only; no programmatic `codex exec` invocation. | Documented. Consumers invoke via Codex TUI. CI/automation use companion directly (`node companion.mjs run ...`). |
+| R13 | Plugin command docs are packaged but not invokable in Codex CLI 0.125.0. | Documented. CI/automation use companion directly (`node companion.mjs run ...`). Native TUI invocation is blocked on upstream Codex support. |
 | R14 | Shared-lib parametrization introduces upstream-drift risk. | Minimal surface (4 files need init-arg; 6 copy-verbatim). Upstream tracking via a `UPSTREAM.md` noting last-synced commit. |
 
 ## 19. Milestones (preview — writing-plans will expand)
 
-- **M0 — skeleton + install-path smoke.** Two plugins + `.agents/plugins/marketplace.json`. Single `/<target>-ping` command that prints "ok". Live-install from github, enable in TUI, invoke command, see "ok".
+- **M0 — skeleton + install-path smoke.** Two plugins + `.agents/plugins/marketplace.json`. Live-install from github and enable in TUI. Diagnostic ping command docs are deferred until upstream Codex supports plugin command registration.
 - **M1 — shared-lib port + parametrization.** Port 10 upstream lib files per plugin; parametrize the 4 coupled ones. Unit tests for `workspace`, `process`, `jobs`, `args`, `render`.
 - **M2 — Claude foreground runtime (review mode).** `claude-companion run --mode=review --foreground` with `--setting-sources ""` + `--disallowedTools`. Foreground flow end-to-end with a mock CLI. `/claude-review` command invokes it.
 - **M3 — Claude commands + rescue subagent.** Port `commands/*.md`, `agents/claude-rescue.md`. Status/result/cancel commands. Foreground review + adversarial-review + setup work.
@@ -751,7 +797,7 @@ Adversarial-review gate between milestones where risk warrants.
 
 ## 20. Success criteria
 
-- `codex plugin marketplace add seungpyoson/codex-plugin-multi` installs the marketplace. User enables each plugin via TUI. Bare slash commands (`/claude-rescue`, `/gemini-review`, …) appear in the palette.
+- `codex plugin marketplace add seungpyoson/codex-plugin-multi` installs the marketplace. User enables each plugin via TUI. In Codex CLI 0.125.0, packaged command docs do not appear as slash commands in the palette; native slash invocation remains an upstream-support criterion.
 - `/claude-rescue <task>` launches a background Claude job, returns job ID, `/claude-result <id>` renders usable output. User never sees companion internals.
 - `/gemini-review` returns a review under `--policy` + disposable containment. Any file mutation in the user's working tree is reported as WARNING, never auto-reverted.
 - All 7 actions × 2 targets work.
@@ -984,7 +1030,7 @@ Git-derived scopes (`staged`, `branch-diff`, `head`) are **object-pure snapshots
 14. Denial detection parses both `permission_denials[]` and result text (plan-mode pre-emption not in denials array).
 15. Hook timeout enforced; v1 ships no hooks.
 16. Cost attribution: OAuth reports `apiKeySource: None`; quota-based.
-17. TUI-only command invocation documented (no `codex exec` path).
+17. Command invocation gap documented: no `codex exec` path and no plugin command registration in Codex CLI 0.125.0 TUI.
 
 ## Appendix: v5 change log (v4 → v5)
 

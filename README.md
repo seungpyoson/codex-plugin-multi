@@ -7,8 +7,11 @@ lets Claude Code delegate to Codex.
 
 - **License:** Apache-2.0. Portions are ported from MIT-licensed upstream code;
   see `NOTICE`.
-- **State:** active development. Claude and Gemini review/rescue/status/result
-  flows are implemented and covered by mock smoke tests. Gemini `cancel` is deferred.
+- **State:** active development. Claude and Gemini companion
+  review/rescue/status/result flows are implemented and covered by mock smoke
+  tests. Gemini `cancel` is deferred. Fresh-install verification on Codex CLI
+  0.125.0 found that the marketplace installs successfully, but the TUI does
+  not register plugin command files as slash commands.
 
 ## Requirements
 
@@ -37,23 +40,44 @@ Then enable the plugins you want:
 In the plugin picker, enable `claude` and/or `gemini`. You can enable one
 without the other.
 
-## First commands
+## Current Codex 0.125.0 TUI limitation
 
-Run setup checks first:
+Codex CLI 0.125.0 does not currently expose plugin `commands/*.md` files as TUI slash commands.
+The command docs below are packaged for the intended plugin-command surface and
+future or compatible Codex builds, but plugin command files are not valid slash
+commands in this Codex build.
+
+Until Codex exposes plugin command files through the TUI, verify runtime behavior
+through the user-invocable skill fallback, the mock smoke tests, opt-in live E2E
+tests, or the companion scripts under `plugins/<target>/scripts/`.
+
+## Skill fallback
+
+Codex CLI 0.125.0 can load plugin skills, so each plugin exposes one
+user-invocable skill fallback:
+
+- **Claude delegation skill:** asks Claude Code to run setup checks, review,
+  adversarial review, rescue, status, result, or cancel workflows through
+  `plugins/claude/scripts/claude-companion.mjs`.
+- **Gemini delegation skill:** asks Gemini CLI to run setup checks, review,
+  adversarial review, rescue, status, or result workflows through
+  `plugins/gemini/scripts/gemini-companion.mjs`. Gemini `cancel` remains
+  deferred.
+
+Example prompts:
 
 ```text
-/claude-setup
-/gemini-setup
+Use the Claude delegation skill to review the current diff for regressions.
+Use the Gemini delegation skill for an adversarial review of this design.
 ```
 
-Then verify dispatch:
+## Deferred command docs
 
-```text
-/claude-ping
-/gemini-ping
-```
-
-Each ping should return `ok`. A first useful review command is:
+The plugin still packages command docs for the intended future slash-command
+surface, except diagnostic ping command docs are deferred until upstream Codex
+registers plugin command files. The ping follow-up is tracked in
+https://github.com/seungpyoson/codex-plugin-multi/issues/13. Example future
+command docs:
 
 ```text
 /claude-review check this diff for regressions
@@ -64,18 +88,18 @@ Each ping should return `ok`. A first useful review command is:
 
 | Command | Status | Behavior |
 |---|---|---|
-| `/claude-ping` / `/gemini-ping` | Shipped | Diagnostic plugin dispatch check. |
-| `/claude-setup` / `/gemini-setup` | Shipped | Target CLI availability and OAuth readiness check. |
-| `/claude-review [focus]` / `/gemini-review [focus]` | Shipped | Read-only review profile over the selected scope. |
-| `/claude-adversarial-review [focus]` / `/gemini-adversarial-review [focus]` | Shipped | Read-only forced-dissent review profile. |
-| `/claude-rescue <task>` / `/gemini-rescue <task>` | Shipped | Background investigation or fix by the target CLI. |
-| `/claude-status` / `/gemini-status` | Shipped | List active and recent jobs for the current workspace. |
-| `/claude-result <job-id>` / `/gemini-result <job-id>` | Shipped | Show the persisted result for a job. |
-| `/claude-cancel <job-id>` | Shipped | Cancel a running Claude background job. Use Ctrl+C for foreground runs. |
+| `/claude-setup` / `/gemini-setup` | Packaged | Target CLI availability and OAuth readiness check. |
+| `/claude-review [focus]` / `/gemini-review [focus]` | Packaged | Read-only review profile over the selected scope. |
+| `/claude-adversarial-review [focus]` / `/gemini-adversarial-review [focus]` | Packaged | Read-only forced-dissent review profile. |
+| `/claude-rescue <task>` / `/gemini-rescue <task>` | Packaged | Background investigation or fix by the target CLI. |
+| `/claude-status` / `/gemini-status` | Packaged | List active and recent jobs for the current workspace. |
+| `/claude-result <job-id>` / `/gemini-result <job-id>` | Packaged | Show the persisted result for a job. |
+| `/claude-cancel <job-id>` | Packaged | Cancel a running Claude background job. Use Ctrl+C for foreground runs. |
 | `/gemini-cancel <job-id>` | Deferred | Gemini `cancel` currently returns `not_implemented`; use Ctrl+C for foreground runs. |
 
-Background jobs return a `job_id`. Use `/<target>-status` to list jobs and
-`/<target>-result <job-id>` to inspect the terminal record.
+Background jobs return a `job_id`. In a Codex build that supports plugin command
+files, use `/<target>-status` to list jobs and `/<target>-result <job-id>` to
+inspect the terminal record.
 
 ## Safety posture
 

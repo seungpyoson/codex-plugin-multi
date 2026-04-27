@@ -5,8 +5,11 @@
 ### Features shipped
 
 - Added the Claude and Gemini Codex plugins under one marketplace manifest.
-- Shipped the shared command surface for both targets: ping, setup, review,
-  adversarial-review, rescue, status, result, and cancel command docs.
+- Shipped user-invocable Claude and Gemini delegation skills as the supported
+  Codex plugin surface for setup, review, adversarial-review, rescue, status,
+  result, and cancel-aware workflows.
+- Packaged the shared non-ping command docs for both targets: setup, review,
+  adversarial-review, rescue, status, result, and cancel.
 - Implemented Claude review/rescue lifecycle with foreground and background job
   records, prompt sidecars, status/result lookup, continuation, and background
   cancellation.
@@ -19,6 +22,13 @@
 
 ### Known limitations
 
+- Codex CLI 0.125.0 does not currently expose plugin `commands/*.md` files as TUI slash commands.
+  Fresh-install verification confirmed `/claude-ping` is rejected even after the
+  Claude plugin is installed and enabled. The command docs are packaged, but the
+  current TUI slash-command registry only dispatches built-ins.
+- Diagnostic ping command docs are deferred until upstream Codex exposes plugin
+  command files through the TUI. Tracked in
+  https://github.com/seungpyoson/codex-plugin-multi/issues/13.
 - Gemini `cancel` is still deferred and returns `not_implemented`.
 - Live Claude/Gemini E2E tests require local OAuth state and are opt-in, not CI
   defaults.

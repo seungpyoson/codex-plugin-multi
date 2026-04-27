@@ -98,10 +98,12 @@ test("README documents shipped install path, first commands, and safety posture"
   assert.doesNotMatch(readme, /M0|M2\+|Planned surface/i);
   assert.match(readme, /codex plugin marketplace add seungpyoson\/codex-plugin-multi/);
   assert.match(readme, /\/plugins/);
-  assert.match(readme, /\/claude-setup/);
-  assert.match(readme, /\/gemini-setup/);
-  assert.match(readme, /\/claude-ping/);
-  assert.match(readme, /\/gemini-ping/);
+  assert.match(readme, /user-invocable skill fallback/);
+  assert.match(readme, /Claude delegation skill/);
+  assert.match(readme, /Gemini delegation skill/);
+  assert.doesNotMatch(readme, /Diagnostic plugin dispatch check/);
+  assert.doesNotMatch(readme, /\/claude-ping/);
+  assert.doesNotMatch(readme, /\/gemini-ping/);
   assert.match(readme, /\/claude-review/);
   assert.match(readme, /\/gemini-review/);
   assert.match(readme, /\/claude-rescue/);

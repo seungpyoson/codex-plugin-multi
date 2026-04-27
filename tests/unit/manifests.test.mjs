@@ -48,9 +48,9 @@ test("both plugins declared in marketplace match filesystem layout", () => {
   }
 });
 
-test("claude and gemini expose the full v0.1 command surface", () => {
+test("claude and gemini package non-ping command docs until upstream slash support lands", () => {
   const commands = [
-    "ping", "review", "adversarial-review", "rescue",
+    "review", "adversarial-review", "rescue",
     "setup", "status", "result", "cancel",
   ];
   for (const plugin of ["claude", "gemini"]) {
@@ -58,7 +58,32 @@ test("claude and gemini expose the full v0.1 command surface", () => {
       const rel = `plugins/${plugin}/commands/${plugin}-${command}.md`;
       assert.equal(existsSync(path.join(REPO_ROOT, rel)), true, `${rel} missing`);
     }
+    const pingRel = `plugins/${plugin}/commands/${plugin}-ping.md`;
+    assert.equal(existsSync(path.join(REPO_ROOT, pingRel)), false, `${pingRel} must stay deferred`);
   }
+});
+
+test("claude and gemini expose user-invocable skill fallbacks", () => {
+  for (const plugin of ["claude", "gemini"]) {
+    const rel = `plugins/${plugin}/skills/${plugin}-delegation/SKILL.md`;
+    const skill = readFileSync(path.join(REPO_ROOT, rel), "utf8");
+    assert.match(skill, new RegExp(`name: ${plugin}-delegation`));
+    assert.match(skill, /user-invocable: true/);
+    assert.match(skill, new RegExp(`${plugin}-companion\\.mjs`));
+  }
+});
+
+test("release docs disclose current Codex slash-command limitation", () => {
+  const readme = readFileSync(path.join(REPO_ROOT, "README.md"), "utf8");
+  const changelog = readFileSync(path.join(REPO_ROOT, "CHANGELOG.md"), "utf8");
+  const releaseVerification = readFileSync(path.join(REPO_ROOT, "docs/release-verification.md"), "utf8");
+
+  const limitation = /Codex CLI 0\.125\.0 does not currently expose plugin `commands\/\*\.md` files as TUI slash commands/;
+  assert.match(readme, limitation);
+  assert.match(readme, /user-invocable skill fallback/);
+  assert.match(changelog, limitation);
+  assert.match(releaseVerification, /Root cause confirmed/);
+  assert.match(releaseVerification, /find_builtin_command/);
 });
 
 test("release metadata documents v0.1.0 for both plugins", () => {

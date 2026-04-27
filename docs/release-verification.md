@@ -7,15 +7,18 @@ machine or account state that has not previously installed this marketplace.
 
 ## Scope
 
-Verify that a new user can install the marketplace, enable both plugins, and run
-one command per target from Codex.
+Verify that a new user can install the marketplace, enable both plugins, and see
+the supported user-invocable delegation skills from Codex. Native plugin slash
+commands remain blocked by Codex CLI 0.125.0.
 
 ## Preconditions
 
 - Codex is installed and has plugin marketplace support.
 - Git and Node.js are available on `PATH`.
-- Claude Code is installed and authenticated if verifying `/claude-setup`.
-- Gemini CLI is installed and authenticated if verifying `/gemini-setup`.
+- Claude Code is installed and authenticated if verifying the Claude setup
+  workflow.
+- Gemini CLI is installed and authenticated if verifying the Gemini setup
+  workflow.
 - The release branch has been merged to the repository location being installed.
 
 ## Fresh-install steps
@@ -56,33 +59,33 @@ codex
 
 Expected: both `claude` and `gemini` are listed. Enable both.
 
-5. Run one diagnostic command per plugin:
+5. Confirm supported fallback skills are model-visible.
 
 ```text
-/claude-ping
-/gemini-ping
+Ask Codex what Claude and Gemini plugin skills are available.
 ```
 
-Expected: each returns `ok`.
+Expected: `claude-delegation` and `gemini-delegation` are available after both
+plugins are enabled.
 
 6. Run setup checks if the target CLIs are installed and authenticated:
 
 ```text
-/claude-setup
-/gemini-setup
+Use the Claude delegation skill to run the setup check.
+Use the Gemini delegation skill to run the setup check.
 ```
 
 Expected: each reports target CLI readiness. If a target CLI is intentionally
 missing on the verification machine, record that as skipped with the reason.
 
-7. Run one read-only review command per target:
+7. Run one read-only review workflow per target:
 
 ```text
-/claude-review smoke-check the seeded repository
-/gemini-review smoke-check the seeded repository
+Use the Claude delegation skill to review the seeded repository.
+Use the Gemini delegation skill to review the seeded repository.
 ```
 
-Expected: each command returns a completed result or a clear target-CLI error.
+Expected: each workflow returns a completed result or a clear target-CLI error.
 Target-CLI quota/authentication failures are environment failures, not plugin
 packaging failures, and must be recorded explicitly.
 
@@ -149,6 +152,33 @@ Fresh-install TUI check:
   `/claude-ping`. `Gemini` was installed and enabled in config, but did not
   appear in the model-visible plugin list because it contributes no skills,
   apps, or MCP servers.
+
+Root cause confirmed:
+
+- Codex CLI 0.125.0 does not currently expose plugin `commands/*.md` files as TUI slash commands.
+- In current upstream `openai/codex`, TUI dispatch routes typed slash prompts
+  through `find_builtin_command` and rejects anything that is not a built-in
+  `SlashCommand` enum variant. Relevant paths:
+  `codex-rs/tui/src/chatwidget/slash_dispatch.rs`,
+  `codex-rs/tui/src/bottom_pane/slash_commands.rs`, and
+  `codex-rs/tui/src/slash_command.rs`.
+- The plugin manifest/loader path only imports `skills`, `mcpServers`, `apps`,
+  plus default `skills/`, `.mcp.json`, and `.app.json` files. It has no
+  manifest field or loader branch for `commands/`. Relevant paths:
+  `codex-rs/core-plugins/src/manifest.rs` and
+  `codex-rs/core-plugins/src/loader.rs`.
+- This is not fixable by adding a missing `commands` field to this repository's
+  plugin manifests; Codex CLI 0.125.0 has no such manifest field. The packaged
+  non-ping command docs are retained for the intended plugin-command surface and
+  future or compatible Codex builds.
+
+Local mitigation:
+
+- Diagnostic ping command docs are deferred until upstream Codex registers
+  plugin command files. Follow-up: GH-13.
+- Claude and Gemini now expose user-invocable delegation skills as the supported
+  Codex plugin surface. This also gives Gemini a model-visible contribution
+  without requiring apps or MCP servers.
 
 ## Current branch evidence
 

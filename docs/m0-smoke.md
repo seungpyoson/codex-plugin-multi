@@ -39,25 +39,25 @@ Config post-remove: `grep codex-plugin-multi ~/.codex/config.toml` → no matche
 
 **Conclusion:** local path install round-trip works. Both plugin directories (`plugins/claude`, `plugins/gemini`) are discoverable through the marketplace manifest.
 
-## T0.4 — TUI dispatch smoke (deferred, human verification required)
+## T0.4 — TUI dispatch smoke (superseded)
 
-`/claude-ping` and `/gemini-ping` command files are wired. Actual TUI
-dispatch cannot be exercised headlessly (see spec §4.18: plugin slash
-commands are TUI-only; `codex exec "/claude-ping"` sends the literal
-string as prompt text, not as a command invocation).
+This original M0 plan assumed plugin command files would appear as TUI slash
+commands. Fresh-install verification on Codex CLI 0.125.0 disproved that:
+plugin `commands/*.md` files are not registered in the TUI slash-command
+dispatcher. Diagnostic ping command docs are now deferred until upstream Codex
+supports plugin command registration.
 
-**Manual verification steps (run on any workstation with Codex CLI):**
+**Current verification steps:**
 
 1. `codex plugin marketplace add /path/to/codex-plugin-multi`
 2. Launch `codex` (TUI).
 3. Type `/plugins`, press Enter. Both `claude` and `gemini` plugins listed as available.
 4. Highlight each, press Space to toggle enabled.
-5. Type `/claude-ping` — expect autocomplete + reply `ok`.
-6. Type `/gemini-ping` — expect autocomplete + reply `ok`.
-7. `codex plugin marketplace remove codex-plugin-multi` when done.
+5. Confirm the Claude and Gemini delegation skills are model-visible.
+6. `codex plugin marketplace remove codex-plugin-multi` when done.
 
-Any deviation (autocomplete missing, plugin not listed, non-`ok` reply,
-name collision with Codex builtins) is a blocker for M1.
+Any deviation in marketplace install, plugin enablement, or skill visibility is
+a blocker for the local fallback surface.
 
 ## T0.5 — github install smoke (deferred, post-push)
 
