@@ -20,7 +20,7 @@ function seedMinimalRepo(cwd) {
   spawnSync("git", ["init", "-q", "-b", "main"], { cwd });
   spawnSync("bash", ["-c",
     "echo seed > seed.txt && git add seed.txt && " +
-    "git -c user.email=t@t -c user.name=t commit -q -m seed"], { cwd });
+    "git -c core.hooksPath=/dev/null -c user.email=t@t -c user.name=t commit -q -m seed"], { cwd });
 }
 
 function runCompanion(args, { cwd, env = {}, dataDir = mkdtempSync(path.join(tmpdir(), "gemini-smoke-data-")) } = {}) {
@@ -35,6 +35,25 @@ function runCompanion(args, { cwd, env = {}, dataDir = mkdtempSync(path.join(tmp
     },
   });
   return { ...res, dataDir };
+}
+
+function sleepSync(ms) {
+  const signal = new Int32Array(new SharedArrayBuffer(4));
+  Atomics.wait(signal, 0, 0, ms);
+}
+
+function rmTree(target) {
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    try {
+      rmSync(target, { recursive: true, force: true });
+      return;
+    } catch (e) {
+      if (!["ENOTEMPTY", "EBUSY", "EPERM"].includes(e.code) || attempt === 4) {
+        throw e;
+      }
+      sleepSync(50);
+    }
+  }
 }
 
 function readOnlyJobRecord(dataDir) {
@@ -128,8 +147,8 @@ test("gemini rescue background: launched event and terminal JobRecord", async ()
     assert.equal(meta.gemini_session_id, GEMINI_SESSION_ID);
     assert.equal("prompt" in meta, false, "full prompt must not appear on JobRecord");
   } finally {
-    rmSync(dataDir, { recursive: true, force: true });
-    rmSync(cwd, { recursive: true, force: true });
+    rmTree(dataDir);
+    rmTree(cwd);
   }
 });
 
@@ -176,8 +195,8 @@ test("gemini rescue background: active job appears in default status", async () 
     }
     assert.ok(terminal, "background job did not finish before cleanup");
   } finally {
-    rmSync(dataDir, { recursive: true, force: true });
-    rmSync(cwd, { recursive: true, force: true });
+    rmTree(dataDir);
+    rmTree(cwd);
   }
 });
 
@@ -207,8 +226,8 @@ test("gemini background worker spawn failure writes failed JobRecord instead of 
       "prompt sidecar must be removed when the worker never launches",
     );
   } finally {
-    rmSync(dataDir, { recursive: true, force: true });
-    rmSync(cwd, { recursive: true, force: true });
+    rmTree(dataDir);
+    rmTree(cwd);
   }
 });
 
@@ -243,8 +262,33 @@ test("gemini continue foreground: resumes prior job session", () => {
     assert.equal(fx.t7_prompt_from_stdin, true, "Gemini continue prompt must arrive on stdin, not argv");
     assert.equal("prompt" in record, false, "full prompt must not appear on JobRecord");
   } finally {
-    rmSync(first.dataDir, { recursive: true, force: true });
-    rmSync(cwd, { recursive: true, force: true });
+    rmTree(first.dataDir);
+    rmTree(cwd);
+  }
+});
+
+test("gemini continue foreground: refuses to resume a running job", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "gemini-continue-running-cwd-"));
+  seedMinimalRepo(cwd);
+  const first = runCompanion(
+    ["run", "--mode=rescue", "--foreground", "--model", "gemini-3-flash-preview",
+     "--cwd", cwd, "--", "initial rescue task"],
+    { cwd },
+  );
+  try {
+    assert.equal(first.status, 0, `exit ${first.status}: ${first.stderr}`);
+    const { metaPath, record } = readOnlyJobRecord(first.dataDir);
+    writeFileSync(metaPath, `${JSON.stringify({ ...record, status: "running" }, null, 2)}\n`, "utf8");
+
+    const continued = runCompanion(
+      ["continue", "--job", record.job_id, "--foreground", "--cwd", cwd, "--", "continue rescue task"],
+      { cwd, dataDir: first.dataDir },
+    );
+    assert.notEqual(continued.status, 0);
+    assert.match(continued.stderr, /cannot continue job in status "running"/);
+  } finally {
+    rmTree(first.dataDir);
+    rmTree(cwd);
   }
 });
 
@@ -310,8 +354,8 @@ test("gemini continue background: launched event and resumed terminal JobRecord"
     assert.equal(fx.t7_resume_id, prior.gemini_session_id);
     assert.equal("prompt" in meta, false, "full prompt must not appear on JobRecord");
   } finally {
-    rmSync(first.dataDir, { recursive: true, force: true });
-    rmSync(cwd, { recursive: true, force: true });
+    rmTree(first.dataDir);
+    rmTree(cwd);
   }
 });
 
@@ -361,8 +405,8 @@ test("gemini _run-worker refuses terminal JobRecord without overwriting it", asy
     assert.equal(after.result, "Mock Gemini response.");
     assert.equal(after.gemini_session_id, GEMINI_SESSION_ID);
   } finally {
-    rmSync(dataDir, { recursive: true, force: true });
-    rmSync(cwd, { recursive: true, force: true });
+    rmTree(dataDir);
+    rmTree(cwd);
   }
 });
 
@@ -422,8 +466,8 @@ test("gemini _run-worker writes failed JobRecord when queued prompt sidecar is m
   } finally {
     if (previous === undefined) delete process.env.GEMINI_PLUGIN_DATA;
     else process.env.GEMINI_PLUGIN_DATA = previous;
-    rmSync(dataDir, { recursive: true, force: true });
-    rmSync(cwd, { recursive: true, force: true });
+    rmTree(dataDir);
+    rmTree(cwd);
   }
 });
 
@@ -457,8 +501,8 @@ test("gemini review foreground: policy-first, stdin transport, /tmp cwd, scoped 
     assert.equal(fx.t7_skip_trust, true, "Gemini review must pass --skip-trust so plan approval is not downgraded");
     assert.equal(fx.t7_prompt_from_stdin, true, "Gemini prompt must arrive on stdin, not argv");
   } finally {
-    rmSync(dataDir, { recursive: true, force: true });
-    rmSync(cwd, { recursive: true, force: true });
+    rmTree(dataDir);
+    rmTree(cwd);
   }
 });
 
@@ -478,8 +522,8 @@ test("gemini review preserves result when pre-run mutation detection is unavaila
     assert.ok(record.mutations.some((m) => m.startsWith("mutation_detection_failed:")),
       `mutation detection failure must be surfaced, got ${JSON.stringify(record.mutations)}`);
   } finally {
-    rmSync(dataDir, { recursive: true, force: true });
-    rmSync(cwd, { recursive: true, force: true });
+    rmTree(dataDir);
+    rmTree(cwd);
   }
 });
 
@@ -498,8 +542,8 @@ test("gemini review preserves pre-run mutation detection failure when target spa
     assert.ok(record.mutations.some((m) => m.startsWith("mutation_detection_failed:")),
       `mutation detection failure must survive spawn failure, got ${JSON.stringify(record.mutations)}`);
   } finally {
-    rmSync(dataDir, { recursive: true, force: true });
-    rmSync(cwd, { recursive: true, force: true });
+    rmTree(dataDir);
+    rmTree(cwd);
   }
 });
 
@@ -528,8 +572,8 @@ test("gemini review preserves result when post-run mutation detection is unavail
     assert.ok(record.mutations.some((m) => m.startsWith("mutation_detection_failed:")),
       `mutation detection failure must be surfaced, got ${JSON.stringify(record.mutations)}`);
   } finally {
-    rmSync(dataDir, { recursive: true, force: true });
-    rmSync(cwd, { recursive: true, force: true });
+    rmTree(dataDir);
+    rmTree(cwd);
   }
 });
 
@@ -563,8 +607,8 @@ test("gemini scope population failure skips target CLI spawn", () => {
     assert.match(record.error_message, /unsafe_symlink/);
     assert.equal(existsSync(marker), false, "target CLI marker proves Gemini binary was spawned");
   } finally {
-    rmSync(dataDir, { recursive: true, force: true });
-    rmSync(cwd, { recursive: true, force: true });
+    rmTree(dataDir);
+    rmTree(cwd);
   }
 });
 
@@ -606,8 +650,8 @@ test("gemini status default hides inactive jobs and --all includes every state",
       ["cancelled", "completed", "failed", "queued", "running", "stale"],
     );
   } finally {
-    rmSync(dataDir, { recursive: true, force: true });
-    rmSync(cwd, { recursive: true, force: true });
+    rmTree(dataDir);
+    rmTree(cwd);
   }
 });
 
@@ -624,7 +668,7 @@ test("gemini ping returns ok with the mock gemini binary", () => {
     assert.equal(parsed.model, "gemini-3-flash-preview");
     assert.equal(parsed.session_id, GEMINI_SESSION_ID);
   } finally {
-    rmSync(dataDir, { recursive: true, force: true });
-    rmSync(cwd, { recursive: true, force: true });
+    rmTree(dataDir);
+    rmTree(cwd);
   }
 });

@@ -24,6 +24,7 @@ async function fixture(name, setup) {
       "plugins/claude/commands/claude-review.md",
       "plugins/gemini/commands/gemini-review.md",
       "plugins/claude/skills/claude-cli-runtime/SKILL.md",
+      "plugins/claude/skills/claude-delegation/SKILL.md",
       "plugins/claude/agents/claude-rescue.md",
     ]) {
       await mkdir(dirname(join(dir, f)), { recursive: true });

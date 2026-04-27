@@ -179,6 +179,8 @@ export async function spawnClaude(profile, runtimeInputs = {}) {
   });
 
   return new Promise((resolve, reject) => {
+    // Claude receives the prompt via argv and ignores stdin, so there is no
+    // stdin EPIPE race to coordinate here. Gemini has a write/close harness.
     const child = spawn(binary, args, { cwd, env, stdio: ["ignore", "pipe", "pipe"] });
     // Capture pidInfo at spawn — this is the ownership proof the companion
     // uses on cancel (§21.1). Short-lived children may exit before `ps` /

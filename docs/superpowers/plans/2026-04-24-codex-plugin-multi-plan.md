@@ -157,7 +157,7 @@ M11 release      → T11.1 → T11.2 → T11.3 → T11.4              (was M10)
 > Superseded 2026-04-27: Codex CLI 0.125.0 does not register plugin
 > `commands/*.md` files in the TUI slash-command dispatcher. Diagnostic ping
 > command docs are deferred until upstream command registration exists; the
-> local fallback is user-invocable delegation skills.
+> local fallback is user-invocable delegation skills. Follow-up: #13.
 
 - **Goal:** one trivial command per plugin to prove the dispatch path.
 - **Files:**

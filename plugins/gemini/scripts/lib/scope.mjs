@@ -781,10 +781,10 @@ export function populateScope(profile, sourceCwd, targetPath, runtimeInputs = {}
   }
 
   // containment=none short-circuits: the target CLI reads directly from sourceCwd,
-  // nothing to populate. This check is structural (target === source), not
+  // nothing to populate. This check is structural (same resolved path), not
   // profile-field-based, so the caller's convention of "pass cwd as target
   // when containment=none" is the single source of truth.
-  if (targetPath === sourceCwd) return;
+  if (path.resolve(targetPath) === path.resolve(sourceCwd)) return;
 
   switch (profile.scope) {
     case "working-tree": scopeWorkingTree(sourceCwd, targetPath); break;

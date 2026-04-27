@@ -90,14 +90,14 @@ function seedMinimalRepo(cwd) {
   spawnSync("git", ["init", "-q", "-b", "main"], { cwd });
   spawnSync("bash", ["-c",
     "echo seed > seed.txt && git add seed.txt && " +
-    "git -c user.email=t@t -c user.name=t commit -q -m seed"], { cwd });
+    "git -c core.hooksPath=/dev/null -c user.email=t@t -c user.name=t commit -q -m seed"], { cwd });
 }
 
 function seedDirtyRepo(cwd) {
   spawnSync("git", ["init", "-q", "-b", "main"], { cwd });
   spawnSync("bash", ["-c",
     "echo original > seed.txt && git add seed.txt && " +
-    "git -c user.email=t@t -c user.name=t commit -q -m seed && " +
+    "git -c core.hooksPath=/dev/null -c user.email=t@t -c user.name=t commit -q -m seed && " +
     "echo modified > seed.txt"], { cwd });
 }
 

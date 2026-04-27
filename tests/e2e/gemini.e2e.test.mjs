@@ -13,7 +13,7 @@ function seedRepo(cwd) {
   spawnSync("git", ["init", "-q", "-b", "main"], { cwd });
   writeFileSync(path.join(cwd, "README.md"), "# Gemini E2E\n");
   spawnSync("git", ["add", "README.md"], { cwd });
-  spawnSync("git", ["-c", "user.email=e2e@example.invalid", "-c", "user.name=e2e", "commit", "-q", "-m", "seed"], { cwd });
+  spawnSync("git", ["-c", "core.hooksPath=/dev/null", "-c", "user.email=e2e@example.invalid", "-c", "user.name=e2e", "commit", "-q", "-m", "seed"], { cwd });
 }
 
 test("live Gemini foreground review completes", {

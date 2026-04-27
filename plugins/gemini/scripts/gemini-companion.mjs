@@ -61,6 +61,10 @@ function mutationDetectionFailure(error, context = null) {
   return `mutation_detection_failed: ${context ? `${context}: ` : ""}${message}`;
 }
 
+function gitStatusLines(output) {
+  return output.split("\n").map((line) => line.trimEnd()).filter((line) => line.length > 0);
+}
+
 function invocationFromRecord(record) {
   return {
     job_id: record.job_id,
@@ -310,33 +314,37 @@ async function executeRun(invocation, prompt, { foreground }) {
     process.exit(2);
   }
 
-  if (checkMutations && gitStatusBefore !== null) {
-    let gitStatusAfter;
-    try {
-      gitStatusAfter = gitStatus(["status", "-s", "--untracked-files=all"], cwd);
-      writeSidecar(workspaceRoot, jobId, "git-status-after.txt", gitStatusAfter);
-    } catch (e) {
-      mutations.push(mutationDetectionFailure(e));
-      gitStatusAfter = null;
+  let finalRecord;
+  try {
+    if (checkMutations && gitStatusBefore !== null) {
+      let gitStatusAfter;
+      try {
+        gitStatusAfter = gitStatus(["status", "-s", "--untracked-files=all"], cwd);
+        writeSidecar(workspaceRoot, jobId, "git-status-after.txt", gitStatusAfter);
+      } catch (e) {
+        mutations.push(mutationDetectionFailure(e));
+        gitStatusAfter = null;
+      }
+      if (gitStatusAfter && gitStatusAfter !== gitStatusBefore) {
+        const beforeLines = new Set(gitStatusLines(gitStatusBefore));
+        mutations.push(...gitStatusLines(gitStatusAfter).filter((line) => !beforeLines.has(line)));
+      }
     }
-    if (gitStatusAfter && gitStatusAfter !== gitStatusBefore) {
-      const beforeLines = new Set(gitStatusBefore.split("\n").map((l) => l.trim()).filter(Boolean));
-      mutations.push(...gitStatusAfter.split("\n").map((l) => l.trim()).filter((l) => l && !beforeLines.has(l)));
-    }
-  }
 
-  const finalRecord = buildJobRecord(invocation, {
-    exitCode: execution.exitCode,
-    parsed: execution.parsed,
-    pidInfo: execution.pidInfo,
-    geminiSessionId: execution.geminiSessionId,
-  }, mutations);
-  writeJobFile(workspaceRoot, jobId, finalRecord);
-  upsertJob(workspaceRoot, finalRecord);
-  writeSidecar(workspaceRoot, jobId, "stdout.log", execution.stdout);
-  writeSidecar(workspaceRoot, jobId, "stderr.log", execution.stderr);
-  if (neutralCwd) rmSync(neutralCwd, { recursive: true, force: true });
-  if (containment.disposed && disposeEffective) containment.cleanup();
+    finalRecord = buildJobRecord(invocation, {
+      exitCode: execution.exitCode,
+      parsed: execution.parsed,
+      pidInfo: execution.pidInfo,
+      geminiSessionId: execution.geminiSessionId,
+    }, mutations);
+    writeJobFile(workspaceRoot, jobId, finalRecord);
+    upsertJob(workspaceRoot, finalRecord);
+    writeSidecar(workspaceRoot, jobId, "stdout.log", execution.stdout);
+    writeSidecar(workspaceRoot, jobId, "stderr.log", execution.stderr);
+  } finally {
+    if (neutralCwd) rmSync(neutralCwd, { recursive: true, force: true });
+    if (containment.disposed && disposeEffective) containment.cleanup();
+  }
   if (foreground) printJson(finalRecord);
   process.exit(finalRecord.status === "completed" ? 0 : 2);
 }
@@ -412,6 +420,10 @@ async function cmdContinue(rest) {
     prior = JSON.parse(readFileSync(jobFile, "utf8"));
   } catch (e) {
     fail("bad_args", e.message);
+  }
+
+  if (!["completed", "failed"].includes(prior.status)) {
+    fail("bad_state", `cannot continue job in status ${JSON.stringify(prior.status)}; wait for terminal status or cancel first`);
   }
 
   const prompt = positionals.join(" ").trim();

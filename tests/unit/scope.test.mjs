@@ -20,18 +20,25 @@ import path from "node:path";
 
 import { populateScope } from "../../plugins/claude/scripts/lib/scope.mjs";
 
+const GIT_TEST_TIMEOUT_MS = 15000;
+
 // Spawns `git` synchronously with a clean env (same discipline as the
 // production code). Throws on non-zero exit so test failures are loud.
 function git(cwd, ...args) {
-  const res = spawnSync("git", ["-C", cwd, ...args], {
+  const res = spawnSync("git", ["-C", cwd, "-c", "core.hooksPath=/dev/null", ...args], {
     encoding: "utf8",
+    timeout: GIT_TEST_TIMEOUT_MS,
     env: {
       ...process.env,
+      GIT_CONFIG_NOSYSTEM: "1",
       GIT_DIR: undefined, GIT_WORK_TREE: undefined, GIT_INDEX_FILE: undefined,
       GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@t",
       GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@t",
     },
   });
+  if (res.error) {
+    throw new Error(`git ${args.join(" ")} failed: ${res.error.message}`);
+  }
   if (res.status !== 0) {
     throw new Error(`git ${args.join(" ")} failed: ${res.stderr}`);
   }
@@ -39,16 +46,21 @@ function git(cwd, ...args) {
 }
 
 function gitStdin(cwd, input, ...args) {
-  const res = spawnSync("git", ["-C", cwd, ...args], {
+  const res = spawnSync("git", ["-C", cwd, "-c", "core.hooksPath=/dev/null", ...args], {
     encoding: "utf8",
     input,
+    timeout: GIT_TEST_TIMEOUT_MS,
     env: {
       ...process.env,
+      GIT_CONFIG_NOSYSTEM: "1",
       GIT_DIR: undefined, GIT_WORK_TREE: undefined, GIT_INDEX_FILE: undefined,
       GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@t",
       GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@t",
     },
   });
+  if (res.error) {
+    throw new Error(`git ${args.join(" ")} failed: ${res.error.message}`);
+  }
   if (res.status !== 0) {
     throw new Error(`git ${args.join(" ")} failed: ${res.stderr}`);
   }
@@ -939,15 +951,18 @@ test("populateScope scope=staged: rejects unmerged index entries", () => {
     git(src, "add", "conflict.txt");
     git(src, "commit", "-qm", "right");
 
-    const merge = spawnSync("git", ["-C", src, "merge", "left"], {
+    const merge = spawnSync("git", ["-C", src, "-c", "core.hooksPath=/dev/null", "merge", "left"], {
       encoding: "utf8",
+      timeout: GIT_TEST_TIMEOUT_MS,
       env: {
         ...process.env,
+        GIT_CONFIG_NOSYSTEM: "1",
         GIT_DIR: undefined, GIT_WORK_TREE: undefined, GIT_INDEX_FILE: undefined,
         GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@t",
         GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@t",
       },
     });
+    if (merge.error) throw new Error(`git merge left failed: ${merge.error.message}`);
     assert.notEqual(merge.status, 0, "test setup should create an unmerged index");
 
     assert.throws(
@@ -3372,19 +3387,21 @@ test("populateScope scope=custom: throws scope_paths_required when glob list is 
   }
 });
 
-test("populateScope containment=none: no-op (target === source is caller's convention)", () => {
+test("populateScope containment=none: no-op for equivalent source and target paths", () => {
   const src = seedRepo();
   try {
     writeFileSync(path.join(src, "A.txt"), "a\n");
+    mkdirSync(path.join(src, "dir-target"));
+    symlinkSync("dir-target", path.join(src, "dir-link"));
     git(src, "add", ".");
     git(src, "commit", "-qm", "seed");
-    // When containment=none the caller passes sourceCwd as targetPath; the
-    // function must detect this and do nothing (no copy-onto-self crash).
+    // When containment=none the caller passes sourceCwd as targetPath. The
+    // function must detect path-equivalent forms and do nothing.
     const profileNone = Object.freeze({
       name: "rescue", containment: "none", scope: "working-tree", dispose_default: false,
     });
     // Should not throw.
-    populateScope(profileNone, src, src);
+    populateScope(profileNone, src, src + path.sep);
   } finally {
     cleanup(src);
   }

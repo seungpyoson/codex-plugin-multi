@@ -21,7 +21,11 @@ import { resolveWorkspaceRoot } from "./workspace.mjs";
 const STATE_VERSION = 1;
 const STATE_FILE_NAME = "state.json";
 const JOBS_DIR_NAME = "jobs";
+const STATE_LOCK_DIR_NAME = ".state.lock";
+const STATE_LOCK_TIMEOUT_MS = 5000;
+const STATE_LOCK_POLL_MS = 25;
 const MAX_JOBS = 50;
+const ACTIVE_JOB_STATUSES = new Set(["queued", "running"]);
 
 // Mutable module config. Defaults to the claude port values; other targets
 // MUST call configureState() before any state read/write to override.
@@ -111,6 +115,10 @@ export function loadState(cwd) {
   }
 }
 
+function isActiveJob(job) {
+  return ACTIVE_JOB_STATUSES.has(job?.status);
+}
+
 function pruneJobs(jobs) {
   // Treat missing updatedAt as epoch-0 ("") and use a stable secondary key
   // (original index) so legacy entries without timestamps retain deterministic
@@ -122,7 +130,15 @@ function pruneJobs(jobs) {
     if (lt === rt) return left.originalIndex - right.originalIndex;
     return rt.localeCompare(lt); // newest first
   });
-  return withIndex.slice(0, MAX_JOBS).map(({ job }) => job);
+  let terminalCount = 0;
+  return withIndex
+    .filter(({ job }) => {
+      if (isActiveJob(job)) return true;
+      if (terminalCount >= MAX_JOBS) return false;
+      terminalCount += 1;
+      return true;
+    })
+    .map(({ job }) => job);
 }
 
 // UUID v4 pattern (what Claude --session-id requires). We also allow the
@@ -179,9 +195,48 @@ function removeJobLogFileIfSafe(cwd, filePath) {
 }
 
 export function saveState(cwd, state) {
+  return withStateLock(cwd, () => saveStateUnlocked(cwd, state));
+}
+
+function acquireStateLock(cwd) {
+  ensureStateDir(cwd);
+  const lockDir = path.join(resolveStateDir(cwd), STATE_LOCK_DIR_NAME);
+  const deadline = Date.now() + STATE_LOCK_TIMEOUT_MS;
+  while (true) {
+    try {
+      fs.mkdirSync(lockDir);
+      return () => {
+        try { fs.rmSync(lockDir, { recursive: true, force: true }); } catch { /* best-effort */ }
+      };
+    } catch (e) {
+      if (e.code !== "EEXIST" || Date.now() >= deadline) {
+        throw new Error(`state_lock_timeout: could not acquire ${lockDir}`);
+      }
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, STATE_LOCK_POLL_MS);
+    }
+  }
+}
+
+function withStateLock(cwd, fn) {
+  const release = acquireStateLock(cwd);
+  try {
+    return fn();
+  } finally {
+    release();
+  }
+}
+
+function mergeActivePreviousJobs(nextJobs, previousJobs) {
+  const nextIds = new Set(nextJobs.map((job) => job.id));
+  const activePrevious = previousJobs.filter((job) => isActiveJob(job) && !nextIds.has(job.id));
+  return [...nextJobs, ...activePrevious];
+}
+
+function saveStateUnlocked(cwd, state) {
   const previousJobs = loadState(cwd).jobs;
   ensureStateDir(cwd);
-  const nextJobs = pruneJobs(state.jobs ?? []);
+  const requestedJobs = Array.isArray(state.jobs) ? state.jobs : [];
+  const nextJobs = pruneJobs(mergeActivePreviousJobs(requestedJobs, previousJobs));
   const nextState = {
     version: STATE_VERSION,
     config: {
@@ -208,14 +263,9 @@ export function saveState(cwd, state) {
   }
 
   // Atomic write: write to a sibling tmp file, then rename. Rename is atomic
-  // on POSIX and prevents readers from observing a partial state.json.
-  //
-  // Limitation (documented): this does NOT provide concurrent-writer safety.
-  // Two processes updating state simultaneously will race — the later rename
-  // wins and the earlier writer's job additions are lost. Upstream accepts
-  // this because the job store is workspace-scoped and the companion
-  // contract is single-writer-per-workspace (spec §12). If the contract
-  // changes, wrap saveState in a `proper-lockfile`-style advisory lock.
+  // on POSIX and prevents readers from observing a partial state.json. The
+  // caller holds a per-workspace advisory lock so launcher/worker read-modify
+  // writes cannot clobber each other.
   const stateFile = resolveStateFile(cwd);
   const tmpFile = `${stateFile}.${process.pid}.${Date.now()}.tmp`;
   try {
@@ -231,14 +281,16 @@ export function saveState(cwd, state) {
 }
 
 export function updateState(cwd, mutate) {
-  const state = loadState(cwd);
-  const result = mutate(state);
-  // Guard against async mutate: state would save before mutation completes,
-  // losing writes (audit finding). Contract is sync-only.
-  if (result && typeof result.then === "function") {
-    throw new Error("updateState mutate must be synchronous; got a thenable");
-  }
-  return saveState(cwd, state);
+  return withStateLock(cwd, () => {
+    const state = loadState(cwd);
+    const result = mutate(state);
+    // Guard against async mutate: state would save before mutation completes,
+    // losing writes (audit finding). Contract is sync-only.
+    if (result && typeof result.then === "function") {
+      throw new Error("updateState mutate must be synchronous; got a thenable");
+    }
+    return saveStateUnlocked(cwd, state);
+  });
 }
 
 export function generateJobId(prefix = "job") {

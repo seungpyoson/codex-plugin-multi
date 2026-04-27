@@ -7,11 +7,16 @@ import { execSync } from "node:child_process";
 
 import { resolveWorkspaceRoot } from "../../plugins/claude/scripts/lib/workspace.mjs";
 
+const GIT_ENV = { ...process.env, GIT_CONFIG_NOSYSTEM: "1" };
+
 function makeGitRepo() {
   const dir = mkdtempSync(path.join(tmpdir(), "workspace-test-"));
-  execSync("git init -q", { cwd: dir });
+  execSync("git -c core.hooksPath=/dev/null init -q", { cwd: dir, env: GIT_ENV });
   writeFileSync(path.join(dir, "seed"), "");
-  execSync("git add seed && git -c user.email=t@t -c user.name=t commit -q -m seed", { cwd: dir });
+  execSync(
+    "git -c core.hooksPath=/dev/null add seed && git -c core.hooksPath=/dev/null -c user.email=t@t -c user.name=t commit -q -m seed",
+    { cwd: dir, env: GIT_ENV },
+  );
   return dir;
 }
 

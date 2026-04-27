@@ -13,16 +13,18 @@ the source path and synced commit.
 
 ## Port classification
 
-Four files are copied verbatim (target-neutral; no Codex-specific references):
+Four files are target-neutral upstream ports (no Codex-specific references);
+`git.mjs` is trimmed to the live production helper during release-candidate
+cleanup.
 
 | File | Upstream role |
 |---|---|
 | `workspace.mjs` | Resolves workspace root via git. |
 | `process.mjs`   | Generic child-process helpers (spawn, timeout, SIGTERM→SIGKILL). |
 | `args.mjs`      | Argument parsing / mutex enforcement. |
-| `git.mjs`       | Git helpers (status, branch, worktree). |
+| `git.mjs`       | Git repository preflight helper. |
 
-Removed in T7.5 (§21.5 "zero importers → deleted"):
+Removed during release-candidate cleanup (zero production importers; see PR #14):
 
 - `job-control.mjs` — imported `./codex.mjs` which does not exist in this port;
   had no production consumer. Byte-identity gave a false positive here
@@ -51,8 +53,7 @@ Dropped from the port (no analog in v1):
   transport has no Claude/Gemini equivalent in v1.
 - `codex.mjs` — replaced by per-plugin `lib/claude.mjs` / `lib/gemini.mjs`
   (lands in M2 / M7).
-- `render.mjs`, `job-control.mjs`, `prompts.mjs`, `tracked-jobs.mjs`, `fs.mjs` — see "Removed in T7.5"
-  section above.
+- `render.mjs`, `job-control.mjs`, `prompts.mjs`, `tracked-jobs.mjs`, `fs.mjs` — see release-candidate cleanup above.
 
 ## Re-sync procedure
 

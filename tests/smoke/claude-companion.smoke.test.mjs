@@ -16,10 +16,9 @@ const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..
 const COMPANION = path.join(REPO_ROOT, "plugins/claude/scripts/claude-companion.mjs");
 const MOCK = path.join(REPO_ROOT, "tests/smoke/claude-mock.mjs");
 
-function runCompanion(args, { cwd, env = {} } = {}) {
+function runCompanion(args, { cwd, env = {}, dataDir = mkdtempSync(path.join(tmpdir(), "companion-smoke-")) } = {}) {
   // Point the companion at a fresh PLUGIN_DATA dir so tests don't step on
   // each other's state or on the user's real ~/.cache.
-  const dataDir = mkdtempSync(path.join(tmpdir(), "companion-smoke-"));
   const res = spawnSync("node", [COMPANION, ...args], {
     cwd,
     env: {
@@ -61,7 +60,7 @@ function seedMinimalRepo(cwd) {
   spawnSync("git", ["init", "-q", "-b", "main"], { cwd });
   spawnSync("bash", ["-c",
     "echo seed > seed.txt && git add seed.txt && " +
-    "git -c user.email=t@t -c user.name=t commit -q -m seed"], { cwd });
+    "git -c core.hooksPath=/dev/null -c user.email=t@t -c user.name=t commit -q -m seed"], { cwd });
 }
 
 test("run --mode=review --foreground: emits JobRecord with status=completed", () => {
@@ -411,6 +410,33 @@ test("continue --job: resumes a prior session via --resume", () => {
   }
 });
 
+test("continue --job: refuses to resume a running job", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "smoke-continue-running-"));
+  const dataDir = mkdtempSync(path.join(tmpdir(), "continue-running-data-"));
+  try {
+    const runRes = runCompanion(
+      ["run", "--mode=rescue", "--foreground",
+       "--model", "claude-haiku-4-5-20251001",
+       "--cwd", cwd, "--", "seed"],
+      { cwd, dataDir },
+    );
+    assert.equal(runRes.status, 0, runRes.stderr);
+    const { metaPath, record } = readOnlyJobRecord(dataDir);
+    writeFileSync(metaPath, `${JSON.stringify({ ...record, status: "running" }, null, 2)}\n`, "utf8");
+
+    const contRes = runCompanion(
+      ["continue", "--job", record.job_id, "--foreground",
+       "--cwd", cwd, "--", "follow-up"],
+      { cwd, dataDir },
+    );
+    assert.notEqual(contRes.status, 0);
+    assert.match(contRes.stderr, /cannot continue job in status "running"/);
+  } finally {
+    rmSync(dataDir, { recursive: true, force: true });
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
 // ————— T7.2 containment/scope smoke tests —————
 // The three `run --isolated*` tests from M5 are GONE — `--isolated` is no
 // longer a CLI flag. The four tests below replace them and additionally lock
@@ -421,7 +447,7 @@ function seedDirtyRepo(cwd) {
   spawnSync("git", ["init", "-q", "-b", "main"], { cwd });
   spawnSync("bash", ["-c",
     "echo original > seed.txt && git add seed.txt && " +
-    "git -c user.email=t@t -c user.name=t commit -q -m seed && " +
+    "git -c core.hooksPath=/dev/null -c user.email=t@t -c user.name=t commit -q -m seed && " +
     "echo modified > seed.txt"], { cwd });
 }
 
@@ -448,10 +474,10 @@ test("adversarial-review scope=branch-diff: only changed files appear in --add-d
   spawnSync("git", ["init", "-q", "-b", "main"], { cwd });
   spawnSync("bash", ["-c",
     "echo old > old.md && git add old.md && " +
-    "git -c user.email=t@t -c user.name=t commit -q -m main && " +
+    "git -c core.hooksPath=/dev/null -c user.email=t@t -c user.name=t commit -q -m main && " +
     "git checkout -qb feature && " +
     "echo foo > foo.md && git add foo.md && " +
-    "git -c user.email=t@t -c user.name=t commit -q -m feature"], { cwd });
+    "git -c core.hooksPath=/dev/null -c user.email=t@t -c user.name=t commit -q -m feature"], { cwd });
   const { stdout, status, stderr, dataDir } = runCompanion(
     ["run", "--mode=adversarial-review", "--foreground",
      "--model", "claude-haiku-4-5-20251001",
@@ -503,7 +529,7 @@ test("review worktree disposed by profile default (dispose_default=true)", () =>
   spawnSync("git", ["init", "-q", "-b", "main"], { cwd });
   spawnSync("bash", ["-c",
     "echo seed > seed && git add seed && " +
-    "git -c user.email=t@t -c user.name=t commit -q -m seed"], { cwd });
+    "git -c core.hooksPath=/dev/null -c user.email=t@t -c user.name=t commit -q -m seed"], { cwd });
   // ASSERT_FILE env triggers the mock to record t7_add_dir into its fixture
   // (which the companion persists into stdout.log). Without it the mock has
   // no reason to echo the path back and the test can't inspect it.
@@ -531,7 +557,7 @@ test("run: pre/post git-status sidecars written in a git cwd", () => {
   const cwd = mkdtempSync(path.join(tmpdir(), "smoke-git-"));
   // Make a minimal git repo with a seed file so git status has meaningful output.
   spawnSync("git", ["init", "-q"], { cwd });
-  spawnSync("bash", ["-c", "echo seed > seed && git add seed && git -c user.email=t@t -c user.name=t commit -q -m seed"], { cwd });
+  spawnSync("bash", ["-c", "echo seed > seed && git add seed && git -c core.hooksPath=/dev/null -c user.email=t@t -c user.name=t commit -q -m seed"], { cwd });
   const { stdout, dataDir } = runCompanion(
     ["run", "--mode=review", "--foreground", "--model", "claude-haiku-4-5-20251001",
      "--cwd", cwd, "--", "review this"],

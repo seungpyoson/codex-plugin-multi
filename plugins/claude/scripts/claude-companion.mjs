@@ -99,6 +99,10 @@ function mutationDetectionFailure(error) {
   return `mutation_detection_failed: ${message}`;
 }
 
+function gitStatusLines(output) {
+  return output.split("\n").map((line) => line.trimEnd()).filter((line) => line.length > 0);
+}
+
 // setupWorktree was deleted in T7.2. Containment lives in
 // lib/containment.mjs; scope population lives in lib/scope.mjs. Both are
 // per-profile decisions (spec §21.4).
@@ -431,45 +435,45 @@ async function executeRun(invocation, prompt, { foreground }) {
     process.exit(2);
   }
 
-  // Post-snapshot for mutation detection.
-  if (checkMutations && gitStatusBefore !== null) {
-    const after = tryGit(["status", "-s", "--untracked-files=all"], cwd);
-    if (after.ok) {
-      const gitStatusAfter = after.stdout;
-      writeSidecar(workspaceRoot, jobId, "git-status-after.txt", gitStatusAfter);
-      if (gitStatusAfter && gitStatusAfter !== gitStatusBefore) {
-        const beforeLines = new Set(
-          gitStatusBefore.split("\n").map((l) => l.trim()).filter(Boolean)
-        );
-        mutations.push(...gitStatusAfter.split("\n")
-          .map((l) => l.trim())
-          .filter((l) => l && !beforeLines.has(l)));
+  let finalRecord;
+  try {
+    // Post-snapshot for mutation detection.
+    if (checkMutations && gitStatusBefore !== null) {
+      const after = tryGit(["status", "-s", "--untracked-files=all"], cwd);
+      if (after.ok) {
+        const gitStatusAfter = after.stdout;
+        writeSidecar(workspaceRoot, jobId, "git-status-after.txt", gitStatusAfter);
+        if (gitStatusAfter && gitStatusAfter !== gitStatusBefore) {
+          const beforeLines = new Set(gitStatusLines(gitStatusBefore));
+          mutations.push(...gitStatusLines(gitStatusAfter)
+            .filter((line) => !beforeLines.has(line)));
+        }
+      } else {
+        mutations.push(mutationDetectionFailure(after.error));
       }
-    } else {
-      mutations.push(mutationDetectionFailure(after.error));
     }
-  }
 
-  // ONE buildJobRecord call — spec §21.3.2 convergence. Foreground prints
-  // what we persist; cmdResult reads the same file; skill renders the same
-  // schema. No hand-assembly anywhere.
-  const finalRecord = buildJobRecord(invocation, {
-    exitCode: execution.exitCode,
-    parsed: execution.parsed,
-    pidInfo: execution.pidInfo,
-    claudeSessionId: execution.claudeSessionId ?? null,
-  }, mutations);
-  writeJobFile(workspaceRoot, jobId, finalRecord);
-  upsertJob(workspaceRoot, finalRecord);
+    // ONE buildJobRecord call — spec §21.3.2 convergence. Foreground prints
+    // what we persist; cmdResult reads the same file; skill renders the same
+    // schema. No hand-assembly anywhere.
+    finalRecord = buildJobRecord(invocation, {
+      exitCode: execution.exitCode,
+      parsed: execution.parsed,
+      pidInfo: execution.pidInfo,
+      claudeSessionId: execution.claudeSessionId ?? null,
+    }, mutations);
+    writeJobFile(workspaceRoot, jobId, finalRecord);
+    upsertJob(workspaceRoot, finalRecord);
 
-  // Sidecar logs (not part of JobRecord — operator diagnostics).
-  writeSidecar(workspaceRoot, jobId, "stdout.log", execution.stdout);
-  writeSidecar(workspaceRoot, jobId, "stderr.log", execution.stderr);
-
-  // Dispose containment after run (§10 / profile.dispose_default). Kept
-  // AFTER sidecar writes so failure traces survive.
-  if (containment.disposed && disposeEffective) {
-    containment.cleanup();
+    // Sidecar logs (not part of JobRecord — operator diagnostics).
+    writeSidecar(workspaceRoot, jobId, "stdout.log", execution.stdout);
+    writeSidecar(workspaceRoot, jobId, "stderr.log", execution.stderr);
+  } finally {
+    // Dispose containment after run (§10 / profile.dispose_default), even if
+    // final persistence or sidecar writes fail after the child exits.
+    if (containment.disposed && disposeEffective) {
+      containment.cleanup();
+    }
   }
   // Note: `containment_path` / `containment_cleaned` were legacy sidechannel
   // fields on the record that pre-dated the JobRecord schema. Containment
@@ -541,6 +545,9 @@ async function cmdContinue(rest) {
     prior = JSON.parse(_readFileSync(jobFile, "utf8"));
   } catch (e) {
     fail("bad_args", e.message);
+  }
+  if (!["completed", "failed"].includes(prior.status)) {
+    fail("bad_state", `cannot continue job in status ${JSON.stringify(prior.status)}; wait for terminal status or cancel first`);
   }
   const prompt = positionals.join(" ").trim();
   if (!prompt) fail("bad_args", "prompt is required (pass after -- separator)");

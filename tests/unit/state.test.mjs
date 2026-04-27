@@ -482,6 +482,7 @@ for (const [target, state, fresh, cleanupTarget] of [
   ["claude", {
     configureState,
     saveState,
+    upsertJob,
     loadState,
     listJobs,
     resolveStateDir,
@@ -518,6 +519,58 @@ for (const [target, state, fresh, cleanupTarget] of [
 
       state.saveState(dir, { jobs: null });
       assert.deepEqual(state.listJobs(dir), []);
+    } finally {
+      cleanupTarget(dir);
+    }
+  });
+
+  test(`${target} state: stale saves preserve active jobs from latest state`, () => {
+    const dir = fresh();
+    try {
+      state.writeJobFile(dir, "stale-job", { id: "stale-job" });
+      state.saveState(dir, {
+        jobs: [
+          { id: "stale-job", status: "completed", updatedAt: "2026-04-24T00:00:00.000Z" },
+        ],
+      });
+      const staleSnapshot = state.loadState(dir);
+
+      state.writeJobFile(dir, "active-job", { id: "active-job", status: "running" });
+      state.upsertJob(dir, {
+        id: "active-job",
+        status: "running",
+        updatedAt: "2026-04-24T00:00:01.000Z",
+      });
+
+      state.saveState(dir, staleSnapshot);
+
+      assert.equal(fs.existsSync(state.resolveJobFile(dir, "active-job")), true);
+      assert.equal(state.listJobs(dir).some((job) => job.id === "active-job"), true);
+    } finally {
+      cleanupTarget(dir);
+    }
+  });
+
+  test(`${target} state: pruning never evicts queued or running jobs`, () => {
+    const dir = fresh();
+    try {
+      const terminalJobs = Array.from({ length: 55 }, (_, index) => ({
+        id: `terminal-${String(index).padStart(2, "0")}`,
+        status: "completed",
+        updatedAt: `2026-04-24T00:00:${String(index).padStart(2, "0")}.000Z`,
+      }));
+      state.saveState(dir, {
+        jobs: [
+          ...terminalJobs,
+          { id: "queued-job", status: "queued", updatedAt: "2000-01-01T00:00:00.000Z" },
+          { id: "running-job", status: "running", updatedAt: "2000-01-01T00:00:01.000Z" },
+        ],
+      });
+
+      const ids = state.listJobs(dir).map((job) => job.id);
+      assert.equal(ids.includes("queued-job"), true);
+      assert.equal(ids.includes("running-job"), true);
+      assert.equal(ids.length, 52);
     } finally {
       cleanupTarget(dir);
     }
