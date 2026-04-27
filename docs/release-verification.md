@@ -129,16 +129,26 @@ Fresh-install packaging check:
   `claude` and `gemini`, both plugin manifests at version `0.1.0`, and the
   expected command files for both targets.
 
-Remaining fresh-install TUI check:
+Fresh-install TUI check:
 
 - Disposable workspace creation succeeded at
   `/tmp/codex-plugin-multi-release-smoke`.
-- Starting Codex with the isolated `CODEX_HOME` reached the Codex first-run
-  authentication screen before `/plugins`, so plugin-picker enablement and
-  `/claude-ping`/`/gemini-ping` were not completed in that clean home.
-- This is an authentication precondition gap, not a marketplace packaging
-  failure. Complete this remaining check by logging into Codex in the isolated
-  home, or by repeating the run with a clean home that is already authenticated.
+- ChatGPT device auth for the isolated `CODEX_HOME` succeeded after the initial
+  API-key login proved insufficient for remote plugin sync.
+- `/plugins` opened the plugin picker. The custom `Codex ↔ Claude/Gemini`
+  marketplace listed both `Claude` and `Gemini`.
+- Installing both plugins from the picker succeeded. The picker reported
+  `Installed Claude plugin` and `Installed Gemini plugin`, and
+  `config.toml` recorded both `claude@codex-plugin-multi` and
+  `gemini@codex-plugin-multi` as enabled.
+- After restarting Codex from the same isolated home, `/claude-ping` was still
+  rejected as `Unrecognized command '/claude-ping'`. The fresh-install
+  slash-command smoke is therefore not complete.
+- `codex debug prompt-input` confirmed `Claude` loaded as an enabled plugin and
+  exposed its skills, but the TUI slash-command surface did not expose
+  `/claude-ping`. `Gemini` was installed and enabled in config, but did not
+  appear in the model-visible plugin list because it contributes no skills,
+  apps, or MCP servers.
 
 ## Current branch evidence
 
