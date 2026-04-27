@@ -745,6 +745,75 @@ for (const [target, state, fresh, cleanupTarget] of [
     }
   });
 
+  test(`${target} state: third writer cannot acquire while reclaim restores a changed owner`, () => {
+    // Regression for the residual restore window: after a reclaimer moves a
+    // live replacement lock to an orphan and detects owner mismatch, lockDir
+    // is momentarily absent while it renames the orphan back. A third writer
+    // must not be able to acquire in that gap.
+    const dir = fresh();
+    const originalRename = fs.renameSync;
+    try {
+      state.configureState({ lockTimeoutMs: 200, lockStaleMs: 100 });
+      state.writeJobFile(dir, "seed-job", { id: "seed-job" });
+      const lockDir = path.join(state.resolveStateDir(dir), ".state.lock");
+      fs.mkdirSync(lockDir);
+      fs.writeFileSync(path.join(lockDir, "owner.json"), `${JSON.stringify({
+        pid: findDeadPid(),
+        hostname: hostname(),
+        startedAt: new Date(Date.now() - 60_000).toISOString(),
+        token: "dead-owner-token",
+      })}\n`, "utf8");
+
+      let injectedReplacement = false;
+      let restoreFrom = null;
+      let thirdWriterAttempted = false;
+      let thirdWriterEntered = false;
+      fs.renameSync = function patchedRename(from, to) {
+        if (!injectedReplacement && from === lockDir && String(to).includes(".orphaned-")) {
+          injectedReplacement = true;
+          fs.rmSync(lockDir, { recursive: true, force: true });
+          fs.mkdirSync(lockDir);
+          fs.writeFileSync(path.join(lockDir, "owner.json"), `${JSON.stringify({
+            pid: process.pid,
+            hostname: hostname(),
+            startedAt: new Date().toISOString(),
+            token: "live-replacement-token",
+          })}\n`, "utf8");
+          const result = originalRename.apply(this, arguments);
+          restoreFrom = to;
+          return result;
+        }
+        if (injectedReplacement && from === restoreFrom && to === lockDir) {
+          thirdWriterAttempted = true;
+          try {
+            state.upsertJob(dir, { id: "writer-c", status: "completed" });
+            thirdWriterEntered = true;
+          } catch (e) {
+            assert.match(e.message, /state_lock_timeout/);
+          }
+        }
+        return originalRename.apply(this, arguments);
+      };
+
+      assert.throws(
+        () => state.upsertJob(dir, { id: "writer-b", status: "completed" }),
+        /state_lock_timeout/,
+      );
+      assert.equal(thirdWriterAttempted, true,
+        "test must exercise the restore window");
+      assert.equal(thirdWriterEntered, false,
+        "writer C must not acquire while a changed live lock is being restored");
+      assert.equal(
+        state.listJobs(dir).some((job) => job.id === "writer-c"),
+        false,
+        "writer C must not commit during the restore window",
+      );
+    } finally {
+      fs.renameSync = originalRename;
+      cleanupTarget(dir);
+    }
+  });
+
   test(`${target} state: lock owner read errors fail closed`, () => {
     const dir = fresh();
     const originalReadFile = fs.readFileSync;

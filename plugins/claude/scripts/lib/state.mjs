@@ -22,6 +22,7 @@ const STATE_VERSION = 1;
 const STATE_FILE_NAME = "state.json";
 const JOBS_DIR_NAME = "jobs";
 const STATE_LOCK_DIR_NAME = ".state.lock";
+const STATE_LOCK_GATE_DIR_NAME = ".state.lock.gate";
 const DEFAULT_STATE_LOCK_TIMEOUT_MS = 5000;
 const STATE_LOCK_POLL_MS = 25;
 const DEFAULT_STATE_LOCK_STALE_MS = 30000;
@@ -272,6 +273,14 @@ function ownerMatchesToken(lockDir, token) {
     && owner.hostname === os.hostname();
 }
 
+function releaseOwnedLockDir(lockDir, token) {
+  try {
+    if (ownerMatchesToken(lockDir, token)) {
+      fs.rmSync(lockDir, { recursive: true, force: true });
+    }
+  } catch { /* best-effort */ }
+}
+
 // Reclaim policy (security):
 //   - Same-host owner with a LIVE pid: never reclaim, regardless of age. The
 //     bug this guards against is mutual-exclusion loss when a writer holds
@@ -324,6 +333,34 @@ function tryReclaimStaleLock(lockDir) {
   }
 }
 
+function acquireStateLockGate(cwd, deadline) {
+  const gateDir = path.join(resolveStateDir(cwd), STATE_LOCK_GATE_DIR_NAME);
+  while (true) {
+    try {
+      fs.mkdirSync(gateDir);
+      const token = randomUUID();
+      try {
+        writeLockOwner(gateDir, token);
+      } catch (e) {
+        try { fs.rmSync(gateDir, { recursive: true, force: true }); } catch { /* best-effort */ }
+        throw e;
+      }
+      return () => releaseOwnedLockDir(gateDir, token);
+    } catch (e) {
+      if (e.code !== "EEXIST") {
+        throw new Error(`state_lock_error: could not acquire ${gateDir}: ${e.message}`);
+      }
+      if (tryReclaimStaleLock(gateDir)) {
+        continue;
+      }
+      if (Date.now() >= deadline) {
+        throw new Error(`state_lock_timeout: could not acquire ${gateDir}`);
+      }
+      sleepSync(STATE_LOCK_POLL_MS);
+    }
+  }
+}
+
 function acquireStateLock(cwd) {
   ensureStateDir(cwd);
   const lockDir = path.join(resolveStateDir(cwd), STATE_LOCK_DIR_NAME);
@@ -333,7 +370,9 @@ function acquireStateLock(cwd) {
   }
   const deadline = Date.now() + CONFIG.lockTimeoutMs;
   while (true) {
+    let releaseGate = null;
     try {
+      releaseGate = acquireStateLockGate(cwd, deadline);
       fs.mkdirSync(lockDir);
       const token = randomUUID();
       try {
@@ -346,20 +385,19 @@ function acquireStateLock(cwd) {
         throw e;
       }
       HELD_STATE_LOCKS.add(lockKey);
+      releaseGate();
+      releaseGate = null;
       return () => {
         HELD_STATE_LOCKS.delete(lockKey);
         // Defense in depth: if reclaim ever (mistakenly) steals our lock and
         // a different writer recreates the dir under their own token, our
         // release closure must not delete that other writer's lock. Verify
         // the on-disk owner still matches our token before removing.
-        try {
-          if (ownerMatchesToken(lockDir, token)) {
-            fs.rmSync(lockDir, { recursive: true, force: true });
-          }
-        } catch { /* best-effort */ }
+        releaseOwnedLockDir(lockDir, token);
       };
     } catch (e) {
       if (e.code !== "EEXIST") {
+        if (String(e.message ?? "").startsWith("state_lock_")) throw e;
         throw new Error(`state_lock_error: could not acquire ${lockDir}: ${e.message}`);
       }
       if (tryReclaimStaleLock(lockDir)) {
@@ -369,6 +407,8 @@ function acquireStateLock(cwd) {
         throw new Error(`state_lock_timeout: could not acquire ${lockDir}`);
       }
       sleepSync(STATE_LOCK_POLL_MS);
+    } finally {
+      if (releaseGate) releaseGate();
     }
   }
 }

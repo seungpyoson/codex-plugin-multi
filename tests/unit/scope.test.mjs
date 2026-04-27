@@ -319,6 +319,26 @@ test("populateScope scope=working-tree (gemini copy): excludes gitignored files"
   }
 });
 
+test("populateScope scope=working-tree: rejects symlink into git metadata", () => {
+  const src = seedRepo();
+  const tgt = mkTarget();
+  try {
+    writeFileSync(path.join(src, "tracked.txt"), "a\n");
+    git(src, "add", ".");
+    git(src, "commit", "-qm", "seed");
+    symlinkSync(".git/config", path.join(src, "git-config-link"));
+
+    assert.throws(
+      () => populateScope(profile("working-tree"), src, tgt),
+      /unsafe_symlink: git-config-link resolves into unsafe source path/,
+    );
+    assert.equal(existsSync(path.join(tgt, "git-config-link")), false,
+      "symlinks resolving into .git metadata must not expose repository internals");
+  } finally {
+    cleanup(src, tgt);
+  }
+});
+
 test("populateScope scope=working-tree: skips nested .git directories", () => {
   const src = seedRepo();
   const tgt = mkTarget();

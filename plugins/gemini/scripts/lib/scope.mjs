@@ -243,6 +243,9 @@ function copyLiveFile(sourceCwd, targetPath, rel, sourceRoot, ignored = null) {
       unsafeSymlink(rel, "resolves outside source root");
     }
     const resolvedRel = path.relative(sourceRoot, resolved).replace(/\\/g, "/");
+    if (!isSafeSnapshotRel(resolvedRel)) {
+      unsafeSymlink(rel, "resolves into unsafe source path");
+    }
     if (isIgnoredLiveRel(ignored, resolvedRel)) return;
     let resolvedStat;
     try {
