@@ -30,7 +30,6 @@ import { execFileSync, spawn } from "node:child_process";
 
 import { parseArgs } from "./lib/args.mjs";
 import { configureState, getStateConfig, resolveJobsDir, resolveJobFile, writeJobFile, upsertJob, listJobs } from "./lib/state.mjs";
-import { configureTrackedJobs } from "./lib/tracked-jobs.mjs";
 import { resolveWorkspaceRoot } from "./lib/workspace.mjs";
 import { spawnClaude } from "./lib/claude.mjs";
 import { resolveProfile, resolveModelForProfile } from "./lib/mode-profiles.mjs";
@@ -48,7 +47,6 @@ configureState({
   pluginDataEnv: "CLAUDE_PLUGIN_DATA",
   sessionIdEnv: "CLAUDE_COMPANION_SESSION_ID",
 });
-configureTrackedJobs({ stderrPrefix: "[claude]" });
 
 const MODELS_CONFIG_PATH = resolvePath(PLUGIN_ROOT, "config/models.json");
 

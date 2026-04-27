@@ -17,11 +17,6 @@
       "branches": 88.89,
       "functions": 100.0
     },
-    "plugins/claude/scripts/lib/fs.mjs": {
-      "lines": 80.0,
-      "branches": 100.0,
-      "functions": 100.0
-    },
     "plugins/claude/scripts/lib/git.mjs": {
       "lines": 85.95,
       "branches": 64.41,
@@ -57,11 +52,6 @@
       "branches": 66.67,
       "functions": 100.0
     },
-    "plugins/claude/scripts/lib/tracked-jobs.mjs": {
-      "lines": 93.58,
-      "branches": 73.85,
-      "functions": 100.0
-    },
     "plugins/claude/scripts/lib/workspace.mjs": {
       "lines": 85.71,
       "branches": 100.0,
@@ -74,11 +64,6 @@
     },
     "plugins/gemini/scripts/lib/containment.mjs": {
       "lines": 55.17,
-      "branches": 66.67,
-      "functions": 100.0
-    },
-    "plugins/gemini/scripts/lib/fs.mjs": {
-      "lines": 71.43,
       "branches": 66.67,
       "functions": 100.0
     },
@@ -121,11 +106,6 @@
       "lines": 79.01,
       "branches": 41.67,
       "functions": 97.22
-    },
-    "plugins/gemini/scripts/lib/tracked-jobs.mjs": {
-      "lines": 88.24,
-      "branches": 72.13,
-      "functions": 85.71
     },
     "plugins/gemini/scripts/lib/workspace.mjs": {
       "lines": 85.71,

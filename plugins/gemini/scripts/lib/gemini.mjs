@@ -123,6 +123,23 @@ export async function spawnGemini(profile, runtimeInputs = {}) {
     let stderr = "";
     let timedOut = false;
     let timer = null;
+    let settled = false;
+    const clearTimer = () => {
+      if (timer) clearTimeout(timer);
+      timer = null;
+    };
+    const finishReject = (error) => {
+      if (settled) return;
+      settled = true;
+      clearTimer();
+      reject(error);
+    };
+    const finishResolve = (value) => {
+      if (settled) return;
+      settled = true;
+      clearTimer();
+      resolve(value);
+    };
     if (timeoutMs > 0) {
       timer = setTimeout(() => {
         timedOut = true;
@@ -133,13 +150,11 @@ export async function spawnGemini(profile, runtimeInputs = {}) {
     child.stdout.on("data", (chunk) => { stdout += chunk.toString("utf8"); });
     child.stderr.on("data", (chunk) => { stderr += chunk.toString("utf8"); });
     child.on("error", (e) => {
-      if (timer) clearTimeout(timer);
-      reject(Object.assign(new Error(`spawn ${binary} failed: ${e.message}`), { code: e.code }));
+      finishReject(Object.assign(new Error(`spawn ${binary} failed: ${e.message}`), { code: e.code }));
     });
     child.on("close", (exitCode, signal) => {
-      if (timer) clearTimeout(timer);
       const parsed = parseGeminiResult(stdout, stderr);
-      resolve({
+      finishResolve({
         exitCode,
         signal,
         timedOut,
@@ -150,7 +165,10 @@ export async function spawnGemini(profile, runtimeInputs = {}) {
         parsed,
       });
     });
-    child.stdin.write(promptText);
-    child.stdin.end();
+    child.stdin.on("error", (e) => {
+      if (e?.code === "EPIPE") return;
+      finishReject(Object.assign(new Error(`write to ${binary} stdin failed: ${e.message}`), { code: e.code }));
+    });
+    child.stdin.end(promptText);
   });
 }

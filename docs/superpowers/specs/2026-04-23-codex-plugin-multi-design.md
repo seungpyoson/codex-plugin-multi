@@ -256,8 +256,8 @@ plugins/codex/
 | `job-control.mjs` | 0 | copy verbatim |
 | `prompts.mjs` | 0 | copy verbatim |
 | `state.mjs` | 2 (`FALLBACK_STATE_ROOT_DIR = "codex-companion"`, `SESSION_ID_ENV = "CODEX_COMPANION_SESSION_ID"`) | parametrize: accept `{tmpdirPrefix, sessionIdEnv}` at module init |
-| `tracked-jobs.mjs` | 1 (stderr prefix `[codex]`) | parametrize: accept `{stderrPrefix}` |
-| `fs.mjs` | 1 (`createTempDir(prefix = "codex-plugin-")`) | parametrize: accept `{tmpPrefix}` |
+| `tracked-jobs.mjs` | 1 (stderr prefix `[codex]`) | drop: no production consumer in this port |
+| `fs.mjs` | 1 (`createTempDir(prefix = "codex-plugin-")`) | drop: no production consumer in this port |
 | `render.mjs` | 22 (display strings like `"# Codex Setup"`, `"# Codex Status"`, `"codex resume"`) | per-plugin copy with target-specific strings |
 
 **Plugin-root self-resolution:** `path.resolve(fileURLToPath(new URL("..", import.meta.url)))` in `codex-companion.mjs:65`. ES-modules locate themselves; no env var needed. This works because no `${CODEX_PLUGIN_ROOT}` is exposed (§4.13).
@@ -387,8 +387,8 @@ codex-plugin-multi/
         claude-companion.mjs                     # entry
         session-lifecycle-hook.mjs               # ported (if adopted; v1 may skip)
         lib/
-          workspace.mjs tracked-jobs.mjs state.mjs render.mjs
-          args.mjs fs.mjs git.mjs job-control.mjs prompts.mjs process.mjs
+          workspace.mjs state.mjs
+          args.mjs git.mjs process.mjs
           claude.mjs                             # replaces upstream codex.mjs
       prompts/
         rescue.md review.md adversarial-review.md
@@ -422,7 +422,7 @@ import { createState } from './lib/state.mjs';
 const state = createState({ tmpdirPrefix: 'claude-companion', sessionIdEnv: 'CLAUDE_COMPANION_SESSION_ID' });
 ```
 
-Same pattern for `tracked-jobs.mjs` (`stderrPrefix`), `fs.mjs` (`tmpPrefix`). `render.mjs` is the most divergent — per-plugin copies with target-specific display strings ("# Claude Setup" vs "# Gemini Setup").
+`tracked-jobs.mjs`, `fs.mjs`, and `render.mjs` were dropped because the current companion entry points do not consume them.
 
 Upstream files explicitly dropped: `app-server*.mjs`, `broker*.mjs` (Codex's ACP transport has no analog for Claude/Gemini in v1).
 
@@ -624,7 +624,7 @@ gemini -p ''
 }
 ```
 
-UUID v4 IDs. Atomic writes via `rename()` (POSIX). Port upstream's `tracked-jobs.mjs` (parametrized per §6.2). PID liveness check (PID alive + cmdline matches binary) guards against PID reuse.
+UUID v4 IDs. Atomic writes via `rename()` (POSIX). PID liveness check (PID alive + cmdline matches binary) guards against PID reuse.
 
 No auto-GC in v1.
 

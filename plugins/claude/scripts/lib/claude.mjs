@@ -1,7 +1,7 @@
 // Claude-specific dispatcher. Spawns `claude -p ...` per spec §7.2 / §10
 // with the layered-defense flag stack for read-only review and the
 // acceptEdits permission mode for rescue. Pure Claude concerns live here;
-// job-store / workspace concerns live in state.mjs + tracked-jobs.mjs.
+// job-store / workspace concerns live in the companion and state.mjs.
 //
 // Post-M7 (spec §21.2): `buildClaudeArgs` and `spawnClaude` take a PROFILE
 // object as their first argument and a `runtimeInputs` object as their

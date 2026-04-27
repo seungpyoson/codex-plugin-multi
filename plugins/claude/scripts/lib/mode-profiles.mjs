@@ -97,12 +97,11 @@ export const MODEL_TIERS = Object.freeze(["cheap", "medium", "default"]);
  * fall-throughs would be exactly the defects §21.2 aims to eliminate.
  */
 export function resolveProfile(name) {
-  const profile = MODE_PROFILES[name];
-  if (!profile) {
+  if (!Object.prototype.hasOwnProperty.call(MODE_PROFILES, name)) {
     const known = Object.keys(MODE_PROFILES).join(", ");
     throw new Error(`unknown mode ${JSON.stringify(name)}; expected one of: ${known}`);
   }
-  return profile;
+  return MODE_PROFILES[name];
 }
 
 /**

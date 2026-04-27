@@ -32,8 +32,10 @@ Removed in T7.5 (§21.5 "zero importers → deleted"):
 - `render.mjs` — Claude/Gemini display-string renderer; commands now render
   directly in the model rather than delegating to a library function, so the
   module had no production importer.
+- `tracked-jobs.mjs` — job-log/progress helpers with no production caller in
+  either companion. Job records are written directly by the live entry points.
 
-Three files are parametrized at module init to remove hardcoded Codex strings
+One file is parametrized at module init to remove hardcoded Codex strings
 (see file-level comment headers). We use a module-level mutable `CONFIG` with
 a `configure*()` setter rather than the factory pattern in spec §6.2 —
 factories would force rewriting every upstream import site, so we keep the
@@ -42,13 +44,6 @@ named-export API and set config once at companion startup.
 | File | Parametrization | Setter |
 |---|---|---|
 | `state.mjs`        | `pluginDataEnv`, `fallbackStateRootDir`, `sessionIdEnv` | `configureState({...})` |
-| `tracked-jobs.mjs` | Reads `sessionIdEnv` from `state.mjs` (single source of truth); own `stderrPrefix` | `configureTrackedJobs({stderrPrefix})` |
-| `fs.mjs`           | `createTempDir(prefix)` — target-specific default (see note below) | — |
-
-**Note on `fs.mjs`:** the default prefix is `claude-companion-` (Claude) or
-`gemini-companion-` (Gemini). This is the one verbatim-diverging line between
-the two plugin copies. Callers should pass an explicit prefix; the default
-exists only to preserve the upstream signature for ad-hoc callers.
 
 Dropped from the port (no analog in v1):
 
@@ -56,7 +51,7 @@ Dropped from the port (no analog in v1):
   transport has no Claude/Gemini equivalent in v1.
 - `codex.mjs` — replaced by per-plugin `lib/claude.mjs` / `lib/gemini.mjs`
   (lands in M2 / M7).
-- `render.mjs`, `job-control.mjs`, `prompts.mjs` — see "Removed in T7.5"
+- `render.mjs`, `job-control.mjs`, `prompts.mjs`, `tracked-jobs.mjs`, `fs.mjs` — see "Removed in T7.5"
   section above.
 
 ## Re-sync procedure

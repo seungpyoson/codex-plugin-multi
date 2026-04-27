@@ -154,12 +154,3 @@ export function verifyPidInfo(saved) {
   }
   return { match: true };
 }
-
-/**
- * Append a prior target session ID to `record.resume_chain`, newest-last.
- * Non-mutating: returns a new record; the input is untouched.
- */
-export function appendResumeLink(record, priorClaudeSessionId) {
-  const prior = Array.isArray(record?.resume_chain) ? record.resume_chain : [];
-  return { ...record, resume_chain: [...prior, priorClaudeSessionId] };
-}

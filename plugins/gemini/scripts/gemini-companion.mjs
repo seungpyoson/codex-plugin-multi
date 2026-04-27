@@ -7,7 +7,6 @@ import { tmpdir } from "node:os";
 
 import { parseArgs } from "./lib/args.mjs";
 import { configureState, resolveJobsDir, resolveJobFile, writeJobFile, upsertJob, listJobs } from "./lib/state.mjs";
-import { configureTrackedJobs } from "./lib/tracked-jobs.mjs";
 import { resolveWorkspaceRoot } from "./lib/workspace.mjs";
 import { resolveProfile, resolveModelForProfile } from "./lib/mode-profiles.mjs";
 import { setupContainment } from "./lib/containment.mjs";
@@ -24,7 +23,6 @@ configureState({
   pluginDataEnv: "GEMINI_PLUGIN_DATA",
   sessionIdEnv: "GEMINI_COMPANION_SESSION_ID",
 });
-configureTrackedJobs({ stderrPrefix: "[gemini]" });
 
 function loadModels() {
   if (!existsSync(MODELS_CONFIG_PATH)) return { cheap: null, medium: null, default: null };

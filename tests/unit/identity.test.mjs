@@ -16,7 +16,6 @@ import {
   newJobId,
   capturePidInfo,
   verifyPidInfo,
-  appendResumeLink,
 } from "../../plugins/claude/scripts/lib/identity.mjs";
 import * as GeminiIdentity from "../../plugins/gemini/scripts/lib/identity.mjs";
 
@@ -256,28 +255,6 @@ test("verifyPidInfo: vanished process returns match:false process_gone (no throw
   });
 });
 
-test("appendResumeLink: non-mutating; appends to empty chain", () => {
-  const rec = Object.freeze({ id: "j1", resume_chain: [] });
-  const next = appendResumeLink(rec, "claude-session-A");
-  assert.deepEqual(next.resume_chain, ["claude-session-A"]);
-  // Original untouched.
-  assert.deepEqual(rec.resume_chain, []);
-});
-
-test("appendResumeLink: appends newest-last to existing chain", () => {
-  const rec = { id: "j2", resume_chain: ["a", "b"] };
-  const next = appendResumeLink(rec, "c");
-  assert.deepEqual(next.resume_chain, ["a", "b", "c"]);
-});
-
-test("appendResumeLink: records without resume_chain get one initialized", () => {
-  const rec = { id: "j3" };
-  const next = appendResumeLink(rec, "first");
-  assert.deepEqual(next.resume_chain, ["first"]);
-  // Original record untouched (no new key leaked onto it).
-  assert.equal("resume_chain" in rec, false);
-});
-
 test("capturePidInfo: Darwin ps output can be parsed through a PATH shim", {
   skip: process.platform !== "darwin",
 }, () => {
@@ -328,12 +305,8 @@ test("capturePidInfo: Darwin ps malformed output is treated as process_gone", {
   }
 });
 
-test("gemini identity mirrors job ids and resume-chain semantics", () => {
+test("gemini identity mirrors job id semantics", () => {
   assert.match(GeminiIdentity.newJobId(), UUID_V4);
-  const rec = { id: "g1", resume_chain: ["first"] };
-  const next = GeminiIdentity.appendResumeLink(rec, "second");
-  assert.deepEqual(next.resume_chain, ["first", "second"]);
-  assert.deepEqual(rec.resume_chain, ["first"]);
 });
 
 test("gemini capturePidInfo parses Darwin ps output through the same shim", {

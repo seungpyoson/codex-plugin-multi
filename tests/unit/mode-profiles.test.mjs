@@ -136,6 +136,13 @@ test("resolveProfile throws on unknown mode", () => {
   assert.throws(() => resolveProfile("chaos"), /unknown mode|unknown profile/i);
 });
 
+test("resolveProfile rejects inherited object property names", () => {
+  for (const name of ["__proto__", "constructor", "toString"]) {
+    assert.throws(() => resolveProfile(name), /unknown mode|unknown profile/i);
+    assert.throws(() => GeminiProfiles.resolveProfile(name), /unknown mode|unknown profile/i);
+  }
+});
+
 // ——————————————————————————————————————————————————————————————
 // MODEL_TIERS export lists the three tier names used by the table.
 // ——————————————————————————————————————————————————————————————

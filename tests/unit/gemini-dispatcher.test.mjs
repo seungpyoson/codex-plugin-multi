@@ -207,6 +207,44 @@ process.stdin.on("end", () => {
   }
 });
 
+test("spawnGemini: ignores EPIPE when fast child returns valid output", () => {
+  const dir = mkdtempSync(path.join(tmpdir(), "gemini-epipe-unit-"));
+  try {
+    const bin = writeExecutable(dir, "gemini-closes-stdin.mjs", `#!/usr/bin/env node
+process.stdin.destroy();
+process.stdout.write(JSON.stringify({
+  session_id: "22222222-3333-4444-9555-777777777777",
+  response: "ok"
+}) + "\\n");
+setTimeout(() => process.exit(0), 25);
+`);
+    const runner = path.join(dir, "runner.mjs");
+    const geminiLib = pathToFileURL(path.join(REPO_ROOT, "plugins/gemini/scripts/lib/gemini.mjs")).href;
+    const profileLib = pathToFileURL(path.join(REPO_ROOT, "plugins/gemini/scripts/lib/mode-profiles.mjs")).href;
+    writeFileSync(runner, `import { spawnGemini } from ${JSON.stringify(geminiLib)};
+import { resolveProfile } from ${JSON.stringify(profileLib)};
+const result = await spawnGemini(resolveProfile("rescue"), {
+  model: "gemini-3-flash-preview",
+  promptText: "x".repeat(8 * 1024 * 1024),
+  cwd: ${JSON.stringify(dir)},
+  binary: ${JSON.stringify(bin)},
+});
+if (result.exitCode !== 0) process.exit(2);
+if (!result.parsed.ok || result.parsed.result !== "ok") process.exit(3);
+`);
+
+    const result = spawnSync(process.execPath, [runner], {
+      encoding: "utf8",
+      timeout: 3000,
+      maxBuffer: 1024 * 1024,
+    });
+
+    assert.equal(result.status, 0, `stdout=${result.stdout}\nstderr=${result.stderr}`);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("spawnGemini: callback failures and process failures stay explicit", async () => {
   const dir = mkdtempSync(path.join(tmpdir(), "gemini-spawn-failure-unit-"));
   try {

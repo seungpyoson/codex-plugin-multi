@@ -21,8 +21,8 @@ async function fixture(name, setup) {
       ".agents/plugins/marketplace.json",
       "plugins/claude/.codex-plugin/plugin.json",
       "plugins/gemini/.codex-plugin/plugin.json",
-      "plugins/claude/commands/claude-ping.md",
-      "plugins/gemini/commands/gemini-ping.md",
+      "plugins/claude/commands/claude-review.md",
+      "plugins/gemini/commands/gemini-review.md",
       "plugins/claude/skills/claude-cli-runtime/SKILL.md",
       "plugins/claude/agents/claude-rescue.md",
     ]) {
@@ -87,7 +87,7 @@ await expectFail(
 await expectFail(
   "unknown-frontmatter",
   async (dir) => {
-    const p = join(dir, "plugins/claude/commands/claude-ping.md");
+    const p = join(dir, "plugins/claude/commands/claude-review.md");
     await writeFile(
       p,
       `---\ndescription: ok\ndisable-model-invocation: true\n---\nBody\n`
@@ -100,8 +100,8 @@ await expectFail(
 await expectFail(
   "colon-filename",
   async (dir) => {
-    const src = join(dir, "plugins/claude/commands/claude-ping.md");
-    const dst = join(dir, "plugins/claude/commands/claude:ping.md");
+    const src = join(dir, "plugins/claude/commands/claude-review.md");
+    const dst = join(dir, "plugins/claude/commands/claude:review.md");
     await cp(src, dst);
     await rm(src);
   },
