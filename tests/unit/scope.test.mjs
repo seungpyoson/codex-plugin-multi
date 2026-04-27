@@ -1053,6 +1053,55 @@ test("populateScope scope=staged: rejects dangling symlink as unsafe", () => {
   }
 });
 
+test("populateScope scope=staged: rejects symlink into git metadata", () => {
+  const src = seedRepo();
+  const tgt = mkTarget();
+  try {
+    symlinkSync(".git/config", path.join(src, "metadata-link.txt"));
+    git(src, "add", "metadata-link.txt");
+
+    assert.throws(
+      () => populateScope(profile("staged"), src, tgt),
+      /unsafe_symlink/,
+    );
+  } finally {
+    cleanup(src, tgt);
+  }
+});
+
+test("populateScope scope=staged: rejects symlink path that traverses through a file", () => {
+  const src = seedRepo();
+  const tgt = mkTarget();
+  try {
+    writeFileSync(path.join(src, "target.txt"), "target\n");
+    symlinkSync("target.txt/child", path.join(src, "file-child-link.txt"));
+    git(src, "add", "target.txt", "file-child-link.txt");
+
+    assert.throws(
+      () => populateScope(profile("staged"), src, tgt),
+      /unsafe_symlink/,
+    );
+  } finally {
+    cleanup(src, tgt);
+  }
+});
+
+test("populateScope scope=staged: rejects symlink through a missing parent", () => {
+  const src = seedRepo();
+  const tgt = mkTarget();
+  try {
+    symlinkSync("missing/child.txt", path.join(src, "missing-child-link.txt"));
+    git(src, "add", "missing-child-link.txt");
+
+    assert.throws(
+      () => populateScope(profile("staged"), src, tgt),
+      /unsafe_symlink/,
+    );
+  } finally {
+    cleanup(src, tgt);
+  }
+});
+
 test("populateScope scope=staged: rejects empty symlink blobs as unsafe", () => {
   const src = seedRepo();
   const tgt = mkTarget();
@@ -1340,6 +1389,29 @@ test("populateScope scope=branch-diff: clears stale target content when diff is 
     populateScope(profile("branch-diff"), src, tgt, { scopeBase: "main" });
 
     assert.deepEqual(readdirSync(tgt).sort(), []);
+  } finally {
+    cleanup(src, tgt);
+  }
+});
+
+test("populateScope scope=branch-diff: skips files deleted in HEAD", () => {
+  const src = seedRepo();
+  const tgt = mkTarget();
+  try {
+    writeFileSync(path.join(src, "deleted.txt"), "base\n");
+    git(src, "add", "deleted.txt");
+    git(src, "commit", "-qm", "main");
+
+    git(src, "checkout", "-qb", "feature");
+    rmSync(path.join(src, "deleted.txt"));
+    git(src, "add", "deleted.txt");
+    git(src, "commit", "-qm", "delete file");
+
+    populateScope(profile("branch-diff"), src, tgt, { scopeBase: "main" });
+
+    assert.equal(existsSync(path.join(tgt, "deleted.txt")), false,
+      "branch-diff must not materialize files deleted from HEAD");
+    assertNoSymlinks(tgt);
   } finally {
     cleanup(src, tgt);
   }
@@ -1899,6 +1971,30 @@ test("populateScope scope=branch-diff: skips submodule entries", () => {
     assertNoSymlinks(tgt);
   } finally {
     cleanup(src, submoduleRepo, tgt);
+  }
+});
+
+test("populateScope scope=branch-diff: rejects symlink to submodule entry", () => {
+  const src = seedRepo();
+  const tgt = mkTarget();
+  try {
+    writeFileSync(path.join(src, "seed.txt"), "seed\n");
+    git(src, "add", "seed.txt");
+    git(src, "commit", "-qm", "main");
+
+    git(src, "checkout", "-qb", "feature");
+    const commitObject = git(src, "rev-parse", "HEAD").trim();
+    git(src, "update-index", "--add", "--cacheinfo", `160000,${commitObject},submodule`);
+    symlinkSync("submodule", path.join(src, "submodule-link.txt"));
+    git(src, "add", "submodule-link.txt");
+    git(src, "commit", "-qm", "symlink to gitlink");
+
+    assert.throws(
+      () => populateScope(profile("branch-diff"), src, tgt, { scopeBase: "main" }),
+      /unsafe_symlink/,
+    );
+  } finally {
+    cleanup(src, tgt);
   }
 });
 
