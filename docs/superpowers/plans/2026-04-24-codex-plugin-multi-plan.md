@@ -49,6 +49,9 @@ Current implementation state on `feat/012-t7-6-regression-matrix`:
   limitations, and upstream attribution.
 - T11.2 release-candidate review disposition is documented through `cc82850` in
   `docs/m10-review.md`; no blocker/high/medium findings remain open.
+- T11.4 release-verification runbook is drafted as a preflight artifact in
+  `docs/release-verification.md`; actual fresh-machine verification remains
+  pending until after merge/install from the release source.
 - Gemini `cancel` is intentionally not part of completed M9; treat it as an
   explicit lifecycle-parity slice if prioritized, not as hidden unfinished M9
   work.
