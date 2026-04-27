@@ -2,7 +2,10 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { spawnSync } from "node:child_process";
+import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 import {
   buildClaudeArgs,
@@ -16,6 +19,13 @@ const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..
 const MOCK = path.join(REPO_ROOT, "tests/smoke/claude-mock.mjs");
 
 const UUID = "550e8400-e29b-41d4-a716-446655440000";
+
+function writeExecutable(dir, name, source) {
+  const bin = path.join(dir, name);
+  writeFileSync(bin, source, "utf8");
+  chmodSync(bin, 0o755);
+  return bin;
+}
 
 test("buildClaudeArgs: review mode passes --disallowedTools + plan + setting-sources", () => {
   const args = buildClaudeArgs(resolveProfile("review"), {
@@ -239,6 +249,40 @@ test("spawnClaude: returns claudeSessionId from stdout and pidInfo tuple", async
     "starttime" in result.pidInfo && "argv0" in result.pidInfo,
     "pidInfo always has starttime/argv0 keys (may be null)"
   );
+});
+
+test("spawnClaude: timeout escalation timer does not keep the parent process alive", () => {
+  const dir = mkdtempSync(path.join(tmpdir(), "claude-timeout-unref-unit-"));
+  try {
+    const hangBin = writeExecutable(dir, "claude-hang.mjs", `#!/usr/bin/env node
+setTimeout(() => {}, 10000);
+`);
+    const runner = path.join(dir, "runner.mjs");
+    const claudeLib = pathToFileURL(path.join(REPO_ROOT, "plugins/claude/scripts/lib/claude.mjs")).href;
+    const profileLib = pathToFileURL(path.join(REPO_ROOT, "plugins/claude/scripts/lib/mode-profiles.mjs")).href;
+    writeFileSync(runner, `import { spawnClaude } from ${JSON.stringify(claudeLib)};
+import { resolveProfile } from ${JSON.stringify(profileLib)};
+const result = await spawnClaude(resolveProfile("rescue"), {
+  model: "claude-haiku-4-5-20251001",
+  promptText: "timeout",
+  sessionId: ${JSON.stringify(UUID)},
+  binary: ${JSON.stringify(hangBin)},
+  timeoutMs: 20,
+});
+if (!result.timedOut) process.exit(2);
+`);
+
+    const started = Date.now();
+    const result = spawnSync(process.execPath, [runner], { encoding: "utf8", timeout: 1200 });
+    const elapsed = Date.now() - started;
+
+    assert.notEqual(result.error?.code, "ETIMEDOUT",
+      `runner stayed alive ${elapsed}ms; stderr=${result.stderr}`);
+    assert.equal(result.status, 0, `stdout=${result.stdout}\nstderr=${result.stderr}`);
+    assert.ok(elapsed < 1000, `runner took ${elapsed}ms after spawnClaude timeout`);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 test("_internal.isUuidV4: accepts/rejects expected cases", () => {

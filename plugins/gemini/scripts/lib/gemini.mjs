@@ -127,7 +127,7 @@ export async function spawnGemini(profile, runtimeInputs = {}) {
       timer = setTimeout(() => {
         timedOut = true;
         try { child.kill("SIGTERM"); } catch { /* already gone */ }
-        setTimeout(() => { try { child.kill("SIGKILL"); } catch { /* already gone */ } }, 2000);
+        setTimeout(() => { try { child.kill("SIGKILL"); } catch { /* already gone */ } }, 2000).unref();
       }, timeoutMs);
     }
     child.stdout.on("data", (chunk) => { stdout += chunk.toString("utf8"); });

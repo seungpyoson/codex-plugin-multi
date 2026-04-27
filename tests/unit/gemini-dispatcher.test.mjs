@@ -1,7 +1,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { spawnSync } from "node:child_process";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 
@@ -255,6 +256,41 @@ setTimeout(() => {}, 10000);
       }),
       /promptText is required/,
     );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("spawnGemini: timeout escalation timer does not keep the parent process alive", () => {
+  const dir = mkdtempSync(path.join(tmpdir(), "gemini-timeout-unref-unit-"));
+  try {
+    const hangBin = writeExecutable(dir, "gemini-hang.mjs", `#!/usr/bin/env node
+process.stdin.resume();
+setTimeout(() => {}, 10000);
+`);
+    const runner = path.join(dir, "runner.mjs");
+    const geminiLib = pathToFileURL(path.join(REPO_ROOT, "plugins/gemini/scripts/lib/gemini.mjs")).href;
+    const profileLib = pathToFileURL(path.join(REPO_ROOT, "plugins/gemini/scripts/lib/mode-profiles.mjs")).href;
+    writeFileSync(runner, `import { spawnGemini } from ${JSON.stringify(geminiLib)};
+import { resolveProfile } from ${JSON.stringify(profileLib)};
+const result = await spawnGemini(resolveProfile("rescue"), {
+  model: "gemini-3-flash-preview",
+  promptText: "timeout",
+  cwd: ${JSON.stringify(dir)},
+  binary: ${JSON.stringify(hangBin)},
+  timeoutMs: 20,
+});
+if (!result.timedOut) process.exit(2);
+`);
+
+    const started = Date.now();
+    const result = spawnSync(process.execPath, [runner], { encoding: "utf8", timeout: 1200 });
+    const elapsed = Date.now() - started;
+
+    assert.notEqual(result.error?.code, "ETIMEDOUT",
+      `runner stayed alive ${elapsed}ms; stderr=${result.stderr}`);
+    assert.equal(result.status, 0, `stdout=${result.stdout}\nstderr=${result.stderr}`);
+    assert.ok(elapsed < 1000, `runner took ${elapsed}ms after spawnGemini timeout`);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

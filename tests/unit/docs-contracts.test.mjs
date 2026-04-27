@@ -20,6 +20,10 @@ test("claude cancel docs reject foreground cancel and direct users to Ctrl+C", (
   assert.match(combined, /Ctrl\+C/i);
   assert.doesNotMatch(combined, /foreground[^.\n]*(SIGTERM|SIGKILL|cancel)/i,
     "foreground cancellation must not be documented as companion signaling");
+  assert.match(command, /error:\s*"signal_failed"/,
+    "signal_failed is emitted through the error envelope, not a status envelope");
+  assert.doesNotMatch(command, /status:\s*"signal_failed"/,
+    "signal_failed docs must not imply a status field");
 });
 
 test("claude review command docs use current mutation schema fields", () => {
