@@ -49,6 +49,7 @@ configureState({
 });
 
 const MODELS_CONFIG_PATH = resolvePath(PLUGIN_ROOT, "config/models.json");
+const CONTINUABLE_STATUSES = new Set(["completed", "failed", "cancelled", "stale"]);
 
 function loadModels() {
   if (!existsSync(MODELS_CONFIG_PATH)) return { cheap: null, medium: null, default: null };
@@ -436,6 +437,7 @@ async function executeRun(invocation, prompt, { foreground }) {
   }
 
   let finalRecord;
+  let finalizationError = null;
   try {
     // Post-snapshot for mutation detection.
     if (checkMutations && gitStatusBefore !== null) {
@@ -468,12 +470,19 @@ async function executeRun(invocation, prompt, { foreground }) {
     // Sidecar logs (not part of JobRecord — operator diagnostics).
     writeSidecar(workspaceRoot, jobId, "stdout.log", execution.stdout);
     writeSidecar(workspaceRoot, jobId, "stderr.log", execution.stderr);
+  } catch (e) {
+    finalizationError = e;
   } finally {
     // Dispose containment after run (§10 / profile.dispose_default), even if
     // final persistence or sidecar writes fail after the child exits.
     if (containment.disposed && disposeEffective) {
       containment.cleanup();
     }
+  }
+  if (finalizationError) {
+    fail("finalization_failed", finalizationError.message ?? String(finalizationError), {
+      error_code: finalizationError.code ?? null,
+    });
   }
   // Note: `containment_path` / `containment_cleaned` were legacy sidechannel
   // fields on the record that pre-dated the JobRecord schema. Containment
@@ -546,7 +555,7 @@ async function cmdContinue(rest) {
   } catch (e) {
     fail("bad_args", e.message);
   }
-  if (!["completed", "failed"].includes(prior.status)) {
+  if (!CONTINUABLE_STATUSES.has(prior.status)) {
     fail("bad_state", `cannot continue job in status ${JSON.stringify(prior.status)}; wait for terminal status or cancel first`);
   }
   const prompt = positionals.join(" ").trim();

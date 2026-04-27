@@ -568,12 +568,13 @@ test("M6-mock-gap: timeoutMs fires SIGTERM when claude hangs (no coverage pre-T7
 // modes only). Review mode runs mutation-detection against sourceCwd, but
 // claude writes inside the worktree. The gap test uses an absolute
 // CLAUDE_MOCK_MUTATE_FILE so the mock writes directly into sourceCwd, then
-// asserts the JobRecord's mutations[] array captures the new file.
+// asserts the JobRecord's mutations[] array preserves the two-column
+// git-status prefix for the modified tracked file.
 
 test("M6-mock-gap: mutation detected when claude writes a file (no coverage pre-T7.6)", () => {
   const cwd = mkdtempSync(path.join(tmpdir(), "inv-mut-"));
   seedMinimalRepo(cwd);
-  const target = path.join(cwd, "foo.md"); // absolute — lands in sourceCwd
+  const target = path.join(cwd, "seed.txt"); // absolute — lands in sourceCwd
   const { stdout, status, stderr, dataDir } = runCompanion(
     ["run", "--mode=review", "--foreground",
      "--model", "claude-haiku-4-5-20251001",
@@ -585,10 +586,11 @@ test("M6-mock-gap: mutation detected when claude writes a file (no coverage pre-
     const record = JSON.parse(stdout);
     assert.ok(Array.isArray(record.mutations),
       "JobRecord must carry a mutations array");
-    // git status -s --untracked-files=all prints "?? foo.md" for a new file.
-    const saw = record.mutations.some((l) => l.includes("foo.md"));
-    assert.ok(saw,
-      `mutations[] must mention foo.md; got ${JSON.stringify(record.mutations)}`);
+    // git status -s --untracked-files=all prints " M seed.txt" for an
+    // unstaged tracked-file mutation; the leading column is semantically
+    // distinct from "M  seed.txt" (staged).
+    assert.ok(record.mutations.includes(" M seed.txt"),
+      `mutations[] must preserve unstaged status columns; got ${JSON.stringify(record.mutations)}`);
   } finally {
     rmTempTree(dataDir);
     rmTempTree(cwd);

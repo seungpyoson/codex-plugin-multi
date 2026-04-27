@@ -24,8 +24,12 @@ const JOBS_DIR_NAME = "jobs";
 const STATE_LOCK_DIR_NAME = ".state.lock";
 const STATE_LOCK_TIMEOUT_MS = 5000;
 const STATE_LOCK_POLL_MS = 25;
+const STATE_LOCK_STALE_MS = 30000;
+const STATE_LOCK_OWNER_FILE = "owner.json";
 const MAX_JOBS = 50;
 const ACTIVE_JOB_STATUSES = new Set(["queued", "running"]);
+const STATE_LOCK_SLEEP = new Int32Array(new SharedArrayBuffer(4));
+const HELD_STATE_LOCKS = new Set();
 
 // Mutable module config. Defaults to the claude port values; other targets
 // MUST call configureState() before any state read/write to override.
@@ -198,21 +202,99 @@ export function saveState(cwd, state) {
   return withStateLock(cwd, () => saveStateUnlocked(cwd, state));
 }
 
+function sleepSync(ms) {
+  Atomics.wait(STATE_LOCK_SLEEP, 0, 0, ms);
+}
+
+function isProcessAlive(pid) {
+  if (!Number.isInteger(pid) || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (e) {
+    return e?.code === "EPERM";
+  }
+}
+
+function readLockOwner(lockDir) {
+  try {
+    const owner = JSON.parse(fs.readFileSync(path.join(lockDir, STATE_LOCK_OWNER_FILE), "utf8"));
+    return owner && typeof owner === "object" && !Array.isArray(owner) ? owner : null;
+  } catch {
+    return null;
+  }
+}
+
+function lockAgeMs(lockDir, owner) {
+  const startedAt = owner?.startedAt ? Date.parse(owner.startedAt) : NaN;
+  if (Number.isFinite(startedAt)) return Date.now() - startedAt;
+  try {
+    return Date.now() - fs.statSync(lockDir).mtimeMs;
+  } catch {
+    return 0;
+  }
+}
+
+function writeLockOwner(lockDir) {
+  const owner = {
+    pid: process.pid,
+    hostname: os.hostname(),
+    startedAt: new Date().toISOString(),
+  };
+  fs.writeFileSync(path.join(lockDir, STATE_LOCK_OWNER_FILE), `${JSON.stringify(owner)}\n`, "utf8");
+}
+
+function tryReclaimStaleLock(lockDir) {
+  const owner = readLockOwner(lockDir);
+  const sameHost = owner?.hostname === os.hostname();
+  const ownerDead = sameHost && Number.isInteger(owner?.pid) && !isProcessAlive(owner.pid);
+  const tooOld = lockAgeMs(lockDir, owner) > STATE_LOCK_STALE_MS;
+  if (!ownerDead && !tooOld) return false;
+
+  const orphanDir = `${lockDir}.orphaned-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  try {
+    fs.renameSync(lockDir, orphanDir);
+    fs.rmSync(orphanDir, { recursive: true, force: true });
+    return true;
+  } catch (e) {
+    if (e?.code === "ENOENT") return true;
+    return false;
+  }
+}
+
 function acquireStateLock(cwd) {
   ensureStateDir(cwd);
   const lockDir = path.join(resolveStateDir(cwd), STATE_LOCK_DIR_NAME);
+  const lockKey = path.resolve(lockDir);
+  if (HELD_STATE_LOCKS.has(lockKey)) {
+    throw new Error(`state_lock_reentrant: already holding ${lockDir}`);
+  }
   const deadline = Date.now() + STATE_LOCK_TIMEOUT_MS;
   while (true) {
     try {
       fs.mkdirSync(lockDir);
+      try {
+        writeLockOwner(lockDir);
+      } catch (e) {
+        try { fs.rmSync(lockDir, { recursive: true, force: true }); } catch { /* best-effort */ }
+        throw e;
+      }
+      HELD_STATE_LOCKS.add(lockKey);
       return () => {
+        HELD_STATE_LOCKS.delete(lockKey);
         try { fs.rmSync(lockDir, { recursive: true, force: true }); } catch { /* best-effort */ }
       };
     } catch (e) {
-      if (e.code !== "EEXIST" || Date.now() >= deadline) {
+      if (e.code !== "EEXIST") {
+        throw new Error(`state_lock_error: could not acquire ${lockDir}: ${e.message}`);
+      }
+      if (tryReclaimStaleLock(lockDir)) {
+        continue;
+      }
+      if (Date.now() >= deadline) {
         throw new Error(`state_lock_timeout: could not acquire ${lockDir}`);
       }
-      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, STATE_LOCK_POLL_MS);
+      sleepSync(STATE_LOCK_POLL_MS);
     }
   }
 }

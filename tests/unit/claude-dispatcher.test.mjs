@@ -251,6 +251,54 @@ test("spawnClaude: returns claudeSessionId from stdout and pidInfo tuple", async
   );
 });
 
+test("spawnClaude: strips API-key env before launching target CLI", async () => {
+  const dir = mkdtempSync(path.join(tmpdir(), "claude-env-sanitize-unit-"));
+  try {
+    const bin = writeExecutable(dir, "claude-env-check.mjs", `#!/usr/bin/env node
+const forbidden = [
+  "ANTHROPIC_API_KEY",
+  "CLAUDE_API_KEY",
+  "OPENAI_API_KEY",
+  "ANTHROPIC_AUTH_TOKEN",
+  "ANTHROPIC_BASE_URL",
+];
+const leaked = forbidden.filter((key) => process.env[key]);
+if (leaked.length > 0) {
+  process.stderr.write("leaked env: " + leaked.join(",") + "\\n");
+  process.exit(42);
+}
+if (process.env.CLAUDE_CONFIG_DIR !== "kept-config") {
+  process.stderr.write("missing kept oauth/config env\\n");
+  process.exit(43);
+}
+const sessionIdx = process.argv.indexOf("--session-id");
+const sessionId = sessionIdx >= 0 ? process.argv[sessionIdx + 1] : null;
+process.stdout.write(JSON.stringify({ type: "result", is_error: false, result: "ok", session_id: sessionId }) + "\\n");
+`);
+    const result = await spawnClaude(resolveProfile("rescue"), {
+      model: "claude-haiku-4-5-20251001",
+      promptText: "hello",
+      sessionId: UUID,
+      binary: bin,
+      env: {
+        PATH: process.env.PATH,
+        HOME: process.env.HOME,
+        CLAUDE_CONFIG_DIR: "kept-config",
+        ANTHROPIC_API_KEY: "must-not-leak",
+        CLAUDE_API_KEY: "must-not-leak",
+        OPENAI_API_KEY: "must-not-leak",
+        ANTHROPIC_AUTH_TOKEN: "must-not-leak",
+        ANTHROPIC_BASE_URL: "https://example.invalid",
+      },
+    });
+
+    assert.equal(result.exitCode, 0, result.stderr);
+    assert.equal(result.parsed.ok, true);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("spawnClaude: timeout escalation timer does not keep the parent process alive", () => {
   const dir = mkdtempSync(path.join(tmpdir(), "claude-timeout-unref-unit-"));
   try {

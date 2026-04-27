@@ -437,6 +437,57 @@ test("continue --job: refuses to resume a running job", () => {
   }
 });
 
+test("continue --job: resumes a cancelled terminal job", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "smoke-continue-cancelled-"));
+  const dataDir = mkdtempSync(path.join(tmpdir(), "continue-cancelled-data-"));
+  try {
+    const runRes = runCompanion(
+      ["run", "--mode=rescue", "--foreground",
+       "--model", "claude-haiku-4-5-20251001",
+       "--cwd", cwd, "--", "seed"],
+      { cwd, dataDir },
+    );
+    assert.equal(runRes.status, 0, runRes.stderr);
+    const { metaPath, record } = readOnlyJobRecord(dataDir);
+    writeFileSync(metaPath, `${JSON.stringify({ ...record, status: "cancelled" }, null, 2)}\n`, "utf8");
+
+    const contRes = runCompanion(
+      ["continue", "--job", record.job_id, "--foreground",
+       "--cwd", cwd, "--", "follow-up"],
+      { cwd, dataDir },
+    );
+    assert.equal(contRes.status, 0, contRes.stderr);
+    const continued = JSON.parse(contRes.stdout);
+    assert.equal(continued.parent_job_id, record.job_id);
+    assert.equal(continued.status, "completed");
+  } finally {
+    rmSync(dataDir, { recursive: true, force: true });
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("run --foreground: finalization write failures use structured errors", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "smoke-finalize-fail-"));
+  const dataDir = mkdtempSync(path.join(tmpdir(), "finalize-fail-data-"));
+  try {
+    seedMinimalRepo(cwd);
+    const res = runCompanion(
+      ["run", "--mode=rescue", "--foreground",
+       "--model", "claude-haiku-4-5-20251001",
+       "--cwd", cwd, "--", "seed"],
+      { cwd, dataDir, env: { CLAUDE_MOCK_SIDECAR_CONFLICT: "1" } },
+    );
+    assert.notEqual(res.status, 0);
+    assert.doesNotMatch(res.stderr, /unhandled/i);
+    const err = JSON.parse(res.stdout);
+    assert.equal(err.error, "finalization_failed");
+    assert.match(err.message, /EEXIST|not a directory|file already exists/i);
+  } finally {
+    rmSync(dataDir, { recursive: true, force: true });
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
 // ————— T7.2 containment/scope smoke tests —————
 // The three `run --isolated*` tests from M5 are GONE — `--isolated` is no
 // longer a CLI flag. The four tests below replace them and additionally lock

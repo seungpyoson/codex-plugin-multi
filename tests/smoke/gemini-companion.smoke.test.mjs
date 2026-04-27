@@ -292,6 +292,33 @@ test("gemini continue foreground: refuses to resume a running job", () => {
   }
 });
 
+test("gemini continue foreground: resumes a cancelled terminal job", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "gemini-continue-cancelled-cwd-"));
+  seedMinimalRepo(cwd);
+  const first = runCompanion(
+    ["run", "--mode=rescue", "--foreground", "--model", "gemini-3-flash-preview",
+     "--cwd", cwd, "--", "initial rescue task"],
+    { cwd },
+  );
+  try {
+    assert.equal(first.status, 0, `exit ${first.status}: ${first.stderr}`);
+    const { metaPath, record } = readOnlyJobRecord(first.dataDir);
+    writeFileSync(metaPath, `${JSON.stringify({ ...record, status: "cancelled" }, null, 2)}\n`, "utf8");
+
+    const continued = runCompanion(
+      ["continue", "--job", record.job_id, "--foreground", "--cwd", cwd, "--", "continue rescue task"],
+      { cwd, dataDir: first.dataDir },
+    );
+    assert.equal(continued.status, 0, `exit ${continued.status}: ${continued.stderr}`);
+    const out = JSON.parse(continued.stdout);
+    assert.equal(out.parent_job_id, record.job_id);
+    assert.equal(out.status, "completed");
+  } finally {
+    rmTree(first.dataDir);
+    rmTree(cwd);
+  }
+});
+
 test("gemini continue background: launched event and resumed terminal JobRecord", async () => {
   const cwd = mkdtempSync(path.join(tmpdir(), "gemini-continue-bg-cwd-"));
   seedMinimalRepo(cwd);

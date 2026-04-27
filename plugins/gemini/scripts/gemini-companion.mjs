@@ -18,6 +18,7 @@ import { spawnGemini } from "./lib/gemini.mjs";
 const PLUGIN_ROOT = resolvePath(dirname(fileURLToPath(import.meta.url)), "..");
 const MODELS_CONFIG_PATH = resolvePath(PLUGIN_ROOT, "config/models.json");
 const READ_ONLY_POLICY = resolvePath(PLUGIN_ROOT, "policies/read-only.toml");
+const CONTINUABLE_STATUSES = new Set(["completed", "failed", "cancelled", "stale"]);
 
 configureState({
   pluginDataEnv: "GEMINI_PLUGIN_DATA",
@@ -315,6 +316,7 @@ async function executeRun(invocation, prompt, { foreground }) {
   }
 
   let finalRecord;
+  let finalizationError = null;
   try {
     if (checkMutations && gitStatusBefore !== null) {
       let gitStatusAfter;
@@ -341,9 +343,16 @@ async function executeRun(invocation, prompt, { foreground }) {
     upsertJob(workspaceRoot, finalRecord);
     writeSidecar(workspaceRoot, jobId, "stdout.log", execution.stdout);
     writeSidecar(workspaceRoot, jobId, "stderr.log", execution.stderr);
+  } catch (e) {
+    finalizationError = e;
   } finally {
     if (neutralCwd) rmSync(neutralCwd, { recursive: true, force: true });
     if (containment.disposed && disposeEffective) containment.cleanup();
+  }
+  if (finalizationError) {
+    fail("finalization_failed", finalizationError.message ?? String(finalizationError), {
+      error_code: finalizationError.code ?? null,
+    });
   }
   if (foreground) printJson(finalRecord);
   process.exit(finalRecord.status === "completed" ? 0 : 2);
@@ -422,7 +431,7 @@ async function cmdContinue(rest) {
     fail("bad_args", e.message);
   }
 
-  if (!["completed", "failed"].includes(prior.status)) {
+  if (!CONTINUABLE_STATUSES.has(prior.status)) {
     fail("bad_state", `cannot continue job in status ${JSON.stringify(prior.status)}; wait for terminal status or cancel first`);
   }
 

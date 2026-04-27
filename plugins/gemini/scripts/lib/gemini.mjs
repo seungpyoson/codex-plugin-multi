@@ -2,6 +2,29 @@ import { spawn } from "node:child_process";
 
 import { capturePidInfo } from "./identity.mjs";
 
+const PROVIDER_ENV_DENYLIST = new Set([
+  "ANTHROPIC_AUTH_TOKEN",
+  "ANTHROPIC_BASE_URL",
+  "ANTHROPIC_API_URL",
+  "ANTHROPIC_VERTEX_PROJECT_ID",
+  "CLAUDE_CODE_USE_BEDROCK",
+  "CLAUDE_CODE_USE_VERTEX",
+  "CLOUD_ML_REGION",
+  "GOOGLE_APPLICATION_CREDENTIALS",
+  "GOOGLE_CLOUD_PROJECT",
+  "GOOGLE_GENAI_USE_VERTEXAI",
+]);
+
+function sanitizeTargetEnv(env) {
+  const sanitized = {};
+  for (const [key, value] of Object.entries(env ?? {})) {
+    const upper = key.toUpperCase();
+    if (upper.endsWith("_API_KEY") || PROVIDER_ENV_DENYLIST.has(upper)) continue;
+    sanitized[key] = value;
+  }
+  return sanitized;
+}
+
 function assertProfile(profile) {
   if (!profile || typeof profile !== "object") {
     throw new Error("buildGeminiArgs: first argument must be a mode profile object");
@@ -107,9 +130,10 @@ export async function spawnGemini(profile, runtimeInputs = {}) {
   }
 
   const args = buildGeminiArgs(profile, { model, policyPath, includeDirPath, resumeId });
+  const targetEnv = sanitizeTargetEnv(env);
 
   return new Promise((resolve, reject) => {
-    const child = spawn(binary, args, { cwd, env, stdio: ["pipe", "pipe", "pipe"] });
+    const child = spawn(binary, args, { cwd, env: targetEnv, stdio: ["pipe", "pipe", "pipe"] });
     let pidInfo;
     try {
       pidInfo = capturePidInfo(child.pid);

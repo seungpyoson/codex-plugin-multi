@@ -207,6 +207,56 @@ process.stdin.on("end", () => {
   }
 });
 
+test("spawnGemini: strips API-key env before launching target CLI", async () => {
+  const dir = mkdtempSync(path.join(tmpdir(), "gemini-env-sanitize-unit-"));
+  try {
+    const bin = writeExecutable(dir, "gemini-env-check.mjs", `#!/usr/bin/env node
+const forbidden = [
+  "GEMINI_API_KEY",
+  "GOOGLE_API_KEY",
+  "OPENAI_API_KEY",
+  "GOOGLE_APPLICATION_CREDENTIALS",
+  "GOOGLE_CLOUD_PROJECT",
+];
+const leaked = forbidden.filter((key) => process.env[key]);
+if (leaked.length > 0) {
+  process.stderr.write("leaked env: " + leaked.join(",") + "\\n");
+  process.exit(42);
+}
+if (process.env.GEMINI_CONFIG_DIR !== "kept-config") {
+  process.stderr.write("missing kept oauth/config env\\n");
+  process.exit(43);
+}
+process.stdin.resume();
+process.stdout.write(JSON.stringify({
+  session_id: "22222222-3333-4444-9555-666666666666",
+  response: "ok"
+}) + "\\n");
+`);
+    const result = await spawnGemini(resolveProfile("rescue"), {
+      model: "gemini-3-flash-preview",
+      promptText: "hello",
+      cwd: dir,
+      binary: bin,
+      env: {
+        PATH: process.env.PATH,
+        HOME: process.env.HOME,
+        GEMINI_CONFIG_DIR: "kept-config",
+        GEMINI_API_KEY: "must-not-leak",
+        GOOGLE_API_KEY: "must-not-leak",
+        OPENAI_API_KEY: "must-not-leak",
+        GOOGLE_APPLICATION_CREDENTIALS: "/tmp/must-not-leak.json",
+        GOOGLE_CLOUD_PROJECT: "must-not-leak",
+      },
+    });
+
+    assert.equal(result.exitCode, 0, result.stderr);
+    assert.equal(result.parsed.ok, true);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("spawnGemini: ignores EPIPE when fast child returns valid output", () => {
   const dir = mkdtempSync(path.join(tmpdir(), "gemini-epipe-unit-"));
   try {

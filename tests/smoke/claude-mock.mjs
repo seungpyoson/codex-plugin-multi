@@ -89,6 +89,16 @@ const sessionId = parsed.flags["--session-id"] ?? "00000000-0000-4000-8000-00000
 const resumeId = parsed.flags["--resume"] ?? null;
 const promptSha = createHash("sha256").update(prompt).digest("hex").slice(0, 16);
 
+if (process.env.CLAUDE_MOCK_SIDECAR_CONFLICT === "1") {
+  const { resolveJobsDir } = await import("../../plugins/claude/scripts/lib/state.mjs");
+  const { writeFileSync, mkdirSync } = await import("node:fs");
+  const { dirname } = await import("node:path");
+  const jobsDir = resolveJobsDir(process.cwd());
+  const conflictPath = resolve(jobsDir, sessionId);
+  mkdirSync(dirname(conflictPath), { recursive: true });
+  writeFileSync(conflictPath, "sidecar-directory-conflict\n", "utf8");
+}
+
 // T7.3 test oracle: when CLAUDE_MOCK_RECORD_RESUME=1, record the `--resume`
 // (or `--session-id` fallback) UUID to a sink path. Smoke tests read it back
 // to assert the companion passed the *correct* UUID (§21.1 identity contract,

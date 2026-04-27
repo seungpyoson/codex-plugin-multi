@@ -12,6 +12,29 @@ import { spawn } from "node:child_process";
 
 import { capturePidInfo } from "./identity.mjs";
 
+const PROVIDER_ENV_DENYLIST = new Set([
+  "ANTHROPIC_AUTH_TOKEN",
+  "ANTHROPIC_BASE_URL",
+  "ANTHROPIC_API_URL",
+  "ANTHROPIC_VERTEX_PROJECT_ID",
+  "CLAUDE_CODE_USE_BEDROCK",
+  "CLAUDE_CODE_USE_VERTEX",
+  "CLOUD_ML_REGION",
+  "GOOGLE_APPLICATION_CREDENTIALS",
+  "GOOGLE_CLOUD_PROJECT",
+  "GOOGLE_GENAI_USE_VERTEXAI",
+]);
+
+function sanitizeTargetEnv(env) {
+  const sanitized = {};
+  for (const [key, value] of Object.entries(env ?? {})) {
+    const upper = key.toUpperCase();
+    if (upper.endsWith("_API_KEY") || PROVIDER_ENV_DENYLIST.has(upper)) continue;
+    sanitized[key] = value;
+  }
+  return sanitized;
+}
+
 // Claude requires UUIDv4 for --session-id. We always pass one up-front so we
 // know the session ID before the call returns and can --resume later.
 function isUuidV4(s) {
@@ -155,7 +178,7 @@ export function parseClaudeResult(stdout) {
  *   profile        — mode profile (see buildClaudeArgs)
  *   runtimeInputs  — same shape as buildClaudeArgs runtimeInputs, plus:
  *     cwd?          (default: process.cwd())
- *     env?          (default: process.env)
+ *     env?          (default: process.env; API-key/provider-routing vars are stripped)
  *     timeoutMs?    (default: 0 = no timeout)
  *     binary?       (default: "claude")
  */
@@ -177,11 +200,12 @@ export async function spawnClaude(profile, runtimeInputs = {}) {
   const args = buildClaudeArgs(profile, {
     model, promptText, sessionId, resumeId, addDirPath, jsonSchema,
   });
+  const targetEnv = sanitizeTargetEnv(env);
 
   return new Promise((resolve, reject) => {
     // Claude receives the prompt via argv and ignores stdin, so there is no
     // stdin EPIPE race to coordinate here. Gemini has a write/close harness.
-    const child = spawn(binary, args, { cwd, env, stdio: ["ignore", "pipe", "pipe"] });
+    const child = spawn(binary, args, { cwd, env: targetEnv, stdio: ["ignore", "pipe", "pipe"] });
     // Capture pidInfo at spawn — this is the ownership proof the companion
     // uses on cancel (§21.1). Short-lived children may exit before `ps` /
     // `/proc` can be read; in that case we keep the pid and record a

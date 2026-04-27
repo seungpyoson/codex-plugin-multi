@@ -1,7 +1,7 @@
 import { test, before, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import fs, { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { hostname, tmpdir } from "node:os";
 import path from "node:path";
 
 import {
@@ -70,6 +70,17 @@ function freshGeminiStateDir() {
 function cleanupGemini(dir) {
   delete process.env["GEMINI_STATE_TEST_DATA"];
   rmSync(dir, { recursive: true, force: true });
+}
+
+function findDeadPid() {
+  for (let pid = 999999; pid < 1009999; pid += 1) {
+    try {
+      process.kill(pid, 0);
+    } catch (e) {
+      if (e?.code === "ESRCH") return pid;
+    }
+  }
+  return 99999999;
 }
 
 test("configureState: getStateConfig returns set values", () => {
@@ -482,6 +493,7 @@ for (const [target, state, fresh, cleanupTarget] of [
   ["claude", {
     configureState,
     saveState,
+    updateState,
     upsertJob,
     loadState,
     listJobs,
@@ -571,6 +583,91 @@ for (const [target, state, fresh, cleanupTarget] of [
       assert.equal(ids.includes("queued-job"), true);
       assert.equal(ids.includes("running-job"), true);
       assert.equal(ids.length, 52);
+    } finally {
+      cleanupTarget(dir);
+    }
+  });
+
+  test(`${target} state: stale lock directories are reclaimed`, () => {
+    const dir = fresh();
+    try {
+      state.writeJobFile(dir, "seed-job", { id: "seed-job" });
+      const lockDir = path.join(state.resolveStateDir(dir), ".state.lock");
+      fs.mkdirSync(lockDir);
+      const old = new Date(Date.now() - 60_000);
+      fs.utimesSync(lockDir, old, old);
+
+      state.upsertJob(dir, { id: "after-stale-lock", status: "completed" });
+
+      assert.equal(state.listJobs(dir).some((job) => job.id === "after-stale-lock"), true);
+      assert.equal(fs.existsSync(lockDir), false);
+    } finally {
+      cleanupTarget(dir);
+    }
+  });
+
+  test(`${target} state: lock directories owned by dead same-host processes are reclaimed`, () => {
+    const dir = fresh();
+    try {
+      state.writeJobFile(dir, "seed-job", { id: "seed-job" });
+      const lockDir = path.join(state.resolveStateDir(dir), ".state.lock");
+      fs.mkdirSync(lockDir);
+      fs.writeFileSync(path.join(lockDir, "owner.json"), `${JSON.stringify({
+        pid: findDeadPid(),
+        hostname: hostname(),
+        startedAt: new Date().toISOString(),
+      })}\n`, "utf8");
+
+      state.upsertJob(dir, { id: "after-dead-lock", status: "completed" });
+
+      assert.equal(state.listJobs(dir).some((job) => job.id === "after-dead-lock"), true);
+      assert.equal(fs.existsSync(lockDir), false);
+    } finally {
+      cleanupTarget(dir);
+    }
+  });
+
+  test(`${target} state: live locks time out without stale reclaim`, () => {
+    const dir = fresh();
+    const realNow = Date.now;
+    try {
+      state.writeJobFile(dir, "seed-job", { id: "seed-job" });
+      const lockDir = path.join(state.resolveStateDir(dir), ".state.lock");
+      fs.mkdirSync(lockDir);
+      fs.writeFileSync(path.join(lockDir, "owner.json"), `${JSON.stringify({
+        pid: process.pid,
+        hostname: hostname(),
+        startedAt: new Date(realNow() + 600_000).toISOString(),
+      })}\n`, "utf8");
+
+      let calls = 0;
+      Date.now = () => {
+        calls += 1;
+        return realNow() + (calls >= 4 ? 6000 : 0);
+      };
+
+      assert.throws(
+        () => state.upsertJob(dir, { id: "blocked-by-live-lock", status: "completed" }),
+        /state_lock_timeout/,
+      );
+      assert.equal(fs.existsSync(lockDir), true);
+    } finally {
+      Date.now = realNow;
+      cleanupTarget(dir);
+    }
+  });
+
+  test(`${target} state: reentrant lock attempts fail fast`, () => {
+    const dir = fresh();
+    try {
+      const started = Date.now();
+      assert.throws(
+        () => state.updateState(dir, () => {
+          state.saveState(dir, { jobs: [] });
+        }),
+        /state_lock_reentrant/,
+      );
+      assert.ok(Date.now() - started < 1000, "reentrant calls must not spin until lock timeout");
     } finally {
       cleanupTarget(dir);
     }
