@@ -133,6 +133,54 @@ test("gemini rescue background: launched event and terminal JobRecord", async ()
   }
 });
 
+test("gemini rescue background: active job appears in default status", async () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "gemini-bg-status-cwd-"));
+  seedMinimalRepo(cwd);
+  const { stdout, stderr, status, dataDir } = runCompanion(
+    ["run", "--mode=rescue", "--background", "--model", "gemini-3-flash-preview",
+     "--cwd", cwd, "--", "delayed background rescue task"],
+    { cwd, env: { GEMINI_MOCK_DELAY_MS: "5000" } },
+  );
+  try {
+    assert.equal(status, 0, `exit ${status}: ${stderr}`);
+    const launched = JSON.parse(stdout);
+    const runningDeadline = Date.now() + 3000;
+    let running = null;
+    while (Date.now() < runningDeadline && !running) {
+      const statusRes = spawnSync("node", [COMPANION, "status", "--cwd", cwd], {
+        cwd,
+        encoding: "utf8",
+        env: { ...process.env, GEMINI_PLUGIN_DATA: dataDir },
+      });
+      assert.equal(statusRes.status, 0, `exit ${statusRes.status}: ${statusRes.stderr}`);
+      const parsed = JSON.parse(statusRes.stdout);
+      running = parsed.jobs.find((job) => job.job_id === launched.job_id);
+      if (!running) await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    assert.ok(running, "active background job was hidden from default gemini status");
+    assert.equal(running.status, "running");
+    assert.ok(running.pid_info?.pid, "running Gemini job must carry pid_info");
+
+    const terminalDeadline = Date.now() + 7000;
+    let terminal = null;
+    while (Date.now() < terminalDeadline && !terminal) {
+      const allRes = spawnSync("node", [COMPANION, "status", "--all", "--cwd", cwd], {
+        cwd,
+        encoding: "utf8",
+        env: { ...process.env, GEMINI_PLUGIN_DATA: dataDir },
+      });
+      assert.equal(allRes.status, 0, `exit ${allRes.status}: ${allRes.stderr}`);
+      const parsed = JSON.parse(allRes.stdout);
+      terminal = parsed.jobs.find((job) => job.job_id === launched.job_id && job.status !== "running");
+      if (!terminal) await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    assert.ok(terminal, "background job did not finish before cleanup");
+  } finally {
+    rmSync(dataDir, { recursive: true, force: true });
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
 test("gemini background worker spawn failure writes failed JobRecord instead of launched", () => {
   const cwd = mkdtempSync(path.join(tmpdir(), "gemini-bg-spawn-fail-runner-"));
   const missingCwd = path.join(cwd, "missing-cwd");

@@ -14,6 +14,8 @@ argument-hint: "<job-id> [--force]"
    - `status: "signaled"` → job received SIGTERM/SIGKILL.
    - `status: "already_terminal"` → nothing to do.
    - `status: "already_dead"` → PID gone; state will reconcile.
+   - `status: "no_pid_info"` → job lacks complete PID ownership proof; do not signal manually unless the operator accepts that risk.
+   - `status: "stale_pid"` → PID ownership proof changed; refuse to signal because the PID may have been reused.
 
 ## Guardrails
 

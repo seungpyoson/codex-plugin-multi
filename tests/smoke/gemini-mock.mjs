@@ -70,4 +70,12 @@ if (assertFileRel) {
   fixture.t7_saw_file = includeDirs.some((dir) => existsSync(resolve(dir, assertFileRel)));
 }
 
-process.stdout.write(JSON.stringify(fixture) + "\n");
+const delayMs = Number(process.env.GEMINI_MOCK_DELAY_MS ?? "0");
+if (Number.isFinite(delayMs) && delayMs > 0) {
+  setTimeout(() => {
+    process.stdout.write(JSON.stringify(fixture) + "\n");
+    process.exit(0);
+  }, delayMs);
+} else {
+  process.stdout.write(JSON.stringify(fixture) + "\n");
+}

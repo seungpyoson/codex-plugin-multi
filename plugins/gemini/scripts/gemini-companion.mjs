@@ -287,6 +287,17 @@ async function executeRun(invocation, prompt, { foreground }) {
       cwd: neutralCwd ?? containment.path,
       binary: invocation.binary,
       resumeId,
+      onSpawn: (pidInfo) => {
+        const runningRecord = buildJobRecord(invocation, {
+          status: "running",
+          exitCode: null,
+          parsed: null,
+          pidInfo,
+          geminiSessionId: null,
+        }, mutations);
+        writeJobFile(workspaceRoot, jobId, runningRecord);
+        upsertJob(workspaceRoot, runningRecord);
+      },
     });
   } catch (e) {
     const errorRecord = buildJobRecord(invocation, {
