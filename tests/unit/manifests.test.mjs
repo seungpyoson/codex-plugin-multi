@@ -63,9 +63,13 @@ test("claude and gemini expose the full v0.1 command surface", () => {
 
 test("release metadata documents v0.1.0 for both plugins", () => {
   const changelog = readFileSync(path.join(REPO_ROOT, "CHANGELOG.md"), "utf8");
+  const rootPackage = readJson("package.json");
+  assert.equal(rootPackage.version, "0.1.0");
   for (const plugin of ["claude", "gemini"]) {
     const manifest = readJson(`plugins/${plugin}/.codex-plugin/plugin.json`);
+    const workspacePackage = readJson(`plugins/${plugin}/package.json`);
     assert.equal(manifest.version, "0.1.0");
+    assert.equal(workspacePackage.version, manifest.version);
   }
 
   assert.match(changelog, /## 0\.1\.0/);

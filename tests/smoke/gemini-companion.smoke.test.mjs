@@ -382,7 +382,7 @@ test("gemini _run-worker writes failed JobRecord when queued prompt sidecar is m
 test("gemini review foreground: policy-first, stdin transport, /tmp cwd, scoped include dir", () => {
   const cwd = mkdtempSync(path.join(tmpdir(), "gemini-review-cwd-"));
   seedMinimalRepo(cwd);
-  const neutralCwd = realpathSync("/tmp");
+  const neutralCwd = realpathSync(tmpdir());
   const { stdout, stderr, status, dataDir } = runCompanion(
     ["run", "--mode=review", "--foreground", "--cwd", cwd, "--", "review: x=1"],
     { cwd, env: { GEMINI_MOCK_ASSERT_FILE: "seed.txt", GEMINI_MOCK_ASSERT_CWD: neutralCwd } },
@@ -399,7 +399,7 @@ test("gemini review foreground: policy-first, stdin transport, /tmp cwd, scoped 
     assert.equal(record.scope, "working-tree");
 
     const fx = readStdoutLog(dataDir, record.job_id);
-    assert.notEqual(fx.t7_cwd, neutralCwd, "Gemini review must not use /tmp itself as the workspace root");
+    assert.notEqual(fx.t7_cwd, neutralCwd, "Gemini review must not use the temp root itself as the workspace root");
     assert.equal(fx.t7_cwd.startsWith(neutralCwd), true, `Gemini review must run from a neutral temp cwd under ${neutralCwd}; got ${fx.t7_cwd}`);
     assert.equal(existsSync(fx.t7_cwd), false, `neutral Gemini cwd must be cleaned after the run: ${fx.t7_cwd}`);
     assert.equal(fx.t7_include_dirs.includes(fx.t7_cwd), false, "neutral cwd must not be the scoped include directory");
@@ -520,7 +520,7 @@ test("gemini scope population failure skips target CLI spawn", () => {
   }
 });
 
-test("gemini status default includes queued, cancelled, stale, running, completed, and failed jobs", async () => {
+test("gemini status default hides inactive jobs and --all includes every state", async () => {
   const cwd = mkdtempSync(path.join(tmpdir(), "gemini-status-cwd-"));
   const dataDir = mkdtempSync(path.join(tmpdir(), "gemini-status-data-"));
   seedMinimalRepo(cwd);
@@ -543,6 +543,18 @@ test("gemini status default includes queued, cancelled, stale, running, complete
     const parsed = JSON.parse(res.stdout);
     assert.deepEqual(
       parsed.jobs.map((job) => job.status).sort(),
+      ["completed", "failed", "running"],
+    );
+
+    const allRes = spawnSync("node", [COMPANION, "status", "--all", "--cwd", cwd], {
+      cwd,
+      encoding: "utf8",
+      env: { ...process.env, GEMINI_PLUGIN_DATA: dataDir },
+    });
+    assert.equal(allRes.status, 0, `exit ${allRes.status}: ${allRes.stderr}`);
+    const allParsed = JSON.parse(allRes.stdout);
+    assert.deepEqual(
+      allParsed.jobs.map((job) => job.status).sort(),
       ["cancelled", "completed", "failed", "queued", "running", "stale"],
     );
   } finally {

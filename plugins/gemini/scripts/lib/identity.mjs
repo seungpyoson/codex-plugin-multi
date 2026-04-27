@@ -3,9 +3,9 @@
 // Every durable record names FOUR identities, separately:
 //
 //   job_id            — companion-minted UUID per `run`/`continue` invocation.
-//   claude_session_id — read from Claude's stdout (`parsed.session_id`); the
-//                       value Claude actually ran under. Never minted here.
-//   resume_chain[]    — newest-last list of prior `claude_session_id`s across
+//   target_session_id — read from target stdout (`parsed.session_id`); the
+//                       value the target actually ran under. Never minted here.
+//   resume_chain[]    — newest-last list of prior target session IDs across
 //                       a `continue` chain.
 //   pid_info          — {pid, starttime, argv0} captured from /proc or ps at
 //                       spawn time. Used for PID-reuse-safe cancel signaling.
@@ -156,7 +156,7 @@ export function verifyPidInfo(saved) {
 }
 
 /**
- * Append a prior claude_session_id to `record.resume_chain`, newest-last.
+ * Append a prior target session ID to `record.resume_chain`, newest-last.
  * Non-mutating: returns a new record; the input is untouched.
  */
 export function appendResumeLink(record, priorClaudeSessionId) {

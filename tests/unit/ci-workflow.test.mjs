@@ -16,9 +16,17 @@ test("package scripts expose per-target smoke commands", () => {
 test("pull-request CI runs unit tests and per-target smoke matrix separately", () => {
   assert.match(workflow, /\n\s+test:\n/);
   assert.match(workflow, /CODEX_PLUGIN_SKIP_SMOKE:\s*"1"/);
+  assert.match(workflow, /npm test/);
+  assert.doesNotMatch(workflow, /compgen/);
+  assert.doesNotMatch(workflow, /No unit tests yet/);
   assert.match(workflow, /\n\s+smoke:\n/);
   assert.match(workflow, /target:\s*\[claude,\s*gemini\]/);
   assert.match(workflow, /npm run smoke:\$\{\{ matrix\.target \}\}/);
+});
+
+test("pull-request CI runs the enforced coverage gate", () => {
+  assert.match(workflow, /COVERAGE_ENFORCE_TARGET:\s*"1"/);
+  assert.match(workflow, /npm run test:coverage/);
 });
 
 test("manual E2E scripts are opt-in and documented", () => {

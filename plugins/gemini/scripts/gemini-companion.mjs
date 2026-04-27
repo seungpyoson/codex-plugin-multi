@@ -3,6 +3,7 @@ import { fileURLToPath } from "node:url";
 import { dirname, join as joinPath, resolve as resolvePath } from "node:path";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, unlinkSync, writeFileSync, chmodSync } from "node:fs";
 import { execFileSync, spawn } from "node:child_process";
+import { tmpdir } from "node:os";
 
 import { parseArgs } from "./lib/args.mjs";
 import { configureState, resolveJobsDir, resolveJobFile, writeJobFile, upsertJob, listJobs } from "./lib/state.mjs";
@@ -260,7 +261,7 @@ async function executeRun(invocation, prompt, { foreground }) {
   const mutations = [];
   if (checkMutations) {
     try {
-      neutralCwd = mkdtempSync(joinPath("/tmp", "gemini-neutral-cwd-"));
+      neutralCwd = mkdtempSync(joinPath(tmpdir(), "gemini-neutral-cwd-"));
     } catch (e) {
       mutations.push(mutationDetectionFailure(e, "neutral cwd setup failed"));
     }
@@ -472,7 +473,10 @@ async function cmdStatus(rest) {
     printJson(match);
     return;
   }
-  printJson({ workspace_root: workspaceRoot, jobs });
+  const filtered = options.all
+    ? jobs
+    : jobs.filter((j) => j.status === "running" || j.status === "completed" || j.status === "failed");
+  printJson({ workspace_root: workspaceRoot, jobs: filtered });
 }
 
 async function cmdResult(rest) {

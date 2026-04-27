@@ -7,14 +7,14 @@ Review via Claude Code. Read-only; changes detected post-hoc, never auto-reverte
 
 ## Arguments
 
-`$ARGUMENTS` — optional focus area or flags. Passed as-is to the companion prompt.
+`$ARGUMENTS` — optional `--scope-base <ref>` followed by focus text. If present, pass `--scope-base <ref>` before `--`; pass the remaining focus text after `--`.
 
 ## Workflow
 
 1. Consult the `claude-prompting` skill for review-mode prompt framing and schema hints.
 2. Run:
    ```
-   node "<plugin-root>/scripts/claude-companion.mjs" run --mode=review --foreground -- "$ARGUMENTS"
+   node "<plugin-root>/scripts/claude-companion.mjs" run --mode=review --foreground [--scope-base <ref>] -- "<focus text>"
    ```
    (Containment + scope + dispose are all carried by the review profile — spec §21.4.)
 3. Render the returned JSON:

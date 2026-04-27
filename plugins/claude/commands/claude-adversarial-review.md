@@ -7,14 +7,14 @@ Adversarial review via Claude Code. Assumes the author is wrong; looks for failu
 
 ## Arguments
 
-`$ARGUMENTS` — optional focus area (e.g., "error handling", "concurrency"). Passed as-is.
+`$ARGUMENTS` — optional `--scope-base <ref>` followed by focus text (e.g., "error handling", "concurrency"). If present, pass `--scope-base <ref>` before `--`; pass the remaining focus text after `--`.
 
 ## Workflow
 
 1. Consult the `claude-prompting` skill for adversarial prompt framing.
 2. Run:
    ```
-   node "<plugin-root>/scripts/claude-companion.mjs" run --mode=adversarial-review --foreground -- "$ARGUMENTS"
+   node "<plugin-root>/scripts/claude-companion.mjs" run --mode=adversarial-review --foreground [--scope-base <ref>] -- "<focus text>"
    ```
    (Containment=worktree, scope=branch-diff, dispose=true all come from the profile — spec §21.4.)
    `branch-diff` is object-pure: checkout filters, replace refs, and grafts are ignored.

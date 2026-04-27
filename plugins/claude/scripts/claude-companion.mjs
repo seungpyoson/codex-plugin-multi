@@ -21,7 +21,7 @@
 // `--override-dispose <bool>`, intentionally undocumented in command-file
 // snippets.
 //
-// Only `run --foreground` is implemented at M2; later milestones extend.
+// Subcommands below keep foreground/background lifecycle behavior explicit.
 
 import { fileURLToPath } from "node:url";
 import { dirname, resolve as resolvePath } from "node:path";
@@ -406,6 +406,17 @@ async function executeRun(invocation, prompt, { foreground }) {
       jsonSchema: invocation.schema_spec,
       resumeId,
       timeoutMs: 0,
+      onSpawn: (pidInfo) => {
+        const runningRecord = buildJobRecord(invocation, {
+          status: "running",
+          exitCode: null,
+          parsed: null,
+          pidInfo,
+          claudeSessionId: null,
+        }, mutations);
+        writeJobFile(workspaceRoot, jobId, runningRecord);
+        upsertJob(workspaceRoot, runningRecord);
+      },
     });
   } catch (e) {
     const errorRecord = buildJobRecord(invocation, {
@@ -491,6 +502,9 @@ async function cmdRunWorker(rest) {
   } catch (e) {
     fail("bad_args", e.message);
   }
+  if (["completed", "failed", "cancelled", "stale"].includes(meta.status)) {
+    fail("bad_state", `job ${options.job} is already terminal (${meta.status}); refusing worker re-entry`);
+  }
 
   // Read+delete the prompt sidecar (§21.3.1 handoff buffer). Missing sidecar
   // means either the launcher crashed before writing it, or this is a
@@ -517,6 +531,9 @@ async function cmdContinue(rest) {
     booleanOptions: ["background", "foreground"],
   });
   if (!options.job) fail("bad_args", "--job <id> is required");
+  if (options.background && options.foreground) {
+    fail("bad_args", "--background and --foreground are mutually exclusive");
+  }
   const cwd = options.cwd ?? process.cwd();
   const workspaceRoot = resolveWorkspaceRoot(cwd);
   let prior;
@@ -739,6 +756,17 @@ async function cmdCancel(rest) {
       status: "no_pid_info",
       detail: "job has no pid_info; cannot safely signal (legacy record or race)",
       job_id: options.job,
+    });
+    return;
+  }
+  if (pidInfo.capture_error || !pidInfo.starttime || !pidInfo.argv0) {
+    printJson({
+      ok: false,
+      status: "no_pid_info",
+      detail: "job has pid but no complete ownership proof; refusing to signal",
+      job_id: options.job,
+      pid: pidInfo.pid,
+      capture_error: pidInfo.capture_error ?? null,
     });
     return;
   }

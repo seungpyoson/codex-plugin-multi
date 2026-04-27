@@ -2,10 +2,10 @@
 
 Date: 2026-04-27
 
-Reviewed head: `da616f6` (`Release metadata for v0.1.0`)
+Reviewed head: `42f5107` (`docs: draft release verification runbook`)
 
 Review scope: release-candidate delta from M9 baseline `3bf78d4` through
-`da616f6`, covering shared lifecycle hardening, coverage gate, CI smoke matrix,
+`42f5107`, covering shared lifecycle hardening, coverage gate, CI smoke matrix,
 manual E2E runbook, manifest/frontmatter linting, README install guide, and
 v0.1.0 metadata.
 

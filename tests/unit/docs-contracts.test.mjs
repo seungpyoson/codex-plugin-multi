@@ -45,6 +45,28 @@ test("review command docs advertise --scope-base, not legacy --base", () => {
   assert.doesNotMatch(docs, /--base <ref>/);
 });
 
+test("review command docs route --scope-base as a companion flag", () => {
+  const docs = [
+    readRepoFile("plugins/claude/commands/claude-review.md"),
+    readRepoFile("plugins/claude/commands/claude-adversarial-review.md"),
+    readRepoFile("plugins/gemini/commands/gemini-review.md"),
+    readRepoFile("plugins/gemini/commands/gemini-adversarial-review.md"),
+  ].join("\n");
+
+  assert.match(docs, /pass `--scope-base <ref>` before `--`/i);
+  assert.doesNotMatch(docs, /Passed as-is to the companion prompt/i);
+});
+
+test("setup docs do not claim unimplemented target version-floor checks", () => {
+  const docs = [
+    readRepoFile("plugins/claude/commands/claude-setup.md"),
+    readRepoFile("plugins/gemini/commands/gemini-setup.md"),
+  ].join("\n");
+
+  assert.doesNotMatch(docs, /min-versions\.json/);
+  assert.doesNotMatch(docs, /version is below floor/i);
+});
+
 test("gemini command docs match background/continue runtime and deferred cancel", () => {
   const rescue = readRepoFile("plugins/gemini/commands/gemini-rescue.md");
   const cancel = readRepoFile("plugins/gemini/commands/gemini-cancel.md");

@@ -129,6 +129,25 @@ test("buildJobRecord: queued/pre-run state (no execution)", () => {
   assert.equal(rec.error_message, null);
 });
 
+test("buildJobRecord: running state preserves pid_info and has no end time", () => {
+  const pidInfo = { pid: 12345, starttime: "Thu Apr 24 12:00:00 2026", argv0: "claude" };
+  const rec = buildJobRecord(makeInvocation(), {
+    status: "running",
+    exitCode: null,
+    parsed: null,
+    pidInfo,
+    claudeSessionId: null,
+  }, []);
+  assert.deepEqual(Object.keys(rec).sort(), [...EXPECTED_KEYS].sort());
+  assert.equal(rec.status, "running");
+  assert.deepEqual(rec.pid_info, pidInfo);
+  assert.equal(rec.ended_at, null);
+  assert.equal(rec.exit_code, null);
+  assert.equal(rec.result, null);
+  assert.equal(rec.error_code, null);
+  assert.equal(rec.error_message, null);
+});
+
 test("buildJobRecord: gemini success path stores gemini_session_id, not claude_session_id", () => {
   const rec = buildJobRecord(makeInvocation({
     target: "gemini",
@@ -194,6 +213,18 @@ test("gemini buildJobRecord: queued, success, and structured output paths", () =
   assert.equal(queued.status, "queued");
   assert.equal(queued.claude_session_id, null);
   assert.equal(queued.gemini_session_id, null);
+
+  const pidInfo = { pid: 12345, starttime: "Thu Apr 24 12:00:00 2026", argv0: "gemini" };
+  const running = buildGeminiJobRecord(invocation, {
+    status: "running",
+    exitCode: null,
+    parsed: null,
+    pidInfo,
+    geminiSessionId: null,
+  }, []);
+  assert.equal(running.status, "running");
+  assert.deepEqual(running.pid_info, pidInfo);
+  assert.equal(running.ended_at, null);
 
   const completed = buildGeminiJobRecord(invocation, {
     exitCode: 0,

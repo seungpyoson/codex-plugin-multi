@@ -101,6 +101,13 @@ function classifyExecution(execution) {
       error_message: null,
     };
   }
+  if (execution.status === "running") {
+    return {
+      status: "running",
+      error_code: null,
+      error_message: null,
+    };
+  }
   if (execution.errorMessage) {
     return {
       status: "failed",
@@ -225,7 +232,7 @@ export function buildJobRecord(invocation, execution, mutations) {
     // Lifecycle
     status,
     started_at: invocation.started_at,
-    ended_at: execution ? new Date().toISOString() : null,
+    ended_at: execution && status !== "running" ? new Date().toISOString() : null,
     exit_code: execution?.exitCode ?? null,
     error_code,
     error_message,

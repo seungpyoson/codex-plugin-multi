@@ -317,6 +317,70 @@ test("run --background: worker spawn failure writes failed JobRecord instead of 
   }
 });
 
+test("run --background: active job is visible as running and can be cancelled", async () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "smoke-bg-cancel-"));
+  const { stdout, status, stderr, dataDir } = runCompanion(
+    ["run", "--mode=rescue", "--background", "--model", "claude-haiku-4-5-20251001",
+     "--cwd", cwd, "--", "long background task"],
+    { cwd, env: { CLAUDE_MOCK_DELAY_MS: "5000" } },
+  );
+  try {
+    assert.equal(status, 0, stderr);
+    const launched = JSON.parse(stdout);
+    const deadline = Date.now() + 5000;
+    let running = null;
+    while (Date.now() < deadline && !running) {
+      const statusRes = spawnSync("node", [
+        path.join(REPO_ROOT, "plugins/claude/scripts/claude-companion.mjs"),
+        "status", "--cwd", cwd,
+      ], {
+        cwd, encoding: "utf8",
+        env: { ...process.env, CLAUDE_PLUGIN_DATA: dataDir },
+      });
+      assert.equal(statusRes.status, 0, statusRes.stderr);
+      const statusObj = JSON.parse(statusRes.stdout);
+      running = statusObj.jobs.find((j) => j.id === launched.job_id && j.status === "running");
+      if (!running) await new Promise((r) => setTimeout(r, 100));
+    }
+    assert.ok(running, "background job never became visible as running");
+    assert.ok(running.pid_info?.pid, "running job must carry pid_info for safe cancellation");
+
+    const cancelRes = spawnSync("node", [
+      path.join(REPO_ROOT, "plugins/claude/scripts/claude-companion.mjs"),
+      "cancel", "--job", launched.job_id, "--cwd", cwd,
+    ], {
+      cwd, encoding: "utf8",
+      env: { ...process.env, CLAUDE_PLUGIN_DATA: dataDir },
+    });
+    assert.equal(cancelRes.status, 0, cancelRes.stderr);
+    const cancel = JSON.parse(cancelRes.stdout);
+    if (running.pid_info.capture_error) {
+      assert.equal(cancel.status, "no_pid_info");
+      const terminalDeadline = Date.now() + 7000;
+      let terminal = null;
+      while (Date.now() < terminalDeadline && !terminal) {
+        const statusRes = spawnSync("node", [
+          path.join(REPO_ROOT, "plugins/claude/scripts/claude-companion.mjs"),
+          "status", "--cwd", cwd,
+        ], {
+          cwd, encoding: "utf8",
+          env: { ...process.env, CLAUDE_PLUGIN_DATA: dataDir },
+        });
+        assert.equal(statusRes.status, 0, statusRes.stderr);
+        const statusObj = JSON.parse(statusRes.stdout);
+        terminal = statusObj.jobs.find((j) => j.id === launched.job_id && j.status !== "running");
+        if (!terminal) await new Promise((r) => setTimeout(r, 100));
+      }
+      assert.ok(terminal, "job with incomplete pid_info did not finish before cleanup");
+    } else {
+      assert.equal(cancel.status, "signaled");
+    }
+  } finally {
+    cleanup(dataDir);
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
 test("continue --job: resumes a prior session via --resume", () => {
   const cwd = mkdtempSync(path.join(tmpdir(), "smoke-continue-"));
   const dataDir = mkdtempSync(path.join(tmpdir(), "continue-data-"));
@@ -642,6 +706,41 @@ test("cancel: already_terminal for a completed job", () => {
     assert.equal(cancelRes.status, 0);
     const response = JSON.parse(cancelRes.stdout);
     assert.equal(response.status, "already_terminal");
+  } finally {
+    rmSync(dataDir, { recursive: true, force: true });
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("claude _run-worker refuses terminal JobRecord without overwriting it", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "smoke-worker-terminal-"));
+  const dataDir = mkdtempSync(path.join(tmpdir(), "worker-terminal-data-"));
+  try {
+    const runRes = spawnSync("node", [
+      path.join(REPO_ROOT, "plugins/claude/scripts/claude-companion.mjs"),
+      "run", "--mode=rescue", "--foreground",
+      "--model", "claude-haiku-4-5-20251001",
+      "--cwd", cwd, "--", "seed",
+    ], {
+      cwd, encoding: "utf8",
+      env: { ...process.env, CLAUDE_BINARY: MOCK, CLAUDE_PLUGIN_DATA: dataDir },
+    });
+    assert.equal(runRes.status, 0, runRes.stderr);
+    const completed = JSON.parse(runRes.stdout);
+    assert.equal(completed.status, "completed");
+
+    const workerRes = spawnSync("node", [
+      path.join(REPO_ROOT, "plugins/claude/scripts/claude-companion.mjs"),
+      "_run-worker", "--cwd", cwd, "--job", completed.job_id,
+    ], {
+      cwd, encoding: "utf8",
+      env: { ...process.env, CLAUDE_BINARY: MOCK, CLAUDE_PLUGIN_DATA: dataDir },
+    });
+    assert.notEqual(workerRes.status, 0, "terminal worker re-entry must be refused");
+
+    const { record } = readOnlyJobRecord(dataDir);
+    assert.equal(record.status, "completed", "terminal worker re-entry must not overwrite record");
+    assert.equal(record.job_id, completed.job_id);
   } finally {
     rmSync(dataDir, { recursive: true, force: true });
     rmSync(cwd, { recursive: true, force: true });

@@ -26,15 +26,14 @@ jobs:
         with:
           node-version: "20"
       - run: npm ci --ignore-scripts || npm install --ignore-scripts
-      - name: Run unit tests (allow empty for M0)
+      - name: Run unit tests
         env:
           CODEX_PLUGIN_SKIP_SMOKE: "1"
-        run: |
-          if compgen -G "tests/unit/**/*.test.mjs" > /dev/null; then
-            npm test
-          else
-            echo "No unit tests yet (pre-M1)"
-          fi
+        run: npm test
+      - name: Run coverage gate
+        env:
+          COVERAGE_ENFORCE_TARGET: "1"
+        run: npm run test:coverage
 
   smoke:
     runs-on: ubuntu-latest

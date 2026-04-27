@@ -171,6 +171,7 @@ export async function spawnClaude(profile, runtimeInputs = {}) {
     env = process.env,
     timeoutMs = 0,
     binary = "claude",
+    onSpawn = null,
   } = runtimeInputs;
 
   const args = buildClaudeArgs(profile, {
@@ -188,6 +189,9 @@ export async function spawnClaude(profile, runtimeInputs = {}) {
       pidInfo = capturePidInfo(child.pid);
     } catch (e) {
       pidInfo = { pid: child.pid, starttime: null, argv0: null, capture_error: e.message };
+    }
+    if (typeof onSpawn === "function" && Number.isInteger(child.pid)) {
+      try { onSpawn(pidInfo); } catch { /* status handoff is best-effort */ }
     }
     let stdout = "";
     let stderr = "";

@@ -6,9 +6,9 @@ argument-hint: "<job-id> [--force]"
 ## Workflow
 
 1. Confirm with the user before canceling unless they passed `--force` (SIGKILL).
-2. Run:
+2. Parse `$ARGUMENTS` as `<job-id> [--force]`, then run:
    ```
-   node "<plugin-root>/scripts/claude-companion.mjs" cancel --job "$ARGUMENTS"
+   node "<plugin-root>/scripts/claude-companion.mjs" cancel --job <job-id> [--force]
    ```
 3. Report the response JSON:
    - `status: "signaled"` → job received SIGTERM/SIGKILL.
