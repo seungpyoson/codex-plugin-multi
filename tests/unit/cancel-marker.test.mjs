@@ -13,7 +13,9 @@ import {
   writeCancelMarker,
   consumeCancelMarker,
 } from "../../plugins/claude/scripts/lib/cancel-marker.mjs";
+import * as GeminiCancelMarker from "../../plugins/gemini/scripts/lib/cancel-marker.mjs";
 import { configureState } from "../../plugins/claude/scripts/lib/state.mjs";
+import { configureState as configureGeminiState } from "../../plugins/gemini/scripts/lib/state.mjs";
 
 function freshWorkspace() {
   const root = mkdtempSync(path.join(tmpdir(), "cancel-marker-unit-"));
@@ -94,6 +96,31 @@ test("consumeCancelMarker: returns false when no marker is present", () => {
   const { root, dataDir } = freshWorkspace();
   try {
     assert.equal(consumeCancelMarker(root, JOB), false);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+    rmSync(dataDir, { recursive: true, force: true });
+  }
+});
+
+// Coverage parity: identity tests load the gemini side via `* as GeminiX`
+// and exercise its happy path. cancel-marker.mjs is byte-identical, so a
+// minimal happy-path drive is enough to clear the coverage gate.
+test("gemini cancel-marker: byte-identical helper exercised on the gemini side", () => {
+  const root = mkdtempSync(path.join(tmpdir(), "cancel-marker-gemini-"));
+  const dataDir = mkdtempSync(path.join(tmpdir(), "cancel-marker-gemini-data-"));
+  try {
+    configureGeminiState({ envVar: "GEMINI_PLUGIN_DATA", fallbackBaseName: "gemini-companion", sessionEnvVar: "GEMINI_COMPANION_SESSION_ID" });
+    process.env.GEMINI_PLUGIN_DATA = dataDir;
+
+    const p = GeminiCancelMarker.cancelMarkerPath(root, JOB);
+    assert.ok(p.endsWith(`${JOB}/cancel-requested.flag`));
+
+    GeminiCancelMarker.writeCancelMarker(root, JOB);
+    assert.ok(existsSync(p));
+
+    assert.equal(GeminiCancelMarker.consumeCancelMarker(root, JOB), true);
+    assert.equal(existsSync(p), false);
+    assert.equal(GeminiCancelMarker.consumeCancelMarker(root, JOB), false);
   } finally {
     rmSync(root, { recursive: true, force: true });
     rmSync(dataDir, { recursive: true, force: true });
