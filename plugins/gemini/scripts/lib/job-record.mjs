@@ -126,6 +126,16 @@ function classifyExecution(execution) {
       error_message: null,
     };
   }
+  if (execution.status === "stale") {
+    // #16 follow-up 3: orphan reconciliation produces a terminal stale
+    // record so an operator can `continue --job` it instead of having
+    // active history grow forever. errorMessage is the reason text.
+    return {
+      status: "stale",
+      error_code: "stale_active_job",
+      error_message: execution.errorMessage ?? "stale_active_job",
+    };
+  }
   if (execution.errorMessage) {
     if (isScopeFailure(execution.errorMessage)) {
       return {

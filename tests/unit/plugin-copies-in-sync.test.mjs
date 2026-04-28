@@ -25,6 +25,7 @@ const VERBATIM_FILES = [
   "identity.mjs",
   "scope.mjs",
   "cancel-marker.mjs",
+  "reconcile.mjs",
 ];
 
 for (const file of VERBATIM_FILES) {

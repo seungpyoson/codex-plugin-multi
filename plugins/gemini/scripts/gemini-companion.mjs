@@ -16,6 +16,7 @@ import { setupContainment } from "./lib/containment.mjs";
 import { populateScope } from "./lib/scope.mjs";
 import { newJobId, verifyPidInfo } from "./lib/identity.mjs";
 import { buildJobRecord } from "./lib/job-record.mjs";
+import { reconcileActiveJobs } from "./lib/reconcile.mjs";
 import { spawnGemini } from "./lib/gemini.mjs";
 import { writeCancelMarker, consumeCancelMarker } from "./lib/cancel-marker.mjs";
 
@@ -690,6 +691,8 @@ async function cmdStatus(rest) {
   const { options } = parseArgs(rest, { valueOptions: ["job", "cwd"], booleanOptions: ["all"] });
   const cwd = options.cwd ?? process.cwd();
   const workspaceRoot = resolveWorkspaceRoot(cwd);
+  // #16 follow-up 3: reconcile orphan active jobs before listing.
+  reconcileActiveJobs(workspaceRoot);
   const jobs = listJobs(workspaceRoot);
   if (options.job) {
     const match = jobs.find((j) => j.id === options.job);

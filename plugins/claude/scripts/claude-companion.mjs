@@ -40,6 +40,7 @@ import { setupContainment } from "./lib/containment.mjs";
 import { populateScope } from "./lib/scope.mjs";
 import { newJobId, verifyPidInfo } from "./lib/identity.mjs";
 import { buildJobRecord } from "./lib/job-record.mjs";
+import { reconcileActiveJobs } from "./lib/reconcile.mjs";
 
 // ——— plugin-root self-resolution (upstream pattern, spec §4.14) ———
 const PLUGIN_ROOT = resolvePath(dirname(fileURLToPath(import.meta.url)), "..");
@@ -914,6 +915,12 @@ async function cmdStatus(rest) {
   });
   const cwd = options.cwd ?? process.cwd();
   const workspaceRoot = resolveWorkspaceRoot(cwd);
+  // #16 follow-up 3: reconcile orphan active jobs (queued/running with
+  // dead pid_info or never-spawned older than the orphan window) before
+  // listing. Promotes them to status=stale so they stop counting against
+  // active history and operators can `continue --job` them. Silent on
+  // success — the next listJobs call sees the updated records.
+  reconcileActiveJobs(workspaceRoot);
   const jobs = listJobs(workspaceRoot);
   if (options.job) {
     const match = jobs.find((j) => j.id === options.job);
