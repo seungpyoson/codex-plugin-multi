@@ -542,24 +542,93 @@ export function generateJobId(prefix = "job") {
   return `${prefix}-${Date.now().toString(36)}-${random}`;
 }
 
+// Extracted helper so commitJobRecord{,IfActive} can apply the same
+// upsert semantics inside an outer updateState callback (which already
+// holds the state lock — re-entering withStateLock would throw).
+function applyJobUpsertToState(state, jobPatch) {
+  const timestamp = nowIso();
+  const existingIndex = state.jobs.findIndex((job) => job.id === jobPatch.id);
+  if (existingIndex === -1) {
+    state.jobs.unshift({
+      createdAt: timestamp,
+      updatedAt: timestamp,
+      ...jobPatch
+    });
+    return;
+  }
+  state.jobs[existingIndex] = {
+    ...state.jobs[existingIndex],
+    ...jobPatch,
+    updatedAt: timestamp
+  };
+}
+
 export function upsertJob(cwd, jobPatch) {
-  return updateState(cwd, (state) => {
-    const timestamp = nowIso();
-    const existingIndex = state.jobs.findIndex((job) => job.id === jobPatch.id);
-    if (existingIndex === -1) {
-      state.jobs.unshift({
-        createdAt: timestamp,
-        updatedAt: timestamp,
-        ...jobPatch
-      });
-      return;
-    }
-    state.jobs[existingIndex] = {
-      ...state.jobs[existingIndex],
-      ...jobPatch,
-      updatedAt: timestamp
-    };
-  });
+  return updateState(cwd, (state) => { applyJobUpsertToState(state, jobPatch); });
+}
+
+// PR #21 review BLOCKER 1 + 2 — atomic-under-lock meta + state commit.
+//
+// Two concurrent writers (worker finalization, reconcile, error paths) used
+// to do `writeJobFile + upsertJob` as two unrelated operations. That left
+// two race windows:
+//
+//   (1) reconcile reads meta=running, classifies stale, writes stale meta
+//       → CLOBBERS a worker's terminal completed meta that landed in
+//       between (BLOCKER 2 — confirmed losing "REAL_WORKER_RESULT").
+//   (2) finalization's writeJobFile succeeds but upsertJob fails (lock
+//       timeout) → fallback rewrites meta unconditionally, clobbering a
+//       successful terminal record with "failed/spawn_failed" (BLOCKER 1).
+//
+// commitJobRecord folds both writes into ONE state-lock acquisition: meta
+// is written first (still atomic via tmpfile+rename); on success, state is
+// updated in the same locked window. If the meta write throws, state is
+// not touched. If the state save throws (rare — disk full while we hold
+// the lock), the meta IS on disk but state isn't — caller can detect via
+// the returned errors and choose a per-side fallback.
+//
+// Returns { metaError, stateError }; both null on success. Distinguishing
+// which side failed lets callers fix only what's broken (BLOCKER 1 fix).
+export function commitJobRecord(cwd, jobId, record) {
+  let metaError = null;
+  let stateError = null;
+  try {
+    updateState(cwd, (state) => {
+      try { writeJobFile(cwd, jobId, record); }
+      catch (e) { metaError = e; throw e; }
+      applyJobUpsertToState(state, record);
+    });
+  } catch (e) {
+    if (e !== metaError) stateError = e;
+  }
+  return { metaError, stateError };
+}
+
+// CAS variant for reconcile — read meta INSIDE the lock, only commit if the
+// on-disk record is still in an active status. This serializes against
+// commitJobRecord callers (worker finalization), eliminating BLOCKER 2's
+// read-then-write race entirely: a worker's terminal commit either runs
+// before reconcile (CAS sees terminal → builder NOT called) or after
+// reconcile (worker's commit overwrites the stale we just wrote — terminal
+// wins). Returns the committed record or null when CAS aborted / builder
+// returned null.
+export function commitJobRecordIfActive(cwd, jobId, builder) {
+  let committed = null;
+  try {
+    updateState(cwd, (state) => {
+      let meta;
+      try { meta = JSON.parse(fs.readFileSync(resolveJobFile(cwd, jobId), "utf8")); }
+      catch { return; } // missing/unreadable meta — treat as no-op
+      if (!meta || !ACTIVE_JOB_STATUSES.has(meta.status)) return;
+      const next = builder(meta);
+      if (!next) return;
+      try { writeJobFile(cwd, jobId, next); }
+      catch { return; }
+      applyJobUpsertToState(state, next);
+      committed = next;
+    });
+  } catch { /* lock acquisition / state save failed; next pass retries */ }
+  return committed;
 }
 
 export function listJobs(cwd) {

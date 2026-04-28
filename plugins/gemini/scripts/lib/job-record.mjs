@@ -94,6 +94,11 @@ const EXPECTED_KEYS_SET = new Set(EXPECTED_KEYS);
  *   null            — completed or cancelled.
  *   scope_failed    — execution.errorMessage describes scope preparation refusal.
  *   spawn_failed    — execution.errorMessage set (spawn threw before Gemini ran).
+ *   finalization_failed — errorMessage starts "finalization_failed:" — the
+ *                         companion's executeRun fallback path (#16 follow-up 1).
+ *                         Distinguished from spawn_failed so monitoring/automation
+ *                         routing on error_code doesn't conflate disk/lock failures
+ *                         with missing-binary errors. PR #21 review HIGH 1.
  *   parse_error     — parsed.ok === false with reason starting "json_parse"/"empty_stdout".
  *   timeout         — execution.timedOut === true (companion's wall-clock kill).
  *   gemini_error    — exitCode !== 0 with parseable JSON from Gemini.
@@ -102,6 +107,7 @@ const EXPECTED_KEYS_SET = new Set(EXPECTED_KEYS);
  *   unknown_error   — catch-all; should be rare.
  */
 const CANCEL_SIGNALS = new Set(["SIGTERM", "SIGKILL", "SIGINT", "SIGHUP"]);
+const FINALIZATION_FAILED_PREFIX = "finalization_failed:";
 
 function classifyExecution(execution) {
   if (!execution) {
@@ -144,9 +150,14 @@ function classifyExecution(execution) {
         error_message: execution.errorMessage,
       };
     }
+    // Distinguish finalization_failed (post-target persistence failure) from
+    // spawn_failed (target never ran). The companion's executeRun fallback
+    // synthesizes the former with a fixed prefix; everything else is a true
+    // pre-spawn failure. PR #21 review HIGH 1.
+    const isFinalization = String(execution.errorMessage).startsWith(FINALIZATION_FAILED_PREFIX);
     return {
       status: "failed",
-      error_code: "spawn_failed",
+      error_code: isFinalization ? "finalization_failed" : "spawn_failed",
       error_message: execution.errorMessage,
     };
   }

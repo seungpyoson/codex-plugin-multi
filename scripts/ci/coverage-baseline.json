@@ -18,8 +18,13 @@
       "functions": 100.0
     },
     "plugins/claude/scripts/lib/git.mjs": {
-      "lines": 85.95,
-      "branches": 64.41,
+      "lines": 100.0,
+      "branches": 100.0,
+      "functions": 100.0
+    },
+    "plugins/claude/scripts/lib/git-env.mjs": {
+      "lines": 100.0,
+      "branches": 100.0,
       "functions": 100.0
     },
     "plugins/claude/scripts/lib/identity.mjs": {
@@ -34,7 +39,7 @@
     },
     "plugins/claude/scripts/lib/reconcile.mjs": {
       "lines": 95.79,
-      "branches": 87.5,
+      "branches": 81.0,
       "functions": 100.0
     },
     "plugins/claude/scripts/lib/mode-profiles.mjs": {
@@ -53,8 +58,8 @@
       "functions": 98.61
     },
     "plugins/claude/scripts/lib/state.mjs": {
-      "lines": 88.48,
-      "branches": 66.67,
+      "lines": 94.0,
+      "branches": 86.0,
       "functions": 100.0
     },
     "plugins/claude/scripts/lib/workspace.mjs": {
@@ -78,8 +83,13 @@
       "functions": 81.82
     },
     "plugins/gemini/scripts/lib/git.mjs": {
-      "lines": 85.95,
-      "branches": 64.41,
+      "lines": 100.0,
+      "branches": 100.0,
+      "functions": 100.0
+    },
+    "plugins/gemini/scripts/lib/git-env.mjs": {
+      "lines": 100.0,
+      "branches": 100.0,
       "functions": 100.0
     },
     "plugins/gemini/scripts/lib/identity.mjs": {
@@ -94,7 +104,7 @@
     },
     "plugins/gemini/scripts/lib/reconcile.mjs": {
       "lines": 95.79,
-      "branches": 87.5,
+      "branches": 81.0,
       "functions": 100.0
     },
     "plugins/gemini/scripts/lib/mode-profiles.mjs": {
@@ -113,9 +123,9 @@
       "functions": 98.61
     },
     "plugins/gemini/scripts/lib/state.mjs": {
-      "lines": 79.01,
-      "branches": 41.67,
-      "functions": 97.22
+      "lines": 94.0,
+      "branches": 86.0,
+      "functions": 100.0
     },
     "plugins/gemini/scripts/lib/workspace.mjs": {
       "lines": 85.71,

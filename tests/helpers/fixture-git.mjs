@@ -14,20 +14,14 @@
 //   (4) carry deterministic author/committer identity so commits succeed
 //       regardless of the caller's global git config.
 //
-// scripts/ci/run-tests.mjs scrubs the same env vars at the runner
-// boundary. This helper is the second-line defense for fixture sites
-// (and the only protection if a test is ever invoked outside the
-// repository runner).
+// The strip list itself lives in plugins/{claude,gemini}/scripts/lib/git-env.mjs
+// — the same canonical list every plugin/runner uses. PR #21's adversarial
+// review caught that the OLD strip list missed GIT_CONFIG_GLOBAL etc., letting
+// a malicious parent env override init.defaultBranch into the fixture; folding
+// this onto the shared module makes the next gap a one-place fix.
 
 import { spawnSync } from "node:child_process";
-
-const STRIPPED_GIT_ENV_KEYS = [
-  "GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_COMMON_DIR", "GIT_PREFIX",
-  "GIT_NAMESPACE", "GIT_CEILING_DIRECTORIES", "GIT_DISCOVERY_ACROSS_FILESYSTEM",
-  "GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES",
-  "GIT_ATTR_SOURCE", "GIT_REPLACE_REF_BASE", "GIT_SHALLOW_FILE",
-  "GIT_CONFIG_PARAMETERS", "GIT_CONFIG_COUNT",
-];
+import { cleanGitEnv as scrubGitEnv } from "../../plugins/claude/scripts/lib/git-env.mjs";
 
 /**
  * Build a sanitized environment for fixture git invocations. Always returns
@@ -35,11 +29,7 @@ const STRIPPED_GIT_ENV_KEYS = [
  *   const env = { ...fixtureGitEnv(), GIT_AUTHOR_DATE: "..." };
  */
 export function fixtureGitEnv(extra = {}) {
-  const env = { ...process.env };
-  for (const k of STRIPPED_GIT_ENV_KEYS) delete env[k];
-  for (const k of Object.keys(env)) {
-    if (/^GIT_CONFIG_(KEY|VALUE)_\d+$/.test(k)) delete env[k];
-  }
+  const env = scrubGitEnv(process.env);
   env.GIT_CONFIG_NOSYSTEM = "1";
   env.GIT_AUTHOR_NAME = env.GIT_AUTHOR_NAME ?? "t";
   env.GIT_AUTHOR_EMAIL = env.GIT_AUTHOR_EMAIL ?? "t@t";

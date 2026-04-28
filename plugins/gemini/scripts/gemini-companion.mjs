@@ -9,7 +9,7 @@ import { execFileSync, spawn } from "node:child_process";
 import { tmpdir } from "node:os";
 
 import { parseArgs } from "./lib/args.mjs";
-import { configureState, resolveJobsDir, resolveJobFile, writeJobFile, upsertJob, listJobs } from "./lib/state.mjs";
+import { configureState, resolveJobsDir, resolveJobFile, writeJobFile, upsertJob, listJobs, commitJobRecord } from "./lib/state.mjs";
 import { resolveWorkspaceRoot } from "./lib/workspace.mjs";
 import { resolveProfile, resolveModelForProfile } from "./lib/mode-profiles.mjs";
 import { setupContainment } from "./lib/containment.mjs";
@@ -17,6 +17,7 @@ import { populateScope } from "./lib/scope.mjs";
 import { newJobId, verifyPidInfo } from "./lib/identity.mjs";
 import { buildJobRecord } from "./lib/job-record.mjs";
 import { reconcileActiveJobs } from "./lib/reconcile.mjs";
+import { cleanGitEnv } from "./lib/git-env.mjs";
 import { spawnGemini } from "./lib/gemini.mjs";
 import { writeCancelMarker, consumeCancelMarker } from "./lib/cancel-marker.mjs";
 
@@ -86,13 +87,9 @@ function preflightDisclosure(target) {
   );
 }
 
-function cleanGitEnv() {
-  const env = { ...process.env };
-  for (const k of ["GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_COMMON_DIR", "GIT_PREFIX"]) {
-    delete env[k];
-  }
-  return env;
-}
+// Mutation-detection git scrub: same shared list as claude-companion +
+// scope.mjs. PR #21 review: previous local 5-key list missed
+// GIT_CONFIG_GLOBAL — fold onto plugin lib's canonical scrub.
 
 function gitStatus(args, cwd) {
   return execFileSync("git", ["-C", cwd, ...args], {
@@ -488,12 +485,9 @@ async function executeRun(invocation, prompt, { foreground }) {
     timedOut: execution.timedOut === true,
   }, mutations);
 
-  let metaError = null;
-  let stateError = null;
-  try { writeJobFile(workspaceRoot, jobId, finalRecord); }
-  catch (e) { metaError = e; }
-  try { upsertJob(workspaceRoot, finalRecord); }
-  catch (e) { stateError = e; }
+  // BLOCKER 2 fix: atomic-under-lock meta + state commit. See
+  // claude-companion.mjs::executeRun for the race-class rationale.
+  const { metaError, stateError } = commitJobRecord(workspaceRoot, jobId, finalRecord);
 
   for (const [name, contents] of [
     ["stdout.log", execution.stdout],
@@ -506,6 +500,9 @@ async function executeRun(invocation, prompt, { foreground }) {
   }
 
   if (metaError || stateError) {
+    // BLOCKER 1 fix: only overwrite the side that actually failed —
+    // an unconditional fallback writeJobFile would clobber a successful
+    // meta when only state.json failed (lock timeout).
     const detail = [
       metaError && `meta=${metaError.message}`,
       stateError && `state=${stateError.message}`,
@@ -521,8 +518,20 @@ async function executeRun(invocation, prompt, { foreground }) {
       }, mutations);
     } catch { /* defense in depth */ }
     if (fallbackRecord) {
-      try { writeJobFile(workspaceRoot, jobId, fallbackRecord); } catch { /* exhausted */ }
-      try { upsertJob(workspaceRoot, fallbackRecord); } catch { /* exhausted */ }
+      if (metaError) {
+        // commitJobRecord aborted in writeJobFile → state was NOT mutated
+        // either. Overwrite both sides with the fallback failed-record.
+        try { writeJobFile(workspaceRoot, jobId, fallbackRecord); } catch { /* exhausted */ }
+        try { upsertJob(workspaceRoot, fallbackRecord); } catch { /* exhausted */ }
+      } else if (stateError) {
+        // meta is the good terminal record. Don't touch it (BLOCKER 1).
+        // Retry the state upsert with the GOOD record; fall back to the
+        // failed-record only if that retry also fails.
+        try { upsertJob(workspaceRoot, finalRecord); }
+        catch {
+          try { upsertJob(workspaceRoot, fallbackRecord); } catch { /* exhausted */ }
+        }
+      }
     }
     if (neutralCwd) rmSync(neutralCwd, { recursive: true, force: true });
     if (containment.disposed && disposeEffective) {
@@ -635,7 +644,17 @@ async function cmdContinue(rest) {
 
   const priorGeminiSessionId = prior.gemini_session_id ?? null;
   if (!priorGeminiSessionId) {
-    fail("bad_args", `prior job ${options.job} has no gemini_session_id to resume`);
+    // PR #21 review HIGH 4: surface an actionable next step when the prior
+    // record is a stale orphan that never produced a session ID.
+    const isStaleOrphan = prior.status === "stale";
+    const reason = isStaleOrphan
+      ? "the worker exited before Gemini returned a session ID, so there is no chat to resume."
+      : "this record carries no session ID and cannot be chained.";
+    const suggestion = isStaleOrphan
+      ? ` Re-run from scratch: gemini-companion run --mode ${prior.mode_profile_name ?? prior.mode} --cwd ${JSON.stringify(prior.cwd)} -- "<your prompt>"`
+      : "";
+    fail("no_session_to_resume",
+      `prior job ${options.job} has no gemini_session_id to resume — ${reason}${suggestion}`);
   }
 
   const newJobId_ = newJobId();
@@ -720,7 +739,18 @@ async function cmdResult(rest) {
   try { jobFile = resolveJobFile(workspaceRoot, options.job); }
   catch (e) { fail("bad_args", e.message); }
   if (!existsSync(jobFile)) fail("not_found", `no meta.json for job ${options.job}`);
-  printJson(JSON.parse(readFileSync(jobFile, "utf8")));
+  // PR #21 review MED 1: wrap the read so a directory-at-meta-path
+  // (GEMINI_MOCK_META_CONFLICT, or a half-finalized job) produces a
+  // friendly error instead of an unhandled EISDIR stacktrace.
+  let meta;
+  try {
+    meta = JSON.parse(readFileSync(jobFile, "utf8"));
+  } catch (e) {
+    fail("read_failed",
+      `cannot read meta.json for job ${options.job}: ${e.message}`,
+      { error_code: e.code ?? null });
+  }
+  printJson(meta);
 }
 
 async function cmdPing(rest) {

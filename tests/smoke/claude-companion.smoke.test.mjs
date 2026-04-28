@@ -7,7 +7,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 // spawnSync is reused for git init in the mutation-detection smoke.
-import { mkdtempSync, rmSync, existsSync, readFileSync, readdirSync, realpathSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, rmSync, existsSync, readFileSync, readdirSync, realpathSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -710,6 +710,49 @@ test("run --foreground: sidecar write failures warn but preserve terminal status
     assert.equal(persisted.status, "completed");
     assert.equal(persisted.job_id, record.job_id);
   } finally {
+    rmSync(dataDir, { recursive: true, force: true });
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("result --job: meta path that is a directory returns a friendly error, not unhandled EISDIR (PR #21 review MED 1)", async () => {
+  // Set up a job dir with a directory at the meta path. Any code path
+  // that ends up with meta.json being a directory (META_CONFLICT, or a
+  // crash mid-rename) used to crash result --job with an unhandled
+  // EISDIR stacktrace. Wrap the readFileSync so consumers see a clean
+  // {ok:false, error:"read_failed"} payload.
+  //
+  // Use the lib's own resolveJobFile so the path matches what cmdResult
+  // computes — bypasses the need to introspect state subdirs.
+  const { configureState, resolveJobFile, ensureStateDir, getStateConfig } =
+    await import("../../plugins/claude/scripts/lib/state.mjs");
+  const initial = { ...getStateConfig() };
+  const cwd = mkdtempSync(path.join(tmpdir(), "smoke-eisdir-"));
+  const dataDir = mkdtempSync(path.join(tmpdir(), "eisdir-data-"));
+  process.env.CLAUDE_PLUGIN_DATA = dataDir;
+  configureState({
+    pluginDataEnv: "CLAUDE_PLUGIN_DATA",
+    fallbackStateRootDir: path.join(dataDir, "fallback"),
+  });
+  try {
+    seedMinimalRepo(cwd);
+    const id = "00000000-0000-4000-8000-00000000eisd";
+    ensureStateDir(cwd);
+    const metaPath = resolveJobFile(cwd, id);
+    mkdirSync(metaPath, { recursive: true });
+
+    const res = runCompanion(["result", "--job", id, "--cwd", cwd],
+      { cwd, dataDir });
+    assert.notEqual(res.status, 0, "result must fail when meta is a directory");
+    assert.doesNotMatch(res.stderr, /unhandled/i,
+      "must NOT crash with an unhandled stacktrace");
+    const err = JSON.parse(res.stdout);
+    assert.equal(err.error, "read_failed");
+    assert.match(err.message, /cannot read meta.json/);
+    assert.equal(err.error_code, "EISDIR");
+  } finally {
+    configureState(initial);
+    delete process.env.CLAUDE_PLUGIN_DATA;
     rmSync(dataDir, { recursive: true, force: true });
     rmSync(cwd, { recursive: true, force: true });
   }

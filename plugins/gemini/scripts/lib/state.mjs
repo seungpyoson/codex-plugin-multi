@@ -541,24 +541,67 @@ export function generateJobId(prefix = "job") {
   return `${prefix}-${Date.now().toString(36)}-${random}`;
 }
 
+// Extracted helper so commitJobRecord{,IfActive} can apply the same
+// upsert semantics inside an outer updateState callback (which already
+// holds the state lock — re-entering withStateLock would throw).
+function applyJobUpsertToState(state, jobPatch) {
+  const timestamp = nowIso();
+  const existingIndex = state.jobs.findIndex((job) => job.id === jobPatch.id);
+  if (existingIndex === -1) {
+    state.jobs.unshift({
+      createdAt: timestamp,
+      updatedAt: timestamp,
+      ...jobPatch
+    });
+    return;
+  }
+  state.jobs[existingIndex] = {
+    ...state.jobs[existingIndex],
+    ...jobPatch,
+    updatedAt: timestamp
+  };
+}
+
 export function upsertJob(cwd, jobPatch) {
-  return updateState(cwd, (state) => {
-    const timestamp = nowIso();
-    const existingIndex = state.jobs.findIndex((job) => job.id === jobPatch.id);
-    if (existingIndex === -1) {
-      state.jobs.unshift({
-        createdAt: timestamp,
-        updatedAt: timestamp,
-        ...jobPatch
-      });
-      return;
-    }
-    state.jobs[existingIndex] = {
-      ...state.jobs[existingIndex],
-      ...jobPatch,
-      updatedAt: timestamp
-    };
-  });
+  return updateState(cwd, (state) => { applyJobUpsertToState(state, jobPatch); });
+}
+
+// PR #21 review BLOCKER 1 + 2 — atomic-under-lock meta + state commit.
+// See plugins/claude/scripts/lib/state.mjs::commitJobRecord for the full
+// rationale (the same race classes apply here verbatim).
+export function commitJobRecord(cwd, jobId, record) {
+  let metaError = null;
+  let stateError = null;
+  try {
+    updateState(cwd, (state) => {
+      try { writeJobFile(cwd, jobId, record); }
+      catch (e) { metaError = e; throw e; }
+      applyJobUpsertToState(state, record);
+    });
+  } catch (e) {
+    if (e !== metaError) stateError = e;
+  }
+  return { metaError, stateError };
+}
+
+// CAS variant for reconcile — see Claude state.mjs for rationale.
+export function commitJobRecordIfActive(cwd, jobId, builder) {
+  let committed = null;
+  try {
+    updateState(cwd, (state) => {
+      let meta;
+      try { meta = JSON.parse(fs.readFileSync(resolveJobFile(cwd, jobId), "utf8")); }
+      catch { return; }
+      if (!meta || !ACTIVE_JOB_STATUSES.has(meta.status)) return;
+      const next = builder(meta);
+      if (!next) return;
+      try { writeJobFile(cwd, jobId, next); }
+      catch { return; }
+      applyJobUpsertToState(state, next);
+      committed = next;
+    });
+  } catch { /* lock acquisition / state save failed; next pass retries */ }
+  return committed;
 }
 
 export function listJobs(cwd) {

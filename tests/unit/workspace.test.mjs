@@ -3,20 +3,17 @@ import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { execSync } from "node:child_process";
 
 import { resolveWorkspaceRoot } from "../../plugins/claude/scripts/lib/workspace.mjs";
-
-const GIT_ENV = { ...process.env, GIT_CONFIG_NOSYSTEM: "1" };
+// PR #21 review HIGH 5: this file used to call execSync("git ...") with raw
+// process.env so a parent GIT_DIR override would hijack the fixture init
+// into the caller checkout. Route every fixture git through the scrubbed
+// helper.
+import { fixtureSeedRepo } from "../helpers/fixture-git.mjs";
 
 function makeGitRepo() {
   const dir = mkdtempSync(path.join(tmpdir(), "workspace-test-"));
-  execSync("git -c core.hooksPath=/dev/null init -q", { cwd: dir, env: GIT_ENV });
-  writeFileSync(path.join(dir, "seed"), "");
-  execSync(
-    "git -c core.hooksPath=/dev/null add seed && git -c core.hooksPath=/dev/null -c user.email=t@t -c user.name=t commit -q -m seed",
-    { cwd: dir, env: GIT_ENV },
-  );
+  fixtureSeedRepo(dir, { fileName: "seed", fileContents: "" });
   return dir;
 }
 

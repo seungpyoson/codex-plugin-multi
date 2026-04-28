@@ -214,6 +214,52 @@ test("reconcileActiveJobs: invalid started_at string is left alone", () => {
   }
 });
 
+test("reconcileActiveJobs: TOCTOU regression — terminal meta written mid-flight is NOT clobbered", () => {
+  // PR #21 review BLOCKER 2 regression guard. The race used to be:
+  //   t1: reconcile reads meta = running
+  //   t2: worker writes meta = completed
+  //   t3: reconcile writes meta = stale (CLOBBERS completed result)
+  //
+  // The fix moves the read-classify-write into commitJobRecordIfActive,
+  // which holds the state lock around an in-lock CAS read. Because we
+  // hold the lock while reading + writing, the only way for a worker's
+  // commit to land in between is if the worker's commitJobRecord runs
+  // BEFORE we acquired the lock — in which case the in-lock read sees
+  // the terminal status and the builder is NOT called.
+  //
+  // Direct simulation of "worker beat us to the lock": pre-write the
+  // terminal record before invoking reconcile. Reconcile must see the
+  // terminal status via its in-lock CAS read and abort.
+  const dir = freshDir();
+  try {
+    const id = "toctou-completed";
+    seedActive(dir, id, {
+      pid_info: { pid: findDeadPid(), starttime: "Thu Apr 24 12:00:00 2026", argv0: "claude" },
+    });
+    // Worker's terminal commit lands BEFORE reconcile's lock acquisition.
+    // Use writeJobFile + upsertJob (the legacy non-atomic pattern is fine
+    // for the test fixture; the contract is "if meta is terminal on disk
+    // when reconcile reads under lock, no clobber").
+    writeJobFile(dir, id, {
+      ...readJobFileById(dir, id),
+      status: "completed",
+      result: "REAL_WORKER_RESULT",
+      ended_at: new Date().toISOString(),
+      exit_code: 0, error_code: null, error_message: null,
+    });
+    upsertJob(dir, { id, status: "completed" });
+
+    const reclaimed = reconcileActiveJobs(dir);
+    assert.deepEqual(reclaimed, [],
+      "reconcile must NOT promote a terminal record (CAS abort)");
+    const after = readJobFileById(dir, id);
+    assert.equal(after.status, "completed",
+      "terminal completed record must NOT be clobbered with stale");
+    assert.equal(after.result, "REAL_WORKER_RESULT",
+      "worker's result must survive reconcile pass");
+  } finally { cleanup(dir); }
+});
+
 test("reconcileActiveJobs: state-summary active + meta terminal is skipped", () => {
   // Defense in depth: if state.json says running but meta.json says
   // completed (e.g., a writer crashed mid-update), reconciliation must

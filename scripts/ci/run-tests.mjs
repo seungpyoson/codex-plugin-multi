@@ -7,6 +7,10 @@ import { spawnSync } from "node:child_process";
 import { resolve, dirname, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 
+// One source of truth for the GIT_* scrub list — same module the companions
+// and fixture helper consume. Adding a key in git-env.mjs propagates here too.
+import { cleanGitEnv } from "../../plugins/claude/scripts/lib/git-env.mjs";
+
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
 // Walks tests/unit AND tests/smoke. Smoke tests can be skipped by pointing
 // CODEX_PLUGIN_SKIP_SMOKE=1 (CI sets this when a smoke fixture is missing).
@@ -67,19 +71,13 @@ const rel = files.map((f) => relative(REPO_ROOT, f));
 // caller checkout's branch + creating fixture commits there. Defense in
 // depth: per-test-fixture helpers also scrub, but stripping at the runner
 // boundary protects every legacy callsite at once.
-const cleanEnv = { ...process.env };
-for (const k of [
-  "GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_COMMON_DIR", "GIT_PREFIX",
-  "GIT_NAMESPACE", "GIT_CEILING_DIRECTORIES", "GIT_DISCOVERY_ACROSS_FILESYSTEM",
-  "GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES",
-  "GIT_ATTR_SOURCE", "GIT_REPLACE_REF_BASE", "GIT_SHALLOW_FILE",
-  "GIT_CONFIG_PARAMETERS", "GIT_CONFIG_COUNT",
-]) {
-  delete cleanEnv[k];
-}
-for (const k of Object.keys(cleanEnv)) {
-  if (/^GIT_CONFIG_(KEY|VALUE)_\d+$/.test(k)) delete cleanEnv[k];
-}
+//
+// PR #21 review caveat: the inline strip list previously omitted
+// GIT_CONFIG_GLOBAL/SYSTEM, GIT_TRACE*, GIT_OPTIONAL_LOCKS,
+// GIT_TERMINAL_PROMPT, GIT_PROTOCOL, GIT_AUTO_GC. The shared cleanGitEnv()
+// from plugin lib carries the canonical list so a future addition is a
+// one-place change.
+const cleanEnv = cleanGitEnv(process.env);
 
 const res = spawnSync(
   "node",

@@ -47,6 +47,8 @@ import {
 } from "node:fs";
 import path from "node:path";
 
+import { cleanGitEnv as scrubGitEnv } from "./git-env.mjs";
+
 const VALID_SCOPES = new Set(["working-tree", "staged", "branch-diff", "head", "custom"]);
 const MAX_GIT_SYMLINK_HOPS = 40;
 const OBJECT_PURE_GIT_CONFIG = [
@@ -58,28 +60,18 @@ const OBJECT_PURE_GIT_CONFIG = [
   "-c", "advice.graftFileDeprecated=false",
 ];
 
+// Scope-specific git env: shared scrub PLUS object-store hardening that
+// only matters during populateScope (no lazy fetches into the source repo,
+// no replace-object indirection, no graft-file injection, no system
+// config). The base list lives in lib/git-env.mjs.
 function cleanGitEnv() {
-  const env = {
-    ...process.env,
+  return {
+    ...scrubGitEnv(process.env),
     GIT_NO_LAZY_FETCH: "1",
     GIT_NO_REPLACE_OBJECTS: "1",
     GIT_GRAFT_FILE: process.platform === "win32" ? "NUL" : "/dev/null",
     GIT_CONFIG_NOSYSTEM: "1",
   };
-  for (const k of [
-    "GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_COMMON_DIR", "GIT_PREFIX",
-    "GIT_CONFIG_GLOBAL", "GIT_CONFIG_SYSTEM", "GIT_CONFIG_PARAMETERS", "GIT_CONFIG_COUNT",
-    "GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_REPLACE_REF_BASE",
-    "GIT_NAMESPACE", "GIT_CEILING_DIRECTORIES", "GIT_DISCOVERY_ACROSS_FILESYSTEM", "GIT_SHALLOW_FILE",
-    "GIT_ATTR_SOURCE",
-    "GIT_EXTERNAL_DIFF", "GIT_PAGER", "GIT_PAGER_IN_USE", "PAGER",
-  ]) {
-    delete env[k];
-  }
-  for (const k of Object.keys(env)) {
-    if (/^GIT_CONFIG_(KEY|VALUE)_\d+$/.test(k)) delete env[k];
-  }
-  return env;
 }
 
 function git(sourceCwd, args, opts = {}) {

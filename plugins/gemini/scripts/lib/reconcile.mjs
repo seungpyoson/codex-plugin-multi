@@ -27,10 +27,9 @@
 // Called from cmdStatus on every status request so the lifecycle
 // self-heals without a separate reaper process.
 
-import { listJobs, writeJobFile, upsertJob, resolveJobFile } from "./state.mjs";
+import { listJobs, commitJobRecordIfActive } from "./state.mjs";
 import { verifyPidInfo } from "./identity.mjs";
 import { buildJobRecord } from "./job-record.mjs";
-import { existsSync, readFileSync } from "node:fs";
 
 const ACTIVE_STATUSES = new Set(["queued", "running"]);
 
@@ -43,16 +42,6 @@ function parseStartedAt(record) {
   if (!record?.started_at) return null;
   const t = Date.parse(record.started_at);
   return Number.isFinite(t) ? t : null;
-}
-
-function readMetaIfExists(workspaceRoot, jobId) {
-  try {
-    const file = resolveJobFile(workspaceRoot, jobId);
-    if (!existsSync(file)) return null;
-    return JSON.parse(readFileSync(file, "utf8"));
-  } catch {
-    return null;
-  }
 }
 
 function invocationFromMeta(meta) {
@@ -111,45 +100,46 @@ function classifyOrphan(meta, now, orphanAgeMs) {
  * means nothing was reclaimed). Callers may surface that to the user
  * via stderr; cmdStatus calls this silently so a default `status`
  * just shows up-to-date records.
+ *
+ * BLOCKER 2 fix (PR #21 review): the read-classify-write loop runs
+ * inside commitJobRecordIfActive, which holds the state lock around an
+ * in-lock CAS read of meta.json. A worker's commitJobRecord that lands
+ * before reconcile takes the lock will be CAS-detected (meta no longer
+ * active → builder NOT called); a worker that runs after reconcile
+ * commits stale will simply overwrite the stale record with its
+ * terminal record. Either way, terminal wins — no clobber.
  */
 export function reconcileActiveJobs(workspaceRoot, {
   now = Date.now(),
   orphanAgeMs = DEFAULT_ORPHAN_AGE_MS,
 } = {}) {
   const reclaimed = [];
-  const jobs = listJobs(workspaceRoot);
-  for (const summary of jobs) {
+  for (const summary of listJobs(workspaceRoot)) {
     if (!ACTIVE_STATUSES.has(summary.status)) continue;
-    // Read the full meta from disk — the state.json summary may not
-    // carry every invocation field buildJobRecord needs.
-    const meta = readMetaIfExists(workspaceRoot, summary.id);
-    if (!meta) continue;
-    if (!ACTIVE_STATUSES.has(meta.status)) continue;
-    const reason = classifyOrphan(meta, now, orphanAgeMs);
-    if (!reason) continue;
-    let invocation;
-    try {
-      invocation = invocationFromMeta(meta);
-    } catch { continue; }
-    if (!invocation.target || !invocation.mode_profile_name) continue;
-    let staleRecord;
-    try {
-      staleRecord = buildJobRecord(invocation, {
-        // status="stale" tells classifyExecution to short-circuit.
-        status: "stale",
-        exitCode: meta.exit_code ?? null,
-        parsed: null,
-        pidInfo: meta.pid_info ?? null,
-        claudeSessionId: meta.claude_session_id ?? null,
-        geminiSessionId: meta.gemini_session_id ?? null,
-        errorMessage: `stale_active_job: ${reason}`,
-      }, Array.isArray(meta.mutations) ? meta.mutations : []);
-    } catch { continue; }
-    try {
-      writeJobFile(workspaceRoot, invocation.job_id, staleRecord);
-      upsertJob(workspaceRoot, staleRecord);
-      reclaimed.push({ job_id: invocation.job_id, reason });
-    } catch { /* best-effort; the next status call will retry */ }
+    let reason = null;
+    const next = commitJobRecordIfActive(workspaceRoot, summary.id, (meta) => {
+      // Inside the state lock. CAS already passed — meta.status is in
+      // ACTIVE_JOB_STATUSES. Decide whether to promote.
+      reason = classifyOrphan(meta, now, orphanAgeMs);
+      if (!reason) return null;
+      let invocation;
+      try { invocation = invocationFromMeta(meta); }
+      catch { return null; }
+      if (!invocation.target || !invocation.mode_profile_name) return null;
+      try {
+        return buildJobRecord(invocation, {
+          // status="stale" tells classifyExecution to short-circuit.
+          status: "stale",
+          exitCode: meta.exit_code ?? null,
+          parsed: null,
+          pidInfo: meta.pid_info ?? null,
+          claudeSessionId: meta.claude_session_id ?? null,
+          geminiSessionId: meta.gemini_session_id ?? null,
+          errorMessage: `stale_active_job: ${reason}`,
+        }, Array.isArray(meta.mutations) ? meta.mutations : []);
+      } catch { return null; }
+    });
+    if (next) reclaimed.push({ job_id: summary.id, reason });
   }
   return reclaimed;
 }
