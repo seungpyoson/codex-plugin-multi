@@ -196,7 +196,158 @@ test("reconcileActiveJobs: stale jobs are continuable history, not deleted", () 
   }
 });
 
-test("gemini reconcileActiveJobs: same semantics on the gemini state module", () => {
+test("reconcileActiveJobs: invalid started_at string is left alone", () => {
+  // parseStartedAt returns null when the ISO string is unparseable.
+  // Reconciliation must not crash and must not reclaim such records.
+  const dir = freshDir();
+  try {
+    const id = "bad-started-at";
+    seedActive(dir, id, {
+      pid_info: null,
+      started_at: "not-a-date",
+    });
+    assert.deepEqual(reconcileActiveJobs(dir), [],
+      "record with unparseable started_at must be left active");
+    assert.equal(readJobFileById(dir, id).status, "running");
+  } finally {
+    cleanup(dir);
+  }
+});
+
+test("reconcileActiveJobs: state-summary active + meta terminal is skipped", () => {
+  // Defense in depth: if state.json says running but meta.json says
+  // completed (e.g., a writer crashed mid-update), reconciliation must
+  // trust the meta and skip — not promote to stale.
+  const dir = freshDir();
+  try {
+    const id = "summary-vs-meta";
+    seedActive(dir, id, { status: "completed" });
+    // Override summary to say running while meta still says completed.
+    upsertJob(dir, { id, status: "running" });
+    assert.deepEqual(reconcileActiveJobs(dir), []);
+    assert.equal(readJobFileById(dir, id).status, "completed",
+      "meta wins; reconciliation must not flip a completed record to stale");
+  } finally {
+    cleanup(dir);
+  }
+});
+
+test("reconcileActiveJobs: invalid pid (zero/negative) is treated as no pid_info", () => {
+  // pid_info { pid: 0, ... } is invalid; reconcile must fall back to
+  // age-based logic instead of trying to verify pid 0.
+  const dir = freshDir();
+  try {
+    const id = "invalid-pid";
+    seedActive(dir, id, {
+      pid_info: { pid: 0, starttime: "x", argv0: "claude" },
+      started_at: new Date(Date.now() - 5_000).toISOString(),
+    });
+    assert.deepEqual(reconcileActiveJobs(dir), [],
+      "young record with invalid pid must remain active");
+  } finally {
+    cleanup(dir);
+  }
+});
+
+test("reconcileActiveJobs: pid_info missing argv0 falls through to age check", () => {
+  const dir = freshDir();
+  try {
+    const id = "no-argv0";
+    seedActive(dir, id, {
+      pid_info: { pid: 1, starttime: "x", argv0: null },
+      started_at: new Date(Date.now() - 5_000).toISOString(),
+    });
+    assert.deepEqual(reconcileActiveJobs(dir), [],
+      "young record with incomplete pid_info must remain active");
+    // Tighten orphan window so the same record reclaims via age fallback.
+    const reclaimed = reconcileActiveJobs(dir, { orphanAgeMs: 1_000 });
+    assert.equal(reclaimed.length, 1);
+    assert.equal(readJobFileById(dir, id).status, "stale");
+  } finally {
+    cleanup(dir);
+  }
+});
+
+test("reconcileActiveJobs: pid_info with capture_error is treated as missing pid_info", () => {
+  // capture_error means we couldn't read /proc or run `ps` — we have a
+  // pid number but no ownership proof. Reconcile must NOT signal that
+  // pid (cmdCancel already refuses); it should fall through to the
+  // age-based branch.
+  const dir = freshDir();
+  try {
+    const id = "capture-error-young";
+    seedActive(dir, id, {
+      pid_info: { pid: 1, starttime: null, argv0: null, capture_error: "EPERM" },
+      started_at: new Date(Date.now() - 30_000).toISOString(),
+    });
+    assert.deepEqual(reconcileActiveJobs(dir), [],
+      "young record with capture_error must remain active until orphan window");
+    assert.equal(readJobFileById(dir, id).status, "running");
+  } finally {
+    cleanup(dir);
+  }
+});
+
+test("reconcileActiveJobs: configurable orphan window controls when missing pid_info reclaims", () => {
+  const dir = freshDir();
+  try {
+    const id = "tunable-orphan";
+    seedActive(dir, id, {
+      status: "queued",
+      pid_info: null,
+      started_at: new Date(Date.now() - 10 * 60 * 1000).toISOString(), // 10 min
+    });
+    // Default 1h window — leaves it.
+    assert.deepEqual(reconcileActiveJobs(dir), [],
+      "10-min queued must stay active under default 1h window");
+    // Tighten to 5 min — reclaims it.
+    const reclaimed = reconcileActiveJobs(dir, { orphanAgeMs: 5 * 60 * 1000 });
+    assert.equal(reclaimed.length, 1);
+    assert.equal(readJobFileById(dir, id).status, "stale");
+  } finally {
+    cleanup(dir);
+  }
+});
+
+test("reconcileActiveJobs: terminal records (completed/failed/cancelled) are ignored", () => {
+  // Reconciliation only touches active records; terminal records must
+  // pass through unchanged so a re-run of cmdStatus is idempotent.
+  const dir = freshDir();
+  try {
+    for (const status of ["completed", "failed", "cancelled", "stale"]) {
+      seedActive(dir, `${status}-job`, {
+        status,
+        pid_info: { pid: findDeadPid(), starttime: "x", argv0: "claude" },
+      });
+    }
+    assert.deepEqual(reconcileActiveJobs(dir), [],
+      "terminal records must be ignored, even with dead pid_info");
+    for (const status of ["completed", "failed", "cancelled", "stale"]) {
+      assert.equal(readJobFileById(dir, `${status}-job`).status, status,
+        `${status} record must not be promoted to stale`);
+    }
+  } finally {
+    cleanup(dir);
+  }
+});
+
+test("reconcileActiveJobs: missing meta.json on disk is skipped without throwing", () => {
+  // listJobs returns a state.json summary; meta.json may be missing if a
+  // prior writer failed. Reconciliation must skip such entries instead of
+  // crashing the next status call.
+  const dir = freshDir();
+  try {
+    upsertJob(dir, { id: "summary-only", status: "running",
+      started_at: new Date(Date.now() - 10_000).toISOString() });
+    // No writeJobFile — meta.json absent. Should be a no-op.
+    assert.deepEqual(reconcileActiveJobs(dir), [],
+      "summary without meta.json must be skipped, not throw");
+  } finally {
+    cleanup(dir);
+  }
+});
+
+test("gemini reconcileActiveJobs: dead pid promotes to stale", () => {
   const dir = freshGeminiDir();
   try {
     const id = "gemini-dead-pid-job";
@@ -230,6 +381,47 @@ test("gemini reconcileActiveJobs: same semantics on the gemini state module", ()
     const reclaimed = reconcileGemini(dir);
     assert.equal(reclaimed.length, 1);
     assert.equal(GeminiState.readJobFileById(dir, id).status, "stale");
+  } finally {
+    cleanup(dir, "RECONCILE_GEMINI_DATA");
+  }
+});
+
+test("gemini reconcileActiveJobs: missing pid_info reclaimed only after orphan window", () => {
+  const dir = freshGeminiDir();
+  try {
+    const baseRecord = (id, startedAt) => ({
+      id, job_id: id,
+      target: "gemini",
+      parent_job_id: null,
+      resume_chain: [],
+      mode_profile_name: "rescue",
+      mode: "rescue",
+      model: "gemini-3-flash-preview",
+      cwd: dir, workspace_root: dir,
+      containment: "none", scope: "working-tree",
+      dispose_effective: false,
+      scope_base: null, scope_paths: null,
+      prompt_head: "rescue test", schema_spec: null,
+      binary: "gemini",
+      status: "queued",
+      started_at: startedAt,
+      pid_info: null,
+      claude_session_id: null,
+      gemini_session_id: null,
+      schema_version: 6,
+    });
+    const young = baseRecord("g-young", new Date(Date.now() - 60_000).toISOString());
+    const old = baseRecord("g-old", new Date(Date.now() - 4 * 60 * 60 * 1000).toISOString());
+    GeminiState.writeJobFile(dir, young.id, young);
+    GeminiState.writeJobFile(dir, old.id, old);
+    GeminiState.upsertJob(dir, { id: young.id, status: "queued" });
+    GeminiState.upsertJob(dir, { id: old.id, status: "queued" });
+
+    const reclaimed = reconcileGemini(dir);
+    assert.equal(reclaimed.length, 1, `expected 1 reclaim; got ${JSON.stringify(reclaimed)}`);
+    assert.equal(reclaimed[0].job_id, "g-old");
+    assert.equal(GeminiState.readJobFileById(dir, "g-young").status, "queued");
+    assert.equal(GeminiState.readJobFileById(dir, "g-old").status, "stale");
   } finally {
     cleanup(dir, "RECONCILE_GEMINI_DATA");
   }

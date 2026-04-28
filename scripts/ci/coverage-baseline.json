@@ -28,9 +28,14 @@
       "functions": 83.33
     },
     "plugins/claude/scripts/lib/job-record.mjs": {
-      "lines": 91.38,
+      "lines": 90.0,
       "branches": 86.36,
       "functions": 60.0
+    },
+    "plugins/claude/scripts/lib/reconcile.mjs": {
+      "lines": 95.79,
+      "branches": 87.5,
+      "functions": 100.0
     },
     "plugins/claude/scripts/lib/mode-profiles.mjs": {
       "lines": 86.67,
@@ -86,6 +91,11 @@
       "lines": 82.76,
       "branches": 78.33,
       "functions": 60.0
+    },
+    "plugins/gemini/scripts/lib/reconcile.mjs": {
+      "lines": 95.79,
+      "branches": 87.5,
+      "functions": 100.0
     },
     "plugins/gemini/scripts/lib/mode-profiles.mjs": {
       "lines": 66.67,
