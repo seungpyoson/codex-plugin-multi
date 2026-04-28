@@ -53,9 +53,11 @@ In the repository checkout, it is `plugins/claude`.
 ## Rendering
 
 Render companion JSON according to `claude-result-handling`. Surface
-`mutations` prominently for read-only review paths. Do not expose full prompts
-or secrets. For setup failures, tell the user to run `claude` interactively if
-OAuth is missing; never suggest setting `ANTHROPIC_API_KEY`.
+`mutations` prominently for read-only review paths, and render diagnostic
+fields such as `error_summary`, `error_cause`, `suggested_action`, and
+`disclosure_note` before raw `error_message` when present. Do not expose full
+prompts or secrets. For setup failures, tell the user to run `claude`
+interactively if OAuth is missing; never suggest setting `ANTHROPIC_API_KEY`.
 
 ## Guardrails
 

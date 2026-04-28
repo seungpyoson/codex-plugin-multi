@@ -915,6 +915,11 @@ test("gemini review fails closed when pre-run ignore filtering is unavailable", 
     const record = JSON.parse(stdout);
     assert.equal(record.status, "failed");
     assert.match(record.error_message, /scope_population_failed: cannot evaluate gitignored files/);
+    assert.match(record.error_summary, /Review scope was rejected/);
+    assert.match(record.error_cause, /gitignored files/);
+    assert.match(record.suggested_action, /branch-diff/);
+    assert.match(record.disclosure_note, /not spawned/);
+    assert.match(record.disclosure_note, /external provider/);
     assert.deepEqual(record.mutations, [],
       "scope filtering fails before mutation detection and target spawn");
   } finally {
@@ -1002,6 +1007,11 @@ test("gemini scope population failure skips target CLI spawn", () => {
     assert.equal(record.status, "failed");
     assert.equal(record.exit_code, null);
     assert.match(record.error_message, /unsafe_symlink/);
+    assert.match(record.error_summary, /Review scope was rejected/);
+    assert.match(record.error_cause, /symlink/i);
+    assert.match(record.suggested_action, /branch-diff/);
+    assert.match(record.disclosure_note, /not spawned/);
+    assert.match(record.disclosure_note, /external provider/);
     assert.equal(existsSync(marker), false, "target CLI marker proves Gemini binary was spawned");
   } finally {
     rmTree(dataDir);

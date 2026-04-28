@@ -48,22 +48,32 @@ In the repository checkout, it is `plugins/gemini`.
   node "<plugin-root>/scripts/gemini-companion.mjs" status --cwd "<workspace>" --all
   node "<plugin-root>/scripts/gemini-companion.mjs" result --cwd "<workspace>" --job "<job-id>"
   ```
+- Cancel a background job:
+  ```bash
+  node "<plugin-root>/scripts/gemini-companion.mjs" cancel --job "<job-id>" --cwd "<workspace>"
+  ```
 
 ## Rendering
 
 Render companion JSON directly and keep the user's attention on `status`,
-`result`, `structured_output`, `permission_denials`, and `mutations`. Surface
-`mutations` prominently for read-only review paths. For setup failures, tell the
-user to run `gemini` interactively if OAuth is missing; never suggest setting
-`GEMINI_API_KEY`.
+`result`, `structured_output`, `permission_denials`, `mutations`, and the
+diagnostic fields `error_summary`, `error_cause`, `suggested_action`, and
+`disclosure_note`. Surface `mutations` prominently for read-only review paths.
+For setup failures, tell the user to run `gemini` interactively if OAuth is
+missing; never suggest setting `GEMINI_API_KEY`.
 
 ## Guardrails
 
 - Do not claim slash commands such as `/gemini-ping` are available on Codex CLI
   0.125.0.
-- Gemini `cancel` is deferred and returns `not_implemented`; tell the user to
-  use Ctrl+C for foreground runs.
+- Gemini `cancel --job <job-id>` is wired and operational. Use it to cancel
+  queued or running background jobs. For foreground runs, Ctrl+C is still the
+  correct interrupt mechanism since there is no background job to target.
 - Gemini plan mode alone is not a sandbox. The companion's review paths use the
   bundled TOML read-only policy and disposable containment.
+- `branch-diff` reduces which files are reviewed, but a successful Gemini
+  review still sends selected source content to the Gemini provider. If a
+  private-repo approval reviewer denies that disclosure, treat it as a policy
+  decision rather than a plugin/runtime failure.
 - Do not run `gemini` directly; use the companion so job records, mutation
   detection, and Gemini session identity handling remain consistent.

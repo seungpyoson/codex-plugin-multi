@@ -141,6 +141,19 @@ test("gemini command docs match background/continue runtime and wired cancel", (
   assert.match(cancel, /\bsignaled\b/);
 });
 
+test("gemini-delegation/SKILL.md describes cancel --job flow (not deferred/not_implemented)", () => {
+  const skill = readRepoFile("plugins/gemini/skills/gemini-delegation/SKILL.md");
+
+  assert.doesNotMatch(skill, /not_implemented/,
+    "gemini-delegation/SKILL.md must not claim cancel returns not_implemented");
+  assert.doesNotMatch(skill, /cancel is deferred/i,
+    "gemini-delegation/SKILL.md must not say cancel is deferred");
+  assert.doesNotMatch(skill, /cancel.*deferred|deferred.*cancel/i,
+    "gemini-delegation/SKILL.md must not describe cancel as deferred");
+  assert.match(skill, /cancel.*--job/i,
+    "gemini-delegation/SKILL.md must document the `cancel --job` workflow");
+});
+
 test("spec does not reference an unshipped Gemini result-handling skill", () => {
   const spec = readRepoFile("docs/superpowers/specs/2026-04-23-codex-plugin-multi-design.md");
 

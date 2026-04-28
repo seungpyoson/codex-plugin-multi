@@ -11,6 +11,8 @@ node "<plugin-root>/scripts/gemini-companion.mjs" result --job "$ARGUMENTS"
 ```
 
 Render the returned JobRecord. Do not expose sidecar file paths unless the user asks.
+If `error_summary`, `error_cause`, `suggested_action`, or `disclosure_note` is
+present, render those fields before the raw `error_message`.
 
 For `staged`, `head`, and `branch-diff` scopes, the scoped tree is a git
 object-pure snapshot: checkout filters, LFS smudge, EOL conversion, textconv,

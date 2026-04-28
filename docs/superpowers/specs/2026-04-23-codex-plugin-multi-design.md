@@ -889,7 +889,7 @@ ModeProfile {
 
 **Rule:** exactly one schema describes everything the companion durably persists about one invocation. The same schema is what `cmdResult` returns, what the `run --foreground` stdout prints (success path), and what the Claude result-handling skill and Gemini result command docs describe.
 
-**The schema (v6):**
+**The schema (v7):**
 
 ```
 JobRecord {
@@ -909,6 +909,7 @@ JobRecord {
   status: "queued" | "running" | "completed" | "failed" | "cancelled" | "stale"
   started_at, ended_at?, exit_code?
   error_code?, error_message?      // failed | stale only
+  error_summary?, error_cause?, suggested_action?, disclosure_note?
 
   // Result (was missing in v4) — required when status = completed or failed
   result?: string
@@ -918,7 +919,7 @@ JobRecord {
   cost_usd?, usage?
 
   // Bookkeeping — required
-  schema_version: 6
+  schema_version: 7
 }
 ```
 

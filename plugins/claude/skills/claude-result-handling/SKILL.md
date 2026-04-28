@@ -13,7 +13,7 @@ The companion returns the SAME JSON shape from three entry points — foreground
 (spec §21.3). Nothing is hand-assembled in memory; what goes to disk is what
 comes back to you.
 
-## Success path — JobRecord schema (v6)
+## Success path — JobRecord schema (v7)
 
 ```json
 {
@@ -45,8 +45,12 @@ comes back to you.
   "started_at":          "<iso-8601>",
   "ended_at":            null | "<iso-8601>",
   "exit_code":           null | 0 | 1 | 2,
-  "error_code":          null | "spawn_failed" | "claude_error" | "parse_error" | "timeout",
+  "error_code":          null | "scope_failed" | "spawn_failed" | "claude_error" | "parse_error" | "timeout",
   "error_message":       null | "<human>",
+  "error_summary":       null | "<short operator-facing summary>",
+  "error_cause":         null | "<why this happened>",
+  "suggested_action":    null | "<what to do next>",
+  "disclosure_note":     null | "<what was or was not sent externally>",
 
   "result":              null | "<text from Claude>",  // null on queued; "" allowed on schema runs
   "structured_output":   null | { ... },                // populated on --json-schema runs
@@ -55,7 +59,7 @@ comes back to you.
   "cost_usd":            null | 0.001,
   "usage":               null | { "input_tokens": N, ... },
 
-  "schema_version":      6
+  "schema_version":      7
 }
 ```
 
@@ -110,6 +114,11 @@ ignored files.
 
 - `spawn_failed` — `claude` binary not found or crashed before JSON output.
   Tell the user to run `/claude-setup`. `error_message` has the spawn detail.
+- `scope_failed` — the companion refused to prepare the selected review scope
+  before launching the target CLI. Render `error_summary`, `error_cause`,
+  `suggested_action`, and `disclosure_note` before the raw `error_message`.
+  These failures are protective; rejected scope content was not sent to the
+  target CLI or external provider.
 - `claude_error` — Claude ran but returned `is_error: true`. `result` may
   still contain partial text worth showing.
 - `parse_error` — Claude's stdout wasn't valid JSON. Rare; usually a CLI
@@ -118,7 +127,8 @@ ignored files.
 - `not_found` — (only from `result --job` / `status --job`) the `job_id`
   doesn't exist in this workspace. Suggest `/claude-status --all`.
 
-Render `error_message` verbatim when present. Do NOT reinterpret.
+Render `error_message` verbatim when present. Do NOT reinterpret it; use the
+structured diagnostic fields when present for the human explanation.
 
 ## Background-launch response
 

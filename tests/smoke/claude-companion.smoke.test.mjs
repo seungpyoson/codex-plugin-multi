@@ -81,7 +81,7 @@ test("run --mode=review --foreground: emits JobRecord with status=completed", ()
     assert.ok(result.job_id, "job_id set");
     assert.equal(result.result, "Mock Claude response.");
     assert.deepEqual(result.permission_denials, []);
-    assert.equal(result.schema_version, 6, "schema_version bumped for Gemini session parity");
+    assert.equal(result.schema_version, 7, "schema_version bumped for scope diagnostics");
     assert.equal("prompt" in result, false,
       "§21.3.1: full prompt must not appear on JobRecord");
     assert.equal("ok" in result, false,
@@ -129,6 +129,11 @@ test("run --mode=review --foreground: corrupt index fails closed before target s
     const result = JSON.parse(stdout);
     assert.equal(result.status, "failed");
     assert.match(result.error_message, /scope_population_failed: cannot evaluate gitignored files/);
+    assert.match(result.error_summary, /Review scope was rejected/);
+    assert.match(result.error_cause, /gitignored files/);
+    assert.match(result.suggested_action, /branch-diff/);
+    assert.match(result.disclosure_note, /not spawned/);
+    assert.match(result.disclosure_note, /not sent/);
     assert.deepEqual(result.mutations, [],
       "scope filtering fails before mutation detection and target spawn");
   } finally {
@@ -192,7 +197,7 @@ test("run: meta.json persisted to workspace state", () => {
     assert.equal(meta.session_id, undefined,
       "legacy session_id field must not be present on new-shape records");
     // JobRecord schema version and full-prompt omission stay explicit.
-    assert.equal(meta.schema_version, 6);
+    assert.equal(meta.schema_version, 7);
     assert.equal("prompt" in meta, false,
       "§21.3.1: full `prompt` field must not be persisted");
     // T7.4: result field populated on foreground completion (symmetry with bg).

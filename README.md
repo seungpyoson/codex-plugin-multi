@@ -113,6 +113,9 @@ inspect the terminal record.
 - **`--dispose` is the default for review profiles.** Disposable containment
   materializes the selected scope outside the user's active working tree and
   cleans it up after the run.
+- **Scope narrowing is not provider isolation.** `branch-diff` reduces which
+  files are reviewed, but a successful external review still sends selected
+  source content to the target provider.
 - **Rescue is write-capable.** Rescue modes are intended for investigation and
   fixes. Review and adversarial-review are the safer choices when you only want
   critique.
