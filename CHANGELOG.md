@@ -38,8 +38,8 @@
 
 ### Upstream attribution
 
-- Ports portions of `openai/codex-plugin-cc` from MIT to Apache-2.0 with
-  attribution in `NOTICE`.
+- Ports portions of `openai/codex-plugin-cc` from MIT-licensed upstream code
+  with attribution in `NOTICE`.
 - Shared library provenance is recorded in
   `plugins/claude/scripts/lib/UPSTREAM.md` and
   `plugins/gemini/scripts/lib/UPSTREAM.md`.

@@ -108,10 +108,10 @@ M11 release      → T11.1 → T11.2 → T11.3 → T11.4              (was M10)
 
 ### T0.1 — repo bootstrap
 
-- **Goal:** Apache-2.0 licensed repo skeleton with NOTICE attribution to upstream MIT.
+- **Goal:** Source-available non-commercial repo skeleton with NOTICE attribution to upstream MIT.
 - **Files:**
-  - `LICENSE` (Apache-2.0 text)
-  - `NOTICE` (full MIT text of `openai/codex-plugin-cc` + attribution note: "This project ports portions of openai/codex-plugin-cc (MIT) to Apache-2.0 with modifications.")
+  - `LICENSE` (source-available non-commercial text)
+  - `NOTICE` (full MIT text of `openai/codex-plugin-cc` + attribution note)
   - `README.md` (overview, install instructions, safety disclosures per §10)
   - `package.json` with `{"workspaces": ["plugins/*"], "private": true, "engines": {"node": ">=20.0.0"}}`
   - `.gitignore` (node_modules, `.codex-plugin-*/jobs/`, `~/.cache/codex-plugin-*/`, OS cruft)
@@ -145,9 +145,9 @@ M11 release      → T11.1 → T11.2 → T11.3 → T11.4              (was M10)
 
 - **Goal:** minimal `.codex-plugin/plugin.json` per plugin.
 - **Files:**
-  - `plugins/claude/.codex-plugin/plugin.json`: `{"name":"claude","version":"0.0.1","description":"Delegate to Claude Code from Codex.","author":{"name":"seungpyoson"},"repository":"https://github.com/seungpyoson/codex-plugin-multi","license":"Apache-2.0"}`
+  - `plugins/claude/.codex-plugin/plugin.json`: `{"name":"claude","version":"0.0.1","description":"Delegate to Claude Code from Codex.","author":{"name":"seungpyoson"},"repository":"https://github.com/seungpyoson/codex-plugin-multi","license":"Source-Available-NonCommercial"}`
   - `plugins/gemini/.codex-plugin/plugin.json`: analogous.
-  - Stub `plugins/claude/LICENSE` and `plugins/gemini/LICENSE` (Apache-2.0 copies).
+  - Stub `plugins/claude/LICENSE` and `plugins/gemini/LICENSE` pointers to the top-level license.
 - **Acceptance:** Both manifests validate as JSON. Marketplace install from T0.2 now resolves individual plugins (visible in Codex TUI `/plugins`).
 - **Spec ref:** §4.13, §6.
 - **Depends on:** T0.2
@@ -209,7 +209,7 @@ M11 release      → T11.1 → T11.2 → T11.3 → T11.4              (was M10)
 
 - **Goal:** six target-neutral lib files copied per plugin, with upstream attribution.
 - **Files (per plugin, so twice — claude/ and gemini/):**
-  - `plugins/<target>/scripts/lib/workspace.mjs` (verbatim from upstream `plugins/codex/scripts/lib/workspace.mjs`, with a `// Ported from openai/codex-plugin-cc (MIT). Apache-2.0 modifications.` header)
+  - `plugins/<target>/scripts/lib/workspace.mjs` (verbatim from upstream `plugins/codex/scripts/lib/workspace.mjs`, with a `// Ported from openai/codex-plugin-cc (MIT). See NOTICE.` header)
   - Same header for: `process.mjs`, `args.mjs`, `git.mjs`, `job-control.mjs`, `prompts.mjs`.
   - `plugins/<target>/scripts/lib/UPSTREAM.md`: records source commit SHA + which files are copy-verbatim vs parametrized.
 - **Acceptance:** `diff` of each copy-verbatim file against the vendored upstream source is header-only (single comment block at top). `UPSTREAM.md` cites the SHA.

@@ -5,8 +5,9 @@ Two Codex plugins that let Codex delegate work to **Claude Code** and
 [`openai/codex-plugin-cc`](https://github.com/openai/codex-plugin-cc), which
 lets Claude Code delegate to Codex.
 
-- **License:** Apache-2.0. Portions are ported from MIT-licensed upstream code;
-  see `NOTICE`.
+- **License:** Source-available, non-commercial. Selling, sublicensing, or
+  commercial redistribution is not permitted without prior written permission.
+  Portions are ported from MIT-licensed upstream code; see `NOTICE`.
 - **State:** active development. Claude and Gemini companion
   review/rescue/status/result flows are implemented and covered by mock smoke
   tests. Gemini `cancel` is deferred. Fresh-install verification on Codex CLI
@@ -166,4 +167,4 @@ codex-plugin-multi/
 ## Attribution
 
 Ports portions of [`openai/codex-plugin-cc`](https://github.com/openai/codex-plugin-cc)
-from MIT to Apache-2.0. See `NOTICE` for upstream text and attribution.
+from MIT-licensed upstream code. See `NOTICE` for upstream text and attribution.
