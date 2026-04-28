@@ -1,0 +1,72 @@
+# Architecture Record
+
+This project is the Codex-side inverse of `openai/codex-plugin-cc`: Codex can
+delegate to Claude Code and Gemini CLI. The implementation intentionally differs
+from a simple upstream port in a few places because the review/rescue lifecycle
+has different failure modes when Codex is the caller.
+
+## Core Improvement: Containment And Scope Are Separate
+
+The most important architectural choice is that containment and scope are
+orthogonal.
+
+- `containment` answers: where may the target CLI write?
+- `scope` answers: what source context may the target CLI see?
+
+This avoids the common but unsafe shortcut of treating "isolated" as one
+combined flag. A review can see the dirty working tree while still running in a
+disposable target directory. That is the default shape for review profiles:
+the model sees the relevant source state, but writes are contained and mutation
+detection records any unexpected changes.
+
+This split fixed the earlier design gap where a "safe" review could miss
+uncommitted changes because isolation and visibility were conflated.
+
+## Other Load-Bearing Invariants
+
+### ModeProfile Is The Source Of Mode Defaults
+
+Every mode-correlated setting lives in the `ModeProfile` table: model tier,
+permission mode, disallowed tools, containment, scope, dispose default,
+context-stripping, and add-dir behavior. Dispatcher libraries receive a profile
+instead of taking scattered flag defaults.
+
+This prevents review, adversarial-review, rescue, continue, and ping behavior
+from drifting apart across Claude and Gemini.
+
+### One JobRecord Shape
+
+Foreground output, background result files, `status`, `result`, and the result
+handling docs all use the same `JobRecord` schema. The code should not assemble
+different per-path response blobs.
+
+This makes job lifecycle behavior auditable and keeps status/result semantics
+consistent across foreground and background runs.
+
+### Identity Types Stay Distinct
+
+`job_id`, target session IDs, resume chains, and PID ownership tuples are
+different identities with different sources:
+
+- `job_id` is minted by this companion.
+- `claude_session_id` / `gemini_session_id` are read from target CLI output.
+- `resume_chain` records target session continuity.
+- `pid_info` records process ownership for safe cancellation.
+
+Keeping these separate prevents resuming the wrong session and prevents sending
+signals to a reused PID.
+
+### Shared Libraries Need Behavior Checks, Not Only Byte Identity
+
+Claude and Gemini share many library copies. Byte identity is useful, but it is
+not sufficient: two copies can be equally broken. Shared-library checks also
+require clean imports, production consumers, and behavior tests.
+
+## Upstream Relationship
+
+Upstream `openai/codex-plugin-cc` remains the reference for the delegation
+shape and several helper patterns. This repository keeps upstream attribution in
+`NOTICE`, tracks provenance in each `UPSTREAM.md`, and preserves compatible
+patterns where they fit. The differences above are intentional local
+architecture, not accidental drift.
+
