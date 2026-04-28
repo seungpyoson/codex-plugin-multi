@@ -899,6 +899,102 @@ for (const [target, state, fresh, cleanupTarget] of [
     }
   });
 
+  test(`${target} state: corrupt owner metadata emits a one-line stderr diagnostic`, () => {
+    // #16 follow-up 5: operators reading the state dir need a clue when a
+    // young corrupt-owner lock is blocking writers. Diagnostic must be
+    // single-line, prefixed, and never expose owner.json contents (the
+    // token field in particular).
+    const dir = fresh();
+    const originalWrite = process.stderr.write.bind(process.stderr);
+    const captured = [];
+    let originalQuiet;
+    try {
+      withStateConfig(state, { lockTimeoutMs: 250, lockStaleMs: 60_000 }, () => {
+        originalQuiet = process.env.CODEX_PLUGIN_QUIET_LOCK;
+        delete process.env.CODEX_PLUGIN_QUIET_LOCK;
+        process.stderr.write = (chunk, ...rest) => {
+          captured.push(typeof chunk === "string" ? chunk : chunk.toString("utf8"));
+          return originalWrite(chunk, ...rest);
+        };
+
+        state.writeJobFile(dir, "seed-job", { id: "seed-job" });
+        const lockDir = path.join(state.resolveStateDir(dir), ".state.lock");
+        fs.mkdirSync(lockDir);
+        fs.writeFileSync(
+          path.join(lockDir, "owner.json"),
+          `{"token":"sekrit-do-not-leak", broken json`,
+          "utf8",
+        );
+        assert.throws(
+          () => state.upsertJob(dir, { id: "blocked", status: "completed" }),
+          /state_lock_timeout/,
+        );
+      });
+
+      const joined = captured.join("");
+      assert.match(joined, /state-lock: corrupt owner metadata at /,
+        "diagnostic must surface corrupt owner.json with a single-line prefix");
+      assert.doesNotMatch(joined, /sekrit-do-not-leak/,
+        "diagnostic must never leak owner.json contents");
+      assert.equal(joined.split("\n").filter(Boolean).every((l) => l.startsWith("state-lock: ")), true,
+        "every emitted diagnostic line must start with state-lock: prefix");
+    } finally {
+      process.stderr.write = originalWrite;
+      if (originalQuiet === undefined) delete process.env.CODEX_PLUGIN_QUIET_LOCK;
+      else process.env.CODEX_PLUGIN_QUIET_LOCK = originalQuiet;
+      cleanupTarget(dir);
+    }
+  });
+
+  test(`${target} state: cross-host owner contention emits a diagnostic`, () => {
+    // Cross-host owner with parseable JSON should also emit a one-line
+    // diagnostic so operators can see why their writer is timing out.
+    const dir = fresh();
+    const originalWrite = process.stderr.write.bind(process.stderr);
+    const captured = [];
+    let originalQuiet;
+    try {
+      withStateConfig(state, { lockTimeoutMs: 250, lockStaleMs: 60_000 }, () => {
+        originalQuiet = process.env.CODEX_PLUGIN_QUIET_LOCK;
+        delete process.env.CODEX_PLUGIN_QUIET_LOCK;
+        process.stderr.write = (chunk, ...rest) => {
+          captured.push(typeof chunk === "string" ? chunk : chunk.toString("utf8"));
+          return originalWrite(chunk, ...rest);
+        };
+
+        state.writeJobFile(dir, "seed-job", { id: "seed-job" });
+        const lockDir = path.join(state.resolveStateDir(dir), ".state.lock");
+        fs.mkdirSync(lockDir);
+        // Young cross-host owner: still well below the 60_000 ms stale window
+        // so reclaim must wait; the diagnostic must fire on the contention.
+        fs.writeFileSync(path.join(lockDir, "owner.json"), `${JSON.stringify({
+          pid: 42,
+          hostname: "remote-host.invalid",
+          startedAt: new Date(Date.now() - 1_000).toISOString(),
+          token: "remote-token-do-not-leak",
+        })}\n`, "utf8");
+
+        assert.throws(
+          () => state.upsertJob(dir, { id: "blocked-x", status: "completed" }),
+          /state_lock_timeout/,
+        );
+      });
+
+      const joined = captured.join("");
+      assert.match(joined, /state-lock: cross-host owner contention/,
+        "cross-host owner must surface a diagnostic line");
+      assert.match(joined, /owner\.host=remote-host\.invalid/,
+        "diagnostic should name the remote host so operators can correlate");
+      assert.doesNotMatch(joined, /remote-token-do-not-leak/,
+        "diagnostic must never leak owner.json contents");
+    } finally {
+      process.stderr.write = originalWrite;
+      if (originalQuiet === undefined) delete process.env.CODEX_PLUGIN_QUIET_LOCK;
+      else process.env.CODEX_PLUGIN_QUIET_LOCK = originalQuiet;
+      cleanupTarget(dir);
+    }
+  });
+
   test(`${target} state: missing/corrupt owner metadata is reclaimed only when too old`, () => {
     const dir = fresh();
     try {
