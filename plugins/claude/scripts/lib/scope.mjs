@@ -628,20 +628,44 @@ function hasGitMetadataInAncestry(sourceCwd) {
 // using `git ls-files --others --ignored --exclude-standard -z -- .`. Tracked-
 // but-gitignored files (rare) are NOT filtered because `--others` already
 // excludes index entries, preserving modified tracked files in review scope.
+//
+// Transient retry (#16 follow-up 6): the index can be momentarily
+// unreadable during a concurrent `git gc`, `git checkout`, or
+// `index.lock` window. A single failure here used to fail-closed and
+// abort the run with `scope_population_failed`, even though a 50ms
+// retry would usually succeed. We retry up to MAX_GIT_LSFILES_ATTEMPTS
+// times with a tiny backoff before declaring the index unreadable; the
+// final attempt's error is surfaced verbatim so the operator sees the
+// underlying cause (e.g. "fatal: index file corrupt").
+const MAX_GIT_LSFILES_ATTEMPTS = 3;
+const GIT_LSFILES_BACKOFF_MS = 50;
+
+function sleepBackoffSync(ms) {
+  // Avoid Atomics.wait on shared buffer here — keep this dependency-free
+  // and let backoff be a small busy wait; we only sleep at most ~150ms total.
+  const end = Date.now() + ms;
+  while (Date.now() < end) { /* spin */ }
+}
+
 function listIgnoredUntrackedFiles(sourceCwd) {
-  try {
-    const raw = git(sourceCwd, [
-      "ls-files", "--others", "--ignored", "--exclude-standard", "-z", "--", ".",
-    ]);
-    return new Set(
-      raw.split("\0").filter(Boolean).map((rel) => rel.replace(/\\/g, "/")),
-    );
-  } catch (err) {
-    if (hasGitMetadataInAncestry(sourceCwd)) {
-      scopePopulationFailed(`cannot evaluate gitignored files for working-tree scope: ${err.message}`);
+  let lastErr = null;
+  for (let attempt = 1; attempt <= MAX_GIT_LSFILES_ATTEMPTS; attempt += 1) {
+    try {
+      const raw = git(sourceCwd, [
+        "ls-files", "--others", "--ignored", "--exclude-standard", "-z", "--", ".",
+      ]);
+      return new Set(
+        raw.split("\0").filter(Boolean).map((rel) => rel.replace(/\\/g, "/")),
+      );
+    } catch (err) {
+      lastErr = err;
+      if (attempt < MAX_GIT_LSFILES_ATTEMPTS) sleepBackoffSync(GIT_LSFILES_BACKOFF_MS);
     }
-    return null;
   }
+  if (hasGitMetadataInAncestry(sourceCwd)) {
+    scopePopulationFailed(`cannot evaluate gitignored files for working-tree scope: ${lastErr?.message ?? "unknown error"}`);
+  }
+  return null;
 }
 
 function scopeWorkingTree(sourceCwd, targetPath) {

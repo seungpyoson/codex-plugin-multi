@@ -92,6 +92,24 @@ test("spec does not reference an unshipped Gemini result-handling skill", () => 
   assert.match(spec, /Gemini result command docs/);
 });
 
+test("working-tree privacy docs distinguish git worktree from non-git directories", () => {
+  // #16 follow-up 6: the gitignored-file filter only applies inside a git
+  // worktree. Make sure operator-facing docs say so explicitly so callers
+  // do not assume `.env` is hidden in arbitrary non-git directories.
+  const docs = [
+    readRepoFile("plugins/claude/skills/claude-cli-runtime/SKILL.md"),
+    readRepoFile("plugins/claude/skills/claude-result-handling/SKILL.md"),
+    readRepoFile("plugins/gemini/commands/gemini-result.md"),
+  ];
+  for (const doc of docs) {
+    assert.match(
+      doc,
+      /non-git|inside a git worktree/i,
+      "privacy docs must distinguish git from non-git source directories",
+    );
+  }
+});
+
 test("README documents shipped install path, first commands, and safety posture", () => {
   const readme = readRepoFile("README.md");
 
