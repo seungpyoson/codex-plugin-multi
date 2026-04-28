@@ -99,6 +99,18 @@ if (process.env.CLAUDE_MOCK_SIDECAR_CONFLICT === "1") {
   writeFileSync(conflictPath, "sidecar-directory-conflict\n", "utf8");
 }
 
+if (process.env.CLAUDE_MOCK_META_CONFLICT === "1") {
+  // Replace <jobsDir>/<sessionId>.json (the queued record file from the
+  // launcher) with a DIRECTORY so the companion's terminal writeJobFile
+  // rename fails (#16 follow-up 1 — meta-write fatal path).
+  const { resolveJobsDir } = await import("../../plugins/claude/scripts/lib/state.mjs");
+  const { mkdirSync, unlinkSync } = await import("node:fs");
+  const jobsDir = resolveJobsDir(process.cwd());
+  const conflictDir = resolve(jobsDir, `${sessionId}.json`);
+  try { unlinkSync(conflictDir); } catch { /* nothing to remove yet */ }
+  mkdirSync(conflictDir, { recursive: true });
+}
+
 // T7.3 test oracle: when CLAUDE_MOCK_RECORD_RESUME=1, record the `--resume`
 // (or `--session-id` fallback) UUID to a sink path. Smoke tests read it back
 // to assert the companion passed the *correct* UUID (§21.1 identity contract,
