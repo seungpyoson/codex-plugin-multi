@@ -158,11 +158,18 @@ codex-plugin-multi/
   .agents/plugins/marketplace.json
   plugins/claude/
   plugins/gemini/
+  docs/architecture-record.md
   docs/e2e.md
-  docs/superpowers/
+  docs/release-verification.md
+  docs/superpowers/specs/2026-04-23-codex-plugin-multi-design.md
+  docs/archive/
   scripts/ci/check-manifests.mjs
   tests/
 ```
+
+`docs/archive/` contains historical implementation plans, smoke notes, and
+review records. Treat the README plus the active docs listed above as the
+current source of truth.
 
 ## Attribution
 
