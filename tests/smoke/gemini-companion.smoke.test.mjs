@@ -683,6 +683,67 @@ test("gemini status default hides inactive jobs and --all includes every state",
   }
 });
 
+test("gemini run --foreground: sidecar write failures warn but preserve terminal status (#16 follow-up 1)", () => {
+  // Mirror of the Claude sidecar-warn smoke test for parity coverage.
+  const cwd = mkdtempSync(path.join(tmpdir(), "gemini-sidecar-warn-"));
+  seedMinimalRepo(cwd);
+  const { stdout, stderr, status, dataDir } = runCompanion(
+    ["run", "--mode=rescue", "--foreground", "--model", "gemini-3-flash-preview",
+     "--cwd", cwd, "--", "sidecar warn"],
+    { cwd, env: { GEMINI_MOCK_SIDECAR_CONFLICT: "1" } },
+  );
+  try {
+    assert.equal(status, 0, `expected completed exit; got ${status}: ${stderr}`);
+    assert.doesNotMatch(stderr, /unhandled/i);
+    assert.match(stderr, /warning: sidecar .* write failed/i,
+      "Gemini sidecar failure must surface as a one-line stderr warning");
+    const record = JSON.parse(stdout);
+    assert.equal(record.status, "completed",
+      "terminal JobRecord must reflect the real run outcome despite sidecar failure");
+    assert.equal(record.error_code, null);
+    const { record: persisted } = readOnlyJobRecord(dataDir);
+    assert.equal(persisted.status, "completed");
+    assert.equal(persisted.job_id, record.job_id);
+  } finally {
+    rmTree(dataDir);
+    rmTree(cwd);
+  }
+});
+
+test("gemini run --foreground: meta-write conflict produces fallback failed record, no permanent running (#16 follow-up 1)", () => {
+  // Mirror of the Claude meta-conflict test. The Gemini mock walks
+  // GEMINI_PLUGIN_DATA/state/*/jobs to discover the queued meta path.
+  const cwd = mkdtempSync(path.join(tmpdir(), "gemini-meta-conflict-"));
+  seedMinimalRepo(cwd);
+  const { stdout, stderr, status, dataDir } = runCompanion(
+    ["run", "--mode=rescue", "--foreground", "--model", "gemini-3-flash-preview",
+     "--cwd", cwd, "--", "meta conflict"],
+    { cwd, env: { GEMINI_MOCK_META_CONFLICT: "1" } },
+  );
+  try {
+    assert.notEqual(status, 0, "meta write failure must exit non-zero");
+    assert.doesNotMatch(stderr, /unhandled/i);
+    const err = JSON.parse(stdout);
+    assert.equal(err.error, "finalization_failed");
+    const stateRoot = path.join(dataDir, "state");
+    let stateJobs = [];
+    for (const dir of readdirSync(stateRoot)) {
+      const stateFile = path.join(stateRoot, dir, "state.json");
+      if (!existsSync(stateFile)) continue;
+      stateJobs = JSON.parse(readFileSync(stateFile, "utf8")).jobs ?? [];
+    }
+    assert.equal(
+      stateJobs.some((j) => j.status === "running" || j.status === "queued"),
+      false,
+      "fallback failed-record must overwrite the running entry; got " +
+      JSON.stringify(stateJobs.map((j) => ({ id: j.id, status: j.status })))
+    );
+  } finally {
+    rmTree(dataDir);
+    rmTree(cwd);
+  }
+});
+
 test("gemini ping returns ok with the mock gemini binary", () => {
   const cwd = mkdtempSync(path.join(tmpdir(), "gemini-ping-cwd-"));
   const { stdout, stderr, status, dataDir } = runCompanion(

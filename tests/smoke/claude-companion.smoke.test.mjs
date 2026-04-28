@@ -467,9 +467,13 @@ test("continue --job: resumes a cancelled terminal job", () => {
   }
 });
 
-test("run --foreground: finalization write failures use structured errors", () => {
-  const cwd = mkdtempSync(path.join(tmpdir(), "smoke-finalize-fail-"));
-  const dataDir = mkdtempSync(path.join(tmpdir(), "finalize-fail-data-"));
+test("run --foreground: sidecar write failures warn but preserve terminal status (#16 follow-up 1)", () => {
+  // Per #16 follow-up 1: stdout.log/stderr.log are diagnostic sidecars,
+  // not the contractual job result. A failed sidecar write must surface
+  // as a stderr warning, not as `finalization_failed`. The terminal
+  // JobRecord (meta + state) must reflect the real run outcome.
+  const cwd = mkdtempSync(path.join(tmpdir(), "smoke-sidecar-warn-"));
+  const dataDir = mkdtempSync(path.join(tmpdir(), "sidecar-warn-data-"));
   try {
     seedMinimalRepo(cwd);
     const res = runCompanion(
@@ -478,11 +482,62 @@ test("run --foreground: finalization write failures use structured errors", () =
        "--cwd", cwd, "--", "seed"],
       { cwd, dataDir, env: { CLAUDE_MOCK_SIDECAR_CONFLICT: "1" } },
     );
-    assert.notEqual(res.status, 0);
+    // Sidecar conflict is a warning, not a fatal error. Exit code reflects
+    // the real terminal status (0 on completed).
+    assert.equal(res.status, 0, `expected completed exit; got ${res.status}: ${res.stderr}`);
+    assert.doesNotMatch(res.stderr, /unhandled/i);
+    assert.match(res.stderr, /warning: sidecar .* write failed/i,
+      "sidecar failure must surface as a one-line stderr warning");
+    const record = JSON.parse(res.stdout);
+    assert.equal(record.status, "completed",
+      "terminal JobRecord must reflect the real run outcome despite sidecar failure");
+    assert.equal(record.error_code, null);
+    // The persisted meta + state must agree with stdout (no split-brain).
+    const { record: persisted } = readOnlyJobRecord(dataDir);
+    assert.equal(persisted.status, "completed");
+    assert.equal(persisted.job_id, record.job_id);
+  } finally {
+    rmSync(dataDir, { recursive: true, force: true });
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("run --foreground: meta-write conflict produces fallback failed record, no permanent running (#16 follow-up 1)", () => {
+  // CLAUDE_MOCK_META_CONFLICT pre-creates the meta.json target as a
+  // directory before claude-mock exits; the companion's writeJobFile
+  // rename then fails. The companion must:
+  //   - exit non-zero with finalization_failed,
+  //   - leave a coherent fallback record in state.json (not "running"),
+  //   - not crash with "unhandled".
+  const cwd = mkdtempSync(path.join(tmpdir(), "smoke-meta-conflict-"));
+  const dataDir = mkdtempSync(path.join(tmpdir(), "meta-conflict-data-"));
+  try {
+    seedMinimalRepo(cwd);
+    const res = runCompanion(
+      ["run", "--mode=rescue", "--foreground",
+       "--model", "claude-haiku-4-5-20251001",
+       "--cwd", cwd, "--", "seed"],
+      { cwd, dataDir, env: { CLAUDE_MOCK_META_CONFLICT: "1" } },
+    );
+    assert.notEqual(res.status, 0, "meta write failure must exit non-zero");
     assert.doesNotMatch(res.stderr, /unhandled/i);
     const err = JSON.parse(res.stdout);
     assert.equal(err.error, "finalization_failed");
-    assert.match(err.message, /EEXIST|not a directory|file already exists/i);
+    // state.json must not show a permanent active "running" record. Read the
+    // jobs list and assert no active job remains for this workspace.
+    const stateRoot = path.join(dataDir, "state");
+    let stateJobs = [];
+    for (const dir of readdirSync(stateRoot)) {
+      const stateFile = path.join(stateRoot, dir, "state.json");
+      if (!existsSync(stateFile)) continue;
+      stateJobs = JSON.parse(readFileSync(stateFile, "utf8")).jobs ?? [];
+    }
+    assert.equal(
+      stateJobs.some((j) => j.status === "running" || j.status === "queued"),
+      false,
+      "fallback failed-record must overwrite the running entry; got " +
+      JSON.stringify(stateJobs.map((j) => ({ id: j.id, status: j.status })))
+    );
   } finally {
     rmSync(dataDir, { recursive: true, force: true });
     rmSync(cwd, { recursive: true, force: true });

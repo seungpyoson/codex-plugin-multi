@@ -70,6 +70,58 @@ if (assertFileRel) {
   fixture.t7_saw_file = includeDirs.some((dir) => existsSync(resolve(dir, assertFileRel)));
 }
 
+// Gemini's companion does not pass --session-id to the target CLI, so the
+// mock cannot derive the jobId from argv. To inject a finalization conflict
+// for #16 follow-up 1 tests, we walk GEMINI_PLUGIN_DATA/state/*/jobs and
+// pick the most recently modified queued meta file (the one this run wrote
+// just before spawning us). That base name is the jobId.
+async function findActiveJobIdFromState() {
+  const dataDir = process.env.GEMINI_PLUGIN_DATA;
+  if (!dataDir) return null;
+  const { readdirSync, statSync, existsSync } = await import("node:fs");
+  const { join } = await import("node:path");
+  const stateRoot = join(dataDir, "state");
+  if (!existsSync(stateRoot)) return null;
+  let pick = null;
+  for (const ws of readdirSync(stateRoot)) {
+    const jobsDir = join(stateRoot, ws, "jobs");
+    if (!existsSync(jobsDir)) continue;
+    for (const entry of readdirSync(jobsDir)) {
+      if (!entry.endsWith(".json")) continue;
+      const full = join(jobsDir, entry);
+      const m = statSync(full).mtimeMs;
+      if (!pick || m > pick.mtime) {
+        pick = { jobsDir, jobId: entry.slice(0, -".json".length), mtime: m };
+      }
+    }
+  }
+  return pick;
+}
+
+if (process.env.GEMINI_MOCK_SIDECAR_CONFLICT === "1") {
+  // Pre-create <jobsDir>/<jobId> as a regular FILE so the companion's
+  // writeSidecar mkdir fails with ENOTDIR (#16 follow-up 1).
+  const { writeFileSync, mkdirSync } = await import("node:fs");
+  const found = await findActiveJobIdFromState();
+  if (found) {
+    const conflictPath = resolve(found.jobsDir, found.jobId);
+    mkdirSync(found.jobsDir, { recursive: true });
+    writeFileSync(conflictPath, "sidecar-directory-conflict\n", "utf8");
+  }
+}
+
+if (process.env.GEMINI_MOCK_META_CONFLICT === "1") {
+  // Replace <jobsDir>/<jobId>.json with a directory so the companion's
+  // writeJobFile rename fails (#16 follow-up 1 — meta-write fatal path).
+  const { unlinkSync, mkdirSync } = await import("node:fs");
+  const found = await findActiveJobIdFromState();
+  if (found) {
+    const target = resolve(found.jobsDir, `${found.jobId}.json`);
+    try { unlinkSync(target); } catch { /* nothing to remove yet */ }
+    mkdirSync(target, { recursive: true });
+  }
+}
+
 const delayMs = Number(process.env.GEMINI_MOCK_DELAY_MS ?? "0");
 if (Number.isFinite(delayMs) && delayMs > 0) {
   setTimeout(() => {

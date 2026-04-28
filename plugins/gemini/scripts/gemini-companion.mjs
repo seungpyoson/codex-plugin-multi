@@ -315,45 +315,83 @@ async function executeRun(invocation, prompt, { foreground }) {
     process.exit(2);
   }
 
-  let finalRecord;
-  let finalizationError = null;
-  try {
-    if (checkMutations && gitStatusBefore !== null) {
-      let gitStatusAfter;
-      try {
-        gitStatusAfter = gitStatus(["status", "-s", "--untracked-files=all"], cwd);
-        writeSidecar(workspaceRoot, jobId, "git-status-after.txt", gitStatusAfter);
-      } catch (e) {
-        mutations.push(mutationDetectionFailure(e));
-        gitStatusAfter = null;
-      }
-      if (gitStatusAfter && gitStatusAfter !== gitStatusBefore) {
-        const beforeLines = new Set(gitStatusLines(gitStatusBefore));
-        mutations.push(...gitStatusLines(gitStatusAfter).filter((line) => !beforeLines.has(line)));
-      }
-    }
+  // ——— finalization (#16 follow-up 1) ————————————————————————————————
+  // See claude-companion.mjs for the three-tier persistence policy.
+  // Briefly: meta + state are contractual (fatal on failure with a
+  // best-effort failed-fallback record so onSpawn's running entry doesn't
+  // persist forever), sidecars are diagnostic (stderr warning, never
+  // changes the terminal status).
 
-    finalRecord = buildJobRecord(invocation, {
-      exitCode: execution.exitCode,
-      parsed: execution.parsed,
-      pidInfo: execution.pidInfo,
-      geminiSessionId: execution.geminiSessionId,
-    }, mutations);
-    writeJobFile(workspaceRoot, jobId, finalRecord);
-    upsertJob(workspaceRoot, finalRecord);
-    writeSidecar(workspaceRoot, jobId, "stdout.log", execution.stdout);
-    writeSidecar(workspaceRoot, jobId, "stderr.log", execution.stderr);
-  } catch (e) {
-    finalizationError = e;
-  } finally {
-    if (neutralCwd) rmSync(neutralCwd, { recursive: true, force: true });
-    if (containment.disposed && disposeEffective) containment.cleanup();
+  if (checkMutations && gitStatusBefore !== null) {
+    let gitStatusAfter;
+    try {
+      gitStatusAfter = gitStatus(["status", "-s", "--untracked-files=all"], cwd);
+      try { writeSidecar(workspaceRoot, jobId, "git-status-after.txt", gitStatusAfter); }
+      catch (e) { process.stderr.write(`gemini-companion: warning: sidecar git-status-after.txt write failed: ${e.message}\n`); }
+    } catch (e) {
+      mutations.push(mutationDetectionFailure(e));
+      gitStatusAfter = null;
+    }
+    if (gitStatusAfter && gitStatusAfter !== gitStatusBefore) {
+      const beforeLines = new Set(gitStatusLines(gitStatusBefore));
+      mutations.push(...gitStatusLines(gitStatusAfter).filter((line) => !beforeLines.has(line)));
+    }
   }
-  if (finalizationError) {
-    fail("finalization_failed", finalizationError.message ?? String(finalizationError), {
-      error_code: finalizationError.code ?? null,
+
+  const finalRecord = buildJobRecord(invocation, {
+    exitCode: execution.exitCode,
+    parsed: execution.parsed,
+    pidInfo: execution.pidInfo,
+    geminiSessionId: execution.geminiSessionId,
+  }, mutations);
+
+  let metaError = null;
+  let stateError = null;
+  try { writeJobFile(workspaceRoot, jobId, finalRecord); }
+  catch (e) { metaError = e; }
+  try { upsertJob(workspaceRoot, finalRecord); }
+  catch (e) { stateError = e; }
+
+  for (const [name, contents] of [
+    ["stdout.log", execution.stdout],
+    ["stderr.log", execution.stderr],
+  ]) {
+    try { writeSidecar(workspaceRoot, jobId, name, contents); }
+    catch (e) {
+      process.stderr.write(`gemini-companion: warning: sidecar ${name} write failed: ${e.message}\n`);
+    }
+  }
+
+  if (metaError || stateError) {
+    const detail = [
+      metaError && `meta=${metaError.message}`,
+      stateError && `state=${stateError.message}`,
+    ].filter(Boolean).join("; ");
+    let fallbackRecord = null;
+    try {
+      fallbackRecord = buildJobRecord(invocation, {
+        exitCode: execution.exitCode,
+        parsed: execution.parsed,
+        pidInfo: execution.pidInfo,
+        geminiSessionId: execution.geminiSessionId ?? null,
+        errorMessage: `finalization_failed: ${detail}`,
+      }, mutations);
+    } catch { /* defense in depth */ }
+    if (fallbackRecord) {
+      try { writeJobFile(workspaceRoot, jobId, fallbackRecord); } catch { /* exhausted */ }
+      try { upsertJob(workspaceRoot, fallbackRecord); } catch { /* exhausted */ }
+    }
+    if (neutralCwd) rmSync(neutralCwd, { recursive: true, force: true });
+    if (containment.disposed && disposeEffective) {
+      try { containment.cleanup(); } catch { /* best-effort */ }
+    }
+    fail("finalization_failed", detail, {
+      error_code: (metaError ?? stateError)?.code ?? null,
     });
   }
+
+  if (neutralCwd) rmSync(neutralCwd, { recursive: true, force: true });
+  if (containment.disposed && disposeEffective) containment.cleanup();
   if (foreground) printJson(finalRecord);
   process.exit(finalRecord.status === "completed" ? 0 : 2);
 }

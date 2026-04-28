@@ -436,53 +436,106 @@ async function executeRun(invocation, prompt, { foreground }) {
     process.exit(2);
   }
 
-  let finalRecord;
-  let finalizationError = null;
-  try {
-    // Post-snapshot for mutation detection.
-    if (checkMutations && gitStatusBefore !== null) {
-      const after = tryGit(["status", "-s", "--untracked-files=all"], cwd);
-      if (after.ok) {
-        const gitStatusAfter = after.stdout;
-        writeSidecar(workspaceRoot, jobId, "git-status-after.txt", gitStatusAfter);
-        if (gitStatusAfter && gitStatusAfter !== gitStatusBefore) {
-          const beforeLines = new Set(gitStatusLines(gitStatusBefore));
-          mutations.push(...gitStatusLines(gitStatusAfter)
-            .filter((line) => !beforeLines.has(line)));
-        }
-      } else {
-        mutations.push(mutationDetectionFailure(after.error));
+  // ——— finalization (#16 follow-up 1) ————————————————————————————————
+  //
+  // Three categories of persistence happen here, with explicit severities:
+  //
+  //   1. JobRecord meta (writeJobFile)        — CONTRACTUAL: this is the
+  //      shape consumers (`status --job`, `result --job`, skills) read.
+  //      Failure here is fatal; we still fall back to a best-effort
+  //      `failed`/`finalization_failed` record so operators don't see a
+  //      permanent "running" entry from the onSpawn write.
+  //   2. State index (upsertJob)              — CONTRACTUAL: `status`
+  //      iterates this. Failure here is fatal under the same fallback
+  //      rules — meta.json and state.json must agree, no split-brain.
+  //   3. Sidecar logs (stdout.log/stderr.log) — DIAGNOSTIC: operator-
+  //      facing trace files. Failure is a stderr WARNING and never
+  //      changes the job's terminal status. Per #16 follow-up 1: the
+  //      target CLI already exited successfully; clobbering its real
+  //      result with `finalization_failed` over a failed log write is
+  //      misleading. The warning is loud enough.
+  //
+  // Containment cleanup runs in the finally block so a fatal persistence
+  // path still disposes the workspace, matching M5/M6 semantics.
+
+  // Post-snapshot for mutation detection (warning on failure; not fatal).
+  if (checkMutations && gitStatusBefore !== null) {
+    const after = tryGit(["status", "-s", "--untracked-files=all"], cwd);
+    if (after.ok) {
+      const gitStatusAfter = after.stdout;
+      try { writeSidecar(workspaceRoot, jobId, "git-status-after.txt", gitStatusAfter); }
+      catch (e) { process.stderr.write(`claude-companion: warning: sidecar git-status-after.txt write failed: ${e.message}\n`); }
+      if (gitStatusAfter && gitStatusAfter !== gitStatusBefore) {
+        const beforeLines = new Set(gitStatusLines(gitStatusBefore));
+        mutations.push(...gitStatusLines(gitStatusAfter)
+          .filter((line) => !beforeLines.has(line)));
       }
-    }
-
-    // ONE buildJobRecord call — spec §21.3.2 convergence. Foreground prints
-    // what we persist; cmdResult reads the same file; skill renders the same
-    // schema. No hand-assembly anywhere.
-    finalRecord = buildJobRecord(invocation, {
-      exitCode: execution.exitCode,
-      parsed: execution.parsed,
-      pidInfo: execution.pidInfo,
-      claudeSessionId: execution.claudeSessionId ?? null,
-    }, mutations);
-    writeJobFile(workspaceRoot, jobId, finalRecord);
-    upsertJob(workspaceRoot, finalRecord);
-
-    // Sidecar logs (not part of JobRecord — operator diagnostics).
-    writeSidecar(workspaceRoot, jobId, "stdout.log", execution.stdout);
-    writeSidecar(workspaceRoot, jobId, "stderr.log", execution.stderr);
-  } catch (e) {
-    finalizationError = e;
-  } finally {
-    // Dispose containment after run (§10 / profile.dispose_default), even if
-    // final persistence or sidecar writes fail after the child exits.
-    if (containment.disposed && disposeEffective) {
-      containment.cleanup();
+    } else {
+      mutations.push(mutationDetectionFailure(after.error));
     }
   }
-  if (finalizationError) {
-    fail("finalization_failed", finalizationError.message ?? String(finalizationError), {
-      error_code: finalizationError.code ?? null,
+
+  // ONE buildJobRecord call for the canonical record — spec §21.3.2.
+  const finalRecord = buildJobRecord(invocation, {
+    exitCode: execution.exitCode,
+    parsed: execution.parsed,
+    pidInfo: execution.pidInfo,
+    claudeSessionId: execution.claudeSessionId ?? null,
+  }, mutations);
+
+  // Phase 1+2: contractual persistence (meta.json + state.json).
+  let metaError = null;
+  let stateError = null;
+  try { writeJobFile(workspaceRoot, jobId, finalRecord); }
+  catch (e) { metaError = e; }
+  try { upsertJob(workspaceRoot, finalRecord); }
+  catch (e) { stateError = e; }
+
+  // Phase 3: sidecars — diagnostics only.
+  for (const [name, contents] of [
+    ["stdout.log", execution.stdout],
+    ["stderr.log", execution.stderr],
+  ]) {
+    try { writeSidecar(workspaceRoot, jobId, name, contents); }
+    catch (e) {
+      process.stderr.write(`claude-companion: warning: sidecar ${name} write failed: ${e.message}\n`);
+    }
+  }
+
+  if (metaError || stateError) {
+    // Best-effort fallback so the persisted record is not stuck on
+    // "running" from onSpawn. Re-issue via buildJobRecord with an explicit
+    // finalization_failed errorMessage so classifyExecution returns
+    // status=failed; consumers (status/result) then see a coherent
+    // terminal record instead of a permanent active job.
+    const detail = [
+      metaError && `meta=${metaError.message}`,
+      stateError && `state=${stateError.message}`,
+    ].filter(Boolean).join("; ");
+    let fallbackRecord = null;
+    try {
+      fallbackRecord = buildJobRecord(invocation, {
+        exitCode: execution.exitCode,
+        parsed: execution.parsed,
+        pidInfo: execution.pidInfo,
+        claudeSessionId: execution.claudeSessionId ?? null,
+        errorMessage: `finalization_failed: ${detail}`,
+      }, mutations);
+    } catch { /* defense in depth */ }
+    if (fallbackRecord) {
+      try { writeJobFile(workspaceRoot, jobId, fallbackRecord); } catch { /* exhausted */ }
+      try { upsertJob(workspaceRoot, fallbackRecord); } catch { /* exhausted */ }
+    }
+    if (containment.disposed && disposeEffective) {
+      try { containment.cleanup(); } catch { /* best-effort */ }
+    }
+    fail("finalization_failed", detail, {
+      error_code: (metaError ?? stateError)?.code ?? null,
     });
+  }
+
+  if (containment.disposed && disposeEffective) {
+    containment.cleanup();
   }
   // Note: `containment_path` / `containment_cleaned` were legacy sidechannel
   // fields on the record that pre-dated the JobRecord schema. Containment
