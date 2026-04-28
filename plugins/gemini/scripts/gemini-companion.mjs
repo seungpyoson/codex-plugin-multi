@@ -338,11 +338,16 @@ async function executeRun(invocation, prompt, { foreground }) {
     }
   }
 
+  // signal + timedOut feed classifyExecution: a SIGTERM/SIGKILL exit without
+  // timedOut is an operator cancel → status="cancelled" (#16 follow-up 2);
+  // timedOut wins so wall-clock kills classify as timeout failures.
   const finalRecord = buildJobRecord(invocation, {
     exitCode: execution.exitCode,
     parsed: execution.parsed,
     pidInfo: execution.pidInfo,
     geminiSessionId: execution.geminiSessionId,
+    signal: execution.signal ?? null,
+    timedOut: execution.timedOut === true,
   }, mutations);
 
   let metaError = null;
@@ -541,9 +546,14 @@ async function cmdStatus(rest) {
     printJson(match);
     return;
   }
+  // Default status view: every continuable + actionable state. cancelled
+  // and stale are continuable terminal states (#16 follow-up 2/4) so they
+  // belong in the default view alongside running/completed/failed; --all
+  // is the only way to surface queued (transient pre-spawn).
+  const DEFAULT_STATUSES = new Set(["running", "completed", "failed", "cancelled", "stale"]);
   const filtered = options.all
     ? jobs
-    : jobs.filter((j) => j.status === "running" || j.status === "completed" || j.status === "failed");
+    : jobs.filter((j) => DEFAULT_STATUSES.has(j.status));
   printJson({ workspace_root: workspaceRoot, jobs: filtered });
 }
 

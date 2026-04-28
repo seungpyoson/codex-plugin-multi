@@ -82,17 +82,22 @@ const EXPECTED_KEYS_SET = new Set(EXPECTED_KEYS);
  * Status derivation (spec §21.3):
  *   queued      — no execution yet (background launch, pre-worker).
  *   completed   — exitCode === 0 AND parsed.ok === true.
+ *   cancelled   — target CLI exited via SIGTERM/SIGKILL from an operator
+ *                 cancel (#16 follow-up 2). timedOut runs are NOT cancelled.
  *   failed      — anything else.
  *
  * error_code classification:
- *   null           — completed.
- *   spawn_failed   — execution.errorMessage set (spawn threw before Claude ran).
- *   parse_error    — parsed.ok === false with reason starting "json_parse"/"empty_stdout".
- *   claude_error   — exitCode !== 0 with parseable JSON (Claude's is_error=true).
- *                    Also covers exitCode === 0 but parsed.ok === false with
- *                    is_error semantics.
- *   unknown_error  — catch-all; should be rare.
+ *   null            — completed or cancelled.
+ *   spawn_failed    — execution.errorMessage set (spawn threw before target ran).
+ *   parse_error     — parsed.ok === false with reason starting "json_parse"/"empty_stdout".
+ *   timeout         — execution.timedOut === true (companion's wall-clock kill).
+ *   claude_error    — exitCode !== 0 with parseable JSON (target's is_error=true).
+ *                     Also covers exitCode === 0 but parsed.ok === false with
+ *                     is_error semantics.
+ *   unknown_error   — catch-all; should be rare.
  */
+const CANCEL_SIGNALS = new Set(["SIGTERM", "SIGKILL", "SIGINT", "SIGHUP"]);
+
 function classifyExecution(execution) {
   if (!execution) {
     return {
@@ -113,6 +118,22 @@ function classifyExecution(execution) {
       status: "failed",
       error_code: "spawn_failed",
       error_message: execution.errorMessage,
+    };
+  }
+  // #16 follow-up 1 / 2: a wall-clock timeout fires SIGTERM too, so check
+  // timedOut FIRST. Only signal-driven exits without timedOut are cancels.
+  if (execution.timedOut === true) {
+    return {
+      status: "failed",
+      error_code: "timeout",
+      error_message: "target CLI exceeded the configured timeoutMs",
+    };
+  }
+  if (CANCEL_SIGNALS.has(execution.signal ?? "")) {
+    return {
+      status: "cancelled",
+      error_code: null,
+      error_message: null,
     };
   }
   const parsed = execution.parsed ?? null;

@@ -640,7 +640,7 @@ test("gemini scope population failure skips target CLI spawn", () => {
   }
 });
 
-test("gemini status default hides inactive jobs and --all includes every state", async () => {
+test("gemini status default surfaces continuable terminal states; --all includes queued (#16 follow-up 4)", async () => {
   const cwd = mkdtempSync(path.join(tmpdir(), "gemini-status-cwd-"));
   const dataDir = mkdtempSync(path.join(tmpdir(), "gemini-status-data-"));
   seedMinimalRepo(cwd);
@@ -661,9 +661,12 @@ test("gemini status default hides inactive jobs and --all includes every state",
     });
     assert.equal(res.status, 0, `exit ${res.status}: ${res.stderr}`);
     const parsed = JSON.parse(res.stdout);
+    // #16 follow-up 4: cancelled and stale are continuable terminal states,
+    // so default status must include them. Only queued (transient pre-spawn)
+    // is hidden from the default view.
     assert.deepEqual(
       parsed.jobs.map((job) => job.status).sort(),
-      ["completed", "failed", "running"],
+      ["cancelled", "completed", "failed", "running", "stale"],
     );
 
     const allRes = spawnSync("node", [COMPANION, "status", "--all", "--cwd", cwd], {
