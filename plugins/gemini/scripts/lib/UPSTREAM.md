@@ -2,10 +2,10 @@
 
 All files in this directory are ported from
 [`openai/codex-plugin-cc`](https://github.com/openai/codex-plugin-cc) (MIT license)
-into this repository (Apache-2.0). Per the MIT text, the upstream copyright notice
-is preserved in the repository's top-level `NOTICE` file. Per the Apache License,
-each modified file carries a "modified from upstream" comment header indicating
-the source path and synced commit.
+into this repository. Per the MIT text, the upstream copyright notice is
+preserved in the repository's top-level `NOTICE` file. Each modified file
+carries a "modified from upstream" comment header indicating the source path and
+synced commit.
 
 **Synced commit:** `807e03ac9d5aa23bc395fdec8c3767500a86b3cf` (2026-04-18, "fix: bump plugin version to 1.0.4 (#244)")
 

@@ -3,7 +3,9 @@
 - **Date:** 2026-04-23 (v3) / 2026-04-24 (v4 — full empirical re-verification) / **2026-04-24 (v5 — architectural invariants)**
 - **Status:** Draft v5, post-M6 cross-model review; corrected after 2026-04-27 fresh-install verification
 - **Repo:** [`seungpyoson/codex-plugin-multi`](https://github.com/seungpyoson/codex-plugin-multi)
-- **License:** Apache-2.0 (mirrors upstream)
+- **License:** Source-available non-commercial. Selling, sublicensing, or
+  commercial redistribution is not permitted without prior written permission.
+  Upstream MIT attribution is preserved in `NOTICE`.
 - **Reference:** [`openai/codex-plugin-cc`](https://github.com/openai/codex-plugin-cc) (MIT — Claude Code plugin calling Codex); [`openai/plugins`](https://github.com/openai/plugins) (canonical Codex monorepo pattern)
 
 ## What changed in v5 (from v4)
@@ -66,7 +68,7 @@ Upstream `openai/codex-plugin-cc` is a **Claude Code plugin** that lets Claude C
 |---|----------|--------|
 | 1 | Packaging | Two plugins (`plugins/claude/`, `plugins/gemini/`) in one monorepo. Each is standalone. Registered via a single `.agents/plugins/marketplace.json` at repo root. |
 | 2 | Slash-command naming | Intended surface uses **bare names, not namespaced:** `/claude-rescue`, `/gemini-review`, etc. Codex CLI 0.125.0 does not currently register plugin command files. |
-| 3 | Repo | `seungpyoson/codex-plugin-multi`, Apache-2.0, public GitHub. |
+| 3 | Repo | `seungpyoson/codex-plugin-multi`, source-available non-commercial, public GitHub. |
 | 4 | Prompting skills | One per plugin: `plugins/<target>/skills/<target>-prompting/`. Mirrors upstream's `gpt-5-4-prompting` structure. |
 | 5 | Auth | OAuth / subscription only. Plugin never reads or writes `*_API_KEY` env vars. |
 | 6 | Primary user-facing surface | User-invocable delegation skills and companion scripts in v0.1.0. Native `commands/*.md` slash commands are blocked on Codex TUI support in CLI 0.125.0; non-ping command docs are packaged for the intended future surface. |
@@ -221,7 +223,7 @@ through built-ins only.
 
 `--sparse <path>` flag **only works for git sources**, not local paths. Users install the whole marketplace and enable individual plugins via Codex TUI (`/plugins` command — Space to toggle, Enter for details). Config-based enable also works: `-c 'plugins."name@marketplace".enabled=true'`.
 
-### 4.14 Upstream reference — files to port (Apache-2.0 port of MIT)
+### 4.14 Upstream reference — files to port (MIT upstream with attribution)
 
 `openai/codex-plugin-cc` structure (note: it's a **Claude Code** plugin, uses `.claude-plugin/plugin.json`):
 
@@ -360,7 +362,7 @@ Review and adversarial-review run single-turn in the calling Codex session (no s
 ```
 codex-plugin-multi/
   README.md
-  LICENSE                                        # Apache-2.0
+  LICENSE                                        # source-available non-commercial
   NOTICE                                         # attribution to upstream (MIT)
   CHANGELOG.md
   package.json                                   # workspaces: ["plugins/*"]
@@ -772,7 +774,7 @@ Before v0.1.0: run upstream `/codex:adversarial-review` against this repo. Addre
 | R6 | Concurrent Gemini at semantic layer. | Disposable containment default + policy file. Serialize per workspace via lockfile if observed in practice. |
 | R7 | Command name collision with Codex builtins (`stop`, `plan`, …). | Bare names enumerated §5.1; none collide. Spec pins the list. |
 | R8 | Multi-plugin install UX. | Verified live: `codex plugin marketplace add owner/repo` resolves to git clone; `.agents/plugins/marketplace.json` schema validated; user enables per-plugin in TUI. |
-| R9 | Apache-2.0 port of MIT upstream. | `NOTICE` includes full MIT text + attribution. Our deltas Apache-2.0. |
+| R9 | MIT upstream attribution. | `NOTICE` includes full MIT text + attribution. Repository distribution is source-available non-commercial. |
 | R10 | `--bare` OAuth incompatibility would have broken Claude calls in v3. | Resolved in v4: `--setting-sources ""`. |
 | R11 | Hook timeout enforcement means gate hooks with real work will silently fail. | v1 ships no hooks. Review-gate feature deferred. |
 | R12 | `--json-schema` is soft contract. | Parse `structured_output`; fall back to text-parse + retry once. |
