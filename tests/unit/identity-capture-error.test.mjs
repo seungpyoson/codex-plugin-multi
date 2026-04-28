@@ -78,73 +78,83 @@ function runCaptureInHostileEnv(envOverrides) {
   }
 }
 
-test("captureDarwin: PATH points at empty dir → THROW capture_error (NOT process_gone) for live pid", { skip: process.platform !== "darwin" }, () => {
-  // macOS spawn falls back to a system PATH when env has no PATH at all.
-  // Force the failure by pointing PATH at a real but empty directory so
-  // `ps` is genuinely not findable.
+// Class 3b: capturePidInfo pins /bin/ps absolute. PATH-stripped /
+// PATH-shimmed environments now have NO effect on capture. The four
+// tests below originally proved capture_error vs process_gone
+// discrimination when ps was unavailable via PATH; with the absolute
+// path pin, those scenarios are structurally unreachable. They are
+// preserved here as Class 3b regression guards: each proves the pin
+// holds (capture succeeds despite hostile PATH).
+
+test("Class 3b: empty PATH does not break capture (pinned /bin/ps)", { skip: process.platform !== "darwin" }, () => {
   const emptyDir = mkdtempSync(path.join(tmpdir(), "empty-path-"));
   try {
     const r = runCaptureInHostileEnv({ PATH: emptyDir });
-    assert.match(r.stdout, /^THREW:/, `expected throw, got: ${r.stdout}`);
-    assert.match(r.stdout, /capture_error/, `must be capture_error, not process_gone — got: ${r.stdout}`);
-    assert.doesNotMatch(r.stdout, /^THREW:process_gone/,
-      "must NOT report process_gone — the pid is alive, ps just couldn't run");
+    assert.match(r.stdout, /^OK:/,
+      `pinned /bin/ps must succeed regardless of PATH; got: ${r.stdout}`);
+    const info = JSON.parse(r.stdout.replace(/^OK:/, ""));
+    assert.equal(info.pid, LIVE_PID);
+    assert.ok(info.starttime, "starttime captured");
+    assert.ok(info.argv0, "argv0 captured");
   } finally {
     rmSync(emptyDir, { recursive: true, force: true });
   }
 });
 
-test("captureDarwin: hostile ps stub (exit 1 + 'permission denied') → capture_error", { skip: process.platform !== "darwin" }, () => {
+test("Class 3b: hostile ps stub on PATH (exit 1 + permission denied) is bypassed", { skip: process.platform !== "darwin" }, () => {
   const stubDir = mkdtempSync(path.join(tmpdir(), "ps-stub-"));
   const stub = path.join(stubDir, "ps");
   writeFileSync(stub, "#!/bin/sh\necho 'ps: operation not permitted' >&2\nexit 1\n", "utf8");
   chmodSync(stub, 0o755);
   try {
     const r = runCaptureInHostileEnv({ PATH: stubDir });
-    assert.match(r.stdout, /^THREW:/, `expected throw, got: ${r.stdout}`);
-    assert.match(r.stdout, /capture_error/,
-      `non-empty stderr from ps must be capture_error, not process_gone — got: ${r.stdout}`);
+    assert.match(r.stdout, /^OK:/,
+      `absolute /bin/ps must defeat PATH-shim attack; got: ${r.stdout}`);
   } finally {
     rmSync(stubDir, { recursive: true, force: true });
   }
 });
 
-test("captureDarwin: hostile ps stub (exit 0 + empty stdout) → capture_error", { skip: process.platform !== "darwin" }, () => {
+test("Class 3b: hostile ps stub on PATH (exit 0 + empty stdout) is bypassed", { skip: process.platform !== "darwin" }, () => {
   const stubDir = mkdtempSync(path.join(tmpdir(), "ps-stub-"));
   const stub = path.join(stubDir, "ps");
   writeFileSync(stub, "#!/bin/sh\nexit 0\n", "utf8");
   chmodSync(stub, 0o755);
   try {
     const r = runCaptureInHostileEnv({ PATH: stubDir });
-    assert.match(r.stdout, /^THREW:/, `expected throw, got: ${r.stdout}`);
-    assert.match(r.stdout, /capture_error/,
-      `empty-stdout from ps must be capture_error, not process_gone — got: ${r.stdout}`);
+    assert.match(r.stdout, /^OK:/,
+      `silent stub on PATH must not break capture; got: ${r.stdout}`);
   } finally {
     rmSync(stubDir, { recursive: true, force: true });
   }
 });
 
-test("captureDarwin: ps stub mimicking real 'no such pid' (exit 1 + empty stderr) → process_gone", { skip: process.platform !== "darwin" }, () => {
+test("Class 3b: silent-exit-1 stub on PATH (would have meant 'no such pid' before pin) is bypassed", { skip: process.platform !== "darwin" }, () => {
+  // The hostile stub here mimics BSD ps's real "no such pid" signal
+  // (exit 1 with empty stdout and stderr). Before Class 3b this would
+  // have falsely classified the LIVE pid as process_gone via PATH shim.
+  // Now /bin/ps is invoked absolute: live pid → success.
   const stubDir = mkdtempSync(path.join(tmpdir(), "ps-stub-"));
   const stub = path.join(stubDir, "ps");
-  // BSD ps's actual no-such-process behavior: exit 1 with empty stdout AND empty stderr.
   writeFileSync(stub, "#!/bin/sh\nexit 1\n", "utf8");
   chmodSync(stub, 0o755);
   try {
     const r = runCaptureInHostileEnv({ PATH: stubDir });
-    assert.match(r.stdout, /^THREW:/, `expected throw, got: ${r.stdout}`);
-    assert.match(r.stdout, /process_gone/,
-      `silent exit-1 IS the genuine 'no such pid' signal — got: ${r.stdout}`);
+    assert.match(r.stdout, /^OK:/,
+      `live pid must be captured; absolute /bin/ps means PATH stub is irrelevant; got: ${r.stdout}`);
   } finally {
     rmSync(stubDir, { recursive: true, force: true });
   }
 });
 
-test("verifyPidInfo: capture_error reason maps through correctly", { skip: process.platform !== "darwin" }, () => {
-  // Run verifyPidInfo from a child with PATH pointing at an empty dir so
-  // capturePidInfo can't find ps. Result must be {match:false,
-  // reason:"capture_error"} — NOT process_gone (the pid is alive; we just
-  // couldn't ask ps).
+test("Class 3b regression: verifyPidInfo with empty PATH still succeeds via /bin/ps", { skip: process.platform !== "darwin" }, () => {
+  // Pre-Class 3b this test asserted reason: "capture_error" because
+  // PATH-stripped capturePidInfo couldn't find ps. With /bin/ps pinned
+  // absolute, capture succeeds for a live pid; verifyPidInfo then compares
+  // the bogus saved.starttime ("x") against the real one and reports
+  // starttime_mismatch. The point of this test is to prove the PATH
+  // stripping is no longer an attack surface — the result is a deterministic
+  // ownership-comparison outcome, not an "I can't tell" capture_error.
   const probe = `
     import { verifyPidInfo } from "${process.cwd()}/plugins/claude/scripts/lib/identity.mjs";
     const r = verifyPidInfo({ pid: ${LIVE_PID}, starttime: "x", argv0: "sleep" });
@@ -161,8 +171,8 @@ test("verifyPidInfo: capture_error reason maps through correctly", { skip: proce
     });
     const parsed = JSON.parse(res.stdout);
     assert.equal(parsed.match, false);
-    assert.equal(parsed.reason, "capture_error",
-      `must propagate as capture_error, not process_gone — got: ${res.stdout}`);
+    assert.equal(parsed.reason, "starttime_mismatch",
+      `with /bin/ps pinned, capture succeeds even on stripped PATH; verifyPidInfo then sees the bogus saved.starttime — got: ${res.stdout}`);
   } finally {
     rmSync(probeDir, { recursive: true, force: true });
     rmSync(emptyDir, { recursive: true, force: true });

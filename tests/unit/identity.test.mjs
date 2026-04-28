@@ -6,7 +6,7 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
+import cp, { spawn } from "node:child_process";
 import fs, { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
@@ -59,12 +59,35 @@ function withPlatformAndFs(platform, methods, fn) {
   }
 }
 
+// Monkey-patch child_process methods (e.g. spawnSync) for the duration of fn.
+// Required because Class 3b pins /bin/ps absolute, which makes PATH-shim
+// based ps mocking ineffective. syncBuiltinESMExports propagates the
+// mutation to identity.mjs's destructured `spawnSync` import.
+function withPlatformAndChild(platform, methods, fn) {
+  const originals = {};
+  for (const name of Object.keys(methods)) {
+    originals[name] = cp[name];
+    cp[name] = methods[name];
+  }
+  syncBuiltinESMExports();
+  setPlatform(platform);
+  try {
+    return fn();
+  } finally {
+    restorePlatform();
+    for (const [name, value] of Object.entries(originals)) {
+      cp[name] = value;
+    }
+    syncBuiltinESMExports();
+  }
+}
+
 function assertLinuxIdentityBranches(identity) {
   const afterComm = ["S", ...Array.from({ length: 18 }, (_, i) => String(i + 1)), "98765", "tail"];
   const stat = `123 (node worker) ${afterComm.join(" ")}`;
 
   withPlatformAndFs("linux", {
-    existsSync: (file) => file === "/proc/123/stat" || file === "/proc/123/cmdline",
+    existsSync: (file) => file === "/proc" || file === "/proc/123/stat" || file === "/proc/123/cmdline",
     readFileSync: (file) => {
       if (file === "/proc/123/stat") return stat;
       if (file === "/proc/123/cmdline") return "/usr/bin/node\0--worker";
@@ -79,7 +102,7 @@ function assertLinuxIdentityBranches(identity) {
   });
 
   withPlatformAndFs("linux", {
-    existsSync: (file) => file === "/proc/124/stat",
+    existsSync: (file) => file === "/proc" || file === "/proc/124/stat",
     readFileSync: (file) => {
       if (file === "/proc/124/stat") return stat.replace("123", "124");
       throw new Error(`unexpected file ${file}`);
@@ -92,8 +115,10 @@ function assertLinuxIdentityBranches(identity) {
     });
   });
 
+  // /proc mounted but per-pid stat missing → process_gone (existing
+  // semantics; the genuine "no such pid" signal on Linux).
   withPlatformAndFs("linux", {
-    existsSync: () => false,
+    existsSync: (file) => file === "/proc",
     readFileSync: () => {
       throw new Error("should not read missing proc files");
     },
@@ -104,6 +129,26 @@ function assertLinuxIdentityBranches(identity) {
       starttime: "x",
       argv0: "x",
     }), { match: false, reason: "process_gone" });
+  });
+
+  // Class 3 — /proc unmounted (containerized environment) → capture_error,
+  // NOT process_gone. Without this precondition, every existsSync of a
+  // per-pid stat returns false, falsely classifying LIVE pids as
+  // process_gone, which cmdCancel would then turn into already_dead exit 0.
+  withPlatformAndFs("linux", {
+    existsSync: () => false,
+    readFileSync: () => {
+      throw new Error("should not read when /proc is unmounted");
+    },
+  }, () => {
+    assert.throws(
+      () => identity.capturePidInfo(125),
+      /capture_error: \/proc not available on linux/,
+    );
+    assert.deepEqual(
+      identity.verifyPidInfo({ pid: 125, starttime: "x", argv0: "x" }),
+      { match: false, reason: "capture_error" },
+    );
   });
 
   // PR #21 review #3: malformed /proc output is a PARSE failure, not proof
@@ -286,16 +331,24 @@ test("verifyPidInfo: vanished process returns match:false process_gone (no throw
   });
 });
 
-test("capturePidInfo: Darwin ps output can be parsed through a PATH shim", () => {
-  const dir = mkdtempSync(path.join(tmpdir(), "identity-ps-"));
-  const originalPath = process.env.PATH;
-  try {
-    setPlatform("darwin");
-    const ps = path.join(dir, "ps");
-    writeFileSync(ps, "#!/bin/sh\necho 'Thu Apr 24 12:34:56 2026 /bin/fake-node'\n", "utf8");
-    chmodSync(ps, 0o755);
-    process.env.PATH = `${dir}${path.delimiter}${originalPath ?? ""}`;
-
+// Class 3b: capturePidInfo pins /bin/ps absolute, so PATH-shim mocks no
+// longer work. Mock spawnSync directly via withPlatformAndChild and assert
+// the parser handles its output. Also asserts the binary path used is
+// /bin/ps — the regression test for the pinned-absolute fix.
+test("capturePidInfo: Darwin ps output can be parsed through a spawnSync mock", () => {
+  let observedBinary = null;
+  let observedArgs = null;
+  withPlatformAndChild("darwin", {
+    spawnSync: (binary, args) => {
+      observedBinary = binary;
+      observedArgs = args;
+      return {
+        status: 0,
+        stdout: "Thu Apr 24 12:34:56 2026 /bin/fake-node\n",
+        stderr: "",
+      };
+    },
+  }, () => {
     assert.deepEqual(capturePidInfo(12345), {
       pid: 12345,
       starttime: "Thu Apr 24 12:34:56 2026",
@@ -311,57 +364,58 @@ test("capturePidInfo: Darwin ps output can be parsed through a PATH shim", () =>
       starttime: "Thu Apr 24 12:34:56 2026",
       argv0: "/bin/other",
     }), { match: false, reason: "argv0_mismatch" });
-  } finally {
-    restorePlatform();
-    process.env.PATH = originalPath;
-    rmSync(dir, { recursive: true, force: true });
-  }
+  });
+  assert.equal(observedBinary, "/bin/ps",
+    "Class 3b regression: capturePidInfo must invoke /bin/ps absolute (PATH-resolved 'ps' would let a stripped/shimmed PATH break ownership capture)");
+  assert.deepEqual(observedArgs, ["-o", "lstart=,comm=", "-p", "12345"]);
 });
 
 test("capturePidInfo: Darwin ps malformed output is treated as capture_error", () => {
   // PR #21 review #3: a hostile / buggy ps that returns truncated output is
   // a parse failure, NOT proof the pid is dead. capture_error keeps reconcile
   // and cmdCancel from acting on it.
-  const dir = mkdtempSync(path.join(tmpdir(), "identity-ps-bad-"));
-  const originalPath = process.env.PATH;
-  try {
-    setPlatform("darwin");
-    const ps = path.join(dir, "ps");
-    writeFileSync(ps, "#!/bin/sh\necho 'too short'\n", "utf8");
-    chmodSync(ps, 0o755);
-    process.env.PATH = `${dir}${path.delimiter}${originalPath ?? ""}`;
-
+  withPlatformAndChild("darwin", {
+    spawnSync: () => ({ status: 0, stdout: "too short\n", stderr: "" }),
+  }, () => {
     assert.throws(() => capturePidInfo(12345), /capture_error: ps output too short/);
-  } finally {
-    restorePlatform();
-    process.env.PATH = originalPath;
-    rmSync(dir, { recursive: true, force: true });
-  }
+  });
+});
+
+test("capturePidInfo: Darwin spawnSync error → capture_error (e.g. /bin/ps missing)", () => {
+  // If /bin/ps itself can't be exec'd (chroot, hardened sandbox), spawnSync
+  // sets result.error. The pid may well be alive — we just couldn't ask.
+  // capture_error → cmdCancel emits unverifiable + exit 2.
+  withPlatformAndChild("darwin", {
+    spawnSync: () => ({
+      error: Object.assign(new Error("ENOENT: no such file"), { code: "ENOENT" }),
+      status: null, stdout: "", stderr: "",
+    }),
+  }, () => {
+    assert.throws(() => capturePidInfo(12345), /capture_error: ENOENT/);
+  });
 });
 
 test("gemini identity mirrors job id semantics", () => {
   assert.match(GeminiIdentity.newJobId(), UUID_V4);
 });
 
-test("gemini capturePidInfo parses Darwin ps output through the same shim", () => {
-  const dir = mkdtempSync(path.join(tmpdir(), "gemini-identity-ps-"));
-  const originalPath = process.env.PATH;
-  try {
-    setPlatform("darwin");
-    const ps = path.join(dir, "ps");
-    writeFileSync(ps, "#!/bin/sh\necho 'Fri Apr 25 01:02:03 2026 /bin/gemini-fake'\n", "utf8");
-    chmodSync(ps, 0o755);
-    process.env.PATH = `${dir}${path.delimiter}${originalPath ?? ""}`;
-
+test("gemini capturePidInfo parses Darwin ps output through spawnSync mock", () => {
+  withPlatformAndChild("darwin", {
+    spawnSync: (binary) => {
+      assert.equal(binary, "/bin/ps",
+        "gemini side must also pin /bin/ps absolute");
+      return {
+        status: 0,
+        stdout: "Fri Apr 25 01:02:03 2026 /bin/gemini-fake\n",
+        stderr: "",
+      };
+    },
+  }, () => {
     const info = GeminiIdentity.capturePidInfo(56789);
     assert.equal(info.starttime, "Fri Apr 25 01:02:03 2026");
     assert.equal(info.argv0, "/bin/gemini-fake");
     assert.deepEqual(GeminiIdentity.verifyPidInfo(info), { match: true });
-  } finally {
-    restorePlatform();
-    process.env.PATH = originalPath;
-    rmSync(dir, { recursive: true, force: true });
-  }
+  });
 });
 
 test("capturePidInfo: Linux, unsupported platform, and verify error branches", () => {

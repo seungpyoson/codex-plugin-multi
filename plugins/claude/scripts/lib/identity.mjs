@@ -63,6 +63,15 @@ export function capturePidInfo(pid) {
 }
 
 function captureLinux(pid) {
+  // Class 3 — /proc precondition (Finding B from reviewer round 2).
+  // In a hardened container or sandbox where /proc is unmounted, EVERY
+  // existsSync('/proc/<pid>/stat') returns false. Treating that as
+  // process_gone would falsely reclassify LIVE pids as already_dead. The
+  // honest signal is "we can't see the process table" — capture_error,
+  // which cmdCancel maps to unverifiable + exit 2 (refused for safety).
+  if (!existsSync("/proc")) {
+    throw new Error(`capture_error: /proc not available on linux (sandbox or unmounted)`);
+  }
   const statPath = `/proc/${pid}/stat`;
   const cmdlinePath = `/proc/${pid}/cmdline`;
   // Genuine "no such pid" signal on Linux: /proc/<pid>/stat doesn't exist.
@@ -106,9 +115,15 @@ function captureLinux(pid) {
 }
 
 function captureDarwin(pid) {
+  // Class 3 — pin /bin/ps absolute. PATH-resolved "ps" let a stripped or
+  // shimmed PATH break ownership capture (silent stub on PATH could exit
+  // 1 with empty everything, mimicking real "no such pid" and
+  // mis-classifying LIVE pids as process_gone). /bin/ps is part of the
+  // macOS base install and stable; if it's missing or denied, spawnSync
+  // sets result.error → capture_error, which is the safe answer.
   // spawnSync (not execFileSync) so we can distinguish failure modes by
-  // result.status / result.error / result.stderr. Issue #22 sub-task 3.
-  const result = spawnSync("ps", ["-o", "lstart=,comm=", "-p", String(pid)], {
+  // result.status / result.error / result.stderr.
+  const result = spawnSync("/bin/ps", ["-o", "lstart=,comm=", "-p", String(pid)], {
     encoding: "utf8",
     stdio: ["ignore", "pipe", "pipe"],
   });
