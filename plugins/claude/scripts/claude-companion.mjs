@@ -32,6 +32,7 @@ import { parseArgs } from "./lib/args.mjs";
 import { configureState, getStateConfig, resolveJobsDir, resolveJobFile, writeJobFile, upsertJob, listJobs } from "./lib/state.mjs";
 import { resolveWorkspaceRoot } from "./lib/workspace.mjs";
 import { spawnClaude } from "./lib/claude.mjs";
+import { writeCancelMarker, consumeCancelMarker } from "./lib/cancel-marker.mjs";
 import { resolveProfile, resolveModelForProfile } from "./lib/mode-profiles.mjs";
 import { setupContainment } from "./lib/containment.mjs";
 import { populateScope } from "./lib/scope.mjs";
@@ -835,16 +836,11 @@ async function cmdCancel(rest) {
     process.exit(2);
   }
   // Issue #22 sub-task 2: write the cancel-requested marker BEFORE
-  // signaling. The worker's executeRun reads it during finalization and
-  // forces status=cancelled even if the target CLI traps SIGTERM and
-  // exits 0 with valid output. Marker is best-effort — if the write
-  // fails, the cancel still goes through, we just lose the override
-  // (worst case: SIGTERM-trap mis-classification reappears).
-  const markerPath = cancelMarkerPath(workspaceRoot, options.job);
+  // signaling. See lib/cancel-marker.mjs for the full SIGTERM-trap
+  // rationale. Best-effort — if the write fails the cancel still goes
+  // through; we just lose the lifecycle override.
   try {
-    mkdirSync(dirname(markerPath), { recursive: true });
-    writeFileSync(markerPath, new Date().toISOString() + "\n", { mode: 0o600, encoding: "utf8" });
-    try { chmodSync(markerPath, 0o600); } catch { /* best-effort on non-POSIX */ }
+    writeCancelMarker(workspaceRoot, options.job);
   } catch (e) {
     process.stderr.write(`claude-companion: warning: cancel marker write failed: ${e.message}\n`);
   }
@@ -856,24 +852,6 @@ async function cmdCancel(rest) {
     fail("signal_failed", e.message, { pid: pidInfo.pid, signal });
   }
   printJson({ ok: true, status: "signaled", signal, job_id: options.job, pid: pidInfo.pid });
-}
-
-// Issue #22 sub-task 2: cancel-requested marker. Same dir as prompt
-// sidecar; presence is the signal (file content is just a timestamp for
-// post-hoc debugging).
-function cancelMarkerPath(workspaceRoot, jobId) {
-  return `${resolveJobsDir(workspaceRoot)}/${jobId}/cancel-requested.flag`;
-}
-
-// Read-and-delete: returns true if the marker was present (signaling that
-// cmdCancel asked to cancel before the target exited). Best-effort — any
-// error during read/unlink is swallowed (the unlink loss is harmless; the
-// presence check has already happened).
-function consumeCancelMarker(workspaceRoot, jobId) {
-  const p = cancelMarkerPath(workspaceRoot, jobId);
-  if (!existsSync(p)) return false;
-  try { unlinkSync(p); } catch { /* already gone */ }
-  return true;
 }
 
 // ——— dispatch ———

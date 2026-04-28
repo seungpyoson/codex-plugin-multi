@@ -14,6 +14,7 @@ import { populateScope } from "./lib/scope.mjs";
 import { newJobId, verifyPidInfo } from "./lib/identity.mjs";
 import { buildJobRecord } from "./lib/job-record.mjs";
 import { spawnGemini } from "./lib/gemini.mjs";
+import { writeCancelMarker, consumeCancelMarker } from "./lib/cancel-marker.mjs";
 
 const PLUGIN_ROOT = resolvePath(dirname(fileURLToPath(import.meta.url)), "..");
 const MODELS_CONFIG_PATH = resolvePath(PLUGIN_ROOT, "config/models.json");
@@ -642,13 +643,9 @@ async function cmdCancel(rest) {
     });
     process.exit(2);
   }
-  // Issue #22 sub-task 2: write the cancel-requested marker BEFORE
-  // signaling. See claude-companion.mjs::cmdCancel for the full rationale.
-  const markerPath = cancelMarkerPath(workspaceRoot, options.job);
+  // Issue #22 sub-task 2: see lib/cancel-marker.mjs for SIGTERM-trap rationale.
   try {
-    mkdirSync(dirname(markerPath), { recursive: true });
-    writeFileSync(markerPath, new Date().toISOString() + "\n", { mode: 0o600, encoding: "utf8" });
-    try { chmodSync(markerPath, 0o600); } catch { /* best-effort on non-POSIX */ }
+    writeCancelMarker(workspaceRoot, options.job);
   } catch (e) {
     process.stderr.write(`gemini-companion: warning: cancel marker write failed: ${e.message}\n`);
   }
@@ -660,19 +657,6 @@ async function cmdCancel(rest) {
     fail("signal_failed", e.message, { pid: pidInfo.pid, signal });
   }
   printJson({ ok: true, status: "signaled", signal, job_id: options.job, pid: pidInfo.pid });
-}
-
-// Issue #22 sub-task 2: cancel-requested marker. Same shape as the Claude
-// helper (presence is the signal; payload is a timestamp for debugging).
-function cancelMarkerPath(workspaceRoot, jobId) {
-  return `${resolveJobsDir(workspaceRoot)}/${jobId}/cancel-requested.flag`;
-}
-
-function consumeCancelMarker(workspaceRoot, jobId) {
-  const p = cancelMarkerPath(workspaceRoot, jobId);
-  if (!existsSync(p)) return false;
-  try { unlinkSync(p); } catch { /* already gone */ }
-  return true;
 }
 
 async function main() {

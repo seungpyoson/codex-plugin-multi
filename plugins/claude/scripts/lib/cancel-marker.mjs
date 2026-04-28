@@ -1,0 +1,48 @@
+// cancel-marker.mjs — file-based sentinel that cmdCancel writes BEFORE
+// signaling the target. The worker's executeRun reads-and-deletes it
+// during finalization (consumeCancelMarker) and forces status=cancelled
+// regardless of exit_code/signal — closes the SIGTERM-trap loophole
+// where a target CLI that handles SIGTERM and exits 0 with valid output
+// would otherwise be mis-classified as `completed`. (Issue #22 sub-task 2.)
+//
+// This module is in the byte-identical lib pair (VERBATIM_FILES). Only
+// lifecycle-pure functions live here; target-specific concerns (warning
+// prefix, branding) stay at the caller.
+
+import { writeFileSync, mkdirSync, existsSync, chmodSync, unlinkSync } from "node:fs";
+import { dirname } from "node:path";
+
+import { resolveJobsDir } from "./state.mjs";
+
+/** Returns the absolute path of the cancel-requested marker for a job. */
+export function cancelMarkerPath(workspaceRoot, jobId) {
+  return `${resolveJobsDir(workspaceRoot)}/${jobId}/cancel-requested.flag`;
+}
+
+/**
+ * Writes the cancel-requested marker (mode 0600). Creates the parent dir
+ * if missing. Throws on failure — callers wrap in try/catch and emit a
+ * target-specific warning, since marker write is best-effort: if it
+ * fails, the SIGTERM still goes through and we lose only the override
+ * (worst case: SIGTERM-trap mis-classification reappears).
+ */
+export function writeCancelMarker(workspaceRoot, jobId) {
+  const p = cancelMarkerPath(workspaceRoot, jobId);
+  mkdirSync(dirname(p), { recursive: true });
+  writeFileSync(p, new Date().toISOString() + "\n", { mode: 0o600, encoding: "utf8" });
+  try { chmodSync(p, 0o600); } catch { /* best-effort on non-POSIX */ }
+  return p;
+}
+
+/**
+ * Read-and-delete. Returns true if the marker was present (signal to
+ * force status=cancelled). Any read/unlink error is swallowed — the
+ * presence check has already happened, so an unlink loss is harmless
+ * (the next run uses a different jobId).
+ */
+export function consumeCancelMarker(workspaceRoot, jobId) {
+  const p = cancelMarkerPath(workspaceRoot, jobId);
+  if (!existsSync(p)) return false;
+  try { unlinkSync(p); } catch { /* already gone */ }
+  return true;
+}

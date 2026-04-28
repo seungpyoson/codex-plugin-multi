@@ -24,6 +24,7 @@ const VERBATIM_FILES = [
   "git.mjs",
   "identity.mjs",
   "scope.mjs",
+  "cancel-marker.mjs",
 ];
 
 for (const file of VERBATIM_FILES) {
