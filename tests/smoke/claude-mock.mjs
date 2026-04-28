@@ -206,6 +206,18 @@ if (mutateRel) {
   fixture.t7_mutate_wrote = target;
 }
 
+// Issue #22 sub-task 2 oracle: `CLAUDE_MOCK_TRAP_SIGTERM=1` makes the mock
+// handle SIGTERM cleanly — it emits the fixture and exits 0, exactly like a
+// well-behaved CLI that traps signals to flush partial output. Without the
+// cancel-marker fix, classifyExecution would mis-report this as "completed"
+// even when the operator had asked for a cancel.
+if (process.env.CLAUDE_MOCK_TRAP_SIGTERM === "1") {
+  process.on("SIGTERM", () => {
+    process.stdout.write(JSON.stringify(fixture) + "\n");
+    process.exit(0);
+  });
+}
+
 // T7.6 test oracle: `CLAUDE_MOCK_DELAY_MS=<n>` — delay N ms before emitting
 // stdout + exiting. Exercises the `timeoutMs` branch in `spawnClaude`, which
 // has no regression coverage today (M6 reviewer flagged "timeoutMs never

@@ -108,6 +108,14 @@ function classifyExecution(execution) {
       error_message: null,
     };
   }
+  if (execution.status === "cancelled") {
+    // Issue #22 sub-task 2: see claude-side counterpart for rationale.
+    return {
+      status: "cancelled",
+      error_code: null,
+      error_message: null,
+    };
+  }
   if (execution.errorMessage) {
     return {
       status: "failed",

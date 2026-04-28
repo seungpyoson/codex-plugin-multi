@@ -108,6 +108,18 @@ function classifyExecution(execution) {
       error_message: null,
     };
   }
+  if (execution.status === "cancelled") {
+    // Issue #22 sub-task 2: the companion's executeRun saw a
+    // cancel-requested marker and is forcing the lifecycle status. Do NOT
+    // look at exitCode / parsed — a target CLI that traps SIGTERM and
+    // exits 0 with valid JSON would otherwise be mis-classified as
+    // completed, silently losing the operator's cancel intent.
+    return {
+      status: "cancelled",
+      error_code: null,
+      error_message: null,
+    };
+  }
   if (execution.errorMessage) {
     return {
       status: "failed",

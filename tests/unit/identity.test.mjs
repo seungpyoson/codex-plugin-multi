@@ -106,11 +106,14 @@ function assertLinuxIdentityBranches(identity) {
     }), { match: false, reason: "process_gone" });
   });
 
+  // PR #21 review #3: malformed /proc output is a PARSE failure, not proof
+  // of death. Distinguish via capture_error so reconcile/cmdCancel don't
+  // act on it as if the pid were gone.
   withPlatformAndFs("linux", {
     existsSync: () => true,
     readFileSync: () => "malformed",
   }, () => {
-    assert.throws(() => identity.capturePidInfo(126), /process_gone: malformed/);
+    assert.throws(() => identity.capturePidInfo(126), /capture_error: malformed/);
   });
 
   withPlatformAndFs("linux", {
@@ -120,7 +123,7 @@ function assertLinuxIdentityBranches(identity) {
       return "";
     },
   }, () => {
-    assert.throws(() => identity.capturePidInfo(127), /process_gone: no starttime/);
+    assert.throws(() => identity.capturePidInfo(127), /capture_error: no starttime/);
   });
 
   withPlatformAndFs("linux", {
@@ -130,16 +133,34 @@ function assertLinuxIdentityBranches(identity) {
       return "";
     },
   }, () => {
-    assert.throws(() => identity.capturePidInfo(127), /process_gone: no argv0\/comm/);
+    assert.throws(() => identity.capturePidInfo(127), /capture_error: no argv0\/comm/);
   });
 
+  // PR #21 review #3: EACCES on /proc/<pid>/stat is the sandbox / hidepid
+  // signal — the pid is likely alive; we just can't read its metadata.
+  // capture_error keeps reconcile/cmdCancel from treating this as death.
   withPlatformAndFs("linux", {
     existsSync: () => true,
     readFileSync: () => {
-      throw new Error("permission denied");
+      const e = new Error("permission denied");
+      e.code = "EACCES";
+      throw e;
     },
   }, () => {
-    assert.throws(() => identity.capturePidInfo(128), /process_gone: permission denied/);
+    assert.throws(() => identity.capturePidInfo(128), /capture_error: permission denied/);
+  });
+
+  // The race case: existsSync returned true, then readFileSync threw ENOENT
+  // (pid died between the two syscalls). This IS proof of death.
+  withPlatformAndFs("linux", {
+    existsSync: () => true,
+    readFileSync: () => {
+      const e = new Error("ENOENT: race");
+      e.code = "ENOENT";
+      throw e;
+    },
+  }, () => {
+    assert.throws(() => identity.capturePidInfo(128), /process_gone: ENOENT/);
   });
 
   withPlatformAndFs("win32", {}, () => {
@@ -191,8 +212,18 @@ test("capturePidInfo: invalid pid (-1) throws invalid_pid", () => {
 });
 
 test("capturePidInfo: non-existent pid throws process_gone", () => {
-  // PID 2^31 - 2 is effectively never a real pid.
-  assert.throws(() => capturePidInfo(2147483646), /process_gone/);
+  // Find an in-range pid that is genuinely not allocated. BSD ps's
+  // PID_MAX rejects very large pids with stderr ("process id too large")
+  // which classifies as capture_error (not death). Search the
+  // 50000–99000 range for a process that doesn't exist — that exercises
+  // the genuine "ps exit 1 with empty stderr" → process_gone path.
+  let missingPid = null;
+  for (let p = 50000; p < 99000; p += 1) {
+    try { process.kill(p, 0); }
+    catch (e) { if (e?.code === "ESRCH") { missingPid = p; break; } }
+  }
+  assert.ok(missingPid, "must find an in-range unallocated pid for the test");
+  assert.throws(() => capturePidInfo(missingPid), /process_gone/);
 });
 
 test("verifyPidInfo: self-compare returns {match: true}", SKIP_PS_UNDER_COVERAGE, () => {
@@ -287,7 +318,10 @@ test("capturePidInfo: Darwin ps output can be parsed through a PATH shim", () =>
   }
 });
 
-test("capturePidInfo: Darwin ps malformed output is treated as process_gone", () => {
+test("capturePidInfo: Darwin ps malformed output is treated as capture_error", () => {
+  // PR #21 review #3: a hostile / buggy ps that returns truncated output is
+  // a parse failure, NOT proof the pid is dead. capture_error keeps reconcile
+  // and cmdCancel from acting on it.
   const dir = mkdtempSync(path.join(tmpdir(), "identity-ps-bad-"));
   const originalPath = process.env.PATH;
   try {
@@ -297,7 +331,7 @@ test("capturePidInfo: Darwin ps malformed output is treated as process_gone", ()
     chmodSync(ps, 0o755);
     process.env.PATH = `${dir}${path.delimiter}${originalPath ?? ""}`;
 
-    assert.throws(() => capturePidInfo(12345), /process_gone: ps output too short/);
+    assert.throws(() => capturePidInfo(12345), /capture_error: ps output too short/);
   } finally {
     restorePlatform();
     process.env.PATH = originalPath;

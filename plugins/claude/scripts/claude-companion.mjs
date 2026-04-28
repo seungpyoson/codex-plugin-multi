@@ -455,6 +455,13 @@ async function executeRun(invocation, prompt, { foreground }) {
       }
     }
 
+    // Issue #22 sub-task 2: cancel-marker check. cmdCancel writes the
+    // marker BEFORE signaling so we can force status=cancelled even when
+    // the target CLI traps SIGTERM and exits 0 with valid output. The
+    // marker is per-job and best-effort — a missing file means "no cancel
+    // requested," not "couldn't read."
+    const cancelMarker = consumeCancelMarker(workspaceRoot, jobId);
+
     // ONE buildJobRecord call — spec §21.3.2 convergence. Foreground prints
     // what we persist; cmdResult reads the same file; skill renders the same
     // schema. No hand-assembly anywhere.
@@ -463,6 +470,7 @@ async function executeRun(invocation, prompt, { foreground }) {
       parsed: execution.parsed,
       pidInfo: execution.pidInfo,
       claudeSessionId: execution.claudeSessionId ?? null,
+      ...(cancelMarker ? { status: "cancelled" } : {}),
     }, mutations);
     writeJobFile(workspaceRoot, jobId, finalRecord);
     upsertJob(workspaceRoot, finalRecord);
@@ -794,6 +802,25 @@ async function cmdCancel(rest) {
       printJson({ ok: true, status: "already_dead", job_id: options.job, pid: pidInfo.pid });
       return;
     }
+    if (check.reason === "capture_error") {
+      // Issue #22 sub-task 3: ps/proc was unavailable (PATH stripped,
+      // sandbox-denied exec, hidepid mount). The pid may well be alive — we
+      // just couldn't verify ownership. Refusing to signal is the safe
+      // default; the distinct status lets operators tell "I can't ask"
+      // apart from "the pid was reused" (stale_pid).
+      process.stderr.write(
+        `claude-companion: unverifiable — could not verify pid ${pidInfo.pid} ` +
+        `ownership (ps/proc unavailable). Refusing to signal.\n`
+      );
+      printJson({
+        ok: false,
+        status: "unverifiable",
+        detail: "could not verify pid ownership; refusing to signal",
+        job_id: options.job,
+        pid: pidInfo.pid,
+      });
+      process.exit(2);
+    }
     // starttime_mismatch / argv0_mismatch / invalid — PID reuse or tampering.
     process.stderr.write(
       `claude-companion: stale_pid (${check.reason}) — refusing to signal pid ${pidInfo.pid}\n`
@@ -807,6 +834,21 @@ async function cmdCancel(rest) {
     });
     process.exit(2);
   }
+  // Issue #22 sub-task 2: write the cancel-requested marker BEFORE
+  // signaling. The worker's executeRun reads it during finalization and
+  // forces status=cancelled even if the target CLI traps SIGTERM and
+  // exits 0 with valid output. Marker is best-effort — if the write
+  // fails, the cancel still goes through, we just lose the override
+  // (worst case: SIGTERM-trap mis-classification reappears).
+  const markerPath = cancelMarkerPath(workspaceRoot, options.job);
+  try {
+    mkdirSync(`${resolveJobsDir(workspaceRoot)}/${options.job}`, { recursive: true });
+    writeFileSync(markerPath, new Date().toISOString() + "\n", { mode: 0o600, encoding: "utf8" });
+    try { chmodSync(markerPath, 0o600); } catch { /* best-effort on non-POSIX */ }
+  } catch (e) {
+    process.stderr.write(`claude-companion: warning: cancel marker write failed: ${e.message}\n`);
+  }
+
   const signal = options.force ? "SIGKILL" : "SIGTERM";
   try {
     process.kill(pidInfo.pid, signal);
@@ -814,6 +856,24 @@ async function cmdCancel(rest) {
     fail("signal_failed", e.message, { pid: pidInfo.pid, signal });
   }
   printJson({ ok: true, status: "signaled", signal, job_id: options.job, pid: pidInfo.pid });
+}
+
+// Issue #22 sub-task 2: cancel-requested marker. Same dir as prompt
+// sidecar; presence is the signal (file content is just a timestamp for
+// post-hoc debugging).
+function cancelMarkerPath(workspaceRoot, jobId) {
+  return `${resolveJobsDir(workspaceRoot)}/${jobId}/cancel-requested.flag`;
+}
+
+// Read-and-delete: returns true if the marker was present (signaling that
+// cmdCancel asked to cancel before the target exited). Best-effort — any
+// error during read/unlink is swallowed (the unlink loss is harmless; the
+// presence check has already happened).
+function consumeCancelMarker(workspaceRoot, jobId) {
+  const p = cancelMarkerPath(workspaceRoot, jobId);
+  if (!existsSync(p)) return false;
+  try { unlinkSync(p); } catch { /* already gone */ }
+  return true;
 }
 
 // ——— dispatch ———

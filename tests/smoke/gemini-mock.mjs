@@ -70,6 +70,18 @@ if (assertFileRel) {
   fixture.t7_saw_file = includeDirs.some((dir) => existsSync(resolve(dir, assertFileRel)));
 }
 
+// Issue #22 sub-task 2 oracle: `GEMINI_MOCK_TRAP_SIGTERM=1` makes the mock
+// handle SIGTERM cleanly — emits the fixture and exits 0, exactly like a
+// well-behaved CLI that traps signals. Without the cancel-marker fix,
+// classifyExecution would mis-report this as "completed" even when the
+// operator had asked for a cancel.
+if (process.env.GEMINI_MOCK_TRAP_SIGTERM === "1") {
+  process.on("SIGTERM", () => {
+    process.stdout.write(JSON.stringify(fixture) + "\n");
+    process.exit(0);
+  });
+}
+
 const delayMs = Number(process.env.GEMINI_MOCK_DELAY_MS ?? "0");
 if (Number.isFinite(delayMs) && delayMs > 0) {
   setTimeout(() => {

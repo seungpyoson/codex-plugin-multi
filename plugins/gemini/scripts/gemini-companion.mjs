@@ -11,7 +11,7 @@ import { resolveWorkspaceRoot } from "./lib/workspace.mjs";
 import { resolveProfile, resolveModelForProfile } from "./lib/mode-profiles.mjs";
 import { setupContainment } from "./lib/containment.mjs";
 import { populateScope } from "./lib/scope.mjs";
-import { newJobId } from "./lib/identity.mjs";
+import { newJobId, verifyPidInfo } from "./lib/identity.mjs";
 import { buildJobRecord } from "./lib/job-record.mjs";
 import { spawnGemini } from "./lib/gemini.mjs";
 
@@ -333,11 +333,17 @@ async function executeRun(invocation, prompt, { foreground }) {
       }
     }
 
+    // Issue #22 sub-task 2: cancel-marker check. cmdCancel writes the
+    // marker BEFORE signaling so finalization can force status=cancelled
+    // even when the target traps SIGTERM and exits 0 with valid output.
+    const cancelMarker = consumeCancelMarker(workspaceRoot, jobId);
+
     finalRecord = buildJobRecord(invocation, {
       exitCode: execution.exitCode,
       parsed: execution.parsed,
       pidInfo: execution.pidInfo,
       geminiSessionId: execution.geminiSessionId,
+      ...(cancelMarker ? { status: "cancelled" } : {}),
     }, mutations);
     writeJobFile(workspaceRoot, jobId, finalRecord);
     upsertJob(workspaceRoot, finalRecord);
@@ -552,6 +558,123 @@ async function cmdPing(rest) {
   }
 }
 
+// ——— subcommand: cancel (signal a running job) ———
+//
+// Mirror of claude-companion.mjs's cmdCancel. Issue #22 sub-task 1: prior
+// to this commit the dispatch routed `cancel` to fail("not_implemented"),
+// so users had no way to cancel a Gemini background job through the
+// documented interface.
+//
+// §21.1: signal target is resolved through `pid_info = {pid, starttime,
+// argv0}`, never through pid alone. The ps/proc re-read is both the
+// liveness check AND the ownership proof — if starttime or argv0 drift,
+// we refuse to signal (`stale_pid`) because the pid has been reused by
+// an unrelated process.
+async function cmdCancel(rest) {
+  const { options } = parseArgs(rest, {
+    valueOptions: ["job", "cwd"],
+    booleanOptions: ["force"],
+  });
+  if (!options.job) fail("bad_args", "--job <id> is required");
+  const cwd = options.cwd ?? process.cwd();
+  const workspaceRoot = resolveWorkspaceRoot(cwd);
+  const jobs = listJobs(workspaceRoot);
+  const job = jobs.find((j) => j.id === options.job);
+  if (!job) fail("not_found", `no job with id ${options.job}`);
+  if (job.status !== "running") {
+    printJson({ ok: true, status: "already_terminal", job_status: job.status, job_id: options.job });
+    return;
+  }
+  const pidInfo = job.pid_info ?? null;
+  if (!pidInfo || !Number.isInteger(pidInfo.pid)) {
+    printJson({
+      ok: false,
+      status: "no_pid_info",
+      detail: "job has no pid_info; cannot safely signal (legacy record or race)",
+      job_id: options.job,
+    });
+    return;
+  }
+  if (pidInfo.capture_error || !pidInfo.starttime || !pidInfo.argv0) {
+    printJson({
+      ok: false,
+      status: "no_pid_info",
+      detail: "job has pid but no complete ownership proof; refusing to signal",
+      job_id: options.job,
+      pid: pidInfo.pid,
+      capture_error: pidInfo.capture_error ?? null,
+    });
+    return;
+  }
+  const check = verifyPidInfo(pidInfo);
+  if (!check.match) {
+    if (check.reason === "process_gone") {
+      printJson({ ok: true, status: "already_dead", job_id: options.job, pid: pidInfo.pid });
+      return;
+    }
+    if (check.reason === "capture_error") {
+      // Issue #22 sub-task 3: ps/proc was unavailable (PATH stripped,
+      // sandbox-denied exec, hidepid mount). Refusing to signal is safe;
+      // the distinct status lets operators tell "I can't ask" apart from
+      // "the pid was reused".
+      process.stderr.write(
+        `gemini-companion: unverifiable — could not verify pid ${pidInfo.pid} ` +
+        `ownership (ps/proc unavailable). Refusing to signal.\n`
+      );
+      printJson({
+        ok: false,
+        status: "unverifiable",
+        detail: "could not verify pid ownership; refusing to signal",
+        job_id: options.job,
+        pid: pidInfo.pid,
+      });
+      process.exit(2);
+    }
+    process.stderr.write(
+      `gemini-companion: stale_pid (${check.reason}) — refusing to signal pid ${pidInfo.pid}\n`
+    );
+    printJson({
+      ok: false,
+      status: "stale_pid",
+      reason: check.reason,
+      job_id: options.job,
+      pid: pidInfo.pid,
+    });
+    process.exit(2);
+  }
+  // Issue #22 sub-task 2: write the cancel-requested marker BEFORE
+  // signaling. See claude-companion.mjs::cmdCancel for the full rationale.
+  const markerPath = cancelMarkerPath(workspaceRoot, options.job);
+  try {
+    mkdirSync(`${resolveJobsDir(workspaceRoot)}/${options.job}`, { recursive: true });
+    writeFileSync(markerPath, new Date().toISOString() + "\n", { mode: 0o600, encoding: "utf8" });
+    try { chmodSync(markerPath, 0o600); } catch { /* best-effort on non-POSIX */ }
+  } catch (e) {
+    process.stderr.write(`gemini-companion: warning: cancel marker write failed: ${e.message}\n`);
+  }
+
+  const signal = options.force ? "SIGKILL" : "SIGTERM";
+  try {
+    process.kill(pidInfo.pid, signal);
+  } catch (e) {
+    fail("signal_failed", e.message, { pid: pidInfo.pid, signal });
+  }
+  printJson({ ok: true, status: "signaled", signal, job_id: options.job, pid: pidInfo.pid });
+}
+
+// Issue #22 sub-task 2: cancel-requested marker. Same shape as the Claude
+// helper (presence is the signal; payload is a timestamp for debugging).
+function cancelMarkerPath(workspaceRoot, jobId) {
+  return `${resolveJobsDir(workspaceRoot)}/${jobId}/cancel-requested.flag`;
+}
+
+function consumeCancelMarker(workspaceRoot, jobId) {
+  const p = cancelMarkerPath(workspaceRoot, jobId);
+  if (!existsSync(p)) return false;
+  try { unlinkSync(p); } catch { /* already gone */ }
+  return true;
+}
+
 async function main() {
   const argv = process.argv.slice(2);
   const sub = argv[0];
@@ -563,7 +686,7 @@ async function main() {
     case "status": return cmdStatus(rest);
     case "result": return cmdResult(rest);
     case "continue": return cmdContinue(rest);
-    case "cancel":
+    case "cancel": return cmdCancel(rest);
     case "doctor":
       return fail("not_implemented", `'${sub}' lands in a later milestone`);
     case "--help":

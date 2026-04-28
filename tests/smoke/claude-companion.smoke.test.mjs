@@ -381,6 +381,70 @@ test("run --background: active job is visible as running and can be cancelled", 
   }
 });
 
+test("cancel: SIGTERM-trapping target classifies as cancelled, not completed (issue #22 sub-task 2)", async () => {
+  // Without the cancel-marker fix, a target that handles SIGTERM and exits
+  // 0 with valid JSON output is mis-classified as `completed` — operator's
+  // cancel intent is silently lost. With the marker, cmdCancel writes a
+  // sentinel before signaling and finalization forces status=cancelled.
+  const cwd = mkdtempSync(path.join(tmpdir(), "smoke-trap-cancel-"));
+  const { stdout, status, stderr, dataDir } = runCompanion(
+    ["run", "--mode=rescue", "--background", "--model", "claude-haiku-4-5-20251001",
+     "--cwd", cwd, "--", "long task"],
+    { cwd, env: { CLAUDE_MOCK_DELAY_MS: "5000", CLAUDE_MOCK_TRAP_SIGTERM: "1" } },
+  );
+  try {
+    assert.equal(status, 0, stderr);
+    const launched = JSON.parse(stdout);
+    // Wait until the job is visible as running (mock has spawned, pid_info written).
+    const runDeadline = Date.now() + 5000;
+    let running = null;
+    while (Date.now() < runDeadline && !running) {
+      const sr = spawnSync("node", [
+        path.join(REPO_ROOT, "plugins/claude/scripts/claude-companion.mjs"),
+        "status", "--cwd", cwd,
+      ], { cwd, encoding: "utf8", env: { ...process.env, CLAUDE_PLUGIN_DATA: dataDir } });
+      const so = JSON.parse(sr.stdout);
+      running = so.jobs.find((j) => j.id === launched.job_id && j.status === "running");
+      if (!running) await new Promise((r) => setTimeout(r, 100));
+    }
+    assert.ok(running, "background job never visible as running");
+
+    // Cancel — the trapping mock will exit 0 with valid JSON, signal=null.
+    const cancelRes = spawnSync("node", [
+      path.join(REPO_ROOT, "plugins/claude/scripts/claude-companion.mjs"),
+      "cancel", "--job", launched.job_id, "--cwd", cwd,
+    ], { cwd, encoding: "utf8", env: { ...process.env, CLAUDE_PLUGIN_DATA: dataDir } });
+    assert.equal(cancelRes.status, 0, cancelRes.stderr);
+
+    // Wait for the worker to finalize. Allow 10s — the mock has a 5s
+    // natural-delay fallback in case SIGTERM trapping doesn't engage.
+    const termDeadline = Date.now() + 10000;
+    let terminal = null;
+    let lastStatusSeen = null;
+    while (Date.now() < termDeadline && !terminal) {
+      // Use --all because origin/main's cmdStatus default filter is
+      // running|completed|failed — it would hide the cancelled record we
+      // want to assert on. (PR #21's status UX fix expands the default
+      // filter; this test deliberately doesn't depend on it.)
+      const sr = spawnSync("node", [
+        path.join(REPO_ROOT, "plugins/claude/scripts/claude-companion.mjs"),
+        "status", "--all", "--cwd", cwd,
+      ], { cwd, encoding: "utf8", env: { ...process.env, CLAUDE_PLUGIN_DATA: dataDir } });
+      const so = JSON.parse(sr.stdout);
+      const seen = so.jobs.find((j) => j.id === launched.job_id);
+      lastStatusSeen = seen?.status ?? "(missing)";
+      terminal = so.jobs.find((j) => j.id === launched.job_id && j.status !== "running");
+      if (!terminal) await new Promise((r) => setTimeout(r, 100));
+    }
+    assert.ok(terminal, `job did not finalize after cancel; last status seen=${lastStatusSeen}`);
+    assert.equal(terminal.status, "cancelled",
+      `cancel-marker must force status=cancelled even when target trapped SIGTERM and exited 0; got ${JSON.stringify(terminal)}`);
+  } finally {
+    cleanup(dataDir);
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
 test("continue --job: resumes a prior session via --resume", () => {
   const cwd = mkdtempSync(path.join(tmpdir(), "smoke-continue-"));
   const dataDir = mkdtempSync(path.join(tmpdir(), "continue-data-"));

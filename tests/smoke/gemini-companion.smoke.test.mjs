@@ -200,6 +200,157 @@ test("gemini rescue background: active job appears in default status", async () 
   }
 });
 
+test("gemini cancel: signals a running background job (issue #22 sub-task 1)", async () => {
+  // Mirror of the Claude cancel smoke. Pre-#22, gemini-companion's
+  // dispatch routed `cancel` to fail("not_implemented") so users had no
+  // way to cancel a Gemini background job through the documented surface.
+  const cwd = mkdtempSync(path.join(tmpdir(), "gemini-bg-cancel-cwd-"));
+  seedMinimalRepo(cwd);
+  const { stdout, status, stderr, dataDir } = runCompanion(
+    ["run", "--mode=rescue", "--background", "--model", "gemini-3-flash-preview",
+     "--cwd", cwd, "--", "long background task"],
+    { cwd, env: { GEMINI_MOCK_DELAY_MS: "5000" } },
+  );
+  try {
+    assert.equal(status, 0, stderr);
+    const launched = JSON.parse(stdout);
+    const deadline = Date.now() + 5000;
+    let running = null;
+    while (Date.now() < deadline && !running) {
+      const statusRes = spawnSync("node", [COMPANION, "status", "--cwd", cwd], {
+        cwd, encoding: "utf8",
+        env: { ...process.env, GEMINI_PLUGIN_DATA: dataDir },
+      });
+      assert.equal(statusRes.status, 0, statusRes.stderr);
+      const statusObj = JSON.parse(statusRes.stdout);
+      running = statusObj.jobs.find((j) => j.id === launched.job_id && j.status === "running");
+      if (!running) await new Promise((r) => setTimeout(r, 100));
+    }
+    assert.ok(running, "background gemini job never became visible as running");
+    assert.ok(running.pid_info?.pid, "running gemini job must carry pid_info for safe cancel");
+
+    const cancelRes = spawnSync("node", [
+      COMPANION, "cancel", "--job", launched.job_id, "--cwd", cwd,
+    ], {
+      cwd, encoding: "utf8",
+      env: { ...process.env, GEMINI_PLUGIN_DATA: dataDir },
+    });
+    // The two acceptable outcomes: signaled (signal landed) or no_pid_info
+    // (mock spawn raced and pid capture failed). Either is correct; what
+    // MUST NOT happen is an "not_implemented" error from the dispatch.
+    assert.notEqual(cancelRes.status, 1, `gemini cancel must be implemented; stderr=${cancelRes.stderr}`);
+    const cancel = JSON.parse(cancelRes.stdout);
+    assert.notEqual(cancel.error, "not_implemented",
+      `gemini cancel must not fall through to not_implemented; got ${JSON.stringify(cancel)}`);
+    if (running.pid_info.capture_error) {
+      assert.equal(cancel.status, "no_pid_info");
+    } else {
+      assert.equal(cancel.status, "signaled");
+      assert.equal(cancel.signal, "SIGTERM");
+      assert.equal(cancel.pid, running.pid_info.pid);
+    }
+  } finally {
+    rmTree(dataDir);
+    rmTree(cwd);
+  }
+});
+
+test("gemini cancel: already_terminal for a completed job (issue #22 sub-task 1)", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "gemini-cancel-terminal-cwd-"));
+  seedMinimalRepo(cwd);
+  const runRes = runCompanion(
+    ["run", "--mode=rescue", "--foreground", "--model", "gemini-3-flash-preview",
+     "--cwd", cwd, "--", "quick task"],
+    { cwd },
+  );
+  try {
+    assert.equal(runRes.status, 0, runRes.stderr);
+    const completed = JSON.parse(runRes.stdout);
+    const cancelRes = spawnSync("node", [
+      COMPANION, "cancel", "--job", completed.job_id, "--cwd", cwd,
+    ], {
+      cwd, encoding: "utf8",
+      env: { ...process.env, GEMINI_PLUGIN_DATA: runRes.dataDir },
+    });
+    assert.equal(cancelRes.status, 0, cancelRes.stderr);
+    const cancel = JSON.parse(cancelRes.stdout);
+    assert.equal(cancel.status, "already_terminal");
+    assert.equal(cancel.job_status, "completed");
+  } finally {
+    rmTree(runRes.dataDir);
+    rmTree(cwd);
+  }
+});
+
+test("gemini cancel: SIGTERM-trapping target classifies as cancelled, not completed (issue #22 sub-task 2)", async () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "gemini-trap-cancel-cwd-"));
+  seedMinimalRepo(cwd);
+  const { stdout, status, stderr, dataDir } = runCompanion(
+    ["run", "--mode=rescue", "--background", "--model", "gemini-3-flash-preview",
+     "--cwd", cwd, "--", "long task"],
+    { cwd, env: { GEMINI_MOCK_DELAY_MS: "5000", GEMINI_MOCK_TRAP_SIGTERM: "1" } },
+  );
+  try {
+    assert.equal(status, 0, stderr);
+    const launched = JSON.parse(stdout);
+    const runDeadline = Date.now() + 5000;
+    let running = null;
+    while (Date.now() < runDeadline && !running) {
+      const sr = spawnSync("node", [COMPANION, "status", "--cwd", cwd], {
+        cwd, encoding: "utf8", env: { ...process.env, GEMINI_PLUGIN_DATA: dataDir },
+      });
+      const so = JSON.parse(sr.stdout);
+      running = so.jobs.find((j) => j.id === launched.job_id && j.status === "running");
+      if (!running) await new Promise((r) => setTimeout(r, 100));
+    }
+    assert.ok(running, "background gemini job never visible as running");
+
+    const cancelRes = spawnSync("node", [
+      COMPANION, "cancel", "--job", launched.job_id, "--cwd", cwd,
+    ], { cwd, encoding: "utf8", env: { ...process.env, GEMINI_PLUGIN_DATA: dataDir } });
+    assert.equal(cancelRes.status, 0, cancelRes.stderr);
+
+    // 10s allows the mock's 5s natural-delay fallback to fire too.
+    const termDeadline = Date.now() + 10000;
+    let terminal = null;
+    while (Date.now() < termDeadline && !terminal) {
+      // --all so the cancelled record (filtered by default cmdStatus on
+      // origin/main) is visible to the polling assertion.
+      const sr = spawnSync("node", [COMPANION, "status", "--all", "--cwd", cwd], {
+        cwd, encoding: "utf8", env: { ...process.env, GEMINI_PLUGIN_DATA: dataDir },
+      });
+      const so = JSON.parse(sr.stdout);
+      terminal = so.jobs.find((j) => j.id === launched.job_id && j.status !== "running");
+      if (!terminal) await new Promise((r) => setTimeout(r, 100));
+    }
+    assert.ok(terminal, "job did not finalize after cancel");
+    assert.equal(terminal.status, "cancelled",
+      `cancel-marker must force status=cancelled even when target trapped SIGTERM; got ${JSON.stringify(terminal)}`);
+  } finally {
+    rmTree(dataDir);
+    rmTree(cwd);
+  }
+});
+
+test("gemini cancel: not_found for an unknown job", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "gemini-cancel-notfound-cwd-"));
+  const dataDir = mkdtempSync(path.join(tmpdir(), "gemini-cancel-notfound-data-"));
+  try {
+    const cancelRes = spawnSync("node", [
+      COMPANION, "cancel", "--job", "00000000-0000-4000-8000-000000000999", "--cwd", cwd,
+    ], {
+      cwd, encoding: "utf8",
+      env: { ...process.env, GEMINI_PLUGIN_DATA: dataDir },
+    });
+    assert.notEqual(cancelRes.status, 0);
+    const cancel = JSON.parse(cancelRes.stdout);
+    assert.equal(cancel.error, "not_found");
+  } finally {
+    rmTree(dataDir);
+    rmTree(cwd);
+  }
+});
+
 test("gemini background worker spawn failure writes failed JobRecord instead of launched", () => {
   const cwd = mkdtempSync(path.join(tmpdir(), "gemini-bg-spawn-fail-runner-"));
   const missingCwd = path.join(cwd, "missing-cwd");
