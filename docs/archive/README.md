@@ -11,5 +11,5 @@ Current docs live at:
 - `../release-verification.md`
 - `../superpowers/specs/2026-04-23-codex-plugin-multi-design.md`
 
-Archived files may mention old branch names, milestone labels, acceptance
-criteria, or commands that were superseded before release.
+Archived files may mention old branch names, milestone labels, license terms,
+acceptance criteria, or commands that were superseded before release.
