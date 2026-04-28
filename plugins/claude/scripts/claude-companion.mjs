@@ -842,7 +842,7 @@ async function cmdCancel(rest) {
   // (worst case: SIGTERM-trap mis-classification reappears).
   const markerPath = cancelMarkerPath(workspaceRoot, options.job);
   try {
-    mkdirSync(`${resolveJobsDir(workspaceRoot)}/${options.job}`, { recursive: true });
+    mkdirSync(dirname(markerPath), { recursive: true });
     writeFileSync(markerPath, new Date().toISOString() + "\n", { mode: 0o600, encoding: "utf8" });
     try { chmodSync(markerPath, 0o600); } catch { /* best-effort on non-POSIX */ }
   } catch (e) {

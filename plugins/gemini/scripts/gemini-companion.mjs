@@ -646,7 +646,7 @@ async function cmdCancel(rest) {
   // signaling. See claude-companion.mjs::cmdCancel for the full rationale.
   const markerPath = cancelMarkerPath(workspaceRoot, options.job);
   try {
-    mkdirSync(`${resolveJobsDir(workspaceRoot)}/${options.job}`, { recursive: true });
+    mkdirSync(dirname(markerPath), { recursive: true });
     writeFileSync(markerPath, new Date().toISOString() + "\n", { mode: 0o600, encoding: "utf8" });
     try { chmodSync(markerPath, 0o600); } catch { /* best-effort on non-POSIX */ }
   } catch (e) {
