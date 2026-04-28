@@ -16,6 +16,7 @@ import {
   newJobId,
   capturePidInfo,
   verifyPidInfo,
+  attachPidCapture,
 } from "../../plugins/claude/scripts/lib/identity.mjs";
 import * as GeminiIdentity from "../../plugins/gemini/scripts/lib/identity.mjs";
 
@@ -428,3 +429,77 @@ test("capturePidInfo: Linux, unsupported platform, and verify error branches", (
 test("gemini capturePidInfo: Linux, unsupported platform, and verify error branches", () => {
   assertLinuxIdentityBranches(GeminiIdentity);
 });
+
+// Class 5a / Finding H: the existing #25 dispatcher tests only assert that
+// onSpawn fires asynchronously (after spawn() returns). A regressed
+// implementation that captures pid_info SYNCHRONOUSLY but defers the
+// callback would still pass those tests — yet the captured argv0 would
+// be the PARENT's (the test runner = "node"), not the child binary.
+//
+// This test catches that class of regression by spawning a child with a
+// DIFFERENT binary from the parent (sleep, not node) and asserting the
+// captured argv0 reflects the child binary post-execve, not the parent's.
+test(
+  "attachPidCapture: captured argv0 reflects child binary post-execve, not parent's argv (Class 5a)",
+  { skip: !["linux", "darwin"].includes(process.platform)
+    ? `unsupported platform: ${process.platform}`
+    : !fs.existsSync("/bin/sleep")
+      ? "/bin/sleep not available"
+      : process.env.CODEX_PLUGIN_COVERAGE === "1" && process.platform === "darwin"
+        ? "macOS sandboxing can deny ps under coverage; covered by Linux CI run"
+        : false,
+  },
+  () => new Promise((resolve, reject) => {
+    const child = spawn("/bin/sleep", ["10"], { stdio: "ignore" });
+    let cleanupDone = false;
+    const cleanup = () => {
+      if (cleanupDone) return;
+      cleanupDone = true;
+      try { process.kill(child.pid, "SIGKILL"); } catch { /* already gone */ }
+    };
+
+    const getPidInfo = attachPidCapture(child, () => {
+      try {
+        const info = getPidInfo();
+        assert.ok(info, "pidInfo must be populated after 'spawn' fires");
+        // capture_error here means /proc denied or ps failed — skip the
+        // argv0 assertion in that case (Class 3 paths cover capture_error
+        // semantics directly).
+        if (info.capture_error) {
+          cleanup();
+          resolve();
+          return;
+        }
+        const argv0 = String(info.argv0 ?? "");
+        // Regression assertion: parent is `node` (the test runner). If
+        // capture happened pre-execve, argv0 would contain "node". After
+        // execve completes, argv0 reflects /bin/sleep on Linux
+        // (/proc/<pid>/cmdline = "/bin/sleep") or "sleep" on Darwin
+        // (ps -o comm=).
+        assert.ok(
+          /sleep/.test(argv0),
+          `Class 5a regression: argv0 ${JSON.stringify(argv0)} must contain "sleep" (the child binary). A pre-execve capture would record the parent's argv (e.g. "node ${path.basename(process.argv[1] ?? "")}").`,
+        );
+        assert.ok(
+          !/^node\b/.test(argv0),
+          `argv0 ${JSON.stringify(argv0)} must NOT start with "node" — that would mean attachPidCapture read the parent's cmdline before the child execve completed.`,
+        );
+        cleanup();
+        resolve();
+      } catch (e) {
+        cleanup();
+        reject(e);
+      }
+    });
+
+    child.once("error", (err) => {
+      cleanup();
+      reject(err);
+    });
+    // Hard timeout in case 'spawn' never fires.
+    setTimeout(() => {
+      cleanup();
+      reject(new Error("attachPidCapture: 'spawn' callback never fired within 5s"));
+    }, 5000).unref();
+  }),
+);
