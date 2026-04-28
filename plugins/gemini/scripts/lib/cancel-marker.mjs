@@ -12,10 +12,18 @@
 import { writeFileSync, mkdirSync, existsSync, chmodSync, unlinkSync } from "node:fs";
 import { dirname } from "node:path";
 
-import { resolveJobsDir } from "./state.mjs";
+import { resolveJobsDir, assertSafeJobId } from "./state.mjs";
+
+// All public functions validate jobId BEFORE any path concat. The state
+// module also enforces this for writeJobFile / resolveJobFile / state.json
+// upserts, so under normal flow listJobs only returns UUIDs. The boundary
+// validation here is defense in depth: if state.json is tampered (or a
+// future code path bypasses state.mjs validation), callers like cmdCancel
+// still cannot use a traversal-laden jobId to escape the jobs dir.
 
 /** Returns the absolute path of the cancel-requested marker for a job. */
 export function cancelMarkerPath(workspaceRoot, jobId) {
+  assertSafeJobId(jobId);
   return `${resolveJobsDir(workspaceRoot)}/${jobId}/cancel-requested.flag`;
 }
 
