@@ -371,6 +371,9 @@ test("run --background: active job is visible as running and can be cancelled", 
       assert.equal(cancelRes.status, 2,
         `capture_error path must exit 2 (refused, unverifiable); stderr=${cancelRes.stderr}`);
       assert.equal(cancel.status, "no_pid_info");
+      // No pid_info → no signal sent → job will run to natural completion
+      // (or remain running until timeout). We just need it to reach SOME
+      // terminal state so the test doesn't leak background workers.
       const terminalDeadline = Date.now() + 7000;
       let terminal = null;
       while (Date.now() < terminalDeadline && !terminal) {
@@ -403,6 +406,44 @@ test("run --background: active job is visible as running and can be cancelled", 
         exitOk,
         `unexpected (status, exit) pair (${JSON.stringify(cancel.status)}, ${cancelRes.status}); stderr=${cancelRes.stderr}`,
       );
+      if (cancel.status === "signaled") {
+        // #16 follow-up 2: a real signal-driven cancel must produce a
+        // `cancelled` terminal record, not a `failed` one. Poll until the
+        // worker finalizes, then assert the persisted status.
+        const terminalDeadline = Date.now() + 7000;
+        let terminalRecord = null;
+        while (Date.now() < terminalDeadline && !terminalRecord) {
+          const statusRes = spawnSync("node", [
+            path.join(REPO_ROOT, "plugins/claude/scripts/claude-companion.mjs"),
+            "status", "--cwd", cwd, "--all",
+          ], {
+            cwd, encoding: "utf8",
+            env: { ...process.env, CLAUDE_PLUGIN_DATA: dataDir },
+          });
+          assert.equal(statusRes.status, 0, statusRes.stderr);
+          const statusObj = JSON.parse(statusRes.stdout);
+          terminalRecord = statusObj.jobs.find((j) =>
+            j.id === launched.job_id && j.status !== "running" && j.status !== "queued");
+          if (!terminalRecord) await new Promise((r) => setTimeout(r, 100));
+        }
+        assert.ok(terminalRecord, "cancelled background job did not reach a terminal state");
+        assert.equal(terminalRecord.status, "cancelled",
+          `signal-driven cancel must classify as cancelled; got ${terminalRecord.status}`);
+        assert.equal(terminalRecord.error_code, null,
+          "cancelled is a clean terminal state — no error_code");
+        // Default status (no --all) must still surface the cancelled job
+        // because cancelled is continuable (#16 follow-up 4).
+        const defaultStatusRes = spawnSync("node", [
+          path.join(REPO_ROOT, "plugins/claude/scripts/claude-companion.mjs"),
+          "status", "--cwd", cwd,
+        ], {
+          cwd, encoding: "utf8",
+          env: { ...process.env, CLAUDE_PLUGIN_DATA: dataDir },
+        });
+        const defaultStatus = JSON.parse(defaultStatusRes.stdout);
+        assert.ok(defaultStatus.jobs.some((j) => j.id === launched.job_id && j.status === "cancelled"),
+          "default status (no --all) must include cancelled jobs");
+      }
     }
   } finally {
     cleanup(dataDir);
