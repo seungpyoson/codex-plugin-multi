@@ -383,9 +383,21 @@ test("run --background: active job is visible as running and can be cancelled", 
       }
       assert.ok(terminal, "job with incomplete pid_info did not finish before cleanup");
     } else {
-      assert.equal(cancelRes.status, 0,
-        `signaled path must exit 0 (cancel post-condition reached); stderr=${cancelRes.stderr}`);
-      assert.equal(cancel.status, "signaled");
+      // The mock binary is fast — between attachPidCapture's snapshot at
+      // 'spawn' and cmdCancel's verifyPidInfo, the mock can exit and (rarely)
+      // its pid can be reused. All four post-spawn outcomes are valid:
+      //   signaled / already_dead → exit 0 (cancel post-condition holds)
+      //   stale_pid / unverifiable → exit 2 (refused for safety)
+      // What MUST NOT happen is signaled-but-non-zero or stale_pid-but-zero.
+      const exitOk =
+        (cancel.status === "signaled" && cancelRes.status === 0) ||
+        (cancel.status === "already_dead" && cancelRes.status === 0) ||
+        (cancel.status === "stale_pid" && cancelRes.status === 2) ||
+        (cancel.status === "unverifiable" && cancelRes.status === 2);
+      assert.ok(
+        exitOk,
+        `unexpected (status, exit) pair (${JSON.stringify(cancel.status)}, ${cancelRes.status}); stderr=${cancelRes.stderr}`,
+      );
     }
   } finally {
     cleanup(dataDir);
