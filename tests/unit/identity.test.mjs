@@ -7,9 +7,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import cp, { spawn } from "node:child_process";
-import fs, { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import fs from "node:fs";
 import { syncBuiltinESMExports } from "node:module";
-import { tmpdir } from "node:os";
 import path from "node:path";
 
 import {
@@ -27,6 +26,14 @@ const SKIP_PS_UNDER_COVERAGE = {
     ? "macOS sandboxing can deny ps; shimmed Darwin tests cover parser and ownership comparison"
     : false,
 };
+let attachPidCaptureSkipReason = false;
+if (!["linux", "darwin"].includes(process.platform)) {
+  attachPidCaptureSkipReason = `unsupported platform: ${process.platform}`;
+} else if (!fs.existsSync("/bin/sleep")) {
+  attachPidCaptureSkipReason = "/bin/sleep not available";
+} else if (process.env.CODEX_PLUGIN_COVERAGE === "1" && process.platform === "darwin") {
+  attachPidCaptureSkipReason = "macOS sandboxing can deny ps under coverage; covered by Linux CI run";
+}
 const ORIGINAL_PLATFORM_DESCRIPTOR = Object.getOwnPropertyDescriptor(process, "platform");
 
 function setPlatform(value) {
@@ -257,7 +264,7 @@ test("capturePidInfo: invalid pid (-1) throws invalid_pid", () => {
   assert.throws(() => capturePidInfo(-1), /invalid_pid/);
 });
 
-test("capturePidInfo: non-existent pid throws process_gone", () => {
+test("capturePidInfo: non-existent pid throws process_gone", SKIP_PS_UNDER_COVERAGE, () => {
   // Find an in-range pid that is genuinely not allocated. BSD ps's
   // PID_MAX rejects very large pids with stderr ("process id too large")
   // which classifies as capture_error (not death). Search the
@@ -294,7 +301,7 @@ test("verifyPidInfo: argv0 mismatch returns match:false argv0_mismatch", SKIP_PS
   assert.equal(check.reason, "argv0_mismatch");
 });
 
-test("verifyPidInfo: vanished process returns match:false process_gone (no throw)", () => {
+test("verifyPidInfo: vanished process returns match:false process_gone (no throw)", SKIP_PS_UNDER_COVERAGE, () => {
   // Spawn a trivial child, let it exit, then verify.
   return new Promise((resolve, reject) => {
     const child = spawn(process.execPath, ["-e", "process.exit(0)"], {
@@ -441,14 +448,7 @@ test("gemini capturePidInfo: Linux, unsupported platform, and verify error branc
 // captured argv0 reflects the child binary post-execve, not the parent's.
 test(
   "attachPidCapture: captured argv0 reflects child binary post-execve, not parent's argv (Class 5a)",
-  { skip: !["linux", "darwin"].includes(process.platform)
-    ? `unsupported platform: ${process.platform}`
-    : !fs.existsSync("/bin/sleep")
-      ? "/bin/sleep not available"
-      : process.env.CODEX_PLUGIN_COVERAGE === "1" && process.platform === "darwin"
-        ? "macOS sandboxing can deny ps under coverage; covered by Linux CI run"
-        : false,
-  },
+  { skip: attachPidCaptureSkipReason },
   () => new Promise((resolve, reject) => {
     const child = spawn("/bin/sleep", ["10"], { stdio: "ignore" });
     let cleanupDone = false;

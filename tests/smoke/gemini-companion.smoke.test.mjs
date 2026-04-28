@@ -496,7 +496,11 @@ test("gemini cancel: already_terminal for a completed job (issue #22 sub-task 1)
   }
 });
 
-test("gemini cancel: SIGTERM-trapping target classifies as cancelled, not completed (issue #22 sub-task 2)", async () => {
+test("gemini cancel: SIGTERM-trapping target classifies as cancelled, not completed (issue #22 sub-task 2)", {
+  skip: process.env.CODEX_PLUGIN_COVERAGE === "1" && process.platform === "darwin"
+    ? "NODE_V8_COVERAGE can make macOS sandbox deny ps; regular npm test covers SIGTERM-trap cancel"
+    : false,
+}, async () => {
   const cwd = mkdtempSync(path.join(tmpdir(), "gemini-trap-cancel-cwd-"));
   seedMinimalRepo(cwd);
   const { stdout, status, stderr, dataDir } = runCompanion(

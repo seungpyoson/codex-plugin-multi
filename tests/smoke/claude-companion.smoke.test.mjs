@@ -405,7 +405,11 @@ test("run --background: active job is visible as running and can be cancelled", 
   }
 });
 
-test("cancel: SIGTERM-trapping target classifies as cancelled, not completed (issue #22 sub-task 2)", async () => {
+test("cancel: SIGTERM-trapping target classifies as cancelled, not completed (issue #22 sub-task 2)", {
+  skip: process.env.CODEX_PLUGIN_COVERAGE === "1" && process.platform === "darwin"
+    ? "NODE_V8_COVERAGE can make macOS sandbox deny ps; regular npm test covers SIGTERM-trap cancel"
+    : false,
+}, async () => {
   // Without the cancel-marker fix, a target that handles SIGTERM and exits
   // 0 with valid JSON output is mis-classified as `completed` — operator's
   // cancel intent is silently lost. With the marker, cmdCancel writes a

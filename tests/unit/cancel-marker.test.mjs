@@ -5,7 +5,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import path from "node:path";
-import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync, mkdirSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 
 import {
@@ -128,7 +128,7 @@ test("cancelMarkerPath: rejects path-traversal jobIds with assertSafeJobId", () 
       "foo/bar",
       "..",
       "",
-      "valid-id" + String.fromCharCode(0) + "null-byte",
+      "valid-id" + String.fromCodePoint(0) + "null-byte",
       ".dotfile-id",
     ];
     for (const id of tampered) {

@@ -30,11 +30,11 @@ const CANCEL_ERRORS = [
 
 function quotedValuesForField(markdown, field) {
   const values = new Set();
-  const pattern = new RegExp(`${field}:\\s*"([^"]+)"`, "g");
+  const pattern = new RegExp(String.raw`${field}:\s*"([^"]+)"`, "g");
   for (const match of markdown.matchAll(pattern)) {
     values.add(match[1]);
   }
-  return [...values].sort();
+  return [...values].sort((a, b) => a.localeCompare(b));
 }
 
 test("claude cancel docs reject foreground cancel and direct users to Ctrl+C", () => {
@@ -59,12 +59,12 @@ test("cancel command docs enumerate the runtime status and error contracts", () 
 
     assert.deepEqual(
       quotedValuesForField(command, "status"),
-      [...CANCEL_STATUSES].sort(),
+      [...CANCEL_STATUSES].sort((a, b) => a.localeCompare(b)),
       `${target}-cancel.md must enumerate exactly the status values cmdCancel emits`,
     );
     assert.deepEqual(
       quotedValuesForField(command, "error"),
-      [...CANCEL_ERRORS].sort(),
+      [...CANCEL_ERRORS].sort((a, b) => a.localeCompare(b)),
       `${target}-cancel.md must enumerate exactly the error values cmdCancel emits`,
     );
     assert.match(command, /Exit `0`[\s\S]*signaled[\s\S]*already_terminal[\s\S]*already_dead[\s\S]*cancel_pending/);

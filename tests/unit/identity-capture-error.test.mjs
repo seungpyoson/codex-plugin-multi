@@ -21,21 +21,31 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync, chmodSync } from "node:fs";
+import { mkdtempSync, writeFileSync, rmSync, chmodSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
-import { capturePidInfo, verifyPidInfo } from "../../plugins/claude/scripts/lib/identity.mjs";
+import { capturePidInfo } from "../../plugins/claude/scripts/lib/identity.mjs";
 
 // We need a long-lived child whose pid we can probe under various hostile
 // environments. Spawn `sleep 60` and tear it down at end-of-suite.
 let LIVE_PID;
 let LIVE_CHILD;
+let HOST_PS_SKIP_REASON = null;
 test("setup — spawn a live child to probe", async () => {
   LIVE_CHILD = spawn("sleep", ["60"], { stdio: "ignore", detached: true });
   await new Promise((res) => LIVE_CHILD.once("spawn", res));
   LIVE_PID = LIVE_CHILD.pid;
   assert.ok(Number.isInteger(LIVE_PID), "live child must have a pid");
+  try {
+    capturePidInfo(LIVE_PID);
+  } catch (e) {
+    if (process.platform === "darwin" && String(e.message).includes("capture_error")) {
+      HOST_PS_SKIP_REASON = `macOS sandbox denied /bin/ps (${e.message})`;
+      return;
+    }
+    throw e;
+  }
 });
 
 // On Darwin, capturePidInfo invokes ps internally with the parent process's
@@ -44,7 +54,11 @@ test("setup — spawn a live child to probe", async () => {
 // the result. This test runs inside the same process — it's a sanity check
 // that the live-pid happy path returns a record (regression guard for the
 // "every error is process_gone" wrapper).
-test("capturePidInfo: live pid in normal env returns {pid, starttime, argv0}", () => {
+test("capturePidInfo: live pid in normal env returns {pid, starttime, argv0}", (t) => {
+  if (HOST_PS_SKIP_REASON) {
+    t.skip(HOST_PS_SKIP_REASON);
+    return;
+  }
   const info = capturePidInfo(LIVE_PID);
   assert.equal(info.pid, LIVE_PID);
   assert.ok(info.starttime, "starttime present");
@@ -86,7 +100,11 @@ function runCaptureInHostileEnv(envOverrides) {
 // preserved here as Class 3b regression guards: each proves the pin
 // holds (capture succeeds despite hostile PATH).
 
-test("Class 3b: empty PATH does not break capture (pinned /bin/ps)", { skip: process.platform !== "darwin" }, () => {
+test("Class 3b: empty PATH does not break capture (pinned /bin/ps)", { skip: process.platform !== "darwin" }, (t) => {
+  if (HOST_PS_SKIP_REASON) {
+    t.skip(HOST_PS_SKIP_REASON);
+    return;
+  }
   const emptyDir = mkdtempSync(path.join(tmpdir(), "empty-path-"));
   try {
     const r = runCaptureInHostileEnv({ PATH: emptyDir });
@@ -101,7 +119,11 @@ test("Class 3b: empty PATH does not break capture (pinned /bin/ps)", { skip: pro
   }
 });
 
-test("Class 3b: hostile ps stub on PATH (exit 1 + permission denied) is bypassed", { skip: process.platform !== "darwin" }, () => {
+test("Class 3b: hostile ps stub on PATH (exit 1 + permission denied) is bypassed", { skip: process.platform !== "darwin" }, (t) => {
+  if (HOST_PS_SKIP_REASON) {
+    t.skip(HOST_PS_SKIP_REASON);
+    return;
+  }
   const stubDir = mkdtempSync(path.join(tmpdir(), "ps-stub-"));
   const stub = path.join(stubDir, "ps");
   writeFileSync(stub, "#!/bin/sh\necho 'ps: operation not permitted' >&2\nexit 1\n", "utf8");
@@ -115,7 +137,11 @@ test("Class 3b: hostile ps stub on PATH (exit 1 + permission denied) is bypassed
   }
 });
 
-test("Class 3b: hostile ps stub on PATH (exit 0 + empty stdout) is bypassed", { skip: process.platform !== "darwin" }, () => {
+test("Class 3b: hostile ps stub on PATH (exit 0 + empty stdout) is bypassed", { skip: process.platform !== "darwin" }, (t) => {
+  if (HOST_PS_SKIP_REASON) {
+    t.skip(HOST_PS_SKIP_REASON);
+    return;
+  }
   const stubDir = mkdtempSync(path.join(tmpdir(), "ps-stub-"));
   const stub = path.join(stubDir, "ps");
   writeFileSync(stub, "#!/bin/sh\nexit 0\n", "utf8");
@@ -129,7 +155,11 @@ test("Class 3b: hostile ps stub on PATH (exit 0 + empty stdout) is bypassed", { 
   }
 });
 
-test("Class 3b: silent-exit-1 stub on PATH (would have meant 'no such pid' before pin) is bypassed", { skip: process.platform !== "darwin" }, () => {
+test("Class 3b: silent-exit-1 stub on PATH (would have meant 'no such pid' before pin) is bypassed", { skip: process.platform !== "darwin" }, (t) => {
+  if (HOST_PS_SKIP_REASON) {
+    t.skip(HOST_PS_SKIP_REASON);
+    return;
+  }
   // The hostile stub here mimics BSD ps's real "no such pid" signal
   // (exit 1 with empty stdout and stderr). Before Class 3b this would
   // have falsely classified the LIVE pid as process_gone via PATH shim.
@@ -147,7 +177,11 @@ test("Class 3b: silent-exit-1 stub on PATH (would have meant 'no such pid' befor
   }
 });
 
-test("Class 3b regression: verifyPidInfo with empty PATH still succeeds via /bin/ps", { skip: process.platform !== "darwin" }, () => {
+test("Class 3b regression: verifyPidInfo with empty PATH still succeeds via /bin/ps", { skip: process.platform !== "darwin" }, (t) => {
+  if (HOST_PS_SKIP_REASON) {
+    t.skip(HOST_PS_SKIP_REASON);
+    return;
+  }
   // Pre-Class 3b this test asserted reason: "capture_error" because
   // PATH-stripped capturePidInfo couldn't find ps. With /bin/ps pinned
   // absolute, capture succeeds for a live pid; verifyPidInfo then compares

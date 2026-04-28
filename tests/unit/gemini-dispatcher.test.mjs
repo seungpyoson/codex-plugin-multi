@@ -214,7 +214,7 @@ test("spawnGemini: onSpawn fires asynchronously via 'spawn' event, not synchrono
   // proving onSpawn does not fire in the synchronous executor turn.
   const dir = mkdtempSync(path.join(tmpdir(), "gemini-spawn-async-"));
   try {
-    const bin = writeExecutable(dir, "gemini-ok.mjs", `#!/usr/bin/env node
+    const bin = writeExecutable(dir, "gemini-ok.mjs", String.raw`#!/usr/bin/env node
 const chunks = [];
 process.stdin.on("data", (c) => chunks.push(c));
 process.stdin.on("end", () => {
