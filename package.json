@@ -21,6 +21,7 @@
     "lint": "node scripts/ci/check-manifests.mjs",
     "lint:self-test": "node scripts/ci/check-manifests-self-test.mjs",
     "test": "node scripts/ci/run-tests.mjs",
+    "test:full": "CODEX_PLUGIN_FULL_TESTS=1 node scripts/ci/run-tests.mjs",
     "test:coverage": "node scripts/ci/check-coverage.mjs",
     "smoke:claude": "node --test --test-reporter=spec tests/smoke/claude-companion.smoke.test.mjs tests/smoke/identity-resume-chain.smoke.test.mjs",
     "smoke:gemini": "node --test --test-reporter=spec tests/smoke/gemini-companion.smoke.test.mjs",

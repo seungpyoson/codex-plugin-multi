@@ -280,6 +280,11 @@ test("T7.4 / §21.3.2: prompt sidecar is deleted after worker consumes it", asyn
     // After the worker consumed the prompt, the sidecar must be gone.
     assert.equal(existsSync(path.join(jobDir, "prompt.txt")), false,
       "§21.3.1: prompt sidecar must be deleted after worker consumes it");
+    // Settle: meta.json flips to terminal BEFORE upsertJob writes state.json
+    // and BEFORE writeSidecar emits stdout.log/stderr.log. Without this
+    // wait, the recursive cleanup races the worker's tail writes and Linux
+    // CI flakes with `ENOTEMPTY` on rmdir of state/<subdir>/.
+    await new Promise((r) => setTimeout(r, 250));
   } finally {
     cleanup(dataDir);
     rmSync(cwd, { recursive: true, force: true });

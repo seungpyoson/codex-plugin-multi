@@ -129,6 +129,44 @@ test("buildJobRecord: queued/pre-run state (no execution)", () => {
   assert.equal(rec.error_message, null);
 });
 
+test("buildJobRecord: status=cancelled short-circuit forces lifecycle override (issue #22 sub-task 2)", () => {
+  // The companion's cancel-marker path passes status="cancelled" so a
+  // target CLI that traps SIGTERM and exits 0 with valid JSON output is
+  // still classified as cancelled — without this short-circuit,
+  // classifyExecution would see a successful exit and emit "completed",
+  // silently losing the operator's cancel intent.
+  const rec = buildJobRecord(makeInvocation(), {
+    status: "cancelled",
+    exitCode: 0,
+    parsed: { ok: true, result: "partial output before SIGTERM trap exit",
+      structured: null, denials: [], costUsd: 0.001 },
+    pidInfo: makePidInfo(),
+    claudeSessionId: CLAUDE_UUID,
+  }, []);
+  assert.equal(rec.status, "cancelled");
+  assert.equal(rec.error_code, null);
+  assert.equal(rec.error_message, null);
+  assert.equal(rec.exit_code, 0,
+    "exit_code is preserved as captured even when status is forced to cancelled");
+  // result is also preserved — the partial output the target managed to
+  // emit before its SIGTERM-handler exited is still the truth on disk.
+  assert.equal(rec.result, "partial output before SIGTERM trap exit");
+});
+
+test("gemini buildJobRecord: status=cancelled mirror", () => {
+  const rec = buildGeminiJobRecord(
+    makeInvocation({ target: "gemini", binary: "gemini" }),
+    {
+      status: "cancelled",
+      exitCode: 0,
+      parsed: { ok: true, result: "x", structured: null, denials: [] },
+      pidInfo: makePidInfo(),
+      geminiSessionId: GEMINI_UUID,
+    }, []);
+  assert.equal(rec.status, "cancelled");
+  assert.equal(rec.error_code, null);
+});
+
 test("buildJobRecord: running state preserves pid_info and has no end time", () => {
   const pidInfo = { pid: 12345, starttime: "Thu Apr 24 12:00:00 2026", argv0: "claude" };
   const rec = buildJobRecord(makeInvocation(), {
