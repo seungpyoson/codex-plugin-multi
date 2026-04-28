@@ -24,17 +24,37 @@ const GIT_TEST_TIMEOUT_MS = 15000;
 
 // Spawns `git` synchronously with a clean env (same discipline as the
 // production code). Throws on non-zero exit so test failures are loud.
+// #16 follow-up 9: env scrub now covers every GIT_* var that could
+// hijack a fixture call into the caller checkout (GIT_NAMESPACE,
+// GIT_CEILING_DIRECTORIES, GIT_DISCOVERY_ACROSS_FILESYSTEM, ...).
+// spawnSync's cwd is now pinned too so git's process inherits the
+// fixture dir, not the test runner's cwd.
+function fixtureEnv() {
+  const env = { ...process.env };
+  for (const k of [
+    "GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_COMMON_DIR", "GIT_PREFIX",
+    "GIT_NAMESPACE", "GIT_CEILING_DIRECTORIES", "GIT_DISCOVERY_ACROSS_FILESYSTEM",
+    "GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+    "GIT_ATTR_SOURCE", "GIT_REPLACE_REF_BASE", "GIT_SHALLOW_FILE",
+    "GIT_CONFIG_PARAMETERS", "GIT_CONFIG_COUNT",
+  ]) {
+    delete env[k];
+  }
+  for (const k of Object.keys(env)) {
+    if (/^GIT_CONFIG_(KEY|VALUE)_\d+$/.test(k)) delete env[k];
+  }
+  env.GIT_CONFIG_NOSYSTEM = "1";
+  env.GIT_AUTHOR_NAME = "t"; env.GIT_AUTHOR_EMAIL = "t@t";
+  env.GIT_COMMITTER_NAME = "t"; env.GIT_COMMITTER_EMAIL = "t@t";
+  return env;
+}
+
 function git(cwd, ...args) {
   const res = spawnSync("git", ["-C", cwd, "-c", "core.hooksPath=/dev/null", ...args], {
+    cwd,
     encoding: "utf8",
     timeout: GIT_TEST_TIMEOUT_MS,
-    env: {
-      ...process.env,
-      GIT_CONFIG_NOSYSTEM: "1",
-      GIT_DIR: undefined, GIT_WORK_TREE: undefined, GIT_INDEX_FILE: undefined,
-      GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@t",
-      GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@t",
-    },
+    env: fixtureEnv(),
   });
   if (res.error) {
     throw new Error(`git ${args.join(" ")} failed: ${res.error.message}`);
@@ -47,16 +67,11 @@ function git(cwd, ...args) {
 
 function gitStdin(cwd, input, ...args) {
   const res = spawnSync("git", ["-C", cwd, "-c", "core.hooksPath=/dev/null", ...args], {
+    cwd,
     encoding: "utf8",
     input,
     timeout: GIT_TEST_TIMEOUT_MS,
-    env: {
-      ...process.env,
-      GIT_CONFIG_NOSYSTEM: "1",
-      GIT_DIR: undefined, GIT_WORK_TREE: undefined, GIT_INDEX_FILE: undefined,
-      GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@t",
-      GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@t",
-    },
+    env: fixtureEnv(),
   });
   if (res.error) {
     throw new Error(`git ${args.join(" ")} failed: ${res.error.message}`);
@@ -266,7 +281,7 @@ test("populateScope scope=working-tree: excludes gitignored files (privacy)", ()
 
     // Sanity: confirm git agrees those files are ignored.
     const ignoreCheck = spawnSync("git", ["-C", src, "check-ignore", "-v", ".env", "ignored.log"], {
-      encoding: "utf8", timeout: GIT_TEST_TIMEOUT_MS,
+      cwd: src, encoding: "utf8", timeout: GIT_TEST_TIMEOUT_MS, env: fixtureEnv(),
     });
     assert.equal(ignoreCheck.status, 0, `expected git check-ignore to confirm ignore: ${ignoreCheck.stderr}`);
 
@@ -1029,14 +1044,13 @@ test("populateScope scope=staged: rejects unmerged index entries", () => {
     git(src, "commit", "-qm", "right");
 
     const merge = spawnSync("git", ["-C", src, "-c", "core.hooksPath=/dev/null", "merge", "left"], {
+      cwd: src,
       encoding: "utf8",
       timeout: GIT_TEST_TIMEOUT_MS,
       env: {
-        ...process.env,
-        GIT_CONFIG_NOSYSTEM: "1",
-        GIT_DIR: undefined, GIT_WORK_TREE: undefined, GIT_INDEX_FILE: undefined,
-        GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@t",
-        GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@t",
+        ...fixtureEnv(),
+        // Preserved comment for the explicit two-author setup; legacy fields
+        // kept for clarity and to match the older format used elsewhere.
       },
     });
     if (merge.error) throw new Error(`git merge left failed: ${merge.error.message}`);

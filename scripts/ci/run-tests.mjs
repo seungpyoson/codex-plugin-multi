@@ -18,10 +18,12 @@ const TEST_DIRS = [
 // Directories never walked — avoid picking up fixture deps or generated trees.
 const SKIP_DIRS = new Set(["node_modules", "fixtures", ".git", "coverage"]);
 
-// scope.test.mjs has 155 real-git tests (~140s on a typical laptop), which
-// blows the 60s pre-commit `npm test` window. Default `npm test` therefore
-// skips it; CI sets CODEX_PLUGIN_FULL_TESTS=1 to include it. Run
-// `npm run test:full` locally before opening a PR.
+// #16 follow-up 9 (test isolation, secondary): the pre-commit gate runs
+// `npm test` with a 60s timeout, but tests/unit/scope.test.mjs alone has
+// 155 real-git tests that take ~140s on a typical laptop. Default
+// `npm test` therefore skips scope.test.mjs; CI sets
+// CODEX_PLUGIN_FULL_TESTS=1 to include it. Run `npm run test:full`
+// locally before opening a PR.
 const SLOW_TEST_BASENAMES = new Set([
   "scope.test.mjs",
 ]);
@@ -56,9 +58,32 @@ if (files.length === 0) {
 }
 
 const rel = files.map((f) => relative(REPO_ROOT, f));
+
+// #16 follow-up 9 (test isolation): scrub inherited GIT_* env vars before
+// the test runner spawns its child. If a developer runs `npm test` from a
+// pre-commit hook context, GIT_DIR / GIT_WORK_TREE / GIT_INDEX_FILE point at
+// the caller checkout. Test fixtures that spawn `git init` then
+// `git checkout -qb feature` would otherwise be hijacked into mutating the
+// caller checkout's branch + creating fixture commits there. Defense in
+// depth: per-test-fixture helpers also scrub, but stripping at the runner
+// boundary protects every legacy callsite at once.
+const cleanEnv = { ...process.env };
+for (const k of [
+  "GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_COMMON_DIR", "GIT_PREFIX",
+  "GIT_NAMESPACE", "GIT_CEILING_DIRECTORIES", "GIT_DISCOVERY_ACROSS_FILESYSTEM",
+  "GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+  "GIT_ATTR_SOURCE", "GIT_REPLACE_REF_BASE", "GIT_SHALLOW_FILE",
+  "GIT_CONFIG_PARAMETERS", "GIT_CONFIG_COUNT",
+]) {
+  delete cleanEnv[k];
+}
+for (const k of Object.keys(cleanEnv)) {
+  if (/^GIT_CONFIG_(KEY|VALUE)_\d+$/.test(k)) delete cleanEnv[k];
+}
+
 const res = spawnSync(
   "node",
   ["--test", "--test-reporter=spec", ...rel],
-  { cwd: REPO_ROOT, stdio: "inherit" }
+  { cwd: REPO_ROOT, stdio: "inherit", env: cleanEnv }
 );
 process.exit(res.status ?? 1);

@@ -12,6 +12,8 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { fixtureGitEnv, fixtureSeedRepo } from "../helpers/fixture-git.mjs";
+
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const COMPANION = path.join(REPO_ROOT, "plugins/claude/scripts/claude-companion.mjs");
 const MOCK = path.join(REPO_ROOT, "tests/smoke/claude-mock.mjs");
@@ -54,13 +56,11 @@ function readOnlyJobRecord(dataDir) {
 
 // T7.2: review mode's profile has scope=working-tree, which populates via
 // `git ls-files` + copy. Non-git cwds can no longer run review (spec §21.4).
-// Helper seeds a minimal git repo so the tests can focus on the companion
-// contract, not setup ceremony.
+// Uses fixtureSeedRepo (#16 follow-up 9) so a stale GIT_DIR /
+// GIT_WORK_TREE / GIT_INDEX_FILE in the parent process cannot hijack the
+// fixture into mutating the caller checkout.
 function seedMinimalRepo(cwd) {
-  spawnSync("git", ["init", "-q", "-b", "main"], { cwd });
-  spawnSync("bash", ["-c",
-    "echo seed > seed.txt && git add seed.txt && " +
-    "git -c core.hooksPath=/dev/null -c user.email=t@t -c user.name=t commit -q -m seed"], { cwd });
+  fixtureSeedRepo(cwd);
 }
 
 test("run --mode=review --foreground: emits JobRecord with status=completed", () => {
@@ -763,12 +763,12 @@ test("run --foreground: meta-write conflict produces fallback failed record, no 
 // down M6 finding #4 (review can't see dirty tree).
 
 // Helper: seed a git repo with one committed file, then modify it uncommitted.
+// Same isolation discipline as seedMinimalRepo (#16 follow-up 9).
 function seedDirtyRepo(cwd) {
-  spawnSync("git", ["init", "-q", "-b", "main"], { cwd });
-  spawnSync("bash", ["-c",
-    "echo original > seed.txt && git add seed.txt && " +
-    "git -c core.hooksPath=/dev/null -c user.email=t@t -c user.name=t commit -q -m seed && " +
-    "echo modified > seed.txt"], { cwd });
+  fixtureSeedRepo(cwd, { fileName: "seed.txt", fileContents: "original\n" });
+  spawnSync("bash", ["-c", "printf modified > seed.txt"], {
+    cwd, encoding: "utf8", env: fixtureGitEnv(),
+  });
 }
 
 // Helper: read stdout.log sidecar (contains the mock's full fixture JSON
@@ -791,13 +791,15 @@ function readStdoutLog(dataDir, jobId) {
 test("adversarial-review scope=branch-diff: only changed files appear in --add-dir", () => {
   const cwd = mkdtempSync(path.join(tmpdir(), "smoke-adv-"));
   // main: has old.md. feature: adds foo.md.
-  spawnSync("git", ["init", "-q", "-b", "main"], { cwd });
+  // #16 follow-up 9: sanitized env so the parent process's GIT_DIR cannot
+  // hijack `git checkout -qb feature` into the caller checkout.
+  spawnSync("git", ["init", "-q", "-b", "main"], { cwd, env: fixtureGitEnv() });
   spawnSync("bash", ["-c",
     "echo old > old.md && git add old.md && " +
-    "git -c core.hooksPath=/dev/null -c user.email=t@t -c user.name=t commit -q -m main && " +
+    "git -c core.hooksPath=/dev/null commit -q -m main && " +
     "git checkout -qb feature && " +
     "echo foo > foo.md && git add foo.md && " +
-    "git -c core.hooksPath=/dev/null -c user.email=t@t -c user.name=t commit -q -m feature"], { cwd });
+    "git -c core.hooksPath=/dev/null commit -q -m feature"], { cwd, env: fixtureGitEnv() });
   const { stdout, status, stderr, dataDir } = runCompanion(
     ["run", "--mode=adversarial-review", "--foreground",
      "--model", "claude-haiku-4-5-20251001",
@@ -910,10 +912,7 @@ test("rescue runs in sourceCwd (containment=none): --add-dir === cwd", () => {
 
 test("review worktree disposed by profile default (dispose_default=true)", () => {
   const cwd = mkdtempSync(path.join(tmpdir(), "smoke-dispose-"));
-  spawnSync("git", ["init", "-q", "-b", "main"], { cwd });
-  spawnSync("bash", ["-c",
-    "echo seed > seed && git add seed && " +
-    "git -c core.hooksPath=/dev/null -c user.email=t@t -c user.name=t commit -q -m seed"], { cwd });
+  fixtureSeedRepo(cwd, { fileName: "seed", fileContents: "seed\n" });
   // ASSERT_FILE env triggers the mock to record t7_add_dir into its fixture
   // (which the companion persists into stdout.log). Without it the mock has
   // no reason to echo the path back and the test can't inspect it.
@@ -940,8 +939,7 @@ test("review worktree disposed by profile default (dispose_default=true)", () =>
 test("run: pre/post git-status sidecars written in a git cwd", () => {
   const cwd = mkdtempSync(path.join(tmpdir(), "smoke-git-"));
   // Make a minimal git repo with a seed file so git status has meaningful output.
-  spawnSync("git", ["init", "-q"], { cwd });
-  spawnSync("bash", ["-c", "echo seed > seed && git add seed && git -c core.hooksPath=/dev/null -c user.email=t@t -c user.name=t commit -q -m seed"], { cwd });
+  fixtureSeedRepo(cwd, { fileName: "seed", fileContents: "seed\n" });
   const { stdout, dataDir } = runCompanion(
     ["run", "--mode=review", "--foreground", "--model", "claude-haiku-4-5-20251001",
      "--cwd", cwd, "--", "review this"],

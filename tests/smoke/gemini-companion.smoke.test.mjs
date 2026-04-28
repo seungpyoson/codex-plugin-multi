@@ -9,6 +9,8 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { fixtureSeedRepo } from "../helpers/fixture-git.mjs";
+
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const COMPANION = path.join(REPO_ROOT, "plugins/gemini/scripts/gemini-companion.mjs");
 const MOCK = path.join(REPO_ROOT, "tests/smoke/gemini-mock.mjs");
@@ -16,11 +18,11 @@ const GEMINI_SESSION_ID = "22222222-3333-4444-9555-666666666666";
 const RESUMED_GEMINI_SESSION_ID = "77777777-8888-4999-aaaa-bbbbbbbbbbbb";
 const GEMINI_SMOKE_POLL_TIMEOUT_MS = Number(process.env.GEMINI_SMOKE_POLL_TIMEOUT_MS ?? 5000);
 
+// #16 follow-up 9: fixtureSeedRepo scrubs inherited GIT_* env vars so a
+// stale GIT_DIR/GIT_WORK_TREE in the parent process cannot hijack fixture
+// commits into the caller checkout.
 function seedMinimalRepo(cwd) {
-  spawnSync("git", ["init", "-q", "-b", "main"], { cwd });
-  spawnSync("bash", ["-c",
-    "echo seed > seed.txt && git add seed.txt && " +
-    "git -c core.hooksPath=/dev/null -c user.email=t@t -c user.name=t commit -q -m seed"], { cwd });
+  fixtureSeedRepo(cwd);
 }
 
 function runCompanion(args, { cwd, env = {}, dataDir = mkdtempSync(path.join(tmpdir(), "gemini-smoke-data-")) } = {}) {

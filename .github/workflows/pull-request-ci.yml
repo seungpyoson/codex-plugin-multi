@@ -26,7 +26,7 @@ jobs:
         with:
           node-version: "20"
       - run: npm ci --ignore-scripts || npm install --ignore-scripts
-      - name: Run unit tests
+      - name: Run unit tests (full)
         env:
           CODEX_PLUGIN_SKIP_SMOKE: "1"
           CODEX_PLUGIN_FULL_TESTS: "1"
