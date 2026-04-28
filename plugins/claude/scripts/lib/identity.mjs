@@ -146,6 +146,33 @@ function captureDarwin(pid) {
 }
 
 /**
+ * Attach pid_info capture to a freshly-spawned child. Defers reading
+ * /proc/<pid>/cmdline (Linux) or `ps -o comm=` (Darwin) until the child's
+ * 'spawn' event — Node's canonical post-execve signal. Reading earlier
+ * returns the parent's argv, which then mismatches verifyPidInfo at
+ * cancel time as `argv0_mismatch` (issue #25).
+ *
+ * Returns a `() => pidInfo | null` getter. The captured info becomes
+ * available once the child has execve'd; if the child fails before
+ * 'spawn' (e.g., ENOENT), the getter stays null and the caller's
+ * existing 'error' handler remains authoritative.
+ */
+export function attachPidCapture(child, onSpawn) {
+  let pidInfo = null;
+  child.once("spawn", () => {
+    try {
+      pidInfo = capturePidInfo(child.pid);
+    } catch (e) {
+      pidInfo = { pid: child.pid, starttime: null, argv0: null, capture_error: e.message };
+    }
+    if (typeof onSpawn === "function" && Number.isInteger(child.pid)) {
+      try { onSpawn(pidInfo); } catch { /* status handoff is best-effort */ }
+    }
+  });
+  return () => pidInfo;
+}
+
+/**
  * Re-capture pidInfo for saved.pid and compare.
  *
  * Returns `{match: true}` on exact match of both starttime and argv0.

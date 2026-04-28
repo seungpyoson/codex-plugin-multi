@@ -10,7 +10,7 @@
 
 import { spawn } from "node:child_process";
 
-import { capturePidInfo } from "./identity.mjs";
+import { attachPidCapture } from "./identity.mjs";
 
 // Provider credential / routing scrub policy.
 //
@@ -230,19 +230,7 @@ export async function spawnClaude(profile, runtimeInputs = {}) {
     // Claude receives the prompt via argv and ignores stdin, so there is no
     // stdin EPIPE race to coordinate here. Gemini has a write/close harness.
     const child = spawn(binary, args, { cwd, env: targetEnv, stdio: ["ignore", "pipe", "pipe"] });
-    // Capture pidInfo at spawn — this is the ownership proof the companion
-    // uses on cancel (§21.1). Short-lived children may exit before `ps` /
-    // `/proc` can be read; in that case we keep the pid and record a
-    // capture_error instead of crashing the run.
-    let pidInfo;
-    try {
-      pidInfo = capturePidInfo(child.pid);
-    } catch (e) {
-      pidInfo = { pid: child.pid, starttime: null, argv0: null, capture_error: e.message };
-    }
-    if (typeof onSpawn === "function" && Number.isInteger(child.pid)) {
-      try { onSpawn(pidInfo); } catch { /* status handoff is best-effort */ }
-    }
+    const getPidInfo = attachPidCapture(child, onSpawn);
     let stdout = "";
     let stderr = "";
     let timedOut = false;
@@ -277,7 +265,7 @@ export async function spawnClaude(profile, runtimeInputs = {}) {
         // resume UUID. Either way, this is the value to persist.
         claudeSessionId: parsed.sessionId ?? null,
         // pidInfo {pid, starttime, argv0} for PID-reuse-safe cancel.
-        pidInfo,
+        pidInfo: getPidInfo(),
         // T7.4 DROPPED: the legacy `.sessionId` alias. Call sites now read
         // `claudeSessionId` (Claude's echo) or `sessionIdSent` (what we
         // passed). Keeping both aliases invited silent reads of the wrong
