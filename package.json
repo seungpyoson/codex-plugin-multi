@@ -4,7 +4,7 @@
   "description": "Codex plugins that delegate to Claude Code and Gemini CLI. Symmetric inverse of openai/codex-plugin-cc.",
   "private": true,
   "type": "module",
-  "license": "SEE LICENSE IN LICENSE",
+  "license": "AGPL-3.0-only",
   "author": "Seungpyo Son",
   "repository": {
     "type": "git",

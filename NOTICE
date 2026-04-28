@@ -5,8 +5,8 @@ This product ports portions of openai/codex-plugin-cc (MIT) with
 modifications. See the original at https://github.com/openai/codex-plugin-cc.
 
 The codex-plugin-multi repository is distributed under the top-level
-source-available non-commercial LICENSE. The upstream MIT notice below is
-preserved for upstream-derived portions.
+AGPL-3.0-only LICENSE. The upstream MIT notice below is preserved for
+upstream-derived portions.
 
 Upstream MIT license text follows:
 

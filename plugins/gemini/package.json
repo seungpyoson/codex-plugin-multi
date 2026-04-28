@@ -2,6 +2,6 @@
   "name": "codex-plugin-multi-gemini",
   "version": "0.1.0",
   "private": true,
-  "license": "SEE LICENSE IN LICENSE",
+  "license": "AGPL-3.0-only",
   "description": "Codex plugin that delegates to Gemini CLI (sub-workspace of codex-plugin-multi)."
 }

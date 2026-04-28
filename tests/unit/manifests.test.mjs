@@ -29,7 +29,7 @@ test("claude plugin.json: valid schema", () => {
   const m = readJson("plugins/claude/.codex-plugin/plugin.json");
   assert.equal(m.name, "claude");
   assert.ok(/^\d+\.\d+\.\d+/.test(m.version));
-  assert.equal(m.license, "Source-Available-NonCommercial");
+  assert.equal(m.license, "AGPL-3.0-only");
   assert.ok(m.interface.capabilities.every((c) => ["Interactive", "Read", "Write"].includes(c)));
 });
 
@@ -37,7 +37,7 @@ test("gemini plugin.json: valid schema", () => {
   const m = readJson("plugins/gemini/.codex-plugin/plugin.json");
   assert.equal(m.name, "gemini");
   assert.ok(/^\d+\.\d+\.\d+/.test(m.version));
-  assert.equal(m.license, "Source-Available-NonCommercial");
+  assert.equal(m.license, "AGPL-3.0-only");
 });
 
 test("both plugins declared in marketplace match filesystem layout", () => {
