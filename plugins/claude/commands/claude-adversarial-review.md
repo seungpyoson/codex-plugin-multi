@@ -1,0 +1,28 @@
+---
+description: Get Claude Code to adversarially challenge the current design. Not a linter — a "why will this break" pass.
+argument-hint: "[--scope-base <ref>] [focus area]"
+---
+
+Adversarial review via Claude Code. Assumes the author is wrong; looks for failure modes, hidden assumptions, missing edge cases.
+
+## Arguments
+
+`$ARGUMENTS` — optional `--scope-base <ref>` followed by focus text (e.g., "error handling", "concurrency"). If present, pass `--scope-base <ref>` before `--`; pass the remaining focus text after `--`.
+
+## Workflow
+
+1. Consult the `claude-prompting` skill for adversarial prompt framing.
+2. Run:
+   ```
+   node "<plugin-root>/scripts/claude-companion.mjs" run --mode=adversarial-review --foreground [--scope-base <ref>] -- "<focus text>"
+   ```
+   (Containment=worktree, scope=branch-diff, dispose=true all come from the profile — spec §21.4.)
+   `branch-diff` is object-pure: checkout filters, replace refs, and grafts are ignored.
+3. Render findings by severity. Do not downgrade Claude's concerns even if you (Codex) disagree — the job is to surface them.
+4. Watch for a non-empty `mutations` list in the result and surface it.
+
+## Guardrails
+
+- Adversarial mode is read-only (same sandbox layers as `/claude-review`).
+- Do not fix issues here — `/claude-adversarial-review` only reviews. Fixing is `/claude-rescue`.
+- No style nits. Model prompt is tuned to suppress low-value cleanup feedback.

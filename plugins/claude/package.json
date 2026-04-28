@@ -1,0 +1,7 @@
+{
+  "name": "codex-plugin-multi-claude",
+  "version": "0.1.0",
+  "private": true,
+  "license": "Apache-2.0",
+  "description": "Codex plugin that delegates to Claude Code (sub-workspace of codex-plugin-multi)."
+}

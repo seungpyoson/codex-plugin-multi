@@ -1,0 +1,116 @@
+{
+  "target_percent": 85,
+  "note": "Current non-regression baseline for T10.1. The target remains 85%; raise these values as unit coverage expands.",
+  "files": {
+    "plugins/claude/scripts/lib/args.mjs": {
+      "lines": 91.43,
+      "branches": 86.0,
+      "functions": 100.0
+    },
+    "plugins/claude/scripts/lib/claude.mjs": {
+      "lines": 96.48,
+      "branches": 76.36,
+      "functions": 91.67
+    },
+    "plugins/claude/scripts/lib/containment.mjs": {
+      "lines": 96.55,
+      "branches": 88.89,
+      "functions": 100.0
+    },
+    "plugins/claude/scripts/lib/git.mjs": {
+      "lines": 85.95,
+      "branches": 64.41,
+      "functions": 100.0
+    },
+    "plugins/claude/scripts/lib/identity.mjs": {
+      "lines": 48.45,
+      "branches": 55.56,
+      "functions": 83.33
+    },
+    "plugins/claude/scripts/lib/job-record.mjs": {
+      "lines": 91.38,
+      "branches": 86.36,
+      "functions": 60.0
+    },
+    "plugins/claude/scripts/lib/mode-profiles.mjs": {
+      "lines": 86.67,
+      "branches": 100.0,
+      "functions": 100.0
+    },
+    "plugins/claude/scripts/lib/process.mjs": {
+      "lines": 84.62,
+      "branches": 77.08,
+      "functions": 100.0
+    },
+    "plugins/claude/scripts/lib/scope.mjs": {
+      "lines": 90.34,
+      "branches": 74.9,
+      "functions": 98.61
+    },
+    "plugins/claude/scripts/lib/state.mjs": {
+      "lines": 88.48,
+      "branches": 66.67,
+      "functions": 100.0
+    },
+    "plugins/claude/scripts/lib/workspace.mjs": {
+      "lines": 85.71,
+      "branches": 100.0,
+      "functions": 100.0
+    },
+    "plugins/gemini/scripts/lib/args.mjs": {
+      "lines": 91.43,
+      "branches": 86.0,
+      "functions": 100.0
+    },
+    "plugins/gemini/scripts/lib/containment.mjs": {
+      "lines": 55.17,
+      "branches": 66.67,
+      "functions": 100.0
+    },
+    "plugins/gemini/scripts/lib/gemini.mjs": {
+      "lines": 96.32,
+      "branches": 88.0,
+      "functions": 81.82
+    },
+    "plugins/gemini/scripts/lib/git.mjs": {
+      "lines": 85.95,
+      "branches": 64.41,
+      "functions": 100.0
+    },
+    "plugins/gemini/scripts/lib/identity.mjs": {
+      "lines": 25.77,
+      "branches": 0.0,
+      "functions": 83.33
+    },
+    "plugins/gemini/scripts/lib/job-record.mjs": {
+      "lines": 82.76,
+      "branches": 78.33,
+      "functions": 60.0
+    },
+    "plugins/gemini/scripts/lib/mode-profiles.mjs": {
+      "lines": 66.67,
+      "branches": 88.89,
+      "functions": 100.0
+    },
+    "plugins/gemini/scripts/lib/process.mjs": {
+      "lines": 84.62,
+      "branches": 77.08,
+      "functions": 100.0
+    },
+    "plugins/gemini/scripts/lib/scope.mjs": {
+      "lines": 90.34,
+      "branches": 74.9,
+      "functions": 98.61
+    },
+    "plugins/gemini/scripts/lib/state.mjs": {
+      "lines": 79.01,
+      "branches": 41.67,
+      "functions": 97.22
+    },
+    "plugins/gemini/scripts/lib/workspace.mjs": {
+      "lines": 85.71,
+      "branches": 100.0,
+      "functions": 100.0
+    }
+  }
+}

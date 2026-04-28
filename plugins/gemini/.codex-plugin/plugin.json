@@ -1,0 +1,35 @@
+{
+  "name": "gemini",
+  "version": "0.1.0",
+  "description": "Delegate investigation, review, and adversarial review to Gemini CLI from within Codex.",
+  "author": {
+    "name": "seungpyoson"
+  },
+  "homepage": "https://github.com/seungpyoson/codex-plugin-multi",
+  "repository": "https://github.com/seungpyoson/codex-plugin-multi",
+  "license": "Apache-2.0",
+  "keywords": [
+    "gemini",
+    "gemini-cli",
+    "delegation",
+    "rescue",
+    "review"
+  ],
+  "interface": {
+    "displayName": "Gemini",
+    "shortDescription": "Delegate to Gemini CLI from Codex.",
+    "longDescription": "Invoke Gemini CLI headlessly from Codex for investigation, rescue, review, and adversarial-review workflows. Uses OAuth subscription (no API keys).",
+    "developerName": "seungpyoson",
+    "category": "Coding",
+    "capabilities": [
+      "Interactive",
+      "Read",
+      "Write"
+    ],
+    "defaultPrompt": [
+      "Ask Gemini CLI to review the current diff",
+      "Have Gemini CLI investigate a failing test",
+      "Get an adversarial review from Gemini CLI"
+    ]
+  }
+}
