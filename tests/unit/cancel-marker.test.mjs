@@ -1,6 +1,6 @@
 // Unit coverage for the cancel-marker helper extracted in #24. Smoke
 // covers the SIGTERM-trap end-to-end path; this file pins the
-// lifecycle-pure pieces that the byte-identity guard depends on.
+// lifecycle-pure pieces.
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -13,9 +13,7 @@ import {
   writeCancelMarker,
   consumeCancelMarker,
 } from "../../plugins/claude/scripts/lib/cancel-marker.mjs";
-import * as GeminiCancelMarker from "../../plugins/gemini/scripts/lib/cancel-marker.mjs";
 import { configureState } from "../../plugins/claude/scripts/lib/state.mjs";
-import { configureState as configureGeminiState } from "../../plugins/gemini/scripts/lib/state.mjs";
 
 function freshWorkspace() {
   const root = mkdtempSync(path.join(tmpdir(), "cancel-marker-unit-"));
@@ -159,59 +157,6 @@ test("writeCancelMarker / consumeCancelMarker: inherit jobId validation via canc
     const escapePath = path.resolve(root, "..", "..", "..", "escape", "cancel-requested.flag");
     assert.equal(existsSync(escapePath), false,
       `no marker should exist at escape path ${escapePath}`);
-  } finally {
-    rmSync(root, { recursive: true, force: true });
-    rmSync(dataDir, { recursive: true, force: true });
-  }
-});
-
-test("gemini cancelMarkerPath: same path-traversal defense", () => {
-  const root = mkdtempSync(path.join(tmpdir(), "cancel-marker-gemini-trav-"));
-  const dataDir = mkdtempSync(path.join(tmpdir(), "cancel-marker-gemini-trav-data-"));
-  try {
-    configureGeminiState({
-      pluginDataEnv: "GEMINI_PLUGIN_DATA",
-      fallbackStateRootDir: path.join(tmpdir(), "gemini-companion"),
-      sessionIdEnv: "GEMINI_COMPANION_SESSION_ID",
-    });
-    process.env.GEMINI_PLUGIN_DATA = dataDir;
-    assert.throws(
-      () => GeminiCancelMarker.cancelMarkerPath(root, "../../../escape"),
-      /Unsafe jobId/,
-    );
-    assert.throws(
-      () => GeminiCancelMarker.writeCancelMarker(root, "../../../escape"),
-      /Unsafe jobId/,
-    );
-  } finally {
-    rmSync(root, { recursive: true, force: true });
-    rmSync(dataDir, { recursive: true, force: true });
-  }
-});
-
-// Coverage parity: identity tests load the gemini side via `* as GeminiX`
-// and exercise its happy path. cancel-marker.mjs is byte-identical, so a
-// minimal happy-path drive is enough to clear the coverage gate.
-test("gemini cancel-marker: byte-identical helper exercised on the gemini side", () => {
-  const root = mkdtempSync(path.join(tmpdir(), "cancel-marker-gemini-"));
-  const dataDir = mkdtempSync(path.join(tmpdir(), "cancel-marker-gemini-data-"));
-  try {
-    configureGeminiState({
-      pluginDataEnv: "GEMINI_PLUGIN_DATA",
-      fallbackStateRootDir: path.join(tmpdir(), "gemini-companion"),
-      sessionIdEnv: "GEMINI_COMPANION_SESSION_ID",
-    });
-    process.env.GEMINI_PLUGIN_DATA = dataDir;
-
-    const p = GeminiCancelMarker.cancelMarkerPath(root, JOB);
-    assert.ok(p.endsWith(`${JOB}/cancel-requested.flag`));
-
-    GeminiCancelMarker.writeCancelMarker(root, JOB);
-    assert.ok(existsSync(p));
-
-    assert.equal(GeminiCancelMarker.consumeCancelMarker(root, JOB), true);
-    assert.equal(existsSync(p), false);
-    assert.equal(GeminiCancelMarker.consumeCancelMarker(root, JOB), false);
   } finally {
     rmSync(root, { recursive: true, force: true });
     rmSync(dataDir, { recursive: true, force: true });
