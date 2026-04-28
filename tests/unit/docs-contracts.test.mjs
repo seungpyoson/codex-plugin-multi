@@ -10,6 +10,33 @@ function readRepoFile(rel) {
   return readFileSync(path.join(REPO_ROOT, rel), "utf8");
 }
 
+const CANCEL_STATUSES = [
+  "signaled",
+  "already_terminal",
+  "already_dead",
+  "cancel_pending",
+  "cancel_failed",
+  "no_pid_info",
+  "unverifiable",
+  "stale_pid",
+];
+
+const CANCEL_ERRORS = [
+  "bad_args",
+  "not_found",
+  "bad_state",
+  "signal_failed",
+];
+
+function quotedValuesForField(markdown, field) {
+  const values = new Set();
+  const pattern = new RegExp(`${field}:\\s*"([^"]+)"`, "g");
+  for (const match of markdown.matchAll(pattern)) {
+    values.add(match[1]);
+  }
+  return [...values].sort();
+}
+
 test("claude cancel docs reject foreground cancel and direct users to Ctrl+C", () => {
   const command = readRepoFile("plugins/claude/commands/claude-cancel.md");
   const runtime = readRepoFile("plugins/claude/skills/claude-cli-runtime/SKILL.md");
@@ -24,6 +51,28 @@ test("claude cancel docs reject foreground cancel and direct users to Ctrl+C", (
     "signal_failed is emitted through the error envelope, not a status envelope");
   assert.doesNotMatch(command, /status:\s*"signal_failed"/,
     "signal_failed docs must not imply a status field");
+});
+
+test("cancel command docs enumerate the runtime status and error contracts", () => {
+  for (const target of ["claude", "gemini"]) {
+    const command = readRepoFile(`plugins/${target}/commands/${target}-cancel.md`);
+
+    assert.deepEqual(
+      quotedValuesForField(command, "status"),
+      [...CANCEL_STATUSES].sort(),
+      `${target}-cancel.md must enumerate exactly the status values cmdCancel emits`,
+    );
+    assert.deepEqual(
+      quotedValuesForField(command, "error"),
+      [...CANCEL_ERRORS].sort(),
+      `${target}-cancel.md must enumerate exactly the error values cmdCancel emits`,
+    );
+    assert.match(command, /Exit `0`[\s\S]*signaled[\s\S]*already_terminal[\s\S]*already_dead[\s\S]*cancel_pending/);
+    assert.match(command, /Exit `1`[\s\S]*bad_args[\s\S]*not_found[\s\S]*bad_state[\s\S]*signal_failed[\s\S]*cancel_failed/);
+    assert.match(command, /Exit `2`[\s\S]*no_pid_info[\s\S]*unverifiable[\s\S]*stale_pid/);
+    assert.doesNotMatch(command, /state will reconcile/i,
+      "already_dead must not promise a reconcile path the runtime does not implement");
+  }
 });
 
 test("claude review command docs use current mutation schema fields", () => {

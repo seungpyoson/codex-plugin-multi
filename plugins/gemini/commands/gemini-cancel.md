@@ -15,10 +15,10 @@ argument-hint: "<job-id> [--force]"
 ### Statuses and exit codes
 
 Exit `0` — cancel post-condition holds (process gone, never running, or signal sent):
-- `signaled` — SIGTERM (or SIGKILL with `--force`) delivered to the verified pid.
-- `already_terminal` — job is already `completed` / `failed` / `cancelled` / `stale`; nothing to do.
-- `already_dead` — pid is gone; state will reconcile on next status read.
-- `cancel_pending` — job was queued (worker not yet spawned target). A marker was written; the worker will refuse to spawn on pickup and finalize as `cancelled`.
+- `status: "signaled"` — SIGTERM (or SIGKILL with `--force`) delivered to the verified pid.
+- `status: "already_terminal"` — job is already `completed` / `failed` / `cancelled` / `stale`; nothing to do.
+- `status: "already_dead"` — pid is gone; no signal was sent.
+- `status: "cancel_pending"` — job was queued (worker not yet spawned target). A marker was written; the worker will refuse to spawn on pickup and finalize as `cancelled`.
 
 Exit `1` — operational error (cancel could not be performed):
 - `error: "bad_args"` — invalid arguments (missing `--job`, conflicting flags).
@@ -28,9 +28,9 @@ Exit `1` — operational error (cancel could not be performed):
 - `status: "cancel_failed"` — job is queued but the cancel marker write threw (disk full, permissions, parent dir vanished). The cancel intent is NOT durably recorded; the worker may still spawn the target.
 
 Exit `2` — refused for safety (process may still be running, ownership unverifiable):
-- `no_pid_info` — running job has no pid_info, or pid_info is missing `starttime` / `argv0` (legacy record, spawn race, or `ps`/`/proc` was unavailable at spawn). Operator must investigate.
-- `unverifiable` — could not re-verify pid ownership at cancel time (`ps`/`/proc` unavailable). Operator must investigate.
-- `stale_pid` — recorded `starttime` or `argv0` no longer matches the live process at that pid; the pid was reused. Refused to avoid signaling an unrelated process.
+- `status: "no_pid_info"` — running job has no pid_info, or pid_info is missing `starttime` / `argv0` (legacy record, spawn race, or `ps`/`/proc` was unavailable at spawn). Operator must investigate.
+- `status: "unverifiable"` — could not re-verify pid ownership at cancel time (`ps`/`/proc` unavailable). Operator must investigate.
+- `status: "stale_pid"` — recorded `starttime` or `argv0` no longer matches the live process at that pid; the pid was reused. Refused to avoid signaling an unrelated process.
 
 ## Guardrails
 
