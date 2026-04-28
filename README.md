@@ -9,8 +9,8 @@ lets Claude Code delegate to Codex.
   commercial redistribution is not permitted without prior written permission.
   Portions are ported from MIT-licensed upstream code; see `NOTICE`.
 - **State:** active development. Claude and Gemini companion
-  review/rescue/status/result flows are implemented and covered by mock smoke
-  tests. Gemini `cancel` is deferred. Fresh-install verification on Codex CLI
+  review/rescue/status/result/cancel flows are implemented and covered by mock
+  smoke tests. Fresh-install verification on Codex CLI
   0.125.0 found that the marketplace installs successfully, but the TUI does
   not register plugin command files as slash commands.
 
@@ -61,9 +61,8 @@ user-invocable skill fallback:
   adversarial review, rescue, status, result, or cancel workflows through
   `plugins/claude/scripts/claude-companion.mjs`.
 - **Gemini delegation skill:** asks Gemini CLI to run setup checks, review,
-  adversarial review, rescue, status, or result workflows through
-  `plugins/gemini/scripts/gemini-companion.mjs`. Gemini `cancel` remains
-  deferred.
+  adversarial review, rescue, status, result, or cancel workflows through
+  `plugins/gemini/scripts/gemini-companion.mjs`.
 
 Example prompts:
 
@@ -96,7 +95,7 @@ command docs:
 | `/claude-status` / `/gemini-status` | Packaged | List active and recent jobs for the current workspace. |
 | `/claude-result <job-id>` / `/gemini-result <job-id>` | Packaged | Show the persisted result for a job. |
 | `/claude-cancel <job-id>` | Packaged | Cancel a running Claude background job. Use Ctrl+C for foreground runs. |
-| `/gemini-cancel <job-id>` | Deferred | Gemini `cancel` currently returns `not_implemented`; use Ctrl+C for foreground runs. |
+| `/gemini-cancel <job-id>` | Packaged | Cancel a running Gemini background job. Use Ctrl+C for foreground runs. |
 
 Background jobs return a `job_id`. In a Codex build that supports plugin command
 files, use `/<target>-status` to list jobs and `/<target>-result <job-id>` to

@@ -398,6 +398,30 @@ async function executeRun(invocation, prompt, { foreground }) {
     ? invocation.resume_chain[invocation.resume_chain.length - 1]
     : null;
 
+  // Pre-spawn cancel-marker check (Class 1 + Finding A, race window α).
+  // cmdRunWorker has its own check at the top of the worker body, but a
+  // cancel issued during containment setup / scope copy lands AFTER that
+  // check while state.json still says "queued". Rechecking immediately
+  // before spawnClaude narrows the window from "containment + scope +
+  // pre-snapshot + spawn" (potentially seconds with a large repo) to the
+  // microseconds between this check and child.once('spawn'). The post-run
+  // consumer at the close handler is the safety net for that residual gap.
+  // This check also covers the foreground path (cmdRun bypasses
+  // cmdRunWorker entirely).
+  if (consumeCancelMarker(workspaceRoot, jobId)) {
+    if (containment.disposed && disposeEffective) {
+      try { containment.cleanup(); } catch { /* best-effort */ }
+    }
+    const cancelledRecord = buildJobRecord(invocation, {
+      status: "cancelled",
+      exitCode: null, parsed: null, pidInfo: null, claudeSessionId: null,
+    }, mutations);
+    writeJobFile(workspaceRoot, jobId, cancelledRecord);
+    upsertJob(workspaceRoot, cancelledRecord);
+    if (foreground) printJson(cancelledRecord);
+    process.exit(0);
+  }
+
   let execution;
   try {
     execution = await spawnClaude(profile, {
@@ -524,6 +548,20 @@ async function cmdRunWorker(rest) {
   }
   if (["completed", "failed", "cancelled", "stale"].includes(meta.status)) {
     fail("bad_state", `job ${options.job} is already terminal (${meta.status}); refusing worker re-entry`);
+  }
+
+  // Honor a cancel that arrived while we were queued. The worker MUST check
+  // this before spawning the target — otherwise the run completes (model
+  // call, side effects) and only the post-run consumer at executeRun would
+  // convert "completed" → "cancelled".
+  if (consumeCancelMarker(workspaceRoot, options.job)) {
+    const cancelledRecord = buildJobRecord(invocationFromRecord(meta), {
+      status: "cancelled",
+      exitCode: null, parsed: null, pidInfo: null, claudeSessionId: null,
+    }, []);
+    writeJobFile(workspaceRoot, options.job, cancelledRecord);
+    upsertJob(workspaceRoot, cancelledRecord);
+    process.exit(0);
   }
 
   // Read+delete the prompt sidecar (§21.3.1 handoff buffer). Missing sidecar
@@ -766,21 +804,54 @@ async function cmdCancel(rest) {
   const job = jobs.find((j) => j.id === options.job);
   if (!job) fail("not_found", `no job with id ${options.job}`);
   if (job.status !== "running") {
-    printJson({ ok: true, status: "already_terminal", job_status: job.status, job_id: options.job });
+    // "Truly terminal" — the job has reached a stop state, nothing to do.
+    if (["completed", "failed", "cancelled", "stale"].includes(job.status)) {
+      printJson({ ok: true, status: "already_terminal", job_status: job.status, job_id: options.job });
+      return;
+    }
+    // From here, only "queued" is a valid non-running state worth marker-
+    // writing. Any other unknown status reflects a state-corruption bug
+    // elsewhere; surface it via bad_state instead of silently treating it
+    // as queued and writing a marker the worker may never see.
+    if (job.status !== "queued") {
+      fail("bad_state", `unexpected job status ${JSON.stringify(job.status)} for job ${options.job}`);
+    }
+    // Queued: the worker hasn't spawned the target binary yet. Drop a
+    // cancel marker so the worker refuses to spawn on pickup. The marker
+    // IS the cancel mechanism here (no SIGTERM fallback), so a write
+    // failure must NOT report cancel_pending — exit 1 with cancel_failed.
+    try {
+      writeCancelMarker(workspaceRoot, options.job);
+    } catch (e) {
+      process.stderr.write(`claude-companion: cancel marker write failed: ${e.message}\n`);
+      printJson({
+        ok: false,
+        status: "cancel_failed",
+        detail: "could not durably record cancel intent (marker write failed); job may still spawn",
+        job_id: options.job,
+        error: e.message,
+      });
+      process.exit(1);
+    }
+    printJson({ ok: true, status: "cancel_pending", job_status: job.status, job_id: options.job });
     return;
   }
+  // From here on, job.status === "running". Verification failures must not
+  // exit 0: an exit-0 contract means "the cancel post-condition holds"
+  // (process gone or never running). We can't promise either when ownership
+  // proof is missing, so these paths exit 2 (refused for safety).
   const pidInfo = job.pid_info ?? null;
   if (!pidInfo || !Number.isInteger(pidInfo.pid)) {
     // Legacy records (pre-T7.3) or races where the spawn aborted before
-    // pidInfo was persisted. Operators must decide manually; refusing to
-    // signal is the safe default — a bare `pid` is not an ownership proof.
+    // pidInfo was persisted. The job claims status=running but we have
+    // nothing to verify. Refusing is safe; exit 2 is the contract.
     printJson({
       ok: false,
       status: "no_pid_info",
       detail: "job has no pid_info; cannot safely signal (legacy record or race)",
       job_id: options.job,
     });
-    return;
+    process.exit(2);
   }
   if (pidInfo.capture_error || !pidInfo.starttime || !pidInfo.argv0) {
     printJson({
@@ -791,7 +862,7 @@ async function cmdCancel(rest) {
       pid: pidInfo.pid,
       capture_error: pidInfo.capture_error ?? null,
     });
-    return;
+    process.exit(2);
   }
   // Non-throwing ownership check: compares {starttime, argv0} of the live
   // process against the tuple captured at spawn. Mismatch → refuse.

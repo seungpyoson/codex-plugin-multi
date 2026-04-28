@@ -235,22 +235,225 @@ test("gemini cancel: signals a running background job (issue #22 sub-task 1)", a
       cwd, encoding: "utf8",
       env: { ...process.env, GEMINI_PLUGIN_DATA: dataDir },
     });
-    // The two acceptable outcomes: signaled (signal landed) or no_pid_info
-    // (mock spawn raced and pid capture failed). Either is correct; what
-    // MUST NOT happen is an "not_implemented" error from the dispatch.
+    // Two acceptable outcomes: signaled (signal landed) or no_pid_info
+    // (mock spawn raced and pid capture failed). What MUST NOT happen is
+    // a "not_implemented" error from the dispatch.
     assert.notEqual(cancelRes.status, 1, `gemini cancel must be implemented; stderr=${cancelRes.stderr}`);
     const cancel = JSON.parse(cancelRes.stdout);
     assert.notEqual(cancel.error, "not_implemented",
       `gemini cancel must not fall through to not_implemented; got ${JSON.stringify(cancel)}`);
     if (running.pid_info.capture_error) {
+      // Issue #25 follow-up: a running job whose pid_info lacks a
+      // complete ownership proof is "unverifiable" — exit 2 means
+      // "refused for safety; operator must investigate." Exit 0 would
+      // lie that the cancel post-condition (process gone) holds.
+      assert.equal(cancelRes.status, 2,
+        `capture_error path must exit 2 (refused, unverifiable); stderr=${cancelRes.stderr}`);
       assert.equal(cancel.status, "no_pid_info");
     } else {
+      assert.equal(cancelRes.status, 0,
+        `signaled path must exit 0 (cancel post-condition reached); stderr=${cancelRes.stderr}`);
       assert.equal(cancel.status, "signaled");
       assert.equal(cancel.signal, "SIGTERM");
       assert.equal(cancel.pid, running.pid_info.pid);
     }
   } finally {
     rmTree(dataDir);
+    rmTree(cwd);
+  }
+});
+
+test("gemini cancel: queued job → cancel_pending, marker written, exit 0", () => {
+  // Class 1 + Finding A: a queued (not-yet-running) job cannot be
+  // already_terminal — the worker hasn't spawned anything. Cancel must
+  // drop a marker so the worker refuses to spawn on pickup.
+  const cwd = mkdtempSync(path.join(tmpdir(), "gemini-cancel-queued-cwd-"));
+  seedMinimalRepo(cwd);
+  const runRes = runCompanion(
+    ["run", "--mode=rescue", "--foreground", "--model", "gemini-3-flash-preview",
+     "--cwd", cwd, "--", "seed"],
+    { cwd },
+  );
+  try {
+    assert.equal(runRes.status, 0, runRes.stderr);
+    const { metaPath, record } = readOnlyJobRecord(runRes.dataDir);
+    writeFileSync(metaPath,
+      `${JSON.stringify({ ...record, status: "queued", pid_info: null }, null, 2)}\n`, "utf8");
+    // listJobs reads state.json — patch that too so cmdCancel sees the queued shape.
+    const stateRoot = path.join(runRes.dataDir, "state");
+    const statePath = (() => {
+      for (const d of readdirSync(stateRoot)) {
+        const p = path.join(stateRoot, d, "state.json");
+        if (existsSync(p)) return p;
+      }
+      throw new Error("no state.json");
+    })();
+    const state = JSON.parse(readFileSync(statePath, "utf8"));
+    const idx = state.jobs.findIndex((j) => j.id === record.job_id);
+    state.jobs[idx] = { ...state.jobs[idx], status: "queued", pid_info: null };
+    writeFileSync(statePath, JSON.stringify(state, null, 2));
+
+    const cancelRes = spawnSync("node", [
+      COMPANION, "cancel", "--job", record.job_id, "--cwd", cwd,
+    ], {
+      cwd, encoding: "utf8",
+      env: { ...process.env, GEMINI_PLUGIN_DATA: runRes.dataDir },
+    });
+    assert.equal(cancelRes.status, 0, cancelRes.stderr);
+    const cancel = JSON.parse(cancelRes.stdout);
+    assert.equal(cancel.status, "cancel_pending");
+    assert.equal(cancel.ok, true);
+    assert.equal(cancel.job_status, "queued");
+
+    const wsDir = path.dirname(metaPath);
+    const markerPath = path.join(wsDir, record.job_id, "cancel-requested.flag");
+    assert.ok(existsSync(markerPath),
+      `cancel_pending must write a marker at ${markerPath}`);
+  } finally {
+    rmTree(runRes.dataDir);
+    rmTree(cwd);
+  }
+});
+
+test("gemini _run-worker: cancel marker prevents target spawn, sets status=cancelled", () => {
+  // Class 1 + Finding A end-to-end: worker MUST exit before spawning the
+  // target binary when a marker is present. Otherwise the model call
+  // happens (cost + side effects) and only the post-run consumer would
+  // convert "completed" → "cancelled".
+  const cwd = mkdtempSync(path.join(tmpdir(), "gemini-worker-cancel-cwd-"));
+  seedMinimalRepo(cwd);
+  const runRes = runCompanion(
+    ["run", "--mode=rescue", "--foreground", "--model", "gemini-3-flash-preview",
+     "--cwd", cwd, "--", "seed"],
+    { cwd },
+  );
+  try {
+    assert.equal(runRes.status, 0, runRes.stderr);
+    const { metaPath, record } = readOnlyJobRecord(runRes.dataDir);
+    writeFileSync(metaPath,
+      `${JSON.stringify({ ...record, status: "queued", pid_info: null }, null, 2)}\n`, "utf8");
+
+    const wsDir = path.dirname(metaPath);
+    const markerDir = path.join(wsDir, record.job_id);
+    mkdirSync(markerDir, { recursive: true });
+    const markerPath = path.join(markerDir, "cancel-requested.flag");
+    writeFileSync(markerPath, new Date().toISOString() + "\n");
+
+    const workerRes = spawnSync("node", [
+      COMPANION, "_run-worker", "--cwd", cwd, "--job", record.job_id,
+    ], {
+      cwd, encoding: "utf8",
+      env: { ...process.env, GEMINI_BINARY: MOCK, GEMINI_PLUGIN_DATA: runRes.dataDir },
+    });
+    assert.equal(workerRes.status, 0,
+      `worker must exit 0 when marker present; stderr=${workerRes.stderr}`);
+
+    const finalMeta = JSON.parse(readFileSync(metaPath, "utf8"));
+    assert.equal(finalMeta.status, "cancelled",
+      `worker must persist status=cancelled; got ${finalMeta.status}`);
+    assert.equal(finalMeta.pid_info, null,
+      "worker must not record pid_info when refusing to spawn");
+    assert.equal(existsSync(markerPath), false,
+      "worker must consume (unlink) the marker on pickup");
+  } finally {
+    rmTree(runRes.dataDir);
+    rmTree(cwd);
+  }
+});
+
+test("gemini cancel: queued + marker write failure → cancel_failed, exit 1", () => {
+  // Class 1 follow-up (reviewer Vector 3): the queued-cancel branch's marker
+  // is the entire cancel mechanism. Write failure must not lie via cancel_pending.
+  const cwd = mkdtempSync(path.join(tmpdir(), "gemini-cancel-fail-cwd-"));
+  seedMinimalRepo(cwd);
+  const runRes = runCompanion(
+    ["run", "--mode=rescue", "--foreground", "--model", "gemini-3-flash-preview",
+     "--cwd", cwd, "--", "seed"],
+    { cwd },
+  );
+  try {
+    assert.equal(runRes.status, 0, runRes.stderr);
+    const { metaPath, record } = readOnlyJobRecord(runRes.dataDir);
+    writeFileSync(metaPath,
+      `${JSON.stringify({ ...record, status: "queued", pid_info: null }, null, 2)}\n`, "utf8");
+    const stateRoot = path.join(runRes.dataDir, "state");
+    const statePath = (() => {
+      for (const d of readdirSync(stateRoot)) {
+        const p = path.join(stateRoot, d, "state.json");
+        if (existsSync(p)) return p;
+      }
+      throw new Error("no state.json");
+    })();
+    const state = JSON.parse(readFileSync(statePath, "utf8"));
+    const idx = state.jobs.findIndex((j) => j.id === record.job_id);
+    state.jobs[idx] = { ...state.jobs[idx], status: "queued", pid_info: null };
+    writeFileSync(statePath, JSON.stringify(state, null, 2));
+
+    // Booby-trap: writeCancelMarker mkdirs <jobsDir>/<jobId> recursively.
+    // Replace the per-job dir with a regular file so mkdir throws ENOTDIR.
+    const wsDir = path.dirname(metaPath);
+    const expectedMarkerDir = path.join(wsDir, record.job_id);
+    rmSync(expectedMarkerDir, { recursive: true, force: true });
+    writeFileSync(expectedMarkerDir, "blocker", "utf8");
+
+    const cancelRes = spawnSync("node", [
+      COMPANION, "cancel", "--job", record.job_id, "--cwd", cwd,
+    ], {
+      cwd, encoding: "utf8",
+      env: { ...process.env, GEMINI_PLUGIN_DATA: runRes.dataDir },
+    });
+    assert.equal(cancelRes.status, 1,
+      `marker write failure must exit 1; stderr=${cancelRes.stderr}`);
+    const cancel = JSON.parse(cancelRes.stdout);
+    assert.equal(cancel.status, "cancel_failed");
+    assert.equal(cancel.ok, false);
+  } finally {
+    rmTree(runRes.dataDir);
+    rmTree(cwd);
+  }
+});
+
+test("gemini cancel: unknown job status → bad_state, exit 1", () => {
+  // Class 1 follow-up (reviewer Vector 5): unknown statuses must surface
+  // as bad_state, not silently fall into the queued marker-writing branch.
+  const cwd = mkdtempSync(path.join(tmpdir(), "gemini-cancel-bad-state-cwd-"));
+  seedMinimalRepo(cwd);
+  const runRes = runCompanion(
+    ["run", "--mode=rescue", "--foreground", "--model", "gemini-3-flash-preview",
+     "--cwd", cwd, "--", "seed"],
+    { cwd },
+  );
+  try {
+    assert.equal(runRes.status, 0, runRes.stderr);
+    const { metaPath, record } = readOnlyJobRecord(runRes.dataDir);
+    writeFileSync(metaPath,
+      `${JSON.stringify({ ...record, status: "errored" }, null, 2)}\n`, "utf8");
+    const stateRoot = path.join(runRes.dataDir, "state");
+    const statePath = (() => {
+      for (const d of readdirSync(stateRoot)) {
+        const p = path.join(stateRoot, d, "state.json");
+        if (existsSync(p)) return p;
+      }
+      throw new Error("no state.json");
+    })();
+    const state = JSON.parse(readFileSync(statePath, "utf8"));
+    const idx = state.jobs.findIndex((j) => j.id === record.job_id);
+    state.jobs[idx] = { ...state.jobs[idx], status: "errored" };
+    writeFileSync(statePath, JSON.stringify(state, null, 2));
+
+    const cancelRes = spawnSync("node", [
+      COMPANION, "cancel", "--job", record.job_id, "--cwd", cwd,
+    ], {
+      cwd, encoding: "utf8",
+      env: { ...process.env, GEMINI_PLUGIN_DATA: runRes.dataDir },
+    });
+    assert.equal(cancelRes.status, 1,
+      `unknown status must exit 1; stderr=${cancelRes.stderr}`);
+    const cancel = JSON.parse(cancelRes.stdout);
+    assert.equal(cancel.error, "bad_state");
+    assert.match(cancel.message ?? "", /unexpected job status/);
+  } finally {
+    rmTree(runRes.dataDir);
     rmTree(cwd);
   }
 });

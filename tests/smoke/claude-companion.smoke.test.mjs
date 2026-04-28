@@ -357,9 +357,14 @@ test("run --background: active job is visible as running and can be cancelled", 
       cwd, encoding: "utf8",
       env: { ...process.env, CLAUDE_PLUGIN_DATA: dataDir },
     });
-    assert.equal(cancelRes.status, 0, cancelRes.stderr);
     const cancel = JSON.parse(cancelRes.stdout);
     if (running.pid_info.capture_error) {
+      // Issue #25 follow-up: a running job whose pid_info lacks a complete
+      // ownership proof is "unverifiable" — exit 2 means "refused for
+      // safety; operator must investigate." Exit 0 would lie that the
+      // cancel post-condition (process gone) holds.
+      assert.equal(cancelRes.status, 2,
+        `capture_error path must exit 2 (refused, unverifiable); stderr=${cancelRes.stderr}`);
       assert.equal(cancel.status, "no_pid_info");
       const terminalDeadline = Date.now() + 7000;
       let terminal = null;
@@ -378,6 +383,8 @@ test("run --background: active job is visible as running and can be cancelled", 
       }
       assert.ok(terminal, "job with incomplete pid_info did not finish before cleanup");
     } else {
+      assert.equal(cancelRes.status, 0,
+        `signaled path must exit 0 (cancel post-condition reached); stderr=${cancelRes.stderr}`);
       assert.equal(cancel.status, "signaled");
     }
   } finally {
@@ -824,6 +831,234 @@ test("result --job with unknown id: returns not_found", () => {
     assert.match(stderr, /no meta.json/);
   } finally {
     cleanup(dataDir);
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("cancel: queued job → cancel_pending, marker written, exit 0", () => {
+  // Class 1 + Finding A: a job that is queued but not yet running cannot
+  // be "already_terminal" — the worker hasn't spawned anything. Cancel
+  // must drop a marker so the worker refuses to spawn on pickup, and
+  // return cancel_pending so operators distinguish "intent recorded" from
+  // "intent moot."
+  const cwd = mkdtempSync(path.join(tmpdir(), "smoke-cancel-queued-"));
+  seedMinimalRepo(cwd);
+  const dataDir = mkdtempSync(path.join(tmpdir(), "cancel-queued-data-"));
+  try {
+    // Foreground run completes; we then patch the persisted state to the
+    // pre-spawn shape (status=queued, pid_info=null) to exercise the
+    // queued-cancel path without timing races against a real worker.
+    const runRes = runCompanion(
+      ["run", "--mode=rescue", "--foreground",
+       "--model", "claude-haiku-4-5-20251001",
+       "--cwd", cwd, "--", "seed"],
+      { cwd, dataDir },
+    );
+    assert.equal(runRes.status, 0, runRes.stderr);
+    const { metaPath, record } = readOnlyJobRecord(dataDir);
+    const queuedRecord = { ...record, status: "queued", pid_info: null };
+    writeFileSync(metaPath, `${JSON.stringify(queuedRecord, null, 2)}\n`, "utf8");
+    // listJobs reads state.json — patch that too so cmdCancel's view matches.
+    const stateRoot = path.join(dataDir, "state");
+    const statePath = (() => {
+      for (const d of readdirSync(stateRoot)) {
+        const p = path.join(stateRoot, d, "state.json");
+        if (existsSync(p)) return p;
+      }
+      throw new Error("no state.json");
+    })();
+    const state = JSON.parse(readFileSync(statePath, "utf8"));
+    const idx = state.jobs.findIndex((j) => j.id === record.job_id);
+    state.jobs[idx] = { ...state.jobs[idx], status: "queued", pid_info: null };
+    writeFileSync(statePath, JSON.stringify(state, null, 2));
+
+    const cancelRes = spawnSync("node", [
+      path.join(REPO_ROOT, "plugins/claude/scripts/claude-companion.mjs"),
+      "cancel", "--job", record.job_id, "--cwd", cwd,
+    ], {
+      cwd, encoding: "utf8",
+      env: { ...process.env, CLAUDE_PLUGIN_DATA: dataDir },
+    });
+    assert.equal(cancelRes.status, 0, cancelRes.stderr);
+    const cancel = JSON.parse(cancelRes.stdout);
+    assert.equal(cancel.status, "cancel_pending");
+    assert.equal(cancel.ok, true);
+    assert.equal(cancel.job_status, "queued");
+
+    // Marker must exist at <jobsDir>/<jobId>/cancel-requested.flag so that
+    // cmdRunWorker (and executeRun's post-run consumer) can pick it up.
+    const wsDir = path.dirname(metaPath); // jobs/
+    const markerPath = path.join(wsDir, record.job_id, "cancel-requested.flag");
+    assert.ok(existsSync(markerPath),
+      `cancel_pending must write a marker at ${markerPath}`);
+  } finally {
+    rmSync(dataDir, { recursive: true, force: true });
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("_run-worker: cancel marker prevents target spawn, sets status=cancelled", () => {
+  // Class 1 + Finding A end-to-end: when the launcher dropped a cancel
+  // marker on a queued job, the worker MUST exit before spawning the
+  // target binary. Otherwise the model call happens (cost + side effects)
+  // and only the post-run consumer would convert "completed" → "cancelled".
+  const cwd = mkdtempSync(path.join(tmpdir(), "smoke-worker-cancel-"));
+  seedMinimalRepo(cwd);
+  const dataDir = mkdtempSync(path.join(tmpdir(), "worker-cancel-data-"));
+  try {
+    const runRes = runCompanion(
+      ["run", "--mode=rescue", "--foreground",
+       "--model", "claude-haiku-4-5-20251001",
+       "--cwd", cwd, "--", "seed"],
+      { cwd, dataDir },
+    );
+    assert.equal(runRes.status, 0, runRes.stderr);
+    const { metaPath, record } = readOnlyJobRecord(dataDir);
+    // Patch back to queued so _run-worker accepts the job (terminal jobs
+    // are refused at the top of cmdRunWorker).
+    writeFileSync(metaPath,
+      `${JSON.stringify({ ...record, status: "queued", pid_info: null }, null, 2)}\n`, "utf8");
+
+    // Drop the cancel marker manually — this is what cmdCancel writes
+    // when it sees a queued job.
+    const wsDir = path.dirname(metaPath);
+    const markerDir = path.join(wsDir, record.job_id);
+    spawnSync("mkdir", ["-p", markerDir]);
+    const markerPath = path.join(markerDir, "cancel-requested.flag");
+    writeFileSync(markerPath, new Date().toISOString() + "\n");
+
+    const workerRes = spawnSync("node", [
+      path.join(REPO_ROOT, "plugins/claude/scripts/claude-companion.mjs"),
+      "_run-worker", "--cwd", cwd, "--job", record.job_id,
+    ], {
+      cwd, encoding: "utf8",
+      env: { ...process.env, CLAUDE_BINARY: MOCK, CLAUDE_PLUGIN_DATA: dataDir },
+    });
+    assert.equal(workerRes.status, 0,
+      `worker must exit 0 when marker present; stderr=${workerRes.stderr}`);
+
+    const finalMeta = JSON.parse(readFileSync(metaPath, "utf8"));
+    assert.equal(finalMeta.status, "cancelled",
+      `worker must persist status=cancelled; got ${finalMeta.status}`);
+    // pid_info stays null — the target was never spawned.
+    assert.equal(finalMeta.pid_info, null,
+      "worker must not record pid_info when refusing to spawn");
+    // Marker was consumed (unlinked) so a second pickup wouldn't double-cancel.
+    assert.equal(existsSync(markerPath), false,
+      "worker must consume (unlink) the marker on pickup");
+  } finally {
+    rmSync(dataDir, { recursive: true, force: true });
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("cancel: queued + marker write failure → cancel_failed, exit 1", () => {
+  // Class 1 follow-up (reviewer Vector 3): the queued-cancel branch's marker
+  // is the entire cancel mechanism (no SIGTERM fallback). If the write
+  // throws (disk full, perms, parent dir is a regular file), exit 0 with
+  // cancel_pending would lie about durability. Must exit 1, status:cancel_failed.
+  const cwd = mkdtempSync(path.join(tmpdir(), "smoke-cancel-fail-"));
+  seedMinimalRepo(cwd);
+  const dataDir = mkdtempSync(path.join(tmpdir(), "cancel-fail-data-"));
+  try {
+    const runRes = runCompanion(
+      ["run", "--mode=rescue", "--foreground",
+       "--model", "claude-haiku-4-5-20251001",
+       "--cwd", cwd, "--", "seed"],
+      { cwd, dataDir },
+    );
+    assert.equal(runRes.status, 0, runRes.stderr);
+    const { metaPath, record } = readOnlyJobRecord(dataDir);
+    writeFileSync(metaPath,
+      `${JSON.stringify({ ...record, status: "queued", pid_info: null }, null, 2)}\n`, "utf8");
+    // Patch state.json to match.
+    const stateRoot = path.join(dataDir, "state");
+    const statePath = (() => {
+      for (const d of readdirSync(stateRoot)) {
+        const p = path.join(stateRoot, d, "state.json");
+        if (existsSync(p)) return p;
+      }
+      throw new Error("no state.json");
+    })();
+    const state = JSON.parse(readFileSync(statePath, "utf8"));
+    const idx = state.jobs.findIndex((j) => j.id === record.job_id);
+    state.jobs[idx] = { ...state.jobs[idx], status: "queued", pid_info: null };
+    writeFileSync(statePath, JSON.stringify(state, null, 2));
+
+    // Booby-trap the marker dir: writeCancelMarker calls
+    // mkdirSync(<jobsDir>/<jobId>, { recursive: true }) — placing a regular
+    // file at that path makes the mkdir throw ENOTDIR. Remove any
+    // pre-existing per-job dir first (the seed run created it for sidecars).
+    const wsDir = path.dirname(metaPath);
+    const expectedMarkerDir = path.join(wsDir, record.job_id);
+    rmSync(expectedMarkerDir, { recursive: true, force: true });
+    writeFileSync(expectedMarkerDir, "blocker", "utf8");
+
+    const cancelRes = spawnSync("node", [
+      path.join(REPO_ROOT, "plugins/claude/scripts/claude-companion.mjs"),
+      "cancel", "--job", record.job_id, "--cwd", cwd,
+    ], {
+      cwd, encoding: "utf8",
+      env: { ...process.env, CLAUDE_PLUGIN_DATA: dataDir },
+    });
+    assert.equal(cancelRes.status, 1,
+      `marker write failure must exit 1; stderr=${cancelRes.stderr}`);
+    const cancel = JSON.parse(cancelRes.stdout);
+    assert.equal(cancel.status, "cancel_failed");
+    assert.equal(cancel.ok, false);
+    assert.match(cancel.detail ?? "", /could not durably record cancel intent/);
+  } finally {
+    rmSync(dataDir, { recursive: true, force: true });
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("cancel: unknown job status → bad_state, exit 1", () => {
+  // Class 1 follow-up (reviewer Vector 5): if state.json is corrupted such
+  // that job.status is something we don't recognize (not running, not
+  // truly-terminal, not queued), the code MUST surface the corruption
+  // rather than silently treat it as queued and write a marker.
+  const cwd = mkdtempSync(path.join(tmpdir(), "smoke-cancel-bad-state-"));
+  seedMinimalRepo(cwd);
+  const dataDir = mkdtempSync(path.join(tmpdir(), "cancel-bad-state-data-"));
+  try {
+    const runRes = runCompanion(
+      ["run", "--mode=rescue", "--foreground",
+       "--model", "claude-haiku-4-5-20251001",
+       "--cwd", cwd, "--", "seed"],
+      { cwd, dataDir },
+    );
+    assert.equal(runRes.status, 0, runRes.stderr);
+    const { metaPath, record } = readOnlyJobRecord(dataDir);
+    writeFileSync(metaPath,
+      `${JSON.stringify({ ...record, status: "errored" }, null, 2)}\n`, "utf8");
+    const stateRoot = path.join(dataDir, "state");
+    const statePath = (() => {
+      for (const d of readdirSync(stateRoot)) {
+        const p = path.join(stateRoot, d, "state.json");
+        if (existsSync(p)) return p;
+      }
+      throw new Error("no state.json");
+    })();
+    const state = JSON.parse(readFileSync(statePath, "utf8"));
+    const idx = state.jobs.findIndex((j) => j.id === record.job_id);
+    state.jobs[idx] = { ...state.jobs[idx], status: "errored" };
+    writeFileSync(statePath, JSON.stringify(state, null, 2));
+
+    const cancelRes = spawnSync("node", [
+      path.join(REPO_ROOT, "plugins/claude/scripts/claude-companion.mjs"),
+      "cancel", "--job", record.job_id, "--cwd", cwd,
+    ], {
+      cwd, encoding: "utf8",
+      env: { ...process.env, CLAUDE_PLUGIN_DATA: dataDir },
+    });
+    assert.equal(cancelRes.status, 1,
+      `unknown status must exit 1; stderr=${cancelRes.stderr}`);
+    const cancel = JSON.parse(cancelRes.stdout);
+    assert.equal(cancel.error, "bad_state");
+    assert.match(cancel.message ?? "", /unexpected job status/);
+  } finally {
+    rmSync(dataDir, { recursive: true, force: true });
     rmSync(cwd, { recursive: true, force: true });
   }
 });

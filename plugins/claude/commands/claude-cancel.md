@@ -10,16 +10,31 @@ argument-hint: "<job-id> [--force]"
    ```
    node "<plugin-root>/scripts/claude-companion.mjs" cancel --job <job-id> [--force]
    ```
-3. Report the response JSON:
-   - `status: "signaled"` → job received SIGTERM/SIGKILL.
-   - `status: "already_terminal"` → nothing to do.
-   - `status: "already_dead"` → PID gone; state will reconcile.
-   - `status: "no_pid_info"` → job lacks complete PID ownership proof; do not signal manually unless the operator accepts that risk.
-   - `status: "stale_pid"` → PID ownership proof changed; refuse to signal because the PID may have been reused.
-   - `error: "signal_failed"` → OS signal attempt failed; surface the returned `message`, `pid`, and `signal` details.
+3. Report the response JSON. The exit code is the coarse-grained outcome; the JSON `status` field is the fine-grained reason.
+
+### Statuses and exit codes
+
+Exit `0` — cancel post-condition holds (process gone, never running, or signal sent):
+- `signaled` — SIGTERM (or SIGKILL with `--force`) delivered to the verified pid.
+- `already_terminal` — job is already `completed` / `failed` / `cancelled` / `stale`; nothing to do.
+- `already_dead` — pid is gone; state will reconcile on next status read.
+- `cancel_pending` — job was queued (worker not yet spawned target). A marker was written; the worker will refuse to spawn on pickup and finalize as `cancelled`.
+
+Exit `1` — operational error (cancel could not be performed):
+- `error: "bad_args"` — invalid arguments (missing `--job`, conflicting flags).
+- `error: "not_found"` — no job with that id in this workspace.
+- `error: "bad_state"` — job has an unrecognized `status` (state corruption); refuse to act on it.
+- `error: "signal_failed"` — OS signal attempt failed; surface the returned `message`, `pid`, and `signal`.
+- `status: "cancel_failed"` — job is queued but the cancel marker write threw (disk full, permissions, parent dir vanished). The cancel intent is NOT durably recorded; the worker may still spawn the target.
+
+Exit `2` — refused for safety (process may still be running, ownership unverifiable):
+- `no_pid_info` — running job has no pid_info, or pid_info is missing `starttime` / `argv0` (legacy record, spawn race, or `ps`/`/proc` was unavailable at spawn). Operator must investigate.
+- `unverifiable` — could not re-verify pid ownership at cancel time (`ps`/`/proc` unavailable). Operator must investigate.
+- `stale_pid` — recorded `starttime` or `argv0` no longer matches the live process at that pid; the pid was reused. Refused to avoid signaling an unrelated process.
 
 ## Guardrails
 
 - This command is for background jobs only. Foreground runs are owned by the active terminal; interrupt them with Ctrl+C.
 - Default signal is SIGTERM (graceful). Only use SIGKILL with `--force`.
-- PID-liveness check runs before signaling — guards against PID reuse.
+- PID-liveness AND ownership check (`{starttime, argv0}` tuple) runs before signaling — a bare pid match is not sufficient to authorize a kill.
+- For shell pipelines that want best-effort cancel: append `|| true` to absorb exit 2 (refused-for-safety) when ps/proc is unavailable.

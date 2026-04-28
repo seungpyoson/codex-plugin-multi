@@ -71,7 +71,7 @@ test("setup docs do not claim unimplemented target version-floor checks", () => 
   assert.doesNotMatch(docs, /version is below floor/i);
 });
 
-test("gemini command docs match background/continue runtime and deferred cancel", () => {
+test("gemini command docs match background/continue runtime and wired cancel", () => {
   const rescue = readRepoFile("plugins/gemini/commands/gemini-rescue.md");
   const cancel = readRepoFile("plugins/gemini/commands/gemini-cancel.md");
 
@@ -80,9 +80,16 @@ test("gemini command docs match background/continue runtime and deferred cancel"
   assert.doesNotMatch(rescue, /foreground only/i);
   assert.doesNotMatch(rescue, /background support lands/i);
 
-  assert.match(cancel, /not_implemented/);
-  assert.match(cancel, /deferred/i);
+  // Gemini cancel is wired (PR #22 / commit 01f4282) — docs must NOT claim
+  // it returns not_implemented or that it's deferred.
+  assert.doesNotMatch(cancel, /not_implemented/,
+    "gemini cancel is wired; docs must not claim not_implemented");
+  assert.doesNotMatch(cancel, /\bdeferred\b/i,
+    "gemini cancel is wired; docs must not claim it's deferred");
   assert.doesNotMatch(cancel, /M8 wires background cancel/i);
+  // Must enumerate the canonical signaled-success status so operators
+  // know cancel is operational.
+  assert.match(cancel, /\bsignaled\b/);
 });
 
 test("spec does not reference an unshipped Gemini result-handling skill", () => {
@@ -111,6 +118,7 @@ test("README documents shipped install path, first commands, and safety posture"
   assert.match(readme, /Gemini plan-mode is NOT a sandbox/);
   assert.match(readme, /read-only\.toml/);
   assert.match(readme, /--dispose/);
-  assert.match(readme, /Gemini `cancel`.*deferred/i);
+  assert.doesNotMatch(readme, /Gemini `cancel`.*deferred/i,
+    "gemini cancel is wired (PR #22); README must not claim it's deferred");
   assert.match(readme, /docs\/e2e\.md/);
 });
