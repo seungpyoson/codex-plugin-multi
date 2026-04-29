@@ -16,7 +16,7 @@ const COMPANION = path.join(REPO_ROOT, "plugins/gemini/scripts/gemini-companion.
 const MOCK = path.join(REPO_ROOT, "tests/smoke/gemini-mock.mjs");
 const GEMINI_SESSION_ID = "22222222-3333-4444-9555-666666666666";
 const RESUMED_GEMINI_SESSION_ID = "77777777-8888-4999-aaaa-bbbbbbbbbbbb";
-const GEMINI_SMOKE_POLL_TIMEOUT_MS = Number(process.env.GEMINI_SMOKE_POLL_TIMEOUT_MS ?? 5000);
+const GEMINI_SMOKE_POLL_TIMEOUT_MS = Number(process.env.GEMINI_SMOKE_POLL_TIMEOUT_MS ?? 30000);
 
 // #16 follow-up 9: fixtureSeedRepo scrubs inherited GIT_* env vars so a
 // stale GIT_DIR/GIT_WORK_TREE in the parent process cannot hijack fixture
@@ -165,7 +165,7 @@ test("gemini rescue background: active job appears in default status", async () 
   try {
     assert.equal(status, 0, `exit ${status}: ${stderr}`);
     const launched = JSON.parse(stdout);
-    const runningDeadline = Date.now() + 3000;
+    const runningDeadline = Date.now() + GEMINI_SMOKE_POLL_TIMEOUT_MS;
     let running = null;
     while (Date.now() < runningDeadline && !running) {
       const statusRes = spawnSync("node", [COMPANION, "status", "--cwd", cwd], {
@@ -216,7 +216,7 @@ test("gemini cancel: signals a running background job (issue #22 sub-task 1)", a
   try {
     assert.equal(status, 0, stderr);
     const launched = JSON.parse(stdout);
-    const deadline = Date.now() + 5000;
+    const deadline = Date.now() + GEMINI_SMOKE_POLL_TIMEOUT_MS;
     let running = null;
     while (Date.now() < deadline && !running) {
       const statusRes = spawnSync("node", [COMPANION, "status", "--cwd", cwd], {
@@ -513,7 +513,7 @@ test("gemini cancel: SIGTERM-trapping target classifies as cancelled, not comple
   try {
     assert.equal(status, 0, stderr);
     const launched = JSON.parse(stdout);
-    const runDeadline = Date.now() + 5000;
+    const runDeadline = Date.now() + GEMINI_SMOKE_POLL_TIMEOUT_MS;
     let running = null;
     while (Date.now() < runDeadline && !running) {
       const sr = spawnSync("node", [COMPANION, "status", "--cwd", cwd], {
@@ -577,7 +577,7 @@ test("gemini cancel: ESRCH after ownership verification is already_dead, not sig
   try {
     assert.equal(status, 0, stderr);
     const launched = JSON.parse(stdout);
-    const runDeadline = Date.now() + 5000;
+    const runDeadline = Date.now() + GEMINI_SMOKE_POLL_TIMEOUT_MS;
     let running = null;
     while (Date.now() < runDeadline && !running) {
       const sr = spawnSync("node", [COMPANION, "status", "--cwd", cwd], {

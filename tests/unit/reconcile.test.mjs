@@ -7,6 +7,7 @@
 
 import { test, before, afterEach } from "node:test";
 import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -20,6 +21,7 @@ import {
   readJobFileById,
 } from "../../plugins/claude/scripts/lib/state.mjs";
 import { reconcileActiveJobs } from "../../plugins/claude/scripts/lib/reconcile.mjs";
+import { capturePidInfo } from "../../plugins/claude/scripts/lib/identity.mjs";
 import * as GeminiState from "../../plugins/gemini/scripts/lib/state.mjs";
 import { reconcileActiveJobs as reconcileGemini } from "../../plugins/gemini/scripts/lib/reconcile.mjs";
 
@@ -84,6 +86,29 @@ function findDeadPid() {
   return 99999999;
 }
 
+async function deadPidInfo() {
+  const child = spawn(process.execPath, ["-e", "setTimeout(() => {}, 30000)"], {
+    stdio: "ignore",
+  });
+  await new Promise((resolve, reject) => {
+    child.once("spawn", resolve);
+    child.once("error", reject);
+  });
+  const pidInfo = capturePidInfo(child.pid);
+  child.kill("SIGTERM");
+  await new Promise((resolve) => {
+    const timer = setTimeout(() => {
+      try { child.kill("SIGKILL"); } catch { /* already gone */ }
+      resolve();
+    }, 1000);
+    child.once("close", () => {
+      clearTimeout(timer);
+      resolve();
+    });
+  });
+  return pidInfo;
+}
+
 function seedActive(dir, jobId, overrides = {}) {
   const record = {
     id: jobId, job_id: jobId,
@@ -116,17 +141,13 @@ test("reconcileActiveJobs: leaves a fresh queued/running job alone", () => {
   }
 });
 
-test("reconcileActiveJobs: queued/running with a dead pid is promoted to stale", () => {
+test("reconcileActiveJobs: queued/running with a dead pid is promoted to stale", async () => {
   const dir = freshDir();
   try {
     const id = "dead-pid-job";
-    const deadPid = findDeadPid();
+    const pidInfo = await deadPidInfo();
     seedActive(dir, id, {
-      pid_info: {
-        pid: deadPid,
-        starttime: "Thu Apr 24 12:00:00 2026",
-        argv0: "claude",
-      },
+      pid_info: pidInfo,
     });
     const reclaimed = reconcileActiveJobs(dir);
     assert.equal(reclaimed.length, 1, `expected 1 reclaim; got ${JSON.stringify(reclaimed)}`);
@@ -168,16 +189,12 @@ test("reconcileActiveJobs: missing pid_info reclaimed only after orphan window",
   }
 });
 
-test("reconcileActiveJobs: stale jobs are continuable history, not deleted", () => {
+test("reconcileActiveJobs: stale jobs are continuable history, not deleted", async () => {
   const dir = freshDir();
   try {
     const id = "permanent-stale-job";
     seedActive(dir, id, {
-      pid_info: {
-        pid: findDeadPid(),
-        starttime: "Thu Apr 24 12:00:00 2026",
-        argv0: "claude",
-      },
+      pid_info: await deadPidInfo(),
     });
     reconcileActiveJobs(dir);
     const stale = readJobFileById(dir, id);
@@ -393,10 +410,11 @@ test("reconcileActiveJobs: missing meta.json on disk is skipped without throwing
   }
 });
 
-test("gemini reconcileActiveJobs: dead pid promotes to stale", () => {
+test("gemini reconcileActiveJobs: dead pid promotes to stale", async () => {
   const dir = freshGeminiDir();
   try {
     const id = "gemini-dead-pid-job";
+    const pidInfo = await deadPidInfo();
     GeminiState.writeJobFile(dir, id, {
       id, job_id: id,
       target: "gemini",
@@ -413,11 +431,7 @@ test("gemini reconcileActiveJobs: dead pid promotes to stale", () => {
       binary: "gemini",
       status: "running",
       started_at: new Date(Date.now() - 10_000).toISOString(),
-      pid_info: {
-        pid: findDeadPid(),
-        starttime: "Thu Apr 24 12:00:00 2026",
-        argv0: "gemini",
-      },
+      pid_info: pidInfo,
       claude_session_id: null,
       gemini_session_id: null,
       schema_version: 6,

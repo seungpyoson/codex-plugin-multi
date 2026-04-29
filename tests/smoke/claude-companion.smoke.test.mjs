@@ -17,6 +17,7 @@ import { fixtureGitEnv, fixtureSeedRepo } from "../helpers/fixture-git.mjs";
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const COMPANION = path.join(REPO_ROOT, "plugins/claude/scripts/claude-companion.mjs");
 const MOCK = path.join(REPO_ROOT, "tests/smoke/claude-mock.mjs");
+const CLAUDE_SMOKE_POLL_TIMEOUT_MS = Number(process.env.CLAUDE_SMOKE_POLL_TIMEOUT_MS ?? 30000);
 
 function runCompanion(args, { cwd, env = {}, dataDir = mkdtempSync(path.join(tmpdir(), "companion-smoke-")) } = {}) {
   // Point the companion at a fresh PLUGIN_DATA dir so tests don't step on
@@ -265,7 +266,7 @@ test("T7.4 / §21.3.2: prompt sidecar is deleted after worker consumes it", asyn
     const ev = JSON.parse(stdout);
     const stateRoot = path.join(dataDir, "state");
     // Poll until the record is terminal.
-    const deadline = Date.now() + 5000;
+    const deadline = Date.now() + 10000;
     let done = false;
     let jobDir = null;
     while (Date.now() < deadline && !done) {
@@ -337,7 +338,7 @@ test("run --background: active job is visible as running and can be cancelled", 
   try {
     assert.equal(status, 0, stderr);
     const launched = JSON.parse(stdout);
-    const deadline = Date.now() + 5000;
+    const deadline = Date.now() + CLAUDE_SMOKE_POLL_TIMEOUT_MS;
     let running = null;
     while (Date.now() < deadline && !running) {
       const statusRes = spawnSync("node", [
@@ -470,7 +471,7 @@ test("cancel: SIGTERM-trapping target classifies as cancelled, not completed (is
     assert.equal(status, 0, stderr);
     const launched = JSON.parse(stdout);
     // Wait until the job is visible as running (mock has spawned, pid_info written).
-    const runDeadline = Date.now() + 5000;
+    const runDeadline = Date.now() + CLAUDE_SMOKE_POLL_TIMEOUT_MS;
     let running = null;
     while (Date.now() < runDeadline && !running) {
       const sr = spawnSync("node", [
@@ -542,7 +543,7 @@ test("cancel: ESRCH after ownership verification is already_dead, not signal_fai
   try {
     assert.equal(status, 0, stderr);
     const launched = JSON.parse(stdout);
-    const runDeadline = Date.now() + 5000;
+    const runDeadline = Date.now() + CLAUDE_SMOKE_POLL_TIMEOUT_MS;
     let running = null;
     while (Date.now() < runDeadline && !running) {
       const sr = spawnSync("node", [

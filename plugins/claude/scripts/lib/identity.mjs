@@ -162,10 +162,10 @@ function captureDarwin(pid) {
 
 /**
  * Attach pid_info capture to a freshly-spawned child. Defers reading
- * /proc/<pid>/cmdline (Linux) or `ps -o comm=` (Darwin) until the child's
- * 'spawn' event — Node's canonical post-execve signal. Reading earlier
- * returns the parent's argv, which then mismatches verifyPidInfo at
- * cancel time as `argv0_mismatch` (issue #25).
+ * /proc/<pid>/cmdline (Linux) or `ps -o comm=` (Darwin) until just after the
+ * child's 'spawn' event. The small delay matters for shebang targets such as
+ * `#!/usr/bin/env node`: the PID can briefly report `env` before that wrapper
+ * execs the real target, which would later mismatch as `argv0_mismatch`.
  *
  * Returns a `() => pidInfo | null` getter. The captured info becomes
  * available once the child has execve'd; if the child fails before
@@ -174,15 +174,36 @@ function captureDarwin(pid) {
  */
 export function attachPidCapture(child, onSpawn) {
   let pidInfo = null;
-  child.once("spawn", () => {
+  let callbackFired = false;
+  let spawnSeen = false;
+  let captureTimer = null;
+  const captureNow = () => {
+    if (pidInfo || !Number.isInteger(child.pid)) return pidInfo;
     try {
       pidInfo = capturePidInfo(child.pid);
     } catch (e) {
       pidInfo = { pid: child.pid, starttime: null, argv0: null, capture_error: e.message };
     }
-    if (typeof onSpawn === "function" && Number.isInteger(child.pid)) {
+    return pidInfo;
+  };
+  const fireCallback = () => {
+    if (callbackFired || !Number.isInteger(child.pid)) return;
+    callbackFired = true;
+    captureNow();
+    if (typeof onSpawn === "function") {
       try { onSpawn(pidInfo); } catch { /* status handoff is best-effort */ }
     }
+  };
+  child.once("spawn", () => {
+    spawnSeen = true;
+    captureTimer = setTimeout(fireCallback, 50);
+  });
+  child.once("close", () => {
+    if (captureTimer) {
+      clearTimeout(captureTimer);
+      captureTimer = null;
+    }
+    if (spawnSeen) fireCallback();
   });
   return () => pidInfo;
 }

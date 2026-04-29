@@ -210,8 +210,9 @@ process.stdin.on("end", () => {
 test("spawnGemini: onSpawn fires asynchronously via 'spawn' event, not synchronously (issue #25)", async () => {
   // Regression for the argv0_mismatch flake — see claude-dispatcher's
   // counterpart for the full rationale. capturePidInfo must read
-  // /proc/<pid>/cmdline AFTER execve completes; we enforce this by
-  // proving onSpawn does not fire in the synchronous executor turn.
+  // /proc/<pid>/cmdline after the child has had a chance to exec the real
+  // target; we enforce this by proving onSpawn does not fire in the
+  // synchronous executor turn.
   const dir = mkdtempSync(path.join(tmpdir(), "gemini-spawn-async-"));
   try {
     const bin = writeExecutable(dir, "gemini-ok.mjs", String.raw`#!/usr/bin/env node

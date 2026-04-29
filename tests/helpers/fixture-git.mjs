@@ -21,6 +21,8 @@
 // this onto the shared module makes the next gap a one-place fix.
 
 import { spawnSync } from "node:child_process";
+import { writeFileSync } from "node:fs";
+import { join as joinPath } from "node:path";
 import { cleanGitEnv as scrubGitEnv } from "../../plugins/claude/scripts/lib/git-env.mjs";
 
 /**
@@ -75,20 +77,16 @@ export function fixtureSeedRepo(cwd, {
   if (init.status !== 0) {
     throw new Error(`fixtureSeedRepo: git init failed: ${init.stderr ?? ""}`);
   }
-  // Use bash so callers can keep the existing one-shot pattern without
-  // importing fs. Bash inherits the sanitized env via spawnSync.
-  const seed = spawnSync("bash", [
-    "-c",
-    `printf %s ${JSON.stringify(fileContents)} > ${JSON.stringify(fileName)} && ` +
-    `git -c core.hooksPath=/dev/null add ${JSON.stringify(fileName)} && ` +
-    `git -c core.hooksPath=/dev/null commit -q -m ${JSON.stringify(message)}`,
-  ], {
-    cwd,
-    encoding: "utf8",
-    timeout: 15000,
-    env: fixtureGitEnv(),
-  });
-  if (seed.status !== 0) {
-    throw new Error(`fixtureSeedRepo: seed failed: ${seed.stderr ?? ""}`);
+
+  writeFileSync(joinPath(cwd, fileName), fileContents);
+
+  const add = fixtureGit(cwd, ["add", fileName]);
+  if (add.status !== 0) {
+    throw new Error(`fixtureSeedRepo: git add failed: ${add.stderr ?? ""}`);
+  }
+
+  const commit = fixtureGit(cwd, ["commit", "-q", "-m", message]);
+  if (commit.status !== 0) {
+    throw new Error(`fixtureSeedRepo: git commit failed: ${commit.stderr ?? ""}`);
   }
 }

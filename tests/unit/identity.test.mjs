@@ -445,7 +445,8 @@ test("gemini capturePidInfo: Linux, unsupported platform, and verify error branc
 //
 // This test catches that class of regression by spawning a child with a
 // DIFFERENT binary from the parent (sleep, not node) and asserting the
-// captured argv0 reflects the child binary post-execve, not the parent's.
+// captured argv0 reflects the child binary after the post-spawn capture
+// delay, not the parent's.
 test(
   "attachPidCapture: captured argv0 reflects child binary post-execve, not parent's argv (Class 5a)",
   { skip: attachPidCaptureSkipReason },

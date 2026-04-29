@@ -255,9 +255,9 @@ test("spawnClaude: onSpawn fires asynchronously via 'spawn' event, not synchrono
   // Regression for the argv0_mismatch flake: capturePidInfo must run
   // AFTER the child's execve completes, otherwise /proc/<pid>/cmdline
   // (Linux) or `ps -o comm=` (Darwin) may still reflect the parent's
-  // argv. Node's child.once('spawn', ...) is the canonical post-execve
-  // signal, so onSpawn MUST NOT fire during the synchronous executor
-  // turn that calls spawn().
+  // argv. onSpawn MUST NOT fire during the synchronous executor turn
+  // that calls spawn(), and attachPidCapture adds a short post-spawn
+  // delay so shebang wrappers can exec the real target.
   let onSpawnFired = false;
   const promise = spawnClaude(resolveProfile("rescue"), {
     model: "claude-haiku-4-5-20251001",
