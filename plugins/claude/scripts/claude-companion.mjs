@@ -823,15 +823,9 @@ async function cmdCancel(rest) {
     try {
       writeCancelMarker(workspaceRoot, options.job);
     } catch (e) {
-      process.stderr.write(`claude-companion: cancel marker write failed: ${e.message}\n`);
-      printJson({
-        ok: false,
-        status: "cancel_failed",
-        detail: "could not durably record cancel intent (marker write failed); job may still spawn",
-        job_id: options.job,
-        error: e.message,
-      });
-      process.exit(1);
+      fail("cancel_failed",
+        "could not durably record cancel intent (marker write failed); job may still spawn",
+        { job_id: options.job, detail: e.message });
     }
     printJson({ ok: true, status: "cancel_pending", job_status: job.status, job_id: options.job });
     return;
@@ -920,6 +914,10 @@ async function cmdCancel(rest) {
   try {
     process.kill(pidInfo.pid, signal);
   } catch (e) {
+    if (e?.code === "ESRCH") {
+      printJson({ ok: true, status: "already_dead", job_id: options.job, pid: pidInfo.pid });
+      return;
+    }
     fail("signal_failed", e.message, { pid: pidInfo.pid, signal });
   }
   printJson({ ok: true, status: "signaled", signal, job_id: options.job, pid: pidInfo.pid });

@@ -39,7 +39,10 @@ No blocker, high, or medium findings remain open for the reviewed delta.
 
 ## Known non-code limitations
 
-- Gemini `cancel` remains intentionally deferred and documented.
+- Historical note: at M10 review time Gemini `cancel` was intentionally
+  deferred. Current PR #23 follow-up work wires Gemini `cancel`; operator
+  contract is now the plugin command docs and docs-contract tests, not this
+  historical release-review note.
 - Live E2E is opt-in and not part of default CI.
 - `git cat-file --batch` and slow scope-suite optimization remain performance
   backlog items, not release blockers.

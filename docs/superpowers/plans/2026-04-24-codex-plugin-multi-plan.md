@@ -676,7 +676,7 @@ M11 release      → T11.1 → T11.2 → T11.3 → T11.4              (was M10)
 
 **Milestone goal:** Gemini rescue works detached with session continuation.
 
-**Runtime alignment:** As of `3bf78d4`, Gemini `run --background` plus foreground/background `continue --job` are implemented. Gemini `cancel` remains deferred.
+**Runtime alignment:** As of `3bf78d4`, Gemini `run --background` plus foreground/background `continue --job` were implemented while Gemini `cancel` remained deferred. PR #23 follow-up work later wired Gemini `cancel`; see `plugins/gemini/commands/gemini-cancel.md` for the current operator contract.
 
 ### T9.1 — Gemini `run --background` + detached wrapper
 

@@ -15,7 +15,6 @@ const CANCEL_STATUSES = [
   "already_terminal",
   "already_dead",
   "cancel_pending",
-  "cancel_failed",
   "no_pid_info",
   "unverifiable",
   "stale_pid",
@@ -26,6 +25,7 @@ const CANCEL_ERRORS = [
   "not_found",
   "bad_state",
   "signal_failed",
+  "cancel_failed",
 ];
 
 function quotedValuesForField(markdown, field) {

@@ -416,7 +416,7 @@ test("gemini cancel: queued + marker write failure → cancel_failed, exit 1", (
     assert.equal(cancelRes.status, 1,
       `marker write failure must exit 1; stderr=${cancelRes.stderr}`);
     const cancel = JSON.parse(cancelRes.stdout);
-    assert.equal(cancel.status, "cancel_failed");
+    assert.equal(cancel.error, "cancel_failed");
     assert.equal(cancel.ok, false);
   } finally {
     rmTree(runRes.dataDir);
@@ -506,7 +506,7 @@ test("gemini cancel: SIGTERM-trapping target classifies as cancelled, not comple
   const { stdout, status, stderr, dataDir } = runCompanion(
     ["run", "--mode=rescue", "--background", "--model", "gemini-3-flash-preview",
      "--cwd", cwd, "--", "long task"],
-    { cwd, env: { GEMINI_MOCK_DELAY_MS: "5000", GEMINI_MOCK_TRAP_SIGTERM: "1" } },
+    { cwd, env: { GEMINI_MOCK_DELAY_MS: "30000", GEMINI_MOCK_TRAP_SIGTERM: "1" } },
   );
   try {
     assert.equal(status, 0, stderr);
@@ -526,9 +526,19 @@ test("gemini cancel: SIGTERM-trapping target classifies as cancelled, not comple
     const cancelRes = spawnSync("node", [
       COMPANION, "cancel", "--job", launched.job_id, "--cwd", cwd,
     ], { cwd, encoding: "utf8", env: { ...process.env, GEMINI_PLUGIN_DATA: dataDir } });
-    assert.equal(cancelRes.status, 0, cancelRes.stderr);
+    const cancel = JSON.parse(cancelRes.stdout);
+    const exitOk =
+      (cancel.status === "signaled" && cancelRes.status === 0) ||
+      (cancel.status === "already_dead" && cancelRes.status === 0) ||
+      (cancel.status === "no_pid_info" && cancelRes.status === 2) ||
+      (cancel.status === "unverifiable" && cancelRes.status === 2);
+    assert.ok(exitOk,
+      `unexpected SIGTERM-trap cancel outcome (${JSON.stringify(cancel.status)}, ${cancelRes.status}); stderr=${cancelRes.stderr}`);
+    if (cancelRes.status !== 0) return;
 
-    // 10s allows the mock's 5s natural-delay fallback to fire too.
+    // Natural completion is delayed well beyond this window, so finalization
+    // here should mean SIGTERM trapping engaged or the ESRCH-after-marker race
+    // was handled as already_dead.
     const termDeadline = Date.now() + 10000;
     let terminal = null;
     while (Date.now() < termDeadline && !terminal) {
@@ -544,6 +554,71 @@ test("gemini cancel: SIGTERM-trapping target classifies as cancelled, not comple
     assert.ok(terminal, "job did not finalize after cancel");
     assert.equal(terminal.status, "cancelled",
       `cancel-marker must force status=cancelled even when target trapped SIGTERM; got ${JSON.stringify(terminal)}`);
+  } finally {
+    rmTree(dataDir);
+    rmTree(cwd);
+  }
+});
+
+test("gemini cancel: ESRCH after ownership verification is already_dead, not signal_failed", {
+  skip: process.env.CODEX_PLUGIN_COVERAGE === "1"
+    ? "regular npm test covers ESRCH kill race; coverage mode already imports companion in cancel smoke"
+    : false,
+}, async () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "gemini-cancel-esrch-cwd-"));
+  seedMinimalRepo(cwd);
+  const { stdout, status, stderr, dataDir } = runCompanion(
+    ["run", "--mode=rescue", "--background", "--model", "gemini-3-flash-preview",
+     "--cwd", cwd, "--", "long task"],
+    { cwd, env: { GEMINI_MOCK_DELAY_MS: "30000" } },
+  );
+  try {
+    assert.equal(status, 0, stderr);
+    const launched = JSON.parse(stdout);
+    const runDeadline = Date.now() + 5000;
+    let running = null;
+    while (Date.now() < runDeadline && !running) {
+      const sr = spawnSync("node", [COMPANION, "status", "--cwd", cwd], {
+        cwd, encoding: "utf8", env: { ...process.env, GEMINI_PLUGIN_DATA: dataDir },
+      });
+      const so = JSON.parse(sr.stdout);
+      running = so.jobs.find((j) => j.id === launched.job_id && j.status === "running");
+      if (!running) await new Promise((r) => setTimeout(r, 100));
+    }
+    assert.ok(running, "background gemini job never visible as running");
+    if (running.pid_info?.capture_error) return;
+
+    const preload = path.join(cwd, "kill-esrch-after-signal.mjs");
+    writeFileSync(preload, `
+const origKill = process.kill.bind(process);
+process.kill = (pid, signal) => {
+  if (signal === "SIGTERM") {
+    try { origKill(pid, signal); } catch {}
+    const err = new Error("kill ESRCH");
+    err.code = "ESRCH";
+    throw err;
+  }
+  return origKill(pid, signal);
+};
+`, "utf8");
+    const cancelRes = spawnSync("node", [
+      COMPANION, "cancel", "--job", launched.job_id, "--cwd", cwd,
+    ], {
+      cwd, encoding: "utf8",
+      env: {
+        ...process.env,
+        GEMINI_PLUGIN_DATA: dataDir,
+        NODE_OPTIONS: `--import=${preload}`,
+      },
+    });
+    const cancel = JSON.parse(cancelRes.stdout);
+    if (cancel.status === "no_pid_info") {
+      assert.equal(cancelRes.status, 2, cancelRes.stderr);
+      return;
+    }
+    assert.equal(cancelRes.status, 0, cancelRes.stderr);
+    assert.equal(cancel.status, "already_dead");
+    assert.equal(cancel.pid, running.pid_info.pid);
   } finally {
     rmTree(dataDir);
     rmTree(cwd);

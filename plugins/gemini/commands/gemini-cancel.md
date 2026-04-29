@@ -25,7 +25,7 @@ Exit `1` — operational error (cancel could not be performed):
 - `error: "not_found"` — no job with that id in this workspace.
 - `error: "bad_state"` — job has an unrecognized `status` (state corruption); refuse to act on it.
 - `error: "signal_failed"` — OS signal attempt failed; surface the returned `message`, `pid`, and `signal`.
-- `status: "cancel_failed"` — job is queued but the cancel marker write threw (disk full, permissions, parent dir vanished). The cancel intent is NOT durably recorded; the worker may still spawn the target.
+- `error: "cancel_failed"` — job is queued but the cancel marker write threw (disk full, permissions, parent dir vanished). The cancel intent is NOT durably recorded; the worker may still spawn the target.
 
 Exit `2` — refused for safety (process may still be running, ownership unverifiable):
 - `status: "no_pid_info"` — running job has no pid_info, or pid_info is missing `starttime` / `argv0` (legacy record, spawn race, or `ps`/`/proc` was unavailable at spawn). Operator must investigate.

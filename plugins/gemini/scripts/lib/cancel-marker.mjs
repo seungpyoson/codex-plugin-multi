@@ -29,10 +29,10 @@ export function cancelMarkerPath(workspaceRoot, jobId) {
 
 /**
  * Writes the cancel-requested marker (mode 0600). Creates the parent dir
- * if missing. Throws on failure — callers wrap in try/catch and emit a
- * target-specific warning, since marker write is best-effort: if it
- * fails, the SIGTERM still goes through and we lose only the override
- * (worst case: SIGTERM-trap mis-classification reappears).
+ * if missing. Throws on failure so cmdCancel can decide how hard to fail.
+ * For queued jobs the marker is the whole cancel mechanism, so failure
+ * must surface as cancel_failed. For running jobs the signal can still
+ * proceed, so callers may warn and continue.
  */
 export function writeCancelMarker(workspaceRoot, jobId) {
   const p = cancelMarkerPath(workspaceRoot, jobId);
@@ -46,7 +46,9 @@ export function writeCancelMarker(workspaceRoot, jobId) {
  * Read-and-delete. Returns true if the marker was present (signal to
  * force status=cancelled). Any read/unlink error is swallowed — the
  * presence check has already happened, so an unlink loss is harmless
- * (the next run uses a different jobId).
+ * (the next run uses a different jobId). Caller contract: one worker
+ * consumes a marker for a given job lifecycle; a second consumer seeing
+ * false is a harmless no-op.
  */
 export function consumeCancelMarker(workspaceRoot, jobId) {
   const p = cancelMarkerPath(workspaceRoot, jobId);

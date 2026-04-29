@@ -496,6 +496,37 @@ test("buildJobRecord: parse_error path (claude returned unparsable stdout)", () 
   assert.equal(rec.error_code, "parse_error");
 });
 
+test("buildJobRecord: claude empty_stdout parse failure preserves parsed error", () => {
+  const rec = buildJobRecord(makeInvocation(), {
+    exitCode: 0,
+    parsed: { ok: false, reason: "empty_stdout", error: "no output", denials: "bad" },
+    pidInfo: null,
+    claudeSessionId: null,
+  }, []);
+  assert.equal(rec.status, "failed");
+  assert.equal(rec.error_code, "parse_error");
+  assert.equal(rec.error_message, "no output");
+  assert.deepEqual(rec.permission_denials, []);
+});
+
+test("buildJobRecord: claude optional invocation defaults are normalized", () => {
+  const invocation = makeInvocation({
+    parent_job_id: undefined,
+    resume_chain: undefined,
+    dispose_effective: undefined,
+    scope_base: undefined,
+    scope_paths: undefined,
+    schema_spec: undefined,
+  });
+  const rec = buildJobRecord(invocation, null, []);
+  assert.equal(rec.parent_job_id, null);
+  assert.deepEqual(rec.resume_chain, []);
+  assert.equal(rec.dispose_effective, false);
+  assert.equal(rec.scope_base, null);
+  assert.equal(rec.scope_paths, null);
+  assert.equal(rec.schema_spec, null);
+});
+
 test("buildJobRecord: mutations pass through verbatim", () => {
   const mutations = ["M foo.md", "?? bar.js"];
   const rec = buildJobRecord(makeInvocation(), {

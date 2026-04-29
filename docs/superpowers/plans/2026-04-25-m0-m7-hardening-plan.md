@@ -261,7 +261,11 @@
 - `lib-imports.test.mjs` enforces production-consumer checks for both Claude and Gemini lib files.
 - Gemini policy test asserts the deny list contains every currently known destructive tool in `read-only.toml`.
 - Gemini smoke coverage includes `review`, `adversarial-review`, `rescue`, `ping`, `status`, and `result` where M7 supports them.
-- Historical M7 boundary: Gemini background and cancel remained documented as not implemented. Current runtime after `3bf78d4`: Gemini background and continue are implemented; Gemini cancel remains deferred.
+- Historical M7 boundary: Gemini background and cancel remained documented as
+  not implemented. Runtime after `3bf78d4`: Gemini background and continue
+  were implemented while Gemini cancel remained deferred. PR #23 follow-up
+  work wires Gemini cancel; current operator contract lives in
+  `plugins/gemini/commands/gemini-cancel.md`.
 
 **TDD Steps:**
 - [ ] Add a failing lib-imports test for Gemini production consumers.
@@ -269,11 +273,13 @@
 - [ ] Update production-consumer traversal so both plugin companions and lib-to-lib imports are handled per target.
 - [ ] Add policy completeness assertions for every deny rule present in `plugins/gemini/policies/read-only.toml`.
 - [ ] Add Gemini smoke cases for adversarial-review and rescue with the mock CLI.
-- [ ] Add or update tests for the current Gemini lifecycle surface: background/continue should pass; cancel should remain explicit `not_implemented` until implemented.
+- [x] Superseded by PR #23 follow-up work: Gemini cancel is now implemented and
+  covered by smoke/docs-contract tests.
 - [ ] Run `npm test -- tests/unit/lib-imports.test.mjs tests/unit/policy.test.mjs tests/smoke/gemini-companion.smoke.test.mjs`.
 
 **Implementation Notes:**
-- Do not add cancel behavior here; Gemini background/continue are now implemented, while cancel should stay explicit `not_implemented` until its own milestone.
+- Historical scope boundary: do not add cancel behavior in this M0-M7 hardening
+  pass. Gemini cancel was implemented later in PR #23 follow-up work.
 - Keep smoke tests mock-based; live Gemini OAuth verification is Task 7.
 
 **Commit:**

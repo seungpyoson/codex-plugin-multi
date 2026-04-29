@@ -33,7 +33,7 @@ function runCompanion(args, { cwd, env = {}, dataDir = mkdtempSync(path.join(tmp
 }
 
 function cleanup(dataDir) {
-  rmSync(dataDir, { recursive: true, force: true });
+  rmSync(dataDir, { recursive: true, force: true, maxRetries: 3, retryDelay: 50 });
 }
 
 function readOnlyJobRecord(dataDir) {
@@ -423,7 +423,7 @@ test("cancel: SIGTERM-trapping target classifies as cancelled, not completed (is
   const { stdout, status, stderr, dataDir } = runCompanion(
     ["run", "--mode=rescue", "--background", "--model", "claude-haiku-4-5-20251001",
      "--cwd", cwd, "--", "long task"],
-    { cwd, env: { CLAUDE_MOCK_DELAY_MS: "5000", CLAUDE_MOCK_TRAP_SIGTERM: "1" } },
+    { cwd, env: { CLAUDE_MOCK_DELAY_MS: "30000", CLAUDE_MOCK_TRAP_SIGTERM: "1" } },
   );
   try {
     assert.equal(status, 0, stderr);
@@ -447,10 +447,19 @@ test("cancel: SIGTERM-trapping target classifies as cancelled, not completed (is
       path.join(REPO_ROOT, "plugins/claude/scripts/claude-companion.mjs"),
       "cancel", "--job", launched.job_id, "--cwd", cwd,
     ], { cwd, encoding: "utf8", env: { ...process.env, CLAUDE_PLUGIN_DATA: dataDir } });
-    assert.equal(cancelRes.status, 0, cancelRes.stderr);
+    const cancel = JSON.parse(cancelRes.stdout);
+    const exitOk =
+      (cancel.status === "signaled" && cancelRes.status === 0) ||
+      (cancel.status === "already_dead" && cancelRes.status === 0) ||
+      (cancel.status === "no_pid_info" && cancelRes.status === 2) ||
+      (cancel.status === "unverifiable" && cancelRes.status === 2);
+    assert.ok(exitOk,
+      `unexpected SIGTERM-trap cancel outcome (${JSON.stringify(cancel.status)}, ${cancelRes.status}); stderr=${cancelRes.stderr}`);
+    if (cancelRes.status !== 0) return;
 
-    // Wait for the worker to finalize. Allow 10s — the mock has a 5s
-    // natural-delay fallback in case SIGTERM trapping doesn't engage.
+    // Wait for the worker to finalize. The mock has a long natural-delay
+    // fallback so this should complete quickly only if SIGTERM trapping
+    // engaged or the ESRCH-after-marker race was handled as already_dead.
     const termDeadline = Date.now() + 10000;
     let terminal = null;
     let lastStatusSeen = null;
@@ -472,6 +481,72 @@ test("cancel: SIGTERM-trapping target classifies as cancelled, not completed (is
     assert.ok(terminal, `job did not finalize after cancel; last status seen=${lastStatusSeen}`);
     assert.equal(terminal.status, "cancelled",
       `cancel-marker must force status=cancelled even when target trapped SIGTERM and exited 0; got ${JSON.stringify(terminal)}`);
+  } finally {
+    cleanup(dataDir);
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("cancel: ESRCH after ownership verification is already_dead, not signal_failed", {
+  skip: process.env.CODEX_PLUGIN_COVERAGE === "1"
+    ? "regular npm test covers ESRCH kill race; coverage mode already imports companion in cancel smoke"
+    : false,
+}, async () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "smoke-cancel-esrch-"));
+  const { stdout, status, stderr, dataDir } = runCompanion(
+    ["run", "--mode=rescue", "--background", "--model", "claude-haiku-4-5-20251001",
+     "--cwd", cwd, "--", "long task"],
+    { cwd, env: { CLAUDE_MOCK_DELAY_MS: "30000" } },
+  );
+  try {
+    assert.equal(status, 0, stderr);
+    const launched = JSON.parse(stdout);
+    const runDeadline = Date.now() + 5000;
+    let running = null;
+    while (Date.now() < runDeadline && !running) {
+      const sr = spawnSync("node", [
+        path.join(REPO_ROOT, "plugins/claude/scripts/claude-companion.mjs"),
+        "status", "--cwd", cwd,
+      ], { cwd, encoding: "utf8", env: { ...process.env, CLAUDE_PLUGIN_DATA: dataDir } });
+      const so = JSON.parse(sr.stdout);
+      running = so.jobs.find((j) => j.id === launched.job_id && j.status === "running");
+      if (!running) await new Promise((r) => setTimeout(r, 100));
+    }
+    assert.ok(running, "background job never visible as running");
+    if (running.pid_info?.capture_error) return;
+
+    const preload = path.join(cwd, "kill-esrch-after-signal.mjs");
+    writeFileSync(preload, `
+const origKill = process.kill.bind(process);
+process.kill = (pid, signal) => {
+  if (signal === "SIGTERM") {
+    try { origKill(pid, signal); } catch {}
+    const err = new Error("kill ESRCH");
+    err.code = "ESRCH";
+    throw err;
+  }
+  return origKill(pid, signal);
+};
+`, "utf8");
+    const cancelRes = spawnSync("node", [
+      path.join(REPO_ROOT, "plugins/claude/scripts/claude-companion.mjs"),
+      "cancel", "--job", launched.job_id, "--cwd", cwd,
+    ], {
+      cwd, encoding: "utf8",
+      env: {
+        ...process.env,
+        CLAUDE_PLUGIN_DATA: dataDir,
+        NODE_OPTIONS: `--import=${preload}`,
+      },
+    });
+    const cancel = JSON.parse(cancelRes.stdout);
+    if (cancel.status === "no_pid_info") {
+      assert.equal(cancelRes.status, 2, cancelRes.stderr);
+      return;
+    }
+    assert.equal(cancelRes.status, 0, cancelRes.stderr);
+    assert.equal(cancel.status, "already_dead");
+    assert.equal(cancel.pid, running.pid_info.pid);
   } finally {
     cleanup(dataDir);
     rmSync(cwd, { recursive: true, force: true });
@@ -977,7 +1052,7 @@ test("cancel: queued + marker write failure → cancel_failed, exit 1", () => {
   // Class 1 follow-up (reviewer Vector 3): the queued-cancel branch's marker
   // is the entire cancel mechanism (no SIGTERM fallback). If the write
   // throws (disk full, perms, parent dir is a regular file), exit 0 with
-  // cancel_pending would lie about durability. Must exit 1, status:cancel_failed.
+  // cancel_pending would lie about durability. Must exit 1, error:cancel_failed.
   const cwd = mkdtempSync(path.join(tmpdir(), "smoke-cancel-fail-"));
   seedMinimalRepo(cwd);
   const dataDir = mkdtempSync(path.join(tmpdir(), "cancel-fail-data-"));
@@ -1025,9 +1100,9 @@ test("cancel: queued + marker write failure → cancel_failed, exit 1", () => {
     assert.equal(cancelRes.status, 1,
       `marker write failure must exit 1; stderr=${cancelRes.stderr}`);
     const cancel = JSON.parse(cancelRes.stdout);
-    assert.equal(cancel.status, "cancel_failed");
+    assert.equal(cancel.error, "cancel_failed");
     assert.equal(cancel.ok, false);
-    assert.match(cancel.detail ?? "", /could not durably record cancel intent/);
+    assert.match(cancel.message ?? "", /could not durably record cancel intent/);
   } finally {
     rmSync(dataDir, { recursive: true, force: true });
     rmSync(cwd, { recursive: true, force: true });

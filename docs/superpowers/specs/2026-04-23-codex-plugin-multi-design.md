@@ -791,7 +791,7 @@ Before v0.1.0: run upstream `/codex:adversarial-review` against this repo. Addre
 - **M5 — Claude containment + dispose.** `containment=worktree`, profile-driven disposal, pre/post git-status capture.
 - **M6 — Claude prompting skill.** `skills/claude-prompting/SKILL.md` + references.
 - **M7 — Gemini port (policy-first).** `plugins/gemini/`. `policies/read-only.toml`. stdin transport. `/tmp` cwd for isolation.
-- **M8 — Gemini rescue background + continue.** `run --background`, detached worker lifecycle, and `continue --job` using captured `gemini_session_id`. Gemini `cancel` remains deferred.
+- **M8 — Gemini rescue background + continue.** `run --background`, detached worker lifecycle, and `continue --job` using captured `gemini_session_id`. Historical boundary: Gemini `cancel` was deferred at this milestone; PR #23 follow-up work wires it, so current operator contract lives in `plugins/gemini/commands/gemini-cancel.md`.
 - **M9 — Tests.** Full unit + smoke (mock CLIs) + CI (lint + unit + smoke). E2E manual.
 - **M10 — Docs, CHANGELOG, v0.1.0.** Self adversarial review. Tag release.
 
