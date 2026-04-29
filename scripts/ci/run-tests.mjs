@@ -18,6 +18,15 @@ const TEST_DIRS = [
 // Directories never walked — avoid picking up fixture deps or generated trees.
 const SKIP_DIRS = new Set(["node_modules", "fixtures", ".git", "coverage"]);
 
+// scope.test.mjs has 155 real-git tests (~140s on a typical laptop), which
+// blows the 60s pre-commit `npm test` window. Default `npm test` therefore
+// skips it; CI sets CODEX_PLUGIN_FULL_TESTS=1 to include it. Run
+// `npm run test:full` locally before opening a PR.
+const SLOW_TEST_BASENAMES = new Set([
+  "scope.test.mjs",
+]);
+const RUN_FULL = process.env.CODEX_PLUGIN_FULL_TESTS === "1";
+
 async function walk(dir) {
   const out = [];
   let entries;
@@ -31,7 +40,10 @@ async function walk(dir) {
     if (SKIP_DIRS.has(ent.name)) continue;
     const full = resolve(dir, ent.name);
     if (ent.isDirectory()) out.push(...(await walk(full)));
-    else if (ent.isFile() && ent.name.endsWith(".test.mjs")) out.push(full);
+    else if (ent.isFile() && ent.name.endsWith(".test.mjs")) {
+      if (!RUN_FULL && SLOW_TEST_BASENAMES.has(ent.name)) continue;
+      out.push(full);
+    }
   }
   return out;
 }

@@ -17,8 +17,12 @@ Review via Claude Code. Read-only; changes detected post-hoc, never auto-reverte
    node "<plugin-root>/scripts/claude-companion.mjs" run --mode=review --foreground [--scope-base <ref>] -- "<focus text>"
    ```
    (Containment + scope + dispose are all carried by the review profile — spec §21.4.)
+   For a pinned review bundle or hand-picked files, first run `preflight`, then use
+   `run --mode=custom-review --scope-paths <g1,g2,...>` and refer to files by
+   relative paths inside the selected scope.
 3. Render the returned JSON:
    - If `mutations` is non-empty, surface that list prominently. Do not auto-revert.
+   - If target read permission denials leave no findings, report review blocked / no findings produced.
    - If `structured_output` is populated (schema runs), render its verdict + findings.
    - Otherwise render `result` as Markdown.
 

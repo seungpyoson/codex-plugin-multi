@@ -207,6 +207,43 @@ process.stdin.on("end", () => {
   }
 });
 
+test("spawnGemini: onSpawn fires asynchronously via 'spawn' event, not synchronously (issue #25)", async () => {
+  // Regression for the argv0_mismatch flake — see claude-dispatcher's
+  // counterpart for the full rationale. capturePidInfo must read
+  // /proc/<pid>/cmdline AFTER execve completes; we enforce this by
+  // proving onSpawn does not fire in the synchronous executor turn.
+  const dir = mkdtempSync(path.join(tmpdir(), "gemini-spawn-async-"));
+  try {
+    const bin = writeExecutable(dir, "gemini-ok.mjs", String.raw`#!/usr/bin/env node
+const chunks = [];
+process.stdin.on("data", (c) => chunks.push(c));
+process.stdin.on("end", () => {
+  process.stdout.write(JSON.stringify({
+    session_id: "11111111-2222-3333-9444-555555555555",
+    response: "ok",
+    stats: { tokens: { total: 1 } }
+  }) + "\\n");
+});
+`);
+    let onSpawnFired = false;
+    const promise = spawnGemini(resolveProfile("rescue"), {
+      model: "gemini-3-flash-preview",
+      promptText: "hello",
+      includeDirPath: dir,
+      cwd: dir,
+      binary: bin,
+      onSpawn: () => { onSpawnFired = true; },
+    });
+    assert.equal(onSpawnFired, false,
+      "onSpawn fired synchronously — capturePidInfo will read pre-execve cmdline (issue #25)");
+    const result = await promise;
+    assert.equal(onSpawnFired, true, "onSpawn must fire by the time spawnGemini resolves");
+    assert.ok(result.pidInfo, "pidInfo must be present after a successful spawn");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("spawnGemini: strips provider creds and routing env before launching target CLI", async () => {
   const dir = mkdtempSync(path.join(tmpdir(), "gemini-env-sanitize-unit-"));
   try {

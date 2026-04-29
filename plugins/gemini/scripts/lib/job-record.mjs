@@ -21,7 +21,7 @@
 // - Schema drift is a test failure (job-record.test.mjs asserts on keys AND
 //   on claude-result-handling/SKILL.md mentioning each field).
 
-export const SCHEMA_VERSION = 6;
+export const SCHEMA_VERSION = 7;
 
 /**
  * Canonical JobRecord field list. Exported so tests can reference it and
@@ -61,6 +61,10 @@ export const EXPECTED_KEYS = Object.freeze([
   "exit_code",
   "error_code",
   "error_message",
+  "error_summary",
+  "error_cause",
+  "suggested_action",
+  "disclosure_note",
 
   // Result
   "result",
@@ -86,6 +90,7 @@ const EXPECTED_KEYS_SET = new Set(EXPECTED_KEYS);
  *
  * error_code classification:
  *   null           — completed.
+ *   scope_failed   — execution.errorMessage describes scope preparation refusal.
  *   spawn_failed   — execution.errorMessage set (spawn threw before Gemini ran).
  *   parse_error    — parsed.ok === false with reason starting "json_parse"/"empty_stdout".
  *   gemini_error   — exitCode !== 0 with parseable JSON from Gemini.
@@ -108,7 +113,22 @@ function classifyExecution(execution) {
       error_message: null,
     };
   }
+  if (execution.status === "cancelled") {
+    // Issue #22 sub-task 2: see claude-side counterpart for rationale.
+    return {
+      status: "cancelled",
+      error_code: null,
+      error_message: null,
+    };
+  }
   if (execution.errorMessage) {
+    if (isScopeFailure(execution.errorMessage)) {
+      return {
+        status: "failed",
+        error_code: "scope_failed",
+        error_message: execution.errorMessage,
+      };
+    }
     return {
       status: "failed",
       error_code: "spawn_failed",
@@ -139,6 +159,152 @@ function classifyExecution(execution) {
     status: "failed",
     error_code: "gemini_error",
     error_message: null,
+  };
+}
+
+const SCOPE_FAILURE_PREFIXES = [
+  "unsafe_symlink:",
+  "scope_population_failed:",
+  "scope_base_missing:",
+  "scope_requires_git:",
+  "scope_requires_head:",
+  "scope_paths_required:",
+  "scope_empty:",
+  "invalid_profile:",
+];
+
+function isScopeFailure(message) {
+  return SCOPE_FAILURE_PREFIXES.some((prefix) => String(message ?? "").startsWith(prefix));
+}
+
+function buildErrorDiagnostic(invocation, status, error_code, error_message) {
+  const empty = {
+    error_summary: null,
+    error_cause: null,
+    suggested_action: null,
+    disclosure_note: null,
+  };
+  if (status !== "failed" || error_code !== "scope_failed" || !error_message) {
+    return empty;
+  }
+
+  const message = String(error_message);
+  const target = invocation.target === "claude" ? "Claude" : "Gemini";
+  const disclosure =
+    `Scope preparation failed before ${target} launch. The target CLI was not spawned, ` +
+    "so rejected scope content was not sent to the target CLI or external provider. " +
+    "Branch-diff reduces scope, but any successful external review still sends selected source content to the target provider.";
+
+  if (message.startsWith("unsafe_symlink:")) {
+    return {
+      error_summary: "Review scope was rejected before target launch.",
+      error_cause:
+        "A symlink in the selected review scope resolves outside the source root, " +
+        "so the companion refused to copy it into disposable containment.",
+      suggested_action:
+        "For committed branch changes, retry with adversarial-review/branch-diff and an explicit --scope-base <ref>. " +
+        "For live working-tree review, remove or relocate the symlink, or use custom scope paths that exclude it.",
+      disclosure_note: disclosure,
+    };
+  }
+
+  if (message.startsWith("scope_population_failed:")) {
+    return {
+      error_summary: "Review scope was rejected before target launch.",
+      error_cause:
+        "The companion could not safely prepare the selected review scope. " +
+        "For working-tree scope this often means gitignored files could not be evaluated or filesystem copying failed.",
+      suggested_action:
+        "Fix the working-tree/index issue and retry. For committed branch changes, retry with adversarial-review/branch-diff and an explicit --scope-base <ref>.",
+      disclosure_note: disclosure,
+    };
+  }
+
+  if (message.startsWith("scope_base_missing:")) {
+    return {
+      error_summary: "Review scope was rejected before target launch.",
+      error_cause:
+        "A missing base ref or unresolvable git ref prevented scope preparation. " +
+        "Branch-diff scopes require a valid, fetchable base ref.",
+      suggested_action:
+        "To fix this, choose a valid base ref (a branch name, tag, or commit SHA) and " +
+        "pass it via `--scope-base <ref>`. Alternatively, use working-tree scope which " +
+        "does not require a base ref.",
+      disclosure_note: disclosure,
+    };
+  }
+
+  if (message.startsWith("scope_requires_git:")) {
+    return {
+      error_summary: "Review scope was rejected before target launch.",
+      error_cause:
+        "The selected scope requires a git repository, but the workspace root is not " +
+        "inside a git worktree.",
+      suggested_action:
+        "To resolve this: run from a git worktree or use a scope that supports " +
+        "non-git directories (such as passing explicit --scope-paths).",
+      disclosure_note: disclosure,
+    };
+  }
+
+  if (message.startsWith("scope_requires_head:")) {
+    return {
+      error_summary: "Review scope was rejected before target launch.",
+      error_cause:
+        "The selected scope requires at least one commit (HEAD), but the repository " +
+        "has no commits yet.",
+      suggested_action:
+        "To fix this, create an initial commit before running git-object scopes such " +
+        "as branch-diff. Use `git commit` to create the first commit.",
+      disclosure_note: disclosure,
+    };
+  }
+
+  if (message.startsWith("scope_paths_required:")) {
+    return {
+      error_summary: "Review scope was rejected before target launch.",
+      error_cause:
+        "The custom scope requires explicit paths; no scope paths were provided.",
+      suggested_action:
+        "To fix this: pass explicit --scope-paths <path> [<path> ...] before `--`. " +
+        "For automatic scope detection, use working-tree or branch-diff scope instead.",
+      disclosure_note: disclosure,
+    };
+  }
+
+  if (message.startsWith("scope_empty:")) {
+    return {
+      error_summary: "Review scope was empty before target launch.",
+      error_cause:
+        "The selected scope was empty and resolved to no reviewable files. Launching the target " +
+        "would produce a misleading completed review with no useful source context.",
+      suggested_action:
+        "For pinned bundles or selected files, retry with `--mode=custom-review` " +
+        "and explicit `--scope-paths <glob,...>`. For branch diffs, check the " +
+        "`--scope-base <ref>` value and run preflight before launching the provider.",
+      disclosure_note: disclosure,
+    };
+  }
+
+  if (message.startsWith("invalid_profile:")) {
+    return {
+      error_summary: "Review scope was rejected before target launch.",
+      error_cause:
+        "This is an internal plugin or profile bug, not a user input error. " +
+        "The review profile or plugin configuration is internally inconsistent.",
+      suggested_action:
+        "Please report this as a bug and include the raw error_message value " +
+        "to help diagnose the misconfigured profile field.",
+      disclosure_note: disclosure,
+    };
+  }
+
+  return {
+    error_summary: "Review scope was rejected before target launch.",
+    error_cause: "The selected review scope could not be prepared safely.",
+    suggested_action:
+      "Check the raw error_message, fix the scope input, and retry. For committed branch changes, prefer branch-diff with an explicit --scope-base <ref>.",
+    disclosure_note: disclosure,
   };
 }
 
@@ -199,6 +365,7 @@ export function buildJobRecord(invocation, execution, mutations) {
     throw new Error("buildJobRecord: mutations must be an array (empty ok)");
   }
   const { status, error_code, error_message } = classifyExecution(execution);
+  const diagnostic = buildErrorDiagnostic(invocation, status, error_code, error_message);
 
   const parsed = execution?.parsed ?? null;
   const record = {
@@ -236,6 +403,10 @@ export function buildJobRecord(invocation, execution, mutations) {
     exit_code: execution?.exitCode ?? null,
     error_code,
     error_message,
+    error_summary: diagnostic.error_summary,
+    error_cause: diagnostic.error_cause,
+    suggested_action: diagnostic.suggested_action,
+    disclosure_note: diagnostic.disclosure_note,
 
     // Result
     result: parsed?.result ?? null,

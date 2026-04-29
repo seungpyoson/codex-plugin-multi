@@ -7,7 +7,10 @@ This note records PASS_M8_GEMINI_BACKGROUND_CONTINUE LOW/NIT findings that were 
 - `_run-worker` terminal re-entry now fails before consuming sidecars or overwriting a terminal JobRecord.
 - Gemini smoke coverage directly exercises the queued missing-prompt-sidecar worker path.
 - Gemini continue smoke coverage now uses a mock that rotates `gemini_session_id` on resumed runs.
-- Gemini command and roadmap docs now state that background `run` and `continue --job` are implemented, while `cancel` remains deferred.
+- Historical backlog note: Gemini command and roadmap docs stated at this point
+  that background `run` and `continue --job` were implemented while `cancel`
+  remained deferred. PR #23 follow-up work wires Gemini `cancel`; see
+  `plugins/gemini/commands/gemini-cancel.md` for the current contract.
 - Gemini smoke polling uses `GEMINI_SMOKE_POLL_TIMEOUT_MS` so CI can raise the deadline without changing tests.
 
 ## Resolved in T10.0

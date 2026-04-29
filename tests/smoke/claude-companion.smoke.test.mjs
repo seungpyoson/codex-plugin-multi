@@ -33,7 +33,7 @@ function runCompanion(args, { cwd, env = {}, dataDir = mkdtempSync(path.join(tmp
 }
 
 function cleanup(dataDir) {
-  rmSync(dataDir, { recursive: true, force: true });
+  rmSync(dataDir, { recursive: true, force: true, maxRetries: 3, retryDelay: 50 });
 }
 
 function readOnlyJobRecord(dataDir) {
@@ -81,7 +81,7 @@ test("run --mode=review --foreground: emits JobRecord with status=completed", ()
     assert.ok(result.job_id, "job_id set");
     assert.equal(result.result, "Mock Claude response.");
     assert.deepEqual(result.permission_denials, []);
-    assert.equal(result.schema_version, 6, "schema_version bumped for Gemini session parity");
+    assert.equal(result.schema_version, 7, "schema_version bumped for scope diagnostics");
     assert.equal("prompt" in result, false,
       "§21.3.1: full prompt must not appear on JobRecord");
     assert.equal("ok" in result, false,
@@ -129,6 +129,11 @@ test("run --mode=review --foreground: corrupt index fails closed before target s
     const result = JSON.parse(stdout);
     assert.equal(result.status, "failed");
     assert.match(result.error_message, /scope_population_failed: cannot evaluate gitignored files/);
+    assert.match(result.error_summary, /Review scope was rejected/);
+    assert.match(result.error_cause, /gitignored files/);
+    assert.match(result.suggested_action, /branch-diff/);
+    assert.match(result.disclosure_note, /not spawned/);
+    assert.match(result.disclosure_note, /not sent/);
     assert.deepEqual(result.mutations, [],
       "scope filtering fails before mutation detection and target spawn");
   } finally {
@@ -192,7 +197,7 @@ test("run: meta.json persisted to workspace state", () => {
     assert.equal(meta.session_id, undefined,
       "legacy session_id field must not be present on new-shape records");
     // JobRecord schema version and full-prompt omission stay explicit.
-    assert.equal(meta.schema_version, 6);
+    assert.equal(meta.schema_version, 7);
     assert.equal("prompt" in meta, false,
       "§21.3.1: full `prompt` field must not be persisted");
     // T7.4: result field populated on foreground completion (symmetry with bg).
@@ -280,6 +285,11 @@ test("T7.4 / §21.3.2: prompt sidecar is deleted after worker consumes it", asyn
     // After the worker consumed the prompt, the sidecar must be gone.
     assert.equal(existsSync(path.join(jobDir, "prompt.txt")), false,
       "§21.3.1: prompt sidecar must be deleted after worker consumes it");
+    // Settle: meta.json flips to terminal BEFORE upsertJob writes state.json
+    // and BEFORE writeSidecar emits stdout.log/stderr.log. Without this
+    // wait, the recursive cleanup races the worker's tail writes and Linux
+    // CI flakes with `ENOTEMPTY` on rmdir of state/<subdir>/.
+    await new Promise((r) => setTimeout(r, 250));
   } finally {
     cleanup(dataDir);
     rmSync(cwd, { recursive: true, force: true });
@@ -352,9 +362,14 @@ test("run --background: active job is visible as running and can be cancelled", 
       cwd, encoding: "utf8",
       env: { ...process.env, CLAUDE_PLUGIN_DATA: dataDir },
     });
-    assert.equal(cancelRes.status, 0, cancelRes.stderr);
     const cancel = JSON.parse(cancelRes.stdout);
     if (running.pid_info.capture_error) {
+      // Issue #25 follow-up: a running job whose pid_info lacks a complete
+      // ownership proof is "unverifiable" — exit 2 means "refused for
+      // safety; operator must investigate." Exit 0 would lie that the
+      // cancel post-condition (process gone) holds.
+      assert.equal(cancelRes.status, 2,
+        `capture_error path must exit 2 (refused, unverifiable); stderr=${cancelRes.stderr}`);
       assert.equal(cancel.status, "no_pid_info");
       const terminalDeadline = Date.now() + 7000;
       let terminal = null;
@@ -373,8 +388,165 @@ test("run --background: active job is visible as running and can be cancelled", 
       }
       assert.ok(terminal, "job with incomplete pid_info did not finish before cleanup");
     } else {
-      assert.equal(cancel.status, "signaled");
+      // The mock binary is fast — between attachPidCapture's snapshot at
+      // 'spawn' and cmdCancel's verifyPidInfo, the mock can exit and (rarely)
+      // its pid can be reused. All four post-spawn outcomes are valid:
+      //   signaled / already_dead → exit 0 (cancel post-condition holds)
+      //   stale_pid / unverifiable → exit 2 (refused for safety)
+      // What MUST NOT happen is signaled-but-non-zero or stale_pid-but-zero.
+      const exitOk =
+        (cancel.status === "signaled" && cancelRes.status === 0) ||
+        (cancel.status === "already_dead" && cancelRes.status === 0) ||
+        (cancel.status === "stale_pid" && cancelRes.status === 2) ||
+        (cancel.status === "unverifiable" && cancelRes.status === 2);
+      assert.ok(
+        exitOk,
+        `unexpected (status, exit) pair (${JSON.stringify(cancel.status)}, ${cancelRes.status}); stderr=${cancelRes.stderr}`,
+      );
     }
+  } finally {
+    cleanup(dataDir);
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("cancel: SIGTERM-trapping target classifies as cancelled, not completed (issue #22 sub-task 2)", {
+  skip: process.env.CODEX_PLUGIN_COVERAGE === "1" && process.platform === "darwin"
+    ? "NODE_V8_COVERAGE can make macOS sandbox deny ps; regular npm test covers SIGTERM-trap cancel"
+    : false,
+}, async () => {
+  // Without the cancel-marker fix, a target that handles SIGTERM and exits
+  // 0 with valid JSON output is mis-classified as `completed` — operator's
+  // cancel intent is silently lost. With the marker, cmdCancel writes a
+  // sentinel before signaling and finalization forces status=cancelled.
+  const cwd = mkdtempSync(path.join(tmpdir(), "smoke-trap-cancel-"));
+  const { stdout, status, stderr, dataDir } = runCompanion(
+    ["run", "--mode=rescue", "--background", "--model", "claude-haiku-4-5-20251001",
+     "--cwd", cwd, "--", "long task"],
+    { cwd, env: { CLAUDE_MOCK_DELAY_MS: "30000", CLAUDE_MOCK_TRAP_SIGTERM: "1" } },
+  );
+  try {
+    assert.equal(status, 0, stderr);
+    const launched = JSON.parse(stdout);
+    // Wait until the job is visible as running (mock has spawned, pid_info written).
+    const runDeadline = Date.now() + 5000;
+    let running = null;
+    while (Date.now() < runDeadline && !running) {
+      const sr = spawnSync("node", [
+        path.join(REPO_ROOT, "plugins/claude/scripts/claude-companion.mjs"),
+        "status", "--cwd", cwd,
+      ], { cwd, encoding: "utf8", env: { ...process.env, CLAUDE_PLUGIN_DATA: dataDir } });
+      const so = JSON.parse(sr.stdout);
+      running = so.jobs.find((j) => j.id === launched.job_id && j.status === "running");
+      if (!running) await new Promise((r) => setTimeout(r, 100));
+    }
+    assert.ok(running, "background job never visible as running");
+
+    // Cancel — the trapping mock will exit 0 with valid JSON, signal=null.
+    const cancelRes = spawnSync("node", [
+      path.join(REPO_ROOT, "plugins/claude/scripts/claude-companion.mjs"),
+      "cancel", "--job", launched.job_id, "--cwd", cwd,
+    ], { cwd, encoding: "utf8", env: { ...process.env, CLAUDE_PLUGIN_DATA: dataDir } });
+    const cancel = JSON.parse(cancelRes.stdout);
+    const exitOk =
+      (cancel.status === "signaled" && cancelRes.status === 0) ||
+      (cancel.status === "already_dead" && cancelRes.status === 0) ||
+      (cancel.status === "no_pid_info" && cancelRes.status === 2) ||
+      (cancel.status === "unverifiable" && cancelRes.status === 2);
+    assert.ok(exitOk,
+      `unexpected SIGTERM-trap cancel outcome (${JSON.stringify(cancel.status)}, ${cancelRes.status}); stderr=${cancelRes.stderr}`);
+    if (cancelRes.status !== 0) return;
+
+    // Wait for the worker to finalize. The mock has a long natural-delay
+    // fallback so this should complete quickly only if SIGTERM trapping
+    // engaged or the ESRCH-after-marker race was handled as already_dead.
+    const termDeadline = Date.now() + 10000;
+    let terminal = null;
+    let lastStatusSeen = null;
+    while (Date.now() < termDeadline && !terminal) {
+      // Use --all because origin/main's cmdStatus default filter is
+      // running|completed|failed — it would hide the cancelled record we
+      // want to assert on. (PR #21's status UX fix expands the default
+      // filter; this test deliberately doesn't depend on it.)
+      const sr = spawnSync("node", [
+        path.join(REPO_ROOT, "plugins/claude/scripts/claude-companion.mjs"),
+        "status", "--all", "--cwd", cwd,
+      ], { cwd, encoding: "utf8", env: { ...process.env, CLAUDE_PLUGIN_DATA: dataDir } });
+      const so = JSON.parse(sr.stdout);
+      const seen = so.jobs.find((j) => j.id === launched.job_id);
+      lastStatusSeen = seen?.status ?? "(missing)";
+      terminal = so.jobs.find((j) => j.id === launched.job_id && j.status !== "running");
+      if (!terminal) await new Promise((r) => setTimeout(r, 100));
+    }
+    assert.ok(terminal, `job did not finalize after cancel; last status seen=${lastStatusSeen}`);
+    assert.equal(terminal.status, "cancelled",
+      `cancel-marker must force status=cancelled even when target trapped SIGTERM and exited 0; got ${JSON.stringify(terminal)}`);
+  } finally {
+    cleanup(dataDir);
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("cancel: ESRCH after ownership verification is already_dead, not signal_failed", {
+  skip: process.env.CODEX_PLUGIN_COVERAGE === "1"
+    ? "regular npm test covers ESRCH kill race; coverage mode already imports companion in cancel smoke"
+    : false,
+}, async () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "smoke-cancel-esrch-"));
+  const { stdout, status, stderr, dataDir } = runCompanion(
+    ["run", "--mode=rescue", "--background", "--model", "claude-haiku-4-5-20251001",
+     "--cwd", cwd, "--", "long task"],
+    { cwd, env: { CLAUDE_MOCK_DELAY_MS: "30000" } },
+  );
+  try {
+    assert.equal(status, 0, stderr);
+    const launched = JSON.parse(stdout);
+    const runDeadline = Date.now() + 5000;
+    let running = null;
+    while (Date.now() < runDeadline && !running) {
+      const sr = spawnSync("node", [
+        path.join(REPO_ROOT, "plugins/claude/scripts/claude-companion.mjs"),
+        "status", "--cwd", cwd,
+      ], { cwd, encoding: "utf8", env: { ...process.env, CLAUDE_PLUGIN_DATA: dataDir } });
+      const so = JSON.parse(sr.stdout);
+      running = so.jobs.find((j) => j.id === launched.job_id && j.status === "running");
+      if (!running) await new Promise((r) => setTimeout(r, 100));
+    }
+    assert.ok(running, "background job never visible as running");
+    if (running.pid_info?.capture_error) return;
+
+    const preload = path.join(cwd, "kill-esrch-after-signal.mjs");
+    writeFileSync(preload, `
+const origKill = process.kill.bind(process);
+process.kill = (pid, signal) => {
+  if (signal === "SIGTERM") {
+    try { origKill(pid, signal); } catch {}
+    const err = new Error("kill ESRCH");
+    err.code = "ESRCH";
+    throw err;
+  }
+  return origKill(pid, signal);
+};
+`, "utf8");
+    const cancelRes = spawnSync("node", [
+      path.join(REPO_ROOT, "plugins/claude/scripts/claude-companion.mjs"),
+      "cancel", "--job", launched.job_id, "--cwd", cwd,
+    ], {
+      cwd, encoding: "utf8",
+      env: {
+        ...process.env,
+        CLAUDE_PLUGIN_DATA: dataDir,
+        NODE_OPTIONS: `--import=${preload}`,
+      },
+    });
+    const cancel = JSON.parse(cancelRes.stdout);
+    if (cancel.status === "no_pid_info") {
+      assert.equal(cancelRes.status, 2, cancelRes.stderr);
+      return;
+    }
+    assert.equal(cancelRes.status, 0, cancelRes.stderr);
+    assert.equal(cancel.status, "already_dead");
+    assert.equal(cancel.pid, running.pid_info.pid);
   } finally {
     cleanup(dataDir);
     rmSync(cwd, { recursive: true, force: true });
@@ -547,6 +719,70 @@ test("adversarial-review scope=branch-diff: only changed files appear in --add-d
       `branch-diff scope leaked old.md; saw: ${files.join(",")}`);
   } finally {
     cleanup(dataDir);
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("custom-review scope=custom: reviews explicit bundle files from a non-git directory", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "smoke-custom-review-"));
+  try {
+    writeFileSync(path.join(cwd, "PR23.diff"), "diff --git a/x b/x\n");
+    writeFileSync(path.join(cwd, "notes.md"), "review notes\n");
+    writeFileSync(path.join(cwd, "private.log"), "not selected\n");
+
+    const { stdout, status, stderr, dataDir } = runCompanion(
+      ["run", "--mode=custom-review", "--foreground",
+       "--model", "claude-haiku-4-5-20251001",
+       "--cwd", cwd, "--scope-paths", "PR23.diff,notes.md", "--",
+       "Review the selected bundle files using relative paths."],
+      { cwd, env: { CLAUDE_MOCK_ASSERT_FILE: "PR23.diff", CLAUDE_MOCK_LIST_ADDDIR: "1" } }
+    );
+    try {
+      assert.equal(status, 0, `exit ${status}: ${stderr}`);
+      const result = JSON.parse(stdout);
+      assert.equal(result.mode, "custom-review");
+      assert.equal(result.scope, "custom");
+      assert.deepEqual(result.scope_paths, ["PR23.diff", "notes.md"]);
+      const fx = readStdoutLog(dataDir, result.job_id);
+      assert.equal(fx.t7_saw_file, true, "custom-review should include PR23.diff in --add-dir");
+      assert.deepEqual(fx.t7_add_dir_files.sort(), ["PR23.diff", "notes.md"]);
+    } finally {
+      cleanup(dataDir);
+    }
+  } finally {
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("preflight custom-review summarizes selected bundle files without launching Claude", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "smoke-preflight-"));
+  const missingBinary = path.join(cwd, "missing-claude");
+  try {
+    writeFileSync(path.join(cwd, "PR23.diff"), "diff --git a/x b/x\n");
+    writeFileSync(path.join(cwd, "notes.md"), "review notes\n");
+    writeFileSync(path.join(cwd, "private.log"), "not selected\n");
+
+    const { stdout, status, stderr, dataDir } = runCompanion(
+      ["preflight", "--mode=custom-review",
+       "--cwd", cwd, "--scope-paths", "PR23.diff,notes.md",
+       "--binary", missingBinary],
+      { cwd }
+    );
+    try {
+      assert.equal(status, 0, `exit ${status}: ${stderr}`);
+      const result = JSON.parse(stdout);
+      assert.equal(result.event, "preflight");
+      assert.equal(result.target, "claude");
+      assert.equal(result.mode, "custom-review");
+      assert.equal(result.scope, "custom");
+      assert.equal(result.file_count, 2);
+      assert.ok(result.byte_count > 0);
+      assert.deepEqual(result.files.sort(), ["PR23.diff", "notes.md"]);
+      assert.match(result.disclosure_note, /not spawned/i);
+    } finally {
+      cleanup(dataDir);
+    }
+  } finally {
     rmSync(cwd, { recursive: true, force: true });
   }
 });
@@ -755,6 +991,234 @@ test("result --job with unknown id: returns not_found", () => {
     assert.match(stderr, /no meta.json/);
   } finally {
     cleanup(dataDir);
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("cancel: queued job → cancel_pending, marker written, exit 0", () => {
+  // Class 1 + Finding A: a job that is queued but not yet running cannot
+  // be "already_terminal" — the worker hasn't spawned anything. Cancel
+  // must drop a marker so the worker refuses to spawn on pickup, and
+  // return cancel_pending so operators distinguish "intent recorded" from
+  // "intent moot."
+  const cwd = mkdtempSync(path.join(tmpdir(), "smoke-cancel-queued-"));
+  seedMinimalRepo(cwd);
+  const dataDir = mkdtempSync(path.join(tmpdir(), "cancel-queued-data-"));
+  try {
+    // Foreground run completes; we then patch the persisted state to the
+    // pre-spawn shape (status=queued, pid_info=null) to exercise the
+    // queued-cancel path without timing races against a real worker.
+    const runRes = runCompanion(
+      ["run", "--mode=rescue", "--foreground",
+       "--model", "claude-haiku-4-5-20251001",
+       "--cwd", cwd, "--", "seed"],
+      { cwd, dataDir },
+    );
+    assert.equal(runRes.status, 0, runRes.stderr);
+    const { metaPath, record } = readOnlyJobRecord(dataDir);
+    const queuedRecord = { ...record, status: "queued", pid_info: null };
+    writeFileSync(metaPath, `${JSON.stringify(queuedRecord, null, 2)}\n`, "utf8");
+    // listJobs reads state.json — patch that too so cmdCancel's view matches.
+    const stateRoot = path.join(dataDir, "state");
+    const statePath = (() => {
+      for (const d of readdirSync(stateRoot)) {
+        const p = path.join(stateRoot, d, "state.json");
+        if (existsSync(p)) return p;
+      }
+      throw new Error("no state.json");
+    })();
+    const state = JSON.parse(readFileSync(statePath, "utf8"));
+    const idx = state.jobs.findIndex((j) => j.id === record.job_id);
+    state.jobs[idx] = { ...state.jobs[idx], status: "queued", pid_info: null };
+    writeFileSync(statePath, JSON.stringify(state, null, 2));
+
+    const cancelRes = spawnSync("node", [
+      path.join(REPO_ROOT, "plugins/claude/scripts/claude-companion.mjs"),
+      "cancel", "--job", record.job_id, "--cwd", cwd,
+    ], {
+      cwd, encoding: "utf8",
+      env: { ...process.env, CLAUDE_PLUGIN_DATA: dataDir },
+    });
+    assert.equal(cancelRes.status, 0, cancelRes.stderr);
+    const cancel = JSON.parse(cancelRes.stdout);
+    assert.equal(cancel.status, "cancel_pending");
+    assert.equal(cancel.ok, true);
+    assert.equal(cancel.job_status, "queued");
+
+    // Marker must exist at <jobsDir>/<jobId>/cancel-requested.flag so that
+    // cmdRunWorker (and executeRun's post-run consumer) can pick it up.
+    const wsDir = path.dirname(metaPath); // jobs/
+    const markerPath = path.join(wsDir, record.job_id, "cancel-requested.flag");
+    assert.ok(existsSync(markerPath),
+      `cancel_pending must write a marker at ${markerPath}`);
+  } finally {
+    rmSync(dataDir, { recursive: true, force: true });
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("_run-worker: cancel marker prevents target spawn, sets status=cancelled", () => {
+  // Class 1 + Finding A end-to-end: when the launcher dropped a cancel
+  // marker on a queued job, the worker MUST exit before spawning the
+  // target binary. Otherwise the model call happens (cost + side effects)
+  // and only the post-run consumer would convert "completed" → "cancelled".
+  const cwd = mkdtempSync(path.join(tmpdir(), "smoke-worker-cancel-"));
+  seedMinimalRepo(cwd);
+  const dataDir = mkdtempSync(path.join(tmpdir(), "worker-cancel-data-"));
+  try {
+    const runRes = runCompanion(
+      ["run", "--mode=rescue", "--foreground",
+       "--model", "claude-haiku-4-5-20251001",
+       "--cwd", cwd, "--", "seed"],
+      { cwd, dataDir },
+    );
+    assert.equal(runRes.status, 0, runRes.stderr);
+    const { metaPath, record } = readOnlyJobRecord(dataDir);
+    // Patch back to queued so _run-worker accepts the job (terminal jobs
+    // are refused at the top of cmdRunWorker).
+    writeFileSync(metaPath,
+      `${JSON.stringify({ ...record, status: "queued", pid_info: null }, null, 2)}\n`, "utf8");
+
+    // Drop the cancel marker manually — this is what cmdCancel writes
+    // when it sees a queued job.
+    const wsDir = path.dirname(metaPath);
+    const markerDir = path.join(wsDir, record.job_id);
+    spawnSync("mkdir", ["-p", markerDir]);
+    const markerPath = path.join(markerDir, "cancel-requested.flag");
+    writeFileSync(markerPath, new Date().toISOString() + "\n");
+
+    const workerRes = spawnSync("node", [
+      path.join(REPO_ROOT, "plugins/claude/scripts/claude-companion.mjs"),
+      "_run-worker", "--cwd", cwd, "--job", record.job_id,
+    ], {
+      cwd, encoding: "utf8",
+      env: { ...process.env, CLAUDE_BINARY: MOCK, CLAUDE_PLUGIN_DATA: dataDir },
+    });
+    assert.equal(workerRes.status, 0,
+      `worker must exit 0 when marker present; stderr=${workerRes.stderr}`);
+
+    const finalMeta = JSON.parse(readFileSync(metaPath, "utf8"));
+    assert.equal(finalMeta.status, "cancelled",
+      `worker must persist status=cancelled; got ${finalMeta.status}`);
+    // pid_info stays null — the target was never spawned.
+    assert.equal(finalMeta.pid_info, null,
+      "worker must not record pid_info when refusing to spawn");
+    // Marker was consumed (unlinked) so a second pickup wouldn't double-cancel.
+    assert.equal(existsSync(markerPath), false,
+      "worker must consume (unlink) the marker on pickup");
+  } finally {
+    rmSync(dataDir, { recursive: true, force: true });
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("cancel: queued + marker write failure → cancel_failed, exit 1", () => {
+  // Class 1 follow-up (reviewer Vector 3): the queued-cancel branch's marker
+  // is the entire cancel mechanism (no SIGTERM fallback). If the write
+  // throws (disk full, perms, parent dir is a regular file), exit 0 with
+  // cancel_pending would lie about durability. Must exit 1, error:cancel_failed.
+  const cwd = mkdtempSync(path.join(tmpdir(), "smoke-cancel-fail-"));
+  seedMinimalRepo(cwd);
+  const dataDir = mkdtempSync(path.join(tmpdir(), "cancel-fail-data-"));
+  try {
+    const runRes = runCompanion(
+      ["run", "--mode=rescue", "--foreground",
+       "--model", "claude-haiku-4-5-20251001",
+       "--cwd", cwd, "--", "seed"],
+      { cwd, dataDir },
+    );
+    assert.equal(runRes.status, 0, runRes.stderr);
+    const { metaPath, record } = readOnlyJobRecord(dataDir);
+    writeFileSync(metaPath,
+      `${JSON.stringify({ ...record, status: "queued", pid_info: null }, null, 2)}\n`, "utf8");
+    // Patch state.json to match.
+    const stateRoot = path.join(dataDir, "state");
+    const statePath = (() => {
+      for (const d of readdirSync(stateRoot)) {
+        const p = path.join(stateRoot, d, "state.json");
+        if (existsSync(p)) return p;
+      }
+      throw new Error("no state.json");
+    })();
+    const state = JSON.parse(readFileSync(statePath, "utf8"));
+    const idx = state.jobs.findIndex((j) => j.id === record.job_id);
+    state.jobs[idx] = { ...state.jobs[idx], status: "queued", pid_info: null };
+    writeFileSync(statePath, JSON.stringify(state, null, 2));
+
+    // Booby-trap the marker dir: writeCancelMarker calls
+    // mkdirSync(<jobsDir>/<jobId>, { recursive: true }) — placing a regular
+    // file at that path makes the mkdir throw ENOTDIR. Remove any
+    // pre-existing per-job dir first (the seed run created it for sidecars).
+    const wsDir = path.dirname(metaPath);
+    const expectedMarkerDir = path.join(wsDir, record.job_id);
+    rmSync(expectedMarkerDir, { recursive: true, force: true });
+    writeFileSync(expectedMarkerDir, "blocker", "utf8");
+
+    const cancelRes = spawnSync("node", [
+      path.join(REPO_ROOT, "plugins/claude/scripts/claude-companion.mjs"),
+      "cancel", "--job", record.job_id, "--cwd", cwd,
+    ], {
+      cwd, encoding: "utf8",
+      env: { ...process.env, CLAUDE_PLUGIN_DATA: dataDir },
+    });
+    assert.equal(cancelRes.status, 1,
+      `marker write failure must exit 1; stderr=${cancelRes.stderr}`);
+    const cancel = JSON.parse(cancelRes.stdout);
+    assert.equal(cancel.error, "cancel_failed");
+    assert.equal(cancel.ok, false);
+    assert.match(cancel.message ?? "", /could not durably record cancel intent/);
+  } finally {
+    rmSync(dataDir, { recursive: true, force: true });
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("cancel: unknown job status → bad_state, exit 1", () => {
+  // Class 1 follow-up (reviewer Vector 5): if state.json is corrupted such
+  // that job.status is something we don't recognize (not running, not
+  // truly-terminal, not queued), the code MUST surface the corruption
+  // rather than silently treat it as queued and write a marker.
+  const cwd = mkdtempSync(path.join(tmpdir(), "smoke-cancel-bad-state-"));
+  seedMinimalRepo(cwd);
+  const dataDir = mkdtempSync(path.join(tmpdir(), "cancel-bad-state-data-"));
+  try {
+    const runRes = runCompanion(
+      ["run", "--mode=rescue", "--foreground",
+       "--model", "claude-haiku-4-5-20251001",
+       "--cwd", cwd, "--", "seed"],
+      { cwd, dataDir },
+    );
+    assert.equal(runRes.status, 0, runRes.stderr);
+    const { metaPath, record } = readOnlyJobRecord(dataDir);
+    writeFileSync(metaPath,
+      `${JSON.stringify({ ...record, status: "errored" }, null, 2)}\n`, "utf8");
+    const stateRoot = path.join(dataDir, "state");
+    const statePath = (() => {
+      for (const d of readdirSync(stateRoot)) {
+        const p = path.join(stateRoot, d, "state.json");
+        if (existsSync(p)) return p;
+      }
+      throw new Error("no state.json");
+    })();
+    const state = JSON.parse(readFileSync(statePath, "utf8"));
+    const idx = state.jobs.findIndex((j) => j.id === record.job_id);
+    state.jobs[idx] = { ...state.jobs[idx], status: "errored" };
+    writeFileSync(statePath, JSON.stringify(state, null, 2));
+
+    const cancelRes = spawnSync("node", [
+      path.join(REPO_ROOT, "plugins/claude/scripts/claude-companion.mjs"),
+      "cancel", "--job", record.job_id, "--cwd", cwd,
+    ], {
+      cwd, encoding: "utf8",
+      env: { ...process.env, CLAUDE_PLUGIN_DATA: dataDir },
+    });
+    assert.equal(cancelRes.status, 1,
+      `unknown status must exit 1; stderr=${cancelRes.stderr}`);
+    const cancel = JSON.parse(cancelRes.stdout);
+    assert.equal(cancel.error, "bad_state");
+    assert.match(cancel.message ?? "", /unexpected job status/);
+  } finally {
+    rmSync(dataDir, { recursive: true, force: true });
     rmSync(cwd, { recursive: true, force: true });
   }
 });

@@ -163,7 +163,7 @@ function pruneJobs(jobs) {
 // the jobs dir.
 const SAFE_JOB_ID = /^(?:[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}|[A-Za-z0-9][A-Za-z0-9._-]{0,127})$/;
 
-function assertSafeJobId(jobId) {
+export function assertSafeJobId(jobId) {
   if (typeof jobId !== "string" || !SAFE_JOB_ID.test(jobId)) {
     throw new Error(`Unsafe jobId: ${JSON.stringify(jobId)}`);
   }

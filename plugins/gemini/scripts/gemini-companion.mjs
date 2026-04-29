@@ -1,7 +1,10 @@
 #!/usr/bin/env node
 import { fileURLToPath } from "node:url";
 import { dirname, join as joinPath, resolve as resolvePath } from "node:path";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, unlinkSync, writeFileSync, chmodSync } from "node:fs";
+import {
+  existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, unlinkSync,
+  writeFileSync, chmodSync, readdirSync, statSync,
+} from "node:fs";
 import { execFileSync, spawn } from "node:child_process";
 import { tmpdir } from "node:os";
 
@@ -11,14 +14,17 @@ import { resolveWorkspaceRoot } from "./lib/workspace.mjs";
 import { resolveProfile, resolveModelForProfile } from "./lib/mode-profiles.mjs";
 import { setupContainment } from "./lib/containment.mjs";
 import { populateScope } from "./lib/scope.mjs";
-import { newJobId } from "./lib/identity.mjs";
+import { newJobId, verifyPidInfo } from "./lib/identity.mjs";
 import { buildJobRecord } from "./lib/job-record.mjs";
 import { spawnGemini } from "./lib/gemini.mjs";
+import { writeCancelMarker, consumeCancelMarker } from "./lib/cancel-marker.mjs";
 
 const PLUGIN_ROOT = resolvePath(dirname(fileURLToPath(import.meta.url)), "..");
 const MODELS_CONFIG_PATH = resolvePath(PLUGIN_ROOT, "config/models.json");
 const READ_ONLY_POLICY = resolvePath(PLUGIN_ROOT, "policies/read-only.toml");
 const CONTINUABLE_STATUSES = new Set(["completed", "failed", "cancelled", "stale"]);
+const RUN_MODES = Object.freeze(["review", "adversarial-review", "custom-review", "rescue"]);
+const PREFLIGHT_MODES = Object.freeze(["review", "adversarial-review", "custom-review"]);
 
 configureState({
   pluginDataEnv: "GEMINI_PLUGIN_DATA",
@@ -38,6 +44,45 @@ function fail(code, message, details = {}) {
   process.stderr.write(`gemini-companion: ${message}\n`);
   printJson({ ok: false, error: code, message, ...details });
   process.exit(1);
+}
+
+function parseScopePathsOption(value) {
+  return value
+    ? String(value).split(",").map((s) => s.trim()).filter(Boolean)
+    : null;
+}
+
+function comparePathStrings(a, b) {
+  return a < b ? -1 : a > b ? 1 : 0;
+}
+
+function summarizeScopeDirectory(root) {
+  const files = [];
+  let byteCount = 0;
+  function walk(absDir, relDir = "") {
+    for (const ent of readdirSync(absDir, { withFileTypes: true })) {
+      const abs = resolvePath(absDir, ent.name);
+      const rel = relDir ? `${relDir}/${ent.name}` : ent.name;
+      if (ent.isDirectory()) {
+        walk(abs, rel);
+        continue;
+      }
+      if (!ent.isFile()) continue;
+      files.push(rel);
+      byteCount += statSync(abs).size;
+    }
+  }
+  if (existsSync(root)) walk(root);
+  files.sort(comparePathStrings);
+  return { files, file_count: files.length, byte_count: byteCount };
+}
+
+function preflightDisclosure(target) {
+  return (
+    `Preflight only: ${target} was not spawned, and no selected scope content ` +
+    "was sent to the target CLI or external provider. A later successful " +
+    `external review still sends the selected files to ${target}.`
+  );
 }
 
 function cleanGitEnv() {
@@ -160,14 +205,75 @@ function failBackgroundWorkerSpawn(workspaceRoot, invocation, error) {
   fail("spawn_failed", message, { error_code: error?.code ?? null });
 }
 
+function cmdPreflight(rest) {
+  const { options } = parseArgs(rest, {
+    valueOptions: ["mode", "cwd", "scope-base", "scope-paths", "binary"],
+    booleanOptions: [],
+  });
+  const mode = options.mode;
+  if (!mode || !PREFLIGHT_MODES.includes(mode)) {
+    fail("bad_args", `--mode must be one of ${PREFLIGHT_MODES.join("|")}; got ${JSON.stringify(mode)}`);
+  }
+
+  const profile = resolveProfile(mode);
+  const cwd = options.cwd ?? process.cwd();
+  const workspaceRoot = resolveWorkspaceRoot(cwd);
+  const scopePaths = parseScopePathsOption(options["scope-paths"]);
+  let containment = null;
+  let exitCode = 0;
+  try {
+    containment = setupContainment(profile, cwd);
+    populateScope(profile, cwd, containment.path, {
+      scopeBase: options["scope-base"] ?? null,
+      scopePaths,
+    }, containment);
+    const summary = summarizeScopeDirectory(containment.path);
+    printJson({
+      ok: true,
+      event: "preflight",
+      target: "gemini",
+      mode,
+      mode_profile_name: profile.name,
+      cwd,
+      workspace_root: workspaceRoot,
+      containment: profile.containment,
+      scope: profile.scope,
+      scope_base: options["scope-base"] ?? null,
+      scope_paths: scopePaths,
+      ...summary,
+      disclosure_note: preflightDisclosure("Gemini"),
+    });
+  } catch (e) {
+    exitCode = 2;
+    printJson({
+      ok: false,
+      event: "preflight",
+      target: "gemini",
+      mode,
+      cwd,
+      workspace_root: workspaceRoot,
+      containment: profile.containment,
+      scope: profile.scope,
+      scope_base: options["scope-base"] ?? null,
+      scope_paths: scopePaths,
+      error: "scope_failed",
+      error_message: e.message,
+      disclosure_note: preflightDisclosure("Gemini"),
+    });
+  } finally {
+    if (containment) { try { containment.cleanup(); } catch { /* best-effort */ } }
+  }
+  process.exit(exitCode);
+}
+
 async function cmdRun(rest) {
   const { options, positionals } = parseArgs(rest, {
     valueOptions: ["mode", "model", "cwd", "binary", "scope-base", "scope-paths", "override-dispose"],
     booleanOptions: ["background", "foreground"],
   });
   const mode = options.mode;
-  if (!mode || !["review", "adversarial-review", "rescue"].includes(mode)) {
-    fail("bad_args", `--mode must be one of review|adversarial-review|rescue; got ${JSON.stringify(mode)}`);
+  if (!mode || !RUN_MODES.includes(mode)) {
+    fail("bad_args", `--mode must be one of ${RUN_MODES.join("|")}; got ${JSON.stringify(mode)}`);
   }
   if (options.background && options.foreground) {
     fail("bad_args", "--background and --foreground are mutually exclusive");
@@ -188,9 +294,7 @@ async function cmdRun(rest) {
     if (v === "false" || v === "0") return false;
     return profile.dispose_default;
   })();
-  const scopePaths = options["scope-paths"]
-    ? String(options["scope-paths"]).split(",").map((s) => s.trim()).filter(Boolean)
-    : null;
+  const scopePaths = parseScopePathsOption(options["scope-paths"]);
 
   const jobId = newJobId();
   const invocation = Object.freeze({
@@ -280,6 +384,33 @@ async function executeRun(invocation, prompt, { foreground }) {
     ? invocation.resume_chain[invocation.resume_chain.length - 1]
     : null;
 
+  // Pre-spawn cancel-marker check (Class 1 + Finding A, race window α).
+  // cmdRunWorker has its own check at the top of the worker body, but a
+  // cancel issued during containment setup / scope copy lands AFTER that
+  // check while state.json still says "queued". Rechecking immediately
+  // before spawnGemini narrows the window from "containment + scope +
+  // pre-snapshot + spawn" (potentially seconds with a large repo) to the
+  // microseconds between this check and child.once('spawn'). The post-run
+  // consumer at the close handler is the safety net for that residual gap.
+  // This check also covers the foreground path (cmdRun bypasses
+  // cmdRunWorker entirely).
+  if (consumeCancelMarker(workspaceRoot, jobId)) {
+    if (neutralCwd) {
+      try { rmSync(neutralCwd, { recursive: true, force: true }); } catch { /* best-effort */ }
+    }
+    if (disposeEffective) {
+      try { containment.cleanup(); } catch { /* best-effort */ }
+    }
+    const cancelledRecord = buildJobRecord(invocation, {
+      status: "cancelled",
+      exitCode: null, parsed: null, pidInfo: null, geminiSessionId: null,
+    }, mutations);
+    writeJobFile(workspaceRoot, jobId, cancelledRecord);
+    upsertJob(workspaceRoot, cancelledRecord);
+    if (foreground) printJson(cancelledRecord);
+    process.exit(0);
+  }
+
   let execution;
   try {
     execution = await spawnGemini(profile, {
@@ -333,11 +464,17 @@ async function executeRun(invocation, prompt, { foreground }) {
       }
     }
 
+    // Issue #22 sub-task 2: cancel-marker check. cmdCancel writes the
+    // marker BEFORE signaling so finalization can force status=cancelled
+    // even when the target traps SIGTERM and exits 0 with valid output.
+    const cancelMarker = consumeCancelMarker(workspaceRoot, jobId);
+
     finalRecord = buildJobRecord(invocation, {
       exitCode: execution.exitCode,
       parsed: execution.parsed,
       pidInfo: execution.pidInfo,
       geminiSessionId: execution.geminiSessionId,
+      ...(cancelMarker ? { status: "cancelled" } : {}),
     }, mutations);
     writeJobFile(workspaceRoot, jobId, finalRecord);
     upsertJob(workspaceRoot, finalRecord);
@@ -393,6 +530,20 @@ async function cmdRunWorker(rest) {
 
   if (["completed", "failed", "cancelled", "stale"].includes(meta.status)) {
     fail("bad_state", `_run-worker refuses terminal job ${options.job}`);
+  }
+
+  // Honor a cancel that arrived while we were queued. The worker MUST check
+  // this before spawning the target — otherwise the run completes (model
+  // call, side effects) and only the post-run consumer at executeRun would
+  // convert "completed" → "cancelled".
+  if (consumeCancelMarker(workspaceRoot, options.job)) {
+    const cancelledRecord = buildJobRecord(invocationFromRecord(meta), {
+      status: "cancelled",
+      exitCode: null, parsed: null, pidInfo: null, geminiSessionId: null,
+    }, []);
+    writeJobFile(workspaceRoot, options.job, cancelledRecord);
+    upsertJob(workspaceRoot, cancelledRecord);
+    process.exit(0);
   }
 
   const prompt = consumePromptSidecar(workspaceRoot, options.job);
@@ -552,18 +703,150 @@ async function cmdPing(rest) {
   }
 }
 
+// ——— subcommand: cancel (signal a running job) ———
+//
+// Mirror of claude-companion.mjs's cmdCancel. Issue #22 sub-task 1: prior
+// to this commit the dispatch routed `cancel` to fail("not_implemented"),
+// so users had no way to cancel a Gemini background job through the
+// documented interface.
+//
+// §21.1: signal target is resolved through `pid_info = {pid, starttime,
+// argv0}`, never through pid alone. The ps/proc re-read is both the
+// liveness check AND the ownership proof — if starttime or argv0 drift,
+// we refuse to signal (`stale_pid`) because the pid has been reused by
+// an unrelated process.
+async function cmdCancel(rest) {
+  const { options } = parseArgs(rest, {
+    valueOptions: ["job", "cwd"],
+    booleanOptions: ["force"],
+  });
+  if (!options.job) fail("bad_args", "--job <id> is required");
+  const cwd = options.cwd ?? process.cwd();
+  const workspaceRoot = resolveWorkspaceRoot(cwd);
+  const jobs = listJobs(workspaceRoot);
+  const job = jobs.find((j) => j.id === options.job);
+  if (!job) fail("not_found", `no job with id ${options.job}`);
+  if (job.status !== "running") {
+    // "Truly terminal" — the job has reached a stop state, nothing to do.
+    if (["completed", "failed", "cancelled", "stale"].includes(job.status)) {
+      printJson({ ok: true, status: "already_terminal", job_status: job.status, job_id: options.job });
+      return;
+    }
+    // From here, only "queued" is a valid non-running state worth marker-
+    // writing. Any other unknown status reflects a state-corruption bug
+    // elsewhere; surface it via bad_state instead of silently treating it
+    // as queued and writing a marker the worker may never see.
+    if (job.status !== "queued") {
+      fail("bad_state", `unexpected job status ${JSON.stringify(job.status)} for job ${options.job}`);
+    }
+    // Queued: the worker hasn't spawned the target binary yet. Drop a
+    // cancel marker so the worker refuses to spawn on pickup. The marker
+    // IS the cancel mechanism here (no SIGTERM fallback), so a write
+    // failure must NOT report cancel_pending — exit 1 with cancel_failed.
+    try {
+      writeCancelMarker(workspaceRoot, options.job);
+    } catch (e) {
+      fail("cancel_failed",
+        "could not durably record cancel intent (marker write failed); job may still spawn",
+        { job_id: options.job, detail: e.message });
+    }
+    printJson({ ok: true, status: "cancel_pending", job_status: job.status, job_id: options.job });
+    return;
+  }
+  // From here on, job.status === "running". Verification failures must not
+  // exit 0: an exit-0 contract means "the cancel post-condition holds"
+  // (process gone or never running). We can't promise either when ownership
+  // proof is missing, so these paths exit 2 (refused for safety).
+  const pidInfo = job.pid_info ?? null;
+  if (!pidInfo || !Number.isInteger(pidInfo.pid)) {
+    printJson({
+      ok: false,
+      status: "no_pid_info",
+      detail: "job has no pid_info; cannot safely signal (legacy record or race)",
+      job_id: options.job,
+    });
+    process.exit(2);
+  }
+  if (pidInfo.capture_error || !pidInfo.starttime || !pidInfo.argv0) {
+    printJson({
+      ok: false,
+      status: "no_pid_info",
+      detail: "job has pid but no complete ownership proof; refusing to signal",
+      job_id: options.job,
+      pid: pidInfo.pid,
+      capture_error: pidInfo.capture_error ?? null,
+    });
+    process.exit(2);
+  }
+  const check = verifyPidInfo(pidInfo);
+  if (!check.match) {
+    if (check.reason === "process_gone") {
+      printJson({ ok: true, status: "already_dead", job_id: options.job, pid: pidInfo.pid });
+      return;
+    }
+    if (check.reason === "capture_error") {
+      // Issue #22 sub-task 3: ps/proc was unavailable (PATH stripped,
+      // sandbox-denied exec, hidepid mount). Refusing to signal is safe;
+      // the distinct status lets operators tell "I can't ask" apart from
+      // "the pid was reused".
+      process.stderr.write(
+        `gemini-companion: unverifiable — could not verify pid ${pidInfo.pid} ` +
+        `ownership (ps/proc unavailable). Refusing to signal.\n`
+      );
+      printJson({
+        ok: false,
+        status: "unverifiable",
+        detail: "could not verify pid ownership; refusing to signal",
+        job_id: options.job,
+        pid: pidInfo.pid,
+      });
+      process.exit(2);
+    }
+    process.stderr.write(
+      `gemini-companion: stale_pid (${check.reason}) — refusing to signal pid ${pidInfo.pid}\n`
+    );
+    printJson({
+      ok: false,
+      status: "stale_pid",
+      reason: check.reason,
+      job_id: options.job,
+      pid: pidInfo.pid,
+    });
+    process.exit(2);
+  }
+  // Issue #22 sub-task 2: see lib/cancel-marker.mjs for SIGTERM-trap rationale.
+  try {
+    writeCancelMarker(workspaceRoot, options.job);
+  } catch (e) {
+    process.stderr.write(`gemini-companion: warning: cancel marker write failed: ${e.message}\n`);
+  }
+
+  const signal = options.force ? "SIGKILL" : "SIGTERM";
+  try {
+    process.kill(pidInfo.pid, signal);
+  } catch (e) {
+    if (e?.code === "ESRCH") {
+      printJson({ ok: true, status: "already_dead", job_id: options.job, pid: pidInfo.pid });
+      return;
+    }
+    fail("signal_failed", e.message, { pid: pidInfo.pid, signal });
+  }
+  printJson({ ok: true, status: "signaled", signal, job_id: options.job, pid: pidInfo.pid });
+}
+
 async function main() {
   const argv = process.argv.slice(2);
   const sub = argv[0];
   const rest = argv.slice(1);
   switch (sub) {
+    case "preflight": return cmdPreflight(rest);
     case "run": return cmdRun(rest);
     case "_run-worker": return cmdRunWorker(rest);
     case "ping": return cmdPing(rest);
     case "status": return cmdStatus(rest);
     case "result": return cmdResult(rest);
     case "continue": return cmdContinue(rest);
-    case "cancel":
+    case "cancel": return cmdCancel(rest);
     case "doctor":
       return fail("not_implemented", `'${sub}' lands in a later milestone`);
     case "--help":

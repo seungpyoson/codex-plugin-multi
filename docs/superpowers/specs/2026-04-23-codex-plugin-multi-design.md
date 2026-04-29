@@ -434,13 +434,17 @@ Upstream files explicitly dropped: `app-server*.mjs`, `broker*.mjs` (Codex's ACP
 
 ```
 <target>-companion.mjs run \
-  --mode=rescue|review|adversarial-review \
+  --mode=rescue|review|adversarial-review|custom-review \
   [--background | --foreground] \
   [--model <full-id>] \
   [--cwd <path>] \
   [--scope-base <ref>] [--scope-paths <glob,...>] \
   [--override-dispose <bool>] \
   <prompt-source: argv for Claude, stdin for Gemini>
+
+<target>-companion.mjs preflight \
+  --mode=review|adversarial-review|custom-review \
+  [--cwd <path>] [--scope-base <ref>] [--scope-paths <glob,...>]
 
 <target>-companion.mjs continue --job <job-id> <prompt>
 <target>-companion.mjs status [--job <id>]
@@ -617,7 +621,7 @@ gemini -p ''
 **`meta.json`:**
 ```json
 {
-  "id": "<uuid>", "target": "claude", "mode": "rescue|review|adversarial-review",
+  "id": "<uuid>", "target": "claude", "mode": "rescue|review|adversarial-review|custom-review",
   "status": "running|done|failed|canceled", "pid": 12345, "exit_code": null,
   "started_at": "...", "ended_at": null, "cwd": "...", "workspace_root": "...",
   "isolated": true, "disposed": true, "dispose_path": "...",
@@ -791,7 +795,7 @@ Before v0.1.0: run upstream `/codex:adversarial-review` against this repo. Addre
 - **M5 — Claude containment + dispose.** `containment=worktree`, profile-driven disposal, pre/post git-status capture.
 - **M6 — Claude prompting skill.** `skills/claude-prompting/SKILL.md` + references.
 - **M7 — Gemini port (policy-first).** `plugins/gemini/`. `policies/read-only.toml`. stdin transport. `/tmp` cwd for isolation.
-- **M8 — Gemini rescue background + continue.** `run --background`, detached worker lifecycle, and `continue --job` using captured `gemini_session_id`. Gemini `cancel` remains deferred.
+- **M8 — Gemini rescue background + continue.** `run --background`, detached worker lifecycle, and `continue --job` using captured `gemini_session_id`. Historical boundary: Gemini `cancel` was deferred at this milestone; PR #23 follow-up work wires it, so current operator contract lives in `plugins/gemini/commands/gemini-cancel.md`.
 - **M9 — Tests.** Full unit + smoke (mock CLIs) + CI (lint + unit + smoke). E2E manual.
 - **M10 — Docs, CHANGELOG, v0.1.0.** Self adversarial review. Tag release.
 
@@ -847,7 +851,7 @@ These are the rules M7+ code is judged against. Each invariant names a class of 
 
 ```
 ModeProfile {
-  name:            "review" | "adversarial-review" | "rescue" | "ping"
+  name:            "review" | "adversarial-review" | "custom-review" | "rescue" | "ping"
   model_tier:      "cheap" | "medium" | "default"        // §8
   permission_mode: "plan" | "acceptEdits"                // §4.5
   strip_context:   boolean                               // §4.6 — strip CLAUDE.md?
@@ -866,6 +870,7 @@ ModeProfile {
 |---|---|---|---|---|---|---|---|
 | review | cheap | plan | true | worktree | working-tree | true | yes |
 | adversarial-review | medium | plan | true | worktree | branch-diff | true | yes |
+| custom-review | medium | plan | true | worktree | custom | true | yes |
 | rescue | default | acceptEdits | **false** | none | working-tree | false | yes |
 | ping | cheap | plan | true | none | head (no setup) | false | no |
 
@@ -889,7 +894,7 @@ ModeProfile {
 
 **Rule:** exactly one schema describes everything the companion durably persists about one invocation. The same schema is what `cmdResult` returns, what the `run --foreground` stdout prints (success path), and what the Claude result-handling skill and Gemini result command docs describe.
 
-**The schema (v6):**
+**The schema (v7):**
 
 ```
 JobRecord {
@@ -909,6 +914,7 @@ JobRecord {
   status: "queued" | "running" | "completed" | "failed" | "cancelled" | "stale"
   started_at, ended_at?, exit_code?
   error_code?, error_message?      // failed | stale only
+  error_summary?, error_cause?, suggested_action?, disclosure_note?
 
   // Result (was missing in v4) — required when status = completed or failed
   result?: string
@@ -918,7 +924,7 @@ JobRecord {
   cost_usd?, usage?
 
   // Bookkeeping — required
-  schema_version: 6
+  schema_version: 7
 }
 ```
 

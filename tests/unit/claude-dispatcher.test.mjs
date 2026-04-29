@@ -251,6 +251,31 @@ test("spawnClaude: returns claudeSessionId from stdout and pidInfo tuple", async
   );
 });
 
+test("spawnClaude: onSpawn fires asynchronously via 'spawn' event, not synchronously (issue #25)", async () => {
+  // Regression for the argv0_mismatch flake: capturePidInfo must run
+  // AFTER the child's execve completes, otherwise /proc/<pid>/cmdline
+  // (Linux) or `ps -o comm=` (Darwin) may still reflect the parent's
+  // argv. Node's child.once('spawn', ...) is the canonical post-execve
+  // signal, so onSpawn MUST NOT fire during the synchronous executor
+  // turn that calls spawn().
+  let onSpawnFired = false;
+  const promise = spawnClaude(resolveProfile("rescue"), {
+    model: "claude-haiku-4-5-20251001",
+    promptText: "hello",
+    sessionId: UUID,
+    binary: MOCK,
+    onSpawn: () => { onSpawnFired = true; },
+  });
+  // Synchronous check: spawnClaude returned a Promise; if onSpawn fired
+  // here, capture happened pre-execve (the bug).
+  assert.equal(onSpawnFired, false,
+    "onSpawn fired synchronously — capturePidInfo will read pre-execve cmdline (issue #25)");
+  const result = await promise;
+  // Once the spawn settles, onSpawn must have fired.
+  assert.equal(onSpawnFired, true, "onSpawn must fire by the time spawnClaude resolves");
+  assert.ok(result.pidInfo, "pidInfo must be present after a successful spawn");
+});
+
 test("spawnClaude: strips provider creds and routing env before launching target CLI", async () => {
   const dir = mkdtempSync(path.join(tmpdir(), "claude-env-sanitize-unit-"));
   try {

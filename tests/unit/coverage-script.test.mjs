@@ -266,3 +266,21 @@ test("coverage merger shares raw V8 functions for byte-identical shared lib pair
   assert.deepEqual(byFile.get(claudeArgs), [claudeFn, geminiFn]);
   assert.deepEqual(byFile.get(geminiArgs), [claudeFn, geminiFn]);
 });
+
+test("coverage merger discovers byte-identical lib pairs instead of requiring duplicate tests", async () => {
+  const claudeMarker = resolve("plugins/claude/scripts/lib/cancel-marker.mjs");
+  const geminiMarker = resolve("plugins/gemini/scripts/lib/cancel-marker.mjs");
+  const claudeFn = { functionName: "writeCancelMarker", ranges: [{ startOffset: 0, endOffset: 10, count: 1 }] };
+  const byFile = new Map([
+    [claudeMarker, [claudeFn]],
+    [geminiMarker, []],
+  ]);
+
+  await _internal.shareCoverageForVerbatimPairs(byFile, [claudeMarker, geminiMarker], async () => "same source");
+
+  assert.deepEqual(
+    byFile.get(geminiMarker),
+    [claudeFn],
+    "byte-identical gemini helper should inherit claude-side coverage without a gemini-only exercise test",
+  );
+});

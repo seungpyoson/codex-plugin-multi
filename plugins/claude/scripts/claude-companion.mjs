@@ -4,10 +4,12 @@
 // lives here; shared machinery lives in ./lib/.
 //
 // Subcommands (see spec §7.1):
-//   run      --mode=review|adversarial-review|rescue [--background|--foreground]
+//   run      --mode=review|adversarial-review|custom-review|rescue [--background|--foreground]
 //            [--model ID] [--cwd PATH] [--scope-base REF]
 //            [--scope-paths G1,G2,…] [--override-dispose|--no-override-dispose]
 //            -- PROMPT
+//   preflight --mode=review|adversarial-review|custom-review [--cwd PATH]
+//            [--scope-base REF] [--scope-paths G1,G2,…]
 //   status   [--job ID]
 //   result   --job ID
 //   cancel   --job ID [--force]
@@ -25,19 +27,19 @@
 
 import { fileURLToPath } from "node:url";
 import { dirname, resolve as resolvePath } from "node:path";
-import { writeFileSync, mkdirSync, existsSync, chmodSync, renameSync, unlinkSync } from "node:fs";
+import { writeFileSync, mkdirSync, existsSync, chmodSync, renameSync, unlinkSync, readdirSync, statSync, readFileSync as _readFileSync } from "node:fs";
 import { execFileSync, spawn } from "node:child_process";
 
 import { parseArgs } from "./lib/args.mjs";
 import { configureState, getStateConfig, resolveJobsDir, resolveJobFile, writeJobFile, upsertJob, listJobs } from "./lib/state.mjs";
 import { resolveWorkspaceRoot } from "./lib/workspace.mjs";
 import { spawnClaude } from "./lib/claude.mjs";
+import { writeCancelMarker, consumeCancelMarker } from "./lib/cancel-marker.mjs";
 import { resolveProfile, resolveModelForProfile } from "./lib/mode-profiles.mjs";
 import { setupContainment } from "./lib/containment.mjs";
 import { populateScope } from "./lib/scope.mjs";
 import { newJobId, verifyPidInfo } from "./lib/identity.mjs";
 import { buildJobRecord } from "./lib/job-record.mjs";
-import { readFileSync as _readFileSync } from "node:fs";
 
 // ——— plugin-root self-resolution (upstream pattern, spec §4.14) ———
 const PLUGIN_ROOT = resolvePath(dirname(fileURLToPath(import.meta.url)), "..");
@@ -50,6 +52,8 @@ configureState({
 
 const MODELS_CONFIG_PATH = resolvePath(PLUGIN_ROOT, "config/models.json");
 const CONTINUABLE_STATUSES = new Set(["completed", "failed", "cancelled", "stale"]);
+const RUN_MODES = Object.freeze(["review", "adversarial-review", "custom-review", "rescue"]);
+const PREFLIGHT_MODES = Object.freeze(["review", "adversarial-review", "custom-review"]);
 
 function loadModels() {
   if (!existsSync(MODELS_CONFIG_PATH)) return { cheap: null, medium: null, default: null };
@@ -64,6 +68,45 @@ function fail(code, message, details = {}) {
   process.stderr.write(`claude-companion: ${message}\n`);
   printJson({ ok: false, error: code, message, ...details });
   process.exit(1);
+}
+
+function parseScopePathsOption(value) {
+  return value
+    ? String(value).split(",").map((s) => s.trim()).filter(Boolean)
+    : null;
+}
+
+function comparePathStrings(a, b) {
+  return a < b ? -1 : a > b ? 1 : 0;
+}
+
+function summarizeScopeDirectory(root) {
+  const files = [];
+  let byteCount = 0;
+  function walk(absDir, relDir = "") {
+    for (const ent of readdirSync(absDir, { withFileTypes: true })) {
+      const abs = resolvePath(absDir, ent.name);
+      const rel = relDir ? `${relDir}/${ent.name}` : ent.name;
+      if (ent.isDirectory()) {
+        walk(abs, rel);
+        continue;
+      }
+      if (!ent.isFile()) continue;
+      files.push(rel);
+      byteCount += statSync(abs).size;
+    }
+  }
+  if (existsSync(root)) walk(root);
+  files.sort(comparePathStrings);
+  return { files, file_count: files.length, byte_count: byteCount };
+}
+
+function preflightDisclosure(target) {
+  return (
+    `Preflight only: ${target} was not spawned, and no selected scope content ` +
+    "was sent to the target CLI or external provider. A later successful " +
+    `external review still sends the selected files to ${target}.`
+  );
 }
 
 // Wraps git command; reports failure separately from successful empty output
@@ -232,6 +275,70 @@ function failBackgroundWorkerSpawn(workspaceRoot, invocation, error) {
   fail("spawn_failed", message, { error_code: error?.code ?? null });
 }
 
+// ——— subcommand: preflight ———
+function cmdPreflight(rest) {
+  const { options } = parseArgs(rest, {
+    valueOptions: ["mode", "cwd", "scope-base", "scope-paths", "binary"],
+    booleanOptions: [],
+    aliasMap: {},
+  });
+
+  const mode = options.mode;
+  if (!mode || !PREFLIGHT_MODES.includes(mode)) {
+    fail("bad_args", `--mode must be one of ${PREFLIGHT_MODES.join("|")}; got ${JSON.stringify(mode)}`);
+  }
+
+  const profile = resolveProfile(mode);
+  const cwd = options.cwd ?? process.cwd();
+  const workspaceRoot = resolveWorkspaceRoot(cwd);
+  const scopePaths = parseScopePathsOption(options["scope-paths"]);
+  let containment = null;
+  let exitCode = 0;
+  try {
+    containment = setupContainment(profile, cwd);
+    populateScope(profile, cwd, containment.path, {
+      scopeBase: options["scope-base"] ?? null,
+      scopePaths,
+    }, containment);
+    const summary = summarizeScopeDirectory(containment.path);
+    printJson({
+      ok: true,
+      event: "preflight",
+      target: "claude",
+      mode,
+      mode_profile_name: profile.name,
+      cwd,
+      workspace_root: workspaceRoot,
+      containment: profile.containment,
+      scope: profile.scope,
+      scope_base: options["scope-base"] ?? null,
+      scope_paths: scopePaths,
+      ...summary,
+      disclosure_note: preflightDisclosure("Claude"),
+    });
+  } catch (e) {
+    exitCode = 2;
+    printJson({
+      ok: false,
+      event: "preflight",
+      target: "claude",
+      mode,
+      cwd,
+      workspace_root: workspaceRoot,
+      containment: profile.containment,
+      scope: profile.scope,
+      scope_base: options["scope-base"] ?? null,
+      scope_paths: scopePaths,
+      error: "scope_failed",
+      error_message: e.message,
+      disclosure_note: preflightDisclosure("Claude"),
+    });
+  } finally {
+    if (containment) { try { containment.cleanup(); } catch { /* best-effort */ } }
+  }
+  process.exit(exitCode);
+}
+
 // ——— subcommand: run ———
 async function cmdRun(rest) {
   const { options, positionals } = parseArgs(rest, {
@@ -241,8 +348,8 @@ async function cmdRun(rest) {
   });
 
   const mode = options.mode;
-  if (!mode || !["review", "adversarial-review", "rescue"].includes(mode)) {
-    fail("bad_args", `--mode must be one of review|adversarial-review|rescue; got ${JSON.stringify(mode)}`);
+  if (!mode || !RUN_MODES.includes(mode)) {
+    fail("bad_args", `--mode must be one of ${RUN_MODES.join("|")}; got ${JSON.stringify(mode)}`);
   }
   if (options.background && options.foreground) {
     fail("bad_args", "--background and --foreground are mutually exclusive");
@@ -273,9 +380,7 @@ async function cmdRun(rest) {
     return profile.dispose_default;
   })();
 
-  const scopePaths = options["scope-paths"]
-    ? String(options["scope-paths"]).split(",").map((s) => s.trim()).filter(Boolean)
-    : null;
+  const scopePaths = parseScopePathsOption(options["scope-paths"]);
 
   const prompt = positionals.join(" ").trim();
   if (!prompt) {
@@ -397,6 +502,30 @@ async function executeRun(invocation, prompt, { foreground }) {
     ? invocation.resume_chain[invocation.resume_chain.length - 1]
     : null;
 
+  // Pre-spawn cancel-marker check (Class 1 + Finding A, race window α).
+  // cmdRunWorker has its own check at the top of the worker body, but a
+  // cancel issued during containment setup / scope copy lands AFTER that
+  // check while state.json still says "queued". Rechecking immediately
+  // before spawnClaude narrows the window from "containment + scope +
+  // pre-snapshot + spawn" (potentially seconds with a large repo) to the
+  // microseconds between this check and child.once('spawn'). The post-run
+  // consumer at the close handler is the safety net for that residual gap.
+  // This check also covers the foreground path (cmdRun bypasses
+  // cmdRunWorker entirely).
+  if (consumeCancelMarker(workspaceRoot, jobId)) {
+    if (containment.disposed && disposeEffective) {
+      try { containment.cleanup(); } catch { /* best-effort */ }
+    }
+    const cancelledRecord = buildJobRecord(invocation, {
+      status: "cancelled",
+      exitCode: null, parsed: null, pidInfo: null, claudeSessionId: null,
+    }, mutations);
+    writeJobFile(workspaceRoot, jobId, cancelledRecord);
+    upsertJob(workspaceRoot, cancelledRecord);
+    if (foreground) printJson(cancelledRecord);
+    process.exit(0);
+  }
+
   let execution;
   try {
     execution = await spawnClaude(profile, {
@@ -455,6 +584,13 @@ async function executeRun(invocation, prompt, { foreground }) {
       }
     }
 
+    // Issue #22 sub-task 2: cancel-marker check. cmdCancel writes the
+    // marker BEFORE signaling so we can force status=cancelled even when
+    // the target CLI traps SIGTERM and exits 0 with valid output. The
+    // marker is per-job and best-effort — a missing file means "no cancel
+    // requested," not "couldn't read."
+    const cancelMarker = consumeCancelMarker(workspaceRoot, jobId);
+
     // ONE buildJobRecord call — spec §21.3.2 convergence. Foreground prints
     // what we persist; cmdResult reads the same file; skill renders the same
     // schema. No hand-assembly anywhere.
@@ -463,6 +599,7 @@ async function executeRun(invocation, prompt, { foreground }) {
       parsed: execution.parsed,
       pidInfo: execution.pidInfo,
       claudeSessionId: execution.claudeSessionId ?? null,
+      ...(cancelMarker ? { status: "cancelled" } : {}),
     }, mutations);
     writeJobFile(workspaceRoot, jobId, finalRecord);
     upsertJob(workspaceRoot, finalRecord);
@@ -515,6 +652,20 @@ async function cmdRunWorker(rest) {
   }
   if (["completed", "failed", "cancelled", "stale"].includes(meta.status)) {
     fail("bad_state", `job ${options.job} is already terminal (${meta.status}); refusing worker re-entry`);
+  }
+
+  // Honor a cancel that arrived while we were queued. The worker MUST check
+  // this before spawning the target — otherwise the run completes (model
+  // call, side effects) and only the post-run consumer at executeRun would
+  // convert "completed" → "cancelled".
+  if (consumeCancelMarker(workspaceRoot, options.job)) {
+    const cancelledRecord = buildJobRecord(invocationFromRecord(meta), {
+      status: "cancelled",
+      exitCode: null, parsed: null, pidInfo: null, claudeSessionId: null,
+    }, []);
+    writeJobFile(workspaceRoot, options.job, cancelledRecord);
+    upsertJob(workspaceRoot, cancelledRecord);
+    process.exit(0);
   }
 
   // Read+delete the prompt sidecar (§21.3.1 handoff buffer). Missing sidecar
@@ -757,21 +908,48 @@ async function cmdCancel(rest) {
   const job = jobs.find((j) => j.id === options.job);
   if (!job) fail("not_found", `no job with id ${options.job}`);
   if (job.status !== "running") {
-    printJson({ ok: true, status: "already_terminal", job_status: job.status, job_id: options.job });
+    // "Truly terminal" — the job has reached a stop state, nothing to do.
+    if (["completed", "failed", "cancelled", "stale"].includes(job.status)) {
+      printJson({ ok: true, status: "already_terminal", job_status: job.status, job_id: options.job });
+      return;
+    }
+    // From here, only "queued" is a valid non-running state worth marker-
+    // writing. Any other unknown status reflects a state-corruption bug
+    // elsewhere; surface it via bad_state instead of silently treating it
+    // as queued and writing a marker the worker may never see.
+    if (job.status !== "queued") {
+      fail("bad_state", `unexpected job status ${JSON.stringify(job.status)} for job ${options.job}`);
+    }
+    // Queued: the worker hasn't spawned the target binary yet. Drop a
+    // cancel marker so the worker refuses to spawn on pickup. The marker
+    // IS the cancel mechanism here (no SIGTERM fallback), so a write
+    // failure must NOT report cancel_pending — exit 1 with cancel_failed.
+    try {
+      writeCancelMarker(workspaceRoot, options.job);
+    } catch (e) {
+      fail("cancel_failed",
+        "could not durably record cancel intent (marker write failed); job may still spawn",
+        { job_id: options.job, detail: e.message });
+    }
+    printJson({ ok: true, status: "cancel_pending", job_status: job.status, job_id: options.job });
     return;
   }
+  // From here on, job.status === "running". Verification failures must not
+  // exit 0: an exit-0 contract means "the cancel post-condition holds"
+  // (process gone or never running). We can't promise either when ownership
+  // proof is missing, so these paths exit 2 (refused for safety).
   const pidInfo = job.pid_info ?? null;
   if (!pidInfo || !Number.isInteger(pidInfo.pid)) {
     // Legacy records (pre-T7.3) or races where the spawn aborted before
-    // pidInfo was persisted. Operators must decide manually; refusing to
-    // signal is the safe default — a bare `pid` is not an ownership proof.
+    // pidInfo was persisted. The job claims status=running but we have
+    // nothing to verify. Refusing is safe; exit 2 is the contract.
     printJson({
       ok: false,
       status: "no_pid_info",
       detail: "job has no pid_info; cannot safely signal (legacy record or race)",
       job_id: options.job,
     });
-    return;
+    process.exit(2);
   }
   if (pidInfo.capture_error || !pidInfo.starttime || !pidInfo.argv0) {
     printJson({
@@ -782,7 +960,7 @@ async function cmdCancel(rest) {
       pid: pidInfo.pid,
       capture_error: pidInfo.capture_error ?? null,
     });
-    return;
+    process.exit(2);
   }
   // Non-throwing ownership check: compares {starttime, argv0} of the live
   // process against the tuple captured at spawn. Mismatch → refuse.
@@ -793,6 +971,25 @@ async function cmdCancel(rest) {
       // "already_dead"; preserve so ops tooling keeps parsing.
       printJson({ ok: true, status: "already_dead", job_id: options.job, pid: pidInfo.pid });
       return;
+    }
+    if (check.reason === "capture_error") {
+      // Issue #22 sub-task 3: ps/proc was unavailable (PATH stripped,
+      // sandbox-denied exec, hidepid mount). The pid may well be alive — we
+      // just couldn't verify ownership. Refusing to signal is the safe
+      // default; the distinct status lets operators tell "I can't ask"
+      // apart from "the pid was reused" (stale_pid).
+      process.stderr.write(
+        `claude-companion: unverifiable — could not verify pid ${pidInfo.pid} ` +
+        `ownership (ps/proc unavailable). Refusing to signal.\n`
+      );
+      printJson({
+        ok: false,
+        status: "unverifiable",
+        detail: "could not verify pid ownership; refusing to signal",
+        job_id: options.job,
+        pid: pidInfo.pid,
+      });
+      process.exit(2);
     }
     // starttime_mismatch / argv0_mismatch / invalid — PID reuse or tampering.
     process.stderr.write(
@@ -807,10 +1004,24 @@ async function cmdCancel(rest) {
     });
     process.exit(2);
   }
+  // Issue #22 sub-task 2: write the cancel-requested marker BEFORE
+  // signaling. See lib/cancel-marker.mjs for the full SIGTERM-trap
+  // rationale. Best-effort — if the write fails the cancel still goes
+  // through; we just lose the lifecycle override.
+  try {
+    writeCancelMarker(workspaceRoot, options.job);
+  } catch (e) {
+    process.stderr.write(`claude-companion: warning: cancel marker write failed: ${e.message}\n`);
+  }
+
   const signal = options.force ? "SIGKILL" : "SIGTERM";
   try {
     process.kill(pidInfo.pid, signal);
   } catch (e) {
+    if (e?.code === "ESRCH") {
+      printJson({ ok: true, status: "already_dead", job_id: options.job, pid: pidInfo.pid });
+      return;
+    }
     fail("signal_failed", e.message, { pid: pidInfo.pid, signal });
   }
   printJson({ ok: true, status: "signaled", signal, job_id: options.job, pid: pidInfo.pid });
@@ -822,6 +1033,7 @@ async function main() {
   const sub = argv[0];
   const rest = argv.slice(1);
   switch (sub) {
+    case "preflight": return cmdPreflight(rest);
     case "run":     return cmdRun(rest);
     case "ping":    return cmdPing(rest);
     case "status":  return cmdStatus(rest);

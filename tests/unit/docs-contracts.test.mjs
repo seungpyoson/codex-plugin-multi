@@ -10,6 +10,33 @@ function readRepoFile(rel) {
   return readFileSync(path.join(REPO_ROOT, rel), "utf8");
 }
 
+const CANCEL_STATUSES = [
+  "signaled",
+  "already_terminal",
+  "already_dead",
+  "cancel_pending",
+  "no_pid_info",
+  "unverifiable",
+  "stale_pid",
+];
+
+const CANCEL_ERRORS = [
+  "bad_args",
+  "not_found",
+  "bad_state",
+  "signal_failed",
+  "cancel_failed",
+];
+
+function quotedValuesForField(markdown, field) {
+  const values = new Set();
+  const pattern = new RegExp(String.raw`${field}:\s*"([^"]+)"`, "g");
+  for (const match of markdown.matchAll(pattern)) {
+    values.add(match[1]);
+  }
+  return [...values].sort((a, b) => a.localeCompare(b));
+}
+
 test("claude cancel docs reject foreground cancel and direct users to Ctrl+C", () => {
   const command = readRepoFile("plugins/claude/commands/claude-cancel.md");
   const runtime = readRepoFile("plugins/claude/skills/claude-cli-runtime/SKILL.md");
@@ -24,6 +51,28 @@ test("claude cancel docs reject foreground cancel and direct users to Ctrl+C", (
     "signal_failed is emitted through the error envelope, not a status envelope");
   assert.doesNotMatch(command, /status:\s*"signal_failed"/,
     "signal_failed docs must not imply a status field");
+});
+
+test("cancel command docs enumerate the runtime status and error contracts", () => {
+  for (const target of ["claude", "gemini"]) {
+    const command = readRepoFile(`plugins/${target}/commands/${target}-cancel.md`);
+
+    assert.deepEqual(
+      quotedValuesForField(command, "status"),
+      [...CANCEL_STATUSES].sort((a, b) => a.localeCompare(b)),
+      `${target}-cancel.md must enumerate exactly the status values cmdCancel emits`,
+    );
+    assert.deepEqual(
+      quotedValuesForField(command, "error"),
+      [...CANCEL_ERRORS].sort((a, b) => a.localeCompare(b)),
+      `${target}-cancel.md must enumerate exactly the error values cmdCancel emits`,
+    );
+    assert.match(command, /Exit `0`[\s\S]*signaled[\s\S]*already_terminal[\s\S]*already_dead[\s\S]*cancel_pending/);
+    assert.match(command, /Exit `1`[\s\S]*bad_args[\s\S]*not_found[\s\S]*bad_state[\s\S]*signal_failed[\s\S]*cancel_failed/);
+    assert.match(command, /Exit `2`[\s\S]*no_pid_info[\s\S]*unverifiable[\s\S]*stale_pid/);
+    assert.doesNotMatch(command, /state will reconcile/i,
+      "already_dead must not promise a reconcile path the runtime does not implement");
+  }
 });
 
 test("claude review command docs use current mutation schema fields", () => {
@@ -61,6 +110,24 @@ test("review command docs route --scope-base as a companion flag", () => {
   assert.doesNotMatch(docs, /Passed as-is to the companion prompt/i);
 });
 
+test("review docs expose custom-review, preflight, and blocked-review wording", () => {
+  const docs = [
+    readRepoFile("plugins/claude/skills/claude-cli-runtime/SKILL.md"),
+    readRepoFile("plugins/claude/commands/claude-review.md"),
+    readRepoFile("plugins/claude/commands/claude-adversarial-review.md"),
+    readRepoFile("plugins/gemini/skills/gemini-delegation/SKILL.md"),
+    readRepoFile("plugins/gemini/commands/gemini-review.md"),
+    readRepoFile("plugins/gemini/commands/gemini-adversarial-review.md"),
+    readRepoFile("plugins/claude/skills/claude-result-handling/SKILL.md"),
+  ].join("\n");
+
+  assert.match(docs, /custom-review/);
+  assert.match(docs, /preflight/);
+  assert.match(docs, /review blocked\s*\/\s*no findings produced/i);
+  assert.match(docs, /relative paths/i);
+  assert.doesNotMatch(docs, /policy decision rather than a plugin\/runtime failure/i);
+});
+
 test("setup docs do not claim unimplemented target version-floor checks", () => {
   const docs = [
     readRepoFile("plugins/claude/commands/claude-setup.md"),
@@ -71,7 +138,7 @@ test("setup docs do not claim unimplemented target version-floor checks", () => 
   assert.doesNotMatch(docs, /version is below floor/i);
 });
 
-test("gemini command docs match background/continue runtime and deferred cancel", () => {
+test("gemini command docs match background/continue runtime and wired cancel", () => {
   const rescue = readRepoFile("plugins/gemini/commands/gemini-rescue.md");
   const cancel = readRepoFile("plugins/gemini/commands/gemini-cancel.md");
 
@@ -80,9 +147,40 @@ test("gemini command docs match background/continue runtime and deferred cancel"
   assert.doesNotMatch(rescue, /foreground only/i);
   assert.doesNotMatch(rescue, /background support lands/i);
 
-  assert.match(cancel, /not_implemented/);
-  assert.match(cancel, /deferred/i);
+  // Gemini cancel is wired (PR #22 / commit 01f4282) — docs must NOT claim
+  // it returns not_implemented or that it's deferred.
+  assert.doesNotMatch(cancel, /not_implemented/,
+    "gemini cancel is wired; docs must not claim not_implemented");
+  assert.doesNotMatch(cancel, /\bdeferred\b/i,
+    "gemini cancel is wired; docs must not claim it's deferred");
   assert.doesNotMatch(cancel, /M8 wires background cancel/i);
+  // Must enumerate the canonical signaled-success status so operators
+  // know cancel is operational.
+  assert.match(cancel, /\bsignaled\b/);
+});
+
+test("gemini-delegation/SKILL.md describes cancel --job flow (not deferred/not_implemented)", () => {
+  const skill = readRepoFile("plugins/gemini/skills/gemini-delegation/SKILL.md");
+
+  assert.doesNotMatch(skill, /not_implemented/,
+    "gemini-delegation/SKILL.md must not claim cancel returns not_implemented");
+  assert.doesNotMatch(skill, /cancel is deferred/i,
+    "gemini-delegation/SKILL.md must not say cancel is deferred");
+  assert.doesNotMatch(skill, /cancel.*deferred|deferred.*cancel/i,
+    "gemini-delegation/SKILL.md must not describe cancel as deferred");
+  assert.match(skill, /cancel.*--job/i,
+    "gemini-delegation/SKILL.md must document the `cancel --job` workflow");
+});
+
+test("companion preflight file sorting uses an explicit comparator", () => {
+  for (const target of ["claude", "gemini"]) {
+    const companion = readRepoFile(`plugins/${target}/scripts/${target}-companion.mjs`);
+
+    assert.doesNotMatch(companion, /\.sort\(\)/,
+      `${target} companion must not rely on default Array#sort ordering`);
+    assert.match(companion, /files\.sort\(comparePathStrings\)/,
+      `${target} companion must sort preflight files with an explicit comparator`);
+  }
 });
 
 test("spec does not reference an unshipped Gemini result-handling skill", () => {
@@ -111,6 +209,7 @@ test("README documents shipped install path, first commands, and safety posture"
   assert.match(readme, /Gemini plan-mode is NOT a sandbox/);
   assert.match(readme, /read-only\.toml/);
   assert.match(readme, /--dispose/);
-  assert.match(readme, /Gemini `cancel`.*deferred/i);
+  assert.doesNotMatch(readme, /Gemini `cancel`.*deferred/i,
+    "gemini cancel is wired (PR #22); README must not claim it's deferred");
   assert.match(readme, /docs\/e2e\.md/);
 });

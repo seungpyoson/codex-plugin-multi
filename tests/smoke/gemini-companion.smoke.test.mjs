@@ -200,6 +200,450 @@ test("gemini rescue background: active job appears in default status", async () 
   }
 });
 
+test("gemini cancel: signals a running background job (issue #22 sub-task 1)", async () => {
+  // Mirror of the Claude cancel smoke. Pre-#22, gemini-companion's
+  // dispatch routed `cancel` to fail("not_implemented") so users had no
+  // way to cancel a Gemini background job through the documented surface.
+  const cwd = mkdtempSync(path.join(tmpdir(), "gemini-bg-cancel-cwd-"));
+  seedMinimalRepo(cwd);
+  const { stdout, status, stderr, dataDir } = runCompanion(
+    ["run", "--mode=rescue", "--background", "--model", "gemini-3-flash-preview",
+     "--cwd", cwd, "--", "long background task"],
+    { cwd, env: { GEMINI_MOCK_DELAY_MS: "5000" } },
+  );
+  try {
+    assert.equal(status, 0, stderr);
+    const launched = JSON.parse(stdout);
+    const deadline = Date.now() + 5000;
+    let running = null;
+    while (Date.now() < deadline && !running) {
+      const statusRes = spawnSync("node", [COMPANION, "status", "--cwd", cwd], {
+        cwd, encoding: "utf8",
+        env: { ...process.env, GEMINI_PLUGIN_DATA: dataDir },
+      });
+      assert.equal(statusRes.status, 0, statusRes.stderr);
+      const statusObj = JSON.parse(statusRes.stdout);
+      running = statusObj.jobs.find((j) => j.id === launched.job_id && j.status === "running");
+      if (!running) await new Promise((r) => setTimeout(r, 100));
+    }
+    assert.ok(running, "background gemini job never became visible as running");
+    assert.ok(running.pid_info?.pid, "running gemini job must carry pid_info for safe cancel");
+
+    const cancelRes = spawnSync("node", [
+      COMPANION, "cancel", "--job", launched.job_id, "--cwd", cwd,
+    ], {
+      cwd, encoding: "utf8",
+      env: { ...process.env, GEMINI_PLUGIN_DATA: dataDir },
+    });
+    // Two acceptable outcomes: signaled (signal landed) or no_pid_info
+    // (mock spawn raced and pid capture failed). What MUST NOT happen is
+    // a "not_implemented" error from the dispatch.
+    assert.notEqual(cancelRes.status, 1, `gemini cancel must be implemented; stderr=${cancelRes.stderr}`);
+    const cancel = JSON.parse(cancelRes.stdout);
+    assert.notEqual(cancel.error, "not_implemented",
+      `gemini cancel must not fall through to not_implemented; got ${JSON.stringify(cancel)}`);
+    if (running.pid_info.capture_error) {
+      // Issue #25 follow-up: a running job whose pid_info lacks a
+      // complete ownership proof is "unverifiable" — exit 2 means
+      // "refused for safety; operator must investigate." Exit 0 would
+      // lie that the cancel post-condition (process gone) holds.
+      assert.equal(cancelRes.status, 2,
+        `capture_error path must exit 2 (refused, unverifiable); stderr=${cancelRes.stderr}`);
+      assert.equal(cancel.status, "no_pid_info");
+    } else {
+      // Mock can exit between attachPidCapture's 'spawn' snapshot and
+      // verifyPidInfo at cancel time. All four post-spawn outcomes are
+      // valid; what must NOT happen is a status/exit-code mismatch.
+      const exitOk =
+        (cancel.status === "signaled" && cancelRes.status === 0) ||
+        (cancel.status === "already_dead" && cancelRes.status === 0) ||
+        (cancel.status === "stale_pid" && cancelRes.status === 2) ||
+        (cancel.status === "unverifiable" && cancelRes.status === 2);
+      assert.ok(
+        exitOk,
+        `unexpected (status, exit) pair (${JSON.stringify(cancel.status)}, ${cancelRes.status}); stderr=${cancelRes.stderr}`,
+      );
+      if (cancel.status === "signaled") {
+        assert.equal(cancel.signal, "SIGTERM");
+        assert.equal(cancel.pid, running.pid_info.pid);
+      }
+    }
+  } finally {
+    rmTree(dataDir);
+    rmTree(cwd);
+  }
+});
+
+test("gemini cancel: queued job → cancel_pending, marker written, exit 0", () => {
+  // Class 1 + Finding A: a queued (not-yet-running) job cannot be
+  // already_terminal — the worker hasn't spawned anything. Cancel must
+  // drop a marker so the worker refuses to spawn on pickup.
+  const cwd = mkdtempSync(path.join(tmpdir(), "gemini-cancel-queued-cwd-"));
+  seedMinimalRepo(cwd);
+  const runRes = runCompanion(
+    ["run", "--mode=rescue", "--foreground", "--model", "gemini-3-flash-preview",
+     "--cwd", cwd, "--", "seed"],
+    { cwd },
+  );
+  try {
+    assert.equal(runRes.status, 0, runRes.stderr);
+    const { metaPath, record } = readOnlyJobRecord(runRes.dataDir);
+    writeFileSync(metaPath,
+      `${JSON.stringify({ ...record, status: "queued", pid_info: null }, null, 2)}\n`, "utf8");
+    // listJobs reads state.json — patch that too so cmdCancel sees the queued shape.
+    const stateRoot = path.join(runRes.dataDir, "state");
+    const statePath = (() => {
+      for (const d of readdirSync(stateRoot)) {
+        const p = path.join(stateRoot, d, "state.json");
+        if (existsSync(p)) return p;
+      }
+      throw new Error("no state.json");
+    })();
+    const state = JSON.parse(readFileSync(statePath, "utf8"));
+    const idx = state.jobs.findIndex((j) => j.id === record.job_id);
+    state.jobs[idx] = { ...state.jobs[idx], status: "queued", pid_info: null };
+    writeFileSync(statePath, JSON.stringify(state, null, 2));
+
+    const cancelRes = spawnSync("node", [
+      COMPANION, "cancel", "--job", record.job_id, "--cwd", cwd,
+    ], {
+      cwd, encoding: "utf8",
+      env: { ...process.env, GEMINI_PLUGIN_DATA: runRes.dataDir },
+    });
+    assert.equal(cancelRes.status, 0, cancelRes.stderr);
+    const cancel = JSON.parse(cancelRes.stdout);
+    assert.equal(cancel.status, "cancel_pending");
+    assert.equal(cancel.ok, true);
+    assert.equal(cancel.job_status, "queued");
+
+    const wsDir = path.dirname(metaPath);
+    const markerPath = path.join(wsDir, record.job_id, "cancel-requested.flag");
+    assert.ok(existsSync(markerPath),
+      `cancel_pending must write a marker at ${markerPath}`);
+  } finally {
+    rmTree(runRes.dataDir);
+    rmTree(cwd);
+  }
+});
+
+test("gemini _run-worker: cancel marker prevents target spawn, sets status=cancelled", () => {
+  // Class 1 + Finding A end-to-end: worker MUST exit before spawning the
+  // target binary when a marker is present. Otherwise the model call
+  // happens (cost + side effects) and only the post-run consumer would
+  // convert "completed" → "cancelled".
+  const cwd = mkdtempSync(path.join(tmpdir(), "gemini-worker-cancel-cwd-"));
+  seedMinimalRepo(cwd);
+  const runRes = runCompanion(
+    ["run", "--mode=rescue", "--foreground", "--model", "gemini-3-flash-preview",
+     "--cwd", cwd, "--", "seed"],
+    { cwd },
+  );
+  try {
+    assert.equal(runRes.status, 0, runRes.stderr);
+    const { metaPath, record } = readOnlyJobRecord(runRes.dataDir);
+    writeFileSync(metaPath,
+      `${JSON.stringify({ ...record, status: "queued", pid_info: null }, null, 2)}\n`, "utf8");
+
+    const wsDir = path.dirname(metaPath);
+    const markerDir = path.join(wsDir, record.job_id);
+    mkdirSync(markerDir, { recursive: true });
+    const markerPath = path.join(markerDir, "cancel-requested.flag");
+    writeFileSync(markerPath, new Date().toISOString() + "\n");
+
+    const workerRes = spawnSync("node", [
+      COMPANION, "_run-worker", "--cwd", cwd, "--job", record.job_id,
+    ], {
+      cwd, encoding: "utf8",
+      env: { ...process.env, GEMINI_BINARY: MOCK, GEMINI_PLUGIN_DATA: runRes.dataDir },
+    });
+    assert.equal(workerRes.status, 0,
+      `worker must exit 0 when marker present; stderr=${workerRes.stderr}`);
+
+    const finalMeta = JSON.parse(readFileSync(metaPath, "utf8"));
+    assert.equal(finalMeta.status, "cancelled",
+      `worker must persist status=cancelled; got ${finalMeta.status}`);
+    assert.equal(finalMeta.pid_info, null,
+      "worker must not record pid_info when refusing to spawn");
+    assert.equal(existsSync(markerPath), false,
+      "worker must consume (unlink) the marker on pickup");
+  } finally {
+    rmTree(runRes.dataDir);
+    rmTree(cwd);
+  }
+});
+
+test("gemini cancel: queued + marker write failure → cancel_failed, exit 1", () => {
+  // Class 1 follow-up (reviewer Vector 3): the queued-cancel branch's marker
+  // is the entire cancel mechanism. Write failure must not lie via cancel_pending.
+  const cwd = mkdtempSync(path.join(tmpdir(), "gemini-cancel-fail-cwd-"));
+  seedMinimalRepo(cwd);
+  const runRes = runCompanion(
+    ["run", "--mode=rescue", "--foreground", "--model", "gemini-3-flash-preview",
+     "--cwd", cwd, "--", "seed"],
+    { cwd },
+  );
+  try {
+    assert.equal(runRes.status, 0, runRes.stderr);
+    const { metaPath, record } = readOnlyJobRecord(runRes.dataDir);
+    writeFileSync(metaPath,
+      `${JSON.stringify({ ...record, status: "queued", pid_info: null }, null, 2)}\n`, "utf8");
+    const stateRoot = path.join(runRes.dataDir, "state");
+    const statePath = (() => {
+      for (const d of readdirSync(stateRoot)) {
+        const p = path.join(stateRoot, d, "state.json");
+        if (existsSync(p)) return p;
+      }
+      throw new Error("no state.json");
+    })();
+    const state = JSON.parse(readFileSync(statePath, "utf8"));
+    const idx = state.jobs.findIndex((j) => j.id === record.job_id);
+    state.jobs[idx] = { ...state.jobs[idx], status: "queued", pid_info: null };
+    writeFileSync(statePath, JSON.stringify(state, null, 2));
+
+    // Booby-trap: writeCancelMarker mkdirs <jobsDir>/<jobId> recursively.
+    // Replace the per-job dir with a regular file so mkdir throws ENOTDIR.
+    const wsDir = path.dirname(metaPath);
+    const expectedMarkerDir = path.join(wsDir, record.job_id);
+    rmSync(expectedMarkerDir, { recursive: true, force: true });
+    writeFileSync(expectedMarkerDir, "blocker", "utf8");
+
+    const cancelRes = spawnSync("node", [
+      COMPANION, "cancel", "--job", record.job_id, "--cwd", cwd,
+    ], {
+      cwd, encoding: "utf8",
+      env: { ...process.env, GEMINI_PLUGIN_DATA: runRes.dataDir },
+    });
+    assert.equal(cancelRes.status, 1,
+      `marker write failure must exit 1; stderr=${cancelRes.stderr}`);
+    const cancel = JSON.parse(cancelRes.stdout);
+    assert.equal(cancel.error, "cancel_failed");
+    assert.equal(cancel.ok, false);
+  } finally {
+    rmTree(runRes.dataDir);
+    rmTree(cwd);
+  }
+});
+
+test("gemini cancel: unknown job status → bad_state, exit 1", () => {
+  // Class 1 follow-up (reviewer Vector 5): unknown statuses must surface
+  // as bad_state, not silently fall into the queued marker-writing branch.
+  const cwd = mkdtempSync(path.join(tmpdir(), "gemini-cancel-bad-state-cwd-"));
+  seedMinimalRepo(cwd);
+  const runRes = runCompanion(
+    ["run", "--mode=rescue", "--foreground", "--model", "gemini-3-flash-preview",
+     "--cwd", cwd, "--", "seed"],
+    { cwd },
+  );
+  try {
+    assert.equal(runRes.status, 0, runRes.stderr);
+    const { metaPath, record } = readOnlyJobRecord(runRes.dataDir);
+    writeFileSync(metaPath,
+      `${JSON.stringify({ ...record, status: "errored" }, null, 2)}\n`, "utf8");
+    const stateRoot = path.join(runRes.dataDir, "state");
+    const statePath = (() => {
+      for (const d of readdirSync(stateRoot)) {
+        const p = path.join(stateRoot, d, "state.json");
+        if (existsSync(p)) return p;
+      }
+      throw new Error("no state.json");
+    })();
+    const state = JSON.parse(readFileSync(statePath, "utf8"));
+    const idx = state.jobs.findIndex((j) => j.id === record.job_id);
+    state.jobs[idx] = { ...state.jobs[idx], status: "errored" };
+    writeFileSync(statePath, JSON.stringify(state, null, 2));
+
+    const cancelRes = spawnSync("node", [
+      COMPANION, "cancel", "--job", record.job_id, "--cwd", cwd,
+    ], {
+      cwd, encoding: "utf8",
+      env: { ...process.env, GEMINI_PLUGIN_DATA: runRes.dataDir },
+    });
+    assert.equal(cancelRes.status, 1,
+      `unknown status must exit 1; stderr=${cancelRes.stderr}`);
+    const cancel = JSON.parse(cancelRes.stdout);
+    assert.equal(cancel.error, "bad_state");
+    assert.match(cancel.message ?? "", /unexpected job status/);
+  } finally {
+    rmTree(runRes.dataDir);
+    rmTree(cwd);
+  }
+});
+
+test("gemini cancel: already_terminal for a completed job (issue #22 sub-task 1)", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "gemini-cancel-terminal-cwd-"));
+  seedMinimalRepo(cwd);
+  const runRes = runCompanion(
+    ["run", "--mode=rescue", "--foreground", "--model", "gemini-3-flash-preview",
+     "--cwd", cwd, "--", "quick task"],
+    { cwd },
+  );
+  try {
+    assert.equal(runRes.status, 0, runRes.stderr);
+    const completed = JSON.parse(runRes.stdout);
+    const cancelRes = spawnSync("node", [
+      COMPANION, "cancel", "--job", completed.job_id, "--cwd", cwd,
+    ], {
+      cwd, encoding: "utf8",
+      env: { ...process.env, GEMINI_PLUGIN_DATA: runRes.dataDir },
+    });
+    assert.equal(cancelRes.status, 0, cancelRes.stderr);
+    const cancel = JSON.parse(cancelRes.stdout);
+    assert.equal(cancel.status, "already_terminal");
+    assert.equal(cancel.job_status, "completed");
+  } finally {
+    rmTree(runRes.dataDir);
+    rmTree(cwd);
+  }
+});
+
+test("gemini cancel: SIGTERM-trapping target classifies as cancelled, not completed (issue #22 sub-task 2)", {
+  skip: process.env.CODEX_PLUGIN_COVERAGE === "1" && process.platform === "darwin"
+    ? "NODE_V8_COVERAGE can make macOS sandbox deny ps; regular npm test covers SIGTERM-trap cancel"
+    : false,
+}, async () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "gemini-trap-cancel-cwd-"));
+  seedMinimalRepo(cwd);
+  const { stdout, status, stderr, dataDir } = runCompanion(
+    ["run", "--mode=rescue", "--background", "--model", "gemini-3-flash-preview",
+     "--cwd", cwd, "--", "long task"],
+    { cwd, env: { GEMINI_MOCK_DELAY_MS: "30000", GEMINI_MOCK_TRAP_SIGTERM: "1" } },
+  );
+  try {
+    assert.equal(status, 0, stderr);
+    const launched = JSON.parse(stdout);
+    const runDeadline = Date.now() + 5000;
+    let running = null;
+    while (Date.now() < runDeadline && !running) {
+      const sr = spawnSync("node", [COMPANION, "status", "--cwd", cwd], {
+        cwd, encoding: "utf8", env: { ...process.env, GEMINI_PLUGIN_DATA: dataDir },
+      });
+      const so = JSON.parse(sr.stdout);
+      running = so.jobs.find((j) => j.id === launched.job_id && j.status === "running");
+      if (!running) await new Promise((r) => setTimeout(r, 100));
+    }
+    assert.ok(running, "background gemini job never visible as running");
+
+    const cancelRes = spawnSync("node", [
+      COMPANION, "cancel", "--job", launched.job_id, "--cwd", cwd,
+    ], { cwd, encoding: "utf8", env: { ...process.env, GEMINI_PLUGIN_DATA: dataDir } });
+    const cancel = JSON.parse(cancelRes.stdout);
+    const exitOk =
+      (cancel.status === "signaled" && cancelRes.status === 0) ||
+      (cancel.status === "already_dead" && cancelRes.status === 0) ||
+      (cancel.status === "no_pid_info" && cancelRes.status === 2) ||
+      (cancel.status === "unverifiable" && cancelRes.status === 2);
+    assert.ok(exitOk,
+      `unexpected SIGTERM-trap cancel outcome (${JSON.stringify(cancel.status)}, ${cancelRes.status}); stderr=${cancelRes.stderr}`);
+    if (cancelRes.status !== 0) return;
+
+    // Natural completion is delayed well beyond this window, so finalization
+    // here should mean SIGTERM trapping engaged or the ESRCH-after-marker race
+    // was handled as already_dead.
+    const termDeadline = Date.now() + 10000;
+    let terminal = null;
+    while (Date.now() < termDeadline && !terminal) {
+      // --all so the cancelled record (filtered by default cmdStatus on
+      // origin/main) is visible to the polling assertion.
+      const sr = spawnSync("node", [COMPANION, "status", "--all", "--cwd", cwd], {
+        cwd, encoding: "utf8", env: { ...process.env, GEMINI_PLUGIN_DATA: dataDir },
+      });
+      const so = JSON.parse(sr.stdout);
+      terminal = so.jobs.find((j) => j.id === launched.job_id && j.status !== "running");
+      if (!terminal) await new Promise((r) => setTimeout(r, 100));
+    }
+    assert.ok(terminal, "job did not finalize after cancel");
+    assert.equal(terminal.status, "cancelled",
+      `cancel-marker must force status=cancelled even when target trapped SIGTERM; got ${JSON.stringify(terminal)}`);
+  } finally {
+    rmTree(dataDir);
+    rmTree(cwd);
+  }
+});
+
+test("gemini cancel: ESRCH after ownership verification is already_dead, not signal_failed", {
+  skip: process.env.CODEX_PLUGIN_COVERAGE === "1"
+    ? "regular npm test covers ESRCH kill race; coverage mode already imports companion in cancel smoke"
+    : false,
+}, async () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "gemini-cancel-esrch-cwd-"));
+  seedMinimalRepo(cwd);
+  const { stdout, status, stderr, dataDir } = runCompanion(
+    ["run", "--mode=rescue", "--background", "--model", "gemini-3-flash-preview",
+     "--cwd", cwd, "--", "long task"],
+    { cwd, env: { GEMINI_MOCK_DELAY_MS: "30000" } },
+  );
+  try {
+    assert.equal(status, 0, stderr);
+    const launched = JSON.parse(stdout);
+    const runDeadline = Date.now() + 5000;
+    let running = null;
+    while (Date.now() < runDeadline && !running) {
+      const sr = spawnSync("node", [COMPANION, "status", "--cwd", cwd], {
+        cwd, encoding: "utf8", env: { ...process.env, GEMINI_PLUGIN_DATA: dataDir },
+      });
+      const so = JSON.parse(sr.stdout);
+      running = so.jobs.find((j) => j.id === launched.job_id && j.status === "running");
+      if (!running) await new Promise((r) => setTimeout(r, 100));
+    }
+    assert.ok(running, "background gemini job never visible as running");
+    if (running.pid_info?.capture_error) return;
+
+    const preload = path.join(cwd, "kill-esrch-after-signal.mjs");
+    writeFileSync(preload, `
+const origKill = process.kill.bind(process);
+process.kill = (pid, signal) => {
+  if (signal === "SIGTERM") {
+    try { origKill(pid, signal); } catch {}
+    const err = new Error("kill ESRCH");
+    err.code = "ESRCH";
+    throw err;
+  }
+  return origKill(pid, signal);
+};
+`, "utf8");
+    const cancelRes = spawnSync("node", [
+      COMPANION, "cancel", "--job", launched.job_id, "--cwd", cwd,
+    ], {
+      cwd, encoding: "utf8",
+      env: {
+        ...process.env,
+        GEMINI_PLUGIN_DATA: dataDir,
+        NODE_OPTIONS: `--import=${preload}`,
+      },
+    });
+    const cancel = JSON.parse(cancelRes.stdout);
+    if (cancel.status === "no_pid_info") {
+      assert.equal(cancelRes.status, 2, cancelRes.stderr);
+      return;
+    }
+    assert.equal(cancelRes.status, 0, cancelRes.stderr);
+    assert.equal(cancel.status, "already_dead");
+    assert.equal(cancel.pid, running.pid_info.pid);
+  } finally {
+    rmTree(dataDir);
+    rmTree(cwd);
+  }
+});
+
+test("gemini cancel: not_found for an unknown job", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "gemini-cancel-notfound-cwd-"));
+  const dataDir = mkdtempSync(path.join(tmpdir(), "gemini-cancel-notfound-data-"));
+  try {
+    const cancelRes = spawnSync("node", [
+      COMPANION, "cancel", "--job", "00000000-0000-4000-8000-000000000999", "--cwd", cwd,
+    ], {
+      cwd, encoding: "utf8",
+      env: { ...process.env, GEMINI_PLUGIN_DATA: dataDir },
+    });
+    assert.notEqual(cancelRes.status, 0);
+    const cancel = JSON.parse(cancelRes.stdout);
+    assert.equal(cancel.error, "not_found");
+  } finally {
+    rmTree(dataDir);
+    rmTree(cwd);
+  }
+});
+
 test("gemini background worker spawn failure writes failed JobRecord instead of launched", () => {
   const cwd = mkdtempSync(path.join(tmpdir(), "gemini-bg-spawn-fail-runner-"));
   const missingCwd = path.join(cwd, "missing-cwd");
@@ -533,6 +977,64 @@ test("gemini review foreground: policy-first, stdin transport, /tmp cwd, scoped 
   }
 });
 
+test("gemini custom-review: scoped include dir contains explicit bundle files", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "gemini-custom-review-"));
+  writeFileSync(path.join(cwd, "PR23.diff"), "diff --git a/x b/x\n");
+  writeFileSync(path.join(cwd, "notes.md"), "review notes\n");
+  writeFileSync(path.join(cwd, "private.log"), "not selected\n");
+  const { stdout, stderr, status, dataDir } = runCompanion(
+    ["run", "--mode=custom-review", "--foreground",
+     "--cwd", cwd, "--scope-paths", "PR23.diff,notes.md", "--",
+     "Review the selected bundle files using relative paths."],
+    { cwd, env: { GEMINI_MOCK_ASSERT_FILE: "PR23.diff" } },
+  );
+  try {
+    assert.equal(status, 0, `exit ${status}: ${stderr}`);
+    const record = JSON.parse(stdout);
+    assert.equal(record.target, "gemini");
+    assert.equal(record.status, "completed");
+    assert.equal(record.mode, "custom-review");
+    assert.equal(record.scope, "custom");
+    assert.deepEqual(record.scope_paths, ["PR23.diff", "notes.md"]);
+
+    const fx = readStdoutLog(dataDir, record.job_id);
+    assert.equal(fx.t7_saw_file, true, `Gemini custom-review must receive PR23.diff; got ${fx.t7_include_dirs}`);
+  } finally {
+    rmTree(dataDir);
+    rmTree(cwd);
+  }
+});
+
+test("gemini preflight custom-review summarizes selected bundle files without launching Gemini", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "gemini-preflight-"));
+  const missingBinary = path.join(cwd, "missing-gemini");
+  writeFileSync(path.join(cwd, "PR23.diff"), "diff --git a/x b/x\n");
+  writeFileSync(path.join(cwd, "notes.md"), "review notes\n");
+  writeFileSync(path.join(cwd, "private.log"), "not selected\n");
+  const { stdout, stderr, status, dataDir } = runCompanion(
+    ["preflight", "--mode=custom-review",
+     "--cwd", cwd, "--scope-paths", "PR23.diff,notes.md",
+     "--binary", missingBinary],
+    { cwd },
+  );
+  try {
+    assert.equal(status, 0, `exit ${status}: ${stderr}`);
+    const result = JSON.parse(stdout);
+    assert.equal(result.event, "preflight");
+    assert.equal(result.target, "gemini");
+    assert.equal(result.mode, "custom-review");
+    assert.equal(result.scope, "custom");
+    assert.equal(result.file_count, 2);
+    assert.ok(result.byte_count > 0);
+    assert.deepEqual(result.files.sort(), ["PR23.diff", "notes.md"]);
+    assert.match(result.disclosure_note, /not spawned/i);
+    assert.match(result.disclosure_note, /external provider/i);
+  } finally {
+    rmTree(dataDir);
+    rmTree(cwd);
+  }
+});
+
 test("gemini review fails closed when pre-run ignore filtering is unavailable", () => {
   const cwd = mkdtempSync(path.join(tmpdir(), "gemini-mut-pre-cwd-"));
   seedMinimalRepo(cwd);
@@ -546,6 +1048,11 @@ test("gemini review fails closed when pre-run ignore filtering is unavailable", 
     const record = JSON.parse(stdout);
     assert.equal(record.status, "failed");
     assert.match(record.error_message, /scope_population_failed: cannot evaluate gitignored files/);
+    assert.match(record.error_summary, /Review scope was rejected/);
+    assert.match(record.error_cause, /gitignored files/);
+    assert.match(record.suggested_action, /branch-diff/);
+    assert.match(record.disclosure_note, /not spawned/);
+    assert.match(record.disclosure_note, /external provider/);
     assert.deepEqual(record.mutations, [],
       "scope filtering fails before mutation detection and target spawn");
   } finally {
@@ -633,6 +1140,11 @@ test("gemini scope population failure skips target CLI spawn", () => {
     assert.equal(record.status, "failed");
     assert.equal(record.exit_code, null);
     assert.match(record.error_message, /unsafe_symlink/);
+    assert.match(record.error_summary, /Review scope was rejected/);
+    assert.match(record.error_cause, /symlink/i);
+    assert.match(record.suggested_action, /branch-diff/);
+    assert.match(record.disclosure_note, /not spawned/);
+    assert.match(record.disclosure_note, /external provider/);
     assert.equal(existsSync(marker), false, "target CLI marker proves Gemini binary was spawned");
   } finally {
     rmTree(dataDir);

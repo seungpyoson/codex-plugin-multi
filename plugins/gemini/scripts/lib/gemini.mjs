@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 
-import { capturePidInfo } from "./identity.mjs";
+import { attachPidCapture } from "./identity.mjs";
 
 // Provider credential / routing scrub policy.
 //
@@ -158,15 +158,7 @@ export async function spawnGemini(profile, runtimeInputs = {}) {
 
   return new Promise((resolve, reject) => {
     const child = spawn(binary, args, { cwd, env: targetEnv, stdio: ["pipe", "pipe", "pipe"] });
-    let pidInfo;
-    try {
-      pidInfo = capturePidInfo(child.pid);
-    } catch (e) {
-      pidInfo = { pid: child.pid, starttime: null, argv0: null, capture_error: e.message };
-    }
-    if (typeof onSpawn === "function" && Number.isInteger(child.pid)) {
-      try { onSpawn(pidInfo); } catch { /* status handoff is best-effort */ }
-    }
+    const getPidInfo = attachPidCapture(child, onSpawn);
     let stdout = "";
     let stderr = "";
     let timedOut = false;
@@ -209,7 +201,7 @@ export async function spawnGemini(profile, runtimeInputs = {}) {
         stdout,
         stderr,
         geminiSessionId: parsed.sessionId ?? null,
-        pidInfo,
+        pidInfo: getPidInfo(),
         parsed,
       });
     });

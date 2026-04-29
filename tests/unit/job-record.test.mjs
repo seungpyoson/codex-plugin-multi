@@ -29,9 +29,9 @@ const UUID = "550e8400-e29b-41d4-a716-446655440000";
 const CLAUDE_UUID = "11111111-2222-4333-8444-555555555555";
 const GEMINI_UUID = "22222222-3333-4444-9555-666666666666";
 
-test("JobRecord schema_version is bumped for gemini_session_id parity", () => {
-  assert.equal(SCHEMA_VERSION, 6);
-  assert.equal(GEMINI_SCHEMA_VERSION, 6);
+test("JobRecord schema_version is bumped for scope diagnostics", () => {
+  assert.equal(SCHEMA_VERSION, 7);
+  assert.equal(GEMINI_SCHEMA_VERSION, 7);
 });
 
 // Helper — minimal valid invocation captured at cmdRun entry.
@@ -71,6 +71,7 @@ test("EXPECTED_KEYS is the spec §21.3 canonical list", () => {
     "containment", "scope", "dispose_effective", "scope_base", "scope_paths",
     "prompt_head", "schema_spec", "binary",
     "status", "started_at", "ended_at", "exit_code", "error_code", "error_message",
+    "error_summary", "error_cause", "suggested_action", "disclosure_note",
     "result", "structured_output", "permission_denials", "mutations",
     "cost_usd", "usage",
     "schema_version",
@@ -127,6 +128,44 @@ test("buildJobRecord: queued/pre-run state (no execution)", () => {
   assert.equal(rec.gemini_session_id, null);
   assert.equal(rec.error_code, null);
   assert.equal(rec.error_message, null);
+});
+
+test("buildJobRecord: status=cancelled short-circuit forces lifecycle override (issue #22 sub-task 2)", () => {
+  // The companion's cancel-marker path passes status="cancelled" so a
+  // target CLI that traps SIGTERM and exits 0 with valid JSON output is
+  // still classified as cancelled — without this short-circuit,
+  // classifyExecution would see a successful exit and emit "completed",
+  // silently losing the operator's cancel intent.
+  const rec = buildJobRecord(makeInvocation(), {
+    status: "cancelled",
+    exitCode: 0,
+    parsed: { ok: true, result: "partial output before SIGTERM trap exit",
+      structured: null, denials: [], costUsd: 0.001 },
+    pidInfo: makePidInfo(),
+    claudeSessionId: CLAUDE_UUID,
+  }, []);
+  assert.equal(rec.status, "cancelled");
+  assert.equal(rec.error_code, null);
+  assert.equal(rec.error_message, null);
+  assert.equal(rec.exit_code, 0,
+    "exit_code is preserved as captured even when status is forced to cancelled");
+  // result is also preserved — the partial output the target managed to
+  // emit before its SIGTERM-handler exited is still the truth on disk.
+  assert.equal(rec.result, "partial output before SIGTERM trap exit");
+});
+
+test("gemini buildJobRecord: status=cancelled mirror", () => {
+  const rec = buildGeminiJobRecord(
+    makeInvocation({ target: "gemini", binary: "gemini" }),
+    {
+      status: "cancelled",
+      exitCode: 0,
+      parsed: { ok: true, result: "x", structured: null, denials: [] },
+      pidInfo: makePidInfo(),
+      geminiSessionId: GEMINI_UUID,
+    }, []);
+  assert.equal(rec.status, "cancelled");
+  assert.equal(rec.error_code, null);
 });
 
 test("buildJobRecord: running state preserves pid_info and has no end time", () => {
@@ -200,6 +239,114 @@ test("gemini buildJobRecord: failure path uses gemini_error, not claude_error", 
   }, []);
   assert.equal(rec.status, "failed");
   assert.equal(rec.error_code, "gemini_error");
+});
+
+test("buildJobRecord: unsafe scope failures carry operator diagnostics", () => {
+  const rec = buildJobRecord(makeInvocation(), {
+    exitCode: null,
+    parsed: null,
+    pidInfo: null,
+    claudeSessionId: null,
+    errorMessage: "unsafe_symlink: projects/memory resolves outside source root",
+  }, []);
+  assert.equal(rec.status, "failed");
+  assert.equal(rec.error_code, "scope_failed");
+  assert.equal(rec.error_message, "unsafe_symlink: projects/memory resolves outside source root");
+  assert.match(rec.error_summary, /Review scope was rejected/);
+  assert.match(rec.error_cause, /symlink/i);
+  assert.match(rec.suggested_action, /branch-diff/);
+  assert.match(rec.disclosure_note, /not spawned/);
+  assert.match(rec.disclosure_note, /not sent/);
+});
+
+test("gemini buildJobRecord: unsafe scope diagnostics mention provider disclosure", () => {
+  const rec = buildGeminiJobRecord(makeInvocation({
+    target: "gemini",
+    model: "gemini-3-flash-preview",
+    binary: "gemini",
+  }), {
+    exitCode: null,
+    parsed: null,
+    pidInfo: null,
+    geminiSessionId: null,
+    errorMessage: "scope_population_failed: cannot evaluate gitignored files for working-tree scope: bad index",
+  }, []);
+  assert.equal(rec.status, "failed");
+  assert.equal(rec.error_code, "scope_failed");
+  assert.match(rec.error_summary, /Review scope was rejected/);
+  assert.match(rec.error_cause, /gitignored files/);
+  assert.match(rec.suggested_action, /working-tree/);
+  assert.match(rec.disclosure_note, /not spawned/);
+  assert.match(rec.disclosure_note, /external provider/);
+});
+
+test("buildJobRecord: scope_base_missing provides targeted diagnostic", () => {
+  const rec = buildJobRecord(makeInvocation(), {
+    exitCode: null, parsed: null, pidInfo: null, claudeSessionId: null,
+    errorMessage: "scope_base_missing: main is not a valid ref",
+  }, []);
+  assert.equal(rec.status, "failed");
+  assert.equal(rec.error_code, "scope_failed");
+  assert.match(rec.error_cause, /unresolvable git ref/);
+  assert.match(rec.suggested_action, /choose a valid base ref/);
+});
+
+test("buildJobRecord: scope_requires_git provides targeted diagnostic", () => {
+  const rec = buildJobRecord(makeInvocation(), {
+    exitCode: null, parsed: null, pidInfo: null, claudeSessionId: null,
+    errorMessage: "scope_requires_git: not a git repo",
+  }, []);
+  assert.equal(rec.status, "failed");
+  assert.equal(rec.error_code, "scope_failed");
+  assert.match(rec.error_cause, /requires a git repository/);
+  assert.match(rec.suggested_action, /run from a git worktree/);
+});
+
+test("buildJobRecord: scope_requires_head provides targeted diagnostic", () => {
+  const rec = buildJobRecord(makeInvocation(), {
+    exitCode: null, parsed: null, pidInfo: null, claudeSessionId: null,
+    errorMessage: "scope_requires_head: no commits yet",
+  }, []);
+  assert.equal(rec.status, "failed");
+  assert.equal(rec.error_code, "scope_failed");
+  assert.match(rec.error_cause, /requires at least one commit/);
+  assert.match(rec.suggested_action, /create an initial commit/);
+});
+
+test("buildJobRecord: scope_paths_required provides targeted diagnostic", () => {
+  const rec = buildJobRecord(makeInvocation(), {
+    exitCode: null, parsed: null, pidInfo: null, claudeSessionId: null,
+    errorMessage: "scope_paths_required: custom scope needs paths",
+  }, []);
+  assert.equal(rec.status, "failed");
+  assert.equal(rec.error_code, "scope_failed");
+  assert.match(rec.error_cause, /requires explicit paths/);
+  assert.match(rec.suggested_action, /pass explicit --scope-paths/);
+});
+
+test("buildJobRecord: scope_empty provides targeted diagnostic", () => {
+  const rec = buildJobRecord(makeInvocation(), {
+    exitCode: null,
+    parsed: null,
+    pidInfo: null,
+    claudeSessionId: null,
+    errorMessage: "scope_empty: branch-diff selected no files under /tmp/review-bundle",
+  }, []);
+  assert.equal(rec.status, "failed");
+  assert.equal(rec.error_code, "scope_failed");
+  assert.match(rec.error_cause, /empty/i);
+  assert.match(rec.suggested_action, /custom-review|--scope-paths/);
+});
+
+test("buildJobRecord: invalid_profile provides targeted diagnostic", () => {
+  const rec = buildJobRecord(makeInvocation(), {
+    exitCode: null, parsed: null, pidInfo: null, claudeSessionId: null,
+    errorMessage: "invalid_profile: unknown profile setting",
+  }, []);
+  assert.equal(rec.status, "failed");
+  assert.equal(rec.error_code, "scope_failed");
+  assert.match(rec.error_cause, /internally inconsistent/);
+  assert.match(rec.suggested_action, /report this as a bug/i);
 });
 
 test("gemini buildJobRecord: queued, success, and structured output paths", () => {
@@ -363,6 +510,37 @@ test("buildJobRecord: parse_error path (claude returned unparsable stdout)", () 
   assert.equal(rec.error_code, "parse_error");
 });
 
+test("buildJobRecord: claude empty_stdout parse failure preserves parsed error", () => {
+  const rec = buildJobRecord(makeInvocation(), {
+    exitCode: 0,
+    parsed: { ok: false, reason: "empty_stdout", error: "no output", denials: "bad" },
+    pidInfo: null,
+    claudeSessionId: null,
+  }, []);
+  assert.equal(rec.status, "failed");
+  assert.equal(rec.error_code, "parse_error");
+  assert.equal(rec.error_message, "no output");
+  assert.deepEqual(rec.permission_denials, []);
+});
+
+test("buildJobRecord: claude optional invocation defaults are normalized", () => {
+  const invocation = makeInvocation({
+    parent_job_id: undefined,
+    resume_chain: undefined,
+    dispose_effective: undefined,
+    scope_base: undefined,
+    scope_paths: undefined,
+    schema_spec: undefined,
+  });
+  const rec = buildJobRecord(invocation, null, []);
+  assert.equal(rec.parent_job_id, null);
+  assert.deepEqual(rec.resume_chain, []);
+  assert.equal(rec.dispose_effective, false);
+  assert.equal(rec.scope_base, null);
+  assert.equal(rec.scope_paths, null);
+  assert.equal(rec.schema_spec, null);
+});
+
 test("buildJobRecord: mutations pass through verbatim", () => {
   const mutations = ["M foo.md", "?? bar.js"];
   const rec = buildJobRecord(makeInvocation(), {
@@ -446,6 +624,80 @@ test("buildJobRecord: non-parse failures classify as target errors or unknown", 
   }, []);
   assert.equal(parsedTargetError.error_code, "claude_error");
   assert.equal(parsedTargetError.error_message, "tool denied");
+});
+
+// --- Gemini-side targeted scope diagnostic tests (Finding 2 — provider disclosure coverage) ---
+
+test("gemini buildJobRecord: scope_base_missing carries targeted base-ref diagnostic", () => {
+  const rec = buildGeminiJobRecord(makeInvocation({ target: "gemini", binary: "gemini" }), {
+    exitCode: null, parsed: null, pidInfo: null, geminiSessionId: null,
+    errorMessage: "scope_base_missing: the provided base ref abc123 does not exist",
+  }, []);
+  assert.equal(rec.status, "failed");
+  assert.equal(rec.error_code, "scope_failed");
+  assert.match(rec.error_cause, /base ref/i);
+  assert.match(rec.suggested_action, /--scope-base/);
+  assert.match(rec.disclosure_note, /external provider/);
+});
+
+test("gemini buildJobRecord: scope_requires_git carries git-worktree diagnostic", () => {
+  const rec = buildGeminiJobRecord(makeInvocation({ target: "gemini", binary: "gemini" }), {
+    exitCode: null, parsed: null, pidInfo: null, geminiSessionId: null,
+    errorMessage: "scope_requires_git: current directory is not a git repository",
+  }, []);
+  assert.equal(rec.status, "failed");
+  assert.equal(rec.error_code, "scope_failed");
+  assert.match(rec.error_cause, /git/i);
+  assert.match(rec.suggested_action, /git worktree/i);
+  assert.match(rec.disclosure_note, /external provider/);
+});
+
+test("gemini buildJobRecord: scope_requires_head carries initial-commit diagnostic", () => {
+  const rec = buildGeminiJobRecord(makeInvocation({ target: "gemini", binary: "gemini" }), {
+    exitCode: null, parsed: null, pidInfo: null, geminiSessionId: null,
+    errorMessage: "scope_requires_head: repository has no commits",
+  }, []);
+  assert.equal(rec.status, "failed");
+  assert.equal(rec.error_code, "scope_failed");
+  assert.match(rec.error_cause, /HEAD/i);
+  assert.match(rec.suggested_action, /initial commit/i);
+  assert.match(rec.disclosure_note, /external provider/);
+});
+
+test("gemini buildJobRecord: scope_paths_required carries explicit-paths diagnostic", () => {
+  const rec = buildGeminiJobRecord(makeInvocation({ target: "gemini", binary: "gemini" }), {
+    exitCode: null, parsed: null, pidInfo: null, geminiSessionId: null,
+    errorMessage: "scope_paths_required: custom scope requires explicit --scope-paths",
+  }, []);
+  assert.equal(rec.status, "failed");
+  assert.equal(rec.error_code, "scope_failed");
+  assert.match(rec.error_cause, /scope path/i);
+  assert.match(rec.suggested_action, /--scope-paths/);
+  assert.match(rec.disclosure_note, /external provider/);
+});
+
+test("gemini buildJobRecord: scope_empty carries empty-scope diagnostic", () => {
+  const rec = buildGeminiJobRecord(makeInvocation({ target: "gemini", binary: "gemini" }), {
+    exitCode: null, parsed: null, pidInfo: null, geminiSessionId: null,
+    errorMessage: "scope_empty: custom scope matched no files for --scope-paths PR23.diff",
+  }, []);
+  assert.equal(rec.status, "failed");
+  assert.equal(rec.error_code, "scope_failed");
+  assert.match(rec.error_cause, /empty/i);
+  assert.match(rec.suggested_action, /--scope-paths/);
+  assert.match(rec.disclosure_note, /external provider/);
+});
+
+test("gemini buildJobRecord: invalid_profile carries plugin-bug diagnostic, raw error preserved", () => {
+  const rec = buildGeminiJobRecord(makeInvocation({ target: "gemini", binary: "gemini" }), {
+    exitCode: null, parsed: null, pidInfo: null, geminiSessionId: null,
+    errorMessage: "invalid_profile: review profile missing required field: model_tier",
+  }, []);
+  assert.equal(rec.status, "failed");
+  assert.equal(rec.error_code, "scope_failed");
+  assert.match(rec.error_cause, /plugin|profile/i);
+  assert.match(rec.suggested_action, /error_message/);
+  assert.match(rec.disclosure_note, /external provider/);
 });
 
 test("schema parity — every EXPECTED_KEYS field is documented in claude-result-handling/SKILL.md", () => {
