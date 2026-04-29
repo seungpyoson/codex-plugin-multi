@@ -109,6 +109,31 @@ async function deadPidInfo() {
   return pidInfo;
 }
 
+async function withLivePidInfo(fn) {
+  const child = spawn(process.execPath, ["-e", "setTimeout(() => {}, 30000)"], {
+    stdio: "ignore",
+  });
+  await new Promise((resolve, reject) => {
+    child.once("spawn", resolve);
+    child.once("error", reject);
+  });
+  try {
+    return await fn(capturePidInfo(child.pid));
+  } finally {
+    child.kill("SIGTERM");
+    await new Promise((resolve) => {
+      const timer = setTimeout(() => {
+        try { child.kill("SIGKILL"); } catch { /* already gone */ }
+        resolve();
+      }, 1000);
+      child.once("close", () => {
+        clearTimeout(timer);
+        resolve();
+      });
+    });
+  }
+}
+
 function seedActive(dir, jobId, overrides = {}) {
   const record = {
     id: jobId, job_id: jobId,
@@ -158,6 +183,40 @@ test("reconcileActiveJobs: queued/running with a dead pid is promoted to stale",
       "dead-pid orphan must be promoted to stale");
     assert.equal(after.error_code, "stale_active_job");
     assert.match(after.error_message, /stale_active_job: /);
+  } finally {
+    cleanup(dir);
+  }
+});
+
+test("reconcileActiveJobs: live pid_info leaves running job active", async () => {
+  const dir = freshDir();
+  try {
+    await withLivePidInfo(async (pidInfo) => {
+      const id = "live-pid-job";
+      seedActive(dir, id, { pid_info: pidInfo });
+      assert.deepEqual(reconcileActiveJobs(dir), [],
+        "matching live pid_info must not be reclaimed as stale");
+      assert.equal(readJobFileById(dir, id).status, "running");
+    });
+  } finally {
+    cleanup(dir);
+  }
+});
+
+test("reconcileActiveJobs: live pid with mismatched identity is promoted as reused", async () => {
+  const dir = freshDir();
+  try {
+    await withLivePidInfo(async (pidInfo) => {
+      const id = "reused-pid-job";
+      seedActive(dir, id, {
+        pid_info: { ...pidInfo, argv0: `${pidInfo.argv0}-different-binary` },
+      });
+      const reclaimed = reconcileActiveJobs(dir);
+      assert.equal(reclaimed.length, 1);
+      assert.equal(reclaimed[0].job_id, id);
+      assert.match(reclaimed[0].reason, /reused by a different process/);
+      assert.equal(readJobFileById(dir, id).status, "stale");
+    });
   } finally {
     cleanup(dir);
   }
