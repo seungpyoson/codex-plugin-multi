@@ -172,6 +172,17 @@ test("gemini-delegation/SKILL.md describes cancel --job flow (not deferred/not_i
     "gemini-delegation/SKILL.md must document the `cancel --job` workflow");
 });
 
+test("companion preflight file sorting uses an explicit comparator", () => {
+  for (const target of ["claude", "gemini"]) {
+    const companion = readRepoFile(`plugins/${target}/scripts/${target}-companion.mjs`);
+
+    assert.doesNotMatch(companion, /\.sort\(\)/,
+      `${target} companion must not rely on default Array#sort ordering`);
+    assert.match(companion, /files\.sort\(comparePathStrings\)/,
+      `${target} companion must sort preflight files with an explicit comparator`);
+  }
+});
+
 test("spec does not reference an unshipped Gemini result-handling skill", () => {
   const spec = readRepoFile("docs/superpowers/specs/2026-04-23-codex-plugin-multi-design.md");
 

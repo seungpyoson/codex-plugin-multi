@@ -52,6 +52,10 @@ function parseScopePathsOption(value) {
     : null;
 }
 
+function comparePathStrings(a, b) {
+  return a < b ? -1 : a > b ? 1 : 0;
+}
+
 function summarizeScopeDirectory(root) {
   const files = [];
   let byteCount = 0;
@@ -69,7 +73,7 @@ function summarizeScopeDirectory(root) {
     }
   }
   if (existsSync(root)) walk(root);
-  files.sort();
+  files.sort(comparePathStrings);
   return { files, file_count: files.length, byte_count: byteCount };
 }
 

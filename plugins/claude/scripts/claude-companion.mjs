@@ -27,7 +27,7 @@
 
 import { fileURLToPath } from "node:url";
 import { dirname, resolve as resolvePath } from "node:path";
-import { writeFileSync, mkdirSync, existsSync, chmodSync, renameSync, unlinkSync, readdirSync, statSync } from "node:fs";
+import { writeFileSync, mkdirSync, existsSync, chmodSync, renameSync, unlinkSync, readdirSync, statSync, readFileSync as _readFileSync } from "node:fs";
 import { execFileSync, spawn } from "node:child_process";
 
 import { parseArgs } from "./lib/args.mjs";
@@ -40,7 +40,6 @@ import { setupContainment } from "./lib/containment.mjs";
 import { populateScope } from "./lib/scope.mjs";
 import { newJobId, verifyPidInfo } from "./lib/identity.mjs";
 import { buildJobRecord } from "./lib/job-record.mjs";
-import { readFileSync as _readFileSync } from "node:fs";
 
 // ——— plugin-root self-resolution (upstream pattern, spec §4.14) ———
 const PLUGIN_ROOT = resolvePath(dirname(fileURLToPath(import.meta.url)), "..");
@@ -77,6 +76,10 @@ function parseScopePathsOption(value) {
     : null;
 }
 
+function comparePathStrings(a, b) {
+  return a < b ? -1 : a > b ? 1 : 0;
+}
+
 function summarizeScopeDirectory(root) {
   const files = [];
   let byteCount = 0;
@@ -94,7 +97,7 @@ function summarizeScopeDirectory(root) {
     }
   }
   if (existsSync(root)) walk(root);
-  files.sort();
+  files.sort(comparePathStrings);
   return { files, file_count: files.length, byte_count: byteCount };
 }
 
