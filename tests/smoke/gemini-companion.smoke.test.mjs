@@ -977,6 +977,64 @@ test("gemini review foreground: policy-first, stdin transport, /tmp cwd, scoped 
   }
 });
 
+test("gemini custom-review: scoped include dir contains explicit bundle files", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "gemini-custom-review-"));
+  writeFileSync(path.join(cwd, "PR23.diff"), "diff --git a/x b/x\n");
+  writeFileSync(path.join(cwd, "notes.md"), "review notes\n");
+  writeFileSync(path.join(cwd, "private.log"), "not selected\n");
+  const { stdout, stderr, status, dataDir } = runCompanion(
+    ["run", "--mode=custom-review", "--foreground",
+     "--cwd", cwd, "--scope-paths", "PR23.diff,notes.md", "--",
+     "Review the selected bundle files using relative paths."],
+    { cwd, env: { GEMINI_MOCK_ASSERT_FILE: "PR23.diff" } },
+  );
+  try {
+    assert.equal(status, 0, `exit ${status}: ${stderr}`);
+    const record = JSON.parse(stdout);
+    assert.equal(record.target, "gemini");
+    assert.equal(record.status, "completed");
+    assert.equal(record.mode, "custom-review");
+    assert.equal(record.scope, "custom");
+    assert.deepEqual(record.scope_paths, ["PR23.diff", "notes.md"]);
+
+    const fx = readStdoutLog(dataDir, record.job_id);
+    assert.equal(fx.t7_saw_file, true, `Gemini custom-review must receive PR23.diff; got ${fx.t7_include_dirs}`);
+  } finally {
+    rmTree(dataDir);
+    rmTree(cwd);
+  }
+});
+
+test("gemini preflight custom-review summarizes selected bundle files without launching Gemini", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "gemini-preflight-"));
+  const missingBinary = path.join(cwd, "missing-gemini");
+  writeFileSync(path.join(cwd, "PR23.diff"), "diff --git a/x b/x\n");
+  writeFileSync(path.join(cwd, "notes.md"), "review notes\n");
+  writeFileSync(path.join(cwd, "private.log"), "not selected\n");
+  const { stdout, stderr, status, dataDir } = runCompanion(
+    ["preflight", "--mode=custom-review",
+     "--cwd", cwd, "--scope-paths", "PR23.diff,notes.md",
+     "--binary", missingBinary],
+    { cwd },
+  );
+  try {
+    assert.equal(status, 0, `exit ${status}: ${stderr}`);
+    const result = JSON.parse(stdout);
+    assert.equal(result.event, "preflight");
+    assert.equal(result.target, "gemini");
+    assert.equal(result.mode, "custom-review");
+    assert.equal(result.scope, "custom");
+    assert.equal(result.file_count, 2);
+    assert.ok(result.byte_count > 0);
+    assert.deepEqual(result.files.sort(), ["PR23.diff", "notes.md"]);
+    assert.match(result.disclosure_note, /not spawned/i);
+    assert.match(result.disclosure_note, /external provider/i);
+  } finally {
+    rmTree(dataDir);
+    rmTree(cwd);
+  }
+});
+
 test("gemini review fails closed when pre-run ignore filtering is unavailable", () => {
   const cwd = mkdtempSync(path.join(tmpdir(), "gemini-mut-pre-cwd-"));
   seedMinimalRepo(cwd);

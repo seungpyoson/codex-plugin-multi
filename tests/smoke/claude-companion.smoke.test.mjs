@@ -723,6 +723,70 @@ test("adversarial-review scope=branch-diff: only changed files appear in --add-d
   }
 });
 
+test("custom-review scope=custom: reviews explicit bundle files from a non-git directory", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "smoke-custom-review-"));
+  try {
+    writeFileSync(path.join(cwd, "PR23.diff"), "diff --git a/x b/x\n");
+    writeFileSync(path.join(cwd, "notes.md"), "review notes\n");
+    writeFileSync(path.join(cwd, "private.log"), "not selected\n");
+
+    const { stdout, status, stderr, dataDir } = runCompanion(
+      ["run", "--mode=custom-review", "--foreground",
+       "--model", "claude-haiku-4-5-20251001",
+       "--cwd", cwd, "--scope-paths", "PR23.diff,notes.md", "--",
+       "Review the selected bundle files using relative paths."],
+      { cwd, env: { CLAUDE_MOCK_ASSERT_FILE: "PR23.diff", CLAUDE_MOCK_LIST_ADDDIR: "1" } }
+    );
+    try {
+      assert.equal(status, 0, `exit ${status}: ${stderr}`);
+      const result = JSON.parse(stdout);
+      assert.equal(result.mode, "custom-review");
+      assert.equal(result.scope, "custom");
+      assert.deepEqual(result.scope_paths, ["PR23.diff", "notes.md"]);
+      const fx = readStdoutLog(dataDir, result.job_id);
+      assert.equal(fx.t7_saw_file, true, "custom-review should include PR23.diff in --add-dir");
+      assert.deepEqual(fx.t7_add_dir_files.sort(), ["PR23.diff", "notes.md"]);
+    } finally {
+      cleanup(dataDir);
+    }
+  } finally {
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("preflight custom-review summarizes selected bundle files without launching Claude", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "smoke-preflight-"));
+  const missingBinary = path.join(cwd, "missing-claude");
+  try {
+    writeFileSync(path.join(cwd, "PR23.diff"), "diff --git a/x b/x\n");
+    writeFileSync(path.join(cwd, "notes.md"), "review notes\n");
+    writeFileSync(path.join(cwd, "private.log"), "not selected\n");
+
+    const { stdout, status, stderr, dataDir } = runCompanion(
+      ["preflight", "--mode=custom-review",
+       "--cwd", cwd, "--scope-paths", "PR23.diff,notes.md",
+       "--binary", missingBinary],
+      { cwd }
+    );
+    try {
+      assert.equal(status, 0, `exit ${status}: ${stderr}`);
+      const result = JSON.parse(stdout);
+      assert.equal(result.event, "preflight");
+      assert.equal(result.target, "claude");
+      assert.equal(result.mode, "custom-review");
+      assert.equal(result.scope, "custom");
+      assert.equal(result.file_count, 2);
+      assert.ok(result.byte_count > 0);
+      assert.deepEqual(result.files.sort(), ["PR23.diff", "notes.md"]);
+      assert.match(result.disclosure_note, /not spawned/i);
+    } finally {
+      cleanup(dataDir);
+    }
+  } finally {
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
 test("rescue runs in sourceCwd (containment=none): --add-dir === cwd", () => {
   const cwd = mkdtempSync(path.join(tmpdir(), "smoke-rescue-"));
   seedDirtyRepo(cwd);

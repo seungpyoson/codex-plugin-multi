@@ -26,8 +26,8 @@ comes back to you.
   "resume_chain":        ["<uuid>", ...],   // newest-last; [] on first run
   "pid_info":            null | { "pid": N, "starttime": "...", "argv0": "..." },
 
-  "mode":                "review|adversarial-review|rescue|ping",
-  "mode_profile_name":   "review|adversarial-review|rescue|ping",
+  "mode":                "review|adversarial-review|custom-review|rescue|ping",
+  "mode_profile_name":   "review|adversarial-review|custom-review|rescue|ping",
   "model":               "<full-id>",
   "cwd":                 "<abs-path>",
   "workspace_root":      "<abs-path>",
@@ -100,9 +100,11 @@ ignored files.
    "completed"`, `result` may be an empty string on schema-only runs — that
    is not an error, it means the model's output lived in `structured_output`.
 
-4. **Permission denials.** If `permission_denials.length > 0`: render a small
-   "Tools denied" footnote — informational, not alarming (this is expected
-   for review mode).
+4. **Permission denials.** If `permission_denials.length > 0` and there is no
+   substantive `result` or `structured_output`, render **review blocked / no
+   findings produced** and list the denied tools or paths. If findings are
+   present, render a small "Tools denied" footnote — informational, not
+   alarming (some tool attempts are expected for review mode).
 
 5. **Cost/usage.** Include `cost_usd` and `usage` in a small footer ONLY
    when the user asked about cost; otherwise suppress. Under OAuth

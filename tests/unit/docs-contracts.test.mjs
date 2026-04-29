@@ -110,6 +110,24 @@ test("review command docs route --scope-base as a companion flag", () => {
   assert.doesNotMatch(docs, /Passed as-is to the companion prompt/i);
 });
 
+test("review docs expose custom-review, preflight, and blocked-review wording", () => {
+  const docs = [
+    readRepoFile("plugins/claude/skills/claude-cli-runtime/SKILL.md"),
+    readRepoFile("plugins/claude/commands/claude-review.md"),
+    readRepoFile("plugins/claude/commands/claude-adversarial-review.md"),
+    readRepoFile("plugins/gemini/skills/gemini-delegation/SKILL.md"),
+    readRepoFile("plugins/gemini/commands/gemini-review.md"),
+    readRepoFile("plugins/gemini/commands/gemini-adversarial-review.md"),
+    readRepoFile("plugins/claude/skills/claude-result-handling/SKILL.md"),
+  ].join("\n");
+
+  assert.match(docs, /custom-review/);
+  assert.match(docs, /preflight/);
+  assert.match(docs, /review blocked\s*\/\s*no findings produced/i);
+  assert.match(docs, /relative paths/i);
+  assert.doesNotMatch(docs, /policy decision rather than a plugin\/runtime failure/i);
+});
+
 test("setup docs do not claim unimplemented target version-floor checks", () => {
   const docs = [
     readRepoFile("plugins/claude/commands/claude-setup.md"),

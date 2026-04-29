@@ -26,11 +26,11 @@ const REVIEW_DISALLOWED = [
 ];
 
 // ——————————————————————————————————————————————————————————————
-// (a) Exactly four mode keys — no extras, no omissions.
+// (a) Exactly five mode keys — no extras, no omissions.
 // ——————————————————————————————————————————————————————————————
-test("MODE_PROFILES has exactly the four spec-§21.2 keys", () => {
+test("MODE_PROFILES has exactly the five spec-§21.2 keys", () => {
   const keys = Object.keys(MODE_PROFILES).sort();
-  assert.deepEqual(keys, ["adversarial-review", "ping", "rescue", "review"]);
+  assert.deepEqual(keys, ["adversarial-review", "custom-review", "ping", "rescue", "review"]);
 });
 
 // ——————————————————————————————————————————————————————————————
@@ -42,7 +42,7 @@ const REQUIRED_FIELDS = [
   "dispose_default", "add_dir", "schema_allowed",
 ].sort();
 
-for (const name of ["review", "adversarial-review", "rescue", "ping"]) {
+for (const name of ["review", "adversarial-review", "custom-review", "rescue", "ping"]) {
   test(`profile "${name}" has exactly the required fields`, () => {
     const p = MODE_PROFILES[name];
     const actual = Object.keys(p).sort();
@@ -77,6 +77,21 @@ test("adversarial-review profile values match spec §21.2 table", () => {
     disallowed_tools: REVIEW_DISALLOWED,
     containment: "worktree",
     scope: "branch-diff",
+    dispose_default: true,
+    add_dir: true,
+    schema_allowed: true,
+  });
+});
+
+test("custom-review profile values match spec §21.2 table", () => {
+  assert.deepEqual(MODE_PROFILES["custom-review"], {
+    name: "custom-review",
+    model_tier: "medium",
+    permission_mode: "plan",
+    strip_context: true,
+    disallowed_tools: REVIEW_DISALLOWED,
+    containment: "worktree",
+    scope: "custom",
     dispose_default: true,
     add_dir: true,
     schema_allowed: true,
@@ -157,6 +172,7 @@ test("resolveModelForProfile returns the tier's model from config", () => {
   const cfg = { cheap: "h", medium: "s", default: "o" };
   assert.equal(resolveModelForProfile(MODE_PROFILES.review, cfg), "h");
   assert.equal(resolveModelForProfile(MODE_PROFILES["adversarial-review"], cfg), "s");
+  assert.equal(resolveModelForProfile(MODE_PROFILES["custom-review"], cfg), "s");
   assert.equal(resolveModelForProfile(MODE_PROFILES.rescue, cfg), "o");
   assert.equal(resolveModelForProfile(MODE_PROFILES.ping, cfg), "h");
 });
@@ -212,6 +228,19 @@ test("buildClaudeArgs: adversarial-review matches review except for the profile'
   assert.ok(args.includes("--disallowedTools"));
   assert.ok(args.includes("--setting-sources"));
   assert.equal(args[args.indexOf("--model") + 1], "claude-sonnet-4-6");
+});
+
+test("buildClaudeArgs: custom-review uses the read-only review flag stack", () => {
+  const args = buildClaudeArgs(resolveProfile("custom-review"), {
+    model: "claude-sonnet-4-6",
+    promptText: "review selected bundle files",
+    sessionId: UUID,
+    addDirPath: "/tmp/scoped-bundle",
+  });
+  assert.equal(args[args.indexOf("--permission-mode") + 1], "plan");
+  assert.ok(args.includes("--disallowedTools"));
+  assert.ok(args.includes("--setting-sources"));
+  assert.equal(args[args.indexOf("--add-dir") + 1], "/tmp/scoped-bundle");
 });
 
 test("buildClaudeArgs: rescue omits --setting-sources (strip_context=false)", () => {
@@ -384,9 +413,10 @@ test("buildClaudeArgs rejects when neither sessionId nor resumeId is given", () 
 });
 
 test("gemini MODE_PROFILES preserves the canonical frozen mode table", () => {
-  assert.deepEqual(Object.keys(GeminiProfiles.MODE_PROFILES).sort(), ["adversarial-review", "ping", "rescue", "review"]);
+  assert.deepEqual(Object.keys(GeminiProfiles.MODE_PROFILES).sort(), ["adversarial-review", "custom-review", "ping", "rescue", "review"]);
   assert.deepEqual(GeminiProfiles.MODE_PROFILES.review, MODE_PROFILES.review);
   assert.deepEqual(GeminiProfiles.MODE_PROFILES["adversarial-review"], MODE_PROFILES["adversarial-review"]);
+  assert.deepEqual(GeminiProfiles.MODE_PROFILES["custom-review"], MODE_PROFILES["custom-review"]);
   assert.deepEqual(GeminiProfiles.MODE_PROFILES.rescue, MODE_PROFILES.rescue);
   assert.deepEqual(GeminiProfiles.MODE_PROFILES.ping, MODE_PROFILES.ping);
   assert.ok(Object.isFrozen(GeminiProfiles.MODE_PROFILES));
@@ -407,7 +437,7 @@ test("gemini resolveProfile and model-tier lookup mirror Claude semantics", () =
 });
 
 test("gemini profile rows have the canonical field set and values", () => {
-  for (const name of ["review", "adversarial-review", "rescue", "ping"]) {
+  for (const name of ["review", "adversarial-review", "custom-review", "rescue", "ping"]) {
     assert.deepEqual(
       Object.keys(GeminiProfiles.MODE_PROFILES[name]).sort(),
       REQUIRED_FIELDS,
@@ -434,6 +464,18 @@ test("gemini profile rows have the canonical field set and values", () => {
     disallowed_tools: REVIEW_DISALLOWED,
     containment: "worktree",
     scope: "branch-diff",
+    dispose_default: true,
+    add_dir: true,
+    schema_allowed: true,
+  });
+  assert.deepEqual(GeminiProfiles.MODE_PROFILES["custom-review"], {
+    name: "custom-review",
+    model_tier: "medium",
+    permission_mode: "plan",
+    strip_context: true,
+    disallowed_tools: REVIEW_DISALLOWED,
+    containment: "worktree",
+    scope: "custom",
     dispose_default: true,
     add_dir: true,
     schema_allowed: true,
@@ -468,6 +510,7 @@ test("gemini resolveModelForProfile resolves every mode tier", () => {
   const cfg = { cheap: "gemini-flash", medium: "gemini-pro", default: "gemini-default" };
   assert.equal(GeminiProfiles.resolveModelForProfile(GeminiProfiles.MODE_PROFILES.review, cfg), "gemini-flash");
   assert.equal(GeminiProfiles.resolveModelForProfile(GeminiProfiles.MODE_PROFILES["adversarial-review"], cfg), "gemini-pro");
+  assert.equal(GeminiProfiles.resolveModelForProfile(GeminiProfiles.MODE_PROFILES["custom-review"], cfg), "gemini-pro");
   assert.equal(GeminiProfiles.resolveModelForProfile(GeminiProfiles.MODE_PROFILES.rescue, cfg), "gemini-default");
   assert.equal(GeminiProfiles.resolveModelForProfile(GeminiProfiles.MODE_PROFILES.ping, cfg), "gemini-flash");
 });

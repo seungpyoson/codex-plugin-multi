@@ -434,13 +434,17 @@ Upstream files explicitly dropped: `app-server*.mjs`, `broker*.mjs` (Codex's ACP
 
 ```
 <target>-companion.mjs run \
-  --mode=rescue|review|adversarial-review \
+  --mode=rescue|review|adversarial-review|custom-review \
   [--background | --foreground] \
   [--model <full-id>] \
   [--cwd <path>] \
   [--scope-base <ref>] [--scope-paths <glob,...>] \
   [--override-dispose <bool>] \
   <prompt-source: argv for Claude, stdin for Gemini>
+
+<target>-companion.mjs preflight \
+  --mode=review|adversarial-review|custom-review \
+  [--cwd <path>] [--scope-base <ref>] [--scope-paths <glob,...>]
 
 <target>-companion.mjs continue --job <job-id> <prompt>
 <target>-companion.mjs status [--job <id>]
@@ -617,7 +621,7 @@ gemini -p ''
 **`meta.json`:**
 ```json
 {
-  "id": "<uuid>", "target": "claude", "mode": "rescue|review|adversarial-review",
+  "id": "<uuid>", "target": "claude", "mode": "rescue|review|adversarial-review|custom-review",
   "status": "running|done|failed|canceled", "pid": 12345, "exit_code": null,
   "started_at": "...", "ended_at": null, "cwd": "...", "workspace_root": "...",
   "isolated": true, "disposed": true, "dispose_path": "...",
@@ -847,7 +851,7 @@ These are the rules M7+ code is judged against. Each invariant names a class of 
 
 ```
 ModeProfile {
-  name:            "review" | "adversarial-review" | "rescue" | "ping"
+  name:            "review" | "adversarial-review" | "custom-review" | "rescue" | "ping"
   model_tier:      "cheap" | "medium" | "default"        // §8
   permission_mode: "plan" | "acceptEdits"                // §4.5
   strip_context:   boolean                               // §4.6 — strip CLAUDE.md?
@@ -866,6 +870,7 @@ ModeProfile {
 |---|---|---|---|---|---|---|---|
 | review | cheap | plan | true | worktree | working-tree | true | yes |
 | adversarial-review | medium | plan | true | worktree | branch-diff | true | yes |
+| custom-review | medium | plan | true | worktree | custom | true | yes |
 | rescue | default | acceptEdits | **false** | none | working-tree | false | yes |
 | ping | cheap | plan | true | none | head (no setup) | false | no |
 

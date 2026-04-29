@@ -35,6 +35,14 @@ In the repository checkout, it is `plugins/gemini`.
   ```bash
   node "<plugin-root>/scripts/gemini-companion.mjs" run --mode=adversarial-review --foreground --cwd "<workspace>" -- "<design or diff to challenge>"
   ```
+- Disclosure/scope preflight:
+  ```bash
+  node "<plugin-root>/scripts/gemini-companion.mjs" preflight --mode=adversarial-review --cwd "<workspace>"
+  ```
+- Pinned bundle or selected-file review:
+  ```bash
+  node "<plugin-root>/scripts/gemini-companion.mjs" run --mode=custom-review --foreground --cwd "<bundle-or-workspace>" --scope-paths "PR.diff,docs/*.md" -- "<review focus using relative paths>"
+  ```
 - Rescue/investigation:
   ```bash
   node "<plugin-root>/scripts/gemini-companion.mjs" run --mode=rescue --foreground --cwd "<workspace>" -- "<task>"
@@ -59,6 +67,8 @@ Render companion JSON directly and keep the user's attention on `status`,
 `result`, `structured_output`, `permission_denials`, `mutations`, and the
 diagnostic fields `error_summary`, `error_cause`, `suggested_action`, and
 `disclosure_note`. Surface `mutations` prominently for read-only review paths.
+If target read permission denials leave no substantive result or findings,
+render review blocked / no findings produced and list the denied operations.
 For setup failures, tell the user to run `gemini` interactively if OAuth is
 missing; never suggest setting `GEMINI_API_KEY`.
 
@@ -73,7 +83,11 @@ missing; never suggest setting `GEMINI_API_KEY`.
   bundled TOML read-only policy and disposable containment.
 - `branch-diff` reduces which files are reviewed, but a successful Gemini
   review still sends selected source content to the Gemini provider. If a
-  private-repo approval reviewer denies that disclosure, treat it as a policy
-  decision rather than a plugin/runtime failure.
+  private-repo approval reviewer denies that disclosure before the companion
+  starts, report the review workflow as blocked before launch; the companion
+  cannot emit a JobRecord when Codex prevents the process from starting.
+- For review bundles, use `custom-review` with explicit `--scope-paths` and
+  prompt Gemini with relative paths inside the granted scope. Do not point it
+  at an absolute parent checkout path.
 - Do not run `gemini` directly; use the companion so job records, mutation
   detection, and Gemini session identity handling remain consistent.

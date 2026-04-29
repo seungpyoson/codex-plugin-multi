@@ -1,7 +1,10 @@
 #!/usr/bin/env node
 import { fileURLToPath } from "node:url";
 import { dirname, join as joinPath, resolve as resolvePath } from "node:path";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, unlinkSync, writeFileSync, chmodSync } from "node:fs";
+import {
+  existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, unlinkSync,
+  writeFileSync, chmodSync, readdirSync, statSync,
+} from "node:fs";
 import { execFileSync, spawn } from "node:child_process";
 import { tmpdir } from "node:os";
 
@@ -20,6 +23,8 @@ const PLUGIN_ROOT = resolvePath(dirname(fileURLToPath(import.meta.url)), "..");
 const MODELS_CONFIG_PATH = resolvePath(PLUGIN_ROOT, "config/models.json");
 const READ_ONLY_POLICY = resolvePath(PLUGIN_ROOT, "policies/read-only.toml");
 const CONTINUABLE_STATUSES = new Set(["completed", "failed", "cancelled", "stale"]);
+const RUN_MODES = Object.freeze(["review", "adversarial-review", "custom-review", "rescue"]);
+const PREFLIGHT_MODES = Object.freeze(["review", "adversarial-review", "custom-review"]);
 
 configureState({
   pluginDataEnv: "GEMINI_PLUGIN_DATA",
@@ -39,6 +44,41 @@ function fail(code, message, details = {}) {
   process.stderr.write(`gemini-companion: ${message}\n`);
   printJson({ ok: false, error: code, message, ...details });
   process.exit(1);
+}
+
+function parseScopePathsOption(value) {
+  return value
+    ? String(value).split(",").map((s) => s.trim()).filter(Boolean)
+    : null;
+}
+
+function summarizeScopeDirectory(root) {
+  const files = [];
+  let byteCount = 0;
+  function walk(absDir, relDir = "") {
+    for (const ent of readdirSync(absDir, { withFileTypes: true })) {
+      const abs = resolvePath(absDir, ent.name);
+      const rel = relDir ? `${relDir}/${ent.name}` : ent.name;
+      if (ent.isDirectory()) {
+        walk(abs, rel);
+        continue;
+      }
+      if (!ent.isFile()) continue;
+      files.push(rel);
+      byteCount += statSync(abs).size;
+    }
+  }
+  if (existsSync(root)) walk(root);
+  files.sort();
+  return { files, file_count: files.length, byte_count: byteCount };
+}
+
+function preflightDisclosure(target) {
+  return (
+    `Preflight only: ${target} was not spawned, and no selected scope content ` +
+    "was sent to the target CLI or external provider. A later successful " +
+    `external review still sends the selected files to ${target}.`
+  );
 }
 
 function cleanGitEnv() {
@@ -161,14 +201,75 @@ function failBackgroundWorkerSpawn(workspaceRoot, invocation, error) {
   fail("spawn_failed", message, { error_code: error?.code ?? null });
 }
 
+function cmdPreflight(rest) {
+  const { options } = parseArgs(rest, {
+    valueOptions: ["mode", "cwd", "scope-base", "scope-paths", "binary"],
+    booleanOptions: [],
+  });
+  const mode = options.mode;
+  if (!mode || !PREFLIGHT_MODES.includes(mode)) {
+    fail("bad_args", `--mode must be one of ${PREFLIGHT_MODES.join("|")}; got ${JSON.stringify(mode)}`);
+  }
+
+  const profile = resolveProfile(mode);
+  const cwd = options.cwd ?? process.cwd();
+  const workspaceRoot = resolveWorkspaceRoot(cwd);
+  const scopePaths = parseScopePathsOption(options["scope-paths"]);
+  let containment = null;
+  let exitCode = 0;
+  try {
+    containment = setupContainment(profile, cwd);
+    populateScope(profile, cwd, containment.path, {
+      scopeBase: options["scope-base"] ?? null,
+      scopePaths,
+    }, containment);
+    const summary = summarizeScopeDirectory(containment.path);
+    printJson({
+      ok: true,
+      event: "preflight",
+      target: "gemini",
+      mode,
+      mode_profile_name: profile.name,
+      cwd,
+      workspace_root: workspaceRoot,
+      containment: profile.containment,
+      scope: profile.scope,
+      scope_base: options["scope-base"] ?? null,
+      scope_paths: scopePaths,
+      ...summary,
+      disclosure_note: preflightDisclosure("Gemini"),
+    });
+  } catch (e) {
+    exitCode = 2;
+    printJson({
+      ok: false,
+      event: "preflight",
+      target: "gemini",
+      mode,
+      cwd,
+      workspace_root: workspaceRoot,
+      containment: profile.containment,
+      scope: profile.scope,
+      scope_base: options["scope-base"] ?? null,
+      scope_paths: scopePaths,
+      error: "scope_failed",
+      error_message: e.message,
+      disclosure_note: preflightDisclosure("Gemini"),
+    });
+  } finally {
+    if (containment) { try { containment.cleanup(); } catch { /* best-effort */ } }
+  }
+  process.exit(exitCode);
+}
+
 async function cmdRun(rest) {
   const { options, positionals } = parseArgs(rest, {
     valueOptions: ["mode", "model", "cwd", "binary", "scope-base", "scope-paths", "override-dispose"],
     booleanOptions: ["background", "foreground"],
   });
   const mode = options.mode;
-  if (!mode || !["review", "adversarial-review", "rescue"].includes(mode)) {
-    fail("bad_args", `--mode must be one of review|adversarial-review|rescue; got ${JSON.stringify(mode)}`);
+  if (!mode || !RUN_MODES.includes(mode)) {
+    fail("bad_args", `--mode must be one of ${RUN_MODES.join("|")}; got ${JSON.stringify(mode)}`);
   }
   if (options.background && options.foreground) {
     fail("bad_args", "--background and --foreground are mutually exclusive");
@@ -189,9 +290,7 @@ async function cmdRun(rest) {
     if (v === "false" || v === "0") return false;
     return profile.dispose_default;
   })();
-  const scopePaths = options["scope-paths"]
-    ? String(options["scope-paths"]).split(",").map((s) => s.trim()).filter(Boolean)
-    : null;
+  const scopePaths = parseScopePathsOption(options["scope-paths"]);
 
   const jobId = newJobId();
   const invocation = Object.freeze({
@@ -736,6 +835,7 @@ async function main() {
   const sub = argv[0];
   const rest = argv.slice(1);
   switch (sub) {
+    case "preflight": return cmdPreflight(rest);
     case "run": return cmdRun(rest);
     case "_run-worker": return cmdRunWorker(rest);
     case "ping": return cmdPing(rest);

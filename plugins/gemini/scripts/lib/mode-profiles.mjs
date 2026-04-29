@@ -63,6 +63,18 @@ export const MODE_PROFILES = Object.freeze({
     add_dir: true,
     schema_allowed: true,
   }),
+  "custom-review": Object.freeze({
+    name: "custom-review",
+    model_tier: "medium",
+    permission_mode: "plan",
+    strip_context: true,
+    disallowed_tools: REVIEW_DISALLOWED,
+    containment: "worktree",
+    scope: "custom",
+    dispose_default: true,
+    add_dir: true,
+    schema_allowed: true,
+  }),
   rescue: Object.freeze({
     name: "rescue",
     model_tier: "default",

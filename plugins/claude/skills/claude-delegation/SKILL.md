@@ -35,6 +35,14 @@ In the repository checkout, it is `plugins/claude`.
   ```bash
   node "<plugin-root>/scripts/claude-companion.mjs" run --mode=adversarial-review --foreground --cwd "<workspace>" -- "<design or diff to challenge>"
   ```
+- Disclosure/scope preflight:
+  ```bash
+  node "<plugin-root>/scripts/claude-companion.mjs" preflight --mode=adversarial-review --cwd "<workspace>"
+  ```
+- Pinned bundle or selected-file review:
+  ```bash
+  node "<plugin-root>/scripts/claude-companion.mjs" run --mode=custom-review --foreground --cwd "<bundle-or-workspace>" --scope-paths "PR.diff,docs/*.md" -- "<review focus using relative paths>"
+  ```
 - Rescue/investigation:
   ```bash
   node "<plugin-root>/scripts/claude-companion.mjs" run --mode=rescue --foreground --cwd "<workspace>" -- "<task>"
@@ -56,7 +64,9 @@ Render companion JSON according to `claude-result-handling`. Surface
 `mutations` prominently for read-only review paths, and render diagnostic
 fields such as `error_summary`, `error_cause`, `suggested_action`, and
 `disclosure_note` before raw `error_message` when present. Do not expose full
-prompts or secrets. For setup failures, tell the user to run `claude`
+prompts or secrets. If target read permission denials leave no substantive
+result or findings, render review blocked / no findings produced and list the
+denied operations. For setup failures, tell the user to run `claude`
 interactively if OAuth is missing; never suggest setting `ANTHROPIC_API_KEY`.
 
 ## Guardrails
@@ -65,5 +75,8 @@ interactively if OAuth is missing; never suggest setting `ANTHROPIC_API_KEY`.
   0.125.0.
 - Prefer review or adversarial-review for read-only critique. Use rescue only
   when the user wants Claude Code to investigate or make changes.
+- For review bundles, use `custom-review` with explicit `--scope-paths` and
+  prompt Claude with relative paths inside the granted scope. Do not point it
+  at an absolute parent checkout path.
 - Do not run `claude` directly; use the companion so job records, mutation
   detection, and session identity handling remain consistent.

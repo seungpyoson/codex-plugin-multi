@@ -18,7 +18,11 @@ node "<plugin-root>/scripts/gemini-companion.mjs" run --mode=adversarial-review 
 `branch-diff` is object-pure: checkout filters, replace refs, and grafts are ignored.
 It reduces the selected review scope, but a successful run still sends those
 selected source files to Gemini. If a private-repo approval reviewer denies the
-run as external-provider disclosure, report that as a policy decision rather
-than a Gemini/plugin runtime failure.
+run as external-provider disclosure before launch, report the workflow as
+blocked before the companion could produce a JobRecord.
 
-Render findings by severity. If `mutations` is non-empty, surface it prominently and do not auto-revert.
+For a pinned review bundle, run `preflight`, then use
+`run --mode=custom-review --scope-paths <g1,g2,...>` with prompt wording that
+names relative paths inside the selected bundle scope.
+
+Render findings by severity. If `mutations` is non-empty, surface it prominently and do not auto-revert. If target read permission denials leave no findings, report review blocked / no findings produced.

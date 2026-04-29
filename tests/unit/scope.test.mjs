@@ -1469,7 +1469,7 @@ test("populateScope scope=branch-diff: copies files changed vs base, not unrelat
   }
 });
 
-test("populateScope scope=branch-diff: clears stale target content when diff is empty", () => {
+test("populateScope scope=branch-diff: fails closed when diff selects no files", () => {
   const src = seedRepo();
   const tgt = mkTarget();
   try {
@@ -1478,7 +1478,10 @@ test("populateScope scope=branch-diff: clears stale target content when diff is 
     git(src, "commit", "-qm", "main");
     writeFileSync(path.join(tgt, "stale.txt"), "stale\n");
 
-    populateScope(profile("branch-diff"), src, tgt, { scopeBase: "main" });
+    assert.throws(
+      () => populateScope(profile("branch-diff"), src, tgt, { scopeBase: "main" }),
+      /scope_empty: branch-diff selected no files/,
+    );
 
     assert.deepEqual(readdirSync(tgt).sort(), []);
   } finally {
@@ -3375,6 +3378,23 @@ test("populateScope scope=custom: includes ignored files matched by glob", () =>
 
     assert.equal(readFileSync(path.join(tgt, "ignored.log"), "utf8"), "ignored\n");
     assertNoSymlinks(tgt);
+  } finally {
+    cleanup(src, tgt);
+  }
+});
+
+test("populateScope scope=custom: fails closed when globs match no files", () => {
+  const src = seedRepo();
+  const tgt = mkTarget();
+  try {
+    writeFileSync(path.join(src, "keep.md"), "yes\n");
+
+    assert.throws(
+      () => populateScope(profile("custom"), src, tgt, {
+        scopePaths: ["missing.md", "docs/*.md"],
+      }),
+      /scope_empty: custom scope matched no files/,
+    );
   } finally {
     cleanup(src, tgt);
   }

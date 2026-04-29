@@ -16,4 +16,8 @@ Run:
 node "<plugin-root>/scripts/gemini-companion.mjs" run --mode=review --foreground [--scope-base <ref>] -- "<focus text>"
 ```
 
-Render the returned JobRecord. If `mutations` is non-empty, surface it prominently and do not auto-revert.
+For a pinned review bundle or selected files, first run `preflight`, then use
+`run --mode=custom-review --scope-paths <g1,g2,...>` and refer to files by
+relative paths inside the selected scope.
+
+Render the returned JobRecord. If `mutations` is non-empty, surface it prominently and do not auto-revert. If target read permission denials leave no findings, report review blocked / no findings produced.

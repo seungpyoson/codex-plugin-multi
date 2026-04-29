@@ -57,11 +57,11 @@ tests, or the companion scripts under `plugins/<target>/scripts/`.
 Codex CLI 0.125.0 can load plugin skills, so each plugin exposes one
 user-invocable skill fallback:
 
-- **Claude delegation skill:** asks Claude Code to run setup checks, review,
-  adversarial review, rescue, status, result, or cancel workflows through
+- **Claude delegation skill:** asks Claude Code to run setup checks, preflight,
+  review, adversarial review, custom-review, rescue, status, result, or cancel workflows through
   `plugins/claude/scripts/claude-companion.mjs`.
-- **Gemini delegation skill:** asks Gemini CLI to run setup checks, review,
-  adversarial review, rescue, status, result, or cancel workflows through
+- **Gemini delegation skill:** asks Gemini CLI to run setup checks, preflight,
+  review, adversarial review, custom-review, rescue, status, result, or cancel workflows through
   `plugins/gemini/scripts/gemini-companion.mjs`.
 
 Example prompts:
@@ -116,6 +116,10 @@ inspect the terminal record.
 - **Scope narrowing is not provider isolation.** `branch-diff` reduces which
   files are reviewed, but a successful external review still sends selected
   source content to the target provider.
+- **Preflight before uncertain disclosure.** `preflight` reports selected files,
+  file count, and byte count without launching the target provider. Use
+  `custom-review` plus explicit `--scope-paths` for pinned review bundles, and
+  prompt with relative paths inside the selected scope.
 - **Rescue is write-capable.** Rescue modes are intended for investigation and
   fixes. Review and adversarial-review are the safer choices when you only want
   critique.

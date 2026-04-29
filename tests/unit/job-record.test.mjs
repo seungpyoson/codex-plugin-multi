@@ -324,6 +324,20 @@ test("buildJobRecord: scope_paths_required provides targeted diagnostic", () => 
   assert.match(rec.suggested_action, /pass explicit --scope-paths/);
 });
 
+test("buildJobRecord: scope_empty provides targeted diagnostic", () => {
+  const rec = buildJobRecord(makeInvocation(), {
+    exitCode: null,
+    parsed: null,
+    pidInfo: null,
+    claudeSessionId: null,
+    errorMessage: "scope_empty: branch-diff selected no files under /tmp/review-bundle",
+  }, []);
+  assert.equal(rec.status, "failed");
+  assert.equal(rec.error_code, "scope_failed");
+  assert.match(rec.error_cause, /empty/i);
+  assert.match(rec.suggested_action, /custom-review|--scope-paths/);
+});
+
 test("buildJobRecord: invalid_profile provides targeted diagnostic", () => {
   const rec = buildJobRecord(makeInvocation(), {
     exitCode: null, parsed: null, pidInfo: null, claudeSessionId: null,
@@ -658,6 +672,18 @@ test("gemini buildJobRecord: scope_paths_required carries explicit-paths diagnos
   assert.equal(rec.status, "failed");
   assert.equal(rec.error_code, "scope_failed");
   assert.match(rec.error_cause, /scope path/i);
+  assert.match(rec.suggested_action, /--scope-paths/);
+  assert.match(rec.disclosure_note, /external provider/);
+});
+
+test("gemini buildJobRecord: scope_empty carries empty-scope diagnostic", () => {
+  const rec = buildGeminiJobRecord(makeInvocation({ target: "gemini", binary: "gemini" }), {
+    exitCode: null, parsed: null, pidInfo: null, geminiSessionId: null,
+    errorMessage: "scope_empty: custom scope matched no files for --scope-paths PR23.diff",
+  }, []);
+  assert.equal(rec.status, "failed");
+  assert.equal(rec.error_code, "scope_failed");
+  assert.match(rec.error_cause, /empty/i);
   assert.match(rec.suggested_action, /--scope-paths/);
   assert.match(rec.disclosure_note, /external provider/);
 });

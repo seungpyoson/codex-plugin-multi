@@ -4,10 +4,12 @@
 // lives here; shared machinery lives in ./lib/.
 //
 // Subcommands (see spec §7.1):
-//   run      --mode=review|adversarial-review|rescue [--background|--foreground]
+//   run      --mode=review|adversarial-review|custom-review|rescue [--background|--foreground]
 //            [--model ID] [--cwd PATH] [--scope-base REF]
 //            [--scope-paths G1,G2,…] [--override-dispose|--no-override-dispose]
 //            -- PROMPT
+//   preflight --mode=review|adversarial-review|custom-review [--cwd PATH]
+//            [--scope-base REF] [--scope-paths G1,G2,…]
 //   status   [--job ID]
 //   result   --job ID
 //   cancel   --job ID [--force]
@@ -25,7 +27,7 @@
 
 import { fileURLToPath } from "node:url";
 import { dirname, resolve as resolvePath } from "node:path";
-import { writeFileSync, mkdirSync, existsSync, chmodSync, renameSync, unlinkSync } from "node:fs";
+import { writeFileSync, mkdirSync, existsSync, chmodSync, renameSync, unlinkSync, readdirSync, statSync } from "node:fs";
 import { execFileSync, spawn } from "node:child_process";
 
 import { parseArgs } from "./lib/args.mjs";
@@ -51,6 +53,8 @@ configureState({
 
 const MODELS_CONFIG_PATH = resolvePath(PLUGIN_ROOT, "config/models.json");
 const CONTINUABLE_STATUSES = new Set(["completed", "failed", "cancelled", "stale"]);
+const RUN_MODES = Object.freeze(["review", "adversarial-review", "custom-review", "rescue"]);
+const PREFLIGHT_MODES = Object.freeze(["review", "adversarial-review", "custom-review"]);
 
 function loadModels() {
   if (!existsSync(MODELS_CONFIG_PATH)) return { cheap: null, medium: null, default: null };
@@ -65,6 +69,41 @@ function fail(code, message, details = {}) {
   process.stderr.write(`claude-companion: ${message}\n`);
   printJson({ ok: false, error: code, message, ...details });
   process.exit(1);
+}
+
+function parseScopePathsOption(value) {
+  return value
+    ? String(value).split(",").map((s) => s.trim()).filter(Boolean)
+    : null;
+}
+
+function summarizeScopeDirectory(root) {
+  const files = [];
+  let byteCount = 0;
+  function walk(absDir, relDir = "") {
+    for (const ent of readdirSync(absDir, { withFileTypes: true })) {
+      const abs = resolvePath(absDir, ent.name);
+      const rel = relDir ? `${relDir}/${ent.name}` : ent.name;
+      if (ent.isDirectory()) {
+        walk(abs, rel);
+        continue;
+      }
+      if (!ent.isFile()) continue;
+      files.push(rel);
+      byteCount += statSync(abs).size;
+    }
+  }
+  if (existsSync(root)) walk(root);
+  files.sort();
+  return { files, file_count: files.length, byte_count: byteCount };
+}
+
+function preflightDisclosure(target) {
+  return (
+    `Preflight only: ${target} was not spawned, and no selected scope content ` +
+    "was sent to the target CLI or external provider. A later successful " +
+    `external review still sends the selected files to ${target}.`
+  );
 }
 
 // Wraps git command; reports failure separately from successful empty output
@@ -233,6 +272,70 @@ function failBackgroundWorkerSpawn(workspaceRoot, invocation, error) {
   fail("spawn_failed", message, { error_code: error?.code ?? null });
 }
 
+// ——— subcommand: preflight ———
+function cmdPreflight(rest) {
+  const { options } = parseArgs(rest, {
+    valueOptions: ["mode", "cwd", "scope-base", "scope-paths", "binary"],
+    booleanOptions: [],
+    aliasMap: {},
+  });
+
+  const mode = options.mode;
+  if (!mode || !PREFLIGHT_MODES.includes(mode)) {
+    fail("bad_args", `--mode must be one of ${PREFLIGHT_MODES.join("|")}; got ${JSON.stringify(mode)}`);
+  }
+
+  const profile = resolveProfile(mode);
+  const cwd = options.cwd ?? process.cwd();
+  const workspaceRoot = resolveWorkspaceRoot(cwd);
+  const scopePaths = parseScopePathsOption(options["scope-paths"]);
+  let containment = null;
+  let exitCode = 0;
+  try {
+    containment = setupContainment(profile, cwd);
+    populateScope(profile, cwd, containment.path, {
+      scopeBase: options["scope-base"] ?? null,
+      scopePaths,
+    }, containment);
+    const summary = summarizeScopeDirectory(containment.path);
+    printJson({
+      ok: true,
+      event: "preflight",
+      target: "claude",
+      mode,
+      mode_profile_name: profile.name,
+      cwd,
+      workspace_root: workspaceRoot,
+      containment: profile.containment,
+      scope: profile.scope,
+      scope_base: options["scope-base"] ?? null,
+      scope_paths: scopePaths,
+      ...summary,
+      disclosure_note: preflightDisclosure("Claude"),
+    });
+  } catch (e) {
+    exitCode = 2;
+    printJson({
+      ok: false,
+      event: "preflight",
+      target: "claude",
+      mode,
+      cwd,
+      workspace_root: workspaceRoot,
+      containment: profile.containment,
+      scope: profile.scope,
+      scope_base: options["scope-base"] ?? null,
+      scope_paths: scopePaths,
+      error: "scope_failed",
+      error_message: e.message,
+      disclosure_note: preflightDisclosure("Claude"),
+    });
+  } finally {
+    if (containment) { try { containment.cleanup(); } catch { /* best-effort */ } }
+  }
+  process.exit(exitCode);
+}
+
 // ——— subcommand: run ———
 async function cmdRun(rest) {
   const { options, positionals } = parseArgs(rest, {
@@ -242,8 +345,8 @@ async function cmdRun(rest) {
   });
 
   const mode = options.mode;
-  if (!mode || !["review", "adversarial-review", "rescue"].includes(mode)) {
-    fail("bad_args", `--mode must be one of review|adversarial-review|rescue; got ${JSON.stringify(mode)}`);
+  if (!mode || !RUN_MODES.includes(mode)) {
+    fail("bad_args", `--mode must be one of ${RUN_MODES.join("|")}; got ${JSON.stringify(mode)}`);
   }
   if (options.background && options.foreground) {
     fail("bad_args", "--background and --foreground are mutually exclusive");
@@ -274,9 +377,7 @@ async function cmdRun(rest) {
     return profile.dispose_default;
   })();
 
-  const scopePaths = options["scope-paths"]
-    ? String(options["scope-paths"]).split(",").map((s) => s.trim()).filter(Boolean)
-    : null;
+  const scopePaths = parseScopePathsOption(options["scope-paths"]);
 
   const prompt = positionals.join(" ").trim();
   if (!prompt) {
@@ -929,6 +1030,7 @@ async function main() {
   const sub = argv[0];
   const rest = argv.slice(1);
   switch (sub) {
+    case "preflight": return cmdPreflight(rest);
     case "run":     return cmdRun(rest);
     case "ping":    return cmdPing(rest);
     case "status":  return cmdStatus(rest);

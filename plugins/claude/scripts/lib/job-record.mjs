@@ -173,6 +173,7 @@ const SCOPE_FAILURE_PREFIXES = [
   "scope_requires_git:",
   "scope_requires_head:",
   "scope_paths_required:",
+  "scope_empty:",
   "invalid_profile:",
 ];
 
@@ -271,6 +272,20 @@ function buildErrorDiagnostic(invocation, status, error_code, error_message) {
       suggested_action:
         "To fix this: pass explicit --scope-paths <path> [<path> ...] before `--`. " +
         "For automatic scope detection, use working-tree or branch-diff scope instead.",
+      disclosure_note: disclosure,
+    };
+  }
+
+  if (message.startsWith("scope_empty:")) {
+    return {
+      error_summary: "Review scope was empty before target launch.",
+      error_cause:
+        "The selected scope was empty and resolved to no reviewable files. Launching the target " +
+        "would produce a misleading completed review with no useful source context.",
+      suggested_action:
+        "For pinned bundles or selected files, retry with `--mode=custom-review` " +
+        "and explicit `--scope-paths <glob,...>`. For branch diffs, check the " +
+        "`--scope-base <ref>` value and run preflight before launching the provider.",
       disclosure_note: disclosure,
     };
   }

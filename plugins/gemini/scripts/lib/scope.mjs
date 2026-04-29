@@ -37,7 +37,7 @@
 //
 // Failure tags emitted by populateScope include: invalid_profile,
 // scope_requires_git, scope_requires_head, scope_base_missing, scope_paths_required,
-// unsafe_symlink, and scope_population_failed.
+// scope_empty, unsafe_symlink, and scope_population_failed.
 
 import { execFileSync } from "node:child_process";
 import {
@@ -132,6 +132,10 @@ function unsafeSymlink(rel, reason) {
 
 function scopePopulationFailed(message) {
   throw new Error(`scope_population_failed: ${message}`);
+}
+
+function scopeEmpty(message) {
+  throw new Error(`scope_empty: ${message}`);
 }
 
 function lstatForScope(abs, rel) {
@@ -724,7 +728,9 @@ function scopeBranchDiff(sourceCwd, targetPath, scopeBase) {
     }
     files.push({ gitRel, snapshotRel });
   }
-  if (files.length === 0) return;
+  if (files.length === 0) {
+    scopeEmpty(`branch-diff selected no files under ${sourceCwd} against base ${JSON.stringify(base)}`);
+  }
   const materializations = [];
   const entriesByRel = entryMap(scopedGitEntries(ctx, headEntries(ctx.gitRoot)));
   const access = snapshotAccess(ctx, entriesByRel);
@@ -832,6 +838,9 @@ function scopeCustom(sourceCwd, targetPath, scopePaths) {
   // Custom is filesystem-backed like working-tree, then narrowed by globs.
   const all = listLiveWorkingTreeFiles(sourceCwd);
   const matched = all.filter((rel) => scopePaths.some((g) => matchGlob(rel, g)));
+  if (matched.length === 0) {
+    scopeEmpty(`custom scope matched no files for --scope-paths ${scopePaths.join(",")} in ${sourceCwd}`);
+  }
   const sourceRoot = realpathSync(sourceCwd);
   for (const rel of matched) copyLiveFile(sourceCwd, targetPath, rel, sourceRoot);
 }
