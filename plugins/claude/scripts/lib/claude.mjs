@@ -131,7 +131,7 @@ export function buildClaudeArgs(profile, runtimeInputs = {}) {
   if (resumeId === null && !isUuidV4(sessionId)) {
     throw new Error(`buildClaudeArgs: sessionId must be UUID v4; got ${JSON.stringify(sessionId)}`);
   }
-  if (typeof model !== "string" || !model) {
+  if ((typeof model !== "string" || !model) && profile.name !== "ping") {
     throw new Error("buildClaudeArgs: model is required (full ID, no aliases)");
   }
 
@@ -139,8 +139,8 @@ export function buildClaudeArgs(profile, runtimeInputs = {}) {
     "-p", promptText,
     "--output-format", "json",
     "--no-session-persistence",
-    "--model", model,
   ];
+  if (typeof model === "string" && model) args.push("--model", model);
   if (resumeId) {
     // --resume continues a prior Claude session; a fresh --session-id must NOT
     // also be passed or Claude rejects the argv.

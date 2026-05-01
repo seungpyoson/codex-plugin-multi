@@ -84,11 +84,13 @@ export function buildGeminiArgs(profile, runtimeInputs = {}) {
     resumeId = null,
   } = runtimeInputs;
 
-  if (typeof model !== "string" || !model) {
+  if ((typeof model !== "string" || !model) && profile.name !== "ping") {
     throw new Error("buildGeminiArgs: model is required (full ID, no aliases)");
   }
 
-  const args = ["-p", "", "-m", model, "--output-format", "json"];
+  const args = ["-p", ""];
+  if (typeof model === "string" && model) args.push("-m", model);
+  args.push("--output-format", "json");
   if (resumeId) args.push("--resume", resumeId);
 
   if (profile.permission_mode === "acceptEdits") {

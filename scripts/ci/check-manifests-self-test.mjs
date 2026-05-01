@@ -159,6 +159,18 @@ await expectFail(
   `unknown frontmatter key`
 );
 
+// Case 9: plugin with user-invocable skills must expose the skills root.
+await expectFail(
+  "missing-skills-pointer",
+  async (dir) => {
+    const p = join(dir, "plugins/claude/.codex-plugin/plugin.json");
+    const m = JSON.parse(await (await import("node:fs/promises")).readFile(p, "utf8"));
+    delete m.skills;
+    await writeFile(p, JSON.stringify(m, null, 2));
+  },
+  `skills`
+);
+
 if (failed > 0) {
   process.stderr.write(`\n${failed} self-test case(s) failed\n`);
   process.exit(1);

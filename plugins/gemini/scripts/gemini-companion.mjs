@@ -753,25 +753,43 @@ async function cmdResult(rest) {
   printJson(meta);
 }
 
+const PING_PROMPT = "reply with exactly: pong. Do not use any tools, do not read files, and do not explore the workspace.";
+
+function pingFailureDetail(execution) {
+  const raw = execution?.parsed?.raw;
+  const rawText = typeof raw === "string"
+    ? raw
+    : (raw == null ? "" : JSON.stringify(raw));
+  const detail = [
+    execution?.stderr,
+    execution?.stdout,
+    execution?.parsed?.error,
+    rawText,
+    execution?.exitCode == null ? "" : `exit ${execution.exitCode}`,
+  ].map((s) => String(s ?? "").trim()).find(Boolean) ?? "";
+  return detail.slice(0, 500);
+}
+
 async function cmdPing(rest) {
   const { options } = parseArgs(rest, { valueOptions: ["model", "binary", "timeout-ms"], booleanOptions: [] });
   const profile = resolveProfile("ping");
-  const model = options.model ?? resolveModelForProfile(profile, loadModels());
-  if (!model) fail("no_model", "no model resolved for ping; pass --model or populate config/models.json");
+  const model = options.model ?? null;
   try {
     const execution = await spawnGemini(profile, {
       model,
-      promptText: "reply with exactly: pong",
+      promptText: PING_PROMPT,
       policyPath: READ_ONLY_POLICY,
       cwd: "/tmp",
       binary: options.binary ?? process.env.GEMINI_BINARY ?? "gemini",
       timeoutMs: Number(options["timeout-ms"] ?? 15000),
     });
     if (execution.parsed.ok) {
-      printJson({ status: "ok", model, session_id: execution.geminiSessionId, usage: execution.parsed.usage });
+      const payload = { status: "ok", session_id: execution.geminiSessionId, usage: execution.parsed.usage };
+      if (model) payload.model = model;
+      printJson(payload);
       process.exit(0);
     }
-    printJson({ status: "error", detail: execution.stderr.trim().slice(0, 500) });
+    printJson({ status: "error", detail: pingFailureDetail(execution) });
     process.exit(2);
   } catch (e) {
     if (e.code === "ENOENT") {

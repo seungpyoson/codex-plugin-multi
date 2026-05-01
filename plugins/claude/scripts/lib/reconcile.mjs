@@ -70,12 +70,12 @@ function invocationFromMeta(meta) {
   };
 }
 
-function classifyOrphan(meta, now, orphanAgeMs) {
+function classifyOrphan(meta, now, orphanAgeMs, verifyPidInfoFn) {
   const pidInfo = meta.pid_info ?? null;
   if (pidInfo && Number.isInteger(pidInfo.pid)
       && pidInfo.starttime && pidInfo.argv0
       && !pidInfo.capture_error) {
-    const check = verifyPidInfo(pidInfo);
+    const check = verifyPidInfoFn(pidInfo);
     if (check.match) return null;
     if (check.reason === "process_gone") {
       return `worker pid ${pidInfo.pid} no longer exists`;
@@ -112,6 +112,7 @@ function classifyOrphan(meta, now, orphanAgeMs) {
 export function reconcileActiveJobs(workspaceRoot, {
   now = Date.now(),
   orphanAgeMs = DEFAULT_ORPHAN_AGE_MS,
+  verifyPidInfoFn = verifyPidInfo,
 } = {}) {
   const reclaimed = [];
   for (const summary of listJobs(workspaceRoot)) {
@@ -120,7 +121,7 @@ export function reconcileActiveJobs(workspaceRoot, {
     const next = commitJobRecordIfActive(workspaceRoot, summary.id, (meta) => {
       // Inside the state lock. CAS already passed — meta.status is in
       // ACTIVE_JOB_STATUSES. Decide whether to promote.
-      reason = classifyOrphan(meta, now, orphanAgeMs);
+      reason = classifyOrphan(meta, now, orphanAgeMs, verifyPidInfoFn);
       if (!reason) return null;
       let invocation;
       try { invocation = invocationFromMeta(meta); }

@@ -166,6 +166,16 @@ test("buildClaudeArgs: rejects invalid profile shapes and ignores disabled optio
   assert.ok(!pingArgs.includes("--json-schema"));
 });
 
+test("buildClaudeArgs: ping can use the native CLI default model", () => {
+  const args = buildClaudeArgs(resolveProfile("ping"), {
+    model: null,
+    promptText: "ping",
+    sessionId: UUID,
+  });
+
+  assert.equal(args.includes("--model"), false);
+});
+
 test("parseClaudeResult: empty stdout returns error", () => {
   const r = parseClaudeResult("");
   assert.equal(r.ok, false);

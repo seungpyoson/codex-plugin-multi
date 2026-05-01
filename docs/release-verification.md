@@ -149,9 +149,9 @@ Fresh-install TUI check:
   slash-command smoke is therefore not complete.
 - `codex debug prompt-input` confirmed `Claude` loaded as an enabled plugin and
   exposed its skills, but the TUI slash-command surface did not expose
-  `/claude-ping`. `Gemini` was installed and enabled in config, but did not
-  appear in the model-visible plugin list because it contributes no skills,
-  apps, or MCP servers.
+  `/claude-ping`. On that pre-fix branch, `Gemini` was installed and enabled in
+  config but did not appear in the model-visible plugin list because the plugin
+  manifest did not explicitly expose its bundled skills.
 
 Root cause confirmed:
 
@@ -179,6 +179,8 @@ Local mitigation:
 - Claude and Gemini now expose user-invocable delegation skills as the supported
   Codex plugin surface. This also gives Gemini a model-visible contribution
   without requiring apps or MCP servers.
+- Current manifests must expose `skills: "./skills"` so the delegation skills
+  are discoverable after marketplace installation.
 
 ## Current branch evidence
 

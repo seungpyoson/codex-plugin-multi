@@ -81,6 +81,17 @@ test("buildGeminiArgs: omits include dir when profile disables add_dir", () => {
   assert.equal(args.includes("--include-directories"), false);
 });
 
+test("buildGeminiArgs: ping can use the native CLI default model", () => {
+  const args = buildGeminiArgs(resolveProfile("ping"), {
+    model: null,
+    policyPath: POLICY,
+    includeDirPath: "/tmp/ignored",
+  });
+
+  assert.equal(args.includes("-m"), false);
+  assert.equal(args.includes("--model"), false);
+});
+
 test("parseGeminiResult: extracts response, session_id, and stats", () => {
   const parsed = parseGeminiResult(JSON.stringify({
     session_id: "22222222-3333-4444-9555-666666666666",

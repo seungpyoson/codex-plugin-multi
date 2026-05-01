@@ -101,7 +101,7 @@ Every design choice below is anchored to a source citation or live test. Environ
 
 | Tier | Claude | Gemini |
 |---|---|---|
-| cheap (pings/doctor) | `claude-haiku-4-5-20251001` | `gemini-3-flash-preview` |
+| cheap (review/setup optional) | `claude-haiku-4-5-20251001` | `gemini-3-flash-preview` |
 | medium | `claude-sonnet-4-6` | `gemini-3.1-pro-preview` |
 | default (smartest) | `claude-opus-4-7` | `gemini-3.1-pro-preview` |
 
@@ -699,9 +699,9 @@ Body: selection guidance, forwarding rules, response style. Parity with upstream
 ## 15. Setup — `/<target>-setup`
 
 1. **Binary check** — `which <target>`. Missing → install URL, stop.
-2. **OAuth ping** — `<target>-companion ping` (cheap tier). Not authed → instruct user to run `<target>` interactively; stop.
+2. **OAuth ping** — `<target>-companion ping` without `--model` unless the user explicitly overrides it. Not authed → instruct user to run `<target>` interactively; stop.
 3. **Version floor** — `<target> --version` vs `config/min-versions.json`. Below floor → warn, continue.
-4. **Gemini-only rate-limit probe** — ping cheap + default tiers, report serving.
+4. **Gemini-only rate-limit probe** — optional explicit-model ping probes, report serving.
 5. **Smoke-test hint** — print a one-liner the user can paste (e.g., `/claude-review`).
 
 **Hard rules:** never read/write any `*_API_KEY`; never programmatic auth; never persist tokens.
@@ -873,7 +873,7 @@ ModeProfile {
 | adversarial-review | medium | plan | true | worktree | branch-diff | true | yes |
 | custom-review | medium | plan | true | worktree | custom | true | yes |
 | rescue | default | acceptEdits | **false** | none | working-tree | false | yes |
-| ping | cheap | plan | true | none | head (no setup) | false | no |
+| ping | default | plan | true | none | head (no setup) | false | no |
 
 **Forbidden patterns:**
 

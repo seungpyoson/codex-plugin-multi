@@ -42,6 +42,13 @@ Then enable the plugins you want:
 In the plugin picker, enable `claude` and/or `gemini`. You can enable one
 without the other.
 
+## Verify skill discovery after installation
+
+After enabling the plugins, open Codex's skill picker or ask Codex what plugin
+skills are available. The installed skill list should include
+`claude-delegation` and `gemini-delegation`. If they are missing, the plugin
+manifests are not exposing the bundled `skills/` roots correctly.
+
 ## Current Codex 0.125.0 TUI limitation
 
 Codex CLI 0.125.0 does not currently expose plugin `commands/*.md` files as TUI slash commands.

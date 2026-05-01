@@ -13,8 +13,8 @@
 - Implemented Claude review/rescue lifecycle with foreground and background job
   records, prompt sidecars, status/result lookup, continuation, and background
   cancellation.
-- Implemented Gemini foreground review/rescue plus background rescue and
-  `continue --job` lifecycle parity.
+- Implemented Gemini foreground review/rescue plus background rescue, status,
+  result, continue, and cancellation lifecycle parity.
 - Added object-pure git scope population for working-tree, staged, HEAD,
   branch-diff, and custom scopes.
 - Added mock smoke tests, unit coverage enforcement, per-target smoke CI jobs,
@@ -29,7 +29,6 @@
 - Diagnostic ping command docs are deferred until upstream Codex exposes plugin
   command files through the TUI. Tracked in
   https://github.com/seungpyoson/codex-plugin-multi/issues/13.
-- Gemini `cancel` is still deferred and returns `not_implemented`.
 - Live Claude/Gemini E2E tests require local OAuth state and are opt-in, not CI
   defaults.
 - Scope tests include intentionally broad object-pure safety coverage and remain

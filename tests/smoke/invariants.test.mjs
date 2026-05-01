@@ -409,9 +409,12 @@ test("M6-finding-7: PID-reuse cancel refused — tampered starttime halts signal
       ["cancel", "--job", jobId, "--cwd", cwd],
       { cwd, dataDir });
     assert.notEqual(cancelRes.status, 0,
-      `cancel must fail on stale_pid; got exit ${cancelRes.status}`);
-    assert.match(cancelRes.stderr, /stale_pid/,
-      `stderr must mention stale_pid; got: ${cancelRes.stderr}`);
+      `cancel must fail on stale_pid/unverifiable; got exit ${cancelRes.status}`);
+    const cancel = JSON.parse(cancelRes.stdout);
+    assert.ok(["stale_pid", "unverifiable"].includes(cancel.status),
+      `cancel must refuse with stale_pid or unverifiable; got ${cancelRes.stdout}`);
+    assert.match(cancelRes.stderr, /stale_pid|unverifiable/,
+      `stderr must mention stale_pid or unverifiable; got: ${cancelRes.stderr}`);
     assert.equal(process.killed ?? false, false);
   } finally {
     rmTempTree(dataDir);

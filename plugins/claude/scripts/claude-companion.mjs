@@ -865,6 +865,23 @@ async function cmdNotImplemented(name) {
   fail("not_implemented", `'${name}' lands in a later milestone; only 'run --foreground' is wired at M2`);
 }
 
+const PING_PROMPT = "reply with exactly: pong. Do not use any tools, do not read files, and do not explore the workspace.";
+
+function pingFailureDetail(execution) {
+  const raw = execution?.parsed?.raw;
+  const rawText = typeof raw === "string"
+    ? raw
+    : (raw == null ? "" : JSON.stringify(raw));
+  const detail = [
+    execution?.stderr,
+    execution?.stdout,
+    execution?.parsed?.error,
+    rawText,
+    execution?.exitCode == null ? "" : `exit ${execution.exitCode}`,
+  ].map((s) => String(s ?? "").trim()).find(Boolean) ?? "";
+  return detail.slice(0, 500);
+}
+
 // ——— subcommand: ping (OAuth health probe per spec §7.5) ———
 async function cmdPing(rest) {
   const { options } = parseArgs(rest, {
@@ -872,8 +889,7 @@ async function cmdPing(rest) {
     booleanOptions: [],
   });
   const profile = resolveProfile("ping");
-  const model = options.model ?? resolveModelForProfile(profile, loadModels());
-  if (!model) fail("no_model", "no model resolved for ping; pass --model or populate config/models.json");
+  const model = options.model ?? null;
   const binary = options.binary ?? process.env.CLAUDE_BINARY ?? "claude";
   const timeoutMs = Number(options["timeout-ms"] ?? 15000);
   // Ping is ephemeral (no durable record), so reuse newJobId() purely for its
@@ -883,7 +899,7 @@ async function cmdPing(rest) {
   try {
     execution = await spawnClaude(profile, {
       model,
-      promptText: "reply with exactly: pong",
+      promptText: PING_PROMPT,
       sessionId,
       cwd: process.cwd(),
       binary,
@@ -902,23 +918,25 @@ async function cmdPing(rest) {
   if (execution.parsed.ok && (execution.parsed.result || execution.parsed.structured)) {
     // T7.4: drop the legacy `.sessionId` alias. Ping uses claudeSessionId
     // (Claude's echo) with sessionIdSent fallback when the mock short-circuits.
-    printJson({ status: "ok", model,
+    const payload = { status: "ok",
       session_id: execution.claudeSessionId ?? execution.sessionIdSent,
-      cost_usd: execution.parsed.costUsd, usage: execution.parsed.usage });
+      cost_usd: execution.parsed.costUsd, usage: execution.parsed.usage };
+    if (model) payload.model = model;
+    printJson(payload);
     process.exit(0);
   }
   if (execution.exitCode !== 0) {
-    const stderr = execution.stderr ?? "";
-    if (/rate limit|429|overloaded/i.test(stderr)) {
-      printJson({ status: "rate_limited", detail: stderr.trim().slice(0, 500) });
+    const detail = pingFailureDetail(execution);
+    if (/rate limit|429|overloaded/i.test(detail)) {
+      printJson({ status: "rate_limited", detail });
       process.exit(2);
     }
-    if (/auth|login|credential|oauth|unauthenticated/i.test(stderr)) {
-      printJson({ status: "not_authed", detail: stderr.trim().slice(0, 500),
+    if (/auth|login|credential|oauth|unauthenticated/i.test(detail)) {
+      printJson({ status: "not_authed", detail,
         hint: "Run `claude` interactively to complete OAuth. Do not set ANTHROPIC_API_KEY." });
       process.exit(2);
     }
-    printJson({ status: "error", exit_code: execution.exitCode, detail: stderr.trim().slice(0, 500) });
+    printJson({ status: "error", exit_code: execution.exitCode, detail });
     process.exit(2);
   }
   printJson({ status: "error", detail: "parsed result missing", raw: execution.parsed.raw });

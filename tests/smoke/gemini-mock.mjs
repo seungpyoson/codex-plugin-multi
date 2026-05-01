@@ -41,6 +41,12 @@ const sessionId = parsed.flags["--resume"]
   ? "77777777-8888-4999-aaaa-bbbbbbbbbbbb"
   : "22222222-3333-4444-9555-666666666666";
 
+const expectedPromptText = process.env.GEMINI_MOCK_ASSERT_PROMPT_INCLUDES;
+if (expectedPromptText && !prompt.includes(expectedPromptText)) {
+  process.stderr.write(`gemini-mock: prompt missing expected text: ${expectedPromptText}\n`);
+  process.exit(1);
+}
+
 const fixture = {
   session_id: sessionId,
   response: "Mock Gemini response.",

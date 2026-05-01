@@ -7,7 +7,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 // spawnSync is reused for git init in the mutation-detection smoke.
-import { mkdtempSync, mkdirSync, rmSync, existsSync, readFileSync, readdirSync, realpathSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, rmSync, existsSync, readFileSync, readdirSync, realpathSync, writeFileSync, chmodSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -37,6 +37,13 @@ function runCompanion(args, { cwd, env = {}, dataDir = mkdtempSync(path.join(tmp
 
 function cleanup(dataDir) {
   rmSync(dataDir, { recursive: true, force: true, maxRetries: 3, retryDelay: 50 });
+}
+
+function writeExecutable(dir, name, source) {
+  const bin = path.join(dir, name);
+  writeFileSync(bin, source, "utf8");
+  chmodSync(bin, 0o755);
+  return bin;
 }
 
 function readOnlyJobRecord(dataDir) {
@@ -1033,6 +1040,46 @@ test("ping: returns status=ok with the mock claude binary", () => {
     assert.ok(result.session_id);
   } finally {
     cleanup(dataDir);
+  }
+});
+
+test("ping: succeeds without --model and forbids tool exploration in the prompt", () => {
+  const { stdout, stderr, status, dataDir } = runCompanion(
+    ["ping"],
+    {
+      cwd: tmpdir(),
+      env: { CLAUDE_MOCK_ASSERT_PROMPT_INCLUDES: "Do not use any tools" },
+    }
+  );
+  try {
+    assert.equal(status, 0, `ping exit ${status}: ${stderr}`);
+    const result = JSON.parse(stdout);
+    assert.equal(result.status, "ok");
+    assert.equal(Object.prototype.hasOwnProperty.call(result, "model"), false);
+    assert.ok(result.session_id);
+  } finally {
+    cleanup(dataDir);
+  }
+});
+
+test("ping: failure detail falls back to target stdout when stderr is empty", () => {
+  const tmp = mkdtempSync(path.join(tmpdir(), "claude-ping-stdout-"));
+  const binary = writeExecutable(tmp, "claude-stdout-error", `#!/usr/bin/env node
+process.stdout.write("stdout auth diagnostic\\n");
+process.exit(7);
+`);
+  const { stdout, status, dataDir } = runCompanion(
+    ["ping", "--model", "claude-haiku-4-5-20251001"],
+    { cwd: tmpdir(), env: { CLAUDE_BINARY: binary } },
+  );
+  try {
+    assert.equal(status, 2);
+    const result = JSON.parse(stdout);
+    assert.equal(result.status, "not_authed");
+    assert.match(result.detail, /stdout auth diagnostic/);
+  } finally {
+    cleanup(dataDir);
+    rmSync(tmp, { recursive: true, force: true });
   }
 });
 

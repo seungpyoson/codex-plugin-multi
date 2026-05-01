@@ -30,6 +30,7 @@ test("claude plugin.json: valid schema", () => {
   assert.equal(m.name, "claude");
   assert.ok(/^\d+\.\d+\.\d+/.test(m.version));
   assert.equal(m.license, "AGPL-3.0-only");
+  assert.equal(m.skills, "./skills");
   assert.ok(m.interface.capabilities.every((c) => ["Interactive", "Read", "Write"].includes(c)));
 });
 
@@ -38,6 +39,7 @@ test("gemini plugin.json: valid schema", () => {
   assert.equal(m.name, "gemini");
   assert.ok(/^\d+\.\d+\.\d+/.test(m.version));
   assert.equal(m.license, "AGPL-3.0-only");
+  assert.equal(m.skills, "./skills");
 });
 
 test("both plugins declared in marketplace match filesystem layout", () => {
@@ -70,7 +72,17 @@ test("claude and gemini expose user-invocable skill fallbacks", () => {
     assert.match(skill, new RegExp(`name: ${plugin}-delegation`));
     assert.match(skill, /user-invocable: true/);
     assert.match(skill, new RegExp(`${plugin}-companion\\.mjs`));
+    const description = skill.match(/^description:\s*(.+)$/m)?.[1] ?? "";
+    assert.ok(description.length > 0, `${rel} missing description`);
+    assert.ok(description.length <= 88, `${rel} description too long for picker: ${description.length}`);
   }
+});
+
+test("README documents install verification for discoverable delegation skills", () => {
+  const readme = readFileSync(path.join(REPO_ROOT, "README.md"), "utf8");
+  assert.match(readme, /Verify skill discovery after installation/);
+  assert.match(readme, /claude-delegation/);
+  assert.match(readme, /gemini-delegation/);
 });
 
 test("release docs disclose current Codex slash-command limitation", () => {

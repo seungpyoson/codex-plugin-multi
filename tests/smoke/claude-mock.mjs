@@ -89,6 +89,12 @@ const sessionId = parsed.flags["--session-id"] ?? "00000000-0000-4000-8000-00000
 const resumeId = parsed.flags["--resume"] ?? null;
 const promptSha = createHash("sha256").update(prompt).digest("hex").slice(0, 16);
 
+const expectedPromptText = process.env.CLAUDE_MOCK_ASSERT_PROMPT_INCLUDES;
+if (expectedPromptText && !prompt.includes(expectedPromptText)) {
+  process.stderr.write(`claude-mock: prompt missing expected text: ${expectedPromptText}\n`);
+  process.exit(1);
+}
+
 if (process.env.CLAUDE_MOCK_SIDECAR_CONFLICT === "1") {
   const { resolveJobsDir } = await import("../../plugins/claude/scripts/lib/state.mjs");
   const { writeFileSync, mkdirSync } = await import("node:fs");

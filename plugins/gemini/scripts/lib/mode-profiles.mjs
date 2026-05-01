@@ -89,7 +89,7 @@ export const MODE_PROFILES = Object.freeze({
   }),
   ping: Object.freeze({
     name: "ping",
-    model_tier: "cheap",
+    model_tier: "default",
     permission_mode: "plan",
     strip_context: true,
     disallowed_tools: REVIEW_DISALLOWED,

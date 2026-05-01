@@ -1278,3 +1278,49 @@ test("gemini ping returns ok with the mock gemini binary", () => {
     rmTree(cwd);
   }
 });
+
+test("gemini ping succeeds without --model and forbids tool exploration in the prompt", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "gemini-ping-default-cwd-"));
+  const { stdout, stderr, status, dataDir } = runCompanion(
+    ["ping"],
+    {
+      cwd,
+      env: { GEMINI_MOCK_ASSERT_PROMPT_INCLUDES: "Do not use any tools" },
+    },
+  );
+  try {
+    assert.equal(status, 0, `exit ${status}: ${stderr}`);
+    const parsed = JSON.parse(stdout);
+    assert.equal(parsed.status, "ok");
+    assert.equal(Object.prototype.hasOwnProperty.call(parsed, "model"), false);
+    assert.equal(parsed.session_id, GEMINI_SESSION_ID);
+  } finally {
+    rmTree(dataDir);
+    rmTree(cwd);
+  }
+});
+
+test("gemini ping failure detail falls back to target stdout when stderr is empty", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "gemini-ping-stdout-cwd-"));
+  const binDir = mkdtempSync(path.join(tmpdir(), "gemini-ping-stdout-bin-"));
+  const binary = path.join(binDir, "gemini-stdout-error");
+  writeFileSync(binary, `#!/usr/bin/env node
+process.stdout.write("stdout oauth diagnostic\\n");
+process.exit(7);
+`, "utf8");
+  chmodSync(binary, 0o755);
+  const { stdout, status, dataDir } = runCompanion(
+    ["ping", "--model", "gemini-3-flash-preview"],
+    { cwd, env: { GEMINI_BINARY: binary } },
+  );
+  try {
+    assert.equal(status, 2);
+    const parsed = JSON.parse(stdout);
+    assert.equal(parsed.status, "error");
+    assert.match(parsed.detail, /stdout oauth diagnostic/);
+  } finally {
+    rmTree(dataDir);
+    rmTree(cwd);
+    rmTree(binDir);
+  }
+});
