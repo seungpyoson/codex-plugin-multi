@@ -45,10 +45,20 @@ without the other.
 ## Verify skill discovery after installation
 
 After enabling the plugins, open Codex's skill picker or ask Codex what plugin
-skills are available. The installed skill list should include
-`claude-delegation` and `gemini-delegation`. If they are missing, the plugin
-is either not enabled in that Codex profile or the manifests are not exposing
-the bundled `skills/` roots correctly.
+skills are available. Current Codex builds expose plugin skills with their
+plugin namespace; the installed skill list should include
+`claude:claude-delegation` and `gemini:gemini-delegation`.
+
+For a non-interactive check against the current Codex profile, run:
+
+```bash
+codex debug prompt-input 'list skills'
+```
+
+If you are testing a disposable profile, set `CODEX_HOME` to that profile before
+running the same command. If the namespaced skills are missing, the plugin is
+either not enabled in that Codex profile or the manifests are not exposing the
+bundled `skills/` roots correctly.
 
 ## Current Codex 0.125.0 TUI limitation
 
@@ -129,6 +139,11 @@ inspect the terminal record.
   file count, and byte count without launching the target provider. Use
   `custom-review` plus explicit `--scope-paths` for pinned review bundles, and
   prompt with relative paths inside the selected scope.
+- **Host-owned pre-launch denials stay outside companion control.** If Codex
+  blocks an external provider review before launching the companion process, the
+  plugin cannot emit a JobRecord. That host-owned gap is tracked in #27. Choose
+  an approved provider, run local/Codex-only review, or use `preflight` to
+  inspect disclosure before requesting an external review.
 - **Rescue is write-capable.** Rescue modes are intended for investigation and
   fixes. Review and adversarial-review are the safer choices when you only want
   critique.
