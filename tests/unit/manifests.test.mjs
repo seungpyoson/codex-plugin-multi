@@ -81,8 +81,10 @@ test("claude and gemini expose user-invocable skill fallbacks", () => {
 test("README documents install verification for discoverable delegation skills", () => {
   const readme = readFileSync(path.join(REPO_ROOT, "README.md"), "utf8");
   assert.match(readme, /Verify skill discovery after installation/);
-  assert.match(readme, /claude-delegation/);
-  assert.match(readme, /gemini-delegation/);
+  assert.match(readme, /codex debug prompt-input 'list skills'/);
+  assert.match(readme, /claude:claude-delegation/);
+  assert.match(readme, /gemini:gemini-delegation/);
+  assert.match(readme, /CODEX_HOME/);
 });
 
 test("release docs disclose current Codex slash-command limitation", () => {

@@ -231,3 +231,14 @@ test("README documents shipped install path, first commands, and safety posture"
     "gemini cancel is wired (PR #22); README must not claim it's deferred");
   assert.match(readme, /docs\/e2e\.md/);
 });
+
+test("README documents host-owned pre-launch provider denials as outside companion control", () => {
+  const readme = readRepoFile("README.md");
+
+  assert.match(readme, /pre-launch/i);
+  assert.match(readme, /host-owned/i);
+  assert.match(readme, /cannot emit a JobRecord/i);
+  assert.match(readme, /approved provider/i);
+  assert.match(readme, /local\/Codex-only review/i);
+  assert.match(readme, /#27/);
+});
