@@ -24,7 +24,7 @@ const EMPTY_TOOLS = Object.freeze([]);
  *
  * Each profile row has exactly these fields:
  *   name             — the mode key (kept in the value for self-description)
- *   model_tier       — "cheap" | "medium" | "default" (§8)
+ *   model_tier       — "cheap" | "medium" | "default" | "native" (§8)
  *   permission_mode  — "plan" | "acceptEdits" (§4.5)
  *   strip_context    — emit `--setting-sources ""`? (§4.6)
  *   disallowed_tools — hard blocklist (§4.5). Empty array means don't pass
@@ -89,7 +89,7 @@ export const MODE_PROFILES = Object.freeze({
   }),
   ping: Object.freeze({
     name: "ping",
-    model_tier: "default",
+    model_tier: "native",
     permission_mode: "plan",
     strip_context: true,
     disallowed_tools: REVIEW_DISALLOWED,
@@ -102,7 +102,7 @@ export const MODE_PROFILES = Object.freeze({
 });
 
 /** Tier names used across the table. Exported so UI/tests can enumerate. */
-export const MODEL_TIERS = Object.freeze(["cheap", "medium", "default"]);
+export const MODEL_TIERS = Object.freeze(["cheap", "medium", "default", "native"]);
 
 /**
  * Look up a profile by mode name. Throws loudly on unknown names — silent
@@ -127,6 +127,7 @@ export function resolveModelForProfile(profile, modelsConfig) {
   if (!profile || typeof profile.model_tier !== "string") {
     throw new Error("resolveModelForProfile: profile.model_tier is required");
   }
+  if (profile.model_tier === "native") return null;
   if (!modelsConfig || typeof modelsConfig !== "object") return null;
   return modelsConfig[profile.model_tier] ?? null;
 }

@@ -754,6 +754,7 @@ async function cmdResult(rest) {
 }
 
 const PING_PROMPT = "reply with exactly: pong. Do not use any tools, do not read files, and do not explore the workspace.";
+const PING_AUTH_RE = /\b(auth|login|credential|oauth|unauthenticated)\b/i;
 
 function pingFailureDetail(execution) {
   const raw = execution?.parsed?.raw;
@@ -773,7 +774,7 @@ function pingFailureDetail(execution) {
 async function cmdPing(rest) {
   const { options } = parseArgs(rest, { valueOptions: ["model", "binary", "timeout-ms"], booleanOptions: [] });
   const profile = resolveProfile("ping");
-  const model = options.model ?? null;
+  const model = options.model ?? resolveModelForProfile(profile, loadModels());
   try {
     const execution = await spawnGemini(profile, {
       model,
@@ -784,12 +785,22 @@ async function cmdPing(rest) {
       timeoutMs: Number(options["timeout-ms"] ?? 15000),
     });
     if (execution.parsed.ok) {
-      const payload = { status: "ok", session_id: execution.geminiSessionId, usage: execution.parsed.usage };
-      if (model) payload.model = model;
+      const payload = { status: "ok", model: model ?? null,
+        session_id: execution.geminiSessionId, usage: execution.parsed.usage };
       printJson(payload);
       process.exit(0);
     }
-    printJson({ status: "error", detail: pingFailureDetail(execution) });
+    const detail = pingFailureDetail(execution);
+    if (/rate limit|429|overloaded/i.test(detail)) {
+      printJson({ status: "rate_limited", detail });
+      process.exit(2);
+    }
+    if (PING_AUTH_RE.test(detail)) {
+      printJson({ status: "not_authed", detail,
+        hint: "Run `gemini` interactively to complete OAuth." });
+      process.exit(2);
+    }
+    printJson({ status: "error", detail });
     process.exit(2);
   } catch (e) {
     if (e.code === "ENOENT") {

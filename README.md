@@ -47,7 +47,8 @@ without the other.
 After enabling the plugins, open Codex's skill picker or ask Codex what plugin
 skills are available. The installed skill list should include
 `claude-delegation` and `gemini-delegation`. If they are missing, the plugin
-manifests are not exposing the bundled `skills/` roots correctly.
+is either not enabled in that Codex profile or the manifests are not exposing
+the bundled `skills/` roots correctly.
 
 ## Current Codex 0.125.0 TUI limitation
 

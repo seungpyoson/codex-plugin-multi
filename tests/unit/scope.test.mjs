@@ -19,34 +19,15 @@ import { spawnSync } from "node:child_process";
 import path from "node:path";
 
 import { populateScope } from "../../plugins/claude/scripts/lib/scope.mjs";
+import { fixtureGitEnv } from "../helpers/fixture-git.mjs";
 
 const GIT_TEST_TIMEOUT_MS = 15000;
 
-// Spawns `git` synchronously with a clean env (same discipline as the
-// production code). Throws on non-zero exit so test failures are loud.
-// #16 follow-up 9: env scrub now covers every GIT_* var that could
-// hijack a fixture call into the caller checkout (GIT_NAMESPACE,
-// GIT_CEILING_DIRECTORIES, GIT_DISCOVERY_ACROSS_FILESYSTEM, ...).
-// spawnSync's cwd is now pinned too so git's process inherits the
-// fixture dir, not the test runner's cwd.
+// Spawns `git` synchronously with the shared fixture scrub discipline.
+// spawnSync's cwd is pinned too so git inherits the fixture dir, not the
+// test runner's cwd.
 function fixtureEnv() {
-  const env = { ...process.env };
-  for (const k of [
-    "GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_COMMON_DIR", "GIT_PREFIX",
-    "GIT_NAMESPACE", "GIT_CEILING_DIRECTORIES", "GIT_DISCOVERY_ACROSS_FILESYSTEM",
-    "GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES",
-    "GIT_ATTR_SOURCE", "GIT_REPLACE_REF_BASE", "GIT_SHALLOW_FILE",
-    "GIT_CONFIG_PARAMETERS", "GIT_CONFIG_COUNT",
-  ]) {
-    delete env[k];
-  }
-  for (const k of Object.keys(env)) {
-    if (/^GIT_CONFIG_(KEY|VALUE)_\d+$/.test(k)) delete env[k];
-  }
-  env.GIT_CONFIG_NOSYSTEM = "1";
-  env.GIT_AUTHOR_NAME = "t"; env.GIT_AUTHOR_EMAIL = "t@t";
-  env.GIT_COMMITTER_NAME = "t"; env.GIT_COMMITTER_EMAIL = "t@t";
-  return env;
+  return fixtureGitEnv();
 }
 
 function git(cwd, ...args) {

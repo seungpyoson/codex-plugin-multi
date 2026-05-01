@@ -546,14 +546,14 @@ Identical to upstream: parent fork-execs target CLI, stdio redirected to `<works
 
 ## 8. Model selection policy
 
-Three tiers, full IDs only (§4.2). Config file `config/models.json`:
+Three configured tiers, full IDs only (§4.2). Config file `config/models.json`:
 
 ```json
 {"cheap": "<id>", "medium": "<id>", "default": "<id>"}
 ```
 
-- Rescue / review / adversarial-review default to `default` tier; user overrides via `--model=<id>`.
-- Ping / doctor use `cheap`.
+- Review uses `cheap`; adversarial-review/custom-review use `medium`; rescue uses `default`.
+- Ping uses the target CLI's native default and reports `model: null` unless the operator passes `--model=<id>`.
 - Unknown IDs fail with raw error; no fallback (`claude-haiku-4-5-20251001` is the canonical haiku, not the `haiku` alias).
 
 ## 9. Context isolation
@@ -853,7 +853,7 @@ These are the rules M7+ code is judged against. Each invariant names a class of 
 ```
 ModeProfile {
   name:            "review" | "adversarial-review" | "custom-review" | "rescue" | "ping"
-  model_tier:      "cheap" | "medium" | "default"        // §8
+  model_tier:      "cheap" | "medium" | "default" | "native"  // §8
   permission_mode: "plan" | "acceptEdits"                // §4.5
   strip_context:   boolean                               // §4.6 — strip CLAUDE.md?
   disallowed_tools: string[]                             // §4.5 hard blocklist

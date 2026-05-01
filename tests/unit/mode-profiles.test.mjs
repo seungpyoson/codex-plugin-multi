@@ -116,7 +116,7 @@ test("rescue profile values match spec §21.2 table (strip_context=false)", () =
 test("ping profile values match spec §21.2 table", () => {
   assert.deepEqual(MODE_PROFILES.ping, {
     name: "ping",
-    model_tier: "default",
+    model_tier: "native",
     permission_mode: "plan",
     strip_context: true,
     disallowed_tools: REVIEW_DISALLOWED,
@@ -159,10 +159,10 @@ test("resolveProfile rejects inherited object property names", () => {
 });
 
 // ——————————————————————————————————————————————————————————————
-// MODEL_TIERS export lists the three tier names used by the table.
+// MODEL_TIERS export lists the tier names used by the table.
 // ——————————————————————————————————————————————————————————————
-test("MODEL_TIERS enumerates cheap|medium|default", () => {
-  assert.deepEqual([...MODEL_TIERS].sort(), ["cheap", "default", "medium"]);
+test("MODEL_TIERS enumerates cheap|medium|default|native", () => {
+  assert.deepEqual([...MODEL_TIERS].sort(), ["cheap", "default", "medium", "native"]);
 });
 
 // ——————————————————————————————————————————————————————————————
@@ -174,7 +174,7 @@ test("resolveModelForProfile returns the tier's model from config", () => {
   assert.equal(resolveModelForProfile(MODE_PROFILES["adversarial-review"], cfg), "s");
   assert.equal(resolveModelForProfile(MODE_PROFILES["custom-review"], cfg), "s");
   assert.equal(resolveModelForProfile(MODE_PROFILES.rescue, cfg), "o");
-  assert.equal(resolveModelForProfile(MODE_PROFILES.ping, cfg), "o");
+  assert.equal(resolveModelForProfile(MODE_PROFILES.ping, cfg), null);
 });
 
 test("resolveModelForProfile returns null when tier missing from config", () => {
@@ -427,7 +427,7 @@ test("gemini MODE_PROFILES preserves the canonical frozen mode table", () => {
 });
 
 test("gemini resolveProfile and model-tier lookup mirror Claude semantics", () => {
-  assert.deepEqual([...GeminiProfiles.MODEL_TIERS].sort(), ["cheap", "default", "medium"]);
+  assert.deepEqual([...GeminiProfiles.MODEL_TIERS].sort(), ["cheap", "default", "medium", "native"]);
   assert.equal(GeminiProfiles.resolveProfile("review"), GeminiProfiles.MODE_PROFILES.review);
   assert.throws(() => GeminiProfiles.resolveProfile("unknown"), /unknown mode|unknown profile/i);
   assert.equal(GeminiProfiles.resolveModelForProfile(GeminiProfiles.MODE_PROFILES.review, { cheap: "flash" }), "flash");
@@ -494,7 +494,7 @@ test("gemini profile rows have the canonical field set and values", () => {
   });
   assert.deepEqual(GeminiProfiles.MODE_PROFILES.ping, {
     name: "ping",
-    model_tier: "default",
+    model_tier: "native",
     permission_mode: "plan",
     strip_context: true,
     disallowed_tools: REVIEW_DISALLOWED,
@@ -512,5 +512,5 @@ test("gemini resolveModelForProfile resolves every mode tier", () => {
   assert.equal(GeminiProfiles.resolveModelForProfile(GeminiProfiles.MODE_PROFILES["adversarial-review"], cfg), "gemini-pro");
   assert.equal(GeminiProfiles.resolveModelForProfile(GeminiProfiles.MODE_PROFILES["custom-review"], cfg), "gemini-pro");
   assert.equal(GeminiProfiles.resolveModelForProfile(GeminiProfiles.MODE_PROFILES.rescue, cfg), "gemini-default");
-  assert.equal(GeminiProfiles.resolveModelForProfile(GeminiProfiles.MODE_PROFILES.ping, cfg), "gemini-default");
+  assert.equal(GeminiProfiles.resolveModelForProfile(GeminiProfiles.MODE_PROFILES.ping, cfg), null);
 });

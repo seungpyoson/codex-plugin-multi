@@ -866,6 +866,7 @@ async function cmdNotImplemented(name) {
 }
 
 const PING_PROMPT = "reply with exactly: pong. Do not use any tools, do not read files, and do not explore the workspace.";
+const PING_AUTH_RE = /\b(auth|login|credential|oauth|unauthenticated)\b/i;
 
 function pingFailureDetail(execution) {
   const raw = execution?.parsed?.raw;
@@ -889,7 +890,7 @@ async function cmdPing(rest) {
     booleanOptions: [],
   });
   const profile = resolveProfile("ping");
-  const model = options.model ?? null;
+  const model = options.model ?? resolveModelForProfile(profile, loadModels());
   const binary = options.binary ?? process.env.CLAUDE_BINARY ?? "claude";
   const timeoutMs = Number(options["timeout-ms"] ?? 15000);
   // Ping is ephemeral (no durable record), so reuse newJobId() purely for its
@@ -918,10 +919,9 @@ async function cmdPing(rest) {
   if (execution.parsed.ok && (execution.parsed.result || execution.parsed.structured)) {
     // T7.4: drop the legacy `.sessionId` alias. Ping uses claudeSessionId
     // (Claude's echo) with sessionIdSent fallback when the mock short-circuits.
-    const payload = { status: "ok",
+    const payload = { status: "ok", model: model ?? null,
       session_id: execution.claudeSessionId ?? execution.sessionIdSent,
       cost_usd: execution.parsed.costUsd, usage: execution.parsed.usage };
-    if (model) payload.model = model;
     printJson(payload);
     process.exit(0);
   }
@@ -931,7 +931,7 @@ async function cmdPing(rest) {
       printJson({ status: "rate_limited", detail });
       process.exit(2);
     }
-    if (/auth|login|credential|oauth|unauthenticated/i.test(detail)) {
+    if (PING_AUTH_RE.test(detail)) {
       printJson({ status: "not_authed", detail,
         hint: "Run `claude` interactively to complete OAuth. Do not set ANTHROPIC_API_KEY." });
       process.exit(2);

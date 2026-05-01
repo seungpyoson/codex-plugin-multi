@@ -19,6 +19,10 @@
   branch-diff, and custom scopes.
 - Added mock smoke tests, unit coverage enforcement, per-target smoke CI jobs,
   manifest/frontmatter linting, and opt-in live E2E harnesses.
+- Added the plugin `skills` manifest pointer for both targets and hardened
+  setup ping so the default probe uses the target CLI's native model selection;
+  ping JSON keeps a `model` key and returns `null` when no explicit `--model`
+  override was supplied.
 
 ### Known limitations
 

@@ -1292,7 +1292,7 @@ test("gemini ping succeeds without --model and forbids tool exploration in the p
     assert.equal(status, 0, `exit ${status}: ${stderr}`);
     const parsed = JSON.parse(stdout);
     assert.equal(parsed.status, "ok");
-    assert.equal(Object.prototype.hasOwnProperty.call(parsed, "model"), false);
+    assert.equal(parsed.model, null);
     assert.equal(parsed.session_id, GEMINI_SESSION_ID);
   } finally {
     rmTree(dataDir);
@@ -1316,7 +1316,7 @@ process.exit(7);
   try {
     assert.equal(status, 2);
     const parsed = JSON.parse(stdout);
-    assert.equal(parsed.status, "error");
+    assert.equal(parsed.status, "not_authed");
     assert.match(parsed.detail, /stdout oauth diagnostic/);
   } finally {
     rmTree(dataDir);

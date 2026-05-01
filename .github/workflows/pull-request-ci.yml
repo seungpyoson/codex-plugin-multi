@@ -26,6 +26,15 @@ jobs:
         with:
           node-version: "20"
       - run: npm ci --ignore-scripts || npm install --ignore-scripts
+      - name: Run tests under hostile git-hook env
+        env:
+          CODEX_PLUGIN_SKIP_SMOKE: "1"
+          GIT_DIR: /tmp/hostile/.git
+          GIT_WORK_TREE: /tmp/hostile
+          GIT_INDEX_FILE: /tmp/hostile/index
+        run: |
+          printf '[init]\n\tdefaultBranch = injected-master\n' > "$RUNNER_TEMP/hostile-gitconfig"
+          GIT_CONFIG_GLOBAL="$RUNNER_TEMP/hostile-gitconfig" node scripts/ci/run-tests.mjs
       - name: Run unit tests (full)
         env:
           CODEX_PLUGIN_SKIP_SMOKE: "1"

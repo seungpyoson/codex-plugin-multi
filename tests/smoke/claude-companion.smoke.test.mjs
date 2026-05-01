@@ -1055,7 +1055,7 @@ test("ping: succeeds without --model and forbids tool exploration in the prompt"
     assert.equal(status, 0, `ping exit ${status}: ${stderr}`);
     const result = JSON.parse(stdout);
     assert.equal(result.status, "ok");
-    assert.equal(Object.prototype.hasOwnProperty.call(result, "model"), false);
+    assert.equal(result.model, null);
     assert.ok(result.session_id);
   } finally {
     cleanup(dataDir);
@@ -1077,6 +1077,27 @@ process.exit(7);
     const result = JSON.parse(stdout);
     assert.equal(result.status, "not_authed");
     assert.match(result.detail, /stdout auth diagnostic/);
+  } finally {
+    cleanup(dataDir);
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("ping: generic stdout mentioning authoring is not classified as auth", () => {
+  const tmp = mkdtempSync(path.join(tmpdir(), "claude-ping-authoring-"));
+  const binary = writeExecutable(tmp, "claude-authoring-error", `#!/usr/bin/env node
+process.stdout.write("authoring failed\\n");
+process.exit(7);
+`);
+  const { stdout, status, dataDir } = runCompanion(
+    ["ping", "--model", "claude-haiku-4-5-20251001"],
+    { cwd: tmpdir(), env: { CLAUDE_BINARY: binary } },
+  );
+  try {
+    assert.equal(status, 2);
+    const result = JSON.parse(stdout);
+    assert.equal(result.status, "error");
+    assert.match(result.detail, /authoring failed/);
   } finally {
     cleanup(dataDir);
     rmSync(tmp, { recursive: true, force: true });

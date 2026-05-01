@@ -98,6 +98,35 @@ rm -rf /tmp/codex-plugin-multi-release-smoke
 
 ## Evidence log
 
+### 2026-05-01 post-fix skill-discovery boundary check
+
+Environment:
+
+- Branch/head: local `pr-21-review` checkout after adding `skills: "./skills"`
+  to both plugin manifests.
+- Codex: local `codex` CLI available on `PATH`.
+
+Observed:
+
+- Clean `CODEX_HOME` CLI-only probe:
+  `CODEX_HOME=/private/tmp/codex-home-pr21-31423 codex plugin marketplace add /Users/spson/Projects/Claude/codex-plugin-multi`
+  succeeded, but `codex debug prompt-input 'list skills'` did not include
+  `claude-delegation` or `gemini-delegation` after manually enabling
+  `[plugins."claude@codex-plugin-multi"]` and
+  `[plugins."gemini@codex-plugin-multi"]` in that temp config. This CLI-only
+  path does not exercise the interactive plugin picker enablement flow from the
+  fresh-install steps above, so it is not accepted as final release evidence.
+- Current installed user environment probe:
+  `codex debug prompt-input 'list skills'` did include
+  `claude:claude-delegation` and `gemini:gemini-delegation` from the installed
+  `codex-plugin-multi` cache. This proves the skill surface can be model-visible
+  in an enabled install, but it is not a clean post-fix install against the PR
+  head.
+
+Conclusion: #20's manifest-level fix is in place, but the central acceptance
+criterion remains pending until the interactive fresh-install picker flow is run
+against the PR head or merged release ref.
+
 ### 2026-04-27 branch-ref verification
 
 Environment:
