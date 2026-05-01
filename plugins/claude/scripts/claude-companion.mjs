@@ -31,7 +31,7 @@ import { writeFileSync, mkdirSync, existsSync, chmodSync, renameSync, unlinkSync
 import { execFileSync, spawn } from "node:child_process";
 
 import { parseArgs } from "./lib/args.mjs";
-import { configureState, getStateConfig, resolveJobsDir, resolveJobFile, writeJobFile, upsertJob, listJobs } from "./lib/state.mjs";
+import { configureState, getStateConfig, resolveJobsDir, resolveJobFile, writeJobFile, upsertJob, listJobs, commitJobRecord } from "./lib/state.mjs";
 import { resolveWorkspaceRoot } from "./lib/workspace.mjs";
 import { spawnClaude } from "./lib/claude.mjs";
 import { writeCancelMarker, consumeCancelMarker } from "./lib/cancel-marker.mjs";
@@ -40,6 +40,8 @@ import { setupContainment } from "./lib/containment.mjs";
 import { populateScope } from "./lib/scope.mjs";
 import { newJobId, verifyPidInfo } from "./lib/identity.mjs";
 import { buildJobRecord } from "./lib/job-record.mjs";
+import { reconcileActiveJobs } from "./lib/reconcile.mjs";
+import { cleanGitEnv } from "./lib/git-env.mjs";
 
 // ——— plugin-root self-resolution (upstream pattern, spec §4.14) ———
 const PLUGIN_ROOT = resolvePath(dirname(fileURLToPath(import.meta.url)), "..");
@@ -113,16 +115,10 @@ function preflightDisclosure(target) {
 // so mutation detection can warn instead of silently reporting "clean".
 // Uses execFileSync with an argv array (no shell) to prevent command injection
 // through the cwd argument (audit HIGH finding, M2 gate).
-// Strip inherited git env vars (GIT_DIR, GIT_INDEX_FILE, ...) so subprocess
-// git invocations aren't hijacked by a parent git-hook's repo context. Same
-// discipline applies in lib/containment.mjs and lib/scope.mjs.
-function cleanGitEnv() {
-  const env = { ...process.env };
-  for (const k of ["GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_COMMON_DIR", "GIT_PREFIX"]) {
-    delete env[k];
-  }
-  return env;
-}
+// Strip inherited git env vars (GIT_DIR, GIT_CONFIG_GLOBAL, ...) via the
+// shared lib/git-env.mjs scrub so a parent env can't hijack mutation
+// detection's git invocations. PR #21 review: the previous local
+// 5-key strip list missed GIT_CONFIG_GLOBAL → fold onto the canonical list.
 
 function tryGit(args, cwd) {
   try {
@@ -565,61 +561,133 @@ async function executeRun(invocation, prompt, { foreground }) {
     process.exit(2);
   }
 
-  let finalRecord;
-  let finalizationError = null;
-  try {
-    // Post-snapshot for mutation detection.
-    if (checkMutations && gitStatusBefore !== null) {
-      const after = tryGit(["status", "-s", "--untracked-files=all"], cwd);
-      if (after.ok) {
-        const gitStatusAfter = after.stdout;
-        writeSidecar(workspaceRoot, jobId, "git-status-after.txt", gitStatusAfter);
-        if (gitStatusAfter && gitStatusAfter !== gitStatusBefore) {
-          const beforeLines = new Set(gitStatusLines(gitStatusBefore));
-          mutations.push(...gitStatusLines(gitStatusAfter)
-            .filter((line) => !beforeLines.has(line)));
-        }
-      } else {
-        mutations.push(mutationDetectionFailure(after.error));
+  // ——— finalization (#16 follow-up 1) ————————————————————————————————
+  //
+  // Three categories of persistence happen here, with explicit severities:
+  //
+  //   1. JobRecord meta (writeJobFile)        — CONTRACTUAL: this is the
+  //      shape consumers (`status --job`, `result --job`, skills) read.
+  //      Failure here is fatal; we still fall back to a best-effort
+  //      `failed`/`finalization_failed` record so operators don't see a
+  //      permanent "running" entry from the onSpawn write.
+  //   2. State index (upsertJob)              — CONTRACTUAL: `status`
+  //      iterates this. Failure here is fatal under the same fallback
+  //      rules — meta.json and state.json must agree, no split-brain.
+  //   3. Sidecar logs (stdout.log/stderr.log) — DIAGNOSTIC: operator-
+  //      facing trace files. Failure is a stderr WARNING and never
+  //      changes the job's terminal status. Per #16 follow-up 1: the
+  //      target CLI already exited successfully; clobbering its real
+  //      result with `finalization_failed` over a failed log write is
+  //      misleading. The warning is loud enough.
+  //
+  // Containment cleanup runs in the finally block so a fatal persistence
+  // path still disposes the workspace, matching M5/M6 semantics.
+
+  // Post-snapshot for mutation detection (warning on failure; not fatal).
+  if (checkMutations && gitStatusBefore !== null) {
+    const after = tryGit(["status", "-s", "--untracked-files=all"], cwd);
+    if (after.ok) {
+      const gitStatusAfter = after.stdout;
+      try { writeSidecar(workspaceRoot, jobId, "git-status-after.txt", gitStatusAfter); }
+      catch (e) { process.stderr.write(`claude-companion: warning: sidecar git-status-after.txt write failed: ${e.message}\n`); }
+      if (gitStatusAfter && gitStatusAfter !== gitStatusBefore) {
+        const beforeLines = new Set(gitStatusLines(gitStatusBefore));
+        mutations.push(...gitStatusLines(gitStatusAfter)
+          .filter((line) => !beforeLines.has(line)));
       }
-    }
-
-    // Issue #22 sub-task 2: cancel-marker check. cmdCancel writes the
-    // marker BEFORE signaling so we can force status=cancelled even when
-    // the target CLI traps SIGTERM and exits 0 with valid output. The
-    // marker is per-job and best-effort — a missing file means "no cancel
-    // requested," not "couldn't read."
-    const cancelMarker = consumeCancelMarker(workspaceRoot, jobId);
-
-    // ONE buildJobRecord call — spec §21.3.2 convergence. Foreground prints
-    // what we persist; cmdResult reads the same file; skill renders the same
-    // schema. No hand-assembly anywhere.
-    finalRecord = buildJobRecord(invocation, {
-      exitCode: execution.exitCode,
-      parsed: execution.parsed,
-      pidInfo: execution.pidInfo,
-      claudeSessionId: execution.claudeSessionId ?? null,
-      ...(cancelMarker ? { status: "cancelled" } : {}),
-    }, mutations);
-    writeJobFile(workspaceRoot, jobId, finalRecord);
-    upsertJob(workspaceRoot, finalRecord);
-
-    // Sidecar logs (not part of JobRecord — operator diagnostics).
-    writeSidecar(workspaceRoot, jobId, "stdout.log", execution.stdout);
-    writeSidecar(workspaceRoot, jobId, "stderr.log", execution.stderr);
-  } catch (e) {
-    finalizationError = e;
-  } finally {
-    // Dispose containment after run (§10 / profile.dispose_default), even if
-    // final persistence or sidecar writes fail after the child exits.
-    if (containment.disposed && disposeEffective) {
-      containment.cleanup();
+    } else {
+      mutations.push(mutationDetectionFailure(after.error));
     }
   }
-  if (finalizationError) {
-    fail("finalization_failed", finalizationError.message ?? String(finalizationError), {
-      error_code: finalizationError.code ?? null,
+
+  // Issue #22 sub-task 2: cancel-marker check. cmdCancel writes the
+  // marker BEFORE signaling so we can force status=cancelled even when
+  // the target CLI traps SIGTERM and exits 0 with valid output. The
+  // marker is per-job and best-effort — a missing file means "no cancel
+  // requested," not "couldn't read."
+  const cancelMarker = consumeCancelMarker(workspaceRoot, jobId);
+
+  // ONE buildJobRecord call for the canonical record — spec §21.3.2.
+  // signal + timedOut feed classifyExecution: a SIGTERM/SIGKILL exit without
+  // timedOut is an operator cancel → status="cancelled" (#16 follow-up 2);
+  // timedOut wins so wall-clock kills classify as timeout failures.
+  const finalRecord = buildJobRecord(invocation, {
+    exitCode: execution.exitCode,
+    parsed: execution.parsed,
+    pidInfo: execution.pidInfo,
+    claudeSessionId: execution.claudeSessionId ?? null,
+    ...(cancelMarker ? { status: "cancelled" } : {}),
+    signal: execution.signal ?? null,
+    timedOut: execution.timedOut === true,
+  }, mutations);
+
+  // Phase 1+2: contractual persistence (meta.json + state.json) under ONE
+  // state-lock acquisition. PR #21 review BLOCKER 2: this is what serializes
+  // finalization against reconcile so a concurrent stale promotion can't
+  // clobber our completed record.
+  const { metaError, stateError } = commitJobRecord(workspaceRoot, jobId, finalRecord);
+
+  // Phase 3: sidecars — diagnostics only.
+  for (const [name, contents] of [
+    ["stdout.log", execution.stdout],
+    ["stderr.log", execution.stderr],
+  ]) {
+    try { writeSidecar(workspaceRoot, jobId, name, contents); }
+    catch (e) {
+      process.stderr.write(`claude-companion: warning: sidecar ${name} write failed: ${e.message}\n`);
+    }
+  }
+
+  if (metaError || stateError) {
+    // Best-effort fallback so the persisted record is not stuck on
+    // "running" from onSpawn. PR #21 review BLOCKER 1: only overwrite
+    // the side that ACTUALLY failed — a state-lock-timeout (state failed,
+    // meta succeeded) used to clobber the good meta with a fallback
+    // failed-record. classifyExecution sees "finalization_failed:" and
+    // emits error_code=finalization_failed (not spawn_failed).
+    const detail = [
+      metaError && `meta=${metaError.message}`,
+      stateError && `state=${stateError.message}`,
+    ].filter(Boolean).join("; ");
+    let fallbackRecord = null;
+    try {
+      fallbackRecord = buildJobRecord(invocation, {
+        exitCode: execution.exitCode,
+        parsed: execution.parsed,
+        pidInfo: execution.pidInfo,
+        claudeSessionId: execution.claudeSessionId ?? null,
+        errorMessage: `finalization_failed: ${detail}`,
+      }, mutations);
+    } catch { /* defense in depth */ }
+    if (fallbackRecord) {
+      if (metaError) {
+        // commitJobRecord aborted in writeJobFile → state was NOT mutated
+        // either. Both sides still hold onSpawn's "running"; overwrite both
+        // with the fallback so consumers see a coherent terminal state.
+        try { writeJobFile(workspaceRoot, jobId, fallbackRecord); } catch { /* exhausted */ }
+        try { upsertJob(workspaceRoot, fallbackRecord); } catch { /* exhausted */ }
+      } else if (stateError) {
+        // meta IS the good terminal record (writeJobFile succeeded inside
+        // commitJobRecord; only saveStateUnlocked threw). Do NOT touch
+        // meta — that's the BLOCKER 1 clobber path. Retry upsertJob with
+        // the GOOD record; if that also fails, fall back to the failed
+        // record so state at least reflects a terminal status.
+        try { upsertJob(workspaceRoot, finalRecord); }
+        catch {
+          try { upsertJob(workspaceRoot, fallbackRecord); } catch { /* exhausted */ }
+        }
+      }
+    }
+    if (containment.disposed && disposeEffective) {
+      try { containment.cleanup(); } catch { /* best-effort */ }
+    }
+    fail("finalization_failed", detail, {
+      error_code: (metaError ?? stateError)?.code ?? null,
     });
+  }
+
+  if (containment.disposed && disposeEffective) {
+    containment.cleanup();
   }
   // Note: `containment_path` / `containment_cleaned` were legacy sidechannel
   // fields on the record that pre-dated the JobRecord schema. Containment
@@ -716,9 +784,18 @@ async function cmdContinue(rest) {
   // resume-from-resume on legacy records hits a dead UUID.
   const priorClaudeSessionId = prior.claude_session_id ?? prior.session_id ?? null;
   if (!priorClaudeSessionId) {
-    fail("bad_args",
-      `prior job ${options.job} has no claude_session_id to resume; ` +
-      `pre-T7.3 records missing this field cannot be chained.`);
+    // PR #21 review HIGH 4: the most common stale-record case is a
+    // background worker that died before Claude echoed a session ID. Give
+    // the operator an actionable next step instead of a bare "no session".
+    const isStaleOrphan = prior.status === "stale";
+    const reason = isStaleOrphan
+      ? "the worker exited before Claude returned a session ID, so there is no chat to resume."
+      : "pre-T7.3 records missing this field cannot be chained.";
+    const suggestion = isStaleOrphan
+      ? ` Re-run from scratch: claude-companion run --mode ${prior.mode_profile_name ?? prior.mode} --cwd ${JSON.stringify(prior.cwd)} -- "<your prompt>"`
+      : "";
+    fail("no_session_to_resume",
+      `prior job ${options.job} has no claude_session_id to resume — ${reason}${suggestion}`);
   }
   const newJobId_ = newJobId();
   const model = options.model ?? prior.model;
@@ -788,6 +865,24 @@ async function cmdNotImplemented(name) {
   fail("not_implemented", `'${name}' lands in a later milestone; only 'run --foreground' is wired at M2`);
 }
 
+const PING_PROMPT = "reply with exactly: pong. Do not use any tools, do not read files, and do not explore the workspace.";
+const PING_AUTH_RE = /\b(auth(?:enticat\w*)?|login|credential\w*|oauth|unauthenticated|signin|sign-in)\b/i;
+
+function pingFailureDetail(execution) {
+  const raw = execution?.parsed?.raw;
+  const rawText = typeof raw === "string"
+    ? raw
+    : (raw == null ? "" : JSON.stringify(raw));
+  const detail = [
+    execution?.stderr,
+    execution?.stdout,
+    execution?.parsed?.error,
+    rawText,
+    execution?.exitCode == null ? "" : `exit ${execution.exitCode}`,
+  ].map((s) => String(s ?? "").trim()).find(Boolean) ?? "";
+  return detail.slice(0, 500);
+}
+
 // ——— subcommand: ping (OAuth health probe per spec §7.5) ———
 async function cmdPing(rest) {
   const { options } = parseArgs(rest, {
@@ -796,7 +891,6 @@ async function cmdPing(rest) {
   });
   const profile = resolveProfile("ping");
   const model = options.model ?? resolveModelForProfile(profile, loadModels());
-  if (!model) fail("no_model", "no model resolved for ping; pass --model or populate config/models.json");
   const binary = options.binary ?? process.env.CLAUDE_BINARY ?? "claude";
   const timeoutMs = Number(options["timeout-ms"] ?? 15000);
   // Ping is ephemeral (no durable record), so reuse newJobId() purely for its
@@ -806,7 +900,7 @@ async function cmdPing(rest) {
   try {
     execution = await spawnClaude(profile, {
       model,
-      promptText: "reply with exactly: pong",
+      promptText: PING_PROMPT,
       sessionId,
       cwd: process.cwd(),
       binary,
@@ -825,23 +919,24 @@ async function cmdPing(rest) {
   if (execution.parsed.ok && (execution.parsed.result || execution.parsed.structured)) {
     // T7.4: drop the legacy `.sessionId` alias. Ping uses claudeSessionId
     // (Claude's echo) with sessionIdSent fallback when the mock short-circuits.
-    printJson({ status: "ok", model,
+    const payload = { status: "ok", model: model ?? null,
       session_id: execution.claudeSessionId ?? execution.sessionIdSent,
-      cost_usd: execution.parsed.costUsd, usage: execution.parsed.usage });
+      cost_usd: execution.parsed.costUsd, usage: execution.parsed.usage };
+    printJson(payload);
     process.exit(0);
   }
   if (execution.exitCode !== 0) {
-    const stderr = execution.stderr ?? "";
-    if (/rate limit|429|overloaded/i.test(stderr)) {
-      printJson({ status: "rate_limited", detail: stderr.trim().slice(0, 500) });
+    const detail = pingFailureDetail(execution);
+    if (/rate limit|429|overloaded/i.test(detail)) {
+      printJson({ status: "rate_limited", detail });
       process.exit(2);
     }
-    if (/auth|login|credential|oauth|unauthenticated/i.test(stderr)) {
-      printJson({ status: "not_authed", detail: stderr.trim().slice(0, 500),
+    if (PING_AUTH_RE.test(detail)) {
+      printJson({ status: "not_authed", detail,
         hint: "Run `claude` interactively to complete OAuth. Do not set ANTHROPIC_API_KEY." });
       process.exit(2);
     }
-    printJson({ status: "error", exit_code: execution.exitCode, detail: stderr.trim().slice(0, 500) });
+    printJson({ status: "error", exit_code: execution.exitCode, detail });
     process.exit(2);
   }
   printJson({ status: "error", detail: "parsed result missing", raw: execution.parsed.raw });
@@ -856,6 +951,12 @@ async function cmdStatus(rest) {
   });
   const cwd = options.cwd ?? process.cwd();
   const workspaceRoot = resolveWorkspaceRoot(cwd);
+  // #16 follow-up 3: reconcile orphan active jobs (queued/running with
+  // dead pid_info or never-spawned older than the orphan window) before
+  // listing. Promotes them to status=stale so they stop counting against
+  // active history and operators can `continue --job` them. Silent on
+  // success — the next listJobs call sees the updated records.
+  reconcileActiveJobs(workspaceRoot);
   const jobs = listJobs(workspaceRoot);
   if (options.job) {
     const match = jobs.find((j) => j.id === options.job);
@@ -863,7 +964,12 @@ async function cmdStatus(rest) {
     printJson(match);
     return;
   }
-  const filtered = options.all ? jobs : jobs.filter((j) => j.status === "running" || j.status === "completed" || j.status === "failed");
+  // Default status view: every continuable + actionable state. cancelled
+  // and stale are continuable terminal states (#16 follow-up 2/4) so they
+  // belong in the default view alongside running/completed/failed; --all
+  // is the only way to surface queued (transient pre-spawn).
+  const DEFAULT_STATUSES = new Set(["running", "completed", "failed", "cancelled", "stale"]);
+  const filtered = options.all ? jobs : jobs.filter((j) => DEFAULT_STATUSES.has(j.status));
   printJson({ workspace_root: workspaceRoot, jobs: filtered });
 }
 
@@ -885,7 +991,17 @@ async function cmdResult(rest) {
     fail("bad_args", e.message);
   }
   if (!existsSync(jobFile)) fail("not_found", `no meta.json for job ${options.job}`);
-  const meta = JSON.parse(_readFileSync(jobFile, "utf8"));
+  // PR #21 review MED 1: wrap the read so a directory-at-meta-path
+  // (CLAUDE_MOCK_META_CONFLICT, or a half-finalized job) produces a
+  // friendly error instead of an unhandled EISDIR stacktrace.
+  let meta;
+  try {
+    meta = JSON.parse(_readFileSync(jobFile, "utf8"));
+  } catch (e) {
+    fail("read_failed",
+      `cannot read meta.json for job ${options.job}: ${e.message}`,
+      { error_code: e.code ?? null });
+  }
   printJson(meta);
 }
 

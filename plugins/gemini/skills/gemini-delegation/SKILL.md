@@ -1,6 +1,6 @@
 ---
 name: gemini-delegation
-description: Delegate setup checks, review, adversarial review, rescue, status, result, and cancel-aware workflows to Gemini CLI through the supported Codex skill surface.
+description: Delegate review, adversarial review, rescue, and setup to Gemini CLI.
 user-invocable: true
 ---
 

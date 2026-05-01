@@ -72,6 +72,21 @@ function cleanupGemini(dir) {
   rmSync(dir, { recursive: true, force: true });
 }
 
+// withStateConfig: scope a configureState() override to fn() so an early
+// failure inside fn() cannot leak the override to subsequent tests. The
+// per-target afterEach restores the snapshot too, but pairing each
+// override site with its own try/finally keeps tests robust in isolation
+// (e.g., when a single test is run with --test-name-pattern).
+function withStateConfig(stateModule, override, fn) {
+  const previous = stateModule.getStateConfig();
+  stateModule.configureState(override);
+  try {
+    return fn();
+  } finally {
+    stateModule.configureState(previous);
+  }
+}
+
 function findDeadPid() {
   for (let pid = 999999; pid < 1009999; pid += 1) {
     try {
@@ -492,6 +507,7 @@ test("gemini state: unsafe stale ids, directory logs, and rename cleanup are gua
 for (const [target, state, fresh, cleanupTarget] of [
   ["claude", {
     configureState,
+    getStateConfig,
     saveState,
     updateState,
     upsertJob,
@@ -665,27 +681,28 @@ for (const [target, state, fresh, cleanupTarget] of [
     // refuse a live same-host owner regardless of age.
     const dir = fresh();
     try {
-      state.configureState({ lockTimeoutMs: 200, lockStaleMs: 100 });
-      state.writeJobFile(dir, "seed-job", { id: "seed-job" });
-      const lockDir = path.join(state.resolveStateDir(dir), ".state.lock");
-      fs.mkdirSync(lockDir);
-      fs.writeFileSync(path.join(lockDir, "owner.json"), `${JSON.stringify({
-        pid: process.pid,
-        hostname: hostname(),
-        startedAt: new Date(Date.now() - 60_000).toISOString(),
-        token: "live-owner-token",
-      })}\n`, "utf8");
+      withStateConfig(state, { lockTimeoutMs: 200, lockStaleMs: 100 }, () => {
+        state.writeJobFile(dir, "seed-job", { id: "seed-job" });
+        const lockDir = path.join(state.resolveStateDir(dir), ".state.lock");
+        fs.mkdirSync(lockDir);
+        fs.writeFileSync(path.join(lockDir, "owner.json"), `${JSON.stringify({
+          pid: process.pid,
+          hostname: hostname(),
+          startedAt: new Date(Date.now() - 60_000).toISOString(),
+          token: "live-owner-token",
+        })}\n`, "utf8");
 
-      assert.throws(
-        () => state.upsertJob(dir, { id: "writer-b", status: "completed" }),
-        /state_lock_timeout/,
-      );
-      assert.equal(fs.existsSync(lockDir), true,
-        "live same-host lock must remain intact even when older than the stale window");
-      assert.equal(
-        state.listJobs(dir).some((job) => job.id === "writer-b"), false,
-        "writer B must not be able to commit while writer A's live lock is still held",
-      );
+        assert.throws(
+          () => state.upsertJob(dir, { id: "writer-b", status: "completed" }),
+          /state_lock_timeout/,
+        );
+        assert.equal(fs.existsSync(lockDir), true,
+          "live same-host lock must remain intact even when older than the stale window");
+        assert.equal(
+          state.listJobs(dir).some((job) => job.id === "writer-b"), false,
+          "writer B must not be able to commit while writer A's live lock is still held",
+        );
+      });
     } finally {
       cleanupTarget(dir);
     }
@@ -699,46 +716,47 @@ for (const [target, state, fresh, cleanupTarget] of [
     const dir = fresh();
     const originalRename = fs.renameSync;
     try {
-      state.configureState({ lockTimeoutMs: 200, lockStaleMs: 100 });
-      state.writeJobFile(dir, "seed-job", { id: "seed-job" });
-      const lockDir = path.join(state.resolveStateDir(dir), ".state.lock");
-      fs.mkdirSync(lockDir);
-      fs.writeFileSync(path.join(lockDir, "owner.json"), `${JSON.stringify({
-        pid: findDeadPid(),
-        hostname: hostname(),
-        startedAt: new Date(Date.now() - 60_000).toISOString(),
-        token: "dead-owner-token",
-      })}\n`, "utf8");
+      withStateConfig(state, { lockTimeoutMs: 200, lockStaleMs: 100 }, () => {
+        state.writeJobFile(dir, "seed-job", { id: "seed-job" });
+        const lockDir = path.join(state.resolveStateDir(dir), ".state.lock");
+        fs.mkdirSync(lockDir);
+        fs.writeFileSync(path.join(lockDir, "owner.json"), `${JSON.stringify({
+          pid: findDeadPid(),
+          hostname: hostname(),
+          startedAt: new Date(Date.now() - 60_000).toISOString(),
+          token: "dead-owner-token",
+        })}\n`, "utf8");
 
-      let injected = false;
-      fs.renameSync = function patchedRename(from, to) {
-        if (!injected && from === lockDir && String(to).includes(".orphaned-")) {
-          injected = true;
-          fs.rmSync(lockDir, { recursive: true, force: true });
-          fs.mkdirSync(lockDir);
-          fs.writeFileSync(path.join(lockDir, "owner.json"), `${JSON.stringify({
-            pid: process.pid,
-            hostname: hostname(),
-            startedAt: new Date().toISOString(),
-            token: "live-replacement-token",
-          })}\n`, "utf8");
-        }
-        return originalRename.apply(this, arguments);
-      };
+        let injected = false;
+        fs.renameSync = function patchedRename(from, to) {
+          if (!injected && from === lockDir && String(to).includes(".orphaned-")) {
+            injected = true;
+            fs.rmSync(lockDir, { recursive: true, force: true });
+            fs.mkdirSync(lockDir);
+            fs.writeFileSync(path.join(lockDir, "owner.json"), `${JSON.stringify({
+              pid: process.pid,
+              hostname: hostname(),
+              startedAt: new Date().toISOString(),
+              token: "live-replacement-token",
+            })}\n`, "utf8");
+          }
+          return originalRename.apply(this, arguments);
+        };
 
-      assert.throws(
-        () => state.upsertJob(dir, { id: "writer-b", status: "completed" }),
-        /state_lock_timeout/,
-      );
-      fs.renameSync = originalRename;
+        assert.throws(
+          () => state.upsertJob(dir, { id: "writer-b", status: "completed" }),
+          /state_lock_timeout/,
+        );
+        fs.renameSync = originalRename;
 
-      const owner = JSON.parse(fs.readFileSync(path.join(lockDir, "owner.json"), "utf8"));
-      assert.equal(owner.token, "live-replacement-token",
-        "reclaim must restore the live lock it found at rename time");
-      assert.equal(
-        state.listJobs(dir).some((job) => job.id === "writer-b"), false,
-        "writer B must not commit after racing with a replacement live lock",
-      );
+        const owner = JSON.parse(fs.readFileSync(path.join(lockDir, "owner.json"), "utf8"));
+        assert.equal(owner.token, "live-replacement-token",
+          "reclaim must restore the live lock it found at rename time");
+        assert.equal(
+          state.listJobs(dir).some((job) => job.id === "writer-b"), false,
+          "writer B must not commit after racing with a replacement live lock",
+        );
+      });
     } finally {
       fs.renameSync = originalRename;
       cleanupTarget(dir);
@@ -753,61 +771,62 @@ for (const [target, state, fresh, cleanupTarget] of [
     const dir = fresh();
     const originalRename = fs.renameSync;
     try {
-      state.configureState({ lockTimeoutMs: 200, lockStaleMs: 100 });
-      state.writeJobFile(dir, "seed-job", { id: "seed-job" });
-      const lockDir = path.join(state.resolveStateDir(dir), ".state.lock");
-      fs.mkdirSync(lockDir);
-      fs.writeFileSync(path.join(lockDir, "owner.json"), `${JSON.stringify({
-        pid: findDeadPid(),
-        hostname: hostname(),
-        startedAt: new Date(Date.now() - 60_000).toISOString(),
-        token: "dead-owner-token",
-      })}\n`, "utf8");
+      withStateConfig(state, { lockTimeoutMs: 200, lockStaleMs: 100 }, () => {
+        state.writeJobFile(dir, "seed-job", { id: "seed-job" });
+        const lockDir = path.join(state.resolveStateDir(dir), ".state.lock");
+        fs.mkdirSync(lockDir);
+        fs.writeFileSync(path.join(lockDir, "owner.json"), `${JSON.stringify({
+          pid: findDeadPid(),
+          hostname: hostname(),
+          startedAt: new Date(Date.now() - 60_000).toISOString(),
+          token: "dead-owner-token",
+        })}\n`, "utf8");
 
-      let injectedReplacement = false;
-      let restoreFrom = null;
-      let thirdWriterAttempted = false;
-      let thirdWriterEntered = false;
-      fs.renameSync = function patchedRename(from, to) {
-        if (!injectedReplacement && from === lockDir && String(to).includes(".orphaned-")) {
-          injectedReplacement = true;
-          fs.rmSync(lockDir, { recursive: true, force: true });
-          fs.mkdirSync(lockDir);
-          fs.writeFileSync(path.join(lockDir, "owner.json"), `${JSON.stringify({
-            pid: process.pid,
-            hostname: hostname(),
-            startedAt: new Date().toISOString(),
-            token: "live-replacement-token",
-          })}\n`, "utf8");
-          const result = originalRename.apply(this, arguments);
-          restoreFrom = to;
-          return result;
-        }
-        if (injectedReplacement && from === restoreFrom && to === lockDir) {
-          thirdWriterAttempted = true;
-          try {
-            state.upsertJob(dir, { id: "writer-c", status: "completed" });
-            thirdWriterEntered = true;
-          } catch (e) {
-            assert.match(e.message, /state_lock_timeout/);
+        let injectedReplacement = false;
+        let restoreFrom = null;
+        let thirdWriterAttempted = false;
+        let thirdWriterEntered = false;
+        fs.renameSync = function patchedRename(from, to) {
+          if (!injectedReplacement && from === lockDir && String(to).includes(".orphaned-")) {
+            injectedReplacement = true;
+            fs.rmSync(lockDir, { recursive: true, force: true });
+            fs.mkdirSync(lockDir);
+            fs.writeFileSync(path.join(lockDir, "owner.json"), `${JSON.stringify({
+              pid: process.pid,
+              hostname: hostname(),
+              startedAt: new Date().toISOString(),
+              token: "live-replacement-token",
+            })}\n`, "utf8");
+            const result = originalRename.apply(this, arguments);
+            restoreFrom = to;
+            return result;
           }
-        }
-        return originalRename.apply(this, arguments);
-      };
+          if (injectedReplacement && from === restoreFrom && to === lockDir) {
+            thirdWriterAttempted = true;
+            try {
+              state.upsertJob(dir, { id: "writer-c", status: "completed" });
+              thirdWriterEntered = true;
+            } catch (e) {
+              assert.match(e.message, /state_lock_timeout/);
+            }
+          }
+          return originalRename.apply(this, arguments);
+        };
 
-      assert.throws(
-        () => state.upsertJob(dir, { id: "writer-b", status: "completed" }),
-        /state_lock_timeout/,
-      );
-      assert.equal(thirdWriterAttempted, true,
-        "test must exercise the restore window");
-      assert.equal(thirdWriterEntered, false,
-        "writer C must not acquire while a changed live lock is being restored");
-      assert.equal(
-        state.listJobs(dir).some((job) => job.id === "writer-c"),
-        false,
-        "writer C must not commit during the restore window",
-      );
+        assert.throws(
+          () => state.upsertJob(dir, { id: "writer-b", status: "completed" }),
+          /state_lock_timeout/,
+        );
+        assert.equal(thirdWriterAttempted, true,
+          "test must exercise the restore window");
+        assert.equal(thirdWriterEntered, false,
+          "writer C must not acquire while a changed live lock is being restored");
+        assert.equal(
+          state.listJobs(dir).some((job) => job.id === "writer-c"),
+          false,
+          "writer C must not commit during the restore window",
+        );
+      });
     } finally {
       fs.renameSync = originalRename;
       cleanupTarget(dir);
@@ -818,31 +837,32 @@ for (const [target, state, fresh, cleanupTarget] of [
     const dir = fresh();
     const originalReadFile = fs.readFileSync;
     try {
-      state.configureState({ lockTimeoutMs: 200, lockStaleMs: 100 });
-      state.writeJobFile(dir, "seed-job", { id: "seed-job" });
-      const lockDir = path.join(state.resolveStateDir(dir), ".state.lock");
-      const ownerPath = path.join(lockDir, "owner.json");
-      fs.mkdirSync(lockDir);
-      fs.writeFileSync(ownerPath, `${JSON.stringify({
-        pid: findDeadPid(),
-        hostname: hostname(),
-        startedAt: new Date(Date.now() - 60_000).toISOString(),
-        token: "unreadable-owner-token",
-      })}\n`, "utf8");
+      withStateConfig(state, { lockTimeoutMs: 200, lockStaleMs: 100 }, () => {
+        state.writeJobFile(dir, "seed-job", { id: "seed-job" });
+        const lockDir = path.join(state.resolveStateDir(dir), ".state.lock");
+        const ownerPath = path.join(lockDir, "owner.json");
+        fs.mkdirSync(lockDir);
+        fs.writeFileSync(ownerPath, `${JSON.stringify({
+          pid: findDeadPid(),
+          hostname: hostname(),
+          startedAt: new Date(Date.now() - 60_000).toISOString(),
+          token: "unreadable-owner-token",
+        })}\n`, "utf8");
 
-      fs.readFileSync = function patchedReadFile(file, ...args) {
-        if (path.resolve(String(file)) === ownerPath) {
-          const err = new Error("owner read denied");
-          err.code = "EACCES";
-          throw err;
-        }
-        return originalReadFile.apply(this, [file, ...args]);
-      };
+        fs.readFileSync = function patchedReadFile(file, ...args) {
+          if (path.resolve(String(file)) === ownerPath) {
+            const err = new Error("owner read denied");
+            err.code = "EACCES";
+            throw err;
+          }
+          return originalReadFile.apply(this, [file, ...args]);
+        };
 
-      assert.throws(
-        () => state.upsertJob(dir, { id: "blocked-by-owner-read-error", status: "completed" }),
-        /state_lock_timeout/,
-      );
+        assert.throws(
+          () => state.upsertJob(dir, { id: "blocked-by-owner-read-error", status: "completed" }),
+          /state_lock_timeout/,
+        );
+      });
     } finally {
       fs.readFileSync = originalReadFile;
       cleanupTarget(dir);
@@ -879,35 +899,132 @@ for (const [target, state, fresh, cleanupTarget] of [
     }
   });
 
+  test(`${target} state: corrupt owner metadata emits a one-line stderr diagnostic`, () => {
+    // #16 follow-up 5: operators reading the state dir need a clue when a
+    // young corrupt-owner lock is blocking writers. Diagnostic must be
+    // single-line, prefixed, and never expose owner.json contents (the
+    // token field in particular).
+    const dir = fresh();
+    const originalWrite = process.stderr.write.bind(process.stderr);
+    const captured = [];
+    let originalQuiet;
+    try {
+      withStateConfig(state, { lockTimeoutMs: 250, lockStaleMs: 60_000 }, () => {
+        originalQuiet = process.env.CODEX_PLUGIN_QUIET_LOCK;
+        delete process.env.CODEX_PLUGIN_QUIET_LOCK;
+        process.stderr.write = (chunk, ...rest) => {
+          captured.push(typeof chunk === "string" ? chunk : chunk.toString("utf8"));
+          return originalWrite(chunk, ...rest);
+        };
+
+        state.writeJobFile(dir, "seed-job", { id: "seed-job" });
+        const lockDir = path.join(state.resolveStateDir(dir), ".state.lock");
+        fs.mkdirSync(lockDir);
+        fs.writeFileSync(
+          path.join(lockDir, "owner.json"),
+          `{"token":"sekrit-do-not-leak", broken json`,
+          "utf8",
+        );
+        assert.throws(
+          () => state.upsertJob(dir, { id: "blocked", status: "completed" }),
+          /state_lock_timeout/,
+        );
+      });
+
+      const joined = captured.join("");
+      assert.match(joined, /state-lock: corrupt owner metadata at /,
+        "diagnostic must surface corrupt owner.json with a single-line prefix");
+      assert.doesNotMatch(joined, /sekrit-do-not-leak/,
+        "diagnostic must never leak owner.json contents");
+      assert.equal(joined.split("\n").filter(Boolean).every((l) => l.startsWith("state-lock: ")), true,
+        "every emitted diagnostic line must start with state-lock: prefix");
+    } finally {
+      process.stderr.write = originalWrite;
+      if (originalQuiet === undefined) delete process.env.CODEX_PLUGIN_QUIET_LOCK;
+      else process.env.CODEX_PLUGIN_QUIET_LOCK = originalQuiet;
+      cleanupTarget(dir);
+    }
+  });
+
+  test(`${target} state: cross-host owner contention emits a diagnostic`, () => {
+    // Cross-host owner with parseable JSON should also emit a one-line
+    // diagnostic so operators can see why their writer is timing out.
+    const dir = fresh();
+    const originalWrite = process.stderr.write.bind(process.stderr);
+    const captured = [];
+    let originalQuiet;
+    try {
+      withStateConfig(state, { lockTimeoutMs: 250, lockStaleMs: 60_000 }, () => {
+        originalQuiet = process.env.CODEX_PLUGIN_QUIET_LOCK;
+        delete process.env.CODEX_PLUGIN_QUIET_LOCK;
+        process.stderr.write = (chunk, ...rest) => {
+          captured.push(typeof chunk === "string" ? chunk : chunk.toString("utf8"));
+          return originalWrite(chunk, ...rest);
+        };
+
+        state.writeJobFile(dir, "seed-job", { id: "seed-job" });
+        const lockDir = path.join(state.resolveStateDir(dir), ".state.lock");
+        fs.mkdirSync(lockDir);
+        // Young cross-host owner: still well below the 60_000 ms stale window
+        // so reclaim must wait; the diagnostic must fire on the contention.
+        fs.writeFileSync(path.join(lockDir, "owner.json"), `${JSON.stringify({
+          pid: 42,
+          hostname: "remote-host.invalid",
+          startedAt: new Date(Date.now() - 1_000).toISOString(),
+          token: "remote-token-do-not-leak",
+        })}\n`, "utf8");
+
+        assert.throws(
+          () => state.upsertJob(dir, { id: "blocked-x", status: "completed" }),
+          /state_lock_timeout/,
+        );
+      });
+
+      const joined = captured.join("");
+      assert.match(joined, /state-lock: cross-host owner contention/,
+        "cross-host owner must surface a diagnostic line");
+      assert.match(joined, /owner\.host=remote-host\.invalid/,
+        "diagnostic should name the remote host so operators can correlate");
+      assert.doesNotMatch(joined, /remote-token-do-not-leak/,
+        "diagnostic must never leak owner.json contents");
+    } finally {
+      process.stderr.write = originalWrite;
+      if (originalQuiet === undefined) delete process.env.CODEX_PLUGIN_QUIET_LOCK;
+      else process.env.CODEX_PLUGIN_QUIET_LOCK = originalQuiet;
+      cleanupTarget(dir);
+    }
+  });
+
   test(`${target} state: missing/corrupt owner metadata is reclaimed only when too old`, () => {
     const dir = fresh();
     try {
       // Tight timeout, conservative stale window: a young corrupt-owner lock
       // must time out (no reclaim) within ~250ms even though the stale window
       // is much higher than the timeout.
-      state.configureState({ lockTimeoutMs: 250, lockStaleMs: 60_000 });
-      state.writeJobFile(dir, "seed-job", { id: "seed-job" });
-      const lockDir = path.join(state.resolveStateDir(dir), ".state.lock");
-      fs.mkdirSync(lockDir);
-      // Corrupt owner.json with no parseable pid/hostname. Without an owner
-      // we fall through to age-based reclaim, which must keep its hands off
-      // a young dir (mtime ≈ now).
-      fs.writeFileSync(path.join(lockDir, "owner.json"), "not json", "utf8");
-      assert.throws(
-        () => state.upsertJob(dir, { id: "blocked-by-corrupt-owner", status: "completed" }),
-        /state_lock_timeout/,
-      );
-      assert.equal(fs.existsSync(lockDir), true,
-        "corrupt-owner lock that is still young must not be reclaimed");
+      withStateConfig(state, { lockTimeoutMs: 250, lockStaleMs: 60_000 }, () => {
+        state.writeJobFile(dir, "seed-job", { id: "seed-job" });
+        const lockDir = path.join(state.resolveStateDir(dir), ".state.lock");
+        fs.mkdirSync(lockDir);
+        // Corrupt owner.json with no parseable pid/hostname. Without an owner
+        // we fall through to age-based reclaim, which must keep its hands off
+        // a young dir (mtime ≈ now).
+        fs.writeFileSync(path.join(lockDir, "owner.json"), "not json", "utf8");
+        assert.throws(
+          () => state.upsertJob(dir, { id: "blocked-by-corrupt-owner", status: "completed" }),
+          /state_lock_timeout/,
+        );
+        assert.equal(fs.existsSync(lockDir), true,
+          "corrupt-owner lock that is still young must not be reclaimed");
 
-      // Backdate the dir well past the stale window; reclaim must succeed.
-      const old = new Date(Date.now() - 120_000);
-      fs.utimesSync(lockDir, old, old);
-      state.upsertJob(dir, { id: "after-corrupt-owner-stale", status: "completed" });
-      assert.equal(
-        state.listJobs(dir).some((job) => job.id === "after-corrupt-owner-stale"), true,
-        "missing/corrupt owner metadata must remain age-reclaimable when too old",
-      );
+        // Backdate the dir well past the stale window; reclaim must succeed.
+        const old = new Date(Date.now() - 120_000);
+        fs.utimesSync(lockDir, old, old);
+        state.upsertJob(dir, { id: "after-corrupt-owner-stale", status: "completed" });
+        assert.equal(
+          state.listJobs(dir).some((job) => job.id === "after-corrupt-owner-stale"), true,
+          "missing/corrupt owner metadata must remain age-reclaimable when too old",
+        );
+      });
     } finally {
       cleanupTarget(dir);
     }

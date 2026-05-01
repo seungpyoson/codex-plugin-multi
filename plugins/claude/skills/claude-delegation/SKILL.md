@@ -1,6 +1,6 @@
 ---
 name: claude-delegation
-description: Delegate setup checks, review, adversarial review, rescue, status, result, and cancel workflows to Claude Code through the supported Codex skill surface.
+description: Delegate review, adversarial review, rescue, and setup to Claude Code.
 user-invocable: true
 ---
 

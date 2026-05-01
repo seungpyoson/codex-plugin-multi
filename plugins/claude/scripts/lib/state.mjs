@@ -281,6 +281,17 @@ function releaseOwnedLockDir(lockDir, token) {
   } catch { /* best-effort */ }
 }
 
+// Diagnostic emitter (one line per call, stderr). Never includes secrets —
+// owner.json carries pid/hostname/startedAt/token only; we omit token from
+// diagnostics. Operators reading these lines need an actionable cause +
+// next step, not a full owner dump.
+function emitLockDiagnostic(message) {
+  if (process.env.CODEX_PLUGIN_QUIET_LOCK === "1") return;
+  try {
+    process.stderr.write(`state-lock: ${message}\n`);
+  } catch { /* stderr closed; nothing to do */ }
+}
+
 // Reclaim policy (security):
 //   - Same-host owner with a LIVE pid: never reclaim, regardless of age. The
 //     bug this guards against is mutual-exclusion loss when a writer holds
@@ -292,6 +303,11 @@ function releaseOwnedLockDir(lockDir, token) {
 //     age-based reclaim only when older than the configured stale window.
 //     We can't probe a remote pid; we can't trust an unparseable owner file;
 //     in both cases we wait until the lock is plausibly orphaned.
+//
+// Diagnostics (#16 follow-up 5): when we encounter corrupt owner metadata,
+// a cross-host owner during contention, or a put-back failure that leaves
+// an orphan dir behind, emit a one-line stderr warning so operators can
+// reason about what they're seeing in the state dir.
 function tryReclaimStaleLock(lockDir) {
   const ownerRaw = readLockOwnerRaw(lockDir);
   if (ownerRaw === undefined) return false;
@@ -301,15 +317,25 @@ function tryReclaimStaleLock(lockDir) {
   const sameHostAlive = sameHost && ownerPidValid && isProcessAlive(owner.pid);
   if (sameHostAlive) return false;
   const ownerDead = sameHost && ownerPidValid && !isProcessAlive(owner.pid);
+  const ageMs = lockAgeMs(lockDir, owner);
 
   let canReclaim;
   if (ownerDead) {
     canReclaim = true;
   } else {
-    // Cross-host owner, or missing/corrupt owner metadata. Use the age fall
-    // back, conservatively: the dir must be older than the stale window
-    // before we touch it.
-    canReclaim = lockAgeMs(lockDir, owner) > CONFIG.lockStaleMs;
+    canReclaim = ageMs > CONFIG.lockStaleMs;
+    if (owner == null && ownerRaw !== null) {
+      emitLockDiagnostic(
+        `corrupt owner metadata at ${lockDir} (age ${Math.round(ageMs)}ms);` +
+        ` waiting until older than ${CONFIG.lockStaleMs}ms before reclaim`,
+      );
+    } else if (owner != null && !sameHost) {
+      emitLockDiagnostic(
+        `cross-host owner contention at ${lockDir} (owner.host=${owner.hostname}` +
+        `, this.host=${os.hostname()}, age ${Math.round(ageMs)}ms);` +
+        ` waiting until older than ${CONFIG.lockStaleMs}ms before reclaim`,
+      );
+    }
   }
   if (!canReclaim) return false;
 
@@ -317,11 +343,19 @@ function tryReclaimStaleLock(lockDir) {
   try {
     fs.renameSync(lockDir, orphanDir);
     if (readLockOwnerRaw(orphanDir) !== ownerRaw) {
+      let restored = false;
       try {
         fs.renameSync(orphanDir, lockDir);
+        restored = true;
       } catch {
         // A different process may already have recreated lockDir. Leave the
         // orphan intact rather than deleting a lock we no longer own.
+      }
+      if (!restored) {
+        emitLockDiagnostic(
+          `orphan dir retained at ${orphanDir} after put-back failed; safe to remove` +
+          ` once you confirm no live owner under ${lockDir}`,
+        );
       }
       return false;
     }
@@ -373,14 +407,37 @@ function acquireStateLock(cwd) {
     let releaseGate = null;
     try {
       releaseGate = acquireStateLockGate(cwd, deadline);
-      fs.mkdirSync(lockDir);
+      // Try to acquire the main lock directly. On EEXIST, attempt reclaim
+      // while still holding the gate so a successful reclaim can immediately
+      // claim the freed slot without releasing the gate and racing again
+      // (#16 follow-up 5 addendum item 2 — keeps mutual exclusion identical
+      // and avoids losing work to gate contention under bursty acquirers).
+      try {
+        fs.mkdirSync(lockDir);
+      } catch (e) {
+        if (e.code !== "EEXIST") throw e;
+        const reclaimed = tryReclaimStaleLock(lockDir);
+        if (!reclaimed) {
+          // Live owner or unreclaimable yet; back off, releasing gate so
+          // other writers (including the live owner's release path) can run.
+          releaseGate();
+          releaseGate = null;
+          if (Date.now() >= deadline) {
+            throw new Error(`state_lock_timeout: could not acquire ${lockDir}`);
+          }
+          sleepSync(STATE_LOCK_POLL_MS);
+          continue;
+        }
+        // Reclaim succeeded — lockDir is now gone. Recreate it directly while
+        // we still hold the gate, so no concurrent writer can sneak in.
+        fs.mkdirSync(lockDir);
+      }
       const token = randomUUID();
       try {
         writeLockOwner(lockDir, token);
       } catch (e) {
         // We just created lockDir and never registered ownership — safe to
-        // remove. No other writer can have stolen it: tryReclaimStaleLock
-        // refuses to reclaim a fresh empty dir (no owner.json + age 0 < stale).
+        // remove. No other writer can have stolen it: we still hold the gate.
         try { fs.rmSync(lockDir, { recursive: true, force: true }); } catch { /* best-effort */ }
         throw e;
       }
@@ -396,17 +453,8 @@ function acquireStateLock(cwd) {
         releaseOwnedLockDir(lockDir, token);
       };
     } catch (e) {
-      if (e.code !== "EEXIST") {
-        if (String(e.message ?? "").startsWith("state_lock_")) throw e;
-        throw new Error(`state_lock_error: could not acquire ${lockDir}: ${e.message}`);
-      }
-      if (tryReclaimStaleLock(lockDir)) {
-        continue;
-      }
-      if (Date.now() >= deadline) {
-        throw new Error(`state_lock_timeout: could not acquire ${lockDir}`);
-      }
-      sleepSync(STATE_LOCK_POLL_MS);
+      if (String(e.message ?? "").startsWith("state_lock_")) throw e;
+      throw new Error(`state_lock_error: could not acquire ${lockDir}: ${e.message}`);
     } finally {
       if (releaseGate) releaseGate();
     }
@@ -494,24 +542,121 @@ export function generateJobId(prefix = "job") {
   return `${prefix}-${Date.now().toString(36)}-${random}`;
 }
 
+// Extracted helper so commitJobRecord{,IfActive} can apply the same
+// upsert semantics inside an outer updateState callback (which already
+// holds the state lock — re-entering withStateLock would throw).
+function applyJobUpsertToState(state, jobPatch) {
+  const timestamp = nowIso();
+  const existingIndex = state.jobs.findIndex((job) => job.id === jobPatch.id);
+  if (existingIndex === -1) {
+    state.jobs.unshift({
+      createdAt: timestamp,
+      updatedAt: timestamp,
+      ...jobPatch
+    });
+    return;
+  }
+  state.jobs[existingIndex] = {
+    ...state.jobs[existingIndex],
+    ...jobPatch,
+    updatedAt: timestamp
+  };
+}
+
 export function upsertJob(cwd, jobPatch) {
-  return updateState(cwd, (state) => {
-    const timestamp = nowIso();
-    const existingIndex = state.jobs.findIndex((job) => job.id === jobPatch.id);
-    if (existingIndex === -1) {
-      state.jobs.unshift({
-        createdAt: timestamp,
-        updatedAt: timestamp,
-        ...jobPatch
-      });
-      return;
-    }
-    state.jobs[existingIndex] = {
-      ...state.jobs[existingIndex],
-      ...jobPatch,
-      updatedAt: timestamp
-    };
-  });
+  return updateState(cwd, (state) => { applyJobUpsertToState(state, jobPatch); });
+}
+
+// PR #21 review BLOCKER 1 + 2 — atomic-under-lock meta + state commit.
+//
+// Two concurrent writers (worker finalization, reconcile, error paths) used
+// to do `writeJobFile + upsertJob` as two unrelated operations. That left
+// two race windows:
+//
+//   (1) reconcile reads meta=running, classifies stale, writes stale meta
+//       → CLOBBERS a worker's terminal completed meta that landed in
+//       between (BLOCKER 2 — confirmed losing "REAL_WORKER_RESULT").
+//   (2) finalization's writeJobFile succeeds but upsertJob fails (lock
+//       timeout) → fallback rewrites meta unconditionally, clobbering a
+//       successful terminal record with "failed/spawn_failed" (BLOCKER 1).
+//
+// commitJobRecord folds both writes into ONE state-lock acquisition: meta
+// is written first (still atomic via tmpfile+rename); on success, state is
+// updated in the same locked window. If the meta write throws, state is
+// not touched. If the state save throws (rare — disk full while we hold
+// the lock), the meta IS on disk but state isn't — caller can detect via
+// the returned errors and choose a per-side fallback.
+//
+// Returns { metaError, stateError }; both null on success. Distinguishing
+// which side failed lets callers fix only what's broken (BLOCKER 1 fix).
+export function commitJobRecord(cwd, jobId, record) {
+  let metaError = null;
+  let stateError = null;
+  try {
+    updateState(cwd, (state) => {
+      try { writeJobFile(cwd, jobId, record); }
+      catch (e) { metaError = e; throw e; }
+      applyJobUpsertToState(state, record);
+    });
+  } catch (e) {
+    if (e !== metaError) stateError = e;
+  }
+  return { metaError, stateError };
+}
+
+// CAS variant for reconcile — read meta INSIDE the lock, only commit if the
+// on-disk record is still in an active status. This serializes against
+// commitJobRecord callers (worker finalization), eliminating BLOCKER 2's
+// read-then-write race entirely: a worker's terminal commit either runs
+// before reconcile (CAS sees terminal → builder NOT called) or after
+// reconcile (worker's commit overwrites the stale we just wrote — terminal
+// wins). Returns the committed record or null when CAS aborted / builder
+// returned null.
+export function commitJobRecordIfActive(cwd, jobId, builder) {
+  let committed = null;
+  try {
+    updateState(cwd, (state) => {
+      let meta;
+      try { meta = JSON.parse(fs.readFileSync(resolveJobFile(cwd, jobId), "utf8")); }
+      catch { return; } // missing/unreadable meta — treat as no-op
+      if (!meta || !ACTIVE_JOB_STATUSES.has(meta.status)) return;
+      const next = builder(meta);
+      if (!next) return;
+      try { writeJobFile(cwd, jobId, next); }
+      catch { return; }
+      applyJobUpsertToState(state, next);
+      committed = next;
+    });
+  } catch { /* lock acquisition / state save failed; next pass retries */ }
+  return committed;
+}
+
+// Batch CAS variant for reconcile. Acquires the state lock once, then checks
+// each active job under that same lock. If meta.json is missing but state.json
+// still carries a full active JobRecord, the builder can recover by writing a
+// stale terminal meta record instead of leaving a permanent active orphan.
+export function commitJobRecordsIfActive(cwd, jobIds, builder) {
+  const committed = [];
+  try {
+    updateState(cwd, (state) => {
+      for (const jobId of new Set(jobIds)) {
+        const stateJob = state.jobs.find((job) => job.id === jobId) ?? null;
+        let meta = null;
+        let metaMissing = false;
+        try { meta = JSON.parse(fs.readFileSync(resolveJobFile(cwd, jobId), "utf8")); }
+        catch { metaMissing = true; }
+        const source = meta ?? stateJob;
+        if (!source || !ACTIVE_JOB_STATUSES.has(source.status)) continue;
+        const next = builder(source, { jobId, stateJob, metaMissing });
+        if (!next) continue;
+        try { writeJobFile(cwd, jobId, next); }
+        catch { continue; }
+        applyJobUpsertToState(state, next);
+        committed.push(next);
+      }
+    });
+  } catch { /* lock acquisition / state save failed; next pass retries */ }
+  return committed;
 }
 
 export function listJobs(cwd) {

@@ -9,18 +9,20 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { fixtureSeedRepo } from "../helpers/fixture-git.mjs";
+
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const COMPANION = path.join(REPO_ROOT, "plugins/gemini/scripts/gemini-companion.mjs");
 const MOCK = path.join(REPO_ROOT, "tests/smoke/gemini-mock.mjs");
 const GEMINI_SESSION_ID = "22222222-3333-4444-9555-666666666666";
 const RESUMED_GEMINI_SESSION_ID = "77777777-8888-4999-aaaa-bbbbbbbbbbbb";
-const GEMINI_SMOKE_POLL_TIMEOUT_MS = Number(process.env.GEMINI_SMOKE_POLL_TIMEOUT_MS ?? 5000);
+const GEMINI_SMOKE_POLL_TIMEOUT_MS = Number(process.env.GEMINI_SMOKE_POLL_TIMEOUT_MS ?? 30000);
 
+// #16 follow-up 9: fixtureSeedRepo scrubs inherited GIT_* env vars so a
+// stale GIT_DIR/GIT_WORK_TREE in the parent process cannot hijack fixture
+// commits into the caller checkout.
 function seedMinimalRepo(cwd) {
-  spawnSync("git", ["init", "-q", "-b", "main"], { cwd });
-  spawnSync("bash", ["-c",
-    "echo seed > seed.txt && git add seed.txt && " +
-    "git -c core.hooksPath=/dev/null -c user.email=t@t -c user.name=t commit -q -m seed"], { cwd });
+  fixtureSeedRepo(cwd);
 }
 
 function runCompanion(args, { cwd, env = {}, dataDir = mkdtempSync(path.join(tmpdir(), "gemini-smoke-data-")) } = {}) {
@@ -163,7 +165,7 @@ test("gemini rescue background: active job appears in default status", async () 
   try {
     assert.equal(status, 0, `exit ${status}: ${stderr}`);
     const launched = JSON.parse(stdout);
-    const runningDeadline = Date.now() + 3000;
+    const runningDeadline = Date.now() + GEMINI_SMOKE_POLL_TIMEOUT_MS;
     let running = null;
     while (Date.now() < runningDeadline && !running) {
       const statusRes = spawnSync("node", [COMPANION, "status", "--cwd", cwd], {
@@ -214,7 +216,7 @@ test("gemini cancel: signals a running background job (issue #22 sub-task 1)", a
   try {
     assert.equal(status, 0, stderr);
     const launched = JSON.parse(stdout);
-    const deadline = Date.now() + 5000;
+    const deadline = Date.now() + GEMINI_SMOKE_POLL_TIMEOUT_MS;
     let running = null;
     while (Date.now() < deadline && !running) {
       const statusRes = spawnSync("node", [COMPANION, "status", "--cwd", cwd], {
@@ -511,7 +513,7 @@ test("gemini cancel: SIGTERM-trapping target classifies as cancelled, not comple
   try {
     assert.equal(status, 0, stderr);
     const launched = JSON.parse(stdout);
-    const runDeadline = Date.now() + 5000;
+    const runDeadline = Date.now() + GEMINI_SMOKE_POLL_TIMEOUT_MS;
     let running = null;
     while (Date.now() < runDeadline && !running) {
       const sr = spawnSync("node", [COMPANION, "status", "--cwd", cwd], {
@@ -575,7 +577,7 @@ test("gemini cancel: ESRCH after ownership verification is already_dead, not sig
   try {
     assert.equal(status, 0, stderr);
     const launched = JSON.parse(stdout);
-    const runDeadline = Date.now() + 5000;
+    const runDeadline = Date.now() + GEMINI_SMOKE_POLL_TIMEOUT_MS;
     let running = null;
     while (Date.now() < runDeadline && !running) {
       const sr = spawnSync("node", [COMPANION, "status", "--cwd", cwd], {
@@ -1152,7 +1154,7 @@ test("gemini scope population failure skips target CLI spawn", () => {
   }
 });
 
-test("gemini status default hides inactive jobs and --all includes every state", async () => {
+test("gemini status default surfaces continuable terminal states; --all includes queued (#16 follow-up 4)", async () => {
   const cwd = mkdtempSync(path.join(tmpdir(), "gemini-status-cwd-"));
   const dataDir = mkdtempSync(path.join(tmpdir(), "gemini-status-data-"));
   seedMinimalRepo(cwd);
@@ -1173,9 +1175,12 @@ test("gemini status default hides inactive jobs and --all includes every state",
     });
     assert.equal(res.status, 0, `exit ${res.status}: ${res.stderr}`);
     const parsed = JSON.parse(res.stdout);
+    // #16 follow-up 4: cancelled and stale are continuable terminal states,
+    // so default status must include them. Only queued (transient pre-spawn)
+    // is hidden from the default view.
     assert.deepEqual(
       parsed.jobs.map((job) => job.status).sort(),
-      ["completed", "failed", "running"],
+      ["cancelled", "completed", "failed", "running", "stale"],
     );
 
     const allRes = spawnSync("node", [COMPANION, "status", "--all", "--cwd", cwd], {
@@ -1188,6 +1193,67 @@ test("gemini status default hides inactive jobs and --all includes every state",
     assert.deepEqual(
       allParsed.jobs.map((job) => job.status).sort(),
       ["cancelled", "completed", "failed", "queued", "running", "stale"],
+    );
+  } finally {
+    rmTree(dataDir);
+    rmTree(cwd);
+  }
+});
+
+test("gemini run --foreground: sidecar write failures warn but preserve terminal status (#16 follow-up 1)", () => {
+  // Mirror of the Claude sidecar-warn smoke test for parity coverage.
+  const cwd = mkdtempSync(path.join(tmpdir(), "gemini-sidecar-warn-"));
+  seedMinimalRepo(cwd);
+  const { stdout, stderr, status, dataDir } = runCompanion(
+    ["run", "--mode=rescue", "--foreground", "--model", "gemini-3-flash-preview",
+     "--cwd", cwd, "--", "sidecar warn"],
+    { cwd, env: { GEMINI_MOCK_SIDECAR_CONFLICT: "1" } },
+  );
+  try {
+    assert.equal(status, 0, `expected completed exit; got ${status}: ${stderr}`);
+    assert.doesNotMatch(stderr, /unhandled/i);
+    assert.match(stderr, /warning: sidecar .* write failed/i,
+      "Gemini sidecar failure must surface as a one-line stderr warning");
+    const record = JSON.parse(stdout);
+    assert.equal(record.status, "completed",
+      "terminal JobRecord must reflect the real run outcome despite sidecar failure");
+    assert.equal(record.error_code, null);
+    const { record: persisted } = readOnlyJobRecord(dataDir);
+    assert.equal(persisted.status, "completed");
+    assert.equal(persisted.job_id, record.job_id);
+  } finally {
+    rmTree(dataDir);
+    rmTree(cwd);
+  }
+});
+
+test("gemini run --foreground: meta-write conflict produces fallback failed record, no permanent running (#16 follow-up 1)", () => {
+  // Mirror of the Claude meta-conflict test. The Gemini mock walks
+  // GEMINI_PLUGIN_DATA/state/*/jobs to discover the queued meta path.
+  const cwd = mkdtempSync(path.join(tmpdir(), "gemini-meta-conflict-"));
+  seedMinimalRepo(cwd);
+  const { stdout, stderr, status, dataDir } = runCompanion(
+    ["run", "--mode=rescue", "--foreground", "--model", "gemini-3-flash-preview",
+     "--cwd", cwd, "--", "meta conflict"],
+    { cwd, env: { GEMINI_MOCK_META_CONFLICT: "1" } },
+  );
+  try {
+    assert.notEqual(status, 0, "meta write failure must exit non-zero");
+    assert.doesNotMatch(stderr, /unhandled/i);
+    const err = JSON.parse(stdout);
+    assert.equal(err.error, "finalization_failed");
+    const stateRoot = path.join(dataDir, "state");
+    let stateJobs = [];
+    for (const dir of readdirSync(stateRoot)) {
+      const stateFile = path.join(stateRoot, dir, "state.json");
+      if (!existsSync(stateFile)) continue;
+      stateJobs = JSON.parse(readFileSync(stateFile, "utf8")).jobs ?? [];
+    }
+    assert.equal(
+      stateJobs.some((j) => j.status === "running" || j.status === "queued"),
+      false,
+      "fallback failed-record must overwrite the running entry; got " +
+      JSON.stringify(stateJobs.map((j) => ({ id: j.id, status: j.status })))
     );
   } finally {
     rmTree(dataDir);
@@ -1210,5 +1276,77 @@ test("gemini ping returns ok with the mock gemini binary", () => {
   } finally {
     rmTree(dataDir);
     rmTree(cwd);
+  }
+});
+
+test("gemini ping succeeds without --model and forbids tool exploration in the prompt", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "gemini-ping-default-cwd-"));
+  const { stdout, stderr, status, dataDir } = runCompanion(
+    ["ping"],
+    {
+      cwd,
+      env: { GEMINI_MOCK_ASSERT_PROMPT_INCLUDES: "Do not use any tools" },
+    },
+  );
+  try {
+    assert.equal(status, 0, `exit ${status}: ${stderr}`);
+    const parsed = JSON.parse(stdout);
+    assert.equal(parsed.status, "ok");
+    assert.equal(parsed.model, null);
+    assert.equal(parsed.session_id, GEMINI_SESSION_ID);
+  } finally {
+    rmTree(dataDir);
+    rmTree(cwd);
+  }
+});
+
+test("gemini ping failure detail falls back to target stdout when stderr is empty", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "gemini-ping-stdout-cwd-"));
+  const binDir = mkdtempSync(path.join(tmpdir(), "gemini-ping-stdout-bin-"));
+  const binary = path.join(binDir, "gemini-stdout-error");
+  writeFileSync(binary, `#!/usr/bin/env node
+process.stdout.write("credentials missing\\n");
+process.exit(7);
+`, "utf8");
+  chmodSync(binary, 0o755);
+  const { stdout, status, dataDir } = runCompanion(
+    ["ping", "--model", "gemini-3-flash-preview"],
+    { cwd, env: { GEMINI_BINARY: binary } },
+  );
+  try {
+    assert.equal(status, 2);
+    const parsed = JSON.parse(stdout);
+    assert.equal(parsed.status, "not_authed");
+    assert.match(parsed.detail, /credentials missing/);
+  } finally {
+    rmTree(dataDir);
+    rmTree(cwd);
+    rmTree(binDir);
+  }
+});
+
+test("gemini ping generic error includes exit_code", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "gemini-ping-generic-cwd-"));
+  const binDir = mkdtempSync(path.join(tmpdir(), "gemini-ping-generic-bin-"));
+  const binary = path.join(binDir, "gemini-generic-error");
+  writeFileSync(binary, `#!/usr/bin/env node
+process.stdout.write("plain failure\\n");
+process.exit(7);
+`, "utf8");
+  chmodSync(binary, 0o755);
+  const { stdout, status, dataDir } = runCompanion(
+    ["ping", "--model", "gemini-3-flash-preview"],
+    { cwd, env: { GEMINI_BINARY: binary } },
+  );
+  try {
+    assert.equal(status, 2);
+    const parsed = JSON.parse(stdout);
+    assert.equal(parsed.status, "error");
+    assert.equal(parsed.exit_code, 7);
+    assert.match(parsed.detail, /plain failure/);
+  } finally {
+    rmTree(dataDir);
+    rmTree(cwd);
+    rmTree(binDir);
   }
 });

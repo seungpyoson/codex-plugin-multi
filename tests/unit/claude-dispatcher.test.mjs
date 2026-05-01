@@ -166,6 +166,16 @@ test("buildClaudeArgs: rejects invalid profile shapes and ignores disabled optio
   assert.ok(!pingArgs.includes("--json-schema"));
 });
 
+test("buildClaudeArgs: ping can use the native CLI default model", () => {
+  const args = buildClaudeArgs(resolveProfile("ping"), {
+    model: null,
+    promptText: "ping",
+    sessionId: UUID,
+  });
+
+  assert.equal(args.includes("--model"), false);
+});
+
 test("parseClaudeResult: empty stdout returns error", () => {
   const r = parseClaudeResult("");
   assert.equal(r.ok, false);
@@ -255,9 +265,9 @@ test("spawnClaude: onSpawn fires asynchronously via 'spawn' event, not synchrono
   // Regression for the argv0_mismatch flake: capturePidInfo must run
   // AFTER the child's execve completes, otherwise /proc/<pid>/cmdline
   // (Linux) or `ps -o comm=` (Darwin) may still reflect the parent's
-  // argv. Node's child.once('spawn', ...) is the canonical post-execve
-  // signal, so onSpawn MUST NOT fire during the synchronous executor
-  // turn that calls spawn().
+  // argv. onSpawn MUST NOT fire during the synchronous executor turn
+  // that calls spawn(), and attachPidCapture adds a short post-spawn
+  // delay so shebang wrappers can exec the real target.
   let onSpawnFired = false;
   const promise = spawnClaude(resolveProfile("rescue"), {
     model: "claude-haiku-4-5-20251001",
@@ -318,6 +328,11 @@ const forbidden = [
   "GOOGLE_APPLICATION_CREDENTIALS",
   "GOOGLE_GENAI_USE_VERTEXAI",
   "CLOUD_ML_REGION",
+  // Router / proxy ecosystems (#16 follow-up 7)
+  "LITELLM_BASE_URL",
+  "LITELLM_API_KEY",
+  "OLLAMA_HOST",
+  "OLLAMA_BASE_URL",
 ];
 const leaked = forbidden.filter((key) => process.env[key]);
 if (leaked.length > 0) {
@@ -327,6 +342,10 @@ if (leaked.length > 0) {
 if (process.env.CLAUDE_CONFIG_DIR !== "kept-config") {
   process.stderr.write("missing kept oauth/config env\\n");
   process.exit(43);
+}
+if (process.env.HTTPS_PROXY !== "http://corp-proxy.invalid:3128" || process.env.NO_PROXY !== "localhost,.internal") {
+  process.stderr.write("proxy env must pass through unchanged\\n");
+  process.exit(45);
 }
 if (process.env.PATH !== ${JSON.stringify(process.env.PATH ?? "")} || process.env.HOME !== ${JSON.stringify(process.env.HOME ?? "")}) {
   process.stderr.write("PATH/HOME must pass through unchanged\\n");
@@ -383,6 +402,15 @@ process.stdout.write(JSON.stringify({ type: "result", is_error: false, result: "
         GOOGLE_APPLICATION_CREDENTIALS: "/tmp/must-not-leak.json",
         GOOGLE_GENAI_USE_VERTEXAI: "true",
         CLOUD_ML_REGION: "us-central1",
+        // LITELLM_* / OLLAMA_* router prefixes — must be stripped (#16 follow-up 7).
+        LITELLM_BASE_URL: "https://router.invalid",
+        LITELLM_API_KEY: "must-not-leak",
+        OLLAMA_HOST: "router.invalid",
+        OLLAMA_BASE_URL: "http://router.invalid",
+        // Proxy vars are intentionally NOT scrubbed — corporate networks use
+        // these to reach the public internet at all (#16 follow-up 7).
+        HTTPS_PROXY: "http://corp-proxy.invalid:3128",
+        NO_PROXY: "localhost,.internal",
       },
     });
 

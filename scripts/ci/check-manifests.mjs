@@ -134,7 +134,7 @@ async function checkMarketplace() {
 async function checkPluginManifest(name) {
   const path = `plugins/${name}/.codex-plugin/plugin.json`;
   const m = await readJson(path);
-  if (!m) return;
+  if (!m) return null;
   if (checkType(m, "name", "string", path)) {
     checkBareName(m.name, path, "plugin name");
     if (m.name !== name) err(path, `name "${m.name}" does not match directory "${name}"`);
@@ -146,6 +146,11 @@ async function checkPluginManifest(name) {
   checkType(m, "license", "string", path);
   checkType(m, "author", "object", path);
   if (m.author) checkType(m.author, "name", "string", path);
+  if (m.skills !== undefined) {
+    if (checkType(m, "skills", "string", path) && m.skills !== "./skills") {
+      err(path, `field "skills" must be "./skills" when plugin skills are packaged`);
+    }
+  }
   if (m.interface) {
     checkType(m.interface, "displayName", "string", path);
     if (Array.isArray(m.interface.capabilities)) {
@@ -156,6 +161,7 @@ async function checkPluginManifest(name) {
       }
     }
   }
+  return m;
 }
 
 function parseFrontmatter(text, path) {
@@ -234,10 +240,10 @@ async function checkMarkdownFrontmatterFile(rel, allowedKeys) {
     text = await readFile(resolve(REPO_ROOT, rel), "utf8");
   } catch (e) {
     err(rel, `could not read: ${e.message}`);
-    return;
+    return null;
   }
   const parsed = parseFrontmatter(text, rel);
-  if (parsed == null) return;
+  if (parsed == null) return null;
   for (const key of Object.keys(parsed.fm)) {
     if (!allowedKeys.has(key)) {
       err(rel, `unknown frontmatter key "${key}"; allowed: ${[...allowedKeys].join("|")}`);
@@ -245,6 +251,7 @@ async function checkMarkdownFrontmatterFile(rel, allowedKeys) {
   }
   const body = text.slice(parsed.bodyStart).trim();
   if (!body) err(rel, `body is empty`);
+  return parsed;
 }
 
 async function checkCommandsDir(plugin) {
@@ -289,8 +296,9 @@ async function checkSkillsDir(plugin) {
   try {
     entries = await readdir(dir, { withFileTypes: true });
   } catch {
-    return;
+    return false;
   }
+  let hasUserInvocableSkill = false;
   for (const e of entries) {
     if (e.name.startsWith(".")) continue;
     if (!e.isDirectory()) {
@@ -298,11 +306,15 @@ async function checkSkillsDir(plugin) {
       continue;
     }
     checkBareName(e.name, `plugins/${plugin}/skills/${e.name}`, "skill directory name");
-    await checkMarkdownFrontmatterFile(
+    const parsed = await checkMarkdownFrontmatterFile(
       `plugins/${plugin}/skills/${e.name}/SKILL.md`,
       SKILL_FRONTMATTER_KEYS
     );
+    if (parsed?.fm?.["user-invocable"] === "true") {
+      hasUserInvocableSkill = true;
+    }
   }
+  return hasUserInvocableSkill;
 }
 
 // Discover plugins from marketplace.json rather than hardcoding names.
@@ -310,9 +322,12 @@ async function checkSkillsDir(plugin) {
 // it to manifest + command-file validation without touching the linter.
 const declaredPlugins = await checkMarketplace();
 for (const name of declaredPlugins) {
-  await checkPluginManifest(name);
+  const manifest = await checkPluginManifest(name);
   await checkCommandsDir(name);
-  await checkSkillsDir(name);
+  const hasUserInvocableSkills = await checkSkillsDir(name);
+  if (hasUserInvocableSkills && manifest?.skills !== "./skills") {
+    err(`plugins/${name}/.codex-plugin/plugin.json`, `missing field "skills": "./skills" for user-invocable plugin skills`);
+  }
   await checkAgentsDir(name);
 }
 

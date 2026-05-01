@@ -86,18 +86,29 @@ const EXPECTED_KEYS_SET = new Set(EXPECTED_KEYS);
  * Status derivation (spec §21.3):
  *   queued      — no execution yet (background launch, pre-worker).
  *   completed   — exitCode === 0 AND parsed.ok === true.
+ *   cancelled   — target CLI exited via SIGTERM/SIGKILL from an operator
+ *                 cancel (#16 follow-up 2). timedOut runs are NOT cancelled.
  *   failed      — anything else.
  *
  * error_code classification:
- *   null           — completed.
- *   scope_failed   — execution.errorMessage describes scope preparation refusal.
- *   spawn_failed   — execution.errorMessage set (spawn threw before Claude ran).
- *   parse_error    — parsed.ok === false with reason starting "json_parse"/"empty_stdout".
- *   claude_error   — exitCode !== 0 with parseable JSON (Claude's is_error=true).
- *                    Also covers exitCode === 0 but parsed.ok === false with
- *                    is_error semantics.
- *   unknown_error  — catch-all; should be rare.
+ *   null            — completed or cancelled.
+ *   scope_failed    — execution.errorMessage describes scope preparation refusal.
+ *   spawn_failed    — execution.errorMessage set (spawn threw before target ran).
+ *   finalization_failed — errorMessage starts "finalization_failed:" — the
+ *                         companion's executeRun fallback path (#16 follow-up 1).
+ *                         Distinguished from spawn_failed so monitoring/automation
+ *                         routing on error_code doesn't conflate disk/lock failures
+ *                         with missing-binary errors. PR #21 review HIGH 1.
+ *   parse_error     — parsed.ok === false with reason starting "json_parse"/"empty_stdout".
+ *   timeout         — execution.timedOut === true (companion's wall-clock kill).
+ *   claude_error    — exitCode !== 0 with parseable JSON (target's is_error=true).
+ *                     Also covers exitCode === 0 but parsed.ok === false with
+ *                     is_error semantics.
+ *   unknown_error   — catch-all; should be rare.
  */
+const CANCEL_SIGNALS = new Set(["SIGTERM", "SIGKILL", "SIGINT", "SIGHUP"]);
+const FINALIZATION_FAILED_PREFIX = "finalization_failed:";
+
 function classifyExecution(execution) {
   if (!execution) {
     return {
@@ -125,6 +136,16 @@ function classifyExecution(execution) {
       error_message: null,
     };
   }
+  if (execution.status === "stale") {
+    // #16 follow-up 3: orphan reconciliation produces a terminal stale
+    // record so an operator can `continue --job` it instead of having
+    // active history grow forever. errorMessage is the reason text.
+    return {
+      status: "stale",
+      error_code: "stale_active_job",
+      error_message: execution.errorMessage ?? "stale_active_job",
+    };
+  }
   if (execution.errorMessage) {
     if (isScopeFailure(execution.errorMessage)) {
       return {
@@ -133,10 +154,31 @@ function classifyExecution(execution) {
         error_message: execution.errorMessage,
       };
     }
+    // Distinguish finalization_failed (post-target persistence failure) from
+    // spawn_failed (target never ran). The companion's executeRun fallback
+    // synthesizes the former with a fixed prefix; everything else is a true
+    // pre-spawn failure. PR #21 review HIGH 1.
+    const isFinalization = String(execution.errorMessage).startsWith(FINALIZATION_FAILED_PREFIX);
     return {
       status: "failed",
-      error_code: "spawn_failed",
+      error_code: isFinalization ? "finalization_failed" : "spawn_failed",
       error_message: execution.errorMessage,
+    };
+  }
+  // #16 follow-up 1 / 2: a wall-clock timeout fires SIGTERM too, so check
+  // timedOut FIRST. Only signal-driven exits without timedOut are cancels.
+  if (execution.timedOut === true) {
+    return {
+      status: "failed",
+      error_code: "timeout",
+      error_message: "target CLI exceeded the configured timeoutMs",
+    };
+  }
+  if (CANCEL_SIGNALS.has(execution.signal ?? "")) {
+    return {
+      status: "cancelled",
+      error_code: null,
+      error_message: null,
     };
   }
   const parsed = execution.parsed ?? null;

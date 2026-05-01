@@ -7,7 +7,8 @@
   },
   "homepage": "https://github.com/seungpyoson/codex-plugin-multi",
   "repository": "https://github.com/seungpyoson/codex-plugin-multi",
-  "license": "Source-Available-NonCommercial",
+  "license": "AGPL-3.0-only",
+  "skills": "./skills",
   "keywords": [
     "claude",
     "claude-code",

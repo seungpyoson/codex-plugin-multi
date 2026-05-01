@@ -1,7 +1,16 @@
 import { runCommand } from "./process.mjs";
+import { cleanGitEnv } from "./git-env.mjs";
 
+// PR #21 review HIGH 5 backside: this lib is called from
+// workspace.mjs::resolveWorkspaceRoot, which runs at the start of every
+// companion subcommand. Without scrubbing, a parent env exporting
+// GIT_DIR=/elsewhere would silently make the companion think its workspace
+// root is /elsewhere — same hijack class as the test fixtures. The shared
+// cleanGitEnv covers GIT_DIR, GIT_WORK_TREE, GIT_CONFIG_GLOBAL, the trace
+// family, and indexed config injection.
 function git(cwd, args, options = {}) {
-  return runCommand("git", args, { cwd, ...options });
+  const env = cleanGitEnv(options.env ?? process.env);
+  return runCommand("git", args, { cwd, ...options, env });
 }
 
 export function ensureGitRepository(cwd) {

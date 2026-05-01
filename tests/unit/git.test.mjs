@@ -1,19 +1,21 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
 import { realpathSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
 import { ensureGitRepository } from "../../plugins/claude/scripts/lib/git.mjs";
+// PR #21 review HIGH 5: this file used to call execFileSync("git", ...) with
+// raw process.env, so a parent shell exporting GIT_DIR=/bad would hijack
+// every fixture git into the wrong repo. Use the scrubbed fixture helper.
+import { fixtureGit } from "../helpers/fixture-git.mjs";
 
-function runGit(cwd, args, options = {}) {
-  return execFileSync("git", ["-c", "core.hooksPath=/dev/null", ...args], {
-    cwd,
-    encoding: "utf8",
-    stdio: options.stdio ?? ["ignore", "pipe", "pipe"],
-    env: { ...process.env, GIT_CONFIG_NOSYSTEM: "1" },
-  });
+function runGit(cwd, args) {
+  const res = fixtureGit(cwd, args);
+  if (res.status !== 0) {
+    throw new Error(`git ${args.join(" ")} failed: ${res.stderr ?? ""}`);
+  }
+  return res.stdout;
 }
 
 function initRepo() {

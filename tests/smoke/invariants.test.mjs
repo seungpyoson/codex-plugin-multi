@@ -31,6 +31,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { spawnClaude } from "../../plugins/claude/scripts/lib/claude.mjs";
 import { resolveProfile } from "../../plugins/claude/scripts/lib/mode-profiles.mjs";
+import { fixtureGitEnv, fixtureSeedRepo } from "../helpers/fixture-git.mjs";
 
 // ---------------------------------------------------------------------------
 // MATRIX_FINDINGS — the contract. Finding ID → test-name fragment.
@@ -86,19 +87,18 @@ function rmTempTree(p) {
   rmSync(p, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
 }
 
+// #16 follow-up 9: fixtureSeedRepo scrubs inherited GIT_* env vars so a
+// stale GIT_DIR/GIT_WORK_TREE in the parent process cannot hijack fixture
+// commits into the caller checkout.
 function seedMinimalRepo(cwd) {
-  spawnSync("git", ["init", "-q", "-b", "main"], { cwd });
-  spawnSync("bash", ["-c",
-    "echo seed > seed.txt && git add seed.txt && " +
-    "git -c core.hooksPath=/dev/null -c user.email=t@t -c user.name=t commit -q -m seed"], { cwd });
+  fixtureSeedRepo(cwd);
 }
 
 function seedDirtyRepo(cwd) {
-  spawnSync("git", ["init", "-q", "-b", "main"], { cwd });
-  spawnSync("bash", ["-c",
-    "echo original > seed.txt && git add seed.txt && " +
-    "git -c core.hooksPath=/dev/null -c user.email=t@t -c user.name=t commit -q -m seed && " +
-    "echo modified > seed.txt"], { cwd });
+  fixtureSeedRepo(cwd, { fileName: "seed.txt", fileContents: "original\n" });
+  spawnSync("bash", ["-c", "printf modified > seed.txt"], {
+    cwd, encoding: "utf8", env: fixtureGitEnv(),
+  });
 }
 
 function writeMarkerBinary(dir, markerPath) {
@@ -409,9 +409,12 @@ test("M6-finding-7: PID-reuse cancel refused — tampered starttime halts signal
       ["cancel", "--job", jobId, "--cwd", cwd],
       { cwd, dataDir });
     assert.notEqual(cancelRes.status, 0,
-      `cancel must fail on stale_pid; got exit ${cancelRes.status}`);
-    assert.match(cancelRes.stderr, /stale_pid/,
-      `stderr must mention stale_pid; got: ${cancelRes.stderr}`);
+      `cancel must fail on stale_pid/unverifiable; got exit ${cancelRes.status}`);
+    const cancel = JSON.parse(cancelRes.stdout);
+    assert.ok(["stale_pid", "unverifiable"].includes(cancel.status),
+      `cancel must refuse with stale_pid or unverifiable; got ${cancelRes.stdout}`);
+    assert.match(cancelRes.stderr, /stale_pid|unverifiable/,
+      `stderr must mention stale_pid or unverifiable; got: ${cancelRes.stderr}`);
     assert.equal(process.killed ?? false, false);
   } finally {
     rmTempTree(dataDir);

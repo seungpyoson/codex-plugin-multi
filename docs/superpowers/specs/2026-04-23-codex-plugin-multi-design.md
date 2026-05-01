@@ -3,9 +3,10 @@
 - **Date:** 2026-04-23 (v3) / 2026-04-24 (v4 — full empirical re-verification) / **2026-04-24 (v5 — architectural invariants)**
 - **Status:** Draft v5, post-M6 cross-model review; corrected after 2026-04-27 fresh-install verification
 - **Repo:** [`seungpyoson/codex-plugin-multi`](https://github.com/seungpyoson/codex-plugin-multi)
-- **License:** Source-available non-commercial. Selling, sublicensing, or
-  commercial redistribution is not permitted without prior written permission.
-  Upstream MIT attribution is preserved in `NOTICE`.
+- **License:** AGPL-3.0-only. Commercial use is permitted under the AGPL, but
+  modified versions distributed or offered over a network must provide
+  corresponding source under the same license. Upstream MIT attribution is
+  preserved in `NOTICE`.
 - **Reference:** [`openai/codex-plugin-cc`](https://github.com/openai/codex-plugin-cc) (MIT — Claude Code plugin calling Codex); [`openai/plugins`](https://github.com/openai/plugins) (canonical Codex monorepo pattern)
 
 ## What changed in v5 (from v4)
@@ -68,7 +69,7 @@ Upstream `openai/codex-plugin-cc` is a **Claude Code plugin** that lets Claude C
 |---|----------|--------|
 | 1 | Packaging | Two plugins (`plugins/claude/`, `plugins/gemini/`) in one monorepo. Each is standalone. Registered via a single `.agents/plugins/marketplace.json` at repo root. |
 | 2 | Slash-command naming | Intended surface uses **bare names, not namespaced:** `/claude-rescue`, `/gemini-review`, etc. Codex CLI 0.125.0 does not currently register plugin command files. |
-| 3 | Repo | `seungpyoson/codex-plugin-multi`, source-available non-commercial, public GitHub. |
+| 3 | Repo | `seungpyoson/codex-plugin-multi`, AGPL-3.0-only, public GitHub. |
 | 4 | Prompting skills | One per plugin: `plugins/<target>/skills/<target>-prompting/`. Mirrors upstream's `gpt-5-4-prompting` structure. |
 | 5 | Auth | OAuth / subscription only. Plugin never reads or writes `*_API_KEY` env vars. |
 | 6 | Primary user-facing surface | User-invocable delegation skills and companion scripts in v0.1.0. Native `commands/*.md` slash commands are blocked on Codex TUI support in CLI 0.125.0; non-ping command docs are packaged for the intended future surface. |
@@ -100,7 +101,7 @@ Every design choice below is anchored to a source citation or live test. Environ
 
 | Tier | Claude | Gemini |
 |---|---|---|
-| cheap (pings/doctor) | `claude-haiku-4-5-20251001` | `gemini-3-flash-preview` |
+| cheap (review/setup optional) | `claude-haiku-4-5-20251001` | `gemini-3-flash-preview` |
 | medium | `claude-sonnet-4-6` | `gemini-3.1-pro-preview` |
 | default (smartest) | `claude-opus-4-7` | `gemini-3.1-pro-preview` |
 
@@ -362,7 +363,7 @@ Review and adversarial-review run single-turn in the calling Codex session (no s
 ```
 codex-plugin-multi/
   README.md
-  LICENSE                                        # source-available non-commercial
+  LICENSE                                        # AGPL-3.0-only
   NOTICE                                         # attribution to upstream (MIT)
   CHANGELOG.md
   package.json                                   # workspaces: ["plugins/*"]
@@ -538,21 +539,23 @@ Identical to upstream: parent fork-execs target CLI, stdio redirected to `<works
 ### 7.5 OAuth health probe — `ping`
 
 - `ok` — JSON parsed, `is_error:false` / `response` non-empty.
-- `not_authed` — non-zero exit + non-JSON stdout + stderr content. Surface stderr verbatim + "run `<target>` interactively to complete OAuth."
+- `not_authed` — non-zero exit whose stderr/stdout/parsed fallback detail
+  contains auth/login/credential/OAuth signals. Surface the detail verbatim +
+  "run `<target>` interactively to complete OAuth."
 - `not_found` — `ENOENT`. Print install URL.
-- `rate_limited` — 429 in stderr. Gemini-specific retry guidance.
-- `error:<raw>` — anything else.
+- `rate_limited` — rate-limit / 429 / overload signal in the fallback detail.
+- `error` — anything else, with `exit_code` when the target CLI exited non-zero.
 
 ## 8. Model selection policy
 
-Three tiers, full IDs only (§4.2). Config file `config/models.json`:
+Three configured tiers, full IDs only (§4.2). Config file `config/models.json`:
 
 ```json
 {"cheap": "<id>", "medium": "<id>", "default": "<id>"}
 ```
 
-- Rescue / review / adversarial-review default to `default` tier; user overrides via `--model=<id>`.
-- Ping / doctor use `cheap`.
+- Review uses `cheap`; adversarial-review/custom-review use `medium`; rescue uses `default`.
+- Ping uses the target CLI's native default and reports `model: null` unless the operator passes `--model=<id>`.
 - Unknown IDs fail with raw error; no fallback (`claude-haiku-4-5-20251001` is the canonical haiku, not the `haiku` alias).
 
 ## 9. Context isolation
@@ -698,9 +701,9 @@ Body: selection guidance, forwarding rules, response style. Parity with upstream
 ## 15. Setup — `/<target>-setup`
 
 1. **Binary check** — `which <target>`. Missing → install URL, stop.
-2. **OAuth ping** — `<target>-companion ping` (cheap tier). Not authed → instruct user to run `<target>` interactively; stop.
+2. **OAuth ping** — `<target>-companion ping` without `--model` unless the user explicitly overrides it. Not authed → instruct user to run `<target>` interactively; stop.
 3. **Version floor** — `<target> --version` vs `config/min-versions.json`. Below floor → warn, continue.
-4. **Gemini-only rate-limit probe** — ping cheap + default tiers, report serving.
+4. **Gemini-only rate-limit probe** — optional explicit-model ping probes, report serving.
 5. **Smoke-test hint** — print a one-liner the user can paste (e.g., `/claude-review`).
 
 **Hard rules:** never read/write any `*_API_KEY`; never programmatic auth; never persist tokens.
@@ -778,7 +781,7 @@ Before v0.1.0: run upstream `/codex:adversarial-review` against this repo. Addre
 | R6 | Concurrent Gemini at semantic layer. | Disposable containment default + policy file. Serialize per workspace via lockfile if observed in practice. |
 | R7 | Command name collision with Codex builtins (`stop`, `plan`, …). | Bare names enumerated §5.1; none collide. Spec pins the list. |
 | R8 | Multi-plugin install UX. | Verified live: `codex plugin marketplace add owner/repo` resolves to git clone; `.agents/plugins/marketplace.json` schema validated; user enables per-plugin in TUI. |
-| R9 | MIT upstream attribution. | `NOTICE` includes full MIT text + attribution. Repository distribution is source-available non-commercial. |
+| R9 | MIT upstream attribution. | `NOTICE` includes full MIT text + attribution. Repository distribution is AGPL-3.0-only. |
 | R10 | `--bare` OAuth incompatibility would have broken Claude calls in v3. | Resolved in v4: `--setting-sources ""`. |
 | R11 | Hook timeout enforcement means gate hooks with real work will silently fail. | v1 ships no hooks. Review-gate feature deferred. |
 | R12 | `--json-schema` is soft contract. | Parse `structured_output`; fall back to text-parse + retry once. |
@@ -852,7 +855,7 @@ These are the rules M7+ code is judged against. Each invariant names a class of 
 ```
 ModeProfile {
   name:            "review" | "adversarial-review" | "custom-review" | "rescue" | "ping"
-  model_tier:      "cheap" | "medium" | "default"        // §8
+  model_tier:      "cheap" | "medium" | "default" | "native"  // §8
   permission_mode: "plan" | "acceptEdits"                // §4.5
   strip_context:   boolean                               // §4.6 — strip CLAUDE.md?
   disallowed_tools: string[]                             // §4.5 hard blocklist
@@ -872,7 +875,7 @@ ModeProfile {
 | adversarial-review | medium | plan | true | worktree | branch-diff | true | yes |
 | custom-review | medium | plan | true | worktree | custom | true | yes |
 | rescue | default | acceptEdits | **false** | none | working-tree | false | yes |
-| ping | cheap | plan | true | none | head (no setup) | false | no |
+| ping | default | plan | true | none | head (no setup) | false | no |
 
 **Forbidden patterns:**
 

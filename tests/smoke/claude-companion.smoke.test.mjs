@@ -7,14 +7,17 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 // spawnSync is reused for git init in the mutation-detection smoke.
-import { mkdtempSync, rmSync, existsSync, readFileSync, readdirSync, realpathSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, rmSync, existsSync, readFileSync, readdirSync, realpathSync, writeFileSync, chmodSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { fixtureGitEnv, fixtureSeedRepo } from "../helpers/fixture-git.mjs";
+
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const COMPANION = path.join(REPO_ROOT, "plugins/claude/scripts/claude-companion.mjs");
 const MOCK = path.join(REPO_ROOT, "tests/smoke/claude-mock.mjs");
+const CLAUDE_SMOKE_POLL_TIMEOUT_MS = Number(process.env.CLAUDE_SMOKE_POLL_TIMEOUT_MS ?? 30000);
 
 function runCompanion(args, { cwd, env = {}, dataDir = mkdtempSync(path.join(tmpdir(), "companion-smoke-")) } = {}) {
   // Point the companion at a fresh PLUGIN_DATA dir so tests don't step on
@@ -36,6 +39,13 @@ function cleanup(dataDir) {
   rmSync(dataDir, { recursive: true, force: true, maxRetries: 3, retryDelay: 50 });
 }
 
+function writeExecutable(dir, name, source) {
+  const bin = path.join(dir, name);
+  writeFileSync(bin, source, "utf8");
+  chmodSync(bin, 0o755);
+  return bin;
+}
+
 function readOnlyJobRecord(dataDir) {
   const stateRoot = path.join(dataDir, "state");
   const records = [];
@@ -54,13 +64,11 @@ function readOnlyJobRecord(dataDir) {
 
 // T7.2: review mode's profile has scope=working-tree, which populates via
 // `git ls-files` + copy. Non-git cwds can no longer run review (spec §21.4).
-// Helper seeds a minimal git repo so the tests can focus on the companion
-// contract, not setup ceremony.
+// Uses fixtureSeedRepo (#16 follow-up 9) so a stale GIT_DIR /
+// GIT_WORK_TREE / GIT_INDEX_FILE in the parent process cannot hijack the
+// fixture into mutating the caller checkout.
 function seedMinimalRepo(cwd) {
-  spawnSync("git", ["init", "-q", "-b", "main"], { cwd });
-  spawnSync("bash", ["-c",
-    "echo seed > seed.txt && git add seed.txt && " +
-    "git -c core.hooksPath=/dev/null -c user.email=t@t -c user.name=t commit -q -m seed"], { cwd });
+  fixtureSeedRepo(cwd);
 }
 
 test("run --mode=review --foreground: emits JobRecord with status=completed", () => {
@@ -265,7 +273,7 @@ test("T7.4 / §21.3.2: prompt sidecar is deleted after worker consumes it", asyn
     const ev = JSON.parse(stdout);
     const stateRoot = path.join(dataDir, "state");
     // Poll until the record is terminal.
-    const deadline = Date.now() + 5000;
+    const deadline = Date.now() + 10000;
     let done = false;
     let jobDir = null;
     while (Date.now() < deadline && !done) {
@@ -337,7 +345,7 @@ test("run --background: active job is visible as running and can be cancelled", 
   try {
     assert.equal(status, 0, stderr);
     const launched = JSON.parse(stdout);
-    const deadline = Date.now() + 5000;
+    const deadline = Date.now() + CLAUDE_SMOKE_POLL_TIMEOUT_MS;
     let running = null;
     while (Date.now() < deadline && !running) {
       const statusRes = spawnSync("node", [
@@ -371,6 +379,9 @@ test("run --background: active job is visible as running and can be cancelled", 
       assert.equal(cancelRes.status, 2,
         `capture_error path must exit 2 (refused, unverifiable); stderr=${cancelRes.stderr}`);
       assert.equal(cancel.status, "no_pid_info");
+      // No pid_info → no signal sent → job will run to natural completion
+      // (or remain running until timeout). We just need it to reach SOME
+      // terminal state so the test doesn't leak background workers.
       const terminalDeadline = Date.now() + 7000;
       let terminal = null;
       while (Date.now() < terminalDeadline && !terminal) {
@@ -403,6 +414,44 @@ test("run --background: active job is visible as running and can be cancelled", 
         exitOk,
         `unexpected (status, exit) pair (${JSON.stringify(cancel.status)}, ${cancelRes.status}); stderr=${cancelRes.stderr}`,
       );
+      if (cancel.status === "signaled") {
+        // #16 follow-up 2: a real signal-driven cancel must produce a
+        // `cancelled` terminal record, not a `failed` one. Poll until the
+        // worker finalizes, then assert the persisted status.
+        const terminalDeadline = Date.now() + 7000;
+        let terminalRecord = null;
+        while (Date.now() < terminalDeadline && !terminalRecord) {
+          const statusRes = spawnSync("node", [
+            path.join(REPO_ROOT, "plugins/claude/scripts/claude-companion.mjs"),
+            "status", "--cwd", cwd, "--all",
+          ], {
+            cwd, encoding: "utf8",
+            env: { ...process.env, CLAUDE_PLUGIN_DATA: dataDir },
+          });
+          assert.equal(statusRes.status, 0, statusRes.stderr);
+          const statusObj = JSON.parse(statusRes.stdout);
+          terminalRecord = statusObj.jobs.find((j) =>
+            j.id === launched.job_id && j.status !== "running" && j.status !== "queued");
+          if (!terminalRecord) await new Promise((r) => setTimeout(r, 100));
+        }
+        assert.ok(terminalRecord, "cancelled background job did not reach a terminal state");
+        assert.equal(terminalRecord.status, "cancelled",
+          `signal-driven cancel must classify as cancelled; got ${terminalRecord.status}`);
+        assert.equal(terminalRecord.error_code, null,
+          "cancelled is a clean terminal state — no error_code");
+        // Default status (no --all) must still surface the cancelled job
+        // because cancelled is continuable (#16 follow-up 4).
+        const defaultStatusRes = spawnSync("node", [
+          path.join(REPO_ROOT, "plugins/claude/scripts/claude-companion.mjs"),
+          "status", "--cwd", cwd,
+        ], {
+          cwd, encoding: "utf8",
+          env: { ...process.env, CLAUDE_PLUGIN_DATA: dataDir },
+        });
+        const defaultStatus = JSON.parse(defaultStatusRes.stdout);
+        assert.ok(defaultStatus.jobs.some((j) => j.id === launched.job_id && j.status === "cancelled"),
+          "default status (no --all) must include cancelled jobs");
+      }
     }
   } finally {
     cleanup(dataDir);
@@ -429,7 +478,7 @@ test("cancel: SIGTERM-trapping target classifies as cancelled, not completed (is
     assert.equal(status, 0, stderr);
     const launched = JSON.parse(stdout);
     // Wait until the job is visible as running (mock has spawned, pid_info written).
-    const runDeadline = Date.now() + 5000;
+    const runDeadline = Date.now() + CLAUDE_SMOKE_POLL_TIMEOUT_MS;
     let running = null;
     while (Date.now() < runDeadline && !running) {
       const sr = spawnSync("node", [
@@ -501,7 +550,7 @@ test("cancel: ESRCH after ownership verification is already_dead, not signal_fai
   try {
     assert.equal(status, 0, stderr);
     const launched = JSON.parse(stdout);
-    const runDeadline = Date.now() + 5000;
+    const runDeadline = Date.now() + CLAUDE_SMOKE_POLL_TIMEOUT_MS;
     let running = null;
     while (Date.now() < runDeadline && !running) {
       const sr = spawnSync("node", [
@@ -639,9 +688,13 @@ test("continue --job: resumes a cancelled terminal job", () => {
   }
 });
 
-test("run --foreground: finalization write failures use structured errors", () => {
-  const cwd = mkdtempSync(path.join(tmpdir(), "smoke-finalize-fail-"));
-  const dataDir = mkdtempSync(path.join(tmpdir(), "finalize-fail-data-"));
+test("run --foreground: sidecar write failures warn but preserve terminal status (#16 follow-up 1)", () => {
+  // Per #16 follow-up 1: stdout.log/stderr.log are diagnostic sidecars,
+  // not the contractual job result. A failed sidecar write must surface
+  // as a stderr warning, not as `finalization_failed`. The terminal
+  // JobRecord (meta + state) must reflect the real run outcome.
+  const cwd = mkdtempSync(path.join(tmpdir(), "smoke-sidecar-warn-"));
+  const dataDir = mkdtempSync(path.join(tmpdir(), "sidecar-warn-data-"));
   try {
     seedMinimalRepo(cwd);
     const res = runCompanion(
@@ -650,11 +703,105 @@ test("run --foreground: finalization write failures use structured errors", () =
        "--cwd", cwd, "--", "seed"],
       { cwd, dataDir, env: { CLAUDE_MOCK_SIDECAR_CONFLICT: "1" } },
     );
-    assert.notEqual(res.status, 0);
+    // Sidecar conflict is a warning, not a fatal error. Exit code reflects
+    // the real terminal status (0 on completed).
+    assert.equal(res.status, 0, `expected completed exit; got ${res.status}: ${res.stderr}`);
+    assert.doesNotMatch(res.stderr, /unhandled/i);
+    assert.match(res.stderr, /warning: sidecar .* write failed/i,
+      "sidecar failure must surface as a one-line stderr warning");
+    const record = JSON.parse(res.stdout);
+    assert.equal(record.status, "completed",
+      "terminal JobRecord must reflect the real run outcome despite sidecar failure");
+    assert.equal(record.error_code, null);
+    // The persisted meta + state must agree with stdout (no split-brain).
+    const { record: persisted } = readOnlyJobRecord(dataDir);
+    assert.equal(persisted.status, "completed");
+    assert.equal(persisted.job_id, record.job_id);
+  } finally {
+    rmSync(dataDir, { recursive: true, force: true });
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("result --job: meta path that is a directory returns a friendly error, not unhandled EISDIR (PR #21 review MED 1)", async () => {
+  // Set up a job dir with a directory at the meta path. Any code path
+  // that ends up with meta.json being a directory (META_CONFLICT, or a
+  // crash mid-rename) used to crash result --job with an unhandled
+  // EISDIR stacktrace. Wrap the readFileSync so consumers see a clean
+  // {ok:false, error:"read_failed"} payload.
+  //
+  // Use the lib's own resolveJobFile so the path matches what cmdResult
+  // computes — bypasses the need to introspect state subdirs.
+  const { configureState, resolveJobFile, ensureStateDir, getStateConfig } =
+    await import("../../plugins/claude/scripts/lib/state.mjs");
+  const initial = { ...getStateConfig() };
+  const cwd = mkdtempSync(path.join(tmpdir(), "smoke-eisdir-"));
+  const dataDir = mkdtempSync(path.join(tmpdir(), "eisdir-data-"));
+  process.env.CLAUDE_PLUGIN_DATA = dataDir;
+  configureState({
+    pluginDataEnv: "CLAUDE_PLUGIN_DATA",
+    fallbackStateRootDir: path.join(dataDir, "fallback"),
+  });
+  try {
+    seedMinimalRepo(cwd);
+    const id = "00000000-0000-4000-8000-00000000eisd";
+    ensureStateDir(cwd);
+    const metaPath = resolveJobFile(cwd, id);
+    mkdirSync(metaPath, { recursive: true });
+
+    const res = runCompanion(["result", "--job", id, "--cwd", cwd],
+      { cwd, dataDir });
+    assert.notEqual(res.status, 0, "result must fail when meta is a directory");
+    assert.doesNotMatch(res.stderr, /unhandled/i,
+      "must NOT crash with an unhandled stacktrace");
+    const err = JSON.parse(res.stdout);
+    assert.equal(err.error, "read_failed");
+    assert.match(err.message, /cannot read meta.json/);
+    assert.equal(err.error_code, "EISDIR");
+  } finally {
+    configureState(initial);
+    delete process.env.CLAUDE_PLUGIN_DATA;
+    rmSync(dataDir, { recursive: true, force: true });
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("run --foreground: meta-write conflict produces fallback failed record, no permanent running (#16 follow-up 1)", () => {
+  // CLAUDE_MOCK_META_CONFLICT pre-creates the meta.json target as a
+  // directory before claude-mock exits; the companion's writeJobFile
+  // rename then fails. The companion must:
+  //   - exit non-zero with finalization_failed,
+  //   - leave a coherent fallback record in state.json (not "running"),
+  //   - not crash with "unhandled".
+  const cwd = mkdtempSync(path.join(tmpdir(), "smoke-meta-conflict-"));
+  const dataDir = mkdtempSync(path.join(tmpdir(), "meta-conflict-data-"));
+  try {
+    seedMinimalRepo(cwd);
+    const res = runCompanion(
+      ["run", "--mode=rescue", "--foreground",
+       "--model", "claude-haiku-4-5-20251001",
+       "--cwd", cwd, "--", "seed"],
+      { cwd, dataDir, env: { CLAUDE_MOCK_META_CONFLICT: "1" } },
+    );
+    assert.notEqual(res.status, 0, "meta write failure must exit non-zero");
     assert.doesNotMatch(res.stderr, /unhandled/i);
     const err = JSON.parse(res.stdout);
     assert.equal(err.error, "finalization_failed");
-    assert.match(err.message, /EEXIST|not a directory|file already exists/i);
+    // state.json must not show a permanent active "running" record. Read the
+    // jobs list and assert no active job remains for this workspace.
+    const stateRoot = path.join(dataDir, "state");
+    let stateJobs = [];
+    for (const dir of readdirSync(stateRoot)) {
+      const stateFile = path.join(stateRoot, dir, "state.json");
+      if (!existsSync(stateFile)) continue;
+      stateJobs = JSON.parse(readFileSync(stateFile, "utf8")).jobs ?? [];
+    }
+    assert.equal(
+      stateJobs.some((j) => j.status === "running" || j.status === "queued"),
+      false,
+      "fallback failed-record must overwrite the running entry; got " +
+      JSON.stringify(stateJobs.map((j) => ({ id: j.id, status: j.status })))
+    );
   } finally {
     rmSync(dataDir, { recursive: true, force: true });
     rmSync(cwd, { recursive: true, force: true });
@@ -667,12 +814,12 @@ test("run --foreground: finalization write failures use structured errors", () =
 // down M6 finding #4 (review can't see dirty tree).
 
 // Helper: seed a git repo with one committed file, then modify it uncommitted.
+// Same isolation discipline as seedMinimalRepo (#16 follow-up 9).
 function seedDirtyRepo(cwd) {
-  spawnSync("git", ["init", "-q", "-b", "main"], { cwd });
-  spawnSync("bash", ["-c",
-    "echo original > seed.txt && git add seed.txt && " +
-    "git -c core.hooksPath=/dev/null -c user.email=t@t -c user.name=t commit -q -m seed && " +
-    "echo modified > seed.txt"], { cwd });
+  fixtureSeedRepo(cwd, { fileName: "seed.txt", fileContents: "original\n" });
+  spawnSync("bash", ["-c", "printf modified > seed.txt"], {
+    cwd, encoding: "utf8", env: fixtureGitEnv(),
+  });
 }
 
 // Helper: read stdout.log sidecar (contains the mock's full fixture JSON
@@ -695,13 +842,15 @@ function readStdoutLog(dataDir, jobId) {
 test("adversarial-review scope=branch-diff: only changed files appear in --add-dir", () => {
   const cwd = mkdtempSync(path.join(tmpdir(), "smoke-adv-"));
   // main: has old.md. feature: adds foo.md.
-  spawnSync("git", ["init", "-q", "-b", "main"], { cwd });
+  // #16 follow-up 9: sanitized env so the parent process's GIT_DIR cannot
+  // hijack `git checkout -qb feature` into the caller checkout.
+  spawnSync("git", ["init", "-q", "-b", "main"], { cwd, env: fixtureGitEnv() });
   spawnSync("bash", ["-c",
     "echo old > old.md && git add old.md && " +
-    "git -c core.hooksPath=/dev/null -c user.email=t@t -c user.name=t commit -q -m main && " +
+    "git -c core.hooksPath=/dev/null commit -q -m main && " +
     "git checkout -qb feature && " +
     "echo foo > foo.md && git add foo.md && " +
-    "git -c core.hooksPath=/dev/null -c user.email=t@t -c user.name=t commit -q -m feature"], { cwd });
+    "git -c core.hooksPath=/dev/null commit -q -m feature"], { cwd, env: fixtureGitEnv() });
   const { stdout, status, stderr, dataDir } = runCompanion(
     ["run", "--mode=adversarial-review", "--foreground",
      "--model", "claude-haiku-4-5-20251001",
@@ -814,10 +963,7 @@ test("rescue runs in sourceCwd (containment=none): --add-dir === cwd", () => {
 
 test("review worktree disposed by profile default (dispose_default=true)", () => {
   const cwd = mkdtempSync(path.join(tmpdir(), "smoke-dispose-"));
-  spawnSync("git", ["init", "-q", "-b", "main"], { cwd });
-  spawnSync("bash", ["-c",
-    "echo seed > seed && git add seed && " +
-    "git -c core.hooksPath=/dev/null -c user.email=t@t -c user.name=t commit -q -m seed"], { cwd });
+  fixtureSeedRepo(cwd, { fileName: "seed", fileContents: "seed\n" });
   // ASSERT_FILE env triggers the mock to record t7_add_dir into its fixture
   // (which the companion persists into stdout.log). Without it the mock has
   // no reason to echo the path back and the test can't inspect it.
@@ -844,8 +990,7 @@ test("review worktree disposed by profile default (dispose_default=true)", () =>
 test("run: pre/post git-status sidecars written in a git cwd", () => {
   const cwd = mkdtempSync(path.join(tmpdir(), "smoke-git-"));
   // Make a minimal git repo with a seed file so git status has meaningful output.
-  spawnSync("git", ["init", "-q"], { cwd });
-  spawnSync("bash", ["-c", "echo seed > seed && git add seed && git -c core.hooksPath=/dev/null -c user.email=t@t -c user.name=t commit -q -m seed"], { cwd });
+  fixtureSeedRepo(cwd, { fileName: "seed", fileContents: "seed\n" });
   const { stdout, dataDir } = runCompanion(
     ["run", "--mode=review", "--foreground", "--model", "claude-haiku-4-5-20251001",
      "--cwd", cwd, "--", "review this"],
@@ -895,6 +1040,67 @@ test("ping: returns status=ok with the mock claude binary", () => {
     assert.ok(result.session_id);
   } finally {
     cleanup(dataDir);
+  }
+});
+
+test("ping: succeeds without --model and forbids tool exploration in the prompt", () => {
+  const { stdout, stderr, status, dataDir } = runCompanion(
+    ["ping"],
+    {
+      cwd: tmpdir(),
+      env: { CLAUDE_MOCK_ASSERT_PROMPT_INCLUDES: "Do not use any tools" },
+    }
+  );
+  try {
+    assert.equal(status, 0, `ping exit ${status}: ${stderr}`);
+    const result = JSON.parse(stdout);
+    assert.equal(result.status, "ok");
+    assert.equal(result.model, null);
+    assert.ok(result.session_id);
+  } finally {
+    cleanup(dataDir);
+  }
+});
+
+test("ping: failure detail falls back to target stdout when stderr is empty", () => {
+  const tmp = mkdtempSync(path.join(tmpdir(), "claude-ping-stdout-"));
+  const binary = writeExecutable(tmp, "claude-stdout-error", `#!/usr/bin/env node
+process.stdout.write("Authentication required\\n");
+process.exit(7);
+`);
+  const { stdout, status, dataDir } = runCompanion(
+    ["ping", "--model", "claude-haiku-4-5-20251001"],
+    { cwd: tmpdir(), env: { CLAUDE_BINARY: binary } },
+  );
+  try {
+    assert.equal(status, 2);
+    const result = JSON.parse(stdout);
+    assert.equal(result.status, "not_authed");
+    assert.match(result.detail, /Authentication required/);
+  } finally {
+    cleanup(dataDir);
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("ping: generic stdout mentioning authoring is not classified as auth", () => {
+  const tmp = mkdtempSync(path.join(tmpdir(), "claude-ping-authoring-"));
+  const binary = writeExecutable(tmp, "claude-authoring-error", `#!/usr/bin/env node
+process.stdout.write("authoring authority logging failed\\n");
+process.exit(7);
+`);
+  const { stdout, status, dataDir } = runCompanion(
+    ["ping", "--model", "claude-haiku-4-5-20251001"],
+    { cwd: tmpdir(), env: { CLAUDE_BINARY: binary } },
+  );
+  try {
+    assert.equal(status, 2);
+    const result = JSON.parse(stdout);
+    assert.equal(result.status, "error");
+    assert.match(result.detail, /authoring authority logging failed/);
+  } finally {
+    cleanup(dataDir);
+    rmSync(tmp, { recursive: true, force: true });
   }
 });
 

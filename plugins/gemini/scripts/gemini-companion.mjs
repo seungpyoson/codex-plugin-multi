@@ -9,13 +9,15 @@ import { execFileSync, spawn } from "node:child_process";
 import { tmpdir } from "node:os";
 
 import { parseArgs } from "./lib/args.mjs";
-import { configureState, resolveJobsDir, resolveJobFile, writeJobFile, upsertJob, listJobs } from "./lib/state.mjs";
+import { configureState, resolveJobsDir, resolveJobFile, writeJobFile, upsertJob, listJobs, commitJobRecord } from "./lib/state.mjs";
 import { resolveWorkspaceRoot } from "./lib/workspace.mjs";
 import { resolveProfile, resolveModelForProfile } from "./lib/mode-profiles.mjs";
 import { setupContainment } from "./lib/containment.mjs";
 import { populateScope } from "./lib/scope.mjs";
 import { newJobId, verifyPidInfo } from "./lib/identity.mjs";
 import { buildJobRecord } from "./lib/job-record.mjs";
+import { reconcileActiveJobs } from "./lib/reconcile.mjs";
+import { cleanGitEnv } from "./lib/git-env.mjs";
 import { spawnGemini } from "./lib/gemini.mjs";
 import { writeCancelMarker, consumeCancelMarker } from "./lib/cancel-marker.mjs";
 
@@ -85,13 +87,9 @@ function preflightDisclosure(target) {
   );
 }
 
-function cleanGitEnv() {
-  const env = { ...process.env };
-  for (const k of ["GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_COMMON_DIR", "GIT_PREFIX"]) {
-    delete env[k];
-  }
-  return env;
-}
+// Mutation-detection git scrub: same shared list as claude-companion +
+// scope.mjs. PR #21 review: previous local 5-key list missed
+// GIT_CONFIG_GLOBAL — fold onto plugin lib's canonical scrub.
 
 function gitStatus(args, cwd) {
   return execFileSync("git", ["-C", cwd, ...args], {
@@ -446,51 +444,106 @@ async function executeRun(invocation, prompt, { foreground }) {
     process.exit(2);
   }
 
-  let finalRecord;
-  let finalizationError = null;
-  try {
-    if (checkMutations && gitStatusBefore !== null) {
-      let gitStatusAfter;
-      try {
-        gitStatusAfter = gitStatus(["status", "-s", "--untracked-files=all"], cwd);
-        writeSidecar(workspaceRoot, jobId, "git-status-after.txt", gitStatusAfter);
-      } catch (e) {
-        mutations.push(mutationDetectionFailure(e));
-        gitStatusAfter = null;
-      }
-      if (gitStatusAfter && gitStatusAfter !== gitStatusBefore) {
-        const beforeLines = new Set(gitStatusLines(gitStatusBefore));
-        mutations.push(...gitStatusLines(gitStatusAfter).filter((line) => !beforeLines.has(line)));
+  // ——— finalization (#16 follow-up 1) ————————————————————————————————
+  // See claude-companion.mjs for the three-tier persistence policy.
+  // Briefly: meta + state are contractual (fatal on failure with a
+  // best-effort failed-fallback record so onSpawn's running entry doesn't
+  // persist forever), sidecars are diagnostic (stderr warning, never
+  // changes the terminal status).
+
+  if (checkMutations && gitStatusBefore !== null) {
+    let gitStatusAfter;
+    try {
+      gitStatusAfter = gitStatus(["status", "-s", "--untracked-files=all"], cwd);
+      try { writeSidecar(workspaceRoot, jobId, "git-status-after.txt", gitStatusAfter); }
+      catch (e) { process.stderr.write(`gemini-companion: warning: sidecar git-status-after.txt write failed: ${e.message}\n`); }
+    } catch (e) {
+      mutations.push(mutationDetectionFailure(e));
+      gitStatusAfter = null;
+    }
+    if (gitStatusAfter && gitStatusAfter !== gitStatusBefore) {
+      const beforeLines = new Set(gitStatusLines(gitStatusBefore));
+      mutations.push(...gitStatusLines(gitStatusAfter).filter((line) => !beforeLines.has(line)));
+    }
+  }
+
+  // Issue #22 sub-task 2: cancel-marker check. cmdCancel writes the
+  // marker BEFORE signaling so finalization can force status=cancelled
+  // even when the target traps SIGTERM and exits 0 with valid output.
+  const cancelMarker = consumeCancelMarker(workspaceRoot, jobId);
+
+  // signal + timedOut feed classifyExecution: a SIGTERM/SIGKILL exit without
+  // timedOut is an operator cancel → status="cancelled" (#16 follow-up 2);
+  // timedOut wins so wall-clock kills classify as timeout failures.
+  const finalRecord = buildJobRecord(invocation, {
+    exitCode: execution.exitCode,
+    parsed: execution.parsed,
+    pidInfo: execution.pidInfo,
+    geminiSessionId: execution.geminiSessionId,
+    ...(cancelMarker ? { status: "cancelled" } : {}),
+    signal: execution.signal ?? null,
+    timedOut: execution.timedOut === true,
+  }, mutations);
+
+  // BLOCKER 2 fix: atomic-under-lock meta + state commit. See
+  // claude-companion.mjs::executeRun for the race-class rationale.
+  const { metaError, stateError } = commitJobRecord(workspaceRoot, jobId, finalRecord);
+
+  for (const [name, contents] of [
+    ["stdout.log", execution.stdout],
+    ["stderr.log", execution.stderr],
+  ]) {
+    try { writeSidecar(workspaceRoot, jobId, name, contents); }
+    catch (e) {
+      process.stderr.write(`gemini-companion: warning: sidecar ${name} write failed: ${e.message}\n`);
+    }
+  }
+
+  if (metaError || stateError) {
+    // BLOCKER 1 fix: only overwrite the side that actually failed —
+    // an unconditional fallback writeJobFile would clobber a successful
+    // meta when only state.json failed (lock timeout).
+    const detail = [
+      metaError && `meta=${metaError.message}`,
+      stateError && `state=${stateError.message}`,
+    ].filter(Boolean).join("; ");
+    let fallbackRecord = null;
+    try {
+      fallbackRecord = buildJobRecord(invocation, {
+        exitCode: execution.exitCode,
+        parsed: execution.parsed,
+        pidInfo: execution.pidInfo,
+        geminiSessionId: execution.geminiSessionId ?? null,
+        errorMessage: `finalization_failed: ${detail}`,
+      }, mutations);
+    } catch { /* defense in depth */ }
+    if (fallbackRecord) {
+      if (metaError) {
+        // commitJobRecord aborted in writeJobFile → state was NOT mutated
+        // either. Overwrite both sides with the fallback failed-record.
+        try { writeJobFile(workspaceRoot, jobId, fallbackRecord); } catch { /* exhausted */ }
+        try { upsertJob(workspaceRoot, fallbackRecord); } catch { /* exhausted */ }
+      } else if (stateError) {
+        // meta is the good terminal record. Don't touch it (BLOCKER 1).
+        // Retry the state upsert with the GOOD record; fall back to the
+        // failed-record only if that retry also fails.
+        try { upsertJob(workspaceRoot, finalRecord); }
+        catch {
+          try { upsertJob(workspaceRoot, fallbackRecord); } catch { /* exhausted */ }
+        }
       }
     }
-
-    // Issue #22 sub-task 2: cancel-marker check. cmdCancel writes the
-    // marker BEFORE signaling so finalization can force status=cancelled
-    // even when the target traps SIGTERM and exits 0 with valid output.
-    const cancelMarker = consumeCancelMarker(workspaceRoot, jobId);
-
-    finalRecord = buildJobRecord(invocation, {
-      exitCode: execution.exitCode,
-      parsed: execution.parsed,
-      pidInfo: execution.pidInfo,
-      geminiSessionId: execution.geminiSessionId,
-      ...(cancelMarker ? { status: "cancelled" } : {}),
-    }, mutations);
-    writeJobFile(workspaceRoot, jobId, finalRecord);
-    upsertJob(workspaceRoot, finalRecord);
-    writeSidecar(workspaceRoot, jobId, "stdout.log", execution.stdout);
-    writeSidecar(workspaceRoot, jobId, "stderr.log", execution.stderr);
-  } catch (e) {
-    finalizationError = e;
-  } finally {
     if (neutralCwd) rmSync(neutralCwd, { recursive: true, force: true });
-    if (containment.disposed && disposeEffective) containment.cleanup();
-  }
-  if (finalizationError) {
-    fail("finalization_failed", finalizationError.message ?? String(finalizationError), {
-      error_code: finalizationError.code ?? null,
+    if (containment.disposed && disposeEffective) {
+      try { containment.cleanup(); } catch { /* best-effort */ }
+    }
+    fail("finalization_failed", detail, {
+      error_code: (metaError ?? stateError)?.code ?? null,
     });
   }
+
+  if (neutralCwd) rmSync(neutralCwd, { recursive: true, force: true });
+  if (containment.disposed && disposeEffective) containment.cleanup();
   if (foreground) printJson(finalRecord);
   process.exit(finalRecord.status === "completed" ? 0 : 2);
 }
@@ -591,7 +644,17 @@ async function cmdContinue(rest) {
 
   const priorGeminiSessionId = prior.gemini_session_id ?? null;
   if (!priorGeminiSessionId) {
-    fail("bad_args", `prior job ${options.job} has no gemini_session_id to resume`);
+    // PR #21 review HIGH 4: surface an actionable next step when the prior
+    // record is a stale orphan that never produced a session ID.
+    const isStaleOrphan = prior.status === "stale";
+    const reason = isStaleOrphan
+      ? "the worker exited before Gemini returned a session ID, so there is no chat to resume."
+      : "this record carries no session ID and cannot be chained.";
+    const suggestion = isStaleOrphan
+      ? ` Re-run from scratch: gemini-companion run --mode ${prior.mode_profile_name ?? prior.mode} --cwd ${JSON.stringify(prior.cwd)} -- "<your prompt>"`
+      : "";
+    fail("no_session_to_resume",
+      `prior job ${options.job} has no gemini_session_id to resume — ${reason}${suggestion}`);
   }
 
   const newJobId_ = newJobId();
@@ -647,6 +710,8 @@ async function cmdStatus(rest) {
   const { options } = parseArgs(rest, { valueOptions: ["job", "cwd"], booleanOptions: ["all"] });
   const cwd = options.cwd ?? process.cwd();
   const workspaceRoot = resolveWorkspaceRoot(cwd);
+  // #16 follow-up 3: reconcile orphan active jobs before listing.
+  reconcileActiveJobs(workspaceRoot);
   const jobs = listJobs(workspaceRoot);
   if (options.job) {
     const match = jobs.find((j) => j.id === options.job);
@@ -654,9 +719,14 @@ async function cmdStatus(rest) {
     printJson(match);
     return;
   }
+  // Default status view: every continuable + actionable state. cancelled
+  // and stale are continuable terminal states (#16 follow-up 2/4) so they
+  // belong in the default view alongside running/completed/failed; --all
+  // is the only way to surface queued (transient pre-spawn).
+  const DEFAULT_STATUSES = new Set(["running", "completed", "failed", "cancelled", "stale"]);
   const filtered = options.all
     ? jobs
-    : jobs.filter((j) => j.status === "running" || j.status === "completed" || j.status === "failed");
+    : jobs.filter((j) => DEFAULT_STATUSES.has(j.status));
   printJson({ workspace_root: workspaceRoot, jobs: filtered });
 }
 
@@ -669,28 +739,68 @@ async function cmdResult(rest) {
   try { jobFile = resolveJobFile(workspaceRoot, options.job); }
   catch (e) { fail("bad_args", e.message); }
   if (!existsSync(jobFile)) fail("not_found", `no meta.json for job ${options.job}`);
-  printJson(JSON.parse(readFileSync(jobFile, "utf8")));
+  // PR #21 review MED 1: wrap the read so a directory-at-meta-path
+  // (GEMINI_MOCK_META_CONFLICT, or a half-finalized job) produces a
+  // friendly error instead of an unhandled EISDIR stacktrace.
+  let meta;
+  try {
+    meta = JSON.parse(readFileSync(jobFile, "utf8"));
+  } catch (e) {
+    fail("read_failed",
+      `cannot read meta.json for job ${options.job}: ${e.message}`,
+      { error_code: e.code ?? null });
+  }
+  printJson(meta);
+}
+
+const PING_PROMPT = "reply with exactly: pong. Do not use any tools, do not read files, and do not explore the workspace.";
+const PING_AUTH_RE = /\b(auth(?:enticat\w*)?|login|credential\w*|oauth|unauthenticated|signin|sign-in)\b/i;
+
+function pingFailureDetail(execution) {
+  const raw = execution?.parsed?.raw;
+  const rawText = typeof raw === "string"
+    ? raw
+    : (raw == null ? "" : JSON.stringify(raw));
+  const detail = [
+    execution?.stderr,
+    execution?.stdout,
+    execution?.parsed?.error,
+    rawText,
+    execution?.exitCode == null ? "" : `exit ${execution.exitCode}`,
+  ].map((s) => String(s ?? "").trim()).find(Boolean) ?? "";
+  return detail.slice(0, 500);
 }
 
 async function cmdPing(rest) {
   const { options } = parseArgs(rest, { valueOptions: ["model", "binary", "timeout-ms"], booleanOptions: [] });
   const profile = resolveProfile("ping");
   const model = options.model ?? resolveModelForProfile(profile, loadModels());
-  if (!model) fail("no_model", "no model resolved for ping; pass --model or populate config/models.json");
   try {
     const execution = await spawnGemini(profile, {
       model,
-      promptText: "reply with exactly: pong",
+      promptText: PING_PROMPT,
       policyPath: READ_ONLY_POLICY,
       cwd: "/tmp",
       binary: options.binary ?? process.env.GEMINI_BINARY ?? "gemini",
       timeoutMs: Number(options["timeout-ms"] ?? 15000),
     });
     if (execution.parsed.ok) {
-      printJson({ status: "ok", model, session_id: execution.geminiSessionId, usage: execution.parsed.usage });
+      const payload = { status: "ok", model: model ?? null,
+        session_id: execution.geminiSessionId, usage: execution.parsed.usage };
+      printJson(payload);
       process.exit(0);
     }
-    printJson({ status: "error", detail: execution.stderr.trim().slice(0, 500) });
+    const detail = pingFailureDetail(execution);
+    if (/rate limit|429|overloaded/i.test(detail)) {
+      printJson({ status: "rate_limited", detail });
+      process.exit(2);
+    }
+    if (PING_AUTH_RE.test(detail)) {
+      printJson({ status: "not_authed", detail,
+        hint: "Run `gemini` interactively to complete OAuth." });
+      process.exit(2);
+    }
+    printJson({ status: "error", exit_code: execution.exitCode, detail });
     process.exit(2);
   } catch (e) {
     if (e.code === "ENOENT") {

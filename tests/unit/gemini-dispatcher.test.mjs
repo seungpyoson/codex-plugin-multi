@@ -81,6 +81,17 @@ test("buildGeminiArgs: omits include dir when profile disables add_dir", () => {
   assert.equal(args.includes("--include-directories"), false);
 });
 
+test("buildGeminiArgs: ping can use the native CLI default model", () => {
+  const args = buildGeminiArgs(resolveProfile("ping"), {
+    model: null,
+    policyPath: POLICY,
+    includeDirPath: "/tmp/ignored",
+  });
+
+  assert.equal(args.includes("-m"), false);
+  assert.equal(args.includes("--model"), false);
+});
+
 test("parseGeminiResult: extracts response, session_id, and stats", () => {
   const parsed = parseGeminiResult(JSON.stringify({
     session_id: "22222222-3333-4444-9555-666666666666",
@@ -210,8 +221,9 @@ process.stdin.on("end", () => {
 test("spawnGemini: onSpawn fires asynchronously via 'spawn' event, not synchronously (issue #25)", async () => {
   // Regression for the argv0_mismatch flake — see claude-dispatcher's
   // counterpart for the full rationale. capturePidInfo must read
-  // /proc/<pid>/cmdline AFTER execve completes; we enforce this by
-  // proving onSpawn does not fire in the synchronous executor turn.
+  // /proc/<pid>/cmdline after the child has had a chance to exec the real
+  // target; we enforce this by proving onSpawn does not fire in the
+  // synchronous executor turn.
   const dir = mkdtempSync(path.join(tmpdir(), "gemini-spawn-async-"));
   try {
     const bin = writeExecutable(dir, "gemini-ok.mjs", String.raw`#!/usr/bin/env node
@@ -286,6 +298,11 @@ const forbidden = [
   "GOOGLE_APPLICATION_CREDENTIALS",
   "GOOGLE_GENAI_USE_VERTEXAI",
   "CLOUD_ML_REGION",
+  // Router / proxy ecosystems (#16 follow-up 7)
+  "LITELLM_BASE_URL",
+  "LITELLM_API_KEY",
+  "OLLAMA_HOST",
+  "OLLAMA_BASE_URL",
 ];
 const leaked = forbidden.filter((key) => process.env[key]);
 if (leaked.length > 0) {
@@ -295,6 +312,10 @@ if (leaked.length > 0) {
 if (process.env.GEMINI_CONFIG_DIR !== "kept-config") {
   process.stderr.write("missing kept oauth/config env\\n");
   process.exit(43);
+}
+if (process.env.HTTPS_PROXY !== "http://corp-proxy.invalid:3128" || process.env.NO_PROXY !== "localhost,.internal") {
+  process.stderr.write("proxy env must pass through unchanged\\n");
+  process.exit(45);
 }
 if (process.env.PATH !== ${JSON.stringify(process.env.PATH ?? "")} || process.env.HOME !== ${JSON.stringify(process.env.HOME ?? "")}) {
   process.stderr.write("PATH/HOME must pass through unchanged\\n");
@@ -353,6 +374,15 @@ process.stdout.write(JSON.stringify({
         GOOGLE_APPLICATION_CREDENTIALS: "/tmp/must-not-leak.json",
         GOOGLE_GENAI_USE_VERTEXAI: "true",
         CLOUD_ML_REGION: "us-central1",
+        // LITELLM_* / OLLAMA_* router prefixes — must be stripped (#16 follow-up 7).
+        LITELLM_BASE_URL: "https://router.invalid",
+        LITELLM_API_KEY: "must-not-leak",
+        OLLAMA_HOST: "router.invalid",
+        OLLAMA_BASE_URL: "http://router.invalid",
+        // Proxy vars are intentionally NOT scrubbed — corporate networks use
+        // these to reach the public internet at all (#16 follow-up 7).
+        HTTPS_PROXY: "http://corp-proxy.invalid:3128",
+        NO_PROXY: "localhost,.internal",
       },
     });
 

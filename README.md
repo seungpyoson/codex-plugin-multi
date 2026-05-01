@@ -5,9 +5,10 @@ Two Codex plugins that let Codex delegate work to **Claude Code** and
 [`openai/codex-plugin-cc`](https://github.com/openai/codex-plugin-cc), which
 lets Claude Code delegate to Codex.
 
-- **License:** Source-available, non-commercial. Selling, sublicensing, or
-  commercial redistribution is not permitted without prior written permission.
-  Portions are ported from MIT-licensed upstream code; see `NOTICE`.
+- **License:** AGPL-3.0-only. Commercial use is permitted under the AGPL, but
+  modified versions distributed or offered over a network must provide
+  corresponding source under the same license. Portions are ported from
+  MIT-licensed upstream code; see `NOTICE`.
 - **State:** active development. Claude and Gemini companion
   review/rescue/status/result/cancel flows are implemented and covered by mock
   smoke tests. Fresh-install verification on Codex CLI
@@ -40,6 +41,14 @@ Then enable the plugins you want:
 
 In the plugin picker, enable `claude` and/or `gemini`. You can enable one
 without the other.
+
+## Verify skill discovery after installation
+
+After enabling the plugins, open Codex's skill picker or ask Codex what plugin
+skills are available. The installed skill list should include
+`claude-delegation` and `gemini-delegation`. If they are missing, the plugin
+is either not enabled in that Codex profile or the manifests are not exposing
+the bundled `skills/` roots correctly.
 
 ## Current Codex 0.125.0 TUI limitation
 
@@ -164,11 +173,18 @@ codex-plugin-multi/
   .agents/plugins/marketplace.json
   plugins/claude/
   plugins/gemini/
+  docs/architecture-record.md
   docs/e2e.md
-  docs/superpowers/
+  docs/release-verification.md
+  docs/superpowers/specs/2026-04-23-codex-plugin-multi-design.md
+  docs/archive/
   scripts/ci/check-manifests.mjs
   tests/
 ```
+
+`docs/archive/` contains historical implementation plans, smoke notes, and
+review records. Treat the README plus the active docs listed above as the
+current source of truth.
 
 ## Attribution
 

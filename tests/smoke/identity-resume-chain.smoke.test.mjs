@@ -16,15 +16,15 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { fixtureSeedRepo } from "../helpers/fixture-git.mjs";
+
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const COMPANION = path.join(REPO_ROOT, "plugins/claude/scripts/claude-companion.mjs");
 const MOCK = path.join(REPO_ROOT, "tests/smoke/claude-mock.mjs");
 
+// #16 follow-up 9: fixtureSeedRepo scrubs inherited GIT_* env vars.
 function seedRepo(cwd) {
-  spawnSync("git", ["init", "-q", "-b", "main"], { cwd });
-  spawnSync("bash", ["-c",
-    "echo seed > seed.txt && git add seed.txt && " +
-    "git -c core.hooksPath=/dev/null -c user.email=t@t -c user.name=t commit -q -m seed"], { cwd });
+  fixtureSeedRepo(cwd);
 }
 
 function runCompanion(args, { cwd, dataDir, env = {} }) {

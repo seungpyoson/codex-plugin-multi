@@ -9,11 +9,20 @@ import { fileURLToPath } from "node:url";
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const COMPANION = path.join(REPO_ROOT, "plugins/gemini/scripts/gemini-companion.mjs");
 
+// #16 follow-up 9: env scrub so a stale GIT_DIR / GIT_WORK_TREE in the
+// parent process cannot hijack fixture commits into the caller checkout.
+import { fixtureGit, fixtureGitEnv } from "../helpers/fixture-git.mjs";
+
 function seedRepo(cwd) {
-  spawnSync("git", ["init", "-q", "-b", "main"], { cwd });
+  fixtureGit(cwd, ["init", "-q", "-b", "main"]);
   writeFileSync(path.join(cwd, "README.md"), "# Gemini E2E\n");
-  spawnSync("git", ["add", "README.md"], { cwd });
-  spawnSync("git", ["-c", "core.hooksPath=/dev/null", "-c", "user.email=e2e@example.invalid", "-c", "user.name=e2e", "commit", "-q", "-m", "seed"], { cwd });
+  fixtureGit(cwd, ["add", "README.md"]);
+  fixtureGit(cwd, ["commit", "-q", "-m", "seed"], {
+    env: fixtureGitEnv({
+      GIT_AUTHOR_EMAIL: "e2e@example.invalid", GIT_AUTHOR_NAME: "e2e",
+      GIT_COMMITTER_EMAIL: "e2e@example.invalid", GIT_COMMITTER_NAME: "e2e",
+    }),
+  });
 }
 
 test("live Gemini foreground review completes", {

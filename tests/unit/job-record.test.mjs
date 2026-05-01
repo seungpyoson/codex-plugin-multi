@@ -498,6 +498,89 @@ test("buildJobRecord: spawn_failed path (execution threw before claude)", () => 
   assert.equal(rec.result, null);
 });
 
+test("buildJobRecord: finalization_failed errorMessage classifies as finalization_failed (PR #21 review HIGH 1)", () => {
+  // The companion's executeRun fallback synthesizes a record with
+  // errorMessage="finalization_failed: meta=… ; state=…" when writeJobFile
+  // or upsertJob fails. Previously this short-circuited to spawn_failed,
+  // which lied about the cause: monitoring routed disk-full or lock-timeout
+  // errors as missing-binary.
+  const rec = buildJobRecord(makeInvocation(), {
+    exitCode: 0,
+    parsed: { ok: true, result: "x", structured: null, denials: [] },
+    pidInfo: makePidInfo(),
+    claudeSessionId: CLAUDE_UUID,
+    errorMessage: "finalization_failed: state=lock timeout after 5000ms",
+  }, []);
+  assert.equal(rec.status, "failed");
+  assert.equal(rec.error_code, "finalization_failed");
+  assert.equal(rec.error_message,
+    "finalization_failed: state=lock timeout after 5000ms");
+});
+
+test("gemini buildJobRecord: finalization_failed mirror", () => {
+  const rec = buildGeminiJobRecord(
+    makeInvocation({ target: "gemini", binary: "gemini" }),
+    {
+      exitCode: 0,
+      parsed: { ok: true, result: "x", structured: null, denials: [] },
+      pidInfo: makePidInfo(),
+      geminiSessionId: GEMINI_UUID,
+      errorMessage: "finalization_failed: meta=ENOSPC",
+    }, []);
+  assert.equal(rec.status, "failed");
+  assert.equal(rec.error_code, "finalization_failed");
+});
+
+test("buildJobRecord: signal-driven exit classifies as cancelled (#16 follow-up 2)", () => {
+  // SIGTERM/SIGKILL with timedOut=false is operator cancel.
+  for (const signal of ["SIGTERM", "SIGKILL", "SIGINT", "SIGHUP"]) {
+    const rec = buildJobRecord(makeInvocation(), {
+      exitCode: null,
+      signal,
+      timedOut: false,
+      parsed: { ok: false, reason: "empty_stdout", result: null,
+        structured: null, denials: [] },
+      pidInfo: makePidInfo(),
+      claudeSessionId: null,
+    }, []);
+    assert.equal(rec.status, "cancelled", `signal=${signal} must classify as cancelled`);
+    assert.equal(rec.error_code, null);
+    assert.equal(rec.error_message, null);
+    assert.equal(rec.exit_code, null);
+  }
+});
+
+test("buildJobRecord: timedOut wins over signal (timeout, not cancelled)", () => {
+  const rec = buildJobRecord(makeInvocation(), {
+    exitCode: null,
+    signal: "SIGTERM",
+    timedOut: true,
+    parsed: { ok: false, reason: "empty_stdout", result: null,
+      structured: null, denials: [] },
+    pidInfo: makePidInfo(),
+    claudeSessionId: null,
+  }, []);
+  assert.equal(rec.status, "failed",
+    "wall-clock timeouts must classify as failed/timeout, not cancelled");
+  assert.equal(rec.error_code, "timeout");
+});
+
+test("gemini buildJobRecord: signal-driven exit classifies as cancelled", () => {
+  const rec = buildGeminiJobRecord(
+    makeInvocation({ target: "gemini", binary: "gemini" }),
+    {
+      exitCode: null,
+      signal: "SIGTERM",
+      timedOut: false,
+      parsed: { ok: false, reason: "empty_stdout", result: null,
+        structured: null, denials: [] },
+      pidInfo: makePidInfo(),
+      geminiSessionId: null,
+    }, []);
+  assert.equal(rec.status, "cancelled");
+  assert.equal(rec.error_code, null);
+});
+
 test("buildJobRecord: parse_error path (claude returned unparsable stdout)", () => {
   const rec = buildJobRecord(makeInvocation(), {
     exitCode: 0,

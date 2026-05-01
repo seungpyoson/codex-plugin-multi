@@ -47,6 +47,8 @@ import {
 } from "node:fs";
 import path from "node:path";
 
+import { cleanGitEnv as scrubGitEnv } from "./git-env.mjs";
+
 const VALID_SCOPES = new Set(["working-tree", "staged", "branch-diff", "head", "custom"]);
 const MAX_GIT_SYMLINK_HOPS = 40;
 const OBJECT_PURE_GIT_CONFIG = [
@@ -58,28 +60,18 @@ const OBJECT_PURE_GIT_CONFIG = [
   "-c", "advice.graftFileDeprecated=false",
 ];
 
+// Scope-specific git env: shared scrub PLUS object-store hardening that
+// only matters during populateScope (no lazy fetches into the source repo,
+// no replace-object indirection, no graft-file injection, no system
+// config). The base list lives in lib/git-env.mjs.
 function cleanGitEnv() {
-  const env = {
-    ...process.env,
+  return {
+    ...scrubGitEnv(process.env),
     GIT_NO_LAZY_FETCH: "1",
     GIT_NO_REPLACE_OBJECTS: "1",
     GIT_GRAFT_FILE: process.platform === "win32" ? "NUL" : "/dev/null",
     GIT_CONFIG_NOSYSTEM: "1",
   };
-  for (const k of [
-    "GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_COMMON_DIR", "GIT_PREFIX",
-    "GIT_CONFIG_GLOBAL", "GIT_CONFIG_SYSTEM", "GIT_CONFIG_PARAMETERS", "GIT_CONFIG_COUNT",
-    "GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_REPLACE_REF_BASE",
-    "GIT_NAMESPACE", "GIT_CEILING_DIRECTORIES", "GIT_DISCOVERY_ACROSS_FILESYSTEM", "GIT_SHALLOW_FILE",
-    "GIT_ATTR_SOURCE",
-    "GIT_EXTERNAL_DIFF", "GIT_PAGER", "GIT_PAGER_IN_USE", "PAGER",
-  ]) {
-    delete env[k];
-  }
-  for (const k of Object.keys(env)) {
-    if (/^GIT_CONFIG_(KEY|VALUE)_\d+$/.test(k)) delete env[k];
-  }
-  return env;
 }
 
 function git(sourceCwd, args, opts = {}) {
@@ -632,20 +624,44 @@ function hasGitMetadataInAncestry(sourceCwd) {
 // using `git ls-files --others --ignored --exclude-standard -z -- .`. Tracked-
 // but-gitignored files (rare) are NOT filtered because `--others` already
 // excludes index entries, preserving modified tracked files in review scope.
+//
+// Transient retry (#16 follow-up 6): the index can be momentarily
+// unreadable during a concurrent `git gc`, `git checkout`, or
+// `index.lock` window. A single failure here used to fail-closed and
+// abort the run with `scope_population_failed`, even though a 50ms
+// retry would usually succeed. We retry up to MAX_GIT_LSFILES_ATTEMPTS
+// times with a tiny backoff before declaring the index unreadable; the
+// final attempt's error is surfaced verbatim so the operator sees the
+// underlying cause (e.g. "fatal: index file corrupt").
+const MAX_GIT_LSFILES_ATTEMPTS = 3;
+const GIT_LSFILES_BACKOFF_MS = 50;
+
+function sleepBackoffSync(ms) {
+  // Avoid Atomics.wait on shared buffer here — keep this dependency-free
+  // and let backoff be a small busy wait; we only sleep at most ~150ms total.
+  const end = Date.now() + ms;
+  while (Date.now() < end) { /* spin */ }
+}
+
 function listIgnoredUntrackedFiles(sourceCwd) {
-  try {
-    const raw = git(sourceCwd, [
-      "ls-files", "--others", "--ignored", "--exclude-standard", "-z", "--", ".",
-    ]);
-    return new Set(
-      raw.split("\0").filter(Boolean).map((rel) => rel.replace(/\\/g, "/")),
-    );
-  } catch (err) {
-    if (hasGitMetadataInAncestry(sourceCwd)) {
-      scopePopulationFailed(`cannot evaluate gitignored files for working-tree scope: ${err.message}`);
+  let lastErr = null;
+  for (let attempt = 1; attempt <= MAX_GIT_LSFILES_ATTEMPTS; attempt += 1) {
+    try {
+      const raw = git(sourceCwd, [
+        "ls-files", "--others", "--ignored", "--exclude-standard", "-z", "--", ".",
+      ]);
+      return new Set(
+        raw.split("\0").filter(Boolean).map((rel) => rel.replace(/\\/g, "/")),
+      );
+    } catch (err) {
+      lastErr = err;
+      if (attempt < MAX_GIT_LSFILES_ATTEMPTS) sleepBackoffSync(GIT_LSFILES_BACKOFF_MS);
     }
-    return null;
   }
+  if (hasGitMetadataInAncestry(sourceCwd)) {
+    scopePopulationFailed(`cannot evaluate gitignored files for working-tree scope: ${lastErr?.message ?? "unknown error"}`);
+  }
+  return null;
 }
 
 function scopeWorkingTree(sourceCwd, targetPath) {
