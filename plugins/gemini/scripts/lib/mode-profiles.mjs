@@ -131,3 +131,20 @@ export function resolveModelForProfile(profile, modelsConfig) {
   if (!modelsConfig || typeof modelsConfig !== "object") return null;
   return modelsConfig[profile.model_tier] ?? null;
 }
+
+export function resolveModelCandidatesForProfile(profile, modelsConfig) {
+  if (!profile || typeof profile.model_tier !== "string") {
+    throw new Error("resolveModelCandidatesForProfile: profile.model_tier is required");
+  }
+  if (!modelsConfig || typeof modelsConfig !== "object") return [];
+  const primary = profile.model_tier === "native" ? null : modelsConfig[profile.model_tier] ?? null;
+  const fallbackTier = profile.model_tier === "native" ? "cheap" : profile.model_tier;
+  const configuredFallbacks = modelsConfig.fallbacks?.[fallbackTier];
+  const fallbacks = Array.isArray(configuredFallbacks)
+    ? configuredFallbacks.filter((model) => typeof model === "string" && model.length > 0)
+    : [];
+  const candidates = profile.model_tier === "native" ? [null, ...fallbacks] : [primary, ...fallbacks];
+  return [...new Set(candidates)].filter((model) => (
+    model === null ? profile.model_tier === "native" : typeof model === "string" && model.length > 0
+  ));
+}

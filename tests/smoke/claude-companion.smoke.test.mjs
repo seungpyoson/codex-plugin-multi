@@ -39,6 +39,12 @@ function cleanup(dataDir) {
   rmSync(dataDir, { recursive: true, force: true, maxRetries: 3, retryDelay: 50 });
 }
 
+function assertPreflightSafetyFields(result) {
+  assert.equal(result.target_spawned, false);
+  assert.equal(result.selected_scope_sent_to_provider, false);
+  assert.equal(result.requires_external_provider_consent, true);
+}
+
 function writeExecutable(dir, name, source) {
   const bin = path.join(dir, name);
   writeFileSync(bin, source, "utf8");
@@ -927,7 +933,53 @@ test("preflight custom-review summarizes selected bundle files without launching
       assert.equal(result.file_count, 2);
       assert.ok(result.byte_count > 0);
       assert.deepEqual(result.files.sort(), ["PR23.diff", "notes.md"]);
+      assertPreflightSafetyFields(result);
       assert.match(result.disclosure_note, /not spawned/i);
+    } finally {
+      cleanup(dataDir);
+    }
+  } finally {
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("preflight bad args still emits provider safety fields", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "smoke-preflight-bad-args-"));
+  try {
+    const { stdout, status, dataDir } = runCompanion(
+      ["preflight", "--mode=nope", "--cwd", cwd],
+      { cwd }
+    );
+    try {
+      assert.equal(status, 1);
+      const result = JSON.parse(stdout);
+      assert.equal(result.event, "preflight");
+      assert.equal(result.target, "claude");
+      assert.equal(result.error, "bad_args");
+      assertPreflightSafetyFields(result);
+    } finally {
+      cleanup(dataDir);
+    }
+  } finally {
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("preflight scope failures still emit provider safety fields", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "smoke-preflight-scope-fail-"));
+  try {
+    writeFileSync(path.join(cwd, "notes.md"), "review notes\n");
+    const { stdout, status, dataDir } = runCompanion(
+      ["preflight", "--mode=custom-review", "--cwd", cwd, "--scope-paths", "missing.md"],
+      { cwd }
+    );
+    try {
+      assert.equal(status, 2);
+      const result = JSON.parse(stdout);
+      assert.equal(result.event, "preflight");
+      assert.equal(result.target, "claude");
+      assert.equal(result.error, "scope_failed");
+      assertPreflightSafetyFields(result);
     } finally {
       cleanup(dataDir);
     }
@@ -1015,12 +1067,16 @@ test("run: pre/post git-status sidecars written in a git cwd", () => {
   }
 });
 
-test("doctor: returns not_implemented (pre-M10)", () => {
+test("doctor: returns the same readiness contract as ping", () => {
   const cwd = mkdtempSync(path.join(tmpdir(), "smoke-cwd-"));
-  const { stderr, status, dataDir } = runCompanion(["doctor"], { cwd });
+  const { stdout, status, dataDir } = runCompanion(["doctor"], { cwd });
   try {
-    assert.notEqual(status, 0);
-    assert.match(stderr, /later milestone/);
+    assert.equal(status, 0);
+    const result = JSON.parse(stdout);
+    assert.equal(result.status, "ok");
+    assert.equal(result.ready, true);
+    assert.match(result.summary, /ready/i);
+    assert.match(result.next_action, /review/i);
   } finally {
     cleanup(dataDir);
     rmSync(cwd, { recursive: true, force: true });
@@ -1030,14 +1086,39 @@ test("doctor: returns not_implemented (pre-M10)", () => {
 test("ping: returns status=ok with the mock claude binary", () => {
   const { stdout, status, dataDir } = runCompanion(
     ["ping", "--model", "claude-haiku-4-5-20251001"],
-    { cwd: tmpdir() }
+    { cwd: tmpdir(), env: { ANTHROPIC_API_KEY: "secret-test-value" } }
   );
   try {
     assert.equal(status, 0, `ping exit ${status}`);
     const result = JSON.parse(stdout);
     assert.equal(result.status, "ok");
+    assert.equal(result.ready, true);
+    assert.match(result.summary, /ready/i);
+    assert.deepEqual(result.ignored_env_credentials, ["ANTHROPIC_API_KEY"]);
+    assert.equal(result.auth_policy, "api_key_env_ignored");
+    assert.doesNotMatch(stdout, /secret-test-value/);
     assert.equal(result.model, "claude-haiku-4-5-20251001");
     assert.ok(result.session_id);
+  } finally {
+    cleanup(dataDir);
+  }
+});
+
+test("ping: not_found includes readiness guidance", () => {
+  const missingBinary = path.join(tmpdir(), "missing-claude-ping-binary");
+  const { stdout, status, dataDir } = runCompanion(
+    ["ping", "--binary", missingBinary, "--model", "claude-haiku-4-5-20251001"],
+    { cwd: tmpdir(), env: { ANTHROPIC_API_KEY: "secret-test-value" } },
+  );
+  try {
+    assert.equal(status, 2);
+    const result = JSON.parse(stdout);
+    assert.equal(result.status, "not_found");
+    assert.equal(result.ready, false);
+    assert.match(result.summary, /not found/i);
+    assert.match(result.next_action, /Install Claude Code/);
+    assert.deepEqual(result.ignored_env_credentials, ["ANTHROPIC_API_KEY"]);
+    assert.doesNotMatch(stdout, /secret-test-value/);
   } finally {
     cleanup(dataDir);
   }
@@ -1076,7 +1157,64 @@ process.exit(7);
     assert.equal(status, 2);
     const result = JSON.parse(stdout);
     assert.equal(result.status, "not_authed");
+    assert.equal(result.ready, false);
+    assert.match(result.next_action, /claude auth login/);
     assert.match(result.detail, /OAuth2 flow incomplete/);
+  } finally {
+    cleanup(dataDir);
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("ping: Claude JSON auth errors surface result text, not raw JSON", () => {
+  const tmp = mkdtempSync(path.join(tmpdir(), "claude-ping-json-auth-"));
+  const binary = writeExecutable(tmp, "claude-json-auth-error", `#!/usr/bin/env node
+process.stdout.write(JSON.stringify({
+  type: "result",
+  is_error: true,
+  result: "Not logged in · Please run /login",
+  session_id: "33333333-3333-4333-8333-333333333333"
+}) + "\\n");
+process.exit(1);
+`);
+  const { stdout, status, dataDir } = runCompanion(
+    ["ping", "--model", "claude-haiku-4-5-20251001"],
+    { cwd: tmpdir(), env: { CLAUDE_BINARY: binary } },
+  );
+  try {
+    assert.equal(status, 2);
+    const result = JSON.parse(stdout);
+    assert.equal(result.status, "not_authed");
+    assert.equal(result.ready, false);
+    assert.equal(result.detail, "Not logged in · Please run /login");
+  } finally {
+    cleanup(dataDir);
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("ping: not_authed reports ignored parent API-key auth without exposing values", () => {
+  const tmp = mkdtempSync(path.join(tmpdir(), "claude-ping-api-key-auth-"));
+  const binary = writeExecutable(tmp, "claude-api-key-auth-error", `#!/usr/bin/env node
+process.stdout.write(JSON.stringify({
+  type: "result",
+  is_error: true,
+  result: "Not logged in · Please run /login",
+  session_id: "33333333-3333-4333-8333-333333333333"
+}) + "\\n");
+process.exit(1);
+`);
+  const { stdout, status, dataDir } = runCompanion(
+    ["ping", "--model", "claude-haiku-4-5-20251001"],
+    { cwd: tmpdir(), env: { CLAUDE_BINARY: binary, ANTHROPIC_API_KEY: "secret-test-value" } },
+  );
+  try {
+    assert.equal(status, 2);
+    const result = JSON.parse(stdout);
+    assert.equal(result.status, "not_authed");
+    assert.deepEqual(result.ignored_env_credentials, ["ANTHROPIC_API_KEY"]);
+    assert.equal(result.auth_policy, "api_key_env_ignored");
+    assert.doesNotMatch(stdout, /secret-test-value/);
   } finally {
     cleanup(dataDir);
     rmSync(tmp, { recursive: true, force: true });
@@ -1097,6 +1235,8 @@ process.exit(7);
     assert.equal(status, 2);
     const result = JSON.parse(stdout);
     assert.equal(result.status, "error");
+    assert.equal(result.ready, false);
+    assert.match(result.next_action, /rerun setup/);
     assert.match(result.detail, /authoring authority logging failed/);
   } finally {
     cleanup(dataDir);

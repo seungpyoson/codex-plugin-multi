@@ -187,6 +187,26 @@ test("resolveModelForProfile rejects invalid profiles and null configs", () => {
   assert.equal(resolveModelForProfile(MODE_PROFILES.review, null), null);
 });
 
+test("Gemini resolveModelCandidatesForProfile appends configured tier fallbacks", () => {
+  const cfg = {
+    cheap: "g-fast",
+    medium: "g-smart",
+    default: "g-default",
+    fallbacks: {
+      cheap: ["g-fast"],
+      medium: ["g-stable", "g-fast", "g-stable"],
+    },
+  };
+  assert.deepEqual(
+    GeminiProfiles.resolveModelCandidatesForProfile(GeminiProfiles.MODE_PROFILES["adversarial-review"], cfg),
+    ["g-smart", "g-stable", "g-fast"],
+  );
+  assert.deepEqual(
+    GeminiProfiles.resolveModelCandidatesForProfile(GeminiProfiles.MODE_PROFILES.ping, cfg),
+    [null, "g-fast"],
+  );
+});
+
 // ——————————————————————————————————————————————————————————————
 // (e) buildClaudeArgs(profile, runtimeInputs) — per-mode argv assertions.
 // ——————————————————————————————————————————————————————————————
@@ -513,4 +533,37 @@ test("gemini resolveModelForProfile resolves every mode tier", () => {
   assert.equal(GeminiProfiles.resolveModelForProfile(GeminiProfiles.MODE_PROFILES["custom-review"], cfg), "gemini-pro");
   assert.equal(GeminiProfiles.resolveModelForProfile(GeminiProfiles.MODE_PROFILES.rescue, cfg), "gemini-default");
   assert.equal(GeminiProfiles.resolveModelForProfile(GeminiProfiles.MODE_PROFILES.ping, cfg), null);
+});
+
+test("gemini resolveModelCandidatesForProfile covers fallback edge cases", () => {
+  assert.throws(
+    () => GeminiProfiles.resolveModelCandidatesForProfile(null, {}),
+    /profile\.model_tier/,
+  );
+  assert.throws(
+    () => GeminiProfiles.resolveModelCandidatesForProfile({}, {}),
+    /profile\.model_tier/,
+  );
+  assert.deepEqual(
+    GeminiProfiles.resolveModelCandidatesForProfile(GeminiProfiles.MODE_PROFILES.review, null),
+    [],
+  );
+  assert.deepEqual(
+    GeminiProfiles.resolveModelCandidatesForProfile(GeminiProfiles.MODE_PROFILES.review, { fallbacks: { cheap: "not-array" } }),
+    [],
+  );
+  assert.deepEqual(
+    GeminiProfiles.resolveModelCandidatesForProfile(GeminiProfiles.MODE_PROFILES.review, {
+      cheap: "gemini-flash",
+      fallbacks: { cheap: ["", "gemini-flash", "gemini-stable", 7, "gemini-stable"] },
+    }),
+    ["gemini-flash", "gemini-stable"],
+  );
+  assert.deepEqual(
+    GeminiProfiles.resolveModelCandidatesForProfile(GeminiProfiles.MODE_PROFILES.ping, {
+      cheap: "ignored-primary-for-native",
+      fallbacks: { cheap: ["", "gemini-flash", "gemini-flash"] },
+    }),
+    [null, "gemini-flash"],
+  );
 });

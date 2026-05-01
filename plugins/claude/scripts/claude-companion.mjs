@@ -111,6 +111,14 @@ function preflightDisclosure(target) {
   );
 }
 
+function preflightSafetyFields() {
+  return {
+    target_spawned: false,
+    selected_scope_sent_to_provider: false,
+    requires_external_provider_consent: true,
+  };
+}
+
 // Wraps git command; reports failure separately from successful empty output
 // so mutation detection can warn instead of silently reporting "clean".
 // Uses execFileSync with an argv array (no shell) to prevent command injection
@@ -280,12 +288,19 @@ function cmdPreflight(rest) {
   });
 
   const mode = options.mode;
+  const cwd = options.cwd ?? process.cwd();
   if (!mode || !PREFLIGHT_MODES.includes(mode)) {
-    fail("bad_args", `--mode must be one of ${PREFLIGHT_MODES.join("|")}; got ${JSON.stringify(mode)}`);
+    fail("bad_args", `--mode must be one of ${PREFLIGHT_MODES.join("|")}; got ${JSON.stringify(mode)}`, {
+      event: "preflight",
+      target: "claude",
+      mode: mode ?? null,
+      cwd,
+      ...preflightSafetyFields(),
+      disclosure_note: preflightDisclosure("Claude"),
+    });
   }
 
   const profile = resolveProfile(mode);
-  const cwd = options.cwd ?? process.cwd();
   const workspaceRoot = resolveWorkspaceRoot(cwd);
   const scopePaths = parseScopePathsOption(options["scope-paths"]);
   let containment = null;
@@ -310,6 +325,7 @@ function cmdPreflight(rest) {
       scope_base: options["scope-base"] ?? null,
       scope_paths: scopePaths,
       ...summary,
+      ...preflightSafetyFields(),
       disclosure_note: preflightDisclosure("Claude"),
     });
   } catch (e) {
@@ -327,6 +343,7 @@ function cmdPreflight(rest) {
       scope_paths: scopePaths,
       error: "scope_failed",
       error_message: e.message,
+      ...preflightSafetyFields(),
       disclosure_note: preflightDisclosure("Claude"),
     });
   } finally {
@@ -867,20 +884,79 @@ async function cmdNotImplemented(name) {
 
 const PING_PROMPT = "reply with exactly: pong. Do not use any tools, do not read files, and do not explore the workspace.";
 const PING_AUTH_RE = /\b(auth(?:enticat\w*)?|login|credential\w*|oauth2?|unauthenticated|signin|sign-in)\b/i;
+const PING_PROVIDER_API_KEY_ENV = ["ANTHROPIC_API_KEY", "CLAUDE_API_KEY"];
+
+function ignoredApiKeyAuthFields() {
+  const ignored = PING_PROVIDER_API_KEY_ENV.filter((key) => process.env[key]);
+  if (ignored.length === 0) return {};
+  return {
+    ignored_env_credentials: ignored,
+    auth_policy: "api_key_env_ignored",
+  };
+}
+
+function pingOkFields() {
+  return {
+    ready: true,
+    summary: "Claude Code is ready using first-party CLI auth.",
+    next_action: "Run a Claude review command.",
+  };
+}
+
+function pingNotAuthedFields() {
+  return {
+    ready: false,
+    summary: "Claude Code subscription/OAuth auth is not available to this companion process.",
+    next_action: "In a normal terminal, unset ANTHROPIC_API_KEY and CLAUDE_API_KEY, then run: claude auth login",
+  };
+}
+
+function pingRateLimitedFields() {
+  return {
+    ready: false,
+    summary: "Claude Code auth works, but the provider is currently rate-limited or overloaded.",
+    next_action: "Retry in a few minutes.",
+  };
+}
+
+function pingNotFoundFields() {
+  return {
+    ready: false,
+    summary: "Claude Code binary was not found on PATH.",
+    next_action: "Install Claude Code from https://claude.com/claude-code, or rerun setup with --binary pointing at your claude executable.",
+  };
+}
+
+function pingErrorFields() {
+  return {
+    ready: false,
+    summary: "Claude Code ping failed before readiness could be confirmed.",
+    next_action: "Inspect detail, fix the Claude CLI error, then rerun setup.",
+  };
+}
 
 function pingFailureDetail(execution) {
   const raw = execution?.parsed?.raw;
   const rawText = typeof raw === "string"
     ? raw
     : (raw == null ? "" : JSON.stringify(raw));
+  const parsedError = execution?.parsed?.reason === "json_parse_error"
+    ? null
+    : execution?.parsed?.error;
   const detail = [
     execution?.stderr,
+    parsedError,
+    execution?.parsed?.result,
     execution?.stdout,
-    execution?.parsed?.error,
     rawText,
     execution?.exitCode == null ? "" : `exit ${execution.exitCode}`,
   ].map((s) => String(s ?? "").trim()).find(Boolean) ?? "";
-  return detail.slice(0, 500);
+  const firstLine = detail.split("\n").map((line) => line.trim()).find(Boolean);
+  const hasStackFrame = detail
+    .split("\n")
+    .some((line) => line.trimStart().startsWith("at "));
+  const concise = hasStackFrame && firstLine ? firstLine : detail;
+  return concise.slice(0, 500);
 }
 
 // ——— subcommand: ping (OAuth health probe per spec §7.5) ———
@@ -908,18 +984,20 @@ async function cmdPing(rest) {
     });
   } catch (e) {
     if (e.code === "ENOENT") {
-      printJson({ status: "not_found", detail: `claude binary not found on PATH (or CLAUDE_BINARY override)`,
+      printJson({ status: "not_found", ...pingNotFoundFields(),
+        ...ignoredApiKeyAuthFields(),
+        detail: `claude binary not found on PATH (or CLAUDE_BINARY override)`,
         install_url: "https://claude.com/claude-code" });
       process.exit(2);
     }
-    printJson({ status: "error", detail: e.message });
+    printJson({ status: "error", ...pingErrorFields(), ...ignoredApiKeyAuthFields(), detail: e.message });
     process.exit(2);
   }
   // Classify. Real Claude error texts change per version; match on signals only.
   if (execution.parsed.ok && (execution.parsed.result || execution.parsed.structured)) {
     // T7.4: drop the legacy `.sessionId` alias. Ping uses claudeSessionId
     // (Claude's echo) with sessionIdSent fallback when the mock short-circuits.
-    const payload = { status: "ok", model: model ?? null,
+    const payload = { status: "ok", ...pingOkFields(), ...ignoredApiKeyAuthFields(), model: model ?? null,
       session_id: execution.claudeSessionId ?? execution.sessionIdSent,
       cost_usd: execution.parsed.costUsd, usage: execution.parsed.usage };
     printJson(payload);
@@ -928,18 +1006,20 @@ async function cmdPing(rest) {
   if (execution.exitCode !== 0) {
     const detail = pingFailureDetail(execution);
     if (/rate limit|429|overloaded/i.test(detail)) {
-      printJson({ status: "rate_limited", detail });
+      printJson({ status: "rate_limited", ...pingRateLimitedFields(), ...ignoredApiKeyAuthFields(), detail });
       process.exit(2);
     }
     if (PING_AUTH_RE.test(detail)) {
-      printJson({ status: "not_authed", detail,
-        hint: "Run `claude` interactively to complete OAuth. Do not set ANTHROPIC_API_KEY." });
+      printJson({ status: "not_authed", ...pingNotAuthedFields(), detail,
+        ...ignoredApiKeyAuthFields(),
+        hint: "Run `claude` interactively to complete OAuth. API-key env vars are ignored by plugin policy." });
       process.exit(2);
     }
-    printJson({ status: "error", exit_code: execution.exitCode, detail });
+    printJson({ status: "error", ...pingErrorFields(), ...ignoredApiKeyAuthFields(), exit_code: execution.exitCode, detail });
     process.exit(2);
   }
-  printJson({ status: "error", detail: "parsed result missing", raw: execution.parsed.raw });
+  printJson({ status: "error", ...pingErrorFields(), ...ignoredApiKeyAuthFields(),
+    detail: "parsed result missing", raw: execution.parsed.raw });
   process.exit(2);
 }
 
@@ -1157,8 +1237,7 @@ async function main() {
     case "cancel":  return cmdCancel(rest);
     case "continue": return cmdContinue(rest);
     case "_run-worker": return cmdRunWorker(rest);
-    case "doctor":
-      return cmdNotImplemented(sub);
+    case "doctor":  return cmdPing(rest);
     case "--help":
     case "-h":
     case undefined:

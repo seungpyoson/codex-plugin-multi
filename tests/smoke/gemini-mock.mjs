@@ -40,10 +40,26 @@ const includeDirs = String(parsed.flags["--include-directories"] ?? "")
 const sessionId = parsed.flags["--resume"]
   ? "77777777-8888-4999-aaaa-bbbbbbbbbbbb"
   : "22222222-3333-4444-9555-666666666666";
+const model = parsed.flags["-m"] ?? parsed.flags["--model"] ?? "unknown";
 
 const expectedPromptText = process.env.GEMINI_MOCK_ASSERT_PROMPT_INCLUDES;
 if (expectedPromptText && !prompt.includes(expectedPromptText)) {
   process.stderr.write(`gemini-mock: prompt missing expected text: ${expectedPromptText}\n`);
+  process.exit(1);
+}
+
+if (process.env.GEMINI_MOCK_CAPACITY_MODEL === model) {
+  process.stderr.write(JSON.stringify({
+    error: {
+      code: 429,
+      message: `No capacity available for model ${model} on the server`,
+      status: "RESOURCE_EXHAUSTED",
+      details: [{
+        reason: "MODEL_CAPACITY_EXHAUSTED",
+        metadata: { model },
+      }],
+    },
+  }) + "\n");
   process.exit(1);
 }
 
@@ -52,7 +68,7 @@ const fixture = {
   response: "Mock Gemini response.",
   stats: {
     models: {
-      [parsed.flags["-m"] ?? parsed.flags["--model"] ?? "unknown"]: {
+      [model]: {
         tokens: { total: 12 },
       },
     },

@@ -27,6 +27,10 @@ const COMMAND_FRONTMATTER_KEYS = new Set([
   "allowed-tools",
 ]);
 
+const FORBIDDEN_PLUGIN_MANIFEST_KEYS = new Map([
+  ["commands", "upstream Codex supports plugin command-file registration and dispatch (tracked in #13)"],
+]);
+
 const SKILL_FRONTMATTER_KEYS = new Set([
   "name",
   "description",
@@ -135,6 +139,11 @@ async function checkPluginManifest(name) {
   const path = `plugins/${name}/.codex-plugin/plugin.json`;
   const m = await readJson(path);
   if (!m) return null;
+  for (const [key, reason] of FORBIDDEN_PLUGIN_MANIFEST_KEYS) {
+    if (key in m) {
+      err(path, `field "${key}" is forbidden until ${reason}`);
+    }
+  }
   if (checkType(m, "name", "string", path)) {
     checkBareName(m.name, path, "plugin name");
     if (m.name !== name) err(path, `name "${m.name}" does not match directory "${name}"`);

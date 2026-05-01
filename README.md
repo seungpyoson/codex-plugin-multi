@@ -141,7 +141,8 @@ inspect the terminal record.
   prompt with relative paths inside the selected scope.
 - **Host-owned pre-launch denials stay outside companion control.** If Codex
   blocks an external provider review before launching the companion process, the
-  plugin cannot emit a JobRecord. That host-owned gap is tracked in #27. Choose
+  plugin cannot emit a JobRecord. That host-owned gap is tracked in
+  https://github.com/seungpyoson/codex-plugin-multi/issues/27. Choose
   an approved provider, run local/Codex-only review, or use `preflight` to
   inspect disclosure before requesting an external review.
 - **Rescue is write-capable.** Rescue modes are intended for investigation and

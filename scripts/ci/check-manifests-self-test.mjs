@@ -171,6 +171,19 @@ await expectFail(
   `skills`
 );
 
+// Case 10: commands manifest field must stay forbidden until upstream Codex
+// supports plugin command-file registration and dispatch.
+await expectFail(
+  "commands-manifest-field",
+  async (dir) => {
+    const p = join(dir, "plugins/claude/.codex-plugin/plugin.json");
+    const m = JSON.parse(await (await import("node:fs/promises")).readFile(p, "utf8"));
+    m.commands = "./commands";
+    await writeFile(p, JSON.stringify(m, null, 2));
+  },
+  `commands`
+);
+
 if (failed > 0) {
   process.stderr.write(`\n${failed} self-test case(s) failed\n`);
   process.exit(1);
