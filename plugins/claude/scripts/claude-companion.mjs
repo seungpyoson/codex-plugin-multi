@@ -866,7 +866,7 @@ async function cmdNotImplemented(name) {
 }
 
 const PING_PROMPT = "reply with exactly: pong. Do not use any tools, do not read files, and do not explore the workspace.";
-const PING_AUTH_RE = /\b(auth(?:enticat\w*)?|login|credential\w*|oauth|unauthenticated|signin|sign-in)\b/i;
+const PING_AUTH_RE = /\b(auth(?:enticat\w*)?|login|credential\w*|oauth2?|unauthenticated|signin|sign-in)\b/i;
 
 function pingFailureDetail(execution) {
   const raw = execution?.parsed?.raw;

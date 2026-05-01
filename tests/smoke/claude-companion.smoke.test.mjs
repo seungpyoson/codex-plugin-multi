@@ -1065,7 +1065,7 @@ test("ping: succeeds without --model and forbids tool exploration in the prompt"
 test("ping: failure detail falls back to target stdout when stderr is empty", () => {
   const tmp = mkdtempSync(path.join(tmpdir(), "claude-ping-stdout-"));
   const binary = writeExecutable(tmp, "claude-stdout-error", `#!/usr/bin/env node
-process.stdout.write("Authentication required\\n");
+process.stdout.write("OAuth2 flow incomplete\\n");
 process.exit(7);
 `);
   const { stdout, status, dataDir } = runCompanion(
@@ -1076,7 +1076,7 @@ process.exit(7);
     assert.equal(status, 2);
     const result = JSON.parse(stdout);
     assert.equal(result.status, "not_authed");
-    assert.match(result.detail, /Authentication required/);
+    assert.match(result.detail, /OAuth2 flow incomplete/);
   } finally {
     cleanup(dataDir);
     rmSync(tmp, { recursive: true, force: true });

@@ -260,7 +260,7 @@ test("reconcileActiveJobs: TOCTOU regression — terminal meta written mid-fligh
   //   t2: worker writes meta = completed
   //   t3: reconcile writes meta = stale (CLOBBERS completed result)
   //
-  // The fix moves the read-classify-write into commitJobRecordIfActive,
+  // The fix moves the read-classify-write into commitJobRecordsIfActive,
   // which holds the state lock around an in-lock CAS read. Because we
   // hold the lock while reading + writing, the only way for a worker's
   // commit to land in between is if the worker's commitJobRecord runs
@@ -300,10 +300,10 @@ test("reconcileActiveJobs: TOCTOU regression — terminal meta written mid-fligh
   } finally { cleanup(dir); }
 });
 
-test("reconcileActiveJobs: state-summary active + meta terminal is skipped", () => {
+test("reconcileActiveJobs: state-summary active + meta terminal repairs state", () => {
   // Defense in depth: if state.json says running but meta.json says
   // completed (e.g., a writer crashed mid-update), reconciliation must
-  // trust the meta and skip — not promote to stale.
+  // trust the meta and repair state — not promote to stale.
   const dir = freshDir();
   try {
     const id = "summary-vs-meta";
@@ -313,6 +313,8 @@ test("reconcileActiveJobs: state-summary active + meta terminal is skipped", () 
     assert.deepEqual(reconcileActiveJobs(dir), []);
     assert.equal(readJobFileById(dir, id).status, "completed",
       "meta wins; reconciliation must not flip a completed record to stale");
+    assert.equal(listJobs(dir).find((job) => job.id === id)?.status, "completed",
+      "state summary must be repaired from terminal meta without reporting a reclaim");
   } finally {
     cleanup(dir);
   }

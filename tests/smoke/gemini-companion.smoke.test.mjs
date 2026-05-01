@@ -1325,6 +1325,57 @@ process.exit(7);
   }
 });
 
+test("gemini ping classifies OAuth2 stdout as not_authed", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "gemini-ping-oauth2-cwd-"));
+  const binDir = mkdtempSync(path.join(tmpdir(), "gemini-ping-oauth2-bin-"));
+  const binary = path.join(binDir, "gemini-oauth2-error");
+  writeFileSync(binary, `#!/usr/bin/env node
+process.stdout.write("OAuth2 flow incomplete\\n");
+process.exit(7);
+`, "utf8");
+  chmodSync(binary, 0o755);
+  const { stdout, status, dataDir } = runCompanion(
+    ["ping", "--model", "gemini-3-flash-preview"],
+    { cwd, env: { GEMINI_BINARY: binary } },
+  );
+  try {
+    assert.equal(status, 2);
+    const parsed = JSON.parse(stdout);
+    assert.equal(parsed.status, "not_authed");
+    assert.match(parsed.detail, /OAuth2 flow incomplete/);
+  } finally {
+    rmTree(dataDir);
+    rmTree(cwd);
+    rmTree(binDir);
+  }
+});
+
+test("gemini ping generic stdout mentioning authoring is not classified as auth", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "gemini-ping-authoring-cwd-"));
+  const binDir = mkdtempSync(path.join(tmpdir(), "gemini-ping-authoring-bin-"));
+  const binary = path.join(binDir, "gemini-authoring-error");
+  writeFileSync(binary, `#!/usr/bin/env node
+process.stdout.write("authoring authority logging failed\\n");
+process.exit(7);
+`, "utf8");
+  chmodSync(binary, 0o755);
+  const { stdout, status, dataDir } = runCompanion(
+    ["ping", "--model", "gemini-3-flash-preview"],
+    { cwd, env: { GEMINI_BINARY: binary } },
+  );
+  try {
+    assert.equal(status, 2);
+    const parsed = JSON.parse(stdout);
+    assert.equal(parsed.status, "error");
+    assert.equal(parsed.exit_code, 7);
+    assert.match(parsed.detail, /authoring authority logging failed/);
+  } finally {
+    rmTree(dataDir);
+    rmTree(cwd);
+    rmTree(binDir);
+  }
+});
+
 test("gemini ping generic error includes exit_code", () => {
   const cwd = mkdtempSync(path.join(tmpdir(), "gemini-ping-generic-cwd-"));
   const binDir = mkdtempSync(path.join(tmpdir(), "gemini-ping-generic-bin-"));
