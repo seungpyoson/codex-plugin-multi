@@ -20,6 +20,7 @@ const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..
 const VERBATIM_FILES = [
   "workspace.mjs",
   "process.mjs",
+  "provider-env.mjs",
   "args.mjs",
   "git.mjs",
   "identity.mjs",

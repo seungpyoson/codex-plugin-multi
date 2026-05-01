@@ -541,9 +541,9 @@ export function generateJobId(prefix = "job") {
   return `${prefix}-${Date.now().toString(36)}-${random}`;
 }
 
-// Extracted helper so commitJobRecord{,IfActive} can apply the same
-// upsert semantics inside an outer updateState callback (which already
-// holds the state lock — re-entering withStateLock would throw).
+// Extracted helper so commitJobRecord and commitJobRecordsIfActive can apply
+// the same upsert semantics inside an outer updateState callback (which
+// already holds the state lock — re-entering withStateLock would throw).
 function applyJobUpsertToState(state, jobPatch) {
   const timestamp = nowIso();
   const existingIndex = state.jobs.findIndex((job) => job.id === jobPatch.id);
@@ -584,50 +584,36 @@ export function commitJobRecord(cwd, jobId, record) {
   return { metaError, stateError };
 }
 
-// CAS variant for reconcile — see Claude state.mjs for rationale.
-export function commitJobRecordIfActive(cwd, jobId, builder) {
-  let committed = null;
-  try {
-    updateState(cwd, (state) => {
-      let meta;
-      try { meta = JSON.parse(fs.readFileSync(resolveJobFile(cwd, jobId), "utf8")); }
-      catch { return; }
-      if (!meta || !ACTIVE_JOB_STATUSES.has(meta.status)) return;
-      const next = builder(meta);
-      if (!next) return;
-      try { writeJobFile(cwd, jobId, next); }
-      catch { return; }
-      applyJobUpsertToState(state, next);
-      committed = next;
-    });
-  } catch { /* lock acquisition / state save failed; next pass retries */ }
-  return committed;
-}
-
 // Batch CAS variant for reconcile. Acquires the state lock once, then checks
 // each active job under that same lock. If meta.json is missing but state.json
 // still carries a full active JobRecord, the builder can recover by writing a
 // stale terminal meta record instead of leaving a permanent active orphan.
 export function commitJobRecordsIfActive(cwd, jobIds, builder) {
-  const committed = [];
+  let committed = [];
   try {
+    const pending = [];
     updateState(cwd, (state) => {
       for (const jobId of new Set(jobIds)) {
         const stateJob = state.jobs.find((job) => job.id === jobId) ?? null;
         let meta = null;
-        let metaMissing = false;
         try { meta = JSON.parse(fs.readFileSync(resolveJobFile(cwd, jobId), "utf8")); }
-        catch { metaMissing = true; }
+        catch { /* fall back to state.json summary below */ }
+        if (meta && stateJob && ACTIVE_JOB_STATUSES.has(stateJob.status) &&
+            !ACTIVE_JOB_STATUSES.has(meta.status)) {
+          applyJobUpsertToState(state, meta);
+          continue;
+        }
         const source = meta ?? stateJob;
         if (!source || !ACTIVE_JOB_STATUSES.has(source.status)) continue;
-        const next = builder(source, { jobId, stateJob, metaMissing });
+        const next = builder(source);
         if (!next) continue;
         try { writeJobFile(cwd, jobId, next); }
         catch { continue; }
         applyJobUpsertToState(state, next);
-        committed.push(next);
+        pending.push(next);
       }
     });
+    committed = pending;
   } catch { /* lock acquisition / state save failed; next pass retries */ }
   return committed;
 }

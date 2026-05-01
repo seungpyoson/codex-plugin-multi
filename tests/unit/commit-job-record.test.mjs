@@ -7,8 +7,8 @@
 //
 // Both are race classes: two writers for the same (cwd, jobId). The fix
 // is commitJobRecord (atomic meta + state under one lock acquisition)
-// and commitJobRecordIfActive (CAS read inside the lock, abort if no
-// longer active).
+// and commitJobRecordsIfActive (batched CAS reads inside one lock, abort
+// if no longer active).
 
 import { test, before, afterEach } from "node:test";
 import assert from "node:assert/strict";
@@ -20,18 +20,21 @@ import {
   configureState,
   getStateConfig,
   commitJobRecord,
-  commitJobRecordIfActive,
+  commitJobRecordsIfActive,
   upsertJob,
   writeJobFile,
   readJobFileById,
   resolveJobFile,
+  resolveStateFile,
   listJobs,
 } from "../../plugins/claude/scripts/lib/state.mjs";
 import {
   configureState as configureGeminiState,
   getStateConfig as getGeminiStateConfig,
   commitJobRecord as commitGeminiJobRecord,
-  commitJobRecordIfActive as commitGeminiIfActive,
+  commitJobRecordsIfActive as commitGeminiRecordsIfActive,
+  writeJobFile as writeGeminiJobFile,
+  listJobs as listGeminiJobs,
 } from "../../plugins/gemini/scripts/lib/state.mjs";
 import { buildJobRecord } from "../../plugins/claude/scripts/lib/job-record.mjs";
 
@@ -134,9 +137,9 @@ test("commitJobRecord: meta failure leaves state untouched", () => {
   } finally { cleanup(dir); }
 });
 
-// ——— commitJobRecordIfActive (CAS) ———
+// ——— commitJobRecordsIfActive (batch CAS) ———
 
-test("commitJobRecordIfActive: builder runs when meta is active", () => {
+test("commitJobRecordsIfActive: builder runs for active records in one batch", () => {
   const dir = freshDir();
   try {
     const id = "00000000-0000-4000-8000-000000000333";
@@ -145,7 +148,7 @@ test("commitJobRecordIfActive: builder runs when meta is active", () => {
     });
     commitJobRecord(dir, id, running);
     let calledWith = null;
-    const next = commitJobRecordIfActive(dir, id, (meta) => {
+    const next = commitJobRecordsIfActive(dir, [id], (meta) => {
       calledWith = meta;
       return makeRecord(dir, id, {
         status: "stale", exitCode: null, parsed: null,
@@ -154,12 +157,12 @@ test("commitJobRecordIfActive: builder runs when meta is active", () => {
     });
     assert.ok(calledWith, "builder must be called for an active record");
     assert.equal(calledWith.status, "running");
-    assert.ok(next, "builder result must be committed");
+    assert.equal(next.length, 1, "builder result must be committed");
     assert.equal(readJobFileById(dir, id).status, "stale");
   } finally { cleanup(dir); }
 });
 
-test("commitJobRecordIfActive: CAS aborts when meta is already terminal", () => {
+test("commitJobRecordsIfActive: CAS aborts when meta is already terminal", () => {
   // BLOCKER 2 regression guard — simulate the worker having written its
   // terminal completed record before reconcile took the lock. Builder must
   // NOT run (no clobber), and meta must remain completed.
@@ -169,7 +172,7 @@ test("commitJobRecordIfActive: CAS aborts when meta is already terminal", () => 
     const completed = makeRecord(dir, id);   // status=completed by default
     commitJobRecord(dir, id, completed);
     let builderCalled = false;
-    const next = commitJobRecordIfActive(dir, id, () => {
+    const next = commitJobRecordsIfActive(dir, [id], () => {
       builderCalled = true;
       return makeRecord(dir, id, {
         status: "stale", exitCode: null, parsed: null,
@@ -178,13 +181,13 @@ test("commitJobRecordIfActive: CAS aborts when meta is already terminal", () => 
     });
     assert.equal(builderCalled, false,
       "CAS must abort builder when on-disk meta is no longer active");
-    assert.equal(next, null, "no commit when CAS aborts");
+    assert.deepEqual(next, [], "no commit when CAS aborts");
     assert.equal(readJobFileById(dir, id).status, "completed",
       "terminal completed record must NOT be clobbered with stale");
   } finally { cleanup(dir); }
 });
 
-test("commitJobRecordIfActive: returning null from builder is a no-op", () => {
+test("commitJobRecordsIfActive: returning null from builder is a no-op", () => {
   const dir = freshDir();
   try {
     const id = "00000000-0000-4000-8000-000000000555";
@@ -193,24 +196,93 @@ test("commitJobRecordIfActive: returning null from builder is a no-op", () => {
       started_at: new Date().toISOString(), ...INVOCATION_FIELDS,
     }, null, []);
     commitJobRecord(dir, id, queued);
-    const result = commitJobRecordIfActive(dir, id, () => null);
-    assert.equal(result, null);
+    const result = commitJobRecordsIfActive(dir, [id], () => null);
+    assert.deepEqual(result, []);
     assert.equal(readJobFileById(dir, id).status, "queued");
   } finally { cleanup(dir); }
 });
 
-test("commitJobRecordIfActive: missing meta is a no-op (not a throw)", () => {
+test("commitJobRecordsIfActive: incomplete state-only summary can decline commit", () => {
   const dir = freshDir();
   try {
     const id = "00000000-0000-4000-8000-000000000666";
     upsertJob(dir, { id, status: "running" });   // summary only, no meta
-    let builderCalled = false;
-    const result = commitJobRecordIfActive(dir, id, () => {
-      builderCalled = true;
+    let calls = 0;
+    const result = commitJobRecordsIfActive(dir, [id], (source) => {
+      calls += 1;
+      assert.equal(source.id, id);
       return null;
     });
+    assert.equal(calls, 1);
+    assert.deepEqual(result, []);
+  } finally { cleanup(dir); }
+});
+
+test("commitJobRecordsIfActive: full state-only record can be committed", () => {
+  const dir = freshDir();
+  try {
+    const id = "00000000-0000-4000-8000-000000000667";
+    const running = makeRecord(dir, id, {
+      status: "running", exitCode: null, parsed: null,
+    });
+    commitJobRecord(dir, id, running);
+    rmSync(resolveJobFile(dir, id), { force: true });
+    let builderCalled = false;
+    const result = commitJobRecordsIfActive(dir, [id], (source) => {
+      builderCalled = true;
+      assert.equal(source.id, id);
+      return makeRecord(dir, id, {
+        status: "stale", exitCode: null, parsed: null,
+        errorMessage: "stale_active_job: state-only recovery",
+      });
+    });
+    assert.equal(builderCalled, true);
+    assert.equal(result.length, 1);
+    assert.equal(readJobFileById(dir, id).status, "stale");
+  } finally { cleanup(dir); }
+});
+
+test("commitJobRecordsIfActive: returns no committed records when state save fails", () => {
+  const dir = freshDir();
+  try {
+    const id = "00000000-0000-4000-8000-000000000668";
+    const running = makeRecord(dir, id, {
+      status: "running", exitCode: null, parsed: null,
+    });
+    writeJobFile(dir, id, running);
+    require_then_mkdir(resolveStateFile(dir));
+    const result = commitJobRecordsIfActive(dir, [id], () => makeRecord(dir, id, {
+      status: "stale", exitCode: null, parsed: null,
+      errorMessage: "stale_active_job: save failed after meta write",
+    }));
+    assert.deepEqual(result, [],
+      "caller must not receive committed records when state.json save failed");
+    assert.equal(readJobFileById(dir, id).status, "stale",
+      "meta write may still land; later reconcile can repair state from terminal meta");
+  } finally { cleanup(dir); }
+});
+
+test("commitJobRecordsIfActive: terminal meta repairs active state without builder", () => {
+  const dir = freshDir();
+  try {
+    const id = "00000000-0000-4000-8000-000000000669";
+    const running = makeRecord(dir, id, {
+      status: "running", exitCode: null, parsed: null,
+    });
+    commitJobRecord(dir, id, running);
+    writeJobFile(dir, id, {
+      ...running,
+      status: "stale",
+      error_message: "stale_active_job: meta already landed",
+    });
+    let builderCalled = false;
+    const result = commitJobRecordsIfActive(dir, [id], () => {
+      builderCalled = true;
+      throw new Error("builder must not run for terminal meta repair");
+    });
     assert.equal(builderCalled, false);
-    assert.equal(result, null);
+    assert.deepEqual(result, []);
+    assert.equal(listJobs(dir).find((job) => job.id === id)?.status, "stale");
   } finally { cleanup(dir); }
 });
 
@@ -245,9 +317,56 @@ test("gemini commitJobRecord: same atomic-under-lock semantics", () => {
     const { metaError, stateError } = commitGeminiJobRecord(dir, id, record);
     assert.equal(metaError, null);
     assert.equal(stateError, null);
-    const result = commitGeminiIfActive(dir, id, () => null);
-    assert.equal(result, null,
+    const result = commitGeminiRecordsIfActive(dir, [id], () => null);
+    assert.deepEqual(result, [],
       "CAS aborts because the record is now terminal");
+  } finally {
+    delete process.env[envVar];
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("gemini commitJobRecordsIfActive: terminal meta repairs active state without builder", () => {
+  const envVar = "COMMIT_GEMINI_TEST_DATA";
+  const dir = mkdtempSync(path.join(tmpdir(), "commit-g-repair-"));
+  process.env[envVar] = dir;
+  configureGeminiState({
+    pluginDataEnv: envVar,
+    fallbackStateRootDir: path.join(dir, "fallback"),
+  });
+  try {
+    const id = "00000000-0000-4000-8000-000000000778";
+    const running = buildJobRecord({
+      job_id: id, target: "gemini",
+      parent_job_id: null, resume_chain: [],
+      mode_profile_name: "rescue", mode: "rescue",
+      model: "gemini-3-pro-preview",
+      cwd: dir, workspace_root: dir,
+      containment: "none", scope: "working-tree",
+      dispose_effective: false, scope_base: null, scope_paths: null,
+      prompt_head: "test", schema_spec: null, binary: "gemini",
+      started_at: new Date().toISOString(),
+    }, {
+      status: "running",
+      exitCode: null,
+      parsed: null,
+      pidInfo: { pid: 1, starttime: "x", argv0: "gemini" },
+      geminiSessionId: null,
+    }, []);
+    commitGeminiJobRecord(dir, id, running);
+    writeGeminiJobFile(dir, id, {
+      ...running,
+      status: "stale",
+      error_message: "stale_active_job: meta already landed",
+    });
+    let builderCalled = false;
+    const result = commitGeminiRecordsIfActive(dir, [id], () => {
+      builderCalled = true;
+      throw new Error("builder must not run for terminal meta repair");
+    });
+    assert.equal(builderCalled, false);
+    assert.deepEqual(result, []);
+    assert.equal(listGeminiJobs(dir).find((job) => job.id === id)?.status, "stale");
   } finally {
     delete process.env[envVar];
     rmSync(dir, { recursive: true, force: true });

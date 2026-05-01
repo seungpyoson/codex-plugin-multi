@@ -421,6 +421,52 @@ process.stdout.write(JSON.stringify({ type: "result", is_error: false, result: "
   }
 });
 
+test("spawnClaude: opt-in strict mode strips proxy env", async () => {
+  const dir = mkdtempSync(path.join(tmpdir(), "claude-proxy-strip-unit-"));
+  try {
+    const bin = writeExecutable(dir, "claude-proxy-check.mjs", `#!/usr/bin/env node
+const forbidden = [
+  "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "ALL_PROXY",
+  "http_proxy", "https_proxy", "no_proxy", "all_proxy",
+  "Http_Proxy", "CODEX_PLUGIN_STRIP_PROXY_ENV"
+];
+const leaked = forbidden.filter((key) => process.env[key]);
+if (leaked.length > 0) {
+  process.stderr.write("leaked proxy/control env: " + leaked.join(",") + "\\n");
+  process.exit(45);
+}
+const sessionIdx = process.argv.indexOf("--session-id");
+const sessionId = sessionIdx >= 0 ? process.argv[sessionIdx + 1] : null;
+process.stdout.write(JSON.stringify({ type: "result", is_error: false, result: "ok", session_id: sessionId }) + "\\n");
+`);
+    const result = await spawnClaude(resolveProfile("rescue"), {
+      model: "claude-haiku-4-5-20251001",
+      promptText: "hello",
+      sessionId: UUID,
+      binary: bin,
+      env: {
+        PATH: process.env.PATH,
+        HOME: process.env.HOME,
+        CODEX_PLUGIN_STRIP_PROXY_ENV: "1",
+        HTTP_PROXY: "http://corp-proxy.invalid:3128",
+        HTTPS_PROXY: "http://corp-proxy.invalid:3128",
+        NO_PROXY: "localhost,.internal",
+        ALL_PROXY: "socks://corp-proxy.invalid:1080",
+        http_proxy: "http://lower-proxy.invalid:3128",
+        https_proxy: "http://lower-proxy.invalid:3128",
+        no_proxy: "localhost,.lower",
+        all_proxy: "socks://lower-proxy.invalid:1080",
+        Http_Proxy: "http://mixed-proxy.invalid:3128",
+      },
+    });
+
+    assert.equal(result.exitCode, 0, result.stderr);
+    assert.equal(result.parsed.ok, true);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("spawnClaude: timeout escalation timer does not keep the parent process alive", () => {
   const dir = mkdtempSync(path.join(tmpdir(), "claude-timeout-unref-unit-"));
   try {

@@ -393,6 +393,54 @@ process.stdout.write(JSON.stringify({
   }
 });
 
+test("spawnGemini: opt-in strict mode strips proxy env", async () => {
+  const dir = mkdtempSync(path.join(tmpdir(), "gemini-proxy-strip-unit-"));
+  try {
+    const bin = writeExecutable(dir, "gemini-proxy-check.mjs", `#!/usr/bin/env node
+const forbidden = [
+  "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "ALL_PROXY",
+  "http_proxy", "https_proxy", "no_proxy", "all_proxy",
+  "Http_Proxy", "CODEX_PLUGIN_STRIP_PROXY_ENV"
+];
+const leaked = forbidden.filter((key) => process.env[key]);
+if (leaked.length > 0) {
+  process.stderr.write("leaked proxy/control env: " + leaked.join(",") + "\\n");
+  process.exit(45);
+}
+process.stdin.resume();
+process.stdout.write(JSON.stringify({
+  session_id: "22222222-3333-4444-9555-666666666666",
+  response: "ok"
+}) + "\\n");
+`);
+    const result = await spawnGemini(resolveProfile("rescue"), {
+      model: "gemini-3-flash-preview",
+      promptText: "hello",
+      cwd: dir,
+      binary: bin,
+      env: {
+        PATH: process.env.PATH,
+        HOME: process.env.HOME,
+        CODEX_PLUGIN_STRIP_PROXY_ENV: "1",
+        HTTP_PROXY: "http://corp-proxy.invalid:3128",
+        HTTPS_PROXY: "http://corp-proxy.invalid:3128",
+        NO_PROXY: "localhost,.internal",
+        ALL_PROXY: "socks://corp-proxy.invalid:1080",
+        http_proxy: "http://lower-proxy.invalid:3128",
+        https_proxy: "http://lower-proxy.invalid:3128",
+        no_proxy: "localhost,.lower",
+        all_proxy: "socks://lower-proxy.invalid:1080",
+        Http_Proxy: "http://mixed-proxy.invalid:3128",
+      },
+    });
+
+    assert.equal(result.exitCode, 0, result.stderr);
+    assert.equal(result.parsed.ok, true);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("spawnGemini: ignores EPIPE when fast child returns valid output", () => {
   const dir = mkdtempSync(path.join(tmpdir(), "gemini-epipe-unit-"));
   try {
