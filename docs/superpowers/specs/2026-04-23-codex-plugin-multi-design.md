@@ -539,10 +539,12 @@ Identical to upstream: parent fork-execs target CLI, stdio redirected to `<works
 ### 7.5 OAuth health probe — `ping`
 
 - `ok` — JSON parsed, `is_error:false` / `response` non-empty.
-- `not_authed` — non-zero exit + non-JSON stdout + stderr content. Surface stderr verbatim + "run `<target>` interactively to complete OAuth."
+- `not_authed` — non-zero exit whose stderr/stdout/parsed fallback detail
+  contains auth/login/credential/OAuth signals. Surface the detail verbatim +
+  "run `<target>` interactively to complete OAuth."
 - `not_found` — `ENOENT`. Print install URL.
-- `rate_limited` — 429 in stderr. Gemini-specific retry guidance.
-- `error:<raw>` — anything else.
+- `rate_limited` — rate-limit / 429 / overload signal in the fallback detail.
+- `error` — anything else, with `exit_code` when the target CLI exited non-zero.
 
 ## 8. Model selection policy
 

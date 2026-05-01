@@ -23,6 +23,12 @@
   setup ping so the default probe uses the target CLI's native model selection;
   ping JSON keeps a `model` key and returns `null` when no explicit `--model`
   override was supplied.
+- Hardened post-review setup/status edge cases: ping auth classification now
+  recognizes common `authentication` / `credentials` variants without matching
+  unrelated `author*` text; Gemini generic ping errors now include `exit_code`
+  like Claude; orphan reconciliation batches active-job CAS updates under one
+  state lock and can reclaim full state-only active records when `meta.json`
+  is missing.
 
 ### Known limitations
 

@@ -1065,7 +1065,7 @@ test("ping: succeeds without --model and forbids tool exploration in the prompt"
 test("ping: failure detail falls back to target stdout when stderr is empty", () => {
   const tmp = mkdtempSync(path.join(tmpdir(), "claude-ping-stdout-"));
   const binary = writeExecutable(tmp, "claude-stdout-error", `#!/usr/bin/env node
-process.stdout.write("stdout auth diagnostic\\n");
+process.stdout.write("Authentication required\\n");
 process.exit(7);
 `);
   const { stdout, status, dataDir } = runCompanion(
@@ -1076,7 +1076,7 @@ process.exit(7);
     assert.equal(status, 2);
     const result = JSON.parse(stdout);
     assert.equal(result.status, "not_authed");
-    assert.match(result.detail, /stdout auth diagnostic/);
+    assert.match(result.detail, /Authentication required/);
   } finally {
     cleanup(dataDir);
     rmSync(tmp, { recursive: true, force: true });
@@ -1086,7 +1086,7 @@ process.exit(7);
 test("ping: generic stdout mentioning authoring is not classified as auth", () => {
   const tmp = mkdtempSync(path.join(tmpdir(), "claude-ping-authoring-"));
   const binary = writeExecutable(tmp, "claude-authoring-error", `#!/usr/bin/env node
-process.stdout.write("authoring failed\\n");
+process.stdout.write("authoring authority logging failed\\n");
 process.exit(7);
 `);
   const { stdout, status, dataDir } = runCompanion(
@@ -1097,7 +1097,7 @@ process.exit(7);
     assert.equal(status, 2);
     const result = JSON.parse(stdout);
     assert.equal(result.status, "error");
-    assert.match(result.detail, /authoring failed/);
+    assert.match(result.detail, /authoring authority logging failed/);
   } finally {
     cleanup(dataDir);
     rmSync(tmp, { recursive: true, force: true });

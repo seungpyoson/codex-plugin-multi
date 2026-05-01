@@ -631,6 +631,34 @@ export function commitJobRecordIfActive(cwd, jobId, builder) {
   return committed;
 }
 
+// Batch CAS variant for reconcile. Acquires the state lock once, then checks
+// each active job under that same lock. If meta.json is missing but state.json
+// still carries a full active JobRecord, the builder can recover by writing a
+// stale terminal meta record instead of leaving a permanent active orphan.
+export function commitJobRecordsIfActive(cwd, jobIds, builder) {
+  const committed = [];
+  try {
+    updateState(cwd, (state) => {
+      for (const jobId of new Set(jobIds)) {
+        const stateJob = state.jobs.find((job) => job.id === jobId) ?? null;
+        let meta = null;
+        let metaMissing = false;
+        try { meta = JSON.parse(fs.readFileSync(resolveJobFile(cwd, jobId), "utf8")); }
+        catch { metaMissing = true; }
+        const source = meta ?? stateJob;
+        if (!source || !ACTIVE_JOB_STATUSES.has(source.status)) continue;
+        const next = builder(source, { jobId, stateJob, metaMissing });
+        if (!next) continue;
+        try { writeJobFile(cwd, jobId, next); }
+        catch { continue; }
+        applyJobUpsertToState(state, next);
+        committed.push(next);
+      }
+    });
+  } catch { /* lock acquisition / state save failed; next pass retries */ }
+  return committed;
+}
+
 export function listJobs(cwd) {
   return loadState(cwd).jobs;
 }

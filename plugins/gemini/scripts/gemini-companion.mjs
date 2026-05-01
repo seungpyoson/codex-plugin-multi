@@ -754,7 +754,7 @@ async function cmdResult(rest) {
 }
 
 const PING_PROMPT = "reply with exactly: pong. Do not use any tools, do not read files, and do not explore the workspace.";
-const PING_AUTH_RE = /\b(auth|login|credential|oauth|unauthenticated)\b/i;
+const PING_AUTH_RE = /\b(auth(?:enticat\w*)?|login|credential\w*|oauth|unauthenticated|signin|sign-in)\b/i;
 
 function pingFailureDetail(execution) {
   const raw = execution?.parsed?.raw;
@@ -800,7 +800,7 @@ async function cmdPing(rest) {
         hint: "Run `gemini` interactively to complete OAuth." });
       process.exit(2);
     }
-    printJson({ status: "error", detail });
+    printJson({ status: "error", exit_code: execution.exitCode, detail });
     process.exit(2);
   } catch (e) {
     if (e.code === "ENOENT") {

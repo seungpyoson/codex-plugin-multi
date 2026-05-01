@@ -18,6 +18,7 @@ import {
   writeJobFile,
   listJobs,
   readJobFileById,
+  resolveJobFile,
 } from "../../plugins/claude/scripts/lib/state.mjs";
 import { reconcileActiveJobs } from "../../plugins/claude/scripts/lib/reconcile.mjs";
 import * as GeminiState from "../../plugins/gemini/scripts/lib/state.mjs";
@@ -418,7 +419,7 @@ test("reconcileActiveJobs: terminal records (completed/failed/cancelled) are ign
 
 test("reconcileActiveJobs: missing meta.json on disk is skipped without throwing", () => {
   // listJobs returns a state.json summary; meta.json may be missing if a
-  // prior writer failed. Reconciliation must skip such entries instead of
+  // prior writer failed. Incomplete summaries must be skipped instead of
   // crashing the next status call.
   const dir = freshDir();
   try {
@@ -427,6 +428,29 @@ test("reconcileActiveJobs: missing meta.json on disk is skipped without throwing
     // No writeJobFile — meta.json absent. Should be a no-op.
     assert.deepEqual(reconcileActiveJobs(dir), [],
       "summary without meta.json must be skipped, not throw");
+  } finally {
+    cleanup(dir);
+  }
+});
+
+test("reconcileActiveJobs: full state-only active record is reclaimed when meta is missing", () => {
+  // If state.json retained a full active JobRecord but meta.json disappeared,
+  // reconcile can still produce a terminal stale meta record instead of
+  // leaving status --all polluted forever.
+  const dir = freshDir();
+  try {
+    const id = "state-only-full-record";
+    seedActive(dir, id, {
+      started_at: new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString(),
+    });
+    rmSync(resolveJobFile(dir, id), { force: true });
+
+    const reclaimed = reconcileActiveJobs(dir);
+    assert.equal(reclaimed.length, 1);
+    assert.equal(reclaimed[0].job_id, id);
+    const after = readJobFileById(dir, id);
+    assert.equal(after.status, "stale");
+    assert.match(after.error_message, /stale_active_job/);
   } finally {
     cleanup(dir);
   }

@@ -1305,7 +1305,7 @@ test("gemini ping failure detail falls back to target stdout when stderr is empt
   const binDir = mkdtempSync(path.join(tmpdir(), "gemini-ping-stdout-bin-"));
   const binary = path.join(binDir, "gemini-stdout-error");
   writeFileSync(binary, `#!/usr/bin/env node
-process.stdout.write("stdout oauth diagnostic\\n");
+process.stdout.write("credentials missing\\n");
 process.exit(7);
 `, "utf8");
   chmodSync(binary, 0o755);
@@ -1317,7 +1317,33 @@ process.exit(7);
     assert.equal(status, 2);
     const parsed = JSON.parse(stdout);
     assert.equal(parsed.status, "not_authed");
-    assert.match(parsed.detail, /stdout oauth diagnostic/);
+    assert.match(parsed.detail, /credentials missing/);
+  } finally {
+    rmTree(dataDir);
+    rmTree(cwd);
+    rmTree(binDir);
+  }
+});
+
+test("gemini ping generic error includes exit_code", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "gemini-ping-generic-cwd-"));
+  const binDir = mkdtempSync(path.join(tmpdir(), "gemini-ping-generic-bin-"));
+  const binary = path.join(binDir, "gemini-generic-error");
+  writeFileSync(binary, `#!/usr/bin/env node
+process.stdout.write("plain failure\\n");
+process.exit(7);
+`, "utf8");
+  chmodSync(binary, 0o755);
+  const { stdout, status, dataDir } = runCompanion(
+    ["ping", "--model", "gemini-3-flash-preview"],
+    { cwd, env: { GEMINI_BINARY: binary } },
+  );
+  try {
+    assert.equal(status, 2);
+    const parsed = JSON.parse(stdout);
+    assert.equal(parsed.status, "error");
+    assert.equal(parsed.exit_code, 7);
+    assert.match(parsed.detail, /plain failure/);
   } finally {
     rmTree(dataDir);
     rmTree(cwd);

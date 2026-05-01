@@ -27,7 +27,7 @@
 // Called from cmdStatus on every status request so the lifecycle
 // self-heals without a separate reaper process.
 
-import { listJobs, commitJobRecordIfActive } from "./state.mjs";
+import { listJobs, commitJobRecordsIfActive } from "./state.mjs";
 import { verifyPidInfo } from "./identity.mjs";
 import { buildJobRecord } from "./job-record.mjs";
 
@@ -102,45 +102,45 @@ function classifyOrphan(meta, now, orphanAgeMs, verifyPidInfoFn) {
  * just shows up-to-date records.
  *
  * BLOCKER 2 fix (PR #21 review): the read-classify-write loop runs
- * inside commitJobRecordIfActive, which holds the state lock around an
- * in-lock CAS read of meta.json. A worker's commitJobRecord that lands
- * before reconcile takes the lock will be CAS-detected (meta no longer
- * active → builder NOT called); a worker that runs after reconcile
- * commits stale will simply overwrite the stale record with its
- * terminal record. Either way, terminal wins — no clobber.
+ * inside commitJobRecordsIfActive, which holds the state lock around
+ * in-lock CAS reads of meta.json/state.json. A worker's commitJobRecord
+ * that lands before reconcile takes the lock will be CAS-detected
+ * (meta no longer active → builder NOT called); a worker that runs
+ * after reconcile commits stale will simply overwrite the stale record
+ * with its terminal record. Either way, terminal wins — no clobber.
  */
 export function reconcileActiveJobs(workspaceRoot, {
   now = Date.now(),
   orphanAgeMs = DEFAULT_ORPHAN_AGE_MS,
   verifyPidInfoFn = verifyPidInfo,
 } = {}) {
-  const reclaimed = [];
-  for (const summary of listJobs(workspaceRoot)) {
-    if (!ACTIVE_STATUSES.has(summary.status)) continue;
-    let reason = null;
-    const next = commitJobRecordIfActive(workspaceRoot, summary.id, (meta) => {
-      // Inside the state lock. CAS already passed — meta.status is in
-      // ACTIVE_JOB_STATUSES. Decide whether to promote.
-      reason = classifyOrphan(meta, now, orphanAgeMs, verifyPidInfoFn);
-      if (!reason) return null;
-      let invocation;
-      try { invocation = invocationFromMeta(meta); }
-      catch { return null; }
-      if (!invocation.target || !invocation.mode_profile_name) return null;
-      try {
-        return buildJobRecord(invocation, {
-          // status="stale" tells classifyExecution to short-circuit.
-          status: "stale",
-          exitCode: meta.exit_code ?? null,
-          parsed: null,
-          pidInfo: meta.pid_info ?? null,
-          claudeSessionId: meta.claude_session_id ?? null,
-          geminiSessionId: meta.gemini_session_id ?? null,
-          errorMessage: `stale_active_job: ${reason}`,
-        }, Array.isArray(meta.mutations) ? meta.mutations : []);
-      } catch { return null; }
-    });
-    if (next) reclaimed.push({ job_id: summary.id, reason });
-  }
-  return reclaimed;
+  const activeJobIds = listJobs(workspaceRoot)
+    .filter((summary) => ACTIVE_STATUSES.has(summary.status))
+    .map((summary) => summary.id);
+  const reasons = new Map();
+  const committed = commitJobRecordsIfActive(workspaceRoot, activeJobIds, (meta) => {
+    // Inside the state lock. CAS already passed — meta.status is in
+    // ACTIVE_JOB_STATUSES. Decide whether to promote.
+    const reason = classifyOrphan(meta, now, orphanAgeMs, verifyPidInfoFn);
+    if (!reason) return null;
+    let invocation;
+    try { invocation = invocationFromMeta(meta); }
+    catch { return null; }
+    if (!invocation.target || !invocation.mode_profile_name) return null;
+    try {
+      const next = buildJobRecord(invocation, {
+        // status="stale" tells classifyExecution to short-circuit.
+        status: "stale",
+        exitCode: meta.exit_code ?? null,
+        parsed: null,
+        pidInfo: meta.pid_info ?? null,
+        claudeSessionId: meta.claude_session_id ?? null,
+        geminiSessionId: meta.gemini_session_id ?? null,
+        errorMessage: `stale_active_job: ${reason}`,
+      }, Array.isArray(meta.mutations) ? meta.mutations : []);
+      reasons.set(next.id, reason);
+      return next;
+    } catch { return null; }
+  });
+  return committed.map((record) => ({ job_id: record.id, reason: reasons.get(record.id) }));
 }
