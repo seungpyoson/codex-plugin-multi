@@ -488,7 +488,7 @@ test("M6-finding-1-H1: background worker persists parsed.result on terminal JobR
       scope: "working-tree",
       scope_base: null,
       scope_paths: null,
-      disclosure: "Selected source content may be sent to Claude Code for external review.",
+      disclosure: "Selected source content was sent to Claude Code for external review.",
     });
     assert.equal(meta.schema_version, 7);
   } finally {

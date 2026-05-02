@@ -89,19 +89,37 @@ const PROVIDER_NAMES = Object.freeze({
 
 export function externalReviewForInvocation(invocation, execution = null) {
   const provider = PROVIDER_NAMES[invocation.target] ?? invocation.target;
+  const { status, error_code } = classifyExecution(execution);
+  const disclosure = externalReviewDisclosure(provider, status, error_code);
   return Object.freeze({
     marker: "EXTERNAL REVIEW",
     provider,
     run_kind: invocation.run_kind ?? "foreground",
     job_id: invocation.job_id,
-    session_id: execution?.claudeSessionId ?? execution?.geminiSessionId ?? execution?.kimiSessionId ?? null,
+    session_id: execution?.geminiSessionId ?? null,
     parent_job_id: invocation.parent_job_id ?? null,
     mode: invocation.mode,
     scope: invocation.scope,
     scope_base: invocation.scope_base ?? null,
     scope_paths: invocation.scope_paths ?? null,
-    disclosure: `Selected source content may be sent to ${provider} for external review.`,
+    disclosure,
   });
+}
+
+function externalReviewDisclosure(provider, status, errorCode) {
+  if (status === "queued" || status === "running") {
+    return `Selected source content may be sent to ${provider} for external review.`;
+  }
+  if (status === "completed") {
+    return `Selected source content was sent to ${provider} for external review.`;
+  }
+  if (errorCode === "scope_failed" || errorCode === "spawn_failed") {
+    return `Selected source content was not sent to ${provider}; the target process was not spawned.`;
+  }
+  if (status === "stale") {
+    return `Selected source content may have been sent to ${provider}; the background worker became stale before completion.`;
+  }
+  return `Selected source content may have been sent to ${provider}; the run ended before a clean result was produced.`;
 }
 
 /**

@@ -1435,6 +1435,12 @@ test("status: lists a job after a review run", () => {
     const match = statusObj.jobs.find((j) => j.id === job_id);
     assert.ok(match, `job ${job_id} not in status output`);
     assert.equal(match.status, "completed");
+    assert.equal(match.external_review.provider, "Claude Code");
+    assert.equal(match.external_review.job_id, job_id);
+    assert.equal(
+      match.external_review.disclosure,
+      "Selected source content was sent to Claude Code for external review.",
+    );
   } finally {
     rmSync(dataDir, { recursive: true, force: true });
     rmSync(cwd, { recursive: true, force: true });
@@ -1467,6 +1473,12 @@ test("result --job: returns meta for a finished job", () => {
     const meta = JSON.parse(resultRes.stdout);
     assert.equal(meta.id, job_id);
     assert.equal(meta.status, "completed");
+    assert.equal(meta.external_review.provider, "Claude Code");
+    assert.equal(meta.external_review.job_id, job_id);
+    assert.equal(
+      meta.external_review.disclosure,
+      "Selected source content was sent to Claude Code for external review.",
+    );
   } finally {
     rmSync(dataDir, { recursive: true, force: true });
     rmSync(cwd, { recursive: true, force: true });

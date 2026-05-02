@@ -214,4 +214,35 @@ test("direct API reviewers fail closed when no explicit API-key auth is availabl
   assert.equal(record.status, "failed");
   assert.equal(record.error_code, "missing_key");
   assert.match(record.suggested_action, /DEEPSEEK_API_KEY/);
+  assert.equal(
+    record.external_review.disclosure,
+    "Selected source content was not sent to DeepSeek through direct API auth.",
+  );
+  assert.equal(record.disclosure_note, record.external_review.disclosure);
+});
+
+test("direct API reviewers mark scope failures as not sent", async () => {
+  const cwd = makeWorkspace();
+  const result = await run([
+    "run",
+    "--provider", "deepseek",
+    "--mode", "custom-review",
+    "--scope", "custom",
+    "--prompt", "Check this file.",
+  ], {
+    cwd,
+    env: {
+      API_REVIEWERS_MOCK_RESPONSE: mockResponse("deepseek-v4-flash"),
+      DEEPSEEK_API_KEY: "secret-test-value",
+    },
+  });
+  assert.equal(result.status, 1);
+  const record = parseJson(result.stdout);
+  assert.equal(record.status, "failed");
+  assert.equal(record.error_code, "scope_failed");
+  assert.equal(
+    record.external_review.disclosure,
+    "Selected source content was not sent to DeepSeek through direct API auth.",
+  );
+  assert.equal(record.disclosure_note, record.external_review.disclosure);
 });

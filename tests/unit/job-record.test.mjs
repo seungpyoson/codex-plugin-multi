@@ -121,7 +121,7 @@ test("buildJobRecord: foreground success path has EXACTLY the expected keys", ()
     scope: "working-tree",
     scope_base: null,
     scope_paths: null,
-    disclosure: "Selected source content may be sent to Claude Code for external review.",
+    disclosure: "Selected source content was sent to Claude Code for external review.",
   });
   assert.equal(rec.schema_version, SCHEMA_VERSION);
   assert.equal(rec.id, rec.job_id, "id is legacy alias for job_id");
@@ -144,6 +144,10 @@ test("buildJobRecord: queued/pre-run state (no execution)", () => {
   assert.equal(rec.gemini_session_id, null);
   assert.equal(rec.error_code, null);
   assert.equal(rec.error_message, null);
+  assert.equal(
+    rec.external_review.disclosure,
+    "Selected source content may be sent to Claude Code for external review.",
+  );
 });
 
 test("buildJobRecord: status=cancelled short-circuit forces lifecycle override (issue #22 sub-task 2)", () => {
@@ -273,6 +277,10 @@ test("buildJobRecord: unsafe scope failures carry operator diagnostics", () => {
   assert.match(rec.suggested_action, /branch-diff/);
   assert.match(rec.disclosure_note, /not spawned/);
   assert.match(rec.disclosure_note, /not sent/);
+  assert.equal(
+    rec.external_review.disclosure,
+    "Selected source content was not sent to Claude Code; the target process was not spawned.",
+  );
 });
 
 test("gemini buildJobRecord: unsafe scope diagnostics mention provider disclosure", () => {
@@ -294,6 +302,10 @@ test("gemini buildJobRecord: unsafe scope diagnostics mention provider disclosur
   assert.match(rec.suggested_action, /working-tree/);
   assert.match(rec.disclosure_note, /not spawned/);
   assert.match(rec.disclosure_note, /external provider/);
+  assert.equal(
+    rec.external_review.disclosure,
+    "Selected source content was not sent to Gemini CLI; the target process was not spawned.",
+  );
 });
 
 test("buildJobRecord: scope_base_missing provides targeted diagnostic", () => {
@@ -846,4 +858,20 @@ test("schema parity — every EXPECTED_KEYS field is documented in claude-result
   }
   assert.deepEqual(missing, [],
     `claude-result-handling/SKILL.md must mention every JobRecord field. Missing: ${missing.join(", ")}`);
+});
+
+test("claude-result-handling external-review ASCII box rows are aligned", () => {
+  const skillText = readFileSync(SKILL_MD, "utf8");
+  const boxes = [...skillText.matchAll(/```text\n([\s\S]*?)```/g)]
+    .map((match) => match[1])
+    .filter((block) => block.includes("EXTERNAL REVIEW"));
+
+  assert.ok(boxes.length > 0, "expected at least one EXTERNAL REVIEW text block");
+  for (const box of boxes) {
+    const rows = box.split("\n").filter((line) => /^ *[|+]/.test(line));
+    assert.ok(rows.length >= 3, `expected bordered rows in block:\n${box}`);
+    const indents = new Set(rows.map((line) => line.match(/^ */)[0].length));
+    assert.deepEqual([...indents], [rows[0].match(/^ */)[0].length],
+      `external-review box rows have inconsistent leading spaces:\n${box}`);
+  }
 });

@@ -270,7 +270,7 @@ for (const mode of ["review", "adversarial-review", "custom-review"]) {
       scope: mode === "adversarial-review" ? "branch-diff" : (mode === "custom-review" ? "custom" : "working-tree"),
       scope_base: mode === "adversarial-review" ? "HEAD~1" : null,
       scope_paths: mode === "custom-review" ? ["seed.txt"] : null,
-      disclosure: "Selected source content may be sent to Kimi Code CLI for external review.",
+      disclosure: "Selected source content was sent to Kimi Code CLI for external review.",
     });
     const { record: persisted } = readOnlyJobRecord(result.dataDir);
     assert.equal(persisted.job_id, record.job_id);

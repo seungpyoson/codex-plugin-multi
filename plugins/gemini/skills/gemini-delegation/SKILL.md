@@ -63,12 +63,35 @@ In the repository checkout, it is `plugins/gemini`.
 
 ## Rendering
 
-Render companion JSON directly. If `external_review` is present, render an
-EXTERNAL REVIEW box for launch/result and a persistent `| EXTERNAL |` rail for
-wait/status before normal prose. Keep the user's attention on `status`,
-`result`, `structured_output`, `permission_denials`, `mutations`, and the
-diagnostic fields `error_summary`, `error_cause`, `suggested_action`, and
-`disclosure_note`. Surface `mutations` prominently for read-only review paths.
+Render companion JSON directly. If `external_review` is present, render it
+before normal prose.
+
+Launch/result card:
+
+```text
++---------------- EXTERNAL REVIEW ----------------+
+| Provider  <external_review.provider>            |
+| Job       <external_review.job_id>               |
+| Session   <external_review.session_id|pending>   |
+| Run       <external_review.run_kind>             |
+| Scope     <external_review.scope>[, base=...]    |
++-------------------------------------------------+
+Disclosure: <external_review.disclosure>
+```
+
+Wait/status rail:
+
+```text
+| EXTERNAL | <provider> - <job_id> - <status>
+| EXTERNAL | <run_kind> - <scope>[, base=<scope_base>]
+```
+
+For multiple provider results, render one card/rail per `external_review`.
+Keep the user's attention on `status`, `result`, `structured_output`,
+`permission_denials`, `mutations`, and the diagnostic fields `error_summary`,
+`error_cause`, `suggested_action`, and `disclosure_note`. Surface `mutations`
+prominently for read-only review paths. If `external_review.disclosure` is
+already rendered, do not repeat an identical `disclosure_note`.
 If target read permission denials leave no substantive result or findings,
 render review blocked / no findings produced and list the denied operations.
 For setup failures, tell the user to run `gemini` interactively if OAuth is

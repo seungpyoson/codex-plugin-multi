@@ -216,6 +216,11 @@ test("reconcileActiveJobs: stale jobs are continuable history, not deleted", () 
     const id = "permanent-stale-job";
     seedActive(dir, id, {
       pid_info: TEST_PID_INFO,
+      external_review: {
+        marker: "EXTERNAL REVIEW",
+        provider: "Claude Code",
+        run_kind: "background",
+      },
     });
     reconcileActiveJobs(dir, {
       verifyPidInfoFn: verifier("process_gone"),
@@ -227,6 +232,11 @@ test("reconcileActiveJobs: stale jobs are continuable history, not deleted", () 
     assert.equal(stale.mode, "rescue");
     assert.equal(stale.workspace_root, dir);
     assert.equal(stale.target, "claude");
+    assert.equal(stale.external_review.run_kind, "background");
+    assert.equal(
+      stale.external_review.disclosure,
+      "Selected source content may have been sent to Claude Code; the background worker became stale before completion.",
+    );
     // Reconciliation never deletes the record from state.json either.
     const summary = listJobs(dir).find((j) => j.id === id);
     assert.ok(summary, "stale job must remain in state.json");
@@ -479,6 +489,11 @@ test("gemini reconcileActiveJobs: dead pid promotes to stale", () => {
       status: "running",
       started_at: new Date(Date.now() - 10_000).toISOString(),
       pid_info: TEST_PID_INFO,
+      external_review: {
+        marker: "EXTERNAL REVIEW",
+        provider: "Gemini CLI",
+        run_kind: "background",
+      },
       claude_session_id: null,
       gemini_session_id: null,
       schema_version: 6,
@@ -489,7 +504,9 @@ test("gemini reconcileActiveJobs: dead pid promotes to stale", () => {
       verifyPidInfoFn: verifier("process_gone"),
     });
     assert.equal(reclaimed.length, 1);
-    assert.equal(GeminiState.readJobFileById(dir, id).status, "stale");
+    const after = GeminiState.readJobFileById(dir, id);
+    assert.equal(after.status, "stale");
+    assert.equal(after.external_review.run_kind, "background");
   } finally {
     cleanup(dir, "RECONCILE_GEMINI_DATA");
   }

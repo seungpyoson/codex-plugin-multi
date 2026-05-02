@@ -198,6 +198,7 @@ test("gemini rescue background: launched event and terminal JobRecord", async ()
     assert.deepEqual(meta.external_review, {
       ...launched.external_review,
       session_id: GEMINI_SESSION_ID,
+      disclosure: "Selected source content was sent to Gemini CLI for external review.",
     });
     assert.equal("prompt" in meta, false, "full prompt must not appear on JobRecord");
   } finally {
@@ -951,6 +952,12 @@ test("gemini continue background: launched event and resumed terminal JobRecord"
     assert.equal(launched.parent_job_id, prior.job_id);
     assert.equal(typeof launched.job_id, "string");
     assert.equal(Number.isInteger(launched.pid), true);
+    assert.equal(launched.external_review.parent_job_id, prior.job_id);
+    assert.equal(launched.external_review.run_kind, "background");
+    assert.equal(
+      launched.external_review.disclosure,
+      "Selected source content may be sent to Gemini CLI for external review.",
+    );
 
     const stateRoot = path.join(first.dataDir, "state");
     const deadline = Date.now() + GEMINI_SMOKE_POLL_TIMEOUT_MS;
@@ -976,6 +983,13 @@ test("gemini continue background: launched event and resumed terminal JobRecord"
     assert.deepEqual(meta.resume_chain, [prior.gemini_session_id]);
     assert.equal(meta.result, "Mock Gemini response.");
     assert.equal(meta.gemini_session_id, RESUMED_GEMINI_SESSION_ID);
+    assert.equal(meta.external_review.parent_job_id, prior.job_id);
+    assert.equal(meta.external_review.run_kind, "background");
+    assert.equal(meta.external_review.session_id, RESUMED_GEMINI_SESSION_ID);
+    assert.equal(
+      meta.external_review.disclosure,
+      "Selected source content was sent to Gemini CLI for external review.",
+    );
 
     let fx = null;
     while (Date.now() < deadline && !fx) {

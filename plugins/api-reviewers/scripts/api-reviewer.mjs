@@ -340,11 +340,22 @@ function suggestedAction(errorCode, provider, cfg) {
   return "Inspect error_message and retry after correcting the provider or request configuration.";
 }
 
+function directApiDisclosure(displayName, completed, errorCode) {
+  if (completed) {
+    return `Selected source content was sent to ${displayName} through direct API auth.`;
+  }
+  if (errorCode === "missing_key" || errorCode === "scope_failed") {
+    return `Selected source content was not sent to ${displayName} through direct API auth.`;
+  }
+  return `Selected source content may have been sent to ${displayName} through direct API auth.`;
+}
+
 function buildRecord({ provider, cfg, mode, options, scopeInfo, execution, startedAt, endedAt }) {
   const completed = execution.exitCode === 0 && execution.parsed?.ok === true;
   const errorCode = completed ? null : (execution.parsed?.reason ?? "provider_error");
   const target = provider;
-  const externalReview = {
+  const disclosure = directApiDisclosure(cfg.display_name, completed, errorCode);
+  const externalReview = Object.freeze({
     marker: "EXTERNAL REVIEW",
     provider: cfg.display_name,
     run_kind: "foreground",
@@ -355,8 +366,8 @@ function buildRecord({ provider, cfg, mode, options, scopeInfo, execution, start
     scope: scopeInfo.scope,
     scope_base: scopeInfo.scope_base ?? null,
     scope_paths: scopeInfo.scope_paths,
-    disclosure: `Selected source content was sent to ${cfg.display_name} through direct API auth.`,
-  };
+    disclosure,
+  });
   return {
     id: options.jobId,
     job_id: options.jobId,
@@ -390,7 +401,7 @@ function buildRecord({ provider, cfg, mode, options, scopeInfo, execution, start
     error_cause: completed ? null : "direct_api_provider",
     suggested_action: completed ? null : suggestedAction(errorCode, provider, cfg),
     external_review: externalReview,
-    disclosure_note: `Selected files were sent to ${cfg.display_name} through direct API auth.`,
+    disclosure_note: disclosure,
     result: completed ? execution.parsed.result : null,
     structured_output: null,
     permission_denials: [],

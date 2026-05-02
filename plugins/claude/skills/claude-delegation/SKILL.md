@@ -65,8 +65,9 @@ Render companion JSON according to `claude-result-handling`. If
 status or findings prose. Surface `mutations` prominently for read-only review
 paths, and render diagnostic fields such as `error_summary`, `error_cause`,
 `suggested_action`, and `disclosure_note` before raw `error_message` when
-present. Do not expose full prompts or secrets. If target read permission
-denials leave no substantive result or findings, render review blocked / no
+present. If `external_review.disclosure` is already rendered, do not repeat an
+identical `disclosure_note`. Do not expose full prompts or secrets. If target
+read permission denials leave no substantive result or findings, render review blocked / no
 findings produced and list the denied operations. For setup failures, tell the
 user to run `claude` interactively if OAuth is missing; never suggest setting
 `ANTHROPIC_API_KEY`.

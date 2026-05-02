@@ -52,6 +52,7 @@ function invocationFromMeta(meta) {
     job_id: meta.job_id ?? meta.id,
     target: meta.target,
     parent_job_id: meta.parent_job_id ?? null,
+    run_kind: meta.external_review?.run_kind ?? "foreground",
     resume_chain: meta.resume_chain ?? [],
     mode_profile_name: meta.mode_profile_name,
     mode: meta.mode,
