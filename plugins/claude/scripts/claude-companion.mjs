@@ -391,14 +391,13 @@ async function cmdRun(rest) {
   })();
 
   const scopePaths = parseScopePathsOption(options["scope-paths"]);
-  const authSelection = resolveAuthSelection(options["auth-mode"]);
-  if (authSelection.selected_auth_path === "api_key_env_missing") {
-    fail("not_authed", apiKeyMissingMessage(), apiKeyMissingFields(authSelection));
-  }
-
   const prompt = positionals.join(" ").trim();
   if (!prompt) {
     fail("bad_args", "prompt is required (pass after -- separator)");
+  }
+  const authSelection = resolveAuthSelection(options["auth-mode"]);
+  if (authSelection.selected_auth_path === "api_key_env_missing") {
+    fail("not_authed", apiKeyMissingMessage(), apiKeyMissingFields(authSelection));
   }
 
   const jobId = newJobId();
@@ -774,7 +773,7 @@ async function cmdRunWorker(rest) {
   const invocation = invocationFromRecord(meta, options["auth-mode"]);
   const authSelection = resolveAuthSelection(invocation.auth_mode);
   if (authSelection.selected_auth_path === "api_key_env_missing") {
-    consumePromptSidecar(workspaceRoot, options.job);
+    // The prompt sidecar was already consumed above, so auth refusal cannot leave it on disk.
     const errorRecord = buildJobRecord(invocation, {
       exitCode: null, parsed: null, pidInfo: null, claudeSessionId: null,
       errorMessage: `worker: ${apiKeyMissingMessage()}`,
