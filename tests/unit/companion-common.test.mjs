@@ -7,6 +7,7 @@ import {
   preflightDisclosure,
   preflightSafetyFields,
 } from "../../scripts/lib/companion-common.mjs";
+import { COMPANION_PLUGIN_TARGETS } from "../../scripts/lib/plugin-targets.mjs";
 
 test("companion-common exposes the shared ping prompt", () => {
   assert.equal(
@@ -42,11 +43,11 @@ test("credentialNameDiagnostics omits fields when no provider key is present", (
 });
 
 test("plugin packaging copies expose the canonical helper behavior", async () => {
-  const modules = await Promise.all([
-    import("../../plugins/claude/scripts/lib/companion-common.mjs"),
-    import("../../plugins/gemini/scripts/lib/companion-common.mjs"),
-    import("../../plugins/kimi/scripts/lib/companion-common.mjs"),
-  ]);
+  const modules = await Promise.all(
+    COMPANION_PLUGIN_TARGETS.map((plugin) =>
+      import(`../../plugins/${plugin}/scripts/lib/companion-common.mjs`)
+    )
+  );
   for (const mod of modules) {
     assert.equal(mod.PING_PROMPT, PING_PROMPT);
     assert.deepEqual(mod.preflightSafetyFields(), preflightSafetyFields());

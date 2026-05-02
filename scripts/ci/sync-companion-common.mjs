@@ -1,12 +1,13 @@
 #!/usr/bin/env node
-import assert from "node:assert/strict";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { COMPANION_PLUGIN_TARGETS } from "../lib/plugin-targets.mjs";
+
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const SOURCE = path.join(REPO_ROOT, "scripts/lib/companion-common.mjs");
-const COPIES = ["claude", "gemini", "kimi"].map((plugin) =>
+const COPIES = COMPANION_PLUGIN_TARGETS.map((plugin) =>
   path.join(REPO_ROOT, `plugins/${plugin}/scripts/lib/companion-common.mjs`)
 );
 
@@ -26,5 +27,6 @@ for (const copyPath of COPIES) {
 }
 
 if (failures.length > 0) {
-  assert.fail(`companion-common packaging copies are stale: ${failures.join(", ")}`);
+  process.stderr.write(`error: companion-common packaging copies are stale: ${failures.join(", ")}\n`);
+  process.exit(1);
 }

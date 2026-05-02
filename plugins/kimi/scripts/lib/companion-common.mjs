@@ -1,5 +1,6 @@
-// Canonical source for plugin-local packaging copies. Run
-// `node scripts/ci/sync-companion-common.mjs` after editing this file.
+// Shared companion helper source.
+// Edit scripts/lib/companion-common.mjs, then run
+// `node scripts/ci/sync-companion-common.mjs` to update plugin packaging copies.
 
 export const PING_PROMPT =
   "reply with exactly: pong. Do not use any tools, do not read files, and do not explore the workspace.";
