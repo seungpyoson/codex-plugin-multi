@@ -1,7 +1,8 @@
 # codex-plugin-multi
 
-Two Codex plugins that let Codex delegate work to **Claude Code** and
-**Gemini CLI**. This repository is the Codex-side counterpart to
+Codex plugins that let Codex delegate work to **Claude Code**, **Gemini CLI**,
+**Kimi Code CLI**, and direct API-backed reviewers like **DeepSeek** and
+**GLM**. This repository is the Codex-side counterpart to
 [`openai/codex-plugin-cc`](https://github.com/openai/codex-plugin-cc), which
 lets Claude Code delegate to Codex.
 
@@ -9,9 +10,9 @@ lets Claude Code delegate to Codex.
   modified versions distributed or offered over a network must provide
   corresponding source under the same license. Portions are ported from
   MIT-licensed upstream code; see `NOTICE`.
-- **State:** active development. Claude and Gemini companion
-  review/rescue/status/result/cancel flows are implemented and covered by mock
-  smoke tests. Fresh-install verification on Codex CLI
+- **State:** active development. Claude, Gemini, Kimi, and API-backed reviewer
+  flows are implemented and covered by mock smoke tests. Fresh-install
+  verification on Codex CLI
   0.125.0 found that the marketplace installs successfully, but the TUI does
   not register plugin command files as slash commands.
 
@@ -21,9 +22,16 @@ lets Claude Code delegate to Codex.
 - Git and Node.js available on `PATH`.
 - Claude Code installed and authenticated if you enable the Claude plugin.
 - Gemini CLI installed and authenticated if you enable the Gemini plugin.
+- Kimi Code CLI installed and authenticated if you enable the Kimi plugin.
+- `DEEPSEEK_API_KEY` if you enable the DeepSeek direct API reviewer.
+- `ZAI_API_KEY` if you enable the GLM direct API reviewer. `ZAI_GLM_API_KEY`
+  is accepted as a compatibility alias. GLM Coding Plan calls use
+  `https://api.z.ai/api/coding/paas/v4`, not the general Z.ai endpoint.
 
 The plugins use each target CLI's native OAuth login. They do not read
-`ANTHROPIC_API_KEY`, `GEMINI_API_KEY`, or any `*_API_KEY` environment variable.
+`ANTHROPIC_API_KEY`, `GEMINI_API_KEY`, `KIMI_CODE_API_KEY`, `MOONSHOT_API_KEY`,
+or any `*_API_KEY` environment variable. Direct API reviewers are separate and
+only use API keys through explicit `auth_mode: "api_key"` provider config.
 
 ## Install
 
@@ -39,15 +47,18 @@ Then enable the plugins you want:
 /plugins
 ```
 
-In the plugin picker, enable `claude` and/or `gemini`. You can enable one
-without the other.
+In the plugin picker, enable `claude`, `gemini`, `kimi`, and/or
+`api-reviewers`. You can enable
+one without the others.
 
 ## Verify skill discovery after installation
 
 After enabling the plugins, open Codex's skill picker or ask Codex what plugin
 skills are available. Current Codex builds expose plugin skills with their
 plugin namespace; the installed skill list should include
-`claude:claude-delegation` and `gemini:gemini-delegation`.
+`claude:claude-delegation`, `gemini:gemini-delegation`, and
+`kimi:kimi-delegation`. The API-backed reviewer plugin exposes
+`api-reviewers:api-reviewers-delegation`.
 
 For a non-interactive check against the current Codex profile, run:
 
@@ -82,12 +93,20 @@ user-invocable skill fallback:
 - **Gemini delegation skill:** asks Gemini CLI to run setup checks, preflight,
   review, adversarial review, custom-review, rescue, status, result, or cancel workflows through
   `plugins/gemini/scripts/gemini-companion.mjs`.
+- **Kimi delegation skill:** asks Kimi Code CLI to run setup checks, preflight,
+  review, adversarial review, custom-review, rescue, status, result, or cancel workflows through
+  `plugins/kimi/scripts/kimi-companion.mjs`.
+- **API reviewers delegation skill:** asks DeepSeek or GLM direct API to run
+  setup checks, review, adversarial review, or custom-review workflows through
+  `plugins/api-reviewers/scripts/api-reviewer.mjs`.
 
 Example prompts:
 
 ```text
 Use the Claude delegation skill to review the current diff for regressions.
 Use the Gemini delegation skill for an adversarial review of this design.
+Use the Kimi delegation skill to review this branch for missed edge cases.
+Use the API reviewers delegation skill to ask GLM to review selected files.
 ```
 
 ## Deferred command docs
@@ -101,20 +120,28 @@ command docs:
 ```text
 /claude-review check this diff for regressions
 /gemini-review check this diff for regressions
+/kimi-review check this diff for regressions
+/deepseek-review check this diff for regressions
+/glm-review check this diff for regressions
 ```
 
 ## Command inventory
 
 | Command | Status | Behavior |
 |---|---|---|
-| `/claude-setup` / `/gemini-setup` | Packaged | Target CLI availability and OAuth readiness check. |
-| `/claude-review [focus]` / `/gemini-review [focus]` | Packaged | Read-only review profile over the selected scope. |
-| `/claude-adversarial-review [focus]` / `/gemini-adversarial-review [focus]` | Packaged | Read-only forced-dissent review profile. |
-| `/claude-rescue <task>` / `/gemini-rescue <task>` | Packaged | Background investigation or fix by the target CLI. |
-| `/claude-status` / `/gemini-status` | Packaged | List active and recent jobs for the current workspace. |
-| `/claude-result <job-id>` / `/gemini-result <job-id>` | Packaged | Show the persisted result for a job. |
+| `/claude-setup` / `/gemini-setup` / `/kimi-setup` | Packaged | Target CLI availability and OAuth readiness check. |
+| `/deepseek-setup` / `/glm-setup` | Packaged | Direct API-key readiness check; reports key names only. |
+| `/claude-review [focus]` / `/gemini-review [focus]` / `/kimi-review [focus]` | Packaged | Read-only review profile over the selected scope. |
+| `/deepseek-review [focus]` / `/glm-review [focus]` | Packaged | Direct API-backed review over the selected scope. |
+| `/claude-adversarial-review [focus]` / `/gemini-adversarial-review [focus]` / `/kimi-adversarial-review [focus]` | Packaged | Read-only forced-dissent review profile. |
+| `/deepseek-adversarial-review [focus]` / `/glm-adversarial-review [focus]` | Packaged | Direct API-backed forced-dissent review. |
+| `/deepseek-custom-review --scope-paths <files>` / `/glm-custom-review --scope-paths <files>` | Packaged | Direct API-backed review of explicit files. |
+| `/claude-rescue <task>` / `/gemini-rescue <task>` / `/kimi-rescue <task>` | Packaged | Background investigation or fix by the target CLI. |
+| `/claude-status` / `/gemini-status` / `/kimi-status` | Packaged | List active and recent jobs for the current workspace. |
+| `/claude-result <job-id>` / `/gemini-result <job-id>` / `/kimi-result <job-id>` | Packaged | Show the persisted result for a job. |
 | `/claude-cancel <job-id>` | Packaged | Cancel a running Claude background job. Use Ctrl+C for foreground runs. |
 | `/gemini-cancel <job-id>` | Packaged | Cancel a running Gemini background job. Use Ctrl+C for foreground runs. |
+| `/kimi-cancel <job-id>` | Packaged | Cancel a running Kimi background job. Use Ctrl+C for foreground runs. |
 
 Background jobs return a `job_id`. In a Codex build that supports plugin command
 files, use `/<target>-status` to list jobs and `/<target>-result <job-id>` to
@@ -124,8 +151,9 @@ inspect the terminal record.
 
 - **Review modes are defensive, not magical.** Claude review paths use
   `--disallowedTools`; Gemini review paths use
-  `plugins/gemini/policies/read-only.toml`. Mutations are detected and reported
-  rather than auto-reverted.
+  `plugins/gemini/policies/read-only.toml`; Kimi review paths use Kimi plan
+  mode plus disposable scoped input. Mutations are detected and reported rather
+  than auto-reverted.
 - **Gemini plan-mode is NOT a sandbox.** Gemini's plan mode alone is not the
   enforcement layer for this plugin. The TOML policy file is the real read-only
   control used by Gemini review and adversarial-review paths.
@@ -135,6 +163,11 @@ inspect the terminal record.
 - **Scope narrowing is not provider isolation.** `branch-diff` reduces which
   files are reviewed, but a successful external review still sends selected
   source content to the target provider.
+- **API-key providers are explicit.** DeepSeek and GLM direct API reviewers use
+  `auth_mode: "api_key"` in `plugins/api-reviewers/config/providers.json`.
+  They report `credential_ref` as a key name and never print secret values.
+  They are not fallback auth for Claude, Gemini, or Kimi subscription/OAuth
+  plugins.
 - **Preflight before uncertain disclosure.** `preflight` reports selected files,
   file count, and byte count without launching the target provider. Use
   `custom-review` plus explicit `--scope-paths` for pinned review bundles, and
@@ -142,7 +175,7 @@ inspect the terminal record.
 - **Host-owned pre-launch denials stay outside companion control.** If Codex
   blocks an external provider review before launching the companion process, the
   plugin cannot emit a JobRecord. That host-owned gap is tracked in
-  https://github.com/seungpyoson/codex-plugin-multi/issues/27. Choose
+  https://github.com/seungpyoson/codex-plugin-multi/issues/13. Choose
   an approved provider, run local/Codex-only review, or use `preflight` to
   inspect disclosure before requesting an external review.
 - **Rescue is write-capable.** Rescue modes are intended for investigation and
@@ -153,13 +186,15 @@ inspect the terminal record.
 
 ## Manual E2E
 
-CI uses deterministic mock target CLIs. Real Claude Code and Gemini CLI checks
-are opt-in because they require local OAuth state. See `docs/e2e.md` for the
+CI uses deterministic mock target CLIs and mock API responses. Real Claude
+Code, Gemini CLI, Kimi CLI, DeepSeek API, and GLM API checks are opt-in because
+they require local OAuth state or live credentials. See `docs/e2e.md` for the
 manual runbook:
 
 ```bash
 CLAUDE_LIVE_E2E=1 npm run e2e:claude
 GEMINI_LIVE_E2E=1 npm run e2e:gemini
+KIMI_LIVE_E2E=1 npm run e2e:kimi
 ```
 
 Without the live env vars, those E2E tests skip by design.
@@ -179,6 +214,8 @@ Useful focused checks:
 ```bash
 npm run smoke:claude
 npm run smoke:gemini
+npm run smoke:kimi
+npm run smoke:api-reviewers
 COVERAGE_ENFORCE_TARGET=1 npm run test:coverage
 ```
 
@@ -189,6 +226,8 @@ codex-plugin-multi/
   .agents/plugins/marketplace.json
   plugins/claude/
   plugins/gemini/
+  plugins/kimi/
+  plugins/api-reviewers/
   docs/architecture-record.md
   docs/e2e.md
   docs/release-verification.md

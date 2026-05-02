@@ -1,0 +1,34 @@
+{
+  "name": "api-reviewers",
+  "version": "0.1.0",
+  "description": "Delegate code reviews to direct API-backed providers from within Codex.",
+  "author": {
+    "name": "seungpyoson"
+  },
+  "homepage": "https://github.com/seungpyoson/codex-plugin-multi",
+  "repository": "https://github.com/seungpyoson/codex-plugin-multi",
+  "license": "AGPL-3.0-only",
+  "skills": "./skills",
+  "keywords": [
+    "deepseek",
+    "glm",
+    "zai",
+    "api",
+    "review"
+  ],
+  "interface": {
+    "displayName": "API Reviewers",
+    "shortDescription": "Delegate to direct API-backed reviewers from Codex.",
+    "longDescription": "Invoke DeepSeek and GLM directly through explicit API-key auth for review, adversarial-review, and custom-review workflows.",
+    "developerName": "seungpyoson",
+    "category": "Coding",
+    "capabilities": [
+      "Read"
+    ],
+    "defaultPrompt": [
+      "Ask DeepSeek to review the current diff",
+      "Ask GLM to review selected files",
+      "Run an adversarial review through an API-backed provider"
+    ]
+  }
+}

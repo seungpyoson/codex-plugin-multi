@@ -1,9 +1,10 @@
 # Architecture Record
 
 This project is the Codex-side inverse of `openai/codex-plugin-cc`: Codex can
-delegate to Claude Code and Gemini CLI. The implementation intentionally differs
-from a simple upstream port in a few places because the review/rescue lifecycle
-has different failure modes when Codex is the caller.
+delegate to Claude Code, Gemini CLI, Kimi Code CLI, and direct API-backed
+reviewers. The implementation intentionally differs from a simple upstream port
+in a few places because the review/rescue lifecycle has different failure modes
+when Codex is the caller.
 
 ## Core Improvement: Containment And Scope Are Separate
 
@@ -58,9 +59,17 @@ signals to a reused PID.
 
 ### Shared Libraries Need Behavior Checks, Not Only Byte Identity
 
-Claude and Gemini share many library copies. Byte identity is useful, but it is
-not sufficient: two copies can be equally broken. Shared-library checks also
-require clean imports, production consumers, and behavior tests.
+Claude, Gemini, and Kimi share many library copies. Byte identity is useful, but
+it is not sufficient: two copies can be equally broken. Shared-library checks
+also require clean imports, production consumers, and behavior tests.
+
+The repo keeps plugin packages self-contained, so some shared code remains
+copied instead of imported from a cross-plugin runtime package. That duplication
+is intentional only when it is either byte-identical and guarded by
+`tests/unit/plugin-copies-in-sync.test.mjs`, or provider-specific enough that
+centralizing it would hide auth, process, or output-contract differences. Direct
+API-backed reviewers use a separate, smaller runtime because their failure
+surface is HTTP/auth-policy based rather than CLI/process based.
 
 ## Upstream Relationship
 
@@ -69,4 +78,3 @@ shape and several helper patterns. This repository keeps upstream attribution in
 `NOTICE`, tracks provenance in each `UPSTREAM.md`, and preserves compatible
 patterns where they fit. The differences above are intentional local
 architecture, not accidental drift.
-

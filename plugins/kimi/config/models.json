@@ -1,0 +1,10 @@
+{
+  "cheap": "kimi-code/kimi-for-coding",
+  "medium": "kimi-code/kimi-for-coding",
+  "default": "kimi-code/kimi-for-coding",
+  "fallbacks": {
+    "cheap": [],
+    "medium": [],
+    "default": []
+  }
+}
