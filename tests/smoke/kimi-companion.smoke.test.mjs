@@ -63,6 +63,30 @@ function assertPreflightSafetyFields(result) {
   assert.equal(result.requires_external_provider_consent, true);
 }
 
+function kimiPromptAssertionArgs(cwd, mode) {
+  const extraArgs = [];
+  if (mode === "adversarial-review") {
+    writeFileSync(path.join(cwd, "changed.txt"), "changed\n");
+    assert.equal(fixtureGit(cwd, ["add", "changed.txt"]).status, 0);
+    assert.equal(fixtureGit(cwd, ["commit", "-q", "-m", "changed"]).status, 0);
+    extraArgs.push("--scope-base", "HEAD~1");
+  }
+  if (mode === "custom-review") {
+    extraArgs.push("--scope-paths", "seed.txt");
+  }
+  return [
+    "run",
+    "--mode",
+    mode,
+    "--cwd",
+    cwd,
+    ...extraArgs,
+    "--foreground",
+    "--",
+    "Review this file.",
+  ];
+}
+
 test("kimi ping reports OAuth readiness and ignored API-key diagnostics", () => {
   const cwd = mkdtempSync(path.join(tmpdir(), "kimi-ping-"));
   try {
@@ -106,47 +130,27 @@ test("kimi ping classifies missing binary with readiness fields", () => {
   }
 });
 
-test("kimi review prompts require a self-contained final verdict", () => withRepo((cwd) => {
-  const result = runCompanion([
-    "run",
-    "--mode",
-    "custom-review",
-    "--cwd",
-    cwd,
-    "--scope-paths",
-    "seed.txt",
-    "--foreground",
-    "--",
-    "Review this file.",
-  ], {
-    cwd,
-    env: {
-      KIMI_MOCK_ASSERT_PROMPT_INCLUDES: "Your final answer must be self-contained",
-    },
-  });
-  assert.equal(result.status, 0, result.stderr);
-}));
+for (const mode of ["review", "adversarial-review", "custom-review"]) {
+  test(`kimi ${mode} prompt requires a self-contained final verdict`, () => withRepo((cwd) => {
+    const result = runCompanion(kimiPromptAssertionArgs(cwd, mode), {
+      cwd,
+      env: {
+        KIMI_MOCK_ASSERT_PROMPT_INCLUDES: "Your final answer must be self-contained",
+      },
+    });
+    assert.equal(result.status, 0, result.stderr);
+  }));
 
-test("kimi review prompts include provider live-verification context", () => withRepo((cwd) => {
-  const result = runCompanion([
-    "run",
-    "--mode",
-    "custom-review",
-    "--cwd",
-    cwd,
-    "--scope-paths",
-    "seed.txt",
-    "--foreground",
-    "--",
-    "Review this file.",
-  ], {
-    cwd,
-    env: {
-      KIMI_MOCK_ASSERT_PROMPT_INCLUDES: "Live verification context",
-    },
-  });
-  assert.equal(result.status, 0, result.stderr);
-}));
+  test(`kimi ${mode} prompt includes provider live-verification context`, () => withRepo((cwd) => {
+    const result = runCompanion(kimiPromptAssertionArgs(cwd, mode), {
+      cwd,
+      env: {
+        KIMI_MOCK_ASSERT_PROMPT_INCLUDES: "Live verification context",
+      },
+    });
+    assert.equal(result.status, 0, result.stderr);
+  }));
+}
 
 test("kimi preflight success and bad_args emit safety fields", () => withRepo((cwd) => {
   const ok = runCompanion(["preflight", "--mode", "review", "--cwd", cwd], { cwd });

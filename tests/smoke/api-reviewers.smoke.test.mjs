@@ -108,6 +108,7 @@ test("DeepSeek direct API custom-review completes and persists JobRecord", async
     env: {
       API_REVIEWERS_PLUGIN_DATA: dataDir,
       API_REVIEWERS_MOCK_RESPONSE: mockResponse("deepseek-v4-flash"),
+      API_REVIEWERS_MOCK_ASSERT_PROMPT_INCLUDES: "Live verification context",
       DEEPSEEK_API_KEY: "secret-test-value",
     },
   });
@@ -136,6 +137,7 @@ test("branch-diff default reviews committed changes against main with scrubbed g
     env: {
       API_REVIEWERS_PLUGIN_DATA: dataDir,
       API_REVIEWERS_MOCK_RESPONSE: mockResponse("deepseek-v4-flash"),
+      API_REVIEWERS_MOCK_ASSERT_PROMPT_INCLUDES: "Live verification context",
       DEEPSEEK_API_KEY: "secret-test-value",
       GIT_DIR: path.join(cwd, "not-a-repo"),
       GIT_CONFIG_GLOBAL: path.join(cwd, "malicious-gitconfig"),
