@@ -150,6 +150,19 @@ test("kimi ping classifies timeout as transient latency", () => {
   }
 });
 
+test("kimi ping rejects fractional timeout milliseconds", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "kimi-ping-timeout-fraction-"));
+  try {
+    const result = runCompanion(["ping", "--timeout-ms", "0.5"], { cwd });
+    assert.equal(result.status, 1);
+    const parsed = parseJson(result.stdout);
+    assert.equal(parsed.error, "bad_args");
+    assert.match(parsed.message, /positive integer number of milliseconds/);
+  } finally {
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
 for (const mode of ["review", "adversarial-review", "custom-review"]) {
   test(`kimi ${mode} prompt requires a self-contained final verdict`, () => withRepo((cwd) => {
     const result = runCompanion(kimiPromptAssertionArgs(cwd, mode), {
