@@ -14,8 +14,9 @@
 // from a malicious parent env). Folding everything onto this module makes
 // adding a new key a one-place change.
 //
-// Byte-identical between plugins/claude/scripts/lib/ and
-// plugins/kimi/scripts/lib/ — listed in VERBATIM_FILES.
+// Kimi keeps target-specific header comments, but its stripped key list is
+// pinned against the canonical Claude/Gemini copy by
+// tests/unit/plugin-copies-in-sync.test.mjs.
 
 // Comprehensive list of GIT_* env vars whose presence in a parent env can
 // silently hijack a git subprocess into reading the wrong repository,

@@ -56,6 +56,23 @@ function providerConfig(providers, name) {
   return cfg;
 }
 
+function fallbackProviderConfig(provider) {
+  const displayName = provider ? String(provider) : "API Reviewers";
+  return {
+    display_name: displayName,
+    auth_mode: "api_key",
+    env_keys: [],
+    base_url: null,
+    model: null,
+  };
+}
+
+function runBadArgs(message) {
+  const error = new Error(message);
+  error.apiReviewersReason = "bad_args";
+  return error;
+}
+
 function selectedCredential(cfg, env = process.env) {
   for (const keyName of cfg.env_keys ?? []) {
     if (typeof env[keyName] === "string" && env[keyName].length > 0) {
@@ -88,10 +105,13 @@ function parseProviderTimeoutMs(env = process.env) {
 }
 
 function applyRequestDefaults(requestBody, requestDefaults = {}) {
-  for (const [key, value] of Object.entries(requestDefaults)) {
+  const entries = Object.entries(requestDefaults);
+  for (const [key] of entries) {
     if (!ALLOWED_REQUEST_DEFAULT_KEYS.has(key)) {
       return { ok: false, error: `disallowed_request_default:${key}` };
     }
+  }
+  for (const [key, value] of entries) {
     requestBody[key] = value;
   }
   return { ok: true };
@@ -106,6 +126,21 @@ function redactor(env = process.env) {
     for (const secret of secrets) out = out.split(secret).join("[REDACTED]");
     return out;
   };
+}
+
+function redactValue(value, redact) {
+  if (typeof value === "string") return redact(value);
+  if (Array.isArray(value)) return value.map((item) => redactValue(item, redact));
+  if (value && typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value).map(([key, entryValue]) => [key, redactValue(entryValue, redact)])
+    );
+  }
+  return value;
+}
+
+function redactRecord(record, env = process.env) {
+  return redactValue(record, redactor(env));
 }
 
 function baseUrlFor(cfg) {
@@ -452,6 +487,7 @@ function providerFailure(reason, message, httpStatus, raw = null) {
 }
 
 function suggestedAction(errorCode, provider, cfg) {
+  if (errorCode === "bad_args") return "Correct the api-reviewer command arguments and retry.";
   if (errorCode === "missing_key") return `Expose one of these key names to Codex: ${(cfg.env_keys ?? []).join(", ")}.`;
   if (errorCode === "auth_rejected") return `Check the ${cfg.display_name} API key and billing/plan for ${cfg.model}.`;
   if (errorCode === "rate_limited") return `Wait and retry, or lower concurrency for ${provider}.`;
@@ -505,7 +541,7 @@ function buildRecord({ provider, cfg, mode, options, scopeInfo, execution, start
     usage: execution.parsed?.usage ?? null,
     auth_mode: cfg.auth_mode,
     credential_ref: execution.credential_ref ?? null,
-    endpoint: execution.endpoint ?? baseUrlFor(cfg),
+    endpoint: execution.endpoint ?? (cfg.base_url ? baseUrlFor(cfg) : null),
     http_status: execution.http_status ?? null,
     raw_model: execution.parsed?.raw_model ?? null,
     schema_version: 7,
@@ -542,23 +578,31 @@ async function cmdDoctor(options) {
 
 async function cmdRun(options) {
   const providers = await loadProviders();
-  const provider = options.provider;
-  if (!provider) throw new Error("bad_args: --provider is required");
+  const provider = options.provider ?? null;
   const mode = options.mode ?? "review";
-  if (!VALID_MODES.has(mode)) throw new Error(`bad_args: unsupported --mode ${mode}`);
-  const cfg = providerConfig(providers, provider);
-  if (cfg.auth_mode !== "api_key" && cfg.auth_mode !== "auto") {
-    throw new Error(`bad_args: ${provider} auth_mode must be api_key or auto`);
-  }
   const startedAt = new Date().toISOString();
   const jobId = `job_${randomUUID()}`;
   const runOptions = { ...options, jobId };
+  let cfg;
   let scopeInfo;
   let execution;
   try {
+    if (!provider) throw runBadArgs("bad_args: --provider is required");
+    if (!VALID_MODES.has(mode)) throw runBadArgs(`bad_args: unsupported --mode ${mode}`);
+    try {
+      cfg = providerConfig(providers, provider);
+    } catch (e) {
+      throw runBadArgs(e.message);
+    }
+    if (cfg.auth_mode !== "api_key" && cfg.auth_mode !== "auto") {
+      throw runBadArgs(`bad_args: ${provider} auth_mode must be api_key or auto`);
+    }
     scopeInfo = await collectScope({ ...runOptions, mode });
     execution = await callProvider(provider, cfg, promptFor(mode, options.prompt ?? "", scopeInfo));
   } catch (e) {
+    const redact = redactor();
+    const reason = e.apiReviewersReason ?? "scope_failed";
+    cfg ??= fallbackProviderConfig(provider);
     const cwd = resolve(process.cwd());
     scopeInfo = {
       cwd,
@@ -569,11 +613,11 @@ async function cmdRun(options) {
     };
     execution = {
       exitCode: 1,
-      parsed: { ok: false, reason: "scope_failed", error: e.message },
+      parsed: { ok: false, reason, error: redact(e.message) },
     };
   }
-  const record = buildRecord({
-    provider,
+  const record = redactRecord(buildRecord({
+    provider: provider ?? "api-reviewers",
     cfg,
     mode,
     options: runOptions,
@@ -581,7 +625,7 @@ async function cmdRun(options) {
     execution,
     startedAt,
     endedAt: new Date().toISOString(),
-  });
+  }));
   const printableRecord = await persistRecordBestEffort(record);
   printJson(printableRecord);
   process.exit(record.status === "completed" ? 0 : 1);

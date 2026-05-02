@@ -19,6 +19,8 @@ import {
   CLAUDE_GEMINI_PLUGIN_TARGETS,
   COMPANION_PLUGIN_TARGETS,
 } from "../../scripts/lib/plugin-targets.mjs";
+import { STRIPPED_GIT_ENV_KEYS as CLAUDE_STRIPPED_GIT_ENV_KEYS } from "../../plugins/claude/scripts/lib/git-env.mjs";
+import { STRIPPED_GIT_ENV_KEYS as KIMI_STRIPPED_GIT_ENV_KEYS } from "../../plugins/kimi/scripts/lib/git-env.mjs";
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 
@@ -80,6 +82,15 @@ test("lib/git-env.mjs: api-reviewers packaging copy matches the companion shared
     "utf8"
   );
   assert.equal(copy, canonical, "git-env.mjs packaging copy drifted in api-reviewers");
+});
+
+test("lib/git-env.mjs: kimi stripped key list matches the companion shared source", () => {
+  const sortKeys = (keys) => [...keys].sort((a, b) => a.localeCompare(b));
+  assert.deepEqual(
+    sortKeys(KIMI_STRIPPED_GIT_ENV_KEYS),
+    sortKeys(CLAUDE_STRIPPED_GIT_ENV_KEYS),
+    "git-env.mjs stripped key list drifted in kimi"
+  );
 });
 
 test("companion plugin target list matches packaged companion-common copies", () => {

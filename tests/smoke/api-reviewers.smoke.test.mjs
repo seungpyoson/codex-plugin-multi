@@ -217,6 +217,47 @@ for (const value of ["abc", "Infinity", "1.5", "0", "-1", "9007199254740992"]) {
   });
 }
 
+for (const scenario of [
+  {
+    name: "missing provider",
+    args: ["run", "--mode", "review", "--foreground", "--prompt", "Check this."],
+    provider: "api-reviewers",
+    message: /--provider is required/,
+  },
+  {
+    name: "unknown provider",
+    args: ["run", "--provider", "missing-provider", "--mode", "review", "--foreground", "--prompt", "Check this."],
+    provider: "missing-provider",
+    message: /unknown_provider:missing-provider/,
+  },
+  {
+    name: "invalid mode",
+    args: ["run", "--provider", "glm", "--mode", "rescue", "--foreground", "--prompt", "Check this."],
+    provider: "glm",
+    message: /unsupported --mode rescue/,
+  },
+]) {
+  test(`run ${scenario.name} returns structured JobRecord`, async () => {
+    const cwd = makeWorkspace();
+    const dataDir = mkdtempSync(path.join(tmpdir(), "api-reviewers-data-"));
+    const result = await run(scenario.args, {
+      cwd,
+      env: {
+        API_REVIEWERS_PLUGIN_DATA: dataDir,
+        ZAI_API_KEY: "secret-test-value",
+      },
+    });
+
+    assert.equal(result.status, 1);
+    const record = parseJson(result.stdout);
+    assert.equal(record.status, "failed");
+    assert.equal(record.provider, scenario.provider);
+    assert.equal(record.error_code, "bad_args");
+    assert.match(record.error_message, scenario.message);
+    assert.doesNotMatch(result.stdout, /secret-test-value/);
+  });
+}
+
 test("branch-diff git revision failure returns stderr in structured JobRecord", async () => {
   const cwd = makeBranchDiffWorkspace();
   const dataDir = mkdtempSync(path.join(tmpdir(), "api-reviewers-data-"));
@@ -243,6 +284,34 @@ test("branch-diff git revision failure returns stderr in structured JobRecord", 
   assert.match(record.error_message, /git_failed:/);
   assert.match(record.error_message, /missing-base/);
   assert.doesNotMatch(record.error_message, /scope_empty/);
+  assert.doesNotMatch(result.stdout, /secret-test-value/);
+});
+
+test("branch-diff git revision failure redacts API key values from stderr", async () => {
+  const cwd = makeBranchDiffWorkspace();
+  const dataDir = mkdtempSync(path.join(tmpdir(), "api-reviewers-data-"));
+  const result = await run([
+    "run",
+    "--provider", "deepseek",
+    "--mode", "review",
+    "--scope-base", "secret-test-value",
+    "--foreground",
+    "--prompt", "Check this branch.",
+  ], {
+    cwd,
+    env: {
+      API_REVIEWERS_PLUGIN_DATA: dataDir,
+      API_REVIEWERS_MOCK_RESPONSE: mockResponse("deepseek-v4-pro"),
+      DEEPSEEK_API_KEY: "secret-test-value",
+    },
+  });
+
+  assert.equal(result.status, 1);
+  const record = parseJson(result.stdout);
+  assert.equal(record.status, "failed");
+  assert.equal(record.error_code, "scope_failed");
+  assert.match(record.error_message, /git_failed:/);
+  assert.match(record.error_message, /\[REDACTED\]/);
   assert.doesNotMatch(result.stdout, /secret-test-value/);
 });
 

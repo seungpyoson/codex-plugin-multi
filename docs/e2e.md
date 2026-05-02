@@ -122,3 +122,14 @@ Latest live verification:
     (`DEEPSEEK_API_KEY`, `deepseek-v4-flash`, HTTP 200) and GLM
     (`ZAI_GLM_API_KEY`, `glm-5.1`, `https://api.z.ai/api/coding/paas/v4`,
     HTTP 200). Secret values were not printed.
+
+Pending live verification:
+
+- PR #50 changes the shipped high-capability defaults after the latest recorded
+  live run. The following require a fresh maintainer-approved live run before
+  treating them as vendor-confirmed:
+  - DeepSeek `deepseek-v4-pro` with `thinking.type=enabled`,
+    `reasoning_effort=max`, and `max_tokens=65536`.
+  - GLM `glm-5.1` with `thinking.type=enabled` and `max_tokens=131072`.
+  - Claude CLI `--effort max` on model-bearing companion invocations.
+  - Kimi CLI `--thinking` on all companion profiles, including ping.
