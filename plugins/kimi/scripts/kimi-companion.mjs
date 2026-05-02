@@ -172,8 +172,8 @@ function invocationFromRecord(record) {
 function parsePositiveTimeoutMs(value, fallback) {
   if (value === undefined || value === null || value === "") return fallback;
   const parsed = Number(value);
-  if (!Number.isFinite(parsed) || parsed <= 0) {
-    fail("bad_args", `--timeout-ms must be a positive number of milliseconds; got ${JSON.stringify(value)}`);
+  if (parsed <= 0 || !Number.isInteger(parsed)) {
+    fail("bad_args", `--timeout-ms must be a positive integer number of milliseconds; got ${JSON.stringify(value)}`);
   }
   return parsed;
 }
