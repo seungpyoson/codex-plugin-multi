@@ -568,8 +568,8 @@ test("buildJobRecord: timedOut wins over signal (timeout, not cancelled)", () =>
   assert.equal(rec.error_code, "timeout");
 });
 
-test("kimi buildJobRecord: timeout diagnostics use invocation target display name", () => {
-  const kimi = buildKimiJobRecord(makeInvocation({ target: "kimi", binary: "kimi" }), {
+test("kimi buildJobRecord: timeout diagnostics use Kimi target display name", () => {
+  const rec = buildKimiJobRecord(makeInvocation({ target: "kimi", binary: "kimi" }), {
     exitCode: null,
     signal: "SIGTERM",
     timedOut: true,
@@ -578,14 +578,16 @@ test("kimi buildJobRecord: timeout diagnostics use invocation target display nam
     pidInfo: makePidInfo(),
     kimiSessionId: null,
   }, []);
-  assert.equal(kimi.status, "failed");
-  assert.equal(kimi.error_code, "timeout");
-  assert.match(kimi.error_summary, /^Kimi Code CLI timed out/);
-  assert.match(kimi.error_cause, /foreground Kimi process/);
-  assert.match(kimi.suggested_action, /check Kimi service status/);
-  assert.match(kimi.suggested_action, /run `kimi` interactively/);
+  assert.equal(rec.status, "failed");
+  assert.equal(rec.error_code, "timeout");
+  assert.match(rec.error_summary, /^Kimi Code CLI timed out/);
+  assert.match(rec.error_cause, /foreground Kimi process/);
+  assert.match(rec.suggested_action, /check Kimi service status/);
+  assert.match(rec.suggested_action, /run `kimi` interactively/);
+});
 
-  const claude = buildKimiJobRecord(makeInvocation({ target: "claude", binary: "claude" }), {
+test("kimi buildJobRecord: timeout diagnostics use Claude target display name", () => {
+  const rec = buildKimiJobRecord(makeInvocation({ target: "claude", binary: "claude" }), {
     exitCode: null,
     signal: "SIGTERM",
     timedOut: true,
@@ -594,12 +596,12 @@ test("kimi buildJobRecord: timeout diagnostics use invocation target display nam
     pidInfo: makePidInfo(),
     kimiSessionId: null,
   }, []);
-  assert.equal(claude.status, "failed");
-  assert.equal(claude.error_code, "timeout");
-  assert.match(claude.error_summary, /^Claude Code CLI timed out/);
-  assert.match(claude.error_cause, /foreground Claude process/);
-  assert.match(claude.suggested_action, /check Claude service status/);
-  assert.match(claude.suggested_action, /run `claude` interactively/);
+  assert.equal(rec.status, "failed");
+  assert.equal(rec.error_code, "timeout");
+  assert.match(rec.error_summary, /^Claude Code CLI timed out/);
+  assert.match(rec.error_cause, /foreground Claude process/);
+  assert.match(rec.suggested_action, /check Claude service status/);
+  assert.match(rec.suggested_action, /run `claude` interactively/);
 });
 
 test("gemini buildJobRecord: signal-driven exit classifies as cancelled", () => {
