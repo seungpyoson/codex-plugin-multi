@@ -29,11 +29,11 @@ In the repository checkout, it is `plugins/kimi`.
   ```
 - Read-only review:
   ```bash
-  node "<plugin-root>/scripts/kimi-companion.mjs" run --mode=review --foreground --cwd "<workspace>" -- "<review focus>"
+  node "<plugin-root>/scripts/kimi-companion.mjs" run --mode=review --foreground --cwd "<workspace>" [--max-steps-per-turn <n>] -- "<review focus>"
   ```
 - Adversarial review:
   ```bash
-  node "<plugin-root>/scripts/kimi-companion.mjs" run --mode=adversarial-review --foreground --cwd "<workspace>" -- "<design or diff to challenge>"
+  node "<plugin-root>/scripts/kimi-companion.mjs" run --mode=adversarial-review --foreground --cwd "<workspace>" [--max-steps-per-turn <n>] -- "<design or diff to challenge>"
   ```
 - Disclosure/scope preflight:
   ```bash
@@ -41,7 +41,7 @@ In the repository checkout, it is `plugins/kimi`.
   ```
 - Pinned bundle or selected-file review:
   ```bash
-  node "<plugin-root>/scripts/kimi-companion.mjs" run --mode=custom-review --foreground --cwd "<bundle-or-workspace>" --scope-paths "PR.diff,docs/*.md" -- "<review focus using relative paths>"
+  node "<plugin-root>/scripts/kimi-companion.mjs" run --mode=custom-review --foreground --cwd "<bundle-or-workspace>" --scope-paths "PR.diff,docs/*.md" [--max-steps-per-turn <n>] -- "<review focus using relative paths>"
   ```
 - Rescue/investigation:
   ```bash

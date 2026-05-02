@@ -37,6 +37,8 @@ const EMPTY_TOOLS = Object.freeze([]);
  *   add_dir          — pass `--add-dir <path>` at all?
  *   schema_allowed   — is `--json-schema` meaningful for this mode? When
  *                      false, jsonSchema runtime input is silently dropped.
+ *   max_steps_per_turn — Kimi CLI step budget. Larger review scopes need a
+ *                      higher default than ping/rescue probes.
  */
 export const MODE_PROFILES = Object.freeze({
   review: Object.freeze({
@@ -50,6 +52,7 @@ export const MODE_PROFILES = Object.freeze({
     dispose_default: true,
     add_dir: true,
     schema_allowed: true,
+    max_steps_per_turn: 16,
   }),
   "adversarial-review": Object.freeze({
     name: "adversarial-review",
@@ -62,6 +65,7 @@ export const MODE_PROFILES = Object.freeze({
     dispose_default: true,
     add_dir: true,
     schema_allowed: true,
+    max_steps_per_turn: 32,
   }),
   "custom-review": Object.freeze({
     name: "custom-review",
@@ -74,6 +78,7 @@ export const MODE_PROFILES = Object.freeze({
     dispose_default: true,
     add_dir: true,
     schema_allowed: true,
+    max_steps_per_turn: 32,
   }),
   rescue: Object.freeze({
     name: "rescue",
@@ -86,6 +91,7 @@ export const MODE_PROFILES = Object.freeze({
     dispose_default: false,
     add_dir: true,
     schema_allowed: false,
+    max_steps_per_turn: 8,
   }),
   ping: Object.freeze({
     name: "ping",
@@ -98,6 +104,7 @@ export const MODE_PROFILES = Object.freeze({
     dispose_default: false,
     add_dir: false, // ping is a bare OAuth probe — no directory is granted
     schema_allowed: false,
+    max_steps_per_turn: 8,
   }),
 });
 

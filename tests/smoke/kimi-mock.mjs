@@ -47,6 +47,14 @@ if (expectedPromptText && !prompt.includes(expectedPromptText)) {
   process.exit(1);
 }
 
+const expectedMaxSteps = process.env.KIMI_MOCK_ASSERT_MAX_STEPS_PER_TURN;
+if (expectedMaxSteps && String(parsed.flags["--max-steps-per-turn"] ?? "") !== expectedMaxSteps) {
+  process.stderr.write(
+    `kimi-mock: --max-steps-per-turn mismatch: expected ${expectedMaxSteps}, got ${parsed.flags["--max-steps-per-turn"] ?? "<missing>"}\n`,
+  );
+  process.exit(1);
+}
+
 if (process.env.KIMI_MOCK_CAPACITY_MODEL === model) {
   process.stderr.write(JSON.stringify({
     error: {
@@ -59,6 +67,13 @@ if (process.env.KIMI_MOCK_CAPACITY_MODEL === model) {
       }],
     },
   }) + "\n");
+  process.exit(1);
+}
+
+if (process.env.KIMI_MOCK_STEP_LIMIT) {
+  const limit = process.env.KIMI_MOCK_STEP_LIMIT;
+  process.stdout.write(`Max number of steps reached: ${limit}\n`);
+  process.stderr.write(`To resume this session: kimi -r ${sessionId}\n`);
   process.exit(1);
 }
 

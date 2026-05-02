@@ -53,6 +53,7 @@ export const EXPECTED_KEYS = Object.freeze([
   "prompt_head",
   "schema_spec",
   "binary",
+  "max_steps_per_turn",
 
   // Lifecycle
   "status",
@@ -99,6 +100,7 @@ const EXPECTED_KEYS_SET = new Set(EXPECTED_KEYS);
  *                         Distinguished from spawn_failed so monitoring/automation
  *                         routing on error_code doesn't conflate disk/lock failures
  *                         with missing-binary errors. PR #21 review HIGH 1.
+ *   step_limit_exceeded — Kimi emitted its non-JSON max-step exhaustion sentinel.
  *   parse_error     — parsed.ok === false with reason starting "json_parse"/"empty_stdout".
  *   timeout         — execution.timedOut === true (companion's wall-clock kill).
  *   kimi_error    — exitCode !== 0 with parseable JSON from Kimi.
@@ -183,6 +185,13 @@ function classifyExecution(execution) {
   }
   if (parsed && parsed.ok === false) {
     const reason = parsed.reason ?? null;
+    if (reason === "step_limit_exceeded") {
+      return {
+        status: "failed",
+        error_code: "step_limit_exceeded",
+        error_message: parsed.error ?? reason,
+      };
+    }
     if (reason === "json_parse_error" || reason === "empty_stdout") {
       return {
         status: "failed",
@@ -236,6 +245,17 @@ function buildErrorDiagnostic(invocation, status, error_code, error_message) {
       suggested_action:
         `Retry the review after a short wait. If it repeats, check ${target.displayName} ` +
         `service status or run \`${target.binaryName}\` interactively from a normal terminal.`,
+      disclosure_note: null,
+    };
+  }
+  if (status === "failed" && error_code === "step_limit_exceeded") {
+    return {
+      error_summary: `${target.displayName} Code CLI exhausted its configured step limit before returning a review result.`,
+      error_cause:
+        `${target.displayName} emitted a plain-text max-step exhaustion sentinel instead of ` +
+        "the requested stream-json payload. The companion recognized the sentinel and preserved it as a provider resource-limit diagnostic.",
+      suggested_action:
+        "Retry with a higher step budget using --max-steps-per-turn <n>, or rerun with a narrower scope.",
       disclosure_note: null,
     };
   }
@@ -404,7 +424,7 @@ function assertInvocation(invocation) {
  *                    mode_profile_name, mode, model, cwd, workspace_root,
  *                    containment, scope, dispose_effective?,
  *                    scope_base?, scope_paths?, prompt_head, schema_spec?,
- *                    binary, started_at }
+ *                    binary, max_steps_per_turn?, started_at }
  *
  *   execution  — null when writing the pre-run/queued record. Otherwise:
  *                  { exitCode, parsed: {ok, result?, structured?, denials?,
@@ -454,6 +474,7 @@ export function buildJobRecord(invocation, execution, mutations) {
     prompt_head: invocation.prompt_head,
     schema_spec: invocation.schema_spec ?? null,
     binary: invocation.binary,
+    max_steps_per_turn: invocation.max_steps_per_turn ?? null,
 
     // Lifecycle
     status,

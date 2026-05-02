@@ -57,6 +57,24 @@ function parseJson(stdout) {
   return JSON.parse(stdout);
 }
 
+function waitForTerminalRecord(dataDir, jobId, { timeoutMs = 5000 } = {}) {
+  const deadline = Date.now() + timeoutMs;
+  let last = null;
+  while (Date.now() < deadline) {
+    const stateRoot = path.join(dataDir, "state");
+    if (existsSync(stateRoot)) {
+      for (const workspaceDir of readdirSync(stateRoot)) {
+        const metaPath = path.join(stateRoot, workspaceDir, "jobs", `${jobId}.json`);
+        if (!existsSync(metaPath)) continue;
+        last = JSON.parse(readFileSync(metaPath, "utf8"));
+        if (["completed", "failed", "cancelled", "stale"].includes(last.status)) return last;
+      }
+    }
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 50);
+  }
+  assert.fail(`job ${jobId} did not become terminal; last=${JSON.stringify(last)}`);
+}
+
 function assertPreflightSafetyFields(result) {
   assert.equal(result.target_spawned, false);
   assert.equal(result.selected_scope_sent_to_provider, false);
@@ -212,6 +230,92 @@ test("kimi foreground review timeout returns actionable JobRecord", () => withRe
   const { record: persisted } = readOnlyJobRecord(result.dataDir);
   assert.equal(persisted.job_id, record.job_id);
   assert.equal(persisted.error_code, "timeout");
+}));
+
+test("kimi foreground review step-limit exhaustion returns actionable JobRecord", () => withRepo((cwd) => {
+  const result = runCompanion([
+    "run",
+    "--mode",
+    "custom-review",
+    "--cwd",
+    cwd,
+    "--scope-paths",
+    "seed.txt",
+    "--foreground",
+    "--max-steps-per-turn",
+    "48",
+    "--",
+    "Review this scope.",
+  ], {
+    cwd,
+    env: {
+      KIMI_MOCK_ASSERT_MAX_STEPS_PER_TURN: "48",
+      KIMI_MOCK_STEP_LIMIT: "1",
+    },
+  });
+  assert.equal(result.status, 2);
+  const record = parseJson(result.stdout);
+  assert.equal(record.target, "kimi");
+  assert.equal(record.mode, "custom-review");
+  assert.equal(record.status, "failed");
+  assert.equal(record.error_code, "step_limit_exceeded");
+  assert.match(record.error_message, /Max number of steps reached: 1/);
+  assert.match(record.suggested_action, /higher step budget/i);
+  assert.match(record.suggested_action, /narrower scope/i);
+  const { record: persisted } = readOnlyJobRecord(result.dataDir);
+  assert.equal(persisted.job_id, record.job_id);
+  assert.equal(persisted.error_code, "step_limit_exceeded");
+}));
+
+test("kimi run rejects invalid max-step budgets before target launch", () => withRepo((cwd) => {
+  const result = runCompanion([
+    "run",
+    "--mode",
+    "custom-review",
+    "--cwd",
+    cwd,
+    "--scope-paths",
+    "seed.txt",
+    "--foreground",
+    "--max-steps-per-turn",
+    "0.5",
+    "--",
+    "Review this scope.",
+  ], { cwd });
+  assert.equal(result.status, 1);
+  const parsed = parseJson(result.stdout);
+  assert.equal(parsed.error, "bad_args");
+  assert.match(parsed.message, /--max-steps-per-turn/);
+}));
+
+test("kimi background review preserves configured max-step budget through queued JobRecord", () => withRepo((cwd) => {
+  const dataDir = mkdtempSync(path.join(tmpdir(), "kimi-background-max-steps-data-"));
+  const launched = runCompanion([
+    "run",
+    "--mode",
+    "custom-review",
+    "--cwd",
+    cwd,
+    "--scope-paths",
+    "seed.txt",
+    "--background",
+    "--max-steps-per-turn",
+    "48",
+    "--",
+    "Review this scope.",
+  ], {
+    cwd,
+    dataDir,
+    env: { KIMI_MOCK_ASSERT_MAX_STEPS_PER_TURN: "48" },
+  });
+  assert.equal(launched.status, 0, launched.stderr);
+  const payload = parseJson(launched.stdout);
+  assert.equal(payload.event, "launched");
+
+  const record = waitForTerminalRecord(dataDir, payload.job_id);
+  assert.equal(record.status, "completed");
+  assert.equal(record.result, "Mock Kimi response.");
+  assert.equal(record.max_steps_per_turn, 48);
 }));
 
 test("kimi preflight success and bad_args emit safety fields", () => withRepo((cwd) => {
