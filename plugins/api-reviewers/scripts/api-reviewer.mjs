@@ -348,11 +348,19 @@ function providerFailure(reason, message, httpStatus, raw = null, payloadSent = 
   };
 }
 
-function suggestedAction(errorCode, provider, cfg) {
+function suggestedAction(errorCode, provider, cfg, errorMessage = "", env = process.env) {
   if (errorCode === "missing_key") return `Expose one of these key names to Codex: ${(cfg.env_keys ?? []).join(", ")}.`;
   if (errorCode === "auth_rejected") return `Check the ${cfg.display_name} API key and billing/plan for ${cfg.model}.`;
   if (errorCode === "rate_limited") return `Wait and retry, or lower concurrency for ${provider}.`;
-  if (errorCode === "provider_unavailable") return `Retry later or switch reviewer provider.`;
+  if (errorCode === "provider_unavailable") {
+    if (env.CODEX_SANDBOX) {
+      return `If running inside Codex, set [sandbox_workspace_write].network_access = true in ~/.codex/config.toml, start a fresh Codex session, then retry; or run this direct API reviewer outside sandbox. If network is already enabled, retry later or switch reviewer provider.`;
+    }
+    if (/fetch failed|ENOTFOUND|EAI_AGAIN|ECONNREFUSED|network|timeout/i.test(errorMessage)) {
+      return `Check network access, retry later, or switch reviewer provider.`;
+    }
+    return `Retry later or switch reviewer provider.`;
+  }
   if (errorCode === "scope_failed") return "Adjust --scope, --scope-base, or --scope-paths and retry.";
   return "Inspect error_message and retry after correcting the provider or request configuration.";
 }
@@ -428,7 +436,7 @@ function buildRecord({ provider, cfg, mode, options, scopeInfo, execution, start
     error_message: completed ? null : execution.parsed?.error ?? null,
     error_summary: completed ? null : execution.parsed?.error ?? errorCode,
     error_cause: completed ? null : "direct_api_provider",
-    suggested_action: completed ? null : suggestedAction(errorCode, provider, cfg),
+    suggested_action: completed ? null : suggestedAction(errorCode, provider, cfg, execution.parsed?.error ?? ""),
     external_review: externalReview,
     disclosure_note: disclosure,
     result: completed ? execution.parsed.result : null,

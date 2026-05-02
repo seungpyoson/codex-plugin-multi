@@ -234,6 +234,45 @@ test("direct API timeout marks selected content as sent", async () => {
   }
 });
 
+test("direct API provider_unavailable under Codex recommends sandbox network access", async () => {
+  const cwd = makeWorkspace();
+  const dataDir = mkdtempSync(path.join(tmpdir(), "api-reviewers-data-"));
+  const pluginRoot = makeInstalledApiReviewersRoot();
+  writeFileSync(path.join(pluginRoot, "config", "providers.json"), JSON.stringify({
+    deepseek: {
+      display_name: "DeepSeek",
+      auth_mode: "api_key",
+      env_keys: ["DEEPSEEK_API_KEY"],
+      base_url: "http://127.0.0.1:9",
+      model: "deepseek-v4-flash",
+    },
+  }, null, 2));
+
+  const result = await run([
+    "run",
+    "--provider", "deepseek",
+    "--mode", "custom-review",
+    "--scope", "custom",
+    "--scope-paths", "seed.txt",
+    "--foreground",
+    "--prompt", "Check this file.",
+  ], {
+    cwd,
+    companion: path.join(pluginRoot, "scripts", "api-reviewer.mjs"),
+    env: {
+      API_REVIEWERS_PLUGIN_DATA: dataDir,
+      CODEX_SANDBOX: "seatbelt",
+      DEEPSEEK_API_KEY: "secret-test-value",
+    },
+  });
+  assert.equal(result.status, 1);
+  const record = parseJson(result.stdout);
+  assert.equal(record.error_code, "provider_unavailable");
+  assert.match(record.suggested_action, /network_access = true/);
+  assert.match(record.suggested_action, /outside sandbox/);
+  assert.doesNotMatch(result.stdout, /secret-test-value/);
+});
+
 test("branch-diff default reviews committed changes against main with scrubbed git env", async () => {
   const cwd = makeBranchDiffWorkspace();
   const dataDir = mkdtempSync(path.join(tmpdir(), "api-reviewers-data-"));

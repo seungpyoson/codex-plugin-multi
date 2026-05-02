@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -180,6 +180,57 @@ test("kimi ping classifies timeout as transient latency", () => {
     assert.match(parsed.next_action, /Retry/);
     assert.equal(parsed.timeout_ms, 20);
     assert.match(parsed.detail, /configured timeoutMs/);
+  } finally {
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("kimi ping classifies Codex sandbox denial for Kimi state as sandbox_blocked", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "kimi-ping-sandbox-denied-"));
+  const bin = path.join(cwd, "kimi-denied");
+  writeFileSync(bin, `#!/usr/bin/env node
+process.stderr.write("[Errno 1] Operation not permitted: '/Users/test/.kimi/tmpabc.tmp'\\n");
+process.exit(1);
+`, "utf8");
+  chmodSync(bin, 0o755);
+  try {
+    const result = spawnSync("node", [COMPANION, "ping", "--binary", bin], {
+      cwd,
+      encoding: "utf8",
+      env: { ...process.env, CODEX_SANDBOX: "seatbelt", KIMI_PLUGIN_DATA: mkdtempSync(path.join(tmpdir(), "kimi-denied-data-")) },
+    });
+    assert.equal(result.status, 2);
+    const parsed = parseJson(result.stdout);
+    assert.equal(parsed.status, "sandbox_blocked");
+    assert.equal(parsed.ready, false);
+    assert.match(parsed.summary, /Codex sandbox/);
+    assert.match(parsed.next_action, /~\/\.kimi/);
+    assert.match(parsed.next_action, /writable_roots/);
+    assert.match(parsed.detail, /Operation not permitted/);
+  } finally {
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("kimi ping classifies Codex sandbox denial when traceback truncates before Kimi path", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "kimi-ping-sandbox-long-denied-"));
+  const bin = path.join(cwd, "kimi-long-denied");
+  writeFileSync(bin, `#!/usr/bin/env node
+process.stderr.write("Traceback (most recent call last)\\\\n" + "x".repeat(700) + "\\\\nPermissionError: [Errno 1] Operation not permitted: '/Users/test/.kimi/logs/kimi.log'\\\\n");
+process.exit(1);
+`, "utf8");
+  chmodSync(bin, 0o755);
+  try {
+    const result = spawnSync("node", [COMPANION, "ping", "--binary", bin], {
+      cwd,
+      encoding: "utf8",
+      env: { ...process.env, CODEX_SANDBOX: "seatbelt", KIMI_PLUGIN_DATA: mkdtempSync(path.join(tmpdir(), "kimi-long-denied-data-")) },
+    });
+    assert.equal(result.status, 2);
+    const parsed = parseJson(result.stdout);
+    assert.equal(parsed.status, "sandbox_blocked");
+    assert.equal(parsed.ready, false);
+    assert.match(parsed.next_action, /~\/\.kimi/);
   } finally {
     rmSync(cwd, { recursive: true, force: true });
   }
