@@ -1,0 +1,36 @@
+{
+  "name": "kimi",
+  "version": "0.1.0",
+  "description": "Delegate investigation, review, and adversarial review to Kimi Code CLI from within Codex.",
+  "author": {
+    "name": "seungpyoson"
+  },
+  "homepage": "https://github.com/seungpyoson/codex-plugin-multi",
+  "repository": "https://github.com/seungpyoson/codex-plugin-multi",
+  "license": "AGPL-3.0-only",
+  "skills": "./skills",
+  "keywords": [
+    "kimi",
+    "kimi-cli",
+    "delegation",
+    "rescue",
+    "review"
+  ],
+  "interface": {
+    "displayName": "Kimi",
+    "shortDescription": "Delegate to Kimi Code CLI from Codex.",
+    "longDescription": "Invoke Kimi Code CLI headlessly from Codex for investigation, rescue, review, and adversarial-review workflows. Uses OAuth subscription (no API keys).",
+    "developerName": "seungpyoson",
+    "category": "Coding",
+    "capabilities": [
+      "Interactive",
+      "Read",
+      "Write"
+    ],
+    "defaultPrompt": [
+      "Ask Kimi Code CLI to review the current diff",
+      "Have Kimi Code CLI investigate a failing test",
+      "Get an adversarial review from Kimi Code CLI"
+    ]
+  }
+}

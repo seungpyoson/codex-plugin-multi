@@ -4,6 +4,12 @@
 
 ### Changed
 
+- Added Kimi Code CLI as a third plugin with setup, preflight, review,
+  adversarial-review, custom-review, rescue, status, result, cancel, mock smoke
+  coverage, and opt-in live E2E coverage.
+- Added direct API-backed DeepSeek and GLM reviewers with explicit
+  `auth_mode: "api_key"` provider config, safe credential-name diagnostics,
+  mock smoke coverage, and GLM Coding Plan endpoint support.
 - Hardened Claude and Gemini preflight output with explicit safety fields that
   report no target spawn, no selected-scope send, and the external-provider
   consent requirement.
@@ -57,8 +63,8 @@
 - Diagnostic ping command docs are deferred until upstream Codex exposes plugin
   command files through the TUI. Tracked in
   https://github.com/seungpyoson/codex-plugin-multi/issues/13.
-- Live Claude/Gemini E2E tests require local OAuth state and are opt-in, not CI
-  defaults.
+- Live Claude/Gemini/Kimi E2E tests require local OAuth state and are opt-in,
+  not CI defaults.
 - Scope tests include intentionally broad object-pure safety coverage and remain
   relatively slow.
 - `git cat-file --batch` optimization is deferred to a performance cleanup.

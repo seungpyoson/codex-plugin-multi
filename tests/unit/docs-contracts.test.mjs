@@ -240,5 +240,5 @@ test("README documents host-owned pre-launch provider denials as outside compani
   assert.match(readme, /cannot emit a JobRecord/i);
   assert.match(readme, /approved provider/i);
   assert.match(readme, /local\/Codex-only review/i);
-  assert.match(readme, /https:\/\/github\.com\/seungpyoson\/codex-plugin-multi\/issues\/27/);
+  assert.match(readme, /https:\/\/github\.com\/seungpyoson\/codex-plugin-multi\/issues\/13/);
 });

@@ -55,7 +55,8 @@ function parseDeclaredExports(source) {
 
 const CLAUDE_FILES = listLibFiles("claude");
 const GEMINI_FILES = listLibFiles("gemini");
-const ALL_LIB_FILES = [...CLAUDE_FILES, ...GEMINI_FILES];
+const KIMI_FILES = listLibFiles("kimi");
+const ALL_LIB_FILES = [...CLAUDE_FILES, ...GEMINI_FILES, ...KIMI_FILES];
 
 for (const entry of ALL_LIB_FILES) {
   test(`${entry.plugin}/lib/${entry.name}: imports cleanly (§21.5)`, async () => {
@@ -90,7 +91,7 @@ for (const entry of ALL_LIB_FILES) {
 function collectProductionCallers() {
   const callers = [];
   // Companion entry points (both plugins, whichever exist).
-  for (const plugin of ["claude", "gemini"]) {
+  for (const plugin of ["claude", "gemini", "kimi"]) {
     const scriptsDir = path.join(REPO_ROOT, "plugins", plugin, "scripts");
     let entries;
     try {
@@ -108,7 +109,7 @@ function collectProductionCallers() {
   // Lib-to-lib imports count as production usage as long as the importing lib
   // itself is (transitively) production-consumed. Assert this via a reachability
   // walk from each plugin's companion entry points.
-  for (const plugin of ["claude", "gemini"]) {
+  for (const plugin of ["claude", "gemini", "kimi"]) {
     const libDir = path.join(REPO_ROOT, "plugins", plugin, "scripts", "lib");
     let entries;
     try {
@@ -122,7 +123,7 @@ function collectProductionCallers() {
     }
   }
   // Code-fenced references in commands/agents markdown.
-  for (const plugin of ["claude", "gemini"]) {
+  for (const plugin of ["claude", "gemini", "kimi"]) {
     for (const sub of ["commands", "agents"]) {
       const dir = path.join(REPO_ROOT, "plugins", plugin, sub);
       let entries;

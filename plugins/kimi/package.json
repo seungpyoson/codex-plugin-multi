@@ -1,0 +1,7 @@
+{
+  "name": "codex-plugin-multi-kimi",
+  "version": "0.1.0",
+  "private": true,
+  "license": "AGPL-3.0-only",
+  "description": "Codex plugin that delegates to Kimi Code CLI (sub-workspace of codex-plugin-multi)."
+}

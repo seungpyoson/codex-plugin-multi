@@ -42,6 +42,22 @@ test("gemini plugin.json: valid schema", () => {
   assert.equal(m.skills, "./skills");
 });
 
+test("kimi plugin.json: valid schema", () => {
+  const m = readJson("plugins/kimi/.codex-plugin/plugin.json");
+  assert.equal(m.name, "kimi");
+  assert.ok(/^\d+\.\d+\.\d+/.test(m.version));
+  assert.equal(m.license, "AGPL-3.0-only");
+  assert.equal(m.skills, "./skills");
+});
+
+test("api-reviewers plugin.json: valid schema", () => {
+  const m = readJson("plugins/api-reviewers/.codex-plugin/plugin.json");
+  assert.equal(m.name, "api-reviewers");
+  assert.ok(/^\d+\.\d+\.\d+/.test(m.version));
+  assert.equal(m.license, "AGPL-3.0-only");
+  assert.equal(m.skills, "./skills");
+});
+
 test("both plugins declared in marketplace match filesystem layout", () => {
   const m = readJson(".agents/plugins/marketplace.json");
   for (const p of m.plugins) {
@@ -50,12 +66,12 @@ test("both plugins declared in marketplace match filesystem layout", () => {
   }
 });
 
-test("claude and gemini package non-ping command docs until upstream slash support lands", () => {
+test("claude, gemini, and kimi package non-ping command docs until upstream slash support lands", () => {
   const commands = [
     "review", "adversarial-review", "rescue",
     "setup", "status", "result", "cancel",
   ];
-  for (const plugin of ["claude", "gemini"]) {
+  for (const plugin of ["claude", "gemini", "kimi"]) {
     for (const command of commands) {
       const rel = `plugins/${plugin}/commands/${plugin}-${command}.md`;
       assert.equal(existsSync(path.join(REPO_ROOT, rel)), true, `${rel} missing`);
@@ -65,8 +81,8 @@ test("claude and gemini package non-ping command docs until upstream slash suppo
   }
 });
 
-test("claude and gemini expose user-invocable skill fallbacks", () => {
-  for (const plugin of ["claude", "gemini"]) {
+test("claude, gemini, and kimi expose user-invocable skill fallbacks", () => {
+  for (const plugin of ["claude", "gemini", "kimi"]) {
     const rel = `plugins/${plugin}/skills/${plugin}-delegation/SKILL.md`;
     const skill = readFileSync(path.join(REPO_ROOT, rel), "utf8");
     assert.match(skill, new RegExp(`name: ${plugin}-delegation`));
@@ -84,6 +100,8 @@ test("README documents install verification for discoverable delegation skills",
   assert.match(readme, /codex debug prompt-input 'list skills'/);
   assert.match(readme, /claude:claude-delegation/);
   assert.match(readme, /gemini:gemini-delegation/);
+  assert.match(readme, /kimi:kimi-delegation/);
+  assert.match(readme, /api-reviewers:api-reviewers-delegation/);
   assert.match(readme, /CODEX_HOME/);
 });
 
@@ -104,7 +122,7 @@ test("release metadata documents v0.1.0 for both plugins", () => {
   const changelog = readFileSync(path.join(REPO_ROOT, "CHANGELOG.md"), "utf8");
   const rootPackage = readJson("package.json");
   assert.equal(rootPackage.version, "0.1.0");
-  for (const plugin of ["claude", "gemini"]) {
+  for (const plugin of ["claude", "gemini", "kimi", "api-reviewers"]) {
     const manifest = readJson(`plugins/${plugin}/.codex-plugin/plugin.json`);
     const workspacePackage = readJson(`plugins/${plugin}/package.json`);
     assert.equal(manifest.version, "0.1.0");
