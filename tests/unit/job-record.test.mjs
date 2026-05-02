@@ -27,14 +27,37 @@ import {
 const HERE = dirname(fileURLToPath(import.meta.url));
 const SKILL_MD = resolvePath(HERE, "..", "..",
   "plugins/claude/skills/claude-result-handling/SKILL.md");
+const EXTERNAL_REVIEW_SKILL_MDS = [
+  SKILL_MD,
+  resolvePath(HERE, "..", "..", "plugins/claude/skills/claude-delegation/SKILL.md"),
+  resolvePath(HERE, "..", "..", "plugins/gemini/skills/gemini-delegation/SKILL.md"),
+  resolvePath(HERE, "..", "..", "plugins/kimi/skills/kimi-delegation/SKILL.md"),
+  resolvePath(HERE, "..", "..", "plugins/api-reviewers/skills/api-reviewers-delegation/SKILL.md"),
+];
 
 const UUID = "550e8400-e29b-41d4-a716-446655440000";
 const CLAUDE_UUID = "11111111-2222-4333-8444-555555555555";
 const GEMINI_UUID = "22222222-3333-4444-9555-666666666666";
 
-test("JobRecord schema_version is bumped for scope diagnostics", () => {
-  assert.equal(SCHEMA_VERSION, 7);
-  assert.equal(GEMINI_SCHEMA_VERSION, 7);
+function sentButNoCleanResult(provider) {
+  return `Selected source content was sent to ${provider} for external review, but the run ended before a clean result was produced.`;
+}
+
+function sentButCancelled(provider) {
+  return `Selected source content was sent to ${provider} for external review; the operator cancelled the run before it completed.`;
+}
+
+function notSentCancelled(provider) {
+  return `Selected source content was not sent to ${provider}; the operator cancelled the run before the target process was started.`;
+}
+
+function notSentScopeRejected(provider) {
+  return `Selected source content was not sent to ${provider}; the review scope was rejected before the target process was started.`;
+}
+
+test("JobRecord schema_version is bumped for external review provenance", () => {
+  assert.equal(SCHEMA_VERSION, 8);
+  assert.equal(GEMINI_SCHEMA_VERSION, 8);
 });
 
 // Helper — minimal valid invocation captured at cmdRun entry.
@@ -51,6 +74,7 @@ function makeInvocation(overrides = {}) {
     workspace_root: "/tmp/src",
     containment: "worktree",
     scope: "working-tree",
+    run_kind: "foreground",
     dispose_effective: true,
     scope_base: null,
     scope_paths: null,
@@ -74,7 +98,7 @@ test("EXPECTED_KEYS is the spec §21.3 canonical list", () => {
     "containment", "scope", "dispose_effective", "scope_base", "scope_paths",
     "prompt_head", "schema_spec", "binary",
     "status", "started_at", "ended_at", "exit_code", "error_code", "error_message",
-    "error_summary", "error_cause", "suggested_action", "disclosure_note",
+    "error_summary", "error_cause", "suggested_action", "external_review", "disclosure_note",
     "result", "structured_output", "permission_denials", "mutations",
     "cost_usd", "usage",
     "schema_version",
@@ -110,6 +134,20 @@ test("buildJobRecord: foreground success path has EXACTLY the expected keys", ()
   assert.equal(rec.exit_code, 0);
   assert.equal(rec.error_code, null);
   assert.equal(rec.error_message, null);
+  assert.deepEqual(rec.external_review, {
+    marker: "EXTERNAL REVIEW",
+    provider: "Claude Code",
+    run_kind: "foreground",
+    job_id: rec.job_id,
+    session_id: CLAUDE_UUID,
+    parent_job_id: null,
+    mode: "review",
+    scope: "working-tree",
+    scope_base: null,
+    scope_paths: null,
+    source_content_transmission: "sent",
+    disclosure: "Selected source content was sent to Claude Code for external review.",
+  });
   assert.equal(rec.schema_version, SCHEMA_VERSION);
   assert.equal(rec.id, rec.job_id, "id is legacy alias for job_id");
 });
@@ -131,6 +169,11 @@ test("buildJobRecord: queued/pre-run state (no execution)", () => {
   assert.equal(rec.gemini_session_id, null);
   assert.equal(rec.error_code, null);
   assert.equal(rec.error_message, null);
+  assert.equal(
+    rec.external_review.disclosure,
+    "Selected source content may be sent to Claude Code for external review.",
+  );
+  assert.equal(rec.external_review.source_content_transmission, "may_be_sent");
 });
 
 test("buildJobRecord: status=cancelled short-circuit forces lifecycle override (issue #22 sub-task 2)", () => {
@@ -155,6 +198,21 @@ test("buildJobRecord: status=cancelled short-circuit forces lifecycle override (
   // result is also preserved — the partial output the target managed to
   // emit before its SIGTERM-handler exited is still the truth on disk.
   assert.equal(rec.result, "partial output before SIGTERM trap exit");
+  assert.equal(rec.external_review.source_content_transmission, "sent");
+  assert.equal(rec.external_review.disclosure, sentButCancelled("Claude Code"));
+});
+
+test("buildJobRecord: pre-spawn cancelled records mark source content not sent", () => {
+  const rec = buildJobRecord(makeInvocation(), {
+    status: "cancelled",
+    exitCode: null,
+    parsed: null,
+    pidInfo: null,
+    claudeSessionId: null,
+  }, []);
+  assert.equal(rec.status, "cancelled");
+  assert.equal(rec.external_review.source_content_transmission, "not_sent");
+  assert.equal(rec.external_review.disclosure, notSentCancelled("Claude Code"));
 });
 
 test("gemini buildJobRecord: status=cancelled mirror", () => {
@@ -169,6 +227,8 @@ test("gemini buildJobRecord: status=cancelled mirror", () => {
     }, []);
   assert.equal(rec.status, "cancelled");
   assert.equal(rec.error_code, null);
+  assert.equal(rec.external_review.source_content_transmission, "sent");
+  assert.equal(rec.external_review.disclosure, sentButCancelled("Gemini CLI"));
 });
 
 test("buildJobRecord: running state preserves pid_info and has no end time", () => {
@@ -225,6 +285,7 @@ test("buildJobRecord: failure path — claude exited non-zero", () => {
   assert.equal(rec.exit_code, 1);
   // Readable stdout can still ride along on a failure.
   assert.equal(rec.result, "partial output");
+  assert.equal(rec.external_review.disclosure, sentButNoCleanResult("Claude Code"));
 });
 
 test("gemini buildJobRecord: failure path uses gemini_error, not claude_error", () => {
@@ -242,6 +303,7 @@ test("gemini buildJobRecord: failure path uses gemini_error, not claude_error", 
   }, []);
   assert.equal(rec.status, "failed");
   assert.equal(rec.error_code, "gemini_error");
+  assert.equal(rec.external_review.disclosure, sentButNoCleanResult("Gemini CLI"));
 });
 
 test("buildJobRecord: unsafe scope failures carry operator diagnostics", () => {
@@ -260,6 +322,11 @@ test("buildJobRecord: unsafe scope failures carry operator diagnostics", () => {
   assert.match(rec.suggested_action, /branch-diff/);
   assert.match(rec.disclosure_note, /not spawned/);
   assert.match(rec.disclosure_note, /not sent/);
+  assert.equal(
+    rec.external_review.disclosure,
+    notSentScopeRejected("Claude Code"),
+  );
+  assert.equal(rec.external_review.source_content_transmission, "not_sent");
 });
 
 test("gemini buildJobRecord: unsafe scope diagnostics mention provider disclosure", () => {
@@ -281,6 +348,11 @@ test("gemini buildJobRecord: unsafe scope diagnostics mention provider disclosur
   assert.match(rec.suggested_action, /working-tree/);
   assert.match(rec.disclosure_note, /not spawned/);
   assert.match(rec.disclosure_note, /external provider/);
+  assert.equal(
+    rec.external_review.disclosure,
+    notSentScopeRejected("Gemini CLI"),
+  );
+  assert.equal(rec.external_review.source_content_transmission, "not_sent");
 });
 
 test("buildJobRecord: scope_base_missing provides targeted diagnostic", () => {
@@ -423,6 +495,7 @@ test("gemini buildJobRecord: spawn, parse, and prompt-defense paths", () => {
   }, []);
   assert.equal(parseFailed.status, "failed");
   assert.equal(parseFailed.error_code, "parse_error");
+  assert.equal(parseFailed.external_review.disclosure, sentButNoCleanResult("Gemini CLI"));
 
   assert.throws(
     () => buildGeminiJobRecord(makeInvocation({ ...invocation, prompt: "secret" }), null, []),
@@ -460,6 +533,7 @@ test("gemini buildJobRecord: default, validation, and non-parse failure branches
   assert.equal(noParsed.status, "failed");
   assert.equal(noParsed.error_code, "gemini_error");
   assert.equal(noParsed.error_message, null);
+  assert.equal(noParsed.external_review.disclosure, sentButNoCleanResult("Gemini CLI"));
 
   const emptyStdout = buildGeminiJobRecord(invocation, {
     exitCode: 0,
@@ -479,6 +553,7 @@ test("gemini buildJobRecord: default, validation, and non-parse failure branches
   }, []);
   assert.equal(targetError.error_code, "gemini_error");
   assert.equal(targetError.error_message, "blocked");
+  assert.equal(targetError.external_review.disclosure, sentButNoCleanResult("Gemini CLI"));
 
   const missingMode = makeInvocation(invocation);
   delete missingMode.mode;
@@ -518,6 +593,7 @@ test("buildJobRecord: finalization_failed errorMessage classifies as finalizatio
   assert.equal(rec.error_code, "finalization_failed");
   assert.equal(rec.error_message,
     "finalization_failed: state=lock timeout after 5000ms");
+  assert.equal(rec.external_review.disclosure, sentButNoCleanResult("Claude Code"));
 });
 
 test("gemini buildJobRecord: finalization_failed mirror", () => {
@@ -529,9 +605,10 @@ test("gemini buildJobRecord: finalization_failed mirror", () => {
       pidInfo: makePidInfo(),
       geminiSessionId: GEMINI_UUID,
       errorMessage: "finalization_failed: meta=ENOSPC",
-    }, []);
+  }, []);
   assert.equal(rec.status, "failed");
   assert.equal(rec.error_code, "finalization_failed");
+  assert.equal(rec.external_review.disclosure, sentButNoCleanResult("Gemini CLI"));
 });
 
 test("buildJobRecord: signal-driven exit classifies as cancelled (#16 follow-up 2)", () => {
@@ -566,6 +643,7 @@ test("buildJobRecord: timedOut wins over signal (timeout, not cancelled)", () =>
   assert.equal(rec.status, "failed",
     "wall-clock timeouts must classify as failed/timeout, not cancelled");
   assert.equal(rec.error_code, "timeout");
+  assert.equal(rec.external_review.disclosure, sentButNoCleanResult("Claude Code"));
 });
 
 test("kimi buildJobRecord: timeout diagnostics use Kimi target display name", () => {
@@ -584,6 +662,7 @@ test("kimi buildJobRecord: timeout diagnostics use Kimi target display name", ()
   assert.match(rec.error_cause, /foreground Kimi process/);
   assert.match(rec.suggested_action, /check Kimi service status/);
   assert.match(rec.suggested_action, /run `kimi` interactively/);
+  assert.equal(rec.external_review.disclosure, sentButNoCleanResult("Kimi Code CLI"));
 });
 
 test("kimi buildJobRecord: timeout diagnostics use Claude target display name", () => {
@@ -630,6 +709,7 @@ test("buildJobRecord: parse_error path (claude returned unparsable stdout)", () 
   }, []);
   assert.equal(rec.status, "failed");
   assert.equal(rec.error_code, "parse_error");
+  assert.equal(rec.external_review.disclosure, sentButNoCleanResult("Claude Code"));
 });
 
 test("buildJobRecord: claude empty_stdout parse failure preserves parsed error", () => {
@@ -643,6 +723,7 @@ test("buildJobRecord: claude empty_stdout parse failure preserves parsed error",
   assert.equal(rec.error_code, "parse_error");
   assert.equal(rec.error_message, "no output");
   assert.deepEqual(rec.permission_denials, []);
+  assert.equal(rec.external_review.disclosure, sentButNoCleanResult("Claude Code"));
 });
 
 test("buildJobRecord: claude optional invocation defaults are normalized", () => {
@@ -737,6 +818,7 @@ test("buildJobRecord: non-parse failures classify as target errors or unknown", 
   assert.equal(noParsed.status, "failed");
   assert.equal(noParsed.error_code, "claude_error");
   assert.equal(noParsed.error_message, null);
+  assert.equal(noParsed.external_review.disclosure, sentButNoCleanResult("Claude Code"));
 
   const parsedTargetError = buildJobRecord(makeInvocation(), {
     exitCode: 0,
@@ -746,6 +828,7 @@ test("buildJobRecord: non-parse failures classify as target errors or unknown", 
   }, []);
   assert.equal(parsedTargetError.error_code, "claude_error");
   assert.equal(parsedTargetError.error_message, "tool denied");
+  assert.equal(parsedTargetError.external_review.disclosure, sentButNoCleanResult("Claude Code"));
 });
 
 // --- Gemini-side targeted scope diagnostic tests (Finding 2 — provider disclosure coverage) ---
@@ -833,4 +916,29 @@ test("schema parity — every EXPECTED_KEYS field is documented in claude-result
   }
   assert.deepEqual(missing, [],
     `claude-result-handling/SKILL.md must mention every JobRecord field. Missing: ${missing.join(", ")}`);
+});
+
+test("external-review SKILL ASCII box rows are aligned", () => {
+  let boxCount = 0;
+  for (const skillPath of EXTERNAL_REVIEW_SKILL_MDS) {
+    const skillText = readFileSync(skillPath, "utf8");
+    const boxes = [...skillText.matchAll(/```text\n([\s\S]*?)```/g)]
+      .map((match) => match[1])
+      .filter((block) => block.includes("EXTERNAL REVIEW"))
+      .filter((block) => block.split("\n").some((line) => /^ *\+/.test(line)));
+
+    for (const box of boxes) {
+      boxCount += 1;
+      const rows = box.split("\n").filter((line) => /^ *[|+]/.test(line));
+      assert.ok(rows.length >= 3, `expected bordered rows in ${skillPath}:\n${box}`);
+      const commonIndent = rows[0].match(/^ */)[0].length;
+      const indents = new Set(rows.map((line) => line.match(/^ */)[0].length));
+      assert.deepEqual([...indents], [commonIndent],
+        `external-review box rows have inconsistent leading spaces in ${skillPath}:\n${box}`);
+      const widths = new Set(rows.map((line) => line.slice(commonIndent).length));
+      assert.equal(widths.size, 1,
+        `external-review box rows have inconsistent widths in ${skillPath}:\n${box}`);
+    }
+  }
+  assert.ok(boxCount > 0, "expected at least one EXTERNAL REVIEW text box");
 });

@@ -15,7 +15,7 @@ import { resolveProfile, resolveModelForProfile, resolveModelCandidatesForProfil
 import { setupContainment } from "./lib/containment.mjs";
 import { populateScope } from "./lib/scope.mjs";
 import { newJobId, verifyPidInfo } from "./lib/identity.mjs";
-import { buildJobRecord } from "./lib/job-record.mjs";
+import { buildJobRecord, externalReviewForInvocation } from "./lib/job-record.mjs";
 import { reconcileActiveJobs } from "./lib/reconcile.mjs";
 import { cleanGitEnv } from "./lib/git-env.mjs";
 import { spawnKimi } from "./lib/kimi.mjs";
@@ -146,6 +146,14 @@ function gitStatusLines(output) {
   return output.split("\n").map((line) => line.trimEnd()).filter((line) => line.length > 0);
 }
 
+function runKindFromRecord(record) {
+  if (record.external_review?.run_kind) return record.external_review.run_kind;
+  if (record.pid_info || record.status === "queued" || record.status === "running" || record.status === "stale") {
+    return "background";
+  }
+  return "foreground";
+}
+
 function invocationFromRecord(record) {
   return {
     job_id: record.job_id,
@@ -165,6 +173,7 @@ function invocationFromRecord(record) {
     prompt_head: record.prompt_head,
     schema_spec: record.schema_spec ?? null,
     binary: record.binary,
+    run_kind: runKindFromRecord(record),
     started_at: record.started_at,
   };
 }
@@ -369,6 +378,7 @@ async function cmdRun(rest) {
     prompt_head: prompt.slice(0, 200),
     schema_spec: null,
     binary: options.binary ?? process.env.KIMI_BINARY ?? "kimi",
+    run_kind: options.background ? "background" : "foreground",
     timeout_ms: timeoutMs,
     started_at: new Date().toISOString(),
   });
@@ -389,6 +399,7 @@ async function cmdRun(rest) {
       mode,
       pid: child.pid ?? null,
       workspace_root: workspaceRoot,
+      external_review: externalReviewForInvocation(invocation),
     });
     process.exit(0);
   }
@@ -758,6 +769,7 @@ async function cmdContinue(rest) {
     prompt_head: prompt.slice(0, 200),
     schema_spec: prior.schema_spec ?? null,
     binary: options.binary ?? process.env.KIMI_BINARY ?? "kimi",
+    run_kind: options.background ? "background" : "foreground",
     timeout_ms: timeoutMs,
     started_at: new Date().toISOString(),
   });
@@ -779,6 +791,7 @@ async function cmdContinue(rest) {
       parent_job_id: options.job,
       pid: child.pid ?? null,
       workspace_root: workspaceRoot,
+      external_review: externalReviewForInvocation(invocation),
     });
     process.exit(0);
   }
@@ -892,7 +905,15 @@ function pingErrorFields() {
   };
 }
 
-function pingFailureDetail(execution) {
+function pingSandboxBlockedFields() {
+  return {
+    ready: false,
+    summary: "Kimi Code CLI is blocked by Codex sandbox access to Kimi state.",
+    next_action: "Add ~/.kimi to [sandbox_workspace_write].writable_roots in ~/.codex/config.toml, keep KIMI_SHARE_DIR unset so Kimi uses its normal auth/config, then start a fresh Codex session and rerun setup. Alternatively, run this check outside sandbox.",
+  };
+}
+
+function pingFailureText(execution) {
   const raw = execution?.parsed?.raw;
   const rawText = typeof raw === "string"
     ? raw
@@ -909,13 +930,24 @@ function pingFailureDetail(execution) {
     execution?.timedOut ? "target CLI exceeded the configured timeoutMs" : "",
     execution?.signal ? `signal ${execution.signal}` : "",
     execution?.exitCode == null ? "" : `exit ${execution.exitCode}`,
-  ].map((s) => String(s ?? "").trim()).find(Boolean) ?? "";
+  ].map((s) => String(s ?? "").trim()).filter(Boolean).join("\n");
+  return detail;
+}
+
+function pingFailureDetail(execution) {
+  const detail = pingFailureText(execution);
   const firstLine = detail.split("\n").map((line) => line.trim()).find(Boolean);
   const hasStackFrame = detail
     .split("\n")
     .some((line) => line.trimStart().startsWith("at "));
   const concise = hasStackFrame && firstLine ? firstLine : detail;
   return concise.slice(0, 500);
+}
+
+function isKimiCodexSandboxBlocked(detail) {
+  return Boolean(process.env.CODEX_SANDBOX) &&
+    /Operation not permitted|PermissionError|EACCES|EPERM/i.test(detail) &&
+    /(?:^|[/\\])\.kimi(?:[/\\]|$)/.test(detail);
 }
 
 async function cmdPing(rest) {
@@ -971,6 +1003,7 @@ async function cmdPing(rest) {
       printJson(payload);
       process.exit(0);
     }
+    const failureText = pingFailureText(execution);
     const detail = pingFailureDetail(execution);
     if (execution?.timedOut === true) {
       printJson({ status: "transient_timeout", ...pingTimeoutFields(timeoutMs), ...ignoredApiKeyAuthFields(), detail });
@@ -986,6 +1019,10 @@ async function cmdPing(rest) {
         hint: "Run `kimi` interactively to complete OAuth. API-key env vars are ignored by plugin policy." });
       process.exit(2);
     }
+    if (isKimiCodexSandboxBlocked(failureText)) {
+      printJson({ status: "sandbox_blocked", ...pingSandboxBlockedFields(), ...ignoredApiKeyAuthFields(), exit_code: execution.exitCode, detail });
+      process.exit(2);
+    }
     printJson({ status: "error", ...pingErrorFields(), ...ignoredApiKeyAuthFields(), exit_code: execution.exitCode, detail });
     process.exit(2);
   } catch (e) {
@@ -996,7 +1033,12 @@ async function cmdPing(rest) {
         install_url: "https://moonshotai.github.io/kimi-cli/" });
       process.exit(2);
     }
-    printJson({ status: "error", ...pingErrorFields(), ...ignoredApiKeyAuthFields(), detail: e.message });
+    const detail = e.message;
+    if (isKimiCodexSandboxBlocked(detail)) {
+      printJson({ status: "sandbox_blocked", ...pingSandboxBlockedFields(), ...ignoredApiKeyAuthFields(), detail });
+      process.exit(2);
+    }
+    printJson({ status: "error", ...pingErrorFields(), ...ignoredApiKeyAuthFields(), detail });
     process.exit(2);
   }
 }

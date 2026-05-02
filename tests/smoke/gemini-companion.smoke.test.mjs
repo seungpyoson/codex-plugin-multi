@@ -159,6 +159,20 @@ test("gemini rescue background: launched event and terminal JobRecord", async ()
     assert.equal(launched.target, "gemini");
     assert.equal(typeof launched.job_id, "string");
     assert.equal(Number.isInteger(launched.pid), true);
+    assert.deepEqual(launched.external_review, {
+      marker: "EXTERNAL REVIEW",
+      provider: "Gemini CLI",
+      run_kind: "background",
+      job_id: launched.job_id,
+      session_id: null,
+      parent_job_id: null,
+      mode: "rescue",
+      scope: "working-tree",
+      scope_base: null,
+      scope_paths: null,
+      source_content_transmission: "may_be_sent",
+      disclosure: "Selected source content may be sent to Gemini CLI for external review.",
+    });
 
     const stateRoot = path.join(dataDir, "state");
     const deadline = Date.now() + GEMINI_SMOKE_POLL_TIMEOUT_MS;
@@ -182,6 +196,12 @@ test("gemini rescue background: launched event and terminal JobRecord", async ()
     assert.equal(meta.status, "completed");
     assert.equal(meta.result, "Mock Gemini response.");
     assert.equal(meta.gemini_session_id, GEMINI_SESSION_ID);
+    assert.deepEqual(meta.external_review, {
+      ...launched.external_review,
+      session_id: GEMINI_SESSION_ID,
+      source_content_transmission: "sent",
+      disclosure: "Selected source content was sent to Gemini CLI for external review.",
+    });
     assert.equal("prompt" in meta, false, "full prompt must not appear on JobRecord");
   } finally {
     rmTree(dataDir);
@@ -447,6 +467,7 @@ test("gemini _run-worker fails before spawn when api_key auth has no provider ke
       schema_spec: null,
       binary,
       auth_mode: "api_key",
+      run_kind: "background",
       started_at: new Date().toISOString(),
     });
     const queued = buildJobRecord(invocation, null, []);
@@ -934,6 +955,12 @@ test("gemini continue background: launched event and resumed terminal JobRecord"
     assert.equal(launched.parent_job_id, prior.job_id);
     assert.equal(typeof launched.job_id, "string");
     assert.equal(Number.isInteger(launched.pid), true);
+    assert.equal(launched.external_review.parent_job_id, prior.job_id);
+    assert.equal(launched.external_review.run_kind, "background");
+    assert.equal(
+      launched.external_review.disclosure,
+      "Selected source content may be sent to Gemini CLI for external review.",
+    );
 
     const stateRoot = path.join(first.dataDir, "state");
     const deadline = Date.now() + GEMINI_SMOKE_POLL_TIMEOUT_MS;
@@ -959,6 +986,13 @@ test("gemini continue background: launched event and resumed terminal JobRecord"
     assert.deepEqual(meta.resume_chain, [prior.gemini_session_id]);
     assert.equal(meta.result, "Mock Gemini response.");
     assert.equal(meta.gemini_session_id, RESUMED_GEMINI_SESSION_ID);
+    assert.equal(meta.external_review.parent_job_id, prior.job_id);
+    assert.equal(meta.external_review.run_kind, "background");
+    assert.equal(meta.external_review.session_id, RESUMED_GEMINI_SESSION_ID);
+    assert.equal(
+      meta.external_review.disclosure,
+      "Selected source content was sent to Gemini CLI for external review.",
+    );
 
     let fx = null;
     while (Date.now() < deadline && !fx) {
@@ -1063,6 +1097,7 @@ test("gemini _run-worker writes failed JobRecord when queued prompt sidecar is m
       prompt_head: "missing sidecar",
       schema_spec: null,
       binary: MOCK,
+      run_kind: "background",
       started_at: new Date().toISOString(),
     });
     const queued = buildJobRecord(invocation, null, []);
@@ -1095,7 +1130,7 @@ test("gemini review foreground: policy-first, stdin transport, /tmp cwd, scoped 
   const neutralCwd = realpathSync(tmpdir());
   const { stdout, stderr, status, dataDir } = runCompanion(
     ["run", "--mode=review", "--foreground", "--cwd", cwd, "--", "review: x=1"],
-    { cwd, env: { GEMINI_MOCK_ASSERT_FILE: "seed.txt", GEMINI_MOCK_ASSERT_CWD: neutralCwd } },
+    { cwd, env: { CODEX_SANDBOX: "", GEMINI_MOCK_ASSERT_FILE: "seed.txt", GEMINI_MOCK_ASSERT_CWD: neutralCwd } },
   );
   try {
     assert.equal(status, 0, `exit ${status}: ${stderr}`);
@@ -1117,6 +1152,29 @@ test("gemini review foreground: policy-first, stdin transport, /tmp cwd, scoped 
     assert.equal(fx.t7_policy_loaded, true, "Gemini review must pass bundled read-only policy");
     assert.equal(fx.t7_sandbox, true, "Gemini review must pass the sandbox flag");
     assert.equal(fx.t7_skip_trust, true, "Gemini review must pass --skip-trust so plan approval is not downgraded");
+    assert.equal(fx.t7_prompt_from_stdin, true, "Gemini prompt must arrive on stdin, not argv");
+  } finally {
+    rmTree(dataDir);
+    rmTree(cwd);
+  }
+});
+
+test("gemini review foreground: omits native Gemini sandbox inside Codex sandbox", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "gemini-review-codex-cwd-"));
+  seedMinimalRepo(cwd);
+  const { stdout, stderr, status, dataDir } = runCompanion(
+    ["run", "--mode=review", "--foreground", "--cwd", cwd, "--", "review: x=1"],
+    { cwd, env: { CODEX_SANDBOX: "seatbelt", GEMINI_MOCK_ASSERT_FILE: "seed.txt" } },
+  );
+  try {
+    assert.equal(status, 0, `exit ${status}: ${stderr}`);
+    const record = JSON.parse(stdout);
+    assert.equal(record.status, "completed");
+
+    const fx = readStdoutLog(dataDir, record.job_id);
+    assert.equal(fx.t7_policy_loaded, true, "Gemini review must still pass bundled read-only policy");
+    assert.equal(fx.t7_sandbox, false, "Gemini -s must be omitted under Codex to avoid nested sandbox-exec");
+    assert.equal(fx.t7_skip_trust, true, "Gemini review must still pass --skip-trust");
     assert.equal(fx.t7_prompt_from_stdin, true, "Gemini prompt must arrive on stdin, not argv");
   } finally {
     rmTree(dataDir);

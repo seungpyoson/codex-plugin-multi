@@ -209,13 +209,13 @@ function promptFor(mode, userPrompt, scopeInfo) {
 function mockProviderExecution(cfg, prompt, credential, env) {
   const expectedPromptText = env.API_REVIEWERS_MOCK_ASSERT_PROMPT_INCLUDES;
   if (expectedPromptText && !prompt.includes(expectedPromptText)) {
-    return providerFailure("mock_assertion_failed", `prompt missing expected text: ${expectedPromptText}`, 200, null);
+    return providerFailure("mock_assertion_failed", `prompt missing expected text: ${expectedPromptText}`, 200, null, false);
   }
   const parsed = parseJson(env.API_REVIEWERS_MOCK_RESPONSE);
-  if (!parsed.ok) return providerFailure("malformed_response", parsed.error, 200, null);
+  if (!parsed.ok) return providerFailure("malformed_response", parsed.error, 200, null, false);
   const content = parsed.value?.choices?.[0]?.message?.content;
   if (typeof content !== "string") {
-    return providerFailure("malformed_response", "response did not include choices[0].message.content", 200, parsed.value);
+    return providerFailure("malformed_response", "response did not include choices[0].message.content", 200, parsed.value, false);
   }
   return {
     exitCode: 0,
@@ -225,6 +225,7 @@ function mockProviderExecution(cfg, prompt, credential, env) {
       usage: parsed.value.usage ?? null,
       raw_model: parsed.value.model ?? null,
     },
+    session_id: safeProviderSessionId(parsed.value?.id),
     http_status: 200,
     credential_ref: credential.keyName,
     endpoint: baseUrlFor(cfg),
@@ -234,7 +235,7 @@ function mockProviderExecution(cfg, prompt, credential, env) {
 async function callProvider(provider, cfg, prompt, env = process.env) {
   const credential = selectedCredential(cfg, env);
   if (!credential.value) {
-    return providerFailure("missing_key", `${cfg.display_name} API key is not available`, null);
+    return providerFailure("missing_key", `${cfg.display_name} API key is not available`, null, null, false);
   }
   const endpoint = `${baseUrlFor(cfg)}/chat/completions`;
   const requestBody = {
@@ -263,14 +264,14 @@ async function callProvider(provider, cfg, prompt, env = process.env) {
     const text = await response.text();
     const parsed = parseJson(text);
     if (!response.ok) {
-      return providerFailure(classifyHttpFailure(response.status, parsed), providerErrorMessage(parsed, text, redact), response.status, parsed);
+      return providerFailure(classifyHttpFailure(response.status, parsed), providerErrorMessage(parsed, text, redact), response.status, parsed, true);
     }
     if (!parsed.ok) {
-      return providerFailure("malformed_response", parsed.error, response.status, null);
+      return providerFailure("malformed_response", parsed.error, response.status, null, true);
     }
     const content = parsed.value?.choices?.[0]?.message?.content;
     if (typeof content !== "string") {
-      return providerFailure("malformed_response", "response did not include choices[0].message.content", response.status, parsed.value);
+      return providerFailure("malformed_response", "response did not include choices[0].message.content", response.status, parsed.value, true);
     }
     return {
       exitCode: 0,
@@ -280,16 +281,31 @@ async function callProvider(provider, cfg, prompt, env = process.env) {
         usage: parsed.value.usage ?? null,
         raw_model: parsed.value.model ?? null,
       },
+      session_id: safeProviderSessionId(parsed.value?.id),
       http_status: response.status,
       credential_ref: credential.keyName,
       endpoint: baseUrlFor(cfg),
     };
   } catch (e) {
     const reason = e?.name === "AbortError" ? "timeout" : "provider_unavailable";
-    return providerFailure(reason, redact(e?.message ?? String(e)), null);
+    return providerFailure(reason, redact(e?.message ?? String(e)), null, null, payloadSentForProviderException(e));
   } finally {
     clearTimeout(timer);
   }
+}
+
+function safeProviderSessionId(value) {
+  if (typeof value !== "string") return null;
+  if (value.length === 0 || value.length > 200) return null;
+  if (/[\u0000-\u001f\u007f]/u.test(value)) return null;
+  return value;
+}
+
+function payloadSentForProviderException(error) {
+  if (error?.name === "AbortError") return true;
+  const code = error?.code ?? error?.cause?.code ?? null;
+  if (code === "ENOTFOUND" || code === "EAI_AGAIN" || code === "ECONNREFUSED") return false;
+  return null;
 }
 
 function parseJson(text) {
@@ -318,7 +334,7 @@ function classifyHttpFailure(status, parsed) {
   return "provider_error";
 }
 
-function providerFailure(reason, message, httpStatus, raw = null) {
+function providerFailure(reason, message, httpStatus, raw = null, payloadSent = null) {
   return {
     exitCode: 1,
     parsed: {
@@ -328,23 +344,68 @@ function providerFailure(reason, message, httpStatus, raw = null) {
       raw,
     },
     http_status: httpStatus,
+    payload_sent: payloadSent,
   };
 }
 
-function suggestedAction(errorCode, provider, cfg) {
+function suggestedAction(errorCode, provider, cfg, errorMessage = "", env = process.env) {
   if (errorCode === "missing_key") return `Expose one of these key names to Codex: ${(cfg.env_keys ?? []).join(", ")}.`;
   if (errorCode === "auth_rejected") return `Check the ${cfg.display_name} API key and billing/plan for ${cfg.model}.`;
   if (errorCode === "rate_limited") return `Wait and retry, or lower concurrency for ${provider}.`;
-  if (errorCode === "provider_unavailable") return `Retry later or switch reviewer provider.`;
+  if (errorCode === "provider_unavailable") {
+    if (env.CODEX_SANDBOX) {
+      return `If running inside Codex, set [sandbox_workspace_write].network_access = true in ~/.codex/config.toml, start a fresh Codex session, then retry; or run this direct API reviewer outside sandbox. If network is already enabled, retry later or switch reviewer provider.`;
+    }
+    if (/fetch failed|ENOTFOUND|EAI_AGAIN|ECONNREFUSED|network|timeout/i.test(errorMessage)) {
+      return `Check network access, retry later, or switch reviewer provider.`;
+    }
+    return `Retry later or switch reviewer provider.`;
+  }
   if (errorCode === "scope_failed") return "Adjust --scope, --scope-base, or --scope-paths and retry.";
   return "Inspect error_message and retry after correcting the provider or request configuration.";
+}
+
+function directApiDisclosure(displayName, completed, payloadSent) {
+  const transmission = directApiTransmission(completed, payloadSent);
+  if (transmission === "sent" && completed) {
+    return `Selected source content was sent to ${displayName} through direct API auth.`;
+  }
+  if (transmission === "not_sent") {
+    return `Selected source content was not sent to ${displayName} through direct API auth.`;
+  }
+  if (transmission === "sent") {
+    return `Selected source content was sent to ${displayName} through direct API auth, but the provider did not return a clean result.`;
+  }
+  return `Selected source content may have been sent to ${displayName} through direct API auth.`;
+}
+
+function directApiTransmission(completed, payloadSent) {
+  if (completed || payloadSent === true) return "sent";
+  if (payloadSent === false) return "not_sent";
+  return "unknown";
 }
 
 function buildRecord({ provider, cfg, mode, options, scopeInfo, execution, startedAt, endedAt }) {
   const completed = execution.exitCode === 0 && execution.parsed?.ok === true;
   const errorCode = completed ? null : (execution.parsed?.reason ?? "provider_error");
   const target = provider;
-  return {
+  const sourceContentTransmission = directApiTransmission(completed, execution.payload_sent ?? null);
+  const disclosure = directApiDisclosure(cfg.display_name, completed, execution.payload_sent ?? null);
+  const externalReview = Object.freeze({
+    marker: "EXTERNAL REVIEW",
+    provider: cfg.display_name,
+    run_kind: "foreground",
+    job_id: options.jobId,
+    session_id: execution.session_id ?? null,
+    parent_job_id: null,
+    mode,
+    scope: scopeInfo.scope,
+    scope_base: scopeInfo.scope_base ?? null,
+    scope_paths: scopeInfo.scope_paths ?? null,
+    source_content_transmission: sourceContentTransmission,
+    disclosure,
+  });
+  return Object.freeze({
     id: options.jobId,
     job_id: options.jobId,
     target,
@@ -363,7 +424,7 @@ function buildRecord({ provider, cfg, mode, options, scopeInfo, execution, start
     scope: scopeInfo.scope,
     dispose_effective: false,
     scope_base: scopeInfo.scope_base ?? null,
-    scope_paths: scopeInfo.scope_paths,
+    scope_paths: scopeInfo.scope_paths ?? null,
     prompt_head: String(options.prompt ?? "").slice(0, 200),
     schema_spec: null,
     binary: null,
@@ -375,8 +436,9 @@ function buildRecord({ provider, cfg, mode, options, scopeInfo, execution, start
     error_message: completed ? null : execution.parsed?.error ?? null,
     error_summary: completed ? null : execution.parsed?.error ?? errorCode,
     error_cause: completed ? null : "direct_api_provider",
-    suggested_action: completed ? null : suggestedAction(errorCode, provider, cfg),
-    disclosure_note: `Selected files were sent to ${cfg.display_name} through direct API auth.`,
+    suggested_action: completed ? null : suggestedAction(errorCode, provider, cfg, execution.parsed?.error ?? ""),
+    external_review: externalReview,
+    disclosure_note: disclosure,
     result: completed ? execution.parsed.result : null,
     structured_output: null,
     permission_denials: [],
@@ -388,8 +450,8 @@ function buildRecord({ provider, cfg, mode, options, scopeInfo, execution, start
     endpoint: execution.endpoint ?? baseUrlFor(cfg),
     http_status: execution.http_status ?? null,
     raw_model: execution.parsed?.raw_model ?? null,
-    schema_version: 7,
-  };
+    schema_version: 8,
+  });
 }
 
 async function persistRecord(record, env = process.env) {
@@ -424,7 +486,6 @@ async function cmdRun(options) {
   let execution;
   try {
     scopeInfo = await collectScope({ ...runOptions, mode });
-    execution = await callProvider(provider, cfg, promptFor(mode, options.prompt ?? "", scopeInfo));
   } catch (e) {
     scopeInfo = {
       cwd: resolve(process.cwd()),
@@ -436,7 +497,15 @@ async function cmdRun(options) {
     execution = {
       exitCode: 1,
       parsed: { ok: false, reason: "scope_failed", error: e.message },
+      payload_sent: false,
     };
+  }
+  if (!execution) {
+    try {
+      execution = await callProvider(provider, cfg, promptFor(mode, options.prompt ?? "", scopeInfo));
+    } catch (e) {
+      execution = providerFailure("provider_unavailable", redactor(process.env)(e?.message ?? String(e)), null, null, null);
+    }
   }
   const record = buildRecord({
     provider,

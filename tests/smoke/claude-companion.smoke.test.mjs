@@ -124,7 +124,7 @@ test("run --mode=review --foreground: emits JobRecord with status=completed", ()
     assert.ok(result.job_id, "job_id set");
     assert.equal(result.result, "Mock Claude response.");
     assert.deepEqual(result.permission_denials, []);
-    assert.equal(result.schema_version, 7, "schema_version bumped for scope diagnostics");
+    assert.equal(result.schema_version, 8, "schema_version bumped for external review provenance");
     assert.equal("prompt" in result, false,
       "§21.3.1: full prompt must not appear on JobRecord");
     assert.equal("ok" in result, false,
@@ -240,7 +240,7 @@ test("run: meta.json persisted to workspace state", () => {
     assert.equal(meta.session_id, undefined,
       "legacy session_id field must not be present on new-shape records");
     // JobRecord schema version and full-prompt omission stay explicit.
-    assert.equal(meta.schema_version, 7);
+    assert.equal(meta.schema_version, 8);
     assert.equal("prompt" in meta, false,
       "§21.3.1: full `prompt` field must not be persisted");
     // T7.4: result field populated on foreground completion (symmetry with bg).
@@ -1435,6 +1435,12 @@ test("status: lists a job after a review run", () => {
     const match = statusObj.jobs.find((j) => j.id === job_id);
     assert.ok(match, `job ${job_id} not in status output`);
     assert.equal(match.status, "completed");
+    assert.equal(match.external_review.provider, "Claude Code");
+    assert.equal(match.external_review.job_id, job_id);
+    assert.equal(
+      match.external_review.disclosure,
+      "Selected source content was sent to Claude Code for external review.",
+    );
   } finally {
     rmSync(dataDir, { recursive: true, force: true });
     rmSync(cwd, { recursive: true, force: true });
@@ -1467,6 +1473,12 @@ test("result --job: returns meta for a finished job", () => {
     const meta = JSON.parse(resultRes.stdout);
     assert.equal(meta.id, job_id);
     assert.equal(meta.status, "completed");
+    assert.equal(meta.external_review.provider, "Claude Code");
+    assert.equal(meta.external_review.job_id, job_id);
+    assert.equal(
+      meta.external_review.disclosure,
+      "Selected source content was sent to Claude Code for external review.",
+    );
   } finally {
     rmSync(dataDir, { recursive: true, force: true });
     rmSync(cwd, { recursive: true, force: true });
@@ -1649,6 +1661,7 @@ test("claude _run-worker fails before spawn when api_key auth has no provider ke
       schema_spec: null,
       binary,
       auth_mode: "api_key",
+      run_kind: "background",
       started_at: new Date().toISOString(),
     });
     const queued = buildJobRecord(invocation, null, []);
