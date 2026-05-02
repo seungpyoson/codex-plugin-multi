@@ -100,6 +100,23 @@ test("doctor reports GLM compatibility alias without leaking value", async () =>
   assert.doesNotMatch(result.stdout, /secret-test-value/);
 });
 
+test("high-capability provider defaults preserve large review output budgets", () => {
+  const providers = parseJson(
+    execFileSync(process.execPath, [
+      "-e",
+      "process.stdout.write(JSON.stringify(require(process.argv[1])))",
+      path.join(REPO_ROOT, "plugins/api-reviewers/config/providers.json"),
+    ], { encoding: "utf8" })
+  );
+
+  assert.equal(providers.deepseek.model, "deepseek-v4-pro");
+  assert.equal(providers.deepseek.request_defaults.thinking.type, "enabled");
+  assert.equal(providers.deepseek.request_defaults.reasoning_effort, "max");
+  assert.ok(providers.deepseek.request_defaults.max_tokens >= 65536);
+  assert.equal(providers.glm.request_defaults.thinking.type, "enabled");
+  assert.ok(providers.glm.request_defaults.max_tokens >= 131072);
+});
+
 for (const scenario of [
   {
     provider: "deepseek",
@@ -178,7 +195,7 @@ test("DeepSeek direct API custom-review completes and persists JobRecord", async
     cwd,
     env: {
       API_REVIEWERS_PLUGIN_DATA: dataDir,
-      API_REVIEWERS_MOCK_RESPONSE: mockResponse("deepseek-reasoner"),
+      API_REVIEWERS_MOCK_RESPONSE: mockResponse("deepseek-v4-pro"),
       API_REVIEWERS_MOCK_ASSERT_PROMPT_INCLUDES: "Live verification context",
       DEEPSEEK_API_KEY: "secret-test-value",
     },
@@ -187,7 +204,7 @@ test("DeepSeek direct API custom-review completes and persists JobRecord", async
   const record = parseJson(result.stdout);
   assert.equal(record.status, "completed");
   assert.equal(record.provider, "deepseek");
-  assert.equal(record.model, "deepseek-reasoner");
+  assert.equal(record.model, "deepseek-v4-pro");
   assert.equal(record.credential_ref, "DEEPSEEK_API_KEY");
   assert.equal(record.result.includes("Verdict: APPROVE"), true);
   assert.deepEqual(record.usage, { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 });
@@ -207,7 +224,7 @@ test("branch-diff default reviews committed changes against main with scrubbed g
     cwd,
     env: {
       API_REVIEWERS_PLUGIN_DATA: dataDir,
-      API_REVIEWERS_MOCK_RESPONSE: mockResponse("deepseek-reasoner"),
+      API_REVIEWERS_MOCK_RESPONSE: mockResponse("deepseek-v4-pro"),
       API_REVIEWERS_MOCK_ASSERT_PROMPT_INCLUDES: "Live verification context",
       DEEPSEEK_API_KEY: "secret-test-value",
       GIT_DIR: path.join(cwd, "not-a-repo"),
@@ -236,7 +253,7 @@ test("branch-diff git spawn failure returns structured scope failure JobRecord",
     cwd,
     env: {
       API_REVIEWERS_PLUGIN_DATA: dataDir,
-      API_REVIEWERS_MOCK_RESPONSE: mockResponse("deepseek-reasoner"),
+      API_REVIEWERS_MOCK_RESPONSE: mockResponse("deepseek-v4-pro"),
       DEEPSEEK_API_KEY: "secret-test-value",
       PATH: "",
     },
