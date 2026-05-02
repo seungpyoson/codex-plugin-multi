@@ -64,6 +64,19 @@ function selectedCredential(cfg, env = process.env) {
   return { keyName: null, value: null };
 }
 
+function parseMaxTokensOverride(env = process.env) {
+  const raw = env.API_REVIEWERS_MAX_TOKENS;
+  if (raw === undefined || raw === null || raw === "") return { ok: true, value: null };
+  const parsed = Number(raw);
+  if (!Number.isSafeInteger(parsed) || parsed <= 0) {
+    return {
+      ok: false,
+      error: `API_REVIEWERS_MAX_TOKENS must be a positive integer number of tokens; got ${JSON.stringify(raw)}`,
+    };
+  }
+  return { ok: true, value: parsed };
+}
+
 function redactor(env = process.env) {
   const secrets = Object.entries(env)
     .filter(([name, value]) => /(?:^|_)API_KEY$/.test(name) && typeof value === "string" && value.length > 0)
@@ -285,6 +298,10 @@ function mockProviderExecution(cfg, prompt, credential, env, requestBody) {
 }
 
 async function callProvider(provider, cfg, prompt, env = process.env) {
+  const maxTokensOverride = parseMaxTokensOverride(env);
+  if (!maxTokensOverride.ok) {
+    return providerFailure("bad_args", maxTokensOverride.error, null);
+  }
   const credential = selectedCredential(cfg, env);
   if (!credential.value) {
     return providerFailure("missing_key", `${cfg.display_name} API key is not available`, null);
@@ -296,8 +313,8 @@ async function callProvider(provider, cfg, prompt, env = process.env) {
     temperature: 0,
   };
   if (cfg.request_defaults) Object.assign(requestBody, cfg.request_defaults);
-  if (env.API_REVIEWERS_MAX_TOKENS !== undefined && env.API_REVIEWERS_MAX_TOKENS !== "") {
-    requestBody.max_tokens = Number(env.API_REVIEWERS_MAX_TOKENS);
+  if (maxTokensOverride.value !== null) {
+    requestBody.max_tokens = maxTokensOverride.value;
   } else if (!Object.hasOwn(requestBody, "max_tokens")) {
     requestBody.max_tokens = 4096;
   }
