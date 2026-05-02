@@ -124,7 +124,7 @@ test("run --mode=review --foreground: emits JobRecord with status=completed", ()
     assert.ok(result.job_id, "job_id set");
     assert.equal(result.result, "Mock Claude response.");
     assert.deepEqual(result.permission_denials, []);
-    assert.equal(result.schema_version, 7, "schema_version bumped for scope diagnostics");
+    assert.equal(result.schema_version, 8, "schema_version bumped for canonical Kimi session parity");
     assert.equal("prompt" in result, false,
       "§21.3.1: full prompt must not appear on JobRecord");
     assert.equal("ok" in result, false,
@@ -240,7 +240,7 @@ test("run: meta.json persisted to workspace state", () => {
     assert.equal(meta.session_id, undefined,
       "legacy session_id field must not be present on new-shape records");
     // JobRecord schema version and full-prompt omission stay explicit.
-    assert.equal(meta.schema_version, 7);
+    assert.equal(meta.schema_version, 8);
     assert.equal("prompt" in meta, false,
       "§21.3.1: full `prompt` field must not be persisted");
     // T7.4: result field populated on foreground completion (symmetry with bg).

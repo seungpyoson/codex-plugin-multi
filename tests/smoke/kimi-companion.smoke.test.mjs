@@ -288,7 +288,7 @@ test("kimi run rejects invalid max-step budgets before target launch", () => wit
   assert.match(parsed.message, /--max-steps-per-turn/);
 }));
 
-test("kimi background review preserves configured max-step budget through queued JobRecord", () => withRepo((cwd) => {
+test("kimi background review preserves configured max-step budget outside public JobRecord", () => withRepo((cwd) => {
   const dataDir = mkdtempSync(path.join(tmpdir(), "kimi-background-max-steps-data-"));
   const launched = runCompanion([
     "run",
@@ -315,7 +315,53 @@ test("kimi background review preserves configured max-step budget through queued
   const record = waitForTerminalRecord(dataDir, payload.job_id);
   assert.equal(record.status, "completed");
   assert.equal(record.result, "Mock Kimi response.");
-  assert.equal(record.max_steps_per_turn, 48);
+  assert.equal("max_steps_per_turn" in record, false);
+}));
+
+test("kimi continue reuses prior private max-step budget without JobRecord drift", () => withRepo((cwd) => {
+  const dataDir = mkdtempSync(path.join(tmpdir(), "kimi-continue-max-steps-data-"));
+  const first = runCompanion([
+    "run",
+    "--mode",
+    "custom-review",
+    "--cwd",
+    cwd,
+    "--scope-paths",
+    "seed.txt",
+    "--foreground",
+    "--max-steps-per-turn",
+    "48",
+    "--",
+    "Review this scope.",
+  ], {
+    cwd,
+    dataDir,
+    env: { KIMI_MOCK_ASSERT_MAX_STEPS_PER_TURN: "48" },
+  });
+  assert.equal(first.status, 0, first.stderr);
+  const firstRecord = parseJson(first.stdout);
+  assert.equal(firstRecord.status, "completed");
+  assert.equal("max_steps_per_turn" in firstRecord, false);
+
+  const continued = runCompanion([
+    "continue",
+    "--job",
+    firstRecord.job_id,
+    "--cwd",
+    cwd,
+    "--foreground",
+    "--",
+    "Continue this review.",
+  ], {
+    cwd,
+    dataDir,
+    env: { KIMI_MOCK_ASSERT_MAX_STEPS_PER_TURN: "48" },
+  });
+  assert.equal(continued.status, 0, continued.stderr);
+  const continuedRecord = parseJson(continued.stdout);
+  assert.equal(continuedRecord.status, "completed");
+  assert.equal(continuedRecord.parent_job_id, firstRecord.job_id);
+  assert.equal("max_steps_per_turn" in continuedRecord, false);
 }));
 
 test("kimi preflight success and bad_args emit safety fields", () => withRepo((cwd) => {

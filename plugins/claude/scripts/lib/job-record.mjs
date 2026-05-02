@@ -21,7 +21,7 @@
 // - Schema drift is a test failure (job-record.test.mjs asserts on keys AND
 //   on claude-result-handling/SKILL.md mentioning each field).
 
-export const SCHEMA_VERSION = 7;
+export const SCHEMA_VERSION = 8;
 
 /**
  * Canonical JobRecord field list. Exported so tests can reference it and
@@ -36,6 +36,7 @@ export const EXPECTED_KEYS = Object.freeze([
   "parent_job_id",
   "claude_session_id",
   "gemini_session_id",
+  "kimi_session_id",
   "resume_chain",
   "pid_info",
 
@@ -422,6 +423,7 @@ export function buildJobRecord(invocation, execution, mutations) {
     parent_job_id: invocation.parent_job_id ?? null,
     claude_session_id: execution?.claudeSessionId ?? null,
     gemini_session_id: execution?.geminiSessionId ?? null,
+    kimi_session_id: execution?.kimiSessionId ?? null,
     resume_chain: Array.isArray(invocation.resume_chain)
       ? [...invocation.resume_chain]
       : [],

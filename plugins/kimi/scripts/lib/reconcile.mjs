@@ -66,7 +66,6 @@ function invocationFromMeta(meta) {
     prompt_head: meta.prompt_head ?? "",
     schema_spec: meta.schema_spec ?? null,
     binary: meta.binary,
-    max_steps_per_turn: meta.max_steps_per_turn ?? null,
     started_at: meta.started_at,
   };
 }
