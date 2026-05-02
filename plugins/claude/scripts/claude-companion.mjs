@@ -161,7 +161,7 @@ function gitStatusLines(output) {
 // Project an invocation out of a JobRecord (used by the background worker
 // when it re-enters executeRun). Only the invocation-phase fields are
 // carried — lifecycle/result fields get re-derived from the fresh execution.
-function invocationFromRecord(record) {
+function invocationFromRecord(record, fallbackAuthMode = "subscription") {
   return {
     job_id: record.job_id,
     target: record.target,
@@ -179,6 +179,7 @@ function invocationFromRecord(record) {
     scope_paths: record.scope_paths ?? null,
     prompt_head: record.prompt_head,
     schema_spec: record.schema_spec ?? null,
+    auth_mode: record.auth_mode ?? fallbackAuthMode ?? "subscription",
     binary: record.binary,
     started_at: record.started_at,
   };
@@ -770,7 +771,7 @@ async function cmdRunWorker(rest) {
     fail("bad_state", "prompt sidecar missing for job " + options.job);
   }
 
-  const invocation = { ...invocationFromRecord(meta), auth_mode: meta.auth_mode ?? options["auth-mode"] ?? "subscription" };
+  const invocation = invocationFromRecord(meta, options["auth-mode"]);
   const authSelection = resolveAuthSelection(invocation.auth_mode);
   if (authSelection.selected_auth_path === "api_key_env_missing") {
     consumePromptSidecar(workspaceRoot, options.job);
@@ -916,10 +917,10 @@ function apiKeyMissingMessage() {
   return buildApiKeyMissingMessage(PING_PROVIDER_API_KEY_ENV);
 }
 
-function apiKeyMissingFields(selection) {
+function apiKeyMissingFields(selection, notAuthedFields = {}) {
   return buildApiKeyMissingFields({
     selection,
-    notAuthedFields: pingNotAuthedFields(),
+    notAuthedFields,
     providerName: "Claude",
     providerApiKeyEnvNames: PING_PROVIDER_API_KEY_ENV,
   });
@@ -1001,7 +1002,7 @@ async function cmdPing(rest) {
   const timeoutMs = Number(options["timeout-ms"] ?? 15000);
   const authSelection = resolveAuthSelection(options["auth-mode"]);
   if (authSelection.selected_auth_path === "api_key_env_missing") {
-    printJson({ status: "not_authed", ...apiKeyMissingFields(authSelection) });
+    printJson({ status: "not_authed", ...apiKeyMissingFields(authSelection, pingNotAuthedFields()) });
     process.exit(2);
   }
   // Ping is ephemeral (no durable record), so reuse newJobId() purely for its

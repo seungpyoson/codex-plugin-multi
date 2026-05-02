@@ -48,7 +48,7 @@ function assertPreflightSafetyFields(result) {
 function assertClaudeApiKeyMissingError(result) {
   assert.equal(result.ok, false);
   assert.equal(result.error, "not_authed");
-  assert.equal(result.ready, false);
+  assert.equal(Object.hasOwn(result, "ready"), false);
   assert.equal(result.auth_mode, "api_key");
   assert.equal(result.selected_auth_path, "api_key_env_missing");
   assert.equal(result.auth_policy, "api_key_env_required");
