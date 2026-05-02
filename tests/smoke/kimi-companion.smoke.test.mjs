@@ -106,6 +106,48 @@ test("kimi ping classifies missing binary with readiness fields", () => {
   }
 });
 
+test("kimi review prompts require a self-contained final verdict", () => withRepo((cwd) => {
+  const result = runCompanion([
+    "run",
+    "--mode",
+    "custom-review",
+    "--cwd",
+    cwd,
+    "--scope-paths",
+    "seed.txt",
+    "--foreground",
+    "--",
+    "Review this file.",
+  ], {
+    cwd,
+    env: {
+      KIMI_MOCK_ASSERT_PROMPT_INCLUDES: "Your final answer must be self-contained",
+    },
+  });
+  assert.equal(result.status, 0, result.stderr);
+}));
+
+test("kimi review prompts include provider live-verification context", () => withRepo((cwd) => {
+  const result = runCompanion([
+    "run",
+    "--mode",
+    "custom-review",
+    "--cwd",
+    cwd,
+    "--scope-paths",
+    "seed.txt",
+    "--foreground",
+    "--",
+    "Review this file.",
+  ], {
+    cwd,
+    env: {
+      KIMI_MOCK_ASSERT_PROMPT_INCLUDES: "Live verification context",
+    },
+  });
+  assert.equal(result.status, 0, result.stderr);
+}));
+
 test("kimi preflight success and bad_args emit safety fields", () => withRepo((cwd) => {
   const ok = runCompanion(["preflight", "--mode", "review", "--cwd", cwd], { cwd });
   assert.equal(ok.status, 0, ok.stderr);

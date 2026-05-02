@@ -53,6 +53,26 @@ function parseScopePathsOption(value) {
     : null;
 }
 
+function targetPromptFor(profile, userPrompt) {
+  if (profile.permission_mode !== "plan") return userPrompt;
+  const modeLine = profile.name === "adversarial-review"
+    ? "You are performing an adversarial code review. Prioritize correctness bugs, security risks, regressions, and missing tests."
+    : "You are performing a code review. Prioritize bugs, behavioral regressions, and missing tests.";
+  const liveContext = [
+    "Live verification context:",
+    "- This repository has verified the configured DeepSeek and GLM direct API endpoints/models from Codex-managed runs.",
+    "- Do not reject model IDs or endpoint hosts solely because they differ from general public documentation; require current run failure evidence or repo-local contradictory evidence.",
+    "- API reviewer JobRecords include the actual endpoint, HTTP status, raw model, credential key name, and usage metadata when the provider returns them.",
+  ].join("\n");
+  return [
+    modeLine,
+    "Your final answer must be self-contained and must not refer to prior, previous, above, or already-provided answers.",
+    "Return a concise verdict and findings. Do not edit files.",
+    liveContext,
+    `User prompt:\n${userPrompt}`,
+  ].join("\n\n");
+}
+
 function comparePathStrings(a, b) {
   return a < b ? -1 : a > b ? 1 : 0;
 }
@@ -354,9 +374,10 @@ async function cmdRun(rest) {
   const queuedRecord = buildJobRecord(invocation, null, []);
   writeJobFile(workspaceRoot, jobId, queuedRecord);
   upsertJob(workspaceRoot, queuedRecord);
+  const targetPrompt = targetPromptFor(profile, prompt);
 
   if (options.background) {
-    writePromptSidecar(workspaceRoot, jobId, prompt);
+    writePromptSidecar(workspaceRoot, jobId, targetPrompt);
     const { child, error } = await spawnDetachedWorker(cwd, jobId);
     if (error) failBackgroundWorkerSpawn(workspaceRoot, invocation, error);
     printJson({
@@ -370,7 +391,7 @@ async function cmdRun(rest) {
     process.exit(0);
   }
 
-  await executeRun(invocation, prompt, { foreground: true });
+  await executeRun(invocation, targetPrompt, { foreground: true });
 }
 
 async function executeRun(invocation, prompt, { foreground }) {
@@ -739,9 +760,10 @@ async function cmdContinue(rest) {
   const queuedRecord = buildJobRecord(invocation, null, []);
   writeJobFile(workspaceRoot, newJobId_, queuedRecord);
   upsertJob(workspaceRoot, queuedRecord);
+  const targetPrompt = targetPromptFor(priorProfile, prompt);
 
   if (options.background) {
-    writePromptSidecar(workspaceRoot, newJobId_, prompt);
+    writePromptSidecar(workspaceRoot, newJobId_, targetPrompt);
     const { child, error } = await spawnDetachedWorker(cwd, newJobId_);
     if (error) failBackgroundWorkerSpawn(workspaceRoot, invocation, error);
     printJson({
@@ -756,7 +778,7 @@ async function cmdContinue(rest) {
     process.exit(0);
   }
 
-  await executeRun(invocation, prompt, { foreground: true });
+  await executeRun(invocation, targetPrompt, { foreground: true });
 }
 
 async function cmdStatus(rest) {

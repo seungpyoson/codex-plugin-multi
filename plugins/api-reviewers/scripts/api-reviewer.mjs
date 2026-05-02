@@ -184,6 +184,12 @@ function promptFor(mode, userPrompt, scopeInfo) {
   const modeLine = mode === "adversarial-review"
     ? "You are performing an adversarial code review. Prioritize correctness bugs, security risks, regressions, and missing tests."
     : "You are performing a code review. Prioritize bugs, behavioral regressions, and missing tests.";
+  const liveContext = [
+    "Live verification context:",
+    "- This repository has verified the configured DeepSeek and GLM direct API endpoints/models from Codex-managed runs.",
+    "- Do not reject model IDs or endpoint hosts solely because they differ from general public documentation; require current run failure evidence or repo-local contradictory evidence.",
+    "- The JobRecord will include the actual endpoint, HTTP status, raw model, credential key name, and usage metadata when the provider returns them.",
+  ].join("\n");
   const files = scopeInfo.files.map((file) => [
     `### ${file.path}`,
     "```",
@@ -193,10 +199,36 @@ function promptFor(mode, userPrompt, scopeInfo) {
   return [
     modeLine,
     "Return a concise verdict and findings. Do not edit files.",
+    liveContext,
     userPrompt ? `User prompt:\n${userPrompt}` : null,
     "Selected files:",
     files,
   ].filter(Boolean).join("\n\n");
+}
+
+function mockProviderExecution(cfg, prompt, credential, env) {
+  const expectedPromptText = env.API_REVIEWERS_MOCK_ASSERT_PROMPT_INCLUDES;
+  if (expectedPromptText && !prompt.includes(expectedPromptText)) {
+    return providerFailure("mock_assertion_failed", `prompt missing expected text: ${expectedPromptText}`, 200, null);
+  }
+  const parsed = parseJson(env.API_REVIEWERS_MOCK_RESPONSE);
+  if (!parsed.ok) return providerFailure("malformed_response", parsed.error, 200, null);
+  const content = parsed.value?.choices?.[0]?.message?.content;
+  if (typeof content !== "string") {
+    return providerFailure("malformed_response", "response did not include choices[0].message.content", 200, parsed.value);
+  }
+  return {
+    exitCode: 0,
+    parsed: {
+      ok: true,
+      result: content,
+      usage: parsed.value.usage ?? null,
+      raw_model: parsed.value.model ?? null,
+    },
+    http_status: 200,
+    credential_ref: credential.keyName,
+    endpoint: baseUrlFor(cfg),
+  };
 }
 
 async function callProvider(provider, cfg, prompt, env = process.env) {
@@ -213,24 +245,7 @@ async function callProvider(provider, cfg, prompt, env = process.env) {
   };
   if (cfg.request_defaults) Object.assign(requestBody, cfg.request_defaults);
   if (env.API_REVIEWERS_MOCK_RESPONSE) {
-    const parsed = parseJson(env.API_REVIEWERS_MOCK_RESPONSE);
-    if (!parsed.ok) return providerFailure("malformed_response", parsed.error, 200, null);
-    const content = parsed.value?.choices?.[0]?.message?.content;
-    if (typeof content !== "string") {
-      return providerFailure("malformed_response", "response did not include choices[0].message.content", 200, parsed.value);
-    }
-    return {
-      exitCode: 0,
-      parsed: {
-        ok: true,
-        result: content,
-        usage: parsed.value.usage ?? null,
-        raw_model: parsed.value.model ?? null,
-      },
-      http_status: 200,
-      credential_ref: credential.keyName,
-      endpoint: baseUrlFor(cfg),
-    };
+    return mockProviderExecution(cfg, prompt, credential, env);
   }
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), Number(env.API_REVIEWERS_TIMEOUT_MS ?? "120000"));
