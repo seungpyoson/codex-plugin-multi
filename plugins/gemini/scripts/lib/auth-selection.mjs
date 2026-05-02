@@ -1,3 +1,7 @@
+// Shared Claude/Gemini auth-selection helper source.
+// Edit scripts/lib/auth-selection.mjs, then run
+// `node scripts/ci/sync-auth-selection.mjs` to update plugin packaging copies.
+
 const AUTH_MODES = new Set(["subscription", "api_key", "auto"]);
 
 export function providerApiKeyEnv(providerApiKeyEnvNames, env = process.env) {
