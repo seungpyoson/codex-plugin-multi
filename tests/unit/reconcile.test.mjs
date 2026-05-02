@@ -216,6 +216,11 @@ test("reconcileActiveJobs: stale jobs are continuable history, not deleted", () 
     const id = "permanent-stale-job";
     seedActive(dir, id, {
       pid_info: TEST_PID_INFO,
+      external_review: {
+        marker: "EXTERNAL REVIEW",
+        provider: "Claude Code",
+        run_kind: "background",
+      },
     });
     reconcileActiveJobs(dir, {
       verifyPidInfoFn: verifier("process_gone"),
@@ -227,10 +232,62 @@ test("reconcileActiveJobs: stale jobs are continuable history, not deleted", () 
     assert.equal(stale.mode, "rescue");
     assert.equal(stale.workspace_root, dir);
     assert.equal(stale.target, "claude");
+    assert.equal(stale.external_review.run_kind, "background");
+    assert.equal(stale.external_review.source_content_transmission, "sent");
+    assert.equal(
+      stale.external_review.disclosure,
+      "Selected source content was sent to Claude Code for external review; the run became stale before completion.",
+    );
     // Reconciliation never deletes the record from state.json either.
     const summary = listJobs(dir).find((j) => j.id === id);
     assert.ok(summary, "stale job must remain in state.json");
     assert.equal(summary.status, "stale");
+  } finally {
+    cleanup(dir);
+  }
+});
+
+test("reconcileActiveJobs: legacy active records without external_review keep run kind unknown", () => {
+  const dir = freshDir();
+  try {
+    const id = "legacy-running-without-external-review";
+    seedActive(dir, id, {
+      pid_info: TEST_PID_INFO,
+      external_review: undefined,
+    });
+    const reclaimed = reconcileActiveJobs(dir, {
+      verifyPidInfoFn: verifier("process_gone"),
+    });
+    assert.equal(reclaimed.length, 1);
+    const stale = readJobFileById(dir, id);
+    assert.equal(stale.status, "stale");
+    assert.equal(stale.external_review.run_kind, "unknown");
+    assert.equal(stale.external_review.source_content_transmission, "sent");
+    assert.match(stale.external_review.disclosure, /run became stale/);
+  } finally {
+    cleanup(dir);
+  }
+});
+
+test("reconcileActiveJobs: legacy queued records without pid_info are marked not sent", () => {
+  const dir = freshDir();
+  try {
+    const id = "legacy-queued-without-pid";
+    seedActive(dir, id, {
+      status: "queued",
+      pid_info: null,
+      external_review: undefined,
+      started_at: new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString(),
+    });
+    const reclaimed = reconcileActiveJobs(dir, {
+      orphanAgeMs: 60 * 60 * 1000,
+    });
+    assert.equal(reclaimed.length, 1);
+    const stale = readJobFileById(dir, id);
+    assert.equal(stale.status, "stale");
+    assert.equal(stale.external_review.run_kind, "unknown");
+    assert.equal(stale.external_review.source_content_transmission, "not_sent");
+    assert.match(stale.external_review.disclosure, /target process was not started/);
   } finally {
     cleanup(dir);
   }
@@ -479,6 +536,11 @@ test("gemini reconcileActiveJobs: dead pid promotes to stale", () => {
       status: "running",
       started_at: new Date(Date.now() - 10_000).toISOString(),
       pid_info: TEST_PID_INFO,
+      external_review: {
+        marker: "EXTERNAL REVIEW",
+        provider: "Gemini CLI",
+        run_kind: "background",
+      },
       claude_session_id: null,
       gemini_session_id: null,
       schema_version: 6,
@@ -489,7 +551,9 @@ test("gemini reconcileActiveJobs: dead pid promotes to stale", () => {
       verifyPidInfoFn: verifier("process_gone"),
     });
     assert.equal(reclaimed.length, 1);
-    assert.equal(GeminiState.readJobFileById(dir, id).status, "stale");
+    const after = GeminiState.readJobFileById(dir, id);
+    assert.equal(after.status, "stale");
+    assert.equal(after.external_review.run_kind, "background");
   } finally {
     cleanup(dir, "RECONCILE_GEMINI_DATA");
   }

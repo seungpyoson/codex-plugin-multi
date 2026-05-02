@@ -6,6 +6,10 @@ import { fileURLToPath } from "node:url";
 import { randomUUID } from "node:crypto";
 import { cleanGitEnv } from "../../claude/scripts/lib/git-env.mjs";
 import { runCommand } from "../../claude/scripts/lib/process.mjs";
+import {
+  EXTERNAL_REVIEW_KEYS,
+  SOURCE_CONTENT_TRANSMISSION,
+} from "../../claude/scripts/lib/external-review.mjs";
 
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 const PLUGIN_ROOT = resolve(SCRIPT_DIR, "..");
@@ -209,13 +213,13 @@ function promptFor(mode, userPrompt, scopeInfo) {
 function mockProviderExecution(cfg, prompt, credential, env) {
   const expectedPromptText = env.API_REVIEWERS_MOCK_ASSERT_PROMPT_INCLUDES;
   if (expectedPromptText && !prompt.includes(expectedPromptText)) {
-    return providerFailure("mock_assertion_failed", `prompt missing expected text: ${expectedPromptText}`, 200, null);
+    return providerFailure("mock_assertion_failed", `prompt missing expected text: ${expectedPromptText}`, 200, null, false);
   }
   const parsed = parseJson(env.API_REVIEWERS_MOCK_RESPONSE);
-  if (!parsed.ok) return providerFailure("malformed_response", parsed.error, 200, null);
+  if (!parsed.ok) return providerFailure("malformed_response", parsed.error, 200, null, false);
   const content = parsed.value?.choices?.[0]?.message?.content;
   if (typeof content !== "string") {
-    return providerFailure("malformed_response", "response did not include choices[0].message.content", 200, parsed.value);
+    return providerFailure("malformed_response", "response did not include choices[0].message.content", 200, parsed.value, false);
   }
   return {
     exitCode: 0,
@@ -225,6 +229,7 @@ function mockProviderExecution(cfg, prompt, credential, env) {
       usage: parsed.value.usage ?? null,
       raw_model: parsed.value.model ?? null,
     },
+    session_id: safeProviderSessionId(parsed.value?.id),
     http_status: 200,
     credential_ref: credential.keyName,
     endpoint: baseUrlFor(cfg),
@@ -234,7 +239,7 @@ function mockProviderExecution(cfg, prompt, credential, env) {
 async function callProvider(provider, cfg, prompt, env = process.env) {
   const credential = selectedCredential(cfg, env);
   if (!credential.value) {
-    return providerFailure("missing_key", `${cfg.display_name} API key is not available`, null);
+    return providerFailure("missing_key", `${cfg.display_name} API key is not available`, null, null, false);
   }
   const endpoint = `${baseUrlFor(cfg)}/chat/completions`;
   const requestBody = {
@@ -263,14 +268,14 @@ async function callProvider(provider, cfg, prompt, env = process.env) {
     const text = await response.text();
     const parsed = parseJson(text);
     if (!response.ok) {
-      return providerFailure(classifyHttpFailure(response.status, parsed), providerErrorMessage(parsed, text, redact), response.status, parsed);
+      return providerFailure(classifyHttpFailure(response.status, parsed), providerErrorMessage(parsed, text, redact), response.status, parsed, true);
     }
     if (!parsed.ok) {
-      return providerFailure("malformed_response", parsed.error, response.status, null);
+      return providerFailure("malformed_response", parsed.error, response.status, null, true);
     }
     const content = parsed.value?.choices?.[0]?.message?.content;
     if (typeof content !== "string") {
-      return providerFailure("malformed_response", "response did not include choices[0].message.content", response.status, parsed.value);
+      return providerFailure("malformed_response", "response did not include choices[0].message.content", response.status, parsed.value, true);
     }
     return {
       exitCode: 0,
@@ -280,16 +285,29 @@ async function callProvider(provider, cfg, prompt, env = process.env) {
         usage: parsed.value.usage ?? null,
         raw_model: parsed.value.model ?? null,
       },
+      session_id: safeProviderSessionId(parsed.value?.id),
       http_status: response.status,
       credential_ref: credential.keyName,
       endpoint: baseUrlFor(cfg),
     };
   } catch (e) {
     const reason = e?.name === "AbortError" ? "timeout" : "provider_unavailable";
-    return providerFailure(reason, redact(e?.message ?? String(e)), null);
+    return providerFailure(reason, redact(e?.message ?? String(e)), null, null, payloadSentForProviderException(e));
   } finally {
     clearTimeout(timer);
   }
+}
+
+function safeProviderSessionId(value) {
+  if (typeof value !== "string") return null;
+  return /^[A-Za-z0-9_-]{1,200}$/u.test(value) ? value : null;
+}
+
+function payloadSentForProviderException(error) {
+  if (error?.name === "AbortError") return null;
+  const code = error?.code ?? error?.cause?.code ?? null;
+  if (code === "ENOTFOUND" || code === "EAI_AGAIN" || code === "ECONNREFUSED") return false;
+  return null;
 }
 
 function parseJson(text) {
@@ -318,7 +336,7 @@ function classifyHttpFailure(status, parsed) {
   return "provider_error";
 }
 
-function providerFailure(reason, message, httpStatus, raw = null) {
+function providerFailure(reason, message, httpStatus, raw = null, payloadSent = null) {
   return {
     exitCode: 1,
     parsed: {
@@ -328,6 +346,7 @@ function providerFailure(reason, message, httpStatus, raw = null) {
       raw,
     },
     http_status: httpStatus,
+    payload_sent: payloadSent,
   };
 }
 
@@ -340,11 +359,56 @@ function suggestedAction(errorCode, provider, cfg) {
   return "Inspect error_message and retry after correcting the provider or request configuration.";
 }
 
+function directApiDisclosure(displayName, completed, payloadSent) {
+  const transmission = directApiTransmission(completed, payloadSent);
+  if (transmission === SOURCE_CONTENT_TRANSMISSION.SENT && completed) {
+    return `Selected source content was sent to ${displayName} through direct API auth.`;
+  }
+  if (transmission === SOURCE_CONTENT_TRANSMISSION.NOT_SENT) {
+    return `Selected source content was not sent to ${displayName} through direct API auth.`;
+  }
+  if (transmission === SOURCE_CONTENT_TRANSMISSION.SENT) {
+    return `Selected source content was sent to ${displayName} through direct API auth, but the provider did not return a clean result.`;
+  }
+  return `Selected source content may have been sent to ${displayName} through direct API auth.`;
+}
+
+function directApiTransmission(completed, payloadSent) {
+  if (completed || payloadSent === true) return SOURCE_CONTENT_TRANSMISSION.SENT;
+  if (payloadSent === false) return SOURCE_CONTENT_TRANSMISSION.NOT_SENT;
+  return SOURCE_CONTENT_TRANSMISSION.UNKNOWN;
+}
+
+function freezeExternalReview(review) {
+  const keys = Object.keys(review);
+  if (keys.length !== EXTERNAL_REVIEW_KEYS.length
+      || keys.some((key) => !EXTERNAL_REVIEW_KEYS.includes(key))) {
+    throw new Error(`external_review keys drifted: ${keys.join(",")}`);
+  }
+  return Object.freeze(review);
+}
+
 function buildRecord({ provider, cfg, mode, options, scopeInfo, execution, startedAt, endedAt }) {
   const completed = execution.exitCode === 0 && execution.parsed?.ok === true;
   const errorCode = completed ? null : (execution.parsed?.reason ?? "provider_error");
   const target = provider;
-  return {
+  const sourceContentTransmission = directApiTransmission(completed, execution.payload_sent ?? null);
+  const disclosure = directApiDisclosure(cfg.display_name, completed, execution.payload_sent ?? null);
+  const externalReview = freezeExternalReview({
+    marker: "EXTERNAL REVIEW",
+    provider: cfg.display_name,
+    run_kind: "foreground",
+    job_id: options.jobId,
+    session_id: execution.session_id ?? null,
+    parent_job_id: null,
+    mode,
+    scope: scopeInfo.scope,
+    scope_base: scopeInfo.scope_base ?? null,
+    scope_paths: scopeInfo.scope_paths ?? null,
+    source_content_transmission: sourceContentTransmission,
+    disclosure,
+  });
+  return Object.freeze({
     id: options.jobId,
     job_id: options.jobId,
     target,
@@ -352,6 +416,7 @@ function buildRecord({ provider, cfg, mode, options, scopeInfo, execution, start
     parent_job_id: null,
     claude_session_id: null,
     gemini_session_id: null,
+    kimi_session_id: null,
     resume_chain: [],
     pid_info: null,
     mode,
@@ -363,7 +428,7 @@ function buildRecord({ provider, cfg, mode, options, scopeInfo, execution, start
     scope: scopeInfo.scope,
     dispose_effective: false,
     scope_base: scopeInfo.scope_base ?? null,
-    scope_paths: scopeInfo.scope_paths,
+    scope_paths: scopeInfo.scope_paths ?? null,
     prompt_head: String(options.prompt ?? "").slice(0, 200),
     schema_spec: null,
     binary: null,
@@ -376,7 +441,8 @@ function buildRecord({ provider, cfg, mode, options, scopeInfo, execution, start
     error_summary: completed ? null : execution.parsed?.error ?? errorCode,
     error_cause: completed ? null : "direct_api_provider",
     suggested_action: completed ? null : suggestedAction(errorCode, provider, cfg),
-    disclosure_note: `Selected files were sent to ${cfg.display_name} through direct API auth.`,
+    external_review: externalReview,
+    disclosure_note: disclosure,
     result: completed ? execution.parsed.result : null,
     structured_output: null,
     permission_denials: [],
@@ -388,8 +454,8 @@ function buildRecord({ provider, cfg, mode, options, scopeInfo, execution, start
     endpoint: execution.endpoint ?? baseUrlFor(cfg),
     http_status: execution.http_status ?? null,
     raw_model: execution.parsed?.raw_model ?? null,
-    schema_version: 7,
-  };
+    schema_version: 9,
+  });
 }
 
 async function persistRecord(record, env = process.env) {
@@ -424,7 +490,6 @@ async function cmdRun(options) {
   let execution;
   try {
     scopeInfo = await collectScope({ ...runOptions, mode });
-    execution = await callProvider(provider, cfg, promptFor(mode, options.prompt ?? "", scopeInfo));
   } catch (e) {
     scopeInfo = {
       cwd: resolve(process.cwd()),
@@ -436,7 +501,15 @@ async function cmdRun(options) {
     execution = {
       exitCode: 1,
       parsed: { ok: false, reason: "scope_failed", error: e.message },
+      payload_sent: false,
     };
+  }
+  if (!execution) {
+    try {
+      execution = await callProvider(provider, cfg, promptFor(mode, options.prompt ?? "", scopeInfo));
+    } catch (e) {
+      execution = providerFailure("provider_unavailable", redactor(process.env)(e?.message ?? String(e)), null, null, null);
+    }
   }
   const record = buildRecord({
     provider,

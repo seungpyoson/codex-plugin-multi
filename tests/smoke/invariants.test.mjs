@@ -439,6 +439,20 @@ test("M6-finding-1-H1: background worker persists parsed.result on terminal JobR
     assert.equal(status, 0);
     const ev = JSON.parse(stdout);
     assert.equal(ev.event, "launched");
+    assert.deepEqual(ev.external_review, {
+      marker: "EXTERNAL REVIEW",
+      provider: "Claude Code",
+      run_kind: "background",
+      job_id: ev.job_id,
+      session_id: null,
+      parent_job_id: null,
+      mode: "rescue",
+      scope: "working-tree",
+      scope_base: null,
+      scope_paths: null,
+      source_content_transmission: "may_be_sent",
+      disclosure: "Selected source content may be sent to Claude Code for external review.",
+    });
     const stateRoot = path.join(dataDir, "state");
     const deadline = Date.now() + 5000;
     let meta = null;
@@ -464,7 +478,21 @@ test("M6-finding-1-H1: background worker persists parsed.result on terminal JobR
     assert.deepEqual(meta.permission_denials, []);
     assert.ok("mutations" in meta, "background JobRecord carries mutations array");
     assert.ok("cost_usd" in meta, "background JobRecord carries cost_usd");
-    assert.equal(meta.schema_version, 7);
+    assert.deepEqual(meta.external_review, {
+      marker: "EXTERNAL REVIEW",
+      provider: "Claude Code",
+      run_kind: "background",
+      job_id: meta.job_id,
+      session_id: meta.claude_session_id,
+      parent_job_id: null,
+      mode: "rescue",
+      scope: "working-tree",
+      scope_base: null,
+      scope_paths: null,
+      source_content_transmission: "sent",
+      disclosure: "Selected source content was sent to Claude Code for external review.",
+    });
+    assert.equal(meta.schema_version, 9);
   } finally {
     rmTempTree(dataDir);
     rmTempTree(cwd);
