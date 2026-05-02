@@ -226,14 +226,26 @@ function buildErrorDiagnostic(invocation, status, error_code, error_message) {
     suggested_action: null,
     disclosure_note: null,
   };
+  const target = targetDisplayName(invocation.target);
+  if (status === "failed" && error_code === "timeout") {
+    return {
+      error_summary: `${target.displayName} Code CLI timed out before returning a review result.`,
+      error_cause:
+        `The foreground ${target.displayName} process exceeded the configured timeout. ` +
+        "This is usually provider latency, a cold start, or a stuck interactive CLI call rather than an OAuth failure.",
+      suggested_action:
+        `Retry the review after a short wait. If it repeats, check ${target.displayName} ` +
+        `service status or run \`${target.binaryName}\` interactively from a normal terminal.`,
+      disclosure_note: null,
+    };
+  }
   if (status !== "failed" || error_code !== "scope_failed" || !error_message) {
     return empty;
   }
 
   const message = String(error_message);
-  const target = invocation.target === "claude" ? "Claude" : "Kimi";
   const disclosure =
-    `Scope preparation failed before ${target} launch. The target CLI was not spawned, ` +
+    `Scope preparation failed before ${target.displayName} launch. The target CLI was not spawned, ` +
     "so rejected scope content was not sent to the target CLI or external provider. " +
     "Branch-diff reduces scope, but any successful external review still sends selected source content to the target provider.";
 
@@ -348,6 +360,11 @@ function buildErrorDiagnostic(invocation, status, error_code, error_message) {
       "Check the raw error_message, fix the scope input, and retry. For committed branch changes, prefer branch-diff with an explicit --scope-base <ref>.",
     disclosure_note: disclosure,
   };
+}
+
+function targetDisplayName(target) {
+  if (target === "claude") return { displayName: "Claude", binaryName: "claude" };
+  return { displayName: "Kimi", binaryName: "kimi" };
 }
 
 /**
