@@ -28,7 +28,6 @@ import {
 } from "./lib/auth-selection.mjs";
 import {
   PING_PROMPT,
-  credentialNameDiagnostics,
   preflightDisclosure,
   preflightSafetyFields,
 } from "./lib/companion-common.mjs";
@@ -850,10 +849,6 @@ function apiKeyMissingFields(selection) {
     providerName: "Gemini",
     providerApiKeyEnvNames: PING_PROVIDER_API_KEY_ENV,
   });
-}
-
-function ignoredApiKeyAuthFields() {
-  return credentialNameDiagnostics(PING_PROVIDER_API_KEY_ENV);
 }
 
 function pingOkFields(modelFallback = null) {
