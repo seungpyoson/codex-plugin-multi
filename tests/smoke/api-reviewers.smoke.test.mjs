@@ -100,6 +100,23 @@ test("doctor reports GLM compatibility alias without leaking value", async () =>
   assert.doesNotMatch(result.stdout, /secret-test-value/);
 });
 
+test("high-capability provider defaults preserve large review output budgets", () => {
+  const providers = parseJson(
+    execFileSync(process.execPath, [
+      "-e",
+      "process.stdout.write(JSON.stringify(require(process.argv[1])))",
+      path.join(REPO_ROOT, "plugins/api-reviewers/config/providers.json"),
+    ], { encoding: "utf8" })
+  );
+
+  assert.equal(providers.deepseek.model, "deepseek-v4-pro");
+  assert.equal(providers.deepseek.request_defaults.thinking.type, "enabled");
+  assert.equal(providers.deepseek.request_defaults.reasoning_effort, "max");
+  assert.ok(providers.deepseek.request_defaults.max_tokens >= 65536);
+  assert.equal(providers.glm.request_defaults.thinking.type, "enabled");
+  assert.ok(providers.glm.request_defaults.max_tokens >= 131072);
+});
+
 for (const scenario of [
   {
     provider: "deepseek",
