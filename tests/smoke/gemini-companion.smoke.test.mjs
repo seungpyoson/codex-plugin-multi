@@ -170,6 +170,7 @@ test("gemini rescue background: launched event and terminal JobRecord", async ()
       scope: "working-tree",
       scope_base: null,
       scope_paths: null,
+      source_content_transmission: "may_be_sent",
       disclosure: "Selected source content may be sent to Gemini CLI for external review.",
     });
 
@@ -198,6 +199,7 @@ test("gemini rescue background: launched event and terminal JobRecord", async ()
     assert.deepEqual(meta.external_review, {
       ...launched.external_review,
       session_id: GEMINI_SESSION_ID,
+      source_content_transmission: "sent",
       disclosure: "Selected source content was sent to Gemini CLI for external review.",
     });
     assert.equal("prompt" in meta, false, "full prompt must not appear on JobRecord");
@@ -465,6 +467,7 @@ test("gemini _run-worker fails before spawn when api_key auth has no provider ke
       schema_spec: null,
       binary,
       auth_mode: "api_key",
+      run_kind: "background",
       started_at: new Date().toISOString(),
     });
     const queued = buildJobRecord(invocation, null, []);
@@ -1094,6 +1097,7 @@ test("gemini _run-worker writes failed JobRecord when queued prompt sidecar is m
       prompt_head: "missing sidecar",
       schema_spec: null,
       binary: MOCK,
+      run_kind: "background",
       started_at: new Date().toISOString(),
     });
     const queued = buildJobRecord(invocation, null, []);

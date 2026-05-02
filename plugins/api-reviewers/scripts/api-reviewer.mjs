@@ -225,7 +225,7 @@ function mockProviderExecution(cfg, prompt, credential, env) {
       usage: parsed.value.usage ?? null,
       raw_model: parsed.value.model ?? null,
     },
-    session_id: typeof parsed.value?.id === "string" ? parsed.value.id : null,
+    session_id: safeProviderSessionId(parsed.value?.id),
     http_status: 200,
     credential_ref: credential.keyName,
     endpoint: baseUrlFor(cfg),
@@ -281,17 +281,31 @@ async function callProvider(provider, cfg, prompt, env = process.env) {
         usage: parsed.value.usage ?? null,
         raw_model: parsed.value.model ?? null,
       },
-      session_id: typeof parsed.value?.id === "string" ? parsed.value.id : null,
+      session_id: safeProviderSessionId(parsed.value?.id),
       http_status: response.status,
       credential_ref: credential.keyName,
       endpoint: baseUrlFor(cfg),
     };
   } catch (e) {
     const reason = e?.name === "AbortError" ? "timeout" : "provider_unavailable";
-    return providerFailure(reason, redact(e?.message ?? String(e)), null);
+    return providerFailure(reason, redact(e?.message ?? String(e)), null, null, payloadSentForProviderException(e));
   } finally {
     clearTimeout(timer);
   }
+}
+
+function safeProviderSessionId(value) {
+  if (typeof value !== "string") return null;
+  if (value.length === 0 || value.length > 200) return null;
+  if (/[\u0000-\u001f\u007f]/u.test(value)) return null;
+  return value;
+}
+
+function payloadSentForProviderException(error) {
+  if (error?.name === "AbortError") return true;
+  const code = error?.code ?? error?.cause?.code ?? null;
+  if (code === "ENOTFOUND" || code === "EAI_AGAIN" || code === "ECONNREFUSED") return false;
+  return null;
 }
 
 function parseJson(text) {
@@ -344,22 +358,30 @@ function suggestedAction(errorCode, provider, cfg) {
 }
 
 function directApiDisclosure(displayName, completed, payloadSent) {
-  if (completed) {
+  const transmission = directApiTransmission(completed, payloadSent);
+  if (transmission === "sent" && completed) {
     return `Selected source content was sent to ${displayName} through direct API auth.`;
   }
-  if (payloadSent === false) {
+  if (transmission === "not_sent") {
     return `Selected source content was not sent to ${displayName} through direct API auth.`;
   }
-  if (payloadSent === true) {
+  if (transmission === "sent") {
     return `Selected source content was sent to ${displayName} through direct API auth, but the provider did not return a clean result.`;
   }
   return `Selected source content may have been sent to ${displayName} through direct API auth.`;
+}
+
+function directApiTransmission(completed, payloadSent) {
+  if (completed || payloadSent === true) return "sent";
+  if (payloadSent === false) return "not_sent";
+  return "unknown";
 }
 
 function buildRecord({ provider, cfg, mode, options, scopeInfo, execution, startedAt, endedAt }) {
   const completed = execution.exitCode === 0 && execution.parsed?.ok === true;
   const errorCode = completed ? null : (execution.parsed?.reason ?? "provider_error");
   const target = provider;
+  const sourceContentTransmission = directApiTransmission(completed, execution.payload_sent ?? null);
   const disclosure = directApiDisclosure(cfg.display_name, completed, execution.payload_sent ?? null);
   const externalReview = Object.freeze({
     marker: "EXTERNAL REVIEW",
@@ -372,9 +394,10 @@ function buildRecord({ provider, cfg, mode, options, scopeInfo, execution, start
     scope: scopeInfo.scope,
     scope_base: scopeInfo.scope_base ?? null,
     scope_paths: scopeInfo.scope_paths ?? null,
+    source_content_transmission: sourceContentTransmission,
     disclosure,
   });
-  return {
+  return Object.freeze({
     id: options.jobId,
     job_id: options.jobId,
     target,
@@ -419,8 +442,8 @@ function buildRecord({ provider, cfg, mode, options, scopeInfo, execution, start
     endpoint: execution.endpoint ?? baseUrlFor(cfg),
     http_status: execution.http_status ?? null,
     raw_model: execution.parsed?.raw_model ?? null,
-    schema_version: 7,
-  };
+    schema_version: 8,
+  });
 }
 
 async function persistRecord(record, env = process.env) {
@@ -455,7 +478,6 @@ async function cmdRun(options) {
   let execution;
   try {
     scopeInfo = await collectScope({ ...runOptions, mode });
-    execution = await callProvider(provider, cfg, promptFor(mode, options.prompt ?? "", scopeInfo));
   } catch (e) {
     scopeInfo = {
       cwd: resolve(process.cwd()),
@@ -469,6 +491,13 @@ async function cmdRun(options) {
       parsed: { ok: false, reason: "scope_failed", error: e.message },
       payload_sent: false,
     };
+  }
+  if (!execution) {
+    try {
+      execution = await callProvider(provider, cfg, promptFor(mode, options.prompt ?? "", scopeInfo));
+    } catch (e) {
+      execution = providerFailure("provider_unavailable", redactor(process.env)(e?.message ?? String(e)), null, null, null);
+    }
   }
   const record = buildRecord({
     provider,

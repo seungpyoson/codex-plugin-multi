@@ -13,7 +13,7 @@ The companion returns the SAME JSON shape from three entry points — foreground
 (spec §21.3). Nothing is hand-assembled in memory; what goes to disk is what
 comes back to you.
 
-## Success path — JobRecord schema (v7)
+## Success path — JobRecord schema (v8)
 
 ```json
 {
@@ -61,6 +61,7 @@ comes back to you.
     "scope":             "working-tree|branch-diff|staged|head|custom",
     "scope_base":        null | "<ref>",
     "scope_paths":       null | ["<glob>"],
+    "source_content_transmission": "not_sent|may_be_sent|sent|unknown",
     "disclosure":        "<external disclosure statement>"
   },
   "disclosure_note":     null | "<what was or was not sent externally>",
@@ -72,7 +73,7 @@ comes back to you.
   "cost_usd":            null | 0.001,
   "usage":               null | { "input_tokens": N, ... },
 
-  "schema_version":      7
+  "schema_version":      8
 }
 ```
 
@@ -106,21 +107,21 @@ from short-lived index contention.
    before findings or status prose. Use the boxed card for launch/result:
 
    ```text
-   +---------------- EXTERNAL REVIEW ----------------+
-   | Provider  Claude Code                           |
-   | Job       <job_id>                              |
-   | Session   <session_id or pending>               |
-   | Run       foreground|background                 |
-   | Scope     <scope>[, base=<scope_base>]          |
-   +-------------------------------------------------+
+   +---------------------------- EXTERNAL REVIEW ---------------------------+
+   | Provider  <external_review.provider>                                   |
+   | Job       <external_review.job_id>                                     |
+   | Session   <external_review.session_id|pending>                         |
+   | Run       <external_review.run_kind>                                   |
+   | Scope     <external_review.scope>[, base=<external_review.scope_base>] |
+   +------------------------------------------------------------------------+
    Disclosure: <external_review.disclosure>
    ```
 
    For wait/status summaries, keep a persistent left rail:
 
    ```text
-   | EXTERNAL | Claude Code · <job_id> · running
-   | EXTERNAL | background · <scope>[, base=<scope_base>]
+   | EXTERNAL | <external_review.provider> · <external_review.job_id> · <status>
+   | EXTERNAL | <external_review.run_kind> · <external_review.scope>[, base=<external_review.scope_base>]
    ```
 
    For multiple providers, use one panel with one row per provider. Do not

@@ -21,9 +21,12 @@
 // - Schema drift is a test failure (job-record.test.mjs asserts on keys AND
 //   on claude-result-handling/SKILL.md mentioning each field).
 
-import { buildExternalReview } from "./external-review.mjs";
+import {
+  buildExternalReview,
+  sourceContentTransmissionForExecution,
+} from "./external-review.mjs";
 
-export const SCHEMA_VERSION = 7;
+export const SCHEMA_VERSION = 8;
 
 /**
  * Canonical JobRecord field list. Exported so tests can reference it and
@@ -85,11 +88,17 @@ const EXPECTED_KEYS_SET = new Set(EXPECTED_KEYS);
 
 export function externalReviewForInvocation(invocation, execution = null) {
   const { status, error_code } = classifyExecution(execution);
+  const sourceContentTransmission = sourceContentTransmissionForExecution({
+    status,
+    errorCode: error_code,
+    pidInfo: execution?.pidInfo ?? null,
+  });
   return buildExternalReview({
     invocation,
     sessionId: execution?.geminiSessionId ?? null,
     status,
     errorCode: error_code,
+    sourceContentTransmission,
   });
 }
 
@@ -382,7 +391,7 @@ function assertInvocation(invocation) {
   for (const f of [
     "job_id", "target", "mode", "mode_profile_name", "model",
     "cwd", "workspace_root", "containment", "scope",
-    "prompt_head", "binary", "started_at",
+    "prompt_head", "binary", "started_at", "run_kind",
   ]) {
     if (!(f in invocation)) {
       throw new Error(`buildJobRecord: invocation missing required field "${f}"`);

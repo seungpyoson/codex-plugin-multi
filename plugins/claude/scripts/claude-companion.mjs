@@ -161,6 +161,14 @@ function gitStatusLines(output) {
 // Project an invocation out of a JobRecord (used by the background worker
 // when it re-enters executeRun). Only the invocation-phase fields are
 // carried — lifecycle/result fields get re-derived from the fresh execution.
+function runKindFromRecord(record) {
+  if (record.external_review?.run_kind) return record.external_review.run_kind;
+  if (record.pid_info || record.status === "queued" || record.status === "running" || record.status === "stale") {
+    return "background";
+  }
+  return "foreground";
+}
+
 function invocationFromRecord(record, fallbackAuthMode = "subscription") {
   return Object.freeze({
     job_id: record.job_id,
@@ -179,7 +187,7 @@ function invocationFromRecord(record, fallbackAuthMode = "subscription") {
     scope_paths: record.scope_paths ?? null,
     prompt_head: record.prompt_head,
     schema_spec: record.schema_spec ?? null,
-    run_kind: record.external_review?.run_kind ?? "foreground",
+    run_kind: runKindFromRecord(record),
     auth_mode: record.auth_mode ?? fallbackAuthMode ?? "subscription",
     binary: record.binary,
     started_at: record.started_at,

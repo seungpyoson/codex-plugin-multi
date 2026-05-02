@@ -146,6 +146,14 @@ function gitStatusLines(output) {
   return output.split("\n").map((line) => line.trimEnd()).filter((line) => line.length > 0);
 }
 
+function runKindFromRecord(record) {
+  if (record.external_review?.run_kind) return record.external_review.run_kind;
+  if (record.pid_info || record.status === "queued" || record.status === "running" || record.status === "stale") {
+    return "background";
+  }
+  return "foreground";
+}
+
 function invocationFromRecord(record) {
   return {
     job_id: record.job_id,
@@ -165,7 +173,7 @@ function invocationFromRecord(record) {
     prompt_head: record.prompt_head,
     schema_spec: record.schema_spec ?? null,
     binary: record.binary,
-    run_kind: record.external_review?.run_kind ?? "foreground",
+    run_kind: runKindFromRecord(record),
     started_at: record.started_at,
   };
 }

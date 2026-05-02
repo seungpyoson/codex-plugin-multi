@@ -1,7 +1,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFile, execFileSync } from "node:child_process";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { cpSync, mkdtempSync, writeFileSync } from "node:fs";
+import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -9,9 +10,9 @@ import { fileURLToPath } from "node:url";
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const COMPANION = path.join(REPO_ROOT, "plugins/api-reviewers/scripts/api-reviewer.mjs");
 
-function run(args, { cwd = REPO_ROOT, env = {} } = {}) {
+function run(args, { cwd = REPO_ROOT, env = {}, companion = COMPANION } = {}) {
   return new Promise((resolve) => {
-    execFile(process.execPath, [COMPANION, ...args], {
+    execFile(process.execPath, [companion, ...args], {
       cwd,
       env: { ...process.env, ...env },
       timeout: 10000,
@@ -25,9 +26,9 @@ function parseJson(stdout) {
   return JSON.parse(stdout);
 }
 
-function mockResponse(model) {
+function mockResponse(model, id = "chatcmpl-test") {
   return JSON.stringify({
-    id: "chatcmpl-test",
+    id,
     object: "chat.completion",
     model,
     choices: [{
@@ -46,6 +47,28 @@ function makeWorkspace() {
   const cwd = mkdtempSync(path.join(tmpdir(), "api-reviewers-smoke-"));
   writeFileSync(path.join(cwd, "seed.txt"), "hello from selected scope\n");
   return cwd;
+}
+
+function makeInstalledApiReviewersRoot() {
+  const root = mkdtempSync(path.join(tmpdir(), "api-reviewers-installed-"));
+  const pluginRoot = path.join(root, "api-reviewers", "0.1.0");
+  cpSync(path.join(REPO_ROOT, "plugins", "claude"), path.join(root, "api-reviewers", "claude"), { recursive: true });
+  cpSync(path.join(REPO_ROOT, "plugins", "api-reviewers"), pluginRoot, { recursive: true });
+  return pluginRoot;
+}
+
+function startHangingChatServer() {
+  const server = createServer((req, res) => {
+    if (req.url === "/chat/completions") {
+      req.resume();
+      return;
+    }
+    res.writeHead(404);
+    res.end();
+  });
+  return new Promise((resolve) => {
+    server.listen(0, "127.0.0.1", () => resolve(server));
+  });
 }
 
 function git(cwd, args) {
@@ -129,11 +152,86 @@ test("DeepSeek direct API custom-review completes and persists JobRecord", async
     scope: "custom",
     scope_base: null,
     scope_paths: ["seed.txt"],
+    source_content_transmission: "sent",
     disclosure: "Selected source content was sent to DeepSeek through direct API auth.",
   });
   assert.equal(record.result.includes("Verdict: APPROVE"), true);
   assert.deepEqual(record.usage, { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 });
   assert.doesNotMatch(result.stdout, /secret-test-value/);
+});
+
+test("direct API provider session_id rejects oversized and control-character values", async () => {
+  const cwd = makeWorkspace();
+  const dataDir = mkdtempSync(path.join(tmpdir(), "api-reviewers-data-"));
+  for (const id of ["bad\nid", "x".repeat(201)]) {
+    const result = await run([
+      "run",
+      "--provider", "deepseek",
+      "--mode", "custom-review",
+      "--scope", "custom",
+      "--scope-paths", "seed.txt",
+      "--foreground",
+      "--prompt", "Check this file.",
+    ], {
+      cwd,
+      env: {
+        API_REVIEWERS_PLUGIN_DATA: dataDir,
+        API_REVIEWERS_MOCK_RESPONSE: mockResponse("deepseek-v4-flash", id),
+        DEEPSEEK_API_KEY: "secret-test-value",
+      },
+    });
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    const record = parseJson(result.stdout);
+    assert.equal(record.status, "completed");
+    assert.equal(record.external_review.session_id, null);
+    assert.doesNotMatch(result.stdout, /bad\\nid/);
+  }
+});
+
+test("direct API timeout marks selected content as sent", async () => {
+  const cwd = makeWorkspace();
+  const dataDir = mkdtempSync(path.join(tmpdir(), "api-reviewers-data-"));
+  const pluginRoot = makeInstalledApiReviewersRoot();
+  const server = await startHangingChatServer();
+  try {
+    const { port } = server.address();
+    writeFileSync(path.join(pluginRoot, "config", "providers.json"), JSON.stringify({
+      deepseek: {
+        display_name: "DeepSeek",
+        auth_mode: "api_key",
+        env_keys: ["DEEPSEEK_API_KEY"],
+        base_url: `http://127.0.0.1:${port}`,
+        model: "deepseek-v4-flash",
+      },
+    }, null, 2));
+
+    const result = await run([
+      "run",
+      "--provider", "deepseek",
+      "--mode", "custom-review",
+      "--scope", "custom",
+      "--scope-paths", "seed.txt",
+      "--foreground",
+      "--prompt", "Check this file.",
+    ], {
+      cwd,
+      companion: path.join(pluginRoot, "scripts", "api-reviewer.mjs"),
+      env: {
+        API_REVIEWERS_PLUGIN_DATA: dataDir,
+        API_REVIEWERS_TIMEOUT_MS: "20",
+        DEEPSEEK_API_KEY: "secret-test-value",
+      },
+    });
+    assert.equal(result.status, 1);
+    assert.notEqual(result.stdout, "", result.stderr);
+    const record = parseJson(result.stdout);
+    assert.equal(record.error_code, "timeout");
+    assert.equal(record.external_review.source_content_transmission, "sent");
+    assert.equal(record.external_review.disclosure,
+      "Selected source content was sent to DeepSeek through direct API auth, but the provider did not return a clean result.");
+  } finally {
+    server.close();
+  }
 });
 
 test("branch-diff default reviews committed changes against main with scrubbed git env", async () => {
@@ -218,6 +316,7 @@ test("direct API reviewers fail closed when no explicit API-key auth is availabl
     record.external_review.disclosure,
     "Selected source content was not sent to DeepSeek through direct API auth.",
   );
+  assert.equal(record.external_review.source_content_transmission, "not_sent");
   assert.equal(record.disclosure_note, record.external_review.disclosure);
 });
 
@@ -244,6 +343,7 @@ test("direct API reviewers mark scope failures as not sent", async () => {
     record.external_review.disclosure,
     "Selected source content was not sent to DeepSeek through direct API auth.",
   );
+  assert.equal(record.external_review.source_content_transmission, "not_sent");
   assert.equal(record.disclosure_note, record.external_review.disclosure);
 });
 
@@ -272,6 +372,7 @@ test("direct API reviewers mark in-process mock assertion failures as not sent",
     record.external_review.disclosure,
     "Selected source content was not sent to DeepSeek through direct API auth.",
   );
+  assert.equal(record.external_review.source_content_transmission, "not_sent");
   assert.equal(record.disclosure_note, record.external_review.disclosure);
 });
 
@@ -299,5 +400,6 @@ test("direct API reviewers mark malformed mock responses as not sent", async () 
     record.external_review.disclosure,
     "Selected source content was not sent to DeepSeek through direct API auth.",
   );
+  assert.equal(record.external_review.source_content_transmission, "not_sent");
   assert.equal(record.disclosure_note, record.external_review.disclosure);
 });

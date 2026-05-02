@@ -8,21 +8,40 @@ export function providerDisplayName(target) {
   return PROVIDER_NAMES[target] ?? target;
 }
 
-export function externalReviewDisclosure(provider, status, errorCode) {
-  if (status === "queued" || status === "running") {
+export const SOURCE_CONTENT_TRANSMISSION = Object.freeze({
+  NOT_SENT: "not_sent",
+  MAY_BE_SENT: "may_be_sent",
+  SENT: "sent",
+  UNKNOWN: "unknown",
+});
+
+export function externalReviewDisclosure(provider, status, sourceContentTransmission, errorCode = null) {
+  if (sourceContentTransmission === SOURCE_CONTENT_TRANSMISSION.MAY_BE_SENT) {
     return `Selected source content may be sent to ${provider} for external review.`;
   }
-  if (status === "completed") {
+  if (sourceContentTransmission === SOURCE_CONTENT_TRANSMISSION.SENT && status === "completed") {
     return `Selected source content was sent to ${provider} for external review.`;
   }
-  if (errorCode === "scope_failed") {
+  if (sourceContentTransmission === SOURCE_CONTENT_TRANSMISSION.SENT && status === "running") {
+    return `Selected source content was sent to ${provider} for external review; the run is in progress.`;
+  }
+  if (sourceContentTransmission === SOURCE_CONTENT_TRANSMISSION.SENT && status === "cancelled") {
+    return `Selected source content was sent to ${provider} for external review; the operator cancelled the run before it completed.`;
+  }
+  if (sourceContentTransmission === SOURCE_CONTENT_TRANSMISSION.SENT) {
+    return `Selected source content was sent to ${provider} for external review, but the run ended before a clean result was produced.`;
+  }
+  if (sourceContentTransmission === SOURCE_CONTENT_TRANSMISSION.NOT_SENT && status === "cancelled") {
+    return `Selected source content was not sent to ${provider}; the operator cancelled the run before the target process was started.`;
+  }
+  if (sourceContentTransmission === SOURCE_CONTENT_TRANSMISSION.NOT_SENT && errorCode === "scope_failed") {
     return `Selected source content was not sent to ${provider}; the review scope was rejected before the target process was started.`;
   }
-  if (errorCode === "spawn_failed") {
+  if (sourceContentTransmission === SOURCE_CONTENT_TRANSMISSION.NOT_SENT && errorCode === "spawn_failed") {
     return `Selected source content was not sent to ${provider}; the target process was not spawned.`;
   }
-  if (targetProcessReceivedContent(errorCode)) {
-    return `Selected source content was sent to ${provider} for external review, but the run ended before a clean result was produced.`;
+  if (sourceContentTransmission === SOURCE_CONTENT_TRANSMISSION.NOT_SENT) {
+    return `Selected source content was not sent to ${provider}; the target process was not started.`;
   }
   if (status === "stale") {
     return `Selected source content may have been sent to ${provider}; the background worker became stale before completion.`;
@@ -30,7 +49,29 @@ export function externalReviewDisclosure(provider, status, errorCode) {
   return `Selected source content may have been sent to ${provider}; the run ended before a clean result was produced.`;
 }
 
-function targetProcessReceivedContent(errorCode) {
+export function sourceContentTransmissionForExecution({ status, errorCode, pidInfo }) {
+  if (status === "queued") {
+    return SOURCE_CONTENT_TRANSMISSION.MAY_BE_SENT;
+  }
+  if (status === "running") {
+    return pidInfo ? SOURCE_CONTENT_TRANSMISSION.SENT : SOURCE_CONTENT_TRANSMISSION.MAY_BE_SENT;
+  }
+  if (status === "stale") {
+    return SOURCE_CONTENT_TRANSMISSION.UNKNOWN;
+  }
+  if (errorCode === "scope_failed" || errorCode === "spawn_failed") {
+    return SOURCE_CONTENT_TRANSMISSION.NOT_SENT;
+  }
+  if (status === "cancelled") {
+    return pidInfo ? SOURCE_CONTENT_TRANSMISSION.SENT : SOURCE_CONTENT_TRANSMISSION.NOT_SENT;
+  }
+  if (status === "completed" || targetProcessReceivedContent(errorCode)) {
+    return SOURCE_CONTENT_TRANSMISSION.SENT;
+  }
+  return SOURCE_CONTENT_TRANSMISSION.UNKNOWN;
+}
+
+export function targetProcessReceivedContent(errorCode) {
   return new Set([
     "claude_error",
     "gemini_error",
@@ -41,7 +82,7 @@ function targetProcessReceivedContent(errorCode) {
   ]).has(errorCode);
 }
 
-export function buildExternalReview({ invocation, sessionId = null, status, errorCode }) {
+export function buildExternalReview({ invocation, sessionId = null, status, errorCode = null, sourceContentTransmission }) {
   const provider = providerDisplayName(invocation.target);
   return Object.freeze({
     marker: "EXTERNAL REVIEW",
@@ -54,6 +95,7 @@ export function buildExternalReview({ invocation, sessionId = null, status, erro
     scope: invocation.scope,
     scope_base: invocation.scope_base ?? null,
     scope_paths: invocation.scope_paths ?? null,
-    disclosure: externalReviewDisclosure(provider, status, errorCode),
+    source_content_transmission: sourceContentTransmission,
+    disclosure: externalReviewDisclosure(provider, status, sourceContentTransmission, errorCode),
   });
 }

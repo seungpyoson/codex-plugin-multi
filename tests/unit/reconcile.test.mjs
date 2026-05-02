@@ -246,6 +246,28 @@ test("reconcileActiveJobs: stale jobs are continuable history, not deleted", () 
   }
 });
 
+test("reconcileActiveJobs: legacy active records without external_review reconcile as background", () => {
+  const dir = freshDir();
+  try {
+    const id = "legacy-running-without-external-review";
+    seedActive(dir, id, {
+      pid_info: TEST_PID_INFO,
+      external_review: undefined,
+    });
+    const reclaimed = reconcileActiveJobs(dir, {
+      verifyPidInfoFn: verifier("process_gone"),
+    });
+    assert.equal(reclaimed.length, 1);
+    const stale = readJobFileById(dir, id);
+    assert.equal(stale.status, "stale");
+    assert.equal(stale.external_review.run_kind, "background");
+    assert.equal(stale.external_review.source_content_transmission, "unknown");
+    assert.match(stale.external_review.disclosure, /background worker became stale/);
+  } finally {
+    cleanup(dir);
+  }
+});
+
 test("reconcileActiveJobs: invalid started_at string is left alone", () => {
   // parseStartedAt returns null when the ISO string is unparseable.
   // Reconciliation must not crash and must not reclaim such records.

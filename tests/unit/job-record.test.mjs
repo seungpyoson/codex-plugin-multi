@@ -43,9 +43,21 @@ function sentButNoCleanResult(provider) {
   return `Selected source content was sent to ${provider} for external review, but the run ended before a clean result was produced.`;
 }
 
-test("JobRecord schema_version is bumped for scope diagnostics", () => {
-  assert.equal(SCHEMA_VERSION, 7);
-  assert.equal(GEMINI_SCHEMA_VERSION, 7);
+function sentButCancelled(provider) {
+  return `Selected source content was sent to ${provider} for external review; the operator cancelled the run before it completed.`;
+}
+
+function notSentCancelled(provider) {
+  return `Selected source content was not sent to ${provider}; the operator cancelled the run before the target process was started.`;
+}
+
+function notSentScopeRejected(provider) {
+  return `Selected source content was not sent to ${provider}; the review scope was rejected before the target process was started.`;
+}
+
+test("JobRecord schema_version is bumped for external review provenance", () => {
+  assert.equal(SCHEMA_VERSION, 8);
+  assert.equal(GEMINI_SCHEMA_VERSION, 8);
 });
 
 // Helper — minimal valid invocation captured at cmdRun entry.
@@ -62,6 +74,7 @@ function makeInvocation(overrides = {}) {
     workspace_root: "/tmp/src",
     containment: "worktree",
     scope: "working-tree",
+    run_kind: "foreground",
     dispose_effective: true,
     scope_base: null,
     scope_paths: null,
@@ -132,6 +145,7 @@ test("buildJobRecord: foreground success path has EXACTLY the expected keys", ()
     scope: "working-tree",
     scope_base: null,
     scope_paths: null,
+    source_content_transmission: "sent",
     disclosure: "Selected source content was sent to Claude Code for external review.",
   });
   assert.equal(rec.schema_version, SCHEMA_VERSION);
@@ -159,6 +173,7 @@ test("buildJobRecord: queued/pre-run state (no execution)", () => {
     rec.external_review.disclosure,
     "Selected source content may be sent to Claude Code for external review.",
   );
+  assert.equal(rec.external_review.source_content_transmission, "may_be_sent");
 });
 
 test("buildJobRecord: status=cancelled short-circuit forces lifecycle override (issue #22 sub-task 2)", () => {
@@ -183,6 +198,21 @@ test("buildJobRecord: status=cancelled short-circuit forces lifecycle override (
   // result is also preserved — the partial output the target managed to
   // emit before its SIGTERM-handler exited is still the truth on disk.
   assert.equal(rec.result, "partial output before SIGTERM trap exit");
+  assert.equal(rec.external_review.source_content_transmission, "sent");
+  assert.equal(rec.external_review.disclosure, sentButCancelled("Claude Code"));
+});
+
+test("buildJobRecord: pre-spawn cancelled records mark source content not sent", () => {
+  const rec = buildJobRecord(makeInvocation(), {
+    status: "cancelled",
+    exitCode: null,
+    parsed: null,
+    pidInfo: null,
+    claudeSessionId: null,
+  }, []);
+  assert.equal(rec.status, "cancelled");
+  assert.equal(rec.external_review.source_content_transmission, "not_sent");
+  assert.equal(rec.external_review.disclosure, notSentCancelled("Claude Code"));
 });
 
 test("gemini buildJobRecord: status=cancelled mirror", () => {
@@ -197,6 +227,8 @@ test("gemini buildJobRecord: status=cancelled mirror", () => {
     }, []);
   assert.equal(rec.status, "cancelled");
   assert.equal(rec.error_code, null);
+  assert.equal(rec.external_review.source_content_transmission, "sent");
+  assert.equal(rec.external_review.disclosure, sentButCancelled("Gemini CLI"));
 });
 
 test("buildJobRecord: running state preserves pid_info and has no end time", () => {
@@ -292,8 +324,9 @@ test("buildJobRecord: unsafe scope failures carry operator diagnostics", () => {
   assert.match(rec.disclosure_note, /not sent/);
   assert.equal(
     rec.external_review.disclosure,
-    "Selected source content was not sent to Claude Code; the review scope was rejected before the target process was started.",
+    notSentScopeRejected("Claude Code"),
   );
+  assert.equal(rec.external_review.source_content_transmission, "not_sent");
 });
 
 test("gemini buildJobRecord: unsafe scope diagnostics mention provider disclosure", () => {
@@ -317,8 +350,9 @@ test("gemini buildJobRecord: unsafe scope diagnostics mention provider disclosur
   assert.match(rec.disclosure_note, /external provider/);
   assert.equal(
     rec.external_review.disclosure,
-    "Selected source content was not sent to Gemini CLI; the review scope was rejected before the target process was started.",
+    notSentScopeRejected("Gemini CLI"),
   );
+  assert.equal(rec.external_review.source_content_transmission, "not_sent");
 });
 
 test("buildJobRecord: scope_base_missing provides targeted diagnostic", () => {

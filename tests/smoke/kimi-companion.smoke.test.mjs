@@ -73,6 +73,21 @@ async function waitForTerminalJob(dataDir, jobId, timeoutMs = 5000) {
   assert.fail(`worker never wrote terminal meta for ${jobId}`);
 }
 
+async function waitForProcessExit(pid, timeoutMs = 5000) {
+  if (!Number.isInteger(pid)) return;
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    try {
+      process.kill(pid, 0);
+    } catch (e) {
+      if (e?.code === "ESRCH") return;
+      throw e;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  assert.fail(`worker process ${pid} did not exit`);
+}
+
 function parseJson(stdout) {
   return JSON.parse(stdout);
 }
@@ -237,6 +252,7 @@ test("kimi foreground review timeout returns actionable JobRecord", () => withRe
 test("kimi background run: launched event and terminal JobRecord carry external_review", async () => {
   const cwd = mkdtempSync(path.join(tmpdir(), "kimi-bg-cwd-"));
   fixtureSeedRepo(cwd);
+  let launchedPid = null;
   const result = runCompanion([
     "run",
     "--mode",
@@ -252,6 +268,7 @@ test("kimi background run: launched event and terminal JobRecord carry external_
   try {
     assert.equal(result.status, 0, result.stderr);
     const launched = parseJson(result.stdout);
+    launchedPid = launched.pid;
     assert.equal(launched.event, "launched");
     assert.equal(launched.target, "kimi");
     assert.equal(launched.mode, "custom-review");
@@ -262,6 +279,7 @@ test("kimi background run: launched event and terminal JobRecord carry external_
       launched.external_review.disclosure,
       "Selected source content may be sent to Kimi Code CLI for external review.",
     );
+    assert.equal(launched.external_review.source_content_transmission, "may_be_sent");
 
     const meta = await waitForTerminalJob(result.dataDir, launched.job_id);
     assert.equal(meta.status, "completed");
@@ -278,9 +296,11 @@ test("kimi background run: launched event and terminal JobRecord carry external_
       scope: "custom",
       scope_base: null,
       scope_paths: ["seed.txt"],
+      source_content_transmission: "sent",
       disclosure: "Selected source content was sent to Kimi Code CLI for external review.",
     });
   } finally {
+    await waitForProcessExit(launchedPid);
     rmSync(result.dataDir, { recursive: true, force: true });
     rmSync(cwd, { recursive: true, force: true });
   }
@@ -289,6 +309,7 @@ test("kimi background run: launched event and terminal JobRecord carry external_
 test("kimi continue background: launched event and terminal JobRecord keep parent metadata", async () => {
   const cwd = mkdtempSync(path.join(tmpdir(), "kimi-continue-bg-cwd-"));
   fixtureSeedRepo(cwd);
+  let launchedPid = null;
   const first = runCompanion([
     "run",
     "--mode",
@@ -319,6 +340,7 @@ test("kimi continue background: launched event and terminal JobRecord keep paren
     ], { cwd, dataDir: first.dataDir });
     assert.equal(continued.status, 0, continued.stderr);
     const launched = parseJson(continued.stdout);
+    launchedPid = launched.pid;
     assert.equal(launched.event, "launched");
     assert.equal(launched.target, "kimi");
     assert.equal(launched.parent_job_id, prior.job_id);
@@ -342,6 +364,7 @@ test("kimi continue background: launched event and terminal JobRecord keep paren
       "Selected source content was sent to Kimi Code CLI for external review.",
     );
   } finally {
+    await waitForProcessExit(launchedPid);
     rmSync(first.dataDir, { recursive: true, force: true });
     rmSync(cwd, { recursive: true, force: true });
   }
@@ -403,6 +426,7 @@ for (const mode of ["review", "adversarial-review", "custom-review"]) {
       scope: mode === "adversarial-review" ? "branch-diff" : (mode === "custom-review" ? "custom" : "working-tree"),
       scope_base: mode === "adversarial-review" ? "HEAD~1" : null,
       scope_paths: mode === "custom-review" ? ["seed.txt"] : null,
+      source_content_transmission: "sent",
       disclosure: "Selected source content was sent to Kimi Code CLI for external review.",
     });
     const { record: persisted } = readOnlyJobRecord(result.dataDir);

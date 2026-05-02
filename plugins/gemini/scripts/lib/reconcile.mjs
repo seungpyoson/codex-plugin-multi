@@ -44,6 +44,12 @@ function parseStartedAt(record) {
   return Number.isFinite(t) ? t : null;
 }
 
+function runKindFromMeta(meta) {
+  if (meta.external_review?.run_kind) return meta.external_review.run_kind;
+  if (meta.pid_info || meta.status === "queued" || meta.status === "running") return "background";
+  return "foreground";
+}
+
 function invocationFromMeta(meta) {
   // Project ONLY the invocation-phase fields buildJobRecord requires.
   // Lifecycle/result fields are re-derived from the synthetic execution
@@ -52,7 +58,7 @@ function invocationFromMeta(meta) {
     job_id: meta.job_id ?? meta.id,
     target: meta.target,
     parent_job_id: meta.parent_job_id ?? null,
-    run_kind: meta.external_review?.run_kind ?? "foreground",
+    run_kind: runKindFromMeta(meta),
     resume_chain: meta.resume_chain ?? [],
     mode_profile_name: meta.mode_profile_name,
     mode: meta.mode,
