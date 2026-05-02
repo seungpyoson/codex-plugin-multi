@@ -165,6 +165,7 @@ function invocationFromRecord(record) {
     prompt_head: record.prompt_head,
     schema_spec: record.schema_spec ?? null,
     binary: record.binary,
+    max_steps_per_turn: record.max_steps_per_turn ?? null,
     started_at: record.started_at,
   };
 }
@@ -174,6 +175,15 @@ function parsePositiveTimeoutMs(value, fallback) {
   const parsed = Number(value);
   if (parsed <= 0 || !Number.isInteger(parsed)) {
     fail("bad_args", `--timeout-ms must be a positive integer number of milliseconds; got ${JSON.stringify(value)}`);
+  }
+  return parsed;
+}
+
+function parsePositiveMaxStepsPerTurn(value, fallback) {
+  if (value === undefined || value === null || value === "") return fallback;
+  const parsed = Number(value);
+  if (parsed <= 0 || !Number.isInteger(parsed)) {
+    fail("bad_args", `--max-steps-per-turn must be a positive integer; got ${JSON.stringify(value)}`);
   }
   return parsed;
 }
@@ -321,7 +331,7 @@ function cmdPreflight(rest) {
 
 async function cmdRun(rest) {
   const { options, positionals } = parseArgs(rest, {
-    valueOptions: ["mode", "model", "cwd", "binary", "scope-base", "scope-paths", "override-dispose", "timeout-ms"],
+    valueOptions: ["mode", "model", "cwd", "binary", "scope-base", "scope-paths", "override-dispose", "timeout-ms", "max-steps-per-turn"],
     booleanOptions: ["background", "foreground"],
   });
   const mode = options.mode;
@@ -349,6 +359,10 @@ async function cmdRun(rest) {
   })();
   const scopePaths = parseScopePathsOption(options["scope-paths"]);
   const timeoutMs = parsePositiveTimeoutMs(options["timeout-ms"], DEFAULT_KIMI_REVIEW_TIMEOUT_MS);
+  const maxStepsPerTurn = parsePositiveMaxStepsPerTurn(
+    options["max-steps-per-turn"],
+    profile.max_steps_per_turn ?? 8,
+  );
 
   const jobId = newJobId();
   const invocation = Object.freeze({
@@ -370,6 +384,7 @@ async function cmdRun(rest) {
     schema_spec: null,
     binary: options.binary ?? process.env.KIMI_BINARY ?? "kimi",
     timeout_ms: timeoutMs,
+    max_steps_per_turn: maxStepsPerTurn,
     started_at: new Date().toISOString(),
   });
 
@@ -482,6 +497,7 @@ async function executeRun(invocation, prompt, { foreground }) {
         binary: invocation.binary,
         resumeId,
         timeoutMs: foreground ? invocation.timeout_ms : 0,
+        maxStepsPerTurn: invocation.max_steps_per_turn,
         onSpawn: (pidInfo) => {
           const runningRecord = buildJobRecord(attemptInvocation, {
             status: "running",
@@ -693,7 +709,7 @@ async function cmdRunWorker(rest) {
 
 async function cmdContinue(rest) {
   const { options, positionals } = parseArgs(rest, {
-    valueOptions: ["job", "cwd", "model", "binary", "timeout-ms"],
+    valueOptions: ["job", "cwd", "model", "binary", "timeout-ms", "max-steps-per-turn"],
     booleanOptions: ["background", "foreground"],
   });
   if (!options.job) fail("bad_args", "--job <id> is required");
@@ -740,6 +756,10 @@ async function cmdContinue(rest) {
   const priorProfile = resolveProfile(priorModeName);
   const priorResumeChain = Array.isArray(prior.resume_chain) ? prior.resume_chain : [];
   const timeoutMs = parsePositiveTimeoutMs(options["timeout-ms"], DEFAULT_KIMI_REVIEW_TIMEOUT_MS);
+  const maxStepsPerTurn = parsePositiveMaxStepsPerTurn(
+    options["max-steps-per-turn"],
+    prior.max_steps_per_turn ?? priorProfile.max_steps_per_turn ?? 8,
+  );
   const invocation = Object.freeze({
     job_id: newJobId_,
     target: "kimi",
@@ -759,6 +779,7 @@ async function cmdContinue(rest) {
     schema_spec: prior.schema_spec ?? null,
     binary: options.binary ?? process.env.KIMI_BINARY ?? "kimi",
     timeout_ms: timeoutMs,
+    max_steps_per_turn: maxStepsPerTurn,
     started_at: new Date().toISOString(),
   });
 

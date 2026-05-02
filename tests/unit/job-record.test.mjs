@@ -586,6 +586,28 @@ test("kimi buildJobRecord: timeout diagnostics use Kimi target display name", ()
   assert.match(rec.suggested_action, /run `kimi` interactively/);
 });
 
+test("kimi buildJobRecord: step-limit exhaustion is actionable, not parse_error", () => {
+  const rec = buildKimiJobRecord(makeInvocation({ target: "kimi", binary: "kimi" }), {
+    exitCode: 1,
+    parsed: {
+      ok: false,
+      reason: "step_limit_exceeded",
+      error: "Max number of steps reached: 1",
+      result: null,
+      structured: null,
+      denials: [],
+    },
+    pidInfo: makePidInfo(),
+    kimiSessionId: null,
+  }, []);
+  assert.equal(rec.status, "failed");
+  assert.equal(rec.error_code, "step_limit_exceeded");
+  assert.equal(rec.error_message, "Max number of steps reached: 1");
+  assert.match(rec.error_summary, /step limit/i);
+  assert.match(rec.suggested_action, /higher step budget/i);
+  assert.match(rec.suggested_action, /narrower scope/i);
+});
+
 test("kimi buildJobRecord: timeout diagnostics use Claude target display name", () => {
   const rec = buildKimiJobRecord(makeInvocation({ target: "claude", binary: "claude" }), {
     exitCode: null,
