@@ -206,8 +206,9 @@ test("kimi foreground review timeout returns actionable JobRecord", () => withRe
   assert.equal(record.mode, "custom-review");
   assert.equal(record.status, "failed");
   assert.equal(record.error_code, "timeout");
-  assert.match(record.error_summary, /timed out/i);
+  assert.match(record.error_summary, /^Kimi Code CLI timed out/);
   assert.match(record.suggested_action, /retry/i);
+  assert.match(record.suggested_action, /run `kimi` interactively/);
   const { record: persisted } = readOnlyJobRecord(result.dataDir);
   assert.equal(persisted.job_id, record.job_id);
   assert.equal(persisted.error_code, "timeout");
