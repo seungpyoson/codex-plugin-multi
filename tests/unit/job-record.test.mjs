@@ -20,6 +20,9 @@ import {
   buildJobRecord as buildGeminiJobRecord,
   SCHEMA_VERSION as GEMINI_SCHEMA_VERSION,
 } from "../../plugins/gemini/scripts/lib/job-record.mjs";
+import {
+  buildJobRecord as buildKimiJobRecord,
+} from "../../plugins/kimi/scripts/lib/job-record.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const SKILL_MD = resolvePath(HERE, "..", "..",
@@ -563,6 +566,24 @@ test("buildJobRecord: timedOut wins over signal (timeout, not cancelled)", () =>
   assert.equal(rec.status, "failed",
     "wall-clock timeouts must classify as failed/timeout, not cancelled");
   assert.equal(rec.error_code, "timeout");
+});
+
+test("kimi buildJobRecord: timeout diagnostics use invocation target display name", () => {
+  const rec = buildKimiJobRecord(makeInvocation({ target: "claude", binary: "claude" }), {
+    exitCode: null,
+    signal: "SIGTERM",
+    timedOut: true,
+    parsed: { ok: false, reason: "empty_stdout", result: null,
+      structured: null, denials: [] },
+    pidInfo: makePidInfo(),
+    kimiSessionId: null,
+  }, []);
+  assert.equal(rec.status, "failed");
+  assert.equal(rec.error_code, "timeout");
+  assert.match(rec.error_summary, /^Claude Code CLI timed out/);
+  assert.match(rec.error_cause, /foreground Claude process/);
+  assert.match(rec.suggested_action, /check Claude service status/);
+  assert.match(rec.suggested_action, /run `claude` interactively/);
 });
 
 test("gemini buildJobRecord: signal-driven exit classifies as cancelled", () => {

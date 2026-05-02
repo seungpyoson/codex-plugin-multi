@@ -130,6 +130,26 @@ test("kimi ping classifies missing binary with readiness fields", () => {
   }
 });
 
+test("kimi ping classifies timeout as transient latency", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "kimi-ping-timeout-"));
+  try {
+    const result = runCompanion(["ping", "--timeout-ms", "20"], {
+      cwd,
+      env: { KIMI_MOCK_DELAY_MS: "200" },
+    });
+    assert.equal(result.status, 2);
+    const parsed = parseJson(result.stdout);
+    assert.equal(parsed.status, "transient_timeout");
+    assert.equal(parsed.ready, false);
+    assert.match(parsed.summary, /timed out/i);
+    assert.match(parsed.next_action, /Retry/);
+    assert.equal(parsed.timeout_ms, 20);
+    assert.match(parsed.detail, /configured timeoutMs/);
+  } finally {
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
 for (const mode of ["review", "adversarial-review", "custom-review"]) {
   test(`kimi ${mode} prompt requires a self-contained final verdict`, () => withRepo((cwd) => {
     const result = runCompanion(kimiPromptAssertionArgs(cwd, mode), {
@@ -151,6 +171,34 @@ for (const mode of ["review", "adversarial-review", "custom-review"]) {
     assert.equal(result.status, 0, result.stderr);
   }));
 }
+
+test("kimi foreground review timeout returns actionable JobRecord", () => withRepo((cwd) => {
+  const result = runCompanion([
+    "run",
+    "--mode",
+    "custom-review",
+    "--cwd",
+    cwd,
+    "--scope-paths",
+    "seed.txt",
+    "--foreground",
+    "--timeout-ms",
+    "20",
+    "--",
+    "Review this scope.",
+  ], { cwd, env: { KIMI_MOCK_DELAY_MS: "200" } });
+  assert.equal(result.status, 2);
+  const record = parseJson(result.stdout);
+  assert.equal(record.target, "kimi");
+  assert.equal(record.mode, "custom-review");
+  assert.equal(record.status, "failed");
+  assert.equal(record.error_code, "timeout");
+  assert.match(record.error_summary, /timed out/i);
+  assert.match(record.suggested_action, /retry/i);
+  const { record: persisted } = readOnlyJobRecord(result.dataDir);
+  assert.equal(persisted.job_id, record.job_id);
+  assert.equal(persisted.error_code, "timeout");
+}));
 
 test("kimi preflight success and bad_args emit safety fields", () => withRepo((cwd) => {
   const ok = runCompanion(["preflight", "--mode", "review", "--cwd", cwd], { cwd });
