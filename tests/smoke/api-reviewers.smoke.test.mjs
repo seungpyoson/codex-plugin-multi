@@ -166,6 +166,7 @@ test("GLM direct API custom-review uses coding endpoint and request defaults", a
     env: {
       API_REVIEWERS_PLUGIN_DATA: dataDir,
       API_REVIEWERS_MOCK_RESPONSE: mockResponse("glm-5.1"),
+      API_REVIEWERS_MOCK_ASSERT_PROMPT_INCLUDES: "Live verification context",
       ZAI_API_KEY: "",
       ZAI_GLM_API_KEY: "secret-test-value",
     },
