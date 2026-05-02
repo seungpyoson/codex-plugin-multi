@@ -287,8 +287,8 @@ function requestFieldMatches(actual, expected) {
     typeof actual === "object" &&
     typeof expected === "object"
   ) {
-    const actualKeys = Object.keys(actual).sort();
-    const expectedKeys = Object.keys(expected).sort();
+    const actualKeys = Object.keys(actual).sort((a, b) => a.localeCompare(b));
+    const expectedKeys = Object.keys(expected).sort((a, b) => a.localeCompare(b));
     if (!requestFieldMatches(actualKeys, expectedKeys)) return false;
     return actualKeys.every((key) => requestFieldMatches(actual[key], expected[key]));
   }
