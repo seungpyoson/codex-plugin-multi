@@ -31,6 +31,7 @@ const VERBATIM_FILES = [
   "scope.mjs",
   "cancel-marker.mjs",
   "companion-common.mjs",
+  "external-review.mjs",
 ];
 
 const CLAUDE_GEMINI_VERBATIM_FILES = [
@@ -48,6 +49,17 @@ test("lib/companion-common.mjs: plugin packaging copies match the canonical shar
       "utf8"
     );
     assert.equal(copy, canonical, `companion-common.mjs packaging copy drifted in ${plugin}`);
+  }
+});
+
+test("lib/external-review.mjs: plugin packaging copies match the canonical shared source", () => {
+  const canonical = readFileSync(path.join(REPO_ROOT, "scripts/lib/external-review.mjs"), "utf8");
+  for (const plugin of COMPANION_PLUGIN_TARGETS) {
+    const copy = readFileSync(
+      path.join(REPO_ROOT, `plugins/${plugin}/scripts/lib/external-review.mjs`),
+      "utf8"
+    );
+    assert.equal(copy, canonical, `external-review.mjs packaging copy drifted in ${plugin}`);
   }
 });
 

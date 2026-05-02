@@ -123,7 +123,7 @@ test("DeepSeek direct API custom-review completes and persists JobRecord", async
     provider: "DeepSeek",
     run_kind: "foreground",
     job_id: record.job_id,
-    session_id: null,
+    session_id: "chatcmpl-test",
     parent_job_id: null,
     mode: "custom-review",
     scope: "custom",

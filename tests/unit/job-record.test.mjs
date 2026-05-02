@@ -279,7 +279,7 @@ test("buildJobRecord: unsafe scope failures carry operator diagnostics", () => {
   assert.match(rec.disclosure_note, /not sent/);
   assert.equal(
     rec.external_review.disclosure,
-    "Selected source content was not sent to Claude Code; the target process was not spawned.",
+    "Selected source content was not sent to Claude Code; the review scope was rejected before the target process was started.",
   );
 });
 
@@ -304,7 +304,7 @@ test("gemini buildJobRecord: unsafe scope diagnostics mention provider disclosur
   assert.match(rec.disclosure_note, /external provider/);
   assert.equal(
     rec.external_review.disclosure,
-    "Selected source content was not sent to Gemini CLI; the target process was not spawned.",
+    "Selected source content was not sent to Gemini CLI; the review scope was rejected before the target process was started.",
   );
 });
 
