@@ -151,6 +151,14 @@ function git(args, cwd) {
   return res.stdout.trim();
 }
 
+function bestEffortWorkspaceRoot(cwd) {
+  try {
+    return git(["rev-parse", "--show-toplevel"], cwd) || cwd;
+  } catch {
+    return cwd;
+  }
+}
+
 function splitScopePaths(value) {
   if (!value) return [];
   return String(value).split(/[,\n]/).map((s) => s.trim()).filter(Boolean);
@@ -451,9 +459,10 @@ async function cmdRun(options) {
     scopeInfo = await collectScope({ ...runOptions, mode });
     execution = await callProvider(provider, cfg, promptFor(mode, options.prompt ?? "", scopeInfo));
   } catch (e) {
+    const cwd = resolve(process.cwd());
     scopeInfo = {
-      cwd: resolve(process.cwd()),
-      workspaceRoot: git(["rev-parse", "--show-toplevel"], process.cwd()) || resolve(process.cwd()),
+      cwd,
+      workspaceRoot: bestEffortWorkspaceRoot(cwd),
       scope: options.scope ?? null,
       scope_base: options["scope-base"] ?? null,
       scope_paths: splitScopePaths(options["scope-paths"]),

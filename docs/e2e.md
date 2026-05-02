@@ -118,7 +118,7 @@ Latest live verification:
   - `CLAUDE_LIVE_E2E=1 npm run e2e:claude` passed.
   - `GEMINI_LIVE_E2E=1 npm run e2e:gemini` passed.
   - `KIMI_LIVE_E2E=1 npm run e2e:kimi` passed.
-  - Direct API companion live checks passed for DeepSeek
+  - Direct API companion live checks passed for the then-current DeepSeek default
     (`DEEPSEEK_API_KEY`, `deepseek-v4-flash`, HTTP 200) and GLM
     (`ZAI_GLM_API_KEY`, `glm-5.1`, `https://api.z.ai/api/coding/paas/v4`,
     HTTP 200). Secret values were not printed.

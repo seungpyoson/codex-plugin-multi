@@ -100,21 +100,36 @@ test("doctor reports GLM compatibility alias without leaking value", async () =>
   assert.doesNotMatch(result.stdout, /secret-test-value/);
 });
 
-test("installed api-reviewers package layout is self-contained for doctor", async () => {
-  const pluginRoot = makeInstalledApiReviewersRoot();
-  const companion = path.join(pluginRoot, "scripts", "api-reviewer.mjs");
-  const result = await run(["doctor", "--provider", "glm"], {
-    companion,
+for (const scenario of [
+  {
+    provider: "deepseek",
+    env: { DEEPSEEK_API_KEY: "secret-test-value" },
+    credentialRef: "DEEPSEEK_API_KEY",
+    endpoint: "https://api.deepseek.com",
+  },
+  {
+    provider: "glm",
     env: { ZAI_API_KEY: "secret-test-value", ZAI_GLM_API_KEY: "" },
+    credentialRef: "ZAI_API_KEY",
+    endpoint: "https://api.z.ai/api/coding/paas/v4",
+  },
+]) {
+  test(`installed api-reviewers package layout is self-contained for ${scenario.provider} doctor`, async () => {
+    const pluginRoot = makeInstalledApiReviewersRoot();
+    const companion = path.join(pluginRoot, "scripts", "api-reviewer.mjs");
+    const result = await run(["doctor", "--provider", scenario.provider], {
+      companion,
+      env: scenario.env,
+    });
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    const parsed = parseJson(result.stdout);
+    assert.equal(parsed.provider, scenario.provider);
+    assert.equal(parsed.ready, true);
+    assert.equal(parsed.credential_ref, scenario.credentialRef);
+    assert.equal(parsed.endpoint, scenario.endpoint);
+    assert.doesNotMatch(result.stdout, /secret-test-value/);
   });
-  assert.equal(result.status, 0, result.stderr || result.stdout);
-  const parsed = parseJson(result.stdout);
-  assert.equal(parsed.provider, "glm");
-  assert.equal(parsed.ready, true);
-  assert.equal(parsed.credential_ref, "ZAI_API_KEY");
-  assert.equal(parsed.endpoint, "https://api.z.ai/api/coding/paas/v4");
-  assert.doesNotMatch(result.stdout, /secret-test-value/);
-});
+}
 
 test("installed api-reviewers package layout is self-contained for branch-diff run", async () => {
   const pluginRoot = makeInstalledApiReviewersRoot();
@@ -163,7 +178,7 @@ test("DeepSeek direct API custom-review completes and persists JobRecord", async
     cwd,
     env: {
       API_REVIEWERS_PLUGIN_DATA: dataDir,
-      API_REVIEWERS_MOCK_RESPONSE: mockResponse("deepseek-v4-flash"),
+      API_REVIEWERS_MOCK_RESPONSE: mockResponse("deepseek-reasoner"),
       API_REVIEWERS_MOCK_ASSERT_PROMPT_INCLUDES: "Live verification context",
       DEEPSEEK_API_KEY: "secret-test-value",
     },
@@ -172,7 +187,7 @@ test("DeepSeek direct API custom-review completes and persists JobRecord", async
   const record = parseJson(result.stdout);
   assert.equal(record.status, "completed");
   assert.equal(record.provider, "deepseek");
-  assert.equal(record.model, "deepseek-v4-flash");
+  assert.equal(record.model, "deepseek-reasoner");
   assert.equal(record.credential_ref, "DEEPSEEK_API_KEY");
   assert.equal(record.result.includes("Verdict: APPROVE"), true);
   assert.deepEqual(record.usage, { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 });
@@ -192,7 +207,7 @@ test("branch-diff default reviews committed changes against main with scrubbed g
     cwd,
     env: {
       API_REVIEWERS_PLUGIN_DATA: dataDir,
-      API_REVIEWERS_MOCK_RESPONSE: mockResponse("deepseek-v4-flash"),
+      API_REVIEWERS_MOCK_RESPONSE: mockResponse("deepseek-reasoner"),
       API_REVIEWERS_MOCK_ASSERT_PROMPT_INCLUDES: "Live verification context",
       DEEPSEEK_API_KEY: "secret-test-value",
       GIT_DIR: path.join(cwd, "not-a-repo"),
@@ -205,6 +220,33 @@ test("branch-diff default reviews committed changes against main with scrubbed g
   assert.equal(record.scope, "branch-diff");
   assert.equal(record.scope_base, "main");
   assert.deepEqual(record.scope_paths, ["feature.txt"]);
+  assert.doesNotMatch(result.stdout, /secret-test-value/);
+});
+
+test("branch-diff git spawn failure returns structured scope failure JobRecord", async () => {
+  const cwd = makeBranchDiffWorkspace();
+  const dataDir = mkdtempSync(path.join(tmpdir(), "api-reviewers-data-"));
+  const result = await run([
+    "run",
+    "--provider", "deepseek",
+    "--mode", "review",
+    "--foreground",
+    "--prompt", "Check this branch.",
+  ], {
+    cwd,
+    env: {
+      API_REVIEWERS_PLUGIN_DATA: dataDir,
+      API_REVIEWERS_MOCK_RESPONSE: mockResponse("deepseek-reasoner"),
+      DEEPSEEK_API_KEY: "secret-test-value",
+      PATH: "",
+    },
+  });
+  assert.equal(result.status, 1);
+  const record = parseJson(result.stdout);
+  assert.equal(record.status, "failed");
+  assert.equal(record.error_code, "scope_failed");
+  assert.match(record.error_message, /git_failed:/);
+  assert.match(record.suggested_action, /Adjust --scope/);
   assert.doesNotMatch(result.stdout, /secret-test-value/);
 });
 
