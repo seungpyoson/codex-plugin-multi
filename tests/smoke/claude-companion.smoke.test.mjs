@@ -1077,6 +1077,8 @@ test("doctor: returns the same readiness contract as ping", () => {
     assert.equal(result.ready, true);
     assert.match(result.summary, /ready/i);
     assert.match(result.next_action, /review/i);
+    assert.equal(result.auth_mode, "subscription");
+    assert.equal(result.selected_auth_path, "subscription_oauth");
   } finally {
     cleanup(dataDir);
     rmSync(cwd, { recursive: true, force: true });
@@ -1096,9 +1098,92 @@ test("ping: returns status=ok with the mock claude binary", () => {
     assert.match(result.summary, /ready/i);
     assert.deepEqual(result.ignored_env_credentials, ["ANTHROPIC_API_KEY"]);
     assert.equal(result.auth_policy, "api_key_env_ignored");
+    assert.equal(result.auth_mode, "subscription");
+    assert.equal(result.selected_auth_path, "subscription_oauth");
     assert.doesNotMatch(stdout, /secret-test-value/);
     assert.equal(result.model, "claude-haiku-4-5-20251001");
     assert.ok(result.session_id);
+  } finally {
+    cleanup(dataDir);
+  }
+});
+
+test("ping: explicit api_key auth allows Claude provider key by name only", () => {
+  const tmp = mkdtempSync(path.join(tmpdir(), "claude-ping-api-key-mode-"));
+  const binary = writeExecutable(tmp, "claude-api-key-mode", `#!/usr/bin/env node
+if (process.env.ANTHROPIC_API_KEY !== "secret-test-value") {
+  process.stderr.write("missing ANTHROPIC_API_KEY\\n");
+  process.exit(9);
+}
+process.stdout.write(JSON.stringify({
+  type: "result",
+  is_error: false,
+  result: "ok",
+  session_id: "33333333-3333-4333-8333-333333333333"
+}) + "\\n");
+`);
+  const { stdout, status, dataDir } = runCompanion(
+    ["ping", "--auth-mode", "api_key", "--binary", binary, "--model", "claude-haiku-4-5-20251001"],
+    { cwd: tmpdir(), env: { ANTHROPIC_API_KEY: "secret-test-value" } },
+  );
+  try {
+    assert.equal(status, 0);
+    const result = JSON.parse(stdout);
+    assert.equal(result.auth_mode, "api_key");
+    assert.equal(result.selected_auth_path, "api_key_env");
+    assert.deepEqual(result.allowed_env_credentials, ["ANTHROPIC_API_KEY"]);
+    assert.equal(result.auth_policy, "api_key_env_allowed");
+    assert.doesNotMatch(stdout, /secret-test-value/);
+  } finally {
+    cleanup(dataDir);
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("ping: auto auth prefers Claude API key when present", () => {
+  const tmp = mkdtempSync(path.join(tmpdir(), "claude-ping-auto-auth-"));
+  const binary = writeExecutable(tmp, "claude-auto-auth", `#!/usr/bin/env node
+if (process.env.ANTHROPIC_API_KEY !== "secret-test-value") {
+  process.stderr.write("missing ANTHROPIC_API_KEY\\n");
+  process.exit(9);
+}
+process.stdout.write(JSON.stringify({
+  type: "result",
+  is_error: false,
+  result: "ok",
+  session_id: "33333333-3333-4333-8333-333333333333"
+}) + "\\n");
+`);
+  const { stdout, status, dataDir } = runCompanion(
+    ["ping", "--auth-mode", "auto", "--binary", binary, "--model", "claude-haiku-4-5-20251001"],
+    { cwd: tmpdir(), env: { ANTHROPIC_API_KEY: "secret-test-value" } },
+  );
+  try {
+    assert.equal(status, 0);
+    const result = JSON.parse(stdout);
+    assert.equal(result.auth_mode, "auto");
+    assert.equal(result.selected_auth_path, "api_key_env");
+    assert.deepEqual(result.allowed_env_credentials, ["ANTHROPIC_API_KEY"]);
+    assert.doesNotMatch(stdout, /secret-test-value/);
+  } finally {
+    cleanup(dataDir);
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("ping: api_key auth fails before Claude spawn when no provider key is present", () => {
+  const missingBinary = path.join(tmpdir(), "missing-claude-api-key-mode-binary");
+  const { stdout, status, dataDir } = runCompanion(
+    ["ping", "--auth-mode", "api_key", "--binary", missingBinary, "--model", "claude-haiku-4-5-20251001"],
+    { cwd: tmpdir(), env: { ANTHROPIC_API_KEY: "", CLAUDE_API_KEY: "" } },
+  );
+  try {
+    assert.equal(status, 2);
+    const result = JSON.parse(stdout);
+    assert.equal(result.status, "not_authed");
+    assert.equal(result.auth_mode, "api_key");
+    assert.equal(result.selected_auth_path, "api_key_env_missing");
+    assert.match(result.next_action, /ANTHROPIC_API_KEY|CLAUDE_API_KEY/);
   } finally {
     cleanup(dataDir);
   }

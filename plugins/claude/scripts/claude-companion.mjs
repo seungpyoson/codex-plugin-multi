@@ -228,7 +228,7 @@ function consumePromptSidecar(workspaceRoot, jobId) {
   return prompt;
 }
 
-async function spawnDetachedWorker(cwd, jobId) {
+async function spawnDetachedWorker(cwd, jobId, authMode) {
   let child;
   try {
     child = spawn(process.execPath, [
@@ -236,6 +236,7 @@ async function spawnDetachedWorker(cwd, jobId) {
       "_run-worker",
       "--cwd", cwd,
       "--job", jobId,
+      "--auth-mode", authMode,
     ], {
       cwd,
       env: process.env,
@@ -355,7 +356,7 @@ function cmdPreflight(rest) {
 // ——— subcommand: run ———
 async function cmdRun(rest) {
   const { options, positionals } = parseArgs(rest, {
-    valueOptions: ["mode", "model", "cwd", "schema", "binary", "scope-base", "scope-paths", "override-dispose"],
+    valueOptions: ["mode", "model", "cwd", "schema", "binary", "scope-base", "scope-paths", "override-dispose", "auth-mode"],
     booleanOptions: ["background", "foreground"],
     aliasMap: {},
   });
@@ -394,6 +395,10 @@ async function cmdRun(rest) {
   })();
 
   const scopePaths = parseScopePathsOption(options["scope-paths"]);
+  const authSelection = resolveAuthSelection(options["auth-mode"]);
+  if (authSelection.selected_auth_path === "api_key_env_missing") {
+    fail("not_authed", apiKeyMissingMessage());
+  }
 
   const prompt = positionals.join(" ").trim();
   if (!prompt) {
@@ -424,6 +429,7 @@ async function cmdRun(rest) {
     prompt_head: prompt.slice(0, 200),          // §21.3.1 — no full prompt
     schema_spec: options.schema ?? null,
     binary: options.binary ?? process.env.CLAUDE_BINARY ?? "claude",
+    auth_mode: authSelection.auth_mode,
     started_at: startedAt,
   });
 
@@ -440,7 +446,7 @@ async function cmdRun(rest) {
 
     // Detach a worker process that will execute the run and overwrite the
     // terminal-state meta when done (spec §7.3 / M4).
-    const { child, error } = await spawnDetachedWorker(cwd, jobId);
+    const { child, error } = await spawnDetachedWorker(cwd, jobId, authSelection.auth_mode);
     if (error) failBackgroundWorkerSpawn(workspaceRoot, invocation, error);
     printJson({
       event: "launched",
@@ -541,6 +547,7 @@ async function executeRun(invocation, prompt, { foreground }) {
 
   let execution;
   try {
+    const authSelection = resolveAuthSelection(invocation.auth_mode);
     execution = await spawnClaude(profile, {
       model,
       promptText: prompt,
@@ -551,6 +558,7 @@ async function executeRun(invocation, prompt, { foreground }) {
       jsonSchema: invocation.schema_spec,
       resumeId,
       timeoutMs: 0,
+      allowedApiKeyEnv: authSelection.allowed_env_credentials,
       onSpawn: (pidInfo) => {
         const runningRecord = buildJobRecord(invocation, {
           status: "running",
@@ -720,7 +728,7 @@ async function executeRun(invocation, prompt, { foreground }) {
 // ——— subcommand: _run-worker (hidden; detached worker for --background) ———
 async function cmdRunWorker(rest) {
   const { options } = parseArgs(rest, {
-    valueOptions: ["cwd", "job"],
+    valueOptions: ["cwd", "job", "auth-mode"],
     booleanOptions: [],
   });
   if (!options.cwd || !options.job) {
@@ -767,14 +775,14 @@ async function cmdRunWorker(rest) {
     fail("bad_state", "prompt sidecar missing for job " + options.job);
   }
 
-  const invocation = invocationFromRecord(meta);
+  const invocation = { ...invocationFromRecord(meta), auth_mode: resolveAuthSelection(options["auth-mode"]).auth_mode };
   await executeRun(invocation, prompt, { foreground: false });
 }
 
 // ——— subcommand: continue (resume a prior session with --resume) ———
 async function cmdContinue(rest) {
   const { options, positionals } = parseArgs(rest, {
-    valueOptions: ["job", "cwd", "model", "binary"],
+    valueOptions: ["job", "cwd", "model", "binary", "auth-mode"],
     booleanOptions: ["background", "foreground"],
   });
   if (!options.job) fail("bad_args", "--job <id> is required");
@@ -819,6 +827,10 @@ async function cmdContinue(rest) {
   const priorModeName = prior.mode_profile_name ?? prior.mode;
   const priorProfile = resolveProfile(priorModeName);
   const priorResumeChain = Array.isArray(prior.resume_chain) ? prior.resume_chain : [];
+  const authSelection = resolveAuthSelection(options["auth-mode"]);
+  if (authSelection.selected_auth_path === "api_key_env_missing") {
+    fail("not_authed", apiKeyMissingMessage());
+  }
 
   // §21.1: resume_chain grows newest-last. The LAST entry is the UUID that
   // executeRun passes to spawnClaude via --resume (see the resumeId
@@ -844,6 +856,7 @@ async function cmdContinue(rest) {
     prompt_head: prompt.slice(0, 200),    // §21.3.1 — no full prompt
     schema_spec: prior.schema_spec ?? prior.schema ?? null,
     binary: options.binary ?? process.env.CLAUDE_BINARY ?? "claude",
+    auth_mode: authSelection.auth_mode,
     started_at: new Date().toISOString(),
   });
 
@@ -853,7 +866,7 @@ async function cmdContinue(rest) {
 
   if (options.background) {
     writePromptSidecar(workspaceRoot, newJobId_, prompt);
-    const { child, error } = await spawnDetachedWorker(cwd, newJobId_);
+    const { child, error } = await spawnDetachedWorker(cwd, newJobId_, authSelection.auth_mode);
     if (error) failBackgroundWorkerSpawn(workspaceRoot, invocation, error);
     printJson({ event: "launched", job_id: newJobId_, target: "claude",
       mode: priorModeName, parent_job_id: options.job, pid: child.pid ?? null,
@@ -885,13 +898,65 @@ async function cmdNotImplemented(name) {
 const PING_PROMPT = "reply with exactly: pong. Do not use any tools, do not read files, and do not explore the workspace.";
 const PING_AUTH_RE = /\b(auth(?:enticat\w*)?|login|credential\w*|oauth2?|unauthenticated|signin|sign-in)\b/i;
 const PING_PROVIDER_API_KEY_ENV = ["ANTHROPIC_API_KEY", "CLAUDE_API_KEY"];
+const AUTH_MODES = new Set(["subscription", "api_key", "auto"]);
 
-function ignoredApiKeyAuthFields() {
-  const ignored = PING_PROVIDER_API_KEY_ENV.filter((key) => process.env[key]);
-  if (ignored.length === 0) return {};
+function providerApiKeyEnv() {
+  return PING_PROVIDER_API_KEY_ENV.filter((key) => process.env[key]);
+}
+
+function resolveAuthSelection(requestedMode = "subscription") {
+  const authMode = requestedMode ?? "subscription";
+  if (!AUTH_MODES.has(authMode)) {
+    fail("bad_args", `--auth-mode must be one of subscription|api_key|auto; got ${JSON.stringify(authMode)}`);
+  }
+  const providerKeys = providerApiKeyEnv();
+  if (authMode === "api_key") {
+    return {
+      auth_mode: authMode,
+      selected_auth_path: providerKeys.length > 0 ? "api_key_env" : "api_key_env_missing",
+      allowed_env_credentials: providerKeys,
+      ignored_env_credentials: [],
+      auth_policy: providerKeys.length > 0 ? "api_key_env_allowed" : "api_key_env_required",
+    };
+  }
+  if (authMode === "auto" && providerKeys.length > 0) {
+    return {
+      auth_mode: authMode,
+      selected_auth_path: "api_key_env",
+      allowed_env_credentials: providerKeys,
+      ignored_env_credentials: [],
+      auth_policy: "api_key_env_allowed",
+    };
+  }
   return {
-    ignored_env_credentials: ignored,
-    auth_policy: "api_key_env_ignored",
+    auth_mode: authMode,
+    selected_auth_path: "subscription_oauth",
+    allowed_env_credentials: [],
+    ignored_env_credentials: providerKeys,
+    auth_policy: providerKeys.length > 0 ? "api_key_env_ignored" : "subscription_oauth",
+  };
+}
+
+function authDiagnosticFields(selection) {
+  return {
+    auth_mode: selection.auth_mode,
+    selected_auth_path: selection.selected_auth_path,
+    ...(selection.allowed_env_credentials.length > 0 ? { allowed_env_credentials: selection.allowed_env_credentials } : {}),
+    ...(selection.ignored_env_credentials.length > 0 ? { ignored_env_credentials: selection.ignored_env_credentials } : {}),
+    auth_policy: selection.auth_policy,
+  };
+}
+
+function apiKeyMissingMessage() {
+  return "explicit api_key auth requires ANTHROPIC_API_KEY or CLAUDE_API_KEY in the companion environment";
+}
+
+function apiKeyMissingFields(selection) {
+  return {
+    ...pingNotAuthedFields(),
+    ...authDiagnosticFields(selection),
+    summary: "Claude API-key auth was requested, but no Claude provider API key is available.",
+    next_action: "Set ANTHROPIC_API_KEY or CLAUDE_API_KEY, or rerun with --auth-mode subscription after completing Claude OAuth.",
   };
 }
 
@@ -962,13 +1027,18 @@ function pingFailureDetail(execution) {
 // ——— subcommand: ping (OAuth health probe per spec §7.5) ———
 async function cmdPing(rest) {
   const { options } = parseArgs(rest, {
-    valueOptions: ["model", "binary", "timeout-ms"],
+    valueOptions: ["model", "binary", "timeout-ms", "auth-mode"],
     booleanOptions: [],
   });
   const profile = resolveProfile("ping");
   const model = options.model ?? resolveModelForProfile(profile, loadModels());
   const binary = options.binary ?? process.env.CLAUDE_BINARY ?? "claude";
   const timeoutMs = Number(options["timeout-ms"] ?? 15000);
+  const authSelection = resolveAuthSelection(options["auth-mode"]);
+  if (authSelection.selected_auth_path === "api_key_env_missing") {
+    printJson({ status: "not_authed", ...apiKeyMissingFields(authSelection) });
+    process.exit(2);
+  }
   // Ping is ephemeral (no durable record), so reuse newJobId() purely for its
   // UUIDv4 guarantee — Claude rejects a non-v4 --session-id. Nothing persists.
   const sessionId = newJobId();
@@ -981,23 +1051,24 @@ async function cmdPing(rest) {
       cwd: process.cwd(),
       binary,
       timeoutMs,
+      allowedApiKeyEnv: authSelection.allowed_env_credentials,
     });
   } catch (e) {
     if (e.code === "ENOENT") {
       printJson({ status: "not_found", ...pingNotFoundFields(),
-        ...ignoredApiKeyAuthFields(),
+        ...authDiagnosticFields(authSelection),
         detail: `claude binary not found on PATH (or CLAUDE_BINARY override)`,
         install_url: "https://claude.com/claude-code" });
       process.exit(2);
     }
-    printJson({ status: "error", ...pingErrorFields(), ...ignoredApiKeyAuthFields(), detail: e.message });
+    printJson({ status: "error", ...pingErrorFields(), ...authDiagnosticFields(authSelection), detail: e.message });
     process.exit(2);
   }
   // Classify. Real Claude error texts change per version; match on signals only.
   if (execution.parsed.ok && (execution.parsed.result || execution.parsed.structured)) {
     // T7.4: drop the legacy `.sessionId` alias. Ping uses claudeSessionId
     // (Claude's echo) with sessionIdSent fallback when the mock short-circuits.
-    const payload = { status: "ok", ...pingOkFields(), ...ignoredApiKeyAuthFields(), model: model ?? null,
+    const payload = { status: "ok", ...pingOkFields(), ...authDiagnosticFields(authSelection), model: model ?? null,
       session_id: execution.claudeSessionId ?? execution.sessionIdSent,
       cost_usd: execution.parsed.costUsd, usage: execution.parsed.usage };
     printJson(payload);
@@ -1006,19 +1077,21 @@ async function cmdPing(rest) {
   if (execution.exitCode !== 0) {
     const detail = pingFailureDetail(execution);
     if (/rate limit|429|overloaded/i.test(detail)) {
-      printJson({ status: "rate_limited", ...pingRateLimitedFields(), ...ignoredApiKeyAuthFields(), detail });
+      printJson({ status: "rate_limited", ...pingRateLimitedFields(), ...authDiagnosticFields(authSelection), detail });
       process.exit(2);
     }
     if (PING_AUTH_RE.test(detail)) {
       printJson({ status: "not_authed", ...pingNotAuthedFields(), detail,
-        ...ignoredApiKeyAuthFields(),
-        hint: "Run `claude` interactively to complete OAuth. API-key env vars are ignored by plugin policy." });
+        ...authDiagnosticFields(authSelection),
+        hint: authSelection.selected_auth_path === "api_key_env"
+          ? "Claude was launched with explicit API-key auth. Check the provider key and CLI support."
+          : "Run `claude` interactively to complete OAuth. API-key env vars are ignored by subscription-mode policy." });
       process.exit(2);
     }
-    printJson({ status: "error", ...pingErrorFields(), ...ignoredApiKeyAuthFields(), exit_code: execution.exitCode, detail });
+    printJson({ status: "error", ...pingErrorFields(), ...authDiagnosticFields(authSelection), exit_code: execution.exitCode, detail });
     process.exit(2);
   }
-  printJson({ status: "error", ...pingErrorFields(), ...ignoredApiKeyAuthFields(),
+  printJson({ status: "error", ...pingErrorFields(), ...authDiagnosticFields(authSelection),
     detail: "parsed result missing", raw: execution.parsed.raw });
   process.exit(2);
 }

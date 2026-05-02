@@ -1343,6 +1343,8 @@ test("gemini ping returns ok with the mock gemini binary", () => {
     assert.match(parsed.summary, /ready/i);
     assert.deepEqual(parsed.ignored_env_credentials, ["GEMINI_API_KEY"]);
     assert.equal(parsed.auth_policy, "api_key_env_ignored");
+    assert.equal(parsed.auth_mode, "subscription");
+    assert.equal(parsed.selected_auth_path, "subscription_oauth");
     assert.doesNotMatch(stdout, /secret-test-value/);
     assert.equal(parsed.model, "gemini-3-flash-preview");
     assert.equal(parsed.session_id, GEMINI_SESSION_ID);
@@ -1362,6 +1364,95 @@ test("gemini doctor returns the same readiness contract as ping", () => {
     assert.equal(parsed.ready, true);
     assert.match(parsed.summary, /ready/i);
     assert.match(parsed.next_action, /review/i);
+    assert.equal(parsed.auth_mode, "subscription");
+    assert.equal(parsed.selected_auth_path, "subscription_oauth");
+  } finally {
+    rmTree(dataDir);
+    rmTree(cwd);
+  }
+});
+
+test("gemini ping explicit api_key auth allows provider key by name only", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "gemini-ping-api-key-cwd-"));
+  const binDir = mkdtempSync(path.join(tmpdir(), "gemini-ping-api-key-bin-"));
+  const binary = path.join(binDir, "gemini-api-key-mode");
+  writeFileSync(binary, `#!/usr/bin/env node
+if (process.env.GEMINI_API_KEY !== "secret-test-value") {
+  process.stderr.write("missing GEMINI_API_KEY\\n");
+  process.exit(9);
+}
+process.stdout.write(JSON.stringify({
+  session_id: "${GEMINI_SESSION_ID}",
+  response: "Mock Gemini response."
+}) + "\\n");
+`, "utf8");
+  chmodSync(binary, 0o755);
+  const { stdout, status, dataDir } = runCompanion(
+    ["ping", "--auth-mode", "api_key", "--binary", binary, "--model", "gemini-3-flash-preview"],
+    { cwd, env: { GEMINI_API_KEY: "secret-test-value" } },
+  );
+  try {
+    assert.equal(status, 0);
+    const parsed = JSON.parse(stdout);
+    assert.equal(parsed.auth_mode, "api_key");
+    assert.equal(parsed.selected_auth_path, "api_key_env");
+    assert.deepEqual(parsed.allowed_env_credentials, ["GEMINI_API_KEY"]);
+    assert.equal(parsed.auth_policy, "api_key_env_allowed");
+    assert.doesNotMatch(stdout, /secret-test-value/);
+  } finally {
+    rmTree(dataDir);
+    rmTree(cwd);
+    rmTree(binDir);
+  }
+});
+
+test("gemini ping auto auth prefers API key when present", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "gemini-ping-auto-auth-cwd-"));
+  const binDir = mkdtempSync(path.join(tmpdir(), "gemini-ping-auto-auth-bin-"));
+  const binary = path.join(binDir, "gemini-auto-auth");
+  writeFileSync(binary, `#!/usr/bin/env node
+if (process.env.GEMINI_API_KEY !== "secret-test-value") {
+  process.stderr.write("missing GEMINI_API_KEY\\n");
+  process.exit(9);
+}
+process.stdout.write(JSON.stringify({
+  session_id: "${GEMINI_SESSION_ID}",
+  response: "Mock Gemini response."
+}) + "\\n");
+`, "utf8");
+  chmodSync(binary, 0o755);
+  const { stdout, status, dataDir } = runCompanion(
+    ["ping", "--auth-mode", "auto", "--binary", binary, "--model", "gemini-3-flash-preview"],
+    { cwd, env: { GEMINI_API_KEY: "secret-test-value" } },
+  );
+  try {
+    assert.equal(status, 0);
+    const parsed = JSON.parse(stdout);
+    assert.equal(parsed.auth_mode, "auto");
+    assert.equal(parsed.selected_auth_path, "api_key_env");
+    assert.deepEqual(parsed.allowed_env_credentials, ["GEMINI_API_KEY"]);
+    assert.doesNotMatch(stdout, /secret-test-value/);
+  } finally {
+    rmTree(dataDir);
+    rmTree(cwd);
+    rmTree(binDir);
+  }
+});
+
+test("gemini ping api_key auth fails before target spawn when no provider key is present", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "gemini-ping-api-key-missing-cwd-"));
+  const missingBinary = path.join(tmpdir(), "missing-gemini-api-key-mode-binary");
+  const { stdout, status, dataDir } = runCompanion(
+    ["ping", "--auth-mode", "api_key", "--binary", missingBinary, "--model", "gemini-3-flash-preview"],
+    { cwd, env: { GEMINI_API_KEY: "", GOOGLE_API_KEY: "" } },
+  );
+  try {
+    assert.equal(status, 2);
+    const parsed = JSON.parse(stdout);
+    assert.equal(parsed.status, "not_authed");
+    assert.equal(parsed.auth_mode, "api_key");
+    assert.equal(parsed.selected_auth_path, "api_key_env_missing");
+    assert.match(parsed.next_action, /GEMINI_API_KEY|GOOGLE_API_KEY/);
   } finally {
     rmTree(dataDir);
     rmTree(cwd);
