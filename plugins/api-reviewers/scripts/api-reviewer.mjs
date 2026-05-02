@@ -14,6 +14,7 @@ const PROVIDERS_PATH = resolve(PLUGIN_ROOT, "config/providers.json");
 const VALID_MODES = new Set(["review", "adversarial-review", "custom-review"]);
 const VALID_AUTH_MODES = new Set(["api_key", "auto"]);
 const ALLOWED_REQUEST_DEFAULT_KEYS = new Set(["thinking", "reasoning_effort", "max_tokens", "top_p", "stop"]);
+const MIN_SECRET_REDACTION_LENGTH = 8;
 
 function printJson(obj) {
   process.stdout.write(`${JSON.stringify(obj, null, 2)}\n`);
@@ -73,6 +74,12 @@ function runBadArgs(message) {
   return error;
 }
 
+function runConfigError(message) {
+  const error = new Error(message);
+  error.apiReviewersReason = "config_error";
+  return error;
+}
+
 function selectedCredential(cfg, env = process.env) {
   for (const keyName of cfg.env_keys ?? []) {
     if (typeof env[keyName] === "string" && env[keyName].length > 0) {
@@ -119,7 +126,11 @@ function applyRequestDefaults(requestBody, requestDefaults = {}) {
 
 function redactor(env = process.env) {
   const secrets = Object.entries(env)
-    .filter(([name, value]) => /(?:^|_)API_KEY$/.test(name) && typeof value === "string" && value.length > 0)
+    .filter(([name, value]) => (
+      /(?:^|_)API_KEY$/.test(name) &&
+      typeof value === "string" &&
+      value.length >= MIN_SECRET_REDACTION_LENGTH
+    ))
     .map(([, value]) => value);
   return (text) => {
     let out = String(text ?? "");
@@ -560,7 +571,7 @@ async function persistRecordBestEffort(record, env = process.env) {
     await persistRecord(record, env);
     return record;
   } catch (e) {
-    const detail = `JobRecord persistence failed: ${e?.message ?? String(e)}`;
+    const detail = redactor(env)(`JobRecord persistence failed: ${e?.message ?? String(e)}`);
     return {
       ...record,
       disclosure_note: record.disclosure_note ? `${record.disclosure_note} ${detail}` : detail,
@@ -577,18 +588,23 @@ async function cmdDoctor(options) {
 }
 
 async function cmdRun(options) {
-  const providers = await loadProviders();
   const provider = options.provider ?? null;
   const mode = options.mode ?? "review";
   const startedAt = new Date().toISOString();
   const jobId = `job_${randomUUID()}`;
   const runOptions = { ...options, jobId };
+  let providers;
   let cfg;
   let scopeInfo;
   let execution;
   try {
     if (!provider) throw runBadArgs("bad_args: --provider is required");
     if (!VALID_MODES.has(mode)) throw runBadArgs(`bad_args: unsupported --mode ${mode}`);
+    try {
+      providers = await loadProviders();
+    } catch (e) {
+      throw runConfigError(`config_error: providers config unreadable: ${e.message}`);
+    }
     try {
       cfg = providerConfig(providers, provider);
     } catch (e) {

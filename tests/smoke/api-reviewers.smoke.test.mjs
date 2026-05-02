@@ -258,6 +258,39 @@ for (const scenario of [
   });
 }
 
+test("run malformed providers config returns structured JobRecord", async () => {
+  const pluginRoot = makeInstalledApiReviewersRoot();
+  const companion = path.join(pluginRoot, "scripts", "api-reviewer.mjs");
+  writeFileSync(path.join(pluginRoot, "config", "providers.json"), "{not json\n");
+  const cwd = makeWorkspace();
+  const dataDir = mkdtempSync(path.join(tmpdir(), "api-reviewers-data-"));
+  const result = await run([
+    "run",
+    "--provider", "glm",
+    "--mode", "custom-review",
+    "--scope", "custom",
+    "--scope-paths", "seed.txt",
+    "--foreground",
+    "--prompt", "Check this file.",
+  ], {
+    cwd,
+    companion,
+    env: {
+      API_REVIEWERS_PLUGIN_DATA: dataDir,
+      ZAI_API_KEY: "secret-test-value",
+    },
+  });
+
+  assert.equal(result.status, 1);
+  const record = parseJson(result.stdout);
+  assert.equal(record.status, "failed");
+  assert.equal(record.provider, "glm");
+  assert.equal(record.error_code, "config_error");
+  assert.match(record.error_message, /providers config unreadable/);
+  assert.doesNotMatch(result.stdout, /secret-test-value/);
+  assert.doesNotMatch(result.stdout, /^\{\s*"ok": false/m);
+});
+
 test("branch-diff git revision failure returns stderr in structured JobRecord", async () => {
   const cwd = makeBranchDiffWorkspace();
   const dataDir = mkdtempSync(path.join(tmpdir(), "api-reviewers-data-"));
@@ -356,7 +389,7 @@ test("provider request defaults cannot override canonical request fields", async
 
 test("persist failure still prints structured JobRecord", async () => {
   const cwd = makeWorkspace();
-  const dataRoot = path.join(tmpdir(), `api-reviewers-data-file-${Date.now()}-${process.pid}`);
+  const dataRoot = path.join(tmpdir(), `api-reviewers-data-file-${Date.now()}-${process.pid}-secret-test-value`);
   writeFileSync(dataRoot, "not a directory\n");
   const result = await run([
     "run",
@@ -380,6 +413,7 @@ test("persist failure still prints structured JobRecord", async () => {
   assert.equal(record.status, "completed");
   assert.equal(record.provider, "glm");
   assert.match(record.disclosure_note, /JobRecord persistence failed:/);
+  assert.match(record.disclosure_note, /\[REDACTED\]/);
   assert.doesNotMatch(result.stdout, /secret-test-value/);
 });
 
