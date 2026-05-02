@@ -146,7 +146,56 @@ function gitStatusLines(output) {
   return output.split("\n").map((line) => line.trimEnd()).filter((line) => line.length > 0);
 }
 
-function invocationFromRecord(record) {
+function runtimeOptionsSidecarPath(workspaceRoot, jobId) {
+  return `${resolveJobsDir(workspaceRoot)}/${jobId}.runtime-options`;
+}
+
+function runtimeOptionsForRecord(record, runtimeOptions = {}) {
+  const profile = resolveProfile(record.mode_profile_name ?? record.mode);
+  return {
+    max_steps_per_turn:
+      runtimeOptions.max_steps_per_turn ??
+      profile.max_steps_per_turn ??
+      8,
+  };
+}
+
+function writeRuntimeOptionsSidecar(workspaceRoot, jobId, options) {
+  const dir = resolveJobsDir(workspaceRoot);
+  mkdirSync(dir, { recursive: true });
+  const file = runtimeOptionsSidecarPath(workspaceRoot, jobId);
+  const tmpFile = `${file}.${process.pid}.${Date.now()}.tmp`;
+  const payload = {
+    max_steps_per_turn: options.max_steps_per_turn,
+  };
+  try {
+    writeFileSync(tmpFile, `${JSON.stringify(payload, null, 2)}\n`, { mode: 0o600, encoding: "utf8" });
+    try { chmodSync(tmpFile, 0o600); } catch { /* best-effort on non-POSIX */ }
+    renameSync(tmpFile, file);
+    try { chmodSync(file, 0o600); } catch { /* best-effort on non-POSIX */ }
+  } catch (e) {
+    try { unlinkSync(tmpFile); } catch { /* already gone */ }
+    throw e;
+  }
+}
+
+function readRuntimeOptionsSidecar(workspaceRoot, jobId) {
+  const file = runtimeOptionsSidecarPath(workspaceRoot, jobId);
+  if (!existsSync(file)) return {};
+  try {
+    const parsed = JSON.parse(readFileSync(file, "utf8"));
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+    const maxSteps = parsed.max_steps_per_turn;
+    return Number.isInteger(maxSteps) && maxSteps > 0
+      ? { max_steps_per_turn: maxSteps }
+      : {};
+  } catch {
+    return {};
+  }
+}
+
+function invocationFromRecord(record, runtimeOptions = {}) {
+  const resolvedRuntimeOptions = runtimeOptionsForRecord(record, runtimeOptions);
   return {
     job_id: record.job_id,
     target: record.target,
@@ -165,7 +214,7 @@ function invocationFromRecord(record) {
     prompt_head: record.prompt_head,
     schema_spec: record.schema_spec ?? null,
     binary: record.binary,
-    max_steps_per_turn: record.max_steps_per_turn ?? null,
+    max_steps_per_turn: resolvedRuntimeOptions.max_steps_per_turn,
     started_at: record.started_at,
   };
 }
@@ -389,6 +438,7 @@ async function cmdRun(rest) {
   });
 
   const queuedRecord = buildJobRecord(invocation, null, []);
+  writeRuntimeOptionsSidecar(workspaceRoot, jobId, { max_steps_per_turn: maxStepsPerTurn });
   writeJobFile(workspaceRoot, jobId, queuedRecord);
   upsertJob(workspaceRoot, queuedRecord);
   const targetPrompt = targetPromptFor(profile, prompt);
@@ -683,7 +733,8 @@ async function cmdRunWorker(rest) {
   // call, side effects) and only the post-run consumer at executeRun would
   // convert "completed" → "cancelled".
   if (consumeCancelMarker(workspaceRoot, options.job)) {
-    const cancelledRecord = buildJobRecord(invocationFromRecord(meta), {
+    const runtimeOptions = readRuntimeOptionsSidecar(workspaceRoot, options.job);
+    const cancelledRecord = buildJobRecord(invocationFromRecord(meta, runtimeOptions), {
       status: "cancelled",
       exitCode: null, parsed: null, pidInfo: null, kimiSessionId: null,
     }, []);
@@ -703,7 +754,8 @@ async function cmdRunWorker(rest) {
     fail("bad_state", "prompt sidecar missing for job " + options.job);
   }
 
-  const invocation = invocationFromRecord(meta);
+  const runtimeOptions = readRuntimeOptionsSidecar(workspaceRoot, options.job);
+  const invocation = invocationFromRecord(meta, runtimeOptions);
   await executeRun(invocation, prompt, { foreground: false });
 }
 
@@ -755,10 +807,11 @@ async function cmdContinue(rest) {
   const priorModeName = prior.mode_profile_name ?? prior.mode;
   const priorProfile = resolveProfile(priorModeName);
   const priorResumeChain = Array.isArray(prior.resume_chain) ? prior.resume_chain : [];
+  const priorRuntimeOptions = readRuntimeOptionsSidecar(workspaceRoot, options.job);
   const timeoutMs = parsePositiveTimeoutMs(options["timeout-ms"], DEFAULT_KIMI_REVIEW_TIMEOUT_MS);
   const maxStepsPerTurn = parsePositiveMaxStepsPerTurn(
     options["max-steps-per-turn"],
-    prior.max_steps_per_turn ?? priorProfile.max_steps_per_turn ?? 8,
+    priorRuntimeOptions.max_steps_per_turn ?? priorProfile.max_steps_per_turn ?? 8,
   );
   const invocation = Object.freeze({
     job_id: newJobId_,
@@ -784,6 +837,7 @@ async function cmdContinue(rest) {
   });
 
   const queuedRecord = buildJobRecord(invocation, null, []);
+  writeRuntimeOptionsSidecar(workspaceRoot, newJobId_, { max_steps_per_turn: maxStepsPerTurn });
   writeJobFile(workspaceRoot, newJobId_, queuedRecord);
   upsertJob(workspaceRoot, queuedRecord);
   const targetPrompt = targetPromptFor(priorProfile, prompt);
