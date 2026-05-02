@@ -6,7 +6,7 @@ import {
   credentialNameDiagnostics,
   preflightDisclosure,
   preflightSafetyFields,
-} from "../../plugins/claude/scripts/lib/companion-common.mjs";
+} from "../../scripts/lib/companion-common.mjs";
 
 test("companion-common exposes the shared ping prompt", () => {
   assert.equal(

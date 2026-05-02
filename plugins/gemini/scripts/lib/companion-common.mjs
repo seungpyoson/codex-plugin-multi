@@ -1,3 +1,6 @@
+// Canonical source for plugin-local packaging copies. Run
+// `node scripts/ci/sync-companion-common.mjs` after editing this file.
+
 export const PING_PROMPT =
   "reply with exactly: pong. Do not use any tools, do not read files, and do not explore the workspace.";
 

@@ -34,6 +34,14 @@ const CLAUDE_GEMINI_VERBATIM_FILES = [
   "git-env.mjs",
 ];
 
+test("lib/companion-common.mjs: plugin packaging copies match the canonical shared source", () => {
+  const canonical = readFileSync(path.join(REPO_ROOT, "scripts/lib/companion-common.mjs"), "utf8");
+  for (const plugin of ["claude", "gemini", "kimi"]) {
+    const copy = readFileSync(path.join(REPO_ROOT, `plugins/${plugin}/scripts/lib/companion-common.mjs`), "utf8");
+    assert.equal(copy, canonical, `companion-common.mjs packaging copy drifted in ${plugin}`);
+  }
+});
+
 for (const file of VERBATIM_FILES) {
   test(`lib/${file}: byte-identical across plugins/{claude,gemini,kimi}`, () => {
     const copies = ["claude", "gemini", "kimi"].map((plugin) => [
