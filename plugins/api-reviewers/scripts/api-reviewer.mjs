@@ -298,7 +298,7 @@ async function callProvider(provider, cfg, prompt, env = process.env) {
   if (cfg.request_defaults) Object.assign(requestBody, cfg.request_defaults);
   if (env.API_REVIEWERS_MAX_TOKENS !== undefined && env.API_REVIEWERS_MAX_TOKENS !== "") {
     requestBody.max_tokens = Number(env.API_REVIEWERS_MAX_TOKENS);
-  } else if (!Object.prototype.hasOwnProperty.call(requestBody, "max_tokens")) {
+  } else if (!Object.hasOwn(requestBody, "max_tokens")) {
     requestBody.max_tokens = 4096;
   }
   if (env.API_REVIEWERS_MOCK_RESPONSE) {
