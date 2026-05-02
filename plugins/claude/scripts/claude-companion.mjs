@@ -42,6 +42,12 @@ import { newJobId, verifyPidInfo } from "./lib/identity.mjs";
 import { buildJobRecord } from "./lib/job-record.mjs";
 import { reconcileActiveJobs } from "./lib/reconcile.mjs";
 import { cleanGitEnv } from "./lib/git-env.mjs";
+import {
+  authDiagnosticFields,
+  apiKeyMissingFields as buildApiKeyMissingFields,
+  apiKeyMissingMessage as buildApiKeyMissingMessage,
+  resolveAuthSelection as resolveAuthSelectionForProvider,
+} from "./lib/auth-selection.mjs";
 
 // ——— plugin-root self-resolution (upstream pattern, spec §4.14) ———
 const PLUGIN_ROOT = resolvePath(dirname(fileURLToPath(import.meta.url)), "..");
@@ -909,66 +915,26 @@ async function cmdNotImplemented(name) {
 const PING_PROMPT = "reply with exactly: pong. Do not use any tools, do not read files, and do not explore the workspace.";
 const PING_AUTH_RE = /\b(auth(?:enticat\w*)?|login|credential\w*|oauth2?|unauthenticated|signin|sign-in)\b/i;
 const PING_PROVIDER_API_KEY_ENV = ["ANTHROPIC_API_KEY", "CLAUDE_API_KEY"];
-const AUTH_MODES = new Set(["subscription", "api_key", "auto"]);
-
-function providerApiKeyEnv() {
-  return PING_PROVIDER_API_KEY_ENV.filter((key) => process.env[key]);
-}
 
 function resolveAuthSelection(requestedMode = "subscription") {
-  const authMode = requestedMode ?? "subscription";
-  if (!AUTH_MODES.has(authMode)) {
-    fail("bad_args", `--auth-mode must be one of subscription|api_key|auto; got ${JSON.stringify(authMode)}`);
-  }
-  const providerKeys = providerApiKeyEnv();
-  if (authMode === "api_key") {
-    return {
-      auth_mode: authMode,
-      selected_auth_path: providerKeys.length > 0 ? "api_key_env" : "api_key_env_missing",
-      allowed_env_credentials: providerKeys,
-      ignored_env_credentials: [],
-      auth_policy: providerKeys.length > 0 ? "api_key_env_allowed" : "api_key_env_required",
-    };
-  }
-  if (authMode === "auto" && providerKeys.length > 0) {
-    return {
-      auth_mode: authMode,
-      selected_auth_path: "api_key_env",
-      allowed_env_credentials: providerKeys,
-      ignored_env_credentials: [],
-      auth_policy: "api_key_env_allowed",
-    };
-  }
-  return {
-    auth_mode: authMode,
-    selected_auth_path: "subscription_oauth",
-    allowed_env_credentials: [],
-    ignored_env_credentials: providerKeys,
-    auth_policy: providerKeys.length > 0 ? "api_key_env_ignored" : "subscription_oauth",
-  };
-}
-
-function authDiagnosticFields(selection) {
-  return {
-    auth_mode: selection.auth_mode,
-    selected_auth_path: selection.selected_auth_path,
-    ...(selection.allowed_env_credentials.length > 0 ? { allowed_env_credentials: selection.allowed_env_credentials } : {}),
-    ...(selection.ignored_env_credentials.length > 0 ? { ignored_env_credentials: selection.ignored_env_credentials } : {}),
-    auth_policy: selection.auth_policy,
-  };
+  return resolveAuthSelectionForProvider({
+    requestedMode,
+    providerApiKeyEnvNames: PING_PROVIDER_API_KEY_ENV,
+    fail,
+  });
 }
 
 function apiKeyMissingMessage() {
-  return "explicit api_key auth requires ANTHROPIC_API_KEY or CLAUDE_API_KEY in the companion environment";
+  return buildApiKeyMissingMessage(PING_PROVIDER_API_KEY_ENV);
 }
 
 function apiKeyMissingFields(selection) {
-  return {
-    ...pingNotAuthedFields(),
-    ...authDiagnosticFields(selection),
-    summary: "Claude API-key auth was requested, but no Claude provider API key is available.",
-    next_action: "Set ANTHROPIC_API_KEY or CLAUDE_API_KEY, or rerun with --auth-mode subscription after completing Claude OAuth.",
-  };
+  return buildApiKeyMissingFields({
+    selection,
+    notAuthedFields: pingNotAuthedFields(),
+    providerName: "Claude",
+    providerApiKeyEnvNames: PING_PROVIDER_API_KEY_ENV,
+  });
 }
 
 function pingOkFields() {
