@@ -11,7 +11,7 @@ import { tmpdir } from "node:os";
 import { parseArgs } from "./lib/args.mjs";
 import { configureState, resolveJobsDir, resolveJobFile, writeJobFile, upsertJob, listJobs, commitJobRecord } from "./lib/state.mjs";
 import { resolveWorkspaceRoot } from "./lib/workspace.mjs";
-import { resolveProfile, resolveModelForProfile } from "./lib/mode-profiles.mjs";
+import { resolveProfile, resolveModelForProfile, resolveModelCandidatesForProfile } from "./lib/mode-profiles.mjs";
 import { setupContainment } from "./lib/containment.mjs";
 import { populateScope } from "./lib/scope.mjs";
 import { newJobId, verifyPidInfo } from "./lib/identity.mjs";
@@ -87,6 +87,14 @@ function preflightDisclosure(target) {
   );
 }
 
+function preflightSafetyFields() {
+  return {
+    target_spawned: false,
+    selected_scope_sent_to_provider: false,
+    requires_external_provider_consent: true,
+  };
+}
+
 // Mutation-detection git scrub: same shared list as claude-companion +
 // scope.mjs. PR #21 review: previous local 5-key list missed
 // GIT_CONFIG_GLOBAL — fold onto plugin lib's canonical scrub.
@@ -103,6 +111,25 @@ function mutationDetectionFailure(error, context = null) {
   const stderr = String(error?.stderr ?? "").trim().split("\n").find(Boolean);
   const message = stderr ?? String(error?.message || error).split("\n").find(Boolean) ?? "unknown error";
   return `mutation_detection_failed: ${context ? `${context}: ` : ""}${message}`;
+}
+
+function retryableModelCapacityFailure(execution) {
+  const detail = [
+    execution?.stderr,
+    execution?.stdout,
+    execution?.parsed?.error,
+    execution?.parsed?.raw,
+  ].map((s) => typeof s === "string" ? s : JSON.stringify(s ?? ""))
+    .join("\n");
+  return /429|rateLimitExceeded|RESOURCE_EXHAUSTED|MODEL_CAPACITY_EXHAUSTED|No capacity available/i.test(detail);
+}
+
+function modelCandidatesForInvocation(profile, invocation) {
+  const modelsConfig = loadModels();
+  const configuredPrimary = resolveModelForProfile(profile, modelsConfig);
+  if (configuredPrimary !== invocation.model) return [invocation.model];
+  const candidates = resolveModelCandidatesForProfile(profile, modelsConfig);
+  return candidates.length > 0 ? candidates : [invocation.model];
 }
 
 function gitStatusLines(output) {
@@ -209,12 +236,19 @@ function cmdPreflight(rest) {
     booleanOptions: [],
   });
   const mode = options.mode;
+  const cwd = options.cwd ?? process.cwd();
   if (!mode || !PREFLIGHT_MODES.includes(mode)) {
-    fail("bad_args", `--mode must be one of ${PREFLIGHT_MODES.join("|")}; got ${JSON.stringify(mode)}`);
+    fail("bad_args", `--mode must be one of ${PREFLIGHT_MODES.join("|")}; got ${JSON.stringify(mode)}`, {
+      event: "preflight",
+      target: "gemini",
+      mode: mode ?? null,
+      cwd,
+      ...preflightSafetyFields(),
+      disclosure_note: preflightDisclosure("Gemini"),
+    });
   }
 
   const profile = resolveProfile(mode);
-  const cwd = options.cwd ?? process.cwd();
   const workspaceRoot = resolveWorkspaceRoot(cwd);
   const scopePaths = parseScopePathsOption(options["scope-paths"]);
   let containment = null;
@@ -239,6 +273,7 @@ function cmdPreflight(rest) {
       scope_base: options["scope-base"] ?? null,
       scope_paths: scopePaths,
       ...summary,
+      ...preflightSafetyFields(),
       disclosure_note: preflightDisclosure("Gemini"),
     });
   } catch (e) {
@@ -256,6 +291,7 @@ function cmdPreflight(rest) {
       scope_paths: scopePaths,
       error: "scope_failed",
       error_message: e.message,
+      ...preflightSafetyFields(),
       disclosure_note: preflightDisclosure("Gemini"),
     });
   } finally {
@@ -339,7 +375,7 @@ async function cmdRun(rest) {
 }
 
 async function executeRun(invocation, prompt, { foreground }) {
-  const { job_id: jobId, model, cwd, workspace_root: workspaceRoot, dispose_effective: disposeEffective } = invocation;
+  const { job_id: jobId, cwd, workspace_root: workspaceRoot, dispose_effective: disposeEffective } = invocation;
   const profile = resolveProfile(invocation.mode_profile_name);
   let containment = null;
   try {
@@ -410,29 +446,48 @@ async function executeRun(invocation, prompt, { foreground }) {
   }
 
   let execution;
+  let executedInvocation = invocation;
   try {
-    execution = await spawnGemini(profile, {
-      model,
-      promptText: prompt,
-      policyPath: profile.permission_mode === "plan" ? READ_ONLY_POLICY : null,
-      includeDirPath: containment.path,
-      cwd: neutralCwd ?? containment.path,
-      binary: invocation.binary,
-      resumeId,
-      onSpawn: (pidInfo) => {
-        const runningRecord = buildJobRecord(invocation, {
-          status: "running",
-          exitCode: null,
-          parsed: null,
-          pidInfo,
-          geminiSessionId: null,
-        }, mutations);
-        writeJobFile(workspaceRoot, jobId, runningRecord);
-        upsertJob(workspaceRoot, runningRecord);
-      },
-    });
+    const modelCandidates = modelCandidatesForInvocation(profile, invocation);
+    for (let i = 0; i < modelCandidates.length; i++) {
+      const attemptModel = modelCandidates[i];
+      const attemptInvocation = Object.freeze({ ...invocation, model: attemptModel });
+      execution = await spawnGemini(profile, {
+        model: attemptModel,
+        promptText: prompt,
+        policyPath: profile.permission_mode === "plan" ? READ_ONLY_POLICY : null,
+        includeDirPath: containment.path,
+        cwd: neutralCwd ?? containment.path,
+        binary: invocation.binary,
+        resumeId,
+        onSpawn: (pidInfo) => {
+          const runningRecord = buildJobRecord(attemptInvocation, {
+            status: "running",
+            exitCode: null,
+            parsed: null,
+            pidInfo,
+            geminiSessionId: null,
+          }, mutations);
+          writeJobFile(workspaceRoot, jobId, runningRecord);
+          upsertJob(workspaceRoot, runningRecord);
+        },
+      });
+      executedInvocation = attemptInvocation;
+      if (
+        execution.exitCode !== 0 &&
+        i < modelCandidates.length - 1 &&
+        retryableModelCapacityFailure(execution)
+      ) {
+        process.stderr.write(
+          `gemini-companion: warning: model ${attemptModel ?? "<native>"} capacity-limited; ` +
+          `retrying with ${modelCandidates[i + 1]}\n`,
+        );
+        continue;
+      }
+      break;
+    }
   } catch (e) {
-    const errorRecord = buildJobRecord(invocation, {
+    const errorRecord = buildJobRecord(executedInvocation, {
       exitCode: null, parsed: null, pidInfo: null, geminiSessionId: null,
       errorMessage: e.message,
     }, mutations);
@@ -475,7 +530,7 @@ async function executeRun(invocation, prompt, { foreground }) {
   // signal + timedOut feed classifyExecution: a SIGTERM/SIGKILL exit without
   // timedOut is an operator cancel → status="cancelled" (#16 follow-up 2);
   // timedOut wins so wall-clock kills classify as timeout failures.
-  const finalRecord = buildJobRecord(invocation, {
+  const finalRecord = buildJobRecord(executedInvocation, {
     exitCode: execution.exitCode,
     parsed: execution.parsed,
     pidInfo: execution.pidInfo,
@@ -755,60 +810,159 @@ async function cmdResult(rest) {
 
 const PING_PROMPT = "reply with exactly: pong. Do not use any tools, do not read files, and do not explore the workspace.";
 const PING_AUTH_RE = /\b(auth(?:enticat\w*)?|login|credential\w*|oauth2?|unauthenticated|signin|sign-in)\b/i;
+const PING_PROVIDER_API_KEY_ENV = ["GEMINI_API_KEY", "GOOGLE_API_KEY"];
+
+function ignoredApiKeyAuthFields() {
+  const ignored = PING_PROVIDER_API_KEY_ENV.filter((key) => process.env[key]);
+  if (ignored.length === 0) return {};
+  return {
+    ignored_env_credentials: ignored,
+    auth_policy: "api_key_env_ignored",
+  };
+}
+
+function pingOkFields(modelFallback = null) {
+  return {
+    ready: true,
+    summary: modelFallback
+      ? "Gemini CLI is ready; the preferred model was capacity-limited and a configured fallback was used."
+      : "Gemini CLI is ready using first-party CLI auth.",
+    next_action: "Run a Gemini review command.",
+    ...(modelFallback ? { model_fallback: modelFallback } : {}),
+  };
+}
+
+function pingNotAuthedFields() {
+  return {
+    ready: false,
+    summary: "Gemini subscription/OAuth auth is not available to this companion process.",
+    next_action: "In a normal terminal, unset GEMINI_API_KEY and GOOGLE_API_KEY, then run: gemini and complete /auth if prompted.",
+  };
+}
+
+function pingRateLimitedFields() {
+  return {
+    ready: false,
+    summary: "Gemini auth works, but every configured model candidate is currently rate-limited or capacity-limited.",
+    next_action: "Retry later, or update plugins/gemini/config/models.json with an available full model ID.",
+  };
+}
+
+function pingNotFoundFields() {
+  return {
+    ready: false,
+    summary: "Gemini CLI binary was not found on PATH.",
+    next_action: "Install Gemini CLI from https://github.com/google-gemini/gemini-cli, or rerun setup with --binary pointing at your gemini executable.",
+  };
+}
+
+function pingErrorFields() {
+  return {
+    ready: false,
+    summary: "Gemini CLI ping failed before readiness could be confirmed.",
+    next_action: "Inspect detail, fix the Gemini CLI error, then rerun setup.",
+  };
+}
 
 function pingFailureDetail(execution) {
   const raw = execution?.parsed?.raw;
   const rawText = typeof raw === "string"
     ? raw
     : (raw == null ? "" : JSON.stringify(raw));
+  const parsedError = execution?.parsed?.reason === "json_parse_error"
+    ? null
+    : execution?.parsed?.error;
   const detail = [
     execution?.stderr,
+    parsedError,
+    execution?.parsed?.result,
     execution?.stdout,
-    execution?.parsed?.error,
     rawText,
     execution?.exitCode == null ? "" : `exit ${execution.exitCode}`,
   ].map((s) => String(s ?? "").trim()).find(Boolean) ?? "";
-  return detail.slice(0, 500);
+  const firstLine = detail.split("\n").map((line) => line.trim()).find(Boolean);
+  const hasStackFrame = detail
+    .split("\n")
+    .some((line) => line.trimStart().startsWith("at "));
+  const concise = hasStackFrame && firstLine ? firstLine : detail;
+  return concise.slice(0, 500);
 }
 
 async function cmdPing(rest) {
   const { options } = parseArgs(rest, { valueOptions: ["model", "binary", "timeout-ms"], booleanOptions: [] });
   const profile = resolveProfile("ping");
-  const model = options.model ?? resolveModelForProfile(profile, loadModels());
+  const modelsConfig = loadModels();
+  const model = options.model ?? resolveModelForProfile(profile, modelsConfig);
+  const modelCandidates = options.model
+    ? [options.model]
+    : resolveModelCandidatesForProfile(profile, modelsConfig);
+  const candidates = modelCandidates.length > 0 ? modelCandidates : [model];
   try {
-    const execution = await spawnGemini(profile, {
-      model,
-      promptText: PING_PROMPT,
-      policyPath: READ_ONLY_POLICY,
-      cwd: "/tmp",
-      binary: options.binary ?? process.env.GEMINI_BINARY ?? "gemini",
-      timeoutMs: Number(options["timeout-ms"] ?? 15000),
-    });
+    let execution = null;
+    let selectedModel = model;
+    let modelFallback = null;
+    const modelFallbackHops = [];
+    for (let i = 0; i < candidates.length; i++) {
+      selectedModel = candidates[i];
+      execution = await spawnGemini(profile, {
+        model: selectedModel,
+        promptText: PING_PROMPT,
+        policyPath: READ_ONLY_POLICY,
+        cwd: "/tmp",
+        binary: options.binary ?? process.env.GEMINI_BINARY ?? "gemini",
+        timeoutMs: Number(options["timeout-ms"] ?? 15000),
+      });
+      if (
+        execution.exitCode !== 0 &&
+        i < candidates.length - 1 &&
+        retryableModelCapacityFailure(execution)
+      ) {
+        const hop = {
+          from: selectedModel,
+          to: candidates[i + 1],
+          reason: "capacity_limited",
+        };
+        modelFallbackHops.push(hop);
+        modelFallback = {
+          ...hop,
+          hops: [...modelFallbackHops],
+        };
+        process.stderr.write(
+          `gemini-companion: warning: ping model ${selectedModel ?? "<native>"} capacity-limited; ` +
+          `retrying with ${candidates[i + 1]}\n`,
+        );
+        continue;
+      }
+      break;
+    }
     if (execution.parsed.ok) {
-      const payload = { status: "ok", model: model ?? null,
+      const payload = { status: "ok", ...pingOkFields(modelFallback), ...ignoredApiKeyAuthFields(), model: selectedModel ?? null,
         session_id: execution.geminiSessionId, usage: execution.parsed.usage };
       printJson(payload);
       process.exit(0);
     }
     const detail = pingFailureDetail(execution);
     if (/rate limit|429|overloaded/i.test(detail)) {
-      printJson({ status: "rate_limited", detail });
+      printJson({ status: "rate_limited", ...pingRateLimitedFields(), ...ignoredApiKeyAuthFields(), detail });
       process.exit(2);
     }
     if (PING_AUTH_RE.test(detail)) {
-      printJson({ status: "not_authed", detail,
-        hint: "Run `gemini` interactively to complete OAuth." });
+      printJson({ status: "not_authed", ...pingNotAuthedFields(), detail,
+        ...ignoredApiKeyAuthFields(),
+        hint: "Run `gemini` interactively to complete OAuth. API-key env vars are ignored by plugin policy." });
       process.exit(2);
     }
-    printJson({ status: "error", exit_code: execution.exitCode, detail });
+    printJson({ status: "error", ...pingErrorFields(), ...ignoredApiKeyAuthFields(), exit_code: execution.exitCode, detail });
     process.exit(2);
   } catch (e) {
     if (e.code === "ENOENT") {
-      printJson({ status: "not_found", detail: "gemini binary not found on PATH (or GEMINI_BINARY override)",
+      printJson({ status: "not_found", ...pingNotFoundFields(),
+        ...ignoredApiKeyAuthFields(),
+        detail: "gemini binary not found on PATH (or GEMINI_BINARY override)",
         install_url: "https://github.com/google-gemini/gemini-cli" });
       process.exit(2);
     }
-    printJson({ status: "error", detail: e.message });
+    printJson({ status: "error", ...pingErrorFields(), ...ignoredApiKeyAuthFields(), detail: e.message });
     process.exit(2);
   }
 }
@@ -957,8 +1111,7 @@ async function main() {
     case "result": return cmdResult(rest);
     case "continue": return cmdContinue(rest);
     case "cancel": return cmdCancel(rest);
-    case "doctor":
-      return fail("not_implemented", `'${sub}' lands in a later milestone`);
+    case "doctor": return cmdPing(rest);
     case "--help":
     case "-h":
     case undefined:

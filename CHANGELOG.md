@@ -1,5 +1,23 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+
+- Hardened Claude and Gemini preflight output with explicit safety fields that
+  report no target spawn, no selected-scope send, and the external-provider
+  consent requirement.
+- Made Claude and Gemini setup diagnostics render a consistent
+  `ready` / `summary` / `next_action` contract across success, missing auth,
+  rate-limit, missing-binary, and generic-error paths.
+- Made plugin-managed Claude and Gemini runs ignore provider API-key
+  environment variables by policy while reporting ignored key names without
+  exposing secret values.
+- Added Gemini capacity fallback for configured model candidates and report the
+  final fallback hop plus the full hop history used by ping.
+- Added a manifest lint guard that rejects plugin `commands` declarations until
+  upstream Codex supports plugin command-file registration and dispatch.
+
 ## 0.1.0 - 2026-04-27
 
 ### Features shipped

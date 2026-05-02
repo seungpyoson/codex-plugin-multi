@@ -58,6 +58,12 @@ function rmTree(target) {
   }
 }
 
+function assertPreflightSafetyFields(result) {
+  assert.equal(result.target_spawned, false);
+  assert.equal(result.selected_scope_sent_to_provider, false);
+  assert.equal(result.requires_external_provider_consent, true);
+}
+
 function readOnlyJobRecord(dataDir) {
   const stateRoot = path.join(dataDir, "state");
   const records = [];
@@ -979,6 +985,28 @@ test("gemini review foreground: policy-first, stdin transport, /tmp cwd, scoped 
   }
 });
 
+test("gemini review falls back when configured model capacity is exhausted", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "gemini-review-fallback-cwd-"));
+  seedMinimalRepo(cwd);
+  const { stdout, stderr, status, dataDir } = runCompanion(
+    ["run", "--mode=review", "--foreground", "--cwd", cwd, "--", "review: x=1"],
+    { cwd, env: { GEMINI_MOCK_CAPACITY_MODEL: "gemini-3-flash-preview" } },
+  );
+  try {
+    assert.equal(status, 0, `exit ${status}: ${stderr}`);
+    assert.match(stderr, /model gemini-3-flash-preview capacity-limited/);
+    assert.match(stderr, /retrying with gemini-2\.5-flash/);
+    const record = JSON.parse(stdout);
+    assert.equal(record.status, "completed");
+    assert.equal(record.model, "gemini-2.5-flash");
+    const fx = readStdoutLog(dataDir, record.job_id);
+    assert.deepEqual(Object.keys(fx.stats.models), ["gemini-2.5-flash"]);
+  } finally {
+    rmTree(dataDir);
+    rmTree(cwd);
+  }
+});
+
 test("gemini custom-review: scoped include dir contains explicit bundle files", () => {
   const cwd = mkdtempSync(path.join(tmpdir(), "gemini-custom-review-"));
   writeFileSync(path.join(cwd, "PR23.diff"), "diff --git a/x b/x\n");
@@ -1029,8 +1057,48 @@ test("gemini preflight custom-review summarizes selected bundle files without la
     assert.equal(result.file_count, 2);
     assert.ok(result.byte_count > 0);
     assert.deepEqual(result.files.sort(), ["PR23.diff", "notes.md"]);
+    assertPreflightSafetyFields(result);
     assert.match(result.disclosure_note, /not spawned/i);
     assert.match(result.disclosure_note, /external provider/i);
+  } finally {
+    rmTree(dataDir);
+    rmTree(cwd);
+  }
+});
+
+test("gemini preflight bad args still emits provider safety fields", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "gemini-preflight-bad-args-"));
+  const { stdout, status, dataDir } = runCompanion(
+    ["preflight", "--mode=nope", "--cwd", cwd],
+    { cwd },
+  );
+  try {
+    assert.equal(status, 1);
+    const result = JSON.parse(stdout);
+    assert.equal(result.event, "preflight");
+    assert.equal(result.target, "gemini");
+    assert.equal(result.error, "bad_args");
+    assertPreflightSafetyFields(result);
+  } finally {
+    rmTree(dataDir);
+    rmTree(cwd);
+  }
+});
+
+test("gemini preflight scope failures still emit provider safety fields", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "gemini-preflight-scope-fail-"));
+  writeFileSync(path.join(cwd, "notes.md"), "review notes\n");
+  const { stdout, status, dataDir } = runCompanion(
+    ["preflight", "--mode=custom-review", "--cwd", cwd, "--scope-paths", "missing.md"],
+    { cwd },
+  );
+  try {
+    assert.equal(status, 2);
+    const result = JSON.parse(stdout);
+    assert.equal(result.event, "preflight");
+    assert.equal(result.target, "gemini");
+    assert.equal(result.error, "scope_failed");
+    assertPreflightSafetyFields(result);
   } finally {
     rmTree(dataDir);
     rmTree(cwd);
@@ -1265,14 +1333,35 @@ test("gemini ping returns ok with the mock gemini binary", () => {
   const cwd = mkdtempSync(path.join(tmpdir(), "gemini-ping-cwd-"));
   const { stdout, stderr, status, dataDir } = runCompanion(
     ["ping", "--model", "gemini-3-flash-preview"],
-    { cwd },
+    { cwd, env: { GEMINI_API_KEY: "secret-test-value" } },
   );
   try {
     assert.equal(status, 0, `exit ${status}: ${stderr}`);
     const parsed = JSON.parse(stdout);
     assert.equal(parsed.status, "ok");
+    assert.equal(parsed.ready, true);
+    assert.match(parsed.summary, /ready/i);
+    assert.deepEqual(parsed.ignored_env_credentials, ["GEMINI_API_KEY"]);
+    assert.equal(parsed.auth_policy, "api_key_env_ignored");
+    assert.doesNotMatch(stdout, /secret-test-value/);
     assert.equal(parsed.model, "gemini-3-flash-preview");
     assert.equal(parsed.session_id, GEMINI_SESSION_ID);
+  } finally {
+    rmTree(dataDir);
+    rmTree(cwd);
+  }
+});
+
+test("gemini doctor returns the same readiness contract as ping", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "gemini-doctor-cwd-"));
+  const { stdout, stderr, status, dataDir } = runCompanion(["doctor"], { cwd });
+  try {
+    assert.equal(status, 0, `exit ${status}: ${stderr}`);
+    const parsed = JSON.parse(stdout);
+    assert.equal(parsed.status, "ok");
+    assert.equal(parsed.ready, true);
+    assert.match(parsed.summary, /ready/i);
+    assert.match(parsed.next_action, /review/i);
   } finally {
     rmTree(dataDir);
     rmTree(cwd);
@@ -1300,6 +1389,94 @@ test("gemini ping succeeds without --model and forbids tool exploration in the p
   }
 });
 
+test("gemini ping falls back when native model capacity is exhausted", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "gemini-ping-native-fallback-cwd-"));
+  const { stdout, stderr, status, dataDir } = runCompanion(
+    ["ping"],
+    { cwd, env: { GEMINI_MOCK_CAPACITY_MODEL: "unknown" } },
+  );
+  try {
+    assert.equal(status, 0, `exit ${status}: ${stderr}`);
+    assert.match(stderr, /ping model <native> capacity-limited/);
+    assert.match(stderr, /retrying with gemini-2\.5-flash/);
+    const parsed = JSON.parse(stdout);
+    assert.equal(parsed.status, "ok");
+    assert.equal(parsed.model, "gemini-2.5-flash");
+    assert.equal(parsed.model_fallback.from, null);
+    assert.equal(parsed.model_fallback.to, "gemini-2.5-flash");
+    assert.deepEqual(parsed.model_fallback.hops, [
+      { from: null, to: "gemini-2.5-flash", reason: "capacity_limited" },
+    ]);
+    assert.match(parsed.summary, /fallback/i);
+  } finally {
+    rmTree(dataDir);
+    rmTree(cwd);
+  }
+});
+
+test("gemini ping not_found includes readiness guidance", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "gemini-ping-missing-cwd-"));
+  const missingBinary = path.join(tmpdir(), "missing-gemini-ping-binary");
+  const { stdout, status, dataDir } = runCompanion(
+    ["ping", "--binary", missingBinary, "--model", "gemini-3-flash-preview"],
+    { cwd, env: { GEMINI_API_KEY: "secret-test-value" } },
+  );
+  try {
+    assert.equal(status, 2);
+    const parsed = JSON.parse(stdout);
+    assert.equal(parsed.status, "not_found");
+    assert.equal(parsed.ready, false);
+    assert.match(parsed.summary, /not found/i);
+    assert.match(parsed.next_action, /Install Gemini CLI/);
+    assert.deepEqual(parsed.ignored_env_credentials, ["GEMINI_API_KEY"]);
+    assert.doesNotMatch(stdout, /secret-test-value/);
+  } finally {
+    rmTree(dataDir);
+    rmTree(cwd);
+  }
+});
+
+test("gemini ping model_fallback reports the final successful hop", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "gemini-ping-multi-fallback-cwd-"));
+  const binDir = mkdtempSync(path.join(tmpdir(), "gemini-ping-multi-fallback-bin-"));
+  const binary = path.join(binDir, "gemini-multi-fallback");
+  writeFileSync(binary, `#!/usr/bin/env node
+const modelIndex = process.argv.indexOf("-m");
+const model = modelIndex === -1 ? "unknown" : process.argv[modelIndex + 1];
+if (model === "unknown" || model === "gemini-2.5-flash") {
+  process.stderr.write("No capacity available for model " + model + " on the server\\n");
+  process.stderr.write("RESOURCE_EXHAUSTED\\n");
+  process.exit(1);
+}
+process.stdout.write(JSON.stringify({
+  session_id: "${GEMINI_SESSION_ID}",
+  response: "Mock Gemini response.",
+  stats: { models: { [model]: { tokens: { total: 12 } } } }
+}) + "\\n");
+`, "utf8");
+  chmodSync(binary, 0o755);
+  const { stdout, stderr, status, dataDir } = runCompanion(
+    ["ping"],
+    { cwd, env: { GEMINI_BINARY: binary } },
+  );
+  try {
+    assert.equal(status, 0, `exit ${status}: ${stderr}`);
+    const parsed = JSON.parse(stdout);
+    assert.equal(parsed.status, "ok");
+    assert.equal(parsed.model, "gemini-2.5-flash-lite");
+    assert.equal(parsed.model_fallback.from, "gemini-2.5-flash");
+    assert.equal(parsed.model_fallback.to, "gemini-2.5-flash-lite");
+    assert.deepEqual(parsed.model_fallback.hops, [
+      { from: null, to: "gemini-2.5-flash", reason: "capacity_limited" },
+      { from: "gemini-2.5-flash", to: "gemini-2.5-flash-lite", reason: "capacity_limited" },
+    ]);
+  } finally {
+    rmTree(dataDir);
+    rmTree(cwd);
+    rmTree(binDir);
+  }
+});
+
 test("gemini ping failure detail falls back to target stdout when stderr is empty", () => {
   const cwd = mkdtempSync(path.join(tmpdir(), "gemini-ping-stdout-cwd-"));
   const binDir = mkdtempSync(path.join(tmpdir(), "gemini-ping-stdout-bin-"));
@@ -1317,6 +1494,8 @@ process.exit(7);
     assert.equal(status, 2);
     const parsed = JSON.parse(stdout);
     assert.equal(parsed.status, "not_authed");
+    assert.equal(parsed.ready, false);
+    assert.match(parsed.next_action, /gemini/);
     assert.match(parsed.detail, /credentials missing/);
   } finally {
     rmTree(dataDir);
@@ -1350,6 +1529,60 @@ process.exit(7);
   }
 });
 
+test("gemini ping trims OAuth stack traces to the diagnostic line", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "gemini-ping-oauth-stack-cwd-"));
+  const binDir = mkdtempSync(path.join(tmpdir(), "gemini-ping-oauth-stack-bin-"));
+  const binary = path.join(binDir, "gemini-oauth-stack-error");
+  writeFileSync(binary, `#!/usr/bin/env node
+process.stderr.write("Error authenticating: FatalCancellationError: Authentication cancelled by user.\\n");
+process.stderr.write("    at initOauthClient (/tmp/gemini/bundle.js:1:1)\\n");
+process.stderr.write("    at async createCodeAssistContentGenerator (/tmp/gemini/bundle.js:2:1)\\n");
+process.exit(7);
+`, "utf8");
+  chmodSync(binary, 0o755);
+  const { stdout, status, dataDir } = runCompanion(
+    ["ping", "--model", "gemini-3-flash-preview"],
+    { cwd, env: { GEMINI_BINARY: binary } },
+  );
+  try {
+    assert.equal(status, 2);
+    const parsed = JSON.parse(stdout);
+    assert.equal(parsed.status, "not_authed");
+    assert.equal(parsed.detail, "Error authenticating: FatalCancellationError: Authentication cancelled by user.");
+  } finally {
+    rmTree(dataDir);
+    rmTree(cwd);
+    rmTree(binDir);
+  }
+});
+
+test("gemini ping not_authed reports ignored parent API-key auth without exposing values", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "gemini-ping-api-key-auth-cwd-"));
+  const binDir = mkdtempSync(path.join(tmpdir(), "gemini-ping-api-key-auth-bin-"));
+  const binary = path.join(binDir, "gemini-api-key-auth-error");
+  writeFileSync(binary, `#!/usr/bin/env node
+process.stderr.write("Error authenticating: FatalCancellationError: Authentication cancelled by user.\\n");
+process.exit(7);
+`, "utf8");
+  chmodSync(binary, 0o755);
+  const { stdout, status, dataDir } = runCompanion(
+    ["ping", "--model", "gemini-3-flash-preview"],
+    { cwd, env: { GEMINI_BINARY: binary, GEMINI_API_KEY: "secret-test-value" } },
+  );
+  try {
+    assert.equal(status, 2);
+    const parsed = JSON.parse(stdout);
+    assert.equal(parsed.status, "not_authed");
+    assert.deepEqual(parsed.ignored_env_credentials, ["GEMINI_API_KEY"]);
+    assert.equal(parsed.auth_policy, "api_key_env_ignored");
+    assert.doesNotMatch(stdout, /secret-test-value/);
+  } finally {
+    rmTree(dataDir);
+    rmTree(cwd);
+    rmTree(binDir);
+  }
+});
+
 test("gemini ping generic stdout mentioning authoring is not classified as auth", () => {
   const cwd = mkdtempSync(path.join(tmpdir(), "gemini-ping-authoring-cwd-"));
   const binDir = mkdtempSync(path.join(tmpdir(), "gemini-ping-authoring-bin-"));
@@ -1367,6 +1600,8 @@ process.exit(7);
     assert.equal(status, 2);
     const parsed = JSON.parse(stdout);
     assert.equal(parsed.status, "error");
+    assert.equal(parsed.ready, false);
+    assert.match(parsed.next_action, /rerun setup/);
     assert.equal(parsed.exit_code, 7);
     assert.match(parsed.detail, /authoring authority logging failed/);
   } finally {
@@ -1393,6 +1628,8 @@ process.exit(7);
     assert.equal(status, 2);
     const parsed = JSON.parse(stdout);
     assert.equal(parsed.status, "error");
+    assert.equal(parsed.ready, false);
+    assert.match(parsed.next_action, /rerun setup/);
     assert.equal(parsed.exit_code, 7);
     assert.match(parsed.detail, /plain failure/);
   } finally {

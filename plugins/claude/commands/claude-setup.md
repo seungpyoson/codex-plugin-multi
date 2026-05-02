@@ -8,13 +8,13 @@ Setup readiness check for the Claude plugin.
 
 1. Run:
    ```
-   node "<plugin-root>/scripts/claude-companion.mjs" ping
+   node "<plugin-root>/scripts/claude-companion.mjs" doctor
    ```
 2. Render results:
-   - `status: "ok"` → report "Claude Code ready" + the model ID that responded.
-   - `status: "not_authed"` → instruct user to run `claude` interactively to complete OAuth. Do NOT try to set any `ANTHROPIC_API_KEY` env var.
-   - `status: "not_found"` → print install URL (https://claude.com/claude-code) and stop.
-   - `status: "rate_limited"` → advise retry in a few minutes.
+   - Always show `summary`.
+   - If `ready: true`, report that Claude Code is ready.
+   - If `ready: false`, show `next_action` exactly.
+   - If `ignored_env_credentials` is present, explain that those env vars were intentionally ignored by plugin policy; never print values.
 3. Print a smoke-test hint: ask Codex to use the Claude delegation skill for a
    read-only review.
 
