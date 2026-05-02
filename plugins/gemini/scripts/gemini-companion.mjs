@@ -673,7 +673,18 @@ async function cmdRunWorker(rest) {
     fail("bad_state", "prompt sidecar missing for job " + options.job);
   }
 
-  const invocation = { ...invocationFromRecord(meta), auth_mode: resolveAuthSelection(options["auth-mode"]).auth_mode };
+  const invocation = { ...invocationFromRecord(meta), auth_mode: meta.auth_mode ?? options["auth-mode"] ?? "subscription" };
+  const authSelection = resolveAuthSelection(invocation.auth_mode);
+  if (authSelection.selected_auth_path === "api_key_env_missing") {
+    consumePromptSidecar(workspaceRoot, options.job);
+    const errorRecord = buildJobRecord(invocation, {
+      exitCode: null, parsed: null, pidInfo: null, geminiSessionId: null,
+      errorMessage: `worker: ${apiKeyMissingMessage()}`,
+    }, []);
+    writeJobFile(workspaceRoot, options.job, errorRecord);
+    upsertJob(workspaceRoot, errorRecord);
+    fail("not_authed", apiKeyMissingMessage(), apiKeyMissingFields(authSelection));
+  }
   await executeRun(invocation, prompt, { foreground: false });
 }
 

@@ -1543,6 +1543,89 @@ test("_run-worker: cancel marker prevents target spawn, sets status=cancelled", 
   }
 });
 
+test("claude _run-worker fails before spawn when api_key auth has no provider key", async () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "claude-worker-auth-missing-cwd-"));
+  const dataDir = mkdtempSync(path.join(tmpdir(), "claude-worker-auth-missing-data-"));
+  const markerPath = path.join(dataDir, "spawned");
+  const binary = writeExecutable(dataDir, "claude-marker", [
+    "#!/bin/sh",
+    `printf spawned > ${JSON.stringify(markerPath)}`,
+    "printf '{\"session_id\":\"11111111-2222-4333-8444-555555555555\",\"result\":\"spawned\"}\\n'",
+    "exit 0",
+    "",
+  ].join("\n"));
+  seedMinimalRepo(cwd);
+  const previous = process.env.CLAUDE_PLUGIN_DATA;
+  process.env.CLAUDE_PLUGIN_DATA = dataDir;
+  try {
+    const state = await import("../../plugins/claude/scripts/lib/state.mjs");
+    const { newJobId } = await import("../../plugins/claude/scripts/lib/identity.mjs");
+    const { buildJobRecord } = await import("../../plugins/claude/scripts/lib/job-record.mjs");
+    const { resolveProfile } = await import("../../plugins/claude/scripts/lib/mode-profiles.mjs");
+    state.configureState({
+      pluginDataEnv: "CLAUDE_PLUGIN_DATA",
+      sessionIdEnv: "CLAUDE_COMPANION_SESSION_ID",
+    });
+    const profile = resolveProfile("rescue");
+    const jobId = newJobId();
+    const invocation = Object.freeze({
+      job_id: jobId,
+      target: "claude",
+      parent_job_id: null,
+      resume_chain: [],
+      mode_profile_name: profile.name,
+      mode: "rescue",
+      model: "claude-haiku-4-5-20251001",
+      cwd,
+      workspace_root: cwd,
+      containment: profile.containment,
+      scope: profile.scope,
+      dispose_effective: profile.dispose_default,
+      scope_base: null,
+      scope_paths: null,
+      prompt_head: "auth missing",
+      schema_spec: null,
+      binary,
+      auth_mode: "api_key",
+      started_at: new Date().toISOString(),
+    });
+    const queued = buildJobRecord(invocation, null, []);
+    state.writeJobFile(cwd, jobId, queued);
+    state.upsertJob(cwd, queued);
+    const promptPath = path.join(state.resolveJobsDir(cwd), jobId, "prompt.txt");
+    mkdirSync(path.dirname(promptPath), { recursive: true });
+    writeFileSync(promptPath, "auth missing", "utf8");
+
+    const worker = spawnSync("node", [
+      COMPANION, "_run-worker", "--cwd", cwd, "--job", jobId, "--auth-mode", "api_key",
+    ], {
+      cwd,
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        CLAUDE_BINARY: binary,
+        CLAUDE_PLUGIN_DATA: dataDir,
+        ANTHROPIC_API_KEY: "",
+        CLAUDE_API_KEY: "",
+      },
+    });
+    assert.notEqual(worker.status, 0, "worker should fail without a provider API key");
+    const error = JSON.parse(worker.stdout);
+    assert.equal(error.error, "not_authed");
+    assert.equal(error.selected_auth_path, "api_key_env_missing");
+    const finalRecord = JSON.parse(readFileSync(state.resolveJobFile(cwd, jobId), "utf8"));
+    assert.equal(finalRecord.status, "failed");
+    assert.match(finalRecord.error_message, /explicit api_key auth requires/);
+    assert.equal(existsSync(promptPath), false, "worker must remove prompt sidecar on auth refusal");
+    assert.equal(existsSync(markerPath), false, "worker must not spawn target when auth is missing");
+  } finally {
+    if (previous === undefined) delete process.env.CLAUDE_PLUGIN_DATA;
+    else process.env.CLAUDE_PLUGIN_DATA = previous;
+    rmSync(dataDir, { recursive: true, force: true });
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
 test("cancel: queued + marker write failure → cancel_failed, exit 1", () => {
   // Class 1 follow-up (reviewer Vector 3): the queued-cancel branch's marker
   // is the entire cancel mechanism (no SIGTERM fallback). If the write
