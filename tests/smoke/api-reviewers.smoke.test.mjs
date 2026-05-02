@@ -149,7 +149,7 @@ test("API_REVIEWERS_MAX_TOKENS overrides provider request defaults", async () =>
   assert.doesNotMatch(result.stdout, /secret-test-value/);
 });
 
-for (const value of ["abc", "Infinity", "1.5"]) {
+for (const value of ["abc", "Infinity", "1.5", "0", "-1", "9007199254740992"]) {
   test(`API_REVIEWERS_MAX_TOKENS rejects invalid override ${value}`, async () => {
     const cwd = makeWorkspace();
     const dataDir = mkdtempSync(path.join(tmpdir(), "api-reviewers-data-"));
@@ -184,6 +184,135 @@ for (const value of ["abc", "Infinity", "1.5"]) {
     assert.doesNotMatch(result.stdout, /secret-test-value/);
   });
 }
+
+for (const value of ["abc", "Infinity", "1.5", "0", "-1", "9007199254740992"]) {
+  test(`API_REVIEWERS_TIMEOUT_MS rejects invalid override ${value}`, async () => {
+    const cwd = makeWorkspace();
+    const dataDir = mkdtempSync(path.join(tmpdir(), "api-reviewers-data-"));
+    const result = await run([
+      "run",
+      "--provider", "glm",
+      "--mode", "custom-review",
+      "--scope", "custom",
+      "--scope-paths", "seed.txt",
+      "--foreground",
+      "--prompt", "Check this file.",
+    ], {
+      cwd,
+      env: {
+        API_REVIEWERS_PLUGIN_DATA: dataDir,
+        API_REVIEWERS_TIMEOUT_MS: value,
+        API_REVIEWERS_MOCK_RESPONSE: mockResponse("glm-5.1"),
+        ZAI_API_KEY: "secret-test-value",
+      },
+    });
+
+    assert.equal(result.status, 1);
+    const record = parseJson(result.stdout);
+    assert.equal(record.status, "failed");
+    assert.equal(record.provider, "glm");
+    assert.equal(record.error_code, "bad_args");
+    assert.match(record.error_message, /API_REVIEWERS_TIMEOUT_MS must be a positive integer number of milliseconds/);
+    assert.doesNotMatch(result.stdout, /secret-test-value/);
+  });
+}
+
+test("branch-diff git revision failure returns stderr in structured JobRecord", async () => {
+  const cwd = makeBranchDiffWorkspace();
+  const dataDir = mkdtempSync(path.join(tmpdir(), "api-reviewers-data-"));
+  const result = await run([
+    "run",
+    "--provider", "deepseek",
+    "--mode", "review",
+    "--scope-base", "missing-base",
+    "--foreground",
+    "--prompt", "Check this branch.",
+  ], {
+    cwd,
+    env: {
+      API_REVIEWERS_PLUGIN_DATA: dataDir,
+      API_REVIEWERS_MOCK_RESPONSE: mockResponse("deepseek-v4-pro"),
+      DEEPSEEK_API_KEY: "secret-test-value",
+    },
+  });
+
+  assert.equal(result.status, 1);
+  const record = parseJson(result.stdout);
+  assert.equal(record.status, "failed");
+  assert.equal(record.error_code, "scope_failed");
+  assert.match(record.error_message, /git_failed:/);
+  assert.match(record.error_message, /missing-base/);
+  assert.doesNotMatch(record.error_message, /scope_empty/);
+  assert.doesNotMatch(result.stdout, /secret-test-value/);
+});
+
+test("provider request defaults cannot override canonical request fields", async () => {
+  const cwd = makeWorkspace();
+  const dataDir = mkdtempSync(path.join(tmpdir(), "api-reviewers-data-"));
+  const pluginRoot = makeInstalledApiReviewersRoot();
+  const providersPath = path.join(pluginRoot, "config", "providers.json");
+  const providers = parseJson(execFileSync(process.execPath, [
+    "-e",
+    "process.stdout.write(JSON.stringify(require(process.argv[1])))",
+    path.join(REPO_ROOT, "plugins/api-reviewers/config/providers.json"),
+  ], { encoding: "utf8" }));
+  providers.glm.request_defaults.model = "attacker-model";
+  writeFileSync(providersPath, `${JSON.stringify(providers, null, 2)}\n`);
+
+  const result = await run([
+    "run",
+    "--provider", "glm",
+    "--mode", "custom-review",
+    "--scope", "custom",
+    "--scope-paths", "seed.txt",
+    "--foreground",
+    "--prompt", "Check this file.",
+  ], {
+    cwd,
+    companion: path.join(pluginRoot, "scripts", "api-reviewer.mjs"),
+    env: {
+      API_REVIEWERS_PLUGIN_DATA: dataDir,
+      API_REVIEWERS_MOCK_RESPONSE: mockResponse("glm-5.1"),
+      ZAI_API_KEY: "secret-test-value",
+    },
+  });
+
+  assert.equal(result.status, 1);
+  const record = parseJson(result.stdout);
+  assert.equal(record.status, "failed");
+  assert.equal(record.error_code, "bad_args");
+  assert.match(record.error_message, /disallowed_request_default:model/);
+  assert.doesNotMatch(result.stdout, /secret-test-value/);
+});
+
+test("persist failure still prints structured JobRecord", async () => {
+  const cwd = makeWorkspace();
+  const dataRoot = path.join(tmpdir(), `api-reviewers-data-file-${Date.now()}-${process.pid}`);
+  writeFileSync(dataRoot, "not a directory\n");
+  const result = await run([
+    "run",
+    "--provider", "glm",
+    "--mode", "custom-review",
+    "--scope", "custom",
+    "--scope-paths", "seed.txt",
+    "--foreground",
+    "--prompt", "Check this file.",
+  ], {
+    cwd,
+    env: {
+      API_REVIEWERS_PLUGIN_DATA: dataRoot,
+      API_REVIEWERS_MOCK_RESPONSE: mockResponse("glm-5.1"),
+      ZAI_API_KEY: "secret-test-value",
+    },
+  });
+
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  const record = parseJson(result.stdout);
+  assert.equal(record.status, "completed");
+  assert.equal(record.provider, "glm");
+  assert.match(record.disclosure_note, /JobRecord persistence failed:/);
+  assert.doesNotMatch(result.stdout, /secret-test-value/);
+});
 
 for (const scenario of [
   {

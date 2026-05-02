@@ -13,6 +13,7 @@ const PLUGIN_ROOT = resolve(SCRIPT_DIR, "..");
 const PROVIDERS_PATH = resolve(PLUGIN_ROOT, "config/providers.json");
 const VALID_MODES = new Set(["review", "adversarial-review", "custom-review"]);
 const VALID_AUTH_MODES = new Set(["api_key", "auto"]);
+const ALLOWED_REQUEST_DEFAULT_KEYS = new Set(["thinking", "reasoning_effort", "max_tokens", "top_p", "stop"]);
 
 function printJson(obj) {
   process.stdout.write(`${JSON.stringify(obj, null, 2)}\n`);
@@ -64,17 +65,36 @@ function selectedCredential(cfg, env = process.env) {
   return { keyName: null, value: null };
 }
 
-function parseMaxTokensOverride(env = process.env) {
-  const raw = env.API_REVIEWERS_MAX_TOKENS;
+function parsePositiveIntegerEnv(env, name, label) {
+  const raw = env[name];
   if (raw === undefined || raw === null || raw === "") return { ok: true, value: null };
   const parsed = Number(raw);
   if (!Number.isSafeInteger(parsed) || parsed <= 0) {
     return {
       ok: false,
-      error: `API_REVIEWERS_MAX_TOKENS must be a positive integer number of tokens; got ${JSON.stringify(raw)}`,
+      error: `${name} must be a positive integer number of ${label}; got ${JSON.stringify(raw)}`,
     };
   }
   return { ok: true, value: parsed };
+}
+
+function parseMaxTokensOverride(env = process.env) {
+  return parsePositiveIntegerEnv(env, "API_REVIEWERS_MAX_TOKENS", "tokens");
+}
+
+function parseProviderTimeoutMs(env = process.env) {
+  const parsed = parsePositiveIntegerEnv(env, "API_REVIEWERS_TIMEOUT_MS", "milliseconds");
+  return parsed.value === null ? { ok: true, value: 120000 } : parsed;
+}
+
+function applyRequestDefaults(requestBody, requestDefaults = {}) {
+  for (const [key, value] of Object.entries(requestDefaults)) {
+    if (!ALLOWED_REQUEST_DEFAULT_KEYS.has(key)) {
+      return { ok: false, error: `disallowed_request_default:${key}` };
+    }
+    requestBody[key] = value;
+  }
+  return { ok: true };
 }
 
 function redactor(env = process.env) {
@@ -156,17 +176,21 @@ function runCommand(command, args = [], options = {}) {
   };
 }
 
-function git(args, cwd) {
+function git(args, cwd, options = {}) {
   const res = runCommand("git", args, { cwd, env: cleanGitEnv() });
   if (res.error) throw new Error(`git_failed:${res.error.message}`);
   if (res.signal) throw new Error(`git_failed:signal:${res.signal}`);
-  if (res.status !== 0) return null;
+  if (res.status !== 0) {
+    if (options.allowFailure) return null;
+    const detail = String(res.stderr || res.stdout || `git exited with status ${res.status}`).trim();
+    throw new Error(`git_failed:${detail}`);
+  }
   return res.stdout.trim();
 }
 
 function bestEffortWorkspaceRoot(cwd) {
   try {
-    return git(["rev-parse", "--show-toplevel"], cwd) || cwd;
+    return git(["rev-parse", "--show-toplevel"], cwd, { allowFailure: true }) || cwd;
   } catch {
     return cwd;
   }
@@ -218,7 +242,7 @@ async function readScopeFiles(workspaceRoot, relPaths) {
 
 async function collectScope(options) {
   const cwd = resolve(options.cwd ?? process.cwd());
-  const workspaceRoot = git(["rev-parse", "--show-toplevel"], cwd) || cwd;
+  const workspaceRoot = git(["rev-parse", "--show-toplevel"], cwd, { allowFailure: true }) || cwd;
   const scope = scopeName(options);
   const scopeBase = scope === "branch-diff" ? options["scope-base"] ?? "main" : null;
   const relPaths = selectedScopePaths(scope, options, cwd);
@@ -253,7 +277,22 @@ function promptFor(mode, userPrompt, scopeInfo) {
 }
 
 function requestFieldMatches(actual, expected) {
-  return JSON.stringify(actual) === JSON.stringify(expected);
+  if (Object.is(actual, expected)) return true;
+  if (Array.isArray(actual) || Array.isArray(expected)) {
+    if (!Array.isArray(actual) || !Array.isArray(expected) || actual.length !== expected.length) return false;
+    return actual.every((item, index) => requestFieldMatches(item, expected[index]));
+  }
+  if (
+    actual && expected &&
+    typeof actual === "object" &&
+    typeof expected === "object"
+  ) {
+    const actualKeys = Object.keys(actual).sort();
+    const expectedKeys = Object.keys(expected).sort();
+    if (!requestFieldMatches(actualKeys, expectedKeys)) return false;
+    return actualKeys.every((key) => requestFieldMatches(actual[key], expected[key]));
+  }
+  return false;
 }
 
 function mockProviderExecution(cfg, prompt, credential, env, requestBody) {
@@ -302,6 +341,10 @@ async function callProvider(provider, cfg, prompt, env = process.env) {
   if (!maxTokensOverride.ok) {
     return providerFailure("bad_args", maxTokensOverride.error, null);
   }
+  const timeoutMs = parseProviderTimeoutMs(env);
+  if (!timeoutMs.ok) {
+    return providerFailure("bad_args", timeoutMs.error, null);
+  }
   const credential = selectedCredential(cfg, env);
   if (!credential.value) {
     return providerFailure("missing_key", `${cfg.display_name} API key is not available`, null);
@@ -312,7 +355,10 @@ async function callProvider(provider, cfg, prompt, env = process.env) {
     messages: [{ role: "user", content: prompt }],
     temperature: 0,
   };
-  if (cfg.request_defaults) Object.assign(requestBody, cfg.request_defaults);
+  const defaultsResult = applyRequestDefaults(requestBody, cfg.request_defaults);
+  if (!defaultsResult.ok) {
+    return providerFailure("bad_args", defaultsResult.error, null);
+  }
   if (maxTokensOverride.value !== null) {
     requestBody.max_tokens = maxTokensOverride.value;
   } else if (!Object.hasOwn(requestBody, "max_tokens")) {
@@ -322,7 +368,7 @@ async function callProvider(provider, cfg, prompt, env = process.env) {
     return mockProviderExecution(cfg, prompt, credential, env, requestBody);
   }
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), Number(env.API_REVIEWERS_TIMEOUT_MS ?? "120000"));
+  const timer = setTimeout(() => controller.abort(), timeoutMs.value);
   const redact = redactor(env);
   try {
     const response = await fetch(endpoint, {
@@ -473,6 +519,19 @@ async function persistRecord(record, env = process.env) {
   await writeFile(resolve(dir, "meta.json"), `${JSON.stringify(record, null, 2)}\n`, { mode: 0o600 });
 }
 
+async function persistRecordBestEffort(record, env = process.env) {
+  try {
+    await persistRecord(record, env);
+    return record;
+  } catch (e) {
+    const detail = `JobRecord persistence failed: ${e?.message ?? String(e)}`;
+    return {
+      ...record,
+      disclosure_note: record.disclosure_note ? `${record.disclosure_note} ${detail}` : detail,
+    };
+  }
+}
+
 async function cmdDoctor(options) {
   const providers = await loadProviders();
   const provider = options.provider;
@@ -523,8 +582,8 @@ async function cmdRun(options) {
     startedAt,
     endedAt: new Date().toISOString(),
   });
-  await persistRecord(record);
-  printJson(record);
+  const printableRecord = await persistRecordBestEffort(record);
+  printJson(printableRecord);
   process.exit(record.status === "completed" ? 0 : 1);
 }
 

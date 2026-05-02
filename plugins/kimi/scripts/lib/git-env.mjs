@@ -25,7 +25,8 @@
 //   1. Location overrides — point git at a different repo entirely.
 //   2. Config injection — make git apply unexpected configuration.
 //   3. Trace family — pollute stdout/stderr with diagnostic output.
-//   4. Behavior overrides — change protocol/lock/prompt semantics.
+//   4. Execution/behavior overrides — change helper paths, protocol, lock,
+//      prompt, pager, or credential-helper semantics.
 //
 // The KEY_n / VALUE_n indexed config vars (companion to GIT_CONFIG_COUNT)
 // are stripped by pattern in cleanGitEnv() since their indices are unbounded.
@@ -44,6 +45,8 @@ export const STRIPPED_GIT_ENV_KEYS = Object.freeze([
   "GIT_ATTR_SOURCE",
   "GIT_REPLACE_REF_BASE",
   "GIT_SHALLOW_FILE",
+  "GIT_EXEC_PATH",
+  "GIT_TEMPLATE_DIR",
 
   // 2. Config injection
   "GIT_CONFIG_GLOBAL",
@@ -74,9 +77,14 @@ export const STRIPPED_GIT_ENV_KEYS = Object.freeze([
   "GIT_PROTOCOL",
   "GIT_AUTO_GC",
   "GIT_EXTERNAL_DIFF",
+  "GIT_SSH",
+  "GIT_SSH_COMMAND",
+  "GIT_ASKPASS",
+  "GIT_EDITOR",
   "GIT_PAGER",
   "GIT_PAGER_IN_USE",
   "PAGER",
+  "SSH_ASKPASS",
 ]);
 
 const INDEXED_GIT_CONFIG_RE = /^GIT_CONFIG_(KEY|VALUE)_\d+$/;
