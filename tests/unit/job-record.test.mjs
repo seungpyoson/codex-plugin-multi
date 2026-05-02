@@ -18,11 +18,20 @@ import {
 } from "../../plugins/claude/scripts/lib/job-record.mjs";
 import {
   buildJobRecord as buildGeminiJobRecord,
+  EXPECTED_KEYS as GEMINI_EXPECTED_KEYS,
   SCHEMA_VERSION as GEMINI_SCHEMA_VERSION,
 } from "../../plugins/gemini/scripts/lib/job-record.mjs";
 import {
   buildJobRecord as buildKimiJobRecord,
+  EXPECTED_KEYS as KIMI_EXPECTED_KEYS,
+  SCHEMA_VERSION as KIMI_SCHEMA_VERSION,
 } from "../../plugins/kimi/scripts/lib/job-record.mjs";
+import {
+  buildExternalReview,
+  EXTERNAL_REVIEW_KEYS,
+  SOURCE_CONTENT_TRANSMISSION,
+  sourceContentTransmissionForExecution,
+} from "../../plugins/claude/scripts/lib/external-review.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const SKILL_MD = resolvePath(HERE, "..", "..",
@@ -55,9 +64,14 @@ function notSentScopeRejected(provider) {
   return `Selected source content was not sent to ${provider}; the review scope was rejected before the target process was started.`;
 }
 
+function notSentSpawnFailed(provider) {
+  return `Selected source content was not sent to ${provider}; the target process was not spawned.`;
+}
+
 test("JobRecord schema_version is bumped for external review provenance", () => {
-  assert.equal(SCHEMA_VERSION, 8);
-  assert.equal(GEMINI_SCHEMA_VERSION, 8);
+  assert.equal(SCHEMA_VERSION, 9);
+  assert.equal(GEMINI_SCHEMA_VERSION, 9);
+  assert.equal(KIMI_SCHEMA_VERSION, 9);
 });
 
 // Helper — minimal valid invocation captured at cmdRun entry.
@@ -90,6 +104,30 @@ function makePidInfo() {
   return { pid: 12345, starttime: "Thu Apr 24 12:00:00 2026", argv0: "claude" };
 }
 
+test("external_review sub-fields have a canonical list and validated transmission enum", () => {
+  const review = buildExternalReview({
+    invocation: makeInvocation(),
+    sessionId: CLAUDE_UUID,
+    status: "completed",
+    errorCode: null,
+    sourceContentTransmission: SOURCE_CONTENT_TRANSMISSION.SENT,
+  });
+  assert.deepEqual(Object.keys(review), [...EXTERNAL_REVIEW_KEYS]);
+  assert.throws(() => buildExternalReview({
+    invocation: makeInvocation(),
+    status: "completed",
+    sourceContentTransmission: "senttt",
+  }), /invalid sourceContentTransmission/);
+});
+
+test("external_review treats known post-spawn failure codes as sent", () => {
+  assert.equal(sourceContentTransmissionForExecution({
+    status: "failed",
+    errorCode: "step_limit_exceeded",
+    pidInfo: makePidInfo(),
+  }), SOURCE_CONTENT_TRANSMISSION.SENT);
+});
+
 test("EXPECTED_KEYS is the spec §21.3 canonical list", () => {
   const required = [
     "id", "job_id", "target", "parent_job_id", "claude_session_id", "gemini_session_id",
@@ -104,6 +142,14 @@ test("EXPECTED_KEYS is the spec §21.3 canonical list", () => {
     "schema_version",
   ];
   assert.deepEqual([...EXPECTED_KEYS].sort(), required.sort());
+});
+
+test("provider EXPECTED_KEYS stay byte-for-byte aligned", () => {
+  assert.deepEqual([...GEMINI_EXPECTED_KEYS], [...EXPECTED_KEYS]);
+  assert.deepEqual(
+    KIMI_EXPECTED_KEYS.map((key) => key === "kimi_session_id" ? "gemini_session_id" : key),
+    [...EXPECTED_KEYS],
+  );
 });
 
 test("buildJobRecord: foreground success path has EXACTLY the expected keys", () => {
@@ -285,6 +331,7 @@ test("buildJobRecord: failure path — claude exited non-zero", () => {
   assert.equal(rec.exit_code, 1);
   // Readable stdout can still ride along on a failure.
   assert.equal(rec.result, "partial output");
+  assert.equal(rec.external_review.source_content_transmission, "sent");
   assert.equal(rec.external_review.disclosure, sentButNoCleanResult("Claude Code"));
 });
 
@@ -303,6 +350,7 @@ test("gemini buildJobRecord: failure path uses gemini_error, not claude_error", 
   }, []);
   assert.equal(rec.status, "failed");
   assert.equal(rec.error_code, "gemini_error");
+  assert.equal(rec.external_review.source_content_transmission, "sent");
   assert.equal(rec.external_review.disclosure, sentButNoCleanResult("Gemini CLI"));
 });
 
@@ -486,6 +534,8 @@ test("gemini buildJobRecord: spawn, parse, and prompt-defense paths", () => {
   assert.equal(spawnFailed.status, "failed");
   assert.equal(spawnFailed.error_code, "spawn_failed");
   assert.equal(spawnFailed.error_message, "spawn gemini ENOENT");
+  assert.equal(spawnFailed.external_review.source_content_transmission, "not_sent");
+  assert.equal(spawnFailed.external_review.disclosure, notSentSpawnFailed("Gemini CLI"));
 
   const parseFailed = buildGeminiJobRecord(invocation, {
     exitCode: 0,
@@ -495,6 +545,7 @@ test("gemini buildJobRecord: spawn, parse, and prompt-defense paths", () => {
   }, []);
   assert.equal(parseFailed.status, "failed");
   assert.equal(parseFailed.error_code, "parse_error");
+  assert.equal(parseFailed.external_review.source_content_transmission, "sent");
   assert.equal(parseFailed.external_review.disclosure, sentButNoCleanResult("Gemini CLI"));
 
   assert.throws(
@@ -533,6 +584,7 @@ test("gemini buildJobRecord: default, validation, and non-parse failure branches
   assert.equal(noParsed.status, "failed");
   assert.equal(noParsed.error_code, "gemini_error");
   assert.equal(noParsed.error_message, null);
+  assert.equal(noParsed.external_review.source_content_transmission, "sent");
   assert.equal(noParsed.external_review.disclosure, sentButNoCleanResult("Gemini CLI"));
 
   const emptyStdout = buildGeminiJobRecord(invocation, {
@@ -543,6 +595,7 @@ test("gemini buildJobRecord: default, validation, and non-parse failure branches
   }, []);
   assert.equal(emptyStdout.error_code, "parse_error");
   assert.equal(emptyStdout.error_message, "no output");
+  assert.equal(emptyStdout.external_review.source_content_transmission, "sent");
   assert.deepEqual(emptyStdout.permission_denials, []);
 
   const targetError = buildGeminiJobRecord(invocation, {
@@ -552,6 +605,7 @@ test("gemini buildJobRecord: default, validation, and non-parse failure branches
     geminiSessionId: null,
   }, []);
   assert.equal(targetError.error_code, "gemini_error");
+  assert.equal(targetError.external_review.source_content_transmission, "sent");
   assert.equal(targetError.error_message, "blocked");
   assert.equal(targetError.external_review.disclosure, sentButNoCleanResult("Gemini CLI"));
 
@@ -574,6 +628,8 @@ test("buildJobRecord: spawn_failed path (execution threw before claude)", () => 
   assert.equal(rec.error_code, "spawn_failed");
   assert.equal(rec.error_message, "spawn claude ENOENT");
   assert.equal(rec.result, null);
+  assert.equal(rec.external_review.source_content_transmission, "not_sent");
+  assert.equal(rec.external_review.disclosure, notSentSpawnFailed("Claude Code"));
 });
 
 test("buildJobRecord: finalization_failed errorMessage classifies as finalization_failed (PR #21 review HIGH 1)", () => {
@@ -709,6 +765,7 @@ test("buildJobRecord: parse_error path (claude returned unparsable stdout)", () 
   }, []);
   assert.equal(rec.status, "failed");
   assert.equal(rec.error_code, "parse_error");
+  assert.equal(rec.external_review.source_content_transmission, "sent");
   assert.equal(rec.external_review.disclosure, sentButNoCleanResult("Claude Code"));
 });
 

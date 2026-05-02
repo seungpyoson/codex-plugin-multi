@@ -163,10 +163,7 @@ function gitStatusLines(output) {
 // carried — lifecycle/result fields get re-derived from the fresh execution.
 function runKindFromRecord(record) {
   if (record.external_review?.run_kind) return record.external_review.run_kind;
-  if (record.pid_info || record.status === "queued" || record.status === "running" || record.status === "stale") {
-    return "background";
-  }
-  return "foreground";
+  return "unknown";
 }
 
 function invocationFromRecord(record, fallbackAuthMode = "subscription") {

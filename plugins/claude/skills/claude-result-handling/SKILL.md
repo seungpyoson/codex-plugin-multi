@@ -13,7 +13,7 @@ The companion returns the SAME JSON shape from three entry points — foreground
 (spec §21.3). Nothing is hand-assembled in memory; what goes to disk is what
 comes back to you.
 
-## Success path — JobRecord schema (v8)
+## Success path — JobRecord schema (v9)
 
 ```json
 {
@@ -45,7 +45,7 @@ comes back to you.
   "started_at":          "<iso-8601>",
   "ended_at":            null | "<iso-8601>",
   "exit_code":           null | 0 | 1 | 2,
-  "error_code":          null | "scope_failed" | "spawn_failed" | "claude_error" | "parse_error" | "timeout",
+  "error_code":          null | "scope_failed" | "spawn_failed" | "claude_error" | "gemini_error" | "kimi_error" | "parse_error" | "step_limit_exceeded" | "finalization_failed" | "timeout" | "unknown_error",
   "error_message":       null | "<human>",
   "error_summary":       null | "<short operator-facing summary>",
   "error_cause":         null | "<why this happened>",
@@ -53,7 +53,7 @@ comes back to you.
   "external_review":     {
     "marker":            "EXTERNAL REVIEW",
     "provider":          "Claude Code",
-    "run_kind":          "foreground|background",
+    "run_kind":          "foreground|background|unknown",
     "job_id":            "<uuid>",
     "session_id":        null | "<provider session id>",
     "parent_job_id":     null | "<uuid>",
@@ -73,7 +73,7 @@ comes back to you.
   "cost_usd":            null | 0.001,
   "usage":               null | { "input_tokens": N, ... },
 
-  "schema_version":      8
+  "schema_version":      9
 }
 ```
 
@@ -177,6 +177,10 @@ from short-lived index contention.
   still contain partial text worth showing.
 - `parse_error` — Claude's stdout wasn't valid JSON. Rare; usually a CLI
   upgrade mismatch. `error_message` has the parser error.
+- `finalization_failed` — the target ran, but the companion failed while
+  writing the terminal record or state. Render the structured diagnostic
+  fields and preserve `error_message`; this is an operator/storage failure,
+  not a missing-binary or scope-preparation failure.
 - `timeout` — the companion's watchdog killed the child. No partial output.
 - `not_found` — (only from `result --job` / `status --job`) the `job_id`
   doesn't exist in this workspace. Suggest `/claude-status --all`.

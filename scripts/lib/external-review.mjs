@@ -15,6 +15,33 @@ export const SOURCE_CONTENT_TRANSMISSION = Object.freeze({
   UNKNOWN: "unknown",
 });
 
+const SOURCE_CONTENT_TRANSMISSION_VALUES = new Set(Object.values(SOURCE_CONTENT_TRANSMISSION));
+
+export const EXTERNAL_REVIEW_KEYS = Object.freeze([
+  "marker",
+  "provider",
+  "run_kind",
+  "job_id",
+  "session_id",
+  "parent_job_id",
+  "mode",
+  "scope",
+  "scope_base",
+  "scope_paths",
+  "source_content_transmission",
+  "disclosure",
+]);
+
+const CONTENT_RECEIVED_ERROR_CODES = Object.freeze(new Set([
+  "claude_error",
+  "gemini_error",
+  "kimi_error",
+  "parse_error",
+  "step_limit_exceeded",
+  "finalization_failed",
+  "timeout",
+]));
+
 export function externalReviewDisclosure(provider, status, sourceContentTransmission, errorCode = null) {
   if (sourceContentTransmission === SOURCE_CONTENT_TRANSMISSION.MAY_BE_SENT) {
     return `Selected source content may be sent to ${provider} for external review.`;
@@ -27,6 +54,9 @@ export function externalReviewDisclosure(provider, status, sourceContentTransmis
   }
   if (sourceContentTransmission === SOURCE_CONTENT_TRANSMISSION.SENT && status === "cancelled") {
     return `Selected source content was sent to ${provider} for external review; the operator cancelled the run before it completed.`;
+  }
+  if (sourceContentTransmission === SOURCE_CONTENT_TRANSMISSION.SENT && status === "stale") {
+    return `Selected source content was sent to ${provider} for external review; the run became stale before completion.`;
   }
   if (sourceContentTransmission === SOURCE_CONTENT_TRANSMISSION.SENT) {
     return `Selected source content was sent to ${provider} for external review, but the run ended before a clean result was produced.`;
@@ -44,12 +74,12 @@ export function externalReviewDisclosure(provider, status, sourceContentTransmis
     return `Selected source content was not sent to ${provider}; the target process was not started.`;
   }
   if (status === "stale") {
-    return `Selected source content may have been sent to ${provider}; the background worker became stale before completion.`;
+    return `Selected source content may have been sent to ${provider}; the run became stale before completion.`;
   }
   return `Selected source content may have been sent to ${provider}; the run ended before a clean result was produced.`;
 }
 
-export function sourceContentTransmissionForExecution({ status, errorCode, pidInfo }) {
+export function sourceContentTransmissionForExecution({ status, errorCode, pidInfo, priorStatus = null }) {
   if (status === "queued") {
     return SOURCE_CONTENT_TRANSMISSION.MAY_BE_SENT;
   }
@@ -57,6 +87,8 @@ export function sourceContentTransmissionForExecution({ status, errorCode, pidIn
     return pidInfo ? SOURCE_CONTENT_TRANSMISSION.SENT : SOURCE_CONTENT_TRANSMISSION.MAY_BE_SENT;
   }
   if (status === "stale") {
+    if (pidInfo) return SOURCE_CONTENT_TRANSMISSION.SENT;
+    if (priorStatus === "queued") return SOURCE_CONTENT_TRANSMISSION.NOT_SENT;
     return SOURCE_CONTENT_TRANSMISSION.UNKNOWN;
   }
   if (errorCode === "scope_failed" || errorCode === "spawn_failed") {
@@ -72,19 +104,15 @@ export function sourceContentTransmissionForExecution({ status, errorCode, pidIn
 }
 
 export function targetProcessReceivedContent(errorCode) {
-  return new Set([
-    "claude_error",
-    "gemini_error",
-    "kimi_error",
-    "parse_error",
-    "finalization_failed",
-    "timeout",
-  ]).has(errorCode);
+  return CONTENT_RECEIVED_ERROR_CODES.has(errorCode);
 }
 
 export function buildExternalReview({ invocation, sessionId = null, status, errorCode = null, sourceContentTransmission }) {
+  if (!SOURCE_CONTENT_TRANSMISSION_VALUES.has(sourceContentTransmission)) {
+    throw new Error(`invalid sourceContentTransmission: ${String(sourceContentTransmission)}`);
+  }
   const provider = providerDisplayName(invocation.target);
-  return Object.freeze({
+  const review = {
     marker: "EXTERNAL REVIEW",
     provider,
     run_kind: invocation.run_kind ?? "foreground",
@@ -97,5 +125,11 @@ export function buildExternalReview({ invocation, sessionId = null, status, erro
     scope_paths: invocation.scope_paths ?? null,
     source_content_transmission: sourceContentTransmission,
     disclosure: externalReviewDisclosure(provider, status, sourceContentTransmission, errorCode),
-  });
+  };
+  const keys = Object.keys(review);
+  if (keys.length !== EXTERNAL_REVIEW_KEYS.length
+      || keys.some((key) => !EXTERNAL_REVIEW_KEYS.includes(key))) {
+    throw new Error(`external_review keys drifted: ${keys.join(",")}`);
+  }
+  return Object.freeze(review);
 }

@@ -6,6 +6,10 @@ import { fileURLToPath } from "node:url";
 import { randomUUID } from "node:crypto";
 import { cleanGitEnv } from "../../claude/scripts/lib/git-env.mjs";
 import { runCommand } from "../../claude/scripts/lib/process.mjs";
+import {
+  EXTERNAL_REVIEW_KEYS,
+  SOURCE_CONTENT_TRANSMISSION,
+} from "../../claude/scripts/lib/external-review.mjs";
 
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 const PLUGIN_ROOT = resolve(SCRIPT_DIR, "..");
@@ -296,13 +300,11 @@ async function callProvider(provider, cfg, prompt, env = process.env) {
 
 function safeProviderSessionId(value) {
   if (typeof value !== "string") return null;
-  if (value.length === 0 || value.length > 200) return null;
-  if (/[\u0000-\u001f\u007f]/u.test(value)) return null;
-  return value;
+  return /^[A-Za-z0-9_-]{1,200}$/u.test(value) ? value : null;
 }
 
 function payloadSentForProviderException(error) {
-  if (error?.name === "AbortError") return true;
+  if (error?.name === "AbortError") return null;
   const code = error?.code ?? error?.cause?.code ?? null;
   if (code === "ENOTFOUND" || code === "EAI_AGAIN" || code === "ECONNREFUSED") return false;
   return null;
@@ -359,22 +361,31 @@ function suggestedAction(errorCode, provider, cfg) {
 
 function directApiDisclosure(displayName, completed, payloadSent) {
   const transmission = directApiTransmission(completed, payloadSent);
-  if (transmission === "sent" && completed) {
+  if (transmission === SOURCE_CONTENT_TRANSMISSION.SENT && completed) {
     return `Selected source content was sent to ${displayName} through direct API auth.`;
   }
-  if (transmission === "not_sent") {
+  if (transmission === SOURCE_CONTENT_TRANSMISSION.NOT_SENT) {
     return `Selected source content was not sent to ${displayName} through direct API auth.`;
   }
-  if (transmission === "sent") {
+  if (transmission === SOURCE_CONTENT_TRANSMISSION.SENT) {
     return `Selected source content was sent to ${displayName} through direct API auth, but the provider did not return a clean result.`;
   }
   return `Selected source content may have been sent to ${displayName} through direct API auth.`;
 }
 
 function directApiTransmission(completed, payloadSent) {
-  if (completed || payloadSent === true) return "sent";
-  if (payloadSent === false) return "not_sent";
-  return "unknown";
+  if (completed || payloadSent === true) return SOURCE_CONTENT_TRANSMISSION.SENT;
+  if (payloadSent === false) return SOURCE_CONTENT_TRANSMISSION.NOT_SENT;
+  return SOURCE_CONTENT_TRANSMISSION.UNKNOWN;
+}
+
+function freezeExternalReview(review) {
+  const keys = Object.keys(review);
+  if (keys.length !== EXTERNAL_REVIEW_KEYS.length
+      || keys.some((key) => !EXTERNAL_REVIEW_KEYS.includes(key))) {
+    throw new Error(`external_review keys drifted: ${keys.join(",")}`);
+  }
+  return Object.freeze(review);
 }
 
 function buildRecord({ provider, cfg, mode, options, scopeInfo, execution, startedAt, endedAt }) {
@@ -383,7 +394,7 @@ function buildRecord({ provider, cfg, mode, options, scopeInfo, execution, start
   const target = provider;
   const sourceContentTransmission = directApiTransmission(completed, execution.payload_sent ?? null);
   const disclosure = directApiDisclosure(cfg.display_name, completed, execution.payload_sent ?? null);
-  const externalReview = Object.freeze({
+  const externalReview = freezeExternalReview({
     marker: "EXTERNAL REVIEW",
     provider: cfg.display_name,
     run_kind: "foreground",
@@ -405,6 +416,7 @@ function buildRecord({ provider, cfg, mode, options, scopeInfo, execution, start
     parent_job_id: null,
     claude_session_id: null,
     gemini_session_id: null,
+    kimi_session_id: null,
     resume_chain: [],
     pid_info: null,
     mode,
@@ -442,7 +454,7 @@ function buildRecord({ provider, cfg, mode, options, scopeInfo, execution, start
     endpoint: execution.endpoint ?? baseUrlFor(cfg),
     http_status: execution.http_status ?? null,
     raw_model: execution.parsed?.raw_model ?? null,
-    schema_version: 8,
+    schema_version: 9,
   });
 }
 

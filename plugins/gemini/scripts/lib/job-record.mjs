@@ -26,7 +26,7 @@ import {
   sourceContentTransmissionForExecution,
 } from "./external-review.mjs";
 
-export const SCHEMA_VERSION = 8;
+export const SCHEMA_VERSION = 9;
 
 /**
  * Canonical JobRecord field list. Exported so tests can reference it and
@@ -92,6 +92,7 @@ export function externalReviewForInvocation(invocation, execution = null) {
     status,
     errorCode: error_code,
     pidInfo: execution?.pidInfo ?? null,
+    priorStatus: execution?.priorStatus ?? null,
   });
   return buildExternalReview({
     invocation,
