@@ -71,6 +71,11 @@ centralizing it would hide auth, process, or output-contract differences. Direct
 API-backed reviewers use a separate, smaller runtime because their failure
 surface is HTTP/auth-policy based rather than CLI/process based.
 
+Common companion primitives that are mechanical across Claude, Gemini, and Kimi
+belong in byte-identical `scripts/lib/companion-common.mjs` copies. Keep
+provider-specific ping/auth wording and runtime classification in each companion
+when centralizing it would obscure target behavior.
+
 ## Upstream Relationship
 
 Upstream `openai/codex-plugin-cc` remains the reference for the delegation

@@ -42,6 +42,12 @@ import { newJobId, verifyPidInfo } from "./lib/identity.mjs";
 import { buildJobRecord } from "./lib/job-record.mjs";
 import { reconcileActiveJobs } from "./lib/reconcile.mjs";
 import { cleanGitEnv } from "./lib/git-env.mjs";
+import {
+  PING_PROMPT,
+  credentialNameDiagnostics,
+  preflightDisclosure,
+  preflightSafetyFields,
+} from "./lib/companion-common.mjs";
 
 // ——— plugin-root self-resolution (upstream pattern, spec §4.14) ———
 const PLUGIN_ROOT = resolvePath(dirname(fileURLToPath(import.meta.url)), "..");
@@ -101,22 +107,6 @@ function summarizeScopeDirectory(root) {
   if (existsSync(root)) walk(root);
   files.sort(comparePathStrings);
   return { files, file_count: files.length, byte_count: byteCount };
-}
-
-function preflightDisclosure(target) {
-  return (
-    `Preflight only: ${target} was not spawned, and no selected scope content ` +
-    "was sent to the target CLI or external provider. A later successful " +
-    `external review still sends the selected files to ${target}.`
-  );
-}
-
-function preflightSafetyFields() {
-  return {
-    target_spawned: false,
-    selected_scope_sent_to_provider: false,
-    requires_external_provider_consent: true,
-  };
 }
 
 // Wraps git command; reports failure separately from successful empty output
@@ -882,17 +872,11 @@ async function cmdNotImplemented(name) {
   fail("not_implemented", `'${name}' lands in a later milestone; only 'run --foreground' is wired at M2`);
 }
 
-const PING_PROMPT = "reply with exactly: pong. Do not use any tools, do not read files, and do not explore the workspace.";
 const PING_AUTH_RE = /\b(auth(?:enticat\w*)?|login|credential\w*|oauth2?|unauthenticated|signin|sign-in)\b/i;
 const PING_PROVIDER_API_KEY_ENV = ["ANTHROPIC_API_KEY", "CLAUDE_API_KEY"];
 
 function ignoredApiKeyAuthFields() {
-  const ignored = PING_PROVIDER_API_KEY_ENV.filter((key) => process.env[key]);
-  if (ignored.length === 0) return {};
-  return {
-    ignored_env_credentials: ignored,
-    auth_policy: "api_key_env_ignored",
-  };
+  return credentialNameDiagnostics(PING_PROVIDER_API_KEY_ENV);
 }
 
 function pingOkFields() {

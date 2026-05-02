@@ -25,6 +25,7 @@ const VERBATIM_FILES = [
   "identity.mjs",
   "scope.mjs",
   "cancel-marker.mjs",
+  "companion-common.mjs",
 ];
 
 const CLAUDE_GEMINI_VERBATIM_FILES = [
