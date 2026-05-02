@@ -1129,11 +1129,11 @@ test("gemini review falls back when configured model capacity is exhausted", () 
   seedMinimalRepo(cwd);
   const { stdout, stderr, status, dataDir } = runCompanion(
     ["run", "--mode=review", "--foreground", "--cwd", cwd, "--", "review: x=1"],
-    { cwd, env: { GEMINI_MOCK_CAPACITY_MODEL: "gemini-3-flash-preview" } },
+    { cwd, env: { GEMINI_MOCK_CAPACITY_MODEL: "gemini-3.1-pro-preview" } },
   );
   try {
     assert.equal(status, 0, `exit ${status}: ${stderr}`);
-    assert.match(stderr, /model gemini-3-flash-preview capacity-limited/);
+    assert.match(stderr, /model gemini-3\.1-pro-preview capacity-limited/);
     assert.match(stderr, /retrying with gemini-2\.5-flash/);
     const record = JSON.parse(stdout);
     assert.equal(record.status, "completed");
