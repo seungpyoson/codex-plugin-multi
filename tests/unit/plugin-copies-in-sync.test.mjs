@@ -11,9 +11,14 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+
+import {
+  CLAUDE_GEMINI_PLUGIN_TARGETS,
+  COMPANION_PLUGIN_TARGETS,
+} from "../../scripts/lib/plugin-targets.mjs";
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 
@@ -25,6 +30,7 @@ const VERBATIM_FILES = [
   "identity.mjs",
   "scope.mjs",
   "cancel-marker.mjs",
+  "companion-common.mjs",
 ];
 
 const CLAUDE_GEMINI_VERBATIM_FILES = [
@@ -33,9 +39,32 @@ const CLAUDE_GEMINI_VERBATIM_FILES = [
   "git-env.mjs",
 ];
 
+test("lib/companion-common.mjs: plugin packaging copies match the canonical shared source", () => {
+  const canonical = readFileSync(path.join(REPO_ROOT, "scripts/lib/companion-common.mjs"), "utf8");
+  for (const plugin of COMPANION_PLUGIN_TARGETS) {
+    const copy = readFileSync(
+      path.join(REPO_ROOT, `plugins/${plugin}/scripts/lib/companion-common.mjs`),
+      "utf8"
+    );
+    assert.equal(copy, canonical, `companion-common.mjs packaging copy drifted in ${plugin}`);
+  }
+});
+
+test("companion plugin target list matches packaged companion-common copies", () => {
+  const pluginsWithCompanionCopy = readdirSync(path.join(REPO_ROOT, "plugins"), { withFileTypes: true })
+    .filter((entry) => entry.isDirectory())
+    .map((entry) => entry.name)
+    .filter((plugin) =>
+      existsSync(path.join(REPO_ROOT, `plugins/${plugin}/scripts/lib/companion-common.mjs`))
+    )
+    .sort();
+
+  assert.deepEqual([...COMPANION_PLUGIN_TARGETS].sort(), pluginsWithCompanionCopy);
+});
+
 for (const file of VERBATIM_FILES) {
-  test(`lib/${file}: byte-identical across plugins/{claude,gemini,kimi}`, () => {
-    const copies = ["claude", "gemini", "kimi"].map((plugin) => [
+  test(`lib/${file}: byte-identical across plugins/{${COMPANION_PLUGIN_TARGETS.join(",")}}`, () => {
+    const copies = COMPANION_PLUGIN_TARGETS.map((plugin) => [
       plugin,
       readFileSync(path.join(REPO_ROOT, `plugins/${plugin}/scripts/lib`, file), "utf8"),
     ]);
@@ -46,8 +75,8 @@ for (const file of VERBATIM_FILES) {
 }
 
 for (const file of CLAUDE_GEMINI_VERBATIM_FILES) {
-  test(`lib/${file}: byte-identical across plugins/{claude,gemini}`, () => {
-    const copies = ["claude", "gemini"].map((plugin) => [
+  test(`lib/${file}: byte-identical across plugins/{${CLAUDE_GEMINI_PLUGIN_TARGETS.join(",")}}`, () => {
+    const copies = CLAUDE_GEMINI_PLUGIN_TARGETS.map((plugin) => [
       plugin,
       readFileSync(path.join(REPO_ROOT, `plugins/${plugin}/scripts/lib`, file), "utf8"),
     ]);

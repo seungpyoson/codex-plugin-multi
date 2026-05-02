@@ -71,6 +71,16 @@ centralizing it would hide auth, process, or output-contract differences. Direct
 API-backed reviewers use a separate, smaller runtime because their failure
 surface is HTTP/auth-policy based rather than CLI/process based.
 
+Common companion primitives that are mechanical across Claude, Gemini, and Kimi
+belong in the canonical repo-level `scripts/lib/companion-common.mjs` source.
+Codex installs each marketplace plugin as a self-contained root, so the Claude,
+Gemini, and Kimi plugin directories also carry generated packaging copies at
+`plugins/<target>/scripts/lib/companion-common.mjs`. Edit the canonical source,
+then run `node scripts/ci/sync-companion-common.mjs`; the sync test rejects
+stale packaging copies. Keep provider-specific ping/auth wording and runtime
+classification in each companion when centralizing it would obscure target
+behavior.
+
 ## Upstream Relationship
 
 Upstream `openai/codex-plugin-cc` remains the reference for the delegation
