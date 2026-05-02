@@ -246,3 +246,58 @@ test("direct API reviewers mark scope failures as not sent", async () => {
   );
   assert.equal(record.disclosure_note, record.external_review.disclosure);
 });
+
+test("direct API reviewers mark in-process mock assertion failures as not sent", async () => {
+  const cwd = makeWorkspace();
+  const result = await run([
+    "run",
+    "--provider", "deepseek",
+    "--mode", "custom-review",
+    "--scope", "custom",
+    "--scope-paths", "seed.txt",
+    "--prompt", "Check this file.",
+  ], {
+    cwd,
+    env: {
+      API_REVIEWERS_MOCK_RESPONSE: mockResponse("deepseek-v4-flash"),
+      API_REVIEWERS_MOCK_ASSERT_PROMPT_INCLUDES: "text that is intentionally absent",
+      DEEPSEEK_API_KEY: "secret-test-value",
+    },
+  });
+  assert.equal(result.status, 1);
+  const record = parseJson(result.stdout);
+  assert.equal(record.status, "failed");
+  assert.equal(record.error_code, "mock_assertion_failed");
+  assert.equal(
+    record.external_review.disclosure,
+    "Selected source content was not sent to DeepSeek through direct API auth.",
+  );
+  assert.equal(record.disclosure_note, record.external_review.disclosure);
+});
+
+test("direct API reviewers mark malformed mock responses as not sent", async () => {
+  const cwd = makeWorkspace();
+  const result = await run([
+    "run",
+    "--provider", "deepseek",
+    "--mode", "custom-review",
+    "--scope", "custom",
+    "--scope-paths", "seed.txt",
+    "--prompt", "Check this file.",
+  ], {
+    cwd,
+    env: {
+      API_REVIEWERS_MOCK_RESPONSE: "not-json",
+      DEEPSEEK_API_KEY: "secret-test-value",
+    },
+  });
+  assert.equal(result.status, 1);
+  const record = parseJson(result.stdout);
+  assert.equal(record.status, "failed");
+  assert.equal(record.error_code, "malformed_response");
+  assert.equal(
+    record.external_review.disclosure,
+    "Selected source content was not sent to DeepSeek through direct API auth.",
+  );
+  assert.equal(record.disclosure_note, record.external_review.disclosure);
+});

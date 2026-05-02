@@ -45,10 +45,10 @@ Launch/result card:
 ```text
 +---------------- EXTERNAL REVIEW ----------------+
 | Provider  <external_review.provider>            |
-| Job       <external_review.job_id>               |
-| Session   <external_review.session_id|pending>   |
-| Run       <external_review.run_kind>             |
-| Scope     <external_review.scope>[, base=...]    |
+| Job       <external_review.job_id>              |
+| Session   <external_review.session_id|pending>  |
+| Run       <external_review.run_kind>            |
+| Scope     <external_review.scope>[, base=...]   |
 +-------------------------------------------------+
 Disclosure: <external_review.disclosure>
 ```
@@ -61,3 +61,6 @@ Wait/status rail:
 ```
 
 For multiple provider results, render one card/rail per `external_review`.
+If `external_review.disclosure` is already rendered, do not repeat an
+identical `disclosure_note` or a `disclosure_note` that restates a scope failure
+was not sent before launch.

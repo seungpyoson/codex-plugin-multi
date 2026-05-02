@@ -168,7 +168,8 @@ from short-lived index contention.
   before launching the target CLI. Render `error_summary`, `error_cause`,
   `suggested_action`, and `disclosure_note` before the raw `error_message`;
   if `external_review.disclosure` is already rendered, do not repeat an
-  identical `disclosure_note`.
+  identical `disclosure_note` or a `disclosure_note` that restates a scope
+  failure was not sent before launch.
   These failures are protective; rejected scope content was not sent to the
   target CLI or external provider.
 - `claude_error` — Claude ran but returned `is_error: true`. `result` may

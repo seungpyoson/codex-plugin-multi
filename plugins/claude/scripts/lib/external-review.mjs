@@ -21,10 +21,24 @@ export function externalReviewDisclosure(provider, status, errorCode) {
   if (errorCode === "spawn_failed") {
     return `Selected source content was not sent to ${provider}; the target process was not spawned.`;
   }
+  if (targetProcessReceivedContent(errorCode)) {
+    return `Selected source content was sent to ${provider} for external review, but the run ended before a clean result was produced.`;
+  }
   if (status === "stale") {
     return `Selected source content may have been sent to ${provider}; the background worker became stale before completion.`;
   }
   return `Selected source content may have been sent to ${provider}; the run ended before a clean result was produced.`;
+}
+
+function targetProcessReceivedContent(errorCode) {
+  return new Set([
+    "claude_error",
+    "gemini_error",
+    "kimi_error",
+    "parse_error",
+    "finalization_failed",
+    "timeout",
+  ]).has(errorCode);
 }
 
 export function buildExternalReview({ invocation, sessionId = null, status, errorCode }) {

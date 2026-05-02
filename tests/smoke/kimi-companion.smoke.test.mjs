@@ -12,6 +12,7 @@ const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..
 const COMPANION = path.join(REPO_ROOT, "plugins/kimi/scripts/kimi-companion.mjs");
 const MOCK = path.join(REPO_ROOT, "tests/smoke/kimi-mock.mjs");
 const KIMI_SESSION_ID = "22222222-3333-4444-9555-666666666666";
+const KIMI_RESUMED_SESSION_ID = "77777777-8888-4999-aaaa-bbbbbbbbbbbb";
 
 function runCompanion(args, { cwd, env = {}, dataDir = mkdtempSync(path.join(tmpdir(), "kimi-smoke-data-")) } = {}) {
   const res = spawnSync("node", [COMPANION, ...args], {
@@ -51,6 +52,25 @@ function readOnlyJobRecord(dataDir) {
   }
   assert.equal(records.length, 1, `expected exactly one JobRecord, got ${records.length}`);
   return records[0];
+}
+
+async function waitForTerminalJob(dataDir, jobId, timeoutMs = 5000) {
+  const stateRoot = path.join(dataDir, "state");
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (existsSync(stateRoot)) {
+      for (const workspaceDir of readdirSync(stateRoot)) {
+        const metaPath = path.join(stateRoot, workspaceDir, "jobs", `${jobId}.json`);
+        if (!existsSync(metaPath)) continue;
+        const parsed = JSON.parse(readFileSync(metaPath, "utf8"));
+        if (parsed.status === "completed" || parsed.status === "failed") {
+          return parsed;
+        }
+      }
+    }
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  assert.fail(`worker never wrote terminal meta for ${jobId}`);
 }
 
 function parseJson(stdout) {
@@ -213,6 +233,119 @@ test("kimi foreground review timeout returns actionable JobRecord", () => withRe
   assert.equal(persisted.job_id, record.job_id);
   assert.equal(persisted.error_code, "timeout");
 }));
+
+test("kimi background run: launched event and terminal JobRecord carry external_review", async () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "kimi-bg-cwd-"));
+  fixtureSeedRepo(cwd);
+  const result = runCompanion([
+    "run",
+    "--mode",
+    "custom-review",
+    "--cwd",
+    cwd,
+    "--scope-paths",
+    "seed.txt",
+    "--background",
+    "--",
+    "Review this scope.",
+  ], { cwd });
+  try {
+    assert.equal(result.status, 0, result.stderr);
+    const launched = parseJson(result.stdout);
+    assert.equal(launched.event, "launched");
+    assert.equal(launched.target, "kimi");
+    assert.equal(launched.mode, "custom-review");
+    assert.equal(launched.external_review.run_kind, "background");
+    assert.equal(launched.external_review.parent_job_id, null);
+    assert.equal(launched.external_review.session_id, null);
+    assert.equal(
+      launched.external_review.disclosure,
+      "Selected source content may be sent to Kimi Code CLI for external review.",
+    );
+
+    const meta = await waitForTerminalJob(result.dataDir, launched.job_id);
+    assert.equal(meta.status, "completed");
+    assert.equal(meta.result, "Mock Kimi response.");
+    assert.equal(meta.kimi_session_id, KIMI_SESSION_ID);
+    assert.deepEqual(meta.external_review, {
+      marker: "EXTERNAL REVIEW",
+      provider: "Kimi Code CLI",
+      run_kind: "background",
+      job_id: launched.job_id,
+      session_id: KIMI_SESSION_ID,
+      parent_job_id: null,
+      mode: "custom-review",
+      scope: "custom",
+      scope_base: null,
+      scope_paths: ["seed.txt"],
+      disclosure: "Selected source content was sent to Kimi Code CLI for external review.",
+    });
+  } finally {
+    rmSync(result.dataDir, { recursive: true, force: true });
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("kimi continue background: launched event and terminal JobRecord keep parent metadata", async () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "kimi-continue-bg-cwd-"));
+  fixtureSeedRepo(cwd);
+  const first = runCompanion([
+    "run",
+    "--mode",
+    "custom-review",
+    "--cwd",
+    cwd,
+    "--scope-paths",
+    "seed.txt",
+    "--foreground",
+    "--",
+    "Initial review.",
+  ], { cwd });
+  try {
+    assert.equal(first.status, 0, first.stderr);
+    const prior = parseJson(first.stdout);
+    assert.equal(prior.status, "completed");
+    assert.equal(prior.kimi_session_id, KIMI_SESSION_ID);
+
+    const continued = runCompanion([
+      "continue",
+      "--job",
+      prior.job_id,
+      "--background",
+      "--cwd",
+      cwd,
+      "--",
+      "Continue the review.",
+    ], { cwd, dataDir: first.dataDir });
+    assert.equal(continued.status, 0, continued.stderr);
+    const launched = parseJson(continued.stdout);
+    assert.equal(launched.event, "launched");
+    assert.equal(launched.target, "kimi");
+    assert.equal(launched.parent_job_id, prior.job_id);
+    assert.equal(launched.external_review.parent_job_id, prior.job_id);
+    assert.equal(launched.external_review.run_kind, "background");
+    assert.equal(
+      launched.external_review.disclosure,
+      "Selected source content may be sent to Kimi Code CLI for external review.",
+    );
+
+    const meta = await waitForTerminalJob(first.dataDir, launched.job_id);
+    assert.equal(meta.status, "completed");
+    assert.equal(meta.parent_job_id, prior.job_id);
+    assert.deepEqual(meta.resume_chain, [KIMI_SESSION_ID]);
+    assert.equal(meta.kimi_session_id, KIMI_RESUMED_SESSION_ID);
+    assert.equal(meta.external_review.parent_job_id, prior.job_id);
+    assert.equal(meta.external_review.run_kind, "background");
+    assert.equal(meta.external_review.session_id, KIMI_RESUMED_SESSION_ID);
+    assert.equal(
+      meta.external_review.disclosure,
+      "Selected source content was sent to Kimi Code CLI for external review.",
+    );
+  } finally {
+    rmSync(first.dataDir, { recursive: true, force: true });
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
 
 test("kimi preflight success and bad_args emit safety fields", () => withRepo((cwd) => {
   const ok = runCompanion(["preflight", "--mode", "review", "--cwd", cwd], { cwd });

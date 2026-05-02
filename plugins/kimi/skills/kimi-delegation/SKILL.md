@@ -71,10 +71,10 @@ Launch/result card:
 ```text
 +---------------- EXTERNAL REVIEW ----------------+
 | Provider  <external_review.provider>            |
-| Job       <external_review.job_id>               |
-| Session   <external_review.session_id|pending>   |
-| Run       <external_review.run_kind>             |
-| Scope     <external_review.scope>[, base=...]    |
+| Job       <external_review.job_id>              |
+| Session   <external_review.session_id|pending>  |
+| Run       <external_review.run_kind>            |
+| Scope     <external_review.scope>[, base=...]   |
 +-------------------------------------------------+
 Disclosure: <external_review.disclosure>
 ```
@@ -91,7 +91,8 @@ Keep the user's attention on `status`, `result`, `structured_output`,
 `permission_denials`, `mutations`, and the diagnostic fields `error_summary`,
 `error_cause`, `suggested_action`, and `disclosure_note`. Surface `mutations`
 prominently for read-only review paths. If `external_review.disclosure` is
-already rendered, do not repeat an identical `disclosure_note`.
+already rendered, do not repeat an identical `disclosure_note` or a
+`disclosure_note` that restates a scope failure was not sent before launch.
 If target read permission denials leave no substantive result or findings,
 render review blocked / no findings produced and list the denied operations.
 For setup failures, tell the user to run `kimi` interactively if OAuth is
