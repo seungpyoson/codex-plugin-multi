@@ -168,6 +168,18 @@ function readStdoutLog(dataDir, jobId) {
 // Oracle: the mock records what --model it received; we inspect it via the
 // stdout.log sidecar which captures the fixture the mock emitted.
 
+test("M6-finding-C2: high-capability Claude model policy intentionally pins every tier", () => {
+  const models = JSON.parse(
+    readFileSync(path.join(REPO_ROOT, "plugins/claude/config/models.json"), "utf8")
+  );
+
+  assert.deepEqual(models, {
+    cheap: "claude-opus-4-7",
+    medium: "claude-opus-4-7",
+    default: "claude-opus-4-7",
+  });
+});
+
 test("M6-finding-C2: omitted review model resolves through configured review tier", () => {
   const cwd = mkdtempSync(path.join(tmpdir(), "inv-c2-"));
   seedMinimalRepo(cwd);

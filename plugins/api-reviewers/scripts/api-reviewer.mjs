@@ -239,10 +239,30 @@ function promptFor(mode, userPrompt, scopeInfo) {
   ].filter(Boolean).join("\n\n");
 }
 
-function mockProviderExecution(cfg, prompt, credential, env) {
+function requestFieldMatches(actual, expected) {
+  return JSON.stringify(actual) === JSON.stringify(expected);
+}
+
+function mockProviderExecution(cfg, prompt, credential, env, requestBody) {
   const expectedPromptText = env.API_REVIEWERS_MOCK_ASSERT_PROMPT_INCLUDES;
   if (expectedPromptText && !prompt.includes(expectedPromptText)) {
     return providerFailure("mock_assertion_failed", `prompt missing expected text: ${expectedPromptText}`, 200, null);
+  }
+  if (env.API_REVIEWERS_MOCK_ASSERT_REQUEST_BODY) {
+    const parsedExpected = parseJson(env.API_REVIEWERS_MOCK_ASSERT_REQUEST_BODY);
+    if (!parsedExpected.ok || !parsedExpected.value || typeof parsedExpected.value !== "object" || Array.isArray(parsedExpected.value)) {
+      return providerFailure("mock_assertion_failed", "API_REVIEWERS_MOCK_ASSERT_REQUEST_BODY must be a JSON object", 200, null);
+    }
+    for (const [key, expected] of Object.entries(parsedExpected.value)) {
+      if (!requestFieldMatches(requestBody[key], expected)) {
+        return providerFailure(
+          "mock_assertion_failed",
+          `request body field ${key} expected ${JSON.stringify(expected)} but got ${JSON.stringify(requestBody[key])}`,
+          200,
+          null
+        );
+      }
+    }
   }
   const parsed = parseJson(env.API_REVIEWERS_MOCK_RESPONSE);
   if (!parsed.ok) return providerFailure("malformed_response", parsed.error, 200, null);
@@ -274,11 +294,15 @@ async function callProvider(provider, cfg, prompt, env = process.env) {
     model: cfg.model,
     messages: [{ role: "user", content: prompt }],
     temperature: 0,
-    max_tokens: Number(env.API_REVIEWERS_MAX_TOKENS ?? "4096"),
   };
   if (cfg.request_defaults) Object.assign(requestBody, cfg.request_defaults);
+  if (env.API_REVIEWERS_MAX_TOKENS !== undefined && env.API_REVIEWERS_MAX_TOKENS !== "") {
+    requestBody.max_tokens = Number(env.API_REVIEWERS_MAX_TOKENS);
+  } else if (!Object.prototype.hasOwnProperty.call(requestBody, "max_tokens")) {
+    requestBody.max_tokens = 4096;
+  }
   if (env.API_REVIEWERS_MOCK_RESPONSE) {
-    return mockProviderExecution(cfg, prompt, credential, env);
+    return mockProviderExecution(cfg, prompt, credential, env, requestBody);
   }
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), Number(env.API_REVIEWERS_TIMEOUT_MS ?? "120000"));

@@ -117,6 +117,38 @@ test("high-capability provider defaults preserve large review output budgets", (
   assert.ok(providers.glm.request_defaults.max_tokens >= 131072);
 });
 
+test("API_REVIEWERS_MAX_TOKENS overrides provider request defaults", async () => {
+  const cwd = makeWorkspace();
+  const dataDir = mkdtempSync(path.join(tmpdir(), "api-reviewers-data-"));
+  const result = await run([
+    "run",
+    "--provider", "glm",
+    "--mode", "custom-review",
+    "--scope", "custom",
+    "--scope-paths", "seed.txt",
+    "--foreground",
+    "--prompt", "Check this file.",
+  ], {
+    cwd,
+    env: {
+      API_REVIEWERS_PLUGIN_DATA: dataDir,
+      API_REVIEWERS_MAX_TOKENS: "2048",
+      API_REVIEWERS_MOCK_RESPONSE: mockResponse("glm-5.1"),
+      API_REVIEWERS_MOCK_ASSERT_REQUEST_BODY: JSON.stringify({
+        max_tokens: 2048,
+        thinking: { type: "enabled" },
+      }),
+      ZAI_API_KEY: "secret-test-value",
+    },
+  });
+
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  const record = parseJson(result.stdout);
+  assert.equal(record.status, "completed");
+  assert.equal(record.provider, "glm");
+  assert.doesNotMatch(result.stdout, /secret-test-value/);
+});
+
 for (const scenario of [
   {
     provider: "deepseek",
