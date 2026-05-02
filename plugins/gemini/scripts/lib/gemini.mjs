@@ -21,6 +21,7 @@ export function buildGeminiArgs(profile, runtimeInputs = {}) {
     policyPath = null,
     includeDirPath = null,
     resumeId = null,
+    env = process.env,
   } = runtimeInputs;
 
   if ((typeof model !== "string" || !model) && profile.name !== "ping") {
@@ -40,7 +41,7 @@ export function buildGeminiArgs(profile, runtimeInputs = {}) {
     args.push("--policy", policyPath);
     args.push("--approval-mode", "plan");
     args.push("--skip-trust");
-    args.push("-s");
+    if (!isCodexSandbox(env)) args.push("-s");
   }
 
   if (profile.add_dir && includeDirPath) {
@@ -48,6 +49,10 @@ export function buildGeminiArgs(profile, runtimeInputs = {}) {
   }
 
   return args;
+}
+
+function isCodexSandbox(env) {
+  return Boolean(env?.CODEX_SANDBOX);
 }
 
 function summarizeStderr(stderr) {
@@ -110,7 +115,7 @@ export async function spawnGemini(profile, runtimeInputs = {}) {
     throw new Error("spawnGemini: promptText is required");
   }
 
-  const args = buildGeminiArgs(profile, { model, policyPath, includeDirPath, resumeId });
+  const args = buildGeminiArgs(profile, { model, policyPath, includeDirPath, resumeId, env });
   const targetEnv = sanitizeTargetEnv(env, { allowedApiKeyEnv });
 
   return new Promise((resolve, reject) => {

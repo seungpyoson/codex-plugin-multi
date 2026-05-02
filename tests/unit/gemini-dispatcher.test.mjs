@@ -24,6 +24,7 @@ test("buildGeminiArgs: review uses policy, plan mode, sandbox, include-directori
     model: "gemini-3-flash-preview",
     policyPath: POLICY,
     includeDirPath: "/tmp/scoped-worktree",
+    env: {},
   });
 
   assert.deepEqual(args.slice(0, 6), ["-p", "", "-m", "gemini-3-flash-preview", "--output-format", "json"]);

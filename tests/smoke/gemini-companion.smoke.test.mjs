@@ -1130,7 +1130,7 @@ test("gemini review foreground: policy-first, stdin transport, /tmp cwd, scoped 
   const neutralCwd = realpathSync(tmpdir());
   const { stdout, stderr, status, dataDir } = runCompanion(
     ["run", "--mode=review", "--foreground", "--cwd", cwd, "--", "review: x=1"],
-    { cwd, env: { GEMINI_MOCK_ASSERT_FILE: "seed.txt", GEMINI_MOCK_ASSERT_CWD: neutralCwd } },
+    { cwd, env: { CODEX_SANDBOX: "", GEMINI_MOCK_ASSERT_FILE: "seed.txt", GEMINI_MOCK_ASSERT_CWD: neutralCwd } },
   );
   try {
     assert.equal(status, 0, `exit ${status}: ${stderr}`);
@@ -1152,6 +1152,29 @@ test("gemini review foreground: policy-first, stdin transport, /tmp cwd, scoped 
     assert.equal(fx.t7_policy_loaded, true, "Gemini review must pass bundled read-only policy");
     assert.equal(fx.t7_sandbox, true, "Gemini review must pass the sandbox flag");
     assert.equal(fx.t7_skip_trust, true, "Gemini review must pass --skip-trust so plan approval is not downgraded");
+    assert.equal(fx.t7_prompt_from_stdin, true, "Gemini prompt must arrive on stdin, not argv");
+  } finally {
+    rmTree(dataDir);
+    rmTree(cwd);
+  }
+});
+
+test("gemini review foreground: omits native Gemini sandbox inside Codex sandbox", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "gemini-review-codex-cwd-"));
+  seedMinimalRepo(cwd);
+  const { stdout, stderr, status, dataDir } = runCompanion(
+    ["run", "--mode=review", "--foreground", "--cwd", cwd, "--", "review: x=1"],
+    { cwd, env: { CODEX_SANDBOX: "seatbelt", GEMINI_MOCK_ASSERT_FILE: "seed.txt" } },
+  );
+  try {
+    assert.equal(status, 0, `exit ${status}: ${stderr}`);
+    const record = JSON.parse(stdout);
+    assert.equal(record.status, "completed");
+
+    const fx = readStdoutLog(dataDir, record.job_id);
+    assert.equal(fx.t7_policy_loaded, true, "Gemini review must still pass bundled read-only policy");
+    assert.equal(fx.t7_sandbox, false, "Gemini -s must be omitted under Codex to avoid nested sandbox-exec");
+    assert.equal(fx.t7_skip_trust, true, "Gemini review must still pass --skip-trust");
     assert.equal(fx.t7_prompt_from_stdin, true, "Gemini prompt must arrive on stdin, not argv");
   } finally {
     rmTree(dataDir);
