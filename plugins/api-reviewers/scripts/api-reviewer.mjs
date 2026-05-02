@@ -1,11 +1,10 @@
 #!/usr/bin/env node
+import { spawnSync } from "node:child_process";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { dirname, resolve, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import { randomUUID } from "node:crypto";
-import { cleanGitEnv } from "../../claude/scripts/lib/git-env.mjs";
-import { runCommand } from "../../claude/scripts/lib/process.mjs";
 
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 const PLUGIN_ROOT = resolve(SCRIPT_DIR, "..");
@@ -117,6 +116,38 @@ function doctorFields(provider, cfg, env = process.env) {
     credential_ref: credential.keyName,
     endpoint,
     model: cfg.model,
+  };
+}
+
+function cleanGitEnv(baseEnv = process.env) {
+  const env = { ...baseEnv };
+  for (const key of Object.keys(env)) {
+    if (key.startsWith("GIT_")) delete env[key];
+  }
+  delete env.PAGER;
+  return env;
+}
+
+function runCommand(command, args = [], options = {}) {
+  const result = spawnSync(command, args, {
+    cwd: options.cwd,
+    env: options.env,
+    encoding: "utf8",
+    input: options.input,
+    maxBuffer: options.maxBuffer,
+    stdio: options.stdio ?? "pipe",
+    shell: process.platform === "win32" ? (process.env.SHELL || true) : false,
+    windowsHide: true,
+  });
+
+  return {
+    command,
+    args,
+    status: result.status ?? 0,
+    signal: result.signal ?? null,
+    stdout: result.stdout ?? "",
+    stderr: result.stderr ?? "",
+    error: result.error ?? null,
   };
 }
 

@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFile, execFileSync } from "node:child_process";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { cpSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -9,9 +9,9 @@ import { fileURLToPath } from "node:url";
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const COMPANION = path.join(REPO_ROOT, "plugins/api-reviewers/scripts/api-reviewer.mjs");
 
-function run(args, { cwd = REPO_ROOT, env = {} } = {}) {
+function run(args, { cwd = REPO_ROOT, env = {}, companion = COMPANION } = {}) {
   return new Promise((resolve) => {
-    execFile(process.execPath, [COMPANION, ...args], {
+    execFile(process.execPath, [companion, ...args], {
       cwd,
       env: { ...process.env, ...env },
       timeout: 10000,
@@ -46,6 +46,13 @@ function makeWorkspace() {
   const cwd = mkdtempSync(path.join(tmpdir(), "api-reviewers-smoke-"));
   writeFileSync(path.join(cwd, "seed.txt"), "hello from selected scope\n");
   return cwd;
+}
+
+function makeInstalledApiReviewersRoot() {
+  const root = mkdtempSync(path.join(tmpdir(), "api-reviewers-installed-"));
+  const pluginRoot = path.join(root, "api-reviewers", "0.1.0");
+  cpSync(path.join(REPO_ROOT, "plugins", "api-reviewers"), pluginRoot, { recursive: true });
+  return pluginRoot;
 }
 
 function git(cwd, args) {
@@ -88,6 +95,22 @@ test("doctor reports GLM compatibility alias without leaking value", async () =>
   assert.equal(parsed.provider, "glm");
   assert.equal(parsed.ready, true);
   assert.equal(parsed.credential_ref, "ZAI_GLM_API_KEY");
+  assert.equal(parsed.endpoint, "https://api.z.ai/api/coding/paas/v4");
+  assert.doesNotMatch(result.stdout, /secret-test-value/);
+});
+
+test("installed api-reviewers package layout is self-contained for doctor", async () => {
+  const pluginRoot = makeInstalledApiReviewersRoot();
+  const companion = path.join(pluginRoot, "scripts", "api-reviewer.mjs");
+  const result = await run(["doctor", "--provider", "glm"], {
+    companion,
+    env: { ZAI_API_KEY: "secret-test-value", ZAI_GLM_API_KEY: "" },
+  });
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  const parsed = parseJson(result.stdout);
+  assert.equal(parsed.provider, "glm");
+  assert.equal(parsed.ready, true);
+  assert.equal(parsed.credential_ref, "ZAI_API_KEY");
   assert.equal(parsed.endpoint, "https://api.z.ai/api/coding/paas/v4");
   assert.doesNotMatch(result.stdout, /secret-test-value/);
 });
