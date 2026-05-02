@@ -6,9 +6,10 @@ import { dirname, resolve, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import { randomUUID } from "node:crypto";
 
+import { cleanGitEnv } from "./lib/git-env.mjs";
+
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 const PLUGIN_ROOT = resolve(SCRIPT_DIR, "..");
-const REPO_ROOT = resolve(PLUGIN_ROOT, "..", "..");
 const PROVIDERS_PATH = resolve(PLUGIN_ROOT, "config/providers.json");
 const VALID_MODES = new Set(["review", "adversarial-review", "custom-review"]);
 const VALID_AUTH_MODES = new Set(["api_key", "auto"]);
@@ -119,15 +120,6 @@ function doctorFields(provider, cfg, env = process.env) {
   };
 }
 
-function cleanGitEnv(baseEnv = process.env) {
-  const env = { ...baseEnv };
-  for (const key of Object.keys(env)) {
-    if (key.startsWith("GIT_")) delete env[key];
-  }
-  delete env.PAGER;
-  return env;
-}
-
 function runCommand(command, args = [], options = {}) {
   const result = spawnSync(command, args, {
     cwd: options.cwd,
@@ -136,14 +128,14 @@ function runCommand(command, args = [], options = {}) {
     input: options.input,
     maxBuffer: options.maxBuffer,
     stdio: options.stdio ?? "pipe",
-    shell: process.platform === "win32" ? (process.env.SHELL || true) : false,
+    shell: process.platform === "win32",
     windowsHide: true,
   });
 
   return {
     command,
     args,
-    status: result.status ?? 0,
+    status: result.status ?? (result.error || result.signal ? 1 : 0),
     signal: result.signal ?? null,
     stdout: result.stdout ?? "",
     stderr: result.stderr ?? "",
@@ -153,6 +145,8 @@ function runCommand(command, args = [], options = {}) {
 
 function git(args, cwd) {
   const res = runCommand("git", args, { cwd, env: cleanGitEnv() });
+  if (res.error) throw new Error(`git_failed:${res.error.message}`);
+  if (res.signal) throw new Error(`git_failed:signal:${res.signal}`);
   if (res.status !== 0) return null;
   return res.stdout.trim();
 }

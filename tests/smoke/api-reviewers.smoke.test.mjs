@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFile, execFileSync } from "node:child_process";
-import { cpSync, mkdtempSync, writeFileSync } from "node:fs";
+import { cpSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -51,6 +51,7 @@ function makeWorkspace() {
 function makeInstalledApiReviewersRoot() {
   const root = mkdtempSync(path.join(tmpdir(), "api-reviewers-installed-"));
   const pluginRoot = path.join(root, "api-reviewers", "0.1.0");
+  mkdirSync(path.dirname(pluginRoot), { recursive: true });
   cpSync(path.join(REPO_ROOT, "plugins", "api-reviewers"), pluginRoot, { recursive: true });
   return pluginRoot;
 }
@@ -112,6 +113,38 @@ test("installed api-reviewers package layout is self-contained for doctor", asyn
   assert.equal(parsed.ready, true);
   assert.equal(parsed.credential_ref, "ZAI_API_KEY");
   assert.equal(parsed.endpoint, "https://api.z.ai/api/coding/paas/v4");
+  assert.doesNotMatch(result.stdout, /secret-test-value/);
+});
+
+test("installed api-reviewers package layout is self-contained for branch-diff run", async () => {
+  const pluginRoot = makeInstalledApiReviewersRoot();
+  const companion = path.join(pluginRoot, "scripts", "api-reviewer.mjs");
+  const cwd = makeBranchDiffWorkspace();
+  const dataDir = mkdtempSync(path.join(tmpdir(), "api-reviewers-data-"));
+  const result = await run([
+    "run",
+    "--provider", "glm",
+    "--mode", "review",
+    "--scope-base", "main",
+    "--prompt", "review installed package branch diff",
+  ], {
+    cwd,
+    companion,
+    env: {
+      ZAI_API_KEY: "secret-test-value",
+      API_REVIEWERS_MOCK_RESPONSE: mockResponse("glm-5.1"),
+      API_REVIEWERS_MOCK_ASSERT_PROMPT_INCLUDES: "feature.txt",
+      API_REVIEWERS_PLUGIN_DATA: dataDir,
+      GIT_DIR: path.join(cwd, ".git", "missing"),
+      GIT_CONFIG_GLOBAL: path.join(cwd, "evil.gitconfig"),
+    },
+  });
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  const parsed = parseJson(result.stdout);
+  assert.equal(parsed.status, "completed");
+  assert.deepEqual(parsed.scope_paths, ["feature.txt"]);
+  assert.equal(parsed.credential_ref, "ZAI_API_KEY");
+  assert.match(parsed.result, /Provider model: glm-5\.1/);
   assert.doesNotMatch(result.stdout, /secret-test-value/);
 });
 

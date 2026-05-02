@@ -73,6 +73,15 @@ test("lib/provider-env.mjs: plugin packaging copies match the canonical shared s
   }
 });
 
+test("lib/git-env.mjs: api-reviewers packaging copy matches the companion shared source", () => {
+  const canonical = readFileSync(path.join(REPO_ROOT, "plugins/claude/scripts/lib/git-env.mjs"), "utf8");
+  const copy = readFileSync(
+    path.join(REPO_ROOT, "plugins/api-reviewers/scripts/lib/git-env.mjs"),
+    "utf8"
+  );
+  assert.equal(copy, canonical, "git-env.mjs packaging copy drifted in api-reviewers");
+});
+
 test("companion plugin target list matches packaged companion-common copies", () => {
   const pluginsWithCompanionCopy = readdirSync(path.join(REPO_ROOT, "plugins"), { withFileTypes: true })
     .filter((entry) => entry.isDirectory())
