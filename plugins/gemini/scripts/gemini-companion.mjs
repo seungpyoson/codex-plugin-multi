@@ -132,7 +132,7 @@ function gitStatusLines(output) {
 }
 
 function invocationFromRecord(record, fallbackAuthMode = "subscription") {
-  return {
+  return Object.freeze({
     job_id: record.job_id,
     target: record.target,
     parent_job_id: record.parent_job_id ?? null,
@@ -152,7 +152,7 @@ function invocationFromRecord(record, fallbackAuthMode = "subscription") {
     auth_mode: record.auth_mode ?? fallbackAuthMode ?? "subscription",
     binary: record.binary,
     started_at: record.started_at,
-  };
+  });
 }
 
 function promptSidecarPath(workspaceRoot, jobId) {

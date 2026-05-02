@@ -62,6 +62,17 @@ test("lib/auth-selection.mjs: plugin packaging copies match the canonical shared
   }
 });
 
+test("lib/provider-env.mjs: plugin packaging copies match the canonical shared source", () => {
+  const canonical = readFileSync(path.join(REPO_ROOT, "scripts/lib/provider-env.mjs"), "utf8");
+  for (const plugin of CLAUDE_GEMINI_PLUGIN_TARGETS) {
+    const copy = readFileSync(
+      path.join(REPO_ROOT, `plugins/${plugin}/scripts/lib/provider-env.mjs`),
+      "utf8"
+    );
+    assert.equal(copy, canonical, `provider-env.mjs packaging copy drifted in ${plugin}`);
+  }
+});
+
 test("companion plugin target list matches packaged companion-common copies", () => {
   const pluginsWithCompanionCopy = readdirSync(path.join(REPO_ROOT, "plugins"), { withFileTypes: true })
     .filter((entry) => entry.isDirectory())

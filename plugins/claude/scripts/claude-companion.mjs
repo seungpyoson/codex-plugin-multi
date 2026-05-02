@@ -162,7 +162,7 @@ function gitStatusLines(output) {
 // when it re-enters executeRun). Only the invocation-phase fields are
 // carried — lifecycle/result fields get re-derived from the fresh execution.
 function invocationFromRecord(record, fallbackAuthMode = "subscription") {
-  return {
+  return Object.freeze({
     job_id: record.job_id,
     target: record.target,
     parent_job_id: record.parent_job_id ?? null,
@@ -182,7 +182,7 @@ function invocationFromRecord(record, fallbackAuthMode = "subscription") {
     auth_mode: record.auth_mode ?? fallbackAuthMode ?? "subscription",
     binary: record.binary,
     started_at: record.started_at,
-  };
+  });
 }
 
 // Prompt handoff for background jobs. The full prompt is NEVER part of the

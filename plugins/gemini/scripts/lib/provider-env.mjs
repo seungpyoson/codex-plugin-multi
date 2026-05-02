@@ -1,3 +1,7 @@
+// Shared Claude/Gemini provider-env helper source.
+// Edit scripts/lib/provider-env.mjs, then run
+// `node scripts/ci/sync-provider-env.mjs` to update plugin packaging copies.
+
 // Provider credential / routing scrub policy.
 //
 // We strip three categories before launching the target CLI:
