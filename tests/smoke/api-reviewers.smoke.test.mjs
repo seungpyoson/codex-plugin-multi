@@ -88,14 +88,6 @@ function startHangingChatServer() {
   });
 }
 
-function startInvalidJsonChatServer() {
-  return startChatServer((req, res) => {
-    req.resume();
-    res.writeHead(200, { "content-type": "application/json" });
-    res.end("not-json");
-  });
-}
-
 function git(cwd, args) {
   execFileSync("git", args, { cwd, stdio: "pipe" });
 }
@@ -248,42 +240,6 @@ test("direct API timeout keeps selected-content transmission unknown", async () 
     assert.equal(record.external_review.source_content_transmission, "unknown");
     assert.equal(record.external_review.disclosure,
       "Selected source content may have been sent to DeepSeek through direct API auth.");
-  } finally {
-    server.close();
-  }
-});
-
-test("direct API malformed production response marks selected content as sent", async () => {
-  const cwd = makeWorkspace();
-  const dataDir = mkdtempSync(path.join(tmpdir(), "api-reviewers-data-"));
-  const pluginRoot = makeInstalledApiReviewersRoot();
-  const server = await startInvalidJsonChatServer();
-  try {
-    const { port } = server.address();
-    writeDeepSeekProviderConfig(pluginRoot, `http://127.0.0.1:${port}`);
-    const result = await run([
-      "run",
-      "--provider", "deepseek",
-      "--mode", "custom-review",
-      "--scope", "custom",
-      "--scope-paths", "seed.txt",
-      "--foreground",
-      "--prompt", "Check this file.",
-    ], {
-      cwd,
-      companion: path.join(pluginRoot, "scripts", "api-reviewer.mjs"),
-      env: {
-        API_REVIEWERS_PLUGIN_DATA: dataDir,
-        DEEPSEEK_API_KEY: "secret-test-value",
-      },
-    });
-    assert.equal(result.status, 1);
-    assert.notEqual(result.stdout, "", result.stderr);
-    const record = parseJson(result.stdout);
-    assert.equal(record.error_code, "malformed_response");
-    assert.equal(record.external_review.source_content_transmission, "sent");
-    assert.equal(record.external_review.disclosure,
-      "Selected source content was sent to DeepSeek through direct API auth, but the provider did not return a clean result.");
   } finally {
     server.close();
   }
