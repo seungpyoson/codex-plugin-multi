@@ -259,8 +259,22 @@ for (const mode of ["review", "adversarial-review", "custom-review"]) {
     assert.equal(record.result, "Mock Kimi response.");
     assert.equal(record.kimi_session_id, KIMI_SESSION_ID);
     assert.equal(record.claude_session_id, null);
+    assert.deepEqual(record.external_review, {
+      marker: "EXTERNAL REVIEW",
+      provider: "Kimi Code CLI",
+      run_kind: "foreground",
+      job_id: record.job_id,
+      session_id: KIMI_SESSION_ID,
+      parent_job_id: null,
+      mode,
+      scope: mode === "adversarial-review" ? "branch-diff" : (mode === "custom-review" ? "custom" : "working-tree"),
+      scope_base: mode === "adversarial-review" ? "HEAD~1" : null,
+      scope_paths: mode === "custom-review" ? ["seed.txt"] : null,
+      disclosure: "Selected source content may be sent to Kimi Code CLI for external review.",
+    });
     const { record: persisted } = readOnlyJobRecord(result.dataDir);
     assert.equal(persisted.job_id, record.job_id);
     assert.equal(persisted.result, "Mock Kimi response.");
+    assert.deepEqual(persisted.external_review, record.external_review);
   }));
 }

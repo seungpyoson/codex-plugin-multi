@@ -344,6 +344,19 @@ function buildRecord({ provider, cfg, mode, options, scopeInfo, execution, start
   const completed = execution.exitCode === 0 && execution.parsed?.ok === true;
   const errorCode = completed ? null : (execution.parsed?.reason ?? "provider_error");
   const target = provider;
+  const externalReview = {
+    marker: "EXTERNAL REVIEW",
+    provider: cfg.display_name,
+    run_kind: "foreground",
+    job_id: options.jobId,
+    session_id: null,
+    parent_job_id: null,
+    mode,
+    scope: scopeInfo.scope,
+    scope_base: scopeInfo.scope_base ?? null,
+    scope_paths: scopeInfo.scope_paths,
+    disclosure: `Selected source content was sent to ${cfg.display_name} through direct API auth.`,
+  };
   return {
     id: options.jobId,
     job_id: options.jobId,
@@ -376,6 +389,7 @@ function buildRecord({ provider, cfg, mode, options, scopeInfo, execution, start
     error_summary: completed ? null : execution.parsed?.error ?? errorCode,
     error_cause: completed ? null : "direct_api_provider",
     suggested_action: completed ? null : suggestedAction(errorCode, provider, cfg),
+    external_review: externalReview,
     disclosure_note: `Selected files were sent to ${cfg.display_name} through direct API auth.`,
     result: completed ? execution.parsed.result : null,
     structured_output: null,

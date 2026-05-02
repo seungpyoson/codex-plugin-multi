@@ -159,6 +159,19 @@ test("gemini rescue background: launched event and terminal JobRecord", async ()
     assert.equal(launched.target, "gemini");
     assert.equal(typeof launched.job_id, "string");
     assert.equal(Number.isInteger(launched.pid), true);
+    assert.deepEqual(launched.external_review, {
+      marker: "EXTERNAL REVIEW",
+      provider: "Gemini CLI",
+      run_kind: "background",
+      job_id: launched.job_id,
+      session_id: null,
+      parent_job_id: null,
+      mode: "rescue",
+      scope: "working-tree",
+      scope_base: null,
+      scope_paths: null,
+      disclosure: "Selected source content may be sent to Gemini CLI for external review.",
+    });
 
     const stateRoot = path.join(dataDir, "state");
     const deadline = Date.now() + GEMINI_SMOKE_POLL_TIMEOUT_MS;
@@ -182,6 +195,10 @@ test("gemini rescue background: launched event and terminal JobRecord", async ()
     assert.equal(meta.status, "completed");
     assert.equal(meta.result, "Mock Gemini response.");
     assert.equal(meta.gemini_session_id, GEMINI_SESSION_ID);
+    assert.deepEqual(meta.external_review, {
+      ...launched.external_review,
+      session_id: GEMINI_SESSION_ID,
+    });
     assert.equal("prompt" in meta, false, "full prompt must not appear on JobRecord");
   } finally {
     rmTree(dataDir);

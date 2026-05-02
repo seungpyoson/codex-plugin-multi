@@ -50,6 +50,19 @@ comes back to you.
   "error_summary":       null | "<short operator-facing summary>",
   "error_cause":         null | "<why this happened>",
   "suggested_action":    null | "<what to do next>",
+  "external_review":     {
+    "marker":            "EXTERNAL REVIEW",
+    "provider":          "Claude Code",
+    "run_kind":          "foreground|background",
+    "job_id":            "<uuid>",
+    "session_id":        null | "<provider session id>",
+    "parent_job_id":     null | "<uuid>",
+    "mode":              "review|adversarial-review|custom-review|rescue|ping",
+    "scope":             "working-tree|branch-diff|staged|head|custom",
+    "scope_base":        null | "<ref>",
+    "scope_paths":       null | ["<glob>"],
+    "disclosure":        "<external disclosure statement>"
+  },
   "disclosure_note":     null | "<what was or was not sent externally>",
 
   "result":              null | "<text from Claude>",  // null on queued; "" allowed on schema runs
@@ -89,7 +102,31 @@ from short-lived index contention.
 
 ## Rendering order
 
-1. **Mutation warning (derived — not a top-level field).** If
+1. **External review banner.** If `external_review` is present, render it
+   before findings or status prose. Use the boxed card for launch/result:
+
+   ```text
+   +---------------- EXTERNAL REVIEW ----------------+
+   | Provider  Claude Code                           |
+   | Job       <job_id>                              |
+   | Session   <session_id or pending>               |
+   | Run       foreground|background                 |
+   | Scope     <scope>[, base=<scope_base>]          |
+   +-------------------------------------------------+
+   Disclosure: <external_review.disclosure>
+   ```
+
+   For wait/status summaries, keep a persistent left rail:
+
+   ```text
+   | EXTERNAL | Claude Code · <job_id> · running
+   | EXTERNAL | background · <scope>[, base=<scope_base>]
+   ```
+
+   For multiple providers, use one panel with one row per provider. Do not
+   replace this marker with ordinary prose.
+
+2. **Mutation warning (derived — not a top-level field).** If
    `mutations.length > 0`: render a **prominent** warning block. Partition
    entries beginning with `mutation_detection_failed:` from ordinary git-status
    entries:
@@ -103,21 +140,21 @@ from short-lived index contention.
    There is NO `warning` field on the JobRecord. The `mutations` array IS
    the signal; its length is the severity.
 
-2. **Structured output.** If `structured_output` is non-null: render its
+3. **Structured output.** If `structured_output` is non-null: render its
    fields. Treat `verdict`, `summary`, `findings[]` as primary if present
    (review/adversarial schema).
 
-3. **Text result.** Else render `result` as Markdown. When `status ===
+4. **Text result.** Else render `result` as Markdown. When `status ===
    "completed"`, `result` may be an empty string on schema-only runs — that
    is not an error, it means the model's output lived in `structured_output`.
 
-4. **Permission denials.** If `permission_denials.length > 0` and there is no
+5. **Permission denials.** If `permission_denials.length > 0` and there is no
    substantive `result` or `structured_output`, render **review blocked / no
    findings produced** and list the denied tools or paths. If findings are
    present, render a small "Tools denied" footnote — informational, not
    alarming (some tool attempts are expected for review mode).
 
-5. **Cost/usage.** Include `cost_usd` and `usage` in a small footer ONLY
+6. **Cost/usage.** Include `cost_usd` and `usage` in a small footer ONLY
    when the user asked about cost; otherwise suppress. Under OAuth
    subscription the figure is the equivalent API cost (not a billing line).
 
@@ -150,13 +187,25 @@ It returns a launch envelope:
 
 ```json
 { "event": "launched", "job_id": "<uuid>", "target": "claude", "mode": "...",
-  "pid": 12345, "workspace_root": "<abs-path>" }
+  "pid": 12345, "workspace_root": "<abs-path>",
+  "external_review": { "marker": "EXTERNAL REVIEW", "...": "..." } }
 ```
 
 Render as:
 
-> Started Claude rescue job `<uuid>`. Check progress with `/claude-status
-> <uuid>`; retrieve final output with `/claude-result <uuid>`.
+```text
++---------------- EXTERNAL REVIEW ----------------+
+   | Provider  Claude Code                           |
+   | Job       <uuid>                                |
+   | Session   pending                               |
+   | Run       background                            |
+| Scope     <scope>[, base=<scope_base>]          |
++-------------------------------------------------+
+Disclosure: <external_review.disclosure>
+
+Check progress with `/claude-status <uuid>`; retrieve final output with
+`/claude-result <uuid>`.
+```
 
 When the user runs `/claude-result <uuid>`, they receive the full JobRecord —
 same schema as foreground — with `result`, `structured_output`,

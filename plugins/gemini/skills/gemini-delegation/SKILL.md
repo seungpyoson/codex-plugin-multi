@@ -63,7 +63,9 @@ In the repository checkout, it is `plugins/gemini`.
 
 ## Rendering
 
-Render companion JSON directly and keep the user's attention on `status`,
+Render companion JSON directly. If `external_review` is present, render an
+EXTERNAL REVIEW box for launch/result and a persistent `| EXTERNAL |` rail for
+wait/status before normal prose. Keep the user's attention on `status`,
 `result`, `structured_output`, `permission_denials`, `mutations`, and the
 diagnostic fields `error_summary`, `error_cause`, `suggested_action`, and
 `disclosure_note`. Surface `mutations` prominently for read-only review paths.

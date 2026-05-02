@@ -15,7 +15,7 @@ import { resolveProfile, resolveModelForProfile, resolveModelCandidatesForProfil
 import { setupContainment } from "./lib/containment.mjs";
 import { populateScope } from "./lib/scope.mjs";
 import { newJobId, verifyPidInfo } from "./lib/identity.mjs";
-import { buildJobRecord } from "./lib/job-record.mjs";
+import { buildJobRecord, externalReviewForInvocation } from "./lib/job-record.mjs";
 import { reconcileActiveJobs } from "./lib/reconcile.mjs";
 import { cleanGitEnv } from "./lib/git-env.mjs";
 import { spawnKimi } from "./lib/kimi.mjs";
@@ -165,6 +165,7 @@ function invocationFromRecord(record) {
     prompt_head: record.prompt_head,
     schema_spec: record.schema_spec ?? null,
     binary: record.binary,
+    run_kind: record.external_review?.run_kind ?? "foreground",
     started_at: record.started_at,
   };
 }
@@ -369,6 +370,7 @@ async function cmdRun(rest) {
     prompt_head: prompt.slice(0, 200),
     schema_spec: null,
     binary: options.binary ?? process.env.KIMI_BINARY ?? "kimi",
+    run_kind: options.background ? "background" : "foreground",
     timeout_ms: timeoutMs,
     started_at: new Date().toISOString(),
   });
@@ -389,6 +391,7 @@ async function cmdRun(rest) {
       mode,
       pid: child.pid ?? null,
       workspace_root: workspaceRoot,
+      external_review: externalReviewForInvocation(invocation),
     });
     process.exit(0);
   }
@@ -758,6 +761,7 @@ async function cmdContinue(rest) {
     prompt_head: prompt.slice(0, 200),
     schema_spec: prior.schema_spec ?? null,
     binary: options.binary ?? process.env.KIMI_BINARY ?? "kimi",
+    run_kind: options.background ? "background" : "foreground",
     timeout_ms: timeoutMs,
     started_at: new Date().toISOString(),
   });
@@ -779,6 +783,7 @@ async function cmdContinue(rest) {
       parent_job_id: options.job,
       pid: child.pid ?? null,
       workspace_root: workspaceRoot,
+      external_review: externalReviewForInvocation(invocation),
     });
     process.exit(0);
   }

@@ -64,6 +64,7 @@ export const EXPECTED_KEYS = Object.freeze([
   "error_summary",
   "error_cause",
   "suggested_action",
+  "external_review",
   "disclosure_note",
 
   // Result
@@ -79,6 +80,29 @@ export const EXPECTED_KEYS = Object.freeze([
 ]);
 
 const EXPECTED_KEYS_SET = new Set(EXPECTED_KEYS);
+
+const PROVIDER_NAMES = Object.freeze({
+  claude: "Claude Code",
+  gemini: "Gemini CLI",
+  kimi: "Kimi Code CLI",
+});
+
+export function externalReviewForInvocation(invocation, execution = null) {
+  const provider = PROVIDER_NAMES[invocation.target] ?? invocation.target;
+  return Object.freeze({
+    marker: "EXTERNAL REVIEW",
+    provider,
+    run_kind: invocation.run_kind ?? "foreground",
+    job_id: invocation.job_id,
+    session_id: execution?.claudeSessionId ?? execution?.geminiSessionId ?? execution?.kimiSessionId ?? null,
+    parent_job_id: invocation.parent_job_id ?? null,
+    mode: invocation.mode,
+    scope: invocation.scope,
+    scope_base: invocation.scope_base ?? null,
+    scope_paths: invocation.scope_paths ?? null,
+    disclosure: `Selected source content may be sent to ${provider} for external review.`,
+  });
+}
 
 /**
  * Infer lifecycle status + error classification from the execution tuple.
@@ -448,6 +472,7 @@ export function buildJobRecord(invocation, execution, mutations) {
     error_summary: diagnostic.error_summary,
     error_cause: diagnostic.error_cause,
     suggested_action: diagnostic.suggested_action,
+    external_review: externalReviewForInvocation(invocation, execution),
     disclosure_note: diagnostic.disclosure_note,
 
     // Result

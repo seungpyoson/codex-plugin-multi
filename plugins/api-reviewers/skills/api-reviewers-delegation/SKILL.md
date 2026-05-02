@@ -38,3 +38,6 @@ node plugins/api-reviewers/scripts/api-reviewer.mjs run --provider deepseek --mo
 ```
 
 If the command fails, report `error_code`, `error_message`, and `suggested_action` from the JobRecord. Do not expose API keys.
+If `external_review` is present, render an EXTERNAL REVIEW box before the
+review result and preserve the provider name, job ID, run kind, scope, and
+disclosure text.

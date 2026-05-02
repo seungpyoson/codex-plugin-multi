@@ -118,6 +118,19 @@ test("DeepSeek direct API custom-review completes and persists JobRecord", async
   assert.equal(record.provider, "deepseek");
   assert.equal(record.model, "deepseek-v4-flash");
   assert.equal(record.credential_ref, "DEEPSEEK_API_KEY");
+  assert.deepEqual(record.external_review, {
+    marker: "EXTERNAL REVIEW",
+    provider: "DeepSeek",
+    run_kind: "foreground",
+    job_id: record.job_id,
+    session_id: null,
+    parent_job_id: null,
+    mode: "custom-review",
+    scope: "custom",
+    scope_base: null,
+    scope_paths: ["seed.txt"],
+    disclosure: "Selected source content was sent to DeepSeek through direct API auth.",
+  });
   assert.equal(record.result.includes("Verdict: APPROVE"), true);
   assert.deepEqual(record.usage, { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 });
   assert.doesNotMatch(result.stdout, /secret-test-value/);

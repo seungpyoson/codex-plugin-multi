@@ -74,7 +74,7 @@ test("EXPECTED_KEYS is the spec §21.3 canonical list", () => {
     "containment", "scope", "dispose_effective", "scope_base", "scope_paths",
     "prompt_head", "schema_spec", "binary",
     "status", "started_at", "ended_at", "exit_code", "error_code", "error_message",
-    "error_summary", "error_cause", "suggested_action", "disclosure_note",
+    "error_summary", "error_cause", "suggested_action", "external_review", "disclosure_note",
     "result", "structured_output", "permission_denials", "mutations",
     "cost_usd", "usage",
     "schema_version",
@@ -110,6 +110,19 @@ test("buildJobRecord: foreground success path has EXACTLY the expected keys", ()
   assert.equal(rec.exit_code, 0);
   assert.equal(rec.error_code, null);
   assert.equal(rec.error_message, null);
+  assert.deepEqual(rec.external_review, {
+    marker: "EXTERNAL REVIEW",
+    provider: "Claude Code",
+    run_kind: "foreground",
+    job_id: rec.job_id,
+    session_id: CLAUDE_UUID,
+    parent_job_id: null,
+    mode: "review",
+    scope: "working-tree",
+    scope_base: null,
+    scope_paths: null,
+    disclosure: "Selected source content may be sent to Claude Code for external review.",
+  });
   assert.equal(rec.schema_version, SCHEMA_VERSION);
   assert.equal(rec.id, rec.job_id, "id is legacy alias for job_id");
 });
