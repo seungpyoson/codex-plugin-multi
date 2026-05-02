@@ -464,7 +464,7 @@ test("M6-finding-1-H1: background worker persists parsed.result on terminal JobR
     assert.deepEqual(meta.permission_denials, []);
     assert.ok("mutations" in meta, "background JobRecord carries mutations array");
     assert.ok("cost_usd" in meta, "background JobRecord carries cost_usd");
-    assert.equal(meta.schema_version, 7);
+    assert.equal(meta.schema_version, 8);
   } finally {
     rmTempTree(dataDir);
     rmTempTree(cwd);
