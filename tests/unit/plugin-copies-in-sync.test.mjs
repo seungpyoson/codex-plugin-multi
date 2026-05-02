@@ -34,6 +34,7 @@ const VERBATIM_FILES = [
 ];
 
 const CLAUDE_GEMINI_VERBATIM_FILES = [
+  "auth-selection.mjs",
   "provider-env.mjs",
   "reconcile.mjs",
   "git-env.mjs",
@@ -47,6 +48,28 @@ test("lib/companion-common.mjs: plugin packaging copies match the canonical shar
       "utf8"
     );
     assert.equal(copy, canonical, `companion-common.mjs packaging copy drifted in ${plugin}`);
+  }
+});
+
+test("lib/auth-selection.mjs: plugin packaging copies match the canonical shared source", () => {
+  const canonical = readFileSync(path.join(REPO_ROOT, "scripts/lib/auth-selection.mjs"), "utf8");
+  for (const plugin of CLAUDE_GEMINI_PLUGIN_TARGETS) {
+    const copy = readFileSync(
+      path.join(REPO_ROOT, `plugins/${plugin}/scripts/lib/auth-selection.mjs`),
+      "utf8"
+    );
+    assert.equal(copy, canonical, `auth-selection.mjs packaging copy drifted in ${plugin}`);
+  }
+});
+
+test("lib/provider-env.mjs: plugin packaging copies match the canonical shared source", () => {
+  const canonical = readFileSync(path.join(REPO_ROOT, "scripts/lib/provider-env.mjs"), "utf8");
+  for (const plugin of CLAUDE_GEMINI_PLUGIN_TARGETS) {
+    const copy = readFileSync(
+      path.join(REPO_ROOT, `plugins/${plugin}/scripts/lib/provider-env.mjs`),
+      "utf8"
+    );
+    assert.equal(copy, canonical, `provider-env.mjs packaging copy drifted in ${plugin}`);
   }
 });
 

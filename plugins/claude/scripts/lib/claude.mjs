@@ -172,13 +172,14 @@ export async function spawnClaude(profile, runtimeInputs = {}) {
     env = process.env,
     timeoutMs = 0,
     binary = "claude",
+    allowedApiKeyEnv = [],
     onSpawn = null,
   } = runtimeInputs;
 
   const args = buildClaudeArgs(profile, {
     model, promptText, sessionId, resumeId, addDirPath, jsonSchema,
   });
-  const targetEnv = sanitizeTargetEnv(env);
+  const targetEnv = sanitizeTargetEnv(env, { allowedApiKeyEnv });
 
   return new Promise((resolve, reject) => {
     // Claude receives the prompt via argv and ignores stdin, so there is no

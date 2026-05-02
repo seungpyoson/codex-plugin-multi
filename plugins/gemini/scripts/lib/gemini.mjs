@@ -102,6 +102,7 @@ export async function spawnGemini(profile, runtimeInputs = {}) {
     env = process.env,
     timeoutMs = 0,
     binary = "gemini",
+    allowedApiKeyEnv = [],
     onSpawn = null,
   } = runtimeInputs;
 
@@ -110,7 +111,7 @@ export async function spawnGemini(profile, runtimeInputs = {}) {
   }
 
   const args = buildGeminiArgs(profile, { model, policyPath, includeDirPath, resumeId });
-  const targetEnv = sanitizeTargetEnv(env);
+  const targetEnv = sanitizeTargetEnv(env, { allowedApiKeyEnv });
 
   return new Promise((resolve, reject) => {
     const child = spawn(binary, args, { cwd, env: targetEnv, stdio: ["pipe", "pipe", "pipe"] });

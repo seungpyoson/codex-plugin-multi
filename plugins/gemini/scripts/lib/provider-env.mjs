@@ -1,3 +1,7 @@
+// Shared Claude/Gemini provider-env helper source.
+// Edit scripts/lib/provider-env.mjs, then run
+// `node scripts/ci/sync-provider-env.mjs` to update plugin packaging copies.
+
 // Provider credential / routing scrub policy.
 //
 // We strip three categories before launching the target CLI:
@@ -41,8 +45,9 @@ const PROVIDER_ENV_DENYLIST = new Set([
   "CODEX_PLUGIN_STRIP_PROXY_ENV",
 ]);
 
-function isDeniedEnvKey(key) {
+function isDeniedEnvKey(key, allowedApiKeyEnv) {
   const upper = key.toUpperCase();
+  if (allowedApiKeyEnv.has(upper)) return false;
   if (upper.endsWith("_API_KEY")) return true;
   if (PROVIDER_ENV_DENYLIST.has(upper)) return true;
   for (const prefix of PROVIDER_PREFIXES) {
@@ -55,11 +60,12 @@ function isProxyEnvKey(key) {
   return key.toUpperCase().endsWith("_PROXY");
 }
 
-export function sanitizeTargetEnv(env) {
+export function sanitizeTargetEnv(env, options = {}) {
   const sanitized = {};
+  const allowedApiKeyEnv = new Set((options.allowedApiKeyEnv ?? []).map((key) => String(key).toUpperCase()));
   const stripProxyEnv = env?.CODEX_PLUGIN_STRIP_PROXY_ENV === "1";
   for (const [key, value] of Object.entries(env ?? {})) {
-    if (isDeniedEnvKey(key)) continue;
+    if (isDeniedEnvKey(key, allowedApiKeyEnv)) continue;
     if (stripProxyEnv && isProxyEnvKey(key)) continue;
     sanitized[key] = value;
   }

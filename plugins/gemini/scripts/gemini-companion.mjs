@@ -21,8 +21,13 @@ import { cleanGitEnv } from "./lib/git-env.mjs";
 import { spawnGemini } from "./lib/gemini.mjs";
 import { writeCancelMarker, consumeCancelMarker } from "./lib/cancel-marker.mjs";
 import {
+  authDiagnosticFields,
+  apiKeyMissingFields as buildApiKeyMissingFields,
+  apiKeyMissingMessage as buildApiKeyMissingMessage,
+  resolveAuthSelection as resolveAuthSelectionForProvider,
+} from "./lib/auth-selection.mjs";
+import {
   PING_PROMPT,
-  credentialNameDiagnostics,
   preflightDisclosure,
   preflightSafetyFields,
 } from "./lib/companion-common.mjs";
@@ -126,8 +131,8 @@ function gitStatusLines(output) {
   return output.split("\n").map((line) => line.trimEnd()).filter((line) => line.length > 0);
 }
 
-function invocationFromRecord(record) {
-  return {
+function invocationFromRecord(record, fallbackAuthMode = "subscription") {
+  return Object.freeze({
     job_id: record.job_id,
     target: record.target,
     parent_job_id: record.parent_job_id ?? null,
@@ -144,9 +149,10 @@ function invocationFromRecord(record) {
     scope_paths: record.scope_paths ?? null,
     prompt_head: record.prompt_head,
     schema_spec: record.schema_spec ?? null,
+    auth_mode: record.auth_mode ?? fallbackAuthMode ?? "subscription",
     binary: record.binary,
     started_at: record.started_at,
-  };
+  });
 }
 
 function promptSidecarPath(workspaceRoot, jobId) {
@@ -169,7 +175,7 @@ function consumePromptSidecar(workspaceRoot, jobId) {
   return prompt;
 }
 
-async function spawnDetachedWorker(cwd, jobId) {
+async function spawnDetachedWorker(cwd, jobId, authMode) {
   let child;
   try {
     child = spawn(process.execPath, [
@@ -177,6 +183,7 @@ async function spawnDetachedWorker(cwd, jobId) {
       "_run-worker",
       "--cwd", cwd,
       "--job", jobId,
+      "--auth-mode", authMode,
     ], {
       cwd,
       env: process.env,
@@ -292,7 +299,7 @@ function cmdPreflight(rest) {
 
 async function cmdRun(rest) {
   const { options, positionals } = parseArgs(rest, {
-    valueOptions: ["mode", "model", "cwd", "binary", "scope-base", "scope-paths", "override-dispose"],
+    valueOptions: ["mode", "model", "cwd", "binary", "scope-base", "scope-paths", "override-dispose", "auth-mode"],
     booleanOptions: ["background", "foreground"],
   });
   const mode = options.mode;
@@ -319,6 +326,10 @@ async function cmdRun(rest) {
     return profile.dispose_default;
   })();
   const scopePaths = parseScopePathsOption(options["scope-paths"]);
+  const authSelection = resolveAuthSelection(options["auth-mode"]);
+  if (authSelection.selected_auth_path === "api_key_env_missing") {
+    fail("not_authed", apiKeyMissingMessage(), apiKeyMissingFields(authSelection));
+  }
 
   const jobId = newJobId();
   const invocation = Object.freeze({
@@ -339,6 +350,7 @@ async function cmdRun(rest) {
     prompt_head: prompt.slice(0, 200),
     schema_spec: null,
     binary: options.binary ?? process.env.GEMINI_BINARY ?? "gemini",
+    auth_mode: authSelection.auth_mode,
     started_at: new Date().toISOString(),
   });
 
@@ -348,7 +360,7 @@ async function cmdRun(rest) {
 
   if (options.background) {
     writePromptSidecar(workspaceRoot, jobId, prompt);
-    const { child, error } = await spawnDetachedWorker(cwd, jobId);
+    const { child, error } = await spawnDetachedWorker(cwd, jobId, authSelection.auth_mode);
     if (error) failBackgroundWorkerSpawn(workspaceRoot, invocation, error);
     printJson({
       event: "launched",
@@ -438,6 +450,7 @@ async function executeRun(invocation, prompt, { foreground }) {
   let execution;
   let executedInvocation = invocation;
   try {
+    const authSelection = resolveAuthSelection(invocation.auth_mode);
     const modelCandidates = modelCandidatesForInvocation(profile, invocation);
     for (let i = 0; i < modelCandidates.length; i++) {
       const attemptModel = modelCandidates[i];
@@ -450,6 +463,7 @@ async function executeRun(invocation, prompt, { foreground }) {
         cwd: neutralCwd ?? containment.path,
         binary: invocation.binary,
         resumeId,
+        allowedApiKeyEnv: authSelection.allowed_env_credentials,
         onSpawn: (pidInfo) => {
           const runningRecord = buildJobRecord(attemptInvocation, {
             status: "running",
@@ -609,7 +623,7 @@ function writeSidecar(workspaceRoot, jobId, name, contents) {
 
 async function cmdRunWorker(rest) {
   const { options } = parseArgs(rest, {
-    valueOptions: ["cwd", "job"],
+    valueOptions: ["cwd", "job", "auth-mode"],
     booleanOptions: [],
   });
   if (!options.cwd || !options.job) {
@@ -655,13 +669,24 @@ async function cmdRunWorker(rest) {
     fail("bad_state", "prompt sidecar missing for job " + options.job);
   }
 
-  const invocation = invocationFromRecord(meta);
+  const invocation = invocationFromRecord(meta, options["auth-mode"]);
+  const authSelection = resolveAuthSelection(invocation.auth_mode);
+  if (authSelection.selected_auth_path === "api_key_env_missing") {
+    // The prompt sidecar was already consumed above, so auth refusal cannot leave it on disk.
+    const errorRecord = buildJobRecord(invocation, {
+      exitCode: null, parsed: null, pidInfo: null, geminiSessionId: null,
+      errorMessage: `worker: ${apiKeyMissingMessage()}`,
+    }, []);
+    writeJobFile(workspaceRoot, options.job, errorRecord);
+    upsertJob(workspaceRoot, errorRecord);
+    fail("not_authed", apiKeyMissingMessage(), apiKeyMissingFields(authSelection));
+  }
   await executeRun(invocation, prompt, { foreground: false });
 }
 
 async function cmdContinue(rest) {
   const { options, positionals } = parseArgs(rest, {
-    valueOptions: ["job", "cwd", "model", "binary"],
+    valueOptions: ["job", "cwd", "model", "binary", "auth-mode"],
     booleanOptions: ["background", "foreground"],
   });
   if (!options.job) fail("bad_args", "--job <id> is required");
@@ -707,6 +732,10 @@ async function cmdContinue(rest) {
   const priorModeName = prior.mode_profile_name ?? prior.mode;
   const priorProfile = resolveProfile(priorModeName);
   const priorResumeChain = Array.isArray(prior.resume_chain) ? prior.resume_chain : [];
+  const authSelection = resolveAuthSelection(options["auth-mode"]);
+  if (authSelection.selected_auth_path === "api_key_env_missing") {
+    fail("not_authed", apiKeyMissingMessage(), apiKeyMissingFields(authSelection));
+  }
   const invocation = Object.freeze({
     job_id: newJobId_,
     target: "gemini",
@@ -725,6 +754,7 @@ async function cmdContinue(rest) {
     prompt_head: prompt.slice(0, 200),
     schema_spec: prior.schema_spec ?? null,
     binary: options.binary ?? process.env.GEMINI_BINARY ?? "gemini",
+    auth_mode: authSelection.auth_mode,
     started_at: new Date().toISOString(),
   });
 
@@ -734,7 +764,7 @@ async function cmdContinue(rest) {
 
   if (options.background) {
     writePromptSidecar(workspaceRoot, newJobId_, prompt);
-    const { child, error } = await spawnDetachedWorker(cwd, newJobId_);
+    const { child, error } = await spawnDetachedWorker(cwd, newJobId_, authSelection.auth_mode);
     if (error) failBackgroundWorkerSpawn(workspaceRoot, invocation, error);
     printJson({
       event: "launched",
@@ -801,8 +831,25 @@ async function cmdResult(rest) {
 const PING_AUTH_RE = /\b(auth(?:enticat\w*)?|login|credential\w*|oauth2?|unauthenticated|signin|sign-in)\b/i;
 const PING_PROVIDER_API_KEY_ENV = ["GEMINI_API_KEY", "GOOGLE_API_KEY"];
 
-function ignoredApiKeyAuthFields() {
-  return credentialNameDiagnostics(PING_PROVIDER_API_KEY_ENV);
+function resolveAuthSelection(requestedMode = "subscription") {
+  return resolveAuthSelectionForProvider({
+    requestedMode,
+    providerApiKeyEnvNames: PING_PROVIDER_API_KEY_ENV,
+    fail,
+  });
+}
+
+function apiKeyMissingMessage() {
+  return buildApiKeyMissingMessage(PING_PROVIDER_API_KEY_ENV);
+}
+
+function apiKeyMissingFields(selection, notAuthedFields = {}) {
+  return buildApiKeyMissingFields({
+    selection,
+    notAuthedFields,
+    providerName: "Gemini",
+    providerApiKeyEnvNames: PING_PROVIDER_API_KEY_ENV,
+  });
 }
 
 function pingOkFields(modelFallback = null) {
@@ -873,7 +920,7 @@ function pingFailureDetail(execution) {
 }
 
 async function cmdPing(rest) {
-  const { options } = parseArgs(rest, { valueOptions: ["model", "binary", "timeout-ms"], booleanOptions: [] });
+  const { options } = parseArgs(rest, { valueOptions: ["model", "binary", "timeout-ms", "auth-mode"], booleanOptions: [] });
   const profile = resolveProfile("ping");
   const modelsConfig = loadModels();
   const model = options.model ?? resolveModelForProfile(profile, modelsConfig);
@@ -881,6 +928,11 @@ async function cmdPing(rest) {
     ? [options.model]
     : resolveModelCandidatesForProfile(profile, modelsConfig);
   const candidates = modelCandidates.length > 0 ? modelCandidates : [model];
+  const authSelection = resolveAuthSelection(options["auth-mode"]);
+  if (authSelection.selected_auth_path === "api_key_env_missing") {
+    printJson({ status: "not_authed", ...apiKeyMissingFields(authSelection, pingNotAuthedFields()) });
+    process.exit(2);
+  }
   try {
     let execution = null;
     let selectedModel = model;
@@ -895,6 +947,7 @@ async function cmdPing(rest) {
         cwd: "/tmp",
         binary: options.binary ?? process.env.GEMINI_BINARY ?? "gemini",
         timeoutMs: Number(options["timeout-ms"] ?? 15000),
+        allowedApiKeyEnv: authSelection.allowed_env_credentials,
       });
       if (
         execution.exitCode !== 0 &&
@@ -920,33 +973,35 @@ async function cmdPing(rest) {
       break;
     }
     if (execution.parsed.ok) {
-      const payload = { status: "ok", ...pingOkFields(modelFallback), ...ignoredApiKeyAuthFields(), model: selectedModel ?? null,
+      const payload = { status: "ok", ...pingOkFields(modelFallback), ...authDiagnosticFields(authSelection), model: selectedModel ?? null,
         session_id: execution.geminiSessionId, usage: execution.parsed.usage };
       printJson(payload);
       process.exit(0);
     }
     const detail = pingFailureDetail(execution);
     if (/rate limit|429|overloaded/i.test(detail)) {
-      printJson({ status: "rate_limited", ...pingRateLimitedFields(), ...ignoredApiKeyAuthFields(), detail });
+      printJson({ status: "rate_limited", ...pingRateLimitedFields(), ...authDiagnosticFields(authSelection), detail });
       process.exit(2);
     }
     if (PING_AUTH_RE.test(detail)) {
       printJson({ status: "not_authed", ...pingNotAuthedFields(), detail,
-        ...ignoredApiKeyAuthFields(),
-        hint: "Run `gemini` interactively to complete OAuth. API-key env vars are ignored by plugin policy." });
+        ...authDiagnosticFields(authSelection),
+        hint: authSelection.selected_auth_path === "api_key_env"
+          ? "Gemini was launched with explicit API-key auth. Check the provider key and CLI support."
+          : "Run `gemini` interactively to complete OAuth. API-key env vars are ignored by subscription-mode policy." });
       process.exit(2);
     }
-    printJson({ status: "error", ...pingErrorFields(), ...ignoredApiKeyAuthFields(), exit_code: execution.exitCode, detail });
+    printJson({ status: "error", ...pingErrorFields(), ...authDiagnosticFields(authSelection), exit_code: execution.exitCode, detail });
     process.exit(2);
   } catch (e) {
     if (e.code === "ENOENT") {
       printJson({ status: "not_found", ...pingNotFoundFields(),
-        ...ignoredApiKeyAuthFields(),
+        ...authDiagnosticFields(authSelection),
         detail: "gemini binary not found on PATH (or GEMINI_BINARY override)",
         install_url: "https://github.com/google-gemini/gemini-cli" });
       process.exit(2);
     }
-    printJson({ status: "error", ...pingErrorFields(), ...ignoredApiKeyAuthFields(), detail: e.message });
+    printJson({ status: "error", ...pingErrorFields(), ...authDiagnosticFields(authSelection), detail: e.message });
     process.exit(2);
   }
 }

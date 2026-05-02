@@ -64,6 +64,17 @@ function assertPreflightSafetyFields(result) {
   assert.equal(result.requires_external_provider_consent, true);
 }
 
+function assertGeminiApiKeyMissingError(result) {
+  assert.equal(result.ok, false);
+  assert.equal(result.error, "not_authed");
+  assert.equal(Object.hasOwn(result, "ready"), false);
+  assert.equal(result.auth_mode, "api_key");
+  assert.equal(result.selected_auth_path, "api_key_env_missing");
+  assert.equal(result.auth_policy, "api_key_env_required");
+  assert.match(result.summary, /Gemini API-key auth was requested/);
+  assert.match(result.next_action, /GEMINI_API_KEY or GOOGLE_API_KEY/);
+}
+
 function readOnlyJobRecord(dataDir) {
   const stateRoot = path.join(dataDir, "state");
   const records = [];
@@ -114,6 +125,24 @@ function readStdoutLog(dataDir, jobId) {
   }
   throw new Error(`no stdout.log for ${jobId}`);
 }
+
+test("gemini run api_key auth failure includes structured diagnostics before spawn", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "gemini-run-api-key-missing-cwd-"));
+  const missingBinary = path.join(cwd, "missing-gemini-binary");
+  const { stdout, status, dataDir } = runCompanion(
+    ["run", "--mode=rescue", "--foreground", "--auth-mode", "api_key",
+     "--model", "gemini-3-flash-preview", "--binary", missingBinary,
+     "--cwd", cwd, "--", "auth missing"],
+    { cwd, env: { GEMINI_API_KEY: "", GOOGLE_API_KEY: "" } },
+  );
+  try {
+    assert.equal(status, 1);
+    assertGeminiApiKeyMissingError(JSON.parse(stdout));
+  } finally {
+    rmTree(dataDir);
+    rmTree(cwd);
+  }
+});
 
 test("gemini rescue background: launched event and terminal JobRecord", async () => {
   const cwd = mkdtempSync(path.join(tmpdir(), "gemini-bg-cwd-"));
@@ -376,6 +405,83 @@ test("gemini _run-worker: cancel marker prevents target spawn, sets status=cance
       "worker must consume (unlink) the marker on pickup");
   } finally {
     rmTree(runRes.dataDir);
+    rmTree(cwd);
+  }
+});
+
+test("gemini _run-worker fails before spawn when api_key auth has no provider key", async () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "gemini-worker-auth-missing-cwd-"));
+  const dataDir = mkdtempSync(path.join(tmpdir(), "gemini-worker-auth-missing-data-"));
+  const markerPath = path.join(dataDir, "spawned");
+  const binary = writeMarkerBinary(dataDir, markerPath);
+  seedMinimalRepo(cwd);
+  const previous = process.env.GEMINI_PLUGIN_DATA;
+  process.env.GEMINI_PLUGIN_DATA = dataDir;
+  try {
+    const state = await import("../../plugins/gemini/scripts/lib/state.mjs");
+    const { newJobId } = await import("../../plugins/gemini/scripts/lib/identity.mjs");
+    const { buildJobRecord } = await import("../../plugins/gemini/scripts/lib/job-record.mjs");
+    const { resolveProfile } = await import("../../plugins/gemini/scripts/lib/mode-profiles.mjs");
+    state.configureState({
+      pluginDataEnv: "GEMINI_PLUGIN_DATA",
+      sessionIdEnv: "GEMINI_COMPANION_SESSION_ID",
+    });
+    const profile = resolveProfile("rescue");
+    const jobId = newJobId();
+    const invocation = Object.freeze({
+      job_id: jobId,
+      target: "gemini",
+      parent_job_id: null,
+      resume_chain: [],
+      mode_profile_name: profile.name,
+      mode: "rescue",
+      model: "gemini-3-flash-preview",
+      cwd,
+      workspace_root: cwd,
+      containment: profile.containment,
+      scope: profile.scope,
+      dispose_effective: profile.dispose_default,
+      scope_base: null,
+      scope_paths: null,
+      prompt_head: "auth missing",
+      schema_spec: null,
+      binary,
+      auth_mode: "api_key",
+      started_at: new Date().toISOString(),
+    });
+    const queued = buildJobRecord(invocation, null, []);
+    state.writeJobFile(cwd, jobId, queued);
+    state.upsertJob(cwd, queued);
+    const promptPath = path.join(state.resolveJobsDir(cwd), jobId, "prompt.txt");
+    mkdirSync(path.dirname(promptPath), { recursive: true });
+    writeFileSync(promptPath, "auth missing", "utf8");
+
+    const worker = spawnSync("node", [
+      COMPANION, "_run-worker", "--cwd", cwd, "--job", jobId, "--auth-mode", "api_key",
+    ], {
+      cwd,
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        GEMINI_BINARY: binary,
+        GEMINI_PLUGIN_DATA: dataDir,
+        GEMINI_API_KEY: "",
+        GOOGLE_API_KEY: "",
+      },
+    });
+    assert.notEqual(worker.status, 0, "worker should fail without a provider API key");
+    const error = JSON.parse(worker.stdout);
+    assert.equal(error.error, "not_authed");
+    assert.equal(error.selected_auth_path, "api_key_env_missing");
+    const finalRecord = JSON.parse(readFileSync(state.resolveJobFile(cwd, jobId), "utf8"));
+    assert.equal(finalRecord.status, "failed");
+    assert.match(finalRecord.error_message, /explicit api_key auth requires/);
+    assert.equal(existsSync(promptPath), false, "worker must remove prompt sidecar on auth refusal");
+    assert.equal(existsSync(markerPath), false, "worker must not spawn target when auth is missing");
+  } finally {
+    if (previous === undefined) delete process.env.GEMINI_PLUGIN_DATA;
+    else process.env.GEMINI_PLUGIN_DATA = previous;
+    rmTree(dataDir);
     rmTree(cwd);
   }
 });
@@ -713,6 +819,39 @@ test("gemini continue foreground: resumes prior job session", () => {
     assert.equal(fx.t7_resume_id, prior.gemini_session_id);
     assert.equal(fx.t7_prompt_from_stdin, true, "Gemini continue prompt must arrive on stdin, not argv");
     assert.equal("prompt" in record, false, "full prompt must not appear on JobRecord");
+  } finally {
+    rmTree(first.dataDir);
+    rmTree(cwd);
+  }
+});
+
+test("gemini continue api_key auth failure includes structured diagnostics before spawn", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "gemini-continue-api-key-missing-cwd-"));
+  seedMinimalRepo(cwd);
+  const first = runCompanion(
+    ["run", "--mode=rescue", "--foreground", "--model", "gemini-3-flash-preview",
+     "--cwd", cwd, "--", "initial rescue task"],
+    { cwd },
+  );
+  try {
+    assert.equal(first.status, 0, `exit ${first.status}: ${first.stderr}`);
+    const prior = JSON.parse(first.stdout);
+    const missingBinary = path.join(cwd, "missing-gemini-continue-binary");
+    const continued = runCompanion(
+      ["continue", "--job", prior.job_id, "--foreground", "--auth-mode", "api_key",
+       "--cwd", cwd, "--", "continue rescue task"],
+      {
+        cwd,
+        dataDir: first.dataDir,
+        env: {
+          GEMINI_API_KEY: "",
+          GOOGLE_API_KEY: "",
+          GEMINI_BINARY: missingBinary,
+        },
+      },
+    );
+    assert.equal(continued.status, 1);
+    assertGeminiApiKeyMissingError(JSON.parse(continued.stdout));
   } finally {
     rmTree(first.dataDir);
     rmTree(cwd);
@@ -1343,6 +1482,8 @@ test("gemini ping returns ok with the mock gemini binary", () => {
     assert.match(parsed.summary, /ready/i);
     assert.deepEqual(parsed.ignored_env_credentials, ["GEMINI_API_KEY"]);
     assert.equal(parsed.auth_policy, "api_key_env_ignored");
+    assert.equal(parsed.auth_mode, "subscription");
+    assert.equal(parsed.selected_auth_path, "subscription_oauth");
     assert.doesNotMatch(stdout, /secret-test-value/);
     assert.equal(parsed.model, "gemini-3-flash-preview");
     assert.equal(parsed.session_id, GEMINI_SESSION_ID);
@@ -1362,6 +1503,95 @@ test("gemini doctor returns the same readiness contract as ping", () => {
     assert.equal(parsed.ready, true);
     assert.match(parsed.summary, /ready/i);
     assert.match(parsed.next_action, /review/i);
+    assert.equal(parsed.auth_mode, "subscription");
+    assert.equal(parsed.selected_auth_path, "subscription_oauth");
+  } finally {
+    rmTree(dataDir);
+    rmTree(cwd);
+  }
+});
+
+test("gemini ping explicit api_key auth allows provider key by name only", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "gemini-ping-api-key-cwd-"));
+  const binDir = mkdtempSync(path.join(tmpdir(), "gemini-ping-api-key-bin-"));
+  const binary = path.join(binDir, "gemini-api-key-mode");
+  writeFileSync(binary, `#!/usr/bin/env node
+if (process.env.GEMINI_API_KEY !== "secret-test-value") {
+  process.stderr.write("missing GEMINI_API_KEY\\n");
+  process.exit(9);
+}
+process.stdout.write(JSON.stringify({
+  session_id: "${GEMINI_SESSION_ID}",
+  response: "Mock Gemini response."
+}) + "\\n");
+`, "utf8");
+  chmodSync(binary, 0o755);
+  const { stdout, status, dataDir } = runCompanion(
+    ["ping", "--auth-mode", "api_key", "--binary", binary, "--model", "gemini-3-flash-preview"],
+    { cwd, env: { GEMINI_API_KEY: "secret-test-value" } },
+  );
+  try {
+    assert.equal(status, 0);
+    const parsed = JSON.parse(stdout);
+    assert.equal(parsed.auth_mode, "api_key");
+    assert.equal(parsed.selected_auth_path, "api_key_env");
+    assert.deepEqual(parsed.allowed_env_credentials, ["GEMINI_API_KEY"]);
+    assert.equal(parsed.auth_policy, "api_key_env_allowed");
+    assert.doesNotMatch(stdout, /secret-test-value/);
+  } finally {
+    rmTree(dataDir);
+    rmTree(cwd);
+    rmTree(binDir);
+  }
+});
+
+test("gemini ping auto auth prefers API key when present", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "gemini-ping-auto-auth-cwd-"));
+  const binDir = mkdtempSync(path.join(tmpdir(), "gemini-ping-auto-auth-bin-"));
+  const binary = path.join(binDir, "gemini-auto-auth");
+  writeFileSync(binary, `#!/usr/bin/env node
+if (process.env.GEMINI_API_KEY !== "secret-test-value") {
+  process.stderr.write("missing GEMINI_API_KEY\\n");
+  process.exit(9);
+}
+process.stdout.write(JSON.stringify({
+  session_id: "${GEMINI_SESSION_ID}",
+  response: "Mock Gemini response."
+}) + "\\n");
+`, "utf8");
+  chmodSync(binary, 0o755);
+  const { stdout, status, dataDir } = runCompanion(
+    ["ping", "--auth-mode", "auto", "--binary", binary, "--model", "gemini-3-flash-preview"],
+    { cwd, env: { GEMINI_API_KEY: "secret-test-value" } },
+  );
+  try {
+    assert.equal(status, 0);
+    const parsed = JSON.parse(stdout);
+    assert.equal(parsed.auth_mode, "auto");
+    assert.equal(parsed.selected_auth_path, "api_key_env");
+    assert.deepEqual(parsed.allowed_env_credentials, ["GEMINI_API_KEY"]);
+    assert.doesNotMatch(stdout, /secret-test-value/);
+  } finally {
+    rmTree(dataDir);
+    rmTree(cwd);
+    rmTree(binDir);
+  }
+});
+
+test("gemini ping api_key auth fails before target spawn when no provider key is present", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "gemini-ping-api-key-missing-cwd-"));
+  const missingBinary = path.join(tmpdir(), "missing-gemini-api-key-mode-binary");
+  const { stdout, status, dataDir } = runCompanion(
+    ["ping", "--auth-mode", "api_key", "--binary", missingBinary, "--model", "gemini-3-flash-preview"],
+    { cwd, env: { GEMINI_API_KEY: "", GOOGLE_API_KEY: "" } },
+  );
+  try {
+    assert.equal(status, 2);
+    const parsed = JSON.parse(stdout);
+    assert.equal(parsed.status, "not_authed");
+    assert.equal(parsed.auth_mode, "api_key");
+    assert.equal(parsed.selected_auth_path, "api_key_env_missing");
+    assert.match(parsed.next_action, /GEMINI_API_KEY|GOOGLE_API_KEY/);
   } finally {
     rmTree(dataDir);
     rmTree(cwd);

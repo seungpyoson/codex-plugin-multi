@@ -28,10 +28,15 @@ lets Claude Code delegate to Codex.
   is accepted as a compatibility alias. GLM Coding Plan calls use
   `https://api.z.ai/api/coding/paas/v4`, not the general Z.ai endpoint.
 
-The plugins use each target CLI's native OAuth login. They do not read
-`ANTHROPIC_API_KEY`, `GEMINI_API_KEY`, `KIMI_CODE_API_KEY`, `MOONSHOT_API_KEY`,
-or any `*_API_KEY` environment variable. Direct API reviewers are separate and
-only use API keys through explicit `auth_mode: "api_key"` provider config.
+Claude and Gemini default to each target CLI's native OAuth login and ignore
+provider API-key env vars. They also support an explicit companion
+`--auth-mode subscription|api_key|auto` option for `setup`/`doctor`, `run`, and
+`continue`: `subscription` strips API keys, `api_key` allows only that
+provider's key names through intentionally, and `auto` uses API-key env auth
+only when a provider key is already present. The selected path is reported as
+`selected_auth_path`; secret values are never printed. Kimi remains
+subscription/OAuth-only. Direct API reviewers are separate and only use API keys
+through explicit `auth_mode: "api_key"` provider config.
 
 ## Install
 
@@ -163,11 +168,13 @@ inspect the terminal record.
 - **Scope narrowing is not provider isolation.** `branch-diff` reduces which
   files are reviewed, but a successful external review still sends selected
   source content to the target provider.
-- **API-key providers are explicit.** DeepSeek and GLM direct API reviewers use
-  `auth_mode: "api_key"` in `plugins/api-reviewers/config/providers.json`.
-  They report `credential_ref` as a key name and never print secret values.
-  They are not fallback auth for Claude, Gemini, or Kimi subscription/OAuth
-  plugins.
+- **API-key auth is explicit.** Claude and Gemini use `--auth-mode subscription`
+  by default and strip provider API-key env vars. `--auth-mode api_key` allows
+  only Claude or Gemini provider key names through; `--auth-mode auto` gives
+  those key names precedence only when they are already present. DeepSeek and
+  GLM direct API reviewers use `auth_mode: "api_key"` in
+  `plugins/api-reviewers/config/providers.json`. Diagnostics report key names
+  only and never print secret values.
 - **Preflight before uncertain disclosure.** `preflight` reports selected files,
   file count, and byte count without launching the target provider. Use
   `custom-review` plus explicit `--scope-paths` for pinned review bundles, and
