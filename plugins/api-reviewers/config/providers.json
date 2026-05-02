@@ -9,7 +9,8 @@
       "thinking": {
         "type": "enabled"
       },
-      "reasoning_effort": "max"
+      "reasoning_effort": "max",
+      "max_tokens": 65536
     }
   },
   "glm": {
@@ -21,7 +22,8 @@
     "request_defaults": {
       "thinking": {
         "type": "enabled"
-      }
+      },
+      "max_tokens": 131072
     }
   }
 }
