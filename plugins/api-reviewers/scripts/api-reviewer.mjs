@@ -2,7 +2,7 @@
 import { spawnSync } from "node:child_process";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
-import { dirname, resolve, relative } from "node:path";
+import { dirname, isAbsolute, resolve, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import { randomUUID } from "node:crypto";
 
@@ -128,7 +128,7 @@ function runCommand(command, args = [], options = {}) {
     input: options.input,
     maxBuffer: options.maxBuffer,
     stdio: options.stdio ?? "pipe",
-    shell: process.platform === "win32",
+    shell: false,
     windowsHide: true,
   });
 
@@ -179,7 +179,7 @@ function selectedScopePaths(scope, options, cwd) {
 async function readScopeFiles(workspaceRoot, relPaths) {
   const files = [];
   for (const relPath of relPaths) {
-    if (relPath.includes("..") || relPath.startsWith("/") || relPath.includes("\\")) {
+    if (relPath.includes("..") || isAbsolute(relPath) || relPath.includes("\\")) {
       throw new Error(`unsafe_scope_path:${relPath}`);
     }
     const abs = resolve(workspaceRoot, relPath);
