@@ -39,7 +39,7 @@ import { fixtureGitEnv, fixtureSeedRepo } from "../helpers/fixture-git.mjs";
 // Adding a new M6 finding is two lines: one row here, one `test(...)` block
 // below. The completion assertion enforces the mapping.
 export const MATRIX_FINDINGS = Object.freeze([
-  { id: "C2",  fragment: "M6-finding-C2: omitted review model resolves through configured review tier" },
+  { id: "C2",  fragment: "M6-finding-C2: silent Opus billing" },
   { id: "G-HIGH", fragment: "M6-finding-G-HIGH: rescue keeps CLAUDE.md context" },
   { id: "4",   fragment: "M6-finding-4: review sees dirty working tree" },
   { id: "6",   fragment: "M6-finding-6: continue chain resumes LATEST claude_session_id" },
@@ -156,19 +156,18 @@ function readStdoutLog(dataDir, jobId) {
 }
 
 // ---------------------------------------------------------------------------
-// FINDING C2 — omitted model must resolve through config. INLINE (approach A).
+// FINDING C2 — silent Opus billing. INLINE (approach A).
 //
 // Root cause: the pre-T7.1 dispatcher used a `mode === "rescue" ? "default"
 // : "default"` ternary that billed Opus for every review. T7.1 routes model
 // resolution through the profile's `model_tier`. This test runs `review`
-// with NO --model flag and asserts the resolved model is the configured
-// review tier from config/models.json. The tier may itself be Opus when the
-// defaults intentionally favor maximum capability.
+// with NO --model flag and asserts the resolved model is the CHEAP tier
+// from config/models.json (claude-haiku-4-5-20251001) — i.e., NOT Opus.
 //
 // Oracle: the mock records what --model it received; we inspect it via the
 // stdout.log sidecar which captures the fixture the mock emitted.
 
-test("M6-finding-C2: omitted review model resolves through configured review tier", () => {
+test("M6-finding-C2: silent Opus billing — review with no --model uses cheap tier", () => {
   const cwd = mkdtempSync(path.join(tmpdir(), "inv-c2-"));
   seedMinimalRepo(cwd);
   // No --model flag. Rely on profile.model_tier=cheap → config.cheap.
@@ -182,12 +181,16 @@ test("M6-finding-C2: omitted review model resolves through configured review tie
   try {
     assert.equal(status, 0, `exit ${status}: ${stderr}`);
     const record = JSON.parse(stdout);
-    // JobRecord captures the resolved model from the review tier.
+    // JobRecord captures the resolved model. Cheap tier, never Opus.
     const expected = JSON.parse(
       readFileSync(path.join(REPO_ROOT, "plugins/claude/config/models.json"), "utf8")
     );
     assert.equal(record.model, expected.cheap,
       `review must default to cheap tier ${expected.cheap}; got ${record.model}`);
+    assert.notEqual(record.model, expected.default,
+      `review must NOT default to Opus (${expected.default}); that's the C2 regression`);
+    assert.equal(record.model, "claude-haiku-4-5-20251001",
+      "drift check: cheap tier pinned to haiku in config/models.json");
   } finally {
     rmTempTree(dataDir);
     rmTempTree(cwd);

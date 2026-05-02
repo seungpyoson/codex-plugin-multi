@@ -4,12 +4,9 @@
     "auth_mode": "api_key",
     "env_keys": ["DEEPSEEK_API_KEY"],
     "base_url": "https://api.deepseek.com",
-    "model": "deepseek-v4-pro",
+    "model": "deepseek-reasoner",
     "request_defaults": {
-      "thinking": {
-        "type": "enabled"
-      },
-      "reasoning_effort": "max"
+      "max_tokens": 65536
     }
   },
   "glm": {
@@ -21,7 +18,8 @@
     "request_defaults": {
       "thinking": {
         "type": "enabled"
-      }
+      },
+      "max_tokens": 131072
     }
   }
 }
