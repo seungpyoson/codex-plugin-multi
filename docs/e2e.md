@@ -123,13 +123,32 @@ Latest live verification:
     (`ZAI_GLM_API_KEY`, `glm-5.1`, `https://api.z.ai/api/coding/paas/v4`,
     HTTP 200). Secret values were not printed.
 
-Pending live verification:
-
-- PR #50 changes the shipped high-capability defaults after the latest recorded
-  live run. The following require a fresh maintainer-approved live run before
-  treating them as vendor-confirmed:
-  - DeepSeek `deepseek-v4-pro` with `thinking.type=enabled`,
+- 2026-05-03 03:18 KST on `SP-MB-Pro.local`, branch
+  `fix/49-api-reviewers-installed-layout`, head
+  `921f83609d26c95830f468bca6216681ce5f6e36`:
+  - `CLAUDE_LIVE_E2E=1 npm run e2e:claude` passed with Claude Code
+    `2.1.126`; this verifies model-bearing companion invocations with
+    `--effort max`.
+  - `GEMINI_LIVE_E2E=1 npm run e2e:gemini` passed with Gemini CLI `0.40.1`.
+  - `KIMI_LIVE_E2E=1 npm run e2e:kimi` passed with Kimi CLI `1.41.0`.
+  - `node plugins/kimi/scripts/kimi-companion.mjs ping` passed with Kimi CLI
+    `1.41.0`; this verifies `--thinking` on the ping profile without an
+    explicit model.
+  - `node plugins/api-reviewers/scripts/api-reviewer.mjs doctor --provider deepseek`
+    reported `ready: true`, `credential_ref: DEEPSEEK_API_KEY`,
+    `endpoint: https://api.deepseek.com`, and `model: deepseek-v4-pro`.
+  - `node plugins/api-reviewers/scripts/api-reviewer.mjs doctor --provider glm`
+    reported `ready: true`, `credential_ref: ZAI_GLM_API_KEY`,
+    `endpoint: https://api.z.ai/api/coding/paas/v4`, and `model: glm-5.1`.
+  - A live DeepSeek `custom-review` scoped to `README.md` completed with
+    `raw_model: deepseek-v4-pro`, `http_status: 200`,
+    `endpoint: https://api.deepseek.com`, and
+    `credential_ref: DEEPSEEK_API_KEY`, verifying `thinking.type=enabled`,
     `reasoning_effort=max`, and `max_tokens=65536`.
-  - GLM `glm-5.1` with `thinking.type=enabled` and `max_tokens=131072`.
-  - Claude CLI `--effort max` on model-bearing companion invocations.
-  - Kimi CLI `--thinking` on all companion profiles, including ping.
+  - A live GLM `custom-review` scoped to `README.md` completed with
+    `raw_model: glm-5.1`, `http_status: 200`,
+    `endpoint: https://api.z.ai/api/coding/paas/v4`, and
+    `credential_ref: ZAI_GLM_API_KEY`, verifying `thinking.type=enabled` and
+    `max_tokens=131072`.
+  - The direct API verification printed only redacted `JobRecord` metadata;
+    secret values were not printed.
