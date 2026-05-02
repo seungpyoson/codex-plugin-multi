@@ -145,5 +145,20 @@ for (const { plugin, providerName, keys } of AUTH_MODULES) {
       }),
       /--auth-mode must be one of subscription\|api_key\|auto/,
     );
+
+    const failures = [];
+    assert.equal(
+      mod.resolveAuthSelection({
+        requestedMode: "bogus",
+        providerApiKeyEnvNames: keys,
+        fail: (code, message) => failures.push({ code, message }),
+        env: { [keys[0]]: "secret-value" },
+      }),
+      null,
+    );
+    assert.deepEqual(failures, [{
+      code: "bad_args",
+      message: "--auth-mode must be one of subscription|api_key|auto; got \"bogus\"",
+    }]);
   });
 }

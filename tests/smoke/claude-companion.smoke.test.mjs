@@ -45,6 +45,17 @@ function assertPreflightSafetyFields(result) {
   assert.equal(result.requires_external_provider_consent, true);
 }
 
+function assertClaudeApiKeyMissingError(result) {
+  assert.equal(result.ok, false);
+  assert.equal(result.error, "not_authed");
+  assert.equal(result.ready, false);
+  assert.equal(result.auth_mode, "api_key");
+  assert.equal(result.selected_auth_path, "api_key_env_missing");
+  assert.equal(result.auth_policy, "api_key_env_required");
+  assert.match(result.summary, /Claude API-key auth was requested/);
+  assert.match(result.next_action, /ANTHROPIC_API_KEY or CLAUDE_API_KEY/);
+}
+
 function writeExecutable(dir, name, source) {
   const bin = path.join(dir, name);
   writeFileSync(bin, source, "utf8");
@@ -76,6 +87,24 @@ function readOnlyJobRecord(dataDir) {
 function seedMinimalRepo(cwd) {
   fixtureSeedRepo(cwd);
 }
+
+test("run: api_key auth failure includes structured diagnostics before spawn", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "smoke-run-api-key-missing-"));
+  const missingBinary = path.join(cwd, "missing-claude-binary");
+  const { stdout, status, dataDir } = runCompanion(
+    ["run", "--mode=rescue", "--foreground", "--auth-mode", "api_key",
+     "--model", "claude-haiku-4-5-20251001", "--binary", missingBinary,
+     "--cwd", cwd, "--", "auth missing"],
+    { cwd, env: { ANTHROPIC_API_KEY: "", CLAUDE_API_KEY: "" } },
+  );
+  try {
+    assert.equal(status, 1);
+    assertClaudeApiKeyMissingError(JSON.parse(stdout));
+  } finally {
+    cleanup(dataDir);
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
 
 test("run --mode=review --foreground: emits JobRecord with status=completed", () => {
   const cwd = mkdtempSync(path.join(tmpdir(), "smoke-cwd-"));
@@ -634,6 +663,39 @@ test("continue --job: resumes a prior session via --resume", () => {
     assert.equal(out.parent_job_id, job_id, "resume carries parent_job_id");
   } finally {
     rmSync(dataDir, { recursive: true, force: true });
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("continue --job: api_key auth failure includes structured diagnostics before spawn", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "smoke-continue-api-key-missing-"));
+  const dataDir = mkdtempSync(path.join(tmpdir(), "continue-api-key-missing-data-"));
+  try {
+    const runRes = runCompanion(
+      ["run", "--mode=rescue", "--foreground", "--model", "claude-haiku-4-5-20251001",
+       "--cwd", cwd, "--", "seed"],
+      { cwd, dataDir },
+    );
+    assert.equal(runRes.status, 0, runRes.stderr);
+    const prior = JSON.parse(runRes.stdout);
+    const missingBinary = path.join(cwd, "missing-claude-continue-binary");
+    const contRes = runCompanion(
+      ["continue", "--job", prior.job_id, "--foreground", "--auth-mode", "api_key",
+       "--cwd", cwd, "--", "follow-up"],
+      {
+        cwd,
+        dataDir,
+        env: {
+          ANTHROPIC_API_KEY: "",
+          CLAUDE_API_KEY: "",
+          CLAUDE_BINARY: missingBinary,
+        },
+      },
+    );
+    assert.equal(contRes.status, 1);
+    assertClaudeApiKeyMissingError(JSON.parse(contRes.stdout));
+  } finally {
+    cleanup(dataDir);
     rmSync(cwd, { recursive: true, force: true });
   }
 });

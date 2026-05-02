@@ -393,7 +393,7 @@ async function cmdRun(rest) {
   const scopePaths = parseScopePathsOption(options["scope-paths"]);
   const authSelection = resolveAuthSelection(options["auth-mode"]);
   if (authSelection.selected_auth_path === "api_key_env_missing") {
-    fail("not_authed", apiKeyMissingMessage());
+    fail("not_authed", apiKeyMissingMessage(), apiKeyMissingFields(authSelection));
   }
 
   const prompt = positionals.join(" ").trim();
@@ -836,7 +836,7 @@ async function cmdContinue(rest) {
   const priorResumeChain = Array.isArray(prior.resume_chain) ? prior.resume_chain : [];
   const authSelection = resolveAuthSelection(options["auth-mode"]);
   if (authSelection.selected_auth_path === "api_key_env_missing") {
-    fail("not_authed", apiKeyMissingMessage());
+    fail("not_authed", apiKeyMissingMessage(), apiKeyMissingFields(authSelection));
   }
 
   // §21.1: resume_chain grows newest-last. The LAST entry is the UUID that

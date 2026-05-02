@@ -64,6 +64,17 @@ function assertPreflightSafetyFields(result) {
   assert.equal(result.requires_external_provider_consent, true);
 }
 
+function assertGeminiApiKeyMissingError(result) {
+  assert.equal(result.ok, false);
+  assert.equal(result.error, "not_authed");
+  assert.equal(result.ready, false);
+  assert.equal(result.auth_mode, "api_key");
+  assert.equal(result.selected_auth_path, "api_key_env_missing");
+  assert.equal(result.auth_policy, "api_key_env_required");
+  assert.match(result.summary, /Gemini API-key auth was requested/);
+  assert.match(result.next_action, /GEMINI_API_KEY or GOOGLE_API_KEY/);
+}
+
 function readOnlyJobRecord(dataDir) {
   const stateRoot = path.join(dataDir, "state");
   const records = [];
@@ -114,6 +125,24 @@ function readStdoutLog(dataDir, jobId) {
   }
   throw new Error(`no stdout.log for ${jobId}`);
 }
+
+test("gemini run api_key auth failure includes structured diagnostics before spawn", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "gemini-run-api-key-missing-cwd-"));
+  const missingBinary = path.join(cwd, "missing-gemini-binary");
+  const { stdout, status, dataDir } = runCompanion(
+    ["run", "--mode=rescue", "--foreground", "--auth-mode", "api_key",
+     "--model", "gemini-3-flash-preview", "--binary", missingBinary,
+     "--cwd", cwd, "--", "auth missing"],
+    { cwd, env: { GEMINI_API_KEY: "", GOOGLE_API_KEY: "" } },
+  );
+  try {
+    assert.equal(status, 1);
+    assertGeminiApiKeyMissingError(JSON.parse(stdout));
+  } finally {
+    rmTree(dataDir);
+    rmTree(cwd);
+  }
+});
 
 test("gemini rescue background: launched event and terminal JobRecord", async () => {
   const cwd = mkdtempSync(path.join(tmpdir(), "gemini-bg-cwd-"));
@@ -790,6 +819,39 @@ test("gemini continue foreground: resumes prior job session", () => {
     assert.equal(fx.t7_resume_id, prior.gemini_session_id);
     assert.equal(fx.t7_prompt_from_stdin, true, "Gemini continue prompt must arrive on stdin, not argv");
     assert.equal("prompt" in record, false, "full prompt must not appear on JobRecord");
+  } finally {
+    rmTree(first.dataDir);
+    rmTree(cwd);
+  }
+});
+
+test("gemini continue api_key auth failure includes structured diagnostics before spawn", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "gemini-continue-api-key-missing-cwd-"));
+  seedMinimalRepo(cwd);
+  const first = runCompanion(
+    ["run", "--mode=rescue", "--foreground", "--model", "gemini-3-flash-preview",
+     "--cwd", cwd, "--", "initial rescue task"],
+    { cwd },
+  );
+  try {
+    assert.equal(first.status, 0, `exit ${first.status}: ${first.stderr}`);
+    const prior = JSON.parse(first.stdout);
+    const missingBinary = path.join(cwd, "missing-gemini-continue-binary");
+    const continued = runCompanion(
+      ["continue", "--job", prior.job_id, "--foreground", "--auth-mode", "api_key",
+       "--cwd", cwd, "--", "continue rescue task"],
+      {
+        cwd,
+        dataDir: first.dataDir,
+        env: {
+          GEMINI_API_KEY: "",
+          GOOGLE_API_KEY: "",
+          GEMINI_BINARY: missingBinary,
+        },
+      },
+    );
+    assert.equal(continued.status, 1);
+    assertGeminiApiKeyMissingError(JSON.parse(continued.stdout));
   } finally {
     rmTree(first.dataDir);
     rmTree(cwd);

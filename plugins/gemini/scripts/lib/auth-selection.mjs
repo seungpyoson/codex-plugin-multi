@@ -13,6 +13,7 @@ export function resolveAuthSelection({
   const authMode = requestedMode ?? "subscription";
   if (!AUTH_MODES.has(authMode)) {
     fail("bad_args", `--auth-mode must be one of subscription|api_key|auto; got ${JSON.stringify(authMode)}`);
+    return null;
   }
   const providerKeys = providerApiKeyEnv(providerApiKeyEnvNames, env);
   if (authMode === "api_key") {
