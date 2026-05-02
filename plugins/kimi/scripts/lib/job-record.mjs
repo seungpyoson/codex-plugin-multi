@@ -226,6 +226,16 @@ function buildErrorDiagnostic(invocation, status, error_code, error_message) {
     suggested_action: null,
     disclosure_note: null,
   };
+  if (status === "failed" && error_code === "timeout") {
+    return {
+      error_summary: "Kimi Code CLI timed out before returning a review result.",
+      error_cause:
+        "The foreground Kimi process exceeded the configured timeout. This is usually provider latency, a cold start, or a stuck interactive CLI call rather than an OAuth failure.",
+      suggested_action:
+        "Retry the review after a short wait. If it repeats, check Kimi service status or run `kimi` interactively from a normal terminal.",
+      disclosure_note: null,
+    };
+  }
   if (status !== "failed" || error_code !== "scope_failed" || !error_message) {
     return empty;
   }

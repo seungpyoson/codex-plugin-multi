@@ -32,6 +32,7 @@ const MODELS_CONFIG_PATH = resolvePath(PLUGIN_ROOT, "config/models.json");
 const CONTINUABLE_STATUSES = new Set(["completed", "failed", "cancelled", "stale"]);
 const RUN_MODES = Object.freeze(["review", "adversarial-review", "custom-review", "rescue"]);
 const PREFLIGHT_MODES = Object.freeze(["review", "adversarial-review", "custom-review"]);
+const DEFAULT_KIMI_REVIEW_TIMEOUT_MS = 180000;
 
 configureState({
   pluginDataEnv: "KIMI_PLUGIN_DATA",
@@ -166,6 +167,15 @@ function invocationFromRecord(record) {
     binary: record.binary,
     started_at: record.started_at,
   };
+}
+
+function parsePositiveTimeoutMs(value, fallback) {
+  if (value === undefined || value === null || value === "") return fallback;
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    fail("bad_args", `--timeout-ms must be a positive number of milliseconds; got ${JSON.stringify(value)}`);
+  }
+  return parsed;
 }
 
 function promptSidecarPath(workspaceRoot, jobId) {
@@ -311,7 +321,7 @@ function cmdPreflight(rest) {
 
 async function cmdRun(rest) {
   const { options, positionals } = parseArgs(rest, {
-    valueOptions: ["mode", "model", "cwd", "binary", "scope-base", "scope-paths", "override-dispose"],
+    valueOptions: ["mode", "model", "cwd", "binary", "scope-base", "scope-paths", "override-dispose", "timeout-ms"],
     booleanOptions: ["background", "foreground"],
   });
   const mode = options.mode;
@@ -338,6 +348,7 @@ async function cmdRun(rest) {
     return profile.dispose_default;
   })();
   const scopePaths = parseScopePathsOption(options["scope-paths"]);
+  const timeoutMs = parsePositiveTimeoutMs(options["timeout-ms"], DEFAULT_KIMI_REVIEW_TIMEOUT_MS);
 
   const jobId = newJobId();
   const invocation = Object.freeze({
@@ -358,6 +369,7 @@ async function cmdRun(rest) {
     prompt_head: prompt.slice(0, 200),
     schema_spec: null,
     binary: options.binary ?? process.env.KIMI_BINARY ?? "kimi",
+    timeout_ms: timeoutMs,
     started_at: new Date().toISOString(),
   });
 
@@ -469,6 +481,7 @@ async function executeRun(invocation, prompt, { foreground }) {
         cwd: neutralCwd ?? containment.path,
         binary: invocation.binary,
         resumeId,
+        timeoutMs: foreground ? invocation.timeout_ms : 0,
         onSpawn: (pidInfo) => {
           const runningRecord = buildJobRecord(attemptInvocation, {
             status: "running",
@@ -680,7 +693,7 @@ async function cmdRunWorker(rest) {
 
 async function cmdContinue(rest) {
   const { options, positionals } = parseArgs(rest, {
-    valueOptions: ["job", "cwd", "model", "binary"],
+    valueOptions: ["job", "cwd", "model", "binary", "timeout-ms"],
     booleanOptions: ["background", "foreground"],
   });
   if (!options.job) fail("bad_args", "--job <id> is required");
@@ -726,6 +739,7 @@ async function cmdContinue(rest) {
   const priorModeName = prior.mode_profile_name ?? prior.mode;
   const priorProfile = resolveProfile(priorModeName);
   const priorResumeChain = Array.isArray(prior.resume_chain) ? prior.resume_chain : [];
+  const timeoutMs = parsePositiveTimeoutMs(options["timeout-ms"], DEFAULT_KIMI_REVIEW_TIMEOUT_MS);
   const invocation = Object.freeze({
     job_id: newJobId_,
     target: "kimi",
@@ -744,6 +758,7 @@ async function cmdContinue(rest) {
     prompt_head: prompt.slice(0, 200),
     schema_spec: prior.schema_spec ?? null,
     binary: options.binary ?? process.env.KIMI_BINARY ?? "kimi",
+    timeout_ms: timeoutMs,
     started_at: new Date().toISOString(),
   });
 
@@ -852,6 +867,15 @@ function pingRateLimitedFields() {
   };
 }
 
+function pingTimeoutFields(timeoutMs) {
+  return {
+    ready: false,
+    summary: "Kimi Code CLI ping timed out before readiness could be confirmed.",
+    next_action: "Retry setup after a short wait. If it repeats, check Kimi service status or run `kimi` interactively.",
+    timeout_ms: timeoutMs,
+  };
+}
+
 function pingNotFoundFields() {
   return {
     ready: false,
@@ -903,6 +927,7 @@ async function cmdPing(rest) {
     ? [options.model]
     : resolveModelCandidatesForProfile(profile, modelsConfig);
   const candidates = modelCandidates.length > 0 ? modelCandidates : [model];
+  const timeoutMs = parsePositiveTimeoutMs(options["timeout-ms"], 30000);
   try {
     let execution = null;
     let selectedModel = model;
@@ -915,7 +940,7 @@ async function cmdPing(rest) {
         promptText: PING_PROMPT,
         cwd: "/tmp",
         binary: options.binary ?? process.env.KIMI_BINARY ?? "kimi",
-        timeoutMs: Number(options["timeout-ms"] ?? 30000),
+        timeoutMs,
       });
       if (
         execution.exitCode !== 0 &&
@@ -947,6 +972,10 @@ async function cmdPing(rest) {
       process.exit(0);
     }
     const detail = pingFailureDetail(execution);
+    if (execution?.timedOut === true) {
+      printJson({ status: "transient_timeout", ...pingTimeoutFields(timeoutMs), ...ignoredApiKeyAuthFields(), detail });
+      process.exit(2);
+    }
     if (/rate limit|429|overloaded/i.test(detail)) {
       printJson({ status: "rate_limited", ...pingRateLimitedFields(), ...ignoredApiKeyAuthFields(), detail });
       process.exit(2);
