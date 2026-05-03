@@ -16,6 +16,17 @@ test("buildKimiArgs: every Kimi profile enables thinking mode intentionally", ()
   }
 });
 
+test("MODE_PROFILES: every Kimi profile declares a positive max-step budget", () => {
+  for (const [name, profile] of Object.entries(MODE_PROFILES)) {
+    assert.ok(
+      Object.prototype.hasOwnProperty.call(profile, "max_steps_per_turn"),
+      `${name} must declare max_steps_per_turn`,
+    );
+    assert.equal(Number.isInteger(profile.max_steps_per_turn), true, `${name} max_steps_per_turn must be an integer`);
+    assert.ok(profile.max_steps_per_turn > 0, `${name} max_steps_per_turn must be positive`);
+  }
+});
+
 test("buildKimiArgs: review keeps model and plan mode with thinking", () => {
   const args = buildKimiArgs(resolveProfile("review"), {
     model: "kimi-code/kimi-for-coding",
@@ -58,10 +69,102 @@ test("parseKimiResult: classifies raw max-step exhaustion before JSON parsing", 
   assert.equal(parsed.raw, "Max number of steps reached: 1\n");
 });
 
-test("parseKimiResult: does not treat an embedded max-step line as the sole sentinel", () => {
+test("parseKimiResult: treats sole max-step sentinel as failure regardless of exit-code metadata", () => {
+  for (const options of [undefined, { exitCode: null }, { exitCode: 0 }]) {
+    const parsed = parseKimiResult(
+      "Max number of steps reached: 1\n",
+      `To resume this session: kimi -r ${KIMI_SESSION_ID}\n`,
+      options,
+    );
+
+    assert.equal(parsed.ok, false);
+    assert.equal(parsed.reason, "step_limit_exceeded");
+    assert.equal(parsed.sessionId, KIMI_SESSION_ID);
+  }
+});
+
+test("parseKimiResult: classifies mixed JSON plus sentinel when Kimi exits nonzero", () => {
   const parsed = parseKimiResult(
     `{"content":"partial","session_id":"${KIMI_SESSION_ID}"}\nMax number of steps reached: 8\n`,
     "",
+    { exitCode: 1 },
+  );
+
+  assert.equal(parsed.ok, false);
+  assert.equal(parsed.reason, "step_limit_exceeded");
+  assert.equal(parsed.error, "Max number of steps reached: 8");
+  assert.equal(parsed.stepLimit, 8);
+  assert.equal(parsed.sessionId, KIMI_SESSION_ID);
+});
+
+test("parseKimiResult: keeps scanning stream-json lines for session id on step limit", () => {
+  const parsed = parseKimiResult(
+    `{"content":"partial","session_id":"${KIMI_SESSION_ID}"}\n{"stats":{"tokens":{"total":12}}}\nMax number of steps reached: 8\n`,
+    "",
+    { exitCode: 1 },
+  );
+
+  assert.equal(parsed.ok, false);
+  assert.equal(parsed.reason, "step_limit_exceeded");
+  assert.equal(parsed.sessionId, KIMI_SESSION_ID);
+});
+
+test("parseKimiResult: recovers JSON session id from stderr when no resume hint exists", () => {
+  const parsed = parseKimiResult(
+    "Max number of steps reached: 8\n",
+    `{"content":"partial","session_id":"${KIMI_SESSION_ID}"}\n`,
+    { exitCode: 1 },
+  );
+
+  assert.equal(parsed.ok, false);
+  assert.equal(parsed.reason, "step_limit_exceeded");
+  assert.equal(parsed.sessionId, KIMI_SESSION_ID);
+});
+
+test("parseKimiResult: prefers stdout JSON session id over stderr fallback", () => {
+  const stderrSessionId = "99999999-aaaa-4bbb-8ccc-dddddddddddd";
+  const parsed = parseKimiResult(
+    `{"content":"partial","session_id":"${KIMI_SESSION_ID}"}\nMax number of steps reached: 8\n`,
+    `{"content":"stderr","session_id":"${stderrSessionId}"}\n`,
+    { exitCode: 1 },
+  );
+
+  assert.equal(parsed.ok, false);
+  assert.equal(parsed.reason, "step_limit_exceeded");
+  assert.equal(parsed.sessionId, KIMI_SESSION_ID);
+});
+
+test("parseKimiResult: accepts stdout resume hints after a failed max-step sentinel", () => {
+  const parsed = parseKimiResult(
+    `Max number of steps reached: 8\nTo resume this session: kimi -r ${KIMI_SESSION_ID}\n`,
+    "",
+    { exitCode: 1 },
+  );
+
+  assert.equal(parsed.ok, false);
+  assert.equal(parsed.reason, "step_limit_exceeded");
+  assert.equal(parsed.error, "Max number of steps reached: 8");
+  assert.equal(parsed.stepLimit, 8);
+  assert.equal(parsed.sessionId, KIMI_SESSION_ID);
+});
+
+test("parseKimiResult: preserves embedded max-step text in successful JSON output", () => {
+  const parsed = parseKimiResult(
+    `{"content":"partial","session_id":"${KIMI_SESSION_ID}"}\nMax number of steps reached: 8\n`,
+    "",
+    { exitCode: 0 },
+  );
+
+  assert.equal(parsed.ok, true);
+  assert.equal(parsed.result, "partial");
+  assert.equal(parsed.sessionId, KIMI_SESSION_ID);
+});
+
+test("parseKimiResult: tolerates null options argument", () => {
+  const parsed = parseKimiResult(
+    `{"content":"partial","session_id":"${KIMI_SESSION_ID}"}\nMax number of steps reached: 8\n`,
+    "",
+    null,
   );
 
   assert.equal(parsed.ok, true);
@@ -88,4 +191,16 @@ test("buildKimiArgs: review modes use safer max-step defaults and allow override
     maxStepsPerTurn: 48,
   });
   assert.equal(customOverrideArgs[customOverrideArgs.indexOf("--max-steps-per-turn") + 1], "48");
+});
+
+test("buildKimiArgs: rejects invalid max-step budgets", () => {
+  for (const maxStepsPerTurn of [0, -1, 1.5, Number.NaN]) {
+    assert.throws(
+      () => buildKimiArgs(resolveProfile("review"), {
+        model: "kimi-k2-turbo-preview",
+        maxStepsPerTurn,
+      }),
+      /maxStepsPerTurn must be a positive integer/,
+    );
+  }
 });
