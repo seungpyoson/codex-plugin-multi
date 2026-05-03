@@ -23,6 +23,7 @@ comes back to you.
   "parent_job_id":       null | "<uuid>",   // set by `continue`; null on fresh runs
   "claude_session_id":   null | "<uuid>",   // from Claude's stdout, not minted
   "gemini_session_id":   null,              // present for schema parity; Gemini uses it
+  "kimi_session_id":     null,              // present for schema parity; Kimi uses it
   "resume_chain":        ["<uuid>", ...],   // newest-last; [] on first run
   "pid_info":            null | { "pid": N, "starttime": "...", "argv0": "..." },
 

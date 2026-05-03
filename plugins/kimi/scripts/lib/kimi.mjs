@@ -20,10 +20,14 @@ export function buildKimiArgs(profile, runtimeInputs = {}) {
     model,
     includeDirPath = null,
     resumeId = null,
+    maxStepsPerTurn = profile.max_steps_per_turn ?? 8,
   } = runtimeInputs;
 
   if ((typeof model !== "string" || !model) && profile.name !== "ping") {
     throw new Error("buildKimiArgs: model is required (full ID, no aliases)");
+  }
+  if (!Number.isInteger(maxStepsPerTurn) || maxStepsPerTurn <= 0) {
+    throw new Error("buildKimiArgs: maxStepsPerTurn must be a positive integer");
   }
 
   const args = [
@@ -34,7 +38,7 @@ export function buildKimiArgs(profile, runtimeInputs = {}) {
     "--input-format",
     "text",
     "--max-steps-per-turn",
-    "8",
+    String(maxStepsPerTurn),
   ];
   if (typeof model === "string" && model) args.push("-m", model);
   args.push("--thinking");
@@ -59,6 +63,10 @@ function summarizeStderr(stderr) {
   return trimmed.length > 4000 ? `${trimmed.slice(0, 4000)}...` : trimmed;
 }
 
+function parseResumeSessionId(text) {
+  return /\bTo resume this session:\s+kimi\s+-r\s+([0-9a-fA-F-]+)/.exec(text)?.[1] ?? null;
+}
+
 export function parseKimiResult(stdout, stderr = "") {
   const trimmed = stdout.trim();
   if (!trimmed) {
@@ -68,8 +76,20 @@ export function parseKimiResult(stdout, stderr = "") {
     }
     return { ok: false, reason: "empty_stdout", raw: stdout };
   }
+  const stepLimitMatch = /^Max number of steps reached:\s*(\d+)\s*$/.exec(trimmed);
+  if (stepLimitMatch) {
+    const error = stepLimitMatch[0].trim();
+    return {
+      ok: false,
+      reason: "step_limit_exceeded",
+      error,
+      stepLimit: Number(stepLimitMatch[1]),
+      sessionId: parseResumeSessionId(`${stdout}\n${stderr}`),
+      raw: stdout,
+    };
+  }
   let parsed;
-  const resumeMatch = /\bTo resume this session:\s+kimi\s+-r\s+([0-9a-fA-F-]+)/.exec(stdout);
+  const resumeMatch = parseResumeSessionId(`${stdout}\n${stderr}`);
   try {
     parsed = JSON.parse(trimmed);
   } catch (e) {
@@ -84,7 +104,7 @@ export function parseKimiResult(stdout, stderr = "") {
     : (typeof parsed.error === "string" ? parsed.error : JSON.stringify(parsed.error));
   return {
     ok: parsed.error == null,
-    sessionId: parsed.session_id ?? parsed.sessionId ?? resumeMatch?.[1] ?? null,
+    sessionId: parsed.session_id ?? parsed.sessionId ?? resumeMatch ?? null,
     result: typeof parsed.content === "string"
       ? parsed.content
       : (typeof parsed.response === "string" ? parsed.response : (typeof parsed.result === "string" ? parsed.result : null)),
@@ -108,13 +128,14 @@ export async function spawnKimi(profile, runtimeInputs = {}) {
     timeoutMs = 0,
     binary = "kimi",
     onSpawn = null,
+    maxStepsPerTurn,
   } = runtimeInputs;
 
   if (typeof promptText !== "string" || promptText.length === 0) {
     throw new Error("spawnKimi: promptText is required");
   }
 
-  const args = buildKimiArgs(profile, { model, includeDirPath, resumeId });
+  const args = buildKimiArgs(profile, { model, includeDirPath, resumeId, maxStepsPerTurn });
   const targetEnv = sanitizeTargetEnv(env);
 
   return new Promise((resolve, reject) => {

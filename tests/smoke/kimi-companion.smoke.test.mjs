@@ -88,8 +88,44 @@ async function waitForProcessExit(pid, timeoutMs = 5000) {
   assert.fail(`worker process ${pid} did not exit`);
 }
 
+function findJobPaths(dataDir, jobId) {
+  const stateRoot = path.join(dataDir, "state");
+  for (const workspaceDir of readdirSync(stateRoot)) {
+    const jobsDir = path.join(stateRoot, workspaceDir, "jobs");
+    const metaPath = path.join(jobsDir, `${jobId}.json`);
+    if (existsSync(metaPath)) {
+      return {
+        jobsDir,
+        metaPath,
+        sidecarDir: path.join(jobsDir, jobId),
+        runtimeOptionsPath: path.join(jobsDir, jobId, "runtime-options.json"),
+        legacyRuntimeOptionsPath: path.join(jobsDir, `${jobId}.runtime-options`),
+      };
+    }
+  }
+  assert.fail(`job ${jobId} not found under ${stateRoot}`);
+}
+
 function parseJson(stdout) {
   return JSON.parse(stdout);
+}
+
+function waitForTerminalRecord(dataDir, jobId, { timeoutMs = 5000 } = {}) {
+  const deadline = Date.now() + timeoutMs;
+  let last = null;
+  while (Date.now() < deadline) {
+    const stateRoot = path.join(dataDir, "state");
+    if (existsSync(stateRoot)) {
+      for (const workspaceDir of readdirSync(stateRoot)) {
+        const metaPath = path.join(stateRoot, workspaceDir, "jobs", `${jobId}.json`);
+        if (!existsSync(metaPath)) continue;
+        last = JSON.parse(readFileSync(metaPath, "utf8"));
+        if (["completed", "failed", "cancelled", "stale"].includes(last.status)) return last;
+      }
+    }
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 50);
+  }
+  assert.fail(`job ${jobId} did not become terminal; last=${JSON.stringify(last)}`);
 }
 
 function assertPreflightSafetyFields(result) {
@@ -367,6 +403,141 @@ test("kimi background run: launched event and terminal JobRecord carry external_
     rmSync(cwd, { recursive: true, force: true });
   }
 });
+
+test("kimi foreground review step-limit exhaustion returns actionable JobRecord", () => withRepo((cwd) => {
+  const result = runCompanion([
+    "run",
+    "--mode",
+    "custom-review",
+    "--cwd",
+    cwd,
+    "--scope-paths",
+    "seed.txt",
+    "--foreground",
+    "--max-steps-per-turn",
+    "48",
+    "--",
+    "Review this scope.",
+  ], {
+    cwd,
+    env: {
+      KIMI_MOCK_ASSERT_MAX_STEPS_PER_TURN: "48",
+      KIMI_MOCK_STEP_LIMIT: "1",
+    },
+  });
+  assert.equal(result.status, 2);
+  const record = parseJson(result.stdout);
+  assert.equal(record.target, "kimi");
+  assert.equal(record.mode, "custom-review");
+  assert.equal(record.status, "failed");
+  assert.equal(record.error_code, "step_limit_exceeded");
+  assert.match(record.error_message, /Max number of steps reached: 1/);
+  assert.match(record.suggested_action, /higher step budget/i);
+  assert.match(record.suggested_action, /narrower scope/i);
+  const { record: persisted } = readOnlyJobRecord(result.dataDir);
+  assert.equal(persisted.job_id, record.job_id);
+  assert.equal(persisted.error_code, "step_limit_exceeded");
+}));
+
+test("kimi run rejects invalid max-step budgets before target launch", () => withRepo((cwd) => {
+  const result = runCompanion([
+    "run",
+    "--mode",
+    "custom-review",
+    "--cwd",
+    cwd,
+    "--scope-paths",
+    "seed.txt",
+    "--foreground",
+    "--max-steps-per-turn",
+    "0.5",
+    "--",
+    "Review this scope.",
+  ], { cwd });
+  assert.equal(result.status, 1);
+  const parsed = parseJson(result.stdout);
+  assert.equal(parsed.error, "bad_args");
+  assert.match(parsed.message, /--max-steps-per-turn/);
+}));
+
+test("kimi background review preserves configured max-step budget outside public JobRecord", () => withRepo((cwd) => {
+  const dataDir = mkdtempSync(path.join(tmpdir(), "kimi-background-max-steps-data-"));
+  const launched = runCompanion([
+    "run",
+    "--mode",
+    "custom-review",
+    "--cwd",
+    cwd,
+    "--scope-paths",
+    "seed.txt",
+    "--background",
+    "--max-steps-per-turn",
+    "48",
+    "--",
+    "Review this scope.",
+  ], {
+    cwd,
+    dataDir,
+    env: { KIMI_MOCK_ASSERT_MAX_STEPS_PER_TURN: "48" },
+  });
+  assert.equal(launched.status, 0, launched.stderr);
+  const payload = parseJson(launched.stdout);
+  assert.equal(payload.event, "launched");
+
+  const record = waitForTerminalRecord(dataDir, payload.job_id);
+  assert.equal(record.status, "completed");
+  assert.equal(record.result, "Mock Kimi response.");
+  assert.equal("max_steps_per_turn" in record, false);
+  const paths = findJobPaths(dataDir, payload.job_id);
+  assert.equal(existsSync(paths.legacyRuntimeOptionsPath), false);
+  assert.equal(existsSync(paths.runtimeOptionsPath), true);
+}));
+
+test("kimi continue reuses prior private max-step budget without JobRecord drift", () => withRepo((cwd) => {
+  const dataDir = mkdtempSync(path.join(tmpdir(), "kimi-continue-max-steps-data-"));
+  const first = runCompanion([
+    "run",
+    "--mode",
+    "custom-review",
+    "--cwd",
+    cwd,
+    "--scope-paths",
+    "seed.txt",
+    "--foreground",
+    "--max-steps-per-turn",
+    "48",
+    "--",
+    "Review this scope.",
+  ], {
+    cwd,
+    dataDir,
+    env: { KIMI_MOCK_ASSERT_MAX_STEPS_PER_TURN: "48" },
+  });
+  assert.equal(first.status, 0, first.stderr);
+  const firstRecord = parseJson(first.stdout);
+  assert.equal(firstRecord.status, "completed");
+  assert.equal("max_steps_per_turn" in firstRecord, false);
+
+  const continued = runCompanion([
+    "continue",
+    "--job",
+    firstRecord.job_id,
+    "--cwd",
+    cwd,
+    "--foreground",
+    "--",
+    "Continue this review.",
+  ], {
+    cwd,
+    dataDir,
+    env: { KIMI_MOCK_ASSERT_MAX_STEPS_PER_TURN: "48" },
+  });
+  assert.equal(continued.status, 0, continued.stderr);
+  const continuedRecord = parseJson(continued.stdout);
+  assert.equal(continuedRecord.status, "completed");
+  assert.equal(continuedRecord.parent_job_id, firstRecord.job_id);
+  assert.equal("max_steps_per_turn" in continuedRecord, false);
+}));
 
 test("kimi continue background: launched event and terminal JobRecord keep parent metadata", async () => {
   const cwd = mkdtempSync(path.join(tmpdir(), "kimi-continue-bg-cwd-"));
