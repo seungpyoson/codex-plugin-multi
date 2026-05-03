@@ -9,7 +9,7 @@ import { runCommand } from "../../claude/scripts/lib/process.mjs";
 import {
   EXTERNAL_REVIEW_KEYS,
   SOURCE_CONTENT_TRANSMISSION,
-} from "./lib/external-review.mjs";
+} from "../../claude/scripts/lib/external-review.mjs";
 
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 const PLUGIN_ROOT = resolve(SCRIPT_DIR, "..");

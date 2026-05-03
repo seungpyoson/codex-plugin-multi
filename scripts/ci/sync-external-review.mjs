@@ -9,7 +9,7 @@ const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..
 const SOURCE = path.join(REPO_ROOT, "scripts/lib/external-review.mjs");
 const COPIES = COMPANION_PLUGIN_TARGETS.map((plugin) =>
   path.join(REPO_ROOT, `plugins/${plugin}/scripts/lib/external-review.mjs`)
-).concat(path.join(REPO_ROOT, "plugins/api-reviewers/scripts/lib/external-review.mjs"));
+);
 
 const checkOnly = process.argv.includes("--check");
 const sourceText = readFileSync(SOURCE, "utf8");
