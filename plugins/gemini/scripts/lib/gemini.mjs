@@ -53,7 +53,9 @@ export function buildGeminiArgs(profile, runtimeInputs = {}) {
 
 function isCodexSandbox(env) {
   const value = env?.CODEX_SANDBOX;
-  return Boolean(value) && value !== "false" && value !== "0";
+  if (!value) return false;
+  const normalized = String(value).trim().toLowerCase();
+  return !["", "false", "0", "no", "off", "null", "undefined", "nil"].includes(normalized);
 }
 
 function summarizeStderr(stderr) {

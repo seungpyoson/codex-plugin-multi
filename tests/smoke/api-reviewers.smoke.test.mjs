@@ -726,6 +726,8 @@ test("direct API timeout marks selected content as sent", async () => {
     assert.notEqual(result.stdout, "", result.stderr);
     const record = parseJson(result.stdout);
     assert.equal(record.error_code, "timeout");
+    assert.match(record.suggested_action, /timeout/i);
+    assert.match(record.suggested_action, /API_REVIEWERS_TIMEOUT_MS/);
     assert.equal(record.external_review.source_content_transmission, "sent");
     assert.equal(record.external_review.disclosure,
       "Selected source content was sent to DeepSeek through direct API auth, but the provider did not return a clean result.");
@@ -771,6 +773,46 @@ test("direct API provider_unavailable under Codex recommends sandbox network acc
   assert.match(record.suggested_action, /network_access = true/);
   assert.match(record.suggested_action, /outside sandbox/);
   assert.doesNotMatch(result.stdout, /secret-test-value/);
+});
+
+test("direct API provider_unavailable ignores false-like Codex sandbox values", async () => {
+  const cwd = makeWorkspace();
+  const dataDir = mkdtempSync(path.join(tmpdir(), "api-reviewers-data-"));
+  const pluginRoot = makeInstalledApiReviewersRoot();
+  writeFileSync(path.join(pluginRoot, "config", "providers.json"), JSON.stringify({
+    deepseek: {
+      display_name: "DeepSeek",
+      auth_mode: "api_key",
+      env_keys: ["DEEPSEEK_API_KEY"],
+      base_url: "http://127.0.0.1:9",
+      model: "deepseek-v4-flash",
+    },
+  }, null, 2));
+
+  for (const value of ["false", "0"]) {
+    const result = await run([
+      "run",
+      "--provider", "deepseek",
+      "--mode", "custom-review",
+      "--scope", "custom",
+      "--scope-paths", "seed.txt",
+      "--foreground",
+      "--prompt", "Check this file.",
+    ], {
+      cwd,
+      companion: path.join(pluginRoot, "scripts", "api-reviewer.mjs"),
+      env: {
+        API_REVIEWERS_PLUGIN_DATA: dataDir,
+        CODEX_SANDBOX: value,
+        DEEPSEEK_API_KEY: "secret-test-value",
+      },
+    });
+    assert.equal(result.status, 1);
+    const record = parseJson(result.stdout);
+    assert.equal(record.error_code, "provider_unavailable");
+    assert.doesNotMatch(record.suggested_action, /network_access = true/);
+    assert.doesNotMatch(record.suggested_action, /outside sandbox/);
+  }
 });
 
 test("direct API HTTP provider_unavailable under Codex does not recommend sandbox network access", async () => {

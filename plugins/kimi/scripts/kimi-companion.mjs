@@ -1019,12 +1019,22 @@ function pingFailureDetail(execution) {
 }
 
 function isKimiCodexSandboxBlocked(detail) {
-  if (!process.env.CODEX_SANDBOX) return false;
+  if (!isCodexSandbox(process.env)) return false;
   const permissionRe = /Operation not permitted|Permission denied|PermissionError|EACCES|EPERM/i;
   const kimiPathRe = /(?:^|[/\\])\.kimi(?:[/\\]|['"\s:)]|$)/;
-  return String(detail ?? "")
-    .split("\n")
-    .some((line) => permissionRe.test(line) && kimiPathRe.test(line));
+  const lines = String(detail ?? "").split("\n");
+  return lines.some((line, i) => {
+    if (permissionRe.test(line) && kimiPathRe.test(line)) return true;
+    const nextLine = lines[i + 1] ?? "";
+    return permissionRe.test(line) && /^\s/.test(nextLine) && kimiPathRe.test(nextLine);
+  });
+}
+
+function isCodexSandbox(env) {
+  const value = env?.CODEX_SANDBOX;
+  if (!value) return false;
+  const normalized = String(value).trim().toLowerCase();
+  return !["", "false", "0", "no", "off", "null", "undefined", "nil"].includes(normalized);
 }
 
 async function cmdPing(rest) {

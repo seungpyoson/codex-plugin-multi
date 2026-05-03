@@ -487,7 +487,7 @@ function payloadSentForProviderException(error) {
   if (error?.name === "AbortError") return true;
   const code = error?.code ?? error?.cause?.code ?? null;
   if (code === "ENOTFOUND" || code === "EAI_AGAIN" || code === "ECONNREFUSED" ||
-      code === "EHOSTUNREACH" || code === "ENETUNREACH" || code === "ECONNABORTED") {
+      code === "EHOSTUNREACH" || code === "ENETUNREACH") {
     return false;
   }
   return null;
@@ -539,9 +539,10 @@ function suggestedAction(errorCode, provider, cfg, errorMessage = "", env = proc
   if (errorCode === "missing_key") return `Expose one of these key names to Codex: ${(cfg.env_keys ?? []).join(", ")}.`;
   if (errorCode === "auth_rejected") return `Check the ${cfg.display_name} API key and billing/plan for ${cfg.model}.`;
   if (errorCode === "rate_limited") return `Wait and retry, or lower concurrency for ${provider}.`;
+  if (errorCode === "timeout") return `The provider did not respond within the timeout window. Retry later, increase API_REVIEWERS_TIMEOUT_MS, or switch reviewer provider.`;
   if (errorCode === "provider_unavailable") {
-    const looksLikeNetworkFailure = /fetch failed|ENOTFOUND|EAI_AGAIN|ECONNREFUSED|EHOSTUNREACH|ENETUNREACH|ECONNABORTED|network/i.test(errorMessage);
-    if (env.CODEX_SANDBOX && looksLikeNetworkFailure) {
+    const looksLikeNetworkFailure = /fetch failed|ENOTFOUND|EAI_AGAIN|ECONNREFUSED|EHOSTUNREACH|ENETUNREACH|ETIMEDOUT|network/i.test(errorMessage);
+    if (isCodexSandbox(env) && looksLikeNetworkFailure) {
       return `If running inside Codex, set [sandbox_workspace_write].network_access = true in ~/.codex/config.toml, start a fresh Codex session, then retry; or run this direct API reviewer outside sandbox. If network is already enabled, retry later or switch reviewer provider.`;
     }
     if (looksLikeNetworkFailure) {
@@ -551,6 +552,13 @@ function suggestedAction(errorCode, provider, cfg, errorMessage = "", env = proc
   }
   if (errorCode === "scope_failed") return "Adjust --scope, --scope-base, or --scope-paths and retry.";
   return "Inspect error_message and retry after correcting the provider or request configuration.";
+}
+
+function isCodexSandbox(env) {
+  const value = env?.CODEX_SANDBOX;
+  if (!value) return false;
+  const normalized = String(value).trim().toLowerCase();
+  return !["", "false", "0", "no", "off", "null", "undefined", "nil"].includes(normalized);
 }
 
 function directApiDisclosure(displayName, completed, payloadSent) {

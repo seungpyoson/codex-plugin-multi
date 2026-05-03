@@ -353,6 +353,54 @@ process.exit(1);
   }
 });
 
+test("kimi ping ignores false-like CODEX_SANDBOX values for sandbox classification", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "kimi-ping-sandbox-false-env-"));
+  const bin = path.join(cwd, "kimi-false-env-denied");
+  writeFileSync(bin, `#!/usr/bin/env node
+process.stderr.write("PermissionError: [Errno 1] Operation not permitted: '/Users/test/.kimi/auth.json'\\n");
+process.exit(1);
+`, "utf8");
+  chmodSync(bin, 0o755);
+  try {
+    for (const value of ["false", "0"]) {
+      const result = spawnSync("node", [COMPANION, "ping", "--binary", bin], {
+        cwd,
+        encoding: "utf8",
+        env: { ...process.env, CODEX_SANDBOX: value, KIMI_PLUGIN_DATA: mkdtempSync(path.join(tmpdir(), "kimi-false-env-denied-data-")) },
+      });
+      assert.equal(result.status, 2);
+      const parsed = parseJson(result.stdout);
+      assert.notEqual(parsed.status, "sandbox_blocked");
+      assert.doesNotMatch(parsed.next_action, /writable_roots/);
+    }
+  } finally {
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("kimi ping classifies indented continuation-line Kimi permission denials", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "kimi-ping-sandbox-continuation-"));
+  const bin = path.join(cwd, "kimi-continuation-denied");
+  writeFileSync(bin, `#!/usr/bin/env node
+process.stderr.write("PermissionError: [Errno 1] Operation not permitted:\\n    '/Users/test/.kimi/config.toml'\\n");
+process.exit(1);
+`, "utf8");
+  chmodSync(bin, 0o755);
+  try {
+    const result = spawnSync("node", [COMPANION, "ping", "--binary", bin], {
+      cwd,
+      encoding: "utf8",
+      env: { ...process.env, CODEX_SANDBOX: "seatbelt", KIMI_PLUGIN_DATA: mkdtempSync(path.join(tmpdir(), "kimi-continuation-denied-data-")) },
+    });
+    assert.equal(result.status, 2);
+    const parsed = parseJson(result.stdout);
+    assert.equal(parsed.status, "sandbox_blocked");
+    assert.match(parsed.next_action, /writable_roots/);
+  } finally {
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
 test("kimi ping rejects fractional timeout milliseconds", () => {
   const cwd = mkdtempSync(path.join(tmpdir(), "kimi-ping-timeout-fraction-"));
   try {

@@ -38,7 +38,7 @@ test("buildGeminiArgs: review uses policy, plan mode, sandbox, include-directori
 });
 
 test("buildGeminiArgs: CODEX_SANDBOX false-like values do not suppress Gemini sandbox", () => {
-  for (const value of ["false", "0"]) {
+  for (const value of ["false", "0", "False", "off", " "]) {
     const args = buildGeminiArgs(resolveProfile("review"), {
       model: "gemini-3-flash-preview",
       policyPath: POLICY,
