@@ -1,9 +1,9 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFile, execFileSync } from "node:child_process";
-import { cpSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
-import { tmpdir } from "node:os";
+import { hostname, tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -72,6 +72,16 @@ function run(args, { cwd = REPO_ROOT, env = {}, companion = COMPANION } = {}) {
 
 function parseJson(stdout) {
   return JSON.parse(stdout);
+}
+
+async function waitForValue(fn, { timeoutMs = 2000, intervalMs = 25 } = {}) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const value = fn();
+    if (value) return value;
+    await new Promise((resolve) => setTimeout(resolve, intervalMs));
+  }
+  assert.fail("timed out waiting for expected value");
 }
 
 function mockResponse(model, id = "chatcmpl-test", content = `Verdict: APPROVE\nProvider model: ${model}`) {
@@ -276,6 +286,491 @@ test("API_REVIEWERS_MAX_TOKENS overrides provider request defaults", async () =>
   assert.equal(record.status, "completed");
   assert.equal(record.provider, "glm");
   assert.doesNotMatch(result.stdout, /secret-test-value/);
+});
+
+test("direct API reviewer persistence prunes old terminal job directories without touching active or unsafe entries", async () => {
+  const cwd = makeWorkspace();
+  const dataDir = mkdtempSync(path.join(tmpdir(), "api-reviewers-data-"));
+  const jobsDir = path.join(dataDir, "jobs");
+  mkdirSync(jobsDir, { recursive: true });
+
+  const oldJobs = Array.from({ length: 51 }, (_, index) => {
+    const id = `job_old_${String(index).padStart(2, "0")}`;
+    const dir = path.join(jobsDir, id);
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(path.join(dir, "meta.json"), JSON.stringify({ id, job_id: id, status: "completed" }) + "\n");
+    writeFileSync(path.join(dir, "prompt.txt"), "stale prompt material\n");
+    return {
+      id,
+      job_id: id,
+      status: "completed",
+      updatedAt: `2000-01-01T00:00:${String(index).padStart(2, "0")}.000Z`,
+    };
+  });
+  mkdirSync(path.join(jobsDir, "active_job"), { recursive: true });
+  writeFileSync(path.join(jobsDir, "active_job", "prompt.txt"), "active prompt material\n");
+  mkdirSync(path.join(jobsDir, "..unsafe"), { recursive: true });
+  writeFileSync(path.join(jobsDir, "..unsafe", "prompt.txt"), "unsafe should remain\n");
+  writeFileSync(path.join(dataDir, "state.json"), JSON.stringify({
+    version: 1,
+    jobs: [
+      ...oldJobs,
+      { id: "active_job", job_id: "active_job", status: "running", updatedAt: "1999-01-01T00:00:00.000Z" },
+      { id: "../unsafe", job_id: "../unsafe", status: "completed", updatedAt: "1998-01-01T00:00:00.000Z" },
+    ],
+  }, null, 2) + "\n");
+
+  const result = await run([
+    "run",
+    "--provider", "deepseek",
+    "--mode", "custom-review",
+    "--scope", "custom",
+    "--scope-paths", "seed.txt",
+    "--foreground",
+    "--prompt", "Check this file.",
+  ], {
+    cwd,
+    env: {
+      API_REVIEWERS_PLUGIN_DATA: dataDir,
+      API_REVIEWERS_MOCK_RESPONSE: mockResponse("deepseek-v4-pro"),
+      DEEPSEEK_API_KEY: "secret-test-value",
+    },
+  });
+
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  const record = parseJson(result.stdout);
+  const state = JSON.parse(readFileSync(path.join(dataDir, "state.json"), "utf8"));
+  const retainedIds = state.jobs.map((job) => job.id);
+  assert.equal(retainedIds.includes(record.id), true);
+  assert.equal(retainedIds.includes("active_job"), true);
+  assert.equal(existsSync(path.join(dataDir, "jobs", record.id, "meta.json")), true);
+  assert.equal(existsSync(path.join(jobsDir, "active_job", "prompt.txt")), true);
+  assert.equal(existsSync(path.join(jobsDir, "..unsafe", "prompt.txt")), true);
+  assert.equal(existsSync(path.join(jobsDir, "job_old_00")), false);
+  assert.ok(readdirSync(jobsDir).length <= 52, "prune should not retain all seeded terminal job directories");
+});
+
+test("direct API reviewer persistence discovers and prunes pre-state job directories", async () => {
+  const cwd = makeWorkspace();
+  const dataDir = mkdtempSync(path.join(tmpdir(), "api-reviewers-data-"));
+  const jobsDir = path.join(dataDir, "jobs");
+  mkdirSync(jobsDir, { recursive: true });
+
+  for (let index = 0; index < 51; index += 1) {
+    const id = `job_disk_${String(index).padStart(2, "0")}`;
+    const dir = path.join(jobsDir, id);
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(path.join(dir, "meta.json"), JSON.stringify({
+      id,
+      job_id: id,
+      status: "completed",
+      provider: "deepseek",
+      mode: "custom-review",
+      ended_at: `2001-01-01T00:00:${String(index).padStart(2, "0")}.000Z`,
+    }) + "\n");
+    writeFileSync(path.join(dir, "prompt.txt"), "stale prompt material\n");
+  }
+  mkdirSync(path.join(jobsDir, "active_disk"), { recursive: true });
+  writeFileSync(path.join(jobsDir, "active_disk", "meta.json"), JSON.stringify({
+    id: "active_disk",
+    job_id: "active_disk",
+    status: "running",
+    provider: "deepseek",
+    mode: "custom-review",
+    updatedAt: "2000-01-01T00:00:00.000Z",
+  }) + "\n");
+  mkdirSync(path.join(jobsDir, "..unsafe"), { recursive: true });
+  writeFileSync(path.join(jobsDir, "..unsafe", "meta.json"), JSON.stringify({
+    id: "../unsafe",
+    job_id: "../unsafe",
+    status: "completed",
+  }) + "\n");
+
+  const result = await run([
+    "run",
+    "--provider", "deepseek",
+    "--mode", "custom-review",
+    "--scope", "custom",
+    "--scope-paths", "seed.txt",
+    "--foreground",
+    "--prompt", "Check this file.",
+  ], {
+    cwd,
+    env: {
+      API_REVIEWERS_PLUGIN_DATA: dataDir,
+      API_REVIEWERS_MOCK_RESPONSE: mockResponse("deepseek-v4-pro"),
+      DEEPSEEK_API_KEY: "secret-test-value",
+    },
+  });
+
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  const record = parseJson(result.stdout);
+  const state = JSON.parse(readFileSync(path.join(dataDir, "state.json"), "utf8"));
+  const retainedIds = state.jobs.map((job) => job.id);
+  assert.equal(retainedIds.includes(record.id), true);
+  assert.equal(retainedIds.includes("active_disk"), true);
+  assert.equal(existsSync(path.join(jobsDir, record.id, "meta.json")), true);
+  assert.equal(existsSync(path.join(jobsDir, "active_disk", "meta.json")), true);
+  assert.equal(existsSync(path.join(jobsDir, "..unsafe", "meta.json")), true);
+  assert.equal(existsSync(path.join(jobsDir, "job_disk_00")), false);
+  assert.ok(readdirSync(jobsDir).length <= 52, "migration prune should not retain all directory-only jobs");
+});
+
+test("direct API reviewer pruning does not follow symlinked job dirs during tmp cleanup", async () => {
+  const cwd = makeWorkspace();
+  const dataDir = mkdtempSync(path.join(tmpdir(), "api-reviewers-data-"));
+  const jobsDir = path.join(dataDir, "jobs");
+  mkdirSync(jobsDir, { recursive: true });
+  const outsideDir = mkdtempSync(path.join(tmpdir(), "api-reviewers-outside-"));
+  const outsideTmp = path.join(outsideDir, "meta.json.outside.tmp");
+  writeFileSync(outsideTmp, "must not be deleted\n");
+
+  const symlinkJobId = "job_symlink_tmp";
+  symlinkSync(outsideDir, path.join(jobsDir, symlinkJobId), "dir");
+
+  const oldJobs = Array.from({ length: 50 }, (_, index) => {
+    const id = `job_keep_${String(index).padStart(2, "0")}`;
+    const dir = path.join(jobsDir, id);
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(path.join(dir, "meta.json"), JSON.stringify({ id, job_id: id, status: "completed" }) + "\n");
+    return {
+      id,
+      job_id: id,
+      status: "completed",
+      updatedAt: `2002-01-01T00:00:${String(index).padStart(2, "0")}.000Z`,
+    };
+  });
+  writeFileSync(path.join(dataDir, "state.json"), JSON.stringify({
+    version: 1,
+    jobs: [
+      ...oldJobs,
+      { id: symlinkJobId, job_id: symlinkJobId, status: "completed", updatedAt: "1999-01-01T00:00:00.000Z" },
+    ],
+  }, null, 2) + "\n");
+
+  const result = await run([
+    "run",
+    "--provider", "deepseek",
+    "--mode", "custom-review",
+    "--scope", "custom",
+    "--scope-paths", "seed.txt",
+    "--foreground",
+    "--prompt", "Check this file.",
+  ], {
+    cwd,
+    env: {
+      API_REVIEWERS_PLUGIN_DATA: dataDir,
+      API_REVIEWERS_MOCK_RESPONSE: mockResponse("deepseek-v4-pro"),
+      DEEPSEEK_API_KEY: "secret-test-value",
+    },
+  });
+
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  assert.equal(existsSync(outsideTmp), true, "tmp cleanup must not follow a symlinked job dir");
+  assert.equal(existsSync(path.join(jobsDir, symlinkJobId)), false, "pruning should remove only the symlink node");
+});
+
+test("direct API reviewer concurrent runs retain every completed job in state", async () => {
+  const cwd = makeWorkspace();
+  const dataDir = mkdtempSync(path.join(tmpdir(), "api-reviewers-data-"));
+  const runCount = 8;
+
+  const results = await Promise.all(Array.from({ length: runCount }, (_, index) => run([
+    "run",
+    "--provider", index % 2 === 0 ? "deepseek" : "glm",
+    "--mode", "custom-review",
+    "--scope", "custom",
+    "--scope-paths", "seed.txt",
+    "--foreground",
+    "--prompt", `Check this file ${index}.`,
+  ], {
+    cwd,
+    env: {
+      API_REVIEWERS_PLUGIN_DATA: dataDir,
+      API_REVIEWERS_MOCK_RESPONSE: mockResponse(index % 2 === 0 ? "deepseek-v4-pro" : "glm-5.1", `mock-${index}`),
+      DEEPSEEK_API_KEY: "secret-test-value",
+      ZAI_API_KEY: "secret-test-value",
+    },
+  })));
+
+  for (const result of results) {
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+  }
+  const records = results.map((result) => parseJson(result.stdout));
+  const state = JSON.parse(readFileSync(path.join(dataDir, "state.json"), "utf8"));
+  const retainedIds = new Set(state.jobs.map((job) => job.id));
+  for (const record of records) {
+    assert.equal(existsSync(path.join(dataDir, "jobs", record.id, "meta.json")), true);
+    assert.equal(retainedIds.has(record.id), true, `missing ${record.id} from state.json`);
+  }
+});
+
+test("direct API reviewer lock does not reclaim a live old owner", async () => {
+  const cwd = makeWorkspace();
+  const dataDir = mkdtempSync(path.join(tmpdir(), "api-reviewers-data-"));
+  const lockDir = path.join(dataDir, ".state.lock");
+  mkdirSync(lockDir, { recursive: true });
+  writeFileSync(path.join(lockDir, "owner.json"), JSON.stringify({
+    pid: process.pid,
+    hostname: hostname(),
+    startedAt: new Date(Date.now() - 120000).toISOString(),
+    token: "live-test-owner",
+  }) + "\n");
+  const oldTime = new Date(Date.now() - 120000);
+  utimesSync(lockDir, oldTime, oldTime);
+
+  const result = await run([
+    "run",
+    "--provider", "deepseek",
+    "--mode", "custom-review",
+    "--scope", "custom",
+    "--scope-paths", "seed.txt",
+    "--foreground",
+    "--prompt", "Check this file.",
+  ], {
+    cwd,
+    env: {
+      API_REVIEWERS_PLUGIN_DATA: dataDir,
+      API_REVIEWERS_MOCK_RESPONSE: mockResponse("deepseek-v4-pro"),
+      API_REVIEWERS_STATE_LOCK_TIMEOUT_MS: "150",
+      DEEPSEEK_API_KEY: "secret-test-value",
+    },
+  });
+
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  const record = parseJson(result.stdout);
+  assert.equal(record.status, "completed");
+  assert.match(record.disclosure_note, /JobRecord persistence failed: api_reviewer_state_lock_timeout/);
+  assert.equal(existsSync(path.join(lockDir, "owner.json")), true);
+  assert.equal(existsSync(path.join(dataDir, "jobs", record.id, "meta.json")), true);
+  assert.equal(existsSync(path.join(dataDir, "state.json")), false);
+});
+
+test("direct API reviewer lock reclaims a dead same-host owner", async () => {
+  const cwd = makeWorkspace();
+  const dataDir = mkdtempSync(path.join(tmpdir(), "api-reviewers-data-"));
+  const lockDir = path.join(dataDir, ".state.lock");
+  mkdirSync(lockDir, { recursive: true });
+  writeFileSync(path.join(lockDir, "owner.json"), JSON.stringify({
+    pid: 999999999,
+    hostname: hostname(),
+    startedAt: new Date(Date.now() - 120000).toISOString(),
+    token: "dead-test-owner",
+  }) + "\n");
+  const oldTime = new Date(Date.now() - 120000);
+  utimesSync(lockDir, oldTime, oldTime);
+
+  const result = await run([
+    "run",
+    "--provider", "deepseek",
+    "--mode", "custom-review",
+    "--scope", "custom",
+    "--scope-paths", "seed.txt",
+    "--foreground",
+    "--prompt", "Check this file.",
+  ], {
+    cwd,
+    env: {
+      API_REVIEWERS_PLUGIN_DATA: dataDir,
+      API_REVIEWERS_MOCK_RESPONSE: mockResponse("deepseek-v4-pro"),
+      DEEPSEEK_API_KEY: "secret-test-value",
+    },
+  });
+
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  const record = parseJson(result.stdout);
+  assert.equal(record.status, "completed");
+  const state = JSON.parse(readFileSync(path.join(dataDir, "state.json"), "utf8"));
+  assert.equal(state.jobs.some((job) => job.id === record.id), true);
+  assert.equal(existsSync(path.join(dataDir, "jobs", record.id, "meta.json")), true);
+  assert.equal(existsSync(lockDir), false);
+});
+
+test("direct API reviewer lock does not reclaim a cross-host owner", async () => {
+  const cwd = makeWorkspace();
+  const dataDir = mkdtempSync(path.join(tmpdir(), "api-reviewers-data-"));
+  const lockDir = path.join(dataDir, ".state.lock");
+  mkdirSync(lockDir, { recursive: true });
+  writeFileSync(path.join(lockDir, "owner.json"), JSON.stringify({
+    pid: 999999999,
+    hostname: "remote-host.invalid",
+    startedAt: new Date(Date.now() - 120000).toISOString(),
+    token: "remote-test-owner",
+  }) + "\n");
+  const oldTime = new Date(Date.now() - 120000);
+  utimesSync(lockDir, oldTime, oldTime);
+
+  const result = await run([
+    "run",
+    "--provider", "deepseek",
+    "--mode", "custom-review",
+    "--scope", "custom",
+    "--scope-paths", "seed.txt",
+    "--foreground",
+    "--prompt", "Check this file.",
+  ], {
+    cwd,
+    env: {
+      API_REVIEWERS_PLUGIN_DATA: dataDir,
+      API_REVIEWERS_MOCK_RESPONSE: mockResponse("deepseek-v4-pro"),
+      API_REVIEWERS_STATE_LOCK_TIMEOUT_MS: "150",
+      DEEPSEEK_API_KEY: "secret-test-value",
+    },
+  });
+
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  const record = parseJson(result.stdout);
+  assert.equal(record.status, "completed");
+  assert.match(record.disclosure_note, /JobRecord persistence failed: api_reviewer_state_lock_timeout/);
+  assert.equal(existsSync(path.join(lockDir, "owner.json")), true);
+  assert.equal(existsSync(path.join(dataDir, "jobs", record.id, "meta.json")), true);
+  assert.equal(existsSync(path.join(dataDir, "state.json")), false);
+});
+
+test("direct API reviewer lock does not reclaim unreadable owner metadata", async () => {
+  const cwd = makeWorkspace();
+  const dataDir = mkdtempSync(path.join(tmpdir(), "api-reviewers-data-"));
+  const lockDir = path.join(dataDir, ".state.lock");
+  mkdirSync(path.join(lockDir, "owner.json"), { recursive: true });
+  const oldTime = new Date(Date.now() - 120000);
+  utimesSync(lockDir, oldTime, oldTime);
+
+  const result = await run([
+    "run",
+    "--provider", "deepseek",
+    "--mode", "custom-review",
+    "--scope", "custom",
+    "--scope-paths", "seed.txt",
+    "--foreground",
+    "--prompt", "Check this file.",
+  ], {
+    cwd,
+    env: {
+      API_REVIEWERS_PLUGIN_DATA: dataDir,
+      API_REVIEWERS_MOCK_RESPONSE: mockResponse("deepseek-v4-pro"),
+      API_REVIEWERS_STATE_LOCK_TIMEOUT_MS: "150",
+      DEEPSEEK_API_KEY: "secret-test-value",
+    },
+  });
+
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  const record = parseJson(result.stdout);
+  assert.equal(record.status, "completed");
+  assert.match(record.disclosure_note, /JobRecord persistence failed: api_reviewer_state_lock_timeout/);
+  assert.equal(existsSync(path.join(lockDir, "owner.json")), true);
+  assert.equal(existsSync(path.join(dataDir, "jobs", record.id, "meta.json")), true);
+  assert.equal(existsSync(path.join(dataDir, "state.json")), false);
+});
+
+test("direct API reviewer lock waits behind a live gate owner", async () => {
+  const cwd = makeWorkspace();
+  const dataDir = mkdtempSync(path.join(tmpdir(), "api-reviewers-data-"));
+  const gateDir = path.join(dataDir, ".state.lock.gate");
+  mkdirSync(gateDir, { recursive: true });
+  writeFileSync(path.join(gateDir, "owner.json"), JSON.stringify({
+    pid: process.pid,
+    hostname: hostname(),
+    startedAt: new Date(Date.now() - 120000).toISOString(),
+    token: "live-gate-owner",
+  }) + "\n");
+  const oldTime = new Date(Date.now() - 120000);
+  utimesSync(gateDir, oldTime, oldTime);
+
+  const result = await run([
+    "run",
+    "--provider", "deepseek",
+    "--mode", "custom-review",
+    "--scope", "custom",
+    "--scope-paths", "seed.txt",
+    "--foreground",
+    "--prompt", "Check this file.",
+  ], {
+    cwd,
+    env: {
+      API_REVIEWERS_PLUGIN_DATA: dataDir,
+      API_REVIEWERS_MOCK_RESPONSE: mockResponse("deepseek-v4-pro"),
+      API_REVIEWERS_STATE_LOCK_TIMEOUT_MS: "150",
+      DEEPSEEK_API_KEY: "secret-test-value",
+    },
+  });
+
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  const record = parseJson(result.stdout);
+  assert.equal(record.status, "completed");
+  assert.match(record.disclosure_note, /JobRecord persistence failed: api_reviewer_state_lock_timeout/);
+  assert.equal(existsSync(path.join(gateDir, "owner.json")), true);
+  assert.equal(existsSync(path.join(dataDir, "jobs", record.id, "meta.json")), true);
+  assert.equal(existsSync(path.join(dataDir, "state.json")), false);
+});
+
+test("direct API reviewer restores current meta if pre-index artifact is pruned", async () => {
+  const cwd = makeWorkspace();
+  const dataDir = mkdtempSync(path.join(tmpdir(), "api-reviewers-data-"));
+  const jobsDir = path.join(dataDir, "jobs");
+  const gateDir = path.join(dataDir, ".state.lock.gate");
+  mkdirSync(gateDir, { recursive: true });
+  writeFileSync(path.join(gateDir, "owner.json"), JSON.stringify({
+    pid: process.pid,
+    hostname: hostname(),
+    startedAt: new Date().toISOString(),
+    token: "test-held-gate",
+  }) + "\n");
+
+  const child = execFile(process.execPath, [
+    COMPANION,
+    "run",
+    "--provider", "deepseek",
+    "--mode", "custom-review",
+    "--scope", "custom",
+    "--scope-paths", "seed.txt",
+    "--foreground",
+    "--prompt", "Check this file.",
+  ], {
+    cwd,
+    env: {
+      ...process.env,
+      API_REVIEWERS_PLUGIN_DATA: dataDir,
+      API_REVIEWERS_MOCK_RESPONSE: mockResponse("deepseek-v4-pro"),
+      API_REVIEWERS_STATE_LOCK_TIMEOUT_MS: "5000",
+      DEEPSEEK_API_KEY: "secret-test-value",
+    },
+    timeout: 10000,
+  });
+
+  let stdout = "";
+  let stderr = "";
+  child.stdout?.setEncoding("utf8");
+  child.stderr?.setEncoding("utf8");
+  child.stdout?.on("data", (chunk) => { stdout += chunk; });
+  child.stderr?.on("data", (chunk) => { stderr += chunk; });
+  const childResult = new Promise((resolve) => {
+    child.on("close", (code) => {
+      resolve({
+        status: code ?? 0,
+        stdout,
+        stderr,
+      });
+    });
+  });
+
+  const jobId = await waitForValue(() => {
+    try {
+      return readdirSync(jobsDir).find((name) => existsSync(path.join(jobsDir, name, "meta.json")));
+    } catch {
+      return null;
+    }
+  });
+
+  rmSync(path.join(jobsDir, jobId), { recursive: true, force: true });
+  rmSync(gateDir, { recursive: true, force: true });
+
+  const result = await childResult;
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  const record = parseJson(result.stdout);
+  const state = JSON.parse(readFileSync(path.join(dataDir, "state.json"), "utf8"));
+  assert.equal(record.id, jobId);
+  assert.equal(state.jobs.some((job) => job.id === record.id), true);
+  assert.equal(existsSync(path.join(jobsDir, record.id, "meta.json")), true);
 });
 
 test("mock request-body assertion failures are marked not sent", async () => {

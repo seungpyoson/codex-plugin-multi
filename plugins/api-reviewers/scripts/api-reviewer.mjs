@@ -1,10 +1,11 @@
 #!/usr/bin/env node
 import { spawnSync } from "node:child_process";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { lstat, mkdir, readFile, readdir, rename, rm, unlink, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { dirname, isAbsolute, resolve, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import { randomUUID } from "node:crypto";
+import { hostname } from "node:os";
 
 import { cleanGitEnv } from "./lib/git-env.mjs";
 import {
@@ -18,6 +19,14 @@ const PROVIDERS_PATH = resolve(PLUGIN_ROOT, "config/providers.json");
 const VALID_MODES = new Set(["review", "adversarial-review", "custom-review"]);
 const VALID_AUTH_MODES = new Set(["api_key", "auto"]);
 const SCHEMA_VERSION = 9;
+const API_REVIEWER_STATE_VERSION = 1;
+const MAX_RETAINED_API_REVIEWER_JOBS = 50;
+const ACTIVE_JOB_STATUSES = new Set(["queued", "running"]);
+const API_REVIEWER_STATE_LOCK_DIR = ".state.lock";
+const API_REVIEWER_STATE_LOCK_GATE_DIR = ".state.lock.gate";
+const API_REVIEWER_STATE_LOCK_POLL_MS = 25;
+const API_REVIEWER_STATE_LOCK_TIMEOUT_MS = 5000;
+const API_REVIEWER_STATE_LOCK_STALE_MS = 30000;
 const API_REVIEWER_EXPECTED_KEYS = Object.freeze([
   "id",
   "job_id",
@@ -72,6 +81,408 @@ const MIN_SECRET_REDACTION_LENGTH = 8;
 
 function printJson(obj) {
   process.stdout.write(`${JSON.stringify(obj, null, 2)}\n`);
+}
+
+function isActiveJob(job) {
+  return ACTIVE_JOB_STATUSES.has(job?.status);
+}
+
+const SAFE_JOB_ID = /^(?:[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}|[A-Za-z0-9][A-Za-z0-9._-]{0,127})$/;
+
+function assertSafeJobId(jobId) {
+  if (typeof jobId !== "string" || !SAFE_JOB_ID.test(jobId)) {
+    throw new Error(`Unsafe jobId: ${JSON.stringify(jobId)}`);
+  }
+}
+
+function apiReviewerDataRoot(env = process.env) {
+  return resolve(env.API_REVIEWERS_PLUGIN_DATA ?? ".codex-plugin-data/api-reviewers");
+}
+
+function apiReviewerJobsDir(root) {
+  return resolve(root, "jobs");
+}
+
+function apiReviewerStateFile(root) {
+  return resolve(root, "state.json");
+}
+
+function sleep(ms) {
+  return new Promise((resolveSleep) => setTimeout(resolveSleep, ms));
+}
+
+function isProcessAlive(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (e) {
+    return e?.code === "EPERM";
+  }
+}
+
+function pruneJobs(jobs) {
+  const withIndex = jobs.map((job, originalIndex) => ({ job, originalIndex }));
+  withIndex.sort((left, right) => {
+    const lt = String(left.job.updatedAt ?? left.job.ended_at ?? left.job.endedAt ?? "");
+    const rt = String(right.job.updatedAt ?? right.job.ended_at ?? right.job.endedAt ?? "");
+    if (lt === rt) return left.originalIndex - right.originalIndex;
+    return rt.localeCompare(lt);
+  });
+  let terminalCount = 0;
+  return withIndex
+    .filter(({ job }) => {
+      if (isActiveJob(job)) return true;
+      if (terminalCount >= MAX_RETAINED_API_REVIEWER_JOBS) return false;
+      terminalCount += 1;
+      return true;
+    })
+    .map(({ job }) => job);
+}
+
+async function loadApiReviewerState(root) {
+  let stateJobs = [];
+  try {
+    const parsed = JSON.parse(await readFile(apiReviewerStateFile(root), "utf8"));
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      stateJobs = [];
+    } else {
+      stateJobs = Array.isArray(parsed.jobs) ? parsed.jobs : [];
+    }
+  } catch {
+    stateJobs = [];
+  }
+  return {
+    version: API_REVIEWER_STATE_VERSION,
+    jobs: mergeApiReviewerJobs(stateJobs, await discoverApiReviewerDiskJobs(root)),
+  };
+}
+
+function summarizeApiReviewerJobRecord(record, fallbackJobId = null) {
+  if (!record || typeof record !== "object" || Array.isArray(record)) return null;
+  const jobId = record.job_id ?? record.id ?? fallbackJobId;
+  try {
+    assertSafeJobId(jobId);
+  } catch {
+    return null;
+  }
+  if (fallbackJobId !== null && jobId !== fallbackJobId) return null;
+  return {
+    id: jobId,
+    job_id: jobId,
+    target: record.target,
+    provider: record.provider,
+    status: record.status,
+    mode: record.mode,
+    scope: record.scope,
+    scope_base: record.scope_base ?? null,
+    scope_paths: record.scope_paths ?? null,
+    updatedAt: record.updatedAt ?? record.ended_at ?? record.endedAt ?? record.started_at ?? record.startedAt ?? new Date(0).toISOString(),
+  };
+}
+
+function mergeApiReviewerJobs(stateJobs, diskJobs) {
+  const merged = [];
+  const seen = new Set();
+  for (const job of [...stateJobs, ...diskJobs]) {
+    const summary = summarizeApiReviewerJobRecord(job);
+    if (!summary) continue;
+    const jobId = summary.id;
+    if (seen.has(jobId)) continue;
+    seen.add(jobId);
+    merged.push(summary);
+  }
+  return merged;
+}
+
+async function discoverApiReviewerDiskJobs(root) {
+  let entries;
+  try {
+    entries = await readdir(apiReviewerJobsDir(root), { withFileTypes: true });
+  } catch (e) {
+    if (e.code === "ENOENT") return [];
+    throw e;
+  }
+  const jobs = [];
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue;
+    const jobId = entry.name;
+    try {
+      assertSafeJobId(jobId);
+    } catch {
+      continue;
+    }
+    try {
+      const parsed = JSON.parse(await readFile(resolve(apiReviewerJobsDir(root), jobId, "meta.json"), "utf8"));
+      const summary = summarizeApiReviewerJobRecord(parsed, jobId);
+      if (summary) jobs.push(summary);
+    } catch {
+      // Ignore malformed legacy artifacts; cleanup only acts on validated job records.
+    }
+  }
+  return jobs;
+}
+
+async function writeApiReviewerState(root, state) {
+  await mkdir(root, { recursive: true });
+  const stateFile = apiReviewerStateFile(root);
+  const tmpFile = `${stateFile}.${process.pid}.${Date.now()}.tmp`;
+  try {
+    await writeFile(tmpFile, `${JSON.stringify(state, null, 2)}\n`, "utf8");
+    await rename(tmpFile, stateFile);
+  } catch (e) {
+    try { await unlink(tmpFile); } catch { /* already gone */ }
+    throw e;
+  }
+}
+
+async function writeApiReviewerMetaRecord(root, record) {
+  assertSafeJobId(record.job_id);
+  const dir = resolve(root, "jobs", record.job_id);
+  await mkdir(dir, { recursive: true });
+  const metaFile = resolve(dir, "meta.json");
+  const tmpFile = `${metaFile}.${process.pid}.${Date.now()}.${randomUUID()}.tmp`;
+  try {
+    await writeFile(tmpFile, `${JSON.stringify(record, null, 2)}\n`, { mode: 0o600 });
+    await rename(tmpFile, metaFile);
+  } catch (e) {
+    try { await unlink(tmpFile); } catch { /* already gone */ }
+    throw e;
+  }
+}
+
+async function readApiReviewerLockOwnerRaw(lockOwnerFile) {
+  try {
+    return await readFile(lockOwnerFile, "utf8");
+  } catch (e) {
+    if (e.code === "ENOENT") return null;
+    return undefined;
+  }
+}
+
+async function readApiReviewerLockOwner(lockOwnerFile) {
+  try {
+    const parsed = JSON.parse(await readFile(lockOwnerFile, "utf8"));
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function apiReviewerLockAgeMs(lockStat, owner) {
+  const startedAt = owner?.startedAt ? Date.parse(owner.startedAt) : NaN;
+  if (Number.isFinite(startedAt)) return Date.now() - startedAt;
+  return Date.now() - lockStat.mtimeMs;
+}
+
+function apiReviewerStateLockTimeoutMs(env = process.env) {
+  const parsed = parsePositiveIntegerEnv(env, "API_REVIEWERS_STATE_LOCK_TIMEOUT_MS", "milliseconds");
+  return parsed.ok && parsed.value !== null ? parsed.value : API_REVIEWER_STATE_LOCK_TIMEOUT_MS;
+}
+
+function apiReviewerStateLockStaleMs(env = process.env) {
+  const parsed = parsePositiveIntegerEnv(env, "API_REVIEWERS_STATE_LOCK_STALE_MS", "milliseconds");
+  return parsed.ok && parsed.value !== null ? parsed.value : API_REVIEWER_STATE_LOCK_STALE_MS;
+}
+
+async function tryReclaimStaleApiReviewerStateLock(lockDir) {
+  const lockOwnerFile = resolve(lockDir, "owner.json");
+  let lockStat;
+  try {
+    lockStat = await lstat(lockDir);
+  } catch (e) {
+    if (e.code === "ENOENT") return true;
+    return false;
+  }
+  const ownerRaw = await readApiReviewerLockOwnerRaw(lockOwnerFile);
+  if (ownerRaw === undefined) return false;
+  const owner = await readApiReviewerLockOwner(lockOwnerFile);
+  if (owner?.hostname && owner.hostname !== hostname()) return false;
+  const sameHost = owner?.hostname === hostname();
+  const ownerPidValid = Number.isInteger(owner?.pid) && owner.pid > 0;
+  const sameHostAlive = sameHost && ownerPidValid && isProcessAlive(owner.pid);
+  if (sameHostAlive) return false;
+
+  const ownerDead = sameHost && ownerPidValid && !isProcessAlive(owner.pid);
+  const ageMs = apiReviewerLockAgeMs(lockStat, owner);
+  if (!ownerDead && ageMs <= apiReviewerStateLockStaleMs()) return false;
+
+  const orphanDir = `${lockDir}.orphaned-${process.pid}-${Date.now()}-${randomUUID()}`;
+  try {
+    await rename(lockDir, orphanDir);
+    const orphanOwnerRaw = await readApiReviewerLockOwnerRaw(resolve(orphanDir, "owner.json"));
+    if (orphanOwnerRaw !== ownerRaw) {
+      try { await rename(orphanDir, lockDir); } catch { /* leave orphan for manual cleanup */ }
+      return false;
+    }
+    await rm(orphanDir, { recursive: true, force: true });
+    return true;
+  } catch (e) {
+    if (e.code === "ENOENT") return true;
+    return false;
+  }
+}
+
+async function releaseApiReviewerStateLock(lockDir, token) {
+  const owner = await readApiReviewerLockOwner(resolve(lockDir, "owner.json"));
+  if (owner?.token === token && owner?.pid === process.pid && owner?.hostname === hostname()) {
+    await rm(lockDir, { recursive: true, force: true }).catch(() => {});
+  }
+}
+
+async function acquireApiReviewerStateLockGate(root, deadline) {
+  const gateDir = resolve(root, API_REVIEWER_STATE_LOCK_GATE_DIR);
+  const gateOwnerFile = resolve(gateDir, "owner.json");
+  while (true) {
+    try {
+      await mkdir(gateDir);
+      const token = randomUUID();
+      try {
+        await writeFile(gateOwnerFile, `${JSON.stringify({
+          pid: process.pid,
+          hostname: hostname(),
+          startedAt: new Date().toISOString(),
+          token,
+        })}\n`, "utf8");
+      } catch (e) {
+        await rm(gateDir, { recursive: true, force: true }).catch(() => {});
+        throw e;
+      }
+      return () => releaseApiReviewerStateLock(gateDir, token);
+    } catch (e) {
+      if (e.code !== "EEXIST") {
+        throw new Error(`api_reviewer_state_lock_error: could not acquire ${gateDir}: ${e.message}`);
+      }
+      if (await tryReclaimStaleApiReviewerStateLock(gateDir)) continue;
+      if (Date.now() >= deadline) {
+        throw new Error(`api_reviewer_state_lock_timeout: could not acquire ${gateDir}`);
+      }
+      await sleep(API_REVIEWER_STATE_LOCK_POLL_MS);
+    }
+  }
+}
+
+async function withApiReviewerStateLock(root, fn) {
+  await mkdir(root, { recursive: true });
+  const lockDir = resolve(root, API_REVIEWER_STATE_LOCK_DIR);
+  const lockOwnerFile = resolve(lockDir, "owner.json");
+  const deadline = Date.now() + apiReviewerStateLockTimeoutMs();
+  while (true) {
+    let releaseGate = null;
+    let token = null;
+    let lockDirCreated = false;
+    try {
+      releaseGate = await acquireApiReviewerStateLockGate(root, deadline);
+      try {
+        await mkdir(lockDir);
+        lockDirCreated = true;
+      } catch (e) {
+        if (e.code !== "EEXIST") {
+          throw new Error(`api_reviewer_state_lock_error: could not acquire ${lockDir}: ${e.message}`);
+        }
+        const reclaimed = await tryReclaimStaleApiReviewerStateLock(lockDir);
+        if (!reclaimed) {
+          await releaseGate();
+          releaseGate = null;
+          if (Date.now() >= deadline) {
+            throw new Error(`api_reviewer_state_lock_timeout: could not acquire ${lockDir}`);
+          }
+          await sleep(API_REVIEWER_STATE_LOCK_POLL_MS);
+          continue;
+        }
+        // Reclaim succeeded; recreate lockDir while still holding the gate so
+        // no third writer can acquire during the orphan put-back window.
+        await mkdir(lockDir);
+        lockDirCreated = true;
+      }
+      token = randomUUID();
+      await writeFile(lockOwnerFile, `${JSON.stringify({
+        pid: process.pid,
+        hostname: hostname(),
+        startedAt: new Date().toISOString(),
+        token,
+      })}\n`, "utf8");
+      await releaseGate();
+      releaseGate = null;
+    } catch (e) {
+      if (String(e.message ?? "").startsWith("api_reviewer_state_lock_")) throw e;
+      if (lockDirCreated) {
+        await rm(lockDir, { recursive: true, force: true }).catch(() => {});
+      }
+      throw new Error(`api_reviewer_state_lock_error: could not acquire ${lockDir}: ${e.message}`);
+    } finally {
+      if (releaseGate) await releaseGate();
+    }
+    try {
+      return await fn();
+    } finally {
+      await releaseApiReviewerStateLock(lockDir, token);
+    }
+  }
+}
+
+async function removeApiReviewerJobDir(root, jobId) {
+  assertSafeJobId(jobId);
+  const jobsDir = apiReviewerJobsDir(root);
+  const jobDir = resolve(jobsDir, jobId);
+  const rel = relative(jobsDir, jobDir);
+  if (!rel || rel.startsWith("..") || isAbsolute(rel)) return;
+  try {
+    const stat = await lstat(jobDir);
+    if (stat.isDirectory()) {
+      await rm(jobDir, { recursive: true, force: true });
+      return;
+    }
+    await unlink(jobDir);
+  } catch (e) {
+    if (e.code === "ENOENT") return;
+    throw e;
+  }
+}
+
+async function removeApiReviewerJobTmpFiles(root, jobId) {
+  assertSafeJobId(jobId);
+  const jobDir = resolve(apiReviewerJobsDir(root), jobId);
+  try {
+    const stat = await lstat(jobDir);
+    if (!stat.isDirectory()) return;
+  } catch (e) {
+    if (e.code === "ENOENT") return;
+    throw e;
+  }
+  let names;
+  try {
+    names = await readdir(jobDir);
+  } catch (e) {
+    if (e.code === "ENOENT") return;
+    throw e;
+  }
+  const prefix = "meta.json.";
+  for (const name of names) {
+    if (!name.startsWith(prefix) || !name.endsWith(".tmp")) continue;
+    try { await unlink(resolve(jobDir, name)); }
+    catch (e) { if (e.code !== "ENOENT") throw e; }
+  }
+}
+
+async function updateApiReviewerStateForRecord(root, record) {
+  const previousJobs = (await loadApiReviewerState(root)).jobs;
+  const summary = summarizeApiReviewerJobRecord(record);
+  if (!summary) return;
+  const merged = [summary, ...previousJobs.filter((job) => (job.id ?? job.job_id) !== record.id)];
+  const nextJobs = pruneJobs(merged);
+  const retainedIds = new Set(nextJobs.map((job) => job.id ?? job.job_id));
+  for (const job of previousJobs) {
+    const jobId = job.id ?? job.job_id;
+    if (retainedIds.has(jobId) || isActiveJob(job)) continue;
+    try { await removeApiReviewerJobTmpFiles(root, jobId); }
+    catch { /* best-effort cleanup must not hide the current review result */ }
+    try { await removeApiReviewerJobDir(root, jobId); }
+    catch { /* best-effort cleanup must not hide the current review result */ }
+  }
+  await writeApiReviewerState(root, {
+    version: API_REVIEWER_STATE_VERSION,
+    jobs: nextJobs,
+  });
 }
 
 function parseArgs(argv) {
@@ -733,10 +1144,12 @@ function buildRecord({ provider, cfg, mode, options, scopeInfo, execution, start
 }
 
 async function persistRecord(record, env = process.env) {
-  const root = resolve(env.API_REVIEWERS_PLUGIN_DATA ?? ".codex-plugin-data/api-reviewers");
-  const dir = resolve(root, "jobs", record.job_id);
-  await mkdir(dir, { recursive: true });
-  await writeFile(resolve(dir, "meta.json"), `${JSON.stringify(record, null, 2)}\n`, { mode: 0o600 });
+  const root = apiReviewerDataRoot(env);
+  await writeApiReviewerMetaRecord(root, record);
+  await withApiReviewerStateLock(root, async () => {
+    await writeApiReviewerMetaRecord(root, record);
+    await updateApiReviewerStateForRecord(root, record);
+  });
 }
 
 async function persistRecordBestEffort(record, env = process.env) {
