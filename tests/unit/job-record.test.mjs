@@ -130,7 +130,7 @@ test("external_review treats known post-spawn failure codes as sent", () => {
 
 test("EXPECTED_KEYS is the spec §21.3 canonical list", () => {
   const required = [
-    "id", "job_id", "target", "parent_job_id", "claude_session_id", "gemini_session_id",
+    "id", "job_id", "target", "parent_job_id", "claude_session_id", "gemini_session_id", "kimi_session_id",
     "resume_chain", "pid_info",
     "mode", "mode_profile_name", "model", "cwd", "workspace_root",
     "containment", "scope", "dispose_effective", "scope_base", "scope_paths",
@@ -146,10 +146,7 @@ test("EXPECTED_KEYS is the spec §21.3 canonical list", () => {
 
 test("provider EXPECTED_KEYS stay byte-for-byte aligned", () => {
   assert.deepEqual([...GEMINI_EXPECTED_KEYS], [...EXPECTED_KEYS]);
-  assert.deepEqual(
-    KIMI_EXPECTED_KEYS.map((key) => key === "kimi_session_id" ? "gemini_session_id" : key),
-    [...EXPECTED_KEYS],
-  );
+  assert.deepEqual([...KIMI_EXPECTED_KEYS], [...EXPECTED_KEYS]);
 });
 
 test("buildJobRecord: foreground success path has EXACTLY the expected keys", () => {

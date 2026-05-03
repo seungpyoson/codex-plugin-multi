@@ -41,6 +41,7 @@ export const EXPECTED_KEYS = Object.freeze([
   "parent_job_id",
   "claude_session_id",
   "gemini_session_id",
+  "kimi_session_id",
   "resume_chain",
   "pid_info",
 
@@ -127,7 +128,8 @@ export function externalReviewForInvocation(invocation, execution = null) {
  *   claude_error    — exitCode !== 0 with parseable JSON (target's is_error=true).
  *                     Also covers exitCode === 0 but parsed.ok === false with
  *                     is_error semantics.
- *   unknown_error   — catch-all; should be rare.
+ *   claude_error    — catch-all target failure; should be rare when no
+ *                     parsed diagnostic is available.
  */
 const CANCEL_SIGNALS = new Set(["SIGTERM", "SIGKILL", "SIGINT", "SIGHUP"]);
 const FINALIZATION_FAILED_PREFIX = "finalization_failed:";
@@ -419,7 +421,7 @@ function assertInvocation(invocation) {
  *   execution  — null when writing the pre-run/queued record. Otherwise:
  *                  { exitCode, parsed: {ok, result?, structured?, denials?,
  *                                        costUsd?, usage?, reason?, error?},
- *                    claudeSessionId?, geminiSessionId?, pidInfo,
+ *                    claudeSessionId?, geminiSessionId?, kimiSessionId?, pidInfo,
  *                    errorMessage?, stdout?, stderr? }
  *
  *   mutations  — array of git-status line strings or
@@ -445,6 +447,7 @@ export function buildJobRecord(invocation, execution, mutations) {
     parent_job_id: invocation.parent_job_id ?? null,
     claude_session_id: execution?.claudeSessionId ?? null,
     gemini_session_id: execution?.geminiSessionId ?? null,
+    kimi_session_id: execution?.kimiSessionId ?? null,
     resume_chain: Array.isArray(invocation.resume_chain)
       ? [...invocation.resume_chain]
       : [],

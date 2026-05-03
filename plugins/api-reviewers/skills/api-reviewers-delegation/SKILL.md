@@ -61,6 +61,8 @@ Wait/status rail:
 ```
 
 For multiple provider results, render one card/rail per `external_review`.
+Render `run_kind: "unknown"` verbatim if encountered; do not infer foreground
+or background from lifecycle fields.
 If `external_review.disclosure` is already rendered, do not repeat an
 identical `disclosure_note` or a `disclosure_note` that restates a scope failure
 was not sent before launch.

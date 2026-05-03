@@ -132,7 +132,7 @@ export function buildExternalReview({ invocation, sessionId = null, status, erro
   };
   const keys = Object.keys(review);
   if (keys.length !== EXTERNAL_REVIEW_KEYS.length
-      || keys.some((key) => !EXTERNAL_REVIEW_KEYS.includes(key))) {
+      || keys.some((key, index) => key !== EXTERNAL_REVIEW_KEYS[index])) {
     throw new Error(`external_review keys drifted: ${keys.join(",")}`);
   }
   return Object.freeze(review);

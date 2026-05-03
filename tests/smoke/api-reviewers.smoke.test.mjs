@@ -9,6 +9,54 @@ import { fileURLToPath } from "node:url";
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const COMPANION = path.join(REPO_ROOT, "plugins/api-reviewers/scripts/api-reviewer.mjs");
+const API_REVIEWER_EXPECTED_KEYS = Object.freeze([
+  "id",
+  "job_id",
+  "target",
+  "provider",
+  "parent_job_id",
+  "claude_session_id",
+  "gemini_session_id",
+  "kimi_session_id",
+  "resume_chain",
+  "pid_info",
+  "mode",
+  "mode_profile_name",
+  "model",
+  "cwd",
+  "workspace_root",
+  "containment",
+  "scope",
+  "dispose_effective",
+  "scope_base",
+  "scope_paths",
+  "prompt_head",
+  "schema_spec",
+  "binary",
+  "status",
+  "started_at",
+  "ended_at",
+  "exit_code",
+  "error_code",
+  "error_message",
+  "error_summary",
+  "error_cause",
+  "suggested_action",
+  "external_review",
+  "disclosure_note",
+  "result",
+  "structured_output",
+  "permission_denials",
+  "mutations",
+  "cost_usd",
+  "usage",
+  "auth_mode",
+  "credential_ref",
+  "endpoint",
+  "http_status",
+  "raw_model",
+  "schema_version",
+]);
 
 function run(args, { cwd = REPO_ROOT, env = {}, companion = COMPANION } = {}) {
   return new Promise((resolve) => {
@@ -154,6 +202,7 @@ test("DeepSeek direct API custom-review completes and persists JobRecord", async
   });
   assert.equal(result.status, 0, result.stderr || result.stdout);
   const record = parseJson(result.stdout);
+  assert.deepEqual(Object.keys(record), [...API_REVIEWER_EXPECTED_KEYS]);
   assert.equal(record.status, "completed");
   assert.equal(record.provider, "deepseek");
   assert.equal(record.model, "deepseek-v4-flash");
@@ -177,6 +226,37 @@ test("DeepSeek direct API custom-review completes and persists JobRecord", async
   assert.equal(record.result.includes("Verdict: APPROVE"), true);
   assert.deepEqual(record.usage, { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 });
   assert.doesNotMatch(result.stdout, /secret-test-value/);
+});
+
+test("direct API provider session_id accepts safe provider ID shapes", async () => {
+  const cwd = makeWorkspace();
+  const dataDir = mkdtempSync(path.join(tmpdir(), "api-reviewers-data-"));
+  for (const id of [
+    "chatcmpl-AbC123",
+    "req_01AbC.dEf/G+h=",
+    "arn:aws:bedrock:us-west-2:123456789012:inference-profile/example",
+    "x".repeat(200),
+  ]) {
+    const result = await run([
+      "run",
+      "--provider", "deepseek",
+      "--mode", "custom-review",
+      "--scope", "custom",
+      "--scope-paths", "seed.txt",
+      "--foreground",
+      "--prompt", "Check this file.",
+    ], {
+      cwd,
+      env: {
+        API_REVIEWERS_PLUGIN_DATA: dataDir,
+        API_REVIEWERS_MOCK_RESPONSE: mockResponse("deepseek-v4-flash", id),
+        DEEPSEEK_API_KEY: "secret-test-value",
+      },
+    });
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    const record = parseJson(result.stdout);
+    assert.equal(record.external_review.session_id, id);
+  }
 });
 
 test("direct API provider session_id rejects unsafe values", async () => {

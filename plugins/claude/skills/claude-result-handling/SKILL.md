@@ -23,6 +23,7 @@ comes back to you.
   "parent_job_id":       null | "<uuid>",   // set by `continue`; null on fresh runs
   "claude_session_id":   null | "<uuid>",   // from Claude's stdout, not minted
   "gemini_session_id":   null,              // present for schema parity; Gemini uses it
+  "kimi_session_id":     null,              // present for schema parity; Kimi uses it
   "resume_chain":        ["<uuid>", ...],   // newest-last; [] on first run
   "pid_info":            null | { "pid": N, "starttime": "...", "argv0": "..." },
 
@@ -45,7 +46,7 @@ comes back to you.
   "started_at":          "<iso-8601>",
   "ended_at":            null | "<iso-8601>",
   "exit_code":           null | 0 | 1 | 2,
-  "error_code":          null | "scope_failed" | "spawn_failed" | "claude_error" | "gemini_error" | "kimi_error" | "parse_error" | "step_limit_exceeded" | "finalization_failed" | "timeout" | "unknown_error",
+  "error_code":          null | "scope_failed" | "spawn_failed" | "claude_error" | "gemini_error" | "kimi_error" | "parse_error" | "step_limit_exceeded" | "finalization_failed" | "timeout" | "stale_active_job",
   "error_message":       null | "<human>",
   "error_summary":       null | "<short operator-facing summary>",
   "error_cause":         null | "<why this happened>",
@@ -126,6 +127,8 @@ from short-lived index contention.
 
    For multiple providers, use one panel with one row per provider. Do not
    replace this marker with ordinary prose.
+   Render `run_kind: "unknown"` verbatim. Do not infer foreground or
+   background from `pid_info`, stale status, or historical fields.
 
 2. **Mutation warning (derived — not a top-level field).** If
    `mutations.length > 0`: render a **prominent** warning block. Partition
@@ -175,13 +178,23 @@ from short-lived index contention.
   target CLI or external provider.
 - `claude_error` — Claude ran but returned `is_error: true`. `result` may
   still contain partial text worth showing.
+- `gemini_error` / `kimi_error` — the corresponding external CLI ran but
+  returned a target-level failure. `result` may contain partial text worth
+  showing if present; otherwise use the structured diagnostic fields.
 - `parse_error` — Claude's stdout wasn't valid JSON. Rare; usually a CLI
   upgrade mismatch. `error_message` has the parser error.
+- `step_limit_exceeded` — Kimi exhausted its configured step budget after
+  launch. Selected source content was sent; render the diagnostic fields and
+  suggest continuing/resuming the job if a provider session id is available.
 - `finalization_failed` — the target ran, but the companion failed while
   writing the terminal record or state. Render the structured diagnostic
   fields and preserve `error_message`; this is an operator/storage failure,
   not a missing-binary or scope-preparation failure.
 - `timeout` — the companion's watchdog killed the child. No partial output.
+- `stale_active_job` — reconciliation promoted an orphaned queued/running
+  record to stale because the worker process disappeared or never produced a
+  terminal record. Render the record as continuable history; do not infer a
+  more specific lifecycle from legacy fields.
 - `not_found` — (only from `result --job` / `status --job`) the `job_id`
   doesn't exist in this workspace. Suggest `/claude-status --all`.
 

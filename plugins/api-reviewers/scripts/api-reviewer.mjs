@@ -9,7 +9,7 @@ import { runCommand } from "../../claude/scripts/lib/process.mjs";
 import {
   EXTERNAL_REVIEW_KEYS,
   SOURCE_CONTENT_TRANSMISSION,
-} from "../../claude/scripts/lib/external-review.mjs";
+} from "./lib/external-review.mjs";
 
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 const PLUGIN_ROOT = resolve(SCRIPT_DIR, "..");
@@ -17,6 +17,55 @@ const REPO_ROOT = resolve(PLUGIN_ROOT, "..", "..");
 const PROVIDERS_PATH = resolve(PLUGIN_ROOT, "config/providers.json");
 const VALID_MODES = new Set(["review", "adversarial-review", "custom-review"]);
 const VALID_AUTH_MODES = new Set(["api_key", "auto"]);
+const SCHEMA_VERSION = 9;
+const API_REVIEWER_EXPECTED_KEYS = Object.freeze([
+  "id",
+  "job_id",
+  "target",
+  "provider",
+  "parent_job_id",
+  "claude_session_id",
+  "gemini_session_id",
+  "kimi_session_id",
+  "resume_chain",
+  "pid_info",
+  "mode",
+  "mode_profile_name",
+  "model",
+  "cwd",
+  "workspace_root",
+  "containment",
+  "scope",
+  "dispose_effective",
+  "scope_base",
+  "scope_paths",
+  "prompt_head",
+  "schema_spec",
+  "binary",
+  "status",
+  "started_at",
+  "ended_at",
+  "exit_code",
+  "error_code",
+  "error_message",
+  "error_summary",
+  "error_cause",
+  "suggested_action",
+  "external_review",
+  "disclosure_note",
+  "result",
+  "structured_output",
+  "permission_denials",
+  "mutations",
+  "cost_usd",
+  "usage",
+  "auth_mode",
+  "credential_ref",
+  "endpoint",
+  "http_status",
+  "raw_model",
+  "schema_version",
+]);
 
 function printJson(obj) {
   process.stdout.write(`${JSON.stringify(obj, null, 2)}\n`);
@@ -300,7 +349,7 @@ async function callProvider(provider, cfg, prompt, env = process.env) {
 
 function safeProviderSessionId(value) {
   if (typeof value !== "string") return null;
-  return /^[A-Za-z0-9_-]{1,200}$/u.test(value) ? value : null;
+  return /^[A-Za-z0-9._:/=+@-]{1,200}$/.test(value) ? value : null;
 }
 
 function payloadSentForProviderException(error) {
@@ -382,10 +431,19 @@ function directApiTransmission(completed, payloadSent) {
 function freezeExternalReview(review) {
   const keys = Object.keys(review);
   if (keys.length !== EXTERNAL_REVIEW_KEYS.length
-      || keys.some((key) => !EXTERNAL_REVIEW_KEYS.includes(key))) {
+      || keys.some((key, index) => key !== EXTERNAL_REVIEW_KEYS[index])) {
     throw new Error(`external_review keys drifted: ${keys.join(",")}`);
   }
   return Object.freeze(review);
+}
+
+function freezeRecord(record) {
+  const keys = Object.keys(record);
+  if (keys.length !== API_REVIEWER_EXPECTED_KEYS.length
+      || keys.some((key, index) => key !== API_REVIEWER_EXPECTED_KEYS[index])) {
+    throw new Error(`api reviewer JobRecord keys drifted: ${keys.join(",")}`);
+  }
+  return Object.freeze(record);
 }
 
 function buildRecord({ provider, cfg, mode, options, scopeInfo, execution, startedAt, endedAt }) {
@@ -408,7 +466,7 @@ function buildRecord({ provider, cfg, mode, options, scopeInfo, execution, start
     source_content_transmission: sourceContentTransmission,
     disclosure,
   });
-  return Object.freeze({
+  return freezeRecord({
     id: options.jobId,
     job_id: options.jobId,
     target,
@@ -454,7 +512,7 @@ function buildRecord({ provider, cfg, mode, options, scopeInfo, execution, start
     endpoint: execution.endpoint ?? baseUrlFor(cfg),
     http_status: execution.http_status ?? null,
     raw_model: execution.parsed?.raw_model ?? null,
-    schema_version: 9,
+    schema_version: SCHEMA_VERSION,
   });
 }
 
