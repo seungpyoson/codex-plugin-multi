@@ -709,7 +709,7 @@ async function cmdRunWorker(rest) {
   // means either the launcher crashed before writing it, or this is a
   // pre-T7.4 legacy record — either way, we can't run.
   const prompt = consumePromptSidecar(resolveJobsDir(workspaceRoot), options.job);
-  if (!prompt) {
+  if (prompt == null) {
     const errorRecord = buildJobRecord(invocationFromRecord(meta), {
       exitCode: null, parsed: null, pidInfo: null, claudeSessionId: null,
       errorMessage: "worker: prompt sidecar missing; job cannot resume",
@@ -836,7 +836,12 @@ async function cmdContinue(rest) {
 function writeSidecar(workspaceRoot, jobId, name, contents) {
   const jobsDir = resolveJobsDir(workspaceRoot);
   const dir = `${jobsDir}/${jobId}`;
-  mkdirSync(dir, { recursive: true });
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
+  try {
+    chmodSync(dir, 0o700);
+  } catch (err) {
+    if (process.platform !== "win32") throw err;
+  }
   const file = `${dir}/${name}`;
   const tmpFile = `${file}.${process.pid}.${Date.now()}.tmp`;
   try {

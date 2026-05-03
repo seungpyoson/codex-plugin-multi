@@ -2,7 +2,7 @@
 // Edit scripts/lib/companion-common.mjs, then run
 // `node scripts/ci/sync-companion-common.mjs` to update plugin packaging copies.
 
-import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { resolve as resolvePath } from "node:path";
 
 export const PING_PROMPT =
@@ -52,29 +52,66 @@ export function runKindFromRecord(record) {
   return "unknown";
 }
 
+const SAFE_JOB_ID = /^(?:[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}|[A-Za-z0-9][A-Za-z0-9._-]{0,127})$/;
+
+function assertSafeSidecarJobId(jobId) {
+  if (typeof jobId !== "string" || !SAFE_JOB_ID.test(jobId)) {
+    throw new Error(`Unsafe jobId: ${JSON.stringify(jobId)}`);
+  }
+}
+
+function enforcePrivateMode(target, mode) {
+  try {
+    chmodSync(target, mode);
+  } catch (err) {
+    if (process.platform === "win32") return;
+    throw err;
+  }
+  if (process.platform === "win32") return;
+  const actual = statSync(target).mode & 0o777;
+  if (actual !== mode) {
+    throw new Error(`${target} mode ${actual.toString(8)} != ${mode.toString(8)}`);
+  }
+}
+
 export function promptSidecarPath(jobsDir, jobId) {
+  assertSafeSidecarJobId(jobId);
   return resolvePath(jobsDir, jobId, "prompt.txt");
 }
 
 export function writePromptSidecar(jobsDir, jobId, prompt) {
+  assertSafeSidecarJobId(jobId);
   const dir = resolvePath(jobsDir, jobId);
   mkdirSync(dir, { recursive: true, mode: 0o700 });
-  try { chmodSync(dir, 0o700); } catch { /* best-effort on non-POSIX */ }
+  enforcePrivateMode(dir, 0o700);
   const p = promptSidecarPath(jobsDir, jobId);
-  writeFileSync(p, prompt, { mode: 0o600, encoding: "utf8" });
-  try { chmodSync(p, 0o600); } catch { /* best-effort on non-POSIX */ }
+  const tmpFile = `${p}.${process.pid}.${Date.now()}.tmp`;
+  try {
+    writeFileSync(tmpFile, prompt, { mode: 0o600, encoding: "utf8" });
+    enforcePrivateMode(tmpFile, 0o600);
+    renameSync(tmpFile, p);
+    enforcePrivateMode(p, 0o600);
+  } catch (err) {
+    try { unlinkSync(tmpFile); } catch { /* already gone */ }
+    throw err;
+  }
 }
 
 export function consumePromptSidecar(jobsDir, jobId) {
+  assertSafeSidecarJobId(jobId);
   const p = promptSidecarPath(jobsDir, jobId);
   let prompt;
   try {
     prompt = readFileSync(p, "utf8");
   } catch (err) {
-    if (err?.code === "ENOENT") return null;
+    if (err?.code === "ENOENT" || err?.code === "ENOTDIR") return null;
     throw err;
   }
-  try { unlinkSync(p); } catch { /* already gone */ }
+  try {
+    unlinkSync(p);
+  } catch (err) {
+    if (err?.code !== "ENOENT") throw err;
+  }
   return prompt;
 }
 

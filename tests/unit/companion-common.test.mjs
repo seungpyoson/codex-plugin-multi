@@ -21,6 +21,8 @@ import {
 } from "../../scripts/lib/companion-common.mjs";
 import { COMPANION_PLUGIN_TARGETS } from "../../scripts/lib/plugin-targets.mjs";
 
+const POSIX_MODE_ASSERTIONS = process.platform !== "win32";
+
 test("companion-common exposes the shared ping prompt", () => {
   assert.equal(
     PING_PROMPT,
@@ -93,11 +95,30 @@ test("prompt sidecar helpers write 0600 handoff files and consume once", () => {
 
   writePromptSidecar(jobsDir, "job-1", "secret prompt");
   assert.equal(readFileSync(p, "utf8"), "secret prompt");
-  assert.equal((statSync(path.dirname(p)).mode & 0o777), 0o700);
-  assert.equal((statSync(p).mode & 0o777), 0o600);
+  if (POSIX_MODE_ASSERTIONS) {
+    assert.equal((statSync(path.dirname(p)).mode & 0o777), 0o700);
+    assert.equal((statSync(p).mode & 0o777), 0o600);
+  }
   assert.equal(consumePromptSidecar(jobsDir, "job-1"), "secret prompt");
   assert.equal(existsSync(p), false);
   assert.equal(consumePromptSidecar(jobsDir, "job-1"), null);
+});
+
+test("prompt sidecar helpers reject unsafe job ids before resolving paths", () => {
+  const jobsDir = mkdtempSync(path.join(tmpdir(), "companion-common-unsafe-jobs-"));
+
+  for (const jobId of ["/tmp/escape", "../escape", "nested/job", "", "."]) {
+    assert.throws(() => promptSidecarPath(jobsDir, jobId), /Unsafe jobId/);
+    assert.throws(() => writePromptSidecar(jobsDir, jobId, "secret"), /Unsafe jobId/);
+    assert.throws(() => consumePromptSidecar(jobsDir, jobId), /Unsafe jobId/);
+  }
+});
+
+test("consumePromptSidecar treats ENOTDIR as a missing sidecar", () => {
+  const jobsDir = mkdtempSync(path.join(tmpdir(), "companion-common-enotdir-jobs-"));
+  writeFileSync(path.join(jobsDir, "job-file"), "not a directory", "utf8");
+
+  assert.equal(consumePromptSidecar(jobsDir, "job-file"), null);
 });
 
 test("plugin packaging copies expose the canonical helper behavior", async () => {
@@ -163,8 +184,10 @@ function assertCopyHelperBranches(mod, plugin) {
   mod.writePromptSidecar(jobsDir, "job-1", "copy prompt");
   const sidecar = mod.promptSidecarPath(jobsDir, "job-1");
   assert.equal(readFileSync(sidecar, "utf8"), "copy prompt");
-  assert.equal((statSync(path.dirname(sidecar)).mode & 0o777), 0o700);
-  assert.equal((statSync(sidecar).mode & 0o777), 0o600);
+  if (POSIX_MODE_ASSERTIONS) {
+    assert.equal((statSync(path.dirname(sidecar)).mode & 0o777), 0o700);
+    assert.equal((statSync(sidecar).mode & 0o777), 0o600);
+  }
   assert.equal(mod.consumePromptSidecar(jobsDir, "job-1"), "copy prompt");
   assert.equal(existsSync(sidecar), false);
   assert.equal(mod.consumePromptSidecar(jobsDir, "job-1"), null);

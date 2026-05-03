@@ -10,16 +10,56 @@ function readRepoFile(rel) {
   return readFileSync(path.join(REPO_ROOT, rel), "utf8");
 }
 
-test("companion sidecar writes use sibling tmp files and rename", () => {
+test("companion sidecar writes use sibling tmp files, rename, and private directories", () => {
   for (const rel of [
     "plugins/claude/scripts/claude-companion.mjs",
     "plugins/gemini/scripts/gemini-companion.mjs",
+    "plugins/kimi/scripts/kimi-companion.mjs",
   ]) {
     const source = readRepoFile(rel);
     const match = /function writeSidecar[\s\S]*?\n}/.exec(source);
     assert.ok(match, `${rel}: missing writeSidecar helper`);
     assert.match(match[0], /renameSync/, `${rel}: writeSidecar must rename a tmp file into place`);
     assert.match(match[0], /\.tmp/, `${rel}: writeSidecar must write a sibling tmp file`);
+    assert.match(match[0], /mode:\s*0o700/, `${rel}: writeSidecar must create private job dirs`);
+    assert.match(match[0], /chmodSync\(dir,\s*0o700\)/, `${rel}: writeSidecar must tighten existing job dirs`);
+  }
+});
+
+test("prompt sidecar writes use sibling tmp files and rename", () => {
+  const source = readRepoFile("scripts/lib/companion-common.mjs");
+  const match = /export function writePromptSidecar[\s\S]*?\n}/.exec(source);
+  assert.ok(match, "scripts/lib/companion-common.mjs: missing writePromptSidecar helper");
+  assert.match(match[0], /renameSync/, "writePromptSidecar must rename a tmp file into place");
+  assert.match(match[0], /\.tmp/, "writePromptSidecar must write a sibling tmp file");
+});
+
+test("prompt sidecar cleanup only swallows already-missing files", () => {
+  const source = readRepoFile("scripts/lib/companion-common.mjs");
+  const match = /export function consumePromptSidecar[\s\S]*?\n}/.exec(source);
+  assert.ok(match, "scripts/lib/companion-common.mjs: missing consumePromptSidecar helper");
+  assert.match(match[0], /catch\s*\(err\)/, "consumePromptSidecar must inspect unlink errors");
+  assert.match(match[0], /err\?\.code\s*!==\s*"ENOENT"/, "consumePromptSidecar must rethrow non-ENOENT unlink errors");
+});
+
+test("Kimi runtime-options sidecar writes use private directories", () => {
+  const source = readRepoFile("plugins/kimi/scripts/kimi-companion.mjs");
+  const match = /function writeRuntimeOptionsSidecar[\s\S]*?\n}/.exec(source);
+  assert.ok(match, "kimi companion: missing writeRuntimeOptionsSidecar helper");
+  assert.match(match[0], /mode:\s*0o700/, "runtime-options sidecar must create private job dirs");
+  assert.match(match[0], /chmodSync\(dir,\s*0o700\)/, "runtime-options sidecar must tighten existing job dirs");
+});
+
+test("workers distinguish empty prompt sidecars from missing prompt sidecars", () => {
+  for (const rel of [
+    "plugins/claude/scripts/claude-companion.mjs",
+    "plugins/gemini/scripts/gemini-companion.mjs",
+    "plugins/kimi/scripts/kimi-companion.mjs",
+  ]) {
+    const source = readRepoFile(rel);
+    const workerPromptBlock = /const prompt = consumePromptSidecar[\s\S]*?await executeRun/.exec(source)?.[0] ?? "";
+    assert.match(workerPromptBlock, /if\s*\(\s*prompt\s*==\s*null\s*\)/, `${rel}: worker must check nullish prompt only`);
+    assert.doesNotMatch(workerPromptBlock, /if\s*\(\s*!prompt\s*\)/, `${rel}: worker must not classify empty prompts as missing`);
   }
 });
 

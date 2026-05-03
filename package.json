@@ -21,6 +21,7 @@
   ],
   "scripts": {
     "lint": "node scripts/ci/check-manifests.mjs",
+    "lint:sync": "node scripts/ci/sync-codex-env.mjs --check && node scripts/ci/sync-companion-common.mjs --check && node scripts/ci/sync-external-review.mjs --check && node scripts/ci/sync-auth-selection.mjs --check && node scripts/ci/sync-provider-env.mjs --check",
     "lint:self-test": "node scripts/ci/check-manifests-self-test.mjs",
     "test": "node scripts/ci/run-tests.mjs",
     "test:full": "CODEX_PLUGIN_FULL_TESTS=1 node scripts/ci/run-tests.mjs",

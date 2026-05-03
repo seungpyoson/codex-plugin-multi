@@ -11,6 +11,7 @@ import { mkdir, readFile, readdir, rm, stat } from "node:fs/promises";
 import { dirname, relative, resolve, sep } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { CODEX_ENV_PLUGIN_TARGETS, COMPANION_PLUGIN_TARGETS } from "../lib/plugin-targets.mjs";
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const SKIP_DIRS = new Set(["node_modules", "fixtures", ".git", "coverage"]);
@@ -50,7 +51,7 @@ async function discoverTestFiles() {
 
 async function discoverLibFiles() {
   const files = [];
-  for (const plugin of ["claude", "gemini"]) {
+  for (const plugin of new Set([...COMPANION_PLUGIN_TARGETS, ...CODEX_ENV_PLUGIN_TARGETS, "api-reviewers"])) {
     files.push(...await walk(
       resolve(REPO_ROOT, "plugins", plugin, "scripts", "lib"),
       (f) => f.endsWith(".mjs"),
@@ -269,26 +270,29 @@ async function readCoverageFunctions(coverageDir, libFiles) {
 
 async function shareCoverageForVerbatimPairs(byFile, libFiles, readText = readFile) {
   const byRepoPath = new Map(libFiles.map((file) => [toRepoRelative(file), resolve(file)]));
-  const claudeLibPrefix = "plugins/claude/scripts/lib/";
-  const geminiLibPrefix = "plugins/gemini/scripts/lib/";
-  for (const repoPath of byRepoPath.keys()) {
-    if (!repoPath.startsWith(claudeLibPrefix)) continue;
-    const fileName = repoPath.slice(claudeLibPrefix.length);
-    if (fileName.includes("/")) continue;
-    const claudeFile = byRepoPath.get(repoPath);
-    const geminiFile = byRepoPath.get(`${geminiLibPrefix}${fileName}`);
-    if (!claudeFile || !geminiFile) continue;
-    const [claudeSource, geminiSource] = await Promise.all([
-      readText(claudeFile, "utf8"),
-      readText(geminiFile, "utf8"),
-    ]);
-    if (String(claudeSource) !== String(geminiSource)) continue;
-    const merged = [
-      ...(byFile.get(claudeFile) ?? []),
-      ...(byFile.get(geminiFile) ?? []),
-    ];
-    byFile.set(claudeFile, merged);
-    byFile.set(geminiFile, merged);
+  const filesByName = new Map();
+  for (const [repoPath, file] of byRepoPath.entries()) {
+    const match = /^plugins\/[^/]+\/scripts\/lib\/([^/]+)$/.exec(repoPath);
+    if (!match) continue;
+    const fileName = match[1];
+    if (!filesByName.has(fileName)) filesByName.set(fileName, []);
+    filesByName.get(fileName).push(file);
+  }
+
+  for (const files of filesByName.values()) {
+    if (files.length < 2) continue;
+    const sources = await Promise.all(files.map((file) => readText(file, "utf8")));
+    const filesBySource = new Map();
+    for (const [i, file] of files.entries()) {
+      const source = String(sources[i]);
+      if (!filesBySource.has(source)) filesBySource.set(source, []);
+      filesBySource.get(source).push(file);
+    }
+    for (const identicalFiles of filesBySource.values()) {
+      if (identicalFiles.length < 2) continue;
+      const merged = identicalFiles.flatMap((file) => byFile.get(file) ?? []);
+      for (const file of identicalFiles) byFile.set(file, merged);
+    }
   }
   return byFile;
 }

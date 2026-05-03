@@ -129,6 +129,18 @@ test("companion plugin target list matches packaged companion-common copies", ()
   assert.deepEqual([...COMPANION_PLUGIN_TARGETS].sort(), pluginsWithCompanionCopy);
 });
 
+test("codex-env plugin target list matches packaged codex-env copies", () => {
+  const pluginsWithCodexEnvCopy = readdirSync(path.join(REPO_ROOT, "plugins"), { withFileTypes: true })
+    .filter((entry) => entry.isDirectory())
+    .map((entry) => entry.name)
+    .filter((plugin) =>
+      existsSync(path.join(REPO_ROOT, `plugins/${plugin}/scripts/lib/codex-env.mjs`))
+    )
+    .sort();
+
+  assert.deepEqual([...CODEX_ENV_PLUGIN_TARGETS].sort(), pluginsWithCodexEnvCopy);
+});
+
 for (const file of VERBATIM_FILES) {
   test(`lib/${file}: byte-identical across plugins/{${COMPANION_PLUGIN_TARGETS.join(",")}}`, () => {
     const copies = COMPANION_PLUGIN_TARGETS.map((plugin) => [

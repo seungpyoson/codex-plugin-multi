@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { resolve } from "node:path";
+import path, { resolve } from "node:path";
 
 import { _internal } from "../../scripts/ci/check-coverage.mjs";
 
@@ -267,6 +267,19 @@ test("coverage merger shares raw V8 functions for byte-identical shared lib pair
   assert.deepEqual(byFile.get(geminiArgs), [claudeFn, geminiFn]);
 });
 
+test("coverage gate discovers every packaged plugin lib directory", async () => {
+  const files = (await _internal.discoverLibFiles()).map((file) =>
+    path.relative(resolve("."), file).split(path.sep).join("/")
+  );
+
+  for (const plugin of ["claude", "gemini", "kimi", "api-reviewers"]) {
+    assert.ok(
+      files.some((file) => file.startsWith(`plugins/${plugin}/scripts/lib/`)),
+      `coverage gate must walk plugins/${plugin}/scripts/lib`,
+    );
+  }
+});
+
 test("coverage merger discovers byte-identical lib pairs instead of requiring duplicate tests", async () => {
   const claudeMarker = resolve("plugins/claude/scripts/lib/cancel-marker.mjs");
   const geminiMarker = resolve("plugins/gemini/scripts/lib/cancel-marker.mjs");
@@ -283,4 +296,51 @@ test("coverage merger discovers byte-identical lib pairs instead of requiring du
     [claudeFn],
     "byte-identical gemini helper should inherit claude-side coverage without a gemini-only exercise test",
   );
+});
+
+test("coverage merger shares coverage across all byte-identical companion-common copies", async () => {
+  const claudeCommon = resolve("plugins/claude/scripts/lib/companion-common.mjs");
+  const geminiCommon = resolve("plugins/gemini/scripts/lib/companion-common.mjs");
+  const kimiCommon = resolve("plugins/kimi/scripts/lib/companion-common.mjs");
+  const coveredFn = { functionName: "printJson", ranges: [{ startOffset: 0, endOffset: 10, count: 1 }] };
+  const byFile = new Map([
+    [claudeCommon, [coveredFn]],
+    [geminiCommon, []],
+    [kimiCommon, []],
+  ]);
+
+  await _internal.shareCoverageForVerbatimPairs(
+    byFile,
+    [claudeCommon, geminiCommon, kimiCommon],
+    async () => "same source",
+  );
+
+  assert.deepEqual(byFile.get(geminiCommon), [coveredFn]);
+  assert.deepEqual(byFile.get(kimiCommon), [coveredFn]);
+});
+
+test("coverage merger keeps sharing identical subsets when same-named plugin files diverge", async () => {
+  const claudeReconcile = resolve("plugins/claude/scripts/lib/reconcile.mjs");
+  const geminiReconcile = resolve("plugins/gemini/scripts/lib/reconcile.mjs");
+  const kimiReconcile = resolve("plugins/kimi/scripts/lib/reconcile.mjs");
+  const coveredFn = { functionName: "reconcileActiveJobs", ranges: [{ startOffset: 0, endOffset: 10, count: 1 }] };
+  const byFile = new Map([
+    [claudeReconcile, [coveredFn]],
+    [geminiReconcile, []],
+    [kimiReconcile, []],
+  ]);
+  const sources = new Map([
+    [claudeReconcile, "shared source"],
+    [geminiReconcile, "shared source"],
+    [kimiReconcile, "kimi source"],
+  ]);
+
+  await _internal.shareCoverageForVerbatimPairs(
+    byFile,
+    [claudeReconcile, geminiReconcile, kimiReconcile],
+    async (file) => sources.get(file),
+  );
+
+  assert.deepEqual(byFile.get(geminiReconcile), [coveredFn]);
+  assert.deepEqual(byFile.get(kimiReconcile), []);
 });

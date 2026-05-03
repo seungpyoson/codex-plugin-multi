@@ -560,7 +560,12 @@ async function executeRun(invocation, prompt, { foreground }) {
 
 function writeSidecar(workspaceRoot, jobId, name, contents) {
   const dir = `${resolveJobsDir(workspaceRoot)}/${jobId}`;
-  mkdirSync(dir, { recursive: true });
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
+  try {
+    chmodSync(dir, 0o700);
+  } catch (err) {
+    if (process.platform !== "win32") throw err;
+  }
   const file = `${dir}/${name}`;
   const tmpFile = `${file}.${process.pid}.${Date.now()}.tmp`;
   try {
@@ -610,7 +615,7 @@ async function cmdRunWorker(rest) {
   }
 
   const prompt = consumePromptSidecar(resolveJobsDir(workspaceRoot), options.job);
-  if (!prompt) {
+  if (prompt == null) {
     const errorRecord = buildJobRecord(invocationFromRecord(meta), {
       exitCode: null, parsed: null, pidInfo: null, geminiSessionId: null,
       errorMessage: "worker: prompt sidecar missing; job cannot resume",
