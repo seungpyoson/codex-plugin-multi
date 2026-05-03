@@ -10,9 +10,9 @@ if (process.argv.includes("--version") || process.argv.includes("-v")) {
 function parseCli(argv) {
   const valueFlags = new Set([
     "-p", "--prompt", "-m", "--model", "--output-format",
-    "--session", "--resume", "--add-dir", "--max-steps-per-turn",
+    "--input-format", "--session", "--resume", "--add-dir", "--max-steps-per-turn",
   ]);
-  const boolFlags = new Set(["--print", "--final-message-only", "--plan", "-y", "--yolo"]);
+  const boolFlags = new Set(["--print", "--final-message-only", "--thinking", "--plan", "-y", "--yolo"]);
   const out = { flags: {}, positional: [] };
   for (let i = 0; i < argv.length; i++) {
     const tok = argv[i];
@@ -22,6 +22,10 @@ function parseCli(argv) {
     } else if (boolFlags.has(tok)) {
       out.flags[tok] = true;
     } else {
+      if (tok.startsWith("-")) {
+        process.stderr.write(`kimi-mock: unknown flag ${tok}\n`);
+        process.exit(1);
+      }
       out.positional.push(tok);
     }
   }

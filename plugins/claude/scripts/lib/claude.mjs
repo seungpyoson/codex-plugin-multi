@@ -39,7 +39,7 @@ function assertProfile(profile) {
  *
  *   profile        — frozen object from MODE_PROFILES (resolveProfile(mode))
  *   runtimeInputs  — {
- *     model,          // full model ID (e.g., claude-haiku-4-5-20251001)
+ *     model,          // full model ID (e.g., claude-opus-4-7)
  *     promptText,     // non-empty string
  *     sessionId?,     // UUIDv4 (required unless resumeId is set)
  *     resumeId?,      // UUIDv4 — emits --resume instead of --session-id
@@ -79,7 +79,7 @@ export function buildClaudeArgs(profile, runtimeInputs = {}) {
     "--output-format", "json",
     "--no-session-persistence",
   ];
-  if (typeof model === "string" && model) args.push("--model", model);
+  if (typeof model === "string" && model) args.push("--model", model, "--effort", "max");
   if (resumeId) {
     // --resume continues a prior Claude session; a fresh --session-id must NOT
     // also be passed or Claude rejects the argv.
