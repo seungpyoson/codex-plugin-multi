@@ -34,6 +34,16 @@ test("prompt sidecar writes use sibling tmp files and rename", () => {
   assert.match(match[0], /\.tmp/, "writePromptSidecar must write a sibling tmp file");
 });
 
+test("prompt sidecar write cleanup removes final path after rename failures", () => {
+  const source = readRepoFile("scripts/lib/companion-common.mjs");
+  const match = /export function writePromptSidecar[\s\S]*?\n}/.exec(source);
+  assert.ok(match, "scripts/lib/companion-common.mjs: missing writePromptSidecar helper");
+  assert.match(match[0], /let\s+renamed\s*=\s*false/, "writePromptSidecar must track whether rename completed");
+  assert.match(match[0], /renamed\s*=\s*true/, "writePromptSidecar must mark successful rename before final hardening");
+  assert.match(match[0], /unlinkSync\(renamed\s*\?\s*p\s*:\s*tmpFile\)/,
+    "writePromptSidecar must remove prompt.txt, not only the tmp file, if post-rename hardening fails");
+});
+
 test("prompt sidecar cleanup only swallows already-missing files", () => {
   const source = readRepoFile("scripts/lib/companion-common.mjs");
   const match = /export function consumePromptSidecar[\s\S]*?\n}/.exec(source);

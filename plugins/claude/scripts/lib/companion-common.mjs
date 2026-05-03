@@ -108,13 +108,15 @@ export function writePromptSidecar(jobsDir, jobId, prompt) {
   enforcePrivateMode(dir, 0o700);
   const p = promptSidecarPath(jobsDir, jobId);
   const tmpFile = `${p}.${process.pid}.${Date.now()}.tmp`;
+  let renamed = false;
   try {
     writeFileSync(tmpFile, prompt, { mode: 0o600, encoding: "utf8" });
     enforcePrivateMode(tmpFile, 0o600);
     renameSync(tmpFile, p);
+    renamed = true;
     enforcePrivateMode(p, 0o600);
   } catch (err) {
-    try { unlinkSync(tmpFile); } catch { /* already gone */ }
+    try { unlinkSync(renamed ? p : tmpFile); } catch { /* already gone */ }
     throw err;
   }
 }
