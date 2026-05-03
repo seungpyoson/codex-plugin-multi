@@ -52,7 +52,8 @@ export function buildGeminiArgs(profile, runtimeInputs = {}) {
 }
 
 function isCodexSandbox(env) {
-  return Boolean(env?.CODEX_SANDBOX);
+  const value = env?.CODEX_SANDBOX;
+  return Boolean(value) && value !== "false" && value !== "0";
 }
 
 function summarizeStderr(stderr) {

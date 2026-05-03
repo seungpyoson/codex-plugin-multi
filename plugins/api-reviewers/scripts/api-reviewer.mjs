@@ -480,15 +480,16 @@ async function callProvider(provider, cfg, prompt, env = process.env) {
 
 function safeProviderSessionId(value) {
   if (typeof value !== "string") return null;
-  if (value.length === 0 || value.length > 200) return null;
-  if (/[\u0000-\u001f\u007f]/u.test(value)) return null;
-  return value;
+  return /^[A-Za-z0-9._:/=+@-]{1,200}$/.test(value) ? value : null;
 }
 
 function payloadSentForProviderException(error) {
   if (error?.name === "AbortError") return true;
   const code = error?.code ?? error?.cause?.code ?? null;
-  if (code === "ENOTFOUND" || code === "EAI_AGAIN" || code === "ECONNREFUSED") return false;
+  if (code === "ENOTFOUND" || code === "EAI_AGAIN" || code === "ECONNREFUSED" ||
+      code === "EHOSTUNREACH" || code === "ENETUNREACH" || code === "ECONNABORTED") {
+    return false;
+  }
   return null;
 }
 
@@ -539,10 +540,11 @@ function suggestedAction(errorCode, provider, cfg, errorMessage = "", env = proc
   if (errorCode === "auth_rejected") return `Check the ${cfg.display_name} API key and billing/plan for ${cfg.model}.`;
   if (errorCode === "rate_limited") return `Wait and retry, or lower concurrency for ${provider}.`;
   if (errorCode === "provider_unavailable") {
-    if (env.CODEX_SANDBOX) {
+    const looksLikeNetworkFailure = /fetch failed|ENOTFOUND|EAI_AGAIN|ECONNREFUSED|EHOSTUNREACH|ENETUNREACH|ECONNABORTED|network/i.test(errorMessage);
+    if (env.CODEX_SANDBOX && looksLikeNetworkFailure) {
       return `If running inside Codex, set [sandbox_workspace_write].network_access = true in ~/.codex/config.toml, start a fresh Codex session, then retry; or run this direct API reviewer outside sandbox. If network is already enabled, retry later or switch reviewer provider.`;
     }
-    if (/fetch failed|ENOTFOUND|EAI_AGAIN|ECONNREFUSED|network|timeout/i.test(errorMessage)) {
+    if (looksLikeNetworkFailure) {
       return `Check network access, retry later, or switch reviewer provider.`;
     }
     return `Retry later or switch reviewer provider.`;

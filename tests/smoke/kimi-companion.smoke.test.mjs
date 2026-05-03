@@ -283,6 +283,76 @@ process.exit(1);
   }
 });
 
+test("kimi ping classifies Codex sandbox denial for Kimi OAuth files before auth hints", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "kimi-ping-sandbox-auth-denied-"));
+  const bin = path.join(cwd, "kimi-auth-denied");
+  writeFileSync(bin, `#!/usr/bin/env node
+process.stderr.write("PermissionError: [Errno 1] Operation not permitted: '/Users/test/.kimi/auth.json'\\n");
+process.exit(1);
+`, "utf8");
+  chmodSync(bin, 0o755);
+  try {
+    const result = spawnSync("node", [COMPANION, "ping", "--binary", bin], {
+      cwd,
+      encoding: "utf8",
+      env: { ...process.env, CODEX_SANDBOX: "seatbelt", KIMI_PLUGIN_DATA: mkdtempSync(path.join(tmpdir(), "kimi-auth-denied-data-")) },
+    });
+    assert.equal(result.status, 2);
+    const parsed = parseJson(result.stdout);
+    assert.equal(parsed.status, "sandbox_blocked");
+    assert.match(parsed.next_action, /writable_roots/);
+  } finally {
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("kimi ping classifies Codex sandbox denial for bare Kimi state directory", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "kimi-ping-sandbox-dir-denied-"));
+  const bin = path.join(cwd, "kimi-dir-denied");
+  writeFileSync(bin, `#!/usr/bin/env node
+process.stderr.write("Permission denied: '/Users/test/.kimi'\\n");
+process.exit(1);
+`, "utf8");
+  chmodSync(bin, 0o755);
+  try {
+    const result = spawnSync("node", [COMPANION, "ping", "--binary", bin], {
+      cwd,
+      encoding: "utf8",
+      env: { ...process.env, CODEX_SANDBOX: "seatbelt", KIMI_PLUGIN_DATA: mkdtempSync(path.join(tmpdir(), "kimi-dir-denied-data-")) },
+    });
+    assert.equal(result.status, 2);
+    const parsed = parseJson(result.stdout);
+    assert.equal(parsed.status, "sandbox_blocked");
+    assert.match(parsed.next_action, /~\/\.kimi/);
+  } finally {
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("kimi ping does not classify unrelated permission error plus Kimi mention as sandbox_blocked", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "kimi-ping-sandbox-false-positive-"));
+  const bin = path.join(cwd, "kimi-unrelated-denied");
+  writeFileSync(bin, `#!/usr/bin/env node
+process.stderr.write("PermissionError: [Errno 1] Operation not permitted: '/workspace/output.log'\\n");
+process.stderr.write("Loaded config defaults from /Users/test/.kimi/config.json\\n");
+process.exit(1);
+`, "utf8");
+  chmodSync(bin, 0o755);
+  try {
+    const result = spawnSync("node", [COMPANION, "ping", "--binary", bin], {
+      cwd,
+      encoding: "utf8",
+      env: { ...process.env, CODEX_SANDBOX: "seatbelt", KIMI_PLUGIN_DATA: mkdtempSync(path.join(tmpdir(), "kimi-unrelated-denied-data-")) },
+    });
+    assert.equal(result.status, 2);
+    const parsed = parseJson(result.stdout);
+    assert.equal(parsed.status, "error");
+    assert.doesNotMatch(parsed.next_action, /writable_roots/);
+  } finally {
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
 test("kimi ping rejects fractional timeout milliseconds", () => {
   const cwd = mkdtempSync(path.join(tmpdir(), "kimi-ping-timeout-fraction-"));
   try {

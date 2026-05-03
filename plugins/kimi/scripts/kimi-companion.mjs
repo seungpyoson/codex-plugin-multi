@@ -1019,9 +1019,12 @@ function pingFailureDetail(execution) {
 }
 
 function isKimiCodexSandboxBlocked(detail) {
-  return Boolean(process.env.CODEX_SANDBOX) &&
-    /Operation not permitted|PermissionError|EACCES|EPERM/i.test(detail) &&
-    /(?:^|[/\\])\.kimi(?:[/\\]|$)/.test(detail);
+  if (!process.env.CODEX_SANDBOX) return false;
+  const permissionRe = /Operation not permitted|Permission denied|PermissionError|EACCES|EPERM/i;
+  const kimiPathRe = /(?:^|[/\\])\.kimi(?:[/\\]|['"\s:)]|$)/;
+  return String(detail ?? "")
+    .split("\n")
+    .some((line) => permissionRe.test(line) && kimiPathRe.test(line));
 }
 
 async function cmdPing(rest) {
@@ -1083,6 +1086,10 @@ async function cmdPing(rest) {
       printJson({ status: "transient_timeout", ...pingTimeoutFields(timeoutMs), ...ignoredApiKeyAuthFields(), detail });
       process.exit(2);
     }
+    if (isKimiCodexSandboxBlocked(failureText)) {
+      printJson({ status: "sandbox_blocked", ...pingSandboxBlockedFields(), ...ignoredApiKeyAuthFields(), exit_code: execution.exitCode, detail });
+      process.exit(2);
+    }
     if (/rate limit|429|overloaded/i.test(detail)) {
       printJson({ status: "rate_limited", ...pingRateLimitedFields(), ...ignoredApiKeyAuthFields(), detail });
       process.exit(2);
@@ -1091,10 +1098,6 @@ async function cmdPing(rest) {
       printJson({ status: "not_authed", ...pingNotAuthedFields(), detail,
         ...ignoredApiKeyAuthFields(),
         hint: "Run `kimi` interactively to complete OAuth. API-key env vars are ignored by plugin policy." });
-      process.exit(2);
-    }
-    if (isKimiCodexSandboxBlocked(failureText)) {
-      printJson({ status: "sandbox_blocked", ...pingSandboxBlockedFields(), ...ignoredApiKeyAuthFields(), exit_code: execution.exitCode, detail });
       process.exit(2);
     }
     printJson({ status: "error", ...pingErrorFields(), ...ignoredApiKeyAuthFields(), exit_code: execution.exitCode, detail });

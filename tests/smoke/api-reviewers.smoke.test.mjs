@@ -71,6 +71,22 @@ function startHangingChatServer() {
   });
 }
 
+function startStatusChatServer(status, body = { error: { message: "provider temporarily unavailable" } }) {
+  const server = createServer((req, res) => {
+    if (req.url === "/chat/completions") {
+      req.resume();
+      res.writeHead(status, { "content-type": "application/json" });
+      res.end(JSON.stringify(body));
+      return;
+    }
+    res.writeHead(404);
+    res.end();
+  });
+  return new Promise((resolve) => {
+    server.listen(0, "127.0.0.1", () => resolve(server));
+  });
+}
+
 function git(cwd, args) {
   execFileSync("git", args, { cwd, stdio: "pipe" });
 }
@@ -644,10 +660,10 @@ test("direct API reviewers redact provider results before printing or persisting
   assert.doesNotMatch(result.stdout, /secret-test-value/);
 });
 
-test("direct API provider session_id rejects oversized and control-character values", async () => {
+test("direct API provider session_id rejects unsafe values", async () => {
   const cwd = makeWorkspace();
   const dataDir = mkdtempSync(path.join(tmpdir(), "api-reviewers-data-"));
-  for (const id of ["bad\nid", "x".repeat(201)]) {
+  for (const id of ["bad\nid", "x".repeat(201), "<script>alert(1)</script>"]) {
     const result = await run([
       "run",
       "--provider", "deepseek",
@@ -668,7 +684,7 @@ test("direct API provider session_id rejects oversized and control-character val
     const record = parseJson(result.stdout);
     assert.equal(record.status, "completed");
     assert.equal(record.external_review.session_id, null);
-    assert.doesNotMatch(result.stdout, /bad\\nid/);
+    assert.doesNotMatch(result.stdout, /bad\\nid|<script>/);
   }
 });
 
@@ -755,6 +771,52 @@ test("direct API provider_unavailable under Codex recommends sandbox network acc
   assert.match(record.suggested_action, /network_access = true/);
   assert.match(record.suggested_action, /outside sandbox/);
   assert.doesNotMatch(result.stdout, /secret-test-value/);
+});
+
+test("direct API HTTP provider_unavailable under Codex does not recommend sandbox network access", async () => {
+  const cwd = makeWorkspace();
+  const dataDir = mkdtempSync(path.join(tmpdir(), "api-reviewers-data-"));
+  const pluginRoot = makeInstalledApiReviewersRoot();
+  const server = await startStatusChatServer(503);
+  try {
+    const { port } = server.address();
+    writeFileSync(path.join(pluginRoot, "config", "providers.json"), JSON.stringify({
+      deepseek: {
+        display_name: "DeepSeek",
+        auth_mode: "api_key",
+        env_keys: ["DEEPSEEK_API_KEY"],
+        base_url: `http://127.0.0.1:${port}`,
+        model: "deepseek-v4-flash",
+      },
+    }, null, 2));
+
+    const result = await run([
+      "run",
+      "--provider", "deepseek",
+      "--mode", "custom-review",
+      "--scope", "custom",
+      "--scope-paths", "seed.txt",
+      "--foreground",
+      "--prompt", "Check this file.",
+    ], {
+      cwd,
+      companion: path.join(pluginRoot, "scripts", "api-reviewer.mjs"),
+      env: {
+        API_REVIEWERS_PLUGIN_DATA: dataDir,
+        CODEX_SANDBOX: "seatbelt",
+        DEEPSEEK_API_KEY: "secret-test-value",
+      },
+    });
+    assert.equal(result.status, 1);
+    const record = parseJson(result.stdout);
+    assert.equal(record.error_code, "provider_unavailable");
+    assert.equal(record.http_status, 503);
+    assert.equal(record.external_review.source_content_transmission, "sent");
+    assert.doesNotMatch(record.suggested_action, /network_access = true/);
+    assert.doesNotMatch(record.suggested_action, /outside sandbox/);
+  } finally {
+    server.close();
+  }
 });
 
 test("branch-diff default reviews committed changes against main with scrubbed git env", async () => {

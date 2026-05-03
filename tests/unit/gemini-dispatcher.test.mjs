@@ -37,6 +37,18 @@ test("buildGeminiArgs: review uses policy, plan mode, sandbox, include-directori
   assert.equal(args.includes("review this"), false, "Gemini prompt must not be placed in argv");
 });
 
+test("buildGeminiArgs: CODEX_SANDBOX false-like values do not suppress Gemini sandbox", () => {
+  for (const value of ["false", "0"]) {
+    const args = buildGeminiArgs(resolveProfile("review"), {
+      model: "gemini-3-flash-preview",
+      policyPath: POLICY,
+      includeDirPath: "/tmp/scoped-worktree",
+      env: { CODEX_SANDBOX: value },
+    });
+    assert.ok(args.includes("-s"), `CODEX_SANDBOX=${value} must not suppress Gemini -s`);
+  }
+});
+
 test("buildGeminiArgs: rescue uses auto_edit and no read-only policy", () => {
   const args = buildGeminiArgs(resolveProfile("rescue"), {
     model: "gemini-3.1-pro-preview",
