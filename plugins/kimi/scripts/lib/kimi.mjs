@@ -67,7 +67,47 @@ function parseResumeSessionId(text) {
   return /\bTo resume this session:\s+kimi\s+-r\s+([0-9a-fA-F-]+)/.exec(text)?.[1] ?? null;
 }
 
-export function parseKimiResult(stdout, stderr = "") {
+const STEP_LIMIT_RE = /^Max number of steps reached:\s*(\d+)\s*$/;
+
+function parseJsonLineSessionId(text) {
+  for (const line of String(text ?? "").split("\n").reverse()) {
+    const trimmed = line.trim();
+    if (!trimmed.startsWith("{")) continue;
+    try {
+      const parsed = JSON.parse(trimmed);
+      const sessionId = parsed.session_id ?? parsed.sessionId ?? null;
+      if (sessionId) return sessionId;
+    } catch {
+      // Keep scanning older stream-json lines.
+    }
+  }
+  return null;
+}
+
+function findStepLimitLine(stdout) {
+  for (const line of String(stdout ?? "").split("\n").reverse()) {
+    const match = STEP_LIMIT_RE.exec(line.trim());
+    if (match) return match;
+  }
+  return null;
+}
+
+function stepLimitResult(match, stdout, stderr) {
+  const error = match[0].trim();
+  return {
+    ok: false,
+    reason: "step_limit_exceeded",
+    error,
+    stepLimit: Number(match[1]),
+    sessionId:
+      parseResumeSessionId(`${stdout}\n${stderr}`) ??
+      parseJsonLineSessionId(stdout) ??
+      parseJsonLineSessionId(stderr),
+    raw: stdout,
+  };
+}
+
+export function parseKimiResult(stdout, stderr = "", options = {}) {
   const trimmed = stdout.trim();
   if (!trimmed) {
     const stderrSummary = summarizeStderr(stderr);
@@ -76,17 +116,17 @@ export function parseKimiResult(stdout, stderr = "") {
     }
     return { ok: false, reason: "empty_stdout", raw: stdout };
   }
-  const stepLimitMatch = /^Max number of steps reached:\s*(\d+)\s*$/.exec(trimmed);
+  const stepLimitMatch = STEP_LIMIT_RE.exec(trimmed);
   if (stepLimitMatch) {
-    const error = stepLimitMatch[0].trim();
-    return {
-      ok: false,
-      reason: "step_limit_exceeded",
-      error,
-      stepLimit: Number(stepLimitMatch[1]),
-      sessionId: parseResumeSessionId(`${stdout}\n${stderr}`),
-      raw: stdout,
-    };
+    return stepLimitResult(stepLimitMatch, stdout, stderr);
+  }
+  // Signal-killed runs have exitCode null; mixed sentinels are ignored so crash/timeout
+  // classification is not masked, while sole sentinels are still caught above.
+  if (Number.isInteger(options?.exitCode) && options.exitCode !== 0) {
+    const failedStepLimitMatch = findStepLimitLine(stdout);
+    if (failedStepLimitMatch) {
+      return stepLimitResult(failedStepLimitMatch, stdout, stderr);
+    }
   }
   let parsed;
   const resumeMatch = parseResumeSessionId(`${stdout}\n${stderr}`);
@@ -175,7 +215,7 @@ export async function spawnKimi(profile, runtimeInputs = {}) {
       finishReject(Object.assign(new Error(`spawn ${binary} failed: ${e.message}`), { code: e.code }));
     });
     child.on("close", (exitCode, signal) => {
-      const parsed = parseKimiResult(stdout, stderr);
+      const parsed = parseKimiResult(stdout, stderr, { exitCode });
       finishResolve({
         exitCode,
         signal,

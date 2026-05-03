@@ -727,12 +727,13 @@ async function cmdRunWorker(rest) {
     fail("bad_state", `_run-worker refuses terminal job ${options.job}`);
   }
 
+  const runtimeOptions = readRuntimeOptionsSidecar(workspaceRoot, options.job);
+
   // Honor a cancel that arrived while we were queued. The worker MUST check
   // this before spawning the target — otherwise the run completes (model
   // call, side effects) and only the post-run consumer at executeRun would
   // convert "completed" → "cancelled".
   if (consumeCancelMarker(workspaceRoot, options.job)) {
-    const runtimeOptions = readRuntimeOptionsSidecar(workspaceRoot, options.job);
     const cancelledRecord = buildJobRecord(invocationFromRecord(meta, runtimeOptions), {
       status: "cancelled",
       exitCode: null, parsed: null, pidInfo: null, kimiSessionId: null,
@@ -744,7 +745,7 @@ async function cmdRunWorker(rest) {
 
   const prompt = consumePromptSidecar(workspaceRoot, options.job);
   if (!prompt) {
-    const errorRecord = buildJobRecord(invocationFromRecord(meta), {
+    const errorRecord = buildJobRecord(invocationFromRecord(meta, runtimeOptions), {
       exitCode: null, parsed: null, pidInfo: null, kimiSessionId: null,
       errorMessage: "worker: prompt sidecar missing; job cannot resume",
     }, []);
@@ -753,7 +754,6 @@ async function cmdRunWorker(rest) {
     fail("bad_state", "prompt sidecar missing for job " + options.job);
   }
 
-  const runtimeOptions = readRuntimeOptionsSidecar(workspaceRoot, options.job);
   const invocation = invocationFromRecord(meta, runtimeOptions);
   await executeRun(invocation, prompt, { foreground: false });
 }

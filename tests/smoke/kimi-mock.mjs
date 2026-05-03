@@ -59,6 +59,15 @@ if (expectedMaxSteps && String(parsed.flags["--max-steps-per-turn"] ?? "") !== e
   process.exit(1);
 }
 
+const expectedResumeId = process.env.KIMI_MOCK_ASSERT_RESUME_ID;
+const actualResumeId = parsed.flags["--session"] ?? parsed.flags["--resume"] ?? "";
+if (expectedResumeId && actualResumeId !== expectedResumeId) {
+  process.stderr.write(
+    `kimi-mock: resume id mismatch: expected ${expectedResumeId}, got ${actualResumeId || "<missing>"}\n`,
+  );
+  process.exit(1);
+}
+
 if (process.env.KIMI_MOCK_CAPACITY_MODEL === model) {
   process.stderr.write(JSON.stringify({
     error: {
@@ -76,8 +85,16 @@ if (process.env.KIMI_MOCK_CAPACITY_MODEL === model) {
 
 if (process.env.KIMI_MOCK_STEP_LIMIT) {
   const limit = process.env.KIMI_MOCK_STEP_LIMIT;
+  if (process.env.KIMI_MOCK_STEP_LIMIT_PREFIX_JSON === "1") {
+    process.stdout.write(JSON.stringify({ content: "Partial Kimi response.", session_id: sessionId }) + "\n");
+  }
   process.stdout.write(`Max number of steps reached: ${limit}\n`);
-  process.stderr.write(`To resume this session: kimi -r ${sessionId}\n`);
+  const resumeHint = `To resume this session: kimi -r ${sessionId}\n`;
+  if (process.env.KIMI_MOCK_STEP_LIMIT_RESUME_ON_STDOUT === "1") {
+    process.stdout.write(resumeHint);
+  } else {
+    process.stderr.write(resumeHint);
+  }
   process.exit(1);
 }
 
