@@ -52,7 +52,8 @@ access:
 network_access = true
 ```
 
-For Kimi, the first-party CLI normally writes state and logs below `~/.kimi`.
+For Kimi, the first-party CLI normally writes state and logs below `~/.kimi`;
+Kimi alone does not require `network_access = true`.
 If Kimi setup (`ping`) returns `sandbox_blocked` with a `.kimi` path, add a
 provider-specific writable root and start a fresh Codex session. If a review
 fails with a `.kimi` permission denial before setup catches it, use the same
@@ -60,7 +61,6 @@ staged writable-root remediation:
 
 ```toml
 [sandbox_workspace_write]
-network_access = true
 writable_roots = ["/Users/<you>/.kimi/logs"]
 ```
 
