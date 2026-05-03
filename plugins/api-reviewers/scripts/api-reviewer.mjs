@@ -349,6 +349,7 @@ async function readScopeFiles(workspaceRoot, relPaths) {
     }
     if (!existsSync(abs)) continue;
     const text = await readFile(abs, "utf8");
+    if (text.length === 0) continue;
     files.push({ path: normalizedRel, text });
   }
   if (files.length === 0) throw new Error("scope_empty: selected files are missing or empty");
@@ -536,9 +537,12 @@ function safeProviderSessionId(value) {
 }
 
 function payloadSentForProviderException(error) {
-  if (error?.name === "AbortError") return null;
+  if (error?.name === "AbortError") return true;
   const code = error?.code ?? error?.cause?.code ?? null;
-  if (code === "ENOTFOUND" || code === "EAI_AGAIN" || code === "ECONNREFUSED") return false;
+  if (code === "ENOTFOUND" || code === "EAI_AGAIN" || code === "ECONNREFUSED" ||
+      code === "EHOSTUNREACH" || code === "ENETUNREACH") {
+    return false;
+  }
   return null;
 }
 
@@ -582,15 +586,32 @@ function providerFailure(reason, message, httpStatus, raw = null, payloadSent = 
   };
 }
 
-function suggestedAction(errorCode, provider, cfg) {
+function suggestedAction(errorCode, provider, cfg, errorMessage = "", httpStatus = null, env = process.env) {
   if (errorCode === "bad_args") return "Correct the api-reviewer command arguments and retry.";
   if (errorCode === "config_error") return "Reinstall or repair plugins/api-reviewers/config/providers.json and retry.";
   if (errorCode === "missing_key") return `Expose one of these key names to Codex: ${(cfg.env_keys ?? []).join(", ")}.`;
   if (errorCode === "auth_rejected") return `Check the ${cfg.display_name} API key and billing/plan for ${cfg.model}.`;
   if (errorCode === "rate_limited") return `Wait and retry, or lower concurrency for ${provider}.`;
-  if (errorCode === "provider_unavailable") return `Retry later or switch reviewer provider.`;
+  if (errorCode === "timeout") return `The provider did not respond within the timeout window. Retry later, increase API_REVIEWERS_TIMEOUT_MS, or switch reviewer provider.`;
+  if (errorCode === "provider_unavailable") {
+    const looksLikeNetworkFailure = /fetch failed|ENOTFOUND|EAI_AGAIN|ECONNREFUSED|EHOSTUNREACH|ENETUNREACH|ETIMEDOUT/i.test(errorMessage);
+    if (httpStatus == null && isCodexSandbox(env) && looksLikeNetworkFailure) {
+      return `If running inside Codex, set [sandbox_workspace_write].network_access = true in ~/.codex/config.toml, start a fresh Codex session, then retry; or run this direct API reviewer outside sandbox. If network is already enabled, retry later or switch reviewer provider.`;
+    }
+    if (httpStatus == null && looksLikeNetworkFailure) {
+      return `Check network access, retry later, or switch reviewer provider.`;
+    }
+    return `Retry later or switch reviewer provider.`;
+  }
   if (errorCode === "scope_failed") return "Adjust --scope, --scope-base, or --scope-paths and retry.";
   return "Inspect error_message and retry after correcting the provider or request configuration.";
+}
+
+function isCodexSandbox(env) {
+  const value = env?.CODEX_SANDBOX;
+  if (!value) return false;
+  const normalized = String(value).trim().toLowerCase();
+  return !["", "false", "0", "no", "off", "null", "undefined", "nil"].includes(normalized);
 }
 
 function directApiDisclosure(displayName, completed, payloadSent) {
@@ -640,6 +661,9 @@ function errorCauseFor(errorCode) {
 
 function buildRecord({ provider, cfg, mode, options, scopeInfo, execution, startedAt, endedAt }) {
   const completed = execution.exitCode === 0 && execution.parsed?.ok === true;
+  const redact = redactor();
+  const result = completed ? redact(execution.parsed.result) : null;
+  const errorMessage = completed ? null : redact(execution.parsed?.error ?? "");
   const errorCode = completed ? null : (execution.parsed?.reason ?? "provider_error");
   const target = provider;
   const sourceContentTransmission = directApiTransmission(completed, execution.payload_sent ?? null);
@@ -687,13 +711,13 @@ function buildRecord({ provider, cfg, mode, options, scopeInfo, execution, start
     ended_at: endedAt,
     exit_code: execution.exitCode,
     error_code: errorCode,
-    error_message: completed ? null : execution.parsed?.error ?? null,
-    error_summary: completed ? null : execution.parsed?.error ?? errorCode,
+    error_message: errorMessage,
+    error_summary: completed ? null : errorMessage || errorCode,
     error_cause: completed ? null : errorCauseFor(errorCode),
-    suggested_action: completed ? null : suggestedAction(errorCode, provider, cfg),
+    suggested_action: completed ? null : suggestedAction(errorCode, provider, cfg, errorMessage, execution.http_status ?? null),
     external_review: externalReview,
     disclosure_note: disclosure,
-    result: completed ? execution.parsed.result : null,
+    result,
     structured_output: null,
     permission_denials: [],
     mutations: [],

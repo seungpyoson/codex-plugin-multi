@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -227,6 +227,180 @@ test("kimi ping classifies timeout as transient latency", () => {
     assert.match(parsed.next_action, /Retry/);
     assert.equal(parsed.timeout_ms, 20);
     assert.match(parsed.detail, /configured timeoutMs/);
+  } finally {
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("kimi ping classifies Codex sandbox denial for Kimi state as sandbox_blocked", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "kimi-ping-sandbox-denied-"));
+  const bin = path.join(cwd, "kimi-denied");
+  writeFileSync(bin, `#!/usr/bin/env node
+process.stderr.write("[Errno 1] Operation not permitted: '/Users/test/.kimi/tmpabc.tmp'\\n");
+process.exit(1);
+`, "utf8");
+  chmodSync(bin, 0o755);
+  try {
+    const result = spawnSync("node", [COMPANION, "ping", "--binary", bin], {
+      cwd,
+      encoding: "utf8",
+      env: { ...process.env, CODEX_SANDBOX: "seatbelt", KIMI_PLUGIN_DATA: mkdtempSync(path.join(tmpdir(), "kimi-denied-data-")) },
+    });
+    assert.equal(result.status, 2);
+    const parsed = parseJson(result.stdout);
+    assert.equal(parsed.status, "sandbox_blocked");
+    assert.equal(parsed.ready, false);
+    assert.match(parsed.summary, /Codex sandbox/);
+    assert.match(parsed.next_action, /~\/\.kimi\/logs/);
+    assert.match(parsed.next_action, /fall back to ~\/\.kimi/);
+    assert.match(parsed.next_action, /writable_roots/);
+    assert.match(parsed.detail, /Operation not permitted/);
+  } finally {
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("kimi ping classifies Codex sandbox denial when traceback truncates before Kimi path", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "kimi-ping-sandbox-long-denied-"));
+  const bin = path.join(cwd, "kimi-long-denied");
+  writeFileSync(bin, `#!/usr/bin/env node
+process.stderr.write("Traceback (most recent call last)\\\\n" + "x".repeat(700) + "\\\\nPermissionError: [Errno 1] Operation not permitted: '/Users/test/.kimi/logs/kimi.log'\\\\n");
+process.exit(1);
+`, "utf8");
+  chmodSync(bin, 0o755);
+  try {
+    const result = spawnSync("node", [COMPANION, "ping", "--binary", bin], {
+      cwd,
+      encoding: "utf8",
+      env: { ...process.env, CODEX_SANDBOX: "seatbelt", KIMI_PLUGIN_DATA: mkdtempSync(path.join(tmpdir(), "kimi-long-denied-data-")) },
+    });
+    assert.equal(result.status, 2);
+    const parsed = parseJson(result.stdout);
+    assert.equal(parsed.status, "sandbox_blocked");
+    assert.equal(parsed.ready, false);
+    assert.match(parsed.next_action, /~\/\.kimi\/logs/);
+    assert.match(parsed.next_action, /fall back to ~\/\.kimi/);
+  } finally {
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("kimi ping classifies Codex sandbox denial for Kimi OAuth files before auth hints", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "kimi-ping-sandbox-auth-denied-"));
+  const bin = path.join(cwd, "kimi-auth-denied");
+  writeFileSync(bin, `#!/usr/bin/env node
+process.stderr.write("PermissionError: [Errno 1] Operation not permitted: '/Users/test/.kimi/auth.json'\\n");
+process.exit(1);
+`, "utf8");
+  chmodSync(bin, 0o755);
+  try {
+    const result = spawnSync("node", [COMPANION, "ping", "--binary", bin], {
+      cwd,
+      encoding: "utf8",
+      env: { ...process.env, CODEX_SANDBOX: "seatbelt", KIMI_PLUGIN_DATA: mkdtempSync(path.join(tmpdir(), "kimi-auth-denied-data-")) },
+    });
+    assert.equal(result.status, 2);
+    const parsed = parseJson(result.stdout);
+    assert.equal(parsed.status, "sandbox_blocked");
+    assert.match(parsed.next_action, /writable_roots/);
+    assert.match(parsed.next_action, /~\/\.kimi\/logs/);
+  } finally {
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("kimi ping classifies Codex sandbox denial for bare Kimi state directory", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "kimi-ping-sandbox-dir-denied-"));
+  const bin = path.join(cwd, "kimi-dir-denied");
+  writeFileSync(bin, `#!/usr/bin/env node
+process.stderr.write("Permission denied: '/Users/test/.kimi'\\n");
+process.exit(1);
+`, "utf8");
+  chmodSync(bin, 0o755);
+  try {
+    const result = spawnSync("node", [COMPANION, "ping", "--binary", bin], {
+      cwd,
+      encoding: "utf8",
+      env: { ...process.env, CODEX_SANDBOX: "seatbelt", KIMI_PLUGIN_DATA: mkdtempSync(path.join(tmpdir(), "kimi-dir-denied-data-")) },
+    });
+    assert.equal(result.status, 2);
+    const parsed = parseJson(result.stdout);
+    assert.equal(parsed.status, "sandbox_blocked");
+    assert.match(parsed.next_action, /~\/\.kimi\/logs/);
+    assert.match(parsed.next_action, /fall back to ~\/\.kimi/);
+  } finally {
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("kimi ping does not classify unrelated permission error plus Kimi mention as sandbox_blocked", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "kimi-ping-sandbox-false-positive-"));
+  const bin = path.join(cwd, "kimi-unrelated-denied");
+  writeFileSync(bin, `#!/usr/bin/env node
+process.stderr.write("PermissionError: [Errno 1] Operation not permitted: '/workspace/output.log'\\n");
+process.stderr.write("Loaded config defaults from /Users/test/.kimi/config.json\\n");
+process.exit(1);
+`, "utf8");
+  chmodSync(bin, 0o755);
+  try {
+    const result = spawnSync("node", [COMPANION, "ping", "--binary", bin], {
+      cwd,
+      encoding: "utf8",
+      env: { ...process.env, CODEX_SANDBOX: "seatbelt", KIMI_PLUGIN_DATA: mkdtempSync(path.join(tmpdir(), "kimi-unrelated-denied-data-")) },
+    });
+    assert.equal(result.status, 2);
+    const parsed = parseJson(result.stdout);
+    assert.equal(parsed.status, "error");
+    assert.doesNotMatch(parsed.next_action, /writable_roots/);
+  } finally {
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("kimi ping ignores false-like CODEX_SANDBOX values for sandbox classification", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "kimi-ping-sandbox-false-env-"));
+  const bin = path.join(cwd, "kimi-false-env-denied");
+  writeFileSync(bin, `#!/usr/bin/env node
+process.stderr.write("PermissionError: [Errno 1] Operation not permitted: '/Users/test/.kimi/auth.json'\\n");
+process.exit(1);
+`, "utf8");
+  chmodSync(bin, 0o755);
+  try {
+    for (const value of ["false", "0"]) {
+      const result = spawnSync("node", [COMPANION, "ping", "--binary", bin], {
+        cwd,
+        encoding: "utf8",
+        env: { ...process.env, CODEX_SANDBOX: value, KIMI_PLUGIN_DATA: mkdtempSync(path.join(tmpdir(), "kimi-false-env-denied-data-")) },
+      });
+      assert.equal(result.status, 2);
+      const parsed = parseJson(result.stdout);
+      assert.notEqual(parsed.status, "sandbox_blocked");
+      assert.doesNotMatch(parsed.next_action, /writable_roots/);
+    }
+  } finally {
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("kimi ping classifies indented continuation-line Kimi permission denials", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "kimi-ping-sandbox-continuation-"));
+  const bin = path.join(cwd, "kimi-continuation-denied");
+  writeFileSync(bin, `#!/usr/bin/env node
+process.stderr.write("PermissionError: [Errno 1] Operation not permitted:\\n    '/Users/test/.kimi/config.toml'\\n");
+process.exit(1);
+`, "utf8");
+  chmodSync(bin, 0o755);
+  try {
+    const result = spawnSync("node", [COMPANION, "ping", "--binary", bin], {
+      cwd,
+      encoding: "utf8",
+      env: { ...process.env, CODEX_SANDBOX: "seatbelt", KIMI_PLUGIN_DATA: mkdtempSync(path.join(tmpdir(), "kimi-continuation-denied-data-")) },
+    });
+    assert.equal(result.status, 2);
+    const parsed = parseJson(result.stdout);
+    assert.equal(parsed.status, "sandbox_blocked");
+    assert.match(parsed.next_action, /writable_roots/);
+    assert.match(parsed.next_action, /~\/\.kimi\/logs/);
   } finally {
     rmSync(cwd, { recursive: true, force: true });
   }
@@ -588,6 +762,70 @@ test("kimi continue reuses prior private max-step budget without JobRecord drift
   assert.equal(continuedRecord.parent_job_id, firstRecord.job_id);
   assert.equal("max_steps_per_turn" in continuedRecord, false);
 }));
+
+test("kimi continue background: launched event and terminal JobRecord keep parent metadata", async () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "kimi-continue-bg-cwd-"));
+  fixtureSeedRepo(cwd);
+  let launchedPid = null;
+  const first = runCompanion([
+    "run",
+    "--mode",
+    "custom-review",
+    "--cwd",
+    cwd,
+    "--scope-paths",
+    "seed.txt",
+    "--foreground",
+    "--",
+    "Initial review.",
+  ], { cwd });
+  try {
+    assert.equal(first.status, 0, first.stderr);
+    const prior = parseJson(first.stdout);
+    assert.equal(prior.status, "completed");
+    assert.equal(prior.kimi_session_id, KIMI_SESSION_ID);
+
+    const continued = runCompanion([
+      "continue",
+      "--job",
+      prior.job_id,
+      "--background",
+      "--cwd",
+      cwd,
+      "--",
+      "Continue the review.",
+    ], { cwd, dataDir: first.dataDir });
+    assert.equal(continued.status, 0, continued.stderr);
+    const launched = parseJson(continued.stdout);
+    launchedPid = launched.pid;
+    assert.equal(launched.event, "launched");
+    assert.equal(launched.target, "kimi");
+    assert.equal(launched.parent_job_id, prior.job_id);
+    assert.equal(launched.external_review.parent_job_id, prior.job_id);
+    assert.equal(launched.external_review.run_kind, "background");
+    assert.equal(
+      launched.external_review.disclosure,
+      "Selected source content may be sent to Kimi Code CLI for external review.",
+    );
+
+    const meta = await waitForTerminalJob(first.dataDir, launched.job_id);
+    assert.equal(meta.status, "completed");
+    assert.equal(meta.parent_job_id, prior.job_id);
+    assert.deepEqual(meta.resume_chain, [KIMI_SESSION_ID]);
+    assert.equal(meta.kimi_session_id, KIMI_RESUMED_SESSION_ID);
+    assert.equal(meta.external_review.parent_job_id, prior.job_id);
+    assert.equal(meta.external_review.run_kind, "background");
+    assert.equal(meta.external_review.session_id, KIMI_RESUMED_SESSION_ID);
+    assert.equal(
+      meta.external_review.disclosure,
+      "Selected source content was sent to Kimi Code CLI for external review.",
+    );
+  } finally {
+    await waitForProcessExit(launchedPid);
+    rmSync(first.dataDir, { recursive: true, force: true });
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
 
 test("kimi continue resumes from step-limit failure and reuses private max-step budget", () => withRepo((cwd) => {
   const dataDir = mkdtempSync(path.join(tmpdir(), "kimi-continue-step-limit-data-"));

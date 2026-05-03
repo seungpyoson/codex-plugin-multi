@@ -976,7 +976,15 @@ function pingErrorFields() {
   };
 }
 
-function pingFailureDetail(execution) {
+function pingSandboxBlockedFields() {
+  return {
+    ready: false,
+    summary: "Kimi Code CLI is blocked by Codex sandbox access to Kimi state.",
+    next_action: "First add ~/.kimi/logs to [sandbox_workspace_write].writable_roots in ~/.codex/config.toml, keep KIMI_SHARE_DIR unset so Kimi uses its normal auth/config, then start a fresh Codex session and rerun setup. If the next denial is an OAuth/session file under ~/.kimi, fall back to ~/.kimi as the writable root. Alternatively, run this check outside sandbox.",
+  };
+}
+
+function pingFailureText(execution) {
   const raw = execution?.parsed?.raw;
   const rawText = typeof raw === "string"
     ? raw
@@ -993,13 +1001,37 @@ function pingFailureDetail(execution) {
     execution?.timedOut ? "target CLI exceeded the configured timeoutMs" : "",
     execution?.signal ? `signal ${execution.signal}` : "",
     execution?.exitCode == null ? "" : `exit ${execution.exitCode}`,
-  ].map((s) => String(s ?? "").trim()).find(Boolean) ?? "";
+  ].map((s) => String(s ?? "").trim()).filter(Boolean).join("\n");
+  return detail;
+}
+
+function pingFailureDetail(execution) {
+  const detail = pingFailureText(execution);
   const firstLine = detail.split("\n").map((line) => line.trim()).find(Boolean);
   const hasStackFrame = detail
     .split("\n")
     .some((line) => line.trimStart().startsWith("at "));
   const concise = hasStackFrame && firstLine ? firstLine : detail;
   return concise.slice(0, 500);
+}
+
+function isKimiCodexSandboxBlocked(detail) {
+  if (!isCodexSandbox(process.env)) return false;
+  const permissionRe = /Operation not permitted|Permission denied|PermissionError|EACCES|EPERM/i;
+  const kimiPathRe = /(?:^|[/\\])\.kimi(?:[/\\]|['"\s:)]|$)/;
+  const lines = String(detail ?? "").split("\n");
+  return lines.some((line, i) => {
+    if (permissionRe.test(line) && kimiPathRe.test(line)) return true;
+    const nextLine = lines[i + 1] ?? "";
+    return permissionRe.test(line) && /^\s/.test(nextLine) && kimiPathRe.test(nextLine);
+  });
+}
+
+function isCodexSandbox(env) {
+  const value = env?.CODEX_SANDBOX;
+  if (!value) return false;
+  const normalized = String(value).trim().toLowerCase();
+  return !["", "false", "0", "no", "off", "null", "undefined", "nil"].includes(normalized);
 }
 
 async function cmdPing(rest) {
@@ -1055,9 +1087,14 @@ async function cmdPing(rest) {
       printJson(payload);
       process.exit(0);
     }
+    const failureText = pingFailureText(execution);
     const detail = pingFailureDetail(execution);
     if (execution?.timedOut === true) {
       printJson({ status: "transient_timeout", ...pingTimeoutFields(timeoutMs), ...ignoredApiKeyAuthFields(), detail });
+      process.exit(2);
+    }
+    if (isKimiCodexSandboxBlocked(failureText)) {
+      printJson({ status: "sandbox_blocked", ...pingSandboxBlockedFields(), ...ignoredApiKeyAuthFields(), exit_code: execution.exitCode, detail });
       process.exit(2);
     }
     if (/rate limit|429|overloaded/i.test(detail)) {
@@ -1080,7 +1117,12 @@ async function cmdPing(rest) {
         install_url: "https://moonshotai.github.io/kimi-cli/" });
       process.exit(2);
     }
-    printJson({ status: "error", ...pingErrorFields(), ...ignoredApiKeyAuthFields(), detail: e.message });
+    const detail = e.message;
+    if (isKimiCodexSandboxBlocked(detail)) {
+      printJson({ status: "sandbox_blocked", ...pingSandboxBlockedFields(), ...ignoredApiKeyAuthFields(), detail });
+      process.exit(2);
+    }
+    printJson({ status: "error", ...pingErrorFields(), ...ignoredApiKeyAuthFields(), detail });
     process.exit(2);
   }
 }

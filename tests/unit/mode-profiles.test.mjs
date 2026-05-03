@@ -14,6 +14,7 @@ import {
 import * as GeminiProfiles from "../../plugins/gemini/scripts/lib/mode-profiles.mjs";
 
 import { buildClaudeArgs } from "../../plugins/claude/scripts/lib/claude.mjs";
+import { buildGeminiArgs } from "../../plugins/gemini/scripts/lib/gemini.mjs";
 
 const UUID = "550e8400-e29b-41d4-a716-446655440000";
 const RESUME_UUID = "11111111-2222-4333-8444-555555555555";
@@ -534,6 +535,32 @@ test("gemini resolveModelForProfile resolves every mode tier", () => {
   assert.equal(GeminiProfiles.resolveModelForProfile(GeminiProfiles.MODE_PROFILES["custom-review"], cfg), "gemini-pro");
   assert.equal(GeminiProfiles.resolveModelForProfile(GeminiProfiles.MODE_PROFILES.rescue, cfg), "gemini-default");
   assert.equal(GeminiProfiles.resolveModelForProfile(GeminiProfiles.MODE_PROFILES.ping, cfg), null);
+});
+
+test("buildGeminiArgs: read-only modes keep native sandbox outside Codex", () => {
+  const args = buildGeminiArgs(GeminiProfiles.MODE_PROFILES.ping, {
+    policyPath: "/tmp/read-only.toml",
+    env: {},
+  });
+
+  assert.ok(args.includes("-s"), "Gemini native sandbox should remain enabled outside Codex sandbox");
+});
+
+test("buildGeminiArgs: read-only modes omit native sandbox inside Codex", () => {
+  const args = buildGeminiArgs(GeminiProfiles.MODE_PROFILES.ping, {
+    policyPath: "/tmp/read-only.toml",
+    env: { CODEX_SANDBOX: "seatbelt" },
+  });
+
+  assert.equal(
+    args.includes("-s"),
+    false,
+    "Gemini -s invokes nested sandbox-exec and must be omitted inside Codex sandbox",
+  );
+  assert.ok(args.includes("--policy"));
+  assert.ok(args.includes("--approval-mode"));
+  assert.equal(args[args.indexOf("--approval-mode") + 1], "plan");
+  assert.ok(args.includes("--skip-trust"));
 });
 
 test("gemini resolveModelCandidatesForProfile covers fallback edge cases", () => {

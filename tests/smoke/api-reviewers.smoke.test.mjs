@@ -74,7 +74,7 @@ function parseJson(stdout) {
   return JSON.parse(stdout);
 }
 
-function mockResponse(model, id = "chatcmpl-test") {
+function mockResponse(model, id = "chatcmpl-test", content = `Verdict: APPROVE\nProvider model: ${model}`) {
   return JSON.stringify({
     id,
     object: "chat.completion",
@@ -84,7 +84,7 @@ function mockResponse(model, id = "chatcmpl-test") {
       finish_reason: "stop",
       message: {
         role: "assistant",
-        content: `Verdict: APPROVE\nProvider model: ${model}`,
+        content,
       },
     }],
     usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 },
@@ -726,10 +726,59 @@ test("direct API provider session_id accepts safe provider ID shapes", async () 
   }
 });
 
+test("direct API reviewers reject selected files with no content before provider execution", async () => {
+  const cwd = makeWorkspace();
+  writeFileSync(path.join(cwd, "empty.txt"), "");
+  const result = await run([
+    "run",
+    "--provider", "deepseek",
+    "--mode", "custom-review",
+    "--scope", "custom",
+    "--scope-paths", "empty.txt",
+    "--foreground",
+    "--prompt", "Check this file.",
+  ], {
+    cwd,
+    env: {
+      API_REVIEWERS_MOCK_RESPONSE: mockResponse("deepseek-v4-flash"),
+      DEEPSEEK_API_KEY: "secret-test-value",
+    },
+  });
+  assert.equal(result.status, 1);
+  const record = parseJson(result.stdout);
+  assert.equal(record.status, "failed");
+  assert.equal(record.error_code, "scope_failed");
+  assertDirectApiNotSent(record, "DeepSeek");
+});
+
+test("direct API reviewers redact provider results before printing or persisting records", async () => {
+  const cwd = makeWorkspace();
+  const result = await run([
+    "run",
+    "--provider", "deepseek",
+    "--mode", "custom-review",
+    "--scope", "custom",
+    "--scope-paths", "seed.txt",
+    "--foreground",
+    "--prompt", "Check this file.",
+  ], {
+    cwd,
+    env: {
+      API_REVIEWERS_MOCK_RESPONSE: mockResponse("deepseek-v4-flash", "chatcmpl-test", "Echoed secret-test-value in provider output"),
+      DEEPSEEK_API_KEY: "secret-test-value",
+    },
+  });
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  const record = parseJson(result.stdout);
+  assert.equal(record.status, "completed");
+  assert.equal(record.result, "Echoed [REDACTED] in provider output");
+  assert.doesNotMatch(result.stdout, /secret-test-value/);
+});
+
 test("direct API provider session_id rejects unsafe values", async () => {
   const cwd = makeWorkspace();
   const dataDir = mkdtempSync(path.join(tmpdir(), "api-reviewers-data-"));
-  for (const id of ["bad\nid", "x".repeat(201), "<script>", "abc\u202edef"]) {
+  for (const id of ["bad\nid", "x".repeat(201), "<script>", "<script>alert(1)</script>", "abc\u202edef"]) {
     const result = await run([
       "run",
       "--provider", "deepseek",
@@ -750,11 +799,11 @@ test("direct API provider session_id rejects unsafe values", async () => {
     const record = parseJson(result.stdout);
     assert.equal(record.status, "completed");
     assert.equal(record.external_review.session_id, null);
-    assert.doesNotMatch(result.stdout, /bad\\nid/);
+    assert.doesNotMatch(result.stdout, /bad\\nid|<script>/);
   }
 });
 
-test("direct API timeout keeps selected-content transmission unknown", async () => {
+test("direct API timeout marks selected content as sent", async () => {
   const cwd = makeWorkspace();
   const dataDir = mkdtempSync(path.join(tmpdir(), "api-reviewers-data-"));
   const pluginRoot = makeInstalledApiReviewersRoot();
@@ -784,9 +833,11 @@ test("direct API timeout keeps selected-content transmission unknown", async () 
     assert.notEqual(result.stdout, "", result.stderr);
     const record = parseJson(result.stdout);
     assert.equal(record.error_code, "timeout");
-    assert.equal(record.external_review.source_content_transmission, "unknown");
+    assert.match(record.suggested_action, /timeout/i);
+    assert.match(record.suggested_action, /API_REVIEWERS_TIMEOUT_MS/);
+    assert.equal(record.external_review.source_content_transmission, "sent");
     assert.equal(record.external_review.disclosure,
-      "Selected source content may have been sent to DeepSeek through direct API auth.");
+      "Selected source content was sent to DeepSeek through direct API auth, but the provider did not return a clean result.");
   } finally {
     server.close();
   }
@@ -826,6 +877,153 @@ test("direct API HTTP failures mark selected content as sent", async () => {
     assert.equal(record.external_review.source_content_transmission, "sent");
     assert.equal(record.external_review.disclosure,
       "Selected source content was sent to DeepSeek through direct API auth, but the provider did not return a clean result.");
+  } finally {
+    server.close();
+  }
+});
+
+test("direct API provider_unavailable under Codex recommends sandbox network access", async () => {
+  const cwd = makeWorkspace();
+  const dataDir = mkdtempSync(path.join(tmpdir(), "api-reviewers-data-"));
+  const pluginRoot = makeInstalledApiReviewersRoot();
+  writeDeepSeekProviderConfig(pluginRoot, "http://127.0.0.1:9");
+
+  const result = await run([
+    "run",
+    "--provider", "deepseek",
+    "--mode", "custom-review",
+    "--scope", "custom",
+    "--scope-paths", "seed.txt",
+    "--foreground",
+    "--prompt", "Check this file.",
+  ], {
+    cwd,
+    companion: path.join(pluginRoot, "scripts", "api-reviewer.mjs"),
+    env: {
+      API_REVIEWERS_PLUGIN_DATA: dataDir,
+      CODEX_SANDBOX: "seatbelt",
+      DEEPSEEK_API_KEY: "secret-test-value",
+    },
+  });
+  assert.equal(result.status, 1);
+  const record = parseJson(result.stdout);
+  assert.equal(record.error_code, "provider_unavailable");
+  assert.match(record.suggested_action, /network_access = true/);
+  assert.match(record.suggested_action, /outside sandbox/);
+  assert.doesNotMatch(result.stdout, /secret-test-value/);
+});
+
+test("direct API provider_unavailable ignores false-like Codex sandbox values", async () => {
+  const cwd = makeWorkspace();
+  const dataDir = mkdtempSync(path.join(tmpdir(), "api-reviewers-data-"));
+  const pluginRoot = makeInstalledApiReviewersRoot();
+  writeDeepSeekProviderConfig(pluginRoot, "http://127.0.0.1:9");
+
+  for (const value of ["false", "0"]) {
+    const result = await run([
+      "run",
+      "--provider", "deepseek",
+      "--mode", "custom-review",
+      "--scope", "custom",
+      "--scope-paths", "seed.txt",
+      "--foreground",
+      "--prompt", "Check this file.",
+    ], {
+      cwd,
+      companion: path.join(pluginRoot, "scripts", "api-reviewer.mjs"),
+      env: {
+        API_REVIEWERS_PLUGIN_DATA: dataDir,
+        CODEX_SANDBOX: value,
+        DEEPSEEK_API_KEY: "secret-test-value",
+      },
+    });
+    assert.equal(result.status, 1);
+    const record = parseJson(result.stdout);
+    assert.equal(record.error_code, "provider_unavailable");
+    assert.doesNotMatch(record.suggested_action, /network_access = true/);
+    assert.doesNotMatch(record.suggested_action, /outside sandbox/);
+  }
+});
+
+test("direct API HTTP provider_unavailable under Codex does not recommend sandbox network access", async () => {
+  const cwd = makeWorkspace();
+  const dataDir = mkdtempSync(path.join(tmpdir(), "api-reviewers-data-"));
+  const pluginRoot = makeInstalledApiReviewersRoot();
+  const server = await startChatServer((req, res) => {
+    req.resume();
+    res.writeHead(503, { "content-type": "application/json" });
+    res.end(JSON.stringify({ error: { message: "provider temporarily unavailable" } }));
+  });
+  try {
+    const { port } = server.address();
+    writeDeepSeekProviderConfig(pluginRoot, `http://127.0.0.1:${port}`);
+
+    const result = await run([
+      "run",
+      "--provider", "deepseek",
+      "--mode", "custom-review",
+      "--scope", "custom",
+      "--scope-paths", "seed.txt",
+      "--foreground",
+      "--prompt", "Check this file.",
+    ], {
+      cwd,
+      companion: path.join(pluginRoot, "scripts", "api-reviewer.mjs"),
+      env: {
+        API_REVIEWERS_PLUGIN_DATA: dataDir,
+        CODEX_SANDBOX: "seatbelt",
+        DEEPSEEK_API_KEY: "secret-test-value",
+      },
+    });
+    assert.equal(result.status, 1);
+    const record = parseJson(result.stdout);
+    assert.equal(record.error_code, "provider_unavailable");
+    assert.equal(record.http_status, 503);
+    assert.equal(record.external_review.source_content_transmission, "sent");
+    assert.doesNotMatch(record.suggested_action, /network_access = true/);
+    assert.doesNotMatch(record.suggested_action, /outside sandbox/);
+  } finally {
+    server.close();
+  }
+});
+
+test("direct API HTTP provider_unavailable with transport-looking wording still does not recommend sandbox access", async () => {
+  const cwd = makeWorkspace();
+  const dataDir = mkdtempSync(path.join(tmpdir(), "api-reviewers-data-"));
+  const pluginRoot = makeInstalledApiReviewersRoot();
+  const server = await startChatServer((req, res) => {
+    req.resume();
+    res.writeHead(503, { "content-type": "application/json" });
+    res.end(JSON.stringify({ error: { message: "upstream fetch failed at provider" } }));
+  });
+  try {
+    const { port } = server.address();
+    writeDeepSeekProviderConfig(pluginRoot, `http://127.0.0.1:${port}`);
+
+    const result = await run([
+      "run",
+      "--provider", "deepseek",
+      "--mode", "custom-review",
+      "--scope", "custom",
+      "--scope-paths", "seed.txt",
+      "--foreground",
+      "--prompt", "Check this file.",
+    ], {
+      cwd,
+      companion: path.join(pluginRoot, "scripts", "api-reviewer.mjs"),
+      env: {
+        API_REVIEWERS_PLUGIN_DATA: dataDir,
+        CODEX_SANDBOX: "seatbelt",
+        DEEPSEEK_API_KEY: "secret-test-value",
+      },
+    });
+    assert.equal(result.status, 1);
+    const record = parseJson(result.stdout);
+    assert.equal(record.error_code, "provider_unavailable");
+    assert.equal(record.http_status, 503);
+    assert.equal(record.external_review.source_content_transmission, "sent");
+    assert.doesNotMatch(record.suggested_action, /network_access = true/);
+    assert.doesNotMatch(record.suggested_action, /outside sandbox/);
   } finally {
     server.close();
   }

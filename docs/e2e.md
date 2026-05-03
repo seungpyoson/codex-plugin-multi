@@ -10,6 +10,33 @@ maintainer explicitly opts in.
 - `npm run e2e:claude`, `npm run e2e:gemini`, and `npm run e2e:kimi` use live CLIs and require local auth.
 - Running an E2E command without the opt-in env var exits successfully with a skipped test.
 
+## Running inside Codex sandbox
+
+Live external reviews need host capabilities beyond ordinary local tests. Keep
+Codex workspace-write sandboxing enabled, and add only the provider capabilities
+needed by the run:
+
+```toml
+[sandbox_workspace_write]
+network_access = true
+writable_roots = ["/Users/<you>/.kimi/logs"]
+```
+
+`network_access = true` is required for DeepSeek and GLM direct API calls. Kimi
+may also need a writable root under `~/.kimi` because the first-party CLI writes
+logs and auth/session state there. Start with `/Users/<you>/.kimi/logs`; if the
+next denial names an OAuth/session file, fall back to `/Users/<you>/.kimi`.
+
+If you do not want persistent sandbox network access, use one-off escalation for
+the single trusted E2E command. In an interactive Codex session, keep
+`network_access` disabled, run the E2E/reviewer command, and approve only that
+command when Codex asks whether to run it outside the sandbox. Do not persist a
+broad always-allow rule.
+
+Do not use `danger-full-access` or `--dangerously-bypass-approvals-and-sandbox`
+as the default verification setup. Those modes hide the sandbox behavior this
+runbook is meant to verify.
+
 ## Claude
 
 Prerequisites:
@@ -95,6 +122,11 @@ Manual live custom review:
 node plugins/api-reviewers/scripts/api-reviewer.mjs run --provider deepseek --mode custom-review --scope custom --scope-paths README.md --foreground --prompt "Review for correctness risks."
 node plugins/api-reviewers/scripts/api-reviewer.mjs run --provider glm --mode custom-review --scope custom --scope-paths README.md --foreground --prompt "Review for correctness risks."
 ```
+
+Custom review scope sends the exact `--scope-paths` file contents to the direct
+API provider. It does not apply gitignore filtering to explicitly selected
+files, so do not include secrets, credentials, private keys, `.env` files, or
+other sensitive local-only content.
 
 Expected result:
 

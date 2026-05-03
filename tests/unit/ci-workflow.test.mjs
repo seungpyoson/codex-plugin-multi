@@ -6,6 +6,7 @@ import { resolve } from "node:path";
 const pkg = JSON.parse(readFileSync(resolve("package.json"), "utf8"));
 const workflow = readFileSync(resolve(".github/workflows/pull-request-ci.yml"), "utf8");
 const e2eDocs = readFileSync(resolve("docs/e2e.md"), "utf8");
+const sonarConfig = readFileSync(resolve(".sonarcloud.properties"), "utf8");
 
 test("package scripts expose per-target smoke commands", () => {
   assert.match(pkg.scripts["smoke:claude"] ?? "", /claude-companion\.smoke\.test\.mjs/);
@@ -30,6 +31,17 @@ test("pull-request CI runs the enforced coverage gate", () => {
   assert.match(workflow, /COVERAGE_ENFORCE_TARGET:\s*"1"/);
   assert.match(workflow, /Run coverage gate[\s\S]*CODEX_PLUGIN_SKIP_SMOKE:\s*"1"/);
   assert.match(workflow, /npm run test:coverage/);
+});
+
+test("Sonar CPD excludes intentional external-review packaging copies", () => {
+  for (const path of [
+    "scripts/lib/external-review.mjs",
+    "plugins/claude/scripts/lib/external-review.mjs",
+    "plugins/gemini/scripts/lib/external-review.mjs",
+    "plugins/kimi/scripts/lib/external-review.mjs",
+  ]) {
+    assert.match(sonarConfig, new RegExp(path.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+  }
 });
 
 test("manual E2E scripts are opt-in and documented", () => {
