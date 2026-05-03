@@ -149,6 +149,15 @@ test("provider EXPECTED_KEYS stay byte-for-byte aligned", () => {
   assert.deepEqual([...KIMI_EXPECTED_KEYS], [...EXPECTED_KEYS]);
 });
 
+test("Kimi JobRecord does not persist private runtime-only options", () => {
+  const rec = buildKimiJobRecord(
+    makeInvocation({ target: "kimi", binary: "kimi", max_steps_per_turn: 48 }),
+    null,
+    [],
+  );
+  assert.equal("max_steps_per_turn" in rec, false);
+});
+
 test("buildJobRecord: foreground success path has EXACTLY the expected keys", () => {
   const rec = buildJobRecord(makeInvocation(), {
     exitCode: 0,
@@ -716,6 +725,28 @@ test("kimi buildJobRecord: timeout diagnostics use Kimi target display name", ()
   assert.match(rec.suggested_action, /check Kimi service status/);
   assert.match(rec.suggested_action, /run `kimi` interactively/);
   assert.equal(rec.external_review.disclosure, sentButNoCleanResult("Kimi Code CLI"));
+});
+
+test("kimi buildJobRecord: step-limit exhaustion is actionable, not parse_error", () => {
+  const rec = buildKimiJobRecord(makeInvocation({ target: "kimi", binary: "kimi" }), {
+    exitCode: 1,
+    parsed: {
+      ok: false,
+      reason: "step_limit_exceeded",
+      error: "Max number of steps reached: 1",
+      result: null,
+      structured: null,
+      denials: [],
+    },
+    pidInfo: makePidInfo(),
+    kimiSessionId: null,
+  }, []);
+  assert.equal(rec.status, "failed");
+  assert.equal(rec.error_code, "step_limit_exceeded");
+  assert.equal(rec.error_message, "Max number of steps reached: 1");
+  assert.match(rec.error_summary, /step limit/i);
+  assert.match(rec.suggested_action, /higher step budget/i);
+  assert.match(rec.suggested_action, /narrower scope/i);
 });
 
 test("kimi buildJobRecord: timeout diagnostics use Claude target display name", () => {

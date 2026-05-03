@@ -826,7 +826,7 @@ These are the rules M7+ code is judged against. Each invariant names a class of 
 | Field | Owner | Lifetime | Source |
 |---|---|---|---|
 | `job_id` | companion | per invocation | `randomUUID()` in companion |
-| `claude_session_id` (or `gemini_session_id`) | target CLI | per CLI session | **read from CLI stdout `parsed.session_id`**, not minted by companion |
+| `claude_session_id` (or `gemini_session_id` / `kimi_session_id`) | target CLI | per CLI session | **read from CLI stdout `parsed.session_id`**, not minted by companion |
 | `resume_chain[]` | companion | across `continue` calls | list of prior `*_session_id`s, newest-last |
 | `pid_info = {pid, starttime, argv0}` | OS | while process lives | `ps`/`/proc` at spawn time |
 
@@ -839,7 +839,7 @@ These are the rules M7+ code is judged against. Each invariant names a class of 
 **Required patterns:**
 
 - On `run`: companion generates `job_id`, passes `job_id` to Claude as `--session-id` for a new session, then records `claude_session_id = parsed.session_id` (Claude echoes it back). When Claude creates its own session ID without input, the record stores what Claude returned — never what the companion sent.
-- On `continue`: companion generates a fresh `job_id`, looks up the prior target session ID (`claude_session_id` or `gemini_session_id`) as the `--resume` UUID, appends it to the new record's `resume_chain`, records the new target session ID from stdout after the run.
+- On `continue`: companion generates a fresh `job_id`, looks up the prior target session ID (`claude_session_id`, `gemini_session_id`, or `kimi_session_id`) as the `--resume` UUID, appends it to the new record's `resume_chain`, records the new target session ID from stdout after the run.
 - On `cancel`: read `pid_info` tuple, re-verify `starttime` + `argv0` match before signaling. Mismatch → refuse with `stale_pid` error.
 
 **Why:** Finding #6 (chained continue breaks), #7 (PID-reuse kill), parts of #3 (result lost) all trace to identity conflation. The type rule makes the mistake unrepresentable.
@@ -897,12 +897,12 @@ ModeProfile {
 
 **Rule:** exactly one schema describes everything the companion durably persists about one invocation. The same schema is what `cmdResult` returns, what the `run --foreground` stdout prints (success path), and what the Claude result-handling skill and Gemini result command docs describe.
 
-**The schema (v7):**
+**The schema (v8):**
 
 ```
 JobRecord {
   // Identity (§21.1) — required
-  job_id, target, claude_session_id | gemini_session_id
+  job_id, target, claude_session_id | gemini_session_id | kimi_session_id
   parent_job_id?, resume_chain[]?
   pid_info? = { pid, starttime, argv0 }
 
@@ -927,7 +927,7 @@ JobRecord {
   cost_usd?, usage?
 
   // Bookkeeping — required
-  schema_version: 7
+  schema_version: 8
 }
 ```
 
