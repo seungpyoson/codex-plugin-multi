@@ -91,6 +91,15 @@ function mockResponse(model, id = "chatcmpl-test") {
   });
 }
 
+function assertDirectApiNotSent(record, displayName) {
+  assert.equal(record.external_review.source_content_transmission, "not_sent");
+  assert.equal(
+    record.external_review.disclosure,
+    `Selected source content was not sent to ${displayName} through direct API auth.`,
+  );
+  assert.equal(record.disclosure_note, record.external_review.disclosure);
+}
+
 function makeWorkspace() {
   const cwd = mkdtempSync(path.join(tmpdir(), "api-reviewers-smoke-"));
   writeFileSync(path.join(cwd, "seed.txt"), "hello from selected scope\n");
@@ -269,6 +278,39 @@ test("API_REVIEWERS_MAX_TOKENS overrides provider request defaults", async () =>
   assert.doesNotMatch(result.stdout, /secret-test-value/);
 });
 
+test("mock request-body assertion failures are marked not sent", async () => {
+  const cwd = makeWorkspace();
+  const dataDir = mkdtempSync(path.join(tmpdir(), "api-reviewers-data-"));
+  const result = await run([
+    "run",
+    "--provider", "glm",
+    "--mode", "custom-review",
+    "--scope", "custom",
+    "--scope-paths", "seed.txt",
+    "--foreground",
+    "--prompt", "Check this file.",
+  ], {
+    cwd,
+    env: {
+      API_REVIEWERS_PLUGIN_DATA: dataDir,
+      API_REVIEWERS_MOCK_RESPONSE: mockResponse("glm-5.1"),
+      API_REVIEWERS_MOCK_ASSERT_REQUEST_BODY: JSON.stringify({
+        model: "wrong-model",
+      }),
+      ZAI_API_KEY: "secret-test-value",
+    },
+  });
+
+  assert.equal(result.status, 1);
+  const record = parseJson(result.stdout);
+  assert.equal(record.status, "failed");
+  assert.equal(record.provider, "glm");
+  assert.equal(record.error_code, "mock_assertion_failed");
+  assert.match(record.error_message, /request body field model expected/);
+  assertDirectApiNotSent(record, "GLM");
+  assert.doesNotMatch(result.stdout, /secret-test-value/);
+});
+
 for (const value of ["abc", "Infinity", "1.5", "0", "-1", "9007199254740992"]) {
   test(`API_REVIEWERS_MAX_TOKENS rejects invalid override ${value}`, async () => {
     const cwd = makeWorkspace();
@@ -300,6 +342,7 @@ for (const value of ["abc", "Infinity", "1.5", "0", "-1", "9007199254740992"]) {
     assert.equal(record.provider, "glm");
     assert.equal(record.error_code, "bad_args");
     assert.match(record.error_message, /API_REVIEWERS_MAX_TOKENS must be a positive integer number of tokens/);
+    assertDirectApiNotSent(record, "GLM");
     assert.doesNotMatch(record.error_message, /mock_assertion_failed/);
     assert.doesNotMatch(result.stdout, /secret-test-value/);
   });
@@ -333,6 +376,7 @@ for (const value of ["abc", "Infinity", "1.5", "0", "-1", "9007199254740992"]) {
     assert.equal(record.provider, "glm");
     assert.equal(record.error_code, "bad_args");
     assert.match(record.error_message, /API_REVIEWERS_TIMEOUT_MS must be a positive integer number of milliseconds/);
+    assertDirectApiNotSent(record, "GLM");
     assert.doesNotMatch(result.stdout, /secret-test-value/);
   });
 }
@@ -506,6 +550,7 @@ test("provider request defaults cannot override canonical request fields", async
   assert.equal(record.status, "failed");
   assert.equal(record.error_code, "bad_args");
   assert.match(record.error_message, /disallowed_request_default:model/);
+  assertDirectApiNotSent(record, "GLM");
   assert.doesNotMatch(result.stdout, /secret-test-value/);
 });
 

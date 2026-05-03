@@ -418,7 +418,7 @@ function mockProviderExecution(cfg, prompt, credential, env, requestBody) {
   if (env.API_REVIEWERS_MOCK_ASSERT_REQUEST_BODY) {
     const parsedExpected = parseJson(env.API_REVIEWERS_MOCK_ASSERT_REQUEST_BODY);
     if (!parsedExpected.ok || !parsedExpected.value || typeof parsedExpected.value !== "object" || Array.isArray(parsedExpected.value)) {
-      return providerFailure("mock_assertion_failed", "API_REVIEWERS_MOCK_ASSERT_REQUEST_BODY must be a JSON object", 200, null);
+      return providerFailure("mock_assertion_failed", "API_REVIEWERS_MOCK_ASSERT_REQUEST_BODY must be a JSON object", 200, null, false);
     }
     for (const [key, expected] of Object.entries(parsedExpected.value)) {
       if (!requestFieldMatches(requestBody[key], expected)) {
@@ -426,7 +426,8 @@ function mockProviderExecution(cfg, prompt, credential, env, requestBody) {
           "mock_assertion_failed",
           `request body field ${key} expected ${JSON.stringify(expected)} but got ${JSON.stringify(requestBody[key])}`,
           200,
-          null
+          null,
+          false
         );
       }
     }
@@ -455,11 +456,11 @@ function mockProviderExecution(cfg, prompt, credential, env, requestBody) {
 async function callProvider(provider, cfg, prompt, env = process.env) {
   const maxTokensOverride = parseMaxTokensOverride(env);
   if (!maxTokensOverride.ok) {
-    return providerFailure("bad_args", maxTokensOverride.error, null);
+    return providerFailure("bad_args", maxTokensOverride.error, null, null, false);
   }
   const timeoutMs = parseProviderTimeoutMs(env);
   if (!timeoutMs.ok) {
-    return providerFailure("bad_args", timeoutMs.error, null);
+    return providerFailure("bad_args", timeoutMs.error, null, null, false);
   }
   const credential = selectedCredential(cfg, env);
   if (!credential.value) {
@@ -473,7 +474,7 @@ async function callProvider(provider, cfg, prompt, env = process.env) {
   };
   const defaultsResult = applyRequestDefaults(requestBody, cfg.request_defaults);
   if (!defaultsResult.ok) {
-    return providerFailure("bad_args", defaultsResult.error, null);
+    return providerFailure("bad_args", defaultsResult.error, null, null, false);
   }
   if (maxTokensOverride.value !== null) {
     requestBody.max_tokens = maxTokensOverride.value;
