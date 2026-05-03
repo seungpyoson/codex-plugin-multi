@@ -53,12 +53,13 @@ export function runKindFromRecord(record) {
 }
 
 export function promptSidecarPath(jobsDir, jobId) {
-  return `${jobsDir}/${jobId}/prompt.txt`;
+  return resolvePath(jobsDir, jobId, "prompt.txt");
 }
 
 export function writePromptSidecar(jobsDir, jobId, prompt) {
-  const dir = `${jobsDir}/${jobId}`;
-  mkdirSync(dir, { recursive: true });
+  const dir = resolvePath(jobsDir, jobId);
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
+  try { chmodSync(dir, 0o700); } catch { /* best-effort on non-POSIX */ }
   const p = promptSidecarPath(jobsDir, jobId);
   writeFileSync(p, prompt, { mode: 0o600, encoding: "utf8" });
   try { chmodSync(p, 0o600); } catch { /* best-effort on non-POSIX */ }
@@ -66,8 +67,13 @@ export function writePromptSidecar(jobsDir, jobId, prompt) {
 
 export function consumePromptSidecar(jobsDir, jobId) {
   const p = promptSidecarPath(jobsDir, jobId);
-  if (!existsSync(p)) return null;
-  const prompt = readFileSync(p, "utf8");
+  let prompt;
+  try {
+    prompt = readFileSync(p, "utf8");
+  } catch (err) {
+    if (err?.code === "ENOENT") return null;
+    throw err;
+  }
   try { unlinkSync(p); } catch { /* already gone */ }
   return prompt;
 }

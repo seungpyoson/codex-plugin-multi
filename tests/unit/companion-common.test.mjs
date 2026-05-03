@@ -93,6 +93,7 @@ test("prompt sidecar helpers write 0600 handoff files and consume once", () => {
 
   writePromptSidecar(jobsDir, "job-1", "secret prompt");
   assert.equal(readFileSync(p, "utf8"), "secret prompt");
+  assert.equal((statSync(path.dirname(p)).mode & 0o777), 0o700);
   assert.equal((statSync(p).mode & 0o777), 0o600);
   assert.equal(consumePromptSidecar(jobsDir, "job-1"), "secret prompt");
   assert.equal(existsSync(p), false);
@@ -162,6 +163,7 @@ function assertCopyHelperBranches(mod, plugin) {
   mod.writePromptSidecar(jobsDir, "job-1", "copy prompt");
   const sidecar = mod.promptSidecarPath(jobsDir, "job-1");
   assert.equal(readFileSync(sidecar, "utf8"), "copy prompt");
+  assert.equal((statSync(path.dirname(sidecar)).mode & 0o777), 0o700);
   assert.equal((statSync(sidecar).mode & 0o777), 0o600);
   assert.equal(mod.consumePromptSidecar(jobsDir, "job-1"), "copy prompt");
   assert.equal(existsSync(sidecar), false);
