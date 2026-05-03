@@ -38,6 +38,59 @@ only when a provider key is already present. The selected path is reported as
 subscription/OAuth-only. Direct API reviewers are separate and only use API keys
 through explicit `auth_mode: "api_key"` provider config.
 
+## Codex sandbox setup
+
+External review sends selected source content to another provider process or
+API. Keep Codex workspace-write sandboxing enabled, but allow the minimum host
+capabilities needed for the providers you use.
+
+For DeepSeek and GLM direct API reviewers, Codex must allow outbound network
+access:
+
+```toml
+[sandbox_workspace_write]
+network_access = true
+```
+
+For Kimi, the first-party CLI normally writes state and logs below `~/.kimi`.
+If Kimi setup or review returns `sandbox_blocked` with a `.kimi` path, add a
+provider-specific writable root and start a fresh Codex session:
+
+```toml
+[sandbox_workspace_write]
+network_access = true
+writable_roots = ["/Users/<you>/.kimi"]
+```
+
+Use the narrowest root that works for your Kimi installation. Some setups only
+need `/Users/<you>/.kimi/logs`; OAuth/session refreshes may need the full
+`/Users/<you>/.kimi` tree. The companion classifies `.kimi` permission denials
+as a writable-root problem so users see this action instead of a generic auth
+or CLI error.
+
+Gemini has a different sandbox interaction: Gemini CLI's native `-s` sandbox can
+fail when launched from inside Codex's outer sandbox. The Gemini companion omits
+only that native Gemini sandbox flag when `CODEX_SANDBOX` is active, while still
+keeping the read-only TOML policy, `--approval-mode plan`, `--skip-trust`,
+scoped input, and mutation detection.
+
+If you do not want sandbox-wide network access, use one-off escalation for a
+specific trusted reviewer command instead. Do not make `danger-full-access` or
+`--dangerously-bypass-approvals-and-sandbox` the default; those modes remove
+more protection than the reviewers require.
+
+Troubleshooting signals:
+
+- Direct API reviewers with `provider_unavailable`, `fetch failed`,
+  `ENOTFOUND`, `EAI_AGAIN`, or `ECONNREFUSED` usually need network access or a
+  one-off escalation. HTTP 5xx responses mean the provider was reached; retry
+  later or switch provider instead of weakening sandbox policy.
+- Kimi `Operation not permitted`, `Permission denied`, `EACCES`, or `EPERM`
+  errors on `.kimi` paths need a Kimi writable root.
+- Claude/Gemini/Kimi subscription/OAuth modes intentionally ignore unrelated
+  API-key env vars. Do not treat stripped API keys as the cause unless you
+  explicitly selected API-key auth for a provider that supports it.
+
 ## Install
 
 From Codex:

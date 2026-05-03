@@ -501,7 +501,7 @@ test("M6-finding-1-H1: background worker persists parsed.result on terminal JobR
       source_content_transmission: "sent",
       disclosure: "Selected source content was sent to Claude Code for external review.",
     });
-    assert.equal(meta.schema_version, 8);
+    assert.equal(meta.schema_version, 9);
   } finally {
     rmTempTree(dataDir);
     rmTempTree(cwd);

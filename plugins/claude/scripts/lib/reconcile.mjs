@@ -46,8 +46,7 @@ function parseStartedAt(record) {
 
 function runKindFromMeta(meta) {
   if (meta.external_review?.run_kind) return meta.external_review.run_kind;
-  if (meta.pid_info || meta.status === "queued" || meta.status === "running") return "background";
-  return "foreground";
+  return "unknown";
 }
 
 function invocationFromMeta(meta) {

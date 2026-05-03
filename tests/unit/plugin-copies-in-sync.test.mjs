@@ -56,7 +56,7 @@ test("lib/companion-common.mjs: plugin packaging copies match the canonical shar
 
 test("lib/external-review.mjs: plugin packaging copies match the canonical shared source", () => {
   const canonical = readFileSync(path.join(REPO_ROOT, "scripts/lib/external-review.mjs"), "utf8");
-  for (const plugin of COMPANION_PLUGIN_TARGETS) {
+  for (const plugin of [...COMPANION_PLUGIN_TARGETS, "api-reviewers"]) {
     const copy = readFileSync(
       path.join(REPO_ROOT, `plugins/${plugin}/scripts/lib/external-review.mjs`),
       "utf8"

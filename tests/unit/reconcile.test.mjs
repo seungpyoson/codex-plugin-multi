@@ -233,9 +233,10 @@ test("reconcileActiveJobs: stale jobs are continuable history, not deleted", () 
     assert.equal(stale.workspace_root, dir);
     assert.equal(stale.target, "claude");
     assert.equal(stale.external_review.run_kind, "background");
+    assert.equal(stale.external_review.source_content_transmission, "sent");
     assert.equal(
       stale.external_review.disclosure,
-      "Selected source content may have been sent to Claude Code; the background worker became stale before completion.",
+      "Selected source content was sent to Claude Code for external review; the run became stale before completion.",
     );
     // Reconciliation never deletes the record from state.json either.
     const summary = listJobs(dir).find((j) => j.id === id);
@@ -246,7 +247,7 @@ test("reconcileActiveJobs: stale jobs are continuable history, not deleted", () 
   }
 });
 
-test("reconcileActiveJobs: legacy active records without external_review reconcile as background", () => {
+test("reconcileActiveJobs: legacy active records without external_review keep run kind unknown", () => {
   const dir = freshDir();
   try {
     const id = "legacy-running-without-external-review";
@@ -260,9 +261,33 @@ test("reconcileActiveJobs: legacy active records without external_review reconci
     assert.equal(reclaimed.length, 1);
     const stale = readJobFileById(dir, id);
     assert.equal(stale.status, "stale");
-    assert.equal(stale.external_review.run_kind, "background");
+    assert.equal(stale.external_review.run_kind, "unknown");
+    assert.equal(stale.external_review.source_content_transmission, "sent");
+    assert.match(stale.external_review.disclosure, /run became stale/);
+  } finally {
+    cleanup(dir);
+  }
+});
+
+test("reconcileActiveJobs: legacy queued records without pid_info keep transmission unknown", () => {
+  const dir = freshDir();
+  try {
+    const id = "legacy-queued-without-pid";
+    seedActive(dir, id, {
+      status: "queued",
+      pid_info: null,
+      external_review: undefined,
+      started_at: new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString(),
+    });
+    const reclaimed = reconcileActiveJobs(dir, {
+      orphanAgeMs: 60 * 60 * 1000,
+    });
+    assert.equal(reclaimed.length, 1);
+    const stale = readJobFileById(dir, id);
+    assert.equal(stale.status, "stale");
+    assert.equal(stale.external_review.run_kind, "unknown");
     assert.equal(stale.external_review.source_content_transmission, "unknown");
-    assert.match(stale.external_review.disclosure, /background worker became stale/);
+    assert.match(stale.external_review.disclosure, /may have been sent/);
   } finally {
     cleanup(dir);
   }

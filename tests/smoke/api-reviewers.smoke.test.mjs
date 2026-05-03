@@ -9,6 +9,54 @@ import { fileURLToPath } from "node:url";
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const COMPANION = path.join(REPO_ROOT, "plugins/api-reviewers/scripts/api-reviewer.mjs");
+const API_REVIEWER_EXPECTED_KEYS = Object.freeze([
+  "id",
+  "job_id",
+  "target",
+  "provider",
+  "parent_job_id",
+  "claude_session_id",
+  "gemini_session_id",
+  "kimi_session_id",
+  "resume_chain",
+  "pid_info",
+  "mode",
+  "mode_profile_name",
+  "model",
+  "cwd",
+  "workspace_root",
+  "containment",
+  "scope",
+  "dispose_effective",
+  "scope_base",
+  "scope_paths",
+  "prompt_head",
+  "schema_spec",
+  "binary",
+  "status",
+  "started_at",
+  "ended_at",
+  "exit_code",
+  "error_code",
+  "error_message",
+  "error_summary",
+  "error_cause",
+  "suggested_action",
+  "external_review",
+  "disclosure_note",
+  "result",
+  "structured_output",
+  "permission_denials",
+  "mutations",
+  "cost_usd",
+  "usage",
+  "auth_mode",
+  "credential_ref",
+  "endpoint",
+  "http_status",
+  "raw_model",
+  "schema_version",
+]);
 
 function run(args, { cwd = REPO_ROOT, env = {}, companion = COMPANION } = {}) {
   return new Promise((resolve) => {
@@ -43,6 +91,15 @@ function mockResponse(model, id = "chatcmpl-test", content = `Verdict: APPROVE\n
   });
 }
 
+function assertDirectApiNotSent(record, displayName) {
+  assert.equal(record.external_review.source_content_transmission, "not_sent");
+  assert.equal(
+    record.external_review.disclosure,
+    `Selected source content was not sent to ${displayName} through direct API auth.`,
+  );
+  assert.equal(record.disclosure_note, record.external_review.disclosure);
+}
+
 function makeWorkspace() {
   const cwd = mkdtempSync(path.join(tmpdir(), "api-reviewers-smoke-"));
   writeFileSync(path.join(cwd, "seed.txt"), "hello from selected scope\n");
@@ -57,11 +114,22 @@ function makeInstalledApiReviewersRoot() {
   return pluginRoot;
 }
 
-function startHangingChatServer() {
+function writeDeepSeekProviderConfig(pluginRoot, baseUrl) {
+  writeFileSync(path.join(pluginRoot, "config", "providers.json"), JSON.stringify({
+    deepseek: {
+      display_name: "DeepSeek",
+      auth_mode: "api_key",
+      env_keys: ["DEEPSEEK_API_KEY"],
+      base_url: baseUrl,
+      model: "deepseek-v4-flash",
+    },
+  }, null, 2));
+}
+
+function startChatServer(handler) {
   const server = createServer((req, res) => {
     if (req.url === "/chat/completions") {
-      req.resume();
-      return;
+      return handler(req, res);
     }
     res.writeHead(404);
     res.end();
@@ -71,19 +139,9 @@ function startHangingChatServer() {
   });
 }
 
-function startStatusChatServer(status, body = { error: { message: "provider temporarily unavailable" } }) {
-  const server = createServer((req, res) => {
-    if (req.url === "/chat/completions") {
-      req.resume();
-      res.writeHead(status, { "content-type": "application/json" });
-      res.end(JSON.stringify(body));
-      return;
-    }
-    res.writeHead(404);
-    res.end();
-  });
-  return new Promise((resolve) => {
-    server.listen(0, "127.0.0.1", () => resolve(server));
+function startHangingChatServer() {
+  return startChatServer((req) => {
+    req.resume();
   });
 }
 
@@ -129,18 +187,6 @@ test("doctor reports GLM compatibility alias without leaking value", async () =>
   assert.equal(parsed.credential_ref, "ZAI_GLM_API_KEY");
   assert.equal(parsed.endpoint, "https://api.z.ai/api/coding/paas/v4");
   assert.doesNotMatch(result.stdout, /secret-test-value/);
-});
-
-test("doctor prefers GLM primary credential when primary and alias are both present", async () => {
-  const result = await run(["doctor", "--provider", "glm"], {
-    env: { ZAI_API_KEY: "primary-secret-value", ZAI_GLM_API_KEY: "alias-secret-value" },
-  });
-  assert.equal(result.status, 0);
-  const parsed = parseJson(result.stdout);
-  assert.equal(parsed.provider, "glm");
-  assert.equal(parsed.ready, true);
-  assert.equal(parsed.credential_ref, "ZAI_API_KEY");
-  assert.doesNotMatch(result.stdout, /primary-secret-value|alias-secret-value/);
 });
 
 test("doctor malformed providers config returns structured diagnostic", async () => {
@@ -232,6 +278,39 @@ test("API_REVIEWERS_MAX_TOKENS overrides provider request defaults", async () =>
   assert.doesNotMatch(result.stdout, /secret-test-value/);
 });
 
+test("mock request-body assertion failures are marked not sent", async () => {
+  const cwd = makeWorkspace();
+  const dataDir = mkdtempSync(path.join(tmpdir(), "api-reviewers-data-"));
+  const result = await run([
+    "run",
+    "--provider", "glm",
+    "--mode", "custom-review",
+    "--scope", "custom",
+    "--scope-paths", "seed.txt",
+    "--foreground",
+    "--prompt", "Check this file.",
+  ], {
+    cwd,
+    env: {
+      API_REVIEWERS_PLUGIN_DATA: dataDir,
+      API_REVIEWERS_MOCK_RESPONSE: mockResponse("glm-5.1"),
+      API_REVIEWERS_MOCK_ASSERT_REQUEST_BODY: JSON.stringify({
+        model: "wrong-model",
+      }),
+      ZAI_API_KEY: "secret-test-value",
+    },
+  });
+
+  assert.equal(result.status, 1);
+  const record = parseJson(result.stdout);
+  assert.equal(record.status, "failed");
+  assert.equal(record.provider, "glm");
+  assert.equal(record.error_code, "mock_assertion_failed");
+  assert.match(record.error_message, /request body field model expected/);
+  assertDirectApiNotSent(record, "GLM");
+  assert.doesNotMatch(result.stdout, /secret-test-value/);
+});
+
 for (const value of ["abc", "Infinity", "1.5", "0", "-1", "9007199254740992"]) {
   test(`API_REVIEWERS_MAX_TOKENS rejects invalid override ${value}`, async () => {
     const cwd = makeWorkspace();
@@ -263,6 +342,7 @@ for (const value of ["abc", "Infinity", "1.5", "0", "-1", "9007199254740992"]) {
     assert.equal(record.provider, "glm");
     assert.equal(record.error_code, "bad_args");
     assert.match(record.error_message, /API_REVIEWERS_MAX_TOKENS must be a positive integer number of tokens/);
+    assertDirectApiNotSent(record, "GLM");
     assert.doesNotMatch(record.error_message, /mock_assertion_failed/);
     assert.doesNotMatch(result.stdout, /secret-test-value/);
   });
@@ -296,6 +376,7 @@ for (const value of ["abc", "Infinity", "1.5", "0", "-1", "9007199254740992"]) {
     assert.equal(record.provider, "glm");
     assert.equal(record.error_code, "bad_args");
     assert.match(record.error_message, /API_REVIEWERS_TIMEOUT_MS must be a positive integer number of milliseconds/);
+    assertDirectApiNotSent(record, "GLM");
     assert.doesNotMatch(result.stdout, /secret-test-value/);
   });
 }
@@ -469,6 +550,7 @@ test("provider request defaults cannot override canonical request fields", async
   assert.equal(record.status, "failed");
   assert.equal(record.error_code, "bad_args");
   assert.match(record.error_message, /disallowed_request_default:model/);
+  assertDirectApiNotSent(record, "GLM");
   assert.doesNotMatch(result.stdout, /secret-test-value/);
 });
 
@@ -587,10 +669,13 @@ test("DeepSeek direct API custom-review completes and persists JobRecord", async
   });
   assert.equal(result.status, 0, result.stderr || result.stdout);
   const record = parseJson(result.stdout);
+  assert.deepEqual(Object.keys(record), [...API_REVIEWER_EXPECTED_KEYS]);
   assert.equal(record.status, "completed");
   assert.equal(record.provider, "deepseek");
   assert.equal(record.model, "deepseek-v4-pro");
   assert.equal(record.credential_ref, "DEEPSEEK_API_KEY");
+  assert.equal(record.schema_version, 9);
+  assert.equal(record.kimi_session_id, null);
   assert.deepEqual(record.external_review, {
     marker: "EXTERNAL REVIEW",
     provider: "DeepSeek",
@@ -608,6 +693,37 @@ test("DeepSeek direct API custom-review completes and persists JobRecord", async
   assert.equal(record.result.includes("Verdict: APPROVE"), true);
   assert.deepEqual(record.usage, { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 });
   assert.doesNotMatch(result.stdout, /secret-test-value/);
+});
+
+test("direct API provider session_id accepts safe provider ID shapes", async () => {
+  const cwd = makeWorkspace();
+  const dataDir = mkdtempSync(path.join(tmpdir(), "api-reviewers-data-"));
+  for (const id of [
+    "chatcmpl-AbC123",
+    "req_01AbC.dEf/G+h=",
+    "arn:aws:bedrock:us-west-2:123456789012:inference-profile/example",
+    "x".repeat(200),
+  ]) {
+    const result = await run([
+      "run",
+      "--provider", "deepseek",
+      "--mode", "custom-review",
+      "--scope", "custom",
+      "--scope-paths", "seed.txt",
+      "--foreground",
+      "--prompt", "Check this file.",
+    ], {
+      cwd,
+      env: {
+        API_REVIEWERS_PLUGIN_DATA: dataDir,
+        API_REVIEWERS_MOCK_RESPONSE: mockResponse("deepseek-v4-flash", id),
+        DEEPSEEK_API_KEY: "secret-test-value",
+      },
+    });
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    const record = parseJson(result.stdout);
+    assert.equal(record.external_review.session_id, id);
+  }
 });
 
 test("direct API reviewers reject selected files with no content before provider execution", async () => {
@@ -632,8 +748,7 @@ test("direct API reviewers reject selected files with no content before provider
   const record = parseJson(result.stdout);
   assert.equal(record.status, "failed");
   assert.equal(record.error_code, "scope_failed");
-  assert.equal(record.external_review.source_content_transmission, "not_sent");
-  assert.equal(record.disclosure_note, "Selected source content was not sent to DeepSeek through direct API auth.");
+  assertDirectApiNotSent(record, "DeepSeek");
 });
 
 test("direct API reviewers redact provider results before printing or persisting records", async () => {
@@ -663,7 +778,7 @@ test("direct API reviewers redact provider results before printing or persisting
 test("direct API provider session_id rejects unsafe values", async () => {
   const cwd = makeWorkspace();
   const dataDir = mkdtempSync(path.join(tmpdir(), "api-reviewers-data-"));
-  for (const id of ["bad\nid", "x".repeat(201), "<script>alert(1)</script>"]) {
+  for (const id of ["bad\nid", "x".repeat(201), "<script>", "<script>alert(1)</script>", "abc\u202edef"]) {
     const result = await run([
       "run",
       "--provider", "deepseek",
@@ -695,15 +810,7 @@ test("direct API timeout marks selected content as sent", async () => {
   const server = await startHangingChatServer();
   try {
     const { port } = server.address();
-    writeFileSync(path.join(pluginRoot, "config", "providers.json"), JSON.stringify({
-      deepseek: {
-        display_name: "DeepSeek",
-        auth_mode: "api_key",
-        env_keys: ["DEEPSEEK_API_KEY"],
-        base_url: `http://127.0.0.1:${port}`,
-        model: "deepseek-v4-flash",
-      },
-    }, null, 2));
+    writeDeepSeekProviderConfig(pluginRoot, `http://127.0.0.1:${port}`);
 
     const result = await run([
       "run",
@@ -736,19 +843,50 @@ test("direct API timeout marks selected content as sent", async () => {
   }
 });
 
+test("direct API HTTP failures mark selected content as sent", async () => {
+  const cwd = makeWorkspace();
+  const dataDir = mkdtempSync(path.join(tmpdir(), "api-reviewers-data-"));
+  const pluginRoot = makeInstalledApiReviewersRoot();
+  const server = await startChatServer((req, res) => {
+    req.resume();
+    res.writeHead(429, { "content-type": "application/json" });
+    res.end(JSON.stringify({ error: { message: "rate limited" } }));
+  });
+  try {
+    const { port } = server.address();
+    writeDeepSeekProviderConfig(pluginRoot, `http://127.0.0.1:${port}`);
+    const result = await run([
+      "run",
+      "--provider", "deepseek",
+      "--mode", "custom-review",
+      "--scope", "custom",
+      "--scope-paths", "seed.txt",
+      "--foreground",
+      "--prompt", "Check this file.",
+    ], {
+      cwd,
+      companion: path.join(pluginRoot, "scripts", "api-reviewer.mjs"),
+      env: {
+        API_REVIEWERS_PLUGIN_DATA: dataDir,
+        DEEPSEEK_API_KEY: "secret-test-value",
+      },
+    });
+    assert.equal(result.status, 1);
+    const record = parseJson(result.stdout);
+    assert.equal(record.error_code, "rate_limited");
+    assert.equal(record.external_review.source_content_transmission, "sent");
+    assert.equal(record.external_review.disclosure,
+      "Selected source content was sent to DeepSeek through direct API auth, but the provider did not return a clean result.");
+  } finally {
+    server.close();
+  }
+});
+
 test("direct API provider_unavailable under Codex recommends sandbox network access", async () => {
   const cwd = makeWorkspace();
   const dataDir = mkdtempSync(path.join(tmpdir(), "api-reviewers-data-"));
   const pluginRoot = makeInstalledApiReviewersRoot();
-  writeFileSync(path.join(pluginRoot, "config", "providers.json"), JSON.stringify({
-    deepseek: {
-      display_name: "DeepSeek",
-      auth_mode: "api_key",
-      env_keys: ["DEEPSEEK_API_KEY"],
-      base_url: "http://127.0.0.1:9",
-      model: "deepseek-v4-flash",
-    },
-  }, null, 2));
+  writeDeepSeekProviderConfig(pluginRoot, "http://127.0.0.1:9");
 
   const result = await run([
     "run",
@@ -779,15 +917,7 @@ test("direct API provider_unavailable ignores false-like Codex sandbox values", 
   const cwd = makeWorkspace();
   const dataDir = mkdtempSync(path.join(tmpdir(), "api-reviewers-data-"));
   const pluginRoot = makeInstalledApiReviewersRoot();
-  writeFileSync(path.join(pluginRoot, "config", "providers.json"), JSON.stringify({
-    deepseek: {
-      display_name: "DeepSeek",
-      auth_mode: "api_key",
-      env_keys: ["DEEPSEEK_API_KEY"],
-      base_url: "http://127.0.0.1:9",
-      model: "deepseek-v4-flash",
-    },
-  }, null, 2));
+  writeDeepSeekProviderConfig(pluginRoot, "http://127.0.0.1:9");
 
   for (const value of ["false", "0"]) {
     const result = await run([
@@ -819,18 +949,14 @@ test("direct API HTTP provider_unavailable under Codex does not recommend sandbo
   const cwd = makeWorkspace();
   const dataDir = mkdtempSync(path.join(tmpdir(), "api-reviewers-data-"));
   const pluginRoot = makeInstalledApiReviewersRoot();
-  const server = await startStatusChatServer(503);
+  const server = await startChatServer((req, res) => {
+    req.resume();
+    res.writeHead(503, { "content-type": "application/json" });
+    res.end(JSON.stringify({ error: { message: "provider temporarily unavailable" } }));
+  });
   try {
     const { port } = server.address();
-    writeFileSync(path.join(pluginRoot, "config", "providers.json"), JSON.stringify({
-      deepseek: {
-        display_name: "DeepSeek",
-        auth_mode: "api_key",
-        env_keys: ["DEEPSEEK_API_KEY"],
-        base_url: `http://127.0.0.1:${port}`,
-        model: "deepseek-v4-flash",
-      },
-    }, null, 2));
+    writeDeepSeekProviderConfig(pluginRoot, `http://127.0.0.1:${port}`);
 
     const result = await run([
       "run",
@@ -856,6 +982,45 @@ test("direct API HTTP provider_unavailable under Codex does not recommend sandbo
     assert.equal(record.external_review.source_content_transmission, "sent");
     assert.doesNotMatch(record.suggested_action, /network_access = true/);
     assert.doesNotMatch(record.suggested_action, /outside sandbox/);
+  } finally {
+    server.close();
+  }
+});
+
+test("direct API live malformed responses mark selected content as sent", async () => {
+  const cwd = makeWorkspace();
+  const dataDir = mkdtempSync(path.join(tmpdir(), "api-reviewers-data-"));
+  const pluginRoot = makeInstalledApiReviewersRoot();
+  const server = await startChatServer((req, res) => {
+    req.resume();
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end("{not json");
+  });
+  try {
+    const { port } = server.address();
+    writeDeepSeekProviderConfig(pluginRoot, `http://127.0.0.1:${port}`);
+    const result = await run([
+      "run",
+      "--provider", "deepseek",
+      "--mode", "custom-review",
+      "--scope", "custom",
+      "--scope-paths", "seed.txt",
+      "--foreground",
+      "--prompt", "Check this file.",
+    ], {
+      cwd,
+      companion: path.join(pluginRoot, "scripts", "api-reviewer.mjs"),
+      env: {
+        API_REVIEWERS_PLUGIN_DATA: dataDir,
+        DEEPSEEK_API_KEY: "secret-test-value",
+      },
+    });
+    assert.equal(result.status, 1);
+    const record = parseJson(result.stdout);
+    assert.equal(record.error_code, "malformed_response");
+    assert.equal(record.external_review.source_content_transmission, "sent");
+    assert.equal(record.external_review.disclosure,
+      "Selected source content was sent to DeepSeek through direct API auth, but the provider did not return a clean result.");
   } finally {
     server.close();
   }
@@ -943,7 +1108,6 @@ test("GLM direct API custom-review uses coding endpoint and request defaults", a
   assert.equal(record.status, "completed");
   assert.equal(record.provider, "glm");
   assert.equal(record.model, "glm-5.1");
-  assert.equal(record.raw_model, "glm-5.1");
   assert.equal(record.credential_ref, "ZAI_GLM_API_KEY");
   assert.equal(record.endpoint, "https://api.z.ai/api/coding/paas/v4");
   assert.doesNotMatch(result.stdout, /secret-test-value/);

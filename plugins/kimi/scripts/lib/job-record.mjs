@@ -26,7 +26,7 @@ import {
   sourceContentTransmissionForExecution,
 } from "./external-review.mjs";
 
-export const SCHEMA_VERSION = 8;
+export const SCHEMA_VERSION = 9;
 
 /**
  * Canonical JobRecord field list. Exported so tests can reference it and
@@ -128,7 +128,8 @@ export function externalReviewForInvocation(invocation, execution = null) {
  *   kimi_error    — exitCode !== 0 with parseable JSON from Kimi.
  *                     Also covers exitCode === 0 but parsed.ok === false with
  *                     is_error semantics.
- *   unknown_error   — catch-all; should be rare.
+ *   kimi_error      — catch-all target failure; should be rare when no
+ *                     parsed diagnostic is available.
  */
 const CANCEL_SIGNALS = new Set(["SIGTERM", "SIGKILL", "SIGINT", "SIGHUP"]);
 const FINALIZATION_FAILED_PREFIX = "finalization_failed:";
@@ -451,7 +452,7 @@ function assertInvocation(invocation) {
  *   execution  — null when writing the pre-run/queued record. Otherwise:
  *                  { exitCode, parsed: {ok, result?, structured?, denials?,
  *                                        costUsd?, usage?, reason?, error?},
- *                    claudeSessionId?, kimiSessionId?, pidInfo,
+ *                    claudeSessionId?, geminiSessionId?, kimiSessionId?, pidInfo,
  *                    errorMessage?, stdout?, stderr? }
  *
  *   mutations  — array of git-status line strings or

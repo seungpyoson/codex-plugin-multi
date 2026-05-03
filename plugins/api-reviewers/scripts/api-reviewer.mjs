@@ -7,12 +7,65 @@ import { fileURLToPath } from "node:url";
 import { randomUUID } from "node:crypto";
 
 import { cleanGitEnv } from "./lib/git-env.mjs";
+import {
+  EXTERNAL_REVIEW_KEYS,
+  SOURCE_CONTENT_TRANSMISSION,
+} from "./lib/external-review.mjs";
 
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 const PLUGIN_ROOT = resolve(SCRIPT_DIR, "..");
 const PROVIDERS_PATH = resolve(PLUGIN_ROOT, "config/providers.json");
 const VALID_MODES = new Set(["review", "adversarial-review", "custom-review"]);
 const VALID_AUTH_MODES = new Set(["api_key", "auto"]);
+const SCHEMA_VERSION = 9;
+const API_REVIEWER_EXPECTED_KEYS = Object.freeze([
+  "id",
+  "job_id",
+  "target",
+  "provider",
+  "parent_job_id",
+  "claude_session_id",
+  "gemini_session_id",
+  "kimi_session_id",
+  "resume_chain",
+  "pid_info",
+  "mode",
+  "mode_profile_name",
+  "model",
+  "cwd",
+  "workspace_root",
+  "containment",
+  "scope",
+  "dispose_effective",
+  "scope_base",
+  "scope_paths",
+  "prompt_head",
+  "schema_spec",
+  "binary",
+  "status",
+  "started_at",
+  "ended_at",
+  "exit_code",
+  "error_code",
+  "error_message",
+  "error_summary",
+  "error_cause",
+  "suggested_action",
+  "external_review",
+  "disclosure_note",
+  "result",
+  "structured_output",
+  "permission_denials",
+  "mutations",
+  "cost_usd",
+  "usage",
+  "auth_mode",
+  "credential_ref",
+  "endpoint",
+  "http_status",
+  "raw_model",
+  "schema_version",
+]);
 const ALLOWED_REQUEST_DEFAULT_KEYS = new Set(["thinking", "reasoning_effort", "max_tokens", "top_p", "stop"]);
 // Avoid corrupting structured fields when a broken local env has a tiny API-key placeholder.
 const MIN_SECRET_REDACTION_LENGTH = 8;
@@ -487,7 +540,7 @@ function payloadSentForProviderException(error) {
   if (error?.name === "AbortError") return true;
   const code = error?.code ?? error?.cause?.code ?? null;
   if (code === "ENOTFOUND" || code === "EAI_AGAIN" || code === "ECONNREFUSED" ||
-      code === "EHOSTUNREACH" || code === "ENETUNREACH") {
+      code === "EHOSTUNREACH" || code === "ENETUNREACH" || code === "ETIMEDOUT") {
     return false;
   }
   return null;
@@ -563,22 +616,40 @@ function isCodexSandbox(env) {
 
 function directApiDisclosure(displayName, completed, payloadSent) {
   const transmission = directApiTransmission(completed, payloadSent);
-  if (transmission === "sent" && completed) {
+  if (transmission === SOURCE_CONTENT_TRANSMISSION.SENT && completed) {
     return `Selected source content was sent to ${displayName} through direct API auth.`;
   }
-  if (transmission === "not_sent") {
+  if (transmission === SOURCE_CONTENT_TRANSMISSION.NOT_SENT) {
     return `Selected source content was not sent to ${displayName} through direct API auth.`;
   }
-  if (transmission === "sent") {
+  if (transmission === SOURCE_CONTENT_TRANSMISSION.SENT) {
     return `Selected source content was sent to ${displayName} through direct API auth, but the provider did not return a clean result.`;
   }
   return `Selected source content may have been sent to ${displayName} through direct API auth.`;
 }
 
 function directApiTransmission(completed, payloadSent) {
-  if (completed || payloadSent === true) return "sent";
-  if (payloadSent === false) return "not_sent";
-  return "unknown";
+  if (completed || payloadSent === true) return SOURCE_CONTENT_TRANSMISSION.SENT;
+  if (payloadSent === false) return SOURCE_CONTENT_TRANSMISSION.NOT_SENT;
+  return SOURCE_CONTENT_TRANSMISSION.UNKNOWN;
+}
+
+function freezeExternalReview(review) {
+  const keys = Object.keys(review);
+  if (keys.length !== EXTERNAL_REVIEW_KEYS.length
+      || keys.some((key, index) => key !== EXTERNAL_REVIEW_KEYS[index])) {
+    throw new Error(`external_review keys drifted: ${keys.join(",")}`);
+  }
+  return Object.freeze(review);
+}
+
+function freezeRecord(record) {
+  const keys = Object.keys(record);
+  if (keys.length !== API_REVIEWER_EXPECTED_KEYS.length
+      || keys.some((key, index) => key !== API_REVIEWER_EXPECTED_KEYS[index])) {
+    throw new Error(`api reviewer JobRecord keys drifted: ${keys.join(",")}`);
+  }
+  return Object.freeze(record);
 }
 
 function errorCauseFor(errorCode) {
@@ -597,7 +668,7 @@ function buildRecord({ provider, cfg, mode, options, scopeInfo, execution, start
   const target = provider;
   const sourceContentTransmission = directApiTransmission(completed, execution.payload_sent ?? null);
   const disclosure = directApiDisclosure(cfg.display_name, completed, execution.payload_sent ?? null);
-  const externalReview = Object.freeze({
+  const externalReview = freezeExternalReview({
     marker: "EXTERNAL REVIEW",
     provider: cfg.display_name,
     run_kind: "foreground",
@@ -611,7 +682,7 @@ function buildRecord({ provider, cfg, mode, options, scopeInfo, execution, start
     source_content_transmission: sourceContentTransmission,
     disclosure,
   });
-  return Object.freeze({
+  return freezeRecord({
     id: options.jobId,
     job_id: options.jobId,
     target,
@@ -619,6 +690,7 @@ function buildRecord({ provider, cfg, mode, options, scopeInfo, execution, start
     parent_job_id: null,
     claude_session_id: null,
     gemini_session_id: null,
+    kimi_session_id: null,
     resume_chain: [],
     pid_info: null,
     mode,
@@ -656,7 +728,7 @@ function buildRecord({ provider, cfg, mode, options, scopeInfo, execution, start
     endpoint: execution.endpoint ?? (cfg.base_url ? baseUrlFor(cfg) : null),
     http_status: execution.http_status ?? null,
     raw_model: execution.parsed?.raw_model ?? null,
-    schema_version: 8,
+    schema_version: SCHEMA_VERSION,
   });
 }
 

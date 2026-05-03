@@ -10,6 +10,27 @@ maintainer explicitly opts in.
 - `npm run e2e:claude`, `npm run e2e:gemini`, and `npm run e2e:kimi` use live CLIs and require local auth.
 - Running an E2E command without the opt-in env var exits successfully with a skipped test.
 
+## Running inside Codex sandbox
+
+Live external reviews need host capabilities beyond ordinary local tests. Keep
+Codex workspace-write sandboxing enabled, and add only the provider capabilities
+needed by the run:
+
+```toml
+[sandbox_workspace_write]
+network_access = true
+writable_roots = ["/Users/<you>/.kimi"]
+```
+
+`network_access = true` is required for DeepSeek and GLM direct API calls. Kimi
+may also need a writable root under `~/.kimi` because the first-party CLI writes
+logs and auth/session state there. If you do not want persistent sandbox network
+access, use one-off escalation for the single trusted E2E command.
+
+Do not use `danger-full-access` or `--dangerously-bypass-approvals-and-sandbox`
+as the default verification setup. Those modes hide the sandbox behavior this
+runbook is meant to verify.
+
 ## Claude
 
 Prerequisites:

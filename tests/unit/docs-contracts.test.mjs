@@ -242,3 +242,19 @@ test("README documents host-owned pre-launch provider denials as outside compani
   assert.match(readme, /local\/Codex-only review/i);
   assert.match(readme, /https:\/\/github\.com\/seungpyoson\/codex-plugin-multi\/issues\/13/);
 });
+
+test("README documents Codex sandbox setup and provider-specific failure modes", () => {
+  const readme = readRepoFile("README.md");
+
+  assert.match(readme, /\[sandbox_workspace_write\]/);
+  assert.match(readme, /network_access = true/);
+  assert.match(readme, /writable_roots/);
+  assert.match(readme, /\/Users\/<you>\/\.kimi/);
+  assert.match(readme, /one-off escalation/i);
+  assert.match(readme, /danger-full-access|dangerously-bypass-approvals-and-sandbox/i);
+  assert.match(readme, /do not make[\s\S]*default/i);
+  assert.match(readme, /Gemini CLI.*native.*sandbox|native.*Gemini.*sandbox/i);
+  assert.match(readme, /Kimi.*\.kimi/i);
+  assert.match(readme, /Direct API reviewers|DeepSeek.*GLM/i);
+  assert.match(readme, /selected source content[\s\S]*sent/i);
+});

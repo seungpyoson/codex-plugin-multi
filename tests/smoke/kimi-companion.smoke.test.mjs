@@ -557,6 +557,70 @@ test("kimi foreground review step-limit exhaustion returns actionable JobRecord"
   assert.equal(persisted.error_code, "step_limit_exceeded");
 }));
 
+test("kimi continue background: launched event and terminal JobRecord keep parent metadata", async () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "kimi-continue-bg-cwd-"));
+  fixtureSeedRepo(cwd);
+  let launchedPid = null;
+  const first = runCompanion([
+    "run",
+    "--mode",
+    "custom-review",
+    "--cwd",
+    cwd,
+    "--scope-paths",
+    "seed.txt",
+    "--foreground",
+    "--",
+    "Initial review.",
+  ], { cwd });
+  try {
+    assert.equal(first.status, 0, first.stderr);
+    const prior = parseJson(first.stdout);
+    assert.equal(prior.status, "completed");
+    assert.equal(prior.kimi_session_id, KIMI_SESSION_ID);
+
+    const continued = runCompanion([
+      "continue",
+      "--job",
+      prior.job_id,
+      "--background",
+      "--cwd",
+      cwd,
+      "--",
+      "Continue the review.",
+    ], { cwd, dataDir: first.dataDir });
+    assert.equal(continued.status, 0, continued.stderr);
+    const launched = parseJson(continued.stdout);
+    launchedPid = launched.pid;
+    assert.equal(launched.event, "launched");
+    assert.equal(launched.target, "kimi");
+    assert.equal(launched.parent_job_id, prior.job_id);
+    assert.equal(launched.external_review.parent_job_id, prior.job_id);
+    assert.equal(launched.external_review.run_kind, "background");
+    assert.equal(
+      launched.external_review.disclosure,
+      "Selected source content may be sent to Kimi Code CLI for external review.",
+    );
+
+    const meta = await waitForTerminalJob(first.dataDir, launched.job_id);
+    assert.equal(meta.status, "completed");
+    assert.equal(meta.parent_job_id, prior.job_id);
+    assert.deepEqual(meta.resume_chain, [KIMI_SESSION_ID]);
+    assert.equal(meta.kimi_session_id, KIMI_RESUMED_SESSION_ID);
+    assert.equal(meta.external_review.parent_job_id, prior.job_id);
+    assert.equal(meta.external_review.run_kind, "background");
+    assert.equal(meta.external_review.session_id, KIMI_RESUMED_SESSION_ID);
+    assert.equal(
+      meta.external_review.disclosure,
+      "Selected source content was sent to Kimi Code CLI for external review.",
+    );
+  } finally {
+    await waitForProcessExit(launchedPid);
+    rmSync(first.dataDir, { recursive: true, force: true });
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
 test("kimi run rejects invalid max-step budgets before target launch", () => withRepo((cwd) => {
   const result = runCompanion([
     "run",

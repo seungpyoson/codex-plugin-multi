@@ -148,10 +148,7 @@ function gitStatusLines(output) {
 
 function runKindFromRecord(record) {
   if (record.external_review?.run_kind) return record.external_review.run_kind;
-  if (record.pid_info || record.status === "queued" || record.status === "running" || record.status === "stale") {
-    return "background";
-  }
-  return "foreground";
+  return "unknown";
 }
 
 function runtimeOptionsSidecarPath(workspaceRoot, jobId) {
