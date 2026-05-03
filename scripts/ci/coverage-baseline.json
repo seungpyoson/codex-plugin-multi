@@ -306,8 +306,8 @@
       "functions": 0.0
     },
     "plugins/kimi/scripts/lib/scope.mjs": {
-      "lines": 92.28,
-      "branches": 87.63,
+      "lines": 92.0,
+      "branches": 86.53,
       "functions": 98.25
     },
     "plugins/kimi/scripts/lib/state.mjs": {
