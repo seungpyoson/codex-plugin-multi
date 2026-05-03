@@ -18,10 +18,13 @@ import {
 } from "../../plugins/claude/scripts/lib/job-record.mjs";
 import {
   buildJobRecord as buildGeminiJobRecord,
+  EXPECTED_KEYS as GEMINI_EXPECTED_KEYS,
   SCHEMA_VERSION as GEMINI_SCHEMA_VERSION,
 } from "../../plugins/gemini/scripts/lib/job-record.mjs";
 import {
   buildJobRecord as buildKimiJobRecord,
+  EXPECTED_KEYS as KIMI_EXPECTED_KEYS,
+  SCHEMA_VERSION as KIMI_SCHEMA_VERSION,
 } from "../../plugins/kimi/scripts/lib/job-record.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -33,8 +36,9 @@ const CLAUDE_UUID = "11111111-2222-4333-8444-555555555555";
 const GEMINI_UUID = "22222222-3333-4444-9555-666666666666";
 
 test("JobRecord schema_version is bumped for scope diagnostics", () => {
-  assert.equal(SCHEMA_VERSION, 7);
-  assert.equal(GEMINI_SCHEMA_VERSION, 7);
+  assert.equal(SCHEMA_VERSION, 8);
+  assert.equal(GEMINI_SCHEMA_VERSION, 8);
+  assert.equal(KIMI_SCHEMA_VERSION, 8);
 });
 
 // Helper — minimal valid invocation captured at cmdRun entry.
@@ -68,7 +72,7 @@ function makePidInfo() {
 
 test("EXPECTED_KEYS is the spec §21.3 canonical list", () => {
   const required = [
-    "id", "job_id", "target", "parent_job_id", "claude_session_id", "gemini_session_id",
+    "id", "job_id", "target", "parent_job_id", "claude_session_id", "gemini_session_id", "kimi_session_id",
     "resume_chain", "pid_info",
     "mode", "mode_profile_name", "model", "cwd", "workspace_root",
     "containment", "scope", "dispose_effective", "scope_base", "scope_paths",
@@ -80,6 +84,20 @@ test("EXPECTED_KEYS is the spec §21.3 canonical list", () => {
     "schema_version",
   ];
   assert.deepEqual([...EXPECTED_KEYS].sort(), required.sort());
+});
+
+test("EXPECTED_KEYS are identical across provider companions", () => {
+  assert.deepEqual([...GEMINI_EXPECTED_KEYS], [...EXPECTED_KEYS]);
+  assert.deepEqual([...KIMI_EXPECTED_KEYS], [...EXPECTED_KEYS]);
+});
+
+test("Kimi JobRecord does not persist private runtime-only options", () => {
+  const rec = buildKimiJobRecord(
+    makeInvocation({ target: "kimi", binary: "kimi", max_steps_per_turn: 48 }),
+    null,
+    [],
+  );
+  assert.equal("max_steps_per_turn" in rec, false);
 });
 
 test("buildJobRecord: foreground success path has EXACTLY the expected keys", () => {
@@ -584,6 +602,28 @@ test("kimi buildJobRecord: timeout diagnostics use Kimi target display name", ()
   assert.match(rec.error_cause, /foreground Kimi process/);
   assert.match(rec.suggested_action, /check Kimi service status/);
   assert.match(rec.suggested_action, /run `kimi` interactively/);
+});
+
+test("kimi buildJobRecord: step-limit exhaustion is actionable, not parse_error", () => {
+  const rec = buildKimiJobRecord(makeInvocation({ target: "kimi", binary: "kimi" }), {
+    exitCode: 1,
+    parsed: {
+      ok: false,
+      reason: "step_limit_exceeded",
+      error: "Max number of steps reached: 1",
+      result: null,
+      structured: null,
+      denials: [],
+    },
+    pidInfo: makePidInfo(),
+    kimiSessionId: null,
+  }, []);
+  assert.equal(rec.status, "failed");
+  assert.equal(rec.error_code, "step_limit_exceeded");
+  assert.equal(rec.error_message, "Max number of steps reached: 1");
+  assert.match(rec.error_summary, /step limit/i);
+  assert.match(rec.suggested_action, /higher step budget/i);
+  assert.match(rec.suggested_action, /narrower scope/i);
 });
 
 test("kimi buildJobRecord: timeout diagnostics use Claude target display name", () => {

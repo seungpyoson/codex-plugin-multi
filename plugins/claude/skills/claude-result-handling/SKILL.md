@@ -13,7 +13,7 @@ The companion returns the SAME JSON shape from three entry points — foreground
 (spec §21.3). Nothing is hand-assembled in memory; what goes to disk is what
 comes back to you.
 
-## Success path — JobRecord schema (v7)
+## Success path — JobRecord schema (v8)
 
 ```json
 {
@@ -23,6 +23,7 @@ comes back to you.
   "parent_job_id":       null | "<uuid>",   // set by `continue`; null on fresh runs
   "claude_session_id":   null | "<uuid>",   // from Claude's stdout, not minted
   "gemini_session_id":   null,              // present for schema parity; Gemini uses it
+  "kimi_session_id":     null,              // present for schema parity; Kimi uses it
   "resume_chain":        ["<uuid>", ...],   // newest-last; [] on first run
   "pid_info":            null | { "pid": N, "starttime": "...", "argv0": "..." },
 
@@ -59,7 +60,7 @@ comes back to you.
   "cost_usd":            null | 0.001,
   "usage":               null | { "input_tokens": N, ... },
 
-  "schema_version":      7
+  "schema_version":      8
 }
 ```
 
