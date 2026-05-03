@@ -87,6 +87,17 @@ function kimiPromptAssertionArgs(cwd, mode) {
   ];
 }
 
+test("kimi mock rejects unknown CLI flags", () => {
+  const result = spawnSync("node", [MOCK, "--unknown-kimi-flag"], {
+    cwd: tmpdir(),
+    input: "",
+    encoding: "utf8",
+  });
+
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /unknown flag --unknown-kimi-flag/);
+});
+
 test("kimi ping reports OAuth readiness and ignored API-key diagnostics", () => {
   const cwd = mkdtempSync(path.join(tmpdir(), "kimi-ping-"));
   try {

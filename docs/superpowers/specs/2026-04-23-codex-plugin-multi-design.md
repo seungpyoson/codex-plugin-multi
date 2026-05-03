@@ -101,8 +101,8 @@ Every design choice below is anchored to a source citation or live test. Environ
 
 | Tier | Claude | Gemini |
 |---|---|---|
-| cheap (review/setup optional) | `claude-haiku-4-5-20251001` | `gemini-3-flash-preview` |
-| medium | `claude-sonnet-4-6` | `gemini-3.1-pro-preview` |
+| cheap (review/setup optional) | `claude-opus-4-7` | `gemini-3.1-pro-preview` |
+| medium | `claude-opus-4-7` | `gemini-3.1-pro-preview` |
 | default (smartest) | `claude-opus-4-7` | `gemini-3.1-pro-preview` |
 
 Aliases silently substitute (`claude --model haiku` → `claude-sonnet-4-6`). **Full model IDs only.**

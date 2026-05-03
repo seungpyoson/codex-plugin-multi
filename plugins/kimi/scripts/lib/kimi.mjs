@@ -37,6 +37,7 @@ export function buildKimiArgs(profile, runtimeInputs = {}) {
     "8",
   ];
   if (typeof model === "string" && model) args.push("-m", model);
+  args.push("--thinking");
   if (resumeId) args.push("--session", resumeId);
 
   if (profile.permission_mode === "acceptEdits") {
