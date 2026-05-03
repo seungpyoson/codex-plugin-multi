@@ -987,14 +987,14 @@ test("direct API HTTP provider_unavailable under Codex does not recommend sandbo
   }
 });
 
-test("direct API HTTP provider_unavailable with network wording still does not recommend sandbox access", async () => {
+test("direct API HTTP provider_unavailable with transport-looking wording still does not recommend sandbox access", async () => {
   const cwd = makeWorkspace();
   const dataDir = mkdtempSync(path.join(tmpdir(), "api-reviewers-data-"));
   const pluginRoot = makeInstalledApiReviewersRoot();
   const server = await startChatServer((req, res) => {
     req.resume();
     res.writeHead(503, { "content-type": "application/json" });
-    res.end(JSON.stringify({ error: { message: "upstream network partition at provider" } }));
+    res.end(JSON.stringify({ error: { message: "upstream fetch failed at provider" } }));
   });
   try {
     const { port } = server.address();

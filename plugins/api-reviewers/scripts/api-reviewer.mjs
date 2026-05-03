@@ -586,7 +586,7 @@ function providerFailure(reason, message, httpStatus, raw = null, payloadSent = 
   };
 }
 
-function suggestedAction(errorCode, provider, cfg, errorMessage = "", env = process.env) {
+function suggestedAction(errorCode, provider, cfg, errorMessage = "", httpStatus = null, env = process.env) {
   if (errorCode === "bad_args") return "Correct the api-reviewer command arguments and retry.";
   if (errorCode === "config_error") return "Reinstall or repair plugins/api-reviewers/config/providers.json and retry.";
   if (errorCode === "missing_key") return `Expose one of these key names to Codex: ${(cfg.env_keys ?? []).join(", ")}.`;
@@ -595,10 +595,10 @@ function suggestedAction(errorCode, provider, cfg, errorMessage = "", env = proc
   if (errorCode === "timeout") return `The provider did not respond within the timeout window. Retry later, increase API_REVIEWERS_TIMEOUT_MS, or switch reviewer provider.`;
   if (errorCode === "provider_unavailable") {
     const looksLikeNetworkFailure = /fetch failed|ENOTFOUND|EAI_AGAIN|ECONNREFUSED|EHOSTUNREACH|ENETUNREACH|ETIMEDOUT/i.test(errorMessage);
-    if (isCodexSandbox(env) && looksLikeNetworkFailure) {
+    if (httpStatus == null && isCodexSandbox(env) && looksLikeNetworkFailure) {
       return `If running inside Codex, set [sandbox_workspace_write].network_access = true in ~/.codex/config.toml, start a fresh Codex session, then retry; or run this direct API reviewer outside sandbox. If network is already enabled, retry later or switch reviewer provider.`;
     }
-    if (looksLikeNetworkFailure) {
+    if (httpStatus == null && looksLikeNetworkFailure) {
       return `Check network access, retry later, or switch reviewer provider.`;
     }
     return `Retry later or switch reviewer provider.`;
@@ -714,7 +714,7 @@ function buildRecord({ provider, cfg, mode, options, scopeInfo, execution, start
     error_message: errorMessage,
     error_summary: completed ? null : errorMessage || errorCode,
     error_cause: completed ? null : errorCauseFor(errorCode),
-    suggested_action: completed ? null : suggestedAction(errorCode, provider, cfg, errorMessage),
+    suggested_action: completed ? null : suggestedAction(errorCode, provider, cfg, errorMessage, execution.http_status ?? null),
     external_review: externalReview,
     disclosure_note: disclosure,
     result,
