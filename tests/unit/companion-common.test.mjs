@@ -74,7 +74,6 @@ test("external-review plugin copies keep stale no-pid transmission unknown", asy
       status: "stale",
       errorCode: "stale_active_job",
       pidInfo: null,
-      priorStatus: "queued",
     }), mod.SOURCE_CONTENT_TRANSMISSION.UNKNOWN);
   }
 });

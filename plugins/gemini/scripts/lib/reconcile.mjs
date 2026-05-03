@@ -140,7 +140,6 @@ export function reconcileActiveJobs(workspaceRoot, {
         exitCode: meta.exit_code ?? null,
         parsed: null,
         pidInfo: meta.pid_info ?? null,
-        priorStatus: meta.status ?? null,
         claudeSessionId: meta.claude_session_id ?? null,
         geminiSessionId: meta.gemini_session_id ?? null,
         errorMessage: `stale_active_job: ${reason}`,

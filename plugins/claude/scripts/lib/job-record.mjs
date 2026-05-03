@@ -93,7 +93,6 @@ export function externalReviewForInvocation(invocation, execution = null) {
     status,
     errorCode: error_code,
     pidInfo: execution?.pidInfo ?? null,
-    priorStatus: execution?.priorStatus ?? null,
   });
   return buildExternalReview({
     invocation,

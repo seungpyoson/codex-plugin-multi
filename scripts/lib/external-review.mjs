@@ -89,7 +89,7 @@ function unknownWithoutCleanResult(provider) {
   return `Selected source content may have been sent to ${provider}; the run ended before a clean result was produced.`;
 }
 
-export function sourceContentTransmissionForExecution({ status, errorCode, pidInfo, priorStatus = null }) {
+export function sourceContentTransmissionForExecution({ status, errorCode, pidInfo }) {
   if (status === "queued") {
     return SOURCE_CONTENT_TRANSMISSION.MAY_BE_SENT;
   }
