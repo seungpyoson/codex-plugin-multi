@@ -37,6 +37,11 @@ node plugins/api-reviewers/scripts/api-reviewer.mjs run --provider glm --mode ad
 node plugins/api-reviewers/scripts/api-reviewer.mjs run --provider deepseek --mode custom-review --scope custom --scope-paths "$FILES" --foreground --prompt "$PROMPT"
 ```
 
+`custom-review` sends the exact `--scope-paths` file contents to the direct API
+provider. It does not gitignore-filter explicitly selected files. Do not include
+secrets, credentials, private keys, `.env` files, or other sensitive local-only
+content.
+
 If the command fails, report `error_code`, `error_message`, and `suggested_action` from the JobRecord. Do not expose API keys.
 If `external_review` is present, render it before the review result.
 

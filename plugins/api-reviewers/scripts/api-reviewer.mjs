@@ -164,6 +164,7 @@ async function readScopeFiles(workspaceRoot, relPaths) {
     }
     if (!existsSync(abs)) continue;
     const text = await readFile(abs, "utf8");
+    if (text.length === 0) continue;
     files.push({ path: normalizedRel, text });
   }
   if (files.length === 0) throw new Error("scope_empty: selected files are missing or empty");
@@ -387,6 +388,9 @@ function directApiTransmission(completed, payloadSent) {
 
 function buildRecord({ provider, cfg, mode, options, scopeInfo, execution, startedAt, endedAt }) {
   const completed = execution.exitCode === 0 && execution.parsed?.ok === true;
+  const redact = redactor();
+  const result = completed ? redact(execution.parsed.result) : null;
+  const errorMessage = completed ? null : redact(execution.parsed?.error ?? "");
   const errorCode = completed ? null : (execution.parsed?.reason ?? "provider_error");
   const target = provider;
   const sourceContentTransmission = directApiTransmission(completed, execution.payload_sent ?? null);
@@ -433,13 +437,13 @@ function buildRecord({ provider, cfg, mode, options, scopeInfo, execution, start
     ended_at: endedAt,
     exit_code: execution.exitCode,
     error_code: errorCode,
-    error_message: completed ? null : execution.parsed?.error ?? null,
-    error_summary: completed ? null : execution.parsed?.error ?? errorCode,
+    error_message: errorMessage,
+    error_summary: completed ? null : errorMessage || errorCode,
     error_cause: completed ? null : "direct_api_provider",
-    suggested_action: completed ? null : suggestedAction(errorCode, provider, cfg, execution.parsed?.error ?? ""),
+    suggested_action: completed ? null : suggestedAction(errorCode, provider, cfg, errorMessage),
     external_review: externalReview,
     disclosure_note: disclosure,
-    result: completed ? execution.parsed.result : null,
+    result,
     structured_output: null,
     permission_denials: [],
     mutations: [],

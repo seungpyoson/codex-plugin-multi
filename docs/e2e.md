@@ -96,6 +96,11 @@ node plugins/api-reviewers/scripts/api-reviewer.mjs run --provider deepseek --mo
 node plugins/api-reviewers/scripts/api-reviewer.mjs run --provider glm --mode custom-review --scope custom --scope-paths README.md --foreground --prompt "Review for correctness risks."
 ```
 
+Custom review scope sends the exact `--scope-paths` file contents to the direct
+API provider. It does not apply gitignore filtering to explicitly selected
+files, so do not include secrets, credentials, private keys, `.env` files, or
+other sensitive local-only content.
+
 Expected result:
 
 - The doctor command reports `ready: true` and a `credential_ref` key name.

@@ -26,7 +26,7 @@ function parseJson(stdout) {
   return JSON.parse(stdout);
 }
 
-function mockResponse(model, id = "chatcmpl-test") {
+function mockResponse(model, id = "chatcmpl-test", content = `Verdict: APPROVE\nProvider model: ${model}`) {
   return JSON.stringify({
     id,
     object: "chat.completion",
@@ -36,7 +36,7 @@ function mockResponse(model, id = "chatcmpl-test") {
       finish_reason: "stop",
       message: {
         role: "assistant",
-        content: `Verdict: APPROVE\nProvider model: ${model}`,
+        content,
       },
     }],
     usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 },
@@ -115,6 +115,18 @@ test("doctor reports GLM compatibility alias without leaking value", async () =>
   assert.doesNotMatch(result.stdout, /secret-test-value/);
 });
 
+test("doctor prefers GLM primary credential when primary and alias are both present", async () => {
+  const result = await run(["doctor", "--provider", "glm"], {
+    env: { ZAI_API_KEY: "primary-secret-value", ZAI_GLM_API_KEY: "alias-secret-value" },
+  });
+  assert.equal(result.status, 0);
+  const parsed = parseJson(result.stdout);
+  assert.equal(parsed.provider, "glm");
+  assert.equal(parsed.ready, true);
+  assert.equal(parsed.credential_ref, "ZAI_API_KEY");
+  assert.doesNotMatch(result.stdout, /primary-secret-value|alias-secret-value/);
+});
+
 test("DeepSeek direct API custom-review completes and persists JobRecord", async () => {
   const cwd = makeWorkspace();
   const dataDir = mkdtempSync(path.join(tmpdir(), "api-reviewers-data-"));
@@ -157,6 +169,56 @@ test("DeepSeek direct API custom-review completes and persists JobRecord", async
   });
   assert.equal(record.result.includes("Verdict: APPROVE"), true);
   assert.deepEqual(record.usage, { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 });
+  assert.doesNotMatch(result.stdout, /secret-test-value/);
+});
+
+test("direct API reviewers reject selected files with no content before provider execution", async () => {
+  const cwd = makeWorkspace();
+  writeFileSync(path.join(cwd, "empty.txt"), "");
+  const result = await run([
+    "run",
+    "--provider", "deepseek",
+    "--mode", "custom-review",
+    "--scope", "custom",
+    "--scope-paths", "empty.txt",
+    "--foreground",
+    "--prompt", "Check this file.",
+  ], {
+    cwd,
+    env: {
+      API_REVIEWERS_MOCK_RESPONSE: mockResponse("deepseek-v4-flash"),
+      DEEPSEEK_API_KEY: "secret-test-value",
+    },
+  });
+  assert.equal(result.status, 1);
+  const record = parseJson(result.stdout);
+  assert.equal(record.status, "failed");
+  assert.equal(record.error_code, "scope_failed");
+  assert.equal(record.external_review.source_content_transmission, "not_sent");
+  assert.equal(record.disclosure_note, "Selected source content was not sent to DeepSeek through direct API auth.");
+});
+
+test("direct API reviewers redact provider results before printing or persisting records", async () => {
+  const cwd = makeWorkspace();
+  const result = await run([
+    "run",
+    "--provider", "deepseek",
+    "--mode", "custom-review",
+    "--scope", "custom",
+    "--scope-paths", "seed.txt",
+    "--foreground",
+    "--prompt", "Check this file.",
+  ], {
+    cwd,
+    env: {
+      API_REVIEWERS_MOCK_RESPONSE: mockResponse("deepseek-v4-flash", "chatcmpl-test", "Echoed secret-test-value in provider output"),
+      DEEPSEEK_API_KEY: "secret-test-value",
+    },
+  });
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  const record = parseJson(result.stdout);
+  assert.equal(record.status, "completed");
+  assert.equal(record.result, "Echoed [REDACTED] in provider output");
   assert.doesNotMatch(result.stdout, /secret-test-value/);
 });
 
@@ -328,6 +390,7 @@ test("GLM direct API custom-review uses coding endpoint and request defaults", a
   assert.equal(record.status, "completed");
   assert.equal(record.provider, "glm");
   assert.equal(record.model, "glm-5.1");
+  assert.equal(record.raw_model, "glm-5.1");
   assert.equal(record.credential_ref, "ZAI_GLM_API_KEY");
   assert.equal(record.endpoint, "https://api.z.ai/api/coding/paas/v4");
   assert.doesNotMatch(result.stdout, /secret-test-value/);
