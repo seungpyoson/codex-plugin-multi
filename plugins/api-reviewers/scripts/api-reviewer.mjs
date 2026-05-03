@@ -14,6 +14,7 @@ const PROVIDERS_PATH = resolve(PLUGIN_ROOT, "config/providers.json");
 const VALID_MODES = new Set(["review", "adversarial-review", "custom-review"]);
 const VALID_AUTH_MODES = new Set(["api_key", "auto"]);
 const ALLOWED_REQUEST_DEFAULT_KEYS = new Set(["thinking", "reasoning_effort", "max_tokens", "top_p", "stop"]);
+// Avoid corrupting structured fields when a broken local env has a tiny API-key placeholder.
 const MIN_SECRET_REDACTION_LENGTH = 8;
 
 function printJson(obj) {
@@ -78,6 +79,21 @@ function runConfigError(message) {
   const error = new Error(message);
   error.apiReviewersReason = "config_error";
   return error;
+}
+
+function providersConfigErrorMessage(error) {
+  return `providers config unreadable: ${error.message}`;
+}
+
+function providersConfigErrorFields(error, provider = null) {
+  return {
+    provider,
+    status: "config_error",
+    ready: false,
+    summary: "API Reviewers providers config is unreadable.",
+    next_action: "Reinstall or repair plugins/api-reviewers/config/providers.json and retry.",
+    error_message: providersConfigErrorMessage(error),
+  };
 }
 
 function selectedCredential(cfg, env = process.env) {
@@ -499,12 +515,20 @@ function providerFailure(reason, message, httpStatus, raw = null) {
 
 function suggestedAction(errorCode, provider, cfg) {
   if (errorCode === "bad_args") return "Correct the api-reviewer command arguments and retry.";
+  if (errorCode === "config_error") return "Reinstall or repair plugins/api-reviewers/config/providers.json and retry.";
   if (errorCode === "missing_key") return `Expose one of these key names to Codex: ${(cfg.env_keys ?? []).join(", ")}.`;
   if (errorCode === "auth_rejected") return `Check the ${cfg.display_name} API key and billing/plan for ${cfg.model}.`;
   if (errorCode === "rate_limited") return `Wait and retry, or lower concurrency for ${provider}.`;
   if (errorCode === "provider_unavailable") return `Retry later or switch reviewer provider.`;
   if (errorCode === "scope_failed") return "Adjust --scope, --scope-base, or --scope-paths and retry.";
   return "Inspect error_message and retry after correcting the provider or request configuration.";
+}
+
+function errorCauseFor(errorCode) {
+  if (errorCode === "bad_args") return "caller";
+  if (errorCode === "config_error") return "provider_config";
+  if (errorCode === "scope_failed") return "scope_resolution";
+  return "direct_api_provider";
 }
 
 function buildRecord({ provider, cfg, mode, options, scopeInfo, execution, startedAt, endedAt }) {
@@ -541,7 +565,7 @@ function buildRecord({ provider, cfg, mode, options, scopeInfo, execution, start
     error_code: errorCode,
     error_message: completed ? null : execution.parsed?.error ?? null,
     error_summary: completed ? null : execution.parsed?.error ?? errorCode,
-    error_cause: completed ? null : "direct_api_provider",
+    error_cause: completed ? null : errorCauseFor(errorCode),
     suggested_action: completed ? null : suggestedAction(errorCode, provider, cfg),
     disclosure_note: `Selected files were sent to ${cfg.display_name} through direct API auth.`,
     result: completed ? execution.parsed.result : null,
@@ -580,8 +604,14 @@ async function persistRecordBestEffort(record, env = process.env) {
 }
 
 async function cmdDoctor(options) {
-  const providers = await loadProviders();
   const provider = options.provider;
+  let providers;
+  try {
+    providers = await loadProviders();
+  } catch (e) {
+    printJson(providersConfigErrorFields(e, provider ?? null));
+    process.exit(1);
+  }
   if (!provider) throw new Error("bad_args: --provider is required");
   const cfg = providerConfig(providers, provider);
   printJson(doctorFields(provider, cfg));
@@ -603,7 +633,7 @@ async function cmdRun(options) {
     try {
       providers = await loadProviders();
     } catch (e) {
-      throw runConfigError(`config_error: providers config unreadable: ${e.message}`);
+      throw runConfigError(`config_error: ${providersConfigErrorMessage(e)}`);
     }
     try {
       cfg = providerConfig(providers, provider);
@@ -653,7 +683,19 @@ async function main() {
   if (cmd === "doctor" || cmd === "ping") return cmdDoctor(options);
   if (cmd === "run") return cmdRun(options);
   if (cmd === "help" || cmd === "--help" || cmd === "-h") {
-    printJson({ ok: true, commands: ["doctor", "ping", "run"], providers: Object.keys(await loadProviders()) });
+    let providers;
+    try {
+      providers = await loadProviders();
+    } catch (e) {
+      printJson({
+        ok: false,
+        commands: ["doctor", "ping", "run"],
+        providers: [],
+        ...providersConfigErrorFields(e),
+      });
+      process.exit(1);
+    }
+    printJson({ ok: true, commands: ["doctor", "ping", "run"], providers: Object.keys(providers) });
     return;
   }
   throw new Error(`unknown_command:${cmd}`);

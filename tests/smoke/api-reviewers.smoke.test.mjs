@@ -100,6 +100,46 @@ test("doctor reports GLM compatibility alias without leaking value", async () =>
   assert.doesNotMatch(result.stdout, /secret-test-value/);
 });
 
+test("doctor malformed providers config returns structured diagnostic", async () => {
+  const pluginRoot = makeInstalledApiReviewersRoot();
+  const companion = path.join(pluginRoot, "scripts", "api-reviewer.mjs");
+  writeFileSync(path.join(pluginRoot, "config", "providers.json"), "{not json\n");
+  const result = await run(["doctor", "--provider", "glm"], {
+    companion,
+    env: { ZAI_API_KEY: "secret-test-value" },
+  });
+
+  assert.equal(result.status, 1);
+  const parsed = parseJson(result.stdout);
+  assert.equal(parsed.provider, "glm");
+  assert.equal(parsed.status, "config_error");
+  assert.equal(parsed.ready, false);
+  assert.match(parsed.error_message, /providers config unreadable/);
+  assert.match(parsed.next_action, /providers\.json/);
+  assert.doesNotMatch(result.stdout, /secret-test-value/);
+  assert.doesNotMatch(result.stdout, /^\{\s*"ok": false,\s*"error"/m);
+});
+
+test("help malformed providers config returns structured diagnostic", async () => {
+  const pluginRoot = makeInstalledApiReviewersRoot();
+  const companion = path.join(pluginRoot, "scripts", "api-reviewer.mjs");
+  writeFileSync(path.join(pluginRoot, "config", "providers.json"), "{not json\n");
+  const result = await run(["help"], {
+    companion,
+    env: { DEEPSEEK_API_KEY: "secret-test-value" },
+  });
+
+  assert.equal(result.status, 1);
+  const parsed = parseJson(result.stdout);
+  assert.equal(parsed.ok, false);
+  assert.equal(parsed.status, "config_error");
+  assert.deepEqual(parsed.commands, ["doctor", "ping", "run"]);
+  assert.deepEqual(parsed.providers, []);
+  assert.match(parsed.error_message, /providers config unreadable/);
+  assert.doesNotMatch(result.stdout, /secret-test-value/);
+  assert.doesNotMatch(result.stdout, /^\{\s*"ok": false,\s*"error"/m);
+});
+
 test("high-capability provider defaults preserve large review output budgets", () => {
   const providers = parseJson(
     execFileSync(process.execPath, [
@@ -286,6 +326,8 @@ test("run malformed providers config returns structured JobRecord", async () => 
   assert.equal(record.status, "failed");
   assert.equal(record.provider, "glm");
   assert.equal(record.error_code, "config_error");
+  assert.equal(record.error_cause, "provider_config");
+  assert.match(record.suggested_action, /providers\.json/);
   assert.match(record.error_message, /providers config unreadable/);
   assert.doesNotMatch(result.stdout, /secret-test-value/);
   assert.doesNotMatch(result.stdout, /^\{\s*"ok": false/m);
