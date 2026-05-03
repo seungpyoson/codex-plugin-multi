@@ -372,6 +372,7 @@ test("kimi foreground review step-limit exhaustion returns actionable JobRecord"
     env: {
       KIMI_MOCK_ASSERT_MAX_STEPS_PER_TURN: "48",
       KIMI_MOCK_STEP_LIMIT: "1",
+      KIMI_MOCK_STEP_LIMIT_PREFIX_JSON: "1",
     },
   });
   assert.equal(result.status, 2);
@@ -380,6 +381,7 @@ test("kimi foreground review step-limit exhaustion returns actionable JobRecord"
   assert.equal(record.mode, "custom-review");
   assert.equal(record.status, "failed");
   assert.equal(record.error_code, "step_limit_exceeded");
+  assert.equal(record.kimi_session_id, KIMI_SESSION_ID);
   assert.match(record.error_message, /Max number of steps reached: 1/);
   assert.match(record.suggested_action, /higher step budget/i);
   assert.match(record.suggested_action, /narrower scope/i);
@@ -506,6 +508,41 @@ test("kimi background review preserves configured max-step budget outside public
   assert.equal(existsSync(paths.runtimeOptionsPath), true);
 }));
 
+test("kimi background review step-limit exhaustion preserves private max-step budget", () => withRepo((cwd) => {
+  const dataDir = mkdtempSync(path.join(tmpdir(), "kimi-background-step-limit-data-"));
+  const launched = runCompanion([
+    "run",
+    "--mode",
+    "custom-review",
+    "--cwd",
+    cwd,
+    "--scope-paths",
+    "seed.txt",
+    "--background",
+    "--max-steps-per-turn",
+    "48",
+    "--",
+    "Review this scope.",
+  ], {
+    cwd,
+    dataDir,
+    env: {
+      KIMI_MOCK_ASSERT_MAX_STEPS_PER_TURN: "48",
+      KIMI_MOCK_STEP_LIMIT: "1",
+      KIMI_MOCK_STEP_LIMIT_PREFIX_JSON: "1",
+    },
+  });
+  assert.equal(launched.status, 0, launched.stderr);
+  const payload = parseJson(launched.stdout);
+  assert.equal(payload.event, "launched");
+
+  const record = waitForTerminalRecord(dataDir, payload.job_id);
+  assert.equal(record.status, "failed");
+  assert.equal(record.error_code, "step_limit_exceeded");
+  assert.equal(record.kimi_session_id, KIMI_SESSION_ID);
+  assert.equal("max_steps_per_turn" in record, false);
+}));
+
 test("kimi continue reuses prior private max-step budget without JobRecord drift", () => withRepo((cwd) => {
   const dataDir = mkdtempSync(path.join(tmpdir(), "kimi-continue-max-steps-data-"));
   const first = runCompanion([
@@ -549,6 +586,122 @@ test("kimi continue reuses prior private max-step budget without JobRecord drift
   const continuedRecord = parseJson(continued.stdout);
   assert.equal(continuedRecord.status, "completed");
   assert.equal(continuedRecord.parent_job_id, firstRecord.job_id);
+  assert.equal("max_steps_per_turn" in continuedRecord, false);
+}));
+
+test("kimi continue resumes from step-limit failure and reuses private max-step budget", () => withRepo((cwd) => {
+  const dataDir = mkdtempSync(path.join(tmpdir(), "kimi-continue-step-limit-data-"));
+  const first = runCompanion([
+    "run",
+    "--mode",
+    "custom-review",
+    "--cwd",
+    cwd,
+    "--scope-paths",
+    "seed.txt",
+    "--foreground",
+    "--max-steps-per-turn",
+    "48",
+    "--",
+    "Review this scope.",
+  ], {
+    cwd,
+    dataDir,
+    env: {
+      KIMI_MOCK_ASSERT_MAX_STEPS_PER_TURN: "48",
+      KIMI_MOCK_STEP_LIMIT: "1",
+      KIMI_MOCK_STEP_LIMIT_PREFIX_JSON: "1",
+      KIMI_MOCK_STEP_LIMIT_RESUME_ON_STDOUT: "1",
+    },
+  });
+  assert.equal(first.status, 2, first.stderr);
+  const firstRecord = parseJson(first.stdout);
+  assert.equal(firstRecord.status, "failed");
+  assert.equal(firstRecord.error_code, "step_limit_exceeded");
+  assert.equal(firstRecord.kimi_session_id, KIMI_SESSION_ID);
+  assert.equal("max_steps_per_turn" in firstRecord, false);
+
+  const continued = runCompanion([
+    "continue",
+    "--job",
+    firstRecord.job_id,
+    "--cwd",
+    cwd,
+    "--foreground",
+    "--",
+    "Continue this review.",
+  ], {
+    cwd,
+    dataDir,
+    env: {
+      KIMI_MOCK_ASSERT_MAX_STEPS_PER_TURN: "48",
+      KIMI_MOCK_ASSERT_RESUME_ID: KIMI_SESSION_ID,
+    },
+  });
+  assert.equal(continued.status, 0, continued.stderr);
+  const continuedRecord = parseJson(continued.stdout);
+  assert.equal(continuedRecord.status, "completed");
+  assert.equal(continuedRecord.parent_job_id, firstRecord.job_id);
+  assert.equal(continuedRecord.resume_chain[0], KIMI_SESSION_ID);
+  assert.equal(continuedRecord.kimi_session_id, KIMI_RESUMED_SESSION_ID);
+  assert.equal("max_steps_per_turn" in continuedRecord, false);
+}));
+
+test("kimi background continue resumes from step-limit failure", () => withRepo((cwd) => {
+  const dataDir = mkdtempSync(path.join(tmpdir(), "kimi-background-continue-step-limit-data-"));
+  const first = runCompanion([
+    "run",
+    "--mode",
+    "custom-review",
+    "--cwd",
+    cwd,
+    "--scope-paths",
+    "seed.txt",
+    "--foreground",
+    "--max-steps-per-turn",
+    "48",
+    "--",
+    "Review this scope.",
+  ], {
+    cwd,
+    dataDir,
+    env: {
+      KIMI_MOCK_ASSERT_MAX_STEPS_PER_TURN: "48",
+      KIMI_MOCK_STEP_LIMIT: "1",
+      KIMI_MOCK_STEP_LIMIT_PREFIX_JSON: "1",
+    },
+  });
+  assert.equal(first.status, 2, first.stderr);
+  const firstRecord = parseJson(first.stdout);
+  assert.equal(firstRecord.error_code, "step_limit_exceeded");
+  assert.equal(firstRecord.kimi_session_id, KIMI_SESSION_ID);
+
+  const launched = runCompanion([
+    "continue",
+    "--job",
+    firstRecord.job_id,
+    "--cwd",
+    cwd,
+    "--background",
+    "--",
+    "Continue this review.",
+  ], {
+    cwd,
+    dataDir,
+    env: {
+      KIMI_MOCK_ASSERT_MAX_STEPS_PER_TURN: "48",
+      KIMI_MOCK_ASSERT_RESUME_ID: KIMI_SESSION_ID,
+    },
+  });
+  assert.equal(launched.status, 0, launched.stderr);
+  const payload = parseJson(launched.stdout);
+  assert.equal(payload.event, "launched");
+
+  const continuedRecord = waitForTerminalRecord(dataDir, payload.job_id);
+  assert.equal(continuedRecord.status, "completed");
+  assert.equal(continuedRecord.parent_job_id, firstRecord.job_id);
+  assert.equal(continuedRecord.resume_chain[0], KIMI_SESSION_ID);
+  assert.equal(continuedRecord.kimi_session_id, KIMI_RESUMED_SESSION_ID);
   assert.equal("max_steps_per_turn" in continuedRecord, false);
 }));
 
