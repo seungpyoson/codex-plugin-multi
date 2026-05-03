@@ -42,40 +42,50 @@ const CONTENT_RECEIVED_ERROR_CODES = Object.freeze(new Set([
   "timeout",
 ]));
 
+const SENT_DISCLOSURE_BY_STATUS = Object.freeze({
+  completed: (provider) => `Selected source content was sent to ${provider} for external review.`,
+  running: (provider) => `Selected source content was sent to ${provider} for external review; the run is in progress.`,
+  cancelled: (provider) => `Selected source content was sent to ${provider} for external review; the operator cancelled the run before it completed.`,
+  stale: (provider) => `Selected source content was sent to ${provider} for external review; the run became stale before completion.`,
+});
+
+const NOT_SENT_DISCLOSURE_BY_STATUS = Object.freeze({
+  cancelled: (provider) => `Selected source content was not sent to ${provider}; the operator cancelled the run before the target process was started.`,
+});
+
+const NOT_SENT_DISCLOSURE_BY_ERROR = Object.freeze({
+  scope_failed: (provider) => `Selected source content was not sent to ${provider}; the review scope was rejected before the target process was started.`,
+  spawn_failed: (provider) => `Selected source content was not sent to ${provider}; the target process was not spawned.`,
+});
+
+const UNKNOWN_DISCLOSURE_BY_STATUS = Object.freeze({
+  stale: (provider) => `Selected source content may have been sent to ${provider}; the run became stale before completion.`,
+});
+
 export function externalReviewDisclosure(provider, status, sourceContentTransmission, errorCode = null) {
-  if (sourceContentTransmission === SOURCE_CONTENT_TRANSMISSION.MAY_BE_SENT) {
-    return `Selected source content may be sent to ${provider} for external review.`;
+  switch (sourceContentTransmission) {
+    case SOURCE_CONTENT_TRANSMISSION.MAY_BE_SENT:
+      return `Selected source content may be sent to ${provider} for external review.`;
+    case SOURCE_CONTENT_TRANSMISSION.SENT:
+      return (SENT_DISCLOSURE_BY_STATUS[status] ?? sentWithoutCleanResult)(provider);
+    case SOURCE_CONTENT_TRANSMISSION.NOT_SENT:
+      return (NOT_SENT_DISCLOSURE_BY_STATUS[status]
+        ?? NOT_SENT_DISCLOSURE_BY_ERROR[errorCode]
+        ?? notSentTargetNotStarted)(provider);
+    default:
+      return (UNKNOWN_DISCLOSURE_BY_STATUS[status] ?? unknownWithoutCleanResult)(provider);
   }
-  if (sourceContentTransmission === SOURCE_CONTENT_TRANSMISSION.SENT && status === "completed") {
-    return `Selected source content was sent to ${provider} for external review.`;
-  }
-  if (sourceContentTransmission === SOURCE_CONTENT_TRANSMISSION.SENT && status === "running") {
-    return `Selected source content was sent to ${provider} for external review; the run is in progress.`;
-  }
-  if (sourceContentTransmission === SOURCE_CONTENT_TRANSMISSION.SENT && status === "cancelled") {
-    return `Selected source content was sent to ${provider} for external review; the operator cancelled the run before it completed.`;
-  }
-  if (sourceContentTransmission === SOURCE_CONTENT_TRANSMISSION.SENT && status === "stale") {
-    return `Selected source content was sent to ${provider} for external review; the run became stale before completion.`;
-  }
-  if (sourceContentTransmission === SOURCE_CONTENT_TRANSMISSION.SENT) {
-    return `Selected source content was sent to ${provider} for external review, but the run ended before a clean result was produced.`;
-  }
-  if (sourceContentTransmission === SOURCE_CONTENT_TRANSMISSION.NOT_SENT && status === "cancelled") {
-    return `Selected source content was not sent to ${provider}; the operator cancelled the run before the target process was started.`;
-  }
-  if (sourceContentTransmission === SOURCE_CONTENT_TRANSMISSION.NOT_SENT && errorCode === "scope_failed") {
-    return `Selected source content was not sent to ${provider}; the review scope was rejected before the target process was started.`;
-  }
-  if (sourceContentTransmission === SOURCE_CONTENT_TRANSMISSION.NOT_SENT && errorCode === "spawn_failed") {
-    return `Selected source content was not sent to ${provider}; the target process was not spawned.`;
-  }
-  if (sourceContentTransmission === SOURCE_CONTENT_TRANSMISSION.NOT_SENT) {
-    return `Selected source content was not sent to ${provider}; the target process was not started.`;
-  }
-  if (status === "stale") {
-    return `Selected source content may have been sent to ${provider}; the run became stale before completion.`;
-  }
+}
+
+function sentWithoutCleanResult(provider) {
+  return `Selected source content was sent to ${provider} for external review, but the run ended before a clean result was produced.`;
+}
+
+function notSentTargetNotStarted(provider) {
+  return `Selected source content was not sent to ${provider}; the target process was not started.`;
+}
+
+function unknownWithoutCleanResult(provider) {
   return `Selected source content may have been sent to ${provider}; the run ended before a clean result was produced.`;
 }
 
