@@ -62,3 +62,19 @@ test("plugin packaging copies expose the canonical helper behavior", async () =>
     );
   }
 });
+
+test("external-review plugin copies keep stale no-pid transmission unknown", async () => {
+  const modules = await Promise.all(
+    COMPANION_PLUGIN_TARGETS.map((plugin) =>
+      import(`../../plugins/${plugin}/scripts/lib/external-review.mjs`)
+    )
+  );
+  for (const mod of modules) {
+    assert.equal(mod.sourceContentTransmissionForExecution({
+      status: "stale",
+      errorCode: "stale_active_job",
+      pidInfo: null,
+      priorStatus: "queued",
+    }), mod.SOURCE_CONTENT_TRANSMISSION.UNKNOWN);
+  }
+});
