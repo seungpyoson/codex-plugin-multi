@@ -4,7 +4,14 @@
     "auth_mode": "api_key",
     "env_keys": ["DEEPSEEK_API_KEY"],
     "base_url": "https://api.deepseek.com",
-    "model": "deepseek-v4-flash"
+    "model": "deepseek-v4-pro",
+    "request_defaults": {
+      "thinking": {
+        "type": "enabled"
+      },
+      "reasoning_effort": "max",
+      "max_tokens": 65536
+    }
   },
   "glm": {
     "display_name": "GLM",
@@ -14,8 +21,9 @@
     "model": "glm-5.1",
     "request_defaults": {
       "thinking": {
-        "type": "disabled"
-      }
+        "type": "enabled"
+      },
+      "max_tokens": 131072
     }
   }
 }

@@ -1,18 +1,21 @@
 #!/usr/bin/env node
+import { spawnSync } from "node:child_process";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
-import { dirname, resolve, relative } from "node:path";
+import { dirname, isAbsolute, resolve, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import { randomUUID } from "node:crypto";
-import { cleanGitEnv } from "../../claude/scripts/lib/git-env.mjs";
-import { runCommand } from "../../claude/scripts/lib/process.mjs";
+
+import { cleanGitEnv } from "./lib/git-env.mjs";
 
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 const PLUGIN_ROOT = resolve(SCRIPT_DIR, "..");
-const REPO_ROOT = resolve(PLUGIN_ROOT, "..", "..");
 const PROVIDERS_PATH = resolve(PLUGIN_ROOT, "config/providers.json");
 const VALID_MODES = new Set(["review", "adversarial-review", "custom-review"]);
 const VALID_AUTH_MODES = new Set(["api_key", "auto"]);
+const ALLOWED_REQUEST_DEFAULT_KEYS = new Set(["thinking", "reasoning_effort", "max_tokens", "top_p", "stop"]);
+// Avoid corrupting structured fields when a broken local env has a tiny API-key placeholder.
+const MIN_SECRET_REDACTION_LENGTH = 8;
 
 function printJson(obj) {
   process.stdout.write(`${JSON.stringify(obj, null, 2)}\n`);
@@ -55,6 +58,44 @@ function providerConfig(providers, name) {
   return cfg;
 }
 
+function fallbackProviderConfig(provider) {
+  const displayName = provider ? String(provider) : "API Reviewers";
+  return {
+    display_name: displayName,
+    auth_mode: "api_key",
+    env_keys: [],
+    base_url: null,
+    model: null,
+  };
+}
+
+function runBadArgs(message) {
+  const error = new Error(message);
+  error.apiReviewersReason = "bad_args";
+  return error;
+}
+
+function runConfigError(message) {
+  const error = new Error(message);
+  error.apiReviewersReason = "config_error";
+  return error;
+}
+
+function providersConfigErrorMessage(error) {
+  return `providers config unreadable: ${error.message}`;
+}
+
+function providersConfigErrorFields(error, provider = null) {
+  return {
+    provider,
+    status: "config_error",
+    ready: false,
+    summary: "API Reviewers providers config is unreadable.",
+    next_action: "Reinstall or repair plugins/api-reviewers/config/providers.json and retry.",
+    error_message: providersConfigErrorMessage(error),
+  };
+}
+
 function selectedCredential(cfg, env = process.env) {
   for (const keyName of cfg.env_keys ?? []) {
     if (typeof env[keyName] === "string" && env[keyName].length > 0) {
@@ -64,15 +105,69 @@ function selectedCredential(cfg, env = process.env) {
   return { keyName: null, value: null };
 }
 
+function parsePositiveIntegerEnv(env, name, label) {
+  const raw = env[name];
+  if (raw === undefined || raw === null || raw === "") return { ok: true, value: null };
+  const parsed = Number(raw);
+  if (!Number.isSafeInteger(parsed) || parsed <= 0) {
+    return {
+      ok: false,
+      error: `${name} must be a positive integer number of ${label}; got ${JSON.stringify(raw)}`,
+    };
+  }
+  return { ok: true, value: parsed };
+}
+
+function parseMaxTokensOverride(env = process.env) {
+  return parsePositiveIntegerEnv(env, "API_REVIEWERS_MAX_TOKENS", "tokens");
+}
+
+function parseProviderTimeoutMs(env = process.env) {
+  const parsed = parsePositiveIntegerEnv(env, "API_REVIEWERS_TIMEOUT_MS", "milliseconds");
+  return parsed.value === null ? { ok: true, value: 120000 } : parsed;
+}
+
+function applyRequestDefaults(requestBody, requestDefaults = {}) {
+  const entries = Object.entries(requestDefaults);
+  for (const [key] of entries) {
+    if (!ALLOWED_REQUEST_DEFAULT_KEYS.has(key)) {
+      return { ok: false, error: `disallowed_request_default:${key}` };
+    }
+  }
+  for (const [key, value] of entries) {
+    requestBody[key] = value;
+  }
+  return { ok: true };
+}
+
 function redactor(env = process.env) {
   const secrets = Object.entries(env)
-    .filter(([name, value]) => /(?:^|_)API_KEY$/.test(name) && typeof value === "string" && value.length > 0)
+    .filter(([name, value]) => (
+      /(?:^|_)API_KEY$/.test(name) &&
+      typeof value === "string" &&
+      value.length >= MIN_SECRET_REDACTION_LENGTH
+    ))
     .map(([, value]) => value);
   return (text) => {
     let out = String(text ?? "");
     for (const secret of secrets) out = out.split(secret).join("[REDACTED]");
     return out;
   };
+}
+
+function redactValue(value, redact) {
+  if (typeof value === "string") return redact(value);
+  if (Array.isArray(value)) return value.map((item) => redactValue(item, redact));
+  if (value && typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value).map(([key, entryValue]) => [key, redactValue(entryValue, redact)])
+    );
+  }
+  return value;
+}
+
+function redactRecord(record, env = process.env) {
+  return redactValue(record, redactor(env));
 }
 
 function baseUrlFor(cfg) {
@@ -120,10 +215,47 @@ function doctorFields(provider, cfg, env = process.env) {
   };
 }
 
-function git(args, cwd) {
+function runCommand(command, args = [], options = {}) {
+  const result = spawnSync(command, args, {
+    cwd: options.cwd,
+    env: options.env,
+    encoding: "utf8",
+    input: options.input,
+    maxBuffer: options.maxBuffer,
+    stdio: options.stdio ?? "pipe",
+    shell: false,
+    windowsHide: true,
+  });
+
+  return {
+    command,
+    args,
+    status: result.status ?? (result.error || result.signal ? 1 : 0),
+    signal: result.signal ?? null,
+    stdout: result.stdout ?? "",
+    stderr: result.stderr ?? "",
+    error: result.error ?? null,
+  };
+}
+
+function git(args, cwd, options = {}) {
   const res = runCommand("git", args, { cwd, env: cleanGitEnv() });
-  if (res.status !== 0) return null;
+  if (res.error) throw new Error(`git_failed:${res.error.message}`);
+  if (res.signal) throw new Error(`git_failed:signal:${res.signal}`);
+  if (res.status !== 0) {
+    if (options.allowFailure) return null;
+    const detail = String(res.stderr || res.stdout || `git exited with status ${res.status}`).trim();
+    throw new Error(`git_failed:${detail}`);
+  }
   return res.stdout.trim();
+}
+
+function bestEffortWorkspaceRoot(cwd) {
+  try {
+    return git(["rev-parse", "--show-toplevel"], cwd, { allowFailure: true }) || cwd;
+  } catch {
+    return cwd;
+  }
 }
 
 function splitScopePaths(value) {
@@ -154,7 +286,7 @@ function selectedScopePaths(scope, options, cwd) {
 async function readScopeFiles(workspaceRoot, relPaths) {
   const files = [];
   for (const relPath of relPaths) {
-    if (relPath.includes("..") || relPath.startsWith("/") || relPath.includes("\\")) {
+    if (relPath.includes("..") || isAbsolute(relPath) || relPath.includes("\\")) {
       throw new Error(`unsafe_scope_path:${relPath}`);
     }
     const abs = resolve(workspaceRoot, relPath);
@@ -173,7 +305,7 @@ async function readScopeFiles(workspaceRoot, relPaths) {
 
 async function collectScope(options) {
   const cwd = resolve(options.cwd ?? process.cwd());
-  const workspaceRoot = git(["rev-parse", "--show-toplevel"], cwd) || cwd;
+  const workspaceRoot = git(["rev-parse", "--show-toplevel"], cwd, { allowFailure: true }) || cwd;
   const scope = scopeName(options);
   const scopeBase = scope === "branch-diff" ? options["scope-base"] ?? "main" : null;
   const relPaths = selectedScopePaths(scope, options, cwd);
@@ -207,10 +339,46 @@ function promptFor(mode, userPrompt, scopeInfo) {
   ].filter(Boolean).join("\n\n");
 }
 
-function mockProviderExecution(cfg, prompt, credential, env) {
+function requestFieldMatches(actual, expected) {
+  if (Object.is(actual, expected)) return true;
+  if (Array.isArray(actual) || Array.isArray(expected)) {
+    if (!Array.isArray(actual) || !Array.isArray(expected) || actual.length !== expected.length) return false;
+    return actual.every((item, index) => requestFieldMatches(item, expected[index]));
+  }
+  if (
+    actual && expected &&
+    typeof actual === "object" &&
+    typeof expected === "object"
+  ) {
+    const actualKeys = Object.keys(actual).sort((a, b) => a.localeCompare(b));
+    const expectedKeys = Object.keys(expected).sort((a, b) => a.localeCompare(b));
+    if (!requestFieldMatches(actualKeys, expectedKeys)) return false;
+    return actualKeys.every((key) => requestFieldMatches(actual[key], expected[key]));
+  }
+  return false;
+}
+
+function mockProviderExecution(cfg, prompt, credential, env, requestBody) {
   const expectedPromptText = env.API_REVIEWERS_MOCK_ASSERT_PROMPT_INCLUDES;
   if (expectedPromptText && !prompt.includes(expectedPromptText)) {
     return providerFailure("mock_assertion_failed", `prompt missing expected text: ${expectedPromptText}`, 200, null, false);
+  }
+  if (env.API_REVIEWERS_MOCK_ASSERT_REQUEST_BODY) {
+    const parsedExpected = parseJson(env.API_REVIEWERS_MOCK_ASSERT_REQUEST_BODY);
+    if (!parsedExpected.ok || !parsedExpected.value || typeof parsedExpected.value !== "object" || Array.isArray(parsedExpected.value)) {
+      return providerFailure("mock_assertion_failed", "API_REVIEWERS_MOCK_ASSERT_REQUEST_BODY must be a JSON object", 200, null, false);
+    }
+    for (const [key, expected] of Object.entries(parsedExpected.value)) {
+      if (!requestFieldMatches(requestBody[key], expected)) {
+        return providerFailure(
+          "mock_assertion_failed",
+          `request body field ${key} expected ${JSON.stringify(expected)} but got ${JSON.stringify(requestBody[key])}`,
+          200,
+          null,
+          false
+        );
+      }
+    }
   }
   const parsed = parseJson(env.API_REVIEWERS_MOCK_RESPONSE);
   if (!parsed.ok) return providerFailure("malformed_response", parsed.error, 200, null, false);
@@ -234,6 +402,14 @@ function mockProviderExecution(cfg, prompt, credential, env) {
 }
 
 async function callProvider(provider, cfg, prompt, env = process.env) {
+  const maxTokensOverride = parseMaxTokensOverride(env);
+  if (!maxTokensOverride.ok) {
+    return providerFailure("bad_args", maxTokensOverride.error, null, null, false);
+  }
+  const timeoutMs = parseProviderTimeoutMs(env);
+  if (!timeoutMs.ok) {
+    return providerFailure("bad_args", timeoutMs.error, null, null, false);
+  }
   const credential = selectedCredential(cfg, env);
   if (!credential.value) {
     return providerFailure("missing_key", `${cfg.display_name} API key is not available`, null, null, false);
@@ -243,14 +419,21 @@ async function callProvider(provider, cfg, prompt, env = process.env) {
     model: cfg.model,
     messages: [{ role: "user", content: prompt }],
     temperature: 0,
-    max_tokens: Number(env.API_REVIEWERS_MAX_TOKENS ?? "4096"),
   };
-  if (cfg.request_defaults) Object.assign(requestBody, cfg.request_defaults);
+  const defaultsResult = applyRequestDefaults(requestBody, cfg.request_defaults);
+  if (!defaultsResult.ok) {
+    return providerFailure("bad_args", defaultsResult.error, null, null, false);
+  }
+  if (maxTokensOverride.value !== null) {
+    requestBody.max_tokens = maxTokensOverride.value;
+  } else if (!Object.hasOwn(requestBody, "max_tokens")) {
+    requestBody.max_tokens = 4096;
+  }
   if (env.API_REVIEWERS_MOCK_RESPONSE) {
-    return mockProviderExecution(cfg, prompt, credential, env);
+    return mockProviderExecution(cfg, prompt, credential, env, requestBody);
   }
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), Number(env.API_REVIEWERS_TIMEOUT_MS ?? "120000"));
+  const timer = setTimeout(() => controller.abort(), timeoutMs.value);
   const redact = redactor(env);
   try {
     const response = await fetch(endpoint, {
@@ -350,6 +533,8 @@ function providerFailure(reason, message, httpStatus, raw = null, payloadSent = 
 }
 
 function suggestedAction(errorCode, provider, cfg, errorMessage = "", env = process.env) {
+  if (errorCode === "bad_args") return "Correct the api-reviewer command arguments and retry.";
+  if (errorCode === "config_error") return "Reinstall or repair plugins/api-reviewers/config/providers.json and retry.";
   if (errorCode === "missing_key") return `Expose one of these key names to Codex: ${(cfg.env_keys ?? []).join(", ")}.`;
   if (errorCode === "auth_rejected") return `Check the ${cfg.display_name} API key and billing/plan for ${cfg.model}.`;
   if (errorCode === "rate_limited") return `Wait and retry, or lower concurrency for ${provider}.`;
@@ -384,6 +569,13 @@ function directApiTransmission(completed, payloadSent) {
   if (completed || payloadSent === true) return "sent";
   if (payloadSent === false) return "not_sent";
   return "unknown";
+}
+
+function errorCauseFor(errorCode) {
+  if (errorCode === "bad_args") return "caller";
+  if (errorCode === "config_error") return "provider_config";
+  if (errorCode === "scope_failed") return "scope_resolution";
+  return "direct_api_provider";
 }
 
 function buildRecord({ provider, cfg, mode, options, scopeInfo, execution, startedAt, endedAt }) {
@@ -439,7 +631,7 @@ function buildRecord({ provider, cfg, mode, options, scopeInfo, execution, start
     error_code: errorCode,
     error_message: errorMessage,
     error_summary: completed ? null : errorMessage || errorCode,
-    error_cause: completed ? null : "direct_api_provider",
+    error_cause: completed ? null : errorCauseFor(errorCode),
     suggested_action: completed ? null : suggestedAction(errorCode, provider, cfg, errorMessage),
     external_review: externalReview,
     disclosure_note: disclosure,
@@ -451,7 +643,7 @@ function buildRecord({ provider, cfg, mode, options, scopeInfo, execution, start
     usage: execution.parsed?.usage ?? null,
     auth_mode: cfg.auth_mode,
     credential_ref: execution.credential_ref ?? null,
-    endpoint: execution.endpoint ?? baseUrlFor(cfg),
+    endpoint: execution.endpoint ?? (cfg.base_url ? baseUrlFor(cfg) : null),
     http_status: execution.http_status ?? null,
     raw_model: execution.parsed?.raw_model ?? null,
     schema_version: 8,
@@ -465,42 +657,75 @@ async function persistRecord(record, env = process.env) {
   await writeFile(resolve(dir, "meta.json"), `${JSON.stringify(record, null, 2)}\n`, { mode: 0o600 });
 }
 
+async function persistRecordBestEffort(record, env = process.env) {
+  try {
+    await persistRecord(record, env);
+    return record;
+  } catch (e) {
+    const detail = redactor(env)(`JobRecord persistence failed: ${e?.message ?? String(e)}`);
+    return {
+      ...record,
+      disclosure_note: record.disclosure_note ? `${record.disclosure_note} ${detail}` : detail,
+    };
+  }
+}
+
 async function cmdDoctor(options) {
-  const providers = await loadProviders();
   const provider = options.provider;
+  let providers;
+  try {
+    providers = await loadProviders();
+  } catch (e) {
+    printJson(providersConfigErrorFields(e, provider ?? null));
+    process.exit(1);
+  }
   if (!provider) throw new Error("bad_args: --provider is required");
   const cfg = providerConfig(providers, provider);
   printJson(doctorFields(provider, cfg));
 }
 
 async function cmdRun(options) {
-  const providers = await loadProviders();
-  const provider = options.provider;
-  if (!provider) throw new Error("bad_args: --provider is required");
+  const provider = options.provider ?? null;
   const mode = options.mode ?? "review";
-  if (!VALID_MODES.has(mode)) throw new Error(`bad_args: unsupported --mode ${mode}`);
-  const cfg = providerConfig(providers, provider);
-  if (cfg.auth_mode !== "api_key" && cfg.auth_mode !== "auto") {
-    throw new Error(`bad_args: ${provider} auth_mode must be api_key or auto`);
-  }
   const startedAt = new Date().toISOString();
   const jobId = `job_${randomUUID()}`;
   const runOptions = { ...options, jobId };
+  let providers;
+  let cfg;
   let scopeInfo;
   let execution;
   try {
+    if (!provider) throw runBadArgs("bad_args: --provider is required");
+    if (!VALID_MODES.has(mode)) throw runBadArgs(`bad_args: unsupported --mode ${mode}`);
+    try {
+      providers = await loadProviders();
+    } catch (e) {
+      throw runConfigError(`config_error: ${providersConfigErrorMessage(e)}`);
+    }
+    try {
+      cfg = providerConfig(providers, provider);
+    } catch (e) {
+      throw runBadArgs(e.message);
+    }
+    if (cfg.auth_mode !== "api_key" && cfg.auth_mode !== "auto") {
+      throw runBadArgs(`bad_args: ${provider} auth_mode must be api_key or auto`);
+    }
     scopeInfo = await collectScope({ ...runOptions, mode });
   } catch (e) {
+    const redact = redactor();
+    const reason = e.apiReviewersReason ?? "scope_failed";
+    cfg ??= fallbackProviderConfig(provider);
+    const cwd = resolve(process.cwd());
     scopeInfo = {
-      cwd: resolve(process.cwd()),
-      workspaceRoot: git(["rev-parse", "--show-toplevel"], process.cwd()) || resolve(process.cwd()),
+      cwd,
+      workspaceRoot: bestEffortWorkspaceRoot(cwd),
       scope: options.scope ?? null,
       scope_base: options["scope-base"] ?? null,
       scope_paths: splitScopePaths(options["scope-paths"]),
     };
     execution = {
       exitCode: 1,
-      parsed: { ok: false, reason: "scope_failed", error: e.message },
+      parsed: { ok: false, reason, error: redact(e.message) },
       payload_sent: false,
     };
   }
@@ -511,8 +736,8 @@ async function cmdRun(options) {
       execution = providerFailure("provider_unavailable", redactor(process.env)(e?.message ?? String(e)), null, null, null);
     }
   }
-  const record = buildRecord({
-    provider,
+  const record = redactRecord(buildRecord({
+    provider: provider ?? "api-reviewers",
     cfg,
     mode,
     options: runOptions,
@@ -520,9 +745,9 @@ async function cmdRun(options) {
     execution,
     startedAt,
     endedAt: new Date().toISOString(),
-  });
-  await persistRecord(record);
-  printJson(record);
+  }));
+  const printableRecord = await persistRecordBestEffort(record);
+  printJson(printableRecord);
   process.exit(record.status === "completed" ? 0 : 1);
 }
 
@@ -532,7 +757,19 @@ async function main() {
   if (cmd === "doctor" || cmd === "ping") return cmdDoctor(options);
   if (cmd === "run") return cmdRun(options);
   if (cmd === "help" || cmd === "--help" || cmd === "-h") {
-    printJson({ ok: true, commands: ["doctor", "ping", "run"], providers: Object.keys(await loadProviders()) });
+    let providers;
+    try {
+      providers = await loadProviders();
+    } catch (e) {
+      printJson({
+        ok: false,
+        commands: ["doctor", "ping", "run"],
+        providers: [],
+        ...providersConfigErrorFields(e),
+      });
+      process.exit(1);
+    }
+    printJson({ ok: true, commands: ["doctor", "ping", "run"], providers: Object.keys(providers) });
     return;
   }
   throw new Error(`unknown_command:${cmd}`);
