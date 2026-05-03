@@ -540,7 +540,7 @@ function payloadSentForProviderException(error) {
   if (error?.name === "AbortError") return true;
   const code = error?.code ?? error?.cause?.code ?? null;
   if (code === "ENOTFOUND" || code === "EAI_AGAIN" || code === "ECONNREFUSED" ||
-      code === "EHOSTUNREACH" || code === "ENETUNREACH" || code === "ETIMEDOUT") {
+      code === "EHOSTUNREACH" || code === "ENETUNREACH") {
     return false;
   }
   return null;
@@ -594,7 +594,7 @@ function suggestedAction(errorCode, provider, cfg, errorMessage = "", env = proc
   if (errorCode === "rate_limited") return `Wait and retry, or lower concurrency for ${provider}.`;
   if (errorCode === "timeout") return `The provider did not respond within the timeout window. Retry later, increase API_REVIEWERS_TIMEOUT_MS, or switch reviewer provider.`;
   if (errorCode === "provider_unavailable") {
-    const looksLikeNetworkFailure = /fetch failed|ENOTFOUND|EAI_AGAIN|ECONNREFUSED|EHOSTUNREACH|ENETUNREACH|ETIMEDOUT|network/i.test(errorMessage);
+    const looksLikeNetworkFailure = /fetch failed|ENOTFOUND|EAI_AGAIN|ECONNREFUSED|EHOSTUNREACH|ENETUNREACH|ETIMEDOUT/i.test(errorMessage);
     if (isCodexSandbox(env) && looksLikeNetworkFailure) {
       return `If running inside Codex, set [sandbox_workspace_write].network_access = true in ~/.codex/config.toml, start a fresh Codex session, then retry; or run this direct API reviewer outside sandbox. If network is already enabled, retry later or switch reviewer provider.`;
     }

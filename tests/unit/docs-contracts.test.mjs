@@ -249,8 +249,10 @@ test("README documents Codex sandbox setup and provider-specific failure modes",
   assert.match(readme, /\[sandbox_workspace_write\]/);
   assert.match(readme, /network_access = true/);
   assert.match(readme, /writable_roots/);
+  assert.match(readme, /\/Users\/<you>\/\.kimi\/logs/);
   assert.match(readme, /\/Users\/<you>\/\.kimi/);
   assert.match(readme, /one-off escalation/i);
+  assert.match(readme, /approve only that command/i);
   assert.match(readme, /danger-full-access|dangerously-bypass-approvals-and-sandbox/i);
   assert.match(readme, /do not make[\s\S]*default/i);
   assert.match(readme, /Gemini CLI.*native.*sandbox|native.*Gemini.*sandbox/i);

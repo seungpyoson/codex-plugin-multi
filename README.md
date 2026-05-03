@@ -59,14 +59,14 @@ provider-specific writable root and start a fresh Codex session:
 ```toml
 [sandbox_workspace_write]
 network_access = true
-writable_roots = ["/Users/<you>/.kimi"]
+writable_roots = ["/Users/<you>/.kimi/logs"]
 ```
 
-Use the narrowest root that works for your Kimi installation. Some setups only
-need `/Users/<you>/.kimi/logs`; OAuth/session refreshes may need the full
-`/Users/<you>/.kimi` tree. The companion classifies `.kimi` permission denials
-as a writable-root problem so users see this action instead of a generic auth
-or CLI error.
+Use the narrowest root that works for your Kimi installation. Start with
+`/Users/<you>/.kimi/logs`; if the next denial names an OAuth/session file under
+`/Users/<you>/.kimi`, fall back to the full `/Users/<you>/.kimi` tree. The
+companion classifies `.kimi` permission denials as a writable-root problem so
+users see this action instead of a generic auth or CLI error.
 
 Gemini has a different sandbox interaction: Gemini CLI's native `-s` sandbox can
 fail when launched from inside Codex's outer sandbox. The Gemini companion omits
@@ -75,7 +75,10 @@ keeping the read-only TOML policy, `--approval-mode plan`, `--skip-trust`,
 scoped input, and mutation detection.
 
 If you do not want sandbox-wide network access, use one-off escalation for a
-specific trusted reviewer command instead. Do not make `danger-full-access` or
+specific trusted reviewer command instead. In an interactive Codex session,
+leave `network_access` disabled, run the reviewer command, and when Codex asks
+whether to run that command outside the sandbox, approve only that command. Do
+not persist a broad always-allow rule. Do not make `danger-full-access` or
 `--dangerously-bypass-approvals-and-sandbox` the default; those modes remove
 more protection than the reviewers require.
 

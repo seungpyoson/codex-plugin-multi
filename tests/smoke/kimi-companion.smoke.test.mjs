@@ -251,7 +251,8 @@ process.exit(1);
     assert.equal(parsed.status, "sandbox_blocked");
     assert.equal(parsed.ready, false);
     assert.match(parsed.summary, /Codex sandbox/);
-    assert.match(parsed.next_action, /~\/\.kimi/);
+    assert.match(parsed.next_action, /~\/\.kimi\/logs/);
+    assert.match(parsed.next_action, /fall back to ~\/\.kimi/);
     assert.match(parsed.next_action, /writable_roots/);
     assert.match(parsed.detail, /Operation not permitted/);
   } finally {
@@ -277,7 +278,8 @@ process.exit(1);
     const parsed = parseJson(result.stdout);
     assert.equal(parsed.status, "sandbox_blocked");
     assert.equal(parsed.ready, false);
-    assert.match(parsed.next_action, /~\/\.kimi/);
+    assert.match(parsed.next_action, /~\/\.kimi\/logs/);
+    assert.match(parsed.next_action, /fall back to ~\/\.kimi/);
   } finally {
     rmSync(cwd, { recursive: true, force: true });
   }
@@ -301,6 +303,7 @@ process.exit(1);
     const parsed = parseJson(result.stdout);
     assert.equal(parsed.status, "sandbox_blocked");
     assert.match(parsed.next_action, /writable_roots/);
+    assert.match(parsed.next_action, /~\/\.kimi\/logs/);
   } finally {
     rmSync(cwd, { recursive: true, force: true });
   }
@@ -323,7 +326,8 @@ process.exit(1);
     assert.equal(result.status, 2);
     const parsed = parseJson(result.stdout);
     assert.equal(parsed.status, "sandbox_blocked");
-    assert.match(parsed.next_action, /~\/\.kimi/);
+    assert.match(parsed.next_action, /~\/\.kimi\/logs/);
+    assert.match(parsed.next_action, /fall back to ~\/\.kimi/);
   } finally {
     rmSync(cwd, { recursive: true, force: true });
   }
@@ -396,6 +400,7 @@ process.exit(1);
     const parsed = parseJson(result.stdout);
     assert.equal(parsed.status, "sandbox_blocked");
     assert.match(parsed.next_action, /writable_roots/);
+    assert.match(parsed.next_action, /~\/\.kimi\/logs/);
   } finally {
     rmSync(cwd, { recursive: true, force: true });
   }

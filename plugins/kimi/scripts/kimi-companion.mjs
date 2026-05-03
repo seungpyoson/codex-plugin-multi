@@ -980,7 +980,7 @@ function pingSandboxBlockedFields() {
   return {
     ready: false,
     summary: "Kimi Code CLI is blocked by Codex sandbox access to Kimi state.",
-    next_action: "Add ~/.kimi to [sandbox_workspace_write].writable_roots in ~/.codex/config.toml, keep KIMI_SHARE_DIR unset so Kimi uses its normal auth/config, then start a fresh Codex session and rerun setup. Alternatively, run this check outside sandbox.",
+    next_action: "First add ~/.kimi/logs to [sandbox_workspace_write].writable_roots in ~/.codex/config.toml, keep KIMI_SHARE_DIR unset so Kimi uses its normal auth/config, then start a fresh Codex session and rerun setup. If the next denial is an OAuth/session file under ~/.kimi, fall back to ~/.kimi as the writable root. Alternatively, run this check outside sandbox.",
   };
 }
 

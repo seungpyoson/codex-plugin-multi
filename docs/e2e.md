@@ -19,13 +19,19 @@ needed by the run:
 ```toml
 [sandbox_workspace_write]
 network_access = true
-writable_roots = ["/Users/<you>/.kimi"]
+writable_roots = ["/Users/<you>/.kimi/logs"]
 ```
 
 `network_access = true` is required for DeepSeek and GLM direct API calls. Kimi
 may also need a writable root under `~/.kimi` because the first-party CLI writes
-logs and auth/session state there. If you do not want persistent sandbox network
-access, use one-off escalation for the single trusted E2E command.
+logs and auth/session state there. Start with `/Users/<you>/.kimi/logs`; if the
+next denial names an OAuth/session file, fall back to `/Users/<you>/.kimi`.
+
+If you do not want persistent sandbox network access, use one-off escalation for
+the single trusted E2E command. In an interactive Codex session, keep
+`network_access` disabled, run the E2E/reviewer command, and approve only that
+command when Codex asks whether to run it outside the sandbox. Do not persist a
+broad always-allow rule.
 
 Do not use `danger-full-access` or `--dangerously-bypass-approvals-and-sandbox`
 as the default verification setup. Those modes hide the sandbox behavior this
