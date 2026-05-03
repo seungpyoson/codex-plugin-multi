@@ -88,7 +88,11 @@ export function sourceContentTransmissionForExecution({ status, errorCode, pidIn
   }
   if (status === "stale") {
     if (pidInfo) return SOURCE_CONTENT_TRANSMISSION.SENT;
-    if (priorStatus === "queued") return SOURCE_CONTENT_TRANSMISSION.NOT_SENT;
+    // A stale queued record without pid_info usually means the worker never
+    // reached target spawn, but the running-record handoff after spawn is
+    // best-effort. If that write failed, queued is the last durable status
+    // even though selected content may have reached the target. Keep stale
+    // no-pid cases conservative instead of claiming not_sent.
     return SOURCE_CONTENT_TRANSMISSION.UNKNOWN;
   }
   if (errorCode === "scope_failed" || errorCode === "spawn_failed") {

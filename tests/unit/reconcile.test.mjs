@@ -269,7 +269,7 @@ test("reconcileActiveJobs: legacy active records without external_review keep ru
   }
 });
 
-test("reconcileActiveJobs: legacy queued records without pid_info are marked not sent", () => {
+test("reconcileActiveJobs: legacy queued records without pid_info keep transmission unknown", () => {
   const dir = freshDir();
   try {
     const id = "legacy-queued-without-pid";
@@ -286,8 +286,8 @@ test("reconcileActiveJobs: legacy queued records without pid_info are marked not
     const stale = readJobFileById(dir, id);
     assert.equal(stale.status, "stale");
     assert.equal(stale.external_review.run_kind, "unknown");
-    assert.equal(stale.external_review.source_content_transmission, "not_sent");
-    assert.match(stale.external_review.disclosure, /target process was not started/);
+    assert.equal(stale.external_review.source_content_transmission, "unknown");
+    assert.match(stale.external_review.disclosure, /may have been sent/);
   } finally {
     cleanup(dir);
   }
