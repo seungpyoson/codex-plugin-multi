@@ -208,6 +208,54 @@ function removeJobLogFileIfSafe(cwd, filePath) {
   removeFileIfExists(filePath);
 }
 
+function removeJobSidecarDir(cwd, jobId) {
+  const sidecarDir = path.join(resolveJobsDir(cwd), jobId);
+  if (!isPathWithin(resolveJobsDir(cwd), sidecarDir)) return;
+  try {
+    const stat = fs.lstatSync(sidecarDir);
+    if (stat.isDirectory()) {
+      fs.rmSync(sidecarDir, { recursive: true, force: true });
+      return;
+    }
+    fs.unlinkSync(sidecarDir);
+  } catch (e) {
+    if (e.code === "ENOENT") return;
+    throw e;
+  }
+}
+
+function removeJobTmpFiles(cwd, jobId) {
+  const jobsDir = resolveJobsDir(cwd);
+  let names;
+  try {
+    names = fs.readdirSync(jobsDir);
+  } catch (e) {
+    if (e.code === "ENOENT") return;
+    throw e;
+  }
+  const prefix = `${jobId}.json.`;
+  for (const name of names) {
+    if (!name.startsWith(prefix) || !name.endsWith(".tmp")) continue;
+    removeFileIfExists(path.join(jobsDir, name));
+  }
+}
+
+function removeJobArtifacts(cwd, job) {
+  assertSafeJobId(job.id);
+  for (const cleanup of [
+    () => removeJobFile(resolveJobFile(cwd, job.id)),
+    () => removeJobLogFileIfSafe(cwd, job.logFile),
+    () => removeJobSidecarDir(cwd, job.id),
+    () => removeJobTmpFiles(cwd, job.id),
+  ]) {
+    try {
+      cleanup();
+    } catch {
+      // Retained-history cleanup is best-effort; state persistence is canonical.
+    }
+  }
+}
+
 export function saveState(cwd, state) {
   return withStateLock(cwd, () => saveStateUnlocked(cwd, state));
 }
@@ -501,8 +549,7 @@ function saveStateUnlocked(cwd, state) {
     } catch {
       continue;
     }
-    removeJobFile(resolveJobFile(cwd, job.id));
-    removeJobLogFileIfSafe(cwd, job.logFile);
+    removeJobArtifacts(cwd, job);
   }
 
   // Atomic write: write to a sibling tmp file, then rename. Rename is atomic

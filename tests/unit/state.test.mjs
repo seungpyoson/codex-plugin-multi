@@ -24,6 +24,7 @@ import {
   generateJobId,
 } from "../../plugins/claude/scripts/lib/state.mjs";
 import * as GeminiState from "../../plugins/gemini/scripts/lib/state.mjs";
+import * as KimiState from "../../plugins/kimi/scripts/lib/state.mjs";
 
 // Node's test runner executes tests WITHIN a single file serially by default
 // (subtests only run concurrently under an explicit `test.describe` with
@@ -33,13 +34,16 @@ import * as GeminiState from "../../plugins/gemini/scripts/lib/state.mjs";
 
 let INITIAL_CONFIG;
 let INITIAL_GEMINI_CONFIG;
+let INITIAL_KIMI_CONFIG;
 before(() => {
   INITIAL_CONFIG = { ...getStateConfig() };
   INITIAL_GEMINI_CONFIG = { ...GeminiState.getStateConfig() };
+  INITIAL_KIMI_CONFIG = { ...KimiState.getStateConfig() };
 });
 afterEach(() => {
   configureState(INITIAL_CONFIG);
   GeminiState.configureState(INITIAL_GEMINI_CONFIG);
+  KimiState.configureState(INITIAL_KIMI_CONFIG);
 });
 
 function freshStateDir() {
@@ -69,6 +73,21 @@ function freshGeminiStateDir() {
 
 function cleanupGemini(dir) {
   delete process.env["GEMINI_STATE_TEST_DATA"];
+  rmSync(dir, { recursive: true, force: true });
+}
+
+function freshKimiStateDir() {
+  const dir = mkdtempSync(path.join(tmpdir(), "kimi-state-test-"));
+  process.env["KIMI_STATE_TEST_DATA"] = dir;
+  KimiState.configureState({
+    pluginDataEnv: "KIMI_STATE_TEST_DATA",
+    fallbackStateRootDir: path.join(dir, "fallback"),
+  });
+  return dir;
+}
+
+function cleanupKimi(dir) {
+  delete process.env["KIMI_STATE_TEST_DATA"];
   rmSync(dir, { recursive: true, force: true });
 }
 
@@ -522,7 +541,105 @@ for (const [target, state, fresh, cleanupTarget] of [
     readJobFileById,
   }, freshStateDir, cleanup],
   ["gemini", GeminiState, freshGeminiStateDir, cleanupGemini],
+  ["kimi", KimiState, freshKimiStateDir, cleanupKimi],
 ]) {
+  test(`${target} state: pruning a terminal job removes owned sidecar directory and sibling tmp files`, () => {
+    const dir = fresh();
+    try {
+      const logFile = state.resolveJobLogFile(dir, "drop-job");
+      const jobFile = state.resolveJobFile(dir, "drop-job");
+      const sidecarDir = path.join(path.dirname(jobFile), "drop-job");
+      const siblingTmp = `${jobFile}.${process.pid}.stale.tmp`;
+      state.writeJobFile(dir, "drop-job", { id: "drop-job", status: "completed" });
+      fs.writeFileSync(logFile, "old log", "utf8");
+      fs.mkdirSync(sidecarDir, { recursive: true });
+      fs.writeFileSync(path.join(sidecarDir, "prompt.txt"), "prompt text", "utf8");
+      fs.writeFileSync(path.join(sidecarDir, "runtime-options.json"), "{\"max_steps_per_turn\":32}\n", "utf8");
+      fs.writeFileSync(path.join(sidecarDir, "git-status-before.txt.tmp"), "partial sidecar", "utf8");
+      fs.writeFileSync(siblingTmp, "partial meta", "utf8");
+
+      state.saveState(dir, {
+        jobs: [{ id: "drop-job", updatedAt: "2000-01-01T00:00:00.000Z", logFile }],
+      });
+      state.saveState(dir, { jobs: [] });
+
+      assert.equal(fs.existsSync(jobFile), false);
+      assert.equal(fs.existsSync(logFile), false);
+      assert.equal(fs.existsSync(sidecarDir), false);
+      assert.equal(fs.existsSync(siblingTmp), false);
+    } finally {
+      cleanupTarget(dir);
+    }
+  });
+
+  test(`${target} state: pruning preserves sidecar directory for still-active jobs`, () => {
+    const dir = fresh();
+    try {
+      const jobFile = state.resolveJobFile(dir, "active-job");
+      const sidecarDir = path.join(path.dirname(jobFile), "active-job");
+      state.writeJobFile(dir, "active-job", { id: "active-job", status: "running" });
+      fs.mkdirSync(sidecarDir, { recursive: true });
+      fs.writeFileSync(path.join(sidecarDir, "prompt.txt"), "still needed", "utf8");
+      state.saveState(dir, {
+        jobs: [{ id: "active-job", status: "running", updatedAt: "2000-01-01T00:00:00.000Z" }],
+      });
+
+      state.saveState(dir, { jobs: [] });
+
+      assert.equal(fs.existsSync(jobFile), true);
+      assert.equal(fs.existsSync(path.join(sidecarDir, "prompt.txt")), true);
+      assert.equal(state.listJobs(dir).some((job) => job.id === "active-job" && job.status === "running"), true);
+    } finally {
+      cleanupTarget(dir);
+    }
+  });
+
+  test(`${target} state: artifact cleanup failures do not block state save`, () => {
+    const dir = fresh();
+    try {
+      state.saveState(dir, {
+        jobs: [
+          { id: "drop-dir-json", status: "completed", updatedAt: "2000-01-01T00:00:00.000Z" },
+        ],
+      });
+      fs.mkdirSync(state.resolveJobFile(dir, "drop-dir-json"), { recursive: true });
+
+      assert.doesNotThrow(() => state.saveState(dir, { jobs: [] }));
+      assert.deepEqual(state.listJobs(dir), []);
+      assert.equal(fs.existsSync(state.resolveJobFile(dir, "drop-dir-json")), true);
+    } finally {
+      cleanupTarget(dir);
+    }
+  });
+
+  test(`${target} state: pruning handles file sidecars and directory-shaped tmp files`, () => {
+    const dir = fresh();
+    try {
+      const jobFile = state.resolveJobFile(dir, "drop-file-sidecar");
+      const jobsDir = path.dirname(jobFile);
+      const sidecarPath = path.join(jobsDir, "drop-file-sidecar");
+      const tmpDir = `${jobFile}.${process.pid}.tmp`;
+      const ignoredTmpLikeFile = path.join(jobsDir, "drop-file-sidecar.json.not-tmp");
+      state.saveState(dir, {
+        jobs: [
+          { id: "drop-file-sidecar", status: "completed", updatedAt: "2000-01-01T00:00:00.000Z" },
+        ],
+      });
+      fs.writeFileSync(sidecarPath, "legacy non-directory sidecar", "utf8");
+      fs.mkdirSync(tmpDir);
+      fs.writeFileSync(ignoredTmpLikeFile, "not a tmp suffix", "utf8");
+
+      state.saveState(dir, { jobs: [] });
+
+      assert.deepEqual(state.listJobs(dir), []);
+      assert.equal(fs.existsSync(sidecarPath), false);
+      assert.equal(fs.existsSync(tmpDir), true);
+      assert.equal(fs.existsSync(ignoredTmpLikeFile), true);
+    } finally {
+      cleanupTarget(dir);
+    }
+  });
+
   test(`${target} state: retained jobs, same timestamps, missing stale files, and null jobs`, () => {
     const dir = fresh();
     try {

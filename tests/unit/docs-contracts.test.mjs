@@ -75,6 +75,39 @@ test("cancel command docs enumerate the runtime status and error contracts", () 
   }
 });
 
+test("artifact cleanup inventory covers every provider, review mode, and owned artifact class", () => {
+  const doc = readRepoFile("docs/artifact-cleanup-inventory.md");
+
+  for (const provider of ["Claude", "Gemini", "Kimi", "DeepSeek", "GLM"]) {
+    assert.match(doc, new RegExp(`\\b${provider}\\b`), `missing provider ${provider}`);
+  }
+  for (const mode of ["review", "adversarial-review", "custom-review", "rescue", "foreground", "background", "continue"]) {
+    assert.match(doc, new RegExp(`\\b${mode}\\b`), `missing mode ${mode}`);
+  }
+  for (const artifact of [
+    "state.json",
+    "<jobId>.json",
+    "<jobId>.json.*.tmp",
+    "<jobId>.log",
+    "prompt.txt",
+    "runtime-options.json",
+    "cancel-requested.flag",
+    "git-status-before.txt",
+    "git-status-after.txt",
+    "stdout.log",
+    "stderr.log",
+    "Containment worktree",
+    "Neutral cwd",
+    "jobs/<jobId>/meta.json",
+    "jobs/<jobId>/meta.json.*.tmp",
+  ]) {
+    assert.match(doc, new RegExp(artifact.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")), `missing artifact ${artifact}`);
+  }
+  assert.match(doc, /does not persist prompt sidecars, copied review bundles, branch-diff files, stdout\/stderr logs, PID records, cancel markers, or subprocess state/);
+  assert.match(doc, /retained-history pruning does not signal processes/);
+  assert.match(doc, /starttime.*argv0/s);
+});
+
 test("claude review command docs use current mutation schema fields", () => {
   const docs = [
     readRepoFile("plugins/claude/commands/claude-review.md"),
