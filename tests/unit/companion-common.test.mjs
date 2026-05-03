@@ -105,7 +105,8 @@ test("plugin packaging copies expose the canonical helper behavior", async () =>
       import(`../../plugins/${plugin}/scripts/lib/companion-common.mjs`)
     )
   );
-  for (const mod of modules) {
+  for (const [i, mod] of modules.entries()) {
+    const plugin = COMPANION_PLUGIN_TARGETS[i];
     assert.equal(mod.PING_PROMPT, PING_PROMPT);
     assert.deepEqual(mod.preflightSafetyFields(), preflightSafetyFields());
     assert.equal(mod.preflightDisclosure("Target"), preflightDisclosure("Target"));
@@ -120,8 +121,58 @@ test("plugin packaging copies expose the canonical helper behavior", async () =>
     assert.deepEqual(mod.parseScopePathsOption("one,two"), ["one", "two"]);
     assert.deepEqual(mod.gitStatusLines(" M x\n"), [" M x"]);
     assert.equal(mod.runKindFromRecord({}), "unknown");
+    assertCopyHelperBranches(mod, plugin);
   }
 });
+
+function assertCopyHelperBranches(mod, plugin) {
+  let printed = "";
+  mod.printJson({ plugin }, { write: (chunk) => { printed += chunk; } });
+  assert.equal(printed, `{\n  "plugin": "${plugin}"\n}\n`);
+
+  assert.equal(mod.parseScopePathsOption(""), null);
+  assert.deepEqual(mod.parseScopePathsOption(" a.js, ,b.js "), ["a.js", "b.js"]);
+  assert.equal(mod.comparePathStrings("a", "b"), -1);
+  assert.equal(mod.comparePathStrings("b", "a"), 1);
+  assert.equal(mod.comparePathStrings("a", "a"), 0);
+
+  const root = mkdtempSync(path.join(tmpdir(), `companion-common-copy-${plugin}-`));
+  const nested = path.join(root, "nested");
+  fsMkdir(nested);
+  fsWrite(path.join(root, "b.txt"), "bb");
+  fsWrite(path.join(nested, "a.txt"), "aaa");
+  fsMkdir(path.join(root, "empty-dir"));
+  assert.deepEqual(mod.summarizeScopeDirectory(root), {
+    files: ["b.txt", "nested/a.txt"],
+    file_count: 2,
+    byte_count: 5,
+  });
+  assert.deepEqual(mod.summarizeScopeDirectory(path.join(root, "missing")), {
+    files: [],
+    file_count: 0,
+    byte_count: 0,
+  });
+
+  assert.deepEqual(mod.gitStatusLines(" M a.js  \n\n?? b.js\n"), [" M a.js", "?? b.js"]);
+  assert.equal(mod.runKindFromRecord({ external_review: { run_kind: "background" } }), "background");
+  assert.equal(mod.runKindFromRecord({}), "unknown");
+
+  const jobsDir = mkdtempSync(path.join(tmpdir(), `companion-common-copy-jobs-${plugin}-`));
+  assert.equal(mod.consumePromptSidecar(jobsDir, "job-1"), null);
+  mod.writePromptSidecar(jobsDir, "job-1", "copy prompt");
+  const sidecar = mod.promptSidecarPath(jobsDir, "job-1");
+  assert.equal(readFileSync(sidecar, "utf8"), "copy prompt");
+  assert.equal((statSync(sidecar).mode & 0o777), 0o600);
+  assert.equal(mod.consumePromptSidecar(jobsDir, "job-1"), "copy prompt");
+  assert.equal(existsSync(sidecar), false);
+  assert.equal(mod.consumePromptSidecar(jobsDir, "job-1"), null);
+
+  assert.deepEqual(mod.credentialNameDiagnostics(["KEY"], {}), {});
+  assert.deepEqual(mod.credentialNameDiagnostics(["KEY"], { KEY: "value" }), {
+    ignored_env_credentials: ["KEY"],
+    auth_policy: "api_key_env_ignored",
+  });
+}
 
 function fsMkdir(dir) {
   mkdirSync(dir, { recursive: true });
