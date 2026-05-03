@@ -38,3 +38,31 @@ node plugins/api-reviewers/scripts/api-reviewer.mjs run --provider deepseek --mo
 ```
 
 If the command fails, report `error_code`, `error_message`, and `suggested_action` from the JobRecord. Do not expose API keys.
+If `external_review` is present, render it before the review result.
+
+Launch/result card:
+
+```text
++---------------- EXTERNAL REVIEW ----------------+
+| Provider  <external_review.provider>            |
+| Job       <external_review.job_id>              |
+| Session   <external_review.session_id|pending>  |
+| Run       <external_review.run_kind>            |
+| Scope     <external_review.scope>[, base=...]   |
++-------------------------------------------------+
+Disclosure: <external_review.disclosure>
+```
+
+Wait/status rail:
+
+```text
+| EXTERNAL | <provider> - <job_id> - <status>
+| EXTERNAL | <run_kind> - <scope>[, base=<scope_base>]
+```
+
+For multiple provider results, render one card/rail per `external_review`.
+Render `run_kind: "unknown"` verbatim if encountered; do not infer foreground
+or background from lifecycle fields.
+If `external_review.disclosure` is already rendered, do not repeat an
+identical `disclosure_note` or a `disclosure_note` that restates a scope failure
+was not sent before launch.

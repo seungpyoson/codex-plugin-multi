@@ -13,7 +13,7 @@ The companion returns the SAME JSON shape from three entry points — foreground
 (spec §21.3). Nothing is hand-assembled in memory; what goes to disk is what
 comes back to you.
 
-## Success path — JobRecord schema (v8)
+## Success path — JobRecord schema (v9)
 
 ```json
 {
@@ -46,11 +46,25 @@ comes back to you.
   "started_at":          "<iso-8601>",
   "ended_at":            null | "<iso-8601>",
   "exit_code":           null | 0 | 1 | 2,
-  "error_code":          null | "scope_failed" | "spawn_failed" | "claude_error" | "parse_error" | "timeout",
+  "error_code":          null | "scope_failed" | "spawn_failed" | "claude_error" | "gemini_error" | "kimi_error" | "parse_error" | "step_limit_exceeded" | "finalization_failed" | "timeout" | "stale_active_job",
   "error_message":       null | "<human>",
   "error_summary":       null | "<short operator-facing summary>",
   "error_cause":         null | "<why this happened>",
   "suggested_action":    null | "<what to do next>",
+  "external_review":     {
+    "marker":            "EXTERNAL REVIEW",
+    "provider":          "Claude Code",
+    "run_kind":          "foreground|background|unknown",
+    "job_id":            "<uuid>",
+    "session_id":        null | "<provider session id>",
+    "parent_job_id":     null | "<uuid>",
+    "mode":              "review|adversarial-review|custom-review|rescue|ping",
+    "scope":             "working-tree|branch-diff|staged|head|custom",
+    "scope_base":        null | "<ref>",
+    "scope_paths":       null | ["<glob>"],
+    "source_content_transmission": "not_sent|may_be_sent|sent|unknown",
+    "disclosure":        "<external disclosure statement>"
+  },
   "disclosure_note":     null | "<what was or was not sent externally>",
 
   "result":              null | "<text from Claude>",  // null on queued; "" allowed on schema runs
@@ -60,7 +74,7 @@ comes back to you.
   "cost_usd":            null | 0.001,
   "usage":               null | { "input_tokens": N, ... },
 
-  "schema_version":      8
+  "schema_version":      9
 }
 ```
 
@@ -90,7 +104,33 @@ from short-lived index contention.
 
 ## Rendering order
 
-1. **Mutation warning (derived — not a top-level field).** If
+1. **External review banner.** If `external_review` is present, render it
+   before findings or status prose. Use the boxed card for launch/result:
+
+   ```text
+   +---------------------------- EXTERNAL REVIEW ---------------------------+
+   | Provider  <external_review.provider>                                   |
+   | Job       <external_review.job_id>                                     |
+   | Session   <external_review.session_id|pending>                         |
+   | Run       <external_review.run_kind>                                   |
+   | Scope     <external_review.scope>[, base=<external_review.scope_base>] |
+   +------------------------------------------------------------------------+
+   Disclosure: <external_review.disclosure>
+   ```
+
+   For wait/status summaries, keep a persistent left rail:
+
+   ```text
+   | EXTERNAL | <external_review.provider> · <external_review.job_id> · <status>
+   | EXTERNAL | <external_review.run_kind> · <external_review.scope>[, base=<external_review.scope_base>]
+   ```
+
+   For multiple providers, use one panel with one row per provider. Do not
+   replace this marker with ordinary prose.
+   Render `run_kind: "unknown"` verbatim. Do not infer foreground or
+   background from `pid_info`, stale status, or historical fields.
+
+2. **Mutation warning (derived — not a top-level field).** If
    `mutations.length > 0`: render a **prominent** warning block. Partition
    entries beginning with `mutation_detection_failed:` from ordinary git-status
    entries:
@@ -104,21 +144,21 @@ from short-lived index contention.
    There is NO `warning` field on the JobRecord. The `mutations` array IS
    the signal; its length is the severity.
 
-2. **Structured output.** If `structured_output` is non-null: render its
+3. **Structured output.** If `structured_output` is non-null: render its
    fields. Treat `verdict`, `summary`, `findings[]` as primary if present
    (review/adversarial schema).
 
-3. **Text result.** Else render `result` as Markdown. When `status ===
+4. **Text result.** Else render `result` as Markdown. When `status ===
    "completed"`, `result` may be an empty string on schema-only runs — that
    is not an error, it means the model's output lived in `structured_output`.
 
-4. **Permission denials.** If `permission_denials.length > 0` and there is no
+5. **Permission denials.** If `permission_denials.length > 0` and there is no
    substantive `result` or `structured_output`, render **review blocked / no
    findings produced** and list the denied tools or paths. If findings are
    present, render a small "Tools denied" footnote — informational, not
    alarming (some tool attempts are expected for review mode).
 
-5. **Cost/usage.** Include `cost_usd` and `usage` in a small footer ONLY
+6. **Cost/usage.** Include `cost_usd` and `usage` in a small footer ONLY
    when the user asked about cost; otherwise suppress. Under OAuth
    subscription the figure is the equivalent API cost (not a billing line).
 
@@ -130,14 +170,31 @@ from short-lived index contention.
   Tell the user to run `/claude-setup`. `error_message` has the spawn detail.
 - `scope_failed` — the companion refused to prepare the selected review scope
   before launching the target CLI. Render `error_summary`, `error_cause`,
-  `suggested_action`, and `disclosure_note` before the raw `error_message`.
+  `suggested_action`, and `disclosure_note` before the raw `error_message`;
+  if `external_review.disclosure` is already rendered, do not repeat an
+  identical `disclosure_note` or a `disclosure_note` that restates a scope
+  failure was not sent before launch.
   These failures are protective; rejected scope content was not sent to the
   target CLI or external provider.
 - `claude_error` — Claude ran but returned `is_error: true`. `result` may
   still contain partial text worth showing.
+- `gemini_error` / `kimi_error` — the corresponding external CLI ran but
+  returned a target-level failure. `result` may contain partial text worth
+  showing if present; otherwise use the structured diagnostic fields.
 - `parse_error` — Claude's stdout wasn't valid JSON. Rare; usually a CLI
   upgrade mismatch. `error_message` has the parser error.
+- `step_limit_exceeded` — Kimi exhausted its configured step budget after
+  launch. Selected source content was sent; render the diagnostic fields and
+  suggest continuing/resuming the job if a provider session id is available.
+- `finalization_failed` — the target ran, but the companion failed while
+  writing the terminal record or state. Render the structured diagnostic
+  fields and preserve `error_message`; this is an operator/storage failure,
+  not a missing-binary or scope-preparation failure.
 - `timeout` — the companion's watchdog killed the child. No partial output.
+- `stale_active_job` — reconciliation promoted an orphaned queued/running
+  record to stale because the worker process disappeared or never produced a
+  terminal record. Render the record as continuable history; do not infer a
+  more specific lifecycle from legacy fields.
 - `not_found` — (only from `result --job` / `status --job`) the `job_id`
   doesn't exist in this workspace. Suggest `/claude-status --all`.
 
@@ -151,13 +208,25 @@ It returns a launch envelope:
 
 ```json
 { "event": "launched", "job_id": "<uuid>", "target": "claude", "mode": "...",
-  "pid": 12345, "workspace_root": "<abs-path>" }
+  "pid": 12345, "workspace_root": "<abs-path>",
+  "external_review": { "marker": "EXTERNAL REVIEW", "...": "..." } }
 ```
 
 Render as:
 
-> Started Claude rescue job `<uuid>`. Check progress with `/claude-status
-> <uuid>`; retrieve final output with `/claude-result <uuid>`.
+```text
++---------------- EXTERNAL REVIEW ----------------+
+| Provider  Claude Code                           |
+| Job       <uuid>                                |
+| Session   pending                               |
+| Run       background                            |
+| Scope     <scope>[, base=<scope_base>]          |
++-------------------------------------------------+
+Disclosure: <external_review.disclosure>
+
+Check progress with `/claude-status <uuid>`; retrieve final output with
+`/claude-result <uuid>`.
+```
 
 When the user runs `/claude-result <uuid>`, they receive the full JobRecord —
 same schema as foreground — with `result`, `structured_output`,

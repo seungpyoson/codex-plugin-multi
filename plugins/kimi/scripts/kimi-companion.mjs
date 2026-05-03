@@ -15,7 +15,7 @@ import { resolveProfile, resolveModelForProfile, resolveModelCandidatesForProfil
 import { setupContainment } from "./lib/containment.mjs";
 import { populateScope } from "./lib/scope.mjs";
 import { newJobId, verifyPidInfo } from "./lib/identity.mjs";
-import { buildJobRecord } from "./lib/job-record.mjs";
+import { buildJobRecord, externalReviewForInvocation } from "./lib/job-record.mjs";
 import { reconcileActiveJobs } from "./lib/reconcile.mjs";
 import { cleanGitEnv } from "./lib/git-env.mjs";
 import { spawnKimi } from "./lib/kimi.mjs";
@@ -146,6 +146,11 @@ function gitStatusLines(output) {
   return output.split("\n").map((line) => line.trimEnd()).filter((line) => line.length > 0);
 }
 
+function runKindFromRecord(record) {
+  if (record.external_review?.run_kind) return record.external_review.run_kind;
+  return "unknown";
+}
+
 function runtimeOptionsSidecarPath(workspaceRoot, jobId) {
   return `${resolveJobsDir(workspaceRoot)}/${jobId}/runtime-options.json`;
 }
@@ -213,6 +218,7 @@ function invocationFromRecord(record, runtimeOptions = {}) {
     prompt_head: record.prompt_head,
     schema_spec: record.schema_spec ?? null,
     binary: record.binary,
+    run_kind: runKindFromRecord(record),
     max_steps_per_turn: resolvedRuntimeOptions.max_steps_per_turn,
     started_at: record.started_at,
   };
@@ -431,6 +437,7 @@ async function cmdRun(rest) {
     prompt_head: prompt.slice(0, 200),
     schema_spec: null,
     binary: options.binary ?? process.env.KIMI_BINARY ?? "kimi",
+    run_kind: options.background ? "background" : "foreground",
     timeout_ms: timeoutMs,
     max_steps_per_turn: maxStepsPerTurn,
     started_at: new Date().toISOString(),
@@ -453,6 +460,7 @@ async function cmdRun(rest) {
       mode,
       pid: child.pid ?? null,
       workspace_root: workspaceRoot,
+      external_review: externalReviewForInvocation(invocation),
     });
     process.exit(0);
   }
@@ -830,6 +838,7 @@ async function cmdContinue(rest) {
     prompt_head: prompt.slice(0, 200),
     schema_spec: prior.schema_spec ?? null,
     binary: options.binary ?? process.env.KIMI_BINARY ?? "kimi",
+    run_kind: options.background ? "background" : "foreground",
     timeout_ms: timeoutMs,
     max_steps_per_turn: maxStepsPerTurn,
     started_at: new Date().toISOString(),
@@ -853,6 +862,7 @@ async function cmdContinue(rest) {
       parent_job_id: options.job,
       pid: child.pid ?? null,
       workspace_root: workspaceRoot,
+      external_review: externalReviewForInvocation(invocation),
     });
     process.exit(0);
   }

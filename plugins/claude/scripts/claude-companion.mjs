@@ -39,7 +39,7 @@ import { resolveProfile, resolveModelForProfile } from "./lib/mode-profiles.mjs"
 import { setupContainment } from "./lib/containment.mjs";
 import { populateScope } from "./lib/scope.mjs";
 import { newJobId, verifyPidInfo } from "./lib/identity.mjs";
-import { buildJobRecord } from "./lib/job-record.mjs";
+import { buildJobRecord, externalReviewForInvocation } from "./lib/job-record.mjs";
 import { reconcileActiveJobs } from "./lib/reconcile.mjs";
 import { cleanGitEnv } from "./lib/git-env.mjs";
 import {
@@ -161,6 +161,11 @@ function gitStatusLines(output) {
 // Project an invocation out of a JobRecord (used by the background worker
 // when it re-enters executeRun). Only the invocation-phase fields are
 // carried — lifecycle/result fields get re-derived from the fresh execution.
+function runKindFromRecord(record) {
+  if (record.external_review?.run_kind) return record.external_review.run_kind;
+  return "unknown";
+}
+
 function invocationFromRecord(record, fallbackAuthMode = "subscription") {
   return Object.freeze({
     job_id: record.job_id,
@@ -179,6 +184,7 @@ function invocationFromRecord(record, fallbackAuthMode = "subscription") {
     scope_paths: record.scope_paths ?? null,
     prompt_head: record.prompt_head,
     schema_spec: record.schema_spec ?? null,
+    run_kind: runKindFromRecord(record),
     auth_mode: record.auth_mode ?? fallbackAuthMode ?? "subscription",
     binary: record.binary,
     started_at: record.started_at,
@@ -424,6 +430,7 @@ async function cmdRun(rest) {
     prompt_head: prompt.slice(0, 200),          // §21.3.1 — no full prompt
     schema_spec: options.schema ?? null,
     binary: options.binary ?? process.env.CLAUDE_BINARY ?? "claude",
+    run_kind: options.background ? "background" : "foreground",
     auth_mode: authSelection.auth_mode,
     started_at: startedAt,
   });
@@ -450,6 +457,7 @@ async function cmdRun(rest) {
       mode,
       pid: child.pid ?? null,
       workspace_root: workspaceRoot,
+      external_review: externalReviewForInvocation(invocation),
     });
     process.exit(0);
   }
@@ -862,6 +870,7 @@ async function cmdContinue(rest) {
     prompt_head: prompt.slice(0, 200),    // §21.3.1 — no full prompt
     schema_spec: prior.schema_spec ?? prior.schema ?? null,
     binary: options.binary ?? process.env.CLAUDE_BINARY ?? "claude",
+    run_kind: options.background ? "background" : "foreground",
     auth_mode: authSelection.auth_mode,
     started_at: new Date().toISOString(),
   });
@@ -876,7 +885,8 @@ async function cmdContinue(rest) {
     if (error) failBackgroundWorkerSpawn(workspaceRoot, invocation, error);
     printJson({ event: "launched", job_id: newJobId_, target: "claude",
       mode: priorModeName, parent_job_id: options.job, pid: child.pid ?? null,
-      workspace_root: workspaceRoot });
+      workspace_root: workspaceRoot,
+      external_review: externalReviewForInvocation(invocation) });
     process.exit(0);
   }
   await executeRun(invocation, prompt, { foreground: true });
