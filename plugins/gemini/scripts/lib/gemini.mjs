@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 
 import { attachPidCapture } from "./identity.mjs";
 import { sanitizeTargetEnv } from "./provider-env.mjs";
+import { isCodexSandbox } from "./codex-env.mjs";
 
 function assertProfile(profile) {
   if (!profile || typeof profile !== "object") {
@@ -49,13 +50,6 @@ export function buildGeminiArgs(profile, runtimeInputs = {}) {
   }
 
   return args;
-}
-
-function isCodexSandbox(env) {
-  const value = env?.CODEX_SANDBOX;
-  if (!value) return false;
-  const normalized = String(value).trim().toLowerCase();
-  return !["", "false", "0", "no", "off", "null", "undefined", "nil"].includes(normalized);
 }
 
 function summarizeStderr(stderr) {

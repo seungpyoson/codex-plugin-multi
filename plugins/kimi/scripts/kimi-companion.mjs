@@ -20,11 +20,19 @@ import { reconcileActiveJobs } from "./lib/reconcile.mjs";
 import { cleanGitEnv } from "./lib/git-env.mjs";
 import { spawnKimi } from "./lib/kimi.mjs";
 import { writeCancelMarker, consumeCancelMarker } from "./lib/cancel-marker.mjs";
+import { isCodexSandbox } from "./lib/codex-env.mjs";
 import {
   PING_PROMPT,
+  consumePromptSidecar,
   credentialNameDiagnostics,
+  gitStatusLines,
+  parseScopePathsOption,
   preflightDisclosure,
   preflightSafetyFields,
+  printJson,
+  runKindFromRecord,
+  summarizeScopeDirectory,
+  writePromptSidecar,
 } from "./lib/companion-common.mjs";
 
 const PLUGIN_ROOT = resolvePath(dirname(fileURLToPath(import.meta.url)), "..");
@@ -44,20 +52,10 @@ function loadModels() {
   return JSON.parse(readFileSync(MODELS_CONFIG_PATH, "utf8"));
 }
 
-function printJson(obj) {
-  process.stdout.write(JSON.stringify(obj, null, 2) + "\n");
-}
-
 function fail(code, message, details = {}) {
   process.stderr.write(`kimi-companion: ${message}\n`);
   printJson({ ok: false, error: code, message, ...details });
   process.exit(1);
-}
-
-function parseScopePathsOption(value) {
-  return value
-    ? String(value).split(",").map((s) => s.trim()).filter(Boolean)
-    : null;
 }
 
 function targetPromptFor(profile, userPrompt) {
@@ -78,31 +76,6 @@ function targetPromptFor(profile, userPrompt) {
     liveContext,
     `User prompt:\n${userPrompt}`,
   ].join("\n\n");
-}
-
-function comparePathStrings(a, b) {
-  return a < b ? -1 : a > b ? 1 : 0;
-}
-
-function summarizeScopeDirectory(root) {
-  const files = [];
-  let byteCount = 0;
-  function walk(absDir, relDir = "") {
-    for (const ent of readdirSync(absDir, { withFileTypes: true })) {
-      const abs = resolvePath(absDir, ent.name);
-      const rel = relDir ? `${relDir}/${ent.name}` : ent.name;
-      if (ent.isDirectory()) {
-        walk(abs, rel);
-        continue;
-      }
-      if (!ent.isFile()) continue;
-      files.push(rel);
-      byteCount += statSync(abs).size;
-    }
-  }
-  if (existsSync(root)) walk(root);
-  files.sort(comparePathStrings);
-  return { files, file_count: files.length, byte_count: byteCount };
 }
 
 // Mutation-detection git scrub: same shared list as claude-companion +
@@ -140,15 +113,6 @@ function modelCandidatesForInvocation(profile, invocation) {
   if (configuredPrimary !== invocation.model) return [invocation.model];
   const candidates = resolveModelCandidatesForProfile(profile, modelsConfig);
   return candidates.length > 0 ? candidates : [invocation.model];
-}
-
-function gitStatusLines(output) {
-  return output.split("\n").map((line) => line.trimEnd()).filter((line) => line.length > 0);
-}
-
-function runKindFromRecord(record) {
-  if (record.external_review?.run_kind) return record.external_review.run_kind;
-  return "unknown";
 }
 
 function runtimeOptionsSidecarPath(workspaceRoot, jobId) {
@@ -242,26 +206,6 @@ function parsePositiveMaxStepsPerTurn(value, fallback) {
   return parsed;
 }
 
-function promptSidecarPath(workspaceRoot, jobId) {
-  return `${resolveJobsDir(workspaceRoot)}/${jobId}/prompt.txt`;
-}
-
-function writePromptSidecar(workspaceRoot, jobId, prompt) {
-  const dir = `${resolveJobsDir(workspaceRoot)}/${jobId}`;
-  mkdirSync(dir, { recursive: true });
-  const p = promptSidecarPath(workspaceRoot, jobId);
-  writeFileSync(p, prompt, { mode: 0o600, encoding: "utf8" });
-  try { chmodSync(p, 0o600); } catch { /* best-effort on non-POSIX */ }
-}
-
-function consumePromptSidecar(workspaceRoot, jobId) {
-  const p = promptSidecarPath(workspaceRoot, jobId);
-  if (!existsSync(p)) return null;
-  const prompt = readFileSync(p, "utf8");
-  try { unlinkSync(p); } catch { /* already gone */ }
-  return prompt;
-}
-
 async function spawnDetachedWorker(cwd, jobId) {
   let child;
   try {
@@ -299,7 +243,7 @@ async function spawnDetachedWorker(cwd, jobId) {
 }
 
 function failBackgroundWorkerSpawn(workspaceRoot, invocation, error) {
-  consumePromptSidecar(workspaceRoot, invocation.job_id);
+  consumePromptSidecar(resolveJobsDir(workspaceRoot), invocation.job_id);
   const message = `background worker spawn failed: ${error?.code ? `${error.code}: ` : ""}${error?.message ?? String(error)}`;
   const errorRecord = buildJobRecord(invocation, {
     exitCode: null,
@@ -450,7 +394,7 @@ async function cmdRun(rest) {
   const targetPrompt = targetPromptFor(profile, prompt);
 
   if (options.background) {
-    writePromptSidecar(workspaceRoot, jobId, targetPrompt);
+    writePromptSidecar(resolveJobsDir(workspaceRoot), jobId, targetPrompt);
     const { child, error } = await spawnDetachedWorker(cwd, jobId);
     if (error) failBackgroundWorkerSpawn(workspaceRoot, invocation, error);
     printJson({
@@ -751,7 +695,7 @@ async function cmdRunWorker(rest) {
     process.exit(0);
   }
 
-  const prompt = consumePromptSidecar(workspaceRoot, options.job);
+  const prompt = consumePromptSidecar(resolveJobsDir(workspaceRoot), options.job);
   if (!prompt) {
     const errorRecord = buildJobRecord(invocationFromRecord(meta, runtimeOptions), {
       exitCode: null, parsed: null, pidInfo: null, kimiSessionId: null,
@@ -851,7 +795,7 @@ async function cmdContinue(rest) {
   const targetPrompt = targetPromptFor(priorProfile, prompt);
 
   if (options.background) {
-    writePromptSidecar(workspaceRoot, newJobId_, targetPrompt);
+    writePromptSidecar(resolveJobsDir(workspaceRoot), newJobId_, targetPrompt);
     const { child, error } = await spawnDetachedWorker(cwd, newJobId_);
     if (error) failBackgroundWorkerSpawn(workspaceRoot, invocation, error);
     printJson({
@@ -1025,13 +969,6 @@ function isKimiCodexSandboxBlocked(detail) {
     const nextLine = lines[i + 1] ?? "";
     return permissionRe.test(line) && /^\s/.test(nextLine) && kimiPathRe.test(nextLine);
   });
-}
-
-function isCodexSandbox(env) {
-  const value = env?.CODEX_SANDBOX;
-  if (!value) return false;
-  const normalized = String(value).trim().toLowerCase();
-  return !["", "false", "0", "no", "off", "null", "undefined", "nil"].includes(normalized);
 }
 
 async function cmdPing(rest) {

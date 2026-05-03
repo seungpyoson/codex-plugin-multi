@@ -2,3 +2,4 @@
 
 export const COMPANION_PLUGIN_TARGETS = Object.freeze(["claude", "gemini", "kimi"]);
 export const CLAUDE_GEMINI_PLUGIN_TARGETS = Object.freeze(["claude", "gemini"]);
+export const CODEX_ENV_PLUGIN_TARGETS = Object.freeze(["gemini", "kimi", "api-reviewers"]);

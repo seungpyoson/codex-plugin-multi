@@ -17,6 +17,7 @@ import { fileURLToPath } from "node:url";
 
 import {
   CLAUDE_GEMINI_PLUGIN_TARGETS,
+  CODEX_ENV_PLUGIN_TARGETS,
   COMPANION_PLUGIN_TARGETS,
 } from "../../scripts/lib/plugin-targets.mjs";
 import { STRIPPED_GIT_ENV_KEYS as CLAUDE_STRIPPED_GIT_ENV_KEYS } from "../../plugins/claude/scripts/lib/git-env.mjs";
@@ -84,6 +85,17 @@ test("lib/provider-env.mjs: plugin packaging copies match the canonical shared s
       "utf8"
     );
     assert.equal(copy, canonical, `provider-env.mjs packaging copy drifted in ${plugin}`);
+  }
+});
+
+test("lib/codex-env.mjs: plugin packaging copies match the canonical shared source", () => {
+  const canonical = readFileSync(path.join(REPO_ROOT, "scripts/lib/codex-env.mjs"), "utf8");
+  for (const plugin of CODEX_ENV_PLUGIN_TARGETS) {
+    const copy = readFileSync(
+      path.join(REPO_ROOT, `plugins/${plugin}/scripts/lib/codex-env.mjs`),
+      "utf8"
+    );
+    assert.equal(copy, canonical, `codex-env.mjs packaging copy drifted in ${plugin}`);
   }
 });
 

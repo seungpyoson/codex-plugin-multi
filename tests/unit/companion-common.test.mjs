@@ -1,11 +1,23 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
 
 import {
   PING_PROMPT,
+  comparePathStrings,
+  consumePromptSidecar,
   credentialNameDiagnostics,
+  gitStatusLines,
+  parseScopePathsOption,
   preflightDisclosure,
   preflightSafetyFields,
+  printJson,
+  promptSidecarPath,
+  runKindFromRecord,
+  summarizeScopeDirectory,
+  writePromptSidecar,
 } from "../../scripts/lib/companion-common.mjs";
 import { COMPANION_PLUGIN_TARGETS } from "../../scripts/lib/plugin-targets.mjs";
 
@@ -42,6 +54,51 @@ test("credentialNameDiagnostics omits fields when no provider key is present", (
   assert.deepEqual(credentialNameDiagnostics(["ANTHROPIC_API_KEY"], {}), {});
 });
 
+test("shared companion helpers cover small provider-agnostic behavior", () => {
+  let printed = "";
+  printJson({ ok: true }, { write: (chunk) => { printed += chunk; } });
+  assert.equal(printed, "{\n  \"ok\": true\n}\n");
+  assert.deepEqual(parseScopePathsOption(" a.js, ,src/b.js "), ["a.js", "src/b.js"]);
+  assert.equal(parseScopePathsOption(""), null);
+  assert.deepEqual(["b", "a", "aa"].sort(comparePathStrings), ["a", "aa", "b"]);
+  assert.deepEqual(gitStatusLines(" M a.js  \n\n?? b.js\n"), [" M a.js", "?? b.js"]);
+  assert.equal(runKindFromRecord({ external_review: { run_kind: "foreground" } }), "foreground");
+  assert.equal(runKindFromRecord({}), "unknown");
+});
+
+test("summarizeScopeDirectory returns sorted files and byte totals", () => {
+  const root = mkdtempSync(path.join(tmpdir(), "companion-common-scope-"));
+  const nested = path.join(root, "nested");
+  fsMkdir(nested);
+  fsWrite(path.join(root, "b.txt"), "bb");
+  fsWrite(path.join(nested, "a.txt"), "aaa");
+
+  assert.deepEqual(summarizeScopeDirectory(root), {
+    files: ["b.txt", "nested/a.txt"],
+    file_count: 2,
+    byte_count: 5,
+  });
+  assert.deepEqual(summarizeScopeDirectory(path.join(root, "missing")), {
+    files: [],
+    file_count: 0,
+    byte_count: 0,
+  });
+});
+
+test("prompt sidecar helpers write 0600 handoff files and consume once", () => {
+  const jobsDir = mkdtempSync(path.join(tmpdir(), "companion-common-jobs-"));
+  const p = promptSidecarPath(jobsDir, "job-1");
+  assert.equal(p, path.join(jobsDir, "job-1", "prompt.txt"));
+  assert.equal(consumePromptSidecar(jobsDir, "job-1"), null);
+
+  writePromptSidecar(jobsDir, "job-1", "secret prompt");
+  assert.equal(readFileSync(p, "utf8"), "secret prompt");
+  assert.equal((statSync(p).mode & 0o777), 0o600);
+  assert.equal(consumePromptSidecar(jobsDir, "job-1"), "secret prompt");
+  assert.equal(existsSync(p), false);
+  assert.equal(consumePromptSidecar(jobsDir, "job-1"), null);
+});
+
 test("plugin packaging copies expose the canonical helper behavior", async () => {
   const modules = await Promise.all(
     COMPANION_PLUGIN_TARGETS.map((plugin) =>
@@ -60,8 +117,20 @@ test("plugin packaging copies expose the canonical helper behavior", async () =>
       mod.credentialNameDiagnostics(["__CODEX_PLUGIN_MULTI_MISSING_TEST_KEY__"]),
       credentialNameDiagnostics(["__CODEX_PLUGIN_MULTI_MISSING_TEST_KEY__"]),
     );
+    assert.deepEqual(mod.parseScopePathsOption("one,two"), ["one", "two"]);
+    assert.deepEqual(mod.gitStatusLines(" M x\n"), [" M x"]);
+    assert.equal(mod.runKindFromRecord({}), "unknown");
   }
 });
+
+function fsMkdir(dir) {
+  mkdirSync(dir, { recursive: true });
+}
+
+function fsWrite(file, contents) {
+  writeFileSync(file, contents, "utf8");
+  chmodSync(file, 0o600);
+}
 
 test("external-review plugin copies keep stale no-pid transmission unknown", async () => {
   const modules = await Promise.all(
