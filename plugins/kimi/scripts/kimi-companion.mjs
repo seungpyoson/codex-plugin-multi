@@ -147,7 +147,7 @@ function gitStatusLines(output) {
 }
 
 function runtimeOptionsSidecarPath(workspaceRoot, jobId) {
-  return `${resolveJobsDir(workspaceRoot)}/${jobId}.runtime-options`;
+  return `${resolveJobsDir(workspaceRoot)}/${jobId}/runtime-options.json`;
 }
 
 function runtimeOptionsForRecord(record, runtimeOptions = {}) {
@@ -161,7 +161,7 @@ function runtimeOptionsForRecord(record, runtimeOptions = {}) {
 }
 
 function writeRuntimeOptionsSidecar(workspaceRoot, jobId, options) {
-  const dir = resolveJobsDir(workspaceRoot);
+  const dir = `${resolveJobsDir(workspaceRoot)}/${jobId}`;
   mkdirSync(dir, { recursive: true });
   const file = runtimeOptionsSidecarPath(workspaceRoot, jobId);
   const tmpFile = `${file}.${process.pid}.${Date.now()}.tmp`;
@@ -172,7 +172,6 @@ function writeRuntimeOptionsSidecar(workspaceRoot, jobId, options) {
     writeFileSync(tmpFile, `${JSON.stringify(payload, null, 2)}\n`, { mode: 0o600, encoding: "utf8" });
     try { chmodSync(tmpFile, 0o600); } catch { /* best-effort on non-POSIX */ }
     renameSync(tmpFile, file);
-    try { chmodSync(file, 0o600); } catch { /* best-effort on non-POSIX */ }
   } catch (e) {
     try { unlinkSync(tmpFile); } catch { /* already gone */ }
     throw e;

@@ -58,6 +58,17 @@ test("parseKimiResult: classifies raw max-step exhaustion before JSON parsing", 
   assert.equal(parsed.raw, "Max number of steps reached: 1\n");
 });
 
+test("parseKimiResult: does not treat an embedded max-step line as the sole sentinel", () => {
+  const parsed = parseKimiResult(
+    `{"content":"partial","session_id":"${KIMI_SESSION_ID}"}\nMax number of steps reached: 8\n`,
+    "",
+  );
+
+  assert.equal(parsed.ok, true);
+  assert.equal(parsed.result, "partial");
+  assert.equal(parsed.sessionId, KIMI_SESSION_ID);
+});
+
 test("buildKimiArgs: review modes use safer max-step defaults and allow overrides", () => {
   const reviewArgs = buildKimiArgs(resolveProfile("review"), {
     model: "kimi-k2-turbo-preview",

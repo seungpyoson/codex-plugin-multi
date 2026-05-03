@@ -53,6 +53,24 @@ function readOnlyJobRecord(dataDir) {
   return records[0];
 }
 
+function findJobPaths(dataDir, jobId) {
+  const stateRoot = path.join(dataDir, "state");
+  for (const workspaceDir of readdirSync(stateRoot)) {
+    const jobsDir = path.join(stateRoot, workspaceDir, "jobs");
+    const metaPath = path.join(jobsDir, `${jobId}.json`);
+    if (existsSync(metaPath)) {
+      return {
+        jobsDir,
+        metaPath,
+        sidecarDir: path.join(jobsDir, jobId),
+        runtimeOptionsPath: path.join(jobsDir, jobId, "runtime-options.json"),
+        legacyRuntimeOptionsPath: path.join(jobsDir, `${jobId}.runtime-options`),
+      };
+    }
+  }
+  assert.fail(`job ${jobId} not found under ${stateRoot}`);
+}
+
 function parseJson(stdout) {
   return JSON.parse(stdout);
 }
@@ -327,6 +345,9 @@ test("kimi background review preserves configured max-step budget outside public
   assert.equal(record.status, "completed");
   assert.equal(record.result, "Mock Kimi response.");
   assert.equal("max_steps_per_turn" in record, false);
+  const paths = findJobPaths(dataDir, payload.job_id);
+  assert.equal(existsSync(paths.legacyRuntimeOptionsPath), false);
+  assert.equal(existsSync(paths.runtimeOptionsPath), true);
 }));
 
 test("kimi continue reuses prior private max-step budget without JobRecord drift", () => withRepo((cwd) => {

@@ -76,7 +76,7 @@ export function parseKimiResult(stdout, stderr = "") {
     }
     return { ok: false, reason: "empty_stdout", raw: stdout };
   }
-  const stepLimitMatch = /^Max number of steps reached:\s*(\d+)\s*$/m.exec(trimmed);
+  const stepLimitMatch = /^Max number of steps reached:\s*(\d+)\s*$/.exec(trimmed);
   if (stepLimitMatch) {
     const error = stepLimitMatch[0].trim();
     return {
