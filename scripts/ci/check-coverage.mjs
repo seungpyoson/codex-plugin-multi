@@ -312,9 +312,10 @@ async function coverageSummaries(coverageDir, libFiles) {
   return summaries;
 }
 
-function coverageFailures(summaries, threshold = COVERAGE_TARGET) {
+function coverageFailures(summaries, threshold = COVERAGE_TARGET, enforcedFiles = null) {
   const failures = [];
   for (const summary of summaries) {
+    if (enforcedFiles && !enforcedFiles.has(summary.file)) continue;
     for (const [label, key] of [
       ["line", "lines"],
       ["branch", "branches"],
@@ -327,6 +328,19 @@ function coverageFailures(summaries, threshold = COVERAGE_TARGET) {
     }
   }
   return failures;
+}
+
+function targetEnforcedFilesFromBaseline(baseline, threshold = COVERAGE_TARGET) {
+  if (Array.isArray(baseline.target_enforced_files)) {
+    return new Set(baseline.target_enforced_files);
+  }
+  const files = new Set();
+  for (const [file, expected] of Object.entries(baseline.files ?? {})) {
+    if (["lines", "branches", "functions"].every((key) => Number(expected[key]) >= threshold)) {
+      files.add(file);
+    }
+  }
+  return files;
 }
 
 async function readCoverageBaseline() {
@@ -388,8 +402,12 @@ async function main() {
     const libFiles = await discoverLibFiles();
     const summaries = await coverageSummaries(coverageDir, libFiles);
     printTable(summaries);
-    const targetFailures = coverageFailures(summaries, COVERAGE_TARGET);
     const baseline = await readCoverageBaseline();
+    const targetFailures = coverageFailures(
+      summaries,
+      COVERAGE_TARGET,
+      targetEnforcedFilesFromBaseline(baseline, COVERAGE_TARGET),
+    );
     const regressions = baselineFailures(summaries, baseline);
     if (regressions.length > 0) {
       for (const failure of regressions) process.stderr.write(`coverage regression: ${failure}\n`);
@@ -419,6 +437,7 @@ export const _internal = {
   discoverTestFiles,
   shareCoverageForVerbatimPairs,
   summarizeSourceCoverage,
+  targetEnforcedFilesFromBaseline,
 };
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {

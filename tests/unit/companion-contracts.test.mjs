@@ -63,6 +63,21 @@ test("workers distinguish empty prompt sidecars from missing prompt sidecars", (
   }
 });
 
+test("plan-mode pre-run git-status sidecar failures are mutation warnings across companions", () => {
+  for (const rel of [
+    "plugins/claude/scripts/claude-companion.mjs",
+    "plugins/gemini/scripts/gemini-companion.mjs",
+    "plugins/kimi/scripts/kimi-companion.mjs",
+  ]) {
+    const source = readRepoFile(rel);
+    assert.match(
+      source,
+      /try\s*\{[\s\S]*?writeSidecar\(workspaceRoot,\s*jobId,\s*"git-status-before\.txt"[\s\S]*?\}\s*catch\s*\(e\)\s*\{[\s\S]*?mutations\.push\(mutationDetectionFailure\(e\)\)/,
+      `${rel}: pre-run git-status sidecar failure must be recorded as mutation_detection_failed`,
+    );
+  }
+});
+
 test("gemini companion passes read-only policy only for plan modes", () => {
   const source = readRepoFile("plugins/gemini/scripts/gemini-companion.mjs");
   assert.match(source, /policyPath:\s*profile\.permission_mode\s*===\s*"plan"\s*\?\s*READ_ONLY_POLICY\s*:\s*null/);

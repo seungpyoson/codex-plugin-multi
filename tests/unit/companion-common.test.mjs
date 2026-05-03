@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
@@ -119,6 +119,18 @@ test("consumePromptSidecar treats ENOTDIR as a missing sidecar", () => {
   writeFileSync(path.join(jobsDir, "job-file"), "not a directory", "utf8");
 
   assert.equal(consumePromptSidecar(jobsDir, "job-file"), null);
+});
+
+test("writePromptSidecar rejects symlinked job directories", { skip: process.platform === "win32" }, () => {
+  const jobsDir = mkdtempSync(path.join(tmpdir(), "companion-common-symlink-jobs-"));
+  const escapeDir = mkdtempSync(path.join(tmpdir(), "companion-common-symlink-escape-"));
+  symlinkSync(escapeDir, path.join(jobsDir, "job-link"), "dir");
+
+  assert.throws(
+    () => writePromptSidecar(jobsDir, "job-link", "secret"),
+    /not a real directory inside jobsDir|symlink/i,
+  );
+  assert.equal(existsSync(path.join(escapeDir, "prompt.txt")), false);
 });
 
 test("plugin packaging copies expose the canonical helper behavior", async () => {

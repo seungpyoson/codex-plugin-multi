@@ -2,8 +2,8 @@
 // Edit scripts/lib/companion-common.mjs, then run
 // `node scripts/ci/sync-companion-common.mjs` to update plugin packaging copies.
 
-import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
-import { resolve as resolvePath } from "node:path";
+import { chmodSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import { resolve as resolvePath, sep } from "node:path";
 
 export const PING_PROMPT =
   "reply with exactly: pong. Do not use any tools, do not read files, and do not explore the workspace.";
@@ -74,6 +74,27 @@ function enforcePrivateMode(target, mode) {
   }
 }
 
+function realpathOrResolve(target) {
+  try {
+    return realpathSync.native(target);
+  } catch {
+    return resolvePath(target);
+  }
+}
+
+function assertRealJobDirectory(jobsDir, dir) {
+  const stat = lstatSync(dir);
+  if (!stat.isDirectory() || stat.isSymbolicLink()) {
+    throw new Error(`${dir} is not a real directory inside jobsDir`);
+  }
+  const jobsReal = realpathOrResolve(jobsDir);
+  const dirReal = realpathOrResolve(dir);
+  const jobsPrefix = jobsReal.endsWith(sep) ? jobsReal : `${jobsReal}${sep}`;
+  if (!dirReal.startsWith(jobsPrefix)) {
+    throw new Error(`${dir} is not a real directory inside jobsDir`);
+  }
+}
+
 export function promptSidecarPath(jobsDir, jobId) {
   assertSafeSidecarJobId(jobId);
   return resolvePath(jobsDir, jobId, "prompt.txt");
@@ -83,6 +104,7 @@ export function writePromptSidecar(jobsDir, jobId, prompt) {
   assertSafeSidecarJobId(jobId);
   const dir = resolvePath(jobsDir, jobId);
   mkdirSync(dir, { recursive: true, mode: 0o700 });
+  assertRealJobDirectory(jobsDir, dir);
   enforcePrivateMode(dir, 0o700);
   const p = promptSidecarPath(jobsDir, jobId);
   const tmpFile = `${p}.${process.pid}.${Date.now()}.tmp`;

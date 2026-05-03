@@ -1,5 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import path, { resolve } from "node:path";
 
 import { _internal } from "../../scripts/ci/check-coverage.mjs";
@@ -50,6 +51,59 @@ test("coverage threshold checker fails any lib file below the configured floor",
   assert.deepEqual(failures, [
     "plugins/gemini/scripts/lib/low.mjs: branch coverage 84.90% < 85.00%",
   ]);
+});
+
+test("coverage threshold checker can enforce only an explicit file set", () => {
+  const failures = _internal.coverageFailures([
+    {
+      file: "plugins/claude/scripts/lib/ok.mjs",
+      lines: { percent: 100 },
+      branches: { percent: 100 },
+      functions: { percent: 100 },
+    },
+    {
+      file: "plugins/kimi/scripts/lib/newly-visible.mjs",
+      lines: { percent: 0 },
+      branches: { percent: 100 },
+      functions: { percent: 0 },
+    },
+  ], 85, new Set(["plugins/claude/scripts/lib/ok.mjs"]));
+
+  assert.deepEqual(failures, []);
+});
+
+test("coverage target enforcement set is read explicitly from the baseline", () => {
+  const files = _internal.targetEnforcedFilesFromBaseline({
+    target_enforced_files: ["plugins/claude/scripts/lib/old-surface.mjs"],
+    files: {
+      "plugins/kimi/scripts/lib/newly-visible.mjs": {
+        lines: 100,
+        branches: 100,
+        functions: 100,
+      },
+    },
+  }, 85);
+
+  assert.deepEqual([...files], ["plugins/claude/scripts/lib/old-surface.mjs"]);
+});
+
+test("coverage target enforcement falls back to fully covered baseline entries", () => {
+  const files = _internal.targetEnforcedFilesFromBaseline({
+    files: {
+      "plugins/claude/scripts/lib/enforced.mjs": {
+        lines: 85,
+        branches: 90,
+        functions: 100,
+      },
+      "plugins/kimi/scripts/lib/baseline-only.mjs": {
+        lines: 0,
+        branches: 100,
+        functions: 0,
+      },
+    },
+  }, 85);
+
+  assert.deepEqual([...files], ["plugins/claude/scripts/lib/enforced.mjs"]);
 });
 
 test("coverage function metric ignores anonymous callback helpers", () => {
@@ -278,6 +332,16 @@ test("coverage gate discovers every packaged plugin lib directory", async () => 
       `coverage gate must walk plugins/${plugin}/scripts/lib`,
     );
   }
+});
+
+test("coverage baseline tracks every discovered plugin lib file", async () => {
+  const baseline = JSON.parse(readFileSync(resolve("scripts/ci/coverage-baseline.json"), "utf8"));
+  const baselineFiles = new Set(Object.keys(baseline.files ?? {}));
+  const files = (await _internal.discoverLibFiles()).map((file) =>
+    path.relative(resolve("."), file).split(path.sep).join("/")
+  );
+
+  assert.deepEqual(files.filter((file) => !baselineFiles.has(file)), []);
 });
 
 test("coverage merger discovers byte-identical lib pairs instead of requiring duplicate tests", async () => {

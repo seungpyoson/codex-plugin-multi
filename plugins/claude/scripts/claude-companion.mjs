@@ -453,7 +453,11 @@ async function executeRun(invocation, prompt, { foreground }) {
     const before = tryGit(["status", "-s", "--untracked-files=all"], cwd);
     if (before.ok) {
       gitStatusBefore = before.stdout;
-      writeSidecar(workspaceRoot, jobId, "git-status-before.txt", gitStatusBefore);
+      try {
+        writeSidecar(workspaceRoot, jobId, "git-status-before.txt", gitStatusBefore);
+      } catch (e) {
+        mutations.push(mutationDetectionFailure(e));
+      }
     } else {
       mutations.push(mutationDetectionFailure(before.error));
     }
