@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, statSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
@@ -144,6 +144,24 @@ test("consumePromptSidecar rejects symlinked job directories", { skip: process.p
     /not a real directory inside jobsDir|symlink/i,
   );
   assert.equal(readFileSync(path.join(escapeDir, "prompt.txt"), "utf8"), "attacker prompt");
+});
+
+test("consumePromptSidecar returns the prompt when cleanup unlink fails", {
+  skip: !POSIX_MODE_ASSERTIONS || process.getuid?.() === 0,
+}, () => {
+  const jobsDir = mkdtempSync(path.join(tmpdir(), "companion-common-unlink-fails-"));
+  const p = promptSidecarPath(jobsDir, "job-1");
+  writePromptSidecar(jobsDir, "job-1", "secret prompt");
+  const dir = path.dirname(p);
+
+  chmodSync(dir, 0o500);
+  try {
+    assert.equal(consumePromptSidecar(jobsDir, "job-1"), "secret prompt");
+    assert.equal(readFileSync(p, "utf8"), "secret prompt");
+  } finally {
+    chmodSync(dir, 0o700);
+    try { unlinkSync(p); } catch { /* best-effort test cleanup */ }
+  }
 });
 
 test("plugin packaging copies expose the canonical helper behavior", async () => {

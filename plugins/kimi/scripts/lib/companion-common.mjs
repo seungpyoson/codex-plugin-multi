@@ -144,9 +144,7 @@ export function consumePromptSidecar(jobsDir, jobId) {
   }
   try {
     unlinkSync(p);
-  } catch (err) {
-    if (err?.code !== "ENOENT") throw err;
-  }
+  } catch { /* best-effort cleanup after the prompt has been read */ }
   return prompt;
 }
 
