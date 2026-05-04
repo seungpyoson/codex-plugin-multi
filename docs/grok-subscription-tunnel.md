@@ -151,6 +151,6 @@ node plugins/grok/scripts/grok-web-reviewer.mjs list
 node plugins/grok/scripts/grok-web-reviewer.mjs result --job-id <job_id>
 ```
 
-Custom and branch-diff scope reads reject unsafe paths and files larger than
-256 KiB before contacting the local tunnel. Split larger reviews into smaller
-`--scope-paths` bundles.
+Custom and branch-diff scope reads reject unsafe paths, files larger than
+256 KiB, and selected-source bundles larger than 1 MiB before contacting the
+local tunnel. Split larger reviews into smaller `--scope-paths` bundles.

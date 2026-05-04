@@ -2,7 +2,7 @@
 import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
-import { mkdir, readFile, realpath, rename, stat, unlink, writeFile } from "node:fs/promises";
+import { mkdir, readFile, realpath, rename, rmdir, stat, unlink, writeFile } from "node:fs/promises";
 import { dirname, isAbsolute, relative, resolve } from "node:path";
 import { cleanGitEnv as cleanCanonicalGitEnv } from "./lib/git-env.mjs";
 
@@ -12,6 +12,7 @@ const DEFAULT_MODEL = "grok-4.20-fast";
 const DEFAULT_TIMEOUT_MS = 30000;
 const DEFAULT_DOCTOR_TIMEOUT_MS = 2000;
 const MAX_SCOPE_FILE_BYTES = 256 * 1024;
+const MAX_SCOPE_TOTAL_BYTES = 1024 * 1024;
 const MAX_STATE_JOBS = 50;
 const SCHEMA_VERSION = 9;
 const MIN_SECRET_REDACTION_LENGTH = 8;
@@ -179,6 +180,7 @@ function selectedScopePaths(scope, options, cwd) {
 
 async function readScopeFiles(workspaceRoot, relPaths) {
   const files = [];
+  let totalBytes = 0;
   const realWorkspaceRoot = await realpath(workspaceRoot);
   for (const relPath of relPaths) {
     if (relPath.includes("..") || isAbsolute(relPath) || relPath.includes("\\")) {
@@ -199,6 +201,10 @@ async function readScopeFiles(workspaceRoot, relPaths) {
     if (!info.isFile()) continue;
     if (info.size > MAX_SCOPE_FILE_BYTES) {
       throw new Error(`scope_file_too_large:${normalizedRel}: ${info.size} bytes exceeds ${MAX_SCOPE_FILE_BYTES} byte limit`);
+    }
+    totalBytes += info.size;
+    if (totalBytes > MAX_SCOPE_TOTAL_BYTES) {
+      throw new Error(`scope_total_too_large:${totalBytes} bytes exceeds ${MAX_SCOPE_TOTAL_BYTES} byte limit`);
     }
     const text = await readFile(abs, "utf8");
     if (text.length === 0) continue;
@@ -524,35 +530,59 @@ async function writeJsonFile(file, value) {
   }
 }
 
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function withStateLock(root, fn) {
+  const lockDir = resolve(root, "state.json.lock");
+  for (let attempt = 0; attempt < 200; attempt += 1) {
+    try {
+      await mkdir(lockDir, { mode: 0o700 });
+      try {
+        return await fn();
+      } finally {
+        await rmdir(lockDir);
+      }
+    } catch (error) {
+      if (error?.code !== "EEXIST") throw error;
+      await sleep(Math.min(5 + attempt, 50));
+    }
+  }
+  throw new Error("state_lock_timeout: could not acquire Grok state lock");
+}
+
 async function persistRecord(record, env = process.env) {
   const root = dataRoot(env);
   const stateFile = resolve(root, "state.json");
   await writeJsonFile(resolve(root, "jobs", record.job_id, "meta.json"), record);
 
-  let priorJobs = [];
-  try {
-    const parsed = JSON.parse(await readFile(stateFile, "utf8"));
-    if (Array.isArray(parsed?.jobs)) priorJobs = parsed.jobs;
-  } catch (error) {
-    if (error?.code !== "ENOENT") throw error;
-  }
-  const summary = {
-    id: record.job_id,
-    job_id: record.job_id,
-    target: record.target,
-    provider: record.provider,
-    status: record.status,
-    mode: record.mode,
-    scope: record.scope,
-    scope_base: record.scope_base,
-    scope_paths: record.scope_paths,
-    updatedAt: record.ended_at,
-  };
-  const jobs = [summary, ...priorJobs.filter((job) => job?.job_id !== record.job_id && job?.id !== record.job_id)]
-    .slice(0, MAX_STATE_JOBS);
-  await writeJsonFile(stateFile, {
-    version: 1,
-    jobs,
+  await withStateLock(root, async () => {
+    let priorJobs = [];
+    try {
+      const parsed = JSON.parse(await readFile(stateFile, "utf8"));
+      if (Array.isArray(parsed?.jobs)) priorJobs = parsed.jobs;
+    } catch (error) {
+      if (error?.code !== "ENOENT") throw error;
+    }
+    const summary = {
+      id: record.job_id,
+      job_id: record.job_id,
+      target: record.target,
+      provider: record.provider,
+      status: record.status,
+      mode: record.mode,
+      scope: record.scope,
+      scope_base: record.scope_base,
+      scope_paths: record.scope_paths,
+      updatedAt: record.ended_at,
+    };
+    const jobs = [summary, ...priorJobs.filter((job) => job?.job_id !== record.job_id && job?.id !== record.job_id)]
+      .slice(0, MAX_STATE_JOBS);
+    await writeJsonFile(stateFile, {
+      version: 1,
+      jobs,
+    });
   });
 }
 

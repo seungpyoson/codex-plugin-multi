@@ -335,6 +335,94 @@ test("custom-review reports exhausted Grok file delimiter collisions as not sent
   assert.match(record.external_review.disclosure, /not sent/i);
 });
 
+test("custom-review rejects aggregate selected source that exceeds the prompt cap before contacting the tunnel", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "grok-web-workspace-"));
+  const files = [];
+  for (let i = 0; i < 5; i += 1) {
+    const file = `large-${i}.js`;
+    files.push(file);
+    writeFileSync(path.join(cwd, file), `export const value${i} = "${"x".repeat(220 * 1024)}";\n`);
+  }
+
+  const result = run([
+    "run",
+    "--mode", "custom-review",
+    "--scope", "custom",
+    "--scope-paths", files.join(","),
+    "--foreground",
+    "--prompt", "Check these files.",
+  ], {
+    cwd,
+    env: {
+      GROK_WEB_BASE_URL: "http://127.0.0.1:9/api",
+    },
+  });
+  const record = parseStdout(result);
+
+  assert.equal(result.status, 1);
+  assert.equal(record.status, "failed");
+  assert.equal(record.error_code, "scope_failed");
+  assert.match(record.error_message, /scope_total_too_large/);
+  assert.equal(record.external_review.source_content_transmission, "not_sent");
+  assert.match(record.external_review.disclosure, /not sent/i);
+});
+
+test("concurrent Grok runs preserve every completed job in the state index", async () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "grok-web-workspace-"));
+  const dataDir = mkdtempSync(path.join(tmpdir(), "grok-web-data-"));
+  writeFileSync(path.join(cwd, "review.js"), "export const value = 1;\n");
+  const runCount = 8;
+  let received = 0;
+  const releaseAfterAll = [];
+
+  await withServer(async (req, res) => {
+    await readJsonRequest(req);
+    received += 1;
+    if (received === runCount) {
+      for (const release of releaseAfterAll) release();
+    } else {
+      await new Promise((resolve) => releaseAfterAll.push(resolve));
+    }
+    res.setHeader("content-type", "application/json");
+    res.end(JSON.stringify({
+      id: `grok-web-concurrent-${received}`,
+      choices: [{ message: { content: `Verdict: concurrent ${received}.` } }],
+    }));
+  }, async (baseUrl) => {
+    const results = await Promise.all(Array.from({ length: runCount }, (_, i) => runAsync([
+      "run",
+      "--mode", "custom-review",
+      "--scope", "custom",
+      "--scope-paths", "review.js",
+      "--foreground",
+      "--prompt", `Check this file ${i}.`,
+    ], {
+      cwd,
+      env: {
+        GROK_WEB_BASE_URL: baseUrl,
+        GROK_PLUGIN_DATA: dataDir,
+      },
+    })));
+    const records = results.map((result) => {
+      const record = parseStdout(result);
+      assert.equal(result.status, 0);
+      assert.equal(record.status, "completed");
+      return record;
+    });
+
+    const listResult = run(["list"], {
+      cwd,
+      env: { GROK_PLUGIN_DATA: dataDir },
+    });
+    const listed = parseStdout(listResult);
+    assert.equal(listResult.status, 0);
+    assert.equal(listed.ok, true);
+    const listedIds = new Set(listed.jobs.map((job) => job.job_id));
+    for (const record of records) assert.equal(listedIds.has(record.job_id), true);
+    assert.equal(listed.jobs.length, runCount);
+  });
+});
+
 test("custom-review preserves canonical JobRecord when state index is malformed", async () => {
   const cwd = mkdtempSync(path.join(tmpdir(), "grok-web-workspace-"));
   const dataDir = mkdtempSync(path.join(tmpdir(), "grok-web-data-"));

@@ -62,8 +62,9 @@ prune.
 
 Safety proof for deletion: Grok writes per-job records only under the
 provider-owned Grok data root with validated generated job IDs. Its current
-`state.json` is a bounded recent-job index; per-job `meta.json` remains the
-canonical record for `result --job-id`.
+`state.json` is a bounded recent-job index serialized by a local lock directory
+so concurrent runs do not overwrite each other's summaries; per-job `meta.json`
+remains the canonical record for `result --job-id`.
 
 ## Failure Paths
 
