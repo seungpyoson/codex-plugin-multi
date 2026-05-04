@@ -1,20 +1,20 @@
 ---
 description: Get Claude Code's read-only review of the current diff, files, or focus area. Runs in a disposable worktree (default).
-argument-hint: "[--scope-base <ref>] [focus area]"
+argument-hint: "[--scope-base REF] [focus area]"
 ---
 
 Review via Claude Code. Read-only; changes detected post-hoc, never auto-reverted.
 
 ## Arguments
 
-`$ARGUMENTS` — optional `--scope-base <ref>` followed by focus text. If present, pass `--scope-base <ref>` before `--`; pass the remaining focus text after `--`.
+`$ARGUMENTS` — optional `--scope-base REF` followed by focus text. If present, pass `--scope-base REF` before `--`; pass the remaining focus text after `--`.
 
 ## Workflow
 
 1. Consult the `claude-prompting` skill for review-mode prompt framing and schema hints.
 2. Run:
    ```
-   node "<plugin-root>/scripts/claude-companion.mjs" run --mode=review --foreground [--scope-base <ref>] -- "<focus text>"
+   node "<plugin-root>/scripts/claude-companion.mjs" run --mode=review --foreground -- "<focus text>"
    ```
    (Containment + scope + dispose are all carried by the review profile — spec §21.4.)
    For a pinned review bundle or hand-picked files, first run `preflight`, then use

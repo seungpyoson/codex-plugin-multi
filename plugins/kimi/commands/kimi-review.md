@@ -1,19 +1,19 @@
 ---
 description: Get Kimi Code CLI's read-only review of the current diff, files, or focus area.
-argument-hint: "[--scope-base <ref>] [--max-steps-per-turn <n>] [focus area]"
+argument-hint: "[--scope-base REF] [--max-steps-per-turn N] [focus area]"
 ---
 
 Review via Kimi Code CLI. Runs in Kimi plan mode over disposable scoped input; changes are detected post-hoc and never auto-reverted.
 
 ## Arguments
 
-`$ARGUMENTS` — optional `--scope-base <ref>` and `--max-steps-per-turn <n>` followed by focus text. If present, pass those flags before `--`; pass the remaining focus text after `--`.
+`$ARGUMENTS` — optional `--scope-base REF` and `--max-steps-per-turn N` followed by focus text. If present, pass those flags before `--`; pass the remaining focus text after `--`.
 
 ## Workflow
 
 Run:
 ```
-node "<plugin-root>/scripts/kimi-companion.mjs" run --mode=review --foreground [--scope-base <ref>] [--max-steps-per-turn <n>] -- "<focus text>"
+node "<plugin-root>/scripts/kimi-companion.mjs" run --mode=review --foreground -- "<focus text>"
 ```
 
 For a pinned review bundle or selected files, first run `preflight`, then use

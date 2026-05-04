@@ -1,19 +1,19 @@
 ---
 description: Get Gemini CLI's read-only review of the current diff, files, or focus area. Runs with TOML policy enforcement.
-argument-hint: "[--scope-base <ref>] [focus area]"
+argument-hint: "[--scope-base REF] [focus area]"
 ---
 
 Review via Gemini CLI. Read-only policy is mandatory; changes detected post-hoc, never auto-reverted.
 
 ## Arguments
 
-`$ARGUMENTS` — optional `--scope-base <ref>` followed by focus text. If present, pass `--scope-base <ref>` before `--`; pass the remaining focus text after `--`.
+`$ARGUMENTS` — optional `--scope-base REF` followed by focus text. If present, pass `--scope-base REF` before `--`; pass the remaining focus text after `--`.
 
 ## Workflow
 
 Run:
 ```
-node "<plugin-root>/scripts/gemini-companion.mjs" run --mode=review --foreground [--scope-base <ref>] -- "<focus text>"
+node "<plugin-root>/scripts/gemini-companion.mjs" run --mode=review --foreground -- "<focus text>"
 ```
 
 For a pinned review bundle or selected files, first run `preflight`, then use

@@ -23,7 +23,7 @@ function assertPickerDescription(skill, rel) {
 }
 
 function assertNoBracketedCliFlagsInBash(skill, rel) {
-  for (const [, block] of skill.matchAll(/```bash\n([\s\S]*?)```/g)) {
+  for (const [, block] of skill.matchAll(/(?:^|\n)[ \t]*```(?:bash)?\n([\s\S]*?)\n[ \t]*```/g)) {
     assert.doesNotMatch(block, /\[[^\]\n]*--[a-z0-9-]+[^\]\n]*\]/i, `${rel} has bracketed optional CLI syntax`);
   }
 }
@@ -95,6 +95,7 @@ function assertApiReviewerWorkflowInvocation(skill, provider, workflow, rel) {
 }
 
 function assertApiReviewerCommandDoc(command, workflow, rel) {
+  assertNoBracketedCliFlagsInBash(command, rel);
   assert.doesNotMatch(command, /--foreground\b/, `${rel} must not document ignored --foreground flag`);
   if (workflow !== "setup") {
     assert.match(command, /external_review.*before the review result/, `${rel} missing external_review rendering guidance`);
@@ -266,6 +267,8 @@ test("provider workflow skills are user-invocable and command-backed", () => {
       assertCompanionWorkflowInvocation(skill, plugin, workflow, rel);
       const commandRel = `plugins/${plugin}/commands/${skillName}.md`;
       assert.equal(existsSync(path.join(REPO_ROOT, commandRel)), true, `${commandRel} missing`);
+      const command = readFileSync(path.join(REPO_ROOT, commandRel), "utf8");
+      assertNoBracketedCliFlagsInBash(command, commandRel);
       assert.match(skill, new RegExp(commandRel.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
     }
   }

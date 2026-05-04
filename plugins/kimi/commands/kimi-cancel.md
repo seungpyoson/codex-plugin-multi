@@ -8,8 +8,9 @@ argument-hint: "<job-id> [--force]"
 1. Confirm with the user before canceling unless they passed `--force` (SIGKILL).
 2. Parse `$ARGUMENTS` as `<job-id> [--force]`, then run:
    ```
-   node "<plugin-root>/scripts/kimi-companion.mjs" cancel --job <job-id> [--force]
+   node "<plugin-root>/scripts/kimi-companion.mjs" cancel --job "<job-id>"
    ```
+   Add `--force` only when the user passed `--force`.
 3. Report the response JSON. The exit code is the coarse-grained outcome; the JSON `status` field is the fine-grained reason.
 
 ### Statuses and exit codes

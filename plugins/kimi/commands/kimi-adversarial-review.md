@@ -1,19 +1,19 @@
 ---
 description: Get Kimi Code CLI to adversarially challenge the current design under read-only policy.
-argument-hint: "[--scope-base <ref>] [--max-steps-per-turn <n>] [focus area]"
+argument-hint: "[--scope-base REF] [--max-steps-per-turn N] [focus area]"
 ---
 
 Adversarial review via Kimi Code CLI. Assumes the author is wrong; looks for failure modes, hidden assumptions, and missing edge cases.
 
 ## Arguments
 
-`$ARGUMENTS` — optional `--scope-base <ref>` and `--max-steps-per-turn <n>` followed by focus text. If present, pass those flags before `--`; pass the remaining focus text after `--`.
+`$ARGUMENTS` — optional `--scope-base REF` and `--max-steps-per-turn N` followed by focus text. If present, pass those flags before `--`; pass the remaining focus text after `--`.
 
 ## Workflow
 
 Run:
 ```
-node "<plugin-root>/scripts/kimi-companion.mjs" run --mode=adversarial-review --foreground [--scope-base <ref>] [--max-steps-per-turn <n>] -- "<focus text>"
+node "<plugin-root>/scripts/kimi-companion.mjs" run --mode=adversarial-review --foreground -- "<focus text>"
 ```
 `branch-diff` is object-pure: checkout filters, replace refs, and grafts are ignored.
 It reduces the selected review scope, but a successful run still sends those
