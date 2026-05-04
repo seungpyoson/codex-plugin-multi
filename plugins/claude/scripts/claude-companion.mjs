@@ -223,6 +223,20 @@ function failBackgroundWorkerSpawn(workspaceRoot, invocation, error) {
   fail("spawn_failed", message, { error_code: error?.code ?? null });
 }
 
+function failBackgroundPromptSidecarWrite(workspaceRoot, invocation, error) {
+  const message = `background prompt sidecar write failed: ${error?.code ? `${error.code}: ` : ""}${error?.message ?? String(error)}`;
+  const errorRecord = buildJobRecord(invocation, {
+    exitCode: null,
+    parsed: null,
+    pidInfo: null,
+    claudeSessionId: null,
+    errorMessage: message,
+  }, []);
+  writeJobFile(workspaceRoot, invocation.job_id, errorRecord);
+  upsertJob(workspaceRoot, errorRecord);
+  fail("sidecar_failed", message, { error_code: error?.code ?? null });
+}
+
 // ——— subcommand: preflight ———
 function cmdPreflight(rest) {
   const { options } = parseArgs(rest, {
@@ -385,7 +399,11 @@ async function cmdRun(rest) {
   if (options.background) {
     // Write prompt to private sidecar (§21.3.1 handoff buffer). Worker reads
     // and deletes — prompt text does NOT live on the JobRecord.
-    writePromptSidecar(resolveJobsDir(workspaceRoot), jobId, prompt);
+    try {
+      writePromptSidecar(resolveJobsDir(workspaceRoot), jobId, prompt);
+    } catch (error) {
+      failBackgroundPromptSidecarWrite(workspaceRoot, invocation, error);
+    }
 
     // Detach a worker process that will execute the run and overwrite the
     // terminal-state meta when done (spec §7.3 / M4).
@@ -825,7 +843,11 @@ async function cmdContinue(rest) {
   upsertJob(workspaceRoot, queuedRecord);
 
   if (options.background) {
-    writePromptSidecar(resolveJobsDir(workspaceRoot), newJobId_, prompt);
+    try {
+      writePromptSidecar(resolveJobsDir(workspaceRoot), newJobId_, prompt);
+    } catch (error) {
+      failBackgroundPromptSidecarWrite(workspaceRoot, invocation, error);
+    }
     const { child, error } = await spawnDetachedWorker(cwd, newJobId_, authSelection.auth_mode);
     if (error) failBackgroundWorkerSpawn(workspaceRoot, invocation, error);
     printJson({ event: "launched", job_id: newJobId_, target: "claude",

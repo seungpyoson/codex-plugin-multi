@@ -73,6 +73,31 @@ test("workers distinguish empty prompt sidecars from missing prompt sidecars", (
   }
 });
 
+test("background prompt sidecar write failures terminalize queued jobs", () => {
+  for (const rel of [
+    "plugins/claude/scripts/claude-companion.mjs",
+    "plugins/gemini/scripts/gemini-companion.mjs",
+    "plugins/kimi/scripts/kimi-companion.mjs",
+  ]) {
+    const source = readRepoFile(rel);
+    assert.match(
+      source,
+      /function failBackgroundPromptSidecarWrite[\s\S]*?buildJobRecord[\s\S]*?writeJobFile[\s\S]*?upsertJob[\s\S]*?fail\(/,
+      `${rel}: prompt sidecar write failure must produce a terminal failed JobRecord and structured error`,
+    );
+    assert.match(
+      source,
+      /try\s*\{\s*writePromptSidecar\(resolveJobsDir\(workspaceRoot\),\s*jobId[\s\S]*?\}\s*catch\s*\(error\)\s*\{\s*failBackgroundPromptSidecarWrite\(workspaceRoot,\s*invocation,\s*error\)/,
+      `${rel}: background run must route prompt sidecar write failures through the terminalization helper`,
+    );
+    assert.match(
+      source,
+      /try\s*\{\s*writePromptSidecar\(resolveJobsDir\(workspaceRoot\),\s*newJobId_[\s\S]*?\}\s*catch\s*\(error\)\s*\{\s*failBackgroundPromptSidecarWrite\(workspaceRoot,\s*invocation,\s*error\)/,
+      `${rel}: background continue must route prompt sidecar write failures through the terminalization helper`,
+    );
+  }
+});
+
 test("plan-mode pre-run git-status sidecar failures are mutation warnings across companions", () => {
   for (const rel of [
     "plugins/claude/scripts/claude-companion.mjs",

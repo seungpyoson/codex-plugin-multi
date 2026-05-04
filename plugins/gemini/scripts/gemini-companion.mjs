@@ -176,6 +176,20 @@ function failBackgroundWorkerSpawn(workspaceRoot, invocation, error) {
   fail("spawn_failed", message, { error_code: error?.code ?? null });
 }
 
+function failBackgroundPromptSidecarWrite(workspaceRoot, invocation, error) {
+  const message = `background prompt sidecar write failed: ${error?.code ? `${error.code}: ` : ""}${error?.message ?? String(error)}`;
+  const errorRecord = buildJobRecord(invocation, {
+    exitCode: null,
+    parsed: null,
+    pidInfo: null,
+    geminiSessionId: null,
+    errorMessage: message,
+  }, []);
+  writeJobFile(workspaceRoot, invocation.job_id, errorRecord);
+  upsertJob(workspaceRoot, errorRecord);
+  fail("sidecar_failed", message, { error_code: error?.code ?? null });
+}
+
 function cmdPreflight(rest) {
   const { options } = parseArgs(rest, {
     valueOptions: ["mode", "cwd", "scope-base", "scope-paths", "binary"],
@@ -309,7 +323,11 @@ async function cmdRun(rest) {
   upsertJob(workspaceRoot, queuedRecord);
 
   if (options.background) {
-    writePromptSidecar(resolveJobsDir(workspaceRoot), jobId, prompt);
+    try {
+      writePromptSidecar(resolveJobsDir(workspaceRoot), jobId, prompt);
+    } catch (error) {
+      failBackgroundPromptSidecarWrite(workspaceRoot, invocation, error);
+    }
     const { child, error } = await spawnDetachedWorker(cwd, jobId, authSelection.auth_mode);
     if (error) failBackgroundWorkerSpawn(workspaceRoot, invocation, error);
     printJson({
@@ -720,7 +738,11 @@ async function cmdContinue(rest) {
   upsertJob(workspaceRoot, queuedRecord);
 
   if (options.background) {
-    writePromptSidecar(resolveJobsDir(workspaceRoot), newJobId_, prompt);
+    try {
+      writePromptSidecar(resolveJobsDir(workspaceRoot), newJobId_, prompt);
+    } catch (error) {
+      failBackgroundPromptSidecarWrite(workspaceRoot, invocation, error);
+    }
     const { child, error } = await spawnDetachedWorker(cwd, newJobId_, authSelection.auth_mode);
     if (error) failBackgroundWorkerSpawn(workspaceRoot, invocation, error);
     printJson({

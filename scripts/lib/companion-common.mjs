@@ -84,8 +84,13 @@ function realpathOrResolve(target) {
 
 function assertRealJobDirectory(jobsDir, dir) {
   const stat = lstatSync(dir);
-  if (!stat.isDirectory() || stat.isSymbolicLink()) {
+  if (stat.isSymbolicLink()) {
     throw new Error(`${dir} is not a real directory inside jobsDir`);
+  }
+  if (!stat.isDirectory()) {
+    const err = new Error(`${dir} is not a directory inside jobsDir`);
+    err.code = "ENOTDIR";
+    throw err;
   }
   const jobsReal = realpathOrResolve(jobsDir);
   const dirReal = realpathOrResolve(dir);
@@ -123,6 +128,12 @@ export function writePromptSidecar(jobsDir, jobId, prompt) {
 
 export function consumePromptSidecar(jobsDir, jobId) {
   assertSafeSidecarJobId(jobId);
+  try {
+    assertRealJobDirectory(jobsDir, resolvePath(jobsDir, jobId));
+  } catch (err) {
+    if (err?.code === "ENOENT" || err?.code === "ENOTDIR") return null;
+    throw err;
+  }
   const p = promptSidecarPath(jobsDir, jobId);
   let prompt;
   try {

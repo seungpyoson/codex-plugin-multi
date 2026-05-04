@@ -262,6 +262,20 @@ function failBackgroundWorkerSpawn(workspaceRoot, invocation, error) {
   fail("spawn_failed", message, { error_code: error?.code ?? null });
 }
 
+function failBackgroundPromptSidecarWrite(workspaceRoot, invocation, error) {
+  const message = `background prompt sidecar write failed: ${error?.code ? `${error.code}: ` : ""}${error?.message ?? String(error)}`;
+  const errorRecord = buildJobRecord(invocation, {
+    exitCode: null,
+    parsed: null,
+    pidInfo: null,
+    kimiSessionId: null,
+    errorMessage: message,
+  }, []);
+  writeJobFile(workspaceRoot, invocation.job_id, errorRecord);
+  upsertJob(workspaceRoot, errorRecord);
+  fail("sidecar_failed", message, { error_code: error?.code ?? null });
+}
+
 function cmdPreflight(rest) {
   const { options } = parseArgs(rest, {
     valueOptions: ["mode", "cwd", "scope-base", "scope-paths", "binary"],
@@ -399,7 +413,11 @@ async function cmdRun(rest) {
   const targetPrompt = targetPromptFor(profile, prompt);
 
   if (options.background) {
-    writePromptSidecar(resolveJobsDir(workspaceRoot), jobId, targetPrompt);
+    try {
+      writePromptSidecar(resolveJobsDir(workspaceRoot), jobId, targetPrompt);
+    } catch (error) {
+      failBackgroundPromptSidecarWrite(workspaceRoot, invocation, error);
+    }
     const { child, error } = await spawnDetachedWorker(cwd, jobId);
     if (error) failBackgroundWorkerSpawn(workspaceRoot, invocation, error);
     printJson({
@@ -805,7 +823,11 @@ async function cmdContinue(rest) {
   const targetPrompt = targetPromptFor(priorProfile, prompt);
 
   if (options.background) {
-    writePromptSidecar(resolveJobsDir(workspaceRoot), newJobId_, targetPrompt);
+    try {
+      writePromptSidecar(resolveJobsDir(workspaceRoot), newJobId_, targetPrompt);
+    } catch (error) {
+      failBackgroundPromptSidecarWrite(workspaceRoot, invocation, error);
+    }
     const { child, error } = await spawnDetachedWorker(cwd, newJobId_);
     if (error) failBackgroundWorkerSpawn(workspaceRoot, invocation, error);
     printJson({

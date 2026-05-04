@@ -133,6 +133,19 @@ test("writePromptSidecar rejects symlinked job directories", { skip: process.pla
   assert.equal(existsSync(path.join(escapeDir, "prompt.txt")), false);
 });
 
+test("consumePromptSidecar rejects symlinked job directories", { skip: process.platform === "win32" }, () => {
+  const jobsDir = mkdtempSync(path.join(tmpdir(), "companion-common-consume-symlink-jobs-"));
+  const escapeDir = mkdtempSync(path.join(tmpdir(), "companion-common-consume-symlink-escape-"));
+  symlinkSync(escapeDir, path.join(jobsDir, "job-link"), "dir");
+  writeFileSync(path.join(escapeDir, "prompt.txt"), "attacker prompt", "utf8");
+
+  assert.throws(
+    () => consumePromptSidecar(jobsDir, "job-link"),
+    /not a real directory inside jobsDir|symlink/i,
+  );
+  assert.equal(readFileSync(path.join(escapeDir, "prompt.txt"), "utf8"), "attacker prompt");
+});
+
 test("plugin packaging copies expose the canonical helper behavior", async () => {
   const modules = await Promise.all(
     COMPANION_PLUGIN_TARGETS.map((plugin) =>
@@ -203,6 +216,31 @@ function assertCopyHelperBranches(mod, plugin) {
   assert.equal(mod.consumePromptSidecar(jobsDir, "job-1"), "copy prompt");
   assert.equal(existsSync(sidecar), false);
   assert.equal(mod.consumePromptSidecar(jobsDir, "job-1"), null);
+
+  const enotdirJobsDir = mkdtempSync(path.join(tmpdir(), `companion-common-copy-enotdir-${plugin}-`));
+  writeFileSync(path.join(enotdirJobsDir, "job-file"), "not a directory", "utf8");
+  assert.equal(mod.consumePromptSidecar(enotdirJobsDir, "job-file"), null);
+
+  if (process.platform !== "win32") {
+    const writeSymlinkJobsDir = mkdtempSync(path.join(tmpdir(), `companion-common-copy-write-symlink-${plugin}-`));
+    const writeEscapeDir = mkdtempSync(path.join(tmpdir(), `companion-common-copy-write-escape-${plugin}-`));
+    symlinkSync(writeEscapeDir, path.join(writeSymlinkJobsDir, "job-link"), "dir");
+    assert.throws(
+      () => mod.writePromptSidecar(writeSymlinkJobsDir, "job-link", "copy secret"),
+      /not a real directory inside jobsDir|symlink/i,
+    );
+    assert.equal(existsSync(path.join(writeEscapeDir, "prompt.txt")), false);
+
+    const consumeSymlinkJobsDir = mkdtempSync(path.join(tmpdir(), `companion-common-copy-consume-symlink-${plugin}-`));
+    const consumeEscapeDir = mkdtempSync(path.join(tmpdir(), `companion-common-copy-consume-escape-${plugin}-`));
+    symlinkSync(consumeEscapeDir, path.join(consumeSymlinkJobsDir, "job-link"), "dir");
+    writeFileSync(path.join(consumeEscapeDir, "prompt.txt"), "attacker prompt", "utf8");
+    assert.throws(
+      () => mod.consumePromptSidecar(consumeSymlinkJobsDir, "job-link"),
+      /not a real directory inside jobsDir|symlink/i,
+    );
+    assert.equal(readFileSync(path.join(consumeEscapeDir, "prompt.txt"), "utf8"), "attacker prompt");
+  }
 
   assert.deepEqual(mod.credentialNameDiagnostics(["KEY"], {}), {});
   assert.deepEqual(mod.credentialNameDiagnostics(["KEY"], { KEY: "value" }), {
