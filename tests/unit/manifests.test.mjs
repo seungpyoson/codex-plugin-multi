@@ -29,6 +29,12 @@ function assertNoBracketedCliFlagsInShellFences(skill, rel) {
   }
 }
 
+function assertNoShellVariablePlaceholdersInShellFences(skill, rel) {
+  for (const [, block] of skill.matchAll(/(?:^|\n)[ \t]*```(?:bash|sh|shell)?\n([\s\S]*?)\n[ \t]*```/g)) {
+    assert.doesNotMatch(block, /"\$(?:PROMPT|FILES)"/, `${rel} has shell variable placeholders in copyable commands`);
+  }
+}
+
 test("bracketed optional flag guard covers sh fenced command blocks", () => {
   assert.throws(
     () => assertNoBracketedCliFlagsInShellFences("```sh\nnode script.mjs [--scope-base REF]\n```", "fixture.md"),
@@ -307,6 +313,7 @@ test("grok exposes a user-invocable skill fallback", () => {
   assert.match(skill, /external_review.*before the review result/);
   assert.doesNotMatch(skill, /api\.x\.ai/i);
   assertNoBracketedCliFlagsInShellFences(skill, rel);
+  assertNoShellVariablePlaceholdersInShellFences(skill, rel);
   assertPickerDescription(skill, rel);
 });
 
