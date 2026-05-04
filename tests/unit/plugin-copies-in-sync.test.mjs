@@ -21,6 +21,7 @@ import {
   COMPANION_PLUGIN_TARGETS,
 } from "../../scripts/lib/plugin-targets.mjs";
 import { STRIPPED_GIT_ENV_KEYS as CLAUDE_STRIPPED_GIT_ENV_KEYS } from "../../plugins/claude/scripts/lib/git-env.mjs";
+import { STRIPPED_GIT_ENV_KEYS as GROK_STRIPPED_GIT_ENV_KEYS } from "../../plugins/grok/scripts/lib/git-env.mjs";
 import { STRIPPED_GIT_ENV_KEYS as KIMI_STRIPPED_GIT_ENV_KEYS } from "../../plugins/kimi/scripts/lib/git-env.mjs";
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
@@ -108,12 +109,26 @@ test("lib/git-env.mjs: api-reviewers packaging copy matches the companion shared
   assert.equal(copy, canonical, "git-env.mjs packaging copy drifted in api-reviewers");
 });
 
+test("lib/git-env.mjs: grok packaging copy matches the companion shared source", () => {
+  const canonical = readFileSync(path.join(REPO_ROOT, "plugins/claude/scripts/lib/git-env.mjs"), "utf8");
+  const copy = readFileSync(
+    path.join(REPO_ROOT, "plugins/grok/scripts/lib/git-env.mjs"),
+    "utf8"
+  );
+  assert.equal(copy, canonical, "git-env.mjs packaging copy drifted in grok");
+});
+
 test("lib/git-env.mjs: kimi stripped key list matches the companion shared source", () => {
   const sortKeys = (keys) => [...keys].sort((a, b) => a.localeCompare(b));
   assert.deepEqual(
     sortKeys(KIMI_STRIPPED_GIT_ENV_KEYS),
     sortKeys(CLAUDE_STRIPPED_GIT_ENV_KEYS),
     "git-env.mjs stripped key list drifted in kimi"
+  );
+  assert.deepEqual(
+    sortKeys(GROK_STRIPPED_GIT_ENV_KEYS),
+    sortKeys(CLAUDE_STRIPPED_GIT_ENV_KEYS),
+    "git-env.mjs stripped key list drifted in grok"
   );
 });
 

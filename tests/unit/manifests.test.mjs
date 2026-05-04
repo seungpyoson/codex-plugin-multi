@@ -24,20 +24,27 @@ function assertPickerDescription(skill, rel) {
 }
 
 function assertNoBracketedCliFlagsInShellFences(skill, rel) {
-  for (const [, block] of skill.matchAll(/(?:^|\n)[ \t]*```(?:bash|sh|shell)?\n([\s\S]*?)\n[ \t]*```/g)) {
+  for (const [, block] of skill.matchAll(/(?:^|\n)[ \t]*```(?:bash|sh|shell)?[ \t]*\n([\s\S]*?)\n[ \t]*```/g)) {
     assert.doesNotMatch(block, /\[[^\]\n]*--[a-z0-9-]+[^\]\n]*\]/i, `${rel} has bracketed optional CLI syntax`);
   }
 }
 
 function assertNoShellVariablePlaceholdersInShellFences(skill, rel) {
-  for (const [, block] of skill.matchAll(/(?:^|\n)[ \t]*```(?:bash|sh|shell)?\n([\s\S]*?)\n[ \t]*```/g)) {
-    assert.doesNotMatch(block, /"\$(?:PROMPT|FILES)"/, `${rel} has shell variable placeholders in copyable commands`);
+  for (const [, block] of skill.matchAll(/(?:^|\n)[ \t]*```(?:bash|sh|shell)?[ \t]*\n([\s\S]*?)\n[ \t]*```/g)) {
+    assert.doesNotMatch(block, /"\$(?:PROMPT|FILES|ARGUMENTS|SCOPE_PATHS)"/, `${rel} has shell variable placeholders in copyable commands`);
   }
 }
 
 test("bracketed optional flag guard covers sh fenced command blocks", () => {
   assert.throws(
     () => assertNoBracketedCliFlagsInShellFences("```sh\nnode script.mjs [--scope-base REF]\n```", "fixture.md"),
+    /fixture\.md has bracketed optional CLI syntax/,
+  );
+});
+
+test("bracketed optional flag guard covers shell fence labels with trailing whitespace", () => {
+  assert.throws(
+    () => assertNoBracketedCliFlagsInShellFences("```bash \nnode script.mjs [--scope-base REF]\n```", "fixture.md"),
     /fixture\.md has bracketed optional CLI syntax/,
   );
 });
@@ -134,6 +141,7 @@ function assertApiReviewerCommandDoc(command, workflow, rel) {
 
 function assertGrokWorkflowInvocation(skill, workflow, rel) {
   assertNoBracketedCliFlagsInShellFences(skill, rel);
+  assertNoShellVariablePlaceholdersInShellFences(skill, rel);
   assert.match(skill, /grok-web-reviewer\.mjs\s+(setup|doctor|run)\b/, `${rel} missing grok-web-reviewer invocation`);
   assert.doesNotMatch(skill, /api\.x\.ai/i, `${rel} must not recommend direct xAI API fallback`);
   if (workflow === "setup") {
@@ -163,6 +171,7 @@ function assertGrokWorkflowInvocation(skill, workflow, rel) {
 
 function assertGrokCommandDoc(command, workflow, rel) {
   assertNoBracketedCliFlagsInShellFences(command, rel);
+  assertNoShellVariablePlaceholdersInShellFences(command, rel);
   assert.match(command, /grok-web-reviewer\.mjs\s+(doctor|run)\b/, `${rel} missing grok-web-reviewer command`);
   assert.match(command, /session cookies|tunnel API keys|bearer token/i, `${rel} missing secret handling guidance`);
   assert.doesNotMatch(command, /api\.x\.ai/i, `${rel} must not recommend direct xAI API fallback`);
@@ -462,12 +471,15 @@ test("README documents workflow-specific skill picker UX", () => {
 test("grok-facing docs avoid bracketed optional flags in fenced shell command blocks", () => {
   for (const rel of [
     "README.md",
+    "docs/e2e.md",
     "docs/grok-subscription-tunnel.md",
     "plugins/grok/skills/grok-delegation/SKILL.md",
     ...GROK_WORKFLOWS.map((workflow) => `plugins/grok/skills/grok-${workflow}/SKILL.md`),
     ...GROK_WORKFLOWS.map((workflow) => `plugins/grok/commands/grok-${workflow}.md`),
   ]) {
-    assertNoBracketedCliFlagsInShellFences(readFileSync(path.join(REPO_ROOT, rel), "utf8"), rel);
+    const doc = readFileSync(path.join(REPO_ROOT, rel), "utf8");
+    assertNoBracketedCliFlagsInShellFences(doc, rel);
+    assertNoShellVariablePlaceholdersInShellFences(doc, rel);
   }
 });
 

@@ -4,6 +4,7 @@ import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 import { mkdir, readFile, rename, stat, unlink, writeFile } from "node:fs/promises";
 import { dirname, isAbsolute, relative, resolve } from "node:path";
+import { cleanGitEnv as cleanCanonicalGitEnv } from "./lib/git-env.mjs";
 
 const VALID_MODES = new Set(["review", "adversarial-review", "custom-review"]);
 const DEFAULT_BASE_URL = "http://127.0.0.1:8000/v1";
@@ -92,24 +93,11 @@ function redactor(env = process.env) {
 }
 
 function cleanGitEnv(baseEnv = process.env) {
-  const out = { ...baseEnv };
+  const out = cleanCanonicalGitEnv(baseEnv);
   for (const key of Object.keys(out)) {
     if (
-      key === "GIT_DIR" ||
-      key === "GIT_WORK_TREE" ||
-      key === "GIT_CONFIG" ||
-      key === "GIT_CONFIG_GLOBAL" ||
-      key === "GIT_CONFIG_SYSTEM" ||
-      key === "GIT_INDEX_FILE" ||
-      key === "GIT_OBJECT_DIRECTORY" ||
-      key === "GIT_ALTERNATE_OBJECT_DIRECTORIES" ||
-      key === "GIT_COMMON_DIR" ||
-      key === "GIT_NAMESPACE" ||
-      key === "GIT_CEILING_DIRECTORIES" ||
-      key === "GIT_DISCOVERY_ACROSS_FILESYSTEM" ||
       /^(?:GROK|XAI)_/u.test(key) ||
-      /(?:API_KEY|TOKEN|COOKIE|SESSION|SSO)/iu.test(key) ||
-      /^GIT_CONFIG_(?:COUNT|KEY_\d+|VALUE_\d+)$/u.test(key)
+      /(?:API_KEY|TOKEN|COOKIE|SESSION|SSO)/iu.test(key)
     ) {
       delete out[key];
     }
