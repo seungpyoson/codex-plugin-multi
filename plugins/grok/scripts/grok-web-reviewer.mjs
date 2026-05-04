@@ -69,18 +69,49 @@ function parsePositiveInteger(value, fallback) {
 }
 
 function redactor(env = process.env) {
-  const secrets = Object.entries(env)
-    .filter(([name, value]) => (
-      /(?:API_KEY|TOKEN|COOKIE|SESSION|SSO)/i.test(name) &&
-      typeof value === "string" &&
-      value.length >= MIN_SECRET_REDACTION_LENGTH
-    ))
-    .map(([, value]) => value);
+  const secrets = [];
+  for (const [name, value] of Object.entries(env)) {
+    if (!/(?:API_KEY|TOKEN|COOKIE|SESSION|SSO)/i.test(name) || typeof value !== "string") continue;
+    const candidates = [value];
+    if (value.includes(";")) {
+      candidates.push(...value.split(";").map((part) => part.trim()).filter(Boolean));
+      candidates.push(...value.split(";").map((part) => part.split("=").slice(1).join("=").trim()).filter(Boolean));
+    }
+    for (const candidate of candidates) {
+      if (candidate.length >= MIN_SECRET_REDACTION_LENGTH) secrets.push(candidate);
+    }
+  }
   return (text) => {
     let out = String(text ?? "");
     for (const secret of secrets) out = out.split(secret).join("[REDACTED]");
+    out = out.replace(/Authorization:\s*\S+(?:\s+\S{8,})?/gi, "Authorization: [REDACTED]");
+    out = out.replace(/Bearer\s+\S{8,}/gi, "Bearer [REDACTED]");
     return out;
   };
+}
+
+function cleanGitEnv(baseEnv = process.env) {
+  const out = { ...baseEnv };
+  for (const key of Object.keys(out)) {
+    if (
+      key === "GIT_DIR" ||
+      key === "GIT_WORK_TREE" ||
+      key === "GIT_CONFIG" ||
+      key === "GIT_CONFIG_GLOBAL" ||
+      key === "GIT_CONFIG_SYSTEM" ||
+      key === "GIT_INDEX_FILE" ||
+      key === "GIT_OBJECT_DIRECTORY" ||
+      key === "GIT_ALTERNATE_OBJECT_DIRECTORIES" ||
+      key === "GIT_COMMON_DIR" ||
+      key === "GIT_NAMESPACE" ||
+      key === "GIT_CEILING_DIRECTORIES" ||
+      key === "GIT_DISCOVERY_ACROSS_FILESYSTEM" ||
+      /^GIT_CONFIG_(?:COUNT|KEY_\d+|VALUE_\d+)$/u.test(key)
+    ) {
+      delete out[key];
+    }
+  }
+  return out;
 }
 
 function redactValue(value, redact) {
@@ -110,7 +141,7 @@ function runCommand(command, args = [], options = {}) {
 }
 
 function git(args, cwd, options = {}) {
-  const res = runCommand("git", args, { cwd, env: process.env });
+  const res = runCommand("git", args, { cwd, env: cleanGitEnv() });
   if (res.error) throw new Error(`git_failed:${res.error.message}`);
   if (res.signal) throw new Error(`git_failed:signal:${res.signal}`);
   if (res.status !== 0) {
@@ -237,8 +268,10 @@ function errorMessageFromResponse(parsed, text, redact) {
 
 function tunnelTransportMessage(error, env, redact) {
   const detail = redact(error?.message ?? String(error));
-  if (env.GROK_API_KEY && !env.GROK_WEB_TUNNEL_API_KEY) {
-    return `${detail}. GROK_API_KEY is ignored by grok-web subscription_web mode; start the local Grok web tunnel and set GROK_WEB_TUNNEL_API_KEY only if that tunnel requires bearer auth.`;
+  const ignoredKeys = ["GROK_API_KEY", "XAI_API_KEY", "XAI_KEY"].filter((key) => env[key]);
+  if (ignoredKeys.length > 0 && !env.GROK_WEB_TUNNEL_API_KEY) {
+    const ignored = ignoredKeys.map((key) => `${key} is ignored`).join("; ");
+    return `${detail}. ${ignored} by grok-web subscription_web mode; start the local Grok web tunnel and set GROK_WEB_TUNNEL_API_KEY only if that tunnel requires bearer auth.`;
   }
   return detail;
 }

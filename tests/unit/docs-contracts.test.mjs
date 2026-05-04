@@ -78,7 +78,7 @@ test("cancel command docs enumerate the runtime status and error contracts", () 
 test("artifact cleanup inventory covers every provider, review mode, and owned artifact class", () => {
   const doc = readRepoFile("docs/artifact-cleanup-inventory.md");
 
-  for (const provider of ["Claude", "Gemini", "Kimi", "DeepSeek", "GLM"]) {
+  for (const provider of ["Claude", "Gemini", "Kimi", "DeepSeek", "GLM", "Grok Web"]) {
     assert.match(doc, new RegExp(`\\b${provider}\\b`), `missing provider ${provider}`);
   }
   for (const mode of ["review", "adversarial-review", "custom-review", "rescue", "foreground", "background", "continue"]) {

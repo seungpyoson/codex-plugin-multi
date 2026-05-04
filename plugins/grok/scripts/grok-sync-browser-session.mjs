@@ -7,6 +7,7 @@ import path from "node:path";
 
 const DEFAULT_GROK2API_BASE_URL = "http://127.0.0.1:8000";
 const DEFAULT_ADMIN_KEY = "grok2api";
+const DEFAULT_ADMIN_TIMEOUT_MS = 10000;
 const DEFAULT_POOL = "super";
 const COOKIE_NAMES = ["sso-rw", "sso"];
 
@@ -74,10 +75,26 @@ function normalizeBaseUrl(value) {
 function sanitizeToken(raw) {
   return String(raw || "")
     .trim()
-    .replace(/^sso-rw=/i, "")
-    .replace(/^sso=/i, "")
+    .replace(/^(?:(?:sso-rw|sso)=)+/i, "")
     .replace(/;.*/, "")
     .replaceAll(/\s+/g, "");
+}
+
+function parsePositiveInteger(value, fallback) {
+  if (value === undefined || value === null || value === "") return fallback;
+  const parsed = Number(value);
+  if (!Number.isSafeInteger(parsed) || parsed <= 0) return fallback;
+  return parsed;
+}
+
+function redactMessage(message, secrets = []) {
+  let out = String(message ?? "");
+  for (const secret of secrets) {
+    if (typeof secret === "string" && secret.length >= 8) out = out.split(secret).join("[REDACTED]");
+  }
+  out = out.replace(/Authorization:\s*\S+(?:\s+\S{8,})?/gi, "Authorization: [REDACTED]");
+  out = out.replace(/Bearer\s+\S{8,}/gi, "Bearer [REDACTED]");
+  return out;
 }
 
 function sanitizeAccount(entry) {
@@ -101,37 +118,56 @@ function fail(errorCode, message, extra = {}) {
   process.exit(1);
 }
 
-async function api(baseUrl, pathName, { method = "GET", body = null, adminKey = DEFAULT_ADMIN_KEY } = {}) {
-  const response = await fetch(`${baseUrl}/admin/api${pathName}`, {
-    method,
-    headers: {
-      authorization: `Bearer ${adminKey}`,
-      ...(body == null ? {} : { "content-type": "application/json" }),
-    },
-    ...(body == null ? {} : { body: JSON.stringify(body) }),
-  });
-  const text = await response.text();
-  let parsed = null;
+async function api(baseUrl, pathName, {
+  method = "GET",
+  body = null,
+  adminKey = DEFAULT_ADMIN_KEY,
+  timeoutMs = DEFAULT_ADMIN_TIMEOUT_MS,
+} = {}) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    parsed = text ? JSON.parse(text) : null;
-  } catch {
-    parsed = { raw: text.slice(0, 200) };
+    const response = await fetch(`${baseUrl}/admin/api${pathName}`, {
+      method,
+      headers: {
+        authorization: `Bearer ${adminKey}`,
+        ...(body == null ? {} : { "content-type": "application/json" }),
+      },
+      ...(body == null ? {} : { body: JSON.stringify(body) }),
+      signal: controller.signal,
+    });
+    const text = await response.text();
+    let parsed = null;
+    try {
+      parsed = text ? JSON.parse(text) : null;
+    } catch {
+      parsed = { raw: text.slice(0, 200) };
+    }
+    if (!response.ok) {
+      const err = new Error(`${pathName} HTTP ${response.status}`);
+      err.status = response.status;
+      err.body = parsed;
+      throw err;
+    }
+    return parsed;
+  } catch (error) {
+    if (error?.name === "AbortError") {
+      const err = new Error(`${pathName} timed out after ${timeoutMs}ms`);
+      err.code = "grok2api_timeout";
+      throw err;
+    }
+    throw error;
+  } finally {
+    clearTimeout(timer);
   }
-  if (!response.ok) {
-    const err = new Error(`${pathName} HTTP ${response.status}`);
-    err.status = response.status;
-    err.body = parsed;
-    throw err;
-  }
-  return parsed;
 }
 
-async function checkGrok2Api(baseUrl, adminKey) {
+async function checkGrok2Api(baseUrl, adminKey, timeoutMs) {
   try {
-    const current = await api(baseUrl, "/tokens", { adminKey });
+    const current = await api(baseUrl, "/tokens", { adminKey, timeoutMs });
     return Array.isArray(current?.tokens) ? current.tokens : [];
   } catch (error) {
-    process.stderr.write(`Could not reach local grok2api admin API: ${error.message}\n`);
+    process.stderr.write(`Could not reach local grok2api admin API: ${redactMessage(error.message, [adminKey])}\n`);
     return null;
   }
 }
@@ -158,6 +194,7 @@ function run(command, args, options = {}) {
   const res = spawnSync(command, args, {
     encoding: "utf8",
     windowsHide: true,
+    shell: false,
     ...options,
   });
   if (res.status !== 0 || res.error) {
@@ -249,9 +286,14 @@ async function main(argv = process.argv.slice(2)) {
   const args = parseArgs(argv);
   const baseUrl = normalizeBaseUrl(args["grok2api-base-url"] || process.env.GROK2API_BASE_URL);
   const adminKey = String(args["admin-key"] || process.env.GROK2API_ADMIN_KEY || DEFAULT_ADMIN_KEY);
+  const adminTimeoutMs = parsePositiveInteger(args["admin-timeout-ms"] || process.env.GROK2API_ADMIN_TIMEOUT_MS, DEFAULT_ADMIN_TIMEOUT_MS);
   const pool = String(args.pool || process.env.GROK2API_POOL || DEFAULT_POOL).toLowerCase();
 
-  const existingTokens = await checkGrok2Api(baseUrl, adminKey);
+  if (adminKey === DEFAULT_ADMIN_KEY) {
+    process.stderr.write("Using default grok2api admin key; set GROK2API_ADMIN_KEY for any non-loopback or shared-host setup.\n");
+  }
+
+  const existingTokens = await checkGrok2Api(baseUrl, adminKey, adminTimeoutMs);
   if (existingTokens === null) {
     fail("grok2api_unreachable", `Could not reach local grok2api admin API at ${baseUrl}/admin/api/tokens.`);
   }
@@ -282,12 +324,12 @@ async function main(argv = process.argv.slice(2)) {
 
   const toDelete = existingTokens.map((entry) => entry.token).filter(Boolean);
   try {
+    await api(baseUrl, "/tokens/add", { method: "POST", body: { pool, tokens: [selected.value] }, adminKey, timeoutMs: adminTimeoutMs });
+    await api(baseUrl, "/batch/refresh", { method: "POST", body: { tokens: [selected.value] }, adminKey, timeoutMs: adminTimeoutMs });
     if (toDelete.length) {
-      await api(baseUrl, "/tokens", { method: "DELETE", body: toDelete, adminKey });
+      await api(baseUrl, "/tokens", { method: "DELETE", body: toDelete, adminKey, timeoutMs: adminTimeoutMs });
     }
-    await api(baseUrl, "/tokens/add", { method: "POST", body: { pool, tokens: [selected.value] }, adminKey });
-    await api(baseUrl, "/batch/refresh", { method: "POST", body: { tokens: [selected.value] }, adminKey });
-    const after = await api(baseUrl, "/tokens", { adminKey });
+    const after = await api(baseUrl, "/tokens", { adminKey, timeoutMs: adminTimeoutMs });
     printJson({
       ok: true,
       source,
@@ -300,7 +342,12 @@ async function main(argv = process.argv.slice(2)) {
     });
     process.exit(0);
   } catch (error) {
-    fail("grok2api_import_failed", error.message, { source, selected_cookie: selected.name });
+    fail(error.code || "grok2api_import_failed", redactMessage(error.message, [selected.value, adminKey]), {
+      source,
+      selected_cookie: selected.name,
+      previous_pool_count: existingTokens.length,
+      pool_emptied: false,
+    });
   }
 }
 

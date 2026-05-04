@@ -41,9 +41,10 @@ npm run grok:sync-browser-session
 
 The helper announces which local browser profile and cookie database it reads,
 may trigger macOS Keychain access, prefers the `sso-rw` cookie over `sso`, and
-prints only sanitized pool/quota status. It replaces existing grok2api accounts
-and defaults the local pool to `super` because grok2api may misclassify
-SuperGrok sessions as `basic` during quota auto-detection.
+prints only sanitized pool/quota status. It adds and refreshes the new token
+before deleting old grok2api accounts, so an add/refresh failure does not empty
+the existing pool. It defaults the local pool to `super` because grok2api may
+misclassify SuperGrok sessions as `basic` during quota auto-detection.
 
 Useful options:
 
@@ -54,9 +55,18 @@ npm run grok:sync-browser-session -- --browser edge --profile Default --pool sup
 npm run grok:sync-browser-session -- --browser arc --profile Default --pool super
 ```
 
+The helper talks to grok2api's local admin API with
+`GROK2API_ADMIN_KEY` or `--admin-key`. The out-of-box grok2api default is
+`grok2api`; use a custom admin key if grok2api is bound anywhere other than
+loopback or is running on a shared host. `GROK2API_ADMIN_TIMEOUT_MS` or
+`--admin-timeout-ms` controls the per-call admin API timeout.
+
 4. If browser extraction fails, configure grok2api with your Grok web account
-   token/session in grok2api's own local config or admin UI. Keep that state
-   outside this repository.
+   token/session in grok2api's own local config or admin UI, or pass a local
+   JSON file with `--cookie-source-json` containing `{ "name": "sso-rw",
+   "value": "..." }` or `{ "name": "sso", "value": "..." }` entries. Keep
+   that state outside this repository. This JSON escape hatch is also the
+   fallback if a future Chrome cookie format cannot be decrypted by the helper.
 5. Keep the plugin endpoint at the default, or set:
 
 ```sh

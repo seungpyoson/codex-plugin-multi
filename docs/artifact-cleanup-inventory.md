@@ -40,6 +40,30 @@ DeepSeek/GLM branch-diff and custom-review material is read from the workspace i
 
 Safety proof for deletion: API reviewer pruning only removes directories derived from validated safe job IDs under the API reviewer `jobs/` root. Tampered unsafe state entries are ignored for deletion. Active-looking records are retained and not pruned.
 
+## Grok Web
+
+Applies to Grok Web `review`, `adversarial-review`, and `custom-review`
+foreground subscription-tunnel runs.
+
+| Artifact | Root | Contents | Needed for | Safe deletion point | Owner |
+| --- | --- | --- | --- | --- | --- |
+| `state.json` | `GROK_PLUGIN_DATA` or `.codex-plugin-data/grok` | Latest Grok job summary | Latest local diagnostics only | Never as per-job cleanup | `grok-web-reviewer.mjs` |
+| `jobs/<jobId>/meta.json` | Grok data root | Canonical Grok Web JobRecord | Returned result and retained diagnostics | Manual cleanup or future retained-history pruning | `grok-web-reviewer.mjs` |
+| `jobs/<jobId>/meta.json.*.tmp` | Grok job dir | Partial atomic write | Nothing after interrupted write | Removed on write failure; containing job dir may be manually deleted with the JobRecord | `grok-web-reviewer.mjs` |
+
+Grok branch-diff and custom-review material is read from the workspace into
+memory and sent through the local subscription-backed tunnel. The Grok path
+does not persist prompt sidecars, copied review bundles, branch-diff files,
+stdout/stderr logs, PID records, cancel markers, or subprocess state. Git scope
+discovery uses synchronous child processes with Git environment overrides
+scrubbed before the JobRecord is built; provider execution uses `fetch` in the
+current process. There is no live provider-owned subprocess to terminate on
+prune.
+
+Safety proof for deletion: Grok writes per-job records only under the
+provider-owned Grok data root with validated generated job IDs. Its current
+`state.json` is a latest-job summary, not a retained-history index.
+
 ## Failure Paths
 
 - Bad args, unsupported provider/mode, malformed provider config, missing keys, auth failure, scope failure, HTTP failure, timeout, and malformed provider response all produce terminal JobRecords and enter the same retained-history cleanup path.

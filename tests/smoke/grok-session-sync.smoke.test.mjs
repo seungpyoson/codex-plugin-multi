@@ -71,23 +71,23 @@ test("sync-browser-session imports sso-rw into grok2api, forces super pool, and 
       res.end(JSON.stringify({ tokens: currentTokens }));
       return;
     }
-    if (req.method === "DELETE" && req.url === "/admin/api/tokens") {
-      const body = await readJsonRequest(req);
-      assert.deepEqual(body, ["old-token"]);
-      currentTokens = [];
-      res.end(JSON.stringify({ status: "success" }));
-      return;
-    }
     if (req.method === "POST" && req.url === "/admin/api/tokens/add") {
       const body = await readJsonRequest(req);
       assert.deepEqual(body, { pool: "super", tokens: [secret] });
-      currentTokens = [{ token: secret, pool: "super", status: "active", quota: { auto: { remaining: 50, total: 50 } } }];
+      currentTokens.push({ token: secret, pool: "super", status: "active", quota: { auto: { remaining: 50, total: 50 } } });
       res.end(JSON.stringify({ status: "success", count: 1 }));
       return;
     }
     if (req.method === "POST" && req.url === "/admin/api/batch/refresh") {
       const body = await readJsonRequest(req);
       assert.deepEqual(body, { tokens: [secret] });
+      res.end(JSON.stringify({ status: "success" }));
+      return;
+    }
+    if (req.method === "DELETE" && req.url === "/admin/api/tokens") {
+      const body = await readJsonRequest(req);
+      assert.deepEqual(body, ["old-token"]);
+      currentTokens = currentTokens.filter((entry) => entry.token !== "old-token");
       res.end(JSON.stringify({ status: "success" }));
       return;
     }
@@ -117,9 +117,56 @@ test("sync-browser-session imports sso-rw into grok2api, forces super pool, and 
     assert.doesNotMatch(result.stdout, /super-secret-sso-rw-token-value/);
     assert.doesNotMatch(result.stderr, /super-secret-sso-rw-token-value/);
     assert.match(result.stderr, /Reading Grok session cookies/i);
+    assert.match(result.stderr, /default grok2api admin key/i);
   });
 
   assert.ok(requests.every((entry) => entry.authorization === "Bearer grok2api"));
+});
+
+test("sync-browser-session does not delete existing tokens when add fails", async () => {
+  const dir = mkdtempSync(path.join(tmpdir(), "grok-sync-"));
+  const secret = "new-incoming-token-value";
+  const cookieSource = path.join(dir, "cookies.json");
+  writeFileSync(cookieSource, JSON.stringify([{ name: "sso-rw", value: secret }]));
+
+  const requests = [];
+  let currentTokens = [{ token: "prior-working-token", pool: "super", status: "active", quota: {} }];
+  await withGrok2ApiServer(async (req, res) => {
+    requests.push(req.method);
+    res.setHeader("content-type", "application/json");
+    if (req.method === "GET" && req.url === "/admin/api/tokens") {
+      res.end(JSON.stringify({ tokens: currentTokens }));
+      return;
+    }
+    if (req.method === "POST" && req.url === "/admin/api/tokens/add") {
+      res.statusCode = 500;
+      res.end(JSON.stringify({ error: { message: "add failed" } }));
+      return;
+    }
+    if (req.method === "DELETE" && req.url === "/admin/api/tokens") {
+      currentTokens = [];
+      res.end(JSON.stringify({ status: "success" }));
+      return;
+    }
+    res.statusCode = 404;
+    res.end(JSON.stringify({ error: "not found" }));
+  }, async (baseUrl) => {
+    const result = await runAsync([
+      "--cookie-source-json", cookieSource,
+      "--grok2api-base-url", baseUrl,
+      "--pool", "super",
+    ]);
+    assert.equal(result.status, 1);
+    const parsed = JSON.parse(result.stdout);
+    assert.equal(parsed.ok, false);
+    assert.equal(parsed.error_code, "grok2api_import_failed");
+    assert.equal(parsed.previous_pool_count, 1);
+    assert.equal(parsed.pool_emptied, false);
+    assert.deepEqual(currentTokens, [{ token: "prior-working-token", pool: "super", status: "active", quota: {} }]);
+    assert.doesNotMatch(result.stdout, /new-incoming-token-value/);
+  });
+
+  assert.deepEqual(requests, ["GET", "POST"]);
 });
 
 test("sync-browser-session refuses to touch cookies when grok2api is unreachable", async () => {
@@ -137,4 +184,26 @@ test("sync-browser-session refuses to touch cookies when grok2api is unreachable
   assert.equal(parsed.error_code, "grok2api_unreachable");
   assert.doesNotMatch(result.stdout, /secret-value-that-must-not-load/);
   assert.doesNotMatch(result.stderr, /secret-value-that-must-not-load/);
+});
+
+test("sync-browser-session times out stalled grok2api admin calls before reading cookies", async () => {
+  const dir = mkdtempSync(path.join(tmpdir(), "grok-sync-"));
+  const cookieSource = path.join(dir, "cookies.json");
+  writeFileSync(cookieSource, JSON.stringify([{ name: "sso-rw", value: "secret-value-that-must-not-load" }]));
+
+  await withGrok2ApiServer(async () => {
+    // Intentionally keep the connection open until the helper aborts the call.
+  }, async (baseUrl) => {
+    const result = await runAsync([
+      "--cookie-source-json", cookieSource,
+      "--grok2api-base-url", baseUrl,
+      "--admin-timeout-ms", "50",
+    ]);
+    assert.equal(result.status, 1);
+    const parsed = JSON.parse(result.stdout);
+    assert.equal(parsed.ok, false);
+    assert.equal(parsed.error_code, "grok2api_unreachable");
+    assert.doesNotMatch(result.stdout, /secret-value-that-must-not-load/);
+    assert.doesNotMatch(result.stderr, /secret-value-that-must-not-load/);
+  });
 });

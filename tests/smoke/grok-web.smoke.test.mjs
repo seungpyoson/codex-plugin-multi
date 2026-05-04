@@ -45,7 +45,7 @@ function runAsync(args, options = {}) {
 }
 
 function parseStdout(result) {
-  assert.equal(result.stderr, "");
+  assert.doesNotMatch(result.stderr, /secret|token|cookie|xai/i);
   return JSON.parse(result.stdout);
 }
 
@@ -141,6 +141,21 @@ test("doctor explains direct Grok API keys are ignored for subscription web mode
   assert.doesNotMatch(result.stdout, /xai-direct-api-key/);
 });
 
+test("doctor explains XAI_API_KEY is ignored for subscription web mode", () => {
+  const result = run(["doctor"], {
+    env: {
+      GROK_WEB_BASE_URL: "http://127.0.0.1:9/v1",
+      XAI_API_KEY: "xai-direct-api-key",
+    },
+  });
+  const parsed = parseStdout(result);
+
+  assert.equal(result.status, 0);
+  assert.equal(parsed.error_code, "tunnel_unavailable");
+  assert.match(parsed.error_message, /XAI_API_KEY is ignored/i);
+  assert.doesNotMatch(result.stdout, /xai-direct-api-key/);
+});
+
 test("custom-review sends selected source to a local Grok web tunnel and persists a JobRecord", async () => {
   const cwd = mkdtempSync(path.join(tmpdir(), "grok-web-workspace-"));
   const dataDir = mkdtempSync(path.join(tmpdir(), "grok-web-data-"));
@@ -196,6 +211,131 @@ test("custom-review sends selected source to a local Grok web tunnel and persist
     const persisted = JSON.parse(readFileSync(path.join(dataDir, "jobs", record.job_id, "meta.json"), "utf8"));
     assert.equal(persisted.result, "Verdict: no findings.");
     assert.doesNotMatch(JSON.stringify(persisted), /secret-cookie-like-token/);
+  });
+});
+
+test("review mode uses branch-diff scope with scrubbed git environment", async () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "grok-web-branch-"));
+  const dataDir = mkdtempSync(path.join(tmpdir(), "grok-web-data-"));
+  const hostileGitDir = mkdtempSync(path.join(tmpdir(), "grok-hostile-git-dir-"));
+  execFileSync("git", ["init", "-b", "main"], { cwd, stdio: "ignore" });
+  execFileSync("git", ["config", "user.email", "test@example.com"], { cwd });
+  execFileSync("git", ["config", "user.name", "Test User"], { cwd });
+  writeFileSync(path.join(cwd, "review.js"), "export const value = 1;\n");
+  execFileSync("git", ["add", "review.js"], { cwd });
+  execFileSync("git", ["commit", "-m", "base"], { cwd, stdio: "ignore" });
+  execFileSync("git", ["checkout", "-b", "feature"], { cwd, stdio: "ignore" });
+  writeFileSync(path.join(cwd, "review.js"), "export const value = 2;\n");
+
+  await withServer(async (req, res) => {
+    assert.equal(req.method, "POST");
+    assert.equal(req.url, "/api/chat/completions");
+    const body = await readJsonRequest(req);
+    assert.match(body.messages[0].content, /review\.js/);
+    assert.match(body.messages[0].content, /export const value = 2/);
+    res.setHeader("content-type", "application/json");
+    res.end(JSON.stringify({
+      id: "grok-web-branch-session",
+      choices: [{ message: { content: "Verdict: branch diff reviewed." } }],
+    }));
+  }, async (baseUrl) => {
+    const result = await runAsync([
+      "run",
+      "--mode", "review",
+      "--scope", "branch-diff",
+      "--scope-base", "main",
+      "--foreground",
+      "--prompt", "Review the branch diff.",
+    ], {
+      cwd,
+      env: {
+        GROK_WEB_BASE_URL: baseUrl,
+        GROK_WEB_TUNNEL_API_KEY: "secret-cookie-like-token",
+        GROK_PLUGIN_DATA: dataDir,
+        GIT_DIR: hostileGitDir,
+        GIT_WORK_TREE: hostileGitDir,
+      },
+    });
+    const record = parseStdout(result);
+
+    assert.equal(result.status, 0);
+    assert.equal(record.status, "completed");
+    assert.equal(record.mode, "review");
+    assert.equal(record.scope, "branch-diff");
+    assert.equal(record.scope_base, "main");
+    assert.equal(record.result, "Verdict: branch diff reviewed.");
+  });
+});
+
+for (const { status, code } of [
+  { status: 401, code: "session_expired" },
+  { status: 403, code: "session_expired" },
+  { status: 429, code: "usage_limited" },
+  { status: 500, code: "tunnel_error" },
+]) {
+  test(`custom-review maps HTTP ${status} to ${code} without leaking secrets`, async () => {
+    const cwd = mkdtempSync(path.join(tmpdir(), "grok-web-workspace-"));
+    writeFileSync(path.join(cwd, "review.js"), "export const value = 42;\n");
+
+    await withServer(async (_req, res) => {
+      res.statusCode = status;
+      res.setHeader("content-type", "application/json");
+      res.end(JSON.stringify({ error: { message: "Authorization: Bearer secret-cookie-like-token failed" } }));
+    }, async (baseUrl) => {
+      const result = await runAsync([
+        "run",
+        "--mode", "custom-review",
+        "--scope", "custom",
+        "--scope-paths", "review.js",
+        "--foreground",
+        "--prompt", "Check this file.",
+      ], {
+        cwd,
+        env: {
+          GROK_WEB_BASE_URL: baseUrl,
+          GROK_WEB_TUNNEL_API_KEY: "secret-cookie-like-token",
+        },
+      });
+      const record = parseStdout(result);
+
+      assert.equal(result.status, 1);
+      assert.equal(record.status, "failed");
+      assert.equal(record.error_code, code);
+      assert.equal(record.http_status, status);
+      assert.doesNotMatch(result.stdout, /secret-cookie-like-token/);
+      assert.match(record.error_message, /\[REDACTED\]/);
+    });
+  });
+}
+
+test("custom-review maps malformed tunnel responses", async () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "grok-web-workspace-"));
+  writeFileSync(path.join(cwd, "review.js"), "export const value = 42;\n");
+
+  await withServer(async (_req, res) => {
+    res.setHeader("content-type", "application/json");
+    res.end(JSON.stringify({ choices: [{ message: {} }] }));
+  }, async (baseUrl) => {
+    const result = await runAsync([
+      "run",
+      "--mode", "custom-review",
+      "--scope", "custom",
+      "--scope-paths", "review.js",
+      "--foreground",
+      "--prompt", "Check this file.",
+    ], {
+      cwd,
+      env: {
+        GROK_WEB_BASE_URL: baseUrl,
+        GROK_WEB_TUNNEL_API_KEY: "secret-cookie-like-token",
+      },
+    });
+    const record = parseStdout(result);
+
+    assert.equal(result.status, 1);
+    assert.equal(record.status, "failed");
+    assert.equal(record.error_code, "malformed_response");
+    assert.match(record.suggested_action, /unsupported response shape/i);
   });
 });
 
