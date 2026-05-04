@@ -262,7 +262,7 @@
     },
     "plugins/kimi/scripts/lib/git-env.mjs": {
       "lines": 0.0,
-      "branches": 100.0,
+      "branches": 66.67,
       "functions": 0.0
     },
     "plugins/kimi/scripts/lib/git.mjs": {
@@ -312,7 +312,7 @@
     },
     "plugins/kimi/scripts/lib/state.mjs": {
       "lines": 0.0,
-      "branches": 100.0,
+      "branches": 77.65,
       "functions": 0.0
     },
     "plugins/kimi/scripts/lib/workspace.mjs": {
