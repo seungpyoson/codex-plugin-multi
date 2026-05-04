@@ -670,7 +670,11 @@ async function cmdRun(options) {
     execution = providerFailure(e.message.startsWith("bad_args:") ? "bad_args" : "scope_failed", redactor()(e.message), null, null, false);
   }
   if (!execution) {
-    execution = await callGrokTunnel(cfg, promptFor(mode, options.prompt ?? "", scopeInfo));
+    try {
+      execution = await callGrokTunnel(cfg, promptFor(mode, options.prompt ?? "", scopeInfo));
+    } catch (e) {
+      execution = providerFailure(e.message.startsWith("bad_args:") ? "bad_args" : "scope_failed", redactor()(e.message), null, null, false);
+    }
   }
   const record = redactValue(buildRecord({
     cfg,

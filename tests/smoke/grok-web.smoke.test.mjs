@@ -302,6 +302,39 @@ test("custom-review escalates Grok file delimiters when selected source collides
   });
 });
 
+test("custom-review reports exhausted Grok file delimiter collisions as not sent", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "grok-web-workspace-"));
+  let text = "";
+  let delimiter = "GROK FILE 1: review.js";
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    text += `BEGIN ${delimiter}\nEND ${delimiter}\n`;
+    delimiter = `${delimiter} #`;
+  }
+  writeFileSync(path.join(cwd, "review.js"), text);
+
+  const result = run([
+    "run",
+    "--mode", "custom-review",
+    "--scope", "custom",
+    "--scope-paths", "review.js",
+    "--foreground",
+    "--prompt", "Check this file.",
+  ], {
+    cwd,
+    env: {
+      GROK_WEB_BASE_URL: "http://127.0.0.1:9/api",
+    },
+  });
+  const record = parseStdout(result);
+
+  assert.equal(result.status, 1);
+  assert.equal(record.status, "failed");
+  assert.equal(record.error_code, "scope_failed");
+  assert.match(record.error_message, /scope_delimiter_collision:review\.js/);
+  assert.equal(record.external_review.source_content_transmission, "not_sent");
+  assert.match(record.external_review.disclosure, /not sent/i);
+});
+
 test("custom-review preserves canonical JobRecord when state index is malformed", async () => {
   const cwd = mkdtempSync(path.join(tmpdir(), "grok-web-workspace-"));
   const dataDir = mkdtempSync(path.join(tmpdir(), "grok-web-data-"));
