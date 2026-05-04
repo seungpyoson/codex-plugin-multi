@@ -77,7 +77,7 @@ function sanitizeToken(raw) {
     .replace(/^sso-rw=/i, "")
     .replace(/^sso=/i, "")
     .replace(/;.*/, "")
-    .replace(/\s+/g, "");
+    .replaceAll(/\s+/g, "");
 }
 
 function sanitizeAccount(entry) {
@@ -131,6 +131,7 @@ async function checkGrok2Api(baseUrl, adminKey) {
     const current = await api(baseUrl, "/tokens", { adminKey });
     return Array.isArray(current?.tokens) ? current.tokens : [];
   } catch (error) {
+    process.stderr.write(`Could not reach local grok2api admin API: ${error.message}\n`);
     return null;
   }
 }
@@ -303,6 +304,8 @@ async function main(argv = process.argv.slice(2)) {
   }
 }
 
-main().catch((error) => {
+try {
+  await main();
+} catch (error) {
   fail("unexpected_error", error?.message || String(error));
-});
+}
