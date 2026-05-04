@@ -1,6 +1,6 @@
 ---
 name: api-reviewers-delegation
-description: Delegate review, adversarial review, custom review, setup checks, and result rendering to direct API-backed DeepSeek and GLM reviewers.
+description: Delegate review, adversarial review, custom review, and setup to DeepSeek/GLM.
 user-invocable: true
 ---
 
@@ -29,14 +29,16 @@ Render the JSON fields directly:
 
 ## Review
 
-Run foreground reviews with:
+Run reviews with:
 
 ```bash
-node plugins/api-reviewers/scripts/api-reviewer.mjs run --provider deepseek --mode review --scope branch-diff --foreground --prompt "$PROMPT"
-node plugins/api-reviewers/scripts/api-reviewer.mjs run --provider glm --mode adversarial-review --scope branch-diff --foreground --prompt "$PROMPT"
-node plugins/api-reviewers/scripts/api-reviewer.mjs run --provider deepseek --mode custom-review --scope custom --scope-paths "$FILES" --foreground --prompt "$PROMPT"
+node plugins/api-reviewers/scripts/api-reviewer.mjs run --provider deepseek --mode review --scope branch-diff --prompt "<focus>"
+node plugins/api-reviewers/scripts/api-reviewer.mjs run --provider glm --mode adversarial-review --scope branch-diff --prompt "<focus>"
+node plugins/api-reviewers/scripts/api-reviewer.mjs run --provider deepseek --mode custom-review --scope custom --scope-paths "<file1>,<file2>" --prompt "<focus>"
 ```
 
+For branch-diff review or adversarial-review, add `--scope-base REF` before `--prompt` when the user provides a base ref. Use `<focus>` as the user's review prompt or focus area.
+Replace `<file1>,<file2>` with comma- or newline-separated concrete relative paths for `--scope-paths`; expand globs before running.
 If the command fails, report `error_code`, `error_message`, and `suggested_action` from the JobRecord. Do not expose API keys.
 If `external_review` is present, render it before the review result.
 

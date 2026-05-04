@@ -118,9 +118,13 @@ one without the others.
 
 After enabling the plugins, open Codex's skill picker or ask Codex what plugin
 skills are available. Current Codex builds expose plugin skills with their
-plugin namespace; the installed skill list should include
-`claude:claude-delegation`, `gemini:gemini-delegation`, and
-`kimi:kimi-delegation`. The API-backed reviewer plugin exposes
+plugin namespace. The discoverable UX is `<plugin>:<provider-workflow>` through
+workflow-specific skills such as `claude:claude-review`,
+`gemini:gemini-rescue`, `kimi:kimi-status`,
+`api-reviewers:deepseek-review`, and `api-reviewers:glm-setup`. The installed
+skill list should also include the broad fallback skills
+`claude:claude-delegation`, `gemini:gemini-delegation`,
+`kimi:kimi-delegation`, and
 `api-reviewers:api-reviewers-delegation`.
 
 For a non-interactive check against the current Codex profile, run:
@@ -142,39 +146,58 @@ future or compatible Codex builds, but plugin command files are not valid slash
 commands in this Codex build.
 
 Until Codex exposes plugin command files through the TUI, verify runtime behavior
-through the user-invocable skill fallback, the mock smoke tests, opt-in live E2E
-tests, or the companion scripts under `plugins/<target>/scripts/`.
+through user-invocable workflow-specific skills, the broad delegation skill
+fallbacks, the mock smoke tests, opt-in live E2E tests, or the companion scripts
+under `plugins/<target>/scripts/`.
 
-## Skill fallback
+## Workflow Skills
 
-Codex CLI 0.125.0 can load plugin skills, so each plugin exposes one
-user-invocable skill fallback:
+Codex CLI 0.125.0 can load plugin skills, so each provider workflow is exposed
+as a user-invocable skill. Current Codex builds list these skills with plugin
+namespaces. These are thin wrappers around the existing companion/API reviewer
+contracts:
 
-- **Claude delegation skill:** asks Claude Code to run setup checks, preflight,
-  review, adversarial review, custom-review, rescue, status, result, or cancel workflows through
-  `plugins/claude/scripts/claude-companion.mjs`.
-- **Gemini delegation skill:** asks Gemini CLI to run setup checks, preflight,
-  review, adversarial review, custom-review, rescue, status, result, or cancel workflows through
-  `plugins/gemini/scripts/gemini-companion.mjs`.
-- **Kimi delegation skill:** asks Kimi Code CLI to run setup checks, preflight,
-  review, adversarial review, custom-review, rescue, status, result, or cancel workflows through
-  `plugins/kimi/scripts/kimi-companion.mjs`.
-- **API reviewers delegation skill:** asks DeepSeek or GLM direct API to run
-  setup checks, review, adversarial review, or custom-review workflows through
-  `plugins/api-reviewers/scripts/api-reviewer.mjs`.
+- **Claude:** `claude:claude-review`,
+  `claude:claude-adversarial-review`, `claude:claude-rescue`,
+  `claude:claude-setup`, `claude:claude-status`, `claude:claude-result`,
+  `claude:claude-cancel`.
+- **Gemini:** `gemini:gemini-review`,
+  `gemini:gemini-adversarial-review`, `gemini:gemini-rescue`,
+  `gemini:gemini-setup`, `gemini:gemini-status`, `gemini:gemini-result`,
+  `gemini:gemini-cancel`.
+- **Kimi:** `kimi:kimi-review`, `kimi:kimi-adversarial-review`,
+  `kimi:kimi-rescue`, `kimi:kimi-setup`, `kimi:kimi-status`,
+  `kimi:kimi-result`, `kimi:kimi-cancel`.
+- **DeepSeek:** `api-reviewers:deepseek-review`,
+  `api-reviewers:deepseek-adversarial-review`,
+  `api-reviewers:deepseek-custom-review`, `api-reviewers:deepseek-setup`.
+- **GLM:** `api-reviewers:glm-review`,
+  `api-reviewers:glm-adversarial-review`,
+  `api-reviewers:glm-custom-review`, `api-reviewers:glm-setup`.
+
+The broad delegation skills remain available as fallback/overview entries:
+`claude:claude-delegation`, `gemini:gemini-delegation`,
+`kimi:kimi-delegation`, and `api-reviewers:api-reviewers-delegation`.
+
+The original user-invocable skill fallback remains available for users who
+prefer one overview entry per plugin. The Claude, Gemini, Kimi, and API
+reviewers delegation skills still route to their companion/API reviewer scripts
+as broad overview entries.
+For Claude, Gemini, and Kimi, advanced `custom-review` and `preflight` flows
+remain available through those broad delegation skills.
 
 Example prompts:
 
 ```text
-Use the Claude delegation skill to review the current diff for regressions.
-Use the Gemini delegation skill for an adversarial review of this design.
-Use the Kimi delegation skill to review this branch for missed edge cases.
-Use the API reviewers delegation skill to ask GLM to review selected files.
+Use claude:claude-review to review the current diff for regressions.
+Use gemini:gemini-adversarial-review for an adversarial review of this design.
+Use kimi:kimi-rescue to investigate this failing test in the background, then use kimi:kimi-status and kimi:kimi-result.
+Use api-reviewers:deepseek-custom-review to review selected files.
 ```
 
 ## Deferred command docs
 
-The plugin still packages command docs for the intended future slash-command
+The slash-command files remain packaged for the intended future slash-command
 surface, except diagnostic ping command docs are deferred until upstream Codex
 registers plugin command files. The ping follow-up is tracked in
 https://github.com/seungpyoson/codex-plugin-multi/issues/13. Example future

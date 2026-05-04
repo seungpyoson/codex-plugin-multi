@@ -127,8 +127,8 @@ test("review command docs advertise --scope-base, not legacy --base", () => {
     readRepoFile("plugins/gemini/commands/gemini-adversarial-review.md"),
   ].join("\n");
 
-  assert.match(docs, /--scope-base <ref>/);
-  assert.doesNotMatch(docs, /--base <ref>/);
+  assert.match(docs, /--scope-base REF/);
+  assert.doesNotMatch(docs, /--base REF/);
 });
 
 test("review command docs route --scope-base as a companion flag", () => {
@@ -139,7 +139,7 @@ test("review command docs route --scope-base as a companion flag", () => {
     readRepoFile("plugins/gemini/commands/gemini-adversarial-review.md"),
   ].join("\n");
 
-  assert.match(docs, /pass `--scope-base <ref>` before `--`/i);
+  assert.match(docs, /pass `--scope-base REF` before `--`/i);
   assert.doesNotMatch(docs, /Passed as-is to the companion prompt/i);
 });
 
@@ -254,8 +254,7 @@ test("README documents shipped install path, first commands, and safety posture"
   assert.match(readme, /codex plugin marketplace add seungpyoson\/codex-plugin-multi/);
   assert.match(readme, /\/plugins/);
   assert.match(readme, /user-invocable skill fallback/);
-  assert.match(readme, /Claude delegation skill/);
-  assert.match(readme, /Gemini delegation skill/);
+  assert.match(readme, /Claude, Gemini, Kimi, and API\s+reviewers delegation skills/);
   assert.doesNotMatch(readme, /Diagnostic plugin dispatch check/);
   assert.doesNotMatch(readme, /\/claude-ping/);
   assert.doesNotMatch(readme, /\/gemini-ping/);

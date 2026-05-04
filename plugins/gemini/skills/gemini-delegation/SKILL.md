@@ -25,8 +25,10 @@ In the repository checkout, it is `plugins/gemini`.
 
 - Setup/OAuth check:
   ```bash
-  node "<plugin-root>/scripts/gemini-companion.mjs" ping
+  node "<plugin-root>/scripts/gemini-companion.mjs" doctor
   ```
+For review or adversarial-review, add `--scope-base REF` before `--` when the user provides a base ref.
+
 - Read-only review:
   ```bash
   node "<plugin-root>/scripts/gemini-companion.mjs" run --mode=review --foreground --cwd "<workspace>" -- "<review focus>"

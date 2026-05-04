@@ -1,20 +1,20 @@
 ---
 description: Get Claude Code to adversarially challenge the current design. Not a linter — a "why will this break" pass.
-argument-hint: "[--scope-base <ref>] [focus area]"
+argument-hint: "[--scope-base REF] [focus area]"
 ---
 
 Adversarial review via Claude Code. Assumes the author is wrong; looks for failure modes, hidden assumptions, missing edge cases.
 
 ## Arguments
 
-`$ARGUMENTS` — optional `--scope-base <ref>` followed by focus text (e.g., "error handling", "concurrency"). If present, pass `--scope-base <ref>` before `--`; pass the remaining focus text after `--`.
+`$ARGUMENTS` — optional `--scope-base REF` followed by focus text (e.g., "error handling", "concurrency"). If present, pass `--scope-base REF` before `--`; pass the remaining focus text after `--`.
 
 ## Workflow
 
 1. Consult the `claude-prompting` skill for adversarial prompt framing.
 2. Run:
    ```
-   node "<plugin-root>/scripts/claude-companion.mjs" run --mode=adversarial-review --foreground [--scope-base <ref>] -- "<focus text>"
+   node "<plugin-root>/scripts/claude-companion.mjs" run --mode=adversarial-review --foreground -- "<focus text>"
    ```
    (Containment=worktree, scope=branch-diff, dispose=true all come from the profile — spec §21.4.)
    `branch-diff` is object-pure: checkout filters, replace refs, and grafts are ignored.
