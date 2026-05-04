@@ -43,12 +43,14 @@ test("pull-request CI runs the enforced coverage gate", () => {
   assert.match(workflow, /npm run test:coverage/);
 });
 
-test("Sonar CPD excludes intentional external-review packaging copies", () => {
+test("Sonar CPD excludes intentional packaging and entrypoint copies", () => {
   for (const path of [
     "scripts/lib/external-review.mjs",
     "plugins/claude/scripts/lib/external-review.mjs",
     "plugins/gemini/scripts/lib/external-review.mjs",
     "plugins/kimi/scripts/lib/external-review.mjs",
+    "plugins/grok/scripts/grok-web-reviewer.mjs",
+    "plugins/grok/scripts/grok-sync-browser-session.mjs",
   ]) {
     assert.match(sonarConfig, new RegExp(path.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
   }

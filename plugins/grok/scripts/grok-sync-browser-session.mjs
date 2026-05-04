@@ -174,7 +174,7 @@ function keychainPassword(browser) {
   ];
   const errors = [];
   for (const args of attempts) {
-    const res = spawnSync("security", args, { encoding: "utf8", windowsHide: true });
+    const res = spawnSync("/usr/bin/security", args, { encoding: "utf8", windowsHide: true });
     if (res.status === 0 && res.stdout) return res.stdout.trimEnd();
     errors.push((res.stderr || res.stdout || `security exited ${res.status}`).trim());
   }
