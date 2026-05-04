@@ -735,6 +735,31 @@ test("list repairs malformed state from persisted JobRecords without echoing raw
   assert.doesNotMatch(result.stdout, /proprietary list text/);
 });
 
+test("list reports state lock timeout when malformed state repair cannot acquire the lock", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "grok-web-workspace-"));
+  const dataDir = mkdtempSync(path.join(tmpdir(), "grok-web-data-"));
+  const lockDir = path.join(dataDir, "state.json.lock");
+  mkdirSync(lockDir);
+  writeFileSync(path.join(lockDir, "owner.json"), JSON.stringify({
+    pid: process.pid,
+    host: hostname(),
+    startedAt: new Date(Date.now() - 120000).toISOString(),
+  }));
+  const oldTime = new Date(Date.now() - 120000);
+  utimesSync(lockDir, oldTime, oldTime);
+  writeFileSync(path.join(dataDir, "state.json"), "{\"jobs\":[{\"result\":\"proprietary list text\"");
+
+  const result = run(["list"], {
+    cwd,
+    env: { GROK_PLUGIN_DATA: dataDir },
+  });
+  const parsed = parseStdout(result);
+  assert.equal(result.status, 1);
+  assert.equal(parsed.ok, false);
+  assert.equal(parsed.error_code, "state_lock_timeout");
+  assert.doesNotMatch(result.stdout, /proprietary list text/);
+});
+
 test("state summary sorting pushes invalid timestamps behind valid recent jobs", async () => {
   const { sortJobSummaries } = await import(`file://${COMPANION}`);
   const jobs = sortJobSummaries([

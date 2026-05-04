@@ -645,25 +645,22 @@ async function withStateLock(root, fn) {
         host: hostname(),
         startedAt: new Date().toISOString(),
       })}\n`;
+      await writeFile(resolve(lockDir, "owner.json"), ownerRaw, { mode: 0o600 });
+      let result;
+      let fnError;
       try {
-        await writeFile(resolve(lockDir, "owner.json"), ownerRaw, { mode: 0o600 });
-        let result;
-        let fnError;
-        try {
-          result = await fn();
-        } catch (error) {
-          fnError = error;
-        }
-        try {
-          await releaseStateLock(lockDir, ownerRaw);
-        } catch (releaseError) {
-          if (!fnError) throw releaseError;
-        }
-        if (fnError) throw fnError;
-        return result;
-      } finally {
-        // Release is handled above so cleanup errors cannot mask callback failures.
+        result = await fn();
+      } catch (error) {
+        fnError = error;
       }
+      // Release after capturing fnError so cleanup cannot mask callback failures.
+      try {
+        await releaseStateLock(lockDir, ownerRaw);
+      } catch (releaseError) {
+        if (!fnError) throw releaseError;
+      }
+      if (fnError) throw fnError;
+      return result;
     } catch (error) {
       if (error?.code !== "EEXIST") throw error;
       if (await maybeRecoverStateLock(lockDir)) continue;
@@ -810,8 +807,16 @@ async function cmdList(env = process.env) {
         });
         printJson(redactValue({ ok: true, jobs, repaired_from_disk: true }, redactor(env)));
         return;
-      } catch {
-        printJson({ ok: false, error_code: "malformed_state" });
+      } catch (repairError) {
+        const rawMessage = repairError?.message ?? String(repairError);
+        const repairCode = String(rawMessage).startsWith("state_lock_timeout")
+          ? "state_lock_timeout"
+          : "malformed_state";
+        printJson({
+          ok: false,
+          error_code: repairCode,
+          error_message: redactor(env)(rawMessage),
+        });
         process.exit(1);
       }
     }
