@@ -584,6 +584,60 @@ test("custom-review repairs malformed state index from persisted JobRecords", as
   });
 });
 
+test("state index updates do not import orphaned job records when state is healthy", async () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "grok-web-workspace-"));
+  const dataDir = mkdtempSync(path.join(tmpdir(), "grok-web-data-"));
+  writeFileSync(path.join(cwd, "review.js"), "export const value = 42;\n");
+  const orphanJobId = "job_11111111-1111-4111-9111-111111111111";
+  mkdirSync(path.join(dataDir, "jobs", orphanJobId), { recursive: true });
+  writeFileSync(path.join(dataDir, "jobs", orphanJobId, "meta.json"), JSON.stringify({
+    ok: true,
+    job_id: orphanJobId,
+    status: "completed",
+    mode: "custom-review",
+    provider: "grok-web",
+    started_at: "2026-01-01T00:00:00.000Z",
+    ended_at: "2026-01-01T00:00:00.000Z",
+    result: "orphaned historical result",
+  }));
+  writeFileSync(path.join(dataDir, "state.json"), JSON.stringify({
+    version: 1,
+    jobs: [],
+  }));
+
+  await withServer(async (req, res) => {
+    await readJsonRequest(req);
+    res.setHeader("content-type", "application/json");
+    res.end(JSON.stringify({
+      id: "grok-web-healthy-state",
+      choices: [{ message: { content: "Verdict: healthy state." } }],
+    }));
+  }, async (baseUrl) => {
+    const result = await runAsync([
+      "run",
+      "--mode", "custom-review",
+      "--scope", "custom",
+      "--scope-paths", "review.js",
+      "--foreground",
+      "--prompt", "Check this file.",
+    ], {
+      cwd,
+      env: {
+        GROK_WEB_BASE_URL: baseUrl,
+        GROK_PLUGIN_DATA: dataDir,
+      },
+    });
+    const record = parseStdout(result);
+    assert.equal(result.status, 0);
+
+    const listed = parseStdout(run(["list"], {
+      cwd,
+      env: { GROK_PLUGIN_DATA: dataDir },
+    }));
+    assert.deepEqual(listed.jobs.map((job) => job.job_id), [record.job_id]);
+  });
+});
+
 test("Grok state lock does not reclaim live same-host owners by age", async () => {
   const cwd = mkdtempSync(path.join(tmpdir(), "grok-web-workspace-"));
   const dataDir = mkdtempSync(path.join(tmpdir(), "grok-web-data-"));
@@ -653,19 +707,50 @@ test("list returns an empty job list on a fresh data root", () => {
   assert.deepEqual(parsed, { ok: true, jobs: [] });
 });
 
-test("list reports malformed state without echoing raw content", () => {
+test("list repairs malformed state from persisted JobRecords without echoing raw content", () => {
   const cwd = mkdtempSync(path.join(tmpdir(), "grok-web-workspace-"));
   const dataDir = mkdtempSync(path.join(tmpdir(), "grok-web-data-"));
+  const jobId = "job_22222222-2222-4222-9222-222222222222";
+  mkdirSync(path.join(dataDir, "jobs", jobId), { recursive: true });
+  writeFileSync(path.join(dataDir, "jobs", jobId, "meta.json"), JSON.stringify({
+    ok: true,
+    job_id: jobId,
+    status: "completed",
+    mode: "custom-review",
+    provider: "grok-web",
+    started_at: "2026-01-02T00:00:00.000Z",
+    ended_at: "2026-01-02T00:00:00.000Z",
+    result: "persisted review text",
+  }));
   writeFileSync(path.join(dataDir, "state.json"), "{\"jobs\":[{\"result\":\"proprietary list text\"");
   const result = run(["list"], {
     cwd,
     env: { GROK_PLUGIN_DATA: dataDir },
   });
   const parsed = parseStdout(result);
-  assert.equal(result.status, 1);
-  assert.equal(parsed.ok, false);
-  assert.equal(parsed.error_code, "malformed_state");
+  assert.equal(result.status, 0);
+  assert.equal(parsed.ok, true);
+  assert.equal(parsed.repaired_from_disk, true);
+  assert.equal(parsed.jobs[0].job_id, jobId);
   assert.doesNotMatch(result.stdout, /proprietary list text/);
+});
+
+test("state summary sorting pushes invalid timestamps behind valid recent jobs", async () => {
+  const { sortJobSummaries } = await import(`file://${COMPANION}`);
+  const jobs = sortJobSummaries([
+    { job_id: "job_bad", updatedAt: "not-a-date" },
+    { job_id: "job_new", updatedAt: "2026-01-02T00:00:00.000Z" },
+    { job_id: "job_old", updatedAt: "2026-01-01T00:00:00.000Z" },
+  ]);
+  assert.deepEqual(jobs.map((job) => job.job_id), ["job_new", "job_old", "job_bad"]);
+});
+
+test("stale lock inspection treats a concurrently released lock as retryable", async () => {
+  const { staleLockReason } = await import(`file://${COMPANION}`);
+  const dataDir = mkdtempSync(path.join(tmpdir(), "grok-web-data-"));
+  const lockDir = path.join(dataDir, "state.json.lock");
+  const reason = await staleLockReason(lockDir);
+  assert.equal(reason, null);
 });
 
 test("result reports malformed persisted records without echoing raw content", () => {

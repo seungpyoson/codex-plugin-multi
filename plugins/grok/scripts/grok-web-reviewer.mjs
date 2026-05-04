@@ -5,6 +5,7 @@ import { existsSync } from "node:fs";
 import { mkdir, readFile, readdir, realpath, rename, rm, rmdir, stat, unlink, writeFile } from "node:fs/promises";
 import { hostname } from "node:os";
 import { dirname, isAbsolute, relative, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { cleanGitEnv as cleanCanonicalGitEnv } from "./lib/git-env.mjs";
 
 const VALID_MODES = new Set(["review", "adversarial-review", "custom-review"]);
@@ -562,7 +563,13 @@ function isLivePid(pid) {
 }
 
 async function staleLockReason(lockDir) {
-  const info = await stat(lockDir);
+  let info;
+  try {
+    info = await stat(lockDir);
+  } catch (error) {
+    if (error?.code === "ENOENT") return null;
+    throw error;
+  }
   const ageMs = Date.now() - info.mtimeMs;
   const identity = { dev: info.dev, ino: info.ino };
   let owner = null;
@@ -640,9 +647,22 @@ async function withStateLock(root, fn) {
       })}\n`;
       try {
         await writeFile(resolve(lockDir, "owner.json"), ownerRaw, { mode: 0o600 });
-        return await fn();
+        let result;
+        let fnError;
+        try {
+          result = await fn();
+        } catch (error) {
+          fnError = error;
+        }
+        try {
+          await releaseStateLock(lockDir, ownerRaw);
+        } catch (releaseError) {
+          if (!fnError) throw releaseError;
+        }
+        if (fnError) throw fnError;
+        return result;
       } finally {
-        await releaseStateLock(lockDir, ownerRaw);
+        // Release is handled above so cleanup errors cannot mask callback failures.
       }
     } catch (error) {
       if (error?.code !== "EEXIST") throw error;
@@ -651,6 +671,15 @@ async function withStateLock(root, fn) {
     }
   }
   throw new Error("state_lock_timeout: could not acquire Grok state lock");
+}
+
+function sortTimestamp(updatedAt) {
+  const t = Date.parse(updatedAt ?? "");
+  return Number.isFinite(t) ? t : Number.NEGATIVE_INFINITY;
+}
+
+function sortJobSummaries(jobs) {
+  return [...jobs].sort((a, b) => sortTimestamp(b.updatedAt) - sortTimestamp(a.updatedAt));
 }
 
 async function discoverJobSummaries(root) {
@@ -672,7 +701,7 @@ async function discoverJobSummaries(root) {
       // Malformed per-job records are reported by `result`; keep the index repair best-effort.
     }
   }
-  return summaries.sort((a, b) => Date.parse(b.updatedAt ?? "") - Date.parse(a.updatedAt ?? ""));
+  return sortJobSummaries(summaries);
 }
 
 async function persistRecord(record, env = process.env) {
@@ -682,22 +711,32 @@ async function persistRecord(record, env = process.env) {
 
   await withStateLock(root, async () => {
     let priorJobs = [];
+    let needsRebuild = false;
     try {
       const parsed = JSON.parse(await readFile(stateFile, "utf8"));
       if (Array.isArray(parsed?.jobs)) priorJobs = parsed.jobs;
     } catch (error) {
-      if (error?.code !== "ENOENT" && !(error instanceof SyntaxError)) throw error;
+      if (error?.code === "ENOENT" || error instanceof SyntaxError) needsRebuild = true;
+      else throw error;
+    }
+    let discoveredJobs = [];
+    if (needsRebuild) {
+      try {
+        discoveredJobs = await discoverJobSummaries(root);
+      } catch {
+        // The per-job meta.json for this run is already canonical; keep the state update best-effort.
+      }
     }
     const summary = summaryFromRecord(record);
     const seen = new Set();
-    const jobs = [summary, ...priorJobs, ...await discoverJobSummaries(root)]
+    const jobs = [summary, ...priorJobs, ...discoveredJobs]
       .filter((job) => {
         const id = job?.job_id ?? job?.id;
         if (!id || seen.has(id)) return false;
         seen.add(id);
         return true;
       })
-      .sort((a, b) => Date.parse(b.updatedAt ?? "") - Date.parse(a.updatedAt ?? ""))
+      .sort((a, b) => sortTimestamp(b.updatedAt) - sortTimestamp(a.updatedAt))
       .slice(0, MAX_STATE_JOBS);
     await writeJsonFile(stateFile, {
       version: 1,
@@ -751,7 +790,8 @@ async function cmdResult(options, env = process.env) {
 }
 
 async function cmdList(env = process.env) {
-  const stateFile = resolve(dataRoot(env), "state.json");
+  const root = dataRoot(env);
+  const stateFile = resolve(root, "state.json");
   try {
     const parsed = JSON.parse(await readFile(stateFile, "utf8"));
     const jobs = Array.isArray(parsed?.jobs) ? parsed.jobs : [];
@@ -762,8 +802,18 @@ async function cmdList(env = process.env) {
       return;
     }
     if (error instanceof SyntaxError) {
-      printJson({ ok: false, error_code: "malformed_state" });
-      process.exit(1);
+      try {
+        let jobs = [];
+        await withStateLock(root, async () => {
+          jobs = sortJobSummaries(await discoverJobSummaries(root)).slice(0, MAX_STATE_JOBS);
+          await writeJsonFile(stateFile, { version: 1, jobs });
+        });
+        printJson(redactValue({ ok: true, jobs, repaired_from_disk: true }, redactor(env)));
+        return;
+      } catch {
+        printJson({ ok: false, error_code: "malformed_state" });
+        process.exit(1);
+      }
     }
     throw error;
   }
@@ -863,14 +913,22 @@ async function main() {
   throw new Error(`unknown_command:${cmd}`);
 }
 
-try {
-  await main();
-} catch (e) {
-  const message = e?.message ?? String(e);
-  if (String(message).startsWith("bad_args:")) {
-    printJson({ ok: false, error_code: "bad_args", error_message: redactor()(message) });
-  } else {
-    printJson({ ok: false, error: redactor()(message) });
+async function runCli() {
+  try {
+    await main();
+  } catch (e) {
+    const message = e?.message ?? String(e);
+    if (String(message).startsWith("bad_args:")) {
+      printJson({ ok: false, error_code: "bad_args", error_message: redactor()(message) });
+    } else {
+      printJson({ ok: false, error: redactor()(message) });
+    }
+    process.exit(1);
   }
-  process.exit(1);
+}
+
+export { sortJobSummaries, staleLockReason };
+
+if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  await runCli();
 }
