@@ -631,7 +631,7 @@ async function releaseStateLock(lockDir, ownerRaw) {
   try {
     await rmdir(lockDir);
   } catch (error) {
-    if (error?.code !== "ENOENT") throw error;
+    if (error?.code !== "ENOENT" && error?.code !== "ENOTEMPTY") throw error;
   }
 }
 
@@ -932,7 +932,7 @@ async function runCli() {
   }
 }
 
-export { sortJobSummaries, staleLockReason };
+export { releaseStateLock, sortJobSummaries, staleLockReason, withStateLock };
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   await runCli();

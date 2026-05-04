@@ -1,6 +1,6 @@
 import { once } from "node:events";
 import { execFileSync, spawn, spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import http from "node:http";
 import { hostname, tmpdir } from "node:os";
 import path from "node:path";
@@ -153,6 +153,21 @@ test("doctor explains XAI_API_KEY is ignored for subscription web mode", () => {
   assert.equal(result.status, 0);
   assert.equal(parsed.error_code, "tunnel_unavailable");
   assert.match(parsed.error_message, /XAI_API_KEY is ignored/i);
+  assert.doesNotMatch(result.stdout, /xai-direct-api-key/);
+});
+
+test("doctor explains XAI_KEY is ignored for subscription web mode", () => {
+  const result = run(["doctor"], {
+    env: {
+      GROK_WEB_BASE_URL: "http://127.0.0.1:9/v1",
+      XAI_KEY: "xai-direct-api-key",
+    },
+  });
+  const parsed = parseStdout(result);
+
+  assert.equal(result.status, 0);
+  assert.equal(parsed.error_code, "tunnel_unavailable");
+  assert.match(parsed.error_message, /XAI_KEY is ignored/i);
   assert.doesNotMatch(result.stdout, /xai-direct-api-key/);
 });
 
@@ -512,6 +527,49 @@ test("Grok state index recovers stale locks without owner metadata by age", asyn
   });
 });
 
+test("Grok state index recovers old locks owned by different hosts", async () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "grok-web-workspace-"));
+  const dataDir = mkdtempSync(path.join(tmpdir(), "grok-web-data-"));
+  writeFileSync(path.join(cwd, "review.js"), "export const value = 1;\n");
+  const lockDir = path.join(dataDir, "state.json.lock");
+  mkdirSync(lockDir);
+  writeFileSync(path.join(lockDir, "owner.json"), JSON.stringify({
+    pid: process.pid,
+    host: "other-host.example.invalid",
+    startedAt: new Date(Date.now() - 120000).toISOString(),
+  }));
+  const oldTime = new Date(Date.now() - 120000);
+  utimesSync(lockDir, oldTime, oldTime);
+
+  await withServer(async (req, res) => {
+    await readJsonRequest(req);
+    res.setHeader("content-type", "application/json");
+    res.end(JSON.stringify({
+      id: "grok-web-stale-lock-other-host",
+      choices: [{ message: { content: "Verdict: stale different-host lock recovered." } }],
+    }));
+  }, async (baseUrl) => {
+    const result = await runAsync([
+      "run",
+      "--mode", "custom-review",
+      "--scope", "custom",
+      "--scope-paths", "review.js",
+      "--foreground",
+      "--prompt", "Check this file.",
+    ], {
+      cwd,
+      env: {
+        GROK_WEB_BASE_URL: baseUrl,
+        GROK_PLUGIN_DATA: dataDir,
+      },
+    });
+    const record = parseStdout(result);
+    assert.equal(result.status, 0);
+    assert.equal(record.status, "completed");
+    assert.doesNotMatch(record.disclosure_note, /state_lock_timeout/);
+  });
+});
+
 test("custom-review repairs malformed state index from persisted JobRecords", async () => {
   const cwd = mkdtempSync(path.join(tmpdir(), "grok-web-workspace-"));
   const dataDir = mkdtempSync(path.join(tmpdir(), "grok-web-data-"));
@@ -680,6 +738,35 @@ test("Grok state lock does not reclaim live same-host owners by age", async () =
     assert.match(record.disclosure_note, /state_lock_timeout/);
     assert.equal(readFileSync(path.join(lockDir, "owner.json"), "utf8").includes(`"pid":${process.pid}`), true);
   });
+});
+
+test("state lock release leaves unexpected lock contents without failing a successful callback", async () => {
+  const { withStateLock } = await import(`file://${COMPANION}`);
+  const dataDir = mkdtempSync(path.join(tmpdir(), "grok-web-data-"));
+  const lockDir = path.join(dataDir, "state.json.lock");
+
+  const result = await withStateLock(dataDir, async () => {
+    writeFileSync(path.join(lockDir, "foreign-file"), "leave this alone\n");
+    return "callback-result";
+  });
+
+  assert.equal(result, "callback-result");
+  assert.equal(existsSync(path.join(lockDir, "foreign-file")), true);
+});
+
+test("state lock release does not remove a lock owned by a different token", async () => {
+  const { releaseStateLock } = await import(`file://${COMPANION}`);
+  const dataDir = mkdtempSync(path.join(tmpdir(), "grok-web-data-"));
+  const lockDir = path.join(dataDir, "state.json.lock");
+  mkdirSync(lockDir);
+  const originalOwner = `${JSON.stringify({ pid: 1111, host: "old-host", startedAt: "2026-01-01T00:00:00.000Z" })}\n`;
+  const currentOwner = `${JSON.stringify({ pid: 2222, host: "new-host", startedAt: "2026-01-01T00:01:00.000Z" })}\n`;
+  writeFileSync(path.join(lockDir, "owner.json"), currentOwner);
+
+  await releaseStateLock(lockDir, originalOwner);
+
+  assert.equal(existsSync(lockDir), true);
+  assert.equal(readFileSync(path.join(lockDir, "owner.json"), "utf8"), currentOwner);
 });
 
 test("result rejects unsafe job ids without reading outside the data root", () => {
