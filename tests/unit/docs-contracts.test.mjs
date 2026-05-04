@@ -254,7 +254,7 @@ test("README documents shipped install path, first commands, and safety posture"
   assert.match(readme, /codex plugin marketplace add seungpyoson\/codex-plugin-multi/);
   assert.match(readme, /\/plugins/);
   assert.match(readme, /user-invocable skill fallback/);
-  assert.match(readme, /Claude, Gemini, Kimi, and API\s+reviewers delegation skills/);
+  assert.match(readme, /Claude, Gemini, Kimi, Grok, and API\s+reviewers delegation skills/);
   assert.doesNotMatch(readme, /Diagnostic plugin dispatch check/);
   assert.doesNotMatch(readme, /\/claude-ping/);
   assert.doesNotMatch(readme, /\/gemini-ping/);
