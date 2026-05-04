@@ -993,11 +993,17 @@ test("review mode uses branch-diff scope with scrubbed git environment", async (
   execFileSync("git", ["init", "-b", "main"], { cwd, stdio: "ignore" });
   execFileSync("git", ["config", "user.email", "test@example.com"], { cwd });
   execFileSync("git", ["config", "user.name", "Test User"], { cwd });
+  writeFileSync(path.join(cwd, "local-config.txt"), "base config\n");
+  execFileSync("git", ["add", "local-config.txt"], { cwd });
+  execFileSync("git", ["commit", "-m", "base config"], { cwd, stdio: "ignore" });
   writeFileSync(path.join(cwd, "review.js"), "export const value = 1;\n");
   execFileSync("git", ["add", "review.js"], { cwd });
   execFileSync("git", ["commit", "-m", "base"], { cwd, stdio: "ignore" });
   execFileSync("git", ["checkout", "-b", "feature"], { cwd, stdio: "ignore" });
   writeFileSync(path.join(cwd, "review.js"), "export const value = 2;\n");
+  execFileSync("git", ["add", "review.js"], { cwd });
+  execFileSync("git", ["commit", "-m", "feature"], { cwd, stdio: "ignore" });
+  writeFileSync(path.join(cwd, "local-config.txt"), "GROK_LOCAL_DIRTY_SECRET\n");
 
   await withServer(async (req, res) => {
     assert.equal(req.method, "POST");
@@ -1005,6 +1011,8 @@ test("review mode uses branch-diff scope with scrubbed git environment", async (
     const body = await readJsonRequest(req);
     assert.match(body.messages[0].content, /review\.js/);
     assert.match(body.messages[0].content, /export const value = 2/);
+    assert.doesNotMatch(body.messages[0].content, /local-config\.txt/);
+    assert.doesNotMatch(body.messages[0].content, /GROK_LOCAL_DIRTY_SECRET/);
     res.setHeader("content-type", "application/json");
     res.end(JSON.stringify({
       id: "grok-web-branch-session",
@@ -1037,6 +1045,48 @@ test("review mode uses branch-diff scope with scrubbed git environment", async (
     assert.equal(record.scope_base, "main");
     assert.equal(record.result, "Verdict: branch diff reviewed.");
   });
+});
+
+test("custom-review keeps prompt delimiter exceptions as scope failures before tunnel delivery", async () => {
+  const cwd = realpathSync(mkdtempSync(path.join(tmpdir(), "grok-web-workspace-")));
+  const delimiter = "GROK FILE 1: review.js";
+  writeFileSync(path.join(cwd, "review.js"), Array.from({ length: 101 }, (_, index) => {
+    const suffix = " #".repeat(index);
+    return `BEGIN ${delimiter}${suffix}\nEND ${delimiter}${suffix}`;
+  }).join("\n"));
+
+  const result = await runAsync([
+    "run",
+    "--mode", "custom-review",
+    "--scope", "custom",
+    "--scope-paths", "review.js",
+    "--foreground",
+    "--prompt", "Check this file.",
+  ], {
+    cwd,
+    env: { GROK_WEB_BASE_URL: "http://127.0.0.1:9" },
+  });
+  const record = parseStdout(result);
+
+  assert.equal(result.status, 1);
+  assert.equal(record.error_code, "scope_failed");
+  assert.equal(record.error_cause, "scope_resolution");
+  assert.match(record.suggested_action, /scope/i);
+  assert.equal(record.external_review.source_content_transmission, "not_sent");
+});
+
+test("scope file reads use canonical real paths after symlink boundary check", () => {
+  const source = readFileSync(COMPANION, "utf8");
+  assert.match(source, /const info = await stat\(realAbs\);/);
+  assert.match(source, /const text = await readFile\(realAbs, "utf8"\);/);
+});
+
+test("tunnel invocation catch is separated from prompt construction catch", () => {
+  const source = readFileSync(COMPANION, "utf8");
+  assert.match(source, /prompt = promptFor\(/);
+  assert.match(source, /providerFailure\(e\.message\.startsWith\("bad_args:"\) \? "bad_args" : "scope_failed"/);
+  assert.match(source, /execution = await callGrokTunnel\(cfg, prompt\)/);
+  assert.match(source, /providerFailure\(e\.message\.startsWith\("bad_args:"\) \? "bad_args" : "tunnel_error"/);
 });
 
 for (const { status, code } of [

@@ -173,7 +173,7 @@ function selectedScopePaths(scope, options, cwd) {
   }
   if (scope === "branch-diff") {
     const base = options["scope-base"] ?? "main";
-    const changed = git(["diff", "--name-only", base, "--"], cwd);
+    const changed = git(["diff", "--name-only", `${base}...HEAD`, "--"], cwd);
     const relPaths = changed ? changed.split("\n").filter(Boolean) : [];
     if (relPaths.length === 0) throw new Error("scope_empty: branch-diff selected no files");
     return relPaths;
@@ -200,7 +200,7 @@ async function readScopeFiles(workspaceRoot, relPaths) {
     if (realRel.startsWith("..") || realRel === "") {
       throw new Error(`unsafe_scope_path:${relPath}`);
     }
-    const info = await stat(abs);
+    const info = await stat(realAbs);
     if (!info.isFile()) continue;
     if (info.size > MAX_SCOPE_FILE_BYTES) {
       throw new Error(`scope_file_too_large:${normalizedRel}: ${info.size} bytes exceeds ${MAX_SCOPE_FILE_BYTES} byte limit`);
@@ -209,7 +209,7 @@ async function readScopeFiles(workspaceRoot, relPaths) {
     if (totalBytes > MAX_SCOPE_TOTAL_BYTES) {
       throw new Error(`scope_total_too_large:${totalBytes} bytes exceeds ${MAX_SCOPE_TOTAL_BYTES} byte limit`);
     }
-    const text = await readFile(abs, "utf8");
+    const text = await readFile(realAbs, "utf8");
     if (text.length === 0) continue;
     files.push({ path: normalizedRel, text });
   }
@@ -875,10 +875,16 @@ async function cmdRun(options) {
     execution = providerFailure(e.message.startsWith("bad_args:") ? "bad_args" : "scope_failed", redactor()(e.message), null, null, false);
   }
   if (!execution) {
+    let prompt;
     try {
-      execution = await callGrokTunnel(cfg, promptFor(mode, options.prompt ?? "", scopeInfo));
+      prompt = promptFor(mode, options.prompt ?? "", scopeInfo);
     } catch (e) {
       execution = providerFailure(e.message.startsWith("bad_args:") ? "bad_args" : "scope_failed", redactor()(e.message), null, null, false);
+    }
+    if (!execution) try {
+      execution = await callGrokTunnel(cfg, prompt);
+    } catch (e) {
+      execution = providerFailure(e.message.startsWith("bad_args:") ? "bad_args" : "tunnel_error", redactor()(e.message), null, null, false);
     }
   }
   const record = redactValue(buildRecord({
