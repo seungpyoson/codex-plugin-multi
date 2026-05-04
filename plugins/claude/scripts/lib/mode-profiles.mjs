@@ -24,7 +24,7 @@ const EMPTY_TOOLS = Object.freeze([]);
  *
  * Each profile row has exactly these fields:
  *   name             — the mode key (kept in the value for self-description)
- *   model_tier       — "cheap" | "medium" | "default" | "native" (§8)
+ *   model_tier       — "review_quality" | "rescue" | "native" (§8)
  *   permission_mode  — "plan" | "acceptEdits" (§4.5)
  *   strip_context    — emit `--setting-sources ""`? (§4.6)
  *   disallowed_tools — hard blocklist (§4.5). Empty array means don't pass
@@ -41,7 +41,7 @@ const EMPTY_TOOLS = Object.freeze([]);
 export const MODE_PROFILES = Object.freeze({
   review: Object.freeze({
     name: "review",
-    model_tier: "cheap",
+    model_tier: "review_quality",
     permission_mode: "plan",
     strip_context: true,
     disallowed_tools: REVIEW_DISALLOWED,
@@ -53,7 +53,7 @@ export const MODE_PROFILES = Object.freeze({
   }),
   "adversarial-review": Object.freeze({
     name: "adversarial-review",
-    model_tier: "medium",
+    model_tier: "review_quality",
     permission_mode: "plan",
     strip_context: true,
     disallowed_tools: REVIEW_DISALLOWED,
@@ -65,7 +65,7 @@ export const MODE_PROFILES = Object.freeze({
   }),
   "custom-review": Object.freeze({
     name: "custom-review",
-    model_tier: "medium",
+    model_tier: "review_quality",
     permission_mode: "plan",
     strip_context: true,
     disallowed_tools: REVIEW_DISALLOWED,
@@ -77,7 +77,7 @@ export const MODE_PROFILES = Object.freeze({
   }),
   rescue: Object.freeze({
     name: "rescue",
-    model_tier: "default",
+    model_tier: "rescue",
     permission_mode: "acceptEdits",
     strip_context: false, // §9: rescue inherits CLAUDE.md context on purpose
     disallowed_tools: EMPTY_TOOLS,
@@ -102,7 +102,7 @@ export const MODE_PROFILES = Object.freeze({
 });
 
 /** Tier names used across the table. Exported so UI/tests can enumerate. */
-export const MODEL_TIERS = Object.freeze(["cheap", "medium", "default", "native"]);
+export const MODEL_TIERS = Object.freeze(["review_quality", "rescue", "native"]);
 
 /**
  * Look up a profile by mode name. Throws loudly on unknown names — silent
@@ -121,7 +121,7 @@ export function resolveProfile(name) {
  * (`plugins/claude/config/models.json` at runtime). Returns null when the
  * tier is not present in the config — callers decide how to fail. Model IDs
  * are intentionally NOT stored in this file; the config is the single source
- * of truth for "which model is the 'cheap' tier today".
+ * of truth for "which model is the review_quality tier today".
  */
 export function resolveModelForProfile(profile, modelsConfig) {
   if (!profile || typeof profile.model_tier !== "string") {

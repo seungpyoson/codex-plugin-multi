@@ -68,10 +68,10 @@ function notSentSpawnFailed(provider) {
   return `Selected source content was not sent to ${provider}; the target process was not spawned.`;
 }
 
-test("JobRecord schema_version is bumped for external review provenance", () => {
-  assert.equal(SCHEMA_VERSION, 9);
-  assert.equal(GEMINI_SCHEMA_VERSION, 9);
-  assert.equal(KIMI_SCHEMA_VERSION, 9);
+test("JobRecord schema_version is bumped for delegated review metadata", () => {
+  assert.equal(SCHEMA_VERSION, 10);
+  assert.equal(GEMINI_SCHEMA_VERSION, 10);
+  assert.equal(KIMI_SCHEMA_VERSION, 10);
 });
 
 // Helper — minimal valid invocation captured at cmdRun entry.
@@ -93,6 +93,8 @@ function makeInvocation(overrides = {}) {
     scope_base: null,
     scope_paths: null,
     prompt_head: "review: x=1",
+    review_prompt_contract_version: 1,
+    review_prompt_provider: "Claude",
     schema_spec: null,
     binary: "claude",
     started_at: "2026-04-24T12:00:00.000Z",
@@ -134,7 +136,7 @@ test("EXPECTED_KEYS is the spec §21.3 canonical list", () => {
     "resume_chain", "pid_info",
     "mode", "mode_profile_name", "model", "cwd", "workspace_root",
     "containment", "scope", "dispose_effective", "scope_base", "scope_paths",
-    "prompt_head", "schema_spec", "binary",
+    "prompt_head", "review_metadata", "schema_spec", "binary",
     "status", "started_at", "ended_at", "exit_code", "error_code", "error_message",
     "error_summary", "error_cause", "suggested_action", "external_review", "disclosure_note",
     "result", "structured_output", "permission_denials", "mutations",

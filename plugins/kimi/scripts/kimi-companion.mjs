@@ -34,6 +34,7 @@ import {
   summarizeScopeDirectory,
   writePromptSidecar,
 } from "./lib/companion-common.mjs";
+import { REVIEW_PROMPT_CONTRACT_VERSION, buildReviewPrompt } from "./lib/review-prompt.mjs";
 
 const PLUGIN_ROOT = resolvePath(dirname(fileURLToPath(import.meta.url)), "..");
 const MODELS_CONFIG_PATH = resolvePath(PLUGIN_ROOT, "config/models.json");
@@ -41,6 +42,8 @@ const CONTINUABLE_STATUSES = new Set(["completed", "failed", "cancelled", "stale
 const RUN_MODES = Object.freeze(["review", "adversarial-review", "custom-review", "rescue"]);
 const PREFLIGHT_MODES = Object.freeze(["review", "adversarial-review", "custom-review"]);
 const DEFAULT_KIMI_REVIEW_TIMEOUT_MS = 180000;
+const GIT_PROMPT_BINARY = "/usr/bin/git";
+const GIT_PROMPT_SAFE_PATH = "/usr/bin:/bin";
 
 configureState({
   pluginDataEnv: "KIMI_PLUGIN_DATA",
@@ -48,7 +51,7 @@ configureState({
 });
 
 function loadModels() {
-  if (!existsSync(MODELS_CONFIG_PATH)) return { cheap: null, medium: null, default: null };
+  if (!existsSync(MODELS_CONFIG_PATH)) return { review_quality: null, rescue: null };
   return JSON.parse(readFileSync(MODELS_CONFIG_PATH, "utf8"));
 }
 
@@ -58,7 +61,7 @@ function fail(code, message, details = {}) {
   process.exit(1);
 }
 
-function targetPromptFor(profile, userPrompt) {
+function targetPromptFor(profile, userPrompt, invocation = {}) {
   if (profile.permission_mode !== "plan") return userPrompt;
   const modeLine = profile.name === "adversarial-review"
     ? "You are performing an adversarial code review. Prioritize correctness bugs, security risks, regressions, and missing tests."
@@ -69,13 +72,43 @@ function targetPromptFor(profile, userPrompt) {
     "- Do not reject model IDs or endpoint hosts solely because they differ from general public documentation; require current run failure evidence or repo-local contradictory evidence.",
     "- API reviewer JobRecords include the actual endpoint, HTTP status, raw model, credential key name, and usage metadata when the provider returns them.",
   ].join("\n");
-  return [
-    modeLine,
-    "Your final answer must be self-contained and must not refer to prior, previous, above, or already-provided answers.",
-    "Return a concise verdict and findings. Do not edit files.",
-    liveContext,
-    `User prompt:\n${userPrompt}`,
-  ].join("\n\n");
+  return buildReviewPrompt({
+    provider: "Kimi",
+    mode: profile.name,
+    repository: invocation.workspace_root ?? null,
+    baseRef: invocation.scope_base ?? null,
+    baseCommit: gitCommitForPrompt(invocation.cwd, invocation.scope_base),
+    headRef: "HEAD",
+    headCommit: gitCommitForPrompt(invocation.cwd, "HEAD"),
+    scope: invocation.scope ?? profile.scope,
+    scopePaths: invocation.scope_paths ?? null,
+    userPrompt,
+    extraInstructions: [
+      modeLine,
+      "Your final answer must be self-contained and must not refer to prior, previous, above, or already-provided answers.",
+      liveContext,
+    ],
+  });
+}
+
+function gitCommitForPrompt(cwd, ref) {
+  if (!ref) return null;
+  try {
+    return execFileSync(GIT_PROMPT_BINARY, ["rev-parse", "--verify", `${ref}^{commit}`], {
+      cwd,
+      env: cleanGitPromptEnv(),
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+    }).trim();
+  } catch {
+    return null;
+  }
+}
+
+function cleanGitPromptEnv() {
+  const env = cleanGitEnv();
+  env.PATH = GIT_PROMPT_SAFE_PATH;
+  return env;
 }
 
 // Mutation-detection git scrub: same shared list as claude-companion +
@@ -185,6 +218,8 @@ function invocationFromRecord(record, runtimeOptions = {}) {
     scope_base: record.scope_base ?? null,
     scope_paths: record.scope_paths ?? null,
     prompt_head: record.prompt_head,
+    review_prompt_contract_version: record.review_metadata?.prompt_contract_version ?? null,
+    review_prompt_provider: record.review_metadata?.prompt_provider ?? null,
     schema_spec: record.schema_spec ?? null,
     binary: record.binary,
     run_kind: runKindFromRecord(record),
@@ -398,6 +433,8 @@ async function cmdRun(rest) {
     scope_base: options["scope-base"] ?? null,
     scope_paths: scopePaths,
     prompt_head: prompt.slice(0, 200),
+    review_prompt_contract_version: profile.name === "rescue" ? null : REVIEW_PROMPT_CONTRACT_VERSION,
+    review_prompt_provider: profile.name === "rescue" ? null : "Kimi",
     schema_spec: null,
     binary: options.binary ?? process.env.KIMI_BINARY ?? "kimi",
     run_kind: options.background ? "background" : "foreground",
@@ -410,7 +447,7 @@ async function cmdRun(rest) {
   writeRuntimeOptionsSidecar(workspaceRoot, jobId, { max_steps_per_turn: maxStepsPerTurn });
   writeJobFile(workspaceRoot, jobId, queuedRecord);
   upsertJob(workspaceRoot, queuedRecord);
-  const targetPrompt = targetPromptFor(profile, prompt);
+  const targetPrompt = targetPromptFor(profile, prompt, invocation);
 
   if (options.background) {
     try {
@@ -820,6 +857,8 @@ async function cmdContinue(rest) {
     scope_base: prior.scope_base ?? null,
     scope_paths: prior.scope_paths ?? null,
     prompt_head: prompt.slice(0, 200),
+    review_prompt_contract_version: priorProfile.name === "rescue" ? null : REVIEW_PROMPT_CONTRACT_VERSION,
+    review_prompt_provider: priorProfile.name === "rescue" ? null : "Kimi",
     schema_spec: prior.schema_spec ?? null,
     binary: options.binary ?? process.env.KIMI_BINARY ?? "kimi",
     run_kind: options.background ? "background" : "foreground",
@@ -832,7 +871,7 @@ async function cmdContinue(rest) {
   writeRuntimeOptionsSidecar(workspaceRoot, newJobId_, { max_steps_per_turn: maxStepsPerTurn });
   writeJobFile(workspaceRoot, newJobId_, queuedRecord);
   upsertJob(workspaceRoot, queuedRecord);
-  const targetPrompt = targetPromptFor(priorProfile, prompt);
+  const targetPrompt = targetPromptFor(priorProfile, prompt, invocation);
 
   if (options.background) {
     try {

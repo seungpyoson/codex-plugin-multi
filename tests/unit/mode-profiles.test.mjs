@@ -57,7 +57,7 @@ for (const name of ["review", "adversarial-review", "custom-review", "rescue", "
 test("review profile values match spec §21.2 table", () => {
   assert.deepEqual(MODE_PROFILES.review, {
     name: "review",
-    model_tier: "cheap",
+    model_tier: "review_quality",
     permission_mode: "plan",
     strip_context: true,
     disallowed_tools: REVIEW_DISALLOWED,
@@ -72,7 +72,7 @@ test("review profile values match spec §21.2 table", () => {
 test("adversarial-review profile values match spec §21.2 table", () => {
   assert.deepEqual(MODE_PROFILES["adversarial-review"], {
     name: "adversarial-review",
-    model_tier: "medium",
+    model_tier: "review_quality",
     permission_mode: "plan",
     strip_context: true,
     disallowed_tools: REVIEW_DISALLOWED,
@@ -87,7 +87,7 @@ test("adversarial-review profile values match spec §21.2 table", () => {
 test("custom-review profile values match spec §21.2 table", () => {
   assert.deepEqual(MODE_PROFILES["custom-review"], {
     name: "custom-review",
-    model_tier: "medium",
+    model_tier: "review_quality",
     permission_mode: "plan",
     strip_context: true,
     disallowed_tools: REVIEW_DISALLOWED,
@@ -102,7 +102,7 @@ test("custom-review profile values match spec §21.2 table", () => {
 test("rescue profile values match spec §21.2 table (strip_context=false)", () => {
   assert.deepEqual(MODE_PROFILES.rescue, {
     name: "rescue",
-    model_tier: "default",
+    model_tier: "rescue",
     permission_mode: "acceptEdits",
     strip_context: false,
     disallowed_tools: [],
@@ -162,18 +162,18 @@ test("resolveProfile rejects inherited object property names", () => {
 // ——————————————————————————————————————————————————————————————
 // MODEL_TIERS export lists the tier names used by the table.
 // ——————————————————————————————————————————————————————————————
-test("MODEL_TIERS enumerates cheap|medium|default|native", () => {
-  assert.deepEqual([...MODEL_TIERS].sort(), ["cheap", "default", "medium", "native"]);
+test("MODEL_TIERS enumerates review_quality|rescue|native", () => {
+  assert.deepEqual([...MODEL_TIERS].sort(), ["native", "rescue", "review_quality"]);
 });
 
 // ——————————————————————————————————————————————————————————————
 // resolveModelForProfile picks by tier — no hard-coded model IDs in lib.
 // ——————————————————————————————————————————————————————————————
 test("resolveModelForProfile returns the tier's model from config", () => {
-  const cfg = { cheap: "h", medium: "s", default: "o" };
+  const cfg = { review_quality: "h", rescue: "o" };
   assert.equal(resolveModelForProfile(MODE_PROFILES.review, cfg), "h");
-  assert.equal(resolveModelForProfile(MODE_PROFILES["adversarial-review"], cfg), "s");
-  assert.equal(resolveModelForProfile(MODE_PROFILES["custom-review"], cfg), "s");
+  assert.equal(resolveModelForProfile(MODE_PROFILES["adversarial-review"], cfg), "h");
+  assert.equal(resolveModelForProfile(MODE_PROFILES["custom-review"], cfg), "h");
   assert.equal(resolveModelForProfile(MODE_PROFILES.rescue, cfg), "o");
   assert.equal(resolveModelForProfile(MODE_PROFILES.ping, cfg), null);
 });
@@ -190,17 +190,16 @@ test("resolveModelForProfile rejects invalid profiles and null configs", () => {
 
 test("Gemini resolveModelCandidatesForProfile appends configured tier fallbacks", () => {
   const cfg = {
-    cheap: "g-fast",
-    medium: "g-smart",
-    default: "g-default",
+    review_quality: "g-smart",
+    rescue: "g-default",
     fallbacks: {
-      cheap: ["g-fast"],
-      medium: ["g-stable", "g-fast", "g-stable"],
+      review_quality: ["g-stable", "g-smart", "g-stable"],
+      native: ["g-fast"],
     },
   };
   assert.deepEqual(
     GeminiProfiles.resolveModelCandidatesForProfile(GeminiProfiles.MODE_PROFILES["adversarial-review"], cfg),
-    ["g-smart", "g-stable", "g-fast"],
+    ["g-smart", "g-stable"],
   );
   assert.deepEqual(
     GeminiProfiles.resolveModelCandidatesForProfile(GeminiProfiles.MODE_PROFILES.ping, cfg),
@@ -449,11 +448,11 @@ test("gemini MODE_PROFILES preserves the canonical frozen mode table", () => {
 });
 
 test("gemini resolveProfile and model-tier lookup mirror Claude semantics", () => {
-  assert.deepEqual([...GeminiProfiles.MODEL_TIERS].sort(), ["cheap", "default", "medium", "native"]);
+  assert.deepEqual([...GeminiProfiles.MODEL_TIERS].sort(), ["native", "rescue", "review_quality"]);
   assert.equal(GeminiProfiles.resolveProfile("review"), GeminiProfiles.MODE_PROFILES.review);
   assert.throws(() => GeminiProfiles.resolveProfile("unknown"), /unknown mode|unknown profile/i);
-  assert.equal(GeminiProfiles.resolveModelForProfile(GeminiProfiles.MODE_PROFILES.review, { cheap: "flash" }), "flash");
-  assert.equal(GeminiProfiles.resolveModelForProfile(GeminiProfiles.MODE_PROFILES.rescue, { cheap: "flash" }), null);
+  assert.equal(GeminiProfiles.resolveModelForProfile(GeminiProfiles.MODE_PROFILES.review, { review_quality: "pro" }), "pro");
+  assert.equal(GeminiProfiles.resolveModelForProfile(GeminiProfiles.MODE_PROFILES.rescue, { review_quality: "pro" }), null);
   assert.equal(GeminiProfiles.resolveModelForProfile(GeminiProfiles.MODE_PROFILES.review, null), null);
   assert.throws(() => GeminiProfiles.resolveModelForProfile(null, {}), /profile\.model_tier/);
 });
@@ -468,7 +467,7 @@ test("gemini profile rows have the canonical field set and values", () => {
   }
   assert.deepEqual(GeminiProfiles.MODE_PROFILES.review, {
     name: "review",
-    model_tier: "cheap",
+    model_tier: "review_quality",
     permission_mode: "plan",
     strip_context: true,
     disallowed_tools: REVIEW_DISALLOWED,
@@ -480,7 +479,7 @@ test("gemini profile rows have the canonical field set and values", () => {
   });
   assert.deepEqual(GeminiProfiles.MODE_PROFILES["adversarial-review"], {
     name: "adversarial-review",
-    model_tier: "medium",
+    model_tier: "review_quality",
     permission_mode: "plan",
     strip_context: true,
     disallowed_tools: REVIEW_DISALLOWED,
@@ -492,7 +491,7 @@ test("gemini profile rows have the canonical field set and values", () => {
   });
   assert.deepEqual(GeminiProfiles.MODE_PROFILES["custom-review"], {
     name: "custom-review",
-    model_tier: "medium",
+    model_tier: "review_quality",
     permission_mode: "plan",
     strip_context: true,
     disallowed_tools: REVIEW_DISALLOWED,
@@ -504,7 +503,7 @@ test("gemini profile rows have the canonical field set and values", () => {
   });
   assert.deepEqual(GeminiProfiles.MODE_PROFILES.rescue, {
     name: "rescue",
-    model_tier: "default",
+    model_tier: "rescue",
     permission_mode: "acceptEdits",
     strip_context: false,
     disallowed_tools: [],
@@ -529,8 +528,8 @@ test("gemini profile rows have the canonical field set and values", () => {
 });
 
 test("gemini resolveModelForProfile resolves every mode tier", () => {
-  const cfg = { cheap: "gemini-flash", medium: "gemini-pro", default: "gemini-default" };
-  assert.equal(GeminiProfiles.resolveModelForProfile(GeminiProfiles.MODE_PROFILES.review, cfg), "gemini-flash");
+  const cfg = { review_quality: "gemini-pro", rescue: "gemini-default" };
+  assert.equal(GeminiProfiles.resolveModelForProfile(GeminiProfiles.MODE_PROFILES.review, cfg), "gemini-pro");
   assert.equal(GeminiProfiles.resolveModelForProfile(GeminiProfiles.MODE_PROFILES["adversarial-review"], cfg), "gemini-pro");
   assert.equal(GeminiProfiles.resolveModelForProfile(GeminiProfiles.MODE_PROFILES["custom-review"], cfg), "gemini-pro");
   assert.equal(GeminiProfiles.resolveModelForProfile(GeminiProfiles.MODE_PROFILES.rescue, cfg), "gemini-default");
@@ -577,20 +576,20 @@ test("gemini resolveModelCandidatesForProfile covers fallback edge cases", () =>
     [],
   );
   assert.deepEqual(
-    GeminiProfiles.resolveModelCandidatesForProfile(GeminiProfiles.MODE_PROFILES.review, { fallbacks: { cheap: "not-array" } }),
+    GeminiProfiles.resolveModelCandidatesForProfile(GeminiProfiles.MODE_PROFILES.review, { fallbacks: { review_quality: "not-array" } }),
     [],
   );
   assert.deepEqual(
     GeminiProfiles.resolveModelCandidatesForProfile(GeminiProfiles.MODE_PROFILES.review, {
-      cheap: "gemini-flash",
-      fallbacks: { cheap: ["", "gemini-flash", "gemini-stable", 7, "gemini-stable"] },
+      review_quality: "gemini-pro",
+      fallbacks: { review_quality: ["", "gemini-pro", "gemini-stable", 7, "gemini-stable"] },
     }),
-    ["gemini-flash", "gemini-stable"],
+    ["gemini-pro", "gemini-stable"],
   );
   assert.deepEqual(
     GeminiProfiles.resolveModelCandidatesForProfile(GeminiProfiles.MODE_PROFILES.ping, {
-      cheap: "ignored-primary-for-native",
-      fallbacks: { cheap: ["", "gemini-flash", "gemini-flash"] },
+      review_quality: "ignored-primary-for-native",
+      fallbacks: { native: ["", "gemini-flash", "gemini-flash"] },
     }),
     [null, "gemini-flash"],
   );

@@ -137,6 +137,18 @@ export function redactUnexpectedError(error, argv = process.argv.slice(2), env =
   ]);
 }
 
+export function redactCookieExtractError(error, argv = process.argv.slice(2), env = process.env) {
+  const args = parseArgs(argv);
+  return redactMessage(error?.message || String(error), [
+    args["admin-key"],
+    args["cookie-source-json"],
+    args["cookie-db"],
+    env.GROK2API_ADMIN_KEY,
+    DEFAULT_ADMIN_KEY,
+    homedir(),
+  ]);
+}
+
 async function api(baseUrl, pathName, {
   method = "GET",
   body = null,
@@ -262,7 +274,11 @@ export function chromeDecrypt(encryptedHex, password) {
   if (!encryptedHex) return "";
   const encrypted = Buffer.from(encryptedHex, "hex");
   if (!encrypted.length) return "";
-  if (!(encrypted.subarray(0, 3).toString("utf8") === "v10" || encrypted.subarray(0, 3).toString("utf8") === "v11")) {
+  const version = encrypted.subarray(0, 3).toString("utf8");
+  if (version === "v20") {
+    throw new Error("v20 app-bound encrypted cookies are not supported by this macOS Chrome Safe Storage helper; use --cookie-source-json or sync the browser session into the local tunnel directly");
+  }
+  if (!(version === "v10" || version === "v11")) {
     throw new Error("unsupported encrypted cookie format");
   }
   const payload = encrypted.subarray(3);
@@ -335,7 +351,7 @@ async function main(argv = process.argv.slice(2)) {
       source = "browser_cookie_store";
     }
   } catch (error) {
-    fail("cookie_extract_failed", error.message);
+    fail("cookie_extract_failed", redactCookieExtractError(error));
   }
 
   const selected = selectCookie(cookies);

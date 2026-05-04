@@ -45,6 +45,11 @@
       "branches": 100.0,
       "functions": 100.0
     },
+    "plugins/api-reviewers/scripts/lib/review-prompt.mjs": {
+      "lines": 100.0,
+      "branches": 0.0,
+      "functions": 100.0
+    },
     "plugins/claude/scripts/lib/args.mjs": {
       "lines": 91.43,
       "branches": 86.0,
@@ -103,6 +108,11 @@
     "plugins/claude/scripts/lib/reconcile.mjs": {
       "lines": 95.79,
       "branches": 81.0,
+      "functions": 100.0
+    },
+    "plugins/claude/scripts/lib/review-prompt.mjs": {
+      "lines": 100.0,
+      "branches": 0.0,
       "functions": 100.0
     },
     "plugins/claude/scripts/lib/mode-profiles.mjs": {
@@ -198,6 +208,11 @@
     "plugins/gemini/scripts/lib/reconcile.mjs": {
       "lines": 95.79,
       "branches": 81.0,
+      "functions": 100.0
+    },
+    "plugins/gemini/scripts/lib/review-prompt.mjs": {
+      "lines": 100.0,
+      "branches": 0.0,
       "functions": 100.0
     },
     "plugins/gemini/scripts/lib/mode-profiles.mjs": {
@@ -304,6 +319,11 @@
       "lines": 0.0,
       "branches": 100.0,
       "functions": 0.0
+    },
+    "plugins/kimi/scripts/lib/review-prompt.mjs": {
+      "lines": 100.0,
+      "branches": 0.0,
+      "functions": 100.0
     },
     "plugins/kimi/scripts/lib/scope.mjs": {
       "lines": 92.0,

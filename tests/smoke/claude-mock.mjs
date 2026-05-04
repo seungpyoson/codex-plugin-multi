@@ -10,7 +10,7 @@
 // The mock writes exactly one JSON line on stdout (matching Claude
 // --output-format=json) and exits 0 on a fixture hit.
 
-import { readFileSync, existsSync } from "node:fs";
+import { readFileSync, existsSync, realpathSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createHash } from "node:crypto";
@@ -179,6 +179,8 @@ if (assertFileRel) {
 if (assertCwdAbs) {
   fixture.t7_cwd_match = process.cwd() === assertCwdAbs;
   fixture.t7_cwd = process.cwd();
+  fixture.t7_cwd_real = realpathSync(process.cwd());
+  if (addDir) fixture.t7_add_dir_real = realpathSync(addDir);
 }
 if (process.env.CLAUDE_MOCK_LIST_ADDDIR && addDir) {
   // Emit a sorted list of entries under addDir, for branch-diff verification.

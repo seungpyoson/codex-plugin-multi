@@ -38,6 +38,7 @@ import {
   summarizeScopeDirectory,
   writePromptSidecar,
 } from "./lib/companion-common.mjs";
+import { REVIEW_PROMPT_CONTRACT_VERSION, buildReviewPrompt } from "./lib/review-prompt.mjs";
 
 const PLUGIN_ROOT = resolvePath(dirname(fileURLToPath(import.meta.url)), "..");
 const MODELS_CONFIG_PATH = resolvePath(PLUGIN_ROOT, "config/models.json");
@@ -45,6 +46,8 @@ const READ_ONLY_POLICY = resolvePath(PLUGIN_ROOT, "policies/read-only.toml");
 const CONTINUABLE_STATUSES = new Set(["completed", "failed", "cancelled", "stale"]);
 const RUN_MODES = Object.freeze(["review", "adversarial-review", "custom-review", "rescue"]);
 const PREFLIGHT_MODES = Object.freeze(["review", "adversarial-review", "custom-review"]);
+const GIT_PROMPT_BINARY = "/usr/bin/git";
+const GIT_PROMPT_SAFE_PATH = "/usr/bin:/bin";
 
 configureState({
   pluginDataEnv: "GEMINI_PLUGIN_DATA",
@@ -52,7 +55,7 @@ configureState({
 });
 
 function loadModels() {
-  if (!existsSync(MODELS_CONFIG_PATH)) return { cheap: null, medium: null, default: null };
+  if (!existsSync(MODELS_CONFIG_PATH)) return { review_quality: null, rescue: null };
   return JSON.parse(readFileSync(MODELS_CONFIG_PATH, "utf8"));
 }
 
@@ -60,6 +63,42 @@ function fail(code, message, details = {}) {
   process.stderr.write(`gemini-companion: ${message}\n`);
   printJson({ ok: false, error: code, message, ...details });
   process.exit(1);
+}
+
+function targetPromptFor(invocation, userPrompt) {
+  if (invocation.mode_profile_name === "rescue") return userPrompt;
+  return buildReviewPrompt({
+    provider: "Gemini",
+    mode: invocation.mode_profile_name,
+    repository: invocation.workspace_root ?? null,
+    baseRef: invocation.scope_base,
+    baseCommit: gitCommitForPrompt(invocation.cwd, invocation.scope_base),
+    headRef: "HEAD",
+    headCommit: gitCommitForPrompt(invocation.cwd, "HEAD"),
+    scope: invocation.scope,
+    scopePaths: invocation.scope_paths,
+    userPrompt,
+  });
+}
+
+function gitCommitForPrompt(cwd, ref) {
+  if (!ref) return null;
+  try {
+    return execFileSync(GIT_PROMPT_BINARY, ["rev-parse", "--verify", `${ref}^{commit}`], {
+      cwd,
+      env: cleanGitPromptEnv(),
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+    }).trim();
+  } catch {
+    return null;
+  }
+}
+
+function cleanGitPromptEnv() {
+  const env = cleanGitEnv();
+  env.PATH = GIT_PROMPT_SAFE_PATH;
+  return env;
 }
 
 // Mutation-detection git scrub: same shared list as claude-companion +
@@ -116,6 +155,8 @@ function invocationFromRecord(record, fallbackAuthMode = "subscription") {
     scope_base: record.scope_base ?? null,
     scope_paths: record.scope_paths ?? null,
     prompt_head: record.prompt_head,
+    review_prompt_contract_version: record.review_metadata?.prompt_contract_version ?? null,
+    review_prompt_provider: record.review_metadata?.prompt_provider ?? null,
     schema_spec: record.schema_spec ?? null,
     run_kind: runKindFromRecord(record),
     auth_mode: record.auth_mode ?? fallbackAuthMode ?? "subscription",
@@ -311,6 +352,8 @@ async function cmdRun(rest) {
     scope_base: options["scope-base"] ?? null,
     scope_paths: scopePaths,
     prompt_head: prompt.slice(0, 200),
+    review_prompt_contract_version: profile.name === "rescue" ? null : REVIEW_PROMPT_CONTRACT_VERSION,
+    review_prompt_provider: profile.name === "rescue" ? null : "Gemini",
     schema_spec: null,
     binary: options.binary ?? process.env.GEMINI_BINARY ?? "gemini",
     run_kind: options.background ? "background" : "foreground",
@@ -321,10 +364,11 @@ async function cmdRun(rest) {
   const queuedRecord = buildJobRecord(invocation, null, []);
   writeJobFile(workspaceRoot, jobId, queuedRecord);
   upsertJob(workspaceRoot, queuedRecord);
+  const targetPrompt = targetPromptFor(invocation, prompt);
 
   if (options.background) {
     try {
-      writePromptSidecar(resolveJobsDir(workspaceRoot), jobId, prompt);
+      writePromptSidecar(resolveJobsDir(workspaceRoot), jobId, targetPrompt);
     } catch (error) {
       failBackgroundPromptSidecarWrite(workspaceRoot, invocation, error);
     }
@@ -342,7 +386,7 @@ async function cmdRun(rest) {
     process.exit(0);
   }
 
-  await executeRun(invocation, prompt, { foreground: true });
+  await executeRun(invocation, targetPrompt, { foreground: true });
 }
 
 async function executeRun(invocation, prompt, { foreground }) {
@@ -738,6 +782,8 @@ async function cmdContinue(rest) {
     scope_base: prior.scope_base ?? null,
     scope_paths: prior.scope_paths ?? null,
     prompt_head: prompt.slice(0, 200),
+    review_prompt_contract_version: priorProfile.name === "rescue" ? null : REVIEW_PROMPT_CONTRACT_VERSION,
+    review_prompt_provider: priorProfile.name === "rescue" ? null : "Gemini",
     schema_spec: prior.schema_spec ?? null,
     binary: options.binary ?? process.env.GEMINI_BINARY ?? "gemini",
     run_kind: options.background ? "background" : "foreground",
@@ -748,10 +794,11 @@ async function cmdContinue(rest) {
   const queuedRecord = buildJobRecord(invocation, null, []);
   writeJobFile(workspaceRoot, newJobId_, queuedRecord);
   upsertJob(workspaceRoot, queuedRecord);
+  const targetPrompt = targetPromptFor(invocation, prompt);
 
   if (options.background) {
     try {
-      writePromptSidecar(resolveJobsDir(workspaceRoot), newJobId_, prompt);
+      writePromptSidecar(resolveJobsDir(workspaceRoot), newJobId_, targetPrompt);
     } catch (error) {
       failBackgroundPromptSidecarWrite(workspaceRoot, invocation, error);
     }
@@ -770,7 +817,7 @@ async function cmdContinue(rest) {
     process.exit(0);
   }
 
-  await executeRun(invocation, prompt, { foreground: true });
+  await executeRun(invocation, targetPrompt, { foreground: true });
 }
 
 async function cmdStatus(rest) {

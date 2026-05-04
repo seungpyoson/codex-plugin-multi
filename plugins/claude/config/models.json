@@ -1,5 +1,4 @@
 {
-  "cheap": "claude-opus-4-7",
-  "medium": "claude-opus-4-7",
-  "default": "claude-opus-4-7"
+  "review_quality": "claude-opus-4-7",
+  "rescue": "claude-opus-4-7"
 }

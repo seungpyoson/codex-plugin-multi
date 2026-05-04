@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -104,6 +104,11 @@ function findJobPaths(dataDir, jobId) {
     }
   }
   assert.fail(`job ${jobId} not found under ${stateRoot}`);
+}
+
+function readStdoutLog(dataDir, jobId) {
+  const { sidecarDir } = findJobPaths(dataDir, jobId);
+  return JSON.parse(readFileSync(path.join(sidecarDir, "stdout.log"), "utf8"));
 }
 
 function parseJson(stdout) {
@@ -435,6 +440,16 @@ for (const mode of ["review", "adversarial-review", "custom-review"]) {
       cwd,
       env: {
         KIMI_MOCK_ASSERT_PROMPT_INCLUDES: "Live verification context",
+      },
+    });
+    assert.equal(result.status, 0, result.stderr);
+  }));
+
+  test(`kimi ${mode} prompt includes delegated review contract fields`, () => withRepo((cwd) => {
+    const result = runCompanion(kimiPromptAssertionArgs(cwd, mode), {
+      cwd,
+      env: {
+        KIMI_MOCK_ASSERT_PROMPT_INCLUDES: "Delegated review quality contract",
       },
     });
     assert.equal(result.status, 0, result.stderr);
@@ -979,7 +994,13 @@ for (const mode of ["review", "adversarial-review", "custom-review"]) {
       "--foreground",
       "--",
       "Review this scope.",
-    ], { cwd, env: { KIMI_MOCK_ASSERT_FILE: mode === "adversarial-review" ? "changed.txt" : "seed.txt" } });
+    ], {
+      cwd,
+      env: {
+        KIMI_MOCK_ASSERT_FILE: mode === "adversarial-review" ? "changed.txt" : "seed.txt",
+        KIMI_MOCK_ASSERT_CWD: realpathSync(tmpdir()),
+      },
+    });
     assert.equal(result.status, 0, result.stderr);
     const record = parseJson(result.stdout);
     assert.equal(record.target, "kimi");
@@ -1006,5 +1027,13 @@ for (const mode of ["review", "adversarial-review", "custom-review"]) {
     assert.equal(persisted.job_id, record.job_id);
     assert.equal(persisted.result, "Mock Kimi response.");
     assert.deepEqual(persisted.external_review, record.external_review);
+    const fx = readStdoutLog(result.dataDir, record.job_id);
+    assert.ok(fx.t7_cwd, "mock didn't record cwd");
+    const tmpRoot = realpathSync(tmpdir());
+    assert.notEqual(fx.t7_cwd, tmpRoot, "Kimi review must not use the temp root itself as cwd");
+    assert.equal(fx.t7_cwd.startsWith(tmpRoot), true,
+      `Kimi review must run from a neutral temp cwd under ${tmpRoot}; got ${fx.t7_cwd}`);
+    assert.equal(fx.t7_include_dirs.includes(fx.t7_cwd), false, "neutral cwd must not be the scoped include directory");
+    assert.equal(existsSync(fx.t7_cwd), false, `neutral Kimi cwd must be cleaned after the run: ${fx.t7_cwd}`);
   }));
 }

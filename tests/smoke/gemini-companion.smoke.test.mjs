@@ -1182,7 +1182,7 @@ test("gemini review foreground: omits native Gemini sandbox inside Codex sandbox
   }
 });
 
-test("gemini review falls back when configured model capacity is exhausted", () => {
+test("gemini review does not silently fallback when review_quality capacity is exhausted", () => {
   const cwd = mkdtempSync(path.join(tmpdir(), "gemini-review-fallback-cwd-"));
   seedMinimalRepo(cwd);
   const { stdout, stderr, status, dataDir } = runCompanion(
@@ -1190,14 +1190,11 @@ test("gemini review falls back when configured model capacity is exhausted", () 
     { cwd, env: { GEMINI_MOCK_CAPACITY_MODEL: "gemini-3.1-pro-preview" } },
   );
   try {
-    assert.equal(status, 0, `exit ${status}: ${stderr}`);
-    assert.match(stderr, /model gemini-3\.1-pro-preview capacity-limited/);
-    assert.match(stderr, /retrying with gemini-2\.5-flash/);
+    assert.equal(status, 2, `exit ${status}: ${stderr}`);
+    assert.doesNotMatch(stderr, /retrying with gemini-2\.5-flash/);
     const record = JSON.parse(stdout);
-    assert.equal(record.status, "completed");
-    assert.equal(record.model, "gemini-2.5-flash");
-    const fx = readStdoutLog(dataDir, record.job_id);
-    assert.deepEqual(Object.keys(fx.stats.models), ["gemini-2.5-flash"]);
+    assert.equal(record.status, "failed");
+    assert.equal(record.model, "gemini-3.1-pro-preview");
   } finally {
     rmTree(dataDir);
     rmTree(cwd);
@@ -1677,25 +1674,20 @@ test("gemini ping succeeds without --model and forbids tool exploration in the p
   }
 });
 
-test("gemini ping falls back when native model capacity is exhausted", () => {
+test("gemini ping reports native capacity exhaustion without silent fallback", () => {
   const cwd = mkdtempSync(path.join(tmpdir(), "gemini-ping-native-fallback-cwd-"));
   const { stdout, stderr, status, dataDir } = runCompanion(
     ["ping"],
     { cwd, env: { GEMINI_MOCK_CAPACITY_MODEL: "unknown" } },
   );
   try {
-    assert.equal(status, 0, `exit ${status}: ${stderr}`);
-    assert.match(stderr, /ping model <native> capacity-limited/);
-    assert.match(stderr, /retrying with gemini-2\.5-flash/);
+    assert.equal(status, 2, `exit ${status}: ${stderr}`);
+    assert.doesNotMatch(stderr, /retrying with gemini-2\.5-flash/);
     const parsed = JSON.parse(stdout);
-    assert.equal(parsed.status, "ok");
-    assert.equal(parsed.model, "gemini-2.5-flash");
-    assert.equal(parsed.model_fallback.from, null);
-    assert.equal(parsed.model_fallback.to, "gemini-2.5-flash");
-    assert.deepEqual(parsed.model_fallback.hops, [
-      { from: null, to: "gemini-2.5-flash", reason: "capacity_limited" },
-    ]);
-    assert.match(parsed.summary, /fallback/i);
+    assert.equal(parsed.status, "rate_limited");
+    assert.equal(parsed.model, undefined);
+    assert.equal(parsed.model_fallback, undefined);
+    assert.match(parsed.summary, /capacity-limited/i);
   } finally {
     rmTree(dataDir);
     rmTree(cwd);
@@ -1724,7 +1716,7 @@ test("gemini ping not_found includes readiness guidance", () => {
   }
 });
 
-test("gemini ping model_fallback reports the final successful hop", () => {
+test("gemini ping model_fallback remains null when no native fallbacks are configured", () => {
   const cwd = mkdtempSync(path.join(tmpdir(), "gemini-ping-multi-fallback-cwd-"));
   const binDir = mkdtempSync(path.join(tmpdir(), "gemini-ping-multi-fallback-bin-"));
   const binary = path.join(binDir, "gemini-multi-fallback");
@@ -1748,16 +1740,11 @@ process.stdout.write(JSON.stringify({
     { cwd, env: { GEMINI_BINARY: binary } },
   );
   try {
-    assert.equal(status, 0, `exit ${status}: ${stderr}`);
+    assert.equal(status, 2, `exit ${status}: ${stderr}`);
     const parsed = JSON.parse(stdout);
-    assert.equal(parsed.status, "ok");
-    assert.equal(parsed.model, "gemini-2.5-flash-lite");
-    assert.equal(parsed.model_fallback.from, "gemini-2.5-flash");
-    assert.equal(parsed.model_fallback.to, "gemini-2.5-flash-lite");
-    assert.deepEqual(parsed.model_fallback.hops, [
-      { from: null, to: "gemini-2.5-flash", reason: "capacity_limited" },
-      { from: "gemini-2.5-flash", to: "gemini-2.5-flash-lite", reason: "capacity_limited" },
-    ]);
+    assert.equal(parsed.status, "error");
+    assert.equal(parsed.model, undefined);
+    assert.equal(parsed.model_fallback, undefined);
   } finally {
     rmTree(dataDir);
     rmTree(cwd);

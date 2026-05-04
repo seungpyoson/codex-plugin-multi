@@ -26,8 +26,9 @@
 // Subcommands below keep foreground/background lifecycle behavior explicit.
 
 import { fileURLToPath } from "node:url";
-import { dirname, resolve as resolvePath } from "node:path";
-import { writeFileSync, mkdirSync, existsSync, chmodSync, renameSync, unlinkSync, readdirSync, statSync, readFileSync as _readFileSync } from "node:fs";
+import { dirname, join as joinPath, resolve as resolvePath } from "node:path";
+import { tmpdir } from "node:os";
+import { writeFileSync, mkdirSync, mkdtempSync, existsSync, chmodSync, renameSync, unlinkSync, readdirSync, rmSync, statSync, readFileSync as _readFileSync } from "node:fs";
 import { execFileSync, spawn } from "node:child_process";
 
 import { parseArgs } from "./lib/args.mjs";
@@ -60,6 +61,7 @@ import {
   summarizeScopeDirectory,
   writePromptSidecar,
 } from "./lib/companion-common.mjs";
+import { REVIEW_PROMPT_CONTRACT_VERSION, buildReviewPrompt } from "./lib/review-prompt.mjs";
 
 // ——— plugin-root self-resolution (upstream pattern, spec §4.14) ———
 const PLUGIN_ROOT = resolvePath(dirname(fileURLToPath(import.meta.url)), "..");
@@ -74,9 +76,11 @@ const MODELS_CONFIG_PATH = resolvePath(PLUGIN_ROOT, "config/models.json");
 const CONTINUABLE_STATUSES = new Set(["completed", "failed", "cancelled", "stale"]);
 const RUN_MODES = Object.freeze(["review", "adversarial-review", "custom-review", "rescue"]);
 const PREFLIGHT_MODES = Object.freeze(["review", "adversarial-review", "custom-review"]);
+const GIT_PROMPT_BINARY = "/usr/bin/git";
+const GIT_PROMPT_SAFE_PATH = "/usr/bin:/bin";
 
 function loadModels() {
-  if (!existsSync(MODELS_CONFIG_PATH)) return { cheap: null, medium: null, default: null };
+  if (!existsSync(MODELS_CONFIG_PATH)) return { review_quality: null, rescue: null };
   return JSON.parse(_readFileSync(MODELS_CONFIG_PATH, "utf8"));
 }
 
@@ -84,6 +88,42 @@ function fail(code, message, details = {}) {
   process.stderr.write(`claude-companion: ${message}\n`);
   printJson({ ok: false, error: code, message, ...details });
   process.exit(1);
+}
+
+function targetPromptFor(invocation, userPrompt) {
+  if (invocation.mode_profile_name === "rescue") return userPrompt;
+  return buildReviewPrompt({
+    provider: "Claude",
+    mode: invocation.mode_profile_name,
+    repository: invocation.workspace_root ?? null,
+    baseRef: invocation.scope_base,
+    baseCommit: gitCommitForPrompt(invocation.cwd, invocation.scope_base),
+    headRef: "HEAD",
+    headCommit: gitCommitForPrompt(invocation.cwd, "HEAD"),
+    scope: invocation.scope,
+    scopePaths: invocation.scope_paths,
+    userPrompt,
+  });
+}
+
+function gitCommitForPrompt(cwd, ref) {
+  if (!ref) return null;
+  try {
+    return execFileSync(GIT_PROMPT_BINARY, ["rev-parse", "--verify", `${ref}^{commit}`], {
+      cwd,
+      env: cleanGitPromptEnv(),
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+    }).trim();
+  } catch {
+    return null;
+  }
+}
+
+function cleanGitPromptEnv() {
+  const env = cleanGitEnv();
+  env.PATH = GIT_PROMPT_SAFE_PATH;
+  return env;
 }
 
 // Wraps git command; reports failure separately from successful empty output
@@ -146,6 +186,8 @@ function invocationFromRecord(record, fallbackAuthMode = "subscription") {
     scope_base: record.scope_base ?? null,
     scope_paths: record.scope_paths ?? null,
     prompt_head: record.prompt_head,
+    review_prompt_contract_version: record.review_metadata?.prompt_contract_version ?? null,
+    review_prompt_provider: record.review_metadata?.prompt_provider ?? null,
     schema_spec: record.schema_spec ?? null,
     run_kind: runKindFromRecord(record),
     auth_mode: record.auth_mode ?? fallbackAuthMode ?? "subscription",
@@ -383,6 +425,8 @@ async function cmdRun(rest) {
     scope_base: options["scope-base"] ?? null,
     scope_paths: scopePaths,
     prompt_head: prompt.slice(0, 200),          // §21.3.1 — no full prompt
+    review_prompt_contract_version: profile.name === "rescue" ? null : REVIEW_PROMPT_CONTRACT_VERSION,
+    review_prompt_provider: profile.name === "rescue" ? null : "Claude",
     schema_spec: options.schema ?? null,
     binary: options.binary ?? process.env.CLAUDE_BINARY ?? "claude",
     run_kind: options.background ? "background" : "foreground",
@@ -395,12 +439,13 @@ async function cmdRun(rest) {
   const queuedRecord = buildJobRecord(invocation, null, []);
   writeJobFile(workspaceRoot, jobId, queuedRecord);
   upsertJob(workspaceRoot, queuedRecord);
+  const targetPrompt = targetPromptFor(invocation, prompt);
 
   if (options.background) {
     // Write prompt to private sidecar (§21.3.1 handoff buffer). Worker reads
     // and deletes — prompt text does NOT live on the JobRecord.
     try {
-      writePromptSidecar(resolveJobsDir(workspaceRoot), jobId, prompt);
+      writePromptSidecar(resolveJobsDir(workspaceRoot), jobId, targetPrompt);
     } catch (error) {
       failBackgroundPromptSidecarWrite(workspaceRoot, invocation, error);
     }
@@ -421,7 +466,7 @@ async function cmdRun(rest) {
     process.exit(0);
   }
 
-  await executeRun(invocation, prompt, { foreground: true });
+  await executeRun(invocation, targetPrompt, { foreground: true });
 }
 
 // Shared execution body. Foreground path calls this directly with the live
@@ -458,15 +503,27 @@ async function executeRun(invocation, prompt, { foreground }) {
     }
     process.exit(2);
   }
-  const childCwd = containment.path;
+  const checkMutations = profile.permission_mode === "plan";
+  let neutralCwd = null;
+  let neutralCwdSetupError = null;
+  if (checkMutations) {
+    try {
+      neutralCwd = mkdtempSync(joinPath(tmpdir(), "claude-neutral-cwd-"));
+    } catch (e) {
+      neutralCwdSetupError = e;
+    }
+  }
+  const childCwd = neutralCwd ?? containment.path;
   const addDir = containment.path;
 
   // Pre-snapshot for review-style paths (§10 post-hoc mutation detection).
   // Profile-driven: plan-mode paths are supposed to be read-only, so we
   // snapshot before/after and surface drift via record.mutations.
-  const checkMutations = profile.permission_mode === "plan";
   let gitStatusBefore = null;
   const mutations = [];
+  if (neutralCwdSetupError) {
+    mutations.push(mutationDetectionFailure(neutralCwdSetupError));
+  }
   if (checkMutations) {
     const before = tryGit(["status", "-s", "--untracked-files=all"], cwd);
     if (before.ok) {
@@ -498,6 +555,7 @@ async function executeRun(invocation, prompt, { foreground }) {
   // This check also covers the foreground path (cmdRun bypasses
   // cmdRunWorker entirely).
   if (consumeCancelMarker(workspaceRoot, jobId)) {
+    cleanupNeutralCwd(neutralCwd);
     if (containment.disposed && disposeEffective) {
       try { containment.cleanup(); } catch { /* best-effort */ }
     }
@@ -544,6 +602,7 @@ async function executeRun(invocation, prompt, { foreground }) {
     }, mutations);
     writeJobFile(workspaceRoot, jobId, errorRecord);
     upsertJob(workspaceRoot, errorRecord);
+    cleanupNeutralCwd(neutralCwd);
     if (disposeEffective) containment.cleanup();
     if (foreground) {
       printJson(errorRecord);
@@ -669,6 +728,7 @@ async function executeRun(invocation, prompt, { foreground }) {
         }
       }
     }
+    cleanupNeutralCwd(neutralCwd);
     if (containment.disposed && disposeEffective) {
       try { containment.cleanup(); } catch { /* best-effort */ }
     }
@@ -677,6 +737,7 @@ async function executeRun(invocation, prompt, { foreground }) {
     });
   }
 
+  cleanupNeutralCwd(neutralCwd);
   if (containment.disposed && disposeEffective) {
     containment.cleanup();
   }
@@ -689,6 +750,11 @@ async function executeRun(invocation, prompt, { foreground }) {
     printJson(finalRecord);
   }
   process.exit(finalRecord.status === "completed" ? 0 : 2);
+}
+
+function cleanupNeutralCwd(neutralCwd) {
+  if (!neutralCwd) return;
+  try { rmSync(neutralCwd, { recursive: true, force: true }); } catch { /* best-effort */ }
 }
 
 // ——— subcommand: _run-worker (hidden; detached worker for --background) ———
@@ -843,6 +909,8 @@ async function cmdContinue(rest) {
     scope_base: prior.scope_base ?? null,
     scope_paths: prior.scope_paths ?? null,
     prompt_head: prompt.slice(0, 200),    // §21.3.1 — no full prompt
+    review_prompt_contract_version: priorProfile.name === "rescue" ? null : REVIEW_PROMPT_CONTRACT_VERSION,
+    review_prompt_provider: priorProfile.name === "rescue" ? null : "Claude",
     schema_spec: prior.schema_spec ?? prior.schema ?? null,
     binary: options.binary ?? process.env.CLAUDE_BINARY ?? "claude",
     run_kind: options.background ? "background" : "foreground",
@@ -853,10 +921,11 @@ async function cmdContinue(rest) {
   const queuedRecord = buildJobRecord(invocation, null, []);
   writeJobFile(workspaceRoot, newJobId_, queuedRecord);
   upsertJob(workspaceRoot, queuedRecord);
+  const targetPrompt = targetPromptFor(invocation, prompt);
 
   if (options.background) {
     try {
-      writePromptSidecar(resolveJobsDir(workspaceRoot), newJobId_, prompt);
+      writePromptSidecar(resolveJobsDir(workspaceRoot), newJobId_, targetPrompt);
     } catch (error) {
       failBackgroundPromptSidecarWrite(workspaceRoot, invocation, error);
     }
@@ -868,7 +937,7 @@ async function cmdContinue(rest) {
       external_review: externalReviewForInvocation(invocation) });
     process.exit(0);
   }
-  await executeRun(invocation, prompt, { foreground: true });
+  await executeRun(invocation, targetPrompt, { foreground: true });
 }
 
 function writeSidecar(workspaceRoot, jobId, name, contents) {

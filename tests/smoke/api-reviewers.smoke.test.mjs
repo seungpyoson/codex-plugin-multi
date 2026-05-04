@@ -31,6 +31,7 @@ const API_REVIEWER_EXPECTED_KEYS = Object.freeze([
   "scope_base",
   "scope_paths",
   "prompt_head",
+  "review_metadata",
   "schema_spec",
   "binary",
   "status",
@@ -1169,7 +1170,7 @@ test("DeepSeek direct API custom-review completes and persists JobRecord", async
   assert.equal(record.provider, "deepseek");
   assert.equal(record.model, "deepseek-v4-pro");
   assert.equal(record.credential_ref, "DEEPSEEK_API_KEY");
-  assert.equal(record.schema_version, 9);
+  assert.equal(record.schema_version, 10);
   assert.equal(record.kimi_session_id, null);
   assert.deepEqual(record.external_review, {
     marker: "EXTERNAL REVIEW",
@@ -1268,6 +1269,90 @@ test("direct API reviewers redact provider results before printing or persisting
   assert.equal(record.status, "completed");
   assert.equal(record.result, "Echoed [REDACTED] in provider output");
   assert.doesNotMatch(result.stdout, /secret-test-value/);
+});
+
+test("direct API reviewers redact authorization-shaped provider echoes", async () => {
+  const cwd = makeWorkspace();
+  const result = await run([
+    "run",
+    "--provider", "deepseek",
+    "--mode", "custom-review",
+    "--scope", "custom",
+    "--scope-paths", "seed.txt",
+    "--foreground",
+    "--prompt", "Check this file.",
+  ], {
+    cwd,
+    env: {
+      API_REVIEWERS_MOCK_RESPONSE: mockResponse("deepseek-v4-flash", "chatcmpl-test", "Echoed Authorization: Bearer reflected-token-value\nAuthorization: Token abc1234\nBearer shrt\nBearer alternate-token-value"),
+      DEEPSEEK_API_KEY: "secret-test-value",
+    },
+  });
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  const record = parseJson(result.stdout);
+  assert.equal(record.status, "completed");
+  assert.match(record.result, /Authorization: \[REDACTED\]/);
+  assert.match(record.result, /Bearer \[REDACTED\]/);
+  assert.doesNotMatch(result.stdout, /reflected-token-value|Token abc1234|Bearer shrt|alternate-token-value/);
+});
+
+test("direct API reviewers redact configured non-API_KEY credential names", async () => {
+  const cwd = makeWorkspace();
+  const pluginRoot = makeInstalledApiReviewersRoot();
+  writeFileSync(path.join(pluginRoot, "config", "providers.json"), JSON.stringify({
+    deepseek: {
+      display_name: "DeepSeek",
+      auth_mode: "api_key",
+      env_keys: ["DEEPSEEK_CREDENTIAL"],
+      base_url: "https://api.deepseek.com",
+      model: "deepseek-v4-flash",
+    },
+  }, null, 2));
+  const result = await run([
+    "run",
+    "--provider", "deepseek",
+    "--mode", "custom-review",
+    "--scope", "custom",
+    "--scope-paths", "seed.txt",
+    "--foreground",
+    "--prompt", "Check this file.",
+  ], {
+    cwd,
+    companion: path.join(pluginRoot, "scripts", "api-reviewer.mjs"),
+    env: {
+      API_REVIEWERS_MOCK_RESPONSE: mockResponse("deepseek-v4-flash", "chatcmpl-test", "Echoed token-token-value in provider output"),
+      DEEPSEEK_CREDENTIAL: "token-token-value",
+    },
+  });
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  const record = parseJson(result.stdout);
+  assert.equal(record.status, "completed");
+  assert.equal(record.credential_ref, "DEEPSEEK_CREDENTIAL");
+  assert.equal(record.result, "Echoed [REDACTED] in provider output");
+  assert.doesNotMatch(result.stdout, /token-token-value/);
+});
+
+test("direct API reviewer prompt names the selected provider", async () => {
+  const cwd = makeWorkspace();
+  const result = await run([
+    "run",
+    "--provider", "deepseek",
+    "--mode", "custom-review",
+    "--scope", "custom",
+    "--scope-paths", "seed.txt",
+    "--foreground",
+    "--prompt", "Check this file.",
+  ], {
+    cwd,
+    env: {
+      API_REVIEWERS_MOCK_RESPONSE: mockResponse("deepseek-v4-flash"),
+      API_REVIEWERS_MOCK_ASSERT_PROMPT_INCLUDES: "Provider: DeepSeek",
+      DEEPSEEK_API_KEY: "secret-test-value",
+    },
+  });
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  const record = parseJson(result.stdout);
+  assert.equal(record.status, "completed");
 });
 
 test("direct API provider session_id rejects unsafe values", async () => {

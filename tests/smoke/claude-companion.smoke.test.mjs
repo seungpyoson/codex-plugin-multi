@@ -124,7 +124,7 @@ test("run --mode=review --foreground: emits JobRecord with status=completed", ()
     assert.ok(result.job_id, "job_id set");
     assert.equal(result.result, "Mock Claude response.");
     assert.deepEqual(result.permission_denials, []);
-    assert.equal(result.schema_version, 9, "schema_version bumped for external review provenance");
+    assert.equal(result.schema_version, 10, "schema_version bumped for delegated review metadata");
     assert.equal("prompt" in result, false,
       "§21.3.1: full prompt must not appear on JobRecord");
     assert.equal("ok" in result, false,
@@ -240,7 +240,7 @@ test("run: meta.json persisted to workspace state", () => {
     assert.equal(meta.session_id, undefined,
       "legacy session_id field must not be present on new-shape records");
     // JobRecord schema version and full-prompt omission stay explicit.
-    assert.equal(meta.schema_version, 9);
+    assert.equal(meta.schema_version, 10);
     assert.equal("prompt" in meta, false,
       "§21.3.1: full `prompt` field must not be persisted");
     // T7.4: result field populated on foreground completion (symmetry with bg).
@@ -1085,7 +1085,7 @@ test("review worktree disposed by profile default (dispose_default=true)", () =>
     ["run", "--mode=review", "--foreground",
      "--model", "claude-haiku-4-5-20251001",
      "--cwd", cwd, "--", "review"],
-    { cwd, env: { CLAUDE_MOCK_ASSERT_FILE: "seed" } }
+    { cwd, env: { CLAUDE_MOCK_ASSERT_FILE: "seed", CLAUDE_MOCK_ASSERT_CWD: realpathSync(tmpdir()) } }
   );
   try {
     assert.equal(status, 0, stderr);
@@ -1093,6 +1093,11 @@ test("review worktree disposed by profile default (dispose_default=true)", () =>
     const fx = readStdoutLog(dataDir, result.job_id);
     // The worktree path the mock saw must no longer exist on disk.
     assert.ok(fx.t7_add_dir, "mock didn't record add_dir");
+    assert.ok(fx.t7_cwd, "mock didn't record cwd");
+    assert.notEqual(fx.t7_cwd, fx.t7_add_dir, "Claude review must run from a neutral cwd, not the scoped add-dir");
+    assert.notEqual(fx.t7_cwd_real, fx.t7_add_dir_real, "Claude review cwd must resolve outside the scoped add-dir");
+    assert.equal(existsSync(fx.t7_cwd), false,
+      `neutral Claude cwd should be disposed after review: ${fx.t7_cwd}`);
     assert.equal(existsSync(fx.t7_add_dir), false,
       `review worktree ${fx.t7_add_dir} should be disposed (dispose_default=true)`);
   } finally {

@@ -9,6 +9,7 @@ import { hostname } from "node:os";
 
 import { cleanGitEnv } from "./lib/git-env.mjs";
 import { isCodexSandbox } from "./lib/codex-env.mjs";
+import { REVIEW_PROMPT_CONTRACT_VERSION, buildReviewPrompt } from "./lib/review-prompt.mjs";
 import {
   EXTERNAL_REVIEW_KEYS,
   SOURCE_CONTENT_TRANSMISSION,
@@ -19,7 +20,7 @@ const PLUGIN_ROOT = resolve(SCRIPT_DIR, "..");
 const PROVIDERS_PATH = resolve(PLUGIN_ROOT, "config/providers.json");
 const VALID_MODES = new Set(["review", "adversarial-review", "custom-review"]);
 const VALID_AUTH_MODES = new Set(["api_key", "auto"]);
-const SCHEMA_VERSION = 9;
+const SCHEMA_VERSION = 10;
 const API_REVIEWER_STATE_VERSION = 1;
 const MAX_RETAINED_API_REVIEWER_JOBS = 50;
 const ACTIVE_JOB_STATUSES = new Set(["queued", "running"]);
@@ -50,6 +51,7 @@ const API_REVIEWER_EXPECTED_KEYS = Object.freeze([
   "scope_base",
   "scope_paths",
   "prompt_head",
+  "review_metadata",
   "schema_spec",
   "binary",
   "status",
@@ -605,17 +607,20 @@ function applyRequestDefaults(requestBody, requestDefaults = {}) {
   return { ok: true };
 }
 
-function redactor(env = process.env) {
+function redactor(env = process.env, configuredSecretNames = []) {
+  const configured = new Set(configuredSecretNames);
   const secrets = Object.entries(env)
     .filter(([name, value]) => (
-      /(?:^|_)API_KEY$/.test(name) &&
+      (configured.has(name) || /(?:^|_)(?:API_KEY|TOKEN|ACCESS_KEY|SECRET|ADMIN_KEY)$/.test(name)) &&
       typeof value === "string" &&
-      value.length >= MIN_SECRET_REDACTION_LENGTH
+      (configured.has(name) ? value.length > 0 : value.length >= MIN_SECRET_REDACTION_LENGTH)
     ))
     .map(([, value]) => value);
   return (text) => {
     let out = String(text ?? "");
     for (const secret of secrets) out = out.split(secret).join("[REDACTED]");
+    out = out.replace(/Authorization:\s*\S.*$/gim, "Authorization: [REDACTED]");
+    out = out.replace(/Bearer\s+\S+/gi, "Bearer [REDACTED]");
     return out;
   };
 }
@@ -631,8 +636,8 @@ function redactValue(value, redact) {
   return value;
 }
 
-function redactRecord(record, env = process.env) {
-  return redactValue(record, redactor(env));
+function redactRecord(record, env = process.env, configuredSecretNames = []) {
+  return redactValue(record, redactor(env, configuredSecretNames));
 }
 
 function baseUrlFor(cfg) {
@@ -775,10 +780,28 @@ async function collectScope(options) {
   const scopeBase = scope === "branch-diff" ? options["scope-base"] ?? "main" : null;
   const relPaths = selectedScopePaths(scope, options, cwd);
   const files = await readScopeFiles(workspaceRoot, relPaths);
-  return { cwd, workspaceRoot, scope, scope_base: scopeBase, scope_paths: relPaths, files };
+  return {
+    cwd,
+    workspaceRoot,
+    scope,
+    scope_base: scopeBase,
+    scope_paths: relPaths,
+    base_commit: gitCommitForPrompt(cwd, scopeBase),
+    head_commit: gitCommitForPrompt(cwd, "HEAD"),
+    files,
+  };
 }
 
-function promptFor(mode, userPrompt, scopeInfo) {
+function gitCommitForPrompt(cwd, ref) {
+  if (!ref) return null;
+  try {
+    return git(["rev-parse", "--verify", `${ref}^{commit}`], cwd, { allowFailure: true }) || null;
+  } catch {
+    return null;
+  }
+}
+
+function promptFor(mode, userPrompt, scopeInfo, providerName = "Direct API reviewer") {
   const modeLine = mode === "adversarial-review"
     ? "You are performing an adversarial code review. Prioritize correctness bugs, security risks, regressions, and missing tests."
     : "You are performing a code review. Prioritize bugs, behavioral regressions, and missing tests.";
@@ -794,14 +817,24 @@ function promptFor(mode, userPrompt, scopeInfo) {
     file.text,
     "```",
   ].join("\n")).join("\n\n");
-  return [
-    modeLine,
-    "Return a concise verdict and findings. Do not edit files.",
-    liveContext,
-    userPrompt ? `User prompt:\n${userPrompt}` : null,
-    "Selected files:",
-    files,
-  ].filter(Boolean).join("\n\n");
+  return buildReviewPrompt({
+    provider: providerName,
+    mode,
+    repository: scopeInfo.workspaceRoot ?? null,
+    baseRef: scopeInfo.scope_base ?? null,
+    baseCommit: scopeInfo.base_commit ?? null,
+    headRef: "HEAD",
+    headCommit: scopeInfo.head_commit ?? null,
+    scope: scopeInfo.scope,
+    scopePaths: scopeInfo.scope_paths,
+    userPrompt,
+    extraInstructions: [
+      modeLine,
+      liveContext,
+      "Selected files:",
+      files,
+    ],
+  });
 }
 
 function requestFieldMatches(actual, expected) {
@@ -899,7 +932,7 @@ async function callProvider(provider, cfg, prompt, env = process.env) {
   }
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs.value);
-  const redact = redactor(env);
+  const redact = redactor(env, cfg.env_keys);
   try {
     const response = await fetch(endpoint, {
       method: "POST",
@@ -1066,7 +1099,7 @@ function errorCauseFor(errorCode) {
 
 function buildRecord({ provider, cfg, mode, options, scopeInfo, execution, startedAt, endedAt }) {
   const completed = execution.exitCode === 0 && execution.parsed?.ok === true;
-  const redact = redactor();
+  const redact = redactor(process.env, cfg.env_keys);
   const result = completed ? redact(execution.parsed.result) : null;
   const errorMessage = completed ? null : redact(execution.parsed?.error ?? "");
   const errorCode = completed ? null : (execution.parsed?.reason ?? "provider_error");
@@ -1109,6 +1142,19 @@ function buildRecord({ provider, cfg, mode, options, scopeInfo, execution, start
     scope_base: scopeInfo.scope_base ?? null,
     scope_paths: scopeInfo.scope_paths ?? null,
     prompt_head: String(options.prompt ?? "").slice(0, 200),
+    review_metadata: Object.freeze({
+      prompt_contract_version: REVIEW_PROMPT_CONTRACT_VERSION,
+      prompt_provider: cfg.display_name,
+      scope: scopeInfo.scope,
+      scope_base: scopeInfo.scope_base ?? null,
+      scope_paths: scopeInfo.scope_paths ?? null,
+      raw_output: Object.freeze({
+        http_status: execution.http_status ?? null,
+        raw_model: execution.parsed?.raw_model ?? null,
+        parsed_ok: execution.parsed?.ok ?? null,
+        result_chars: typeof execution.parsed?.result === "string" ? execution.parsed.result.length : null,
+      }),
+    }),
     schema_spec: null,
     binary: null,
     status: completed ? "completed" : "failed",
@@ -1146,12 +1192,12 @@ async function persistRecord(record, env = process.env) {
   });
 }
 
-async function persistRecordBestEffort(record, env = process.env) {
+async function persistRecordBestEffort(record, env = process.env, configuredSecretNames = []) {
   try {
     await persistRecord(record, env);
     return record;
   } catch (e) {
-    const detail = redactor(env)(`JobRecord persistence failed: ${e?.message ?? String(e)}`);
+    const detail = redactor(env, configuredSecretNames)(`JobRecord persistence failed: ${e?.message ?? String(e)}`);
     return {
       ...record,
       disclosure_note: record.disclosure_note ? `${record.disclosure_note} ${detail}` : detail,
@@ -1220,7 +1266,7 @@ async function cmdRun(options) {
   }
   if (!execution) {
     try {
-      execution = await callProvider(provider, cfg, promptFor(mode, options.prompt ?? "", scopeInfo));
+      execution = await callProvider(provider, cfg, promptFor(mode, options.prompt ?? "", scopeInfo, cfg.display_name));
     } catch (e) {
       execution = providerFailure("provider_unavailable", redactor(process.env)(e?.message ?? String(e)), null, null, null);
     }
@@ -1234,8 +1280,8 @@ async function cmdRun(options) {
     execution,
     startedAt,
     endedAt: new Date().toISOString(),
-  }));
-  const printableRecord = await persistRecordBestEffort(record);
+  }), process.env, cfg.env_keys);
+  const printableRecord = await persistRecordBestEffort(record, process.env, cfg.env_keys);
   printJson(printableRecord);
   process.exit(record.status === "completed" ? 0 : 1);
 }
