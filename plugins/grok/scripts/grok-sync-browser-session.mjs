@@ -4,12 +4,14 @@ import { createDecipheriv, pbkdf2Sync } from "node:crypto";
 import { copyFileSync, existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 
 const DEFAULT_GROK2API_BASE_URL = "http://127.0.0.1:8000";
 const DEFAULT_ADMIN_KEY = "grok2api";
 const DEFAULT_ADMIN_TIMEOUT_MS = 10000;
 const DEFAULT_POOL = "super";
 const COOKIE_NAMES = ["sso-rw", "sso"];
+const MIN_SECRET_REDACTION_LENGTH = 4;
 
 const BROWSERS = {
   chrome: {
@@ -90,7 +92,7 @@ function parsePositiveInteger(value, fallback) {
 function redactMessage(message, secrets = []) {
   let out = String(message ?? "");
   for (const secret of secrets) {
-    if (typeof secret === "string" && secret.length >= 8) out = out.split(secret).join("[REDACTED]");
+    if (typeof secret === "string" && secret.length >= MIN_SECRET_REDACTION_LENGTH) out = out.split(secret).join("[REDACTED]");
   }
   out = out.replace(/Authorization:\s*\S+(?:\s+\S{8,})?/gi, "Authorization: [REDACTED]");
   out = out.replace(/Bearer\s+\S{8,}/gi, "Bearer [REDACTED]");
@@ -144,7 +146,8 @@ async function api(baseUrl, pathName, {
       parsed = { raw: text.slice(0, 200) };
     }
     if (!response.ok) {
-      const err = new Error(`${pathName} HTTP ${response.status}`);
+      const detail = parsed?.error?.message || parsed?.message || parsed?.raw;
+      const err = new Error(`${pathName} HTTP ${response.status}${detail ? `: ${detail}` : ""}`);
       err.status = response.status;
       err.body = parsed;
       throw err;
@@ -238,7 +241,7 @@ function sqliteCookieRows(dbPath) {
   }
 }
 
-function chromeDecrypt(encryptedHex, password) {
+export function chromeDecrypt(encryptedHex, password) {
   if (!encryptedHex) return "";
   const encrypted = Buffer.from(encryptedHex, "hex");
   if (!encrypted.length) return "";
@@ -347,12 +350,15 @@ async function main(argv = process.argv.slice(2)) {
       selected_cookie: selected.name,
       previous_pool_count: existingTokens.length,
       pool_emptied: false,
+      stale_token_count: toDelete.length,
     });
   }
 }
 
-try {
-  await main();
-} catch (error) {
-  fail("unexpected_error", error?.message || String(error));
+if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  try {
+    await main();
+  } catch (error) {
+    fail("unexpected_error", error?.message || String(error));
+  }
 }

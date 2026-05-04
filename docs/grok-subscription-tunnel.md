@@ -43,8 +43,11 @@ The helper announces which local browser profile and cookie database it reads,
 may trigger macOS Keychain access, prefers the `sso-rw` cookie over `sso`, and
 prints only sanitized pool/quota status. It adds and refreshes the new token
 before deleting old grok2api accounts, so an add/refresh failure does not empty
-the existing pool. It defaults the local pool to `super` because grok2api may
-misclassify SuperGrok sessions as `basic` during quota auto-detection.
+the existing pool. If deleting stale grok2api tokens fails after the new token
+is imported, the failure JSON reports `stale_token_count` so operators know the
+pool still contains old entries. It defaults the local pool to `super` because
+grok2api may misclassify SuperGrok sessions as `basic` during quota
+auto-detection.
 
 Useful options:
 
@@ -135,3 +138,16 @@ Expected E2E result:
 
 If readiness returns `tunnel_unavailable`, start or repair the local Grok web
 tunnel and retry.
+
+Review runs persist a redacted JobRecord under
+`GROK_PLUGIN_DATA` or `.codex-plugin-data/grok`. The helper can inspect that
+local state without contacting Grok:
+
+```sh
+node plugins/grok/scripts/grok-web-reviewer.mjs list
+node plugins/grok/scripts/grok-web-reviewer.mjs result --job-id <job_id>
+```
+
+Custom and branch-diff scope reads reject unsafe paths and files larger than
+256 KiB before contacting the local tunnel. Split larger reviews into smaller
+`--scope-paths` bundles.

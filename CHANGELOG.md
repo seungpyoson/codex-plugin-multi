@@ -11,8 +11,9 @@
   `auth_mode: "api_key"` provider config, safe credential-name diagnostics,
   mock smoke coverage, and GLM Coding Plan endpoint support.
 - Added an experimental Grok Web plugin backed by a local subscription tunnel,
-  with browser-session sync for grok2api, subscription-only diagnostics, smoke
-  coverage, and opt-in live E2E coverage.
+  with browser-session sync for grok2api, subscription-only diagnostics,
+  result/list lookup, scope-size guardrails, smoke coverage, and opt-in live
+  E2E coverage.
 - Hardened Claude and Gemini preflight output with explicit safety fields that
   report no target spawn, no selected-scope send, and the external-provider
   consent requirement.

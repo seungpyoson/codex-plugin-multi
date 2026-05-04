@@ -1,5 +1,5 @@
 import { once } from "node:events";
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import http from "node:http";
 import { tmpdir } from "node:os";
@@ -169,6 +169,84 @@ test("sync-browser-session does not delete existing tokens when add fails", asyn
   assert.deepEqual(requests, ["GET", "POST"]);
 });
 
+test("sync-browser-session reports stale token count when old-token deletion fails", async () => {
+  const dir = mkdtempSync(path.join(tmpdir(), "grok-sync-"));
+  const secret = "new-incoming-token-value";
+  const cookieSource = path.join(dir, "cookies.json");
+  writeFileSync(cookieSource, JSON.stringify([{ name: "sso-rw", value: secret }]));
+
+  let currentTokens = [{ token: "prior-working-token", pool: "super", status: "active", quota: {} }];
+  await withGrok2ApiServer(async (req, res) => {
+    res.setHeader("content-type", "application/json");
+    if (req.method === "GET" && req.url === "/admin/api/tokens") {
+      res.end(JSON.stringify({ tokens: currentTokens }));
+      return;
+    }
+    if (req.method === "POST" && req.url === "/admin/api/tokens/add") {
+      currentTokens.push({ token: secret, pool: "super", status: "active", quota: {} });
+      res.end(JSON.stringify({ status: "success", count: 1 }));
+      return;
+    }
+    if (req.method === "POST" && req.url === "/admin/api/batch/refresh") {
+      res.end(JSON.stringify({ status: "success" }));
+      return;
+    }
+    if (req.method === "DELETE" && req.url === "/admin/api/tokens") {
+      res.statusCode = 500;
+      res.end(JSON.stringify({ error: { message: "delete failed" } }));
+      return;
+    }
+    res.statusCode = 404;
+    res.end(JSON.stringify({ error: "not found" }));
+  }, async (baseUrl) => {
+    const result = await runAsync([
+      "--cookie-source-json", cookieSource,
+      "--grok2api-base-url", baseUrl,
+      "--pool", "super",
+    ]);
+    assert.equal(result.status, 1);
+    const parsed = JSON.parse(result.stdout);
+    assert.equal(parsed.ok, false);
+    assert.equal(parsed.error_code, "grok2api_import_failed");
+    assert.equal(parsed.previous_pool_count, 1);
+    assert.equal(parsed.pool_emptied, false);
+    assert.equal(parsed.stale_token_count, 1);
+    assert.doesNotMatch(result.stdout, /new-incoming-token-value/);
+  });
+});
+
+test("sync-browser-session redacts short custom admin keys from import failures", async () => {
+  const dir = mkdtempSync(path.join(tmpdir(), "grok-sync-"));
+  const secret = "new-incoming-token-value";
+  const adminKey = "abc1234";
+  const cookieSource = path.join(dir, "cookies.json");
+  writeFileSync(cookieSource, JSON.stringify([{ name: "sso-rw", value: secret }]));
+
+  await withGrok2ApiServer(async (req, res) => {
+    res.setHeader("content-type", "application/json");
+    if (req.method === "GET" && req.url === "/admin/api/tokens") {
+      res.end(JSON.stringify({ tokens: [] }));
+      return;
+    }
+    if (req.method === "POST" && req.url === "/admin/api/tokens/add") {
+      res.statusCode = 500;
+      res.end(JSON.stringify({ error: { message: `Bearer ${adminKey} failed` } }));
+      return;
+    }
+    res.statusCode = 404;
+    res.end(JSON.stringify({ error: "not found" }));
+  }, async (baseUrl) => {
+    const result = await runAsync([
+      "--cookie-source-json", cookieSource,
+      "--grok2api-base-url", baseUrl,
+      "--admin-key", adminKey,
+    ]);
+    assert.equal(result.status, 1);
+    assert.doesNotMatch(result.stdout, new RegExp(adminKey));
+    assert.match(result.stdout, /\[REDACTED\]/);
+  });
+});
+
 test("sync-browser-session refuses to touch cookies when grok2api is unreachable", async () => {
   const dir = mkdtempSync(path.join(tmpdir(), "grok-sync-"));
   const cookieSource = path.join(dir, "cookies.json");
@@ -206,4 +284,32 @@ test("sync-browser-session times out stalled grok2api admin calls before reading
     assert.doesNotMatch(result.stdout, /secret-value-that-must-not-load/);
     assert.doesNotMatch(result.stderr, /secret-value-that-must-not-load/);
   });
+});
+
+test("chrome cookie decrypt helper handles v10/v11 ciphertext and rejects unsupported formats", () => {
+  const script = `
+    import { createCipheriv, pbkdf2Sync } from "node:crypto";
+    import { chromeDecrypt } from ${JSON.stringify(SYNC)};
+    const password = "test-safe-storage-password";
+    const plaintext = "plain-cookie-value";
+    const key = pbkdf2Sync(Buffer.from(password, "utf8"), Buffer.from("saltysalt"), 1003, 16, "sha1");
+    const iv = Buffer.alloc(16, " ");
+    function encryptedHex(version) {
+      const cipher = createCipheriv("aes-128-cbc", key, iv);
+      return Buffer.concat([Buffer.from(version), cipher.update(plaintext, "utf8"), cipher.final()]).toString("hex");
+    }
+    if (chromeDecrypt(encryptedHex("v10"), password) !== plaintext) throw new Error("v10 decrypt failed");
+    if (chromeDecrypt(encryptedHex("v11"), password) !== plaintext) throw new Error("v11 decrypt failed");
+    try {
+      chromeDecrypt(Buffer.from("v12bad").toString("hex"), password);
+      throw new Error("unsupported format did not throw");
+    } catch (error) {
+      if (!/unsupported encrypted cookie format/.test(error.message)) throw error;
+    }
+  `;
+  const stdout = execFileSync(process.execPath, ["--input-type=module", "-e", script], {
+    cwd: REPO_ROOT,
+    encoding: "utf8",
+  });
+  assert.equal(stdout, "");
 });

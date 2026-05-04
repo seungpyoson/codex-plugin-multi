@@ -210,7 +210,33 @@ test("custom-review sends selected source to a local Grok web tunnel and persist
 
     const persisted = JSON.parse(readFileSync(path.join(dataDir, "jobs", record.job_id, "meta.json"), "utf8"));
     assert.equal(persisted.result, "Verdict: no findings.");
+    assert.equal(persisted.grok_session_id, "grok-web-session-1");
     assert.doesNotMatch(JSON.stringify(persisted), /secret-cookie-like-token/);
+
+    const resultLookup = run(["result", "--job-id", record.job_id], {
+      cwd,
+      env: {
+        GROK_PLUGIN_DATA: dataDir,
+        GROK_WEB_TUNNEL_API_KEY: "secret-cookie-like-token",
+      },
+    });
+    const lookedUp = parseStdout(resultLookup);
+    assert.equal(resultLookup.status, 0);
+    assert.equal(lookedUp.job_id, record.job_id);
+    assert.equal(lookedUp.result, "Verdict: no findings.");
+    assert.doesNotMatch(resultLookup.stdout, /secret-cookie-like-token/);
+
+    const listResult = run(["list"], {
+      cwd,
+      env: {
+        GROK_PLUGIN_DATA: dataDir,
+        GROK_WEB_TUNNEL_API_KEY: "secret-cookie-like-token",
+      },
+    });
+    const listed = parseStdout(listResult);
+    assert.equal(listResult.status, 0);
+    assert.equal(listed.ok, true);
+    assert.equal(listed.jobs[0].job_id, record.job_id);
   });
 });
 
@@ -368,6 +394,60 @@ test("local tunnel connection failure is structured as not sent", () => {
   assert.doesNotMatch(result.stdout, /secret-cookie-like-token/);
 });
 
+test("custom-review rejects oversized selected files before contacting the tunnel", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "grok-web-workspace-"));
+  writeFileSync(path.join(cwd, "large.js"), `${"x".repeat(256 * 1024 + 1)}\n`);
+
+  const result = run([
+    "run",
+    "--mode", "custom-review",
+    "--scope", "custom",
+    "--scope-paths", "large.js",
+    "--foreground",
+    "--prompt", "Check this file.",
+  ], {
+    cwd,
+    env: {
+      GROK_WEB_BASE_URL: "http://127.0.0.1:9/api",
+      GROK_WEB_TUNNEL_API_KEY: "secret-cookie-like-token",
+    },
+  });
+  const record = parseStdout(result);
+
+  assert.equal(result.status, 1);
+  assert.equal(record.status, "failed");
+  assert.equal(record.error_code, "scope_failed");
+  assert.match(record.error_message, /scope_file_too_large:large\.js/);
+  assert.equal(record.external_review.source_content_transmission, "not_sent");
+});
+
+test("custom-review rejects unsafe scope paths before contacting the tunnel", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "grok-web-workspace-"));
+  writeFileSync(path.join(cwd, "review.js"), "export const value = 42;\n");
+
+  const result = run([
+    "run",
+    "--mode", "custom-review",
+    "--scope", "custom",
+    "--scope-paths", "../review.js",
+    "--foreground",
+    "--prompt", "Check this file.",
+  ], {
+    cwd,
+    env: {
+      GROK_WEB_BASE_URL: "http://127.0.0.1:9/api",
+      GROK_WEB_TUNNEL_API_KEY: "secret-cookie-like-token",
+    },
+  });
+  const record = parseStdout(result);
+
+  assert.equal(result.status, 1);
+  assert.equal(record.status, "failed");
+  assert.equal(record.error_code, "scope_failed");
+  assert.match(record.error_message, /unsafe_scope_path/);
+  assert.equal(record.external_review.source_content_transmission, "not_sent");
+});
+
 test("help exposes only subscription-backed Grok commands", () => {
   const parsed = JSON.parse(execFileSync(process.execPath, [COMPANION, "help"], {
     cwd: REPO_ROOT,
@@ -375,7 +455,7 @@ test("help exposes only subscription-backed Grok commands", () => {
   }));
 
   assert.equal(parsed.ok, true);
-  assert.deepEqual(parsed.commands, ["doctor", "ping", "run"]);
+  assert.deepEqual(parsed.commands, ["doctor", "ping", "run", "result", "list"]);
   assert.equal(parsed.provider, "grok-web");
   assert.equal(parsed.default_auth_mode, "subscription_web");
   assert.doesNotMatch(JSON.stringify(parsed), /api\.x\.ai/i);

@@ -49,6 +49,9 @@ reports that failure instead of switching billing paths.
 `/grok-setup` and the `doctor` command make a live `GET /models` probe against
 the configured tunnel endpoint. `ready: true` means the local tunnel was
 reachable; `tunnel_unavailable` means start the local Grok web tunnel and retry.
+Grok run records can be inspected with
+`node plugins/grok/scripts/grok-web-reviewer.mjs list` and
+`node plugins/grok/scripts/grok-web-reviewer.mjs result --job-id <job_id>`.
 For grok2api session setup on macOS, `npm run grok:sync-browser-session`
 performs a loud local Chrome-family cookie import into `grok2api`; it announces
 the browser profile it reads, may require Keychain access, and prints only

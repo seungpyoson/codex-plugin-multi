@@ -2,7 +2,7 @@
 import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
-import { mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rename, stat, unlink, writeFile } from "node:fs/promises";
 import { dirname, isAbsolute, relative, resolve } from "node:path";
 
 const VALID_MODES = new Set(["review", "adversarial-review", "custom-review"]);
@@ -10,6 +10,7 @@ const DEFAULT_BASE_URL = "http://127.0.0.1:8000/v1";
 const DEFAULT_MODEL = "grok-4.20-fast";
 const DEFAULT_TIMEOUT_MS = 30000;
 const DEFAULT_DOCTOR_TIMEOUT_MS = 2000;
+const MAX_SCOPE_FILE_BYTES = 256 * 1024;
 const SCHEMA_VERSION = 9;
 const MIN_SECRET_REDACTION_LENGTH = 8;
 
@@ -106,6 +107,8 @@ function cleanGitEnv(baseEnv = process.env) {
       key === "GIT_NAMESPACE" ||
       key === "GIT_CEILING_DIRECTORIES" ||
       key === "GIT_DISCOVERY_ACROSS_FILESYSTEM" ||
+      /^(?:GROK|XAI)_/u.test(key) ||
+      /(?:API_KEY|TOKEN|COOKIE|SESSION|SSO)/iu.test(key) ||
       /^GIT_CONFIG_(?:COUNT|KEY_\d+|VALUE_\d+)$/u.test(key)
     ) {
       delete out[key];
@@ -197,6 +200,11 @@ async function readScopeFiles(workspaceRoot, relPaths) {
       throw new Error(`unsafe_scope_path:${relPath}`);
     }
     if (!existsSync(abs)) continue;
+    const info = await stat(abs);
+    if (!info.isFile()) continue;
+    if (info.size > MAX_SCOPE_FILE_BYTES) {
+      throw new Error(`scope_file_too_large:${normalizedRel}: ${info.size} bytes exceeds ${MAX_SCOPE_FILE_BYTES} byte limit`);
+    }
     const text = await readFile(abs, "utf8");
     if (text.length === 0) continue;
     files.push({ path: normalizedRel, text });
@@ -428,6 +436,7 @@ function buildRecord({ cfg, mode, options, scopeInfo, execution, startedAt, ende
     claude_session_id: null,
     gemini_session_id: null,
     kimi_session_id: null,
+    grok_session_id: execution.session_id ?? null,
     resume_chain: [],
     pid_info: null,
     mode,
@@ -530,6 +539,43 @@ async function persistRecordBestEffort(record, env = process.env) {
   }
 }
 
+function safeJobId(value) {
+  if (typeof value !== "string" || !/^job_[0-9a-f-]{36}$/iu.test(value)) {
+    throw new Error("bad_args: --job-id must be a Grok job id");
+  }
+  return value;
+}
+
+async function cmdResult(options, env = process.env) {
+  const jobId = safeJobId(options["job-id"] ?? options.job);
+  const recordFile = resolve(dataRoot(env), "jobs", jobId, "meta.json");
+  try {
+    const parsed = JSON.parse(await readFile(recordFile, "utf8"));
+    printJson(redactValue(parsed, redactor(env)));
+  } catch (error) {
+    if (error?.code === "ENOENT") {
+      printJson({ ok: false, error_code: "not_found", job_id: jobId });
+      process.exit(1);
+    }
+    throw error;
+  }
+}
+
+async function cmdList(env = process.env) {
+  const stateFile = resolve(dataRoot(env), "state.json");
+  try {
+    const parsed = JSON.parse(await readFile(stateFile, "utf8"));
+    const jobs = Array.isArray(parsed?.jobs) ? parsed.jobs : [];
+    printJson(redactValue({ ok: true, jobs }, redactor(env)));
+  } catch (error) {
+    if (error?.code === "ENOENT") {
+      printJson({ ok: true, jobs: [] });
+      return;
+    }
+    throw error;
+  }
+}
+
 async function doctorFields(env = process.env) {
   const cfg = config(env);
   const probe = await probeGrokTunnel(cfg, env);
@@ -605,10 +651,12 @@ async function main() {
     return;
   }
   if (cmd === "run") return cmdRun(options);
+  if (cmd === "result") return cmdResult(options);
+  if (cmd === "list") return cmdList();
   if (cmd === "help" || cmd === "--help" || cmd === "-h") {
     printJson({
       ok: true,
-      commands: ["doctor", "ping", "run"],
+      commands: ["doctor", "ping", "run", "result", "list"],
       provider: "grok-web",
       default_auth_mode: "subscription_web",
       default_endpoint: DEFAULT_BASE_URL,
