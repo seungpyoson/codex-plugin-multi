@@ -210,10 +210,13 @@ async function readScopeFiles(workspaceRoot, relPaths) {
 
 function fileContentDelimiter(file, index) {
   let delimiter = `GROK FILE ${index}: ${file.path}`;
-  while (file.text.includes(`BEGIN ${delimiter}`) || file.text.includes(`END ${delimiter}`)) {
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    if (!file.text.includes(`BEGIN ${delimiter}`) && !file.text.includes(`END ${delimiter}`)) {
+      return delimiter;
+    }
     delimiter = `${delimiter} #`;
   }
-  return delimiter;
+  throw new Error(`scope_delimiter_collision:${file.path}`);
 }
 
 function promptFileBlock(file, index) {
@@ -276,9 +279,17 @@ function classifyHttpFailure(status) {
 
 function errorMessageFromResponse(parsed, text, redact) {
   if (parsed.ok) {
-    return redact(parsed.value?.error?.message ?? parsed.value?.message ?? JSON.stringify(parsed.value).slice(0, 800));
+    return redact(parsed.value?.error?.message ?? parsed.value?.message ?? JSON.stringify(parsed.value)).slice(0, 800);
   }
   return redact(text).slice(0, 800);
+}
+
+function payloadSentForFetchError(error) {
+  if (error?.name === "AbortError") return null;
+  const code = error?.cause?.code || error?.code;
+  if (["ECONNREFUSED", "ENOTFOUND", "EHOSTUNREACH", "EAI_AGAIN"].includes(code)) return false;
+  if (/bad port/i.test(`${error?.message ?? ""} ${error?.cause?.message ?? ""}`)) return false;
+  return null;
 }
 
 function tunnelTransportMessage(error, env, redact) {
@@ -341,8 +352,7 @@ async function callGrokTunnel(cfg, prompt, env = process.env) {
     };
   } catch (e) {
     const reason = e?.name === "AbortError" ? "tunnel_timeout" : "tunnel_unavailable";
-    const payloadSent = reason === "tunnel_timeout" ? null : false;
-    return providerFailure(reason, tunnelTransportMessage(e, env, redact), null, null, payloadSent);
+    return providerFailure(reason, tunnelTransportMessage(e, env, redact), null, null, payloadSentForFetchError(e));
   } finally {
     clearTimeout(timer);
   }
@@ -444,7 +454,6 @@ function buildRecord({ cfg, mode, options, scopeInfo, execution, startedAt, ende
     claude_session_id: null,
     gemini_session_id: null,
     kimi_session_id: null,
-    grok_session_id: execution.session_id ?? null,
     resume_chain: [],
     pid_info: null,
     mode,
@@ -583,6 +592,10 @@ async function cmdResult(options, env = process.env) {
       printJson({ ok: false, error_code: "not_found", job_id: jobId });
       process.exit(1);
     }
+    if (error instanceof SyntaxError) {
+      printJson({ ok: false, error_code: "malformed_record", job_id: jobId });
+      process.exit(1);
+    }
     throw error;
   }
 }
@@ -597,6 +610,10 @@ async function cmdList(env = process.env) {
     if (error?.code === "ENOENT") {
       printJson({ ok: true, jobs: [] });
       return;
+    }
+    if (error instanceof SyntaxError) {
+      printJson({ ok: false, error_code: "malformed_state" });
+      process.exit(1);
     }
     throw error;
   }
@@ -695,6 +712,11 @@ async function main() {
 try {
   await main();
 } catch (e) {
-  printJson({ ok: false, error: redactor()(e?.message ?? String(e)) });
+  const message = e?.message ?? String(e);
+  if (String(message).startsWith("bad_args:")) {
+    printJson({ ok: false, error_code: "bad_args", error_message: redactor()(message) });
+  } else {
+    printJson({ ok: false, error: redactor()(message) });
+  }
   process.exit(1);
 }

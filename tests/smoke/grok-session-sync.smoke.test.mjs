@@ -233,8 +233,9 @@ test("sync-browser-session reports stale token count when old-token deletion fai
       return;
     }
     if (req.method === "DELETE" && req.url === "/admin/api/tokens") {
+      const body = await readJsonRequest(req);
       res.statusCode = 500;
-      res.end(JSON.stringify({ error: { message: "delete failed" } }));
+      res.end(JSON.stringify({ error: { message: `delete failed for ${JSON.stringify(body)}` } }));
       return;
     }
     res.statusCode = 404;
@@ -253,6 +254,75 @@ test("sync-browser-session reports stale token count when old-token deletion fai
     assert.equal(parsed.pool_emptied, false);
     assert.equal(parsed.stale_token_count, 1);
     assert.doesNotMatch(result.stdout, /new-incoming-token-value/);
+    assert.doesNotMatch(result.stdout, /prior-working-token/);
+  });
+});
+
+test("sync-browser-session preserves grok2api_timeout during mid-import hangs", async () => {
+  const dir = mkdtempSync(path.join(tmpdir(), "grok-sync-"));
+  const secret = "new-incoming-token-value";
+  const cookieSource = path.join(dir, "cookies.json");
+  writeFileSync(cookieSource, JSON.stringify([{ name: "sso-rw", value: secret }]));
+
+  await withGrok2ApiServer(async (req, res) => {
+    res.setHeader("content-type", "application/json");
+    if (req.method === "GET" && req.url === "/admin/api/tokens") {
+      res.end(JSON.stringify({ tokens: [{ token: "prior-working-token", pool: "super", status: "active", quota: {} }] }));
+      return;
+    }
+    if (req.method === "POST" && req.url === "/admin/api/tokens/add") {
+      req.resume();
+      return;
+    }
+    res.statusCode = 404;
+    res.end(JSON.stringify({ error: "not found" }));
+  }, async (baseUrl) => {
+    const result = await runAsync([
+      "--cookie-source-json", cookieSource,
+      "--grok2api-base-url", baseUrl,
+      "--pool", "super",
+      "--admin-timeout-ms", "300",
+    ]);
+    const parsed = JSON.parse(result.stdout);
+    assert.equal(result.status, 1);
+    assert.equal(parsed.ok, false);
+    assert.equal(parsed.error_code, "grok2api_timeout");
+    assert.equal(parsed.previous_pool_count, 1);
+    assert.equal(parsed.pool_emptied, false);
+    assert.doesNotMatch(result.stdout, /new-incoming-token-value/);
+    assert.doesNotMatch(result.stdout, /prior-working-token/);
+  });
+});
+
+test("sync-browser-session redacts before truncating non-json admin errors", async () => {
+  const dir = mkdtempSync(path.join(tmpdir(), "grok-sync-"));
+  const secret = "new-incoming-token-value";
+  const adminKey = "abc1234";
+  const cookieSource = path.join(dir, "cookies.json");
+  writeFileSync(cookieSource, JSON.stringify([{ name: "sso-rw", value: secret }]));
+
+  await withGrok2ApiServer(async (req, res) => {
+    res.setHeader("content-type", "text/html");
+    if (req.method === "GET" && req.url === "/admin/api/tokens") {
+      res.end(JSON.stringify({ tokens: [] }));
+      return;
+    }
+    if (req.method === "POST" && req.url === "/admin/api/tokens/add") {
+      res.statusCode = 500;
+      res.end(`${"x".repeat(195)}${adminKey}`);
+      return;
+    }
+    res.statusCode = 404;
+    res.end("not found");
+  }, async (baseUrl) => {
+    const result = await runAsync([
+      "--cookie-source-json", cookieSource,
+      "--grok2api-base-url", baseUrl,
+      "--admin-key", adminKey,
+    ]);
+    assert.equal(result.status, 1);
+    assert.doesNotMatch(result.stdout, /abc12/);
+    assert.match(result.stdout, /\[REDACTED\]/);
   });
 });
 

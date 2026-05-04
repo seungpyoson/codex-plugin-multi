@@ -1,6 +1,6 @@
 import { once } from "node:events";
 import { execFileSync, spawn, spawnSync } from "node:child_process";
-import { mkdtempSync, readFileSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
 import http from "node:http";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -214,7 +214,8 @@ test("custom-review sends selected source to a local Grok web tunnel and persist
 
     const persisted = JSON.parse(readFileSync(path.join(dataDir, "jobs", record.job_id, "meta.json"), "utf8"));
     assert.equal(persisted.result, "Verdict: no findings 1.");
-    assert.equal(persisted.grok_session_id, "grok-web-session-1");
+    assert.equal(persisted.external_review.session_id, "grok-web-session-1");
+    assert.equal(Object.hasOwn(persisted, "grok_session_id"), false);
     assert.doesNotMatch(JSON.stringify(persisted), /secret-cookie-like-token/);
 
     const resultLookup = run(["result", "--job-id", record.job_id], {
@@ -260,6 +261,44 @@ test("custom-review sends selected source to a local Grok web tunnel and persist
     assert.equal(listed.ok, true);
     assert.equal(listed.jobs[0].job_id, secondRecord.job_id);
     assert.equal(listed.jobs[1].job_id, record.job_id);
+  });
+});
+
+test("custom-review escalates Grok file delimiters when selected source collides", async () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "grok-web-workspace-"));
+  writeFileSync(path.join(cwd, "review.js"), [
+    "const marker = `BEGIN GROK FILE 1: review.js`;",
+    "const end = `END GROK FILE 1: review.js`;",
+    "export const value = marker + end;",
+    "",
+  ].join("\n"));
+
+  await withServer(async (req, res) => {
+    const body = await readJsonRequest(req);
+    assert.match(body.messages[0].content, /BEGIN GROK FILE 1: review\.js #/);
+    assert.match(body.messages[0].content, /END GROK FILE 1: review\.js #/);
+    assert.match(body.messages[0].content, /BEGIN GROK FILE 1: review\.js`/);
+    assert.match(body.messages[0].content, /END GROK FILE 1: review\.js`/);
+    res.setHeader("content-type", "application/json");
+    res.end(JSON.stringify({
+      id: "grok-web-delimiter-session",
+      choices: [{ message: { content: "Verdict: delimiter collision handled." } }],
+    }));
+  }, async (baseUrl) => {
+    const result = await runAsync([
+      "run",
+      "--mode", "custom-review",
+      "--scope", "custom",
+      "--scope-paths", "review.js",
+      "--foreground",
+      "--prompt", "Check this file.",
+    ], {
+      cwd,
+      env: { GROK_WEB_BASE_URL: baseUrl },
+    });
+    const record = parseStdout(result);
+    assert.equal(result.status, 0);
+    assert.equal(record.result, "Verdict: delimiter collision handled.");
   });
 });
 
@@ -315,6 +354,50 @@ test("custom-review preserves canonical JobRecord when state index is malformed"
   });
 });
 
+test("result rejects unsafe job ids without reading outside the data root", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "grok-web-workspace-"));
+  const dataDir = mkdtempSync(path.join(tmpdir(), "grok-web-data-"));
+  const result = run(["result", "--job-id", "../../etc/passwd"], {
+    cwd,
+    env: { GROK_PLUGIN_DATA: dataDir },
+  });
+  const parsed = parseStdout(result);
+  assert.equal(result.status, 1);
+  assert.equal(parsed.ok, false);
+  assert.equal(parsed.error_code, "bad_args");
+});
+
+test("list returns an empty job list on a fresh data root", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "grok-web-workspace-"));
+  const dataDir = mkdtempSync(path.join(tmpdir(), "grok-web-data-"));
+  const result = run(["list"], {
+    cwd,
+    env: { GROK_PLUGIN_DATA: dataDir },
+  });
+  const parsed = parseStdout(result);
+  assert.equal(result.status, 0);
+  assert.deepEqual(parsed, { ok: true, jobs: [] });
+});
+
+test("result reports malformed persisted records without echoing raw content", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "grok-web-workspace-"));
+  const dataDir = mkdtempSync(path.join(tmpdir(), "grok-web-data-"));
+  const jobId = "job_12345678-1234-4234-9234-123456789abc";
+  const jobDir = path.join(dataDir, "jobs", jobId);
+  mkdirSync(jobDir, { recursive: true });
+  writeFileSync(path.join(jobDir, "meta.json"), "{\"result\":\"proprietary review text\"");
+
+  const result = run(["result", "--job-id", jobId], {
+    cwd,
+    env: { GROK_PLUGIN_DATA: dataDir },
+  });
+  const parsed = parseStdout(result);
+  assert.equal(result.status, 1);
+  assert.equal(parsed.ok, false);
+  assert.equal(parsed.error_code, "malformed_record");
+  assert.doesNotMatch(result.stdout, /proprietary review text/);
+});
+
 test("custom-review marks stalled uploaded tunnel requests as unknown transmission", async () => {
   const cwd = realpathSync(mkdtempSync(path.join(tmpdir(), "grok-web-workspace-")));
   writeFileSync(path.join(cwd, "review.js"), "export const value = 42;\n");
@@ -345,6 +428,75 @@ test("custom-review marks stalled uploaded tunnel requests as unknown transmissi
     assert.equal(record.error_code, "tunnel_timeout");
     assert.equal(record.external_review.source_content_transmission, "unknown");
     assert.match(record.external_review.disclosure, /may have been sent/i);
+  });
+});
+
+test("custom-review marks socket drops after upload as unknown transmission", async () => {
+  const cwd = realpathSync(mkdtempSync(path.join(tmpdir(), "grok-web-workspace-")));
+  writeFileSync(path.join(cwd, "review.js"), "export const value = 42;\n");
+
+  let receivedBytes = 0;
+  await withServer(async (req) => {
+    req.on("data", (chunk) => {
+      receivedBytes += chunk.length;
+      req.socket.destroy();
+    });
+    req.resume();
+  }, async (baseUrl) => {
+    const result = await runAsync([
+      "run",
+      "--mode", "custom-review",
+      "--scope", "custom",
+      "--scope-paths", "review.js",
+      "--foreground",
+      "--prompt", "Check this file.",
+    ], {
+      cwd,
+      env: { GROK_WEB_BASE_URL: baseUrl },
+    });
+    const record = parseStdout(result);
+
+    assert.equal(result.status, 1);
+    assert.ok(receivedBytes > 0);
+    assert.equal(record.error_code, "tunnel_unavailable");
+    assert.equal(record.external_review.source_content_transmission, "unknown");
+    assert.match(record.external_review.disclosure, /may have been sent/i);
+  });
+});
+
+test("custom-review redacts before truncating structured tunnel errors", async () => {
+  const cwd = realpathSync(mkdtempSync(path.join(tmpdir(), "grok-web-workspace-")));
+  writeFileSync(path.join(cwd, "review.js"), "export const value = 42;\n");
+  const secret = "super-secret-sso-rw-token-value";
+
+  await withServer(async (req, res) => {
+    await readJsonRequest(req);
+    res.statusCode = 500;
+    res.setHeader("content-type", "application/json");
+    res.end(JSON.stringify({
+      detail: `${"x".repeat(780)}${secret}`,
+    }));
+  }, async (baseUrl) => {
+    const result = await runAsync([
+      "run",
+      "--mode", "custom-review",
+      "--scope", "custom",
+      "--scope-paths", "review.js",
+      "--foreground",
+      "--prompt", "Check this file.",
+    ], {
+      cwd,
+      env: {
+        GROK_WEB_BASE_URL: baseUrl,
+        GROK_WEB_TUNNEL_API_KEY: secret,
+      },
+    });
+    const record = parseStdout(result);
+
+    assert.equal(result.status, 1);
+    assert.equal(record.error_code, "tunnel_error");
+    assert.doesNotMatch(record.error_message, /super-secr/);
+    assert.doesNotMatch(result.stdout, /super-secr/);
   });
 });
 

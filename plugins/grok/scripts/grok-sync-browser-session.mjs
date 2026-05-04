@@ -122,7 +122,7 @@ function fail(errorCode, message, extra = {}) {
   printJson({
     ok: false,
     error_code: errorCode,
-    error_message: message,
+    error_message: String(message).slice(0, 1000),
     ...extra,
   });
   process.exit(1);
@@ -151,7 +151,7 @@ async function api(baseUrl, pathName, {
     try {
       parsed = text ? JSON.parse(text) : null;
     } catch {
-      parsed = { raw: text.slice(0, 200) };
+      parsed = { raw: text };
     }
     if (!response.ok) {
       const detail = parsed?.error?.message || parsed?.message || parsed?.raw;
@@ -355,7 +355,7 @@ async function main(argv = process.argv.slice(2)) {
     });
     process.exit(0);
   } catch (error) {
-    fail(error.code || "grok2api_import_failed", redactMessage(error.message, [selected.value, adminKey]), {
+    fail(error.code || "grok2api_import_failed", redactMessage(error.message, [selected.value, adminKey, ...toDelete]), {
       source,
       selected_cookie: selected.name,
       previous_pool_count: existingTokens.length,
