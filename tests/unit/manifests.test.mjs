@@ -8,6 +8,7 @@ const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..
 const DESCRIPTION_MAX_LENGTH = 88;
 const DELEGATION_PLUGINS = ["claude", "gemini", "kimi"];
 const API_REVIEWER_PROVIDERS = ["deepseek", "glm"];
+const GROK_WORKFLOWS = ["review", "adversarial-review", "custom-review", "setup"];
 
 function readJson(relPath) {
   return JSON.parse(readFileSync(path.join(REPO_ROOT, relPath), "utf8"));
@@ -22,14 +23,34 @@ function assertPickerDescription(skill, rel) {
   );
 }
 
-function assertNoBracketedCliFlagsInBash(skill, rel) {
-  for (const [, block] of skill.matchAll(/(?:^|\n)[ \t]*```(?:bash)?\n([\s\S]*?)\n[ \t]*```/g)) {
+function assertNoBracketedCliFlagsInShellFences(skill, rel) {
+  for (const [, block] of skill.matchAll(/(?:^|\n)[ \t]*```(?:bash|sh|shell)?[ \t]*\n([\s\S]*?)\n[ \t]*```/g)) {
     assert.doesNotMatch(block, /\[[^\]\n]*--[a-z0-9-]+[^\]\n]*\]/i, `${rel} has bracketed optional CLI syntax`);
   }
 }
 
+function assertNoShellVariablePlaceholdersInShellFences(skill, rel) {
+  for (const [, block] of skill.matchAll(/(?:^|\n)[ \t]*```(?:bash|sh|shell)?[ \t]*\n([\s\S]*?)\n[ \t]*```/g)) {
+    assert.doesNotMatch(block, /"\$(?:PROMPT|FILES|ARGUMENTS|SCOPE_PATHS)"/, `${rel} has shell variable placeholders in copyable commands`);
+  }
+}
+
+test("bracketed optional flag guard covers sh fenced command blocks", () => {
+  assert.throws(
+    () => assertNoBracketedCliFlagsInShellFences("```sh\nnode script.mjs [--scope-base REF]\n```", "fixture.md"),
+    /fixture\.md has bracketed optional CLI syntax/,
+  );
+});
+
+test("bracketed optional flag guard covers shell fence labels with trailing whitespace", () => {
+  assert.throws(
+    () => assertNoBracketedCliFlagsInShellFences("```bash \nnode script.mjs [--scope-base REF]\n```", "fixture.md"),
+    /fixture\.md has bracketed optional CLI syntax/,
+  );
+});
+
 function assertCompanionWorkflowInvocation(skill, plugin, workflow, rel) {
-  assertNoBracketedCliFlagsInBash(skill, rel);
+  assertNoBracketedCliFlagsInShellFences(skill, rel);
   if (workflow === "setup") {
     assert.match(skill, new RegExp(`${plugin}-companion\\.mjs"\\s+doctor\\b`), `${rel} missing doctor subcommand`);
     return;
@@ -67,7 +88,7 @@ function assertCompanionWorkflowInvocation(skill, plugin, workflow, rel) {
 }
 
 function assertApiReviewerWorkflowInvocation(skill, provider, workflow, rel) {
-  assertNoBracketedCliFlagsInBash(skill, rel);
+  assertNoBracketedCliFlagsInShellFences(skill, rel);
   assert.match(skill, new RegExp(`api-reviewer\\.mjs\\s+${workflow === "setup" ? "doctor" : "run"}\\b`), `${rel} missing api-reviewer subcommand`);
   assert.match(skill, new RegExp(`--provider\\s+${provider}\\b`), `${rel} missing --provider ${provider}`);
   if (workflow === "setup") return;
@@ -95,7 +116,7 @@ function assertApiReviewerWorkflowInvocation(skill, provider, workflow, rel) {
 }
 
 function assertApiReviewerCommandDoc(command, workflow, rel) {
-  assertNoBracketedCliFlagsInBash(command, rel);
+  assertNoBracketedCliFlagsInShellFences(command, rel);
   assert.doesNotMatch(command, /--foreground\b/, `${rel} must not document ignored --foreground flag`);
   if (workflow !== "setup") {
     assert.match(command, /external_review.*before the review result/, `${rel} missing external_review rendering guidance`);
@@ -110,6 +131,64 @@ function assertApiReviewerCommandDoc(command, workflow, rel) {
     assert.match(command, /--scope\s+custom\b/, `${rel} missing custom scope`);
     assert.match(command, /--scope-paths\s+"<file1>,<file2>"/, `${rel} missing scope-path placeholder`);
     assert.match(command, /\$ARGUMENTS/, `${rel} must describe argument handling`);
+    assert.match(command, /--scope-paths <files>/, `${rel} must map scope paths from arguments`);
+    assert.match(command, /remaining prompt text to `--prompt`/, `${rel} must exclude scope paths from prompt text`);
+    assert.match(command, /Replace `<file1>,<file2>`/, `${rel} must tell agents to replace scope-path placeholders`);
+    assert.match(command, /comma- or newline-separated concrete relative paths/, `${rel} missing scope-path separator guidance`);
+    assert.match(command, /expand globs before running/i, `${rel} missing glob expansion guidance`);
+  }
+}
+
+function assertGrokWorkflowInvocation(skill, workflow, rel) {
+  assertNoBracketedCliFlagsInShellFences(skill, rel);
+  assertNoShellVariablePlaceholdersInShellFences(skill, rel);
+  assert.match(skill, /grok-web-reviewer\.mjs\s+(setup|doctor|run)\b/, `${rel} missing grok-web-reviewer invocation`);
+  assert.doesNotMatch(skill, /api\.x\.ai/i, `${rel} must not recommend direct xAI API fallback`);
+  if (workflow === "setup") {
+    assert.match(skill, /grok-web-reviewer\.mjs\s+doctor\b/, `${rel} missing doctor subcommand`);
+    assert.match(skill, /credential key names only|key names only/i, `${rel} missing credential-name-only guidance`);
+    return;
+  }
+
+  assert.match(skill, /grok-web-reviewer\.mjs\s+run\b/, `${rel} missing run subcommand`);
+  assert.match(skill, new RegExp(`--mode\\s+${workflow}\\b`), `${rel} missing --mode ${workflow}`);
+  assert.match(skill, /--foreground\b/, `${rel} missing --foreground`);
+  assert.match(skill, /--prompt\s+"<focus>"/, `${rel} missing prompt placeholder`);
+  assert.match(skill, /`<focus>` is the user's review prompt or focus area/, `${rel} must define focus placeholder`);
+  assert.match(skill, /session cookies|tunnel API-key|bearer token/i, `${rel} missing secret handling guidance`);
+  if (workflow === "custom-review") {
+    assert.match(skill, /--scope\s+custom\b/, `${rel} missing custom scope`);
+    assert.match(skill, /--scope-paths\s+"<file1>,<file2>"/, `${rel} missing scope-path placeholder`);
+    assert.match(skill, /Replace `<file1>,<file2>`/, `${rel} must tell agents to replace scope-path placeholders`);
+    assert.match(skill, /comma- or newline-separated concrete relative `--scope-paths`/, `${rel} missing scope-path separator guidance`);
+    assert.match(skill, /expand globs before running/i, `${rel} missing glob expansion guidance`);
+  } else {
+    assert.match(skill, /--scope\s+branch-diff\b/, `${rel} missing branch-diff scope`);
+    assert.match(skill, /--scope-base REF/, `${rel} missing optional --scope-base`);
+  }
+  assert.match(skill, /external_review.*before the review result/, `${rel} missing external_review rendering guidance`);
+}
+
+function assertGrokCommandDoc(command, workflow, rel) {
+  assertNoBracketedCliFlagsInShellFences(command, rel);
+  assertNoShellVariablePlaceholdersInShellFences(command, rel);
+  assert.match(command, /grok-web-reviewer\.mjs\s+(doctor|run)\b/, `${rel} missing grok-web-reviewer command`);
+  assert.match(command, /session cookies|tunnel API keys|bearer token/i, `${rel} missing secret handling guidance`);
+  assert.doesNotMatch(command, /api\.x\.ai/i, `${rel} must not recommend direct xAI API fallback`);
+  if (workflow === "setup") return;
+
+  assert.match(command, new RegExp(`--mode\\s+${workflow}\\b`), `${rel} missing --mode ${workflow}`);
+  assert.match(command, /--foreground\b/, `${rel} missing --foreground`);
+  assert.match(command, /external_review.*before the review result/, `${rel} missing external_review rendering guidance`);
+  if (["review", "adversarial-review"].includes(workflow)) {
+    assert.match(command, /argument-hint:\s*"\[--scope-base REF\] \[review prompt\]"/, `${rel} missing scope-base argument hint`);
+    assert.match(command, /`--scope-base REF` before `--prompt`/, `${rel} must route scope-base before prompt`);
+    assert.match(command, /remaining prompt text to `--prompt`/, `${rel} must exclude scope-base from prompt text`);
+    assert.doesNotMatch(command, /--prompt\s+"\$ARGUMENTS"/, `${rel} must not pass all arguments as prompt`);
+  }
+  if (workflow === "custom-review") {
+    assert.match(command, /--scope\s+custom\b/, `${rel} missing custom scope`);
+    assert.match(command, /--scope-paths\s+"<file1>,<file2>"/, `${rel} missing scope-path placeholder`);
     assert.match(command, /--scope-paths <files>/, `${rel} must map scope paths from arguments`);
     assert.match(command, /remaining prompt text to `--prompt`/, `${rel} must exclude scope paths from prompt text`);
     assert.match(command, /Replace `<file1>,<file2>`/, `${rel} must tell agents to replace scope-path placeholders`);
@@ -161,6 +240,16 @@ test("kimi plugin.json: valid schema", () => {
   assert.equal(m.skills, "./skills");
 });
 
+test("grok plugin.json: valid schema", () => {
+  const m = readJson("plugins/grok/.codex-plugin/plugin.json");
+  assert.equal(m.name, "grok");
+  assert.ok(/^\d+\.\d+\.\d+/.test(m.version));
+  assert.equal(m.license, "AGPL-3.0-only");
+  assert.equal(m.skills, "./skills");
+  assert.match(m.interface.longDescription, /subscription-backed/i);
+  assert.doesNotMatch(m.interface.longDescription, /api\.x\.ai/i);
+});
+
 test("api-reviewers plugin.json: valid schema", () => {
   const m = readJson("plugins/api-reviewers/.codex-plugin/plugin.json");
   assert.equal(m.name, "api-reviewers");
@@ -177,7 +266,7 @@ test("both plugins declared in marketplace match filesystem layout", () => {
   }
 });
 
-test("claude, gemini, and kimi package non-ping command docs until upstream slash support lands", () => {
+test("claude, gemini, kimi, and grok package non-ping command docs until upstream slash support lands", () => {
   const commands = [
     "review", "adversarial-review", "rescue",
     "setup", "status", "result", "cancel",
@@ -190,6 +279,11 @@ test("claude, gemini, and kimi package non-ping command docs until upstream slas
     const pingRel = `plugins/${plugin}/commands/${plugin}-ping.md`;
     assert.equal(existsSync(path.join(REPO_ROOT, pingRel)), false, `${pingRel} must stay deferred`);
   }
+  for (const command of ["review", "adversarial-review", "custom-review", "setup"]) {
+    const rel = `plugins/grok/commands/grok-${command}.md`;
+    assert.equal(existsSync(path.join(REPO_ROOT, rel)), true, `${rel} missing`);
+  }
+  assert.equal(existsSync(path.join(REPO_ROOT, "plugins/grok/commands/grok-ping.md")), false);
 });
 
 test("claude, gemini, and kimi expose user-invocable skill fallbacks", () => {
@@ -200,7 +294,7 @@ test("claude, gemini, and kimi expose user-invocable skill fallbacks", () => {
     assert.match(skill, /user-invocable: true/);
     assert.match(skill, new RegExp(`${plugin}-companion\\.mjs`));
     assert.match(skill, new RegExp(`${plugin}-companion\\.mjs"\\s+doctor\\b`));
-    assertNoBracketedCliFlagsInBash(skill, rel);
+    assertNoBracketedCliFlagsInShellFences(skill, rel);
     assert.match(skill, /--scope-base REF/, `${rel} missing branch-diff base-ref guidance`);
     if (plugin === "kimi") {
       assert.match(skill, /rescue[\s\S]*--max-steps-per-turn N/, `${rel} must document Kimi rescue step budget`);
@@ -209,6 +303,27 @@ test("claude, gemini, and kimi expose user-invocable skill fallbacks", () => {
     }
     assertPickerDescription(skill, rel);
   }
+});
+
+test("grok exposes a user-invocable skill fallback", () => {
+  const rel = "plugins/grok/skills/grok-delegation/SKILL.md";
+  const skill = readFileSync(path.join(REPO_ROOT, rel), "utf8");
+
+  assert.match(skill, /^name:\s*grok-delegation$/m);
+  assert.match(skill, /^user-invocable:\s*true$/m);
+  assert.match(skill, /grok-web-reviewer\.mjs/);
+  assert.match(skill, /grok-web-reviewer\.mjs\s+doctor\b/);
+  assert.match(skill, /--mode\s+review\b/);
+  assert.match(skill, /--mode\s+adversarial-review\b/);
+  assert.match(skill, /--mode\s+custom-review\b/);
+  assert.match(skill, /--scope-base REF/);
+  assert.match(skill, /Replace `<file1>,<file2>`/, `${rel} must tell agents to replace scope-path placeholders`);
+  assert.match(skill, /comma- or newline-separated concrete relative paths/, `${rel} missing scope-path separator guidance`);
+  assert.match(skill, /external_review.*before the review result/);
+  assert.doesNotMatch(skill, /api\.x\.ai/i);
+  assertNoBracketedCliFlagsInShellFences(skill, rel);
+  assertNoShellVariablePlaceholdersInShellFences(skill, rel);
+  assertPickerDescription(skill, rel);
 });
 
 test("api-reviewers exposes a user-invocable skill fallback", () => {
@@ -221,7 +336,7 @@ test("api-reviewers exposes a user-invocable skill fallback", () => {
   assert.match(skill, /--provider\s+deepseek\b/);
   assert.match(skill, /--provider\s+glm\b/);
   assert.match(skill.match(/^description:\s*(.+)$/m)?.[1] ?? "", /adversarial review/);
-  assertNoBracketedCliFlagsInBash(skill, rel);
+  assertNoBracketedCliFlagsInShellFences(skill, rel);
   assert.doesNotMatch(skill, /--foreground\b/, `${rel} must not document ignored --foreground flag`);
   assert.match(skill, /api-reviewer\.mjs\s+doctor\b/);
   assert.match(skill, /api-reviewer\.mjs\s+run\b/);
@@ -268,11 +383,10 @@ test("provider workflow skills are user-invocable and command-backed", () => {
       const commandRel = `plugins/${plugin}/commands/${skillName}.md`;
       assert.equal(existsSync(path.join(REPO_ROOT, commandRel)), true, `${commandRel} missing`);
       const command = readFileSync(path.join(REPO_ROOT, commandRel), "utf8");
-      assertNoBracketedCliFlagsInBash(command, commandRel);
+      assertNoBracketedCliFlagsInShellFences(command, commandRel);
       assert.match(skill, new RegExp(commandRel.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
     }
   }
-
   for (const provider of API_REVIEWER_PROVIDERS) {
     for (const workflow of API_REVIEWER_WORKFLOWS) {
       const skillName = `${provider}-${workflow}`;
@@ -294,6 +408,26 @@ test("provider workflow skills are user-invocable and command-backed", () => {
       assert.match(skill, new RegExp(commandRel.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
     }
   }
+
+  for (const workflow of GROK_WORKFLOWS) {
+    const skillName = `grok-${workflow}`;
+    const rel = `plugins/grok/skills/${skillName}/SKILL.md`;
+    const skillPath = path.join(REPO_ROOT, rel);
+    assert.equal(existsSync(skillPath), true, `${rel} missing`);
+    const skill = readFileSync(skillPath, "utf8");
+
+    assert.match(skill, new RegExp(`^name:\\s*${skillName}$`, "m"));
+    assert.match(skill, /^user-invocable:\s*true$/m);
+    assertPickerDescription(skill, rel);
+    assert.match(skill, /grok-web-reviewer\.mjs/);
+    assert.match(skill, new RegExp(`grok:${skillName}`));
+    assertGrokWorkflowInvocation(skill, workflow, rel);
+    const commandRel = `plugins/grok/commands/${skillName}.md`;
+    assert.equal(existsSync(path.join(REPO_ROOT, commandRel)), true, `${commandRel} missing`);
+    const command = readFileSync(path.join(REPO_ROOT, commandRel), "utf8");
+    assertGrokCommandDoc(command, workflow, commandRel);
+    assert.match(skill, new RegExp(commandRel.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+  }
 });
 
 test("README documents install verification for discoverable delegation skills", () => {
@@ -303,6 +437,7 @@ test("README documents install verification for discoverable delegation skills",
   assert.match(readme, /claude:claude-delegation/);
   assert.match(readme, /gemini:gemini-delegation/);
   assert.match(readme, /kimi:kimi-delegation/);
+  assert.match(readme, /grok:grok-delegation/);
   assert.match(readme, /api-reviewers:api-reviewers-delegation/);
   assert.match(readme, /CODEX_HOME/);
 });
@@ -327,6 +462,25 @@ test("README documents workflow-specific skill picker UX", () => {
       assert.match(readme, new RegExp(`\\b${skill}\\b`), `README missing ${skill}`);
     }
   }
+  for (const workflow of GROK_WORKFLOWS) {
+    const skill = `grok:grok-${workflow}`;
+    assert.match(readme, new RegExp(`\\b${skill}\\b`), `README missing ${skill}`);
+  }
+});
+
+test("grok-facing docs avoid bracketed optional flags in fenced shell command blocks", () => {
+  for (const rel of [
+    "README.md",
+    "docs/e2e.md",
+    "docs/grok-subscription-tunnel.md",
+    "plugins/grok/skills/grok-delegation/SKILL.md",
+    ...GROK_WORKFLOWS.map((workflow) => `plugins/grok/skills/grok-${workflow}/SKILL.md`),
+    ...GROK_WORKFLOWS.map((workflow) => `plugins/grok/commands/grok-${workflow}.md`),
+  ]) {
+    const doc = readFileSync(path.join(REPO_ROOT, rel), "utf8");
+    assertNoBracketedCliFlagsInShellFences(doc, rel);
+    assertNoShellVariablePlaceholdersInShellFences(doc, rel);
+  }
 });
 
 test("release docs disclose current Codex slash-command limitation", () => {
@@ -346,7 +500,7 @@ test("release metadata documents v0.1.0 for both plugins", () => {
   const changelog = readFileSync(path.join(REPO_ROOT, "CHANGELOG.md"), "utf8");
   const rootPackage = readJson("package.json");
   assert.equal(rootPackage.version, "0.1.0");
-  for (const plugin of ["claude", "gemini", "kimi", "api-reviewers"]) {
+  for (const plugin of ["claude", "gemini", "kimi", "grok", "api-reviewers"]) {
     const manifest = readJson(`plugins/${plugin}/.codex-plugin/plugin.json`);
     const workspacePackage = readJson(`plugins/${plugin}/package.json`);
     assert.equal(manifest.version, "0.1.0");

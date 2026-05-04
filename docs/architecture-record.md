@@ -1,8 +1,8 @@
 # Architecture Record
 
 This project is the Codex-side inverse of `openai/codex-plugin-cc`: Codex can
-delegate to Claude Code, Gemini CLI, Kimi Code CLI, and direct API-backed
-reviewers. The implementation intentionally differs from a simple upstream port
+delegate to Claude Code, Gemini CLI, Kimi Code CLI, Grok Web, and direct
+API-backed reviewers. The implementation intentionally differs from a simple upstream port
 in a few places because the review/rescue lifecycle has different failure modes
 when Codex is the caller.
 
@@ -70,6 +70,20 @@ is intentional only when it is either byte-identical and guarded by
 centralizing it would hide auth, process, or output-contract differences. Direct
 API-backed reviewers use a separate, smaller runtime because their failure
 surface is HTTP/auth-policy based rather than CLI/process based.
+
+### Grok Web Is Subscription-Backed And Separate From Direct API
+
+Grok Web is intentionally separate from `api-reviewers`. Its default mode is a
+subscription-backed local tunnel that talks to a Grok web session managed by the
+user. It is not a paid direct API provider, and it must not silently fall back
+to xAI API billing when the tunnel is unavailable.
+
+The local tunnel may itself rely on session cookies or other browser-session
+state. Those values are sensitive: the Grok plugin may pass an optional bearer
+value from `GROK_WEB_TUNNEL_API_KEY`, but JobRecords, diagnostics, and docs must
+only show the credential key name. Failure modes should distinguish local tunnel
+unavailable, expired or rejected web session, usage limits, malformed tunnel
+responses, and scope failures where possible.
 
 Common companion primitives that are mechanical across Claude, Gemini, and Kimi
 belong in the canonical repo-level `scripts/lib/companion-common.mjs` source.

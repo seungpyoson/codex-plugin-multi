@@ -78,7 +78,7 @@ test("cancel command docs enumerate the runtime status and error contracts", () 
 test("artifact cleanup inventory covers every provider, review mode, and owned artifact class", () => {
   const doc = readRepoFile("docs/artifact-cleanup-inventory.md");
 
-  for (const provider of ["Claude", "Gemini", "Kimi", "DeepSeek", "GLM"]) {
+  for (const provider of ["Claude", "Gemini", "Kimi", "DeepSeek", "GLM", "Grok Web"]) {
     assert.match(doc, new RegExp(`\\b${provider}\\b`), `missing provider ${provider}`);
   }
   for (const mode of ["review", "adversarial-review", "custom-review", "rescue", "foreground", "background", "continue"]) {
@@ -254,7 +254,7 @@ test("README documents shipped install path, first commands, and safety posture"
   assert.match(readme, /codex plugin marketplace add seungpyoson\/codex-plugin-multi/);
   assert.match(readme, /\/plugins/);
   assert.match(readme, /user-invocable skill fallback/);
-  assert.match(readme, /Claude, Gemini, Kimi, and API\s+reviewers delegation skills/);
+  assert.match(readme, /Claude, Gemini, Kimi, Grok, and API\s+reviewers delegation skills/);
   assert.doesNotMatch(readme, /Diagnostic plugin dispatch check/);
   assert.doesNotMatch(readme, /\/claude-ping/);
   assert.doesNotMatch(readme, /\/gemini-ping/);
@@ -297,4 +297,57 @@ test("README documents Codex sandbox setup and provider-specific failure modes",
   assert.match(readme, /Kimi.*\.kimi/i);
   assert.match(readme, /Direct API reviewers|DeepSeek.*GLM/i);
   assert.match(readme, /selected source content[\s\S]*sent/i);
+});
+
+test("README documents Grok subscription-backed default and no paid API fallback", () => {
+  const readme = readRepoFile("README.md");
+
+  assert.match(readme, /Grok subscription/i);
+  assert.match(readme, /local tunnel/i);
+  assert.match(readme, /GROK_WEB_BASE_URL/);
+  assert.match(readme, /subscription-backed web session/i);
+  assert.match(readme, /not.*api\.x\.ai/i);
+  assert.match(readme, /does not silently fall back/i);
+});
+
+test("Grok setup docs describe a live local tunnel probe", () => {
+  const docs = [
+    readRepoFile("README.md"),
+    readRepoFile("plugins/grok/commands/grok-setup.md"),
+    readRepoFile("plugins/grok/skills/grok-delegation/SKILL.md"),
+  ].join("\n");
+
+  assert.match(docs, /\/api\/models|\/models/);
+  assert.match(docs, /reachable/i);
+  assert.match(docs, /tunnel_unavailable/);
+  assert.match(docs, /Start the local Grok web tunnel/i);
+});
+
+test("Grok subscription tunnel runbook documents compatible setup without exposing cookies", () => {
+  const readme = readRepoFile("README.md");
+  const runbook = readRepoFile("docs/grok-subscription-tunnel.md");
+  const docs = `${readme}\n${runbook}`;
+
+  assert.match(readme, /docs\/grok-subscription-tunnel\.md/);
+  assert.match(runbook, /grok2api/);
+  assert.match(runbook, /http:\/\/127\.0\.0\.1:8000\/v1/);
+  assert.match(runbook, /Grok3-Tunnel/);
+  assert.match(runbook, /swift-grok/i);
+  assert.match(runbook, /http:\/\/127\.0\.0\.1:11435\/api/);
+  assert.match(runbook, /GROK_WEB_TUNNEL_API_KEY/);
+  assert.match(runbook, /sso/);
+  assert.match(runbook, /sso-rw/);
+  assert.match(runbook, /Do not paste/i);
+  assert.match(docs, /GROK_LIVE_E2E=1 npm run e2e:grok/);
+  assert.doesNotMatch(runbook, /api\.x\.ai/i);
+});
+
+test("architecture record treats Grok web as separate from direct API reviewers", () => {
+  const doc = readRepoFile("docs/architecture-record.md");
+
+  assert.match(doc, /Grok Web/i);
+  assert.match(doc, /subscription-backed/i);
+  assert.match(doc, /local tunnel/i);
+  assert.match(doc, /separate from `api-reviewers`/i);
+  assert.match(doc, /session cookies/i);
 });
