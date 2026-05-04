@@ -1004,6 +1004,7 @@ test("review mode uses branch-diff scope with scrubbed git environment", async (
   execFileSync("git", ["add", "review.js"], { cwd });
   execFileSync("git", ["commit", "-m", "feature"], { cwd, stdio: "ignore" });
   writeFileSync(path.join(cwd, "local-config.txt"), "GROK_LOCAL_DIRTY_SECRET\n");
+  writeFileSync(path.join(cwd, "untracked-secret.js"), "GROK_UNTRACKED_SECRET\n");
 
   await withServer(async (req, res) => {
     assert.equal(req.method, "POST");
@@ -1013,6 +1014,8 @@ test("review mode uses branch-diff scope with scrubbed git environment", async (
     assert.match(body.messages[0].content, /export const value = 2/);
     assert.doesNotMatch(body.messages[0].content, /local-config\.txt/);
     assert.doesNotMatch(body.messages[0].content, /GROK_LOCAL_DIRTY_SECRET/);
+    assert.doesNotMatch(body.messages[0].content, /untracked-secret\.js/);
+    assert.doesNotMatch(body.messages[0].content, /GROK_UNTRACKED_SECRET/);
     res.setHeader("content-type", "application/json");
     res.end(JSON.stringify({
       id: "grok-web-branch-session",
@@ -1076,17 +1079,20 @@ test("custom-review keeps prompt delimiter exceptions as scope failures before t
 });
 
 test("scope file reads use canonical real paths after symlink boundary check", () => {
+  // Structural guard for the reviewed TOCTOU fix: later I/O must keep using the verified path.
   const source = readFileSync(COMPANION, "utf8");
   assert.match(source, /const info = await stat\(realAbs\);/);
   assert.match(source, /const text = await readFile\(realAbs, "utf8"\);/);
 });
 
 test("tunnel invocation catch is separated from prompt construction catch", () => {
+  // Structural guard so prompt/scope failures and unexpected tunnel throws cannot share one catch.
   const source = readFileSync(COMPANION, "utf8");
   assert.match(source, /prompt = promptFor\(/);
   assert.match(source, /providerFailure\(e\.message\.startsWith\("bad_args:"\) \? "bad_args" : "scope_failed"/);
   assert.match(source, /execution = await callGrokTunnel\(cfg, prompt\)/);
-  assert.match(source, /providerFailure\(e\.message\.startsWith\("bad_args:"\) \? "bad_args" : "tunnel_error"/);
+  assert.match(source, /"tunnel_error"/);
+  assert.match(source, /payloadSentForFetchError\(e\)/);
 });
 
 for (const { status, code } of [

@@ -884,7 +884,13 @@ async function cmdRun(options) {
     if (!execution) try {
       execution = await callGrokTunnel(cfg, prompt);
     } catch (e) {
-      execution = providerFailure(e.message.startsWith("bad_args:") ? "bad_args" : "tunnel_error", redactor()(e.message), null, null, false);
+      execution = providerFailure(
+        e.message.startsWith("bad_args:") ? "bad_args" : "tunnel_error",
+        redactor()(e.message),
+        null,
+        null,
+        payloadSentForFetchError(e),
+      );
     }
   }
   const record = redactValue(buildRecord({
