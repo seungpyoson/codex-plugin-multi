@@ -459,7 +459,7 @@ test("README documents workflow-specific skill picker UX", () => {
   }
 });
 
-test("grok-facing docs avoid bracketed optional flags in fenced bash blocks", () => {
+test("grok-facing docs avoid bracketed optional flags in fenced shell command blocks", () => {
   for (const rel of [
     "README.md",
     "docs/grok-subscription-tunnel.md",
