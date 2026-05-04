@@ -1,6 +1,6 @@
 import { once } from "node:events";
 import { execFileSync, spawn, spawnSync } from "node:child_process";
-import { mkdtempSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
 import http from "node:http";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -311,6 +311,40 @@ test("custom-review preserves canonical JobRecord when state index is malformed"
     assert.equal(resultLookup.status, 0);
     assert.equal(lookedUp.job_id, record.job_id);
     assert.equal(lookedUp.result, "Verdict: state index malformed.");
+    assert.match(lookedUp.disclosure_note, /JobRecord persistence failed/i);
+  });
+});
+
+test("custom-review marks stalled uploaded tunnel requests as unknown transmission", async () => {
+  const cwd = realpathSync(mkdtempSync(path.join(tmpdir(), "grok-web-workspace-")));
+  writeFileSync(path.join(cwd, "review.js"), "export const value = 42;\n");
+
+  let receivedBytes = 0;
+  await withServer(async (req) => {
+    req.on("data", (chunk) => { receivedBytes += chunk.length; });
+    req.resume();
+  }, async (baseUrl) => {
+    const result = await runAsync([
+      "run",
+      "--mode", "custom-review",
+      "--scope", "custom",
+      "--scope-paths", "review.js",
+      "--foreground",
+      "--prompt", "Check this file.",
+    ], {
+      cwd,
+      env: {
+        GROK_WEB_BASE_URL: baseUrl,
+        GROK_WEB_TIMEOUT_MS: "100",
+      },
+    });
+    const record = parseStdout(result);
+
+    assert.equal(result.status, 1);
+    assert.ok(receivedBytes > 0);
+    assert.equal(record.error_code, "tunnel_timeout");
+    assert.equal(record.external_review.source_content_transmission, "unknown");
+    assert.match(record.external_review.disclosure, /may have been sent/i);
   });
 });
 
@@ -549,6 +583,41 @@ test("custom-review rejects symlinks that resolve outside the workspace", () => 
   assert.equal(record.external_review.source_content_transmission, "not_sent");
   assert.match(record.error_message, /unsafe_scope_path:linked-secret\.js/);
   assert.doesNotMatch(record.error_message, /export const secret/);
+});
+
+test("custom-review accepts files when cwd itself is a symlink to the workspace", async () => {
+  const realWorkspace = mkdtempSync(path.join(tmpdir(), "grok-web-real-workspace-"));
+  const linkRoot = mkdtempSync(path.join(tmpdir(), "grok-web-link-root-"));
+  const linkedWorkspace = path.join(linkRoot, "workspace");
+  writeFileSync(path.join(realWorkspace, "review.js"), "export const value = 42;\n");
+  symlinkSync(realWorkspace, linkedWorkspace);
+
+  await withServer(async (req, res) => {
+    const body = await readJsonRequest(req);
+    assert.match(body.messages[0].content, /BEGIN GROK FILE 1: review\.js/);
+    res.setHeader("content-type", "application/json");
+    res.end(JSON.stringify({
+      id: "grok-web-session-linked-workspace",
+      choices: [{ message: { content: "Verdict: symlinked cwd accepted." } }],
+    }));
+  }, async (baseUrl) => {
+    const result = await runAsync([
+      "run",
+      "--cwd", linkedWorkspace,
+      "--mode", "custom-review",
+      "--scope", "custom",
+      "--scope-paths", "review.js",
+      "--foreground",
+      "--prompt", "Check this file.",
+    ], {
+      env: { GROK_WEB_BASE_URL: baseUrl },
+    });
+    const record = parseStdout(result);
+
+    assert.equal(result.status, 0);
+    assert.equal(record.status, "completed");
+    assert.equal(record.result, "Verdict: symlinked cwd accepted.");
+  });
 });
 
 test("help exposes only subscription-backed Grok commands", () => {

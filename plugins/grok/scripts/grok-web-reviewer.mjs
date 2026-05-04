@@ -179,6 +179,7 @@ function selectedScopePaths(scope, options, cwd) {
 
 async function readScopeFiles(workspaceRoot, relPaths) {
   const files = [];
+  const realWorkspaceRoot = await realpath(workspaceRoot);
   for (const relPath of relPaths) {
     if (relPath.includes("..") || isAbsolute(relPath) || relPath.includes("\\")) {
       throw new Error(`unsafe_scope_path:${relPath}`);
@@ -190,7 +191,7 @@ async function readScopeFiles(workspaceRoot, relPaths) {
     }
     if (!existsSync(abs)) continue;
     const realAbs = await realpath(abs);
-    const realRel = relative(workspaceRoot, realAbs);
+    const realRel = relative(realWorkspaceRoot, realAbs);
     if (realRel.startsWith("..") || realRel === "") {
       throw new Error(`unsafe_scope_path:${relPath}`);
     }
@@ -340,7 +341,8 @@ async function callGrokTunnel(cfg, prompt, env = process.env) {
     };
   } catch (e) {
     const reason = e?.name === "AbortError" ? "tunnel_timeout" : "tunnel_unavailable";
-    return providerFailure(reason, tunnelTransportMessage(e, env, redact), null, null, false);
+    const payloadSent = reason === "tunnel_timeout" ? null : false;
+    return providerFailure(reason, tunnelTransportMessage(e, env, redact), null, null, payloadSent);
   } finally {
     clearTimeout(timer);
   }
@@ -550,10 +552,16 @@ async function persistRecordBestEffort(record, env = process.env) {
     await persistRecord(record, env);
     return record;
   } catch (e) {
-    return {
+    const printable = {
       ...record,
       disclosure_note: `${record.disclosure_note} JobRecord persistence failed: ${redactor(env)(e?.message ?? String(e))}`,
     };
+    try {
+      await writeJsonFile(resolve(dataRoot(env), "jobs", record.job_id, "meta.json"), printable);
+    } catch {
+      // The original failure is already surfaced in disclosure_note.
+    }
+    return printable;
   }
 }
 
