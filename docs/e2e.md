@@ -1,13 +1,16 @@
 # Manual E2E runbook
 
-These checks use the real Claude Code, Gemini CLI, Kimi CLI, DeepSeek API, and
-GLM API. They are not run in CI and are skipped by default unless the
-maintainer explicitly opts in.
+These checks use the real Claude Code, Gemini CLI, Kimi CLI, Grok web tunnel,
+DeepSeek API, and GLM API. They are not run in CI and are skipped by default
+unless the maintainer explicitly opts in.
 
 ## Mock vs live
 
 - `npm test`, `npm run smoke:claude`, `npm run smoke:gemini`, `npm run smoke:kimi`, and `npm run smoke:api-reviewers` use mock CLIs or mock API responses.
-- `npm run e2e:claude`, `npm run e2e:gemini`, and `npm run e2e:kimi` use live CLIs and require local auth.
+- `npm run e2e:claude`, `npm run e2e:gemini`, and `npm run e2e:kimi` use live
+  CLIs and require local auth.
+- `npm run e2e:grok` uses a live subscription-backed Grok web tunnel and
+  requires the tunnel to be running before the test starts.
 - Running an E2E command without the opt-in env var exits successfully with a skipped test.
 
 ## Running inside Codex sandbox
@@ -94,6 +97,39 @@ Expected result:
 - The companion returns a completed Kimi `JobRecord`.
 - Temporary cwd/data directories are removed after the test.
 
+## Grok
+
+Prerequisites:
+
+- A subscription-backed local Grok web tunnel is running.
+- The default endpoint targets grok2api:
+  `GROK_WEB_BASE_URL=http://127.0.0.1:8000/v1`.
+- If the tunnel requires a bearer value, set `GROK_WEB_TUNNEL_API_KEY` to the
+  tunnel API key or cookie string. Do not print this value in logs.
+- To import a local macOS Chrome-family Grok web session into grok2api, run
+  `npm run grok:sync-browser-session` after starting grok2api. The helper reads
+  local browser cookies loudly, may require Keychain access, defaults the
+  grok2api pool to `super`, and prints only sanitized account status.
+
+Command:
+
+```sh
+GROK_LIVE_E2E=1 npm run e2e:grok
+```
+
+Expected result:
+
+- The test prints `live Grok subscription-backed local tunnel custom review completes`.
+- `doctor` reports `ready: true`, `reachable: true`,
+  `auth_mode: "subscription_web"`, and a `/models` probe endpoint.
+- The review command returns a completed Grok Web `JobRecord` with
+  `source_content_transmission: "sent"`.
+- Secret values never appear in stdout.
+
+If the test reports `tunnel_unavailable`, start or repair the local Grok web
+tunnel and retry. Do not add xAI API keys as a fallback for this subscription
+path.
+
 ## Direct API reviewers
 
 Prerequisites:
@@ -154,6 +190,12 @@ Latest live verification:
     (`DEEPSEEK_API_KEY`, `deepseek-v4-flash`, HTTP 200) and GLM
     (`ZAI_GLM_API_KEY`, `glm-5.1`, `https://api.z.ai/api/coding/paas/v4`,
     HTTP 200). Secret values were not printed.
+
+- Current Grok branch:
+  - `GROK_WEB_MODEL=grok-4.3-beta GROK_LIVE_E2E=1 npm run e2e:grok` passed
+    against `grok2api` after `npm run grok:sync-browser-session -- --browser
+    chrome --profile Default --pool super` imported the local SuperGrok web
+    session without printing secret values.
 
 - 2026-05-03 03:18 KST on `SP-MB-Pro.local`, branch
   `fix/49-api-reviewers-installed-layout`, head

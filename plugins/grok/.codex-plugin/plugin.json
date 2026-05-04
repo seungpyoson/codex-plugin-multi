@@ -1,0 +1,32 @@
+{
+  "name": "grok",
+  "version": "0.1.0",
+  "description": "Delegate reviews to a subscription-backed Grok web session through a local tunnel.",
+  "author": {
+    "name": "seungpyoson"
+  },
+  "homepage": "https://github.com/seungpyoson/codex-plugin-multi",
+  "repository": "https://github.com/seungpyoson/codex-plugin-multi",
+  "license": "AGPL-3.0-only",
+  "skills": "./skills",
+  "keywords": [
+    "grok",
+    "subscription",
+    "review"
+  ],
+  "interface": {
+    "displayName": "Grok",
+    "shortDescription": "Delegate to subscription-backed Grok through a local tunnel.",
+    "longDescription": "Invoke Grok through an explicit subscription-backed local web-session tunnel for review, adversarial-review, and custom-review workflows.",
+    "developerName": "seungpyoson",
+    "category": "Coding",
+    "capabilities": [
+      "Read"
+    ],
+    "defaultPrompt": [
+      "Ask Grok to review the current diff using my subscription",
+      "Ask Grok for an adversarial review through the local tunnel",
+      "Run a Grok custom review of selected files"
+    ]
+  }
+}

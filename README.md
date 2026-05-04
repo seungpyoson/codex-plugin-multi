@@ -1,8 +1,8 @@
 # codex-plugin-multi
 
 Codex plugins that let Codex delegate work to **Claude Code**, **Gemini CLI**,
-**Kimi Code CLI**, and direct API-backed reviewers like **DeepSeek** and
-**GLM**. This repository is the Codex-side counterpart to
+**Kimi Code CLI**, **Grok**, and direct API-backed reviewers like **DeepSeek**
+and **GLM**. This repository is the Codex-side counterpart to
 [`openai/codex-plugin-cc`](https://github.com/openai/codex-plugin-cc), which
 lets Claude Code delegate to Codex.
 
@@ -10,8 +10,8 @@ lets Claude Code delegate to Codex.
   modified versions distributed or offered over a network must provide
   corresponding source under the same license. Portions are ported from
   MIT-licensed upstream code; see `NOTICE`.
-- **State:** active development. Claude, Gemini, Kimi, and API-backed reviewer
-  flows are implemented and covered by mock smoke tests. Fresh-install
+- **State:** active development. Claude, Gemini, Kimi, Grok, and API-backed
+  reviewer flows are implemented and covered by mock smoke tests. Fresh-install
   verification on Codex CLI
   0.125.0 found that the marketplace installs successfully, but the TUI does
   not register plugin command files as slash commands.
@@ -23,6 +23,9 @@ lets Claude Code delegate to Codex.
 - Claude Code installed and authenticated if you enable the Claude plugin.
 - Gemini CLI installed and authenticated if you enable the Gemini plugin.
 - Kimi Code CLI installed and authenticated if you enable the Kimi plugin.
+- A local Grok web tunnel if you enable the Grok plugin. The default endpoint
+  targets grok2api at `GROK_WEB_BASE_URL=http://127.0.0.1:8000/v1`; set
+  `GROK_WEB_TUNNEL_API_KEY` only if your local tunnel requires a bearer value.
 - `DEEPSEEK_API_KEY` if you enable the DeepSeek direct API reviewer.
 - `ZAI_API_KEY` if you enable the GLM direct API reviewer. `ZAI_GLM_API_KEY`
   is accepted as a compatibility alias. GLM Coding Plan calls use
@@ -37,6 +40,21 @@ only when a provider key is already present. The selected path is reported as
 `selected_auth_path`; secret values are never printed. Kimi remains
 subscription/OAuth-only. Direct API reviewers are separate and only use API keys
 through explicit `auth_mode: "api_key"` provider config.
+
+The Grok plugin defaults to Grok subscription usage through a local tunnel that
+is backed by a subscription-backed web session. It is not an `api.x.ai`
+integration and does not silently fall back to paid xAI API billing. If the
+local tunnel is unavailable or the web session expires, the Grok JobRecord
+reports that failure instead of switching billing paths.
+`/grok-setup` and the `doctor` command make a live `GET /models` probe against
+the configured tunnel endpoint. `ready: true` means the local tunnel was
+reachable; `tunnel_unavailable` means start the local Grok web tunnel and retry.
+For grok2api session setup on macOS, `npm run grok:sync-browser-session`
+performs a loud local Chrome-family cookie import into `grok2api`; it announces
+the browser profile it reads, may require Keychain access, and prints only
+sanitized pool/quota status.
+See `docs/grok-subscription-tunnel.md` for compatible tunnel setup and live E2E
+verification.
 
 ## Codex sandbox setup
 
@@ -92,6 +110,9 @@ Troubleshooting signals:
   later or switch provider instead of weakening sandbox policy.
 - Kimi `Operation not permitted`, `Permission denied`, `EACCES`, or `EPERM`
   errors on `.kimi` paths need a Kimi writable root.
+- Grok `tunnel_unavailable` means the subscription-backed local tunnel is not
+  reachable at `GROK_WEB_BASE_URL`. Start or repair the tunnel rather than
+  adding xAI API keys.
 - Claude/Gemini/Kimi subscription/OAuth modes intentionally ignore unrelated
   API-key env vars. Do not treat stripped API keys as the cause unless you
   explicitly selected API-key auth for a provider that supports it.
@@ -110,7 +131,7 @@ Then enable the plugins you want:
 /plugins
 ```
 
-In the plugin picker, enable `claude`, `gemini`, `kimi`, and/or
+In the plugin picker, enable `claude`, `gemini`, `kimi`, `grok`, and/or
 `api-reviewers`. You can enable
 one without the others.
 
@@ -120,11 +141,11 @@ After enabling the plugins, open Codex's skill picker or ask Codex what plugin
 skills are available. Current Codex builds expose plugin skills with their
 plugin namespace. The discoverable UX is `<plugin>:<provider-workflow>` through
 workflow-specific skills such as `claude:claude-review`,
-`gemini:gemini-rescue`, `kimi:kimi-status`,
+`gemini:gemini-rescue`, `kimi:kimi-status`, `grok:grok-review`,
 `api-reviewers:deepseek-review`, and `api-reviewers:glm-setup`. The installed
 skill list should also include the broad fallback skills
 `claude:claude-delegation`, `gemini:gemini-delegation`,
-`kimi:kimi-delegation`, and
+`kimi:kimi-delegation`, `grok:grok-delegation`, and
 `api-reviewers:api-reviewers-delegation`.
 
 For a non-interactive check against the current Codex profile, run:
@@ -168,6 +189,8 @@ contracts:
 - **Kimi:** `kimi:kimi-review`, `kimi:kimi-adversarial-review`,
   `kimi:kimi-rescue`, `kimi:kimi-setup`, `kimi:kimi-status`,
   `kimi:kimi-result`, `kimi:kimi-cancel`.
+- **Grok:** `grok:grok-review`, `grok:grok-adversarial-review`,
+  `grok:grok-custom-review`, `grok:grok-setup`.
 - **DeepSeek:** `api-reviewers:deepseek-review`,
   `api-reviewers:deepseek-adversarial-review`,
   `api-reviewers:deepseek-custom-review`, `api-reviewers:deepseek-setup`.
@@ -177,10 +200,11 @@ contracts:
 
 The broad delegation skills remain available as fallback/overview entries:
 `claude:claude-delegation`, `gemini:gemini-delegation`,
-`kimi:kimi-delegation`, and `api-reviewers:api-reviewers-delegation`.
+`kimi:kimi-delegation`, `grok:grok-delegation`, and
+`api-reviewers:api-reviewers-delegation`.
 
 The original user-invocable skill fallback remains available for users who
-prefer one overview entry per plugin. The Claude, Gemini, Kimi, and API
+prefer one overview entry per plugin. The Claude, Gemini, Kimi, Grok, and API
 reviewers delegation skills still route to their companion/API reviewer scripts
 as broad overview entries.
 For Claude, Gemini, and Kimi, advanced `custom-review` and `preflight` flows
@@ -192,6 +216,7 @@ Example prompts:
 Use claude:claude-review to review the current diff for regressions.
 Use gemini:gemini-adversarial-review for an adversarial review of this design.
 Use kimi:kimi-rescue to investigate this failing test in the background, then use kimi:kimi-status and kimi:kimi-result.
+Use grok:grok-review to review the current diff using my subscription.
 Use api-reviewers:deepseek-custom-review to review selected files.
 ```
 
@@ -207,6 +232,7 @@ command docs:
 /claude-review check this diff for regressions
 /gemini-review check this diff for regressions
 /kimi-review check this diff for regressions
+/grok-review check this diff for regressions
 /deepseek-review check this diff for regressions
 /glm-review check this diff for regressions
 ```
@@ -217,10 +243,14 @@ command docs:
 |---|---|---|
 | `/claude-setup` / `/gemini-setup` / `/kimi-setup` | Packaged | Target CLI availability and OAuth readiness check. |
 | `/deepseek-setup` / `/glm-setup` | Packaged | Direct API-key readiness check; reports key names only. |
+| `/grok-setup` | Packaged | Grok subscription-backed local tunnel readiness check; probes `/v1/models` by default and reports key names only. |
 | `/claude-review [focus]` / `/gemini-review [focus]` / `/kimi-review [focus]` | Packaged | Read-only review profile over the selected scope. |
+| `/grok-review [focus]` | Packaged | Subscription-backed Grok web review over the selected scope. |
 | `/deepseek-review [focus]` / `/glm-review [focus]` | Packaged | Direct API-backed review over the selected scope. |
 | `/claude-adversarial-review [focus]` / `/gemini-adversarial-review [focus]` / `/kimi-adversarial-review [focus]` | Packaged | Read-only forced-dissent review profile. |
+| `/grok-adversarial-review [focus]` | Packaged | Subscription-backed Grok web forced-dissent review. |
 | `/deepseek-adversarial-review [focus]` / `/glm-adversarial-review [focus]` | Packaged | Direct API-backed forced-dissent review. |
+| `/grok-custom-review --scope-paths <files>` | Packaged | Subscription-backed Grok web review of explicit files. |
 | `/deepseek-custom-review --scope-paths <files>` / `/glm-custom-review --scope-paths <files>` | Packaged | Direct API-backed review of explicit files. |
 | `/claude-rescue <task>` / `/gemini-rescue <task>` / `/kimi-rescue <task>` | Packaged | Background investigation or fix by the target CLI. |
 | `/claude-status` / `/gemini-status` / `/kimi-status` | Packaged | List active and recent jobs for the current workspace. |
@@ -256,6 +286,10 @@ inspect the terminal record.
   GLM direct API reviewers use `auth_mode: "api_key"` in
   `plugins/api-reviewers/config/providers.json`. Diagnostics report key names
   only and never print secret values.
+- **Grok subscription is the default Grok path.** Grok uses
+  `auth_mode: "subscription_web"` through a local tunnel and does not silently
+  fall back to paid xAI API billing. Tunnel bearer values and session cookies
+  must stay in user-managed env or tunnel state and must not be printed.
 - **Preflight before uncertain disclosure.** `preflight` reports selected files,
   file count, and byte count without launching the target provider. Use
   `custom-review` plus explicit `--scope-paths` for pinned review bundles, and
