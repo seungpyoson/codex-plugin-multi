@@ -516,6 +516,8 @@ async function writeJsonFile(file, value) {
 async function persistRecord(record, env = process.env) {
   const root = dataRoot(env);
   const stateFile = resolve(root, "state.json");
+  await writeJsonFile(resolve(root, "jobs", record.job_id, "meta.json"), record);
+
   let priorJobs = [];
   try {
     const parsed = JSON.parse(await readFile(stateFile, "utf8"));
@@ -537,7 +539,6 @@ async function persistRecord(record, env = process.env) {
   };
   const jobs = [summary, ...priorJobs.filter((job) => job?.job_id !== record.job_id && job?.id !== record.job_id)]
     .slice(0, MAX_STATE_JOBS);
-  await writeJsonFile(resolve(root, "jobs", record.job_id, "meta.json"), record);
   await writeJsonFile(stateFile, {
     version: 1,
     jobs,

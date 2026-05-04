@@ -263,6 +263,57 @@ test("custom-review sends selected source to a local Grok web tunnel and persist
   });
 });
 
+test("custom-review preserves canonical JobRecord when state index is malformed", async () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "grok-web-workspace-"));
+  const dataDir = mkdtempSync(path.join(tmpdir(), "grok-web-data-"));
+  writeFileSync(path.join(cwd, "review.js"), "export const value = 42;\n");
+  writeFileSync(path.join(dataDir, "state.json"), "{bad json");
+
+  await withServer(async (req, res) => {
+    assert.equal(req.method, "POST");
+    assert.equal(req.url, "/api/chat/completions");
+    res.setHeader("content-type", "application/json");
+    res.end(JSON.stringify({
+      id: "grok-web-session-corrupt-state",
+      model: "grok-4.20-fast",
+      choices: [{ message: { content: "Verdict: state index malformed." } }],
+    }));
+  }, async (baseUrl) => {
+    const result = await runAsync([
+      "run",
+      "--mode", "custom-review",
+      "--scope", "custom",
+      "--scope-paths", "review.js",
+      "--foreground",
+      "--prompt", "Check this file.",
+    ], {
+      cwd,
+      env: {
+        GROK_WEB_BASE_URL: baseUrl,
+        GROK_PLUGIN_DATA: dataDir,
+      },
+    });
+    const record = parseStdout(result);
+
+    assert.equal(result.status, 0);
+    assert.equal(record.status, "completed");
+    assert.match(record.disclosure_note, /JobRecord persistence failed/i);
+
+    const persisted = JSON.parse(readFileSync(path.join(dataDir, "jobs", record.job_id, "meta.json"), "utf8"));
+    assert.equal(persisted.job_id, record.job_id);
+    assert.equal(persisted.result, "Verdict: state index malformed.");
+
+    const resultLookup = run(["result", "--job-id", record.job_id], {
+      cwd,
+      env: { GROK_PLUGIN_DATA: dataDir },
+    });
+    const lookedUp = parseStdout(resultLookup);
+    assert.equal(resultLookup.status, 0);
+    assert.equal(lookedUp.job_id, record.job_id);
+    assert.equal(lookedUp.result, "Verdict: state index malformed.");
+  });
+});
+
 test("review mode uses branch-diff scope with scrubbed git environment", async () => {
   const cwd = mkdtempSync(path.join(tmpdir(), "grok-web-branch-"));
   const dataDir = mkdtempSync(path.join(tmpdir(), "grok-web-data-"));
