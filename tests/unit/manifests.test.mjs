@@ -23,14 +23,21 @@ function assertPickerDescription(skill, rel) {
   );
 }
 
-function assertNoBracketedCliFlagsInBash(skill, rel) {
-  for (const [, block] of skill.matchAll(/(?:^|\n)[ \t]*```(?:bash)?\n([\s\S]*?)\n[ \t]*```/g)) {
+function assertNoBracketedCliFlagsInShellFences(skill, rel) {
+  for (const [, block] of skill.matchAll(/(?:^|\n)[ \t]*```(?:bash|sh|shell)?\n([\s\S]*?)\n[ \t]*```/g)) {
     assert.doesNotMatch(block, /\[[^\]\n]*--[a-z0-9-]+[^\]\n]*\]/i, `${rel} has bracketed optional CLI syntax`);
   }
 }
 
+test("bracketed optional flag guard covers sh fenced command blocks", () => {
+  assert.throws(
+    () => assertNoBracketedCliFlagsInShellFences("```sh\nnode script.mjs [--scope-base REF]\n```", "fixture.md"),
+    /fixture\.md has bracketed optional CLI syntax/,
+  );
+});
+
 function assertCompanionWorkflowInvocation(skill, plugin, workflow, rel) {
-  assertNoBracketedCliFlagsInBash(skill, rel);
+  assertNoBracketedCliFlagsInShellFences(skill, rel);
   if (workflow === "setup") {
     assert.match(skill, new RegExp(`${plugin}-companion\\.mjs"\\s+doctor\\b`), `${rel} missing doctor subcommand`);
     return;
@@ -68,7 +75,7 @@ function assertCompanionWorkflowInvocation(skill, plugin, workflow, rel) {
 }
 
 function assertApiReviewerWorkflowInvocation(skill, provider, workflow, rel) {
-  assertNoBracketedCliFlagsInBash(skill, rel);
+  assertNoBracketedCliFlagsInShellFences(skill, rel);
   assert.match(skill, new RegExp(`api-reviewer\\.mjs\\s+${workflow === "setup" ? "doctor" : "run"}\\b`), `${rel} missing api-reviewer subcommand`);
   assert.match(skill, new RegExp(`--provider\\s+${provider}\\b`), `${rel} missing --provider ${provider}`);
   if (workflow === "setup") return;
@@ -96,7 +103,7 @@ function assertApiReviewerWorkflowInvocation(skill, provider, workflow, rel) {
 }
 
 function assertApiReviewerCommandDoc(command, workflow, rel) {
-  assertNoBracketedCliFlagsInBash(command, rel);
+  assertNoBracketedCliFlagsInShellFences(command, rel);
   assert.doesNotMatch(command, /--foreground\b/, `${rel} must not document ignored --foreground flag`);
   if (workflow !== "setup") {
     assert.match(command, /external_review.*before the review result/, `${rel} missing external_review rendering guidance`);
@@ -120,7 +127,7 @@ function assertApiReviewerCommandDoc(command, workflow, rel) {
 }
 
 function assertGrokWorkflowInvocation(skill, workflow, rel) {
-  assertNoBracketedCliFlagsInBash(skill, rel);
+  assertNoBracketedCliFlagsInShellFences(skill, rel);
   assert.match(skill, /grok-web-reviewer\.mjs\s+(setup|doctor|run)\b/, `${rel} missing grok-web-reviewer invocation`);
   assert.doesNotMatch(skill, /api\.x\.ai/i, `${rel} must not recommend direct xAI API fallback`);
   if (workflow === "setup") {
@@ -149,7 +156,7 @@ function assertGrokWorkflowInvocation(skill, workflow, rel) {
 }
 
 function assertGrokCommandDoc(command, workflow, rel) {
-  assertNoBracketedCliFlagsInBash(command, rel);
+  assertNoBracketedCliFlagsInShellFences(command, rel);
   assert.match(command, /grok-web-reviewer\.mjs\s+(doctor|run)\b/, `${rel} missing grok-web-reviewer command`);
   assert.match(command, /session cookies|tunnel API keys|bearer token/i, `${rel} missing secret handling guidance`);
   assert.doesNotMatch(command, /api\.x\.ai/i, `${rel} must not recommend direct xAI API fallback`);
@@ -272,7 +279,7 @@ test("claude, gemini, and kimi expose user-invocable skill fallbacks", () => {
     assert.match(skill, /user-invocable: true/);
     assert.match(skill, new RegExp(`${plugin}-companion\\.mjs`));
     assert.match(skill, new RegExp(`${plugin}-companion\\.mjs"\\s+doctor\\b`));
-    assertNoBracketedCliFlagsInBash(skill, rel);
+    assertNoBracketedCliFlagsInShellFences(skill, rel);
     assert.match(skill, /--scope-base REF/, `${rel} missing branch-diff base-ref guidance`);
     if (plugin === "kimi") {
       assert.match(skill, /rescue[\s\S]*--max-steps-per-turn N/, `${rel} must document Kimi rescue step budget`);
@@ -299,7 +306,7 @@ test("grok exposes a user-invocable skill fallback", () => {
   assert.match(skill, /comma- or newline-separated concrete relative paths/, `${rel} missing scope-path separator guidance`);
   assert.match(skill, /external_review.*before the review result/);
   assert.doesNotMatch(skill, /api\.x\.ai/i);
-  assertNoBracketedCliFlagsInBash(skill, rel);
+  assertNoBracketedCliFlagsInShellFences(skill, rel);
   assertPickerDescription(skill, rel);
 });
 
@@ -313,7 +320,7 @@ test("api-reviewers exposes a user-invocable skill fallback", () => {
   assert.match(skill, /--provider\s+deepseek\b/);
   assert.match(skill, /--provider\s+glm\b/);
   assert.match(skill.match(/^description:\s*(.+)$/m)?.[1] ?? "", /adversarial review/);
-  assertNoBracketedCliFlagsInBash(skill, rel);
+  assertNoBracketedCliFlagsInShellFences(skill, rel);
   assert.doesNotMatch(skill, /--foreground\b/, `${rel} must not document ignored --foreground flag`);
   assert.match(skill, /api-reviewer\.mjs\s+doctor\b/);
   assert.match(skill, /api-reviewer\.mjs\s+run\b/);
@@ -360,7 +367,7 @@ test("provider workflow skills are user-invocable and command-backed", () => {
       const commandRel = `plugins/${plugin}/commands/${skillName}.md`;
       assert.equal(existsSync(path.join(REPO_ROOT, commandRel)), true, `${commandRel} missing`);
       const command = readFileSync(path.join(REPO_ROOT, commandRel), "utf8");
-      assertNoBracketedCliFlagsInBash(command, commandRel);
+      assertNoBracketedCliFlagsInShellFences(command, commandRel);
       assert.match(skill, new RegExp(commandRel.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
     }
   }
@@ -453,7 +460,7 @@ test("grok-facing docs avoid bracketed optional flags in fenced bash blocks", ()
     ...GROK_WORKFLOWS.map((workflow) => `plugins/grok/skills/grok-${workflow}/SKILL.md`),
     ...GROK_WORKFLOWS.map((workflow) => `plugins/grok/commands/grok-${workflow}.md`),
   ]) {
-    assertNoBracketedCliFlagsInBash(readFileSync(path.join(REPO_ROOT, rel), "utf8"), rel);
+    assertNoBracketedCliFlagsInShellFences(readFileSync(path.join(REPO_ROOT, rel), "utf8"), rel);
   }
 });
 
