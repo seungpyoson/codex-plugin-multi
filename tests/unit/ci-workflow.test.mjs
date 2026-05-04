@@ -51,6 +51,7 @@ test("Sonar CPD excludes intentional packaging and entrypoint copies", () => {
     "plugins/kimi/scripts/lib/external-review.mjs",
     "plugins/grok/scripts/grok-web-reviewer.mjs",
     "plugins/grok/scripts/grok-sync-browser-session.mjs",
+    "plugins/grok/scripts/lib/git-env.mjs",
   ]) {
     assert.match(sonarConfig, new RegExp(path.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
   }
