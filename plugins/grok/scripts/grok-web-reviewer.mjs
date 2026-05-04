@@ -564,25 +564,32 @@ function isLivePid(pid) {
 async function staleLockReason(lockDir) {
   const info = await stat(lockDir);
   const ageMs = Date.now() - info.mtimeMs;
+  const identity = { dev: info.dev, ino: info.ino };
   let owner = null;
+  let ownerRaw = null;
   try {
-    owner = JSON.parse(await readFile(resolve(lockDir, "owner.json"), "utf8"));
+    ownerRaw = await readFile(resolve(lockDir, "owner.json"), "utf8");
+    owner = JSON.parse(ownerRaw);
   } catch {
     // Missing or malformed owner metadata can only be reclaimed by age.
   }
   const ownerPid = Number(owner?.pid);
-  if (owner?.host === hostname() && Number.isSafeInteger(ownerPid) && ownerPid > 0 && !isLivePid(ownerPid)) {
-    return "dead_owner";
+  if (owner?.host === hostname() && Number.isSafeInteger(ownerPid) && ownerPid > 0) {
+    return isLivePid(ownerPid) ? null : { reason: "dead_owner", ownerRaw, identity };
   }
   if (ageMs > STATE_LOCK_STALE_MS) {
-    return "stale_age";
+    return { reason: "stale_age", ownerRaw, identity };
   }
   return null;
 }
 
+function sameFileIdentity(a, b) {
+  return a?.dev === b?.dev && a?.ino === b?.ino;
+}
+
 async function maybeRecoverStateLock(lockDir) {
-  const reason = await staleLockReason(lockDir);
-  if (!reason) return false;
+  const stale = await staleLockReason(lockDir);
+  if (!stale) return false;
   const staleDir = `${lockDir}.stale.${process.pid}.${randomUUID()}`;
   try {
     await rename(lockDir, staleDir);
@@ -590,11 +597,29 @@ async function maybeRecoverStateLock(lockDir) {
     if (error?.code === "ENOENT") return true;
     throw error;
   }
+  const renamedInfo = await stat(staleDir);
+  let renamedOwnerRaw = null;
+  try {
+    renamedOwnerRaw = await readFile(resolve(staleDir, "owner.json"), "utf8");
+  } catch {
+    // Missing owner files are only recoverable when that is what we inspected.
+  }
+  if (!sameFileIdentity(stale.identity, renamedInfo) || renamedOwnerRaw !== stale.ownerRaw) {
+    try { await rename(staleDir, lockDir); } catch { /* best-effort: do not delete a lock we did not inspect */ }
+    return false;
+  }
   await rm(staleDir, { recursive: true, force: true });
   return true;
 }
 
-async function releaseStateLock(lockDir) {
+async function releaseStateLock(lockDir, ownerRaw) {
+  try {
+    const currentOwnerRaw = await readFile(resolve(lockDir, "owner.json"), "utf8");
+    if (currentOwnerRaw !== ownerRaw) return;
+  } catch (error) {
+    if (error?.code === "ENOENT") return;
+    throw error;
+  }
   try { await unlink(resolve(lockDir, "owner.json")); } catch { /* best-effort */ }
   try {
     await rmdir(lockDir);
@@ -608,15 +633,16 @@ async function withStateLock(root, fn) {
   for (let attempt = 0; attempt < 200; attempt += 1) {
     try {
       await mkdir(lockDir, { mode: 0o700 });
+      const ownerRaw = `${JSON.stringify({
+        pid: process.pid,
+        host: hostname(),
+        startedAt: new Date().toISOString(),
+      })}\n`;
       try {
-        await writeFile(resolve(lockDir, "owner.json"), `${JSON.stringify({
-          pid: process.pid,
-          host: hostname(),
-          startedAt: new Date().toISOString(),
-        })}\n`, { mode: 0o600 });
+        await writeFile(resolve(lockDir, "owner.json"), ownerRaw, { mode: 0o600 });
         return await fn();
       } finally {
-        await releaseStateLock(lockDir);
+        await releaseStateLock(lockDir, ownerRaw);
       }
     } catch (error) {
       if (error?.code !== "EEXIST") throw error;
@@ -646,7 +672,7 @@ async function discoverJobSummaries(root) {
       // Malformed per-job records are reported by `result`; keep the index repair best-effort.
     }
   }
-  return summaries;
+  return summaries.sort((a, b) => Date.parse(b.updatedAt ?? "") - Date.parse(a.updatedAt ?? ""));
 }
 
 async function persistRecord(record, env = process.env) {
@@ -660,7 +686,7 @@ async function persistRecord(record, env = process.env) {
       const parsed = JSON.parse(await readFile(stateFile, "utf8"));
       if (Array.isArray(parsed?.jobs)) priorJobs = parsed.jobs;
     } catch (error) {
-      if (error?.code !== "ENOENT") throw error;
+      if (error?.code !== "ENOENT" && !(error instanceof SyntaxError)) throw error;
     }
     const summary = summaryFromRecord(record);
     const seen = new Set();
@@ -671,6 +697,7 @@ async function persistRecord(record, env = process.env) {
         seen.add(id);
         return true;
       })
+      .sort((a, b) => Date.parse(b.updatedAt ?? "") - Date.parse(a.updatedAt ?? ""))
       .slice(0, MAX_STATE_JOBS);
     await writeJsonFile(stateFile, {
       version: 1,

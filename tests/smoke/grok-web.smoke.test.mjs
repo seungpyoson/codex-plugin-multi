@@ -1,6 +1,6 @@
 import { once } from "node:events";
 import { execFileSync, spawn, spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import http from "node:http";
 import { hostname, tmpdir } from "node:os";
 import path from "node:path";
@@ -474,20 +474,21 @@ test("Grok state index recovers stale locks owned by dead same-host processes", 
   });
 });
 
-test("custom-review preserves canonical JobRecord when state index is malformed", async () => {
+test("Grok state index recovers stale locks without owner metadata by age", async () => {
   const cwd = mkdtempSync(path.join(tmpdir(), "grok-web-workspace-"));
   const dataDir = mkdtempSync(path.join(tmpdir(), "grok-web-data-"));
-  writeFileSync(path.join(cwd, "review.js"), "export const value = 42;\n");
-  writeFileSync(path.join(dataDir, "state.json"), "{bad json");
+  writeFileSync(path.join(cwd, "review.js"), "export const value = 1;\n");
+  const lockDir = path.join(dataDir, "state.json.lock");
+  mkdirSync(lockDir);
+  const oldTime = new Date(Date.now() - 120000);
+  utimesSync(lockDir, oldTime, oldTime);
 
   await withServer(async (req, res) => {
-    assert.equal(req.method, "POST");
-    assert.equal(req.url, "/api/chat/completions");
+    await readJsonRequest(req);
     res.setHeader("content-type", "application/json");
     res.end(JSON.stringify({
-      id: "grok-web-session-corrupt-state",
-      model: "grok-4.20-fast",
-      choices: [{ message: { content: "Verdict: state index malformed." } }],
+      id: "grok-web-stale-lock-missing-owner",
+      choices: [{ message: { content: "Verdict: stale missing-owner lock recovered." } }],
     }));
   }, async (baseUrl) => {
     const result = await runAsync([
@@ -505,10 +506,48 @@ test("custom-review preserves canonical JobRecord when state index is malformed"
       },
     });
     const record = parseStdout(result);
+    assert.equal(result.status, 0);
+    assert.equal(record.status, "completed");
+    assert.doesNotMatch(record.disclosure_note, /state_lock_timeout/);
+  });
+});
+
+test("custom-review repairs malformed state index from persisted JobRecords", async () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "grok-web-workspace-"));
+  const dataDir = mkdtempSync(path.join(tmpdir(), "grok-web-data-"));
+  writeFileSync(path.join(cwd, "review.js"), "export const value = 42;\n");
+  writeFileSync(path.join(dataDir, "state.json"), "{bad json");
+
+  await withServer(async (req, res) => {
+    assert.equal(req.method, "POST");
+    assert.equal(req.url, "/api/chat/completions");
+    res.setHeader("content-type", "application/json");
+    res.end(JSON.stringify({
+      id: "grok-web-session-corrupt-state",
+      model: "grok-4.20-fast",
+      choices: [{ message: { content: "Verdict: state index malformed." } }],
+    }));
+  }, async (baseUrl) => {
+    const runReview = () => runAsync([
+      "run",
+      "--mode", "custom-review",
+      "--scope", "custom",
+      "--scope-paths", "review.js",
+      "--foreground",
+      "--prompt", "Check this file.",
+    ], {
+      cwd,
+      env: {
+        GROK_WEB_BASE_URL: baseUrl,
+        GROK_PLUGIN_DATA: dataDir,
+      },
+    });
+    const result = await runReview();
+    const record = parseStdout(result);
 
     assert.equal(result.status, 0);
     assert.equal(record.status, "completed");
-    assert.match(record.disclosure_note, /JobRecord persistence failed/i);
+    assert.doesNotMatch(record.disclosure_note, /JobRecord persistence failed/i);
 
     const persisted = JSON.parse(readFileSync(path.join(dataDir, "jobs", record.job_id, "meta.json"), "utf8"));
     assert.equal(persisted.job_id, record.job_id);
@@ -522,7 +561,70 @@ test("custom-review preserves canonical JobRecord when state index is malformed"
     assert.equal(resultLookup.status, 0);
     assert.equal(lookedUp.job_id, record.job_id);
     assert.equal(lookedUp.result, "Verdict: state index malformed.");
-    assert.match(lookedUp.disclosure_note, /JobRecord persistence failed/i);
+    assert.doesNotMatch(lookedUp.disclosure_note, /JobRecord persistence failed/i);
+
+    const secondResult = await runReview();
+    const secondRecord = parseStdout(secondResult);
+    assert.equal(secondResult.status, 0);
+    assert.equal(secondRecord.status, "completed");
+    assert.doesNotMatch(secondRecord.disclosure_note, /JobRecord persistence failed/i);
+
+    const state = JSON.parse(readFileSync(path.join(dataDir, "state.json"), "utf8"));
+    assert.equal(state.jobs[0].job_id, secondRecord.job_id);
+    assert.equal(state.jobs[1].job_id, record.job_id);
+
+    const listResult = run(["list"], {
+      cwd,
+      env: { GROK_PLUGIN_DATA: dataDir },
+    });
+    const listed = parseStdout(listResult);
+    assert.equal(listResult.status, 0);
+    assert.equal(listed.jobs[0].job_id, secondRecord.job_id);
+    assert.equal(listed.jobs[1].job_id, record.job_id);
+  });
+});
+
+test("Grok state lock does not reclaim live same-host owners by age", async () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "grok-web-workspace-"));
+  const dataDir = mkdtempSync(path.join(tmpdir(), "grok-web-data-"));
+  writeFileSync(path.join(cwd, "review.js"), "export const value = 1;\n");
+  const lockDir = path.join(dataDir, "state.json.lock");
+  mkdirSync(lockDir);
+  writeFileSync(path.join(lockDir, "owner.json"), JSON.stringify({
+    pid: process.pid,
+    host: hostname(),
+    startedAt: new Date(Date.now() - 120000).toISOString(),
+  }));
+  const oldTime = new Date(Date.now() - 120000);
+  utimesSync(lockDir, oldTime, oldTime);
+
+  await withServer(async (req, res) => {
+    await readJsonRequest(req);
+    res.setHeader("content-type", "application/json");
+    res.end(JSON.stringify({
+      id: "grok-web-live-lock",
+      choices: [{ message: { content: "Verdict: live lock preserved." } }],
+    }));
+  }, async (baseUrl) => {
+    const result = await runAsync([
+      "run",
+      "--mode", "custom-review",
+      "--scope", "custom",
+      "--scope-paths", "review.js",
+      "--foreground",
+      "--prompt", "Check this file.",
+    ], {
+      cwd,
+      env: {
+        GROK_WEB_BASE_URL: baseUrl,
+        GROK_PLUGIN_DATA: dataDir,
+      },
+    });
+    const record = parseStdout(result);
+    assert.equal(result.status, 0);
+    assert.equal(record.status, "completed");
+    assert.match(record.disclosure_note, /state_lock_timeout/);
+    assert.equal(readFileSync(path.join(lockDir, "owner.json"), "utf8").includes(`"pid":${process.pid}`), true);
   });
 });
 
