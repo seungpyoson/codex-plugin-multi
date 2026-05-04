@@ -68,7 +68,7 @@ test("workers distinguish empty prompt sidecars from missing prompt sidecars", (
     "plugins/kimi/scripts/kimi-companion.mjs",
   ]) {
     const source = readRepoFile(rel);
-    const workerPromptBlock = /const prompt = consumePromptSidecar[\s\S]*?await executeRun/.exec(source)?.[0] ?? "";
+    const workerPromptBlock = /let prompt;[\s\S]*?await executeRun/.exec(source)?.[0] ?? "";
     assert.match(workerPromptBlock, /if\s*\(\s*prompt\s*==\s*null\s*\)/, `${rel}: worker must check nullish prompt only`);
     assert.doesNotMatch(workerPromptBlock, /if\s*\(\s*!prompt\s*\)/, `${rel}: worker must not classify empty prompts as missing`);
   }
@@ -95,6 +95,49 @@ test("background prompt sidecar write failures terminalize queued jobs", () => {
       source,
       /try\s*\{\s*writePromptSidecar\(resolveJobsDir\(workspaceRoot\),\s*newJobId_[\s\S]*?\}\s*catch\s*\(error\)\s*\{\s*failBackgroundPromptSidecarWrite\(workspaceRoot,\s*invocation,\s*error\)/,
       `${rel}: background continue must route prompt sidecar write failures through the terminalization helper`,
+    );
+  }
+});
+
+test("background worker spawn cleanup cannot prevent terminalization", () => {
+  for (const rel of [
+    "plugins/claude/scripts/claude-companion.mjs",
+    "plugins/gemini/scripts/gemini-companion.mjs",
+    "plugins/kimi/scripts/kimi-companion.mjs",
+  ]) {
+    const source = readRepoFile(rel);
+    const match = /function failBackgroundWorkerSpawn[\s\S]*?\n}/.exec(source);
+    assert.ok(match, `${rel}: missing failBackgroundWorkerSpawn helper`);
+    assert.match(
+      match[0],
+      /try\s*\{\s*consumePromptSidecar\(resolveJobsDir\(workspaceRoot\),\s*invocation\.job_id\);\s*\}\s*catch\s*\{\s*\/\* best-effort prompt sidecar cleanup \*\/\s*}/,
+      `${rel}: spawn-failure cleanup must be best-effort before writing the terminal record`,
+    );
+    assert.match(
+      match[0],
+      /buildJobRecord[\s\S]*?writeJobFile[\s\S]*?upsertJob[\s\S]*?fail\("spawn_failed"/,
+      `${rel}: spawn failures must still produce a terminal failed JobRecord`,
+    );
+  }
+});
+
+test("workers terminalize prompt sidecar consume failures", () => {
+  for (const rel of [
+    "plugins/claude/scripts/claude-companion.mjs",
+    "plugins/gemini/scripts/gemini-companion.mjs",
+    "plugins/kimi/scripts/kimi-companion.mjs",
+  ]) {
+    const source = readRepoFile(rel);
+    const workerPromptBlock = /let prompt;[\s\S]*?if\s*\(\s*prompt\s*==\s*null\s*\)/.exec(source)?.[0] ?? "";
+    assert.match(
+      workerPromptBlock,
+      /try\s*\{\s*prompt\s*=\s*consumePromptSidecar\(resolveJobsDir\(workspaceRoot\),\s*options\.job\);/,
+      `${rel}: worker must guard prompt sidecar consumption`,
+    );
+    assert.match(
+      workerPromptBlock,
+      /catch\s*\(error\)[\s\S]*?buildJobRecord[\s\S]*?writeJobFile[\s\S]*?upsertJob[\s\S]*?fail\("bad_state"/,
+      `${rel}: worker consume failures must write a terminal failed JobRecord`,
     );
   }
 });

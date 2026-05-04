@@ -248,7 +248,7 @@ async function spawnDetachedWorker(cwd, jobId) {
 }
 
 function failBackgroundWorkerSpawn(workspaceRoot, invocation, error) {
-  consumePromptSidecar(resolveJobsDir(workspaceRoot), invocation.job_id);
+  try { consumePromptSidecar(resolveJobsDir(workspaceRoot), invocation.job_id); } catch { /* best-effort prompt sidecar cleanup */ }
   const message = `background worker spawn failed: ${error?.code ? `${error.code}: ` : ""}${error?.message ?? String(error)}`;
   const errorRecord = buildJobRecord(invocation, {
     exitCode: null,
@@ -723,7 +723,19 @@ async function cmdRunWorker(rest) {
     process.exit(0);
   }
 
-  const prompt = consumePromptSidecar(resolveJobsDir(workspaceRoot), options.job);
+  let prompt;
+  try {
+    prompt = consumePromptSidecar(resolveJobsDir(workspaceRoot), options.job);
+  } catch (error) {
+    const errorMessage = `worker: prompt sidecar consume failed: ${error?.message ?? String(error)}`;
+    const errorRecord = buildJobRecord(invocationFromRecord(meta, runtimeOptions), {
+      exitCode: null, parsed: null, pidInfo: null, kimiSessionId: null,
+      errorMessage,
+    }, []);
+    writeJobFile(workspaceRoot, options.job, errorRecord);
+    upsertJob(workspaceRoot, errorRecord);
+    fail("bad_state", errorMessage);
+  }
   if (prompt == null) {
     const errorRecord = buildJobRecord(invocationFromRecord(meta, runtimeOptions), {
       exitCode: null, parsed: null, pidInfo: null, kimiSessionId: null,

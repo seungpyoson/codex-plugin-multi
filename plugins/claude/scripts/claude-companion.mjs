@@ -209,7 +209,7 @@ async function spawnDetachedWorker(cwd, jobId, authMode) {
 }
 
 function failBackgroundWorkerSpawn(workspaceRoot, invocation, error) {
-  consumePromptSidecar(resolveJobsDir(workspaceRoot), invocation.job_id);
+  try { consumePromptSidecar(resolveJobsDir(workspaceRoot), invocation.job_id); } catch { /* best-effort prompt sidecar cleanup */ }
   const message = `background worker spawn failed: ${error?.code ? `${error.code}: ` : ""}${error?.message ?? String(error)}`;
   const errorRecord = buildJobRecord(invocation, {
     exitCode: null,
@@ -730,7 +730,19 @@ async function cmdRunWorker(rest) {
   // Read+delete the prompt sidecar (§21.3.1 handoff buffer). Missing sidecar
   // means either the launcher crashed before writing it, or this is a
   // pre-T7.4 legacy record — either way, we can't run.
-  const prompt = consumePromptSidecar(resolveJobsDir(workspaceRoot), options.job);
+  let prompt;
+  try {
+    prompt = consumePromptSidecar(resolveJobsDir(workspaceRoot), options.job);
+  } catch (error) {
+    const errorMessage = `worker: prompt sidecar consume failed: ${error?.message ?? String(error)}`;
+    const errorRecord = buildJobRecord(invocationFromRecord(meta), {
+      exitCode: null, parsed: null, pidInfo: null, claudeSessionId: null,
+      errorMessage,
+    }, []);
+    writeJobFile(workspaceRoot, options.job, errorRecord);
+    upsertJob(workspaceRoot, errorRecord);
+    fail("bad_state", errorMessage);
+  }
   if (prompt == null) {
     const errorRecord = buildJobRecord(invocationFromRecord(meta), {
       exitCode: null, parsed: null, pidInfo: null, claudeSessionId: null,
