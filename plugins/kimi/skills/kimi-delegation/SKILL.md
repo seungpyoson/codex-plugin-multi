@@ -25,15 +25,17 @@ In the repository checkout, it is `plugins/kimi`.
 
 - Setup/OAuth check:
   ```bash
-  node "<plugin-root>/scripts/kimi-companion.mjs" ping
+  node "<plugin-root>/scripts/kimi-companion.mjs" doctor
   ```
+For review or adversarial-review, add `--scope-base REF` before `--` when the user provides a base ref.
+
 - Read-only review:
   ```bash
-  node "<plugin-root>/scripts/kimi-companion.mjs" run --mode=review --foreground --cwd "<workspace>" [--max-steps-per-turn <n>] -- "<review focus>"
+  node "<plugin-root>/scripts/kimi-companion.mjs" run --mode=review --foreground --cwd "<workspace>" -- "<review focus>"
   ```
 - Adversarial review:
   ```bash
-  node "<plugin-root>/scripts/kimi-companion.mjs" run --mode=adversarial-review --foreground --cwd "<workspace>" [--max-steps-per-turn <n>] -- "<design or diff to challenge>"
+  node "<plugin-root>/scripts/kimi-companion.mjs" run --mode=adversarial-review --foreground --cwd "<workspace>" -- "<design or diff to challenge>"
   ```
 - Disclosure/scope preflight:
   ```bash
@@ -41,7 +43,7 @@ In the repository checkout, it is `plugins/kimi`.
   ```
 - Pinned bundle or selected-file review:
   ```bash
-  node "<plugin-root>/scripts/kimi-companion.mjs" run --mode=custom-review --foreground --cwd "<bundle-or-workspace>" --scope-paths "PR.diff,docs/*.md" [--max-steps-per-turn <n>] -- "<review focus using relative paths>"
+  node "<plugin-root>/scripts/kimi-companion.mjs" run --mode=custom-review --foreground --cwd "<bundle-or-workspace>" --scope-paths "PR.diff,docs/*.md" -- "<review focus using relative paths>"
   ```
 - Rescue/investigation:
   ```bash
@@ -60,6 +62,8 @@ In the repository checkout, it is `plugins/kimi`.
   ```bash
   node "<plugin-root>/scripts/kimi-companion.mjs" cancel --job "<job-id>" --cwd "<workspace>"
   ```
+
+For Kimi review, adversarial-review, custom-review, or rescue, add `--max-steps-per-turn N` before `--` when the user provides a positive integer step budget.
 
 ## Rendering
 
