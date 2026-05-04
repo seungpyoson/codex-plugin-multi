@@ -1,10 +1,63 @@
 {
   "target_percent": 85,
   "note": "Current non-regression baseline for T10.1. The target remains 85%; raise these values as unit coverage expands.",
+  "target_enforced_files": [
+    "plugins/claude/scripts/lib/args.mjs",
+    "plugins/claude/scripts/lib/claude.mjs",
+    "plugins/claude/scripts/lib/containment.mjs",
+    "plugins/claude/scripts/lib/git.mjs",
+    "plugins/claude/scripts/lib/git-env.mjs",
+    "plugins/claude/scripts/lib/identity.mjs",
+    "plugins/claude/scripts/lib/job-record.mjs",
+    "plugins/claude/scripts/lib/reconcile.mjs",
+    "plugins/claude/scripts/lib/mode-profiles.mjs",
+    "plugins/claude/scripts/lib/process.mjs",
+    "plugins/claude/scripts/lib/scope.mjs",
+    "plugins/claude/scripts/lib/state.mjs",
+    "plugins/claude/scripts/lib/workspace.mjs",
+    "plugins/gemini/scripts/lib/args.mjs",
+    "plugins/gemini/scripts/lib/containment.mjs",
+    "plugins/gemini/scripts/lib/gemini.mjs",
+    "plugins/gemini/scripts/lib/git.mjs",
+    "plugins/gemini/scripts/lib/git-env.mjs",
+    "plugins/gemini/scripts/lib/identity.mjs",
+    "plugins/gemini/scripts/lib/job-record.mjs",
+    "plugins/gemini/scripts/lib/reconcile.mjs",
+    "plugins/gemini/scripts/lib/mode-profiles.mjs",
+    "plugins/gemini/scripts/lib/process.mjs",
+    "plugins/gemini/scripts/lib/scope.mjs",
+    "plugins/gemini/scripts/lib/state.mjs",
+    "plugins/gemini/scripts/lib/workspace.mjs"
+  ],
   "files": {
+    "plugins/api-reviewers/scripts/lib/codex-env.mjs": {
+      "lines": 100.0,
+      "branches": 100.0,
+      "functions": 100.0
+    },
+    "plugins/api-reviewers/scripts/lib/external-review.mjs": {
+      "lines": 88.24,
+      "branches": 95.65,
+      "functions": 100.0
+    },
+    "plugins/api-reviewers/scripts/lib/git-env.mjs": {
+      "lines": 100.0,
+      "branches": 100.0,
+      "functions": 100.0
+    },
     "plugins/claude/scripts/lib/args.mjs": {
       "lines": 91.43,
       "branches": 86.0,
+      "functions": 100.0
+    },
+    "plugins/claude/scripts/lib/auth-selection.mjs": {
+      "lines": 100.0,
+      "branches": 100.0,
+      "functions": 100.0
+    },
+    "plugins/claude/scripts/lib/cancel-marker.mjs": {
+      "lines": 100.0,
+      "branches": 100.0,
       "functions": 100.0
     },
     "plugins/claude/scripts/lib/claude.mjs": {
@@ -12,9 +65,19 @@
       "branches": 76.36,
       "functions": 91.67
     },
+    "plugins/claude/scripts/lib/companion-common.mjs": {
+      "lines": 85.29,
+      "branches": 73.68,
+      "functions": 100.0
+    },
     "plugins/claude/scripts/lib/containment.mjs": {
       "lines": 96.55,
       "branches": 88.89,
+      "functions": 100.0
+    },
+    "plugins/claude/scripts/lib/external-review.mjs": {
+      "lines": 88.24,
+      "branches": 95.65,
       "functions": 100.0
     },
     "plugins/claude/scripts/lib/git.mjs": {
@@ -52,6 +115,11 @@
       "branches": 77.08,
       "functions": 100.0
     },
+    "plugins/claude/scripts/lib/provider-env.mjs": {
+      "lines": 100.0,
+      "branches": 90.91,
+      "functions": 100.0
+    },
     "plugins/claude/scripts/lib/scope.mjs": {
       "lines": 90.34,
       "branches": 74.9,
@@ -72,9 +140,34 @@
       "branches": 86.0,
       "functions": 100.0
     },
+    "plugins/gemini/scripts/lib/auth-selection.mjs": {
+      "lines": 100.0,
+      "branches": 100.0,
+      "functions": 100.0
+    },
+    "plugins/gemini/scripts/lib/cancel-marker.mjs": {
+      "lines": 100.0,
+      "branches": 100.0,
+      "functions": 100.0
+    },
+    "plugins/gemini/scripts/lib/codex-env.mjs": {
+      "lines": 100.0,
+      "branches": 100.0,
+      "functions": 100.0
+    },
+    "plugins/gemini/scripts/lib/companion-common.mjs": {
+      "lines": 85.29,
+      "branches": 73.68,
+      "functions": 100.0
+    },
     "plugins/gemini/scripts/lib/containment.mjs": {
       "lines": 55.17,
       "branches": 66.67,
+      "functions": 100.0
+    },
+    "plugins/gemini/scripts/lib/external-review.mjs": {
+      "lines": 88.24,
+      "branches": 95.65,
       "functions": 100.0
     },
     "plugins/gemini/scripts/lib/gemini.mjs": {
@@ -117,6 +210,11 @@
       "branches": 77.08,
       "functions": 100.0
     },
+    "plugins/gemini/scripts/lib/provider-env.mjs": {
+      "lines": 100.0,
+      "branches": 90.91,
+      "functions": 100.0
+    },
     "plugins/gemini/scripts/lib/scope.mjs": {
       "lines": 90.34,
       "branches": 74.9,
@@ -129,6 +227,96 @@
     },
     "plugins/gemini/scripts/lib/workspace.mjs": {
       "lines": 85.71,
+      "branches": 100.0,
+      "functions": 100.0
+    },
+    "plugins/kimi/scripts/lib/args.mjs": {
+      "lines": 93.33,
+      "branches": 91.67,
+      "functions": 100.0
+    },
+    "plugins/kimi/scripts/lib/cancel-marker.mjs": {
+      "lines": 100.0,
+      "branches": 100.0,
+      "functions": 100.0
+    },
+    "plugins/kimi/scripts/lib/codex-env.mjs": {
+      "lines": 100.0,
+      "branches": 100.0,
+      "functions": 100.0
+    },
+    "plugins/kimi/scripts/lib/companion-common.mjs": {
+      "lines": 85.29,
+      "branches": 73.68,
+      "functions": 100.0
+    },
+    "plugins/kimi/scripts/lib/containment.mjs": {
+      "lines": 0.0,
+      "branches": 100.0,
+      "functions": 0.0
+    },
+    "plugins/kimi/scripts/lib/external-review.mjs": {
+      "lines": 88.24,
+      "branches": 95.65,
+      "functions": 100.0
+    },
+    "plugins/kimi/scripts/lib/git-env.mjs": {
+      "lines": 0.0,
+      "branches": 66.67,
+      "functions": 0.0
+    },
+    "plugins/kimi/scripts/lib/git.mjs": {
+      "lines": 100.0,
+      "branches": 100.0,
+      "functions": 100.0
+    },
+    "plugins/kimi/scripts/lib/identity.mjs": {
+      "lines": 92.03,
+      "branches": 89.13,
+      "functions": 100.0
+    },
+    "plugins/kimi/scripts/lib/job-record.mjs": {
+      "lines": 44.97,
+      "branches": 66.67,
+      "functions": 85.71
+    },
+    "plugins/kimi/scripts/lib/kimi.mjs": {
+      "lines": 53.81,
+      "branches": 78.79,
+      "functions": 77.78
+    },
+    "plugins/kimi/scripts/lib/mode-profiles.mjs": {
+      "lines": 12.9,
+      "branches": 0.0,
+      "functions": 33.33
+    },
+    "plugins/kimi/scripts/lib/process.mjs": {
+      "lines": 98.29,
+      "branches": 96.55,
+      "functions": 100.0
+    },
+    "plugins/kimi/scripts/lib/provider-env.mjs": {
+      "lines": 0.0,
+      "branches": 100.0,
+      "functions": 0.0
+    },
+    "plugins/kimi/scripts/lib/reconcile.mjs": {
+      "lines": 0.0,
+      "branches": 100.0,
+      "functions": 0.0
+    },
+    "plugins/kimi/scripts/lib/scope.mjs": {
+      "lines": 92.0,
+      "branches": 86.53,
+      "functions": 98.25
+    },
+    "plugins/kimi/scripts/lib/state.mjs": {
+      "lines": 0.0,
+      "branches": 77.65,
+      "functions": 0.0
+    },
+    "plugins/kimi/scripts/lib/workspace.mjs": {
+      "lines": 100.0,
       "branches": 100.0,
       "functions": 100.0
     }

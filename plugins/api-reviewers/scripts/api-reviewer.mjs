@@ -8,6 +8,7 @@ import { randomUUID } from "node:crypto";
 import { hostname } from "node:os";
 
 import { cleanGitEnv } from "./lib/git-env.mjs";
+import { isCodexSandbox } from "./lib/codex-env.mjs";
 import {
   EXTERNAL_REVIEW_KEYS,
   SOURCE_CONTENT_TRANSMISSION,
@@ -1016,13 +1017,6 @@ function suggestedAction(errorCode, provider, cfg, errorMessage = "", httpStatus
   }
   if (errorCode === "scope_failed") return "Adjust --scope, --scope-base, or --scope-paths and retry.";
   return "Inspect error_message and retry after correcting the provider or request configuration.";
-}
-
-function isCodexSandbox(env) {
-  const value = env?.CODEX_SANDBOX;
-  if (!value) return false;
-  const normalized = String(value).trim().toLowerCase();
-  return !["", "false", "0", "no", "off", "null", "undefined", "nil"].includes(normalized);
 }
 
 function directApiDisclosure(displayName, completed, payloadSent) {

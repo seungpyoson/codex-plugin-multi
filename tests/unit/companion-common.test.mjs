@@ -1,13 +1,27 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, statSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
 
 import {
   PING_PROMPT,
+  comparePathStrings,
+  consumePromptSidecar,
   credentialNameDiagnostics,
+  gitStatusLines,
+  parseScopePathsOption,
   preflightDisclosure,
   preflightSafetyFields,
+  printJson,
+  promptSidecarPath,
+  runKindFromRecord,
+  summarizeScopeDirectory,
+  writePromptSidecar,
 } from "../../scripts/lib/companion-common.mjs";
 import { COMPANION_PLUGIN_TARGETS } from "../../scripts/lib/plugin-targets.mjs";
+
+const POSIX_MODE_ASSERTIONS = process.platform !== "win32";
 
 test("companion-common exposes the shared ping prompt", () => {
   assert.equal(
@@ -42,13 +56,122 @@ test("credentialNameDiagnostics omits fields when no provider key is present", (
   assert.deepEqual(credentialNameDiagnostics(["ANTHROPIC_API_KEY"], {}), {});
 });
 
+test("shared companion helpers cover small provider-agnostic behavior", () => {
+  let printed = "";
+  printJson({ ok: true }, { write: (chunk) => { printed += chunk; } });
+  assert.equal(printed, "{\n  \"ok\": true\n}\n");
+  assert.deepEqual(parseScopePathsOption(" a.js, ,src/b.js "), ["a.js", "src/b.js"]);
+  assert.equal(parseScopePathsOption(""), null);
+  assert.deepEqual(["b", "a", "aa"].sort(comparePathStrings), ["a", "aa", "b"]);
+  assert.deepEqual(gitStatusLines(" M a.js  \n\n?? b.js\n"), [" M a.js", "?? b.js"]);
+  assert.equal(runKindFromRecord({ external_review: { run_kind: "foreground" } }), "foreground");
+  assert.equal(runKindFromRecord({}), "unknown");
+});
+
+test("summarizeScopeDirectory returns sorted files and byte totals", () => {
+  const root = mkdtempSync(path.join(tmpdir(), "companion-common-scope-"));
+  const nested = path.join(root, "nested");
+  fsMkdir(nested);
+  fsWrite(path.join(root, "b.txt"), "bb");
+  fsWrite(path.join(nested, "a.txt"), "aaa");
+
+  assert.deepEqual(summarizeScopeDirectory(root), {
+    files: ["b.txt", "nested/a.txt"],
+    file_count: 2,
+    byte_count: 5,
+  });
+  assert.deepEqual(summarizeScopeDirectory(path.join(root, "missing")), {
+    files: [],
+    file_count: 0,
+    byte_count: 0,
+  });
+});
+
+test("prompt sidecar helpers write 0600 handoff files and consume once", () => {
+  const jobsDir = mkdtempSync(path.join(tmpdir(), "companion-common-jobs-"));
+  const p = promptSidecarPath(jobsDir, "job-1");
+  assert.equal(p, path.join(jobsDir, "job-1", "prompt.txt"));
+  assert.equal(consumePromptSidecar(jobsDir, "job-1"), null);
+
+  writePromptSidecar(jobsDir, "job-1", "secret prompt");
+  assert.equal(readFileSync(p, "utf8"), "secret prompt");
+  if (POSIX_MODE_ASSERTIONS) {
+    assert.equal((statSync(path.dirname(p)).mode & 0o777), 0o700);
+    assert.equal((statSync(p).mode & 0o777), 0o600);
+  }
+  assert.equal(consumePromptSidecar(jobsDir, "job-1"), "secret prompt");
+  assert.equal(existsSync(p), false);
+  assert.equal(consumePromptSidecar(jobsDir, "job-1"), null);
+});
+
+test("prompt sidecar helpers reject unsafe job ids before resolving paths", () => {
+  const jobsDir = mkdtempSync(path.join(tmpdir(), "companion-common-unsafe-jobs-"));
+
+  for (const jobId of ["/tmp/escape", "../escape", "nested/job", "", "."]) {
+    assert.throws(() => promptSidecarPath(jobsDir, jobId), /Unsafe jobId/);
+    assert.throws(() => writePromptSidecar(jobsDir, jobId, "secret"), /Unsafe jobId/);
+    assert.throws(() => consumePromptSidecar(jobsDir, jobId), /Unsafe jobId/);
+  }
+});
+
+test("consumePromptSidecar treats ENOTDIR as a missing sidecar", () => {
+  const jobsDir = mkdtempSync(path.join(tmpdir(), "companion-common-enotdir-jobs-"));
+  writeFileSync(path.join(jobsDir, "job-file"), "not a directory", "utf8");
+
+  assert.equal(consumePromptSidecar(jobsDir, "job-file"), null);
+});
+
+test("writePromptSidecar rejects symlinked job directories", { skip: process.platform === "win32" }, () => {
+  const jobsDir = mkdtempSync(path.join(tmpdir(), "companion-common-symlink-jobs-"));
+  const escapeDir = mkdtempSync(path.join(tmpdir(), "companion-common-symlink-escape-"));
+  symlinkSync(escapeDir, path.join(jobsDir, "job-link"), "dir");
+
+  assert.throws(
+    () => writePromptSidecar(jobsDir, "job-link", "secret"),
+    /not a real directory inside jobsDir|symlink/i,
+  );
+  assert.equal(existsSync(path.join(escapeDir, "prompt.txt")), false);
+});
+
+test("consumePromptSidecar rejects symlinked job directories", { skip: process.platform === "win32" }, () => {
+  const jobsDir = mkdtempSync(path.join(tmpdir(), "companion-common-consume-symlink-jobs-"));
+  const escapeDir = mkdtempSync(path.join(tmpdir(), "companion-common-consume-symlink-escape-"));
+  symlinkSync(escapeDir, path.join(jobsDir, "job-link"), "dir");
+  writeFileSync(path.join(escapeDir, "prompt.txt"), "attacker prompt", "utf8");
+
+  assert.throws(
+    () => consumePromptSidecar(jobsDir, "job-link"),
+    /not a real directory inside jobsDir|symlink/i,
+  );
+  assert.equal(readFileSync(path.join(escapeDir, "prompt.txt"), "utf8"), "attacker prompt");
+});
+
+test("consumePromptSidecar returns the prompt when cleanup unlink fails", {
+  skip: !POSIX_MODE_ASSERTIONS || process.getuid?.() === 0,
+}, () => {
+  const jobsDir = mkdtempSync(path.join(tmpdir(), "companion-common-unlink-fails-"));
+  const p = promptSidecarPath(jobsDir, "job-1");
+  writePromptSidecar(jobsDir, "job-1", "secret prompt");
+  const dir = path.dirname(p);
+
+  chmodSync(dir, 0o500);
+  try {
+    assert.equal(consumePromptSidecar(jobsDir, "job-1"), "secret prompt");
+    assert.equal(readFileSync(p, "utf8"), "secret prompt");
+  } finally {
+    chmodSync(dir, 0o700);
+    try { unlinkSync(p); } catch { /* best-effort test cleanup */ }
+  }
+});
+
 test("plugin packaging copies expose the canonical helper behavior", async () => {
   const modules = await Promise.all(
     COMPANION_PLUGIN_TARGETS.map((plugin) =>
       import(`../../plugins/${plugin}/scripts/lib/companion-common.mjs`)
     )
   );
-  for (const mod of modules) {
+  for (const [i, mod] of modules.entries()) {
+    const plugin = COMPANION_PLUGIN_TARGETS[i];
     assert.equal(mod.PING_PROMPT, PING_PROMPT);
     assert.deepEqual(mod.preflightSafetyFields(), preflightSafetyFields());
     assert.equal(mod.preflightDisclosure("Target"), preflightDisclosure("Target"));
@@ -60,8 +183,98 @@ test("plugin packaging copies expose the canonical helper behavior", async () =>
       mod.credentialNameDiagnostics(["__CODEX_PLUGIN_MULTI_MISSING_TEST_KEY__"]),
       credentialNameDiagnostics(["__CODEX_PLUGIN_MULTI_MISSING_TEST_KEY__"]),
     );
+    assert.deepEqual(mod.parseScopePathsOption("one,two"), ["one", "two"]);
+    assert.deepEqual(mod.gitStatusLines(" M x\n"), [" M x"]);
+    assert.equal(mod.runKindFromRecord({}), "unknown");
+    assertCopyHelperBranches(mod, plugin);
   }
 });
+
+function assertCopyHelperBranches(mod, plugin) {
+  let printed = "";
+  mod.printJson({ plugin }, { write: (chunk) => { printed += chunk; } });
+  assert.equal(printed, `{\n  "plugin": "${plugin}"\n}\n`);
+
+  assert.equal(mod.parseScopePathsOption(""), null);
+  assert.deepEqual(mod.parseScopePathsOption(" a.js, ,b.js "), ["a.js", "b.js"]);
+  assert.equal(mod.comparePathStrings("a", "b"), -1);
+  assert.equal(mod.comparePathStrings("b", "a"), 1);
+  assert.equal(mod.comparePathStrings("a", "a"), 0);
+
+  const root = mkdtempSync(path.join(tmpdir(), `companion-common-copy-${plugin}-`));
+  const nested = path.join(root, "nested");
+  fsMkdir(nested);
+  fsWrite(path.join(root, "b.txt"), "bb");
+  fsWrite(path.join(nested, "a.txt"), "aaa");
+  fsMkdir(path.join(root, "empty-dir"));
+  assert.deepEqual(mod.summarizeScopeDirectory(root), {
+    files: ["b.txt", "nested/a.txt"],
+    file_count: 2,
+    byte_count: 5,
+  });
+  assert.deepEqual(mod.summarizeScopeDirectory(path.join(root, "missing")), {
+    files: [],
+    file_count: 0,
+    byte_count: 0,
+  });
+
+  assert.deepEqual(mod.gitStatusLines(" M a.js  \n\n?? b.js\n"), [" M a.js", "?? b.js"]);
+  assert.equal(mod.runKindFromRecord({ external_review: { run_kind: "background" } }), "background");
+  assert.equal(mod.runKindFromRecord({}), "unknown");
+
+  const jobsDir = mkdtempSync(path.join(tmpdir(), `companion-common-copy-jobs-${plugin}-`));
+  assert.equal(mod.consumePromptSidecar(jobsDir, "job-1"), null);
+  mod.writePromptSidecar(jobsDir, "job-1", "copy prompt");
+  const sidecar = mod.promptSidecarPath(jobsDir, "job-1");
+  assert.equal(readFileSync(sidecar, "utf8"), "copy prompt");
+  if (POSIX_MODE_ASSERTIONS) {
+    assert.equal((statSync(path.dirname(sidecar)).mode & 0o777), 0o700);
+    assert.equal((statSync(sidecar).mode & 0o777), 0o600);
+  }
+  assert.equal(mod.consumePromptSidecar(jobsDir, "job-1"), "copy prompt");
+  assert.equal(existsSync(sidecar), false);
+  assert.equal(mod.consumePromptSidecar(jobsDir, "job-1"), null);
+
+  const enotdirJobsDir = mkdtempSync(path.join(tmpdir(), `companion-common-copy-enotdir-${plugin}-`));
+  writeFileSync(path.join(enotdirJobsDir, "job-file"), "not a directory", "utf8");
+  assert.equal(mod.consumePromptSidecar(enotdirJobsDir, "job-file"), null);
+
+  if (process.platform !== "win32") {
+    const writeSymlinkJobsDir = mkdtempSync(path.join(tmpdir(), `companion-common-copy-write-symlink-${plugin}-`));
+    const writeEscapeDir = mkdtempSync(path.join(tmpdir(), `companion-common-copy-write-escape-${plugin}-`));
+    symlinkSync(writeEscapeDir, path.join(writeSymlinkJobsDir, "job-link"), "dir");
+    assert.throws(
+      () => mod.writePromptSidecar(writeSymlinkJobsDir, "job-link", "copy secret"),
+      /not a real directory inside jobsDir|symlink/i,
+    );
+    assert.equal(existsSync(path.join(writeEscapeDir, "prompt.txt")), false);
+
+    const consumeSymlinkJobsDir = mkdtempSync(path.join(tmpdir(), `companion-common-copy-consume-symlink-${plugin}-`));
+    const consumeEscapeDir = mkdtempSync(path.join(tmpdir(), `companion-common-copy-consume-escape-${plugin}-`));
+    symlinkSync(consumeEscapeDir, path.join(consumeSymlinkJobsDir, "job-link"), "dir");
+    writeFileSync(path.join(consumeEscapeDir, "prompt.txt"), "attacker prompt", "utf8");
+    assert.throws(
+      () => mod.consumePromptSidecar(consumeSymlinkJobsDir, "job-link"),
+      /not a real directory inside jobsDir|symlink/i,
+    );
+    assert.equal(readFileSync(path.join(consumeEscapeDir, "prompt.txt"), "utf8"), "attacker prompt");
+  }
+
+  assert.deepEqual(mod.credentialNameDiagnostics(["KEY"], {}), {});
+  assert.deepEqual(mod.credentialNameDiagnostics(["KEY"], { KEY: "value" }), {
+    ignored_env_credentials: ["KEY"],
+    auth_policy: "api_key_env_ignored",
+  });
+}
+
+function fsMkdir(dir) {
+  mkdirSync(dir, { recursive: true });
+}
+
+function fsWrite(file, contents) {
+  writeFileSync(file, contents, "utf8");
+  chmodSync(file, 0o600);
+}
 
 test("external-review plugin copies keep stale no-pid transmission unknown", async () => {
   const modules = await Promise.all(

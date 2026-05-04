@@ -16,6 +16,7 @@ jobs:
           node-version: "20"
       - run: npm ci --ignore-scripts || npm install --ignore-scripts
       - run: npm run lint
+      - run: npm run lint:sync
       - run: npm run lint:self-test
 
   test:

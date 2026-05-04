@@ -27,6 +27,15 @@ test("pull-request CI runs unit tests and per-target smoke matrix separately", (
   assert.match(workflow, /npm run smoke:\$\{\{ matrix\.target \}\}/);
 });
 
+test("pull-request CI runs shared-copy sync checks", () => {
+  assert.match(pkg.scripts["lint:sync"] ?? "", /sync-codex-env\.mjs --check/);
+  assert.match(pkg.scripts["lint:sync"] ?? "", /sync-companion-common\.mjs --check/);
+  assert.match(pkg.scripts["lint:sync"] ?? "", /sync-external-review\.mjs --check/);
+  assert.match(pkg.scripts["lint:sync"] ?? "", /sync-auth-selection\.mjs --check/);
+  assert.match(pkg.scripts["lint:sync"] ?? "", /sync-provider-env\.mjs --check/);
+  assert.match(workflow, /npm run lint:sync/);
+});
+
 test("pull-request CI runs the enforced coverage gate", () => {
   assert.match(workflow, /COVERAGE_ENFORCE_TARGET:\s*"1"/);
   assert.match(workflow, /Run coverage gate[\s\S]*CODEX_PLUGIN_SKIP_SMOKE:\s*"1"/);

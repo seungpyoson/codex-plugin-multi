@@ -206,13 +206,19 @@ test("gemini-delegation/SKILL.md describes cancel --job flow (not deferred/not_i
 });
 
 test("companion preflight file sorting uses an explicit comparator", () => {
-  for (const target of ["claude", "gemini"]) {
+  const common = readRepoFile("scripts/lib/companion-common.mjs");
+  assert.doesNotMatch(common, /\.sort\(\)/,
+    "shared companion scope summary must not rely on default Array#sort ordering");
+  assert.match(common, /files\.sort\(comparePathStrings\)/,
+    "shared companion scope summary must sort preflight files with an explicit comparator");
+
+  for (const target of ["claude", "gemini", "kimi"]) {
     const companion = readRepoFile(`plugins/${target}/scripts/${target}-companion.mjs`);
 
     assert.doesNotMatch(companion, /\.sort\(\)/,
       `${target} companion must not rely on default Array#sort ordering`);
-    assert.match(companion, /files\.sort\(comparePathStrings\)/,
-      `${target} companion must sort preflight files with an explicit comparator`);
+    assert.match(companion, /summarizeScopeDirectory/,
+      `${target} companion must use the shared explicit-sort scope summary`);
   }
 });
 
