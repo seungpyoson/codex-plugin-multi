@@ -2,7 +2,7 @@
 import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
-import { mkdir, readFile, rename, stat, unlink, writeFile } from "node:fs/promises";
+import { mkdir, readFile, realpath, rename, stat, unlink, writeFile } from "node:fs/promises";
 import { dirname, isAbsolute, relative, resolve } from "node:path";
 import { cleanGitEnv as cleanCanonicalGitEnv } from "./lib/git-env.mjs";
 
@@ -12,6 +12,7 @@ const DEFAULT_MODEL = "grok-4.20-fast";
 const DEFAULT_TIMEOUT_MS = 30000;
 const DEFAULT_DOCTOR_TIMEOUT_MS = 2000;
 const MAX_SCOPE_FILE_BYTES = 256 * 1024;
+const MAX_STATE_JOBS = 50;
 const SCHEMA_VERSION = 9;
 const MIN_SECRET_REDACTION_LENGTH = 8;
 
@@ -188,6 +189,11 @@ async function readScopeFiles(workspaceRoot, relPaths) {
       throw new Error(`unsafe_scope_path:${relPath}`);
     }
     if (!existsSync(abs)) continue;
+    const realAbs = await realpath(abs);
+    const realRel = relative(workspaceRoot, realAbs);
+    if (realRel.startsWith("..") || realRel === "") {
+      throw new Error(`unsafe_scope_path:${relPath}`);
+    }
     const info = await stat(abs);
     if (!info.isFile()) continue;
     if (info.size > MAX_SCOPE_FILE_BYTES) {
@@ -199,6 +205,23 @@ async function readScopeFiles(workspaceRoot, relPaths) {
   }
   if (files.length === 0) throw new Error("scope_empty: selected files are missing or empty");
   return files;
+}
+
+function fileContentDelimiter(file, index) {
+  let delimiter = `GROK FILE ${index}: ${file.path}`;
+  while (file.text.includes(`BEGIN ${delimiter}`) || file.text.includes(`END ${delimiter}`)) {
+    delimiter = `${delimiter} #`;
+  }
+  return delimiter;
+}
+
+function promptFileBlock(file, index) {
+  const delimiter = fileContentDelimiter(file, index);
+  return [
+    `BEGIN ${delimiter}`,
+    file.text,
+    `END ${delimiter}`,
+  ].join("\n");
 }
 
 async function collectScope(options) {
@@ -215,12 +238,7 @@ function promptFor(mode, userPrompt, scopeInfo) {
   const modeLine = mode === "adversarial-review"
     ? "You are performing an adversarial code review. Prioritize correctness bugs, security risks, regressions, and missing tests."
     : "You are performing a code review. Prioritize bugs, behavioral regressions, and missing tests.";
-  const files = scopeInfo.files.map((file) => [
-    `### ${file.path}`,
-    "```",
-    file.text,
-    "```",
-  ].join("\n")).join("\n\n");
+  const files = scopeInfo.files.map((file, index) => promptFileBlock(file, index + 1)).join("\n\n");
   return [
     modeLine,
     "Return a concise verdict and findings. Do not edit files.",
@@ -497,21 +515,32 @@ async function writeJsonFile(file, value) {
 
 async function persistRecord(record, env = process.env) {
   const root = dataRoot(env);
+  const stateFile = resolve(root, "state.json");
+  let priorJobs = [];
+  try {
+    const parsed = JSON.parse(await readFile(stateFile, "utf8"));
+    if (Array.isArray(parsed?.jobs)) priorJobs = parsed.jobs;
+  } catch (error) {
+    if (error?.code !== "ENOENT") throw error;
+  }
+  const summary = {
+    id: record.job_id,
+    job_id: record.job_id,
+    target: record.target,
+    provider: record.provider,
+    status: record.status,
+    mode: record.mode,
+    scope: record.scope,
+    scope_base: record.scope_base,
+    scope_paths: record.scope_paths,
+    updatedAt: record.ended_at,
+  };
+  const jobs = [summary, ...priorJobs.filter((job) => job?.job_id !== record.job_id && job?.id !== record.job_id)]
+    .slice(0, MAX_STATE_JOBS);
   await writeJsonFile(resolve(root, "jobs", record.job_id, "meta.json"), record);
-  await writeJsonFile(resolve(root, "state.json"), {
+  await writeJsonFile(stateFile, {
     version: 1,
-    jobs: [{
-      id: record.job_id,
-      job_id: record.job_id,
-      target: record.target,
-      provider: record.provider,
-      status: record.status,
-      mode: record.mode,
-      scope: record.scope,
-      scope_base: record.scope_base,
-      scope_paths: record.scope_paths,
-      updatedAt: record.ended_at,
-    }],
+    jobs,
   });
 }
 

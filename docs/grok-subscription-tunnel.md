@@ -42,12 +42,13 @@ npm run grok:sync-browser-session
 The helper announces which local browser profile and cookie database it reads,
 may trigger macOS Keychain access, prefers the `sso-rw` cookie over `sso`, and
 prints only sanitized pool/quota status. It adds and refreshes the new token
-before deleting old grok2api accounts, so an add/refresh failure does not empty
-the existing pool. If deleting stale grok2api tokens fails after the new token
-is imported, the failure JSON reports `stale_token_count` so operators know the
-pool still contains old entries. It defaults the local pool to `super` because
-grok2api may misclassify SuperGrok sessions as `basic` during quota
-auto-detection.
+before deleting old grok2api accounts in the same target pool, so an
+add/refresh failure does not empty the existing pool and accounts in other pools
+are preserved. Pass `--append` to keep existing accounts in the target pool too.
+If deleting stale grok2api tokens fails after the new token is imported, the
+failure JSON reports `stale_token_count` so operators know the pool still
+contains old entries. It defaults the local pool to `super` because grok2api may
+misclassify SuperGrok sessions as `basic` during quota auto-detection.
 
 Useful options:
 
@@ -56,6 +57,7 @@ npm run grok:sync-browser-session -- --browser chrome --profile Default --pool s
 npm run grok:sync-browser-session -- --browser brave --profile Default --pool super
 npm run grok:sync-browser-session -- --browser edge --profile Default --pool super
 npm run grok:sync-browser-session -- --browser arc --profile Default --pool super
+npm run grok:sync-browser-session -- --browser chrome --profile Default --pool super --append
 ```
 
 The helper talks to grok2api's local admin API with
@@ -141,7 +143,8 @@ tunnel and retry.
 
 Review runs persist a redacted JobRecord under
 `GROK_PLUGIN_DATA` or `.codex-plugin-data/grok`. The helper can inspect that
-local state without contacting Grok:
+local state without contacting Grok. `list` returns the recent local index, with
+the newest job first; `result` reads a specific per-job record:
 
 ```sh
 node plugins/grok/scripts/grok-web-reviewer.mjs list

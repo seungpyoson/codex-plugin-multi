@@ -1,6 +1,6 @@
 import { once } from "node:events";
 import { execFileSync, spawn, spawnSync } from "node:child_process";
-import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import http from "node:http";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -159,9 +159,11 @@ test("doctor explains XAI_API_KEY is ignored for subscription web mode", () => {
 test("custom-review sends selected source to a local Grok web tunnel and persists a JobRecord", async () => {
   const cwd = mkdtempSync(path.join(tmpdir(), "grok-web-workspace-"));
   const dataDir = mkdtempSync(path.join(tmpdir(), "grok-web-data-"));
-  writeFileSync(path.join(cwd, "review.js"), "export const value = 42;\n");
+  writeFileSync(path.join(cwd, "review.js"), "export const value = 42;\n// ``` nested markdown fence\n");
 
+  let requestCount = 0;
   await withServer(async (req, res) => {
+    requestCount += 1;
     assert.equal(req.method, "POST");
     assert.equal(req.url, "/api/chat/completions");
     assert.equal(req.headers.authorization, "Bearer secret-cookie-like-token");
@@ -171,11 +173,13 @@ test("custom-review sends selected source to a local Grok web tunnel and persist
     assert.equal(body.temperature, 0);
     assert.match(body.messages[0].content, /review\.js/);
     assert.match(body.messages[0].content, /export const value = 42/);
+    assert.match(body.messages[0].content, /BEGIN GROK FILE 1: review\.js/);
+    assert.doesNotMatch(body.messages[0].content, /^```$/m);
     res.setHeader("content-type", "application/json");
     res.end(JSON.stringify({
-      id: "grok-web-session-1",
+      id: `grok-web-session-${requestCount}`,
       model: "grok-4.20-fast",
-      choices: [{ message: { content: "Verdict: no findings." } }],
+      choices: [{ message: { content: `Verdict: no findings ${requestCount}.` } }],
       usage: { prompt_tokens: 12, completion_tokens: 5, total_tokens: 17 },
     }));
   }, async (baseUrl) => {
@@ -201,7 +205,7 @@ test("custom-review sends selected source to a local Grok web tunnel and persist
     assert.equal(record.provider, "grok-web");
     assert.equal(record.auth_mode, "subscription_web");
     assert.equal(record.status, "completed");
-    assert.equal(record.result, "Verdict: no findings.");
+    assert.equal(record.result, "Verdict: no findings 1.");
     assert.equal(record.external_review.provider, "Grok Web");
     assert.equal(record.external_review.source_content_transmission, "sent");
     assert.match(record.disclosure_note, /subscription-backed web session/i);
@@ -209,7 +213,7 @@ test("custom-review sends selected source to a local Grok web tunnel and persist
     assert.doesNotMatch(result.stdout, /secret-cookie-like-token/);
 
     const persisted = JSON.parse(readFileSync(path.join(dataDir, "jobs", record.job_id, "meta.json"), "utf8"));
-    assert.equal(persisted.result, "Verdict: no findings.");
+    assert.equal(persisted.result, "Verdict: no findings 1.");
     assert.equal(persisted.grok_session_id, "grok-web-session-1");
     assert.doesNotMatch(JSON.stringify(persisted), /secret-cookie-like-token/);
 
@@ -223,8 +227,26 @@ test("custom-review sends selected source to a local Grok web tunnel and persist
     const lookedUp = parseStdout(resultLookup);
     assert.equal(resultLookup.status, 0);
     assert.equal(lookedUp.job_id, record.job_id);
-    assert.equal(lookedUp.result, "Verdict: no findings.");
+    assert.equal(lookedUp.result, "Verdict: no findings 1.");
     assert.doesNotMatch(resultLookup.stdout, /secret-cookie-like-token/);
+
+    const secondResult = await runAsync([
+      "run",
+      "--mode", "custom-review",
+      "--scope", "custom",
+      "--scope-paths", "review.js",
+      "--foreground",
+      "--prompt", "Check this file again.",
+    ], {
+      cwd,
+      env: {
+        GROK_WEB_BASE_URL: baseUrl,
+        GROK_WEB_TUNNEL_API_KEY: "secret-cookie-like-token",
+        GROK_PLUGIN_DATA: dataDir,
+      },
+    });
+    const secondRecord = parseStdout(secondResult);
+    assert.equal(secondResult.status, 0);
 
     const listResult = run(["list"], {
       cwd,
@@ -236,7 +258,8 @@ test("custom-review sends selected source to a local Grok web tunnel and persist
     const listed = parseStdout(listResult);
     assert.equal(listResult.status, 0);
     assert.equal(listed.ok, true);
-    assert.equal(listed.jobs[0].job_id, record.job_id);
+    assert.equal(listed.jobs[0].job_id, secondRecord.job_id);
+    assert.equal(listed.jobs[1].job_id, record.job_id);
   });
 });
 
@@ -446,6 +469,35 @@ test("custom-review rejects unsafe scope paths before contacting the tunnel", ()
   assert.equal(record.error_code, "scope_failed");
   assert.match(record.error_message, /unsafe_scope_path/);
   assert.equal(record.external_review.source_content_transmission, "not_sent");
+});
+
+test("custom-review rejects symlinks that resolve outside the workspace", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "grok-web-workspace-"));
+  const outside = mkdtempSync(path.join(tmpdir(), "grok-web-outside-"));
+  writeFileSync(path.join(outside, "secret.js"), "export const secret = 1;\n");
+  symlinkSync(path.join(outside, "secret.js"), path.join(cwd, "linked-secret.js"));
+
+  const result = run([
+    "run",
+    "--mode", "custom-review",
+    "--scope", "custom",
+    "--scope-paths", "linked-secret.js",
+    "--foreground",
+    "--prompt", "Check this file.",
+  ], {
+    cwd,
+    env: {
+      GROK_WEB_BASE_URL: "http://127.0.0.1:1/api",
+      GROK_WEB_TUNNEL_API_KEY: "secret-cookie-like-token",
+    },
+  });
+
+  const record = parseStdout(result);
+  assert.equal(result.status, 1);
+  assert.equal(record.error_code, "scope_failed");
+  assert.equal(record.external_review.source_content_transmission, "not_sent");
+  assert.match(record.error_message, /unsafe_scope_path:linked-secret\.js/);
+  assert.doesNotMatch(record.error_message, /export const secret/);
 });
 
 test("help exposes only subscription-backed Grok commands", () => {

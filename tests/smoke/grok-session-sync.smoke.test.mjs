@@ -86,8 +86,7 @@ test("sync-browser-session imports sso-rw into grok2api, forces super pool, and 
     }
     if (req.method === "DELETE" && req.url === "/admin/api/tokens") {
       const body = await readJsonRequest(req);
-      assert.deepEqual(body, ["old-token"]);
-      currentTokens = currentTokens.filter((entry) => entry.token !== "old-token");
+      assert.deepEqual(body, []);
       res.end(JSON.stringify({ status: "success" }));
       return;
     }
@@ -105,15 +104,8 @@ test("sync-browser-session imports sso-rw into grok2api, forces super pool, and 
     assert.equal(parsed.source, "cookie_source_json");
     assert.equal(parsed.selected_cookie, "sso-rw");
     assert.equal(parsed.pool, "super");
-    assert.equal(parsed.deleted_count, 1);
-    assert.deepEqual(parsed.tokens, [{
-      pool: "super",
-      status: "active",
-      quota: { auto: { remaining: 50, total: 50 } },
-      use_count: null,
-      last_used_at: null,
-      tags: [],
-    }]);
+    assert.equal(parsed.deleted_count, 0);
+    assert.deepEqual(parsed.tokens.map((entry) => entry.pool), ["basic", "super"]);
     assert.doesNotMatch(result.stdout, /super-secret-sso-rw-token-value/);
     assert.doesNotMatch(result.stderr, /super-secret-sso-rw-token-value/);
     assert.match(result.stderr, /Reading Grok session cookies/i);
@@ -121,6 +113,55 @@ test("sync-browser-session imports sso-rw into grok2api, forces super pool, and 
   });
 
   assert.ok(requests.every((entry) => entry.authorization === "Bearer grok2api"));
+});
+
+test("sync-browser-session append mode keeps existing same-pool tokens", async () => {
+  const dir = mkdtempSync(path.join(tmpdir(), "grok-sync-"));
+  const secret = "new-incoming-token-value";
+  const cookieSource = path.join(dir, "cookies.json");
+  writeFileSync(cookieSource, JSON.stringify([{ name: "sso-rw", value: secret }]));
+
+  const requests = [];
+  let currentTokens = [{ token: "prior-super-token", pool: "super", status: "active", quota: {} }];
+  await withGrok2ApiServer(async (req, res) => {
+    requests.push(req.method);
+    res.setHeader("content-type", "application/json");
+    if (req.method === "GET" && req.url === "/admin/api/tokens") {
+      res.end(JSON.stringify({ tokens: currentTokens }));
+      return;
+    }
+    if (req.method === "POST" && req.url === "/admin/api/tokens/add") {
+      currentTokens.push({ token: secret, pool: "super", status: "active", quota: {} });
+      res.end(JSON.stringify({ status: "success", count: 1 }));
+      return;
+    }
+    if (req.method === "POST" && req.url === "/admin/api/batch/refresh") {
+      res.end(JSON.stringify({ status: "success" }));
+      return;
+    }
+    if (req.method === "DELETE" && req.url === "/admin/api/tokens") {
+      currentTokens = [];
+      res.end(JSON.stringify({ status: "success" }));
+      return;
+    }
+    res.statusCode = 404;
+    res.end(JSON.stringify({ error: "not found" }));
+  }, async (baseUrl) => {
+    const result = await runAsync([
+      "--cookie-source-json", cookieSource,
+      "--grok2api-base-url", baseUrl,
+      "--pool", "super",
+      "--append",
+    ]);
+    assert.equal(result.status, 0);
+    const parsed = JSON.parse(result.stdout);
+    assert.equal(parsed.ok, true);
+    assert.equal(parsed.deleted_count, 0);
+    assert.deepEqual(currentTokens.map((entry) => entry.token), ["prior-super-token", secret]);
+    assert.doesNotMatch(result.stdout, /new-incoming-token-value/);
+  });
+
+  assert.deepEqual(requests, ["GET", "POST", "POST", "GET"]);
 });
 
 test("sync-browser-session does not delete existing tokens when add fails", async () => {

@@ -110,6 +110,14 @@ function sanitizeAccount(entry) {
   };
 }
 
+function tokensToReplace(existingTokens, selectedValue, pool, append) {
+  if (append) return [];
+  return existingTokens
+    .filter((entry) => String(entry?.pool ?? "").toLowerCase() === pool)
+    .map((entry) => entry.token)
+    .filter((token) => Boolean(token) && token !== selectedValue);
+}
+
 function fail(errorCode, message, extra = {}) {
   printJson({
     ok: false,
@@ -291,6 +299,7 @@ async function main(argv = process.argv.slice(2)) {
   const adminKey = String(args["admin-key"] || process.env.GROK2API_ADMIN_KEY || DEFAULT_ADMIN_KEY);
   const adminTimeoutMs = parsePositiveInteger(args["admin-timeout-ms"] || process.env.GROK2API_ADMIN_TIMEOUT_MS, DEFAULT_ADMIN_TIMEOUT_MS);
   const pool = String(args.pool || process.env.GROK2API_POOL || DEFAULT_POOL).toLowerCase();
+  const append = args.append === true || String(args.append ?? "").toLowerCase() === "true";
 
   if (adminKey === DEFAULT_ADMIN_KEY) {
     process.stderr.write("Using default grok2api admin key; set GROK2API_ADMIN_KEY for any non-loopback or shared-host setup.\n");
@@ -325,7 +334,7 @@ async function main(argv = process.argv.slice(2)) {
     fail("cookie_not_found", "No usable sso-rw or sso cookie was found for grok.com.", { source });
   }
 
-  const toDelete = existingTokens.map((entry) => entry.token).filter(Boolean);
+  const toDelete = tokensToReplace(existingTokens, selected.value, pool, append);
   try {
     await api(baseUrl, "/tokens/add", { method: "POST", body: { pool, tokens: [selected.value] }, adminKey, timeoutMs: adminTimeoutMs });
     await api(baseUrl, "/batch/refresh", { method: "POST", body: { tokens: [selected.value] }, adminKey, timeoutMs: adminTimeoutMs });
@@ -340,6 +349,7 @@ async function main(argv = process.argv.slice(2)) {
       profile: args.profile || process.env.GROK_BROWSER_PROFILE || (args["cookie-source-json"] ? null : "Default"),
       selected_cookie: selected.name,
       pool,
+      append,
       deleted_count: toDelete.length,
       tokens: (after.tokens || []).map(sanitizeAccount),
     });
