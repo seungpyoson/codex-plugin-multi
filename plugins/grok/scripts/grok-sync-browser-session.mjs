@@ -128,6 +128,15 @@ function fail(errorCode, message, extra = {}) {
   process.exit(1);
 }
 
+export function redactUnexpectedError(error, argv = process.argv.slice(2), env = process.env) {
+  const args = parseArgs(argv);
+  return redactMessage(error?.message || String(error), [
+    args["admin-key"],
+    env.GROK2API_ADMIN_KEY,
+    DEFAULT_ADMIN_KEY,
+  ]);
+}
+
 async function api(baseUrl, pathName, {
   method = "GET",
   body = null,
@@ -369,6 +378,6 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
   try {
     await main();
   } catch (error) {
-    fail("unexpected_error", error?.message || String(error));
+    fail("unexpected_error", redactUnexpectedError(error));
   }
 }

@@ -424,3 +424,17 @@ test("chrome cookie decrypt helper handles v10/v11 ciphertext and rejects unsupp
   });
   assert.equal(stdout, "");
 });
+
+test("unexpected sync errors redact explicit admin keys", () => {
+  const script = `
+    import { redactUnexpectedError } from ${JSON.stringify(SYNC)};
+    const rendered = redactUnexpectedError(new Error("admin failure abc1234-secret-key"), ["--admin-key", "abc1234-secret-key"], {});
+    if (rendered.includes("abc1234")) throw new Error(rendered);
+    if (!rendered.includes("[REDACTED]")) throw new Error(rendered);
+  `;
+  const stdout = execFileSync(process.execPath, ["--input-type=module", "-e", script], {
+    cwd: REPO_ROOT,
+    encoding: "utf8",
+  });
+  assert.equal(stdout, "");
+});

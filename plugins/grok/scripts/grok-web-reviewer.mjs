@@ -2,7 +2,8 @@
 import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
-import { mkdir, readFile, realpath, rename, rmdir, stat, unlink, writeFile } from "node:fs/promises";
+import { mkdir, readFile, readdir, realpath, rename, rm, rmdir, stat, unlink, writeFile } from "node:fs/promises";
+import { hostname } from "node:os";
 import { dirname, isAbsolute, relative, resolve } from "node:path";
 import { cleanGitEnv as cleanCanonicalGitEnv } from "./lib/git-env.mjs";
 
@@ -14,6 +15,7 @@ const DEFAULT_DOCTOR_TIMEOUT_MS = 2000;
 const MAX_SCOPE_FILE_BYTES = 256 * 1024;
 const MAX_SCOPE_TOTAL_BYTES = 1024 * 1024;
 const MAX_STATE_JOBS = 50;
+const STATE_LOCK_STALE_MS = 60 * 1000;
 const SCHEMA_VERSION = 9;
 const MIN_SECRET_REDACTION_LENGTH = 8;
 
@@ -530,8 +532,75 @@ async function writeJsonFile(file, value) {
   }
 }
 
+function summaryFromRecord(record) {
+  return {
+    id: record.job_id,
+    job_id: record.job_id,
+    target: record.target,
+    provider: record.provider,
+    status: record.status,
+    mode: record.mode,
+    scope: record.scope,
+    scope_base: record.scope_base,
+    scope_paths: record.scope_paths,
+    updatedAt: record.ended_at,
+  };
+}
+
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function isLivePid(pid) {
+  if (!Number.isSafeInteger(pid) || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return error?.code !== "ESRCH";
+  }
+}
+
+async function staleLockReason(lockDir) {
+  const info = await stat(lockDir);
+  const ageMs = Date.now() - info.mtimeMs;
+  let owner = null;
+  try {
+    owner = JSON.parse(await readFile(resolve(lockDir, "owner.json"), "utf8"));
+  } catch {
+    // Missing or malformed owner metadata can only be reclaimed by age.
+  }
+  const ownerPid = Number(owner?.pid);
+  if (owner?.host === hostname() && Number.isSafeInteger(ownerPid) && ownerPid > 0 && !isLivePid(ownerPid)) {
+    return "dead_owner";
+  }
+  if (ageMs > STATE_LOCK_STALE_MS) {
+    return "stale_age";
+  }
+  return null;
+}
+
+async function maybeRecoverStateLock(lockDir) {
+  const reason = await staleLockReason(lockDir);
+  if (!reason) return false;
+  const staleDir = `${lockDir}.stale.${process.pid}.${randomUUID()}`;
+  try {
+    await rename(lockDir, staleDir);
+  } catch (error) {
+    if (error?.code === "ENOENT") return true;
+    throw error;
+  }
+  await rm(staleDir, { recursive: true, force: true });
+  return true;
+}
+
+async function releaseStateLock(lockDir) {
+  try { await unlink(resolve(lockDir, "owner.json")); } catch { /* best-effort */ }
+  try {
+    await rmdir(lockDir);
+  } catch (error) {
+    if (error?.code !== "ENOENT") throw error;
+  }
 }
 
 async function withStateLock(root, fn) {
@@ -540,16 +609,44 @@ async function withStateLock(root, fn) {
     try {
       await mkdir(lockDir, { mode: 0o700 });
       try {
+        await writeFile(resolve(lockDir, "owner.json"), `${JSON.stringify({
+          pid: process.pid,
+          host: hostname(),
+          startedAt: new Date().toISOString(),
+        })}\n`, { mode: 0o600 });
         return await fn();
       } finally {
-        await rmdir(lockDir);
+        await releaseStateLock(lockDir);
       }
     } catch (error) {
       if (error?.code !== "EEXIST") throw error;
+      if (await maybeRecoverStateLock(lockDir)) continue;
       await sleep(Math.min(5 + attempt, 50));
     }
   }
   throw new Error("state_lock_timeout: could not acquire Grok state lock");
+}
+
+async function discoverJobSummaries(root) {
+  const jobsDir = resolve(root, "jobs");
+  let entries = [];
+  try {
+    entries = await readdir(jobsDir, { withFileTypes: true });
+  } catch (error) {
+    if (error?.code !== "ENOENT") throw error;
+    return [];
+  }
+  const summaries = [];
+  for (const entry of entries) {
+    if (!entry.isDirectory() || !/^job_[0-9a-f-]{36}$/iu.test(entry.name)) continue;
+    try {
+      const record = JSON.parse(await readFile(resolve(jobsDir, entry.name, "meta.json"), "utf8"));
+      if (record?.job_id === entry.name) summaries.push(summaryFromRecord(record));
+    } catch {
+      // Malformed per-job records are reported by `result`; keep the index repair best-effort.
+    }
+  }
+  return summaries;
 }
 
 async function persistRecord(record, env = process.env) {
@@ -565,19 +662,15 @@ async function persistRecord(record, env = process.env) {
     } catch (error) {
       if (error?.code !== "ENOENT") throw error;
     }
-    const summary = {
-      id: record.job_id,
-      job_id: record.job_id,
-      target: record.target,
-      provider: record.provider,
-      status: record.status,
-      mode: record.mode,
-      scope: record.scope,
-      scope_base: record.scope_base,
-      scope_paths: record.scope_paths,
-      updatedAt: record.ended_at,
-    };
-    const jobs = [summary, ...priorJobs.filter((job) => job?.job_id !== record.job_id && job?.id !== record.job_id)]
+    const summary = summaryFromRecord(record);
+    const seen = new Set();
+    const jobs = [summary, ...priorJobs, ...await discoverJobSummaries(root)]
+      .filter((job) => {
+        const id = job?.job_id ?? job?.id;
+        if (!id || seen.has(id)) return false;
+        seen.add(id);
+        return true;
+      })
       .slice(0, MAX_STATE_JOBS);
     await writeJsonFile(stateFile, {
       version: 1,

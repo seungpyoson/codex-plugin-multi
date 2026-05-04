@@ -2,7 +2,7 @@ import { once } from "node:events";
 import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
 import http from "node:http";
-import { tmpdir } from "node:os";
+import { hostname, tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { test } from "node:test";
@@ -423,6 +423,57 @@ test("concurrent Grok runs preserve every completed job in the state index", asy
   });
 });
 
+test("Grok state index recovers stale locks owned by dead same-host processes", async () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "grok-web-workspace-"));
+  const dataDir = mkdtempSync(path.join(tmpdir(), "grok-web-data-"));
+  writeFileSync(path.join(cwd, "review.js"), "export const value = 1;\n");
+  const lockDir = path.join(dataDir, "state.json.lock");
+  const deadOwner = spawnSync(process.execPath, ["-e", ""]);
+  assert.equal(deadOwner.status, 0);
+  mkdirSync(lockDir);
+  writeFileSync(path.join(lockDir, "owner.json"), JSON.stringify({
+    pid: deadOwner.pid,
+    host: hostname(),
+    startedAt: new Date(Date.now() - 120000).toISOString(),
+  }));
+
+  await withServer(async (req, res) => {
+    await readJsonRequest(req);
+    res.setHeader("content-type", "application/json");
+    res.end(JSON.stringify({
+      id: "grok-web-stale-lock",
+      choices: [{ message: { content: "Verdict: stale lock recovered." } }],
+    }));
+  }, async (baseUrl) => {
+    const result = await runAsync([
+      "run",
+      "--mode", "custom-review",
+      "--scope", "custom",
+      "--scope-paths", "review.js",
+      "--foreground",
+      "--prompt", "Check this file.",
+    ], {
+      cwd,
+      env: {
+        GROK_WEB_BASE_URL: baseUrl,
+        GROK_PLUGIN_DATA: dataDir,
+      },
+    });
+    const record = parseStdout(result);
+    assert.equal(result.status, 0);
+    assert.equal(record.status, "completed");
+    assert.doesNotMatch(record.disclosure_note, /state_lock_timeout/);
+
+    const listResult = run(["list"], {
+      cwd,
+      env: { GROK_PLUGIN_DATA: dataDir },
+    });
+    const listed = parseStdout(listResult);
+    assert.equal(listResult.status, 0);
+    assert.equal(listed.jobs[0].job_id, record.job_id);
+  });
+});
+
 test("custom-review preserves canonical JobRecord when state index is malformed", async () => {
   const cwd = mkdtempSync(path.join(tmpdir(), "grok-web-workspace-"));
   const dataDir = mkdtempSync(path.join(tmpdir(), "grok-web-data-"));
@@ -498,6 +549,21 @@ test("list returns an empty job list on a fresh data root", () => {
   const parsed = parseStdout(result);
   assert.equal(result.status, 0);
   assert.deepEqual(parsed, { ok: true, jobs: [] });
+});
+
+test("list reports malformed state without echoing raw content", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "grok-web-workspace-"));
+  const dataDir = mkdtempSync(path.join(tmpdir(), "grok-web-data-"));
+  writeFileSync(path.join(dataDir, "state.json"), "{\"jobs\":[{\"result\":\"proprietary list text\"");
+  const result = run(["list"], {
+    cwd,
+    env: { GROK_PLUGIN_DATA: dataDir },
+  });
+  const parsed = parseStdout(result);
+  assert.equal(result.status, 1);
+  assert.equal(parsed.ok, false);
+  assert.equal(parsed.error_code, "malformed_state");
+  assert.doesNotMatch(result.stdout, /proprietary list text/);
 });
 
 test("result reports malformed persisted records without echoing raw content", () => {
