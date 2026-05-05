@@ -51,6 +51,7 @@ test("Sonar CPD excludes intentional packaging and entrypoint copies", () => {
     "plugins/claude/scripts/lib/external-review.mjs",
     "plugins/gemini/scripts/lib/external-review.mjs",
     "plugins/kimi/scripts/lib/external-review.mjs",
+    "plugins/grok/scripts/lib/external-review.mjs",
     "plugins/grok/scripts/grok-web-reviewer.mjs",
     "plugins/grok/scripts/grok-sync-browser-session.mjs",
     "plugins/grok/scripts/lib/git-env.mjs",
@@ -94,9 +95,10 @@ test("standalone lifecycle smoke tests guard launch event shape against shared h
 
 test("grok external_review shapes are runtime-guarded", () => {
   const source = readFileSync(resolve("plugins/grok/scripts/grok-web-reviewer.mjs"), "utf8");
-  assert.match(source, /EXTERNAL_REVIEW_KEYS/, "Grok must define the canonical external_review key order");
-  const localKeys = source.match(/const EXTERNAL_REVIEW_KEYS = Object\.freeze\(\[([\s\S]*?)\]\);/);
-  assert.ok(localKeys, "Grok external_review keys must be statically inspectable");
+  assert.match(source, /EXTERNAL_REVIEW_KEYS/, "Grok must use the canonical external_review key order");
+  const grokCopy = readFileSync(resolve("plugins/grok/scripts/lib/external-review.mjs"), "utf8");
+  const localKeys = grokCopy.match(/export const EXTERNAL_REVIEW_KEYS = Object\.freeze\(\[([\s\S]*?)\]\);/);
+  assert.ok(localKeys, "Grok external_review keys must be statically inspectable from its packaged shared copy");
   assert.deepEqual([...localKeys[1].matchAll(/"([^"]+)"/g)].map((match) => match[1]), [...EXTERNAL_REVIEW_KEYS],
     "Grok external_review keys must stay in parity with the shared key order");
   assert.match(source, /function freezeExternalReview/, "Grok must validate external_review key drift");
