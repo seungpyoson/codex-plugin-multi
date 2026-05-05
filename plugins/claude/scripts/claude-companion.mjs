@@ -43,6 +43,7 @@ import { newJobId, verifyPidInfo } from "./lib/identity.mjs";
 import { buildJobRecord, classifyExecution, externalReviewForInvocation, isOAuthInferenceRejected } from "./lib/job-record.mjs";
 import { reconcileActiveJobs } from "./lib/reconcile.mjs";
 import { cleanGitEnv } from "./lib/git-env.mjs";
+import { gitEnv, resolveGitBinary } from "./lib/git-binary.mjs";
 import { sanitizeTargetEnv } from "./lib/provider-env.mjs";
 import { runCommand } from "./lib/process.mjs";
 import {
@@ -84,8 +85,6 @@ const CLAUDE_AUTH_STATUS_TIMEOUT_MS = 10000;
 const CONTINUABLE_STATUSES = new Set(["completed", "failed", "cancelled", "stale"]);
 const RUN_MODES = Object.freeze(["review", "adversarial-review", "custom-review", "rescue"]);
 const PREFLIGHT_MODES = Object.freeze(["review", "adversarial-review", "custom-review"]);
-const GIT_PROMPT_BINARY = "/usr/bin/git";
-const GIT_PROMPT_SAFE_PATH = "/usr/bin:/bin";
 
 function isExplicitRelativeBinary(binary) {
   return binary === "." ||
@@ -154,9 +153,9 @@ function targetPromptFor(invocation, userPrompt) {
 function gitCommitForPrompt(cwd, ref) {
   if (!ref) return null;
   try {
-    return execFileSync(GIT_PROMPT_BINARY, ["rev-parse", "--verify", `${ref}^{commit}`], {
+    return execFileSync(resolveGitBinary({ cwd }), ["-C", cwd, "rev-parse", "--verify", `${ref}^{commit}`], {
       cwd,
-      env: cleanGitPromptEnv(),
+      env: gitEnv(cleanGitEnv()),
       encoding: "utf8",
       stdio: ["ignore", "pipe", "ignore"],
     }).trim();
@@ -167,10 +166,10 @@ function gitCommitForPrompt(cwd, ref) {
 
 function gitText(args, cwd) {
   try {
-    return execFileSync(GIT_PROMPT_BINARY, ["-C", cwd, ...args], {
+    return execFileSync(resolveGitBinary({ cwd }), ["-C", cwd, ...args], {
       encoding: "utf8",
       stdio: ["ignore", "pipe", "ignore"],
-      env: cleanGitPromptEnv(),
+      env: gitEnv(cleanGitEnv()),
     }).trim() || null;
   } catch {
     return null;
@@ -308,12 +307,6 @@ function buildRuntimeDiagnostics(invocation, containmentPath, childCwd) {
   };
 }
 
-function cleanGitPromptEnv() {
-  const env = cleanGitEnv();
-  env.PATH = GIT_PROMPT_SAFE_PATH;
-  return env;
-}
-
 // Wraps git command; reports failure separately from successful empty output
 // so mutation detection can warn instead of silently reporting "clean".
 // Uses execFileSync with an argv array (no shell) to prevent command injection
@@ -325,10 +318,10 @@ function cleanGitPromptEnv() {
 
 function tryGit(args, cwd) {
   try {
-    const stdout = execFileSync(GIT_PROMPT_BINARY, ["-C", cwd, ...args], {
+    const stdout = execFileSync(resolveGitBinary({ cwd }), ["-C", cwd, ...args], {
       encoding: "utf8",
       stdio: ["ignore", "pipe", "pipe"],
-      env: cleanGitPromptEnv(),
+      env: gitEnv(cleanGitEnv()),
     });
     return { ok: true, stdout };
   } catch (error) {

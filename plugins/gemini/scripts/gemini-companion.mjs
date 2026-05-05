@@ -18,6 +18,7 @@ import { newJobId, verifyPidInfo } from "./lib/identity.mjs";
 import { buildJobRecord, externalReviewForInvocation } from "./lib/job-record.mjs";
 import { reconcileActiveJobs } from "./lib/reconcile.mjs";
 import { cleanGitEnv } from "./lib/git-env.mjs";
+import { gitEnv, resolveGitBinary } from "./lib/git-binary.mjs";
 import { spawnGemini } from "./lib/gemini.mjs";
 import { writeCancelMarker, consumeCancelMarker } from "./lib/cancel-marker.mjs";
 import {
@@ -51,8 +52,6 @@ const DEFAULT_GEMINI_REVIEW_TIMEOUT_MS = 600000;
 const CONTINUABLE_STATUSES = new Set(["completed", "failed", "cancelled", "stale"]);
 const RUN_MODES = Object.freeze(["review", "adversarial-review", "custom-review", "rescue"]);
 const PREFLIGHT_MODES = Object.freeze(["review", "adversarial-review", "custom-review"]);
-const GIT_PROMPT_BINARY = "/usr/bin/git";
-const GIT_PROMPT_SAFE_PATH = "/usr/bin:/bin";
 
 configureState({
   pluginDataEnv: "GEMINI_PLUGIN_DATA",
@@ -104,9 +103,9 @@ function targetPromptFor(invocation, userPrompt) {
 function gitCommitForPrompt(cwd, ref) {
   if (!ref) return null;
   try {
-    return execFileSync(GIT_PROMPT_BINARY, ["rev-parse", "--verify", `${ref}^{commit}`], {
+    return execFileSync(resolveGitBinary({ cwd }), ["-C", cwd, "rev-parse", "--verify", `${ref}^{commit}`], {
       cwd,
-      env: cleanGitPromptEnv(),
+      env: gitEnv(cleanGitEnv()),
       encoding: "utf8",
       stdio: ["ignore", "pipe", "ignore"],
     }).trim();
@@ -117,10 +116,10 @@ function gitCommitForPrompt(cwd, ref) {
 
 function gitText(args, cwd) {
   try {
-    return execFileSync(GIT_PROMPT_BINARY, ["-C", cwd, ...args], {
+    return execFileSync(resolveGitBinary({ cwd }), ["-C", cwd, ...args], {
       encoding: "utf8",
       stdio: ["ignore", "pipe", "ignore"],
-      env: cleanGitPromptEnv(),
+      env: gitEnv(cleanGitEnv()),
     }).trim() || null;
   } catch {
     return null;
@@ -223,21 +222,15 @@ function reviewAuditManifest(invocation, prompt, containmentPath, execution) {
   });
 }
 
-function cleanGitPromptEnv() {
-  const env = cleanGitEnv();
-  env.PATH = GIT_PROMPT_SAFE_PATH;
-  return env;
-}
-
 // Mutation-detection git scrub: same shared list as claude-companion +
 // scope.mjs. PR #21 review: previous local 5-key list missed
 // GIT_CONFIG_GLOBAL — fold onto plugin lib's canonical scrub.
 
 function gitStatus(args, cwd) {
-  return execFileSync(GIT_PROMPT_BINARY, ["-C", cwd, ...args], {
+  return execFileSync(resolveGitBinary({ cwd }), ["-C", cwd, ...args], {
     encoding: "utf8",
     stdio: ["ignore", "pipe", "pipe"],
-    env: cleanGitPromptEnv(),
+    env: gitEnv(cleanGitEnv()),
   });
 }
 

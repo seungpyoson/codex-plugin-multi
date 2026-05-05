@@ -7,6 +7,7 @@ import { hostname } from "node:os";
 import { dirname, isAbsolute, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { cleanGitEnv as cleanCanonicalGitEnv } from "./lib/git-env.mjs";
+import { gitEnv, resolveGitBinary } from "./lib/git-binary.mjs";
 import { REVIEW_PROMPT_CONTRACT_VERSION, buildReviewAuditManifest, buildReviewPrompt, scopeResolutionReason } from "./lib/review-prompt.mjs";
 import {
   EXTERNAL_REVIEW_KEYS,
@@ -27,8 +28,6 @@ const MAX_STATE_JOBS = 50;
 const STATE_LOCK_STALE_MS = 60 * 1000;
 const SCHEMA_VERSION = 10;
 const MIN_SECRET_REDACTION_LENGTH = 8;
-const GIT_BINARY = "/usr/bin/git";
-const GIT_SAFE_PATH = "/usr/bin:/bin";
 const PLUGIN_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const SCOPE_FILE_OPEN_FLAGS = fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0);
 const GROK_EXPECTED_KEYS = Object.freeze([
@@ -250,7 +249,7 @@ function runCommand(command, args = [], options = {}) {
 }
 
 function git(args, cwd, options = {}) {
-  const res = runCommand(GIT_BINARY, args, { cwd, env: { ...cleanGitEnv(), PATH: GIT_SAFE_PATH } });
+  const res = runCommand(resolveGitBinary({ cwd }), args, { cwd, env: gitEnv(cleanGitEnv()) });
   if (res.error) throw new Error(`git_failed:${res.error.message}`);
   if (res.signal) throw new Error(`git_failed:signal:${res.signal}`);
   if (res.status !== 0) {
@@ -262,9 +261,9 @@ function git(args, cwd, options = {}) {
 }
 
 function gitRaw(args, cwd, options = {}) {
-  const res = runCommand(GIT_BINARY, args, {
+  const res = runCommand(resolveGitBinary({ cwd }), args, {
     cwd,
-    env: { ...cleanGitEnv(), PATH: GIT_SAFE_PATH },
+    env: gitEnv(cleanGitEnv()),
     maxBuffer: options.maxBuffer,
   });
   if (res.error) throw new Error(`git_failed:${res.error.message}`);

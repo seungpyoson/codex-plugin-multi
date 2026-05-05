@@ -48,6 +48,7 @@ import {
 import path from "node:path";
 
 import { cleanGitEnv as scrubGitEnv } from "./git-env.mjs";
+import { gitEnv, resolveGitBinary } from "./git-binary.mjs";
 
 const VALID_SCOPES = new Set(["working-tree", "staged", "branch-diff", "head", "custom"]);
 const MAX_GIT_SYMLINK_HOPS = 40;
@@ -75,20 +76,20 @@ function cleanGitEnv() {
 }
 
 function git(sourceCwd, args, opts = {}) {
-  return execFileSync("git", [...OBJECT_PURE_GIT_CONFIG, "-C", sourceCwd, ...args], {
+  return execFileSync(resolveGitBinary({ cwd: sourceCwd }), [...OBJECT_PURE_GIT_CONFIG, "-C", sourceCwd, ...args], {
     encoding: "utf8",
     stdio: ["ignore", "pipe", opts.stderrInherit ? "inherit" : "pipe"],
-    env: cleanGitEnv(),
+    env: gitEnv(cleanGitEnv()),
     maxBuffer: 1024 * 1024 * 64,
     ...opts,
   });
 }
 
 function gitBuffer(sourceCwd, args, opts = {}) {
-  return execFileSync("git", [...OBJECT_PURE_GIT_CONFIG, "-C", sourceCwd, ...args], {
+  return execFileSync(resolveGitBinary({ cwd: sourceCwd }), [...OBJECT_PURE_GIT_CONFIG, "-C", sourceCwd, ...args], {
     encoding: null,
     stdio: ["ignore", "pipe", opts.stderrInherit ? "inherit" : "pipe"],
-    env: cleanGitEnv(),
+    env: gitEnv(cleanGitEnv()),
     maxBuffer: 1024 * 1024 * 64,
     ...opts,
   });
@@ -405,9 +406,9 @@ function writeGitBlobToFile(sourceCwd, objectSpec, dst, mode, rel = objectSpec) 
   }
   let copyFailed = false;
   try {
-    execFileSync("git", [...OBJECT_PURE_GIT_CONFIG, "-C", sourceCwd, "cat-file", "blob", objectSpec], {
+    execFileSync(resolveGitBinary({ cwd: sourceCwd }), [...OBJECT_PURE_GIT_CONFIG, "-C", sourceCwd, "cat-file", "blob", objectSpec], {
       stdio: ["ignore", fd, "pipe"],
-      env: cleanGitEnv(),
+      env: gitEnv(cleanGitEnv()),
       maxBuffer: 1024 * 1024 * 64,
     });
   } catch (err) {

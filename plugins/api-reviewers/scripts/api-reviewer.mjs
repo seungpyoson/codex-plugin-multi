@@ -8,6 +8,7 @@ import { randomUUID } from "node:crypto";
 import { hostname } from "node:os";
 
 import { cleanGitEnv } from "./lib/git-env.mjs";
+import { gitEnv, resolveGitBinary } from "./lib/git-binary.mjs";
 import { isCodexSandbox } from "./lib/codex-env.mjs";
 import { REVIEW_PROMPT_CONTRACT_VERSION, buildReviewAuditManifest, buildReviewPrompt, scopeResolutionReason } from "./lib/review-prompt.mjs";
 import {
@@ -29,8 +30,6 @@ const API_REVIEWER_STATE_LOCK_GATE_DIR = ".state.lock.gate";
 const API_REVIEWER_STATE_LOCK_POLL_MS = 25;
 const API_REVIEWER_STATE_LOCK_TIMEOUT_MS = 5000;
 const API_REVIEWER_STATE_LOCK_STALE_MS = 30000;
-const GIT_BINARY = "/usr/bin/git";
-const GIT_SAFE_PATH = "/usr/bin:/bin";
 const SCOPE_FILE_OPEN_FLAGS = fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0);
 const MAX_SCOPE_FILE_BYTES = 256 * 1024;
 const MAX_SCOPE_TOTAL_BYTES = 1024 * 1024;
@@ -826,7 +825,7 @@ function runCommand(command, args = [], options = {}) {
 }
 
 function git(args, cwd, options = {}) {
-  const res = runCommand(GIT_BINARY, args, { cwd, env: { ...cleanGitEnv(), PATH: GIT_SAFE_PATH } });
+  const res = runCommand(resolveGitBinary({ cwd }), args, { cwd, env: gitEnv(cleanGitEnv()) });
   if (res.error) throw new Error(`git_failed:${res.error.message}`);
   if (res.signal) throw new Error(`git_failed:signal:${res.signal}`);
   if (res.status !== 0) {
@@ -838,9 +837,9 @@ function git(args, cwd, options = {}) {
 }
 
 function gitRaw(args, cwd, options = {}) {
-  const res = runCommand(GIT_BINARY, args, {
+  const res = runCommand(resolveGitBinary({ cwd }), args, {
     cwd,
-    env: { ...cleanGitEnv(), PATH: GIT_SAFE_PATH },
+    env: gitEnv(cleanGitEnv()),
     maxBuffer: options.maxBuffer,
   });
   if (res.error) throw new Error(`git_failed:${res.error.message}`);

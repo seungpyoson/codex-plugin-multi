@@ -55,6 +55,12 @@ test("Sonar CPD excludes intentional packaging and entrypoint copies", () => {
     "plugins/grok/scripts/grok-web-reviewer.mjs",
     "plugins/grok/scripts/grok-sync-browser-session.mjs",
     "plugins/grok/scripts/lib/git-env.mjs",
+    "plugins/api-reviewers/scripts/lib/git-binary.mjs",
+    "plugins/claude/scripts/lib/git-binary.mjs",
+    "plugins/gemini/scripts/lib/git-binary.mjs",
+    "plugins/grok/scripts/lib/git-binary.mjs",
+    "plugins/kimi/scripts/lib/git-binary.mjs",
+    "plugins/api-reviewers/scripts/lib/git-env.mjs",
     "scripts/lib/review-prompt.mjs",
     "plugins/api-reviewers/scripts/lib/review-prompt.mjs",
     "plugins/claude/scripts/lib/review-prompt.mjs",
@@ -205,42 +211,38 @@ test("companion foreground cancelled terminal records exit cleanly", () => {
   }
 });
 
-test("companion mutation-detection git calls use fixed safe PATH", () => {
+test("companion mutation-detection git calls use safe git resolver", () => {
   for (const rel of [
     "plugins/claude/scripts/claude-companion.mjs",
     "plugins/gemini/scripts/gemini-companion.mjs",
     "plugins/kimi/scripts/kimi-companion.mjs",
   ]) {
     const source = readFileSync(resolve(rel), "utf8");
-    assert.match(source, /const GIT_PROMPT_SAFE_PATH = "\/usr\/bin:\/bin";/,
-      `${rel} must define a fixed git PATH`);
-    assert.match(source, /const GIT_PROMPT_BINARY = "\/usr\/bin\/git";/,
-      `${rel} must pin git to a fixed binary`);
+    assert.match(source, /import \{ gitEnv, resolveGitBinary \} from "\.\/lib\/git-binary\.mjs";/,
+      `${rel} must use the shared safe git resolver`);
 
     const gitCallStart = source.indexOf(rel.includes("claude") ? "function tryGit" : "function gitStatus");
     assert.notEqual(gitCallStart, -1, `${rel} must define mutation-detection git helper`);
     const gitCallEnd = source.indexOf("\nfunction ", gitCallStart + 1);
     const gitCallBlock = source.slice(gitCallStart, gitCallEnd === -1 ? source.length : gitCallEnd);
-    assert.match(gitCallBlock, /execFileSync\(GIT_PROMPT_BINARY,/,
-      `${rel} mutation-detection git helper must use the pinned git binary`);
-    assert.match(gitCallBlock, /env:\s*cleanGitPromptEnv\(\)/,
+    assert.match(gitCallBlock, /execFileSync\(resolveGitBinary\(\{ cwd \}\),/,
+      `${rel} mutation-detection git helper must use the safe git resolver`);
+    assert.match(gitCallBlock, /env:\s*gitEnv\(cleanGitEnv\(\)\)/,
       `${rel} mutation-detection git helper must not inherit caller PATH`);
     assert.doesNotMatch(gitCallBlock, /env:\s*cleanGitEnv\(\)/,
-      `${rel} mutation-detection git helper must use the fixed PATH wrapper`);
+      `${rel} mutation-detection git helper must use the safe PATH wrapper`);
   }
 });
 
-test("direct reviewer branch-diff git calls use fixed safe PATH", () => {
+test("direct reviewer branch-diff git calls use safe git resolver", () => {
   for (const rel of [
     "plugins/api-reviewers/scripts/api-reviewer.mjs",
     "plugins/grok/scripts/grok-web-reviewer.mjs",
   ]) {
     const source = readFileSync(resolve(rel), "utf8");
-    assert.match(source, /const GIT_BINARY = "\/usr\/bin\/git";/,
-      `${rel} must pin git to a fixed binary`);
-    assert.match(source, /const GIT_SAFE_PATH = "\/usr\/bin:\/bin";/,
-      `${rel} must define a fixed git PATH`);
-    assert.match(source, /runCommand\(GIT_BINARY,[\s\S]*PATH: GIT_SAFE_PATH/s,
+    assert.match(source, /import \{ gitEnv, resolveGitBinary \} from "\.\/lib\/git-binary\.mjs";/,
+      `${rel} must use the shared safe git resolver`);
+    assert.match(source, /runCommand\(resolveGitBinary\(\{ cwd \}\),[\s\S]*env:\s*gitEnv\(cleanGitEnv\(\)\)/s,
       `${rel} branch-diff git calls must not inherit caller PATH`);
   }
 });

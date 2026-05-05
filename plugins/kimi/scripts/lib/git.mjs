@@ -1,5 +1,6 @@
 import { runCommand } from "./process.mjs";
 import { cleanGitEnv } from "./git-env.mjs";
+import { gitEnv, resolveGitBinary } from "./git-binary.mjs";
 
 // PR #21 review HIGH 5 backside: this lib is called from
 // workspace.mjs::resolveWorkspaceRoot, which runs at the start of every
@@ -9,8 +10,8 @@ import { cleanGitEnv } from "./git-env.mjs";
 // cleanGitEnv covers GIT_DIR, GIT_WORK_TREE, GIT_CONFIG_GLOBAL, the trace
 // family, and indexed config injection.
 function git(cwd, args, options = {}) {
-  const env = cleanGitEnv(options.env ?? process.env);
-  return runCommand("git", args, { cwd, ...options, env });
+  const env = gitEnv(cleanGitEnv(options.env ?? process.env));
+  return runCommand(resolveGitBinary({ cwd, env: options.env ?? process.env }), args, { cwd, ...options, env });
 }
 
 export function ensureGitRepository(cwd) {
