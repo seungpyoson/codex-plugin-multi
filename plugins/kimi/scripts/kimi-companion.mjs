@@ -21,28 +21,33 @@ import { cleanGitEnv } from "./lib/git-env.mjs";
 import { spawnKimi } from "./lib/kimi.mjs";
 import { writeCancelMarker, consumeCancelMarker } from "./lib/cancel-marker.mjs";
 import { isCodexSandbox } from "./lib/codex-env.mjs";
-import { REVIEW_PROMPT_CONTRACT_VERSION, buildReviewAuditManifest, buildReviewPrompt } from "./lib/review-prompt.mjs";
 import {
   PING_PROMPT,
   consumePromptSidecar,
   credentialNameDiagnostics,
+  externalReviewBackgroundLaunchedEvent,
+  externalReviewLaunchedEvent,
   gitStatusLines,
+  parseLifecycleEventsMode,
   parseScopePathsOption,
   preflightDisclosure,
   preflightSafetyFields,
   printJson,
+  printLifecycleJson,
   runKindFromRecord,
   summarizeScopeDirectory,
   writePromptSidecar,
 } from "./lib/companion-common.mjs";
+import { REVIEW_PROMPT_CONTRACT_VERSION, buildReviewAuditManifest, buildReviewPrompt } from "./lib/review-prompt.mjs";
 
 const PLUGIN_ROOT = resolvePath(dirname(fileURLToPath(import.meta.url)), "..");
 const MODELS_CONFIG_PATH = resolvePath(PLUGIN_ROOT, "config/models.json");
-const GIT_BINARY = "/usr/bin/git";
 const CONTINUABLE_STATUSES = new Set(["completed", "failed", "cancelled", "stale"]);
 const RUN_MODES = Object.freeze(["review", "adversarial-review", "custom-review", "rescue"]);
 const PREFLIGHT_MODES = Object.freeze(["review", "adversarial-review", "custom-review"]);
-const DEFAULT_KIMI_REVIEW_TIMEOUT_MS = 180000;
+const DEFAULT_KIMI_REVIEW_TIMEOUT_MS = 600000;
+const GIT_PROMPT_BINARY = "/usr/bin/git";
+const GIT_PROMPT_SAFE_PATH = "/usr/bin:/bin";
 
 configureState({
   pluginDataEnv: "KIMI_PLUGIN_DATA",
@@ -60,12 +65,56 @@ function fail(code, message, details = {}) {
   process.exit(1);
 }
 
-function gitText(args, cwd) {
+function targetPromptFor(profile, userPrompt, invocation = {}) {
+  if (profile.permission_mode !== "plan") return userPrompt;
+  const modeLine = profile.name === "adversarial-review"
+    ? "You are performing an adversarial code review. Prioritize correctness bugs, security risks, regressions, and missing tests."
+    : "You are performing a code review. Prioritize bugs, behavioral regressions, and missing tests.";
+  const liveContext = [
+    "Live verification context:",
+    "- This repository has verified the configured DeepSeek and GLM direct API endpoints/models from Codex-managed runs.",
+    "- Do not reject model IDs or endpoint hosts solely because they differ from general public documentation; require current run failure evidence or repo-local contradictory evidence.",
+    "- API reviewer JobRecords include the actual endpoint, HTTP status, raw model, credential key name, and usage metadata when the provider returns them.",
+  ].join("\n");
+  return buildReviewPrompt({
+    provider: "Kimi",
+    mode: profile.name,
+    repository: invocation.workspace_root ?? null,
+    baseRef: invocation.scope_base ?? null,
+    baseCommit: gitCommitForPrompt(invocation.cwd, invocation.scope_base),
+    headRef: "HEAD",
+    headCommit: gitCommitForPrompt(invocation.cwd, "HEAD"),
+    scope: invocation.scope ?? profile.scope,
+    scopePaths: invocation.scope_paths ?? null,
+    userPrompt,
+    extraInstructions: [
+      modeLine,
+      "Your final answer must be self-contained and must not refer to prior, previous, above, or already-provided answers.",
+      liveContext,
+    ],
+  });
+}
+
+function gitCommitForPrompt(cwd, ref) {
+  if (!ref) return null;
   try {
-    return execFileSync(GIT_BINARY, ["-C", cwd, ...args], {
+    return execFileSync(GIT_PROMPT_BINARY, ["rev-parse", "--verify", `${ref}^{commit}`], {
+      cwd,
+      env: cleanGitPromptEnv(),
       encoding: "utf8",
       stdio: ["ignore", "pipe", "ignore"],
-      env: cleanGitEnv(),
+    }).trim();
+  } catch {
+    return null;
+  }
+}
+
+function gitText(args, cwd) {
+  try {
+    return execFileSync(GIT_PROMPT_BINARY, ["-C", cwd, ...args], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+      env: cleanGitPromptEnv(),
     }).trim() || null;
   } catch {
     return null;
@@ -83,45 +132,14 @@ function promptMetadata(invocation) {
   return {
     repository: repositoryIdentity(invocation.cwd, invocation.workspace_root),
     baseRef: invocation.scope_base ?? null,
-    baseCommit: invocation.scope_base ? gitText(["rev-parse", "--verify", `${invocation.scope_base}^{commit}`], invocation.cwd) : null,
+    baseCommit: gitCommitForPrompt(invocation.cwd, invocation.scope_base),
     headRef: gitText(["branch", "--show-current"], invocation.cwd) ?? "HEAD",
-    headCommit: gitText(["rev-parse", "--verify", "HEAD^{commit}"], invocation.cwd),
+    headCommit: gitCommitForPrompt(invocation.cwd, "HEAD"),
   };
 }
 
 function pluginSourceCommit() {
-  return gitText(["rev-parse", "--verify", "HEAD^{commit}"], PLUGIN_ROOT);
-}
-
-function targetPromptFor(userPrompt, invocation) {
-  if (invocation.mode_profile_name === "rescue") return userPrompt;
-  const meta = promptMetadata(invocation);
-  const modeLine = invocation.mode === "adversarial-review"
-    ? "You are performing an adversarial code review. Prioritize correctness bugs, security risks, regressions, and missing tests."
-    : "You are performing a code review. Prioritize bugs, behavioral regressions, and missing tests.";
-  const liveContext = [
-    "Live verification context:",
-    "- This repository has verified the configured DeepSeek and GLM direct API endpoints/models from Codex-managed runs.",
-    "- Do not reject model IDs or endpoint hosts solely because they differ from general public documentation; require current run failure evidence or repo-local contradictory evidence.",
-    "- API reviewer JobRecords include the actual endpoint, HTTP status, raw model, credential key name, and usage metadata when the provider returns them.",
-  ].join("\n");
-  return buildReviewPrompt({
-    provider: "Kimi",
-    mode: invocation.mode,
-    repository: meta.repository,
-    baseRef: meta.baseRef,
-    baseCommit: meta.baseCommit,
-    headRef: meta.headRef,
-    headCommit: meta.headCommit,
-    scope: invocation.scope,
-    scopePaths: invocation.scope_paths,
-    userPrompt,
-    extraInstructions: [
-      modeLine,
-      "Your final answer must be self-contained and must not refer to prior, previous, above, or already-provided answers.",
-      liveContext,
-    ],
-  });
+  return gitCommitForPrompt(PLUGIN_ROOT, "HEAD");
 }
 
 function listContainedFiles(root, dir = root, prefix = "") {
@@ -154,9 +172,7 @@ function scopeResolutionReason(invocation) {
     }
     return `git diff -z --name-only ${invocation.scope_base ?? "main"}...HEAD --`;
   }
-  if (Array.isArray(paths) && paths.length > 0) {
-    return "explicit --scope-paths";
-  }
+  if (Array.isArray(paths) && paths.length > 0) return "explicit --scope-paths";
   return invocation.scope ?? null;
 }
 
@@ -187,14 +203,8 @@ function reviewAuditManifest(invocation, prompt, containmentPath, execution) {
       maxStepsPerTurn: invocation.max_steps_per_turn ?? null,
       temperature: null,
     },
-    truncation: {
-      prompt: false,
-      source: false,
-      output: false,
-    },
-    providerIds: {
-      sessionId: execution?.kimiSessionId ?? null,
-    },
+    truncation: { prompt: false, source: false, output: false },
+    providerIds: { sessionId: execution?.kimiSessionId ?? null },
     scope: {
       name: invocation.scope,
       base: invocation.scope_base ?? null,
@@ -207,15 +217,21 @@ function reviewAuditManifest(invocation, prompt, containmentPath, execution) {
   });
 }
 
+function cleanGitPromptEnv() {
+  const env = cleanGitEnv();
+  env.PATH = GIT_PROMPT_SAFE_PATH;
+  return env;
+}
+
 // Mutation-detection git scrub: same shared list as claude-companion +
 // scope.mjs. PR #21 review: previous local 5-key list missed
 // GIT_CONFIG_GLOBAL — fold onto plugin lib's canonical scrub.
 
 function gitStatus(args, cwd) {
-  return execFileSync(GIT_BINARY, ["-C", cwd, ...args], {
+  return execFileSync(GIT_PROMPT_BINARY, ["-C", cwd, ...args], {
     encoding: "utf8",
     stdio: ["ignore", "pipe", "pipe"],
-    env: cleanGitEnv(),
+    env: cleanGitPromptEnv(),
   });
 }
 
@@ -251,6 +267,10 @@ function runtimeOptionsSidecarPath(workspaceRoot, jobId) {
 function runtimeOptionsForRecord(record, runtimeOptions = {}) {
   const profile = resolveProfile(record.mode_profile_name ?? record.mode);
   return {
+    timeout_ms:
+      runtimeOptions.timeout_ms ??
+      record.review_metadata?.audit_manifest?.request?.timeout_ms ??
+      DEFAULT_KIMI_REVIEW_TIMEOUT_MS,
     max_steps_per_turn:
       runtimeOptions.max_steps_per_turn ??
       profile.max_steps_per_turn ??
@@ -269,6 +289,7 @@ function writeRuntimeOptionsSidecar(workspaceRoot, jobId, options) {
   const file = runtimeOptionsSidecarPath(workspaceRoot, jobId);
   const tmpFile = `${file}.${process.pid}.${Date.now()}.tmp`;
   const payload = {
+    timeout_ms: options.timeout_ms,
     max_steps_per_turn: options.max_steps_per_turn,
   };
   try {
@@ -287,10 +308,12 @@ function readRuntimeOptionsSidecar(workspaceRoot, jobId) {
   try {
     const parsed = JSON.parse(readFileSync(file, "utf8"));
     if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+    const timeoutMs = parsed.timeout_ms;
     const maxSteps = parsed.max_steps_per_turn;
-    return Number.isInteger(maxSteps) && maxSteps > 0
-      ? { max_steps_per_turn: maxSteps }
-      : {};
+    const options = {};
+    if (Number.isSafeInteger(timeoutMs) && timeoutMs > 0) options.timeout_ms = timeoutMs;
+    if (Number.isSafeInteger(maxSteps) && maxSteps > 0) options.max_steps_per_turn = maxSteps;
+    return options;
   } catch {
     return {};
   }
@@ -318,17 +341,26 @@ function invocationFromRecord(record, runtimeOptions = {}) {
     review_prompt_provider: record.review_metadata?.prompt_provider ?? null,
     schema_spec: record.schema_spec ?? null,
     binary: record.binary,
+    timeout_ms: resolvedRuntimeOptions.timeout_ms,
     run_kind: runKindFromRecord(record),
     max_steps_per_turn: resolvedRuntimeOptions.max_steps_per_turn,
     started_at: record.started_at,
   };
 }
 
-function parsePositiveTimeoutMs(value, fallback) {
-  if (value === undefined || value === null || value === "") return fallback;
-  const parsed = Number(value);
-  if (parsed <= 0 || !Number.isInteger(parsed)) {
-    fail("bad_args", `--timeout-ms must be a positive integer number of milliseconds; got ${JSON.stringify(value)}`);
+function parsePositiveTimeoutMs(value, fallback, { envName = null } = {}) {
+  const raw = value === undefined || value === null || value === ""
+    ? (envName ? process.env[envName] : undefined)
+    : value;
+  if (raw === undefined || raw === null || raw === "") return fallback;
+  if (typeof raw !== "string") {
+    const source = value === undefined || value === null || value === "" ? envName : "--timeout-ms";
+    fail("bad_args", `${source} must be a positive integer number of milliseconds; got ${JSON.stringify(raw)}`);
+  }
+  const parsed = Number(raw);
+  if (parsed <= 0 || !Number.isSafeInteger(parsed)) {
+    const source = value === undefined || value === null || value === "" ? envName : "--timeout-ms";
+    fail("bad_args", `${source} must be a positive integer number of milliseconds; got ${JSON.stringify(raw)}`);
   }
   return parsed;
 }
@@ -336,7 +368,7 @@ function parsePositiveTimeoutMs(value, fallback) {
 function parsePositiveMaxStepsPerTurn(value, fallback) {
   if (value === undefined || value === null || value === "") return fallback;
   const parsed = Number(value);
-  if (parsed <= 0 || !Number.isInteger(parsed)) {
+  if (parsed <= 0 || !Number.isSafeInteger(parsed)) {
     fail("bad_args", `--max-steps-per-turn must be a positive integer; got ${JSON.stringify(value)}`);
   }
   return parsed;
@@ -479,7 +511,7 @@ function cmdPreflight(rest) {
 
 async function cmdRun(rest) {
   const { options, positionals } = parseArgs(rest, {
-    valueOptions: ["mode", "model", "cwd", "binary", "scope-base", "scope-paths", "override-dispose", "timeout-ms", "max-steps-per-turn"],
+    valueOptions: ["mode", "model", "cwd", "binary", "scope-base", "scope-paths", "override-dispose", "timeout-ms", "max-steps-per-turn", "lifecycle-events"],
     booleanOptions: ["background", "foreground"],
   });
   const mode = options.mode;
@@ -506,7 +538,15 @@ async function cmdRun(rest) {
     return profile.dispose_default;
   })();
   const scopePaths = parseScopePathsOption(options["scope-paths"]);
-  const timeoutMs = parsePositiveTimeoutMs(options["timeout-ms"], DEFAULT_KIMI_REVIEW_TIMEOUT_MS);
+  let lifecycleEvents;
+  try {
+    lifecycleEvents = parseLifecycleEventsMode(options["lifecycle-events"]);
+  } catch (e) {
+    fail("bad_args", e.message);
+  }
+  const timeoutMs = parsePositiveTimeoutMs(options["timeout-ms"], DEFAULT_KIMI_REVIEW_TIMEOUT_MS, {
+    envName: "KIMI_REVIEW_TIMEOUT_MS",
+  });
   const maxStepsPerTurn = parsePositiveMaxStepsPerTurn(
     options["max-steps-per-turn"],
     profile.max_steps_per_turn ?? 8,
@@ -540,12 +580,13 @@ async function cmdRun(rest) {
   });
 
   const queuedRecord = buildJobRecord(invocation, null, []);
-  writeRuntimeOptionsSidecar(workspaceRoot, jobId, { max_steps_per_turn: maxStepsPerTurn });
+  writeRuntimeOptionsSidecar(workspaceRoot, jobId, { timeout_ms: timeoutMs, max_steps_per_turn: maxStepsPerTurn });
   writeJobFile(workspaceRoot, jobId, queuedRecord);
   upsertJob(workspaceRoot, queuedRecord);
-  const targetPrompt = targetPromptFor(prompt, invocation);
+  const targetPrompt = targetPromptFor(profile, prompt, invocation);
 
   if (options.background) {
+    validateBackgroundExecutionScopeOrExit(invocation, lifecycleEvents);
     try {
       writePromptSidecar(resolveJobsDir(workspaceRoot), jobId, targetPrompt);
     } catch (error) {
@@ -553,22 +594,19 @@ async function cmdRun(rest) {
     }
     const { child, error } = await spawnDetachedWorker(cwd, jobId);
     if (error) failBackgroundWorkerSpawn(workspaceRoot, invocation, error);
-    printJson({
-      event: "launched",
-      job_id: jobId,
-      target: "kimi",
-      mode,
-      pid: child.pid ?? null,
-      workspace_root: workspaceRoot,
-      external_review: externalReviewForInvocation(invocation),
-    });
+    const launched = externalReviewBackgroundLaunchedEvent(
+      invocation,
+      child.pid,
+      externalReviewForInvocation(invocation),
+    );
+    printLifecycleJson(launched, lifecycleEvents);
     process.exit(0);
   }
 
-  await executeRun(invocation, targetPrompt, { foreground: true });
+  await executeRun(invocation, targetPrompt, { foreground: true, lifecycleEvents });
 }
 
-async function executeRun(invocation, prompt, { foreground }) {
+async function executeRun(invocation, prompt, { foreground, lifecycleEvents = null }) {
   const { job_id: jobId, cwd, workspace_root: workspaceRoot, dispose_effective: disposeEffective } = invocation;
   const profile = resolveProfile(invocation.mode_profile_name);
   let containment = null;
@@ -586,7 +624,7 @@ async function executeRun(invocation, prompt, { foreground }) {
     }, []);
     writeJobFile(workspaceRoot, jobId, errorRecord);
     upsertJob(workspaceRoot, errorRecord);
-    if (foreground) printJson(errorRecord);
+    if (foreground) printLifecycleJson(errorRecord, lifecycleEvents);
     process.exit(2);
   }
 
@@ -635,8 +673,15 @@ async function executeRun(invocation, prompt, { foreground }) {
     }, mutations);
     writeJobFile(workspaceRoot, jobId, cancelledRecord);
     upsertJob(workspaceRoot, cancelledRecord);
-    if (foreground) printJson(cancelledRecord);
+    if (foreground) printLifecycleJson(cancelledRecord, lifecycleEvents);
     process.exit(0);
+  }
+
+  if (foreground && lifecycleEvents) {
+    printLifecycleJson(
+      externalReviewLaunchedEvent(invocation, externalReviewForInvocation(invocation)),
+      lifecycleEvents,
+    );
   }
 
   let execution;
@@ -653,7 +698,7 @@ async function executeRun(invocation, prompt, { foreground }) {
         cwd: neutralCwd ?? containment.path,
         binary: invocation.binary,
         resumeId,
-        timeoutMs: foreground ? invocation.timeout_ms : 0,
+        timeoutMs: invocation.timeout_ms,
         maxStepsPerTurn: invocation.max_steps_per_turn,
         onSpawn: (pidInfo) => {
           const runningRecord = buildJobRecord(attemptInvocation, {
@@ -690,7 +735,7 @@ async function executeRun(invocation, prompt, { foreground }) {
     upsertJob(workspaceRoot, errorRecord);
     if (neutralCwd) rmSync(neutralCwd, { recursive: true, force: true });
     if (disposeEffective) containment.cleanup();
-    if (foreground) printJson(errorRecord);
+    if (foreground) printLifecycleJson(errorRecord, lifecycleEvents);
     process.exit(2);
   }
 
@@ -796,8 +841,34 @@ async function executeRun(invocation, prompt, { foreground }) {
 
   if (neutralCwd) rmSync(neutralCwd, { recursive: true, force: true });
   if (containment.disposed && disposeEffective) containment.cleanup();
-  if (foreground) printJson(finalRecord);
-  process.exit(finalRecord.status === "completed" ? 0 : 2);
+  if (foreground) printLifecycleJson(finalRecord, lifecycleEvents);
+  process.exit(finalRecord.status === "completed" || finalRecord.status === "cancelled" ? 0 : 2);
+}
+
+function validateBackgroundExecutionScopeOrExit(invocation, lifecycleEvents) {
+  const { job_id: jobId, cwd, workspace_root: workspaceRoot, dispose_effective: disposeEffective } = invocation;
+  const profile = resolveProfile(invocation.mode_profile_name);
+  let containment = null;
+  try {
+    containment = setupContainment(profile, cwd);
+    populateScope(profile, cwd, containment.path, {
+      scopeBase: invocation.scope_base,
+      scopePaths: invocation.scope_paths,
+    }, containment);
+  } catch (e) {
+    if (containment) { try { containment.cleanup(); } catch { /* best-effort */ } }
+    const errorRecord = buildJobRecord(invocation, {
+      exitCode: null, parsed: null, pidInfo: null, kimiSessionId: null,
+      errorMessage: e.message,
+    }, []);
+    writeJobFile(workspaceRoot, jobId, errorRecord);
+    upsertJob(workspaceRoot, errorRecord);
+    printLifecycleJson(errorRecord, lifecycleEvents);
+    process.exit(2);
+  }
+  if (disposeEffective) {
+    try { containment.cleanup(); } catch { /* best-effort */ }
+  }
 }
 
 function writeSidecar(workspaceRoot, jobId, name, contents) {
@@ -888,12 +959,18 @@ async function cmdRunWorker(rest) {
 
 async function cmdContinue(rest) {
   const { options, positionals } = parseArgs(rest, {
-    valueOptions: ["job", "cwd", "model", "binary", "timeout-ms", "max-steps-per-turn"],
+    valueOptions: ["job", "cwd", "model", "binary", "timeout-ms", "max-steps-per-turn", "lifecycle-events"],
     booleanOptions: ["background", "foreground"],
   });
   if (!options.job) fail("bad_args", "--job <id> is required");
   if (options.background && options.foreground) {
     fail("bad_args", "--background and --foreground are mutually exclusive");
+  }
+  let lifecycleEvents;
+  try {
+    lifecycleEvents = parseLifecycleEventsMode(options["lifecycle-events"]);
+  } catch (error) {
+    fail("bad_args", error.message);
   }
 
   const cwd = options.cwd ?? process.cwd();
@@ -935,7 +1012,11 @@ async function cmdContinue(rest) {
   const priorProfile = resolveProfile(priorModeName);
   const priorResumeChain = Array.isArray(prior.resume_chain) ? prior.resume_chain : [];
   const priorRuntimeOptions = readRuntimeOptionsSidecar(workspaceRoot, options.job);
-  const timeoutMs = parsePositiveTimeoutMs(options["timeout-ms"], DEFAULT_KIMI_REVIEW_TIMEOUT_MS);
+  const priorTimeoutMs =
+    priorRuntimeOptions.timeout_ms ??
+    prior.review_metadata?.audit_manifest?.request?.timeout_ms ??
+    DEFAULT_KIMI_REVIEW_TIMEOUT_MS;
+  const timeoutMs = parsePositiveTimeoutMs(options["timeout-ms"], priorTimeoutMs, { envName: "KIMI_REVIEW_TIMEOUT_MS" });
   const maxStepsPerTurn = parsePositiveMaxStepsPerTurn(
     options["max-steps-per-turn"],
     priorRuntimeOptions.max_steps_per_turn ?? priorProfile.max_steps_per_turn ?? 8,
@@ -967,12 +1048,13 @@ async function cmdContinue(rest) {
   });
 
   const queuedRecord = buildJobRecord(invocation, null, []);
-  writeRuntimeOptionsSidecar(workspaceRoot, newJobId_, { max_steps_per_turn: maxStepsPerTurn });
+  writeRuntimeOptionsSidecar(workspaceRoot, newJobId_, { timeout_ms: timeoutMs, max_steps_per_turn: maxStepsPerTurn });
   writeJobFile(workspaceRoot, newJobId_, queuedRecord);
   upsertJob(workspaceRoot, queuedRecord);
-  const targetPrompt = targetPromptFor(prompt, invocation);
+  const targetPrompt = targetPromptFor(priorProfile, prompt, invocation);
 
   if (options.background) {
+    validateBackgroundExecutionScopeOrExit(invocation, lifecycleEvents);
     try {
       writePromptSidecar(resolveJobsDir(workspaceRoot), newJobId_, targetPrompt);
     } catch (error) {
@@ -980,20 +1062,16 @@ async function cmdContinue(rest) {
     }
     const { child, error } = await spawnDetachedWorker(cwd, newJobId_);
     if (error) failBackgroundWorkerSpawn(workspaceRoot, invocation, error);
-    printJson({
-      event: "launched",
-      job_id: newJobId_,
-      target: "kimi",
-      mode: priorModeName,
-      parent_job_id: options.job,
-      pid: child.pid ?? null,
-      workspace_root: workspaceRoot,
-      external_review: externalReviewForInvocation(invocation),
-    });
+    const launched = externalReviewBackgroundLaunchedEvent(
+      invocation,
+      child.pid,
+      externalReviewForInvocation(invocation),
+    );
+    printLifecycleJson(launched, lifecycleEvents);
     process.exit(0);
   }
 
-  await executeRun(invocation, targetPrompt, { foreground: true });
+  await executeRun(invocation, targetPrompt, { foreground: true, lifecycleEvents });
 }
 
 async function cmdStatus(rest) {

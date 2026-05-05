@@ -9,11 +9,16 @@ import {
   comparePathStrings,
   consumePromptSidecar,
   credentialNameDiagnostics,
+  externalReviewBackgroundLaunchedEvent,
+  externalReviewLaunchedEvent,
   gitStatusLines,
+  parseLifecycleEventsMode,
   parseScopePathsOption,
   preflightDisclosure,
   preflightSafetyFields,
   printJson,
+  printJsonLine,
+  printLifecycleJson,
   promptSidecarPath,
   runKindFromRecord,
   summarizeScopeDirectory,
@@ -60,6 +65,55 @@ test("shared companion helpers cover small provider-agnostic behavior", () => {
   let printed = "";
   printJson({ ok: true }, { write: (chunk) => { printed += chunk; } });
   assert.equal(printed, "{\n  \"ok\": true\n}\n");
+  let compact = "";
+  printJsonLine({ ok: true }, { write: (chunk) => { compact += chunk; } });
+  assert.equal(compact, "{\"ok\":true}\n");
+  let lifecyclePretty = "";
+  printLifecycleJson({ ok: true }, null, { write: (chunk) => { lifecyclePretty += chunk; } });
+  assert.equal(lifecyclePretty, "{\n  \"ok\": true\n}\n");
+  let lifecycleJsonl = "";
+  printLifecycleJson({ ok: true }, "jsonl", { write: (chunk) => { lifecycleJsonl += chunk; } });
+  assert.equal(lifecycleJsonl, "{\"ok\":true}\n");
+  assert.equal(parseLifecycleEventsMode(undefined), null);
+  assert.equal(parseLifecycleEventsMode(false), null);
+  assert.equal(parseLifecycleEventsMode("jsonl"), "jsonl");
+  assert.throws(() => parseLifecycleEventsMode("pretty"), /--lifecycle-events must be jsonl/);
+  assert.deepEqual(
+    externalReviewLaunchedEvent(
+      { job_id: "job-1", target: "claude" },
+      { marker: "EXTERNAL REVIEW" },
+    ),
+    {
+      event: "external_review_launched",
+      job_id: "job-1",
+      target: "claude",
+      status: "launched",
+      external_review: { marker: "EXTERNAL REVIEW" },
+    },
+  );
+  assert.deepEqual(
+    externalReviewBackgroundLaunchedEvent(
+      {
+        job_id: "job-1",
+        target: "claude",
+        parent_job_id: "parent-1",
+        mode: "review",
+        workspace_root: "/tmp/workspace",
+      },
+      1234,
+      { marker: "EXTERNAL REVIEW", run_kind: "background" },
+    ),
+    {
+      event: "launched",
+      job_id: "job-1",
+      target: "claude",
+      parent_job_id: "parent-1",
+      mode: "review",
+      pid: 1234,
+      workspace_root: "/tmp/workspace",
+      external_review: { marker: "EXTERNAL REVIEW", run_kind: "background" },
+    },
+  );
   assert.deepEqual(parseScopePathsOption(" a.js, ,src/b.js "), ["a.js", "src/b.js"]);
   assert.equal(parseScopePathsOption(""), null);
   assert.deepEqual(["b", "a", "aa"].sort(comparePathStrings), ["a", "aa", "b"]);
@@ -194,6 +248,55 @@ function assertCopyHelperBranches(mod, plugin) {
   let printed = "";
   mod.printJson({ plugin }, { write: (chunk) => { printed += chunk; } });
   assert.equal(printed, `{\n  "plugin": "${plugin}"\n}\n`);
+  let compact = "";
+  mod.printJsonLine({ plugin }, { write: (chunk) => { compact += chunk; } });
+  assert.equal(compact, `{"plugin":"${plugin}"}\n`);
+  let lifecyclePretty = "";
+  mod.printLifecycleJson({ plugin }, null, { write: (chunk) => { lifecyclePretty += chunk; } });
+  assert.equal(lifecyclePretty, `{\n  "plugin": "${plugin}"\n}\n`);
+  let lifecycleJsonl = "";
+  mod.printLifecycleJson({ plugin }, "jsonl", { write: (chunk) => { lifecycleJsonl += chunk; } });
+  assert.equal(lifecycleJsonl, `{"plugin":"${plugin}"}\n`);
+  assert.equal(mod.parseLifecycleEventsMode(undefined), null);
+  assert.equal(mod.parseLifecycleEventsMode(false), null);
+  assert.equal(mod.parseLifecycleEventsMode("jsonl"), "jsonl");
+  assert.throws(() => mod.parseLifecycleEventsMode("pretty"), /--lifecycle-events must be jsonl/);
+  assert.deepEqual(
+    mod.externalReviewLaunchedEvent(
+      { job_id: "copy-job", target: plugin },
+      { marker: "EXTERNAL REVIEW" },
+    ),
+    {
+      event: "external_review_launched",
+      job_id: "copy-job",
+      target: plugin,
+      status: "launched",
+      external_review: { marker: "EXTERNAL REVIEW" },
+    },
+  );
+  assert.deepEqual(
+    mod.externalReviewBackgroundLaunchedEvent(
+      {
+        job_id: "copy-job",
+        target: plugin,
+        parent_job_id: "copy-parent",
+        mode: "review",
+        workspace_root: "/tmp/copy-workspace",
+      },
+      1234,
+      { marker: "EXTERNAL REVIEW", run_kind: "background" },
+    ),
+    {
+      event: "launched",
+      job_id: "copy-job",
+      target: plugin,
+      parent_job_id: "copy-parent",
+      mode: "review",
+      pid: 1234,
+      workspace_root: "/tmp/copy-workspace",
+      external_review: { marker: "EXTERNAL REVIEW", run_kind: "background" },
+    },
+  );
 
   assert.equal(mod.parseScopePathsOption(""), null);
   assert.deepEqual(mod.parseScopePathsOption(" a.js, ,b.js "), ["a.js", "b.js"]);

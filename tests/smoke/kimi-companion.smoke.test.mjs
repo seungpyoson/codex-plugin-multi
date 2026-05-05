@@ -424,6 +424,26 @@ test("kimi ping rejects fractional timeout milliseconds", () => {
   }
 });
 
+test("kimi run rejects --timeout-ms without a value", () => withRepo((cwd) => {
+  const result = runCompanion([
+    "run",
+    "--mode",
+    "custom-review",
+    "--cwd",
+    cwd,
+    "--scope-paths",
+    "seed.txt",
+    "--foreground",
+    "--timeout-ms",
+    "--",
+    "Review this scope.",
+  ], { cwd });
+  assert.equal(result.status, 1);
+  const parsed = parseJson(result.stdout);
+  assert.equal(parsed.error, "bad_args");
+  assert.match(parsed.message, /--timeout-ms must be a positive integer number of milliseconds/);
+}));
+
 for (const mode of ["review", "adversarial-review", "custom-review"]) {
   test(`kimi ${mode} prompt requires a self-contained final verdict`, () => withRepo((cwd) => {
     const result = runCompanion(kimiPromptAssertionArgs(cwd, mode), {
@@ -495,6 +515,71 @@ test("kimi foreground review timeout returns actionable JobRecord", () => withRe
   assert.equal(persisted.error_code, "timeout");
 }));
 
+test("kimi foreground review --timeout-ms overrides review timeout audit metadata", () => withRepo((cwd) => {
+  const result = runCompanion([
+    "run",
+    "--mode",
+    "custom-review",
+    "--cwd",
+    cwd,
+    "--scope-paths",
+    "seed.txt",
+    "--foreground",
+    "--timeout-ms",
+    "123456",
+    "--",
+    "Review this scope.",
+  ], { cwd });
+  assert.equal(result.status, 0, result.stderr);
+  const record = parseJson(result.stdout);
+  assert.equal(record.status, "completed");
+  assert.equal(record.review_metadata.audit_manifest.request.timeout_ms, 123456);
+  const { record: persisted } = readOnlyJobRecord(result.dataDir);
+  assert.equal(persisted.review_metadata.audit_manifest.request.timeout_ms, 123456);
+}));
+
+test("kimi foreground review KIMI_REVIEW_TIMEOUT_MS sets review timeout audit metadata", () => withRepo((cwd) => {
+  const result = runCompanion([
+    "run",
+    "--mode",
+    "custom-review",
+    "--cwd",
+    cwd,
+    "--scope-paths",
+    "seed.txt",
+    "--foreground",
+    "--",
+    "Review this scope.",
+  ], { cwd, env: { KIMI_REVIEW_TIMEOUT_MS: "234567" } });
+  assert.equal(result.status, 0, result.stderr);
+  const record = parseJson(result.stdout);
+  assert.equal(record.status, "completed");
+  assert.equal(record.review_metadata.audit_manifest.request.timeout_ms, 234567);
+  const { record: persisted } = readOnlyJobRecord(result.dataDir);
+  assert.equal(persisted.review_metadata.audit_manifest.request.timeout_ms, 234567);
+}));
+
+for (const invalidTimeoutEnv of ["-1", "9007199254740992"]) {
+  test(`kimi foreground review rejects invalid KIMI_REVIEW_TIMEOUT_MS ${invalidTimeoutEnv}`, () => withRepo((cwd) => {
+    const result = runCompanion([
+      "run",
+      "--mode",
+      "custom-review",
+      "--cwd",
+      cwd,
+      "--scope-paths",
+      "seed.txt",
+      "--foreground",
+      "--",
+      "Review this scope.",
+    ], { cwd, env: { KIMI_REVIEW_TIMEOUT_MS: invalidTimeoutEnv } });
+    assert.equal(result.status, 1);
+    const parsed = parseJson(result.stdout);
+    assert.equal(parsed.error, "bad_args");
+    assert.match(parsed.message, /KIMI_REVIEW_TIMEOUT_MS must be a positive integer number of milliseconds/);
+  }));
+}
+
 test("kimi background run: launched event and terminal JobRecord carry external_review", async () => {
   const cwd = mkdtempSync(path.join(tmpdir(), "kimi-bg-cwd-"));
   fixtureSeedRepo(cwd);
@@ -507,6 +592,8 @@ test("kimi background run: launched event and terminal JobRecord carry external_
     cwd,
     "--scope-paths",
     "seed.txt",
+    "--timeout-ms",
+    "345678",
     "--background",
     "--",
     "Review this scope.",
@@ -529,6 +616,7 @@ test("kimi background run: launched event and terminal JobRecord carry external_
 
     const meta = await waitForTerminalJob(result.dataDir, launched.job_id);
     assert.equal(meta.status, "completed");
+    assert.equal(meta.review_metadata.audit_manifest.request.timeout_ms, 345678);
     assert.equal(meta.result, "Mock Kimi response.");
     assert.equal(meta.kimi_session_id, KIMI_SESSION_ID);
     assert.deepEqual(meta.external_review, {
@@ -701,6 +789,8 @@ test("kimi continue background: launched event and terminal JobRecord keep paren
       "--job",
       prior.job_id,
       "--background",
+      "--lifecycle-events",
+      "jsonl",
       "--cwd",
       cwd,
       "--",
@@ -759,6 +849,26 @@ test("kimi run rejects invalid max-step budgets before target launch", () => wit
   assert.match(parsed.message, /--max-steps-per-turn/);
 }));
 
+test("kimi run rejects --max-steps-per-turn without a value", () => withRepo((cwd) => {
+  const result = runCompanion([
+    "run",
+    "--mode",
+    "custom-review",
+    "--cwd",
+    cwd,
+    "--scope-paths",
+    "seed.txt",
+    "--foreground",
+    "--max-steps-per-turn",
+    "--",
+    "Review this scope.",
+  ], { cwd });
+  assert.equal(result.status, 1);
+  const parsed = parseJson(result.stdout);
+  assert.equal(parsed.error, "bad_args");
+  assert.match(parsed.message, /--max-steps-per-turn/);
+}));
+
 test("kimi background review preserves configured max-step budget outside public JobRecord", () => withRepo((cwd) => {
   const dataDir = mkdtempSync(path.join(tmpdir(), "kimi-background-max-steps-data-"));
   const launched = runCompanion([
@@ -777,7 +887,7 @@ test("kimi background review preserves configured max-step budget outside public
   ], {
     cwd,
     dataDir,
-    env: { KIMI_MOCK_ASSERT_MAX_STEPS_PER_TURN: "48" },
+    env: { KIMI_REVIEW_TIMEOUT_MS: "", KIMI_MOCK_ASSERT_MAX_STEPS_PER_TURN: "48" },
   });
   assert.equal(launched.status, 0, launched.stderr);
   const payload = parseJson(launched.stdout);
@@ -829,6 +939,7 @@ test("kimi background review step-limit exhaustion preserves private max-step bu
 
 test("kimi continue reuses prior private max-step budget without JobRecord drift", () => withRepo((cwd) => {
   const dataDir = mkdtempSync(path.join(tmpdir(), "kimi-continue-max-steps-data-"));
+  const priorTimeoutMs = 900000;
   const first = runCompanion([
     "run",
     "--mode",
@@ -840,17 +951,20 @@ test("kimi continue reuses prior private max-step budget without JobRecord drift
     "--foreground",
     "--max-steps-per-turn",
     "48",
+    "--timeout-ms",
+    String(priorTimeoutMs),
     "--",
     "Review this scope.",
   ], {
     cwd,
     dataDir,
-    env: { KIMI_MOCK_ASSERT_MAX_STEPS_PER_TURN: "48" },
+    env: { KIMI_REVIEW_TIMEOUT_MS: "", KIMI_MOCK_ASSERT_MAX_STEPS_PER_TURN: "48" },
   });
   assert.equal(first.status, 0, first.stderr);
   const firstRecord = parseJson(first.stdout);
   assert.equal(firstRecord.status, "completed");
   assert.equal("max_steps_per_turn" in firstRecord, false);
+  assert.equal(firstRecord.review_metadata.audit_manifest.request.timeout_ms, priorTimeoutMs);
 
   const continued = runCompanion([
     "continue",
@@ -871,6 +985,95 @@ test("kimi continue reuses prior private max-step budget without JobRecord drift
   assert.equal(continuedRecord.status, "completed");
   assert.equal(continuedRecord.parent_job_id, firstRecord.job_id);
   assert.equal("max_steps_per_turn" in continuedRecord, false);
+  assert.equal(continuedRecord.review_metadata.audit_manifest.request.timeout_ms, priorTimeoutMs);
+}));
+
+test("kimi continue reuses audit timeout when runtime sidecar is missing", () => withRepo((cwd) => {
+  const dataDir = mkdtempSync(path.join(tmpdir(), "kimi-continue-timeout-audit-fallback-data-"));
+  const priorTimeoutMs = 888888;
+  const first = runCompanion([
+    "run",
+    "--mode",
+    "custom-review",
+    "--cwd",
+    cwd,
+    "--scope-paths",
+    "seed.txt",
+    "--foreground",
+    "--timeout-ms",
+    String(priorTimeoutMs),
+    "--",
+    "Review this scope.",
+  ], {
+    cwd,
+    dataDir,
+    env: { KIMI_REVIEW_TIMEOUT_MS: "" },
+  });
+  assert.equal(first.status, 0, first.stderr);
+  const firstRecord = parseJson(first.stdout);
+  rmSync(findJobPaths(dataDir, firstRecord.job_id).runtimeOptionsPath, { force: true });
+
+  const continued = runCompanion([
+    "continue",
+    "--job",
+    firstRecord.job_id,
+    "--cwd",
+    cwd,
+    "--foreground",
+    "--",
+    "Continue this review.",
+  ], {
+    cwd,
+    dataDir,
+    env: { KIMI_REVIEW_TIMEOUT_MS: "" },
+  });
+  assert.equal(continued.status, 0, continued.stderr);
+  const continuedRecord = parseJson(continued.stdout);
+  assert.equal(continuedRecord.review_metadata.audit_manifest.request.timeout_ms, priorTimeoutMs);
+}));
+
+test("kimi continue --timeout-ms overrides prior timeout and env", () => withRepo((cwd) => {
+  const dataDir = mkdtempSync(path.join(tmpdir(), "kimi-continue-timeout-override-data-"));
+  const first = runCompanion([
+    "run",
+    "--mode",
+    "custom-review",
+    "--cwd",
+    cwd,
+    "--scope-paths",
+    "seed.txt",
+    "--foreground",
+    "--timeout-ms",
+    "777777",
+    "--",
+    "Review this scope.",
+  ], {
+    cwd,
+    dataDir,
+    env: { KIMI_REVIEW_TIMEOUT_MS: "" },
+  });
+  assert.equal(first.status, 0, first.stderr);
+  const firstRecord = parseJson(first.stdout);
+
+  const continued = runCompanion([
+    "continue",
+    "--job",
+    firstRecord.job_id,
+    "--cwd",
+    cwd,
+    "--foreground",
+    "--timeout-ms",
+    "555555",
+    "--",
+    "Continue this review.",
+  ], {
+    cwd,
+    dataDir,
+    env: { KIMI_REVIEW_TIMEOUT_MS: "999999" },
+  });
+  assert.equal(continued.status, 0, continued.stderr);
+  const continuedRecord = parseJson(continued.stdout);
+  assert.equal(continuedRecord.review_metadata.audit_manifest.request.timeout_ms, 555555);
 }));
 
 test("kimi continue background: launched event and terminal JobRecord keep parent metadata", async () => {
@@ -1067,6 +1270,123 @@ test("kimi preflight success and bad_args emit safety fields", () => withRepo((c
   assertPreflightSafetyFields(badJson);
 }));
 
+test("kimi review foreground lifecycle jsonl emits launch event before terminal JobRecord", () => withRepo((cwd) => {
+  const result = runCompanion([
+    "run",
+    "--mode",
+    "review",
+    "--cwd",
+    cwd,
+    "--foreground",
+    "--lifecycle-events",
+    "jsonl",
+    "--",
+    "Review this scope.",
+  ], {
+    cwd,
+    env: {
+      KIMI_MOCK_ASSERT_FILE: "seed.txt",
+      KIMI_MOCK_ASSERT_CWD: realpathSync(tmpdir()),
+    },
+  });
+  assert.equal(result.status, 0, result.stderr);
+  const lines = result.stdout.trim().split("\n").map((line) => JSON.parse(line));
+  assert.equal(lines.length, 2);
+  const [launched, record] = lines;
+  assert.equal(launched.event, "external_review_launched");
+  assert.equal(launched.target, "kimi");
+  assert.equal(launched.status, "launched");
+  assert.equal(launched.job_id, record.job_id);
+  assert.deepEqual(launched.external_review, {
+    marker: "EXTERNAL REVIEW",
+    provider: "Kimi Code CLI",
+    run_kind: "foreground",
+    job_id: record.job_id,
+    session_id: null,
+    parent_job_id: null,
+    mode: "review",
+    scope: "working-tree",
+    scope_base: null,
+    scope_paths: null,
+    source_content_transmission: "may_be_sent",
+    disclosure: "Selected source content may be sent to Kimi Code CLI for external review.",
+  });
+  assert.equal(record.status, "completed");
+  assert.equal(record.external_review.source_content_transmission, "sent");
+}));
+
+test("kimi review foreground lifecycle jsonl suppresses launch event on scope failure", () => withRepo((cwd) => {
+  writeFileSync(path.join(cwd, ".git", "index"), "corrupt index");
+  const result = runCompanion([
+    "run",
+    "--mode",
+    "review",
+    "--cwd",
+    cwd,
+    "--foreground",
+    "--lifecycle-events",
+    "jsonl",
+    "--binary",
+    path.join(cwd, "missing-kimi"),
+    "--",
+    "Review this scope.",
+  ], { cwd });
+  assert.equal(result.status, 2, result.stderr);
+  const lines = result.stdout.trim().split("\n").map((line) => JSON.parse(line));
+  assert.equal(lines.length, 1);
+  const [record] = lines;
+  assert.equal(record.status, "failed");
+  assert.match(record.error_message, /scope_population_failed: cannot evaluate gitignored files/);
+  assert.match(record.disclosure_note, /not spawned/);
+  assert.match(record.disclosure_note, /not sent/);
+}));
+
+test("kimi review background lifecycle jsonl suppresses launch event on scope failure", () => withRepo((cwd) => {
+  writeFileSync(path.join(cwd, ".git", "index"), "corrupt index");
+  const result = runCompanion([
+    "run",
+    "--mode",
+    "review",
+    "--cwd",
+    cwd,
+    "--background",
+    "--lifecycle-events",
+    "jsonl",
+    "--",
+    "Review this scope.",
+  ], { cwd });
+  assert.equal(result.status, 2, result.stderr);
+  const lines = result.stdout.trim().split("\n").map((line) => JSON.parse(line));
+  assert.equal(lines.length, 1);
+  const [record] = lines;
+  assert.equal(record.status, "failed");
+  assert.equal(record.external_review.source_content_transmission, "not_sent");
+  assert.match(record.error_message, /scope_population_failed: cannot evaluate gitignored files/);
+  assert.match(record.disclosure_note, /not spawned/);
+  assert.match(record.disclosure_note, /not sent/);
+}));
+
+test("kimi run rejects invalid lifecycle event mode as structured bad args", () => withRepo((cwd) => {
+  const result = runCompanion([
+    "run",
+    "--mode",
+    "review",
+    "--cwd",
+    cwd,
+    "--foreground",
+    "--lifecycle-events",
+    "pretty",
+    "--",
+    "Review this scope.",
+  ], { cwd });
+  assert.equal(result.status, 1);
+  assert.doesNotMatch(result.stderr, /unhandled/i);
+  const parsed = JSON.parse(result.stdout);
+  assert.equal(parsed.ok, false);
+  assert.equal(parsed.error, "bad_args");
+  assert.match(parsed.message, /--lifecycle-events must be jsonl/);
+}));
+
 for (const mode of ["review", "adversarial-review", "custom-review"]) {
   test(`kimi ${mode} foreground writes completed JobRecord`, () => withRepo((cwd) => {
     const extraArgs = [];
@@ -1135,6 +1455,7 @@ for (const mode of ["review", "adversarial-review", "custom-review"]) {
     assert.equal(persisted.review_metadata.raw_output.parsed_ok, true);
     assert.match(persisted.review_metadata.audit_manifest.rendered_prompt_hash.value, /^[a-f0-9]{64}$/);
     assert.equal(persisted.review_metadata.audit_manifest.request.model, persisted.model);
+    assert.equal(persisted.review_metadata.audit_manifest.request.timeout_ms, 600000);
     assert.match(persisted.review_metadata.audit_manifest.prompt_builder.plugin_commit, /^[a-f0-9]{40}$/);
     assert.notEqual(
       persisted.review_metadata.audit_manifest.prompt_builder.plugin_commit,

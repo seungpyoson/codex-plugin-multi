@@ -31,8 +31,8 @@ const API_REVIEWER_STATE_LOCK_TIMEOUT_MS = 5000;
 const API_REVIEWER_STATE_LOCK_STALE_MS = 30000;
 const GIT_BINARY = "/usr/bin/git";
 const GIT_SAFE_PATH = "/usr/bin:/bin";
-const MAX_SCOPE_FILE_BYTES = 1024 * 1024;
-const MAX_SCOPE_TOTAL_BYTES = 4 * 1024 * 1024;
+const MAX_SCOPE_FILE_BYTES = 256 * 1024;
+const MAX_SCOPE_TOTAL_BYTES = 1024 * 1024;
 const GIT_SHOW_MAX_BUFFER_BYTES = MAX_SCOPE_FILE_BYTES + 1024;
 const SCOPE_FILE_OPEN_FLAGS = fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0);
 const API_REVIEWER_EXPECTED_KEYS = Object.freeze([
@@ -91,6 +91,21 @@ const MIN_SECRET_REDACTION_LENGTH = 8;
 
 function printJson(obj) {
   process.stdout.write(`${JSON.stringify(obj, null, 2)}\n`);
+}
+
+function printJsonLine(obj) {
+  process.stdout.write(`${JSON.stringify(obj)}\n`);
+}
+
+function printLifecycleJson(obj, lifecycleEvents) {
+  if (lifecycleEvents === "jsonl") printJsonLine(obj);
+  else printJson(obj);
+}
+
+function parseLifecycleEventsMode(value) {
+  if (value == null || value === false) return null;
+  if (value === "jsonl") return "jsonl";
+  throw runBadArgs("--lifecycle-events must be jsonl");
 }
 
 function isActiveJob(job) {
@@ -565,6 +580,12 @@ function runConfigError(message) {
   return error;
 }
 
+function runProviderFailure(reason, message) {
+  const error = new Error(message);
+  error.apiReviewersReason = reason;
+  return error;
+}
+
 function providersConfigErrorMessage(error) {
   return `providers config unreadable: ${error.message}`;
 }
@@ -622,7 +643,7 @@ function parsePromptCharBudget(cfg, env = process.env) {
 
 function parseProviderTimeoutMs(env = process.env) {
   const parsed = parsePositiveIntegerEnv(env, "API_REVIEWERS_TIMEOUT_MS", "milliseconds");
-  return parsed.value === null ? { ok: true, value: 120000 } : parsed;
+  return parsed.value === null ? { ok: true, value: 600000 } : parsed;
 }
 
 function applyRequestDefaults(requestBody, requestDefaults = {}) {
@@ -636,6 +657,41 @@ function applyRequestDefaults(requestBody, requestDefaults = {}) {
     requestBody[key] = value;
   }
   return { ok: true };
+}
+
+function validateDirectApiRunPreflight(cfg, provider, env = process.env) {
+  if (cfg.auth_mode !== "api_key" && cfg.auth_mode !== "auto") {
+    return {
+      ok: false,
+      reason: "bad_args",
+      error: `${provider} auth_mode must be api_key or auto`,
+    };
+  }
+  const maxTokensOverride = parseMaxTokensOverride(env);
+  if (!maxTokensOverride.ok) {
+    return { ok: false, reason: "bad_args", error: maxTokensOverride.error };
+  }
+  const timeoutMs = parseProviderTimeoutMs(env);
+  if (!timeoutMs.ok) {
+    return { ok: false, reason: "bad_args", error: timeoutMs.error };
+  }
+  const credential = selectedCredential(cfg, env);
+  if (!credential.value) {
+    return {
+      ok: false,
+      reason: "missing_key",
+      error: `${cfg.display_name} API key is not available`,
+    };
+  }
+  const requestDefaultsProbe = applyRequestDefaults({
+    model: cfg.model,
+    messages: [],
+    temperature: 0,
+  }, cfg.request_defaults);
+  if (!requestDefaultsProbe.ok) {
+    return { ok: false, reason: "bad_args", error: requestDefaultsProbe.error };
+  }
+  return { ok: true, maxTokensOverride, timeoutMs, credential };
 }
 
 function redactor(env = process.env, configuredSecretNames = []) {
@@ -792,9 +848,13 @@ function matchGlob(rel, pattern) {
     const c = pattern[i];
     if (c === "*") {
       if (pattern[i + 1] === "*") {
-        re += ".*";
         i += 1;
-        if (pattern[i + 1] === "/") i += 1;
+        if (pattern[i + 1] === "/") {
+          re += "(?:.*/)?";
+          i += 1;
+        } else {
+          re += ".*";
+        }
       } else {
         re += "[^/]*";
       }
@@ -847,7 +907,7 @@ async function readGitScopeFiles(gitCwd, workspaceRoot, relPaths) {
   const totalBytes = { value: 0 };
   for (const relPath of relPaths) {
     const { normalizedRel } = validateScopePath(workspaceRoot, relPath);
-    const blobSpec = `HEAD:${relPath}`;
+    const blobSpec = `HEAD:${normalizedRel}`;
     const sizeText = gitRaw(["cat-file", "-s", blobSpec], gitCwd, { allowFailure: true });
     if (sizeText === null) continue;
     const blobBytes = Number.parseInt(sizeText.trim(), 10);
@@ -863,7 +923,7 @@ async function readGitScopeFiles(gitCwd, workspaceRoot, relPaths) {
       allowFailure: true,
       maxBuffer: GIT_SHOW_MAX_BUFFER_BYTES,
     });
-    if (text === null) continue;
+    if (text === null || text.length === 0) continue;
     addScopeFile(files, normalizedRel, text, totalBytes);
   }
   if (files.length === 0) throw new Error("scope_empty: selected files are missing or empty");
@@ -885,7 +945,15 @@ function addScopeFile(files, normalizedRel, text, totalBytes) {
 
 async function readUtf8ScopeFileWithinLimit(filePath, normalizedRel) {
   const beforeOpen = await lstat(filePath);
-  const handle = await open(filePath, SCOPE_FILE_OPEN_FLAGS);
+  let handle;
+  try {
+    handle = await open(filePath, SCOPE_FILE_OPEN_FLAGS);
+  } catch (error) {
+    if (error?.code === "ELOOP") {
+      throw new Error(`unsafe_scope_path:${normalizedRel}`);
+    }
+    throw error;
+  }
   try {
     const info = await handle.stat();
     if (!info.isFile()) return null;
@@ -937,7 +1005,8 @@ async function readFilesystemScopeFiles(workspaceRoot, relPaths) {
     if (realRel.startsWith("..") || realRel === "") {
       throw new Error(`unsafe_scope_path:${relPath}`);
     }
-    const text = await readUtf8ScopeFileWithinLimit(realAbs, normalizedRel);
+    // Validate the canonical target boundary, then open the requested path so leaf symlinks still fail closed.
+    const text = await readUtf8ScopeFileWithinLimit(abs, normalizedRel);
     if (text === null) continue;
     addScopeFile(files, normalizedRel, text, totalBytes);
   }
@@ -1020,6 +1089,14 @@ function promptFor(mode, userPrompt, scopeInfo, providerName = "Direct API revie
   });
 }
 
+function hasPromptText(value) {
+  return typeof value === "string" && value.trim().length > 0;
+}
+
+function promptHead(value) {
+  return hasPromptText(value) ? value.slice(0, 200) : "";
+}
+
 function requestFieldMatches(actual, expected) {
   if (Object.is(actual, expected)) return true;
   if (Array.isArray(actual) || Array.isArray(expected)) {
@@ -1040,32 +1117,40 @@ function requestFieldMatches(actual, expected) {
 }
 
 function mockProviderExecution(cfg, prompt, credential, env, requestBody) {
+  const diagnostics = () => ({
+    configured_timeout_ms: parseProviderTimeoutMs(env).value,
+    prompt_chars: prompt.length,
+    request_defaults: summarizeRequestDefaults(cfg.request_defaults),
+    max_tokens: requestBody.max_tokens ?? null,
+    temperature: requestBody.temperature ?? null,
+  });
   const expectedPromptText = env.API_REVIEWERS_MOCK_ASSERT_PROMPT_INCLUDES;
   if (expectedPromptText && !prompt.includes(expectedPromptText)) {
-    return providerFailure("mock_assertion_failed", `prompt missing expected text: ${expectedPromptText}`, 200, null, false);
+    return providerFailureWithDiagnostics("mock_assertion_failed", `prompt missing expected text: ${expectedPromptText}`, 200, null, false, diagnostics());
   }
   if (env.API_REVIEWERS_MOCK_ASSERT_REQUEST_BODY) {
     const parsedExpected = parseJson(env.API_REVIEWERS_MOCK_ASSERT_REQUEST_BODY);
     if (!parsedExpected.ok || !parsedExpected.value || typeof parsedExpected.value !== "object" || Array.isArray(parsedExpected.value)) {
-      return providerFailure("mock_assertion_failed", "API_REVIEWERS_MOCK_ASSERT_REQUEST_BODY must be a JSON object", 200, null, false);
+      return providerFailureWithDiagnostics("mock_assertion_failed", "API_REVIEWERS_MOCK_ASSERT_REQUEST_BODY must be a JSON object", 200, null, false, diagnostics());
     }
     for (const [key, expected] of Object.entries(parsedExpected.value)) {
       if (!requestFieldMatches(requestBody[key], expected)) {
-        return providerFailure(
+        return providerFailureWithDiagnostics(
           "mock_assertion_failed",
           `request body field ${key} expected ${JSON.stringify(expected)} but got ${JSON.stringify(requestBody[key])}`,
           200,
           null,
-          false
+          false,
+          diagnostics()
         );
       }
     }
   }
   const parsed = parseJson(env.API_REVIEWERS_MOCK_RESPONSE);
-  if (!parsed.ok) return providerFailure("malformed_response", parsed.error, 200, null, false);
+  if (!parsed.ok) return providerFailureWithDiagnostics("malformed_response", parsed.error, 200, null, false, diagnostics());
   const content = parsed.value?.choices?.[0]?.message?.content;
   if (typeof content !== "string") {
-    return providerFailure("malformed_response", "response did not include choices[0].message.content", 200, parsed.value, false);
+    return providerFailureWithDiagnostics("malformed_response", "response did not include choices[0].message.content", 200, parsed.value, false, diagnostics());
   }
   return {
     exitCode: 0,
@@ -1079,29 +1164,14 @@ function mockProviderExecution(cfg, prompt, credential, env, requestBody) {
     http_status: 200,
     credential_ref: credential.keyName,
     endpoint: baseUrlFor(cfg),
-    diagnostics: {
-      configured_timeout_ms: parseProviderTimeoutMs(env).value,
-      prompt_chars: prompt.length,
-      request_defaults: summarizeRequestDefaults(cfg.request_defaults),
-      max_tokens: requestBody.max_tokens ?? null,
-      temperature: requestBody.temperature ?? null,
-    },
+    diagnostics: diagnostics(),
   };
 }
 
 async function callProvider(provider, cfg, prompt, env = process.env) {
-  const maxTokensOverride = parseMaxTokensOverride(env);
-  if (!maxTokensOverride.ok) {
-    return providerFailure("bad_args", maxTokensOverride.error, null, null, false);
-  }
-  const timeoutMs = parseProviderTimeoutMs(env);
-  if (!timeoutMs.ok) {
-    return providerFailure("bad_args", timeoutMs.error, null, null, false);
-  }
-  const credential = selectedCredential(cfg, env);
-  if (!credential.value) {
-    return providerFailure("missing_key", `${cfg.display_name} API key is not available`, null, null, false);
-  }
+  const preflight = validateDirectApiRunPreflight(cfg, provider, env);
+  if (!preflight.ok) return providerFailure(preflight.reason, preflight.error, null, null, false);
+  const { credential, maxTokensOverride, timeoutMs } = preflight;
   const endpoint = `${baseUrlFor(cfg)}/chat/completions`;
   const requestBody = {
     model: cfg.model,
@@ -1110,13 +1180,26 @@ async function callProvider(provider, cfg, prompt, env = process.env) {
   };
   const defaultsResult = applyRequestDefaults(requestBody, cfg.request_defaults);
   if (!defaultsResult.ok) {
-    return providerFailure("bad_args", defaultsResult.error, null, null, false);
+    return providerFailureWithDiagnostics("bad_args", defaultsResult.error, null, null, false, {
+      configured_timeout_ms: timeoutMs.value,
+      prompt_chars: prompt.length,
+      request_defaults: summarizeRequestDefaults(cfg.request_defaults),
+      max_tokens: requestBody.max_tokens ?? null,
+      temperature: requestBody.temperature ?? null,
+    });
   }
   if (maxTokensOverride.value !== null) {
     requestBody.max_tokens = maxTokensOverride.value;
   } else if (!Object.hasOwn(requestBody, "max_tokens")) {
     requestBody.max_tokens = 4096;
   }
+  const diagnostics = () => ({
+    configured_timeout_ms: timeoutMs.value,
+    prompt_chars: prompt.length,
+    request_defaults: summarizeRequestDefaults(cfg.request_defaults),
+    max_tokens: requestBody.max_tokens ?? null,
+    temperature: requestBody.temperature ?? null,
+  });
   if (env.API_REVIEWERS_MOCK_RESPONSE) {
     return mockProviderExecution(cfg, prompt, credential, env, requestBody);
   }
@@ -1137,14 +1220,28 @@ async function callProvider(provider, cfg, prompt, env = process.env) {
     const text = await response.text();
     const parsed = parseJson(text);
     if (!response.ok) {
-      return providerFailure(classifyHttpFailure(response.status, parsed), providerErrorMessage(parsed, text, redact), response.status, parsed, true);
+      return providerFailureWithDiagnostics(
+        classifyHttpFailure(response.status, parsed),
+        providerErrorMessage(parsed, text, redact),
+        response.status,
+        parsed,
+        true,
+        diagnostics(),
+      );
     }
     if (!parsed.ok) {
-      return providerFailure("malformed_response", parsed.error, response.status, null, true);
+      return providerFailureWithDiagnostics("malformed_response", parsed.error, response.status, null, true, diagnostics());
     }
     const content = parsed.value?.choices?.[0]?.message?.content;
     if (typeof content !== "string") {
-      return providerFailure("malformed_response", "response did not include choices[0].message.content", response.status, parsed.value, true);
+      return providerFailureWithDiagnostics(
+        "malformed_response",
+        "response did not include choices[0].message.content",
+        response.status,
+        parsed.value,
+        true,
+        diagnostics(),
+      );
     }
     return {
       exitCode: 0,
@@ -1158,13 +1255,7 @@ async function callProvider(provider, cfg, prompt, env = process.env) {
       http_status: response.status,
       credential_ref: credential.keyName,
       endpoint: baseUrlFor(cfg),
-      diagnostics: {
-        configured_timeout_ms: timeoutMs.value,
-        prompt_chars: prompt.length,
-        request_defaults: summarizeRequestDefaults(cfg.request_defaults),
-        max_tokens: requestBody.max_tokens ?? null,
-        temperature: requestBody.temperature ?? null,
-      },
+      diagnostics: diagnostics(),
     };
   } catch (e) {
     const reason = e?.name === "AbortError" ? "timeout" : "provider_unavailable";
@@ -1175,12 +1266,8 @@ async function callProvider(provider, cfg, prompt, env = process.env) {
       null,
       payloadSentForProviderException(e),
       {
-        configured_timeout_ms: timeoutMs.value,
+        ...diagnostics(),
         elapsed_ms: Date.now() - started,
-        prompt_chars: prompt.length,
-        request_defaults: summarizeRequestDefaults(cfg.request_defaults),
-        max_tokens: requestBody.max_tokens ?? null,
-        temperature: requestBody.temperature ?? null,
       },
     );
   } finally {
@@ -1321,6 +1408,24 @@ function freezeRecord(record) {
   return Object.freeze(record);
 }
 
+function buildLaunchExternalReview({ cfg, mode, options, scopeInfo }) {
+  const provider = cfg.display_name;
+  return freezeExternalReview({
+    marker: "EXTERNAL REVIEW",
+    provider,
+    run_kind: "foreground",
+    job_id: options.jobId,
+    session_id: null,
+    parent_job_id: null,
+    mode,
+    scope: scopeInfo?.scope ?? null,
+    scope_base: scopeInfo?.scope_base ?? null,
+    scope_paths: scopeInfo?.scope_paths ?? null,
+    source_content_transmission: SOURCE_CONTENT_TRANSMISSION.MAY_BE_SENT,
+    disclosure: `Selected source content may be sent to ${provider} for external review.`,
+  });
+}
+
 function errorCauseFor(errorCode) {
   if (errorCode === "bad_args") return "caller";
   if (errorCode === "config_error") return "provider_config";
@@ -1440,6 +1545,7 @@ function buildReviewMetadata(cfg, scopeInfo, execution = null) {
       timeoutMs: execution.diagnostics?.configured_timeout_ms ?? null,
       maxTokens: execution.diagnostics?.max_tokens ?? null,
       temperature: execution.diagnostics?.temperature ?? null,
+      stream: false,
     },
     truncation: {
       prompt: false,
@@ -1519,7 +1625,7 @@ function buildRecord({ provider, cfg, mode, options, scopeInfo, execution, start
     dispose_effective: false,
     scope_base: scopeInfo.scope_base ?? null,
     scope_paths: scopeInfo.scope_paths ?? null,
-    prompt_head: String(options.prompt ?? "").slice(0, 200),
+    prompt_head: promptHead(options.prompt),
     review_metadata: buildReviewMetadata(cfg, scopeInfo, execution),
     schema_spec: null,
     binary: null,
@@ -1589,6 +1695,7 @@ async function cmdDoctor(options) {
 async function cmdRun(options) {
   const provider = options.provider ?? null;
   const mode = options.mode ?? "review";
+  let lifecycleEvents = null;
   const startedAt = new Date().toISOString();
   const jobId = `job_${randomUUID()}`;
   const runOptions = { ...options, jobId };
@@ -1597,6 +1704,7 @@ async function cmdRun(options) {
   let scopeInfo;
   let execution;
   try {
+    lifecycleEvents = parseLifecycleEventsMode(options["lifecycle-events"]);
     if (!provider) throw runBadArgs("bad_args: --provider is required");
     if (!VALID_MODES.has(mode)) throw runBadArgs(`bad_args: unsupported --mode ${mode}`);
     try {
@@ -1609,9 +1717,9 @@ async function cmdRun(options) {
     } catch (e) {
       throw runBadArgs(e.message);
     }
-    if (cfg.auth_mode !== "api_key" && cfg.auth_mode !== "auto") {
-      throw runBadArgs(`bad_args: ${provider} auth_mode must be api_key or auto`);
-    }
+    const preflight = validateDirectApiRunPreflight(cfg, provider, process.env);
+    if (!preflight.ok && preflight.reason === "bad_args") throw runBadArgs(preflight.error);
+    if (!preflight.ok) throw runProviderFailure(preflight.reason, preflight.error);
     scopeInfo = await collectScope({ ...runOptions, mode });
   } catch (e) {
     const redact = redactor();
@@ -1632,6 +1740,11 @@ async function cmdRun(options) {
     };
   }
   if (!execution) {
+    if (!hasPromptText(options.prompt)) {
+      execution = providerFailure("bad_args", "prompt is required (pass --prompt <focus>)", null, null, false);
+    }
+  }
+  if (!execution) {
     let renderedPrompt = null;
     try {
       renderedPrompt = promptFor(mode, options.prompt ?? "", scopeInfo, cfg.display_name);
@@ -1646,6 +1759,15 @@ async function cmdRun(options) {
       );
     }
     if (!execution) {
+      if (lifecycleEvents) {
+        printLifecycleJson({
+          event: "external_review_launched",
+          job_id: jobId,
+          target: provider,
+          status: "launched",
+          external_review: buildLaunchExternalReview({ cfg, mode, options: runOptions, scopeInfo }),
+        }, lifecycleEvents);
+      }
       try {
         execution = await callProvider(provider, cfg, renderedPrompt);
       } catch (e) {
@@ -1665,7 +1787,7 @@ async function cmdRun(options) {
     endedAt: new Date().toISOString(),
   }), process.env, cfg.env_keys);
   const printableRecord = await persistRecordBestEffort(record, process.env, cfg.env_keys);
-  printJson(printableRecord);
+  printLifecycleJson(printableRecord, lifecycleEvents);
   process.exit(record.status === "completed" ? 0 : 1);
 }
 

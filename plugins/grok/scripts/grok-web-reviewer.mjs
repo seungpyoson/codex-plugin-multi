@@ -8,11 +8,15 @@ import { dirname, isAbsolute, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { cleanGitEnv as cleanCanonicalGitEnv } from "./lib/git-env.mjs";
 import { REVIEW_PROMPT_CONTRACT_VERSION, buildReviewAuditManifest, buildReviewPrompt, scopeResolutionReason } from "./lib/review-prompt.mjs";
+import {
+  EXTERNAL_REVIEW_KEYS,
+  SOURCE_CONTENT_TRANSMISSION,
+} from "./lib/external-review.mjs";
 
 const VALID_MODES = new Set(["review", "adversarial-review", "custom-review"]);
 const DEFAULT_BASE_URL = "http://127.0.0.1:8000/v1";
 const DEFAULT_MODEL = "grok-4.20-fast";
-const DEFAULT_TIMEOUT_MS = 30000;
+const DEFAULT_TIMEOUT_MS = 600000;
 const DEFAULT_DOCTOR_TIMEOUT_MS = 2000;
 const DEFAULT_CHAT_DOCTOR_TIMEOUT_MS = 10000;
 const MAX_SCOPE_FILE_BYTES = 256 * 1024;
@@ -26,9 +30,74 @@ const GIT_BINARY = "/usr/bin/git";
 const GIT_SAFE_PATH = "/usr/bin:/bin";
 const PLUGIN_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const SCOPE_FILE_OPEN_FLAGS = fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0);
+const GROK_EXPECTED_KEYS = Object.freeze([
+  "id",
+  "job_id",
+  "target",
+  "provider",
+  "parent_job_id",
+  "claude_session_id",
+  "gemini_session_id",
+  "kimi_session_id",
+  "resume_chain",
+  "pid_info",
+  "mode",
+  "mode_profile_name",
+  "model",
+  "cwd",
+  "workspace_root",
+  "containment",
+  "scope",
+  "dispose_effective",
+  "scope_base",
+  "scope_paths",
+  "prompt_head",
+  "review_metadata",
+  "schema_spec",
+  "binary",
+  "status",
+  "started_at",
+  "ended_at",
+  "exit_code",
+  "error_code",
+  "error_message",
+  "error_summary",
+  "error_cause",
+  "suggested_action",
+  "external_review",
+  "disclosure_note",
+  "runtime_diagnostics",
+  "result",
+  "structured_output",
+  "permission_denials",
+  "mutations",
+  "cost_usd",
+  "usage",
+  "auth_mode",
+  "credential_ref",
+  "endpoint",
+  "http_status",
+  "raw_model",
+  "schema_version",
+]);
 
 function printJson(obj) {
   process.stdout.write(`${JSON.stringify(obj, null, 2)}\n`);
+}
+
+function printJsonLine(obj) {
+  process.stdout.write(`${JSON.stringify(obj)}\n`);
+}
+
+function printLifecycleJson(obj, lifecycleEvents) {
+  if (lifecycleEvents === "jsonl") printJsonLine(obj);
+  else printJson(obj);
+}
+
+function parseLifecycleEventsMode(value) {
+  if (value == null || value === false) return null;
+  if (value === "jsonl") return "jsonl";
+  throw new Error("bad_args: --lifecycle-events must be jsonl");
 }
 
 function parseArgs(argv) {
@@ -72,24 +141,30 @@ function normalizeBaseUrl(value) {
 }
 
 function config(env = process.env) {
+  const timeoutMs = parsePositiveIntegerEnv(env, "GROK_WEB_TIMEOUT_MS", DEFAULT_TIMEOUT_MS);
+  const doctorTimeoutMs = parsePositiveIntegerEnv(env, "GROK_WEB_DOCTOR_TIMEOUT_MS", DEFAULT_DOCTOR_TIMEOUT_MS);
+  const chatDoctorTimeoutMs = parsePositiveIntegerEnv(env, "GROK_WEB_CHAT_DOCTOR_TIMEOUT_MS", DEFAULT_CHAT_DOCTOR_TIMEOUT_MS);
   return {
     provider: "grok-web",
     display_name: "Grok Web",
     auth_mode: "subscription_web",
     base_url: normalizeBaseUrl(env.GROK_WEB_BASE_URL),
     model: env.GROK_WEB_MODEL || DEFAULT_MODEL,
-    timeout_ms: parsePositiveInteger(env.GROK_WEB_TIMEOUT_MS, DEFAULT_TIMEOUT_MS),
-    doctor_timeout_ms: parsePositiveInteger(env.GROK_WEB_DOCTOR_TIMEOUT_MS, DEFAULT_DOCTOR_TIMEOUT_MS),
-    chat_doctor_timeout_ms: parsePositiveInteger(env.GROK_WEB_CHAT_DOCTOR_TIMEOUT_MS, DEFAULT_CHAT_DOCTOR_TIMEOUT_MS),
+    timeout_ms: timeoutMs,
+    doctor_timeout_ms: doctorTimeoutMs,
+    chat_doctor_timeout_ms: chatDoctorTimeoutMs,
     credential_ref: env.GROK_WEB_TUNNEL_API_KEY ? "GROK_WEB_TUNNEL_API_KEY" : null,
     credential_value: env.GROK_WEB_TUNNEL_API_KEY || null,
   };
 }
 
-function parsePositiveInteger(value, fallback) {
+function parsePositiveIntegerEnv(env, name, fallback) {
+  const value = env[name];
   if (value === undefined || value === null || value === "") return fallback;
   const parsed = Number(value);
-  if (!Number.isSafeInteger(parsed) || parsed <= 0) return fallback;
+  if (!Number.isSafeInteger(parsed) || parsed <= 0) {
+    throw new Error(`bad_args: ${name} must be a positive integer number of milliseconds; got ${JSON.stringify(value)}`);
+  }
   return parsed;
 }
 
@@ -215,9 +290,13 @@ function matchGlob(rel, pattern) {
     const c = pattern[i];
     if (c === "*") {
       if (pattern[i + 1] === "*") {
-        re += ".*";
         i += 1;
-        if (pattern[i + 1] === "/") i += 1;
+        if (pattern[i + 1] === "/") {
+          re += "(?:.*/)?";
+          i += 1;
+        } else {
+          re += ".*";
+        }
       } else {
         re += "[^/]*";
       }
@@ -435,6 +514,14 @@ function promptFor(mode, userPrompt, scopeInfo) {
   });
 }
 
+function hasPromptText(value) {
+  return typeof value === "string" && value.trim().length > 0;
+}
+
+function promptHead(value) {
+  return hasPromptText(value) ? value.slice(0, 200) : "";
+}
+
 function parseJson(text) {
   try {
     return { ok: true, value: JSON.parse(text) };
@@ -529,6 +616,7 @@ async function callGrokTunnel(cfg, prompt, env = process.env) {
   const redact = redactor(env);
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), cfg.timeout_ms);
+  const started = Date.now();
   try {
     const response = await fetch(endpoint, {
       method: "POST",
@@ -546,6 +634,8 @@ async function callGrokTunnel(cfg, prompt, env = process.env) {
         parsed.ok ? parsed.value : null,
         true,
         {
+          configured_timeout_ms: cfg.timeout_ms,
+          elapsed_ms: Date.now() - started,
           endpoint_class: "chat_completions",
           model: cfg.model,
           stream: false,
@@ -554,10 +644,30 @@ async function callGrokTunnel(cfg, prompt, env = process.env) {
         },
       );
     }
-    if (!parsed.ok) return providerFailure("malformed_response", parsed.error, response.status, null, true);
+    if (!parsed.ok) return providerFailureWithDiagnostic("malformed_response", parsed.error, response.status, null, true, {
+      configured_timeout_ms: cfg.timeout_ms,
+      elapsed_ms: Date.now() - started,
+      prompt_chars: prompt.length,
+      max_tokens: null,
+      temperature: requestBody.temperature ?? null,
+      stream: false,
+    });
     const content = parsed.value?.choices?.[0]?.message?.content;
     if (typeof content !== "string") {
-      return providerFailure("malformed_response", "response did not include choices[0].message.content", response.status, parsed.value, true);
+      return providerFailureWithDiagnostic(
+        "malformed_response",
+        "response did not include choices[0].message.content",
+        response.status,
+        parsed.value,
+        true,
+        {
+          configured_timeout_ms: cfg.timeout_ms,
+          prompt_chars: prompt.length,
+          max_tokens: null,
+          temperature: requestBody.temperature ?? null,
+          stream: false,
+        },
+      );
     }
     return {
       exitCode: 0,
@@ -581,7 +691,13 @@ async function callGrokTunnel(cfg, prompt, env = process.env) {
     };
   } catch (e) {
     const reason = e?.name === "AbortError" ? "tunnel_timeout" : "tunnel_unavailable";
-    return providerFailure(reason, tunnelTransportMessage(e, env, redact), null, null, payloadSentForFetchError(e));
+    return providerFailureWithDiagnostic(reason, tunnelTransportMessage(e, env, redact), null, null, payloadSentForFetchError(e), {
+      configured_timeout_ms: cfg.timeout_ms,
+      prompt_chars: prompt.length,
+      max_tokens: null,
+      temperature: requestBody.temperature ?? null,
+      stream: false,
+    });
   } finally {
     clearTimeout(timer);
   }
@@ -683,9 +799,9 @@ async function probeGrokChat(cfg, env = process.env) {
 }
 
 function sourceTransmission(completed, payloadSent) {
-  if (completed || payloadSent === true) return "sent";
-  if (payloadSent === false) return "not_sent";
-  return "unknown";
+  if (completed || payloadSent === true) return SOURCE_CONTENT_TRANSMISSION.SENT;
+  if (payloadSent === false) return SOURCE_CONTENT_TRANSMISSION.NOT_SENT;
+  return SOURCE_CONTENT_TRANSMISSION.UNKNOWN;
 }
 
 function disclosure(cfg, completed, payloadSent) {
@@ -725,6 +841,58 @@ function errorCauseFor(errorCode) {
   return "grok_web_tunnel";
 }
 
+function freezeExternalReview(review) {
+  const keys = Object.keys(review);
+  if (keys.length !== EXTERNAL_REVIEW_KEYS.length
+      || keys.some((key, index) => key !== EXTERNAL_REVIEW_KEYS[index])) {
+    throw new Error(`external_review keys drifted: ${keys.join(",")}`);
+  }
+  return Object.freeze(review);
+}
+
+function freezeRecord(record) {
+  const keys = Object.keys(record);
+  if (keys.length !== GROK_EXPECTED_KEYS.length
+      || keys.some((key, index) => key !== GROK_EXPECTED_KEYS[index])) {
+    throw new Error(`Grok JobRecord keys drifted: ${keys.join(",")}`);
+  }
+  return Object.freeze(record);
+}
+
+function buildLaunchExternalReview({ cfg, mode, options, scopeInfo }) {
+  return freezeExternalReview({
+    marker: "EXTERNAL REVIEW",
+    provider: cfg.display_name,
+    run_kind: "foreground",
+    job_id: options.jobId,
+    session_id: null,
+    parent_job_id: null,
+    mode,
+    scope: scopeInfo?.scope ?? null,
+    scope_base: scopeInfo?.scope_base ?? null,
+    scope_paths: scopeInfo?.scope_paths ?? null,
+    source_content_transmission: SOURCE_CONTENT_TRANSMISSION.MAY_BE_SENT,
+    disclosure: `Selected source content may be sent to ${cfg.display_name} for external review.`,
+  });
+}
+
+function buildTerminalExternalReview({ cfg, mode, options, scopeInfo, execution, transmission, reviewDisclosure }) {
+  return freezeExternalReview({
+    marker: "EXTERNAL REVIEW",
+    provider: cfg.display_name,
+    run_kind: "foreground",
+    job_id: options.jobId,
+    session_id: execution.session_id ?? null,
+    parent_job_id: null,
+    mode,
+    scope: scopeInfo?.scope ?? null,
+    scope_base: scopeInfo?.scope_base ?? null,
+    scope_paths: scopeInfo?.scope_paths ?? null,
+    source_content_transmission: transmission,
+    disclosure: reviewDisclosure,
+  });
+}
+
 function buildReviewMetadata(cfg, scopeInfo, execution = null) {
   const auditManifest = execution?.prompt ? buildReviewAuditManifest({
     prompt: execution.prompt,
@@ -745,7 +913,7 @@ function buildReviewMetadata(cfg, scopeInfo, execution = null) {
     request: {
       provider: cfg.display_name,
       model: cfg.model,
-      timeoutMs: execution.diagnostics?.configured_timeout_ms ?? cfg.timeout_ms ?? null,
+      timeoutMs: execution.diagnostics?.configured_timeout_ms ?? null,
       maxTokens: execution.diagnostics?.max_tokens ?? null,
       temperature: execution.diagnostics?.temperature ?? null,
       stream: false,
@@ -793,7 +961,7 @@ function buildRecord({ cfg, mode, options, scopeInfo, execution, startedAt, ende
     : (errorMessage || errorCode);
   const reviewDisclosure = disclosure(cfg, completed, execution.payload_sent ?? null);
   const transmission = sourceTransmission(completed, execution.payload_sent ?? null);
-  return {
+  return freezeRecord({
     id: options.jobId,
     job_id: options.jobId,
     target: "grok-web",
@@ -814,7 +982,7 @@ function buildRecord({ cfg, mode, options, scopeInfo, execution, startedAt, ende
     dispose_effective: false,
     scope_base: scopeInfo.scope_base ?? null,
     scope_paths: scopeInfo.scope_paths ?? null,
-    prompt_head: String(options.prompt ?? "").slice(0, 200),
+    prompt_head: promptHead(options.prompt),
     review_metadata: buildReviewMetadata(cfg, scopeInfo, execution),
     schema_spec: null,
     binary: null,
@@ -827,20 +995,7 @@ function buildRecord({ cfg, mode, options, scopeInfo, execution, startedAt, ende
     error_summary: completed ? null : diagnostic,
     error_cause: completed ? null : errorCauseFor(errorCode),
     suggested_action: completed ? null : suggestedAction(errorCode, errorMessage),
-    external_review: {
-      marker: "EXTERNAL REVIEW",
-      provider: cfg.display_name,
-      run_kind: "foreground",
-      job_id: options.jobId,
-      session_id: execution.session_id ?? null,
-      parent_job_id: null,
-      mode,
-      scope: scopeInfo.scope,
-      scope_base: scopeInfo.scope_base ?? null,
-      scope_paths: scopeInfo.scope_paths ?? null,
-      source_content_transmission: transmission,
-      disclosure: reviewDisclosure,
-    },
+    external_review: buildTerminalExternalReview({ cfg, mode, options, scopeInfo, execution, transmission, reviewDisclosure }),
     disclosure_note: reviewDisclosure,
     runtime_diagnostics: null,
     result: completed ? execution.parsed.result : null,
@@ -855,7 +1010,7 @@ function buildRecord({ cfg, mode, options, scopeInfo, execution, startedAt, ende
     http_status: execution.http_status ?? null,
     raw_model: execution.parsed?.raw_model ?? null,
     schema_version: SCHEMA_VERSION,
-  };
+  });
 }
 
 function dataRoot(env = process.env) {
@@ -1209,6 +1364,7 @@ async function doctorFields(env = process.env) {
 
 async function cmdRun(options) {
   const mode = options.mode ?? "review";
+  let lifecycleEvents = null;
   const startedAt = new Date().toISOString();
   const cfg = config();
   const jobId = `job_${randomUUID()}`;
@@ -1216,6 +1372,7 @@ async function cmdRun(options) {
   let scopeInfo;
   let execution;
   try {
+    lifecycleEvents = parseLifecycleEventsMode(options["lifecycle-events"]);
     if (!VALID_MODES.has(mode)) throw new Error(`bad_args: unsupported --mode ${mode}`);
     scopeInfo = await collectScope({ ...runOptions, mode });
   } catch (e) {
@@ -1230,6 +1387,11 @@ async function cmdRun(options) {
     execution = providerFailure(e.message.startsWith("bad_args:") ? "bad_args" : "scope_failed", redactor()(e.message), null, null, false);
   }
   if (!execution) {
+    if (!hasPromptText(options.prompt)) {
+      execution = providerFailure("bad_args", "prompt is required (pass --prompt <focus>)", null, null, false);
+    }
+  }
+  if (!execution) {
     let prompt;
     try {
       prompt = promptFor(mode, options.prompt ?? "", scopeInfo);
@@ -1237,14 +1399,24 @@ async function cmdRun(options) {
       execution = providerFailure(e.message.startsWith("bad_args:") ? "bad_args" : "scope_failed", redactor()(e.message), null, null, false);
     }
     if (!execution) try {
+      if (lifecycleEvents) {
+        printLifecycleJson({
+          event: "external_review_launched",
+          job_id: jobId,
+          target: "grok-web",
+          status: "launched",
+          external_review: buildLaunchExternalReview({ cfg, mode, options: runOptions, scopeInfo }),
+        }, lifecycleEvents);
+      }
       execution = await callGrokTunnel(cfg, prompt);
     } catch (e) {
-      execution = providerFailure(
+      execution = providerFailureWithDiagnostic(
         e.message.startsWith("bad_args:") ? "bad_args" : "tunnel_error",
         redactor()(e.message),
         null,
         null,
         payloadSentForFetchError(e),
+        { configured_timeout_ms: cfg.timeout_ms },
       );
     }
     if (prompt) execution.prompt = prompt;
@@ -1259,7 +1431,7 @@ async function cmdRun(options) {
     endedAt: new Date().toISOString(),
   }), redactor());
   const printable = await persistRecordBestEffort(record);
-  printJson(printable);
+  printLifecycleJson(printable, lifecycleEvents);
   process.exit(record.status === "completed" ? 0 : 1);
 }
 

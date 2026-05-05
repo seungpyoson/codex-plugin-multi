@@ -21,7 +21,12 @@ claude-companion.mjs run     --mode=review|adversarial-review|custom-review|resc
                              [--scope-base <ref>] [--scope-paths <g1,g2,…>]
                              [--override-dispose <true|false>]
                              [--schema <json>] [--binary <path>]
+                             [--timeout-ms <ms>]
                              -- <prompt>
+claude-companion.mjs continue --job <id> [--foreground|--background]
+                              [--model <full-id>] [--cwd <path>]
+                              [--binary <path>] [--timeout-ms <ms>]
+                              -- <prompt>
 
 claude-companion.mjs preflight --mode=review|adversarial-review|custom-review
                                [--cwd <path>] [--scope-base <ref>]
@@ -41,7 +46,7 @@ claude-companion.mjs cancel  --job <id> [--cwd <path>] [--force]
 - **Custom review**: use `--mode=custom-review --scope-paths <g1,g2,…>` for pinned bundles or hand-picked files. Prompts should refer to selected files by relative paths inside the granted scope, never by an absolute parent checkout path.
 - **Preflight**: run `preflight` before external review when disclosure or bundle scope is uncertain. It computes file count, byte count, and selected relative paths without launching Claude.
 - **Session IDs**: the companion mints a UUID v4 `job_id`, passes it to fresh Claude runs as `--session-id`, then persists `claude_session_id` from Claude's JSON stdout. Callers do not supply session IDs.
-- **Timeouts**: companion does not enforce a wall-clock timeout by default. Tests pass `--timeout-ms` to the process wrapper directly.
+- **Timeouts**: review run/continue paths default to `600000` ms, accept `--timeout-ms <ms>`, and fall back to `CLAUDE_REVIEW_TIMEOUT_MS` for non-interactive use. The effective value is persisted in `review_metadata.audit_manifest.request.timeout_ms`.
 - **Cancel scope**: `cancel` is for background jobs only. Foreground runs stay attached to the active terminal and should be interrupted with Ctrl+C.
 
 ## Flag-stack per mode (enforced by `lib/claude.mjs`)

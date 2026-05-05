@@ -43,7 +43,6 @@ import { newJobId, verifyPidInfo } from "./lib/identity.mjs";
 import { buildJobRecord, externalReviewForInvocation } from "./lib/job-record.mjs";
 import { reconcileActiveJobs } from "./lib/reconcile.mjs";
 import { cleanGitEnv } from "./lib/git-env.mjs";
-import { REVIEW_PROMPT_CONTRACT_VERSION, buildReviewAuditManifest, buildReviewPrompt } from "./lib/review-prompt.mjs";
 import {
   authDiagnosticFields,
   apiKeyMissingFields as buildApiKeyMissingFields,
@@ -53,15 +52,20 @@ import {
 import {
   PING_PROMPT,
   consumePromptSidecar,
+  externalReviewBackgroundLaunchedEvent,
+  externalReviewLaunchedEvent,
   gitStatusLines,
+  parseLifecycleEventsMode,
   parseScopePathsOption,
   preflightDisclosure,
   preflightSafetyFields,
   printJson,
+  printLifecycleJson,
   runKindFromRecord,
   summarizeScopeDirectory,
   writePromptSidecar,
 } from "./lib/companion-common.mjs";
+import { REVIEW_PROMPT_CONTRACT_VERSION, buildReviewAuditManifest, buildReviewPrompt } from "./lib/review-prompt.mjs";
 
 // ——— plugin-root self-resolution (upstream pattern, spec §4.14) ———
 const PLUGIN_ROOT = resolvePath(dirname(fileURLToPath(import.meta.url)), "..");
@@ -73,10 +77,12 @@ configureState({
 });
 
 const MODELS_CONFIG_PATH = resolvePath(PLUGIN_ROOT, "config/models.json");
-const GIT_BINARY = "/usr/bin/git";
+const DEFAULT_CLAUDE_REVIEW_TIMEOUT_MS = 600000;
 const CONTINUABLE_STATUSES = new Set(["completed", "failed", "cancelled", "stale"]);
 const RUN_MODES = Object.freeze(["review", "adversarial-review", "custom-review", "rescue"]);
 const PREFLIGHT_MODES = Object.freeze(["review", "adversarial-review", "custom-review"]);
+const GIT_PROMPT_BINARY = "/usr/bin/git";
+const GIT_PROMPT_SAFE_PATH = "/usr/bin:/bin";
 
 function loadModels() {
   if (!existsSync(MODELS_CONFIG_PATH)) return { review_quality: null, rescue: null };
@@ -89,34 +95,57 @@ function fail(code, message, details = {}) {
   process.exit(1);
 }
 
-// Wraps git command; reports failure separately from successful empty output
-// so mutation detection can warn instead of silently reporting "clean".
-// Uses execFileSync with an argv array (no shell) to prevent command injection
-// through the cwd argument (audit HIGH finding, M2 gate).
-// Strip inherited git env vars (GIT_DIR, GIT_CONFIG_GLOBAL, ...) via the
-// shared lib/git-env.mjs scrub so a parent env can't hijack mutation
-// detection's git invocations. PR #21 review: the previous local
-// 5-key strip list missed GIT_CONFIG_GLOBAL → fold onto the canonical list.
+function parseReviewTimeoutMs(cliValue, env = process.env, fallback = DEFAULT_CLAUDE_REVIEW_TIMEOUT_MS) {
+  const raw = cliValue ?? env.CLAUDE_REVIEW_TIMEOUT_MS;
+  if (raw === undefined || raw === null || raw === "") return fallback;
+  if (typeof raw !== "string") {
+    const source = cliValue === undefined ? "CLAUDE_REVIEW_TIMEOUT_MS" : "--timeout-ms";
+    fail("bad_args", `${source} must be a positive integer number of milliseconds; got ${JSON.stringify(raw)}`);
+  }
+  const parsed = Number(raw);
+  if (!Number.isSafeInteger(parsed) || parsed <= 0) {
+    const source = cliValue === undefined ? "CLAUDE_REVIEW_TIMEOUT_MS" : "--timeout-ms";
+    fail("bad_args", `${source} must be a positive integer number of milliseconds; got ${JSON.stringify(raw)}`);
+  }
+  return parsed;
+}
 
-function tryGit(args, cwd) {
+function targetPromptFor(invocation, userPrompt) {
+  if (invocation.mode_profile_name === "rescue") return userPrompt;
+  return buildReviewPrompt({
+    provider: "Claude Code",
+    mode: invocation.mode,
+    repository: invocation.workspace_root ?? null,
+    baseRef: invocation.scope_base,
+    baseCommit: gitCommitForPrompt(invocation.cwd, invocation.scope_base),
+    headRef: "HEAD",
+    headCommit: gitCommitForPrompt(invocation.cwd, "HEAD"),
+    scope: invocation.scope,
+    scopePaths: invocation.scope_paths,
+    userPrompt,
+  });
+}
+
+function gitCommitForPrompt(cwd, ref) {
+  if (!ref) return null;
   try {
-    const stdout = execFileSync(GIT_BINARY, ["-C", cwd, ...args], {
+    return execFileSync(GIT_PROMPT_BINARY, ["rev-parse", "--verify", `${ref}^{commit}`], {
+      cwd,
+      env: cleanGitPromptEnv(),
       encoding: "utf8",
-      stdio: ["ignore", "pipe", "pipe"],
-      env: cleanGitEnv(),
-    });
-    return { ok: true, stdout };
-  } catch (error) {
-    return { ok: false, error };
+      stdio: ["ignore", "pipe", "ignore"],
+    }).trim();
+  } catch {
+    return null;
   }
 }
 
 function gitText(args, cwd) {
   try {
-    return execFileSync(GIT_BINARY, ["-C", cwd, ...args], {
+    return execFileSync(GIT_PROMPT_BINARY, ["-C", cwd, ...args], {
       encoding: "utf8",
       stdio: ["ignore", "pipe", "ignore"],
-      env: cleanGitEnv(),
+      env: cleanGitPromptEnv(),
     }).trim() || null;
   } catch {
     return null;
@@ -134,40 +163,14 @@ function promptMetadata(invocation) {
   return {
     repository: repositoryIdentity(invocation.cwd, invocation.workspace_root),
     baseRef: invocation.scope_base ?? null,
-    baseCommit: invocation.scope_base ? gitText(["rev-parse", "--verify", `${invocation.scope_base}^{commit}`], invocation.cwd) : null,
+    baseCommit: gitCommitForPrompt(invocation.cwd, invocation.scope_base),
     headRef: gitText(["branch", "--show-current"], invocation.cwd) ?? "HEAD",
-    headCommit: gitText(["rev-parse", "--verify", "HEAD^{commit}"], invocation.cwd),
+    headCommit: gitCommitForPrompt(invocation.cwd, "HEAD"),
   };
 }
 
 function pluginSourceCommit() {
-  return gitText(["rev-parse", "--verify", "HEAD^{commit}"], PLUGIN_ROOT);
-}
-
-function targetPromptFor(invocation, userPrompt) {
-  if (invocation.mode_profile_name === "rescue") return userPrompt;
-  const meta = promptMetadata(invocation);
-  const modeLine = invocation.mode === "adversarial-review"
-    ? "You are performing an adversarial code review. Prioritize correctness bugs, security risks, regressions, and missing tests."
-    : "You are performing a code review. Prioritize bugs, behavioral regressions, and missing tests.";
-  return buildReviewPrompt({
-    provider: "Claude Code",
-    mode: invocation.mode,
-    repository: meta.repository,
-    baseRef: meta.baseRef,
-    baseCommit: meta.baseCommit,
-    headRef: meta.headRef,
-    headCommit: meta.headCommit,
-    scope: invocation.scope,
-    scopePaths: invocation.scope_paths,
-    userPrompt,
-    extraInstructions: [modeLine],
-  });
-}
-
-function isInsidePath(base, target) {
-  const relative = relativePath(base, target);
-  return relative === "" || (!relative.startsWith("..") && !isAbsolute(relative));
+  return gitCommitForPrompt(PLUGIN_ROOT, "HEAD");
 }
 
 function listContainedFiles(root, dir = root, prefix = "") {
@@ -200,9 +203,7 @@ function scopeResolutionReason(invocation) {
     }
     return `git diff -z --name-only ${invocation.scope_base ?? "main"}...HEAD --`;
   }
-  if (Array.isArray(paths) && paths.length > 0) {
-    return "explicit --scope-paths";
-  }
+  if (Array.isArray(paths) && paths.length > 0) return "explicit --scope-paths";
   return invocation.scope ?? null;
 }
 
@@ -228,19 +229,13 @@ function reviewAuditManifest(invocation, prompt, containmentPath, execution) {
     request: {
       provider: invocation.review_prompt_provider ?? "Claude Code",
       model: invocation.model,
-      timeoutMs: null,
+      timeoutMs: invocation.timeout_ms ?? null,
       maxTokens: null,
       maxStepsPerTurn: null,
       temperature: null,
     },
-    truncation: {
-      prompt: false,
-      source: false,
-      output: false,
-    },
-    providerIds: {
-      sessionId: execution?.claudeSessionId ?? null,
-    },
+    truncation: { prompt: false, source: false, output: false },
+    providerIds: { sessionId: execution?.claudeSessionId ?? null },
     scope: {
       name: invocation.scope,
       base: invocation.scope_base ?? null,
@@ -253,6 +248,11 @@ function reviewAuditManifest(invocation, prompt, containmentPath, execution) {
   });
 }
 
+function isInsidePath(base, target) {
+  const relative = relativePath(base, target);
+  return relative === "" || (!relative.startsWith("..") && !isAbsolute(relative));
+}
+
 function buildRuntimeDiagnostics(invocation, containmentPath, childCwd) {
   const addDir = containmentPath ?? null;
   const relativeFiles = Array.isArray(invocation.scope_paths)
@@ -260,22 +260,48 @@ function buildRuntimeDiagnostics(invocation, containmentPath, childCwd) {
     : (addDir && resolvePath(addDir) !== resolvePath(invocation.cwd)
       ? listContainedFiles(addDir)
       : []);
-  const scopePathMappings = relativeFiles
-    .map((rel) => {
-      const contained = addDir ? resolvePath(addDir, rel) : null;
-      return {
-        original: resolvePath(invocation.cwd, rel),
-        contained,
-        relative: rel,
-        inside_add_dir: addDir && contained ? isInsidePath(addDir, contained) : false,
-      };
-    });
-
+  const scopePathMappings = relativeFiles.map((rel) => {
+    const contained = addDir ? resolvePath(addDir, rel) : null;
+    return {
+      original: resolvePath(invocation.cwd, rel),
+      contained,
+      relative: rel,
+      inside_add_dir: addDir && contained ? isInsidePath(addDir, contained) : false,
+    };
+  });
   return {
     add_dir: addDir,
     child_cwd: childCwd ?? null,
     scope_path_mappings: scopePathMappings,
   };
+}
+
+function cleanGitPromptEnv() {
+  const env = cleanGitEnv();
+  env.PATH = GIT_PROMPT_SAFE_PATH;
+  return env;
+}
+
+// Wraps git command; reports failure separately from successful empty output
+// so mutation detection can warn instead of silently reporting "clean".
+// Uses execFileSync with an argv array (no shell) to prevent command injection
+// through the cwd argument (audit HIGH finding, M2 gate).
+// Strip inherited git env vars (GIT_DIR, GIT_CONFIG_GLOBAL, ...) via the
+// shared lib/git-env.mjs scrub so a parent env can't hijack mutation
+// detection's git invocations. PR #21 review: the previous local
+// 5-key strip list missed GIT_CONFIG_GLOBAL → fold onto the canonical list.
+
+function tryGit(args, cwd) {
+  try {
+    const stdout = execFileSync(GIT_PROMPT_BINARY, ["-C", cwd, ...args], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "pipe"],
+      env: cleanGitPromptEnv(),
+    });
+    return { ok: true, stdout };
+  } catch (error) {
+    return { ok: false, error };
+  }
 }
 
 function mutationDetectionFailure(error) {
@@ -299,7 +325,44 @@ function mutationDetectionFailure(error) {
 // Project an invocation out of a JobRecord (used by the background worker
 // when it re-enters executeRun). Only the invocation-phase fields are
 // carried — lifecycle/result fields get re-derived from the fresh execution.
-function invocationFromRecord(record, fallbackAuthMode = "subscription") {
+function runtimeOptionsSidecarPath(workspaceRoot, jobId) {
+  return `${resolveJobsDir(workspaceRoot)}/${jobId}/runtime-options.json`;
+}
+
+function writeRuntimeOptionsSidecar(workspaceRoot, jobId, options) {
+  const dir = `${resolveJobsDir(workspaceRoot)}/${jobId}`;
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
+  try {
+    chmodSync(dir, 0o700);
+  } catch (err) {
+    if (process.platform !== "win32") throw err;
+  }
+  const file = runtimeOptionsSidecarPath(workspaceRoot, jobId);
+  const tmpFile = `${file}.${process.pid}.${Date.now()}.tmp`;
+  try {
+    writeFileSync(tmpFile, `${JSON.stringify({ timeout_ms: options.timeout_ms }, null, 2)}\n`, { mode: 0o600, encoding: "utf8" });
+    try { chmodSync(tmpFile, 0o600); } catch { /* best-effort on non-POSIX */ }
+    renameSync(tmpFile, file);
+  } catch (e) {
+    try { unlinkSync(tmpFile); } catch { /* already gone */ }
+    throw e;
+  }
+}
+
+function readRuntimeOptionsSidecar(workspaceRoot, jobId) {
+  const file = runtimeOptionsSidecarPath(workspaceRoot, jobId);
+  if (!existsSync(file)) return {};
+  try {
+    const parsed = JSON.parse(_readFileSync(file, "utf8"));
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+    const timeoutMs = parsed.timeout_ms;
+    return Number.isSafeInteger(timeoutMs) && timeoutMs > 0 ? { timeout_ms: timeoutMs } : {};
+  } catch {
+    return {};
+  }
+}
+
+function invocationFromRecord(record, fallbackAuthMode = "subscription", runtimeOptions = {}) {
   return Object.freeze({
     job_id: record.job_id,
     target: record.target,
@@ -322,6 +385,10 @@ function invocationFromRecord(record, fallbackAuthMode = "subscription") {
     run_kind: runKindFromRecord(record),
     auth_mode: record.auth_mode ?? fallbackAuthMode ?? "subscription",
     binary: record.binary,
+    timeout_ms:
+      runtimeOptions.timeout_ms ??
+      record.review_metadata?.audit_manifest?.request?.timeout_ms ??
+      DEFAULT_CLAUDE_REVIEW_TIMEOUT_MS,
     started_at: record.started_at,
   });
 }
@@ -485,7 +552,7 @@ function cmdPreflight(rest) {
 // ——— subcommand: run ———
 async function cmdRun(rest) {
   const { options, positionals } = parseArgs(rest, {
-    valueOptions: ["mode", "model", "cwd", "schema", "binary", "scope-base", "scope-paths", "override-dispose", "auth-mode"],
+    valueOptions: ["mode", "model", "cwd", "schema", "binary", "scope-base", "scope-paths", "override-dispose", "auth-mode", "timeout-ms", "lifecycle-events"],
     booleanOptions: ["background", "foreground"],
     aliasMap: {},
   });
@@ -524,6 +591,13 @@ async function cmdRun(rest) {
   })();
 
   const scopePaths = parseScopePathsOption(options["scope-paths"]);
+  let lifecycleEvents;
+  try {
+    lifecycleEvents = parseLifecycleEventsMode(options["lifecycle-events"]);
+  } catch (e) {
+    fail("bad_args", e.message);
+  }
+  const timeoutMs = parseReviewTimeoutMs(options["timeout-ms"]);
   const prompt = positionals.join(" ").trim();
   if (!prompt) {
     fail("bad_args", "prompt is required (pass after -- separator)");
@@ -557,6 +631,7 @@ async function cmdRun(rest) {
     prompt_head: prompt.slice(0, 200),          // §21.3.1 — no full prompt
     review_prompt_contract_version: profile.name === "rescue" ? null : REVIEW_PROMPT_CONTRACT_VERSION,
     review_prompt_provider: profile.name === "rescue" ? null : "Claude Code",
+    timeout_ms: timeoutMs,
     schema_spec: options.schema ?? null,
     binary: options.binary ?? process.env.CLAUDE_BINARY ?? "claude",
     run_kind: options.background ? "background" : "foreground",
@@ -572,10 +647,12 @@ async function cmdRun(rest) {
   const targetPrompt = targetPromptFor(invocation, prompt);
 
   if (options.background) {
+    validateBackgroundExecutionScopeOrExit(invocation, lifecycleEvents);
     // Write prompt to private sidecar (§21.3.1 handoff buffer). Worker reads
     // and deletes — prompt text does NOT live on the JobRecord.
     try {
       writePromptSidecar(resolveJobsDir(workspaceRoot), jobId, targetPrompt);
+      writeRuntimeOptionsSidecar(workspaceRoot, jobId, { timeout_ms: timeoutMs });
     } catch (error) {
       failBackgroundPromptSidecarWrite(workspaceRoot, invocation, error);
     }
@@ -584,219 +661,222 @@ async function cmdRun(rest) {
     // terminal-state meta when done (spec §7.3 / M4).
     const { child, error } = await spawnDetachedWorker(cwd, jobId, authSelection.auth_mode);
     if (error) failBackgroundWorkerSpawn(workspaceRoot, invocation, error);
-    printJson({
-      event: "launched",
-      job_id: jobId,
-      target: "claude",
-      mode,
-      pid: child.pid ?? null,
-      workspace_root: workspaceRoot,
-      external_review: externalReviewForInvocation(invocation),
-    });
+    const launched = externalReviewBackgroundLaunchedEvent(
+      invocation,
+      child.pid,
+      externalReviewForInvocation(invocation),
+    );
+    printLifecycleJson(launched, lifecycleEvents);
     process.exit(0);
   }
 
-  await executeRun(invocation, targetPrompt, { foreground: true });
+  await executeRun(invocation, targetPrompt, { foreground: true, lifecycleEvents });
 }
 
 // Shared execution body. Foreground path calls this directly with the live
 // prompt; background worker calls it after reading the prompt sidecar.
 // EXACTLY ONE buildJobRecord call per terminal state — §21.3.2 convergence.
-async function executeRun(invocation, prompt, { foreground }) {
-  const {
-    job_id: jobId, mode, model, cwd, workspace_root: workspaceRoot,
-    dispose_effective: disposeEffective,
-  } = invocation;
-
-  // Re-resolve the profile from the persisted mode NAME (spec §21.2).
+async function executeRun(invocation, prompt, { foreground, lifecycleEvents = null }) {
+  const { job_id: jobId, workspace_root: workspaceRoot } = invocation;
   const profile = resolveProfile(invocation.mode_profile_name);
+  const executionScope = setupExecutionScopeOrExit(invocation, profile, { foreground, lifecycleEvents });
+  const mutationContext = prepareMutationContext(invocation, profile);
+  const runtimeDiagnostics = buildRuntimeDiagnostics(
+    invocation,
+    executionScope.addDir,
+    mutationContext.neutralCwd ?? executionScope.childCwd,
+  );
+  const resumeId = latestResumeId(invocation);
 
-  // T7.2: containment + scope are two independent per-profile decisions.
+  exitIfCancelledBeforeSpawn(invocation, executionScope, mutationContext, {
+    foreground,
+    lifecycleEvents,
+    runtimeDiagnostics,
+  });
+
+  if (foreground && lifecycleEvents) {
+    printLifecycleJson(
+      externalReviewLaunchedEvent(invocation, externalReviewForInvocation(invocation)),
+      lifecycleEvents,
+    );
+  }
+
+  const execution = await spawnClaudeOrExit(invocation, profile, prompt, executionScope, mutationContext, {
+    foreground,
+    lifecycleEvents,
+    runtimeDiagnostics,
+    resumeId,
+  });
+
+  recordPostRunMutations(invocation, mutationContext);
+
+  const cancelMarker = consumeCancelMarker(workspaceRoot, jobId);
+  const finalRecord = buildClaudeFinalRecord(
+    invocation,
+    execution,
+    cancelMarker,
+    mutationContext.mutations,
+    prompt,
+    executionScope.addDir,
+    runtimeDiagnostics,
+  );
+  const { metaError, stateError } = commitJobRecord(workspaceRoot, jobId, finalRecord);
+
+  writeExecutionSidecars(workspaceRoot, jobId, execution);
+  exitIfFinalizationFailed(invocation, execution, finalRecord, mutationContext, executionScope, { metaError, stateError });
+
+  cleanupExecutionResources(executionScope, mutationContext);
+
+  if (foreground) printLifecycleJson(finalRecord, lifecycleEvents);
+  process.exit(finalRecord.status === "completed" || finalRecord.status === "cancelled" ? 0 : 2);
+}
+
+function setupExecutionScopeOrExit(invocation, profile, { foreground, lifecycleEvents }) {
   let containment = null;
   try {
-    containment = setupContainment(profile, cwd);
-    populateScope(profile, cwd, containment.path, {
+    containment = setupContainment(profile, invocation.cwd);
+    populateScope(profile, invocation.cwd, containment.path, {
       scopeBase: invocation.scope_base,
       scopePaths: invocation.scope_paths,
     }, containment);
+    return {
+      containment,
+      childCwd: containment.path,
+      addDir: containment.path,
+      disposeEffective: invocation.dispose_effective,
+    };
   } catch (e) {
     if (containment) { try { containment.cleanup(); } catch { /* best-effort */ } }
     const errorRecord = buildJobRecord(invocation, {
       exitCode: null, parsed: null, pidInfo: null, claudeSessionId: null,
       errorMessage: e.message,
     }, []);
-    writeJobFile(workspaceRoot, jobId, errorRecord);
-    upsertJob(workspaceRoot, errorRecord);
-    if (foreground) {
-      printJson(errorRecord);
-      process.exit(2);
-    }
+    writeJobFile(invocation.workspace_root, invocation.job_id, errorRecord);
+    upsertJob(invocation.workspace_root, errorRecord);
+    if (foreground) printLifecycleJson(errorRecord, lifecycleEvents);
     process.exit(2);
   }
+}
+
+function validateBackgroundExecutionScopeOrExit(invocation, lifecycleEvents) {
+  const profile = resolveProfile(invocation.mode_profile_name);
+  const executionScope = setupExecutionScopeOrExit(invocation, profile, {
+    foreground: true,
+    lifecycleEvents,
+  });
+  cleanupExecutionResources(executionScope, { neutralCwd: null });
+}
+
+function prepareMutationContext(invocation, profile) {
   const checkMutations = profile.permission_mode === "plan";
-  let neutralCwd = null;
-  let neutralCwdSetupError = null;
-  if (checkMutations) {
-    try {
-      neutralCwd = mkdtempSync(joinPath(tmpdir(), "claude-neutral-cwd-"));
-    } catch (e) {
-      neutralCwdSetupError = e;
-    }
+  const context = { checkMutations, gitStatusBefore: null, neutralCwd: null, mutations: [] };
+  if (!checkMutations) return context;
+  try {
+    context.neutralCwd = mkdtempSync(joinPath(tmpdir(), "claude-neutral-cwd-"));
+  } catch (e) {
+    context.mutations.push(mutationDetectionFailure(e));
   }
-  const childCwd = neutralCwd ?? containment.path;
-  const addDir = containment.path;
-  const runtimeDiagnostics = buildRuntimeDiagnostics(invocation, addDir, childCwd);
+  const before = tryGit(["status", "-s", "--untracked-files=all"], invocation.cwd);
+  if (!before.ok) {
+    context.mutations.push(mutationDetectionFailure(before.error));
+    return context;
+  }
+  context.gitStatusBefore = before.stdout;
+  try {
+    writeSidecar(invocation.workspace_root, invocation.job_id, "git-status-before.txt", before.stdout);
+  } catch (e) {
+    context.mutations.push(mutationDetectionFailure(e));
+  }
+  return context;
+}
 
-  // Pre-snapshot for review-style paths (§10 post-hoc mutation detection).
-  // Profile-driven: plan-mode paths are supposed to be read-only, so we
-  // snapshot before/after and surface drift via record.mutations.
-  let gitStatusBefore = null;
-  const mutations = [];
-  if (neutralCwdSetupError) {
-    mutations.push(mutationDetectionFailure(neutralCwdSetupError));
-  }
-  if (checkMutations) {
-    const before = tryGit(["status", "-s", "--untracked-files=all"], cwd);
-    if (before.ok) {
-      gitStatusBefore = before.stdout;
-      try {
-        writeSidecar(workspaceRoot, jobId, "git-status-before.txt", gitStatusBefore);
-      } catch (e) {
-        mutations.push(mutationDetectionFailure(e));
-      }
-    } else {
-      mutations.push(mutationDetectionFailure(before.error));
-    }
-  }
-
-  // Resume is carried on invocation.resume_chain[last] via cmdContinue. For
-  // fresh runs this is null and sessionId=jobId is passed instead.
-  const resumeId = invocation.resume_chain && invocation.resume_chain.length > 0
+function latestResumeId(invocation) {
+  return invocation.resume_chain && invocation.resume_chain.length > 0
     ? invocation.resume_chain[invocation.resume_chain.length - 1]
     : null;
+}
 
-  // Pre-spawn cancel-marker check (Class 1 + Finding A, race window α).
-  // cmdRunWorker has its own check at the top of the worker body, but a
-  // cancel issued during containment setup / scope copy lands AFTER that
-  // check while state.json still says "queued". Rechecking immediately
-  // before spawnClaude narrows the window from "containment + scope +
-  // pre-snapshot + spawn" (potentially seconds with a large repo) to the
-  // microseconds between this check and child.once('spawn'). The post-run
-  // consumer at the close handler is the safety net for that residual gap.
-  // This check also covers the foreground path (cmdRun bypasses
-  // cmdRunWorker entirely).
-  if (consumeCancelMarker(workspaceRoot, jobId)) {
-    cleanupNeutralCwd(neutralCwd);
-    if (containment.disposed && disposeEffective) {
-      try { containment.cleanup(); } catch { /* best-effort */ }
-    }
-    const cancelledRecord = buildJobRecord(invocation, {
-      status: "cancelled",
-      exitCode: null, parsed: null, pidInfo: null, claudeSessionId: null,
-      runtimeDiagnostics,
-    }, mutations);
-    writeJobFile(workspaceRoot, jobId, cancelledRecord);
-    upsertJob(workspaceRoot, cancelledRecord);
-    if (foreground) printJson(cancelledRecord);
-    process.exit(0);
-  }
+function exitIfCancelledBeforeSpawn(invocation, executionScope, mutationContext, { foreground, lifecycleEvents, runtimeDiagnostics }) {
+  if (!consumeCancelMarker(invocation.workspace_root, invocation.job_id)) return;
+  cleanupExecutionResources(executionScope, mutationContext);
+  const cancelledRecord = buildJobRecord(invocation, {
+    status: "cancelled",
+    exitCode: null,
+    parsed: null,
+    pidInfo: null,
+    claudeSessionId: null,
+    runtimeDiagnostics,
+  }, mutationContext.mutations);
+  writeJobFile(invocation.workspace_root, invocation.job_id, cancelledRecord);
+  upsertJob(invocation.workspace_root, cancelledRecord);
+  if (foreground) printLifecycleJson(cancelledRecord, lifecycleEvents);
+  process.exit(0);
+}
 
-  let execution;
+async function spawnClaudeOrExit(invocation, profile, prompt, executionScope, mutationContext, options) {
   try {
     const authSelection = resolveAuthSelection(invocation.auth_mode);
-    execution = await spawnClaude(profile, {
-      model,
+    return await spawnClaude(profile, {
+      model: invocation.model,
       promptText: prompt,
-      sessionId: jobId,
-      addDirPath: addDir,
-      cwd: childCwd,
+      sessionId: invocation.job_id,
+      addDirPath: executionScope.addDir,
+      cwd: mutationContext.neutralCwd ?? executionScope.childCwd,
       binary: invocation.binary,
       jsonSchema: invocation.schema_spec,
-      resumeId,
-      timeoutMs: 0,
+      resumeId: options.resumeId,
+      timeoutMs: invocation.timeout_ms,
       allowedApiKeyEnv: authSelection.allowed_env_credentials,
-      onSpawn: (pidInfo) => {
-        const runningRecord = buildJobRecord(invocation, {
-          status: "running",
-          exitCode: null,
-          parsed: null,
-          pidInfo,
-          claudeSessionId: null,
-          runtimeDiagnostics,
-        }, mutations);
-        writeJobFile(workspaceRoot, jobId, runningRecord);
-        upsertJob(workspaceRoot, runningRecord);
-      },
+      onSpawn: (pidInfo) => writeRunningRecord(invocation, pidInfo, mutationContext.mutations, options.runtimeDiagnostics),
     });
   } catch (e) {
     const errorRecord = buildJobRecord(invocation, {
       exitCode: null, parsed: null, pidInfo: null, claudeSessionId: null,
       errorMessage: e.message,
-      runtimeDiagnostics,
-    }, mutations);
-    writeJobFile(workspaceRoot, jobId, errorRecord);
-    upsertJob(workspaceRoot, errorRecord);
-    cleanupNeutralCwd(neutralCwd);
-    if (disposeEffective) containment.cleanup();
-    if (foreground) {
-      printJson(errorRecord);
-      process.exit(2);
-    }
+      runtimeDiagnostics: options.runtimeDiagnostics,
+    }, mutationContext.mutations);
+    writeJobFile(invocation.workspace_root, invocation.job_id, errorRecord);
+    upsertJob(invocation.workspace_root, errorRecord);
+    cleanupExecutionResources(executionScope, mutationContext);
+    if (options.foreground) printLifecycleJson(errorRecord, options.lifecycleEvents);
     process.exit(2);
   }
+}
 
-  // ——— finalization (#16 follow-up 1) ————————————————————————————————
-  //
-  // Three categories of persistence happen here, with explicit severities:
-  //
-  //   1. JobRecord meta (writeJobFile)        — CONTRACTUAL: this is the
-  //      shape consumers (`status --job`, `result --job`, skills) read.
-  //      Failure here is fatal; we still fall back to a best-effort
-  //      `failed`/`finalization_failed` record so operators don't see a
-  //      permanent "running" entry from the onSpawn write.
-  //   2. State index (upsertJob)              — CONTRACTUAL: `status`
-  //      iterates this. Failure here is fatal under the same fallback
-  //      rules — meta.json and state.json must agree, no split-brain.
-  //   3. Sidecar logs (stdout.log/stderr.log) — DIAGNOSTIC: operator-
-  //      facing trace files. Failure is a stderr WARNING and never
-  //      changes the job's terminal status. Per #16 follow-up 1: the
-  //      target CLI already exited successfully; clobbering its real
-  //      result with `finalization_failed` over a failed log write is
-  //      misleading. The warning is loud enough.
-  //
-  // Containment cleanup runs in the finally block so a fatal persistence
-  // path still disposes the workspace, matching M5/M6 semantics.
+function writeRunningRecord(invocation, pidInfo, mutations, runtimeDiagnostics = null) {
+  const runningRecord = buildJobRecord(invocation, {
+    status: "running",
+    exitCode: null,
+    parsed: null,
+    pidInfo,
+    claudeSessionId: null,
+    runtimeDiagnostics,
+  }, mutations);
+  writeJobFile(invocation.workspace_root, invocation.job_id, runningRecord);
+  upsertJob(invocation.workspace_root, runningRecord);
+}
 
-  // Post-snapshot for mutation detection (warning on failure; not fatal).
-  if (checkMutations && gitStatusBefore !== null) {
-    const after = tryGit(["status", "-s", "--untracked-files=all"], cwd);
-    if (after.ok) {
-      const gitStatusAfter = after.stdout;
-      try { writeSidecar(workspaceRoot, jobId, "git-status-after.txt", gitStatusAfter); }
-      catch (e) { process.stderr.write(`claude-companion: warning: sidecar git-status-after.txt write failed: ${e.message}\n`); }
-      if (gitStatusAfter && gitStatusAfter !== gitStatusBefore) {
-        const beforeLines = new Set(gitStatusLines(gitStatusBefore));
-        mutations.push(...gitStatusLines(gitStatusAfter)
-          .filter((line) => !beforeLines.has(line)));
-      }
-    } else {
-      mutations.push(mutationDetectionFailure(after.error));
-    }
+function recordPostRunMutations(invocation, mutationContext) {
+  if (!mutationContext.checkMutations || mutationContext.gitStatusBefore === null) return;
+  const after = tryGit(["status", "-s", "--untracked-files=all"], invocation.cwd);
+  if (!after.ok) {
+    mutationContext.mutations.push(mutationDetectionFailure(after.error));
+    return;
   }
+  try {
+    writeSidecar(invocation.workspace_root, invocation.job_id, "git-status-after.txt", after.stdout);
+  } catch (e) {
+    process.stderr.write(`claude-companion: warning: sidecar git-status-after.txt write failed: ${e.message}\n`);
+  }
+  if (!after.stdout || after.stdout === mutationContext.gitStatusBefore) return;
+  const beforeLines = new Set(gitStatusLines(mutationContext.gitStatusBefore));
+  mutationContext.mutations.push(...gitStatusLines(after.stdout).filter((line) => !beforeLines.has(line)));
+}
 
-  // Issue #22 sub-task 2: cancel-marker check. cmdCancel writes the
-  // marker BEFORE signaling so we can force status=cancelled even when
-  // the target CLI traps SIGTERM and exits 0 with valid output. The
-  // marker is per-job and best-effort — a missing file means "no cancel
-  // requested," not "couldn't read."
-  const cancelMarker = consumeCancelMarker(workspaceRoot, jobId);
-  execution.reviewAuditManifest = reviewAuditManifest(invocation, prompt, containment.path, execution);
-
-  // ONE buildJobRecord call for the canonical record — spec §21.3.2.
-  // signal + timedOut feed classifyExecution: a SIGTERM/SIGKILL exit without
-  // timedOut is an operator cancel → status="cancelled" (#16 follow-up 2);
-  // timedOut wins so wall-clock kills classify as timeout failures.
-  const finalRecord = buildJobRecord(invocation, {
+function buildClaudeFinalRecord(invocation, execution, cancelMarker, mutations, prompt, containmentPath, runtimeDiagnostics) {
+  execution.reviewAuditManifest = reviewAuditManifest(invocation, prompt, containmentPath, execution);
+  execution.runtimeDiagnostics = runtimeDiagnostics;
+  return buildJobRecord(invocation, {
     exitCode: execution.exitCode,
     parsed: execution.parsed,
     pidInfo: execution.pidInfo,
@@ -804,89 +884,62 @@ async function executeRun(invocation, prompt, { foreground }) {
     ...(cancelMarker ? { status: "cancelled" } : {}),
     signal: execution.signal ?? null,
     timedOut: execution.timedOut === true,
-    runtimeDiagnostics,
     reviewAuditManifest: execution.reviewAuditManifest,
+    runtimeDiagnostics: execution.runtimeDiagnostics,
   }, mutations);
+}
 
-  // Phase 1+2: contractual persistence (meta.json + state.json) under ONE
-  // state-lock acquisition. PR #21 review BLOCKER 2: this is what serializes
-  // finalization against reconcile so a concurrent stale promotion can't
-  // clobber our completed record.
-  const { metaError, stateError } = commitJobRecord(workspaceRoot, jobId, finalRecord);
-
-  // Phase 3: sidecars — diagnostics only.
-  for (const [name, contents] of [
-    ["stdout.log", execution.stdout],
-    ["stderr.log", execution.stderr],
-  ]) {
+function writeExecutionSidecars(workspaceRoot, jobId, execution) {
+  for (const [name, contents] of [["stdout.log", execution.stdout], ["stderr.log", execution.stderr]]) {
     try { writeSidecar(workspaceRoot, jobId, name, contents); }
     catch (e) {
       process.stderr.write(`claude-companion: warning: sidecar ${name} write failed: ${e.message}\n`);
     }
   }
+}
 
-  if (metaError || stateError) {
-    // Best-effort fallback so the persisted record is not stuck on
-    // "running" from onSpawn. PR #21 review BLOCKER 1: only overwrite
-    // the side that ACTUALLY failed — a state-lock-timeout (state failed,
-    // meta succeeded) used to clobber the good meta with a fallback
-    // failed-record. classifyExecution sees "finalization_failed:" and
-    // emits error_code=finalization_failed (not spawn_failed).
-    const detail = [
-      metaError && `meta=${metaError.message}`,
-      stateError && `state=${stateError.message}`,
-    ].filter(Boolean).join("; ");
-    let fallbackRecord = null;
-    try {
-      fallbackRecord = buildJobRecord(invocation, {
-        exitCode: execution.exitCode,
-        parsed: execution.parsed,
-        pidInfo: execution.pidInfo,
-        claudeSessionId: execution.claudeSessionId ?? null,
-        errorMessage: `finalization_failed: ${detail}`,
-      }, mutations);
-    } catch { /* defense in depth */ }
-    if (fallbackRecord) {
-      if (metaError) {
-        // commitJobRecord aborted in writeJobFile → state was NOT mutated
-        // either. Both sides still hold onSpawn's "running"; overwrite both
-        // with the fallback so consumers see a coherent terminal state.
-        try { writeJobFile(workspaceRoot, jobId, fallbackRecord); } catch { /* exhausted */ }
-        try { upsertJob(workspaceRoot, fallbackRecord); } catch { /* exhausted */ }
-      } else if (stateError) {
-        // meta IS the good terminal record (writeJobFile succeeded inside
-        // commitJobRecord; only saveStateUnlocked threw). Do NOT touch
-        // meta — that's the BLOCKER 1 clobber path. Retry upsertJob with
-        // the GOOD record; if that also fails, fall back to the failed
-        // record so state at least reflects a terminal status.
-        try { upsertJob(workspaceRoot, finalRecord); }
-        catch {
-          try { upsertJob(workspaceRoot, fallbackRecord); } catch { /* exhausted */ }
-        }
-      }
+function exitIfFinalizationFailed(invocation, execution, finalRecord, mutationContext, executionScope, errors) {
+  const { metaError, stateError } = errors;
+  if (!metaError && !stateError) return;
+  const detail = [
+    metaError && `meta=${metaError.message}`,
+    stateError && `state=${stateError.message}`,
+  ].filter(Boolean).join("; ");
+  persistFinalizationFallback(invocation, execution, finalRecord, mutationContext.mutations, errors, detail);
+  cleanupExecutionResources(executionScope, mutationContext);
+  fail("finalization_failed", detail, {
+    error_code: (metaError ?? stateError)?.code ?? null,
+  });
+}
+
+function persistFinalizationFallback(invocation, execution, finalRecord, mutations, errors, detail) {
+  let fallbackRecord = null;
+  try {
+    fallbackRecord = buildJobRecord(invocation, {
+      exitCode: execution.exitCode,
+      parsed: execution.parsed,
+      pidInfo: execution.pidInfo,
+      claudeSessionId: execution.claudeSessionId ?? null,
+      errorMessage: `finalization_failed: ${detail}`,
+    }, mutations);
+  } catch { /* defense in depth */ }
+  if (!fallbackRecord) return;
+  if (errors.metaError) {
+    try { writeJobFile(invocation.workspace_root, invocation.job_id, fallbackRecord); } catch { /* exhausted */ }
+    try { upsertJob(invocation.workspace_root, fallbackRecord); } catch { /* exhausted */ }
+  } else if (errors.stateError) {
+    try { upsertJob(invocation.workspace_root, finalRecord); }
+    catch {
+      try { upsertJob(invocation.workspace_root, fallbackRecord); } catch { /* exhausted */ }
     }
-    cleanupNeutralCwd(neutralCwd);
-    if (containment.disposed && disposeEffective) {
-      try { containment.cleanup(); } catch { /* best-effort */ }
-    }
-    fail("finalization_failed", detail, {
-      error_code: (metaError ?? stateError)?.code ?? null,
-    });
   }
+}
 
-  cleanupNeutralCwd(neutralCwd);
-  if (containment.disposed && disposeEffective) {
-    containment.cleanup();
+function cleanupExecutionResources(executionScope, mutationContext) {
+  cleanupNeutralCwd(mutationContext.neutralCwd);
+  if (executionScope.disposeEffective) {
+    try { executionScope.containment.cleanup(); } catch { /* best-effort */ }
   }
-  // Note: `containment_path` / `containment_cleaned` were legacy sidechannel
-  // fields on the record that pre-dated the JobRecord schema. Containment
-  // state is now either "disposed" (path gone from disk) or derivable from
-  // workspace inspection; not part of the schema.
-
-  if (foreground) {
-    printJson(finalRecord);
-  }
-  process.exit(finalRecord.status === "completed" ? 0 : 2);
 }
 
 function cleanupNeutralCwd(neutralCwd) {
@@ -957,7 +1010,8 @@ async function cmdRunWorker(rest) {
     fail("bad_state", "prompt sidecar missing for job " + options.job);
   }
 
-  const invocation = invocationFromRecord(meta, options["auth-mode"]);
+  const runtimeOptions = readRuntimeOptionsSidecar(workspaceRoot, options.job);
+  const invocation = invocationFromRecord(meta, options["auth-mode"], runtimeOptions);
   const authSelection = resolveAuthSelection(invocation.auth_mode);
   if (authSelection.selected_auth_path === "api_key_env_missing") {
     // The prompt sidecar was already consumed above, so auth refusal cannot leave it on disk.
@@ -975,12 +1029,18 @@ async function cmdRunWorker(rest) {
 // ——— subcommand: continue (resume a prior session with --resume) ———
 async function cmdContinue(rest) {
   const { options, positionals } = parseArgs(rest, {
-    valueOptions: ["job", "cwd", "model", "binary", "auth-mode"],
+    valueOptions: ["job", "cwd", "model", "binary", "auth-mode", "timeout-ms", "lifecycle-events"],
     booleanOptions: ["background", "foreground"],
   });
   if (!options.job) fail("bad_args", "--job <id> is required");
   if (options.background && options.foreground) {
     fail("bad_args", "--background and --foreground are mutually exclusive");
+  }
+  let lifecycleEvents;
+  try {
+    lifecycleEvents = parseLifecycleEventsMode(options["lifecycle-events"]);
+  } catch (error) {
+    fail("bad_args", error.message);
   }
   const cwd = options.cwd ?? process.cwd();
   const workspaceRoot = resolveWorkspaceRoot(cwd);
@@ -1020,6 +1080,12 @@ async function cmdContinue(rest) {
   const priorModeName = prior.mode_profile_name ?? prior.mode;
   const priorProfile = resolveProfile(priorModeName);
   const priorResumeChain = Array.isArray(prior.resume_chain) ? prior.resume_chain : [];
+  const priorRuntimeOptions = readRuntimeOptionsSidecar(workspaceRoot, options.job);
+  const priorTimeoutMs =
+    priorRuntimeOptions.timeout_ms ??
+    prior.review_metadata?.audit_manifest?.request?.timeout_ms ??
+    DEFAULT_CLAUDE_REVIEW_TIMEOUT_MS;
+  const timeoutMs = parseReviewTimeoutMs(options["timeout-ms"], process.env, priorTimeoutMs);
   const authSelection = resolveAuthSelection(options["auth-mode"]);
   if (authSelection.selected_auth_path === "api_key_env_missing") {
     fail("not_authed", apiKeyMissingMessage(), apiKeyMissingFields(authSelection));
@@ -1049,6 +1115,7 @@ async function cmdContinue(rest) {
     prompt_head: prompt.slice(0, 200),    // §21.3.1 — no full prompt
     review_prompt_contract_version: priorProfile.name === "rescue" ? null : REVIEW_PROMPT_CONTRACT_VERSION,
     review_prompt_provider: priorProfile.name === "rescue" ? null : "Claude Code",
+    timeout_ms: timeoutMs,
     schema_spec: prior.schema_spec ?? prior.schema ?? null,
     binary: options.binary ?? process.env.CLAUDE_BINARY ?? "claude",
     run_kind: options.background ? "background" : "foreground",
@@ -1062,20 +1129,24 @@ async function cmdContinue(rest) {
   const targetPrompt = targetPromptFor(invocation, prompt);
 
   if (options.background) {
+    validateBackgroundExecutionScopeOrExit(invocation, lifecycleEvents);
     try {
       writePromptSidecar(resolveJobsDir(workspaceRoot), newJobId_, targetPrompt);
+      writeRuntimeOptionsSidecar(workspaceRoot, newJobId_, { timeout_ms: timeoutMs });
     } catch (error) {
       failBackgroundPromptSidecarWrite(workspaceRoot, invocation, error);
     }
     const { child, error } = await spawnDetachedWorker(cwd, newJobId_, authSelection.auth_mode);
     if (error) failBackgroundWorkerSpawn(workspaceRoot, invocation, error);
-    printJson({ event: "launched", job_id: newJobId_, target: "claude",
-      mode: priorModeName, parent_job_id: options.job, pid: child.pid ?? null,
-      workspace_root: workspaceRoot,
-      external_review: externalReviewForInvocation(invocation) });
+    const launched = externalReviewBackgroundLaunchedEvent(
+      invocation,
+      child.pid,
+      externalReviewForInvocation(invocation),
+    );
+    printLifecycleJson(launched, lifecycleEvents);
     process.exit(0);
   }
-  await executeRun(invocation, targetPrompt, { foreground: true });
+  await executeRun(invocation, targetPrompt, { foreground: true, lifecycleEvents });
 }
 
 function writeSidecar(workspaceRoot, jobId, name, contents) {

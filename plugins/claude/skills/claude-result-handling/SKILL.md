@@ -137,8 +137,10 @@ from short-lived index contention.
 
 ## Rendering order
 
-1. **External review banner.** If `external_review` is present, render it
-   before findings or status prose. Use the boxed card for launch/result:
+1. **External review banner.** If `external_review_launched` is present, render it immediately from that lifecycle line's
+   `external_review` field. If `external_review` is present on the terminal JobRecord, render it before findings or status prose.
+   Background runs keep the legacy `event: "launched"` envelope, but render the same banner from its `external_review` field.
+   Use the boxed card for launch/result:
 
    ```text
    +---------------------------- EXTERNAL REVIEW ---------------------------+
