@@ -22,6 +22,55 @@ const SCHEMA_VERSION = 10;
 const MIN_SECRET_REDACTION_LENGTH = 8;
 const GIT_BINARY = "/usr/bin/git";
 const GIT_SAFE_PATH = "/usr/bin:/bin";
+const GROK_EXPECTED_KEYS = Object.freeze([
+  "id",
+  "job_id",
+  "target",
+  "provider",
+  "parent_job_id",
+  "claude_session_id",
+  "gemini_session_id",
+  "kimi_session_id",
+  "resume_chain",
+  "pid_info",
+  "mode",
+  "mode_profile_name",
+  "model",
+  "cwd",
+  "workspace_root",
+  "containment",
+  "scope",
+  "dispose_effective",
+  "scope_base",
+  "scope_paths",
+  "prompt_head",
+  "review_metadata",
+  "schema_spec",
+  "binary",
+  "status",
+  "started_at",
+  "ended_at",
+  "exit_code",
+  "error_code",
+  "error_message",
+  "error_summary",
+  "error_cause",
+  "suggested_action",
+  "external_review",
+  "disclosure_note",
+  "result",
+  "structured_output",
+  "permission_denials",
+  "mutations",
+  "cost_usd",
+  "usage",
+  "auth_mode",
+  "credential_ref",
+  "endpoint",
+  "http_status",
+  "raw_model",
+  "schema_version",
+]);
 const EXTERNAL_REVIEW_KEYS = Object.freeze([
   "marker",
   "provider",
@@ -534,6 +583,15 @@ function buildTerminalExternalReview({ cfg, mode, options, scopeInfo, execution,
   });
 }
 
+function freezeRecord(record) {
+  const keys = Object.keys(record);
+  if (keys.length !== GROK_EXPECTED_KEYS.length
+      || keys.some((key, index) => key !== GROK_EXPECTED_KEYS[index])) {
+    throw new Error(`Grok JobRecord keys drifted: ${keys.join(",")}`);
+  }
+  return Object.freeze(record);
+}
+
 function suggestedAction(errorCode) {
   if (errorCode === "bad_args") return "Correct the grok-web command arguments and retry.";
   if (errorCode === "scope_failed") return "Adjust --scope, --scope-base, or --scope-paths and retry.";
@@ -557,7 +615,7 @@ function buildRecord({ cfg, mode, options, scopeInfo, execution, startedAt, ende
   const errorMessage = completed ? null : (execution.parsed?.error ?? "");
   const reviewDisclosure = disclosure(cfg, completed, execution.payload_sent ?? null);
   const transmission = sourceTransmission(completed, execution.payload_sent ?? null);
-  return {
+  return freezeRecord({
     id: options.jobId,
     job_id: options.jobId,
     target: "grok-web",
@@ -617,7 +675,7 @@ function buildRecord({ cfg, mode, options, scopeInfo, execution, startedAt, ende
     http_status: execution.http_status ?? null,
     raw_model: execution.parsed?.raw_model ?? null,
     schema_version: SCHEMA_VERSION,
-  };
+  });
 }
 
 function dataRoot(env = process.env) {

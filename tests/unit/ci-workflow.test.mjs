@@ -2,6 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
+import { EXTERNAL_REVIEW_KEYS } from "../../scripts/lib/external-review.mjs";
 
 const pkg = JSON.parse(readFileSync(resolve("package.json"), "utf8"));
 const workflow = readFileSync(resolve(".github/workflows/pull-request-ci.yml"), "utf8");
@@ -94,12 +95,24 @@ test("standalone lifecycle smoke tests guard launch event shape against shared h
 test("grok external_review shapes are runtime-guarded", () => {
   const source = readFileSync(resolve("plugins/grok/scripts/grok-web-reviewer.mjs"), "utf8");
   assert.match(source, /EXTERNAL_REVIEW_KEYS/, "Grok must define the canonical external_review key order");
+  const localKeys = source.match(/const EXTERNAL_REVIEW_KEYS = Object\.freeze\(\[([\s\S]*?)\]\);/);
+  assert.ok(localKeys, "Grok external_review keys must be statically inspectable");
+  assert.deepEqual([...localKeys[1].matchAll(/"([^"]+)"/g)].map((match) => match[1]), [...EXTERNAL_REVIEW_KEYS],
+    "Grok external_review keys must stay in parity with the shared key order");
   assert.match(source, /function freezeExternalReview/, "Grok must validate external_review key drift");
   assert.match(source, /return freezeExternalReview\(\{[\s\S]*source_content_transmission[\s\S]*disclosure/s,
     "Grok launch external_review builder must freeze the generated review object");
   assert.match(source, /function buildTerminalExternalReview/, "Grok terminal external_review must use a named builder");
   assert.match(source, /external_review: buildTerminalExternalReview\(/,
     "Grok terminal JobRecord must freeze the generated review object");
+});
+
+test("grok terminal JobRecord shape is runtime-guarded", () => {
+  const source = readFileSync(resolve("plugins/grok/scripts/grok-web-reviewer.mjs"), "utf8");
+  assert.match(source, /GROK_EXPECTED_KEYS/, "Grok must define the canonical JobRecord key order");
+  assert.match(source, /function freezeRecord/, "Grok must validate terminal JobRecord key drift");
+  assert.match(source, /return freezeRecord\(\{[\s\S]*schema_version: SCHEMA_VERSION,[\s\S]*\}\);/,
+    "Grok buildRecord must freeze the generated terminal JobRecord");
 });
 
 test("companion background launch events use shared helper", () => {
