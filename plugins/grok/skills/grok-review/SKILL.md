@@ -19,6 +19,9 @@ node plugins/grok/scripts/grok-web-reviewer.mjs run --mode review --scope branch
 
 If the user provides a base ref, add `--scope-base REF` before `--prompt`.
 `<focus>` is the user's review prompt or focus area. Render the returned
-JobRecord, render `external_review_launched` as soon as it appears, then render `external_review` before the review result when present, and
-never print session cookies, tunnel API-key values, or bearer token values.
+JobRecord, render `external_review_launched` as soon as it appears, then render
+`external_review` before the review result when present. If the JobRecord
+failed, report `error_code`, `error_message`, `http_status` when present, and
+`suggested_action`. Never print session cookies, tunnel API-key values, or
+bearer token values.
 Do not recommend direct xAI API keys as a fallback for subscription web mode.
