@@ -765,6 +765,11 @@ function baseUrlFor(cfg) {
 function doctorFields(provider, cfg, env = process.env) {
   const credential = selectedCredential(cfg, env);
   const endpoint = baseUrlFor(cfg);
+  const costQuotaReadiness = {
+    status: "unknown_not_probed",
+    source: "doctor_does_not_call_billing_or_usage_endpoints",
+    billing_mutation: "not_supported",
+  };
   if (!VALID_AUTH_MODES.has(cfg.auth_mode)) {
     return {
       provider,
@@ -774,6 +779,7 @@ function doctorFields(provider, cfg, env = process.env) {
       next_action: `Set ${provider} auth_mode to api_key or auto.`,
       auth_mode: cfg.auth_mode,
       endpoint,
+      cost_quota_readiness: costQuotaReadiness,
     };
   }
   if (!credential.value) {
@@ -786,6 +792,7 @@ function doctorFields(provider, cfg, env = process.env) {
       auth_mode: cfg.auth_mode,
       credential_candidates: cfg.env_keys ?? [],
       endpoint,
+      cost_quota_readiness: costQuotaReadiness,
     };
   }
   return {
@@ -798,6 +805,7 @@ function doctorFields(provider, cfg, env = process.env) {
     credential_ref: credential.keyName,
     endpoint,
     model: cfg.model,
+    cost_quota_readiness: costQuotaReadiness,
   };
 }
 
@@ -1283,7 +1291,11 @@ async function callProvider(provider, cfg, prompt, env = process.env) {
         response.status,
         parsed,
         true,
-        diagnostics(),
+        {
+          ...diagnostics(),
+          elapsed_ms: Date.now() - started,
+          cost_quota: costQuotaDiagnostics(response.status, parsed),
+        },
       );
     }
     if (!parsed.ok) {
@@ -1374,11 +1386,35 @@ function providerErrorMessage(parsed, text, redact) {
 function classifyHttpFailure(status, parsed) {
   const detail = parsed.ok ? JSON.stringify(parsed.value?.error ?? parsed.value ?? {}) : "";
   if (status === 401 || status === 403) return "auth_rejected";
-  if (status === 429) return "rate_limited";
+  if (status === 402 || status === 429 || isUsageLimitDetail(detail)) return "usage_limited";
   if (status === 408 || status === 409 || status === 425 || status === 500 || status === 502 || status === 503 || status === 504 || /capacity|resource|overload|unavailable/i.test(detail)) {
     return "provider_unavailable";
   }
   return "provider_error";
+}
+
+function isUsageLimitDetail(detail) {
+  return /(?:\binsufficient_quota\b|\bpayment_required\b|\bquota\b|\busage limit\b|\bbilling[_ -]?(?:cycle|account|limit|hard[_ -]?limit|quota)\b|\bcredit limit\b|\binsufficient credits\b)/i.test(String(detail ?? ""));
+}
+
+function safeDiagnosticString(value) {
+  if (typeof value !== "string") return null;
+  return /^[A-Za-z][A-Za-z0-9_.-]{0,63}$/.test(value) ? value : null;
+}
+
+function costQuotaDiagnostics(httpStatus, parsed) {
+  const value = parsed.ok ? parsed.value : null;
+  const error = value?.error && typeof value.error === "object" ? value.error : {};
+  const detail = JSON.stringify(error ?? {});
+  const authRejected = httpStatus === 401 || httpStatus === 403;
+  const usageLimited = !authRejected && (httpStatus === 402 || httpStatus === 429 || isUsageLimitDetail(detail));
+  return {
+    classification: usageLimited ? "usage_limited" : "not_reported",
+    http_status: httpStatus ?? null,
+    provider_error_code: safeDiagnosticString(error.code) ?? null,
+    provider_error_type: safeDiagnosticString(error.type) ?? null,
+    billing_mutation: "not_attempted",
+  };
 }
 
 function providerFailure(reason, message, httpStatus, raw = null, payloadSent = null) {
@@ -1431,6 +1467,8 @@ function suggestedAction(errorCode, provider, cfg, errorMessage = "", httpStatus
   if (errorCode === "config_error") return "Reinstall or repair plugins/api-reviewers/config/providers.json and retry.";
   if (errorCode === "missing_key") return `Expose one of these key names to Codex: ${(cfg.env_keys ?? []).join(", ")}.`;
   if (errorCode === "auth_rejected") return `Check the ${cfg.display_name} API key and billing/plan for ${cfg.model}.`;
+  if (errorCode === "usage_limited") return `${cfg.display_name} reported a quota, usage-tier, billing, or credit limit. This plugin does not purchase credits or upgrade tiers automatically; inspect the provider account and perform any billing transaction only after explicit user approval.`;
+  // Kept for backward compatibility with older persisted records and future non-HTTP callers.
   if (errorCode === "rate_limited") return `Wait and retry, or lower concurrency for ${provider}.`;
   if (errorCode === "timeout") return `The provider did not respond within the timeout window. Retry later, increase API_REVIEWERS_TIMEOUT_MS, or switch reviewer provider.`;
   if (errorCode === "provider_unavailable") return providerUnavailableSuggestedAction(errorMessage, httpStatus, env);
@@ -1500,6 +1538,7 @@ function errorCauseFor(errorCode) {
   if (errorCode === "config_error") return "provider_config";
   if (errorCode === "scope_failed") return "scope_resolution";
   if (errorCode === "git_binary_rejected") return "git_binary_policy";
+  if (errorCode === "usage_limited") return "cost_quota_usage_limit";
   return "direct_api_provider";
 }
 
@@ -1614,6 +1653,17 @@ function buildRecord({ provider, cfg, mode, options, scopeInfo, execution, start
     source_content_transmission: sourceContentTransmission,
     disclosure,
   });
+  const runtimeDiagnostics = execution.diagnostics ? {
+    provider_request: {
+      configured_timeout_ms: execution.diagnostics.configured_timeout_ms ?? null,
+      elapsed_ms: execution.diagnostics.elapsed_ms ?? null,
+      prompt_chars: execution.diagnostics.prompt_chars ?? null,
+      request_defaults: execution.diagnostics.request_defaults ?? null,
+      max_tokens: execution.diagnostics.max_tokens ?? null,
+      temperature: execution.diagnostics.temperature ?? null,
+    },
+    cost_quota: execution.diagnostics.cost_quota ?? null,
+  } : null;
   return freezeRecord({
     id: options.jobId,
     job_id: options.jobId,
@@ -1650,7 +1700,7 @@ function buildRecord({ provider, cfg, mode, options, scopeInfo, execution, start
     suggested_action: completed ? null : suggestedAction(errorCode, provider, cfg, errorMessage, execution.http_status ?? null),
     external_review: externalReview,
     disclosure_note: disclosure,
-    runtime_diagnostics: null,
+    runtime_diagnostics: runtimeDiagnostics,
     result,
     structured_output: null,
     permission_denials: [],

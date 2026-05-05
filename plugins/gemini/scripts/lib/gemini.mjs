@@ -58,39 +58,76 @@ function summarizeStderr(stderr) {
   return trimmed.length > 4000 ? `${trimmed.slice(0, 4000)}...` : trimmed;
 }
 
+function usageLimitMessage(...values) {
+  const text = values.filter((value) => value != null).map((value) => (
+    typeof value === "string" ? value : JSON.stringify(value)
+  )).join("\n").trim();
+  if (!text) return null;
+  if (/(?:usage limit|quota|billing cycle|billing account|credit limit|insufficient credits)/i.test(text)) {
+    return text.length > 800 ? `${text.slice(0, 800)}...` : text;
+  }
+  return null;
+}
+
 export function parseGeminiResult(stdout, stderr = "") {
   const trimmed = stdout.trim();
   if (!trimmed) {
-    const stderrSummary = summarizeStderr(stderr);
-    if (stderrSummary) {
-      return { ok: false, reason: "gemini_stderr", error: stderrSummary, raw: stdout };
-    }
-    return { ok: false, reason: "empty_stdout", raw: stdout };
+    return parseEmptyGeminiOutput(stdout, stderr);
   }
-  let parsed;
-  try {
-    parsed = JSON.parse(trimmed);
-  } catch (e) {
-    try {
-      parsed = JSON.parse(trimmed.split("\n").filter(Boolean).pop());
-    } catch {
-      return { ok: false, reason: "json_parse_error", error: e.message, raw: stdout };
-    }
+  const parsedResult = parseGeminiJson(trimmed);
+  if (!parsedResult.ok) {
+    return { ok: false, reason: "json_parse_error", error: parsedResult.error, raw: stdout };
   }
+  const parsed = parsedResult.value;
   const parsedError = parsed.error == null
     ? null
     : (typeof parsed.error === "string" ? parsed.error : JSON.stringify(parsed.error));
+  const usageLimited = parsed.error == null ? null : usageLimitMessage(parsedError, stderr);
   return {
     ok: parsed.error == null,
+    reason: usageLimited ? "usage_limited" : undefined,
     sessionId: parsed.session_id ?? null,
     result: typeof parsed.response === "string" ? parsed.response : (typeof parsed.result === "string" ? parsed.result : null),
     structured: parsed.structured_output ?? null,
     denials: Array.isArray(parsed.permission_denials) ? parsed.permission_denials : [],
     usage: parsed.stats ?? null,
     costUsd: parsed.total_cost_usd ?? null,
-    error: parsedError,
+    error: usageLimited ?? parsedError,
     raw: parsed,
   };
+}
+
+function parseEmptyGeminiOutput(stdout, stderr) {
+  const usageLimited = usageLimitMessage(stderr);
+  if (usageLimited) {
+    return { ok: false, reason: "usage_limited", error: usageLimited, raw: stdout };
+  }
+  const stderrSummary = summarizeStderr(stderr);
+  if (stderrSummary) {
+    return { ok: false, reason: "gemini_stderr", error: stderrSummary, raw: stdout };
+  }
+  return { ok: false, reason: "empty_stdout", raw: stdout };
+}
+
+function parseGeminiJson(trimmed) {
+  try {
+    return { ok: true, value: JSON.parse(trimmed) };
+  } catch (e) {
+    const lastJsonLine = lastNonEmptyLine(trimmed);
+    try {
+      return { ok: true, value: JSON.parse(lastJsonLine) };
+    } catch {
+      return { ok: false, error: e.message };
+    }
+  }
+}
+
+function lastNonEmptyLine(text) {
+  const lines = text.split("\n");
+  for (let i = lines.length - 1; i >= 0; i -= 1) {
+    if (lines[i]) return lines[i];
+  }
+  return "";
 }
 
 export async function spawnGemini(profile, runtimeInputs = {}) {

@@ -592,6 +592,7 @@ function providerFailureWithDiagnostic(reason, message, httpStatus, raw = null, 
 
 function classifyHttpFailure(status) {
   if (status === 401 || status === 403) return "session_expired";
+  if (status === 402) return "usage_limited";
   if (status === 429) return "usage_limited";
   if (status >= 500) return "tunnel_error";
   return "tunnel_error";
@@ -647,6 +648,24 @@ function safeSessionId(value) {
   return /^[A-Za-z0-9._:/=+@-]{1,200}$/.test(value) ? value : null;
 }
 
+function safeDiagnosticString(value) {
+  if (typeof value !== "string") return null;
+  return /^[A-Za-z][A-Za-z0-9_.-]{0,63}$/.test(value) ? value : null;
+}
+
+function costQuotaDiagnostics(httpStatus, parsed) {
+  const value = parsed.ok ? parsed.value : null;
+  const error = value?.error && typeof value.error === "object" ? value.error : {};
+  const usageLimited = httpStatus === 402 || httpStatus === 429;
+  return {
+    classification: usageLimited ? "usage_limited" : "not_reported",
+    http_status: httpStatus ?? null,
+    provider_error_code: safeDiagnosticString(error.code) ?? null,
+    provider_error_type: safeDiagnosticString(error.type) ?? null,
+    billing_mutation: "not_attempted",
+  };
+}
+
 async function callGrokTunnel(cfg, prompt, env = process.env) {
   const endpoint = `${cfg.base_url}/chat/completions`;
   const requestBody = {
@@ -685,6 +704,8 @@ async function callGrokTunnel(cfg, prompt, env = process.env) {
           stream: false,
           message_count: requestBody.messages.length,
           prompt_chars: prompt.length,
+          configured_timeout_ms: cfg.timeout_ms,
+          cost_quota: costQuotaDiagnostics(response.status, parsed),
         },
       );
     }
@@ -879,7 +900,7 @@ function suggestedAction(errorCode, errorMessage = "") {
   if (errorCode === "tunnel_unavailable") return "Start the local Grok web tunnel, verify GROK_WEB_BASE_URL, then retry.";
   if (errorCode === "tunnel_timeout") return "The local Grok web tunnel did not respond before GROK_WEB_TIMEOUT_MS; inspect the tunnel and retry.";
   if (errorCode === "session_expired") return "Refresh the Grok web login/session used by the local tunnel, then retry.";
-  if (errorCode === "usage_limited") return "Wait for Grok subscription usage to recover, reduce concurrency, or inspect the local tunnel.";
+  if (errorCode === "usage_limited") return "Wait for Grok subscription usage to recover, reduce concurrency, or inspect the local tunnel. Any billing, credit, or tier change must be a separate manual action with explicit user approval.";
   if (errorCode === "grok_chat_model_rejected") return "The tunnel lists models, but the configured GROK_WEB_MODEL is not accepted by chat; correct GROK_WEB_MODEL or tunnel model routing, then retry.";
   if (errorCode === "grok_chat_timeout") return "The Grok chat readiness probe exceeded GROK_WEB_CHAT_DOCTOR_TIMEOUT_MS; inspect the local tunnel latency or raise that timeout, then retry.";
   if (errorCode === "models_ok_chat_400") return "The tunnel lists models but chat is not review-capable; refresh the Grok web session, inspect tunnel logs and rate-limit endpoint health, then retry.";
@@ -892,6 +913,7 @@ function errorCauseFor(errorCode) {
   if (errorCode === "bad_args") return "caller";
   if (errorCode === "scope_failed") return "scope_resolution";
   if (errorCode === "git_binary_rejected") return "git_binary_policy";
+  if (errorCode === "usage_limited") return "cost_quota_usage_limit";
   return "grok_web_tunnel";
 }
 
@@ -1011,10 +1033,23 @@ function buildRecord({ cfg, mode, options, scopeInfo, execution, startedAt, ende
   const errorCode = completed ? null : (execution.parsed?.reason ?? "tunnel_error");
   const errorMessage = completed ? null : (execution.parsed?.error ?? "");
   const diagnostic = execution.diagnostics
-    ? `${errorMessage || errorCode} (${Object.entries(execution.diagnostics).map(([key, value]) => `${key}=${value}`).join(" ")})`
+    ? `${errorMessage || errorCode} (${formatDiagnosticPairs(execution.diagnostics)})`
     : (errorMessage || errorCode);
   const reviewDisclosure = disclosure(cfg, completed, execution.payload_sent ?? null);
   const transmission = sourceTransmission(completed, execution.payload_sent ?? null);
+  const runtimeDiagnostics = execution.diagnostics ? {
+    tunnel_request: {
+      endpoint_class: execution.diagnostics.endpoint_class ?? null,
+      model: execution.diagnostics.model ?? cfg.model,
+      stream: execution.diagnostics.stream ?? null,
+      message_count: execution.diagnostics.message_count ?? null,
+      prompt_chars: execution.diagnostics.prompt_chars ?? null,
+      configured_timeout_ms: execution.diagnostics.configured_timeout_ms ?? null,
+      max_tokens: execution.diagnostics.max_tokens ?? null,
+      temperature: execution.diagnostics.temperature ?? null,
+    },
+    cost_quota: execution.diagnostics.cost_quota ?? null,
+  } : null;
   return freezeRecord({
     id: options.jobId,
     job_id: options.jobId,
@@ -1051,7 +1086,7 @@ function buildRecord({ cfg, mode, options, scopeInfo, execution, startedAt, ende
     suggested_action: completed ? null : suggestedAction(errorCode, errorMessage),
     external_review: buildTerminalExternalReview({ cfg, mode, options, scopeInfo, execution, transmission, reviewDisclosure }),
     disclosure_note: reviewDisclosure,
-    runtime_diagnostics: null,
+    runtime_diagnostics: runtimeDiagnostics,
     result: completed ? execution.parsed.result : null,
     structured_output: null,
     permission_denials: [],
@@ -1065,6 +1100,13 @@ function buildRecord({ cfg, mode, options, scopeInfo, execution, startedAt, ende
     raw_model: execution.parsed?.raw_model ?? null,
     schema_version: SCHEMA_VERSION,
   });
+}
+
+function formatDiagnosticPairs(diagnostics) {
+  return Object.entries(diagnostics)
+    .filter(([, value]) => value == null || typeof value !== "object")
+    .map(([key, value]) => `${key}=${value}`)
+    .join(" ");
 }
 
 function dataRoot(env = process.env) {
@@ -1376,6 +1418,11 @@ async function cmdList(env = process.env) {
 
 async function doctorFields(env = process.env) {
   const cfg = config(env);
+  const costQuotaReadiness = {
+    status: "unknown_not_probed",
+    source: "doctor_does_not_call_billing_or_usage_endpoints",
+    billing_mutation: "not_supported",
+  };
   const probe = await probeGrokTunnel(cfg, env);
   const chatProbe = probe.reachable ? await probeGrokChat(cfg, env) : {
     chat_ready: false,
@@ -1409,6 +1456,7 @@ async function doctorFields(env = process.env) {
     timeout_ms: cfg.timeout_ms,
     doctor_timeout_ms: cfg.doctor_timeout_ms,
     chat_doctor_timeout_ms: cfg.chat_doctor_timeout_ms,
+    cost_quota_readiness: costQuotaReadiness,
     error_code: errorCode,
     error_message: ready ? null : (chatProbe.error_message ?? probe.error_message),
     http_status: probe.http_status,

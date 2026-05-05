@@ -226,3 +226,8 @@ Latest live verification:
     `max_tokens=131072`.
   - The direct API verification printed only redacted `JobRecord` metadata;
     secret values were not printed.
+  - Provider quota, usage-tier, billing, credit-limit, or rate-limit failures
+    are classified as `usage_limited` and may include safe
+    `runtime_diagnostics.cost_quota` metadata. Direct API E2E does not query
+    billing endpoints, purchase credits, upgrade tiers, or mutate billing
+    state.

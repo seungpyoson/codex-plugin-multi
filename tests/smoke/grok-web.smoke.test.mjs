@@ -185,6 +185,11 @@ test("doctor reports subscription-backed local tunnel mode and checks chat readi
     assert.equal(parsed.probe_endpoint, `${baseUrl}/models`);
     assert.equal(parsed.chat_probe_endpoint, `${baseUrl}/chat/completions`);
     assert.equal(parsed.chat_doctor_timeout_ms, 10000);
+    assert.deepEqual(parsed.cost_quota_readiness, {
+      status: "unknown_not_probed",
+      source: "doctor_does_not_call_billing_or_usage_endpoints",
+      billing_mutation: "not_supported",
+    });
     assert.match(parsed.summary, /subscription-backed/i);
     assert.match(parsed.next_action, /Grok web review/i);
     assert.equal(parsed.credential_ref, "GROK_WEB_TUNNEL_API_KEY");
@@ -1869,6 +1874,7 @@ test("tunnel invocation catch is separated from prompt construction catch", () =
 for (const { status, code } of [
   { status: 401, code: "session_expired" },
   { status: 403, code: "session_expired" },
+  { status: 402, code: "usage_limited" },
   { status: 429, code: "usage_limited" },
   { status: 500, code: "tunnel_error" },
 ]) {
@@ -1879,7 +1885,13 @@ for (const { status, code } of [
     await withServer(async (_req, res) => {
       res.statusCode = status;
       res.setHeader("content-type", "application/json");
-      res.end(JSON.stringify({ error: { message: "Authorization: Bearer secret-cookie-like-token failed" } }));
+      res.end(JSON.stringify({
+        error: {
+          code: code === "usage_limited" ? "account=user@example.com:plan_id=pro+stripe-sub-abc/123" : "server_error",
+          type: code === "usage_limited" ? "billing/account=user@example.com" : "server_error",
+          message: "Authorization: Bearer secret-cookie-like-token failed",
+        },
+      }));
     }, async (baseUrl) => {
       const result = await runAsync([
         "run",
@@ -1903,6 +1915,16 @@ for (const { status, code } of [
       assert.equal(record.http_status, status);
       assert.equal(record.review_metadata.audit_manifest.request.timeout_ms, 600000);
       assert.match(record.error_summary, /configured_timeout_ms=600000/);
+      if (code === "usage_limited") {
+        assert.equal(record.error_cause, "cost_quota_usage_limit");
+        assert.equal(record.runtime_diagnostics.cost_quota.classification, "usage_limited");
+        assert.equal(record.runtime_diagnostics.cost_quota.http_status, status);
+        assert.equal(record.runtime_diagnostics.cost_quota.provider_error_code, null);
+        assert.equal(record.runtime_diagnostics.cost_quota.provider_error_type, null);
+        assert.equal(record.runtime_diagnostics.tunnel_request.configured_timeout_ms, 600000);
+        assert.doesNotMatch(record.error_summary, /\[object Object\]/);
+        assert.match(record.suggested_action, /subscription usage|manual approval/i);
+      }
       assert.doesNotMatch(result.stdout, /secret-cookie-like-token/);
       assert.match(record.error_message, /\[REDACTED\]/);
     });

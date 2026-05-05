@@ -161,6 +161,36 @@ test("parseGeminiResult: preserves stderr-only Gemini API failures as Gemini err
   assert.equal(parsed.raw, "");
 });
 
+test("parseGeminiResult: classifies quota and billing stderr as usage limited", () => {
+  const parsed = parseGeminiResult("", `Error when talking to Gemini API
+Quota exceeded for this billing account. Please upgrade your usage tier.
+`);
+
+  assert.equal(parsed.ok, false);
+  assert.equal(parsed.reason, "usage_limited");
+  assert.match(parsed.error, /quota exceeded/i);
+});
+
+test("parseGeminiResult: transient rate-limit stderr is not billed as usage limited", () => {
+  const parsed = parseGeminiResult("", `Error when talking to Gemini API
+Rate limit exceeded for requests per minute. Retry later.
+`);
+
+  assert.equal(parsed.ok, false);
+  assert.equal(parsed.reason, "gemini_stderr");
+  assert.match(parsed.error, /rate limit exceeded/i);
+});
+
+test("parseGeminiResult: provider capacity stderr is not billed as usage limited", () => {
+  const parsed = parseGeminiResult("", `Error when talking to Gemini API
+MODEL_CAPACITY_EXHAUSTED: No capacity available; model is capacity-limited.
+`);
+
+  assert.equal(parsed.ok, false);
+  assert.equal(parsed.reason, "gemini_stderr");
+  assert.match(parsed.error, /capacity-limited/i);
+});
+
 test("parseGeminiResult: covers empty, malformed, and newline-delimited JSON outputs", () => {
   assert.deepEqual(parseGeminiResult(""), { ok: false, reason: "empty_stdout", raw: "" });
 
