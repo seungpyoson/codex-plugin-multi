@@ -1383,8 +1383,24 @@ function providerErrorMessage(parsed, text, redact) {
   return redact(text).slice(0, 800);
 }
 
+function providerFailureDetail(parsed) {
+  if (!parsed.ok) return {};
+  const value = parsed.value;
+  if (value && typeof value === "object" && "error" in value && value.error != null) return value.error;
+  return value ?? {};
+}
+
+function providerFailureDetailText(parsed) {
+  return JSON.stringify(providerFailureDetail(parsed) ?? {});
+}
+
+function providerFailureDetailObject(parsed) {
+  const detail = providerFailureDetail(parsed);
+  return detail && typeof detail === "object" && !Array.isArray(detail) ? detail : {};
+}
+
 function classifyHttpFailure(status, parsed) {
-  const detail = parsed.ok ? JSON.stringify(parsed.value?.error ?? parsed.value ?? {}) : "";
+  const detail = parsed.ok ? providerFailureDetailText(parsed) : "";
   if (status === 401 || status === 403) return "auth_rejected";
   if (status === 402 || status === 429 || isUsageLimitDetail(detail)) return "usage_limited";
   if (status === 408 || status === 409 || status === 425 || status === 500 || status === 502 || status === 503 || status === 504 || /capacity|resource|overload|unavailable/i.test(detail)) {
@@ -1403,9 +1419,8 @@ function safeDiagnosticString(value) {
 }
 
 function costQuotaDiagnostics(httpStatus, parsed) {
-  const value = parsed.ok ? parsed.value : null;
-  const error = value?.error && typeof value.error === "object" ? value.error : {};
-  const detail = JSON.stringify(error ?? {});
+  const error = providerFailureDetailObject(parsed);
+  const detail = parsed.ok ? providerFailureDetailText(parsed) : "";
   const authRejected = httpStatus === 401 || httpStatus === 403;
   const usageLimited = !authRejected && (httpStatus === 402 || httpStatus === 429 || isUsageLimitDetail(detail));
   return {

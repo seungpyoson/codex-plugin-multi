@@ -704,7 +704,6 @@ async function callGrokTunnel(cfg, prompt, env = process.env) {
           stream: false,
           message_count: requestBody.messages.length,
           prompt_chars: prompt.length,
-          configured_timeout_ms: cfg.timeout_ms,
           cost_quota: costQuotaDiagnostics(response.status, parsed),
         },
       );
