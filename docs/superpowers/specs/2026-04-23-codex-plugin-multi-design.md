@@ -101,9 +101,9 @@ Every design choice below is anchored to a source citation or live test. Environ
 
 | Tier | Claude | Gemini |
 |---|---|---|
-| cheap (review/setup optional) | `claude-opus-4-7` | `gemini-3.1-pro-preview` |
-| medium | `claude-opus-4-7` | `gemini-3.1-pro-preview` |
-| default (smartest) | `claude-opus-4-7` | `gemini-3.1-pro-preview` |
+| review_quality | `claude-opus-4-7` | `gemini-3.1-pro-preview` |
+| rescue | `claude-opus-4-7` | `gemini-3.1-pro-preview` |
+| native | target CLI default | target CLI default |
 
 Aliases silently substitute (`claude --model haiku` → `claude-sonnet-4-6`). **Full model IDs only.**
 
@@ -548,13 +548,14 @@ Identical to upstream: parent fork-execs target CLI, stdio redirected to `<works
 
 ## 8. Model selection policy
 
-Three configured tiers, full IDs only (§4.2). Config file `config/models.json`:
+Configured review/rescue tiers use full IDs only (§4.2). Config file `config/models.json`:
 
 ```json
-{"cheap": "<id>", "medium": "<id>", "default": "<id>"}
+{"review_quality": "<id>", "rescue": "<id>", "fallbacks": {"review_quality": [], "rescue": [], "native": []}}
 ```
 
-- Review uses `cheap`; adversarial-review/custom-review use `medium`; rescue uses `default`.
+- Review, adversarial-review, and custom-review use `review_quality`.
+- Rescue uses `rescue`.
 - Ping uses the target CLI's native default and reports `model: null` unless the operator passes `--model=<id>`.
 - Unknown IDs fail with raw error; no fallback (`claude-haiku-4-5-20251001` is the canonical haiku, not the `haiku` alias).
 
@@ -774,7 +775,7 @@ Before v0.1.0: run upstream `/codex:adversarial-review` against this repo. Addre
 | # | Risk | Mitigation |
 |---|------|------------|
 | R1 | Gemini plan mode is actively unsafe (auto-escalates to YOLO headlessly). | TOML `--policy` deny rules (verified real). Disposable containment default. README disclosure. |
-| R2 | Claude plan mode is soft; haiku tier occasionally ignores. | `--disallowedTools` blocklist; disposable containment default; pre/post git-status diff. Default to `medium` or `default` tier for reviews. |
+| R2 | Claude plan mode is soft; weaker tiers occasionally ignore review instructions. | `--disallowedTools` blocklist; disposable containment default; pre/post git-status diff. Default review modes to the `review_quality` tier. |
 | R3 | Model aliases silently substitute. | Full IDs only; `config/models.json` allowlist. |
 | R4 | Gemini 429 intermittent on 2.5-series models. | Retry + report serving tiers in `setup`. |
 | R5 | Plugin-root resolution on hash-versioned installs. | `path.resolve(fileURLToPath(new URL("..", import.meta.url)))` (upstream pattern). |
@@ -855,7 +856,7 @@ These are the rules M7+ code is judged against. Each invariant names a class of 
 ```
 ModeProfile {
   name:            "review" | "adversarial-review" | "custom-review" | "rescue" | "ping"
-  model_tier:      "cheap" | "medium" | "default" | "native"  // §8
+  model_tier:      "review_quality" | "rescue" | "native"  // §8
   permission_mode: "plan" | "acceptEdits"                // §4.5
   strip_context:   boolean                               // §4.6 — strip CLAUDE.md?
   disallowed_tools: string[]                             // §4.5 hard blocklist
@@ -871,11 +872,11 @@ ModeProfile {
 
 | Mode | tier | perm | strip | containment | scope | dispose | add_dir |
 |---|---|---|---|---|---|---|---|
-| review | cheap | plan | true | worktree | working-tree | true | yes |
-| adversarial-review | medium | plan | true | worktree | branch-diff | true | yes |
-| custom-review | medium | plan | true | worktree | custom | true | yes |
-| rescue | default | acceptEdits | **false** | none | working-tree | false | yes |
-| ping | default | plan | true | none | head (no setup) | false | no |
+| review | review_quality | plan | true | worktree | working-tree | true | yes |
+| adversarial-review | review_quality | plan | true | worktree | branch-diff | true | yes |
+| custom-review | review_quality | plan | true | worktree | custom | true | yes |
+| rescue | rescue | acceptEdits | **false** | none | working-tree | false | yes |
+| ping | native | plan | true | none | head (no setup) | false | no |
 
 **Forbidden patterns:**
 

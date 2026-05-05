@@ -7,6 +7,7 @@ import { hostname } from "node:os";
 import { dirname, isAbsolute, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { cleanGitEnv as cleanCanonicalGitEnv } from "./lib/git-env.mjs";
+import { REVIEW_PROMPT_CONTRACT_VERSION, buildReviewPrompt } from "./lib/review-prompt.mjs";
 
 const VALID_MODES = new Set(["review", "adversarial-review", "custom-review"]);
 const DEFAULT_BASE_URL = "http://127.0.0.1:8000/v1";
@@ -17,8 +18,10 @@ const MAX_SCOPE_FILE_BYTES = 256 * 1024;
 const MAX_SCOPE_TOTAL_BYTES = 1024 * 1024;
 const MAX_STATE_JOBS = 50;
 const STATE_LOCK_STALE_MS = 60 * 1000;
-const SCHEMA_VERSION = 9;
+const SCHEMA_VERSION = 10;
 const MIN_SECRET_REDACTION_LENGTH = 8;
+const GIT_BINARY = "/usr/bin/git";
+const GIT_SAFE_PATH = "/usr/bin:/bin";
 
 function printJson(obj) {
   process.stdout.write(`${JSON.stringify(obj, null, 2)}\n`);
@@ -137,7 +140,7 @@ function runCommand(command, args = [], options = {}) {
 }
 
 function git(args, cwd, options = {}) {
-  const res = runCommand("git", args, { cwd, env: cleanGitEnv() });
+  const res = runCommand(GIT_BINARY, args, { cwd, env: { ...cleanGitEnv(), PATH: GIT_SAFE_PATH } });
   if (res.error) throw new Error(`git_failed:${res.error.message}`);
   if (res.signal) throw new Error(`git_failed:signal:${res.signal}`);
   if (res.status !== 0) {
@@ -146,6 +149,15 @@ function git(args, cwd, options = {}) {
     throw new Error(`git_failed:${detail}`);
   }
   return res.stdout.trim();
+}
+
+function gitCommitForPrompt(cwd, ref) {
+  if (!ref) return null;
+  try {
+    return git(["rev-parse", "--verify", `${ref}^{commit}`], cwd, { allowFailure: true }) || null;
+  } catch {
+    return null;
+  }
 }
 
 function bestEffortWorkspaceRoot(cwd) {
@@ -244,7 +256,16 @@ async function collectScope(options) {
   const scopeBase = scope === "branch-diff" ? options["scope-base"] ?? "main" : null;
   const relPaths = selectedScopePaths(scope, options, cwd);
   const files = await readScopeFiles(workspaceRoot, relPaths);
-  return { cwd, workspaceRoot, scope, scope_base: scopeBase, scope_paths: relPaths, files };
+  return {
+    cwd,
+    workspaceRoot,
+    scope,
+    scope_base: scopeBase,
+    base_commit: gitCommitForPrompt(cwd, scopeBase),
+    head_commit: gitCommitForPrompt(cwd, "HEAD"),
+    scope_paths: relPaths,
+    files,
+  };
 }
 
 function promptFor(mode, userPrompt, scopeInfo) {
@@ -252,14 +273,24 @@ function promptFor(mode, userPrompt, scopeInfo) {
     ? "You are performing an adversarial code review. Prioritize correctness bugs, security risks, regressions, and missing tests."
     : "You are performing a code review. Prioritize bugs, behavioral regressions, and missing tests.";
   const files = scopeInfo.files.map((file, index) => promptFileBlock(file, index + 1)).join("\n\n");
-  return [
-    modeLine,
-    "Return a concise verdict and findings. Do not edit files.",
-    "This request is routed through a local subscription-backed Grok web tunnel, not paid xAI API billing.",
-    userPrompt ? `User prompt:\n${userPrompt}` : null,
-    "Selected files:",
-    files,
-  ].filter(Boolean).join("\n\n");
+  return buildReviewPrompt({
+    provider: "Grok Web",
+    mode,
+    repository: scopeInfo.workspaceRoot ?? null,
+    baseRef: scopeInfo.scope_base ?? null,
+    baseCommit: scopeInfo.base_commit ?? null,
+    headRef: "HEAD",
+    headCommit: scopeInfo.head_commit ?? null,
+    scope: scopeInfo.scope,
+    scopePaths: scopeInfo.scope_paths,
+    userPrompt,
+    extraInstructions: [
+      modeLine,
+      "Return a concise verdict and findings. Do not edit files.",
+      "This request is routed through a local subscription-backed Grok web tunnel, not paid xAI API billing.",
+      `Selected files:\n${files}`,
+    ],
+  });
 }
 
 function parseJson(text) {
@@ -476,6 +507,19 @@ function buildRecord({ cfg, mode, options, scopeInfo, execution, startedAt, ende
     scope_base: scopeInfo.scope_base ?? null,
     scope_paths: scopeInfo.scope_paths ?? null,
     prompt_head: String(options.prompt ?? "").slice(0, 200),
+    review_metadata: Object.freeze({
+      prompt_contract_version: REVIEW_PROMPT_CONTRACT_VERSION,
+      prompt_provider: cfg.display_name,
+      scope: scopeInfo.scope,
+      scope_base: scopeInfo.scope_base ?? null,
+      scope_paths: scopeInfo.scope_paths ?? null,
+      raw_output: Object.freeze({
+        http_status: execution.http_status ?? null,
+        raw_model: execution.parsed?.raw_model ?? null,
+        parsed_ok: execution.parsed?.ok ?? null,
+        result_chars: typeof execution.parsed?.result === "string" ? execution.parsed.result.length : null,
+      }),
+    }),
     schema_spec: null,
     binary: null,
     status: completed ? "completed" : "failed",

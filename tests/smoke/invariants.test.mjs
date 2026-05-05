@@ -174,19 +174,18 @@ test("M6-finding-C2: high-capability Claude model policy intentionally pins ever
   );
 
   assert.deepEqual(models, {
-    cheap: "claude-opus-4-7",
-    medium: "claude-opus-4-7",
-    default: "claude-opus-4-7",
+    review_quality: "claude-opus-4-7",
+    rescue: "claude-opus-4-7",
   });
 });
 
 test("M6-finding-C2: omitted review model resolves through configured review tier", () => {
   const cwd = mkdtempSync(path.join(tmpdir(), "inv-c2-"));
   seedMinimalRepo(cwd);
-  // No --model flag. Rely on profile.model_tier=cheap → config.cheap.
-  // The mock needs a matching fixture; cheap-tier fixture (default.json)
+  // No --model flag. Rely on profile.model_tier=review_quality.
+  // The mock needs a matching fixture; default fixture
   // is the only one in tests/smoke/fixtures/claude/, so this also verifies
-  // the cheap model ID matches the fixture's routing key.
+  // the review_quality model ID matches the fixture's routing key.
   const { stdout, status, stderr, dataDir } = runCompanion(
     ["run", "--mode=review", "--foreground", "--cwd", cwd, "--", "review: x=1"],
     { cwd }
@@ -198,8 +197,8 @@ test("M6-finding-C2: omitted review model resolves through configured review tie
     const expected = JSON.parse(
       readFileSync(path.join(REPO_ROOT, "plugins/claude/config/models.json"), "utf8")
     );
-    assert.equal(record.model, expected.cheap,
-      `review must default to cheap tier ${expected.cheap}; got ${record.model}`);
+    assert.equal(record.model, expected.review_quality,
+      `review must default to review_quality tier ${expected.review_quality}; got ${record.model}`);
   } finally {
     rmTempTree(dataDir);
     rmTempTree(cwd);
@@ -501,7 +500,7 @@ test("M6-finding-1-H1: background worker persists parsed.result on terminal JobR
       source_content_transmission: "sent",
       disclosure: "Selected source content was sent to Claude Code for external review.",
     });
-    assert.equal(meta.schema_version, 9);
+    assert.equal(meta.schema_version, 10);
   } finally {
     rmTempTree(dataDir);
     rmTempTree(cwd);

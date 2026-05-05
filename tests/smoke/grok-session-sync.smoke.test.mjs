@@ -417,6 +417,14 @@ test("chrome cookie decrypt helper handles v10/v11 ciphertext and rejects unsupp
     } catch (error) {
       if (!/unsupported encrypted cookie format/.test(error.message)) throw error;
     }
+    try {
+      chromeDecrypt(Buffer.from("v20bad").toString("hex"), password);
+      throw new Error("v20 format did not throw");
+    } catch (error) {
+      if (!/v20 app-bound encrypted cookies are not supported/.test(error.message)) throw error;
+      if (!/--cookie-source-json/.test(error.message)) throw error;
+      if (!/local tunnel/.test(error.message)) throw error;
+    }
   `;
   const stdout = execFileSync(process.execPath, ["--input-type=module", "-e", script], {
     cwd: REPO_ROOT,
@@ -429,6 +437,26 @@ test("unexpected sync errors redact explicit admin keys", () => {
   const script = `
     import { redactUnexpectedError } from ${JSON.stringify(SYNC)};
     const rendered = redactUnexpectedError(new Error("admin failure abc1234-secret-key"), ["--admin-key", "abc1234-secret-key"], {});
+    if (rendered.includes("abc1234")) throw new Error(rendered);
+    if (!rendered.includes("[REDACTED]")) throw new Error(rendered);
+  `;
+  const stdout = execFileSync(process.execPath, ["--input-type=module", "-e", script], {
+    cwd: REPO_ROOT,
+    encoding: "utf8",
+  });
+  assert.equal(stdout, "");
+});
+
+test("cookie extraction errors redact local paths and admin keys", () => {
+  const script = `
+    import { redactCookieExtractError } from ${JSON.stringify(SYNC)};
+    const source = "/tmp/private-profile/cookies.json";
+    const rendered = redactCookieExtractError(
+      new Error("failed reading /tmp/private-profile/cookies.json with admin abc1234-secret-key"),
+      ["--cookie-source-json", source, "--admin-key", "abc1234-secret-key"],
+      {},
+    );
+    if (rendered.includes(source)) throw new Error(rendered);
     if (rendered.includes("abc1234")) throw new Error(rendered);
     if (!rendered.includes("[REDACTED]")) throw new Error(rendered);
   `;

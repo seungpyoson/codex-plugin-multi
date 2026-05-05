@@ -1,10 +1,9 @@
 {
-  "cheap": "kimi-code/kimi-for-coding",
-  "medium": "kimi-code/kimi-for-coding",
-  "default": "kimi-code/kimi-for-coding",
+  "review_quality": "kimi-code/kimi-for-coding",
+  "rescue": "kimi-code/kimi-for-coding",
   "fallbacks": {
-    "cheap": [],
-    "medium": [],
-    "default": []
+    "review_quality": [],
+    "rescue": [],
+    "native": []
   }
 }

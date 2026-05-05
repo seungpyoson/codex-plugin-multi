@@ -26,7 +26,28 @@ import {
   sourceContentTransmissionForExecution,
 } from "./external-review.mjs";
 
-export const SCHEMA_VERSION = 9;
+export const SCHEMA_VERSION = 10;
+
+function stringBytes(value) {
+  return Buffer.byteLength(String(value ?? ""), "utf8");
+}
+
+function buildReviewMetadata(invocation, execution = null, parsed = null) {
+  if (!invocation.review_prompt_contract_version) return null;
+  return Object.freeze({
+    prompt_contract_version: invocation.review_prompt_contract_version,
+    prompt_provider: invocation.review_prompt_provider ?? invocation.target,
+    scope: invocation.scope,
+    scope_base: invocation.scope_base ?? null,
+    scope_paths: invocation.scope_paths ?? null,
+    raw_output: execution ? Object.freeze({
+      stdout_bytes: stringBytes(execution.stdout),
+      stderr_bytes: stringBytes(execution.stderr),
+      parsed_ok: parsed?.ok ?? null,
+      result_chars: typeof parsed?.result === "string" ? parsed.result.length : null,
+    }) : null,
+  });
+}
 
 /**
  * Canonical JobRecord field list. Exported so tests can reference it and
@@ -57,6 +78,7 @@ export const EXPECTED_KEYS = Object.freeze([
   "scope_base",
   "scope_paths",
   "prompt_head",
+  "review_metadata",
   "schema_spec",
   "binary",
 
@@ -460,6 +482,7 @@ export function buildJobRecord(invocation, execution, mutations) {
     scope_base: invocation.scope_base ?? null,
     scope_paths: invocation.scope_paths ?? null,
     prompt_head: invocation.prompt_head,
+    review_metadata: buildReviewMetadata(invocation, execution, parsed),
     schema_spec: invocation.schema_spec ?? null,
     binary: invocation.binary,
 

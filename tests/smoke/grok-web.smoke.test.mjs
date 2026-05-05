@@ -1,6 +1,6 @@
 import { once } from "node:events";
 import { execFileSync, spawn, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import http from "node:http";
 import { hostname, tmpdir } from "node:os";
 import path from "node:path";
@@ -186,9 +186,12 @@ test("custom-review sends selected source to a local Grok web tunnel and persist
     assert.equal(body.model, "grok-4.20-fast");
     assert.equal(body.stream, false);
     assert.equal(body.temperature, 0);
+    assert.match(body.messages[0].content, /Provider: Grok Web/);
+    assert.match(body.messages[0].content, /Checklist/);
+    assert.match(body.messages[0].content, /Timed out, truncated, interrupted, blocked, or shallow output is NOT an approval/);
     assert.match(body.messages[0].content, /review\.js/);
     assert.match(body.messages[0].content, /export const value = 42/);
-    assert.match(body.messages[0].content, /BEGIN GROK FILE 1: review\.js/);
+    assert.match(body.messages[0].content, /^BEGIN GROK FILE 1: review\.js$/m);
     assert.doesNotMatch(body.messages[0].content, /^```$/m);
     res.setHeader("content-type", "application/json");
     res.end(JSON.stringify({
@@ -221,6 +224,20 @@ test("custom-review sends selected source to a local Grok web tunnel and persist
     assert.equal(record.auth_mode, "subscription_web");
     assert.equal(record.status, "completed");
     assert.equal(record.result, "Verdict: no findings 1.");
+    assert.equal(record.schema_version, 10);
+    assert.deepEqual(record.review_metadata, {
+      prompt_contract_version: 1,
+      prompt_provider: "Grok Web",
+      scope: "custom",
+      scope_base: null,
+      scope_paths: ["review.js"],
+      raw_output: {
+        http_status: 200,
+        raw_model: "grok-4.20-fast",
+        parsed_ok: true,
+        result_chars: "Verdict: no findings 1.".length,
+      },
+    });
     assert.equal(record.external_review.provider, "Grok Web");
     assert.equal(record.external_review.source_content_transmission, "sent");
     assert.match(record.disclosure_note, /subscription-backed web session/i);
@@ -990,6 +1007,11 @@ test("review mode uses branch-diff scope with scrubbed git environment", async (
   const cwd = mkdtempSync(path.join(tmpdir(), "grok-web-branch-"));
   const dataDir = mkdtempSync(path.join(tmpdir(), "grok-web-data-"));
   const hostileGitDir = mkdtempSync(path.join(tmpdir(), "grok-hostile-git-dir-"));
+  const hostilePath = mkdtempSync(path.join(tmpdir(), "grok-hostile-path-"));
+  const hostileGitMarker = path.join(hostilePath, "git-was-used");
+  const hostileGit = path.join(hostilePath, "git");
+  writeFileSync(hostileGit, `#!/bin/sh\ntouch ${JSON.stringify(hostileGitMarker)}\nexit 99\n`);
+  chmodSync(hostileGit, 0o700);
   execFileSync("git", ["init", "-b", "main"], { cwd, stdio: "ignore" });
   execFileSync("git", ["config", "user.email", "test@example.com"], { cwd });
   execFileSync("git", ["config", "user.name", "Test User"], { cwd });
@@ -999,6 +1021,10 @@ test("review mode uses branch-diff scope with scrubbed git environment", async (
   writeFileSync(path.join(cwd, "review.js"), "export const value = 1;\n");
   execFileSync("git", ["add", "review.js"], { cwd });
   execFileSync("git", ["commit", "-m", "base"], { cwd, stdio: "ignore" });
+  const mainCommit = execFileSync("git", ["rev-parse", "main"], { cwd, encoding: "utf8" }).trim();
+  execFileSync("git", ["tag", "-a", "review-base", "-m", "review base", "main"], { cwd, stdio: "ignore" });
+  const tagObject = execFileSync("git", ["rev-parse", "review-base"], { cwd, encoding: "utf8" }).trim();
+  assert.notEqual(tagObject, mainCommit);
   execFileSync("git", ["checkout", "-b", "feature"], { cwd, stdio: "ignore" });
   writeFileSync(path.join(cwd, "review.js"), "export const value = 2;\n");
   execFileSync("git", ["add", "review.js"], { cwd });
@@ -1011,6 +1037,8 @@ test("review mode uses branch-diff scope with scrubbed git environment", async (
     assert.equal(req.url, "/api/chat/completions");
     const body = await readJsonRequest(req);
     assert.match(body.messages[0].content, /review\.js/);
+    assert.match(body.messages[0].content, new RegExp(`Base commit: ${mainCommit}`));
+    assert.doesNotMatch(body.messages[0].content, new RegExp(`Base commit: ${tagObject}`));
     assert.match(body.messages[0].content, /export const value = 2/);
     assert.doesNotMatch(body.messages[0].content, /local-config\.txt/);
     assert.doesNotMatch(body.messages[0].content, /GROK_LOCAL_DIRTY_SECRET/);
@@ -1026,7 +1054,7 @@ test("review mode uses branch-diff scope with scrubbed git environment", async (
       "run",
       "--mode", "review",
       "--scope", "branch-diff",
-      "--scope-base", "main",
+      "--scope-base", "review-base",
       "--foreground",
       "--prompt", "Review the branch diff.",
     ], {
@@ -1037,6 +1065,7 @@ test("review mode uses branch-diff scope with scrubbed git environment", async (
         GROK_PLUGIN_DATA: dataDir,
         GIT_DIR: hostileGitDir,
         GIT_WORK_TREE: hostileGitDir,
+        PATH: hostilePath,
       },
     });
     const record = parseStdout(result);
@@ -1045,8 +1074,9 @@ test("review mode uses branch-diff scope with scrubbed git environment", async (
     assert.equal(record.status, "completed");
     assert.equal(record.mode, "review");
     assert.equal(record.scope, "branch-diff");
-    assert.equal(record.scope_base, "main");
+    assert.equal(record.scope_base, "review-base");
     assert.equal(record.result, "Verdict: branch diff reviewed.");
+    assert.equal(existsSync(hostileGitMarker), false);
   });
 });
 

@@ -13,7 +13,7 @@ The companion returns the SAME JSON shape from three entry points — foreground
 (spec §21.3). Nothing is hand-assembled in memory; what goes to disk is what
 comes back to you.
 
-## Success path — JobRecord schema (v9)
+## Success path — JobRecord schema (v10)
 
 ```json
 {
@@ -39,6 +39,7 @@ comes back to you.
   "scope_paths":         null | ["<glob>"], // custom scope globs if any
 
   "prompt_head":         "<first 200 chars>", // spec §21.3.1 — no full prompt persisted
+  "review_metadata":     null | { "prompt_contract_version": 1, "prompt_provider": "Claude|Gemini|Kimi", "scope": "working-tree|branch-diff|staged|head|custom", "scope_base": null | "<ref>", "scope_paths": null | ["<glob>"], "raw_output": null | { "stdout_bytes": N, "stderr_bytes": N, "parsed_ok": true | false | null, "result_chars": N | null } },
   "schema_spec":         null | "<json-schema-string>",
   "binary":              "claude",
 
@@ -74,7 +75,7 @@ comes back to you.
   "cost_usd":            null | 0.001,
   "usage":               null | { "input_tokens": N, ... },
 
-  "schema_version":      9
+  "schema_version":      10
 }
 ```
 

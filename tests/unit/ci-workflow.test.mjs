@@ -32,6 +32,7 @@ test("pull-request CI runs shared-copy sync checks", () => {
   assert.match(pkg.scripts["lint:sync"] ?? "", /sync-codex-env\.mjs --check/);
   assert.match(pkg.scripts["lint:sync"] ?? "", /sync-companion-common\.mjs --check/);
   assert.match(pkg.scripts["lint:sync"] ?? "", /sync-external-review\.mjs --check/);
+  assert.match(pkg.scripts["lint:sync"] ?? "", /sync-review-prompt\.mjs --check/);
   assert.match(pkg.scripts["lint:sync"] ?? "", /sync-auth-selection\.mjs --check/);
   assert.match(pkg.scripts["lint:sync"] ?? "", /sync-provider-env\.mjs --check/);
   assert.match(workflow, /npm run lint:sync/);
@@ -52,6 +53,15 @@ test("Sonar CPD excludes intentional packaging and entrypoint copies", () => {
     "plugins/grok/scripts/grok-web-reviewer.mjs",
     "plugins/grok/scripts/grok-sync-browser-session.mjs",
     "plugins/grok/scripts/lib/git-env.mjs",
+    "scripts/lib/review-prompt.mjs",
+    "plugins/api-reviewers/scripts/lib/review-prompt.mjs",
+    "plugins/claude/scripts/lib/review-prompt.mjs",
+    "plugins/gemini/scripts/lib/review-prompt.mjs",
+    "plugins/grok/scripts/lib/review-prompt.mjs",
+    "plugins/kimi/scripts/lib/review-prompt.mjs",
+    "plugins/claude/scripts/lib/mode-profiles.mjs",
+    "plugins/gemini/scripts/lib/mode-profiles.mjs",
+    "plugins/kimi/scripts/lib/mode-profiles.mjs",
   ]) {
     assert.match(sonarConfig, new RegExp(path.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
   }
