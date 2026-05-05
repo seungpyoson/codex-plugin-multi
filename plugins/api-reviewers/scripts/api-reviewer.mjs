@@ -1115,9 +1115,9 @@ function buildLaunchExternalReview({ cfg, mode, options, scopeInfo }) {
     session_id: null,
     parent_job_id: null,
     mode,
-    scope: scopeInfo.scope,
-    scope_base: scopeInfo.scope_base ?? null,
-    scope_paths: scopeInfo.scope_paths ?? null,
+    scope: scopeInfo?.scope ?? null,
+    scope_base: scopeInfo?.scope_base ?? null,
+    scope_paths: scopeInfo?.scope_paths ?? null,
     source_content_transmission: SOURCE_CONTENT_TRANSMISSION.MAY_BE_SENT,
     disclosure: `Selected source content may be sent to ${provider} for external review.`,
   });

@@ -107,6 +107,37 @@ test("grok external_review shapes are runtime-guarded", () => {
     "Grok terminal JobRecord must freeze the generated review object");
 });
 
+test("standalone external_review builders tolerate missing scopeInfo defensively", () => {
+  for (const rel of [
+    "plugins/api-reviewers/scripts/api-reviewer.mjs",
+    "plugins/grok/scripts/grok-web-reviewer.mjs",
+  ]) {
+    const source = readFileSync(resolve(rel), "utf8");
+    const launchStart = source.indexOf("function buildLaunchExternalReview");
+    assert.notEqual(launchStart, -1, `${rel} must define buildLaunchExternalReview`);
+    const launchEnd = source.indexOf("\nfunction ", launchStart + 1);
+    const launchBlock = source.slice(launchStart, launchEnd === -1 ? source.length : launchEnd);
+    assert.match(launchBlock, /scope:\s*scopeInfo\?\.scope\s*\?\?\s*null/,
+      `${rel} launch external_review must not assume scopeInfo exists`);
+    assert.match(launchBlock, /scope_base:\s*scopeInfo\?\.scope_base\s*\?\?\s*null/,
+      `${rel} launch external_review must not assume scopeInfo scope_base exists`);
+    assert.match(launchBlock, /scope_paths:\s*scopeInfo\?\.scope_paths\s*\?\?\s*null/,
+      `${rel} launch external_review must not assume scopeInfo scope_paths exists`);
+  }
+
+  const grok = readFileSync(resolve("plugins/grok/scripts/grok-web-reviewer.mjs"), "utf8");
+  const terminalStart = grok.indexOf("function buildTerminalExternalReview");
+  assert.notEqual(terminalStart, -1, "Grok must define buildTerminalExternalReview");
+  const terminalEnd = grok.indexOf("\nfunction ", terminalStart + 1);
+  const terminalBlock = grok.slice(terminalStart, terminalEnd === -1 ? grok.length : terminalEnd);
+  assert.match(terminalBlock, /scope:\s*scopeInfo\?\.scope\s*\?\?\s*null/,
+    "Grok terminal external_review must not assume scopeInfo exists");
+  assert.match(terminalBlock, /scope_base:\s*scopeInfo\?\.scope_base\s*\?\?\s*null/,
+    "Grok terminal external_review must not assume scopeInfo scope_base exists");
+  assert.match(terminalBlock, /scope_paths:\s*scopeInfo\?\.scope_paths\s*\?\?\s*null/,
+    "Grok terminal external_review must not assume scopeInfo scope_paths exists");
+});
+
 test("grok terminal JobRecord shape is runtime-guarded", () => {
   const source = readFileSync(resolve("plugins/grok/scripts/grok-web-reviewer.mjs"), "utf8");
   assert.match(source, /GROK_EXPECTED_KEYS/, "Grok must define the canonical JobRecord key order");
