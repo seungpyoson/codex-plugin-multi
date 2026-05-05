@@ -1924,6 +1924,7 @@ test("tunnel invocation catch is separated from prompt construction catch", () =
   const source = readFileSync(COMPANION, "utf8");
   assert.match(source, /prompt = promptFor\(/);
   assert.match(source, /providerFailure\(e\.message\.startsWith\("bad_args:"\) \? "bad_args" : "scope_failed"/);
+  assert.match(source, /timeoutMs: execution\.diagnostics\?\.configured_timeout_ms \?\? cfg\.timeout_ms \?\? null/);
   assert.match(source, /execution = await callGrokTunnel\(cfg, prompt\)/);
   assert.match(source, /"tunnel_error"/);
   assert.match(source, /payloadSentForFetchError\(e\)/);
