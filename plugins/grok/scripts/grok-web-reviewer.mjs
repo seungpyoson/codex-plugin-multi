@@ -517,6 +517,23 @@ function freezeExternalReview(review) {
   return Object.freeze(review);
 }
 
+function buildTerminalExternalReview({ cfg, mode, options, scopeInfo, execution, transmission, disclosure: reviewDisclosure }) {
+  return freezeExternalReview({
+    marker: "EXTERNAL REVIEW",
+    provider: cfg.display_name,
+    run_kind: "foreground",
+    job_id: options.jobId,
+    session_id: execution.session_id ?? null,
+    parent_job_id: null,
+    mode,
+    scope: scopeInfo.scope,
+    scope_base: scopeInfo.scope_base ?? null,
+    scope_paths: scopeInfo.scope_paths ?? null,
+    source_content_transmission: transmission,
+    disclosure: reviewDisclosure,
+  });
+}
+
 function suggestedAction(errorCode) {
   if (errorCode === "bad_args") return "Correct the grok-web command arguments and retry.";
   if (errorCode === "scope_failed") return "Adjust --scope, --scope-base, or --scope-paths and retry.";
@@ -586,20 +603,7 @@ function buildRecord({ cfg, mode, options, scopeInfo, execution, startedAt, ende
     error_summary: completed ? null : errorMessage || errorCode,
     error_cause: completed ? null : errorCauseFor(errorCode),
     suggested_action: completed ? null : suggestedAction(errorCode),
-    external_review: {
-      marker: "EXTERNAL REVIEW",
-      provider: cfg.display_name,
-      run_kind: "foreground",
-      job_id: options.jobId,
-      session_id: execution.session_id ?? null,
-      parent_job_id: null,
-      mode,
-      scope: scopeInfo.scope,
-      scope_base: scopeInfo.scope_base ?? null,
-      scope_paths: scopeInfo.scope_paths ?? null,
-      source_content_transmission: transmission,
-      disclosure: reviewDisclosure,
-    },
+    external_review: buildTerminalExternalReview({ cfg, mode, options, scopeInfo, execution, transmission, disclosure: reviewDisclosure }),
     disclosure_note: reviewDisclosure,
     result: completed ? execution.parsed.result : null,
     structured_output: null,
