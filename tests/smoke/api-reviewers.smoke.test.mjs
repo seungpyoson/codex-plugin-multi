@@ -1755,6 +1755,7 @@ test("direct API live malformed responses mark selected content as sent", async 
 
 test("branch-diff default reviews committed changes against main with scrubbed git env", async () => {
   const cwd = makeBranchDiffWorkspace();
+  writeFileSync(path.join(cwd, "feature.txt"), "API_DIRTY_SECRET must not be sent\n");
   const dataDir = mkdtempSync(path.join(tmpdir(), "api-reviewers-data-"));
   const result = await run([
     "run",
@@ -1767,7 +1768,8 @@ test("branch-diff default reviews committed changes against main with scrubbed g
     env: {
       API_REVIEWERS_PLUGIN_DATA: dataDir,
       API_REVIEWERS_MOCK_RESPONSE: mockResponse("deepseek-v4-pro"),
-      API_REVIEWERS_MOCK_ASSERT_PROMPT_INCLUDES: "Live verification context",
+      API_REVIEWERS_MOCK_ASSERT_PROMPT_INCLUDES: "committed feature change",
+      API_REVIEWERS_MOCK_ASSERT_PROMPT_EXCLUDES: "API_DIRTY_SECRET",
       DEEPSEEK_API_KEY: "secret-test-value",
       GIT_DIR: path.join(cwd, "not-a-repo"),
       GIT_CONFIG_GLOBAL: path.join(cwd, "malicious-gitconfig"),
@@ -1779,6 +1781,39 @@ test("branch-diff default reviews committed changes against main with scrubbed g
   assert.equal(record.scope, "branch-diff");
   assert.equal(record.scope_base, "main");
   assert.deepEqual(record.scope_paths, ["feature.txt"]);
+  assert.doesNotMatch(result.stdout, /secret-test-value/);
+});
+
+test("custom-review rejects symlinks that resolve outside the workspace before API delivery", async () => {
+  const cwd = makeWorkspace();
+  const outside = mkdtempSync(path.join(tmpdir(), "api-reviewers-outside-"));
+  writeFileSync(path.join(outside, "secret.txt"), "API_SYMLINK_SECRET must not be sent\n");
+  symlinkSync(path.join(outside, "secret.txt"), path.join(cwd, "linked-secret.txt"));
+  const dataDir = mkdtempSync(path.join(tmpdir(), "api-reviewers-data-"));
+  const result = await run([
+    "run",
+    "--provider", "deepseek",
+    "--mode", "custom-review",
+    "--scope", "custom",
+    "--scope-paths", "linked-secret.txt",
+    "--foreground",
+    "--prompt", "Check this file.",
+  ], {
+    cwd,
+    env: {
+      API_REVIEWERS_PLUGIN_DATA: dataDir,
+      API_REVIEWERS_MOCK_RESPONSE: mockResponse("deepseek-v4-pro"),
+      API_REVIEWERS_MOCK_ASSERT_PROMPT_EXCLUDES: "API_SYMLINK_SECRET",
+      DEEPSEEK_API_KEY: "secret-test-value",
+    },
+  });
+  assert.equal(result.status, 1);
+  const record = parseJson(result.stdout);
+  assert.equal(record.status, "failed");
+  assert.equal(record.error_code, "scope_failed");
+  assert.equal(record.error_cause, "scope_resolution");
+  assert.equal(record.external_review.source_content_transmission, "not_sent");
+  assert.doesNotMatch(result.stdout, /API_SYMLINK_SECRET/);
   assert.doesNotMatch(result.stdout, /secret-test-value/);
 });
 

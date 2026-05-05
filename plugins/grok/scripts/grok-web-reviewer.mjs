@@ -271,35 +271,57 @@ function selectedScopePaths(scope, options, cwd) {
   throw new Error(`unsupported_scope:${scope}`);
 }
 
-async function readScopeFiles(workspaceRoot, relPaths) {
+function validateScopePath(workspaceRoot, relPath) {
+  if (relPath.includes("..") || isAbsolute(relPath) || relPath.includes("\\")) {
+    throw new Error(`unsafe_scope_path:${relPath}`);
+  }
+  const abs = resolve(workspaceRoot, relPath);
+  const normalizedRel = relative(workspaceRoot, abs);
+  if (normalizedRel.startsWith("..") || normalizedRel === "") {
+    throw new Error(`unsafe_scope_path:${relPath}`);
+  }
+  return { abs, normalizedRel };
+}
+
+function readGitScopeFile(cwd, ref, relPath) {
+  const res = runCommand(GIT_BINARY, ["show", `${ref}:${relPath}`], { cwd, env: { ...cleanGitEnv(), PATH: GIT_SAFE_PATH } });
+  if (res.error) throw new Error(`git_failed:${res.error.message}`);
+  if (res.signal) throw new Error(`git_failed:signal:${res.signal}`);
+  if (res.status !== 0) return null;
+  return res.stdout;
+}
+
+async function readScopeFiles(workspaceRoot, relPaths, options = {}) {
   const files = [];
   let totalBytes = 0;
-  const realWorkspaceRoot = await realpath(workspaceRoot);
+  const realWorkspaceRoot = options.sourceRef ? null : await realpath(workspaceRoot);
   for (const relPath of relPaths) {
-    if (relPath.includes("..") || isAbsolute(relPath) || relPath.includes("\\")) {
-      throw new Error(`unsafe_scope_path:${relPath}`);
+    const { abs, normalizedRel } = validateScopePath(workspaceRoot, relPath);
+    let text;
+    let size;
+    if (options.sourceRef) {
+      text = readGitScopeFile(options.cwd, options.sourceRef, normalizedRel);
+      if (text === null) continue;
+      size = Buffer.byteLength(text, "utf8");
+    } else {
+      if (!existsSync(abs)) continue;
+      const realAbs = await realpath(abs);
+      const realRel = relative(realWorkspaceRoot, realAbs);
+      if (realRel.startsWith("..") || realRel === "") {
+        throw new Error(`unsafe_scope_path:${relPath}`);
+      }
+      const info = await stat(realAbs);
+      if (!info.isFile()) continue;
+      size = info.size;
+      text = await readFile(realAbs, "utf8");
     }
-    const abs = resolve(workspaceRoot, relPath);
-    const normalizedRel = relative(workspaceRoot, abs);
-    if (normalizedRel.startsWith("..") || normalizedRel === "") {
-      throw new Error(`unsafe_scope_path:${relPath}`);
+    if (size > MAX_SCOPE_FILE_BYTES) {
+      throw new Error(`scope_file_too_large:${normalizedRel}: ${size} bytes exceeds ${MAX_SCOPE_FILE_BYTES} byte limit`);
     }
-    if (!existsSync(abs)) continue;
-    const realAbs = await realpath(abs);
-    const realRel = relative(realWorkspaceRoot, realAbs);
-    if (realRel.startsWith("..") || realRel === "") {
-      throw new Error(`unsafe_scope_path:${relPath}`);
-    }
-    const info = await stat(realAbs);
-    if (!info.isFile()) continue;
-    if (info.size > MAX_SCOPE_FILE_BYTES) {
-      throw new Error(`scope_file_too_large:${normalizedRel}: ${info.size} bytes exceeds ${MAX_SCOPE_FILE_BYTES} byte limit`);
-    }
-    totalBytes += info.size;
+    totalBytes += size;
     if (totalBytes > MAX_SCOPE_TOTAL_BYTES) {
       throw new Error(`scope_total_too_large:${totalBytes} bytes exceeds ${MAX_SCOPE_TOTAL_BYTES} byte limit`);
     }
-    const text = await readFile(realAbs, "utf8");
     if (text.length === 0) continue;
     files.push({ path: normalizedRel, text });
   }
@@ -333,7 +355,10 @@ async function collectScope(options) {
   const scope = scopeName(options);
   const scopeBase = scope === "branch-diff" ? options["scope-base"] ?? "main" : null;
   const relPaths = selectedScopePaths(scope, options, cwd);
-  const files = await readScopeFiles(workspaceRoot, relPaths);
+  const files = await readScopeFiles(workspaceRoot, relPaths, {
+    cwd,
+    sourceRef: scope === "branch-diff" ? "HEAD" : null,
+  });
   return {
     cwd,
     workspaceRoot,

@@ -1133,6 +1133,7 @@ test("review mode uses branch-diff scope with scrubbed git environment", async (
   writeFileSync(path.join(cwd, "review.js"), "export const value = 2;\n");
   execFileSync("git", ["add", "review.js"], { cwd });
   execFileSync("git", ["commit", "-m", "feature"], { cwd, stdio: "ignore" });
+  writeFileSync(path.join(cwd, "review.js"), "GROK_DIRTY_REVIEW_SECRET\n");
   writeFileSync(path.join(cwd, "local-config.txt"), "GROK_LOCAL_DIRTY_SECRET\n");
   writeFileSync(path.join(cwd, "untracked-secret.js"), "GROK_UNTRACKED_SECRET\n");
 
@@ -1144,6 +1145,7 @@ test("review mode uses branch-diff scope with scrubbed git environment", async (
     assert.match(body.messages[0].content, new RegExp(`Base commit: ${mainCommit}`));
     assert.doesNotMatch(body.messages[0].content, new RegExp(`Base commit: ${tagObject}`));
     assert.match(body.messages[0].content, /export const value = 2/);
+    assert.doesNotMatch(body.messages[0].content, /GROK_DIRTY_REVIEW_SECRET/);
     assert.doesNotMatch(body.messages[0].content, /local-config\.txt/);
     assert.doesNotMatch(body.messages[0].content, /GROK_LOCAL_DIRTY_SECRET/);
     assert.doesNotMatch(body.messages[0].content, /untracked-secret\.js/);
@@ -1213,10 +1215,12 @@ test("custom-review keeps prompt delimiter exceptions as scope failures before t
 });
 
 test("scope file reads use canonical real paths after symlink boundary check", () => {
-  // Structural guard for the reviewed TOCTOU fix: later I/O must keep using the verified path.
+  // Structural guard for the reviewed TOCTOU fix: live custom-review I/O
+  // must keep using the verified path. Branch-diff reads from HEAD via git.
   const source = readFileSync(COMPANION, "utf8");
   assert.match(source, /const info = await stat\(realAbs\);/);
-  assert.match(source, /const text = await readFile\(realAbs, "utf8"\);/);
+  assert.match(source, /text = await readFile\(realAbs, "utf8"\);/);
+  assert.match(source, /text = readGitScopeFile\(options\.cwd, options\.sourceRef, normalizedRel\);/);
 });
 
 test("tunnel invocation catch is separated from prompt construction catch", () => {
