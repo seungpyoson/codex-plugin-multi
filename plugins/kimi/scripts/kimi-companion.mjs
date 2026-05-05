@@ -25,11 +25,15 @@ import {
   PING_PROMPT,
   consumePromptSidecar,
   credentialNameDiagnostics,
+  externalReviewLaunchedEvent,
   gitStatusLines,
+  parseLifecycleEventsMode,
   parseScopePathsOption,
   preflightDisclosure,
   preflightSafetyFields,
   printJson,
+  printJsonLine,
+  printLifecycleJson,
   runKindFromRecord,
   summarizeScopeDirectory,
   writePromptSidecar,
@@ -383,7 +387,7 @@ function cmdPreflight(rest) {
 
 async function cmdRun(rest) {
   const { options, positionals } = parseArgs(rest, {
-    valueOptions: ["mode", "model", "cwd", "binary", "scope-base", "scope-paths", "override-dispose", "timeout-ms", "max-steps-per-turn"],
+    valueOptions: ["mode", "model", "cwd", "binary", "scope-base", "scope-paths", "override-dispose", "timeout-ms", "max-steps-per-turn", "lifecycle-events"],
     booleanOptions: ["background", "foreground"],
   });
   const mode = options.mode;
@@ -410,6 +414,7 @@ async function cmdRun(rest) {
     return profile.dispose_default;
   })();
   const scopePaths = parseScopePathsOption(options["scope-paths"]);
+  const lifecycleEvents = parseLifecycleEventsMode(options["lifecycle-events"]);
   const timeoutMs = parsePositiveTimeoutMs(options["timeout-ms"], DEFAULT_KIMI_REVIEW_TIMEOUT_MS);
   const maxStepsPerTurn = parsePositiveMaxStepsPerTurn(
     options["max-steps-per-turn"],
@@ -457,7 +462,7 @@ async function cmdRun(rest) {
     }
     const { child, error } = await spawnDetachedWorker(cwd, jobId);
     if (error) failBackgroundWorkerSpawn(workspaceRoot, invocation, error);
-    printJson({
+    const launched = {
       event: "launched",
       job_id: jobId,
       target: "kimi",
@@ -465,14 +470,19 @@ async function cmdRun(rest) {
       pid: child.pid ?? null,
       workspace_root: workspaceRoot,
       external_review: externalReviewForInvocation(invocation),
-    });
+    };
+    if (lifecycleEvents === "jsonl") printJsonLine(launched);
+    else printJson(launched);
     process.exit(0);
   }
 
-  await executeRun(invocation, targetPrompt, { foreground: true });
+  if (lifecycleEvents === "jsonl") {
+    printJsonLine(externalReviewLaunchedEvent(invocation, externalReviewForInvocation(invocation)));
+  }
+  await executeRun(invocation, targetPrompt, { foreground: true, lifecycleEvents });
 }
 
-async function executeRun(invocation, prompt, { foreground }) {
+async function executeRun(invocation, prompt, { foreground, lifecycleEvents = null }) {
   const { job_id: jobId, cwd, workspace_root: workspaceRoot, dispose_effective: disposeEffective } = invocation;
   const profile = resolveProfile(invocation.mode_profile_name);
   let containment = null;
@@ -490,7 +500,7 @@ async function executeRun(invocation, prompt, { foreground }) {
     }, []);
     writeJobFile(workspaceRoot, jobId, errorRecord);
     upsertJob(workspaceRoot, errorRecord);
-    if (foreground) printJson(errorRecord);
+    if (foreground) printLifecycleJson(errorRecord, lifecycleEvents);
     process.exit(2);
   }
 
@@ -539,7 +549,7 @@ async function executeRun(invocation, prompt, { foreground }) {
     }, mutations);
     writeJobFile(workspaceRoot, jobId, cancelledRecord);
     upsertJob(workspaceRoot, cancelledRecord);
-    if (foreground) printJson(cancelledRecord);
+    if (foreground) printLifecycleJson(cancelledRecord, lifecycleEvents);
     process.exit(0);
   }
 
@@ -594,7 +604,7 @@ async function executeRun(invocation, prompt, { foreground }) {
     upsertJob(workspaceRoot, errorRecord);
     if (neutralCwd) rmSync(neutralCwd, { recursive: true, force: true });
     if (disposeEffective) containment.cleanup();
-    if (foreground) printJson(errorRecord);
+    if (foreground) printLifecycleJson(errorRecord, lifecycleEvents);
     process.exit(2);
   }
 
@@ -698,7 +708,7 @@ async function executeRun(invocation, prompt, { foreground }) {
 
   if (neutralCwd) rmSync(neutralCwd, { recursive: true, force: true });
   if (containment.disposed && disposeEffective) containment.cleanup();
-  if (foreground) printJson(finalRecord);
+  if (foreground) printLifecycleJson(finalRecord, lifecycleEvents);
   process.exit(finalRecord.status === "completed" ? 0 : 2);
 }
 

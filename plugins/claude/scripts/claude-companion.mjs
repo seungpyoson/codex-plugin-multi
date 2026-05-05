@@ -52,11 +52,15 @@ import {
 import {
   PING_PROMPT,
   consumePromptSidecar,
+  externalReviewLaunchedEvent,
   gitStatusLines,
+  parseLifecycleEventsMode,
   parseScopePathsOption,
   preflightDisclosure,
   preflightSafetyFields,
   printJson,
+  printJsonLine,
+  printLifecycleJson,
   runKindFromRecord,
   summarizeScopeDirectory,
   writePromptSidecar,
@@ -355,7 +359,7 @@ function cmdPreflight(rest) {
 // ——— subcommand: run ———
 async function cmdRun(rest) {
   const { options, positionals } = parseArgs(rest, {
-    valueOptions: ["mode", "model", "cwd", "schema", "binary", "scope-base", "scope-paths", "override-dispose", "auth-mode"],
+    valueOptions: ["mode", "model", "cwd", "schema", "binary", "scope-base", "scope-paths", "override-dispose", "auth-mode", "lifecycle-events"],
     booleanOptions: ["background", "foreground"],
     aliasMap: {},
   });
@@ -394,6 +398,7 @@ async function cmdRun(rest) {
   })();
 
   const scopePaths = parseScopePathsOption(options["scope-paths"]);
+  const lifecycleEvents = parseLifecycleEventsMode(options["lifecycle-events"]);
   const prompt = positionals.join(" ").trim();
   if (!prompt) {
     fail("bad_args", "prompt is required (pass after -- separator)");
@@ -454,7 +459,7 @@ async function cmdRun(rest) {
     // terminal-state meta when done (spec §7.3 / M4).
     const { child, error } = await spawnDetachedWorker(cwd, jobId, authSelection.auth_mode);
     if (error) failBackgroundWorkerSpawn(workspaceRoot, invocation, error);
-    printJson({
+    const launched = {
       event: "launched",
       job_id: jobId,
       target: "claude",
@@ -462,17 +467,22 @@ async function cmdRun(rest) {
       pid: child.pid ?? null,
       workspace_root: workspaceRoot,
       external_review: externalReviewForInvocation(invocation),
-    });
+    };
+    if (lifecycleEvents === "jsonl") printJsonLine(launched);
+    else printJson(launched);
     process.exit(0);
   }
 
-  await executeRun(invocation, targetPrompt, { foreground: true });
+  if (lifecycleEvents === "jsonl") {
+    printJsonLine(externalReviewLaunchedEvent(invocation, externalReviewForInvocation(invocation)));
+  }
+  await executeRun(invocation, targetPrompt, { foreground: true, lifecycleEvents });
 }
 
 // Shared execution body. Foreground path calls this directly with the live
 // prompt; background worker calls it after reading the prompt sidecar.
 // EXACTLY ONE buildJobRecord call per terminal state — §21.3.2 convergence.
-async function executeRun(invocation, prompt, { foreground }) {
+async function executeRun(invocation, prompt, { foreground, lifecycleEvents = null }) {
   const {
     job_id: jobId, mode, model, cwd, workspace_root: workspaceRoot,
     dispose_effective: disposeEffective,
@@ -498,7 +508,7 @@ async function executeRun(invocation, prompt, { foreground }) {
     writeJobFile(workspaceRoot, jobId, errorRecord);
     upsertJob(workspaceRoot, errorRecord);
     if (foreground) {
-      printJson(errorRecord);
+      printLifecycleJson(errorRecord, lifecycleEvents);
       process.exit(2);
     }
     process.exit(2);
@@ -565,7 +575,7 @@ async function executeRun(invocation, prompt, { foreground }) {
     }, mutations);
     writeJobFile(workspaceRoot, jobId, cancelledRecord);
     upsertJob(workspaceRoot, cancelledRecord);
-    if (foreground) printJson(cancelledRecord);
+    if (foreground) printLifecycleJson(cancelledRecord, lifecycleEvents);
     process.exit(0);
   }
 
@@ -605,7 +615,7 @@ async function executeRun(invocation, prompt, { foreground }) {
     cleanupNeutralCwd(neutralCwd);
     if (disposeEffective) containment.cleanup();
     if (foreground) {
-      printJson(errorRecord);
+      printLifecycleJson(errorRecord, lifecycleEvents);
       process.exit(2);
     }
     process.exit(2);
@@ -746,9 +756,7 @@ async function executeRun(invocation, prompt, { foreground }) {
   // state is now either "disposed" (path gone from disk) or derivable from
   // workspace inspection; not part of the schema.
 
-  if (foreground) {
-    printJson(finalRecord);
-  }
+  if (foreground) printLifecycleJson(finalRecord, lifecycleEvents);
   process.exit(finalRecord.status === "completed" ? 0 : 2);
 }
 

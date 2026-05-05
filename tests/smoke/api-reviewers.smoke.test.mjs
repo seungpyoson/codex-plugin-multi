@@ -1191,6 +1191,52 @@ test("DeepSeek direct API custom-review completes and persists JobRecord", async
   assert.doesNotMatch(result.stdout, /secret-test-value/);
 });
 
+test("DeepSeek direct API lifecycle jsonl emits launch event before terminal JobRecord", async () => {
+  const cwd = makeWorkspace();
+  const dataDir = mkdtempSync(path.join(tmpdir(), "api-reviewers-data-"));
+  const result = await run([
+    "run",
+    "--provider", "deepseek",
+    "--mode", "custom-review",
+    "--scope", "custom",
+    "--scope-paths", "seed.txt",
+    "--lifecycle-events", "jsonl",
+    "--prompt", "Check this file.",
+  ], {
+    cwd,
+    env: {
+      API_REVIEWERS_PLUGIN_DATA: dataDir,
+      API_REVIEWERS_MOCK_RESPONSE: mockResponse("deepseek-v4-pro"),
+      DEEPSEEK_API_KEY: "secret-test-value",
+    },
+  });
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  const lines = result.stdout.trim().split("\n").map((line) => JSON.parse(line));
+  assert.equal(lines.length, 2);
+  const [launched, record] = lines;
+  assert.equal(launched.event, "external_review_launched");
+  assert.equal(launched.target, "deepseek");
+  assert.equal(launched.status, "launched");
+  assert.equal(launched.job_id, record.job_id);
+  assert.deepEqual(launched.external_review, {
+    marker: "EXTERNAL REVIEW",
+    provider: "DeepSeek",
+    run_kind: "foreground",
+    job_id: record.job_id,
+    session_id: null,
+    parent_job_id: null,
+    mode: "custom-review",
+    scope: "custom",
+    scope_base: null,
+    scope_paths: ["seed.txt"],
+    source_content_transmission: "may_be_sent",
+    disclosure: "Selected source content may be sent to DeepSeek for external review.",
+  });
+  assert.equal(record.status, "completed");
+  assert.equal(record.external_review.source_content_transmission, "sent");
+  assert.doesNotMatch(result.stdout, /secret-test-value/);
+});
+
 test("direct API provider session_id accepts safe provider ID shapes", async () => {
   const cwd = makeWorkspace();
   const dataDir = mkdtempSync(path.join(tmpdir(), "api-reviewers-data-"));

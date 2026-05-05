@@ -75,6 +75,8 @@ function assertCompanionWorkflowInvocation(skill, plugin, workflow, rel) {
     assert.match(skill, /--foreground\b/, `${rel} missing --foreground`);
   }
   if (["review", "adversarial-review"].includes(workflow)) {
+    assert.match(skill, /--lifecycle-events\s+jsonl\b/, `${rel} missing lifecycle jsonl option`);
+    assert.match(skill, /external_review_launched/, `${rel} missing launch event rendering guidance`);
     assert.match(skill, /--scope-base REF/, `${rel} missing optional --scope-base`);
     assert.match(skill, /`<focus>` is the user's review prompt or focus area/, `${rel} must define focus placeholder`);
     assert.match(skill, /external_review|claude-result-handling/, `${rel} missing external review rendering guidance`);
@@ -95,6 +97,8 @@ function assertApiReviewerWorkflowInvocation(skill, provider, workflow, rel) {
 
   assert.match(skill, new RegExp(`--mode\\s+${workflow}\\b`), `${rel} missing --mode ${workflow}`);
   assert.doesNotMatch(skill, /--foreground\b/, `${rel} must not document ignored --foreground flag`);
+  assert.match(skill, /--lifecycle-events\s+jsonl\b/, `${rel} missing lifecycle jsonl option`);
+  assert.match(skill, /external_review_launched/, `${rel} missing launch event rendering guidance`);
   assert.match(skill, /--prompt\s+"<focus>"/, `${rel} missing prompt placeholder`);
   assert.match(skill, /`<focus>` is the user's review prompt or focus area/, `${rel} must define focus placeholder`);
   if (workflow === "custom-review") {
@@ -119,6 +123,8 @@ function assertApiReviewerCommandDoc(command, workflow, rel) {
   assertNoBracketedCliFlagsInShellFences(command, rel);
   assert.doesNotMatch(command, /--foreground\b/, `${rel} must not document ignored --foreground flag`);
   if (workflow !== "setup") {
+    assert.match(command, /--lifecycle-events\s+jsonl\b/, `${rel} missing lifecycle jsonl option`);
+    assert.match(command, /external_review_launched/, `${rel} missing launch event rendering guidance`);
     assert.match(command, /external_review.*before the review result/, `${rel} missing external_review rendering guidance`);
   }
   if (["review", "adversarial-review"].includes(workflow)) {
@@ -153,6 +159,8 @@ function assertGrokWorkflowInvocation(skill, workflow, rel) {
   assert.match(skill, /grok-web-reviewer\.mjs\s+run\b/, `${rel} missing run subcommand`);
   assert.match(skill, new RegExp(`--mode\\s+${workflow}\\b`), `${rel} missing --mode ${workflow}`);
   assert.match(skill, /--foreground\b/, `${rel} missing --foreground`);
+  assert.match(skill, /--lifecycle-events\s+jsonl\b/, `${rel} missing lifecycle jsonl option`);
+  assert.match(skill, /external_review_launched/, `${rel} missing launch event rendering guidance`);
   assert.match(skill, /--prompt\s+"<focus>"/, `${rel} missing prompt placeholder`);
   assert.match(skill, /`<focus>` is the user's review prompt or focus area/, `${rel} must define focus placeholder`);
   assert.match(skill, /session cookies|tunnel API-key|bearer token/i, `${rel} missing secret handling guidance`);
@@ -179,6 +187,8 @@ function assertGrokCommandDoc(command, workflow, rel) {
 
   assert.match(command, new RegExp(`--mode\\s+${workflow}\\b`), `${rel} missing --mode ${workflow}`);
   assert.match(command, /--foreground\b/, `${rel} missing --foreground`);
+  assert.match(command, /--lifecycle-events\s+jsonl\b/, `${rel} missing lifecycle jsonl option`);
+  assert.match(command, /external_review_launched/, `${rel} missing launch event rendering guidance`);
   assert.match(command, /external_review.*before the review result/, `${rel} missing external_review rendering guidance`);
   if (["review", "adversarial-review"].includes(workflow)) {
     assert.match(command, /argument-hint:\s*"\[--scope-base REF\] \[review prompt\]"/, `${rel} missing scope-base argument hint`);

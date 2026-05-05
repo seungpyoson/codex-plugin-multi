@@ -30,9 +30,9 @@ tell the user to start the local Grok web tunnel and retry.
 Run foreground reviews with:
 
 ```bash
-node plugins/grok/scripts/grok-web-reviewer.mjs run --mode review --scope branch-diff --foreground --prompt "<focus>"
-node plugins/grok/scripts/grok-web-reviewer.mjs run --mode adversarial-review --scope branch-diff --foreground --prompt "<focus>"
-node plugins/grok/scripts/grok-web-reviewer.mjs run --mode custom-review --scope custom --scope-paths "<file1>,<file2>" --foreground --prompt "<focus>"
+node plugins/grok/scripts/grok-web-reviewer.mjs run --mode review --scope branch-diff --foreground --lifecycle-events jsonl --prompt "<focus>"
+node plugins/grok/scripts/grok-web-reviewer.mjs run --mode adversarial-review --scope branch-diff --foreground --lifecycle-events jsonl --prompt "<focus>"
+node plugins/grok/scripts/grok-web-reviewer.mjs run --mode custom-review --scope custom --scope-paths "<file1>,<file2>" --foreground --lifecycle-events jsonl --prompt "<focus>"
 ```
 
 If the user provides a base ref for branch-diff review modes, add
@@ -40,7 +40,7 @@ If the user provides a base ref for branch-diff review modes, add
 or focus area. Replace `<file1>,<file2>` with comma- or newline-separated concrete relative paths; expand globs before running.
 
 If the command fails, report `error_code`, `error_message`, and
-`suggested_action` from the JobRecord. If present, render `external_review` before the review result.
+`suggested_action` from the JobRecord. Render `external_review_launched` as soon as it appears. If `external_review` is present, render it before the review result.
 
 Launch/result card:
 

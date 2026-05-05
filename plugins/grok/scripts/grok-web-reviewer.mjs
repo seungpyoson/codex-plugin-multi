@@ -27,6 +27,21 @@ function printJson(obj) {
   process.stdout.write(`${JSON.stringify(obj, null, 2)}\n`);
 }
 
+function printJsonLine(obj) {
+  process.stdout.write(`${JSON.stringify(obj)}\n`);
+}
+
+function printLifecycleJson(obj, lifecycleEvents) {
+  if (lifecycleEvents === "jsonl") printJsonLine(obj);
+  else printJson(obj);
+}
+
+function parseLifecycleEventsMode(value) {
+  if (value == null || value === false) return null;
+  if (value === "jsonl") return "jsonl";
+  throw new Error("--lifecycle-events must be jsonl");
+}
+
 function parseArgs(argv) {
   const out = { _: [] };
   for (let i = 0; i < argv.length; i += 1) {
@@ -460,6 +475,23 @@ function disclosure(cfg, completed, payloadSent) {
     return `Selected source content was not sent to ${cfg.display_name}; the local subscription-backed tunnel was unavailable before delivery.`;
   }
   return `Selected source content may have been sent to ${cfg.display_name} through a subscription-backed web session.`;
+}
+
+function buildLaunchExternalReview({ cfg, mode, options, scopeInfo }) {
+  return {
+    marker: "EXTERNAL REVIEW",
+    provider: cfg.display_name,
+    run_kind: "foreground",
+    job_id: options.jobId,
+    session_id: null,
+    parent_job_id: null,
+    mode,
+    scope: scopeInfo.scope,
+    scope_base: scopeInfo.scope_base ?? null,
+    scope_paths: scopeInfo.scope_paths ?? null,
+    source_content_transmission: "may_be_sent",
+    disclosure: `Selected source content may be sent to ${cfg.display_name} for external review.`,
+  };
 }
 
 function suggestedAction(errorCode) {
@@ -898,6 +930,7 @@ async function doctorFields(env = process.env) {
 
 async function cmdRun(options) {
   const mode = options.mode ?? "review";
+  let lifecycleEvents = null;
   const startedAt = new Date().toISOString();
   const cfg = config();
   const jobId = `job_${randomUUID()}`;
@@ -905,6 +938,7 @@ async function cmdRun(options) {
   let scopeInfo;
   let execution;
   try {
+    lifecycleEvents = parseLifecycleEventsMode(options["lifecycle-events"]);
     if (!VALID_MODES.has(mode)) throw new Error(`bad_args: unsupported --mode ${mode}`);
     scopeInfo = await collectScope({ ...runOptions, mode });
   } catch (e) {
@@ -926,6 +960,15 @@ async function cmdRun(options) {
       execution = providerFailure(e.message.startsWith("bad_args:") ? "bad_args" : "scope_failed", redactor()(e.message), null, null, false);
     }
     if (!execution) try {
+      if (lifecycleEvents === "jsonl") {
+        printJsonLine({
+          event: "external_review_launched",
+          job_id: jobId,
+          target: "grok-web",
+          status: "launched",
+          external_review: buildLaunchExternalReview({ cfg, mode, options: runOptions, scopeInfo }),
+        });
+      }
       execution = await callGrokTunnel(cfg, prompt);
     } catch (e) {
       execution = providerFailure(
@@ -947,7 +990,7 @@ async function cmdRun(options) {
     endedAt: new Date().toISOString(),
   }), redactor());
   const printable = await persistRecordBestEffort(record);
-  printJson(printable);
+  printLifecycleJson(printable, lifecycleEvents);
   process.exit(record.status === "completed" ? 0 : 1);
 }
 

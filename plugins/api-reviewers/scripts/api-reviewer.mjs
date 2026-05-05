@@ -86,6 +86,21 @@ function printJson(obj) {
   process.stdout.write(`${JSON.stringify(obj, null, 2)}\n`);
 }
 
+function printJsonLine(obj) {
+  process.stdout.write(`${JSON.stringify(obj)}\n`);
+}
+
+function printLifecycleJson(obj, lifecycleEvents) {
+  if (lifecycleEvents === "jsonl") printJsonLine(obj);
+  else printJson(obj);
+}
+
+function parseLifecycleEventsMode(value) {
+  if (value == null || value === false) return null;
+  if (value === "jsonl") return "jsonl";
+  throw runBadArgs("--lifecycle-events must be jsonl");
+}
+
 function isActiveJob(job) {
   return ACTIVE_JOB_STATUSES.has(job?.status);
 }
@@ -1090,6 +1105,24 @@ function freezeRecord(record) {
   return Object.freeze(record);
 }
 
+function buildLaunchExternalReview({ cfg, mode, options, scopeInfo }) {
+  const provider = cfg.display_name;
+  return freezeExternalReview({
+    marker: "EXTERNAL REVIEW",
+    provider,
+    run_kind: "foreground",
+    job_id: options.jobId,
+    session_id: null,
+    parent_job_id: null,
+    mode,
+    scope: scopeInfo.scope,
+    scope_base: scopeInfo.scope_base ?? null,
+    scope_paths: scopeInfo.scope_paths ?? null,
+    source_content_transmission: SOURCE_CONTENT_TRANSMISSION.MAY_BE_SENT,
+    disclosure: `Selected source content may be sent to ${provider} for external review.`,
+  });
+}
+
 function errorCauseFor(errorCode) {
   if (errorCode === "bad_args") return "caller";
   if (errorCode === "config_error") return "provider_config";
@@ -1222,6 +1255,7 @@ async function cmdDoctor(options) {
 async function cmdRun(options) {
   const provider = options.provider ?? null;
   const mode = options.mode ?? "review";
+  let lifecycleEvents = null;
   const startedAt = new Date().toISOString();
   const jobId = `job_${randomUUID()}`;
   const runOptions = { ...options, jobId };
@@ -1230,6 +1264,7 @@ async function cmdRun(options) {
   let scopeInfo;
   let execution;
   try {
+    lifecycleEvents = parseLifecycleEventsMode(options["lifecycle-events"]);
     if (!provider) throw runBadArgs("bad_args: --provider is required");
     if (!VALID_MODES.has(mode)) throw runBadArgs(`bad_args: unsupported --mode ${mode}`);
     try {
@@ -1265,6 +1300,15 @@ async function cmdRun(options) {
     };
   }
   if (!execution) {
+    if (lifecycleEvents === "jsonl") {
+      printJsonLine({
+        event: "external_review_launched",
+        job_id: jobId,
+        target: provider,
+        status: "launched",
+        external_review: buildLaunchExternalReview({ cfg, mode, options: runOptions, scopeInfo }),
+      });
+    }
     try {
       execution = await callProvider(provider, cfg, promptFor(mode, options.prompt ?? "", scopeInfo, cfg.display_name));
     } catch (e) {
@@ -1282,7 +1326,7 @@ async function cmdRun(options) {
     endedAt: new Date().toISOString(),
   }), process.env, cfg.env_keys);
   const printableRecord = await persistRecordBestEffort(record, process.env, cfg.env_keys);
-  printJson(printableRecord);
+  printLifecycleJson(printableRecord, lifecycleEvents);
   process.exit(record.status === "completed" ? 0 : 1);
 }
 

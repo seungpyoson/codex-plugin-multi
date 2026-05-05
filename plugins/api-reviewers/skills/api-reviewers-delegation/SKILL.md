@@ -32,15 +32,15 @@ Render the JSON fields directly:
 Run reviews with:
 
 ```bash
-node plugins/api-reviewers/scripts/api-reviewer.mjs run --provider deepseek --mode review --scope branch-diff --prompt "<focus>"
-node plugins/api-reviewers/scripts/api-reviewer.mjs run --provider glm --mode adversarial-review --scope branch-diff --prompt "<focus>"
-node plugins/api-reviewers/scripts/api-reviewer.mjs run --provider deepseek --mode custom-review --scope custom --scope-paths "<file1>,<file2>" --prompt "<focus>"
+node plugins/api-reviewers/scripts/api-reviewer.mjs run --provider deepseek --mode review --scope branch-diff --lifecycle-events jsonl --prompt "<focus>"
+node plugins/api-reviewers/scripts/api-reviewer.mjs run --provider glm --mode adversarial-review --scope branch-diff --lifecycle-events jsonl --prompt "<focus>"
+node plugins/api-reviewers/scripts/api-reviewer.mjs run --provider deepseek --mode custom-review --scope custom --scope-paths "<file1>,<file2>" --lifecycle-events jsonl --prompt "<focus>"
 ```
 
 For branch-diff review or adversarial-review, add `--scope-base REF` before `--prompt` when the user provides a base ref. Use `<focus>` as the user's review prompt or focus area.
 Replace `<file1>,<file2>` with comma- or newline-separated concrete relative paths for `--scope-paths`; expand globs before running.
 If the command fails, report `error_code`, `error_message`, and `suggested_action` from the JobRecord. Do not expose API keys.
-If `external_review` is present, render it before the review result.
+Render `external_review_launched` as soon as it appears. If `external_review` is present, render it before the review result.
 
 Launch/result card:
 

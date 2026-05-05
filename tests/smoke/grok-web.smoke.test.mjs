@@ -1,6 +1,6 @@
 import { once } from "node:events";
 import { execFileSync, spawn, spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import http from "node:http";
 import { hostname, tmpdir } from "node:os";
 import path from "node:path";
@@ -47,6 +47,10 @@ function runAsync(args, options = {}) {
 function parseStdout(result) {
   assert.doesNotMatch(result.stderr, /secret|token|cookie|xai/i);
   return JSON.parse(result.stdout);
+}
+
+function rmTree(target) {
+  rmSync(target, { recursive: true, force: true });
 }
 
 async function withServer(handler, fn) {
@@ -294,6 +298,69 @@ test("custom-review sends selected source to a local Grok web tunnel and persist
     assert.equal(listed.jobs[0].job_id, secondRecord.job_id);
     assert.equal(listed.jobs[1].job_id, record.job_id);
   });
+});
+
+test("custom-review lifecycle jsonl emits launch event before terminal JobRecord", async () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "grok-web-lifecycle-workspace-"));
+  const dataDir = mkdtempSync(path.join(tmpdir(), "grok-web-lifecycle-data-"));
+  writeFileSync(path.join(cwd, "review.js"), "export const value = 42;\n");
+
+  await withServer(async (req, res) => {
+    assert.equal(req.method, "POST");
+    assert.equal(req.url, "/api/chat/completions");
+    await readJsonRequest(req);
+    res.setHeader("content-type", "application/json");
+    res.end(JSON.stringify({
+      id: "grok-web-lifecycle-session",
+      model: "grok-4.20-fast",
+      choices: [{ message: { content: "Verdict: no findings." } }],
+    }));
+  }, async (baseUrl) => {
+    const result = await runAsync([
+      "run",
+      "--mode", "custom-review",
+      "--scope", "custom",
+      "--scope-paths", "review.js",
+      "--foreground",
+      "--lifecycle-events", "jsonl",
+      "--prompt", "Check this file.",
+    ], {
+      cwd,
+      env: {
+        GROK_WEB_BASE_URL: baseUrl,
+        GROK_WEB_TUNNEL_API_KEY: "secret-cookie-like-token",
+        GROK_PLUGIN_DATA: dataDir,
+      },
+    });
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    const lines = result.stdout.trim().split("\n").map((line) => JSON.parse(line));
+    assert.equal(lines.length, 2);
+    const [launched, record] = lines;
+    assert.equal(launched.event, "external_review_launched");
+    assert.equal(launched.target, "grok-web");
+    assert.equal(launched.status, "launched");
+    assert.equal(launched.job_id, record.job_id);
+    assert.deepEqual(launched.external_review, {
+      marker: "EXTERNAL REVIEW",
+      provider: "Grok Web",
+      run_kind: "foreground",
+      job_id: record.job_id,
+      session_id: null,
+      parent_job_id: null,
+      mode: "custom-review",
+      scope: "custom",
+      scope_base: null,
+      scope_paths: ["review.js"],
+      source_content_transmission: "may_be_sent",
+      disclosure: "Selected source content may be sent to Grok Web for external review.",
+    });
+    assert.equal(record.status, "completed");
+    assert.equal(record.external_review.source_content_transmission, "sent");
+    assert.doesNotMatch(result.stdout, /secret-cookie-like-token/);
+  });
+
+  rmTree(cwd);
+  rmTree(dataDir);
 });
 
 test("custom-review escalates Grok file delimiters when selected source collides", async () => {

@@ -105,7 +105,7 @@ from short-lived index contention.
 
 ## Rendering order
 
-1. **External review banner.** If `external_review` is present, render it
+1. **External review banner.** If `external_review_launched` is present, render it immediately. If `external_review` is present, render it
    before findings or status prose. Use the boxed card for launch/result:
 
    ```text

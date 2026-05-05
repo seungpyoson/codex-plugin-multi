@@ -137,6 +137,45 @@ test("run --mode=review --foreground: emits JobRecord with status=completed", ()
   }
 });
 
+test("run --mode=review --foreground lifecycle jsonl emits launch event before terminal JobRecord", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "smoke-lifecycle-cwd-"));
+  seedMinimalRepo(cwd);
+  const { stdout, stderr, status, dataDir } = runCompanion(
+    ["run", "--mode=review", "--foreground", "--lifecycle-events", "jsonl",
+     "--model", "claude-haiku-4-5-20251001", "--cwd", cwd, "--", "review: x=1"],
+    { cwd }
+  );
+  try {
+    assert.equal(status, 0, `exit ${status}: stderr=${stderr}`);
+    const lines = stdout.trim().split("\n").map((line) => JSON.parse(line));
+    assert.equal(lines.length, 2);
+    const [launched, record] = lines;
+    assert.equal(launched.event, "external_review_launched");
+    assert.equal(launched.target, "claude");
+    assert.equal(launched.status, "launched");
+    assert.equal(launched.job_id, record.job_id);
+    assert.deepEqual(launched.external_review, {
+      marker: "EXTERNAL REVIEW",
+      provider: "Claude Code",
+      run_kind: "foreground",
+      job_id: record.job_id,
+      session_id: null,
+      parent_job_id: null,
+      mode: "review",
+      scope: "working-tree",
+      scope_base: null,
+      scope_paths: null,
+      source_content_transmission: "may_be_sent",
+      disclosure: "Selected source content may be sent to Claude Code for external review.",
+    });
+    assert.equal(record.status, "completed");
+    assert.equal(record.external_review.source_content_transmission, "sent");
+  } finally {
+    cleanup(dataDir);
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
 test("run --mode=review --foreground: surfaces mutation detection failure without dropping result", () => {
   const cwd = mkdtempSync(path.join(tmpdir(), "smoke-mut-fail-cwd-"));
   seedMinimalRepo(cwd);

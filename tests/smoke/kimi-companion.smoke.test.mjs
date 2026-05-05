@@ -972,6 +972,51 @@ test("kimi preflight success and bad_args emit safety fields", () => withRepo((c
   assertPreflightSafetyFields(badJson);
 }));
 
+test("kimi review foreground lifecycle jsonl emits launch event before terminal JobRecord", () => withRepo((cwd) => {
+  const result = runCompanion([
+    "run",
+    "--mode",
+    "review",
+    "--cwd",
+    cwd,
+    "--foreground",
+    "--lifecycle-events",
+    "jsonl",
+    "--",
+    "Review this scope.",
+  ], {
+    cwd,
+    env: {
+      KIMI_MOCK_ASSERT_FILE: "seed.txt",
+      KIMI_MOCK_ASSERT_CWD: realpathSync(tmpdir()),
+    },
+  });
+  assert.equal(result.status, 0, result.stderr);
+  const lines = result.stdout.trim().split("\n").map((line) => JSON.parse(line));
+  assert.equal(lines.length, 2);
+  const [launched, record] = lines;
+  assert.equal(launched.event, "external_review_launched");
+  assert.equal(launched.target, "kimi");
+  assert.equal(launched.status, "launched");
+  assert.equal(launched.job_id, record.job_id);
+  assert.deepEqual(launched.external_review, {
+    marker: "EXTERNAL REVIEW",
+    provider: "Kimi Code CLI",
+    run_kind: "foreground",
+    job_id: record.job_id,
+    session_id: null,
+    parent_job_id: null,
+    mode: "review",
+    scope: "working-tree",
+    scope_base: null,
+    scope_paths: null,
+    source_content_transmission: "may_be_sent",
+    disclosure: "Selected source content may be sent to Kimi Code CLI for external review.",
+  });
+  assert.equal(record.status, "completed");
+  assert.equal(record.external_review.source_content_transmission, "sent");
+}));
+
 for (const mode of ["review", "adversarial-review", "custom-review"]) {
   test(`kimi ${mode} foreground writes completed JobRecord`, () => withRepo((cwd) => {
     const extraArgs = [];

@@ -1159,6 +1159,46 @@ test("gemini review foreground: policy-first, stdin transport, /tmp cwd, scoped 
   }
 });
 
+test("gemini review foreground lifecycle jsonl emits launch event before terminal JobRecord", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "gemini-review-lifecycle-cwd-"));
+  seedMinimalRepo(cwd);
+  const { stdout, stderr, status, dataDir } = runCompanion(
+    ["run", "--mode=review", "--foreground", "--lifecycle-events", "jsonl",
+     "--cwd", cwd, "--", "review: x=1"],
+    { cwd },
+  );
+  try {
+    assert.equal(status, 0, `exit ${status}: ${stderr}`);
+    const lines = stdout.trim().split("\n").map((line) => JSON.parse(line));
+    assert.equal(lines.length, 2);
+    const [launched, record] = lines;
+    assert.equal(launched.event, "external_review_launched");
+    assert.equal(launched.target, "gemini");
+    assert.equal(launched.status, "launched");
+    assert.equal(launched.job_id, record.job_id);
+    assert.deepEqual(launched.external_review, {
+      marker: "EXTERNAL REVIEW",
+      provider: "Gemini CLI",
+      run_kind: "foreground",
+      job_id: record.job_id,
+      session_id: null,
+      parent_job_id: null,
+      mode: "review",
+      scope: "working-tree",
+      scope_base: null,
+      scope_paths: null,
+      source_content_transmission: "may_be_sent",
+      disclosure: "Selected source content may be sent to Gemini CLI for external review.",
+    });
+    assert.equal(record.status, "completed");
+    assert.equal(record.external_review.source_content_transmission, "sent");
+    assert.equal(record.result, "Mock Gemini response.");
+  } finally {
+    rmTree(dataDir);
+    rmTree(cwd);
+  }
+});
+
 test("gemini review foreground: omits native Gemini sandbox inside Codex sandbox", () => {
   const cwd = mkdtempSync(path.join(tmpdir(), "gemini-review-codex-cwd-"));
   seedMinimalRepo(cwd);
