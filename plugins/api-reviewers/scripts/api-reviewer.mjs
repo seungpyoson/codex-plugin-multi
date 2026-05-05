@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { spawnSync } from "node:child_process";
-import { lstat, mkdir, readFile, readdir, realpath, rename, rm, stat, unlink, writeFile } from "node:fs/promises";
-import { existsSync } from "node:fs";
+import { lstat, mkdir, open, readFile, readdir, realpath, rename, rm, unlink, writeFile } from "node:fs/promises";
+import { constants as fsConstants } from "node:fs";
 import { dirname, isAbsolute, resolve, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import { randomUUID } from "node:crypto";
@@ -31,6 +31,10 @@ const API_REVIEWER_STATE_LOCK_TIMEOUT_MS = 5000;
 const API_REVIEWER_STATE_LOCK_STALE_MS = 30000;
 const GIT_BINARY = "/usr/bin/git";
 const GIT_SAFE_PATH = "/usr/bin:/bin";
+const MAX_SCOPE_FILE_BYTES = 1024 * 1024;
+const MAX_SCOPE_TOTAL_BYTES = 4 * 1024 * 1024;
+const GIT_SHOW_MAX_BUFFER_BYTES = MAX_SCOPE_FILE_BYTES + 1024;
+const SCOPE_FILE_OPEN_FLAGS = fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0);
 const API_REVIEWER_EXPECTED_KEYS = Object.freeze([
   "id",
   "job_id",
@@ -602,6 +606,20 @@ function parseMaxTokensOverride(env = process.env) {
   return parsePositiveIntegerEnv(env, "API_REVIEWERS_MAX_TOKENS", "tokens");
 }
 
+function parsePromptCharBudget(cfg, env = process.env) {
+  const override = parsePositiveIntegerEnv(env, "API_REVIEWERS_PROMPT_CHAR_BUDGET", "prompt characters");
+  if (!override.ok || override.value !== null) return override;
+  const configured = cfg.prompt_char_budget;
+  if (configured === undefined || configured === null) return { ok: true, value: null };
+  if (!Number.isSafeInteger(configured) || configured <= 0) {
+    return {
+      ok: false,
+      error: `provider prompt_char_budget must be a positive integer; got ${JSON.stringify(configured)}`,
+    };
+  }
+  return { ok: true, value: configured };
+}
+
 function parseProviderTimeoutMs(env = process.env) {
   const parsed = parsePositiveIntegerEnv(env, "API_REVIEWERS_TIMEOUT_MS", "milliseconds");
   return parsed.value === null ? { ok: true, value: 120000 } : parsed;
@@ -826,35 +844,100 @@ function validateScopePath(workspaceRoot, relPath) {
 
 async function readGitScopeFiles(gitCwd, workspaceRoot, relPaths) {
   const files = [];
+  const totalBytes = { value: 0 };
   for (const relPath of relPaths) {
     const { normalizedRel } = validateScopePath(workspaceRoot, relPath);
-    const text = gitRaw(["show", `HEAD:${relPath}`], gitCwd, {
+    const blobSpec = `HEAD:${relPath}`;
+    const sizeText = gitRaw(["cat-file", "-s", blobSpec], gitCwd, { allowFailure: true });
+    if (sizeText === null) continue;
+    const blobBytes = Number.parseInt(sizeText.trim(), 10);
+    if (!Number.isSafeInteger(blobBytes) || blobBytes < 0) {
+      throw new Error(`scope_invalid_git_blob_size:${normalizedRel}`);
+    }
+    if (blobBytes > MAX_SCOPE_FILE_BYTES) {
+      throw new Error(`scope_file_too_large:${normalizedRel}: ${blobBytes} bytes exceeds ${MAX_SCOPE_FILE_BYTES} byte limit`);
+    }
+    const text = gitRaw(["show", blobSpec], gitCwd, {
       allowFailure: true,
-      maxBuffer: 16 * 1024 * 1024,
+      maxBuffer: GIT_SHOW_MAX_BUFFER_BYTES,
     });
-    if (text === null || text.length === 0) continue;
-    files.push({ path: normalizedRel, text });
+    if (text === null) continue;
+    addScopeFile(files, normalizedRel, text, totalBytes);
   }
   if (files.length === 0) throw new Error("scope_empty: selected files are missing or empty");
   return files;
 }
 
+function addScopeFile(files, normalizedRel, text, totalBytes) {
+  if (text.length === 0) return;
+  const bytes = Buffer.byteLength(text, "utf8");
+  if (bytes > MAX_SCOPE_FILE_BYTES) {
+    throw new Error(`scope_file_too_large:${normalizedRel}: ${bytes} bytes exceeds ${MAX_SCOPE_FILE_BYTES} byte limit`);
+  }
+  totalBytes.value += bytes;
+  if (totalBytes.value > MAX_SCOPE_TOTAL_BYTES) {
+    throw new Error(`scope_total_too_large:${totalBytes.value} bytes exceeds ${MAX_SCOPE_TOTAL_BYTES} byte limit`);
+  }
+  files.push({ path: normalizedRel, text });
+}
+
+async function readUtf8ScopeFileWithinLimit(filePath, normalizedRel) {
+  const beforeOpen = await lstat(filePath);
+  const handle = await open(filePath, SCOPE_FILE_OPEN_FLAGS);
+  try {
+    const info = await handle.stat();
+    if (!info.isFile()) return null;
+    if (!sameFileIdentity(beforeOpen, info)) {
+      throw new Error(`unsafe_scope_path:${normalizedRel}: file changed before secure open`);
+    }
+    if (info.size > MAX_SCOPE_FILE_BYTES) {
+      throw new Error(`scope_file_too_large:${normalizedRel}: ${info.size} bytes exceeds ${MAX_SCOPE_FILE_BYTES} byte limit`);
+    }
+
+    const chunks = [];
+    let total = 0;
+    for (;;) {
+      const remaining = MAX_SCOPE_FILE_BYTES + 1 - total;
+      const buffer = Buffer.allocUnsafe(Math.min(remaining, 64 * 1024));
+      const { bytesRead } = await handle.read(buffer, 0, buffer.length, null);
+      if (bytesRead === 0) break;
+      total += bytesRead;
+      if (total > MAX_SCOPE_FILE_BYTES) {
+        throw new Error(`scope_file_too_large:${normalizedRel}: ${total} bytes exceeds ${MAX_SCOPE_FILE_BYTES} byte limit`);
+      }
+      chunks.push(buffer.subarray(0, bytesRead));
+    }
+    if (total === 0) return "";
+    return Buffer.concat(chunks, total).toString("utf8");
+  } finally {
+    await handle.close();
+  }
+}
+
+function sameFileIdentity(left, right) {
+  return left.dev === right.dev && left.ino === right.ino;
+}
+
 async function readFilesystemScopeFiles(workspaceRoot, relPaths) {
   const files = [];
+  const totalBytes = { value: 0 };
   const realWorkspaceRoot = await realpath(workspaceRoot);
   for (const relPath of relPaths) {
     const { abs, normalizedRel } = validateScopePath(workspaceRoot, relPath);
-    if (!existsSync(abs)) continue;
-    const realAbs = await realpath(abs);
+    let realAbs;
+    try {
+      realAbs = await realpath(abs);
+    } catch (error) {
+      if (error?.code === "ENOENT") continue;
+      throw error;
+    }
     const realRel = relative(realWorkspaceRoot, realAbs);
     if (realRel.startsWith("..") || realRel === "") {
       throw new Error(`unsafe_scope_path:${relPath}`);
     }
-    const info = await stat(realAbs);
-    if (!info.isFile()) continue;
-    const text = await readFile(realAbs, "utf8");
-    if (text.length === 0) continue;
-    files.push({ path: normalizedRel, text });
+    const text = await readUtf8ScopeFileWithinLimit(realAbs, normalizedRel);
+    if (text === null) continue;
+    addScopeFile(files, normalizedRel, text, totalBytes);
   }
   if (files.length === 0) throw new Error("scope_empty: selected files are missing or empty");
   return files;
@@ -1177,6 +1260,7 @@ function suggestedAction(errorCode, provider, cfg, errorMessage = "", httpStatus
   if (errorCode === "bad_args") return "Correct the api-reviewer command arguments and retry.";
   if (errorCode === "config_error") return "Reinstall or repair plugins/api-reviewers/config/providers.json and retry.";
   if (errorCode === "missing_key") return `Expose one of these key names to Codex: ${(cfg.env_keys ?? []).join(", ")}.`;
+  if (errorCode === "preflight_too_large") return `Narrow the review before launch: pass explicit --scope-paths for the largest relevant files, split the branch diff into smaller custom-review shards, or raise API_REVIEWERS_PROMPT_CHAR_BUDGET only if ${cfg.display_name} can accept the prompt.`;
   if (errorCode === "auth_rejected") return `Check the ${cfg.display_name} API key and billing/plan for ${cfg.model}.`;
   if (errorCode === "rate_limited") return `Wait and retry, or lower concurrency for ${provider}.`;
   if (errorCode === "timeout") return `The provider did not respond within the timeout window. Retry later, increase API_REVIEWERS_TIMEOUT_MS, or switch reviewer provider.`;
@@ -1189,6 +1273,9 @@ function suggestedAction(errorCode, provider, cfg, errorMessage = "", httpStatus
       return `Check network access, retry later, or switch reviewer provider.`;
     }
     return `Retry later or switch reviewer provider.`;
+  }
+  if (errorCode === "scope_failed" && /scope_(?:total|file)_too_large/.test(errorMessage)) {
+    return "Narrow or split the review before launch: pass explicit --scope-paths for the largest relevant files, or run multiple custom-review shards.";
   }
   if (errorCode === "scope_failed") return "Adjust --scope, --scope-base, or --scope-paths and retry.";
   return "Inspect error_message and retry after correcting the provider or request configuration.";
@@ -1236,6 +1323,7 @@ function errorCauseFor(errorCode) {
   if (errorCode === "bad_args") return "caller";
   if (errorCode === "config_error") return "provider_config";
   if (errorCode === "scope_failed") return "scope_resolution";
+  if (errorCode === "preflight_too_large") return "provider_preflight";
   return "direct_api_provider";
 }
 
@@ -1250,7 +1338,37 @@ function scopeDiagnostics(scopeInfo) {
   };
 }
 
+function largestScopeFiles(scopeInfo, limit = 5) {
+  const files = Array.isArray(scopeInfo.files) ? scopeInfo.files : [];
+  return files
+    .map((file) => ({
+      path: file.path,
+      bytes: Buffer.byteLength(String(file.text ?? ""), "utf8"),
+    }))
+    .sort((a, b) => b.bytes - a.bytes || a.path.localeCompare(b.path))
+    .slice(0, limit);
+}
+
 function diagnosticErrorSummary(errorCode, errorMessage, scopeInfo, execution) {
+  if (errorCode === "preflight_too_large") {
+    const scope = scopeDiagnostics(scopeInfo);
+    const diagnostics = execution.diagnostics ?? {};
+    const promptChars = diagnostics.prompt_chars ?? 0;
+    const estimatedTokens = Math.ceil(promptChars / 4);
+    const largest = largestScopeFiles(scopeInfo)
+      .map((file) => `${file.path}:${file.bytes}`)
+      .join(",");
+    return [
+      errorMessage || errorCode,
+      `selected_files=${scope.selected_files}`,
+      `selected_bytes=${scope.selected_bytes}`,
+      `selected_chars=${scope.selected_chars}`,
+      `prompt_chars=${promptChars}`,
+      `estimated_tokens=${estimatedTokens}`,
+      `provider_budget_chars=${diagnostics.provider_budget_chars ?? "unknown"}`,
+      `largest_files=${largest || "none"}`,
+    ].join(" ");
+  }
   if (errorCode !== "timeout") return errorMessage || errorCode;
   const scope = scopeDiagnostics(scopeInfo);
   const diagnostics = execution.diagnostics ?? {};
@@ -1266,6 +1384,35 @@ function diagnosticErrorSummary(errorCode, errorMessage, scopeInfo, execution) {
     `estimated_tokens=${estimatedTokens}`,
     `max_tokens=${diagnostics.max_tokens ?? "unknown"}`,
   ].join(" ");
+}
+
+function promptBudgetPreflight(provider, cfg, prompt, scopeInfo, env = process.env) {
+  const budget = parsePromptCharBudget(cfg, env);
+  if (!budget.ok) {
+    return providerFailure("bad_args", budget.error, null, null, false);
+  }
+  if (budget.value === null || prompt.length <= budget.value) return null;
+  const scope = scopeDiagnostics(scopeInfo);
+  const largest = largestScopeFiles(scopeInfo)
+    .map((file) => `${file.path}:${file.bytes}`)
+    .join(",");
+  return providerFailureWithDiagnostics(
+    "preflight_too_large",
+    `prompt_chars=${prompt.length} exceeds provider_budget_chars=${budget.value}`,
+    null,
+    null,
+    false,
+    {
+      provider,
+      prompt_chars: prompt.length,
+      estimated_tokens: Math.ceil(prompt.length / 4),
+      provider_budget_chars: budget.value,
+      selected_files: scope.selected_files,
+      selected_bytes: scope.selected_bytes,
+      selected_chars: scope.selected_chars,
+      largest_files: largest,
+    },
+  );
 }
 
 function buildReviewMetadata(cfg, scopeInfo, execution = null) {
@@ -1483,13 +1630,27 @@ async function cmdRun(options) {
     };
   }
   if (!execution) {
+    let renderedPrompt = null;
     try {
-      const renderedPrompt = promptFor(mode, options.prompt ?? "", scopeInfo, cfg.display_name);
-      execution = await callProvider(provider, cfg, renderedPrompt);
-      execution.prompt = renderedPrompt;
+      renderedPrompt = promptFor(mode, options.prompt ?? "", scopeInfo, cfg.display_name);
+      execution = promptBudgetPreflight(provider, cfg, renderedPrompt, scopeInfo);
     } catch (e) {
-      execution = providerFailure("provider_unavailable", redactor(process.env)(e?.message ?? String(e)), null, null, null);
+      execution = providerFailure(
+        e.message?.startsWith("bad_args:") ? "bad_args" : "provider_unavailable",
+        redactor(process.env)(e?.message ?? String(e)),
+        null,
+        null,
+        false,
+      );
     }
+    if (!execution) {
+      try {
+        execution = await callProvider(provider, cfg, renderedPrompt);
+      } catch (e) {
+        execution = providerFailure("provider_unavailable", redactor(process.env)(e?.message ?? String(e)), null, null, false);
+      }
+    }
+    if (renderedPrompt) execution.prompt = renderedPrompt;
   }
   const record = redactRecord(buildRecord({
     provider: provider ?? "api-reviewers",

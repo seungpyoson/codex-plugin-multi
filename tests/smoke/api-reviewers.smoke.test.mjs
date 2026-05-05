@@ -266,8 +266,10 @@ test("high-capability provider defaults preserve large review output budgets", (
   assert.equal(providers.deepseek.request_defaults.thinking.type, "enabled");
   assert.equal(providers.deepseek.request_defaults.reasoning_effort, "max");
   assert.ok(providers.deepseek.request_defaults.max_tokens >= 65536);
+  assert.ok(providers.deepseek.prompt_char_budget >= 524288);
   assert.equal(providers.glm.request_defaults.thinking.type, "enabled");
   assert.ok(providers.glm.request_defaults.max_tokens >= 131072);
+  assert.ok(providers.glm.prompt_char_budget >= 786432);
 });
 
 test("API_REVIEWERS_MAX_TOKENS overrides provider request defaults", async () => {
@@ -1524,6 +1526,139 @@ test("direct API timeout marks selected content as sent", async () => {
   } finally {
     server.close();
   }
+});
+
+test("direct API prompt budget preflight fails before source transmission", async () => {
+  const cwd = makeWorkspace();
+  writeFileSync(path.join(cwd, "large.txt"), `${"x".repeat(32 * 1024)}\n`);
+
+  const result = await run([
+    "run",
+    "--provider", "deepseek",
+    "--mode", "custom-review",
+    "--scope", "custom",
+    "--scope-paths", "large.txt",
+    "--foreground",
+    "--prompt", "Check this file.",
+  ], {
+    cwd,
+    env: {
+      API_REVIEWERS_PROMPT_CHAR_BUDGET: "4096",
+      API_REVIEWERS_MOCK_RESPONSE: mockResponse("deepseek-v4-flash"),
+      DEEPSEEK_API_KEY: "secret-test-value",
+    },
+  });
+
+  assert.equal(result.status, 1);
+  const record = parseJson(result.stdout);
+  assert.equal(record.status, "failed");
+  assert.equal(record.error_code, "preflight_too_large");
+  assert.match(record.error_message, /prompt_chars=\d+ exceeds provider_budget_chars=4096/);
+  assert.match(record.error_summary, /selected_files=1/);
+  assert.match(record.error_summary, /selected_bytes=\d+/);
+  assert.match(record.suggested_action, /--scope-paths/);
+  assert.equal(record.external_review.source_content_transmission, "not_sent");
+  assert.equal(record.review_metadata.raw_output.parsed_ok, false);
+  assert.equal(record.review_metadata.audit_manifest.selected_source.files.length, 1);
+  assert.equal(record.review_metadata.audit_manifest.truncation.prompt, false);
+  assert.doesNotMatch(result.stdout, /secret-test-value/);
+});
+
+test("direct API custom-review rejects oversized selected files before provider execution", async () => {
+  const cwd = makeWorkspace();
+  writeFileSync(path.join(cwd, "large.txt"), `${"x".repeat(1024 * 1024 + 1)}\n`);
+
+  const result = await run([
+    "run",
+    "--provider", "deepseek",
+    "--mode", "custom-review",
+    "--scope", "custom",
+    "--scope-paths", "large.txt",
+    "--foreground",
+    "--prompt", "Check this file.",
+  ], {
+    cwd,
+    env: {
+      API_REVIEWERS_MOCK_RESPONSE: mockResponse("deepseek-v4-flash"),
+      DEEPSEEK_API_KEY: "secret-test-value",
+    },
+  });
+
+  assert.equal(result.status, 1);
+  const record = parseJson(result.stdout);
+  assert.equal(record.status, "failed");
+  assert.equal(record.error_code, "scope_failed");
+  assert.match(record.error_message, /scope_file_too_large:large\.txt/);
+  assert.match(record.suggested_action, /--scope-paths/);
+  assertDirectApiNotSent(record, "DeepSeek");
+  assert.doesNotMatch(result.stdout, /secret-test-value/);
+});
+
+test("direct API branch-diff rejects oversized committed files before provider execution", async () => {
+  const cwd = makeWorkspace();
+  git(cwd, ["init", "-b", "main"]);
+  git(cwd, ["config", "user.email", "test@example.com"]);
+  git(cwd, ["config", "user.name", "Test User"]);
+  git(cwd, ["add", "seed.txt"]);
+  git(cwd, ["commit", "-m", "seed"]);
+  git(cwd, ["checkout", "-b", "feature"]);
+  writeFileSync(path.join(cwd, "large.txt"), `${"x".repeat(1024 * 1024 + 1)}\n`);
+  git(cwd, ["add", "large.txt"]);
+  git(cwd, ["commit", "-m", "large"]);
+
+  const result = await run([
+    "run",
+    "--provider", "deepseek",
+    "--mode", "review",
+    "--scope", "branch-diff",
+    "--scope-base", "main",
+    "--foreground",
+    "--prompt", "Review the branch diff.",
+  ], {
+    cwd,
+    env: {
+      API_REVIEWERS_MOCK_RESPONSE: mockResponse("deepseek-v4-flash"),
+      DEEPSEEK_API_KEY: "secret-test-value",
+    },
+  });
+
+  assert.equal(result.status, 1);
+  const record = parseJson(result.stdout);
+  assert.equal(record.status, "failed");
+  assert.equal(record.error_code, "scope_failed");
+  assert.match(record.error_message, /scope_file_too_large:large\.txt/);
+  assert.match(record.suggested_action, /--scope-paths/);
+  assertDirectApiNotSent(record, "DeepSeek");
+  assert.doesNotMatch(result.stdout, /secret-test-value/);
+});
+
+test("API_REVIEWERS_PROMPT_CHAR_BUDGET rejects invalid overrides before source transmission", async () => {
+  const cwd = makeWorkspace();
+  const result = await run([
+    "run",
+    "--provider", "deepseek",
+    "--mode", "custom-review",
+    "--scope", "custom",
+    "--scope-paths", "seed.txt",
+    "--foreground",
+    "--prompt", "Check this file.",
+  ], {
+    cwd,
+    env: {
+      API_REVIEWERS_PROMPT_CHAR_BUDGET: "abc",
+      API_REVIEWERS_MOCK_RESPONSE: mockResponse("deepseek-v4-flash"),
+      DEEPSEEK_API_KEY: "secret-test-value",
+    },
+  });
+
+  assert.equal(result.status, 1);
+  const record = parseJson(result.stdout);
+  assert.equal(record.status, "failed");
+  assert.equal(record.error_code, "bad_args");
+  assert.match(record.error_message, /API_REVIEWERS_PROMPT_CHAR_BUDGET/);
+  assert.equal(record.external_review.source_content_transmission, "not_sent");
+  assert.equal(record.review_metadata.audit_manifest.selected_source.files.length, 1);
+  assert.doesNotMatch(result.stdout, /secret-test-value/);
 });
 
 test("direct API HTTP failures mark selected content as sent", async () => {

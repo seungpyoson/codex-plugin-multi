@@ -702,8 +702,11 @@ function disclosure(cfg, completed, payloadSent) {
   return `Selected source content may have been sent to ${cfg.display_name} through a subscription-backed web session.`;
 }
 
-function suggestedAction(errorCode) {
+function suggestedAction(errorCode, errorMessage = "") {
   if (errorCode === "bad_args") return "Correct the grok-web command arguments and retry.";
+  if (errorCode === "scope_failed" && /scope_(?:total|file)_too_large/.test(errorMessage)) {
+    return "Narrow or split the review before launch: pass explicit --scope-paths for the largest files you need reviewed, or run multiple custom-review shards. Start by excluding generated/large files and reviewing the largest files separately.";
+  }
   if (errorCode === "scope_failed") return "Adjust --scope, --scope-base, or --scope-paths and retry.";
   if (errorCode === "tunnel_unavailable") return "Start the local Grok web tunnel, verify GROK_WEB_BASE_URL, then retry.";
   if (errorCode === "tunnel_timeout") return "The local Grok web tunnel did not respond before GROK_WEB_TIMEOUT_MS; inspect the tunnel and retry.";
@@ -823,7 +826,7 @@ function buildRecord({ cfg, mode, options, scopeInfo, execution, startedAt, ende
     error_message: errorMessage,
     error_summary: completed ? null : diagnostic,
     error_cause: completed ? null : errorCauseFor(errorCode),
-    suggested_action: completed ? null : suggestedAction(errorCode),
+    suggested_action: completed ? null : suggestedAction(errorCode, errorMessage),
     external_review: {
       marker: "EXTERNAL REVIEW",
       provider: cfg.display_name,
@@ -1235,7 +1238,6 @@ async function cmdRun(options) {
     }
     if (!execution) try {
       execution = await callGrokTunnel(cfg, prompt);
-      execution.prompt = prompt;
     } catch (e) {
       execution = providerFailure(
         e.message.startsWith("bad_args:") ? "bad_args" : "tunnel_error",
@@ -1245,6 +1247,7 @@ async function cmdRun(options) {
         payloadSentForFetchError(e),
       );
     }
+    if (prompt) execution.prompt = prompt;
   }
   const record = redactValue(buildRecord({
     cfg,

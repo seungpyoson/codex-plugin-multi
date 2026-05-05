@@ -5,6 +5,7 @@
     "env_keys": ["DEEPSEEK_API_KEY"],
     "base_url": "https://api.deepseek.com",
     "model": "deepseek-v4-pro",
+    "prompt_char_budget": 524288,
     "request_defaults": {
       "thinking": {
         "type": "enabled"
@@ -19,6 +20,7 @@
     "env_keys": ["ZAI_API_KEY", "ZAI_GLM_API_KEY"],
     "base_url": "https://api.z.ai/api/coding/paas/v4",
     "model": "glm-5.1",
+    "prompt_char_budget": 786432,
     "request_defaults": {
       "thinking": {
         "type": "enabled"

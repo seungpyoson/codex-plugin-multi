@@ -641,6 +641,8 @@ test("custom-review rejects aggregate selected source that exceeds the prompt ca
   assert.equal(record.status, "failed");
   assert.equal(record.error_code, "scope_failed");
   assert.match(record.error_message, /scope_total_too_large/);
+  assert.match(record.suggested_action, /--scope-paths/);
+  assert.match(record.suggested_action, /largest files/i);
   assert.equal(record.external_review.source_content_transmission, "not_sent");
   assert.match(record.external_review.disclosure, /not sent/i);
 });
@@ -1177,6 +1179,11 @@ test("custom-review marks stalled uploaded tunnel requests as unknown transmissi
     assert.equal(record.error_code, "tunnel_timeout");
     assert.equal(record.external_review.source_content_transmission, "unknown");
     assert.match(record.external_review.disclosure, /may have been sent/i);
+    assert.match(record.review_metadata.audit_manifest.rendered_prompt_hash.value, /^[a-f0-9]{64}$/);
+    assert.deepEqual(
+      record.review_metadata.audit_manifest.selected_source.files.map((file) => file.path),
+      ["review.js"]
+    );
   });
 });
 
@@ -1210,6 +1217,11 @@ test("custom-review marks socket drops after upload as unknown transmission", as
     assert.equal(record.error_code, "tunnel_unavailable");
     assert.equal(record.external_review.source_content_transmission, "unknown");
     assert.match(record.external_review.disclosure, /may have been sent/i);
+    assert.match(record.review_metadata.audit_manifest.rendered_prompt_hash.value, /^[a-f0-9]{64}$/);
+    assert.deepEqual(
+      record.review_metadata.audit_manifest.selected_source.files.map((file) => file.path),
+      ["review.js"]
+    );
   });
 });
 
@@ -1389,6 +1401,7 @@ test("tunnel invocation catch is separated from prompt construction catch", () =
   assert.match(source, /execution = await callGrokTunnel\(cfg, prompt\)/);
   assert.match(source, /"tunnel_error"/);
   assert.match(source, /payloadSentForFetchError\(e\)/);
+  assert.match(source, /if \(prompt\) execution\.prompt = prompt;/);
 });
 
 for (const { status, code } of [
