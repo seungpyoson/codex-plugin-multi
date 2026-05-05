@@ -1871,13 +1871,13 @@ test("tunnel invocation catch is separated from prompt construction catch", () =
   assert.match(source, /payloadSentForFetchError\(e\)/);
 });
 
-for (const { status, code } of [
-  { status: 401, code: "session_expired" },
+for (const { status, code, quotaBody = false } of [
+  { status: 401, code: "session_expired", quotaBody: true },
   { status: 403, code: "session_expired" },
   { status: 400, code: "usage_limited" },
   { status: 402, code: "usage_limited" },
   { status: 429, code: "usage_limited" },
-  { status: 500, code: "tunnel_error" },
+  { status: 500, code: "tunnel_error", quotaBody: true },
 ]) {
   test(`custom-review maps HTTP ${status} to ${code} without leaking secrets`, async () => {
     const cwd = mkdtempSync(path.join(tmpdir(), "grok-web-workspace-"));
@@ -1888,9 +1888,9 @@ for (const { status, code } of [
       res.setHeader("content-type", "application/json");
       res.end(JSON.stringify({
         error: {
-          code: code === "usage_limited" ? "account=user@example.com:plan_id=pro+stripe-sub-abc/123" : "server_error",
-          type: code === "usage_limited" ? "billing/account=user@example.com" : "server_error",
-          message: code === "usage_limited"
+          code: code === "usage_limited" || quotaBody ? "account=user@example.com:plan_id=pro+stripe-sub-abc/123" : "server_error",
+          type: code === "usage_limited" || quotaBody ? "billing/account=user@example.com" : "server_error",
+          message: code === "usage_limited" || quotaBody
             ? "quota exceeded for this billing account; Authorization: Bearer secret-cookie-like-token failed"
             : "Authorization: Bearer secret-cookie-like-token failed",
         },
@@ -1927,6 +1927,10 @@ for (const { status, code } of [
         assert.equal(record.runtime_diagnostics.tunnel_request.configured_timeout_ms, 600000);
         assert.doesNotMatch(record.error_summary, /\[object Object\]/);
         assert.match(record.suggested_action, /subscription usage|manual approval/i);
+      } else if (quotaBody) {
+        assert.notEqual(record.error_cause, "cost_quota_usage_limit");
+        assert.equal(record.runtime_diagnostics.cost_quota.classification, "not_reported");
+        assert.equal(record.runtime_diagnostics.cost_quota.http_status, status);
       }
       assert.doesNotMatch(result.stdout, /secret-cookie-like-token/);
       assert.match(record.error_message, /\[REDACTED\]/);

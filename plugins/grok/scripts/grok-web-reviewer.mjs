@@ -613,8 +613,8 @@ function isUsageLimitDetail(detail) {
 function classifyHttpFailure(status, parsed) {
   const detail = parsed.ok ? providerFailureDetailText(parsed) : "";
   if (status === 401 || status === 403) return "session_expired";
-  if (status === 402 || status === 429 || isUsageLimitDetail(detail)) return "usage_limited";
   if (status >= 500) return "tunnel_error";
+  if (status === 402 || status === 429 || isUsageLimitDetail(detail)) return "usage_limited";
   return "tunnel_error";
 }
 
@@ -676,7 +676,9 @@ function safeDiagnosticString(value) {
 function costQuotaDiagnostics(httpStatus, parsed) {
   const error = providerFailureDetailObject(parsed);
   const detail = parsed.ok ? providerFailureDetailText(parsed) : "";
-  const usageLimited = httpStatus === 402 || httpStatus === 429 || isUsageLimitDetail(detail);
+  const authRejected = httpStatus === 401 || httpStatus === 403;
+  const serverFailure = httpStatus >= 500;
+  const usageLimited = !authRejected && !serverFailure && (httpStatus === 402 || httpStatus === 429 || isUsageLimitDetail(detail));
   return {
     classification: usageLimited ? "usage_limited" : "not_reported",
     http_status: httpStatus ?? null,
