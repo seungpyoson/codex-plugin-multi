@@ -854,6 +854,8 @@ async function readGitScopeFiles(gitCwd, workspaceRoot, relPaths) {
     if (!Number.isSafeInteger(blobBytes) || blobBytes < 0) {
       throw new Error(`scope_invalid_git_blob_size:${normalizedRel}`);
     }
+    // Preflight the raw blob size before git show; gitRaw returns untrimmed stdout for file contents,
+    // so this measures the same byte surface that addScopeFile re-checks after decoding.
     if (blobBytes > MAX_SCOPE_FILE_BYTES) {
       throw new Error(`scope_file_too_large:${normalizedRel}: ${blobBytes} bytes exceeds ${MAX_SCOPE_FILE_BYTES} byte limit`);
     }
