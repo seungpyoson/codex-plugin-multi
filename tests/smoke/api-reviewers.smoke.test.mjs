@@ -1972,6 +1972,15 @@ test("custom-review rejects symlinked scope files before provider delivery", asy
   assert.doesNotMatch(result.stdout, /workspace secret should not be sent/);
 });
 
+test("scope file reads open canonical paths after symlink boundary check", () => {
+  const source = readFileSync(COMPANION, "utf8");
+  assert.match(source, /const SCOPE_FILE_OPEN_FLAGS = fsConstants\.O_RDONLY \| \(fsConstants\.O_NOFOLLOW \?\? 0\);/);
+  assert.match(source, /if \(beforeOpen\.isSymbolicLink\(\)\) \{/);
+  assert.match(source, /const realRel = relative\(realWorkspaceRoot, realAbs\);/);
+  assert.match(source, /const text = await readUtf8ScopeFileWithinLimit\(realAbs, normalizedRel, beforeOpen\);/);
+  assert.doesNotMatch(source, /readUtf8ScopeFileWithinLimit\(abs, normalizedRel\)/);
+});
+
 test("custom-review rejects oversized scope files before provider delivery", async () => {
   const cwd = makeWorkspace();
   const dataDir = mkdtempSync(path.join(tmpdir(), "api-reviewers-data-"));

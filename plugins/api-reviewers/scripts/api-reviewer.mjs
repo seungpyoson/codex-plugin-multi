@@ -943,8 +943,8 @@ function addScopeFile(files, normalizedRel, text, totalBytes) {
   files.push({ path: normalizedRel, text });
 }
 
-async function readUtf8ScopeFileWithinLimit(filePath, normalizedRel) {
-  const beforeOpen = await lstat(filePath);
+async function readUtf8ScopeFileWithinLimit(filePath, normalizedRel, beforeOpen = null) {
+  beforeOpen ??= await lstat(filePath);
   let handle;
   try {
     handle = await open(filePath, SCOPE_FILE_OPEN_FLAGS);
@@ -994,6 +994,16 @@ async function readFilesystemScopeFiles(workspaceRoot, relPaths) {
   const realWorkspaceRoot = await realpath(workspaceRoot);
   for (const relPath of relPaths) {
     const { abs, normalizedRel } = validateScopePath(workspaceRoot, relPath);
+    let beforeOpen;
+    try {
+      beforeOpen = await lstat(abs);
+    } catch (error) {
+      if (error?.code === "ENOENT") continue;
+      throw error;
+    }
+    if (beforeOpen.isSymbolicLink()) {
+      throw new Error(`unsafe_scope_path:${normalizedRel}`);
+    }
     let realAbs;
     try {
       realAbs = await realpath(abs);
@@ -1005,8 +1015,7 @@ async function readFilesystemScopeFiles(workspaceRoot, relPaths) {
     if (realRel.startsWith("..") || realRel === "") {
       throw new Error(`unsafe_scope_path:${relPath}`);
     }
-    // Validate the canonical target boundary, then open the requested path so leaf symlinks still fail closed.
-    const text = await readUtf8ScopeFileWithinLimit(abs, normalizedRel);
+    const text = await readUtf8ScopeFileWithinLimit(realAbs, normalizedRel, beforeOpen);
     if (text === null) continue;
     addScopeFile(files, normalizedRel, text, totalBytes);
   }
