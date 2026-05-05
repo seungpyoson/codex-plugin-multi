@@ -1237,6 +1237,34 @@ test("DeepSeek direct API lifecycle jsonl emits launch event before terminal Job
   assert.doesNotMatch(result.stdout, /secret-test-value/);
 });
 
+test("direct API rejects invalid lifecycle event mode as bad args", async () => {
+  const cwd = makeWorkspace();
+  const dataDir = mkdtempSync(path.join(tmpdir(), "api-reviewers-data-"));
+  const result = await run([
+    "run",
+    "--provider", "deepseek",
+    "--mode", "custom-review",
+    "--scope", "custom",
+    "--scope-paths", "seed.txt",
+    "--lifecycle-events", "pretty",
+    "--prompt", "Check this file.",
+  ], {
+    cwd,
+    env: {
+      API_REVIEWERS_PLUGIN_DATA: dataDir,
+      DEEPSEEK_API_KEY: "secret-test-value",
+    },
+  });
+  assert.equal(result.status, 1);
+  assert.doesNotMatch(result.stderr, /unhandled/i);
+  const record = parseJson(result.stdout);
+  assert.equal(record.status, "failed");
+  assert.equal(record.error_code, "bad_args");
+  assert.equal(record.error_cause, "caller");
+  assert.match(record.error_message, /--lifecycle-events must be jsonl/);
+  assert.doesNotMatch(result.stdout, /secret-test-value/);
+});
+
 test("direct API provider session_id accepts safe provider ID shapes", async () => {
   const cwd = makeWorkspace();
   const dataDir = mkdtempSync(path.join(tmpdir(), "api-reviewers-data-"));
