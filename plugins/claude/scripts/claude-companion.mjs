@@ -60,7 +60,6 @@ import {
   preflightDisclosure,
   preflightSafetyFields,
   printJson,
-  printJsonLine,
   printLifecycleJson,
   runKindFromRecord,
   summarizeScopeDirectory,
@@ -485,97 +484,12 @@ async function executeRun(invocation, prompt, { foreground, lifecycleEvents = nu
     job_id: jobId, mode, model, cwd, workspace_root: workspaceRoot,
     dispose_effective: disposeEffective,
   } = invocation;
-
-  // Re-resolve the profile from the persisted mode NAME (spec §21.2).
   const profile = resolveProfile(invocation.mode_profile_name);
+  const executionScope = setupExecutionScopeOrExit(invocation, profile, { foreground, lifecycleEvents });
+  const mutationContext = prepareMutationContext(invocation, profile);
+  const resumeId = latestResumeId(invocation);
 
-  // T7.2: containment + scope are two independent per-profile decisions.
-  let containment = null;
-  try {
-    containment = setupContainment(profile, cwd);
-    populateScope(profile, cwd, containment.path, {
-      scopeBase: invocation.scope_base,
-      scopePaths: invocation.scope_paths,
-    }, containment);
-  } catch (e) {
-    if (containment) { try { containment.cleanup(); } catch { /* best-effort */ } }
-    const errorRecord = buildJobRecord(invocation, {
-      exitCode: null, parsed: null, pidInfo: null, claudeSessionId: null,
-      errorMessage: e.message,
-    }, []);
-    writeJobFile(workspaceRoot, jobId, errorRecord);
-    upsertJob(workspaceRoot, errorRecord);
-    if (foreground) {
-      printLifecycleJson(errorRecord, lifecycleEvents);
-      process.exit(2);
-    }
-    process.exit(2);
-  }
-  const checkMutations = profile.permission_mode === "plan";
-  let neutralCwd = null;
-  let neutralCwdSetupError = null;
-  if (checkMutations) {
-    try {
-      neutralCwd = mkdtempSync(joinPath(tmpdir(), "claude-neutral-cwd-"));
-    } catch (e) {
-      neutralCwdSetupError = e;
-    }
-  }
-  const childCwd = neutralCwd ?? containment.path;
-  const addDir = containment.path;
-
-  // Pre-snapshot for review-style paths (§10 post-hoc mutation detection).
-  // Profile-driven: plan-mode paths are supposed to be read-only, so we
-  // snapshot before/after and surface drift via record.mutations.
-  let gitStatusBefore = null;
-  const mutations = [];
-  if (neutralCwdSetupError) {
-    mutations.push(mutationDetectionFailure(neutralCwdSetupError));
-  }
-  if (checkMutations) {
-    const before = tryGit(["status", "-s", "--untracked-files=all"], cwd);
-    if (before.ok) {
-      gitStatusBefore = before.stdout;
-      try {
-        writeSidecar(workspaceRoot, jobId, "git-status-before.txt", gitStatusBefore);
-      } catch (e) {
-        mutations.push(mutationDetectionFailure(e));
-      }
-    } else {
-      mutations.push(mutationDetectionFailure(before.error));
-    }
-  }
-
-  // Resume is carried on invocation.resume_chain[last] via cmdContinue. For
-  // fresh runs this is null and sessionId=jobId is passed instead.
-  const resumeId = invocation.resume_chain && invocation.resume_chain.length > 0
-    ? invocation.resume_chain[invocation.resume_chain.length - 1]
-    : null;
-
-  // Pre-spawn cancel-marker check (Class 1 + Finding A, race window α).
-  // cmdRunWorker has its own check at the top of the worker body, but a
-  // cancel issued during containment setup / scope copy lands AFTER that
-  // check while state.json still says "queued". Rechecking immediately
-  // before spawnClaude narrows the window from "containment + scope +
-  // pre-snapshot + spawn" (potentially seconds with a large repo) to the
-  // microseconds between this check and child.once('spawn'). The post-run
-  // consumer at the close handler is the safety net for that residual gap.
-  // This check also covers the foreground path (cmdRun bypasses
-  // cmdRunWorker entirely).
-  if (consumeCancelMarker(workspaceRoot, jobId)) {
-    cleanupNeutralCwd(neutralCwd);
-    if (containment.disposed && disposeEffective) {
-      try { containment.cleanup(); } catch { /* best-effort */ }
-    }
-    const cancelledRecord = buildJobRecord(invocation, {
-      status: "cancelled",
-      exitCode: null, parsed: null, pidInfo: null, claudeSessionId: null,
-    }, mutations);
-    writeJobFile(workspaceRoot, jobId, cancelledRecord);
-    upsertJob(workspaceRoot, cancelledRecord);
-    if (foreground) printLifecycleJson(cancelledRecord, lifecycleEvents);
-    process.exit(0);
-  }
+  exitIfCancelledBeforeSpawn(invocation, executionScope, mutationContext, { foreground, lifecycleEvents });
 
   if (foreground && lifecycleEvents) {
     printLifecycleJson(
@@ -584,99 +498,159 @@ async function executeRun(invocation, prompt, { foreground, lifecycleEvents = nu
     );
   }
 
-  let execution;
+  const execution = await spawnClaudeOrExit(invocation, profile, prompt, executionScope, mutationContext, {
+    foreground,
+    lifecycleEvents,
+    resumeId,
+  });
+
+  recordPostRunMutations(invocation, mutationContext);
+
+  const cancelMarker = consumeCancelMarker(workspaceRoot, jobId);
+  const finalRecord = buildClaudeFinalRecord(invocation, execution, cancelMarker, mutationContext.mutations);
+  const { metaError, stateError } = commitJobRecord(workspaceRoot, jobId, finalRecord);
+
+  writeExecutionSidecars(workspaceRoot, jobId, execution);
+  exitIfFinalizationFailed(invocation, execution, finalRecord, mutationContext, executionScope, { metaError, stateError });
+
+  cleanupExecutionResources(executionScope, mutationContext);
+
+  if (foreground) printLifecycleJson(finalRecord, lifecycleEvents);
+  process.exit(finalRecord.status === "completed" ? 0 : 2);
+}
+
+function setupExecutionScopeOrExit(invocation, profile, { foreground, lifecycleEvents }) {
+  let containment = null;
+  try {
+    containment = setupContainment(profile, invocation.cwd);
+    populateScope(profile, invocation.cwd, containment.path, {
+      scopeBase: invocation.scope_base,
+      scopePaths: invocation.scope_paths,
+    }, containment);
+    return {
+      containment,
+      childCwd: containment.path,
+      addDir: containment.path,
+      disposeEffective: invocation.dispose_effective,
+    };
+  } catch (e) {
+    if (containment) { try { containment.cleanup(); } catch { /* best-effort */ } }
+    const errorRecord = buildJobRecord(invocation, {
+      exitCode: null, parsed: null, pidInfo: null, claudeSessionId: null,
+      errorMessage: e.message,
+    }, []);
+    writeJobFile(invocation.workspace_root, invocation.job_id, errorRecord);
+    upsertJob(invocation.workspace_root, errorRecord);
+    if (foreground) printLifecycleJson(errorRecord, lifecycleEvents);
+    process.exit(2);
+  }
+}
+
+function prepareMutationContext(invocation, profile) {
+  const checkMutations = profile.permission_mode === "plan";
+  const context = { checkMutations, gitStatusBefore: null, neutralCwd: null, mutations: [] };
+  if (!checkMutations) return context;
+  try {
+    context.neutralCwd = mkdtempSync(joinPath(tmpdir(), "claude-neutral-cwd-"));
+  } catch (e) {
+    context.mutations.push(mutationDetectionFailure(e));
+  }
+  const before = tryGit(["status", "-s", "--untracked-files=all"], invocation.cwd);
+  if (!before.ok) {
+    context.mutations.push(mutationDetectionFailure(before.error));
+    return context;
+  }
+  context.gitStatusBefore = before.stdout;
+  try {
+    writeSidecar(invocation.workspace_root, invocation.job_id, "git-status-before.txt", before.stdout);
+  } catch (e) {
+    context.mutations.push(mutationDetectionFailure(e));
+  }
+  return context;
+}
+
+function latestResumeId(invocation) {
+  return invocation.resume_chain && invocation.resume_chain.length > 0
+    ? invocation.resume_chain[invocation.resume_chain.length - 1]
+    : null;
+}
+
+function exitIfCancelledBeforeSpawn(invocation, executionScope, mutationContext, { foreground, lifecycleEvents }) {
+  if (!consumeCancelMarker(invocation.workspace_root, invocation.job_id)) return;
+  cleanupExecutionResources(executionScope, mutationContext);
+  const cancelledRecord = buildJobRecord(invocation, {
+    status: "cancelled",
+    exitCode: null,
+    parsed: null,
+    pidInfo: null,
+    claudeSessionId: null,
+  }, mutationContext.mutations);
+  writeJobFile(invocation.workspace_root, invocation.job_id, cancelledRecord);
+  upsertJob(invocation.workspace_root, cancelledRecord);
+  if (foreground) printLifecycleJson(cancelledRecord, lifecycleEvents);
+  process.exit(0);
+}
+
+async function spawnClaudeOrExit(invocation, profile, prompt, executionScope, mutationContext, options) {
   try {
     const authSelection = resolveAuthSelection(invocation.auth_mode);
-    execution = await spawnClaude(profile, {
-      model,
+    return await spawnClaude(profile, {
+      model: invocation.model,
       promptText: prompt,
-      sessionId: jobId,
-      addDirPath: addDir,
-      cwd: childCwd,
+      sessionId: invocation.job_id,
+      addDirPath: executionScope.addDir,
+      cwd: mutationContext.neutralCwd ?? executionScope.childCwd,
       binary: invocation.binary,
       jsonSchema: invocation.schema_spec,
-      resumeId,
+      resumeId: options.resumeId,
       timeoutMs: 0,
       allowedApiKeyEnv: authSelection.allowed_env_credentials,
-      onSpawn: (pidInfo) => {
-        const runningRecord = buildJobRecord(invocation, {
-          status: "running",
-          exitCode: null,
-          parsed: null,
-          pidInfo,
-          claudeSessionId: null,
-        }, mutations);
-        writeJobFile(workspaceRoot, jobId, runningRecord);
-        upsertJob(workspaceRoot, runningRecord);
-      },
+      onSpawn: (pidInfo) => writeRunningRecord(invocation, pidInfo, mutationContext.mutations),
     });
   } catch (e) {
     const errorRecord = buildJobRecord(invocation, {
       exitCode: null, parsed: null, pidInfo: null, claudeSessionId: null,
       errorMessage: e.message,
-    }, mutations);
-    writeJobFile(workspaceRoot, jobId, errorRecord);
-    upsertJob(workspaceRoot, errorRecord);
-    cleanupNeutralCwd(neutralCwd);
-    if (disposeEffective) containment.cleanup();
-    if (foreground) {
-      printLifecycleJson(errorRecord, lifecycleEvents);
-      process.exit(2);
-    }
+    }, mutationContext.mutations);
+    writeJobFile(invocation.workspace_root, invocation.job_id, errorRecord);
+    upsertJob(invocation.workspace_root, errorRecord);
+    cleanupExecutionResources(executionScope, mutationContext);
+    if (options.foreground) printLifecycleJson(errorRecord, options.lifecycleEvents);
     process.exit(2);
   }
+}
 
-  // ——— finalization (#16 follow-up 1) ————————————————————————————————
-  //
-  // Three categories of persistence happen here, with explicit severities:
-  //
-  //   1. JobRecord meta (writeJobFile)        — CONTRACTUAL: this is the
-  //      shape consumers (`status --job`, `result --job`, skills) read.
-  //      Failure here is fatal; we still fall back to a best-effort
-  //      `failed`/`finalization_failed` record so operators don't see a
-  //      permanent "running" entry from the onSpawn write.
-  //   2. State index (upsertJob)              — CONTRACTUAL: `status`
-  //      iterates this. Failure here is fatal under the same fallback
-  //      rules — meta.json and state.json must agree, no split-brain.
-  //   3. Sidecar logs (stdout.log/stderr.log) — DIAGNOSTIC: operator-
-  //      facing trace files. Failure is a stderr WARNING and never
-  //      changes the job's terminal status. Per #16 follow-up 1: the
-  //      target CLI already exited successfully; clobbering its real
-  //      result with `finalization_failed` over a failed log write is
-  //      misleading. The warning is loud enough.
-  //
-  // Containment cleanup runs in the finally block so a fatal persistence
-  // path still disposes the workspace, matching M5/M6 semantics.
+function writeRunningRecord(invocation, pidInfo, mutations) {
+  const runningRecord = buildJobRecord(invocation, {
+    status: "running",
+    exitCode: null,
+    parsed: null,
+    pidInfo,
+    claudeSessionId: null,
+  }, mutations);
+  writeJobFile(invocation.workspace_root, invocation.job_id, runningRecord);
+  upsertJob(invocation.workspace_root, runningRecord);
+}
 
-  // Post-snapshot for mutation detection (warning on failure; not fatal).
-  if (checkMutations && gitStatusBefore !== null) {
-    const after = tryGit(["status", "-s", "--untracked-files=all"], cwd);
-    if (after.ok) {
-      const gitStatusAfter = after.stdout;
-      try { writeSidecar(workspaceRoot, jobId, "git-status-after.txt", gitStatusAfter); }
-      catch (e) { process.stderr.write(`claude-companion: warning: sidecar git-status-after.txt write failed: ${e.message}\n`); }
-      if (gitStatusAfter && gitStatusAfter !== gitStatusBefore) {
-        const beforeLines = new Set(gitStatusLines(gitStatusBefore));
-        mutations.push(...gitStatusLines(gitStatusAfter)
-          .filter((line) => !beforeLines.has(line)));
-      }
-    } else {
-      mutations.push(mutationDetectionFailure(after.error));
-    }
+function recordPostRunMutations(invocation, mutationContext) {
+  if (!mutationContext.checkMutations || mutationContext.gitStatusBefore === null) return;
+  const after = tryGit(["status", "-s", "--untracked-files=all"], invocation.cwd);
+  if (!after.ok) {
+    mutationContext.mutations.push(mutationDetectionFailure(after.error));
+    return;
   }
+  try {
+    writeSidecar(invocation.workspace_root, invocation.job_id, "git-status-after.txt", after.stdout);
+  } catch (e) {
+    process.stderr.write(`claude-companion: warning: sidecar git-status-after.txt write failed: ${e.message}\n`);
+  }
+  if (!after.stdout || after.stdout === mutationContext.gitStatusBefore) return;
+  const beforeLines = new Set(gitStatusLines(mutationContext.gitStatusBefore));
+  mutationContext.mutations.push(...gitStatusLines(after.stdout).filter((line) => !beforeLines.has(line)));
+}
 
-  // Issue #22 sub-task 2: cancel-marker check. cmdCancel writes the
-  // marker BEFORE signaling so we can force status=cancelled even when
-  // the target CLI traps SIGTERM and exits 0 with valid output. The
-  // marker is per-job and best-effort — a missing file means "no cancel
-  // requested," not "couldn't read."
-  const cancelMarker = consumeCancelMarker(workspaceRoot, jobId);
-
-  // ONE buildJobRecord call for the canonical record — spec §21.3.2.
-  // signal + timedOut feed classifyExecution: a SIGTERM/SIGKILL exit without
-  // timedOut is an operator cancel → status="cancelled" (#16 follow-up 2);
-  // timedOut wins so wall-clock kills classify as timeout failures.
-  const finalRecord = buildJobRecord(invocation, {
+function buildClaudeFinalRecord(invocation, execution, cancelMarker, mutations) {
+  return buildJobRecord(invocation, {
     exitCode: execution.exitCode,
     parsed: execution.parsed,
     pidInfo: execution.pidInfo,
@@ -685,84 +659,59 @@ async function executeRun(invocation, prompt, { foreground, lifecycleEvents = nu
     signal: execution.signal ?? null,
     timedOut: execution.timedOut === true,
   }, mutations);
+}
 
-  // Phase 1+2: contractual persistence (meta.json + state.json) under ONE
-  // state-lock acquisition. PR #21 review BLOCKER 2: this is what serializes
-  // finalization against reconcile so a concurrent stale promotion can't
-  // clobber our completed record.
-  const { metaError, stateError } = commitJobRecord(workspaceRoot, jobId, finalRecord);
-
-  // Phase 3: sidecars — diagnostics only.
-  for (const [name, contents] of [
-    ["stdout.log", execution.stdout],
-    ["stderr.log", execution.stderr],
-  ]) {
+function writeExecutionSidecars(workspaceRoot, jobId, execution) {
+  for (const [name, contents] of [["stdout.log", execution.stdout], ["stderr.log", execution.stderr]]) {
     try { writeSidecar(workspaceRoot, jobId, name, contents); }
     catch (e) {
       process.stderr.write(`claude-companion: warning: sidecar ${name} write failed: ${e.message}\n`);
     }
   }
+}
 
-  if (metaError || stateError) {
-    // Best-effort fallback so the persisted record is not stuck on
-    // "running" from onSpawn. PR #21 review BLOCKER 1: only overwrite
-    // the side that ACTUALLY failed — a state-lock-timeout (state failed,
-    // meta succeeded) used to clobber the good meta with a fallback
-    // failed-record. classifyExecution sees "finalization_failed:" and
-    // emits error_code=finalization_failed (not spawn_failed).
-    const detail = [
-      metaError && `meta=${metaError.message}`,
-      stateError && `state=${stateError.message}`,
-    ].filter(Boolean).join("; ");
-    let fallbackRecord = null;
-    try {
-      fallbackRecord = buildJobRecord(invocation, {
-        exitCode: execution.exitCode,
-        parsed: execution.parsed,
-        pidInfo: execution.pidInfo,
-        claudeSessionId: execution.claudeSessionId ?? null,
-        errorMessage: `finalization_failed: ${detail}`,
-      }, mutations);
-    } catch { /* defense in depth */ }
-    if (fallbackRecord) {
-      if (metaError) {
-        // commitJobRecord aborted in writeJobFile → state was NOT mutated
-        // either. Both sides still hold onSpawn's "running"; overwrite both
-        // with the fallback so consumers see a coherent terminal state.
-        try { writeJobFile(workspaceRoot, jobId, fallbackRecord); } catch { /* exhausted */ }
-        try { upsertJob(workspaceRoot, fallbackRecord); } catch { /* exhausted */ }
-      } else if (stateError) {
-        // meta IS the good terminal record (writeJobFile succeeded inside
-        // commitJobRecord; only saveStateUnlocked threw). Do NOT touch
-        // meta — that's the BLOCKER 1 clobber path. Retry upsertJob with
-        // the GOOD record; if that also fails, fall back to the failed
-        // record so state at least reflects a terminal status.
-        try { upsertJob(workspaceRoot, finalRecord); }
-        catch {
-          try { upsertJob(workspaceRoot, fallbackRecord); } catch { /* exhausted */ }
-        }
-      }
+function exitIfFinalizationFailed(invocation, execution, finalRecord, mutationContext, executionScope, errors) {
+  const { metaError, stateError } = errors;
+  if (!metaError && !stateError) return;
+  const detail = [
+    metaError && `meta=${metaError.message}`,
+    stateError && `state=${stateError.message}`,
+  ].filter(Boolean).join("; ");
+  persistFinalizationFallback(invocation, execution, finalRecord, mutationContext.mutations, errors, detail);
+  cleanupExecutionResources(executionScope, mutationContext);
+  fail("finalization_failed", detail, {
+    error_code: (metaError ?? stateError)?.code ?? null,
+  });
+}
+
+function persistFinalizationFallback(invocation, execution, finalRecord, mutations, errors, detail) {
+  let fallbackRecord = null;
+  try {
+    fallbackRecord = buildJobRecord(invocation, {
+      exitCode: execution.exitCode,
+      parsed: execution.parsed,
+      pidInfo: execution.pidInfo,
+      claudeSessionId: execution.claudeSessionId ?? null,
+      errorMessage: `finalization_failed: ${detail}`,
+    }, mutations);
+  } catch { /* defense in depth */ }
+  if (!fallbackRecord) return;
+  if (errors.metaError) {
+    try { writeJobFile(invocation.workspace_root, invocation.job_id, fallbackRecord); } catch { /* exhausted */ }
+    try { upsertJob(invocation.workspace_root, fallbackRecord); } catch { /* exhausted */ }
+  } else if (errors.stateError) {
+    try { upsertJob(invocation.workspace_root, finalRecord); }
+    catch {
+      try { upsertJob(invocation.workspace_root, fallbackRecord); } catch { /* exhausted */ }
     }
-    cleanupNeutralCwd(neutralCwd);
-    if (containment.disposed && disposeEffective) {
-      try { containment.cleanup(); } catch { /* best-effort */ }
-    }
-    fail("finalization_failed", detail, {
-      error_code: (metaError ?? stateError)?.code ?? null,
-    });
   }
+}
 
-  cleanupNeutralCwd(neutralCwd);
-  if (containment.disposed && disposeEffective) {
-    containment.cleanup();
+function cleanupExecutionResources(executionScope, mutationContext) {
+  cleanupNeutralCwd(mutationContext.neutralCwd);
+  if (executionScope.disposeEffective) {
+    try { executionScope.containment.cleanup(); } catch { /* best-effort */ }
   }
-  // Note: `containment_path` / `containment_cleaned` were legacy sidechannel
-  // fields on the record that pre-dated the JobRecord schema. Containment
-  // state is now either "disposed" (path gone from disk) or derivable from
-  // workspace inspection; not part of the schema.
-
-  if (foreground) printLifecycleJson(finalRecord, lifecycleEvents);
-  process.exit(finalRecord.status === "completed" ? 0 : 2);
 }
 
 function cleanupNeutralCwd(neutralCwd) {

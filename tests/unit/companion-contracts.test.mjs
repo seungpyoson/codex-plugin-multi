@@ -151,7 +151,7 @@ test("plan-mode pre-run git-status sidecar failures are mutation warnings across
     const source = readRepoFile(rel);
     assert.match(
       source,
-      /try\s*\{[\s\S]*?writeSidecar\(workspaceRoot,\s*jobId,\s*"git-status-before\.txt"[\s\S]*?\}\s*catch\s*\(e\)\s*\{[\s\S]*?mutations\.push\(mutationDetectionFailure\(e\)\)/,
+      /try\s*\{[\s\S]*?writeSidecar\((?:workspaceRoot|invocation\.workspace_root),\s*(?:jobId|invocation\.job_id),\s*"git-status-before\.txt"[\s\S]*?\}\s*catch\s*\(e\)\s*\{[\s\S]*?(?:mutations|context\.mutations)\.push\(mutationDetectionFailure\(e\)/,
       `${rel}: pre-run git-status sidecar failure must be recorded as mutation_detection_failed`,
     );
   }
