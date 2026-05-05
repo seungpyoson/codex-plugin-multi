@@ -889,6 +889,8 @@ test("run rejects invalid lifecycle event mode as bad args", () => {
         GROK_WEB_TUNNEL_API_KEY: "secret-cookie-like-token",
       },
     });
+    assert.match(result.stdout, /^\{\n/);
+    assert.doesNotMatch(result.stdout, /^{"event":"external_review_launched"/m);
     const parsed = parseStdout(result);
     assert.equal(result.status, 1);
     assert.equal(parsed.status, "failed");

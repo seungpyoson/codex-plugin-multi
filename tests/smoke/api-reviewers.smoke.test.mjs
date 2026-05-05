@@ -1258,6 +1258,8 @@ test("direct API rejects invalid lifecycle event mode as bad args", async () => 
   });
   assert.equal(result.status, 1);
   assert.doesNotMatch(result.stderr, /unhandled/i);
+  assert.match(result.stdout, /^\{\n/);
+  assert.doesNotMatch(result.stdout, /^{"event":"external_review_launched"/m);
   const record = parseJson(result.stdout);
   assert.equal(record.status, "failed");
   assert.equal(record.error_code, "bad_args");
