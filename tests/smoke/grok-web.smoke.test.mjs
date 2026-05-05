@@ -775,6 +775,52 @@ test("run rejects missing prompt before launch or source transmission", () => {
   }
 });
 
+test("run rejects blank or valueless prompt flags before launch", () => {
+  for (const promptArgs of [
+    ["--prompt", ""],
+    ["--prompt", "   "],
+    ["--prompt"],
+    ["--prompt="],
+    ["--prompt=   "],
+    ["--prompt", "--unused-review-flag"],
+  ]) {
+    const cwd = mkdtempSync(path.join(tmpdir(), "grok-web-workspace-"));
+    const dataDir = mkdtempSync(path.join(tmpdir(), "grok-web-data-"));
+    try {
+      writeFileSync(path.join(cwd, "review.js"), "export const value = 42;\n");
+
+      const result = run([
+        "run",
+        "--mode", "custom-review",
+        "--scope", "custom",
+        "--scope-paths", "review.js",
+        "--foreground",
+        "--lifecycle-events", "jsonl",
+        ...promptArgs,
+      ], {
+        cwd,
+        env: {
+          GROK_PLUGIN_DATA: dataDir,
+          GROK_WEB_BASE_URL: "http://127.0.0.1:9/api",
+        },
+      });
+      const lines = parseJsonLines(result);
+      assert.equal(result.status, 1);
+      assert.equal(lines.length, 1);
+      const [record] = lines;
+      assert.equal(record.status, "failed");
+      assert.equal(record.error_code, "bad_args");
+      assert.match(record.error_message, /prompt is required/);
+      assert.equal(record.prompt_head, "");
+      assert.equal(record.external_review.source_content_transmission, "not_sent");
+      assert.doesNotMatch(result.stdout, /external_review_launched/);
+    } finally {
+      rmTree(cwd);
+      rmTree(dataDir);
+    }
+  }
+});
+
 test("custom-review rejects aggregate selected source that exceeds the prompt cap before contacting the tunnel", () => {
   const cwd = mkdtempSync(path.join(tmpdir(), "grok-web-workspace-"));
   const files = [];

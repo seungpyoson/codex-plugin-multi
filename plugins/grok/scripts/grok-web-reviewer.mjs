@@ -509,7 +509,11 @@ function promptFor(mode, userPrompt, scopeInfo) {
 }
 
 function hasPromptText(value) {
-  return String(value ?? "").trim().length > 0;
+  return typeof value === "string" && value.trim().length > 0;
+}
+
+function promptHead(value) {
+  return hasPromptText(value) ? value.slice(0, 200) : "";
 }
 
 function parseJson(text) {
@@ -940,7 +944,7 @@ function buildRecord({ cfg, mode, options, scopeInfo, execution, startedAt, ende
     dispose_effective: false,
     scope_base: scopeInfo.scope_base ?? null,
     scope_paths: scopeInfo.scope_paths ?? null,
-    prompt_head: String(options.prompt ?? "").slice(0, 200),
+    prompt_head: promptHead(options.prompt),
     review_metadata: buildReviewMetadata(cfg, scopeInfo, execution),
     schema_spec: null,
     binary: null,
