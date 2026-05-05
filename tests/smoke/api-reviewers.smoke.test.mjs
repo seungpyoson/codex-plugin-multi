@@ -1321,6 +1321,34 @@ test("direct API reviewers reject selected files with no content before provider
   assertDirectApiNotSent(record, "DeepSeek");
 });
 
+test("direct API lifecycle jsonl suppresses launch event on scope failure", async () => {
+  const cwd = makeWorkspace();
+  writeFileSync(path.join(cwd, "empty.txt"), "");
+  const result = await run([
+    "run",
+    "--provider", "deepseek",
+    "--mode", "custom-review",
+    "--scope", "custom",
+    "--scope-paths", "empty.txt",
+    "--foreground",
+    "--lifecycle-events", "jsonl",
+    "--prompt", "Check this file.",
+  ], {
+    cwd,
+    env: {
+      API_REVIEWERS_MOCK_RESPONSE: mockResponse("deepseek-v4-flash"),
+      DEEPSEEK_API_KEY: "secret-test-value",
+    },
+  });
+  assert.equal(result.status, 1);
+  const lines = result.stdout.trim().split("\n").map((line) => JSON.parse(line));
+  assert.equal(lines.length, 1);
+  const [record] = lines;
+  assert.equal(record.status, "failed");
+  assert.equal(record.error_code, "scope_failed");
+  assertDirectApiNotSent(record, "DeepSeek");
+});
+
 test("direct API reviewers redact provider results before printing or persisting records", async () => {
   const cwd = makeWorkspace();
   const result = await run([

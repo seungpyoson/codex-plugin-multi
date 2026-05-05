@@ -1372,6 +1372,36 @@ test("custom-review rejects unsafe scope paths before contacting the tunnel", ()
   assert.equal(record.external_review.source_content_transmission, "not_sent");
 });
 
+test("custom-review lifecycle jsonl suppresses launch event on scope failure", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "grok-web-workspace-"));
+  writeFileSync(path.join(cwd, "review.js"), "export const value = 42;\n");
+
+  const result = run([
+    "run",
+    "--mode", "custom-review",
+    "--scope", "custom",
+    "--scope-paths", "../review.js",
+    "--foreground",
+    "--lifecycle-events", "jsonl",
+    "--prompt", "Check this file.",
+  ], {
+    cwd,
+    env: {
+      GROK_WEB_BASE_URL: "http://127.0.0.1:9/api",
+      GROK_WEB_TUNNEL_API_KEY: "secret-cookie-like-token",
+    },
+  });
+
+  assert.equal(result.status, 1);
+  const lines = result.stdout.trim().split("\n").map((line) => JSON.parse(line));
+  assert.equal(lines.length, 1);
+  const [record] = lines;
+  assert.equal(record.status, "failed");
+  assert.equal(record.error_code, "scope_failed");
+  assert.match(record.error_message, /unsafe_scope_path/);
+  assert.equal(record.external_review.source_content_transmission, "not_sent");
+});
+
 test("custom-review rejects symlinks that resolve outside the workspace", () => {
   const cwd = mkdtempSync(path.join(tmpdir(), "grok-web-workspace-"));
   const outside = mkdtempSync(path.join(tmpdir(), "grok-web-outside-"));
