@@ -303,6 +303,52 @@ test("doctor chat probe uses a separate configurable timeout", async () => {
   });
 });
 
+for (const [name, envName] of [
+  ["review", "GROK_WEB_TIMEOUT_MS"],
+  ["models doctor", "GROK_WEB_DOCTOR_TIMEOUT_MS"],
+  ["chat doctor", "GROK_WEB_CHAT_DOCTOR_TIMEOUT_MS"],
+]) {
+  test(`rejects invalid ${name} timeout env`, () => {
+    const result = run(["doctor"], {
+      env: {
+        [envName]: "not-a-number",
+      },
+    });
+    const parsed = parseStdout(result);
+
+    assert.equal(result.status, 1);
+    assert.equal(parsed.error_code, "bad_args");
+    assert.match(parsed.error_message, new RegExp(`${envName} must be a positive integer number of milliseconds`));
+  });
+}
+
+test("custom-review rejects invalid GROK_WEB_TIMEOUT_MS env", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "grok-web-invalid-review-timeout-cwd-"));
+  try {
+    writeFileSync(path.join(cwd, "review.js"), "export const value = 42;\n");
+    const result = run([
+      "run",
+      "--mode", "custom-review",
+      "--scope", "custom",
+      "--scope-paths", "review.js",
+      "--foreground",
+      "--prompt", "Check this file.",
+    ], {
+      cwd,
+      env: {
+        GROK_WEB_TIMEOUT_MS: "not-a-number",
+      },
+    });
+    const parsed = parseStdout(result);
+
+    assert.equal(result.status, 1);
+    assert.equal(parsed.error_code, "bad_args");
+    assert.match(parsed.error_message, /GROK_WEB_TIMEOUT_MS must be a positive integer number of milliseconds/);
+  } finally {
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
 test("doctor is not review-ready when models work but chat returns upstream 400", async () => {
   await withServer(async (req, res) => {
     res.setHeader("content-type", "application/json");
@@ -452,6 +498,7 @@ test("custom-review sends selected source to a local Grok web tunnel and persist
       env: {
         GROK_WEB_BASE_URL: baseUrl,
         GROK_WEB_TUNNEL_API_KEY: "secret-cookie-like-token",
+        GROK_WEB_TIMEOUT_MS: "123456",
         GROK_PLUGIN_DATA: dataDir,
       },
     });
@@ -477,6 +524,7 @@ test("custom-review sends selected source to a local Grok web tunnel and persist
     });
     assert.match(record.review_metadata.audit_manifest.rendered_prompt_hash.value, /^[a-f0-9]{64}$/);
     assert.equal(record.review_metadata.audit_manifest.request.model, "grok-4.20-fast");
+    assert.equal(record.review_metadata.audit_manifest.request.timeout_ms, 123456);
     assert.equal(record.review_metadata.audit_manifest.request.temperature, 0);
     assert.match(record.review_metadata.audit_manifest.prompt_builder.plugin_commit, /^[a-f0-9]{40}$/);
     assert.notEqual(
@@ -1337,6 +1385,9 @@ test("custom-review marks stalled uploaded tunnel requests as unknown transmissi
     assert.equal(result.status, 1);
     assert.ok(receivedBytes > 0);
     assert.equal(record.error_code, "tunnel_timeout");
+    assert.equal(record.review_metadata.audit_manifest.request.timeout_ms, 1000);
+    assert.equal(typeof record.error_summary, "string");
+    assert.match(record.error_summary, /configured_timeout_ms=1000/);
     assert.equal(record.external_review.source_content_transmission, "unknown");
     assert.match(record.external_review.disclosure, /may have been sent/i);
   });
@@ -1645,6 +1696,8 @@ for (const { status, code } of [
       assert.equal(record.status, "failed");
       assert.equal(record.error_code, code);
       assert.equal(record.http_status, status);
+      assert.equal(record.review_metadata.audit_manifest.request.timeout_ms, 600000);
+      assert.match(record.error_summary, /configured_timeout_ms=600000/);
       assert.doesNotMatch(result.stdout, /secret-cookie-like-token/);
       assert.match(record.error_message, /\[REDACTED\]/);
     });
@@ -1678,6 +1731,7 @@ test("custom-review maps malformed tunnel responses", async () => {
     assert.equal(result.status, 1);
     assert.equal(record.status, "failed");
     assert.equal(record.error_code, "malformed_response");
+    assert.equal(record.review_metadata.audit_manifest.request.timeout_ms, 600000);
     assert.match(record.suggested_action, /unsupported response shape/i);
   });
 });
@@ -1706,6 +1760,7 @@ test("local tunnel connection failure is structured as not sent", () => {
   assert.equal(result.status, 1);
   assert.equal(record.status, "failed");
   assert.equal(record.error_code, "tunnel_unavailable");
+  assert.equal(record.review_metadata.audit_manifest.request.timeout_ms, 500);
   assert.equal(record.external_review.source_content_transmission, "not_sent");
   assert.match(record.suggested_action, /Start the local Grok web tunnel/i);
   assert.doesNotMatch(result.stdout, /secret-cookie-like-token/);

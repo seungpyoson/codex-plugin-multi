@@ -130,7 +130,7 @@ test("run --mode=review --foreground: emits JobRecord with status=completed", ()
     assert.equal(result.review_metadata.raw_output.parsed_ok, true);
     assert.match(result.review_metadata.audit_manifest.rendered_prompt_hash.value, /^[a-f0-9]{64}$/);
     assert.equal(result.review_metadata.audit_manifest.request.model, "claude-haiku-4-5-20251001");
-    assert.equal(result.review_metadata.audit_manifest.request.timeout_ms, null);
+    assert.equal(result.review_metadata.audit_manifest.request.timeout_ms, 600000);
     assert.match(result.review_metadata.audit_manifest.prompt_builder.plugin_commit, /^[a-f0-9]{40}$/);
     assert.notEqual(
       result.review_metadata.audit_manifest.prompt_builder.plugin_commit,
@@ -185,6 +185,92 @@ test("run --mode=review --foreground lifecycle jsonl emits launch event before t
     });
     assert.equal(record.status, "completed");
     assert.equal(record.external_review.source_content_transmission, "sent");
+  } finally {
+    cleanup(dataDir);
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("run --mode=review --foreground: --timeout-ms overrides review timeout audit metadata", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "smoke-cwd-timeout-"));
+  seedMinimalRepo(cwd);
+  const { stdout, stderr, status, dataDir } = runCompanion(
+    ["run", "--mode=review", "--foreground", "--model", "claude-haiku-4-5-20251001",
+     "--cwd", cwd, "--timeout-ms", "123456", "--", "review timeout override"],
+    { cwd, env: { CLAUDE_MOCK_ASSERT_PROMPT_INCLUDES: "Provider: Claude Code" } }
+  );
+  try {
+    assert.equal(status, 0, `exit ${status}: stderr=${stderr}`);
+    const result = JSON.parse(stdout);
+    assert.equal(result.status, "completed");
+    assert.equal(result.review_metadata.audit_manifest.request.timeout_ms, 123456);
+    const { record: persisted } = readOnlyJobRecord(dataDir);
+    assert.equal(persisted.review_metadata.audit_manifest.request.timeout_ms, 123456);
+  } finally {
+    cleanup(dataDir);
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("run --mode=review rejects --timeout-ms without a value", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "smoke-cwd-timeout-missing-"));
+  seedMinimalRepo(cwd);
+  const { stdout, status, dataDir } = runCompanion(
+    ["run", "--mode=review", "--foreground", "--model", "claude-haiku-4-5-20251001",
+     "--cwd", cwd, "--timeout-ms", "--", "review timeout missing"],
+    { cwd }
+  );
+  try {
+    assert.equal(status, 1);
+    const result = JSON.parse(stdout);
+    assert.equal(result.error, "bad_args");
+    assert.match(result.message, /--timeout-ms must be a positive integer number of milliseconds/);
+  } finally {
+    cleanup(dataDir);
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("run --mode=review --foreground: CLAUDE_REVIEW_TIMEOUT_MS sets review timeout audit metadata", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "smoke-cwd-env-timeout-"));
+  seedMinimalRepo(cwd);
+  const { stdout, stderr, status, dataDir } = runCompanion(
+    ["run", "--mode=review", "--foreground", "--model", "claude-haiku-4-5-20251001",
+     "--cwd", cwd, "--", "review timeout env override"],
+    {
+      cwd,
+      env: {
+        CLAUDE_REVIEW_TIMEOUT_MS: "234567",
+        CLAUDE_MOCK_ASSERT_PROMPT_INCLUDES: "Provider: Claude Code",
+      },
+    }
+  );
+  try {
+    assert.equal(status, 0, `exit ${status}: stderr=${stderr}`);
+    const result = JSON.parse(stdout);
+    assert.equal(result.status, "completed");
+    assert.equal(result.review_metadata.audit_manifest.request.timeout_ms, 234567);
+    const { record: persisted } = readOnlyJobRecord(dataDir);
+    assert.equal(persisted.review_metadata.audit_manifest.request.timeout_ms, 234567);
+  } finally {
+    cleanup(dataDir);
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("run --mode=review rejects invalid CLAUDE_REVIEW_TIMEOUT_MS", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "smoke-cwd-env-timeout-invalid-"));
+  seedMinimalRepo(cwd);
+  const { stdout, status, dataDir } = runCompanion(
+    ["run", "--mode=review", "--foreground", "--model", "claude-haiku-4-5-20251001",
+     "--cwd", cwd, "--", "review invalid timeout env"],
+    { cwd, env: { CLAUDE_REVIEW_TIMEOUT_MS: "not-a-number" } }
+  );
+  try {
+    assert.equal(status, 1);
+    const result = JSON.parse(stdout);
+    assert.equal(result.error, "bad_args");
+    assert.match(result.message, /CLAUDE_REVIEW_TIMEOUT_MS must be a positive integer number of milliseconds/);
   } finally {
     cleanup(dataDir);
     rmSync(cwd, { recursive: true, force: true });
@@ -764,22 +850,26 @@ process.kill = (pid, signal) => {
 
 test("continue --job: resumes a prior session via --resume", () => {
   const cwd = mkdtempSync(path.join(tmpdir(), "smoke-continue-"));
+  writeFileSync(path.join(cwd, "seed.txt"), "continue timeout seed\n");
   const dataDir = mkdtempSync(path.join(tmpdir(), "continue-data-"));
+  const priorTimeoutMs = 777777;
   try {
     const runRes = spawnSync("node", [
       path.join(REPO_ROOT, "plugins/claude/scripts/claude-companion.mjs"),
-      "run", "--mode=rescue", "--foreground",
+      "run", "--mode=custom-review", "--foreground",
       "--model", "claude-haiku-4-5-20251001",
+      "--scope-paths", "seed.txt",
+      "--timeout-ms", String(priorTimeoutMs),
       "--cwd", cwd, "--", "seed",
     ], { cwd, encoding: "utf8",
-        env: { ...process.env, CLAUDE_BINARY: MOCK, CLAUDE_PLUGIN_DATA: dataDir } });
+        env: { ...process.env, CLAUDE_BINARY: MOCK, CLAUDE_PLUGIN_DATA: dataDir, CLAUDE_REVIEW_TIMEOUT_MS: "" } });
     const { job_id } = JSON.parse(runRes.stdout);
     const contRes = spawnSync("node", [
       path.join(REPO_ROOT, "plugins/claude/scripts/claude-companion.mjs"),
       "continue", "--job", job_id, "--foreground", "--lifecycle-events", "jsonl",
       "--cwd", cwd, "--", "follow-up",
     ], { cwd, encoding: "utf8",
-        env: { ...process.env, CLAUDE_BINARY: MOCK, CLAUDE_PLUGIN_DATA: dataDir } });
+        env: { ...process.env, CLAUDE_BINARY: MOCK, CLAUDE_PLUGIN_DATA: dataDir, CLAUDE_REVIEW_TIMEOUT_MS: "" } });
     assert.equal(contRes.status, 0, contRes.stderr);
     const lines = contRes.stdout.trim().split("\n").map((line) => JSON.parse(line));
     assert.equal(lines.length, 2);
@@ -790,6 +880,39 @@ test("continue --job: resumes a prior session via --resume", () => {
     // T7.4 (§21.3): foreground stdout is a JobRecord, not an ok-envelope.
     assert.equal(out.status, "completed");
     assert.equal(out.parent_job_id, job_id, "resume carries parent_job_id");
+    assert.equal(out.review_metadata.audit_manifest.request.timeout_ms, priorTimeoutMs);
+  } finally {
+    rmSync(dataDir, { recursive: true, force: true });
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("continue --job: --timeout-ms overrides prior timeout and env", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "smoke-continue-timeout-override-"));
+  writeFileSync(path.join(cwd, "seed.txt"), "continue timeout override seed\n");
+  const dataDir = mkdtempSync(path.join(tmpdir(), "continue-timeout-override-data-"));
+  try {
+    const runRes = spawnSync("node", [
+      path.join(REPO_ROOT, "plugins/claude/scripts/claude-companion.mjs"),
+      "run", "--mode=custom-review", "--foreground",
+      "--model", "claude-haiku-4-5-20251001",
+      "--scope-paths", "seed.txt",
+      "--timeout-ms", "777777",
+      "--cwd", cwd, "--", "seed",
+    ], { cwd, encoding: "utf8",
+        env: { ...process.env, CLAUDE_BINARY: MOCK, CLAUDE_PLUGIN_DATA: dataDir, CLAUDE_REVIEW_TIMEOUT_MS: "" } });
+    assert.equal(runRes.status, 0, runRes.stderr);
+    const { job_id } = JSON.parse(runRes.stdout);
+    const contRes = spawnSync("node", [
+      path.join(REPO_ROOT, "plugins/claude/scripts/claude-companion.mjs"),
+      "continue", "--job", job_id, "--foreground",
+      "--timeout-ms", "555555",
+      "--cwd", cwd, "--", "follow-up",
+    ], { cwd, encoding: "utf8",
+        env: { ...process.env, CLAUDE_BINARY: MOCK, CLAUDE_PLUGIN_DATA: dataDir, CLAUDE_REVIEW_TIMEOUT_MS: "999999" } });
+    assert.equal(contRes.status, 0, contRes.stderr);
+    const out = JSON.parse(contRes.stdout);
+    assert.equal(out.review_metadata.audit_manifest.request.timeout_ms, 555555);
   } finally {
     rmSync(dataDir, { recursive: true, force: true });
     rmSync(cwd, { recursive: true, force: true });

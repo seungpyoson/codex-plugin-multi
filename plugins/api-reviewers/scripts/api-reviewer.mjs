@@ -629,7 +629,7 @@ function parseMaxTokensOverride(env = process.env) {
 
 function parseProviderTimeoutMs(env = process.env) {
   const parsed = parsePositiveIntegerEnv(env, "API_REVIEWERS_TIMEOUT_MS", "milliseconds");
-  return parsed.value === null ? { ok: true, value: 120000 } : parsed;
+  return parsed.value === null ? { ok: true, value: 600000 } : parsed;
 }
 
 function applyRequestDefaults(requestBody, requestDefaults = {}) {
@@ -1065,32 +1065,40 @@ function requestFieldMatches(actual, expected) {
 }
 
 function mockProviderExecution(cfg, prompt, credential, env, requestBody) {
+  const diagnostics = () => ({
+    configured_timeout_ms: parseProviderTimeoutMs(env).value,
+    prompt_chars: prompt.length,
+    request_defaults: summarizeRequestDefaults(cfg.request_defaults),
+    max_tokens: requestBody.max_tokens ?? null,
+    temperature: requestBody.temperature ?? null,
+  });
   const expectedPromptText = env.API_REVIEWERS_MOCK_ASSERT_PROMPT_INCLUDES;
   if (expectedPromptText && !prompt.includes(expectedPromptText)) {
-    return providerFailure("mock_assertion_failed", `prompt missing expected text: ${expectedPromptText}`, 200, null, false);
+    return providerFailureWithDiagnostics("mock_assertion_failed", `prompt missing expected text: ${expectedPromptText}`, 200, null, false, diagnostics());
   }
   if (env.API_REVIEWERS_MOCK_ASSERT_REQUEST_BODY) {
     const parsedExpected = parseJson(env.API_REVIEWERS_MOCK_ASSERT_REQUEST_BODY);
     if (!parsedExpected.ok || !parsedExpected.value || typeof parsedExpected.value !== "object" || Array.isArray(parsedExpected.value)) {
-      return providerFailure("mock_assertion_failed", "API_REVIEWERS_MOCK_ASSERT_REQUEST_BODY must be a JSON object", 200, null, false);
+      return providerFailureWithDiagnostics("mock_assertion_failed", "API_REVIEWERS_MOCK_ASSERT_REQUEST_BODY must be a JSON object", 200, null, false, diagnostics());
     }
     for (const [key, expected] of Object.entries(parsedExpected.value)) {
       if (!requestFieldMatches(requestBody[key], expected)) {
-        return providerFailure(
+        return providerFailureWithDiagnostics(
           "mock_assertion_failed",
           `request body field ${key} expected ${JSON.stringify(expected)} but got ${JSON.stringify(requestBody[key])}`,
           200,
           null,
-          false
+          false,
+          diagnostics()
         );
       }
     }
   }
   const parsed = parseJson(env.API_REVIEWERS_MOCK_RESPONSE);
-  if (!parsed.ok) return providerFailure("malformed_response", parsed.error, 200, null, false);
+  if (!parsed.ok) return providerFailureWithDiagnostics("malformed_response", parsed.error, 200, null, false, diagnostics());
   const content = parsed.value?.choices?.[0]?.message?.content;
   if (typeof content !== "string") {
-    return providerFailure("malformed_response", "response did not include choices[0].message.content", 200, parsed.value, false);
+    return providerFailureWithDiagnostics("malformed_response", "response did not include choices[0].message.content", 200, parsed.value, false, diagnostics());
   }
   return {
     exitCode: 0,
@@ -1104,13 +1112,7 @@ function mockProviderExecution(cfg, prompt, credential, env, requestBody) {
     http_status: 200,
     credential_ref: credential.keyName,
     endpoint: baseUrlFor(cfg),
-    diagnostics: {
-      configured_timeout_ms: parseProviderTimeoutMs(env).value,
-      prompt_chars: prompt.length,
-      request_defaults: summarizeRequestDefaults(cfg.request_defaults),
-      max_tokens: requestBody.max_tokens ?? null,
-      temperature: requestBody.temperature ?? null,
-    },
+    diagnostics: diagnostics(),
   };
 }
 
@@ -1126,13 +1128,26 @@ async function callProvider(provider, cfg, prompt, env = process.env) {
   };
   const defaultsResult = applyRequestDefaults(requestBody, cfg.request_defaults);
   if (!defaultsResult.ok) {
-    return providerFailure("bad_args", defaultsResult.error, null, null, false);
+    return providerFailureWithDiagnostics("bad_args", defaultsResult.error, null, null, false, {
+      configured_timeout_ms: timeoutMs.value,
+      prompt_chars: prompt.length,
+      request_defaults: summarizeRequestDefaults(cfg.request_defaults),
+      max_tokens: requestBody.max_tokens ?? null,
+      temperature: requestBody.temperature ?? null,
+    });
   }
   if (maxTokensOverride.value !== null) {
     requestBody.max_tokens = maxTokensOverride.value;
   } else if (!Object.hasOwn(requestBody, "max_tokens")) {
     requestBody.max_tokens = 4096;
   }
+  const diagnostics = () => ({
+    configured_timeout_ms: timeoutMs.value,
+    prompt_chars: prompt.length,
+    request_defaults: summarizeRequestDefaults(cfg.request_defaults),
+    max_tokens: requestBody.max_tokens ?? null,
+    temperature: requestBody.temperature ?? null,
+  });
   if (env.API_REVIEWERS_MOCK_RESPONSE) {
     return mockProviderExecution(cfg, prompt, credential, env, requestBody);
   }
@@ -1153,14 +1168,28 @@ async function callProvider(provider, cfg, prompt, env = process.env) {
     const text = await response.text();
     const parsed = parseJson(text);
     if (!response.ok) {
-      return providerFailure(classifyHttpFailure(response.status, parsed), providerErrorMessage(parsed, text, redact), response.status, parsed, true);
+      return providerFailureWithDiagnostics(
+        classifyHttpFailure(response.status, parsed),
+        providerErrorMessage(parsed, text, redact),
+        response.status,
+        parsed,
+        true,
+        diagnostics(),
+      );
     }
     if (!parsed.ok) {
-      return providerFailure("malformed_response", parsed.error, response.status, null, true);
+      return providerFailureWithDiagnostics("malformed_response", parsed.error, response.status, null, true, diagnostics());
     }
     const content = parsed.value?.choices?.[0]?.message?.content;
     if (typeof content !== "string") {
-      return providerFailure("malformed_response", "response did not include choices[0].message.content", response.status, parsed.value, true);
+      return providerFailureWithDiagnostics(
+        "malformed_response",
+        "response did not include choices[0].message.content",
+        response.status,
+        parsed.value,
+        true,
+        diagnostics(),
+      );
     }
     return {
       exitCode: 0,
@@ -1174,13 +1203,7 @@ async function callProvider(provider, cfg, prompt, env = process.env) {
       http_status: response.status,
       credential_ref: credential.keyName,
       endpoint: baseUrlFor(cfg),
-      diagnostics: {
-        configured_timeout_ms: timeoutMs.value,
-        prompt_chars: prompt.length,
-        request_defaults: summarizeRequestDefaults(cfg.request_defaults),
-        max_tokens: requestBody.max_tokens ?? null,
-        temperature: requestBody.temperature ?? null,
-      },
+      diagnostics: diagnostics(),
     };
   } catch (e) {
     const reason = e?.name === "AbortError" ? "timeout" : "provider_unavailable";
@@ -1191,12 +1214,8 @@ async function callProvider(provider, cfg, prompt, env = process.env) {
       null,
       payloadSentForProviderException(e),
       {
-        configured_timeout_ms: timeoutMs.value,
+        ...diagnostics(),
         elapsed_ms: Date.now() - started,
-        prompt_chars: prompt.length,
-        request_defaults: summarizeRequestDefaults(cfg.request_defaults),
-        max_tokens: requestBody.max_tokens ?? null,
-        temperature: requestBody.temperature ?? null,
       },
     );
   } finally {
@@ -1410,6 +1429,7 @@ function buildReviewMetadata(cfg, scopeInfo, execution = null) {
       timeoutMs: execution.diagnostics?.configured_timeout_ms ?? null,
       maxTokens: execution.diagnostics?.max_tokens ?? null,
       temperature: execution.diagnostics?.temperature ?? null,
+      stream: false,
     },
     truncation: {
       prompt: false,

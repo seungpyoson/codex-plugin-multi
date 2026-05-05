@@ -45,7 +45,7 @@ const MODELS_CONFIG_PATH = resolvePath(PLUGIN_ROOT, "config/models.json");
 const CONTINUABLE_STATUSES = new Set(["completed", "failed", "cancelled", "stale"]);
 const RUN_MODES = Object.freeze(["review", "adversarial-review", "custom-review", "rescue"]);
 const PREFLIGHT_MODES = Object.freeze(["review", "adversarial-review", "custom-review"]);
-const DEFAULT_KIMI_REVIEW_TIMEOUT_MS = 180000;
+const DEFAULT_KIMI_REVIEW_TIMEOUT_MS = 600000;
 const GIT_PROMPT_BINARY = "/usr/bin/git";
 const GIT_PROMPT_SAFE_PATH = "/usr/bin:/bin";
 
@@ -267,6 +267,10 @@ function runtimeOptionsSidecarPath(workspaceRoot, jobId) {
 function runtimeOptionsForRecord(record, runtimeOptions = {}) {
   const profile = resolveProfile(record.mode_profile_name ?? record.mode);
   return {
+    timeout_ms:
+      runtimeOptions.timeout_ms ??
+      record.review_metadata?.audit_manifest?.request?.timeout_ms ??
+      DEFAULT_KIMI_REVIEW_TIMEOUT_MS,
     max_steps_per_turn:
       runtimeOptions.max_steps_per_turn ??
       profile.max_steps_per_turn ??
@@ -285,6 +289,7 @@ function writeRuntimeOptionsSidecar(workspaceRoot, jobId, options) {
   const file = runtimeOptionsSidecarPath(workspaceRoot, jobId);
   const tmpFile = `${file}.${process.pid}.${Date.now()}.tmp`;
   const payload = {
+    timeout_ms: options.timeout_ms,
     max_steps_per_turn: options.max_steps_per_turn,
   };
   try {
@@ -303,10 +308,12 @@ function readRuntimeOptionsSidecar(workspaceRoot, jobId) {
   try {
     const parsed = JSON.parse(readFileSync(file, "utf8"));
     if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+    const timeoutMs = parsed.timeout_ms;
     const maxSteps = parsed.max_steps_per_turn;
-    return Number.isInteger(maxSteps) && maxSteps > 0
-      ? { max_steps_per_turn: maxSteps }
-      : {};
+    const options = {};
+    if (Number.isSafeInteger(timeoutMs) && timeoutMs > 0) options.timeout_ms = timeoutMs;
+    if (Number.isSafeInteger(maxSteps) && maxSteps > 0) options.max_steps_per_turn = maxSteps;
+    return options;
   } catch {
     return {};
   }
@@ -334,17 +341,26 @@ function invocationFromRecord(record, runtimeOptions = {}) {
     review_prompt_provider: record.review_metadata?.prompt_provider ?? null,
     schema_spec: record.schema_spec ?? null,
     binary: record.binary,
+    timeout_ms: resolvedRuntimeOptions.timeout_ms,
     run_kind: runKindFromRecord(record),
     max_steps_per_turn: resolvedRuntimeOptions.max_steps_per_turn,
     started_at: record.started_at,
   };
 }
 
-function parsePositiveTimeoutMs(value, fallback) {
-  if (value === undefined || value === null || value === "") return fallback;
-  const parsed = Number(value);
-  if (parsed <= 0 || !Number.isInteger(parsed)) {
-    fail("bad_args", `--timeout-ms must be a positive integer number of milliseconds; got ${JSON.stringify(value)}`);
+function parsePositiveTimeoutMs(value, fallback, { envName = null } = {}) {
+  const raw = value === undefined || value === null || value === ""
+    ? (envName ? process.env[envName] : undefined)
+    : value;
+  if (raw === undefined || raw === null || raw === "") return fallback;
+  if (typeof raw !== "string") {
+    const source = value === undefined || value === null || value === "" ? envName : "--timeout-ms";
+    fail("bad_args", `${source} must be a positive integer number of milliseconds; got ${JSON.stringify(raw)}`);
+  }
+  const parsed = Number(raw);
+  if (parsed <= 0 || !Number.isSafeInteger(parsed)) {
+    const source = value === undefined || value === null || value === "" ? envName : "--timeout-ms";
+    fail("bad_args", `${source} must be a positive integer number of milliseconds; got ${JSON.stringify(raw)}`);
   }
   return parsed;
 }
@@ -352,7 +368,7 @@ function parsePositiveTimeoutMs(value, fallback) {
 function parsePositiveMaxStepsPerTurn(value, fallback) {
   if (value === undefined || value === null || value === "") return fallback;
   const parsed = Number(value);
-  if (parsed <= 0 || !Number.isInteger(parsed)) {
+  if (parsed <= 0 || !Number.isSafeInteger(parsed)) {
     fail("bad_args", `--max-steps-per-turn must be a positive integer; got ${JSON.stringify(value)}`);
   }
   return parsed;
@@ -528,7 +544,9 @@ async function cmdRun(rest) {
   } catch (e) {
     fail("bad_args", e.message);
   }
-  const timeoutMs = parsePositiveTimeoutMs(options["timeout-ms"], DEFAULT_KIMI_REVIEW_TIMEOUT_MS);
+  const timeoutMs = parsePositiveTimeoutMs(options["timeout-ms"], DEFAULT_KIMI_REVIEW_TIMEOUT_MS, {
+    envName: "KIMI_REVIEW_TIMEOUT_MS",
+  });
   const maxStepsPerTurn = parsePositiveMaxStepsPerTurn(
     options["max-steps-per-turn"],
     profile.max_steps_per_turn ?? 8,
@@ -562,7 +580,7 @@ async function cmdRun(rest) {
   });
 
   const queuedRecord = buildJobRecord(invocation, null, []);
-  writeRuntimeOptionsSidecar(workspaceRoot, jobId, { max_steps_per_turn: maxStepsPerTurn });
+  writeRuntimeOptionsSidecar(workspaceRoot, jobId, { timeout_ms: timeoutMs, max_steps_per_turn: maxStepsPerTurn });
   writeJobFile(workspaceRoot, jobId, queuedRecord);
   upsertJob(workspaceRoot, queuedRecord);
   const targetPrompt = targetPromptFor(profile, prompt, invocation);
@@ -680,7 +698,7 @@ async function executeRun(invocation, prompt, { foreground, lifecycleEvents = nu
         cwd: neutralCwd ?? containment.path,
         binary: invocation.binary,
         resumeId,
-        timeoutMs: foreground ? invocation.timeout_ms : 0,
+        timeoutMs: invocation.timeout_ms,
         maxStepsPerTurn: invocation.max_steps_per_turn,
         onSpawn: (pidInfo) => {
           const runningRecord = buildJobRecord(attemptInvocation, {
@@ -994,7 +1012,11 @@ async function cmdContinue(rest) {
   const priorProfile = resolveProfile(priorModeName);
   const priorResumeChain = Array.isArray(prior.resume_chain) ? prior.resume_chain : [];
   const priorRuntimeOptions = readRuntimeOptionsSidecar(workspaceRoot, options.job);
-  const timeoutMs = parsePositiveTimeoutMs(options["timeout-ms"], DEFAULT_KIMI_REVIEW_TIMEOUT_MS);
+  const priorTimeoutMs =
+    priorRuntimeOptions.timeout_ms ??
+    prior.review_metadata?.audit_manifest?.request?.timeout_ms ??
+    DEFAULT_KIMI_REVIEW_TIMEOUT_MS;
+  const timeoutMs = parsePositiveTimeoutMs(options["timeout-ms"], priorTimeoutMs, { envName: "KIMI_REVIEW_TIMEOUT_MS" });
   const maxStepsPerTurn = parsePositiveMaxStepsPerTurn(
     options["max-steps-per-turn"],
     priorRuntimeOptions.max_steps_per_turn ?? priorProfile.max_steps_per_turn ?? 8,
@@ -1026,7 +1048,7 @@ async function cmdContinue(rest) {
   });
 
   const queuedRecord = buildJobRecord(invocation, null, []);
-  writeRuntimeOptionsSidecar(workspaceRoot, newJobId_, { max_steps_per_turn: maxStepsPerTurn });
+  writeRuntimeOptionsSidecar(workspaceRoot, newJobId_, { timeout_ms: timeoutMs, max_steps_per_turn: maxStepsPerTurn });
   writeJobFile(workspaceRoot, newJobId_, queuedRecord);
   upsertJob(workspaceRoot, queuedRecord);
   const targetPrompt = targetPromptFor(priorProfile, prompt, invocation);

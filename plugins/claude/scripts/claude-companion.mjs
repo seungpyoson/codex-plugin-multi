@@ -77,6 +77,7 @@ configureState({
 });
 
 const MODELS_CONFIG_PATH = resolvePath(PLUGIN_ROOT, "config/models.json");
+const DEFAULT_CLAUDE_REVIEW_TIMEOUT_MS = 600000;
 const CONTINUABLE_STATUSES = new Set(["completed", "failed", "cancelled", "stale"]);
 const RUN_MODES = Object.freeze(["review", "adversarial-review", "custom-review", "rescue"]);
 const PREFLIGHT_MODES = Object.freeze(["review", "adversarial-review", "custom-review"]);
@@ -92,6 +93,21 @@ function fail(code, message, details = {}) {
   process.stderr.write(`claude-companion: ${message}\n`);
   printJson({ ok: false, error: code, message, ...details });
   process.exit(1);
+}
+
+function parseReviewTimeoutMs(cliValue, env = process.env, fallback = DEFAULT_CLAUDE_REVIEW_TIMEOUT_MS) {
+  const raw = cliValue ?? env.CLAUDE_REVIEW_TIMEOUT_MS;
+  if (raw === undefined || raw === null || raw === "") return fallback;
+  if (typeof raw !== "string") {
+    const source = cliValue === undefined ? "CLAUDE_REVIEW_TIMEOUT_MS" : "--timeout-ms";
+    fail("bad_args", `${source} must be a positive integer number of milliseconds; got ${JSON.stringify(raw)}`);
+  }
+  const parsed = Number(raw);
+  if (!Number.isSafeInteger(parsed) || parsed <= 0) {
+    const source = cliValue === undefined ? "CLAUDE_REVIEW_TIMEOUT_MS" : "--timeout-ms";
+    fail("bad_args", `${source} must be a positive integer number of milliseconds; got ${JSON.stringify(raw)}`);
+  }
+  return parsed;
 }
 
 function targetPromptFor(invocation, userPrompt) {
@@ -213,7 +229,7 @@ function reviewAuditManifest(invocation, prompt, containmentPath, execution) {
     request: {
       provider: invocation.review_prompt_provider ?? "Claude Code",
       model: invocation.model,
-      timeoutMs: null,
+      timeoutMs: invocation.timeout_ms ?? null,
       maxTokens: null,
       maxStepsPerTurn: null,
       temperature: null,
@@ -309,7 +325,44 @@ function mutationDetectionFailure(error) {
 // Project an invocation out of a JobRecord (used by the background worker
 // when it re-enters executeRun). Only the invocation-phase fields are
 // carried — lifecycle/result fields get re-derived from the fresh execution.
-function invocationFromRecord(record, fallbackAuthMode = "subscription") {
+function runtimeOptionsSidecarPath(workspaceRoot, jobId) {
+  return `${resolveJobsDir(workspaceRoot)}/${jobId}/runtime-options.json`;
+}
+
+function writeRuntimeOptionsSidecar(workspaceRoot, jobId, options) {
+  const dir = `${resolveJobsDir(workspaceRoot)}/${jobId}`;
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
+  try {
+    chmodSync(dir, 0o700);
+  } catch (err) {
+    if (process.platform !== "win32") throw err;
+  }
+  const file = runtimeOptionsSidecarPath(workspaceRoot, jobId);
+  const tmpFile = `${file}.${process.pid}.${Date.now()}.tmp`;
+  try {
+    writeFileSync(tmpFile, `${JSON.stringify({ timeout_ms: options.timeout_ms }, null, 2)}\n`, { mode: 0o600, encoding: "utf8" });
+    try { chmodSync(tmpFile, 0o600); } catch { /* best-effort on non-POSIX */ }
+    renameSync(tmpFile, file);
+  } catch (e) {
+    try { unlinkSync(tmpFile); } catch { /* already gone */ }
+    throw e;
+  }
+}
+
+function readRuntimeOptionsSidecar(workspaceRoot, jobId) {
+  const file = runtimeOptionsSidecarPath(workspaceRoot, jobId);
+  if (!existsSync(file)) return {};
+  try {
+    const parsed = JSON.parse(_readFileSync(file, "utf8"));
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+    const timeoutMs = parsed.timeout_ms;
+    return Number.isSafeInteger(timeoutMs) && timeoutMs > 0 ? { timeout_ms: timeoutMs } : {};
+  } catch {
+    return {};
+  }
+}
+
+function invocationFromRecord(record, fallbackAuthMode = "subscription", runtimeOptions = {}) {
   return Object.freeze({
     job_id: record.job_id,
     target: record.target,
@@ -332,6 +385,10 @@ function invocationFromRecord(record, fallbackAuthMode = "subscription") {
     run_kind: runKindFromRecord(record),
     auth_mode: record.auth_mode ?? fallbackAuthMode ?? "subscription",
     binary: record.binary,
+    timeout_ms:
+      runtimeOptions.timeout_ms ??
+      record.review_metadata?.audit_manifest?.request?.timeout_ms ??
+      DEFAULT_CLAUDE_REVIEW_TIMEOUT_MS,
     started_at: record.started_at,
   });
 }
@@ -495,7 +552,7 @@ function cmdPreflight(rest) {
 // ——— subcommand: run ———
 async function cmdRun(rest) {
   const { options, positionals } = parseArgs(rest, {
-    valueOptions: ["mode", "model", "cwd", "schema", "binary", "scope-base", "scope-paths", "override-dispose", "auth-mode", "lifecycle-events"],
+    valueOptions: ["mode", "model", "cwd", "schema", "binary", "scope-base", "scope-paths", "override-dispose", "auth-mode", "timeout-ms", "lifecycle-events"],
     booleanOptions: ["background", "foreground"],
     aliasMap: {},
   });
@@ -540,6 +597,7 @@ async function cmdRun(rest) {
   } catch (e) {
     fail("bad_args", e.message);
   }
+  const timeoutMs = parseReviewTimeoutMs(options["timeout-ms"]);
   const prompt = positionals.join(" ").trim();
   if (!prompt) {
     fail("bad_args", "prompt is required (pass after -- separator)");
@@ -573,6 +631,7 @@ async function cmdRun(rest) {
     prompt_head: prompt.slice(0, 200),          // §21.3.1 — no full prompt
     review_prompt_contract_version: profile.name === "rescue" ? null : REVIEW_PROMPT_CONTRACT_VERSION,
     review_prompt_provider: profile.name === "rescue" ? null : "Claude Code",
+    timeout_ms: timeoutMs,
     schema_spec: options.schema ?? null,
     binary: options.binary ?? process.env.CLAUDE_BINARY ?? "claude",
     run_kind: options.background ? "background" : "foreground",
@@ -593,6 +652,7 @@ async function cmdRun(rest) {
     // and deletes — prompt text does NOT live on the JobRecord.
     try {
       writePromptSidecar(resolveJobsDir(workspaceRoot), jobId, targetPrompt);
+      writeRuntimeOptionsSidecar(workspaceRoot, jobId, { timeout_ms: timeoutMs });
     } catch (error) {
       failBackgroundPromptSidecarWrite(workspaceRoot, invocation, error);
     }
@@ -765,7 +825,7 @@ async function spawnClaudeOrExit(invocation, profile, prompt, executionScope, mu
       binary: invocation.binary,
       jsonSchema: invocation.schema_spec,
       resumeId: options.resumeId,
-      timeoutMs: 0,
+      timeoutMs: invocation.timeout_ms,
       allowedApiKeyEnv: authSelection.allowed_env_credentials,
       onSpawn: (pidInfo) => writeRunningRecord(invocation, pidInfo, mutationContext.mutations, options.runtimeDiagnostics),
     });
@@ -950,7 +1010,8 @@ async function cmdRunWorker(rest) {
     fail("bad_state", "prompt sidecar missing for job " + options.job);
   }
 
-  const invocation = invocationFromRecord(meta, options["auth-mode"]);
+  const runtimeOptions = readRuntimeOptionsSidecar(workspaceRoot, options.job);
+  const invocation = invocationFromRecord(meta, options["auth-mode"], runtimeOptions);
   const authSelection = resolveAuthSelection(invocation.auth_mode);
   if (authSelection.selected_auth_path === "api_key_env_missing") {
     // The prompt sidecar was already consumed above, so auth refusal cannot leave it on disk.
@@ -968,7 +1029,7 @@ async function cmdRunWorker(rest) {
 // ——— subcommand: continue (resume a prior session with --resume) ———
 async function cmdContinue(rest) {
   const { options, positionals } = parseArgs(rest, {
-    valueOptions: ["job", "cwd", "model", "binary", "auth-mode", "lifecycle-events"],
+    valueOptions: ["job", "cwd", "model", "binary", "auth-mode", "timeout-ms", "lifecycle-events"],
     booleanOptions: ["background", "foreground"],
   });
   if (!options.job) fail("bad_args", "--job <id> is required");
@@ -1019,6 +1080,12 @@ async function cmdContinue(rest) {
   const priorModeName = prior.mode_profile_name ?? prior.mode;
   const priorProfile = resolveProfile(priorModeName);
   const priorResumeChain = Array.isArray(prior.resume_chain) ? prior.resume_chain : [];
+  const priorRuntimeOptions = readRuntimeOptionsSidecar(workspaceRoot, options.job);
+  const priorTimeoutMs =
+    priorRuntimeOptions.timeout_ms ??
+    prior.review_metadata?.audit_manifest?.request?.timeout_ms ??
+    DEFAULT_CLAUDE_REVIEW_TIMEOUT_MS;
+  const timeoutMs = parseReviewTimeoutMs(options["timeout-ms"], process.env, priorTimeoutMs);
   const authSelection = resolveAuthSelection(options["auth-mode"]);
   if (authSelection.selected_auth_path === "api_key_env_missing") {
     fail("not_authed", apiKeyMissingMessage(), apiKeyMissingFields(authSelection));
@@ -1048,6 +1115,7 @@ async function cmdContinue(rest) {
     prompt_head: prompt.slice(0, 200),    // §21.3.1 — no full prompt
     review_prompt_contract_version: priorProfile.name === "rescue" ? null : REVIEW_PROMPT_CONTRACT_VERSION,
     review_prompt_provider: priorProfile.name === "rescue" ? null : "Claude Code",
+    timeout_ms: timeoutMs,
     schema_spec: prior.schema_spec ?? prior.schema ?? null,
     binary: options.binary ?? process.env.CLAUDE_BINARY ?? "claude",
     run_kind: options.background ? "background" : "foreground",
@@ -1064,6 +1132,7 @@ async function cmdContinue(rest) {
     validateBackgroundExecutionScopeOrExit(invocation, lifecycleEvents);
     try {
       writePromptSidecar(resolveJobsDir(workspaceRoot), newJobId_, targetPrompt);
+      writeRuntimeOptionsSidecar(workspaceRoot, newJobId_, { timeout_ms: timeoutMs });
     } catch (error) {
       failBackgroundPromptSidecarWrite(workspaceRoot, invocation, error);
     }
