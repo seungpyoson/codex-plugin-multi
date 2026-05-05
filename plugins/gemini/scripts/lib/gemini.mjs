@@ -82,7 +82,7 @@ export function parseGeminiResult(stdout, stderr = "") {
   const parsedError = parsed.error == null
     ? null
     : (typeof parsed.error === "string" ? parsed.error : JSON.stringify(parsed.error));
-  const usageLimited = parsed.error == null ? null : usageLimitMessage(parsedError, stderr);
+  const usageLimited = parsed.error == null ? null : usageLimitMessage(parsedError);
   return {
     ok: parsed.error == null,
     reason: usageLimited ? "usage_limited" : undefined,

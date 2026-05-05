@@ -171,6 +171,18 @@ Quota exceeded for this billing account. Please upgrade your usage tier.
   assert.match(parsed.error, /quota exceeded/i);
 });
 
+test("parseGeminiResult: JSON errors are not reclassified by incidental billing stderr", () => {
+  const parsed = parseGeminiResult(
+    JSON.stringify({ error: { code: 400, message: "invalid response schema" } }),
+    "background warning: quota status unavailable for billing account",
+  );
+
+  assert.equal(parsed.ok, false);
+  assert.equal(parsed.reason, undefined);
+  assert.match(parsed.error, /invalid response schema/);
+  assert.doesNotMatch(parsed.error, /billing account/);
+});
+
 test("parseGeminiResult: transient rate-limit stderr is not billed as usage limited", () => {
   const parsed = parseGeminiResult("", `Error when talking to Gemini API
 Rate limit exceeded for requests per minute. Retry later.
