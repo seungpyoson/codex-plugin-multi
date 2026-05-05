@@ -1756,6 +1756,35 @@ test("direct API live malformed responses mark selected content as sent", async 
   }
 });
 
+test("custom-review rejects symlinked scope files before provider delivery", async () => {
+  const cwd = makeWorkspace();
+  const dataDir = mkdtempSync(path.join(tmpdir(), "api-reviewers-data-"));
+  writeFileSync(path.join(cwd, "secret.txt"), "workspace secret should not be sent\n");
+  symlinkSync(path.join(cwd, "secret.txt"), path.join(cwd, "linked-secret.txt"));
+  const result = await run([
+    "run",
+    "--provider", "deepseek",
+    "--mode", "custom-review",
+    "--scope", "custom",
+    "--scope-paths", "linked-secret.txt",
+    "--foreground",
+    "--prompt", "Check this file.",
+  ], {
+    cwd,
+    env: {
+      API_REVIEWERS_PLUGIN_DATA: dataDir,
+      API_REVIEWERS_MOCK_RESPONSE: mockResponse("deepseek-v4-pro"),
+      DEEPSEEK_API_KEY: "secret-test-value",
+    },
+  });
+  assert.equal(result.status, 1);
+  const record = parseJson(result.stdout);
+  assert.equal(record.error_code, "scope_failed");
+  assert.match(record.error_message, /unsafe_scope_path:linked-secret\.txt/);
+  assert.equal(record.external_review.source_content_transmission, "not_sent");
+  assert.doesNotMatch(result.stdout, /workspace secret should not be sent/);
+});
+
 test("branch-diff default reviews committed changes against main with scrubbed git env", async () => {
   const cwd = makeBranchDiffWorkspace();
   const dataDir = mkdtempSync(path.join(tmpdir(), "api-reviewers-data-"));
@@ -1855,6 +1884,41 @@ test("branch-diff scope paths honor glob patterns when narrowing committed chang
     ["feature.txt"]
   );
   assert.doesNotMatch(result.stdout, /extra committed change/);
+});
+
+test("branch-diff scope paths treat **/ as a path segment glob", async () => {
+  const cwd = makeBranchDiffWorkspace();
+  const dataDir = mkdtempSync(path.join(tmpdir(), "api-reviewers-data-"));
+  mkdirSync(path.join(cwd, "nested"));
+  writeFileSync(path.join(cwd, "nested", "feature.txt"), "nested committed change\n");
+  writeFileSync(path.join(cwd, "prefixfeature.txt"), "prefix committed change\n");
+  git(cwd, ["add", "nested/feature.txt", "prefixfeature.txt"]);
+  git(cwd, ["commit", "-m", "nested feature"]);
+  const result = await run([
+    "run",
+    "--provider", "deepseek",
+    "--mode", "review",
+    "--scope", "branch-diff",
+    "--scope-paths", "**/feature.txt",
+    "--foreground",
+    "--prompt", "Check this branch.",
+  ], {
+    cwd,
+    env: {
+      API_REVIEWERS_PLUGIN_DATA: dataDir,
+      API_REVIEWERS_MOCK_RESPONSE: mockResponse("deepseek-v4-pro"),
+      API_REVIEWERS_MOCK_ASSERT_PROMPT_INCLUDES: "nested committed change",
+      DEEPSEEK_API_KEY: "secret-test-value",
+    },
+  });
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  const record = parseJson(result.stdout);
+  assert.deepEqual(record.scope_paths, ["feature.txt", "nested/feature.txt"]);
+  assert.deepEqual(
+    record.review_metadata.audit_manifest.selected_source.files.map((file) => file.path),
+    ["feature.txt", "nested/feature.txt"]
+  );
+  assert.doesNotMatch(result.stdout, /prefix committed change/);
 });
 
 test("branch-diff uses hardened git path despite ambient PATH sabotage", async () => {

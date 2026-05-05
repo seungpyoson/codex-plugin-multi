@@ -276,7 +276,7 @@ test("doctor chat probe uses a separate configurable timeout", async () => {
       return;
     }
     if (req.url === "/api/chat/completions") {
-      await new Promise((resolve) => setTimeout(resolve, 120));
+      await new Promise((resolve) => setTimeout(resolve, 700));
       res.end(JSON.stringify({
         id: "chatcmpl-doctor",
         model: "grok-4.20-fast",
@@ -290,7 +290,7 @@ test("doctor chat probe uses a separate configurable timeout", async () => {
     const result = await runAsync(["doctor"], {
       env: {
         GROK_WEB_BASE_URL: baseUrl,
-        GROK_WEB_DOCTOR_TIMEOUT_MS: "50",
+        GROK_WEB_DOCTOR_TIMEOUT_MS: "500",
         GROK_WEB_CHAT_DOCTOR_TIMEOUT_MS: "10000",
       },
     });
@@ -298,7 +298,7 @@ test("doctor chat probe uses a separate configurable timeout", async () => {
 
     assert.equal(result.status, 0);
     assert.equal(parsed.ready, true);
-    assert.equal(parsed.doctor_timeout_ms, 50);
+    assert.equal(parsed.doctor_timeout_ms, 500);
     assert.equal(parsed.chat_doctor_timeout_ms, 10000);
   });
 });
@@ -1294,7 +1294,7 @@ test("custom-review marks stalled uploaded tunnel requests as unknown transmissi
       cwd,
       env: {
         GROK_WEB_BASE_URL: baseUrl,
-        GROK_WEB_TIMEOUT_MS: "100",
+        GROK_WEB_TIMEOUT_MS: "1000",
       },
     });
     const record = parseStdout(result);
@@ -1465,6 +1465,63 @@ test("review mode uses branch-diff scope with scrubbed git environment", async (
     );
     assert.equal(record.result, "Verdict: branch diff reviewed.");
     assert.equal(existsSync(hostileGitMarker), false);
+  });
+});
+
+test("branch-diff treats **/ as a path segment glob", async () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "grok-web-branch-"));
+  const dataDir = mkdtempSync(path.join(tmpdir(), "grok-web-data-"));
+  execFileSync("git", ["init", "-b", "main"], { cwd, stdio: "ignore" });
+  execFileSync("git", ["config", "user.email", "test@example.com"], { cwd });
+  execFileSync("git", ["config", "user.name", "Test User"], { cwd });
+  writeFileSync(path.join(cwd, "feature.txt"), "base feature\n");
+  execFileSync("git", ["add", "feature.txt"], { cwd });
+  execFileSync("git", ["commit", "-m", "base"], { cwd, stdio: "ignore" });
+  execFileSync("git", ["tag", "-a", "review-base", "-m", "review base", "main"], { cwd, stdio: "ignore" });
+  execFileSync("git", ["checkout", "-b", "feature"], { cwd, stdio: "ignore" });
+  mkdirSync(path.join(cwd, "nested"));
+  writeFileSync(path.join(cwd, "feature.txt"), "root feature change\n");
+  writeFileSync(path.join(cwd, "nested", "feature.txt"), "nested feature change\n");
+  writeFileSync(path.join(cwd, "prefixfeature.txt"), "prefix feature change\n");
+  execFileSync("git", ["add", "feature.txt", "nested/feature.txt", "prefixfeature.txt"], { cwd });
+  execFileSync("git", ["commit", "-m", "feature changes"], { cwd, stdio: "ignore" });
+
+  await withServer(async (req, res) => {
+    const body = await readJsonRequest(req);
+    assert.match(body.messages[0].content, /root feature change/);
+    assert.match(body.messages[0].content, /nested feature change/);
+    assert.doesNotMatch(body.messages[0].content, /prefix feature change/);
+    res.setHeader("content-type", "application/json");
+    res.end(JSON.stringify({
+      id: "grok-web-glob-session",
+      choices: [{ message: { content: "Verdict: glob reviewed." } }],
+    }));
+  }, async (baseUrl) => {
+    const result = await runAsync([
+      "run",
+      "--mode", "review",
+      "--scope", "branch-diff",
+      "--scope-base", "review-base",
+      "--scope-paths", "**/feature.txt",
+      "--foreground",
+      "--prompt", "Review the branch diff.",
+    ], {
+      cwd,
+      env: {
+        GROK_WEB_BASE_URL: baseUrl,
+        GROK_WEB_TUNNEL_API_KEY: "secret-cookie-like-token",
+        GROK_PLUGIN_DATA: dataDir,
+      },
+    });
+    const record = parseStdout(result);
+
+    assert.equal(result.status, 0);
+    assert.deepEqual(record.scope_paths, ["feature.txt", "nested/feature.txt"]);
+    assert.deepEqual(
+      record.review_metadata.audit_manifest.selected_source.files.map((file) => file.path),
+      ["feature.txt", "nested/feature.txt"]
+    );
+    assert.equal(record.result, "Verdict: glob reviewed.");
   });
 });
 

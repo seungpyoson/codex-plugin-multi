@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { spawnSync } from "node:child_process";
-import { lstat, mkdir, readFile, readdir, realpath, rename, rm, stat, unlink, writeFile } from "node:fs/promises";
-import { existsSync } from "node:fs";
+import { lstat, mkdir, open, readFile, readdir, realpath, rename, rm, unlink, writeFile } from "node:fs/promises";
+import { constants as fsConstants, existsSync } from "node:fs";
 import { dirname, isAbsolute, resolve, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import { randomUUID } from "node:crypto";
@@ -31,6 +31,7 @@ const API_REVIEWER_STATE_LOCK_TIMEOUT_MS = 5000;
 const API_REVIEWER_STATE_LOCK_STALE_MS = 30000;
 const GIT_BINARY = "/usr/bin/git";
 const GIT_SAFE_PATH = "/usr/bin:/bin";
+const SCOPE_FILE_OPEN_FLAGS = fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0);
 const API_REVIEWER_EXPECTED_KEYS = Object.freeze([
   "id",
   "job_id",
@@ -795,9 +796,13 @@ function matchGlob(rel, pattern) {
     const c = pattern[i];
     if (c === "*") {
       if (pattern[i + 1] === "*") {
-        re += ".*";
         i += 1;
-        if (pattern[i + 1] === "/") i += 1;
+        if (pattern[i + 1] === "/") {
+          re += "(?:.*/)?";
+          i += 1;
+        } else {
+          re += ".*";
+        }
       } else {
         re += "[^/]*";
       }
@@ -807,6 +812,22 @@ function matchGlob(rel, pattern) {
   }
   re += "$";
   return new RegExp(re).test(rel);
+}
+
+async function readUtf8ScopeFileWithinLimit(abs, relPath) {
+  let handle;
+  try {
+    handle = await open(abs, SCOPE_FILE_OPEN_FLAGS);
+    const info = await handle.stat();
+    if (!info.isFile()) return null;
+    return await handle.readFile({ encoding: "utf8" });
+  } catch (e) {
+    if (e?.code === "ELOOP") throw new Error(`unsafe_scope_path:${relPath}`);
+    if (e?.code === "ENOENT") return null;
+    throw e;
+  } finally {
+    await handle?.close();
+  }
 }
 
 function scopeName(options) {
@@ -871,9 +892,8 @@ async function readFilesystemScopeFiles(workspaceRoot, relPaths) {
     if (realRel.startsWith("..") || realRel === "") {
       throw new Error(`unsafe_scope_path:${relPath}`);
     }
-    const info = await stat(realAbs);
-    if (!info.isFile()) continue;
-    const text = await readFile(realAbs, "utf8");
+    const text = await readUtf8ScopeFileWithinLimit(abs, normalizedRel);
+    if (text === null) continue;
     if (text.length === 0) continue;
     files.push({ path: normalizedRel, text });
   }
