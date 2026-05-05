@@ -526,13 +526,19 @@ function sourceTransmission(completed, payloadSent) {
   return "unknown";
 }
 
-function disclosure(cfg, completed, payloadSent) {
+function disclosure(cfg, completed, payloadSent, errorCode = null) {
   const transmission = sourceTransmission(completed, payloadSent);
   if (transmission === "sent" && completed) {
     return `Selected source content was sent to ${cfg.display_name} through a subscription-backed web session.`;
   }
   if (transmission === "sent") {
     return `Selected source content was sent to ${cfg.display_name} through a subscription-backed web session, but the tunnel did not return a clean result.`;
+  }
+  if (transmission === "not_sent" && errorCode === "scope_failed") {
+    return `Selected source content was not sent to ${cfg.display_name}; the review scope was rejected before delivery.`;
+  }
+  if (transmission === "not_sent" && errorCode === "bad_args") {
+    return `Selected source content was not sent to ${cfg.display_name}; the command arguments were rejected before delivery.`;
   }
   if (transmission === "not_sent") {
     return `Selected source content was not sent to ${cfg.display_name}; the local subscription-backed tunnel was unavailable before delivery.`;
@@ -613,8 +619,8 @@ function buildRecord({ cfg, mode, options, scopeInfo, execution, startedAt, ende
   const completed = execution.exitCode === 0 && execution.parsed?.ok === true;
   const errorCode = completed ? null : (execution.parsed?.reason ?? "tunnel_error");
   const errorMessage = completed ? null : (execution.parsed?.error ?? "");
-  const reviewDisclosure = disclosure(cfg, completed, execution.payload_sent ?? null);
   const transmission = sourceTransmission(completed, execution.payload_sent ?? null);
+  const reviewDisclosure = disclosure(cfg, completed, execution.payload_sent ?? null, errorCode);
   return freezeRecord({
     id: options.jobId,
     job_id: options.jobId,

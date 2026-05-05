@@ -433,6 +433,8 @@ test("custom-review reports exhausted Grok file delimiter collisions as not sent
   assert.match(record.error_message, /scope_delimiter_collision:review\.js/);
   assert.equal(record.external_review.source_content_transmission, "not_sent");
   assert.match(record.external_review.disclosure, /not sent/i);
+  assert.match(record.external_review.disclosure, /scope was rejected/i);
+  assert.doesNotMatch(record.external_review.disclosure, /tunnel was unavailable/i);
 });
 
 test("custom-review rejects aggregate selected source that exceeds the prompt cap before contacting the tunnel", () => {
@@ -465,6 +467,8 @@ test("custom-review rejects aggregate selected source that exceeds the prompt ca
   assert.match(record.error_message, /scope_total_too_large/);
   assert.equal(record.external_review.source_content_transmission, "not_sent");
   assert.match(record.external_review.disclosure, /not sent/i);
+  assert.match(record.external_review.disclosure, /scope was rejected/i);
+  assert.doesNotMatch(record.external_review.disclosure, /tunnel was unavailable/i);
 });
 
 test("concurrent Grok runs preserve every completed job in the state index", async () => {
