@@ -81,6 +81,16 @@ test("Grok lifecycle smoke tests clean up owned temp directories", () => {
   }
 });
 
+test("standalone lifecycle smoke tests guard launch event shape against shared helper", () => {
+  for (const rel of [
+    "tests/smoke/api-reviewers.smoke.test.mjs",
+    "tests/smoke/grok-web.smoke.test.mjs",
+  ]) {
+    const smoke = readFileSync(resolve(rel), "utf8");
+    assert.match(smoke, /externalReviewLaunchedEvent/, `${rel} must compare launch events with shared helper`);
+  }
+});
+
 test("manual E2E scripts are opt-in and documented", () => {
   assert.match(pkg.scripts["e2e:claude"] ?? "", /tests\/e2e\/claude\.e2e\.test\.mjs/);
   assert.match(pkg.scripts["e2e:gemini"] ?? "", /tests\/e2e\/gemini\.e2e\.test\.mjs/);

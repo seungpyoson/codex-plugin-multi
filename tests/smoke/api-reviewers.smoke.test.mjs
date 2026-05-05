@@ -6,6 +6,7 @@ import { createServer } from "node:http";
 import { hostname, tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { externalReviewLaunchedEvent } from "../../scripts/lib/companion-common.mjs";
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const COMPANION = path.join(REPO_ROOT, "plugins/api-reviewers/scripts/api-reviewer.mjs");
@@ -1214,11 +1215,7 @@ test("DeepSeek direct API lifecycle jsonl emits launch event before terminal Job
   const lines = result.stdout.trim().split("\n").map((line) => JSON.parse(line));
   assert.equal(lines.length, 2);
   const [launched, record] = lines;
-  assert.equal(launched.event, "external_review_launched");
-  assert.equal(launched.target, "deepseek");
-  assert.equal(launched.status, "launched");
-  assert.equal(launched.job_id, record.job_id);
-  assert.deepEqual(launched.external_review, {
+  const expectedExternalReview = {
     marker: "EXTERNAL REVIEW",
     provider: "DeepSeek",
     run_kind: "foreground",
@@ -1231,7 +1228,11 @@ test("DeepSeek direct API lifecycle jsonl emits launch event before terminal Job
     scope_paths: ["seed.txt"],
     source_content_transmission: "may_be_sent",
     disclosure: "Selected source content may be sent to DeepSeek for external review.",
-  });
+  };
+  assert.deepEqual(launched, externalReviewLaunchedEvent(
+    { job_id: record.job_id, target: "deepseek" },
+    expectedExternalReview,
+  ));
   assert.equal(record.status, "completed");
   assert.equal(record.external_review.source_content_transmission, "sent");
   assert.doesNotMatch(result.stdout, /secret-test-value/);

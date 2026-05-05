@@ -5,6 +5,7 @@ import http from "node:http";
 import { hostname, tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { externalReviewLaunchedEvent } from "../../scripts/lib/companion-common.mjs";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
@@ -336,11 +337,7 @@ test("custom-review lifecycle jsonl emits launch event before terminal JobRecord
     const lines = result.stdout.trim().split("\n").map((line) => JSON.parse(line));
     assert.equal(lines.length, 2);
     const [launched, record] = lines;
-    assert.equal(launched.event, "external_review_launched");
-    assert.equal(launched.target, "grok-web");
-    assert.equal(launched.status, "launched");
-    assert.equal(launched.job_id, record.job_id);
-    assert.deepEqual(launched.external_review, {
+    const expectedExternalReview = {
       marker: "EXTERNAL REVIEW",
       provider: "Grok Web",
       run_kind: "foreground",
@@ -353,7 +350,11 @@ test("custom-review lifecycle jsonl emits launch event before terminal JobRecord
       scope_paths: ["review.js"],
       source_content_transmission: "may_be_sent",
       disclosure: "Selected source content may be sent to Grok Web for external review.",
-    });
+    };
+    assert.deepEqual(launched, externalReviewLaunchedEvent(
+      { job_id: record.job_id, target: "grok-web" },
+      expectedExternalReview,
+    ));
     assert.equal(record.status, "completed");
     assert.equal(record.external_review.source_content_transmission, "sent");
     assert.doesNotMatch(result.stdout, /secret-cookie-like-token/);
