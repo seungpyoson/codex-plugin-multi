@@ -1140,6 +1140,31 @@ test("kimi review foreground lifecycle jsonl suppresses launch event on scope fa
   assert.match(record.disclosure_note, /not sent/);
 }));
 
+test("kimi review background lifecycle jsonl suppresses launch event on scope failure", () => withRepo((cwd) => {
+  writeFileSync(path.join(cwd, ".git", "index"), "corrupt index");
+  const result = runCompanion([
+    "run",
+    "--mode",
+    "review",
+    "--cwd",
+    cwd,
+    "--background",
+    "--lifecycle-events",
+    "jsonl",
+    "--",
+    "Review this scope.",
+  ], { cwd });
+  assert.equal(result.status, 2, result.stderr);
+  const lines = result.stdout.trim().split("\n").map((line) => JSON.parse(line));
+  assert.equal(lines.length, 1);
+  const [record] = lines;
+  assert.equal(record.status, "failed");
+  assert.equal(record.external_review.source_content_transmission, "not_sent");
+  assert.match(record.error_message, /scope_population_failed: cannot evaluate gitignored files/);
+  assert.match(record.disclosure_note, /not spawned/);
+  assert.match(record.disclosure_note, /not sent/);
+}));
+
 test("kimi run rejects invalid lifecycle event mode as structured bad args", () => withRepo((cwd) => {
   const result = runCompanion([
     "run",

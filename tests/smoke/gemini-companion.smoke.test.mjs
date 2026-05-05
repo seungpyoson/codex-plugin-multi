@@ -1228,6 +1228,31 @@ test("gemini review foreground lifecycle jsonl suppresses launch event on scope 
   }
 });
 
+test("gemini review background lifecycle jsonl suppresses launch event on scope failure", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "gemini-review-bg-lifecycle-scope-fail-cwd-"));
+  seedMinimalRepo(cwd);
+  writeFileSync(path.join(cwd, ".git", "index"), "corrupt index");
+  const { stdout, stderr, status, dataDir } = runCompanion(
+    ["run", "--mode=review", "--background", "--lifecycle-events", "jsonl",
+     "--cwd", cwd, "--", "review"],
+    { cwd },
+  );
+  try {
+    assert.equal(status, 2, `exit ${status}: ${stderr}`);
+    const lines = stdout.trim().split("\n").map((line) => JSON.parse(line));
+    assert.equal(lines.length, 1);
+    const [record] = lines;
+    assert.equal(record.status, "failed");
+    assert.equal(record.external_review.source_content_transmission, "not_sent");
+    assert.match(record.error_message, /scope_population_failed: cannot evaluate gitignored files/);
+    assert.match(record.disclosure_note, /not spawned/);
+    assert.match(record.disclosure_note, /not sent/);
+  } finally {
+    rmTree(dataDir);
+    rmTree(cwd);
+  }
+});
+
 test("gemini run rejects invalid lifecycle event mode as structured bad args", () => {
   const cwd = mkdtempSync(path.join(tmpdir(), "gemini-review-lifecycle-bad-cwd-"));
   seedMinimalRepo(cwd);

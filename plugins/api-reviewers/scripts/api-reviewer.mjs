@@ -32,6 +32,9 @@ const API_REVIEWER_STATE_LOCK_STALE_MS = 30000;
 const GIT_BINARY = "/usr/bin/git";
 const GIT_SAFE_PATH = "/usr/bin:/bin";
 const SCOPE_FILE_OPEN_FLAGS = fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0);
+const MAX_SCOPE_FILE_BYTES = 256 * 1024;
+const MAX_SCOPE_TOTAL_BYTES = 1024 * 1024;
+const GIT_SHOW_MAX_BUFFER_BYTES = MAX_SCOPE_FILE_BYTES + 1;
 const API_REVIEWER_EXPECTED_KEYS = Object.freeze([
   "id",
   "job_id",
@@ -855,6 +858,9 @@ async function readUtf8ScopeFileWithinLimit(abs, relPath) {
     handle = await open(abs, SCOPE_FILE_OPEN_FLAGS);
     const info = await handle.stat();
     if (!info.isFile()) return null;
+    if (info.size > MAX_SCOPE_FILE_BYTES) {
+      throw new Error(`scope_file_too_large:${relPath}: ${info.size} bytes exceeds ${MAX_SCOPE_FILE_BYTES} byte limit`);
+    }
     return await handle.readFile({ encoding: "utf8" });
   } catch (e) {
     if (e?.code === "ELOOP") throw new Error(`unsafe_scope_path:${relPath}`);
@@ -863,6 +869,19 @@ async function readUtf8ScopeFileWithinLimit(abs, relPath) {
   } finally {
     await handle?.close();
   }
+}
+
+function addScopeFile(files, normalizedRel, text, totalBytes) {
+  if (text.length === 0) return;
+  const bytes = Buffer.byteLength(text, "utf8");
+  if (bytes > MAX_SCOPE_FILE_BYTES) {
+    throw new Error(`scope_file_too_large:${normalizedRel}: ${bytes} bytes exceeds ${MAX_SCOPE_FILE_BYTES} byte limit`);
+  }
+  totalBytes.value += bytes;
+  if (totalBytes.value > MAX_SCOPE_TOTAL_BYTES) {
+    throw new Error(`scope_total_too_large:${totalBytes.value} bytes exceeds ${MAX_SCOPE_TOTAL_BYTES} byte limit`);
+  }
+  files.push({ path: normalizedRel, text });
 }
 
 function scopeName(options) {
@@ -903,14 +922,25 @@ function validateScopePath(workspaceRoot, relPath) {
 
 async function readGitScopeFiles(gitCwd, workspaceRoot, relPaths) {
   const files = [];
+  const totalBytes = { value: 0 };
   for (const relPath of relPaths) {
     const { normalizedRel } = validateScopePath(workspaceRoot, relPath);
-    const text = gitRaw(["show", `HEAD:${relPath}`], gitCwd, {
+    const blobSpec = `HEAD:${normalizedRel}`;
+    const sizeText = gitRaw(["cat-file", "-s", blobSpec], gitCwd, { allowFailure: true });
+    if (sizeText === null) continue;
+    const blobBytes = Number.parseInt(sizeText.trim(), 10);
+    if (!Number.isSafeInteger(blobBytes) || blobBytes < 0) {
+      throw new Error(`scope_invalid_git_blob_size:${normalizedRel}`);
+    }
+    if (blobBytes > MAX_SCOPE_FILE_BYTES) {
+      throw new Error(`scope_file_too_large:${normalizedRel}: ${blobBytes} bytes exceeds ${MAX_SCOPE_FILE_BYTES} byte limit`);
+    }
+    const text = gitRaw(["show", blobSpec], gitCwd, {
       allowFailure: true,
-      maxBuffer: 16 * 1024 * 1024,
+      maxBuffer: GIT_SHOW_MAX_BUFFER_BYTES,
     });
     if (text === null || text.length === 0) continue;
-    files.push({ path: normalizedRel, text });
+    addScopeFile(files, normalizedRel, text, totalBytes);
   }
   if (files.length === 0) throw new Error("scope_empty: selected files are missing or empty");
   return files;
@@ -918,6 +948,7 @@ async function readGitScopeFiles(gitCwd, workspaceRoot, relPaths) {
 
 async function readFilesystemScopeFiles(workspaceRoot, relPaths) {
   const files = [];
+  const totalBytes = { value: 0 };
   const realWorkspaceRoot = await realpath(workspaceRoot);
   for (const relPath of relPaths) {
     const { abs, normalizedRel } = validateScopePath(workspaceRoot, relPath);
@@ -929,8 +960,7 @@ async function readFilesystemScopeFiles(workspaceRoot, relPaths) {
     }
     const text = await readUtf8ScopeFileWithinLimit(abs, normalizedRel);
     if (text === null) continue;
-    if (text.length === 0) continue;
-    files.push({ path: normalizedRel, text });
+    addScopeFile(files, normalizedRel, text, totalBytes);
   }
   if (files.length === 0) throw new Error("scope_empty: selected files are missing or empty");
   return files;

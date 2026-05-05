@@ -1785,6 +1785,33 @@ test("custom-review rejects symlinked scope files before provider delivery", asy
   assert.doesNotMatch(result.stdout, /workspace secret should not be sent/);
 });
 
+test("custom-review rejects oversized scope files before provider delivery", async () => {
+  const cwd = makeWorkspace();
+  const dataDir = mkdtempSync(path.join(tmpdir(), "api-reviewers-data-"));
+  writeFileSync(path.join(cwd, "large.txt"), "x".repeat(256 * 1024 + 1));
+  const result = await run([
+    "run",
+    "--provider", "deepseek",
+    "--mode", "custom-review",
+    "--scope", "custom",
+    "--scope-paths", "large.txt",
+    "--foreground",
+    "--prompt", "Check this file.",
+  ], {
+    cwd,
+    env: {
+      API_REVIEWERS_PLUGIN_DATA: dataDir,
+      API_REVIEWERS_MOCK_RESPONSE: mockResponse("deepseek-v4-pro"),
+      DEEPSEEK_API_KEY: "secret-test-value",
+    },
+  });
+  assert.equal(result.status, 1);
+  const record = parseJson(result.stdout);
+  assert.equal(record.error_code, "scope_failed");
+  assert.match(record.error_message, /scope_file_too_large:large\.txt/);
+  assert.equal(record.external_review.source_content_transmission, "not_sent");
+});
+
 test("branch-diff default reviews committed changes against main with scrubbed git env", async () => {
   const cwd = makeBranchDiffWorkspace();
   const dataDir = mkdtempSync(path.join(tmpdir(), "api-reviewers-data-"));
@@ -1976,6 +2003,34 @@ test("GLM direct API custom-review uses coding endpoint and request defaults", a
   assert.equal(record.credential_ref, "ZAI_GLM_API_KEY");
   assert.equal(record.endpoint, "https://api.z.ai/api/coding/paas/v4");
   assert.doesNotMatch(result.stdout, /secret-test-value/);
+});
+
+test("branch-diff rejects oversized committed scope files before provider delivery", async () => {
+  const cwd = makeBranchDiffWorkspace();
+  const dataDir = mkdtempSync(path.join(tmpdir(), "api-reviewers-data-"));
+  writeFileSync(path.join(cwd, "large.txt"), "x".repeat(256 * 1024 + 1));
+  git(cwd, ["add", "large.txt"]);
+  git(cwd, ["commit", "-q", "-m", "large"]);
+  const result = await run([
+    "run",
+    "--provider", "deepseek",
+    "--mode", "review",
+    "--foreground",
+    "--scope-paths", "large.txt",
+    "--prompt", "Check this branch.",
+  ], {
+    cwd,
+    env: {
+      API_REVIEWERS_PLUGIN_DATA: dataDir,
+      API_REVIEWERS_MOCK_RESPONSE: mockResponse("deepseek-v4-pro"),
+      DEEPSEEK_API_KEY: "secret-test-value",
+    },
+  });
+  assert.equal(result.status, 1);
+  const record = parseJson(result.stdout);
+  assert.equal(record.error_code, "scope_failed");
+  assert.match(record.error_message, /scope_file_too_large:large\.txt/);
+  assert.equal(record.external_review.source_content_transmission, "not_sent");
 });
 
 test("direct API reviewers lifecycle jsonl emits launch before terminal record", async () => {

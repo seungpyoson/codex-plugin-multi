@@ -588,6 +588,7 @@ async function cmdRun(rest) {
   const targetPrompt = targetPromptFor(invocation, prompt);
 
   if (options.background) {
+    validateBackgroundExecutionScopeOrExit(invocation, lifecycleEvents);
     // Write prompt to private sidecar (§21.3.1 handoff buffer). Worker reads
     // and deletes — prompt text does NOT live on the JobRecord.
     try {
@@ -695,6 +696,15 @@ function setupExecutionScopeOrExit(invocation, profile, { foreground, lifecycleE
     if (foreground) printLifecycleJson(errorRecord, lifecycleEvents);
     process.exit(2);
   }
+}
+
+function validateBackgroundExecutionScopeOrExit(invocation, lifecycleEvents) {
+  const profile = resolveProfile(invocation.mode_profile_name);
+  const executionScope = setupExecutionScopeOrExit(invocation, profile, {
+    foreground: true,
+    lifecycleEvents,
+  });
+  cleanupExecutionResources(executionScope, { neutralCwd: null });
 }
 
 function prepareMutationContext(invocation, profile) {
@@ -1051,6 +1061,7 @@ async function cmdContinue(rest) {
   const targetPrompt = targetPromptFor(invocation, prompt);
 
   if (options.background) {
+    validateBackgroundExecutionScopeOrExit(invocation, lifecycleEvents);
     try {
       writePromptSidecar(resolveJobsDir(workspaceRoot), newJobId_, targetPrompt);
     } catch (error) {
