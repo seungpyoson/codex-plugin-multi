@@ -368,6 +368,10 @@ test("api-reviewers exposes a user-invocable skill fallback", () => {
   assert.match(skill, /--scope-base REF/);
   assert.match(skill, /Replace `<file1>,<file2>`/, `${rel} must tell agents to replace scope-path placeholders`);
   assert.match(skill, /comma- or newline-separated concrete relative paths/, `${rel} missing scope-path separator guidance`);
+  assert.match(skill, /`error_code`/, `${rel} missing failed JobRecord error_code rendering guidance`);
+  assert.match(skill, /`error_message`/, `${rel} missing failed JobRecord error_message rendering guidance`);
+  assert.match(skill, /`http_status`/, `${rel} missing failed JobRecord http_status rendering guidance`);
+  assert.match(skill, /`suggested_action`/, `${rel} missing failed JobRecord suggested_action rendering guidance`);
   assert.match(skill, /external_review.*before the review result/);
   assertPickerDescription(skill, rel);
 });
