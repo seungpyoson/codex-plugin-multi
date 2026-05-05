@@ -1017,6 +1017,27 @@ test("kimi review foreground lifecycle jsonl emits launch event before terminal 
   assert.equal(record.external_review.source_content_transmission, "sent");
 }));
 
+test("kimi run rejects invalid lifecycle event mode as structured bad args", () => withRepo((cwd) => {
+  const result = runCompanion([
+    "run",
+    "--mode",
+    "review",
+    "--cwd",
+    cwd,
+    "--foreground",
+    "--lifecycle-events",
+    "pretty",
+    "--",
+    "Review this scope.",
+  ], { cwd });
+  assert.equal(result.status, 1);
+  assert.doesNotMatch(result.stderr, /unhandled/i);
+  const parsed = JSON.parse(result.stdout);
+  assert.equal(parsed.ok, false);
+  assert.equal(parsed.error, "bad_args");
+  assert.match(parsed.message, /--lifecycle-events must be jsonl/);
+}));
+
 for (const mode of ["review", "adversarial-review", "custom-review"]) {
   test(`kimi ${mode} foreground writes completed JobRecord`, () => withRepo((cwd) => {
     const extraArgs = [];

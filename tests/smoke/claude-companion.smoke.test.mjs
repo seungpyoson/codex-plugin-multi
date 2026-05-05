@@ -176,6 +176,27 @@ test("run --mode=review --foreground lifecycle jsonl emits launch event before t
   }
 });
 
+test("run rejects invalid lifecycle event mode as structured bad args", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "smoke-lifecycle-bad-cwd-"));
+  seedMinimalRepo(cwd);
+  const { stdout, stderr, status, dataDir } = runCompanion(
+    ["run", "--mode=review", "--foreground", "--lifecycle-events", "pretty",
+     "--model", "claude-haiku-4-5-20251001", "--cwd", cwd, "--", "review"],
+    { cwd }
+  );
+  try {
+    assert.equal(status, 1);
+    assert.doesNotMatch(stderr, /unhandled/i);
+    const parsed = JSON.parse(stdout);
+    assert.equal(parsed.ok, false);
+    assert.equal(parsed.error, "bad_args");
+    assert.match(parsed.message, /--lifecycle-events must be jsonl/);
+  } finally {
+    cleanup(dataDir);
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
 test("run --mode=review --foreground: surfaces mutation detection failure without dropping result", () => {
   const cwd = mkdtempSync(path.join(tmpdir(), "smoke-mut-fail-cwd-"));
   seedMinimalRepo(cwd);

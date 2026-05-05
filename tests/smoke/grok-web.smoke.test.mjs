@@ -866,6 +866,31 @@ test("result rejects unsafe job ids without reading outside the data root", () =
   assert.equal(parsed.error_code, "bad_args");
 });
 
+test("run rejects invalid lifecycle event mode as bad args", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "grok-web-workspace-"));
+  const dataDir = mkdtempSync(path.join(tmpdir(), "grok-web-data-"));
+  const result = run([
+    "run",
+    "--mode", "custom-review",
+    "--scope", "custom",
+    "--scope-paths", "README.md",
+    "--prompt", "review",
+    "--lifecycle-events", "pretty",
+  ], {
+    cwd,
+    env: {
+      GROK_PLUGIN_DATA: dataDir,
+      GROK_WEB_TUNNEL_API_KEY: "secret-cookie-like-token",
+    },
+  });
+  const parsed = parseStdout(result);
+  assert.equal(result.status, 1);
+  assert.equal(parsed.status, "failed");
+  assert.equal(parsed.error_code, "bad_args");
+  assert.equal(parsed.error_cause, "caller");
+  assert.match(parsed.error_message, /--lifecycle-events must be jsonl/);
+});
+
 test("list returns an empty job list on a fresh data root", () => {
   const cwd = mkdtempSync(path.join(tmpdir(), "grok-web-workspace-"));
   const dataDir = mkdtempSync(path.join(tmpdir(), "grok-web-data-"));

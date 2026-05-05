@@ -334,7 +334,12 @@ async function cmdRun(rest) {
     return profile.dispose_default;
   })();
   const scopePaths = parseScopePathsOption(options["scope-paths"]);
-  const lifecycleEvents = parseLifecycleEventsMode(options["lifecycle-events"]);
+  let lifecycleEvents;
+  try {
+    lifecycleEvents = parseLifecycleEventsMode(options["lifecycle-events"]);
+  } catch (e) {
+    fail("bad_args", e.message);
+  }
   const authSelection = resolveAuthSelection(options["auth-mode"]);
   if (authSelection.selected_auth_path === "api_key_env_missing") {
     fail("not_authed", apiKeyMissingMessage(), apiKeyMissingFields(authSelection));

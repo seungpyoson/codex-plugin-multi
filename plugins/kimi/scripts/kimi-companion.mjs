@@ -414,7 +414,12 @@ async function cmdRun(rest) {
     return profile.dispose_default;
   })();
   const scopePaths = parseScopePathsOption(options["scope-paths"]);
-  const lifecycleEvents = parseLifecycleEventsMode(options["lifecycle-events"]);
+  let lifecycleEvents;
+  try {
+    lifecycleEvents = parseLifecycleEventsMode(options["lifecycle-events"]);
+  } catch (e) {
+    fail("bad_args", e.message);
+  }
   const timeoutMs = parsePositiveTimeoutMs(options["timeout-ms"], DEFAULT_KIMI_REVIEW_TIMEOUT_MS);
   const maxStepsPerTurn = parsePositiveMaxStepsPerTurn(
     options["max-steps-per-turn"],

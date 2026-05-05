@@ -398,7 +398,12 @@ async function cmdRun(rest) {
   })();
 
   const scopePaths = parseScopePathsOption(options["scope-paths"]);
-  const lifecycleEvents = parseLifecycleEventsMode(options["lifecycle-events"]);
+  let lifecycleEvents;
+  try {
+    lifecycleEvents = parseLifecycleEventsMode(options["lifecycle-events"]);
+  } catch (e) {
+    fail("bad_args", e.message);
+  }
   const prompt = positionals.join(" ").trim();
   if (!prompt) {
     fail("bad_args", "prompt is required (pass after -- separator)");

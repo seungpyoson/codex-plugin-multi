@@ -1199,6 +1199,27 @@ test("gemini review foreground lifecycle jsonl emits launch event before termina
   }
 });
 
+test("gemini run rejects invalid lifecycle event mode as structured bad args", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "gemini-review-lifecycle-bad-cwd-"));
+  seedMinimalRepo(cwd);
+  const { stdout, stderr, status, dataDir } = runCompanion(
+    ["run", "--mode=review", "--foreground", "--lifecycle-events", "pretty",
+     "--cwd", cwd, "--", "review: x=1"],
+    { cwd },
+  );
+  try {
+    assert.equal(status, 1);
+    assert.doesNotMatch(stderr, /unhandled/i);
+    const parsed = JSON.parse(stdout);
+    assert.equal(parsed.ok, false);
+    assert.equal(parsed.error, "bad_args");
+    assert.match(parsed.message, /--lifecycle-events must be jsonl/);
+  } finally {
+    rmTree(dataDir);
+    rmTree(cwd);
+  }
+});
+
 test("gemini review foreground: omits native Gemini sandbox inside Codex sandbox", () => {
   const cwd = mkdtempSync(path.join(tmpdir(), "gemini-review-codex-cwd-"));
   seedMinimalRepo(cwd);

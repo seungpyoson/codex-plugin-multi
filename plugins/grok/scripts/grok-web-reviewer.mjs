@@ -39,7 +39,7 @@ function printLifecycleJson(obj, lifecycleEvents) {
 function parseLifecycleEventsMode(value) {
   if (value == null || value === false) return null;
   if (value === "jsonl") return "jsonl";
-  throw new Error("--lifecycle-events must be jsonl");
+  throw new Error("bad_args: --lifecycle-events must be jsonl");
 }
 
 function parseArgs(argv) {
