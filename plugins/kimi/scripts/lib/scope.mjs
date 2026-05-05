@@ -714,7 +714,7 @@ function scopeStaged(sourceCwd, targetPath) {
   }
 }
 
-function scopeBranchDiff(sourceCwd, targetPath, scopeBase) {
+function scopeBranchDiff(sourceCwd, targetPath, scopeBase, scopePaths = []) {
   assertGitWorktree(sourceCwd);
   const ctx = gitScopeContext(sourceCwd);
   assertGitHead(ctx, sourceCwd);
@@ -735,7 +735,7 @@ function scopeBranchDiff(sourceCwd, targetPath, scopeBase) {
   }
   prepareGitSnapshotTarget(sourceCwd, targetPath);
   const raw = git(ctx.gitRoot, ["diff", "--name-only", "-z", `${mergeBase}..HEAD`]);
-  const files = [];
+  let files = [];
   for (const gitRel of raw.split("\0").filter(Boolean)) {
     const snapshotRel = toSnapshotRel(ctx, gitRel);
     if (!snapshotRel) continue;
@@ -744,8 +744,14 @@ function scopeBranchDiff(sourceCwd, targetPath, scopeBase) {
     }
     files.push({ gitRel, snapshotRel });
   }
+  if (Array.isArray(scopePaths) && scopePaths.length > 0) {
+    files = files.filter(({ snapshotRel }) => scopePaths.some((g) => matchGlob(snapshotRel, g)));
+  }
   if (files.length === 0) {
-    scopeEmpty(`branch-diff selected no files under ${sourceCwd} against base ${JSON.stringify(base)}`);
+    const qualifier = Array.isArray(scopePaths) && scopePaths.length > 0
+      ? ` matching --scope-paths ${scopePaths.join(",")}`
+      : "";
+    scopeEmpty(`branch-diff selected no files${qualifier} under ${sourceCwd} against base ${JSON.stringify(base)}`);
   }
   const materializations = [];
   const entriesByRel = entryMap(scopedGitEntries(ctx, headEntries(ctx.gitRoot)));
@@ -878,7 +884,7 @@ export function populateScope(profile, sourceCwd, targetPath, runtimeInputs = {}
   switch (profile.scope) {
     case "working-tree": scopeWorkingTree(sourceCwd, targetPath); break;
     case "staged":       scopeStaged(sourceCwd, targetPath); break;
-    case "branch-diff":  scopeBranchDiff(sourceCwd, targetPath, runtimeInputs.scopeBase); break;
+    case "branch-diff":  scopeBranchDiff(sourceCwd, targetPath, runtimeInputs.scopeBase, runtimeInputs.scopePaths); break;
     case "head":         scopeHead(sourceCwd, targetPath, containmentHandle); break;
     case "custom":       scopeCustom(sourceCwd, targetPath, runtimeInputs.scopePaths); break;
     default:

@@ -38,6 +38,7 @@ const CONTENT_RECEIVED_ERROR_CODES = Object.freeze(new Set([
   "kimi_error",
   "parse_error",
   "step_limit_exceeded",
+  "usage_limited",
   "finalization_failed",
   "timeout",
 ]));

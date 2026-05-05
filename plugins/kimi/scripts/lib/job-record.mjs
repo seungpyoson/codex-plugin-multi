@@ -25,29 +25,9 @@ import {
   buildExternalReview,
   sourceContentTransmissionForExecution,
 } from "./external-review.mjs";
+import path from "node:path";
 
 export const SCHEMA_VERSION = 10;
-
-function stringBytes(value) {
-  return Buffer.byteLength(String(value ?? ""), "utf8");
-}
-
-function buildReviewMetadata(invocation, execution = null, parsed = null) {
-  if (!invocation.review_prompt_contract_version) return null;
-  return Object.freeze({
-    prompt_contract_version: invocation.review_prompt_contract_version,
-    prompt_provider: invocation.review_prompt_provider ?? invocation.target,
-    scope: invocation.scope,
-    scope_base: invocation.scope_base ?? null,
-    scope_paths: invocation.scope_paths ?? null,
-    raw_output: execution ? Object.freeze({
-      stdout_bytes: stringBytes(execution.stdout),
-      stderr_bytes: stringBytes(execution.stderr),
-      parsed_ok: parsed?.ok ?? null,
-      result_chars: typeof parsed?.result === "string" ? parsed.result.length : null,
-    }) : null,
-  });
-}
 
 /**
  * Canonical JobRecord field list. Exported so tests can reference it and
@@ -94,6 +74,7 @@ export const EXPECTED_KEYS = Object.freeze([
   "suggested_action",
   "external_review",
   "disclosure_note",
+  "runtime_diagnostics",
 
   // Result
   "result",
@@ -108,6 +89,28 @@ export const EXPECTED_KEYS = Object.freeze([
 ]);
 
 const EXPECTED_KEYS_SET = new Set(EXPECTED_KEYS);
+
+function stringBytes(value) {
+  return Buffer.byteLength(String(value ?? ""), "utf8");
+}
+
+function buildReviewMetadata(invocation, execution = null, parsed = null) {
+  if (!invocation.review_prompt_contract_version) return null;
+  return Object.freeze({
+    prompt_contract_version: invocation.review_prompt_contract_version,
+    prompt_provider: invocation.review_prompt_provider ?? invocation.target,
+    scope: invocation.scope,
+    scope_base: invocation.scope_base ?? null,
+    scope_paths: invocation.scope_paths ?? null,
+    raw_output: execution ? Object.freeze({
+      stdout_bytes: stringBytes(execution.stdout),
+      stderr_bytes: stringBytes(execution.stderr),
+      parsed_ok: parsed?.ok ?? null,
+      result_chars: typeof parsed?.result === "string" ? parsed.result.length : null,
+    }) : null,
+    audit_manifest: execution?.reviewAuditManifest ?? null,
+  });
+}
 
 export function externalReviewForInvocation(invocation, execution = null) {
   const { status, error_code } = classifyExecution(execution);
@@ -145,6 +148,7 @@ export function externalReviewForInvocation(invocation, execution = null) {
  *                         routing on error_code doesn't conflate disk/lock failures
  *                         with missing-binary errors. PR #21 review HIGH 1.
  *   step_limit_exceeded — Kimi emitted its non-JSON max-step exhaustion sentinel.
+ *   usage_limited  — Kimi emitted a non-JSON quota/usage-limit failure.
  *   parse_error     — parsed.ok === false with reason starting "json_parse"/"empty_stdout".
  *   timeout         — execution.timedOut === true (companion's wall-clock kill).
  *   kimi_error    — exitCode !== 0 with parseable JSON from Kimi.
@@ -237,6 +241,13 @@ function classifyExecution(execution) {
         error_message: parsed.error ?? reason,
       };
     }
+    if (reason === "usage_limited") {
+      return {
+        status: "failed",
+        error_code: "usage_limited",
+        error_message: parsed.error ?? reason,
+      };
+    }
     if (reason === "json_parse_error" || reason === "empty_stdout") {
       return {
         status: "failed",
@@ -301,6 +312,18 @@ function buildErrorDiagnostic(invocation, status, error_code, error_message) {
         "the requested stream-json payload. The companion recognized the sentinel and preserved it as a provider resource-limit diagnostic.",
       suggested_action:
         "Retry with a higher step budget using --max-steps-per-turn <n>, or rerun with a narrower scope.",
+      disclosure_note: null,
+    };
+  }
+  if (status === "failed" && error_code === "usage_limited") {
+    return {
+      error_summary: `${target.displayName} Code CLI reported a subscription usage limit before returning a review result.`,
+      error_cause:
+        `${target.displayName} emitted a plain-text quota or billing-cycle failure instead of ` +
+        "the requested stream-json payload. The companion recognized it as an account usage limit, not a JSON parse failure.",
+      suggested_action:
+        `Wait for ${target.displayName} quota to recover, reduce reviewer concurrency, or run ` +
+        `\`${target.binaryName}\` interactively to inspect account usage. Track tier or credit changes separately from this review run.`,
       disclosure_note: null,
     };
   }
@@ -459,6 +482,63 @@ function assertInvocation(invocation) {
   }
 }
 
+function targetFromDenial(denial) {
+  if (typeof denial === "string") return denial;
+  if (!denial || typeof denial !== "object") return null;
+  return denial.target ?? denial.path ?? denial.file_path ?? denial.file ?? null;
+}
+
+function toolFromDenial(denial) {
+  if (!denial || typeof denial !== "object") return null;
+  return denial.tool ?? denial.name ?? null;
+}
+
+function pathInside(base, target) {
+  if (!base || !target || !path.isAbsolute(target)) {
+    return { inside: null, relative: null };
+  }
+  const relative = path.relative(base, target);
+  const inside = relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
+  return {
+    inside,
+    relative: inside ? (relative || ".") : null,
+  };
+}
+
+function normalizeRuntimeDiagnostics(input, denials) {
+  if (!input || typeof input !== "object") return null;
+
+  const addDir = typeof input.add_dir === "string" ? input.add_dir : null;
+  const childCwd = typeof input.child_cwd === "string" ? input.child_cwd : null;
+  const scopePathMappings = Array.isArray(input.scope_path_mappings)
+    ? input.scope_path_mappings.map((mapping) => ({
+      original: typeof mapping?.original === "string" ? mapping.original : null,
+      contained: typeof mapping?.contained === "string" ? mapping.contained : null,
+      relative: typeof mapping?.relative === "string" ? mapping.relative : null,
+      inside_add_dir: mapping?.inside_add_dir === true,
+    }))
+    : [];
+  const permissionDenials = Array.isArray(denials)
+    ? denials.map((denial) => {
+      const target = targetFromDenial(denial);
+      const { inside, relative } = pathInside(addDir, target);
+      return {
+        tool: toolFromDenial(denial),
+        target,
+        inside_add_dir: inside,
+        relative_to_add_dir: relative,
+      };
+    })
+    : [];
+
+  return {
+    add_dir: addDir,
+    child_cwd: childCwd,
+    scope_path_mappings: scopePathMappings,
+    permission_denials: permissionDenials,
+  };
+}
+
 /**
  * Build the single canonical JobRecord.
  *
@@ -492,6 +572,11 @@ export function buildJobRecord(invocation, execution, mutations) {
   const diagnostic = buildErrorDiagnostic(invocation, status, error_code, error_message);
 
   const parsed = execution?.parsed ?? null;
+  const permissionDenials = Array.isArray(parsed?.denials) ? parsed.denials : [];
+  const runtimeDiagnostics = normalizeRuntimeDiagnostics(
+    execution?.runtimeDiagnostics ?? null,
+    permissionDenials,
+  );
   const record = {
     // Identity
     id: invocation.job_id,
@@ -534,11 +619,12 @@ export function buildJobRecord(invocation, execution, mutations) {
     suggested_action: diagnostic.suggested_action,
     external_review: externalReviewForInvocation(invocation, execution),
     disclosure_note: diagnostic.disclosure_note,
+    runtime_diagnostics: runtimeDiagnostics,
 
     // Result
     result: parsed?.result ?? null,
     structured_output: parsed?.structured ?? null,
-    permission_denials: Array.isArray(parsed?.denials) ? parsed.denials : [],
+    permission_denials: permissionDenials,
     mutations: [...mutations],
     cost_usd: parsed?.costUsd ?? null,
     usage: parsed?.usage ?? null,

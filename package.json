@@ -27,6 +27,7 @@
     "test": "node scripts/ci/run-tests.mjs",
     "test:full": "CODEX_PLUGIN_FULL_TESTS=1 node scripts/ci/run-tests.mjs",
     "test:coverage": "node scripts/ci/check-coverage.mjs",
+    "doctor:cache": "node scripts/codex-plugin-cache-doctor.mjs",
     "smoke:claude": "node --test --test-reporter=spec tests/smoke/claude-companion.smoke.test.mjs tests/smoke/identity-resume-chain.smoke.test.mjs",
     "smoke:gemini": "node --test --test-reporter=spec tests/smoke/gemini-companion.smoke.test.mjs",
     "smoke:kimi": "node --test --test-reporter=spec tests/smoke/kimi-companion.smoke.test.mjs",

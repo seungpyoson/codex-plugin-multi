@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { spawnSync } from "node:child_process";
-import { lstat, mkdir, readFile, readdir, rename, rm, unlink, writeFile } from "node:fs/promises";
+import { lstat, mkdir, readFile, readdir, realpath, rename, rm, stat, unlink, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { dirname, isAbsolute, resolve, relative } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -9,7 +9,7 @@ import { hostname } from "node:os";
 
 import { cleanGitEnv } from "./lib/git-env.mjs";
 import { isCodexSandbox } from "./lib/codex-env.mjs";
-import { REVIEW_PROMPT_CONTRACT_VERSION, buildReviewPrompt } from "./lib/review-prompt.mjs";
+import { REVIEW_PROMPT_CONTRACT_VERSION, buildReviewAuditManifest, buildReviewPrompt, scopeResolutionReason } from "./lib/review-prompt.mjs";
 import {
   EXTERNAL_REVIEW_KEYS,
   SOURCE_CONTENT_TRANSMISSION,
@@ -29,6 +29,8 @@ const API_REVIEWER_STATE_LOCK_GATE_DIR = ".state.lock.gate";
 const API_REVIEWER_STATE_LOCK_POLL_MS = 25;
 const API_REVIEWER_STATE_LOCK_TIMEOUT_MS = 5000;
 const API_REVIEWER_STATE_LOCK_STALE_MS = 30000;
+const GIT_BINARY = "/usr/bin/git";
+const GIT_SAFE_PATH = "/usr/bin:/bin";
 const API_REVIEWER_EXPECTED_KEYS = Object.freeze([
   "id",
   "job_id",
@@ -65,6 +67,7 @@ const API_REVIEWER_EXPECTED_KEYS = Object.freeze([
   "suggested_action",
   "external_review",
   "disclosure_note",
+  "runtime_diagnostics",
   "result",
   "structured_output",
   "permission_denials",
@@ -489,7 +492,8 @@ async function updateApiReviewerStateForRecord(root, record) {
 }
 
 function parseArgs(argv) {
-  const out = { _: [] };
+  const out = Object.create(null);
+  out._ = [];
   for (let i = 0; i < argv.length; i += 1) {
     const token = argv[i];
     if (!token.startsWith("--")) {
@@ -498,10 +502,13 @@ function parseArgs(argv) {
     }
     const eq = token.indexOf("=");
     if (eq !== -1) {
-      out[token.slice(2, eq)] = token.slice(eq + 1);
+      const key = token.slice(2, eq);
+      assertSafeOptionKey(key, token);
+      out[key] = token.slice(eq + 1);
       continue;
     }
     const key = token.slice(2);
+    assertSafeOptionKey(key, token);
     const next = argv[i + 1];
     if (next == null || next.startsWith("--")) out[key] = true;
     else {
@@ -510,6 +517,12 @@ function parseArgs(argv) {
     }
   }
   return out;
+}
+
+function assertSafeOptionKey(key, token) {
+  if (!key || key === "__proto__" || key === "prototype" || key === "constructor") {
+    throw new Error(`unsupported option ${token}`);
+  }
 }
 
 async function loadProviders() {
@@ -611,9 +624,11 @@ function redactor(env = process.env, configuredSecretNames = []) {
   const configured = new Set(configuredSecretNames);
   const secrets = Object.entries(env)
     .filter(([name, value]) => (
-      (configured.has(name) || /(?:^|_)(?:API_KEY|TOKEN|ACCESS_KEY|SECRET|ADMIN_KEY)$/.test(name)) &&
       typeof value === "string" &&
-      (configured.has(name) ? value.length > 0 : value.length >= MIN_SECRET_REDACTION_LENGTH)
+      (
+        (configured.has(name) && value.length >= 4) ||
+        (/(?:^|_)(?:API_KEY|TOKEN|ACCESS_KEY|SECRET|ADMIN_KEY)$/.test(name) && value.length >= MIN_SECRET_REDACTION_LENGTH)
+      )
     ))
     .map(([, value]) => value);
   return (text) => {
@@ -709,7 +724,7 @@ function runCommand(command, args = [], options = {}) {
 }
 
 function git(args, cwd, options = {}) {
-  const res = runCommand("git", args, { cwd, env: cleanGitEnv() });
+  const res = runCommand(GIT_BINARY, args, { cwd, env: { ...cleanGitEnv(), PATH: GIT_SAFE_PATH } });
   if (res.error) throw new Error(`git_failed:${res.error.message}`);
   if (res.signal) throw new Error(`git_failed:signal:${res.signal}`);
   if (res.status !== 0) {
@@ -718,6 +733,22 @@ function git(args, cwd, options = {}) {
     throw new Error(`git_failed:${detail}`);
   }
   return res.stdout.trim();
+}
+
+function gitRaw(args, cwd, options = {}) {
+  const res = runCommand(GIT_BINARY, args, {
+    cwd,
+    env: { ...cleanGitEnv(), PATH: GIT_SAFE_PATH },
+    maxBuffer: options.maxBuffer,
+  });
+  if (res.error) throw new Error(`git_failed:${res.error.message}`);
+  if (res.signal) throw new Error(`git_failed:signal:${res.signal}`);
+  if (res.status !== 0) {
+    if (options.allowFailure) return null;
+    const detail = String(res.stderr || res.stdout || `git exited with status ${res.status}`).trim();
+    throw new Error(`git_failed:${detail}`);
+  }
+  return res.stdout;
 }
 
 function bestEffortWorkspaceRoot(cwd) {
@@ -733,6 +764,30 @@ function splitScopePaths(value) {
   return String(value).split(/[,\n]/).map((s) => s.trim()).filter(Boolean);
 }
 
+function splitGitPathList(output) {
+  return output ? output.split("\0").filter(Boolean) : [];
+}
+
+function matchGlob(rel, pattern) {
+  let re = "^";
+  for (let i = 0; i < pattern.length; i += 1) {
+    const c = pattern[i];
+    if (c === "*") {
+      if (pattern[i + 1] === "*") {
+        re += ".*";
+        i += 1;
+        if (pattern[i + 1] === "/") i += 1;
+      } else {
+        re += "[^/]*";
+      }
+    } else if (c === "?") re += "[^/]";
+    else if (".^$+(){}|\\[]".includes(c)) re += `\\${c}`;
+    else re += c;
+  }
+  re += "$";
+  return new RegExp(re).test(rel);
+}
+
 function scopeName(options) {
   return options.scope ?? (options.mode === "custom-review" ? "custom" : "branch-diff");
 }
@@ -745,27 +800,59 @@ function selectedScopePaths(scope, options, cwd) {
   }
   if (scope === "branch-diff") {
     const base = options["scope-base"] ?? "main";
-    const changed = git(["diff", "--name-only", base, "--"], cwd);
-    const relPaths = changed ? changed.split("\n").filter(Boolean) : [];
+    const changed = gitRaw(["diff", "-z", "--name-only", `${base}...HEAD`, "--"], cwd);
+    const requested = splitScopePaths(options["scope-paths"]);
+    const changedPaths = splitGitPathList(changed);
+    const relPaths = requested.length > 0
+      ? changedPaths.filter((relPath) => requested.some((pattern) => matchGlob(relPath, pattern)))
+      : changedPaths;
     if (relPaths.length === 0) throw new Error("scope_empty: branch-diff selected no files");
     return relPaths;
   }
   throw new Error(`unsupported_scope:${scope}`);
 }
 
-async function readScopeFiles(workspaceRoot, relPaths) {
+function validateScopePath(workspaceRoot, relPath) {
+  if (relPath.includes("..") || isAbsolute(relPath) || relPath.includes("\\")) {
+    throw new Error(`unsafe_scope_path:${relPath}`);
+  }
+  const abs = resolve(workspaceRoot, relPath);
+  const normalizedRel = relative(workspaceRoot, abs);
+  if (normalizedRel.startsWith("..") || normalizedRel === "") {
+    throw new Error(`unsafe_scope_path:${relPath}`);
+  }
+  return { abs, normalizedRel };
+}
+
+async function readGitScopeFiles(gitCwd, workspaceRoot, relPaths) {
   const files = [];
   for (const relPath of relPaths) {
-    if (relPath.includes("..") || isAbsolute(relPath) || relPath.includes("\\")) {
-      throw new Error(`unsafe_scope_path:${relPath}`);
-    }
-    const abs = resolve(workspaceRoot, relPath);
-    const normalizedRel = relative(workspaceRoot, abs);
-    if (normalizedRel.startsWith("..") || normalizedRel === "") {
-      throw new Error(`unsafe_scope_path:${relPath}`);
-    }
+    const { normalizedRel } = validateScopePath(workspaceRoot, relPath);
+    const text = gitRaw(["show", `HEAD:${relPath}`], gitCwd, {
+      allowFailure: true,
+      maxBuffer: 16 * 1024 * 1024,
+    });
+    if (text === null || text.length === 0) continue;
+    files.push({ path: normalizedRel, text });
+  }
+  if (files.length === 0) throw new Error("scope_empty: selected files are missing or empty");
+  return files;
+}
+
+async function readFilesystemScopeFiles(workspaceRoot, relPaths) {
+  const files = [];
+  const realWorkspaceRoot = await realpath(workspaceRoot);
+  for (const relPath of relPaths) {
+    const { abs, normalizedRel } = validateScopePath(workspaceRoot, relPath);
     if (!existsSync(abs)) continue;
-    const text = await readFile(abs, "utf8");
+    const realAbs = await realpath(abs);
+    const realRel = relative(realWorkspaceRoot, realAbs);
+    if (realRel.startsWith("..") || realRel === "") {
+      throw new Error(`unsafe_scope_path:${relPath}`);
+    }
+    const info = await stat(realAbs);
+    if (!info.isFile()) continue;
+    const text = await readFile(realAbs, "utf8");
     if (text.length === 0) continue;
     files.push({ path: normalizedRel, text });
   }
@@ -779,14 +866,18 @@ async function collectScope(options) {
   const scope = scopeName(options);
   const scopeBase = scope === "branch-diff" ? options["scope-base"] ?? "main" : null;
   const relPaths = selectedScopePaths(scope, options, cwd);
-  const files = await readScopeFiles(workspaceRoot, relPaths);
+  const files = scope === "branch-diff"
+    ? await readGitScopeFiles(cwd, workspaceRoot, relPaths)
+    : await readFilesystemScopeFiles(workspaceRoot, relPaths);
   return {
     cwd,
     workspaceRoot,
     scope,
     scope_base: scopeBase,
     scope_paths: relPaths,
-    base_commit: gitCommitForPrompt(cwd, scopeBase),
+    repository: repositoryIdentity(cwd, workspaceRoot),
+    base_commit: scopeBase ? gitCommitForPrompt(cwd, scopeBase) : null,
+    head_ref: git(["branch", "--show-current"], cwd, { allowFailure: true }) || "HEAD",
     head_commit: gitCommitForPrompt(cwd, "HEAD"),
     files,
   };
@@ -799,6 +890,13 @@ function gitCommitForPrompt(cwd, ref) {
   } catch {
     return null;
   }
+}
+
+function repositoryIdentity(cwd, workspaceRoot) {
+  const remote = git(["remote", "get-url", "origin"], cwd, { allowFailure: true });
+  if (!remote) return workspaceRoot;
+  const match = /[:/]([^/:]+\/[^/]+?)(?:\.git)?$/.exec(remote);
+  return match ? match[1] : remote;
 }
 
 function promptFor(mode, userPrompt, scopeInfo, providerName = "Direct API reviewer") {
@@ -820,10 +918,10 @@ function promptFor(mode, userPrompt, scopeInfo, providerName = "Direct API revie
   return buildReviewPrompt({
     provider: providerName,
     mode,
-    repository: scopeInfo.workspaceRoot ?? null,
+    repository: scopeInfo.repository,
     baseRef: scopeInfo.scope_base ?? null,
     baseCommit: scopeInfo.base_commit ?? null,
-    headRef: "HEAD",
+    headRef: scopeInfo.head_ref ?? "HEAD",
     headCommit: scopeInfo.head_commit ?? null,
     scope: scopeInfo.scope,
     scopePaths: scopeInfo.scope_paths,
@@ -896,6 +994,13 @@ function mockProviderExecution(cfg, prompt, credential, env, requestBody) {
     http_status: 200,
     credential_ref: credential.keyName,
     endpoint: baseUrlFor(cfg),
+    diagnostics: {
+      configured_timeout_ms: parseProviderTimeoutMs(env).value,
+      prompt_chars: prompt.length,
+      request_defaults: summarizeRequestDefaults(cfg.request_defaults),
+      max_tokens: requestBody.max_tokens ?? null,
+      temperature: requestBody.temperature ?? null,
+    },
   };
 }
 
@@ -933,6 +1038,7 @@ async function callProvider(provider, cfg, prompt, env = process.env) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs.value);
   const redact = redactor(env, cfg.env_keys);
+  const started = Date.now();
   try {
     const response = await fetch(endpoint, {
       method: "POST",
@@ -967,13 +1073,42 @@ async function callProvider(provider, cfg, prompt, env = process.env) {
       http_status: response.status,
       credential_ref: credential.keyName,
       endpoint: baseUrlFor(cfg),
+      diagnostics: {
+        configured_timeout_ms: timeoutMs.value,
+        prompt_chars: prompt.length,
+        request_defaults: summarizeRequestDefaults(cfg.request_defaults),
+        max_tokens: requestBody.max_tokens ?? null,
+        temperature: requestBody.temperature ?? null,
+      },
     };
   } catch (e) {
     const reason = e?.name === "AbortError" ? "timeout" : "provider_unavailable";
-    return providerFailure(reason, redact(e?.message ?? String(e)), null, null, payloadSentForProviderException(e));
+    return providerFailureWithDiagnostics(
+      reason,
+      redact(e?.message ?? String(e)),
+      null,
+      null,
+      payloadSentForProviderException(e),
+      {
+        configured_timeout_ms: timeoutMs.value,
+        elapsed_ms: Date.now() - started,
+        prompt_chars: prompt.length,
+        request_defaults: summarizeRequestDefaults(cfg.request_defaults),
+        max_tokens: requestBody.max_tokens ?? null,
+        temperature: requestBody.temperature ?? null,
+      },
+    );
   } finally {
     clearTimeout(timer);
   }
+}
+
+function summarizeRequestDefaults(defaults = {}) {
+  const summary = {};
+  for (const key of ["thinking", "reasoning_effort", "max_tokens", "top_p"]) {
+    if (Object.hasOwn(defaults, key)) summary[key] = defaults[key];
+  }
+  return summary;
 }
 
 function safeProviderSessionId(value) {
@@ -1028,6 +1163,13 @@ function providerFailure(reason, message, httpStatus, raw = null, payloadSent = 
     },
     http_status: httpStatus,
     payload_sent: payloadSent,
+  };
+}
+
+function providerFailureWithDiagnostics(reason, message, httpStatus, raw = null, payloadSent = null, diagnostics = null) {
+  return {
+    ...providerFailure(reason, message, httpStatus, raw, payloadSent),
+    diagnostics,
   };
 }
 
@@ -1097,6 +1239,93 @@ function errorCauseFor(errorCode) {
   return "direct_api_provider";
 }
 
+function scopeDiagnostics(scopeInfo) {
+  const files = Array.isArray(scopeInfo.files) ? scopeInfo.files : [];
+  const selectedChars = files.reduce((sum, file) => sum + String(file.text ?? "").length, 0);
+  const selectedBytes = files.reduce((sum, file) => sum + Buffer.byteLength(String(file.text ?? ""), "utf8"), 0);
+  return {
+    selected_files: files.length,
+    selected_bytes: selectedBytes,
+    selected_chars: selectedChars,
+  };
+}
+
+function diagnosticErrorSummary(errorCode, errorMessage, scopeInfo, execution) {
+  if (errorCode !== "timeout") return errorMessage || errorCode;
+  const scope = scopeDiagnostics(scopeInfo);
+  const diagnostics = execution.diagnostics ?? {};
+  const promptChars = diagnostics.prompt_chars ?? 0;
+  const estimatedTokens = Math.ceil(promptChars / 4);
+  return [
+    `timeout after ${diagnostics.elapsed_ms ?? "unknown"}ms`,
+    `configured_timeout_ms=${diagnostics.configured_timeout_ms ?? "unknown"}`,
+    `selected_files=${scope.selected_files}`,
+    `selected_bytes=${scope.selected_bytes}`,
+    `selected_chars=${scope.selected_chars}`,
+    `prompt_chars=${promptChars}`,
+    `estimated_tokens=${estimatedTokens}`,
+    `max_tokens=${diagnostics.max_tokens ?? "unknown"}`,
+  ].join(" ");
+}
+
+function buildReviewMetadata(cfg, scopeInfo, execution = null) {
+  const auditManifest = execution?.prompt ? buildReviewAuditManifest({
+    prompt: execution.prompt,
+    sourceFiles: scopeInfo.files,
+    git: {
+      remote: scopeInfo.repository ?? null,
+      branch: scopeInfo.head_ref ?? null,
+      baseRef: scopeInfo.scope_base ?? null,
+      baseCommit: scopeInfo.base_commit ?? null,
+      headRef: scopeInfo.head_ref ?? null,
+      headCommit: scopeInfo.head_commit ?? null,
+    },
+    promptBuilder: {
+      contractVersion: REVIEW_PROMPT_CONTRACT_VERSION,
+      pluginVersion: "0.1.0",
+      pluginCommit: gitCommitForPrompt(PLUGIN_ROOT, "HEAD"),
+    },
+    request: {
+      provider: cfg.display_name,
+      model: cfg.model,
+      timeoutMs: execution.diagnostics?.configured_timeout_ms ?? null,
+      maxTokens: execution.diagnostics?.max_tokens ?? null,
+      temperature: execution.diagnostics?.temperature ?? null,
+    },
+    truncation: {
+      prompt: false,
+      source: false,
+      output: false,
+    },
+    providerIds: {
+      sessionId: execution.session_id ?? null,
+    },
+    scope: {
+      name: scopeInfo.scope,
+      base: scopeInfo.scope_base ?? null,
+      paths: scopeInfo.scope_paths ?? null,
+      reason: scopeResolutionReason(scopeInfo),
+    },
+    result: execution.parsed?.result ?? "",
+    status: execution.exitCode === 0 && execution.parsed?.ok === true ? "completed" : "failed",
+    errorCode: execution.parsed?.reason ?? null,
+  }) : null;
+  return {
+    prompt_contract_version: REVIEW_PROMPT_CONTRACT_VERSION,
+    prompt_provider: cfg.display_name,
+    scope: scopeInfo.scope,
+    scope_base: scopeInfo.scope_base ?? null,
+    scope_paths: scopeInfo.scope_paths ?? null,
+    raw_output: execution ? {
+      http_status: execution.http_status ?? null,
+      raw_model: execution.parsed?.raw_model ?? null,
+      parsed_ok: execution.parsed?.ok ?? null,
+      result_chars: typeof execution.parsed?.result === "string" ? execution.parsed.result.length : null,
+    } : null,
+    audit_manifest: auditManifest,
+  };
+}
+
 function buildRecord({ provider, cfg, mode, options, scopeInfo, execution, startedAt, endedAt }) {
   const completed = execution.exitCode === 0 && execution.parsed?.ok === true;
   const redact = redactor(process.env, cfg.env_keys);
@@ -1142,19 +1371,7 @@ function buildRecord({ provider, cfg, mode, options, scopeInfo, execution, start
     scope_base: scopeInfo.scope_base ?? null,
     scope_paths: scopeInfo.scope_paths ?? null,
     prompt_head: String(options.prompt ?? "").slice(0, 200),
-    review_metadata: Object.freeze({
-      prompt_contract_version: REVIEW_PROMPT_CONTRACT_VERSION,
-      prompt_provider: cfg.display_name,
-      scope: scopeInfo.scope,
-      scope_base: scopeInfo.scope_base ?? null,
-      scope_paths: scopeInfo.scope_paths ?? null,
-      raw_output: Object.freeze({
-        http_status: execution.http_status ?? null,
-        raw_model: execution.parsed?.raw_model ?? null,
-        parsed_ok: execution.parsed?.ok ?? null,
-        result_chars: typeof execution.parsed?.result === "string" ? execution.parsed.result.length : null,
-      }),
-    }),
+    review_metadata: buildReviewMetadata(cfg, scopeInfo, execution),
     schema_spec: null,
     binary: null,
     status: completed ? "completed" : "failed",
@@ -1163,11 +1380,12 @@ function buildRecord({ provider, cfg, mode, options, scopeInfo, execution, start
     exit_code: execution.exitCode,
     error_code: errorCode,
     error_message: errorMessage,
-    error_summary: completed ? null : errorMessage || errorCode,
+    error_summary: completed ? null : diagnosticErrorSummary(errorCode, errorMessage, scopeInfo, execution),
     error_cause: completed ? null : errorCauseFor(errorCode),
     suggested_action: completed ? null : suggestedAction(errorCode, provider, cfg, errorMessage, execution.http_status ?? null),
     external_review: externalReview,
     disclosure_note: disclosure,
+    runtime_diagnostics: null,
     result,
     structured_output: null,
     permission_denials: [],
@@ -1266,7 +1484,9 @@ async function cmdRun(options) {
   }
   if (!execution) {
     try {
-      execution = await callProvider(provider, cfg, promptFor(mode, options.prompt ?? "", scopeInfo, cfg.display_name));
+      const renderedPrompt = promptFor(mode, options.prompt ?? "", scopeInfo, cfg.display_name);
+      execution = await callProvider(provider, cfg, renderedPrompt);
+      execution.prompt = renderedPrompt;
     } catch (e) {
       execution = providerFailure("provider_unavailable", redactor(process.env)(e?.message ?? String(e)), null, null, null);
     }

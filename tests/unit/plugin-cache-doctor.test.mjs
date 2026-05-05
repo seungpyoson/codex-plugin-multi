@@ -1,0 +1,78 @@
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import { execFileSync, spawnSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+
+const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
+const DOCTOR = path.join(REPO_ROOT, "scripts", "codex-plugin-cache-doctor.mjs");
+
+function writeSkill(root, plugin, skill) {
+  const dir = path.join(root, plugin, "skills", skill);
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(path.join(dir, "SKILL.md"), `---\nname: ${skill}\n---\n`, "utf8");
+}
+
+function writeCachedSkill(home, plugin, skill) {
+  const dir = path.join(home, "plugins", "cache", "codex-plugin-multi", plugin, "0.1.0", "skills", skill);
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(path.join(dir, "SKILL.md"), `---\nname: ${skill}\n---\n`, "utf8");
+}
+
+function writeConfig(home, plugin, enabled = true) {
+  mkdirSync(home, { recursive: true });
+  writeFileSync(
+    path.join(home, "config.toml"),
+    `[plugins."${plugin}@codex-plugin-multi"]\nenabled = ${enabled ? "true" : "false"}\n`,
+    "utf8",
+  );
+}
+
+test("codex plugin cache doctor reports stale cache, enablement, and restart guidance", () => {
+  const repo = mkdtempSync(path.join(tmpdir(), "plugin-cache-doctor-repo-"));
+  const primary = mkdtempSync(path.join(tmpdir(), "plugin-cache-doctor-primary-"));
+  const second = mkdtempSync(path.join(tmpdir(), "plugin-cache-doctor-second-"));
+  const marketplace = path.join(primary, ".tmp", "marketplaces", "codex-plugin-multi", "plugins");
+
+  writeSkill(path.join(repo, "plugins"), "grok", "grok-review");
+  writeSkill(marketplace, "grok", "grok-review");
+  writeCachedSkill(primary, "grok", "grok-delegation");
+  writeCachedSkill(second, "grok", "grok-review");
+  writeConfig(primary, "grok", true);
+  writeConfig(second, "grok", false);
+
+  const stdout = execFileSync(process.execPath, [
+    DOCTOR,
+    "--repo", repo,
+    "--codex-home", primary,
+    "--second-codex-home", second,
+    "--plugin", "grok",
+  ], { encoding: "utf8" });
+  const report = JSON.parse(stdout);
+
+  assert.equal(report.ok, false);
+  assert.equal(report.marketplace.present, true);
+  assert.equal(report.profiles.primary.enabled, true);
+  assert.equal(report.profiles.primary.cache_in_sync, false);
+  assert.deepEqual(report.profiles.primary.missing_skills, ["grok-review"]);
+  assert.equal(report.profiles.second.enabled, false);
+  assert.equal(report.profiles.second.cache_in_sync, true);
+  assert.match(report.next_actions.join("\n"), /codex plugin marketplace upgrade codex-plugin-multi/);
+  assert.match(report.next_actions.join("\n"), /restart/i);
+  assert.match(report.next_actions.join("\n"), /codex debug prompt-input 'list skills'/);
+});
+
+test("codex plugin cache doctor rejects unsafe or missing option values", () => {
+  for (const args of [
+    ["--__proto__", "polluted"],
+    ["--constructor", "polluted"],
+    ["--repo"],
+    ["--plugin"],
+  ]) {
+    const result = spawnSync(process.execPath, [DOCTOR, ...args], { encoding: "utf8" });
+    assert.notEqual(result.status, 0, `${args.join(" ")} must fail`);
+    assert.equal({}.polluted, undefined);
+  }
+});

@@ -45,6 +45,7 @@ const API_REVIEWER_EXPECTED_KEYS = Object.freeze([
   "suggested_action",
   "external_review",
   "disclosure_note",
+  "runtime_diagnostics",
   "result",
   "structured_output",
   "permission_denials",
@@ -184,6 +185,18 @@ test("doctor reports DeepSeek API-key readiness by key name only", async () => {
   assert.equal(parsed.ready, true);
   assert.equal(parsed.credential_ref, "DEEPSEEK_API_KEY");
   assert.equal(parsed.auth_mode, "api_key");
+  assert.doesNotMatch(result.stdout, /secret-test-value/);
+});
+
+test("rejects prototype-shaped option keys", async () => {
+  const result = await run(["doctor", "--__proto__", "polluted"], {
+    env: { DEEPSEEK_API_KEY: "secret-test-value" },
+  });
+  const parsed = parseJson(result.stdout);
+
+  assert.equal(result.status, 1);
+  assert.equal(parsed.ok, false);
+  assert.match(parsed.error, /unsupported option --__proto__/);
   assert.doesNotMatch(result.stdout, /secret-test-value/);
 });
 
@@ -1171,6 +1184,29 @@ test("DeepSeek direct API custom-review completes and persists JobRecord", async
   assert.equal(record.model, "deepseek-v4-pro");
   assert.equal(record.credential_ref, "DEEPSEEK_API_KEY");
   assert.equal(record.schema_version, 10);
+  assert.equal(record.review_metadata.prompt_contract_version, 1);
+  assert.equal(record.review_metadata.prompt_provider, "DeepSeek");
+  assert.equal(record.review_metadata.raw_output.http_status, 200);
+  assert.match(record.review_metadata.audit_manifest.rendered_prompt_hash.value, /^[a-f0-9]{64}$/);
+  assert.deepEqual(record.review_metadata.audit_manifest.selected_source.files.map((file) => ({
+    path: file.path,
+    bytes: file.bytes,
+    hashOk: /^[a-f0-9]{64}$/.test(file.content_hash.value),
+  })), [
+    { path: "seed.txt", bytes: "hello from selected scope\n".length, hashOk: true },
+  ]);
+  assert.equal(record.review_metadata.audit_manifest.request.model, "deepseek-v4-pro");
+  assert.equal(record.review_metadata.audit_manifest.request.max_tokens, 65536);
+  assert.equal(record.review_metadata.audit_manifest.request.temperature, 0);
+  assert.match(record.review_metadata.audit_manifest.prompt_builder.plugin_commit, /^[a-f0-9]{40}$/);
+  assert.notEqual(
+    record.review_metadata.audit_manifest.prompt_builder.plugin_commit,
+    record.review_metadata.audit_manifest.git_identity.head_sha,
+    "plugin_commit must identify the plugin source, not the reviewed repository head"
+  );
+  assert.equal(record.review_metadata.audit_manifest.provider_ids.session_id, "chatcmpl-test");
+  assert.equal(JSON.stringify(record.review_metadata.audit_manifest).includes("Check this file"), false);
+  assert.equal(JSON.stringify(record.review_metadata.audit_manifest).includes("hello from selected scope"), false);
   assert.equal(record.kimi_session_id, null);
   assert.deepEqual(record.external_review, {
     marker: "EXTERNAL REVIEW",
@@ -1332,6 +1368,63 @@ test("direct API reviewers redact configured non-API_KEY credential names", asyn
   assert.doesNotMatch(result.stdout, /token-token-value/);
 });
 
+test("direct API reviewers redact realistic short configured credentials without redacting one-byte collisions", async () => {
+  const cwd = makeWorkspace();
+  const pluginRoot = makeInstalledApiReviewersRoot();
+  writeFileSync(path.join(pluginRoot, "config", "providers.json"), JSON.stringify({
+    deepseek: {
+      display_name: "DeepSeek",
+      auth_mode: "api_key",
+      env_keys: ["DEEPSEEK_CREDENTIAL"],
+      base_url: "https://api.deepseek.com",
+      model: "deepseek-v4-flash",
+    },
+  }, null, 2));
+  const result = await run([
+    "run",
+    "--provider", "deepseek",
+    "--mode", "custom-review",
+    "--scope", "custom",
+    "--scope-paths", "seed.txt",
+    "--foreground",
+    "--prompt", "Check this file.",
+  ], {
+    cwd,
+    companion: path.join(pluginRoot, "scripts", "api-reviewer.mjs"),
+    env: {
+      API_REVIEWERS_MOCK_RESPONSE: mockResponse("deepseek-v4-flash", "chatcmpl-test", "a normal alphabet payload"),
+      DEEPSEEK_CREDENTIAL: "a",
+    },
+  });
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  const record = parseJson(result.stdout);
+  assert.equal(record.status, "completed");
+  assert.equal(record.result, "a normal alphabet payload");
+  assert.doesNotMatch(result.stdout, /\[REDACTED\] normal/);
+
+  const shortSecretResult = await run([
+    "run",
+    "--provider", "deepseek",
+    "--mode", "custom-review",
+    "--scope", "custom",
+    "--scope-paths", "seed.txt",
+    "--foreground",
+    "--prompt", "Check this file.",
+  ], {
+    cwd,
+    companion: path.join(pluginRoot, "scripts", "api-reviewer.mjs"),
+    env: {
+      API_REVIEWERS_MOCK_RESPONSE: mockResponse("deepseek-v4-flash", "chatcmpl-test", "provider echoed abcd"),
+      DEEPSEEK_CREDENTIAL: "abcd",
+    },
+  });
+  assert.equal(shortSecretResult.status, 0, shortSecretResult.stderr || shortSecretResult.stdout);
+  const shortSecretRecord = parseJson(shortSecretResult.stdout);
+  assert.equal(shortSecretRecord.status, "completed");
+  assert.equal(shortSecretRecord.result, "provider echoed [REDACTED]");
+  assert.doesNotMatch(shortSecretResult.stdout, /provider echoed abcd/);
+});
+
 test("direct API reviewer prompt names the selected provider", async () => {
   const cwd = makeWorkspace();
   const result = await run([
@@ -1413,6 +1506,16 @@ test("direct API timeout marks selected content as sent", async () => {
     assert.notEqual(result.stdout, "", result.stderr);
     const record = parseJson(result.stdout);
     assert.equal(record.error_code, "timeout");
+    assert.match(record.error_summary, /timeout after \d+ms/i);
+    assert.match(record.error_summary, /configured_timeout_ms=20/);
+    assert.match(record.error_summary, /selected_files=1/);
+    assert.match(record.error_summary, /selected_bytes=\d+/);
+    assert.match(record.error_summary, /prompt_chars=\d+/);
+    assert.match(record.error_summary, /estimated_tokens=\d+/);
+    const promptChars = Number(/prompt_chars=(\d+)/.exec(record.error_summary)?.[1]);
+    const estimatedTokens = Number(/estimated_tokens=(\d+)/.exec(record.error_summary)?.[1]);
+    assert.equal(estimatedTokens, Math.ceil(promptChars / 4));
+    assert.match(record.error_message, /This operation was aborted|aborted/i);
     assert.match(record.suggested_action, /timeout/i);
     assert.match(record.suggested_action, /API_REVIEWERS_TIMEOUT_MS/);
     assert.equal(record.external_review.source_content_transmission, "sent");
@@ -1651,6 +1754,7 @@ test("direct API live malformed responses mark selected content as sent", async 
 test("branch-diff default reviews committed changes against main with scrubbed git env", async () => {
   const cwd = makeBranchDiffWorkspace();
   const dataDir = mkdtempSync(path.join(tmpdir(), "api-reviewers-data-"));
+  writeFileSync(path.join(cwd, "feature.txt"), "DIRTY_SELECTED_SECRET\n");
   const result = await run([
     "run",
     "--provider", "deepseek",
@@ -1662,7 +1766,7 @@ test("branch-diff default reviews committed changes against main with scrubbed g
     env: {
       API_REVIEWERS_PLUGIN_DATA: dataDir,
       API_REVIEWERS_MOCK_RESPONSE: mockResponse("deepseek-v4-pro"),
-      API_REVIEWERS_MOCK_ASSERT_PROMPT_INCLUDES: "Live verification context",
+      API_REVIEWERS_MOCK_ASSERT_PROMPT_INCLUDES: "committed feature change",
       DEEPSEEK_API_KEY: "secret-test-value",
       GIT_DIR: path.join(cwd, "not-a-repo"),
       GIT_CONFIG_GLOBAL: path.join(cwd, "malicious-gitconfig"),
@@ -1675,9 +1779,80 @@ test("branch-diff default reviews committed changes against main with scrubbed g
   assert.equal(record.scope_base, "main");
   assert.deepEqual(record.scope_paths, ["feature.txt"]);
   assert.doesNotMatch(result.stdout, /secret-test-value/);
+  assert.doesNotMatch(result.stdout, /DIRTY_SELECTED_SECRET/);
 });
 
-test("branch-diff git spawn failure returns structured scope failure JobRecord", async () => {
+test("branch-diff scope paths narrow committed changes", async () => {
+  const cwd = makeBranchDiffWorkspace();
+  const dataDir = mkdtempSync(path.join(tmpdir(), "api-reviewers-data-"));
+  writeFileSync(path.join(cwd, "extra.txt"), "extra committed change\n");
+  git(cwd, ["add", "extra.txt"]);
+  git(cwd, ["commit", "-m", "extra"]);
+  const result = await run([
+    "run",
+    "--provider", "deepseek",
+    "--mode", "review",
+    "--scope", "branch-diff",
+    "--scope-paths", "feature.txt",
+    "--foreground",
+    "--prompt", "Check this branch.",
+  ], {
+    cwd,
+    env: {
+      API_REVIEWERS_PLUGIN_DATA: dataDir,
+      API_REVIEWERS_MOCK_RESPONSE: mockResponse("deepseek-v4-pro"),
+      API_REVIEWERS_MOCK_ASSERT_PROMPT_INCLUDES: "feature.txt",
+      DEEPSEEK_API_KEY: "secret-test-value",
+    },
+  });
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  const record = parseJson(result.stdout);
+  assert.deepEqual(record.scope_paths, ["feature.txt"]);
+  assert.deepEqual(
+    record.review_metadata.audit_manifest.selected_source.files.map((file) => file.path),
+    ["feature.txt"]
+  );
+  assert.equal(
+    record.review_metadata.audit_manifest.scope_resolution.reason,
+    "git diff -z --name-only main...HEAD -- filtered by explicit --scope-paths"
+  );
+  assert.doesNotMatch(result.stdout, /extra committed change/);
+});
+
+test("branch-diff scope paths honor glob patterns when narrowing committed changes", async () => {
+  const cwd = makeBranchDiffWorkspace();
+  const dataDir = mkdtempSync(path.join(tmpdir(), "api-reviewers-data-"));
+  writeFileSync(path.join(cwd, "extra.txt"), "extra committed change\n");
+  git(cwd, ["add", "extra.txt"]);
+  git(cwd, ["commit", "-m", "extra"]);
+  const result = await run([
+    "run",
+    "--provider", "deepseek",
+    "--mode", "review",
+    "--scope", "branch-diff",
+    "--scope-paths", "feature.*",
+    "--foreground",
+    "--prompt", "Check this branch.",
+  ], {
+    cwd,
+    env: {
+      API_REVIEWERS_PLUGIN_DATA: dataDir,
+      API_REVIEWERS_MOCK_RESPONSE: mockResponse("deepseek-v4-pro"),
+      API_REVIEWERS_MOCK_ASSERT_PROMPT_INCLUDES: "feature.txt",
+      DEEPSEEK_API_KEY: "secret-test-value",
+    },
+  });
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  const record = parseJson(result.stdout);
+  assert.deepEqual(record.scope_paths, ["feature.txt"]);
+  assert.deepEqual(
+    record.review_metadata.audit_manifest.selected_source.files.map((file) => file.path),
+    ["feature.txt"]
+  );
+  assert.doesNotMatch(result.stdout, /extra committed change/);
+});
+
+test("branch-diff uses hardened git path despite ambient PATH sabotage", async () => {
   const cwd = makeBranchDiffWorkspace();
   const dataDir = mkdtempSync(path.join(tmpdir(), "api-reviewers-data-"));
   const result = await run([
@@ -1695,12 +1870,11 @@ test("branch-diff git spawn failure returns structured scope failure JobRecord",
       PATH: "",
     },
   });
-  assert.equal(result.status, 1);
+  assert.equal(result.status, 0, result.stderr || result.stdout);
   const record = parseJson(result.stdout);
-  assert.equal(record.status, "failed");
-  assert.equal(record.error_code, "scope_failed");
-  assert.match(record.error_message, /git_failed:/);
-  assert.match(record.suggested_action, /Adjust --scope/);
+  assert.equal(record.status, "completed");
+  assert.equal(record.error_code, null);
+  assert.equal(record.external_review.source_content_transmission, "sent");
   assert.doesNotMatch(result.stdout, /secret-test-value/);
 });
 
