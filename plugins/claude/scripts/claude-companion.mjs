@@ -141,10 +141,10 @@ function cleanGitPromptEnv() {
 
 function tryGit(args, cwd) {
   try {
-    const stdout = execFileSync("git", ["-C", cwd, ...args], {
+    const stdout = execFileSync(GIT_PROMPT_BINARY, ["-C", cwd, ...args], {
       encoding: "utf8",
       stdio: ["ignore", "pipe", "pipe"],
-      env: cleanGitEnv(),
+      env: cleanGitPromptEnv(),
     });
     return { ok: true, stdout };
   } catch (error) {

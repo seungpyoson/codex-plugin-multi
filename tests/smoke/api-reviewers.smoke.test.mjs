@@ -1817,7 +1817,7 @@ test("custom-review rejects symlinks that resolve outside the workspace before A
   assert.doesNotMatch(result.stdout, /secret-test-value/);
 });
 
-test("branch-diff git spawn failure returns structured scope failure JobRecord", async () => {
+test("branch-diff git revision failure with hostile PATH returns structured scope failure JobRecord", async () => {
   const cwd = makeBranchDiffWorkspace();
   const dataDir = mkdtempSync(path.join(tmpdir(), "api-reviewers-data-"));
   const result = await run([
@@ -1825,6 +1825,7 @@ test("branch-diff git spawn failure returns structured scope failure JobRecord",
     "--provider", "deepseek",
     "--mode", "review",
     "--foreground",
+    "--scope-base", "missing-base-ref",
     "--prompt", "Check this branch.",
   ], {
     cwd,

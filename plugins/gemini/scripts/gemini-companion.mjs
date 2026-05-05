@@ -110,10 +110,10 @@ function cleanGitPromptEnv() {
 // GIT_CONFIG_GLOBAL — fold onto plugin lib's canonical scrub.
 
 function gitStatus(args, cwd) {
-  return execFileSync("git", ["-C", cwd, ...args], {
+  return execFileSync(GIT_PROMPT_BINARY, ["-C", cwd, ...args], {
     encoding: "utf8",
     stdio: ["ignore", "pipe", "pipe"],
-    env: cleanGitEnv(),
+    env: cleanGitPromptEnv(),
   });
 }
 

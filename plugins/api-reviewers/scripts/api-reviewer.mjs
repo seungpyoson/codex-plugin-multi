@@ -29,6 +29,8 @@ const API_REVIEWER_STATE_LOCK_GATE_DIR = ".state.lock.gate";
 const API_REVIEWER_STATE_LOCK_POLL_MS = 25;
 const API_REVIEWER_STATE_LOCK_TIMEOUT_MS = 5000;
 const API_REVIEWER_STATE_LOCK_STALE_MS = 30000;
+const GIT_BINARY = "/usr/bin/git";
+const GIT_SAFE_PATH = "/usr/bin:/bin";
 const API_REVIEWER_EXPECTED_KEYS = Object.freeze([
   "id",
   "job_id",
@@ -724,7 +726,7 @@ function runCommand(command, args = [], options = {}) {
 }
 
 function git(args, cwd, options = {}) {
-  const res = runCommand("git", args, { cwd, env: cleanGitEnv() });
+  const res = runCommand(GIT_BINARY, args, { cwd, env: { ...cleanGitEnv(), PATH: GIT_SAFE_PATH } });
   if (res.error) throw new Error(`git_failed:${res.error.message}`);
   if (res.signal) throw new Error(`git_failed:signal:${res.signal}`);
   if (res.status !== 0) {
@@ -781,7 +783,7 @@ function validateScopePath(workspaceRoot, relPath) {
 }
 
 function readGitScopeFile(cwd, ref, relPath) {
-  const res = runCommand("git", ["show", `${ref}:${relPath}`], { cwd, env: cleanGitEnv() });
+  const res = runCommand(GIT_BINARY, ["show", `${ref}:${relPath}`], { cwd, env: { ...cleanGitEnv(), PATH: GIT_SAFE_PATH } });
   if (res.error) throw new Error(`git_failed:${res.error.message}`);
   if (res.signal) throw new Error(`git_failed:signal:${res.signal}`);
   if (res.status !== 0) return null;
