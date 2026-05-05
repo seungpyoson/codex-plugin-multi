@@ -22,6 +22,20 @@ const SCHEMA_VERSION = 10;
 const MIN_SECRET_REDACTION_LENGTH = 8;
 const GIT_BINARY = "/usr/bin/git";
 const GIT_SAFE_PATH = "/usr/bin:/bin";
+const EXTERNAL_REVIEW_KEYS = Object.freeze([
+  "marker",
+  "provider",
+  "run_kind",
+  "job_id",
+  "session_id",
+  "parent_job_id",
+  "mode",
+  "scope",
+  "scope_base",
+  "scope_paths",
+  "source_content_transmission",
+  "disclosure",
+]);
 
 function printJson(obj) {
   process.stdout.write(`${JSON.stringify(obj, null, 2)}\n`);
@@ -478,7 +492,7 @@ function disclosure(cfg, completed, payloadSent) {
 }
 
 function buildLaunchExternalReview({ cfg, mode, options, scopeInfo }) {
-  return {
+  return freezeExternalReview({
     marker: "EXTERNAL REVIEW",
     provider: cfg.display_name,
     run_kind: "foreground",
@@ -491,7 +505,16 @@ function buildLaunchExternalReview({ cfg, mode, options, scopeInfo }) {
     scope_paths: scopeInfo.scope_paths ?? null,
     source_content_transmission: "may_be_sent",
     disclosure: `Selected source content may be sent to ${cfg.display_name} for external review.`,
-  };
+  });
+}
+
+function freezeExternalReview(review) {
+  const keys = Object.keys(review);
+  if (keys.length !== EXTERNAL_REVIEW_KEYS.length
+      || keys.some((key, index) => key !== EXTERNAL_REVIEW_KEYS[index])) {
+    throw new Error(`external_review keys drifted: ${keys.join(",")}`);
+  }
+  return Object.freeze(review);
 }
 
 function suggestedAction(errorCode) {

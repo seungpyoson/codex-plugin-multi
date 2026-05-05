@@ -51,7 +51,11 @@ For review or adversarial-review, add `--scope-base REF` before `--` when the us
   ```
 - Background rescue:
   ```bash
-  node "<plugin-root>/scripts/claude-companion.mjs" run --mode=rescue --background --cwd "<workspace>" -- "<task>"
+  node "<plugin-root>/scripts/claude-companion.mjs" run --mode=rescue --background --lifecycle-events jsonl --cwd "<workspace>" -- "<task>"
+  ```
+- Continue a prior external review session:
+  ```bash
+  node "<plugin-root>/scripts/claude-companion.mjs" continue --job "<job-id>" --foreground --lifecycle-events jsonl --cwd "<workspace>" -- "<follow-up>"
   ```
 - Status/result/cancel:
   ```bash

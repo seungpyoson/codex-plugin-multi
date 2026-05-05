@@ -91,6 +91,14 @@ test("standalone lifecycle smoke tests guard launch event shape against shared h
   }
 });
 
+test("grok launch external_review shape is runtime-guarded", () => {
+  const source = readFileSync(resolve("plugins/grok/scripts/grok-web-reviewer.mjs"), "utf8");
+  assert.match(source, /EXTERNAL_REVIEW_KEYS/, "Grok must define the canonical external_review key order");
+  assert.match(source, /function freezeExternalReview/, "Grok must validate launch external_review key drift");
+  assert.match(source, /return freezeExternalReview\(\{[\s\S]*source_content_transmission[\s\S]*disclosure/s,
+    "Grok launch external_review builder must freeze the generated review object");
+});
+
 test("companion background launch events use shared helper", () => {
   for (const rel of [
     "plugins/claude/scripts/claude-companion.mjs",
