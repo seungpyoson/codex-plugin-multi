@@ -701,6 +701,8 @@ test("kimi continue background: launched event and terminal JobRecord keep paren
       "--job",
       prior.job_id,
       "--background",
+      "--lifecycle-events",
+      "jsonl",
       "--cwd",
       cwd,
       "--",
@@ -1065,6 +1067,123 @@ test("kimi preflight success and bad_args emit safety fields", () => withRepo((c
   const badJson = parseJson(bad.stdout);
   assert.equal(badJson.error, "bad_args");
   assertPreflightSafetyFields(badJson);
+}));
+
+test("kimi review foreground lifecycle jsonl emits launch event before terminal JobRecord", () => withRepo((cwd) => {
+  const result = runCompanion([
+    "run",
+    "--mode",
+    "review",
+    "--cwd",
+    cwd,
+    "--foreground",
+    "--lifecycle-events",
+    "jsonl",
+    "--",
+    "Review this scope.",
+  ], {
+    cwd,
+    env: {
+      KIMI_MOCK_ASSERT_FILE: "seed.txt",
+      KIMI_MOCK_ASSERT_CWD: realpathSync(tmpdir()),
+    },
+  });
+  assert.equal(result.status, 0, result.stderr);
+  const lines = result.stdout.trim().split("\n").map((line) => JSON.parse(line));
+  assert.equal(lines.length, 2);
+  const [launched, record] = lines;
+  assert.equal(launched.event, "external_review_launched");
+  assert.equal(launched.target, "kimi");
+  assert.equal(launched.status, "launched");
+  assert.equal(launched.job_id, record.job_id);
+  assert.deepEqual(launched.external_review, {
+    marker: "EXTERNAL REVIEW",
+    provider: "Kimi Code CLI",
+    run_kind: "foreground",
+    job_id: record.job_id,
+    session_id: null,
+    parent_job_id: null,
+    mode: "review",
+    scope: "working-tree",
+    scope_base: null,
+    scope_paths: null,
+    source_content_transmission: "may_be_sent",
+    disclosure: "Selected source content may be sent to Kimi Code CLI for external review.",
+  });
+  assert.equal(record.status, "completed");
+  assert.equal(record.external_review.source_content_transmission, "sent");
+}));
+
+test("kimi review foreground lifecycle jsonl suppresses launch event on scope failure", () => withRepo((cwd) => {
+  writeFileSync(path.join(cwd, ".git", "index"), "corrupt index");
+  const result = runCompanion([
+    "run",
+    "--mode",
+    "review",
+    "--cwd",
+    cwd,
+    "--foreground",
+    "--lifecycle-events",
+    "jsonl",
+    "--binary",
+    path.join(cwd, "missing-kimi"),
+    "--",
+    "Review this scope.",
+  ], { cwd });
+  assert.equal(result.status, 2, result.stderr);
+  const lines = result.stdout.trim().split("\n").map((line) => JSON.parse(line));
+  assert.equal(lines.length, 1);
+  const [record] = lines;
+  assert.equal(record.status, "failed");
+  assert.match(record.error_message, /scope_population_failed: cannot evaluate gitignored files/);
+  assert.match(record.disclosure_note, /not spawned/);
+  assert.match(record.disclosure_note, /not sent/);
+}));
+
+test("kimi review background lifecycle jsonl suppresses launch event on scope failure", () => withRepo((cwd) => {
+  writeFileSync(path.join(cwd, ".git", "index"), "corrupt index");
+  const result = runCompanion([
+    "run",
+    "--mode",
+    "review",
+    "--cwd",
+    cwd,
+    "--background",
+    "--lifecycle-events",
+    "jsonl",
+    "--",
+    "Review this scope.",
+  ], { cwd });
+  assert.equal(result.status, 2, result.stderr);
+  const lines = result.stdout.trim().split("\n").map((line) => JSON.parse(line));
+  assert.equal(lines.length, 1);
+  const [record] = lines;
+  assert.equal(record.status, "failed");
+  assert.equal(record.external_review.source_content_transmission, "not_sent");
+  assert.match(record.error_message, /scope_population_failed: cannot evaluate gitignored files/);
+  assert.match(record.disclosure_note, /not spawned/);
+  assert.match(record.disclosure_note, /not sent/);
+}));
+
+test("kimi run rejects invalid lifecycle event mode as structured bad args", () => withRepo((cwd) => {
+  const result = runCompanion([
+    "run",
+    "--mode",
+    "review",
+    "--cwd",
+    cwd,
+    "--foreground",
+    "--lifecycle-events",
+    "pretty",
+    "--",
+    "Review this scope.",
+  ], { cwd });
+  assert.equal(result.status, 1);
+  assert.doesNotMatch(result.stderr, /unhandled/i);
+  const parsed = JSON.parse(result.stdout);
+  assert.equal(parsed.ok, false);
+  assert.equal(parsed.error, "bad_args");
+  assert.match(parsed.message, /--lifecycle-events must be jsonl/);
 }));
 
 for (const mode of ["review", "adversarial-review", "custom-review"]) {

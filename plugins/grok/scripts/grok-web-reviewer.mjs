@@ -8,6 +8,10 @@ import { dirname, isAbsolute, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { cleanGitEnv as cleanCanonicalGitEnv } from "./lib/git-env.mjs";
 import { REVIEW_PROMPT_CONTRACT_VERSION, buildReviewAuditManifest, buildReviewPrompt, scopeResolutionReason } from "./lib/review-prompt.mjs";
+import {
+  EXTERNAL_REVIEW_KEYS,
+  SOURCE_CONTENT_TRANSMISSION,
+} from "./lib/external-review.mjs";
 
 const VALID_MODES = new Set(["review", "adversarial-review", "custom-review"]);
 const DEFAULT_BASE_URL = "http://127.0.0.1:8000/v1";
@@ -26,9 +30,74 @@ const GIT_BINARY = "/usr/bin/git";
 const GIT_SAFE_PATH = "/usr/bin:/bin";
 const PLUGIN_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const SCOPE_FILE_OPEN_FLAGS = fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0);
+const GROK_EXPECTED_KEYS = Object.freeze([
+  "id",
+  "job_id",
+  "target",
+  "provider",
+  "parent_job_id",
+  "claude_session_id",
+  "gemini_session_id",
+  "kimi_session_id",
+  "resume_chain",
+  "pid_info",
+  "mode",
+  "mode_profile_name",
+  "model",
+  "cwd",
+  "workspace_root",
+  "containment",
+  "scope",
+  "dispose_effective",
+  "scope_base",
+  "scope_paths",
+  "prompt_head",
+  "review_metadata",
+  "schema_spec",
+  "binary",
+  "status",
+  "started_at",
+  "ended_at",
+  "exit_code",
+  "error_code",
+  "error_message",
+  "error_summary",
+  "error_cause",
+  "suggested_action",
+  "external_review",
+  "disclosure_note",
+  "runtime_diagnostics",
+  "result",
+  "structured_output",
+  "permission_denials",
+  "mutations",
+  "cost_usd",
+  "usage",
+  "auth_mode",
+  "credential_ref",
+  "endpoint",
+  "http_status",
+  "raw_model",
+  "schema_version",
+]);
 
 function printJson(obj) {
   process.stdout.write(`${JSON.stringify(obj, null, 2)}\n`);
+}
+
+function printJsonLine(obj) {
+  process.stdout.write(`${JSON.stringify(obj)}\n`);
+}
+
+function printLifecycleJson(obj, lifecycleEvents) {
+  if (lifecycleEvents === "jsonl") printJsonLine(obj);
+  else printJson(obj);
+}
+
+function parseLifecycleEventsMode(value) {
+  if (value == null || value === false) return null;
+  if (value === "jsonl") return "jsonl";
+  throw new Error("bad_args: --lifecycle-events must be jsonl");
 }
 
 function parseArgs(argv) {
@@ -215,9 +284,13 @@ function matchGlob(rel, pattern) {
     const c = pattern[i];
     if (c === "*") {
       if (pattern[i + 1] === "*") {
-        re += ".*";
         i += 1;
-        if (pattern[i + 1] === "/") i += 1;
+        if (pattern[i + 1] === "/") {
+          re += "(?:.*/)?";
+          i += 1;
+        } else {
+          re += ".*";
+        }
       } else {
         re += "[^/]*";
       }
@@ -433,6 +506,10 @@ function promptFor(mode, userPrompt, scopeInfo) {
       `Selected files:\n${files}`,
     ],
   });
+}
+
+function hasPromptText(value) {
+  return String(value ?? "").trim().length > 0;
 }
 
 function parseJson(text) {
@@ -683,9 +760,9 @@ async function probeGrokChat(cfg, env = process.env) {
 }
 
 function sourceTransmission(completed, payloadSent) {
-  if (completed || payloadSent === true) return "sent";
-  if (payloadSent === false) return "not_sent";
-  return "unknown";
+  if (completed || payloadSent === true) return SOURCE_CONTENT_TRANSMISSION.SENT;
+  if (payloadSent === false) return SOURCE_CONTENT_TRANSMISSION.NOT_SENT;
+  return SOURCE_CONTENT_TRANSMISSION.UNKNOWN;
 }
 
 function disclosure(cfg, completed, payloadSent) {
@@ -720,6 +797,58 @@ function errorCauseFor(errorCode) {
   if (errorCode === "bad_args") return "caller";
   if (errorCode === "scope_failed") return "scope_resolution";
   return "grok_web_tunnel";
+}
+
+function freezeExternalReview(review) {
+  const keys = Object.keys(review);
+  if (keys.length !== EXTERNAL_REVIEW_KEYS.length
+      || keys.some((key, index) => key !== EXTERNAL_REVIEW_KEYS[index])) {
+    throw new Error(`external_review keys drifted: ${keys.join(",")}`);
+  }
+  return Object.freeze(review);
+}
+
+function freezeRecord(record) {
+  const keys = Object.keys(record);
+  if (keys.length !== GROK_EXPECTED_KEYS.length
+      || keys.some((key, index) => key !== GROK_EXPECTED_KEYS[index])) {
+    throw new Error(`Grok JobRecord keys drifted: ${keys.join(",")}`);
+  }
+  return Object.freeze(record);
+}
+
+function buildLaunchExternalReview({ cfg, mode, options, scopeInfo }) {
+  return freezeExternalReview({
+    marker: "EXTERNAL REVIEW",
+    provider: cfg.display_name,
+    run_kind: "foreground",
+    job_id: options.jobId,
+    session_id: null,
+    parent_job_id: null,
+    mode,
+    scope: scopeInfo?.scope ?? null,
+    scope_base: scopeInfo?.scope_base ?? null,
+    scope_paths: scopeInfo?.scope_paths ?? null,
+    source_content_transmission: SOURCE_CONTENT_TRANSMISSION.MAY_BE_SENT,
+    disclosure: `Selected source content may be sent to ${cfg.display_name} for external review.`,
+  });
+}
+
+function buildTerminalExternalReview({ cfg, mode, options, scopeInfo, execution, transmission, reviewDisclosure }) {
+  return freezeExternalReview({
+    marker: "EXTERNAL REVIEW",
+    provider: cfg.display_name,
+    run_kind: "foreground",
+    job_id: options.jobId,
+    session_id: execution.session_id ?? null,
+    parent_job_id: null,
+    mode,
+    scope: scopeInfo?.scope ?? null,
+    scope_base: scopeInfo?.scope_base ?? null,
+    scope_paths: scopeInfo?.scope_paths ?? null,
+    source_content_transmission: transmission,
+    disclosure: reviewDisclosure,
+  });
 }
 
 function buildReviewMetadata(cfg, scopeInfo, execution = null) {
@@ -790,7 +919,7 @@ function buildRecord({ cfg, mode, options, scopeInfo, execution, startedAt, ende
     : (errorMessage || errorCode);
   const reviewDisclosure = disclosure(cfg, completed, execution.payload_sent ?? null);
   const transmission = sourceTransmission(completed, execution.payload_sent ?? null);
-  return {
+  return freezeRecord({
     id: options.jobId,
     job_id: options.jobId,
     target: "grok-web",
@@ -824,20 +953,7 @@ function buildRecord({ cfg, mode, options, scopeInfo, execution, startedAt, ende
     error_summary: completed ? null : diagnostic,
     error_cause: completed ? null : errorCauseFor(errorCode),
     suggested_action: completed ? null : suggestedAction(errorCode),
-    external_review: {
-      marker: "EXTERNAL REVIEW",
-      provider: cfg.display_name,
-      run_kind: "foreground",
-      job_id: options.jobId,
-      session_id: execution.session_id ?? null,
-      parent_job_id: null,
-      mode,
-      scope: scopeInfo.scope,
-      scope_base: scopeInfo.scope_base ?? null,
-      scope_paths: scopeInfo.scope_paths ?? null,
-      source_content_transmission: transmission,
-      disclosure: reviewDisclosure,
-    },
+    external_review: buildTerminalExternalReview({ cfg, mode, options, scopeInfo, execution, transmission, reviewDisclosure }),
     disclosure_note: reviewDisclosure,
     runtime_diagnostics: null,
     result: completed ? execution.parsed.result : null,
@@ -852,7 +968,7 @@ function buildRecord({ cfg, mode, options, scopeInfo, execution, startedAt, ende
     http_status: execution.http_status ?? null,
     raw_model: execution.parsed?.raw_model ?? null,
     schema_version: SCHEMA_VERSION,
-  };
+  });
 }
 
 function dataRoot(env = process.env) {
@@ -1206,6 +1322,7 @@ async function doctorFields(env = process.env) {
 
 async function cmdRun(options) {
   const mode = options.mode ?? "review";
+  let lifecycleEvents = null;
   const startedAt = new Date().toISOString();
   const cfg = config();
   const jobId = `job_${randomUUID()}`;
@@ -1213,6 +1330,7 @@ async function cmdRun(options) {
   let scopeInfo;
   let execution;
   try {
+    lifecycleEvents = parseLifecycleEventsMode(options["lifecycle-events"]);
     if (!VALID_MODES.has(mode)) throw new Error(`bad_args: unsupported --mode ${mode}`);
     scopeInfo = await collectScope({ ...runOptions, mode });
   } catch (e) {
@@ -1227,6 +1345,11 @@ async function cmdRun(options) {
     execution = providerFailure(e.message.startsWith("bad_args:") ? "bad_args" : "scope_failed", redactor()(e.message), null, null, false);
   }
   if (!execution) {
+    if (!hasPromptText(options.prompt)) {
+      execution = providerFailure("bad_args", "prompt is required (pass --prompt <focus>)", null, null, false);
+    }
+  }
+  if (!execution) {
     let prompt;
     try {
       prompt = promptFor(mode, options.prompt ?? "", scopeInfo);
@@ -1234,6 +1357,15 @@ async function cmdRun(options) {
       execution = providerFailure(e.message.startsWith("bad_args:") ? "bad_args" : "scope_failed", redactor()(e.message), null, null, false);
     }
     if (!execution) try {
+      if (lifecycleEvents) {
+        printLifecycleJson({
+          event: "external_review_launched",
+          job_id: jobId,
+          target: "grok-web",
+          status: "launched",
+          external_review: buildLaunchExternalReview({ cfg, mode, options: runOptions, scopeInfo }),
+        }, lifecycleEvents);
+      }
       execution = await callGrokTunnel(cfg, prompt);
       execution.prompt = prompt;
     } catch (e) {
@@ -1256,7 +1388,7 @@ async function cmdRun(options) {
     endedAt: new Date().toISOString(),
   }), redactor());
   const printable = await persistRecordBestEffort(record);
-  printJson(printable);
+  printLifecycleJson(printable, lifecycleEvents);
   process.exit(record.status === "completed" ? 0 : 1);
 }
 

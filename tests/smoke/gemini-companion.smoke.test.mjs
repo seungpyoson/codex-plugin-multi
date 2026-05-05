@@ -949,7 +949,8 @@ test("gemini continue background: launched event and resumed terminal JobRecord"
     assert.equal(prior.gemini_session_id, GEMINI_SESSION_ID);
 
     const continued = runCompanion(
-      ["continue", "--job", prior.job_id, "--background", "--cwd", cwd, "--", "background continue task"],
+      ["continue", "--job", prior.job_id, "--background", "--lifecycle-events", "jsonl",
+       "--cwd", cwd, "--", "background continue task"],
       { cwd, dataDir: first.dataDir },
     );
     assert.equal(continued.status, 0, `exit ${continued.status}: ${continued.stderr}`);
@@ -1157,6 +1158,116 @@ test("gemini review foreground: policy-first, stdin transport, /tmp cwd, scoped 
     assert.equal(fx.t7_sandbox, true, "Gemini review must pass the sandbox flag");
     assert.equal(fx.t7_skip_trust, true, "Gemini review must pass --skip-trust so plan approval is not downgraded");
     assert.equal(fx.t7_prompt_from_stdin, true, "Gemini prompt must arrive on stdin, not argv");
+  } finally {
+    rmTree(dataDir);
+    rmTree(cwd);
+  }
+});
+
+test("gemini review foreground lifecycle jsonl emits launch event before terminal JobRecord", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "gemini-review-lifecycle-cwd-"));
+  seedMinimalRepo(cwd);
+  const { stdout, stderr, status, dataDir } = runCompanion(
+    ["run", "--mode=review", "--foreground", "--lifecycle-events", "jsonl",
+     "--cwd", cwd, "--", "review: x=1"],
+    { cwd },
+  );
+  try {
+    assert.equal(status, 0, `exit ${status}: ${stderr}`);
+    const lines = stdout.trim().split("\n").map((line) => JSON.parse(line));
+    assert.equal(lines.length, 2);
+    const [launched, record] = lines;
+    assert.equal(launched.event, "external_review_launched");
+    assert.equal(launched.target, "gemini");
+    assert.equal(launched.status, "launched");
+    assert.equal(launched.job_id, record.job_id);
+    assert.deepEqual(launched.external_review, {
+      marker: "EXTERNAL REVIEW",
+      provider: "Gemini CLI",
+      run_kind: "foreground",
+      job_id: record.job_id,
+      session_id: null,
+      parent_job_id: null,
+      mode: "review",
+      scope: "working-tree",
+      scope_base: null,
+      scope_paths: null,
+      source_content_transmission: "may_be_sent",
+      disclosure: "Selected source content may be sent to Gemini CLI for external review.",
+    });
+    assert.equal(record.status, "completed");
+    assert.equal(record.external_review.source_content_transmission, "sent");
+    assert.equal(record.result, "Mock Gemini response.");
+  } finally {
+    rmTree(dataDir);
+    rmTree(cwd);
+  }
+});
+
+test("gemini review foreground lifecycle jsonl suppresses launch event on scope failure", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "gemini-review-lifecycle-scope-fail-cwd-"));
+  seedMinimalRepo(cwd);
+  writeFileSync(path.join(cwd, ".git", "index"), "corrupt index");
+  const { stdout, stderr, status, dataDir } = runCompanion(
+    ["run", "--mode=review", "--foreground", "--lifecycle-events", "jsonl",
+     "--binary", path.join(cwd, "missing-gemini"), "--cwd", cwd, "--", "review"],
+    { cwd },
+  );
+  try {
+    assert.equal(status, 2, `exit ${status}: ${stderr}`);
+    const lines = stdout.trim().split("\n").map((line) => JSON.parse(line));
+    assert.equal(lines.length, 1);
+    const [record] = lines;
+    assert.equal(record.status, "failed");
+    assert.match(record.error_message, /scope_population_failed: cannot evaluate gitignored files/);
+    assert.match(record.disclosure_note, /not spawned/);
+    assert.match(record.disclosure_note, /not sent/);
+  } finally {
+    rmTree(dataDir);
+    rmTree(cwd);
+  }
+});
+
+test("gemini review background lifecycle jsonl suppresses launch event on scope failure", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "gemini-review-bg-lifecycle-scope-fail-cwd-"));
+  seedMinimalRepo(cwd);
+  writeFileSync(path.join(cwd, ".git", "index"), "corrupt index");
+  const { stdout, stderr, status, dataDir } = runCompanion(
+    ["run", "--mode=review", "--background", "--lifecycle-events", "jsonl",
+     "--cwd", cwd, "--", "review"],
+    { cwd },
+  );
+  try {
+    assert.equal(status, 2, `exit ${status}: ${stderr}`);
+    const lines = stdout.trim().split("\n").map((line) => JSON.parse(line));
+    assert.equal(lines.length, 1);
+    const [record] = lines;
+    assert.equal(record.status, "failed");
+    assert.equal(record.external_review.source_content_transmission, "not_sent");
+    assert.match(record.error_message, /scope_population_failed: cannot evaluate gitignored files/);
+    assert.match(record.disclosure_note, /not spawned/);
+    assert.match(record.disclosure_note, /not sent/);
+  } finally {
+    rmTree(dataDir);
+    rmTree(cwd);
+  }
+});
+
+test("gemini run rejects invalid lifecycle event mode as structured bad args", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "gemini-review-lifecycle-bad-cwd-"));
+  seedMinimalRepo(cwd);
+  const { stdout, stderr, status, dataDir } = runCompanion(
+    ["run", "--mode=review", "--foreground", "--lifecycle-events", "pretty",
+     "--cwd", cwd, "--", "review: x=1"],
+    { cwd },
+  );
+  try {
+    assert.equal(status, 1);
+    assert.doesNotMatch(stderr, /unhandled/i);
+    const parsed = JSON.parse(stdout);
+    assert.equal(parsed.ok, false);
+    assert.equal(parsed.error, "bad_args");
+    assert.match(parsed.message, /--lifecycle-events must be jsonl/);
   } finally {
     rmTree(dataDir);
     rmTree(cwd);

@@ -11,10 +11,10 @@ Use the Kimi companion adversarial-review workflow. Current Codex builds expose 
 `<plugin-root>` is `plugins/kimi` or an absolute path to that plugin directory; `<workspace>` is the repository or bundle directory to review; `<focus>` is the user's review prompt or focus area. Run:
 
 ```bash
-node "<plugin-root>/scripts/kimi-companion.mjs" run --mode=adversarial-review --foreground --cwd "<workspace>" -- "<focus>"
+node "<plugin-root>/scripts/kimi-companion.mjs" run --mode=adversarial-review --foreground --lifecycle-events jsonl --cwd "<workspace>" -- "<focus>"
 ```
 
 If the user provides them, add `--scope-base REF` and/or
 `--max-steps-per-turn N` before `--`; `N` must be a positive integer.
 
-Render findings by severity, render `external_review` before normal prose when present, and surface any `mutations`. Do not claim `/kimi-adversarial-review` is available in Codex builds that do not register plugin command files.
+Render findings by severity, render `external_review_launched` as soon as it appears, then render `external_review` before normal prose when present, and surface any `mutations`. Do not claim `/kimi-adversarial-review` is available in Codex builds that do not register plugin command files.

@@ -31,11 +31,11 @@ For review or adversarial-review, add `--scope-base REF` before `--` when the us
 
 - Read-only review:
   ```bash
-  node "<plugin-root>/scripts/kimi-companion.mjs" run --mode=review --foreground --cwd "<workspace>" -- "<review focus>"
+  node "<plugin-root>/scripts/kimi-companion.mjs" run --mode=review --foreground --lifecycle-events jsonl --cwd "<workspace>" -- "<review focus>"
   ```
 - Adversarial review:
   ```bash
-  node "<plugin-root>/scripts/kimi-companion.mjs" run --mode=adversarial-review --foreground --cwd "<workspace>" -- "<design or diff to challenge>"
+  node "<plugin-root>/scripts/kimi-companion.mjs" run --mode=adversarial-review --foreground --lifecycle-events jsonl --cwd "<workspace>" -- "<design or diff to challenge>"
   ```
 - Disclosure/scope preflight:
   ```bash
@@ -43,7 +43,7 @@ For review or adversarial-review, add `--scope-base REF` before `--` when the us
   ```
 - Pinned bundle or selected-file review:
   ```bash
-  node "<plugin-root>/scripts/kimi-companion.mjs" run --mode=custom-review --foreground --cwd "<bundle-or-workspace>" --scope-paths "PR.diff,docs/*.md" -- "<review focus using relative paths>"
+  node "<plugin-root>/scripts/kimi-companion.mjs" run --mode=custom-review --foreground --lifecycle-events jsonl --cwd "<bundle-or-workspace>" --scope-paths "PR.diff,docs/*.md" -- "<review focus using relative paths>"
   ```
 - Rescue/investigation:
   ```bash
@@ -51,7 +51,11 @@ For review or adversarial-review, add `--scope-base REF` before `--` when the us
   ```
 - Background rescue:
   ```bash
-  node "<plugin-root>/scripts/kimi-companion.mjs" run --mode=rescue --background --cwd "<workspace>" -- "<task>"
+  node "<plugin-root>/scripts/kimi-companion.mjs" run --mode=rescue --background --lifecycle-events jsonl --cwd "<workspace>" -- "<task>"
+  ```
+- Continue a prior external review session:
+  ```bash
+  node "<plugin-root>/scripts/kimi-companion.mjs" continue --job "<job-id>" --foreground --lifecycle-events jsonl --cwd "<workspace>" -- "<follow-up>"
   ```
 - Status/result:
   ```bash
@@ -67,8 +71,7 @@ For Kimi review, adversarial-review, custom-review, or rescue, add `--max-steps-
 
 ## Rendering
 
-Render companion JSON directly. If `external_review` is present, render it
-before normal prose.
+Render companion JSON directly. If `external_review_launched` is present, render it immediately. If a background launch envelope has `event: "launched"` with an `external_review` field, render the same launch card immediately with session pending. If `external_review` is present, render it before normal prose.
 
 Launch/result card:
 

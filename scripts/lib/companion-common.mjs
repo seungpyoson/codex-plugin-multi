@@ -12,6 +12,44 @@ export function printJson(obj, output = process.stdout) {
   output.write(`${JSON.stringify(obj, null, 2)}\n`);
 }
 
+export function printJsonLine(obj, output = process.stdout) {
+  output.write(`${JSON.stringify(obj)}\n`);
+}
+
+export function parseLifecycleEventsMode(value) {
+  if (value == null || value === false) return null;
+  if (value === "jsonl") return "jsonl";
+  throw new Error("--lifecycle-events must be jsonl");
+}
+
+export function externalReviewLaunchedEvent(invocation, externalReview) {
+  return {
+    event: "external_review_launched",
+    job_id: invocation.job_id,
+    target: invocation.target,
+    status: "launched",
+    external_review: externalReview,
+  };
+}
+
+export function externalReviewBackgroundLaunchedEvent(invocation, pid, externalReview) {
+  return {
+    event: "launched",
+    job_id: invocation.job_id,
+    target: invocation.target,
+    ...(invocation.parent_job_id == null ? {} : { parent_job_id: invocation.parent_job_id }),
+    mode: invocation.mode,
+    pid: pid ?? null,
+    workspace_root: invocation.workspace_root,
+    external_review: externalReview,
+  };
+}
+
+export function printLifecycleJson(obj, lifecycleEvents, output = process.stdout) {
+  if (lifecycleEvents === "jsonl") printJsonLine(obj, output);
+  else printJson(obj, output);
+}
+
 export function parseScopePathsOption(value) {
   return value
     ? String(value).split(",").map((s) => s.trim()).filter(Boolean)

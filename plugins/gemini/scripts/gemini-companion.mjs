@@ -18,7 +18,6 @@ import { newJobId, verifyPidInfo } from "./lib/identity.mjs";
 import { buildJobRecord, externalReviewForInvocation } from "./lib/job-record.mjs";
 import { reconcileActiveJobs } from "./lib/reconcile.mjs";
 import { cleanGitEnv } from "./lib/git-env.mjs";
-import { REVIEW_PROMPT_CONTRACT_VERSION, buildReviewAuditManifest, buildReviewPrompt } from "./lib/review-prompt.mjs";
 import { spawnGemini } from "./lib/gemini.mjs";
 import { writeCancelMarker, consumeCancelMarker } from "./lib/cancel-marker.mjs";
 import {
@@ -30,23 +29,29 @@ import {
 import {
   PING_PROMPT,
   consumePromptSidecar,
+  externalReviewBackgroundLaunchedEvent,
+  externalReviewLaunchedEvent,
   gitStatusLines,
+  parseLifecycleEventsMode,
   parseScopePathsOption,
   preflightDisclosure,
   preflightSafetyFields,
   printJson,
+  printLifecycleJson,
   runKindFromRecord,
   summarizeScopeDirectory,
   writePromptSidecar,
 } from "./lib/companion-common.mjs";
+import { REVIEW_PROMPT_CONTRACT_VERSION, buildReviewAuditManifest, buildReviewPrompt } from "./lib/review-prompt.mjs";
 
 const PLUGIN_ROOT = resolvePath(dirname(fileURLToPath(import.meta.url)), "..");
 const MODELS_CONFIG_PATH = resolvePath(PLUGIN_ROOT, "config/models.json");
 const READ_ONLY_POLICY = resolvePath(PLUGIN_ROOT, "policies/read-only.toml");
-const GIT_BINARY = "/usr/bin/git";
 const CONTINUABLE_STATUSES = new Set(["completed", "failed", "cancelled", "stale"]);
 const RUN_MODES = Object.freeze(["review", "adversarial-review", "custom-review", "rescue"]);
 const PREFLIGHT_MODES = Object.freeze(["review", "adversarial-review", "custom-review"]);
+const GIT_PROMPT_BINARY = "/usr/bin/git";
+const GIT_PROMPT_SAFE_PATH = "/usr/bin:/bin";
 
 configureState({
   pluginDataEnv: "GEMINI_PLUGIN_DATA",
@@ -64,24 +69,42 @@ function fail(code, message, details = {}) {
   process.exit(1);
 }
 
-// Mutation-detection git scrub: same shared list as claude-companion +
-// scope.mjs. PR #21 review: previous local 5-key list missed
-// GIT_CONFIG_GLOBAL — fold onto plugin lib's canonical scrub.
-
-function gitStatus(args, cwd) {
-  return execFileSync(GIT_BINARY, ["-C", cwd, ...args], {
-    encoding: "utf8",
-    stdio: ["ignore", "pipe", "pipe"],
-    env: cleanGitEnv(),
+function targetPromptFor(invocation, userPrompt) {
+  if (invocation.mode_profile_name === "rescue") return userPrompt;
+  return buildReviewPrompt({
+    provider: "Gemini CLI",
+    mode: invocation.mode,
+    repository: invocation.workspace_root ?? null,
+    baseRef: invocation.scope_base,
+    baseCommit: gitCommitForPrompt(invocation.cwd, invocation.scope_base),
+    headRef: "HEAD",
+    headCommit: gitCommitForPrompt(invocation.cwd, "HEAD"),
+    scope: invocation.scope,
+    scopePaths: invocation.scope_paths,
+    userPrompt,
   });
+}
+
+function gitCommitForPrompt(cwd, ref) {
+  if (!ref) return null;
+  try {
+    return execFileSync(GIT_PROMPT_BINARY, ["rev-parse", "--verify", `${ref}^{commit}`], {
+      cwd,
+      env: cleanGitPromptEnv(),
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+    }).trim();
+  } catch {
+    return null;
+  }
 }
 
 function gitText(args, cwd) {
   try {
-    return execFileSync(GIT_BINARY, ["-C", cwd, ...args], {
+    return execFileSync(GIT_PROMPT_BINARY, ["-C", cwd, ...args], {
       encoding: "utf8",
       stdio: ["ignore", "pipe", "ignore"],
-      env: cleanGitEnv(),
+      env: cleanGitPromptEnv(),
     }).trim() || null;
   } catch {
     return null;
@@ -99,35 +122,14 @@ function promptMetadata(invocation) {
   return {
     repository: repositoryIdentity(invocation.cwd, invocation.workspace_root),
     baseRef: invocation.scope_base ?? null,
-    baseCommit: invocation.scope_base ? gitText(["rev-parse", "--verify", `${invocation.scope_base}^{commit}`], invocation.cwd) : null,
+    baseCommit: gitCommitForPrompt(invocation.cwd, invocation.scope_base),
     headRef: gitText(["branch", "--show-current"], invocation.cwd) ?? "HEAD",
-    headCommit: gitText(["rev-parse", "--verify", "HEAD^{commit}"], invocation.cwd),
+    headCommit: gitCommitForPrompt(invocation.cwd, "HEAD"),
   };
 }
 
 function pluginSourceCommit() {
-  return gitText(["rev-parse", "--verify", "HEAD^{commit}"], PLUGIN_ROOT);
-}
-
-function targetPromptFor(invocation, userPrompt) {
-  if (invocation.mode_profile_name === "rescue") return userPrompt;
-  const meta = promptMetadata(invocation);
-  const modeLine = invocation.mode === "adversarial-review"
-    ? "You are performing an adversarial code review. Prioritize correctness bugs, security risks, regressions, and missing tests."
-    : "You are performing a code review. Prioritize bugs, behavioral regressions, and missing tests.";
-  return buildReviewPrompt({
-    provider: "Gemini CLI",
-    mode: invocation.mode,
-    repository: meta.repository,
-    baseRef: meta.baseRef,
-    baseCommit: meta.baseCommit,
-    headRef: meta.headRef,
-    headCommit: meta.headCommit,
-    scope: invocation.scope,
-    scopePaths: invocation.scope_paths,
-    userPrompt,
-    extraInstructions: [modeLine],
-  });
+  return gitCommitForPrompt(PLUGIN_ROOT, "HEAD");
 }
 
 function listContainedFiles(root, dir = root, prefix = "") {
@@ -160,9 +162,7 @@ function scopeResolutionReason(invocation) {
     }
     return `git diff -z --name-only ${invocation.scope_base ?? "main"}...HEAD --`;
   }
-  if (Array.isArray(paths) && paths.length > 0) {
-    return "explicit --scope-paths";
-  }
+  if (Array.isArray(paths) && paths.length > 0) return "explicit --scope-paths";
   return invocation.scope ?? null;
 }
 
@@ -193,14 +193,8 @@ function reviewAuditManifest(invocation, prompt, containmentPath, execution) {
       maxStepsPerTurn: null,
       temperature: null,
     },
-    truncation: {
-      prompt: false,
-      source: false,
-      output: false,
-    },
-    providerIds: {
-      sessionId: execution?.geminiSessionId ?? null,
-    },
+    truncation: { prompt: false, source: false, output: false },
+    providerIds: { sessionId: execution?.geminiSessionId ?? null },
     scope: {
       name: invocation.scope,
       base: invocation.scope_base ?? null,
@@ -210,6 +204,24 @@ function reviewAuditManifest(invocation, prompt, containmentPath, execution) {
     result: execution?.parsed?.result ?? "",
     status: execution?.exitCode === 0 && execution?.parsed?.ok === true ? "completed" : "failed",
     errorCode: execution?.parsed?.reason ?? null,
+  });
+}
+
+function cleanGitPromptEnv() {
+  const env = cleanGitEnv();
+  env.PATH = GIT_PROMPT_SAFE_PATH;
+  return env;
+}
+
+// Mutation-detection git scrub: same shared list as claude-companion +
+// scope.mjs. PR #21 review: previous local 5-key list missed
+// GIT_CONFIG_GLOBAL — fold onto plugin lib's canonical scrub.
+
+function gitStatus(args, cwd) {
+  return execFileSync(GIT_PROMPT_BINARY, ["-C", cwd, ...args], {
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"],
+    env: cleanGitPromptEnv(),
   });
 }
 
@@ -403,7 +415,7 @@ function cmdPreflight(rest) {
 
 async function cmdRun(rest) {
   const { options, positionals } = parseArgs(rest, {
-    valueOptions: ["mode", "model", "cwd", "binary", "scope-base", "scope-paths", "override-dispose", "auth-mode"],
+    valueOptions: ["mode", "model", "cwd", "binary", "scope-base", "scope-paths", "override-dispose", "auth-mode", "lifecycle-events"],
     booleanOptions: ["background", "foreground"],
   });
   const mode = options.mode;
@@ -430,6 +442,12 @@ async function cmdRun(rest) {
     return profile.dispose_default;
   })();
   const scopePaths = parseScopePathsOption(options["scope-paths"]);
+  let lifecycleEvents;
+  try {
+    lifecycleEvents = parseLifecycleEventsMode(options["lifecycle-events"]);
+  } catch (e) {
+    fail("bad_args", e.message);
+  }
   const authSelection = resolveAuthSelection(options["auth-mode"]);
   if (authSelection.selected_auth_path === "api_key_env_missing") {
     fail("not_authed", apiKeyMissingMessage(), apiKeyMissingFields(authSelection));
@@ -467,6 +485,7 @@ async function cmdRun(rest) {
   const targetPrompt = targetPromptFor(invocation, prompt);
 
   if (options.background) {
+    validateBackgroundExecutionScopeOrExit(invocation, lifecycleEvents);
     try {
       writePromptSidecar(resolveJobsDir(workspaceRoot), jobId, targetPrompt);
     } catch (error) {
@@ -474,181 +493,240 @@ async function cmdRun(rest) {
     }
     const { child, error } = await spawnDetachedWorker(cwd, jobId, authSelection.auth_mode);
     if (error) failBackgroundWorkerSpawn(workspaceRoot, invocation, error);
-    printJson({
-      event: "launched",
-      job_id: jobId,
-      target: "gemini",
-      mode,
-      pid: child.pid ?? null,
-      workspace_root: workspaceRoot,
-      external_review: externalReviewForInvocation(invocation),
-    });
+    const launched = externalReviewBackgroundLaunchedEvent(
+      invocation,
+      child.pid,
+      externalReviewForInvocation(invocation),
+    );
+    printLifecycleJson(launched, lifecycleEvents);
     process.exit(0);
   }
 
-  await executeRun(invocation, targetPrompt, { foreground: true });
+  await executeRun(invocation, targetPrompt, { foreground: true, lifecycleEvents });
 }
 
-async function executeRun(invocation, prompt, { foreground }) {
-  const { job_id: jobId, cwd, workspace_root: workspaceRoot, dispose_effective: disposeEffective } = invocation;
+async function executeRun(invocation, prompt, { foreground, lifecycleEvents = null }) {
+  const { job_id: jobId, workspace_root: workspaceRoot } = invocation;
   const profile = resolveProfile(invocation.mode_profile_name);
+  const executionScope = setupExecutionScopeOrExit(invocation, profile, { foreground, lifecycleEvents });
+  const mutationContext = prepareMutationContext(invocation, profile);
+  const resumeId = latestResumeId(invocation);
+
+  exitIfCancelledBeforeSpawn(invocation, executionScope, mutationContext, { foreground, lifecycleEvents });
+
+  if (foreground && lifecycleEvents) {
+    printLifecycleJson(
+      externalReviewLaunchedEvent(invocation, externalReviewForInvocation(invocation)),
+      lifecycleEvents,
+    );
+  }
+
+  const { execution, executedInvocation } = await spawnGeminiOrExit(
+    invocation,
+    profile,
+    prompt,
+    executionScope,
+    mutationContext,
+    { foreground, lifecycleEvents, resumeId },
+  );
+
+  recordPostRunMutations(invocation, mutationContext);
+
+  const cancelMarker = consumeCancelMarker(workspaceRoot, jobId);
+  const finalRecord = buildGeminiFinalRecord(
+    executedInvocation,
+    execution,
+    cancelMarker,
+    mutationContext.mutations,
+    prompt,
+    executionScope.containment.path,
+  );
+  const { metaError, stateError } = commitJobRecord(workspaceRoot, jobId, finalRecord);
+
+  writeExecutionSidecars(workspaceRoot, jobId, execution);
+  exitIfFinalizationFailed(invocation, execution, finalRecord, mutationContext, executionScope, { metaError, stateError });
+
+  cleanupExecutionResources(executionScope, mutationContext);
+  if (foreground) printLifecycleJson(finalRecord, lifecycleEvents);
+  process.exit(finalRecord.status === "completed" || finalRecord.status === "cancelled" ? 0 : 2);
+}
+
+function setupExecutionScopeOrExit(invocation, profile, { foreground, lifecycleEvents }) {
   let containment = null;
   try {
-    containment = setupContainment(profile, cwd);
-    populateScope(profile, cwd, containment.path, {
+    containment = setupContainment(profile, invocation.cwd);
+    populateScope(profile, invocation.cwd, containment.path, {
       scopeBase: invocation.scope_base,
       scopePaths: invocation.scope_paths,
     }, containment);
+    return { containment, disposeEffective: invocation.dispose_effective };
   } catch (e) {
     if (containment) { try { containment.cleanup(); } catch { /* best-effort */ } }
     const errorRecord = buildJobRecord(invocation, {
       exitCode: null, parsed: null, pidInfo: null, geminiSessionId: null,
       errorMessage: e.message,
     }, []);
-    writeJobFile(workspaceRoot, jobId, errorRecord);
-    upsertJob(workspaceRoot, errorRecord);
-    if (foreground) printJson(errorRecord);
+    writeJobFile(invocation.workspace_root, invocation.job_id, errorRecord);
+    upsertJob(invocation.workspace_root, errorRecord);
+    if (foreground) printLifecycleJson(errorRecord, lifecycleEvents);
     process.exit(2);
   }
+}
 
+function validateBackgroundExecutionScopeOrExit(invocation, lifecycleEvents) {
+  const profile = resolveProfile(invocation.mode_profile_name);
+  const executionScope = setupExecutionScopeOrExit(invocation, profile, {
+    foreground: true,
+    lifecycleEvents,
+  });
+  cleanupExecutionResources(executionScope, { neutralCwd: null });
+}
+
+function prepareMutationContext(invocation, profile) {
   const checkMutations = profile.permission_mode === "plan";
-  let gitStatusBefore = null;
-  let neutralCwd = null;
-  const mutations = [];
-  if (checkMutations) {
-    try {
-      neutralCwd = mkdtempSync(joinPath(tmpdir(), "gemini-neutral-cwd-"));
-    } catch (e) {
-      mutations.push(mutationDetectionFailure(e, "neutral cwd setup failed"));
-    }
-    try {
-      gitStatusBefore = gitStatus(["status", "-s", "--untracked-files=all"], cwd);
-      writeSidecar(workspaceRoot, jobId, "git-status-before.txt", gitStatusBefore);
-    } catch (e) {
-      mutations.push(mutationDetectionFailure(e));
-    }
+  const context = { checkMutations, gitStatusBefore: null, neutralCwd: null, mutations: [] };
+  if (!checkMutations) return context;
+  try {
+    context.neutralCwd = mkdtempSync(joinPath(tmpdir(), "gemini-neutral-cwd-"));
+  } catch (e) {
+    context.mutations.push(mutationDetectionFailure(e, "neutral cwd setup failed"));
   }
+  try {
+    context.gitStatusBefore = gitStatus(["status", "-s", "--untracked-files=all"], invocation.cwd);
+    writeSidecar(invocation.workspace_root, invocation.job_id, "git-status-before.txt", context.gitStatusBefore);
+  } catch (e) {
+    context.mutations.push(mutationDetectionFailure(e));
+  }
+  return context;
+}
 
-  const resumeId = invocation.resume_chain && invocation.resume_chain.length > 0
+function latestResumeId(invocation) {
+  return invocation.resume_chain && invocation.resume_chain.length > 0
     ? invocation.resume_chain[invocation.resume_chain.length - 1]
     : null;
+}
 
-  // Pre-spawn cancel-marker check (Class 1 + Finding A, race window α).
-  // cmdRunWorker has its own check at the top of the worker body, but a
-  // cancel issued during containment setup / scope copy lands AFTER that
-  // check while state.json still says "queued". Rechecking immediately
-  // before spawnGemini narrows the window from "containment + scope +
-  // pre-snapshot + spawn" (potentially seconds with a large repo) to the
-  // microseconds between this check and child.once('spawn'). The post-run
-  // consumer at the close handler is the safety net for that residual gap.
-  // This check also covers the foreground path (cmdRun bypasses
-  // cmdRunWorker entirely).
-  if (consumeCancelMarker(workspaceRoot, jobId)) {
-    if (neutralCwd) {
-      try { rmSync(neutralCwd, { recursive: true, force: true }); } catch { /* best-effort */ }
-    }
-    if (disposeEffective) {
-      try { containment.cleanup(); } catch { /* best-effort */ }
-    }
-    const cancelledRecord = buildJobRecord(invocation, {
-      status: "cancelled",
-      exitCode: null, parsed: null, pidInfo: null, geminiSessionId: null,
-    }, mutations);
-    writeJobFile(workspaceRoot, jobId, cancelledRecord);
-    upsertJob(workspaceRoot, cancelledRecord);
-    if (foreground) printJson(cancelledRecord);
-    process.exit(0);
-  }
+function exitIfCancelledBeforeSpawn(invocation, executionScope, mutationContext, { foreground, lifecycleEvents }) {
+  if (!consumeCancelMarker(invocation.workspace_root, invocation.job_id)) return;
+  cleanupExecutionResources(executionScope, mutationContext);
+  const cancelledRecord = buildJobRecord(invocation, {
+    status: "cancelled",
+    exitCode: null,
+    parsed: null,
+    pidInfo: null,
+    geminiSessionId: null,
+  }, mutationContext.mutations);
+  writeJobFile(invocation.workspace_root, invocation.job_id, cancelledRecord);
+  upsertJob(invocation.workspace_root, cancelledRecord);
+  if (foreground) printLifecycleJson(cancelledRecord, lifecycleEvents);
+  process.exit(0);
+}
 
-  let execution;
-  let executedInvocation = invocation;
+async function spawnGeminiOrExit(invocation, profile, prompt, executionScope, mutationContext, options) {
   try {
-    const authSelection = resolveAuthSelection(invocation.auth_mode);
-    const modelCandidates = modelCandidatesForInvocation(profile, invocation);
-    for (let i = 0; i < modelCandidates.length; i++) {
-      const attemptModel = modelCandidates[i];
-      const attemptInvocation = Object.freeze({ ...invocation, model: attemptModel });
-      execution = await spawnGemini(profile, {
-        model: attemptModel,
-        promptText: prompt,
-        policyPath: profile.permission_mode === "plan" ? READ_ONLY_POLICY : null,
-        includeDirPath: containment.path,
-        cwd: neutralCwd ?? containment.path,
-        binary: invocation.binary,
-        resumeId,
-        allowedApiKeyEnv: authSelection.allowed_env_credentials,
-        onSpawn: (pidInfo) => {
-          const runningRecord = buildJobRecord(attemptInvocation, {
-            status: "running",
-            exitCode: null,
-            parsed: null,
-            pidInfo,
-            geminiSessionId: null,
-          }, mutations);
-          writeJobFile(workspaceRoot, jobId, runningRecord);
-          upsertJob(workspaceRoot, runningRecord);
-        },
-      });
-      executedInvocation = attemptInvocation;
-      if (
-        execution.exitCode !== 0 &&
-        i < modelCandidates.length - 1 &&
-        retryableModelCapacityFailure(execution)
-      ) {
-        process.stderr.write(
-          `gemini-companion: warning: model ${attemptModel ?? "<native>"} capacity-limited; ` +
-          `retrying with ${modelCandidates[i + 1]}\n`,
-        );
-        continue;
-      }
-      break;
-    }
+    return await spawnGeminiWithFallbacks(invocation, profile, prompt, executionScope, mutationContext, options);
   } catch (e) {
+    const executedInvocation = e.executedInvocation ?? invocation;
     const errorRecord = buildJobRecord(executedInvocation, {
       exitCode: null, parsed: null, pidInfo: null, geminiSessionId: null,
       errorMessage: e.message,
-    }, mutations);
-    writeJobFile(workspaceRoot, jobId, errorRecord);
-    upsertJob(workspaceRoot, errorRecord);
-    if (neutralCwd) rmSync(neutralCwd, { recursive: true, force: true });
-    if (disposeEffective) containment.cleanup();
-    if (foreground) printJson(errorRecord);
+    }, mutationContext.mutations);
+    writeJobFile(invocation.workspace_root, invocation.job_id, errorRecord);
+    upsertJob(invocation.workspace_root, errorRecord);
+    cleanupExecutionResources(executionScope, mutationContext);
+    if (options.foreground) printLifecycleJson(errorRecord, options.lifecycleEvents);
     process.exit(2);
   }
+}
 
-  // ——— finalization (#16 follow-up 1) ————————————————————————————————
-  // See claude-companion.mjs for the three-tier persistence policy.
-  // Briefly: meta + state are contractual (fatal on failure with a
-  // best-effort failed-fallback record so onSpawn's running entry doesn't
-  // persist forever), sidecars are diagnostic (stderr warning, never
-  // changes the terminal status).
-
-  if (checkMutations && gitStatusBefore !== null) {
-    let gitStatusAfter;
+async function spawnGeminiWithFallbacks(invocation, profile, prompt, executionScope, mutationContext, options) {
+  const authSelection = resolveAuthSelection(invocation.auth_mode);
+  const modelCandidates = modelCandidatesForInvocation(profile, invocation);
+  let execution;
+  let executedInvocation = invocation;
+  for (let i = 0; i < modelCandidates.length; i++) {
+    const attemptModel = modelCandidates[i];
+    const attemptInvocation = Object.freeze({ ...invocation, model: attemptModel });
     try {
-      gitStatusAfter = gitStatus(["status", "-s", "--untracked-files=all"], cwd);
-      try { writeSidecar(workspaceRoot, jobId, "git-status-after.txt", gitStatusAfter); }
-      catch (e) { process.stderr.write(`gemini-companion: warning: sidecar git-status-after.txt write failed: ${e.message}\n`); }
+      execution = await spawnOneGeminiAttempt(attemptInvocation, profile, prompt, executionScope, mutationContext, {
+        allowedApiKeyEnv: authSelection.allowed_env_credentials,
+        resumeId: options.resumeId,
+      });
     } catch (e) {
-      mutations.push(mutationDetectionFailure(e));
-      gitStatusAfter = null;
+      e.executedInvocation = attemptInvocation;
+      throw e;
     }
-    if (gitStatusAfter && gitStatusAfter !== gitStatusBefore) {
-      const beforeLines = new Set(gitStatusLines(gitStatusBefore));
-      mutations.push(...gitStatusLines(gitStatusAfter).filter((line) => !beforeLines.has(line)));
-    }
+    executedInvocation = attemptInvocation;
+    if (!shouldRetryGeminiModel(execution, modelCandidates, i)) break;
+    warnGeminiModelRetry(attemptModel, modelCandidates[i + 1]);
   }
+  return { execution, executedInvocation };
+}
 
-  // Issue #22 sub-task 2: cancel-marker check. cmdCancel writes the
-  // marker BEFORE signaling so finalization can force status=cancelled
-  // even when the target traps SIGTERM and exits 0 with valid output.
-  const cancelMarker = consumeCancelMarker(workspaceRoot, jobId);
-  execution.reviewAuditManifest = reviewAuditManifest(executedInvocation, prompt, containment.path, execution);
+function spawnOneGeminiAttempt(invocation, profile, prompt, executionScope, mutationContext, options) {
+  return spawnGemini(profile, {
+    model: invocation.model,
+    promptText: prompt,
+    policyPath: profile.permission_mode === "plan" ? READ_ONLY_POLICY : null,
+    includeDirPath: executionScope.containment.path,
+    cwd: mutationContext.neutralCwd ?? executionScope.containment.path,
+    binary: invocation.binary,
+    resumeId: options.resumeId,
+    allowedApiKeyEnv: options.allowedApiKeyEnv,
+    onSpawn: (pidInfo) => writeRunningRecord(invocation, pidInfo, mutationContext.mutations),
+  });
+}
 
-  // signal + timedOut feed classifyExecution: a SIGTERM/SIGKILL exit without
-  // timedOut is an operator cancel → status="cancelled" (#16 follow-up 2);
-  // timedOut wins so wall-clock kills classify as timeout failures.
-  const finalRecord = buildJobRecord(executedInvocation, {
+function shouldRetryGeminiModel(execution, modelCandidates, index) {
+  return execution.exitCode !== 0
+    && index < modelCandidates.length - 1
+    && retryableModelCapacityFailure(execution);
+}
+
+function warnGeminiModelRetry(fromModel, toModel) {
+  process.stderr.write(
+    `gemini-companion: warning: model ${fromModel ?? "<native>"} capacity-limited; ` +
+    `retrying with ${toModel}\n`,
+  );
+}
+
+function writeRunningRecord(invocation, pidInfo, mutations) {
+  const runningRecord = buildJobRecord(invocation, {
+    status: "running",
+    exitCode: null,
+    parsed: null,
+    pidInfo,
+    geminiSessionId: null,
+  }, mutations);
+  writeJobFile(invocation.workspace_root, invocation.job_id, runningRecord);
+  upsertJob(invocation.workspace_root, runningRecord);
+}
+
+function recordPostRunMutations(invocation, mutationContext) {
+  if (!mutationContext.checkMutations || mutationContext.gitStatusBefore === null) return;
+  let gitStatusAfter = null;
+  try {
+    gitStatusAfter = gitStatus(["status", "-s", "--untracked-files=all"], invocation.cwd);
+    writeGitStatusAfterSidecar(invocation, gitStatusAfter);
+  } catch (e) {
+    mutationContext.mutations.push(mutationDetectionFailure(e));
+  }
+  if (!gitStatusAfter || gitStatusAfter === mutationContext.gitStatusBefore) return;
+  const beforeLines = new Set(gitStatusLines(mutationContext.gitStatusBefore));
+  mutationContext.mutations.push(...gitStatusLines(gitStatusAfter).filter((line) => !beforeLines.has(line)));
+}
+
+function writeGitStatusAfterSidecar(invocation, gitStatusAfter) {
+  try {
+    writeSidecar(invocation.workspace_root, invocation.job_id, "git-status-after.txt", gitStatusAfter);
+  } catch (e) {
+    process.stderr.write(`gemini-companion: warning: sidecar git-status-after.txt write failed: ${e.message}\n`);
+  }
+}
+
+function buildGeminiFinalRecord(invocation, execution, cancelMarker, mutations, prompt, containmentPath) {
+  execution.reviewAuditManifest = reviewAuditManifest(invocation, prompt, containmentPath, execution);
+  return buildJobRecord(invocation, {
     exitCode: execution.exitCode,
     parsed: execution.parsed,
     pidInfo: execution.pidInfo,
@@ -658,68 +736,61 @@ async function executeRun(invocation, prompt, { foreground }) {
     timedOut: execution.timedOut === true,
     reviewAuditManifest: execution.reviewAuditManifest,
   }, mutations);
+}
 
-  // BLOCKER 2 fix: atomic-under-lock meta + state commit. See
-  // claude-companion.mjs::executeRun for the race-class rationale.
-  const { metaError, stateError } = commitJobRecord(workspaceRoot, jobId, finalRecord);
-
-  for (const [name, contents] of [
-    ["stdout.log", execution.stdout],
-    ["stderr.log", execution.stderr],
-  ]) {
+function writeExecutionSidecars(workspaceRoot, jobId, execution) {
+  for (const [name, contents] of [["stdout.log", execution.stdout], ["stderr.log", execution.stderr]]) {
     try { writeSidecar(workspaceRoot, jobId, name, contents); }
     catch (e) {
       process.stderr.write(`gemini-companion: warning: sidecar ${name} write failed: ${e.message}\n`);
     }
   }
+}
 
-  if (metaError || stateError) {
-    // BLOCKER 1 fix: only overwrite the side that actually failed —
-    // an unconditional fallback writeJobFile would clobber a successful
-    // meta when only state.json failed (lock timeout).
-    const detail = [
-      metaError && `meta=${metaError.message}`,
-      stateError && `state=${stateError.message}`,
-    ].filter(Boolean).join("; ");
-    let fallbackRecord = null;
-    try {
-      fallbackRecord = buildJobRecord(invocation, {
-        exitCode: execution.exitCode,
-        parsed: execution.parsed,
-        pidInfo: execution.pidInfo,
-        geminiSessionId: execution.geminiSessionId ?? null,
-        errorMessage: `finalization_failed: ${detail}`,
-      }, mutations);
-    } catch { /* defense in depth */ }
-    if (fallbackRecord) {
-      if (metaError) {
-        // commitJobRecord aborted in writeJobFile → state was NOT mutated
-        // either. Overwrite both sides with the fallback failed-record.
-        try { writeJobFile(workspaceRoot, jobId, fallbackRecord); } catch { /* exhausted */ }
-        try { upsertJob(workspaceRoot, fallbackRecord); } catch { /* exhausted */ }
-      } else if (stateError) {
-        // meta is the good terminal record. Don't touch it (BLOCKER 1).
-        // Retry the state upsert with the GOOD record; fall back to the
-        // failed-record only if that retry also fails.
-        try { upsertJob(workspaceRoot, finalRecord); }
-        catch {
-          try { upsertJob(workspaceRoot, fallbackRecord); } catch { /* exhausted */ }
-        }
-      }
+function exitIfFinalizationFailed(invocation, execution, finalRecord, mutationContext, executionScope, errors) {
+  const { metaError, stateError } = errors;
+  if (!metaError && !stateError) return;
+  const detail = [
+    metaError && `meta=${metaError.message}`,
+    stateError && `state=${stateError.message}`,
+  ].filter(Boolean).join("; ");
+  persistFinalizationFallback(invocation, execution, finalRecord, mutationContext.mutations, errors, detail);
+  cleanupExecutionResources(executionScope, mutationContext);
+  fail("finalization_failed", detail, {
+    error_code: (metaError ?? stateError)?.code ?? null,
+  });
+}
+
+function persistFinalizationFallback(invocation, execution, finalRecord, mutations, errors, detail) {
+  let fallbackRecord = null;
+  try {
+    fallbackRecord = buildJobRecord(invocation, {
+      exitCode: execution.exitCode,
+      parsed: execution.parsed,
+      pidInfo: execution.pidInfo,
+      geminiSessionId: execution.geminiSessionId ?? null,
+      errorMessage: `finalization_failed: ${detail}`,
+    }, mutations);
+  } catch { /* defense in depth */ }
+  if (!fallbackRecord) return;
+  if (errors.metaError) {
+    try { writeJobFile(invocation.workspace_root, invocation.job_id, fallbackRecord); } catch { /* exhausted */ }
+    try { upsertJob(invocation.workspace_root, fallbackRecord); } catch { /* exhausted */ }
+  } else if (errors.stateError) {
+    try { upsertJob(invocation.workspace_root, finalRecord); }
+    catch {
+      try { upsertJob(invocation.workspace_root, fallbackRecord); } catch { /* exhausted */ }
     }
-    if (neutralCwd) rmSync(neutralCwd, { recursive: true, force: true });
-    if (containment.disposed && disposeEffective) {
-      try { containment.cleanup(); } catch { /* best-effort */ }
-    }
-    fail("finalization_failed", detail, {
-      error_code: (metaError ?? stateError)?.code ?? null,
-    });
   }
+}
 
-  if (neutralCwd) rmSync(neutralCwd, { recursive: true, force: true });
-  if (containment.disposed && disposeEffective) containment.cleanup();
-  if (foreground) printJson(finalRecord);
-  process.exit(finalRecord.status === "completed" ? 0 : 2);
+function cleanupExecutionResources(executionScope, mutationContext) {
+  if (mutationContext.neutralCwd) {
+    try { rmSync(mutationContext.neutralCwd, { recursive: true, force: true }); } catch { /* best-effort */ }
+  }
+  if (executionScope.disposeEffective) {
+    try { executionScope.containment.cleanup(); } catch { /* best-effort */ }
+  }
 }
 
 function writeSidecar(workspaceRoot, jobId, name, contents) {
@@ -819,12 +890,18 @@ async function cmdRunWorker(rest) {
 
 async function cmdContinue(rest) {
   const { options, positionals } = parseArgs(rest, {
-    valueOptions: ["job", "cwd", "model", "binary", "auth-mode"],
+    valueOptions: ["job", "cwd", "model", "binary", "auth-mode", "lifecycle-events"],
     booleanOptions: ["background", "foreground"],
   });
   if (!options.job) fail("bad_args", "--job <id> is required");
   if (options.background && options.foreground) {
     fail("bad_args", "--background and --foreground are mutually exclusive");
+  }
+  let lifecycleEvents;
+  try {
+    lifecycleEvents = parseLifecycleEventsMode(options["lifecycle-events"]);
+  } catch (error) {
+    fail("bad_args", error.message);
   }
 
   const cwd = options.cwd ?? process.cwd();
@@ -900,6 +977,7 @@ async function cmdContinue(rest) {
   const targetPrompt = targetPromptFor(invocation, prompt);
 
   if (options.background) {
+    validateBackgroundExecutionScopeOrExit(invocation, lifecycleEvents);
     try {
       writePromptSidecar(resolveJobsDir(workspaceRoot), newJobId_, targetPrompt);
     } catch (error) {
@@ -907,20 +985,16 @@ async function cmdContinue(rest) {
     }
     const { child, error } = await spawnDetachedWorker(cwd, newJobId_, authSelection.auth_mode);
     if (error) failBackgroundWorkerSpawn(workspaceRoot, invocation, error);
-    printJson({
-      event: "launched",
-      job_id: newJobId_,
-      target: "gemini",
-      mode: priorModeName,
-      parent_job_id: options.job,
-      pid: child.pid ?? null,
-      workspace_root: workspaceRoot,
-      external_review: externalReviewForInvocation(invocation),
-    });
+    const launched = externalReviewBackgroundLaunchedEvent(
+      invocation,
+      child.pid,
+      externalReviewForInvocation(invocation),
+    );
+    printLifecycleJson(launched, lifecycleEvents);
     process.exit(0);
   }
 
-  await executeRun(invocation, targetPrompt, { foreground: true });
+  await executeRun(invocation, targetPrompt, { foreground: true, lifecycleEvents });
 }
 
 async function cmdStatus(rest) {

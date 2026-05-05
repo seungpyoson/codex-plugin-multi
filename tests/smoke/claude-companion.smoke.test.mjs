@@ -152,6 +152,116 @@ test("run --mode=review --foreground: emits JobRecord with status=completed", ()
   }
 });
 
+test("run --mode=review --foreground lifecycle jsonl emits launch event before terminal JobRecord", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "smoke-lifecycle-cwd-"));
+  seedMinimalRepo(cwd);
+  const { stdout, stderr, status, dataDir } = runCompanion(
+    ["run", "--mode=review", "--foreground", "--lifecycle-events", "jsonl",
+     "--model", "claude-haiku-4-5-20251001", "--cwd", cwd, "--", "review: x=1"],
+    { cwd }
+  );
+  try {
+    assert.equal(status, 0, `exit ${status}: stderr=${stderr}`);
+    const lines = stdout.trim().split("\n").map((line) => JSON.parse(line));
+    assert.equal(lines.length, 2);
+    const [launched, record] = lines;
+    assert.equal(launched.event, "external_review_launched");
+    assert.equal(launched.target, "claude");
+    assert.equal(launched.status, "launched");
+    assert.equal(launched.job_id, record.job_id);
+    assert.deepEqual(launched.external_review, {
+      marker: "EXTERNAL REVIEW",
+      provider: "Claude Code",
+      run_kind: "foreground",
+      job_id: record.job_id,
+      session_id: null,
+      parent_job_id: null,
+      mode: "review",
+      scope: "working-tree",
+      scope_base: null,
+      scope_paths: null,
+      source_content_transmission: "may_be_sent",
+      disclosure: "Selected source content may be sent to Claude Code for external review.",
+    });
+    assert.equal(record.status, "completed");
+    assert.equal(record.external_review.source_content_transmission, "sent");
+  } finally {
+    cleanup(dataDir);
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("run --mode=review --foreground lifecycle jsonl suppresses launch event on scope failure", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "smoke-lifecycle-scope-fail-cwd-"));
+  seedMinimalRepo(cwd);
+  writeFileSync(path.join(cwd, ".git", "index"), "corrupt index");
+  const { stdout, stderr, status, dataDir } = runCompanion(
+    ["run", "--mode=review", "--foreground", "--lifecycle-events", "jsonl",
+     "--model", "claude-haiku-4-5-20251001", "--binary", path.join(cwd, "missing-claude"),
+     "--cwd", cwd, "--", "review"],
+    { cwd }
+  );
+  try {
+    assert.equal(status, 2, `exit ${status}: stderr=${stderr}`);
+    const lines = stdout.trim().split("\n").map((line) => JSON.parse(line));
+    assert.equal(lines.length, 1);
+    const [record] = lines;
+    assert.equal(record.status, "failed");
+    assert.match(record.error_message, /scope_population_failed: cannot evaluate gitignored files/);
+    assert.match(record.disclosure_note, /not spawned/);
+    assert.match(record.disclosure_note, /not sent/);
+  } finally {
+    cleanup(dataDir);
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("run --mode=review --background lifecycle jsonl suppresses launch event on scope failure", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "smoke-lifecycle-bg-scope-fail-cwd-"));
+  seedMinimalRepo(cwd);
+  writeFileSync(path.join(cwd, ".git", "index"), "corrupt index");
+  const { stdout, stderr, status, dataDir } = runCompanion(
+    ["run", "--mode=review", "--background", "--lifecycle-events", "jsonl",
+     "--model", "claude-haiku-4-5-20251001", "--cwd", cwd, "--", "review"],
+    { cwd }
+  );
+  try {
+    assert.equal(status, 2, `exit ${status}: stderr=${stderr}`);
+    const lines = stdout.trim().split("\n").map((line) => JSON.parse(line));
+    assert.equal(lines.length, 1);
+    const [record] = lines;
+    assert.equal(record.status, "failed");
+    assert.equal(record.external_review.source_content_transmission, "not_sent");
+    assert.match(record.error_message, /scope_population_failed: cannot evaluate gitignored files/);
+    assert.match(record.disclosure_note, /not spawned/);
+    assert.match(record.disclosure_note, /not sent/);
+  } finally {
+    cleanup(dataDir);
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("run rejects invalid lifecycle event mode as structured bad args", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "smoke-lifecycle-bad-cwd-"));
+  seedMinimalRepo(cwd);
+  const { stdout, stderr, status, dataDir } = runCompanion(
+    ["run", "--mode=review", "--foreground", "--lifecycle-events", "pretty",
+     "--model", "claude-haiku-4-5-20251001", "--cwd", cwd, "--", "review"],
+    { cwd }
+  );
+  try {
+    assert.equal(status, 1);
+    assert.doesNotMatch(stderr, /unhandled/i);
+    const parsed = JSON.parse(stdout);
+    assert.equal(parsed.ok, false);
+    assert.equal(parsed.error, "bad_args");
+    assert.match(parsed.message, /--lifecycle-events must be jsonl/);
+  } finally {
+    cleanup(dataDir);
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
 test("run --mode=review --foreground: surfaces mutation detection failure without dropping result", () => {
   const cwd = mkdtempSync(path.join(tmpdir(), "smoke-mut-fail-cwd-"));
   seedMinimalRepo(cwd);
@@ -666,12 +776,16 @@ test("continue --job: resumes a prior session via --resume", () => {
     const { job_id } = JSON.parse(runRes.stdout);
     const contRes = spawnSync("node", [
       path.join(REPO_ROOT, "plugins/claude/scripts/claude-companion.mjs"),
-      "continue", "--job", job_id, "--foreground",
+      "continue", "--job", job_id, "--foreground", "--lifecycle-events", "jsonl",
       "--cwd", cwd, "--", "follow-up",
     ], { cwd, encoding: "utf8",
         env: { ...process.env, CLAUDE_BINARY: MOCK, CLAUDE_PLUGIN_DATA: dataDir } });
     assert.equal(contRes.status, 0, contRes.stderr);
-    const out = JSON.parse(contRes.stdout);
+    const lines = contRes.stdout.trim().split("\n").map((line) => JSON.parse(line));
+    assert.equal(lines.length, 2);
+    const [launched, out] = lines;
+    assert.equal(launched.event, "external_review_launched");
+    assert.equal(launched.external_review.parent_job_id, job_id);
     assert.notEqual(out.job_id, job_id, "continue must mint a new job_id");
     // T7.4 (§21.3): foreground stdout is a JobRecord, not an ok-envelope.
     assert.equal(out.status, "completed");

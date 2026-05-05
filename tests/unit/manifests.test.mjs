@@ -75,6 +75,8 @@ function assertCompanionWorkflowInvocation(skill, plugin, workflow, rel) {
     assert.match(skill, /--foreground\b/, `${rel} missing --foreground`);
   }
   if (["review", "adversarial-review"].includes(workflow)) {
+    assert.match(skill, /--lifecycle-events\s+jsonl\b/, `${rel} missing lifecycle jsonl option`);
+    assert.match(skill, /external_review_launched/, `${rel} missing launch event rendering guidance`);
     assert.match(skill, /--scope-base REF/, `${rel} missing optional --scope-base`);
     assert.match(skill, /`<focus>` is the user's review prompt or focus area/, `${rel} must define focus placeholder`);
     assert.match(skill, /external_review|claude-result-handling/, `${rel} missing external review rendering guidance`);
@@ -95,6 +97,12 @@ function assertApiReviewerWorkflowInvocation(skill, provider, workflow, rel) {
 
   assert.match(skill, new RegExp(`--mode\\s+${workflow}\\b`), `${rel} missing --mode ${workflow}`);
   assert.doesNotMatch(skill, /--foreground\b/, `${rel} must not document ignored --foreground flag`);
+  assert.match(skill, /--lifecycle-events\s+jsonl\b/, `${rel} missing lifecycle jsonl option`);
+  assert.match(skill, /external_review_launched/, `${rel} missing launch event rendering guidance`);
+  assert.match(skill, /`error_code`/, `${rel} missing failed JobRecord error_code rendering guidance`);
+  assert.match(skill, /`error_message`/, `${rel} missing failed JobRecord error_message rendering guidance`);
+  assert.match(skill, /`http_status`/, `${rel} missing failed JobRecord http_status rendering guidance`);
+  assert.match(skill, /`suggested_action`/, `${rel} missing failed JobRecord suggested_action rendering guidance`);
   assert.match(skill, /--prompt\s+"<focus>"/, `${rel} missing prompt placeholder`);
   assert.match(skill, /`<focus>` is the user's review prompt or focus area/, `${rel} must define focus placeholder`);
   if (workflow === "custom-review") {
@@ -119,7 +127,13 @@ function assertApiReviewerCommandDoc(command, workflow, rel) {
   assertNoBracketedCliFlagsInShellFences(command, rel);
   assert.doesNotMatch(command, /--foreground\b/, `${rel} must not document ignored --foreground flag`);
   if (workflow !== "setup") {
+    assert.match(command, /--lifecycle-events\s+jsonl\b/, `${rel} missing lifecycle jsonl option`);
+    assert.match(command, /external_review_launched/, `${rel} missing launch event rendering guidance`);
     assert.match(command, /external_review.*before the review result/, `${rel} missing external_review rendering guidance`);
+    assert.match(command, /`error_code`/, `${rel} missing failed JobRecord error_code rendering guidance`);
+    assert.match(command, /`error_message`/, `${rel} missing failed JobRecord error_message rendering guidance`);
+    assert.match(command, /`http_status`/, `${rel} missing failed JobRecord http_status rendering guidance`);
+    assert.match(command, /`suggested_action`/, `${rel} missing failed JobRecord suggested_action rendering guidance`);
   }
   if (["review", "adversarial-review"].includes(workflow)) {
     assert.match(command, /argument-hint:\s*"\[--scope-base REF\] \[review prompt\]"/, `${rel} missing scope-base argument hint`);
@@ -153,6 +167,12 @@ function assertGrokWorkflowInvocation(skill, workflow, rel) {
   assert.match(skill, /grok-web-reviewer\.mjs\s+run\b/, `${rel} missing run subcommand`);
   assert.match(skill, new RegExp(`--mode\\s+${workflow}\\b`), `${rel} missing --mode ${workflow}`);
   assert.match(skill, /--foreground\b/, `${rel} missing --foreground`);
+  assert.match(skill, /--lifecycle-events\s+jsonl\b/, `${rel} missing lifecycle jsonl option`);
+  assert.match(skill, /external_review_launched/, `${rel} missing launch event rendering guidance`);
+  assert.match(skill, /`error_code`/, `${rel} missing failed JobRecord error_code rendering guidance`);
+  assert.match(skill, /`error_message`/, `${rel} missing failed JobRecord error_message rendering guidance`);
+  assert.match(skill, /`http_status`/, `${rel} missing failed JobRecord http_status rendering guidance`);
+  assert.match(skill, /`suggested_action`/, `${rel} missing failed JobRecord suggested_action rendering guidance`);
   assert.match(skill, /--prompt\s+"<focus>"/, `${rel} missing prompt placeholder`);
   assert.match(skill, /`<focus>` is the user's review prompt or focus area/, `${rel} must define focus placeholder`);
   assert.match(skill, /session cookies|tunnel API-key|bearer token/i, `${rel} missing secret handling guidance`);
@@ -179,7 +199,13 @@ function assertGrokCommandDoc(command, workflow, rel) {
 
   assert.match(command, new RegExp(`--mode\\s+${workflow}\\b`), `${rel} missing --mode ${workflow}`);
   assert.match(command, /--foreground\b/, `${rel} missing --foreground`);
+  assert.match(command, /--lifecycle-events\s+jsonl\b/, `${rel} missing lifecycle jsonl option`);
+  assert.match(command, /external_review_launched/, `${rel} missing launch event rendering guidance`);
   assert.match(command, /external_review.*before the review result/, `${rel} missing external_review rendering guidance`);
+  assert.match(command, /`error_code`/, `${rel} missing failed JobRecord error_code rendering guidance`);
+  assert.match(command, /`error_message`/, `${rel} missing failed JobRecord error_message rendering guidance`);
+  assert.match(command, /`http_status`/, `${rel} missing failed JobRecord http_status rendering guidance`);
+  assert.match(command, /`suggested_action`/, `${rel} missing failed JobRecord suggested_action rendering guidance`);
   if (["review", "adversarial-review"].includes(workflow)) {
     assert.match(command, /argument-hint:\s*"\[--scope-base REF\] \[review prompt\]"/, `${rel} missing scope-base argument hint`);
     assert.match(command, /`--scope-base REF` before `--prompt`/, `${rel} must route scope-base before prompt`);
@@ -296,6 +322,10 @@ test("claude, gemini, and kimi expose user-invocable skill fallbacks", () => {
     assert.match(skill, new RegExp(`${plugin}-companion\\.mjs"\\s+doctor\\b`));
     assertNoBracketedCliFlagsInShellFences(skill, rel);
     assert.match(skill, /--scope-base REF/, `${rel} missing branch-diff base-ref guidance`);
+    if (["gemini", "kimi"].includes(plugin)) {
+      assert.match(skill, /event:\s*"launched"/, `${rel} must render background launched envelopes`);
+      assert.match(skill, /background[\s\S]*external_review/, `${rel} must render background external_review cards`);
+    }
     if (plugin === "kimi") {
       assert.match(skill, /rescue[\s\S]*--max-steps-per-turn N/, `${rel} must document Kimi rescue step budget`);
     } else {
@@ -319,8 +349,14 @@ test("grok exposes a user-invocable skill fallback", () => {
   assert.match(skill, /--scope-base REF/);
   assert.match(skill, /Replace `<file1>,<file2>`/, `${rel} must tell agents to replace scope-path placeholders`);
   assert.match(skill, /comma- or newline-separated concrete relative paths/, `${rel} missing scope-path separator guidance`);
+  assert.match(skill, /`error_code`/, `${rel} missing failed JobRecord error_code rendering guidance`);
+  assert.match(skill, /`error_message`/, `${rel} missing failed JobRecord error_message rendering guidance`);
+  assert.match(skill, /`http_status`/, `${rel} missing failed JobRecord http_status rendering guidance`);
+  assert.match(skill, /`suggested_action`/, `${rel} missing failed JobRecord suggested_action rendering guidance`);
   assert.match(skill, /external_review.*before the review result/);
   assert.doesNotMatch(skill, /api\.x\.ai/i);
+  assert.doesNotMatch(skill, /\bgemini\b/i, `${rel} must not mention Gemini in Grok guidance`);
+  assert.doesNotMatch(skill, /\bcancel\b/i, `${rel} must not document unsupported Grok cancel command`);
   assertNoBracketedCliFlagsInShellFences(skill, rel);
   assertNoShellVariablePlaceholdersInShellFences(skill, rel);
   assertPickerDescription(skill, rel);
@@ -346,6 +382,10 @@ test("api-reviewers exposes a user-invocable skill fallback", () => {
   assert.match(skill, /--scope-base REF/);
   assert.match(skill, /Replace `<file1>,<file2>`/, `${rel} must tell agents to replace scope-path placeholders`);
   assert.match(skill, /comma- or newline-separated concrete relative paths/, `${rel} missing scope-path separator guidance`);
+  assert.match(skill, /`error_code`/, `${rel} missing failed JobRecord error_code rendering guidance`);
+  assert.match(skill, /`error_message`/, `${rel} missing failed JobRecord error_message rendering guidance`);
+  assert.match(skill, /`http_status`/, `${rel} missing failed JobRecord http_status rendering guidance`);
+  assert.match(skill, /`suggested_action`/, `${rel} missing failed JobRecord suggested_action rendering guidance`);
   assert.match(skill, /external_review.*before the review result/);
   assertPickerDescription(skill, rel);
 });
@@ -384,6 +424,11 @@ test("provider workflow skills are user-invocable and command-backed", () => {
       assert.equal(existsSync(path.join(REPO_ROOT, commandRel)), true, `${commandRel} missing`);
       const command = readFileSync(path.join(REPO_ROOT, commandRel), "utf8");
       assertNoBracketedCliFlagsInShellFences(command, commandRel);
+      if (["review", "adversarial-review"].includes(workflow)) {
+        assert.match(command, /--lifecycle-events\s+jsonl\b/, `${commandRel} missing lifecycle jsonl option`);
+        assert.match(command, /external_review_launched/, `${commandRel} missing launch event rendering guidance`);
+        assert.match(command, /external_review.*before/, `${commandRel} missing external_review rendering guidance`);
+      }
       assert.match(skill, new RegExp(commandRel.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
     }
   }

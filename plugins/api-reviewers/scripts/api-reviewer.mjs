@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { spawnSync } from "node:child_process";
-import { lstat, mkdir, readFile, readdir, realpath, rename, rm, stat, unlink, writeFile } from "node:fs/promises";
-import { existsSync } from "node:fs";
+import { lstat, mkdir, open, readFile, readdir, realpath, rename, rm, unlink, writeFile } from "node:fs/promises";
+import { constants as fsConstants, existsSync } from "node:fs";
 import { dirname, isAbsolute, resolve, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import { randomUUID } from "node:crypto";
@@ -31,6 +31,10 @@ const API_REVIEWER_STATE_LOCK_TIMEOUT_MS = 5000;
 const API_REVIEWER_STATE_LOCK_STALE_MS = 30000;
 const GIT_BINARY = "/usr/bin/git";
 const GIT_SAFE_PATH = "/usr/bin:/bin";
+const SCOPE_FILE_OPEN_FLAGS = fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0);
+const MAX_SCOPE_FILE_BYTES = 256 * 1024;
+const MAX_SCOPE_TOTAL_BYTES = 1024 * 1024;
+const GIT_SHOW_MAX_BUFFER_BYTES = MAX_SCOPE_FILE_BYTES + 1;
 const API_REVIEWER_EXPECTED_KEYS = Object.freeze([
   "id",
   "job_id",
@@ -87,6 +91,21 @@ const MIN_SECRET_REDACTION_LENGTH = 8;
 
 function printJson(obj) {
   process.stdout.write(`${JSON.stringify(obj, null, 2)}\n`);
+}
+
+function printJsonLine(obj) {
+  process.stdout.write(`${JSON.stringify(obj)}\n`);
+}
+
+function printLifecycleJson(obj, lifecycleEvents) {
+  if (lifecycleEvents === "jsonl") printJsonLine(obj);
+  else printJson(obj);
+}
+
+function parseLifecycleEventsMode(value) {
+  if (value == null || value === false) return null;
+  if (value === "jsonl") return "jsonl";
+  throw runBadArgs("--lifecycle-events must be jsonl");
 }
 
 function isActiveJob(job) {
@@ -561,6 +580,12 @@ function runConfigError(message) {
   return error;
 }
 
+function runProviderFailure(reason, message) {
+  const error = new Error(message);
+  error.apiReviewersReason = reason;
+  return error;
+}
+
 function providersConfigErrorMessage(error) {
   return `providers config unreadable: ${error.message}`;
 }
@@ -618,6 +643,41 @@ function applyRequestDefaults(requestBody, requestDefaults = {}) {
     requestBody[key] = value;
   }
   return { ok: true };
+}
+
+function validateDirectApiRunPreflight(cfg, provider, env = process.env) {
+  if (cfg.auth_mode !== "api_key" && cfg.auth_mode !== "auto") {
+    return {
+      ok: false,
+      reason: "bad_args",
+      error: `${provider} auth_mode must be api_key or auto`,
+    };
+  }
+  const maxTokensOverride = parseMaxTokensOverride(env);
+  if (!maxTokensOverride.ok) {
+    return { ok: false, reason: "bad_args", error: maxTokensOverride.error };
+  }
+  const timeoutMs = parseProviderTimeoutMs(env);
+  if (!timeoutMs.ok) {
+    return { ok: false, reason: "bad_args", error: timeoutMs.error };
+  }
+  const credential = selectedCredential(cfg, env);
+  if (!credential.value) {
+    return {
+      ok: false,
+      reason: "missing_key",
+      error: `${cfg.display_name} API key is not available`,
+    };
+  }
+  const requestDefaultsProbe = applyRequestDefaults({
+    model: cfg.model,
+    messages: [],
+    temperature: 0,
+  }, cfg.request_defaults);
+  if (!requestDefaultsProbe.ok) {
+    return { ok: false, reason: "bad_args", error: requestDefaultsProbe.error };
+  }
+  return { ok: true, maxTokensOverride, timeoutMs, credential };
 }
 
 function redactor(env = process.env, configuredSecretNames = []) {
@@ -774,9 +834,13 @@ function matchGlob(rel, pattern) {
     const c = pattern[i];
     if (c === "*") {
       if (pattern[i + 1] === "*") {
-        re += ".*";
         i += 1;
-        if (pattern[i + 1] === "/") i += 1;
+        if (pattern[i + 1] === "/") {
+          re += "(?:.*/)?";
+          i += 1;
+        } else {
+          re += ".*";
+        }
       } else {
         re += "[^/]*";
       }
@@ -786,6 +850,38 @@ function matchGlob(rel, pattern) {
   }
   re += "$";
   return new RegExp(re).test(rel);
+}
+
+async function readUtf8ScopeFileWithinLimit(abs, relPath) {
+  let handle;
+  try {
+    handle = await open(abs, SCOPE_FILE_OPEN_FLAGS);
+    const info = await handle.stat();
+    if (!info.isFile()) return null;
+    if (info.size > MAX_SCOPE_FILE_BYTES) {
+      throw new Error(`scope_file_too_large:${relPath}: ${info.size} bytes exceeds ${MAX_SCOPE_FILE_BYTES} byte limit`);
+    }
+    return await handle.readFile({ encoding: "utf8" });
+  } catch (e) {
+    if (e?.code === "ELOOP") throw new Error(`unsafe_scope_path:${relPath}`);
+    if (e?.code === "ENOENT") return null;
+    throw e;
+  } finally {
+    await handle?.close();
+  }
+}
+
+function addScopeFile(files, normalizedRel, text, totalBytes) {
+  if (text.length === 0) return;
+  const bytes = Buffer.byteLength(text, "utf8");
+  if (bytes > MAX_SCOPE_FILE_BYTES) {
+    throw new Error(`scope_file_too_large:${normalizedRel}: ${bytes} bytes exceeds ${MAX_SCOPE_FILE_BYTES} byte limit`);
+  }
+  totalBytes.value += bytes;
+  if (totalBytes.value > MAX_SCOPE_TOTAL_BYTES) {
+    throw new Error(`scope_total_too_large:${totalBytes.value} bytes exceeds ${MAX_SCOPE_TOTAL_BYTES} byte limit`);
+  }
+  files.push({ path: normalizedRel, text });
 }
 
 function scopeName(options) {
@@ -826,14 +922,25 @@ function validateScopePath(workspaceRoot, relPath) {
 
 async function readGitScopeFiles(gitCwd, workspaceRoot, relPaths) {
   const files = [];
+  const totalBytes = { value: 0 };
   for (const relPath of relPaths) {
     const { normalizedRel } = validateScopePath(workspaceRoot, relPath);
-    const text = gitRaw(["show", `HEAD:${relPath}`], gitCwd, {
+    const blobSpec = `HEAD:${normalizedRel}`;
+    const sizeText = gitRaw(["cat-file", "-s", blobSpec], gitCwd, { allowFailure: true });
+    if (sizeText === null) continue;
+    const blobBytes = Number.parseInt(sizeText.trim(), 10);
+    if (!Number.isSafeInteger(blobBytes) || blobBytes < 0) {
+      throw new Error(`scope_invalid_git_blob_size:${normalizedRel}`);
+    }
+    if (blobBytes > MAX_SCOPE_FILE_BYTES) {
+      throw new Error(`scope_file_too_large:${normalizedRel}: ${blobBytes} bytes exceeds ${MAX_SCOPE_FILE_BYTES} byte limit`);
+    }
+    const text = gitRaw(["show", blobSpec], gitCwd, {
       allowFailure: true,
-      maxBuffer: 16 * 1024 * 1024,
+      maxBuffer: GIT_SHOW_MAX_BUFFER_BYTES,
     });
     if (text === null || text.length === 0) continue;
-    files.push({ path: normalizedRel, text });
+    addScopeFile(files, normalizedRel, text, totalBytes);
   }
   if (files.length === 0) throw new Error("scope_empty: selected files are missing or empty");
   return files;
@@ -841,6 +948,7 @@ async function readGitScopeFiles(gitCwd, workspaceRoot, relPaths) {
 
 async function readFilesystemScopeFiles(workspaceRoot, relPaths) {
   const files = [];
+  const totalBytes = { value: 0 };
   const realWorkspaceRoot = await realpath(workspaceRoot);
   for (const relPath of relPaths) {
     const { abs, normalizedRel } = validateScopePath(workspaceRoot, relPath);
@@ -850,11 +958,9 @@ async function readFilesystemScopeFiles(workspaceRoot, relPaths) {
     if (realRel.startsWith("..") || realRel === "") {
       throw new Error(`unsafe_scope_path:${relPath}`);
     }
-    const info = await stat(realAbs);
-    if (!info.isFile()) continue;
-    const text = await readFile(realAbs, "utf8");
-    if (text.length === 0) continue;
-    files.push({ path: normalizedRel, text });
+    const text = await readUtf8ScopeFileWithinLimit(abs, normalizedRel);
+    if (text === null) continue;
+    addScopeFile(files, normalizedRel, text, totalBytes);
   }
   if (files.length === 0) throw new Error("scope_empty: selected files are missing or empty");
   return files;
@@ -935,6 +1041,10 @@ function promptFor(mode, userPrompt, scopeInfo, providerName = "Direct API revie
   });
 }
 
+function hasPromptText(value) {
+  return String(value ?? "").trim().length > 0;
+}
+
 function requestFieldMatches(actual, expected) {
   if (Object.is(actual, expected)) return true;
   if (Array.isArray(actual) || Array.isArray(expected)) {
@@ -1005,18 +1115,9 @@ function mockProviderExecution(cfg, prompt, credential, env, requestBody) {
 }
 
 async function callProvider(provider, cfg, prompt, env = process.env) {
-  const maxTokensOverride = parseMaxTokensOverride(env);
-  if (!maxTokensOverride.ok) {
-    return providerFailure("bad_args", maxTokensOverride.error, null, null, false);
-  }
-  const timeoutMs = parseProviderTimeoutMs(env);
-  if (!timeoutMs.ok) {
-    return providerFailure("bad_args", timeoutMs.error, null, null, false);
-  }
-  const credential = selectedCredential(cfg, env);
-  if (!credential.value) {
-    return providerFailure("missing_key", `${cfg.display_name} API key is not available`, null, null, false);
-  }
+  const preflight = validateDirectApiRunPreflight(cfg, provider, env);
+  if (!preflight.ok) return providerFailure(preflight.reason, preflight.error, null, null, false);
+  const { credential, maxTokensOverride, timeoutMs } = preflight;
   const endpoint = `${baseUrlFor(cfg)}/chat/completions`;
   const requestBody = {
     model: cfg.model,
@@ -1232,6 +1333,24 @@ function freezeRecord(record) {
   return Object.freeze(record);
 }
 
+function buildLaunchExternalReview({ cfg, mode, options, scopeInfo }) {
+  const provider = cfg.display_name;
+  return freezeExternalReview({
+    marker: "EXTERNAL REVIEW",
+    provider,
+    run_kind: "foreground",
+    job_id: options.jobId,
+    session_id: null,
+    parent_job_id: null,
+    mode,
+    scope: scopeInfo?.scope ?? null,
+    scope_base: scopeInfo?.scope_base ?? null,
+    scope_paths: scopeInfo?.scope_paths ?? null,
+    source_content_transmission: SOURCE_CONTENT_TRANSMISSION.MAY_BE_SENT,
+    disclosure: `Selected source content may be sent to ${provider} for external review.`,
+  });
+}
+
 function errorCauseFor(errorCode) {
   if (errorCode === "bad_args") return "caller";
   if (errorCode === "config_error") return "provider_config";
@@ -1440,6 +1559,7 @@ async function cmdDoctor(options) {
 async function cmdRun(options) {
   const provider = options.provider ?? null;
   const mode = options.mode ?? "review";
+  let lifecycleEvents = null;
   const startedAt = new Date().toISOString();
   const jobId = `job_${randomUUID()}`;
   const runOptions = { ...options, jobId };
@@ -1448,6 +1568,7 @@ async function cmdRun(options) {
   let scopeInfo;
   let execution;
   try {
+    lifecycleEvents = parseLifecycleEventsMode(options["lifecycle-events"]);
     if (!provider) throw runBadArgs("bad_args: --provider is required");
     if (!VALID_MODES.has(mode)) throw runBadArgs(`bad_args: unsupported --mode ${mode}`);
     try {
@@ -1460,9 +1581,9 @@ async function cmdRun(options) {
     } catch (e) {
       throw runBadArgs(e.message);
     }
-    if (cfg.auth_mode !== "api_key" && cfg.auth_mode !== "auto") {
-      throw runBadArgs(`bad_args: ${provider} auth_mode must be api_key or auto`);
-    }
+    const preflight = validateDirectApiRunPreflight(cfg, provider, process.env);
+    if (!preflight.ok && preflight.reason === "bad_args") throw runBadArgs(preflight.error);
+    if (!preflight.ok) throw runProviderFailure(preflight.reason, preflight.error);
     scopeInfo = await collectScope({ ...runOptions, mode });
   } catch (e) {
     const redact = redactor();
@@ -1483,6 +1604,20 @@ async function cmdRun(options) {
     };
   }
   if (!execution) {
+    if (!hasPromptText(options.prompt)) {
+      execution = providerFailure("bad_args", "prompt is required (pass --prompt <focus>)", null, null, false);
+    }
+  }
+  if (!execution) {
+    if (lifecycleEvents) {
+      printLifecycleJson({
+        event: "external_review_launched",
+        job_id: jobId,
+        target: provider,
+        status: "launched",
+        external_review: buildLaunchExternalReview({ cfg, mode, options: runOptions, scopeInfo }),
+      }, lifecycleEvents);
+    }
     try {
       const renderedPrompt = promptFor(mode, options.prompt ?? "", scopeInfo, cfg.display_name);
       execution = await callProvider(provider, cfg, renderedPrompt);
@@ -1502,7 +1637,7 @@ async function cmdRun(options) {
     endedAt: new Date().toISOString(),
   }), process.env, cfg.env_keys);
   const printableRecord = await persistRecordBestEffort(record, process.env, cfg.env_keys);
-  printJson(printableRecord);
+  printLifecycleJson(printableRecord, lifecycleEvents);
   process.exit(record.status === "completed" ? 0 : 1);
 }
 

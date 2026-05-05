@@ -1,12 +1,13 @@
 import { once } from "node:events";
 import { execFileSync, spawn, spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import http from "node:http";
 import { hostname, tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { externalReviewLaunchedEvent } from "../../scripts/lib/companion-common.mjs";
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const COMPANION = path.join(REPO_ROOT, "plugins/grok/scripts/grok-web-reviewer.mjs");
@@ -97,6 +98,15 @@ function runAsync(args, options = {}) {
 function parseStdout(result) {
   assert.doesNotMatch(result.stderr, /secret|token|cookie|xai/i);
   return JSON.parse(result.stdout);
+}
+
+function parseJsonLines(result) {
+  assert.doesNotMatch(result.stderr, /secret|token|cookie|xai/i);
+  return result.stdout.trim().split(/\n+/).filter(Boolean).map((line) => JSON.parse(line));
+}
+
+function rmTree(dir) {
+  rmSync(dir, { recursive: true, force: true });
 }
 
 async function withServer(handler, fn) {
@@ -266,7 +276,7 @@ test("doctor chat probe uses a separate configurable timeout", async () => {
       return;
     }
     if (req.url === "/api/chat/completions") {
-      await new Promise((resolve) => setTimeout(resolve, 120));
+      await new Promise((resolve) => setTimeout(resolve, 700));
       res.end(JSON.stringify({
         id: "chatcmpl-doctor",
         model: "grok-4.20-fast",
@@ -280,7 +290,7 @@ test("doctor chat probe uses a separate configurable timeout", async () => {
     const result = await runAsync(["doctor"], {
       env: {
         GROK_WEB_BASE_URL: baseUrl,
-        GROK_WEB_DOCTOR_TIMEOUT_MS: "50",
+        GROK_WEB_DOCTOR_TIMEOUT_MS: "500",
         GROK_WEB_CHAT_DOCTOR_TIMEOUT_MS: "10000",
       },
     });
@@ -288,7 +298,7 @@ test("doctor chat probe uses a separate configurable timeout", async () => {
 
     assert.equal(result.status, 0);
     assert.equal(parsed.ready, true);
-    assert.equal(parsed.doctor_timeout_ms, 50);
+    assert.equal(parsed.doctor_timeout_ms, 500);
     assert.equal(parsed.chat_doctor_timeout_ms, 10000);
   });
 });
@@ -542,6 +552,50 @@ test("custom-review sends selected source to a local Grok web tunnel and persist
   });
 });
 
+test("custom-review lifecycle jsonl emits launch before terminal record", async () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "grok-web-workspace-"));
+  writeFileSync(path.join(cwd, "review.js"), "export const value = 42;\n");
+
+  await withServer(async (_req, res) => {
+    res.setHeader("content-type", "application/json");
+    res.end(JSON.stringify({
+      id: "grok-web-session-lifecycle",
+      model: "grok-4.20-fast",
+      choices: [{ message: { content: "Verdict: no findings." } }],
+      usage: { prompt_tokens: 12, completion_tokens: 5, total_tokens: 17 },
+    }));
+  }, async (baseUrl) => {
+    const result = await runAsync([
+      "run",
+      "--mode", "custom-review",
+      "--scope", "custom",
+      "--scope-paths", "review.js",
+      "--foreground",
+      "--lifecycle-events", "jsonl",
+      "--prompt", "Check this file.",
+    ], {
+      cwd,
+      env: {
+        GROK_WEB_BASE_URL: baseUrl,
+        GROK_WEB_TUNNEL_API_KEY: "secret-cookie-like-token",
+      },
+    });
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    const lines = parseJsonLines(result);
+    assert.equal(lines.length, 2);
+    const [launch, record] = lines;
+    assert.deepEqual(launch, externalReviewLaunchedEvent({
+      job_id: launch.job_id,
+      target: "grok-web",
+    }, launch.external_review));
+    assert.equal(launch.external_review.provider, "Grok Web");
+    assert.equal(launch.external_review.source_content_transmission, "may_be_sent");
+    assert.equal(record.status, "completed");
+    assert.equal(record.external_review.source_content_transmission, "sent");
+    assert.doesNotMatch(result.stdout, /secret-cookie-like-token/);
+  });
+});
+
 test("custom-review escalates Grok file delimiters when selected source collides", async () => {
   const cwd = mkdtempSync(path.join(tmpdir(), "grok-web-workspace-"));
   writeFileSync(path.join(cwd, "review.js"), [
@@ -611,6 +665,114 @@ test("custom-review reports exhausted Grok file delimiter collisions as not sent
   assert.match(record.error_message, /scope_delimiter_collision:review\.js/);
   assert.equal(record.external_review.source_content_transmission, "not_sent");
   assert.match(record.external_review.disclosure, /not sent/i);
+});
+
+test("custom-review lifecycle jsonl suppresses launch event on scope failure", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "grok-web-workspace-"));
+  const dataDir = mkdtempSync(path.join(tmpdir(), "grok-web-data-"));
+  try {
+    let text = "";
+    let delimiter = "GROK FILE 1: review.js";
+    for (let attempt = 0; attempt < 100; attempt += 1) {
+      text += `BEGIN ${delimiter}\nEND ${delimiter}\n`;
+      delimiter = `${delimiter} #`;
+    }
+    writeFileSync(path.join(cwd, "review.js"), text);
+
+    const result = run([
+      "run",
+      "--mode", "custom-review",
+      "--scope", "custom",
+      "--scope-paths", "review.js",
+      "--foreground",
+      "--lifecycle-events", "jsonl",
+      "--prompt", "Check this file.",
+    ], {
+      cwd,
+      env: {
+        GROK_PLUGIN_DATA: dataDir,
+        GROK_WEB_BASE_URL: "http://127.0.0.1:9/api",
+      },
+    });
+    const lines = parseJsonLines(result);
+    assert.equal(result.status, 1);
+    assert.equal(lines.length, 1);
+    const record = lines[0];
+    assert.equal(record.status, "failed");
+    assert.equal(record.error_code, "scope_failed");
+    assert.equal(record.external_review.source_content_transmission, "not_sent");
+  } finally {
+    rmTree(cwd);
+    rmTree(dataDir);
+  }
+});
+
+test("run rejects invalid lifecycle event mode as bad args", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "grok-web-workspace-"));
+  const dataDir = mkdtempSync(path.join(tmpdir(), "grok-web-data-"));
+  try {
+    writeFileSync(path.join(cwd, "review.js"), "export const value = 42;\n");
+
+    const result = run([
+      "run",
+      "--mode", "custom-review",
+      "--scope", "custom",
+      "--scope-paths", "review.js",
+      "--foreground",
+      "--lifecycle-events", "pretty",
+      "--prompt", "Check this file.",
+    ], {
+      cwd,
+      env: {
+        GROK_PLUGIN_DATA: dataDir,
+        GROK_WEB_BASE_URL: "http://127.0.0.1:9/api",
+      },
+    });
+    const record = parseStdout(result);
+    assert.equal(result.status, 1);
+    assert.equal(record.status, "failed");
+    assert.equal(record.error_code, "bad_args");
+    assert.match(record.error_message, /--lifecycle-events must be jsonl/);
+    assert.equal(record.external_review.source_content_transmission, "not_sent");
+  } finally {
+    rmTree(cwd);
+    rmTree(dataDir);
+  }
+});
+
+test("run rejects missing prompt before launch or source transmission", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "grok-web-workspace-"));
+  const dataDir = mkdtempSync(path.join(tmpdir(), "grok-web-data-"));
+  try {
+    writeFileSync(path.join(cwd, "review.js"), "export const value = 42;\n");
+
+    const result = run([
+      "run",
+      "--mode", "custom-review",
+      "--scope", "custom",
+      "--scope-paths", "review.js",
+      "--foreground",
+      "--lifecycle-events", "jsonl",
+    ], {
+      cwd,
+      env: {
+        GROK_PLUGIN_DATA: dataDir,
+        GROK_WEB_BASE_URL: "http://127.0.0.1:9/api",
+      },
+    });
+    const lines = parseJsonLines(result);
+    assert.equal(result.status, 1);
+    assert.equal(lines.length, 1);
+    const [record] = lines;
+    assert.equal(record.status, "failed");
+    assert.equal(record.error_code, "bad_args");
+    assert.match(record.error_message, /prompt is required/);
+    assert.equal(record.external_review.source_content_transmission, "not_sent");
+    assert.doesNotMatch(result.stdout, /external_review_launched/);
+  } finally {
+    rmTree(cwd);
+    rmTree(dataDir);
+  }
 });
 
 test("custom-review rejects aggregate selected source that exceeds the prompt cap before contacting the tunnel", () => {
@@ -1167,7 +1329,7 @@ test("custom-review marks stalled uploaded tunnel requests as unknown transmissi
       cwd,
       env: {
         GROK_WEB_BASE_URL: baseUrl,
-        GROK_WEB_TIMEOUT_MS: "100",
+        GROK_WEB_TIMEOUT_MS: "1000",
       },
     });
     const record = parseStdout(result);
@@ -1341,6 +1503,63 @@ test("review mode uses branch-diff scope with scrubbed git environment", async (
   });
 });
 
+test("branch-diff treats **/ as a path segment glob", async () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "grok-web-branch-"));
+  const dataDir = mkdtempSync(path.join(tmpdir(), "grok-web-data-"));
+  execFileSync("git", ["init", "-b", "main"], { cwd, stdio: "ignore" });
+  execFileSync("git", ["config", "user.email", "test@example.com"], { cwd });
+  execFileSync("git", ["config", "user.name", "Test User"], { cwd });
+  writeFileSync(path.join(cwd, "feature.txt"), "base feature\n");
+  execFileSync("git", ["add", "feature.txt"], { cwd });
+  execFileSync("git", ["commit", "-m", "base"], { cwd, stdio: "ignore" });
+  execFileSync("git", ["tag", "-a", "review-base", "-m", "review base", "main"], { cwd, stdio: "ignore" });
+  execFileSync("git", ["checkout", "-b", "feature"], { cwd, stdio: "ignore" });
+  mkdirSync(path.join(cwd, "nested"));
+  writeFileSync(path.join(cwd, "feature.txt"), "root feature change\n");
+  writeFileSync(path.join(cwd, "nested", "feature.txt"), "nested feature change\n");
+  writeFileSync(path.join(cwd, "prefixfeature.txt"), "prefix feature change\n");
+  execFileSync("git", ["add", "feature.txt", "nested/feature.txt", "prefixfeature.txt"], { cwd });
+  execFileSync("git", ["commit", "-m", "feature changes"], { cwd, stdio: "ignore" });
+
+  await withServer(async (req, res) => {
+    const body = await readJsonRequest(req);
+    assert.match(body.messages[0].content, /root feature change/);
+    assert.match(body.messages[0].content, /nested feature change/);
+    assert.doesNotMatch(body.messages[0].content, /prefix feature change/);
+    res.setHeader("content-type", "application/json");
+    res.end(JSON.stringify({
+      id: "grok-web-glob-session",
+      choices: [{ message: { content: "Verdict: glob reviewed." } }],
+    }));
+  }, async (baseUrl) => {
+    const result = await runAsync([
+      "run",
+      "--mode", "review",
+      "--scope", "branch-diff",
+      "--scope-base", "review-base",
+      "--scope-paths", "**/feature.txt",
+      "--foreground",
+      "--prompt", "Review the branch diff.",
+    ], {
+      cwd,
+      env: {
+        GROK_WEB_BASE_URL: baseUrl,
+        GROK_WEB_TUNNEL_API_KEY: "secret-cookie-like-token",
+        GROK_PLUGIN_DATA: dataDir,
+      },
+    });
+    const record = parseStdout(result);
+
+    assert.equal(result.status, 0);
+    assert.deepEqual(record.scope_paths, ["feature.txt", "nested/feature.txt"]);
+    assert.deepEqual(
+      record.review_metadata.audit_manifest.selected_source.files.map((file) => file.path),
+      ["feature.txt", "nested/feature.txt"]
+    );
+    assert.equal(record.result, "Verdict: glob reviewed.");
+  });
+});
+
 test("custom-review keeps prompt delimiter exceptions as scope failures before tunnel delivery", async () => {
   const cwd = realpathSync(mkdtempSync(path.join(tmpdir(), "grok-web-workspace-")));
   const delimiter = "GROK FILE 1: review.js";
@@ -1489,6 +1708,40 @@ test("local tunnel connection failure is structured as not sent", () => {
   assert.equal(record.error_code, "tunnel_unavailable");
   assert.equal(record.external_review.source_content_transmission, "not_sent");
   assert.match(record.suggested_action, /Start the local Grok web tunnel/i);
+  assert.doesNotMatch(result.stdout, /secret-cookie-like-token/);
+});
+
+test("local tunnel connection failure lifecycle jsonl emits launch then failed terminal record", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "grok-web-workspace-"));
+  writeFileSync(path.join(cwd, "review.js"), "export const value = 42;\n");
+
+  const result = run([
+    "run",
+    "--mode", "custom-review",
+    "--scope", "custom",
+    "--scope-paths", "review.js",
+    "--foreground",
+    "--lifecycle-events", "jsonl",
+    "--prompt", "Check this file.",
+  ], {
+    cwd,
+    env: {
+      GROK_WEB_BASE_URL: "http://127.0.0.1:9/api",
+      GROK_WEB_TUNNEL_API_KEY: "secret-cookie-like-token",
+      GROK_WEB_TIMEOUT_MS: "500",
+    },
+  });
+  const lines = parseJsonLines(result);
+  assert.equal(result.status, 1);
+  assert.equal(lines.length, 2);
+  const [launch, record] = lines;
+  assert.deepEqual(launch, externalReviewLaunchedEvent({
+    job_id: launch.job_id,
+    target: "grok-web",
+  }, launch.external_review));
+  assert.equal(record.status, "failed");
+  assert.equal(record.error_code, "tunnel_unavailable");
+  assert.equal(record.external_review.source_content_transmission, "not_sent");
   assert.doesNotMatch(result.stdout, /secret-cookie-like-token/);
 });
 
