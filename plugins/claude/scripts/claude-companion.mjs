@@ -478,9 +478,6 @@ async function cmdRun(rest) {
     process.exit(0);
   }
 
-  if (lifecycleEvents === "jsonl") {
-    printJsonLine(externalReviewLaunchedEvent(invocation, externalReviewForInvocation(invocation)));
-  }
   await executeRun(invocation, targetPrompt, { foreground: true, lifecycleEvents });
 }
 
@@ -582,6 +579,10 @@ async function executeRun(invocation, prompt, { foreground, lifecycleEvents = nu
     upsertJob(workspaceRoot, cancelledRecord);
     if (foreground) printLifecycleJson(cancelledRecord, lifecycleEvents);
     process.exit(0);
+  }
+
+  if (foreground && lifecycleEvents === "jsonl") {
+    printJsonLine(externalReviewLaunchedEvent(invocation, externalReviewForInvocation(invocation)));
   }
 
   let execution;

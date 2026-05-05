@@ -176,6 +176,31 @@ test("run --mode=review --foreground lifecycle jsonl emits launch event before t
   }
 });
 
+test("run --mode=review --foreground lifecycle jsonl suppresses launch event on scope failure", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "smoke-lifecycle-scope-fail-cwd-"));
+  seedMinimalRepo(cwd);
+  writeFileSync(path.join(cwd, ".git", "index"), "corrupt index");
+  const { stdout, stderr, status, dataDir } = runCompanion(
+    ["run", "--mode=review", "--foreground", "--lifecycle-events", "jsonl",
+     "--model", "claude-haiku-4-5-20251001", "--binary", path.join(cwd, "missing-claude"),
+     "--cwd", cwd, "--", "review"],
+    { cwd }
+  );
+  try {
+    assert.equal(status, 2, `exit ${status}: stderr=${stderr}`);
+    const lines = stdout.trim().split("\n").map((line) => JSON.parse(line));
+    assert.equal(lines.length, 1);
+    const [record] = lines;
+    assert.equal(record.status, "failed");
+    assert.match(record.error_message, /scope_population_failed: cannot evaluate gitignored files/);
+    assert.match(record.disclosure_note, /not spawned/);
+    assert.match(record.disclosure_note, /not sent/);
+  } finally {
+    cleanup(dataDir);
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
 test("run rejects invalid lifecycle event mode as structured bad args", () => {
   const cwd = mkdtempSync(path.join(tmpdir(), "smoke-lifecycle-bad-cwd-"));
   seedMinimalRepo(cwd);
