@@ -1703,7 +1703,8 @@ test("scope file reads use canonical real paths after symlink boundary check", (
   const source = readFileSync(COMPANION, "utf8");
   assert.match(source, /const SCOPE_FILE_OPEN_FLAGS = fsConstants\.O_RDONLY \| \(fsConstants\.O_NOFOLLOW \?\? 0\);/);
   assert.match(source, /if \(beforeOpen\.isSymbolicLink\(\)\) \{/);
-  assert.match(source, /const handle = await open\(filePath, SCOPE_FILE_OPEN_FLAGS\);/);
+  assert.match(source, /handle = await open\(filePath, SCOPE_FILE_OPEN_FLAGS\);/);
+  assert.match(source, /if \(error\?\.code === "ENOENT"\) return null;/);
   assert.match(source, /const info = await handle\.stat\(\);/);
   assert.match(source, /if \(!sameFileIdentity\(beforeOpen, info\)\) \{/);
   assert.match(source, /const \{ bytesRead \} = await handle\.read\(buffer, 0, buffer\.length, null\);/);

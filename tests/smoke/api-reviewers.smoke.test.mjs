@@ -1977,6 +1977,7 @@ test("scope file reads open canonical paths after symlink boundary check", () =>
   assert.match(source, /const SCOPE_FILE_OPEN_FLAGS = fsConstants\.O_RDONLY \| \(fsConstants\.O_NOFOLLOW \?\? 0\);/);
   assert.match(source, /if \(beforeOpen\.isSymbolicLink\(\)\) \{/);
   assert.match(source, /const realRel = relative\(realWorkspaceRoot, realAbs\);/);
+  assert.match(source, /if \(error\?\.code === "ENOENT"\) return null;/);
   assert.match(source, /const text = await readUtf8ScopeFileWithinLimit\(realAbs, normalizedRel, beforeOpen\);/);
   assert.doesNotMatch(source, /readUtf8ScopeFileWithinLimit\(abs, normalizedRel\)/);
 });

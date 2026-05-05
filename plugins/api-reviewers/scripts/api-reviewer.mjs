@@ -952,6 +952,7 @@ async function readUtf8ScopeFileWithinLimit(filePath, normalizedRel, beforeOpen 
     if (error?.code === "ELOOP") {
       throw new Error(`unsafe_scope_path:${normalizedRel}`);
     }
+    if (error?.code === "ENOENT") return null;
     throw error;
   }
   try {

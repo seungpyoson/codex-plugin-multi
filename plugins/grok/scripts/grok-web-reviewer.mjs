@@ -359,7 +359,16 @@ function addScopeFile(files, normalizedRel, text, totalBytes) {
 
 async function readUtf8ScopeFileWithinLimit(filePath, normalizedRel, beforeOpen = null) {
   beforeOpen ??= await lstat(filePath);
-  const handle = await open(filePath, SCOPE_FILE_OPEN_FLAGS);
+  let handle;
+  try {
+    handle = await open(filePath, SCOPE_FILE_OPEN_FLAGS);
+  } catch (error) {
+    if (error?.code === "ELOOP") {
+      throw new Error(`unsafe_scope_path:${normalizedRel}`);
+    }
+    if (error?.code === "ENOENT") return null;
+    throw error;
+  }
   try {
     const info = await handle.stat();
     if (!info.isFile()) return null;
