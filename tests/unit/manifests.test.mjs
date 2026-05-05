@@ -306,6 +306,10 @@ test("claude, gemini, and kimi expose user-invocable skill fallbacks", () => {
     assert.match(skill, new RegExp(`${plugin}-companion\\.mjs"\\s+doctor\\b`));
     assertNoBracketedCliFlagsInShellFences(skill, rel);
     assert.match(skill, /--scope-base REF/, `${rel} missing branch-diff base-ref guidance`);
+    if (["gemini", "kimi"].includes(plugin)) {
+      assert.match(skill, /event:\s*"launched"/, `${rel} must render background launched envelopes`);
+      assert.match(skill, /background[\s\S]*external_review/, `${rel} must render background external_review cards`);
+    }
     if (plugin === "kimi") {
       assert.match(skill, /rescue[\s\S]*--max-steps-per-turn N/, `${rel} must document Kimi rescue step budget`);
     } else {

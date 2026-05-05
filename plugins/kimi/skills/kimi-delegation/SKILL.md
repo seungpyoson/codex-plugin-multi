@@ -71,8 +71,7 @@ For Kimi review, adversarial-review, custom-review, or rescue, add `--max-steps-
 
 ## Rendering
 
-Render companion JSON directly. If `external_review_launched` is present, render it immediately. If `external_review` is present, render it
-before normal prose.
+Render companion JSON directly. If `external_review_launched` is present, render it immediately. If a background launch envelope has `event: "launched"` with an `external_review` field, render the same launch card immediately with session pending. If `external_review` is present, render it before normal prose.
 
 Launch/result card:
 
