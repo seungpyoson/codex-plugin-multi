@@ -67,6 +67,20 @@ test("Sonar CPD excludes intentional packaging and entrypoint copies", () => {
   }
 });
 
+test("Grok lifecycle smoke tests clean up owned temp directories", () => {
+  const smoke = readFileSync(resolve("tests/smoke/grok-web.smoke.test.mjs"), "utf8");
+  for (const testName of [
+    "run rejects invalid lifecycle event mode as bad args",
+    "custom-review lifecycle jsonl suppresses launch event on scope failure",
+  ]) {
+    const start = smoke.indexOf(`test("${testName}"`);
+    assert.notEqual(start, -1, `${testName} not found`);
+    const next = smoke.indexOf("\ntest(", start + 1);
+    const block = smoke.slice(start, next === -1 ? smoke.length : next);
+    assert.match(block, /finally\s*\{[\s\S]*rmTree\(cwd\);[\s\S]*rmTree\(dataDir\);[\s\S]*\}/, `${testName} must clean cwd and dataDir in finally`);
+  }
+});
+
 test("manual E2E scripts are opt-in and documented", () => {
   assert.match(pkg.scripts["e2e:claude"] ?? "", /tests\/e2e\/claude\.e2e\.test\.mjs/);
   assert.match(pkg.scripts["e2e:gemini"] ?? "", /tests\/e2e\/gemini\.e2e\.test\.mjs/);
