@@ -123,6 +123,13 @@ test("companion background launch events use shared helper", () => {
   ]) {
     const source = readFileSync(resolve(rel), "utf8");
     assert.match(source, /externalReviewBackgroundLaunchedEvent/, `${rel} must use the shared background launch helper`);
+    const launches = [...source.matchAll(/const launched = externalReviewBackgroundLaunchedEvent/g)];
+    assert.equal(launches.length, 2, `${rel} must render run and continue background launch events`);
+    for (const launch of launches) {
+      const block = source.slice(launch.index, launch.index + 400);
+      assert.match(block, /printLifecycleJson\(launched, lifecycleEvents\)/,
+        `${rel} must render background launch events through printLifecycleJson`);
+    }
   }
 });
 

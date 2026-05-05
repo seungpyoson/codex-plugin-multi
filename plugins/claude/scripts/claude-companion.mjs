@@ -470,8 +470,7 @@ async function cmdRun(rest) {
       child.pid,
       externalReviewForInvocation(invocation),
     );
-    if (lifecycleEvents === "jsonl") printJsonLine(launched);
-    else printJson(launched);
+    printLifecycleJson(launched, lifecycleEvents);
     process.exit(0);
   }
 
@@ -953,8 +952,7 @@ async function cmdContinue(rest) {
       child.pid,
       externalReviewForInvocation(invocation),
     );
-    if (lifecycleEvents === "jsonl") printJsonLine(launched);
-    else printJson(launched);
+    printLifecycleJson(launched, lifecycleEvents);
     process.exit(0);
   }
   await executeRun(invocation, targetPrompt, { foreground: true, lifecycleEvents });
