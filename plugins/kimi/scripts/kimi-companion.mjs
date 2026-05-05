@@ -33,7 +33,6 @@ import {
   preflightDisclosure,
   preflightSafetyFields,
   printJson,
-  printJsonLine,
   printLifecycleJson,
   runKindFromRecord,
   summarizeScopeDirectory,

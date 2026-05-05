@@ -642,6 +642,41 @@ function applyRequestDefaults(requestBody, requestDefaults = {}) {
   return { ok: true };
 }
 
+function validateDirectApiRunPreflight(cfg, provider, env = process.env) {
+  if (cfg.auth_mode !== "api_key" && cfg.auth_mode !== "auto") {
+    return {
+      ok: false,
+      reason: "bad_args",
+      error: `${provider} auth_mode must be api_key or auto`,
+    };
+  }
+  const maxTokensOverride = parseMaxTokensOverride(env);
+  if (!maxTokensOverride.ok) {
+    return { ok: false, reason: "bad_args", error: maxTokensOverride.error };
+  }
+  const timeoutMs = parseProviderTimeoutMs(env);
+  if (!timeoutMs.ok) {
+    return { ok: false, reason: "bad_args", error: timeoutMs.error };
+  }
+  const credential = selectedCredential(cfg, env);
+  if (!credential.value) {
+    return {
+      ok: false,
+      reason: "missing_key",
+      error: `${cfg.display_name} API key is not available`,
+    };
+  }
+  const requestDefaultsProbe = applyRequestDefaults({
+    model: cfg.model,
+    messages: [],
+    temperature: 0,
+  }, cfg.request_defaults);
+  if (!requestDefaultsProbe.ok) {
+    return { ok: false, reason: "bad_args", error: requestDefaultsProbe.error };
+  }
+  return { ok: true, maxTokensOverride, timeoutMs, credential };
+}
+
 function redactor(env = process.env, configuredSecretNames = []) {
   const configured = new Set(configuredSecretNames);
   const secrets = Object.entries(env)
@@ -1046,18 +1081,9 @@ function mockProviderExecution(cfg, prompt, credential, env, requestBody) {
 }
 
 async function callProvider(provider, cfg, prompt, env = process.env) {
-  const maxTokensOverride = parseMaxTokensOverride(env);
-  if (!maxTokensOverride.ok) {
-    return providerFailure("bad_args", maxTokensOverride.error, null, null, false);
-  }
-  const timeoutMs = parseProviderTimeoutMs(env);
-  if (!timeoutMs.ok) {
-    return providerFailure("bad_args", timeoutMs.error, null, null, false);
-  }
-  const credential = selectedCredential(cfg, env);
-  if (!credential.value) {
-    return providerFailure("missing_key", `${cfg.display_name} API key is not available`, null, null, false);
-  }
+  const preflight = validateDirectApiRunPreflight(cfg, provider, env);
+  if (!preflight.ok) return providerFailure(preflight.reason, preflight.error, null, null, false);
+  const { credential, maxTokensOverride, timeoutMs } = preflight;
   const endpoint = `${baseUrlFor(cfg)}/chat/completions`;
   const requestBody = {
     model: cfg.model,
@@ -1521,23 +1547,9 @@ async function cmdRun(options) {
     } catch (e) {
       throw runBadArgs(e.message);
     }
-    if (cfg.auth_mode !== "api_key" && cfg.auth_mode !== "auto") {
-      throw runBadArgs(`bad_args: ${provider} auth_mode must be api_key or auto`);
-    }
-    const maxTokensOverride = parseMaxTokensOverride(process.env);
-    if (!maxTokensOverride.ok) throw runBadArgs(maxTokensOverride.error);
-    const timeoutMs = parseProviderTimeoutMs(process.env);
-    if (!timeoutMs.ok) throw runBadArgs(timeoutMs.error);
-    const credential = selectedCredential(cfg, process.env);
-    if (!credential.value) {
-      throw runProviderFailure("missing_key", `${cfg.display_name} API key is not available`);
-    }
-    const requestDefaultsProbe = applyRequestDefaults({
-      model: cfg.model,
-      messages: [],
-      temperature: 0,
-    }, cfg.request_defaults);
-    if (!requestDefaultsProbe.ok) throw runBadArgs(requestDefaultsProbe.error);
+    const preflight = validateDirectApiRunPreflight(cfg, provider, process.env);
+    if (!preflight.ok && preflight.reason === "bad_args") throw runBadArgs(preflight.error);
+    if (!preflight.ok) throw runProviderFailure(preflight.reason, preflight.error);
     scopeInfo = await collectScope({ ...runOptions, mode });
   } catch (e) {
     const redact = redactor();

@@ -245,6 +245,25 @@ test("direct reviewer branch-diff git calls use fixed safe PATH", () => {
   }
 });
 
+test("direct API reviewer launch gating and execution share preflight validation", () => {
+  const source = readFileSync(resolve("plugins/api-reviewers/scripts/api-reviewer.mjs"), "utf8");
+  assert.match(source, /function validateDirectApiRunPreflight/, "api reviewer must centralize preflight validation");
+  const usages = [...source.matchAll(/validateDirectApiRunPreflight\(/g)];
+  assert.equal(usages.length, 3, "api reviewer must use one shared helper from cmdRun and callProvider");
+
+  const cmdRunStart = source.indexOf("async function cmdRun");
+  assert.notEqual(cmdRunStart, -1, "cmdRun must exist");
+  const cmdRunBlock = source.slice(cmdRunStart, source.indexOf("\nasync function", cmdRunStart + 1));
+  assert.match(cmdRunBlock, /validateDirectApiRunPreflight\(cfg, provider, process\.env\)/,
+    "cmdRun launch gating must use the shared preflight helper before emitting lifecycle events");
+
+  const callProviderStart = source.indexOf("async function callProvider");
+  assert.notEqual(callProviderStart, -1, "callProvider must exist");
+  const callProviderBlock = source.slice(callProviderStart, source.indexOf("\nfunction ", callProviderStart + 1));
+  assert.match(callProviderBlock, /validateDirectApiRunPreflight\(cfg, provider, env\)/,
+    "callProvider must use the same preflight helper as launch gating");
+});
+
 test("companion continue commands accept lifecycle events", () => {
   for (const rel of [
     "plugins/claude/scripts/claude-companion.mjs",
