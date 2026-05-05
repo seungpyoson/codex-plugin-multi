@@ -480,10 +480,7 @@ async function cmdRun(rest) {
 // prompt; background worker calls it after reading the prompt sidecar.
 // EXACTLY ONE buildJobRecord call per terminal state — §21.3.2 convergence.
 async function executeRun(invocation, prompt, { foreground, lifecycleEvents = null }) {
-  const {
-    job_id: jobId, mode, model, cwd, workspace_root: workspaceRoot,
-    dispose_effective: disposeEffective,
-  } = invocation;
+  const { job_id: jobId, mode, workspace_root: workspaceRoot } = invocation;
   const profile = resolveProfile(invocation.mode_profile_name);
   const executionScope = setupExecutionScopeOrExit(invocation, profile, { foreground, lifecycleEvents });
   const mutationContext = prepareMutationContext(invocation, profile);
