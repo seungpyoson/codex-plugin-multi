@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -456,6 +456,16 @@ for (const mode of ["review", "adversarial-review", "custom-review"]) {
   }));
 }
 
+test("kimi adversarial prompt uses invocation mode, not profile name, for mode line", () => withRepo((cwd) => {
+  const result = runCompanion(kimiPromptAssertionArgs(cwd, "adversarial-review"), {
+    cwd,
+    env: {
+      KIMI_MOCK_ASSERT_PROMPT_INCLUDES: "You are performing an adversarial code review.",
+    },
+  });
+  assert.equal(result.status, 0, result.stderr);
+}));
+
 test("kimi foreground review timeout returns actionable JobRecord", () => withRepo((cwd) => {
   const result = runCompanion([
     "run",
@@ -538,6 +548,91 @@ test("kimi background run: launched event and terminal JobRecord carry external_
   } finally {
     await waitForProcessExit(launchedPid);
     rmSync(result.dataDir, { recursive: true, force: true });
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("kimi _run-worker: cancel marker removes prompt sidecar before target spawn", () => withRepo((cwd) => {
+  const dataDir = mkdtempSync(path.join(tmpdir(), "kimi-worker-cancel-data-"));
+  try {
+    const runRes = runCompanion([
+      "run",
+      "--mode",
+      "custom-review",
+      "--cwd",
+      cwd,
+      "--scope-paths",
+      "seed.txt",
+      "--foreground",
+      "--",
+      "Review this scope.",
+    ], { cwd, dataDir });
+    assert.equal(runRes.status, 0, runRes.stderr);
+    const { metaPath, record } = readOnlyJobRecord(dataDir);
+    writeFileSync(metaPath,
+      `${JSON.stringify({ ...record, status: "queued", pid_info: null }, null, 2)}\n`, "utf8");
+
+    const wsDir = path.dirname(metaPath);
+    const markerDir = path.join(wsDir, record.job_id);
+    mkdirSync(markerDir, { recursive: true });
+    const promptPath = path.join(markerDir, "prompt.txt");
+    writeFileSync(promptPath, "queued prompt with selected source\n", { mode: 0o600 });
+    const markerPath = path.join(markerDir, "cancel-requested.flag");
+    writeFileSync(markerPath, `${new Date().toISOString()}\n`);
+
+    const workerRes = spawnSync("node", [
+      COMPANION,
+      "_run-worker",
+      "--cwd",
+      cwd,
+      "--job",
+      record.job_id,
+    ], {
+      cwd,
+      encoding: "utf8",
+      env: { ...process.env, KIMI_BINARY: MOCK, KIMI_PLUGIN_DATA: dataDir },
+    });
+    assert.equal(workerRes.status, 0, workerRes.stderr);
+
+    const finalMeta = JSON.parse(readFileSync(metaPath, "utf8"));
+    assert.equal(finalMeta.status, "cancelled");
+    assert.equal(finalMeta.pid_info, null);
+    assert.equal(existsSync(markerPath), false,
+      "worker must consume queued cancel marker");
+    assert.equal(existsSync(promptPath), false,
+      "worker must remove prompt sidecar when queued cancel prevents target spawn");
+  } finally {
+    rmSync(dataDir, { recursive: true, force: true });
+  }
+}));
+
+test("kimi background worker spawn failure writes failed JobRecord instead of launched", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "kimi-bg-spawn-fail-runner-"));
+  const missingCwd = path.join(cwd, "missing-cwd");
+  const { stdout, stderr, status, dataDir } = runCompanion(
+    ["run", "--mode=rescue", "--background", "--model", "kimi-k2-0905",
+     "--cwd", missingCwd, "--", "background rescue task"],
+    { cwd },
+  );
+  try {
+    assert.notEqual(status, 0, "launcher must fail instead of emitting a false launched event");
+    const error = JSON.parse(stdout);
+    assert.equal(error.error, "spawn_failed");
+    assert.match(error.message, /background worker spawn failed/);
+    assert.match(stderr, /background worker spawn failed/);
+
+    const { metaPath, record } = readOnlyJobRecord(dataDir);
+    assert.equal(record.status, "failed");
+    assert.equal(record.cwd, missingCwd);
+    assert.match(record.error_message, /background worker spawn failed/);
+    assert.equal("prompt" in record, false, "full prompt must not appear on JobRecord");
+    assert.equal(
+      existsSync(path.join(path.dirname(metaPath), record.job_id, "prompt.txt")),
+      false,
+      "prompt sidecar must be removed when the worker never launches",
+    );
+  } finally {
+    rmSync(dataDir, { recursive: true, force: true });
     rmSync(cwd, { recursive: true, force: true });
   }
 });
@@ -1129,5 +1224,20 @@ for (const mode of ["review", "adversarial-review", "custom-review"]) {
       `Kimi review must run from a neutral temp cwd under ${tmpRoot}; got ${fx.t7_cwd}`);
     assert.equal(fx.t7_include_dirs.includes(fx.t7_cwd), false, "neutral cwd must not be the scoped include directory");
     assert.equal(existsSync(fx.t7_cwd), false, `neutral Kimi cwd must be cleaned after the run: ${fx.t7_cwd}`);
+    assert.equal(persisted.review_metadata.prompt_contract_version, 1);
+    assert.equal(persisted.review_metadata.prompt_provider, "Kimi");
+    assert.equal(persisted.review_metadata.raw_output.parsed_ok, true);
+    assert.match(persisted.review_metadata.audit_manifest.rendered_prompt_hash.value, /^[a-f0-9]{64}$/);
+    assert.equal(persisted.review_metadata.audit_manifest.request.model, persisted.model);
+    assert.match(persisted.review_metadata.audit_manifest.prompt_builder.plugin_commit, /^[a-f0-9]{40}$/);
+    assert.notEqual(
+      persisted.review_metadata.audit_manifest.prompt_builder.plugin_commit,
+      persisted.review_metadata.audit_manifest.git_identity.head_sha,
+      "plugin_commit must identify the plugin source, not the reviewed repository head"
+    );
+    assert.equal(persisted.review_metadata.audit_manifest.scope_resolution.scope, persisted.scope);
+    assert.equal(persisted.review_metadata.audit_manifest.selected_source.files.length > 0, true);
+    assert.equal(JSON.stringify(persisted.review_metadata.audit_manifest).includes("review: x=1"), false);
+    assert.equal(JSON.stringify(persisted.review_metadata.audit_manifest).includes("seed\\n"), false);
   }));
 }

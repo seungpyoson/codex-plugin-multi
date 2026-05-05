@@ -39,7 +39,19 @@ comes back to you.
   "scope_paths":         null | ["<glob>"], // custom scope globs if any
 
   "prompt_head":         "<first 200 chars>", // spec §21.3.1 — no full prompt persisted
-  "review_metadata":     null | { "prompt_contract_version": 1, "prompt_provider": "Claude|Gemini|Kimi", "scope": "working-tree|branch-diff|staged|head|custom", "scope_base": null | "<ref>", "scope_paths": null | ["<glob>"], "raw_output": null | { "stdout_bytes": N, "stderr_bytes": N, "parsed_ok": true | false | null, "result_chars": N | null } },
+  "review_metadata":     null | {
+    "prompt_contract_version": 1,
+    "prompt_provider":  "Claude Code|Gemini CLI|Kimi",
+    "scope":            "working-tree|branch-diff|staged|head|custom",
+    "scope_base":       null | "<ref>",
+    "scope_paths":      null | ["<glob>"],
+    "raw_output":       null | {
+      "stdout_bytes":   0,
+      "stderr_bytes":   0,
+      "parsed_ok":      null | true | false,
+      "result_chars":   null | 0
+    }
+  },
   "schema_spec":         null | "<json-schema-string>",
   "binary":              "claude",
 
@@ -47,7 +59,7 @@ comes back to you.
   "started_at":          "<iso-8601>",
   "ended_at":            null | "<iso-8601>",
   "exit_code":           null | 0 | 1 | 2,
-  "error_code":          null | "scope_failed" | "spawn_failed" | "claude_error" | "gemini_error" | "kimi_error" | "parse_error" | "step_limit_exceeded" | "finalization_failed" | "timeout" | "stale_active_job",
+  "error_code":          null | "scope_failed" | "spawn_failed" | "claude_error" | "gemini_error" | "kimi_error" | "parse_error" | "step_limit_exceeded" | "usage_limited" | "finalization_failed" | "timeout" | "stale_active_job",
   "error_message":       null | "<human>",
   "error_summary":       null | "<short operator-facing summary>",
   "error_cause":         null | "<why this happened>",
@@ -67,6 +79,26 @@ comes back to you.
     "disclosure":        "<external disclosure statement>"
   },
   "disclosure_note":     null | "<what was or was not sent externally>",
+  "runtime_diagnostics": null | {
+    "add_dir":           null | "<exact --add-dir path>",
+    "child_cwd":         null | "<exact child process cwd>",
+    "scope_path_mappings": [
+      {
+        "original":      "<source repo path>",
+        "contained":     "<contained copied path>",
+        "relative":      "<relative selected path>",
+        "inside_add_dir": true | false
+      }
+    ],
+    "permission_denials": [
+      {
+        "tool":          null | "<tool>",
+        "target":        null | "<path or denied target>",
+        "inside_add_dir": null | true | false,
+        "relative_to_add_dir": null | "<relative path>"
+      }
+    ]
+  },
 
   "result":              null | "<text from Claude>",  // null on queued; "" allowed on schema runs
   "structured_output":   null | { ... },                // populated on --json-schema runs
@@ -189,6 +221,9 @@ from short-lived index contention.
 - `step_limit_exceeded` — Kimi exhausted its configured step budget after
   launch. Selected source content was sent; render the diagnostic fields and
   suggest continuing/resuming the job if a provider session id is available.
+- `usage_limited` — Kimi reported a quota, usage-limit, billing-cycle, or
+  credit-limit failure before returning JSON. Selected source content may have
+  been sent; render `error_summary`, `error_cause`, and `suggested_action`.
 - `finalization_failed` — the target ran, but the companion failed while
   writing the terminal record or state. Render the structured diagnostic
   fields and preserve `error_message`; this is an operator/storage failure,

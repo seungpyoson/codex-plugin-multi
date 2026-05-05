@@ -68,7 +68,7 @@ function notSentSpawnFailed(provider) {
   return `Selected source content was not sent to ${provider}; the target process was not spawned.`;
 }
 
-test("JobRecord schema_version is bumped for delegated review metadata", () => {
+test("JobRecord schema_version is bumped for delegated review metadata and runtime diagnostics", () => {
   assert.equal(SCHEMA_VERSION, 10);
   assert.equal(GEMINI_SCHEMA_VERSION, 10);
   assert.equal(KIMI_SCHEMA_VERSION, 10);
@@ -94,7 +94,7 @@ function makeInvocation(overrides = {}) {
     scope_paths: null,
     prompt_head: "review: x=1",
     review_prompt_contract_version: 1,
-    review_prompt_provider: "Claude",
+    review_prompt_provider: "Claude Code",
     schema_spec: null,
     binary: "claude",
     started_at: "2026-04-24T12:00:00.000Z",
@@ -139,6 +139,7 @@ test("EXPECTED_KEYS is the spec §21.3 canonical list", () => {
     "prompt_head", "review_metadata", "schema_spec", "binary",
     "status", "started_at", "ended_at", "exit_code", "error_code", "error_message",
     "error_summary", "error_cause", "suggested_action", "external_review", "disclosure_note",
+    "runtime_diagnostics",
     "result", "structured_output", "permission_denials", "mutations",
     "cost_usd", "usage",
     "schema_version",
@@ -179,6 +180,20 @@ test("buildJobRecord: foreground success path has EXACTLY the expected keys", ()
   assert.deepEqual(rec.permission_denials, []);
   assert.deepEqual(rec.mutations, []);
   assert.equal(rec.prompt_head, "review: x=1");
+  assert.deepEqual(rec.review_metadata, {
+    prompt_contract_version: 1,
+    prompt_provider: "Claude Code",
+    scope: "working-tree",
+    scope_base: null,
+    scope_paths: null,
+    raw_output: {
+      stdout_bytes: 0,
+      stderr_bytes: 0,
+      parsed_ok: true,
+      result_chars: 4,
+    },
+    audit_manifest: null,
+  });
   assert.equal("prompt" in rec, false,
     "§21.3.1 forbids a full `prompt` field on persisted records");
   assert.equal(rec.claude_session_id, CLAUDE_UUID,
@@ -204,6 +219,38 @@ test("buildJobRecord: foreground success path has EXACTLY the expected keys", ()
   });
   assert.equal(rec.schema_version, SCHEMA_VERSION);
   assert.equal(rec.id, rec.job_id, "id is legacy alias for job_id");
+});
+
+test("buildJobRecord: review_metadata persists privacy-safe audit manifests for every companion", () => {
+  const auditManifest = Object.freeze({
+    schema_version: 1,
+    rendered_prompt_hash: { algorithm: "sha256", value: "a".repeat(64) },
+    selected_source: { files: [], totals: { files: 0, bytes: 0, lines: 0 } },
+  });
+  const parsed = { ok: true, result: "Verdict: approve", structured: null, denials: [] };
+  const providers = [
+    [
+      buildJobRecord,
+      makeInvocation(),
+      { parsed, pidInfo: makePidInfo(), claudeSessionId: CLAUDE_UUID, stdout: "ok", stderr: "" },
+    ],
+    [
+      buildGeminiJobRecord,
+      makeInvocation({ target: "gemini", binary: "gemini", review_prompt_provider: "Gemini CLI" }),
+      { parsed, pidInfo: makePidInfo(), geminiSessionId: GEMINI_UUID, stdout: "ok", stderr: "" },
+    ],
+    [
+      buildKimiJobRecord,
+      makeInvocation({ target: "kimi", binary: "kimi", review_prompt_provider: "Kimi Code" }),
+      { parsed, pidInfo: makePidInfo(), kimiSessionId: "kimi-session-123", stdout: "ok", stderr: "" },
+    ],
+  ];
+
+  for (const [providerBuildJobRecord, invocation, execution] of providers) {
+    const rec = providerBuildJobRecord(invocation, { ...execution, reviewAuditManifest: auditManifest }, []);
+    assert.equal(rec.review_metadata.audit_manifest, auditManifest);
+    assert.equal(JSON.stringify(rec).includes("full prompt text"), false);
+  }
 });
 
 test("buildJobRecord: queued/pre-run state (no execution)", () => {
@@ -302,6 +349,236 @@ test("buildJobRecord: running state preserves pid_info and has no end time", () 
   assert.equal(rec.result, null);
   assert.equal(rec.error_code, null);
   assert.equal(rec.error_message, null);
+  assert.equal(rec.runtime_diagnostics, null);
+});
+
+test("buildJobRecord: persists runtime diagnostics and classifies permission-denial targets", () => {
+  const addDir = "/tmp/claude-worktree-abc123";
+  const rec = buildJobRecord(makeInvocation({
+    scope: "custom",
+    scope_paths: ["PR23.diff"],
+  }), {
+    exitCode: 0,
+    parsed: {
+      ok: true,
+      result: "done",
+      structured: null,
+      denials: [
+        { tool: "Read", target: "/tmp/claude-worktree-abc123/PR23.diff" },
+        { name: "Read", path: "/tmp/claude-worktree-abc123/other.diff" },
+        "/tmp/claude-worktree-abc123",
+        { tool: "Read", target: "/tmp/src/private.log" },
+        { tool: "Read", file: "relative-private.log" },
+        { tool: "Bash", command: "pwd" },
+      ],
+      costUsd: null,
+      usage: null,
+    },
+    pidInfo: makePidInfo(),
+    claudeSessionId: CLAUDE_UUID,
+    runtimeDiagnostics: {
+      add_dir: addDir,
+      child_cwd: addDir,
+      scope_path_mappings: [{
+        original: "/tmp/src/PR23.diff",
+        contained: "/tmp/claude-worktree-abc123/PR23.diff",
+        relative: "PR23.diff",
+        inside_add_dir: true,
+      }],
+    },
+  }, []);
+
+  assert.deepEqual(rec.runtime_diagnostics.scope_path_mappings, [{
+    original: "/tmp/src/PR23.diff",
+    contained: "/tmp/claude-worktree-abc123/PR23.diff",
+    relative: "PR23.diff",
+    inside_add_dir: true,
+  }]);
+  assert.deepEqual(rec.runtime_diagnostics.permission_denials, [
+    {
+      tool: "Read",
+      target: "/tmp/claude-worktree-abc123/PR23.diff",
+      inside_add_dir: true,
+      relative_to_add_dir: "PR23.diff",
+    },
+    {
+      tool: "Read",
+      target: "/tmp/claude-worktree-abc123/other.diff",
+      inside_add_dir: true,
+      relative_to_add_dir: "other.diff",
+    },
+    {
+      tool: null,
+      target: "/tmp/claude-worktree-abc123",
+      inside_add_dir: true,
+      relative_to_add_dir: ".",
+    },
+    {
+      tool: "Read",
+      target: "/tmp/src/private.log",
+      inside_add_dir: false,
+      relative_to_add_dir: null,
+    },
+    {
+      tool: "Read",
+      target: "relative-private.log",
+      inside_add_dir: null,
+      relative_to_add_dir: null,
+    },
+    {
+      tool: "Bash",
+      target: null,
+      inside_add_dir: null,
+      relative_to_add_dir: null,
+    },
+  ]);
+});
+
+test("gemini buildJobRecord: persists runtime diagnostics and classifies permission-denial targets", () => {
+  const addDir = "/tmp/gemini-worktree-abc123";
+  const rec = buildGeminiJobRecord(makeInvocation({
+    target: "gemini",
+    binary: "gemini",
+    scope: "custom",
+    scope_paths: ["PR23.diff"],
+  }), {
+    exitCode: 0,
+    parsed: {
+      ok: true,
+      result: "done",
+      structured: null,
+      denials: [
+        { name: "Read", path: "/tmp/gemini-worktree-abc123/PR23.diff" },
+        "/tmp/src/private.log",
+      ],
+    },
+    pidInfo: makePidInfo(),
+    geminiSessionId: GEMINI_UUID,
+    runtimeDiagnostics: {
+      add_dir: addDir,
+      child_cwd: addDir,
+      scope_path_mappings: [{
+        original: "/tmp/src/PR23.diff",
+        contained: "/tmp/gemini-worktree-abc123/PR23.diff",
+        relative: "PR23.diff",
+        inside_add_dir: true,
+      }],
+    },
+  }, []);
+
+  assert.deepEqual(rec.runtime_diagnostics.permission_denials, [
+    {
+      tool: "Read",
+      target: "/tmp/gemini-worktree-abc123/PR23.diff",
+      inside_add_dir: true,
+      relative_to_add_dir: "PR23.diff",
+    },
+    {
+      tool: null,
+      target: "/tmp/src/private.log",
+      inside_add_dir: false,
+      relative_to_add_dir: null,
+    },
+  ]);
+});
+
+test("kimi buildJobRecord: persists runtime diagnostics and classifies permission-denial targets", () => {
+  const addDir = "/tmp/kimi-worktree-abc123";
+  const rec = buildKimiJobRecord(makeInvocation({
+    target: "kimi",
+    binary: "kimi",
+    scope: "custom",
+    scope_paths: ["PR23.diff"],
+  }), {
+    exitCode: 0,
+    parsed: {
+      ok: true,
+      result: "done",
+      structured: null,
+      denials: [
+        { tool: "Read", file_path: "/tmp/kimi-worktree-abc123/PR23.diff" },
+        { name: "Read", file: "/tmp/kimi-worktree-abc123" },
+        "/tmp/src/private.log",
+        { tool: "Bash", command: "pwd" },
+      ],
+    },
+    pidInfo: makePidInfo(),
+    kimiSessionId: "kimi-session-123",
+    runtimeDiagnostics: {
+      add_dir: addDir,
+      child_cwd: addDir,
+      scope_path_mappings: [{
+        original: "/tmp/src/PR23.diff",
+        contained: "/tmp/kimi-worktree-abc123/PR23.diff",
+        relative: "PR23.diff",
+        inside_add_dir: true,
+      }],
+    },
+  }, []);
+
+  assert.deepEqual(rec.runtime_diagnostics.permission_denials, [
+    {
+      tool: "Read",
+      target: "/tmp/kimi-worktree-abc123/PR23.diff",
+      inside_add_dir: true,
+      relative_to_add_dir: "PR23.diff",
+    },
+    {
+      tool: "Read",
+      target: "/tmp/kimi-worktree-abc123",
+      inside_add_dir: true,
+      relative_to_add_dir: ".",
+    },
+    {
+      tool: null,
+      target: "/tmp/src/private.log",
+      inside_add_dir: false,
+      relative_to_add_dir: null,
+    },
+    {
+      tool: "Bash",
+      target: null,
+      inside_add_dir: null,
+      relative_to_add_dir: null,
+    },
+  ]);
+});
+
+test("buildJobRecord: malformed runtime diagnostics normalize to privacy-safe empty diagnostics", () => {
+  const providers = [
+    [buildJobRecord, makeInvocation(), { claudeSessionId: CLAUDE_UUID }],
+    [
+      buildGeminiJobRecord,
+      makeInvocation({ target: "gemini", binary: "gemini" }),
+      { geminiSessionId: GEMINI_UUID },
+    ],
+    [
+      buildKimiJobRecord,
+      makeInvocation({ target: "kimi", binary: "kimi" }),
+      { kimiSessionId: "kimi-session-123" },
+    ],
+  ];
+
+  for (const [providerBuildJobRecord, invocation, sessionFields] of providers) {
+    const rec = providerBuildJobRecord(invocation, {
+      exitCode: 0,
+      parsed: { ok: true, result: "done", structured: null, denials: "not-an-array" },
+      pidInfo: makePidInfo(),
+      runtimeDiagnostics: {
+        add_dir: 42,
+        child_cwd: false,
+        scope_path_mappings: "not-an-array",
+      },
+      ...sessionFields,
+    }, []);
+
+    assert.deepEqual(rec.runtime_diagnostics, {
+      add_dir: null,
+      child_cwd: null,
+      scope_path_mappings: [],
+      permission_denials: [],
+    });
+  }
 });
 
 test("buildJobRecord: gemini success path stores gemini_session_id, not claude_session_id", () => {
@@ -749,6 +1026,31 @@ test("kimi buildJobRecord: step-limit exhaustion is actionable, not parse_error"
   assert.match(rec.error_summary, /step limit/i);
   assert.match(rec.suggested_action, /higher step budget/i);
   assert.match(rec.suggested_action, /narrower scope/i);
+});
+
+test("kimi buildJobRecord: usage limits are actionable and documented", () => {
+  const rec = buildKimiJobRecord(makeInvocation({ target: "kimi", binary: "kimi" }), {
+    exitCode: 1,
+    parsed: {
+      ok: false,
+      reason: "usage_limited",
+      error: "Credit limit exceeded. Usage will reset next billing cycle.",
+      result: null,
+      structured: null,
+      denials: [],
+    },
+    pidInfo: makePidInfo(),
+    kimiSessionId: null,
+  }, []);
+  assert.equal(rec.status, "failed");
+  assert.equal(rec.error_code, "usage_limited");
+  assert.equal(rec.error_message, "Credit limit exceeded. Usage will reset next billing cycle.");
+  assert.match(rec.error_summary, /usage limit/i);
+  assert.match(rec.error_cause, /quota|billing|usage/i);
+  assert.match(rec.suggested_action, /usage/i);
+  const skill = readFileSync(resolvePath("plugins/claude/skills/claude-result-handling/SKILL.md"), "utf8");
+  assert.match(skill, /"usage_limited"/);
+  assert.match(skill, /`usage_limited`/);
 });
 
 test("kimi buildJobRecord: timeout diagnostics use Claude target display name", () => {

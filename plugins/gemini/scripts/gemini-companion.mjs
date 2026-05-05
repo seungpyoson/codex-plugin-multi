@@ -3,7 +3,7 @@ import { fileURLToPath } from "node:url";
 import { dirname, join as joinPath, resolve as resolvePath } from "node:path";
 import {
   existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, unlinkSync,
-  writeFileSync, chmodSync, readdirSync, statSync,
+  writeFileSync, chmodSync, readdirSync, statSync, lstatSync,
 } from "node:fs";
 import { execFileSync, spawn } from "node:child_process";
 import { tmpdir } from "node:os";
@@ -42,7 +42,7 @@ import {
   summarizeScopeDirectory,
   writePromptSidecar,
 } from "./lib/companion-common.mjs";
-import { REVIEW_PROMPT_CONTRACT_VERSION, buildReviewPrompt } from "./lib/review-prompt.mjs";
+import { REVIEW_PROMPT_CONTRACT_VERSION, buildReviewAuditManifest, buildReviewPrompt } from "./lib/review-prompt.mjs";
 
 const PLUGIN_ROOT = resolvePath(dirname(fileURLToPath(import.meta.url)), "..");
 const MODELS_CONFIG_PATH = resolvePath(PLUGIN_ROOT, "config/models.json");
@@ -72,8 +72,8 @@ function fail(code, message, details = {}) {
 function targetPromptFor(invocation, userPrompt) {
   if (invocation.mode_profile_name === "rescue") return userPrompt;
   return buildReviewPrompt({
-    provider: "Gemini",
-    mode: invocation.mode_profile_name,
+    provider: "Gemini CLI",
+    mode: invocation.mode,
     repository: invocation.workspace_root ?? null,
     baseRef: invocation.scope_base,
     baseCommit: gitCommitForPrompt(invocation.cwd, invocation.scope_base),
@@ -97,6 +97,114 @@ function gitCommitForPrompt(cwd, ref) {
   } catch {
     return null;
   }
+}
+
+function gitText(args, cwd) {
+  try {
+    return execFileSync(GIT_PROMPT_BINARY, ["-C", cwd, ...args], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+      env: cleanGitPromptEnv(),
+    }).trim() || null;
+  } catch {
+    return null;
+  }
+}
+
+function repositoryIdentity(cwd, workspaceRoot) {
+  const remote = gitText(["remote", "get-url", "origin"], cwd);
+  if (!remote) return workspaceRoot;
+  const match = /[:/]([^/:]+\/[^/]+?)(?:\.git)?$/.exec(remote);
+  return match ? match[1] : remote;
+}
+
+function promptMetadata(invocation) {
+  return {
+    repository: repositoryIdentity(invocation.cwd, invocation.workspace_root),
+    baseRef: invocation.scope_base ?? null,
+    baseCommit: gitCommitForPrompt(invocation.cwd, invocation.scope_base),
+    headRef: gitText(["branch", "--show-current"], invocation.cwd) ?? "HEAD",
+    headCommit: gitCommitForPrompt(invocation.cwd, "HEAD"),
+  };
+}
+
+function pluginSourceCommit() {
+  return gitCommitForPrompt(PLUGIN_ROOT, "HEAD");
+}
+
+function listContainedFiles(root, dir = root, prefix = "") {
+  const out = [];
+  for (const name of readdirSync(dir)) {
+    if (name === ".git") continue;
+    const full = resolvePath(dir, name);
+    const rel = prefix ? `${prefix}/${name}` : name;
+    const lst = lstatSync(full);
+    if (lst.isSymbolicLink()) continue;
+    if (lst.isDirectory()) out.push(...listContainedFiles(root, full, rel));
+    else out.push(rel);
+  }
+  return out.sort((a, b) => a.localeCompare(b));
+}
+
+function auditSourceFiles(containmentPath) {
+  if (!containmentPath || !existsSync(containmentPath)) return [];
+  return listContainedFiles(containmentPath).map((path) => ({
+    path,
+    content: readFileSync(resolvePath(containmentPath, path)),
+  }));
+}
+
+function scopeResolutionReason(invocation) {
+  const paths = invocation.scope_paths;
+  if (invocation.scope === "branch-diff") {
+    if (Array.isArray(paths) && paths.length > 0) {
+      return `git diff -z --name-only ${invocation.scope_base ?? "main"}...HEAD -- filtered by explicit --scope-paths`;
+    }
+    return `git diff -z --name-only ${invocation.scope_base ?? "main"}...HEAD --`;
+  }
+  if (Array.isArray(paths) && paths.length > 0) return "explicit --scope-paths";
+  return invocation.scope ?? null;
+}
+
+function reviewAuditManifest(invocation, prompt, containmentPath, execution) {
+  if (!invocation.review_prompt_contract_version || invocation.mode_profile_name === "rescue") return null;
+  const meta = promptMetadata(invocation);
+  return buildReviewAuditManifest({
+    prompt,
+    sourceFiles: auditSourceFiles(containmentPath),
+    git: {
+      remote: meta.repository,
+      branch: meta.headRef,
+      baseRef: meta.baseRef,
+      baseCommit: meta.baseCommit,
+      headRef: meta.headRef,
+      headCommit: meta.headCommit,
+    },
+    promptBuilder: {
+      contractVersion: invocation.review_prompt_contract_version,
+      pluginVersion: "0.1.0",
+      pluginCommit: pluginSourceCommit(),
+    },
+    request: {
+      provider: invocation.review_prompt_provider ?? "Gemini CLI",
+      model: invocation.model,
+      timeoutMs: null,
+      maxTokens: null,
+      maxStepsPerTurn: null,
+      temperature: null,
+    },
+    truncation: { prompt: false, source: false, output: false },
+    providerIds: { sessionId: execution?.geminiSessionId ?? null },
+    scope: {
+      name: invocation.scope,
+      base: invocation.scope_base ?? null,
+      paths: invocation.scope_paths ?? null,
+      reason: scopeResolutionReason(invocation),
+    },
+    result: execution?.parsed?.result ?? "",
+    status: execution?.exitCode === 0 && execution?.parsed?.ok === true ? "completed" : "failed",
+    errorCode: execution?.parsed?.reason ?? null,
+  });
 }
 
 function cleanGitPromptEnv() {
@@ -363,7 +471,7 @@ async function cmdRun(rest) {
     scope_paths: scopePaths,
     prompt_head: prompt.slice(0, 200),
     review_prompt_contract_version: profile.name === "rescue" ? null : REVIEW_PROMPT_CONTRACT_VERSION,
-    review_prompt_provider: profile.name === "rescue" ? null : "Gemini",
+    review_prompt_provider: profile.name === "rescue" ? null : "Gemini CLI",
     schema_spec: null,
     binary: options.binary ?? process.env.GEMINI_BINARY ?? "gemini",
     run_kind: options.background ? "background" : "foreground",
@@ -424,7 +532,14 @@ async function executeRun(invocation, prompt, { foreground, lifecycleEvents = nu
   recordPostRunMutations(invocation, mutationContext);
 
   const cancelMarker = consumeCancelMarker(workspaceRoot, jobId);
-  const finalRecord = buildGeminiFinalRecord(executedInvocation, execution, cancelMarker, mutationContext.mutations);
+  const finalRecord = buildGeminiFinalRecord(
+    executedInvocation,
+    execution,
+    cancelMarker,
+    mutationContext.mutations,
+    prompt,
+    executionScope.containment.path,
+  );
   const { metaError, stateError } = commitJobRecord(workspaceRoot, jobId, finalRecord);
 
   writeExecutionSidecars(workspaceRoot, jobId, execution);
@@ -599,7 +714,8 @@ function writeGitStatusAfterSidecar(invocation, gitStatusAfter) {
   }
 }
 
-function buildGeminiFinalRecord(invocation, execution, cancelMarker, mutations) {
+function buildGeminiFinalRecord(invocation, execution, cancelMarker, mutations, prompt, containmentPath) {
+  execution.reviewAuditManifest = reviewAuditManifest(invocation, prompt, containmentPath, execution);
   return buildJobRecord(invocation, {
     exitCode: execution.exitCode,
     parsed: execution.parsed,
@@ -608,6 +724,7 @@ function buildGeminiFinalRecord(invocation, execution, cancelMarker, mutations) 
     ...(cancelMarker ? { status: "cancelled" } : {}),
     signal: execution.signal ?? null,
     timedOut: execution.timedOut === true,
+    reviewAuditManifest: execution.reviewAuditManifest,
   }, mutations);
 }
 
@@ -713,6 +830,7 @@ async function cmdRunWorker(rest) {
   // call, side effects) and only the post-run consumer at executeRun would
   // convert "completed" → "cancelled".
   if (consumeCancelMarker(workspaceRoot, options.job)) {
+    try { consumePromptSidecar(resolveJobsDir(workspaceRoot), options.job); } catch { /* best-effort privacy cleanup */ }
     const cancelledRecord = buildJobRecord(invocationFromRecord(meta), {
       status: "cancelled",
       exitCode: null, parsed: null, pidInfo: null, geminiSessionId: null,
@@ -835,7 +953,7 @@ async function cmdContinue(rest) {
     scope_paths: prior.scope_paths ?? null,
     prompt_head: prompt.slice(0, 200),
     review_prompt_contract_version: priorProfile.name === "rescue" ? null : REVIEW_PROMPT_CONTRACT_VERSION,
-    review_prompt_provider: priorProfile.name === "rescue" ? null : "Gemini",
+    review_prompt_provider: priorProfile.name === "rescue" ? null : "Gemini CLI",
     schema_spec: prior.schema_spec ?? null,
     binary: options.binary ?? process.env.GEMINI_BINARY ?? "gemini",
     run_kind: options.background ? "background" : "foreground",

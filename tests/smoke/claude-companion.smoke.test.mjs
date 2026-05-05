@@ -112,7 +112,7 @@ test("run --mode=review --foreground: emits JobRecord with status=completed", ()
   const { stdout, stderr, status, dataDir } = runCompanion(
     ["run", "--mode=review", "--foreground", "--model", "claude-haiku-4-5-20251001",
      "--cwd", cwd, "--", "review: x=1"],
-    { cwd }
+    { cwd, env: { CLAUDE_MOCK_ASSERT_PROMPT_INCLUDES: "Provider: Claude Code" } }
   );
   try {
     assert.equal(status, 0, `exit ${status}: stderr=${stderr}`);
@@ -124,7 +124,22 @@ test("run --mode=review --foreground: emits JobRecord with status=completed", ()
     assert.ok(result.job_id, "job_id set");
     assert.equal(result.result, "Mock Claude response.");
     assert.deepEqual(result.permission_denials, []);
-    assert.equal(result.schema_version, 10, "schema_version bumped for delegated review metadata");
+    assert.equal(result.schema_version, 10, "schema_version bumped for delegated review metadata and runtime diagnostics");
+    assert.equal(result.review_metadata.prompt_contract_version, 1);
+    assert.equal(result.review_metadata.prompt_provider, "Claude Code");
+    assert.equal(result.review_metadata.raw_output.parsed_ok, true);
+    assert.match(result.review_metadata.audit_manifest.rendered_prompt_hash.value, /^[a-f0-9]{64}$/);
+    assert.equal(result.review_metadata.audit_manifest.request.model, "claude-haiku-4-5-20251001");
+    assert.equal(result.review_metadata.audit_manifest.request.timeout_ms, null);
+    assert.match(result.review_metadata.audit_manifest.prompt_builder.plugin_commit, /^[a-f0-9]{40}$/);
+    assert.notEqual(
+      result.review_metadata.audit_manifest.prompt_builder.plugin_commit,
+      result.review_metadata.audit_manifest.git_identity.head_sha,
+      "plugin_commit must identify the plugin source, not the reviewed repository head"
+    );
+    assert.equal(result.review_metadata.audit_manifest.scope_resolution.scope, result.scope);
+    assert.equal(result.review_metadata.audit_manifest.selected_source.files.length > 0, true);
+    assert.equal(JSON.stringify(result.review_metadata.audit_manifest).includes("review: x=1"), false);
     assert.equal("prompt" in result, false,
       "§21.3.1: full prompt must not appear on JobRecord");
     assert.equal("ok" in result, false,
@@ -1019,10 +1034,51 @@ test("adversarial-review scope=branch-diff: only changed files appear in --add-d
     const result = JSON.parse(stdout);
     const fx = readStdoutLog(dataDir, result.job_id);
     const files = fx.t7_add_dir_files ?? [];
+    assert.deepEqual(result.runtime_diagnostics.scope_path_mappings, [{
+      original: path.join(cwd, "foo.md"),
+      contained: path.join(result.runtime_diagnostics.add_dir, "foo.md"),
+      relative: "foo.md",
+      inside_add_dir: true,
+    }]);
     assert.ok(files.includes("foo.md"),
       `branch-diff scope missing foo.md; saw: ${files.join(",")}`);
     assert.ok(!files.includes("old.md"),
       `branch-diff scope leaked old.md; saw: ${files.join(",")}`);
+  } finally {
+    cleanup(dataDir);
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("adversarial-review scope=branch-diff: scope paths narrow copied and audited files", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "smoke-adv-paths-"));
+  spawnSync("git", ["init", "-q", "-b", "main"], { cwd, env: fixtureGitEnv() });
+  spawnSync("bash", ["-c",
+    "echo old > old.md && git add old.md && " +
+    "git -c core.hooksPath=/dev/null commit -q -m main && " +
+    "git checkout -qb feature && " +
+    "echo wanted > wanted.md && echo extra > extra.md && git add wanted.md extra.md && " +
+    "git -c core.hooksPath=/dev/null commit -q -m feature"], { cwd, env: fixtureGitEnv() });
+  const { stdout, status, stderr, dataDir } = runCompanion(
+    ["run", "--mode=adversarial-review", "--foreground",
+     "--model", "claude-haiku-4-5-20251001",
+     "--cwd", cwd, "--scope-paths", "wanted.md", "--", "focus"],
+    { cwd, env: { CLAUDE_MOCK_LIST_ADDDIR: "1" } }
+  );
+  try {
+    assert.equal(status, 0, `exit ${status}: ${stderr}`);
+    const result = JSON.parse(stdout);
+    const fx = readStdoutLog(dataDir, result.job_id);
+    const files = fx.t7_add_dir_files ?? [];
+    assert.deepEqual(files, ["wanted.md"]);
+    assert.deepEqual(
+      result.review_metadata.audit_manifest.selected_source.files.map((file) => file.path),
+      ["wanted.md"]
+    );
+    assert.equal(
+      result.review_metadata.audit_manifest.scope_resolution.reason,
+      "git diff -z --name-only main...HEAD -- filtered by explicit --scope-paths"
+    );
   } finally {
     cleanup(dataDir);
     rmSync(cwd, { recursive: true, force: true });
@@ -1049,9 +1105,32 @@ test("custom-review scope=custom: reviews explicit bundle files from a non-git d
       assert.equal(result.mode, "custom-review");
       assert.equal(result.scope, "custom");
       assert.deepEqual(result.scope_paths, ["PR23.diff", "notes.md"]);
+      assert.ok(result.runtime_diagnostics.add_dir,
+        "custom-review should persist the exact --add-dir path granted to Claude");
+      assert.ok(result.runtime_diagnostics.child_cwd,
+        "custom-review should persist the exact child cwd used for Claude");
+      assert.notEqual(result.runtime_diagnostics.add_dir, result.runtime_diagnostics.child_cwd,
+        "custom-review should run from a neutral cwd, not the scoped add-dir");
+      assert.deepEqual(result.runtime_diagnostics.scope_path_mappings, [
+        {
+          original: path.join(cwd, "PR23.diff"),
+          contained: path.join(result.runtime_diagnostics.add_dir, "PR23.diff"),
+          relative: "PR23.diff",
+          inside_add_dir: true,
+        },
+        {
+          original: path.join(cwd, "notes.md"),
+          contained: path.join(result.runtime_diagnostics.add_dir, "notes.md"),
+          relative: "notes.md",
+          inside_add_dir: true,
+        },
+      ]);
       const fx = readStdoutLog(dataDir, result.job_id);
       assert.equal(fx.t7_saw_file, true, "custom-review should include PR23.diff in --add-dir");
       assert.deepEqual(fx.t7_add_dir_files.sort(), ["PR23.diff", "notes.md"]);
+      assert.equal(fx.t7_add_dir, result.runtime_diagnostics.add_dir);
+      assert.equal(existsSync(result.runtime_diagnostics.child_cwd), false,
+        `neutral Claude cwd should be disposed after custom review: ${result.runtime_diagnostics.child_cwd}`);
     } finally {
       cleanup(dataDir);
     }
@@ -1683,6 +1762,8 @@ test("_run-worker: cancel marker prevents target spawn, sets status=cancelled", 
     const wsDir = path.dirname(metaPath);
     const markerDir = path.join(wsDir, record.job_id);
     spawnSync("mkdir", ["-p", markerDir]);
+    const promptPath = path.join(markerDir, "prompt.txt");
+    writeFileSync(promptPath, "queued prompt with selected source\n", { mode: 0o600 });
     const markerPath = path.join(markerDir, "cancel-requested.flag");
     writeFileSync(markerPath, new Date().toISOString() + "\n");
 
@@ -1705,6 +1786,8 @@ test("_run-worker: cancel marker prevents target spawn, sets status=cancelled", 
     // Marker was consumed (unlinked) so a second pickup wouldn't double-cancel.
     assert.equal(existsSync(markerPath), false,
       "worker must consume (unlink) the marker on pickup");
+    assert.equal(existsSync(promptPath), false,
+      "worker must remove prompt sidecar when queued cancel prevents target spawn");
   } finally {
     rmSync(dataDir, { recursive: true, force: true });
     rmSync(cwd, { recursive: true, force: true });

@@ -160,6 +160,18 @@ test("parseKimiResult: preserves embedded max-step text in successful JSON outpu
   assert.equal(parsed.sessionId, KIMI_SESSION_ID);
 });
 
+test("parseKimiResult: preserves successful review text that mentions quota", () => {
+  const parsed = parseKimiResult(
+    `{"content":"Verdict: PASS. Check quota and billing cycle handling.","session_id":"${KIMI_SESSION_ID}"}\n`,
+    "",
+    { exitCode: 0 },
+  );
+
+  assert.equal(parsed.ok, true);
+  assert.match(parsed.result, /quota and billing cycle/);
+  assert.equal(parsed.sessionId, KIMI_SESSION_ID);
+});
+
 test("parseKimiResult: tolerates null options argument", () => {
   const parsed = parseKimiResult(
     `{"content":"partial","session_id":"${KIMI_SESSION_ID}"}\nMax number of steps reached: 8\n`,
@@ -170,6 +182,32 @@ test("parseKimiResult: tolerates null options argument", () => {
   assert.equal(parsed.ok, true);
   assert.equal(parsed.result, "partial");
   assert.equal(parsed.sessionId, KIMI_SESSION_ID);
+});
+
+test("parseKimiResult: classifies plain-text usage limit failures before JSON parsing", () => {
+  const parsed = parseKimiResult(
+    "Error code: 403\nYou've reached your usage limit for this billing cycle.\n",
+    "",
+    { exitCode: 1 },
+  );
+
+  assert.equal(parsed.ok, false);
+  assert.equal(parsed.reason, "usage_limited");
+  assert.match(parsed.error, /usage limit/i);
+  assert.doesNotMatch(parsed.error, /not valid JSON|Unexpected token/);
+});
+
+test("parseKimiResult: classifies stderr-only usage limit failures", () => {
+  const parsed = parseKimiResult(
+    "",
+    "Error code: 403\nYou've reached your usage limit for this billing cycle.\n",
+    { exitCode: 1 },
+  );
+
+  assert.equal(parsed.ok, false);
+  assert.equal(parsed.reason, "usage_limited");
+  assert.match(parsed.error, /usage limit/i);
+  assert.equal(parsed.raw, "");
 });
 
 test("buildKimiArgs: review modes use safer max-step defaults and allow overrides", () => {

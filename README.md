@@ -162,6 +162,42 @@ running the same command. If the namespaced skills are missing, the plugin is
 either not enabled in that Codex profile or the manifests are not exposing the
 bundled `skills/` roots correctly.
 
+## Repair stale plugin skill discovery
+
+`npm install` only refreshes this repository's Node dependencies. It does not
+refresh Codex's marketplace clone, runtime plugin cache, enabled plugin config,
+or an already-open TUI session's in-memory skill inventory.
+
+Run the read-only cache doctor before manually copying files:
+
+```bash
+npm run doctor:cache
+```
+
+For `second-codex`, inspect both profiles:
+
+```bash
+npm run doctor:cache -- --second-codex-home "$HOME/.codex-second"
+```
+
+The report compares marketplace/plugin skill files against
+`plugins/cache/codex-plugin-multi/<plugin>/0.1.0`, checks whether each plugin is
+enabled in `config.toml`, and prints next actions. For Git marketplace installs,
+start with:
+
+```bash
+codex plugin marketplace upgrade codex-plugin-multi
+```
+
+If Codex reports that the marketplace is not configured as Git, remove and
+re-add it from GitHub. After marketplace/cache or enablement changes, restart
+the relevant Codex or `second-codex` TUI session; existing sessions do not
+reliably hot-reload plugin skill inventory. Verify the target profile with:
+
+```bash
+codex debug prompt-input 'list skills'
+```
+
 ## Current Codex 0.125.0 TUI limitation
 
 Codex CLI 0.125.0 does not currently expose plugin `commands/*.md` files as TUI slash commands.
