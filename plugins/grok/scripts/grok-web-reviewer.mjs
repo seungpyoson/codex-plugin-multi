@@ -374,9 +374,6 @@ async function readUtf8ScopeFileWithinLimit(filePath, normalizedRel, beforeOpen 
     let total = 0;
     for (;;) {
       const remaining = MAX_SCOPE_FILE_BYTES + 1 - total;
-      if (remaining <= 0) {
-        throw new Error(`scope_file_too_large:${normalizedRel}: exceeds ${MAX_SCOPE_FILE_BYTES} byte limit`);
-      }
       const buffer = Buffer.allocUnsafe(Math.min(remaining, 64 * 1024));
       const { bytesRead } = await handle.read(buffer, 0, buffer.length, null);
       if (bytesRead === 0) break;
