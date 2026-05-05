@@ -68,6 +68,7 @@ function parseResumeSessionId(text) {
 }
 
 const STEP_LIMIT_RE = /^Max number of steps reached:\s*(\d+)\s*$/;
+const USAGE_LIMIT_RE = /(?:Error code:\s*403|usage limit|quota|billing cycle)/i;
 
 function parseJsonLineSessionId(text) {
   for (const line of String(text ?? "").split("\n").reverse()) {
@@ -92,6 +93,13 @@ function findStepLimitLine(stdout) {
   return null;
 }
 
+function usageLimitMessage(stdout, stderr) {
+  const combined = `${stdout ?? ""}\n${stderr ?? ""}`;
+  if (!USAGE_LIMIT_RE.test(combined)) return null;
+  const trimmed = combined.trim();
+  return trimmed.length > 4000 ? `${trimmed.slice(0, 4000)}...` : trimmed;
+}
+
 function stepLimitResult(match, stdout, stderr) {
   const error = match[0].trim();
   return {
@@ -110,6 +118,16 @@ function stepLimitResult(match, stdout, stderr) {
 export function parseKimiResult(stdout, stderr = "", options = {}) {
   const trimmed = stdout.trim();
   if (!trimmed) {
+    const usageLimited = usageLimitMessage("", stderr);
+    if (usageLimited) {
+      return {
+        ok: false,
+        reason: "usage_limited",
+        error: usageLimited,
+        raw: stdout,
+        sessionId: parseResumeSessionId(stderr) ?? parseJsonLineSessionId(stderr),
+      };
+    }
     const stderrSummary = summarizeStderr(stderr);
     if (stderrSummary) {
       return { ok: false, reason: "kimi_stderr", error: stderrSummary, raw: stdout };
@@ -136,6 +154,19 @@ export function parseKimiResult(stdout, stderr = "", options = {}) {
     try {
       parsed = JSON.parse(trimmed.split("\n").filter((line) => line.trim().startsWith("{")).pop());
     } catch {
+      const usageLimited = usageLimitMessage(stdout, stderr);
+      if (usageLimited) {
+        return {
+          ok: false,
+          reason: "usage_limited",
+          error: usageLimited,
+          raw: stdout,
+          sessionId:
+            parseResumeSessionId(`${stdout}\n${stderr}`) ??
+            parseJsonLineSessionId(stdout) ??
+            parseJsonLineSessionId(stderr),
+        };
+      }
       return { ok: false, reason: "json_parse_error", error: e.message, raw: stdout };
     }
   }

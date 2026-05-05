@@ -10,6 +10,56 @@ import assert from "node:assert/strict";
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const COMPANION = path.join(REPO_ROOT, "plugins/grok/scripts/grok-web-reviewer.mjs");
+const GROK_EXPECTED_KEYS = Object.freeze([
+  "id",
+  "job_id",
+  "target",
+  "provider",
+  "parent_job_id",
+  "claude_session_id",
+  "gemini_session_id",
+  "kimi_session_id",
+  "resume_chain",
+  "pid_info",
+  "mode",
+  "mode_profile_name",
+  "model",
+  "cwd",
+  "workspace_root",
+  "containment",
+  "scope",
+  "dispose_effective",
+  "scope_base",
+  "scope_paths",
+  "prompt_head",
+  "review_metadata",
+  "schema_spec",
+  "binary",
+  "status",
+  "started_at",
+  "ended_at",
+  "exit_code",
+  "error_code",
+  "error_message",
+  "error_summary",
+  "error_cause",
+  "suggested_action",
+  "external_review",
+  "disclosure_note",
+  "runtime_diagnostics",
+  "result",
+  "structured_output",
+  "permission_denials",
+  "mutations",
+  "cost_usd",
+  "usage",
+  "auth_mode",
+  "credential_ref",
+  "endpoint",
+  "http_status",
+  "raw_model",
+  "schema_version",
+]);
 
 function run(args, options = {}) {
   return spawnSync(process.execPath, [COMPANION, ...args], {
@@ -69,13 +119,31 @@ async function readJsonRequest(req) {
   return JSON.parse(body);
 }
 
-test("doctor reports subscription-backed local tunnel mode and checks reachability", async () => {
+test("doctor reports subscription-backed local tunnel mode and checks chat readiness", async () => {
   await withServer(async (req, res) => {
-    assert.equal(req.method, "GET");
-    assert.equal(req.url, "/api/models");
     assert.equal(req.headers.authorization, "Bearer secret-cookie-like-token");
     res.setHeader("content-type", "application/json");
-    res.end(JSON.stringify({ data: [{ id: "grok-4.20-fast" }] }));
+    if (req.url === "/api/models") {
+      assert.equal(req.method, "GET");
+      res.end(JSON.stringify({ data: [{ id: "grok-4.20-fast" }] }));
+      return;
+    }
+    if (req.url === "/api/chat/completions") {
+      assert.equal(req.method, "POST");
+      const body = await readJsonRequest(req);
+      assert.equal(body.model, "grok-4.20-fast");
+      assert.equal(body.stream, false);
+      assert.equal(body.messages.length, 1);
+      assert.match(body.messages[0].content, /Return exactly: ok/);
+      res.end(JSON.stringify({
+        id: "chatcmpl-doctor",
+        model: "grok-4.20-fast",
+        choices: [{ message: { content: "ok" } }],
+      }));
+      return;
+    }
+    res.writeHead(404);
+    res.end(JSON.stringify({ error: { message: "not found" } }));
   }, async (baseUrl) => {
     const result = await runAsync(["doctor"], {
       env: {
@@ -89,14 +157,175 @@ test("doctor reports subscription-backed local tunnel mode and checks reachabili
     assert.equal(parsed.provider, "grok-web");
     assert.equal(parsed.ready, true);
     assert.equal(parsed.reachable, true);
+    assert.equal(parsed.chat_ready, true);
     assert.equal(parsed.auth_mode, "subscription_web");
     assert.equal(parsed.endpoint, baseUrl);
     assert.equal(parsed.probe_endpoint, `${baseUrl}/models`);
+    assert.equal(parsed.chat_probe_endpoint, `${baseUrl}/chat/completions`);
+    assert.equal(parsed.chat_doctor_timeout_ms, 10000);
     assert.match(parsed.summary, /subscription-backed/i);
     assert.match(parsed.next_action, /Grok web review/i);
     assert.equal(parsed.credential_ref, "GROK_WEB_TUNNEL_API_KEY");
     assert.doesNotMatch(result.stdout, /secret-cookie-like-token/);
     assert.doesNotMatch(result.stdout, /api\.x\.ai/i);
+  });
+});
+
+test("rejects prototype-shaped option keys", () => {
+  const result = run(["doctor", "--constructor", "polluted"], {
+    env: {
+      GROK_WEB_TUNNEL_API_KEY: "secret-cookie-like-token",
+    },
+  });
+  const parsed = parseStdout(result);
+
+  assert.equal(result.status, 1);
+  assert.equal(parsed.ok, false);
+  assert.match(parsed.error, /unsupported option --constructor/);
+  assert.doesNotMatch(result.stdout, /secret-cookie-like-token/);
+});
+
+test("doctor points bad chat model 400s at GROK_WEB_MODEL", async () => {
+  await withServer(async (req, res) => {
+    res.setHeader("content-type", "application/json");
+    if (req.url === "/api/models") {
+      res.end(JSON.stringify({ data: [{ id: "grok-4.20-fast" }] }));
+      return;
+    }
+    if (req.url === "/api/chat/completions") {
+      const body = await readJsonRequest(req);
+      assert.equal(body.model, "grok-does-not-exist");
+      res.writeHead(400);
+      res.end(JSON.stringify({
+        error: { message: "Model not found: grok-does-not-exist", type: "invalid_request_error", code: "model_not_found" },
+      }));
+      return;
+    }
+    res.writeHead(404);
+    res.end(JSON.stringify({ error: { message: "not found" } }));
+  }, async (baseUrl) => {
+    const result = await runAsync(["doctor"], {
+      env: {
+        GROK_WEB_BASE_URL: baseUrl,
+        GROK_WEB_MODEL: "grok-does-not-exist",
+      },
+    });
+    const parsed = parseStdout(result);
+
+    assert.equal(result.status, 0);
+    assert.equal(parsed.reachable, true);
+    assert.equal(parsed.chat_ready, false);
+    assert.equal(parsed.error_code, "grok_chat_model_rejected");
+    assert.equal(parsed.chat_http_status, 400);
+    assert.match(parsed.error_message, /Model not found/);
+    assert.match(parsed.next_action, /GROK_WEB_MODEL/);
+  });
+});
+
+test("doctor does not classify quota 400s that mention model as model rejection", async () => {
+  await withServer(async (req, res) => {
+    res.setHeader("content-type", "application/json");
+    if (req.url === "/api/models") {
+      res.end(JSON.stringify({ data: [{ id: "grok-4.20-fast" }] }));
+      return;
+    }
+    if (req.url === "/api/chat/completions") {
+      const body = await readJsonRequest(req);
+      assert.equal(body.model, "grok-4.20-fast");
+      res.writeHead(400);
+      res.end(JSON.stringify({
+        error: { message: "invalid request: quota exceeded for model grok-4.20-fast" },
+      }));
+      return;
+    }
+    res.writeHead(404);
+    res.end(JSON.stringify({ error: { message: "not found" } }));
+  }, async (baseUrl) => {
+    const result = await runAsync(["doctor"], {
+      env: {
+        GROK_WEB_BASE_URL: baseUrl,
+      },
+    });
+    const parsed = parseStdout(result);
+
+    assert.equal(result.status, 0);
+    assert.equal(parsed.reachable, true);
+    assert.equal(parsed.chat_ready, false);
+    assert.equal(parsed.error_code, "models_ok_chat_400");
+    assert.equal(parsed.chat_http_status, 400);
+    assert.match(parsed.error_message, /quota exceeded/);
+    assert.doesNotMatch(parsed.next_action, /GROK_WEB_MODEL/);
+  });
+});
+
+test("doctor chat probe uses a separate configurable timeout", async () => {
+  await withServer(async (req, res) => {
+    res.setHeader("content-type", "application/json");
+    if (req.url === "/api/models") {
+      res.end(JSON.stringify({ data: [{ id: "grok-4.20-fast" }] }));
+      return;
+    }
+    if (req.url === "/api/chat/completions") {
+      await new Promise((resolve) => setTimeout(resolve, 120));
+      res.end(JSON.stringify({
+        id: "chatcmpl-doctor",
+        model: "grok-4.20-fast",
+        choices: [{ message: { content: "ok" } }],
+      }));
+      return;
+    }
+    res.writeHead(404);
+    res.end(JSON.stringify({ error: { message: "not found" } }));
+  }, async (baseUrl) => {
+    const result = await runAsync(["doctor"], {
+      env: {
+        GROK_WEB_BASE_URL: baseUrl,
+        GROK_WEB_DOCTOR_TIMEOUT_MS: "50",
+        GROK_WEB_CHAT_DOCTOR_TIMEOUT_MS: "10000",
+      },
+    });
+    const parsed = parseStdout(result);
+
+    assert.equal(result.status, 0);
+    assert.equal(parsed.ready, true);
+    assert.equal(parsed.doctor_timeout_ms, 50);
+    assert.equal(parsed.chat_doctor_timeout_ms, 10000);
+  });
+});
+
+test("doctor is not review-ready when models work but chat returns upstream 400", async () => {
+  await withServer(async (req, res) => {
+    res.setHeader("content-type", "application/json");
+    if (req.url === "/api/models") {
+      res.end(JSON.stringify({ data: [{ id: "grok-4.20-fast" }] }));
+      return;
+    }
+    if (req.url === "/api/chat/completions") {
+      await readJsonRequest(req);
+      res.writeHead(400);
+      res.end(JSON.stringify({
+        error: { message: "Chat upstream returned 400", type: "upstream_error", code: "upstream_error" },
+      }));
+      return;
+    }
+    res.writeHead(404);
+    res.end(JSON.stringify({ error: { message: "not found" } }));
+  }, async (baseUrl) => {
+    const result = await runAsync(["doctor"], {
+      env: { GROK_WEB_BASE_URL: baseUrl },
+    });
+    const parsed = parseStdout(result);
+
+    assert.equal(result.status, 0);
+    assert.equal(parsed.reachable, true);
+    assert.equal(parsed.chat_ready, false);
+    assert.equal(parsed.ready, false);
+    assert.equal(parsed.error_code, "models_ok_chat_400");
+    assert.equal(parsed.http_status, 200);
+    assert.equal(parsed.chat_http_status, 400);
+    assert.match(parsed.error_message, /Chat upstream returned 400/);
+    assert.match(parsed.summary, /models.*chat/i);
+    assert.match(parsed.next_action, /session|tunnel|rate-limit/i);
   });
 });
 
@@ -219,25 +448,42 @@ test("custom-review sends selected source to a local Grok web tunnel and persist
     const record = parseStdout(result);
 
     assert.equal(result.status, 0);
+    assert.deepEqual(Object.keys(record), [...GROK_EXPECTED_KEYS]);
     assert.equal(record.target, "grok-web");
     assert.equal(record.provider, "grok-web");
     assert.equal(record.auth_mode, "subscription_web");
     assert.equal(record.status, "completed");
     assert.equal(record.result, "Verdict: no findings 1.");
     assert.equal(record.schema_version, 10);
-    assert.deepEqual(record.review_metadata, {
-      prompt_contract_version: 1,
-      prompt_provider: "Grok Web",
-      scope: "custom",
-      scope_base: null,
-      scope_paths: ["review.js"],
-      raw_output: {
-        http_status: 200,
-        raw_model: "grok-4.20-fast",
-        parsed_ok: true,
-        result_chars: "Verdict: no findings 1.".length,
-      },
+    assert.equal(record.review_metadata.prompt_contract_version, 1);
+    assert.equal(record.review_metadata.prompt_provider, "Grok Web");
+    assert.equal(record.review_metadata.scope, "custom");
+    assert.deepEqual(record.review_metadata.scope_paths, ["review.js"]);
+    assert.deepEqual(record.review_metadata.raw_output, {
+      http_status: 200,
+      raw_model: "grok-4.20-fast",
+      parsed_ok: true,
+      result_chars: "Verdict: no findings 1.".length,
     });
+    assert.match(record.review_metadata.audit_manifest.rendered_prompt_hash.value, /^[a-f0-9]{64}$/);
+    assert.equal(record.review_metadata.audit_manifest.request.model, "grok-4.20-fast");
+    assert.equal(record.review_metadata.audit_manifest.request.temperature, 0);
+    assert.match(record.review_metadata.audit_manifest.prompt_builder.plugin_commit, /^[a-f0-9]{40}$/);
+    assert.notEqual(
+      record.review_metadata.audit_manifest.prompt_builder.plugin_commit,
+      record.review_metadata.audit_manifest.git_identity.head_sha,
+      "plugin_commit must identify the plugin source, not the reviewed repository head"
+    );
+    assert.equal(record.review_metadata.audit_manifest.provider_ids.session_id, "grok-web-session-1");
+    assert.deepEqual(record.review_metadata.audit_manifest.selected_source.files.map((file) => ({
+      path: file.path,
+      bytes: file.bytes,
+      hashOk: /^[a-f0-9]{64}$/.test(file.content_hash.value),
+    })), [
+      { path: "review.js", bytes: "export const value = 42;\n// ``` nested markdown fence\n".length, hashOk: true },
+    ]);
+    assert.equal(JSON.stringify(record.review_metadata.audit_manifest).includes("Check this file"), false);
+    assert.equal(JSON.stringify(record.review_metadata.audit_manifest).includes("export const value"), false);
     assert.equal(record.external_review.provider, "Grok Web");
     assert.equal(record.external_review.source_content_transmission, "sent");
     assert.match(record.disclosure_note, /subscription-backed web session/i);
@@ -1027,8 +1273,10 @@ test("review mode uses branch-diff scope with scrubbed git environment", async (
   assert.notEqual(tagObject, mainCommit);
   execFileSync("git", ["checkout", "-b", "feature"], { cwd, stdio: "ignore" });
   writeFileSync(path.join(cwd, "review.js"), "export const value = 2;\n");
-  execFileSync("git", ["add", "review.js"], { cwd });
+  writeFileSync(path.join(cwd, "extra.js"), "export const extra = true;\n");
+  execFileSync("git", ["add", "review.js", "extra.js"], { cwd });
   execFileSync("git", ["commit", "-m", "feature"], { cwd, stdio: "ignore" });
+  writeFileSync(path.join(cwd, "review.js"), "GROK_DIRTY_SELECTED_SECRET\n");
   writeFileSync(path.join(cwd, "local-config.txt"), "GROK_LOCAL_DIRTY_SECRET\n");
   writeFileSync(path.join(cwd, "untracked-secret.js"), "GROK_UNTRACKED_SECRET\n");
 
@@ -1037,9 +1285,12 @@ test("review mode uses branch-diff scope with scrubbed git environment", async (
     assert.equal(req.url, "/api/chat/completions");
     const body = await readJsonRequest(req);
     assert.match(body.messages[0].content, /review\.js/);
+    assert.doesNotMatch(body.messages[0].content, /extra\.js/);
+    assert.doesNotMatch(body.messages[0].content, /export const extra/);
     assert.match(body.messages[0].content, new RegExp(`Base commit: ${mainCommit}`));
     assert.doesNotMatch(body.messages[0].content, new RegExp(`Base commit: ${tagObject}`));
     assert.match(body.messages[0].content, /export const value = 2/);
+    assert.doesNotMatch(body.messages[0].content, /GROK_DIRTY_SELECTED_SECRET/);
     assert.doesNotMatch(body.messages[0].content, /local-config\.txt/);
     assert.doesNotMatch(body.messages[0].content, /GROK_LOCAL_DIRTY_SECRET/);
     assert.doesNotMatch(body.messages[0].content, /untracked-secret\.js/);
@@ -1055,6 +1306,7 @@ test("review mode uses branch-diff scope with scrubbed git environment", async (
       "--mode", "review",
       "--scope", "branch-diff",
       "--scope-base", "review-base",
+      "--scope-paths", "review.?s",
       "--foreground",
       "--prompt", "Review the branch diff.",
     ], {
@@ -1075,6 +1327,15 @@ test("review mode uses branch-diff scope with scrubbed git environment", async (
     assert.equal(record.mode, "review");
     assert.equal(record.scope, "branch-diff");
     assert.equal(record.scope_base, "review-base");
+    assert.deepEqual(record.scope_paths, ["review.js"]);
+    assert.deepEqual(
+      record.review_metadata.audit_manifest.selected_source.files.map((file) => file.path),
+      ["review.js"]
+    );
+    assert.equal(
+      record.review_metadata.audit_manifest.scope_resolution.reason,
+      "git diff -z --name-only review-base...HEAD -- filtered by explicit --scope-paths"
+    );
     assert.equal(record.result, "Verdict: branch diff reviewed.");
     assert.equal(existsSync(hostileGitMarker), false);
   });
@@ -1109,10 +1370,15 @@ test("custom-review keeps prompt delimiter exceptions as scope failures before t
 });
 
 test("scope file reads use canonical real paths after symlink boundary check", () => {
-  // Structural guard for the reviewed TOCTOU fix: later I/O must keep using the verified path.
+  // Structural guard for the reviewed TOCTOU fix: later I/O must keep using the verified path
+  // and must read through the bounded file-handle helper instead of unbounded readFile().
   const source = readFileSync(COMPANION, "utf8");
-  assert.match(source, /const info = await stat\(realAbs\);/);
-  assert.match(source, /const text = await readFile\(realAbs, "utf8"\);/);
+  assert.match(source, /const SCOPE_FILE_OPEN_FLAGS = fsConstants\.O_RDONLY \| \(fsConstants\.O_NOFOLLOW \?\? 0\);/);
+  assert.match(source, /const handle = await open\(filePath, SCOPE_FILE_OPEN_FLAGS\);/);
+  assert.match(source, /const info = await handle\.stat\(\);/);
+  assert.match(source, /const \{ bytesRead \} = await handle\.read\(buffer, 0, buffer\.length, null\);/);
+  assert.match(source, /const text = await readUtf8ScopeFileWithinLimit\(realAbs, normalizedRel\);/);
+  assert.doesNotMatch(source, /const text = await readFile\(realAbs, "utf8"\);/);
 });
 
 test("tunnel invocation catch is separated from prompt construction catch", () => {
@@ -1250,6 +1516,43 @@ test("custom-review rejects oversized selected files before contacting the tunne
   assert.equal(record.status, "failed");
   assert.equal(record.error_code, "scope_failed");
   assert.match(record.error_message, /scope_file_too_large:large\.js/);
+  assert.equal(record.external_review.source_content_transmission, "not_sent");
+});
+
+test("branch-diff rejects oversized committed files before contacting the tunnel", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "grok-web-branch-large-"));
+  execFileSync("git", ["init", "-b", "main"], { cwd, stdio: "ignore" });
+  execFileSync("git", ["config", "user.email", "test@example.com"], { cwd });
+  execFileSync("git", ["config", "user.name", "Test User"], { cwd });
+  writeFileSync(path.join(cwd, "large.js"), "export const value = 1;\n");
+  execFileSync("git", ["add", "large.js"], { cwd });
+  execFileSync("git", ["commit", "-m", "base"], { cwd, stdio: "ignore" });
+  execFileSync("git", ["checkout", "-b", "feature"], { cwd, stdio: "ignore" });
+  writeFileSync(path.join(cwd, "large.js"), `${"x".repeat(16 * 1024 * 1024 + 1)}\n`);
+  execFileSync("git", ["add", "large.js"], { cwd });
+  execFileSync("git", ["commit", "-m", "large"], { cwd, stdio: "ignore" });
+
+  const result = run([
+    "run",
+    "--mode", "review",
+    "--scope", "branch-diff",
+    "--scope-base", "main",
+    "--foreground",
+    "--prompt", "Review this large file.",
+  ], {
+    cwd,
+    env: {
+      GROK_WEB_BASE_URL: "http://127.0.0.1:9/api",
+      GROK_WEB_TUNNEL_API_KEY: "secret-cookie-like-token",
+    },
+  });
+  const record = parseStdout(result);
+
+  assert.equal(result.status, 1);
+  assert.equal(record.status, "failed");
+  assert.equal(record.error_code, "scope_failed");
+  assert.match(record.error_message, /scope_file_too_large:large\.js/);
+  assert.doesNotMatch(record.error_message, /ENOBUFS/);
   assert.equal(record.external_review.source_content_transmission, "not_sent");
 });
 

@@ -571,6 +571,19 @@ test("M6-finding-10: every lib is importable and has a consumer (authoritative s
     "claude-companion.mjs must import at least one lib — §21.5 consumer check");
 });
 
+test("review audit source walkers skip symlinks before directory recursion", () => {
+  for (const rel of [
+    "plugins/claude/scripts/claude-companion.mjs",
+    "plugins/gemini/scripts/gemini-companion.mjs",
+    "plugins/kimi/scripts/kimi-companion.mjs",
+  ]) {
+    const source = readFileSync(path.join(REPO_ROOT, rel), "utf8");
+    assert.match(source, /lstatSync\(full\)/, `${rel} must inspect links without following them`);
+    assert.match(source, /isSymbolicLink\(\)\) continue;[\s\S]{0,120}isDirectory\(\)/,
+      `${rel} must skip symlinks before recursing into directories`);
+  }
+});
+
 // ---------------------------------------------------------------------------
 // Gap-coverage: behaviors the M6 mock couldn't exercise
 // ---------------------------------------------------------------------------

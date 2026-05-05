@@ -3,7 +3,7 @@ import { fileURLToPath } from "node:url";
 import { dirname, join as joinPath, resolve as resolvePath } from "node:path";
 import {
   existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, unlinkSync,
-  writeFileSync, chmodSync, readdirSync, statSync,
+  writeFileSync, chmodSync, readdirSync, statSync, lstatSync,
 } from "node:fs";
 import { execFileSync, spawn } from "node:child_process";
 import { tmpdir } from "node:os";
@@ -21,6 +21,7 @@ import { cleanGitEnv } from "./lib/git-env.mjs";
 import { spawnKimi } from "./lib/kimi.mjs";
 import { writeCancelMarker, consumeCancelMarker } from "./lib/cancel-marker.mjs";
 import { isCodexSandbox } from "./lib/codex-env.mjs";
+import { REVIEW_PROMPT_CONTRACT_VERSION, buildReviewAuditManifest, buildReviewPrompt } from "./lib/review-prompt.mjs";
 import {
   PING_PROMPT,
   consumePromptSidecar,
@@ -34,16 +35,14 @@ import {
   summarizeScopeDirectory,
   writePromptSidecar,
 } from "./lib/companion-common.mjs";
-import { REVIEW_PROMPT_CONTRACT_VERSION, buildReviewPrompt } from "./lib/review-prompt.mjs";
 
 const PLUGIN_ROOT = resolvePath(dirname(fileURLToPath(import.meta.url)), "..");
 const MODELS_CONFIG_PATH = resolvePath(PLUGIN_ROOT, "config/models.json");
+const GIT_BINARY = "/usr/bin/git";
 const CONTINUABLE_STATUSES = new Set(["completed", "failed", "cancelled", "stale"]);
 const RUN_MODES = Object.freeze(["review", "adversarial-review", "custom-review", "rescue"]);
 const PREFLIGHT_MODES = Object.freeze(["review", "adversarial-review", "custom-review"]);
 const DEFAULT_KIMI_REVIEW_TIMEOUT_MS = 180000;
-const GIT_PROMPT_BINARY = "/usr/bin/git";
-const GIT_PROMPT_SAFE_PATH = "/usr/bin:/bin";
 
 configureState({
   pluginDataEnv: "KIMI_PLUGIN_DATA",
@@ -61,9 +60,43 @@ function fail(code, message, details = {}) {
   process.exit(1);
 }
 
-function targetPromptFor(profile, userPrompt, invocation = {}) {
-  if (profile.permission_mode !== "plan") return userPrompt;
-  const modeLine = profile.name === "adversarial-review"
+function gitText(args, cwd) {
+  try {
+    return execFileSync(GIT_BINARY, ["-C", cwd, ...args], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+      env: cleanGitEnv(),
+    }).trim() || null;
+  } catch {
+    return null;
+  }
+}
+
+function repositoryIdentity(cwd, workspaceRoot) {
+  const remote = gitText(["remote", "get-url", "origin"], cwd);
+  if (!remote) return workspaceRoot;
+  const match = /[:/]([^/:]+\/[^/]+?)(?:\.git)?$/.exec(remote);
+  return match ? match[1] : remote;
+}
+
+function promptMetadata(invocation) {
+  return {
+    repository: repositoryIdentity(invocation.cwd, invocation.workspace_root),
+    baseRef: invocation.scope_base ?? null,
+    baseCommit: invocation.scope_base ? gitText(["rev-parse", "--verify", `${invocation.scope_base}^{commit}`], invocation.cwd) : null,
+    headRef: gitText(["branch", "--show-current"], invocation.cwd) ?? "HEAD",
+    headCommit: gitText(["rev-parse", "--verify", "HEAD^{commit}"], invocation.cwd),
+  };
+}
+
+function pluginSourceCommit() {
+  return gitText(["rev-parse", "--verify", "HEAD^{commit}"], PLUGIN_ROOT);
+}
+
+function targetPromptFor(userPrompt, invocation) {
+  if (invocation.mode_profile_name === "rescue") return userPrompt;
+  const meta = promptMetadata(invocation);
+  const modeLine = invocation.mode === "adversarial-review"
     ? "You are performing an adversarial code review. Prioritize correctness bugs, security risks, regressions, and missing tests."
     : "You are performing a code review. Prioritize bugs, behavioral regressions, and missing tests.";
   const liveContext = [
@@ -74,14 +107,14 @@ function targetPromptFor(profile, userPrompt, invocation = {}) {
   ].join("\n");
   return buildReviewPrompt({
     provider: "Kimi",
-    mode: profile.name,
-    repository: invocation.workspace_root ?? null,
-    baseRef: invocation.scope_base ?? null,
-    baseCommit: gitCommitForPrompt(invocation.cwd, invocation.scope_base),
-    headRef: "HEAD",
-    headCommit: gitCommitForPrompt(invocation.cwd, "HEAD"),
-    scope: invocation.scope ?? profile.scope,
-    scopePaths: invocation.scope_paths ?? null,
+    mode: invocation.mode,
+    repository: meta.repository,
+    baseRef: meta.baseRef,
+    baseCommit: meta.baseCommit,
+    headRef: meta.headRef,
+    headCommit: meta.headCommit,
+    scope: invocation.scope,
+    scopePaths: invocation.scope_paths,
     userPrompt,
     extraInstructions: [
       modeLine,
@@ -91,24 +124,87 @@ function targetPromptFor(profile, userPrompt, invocation = {}) {
   });
 }
 
-function gitCommitForPrompt(cwd, ref) {
-  if (!ref) return null;
-  try {
-    return execFileSync(GIT_PROMPT_BINARY, ["rev-parse", "--verify", `${ref}^{commit}`], {
-      cwd,
-      env: cleanGitPromptEnv(),
-      encoding: "utf8",
-      stdio: ["ignore", "pipe", "ignore"],
-    }).trim();
-  } catch {
-    return null;
+function listContainedFiles(root, dir = root, prefix = "") {
+  const out = [];
+  for (const name of readdirSync(dir)) {
+    if (name === ".git") continue;
+    const full = resolvePath(dir, name);
+    const rel = prefix ? `${prefix}/${name}` : name;
+    const lst = lstatSync(full);
+    if (lst.isSymbolicLink()) continue;
+    if (lst.isDirectory()) out.push(...listContainedFiles(root, full, rel));
+    else out.push(rel);
   }
+  return out.sort((a, b) => a.localeCompare(b));
 }
 
-function cleanGitPromptEnv() {
-  const env = cleanGitEnv();
-  env.PATH = GIT_PROMPT_SAFE_PATH;
-  return env;
+function auditSourceFiles(containmentPath) {
+  if (!containmentPath || !existsSync(containmentPath)) return [];
+  return listContainedFiles(containmentPath).map((path) => ({
+    path,
+    content: readFileSync(resolvePath(containmentPath, path)),
+  }));
+}
+
+function scopeResolutionReason(invocation) {
+  const paths = invocation.scope_paths;
+  if (invocation.scope === "branch-diff") {
+    if (Array.isArray(paths) && paths.length > 0) {
+      return `git diff -z --name-only ${invocation.scope_base ?? "main"}...HEAD -- filtered by explicit --scope-paths`;
+    }
+    return `git diff -z --name-only ${invocation.scope_base ?? "main"}...HEAD --`;
+  }
+  if (Array.isArray(paths) && paths.length > 0) {
+    return "explicit --scope-paths";
+  }
+  return invocation.scope ?? null;
+}
+
+function reviewAuditManifest(invocation, prompt, containmentPath, execution) {
+  if (!invocation.review_prompt_contract_version || invocation.mode_profile_name === "rescue") return null;
+  const meta = promptMetadata(invocation);
+  return buildReviewAuditManifest({
+    prompt,
+    sourceFiles: auditSourceFiles(containmentPath),
+    git: {
+      remote: meta.repository,
+      branch: meta.headRef,
+      baseRef: meta.baseRef,
+      baseCommit: meta.baseCommit,
+      headRef: meta.headRef,
+      headCommit: meta.headCommit,
+    },
+    promptBuilder: {
+      contractVersion: invocation.review_prompt_contract_version,
+      pluginVersion: "0.1.0",
+      pluginCommit: pluginSourceCommit(),
+    },
+    request: {
+      provider: invocation.review_prompt_provider ?? "Kimi",
+      model: invocation.model,
+      timeoutMs: invocation.timeout_ms ?? null,
+      maxTokens: null,
+      maxStepsPerTurn: invocation.max_steps_per_turn ?? null,
+      temperature: null,
+    },
+    truncation: {
+      prompt: false,
+      source: false,
+      output: false,
+    },
+    providerIds: {
+      sessionId: execution?.kimiSessionId ?? null,
+    },
+    scope: {
+      name: invocation.scope,
+      base: invocation.scope_base ?? null,
+      paths: invocation.scope_paths ?? null,
+      reason: scopeResolutionReason(invocation),
+    },
+    result: execution?.parsed?.result ?? "",
+    status: execution?.exitCode === 0 && execution?.parsed?.ok === true ? "completed" : "failed",
+    errorCode: execution?.parsed?.reason ?? null,
+  });
 }
 
 // Mutation-detection git scrub: same shared list as claude-companion +
@@ -116,7 +212,7 @@ function cleanGitPromptEnv() {
 // GIT_CONFIG_GLOBAL — fold onto plugin lib's canonical scrub.
 
 function gitStatus(args, cwd) {
-  return execFileSync("git", ["-C", cwd, ...args], {
+  return execFileSync(GIT_BINARY, ["-C", cwd, ...args], {
     encoding: "utf8",
     stdio: ["ignore", "pipe", "pipe"],
     env: cleanGitEnv(),
@@ -447,7 +543,7 @@ async function cmdRun(rest) {
   writeRuntimeOptionsSidecar(workspaceRoot, jobId, { max_steps_per_turn: maxStepsPerTurn });
   writeJobFile(workspaceRoot, jobId, queuedRecord);
   upsertJob(workspaceRoot, queuedRecord);
-  const targetPrompt = targetPromptFor(profile, prompt, invocation);
+  const targetPrompt = targetPromptFor(prompt, invocation);
 
   if (options.background) {
     try {
@@ -625,6 +721,7 @@ async function executeRun(invocation, prompt, { foreground }) {
   // marker BEFORE signaling so finalization can force status=cancelled
   // even when the target traps SIGTERM and exits 0 with valid output.
   const cancelMarker = consumeCancelMarker(workspaceRoot, jobId);
+  execution.reviewAuditManifest = reviewAuditManifest(executedInvocation, prompt, containment.path, execution);
 
   // signal + timedOut feed classifyExecution: a SIGTERM/SIGKILL exit without
   // timedOut is an operator cancel → status="cancelled" (#16 follow-up 2);
@@ -637,6 +734,7 @@ async function executeRun(invocation, prompt, { foreground }) {
     ...(cancelMarker ? { status: "cancelled" } : {}),
     signal: execution.signal ?? null,
     timedOut: execution.timedOut === true,
+    reviewAuditManifest: execution.reviewAuditManifest,
   }, mutations);
 
   // BLOCKER 2 fix: atomic-under-lock meta + state commit. See
@@ -751,6 +849,7 @@ async function cmdRunWorker(rest) {
   // call, side effects) and only the post-run consumer at executeRun would
   // convert "completed" → "cancelled".
   if (consumeCancelMarker(workspaceRoot, options.job)) {
+    try { consumePromptSidecar(resolveJobsDir(workspaceRoot), options.job); } catch { /* best-effort privacy cleanup */ }
     const cancelledRecord = buildJobRecord(invocationFromRecord(meta, runtimeOptions), {
       status: "cancelled",
       exitCode: null, parsed: null, pidInfo: null, kimiSessionId: null,
@@ -871,7 +970,7 @@ async function cmdContinue(rest) {
   writeRuntimeOptionsSidecar(workspaceRoot, newJobId_, { max_steps_per_turn: maxStepsPerTurn });
   writeJobFile(workspaceRoot, newJobId_, queuedRecord);
   upsertJob(workspaceRoot, queuedRecord);
-  const targetPrompt = targetPromptFor(priorProfile, prompt, invocation);
+  const targetPrompt = targetPromptFor(prompt, invocation);
 
   if (options.background) {
     try {

@@ -1,34 +1,39 @@
 #!/usr/bin/env node
 import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { existsSync } from "node:fs";
-import { mkdir, readFile, readdir, realpath, rename, rm, rmdir, stat, unlink, writeFile } from "node:fs/promises";
+import { constants as fsConstants } from "node:fs";
+import { mkdir, open, readFile, readdir, realpath, rename, rm, rmdir, stat, unlink, writeFile } from "node:fs/promises";
 import { hostname } from "node:os";
 import { dirname, isAbsolute, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { cleanGitEnv as cleanCanonicalGitEnv } from "./lib/git-env.mjs";
-import { REVIEW_PROMPT_CONTRACT_VERSION, buildReviewPrompt } from "./lib/review-prompt.mjs";
+import { REVIEW_PROMPT_CONTRACT_VERSION, buildReviewAuditManifest, buildReviewPrompt, scopeResolutionReason } from "./lib/review-prompt.mjs";
 
 const VALID_MODES = new Set(["review", "adversarial-review", "custom-review"]);
 const DEFAULT_BASE_URL = "http://127.0.0.1:8000/v1";
 const DEFAULT_MODEL = "grok-4.20-fast";
 const DEFAULT_TIMEOUT_MS = 30000;
 const DEFAULT_DOCTOR_TIMEOUT_MS = 2000;
+const DEFAULT_CHAT_DOCTOR_TIMEOUT_MS = 10000;
 const MAX_SCOPE_FILE_BYTES = 256 * 1024;
 const MAX_SCOPE_TOTAL_BYTES = 1024 * 1024;
+const GIT_SHOW_MAX_BUFFER_BYTES = 16 * 1024 * 1024;
 const MAX_STATE_JOBS = 50;
 const STATE_LOCK_STALE_MS = 60 * 1000;
 const SCHEMA_VERSION = 10;
 const MIN_SECRET_REDACTION_LENGTH = 8;
 const GIT_BINARY = "/usr/bin/git";
 const GIT_SAFE_PATH = "/usr/bin:/bin";
+const PLUGIN_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+const SCOPE_FILE_OPEN_FLAGS = fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0);
 
 function printJson(obj) {
   process.stdout.write(`${JSON.stringify(obj, null, 2)}\n`);
 }
 
 function parseArgs(argv) {
-  const out = { _: [] };
+  const out = Object.create(null);
+  out._ = [];
   for (let i = 0; i < argv.length; i += 1) {
     const token = argv[i];
     if (!token.startsWith("--")) {
@@ -37,10 +42,13 @@ function parseArgs(argv) {
     }
     const eq = token.indexOf("=");
     if (eq !== -1) {
-      out[token.slice(2, eq)] = token.slice(eq + 1);
+      const key = token.slice(2, eq);
+      assertSafeOptionKey(key, token);
+      out[key] = token.slice(eq + 1);
       continue;
     }
     const key = token.slice(2);
+    assertSafeOptionKey(key, token);
     const next = argv[i + 1];
     if (next == null || next.startsWith("--")) out[key] = true;
     else {
@@ -49,6 +57,12 @@ function parseArgs(argv) {
     }
   }
   return out;
+}
+
+function assertSafeOptionKey(key, token) {
+  if (!key || key === "__proto__" || key === "prototype" || key === "constructor") {
+    throw new Error(`unsupported option ${token}`);
+  }
 }
 
 function normalizeBaseUrl(value) {
@@ -66,6 +80,7 @@ function config(env = process.env) {
     model: env.GROK_WEB_MODEL || DEFAULT_MODEL,
     timeout_ms: parsePositiveInteger(env.GROK_WEB_TIMEOUT_MS, DEFAULT_TIMEOUT_MS),
     doctor_timeout_ms: parsePositiveInteger(env.GROK_WEB_DOCTOR_TIMEOUT_MS, DEFAULT_DOCTOR_TIMEOUT_MS),
+    chat_doctor_timeout_ms: parsePositiveInteger(env.GROK_WEB_CHAT_DOCTOR_TIMEOUT_MS, DEFAULT_CHAT_DOCTOR_TIMEOUT_MS),
     credential_ref: env.GROK_WEB_TUNNEL_API_KEY ? "GROK_WEB_TUNNEL_API_KEY" : null,
     credential_value: env.GROK_WEB_TUNNEL_API_KEY || null,
   };
@@ -127,6 +142,7 @@ function runCommand(command, args = [], options = {}) {
     cwd: options.cwd,
     env: options.env,
     encoding: "utf8",
+    maxBuffer: options.maxBuffer,
     shell: false,
     windowsHide: true,
   });
@@ -151,6 +167,22 @@ function git(args, cwd, options = {}) {
   return res.stdout.trim();
 }
 
+function gitRaw(args, cwd, options = {}) {
+  const res = runCommand(GIT_BINARY, args, {
+    cwd,
+    env: { ...cleanGitEnv(), PATH: GIT_SAFE_PATH },
+    maxBuffer: options.maxBuffer,
+  });
+  if (res.error) throw new Error(`git_failed:${res.error.message}`);
+  if (res.signal) throw new Error(`git_failed:signal:${res.signal}`);
+  if (res.status !== 0) {
+    if (options.allowFailure) return null;
+    const detail = String(res.stderr || res.stdout || `git exited with status ${res.status}`).trim();
+    throw new Error(`git_failed:${detail}`);
+  }
+  return res.stdout;
+}
+
 function gitCommitForPrompt(cwd, ref) {
   if (!ref) return null;
   try {
@@ -173,6 +205,30 @@ function splitScopePaths(value) {
   return String(value).split(/[,\n]/).map((s) => s.trim()).filter(Boolean);
 }
 
+function splitGitPathList(output) {
+  return output ? output.split("\0").filter(Boolean) : [];
+}
+
+function matchGlob(rel, pattern) {
+  let re = "^";
+  for (let i = 0; i < pattern.length; i += 1) {
+    const c = pattern[i];
+    if (c === "*") {
+      if (pattern[i + 1] === "*") {
+        re += ".*";
+        i += 1;
+        if (pattern[i + 1] === "/") i += 1;
+      } else {
+        re += "[^/]*";
+      }
+    } else if (c === "?") re += "[^/]";
+    else if (".^$+(){}|\\[]".includes(c)) re += `\\${c}`;
+    else re += c;
+  }
+  re += "$";
+  return new RegExp(re).test(rel);
+}
+
 function scopeName(options) {
   return options.scope ?? (options.mode === "custom-review" ? "custom" : "branch-diff");
 }
@@ -185,45 +241,121 @@ function selectedScopePaths(scope, options, cwd) {
   }
   if (scope === "branch-diff") {
     const base = options["scope-base"] ?? "main";
-    const changed = git(["diff", "--name-only", `${base}...HEAD`, "--"], cwd);
-    const relPaths = changed ? changed.split("\n").filter(Boolean) : [];
+    const changed = gitRaw(["diff", "-z", "--name-only", `${base}...HEAD`, "--"], cwd);
+    const requested = splitScopePaths(options["scope-paths"]);
+    const changedPaths = splitGitPathList(changed);
+    const relPaths = requested.length > 0
+      ? changedPaths.filter((relPath) => requested.some((pattern) => matchGlob(relPath, pattern)))
+      : changedPaths;
     if (relPaths.length === 0) throw new Error("scope_empty: branch-diff selected no files");
     return relPaths;
   }
   throw new Error(`unsupported_scope:${scope}`);
 }
 
-async function readScopeFiles(workspaceRoot, relPaths) {
+function validateScopePath(workspaceRoot, relPath) {
+  if (relPath.includes("..") || isAbsolute(relPath) || relPath.includes("\\")) {
+    throw new Error(`unsafe_scope_path:${relPath}`);
+  }
+  const abs = resolve(workspaceRoot, relPath);
+  const normalizedRel = relative(workspaceRoot, abs);
+  if (normalizedRel.startsWith("..") || normalizedRel === "") {
+    throw new Error(`unsafe_scope_path:${relPath}`);
+  }
+  return { abs, normalizedRel };
+}
+
+function addScopeFile(files, normalizedRel, text, totalBytes) {
+  if (text.length === 0) return;
+  const bytes = Buffer.byteLength(text, "utf8");
+  if (bytes > MAX_SCOPE_FILE_BYTES) {
+    throw new Error(`scope_file_too_large:${normalizedRel}: ${bytes} bytes exceeds ${MAX_SCOPE_FILE_BYTES} byte limit`);
+  }
+  totalBytes.value += bytes;
+  if (totalBytes.value > MAX_SCOPE_TOTAL_BYTES) {
+    throw new Error(`scope_total_too_large:${totalBytes.value} bytes exceeds ${MAX_SCOPE_TOTAL_BYTES} byte limit`);
+  }
+  files.push({ path: normalizedRel, text });
+}
+
+async function readUtf8ScopeFileWithinLimit(filePath, normalizedRel) {
+  const handle = await open(filePath, SCOPE_FILE_OPEN_FLAGS);
+  try {
+    const info = await handle.stat();
+    if (!info.isFile()) return null;
+    if (info.size > MAX_SCOPE_FILE_BYTES) {
+      throw new Error(`scope_file_too_large:${normalizedRel}: ${info.size} bytes exceeds ${MAX_SCOPE_FILE_BYTES} byte limit`);
+    }
+
+    const chunks = [];
+    let total = 0;
+    for (;;) {
+      const remaining = MAX_SCOPE_FILE_BYTES + 1 - total;
+      if (remaining <= 0) {
+        throw new Error(`scope_file_too_large:${normalizedRel}: exceeds ${MAX_SCOPE_FILE_BYTES} byte limit`);
+      }
+      const buffer = Buffer.allocUnsafe(Math.min(remaining, 64 * 1024));
+      const { bytesRead } = await handle.read(buffer, 0, buffer.length, null);
+      if (bytesRead === 0) break;
+      total += bytesRead;
+      if (total > MAX_SCOPE_FILE_BYTES) {
+        throw new Error(`scope_file_too_large:${normalizedRel}: ${total} bytes exceeds ${MAX_SCOPE_FILE_BYTES} byte limit`);
+      }
+      chunks.push(buffer.subarray(0, bytesRead));
+    }
+    if (total === 0) return "";
+    return Buffer.concat(chunks, total).toString("utf8");
+  } finally {
+    await handle.close();
+  }
+}
+
+async function readGitScopeFiles(gitCwd, workspaceRoot, relPaths) {
   const files = [];
-  let totalBytes = 0;
+  const totalBytes = { value: 0 };
+  for (const relPath of relPaths) {
+    const { normalizedRel } = validateScopePath(workspaceRoot, relPath);
+    const blobSpec = `HEAD:${relPath}`;
+    const sizeText = gitRaw(["cat-file", "-s", blobSpec], gitCwd, { allowFailure: true });
+    if (sizeText === null) continue;
+    const blobBytes = Number.parseInt(sizeText.trim(), 10);
+    if (!Number.isSafeInteger(blobBytes) || blobBytes < 0) {
+      throw new Error(`scope_invalid_git_blob_size:${normalizedRel}`);
+    }
+    if (blobBytes > MAX_SCOPE_FILE_BYTES) {
+      throw new Error(`scope_file_too_large:${normalizedRel}:${blobBytes}`);
+    }
+    const text = gitRaw(["show", blobSpec], gitCwd, {
+      allowFailure: true,
+      maxBuffer: GIT_SHOW_MAX_BUFFER_BYTES,
+    });
+    if (text === null) continue;
+    addScopeFile(files, normalizedRel, text, totalBytes);
+  }
+  if (files.length === 0) throw new Error("scope_empty: selected files are missing or empty");
+  return files;
+}
+
+async function readFilesystemScopeFiles(workspaceRoot, relPaths) {
+  const files = [];
+  const totalBytes = { value: 0 };
   const realWorkspaceRoot = await realpath(workspaceRoot);
   for (const relPath of relPaths) {
-    if (relPath.includes("..") || isAbsolute(relPath) || relPath.includes("\\")) {
-      throw new Error(`unsafe_scope_path:${relPath}`);
+    const { abs, normalizedRel } = validateScopePath(workspaceRoot, relPath);
+    let realAbs;
+    try {
+      realAbs = await realpath(abs);
+    } catch (error) {
+      if (error?.code === "ENOENT") continue;
+      throw error;
     }
-    const abs = resolve(workspaceRoot, relPath);
-    const normalizedRel = relative(workspaceRoot, abs);
-    if (normalizedRel.startsWith("..") || normalizedRel === "") {
-      throw new Error(`unsafe_scope_path:${relPath}`);
-    }
-    if (!existsSync(abs)) continue;
-    const realAbs = await realpath(abs);
     const realRel = relative(realWorkspaceRoot, realAbs);
     if (realRel.startsWith("..") || realRel === "") {
       throw new Error(`unsafe_scope_path:${relPath}`);
     }
-    const info = await stat(realAbs);
-    if (!info.isFile()) continue;
-    if (info.size > MAX_SCOPE_FILE_BYTES) {
-      throw new Error(`scope_file_too_large:${normalizedRel}: ${info.size} bytes exceeds ${MAX_SCOPE_FILE_BYTES} byte limit`);
-    }
-    totalBytes += info.size;
-    if (totalBytes > MAX_SCOPE_TOTAL_BYTES) {
-      throw new Error(`scope_total_too_large:${totalBytes} bytes exceeds ${MAX_SCOPE_TOTAL_BYTES} byte limit`);
-    }
-    const text = await readFile(realAbs, "utf8");
-    if (text.length === 0) continue;
-    files.push({ path: normalizedRel, text });
+    const text = await readUtf8ScopeFileWithinLimit(realAbs, normalizedRel);
+    if (text === null) continue;
+    addScopeFile(files, normalizedRel, text, totalBytes);
   }
   if (files.length === 0) throw new Error("scope_empty: selected files are missing or empty");
   return files;
@@ -255,17 +387,28 @@ async function collectScope(options) {
   const scope = scopeName(options);
   const scopeBase = scope === "branch-diff" ? options["scope-base"] ?? "main" : null;
   const relPaths = selectedScopePaths(scope, options, cwd);
-  const files = await readScopeFiles(workspaceRoot, relPaths);
+  const files = scope === "branch-diff"
+    ? await readGitScopeFiles(cwd, workspaceRoot, relPaths)
+    : await readFilesystemScopeFiles(workspaceRoot, relPaths);
   return {
     cwd,
     workspaceRoot,
     scope,
     scope_base: scopeBase,
-    base_commit: gitCommitForPrompt(cwd, scopeBase),
-    head_commit: gitCommitForPrompt(cwd, "HEAD"),
     scope_paths: relPaths,
+    repository: repositoryIdentity(cwd, workspaceRoot),
+    base_commit: scopeBase ? gitCommitForPrompt(cwd, scopeBase) : null,
+    head_ref: git(["branch", "--show-current"], cwd, { allowFailure: true }) || "HEAD",
+    head_commit: gitCommitForPrompt(cwd, "HEAD"),
     files,
   };
+}
+
+function repositoryIdentity(cwd, workspaceRoot) {
+  const remote = git(["remote", "get-url", "origin"], cwd, { allowFailure: true });
+  if (!remote) return workspaceRoot;
+  const match = /[:/]([^/:]+\/[^/]+?)(?:\.git)?$/.exec(remote);
+  return match ? match[1] : remote;
 }
 
 function promptFor(mode, userPrompt, scopeInfo) {
@@ -276,17 +419,16 @@ function promptFor(mode, userPrompt, scopeInfo) {
   return buildReviewPrompt({
     provider: "Grok Web",
     mode,
-    repository: scopeInfo.workspaceRoot ?? null,
+    repository: scopeInfo.repository,
     baseRef: scopeInfo.scope_base ?? null,
     baseCommit: scopeInfo.base_commit ?? null,
-    headRef: "HEAD",
+    headRef: scopeInfo.head_ref ?? "HEAD",
     headCommit: scopeInfo.head_commit ?? null,
     scope: scopeInfo.scope,
     scopePaths: scopeInfo.scope_paths,
     userPrompt,
     extraInstructions: [
       modeLine,
-      "Return a concise verdict and findings. Do not edit files.",
       "This request is routed through a local subscription-backed Grok web tunnel, not paid xAI API billing.",
       `Selected files:\n${files}`,
     ],
@@ -310,6 +452,13 @@ function providerFailure(reason, message, httpStatus, raw = null, payloadSent = 
   };
 }
 
+function providerFailureWithDiagnostic(reason, message, httpStatus, raw = null, payloadSent = null, diagnostics = null) {
+  return {
+    ...providerFailure(reason, message, httpStatus, raw, payloadSent),
+    diagnostics,
+  };
+}
+
 function classifyHttpFailure(status) {
   if (status === 401 || status === 403) return "session_expired";
   if (status === 429) return "usage_limited";
@@ -322,6 +471,26 @@ function errorMessageFromResponse(parsed, text, redact) {
     return redact(parsed.value?.error?.message ?? parsed.value?.message ?? JSON.stringify(parsed.value)).slice(0, 800);
   }
   return redact(text).slice(0, 800);
+}
+
+function chatBadRequestCode(parsed, text) {
+  const value = parsed.ok ? parsed.value : null;
+  const codeOrType = [
+    value?.error?.code,
+    value?.error?.type,
+  ].filter(Boolean).join(" ").toLowerCase();
+  if (/\b(model_not_found|invalid_model|unknown_model)\b/.test(codeOrType)) {
+    return "grok_chat_model_rejected";
+  }
+  const haystack = [
+    value?.error?.message,
+    value?.message,
+    text,
+  ].filter(Boolean).join(" ").toLowerCase();
+  if (/\b(?:model|model id|model name)\b.{0,80}\b(?:not found|unknown|unsupported|does not exist|not accepted)\b/.test(haystack)) {
+    return "grok_chat_model_rejected";
+  }
+  return "models_ok_chat_400";
 }
 
 function payloadSentForFetchError(error) {
@@ -370,7 +539,20 @@ async function callGrokTunnel(cfg, prompt, env = process.env) {
     const text = await response.text();
     const parsed = parseJson(text);
     if (!response.ok) {
-      return providerFailure(classifyHttpFailure(response.status), errorMessageFromResponse(parsed, text, redact), response.status, parsed.ok ? parsed.value : null, true);
+      return providerFailureWithDiagnostic(
+        classifyHttpFailure(response.status),
+        errorMessageFromResponse(parsed, text, redact),
+        response.status,
+        parsed.ok ? parsed.value : null,
+        true,
+        {
+          endpoint_class: "chat_completions",
+          model: cfg.model,
+          stream: false,
+          message_count: requestBody.messages.length,
+          prompt_chars: prompt.length,
+        },
+      );
     }
     if (!parsed.ok) return providerFailure("malformed_response", parsed.error, response.status, null, true);
     const content = parsed.value?.choices?.[0]?.message?.content;
@@ -389,6 +571,13 @@ async function callGrokTunnel(cfg, prompt, env = process.env) {
       http_status: response.status,
       credential_ref: cfg.credential_ref,
       endpoint: cfg.base_url,
+      diagnostics: {
+        configured_timeout_ms: cfg.timeout_ms,
+        prompt_chars: prompt.length,
+        max_tokens: null,
+        temperature: requestBody.temperature ?? null,
+        stream: false,
+      },
     };
   } catch (e) {
     const reason = e?.name === "AbortError" ? "tunnel_timeout" : "tunnel_unavailable";
@@ -442,6 +631,57 @@ async function probeGrokTunnel(cfg, env = process.env) {
   }
 }
 
+async function probeGrokChat(cfg, env = process.env) {
+  const endpoint = `${cfg.base_url}/chat/completions`;
+  const headers = { "content-type": "application/json" };
+  if (cfg.credential_value) headers.authorization = `Bearer ${cfg.credential_value}`;
+  const redact = redactor(env);
+  const requestBody = {
+    model: cfg.model,
+    stream: false,
+    messages: [{ role: "user", content: "Return exactly: ok" }],
+    temperature: 0,
+  };
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), cfg.chat_doctor_timeout_ms);
+  try {
+    const response = await fetch(endpoint, {
+      method: "POST",
+      headers,
+      body: JSON.stringify(requestBody),
+      signal: controller.signal,
+    });
+    const text = await response.text();
+    const parsed = text ? parseJson(text) : { ok: true, value: null };
+    if (!response.ok) {
+      return {
+        chat_ready: false,
+        error_code: response.status === 400 ? chatBadRequestCode(parsed, text) : classifyHttpFailure(response.status),
+        error_message: errorMessageFromResponse(parsed, text, redact),
+        http_status: response.status,
+        probe_endpoint: endpoint,
+      };
+    }
+    return {
+      chat_ready: true,
+      error_code: null,
+      error_message: null,
+      http_status: response.status,
+      probe_endpoint: endpoint,
+    };
+  } catch (e) {
+    return {
+      chat_ready: false,
+      error_code: e?.name === "AbortError" ? "grok_chat_timeout" : "tunnel_unavailable",
+      error_message: tunnelTransportMessage(e, env, redact),
+      http_status: null,
+      probe_endpoint: endpoint,
+    };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 function sourceTransmission(completed, payloadSent) {
   if (completed || payloadSent === true) return "sent";
   if (payloadSent === false) return "not_sent";
@@ -469,6 +709,9 @@ function suggestedAction(errorCode) {
   if (errorCode === "tunnel_timeout") return "The local Grok web tunnel did not respond before GROK_WEB_TIMEOUT_MS; inspect the tunnel and retry.";
   if (errorCode === "session_expired") return "Refresh the Grok web login/session used by the local tunnel, then retry.";
   if (errorCode === "usage_limited") return "Wait for Grok subscription usage to recover, reduce concurrency, or inspect the local tunnel.";
+  if (errorCode === "grok_chat_model_rejected") return "The tunnel lists models, but the configured GROK_WEB_MODEL is not accepted by chat; correct GROK_WEB_MODEL or tunnel model routing, then retry.";
+  if (errorCode === "grok_chat_timeout") return "The Grok chat readiness probe exceeded GROK_WEB_CHAT_DOCTOR_TIMEOUT_MS; inspect the local tunnel latency or raise that timeout, then retry.";
+  if (errorCode === "models_ok_chat_400") return "The tunnel lists models but chat is not review-capable; refresh the Grok web session, inspect tunnel logs and rate-limit endpoint health, then retry.";
   if (errorCode === "malformed_response") return "Inspect or update the local Grok web tunnel; it returned an unsupported response shape.";
   return "Inspect error_message and repair the local Grok web tunnel before retrying.";
 }
@@ -479,10 +722,72 @@ function errorCauseFor(errorCode) {
   return "grok_web_tunnel";
 }
 
+function buildReviewMetadata(cfg, scopeInfo, execution = null) {
+  const auditManifest = execution?.prompt ? buildReviewAuditManifest({
+    prompt: execution.prompt,
+    sourceFiles: scopeInfo.files ?? [],
+    git: {
+      remote: scopeInfo.repository ?? null,
+      branch: scopeInfo.head_ref ?? null,
+      baseRef: scopeInfo.scope_base ?? null,
+      baseCommit: scopeInfo.base_commit ?? null,
+      headRef: scopeInfo.head_ref ?? null,
+      headCommit: scopeInfo.head_commit ?? null,
+    },
+    promptBuilder: {
+      contractVersion: REVIEW_PROMPT_CONTRACT_VERSION,
+      pluginVersion: "0.1.0",
+      pluginCommit: gitCommitForPrompt(PLUGIN_ROOT, "HEAD"),
+    },
+    request: {
+      provider: cfg.display_name,
+      model: cfg.model,
+      timeoutMs: execution.diagnostics?.configured_timeout_ms ?? cfg.timeout_ms ?? null,
+      maxTokens: execution.diagnostics?.max_tokens ?? null,
+      temperature: execution.diagnostics?.temperature ?? null,
+      stream: false,
+    },
+    truncation: {
+      prompt: false,
+      source: false,
+      output: false,
+    },
+    providerIds: {
+      sessionId: execution.session_id ?? null,
+    },
+    scope: {
+      name: scopeInfo.scope,
+      base: scopeInfo.scope_base ?? null,
+      paths: scopeInfo.scope_paths ?? null,
+      reason: scopeResolutionReason(scopeInfo),
+    },
+    result: execution.parsed?.result ?? "",
+    status: execution.exitCode === 0 && execution.parsed?.ok === true ? "completed" : "failed",
+    errorCode: execution.parsed?.reason ?? null,
+  }) : null;
+  return {
+    prompt_contract_version: REVIEW_PROMPT_CONTRACT_VERSION,
+    prompt_provider: cfg.display_name,
+    scope: scopeInfo.scope,
+    scope_base: scopeInfo.scope_base ?? null,
+    scope_paths: scopeInfo.scope_paths ?? null,
+    raw_output: execution ? {
+      http_status: execution.http_status ?? null,
+      raw_model: execution.parsed?.raw_model ?? null,
+      parsed_ok: execution.parsed?.ok ?? null,
+      result_chars: typeof execution.parsed?.result === "string" ? execution.parsed.result.length : null,
+    } : null,
+    audit_manifest: auditManifest,
+  };
+}
+
 function buildRecord({ cfg, mode, options, scopeInfo, execution, startedAt, endedAt }) {
   const completed = execution.exitCode === 0 && execution.parsed?.ok === true;
   const errorCode = completed ? null : (execution.parsed?.reason ?? "tunnel_error");
   const errorMessage = completed ? null : (execution.parsed?.error ?? "");
+  const diagnostic = execution.diagnostics
+    ? `${errorMessage || errorCode} (${Object.entries(execution.diagnostics).map(([key, value]) => `${key}=${value}`).join(" ")})`
+    : (errorMessage || errorCode);
   const reviewDisclosure = disclosure(cfg, completed, execution.payload_sent ?? null);
   const transmission = sourceTransmission(completed, execution.payload_sent ?? null);
   return {
@@ -507,19 +812,7 @@ function buildRecord({ cfg, mode, options, scopeInfo, execution, startedAt, ende
     scope_base: scopeInfo.scope_base ?? null,
     scope_paths: scopeInfo.scope_paths ?? null,
     prompt_head: String(options.prompt ?? "").slice(0, 200),
-    review_metadata: Object.freeze({
-      prompt_contract_version: REVIEW_PROMPT_CONTRACT_VERSION,
-      prompt_provider: cfg.display_name,
-      scope: scopeInfo.scope,
-      scope_base: scopeInfo.scope_base ?? null,
-      scope_paths: scopeInfo.scope_paths ?? null,
-      raw_output: Object.freeze({
-        http_status: execution.http_status ?? null,
-        raw_model: execution.parsed?.raw_model ?? null,
-        parsed_ok: execution.parsed?.ok ?? null,
-        result_chars: typeof execution.parsed?.result === "string" ? execution.parsed.result.length : null,
-      }),
-    }),
+    review_metadata: buildReviewMetadata(cfg, scopeInfo, execution),
     schema_spec: null,
     binary: null,
     status: completed ? "completed" : "failed",
@@ -528,7 +821,7 @@ function buildRecord({ cfg, mode, options, scopeInfo, execution, startedAt, ende
     exit_code: execution.exitCode,
     error_code: errorCode,
     error_message: errorMessage,
-    error_summary: completed ? null : errorMessage || errorCode,
+    error_summary: completed ? null : diagnostic,
     error_cause: completed ? null : errorCauseFor(errorCode),
     suggested_action: completed ? null : suggestedAction(errorCode),
     external_review: {
@@ -546,6 +839,7 @@ function buildRecord({ cfg, mode, options, scopeInfo, execution, startedAt, ende
       disclosure: reviewDisclosure,
     },
     disclosure_note: reviewDisclosure,
+    runtime_diagnostics: null,
     result: completed ? execution.parsed.result : null,
     structured_output: null,
     permission_denials: [],
@@ -871,28 +1165,42 @@ async function cmdList(env = process.env) {
 async function doctorFields(env = process.env) {
   const cfg = config(env);
   const probe = await probeGrokTunnel(cfg, env);
-  const ready = probe.reachable === true;
+  const chatProbe = probe.reachable ? await probeGrokChat(cfg, env) : {
+    chat_ready: false,
+    error_code: probe.error_code,
+    error_message: probe.error_message,
+    http_status: null,
+    probe_endpoint: `${cfg.base_url}/chat/completions`,
+  };
+  const ready = probe.reachable === true && chatProbe.chat_ready === true;
+  const errorCode = ready ? null : (chatProbe.error_code ?? probe.error_code);
   return {
     provider: "grok-web",
     status: "ok",
     ready,
     reachable: probe.reachable,
+    chat_ready: chatProbe.chat_ready,
     summary: ready
-      ? "Grok subscription-backed local tunnel reviewer is configured and reachable."
-      : "Grok subscription-backed local tunnel is not reachable.",
+      ? "Grok subscription-backed local tunnel reviewer is configured and chat-ready."
+      : (probe.reachable
+        ? "Grok tunnel models endpoint is reachable, but chat completion is not review-ready."
+        : "Grok subscription-backed local tunnel is not reachable."),
     next_action: ready
       ? "Run a Grok web review."
-      : suggestedAction(probe.error_code),
+      : suggestedAction(errorCode),
     auth_mode: cfg.auth_mode,
     credential_ref: cfg.credential_ref,
     endpoint: cfg.base_url,
     probe_endpoint: probe.probe_endpoint,
+    chat_probe_endpoint: chatProbe.probe_endpoint,
     model: cfg.model,
     timeout_ms: cfg.timeout_ms,
     doctor_timeout_ms: cfg.doctor_timeout_ms,
-    error_code: probe.error_code,
-    error_message: probe.error_message,
+    chat_doctor_timeout_ms: cfg.chat_doctor_timeout_ms,
+    error_code: errorCode,
+    error_message: ready ? null : (chatProbe.error_message ?? probe.error_message),
     http_status: probe.http_status,
+    chat_http_status: chatProbe.http_status,
   };
 }
 
@@ -927,6 +1235,7 @@ async function cmdRun(options) {
     }
     if (!execution) try {
       execution = await callGrokTunnel(cfg, prompt);
+      execution.prompt = prompt;
     } catch (e) {
       execution = providerFailure(
         e.message.startsWith("bad_args:") ? "bad_args" : "tunnel_error",

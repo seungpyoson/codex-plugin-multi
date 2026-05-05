@@ -404,6 +404,8 @@ test("gemini _run-worker: cancel marker prevents target spawn, sets status=cance
     const wsDir = path.dirname(metaPath);
     const markerDir = path.join(wsDir, record.job_id);
     mkdirSync(markerDir, { recursive: true });
+    const promptPath = path.join(markerDir, "prompt.txt");
+    writeFileSync(promptPath, "queued prompt with selected source\n", { mode: 0o600 });
     const markerPath = path.join(markerDir, "cancel-requested.flag");
     writeFileSync(markerPath, new Date().toISOString() + "\n");
 
@@ -423,6 +425,8 @@ test("gemini _run-worker: cancel marker prevents target spawn, sets status=cance
       "worker must not record pid_info when refusing to spawn");
     assert.equal(existsSync(markerPath), false,
       "worker must consume (unlink) the marker on pickup");
+    assert.equal(existsSync(promptPath), false,
+      "worker must remove prompt sidecar when queued cancel prevents target spawn");
   } finally {
     rmTree(runRes.dataDir);
     rmTree(cwd);
@@ -1164,12 +1168,31 @@ test("gemini review foreground: omits native Gemini sandbox inside Codex sandbox
   seedMinimalRepo(cwd);
   const { stdout, stderr, status, dataDir } = runCompanion(
     ["run", "--mode=review", "--foreground", "--cwd", cwd, "--", "review: x=1"],
-    { cwd, env: { CODEX_SANDBOX: "seatbelt", GEMINI_MOCK_ASSERT_FILE: "seed.txt" } },
+    { cwd, env: {
+      CODEX_SANDBOX: "seatbelt",
+      GEMINI_MOCK_ASSERT_FILE: "seed.txt",
+      GEMINI_MOCK_ASSERT_PROMPT_INCLUDES: "Provider: Gemini CLI",
+    } },
   );
   try {
     assert.equal(status, 0, `exit ${status}: ${stderr}`);
     const record = JSON.parse(stdout);
     assert.equal(record.status, "completed");
+    assert.equal(record.review_metadata.prompt_contract_version, 1);
+    assert.equal(record.review_metadata.prompt_provider, "Gemini CLI");
+    assert.equal(record.review_metadata.raw_output.parsed_ok, true);
+    assert.match(record.review_metadata.audit_manifest.rendered_prompt_hash.value, /^[a-f0-9]{64}$/);
+    assert.equal(record.review_metadata.audit_manifest.request.model, record.model);
+    assert.match(record.review_metadata.audit_manifest.prompt_builder.plugin_commit, /^[a-f0-9]{40}$/);
+    assert.notEqual(
+      record.review_metadata.audit_manifest.prompt_builder.plugin_commit,
+      record.review_metadata.audit_manifest.git_identity.head_sha,
+      "plugin_commit must identify the plugin source, not the reviewed repository head"
+    );
+    assert.equal(record.review_metadata.audit_manifest.scope_resolution.scope, record.scope);
+    assert.equal(record.review_metadata.audit_manifest.selected_source.files.length > 0, true);
+    assert.equal(JSON.stringify(record.review_metadata.audit_manifest).includes("review: x=1"), false);
+    assert.equal(JSON.stringify(record.review_metadata.audit_manifest).includes("seed\\n"), false);
 
     const fx = readStdoutLog(dataDir, record.job_id);
     assert.equal(fx.t7_policy_loaded, true, "Gemini review must still pass bundled read-only policy");

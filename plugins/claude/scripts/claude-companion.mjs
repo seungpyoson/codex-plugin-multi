@@ -26,9 +26,9 @@
 // Subcommands below keep foreground/background lifecycle behavior explicit.
 
 import { fileURLToPath } from "node:url";
-import { dirname, join as joinPath, resolve as resolvePath } from "node:path";
+import { dirname, isAbsolute, join as joinPath, relative as relativePath, resolve as resolvePath } from "node:path";
 import { tmpdir } from "node:os";
-import { writeFileSync, mkdirSync, mkdtempSync, existsSync, chmodSync, renameSync, unlinkSync, readdirSync, rmSync, statSync, readFileSync as _readFileSync } from "node:fs";
+import { writeFileSync, mkdirSync, mkdtempSync, existsSync, chmodSync, renameSync, unlinkSync, readdirSync, rmSync, statSync, lstatSync, readFileSync as _readFileSync } from "node:fs";
 import { execFileSync, spawn } from "node:child_process";
 
 import { parseArgs } from "./lib/args.mjs";
@@ -43,6 +43,7 @@ import { newJobId, verifyPidInfo } from "./lib/identity.mjs";
 import { buildJobRecord, externalReviewForInvocation } from "./lib/job-record.mjs";
 import { reconcileActiveJobs } from "./lib/reconcile.mjs";
 import { cleanGitEnv } from "./lib/git-env.mjs";
+import { REVIEW_PROMPT_CONTRACT_VERSION, buildReviewAuditManifest, buildReviewPrompt } from "./lib/review-prompt.mjs";
 import {
   authDiagnosticFields,
   apiKeyMissingFields as buildApiKeyMissingFields,
@@ -61,7 +62,6 @@ import {
   summarizeScopeDirectory,
   writePromptSidecar,
 } from "./lib/companion-common.mjs";
-import { REVIEW_PROMPT_CONTRACT_VERSION, buildReviewPrompt } from "./lib/review-prompt.mjs";
 
 // ——— plugin-root self-resolution (upstream pattern, spec §4.14) ———
 const PLUGIN_ROOT = resolvePath(dirname(fileURLToPath(import.meta.url)), "..");
@@ -73,11 +73,10 @@ configureState({
 });
 
 const MODELS_CONFIG_PATH = resolvePath(PLUGIN_ROOT, "config/models.json");
+const GIT_BINARY = "/usr/bin/git";
 const CONTINUABLE_STATUSES = new Set(["completed", "failed", "cancelled", "stale"]);
 const RUN_MODES = Object.freeze(["review", "adversarial-review", "custom-review", "rescue"]);
 const PREFLIGHT_MODES = Object.freeze(["review", "adversarial-review", "custom-review"]);
-const GIT_PROMPT_BINARY = "/usr/bin/git";
-const GIT_PROMPT_SAFE_PATH = "/usr/bin:/bin";
 
 function loadModels() {
   if (!existsSync(MODELS_CONFIG_PATH)) return { review_quality: null, rescue: null };
@@ -88,42 +87,6 @@ function fail(code, message, details = {}) {
   process.stderr.write(`claude-companion: ${message}\n`);
   printJson({ ok: false, error: code, message, ...details });
   process.exit(1);
-}
-
-function targetPromptFor(invocation, userPrompt) {
-  if (invocation.mode_profile_name === "rescue") return userPrompt;
-  return buildReviewPrompt({
-    provider: "Claude",
-    mode: invocation.mode_profile_name,
-    repository: invocation.workspace_root ?? null,
-    baseRef: invocation.scope_base,
-    baseCommit: gitCommitForPrompt(invocation.cwd, invocation.scope_base),
-    headRef: "HEAD",
-    headCommit: gitCommitForPrompt(invocation.cwd, "HEAD"),
-    scope: invocation.scope,
-    scopePaths: invocation.scope_paths,
-    userPrompt,
-  });
-}
-
-function gitCommitForPrompt(cwd, ref) {
-  if (!ref) return null;
-  try {
-    return execFileSync(GIT_PROMPT_BINARY, ["rev-parse", "--verify", `${ref}^{commit}`], {
-      cwd,
-      env: cleanGitPromptEnv(),
-      encoding: "utf8",
-      stdio: ["ignore", "pipe", "ignore"],
-    }).trim();
-  } catch {
-    return null;
-  }
-}
-
-function cleanGitPromptEnv() {
-  const env = cleanGitEnv();
-  env.PATH = GIT_PROMPT_SAFE_PATH;
-  return env;
 }
 
 // Wraps git command; reports failure separately from successful empty output
@@ -137,7 +100,7 @@ function cleanGitPromptEnv() {
 
 function tryGit(args, cwd) {
   try {
-    const stdout = execFileSync("git", ["-C", cwd, ...args], {
+    const stdout = execFileSync(GIT_BINARY, ["-C", cwd, ...args], {
       encoding: "utf8",
       stdio: ["ignore", "pipe", "pipe"],
       env: cleanGitEnv(),
@@ -146,6 +109,173 @@ function tryGit(args, cwd) {
   } catch (error) {
     return { ok: false, error };
   }
+}
+
+function gitText(args, cwd) {
+  try {
+    return execFileSync(GIT_BINARY, ["-C", cwd, ...args], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+      env: cleanGitEnv(),
+    }).trim() || null;
+  } catch {
+    return null;
+  }
+}
+
+function repositoryIdentity(cwd, workspaceRoot) {
+  const remote = gitText(["remote", "get-url", "origin"], cwd);
+  if (!remote) return workspaceRoot;
+  const match = /[:/]([^/:]+\/[^/]+?)(?:\.git)?$/.exec(remote);
+  return match ? match[1] : remote;
+}
+
+function promptMetadata(invocation) {
+  return {
+    repository: repositoryIdentity(invocation.cwd, invocation.workspace_root),
+    baseRef: invocation.scope_base ?? null,
+    baseCommit: invocation.scope_base ? gitText(["rev-parse", "--verify", `${invocation.scope_base}^{commit}`], invocation.cwd) : null,
+    headRef: gitText(["branch", "--show-current"], invocation.cwd) ?? "HEAD",
+    headCommit: gitText(["rev-parse", "--verify", "HEAD^{commit}"], invocation.cwd),
+  };
+}
+
+function pluginSourceCommit() {
+  return gitText(["rev-parse", "--verify", "HEAD^{commit}"], PLUGIN_ROOT);
+}
+
+function targetPromptFor(invocation, userPrompt) {
+  if (invocation.mode_profile_name === "rescue") return userPrompt;
+  const meta = promptMetadata(invocation);
+  const modeLine = invocation.mode === "adversarial-review"
+    ? "You are performing an adversarial code review. Prioritize correctness bugs, security risks, regressions, and missing tests."
+    : "You are performing a code review. Prioritize bugs, behavioral regressions, and missing tests.";
+  return buildReviewPrompt({
+    provider: "Claude Code",
+    mode: invocation.mode,
+    repository: meta.repository,
+    baseRef: meta.baseRef,
+    baseCommit: meta.baseCommit,
+    headRef: meta.headRef,
+    headCommit: meta.headCommit,
+    scope: invocation.scope,
+    scopePaths: invocation.scope_paths,
+    userPrompt,
+    extraInstructions: [modeLine],
+  });
+}
+
+function isInsidePath(base, target) {
+  const relative = relativePath(base, target);
+  return relative === "" || (!relative.startsWith("..") && !isAbsolute(relative));
+}
+
+function listContainedFiles(root, dir = root, prefix = "") {
+  const out = [];
+  for (const name of readdirSync(dir)) {
+    if (name === ".git") continue;
+    const full = resolvePath(dir, name);
+    const rel = prefix ? `${prefix}/${name}` : name;
+    const lst = lstatSync(full);
+    if (lst.isSymbolicLink()) continue;
+    if (lst.isDirectory()) out.push(...listContainedFiles(root, full, rel));
+    else out.push(rel);
+  }
+  return out.sort((a, b) => a.localeCompare(b));
+}
+
+function auditSourceFiles(containmentPath) {
+  if (!containmentPath || !existsSync(containmentPath)) return [];
+  return listContainedFiles(containmentPath).map((path) => ({
+    path,
+    content: _readFileSync(resolvePath(containmentPath, path)),
+  }));
+}
+
+function scopeResolutionReason(invocation) {
+  const paths = invocation.scope_paths;
+  if (invocation.scope === "branch-diff") {
+    if (Array.isArray(paths) && paths.length > 0) {
+      return `git diff -z --name-only ${invocation.scope_base ?? "main"}...HEAD -- filtered by explicit --scope-paths`;
+    }
+    return `git diff -z --name-only ${invocation.scope_base ?? "main"}...HEAD --`;
+  }
+  if (Array.isArray(paths) && paths.length > 0) {
+    return "explicit --scope-paths";
+  }
+  return invocation.scope ?? null;
+}
+
+function reviewAuditManifest(invocation, prompt, containmentPath, execution) {
+  if (!invocation.review_prompt_contract_version || invocation.mode_profile_name === "rescue") return null;
+  const meta = promptMetadata(invocation);
+  return buildReviewAuditManifest({
+    prompt,
+    sourceFiles: auditSourceFiles(containmentPath),
+    git: {
+      remote: meta.repository,
+      branch: meta.headRef,
+      baseRef: meta.baseRef,
+      baseCommit: meta.baseCommit,
+      headRef: meta.headRef,
+      headCommit: meta.headCommit,
+    },
+    promptBuilder: {
+      contractVersion: invocation.review_prompt_contract_version,
+      pluginVersion: "0.1.0",
+      pluginCommit: pluginSourceCommit(),
+    },
+    request: {
+      provider: invocation.review_prompt_provider ?? "Claude Code",
+      model: invocation.model,
+      timeoutMs: null,
+      maxTokens: null,
+      maxStepsPerTurn: null,
+      temperature: null,
+    },
+    truncation: {
+      prompt: false,
+      source: false,
+      output: false,
+    },
+    providerIds: {
+      sessionId: execution?.claudeSessionId ?? null,
+    },
+    scope: {
+      name: invocation.scope,
+      base: invocation.scope_base ?? null,
+      paths: invocation.scope_paths ?? null,
+      reason: scopeResolutionReason(invocation),
+    },
+    result: execution?.parsed?.result ?? "",
+    status: execution?.exitCode === 0 && execution?.parsed?.ok === true ? "completed" : "failed",
+    errorCode: execution?.parsed?.reason ?? null,
+  });
+}
+
+function buildRuntimeDiagnostics(invocation, containmentPath, childCwd) {
+  const addDir = containmentPath ?? null;
+  const relativeFiles = Array.isArray(invocation.scope_paths)
+    ? invocation.scope_paths
+    : (addDir && resolvePath(addDir) !== resolvePath(invocation.cwd)
+      ? listContainedFiles(addDir)
+      : []);
+  const scopePathMappings = relativeFiles
+    .map((rel) => {
+      const contained = addDir ? resolvePath(addDir, rel) : null;
+      return {
+        original: resolvePath(invocation.cwd, rel),
+        contained,
+        relative: rel,
+        inside_add_dir: addDir && contained ? isInsidePath(addDir, contained) : false,
+      };
+    });
+
+  return {
+    add_dir: addDir,
+    child_cwd: childCwd ?? null,
+    scope_path_mappings: scopePathMappings,
+  };
 }
 
 function mutationDetectionFailure(error) {
@@ -426,7 +556,7 @@ async function cmdRun(rest) {
     scope_paths: scopePaths,
     prompt_head: prompt.slice(0, 200),          // §21.3.1 — no full prompt
     review_prompt_contract_version: profile.name === "rescue" ? null : REVIEW_PROMPT_CONTRACT_VERSION,
-    review_prompt_provider: profile.name === "rescue" ? null : "Claude",
+    review_prompt_provider: profile.name === "rescue" ? null : "Claude Code",
     schema_spec: options.schema ?? null,
     binary: options.binary ?? process.env.CLAUDE_BINARY ?? "claude",
     run_kind: options.background ? "background" : "foreground",
@@ -515,6 +645,7 @@ async function executeRun(invocation, prompt, { foreground }) {
   }
   const childCwd = neutralCwd ?? containment.path;
   const addDir = containment.path;
+  const runtimeDiagnostics = buildRuntimeDiagnostics(invocation, addDir, childCwd);
 
   // Pre-snapshot for review-style paths (§10 post-hoc mutation detection).
   // Profile-driven: plan-mode paths are supposed to be read-only, so we
@@ -562,6 +693,7 @@ async function executeRun(invocation, prompt, { foreground }) {
     const cancelledRecord = buildJobRecord(invocation, {
       status: "cancelled",
       exitCode: null, parsed: null, pidInfo: null, claudeSessionId: null,
+      runtimeDiagnostics,
     }, mutations);
     writeJobFile(workspaceRoot, jobId, cancelledRecord);
     upsertJob(workspaceRoot, cancelledRecord);
@@ -590,6 +722,7 @@ async function executeRun(invocation, prompt, { foreground }) {
           parsed: null,
           pidInfo,
           claudeSessionId: null,
+          runtimeDiagnostics,
         }, mutations);
         writeJobFile(workspaceRoot, jobId, runningRecord);
         upsertJob(workspaceRoot, runningRecord);
@@ -599,6 +732,7 @@ async function executeRun(invocation, prompt, { foreground }) {
     const errorRecord = buildJobRecord(invocation, {
       exitCode: null, parsed: null, pidInfo: null, claudeSessionId: null,
       errorMessage: e.message,
+      runtimeDiagnostics,
     }, mutations);
     writeJobFile(workspaceRoot, jobId, errorRecord);
     upsertJob(workspaceRoot, errorRecord);
@@ -656,6 +790,7 @@ async function executeRun(invocation, prompt, { foreground }) {
   // marker is per-job and best-effort — a missing file means "no cancel
   // requested," not "couldn't read."
   const cancelMarker = consumeCancelMarker(workspaceRoot, jobId);
+  execution.reviewAuditManifest = reviewAuditManifest(invocation, prompt, containment.path, execution);
 
   // ONE buildJobRecord call for the canonical record — spec §21.3.2.
   // signal + timedOut feed classifyExecution: a SIGTERM/SIGKILL exit without
@@ -669,6 +804,8 @@ async function executeRun(invocation, prompt, { foreground }) {
     ...(cancelMarker ? { status: "cancelled" } : {}),
     signal: execution.signal ?? null,
     timedOut: execution.timedOut === true,
+    runtimeDiagnostics,
+    reviewAuditManifest: execution.reviewAuditManifest,
   }, mutations);
 
   // Phase 1+2: contractual persistence (meta.json + state.json) under ONE
@@ -784,6 +921,7 @@ async function cmdRunWorker(rest) {
   // call, side effects) and only the post-run consumer at executeRun would
   // convert "completed" → "cancelled".
   if (consumeCancelMarker(workspaceRoot, options.job)) {
+    try { consumePromptSidecar(resolveJobsDir(workspaceRoot), options.job); } catch { /* best-effort privacy cleanup */ }
     const cancelledRecord = buildJobRecord(invocationFromRecord(meta), {
       status: "cancelled",
       exitCode: null, parsed: null, pidInfo: null, claudeSessionId: null,
@@ -910,7 +1048,7 @@ async function cmdContinue(rest) {
     scope_paths: prior.scope_paths ?? null,
     prompt_head: prompt.slice(0, 200),    // §21.3.1 — no full prompt
     review_prompt_contract_version: priorProfile.name === "rescue" ? null : REVIEW_PROMPT_CONTRACT_VERSION,
-    review_prompt_provider: priorProfile.name === "rescue" ? null : "Claude",
+    review_prompt_provider: priorProfile.name === "rescue" ? null : "Claude Code",
     schema_spec: prior.schema_spec ?? prior.schema ?? null,
     binary: options.binary ?? process.env.CLAUDE_BINARY ?? "claude",
     run_kind: options.background ? "background" : "foreground",

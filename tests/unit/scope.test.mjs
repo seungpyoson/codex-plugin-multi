@@ -1464,6 +1464,35 @@ test("populateScope scope=branch-diff: copies files changed vs base, not unrelat
   }
 });
 
+test("populateScope scope=branch-diff: scopePaths narrow changed files", () => {
+  const src = seedRepo();
+  const tgt = mkTarget();
+  try {
+    writeFileSync(path.join(src, "base.txt"), "base\n");
+    git(src, "add", ".");
+    git(src, "commit", "-qm", "main");
+    git(src, "checkout", "-qb", "feature");
+    writeFileSync(path.join(src, "wanted.md"), "wanted\n");
+    writeFileSync(path.join(src, "extra.md"), "extra\n");
+    mkdirSync(path.join(src, "nested"));
+    writeFileSync(path.join(src, "nested", "wanted.txt"), "nested\n");
+    git(src, "add", ".");
+    git(src, "commit", "-qm", "feature");
+
+    populateScope(profile("branch-diff"), src, tgt, {
+      scopeBase: "main",
+      scopePaths: ["wanted.md", "nested/*.txt"],
+    });
+
+    assert.ok(existsSync(path.join(tgt, "wanted.md")), "wanted.md missing");
+    assert.ok(existsSync(path.join(tgt, "nested", "wanted.txt")), "nested/wanted.txt missing");
+    assert.equal(existsSync(path.join(tgt, "extra.md")), false,
+      "branch-diff --scope-paths leaked an unrequested changed file");
+  } finally {
+    cleanup(src, tgt);
+  }
+});
+
 test("populateScope scope=branch-diff: fails closed when diff selects no files", () => {
   const src = seedRepo();
   const tgt = mkTarget();

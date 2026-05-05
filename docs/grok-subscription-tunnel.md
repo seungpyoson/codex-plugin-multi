@@ -123,7 +123,17 @@ Expected readiness:
 - `auth_mode: "subscription_web"`
 - `ready: true`
 - `reachable: true`
+- `chat_ready: true`
 - `probe_endpoint` ending in `/models`
+- `chat_probe_endpoint` ending in `/chat/completions`
+
+The doctor uses `GROK_WEB_DOCTOR_TIMEOUT_MS` for the cheap `/models` probe and
+`GROK_WEB_CHAT_DOCTOR_TIMEOUT_MS` for the chat-readiness probe. The chat
+timeout defaults to 10000 ms so a healthy but slow local tunnel is not reported
+as unavailable just because the model listing endpoint is fast. If `/models`
+works but `/chat/completions` rejects the configured model, the doctor reports
+`grok_chat_model_rejected` and points at `GROK_WEB_MODEL` instead of session
+refresh guidance.
 
 Live E2E:
 

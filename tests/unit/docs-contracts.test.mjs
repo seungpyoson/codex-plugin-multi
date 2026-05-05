@@ -108,6 +108,18 @@ test("artifact cleanup inventory covers every provider, review mode, and owned a
   assert.match(doc, /starttime.*argv0/s);
 });
 
+test("README documents cache doctor automation for stale plugin skill discovery", () => {
+  const readme = readRepoFile("README.md");
+  const pkg = JSON.parse(readRepoFile("package.json"));
+
+  assert.match(pkg.scripts["doctor:cache"] ?? "", /codex-plugin-cache-doctor\.mjs/);
+  assert.match(readme, /npm run doctor:cache/);
+  assert.match(readme, /codex plugin marketplace upgrade codex-plugin-multi/);
+  assert.match(readme, /second-codex/i);
+  assert.match(readme, /restart/i);
+  assert.match(readme, /codex debug prompt-input 'list skills'/);
+});
+
 test("claude review command docs use current mutation schema fields", () => {
   const docs = [
     readRepoFile("plugins/claude/commands/claude-review.md"),
