@@ -1496,7 +1496,8 @@ function diagnosticErrorSummary(errorCode, errorMessage, scopeInfo, execution) {
 function promptBudgetPreflight(provider, cfg, prompt, scopeInfo, env = process.env) {
   const budget = parsePromptCharBudget(cfg, env);
   if (!budget.ok) {
-    return providerFailure("bad_args", budget.error, null, null, false);
+    const reason = budget.error?.startsWith("provider prompt_char_budget") ? "config_error" : "bad_args";
+    return providerFailure(reason, budget.error, null, null, false);
   }
   if (budget.value === null || prompt.length <= budget.value) return null;
   const scope = scopeDiagnostics(scopeInfo);

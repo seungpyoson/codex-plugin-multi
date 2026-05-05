@@ -1671,6 +1671,49 @@ test("API_REVIEWERS_PROMPT_CHAR_BUDGET rejects invalid overrides before source t
   assert.doesNotMatch(result.stdout, /secret-test-value/);
 });
 
+test("invalid provider prompt_char_budget is reported as config_error", async () => {
+  const cwd = makeWorkspace();
+  const dataDir = mkdtempSync(path.join(tmpdir(), "api-reviewers-data-"));
+  const pluginRoot = makeInstalledApiReviewersRoot();
+  writeFileSync(path.join(pluginRoot, "config", "providers.json"), JSON.stringify({
+    deepseek: {
+      display_name: "DeepSeek",
+      auth_mode: "api_key",
+      env_keys: ["DEEPSEEK_API_KEY"],
+      base_url: "http://127.0.0.1:9",
+      model: "deepseek-v4-flash",
+      prompt_char_budget: "bad-config-value",
+    },
+  }, null, 2));
+
+  const result = await run([
+    "run",
+    "--provider", "deepseek",
+    "--mode", "custom-review",
+    "--scope", "custom",
+    "--scope-paths", "seed.txt",
+    "--foreground",
+    "--prompt", "Check this file.",
+  ], {
+    cwd,
+    companion: path.join(pluginRoot, "scripts", "api-reviewer.mjs"),
+    env: {
+      API_REVIEWERS_PLUGIN_DATA: dataDir,
+      DEEPSEEK_API_KEY: "secret-test-value",
+    },
+  });
+
+  assert.equal(result.status, 1);
+  const record = parseJson(result.stdout);
+  assert.equal(record.status, "failed");
+  assert.equal(record.error_code, "config_error");
+  assert.equal(record.error_cause, "provider_config");
+  assert.match(record.suggested_action, /providers\.json/);
+  assert.match(record.error_message, /provider prompt_char_budget/);
+  assertDirectApiNotSent(record, "DeepSeek");
+  assert.doesNotMatch(result.stdout, /secret-test-value/);
+});
+
 test("direct API HTTP failures mark selected content as sent", async () => {
   const cwd = makeWorkspace();
   const dataDir = mkdtempSync(path.join(tmpdir(), "api-reviewers-data-"));
