@@ -606,6 +606,8 @@ test("kimi continue background: launched event and terminal JobRecord keep paren
       "--job",
       prior.job_id,
       "--background",
+      "--lifecycle-events",
+      "jsonl",
       "--cwd",
       cwd,
       "--",

@@ -9,6 +9,7 @@ import {
   comparePathStrings,
   consumePromptSidecar,
   credentialNameDiagnostics,
+  externalReviewBackgroundLaunchedEvent,
   externalReviewLaunchedEvent,
   gitStatusLines,
   parseLifecycleEventsMode,
@@ -88,6 +89,29 @@ test("shared companion helpers cover small provider-agnostic behavior", () => {
       target: "claude",
       status: "launched",
       external_review: { marker: "EXTERNAL REVIEW" },
+    },
+  );
+  assert.deepEqual(
+    externalReviewBackgroundLaunchedEvent(
+      {
+        job_id: "job-1",
+        target: "claude",
+        parent_job_id: "parent-1",
+        mode: "review",
+        workspace_root: "/tmp/workspace",
+      },
+      1234,
+      { marker: "EXTERNAL REVIEW", run_kind: "background" },
+    ),
+    {
+      event: "launched",
+      job_id: "job-1",
+      target: "claude",
+      parent_job_id: "parent-1",
+      mode: "review",
+      pid: 1234,
+      workspace_root: "/tmp/workspace",
+      external_review: { marker: "EXTERNAL REVIEW", run_kind: "background" },
     },
   );
   assert.deepEqual(parseScopePathsOption(" a.js, ,src/b.js "), ["a.js", "src/b.js"]);
@@ -248,6 +272,29 @@ function assertCopyHelperBranches(mod, plugin) {
       target: plugin,
       status: "launched",
       external_review: { marker: "EXTERNAL REVIEW" },
+    },
+  );
+  assert.deepEqual(
+    mod.externalReviewBackgroundLaunchedEvent(
+      {
+        job_id: "copy-job",
+        target: plugin,
+        parent_job_id: "copy-parent",
+        mode: "review",
+        workspace_root: "/tmp/copy-workspace",
+      },
+      1234,
+      { marker: "EXTERNAL REVIEW", run_kind: "background" },
+    ),
+    {
+      event: "launched",
+      job_id: "copy-job",
+      target: plugin,
+      parent_job_id: "copy-parent",
+      mode: "review",
+      pid: 1234,
+      workspace_root: "/tmp/copy-workspace",
+      external_review: { marker: "EXTERNAL REVIEW", run_kind: "background" },
     },
   );
 

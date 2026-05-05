@@ -945,7 +945,8 @@ test("gemini continue background: launched event and resumed terminal JobRecord"
     assert.equal(prior.gemini_session_id, GEMINI_SESSION_ID);
 
     const continued = runCompanion(
-      ["continue", "--job", prior.job_id, "--background", "--cwd", cwd, "--", "background continue task"],
+      ["continue", "--job", prior.job_id, "--background", "--lifecycle-events", "jsonl",
+       "--cwd", cwd, "--", "background continue task"],
       { cwd, dataDir: first.dataDir },
     );
     assert.equal(continued.status, 0, `exit ${continued.status}: ${continued.stderr}`);

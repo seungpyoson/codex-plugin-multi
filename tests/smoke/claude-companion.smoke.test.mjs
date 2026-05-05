@@ -736,12 +736,16 @@ test("continue --job: resumes a prior session via --resume", () => {
     const { job_id } = JSON.parse(runRes.stdout);
     const contRes = spawnSync("node", [
       path.join(REPO_ROOT, "plugins/claude/scripts/claude-companion.mjs"),
-      "continue", "--job", job_id, "--foreground",
+      "continue", "--job", job_id, "--foreground", "--lifecycle-events", "jsonl",
       "--cwd", cwd, "--", "follow-up",
     ], { cwd, encoding: "utf8",
         env: { ...process.env, CLAUDE_BINARY: MOCK, CLAUDE_PLUGIN_DATA: dataDir } });
     assert.equal(contRes.status, 0, contRes.stderr);
-    const out = JSON.parse(contRes.stdout);
+    const lines = contRes.stdout.trim().split("\n").map((line) => JSON.parse(line));
+    assert.equal(lines.length, 2);
+    const [launched, out] = lines;
+    assert.equal(launched.event, "external_review_launched");
+    assert.equal(launched.external_review.parent_job_id, job_id);
     assert.notEqual(out.job_id, job_id, "continue must mint a new job_id");
     // T7.4 (§21.3): foreground stdout is a JobRecord, not an ok-envelope.
     assert.equal(out.status, "completed");

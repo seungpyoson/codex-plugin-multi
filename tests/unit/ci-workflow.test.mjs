@@ -91,6 +91,34 @@ test("standalone lifecycle smoke tests guard launch event shape against shared h
   }
 });
 
+test("companion background launch events use shared helper", () => {
+  for (const rel of [
+    "plugins/claude/scripts/claude-companion.mjs",
+    "plugins/gemini/scripts/gemini-companion.mjs",
+    "plugins/kimi/scripts/kimi-companion.mjs",
+  ]) {
+    const source = readFileSync(resolve(rel), "utf8");
+    assert.match(source, /externalReviewBackgroundLaunchedEvent/, `${rel} must use the shared background launch helper`);
+  }
+});
+
+test("companion continue commands accept lifecycle events", () => {
+  for (const rel of [
+    "plugins/claude/scripts/claude-companion.mjs",
+    "plugins/gemini/scripts/gemini-companion.mjs",
+    "plugins/kimi/scripts/kimi-companion.mjs",
+  ]) {
+    const source = readFileSync(resolve(rel), "utf8");
+    const start = source.indexOf("async function cmdContinue");
+    assert.notEqual(start, -1, `${rel} must define cmdContinue`);
+    const end = source.indexOf("\nasync function", start + 1);
+    const block = source.slice(start, end === -1 ? source.length : end);
+    assert.match(block, /"lifecycle-events"/, `${rel} continue must parse --lifecycle-events`);
+    assert.match(block, /parseLifecycleEventsMode/, `${rel} continue must validate --lifecycle-events`);
+    assert.match(block, /printLifecycleJson|printJsonLine/, `${rel} continue must honor lifecycle output mode`);
+  }
+});
+
 test("manual E2E scripts are opt-in and documented", () => {
   assert.match(pkg.scripts["e2e:claude"] ?? "", /tests\/e2e\/claude\.e2e\.test\.mjs/);
   assert.match(pkg.scripts["e2e:gemini"] ?? "", /tests\/e2e\/gemini\.e2e\.test\.mjs/);

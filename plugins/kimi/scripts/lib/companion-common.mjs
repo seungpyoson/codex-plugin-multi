@@ -32,6 +32,19 @@ export function externalReviewLaunchedEvent(invocation, externalReview) {
   };
 }
 
+export function externalReviewBackgroundLaunchedEvent(invocation, pid, externalReview) {
+  return {
+    event: "launched",
+    job_id: invocation.job_id,
+    target: invocation.target,
+    ...(invocation.parent_job_id == null ? {} : { parent_job_id: invocation.parent_job_id }),
+    mode: invocation.mode,
+    pid: pid ?? null,
+    workspace_root: invocation.workspace_root,
+    external_review: externalReview,
+  };
+}
+
 export function printLifecycleJson(obj, lifecycleEvents, output = process.stdout) {
   if (lifecycleEvents === "jsonl") printJsonLine(obj, output);
   else printJson(obj, output);

@@ -25,6 +25,7 @@ import {
   PING_PROMPT,
   consumePromptSidecar,
   credentialNameDiagnostics,
+  externalReviewBackgroundLaunchedEvent,
   externalReviewLaunchedEvent,
   gitStatusLines,
   parseLifecycleEventsMode,
@@ -467,15 +468,11 @@ async function cmdRun(rest) {
     }
     const { child, error } = await spawnDetachedWorker(cwd, jobId);
     if (error) failBackgroundWorkerSpawn(workspaceRoot, invocation, error);
-    const launched = {
-      event: "launched",
-      job_id: jobId,
-      target: "kimi",
-      mode,
-      pid: child.pid ?? null,
-      workspace_root: workspaceRoot,
-      external_review: externalReviewForInvocation(invocation),
-    };
+    const launched = externalReviewBackgroundLaunchedEvent(
+      invocation,
+      child.pid,
+      externalReviewForInvocation(invocation),
+    );
     if (lifecycleEvents === "jsonl") printJsonLine(launched);
     else printJson(launched);
     process.exit(0);
@@ -805,12 +802,18 @@ async function cmdRunWorker(rest) {
 
 async function cmdContinue(rest) {
   const { options, positionals } = parseArgs(rest, {
-    valueOptions: ["job", "cwd", "model", "binary", "timeout-ms", "max-steps-per-turn"],
+    valueOptions: ["job", "cwd", "model", "binary", "timeout-ms", "max-steps-per-turn", "lifecycle-events"],
     booleanOptions: ["background", "foreground"],
   });
   if (!options.job) fail("bad_args", "--job <id> is required");
   if (options.background && options.foreground) {
     fail("bad_args", "--background and --foreground are mutually exclusive");
+  }
+  let lifecycleEvents;
+  try {
+    lifecycleEvents = parseLifecycleEventsMode(options["lifecycle-events"]);
+  } catch (error) {
+    fail("bad_args", error.message);
   }
 
   const cwd = options.cwd ?? process.cwd();
@@ -897,20 +900,17 @@ async function cmdContinue(rest) {
     }
     const { child, error } = await spawnDetachedWorker(cwd, newJobId_);
     if (error) failBackgroundWorkerSpawn(workspaceRoot, invocation, error);
-    printJson({
-      event: "launched",
-      job_id: newJobId_,
-      target: "kimi",
-      mode: priorModeName,
-      parent_job_id: options.job,
-      pid: child.pid ?? null,
-      workspace_root: workspaceRoot,
-      external_review: externalReviewForInvocation(invocation),
-    });
+    const launched = externalReviewBackgroundLaunchedEvent(
+      invocation,
+      child.pid,
+      externalReviewForInvocation(invocation),
+    );
+    if (lifecycleEvents === "jsonl") printJsonLine(launched);
+    else printJson(launched);
     process.exit(0);
   }
 
-  await executeRun(invocation, targetPrompt, { foreground: true });
+  await executeRun(invocation, targetPrompt, { foreground: true, lifecycleEvents });
 }
 
 async function cmdStatus(rest) {
