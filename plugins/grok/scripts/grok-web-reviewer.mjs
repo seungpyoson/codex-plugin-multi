@@ -508,6 +508,10 @@ function promptFor(mode, userPrompt, scopeInfo) {
   });
 }
 
+function hasPromptText(value) {
+  return String(value ?? "").trim().length > 0;
+}
+
 function parseJson(text) {
   try {
     return { ok: true, value: JSON.parse(text) };
@@ -1339,6 +1343,11 @@ async function cmdRun(options) {
       scope_paths: splitScopePaths(options["scope-paths"]),
     };
     execution = providerFailure(e.message.startsWith("bad_args:") ? "bad_args" : "scope_failed", redactor()(e.message), null, null, false);
+  }
+  if (!execution) {
+    if (!hasPromptText(options.prompt)) {
+      execution = providerFailure("bad_args", "prompt is required (pass --prompt <focus>)", null, null, false);
+    }
   }
   if (!execution) {
     let prompt;

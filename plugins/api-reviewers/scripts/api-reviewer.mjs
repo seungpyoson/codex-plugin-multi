@@ -1041,6 +1041,10 @@ function promptFor(mode, userPrompt, scopeInfo, providerName = "Direct API revie
   });
 }
 
+function hasPromptText(value) {
+  return String(value ?? "").trim().length > 0;
+}
+
 function requestFieldMatches(actual, expected) {
   if (Object.is(actual, expected)) return true;
   if (Array.isArray(actual) || Array.isArray(expected)) {
@@ -1598,6 +1602,11 @@ async function cmdRun(options) {
       parsed: { ok: false, reason, error: redact(e.message) },
       payload_sent: false,
     };
+  }
+  if (!execution) {
+    if (!hasPromptText(options.prompt)) {
+      execution = providerFailure("bad_args", "prompt is required (pass --prompt <focus>)", null, null, false);
+    }
   }
   if (!execution) {
     if (lifecycleEvents) {

@@ -2093,6 +2093,35 @@ test("direct API reviewers reject invalid lifecycle event mode as bad args", asy
   assert.doesNotMatch(result.stdout, /secret-test-value/);
 });
 
+test("direct API reviewers reject missing prompt before launch or source transmission", async () => {
+  const cwd = makeWorkspace();
+  const result = await run([
+    "run",
+    "--provider", "deepseek",
+    "--mode", "custom-review",
+    "--scope", "custom",
+    "--scope-paths", "seed.txt",
+    "--foreground",
+    "--lifecycle-events", "jsonl",
+  ], {
+    cwd,
+    env: {
+      API_REVIEWERS_MOCK_RESPONSE: mockResponse("deepseek-v4-pro"),
+      DEEPSEEK_API_KEY: "secret-test-value",
+    },
+  });
+  assert.equal(result.status, 1);
+  const lines = parseJsonLines(result.stdout);
+  assert.equal(lines.length, 1);
+  const [record] = lines;
+  assert.equal(record.status, "failed");
+  assert.equal(record.error_code, "bad_args");
+  assert.match(record.error_message, /prompt is required/);
+  assertDirectApiNotSent(record, "DeepSeek");
+  assert.doesNotMatch(result.stdout, /external_review_launched/);
+  assert.doesNotMatch(result.stdout, /secret-test-value/);
+});
+
 test("direct API reviewers fail closed when no explicit API-key auth is available", async () => {
   const cwd = makeWorkspace();
   const result = await run([
