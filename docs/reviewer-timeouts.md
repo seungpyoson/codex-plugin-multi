@@ -30,6 +30,13 @@ node plugins/kimi/scripts/kimi-companion.mjs run --mode=review --foreground --ti
 
 The same flag is accepted by companion `continue --job <id>` paths.
 
+Kimi also has an independent model step budget. If Kimi sends selected source
+but returns `error_code: "step_limit_exceeded"`, increasing `--timeout-ms` is
+not enough; rerun with a higher `--max-steps-per-turn <n>` or a narrower
+scope. The timeout controls wall-clock runtime, while the step budget controls
+how many Kimi tool/model steps the companion allows before preserving a failed
+JobRecord.
+
 For non-interactive wrappers, these environment variables set the same review
 timeout:
 
@@ -63,6 +70,7 @@ Timeout failures keep provider-specific classifications:
 - Direct API provider timeout after source transmission: `error_code: "timeout"` with `external_review.source_content_transmission: "sent"`.
 - Grok tunnel review timeout: `error_code: "tunnel_timeout"`.
 - Grok doctor chat timeout: `error_code: "grok_chat_timeout"`.
+- Kimi model step exhaustion after source transmission: `error_code: "step_limit_exceeded"`; use `--max-steps-per-turn <n>` or reduce scope.
 - Ping/doctor timeouts stay on ping/doctor JSON and do not imply source was sent.
 
 Do not silently retry, extend, truncate, shard, or mutate runtime configuration.
