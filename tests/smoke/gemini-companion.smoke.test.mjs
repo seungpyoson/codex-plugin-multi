@@ -144,12 +144,12 @@ test("gemini run api_key auth failure includes structured diagnostics before spa
   }
 });
 
-test("gemini rescue background: launched event and terminal JobRecord", async () => {
+test("gemini custom-review background: launched event and terminal JobRecord", async () => {
   const cwd = mkdtempSync(path.join(tmpdir(), "gemini-bg-cwd-"));
   seedMinimalRepo(cwd);
   const { stdout, stderr, status, dataDir } = runCompanion(
-    ["run", "--mode=rescue", "--background", "--model", "gemini-3-flash-preview",
-     "--cwd", cwd, "--", "background rescue task"],
+    ["run", "--mode=custom-review", "--background", "--model", "gemini-3-flash-preview",
+     "--scope-paths", "seed.txt", "--timeout-ms", "345678", "--cwd", cwd, "--", "background rescue task"],
     { cwd },
   );
   try {
@@ -166,10 +166,10 @@ test("gemini rescue background: launched event and terminal JobRecord", async ()
       job_id: launched.job_id,
       session_id: null,
       parent_job_id: null,
-      mode: "rescue",
-      scope: "working-tree",
+      mode: "custom-review",
+      scope: "custom",
       scope_base: null,
-      scope_paths: null,
+      scope_paths: ["seed.txt"],
       source_content_transmission: "may_be_sent",
       disclosure: "Selected source content may be sent to Gemini CLI for external review.",
     });
@@ -194,6 +194,7 @@ test("gemini rescue background: launched event and terminal JobRecord", async ()
 
     assert.ok(meta, "worker never wrote terminal meta");
     assert.equal(meta.status, "completed");
+    assert.equal(meta.review_metadata.audit_manifest.request.timeout_ms, 345678);
     assert.equal(meta.result, "Mock Gemini response.");
     assert.equal(meta.gemini_session_id, GEMINI_SESSION_ID);
     assert.deepEqual(meta.external_review, {
@@ -817,10 +818,13 @@ test("gemini background worker spawn failure writes failed JobRecord instead of 
 test("gemini continue foreground: resumes prior job session", () => {
   const cwd = mkdtempSync(path.join(tmpdir(), "gemini-continue-cwd-"));
   seedMinimalRepo(cwd);
+  writeFileSync(path.join(cwd, "seed.txt"), "continue timeout seed\n");
+  const priorTimeoutMs = 777777;
   const first = runCompanion(
-    ["run", "--mode=rescue", "--foreground", "--model", "gemini-3-flash-preview",
+    ["run", "--mode=custom-review", "--foreground", "--model", "gemini-3-flash-preview",
+     "--scope-paths", "seed.txt", "--timeout-ms", String(priorTimeoutMs),
      "--cwd", cwd, "--", "initial rescue task"],
-    { cwd },
+    { cwd, env: { GEMINI_REVIEW_TIMEOUT_MS: "" } },
   );
   try {
     assert.equal(first.status, 0, `exit ${first.status}: ${first.stderr}`);
@@ -830,7 +834,7 @@ test("gemini continue foreground: resumes prior job session", () => {
 
     const continued = runCompanion(
       ["continue", "--job", prior.job_id, "--foreground", "--cwd", cwd, "--", "continue rescue task"],
-      { cwd, dataDir: first.dataDir },
+      { cwd, dataDir: first.dataDir, env: { GEMINI_REVIEW_TIMEOUT_MS: "" } },
     );
     assert.equal(continued.status, 0, `exit ${continued.status}: ${continued.stderr}`);
     const record = JSON.parse(continued.stdout);
@@ -839,11 +843,40 @@ test("gemini continue foreground: resumes prior job session", () => {
     assert.equal(record.parent_job_id, prior.job_id);
     assert.deepEqual(record.resume_chain, [prior.gemini_session_id]);
     assert.equal(record.gemini_session_id, RESUMED_GEMINI_SESSION_ID);
+    assert.equal(record.review_metadata.audit_manifest.request.timeout_ms, priorTimeoutMs);
 
     const fx = readStdoutLog(first.dataDir, record.job_id);
     assert.equal(fx.t7_resume_id, prior.gemini_session_id);
     assert.equal(fx.t7_prompt_from_stdin, true, "Gemini continue prompt must arrive on stdin, not argv");
     assert.equal("prompt" in record, false, "full prompt must not appear on JobRecord");
+  } finally {
+    rmTree(first.dataDir);
+    rmTree(cwd);
+  }
+});
+
+test("gemini continue foreground: --timeout-ms overrides prior timeout and env", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "gemini-continue-timeout-override-cwd-"));
+  seedMinimalRepo(cwd);
+  writeFileSync(path.join(cwd, "seed.txt"), "continue timeout override seed\n");
+  const first = runCompanion(
+    ["run", "--mode=custom-review", "--foreground", "--model", "gemini-3-flash-preview",
+     "--scope-paths", "seed.txt", "--timeout-ms", "777777",
+     "--cwd", cwd, "--", "initial rescue task"],
+    { cwd, env: { GEMINI_REVIEW_TIMEOUT_MS: "" } },
+  );
+  try {
+    assert.equal(first.status, 0, `exit ${first.status}: ${first.stderr}`);
+    const prior = JSON.parse(first.stdout);
+
+    const continued = runCompanion(
+      ["continue", "--job", prior.job_id, "--foreground", "--timeout-ms", "555555",
+       "--cwd", cwd, "--", "continue rescue task"],
+      { cwd, dataDir: first.dataDir, env: { GEMINI_REVIEW_TIMEOUT_MS: "999999" } },
+    );
+    assert.equal(continued.status, 0, `exit ${continued.status}: ${continued.stderr}`);
+    const record = JSON.parse(continued.stdout);
+    assert.equal(record.review_metadata.audit_manifest.request.timeout_ms, 555555);
   } finally {
     rmTree(first.dataDir);
     rmTree(cwd);
@@ -1294,6 +1327,7 @@ test("gemini review foreground: omits native Gemini sandbox inside Codex sandbox
     assert.equal(record.review_metadata.raw_output.parsed_ok, true);
     assert.match(record.review_metadata.audit_manifest.rendered_prompt_hash.value, /^[a-f0-9]{64}$/);
     assert.equal(record.review_metadata.audit_manifest.request.model, record.model);
+    assert.equal(record.review_metadata.audit_manifest.request.timeout_ms, 600000);
     assert.match(record.review_metadata.audit_manifest.prompt_builder.plugin_commit, /^[a-f0-9]{40}$/);
     assert.notEqual(
       record.review_metadata.audit_manifest.prompt_builder.plugin_commit,
@@ -1310,6 +1344,91 @@ test("gemini review foreground: omits native Gemini sandbox inside Codex sandbox
     assert.equal(fx.t7_sandbox, false, "Gemini -s must be omitted under Codex to avoid nested sandbox-exec");
     assert.equal(fx.t7_skip_trust, true, "Gemini review must still pass --skip-trust");
     assert.equal(fx.t7_prompt_from_stdin, true, "Gemini prompt must arrive on stdin, not argv");
+  } finally {
+    rmTree(dataDir);
+    rmTree(cwd);
+  }
+});
+
+test("gemini review foreground: --timeout-ms overrides review timeout audit metadata", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "gemini-review-timeout-cwd-"));
+  seedMinimalRepo(cwd);
+  const { stdout, stderr, status, dataDir } = runCompanion(
+    ["run", "--mode=review", "--foreground", "--cwd", cwd, "--timeout-ms", "123456", "--", "review timeout override"],
+    { cwd, env: {
+      CODEX_SANDBOX: "seatbelt",
+      GEMINI_MOCK_ASSERT_FILE: "seed.txt",
+      GEMINI_MOCK_ASSERT_PROMPT_INCLUDES: "Provider: Gemini CLI",
+    } },
+  );
+  try {
+    assert.equal(status, 0, `exit ${status}: ${stderr}`);
+    const record = JSON.parse(stdout);
+    assert.equal(record.status, "completed");
+    assert.equal(record.review_metadata.audit_manifest.request.timeout_ms, 123456);
+    const { record: persisted } = readOnlyJobRecord(dataDir);
+    assert.equal(persisted.review_metadata.audit_manifest.request.timeout_ms, 123456);
+  } finally {
+    rmTree(dataDir);
+    rmTree(cwd);
+  }
+});
+
+test("gemini review foreground rejects --timeout-ms without a value", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "gemini-review-timeout-missing-cwd-"));
+  seedMinimalRepo(cwd);
+  const { stdout, status, dataDir } = runCompanion(
+    ["run", "--mode=review", "--foreground", "--cwd", cwd, "--timeout-ms", "--", "review timeout missing"],
+    { cwd },
+  );
+  try {
+    assert.equal(status, 1);
+    const result = JSON.parse(stdout);
+    assert.equal(result.error, "bad_args");
+    assert.match(result.message, /--timeout-ms must be a positive integer number of milliseconds/);
+  } finally {
+    rmTree(dataDir);
+    rmTree(cwd);
+  }
+});
+
+test("gemini review foreground: GEMINI_REVIEW_TIMEOUT_MS sets review timeout audit metadata", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "gemini-review-env-timeout-cwd-"));
+  seedMinimalRepo(cwd);
+  const { stdout, stderr, status, dataDir } = runCompanion(
+    ["run", "--mode=review", "--foreground", "--cwd", cwd, "--", "review timeout env override"],
+    { cwd, env: {
+      CODEX_SANDBOX: "seatbelt",
+      GEMINI_REVIEW_TIMEOUT_MS: "234567",
+      GEMINI_MOCK_ASSERT_FILE: "seed.txt",
+      GEMINI_MOCK_ASSERT_PROMPT_INCLUDES: "Provider: Gemini CLI",
+    } },
+  );
+  try {
+    assert.equal(status, 0, `exit ${status}: ${stderr}`);
+    const record = JSON.parse(stdout);
+    assert.equal(record.status, "completed");
+    assert.equal(record.review_metadata.audit_manifest.request.timeout_ms, 234567);
+    const { record: persisted } = readOnlyJobRecord(dataDir);
+    assert.equal(persisted.review_metadata.audit_manifest.request.timeout_ms, 234567);
+  } finally {
+    rmTree(dataDir);
+    rmTree(cwd);
+  }
+});
+
+test("gemini review foreground rejects invalid GEMINI_REVIEW_TIMEOUT_MS", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "gemini-review-env-timeout-invalid-cwd-"));
+  seedMinimalRepo(cwd);
+  const { stdout, status, dataDir } = runCompanion(
+    ["run", "--mode=review", "--foreground", "--cwd", cwd, "--", "review invalid timeout env"],
+    { cwd, env: { GEMINI_REVIEW_TIMEOUT_MS: "Infinity" } },
+  );
+  try {
+    assert.equal(status, 1);
+    const result = JSON.parse(stdout);
+    assert.equal(result.error, "bad_args");
+    assert.match(result.message, /GEMINI_REVIEW_TIMEOUT_MS must be a positive integer number of milliseconds/);
   } finally {
     rmTree(dataDir);
     rmTree(cwd);

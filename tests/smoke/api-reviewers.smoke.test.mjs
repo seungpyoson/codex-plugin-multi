@@ -807,6 +807,7 @@ test("mock request-body assertion failures are marked not sent", async () => {
     cwd,
     env: {
       API_REVIEWERS_PLUGIN_DATA: dataDir,
+      API_REVIEWERS_TIMEOUT_MS: "234567",
       API_REVIEWERS_MOCK_RESPONSE: mockResponse("glm-5.1"),
       API_REVIEWERS_MOCK_ASSERT_REQUEST_BODY: JSON.stringify({
         model: "wrong-model",
@@ -821,6 +822,7 @@ test("mock request-body assertion failures are marked not sent", async () => {
   assert.equal(record.provider, "glm");
   assert.equal(record.error_code, "mock_assertion_failed");
   assert.match(record.error_message, /request body field model expected/);
+  assert.equal(record.review_metadata.audit_manifest.request.timeout_ms, 234567);
   assertDirectApiNotSent(record, "GLM");
   assert.doesNotMatch(result.stdout, /secret-test-value/);
 });
@@ -1176,6 +1178,7 @@ test("DeepSeek direct API custom-review completes and persists JobRecord", async
     cwd,
     env: {
       API_REVIEWERS_PLUGIN_DATA: dataDir,
+      API_REVIEWERS_TIMEOUT_MS: "123456",
       API_REVIEWERS_MOCK_RESPONSE: mockResponse("deepseek-v4-pro"),
       API_REVIEWERS_MOCK_ASSERT_PROMPT_INCLUDES: "Live verification context",
       DEEPSEEK_API_KEY: "secret-test-value",
@@ -1201,8 +1204,10 @@ test("DeepSeek direct API custom-review completes and persists JobRecord", async
     { path: "seed.txt", bytes: "hello from selected scope\n".length, hashOk: true },
   ]);
   assert.equal(record.review_metadata.audit_manifest.request.model, "deepseek-v4-pro");
+  assert.equal(record.review_metadata.audit_manifest.request.timeout_ms, 123456);
   assert.equal(record.review_metadata.audit_manifest.request.max_tokens, 65536);
   assert.equal(record.review_metadata.audit_manifest.request.temperature, 0);
+  assert.equal(record.review_metadata.audit_manifest.request.stream, false);
   assert.match(record.review_metadata.audit_manifest.prompt_builder.plugin_commit, /^[a-f0-9]{40}$/);
   assert.notEqual(
     record.review_metadata.audit_manifest.prompt_builder.plugin_commit,
@@ -1659,6 +1664,7 @@ test("direct API HTTP provider_unavailable under Codex does not recommend sandbo
       companion: path.join(pluginRoot, "scripts", "api-reviewer.mjs"),
       env: {
         API_REVIEWERS_PLUGIN_DATA: dataDir,
+        API_REVIEWERS_TIMEOUT_MS: "345678",
         CODEX_SANDBOX: "seatbelt",
         DEEPSEEK_API_KEY: "secret-test-value",
       },
@@ -1667,6 +1673,7 @@ test("direct API HTTP provider_unavailable under Codex does not recommend sandbo
     const record = parseJson(result.stdout);
     assert.equal(record.error_code, "provider_unavailable");
     assert.equal(record.http_status, 503);
+    assert.equal(record.review_metadata.audit_manifest.request.timeout_ms, 345678);
     assert.equal(record.external_review.source_content_transmission, "sent");
     assert.doesNotMatch(record.suggested_action, /network_access = true/);
     assert.doesNotMatch(record.suggested_action, /outside sandbox/);
@@ -1742,12 +1749,14 @@ test("direct API live malformed responses mark selected content as sent", async 
       companion: path.join(pluginRoot, "scripts", "api-reviewer.mjs"),
       env: {
         API_REVIEWERS_PLUGIN_DATA: dataDir,
+        API_REVIEWERS_TIMEOUT_MS: "456789",
         DEEPSEEK_API_KEY: "secret-test-value",
       },
     });
     assert.equal(result.status, 1);
     const record = parseJson(result.stdout);
     assert.equal(record.error_code, "malformed_response");
+    assert.equal(record.review_metadata.audit_manifest.request.timeout_ms, 456789);
     assert.equal(record.external_review.source_content_transmission, "sent");
     assert.equal(record.external_review.disclosure,
       "Selected source content was sent to DeepSeek through direct API auth, but the provider did not return a clean result.");

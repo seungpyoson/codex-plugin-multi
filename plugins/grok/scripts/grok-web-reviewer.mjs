@@ -16,7 +16,7 @@ import {
 const VALID_MODES = new Set(["review", "adversarial-review", "custom-review"]);
 const DEFAULT_BASE_URL = "http://127.0.0.1:8000/v1";
 const DEFAULT_MODEL = "grok-4.20-fast";
-const DEFAULT_TIMEOUT_MS = 30000;
+const DEFAULT_TIMEOUT_MS = 600000;
 const DEFAULT_DOCTOR_TIMEOUT_MS = 2000;
 const DEFAULT_CHAT_DOCTOR_TIMEOUT_MS = 10000;
 const MAX_SCOPE_FILE_BYTES = 256 * 1024;
@@ -141,24 +141,30 @@ function normalizeBaseUrl(value) {
 }
 
 function config(env = process.env) {
+  const timeoutMs = parsePositiveIntegerEnv(env, "GROK_WEB_TIMEOUT_MS", DEFAULT_TIMEOUT_MS);
+  const doctorTimeoutMs = parsePositiveIntegerEnv(env, "GROK_WEB_DOCTOR_TIMEOUT_MS", DEFAULT_DOCTOR_TIMEOUT_MS);
+  const chatDoctorTimeoutMs = parsePositiveIntegerEnv(env, "GROK_WEB_CHAT_DOCTOR_TIMEOUT_MS", DEFAULT_CHAT_DOCTOR_TIMEOUT_MS);
   return {
     provider: "grok-web",
     display_name: "Grok Web",
     auth_mode: "subscription_web",
     base_url: normalizeBaseUrl(env.GROK_WEB_BASE_URL),
     model: env.GROK_WEB_MODEL || DEFAULT_MODEL,
-    timeout_ms: parsePositiveInteger(env.GROK_WEB_TIMEOUT_MS, DEFAULT_TIMEOUT_MS),
-    doctor_timeout_ms: parsePositiveInteger(env.GROK_WEB_DOCTOR_TIMEOUT_MS, DEFAULT_DOCTOR_TIMEOUT_MS),
-    chat_doctor_timeout_ms: parsePositiveInteger(env.GROK_WEB_CHAT_DOCTOR_TIMEOUT_MS, DEFAULT_CHAT_DOCTOR_TIMEOUT_MS),
+    timeout_ms: timeoutMs,
+    doctor_timeout_ms: doctorTimeoutMs,
+    chat_doctor_timeout_ms: chatDoctorTimeoutMs,
     credential_ref: env.GROK_WEB_TUNNEL_API_KEY ? "GROK_WEB_TUNNEL_API_KEY" : null,
     credential_value: env.GROK_WEB_TUNNEL_API_KEY || null,
   };
 }
 
-function parsePositiveInteger(value, fallback) {
+function parsePositiveIntegerEnv(env, name, fallback) {
+  const value = env[name];
   if (value === undefined || value === null || value === "") return fallback;
   const parsed = Number(value);
-  if (!Number.isSafeInteger(parsed) || parsed <= 0) return fallback;
+  if (!Number.isSafeInteger(parsed) || parsed <= 0) {
+    throw new Error(`bad_args: ${name} must be a positive integer number of milliseconds; got ${JSON.stringify(value)}`);
+  }
   return parsed;
 }
 
@@ -610,6 +616,7 @@ async function callGrokTunnel(cfg, prompt, env = process.env) {
   const redact = redactor(env);
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), cfg.timeout_ms);
+  const started = Date.now();
   try {
     const response = await fetch(endpoint, {
       method: "POST",
@@ -627,6 +634,8 @@ async function callGrokTunnel(cfg, prompt, env = process.env) {
         parsed.ok ? parsed.value : null,
         true,
         {
+          configured_timeout_ms: cfg.timeout_ms,
+          elapsed_ms: Date.now() - started,
           endpoint_class: "chat_completions",
           model: cfg.model,
           stream: false,
@@ -635,10 +644,30 @@ async function callGrokTunnel(cfg, prompt, env = process.env) {
         },
       );
     }
-    if (!parsed.ok) return providerFailure("malformed_response", parsed.error, response.status, null, true);
+    if (!parsed.ok) return providerFailureWithDiagnostic("malformed_response", parsed.error, response.status, null, true, {
+      configured_timeout_ms: cfg.timeout_ms,
+      elapsed_ms: Date.now() - started,
+      prompt_chars: prompt.length,
+      max_tokens: null,
+      temperature: requestBody.temperature ?? null,
+      stream: false,
+    });
     const content = parsed.value?.choices?.[0]?.message?.content;
     if (typeof content !== "string") {
-      return providerFailure("malformed_response", "response did not include choices[0].message.content", response.status, parsed.value, true);
+      return providerFailureWithDiagnostic(
+        "malformed_response",
+        "response did not include choices[0].message.content",
+        response.status,
+        parsed.value,
+        true,
+        {
+          configured_timeout_ms: cfg.timeout_ms,
+          prompt_chars: prompt.length,
+          max_tokens: null,
+          temperature: requestBody.temperature ?? null,
+          stream: false,
+        },
+      );
     }
     return {
       exitCode: 0,
@@ -662,7 +691,13 @@ async function callGrokTunnel(cfg, prompt, env = process.env) {
     };
   } catch (e) {
     const reason = e?.name === "AbortError" ? "tunnel_timeout" : "tunnel_unavailable";
-    return providerFailure(reason, tunnelTransportMessage(e, env, redact), null, null, payloadSentForFetchError(e));
+    return providerFailureWithDiagnostic(reason, tunnelTransportMessage(e, env, redact), null, null, payloadSentForFetchError(e), {
+      configured_timeout_ms: cfg.timeout_ms,
+      prompt_chars: prompt.length,
+      max_tokens: null,
+      temperature: requestBody.temperature ?? null,
+      stream: false,
+    });
   } finally {
     clearTimeout(timer);
   }
@@ -875,7 +910,7 @@ function buildReviewMetadata(cfg, scopeInfo, execution = null) {
     request: {
       provider: cfg.display_name,
       model: cfg.model,
-      timeoutMs: execution.diagnostics?.configured_timeout_ms ?? cfg.timeout_ms ?? null,
+      timeoutMs: execution.diagnostics?.configured_timeout_ms ?? null,
       maxTokens: execution.diagnostics?.max_tokens ?? null,
       temperature: execution.diagnostics?.temperature ?? null,
       stream: false,
@@ -1373,12 +1408,13 @@ async function cmdRun(options) {
       execution = await callGrokTunnel(cfg, prompt);
       execution.prompt = prompt;
     } catch (e) {
-      execution = providerFailure(
+      execution = providerFailureWithDiagnostic(
         e.message.startsWith("bad_args:") ? "bad_args" : "tunnel_error",
         redactor()(e.message),
         null,
         null,
         payloadSentForFetchError(e),
+        { configured_timeout_ms: cfg.timeout_ms },
       );
     }
   }
