@@ -1874,6 +1874,7 @@ test("tunnel invocation catch is separated from prompt construction catch", () =
 for (const { status, code } of [
   { status: 401, code: "session_expired" },
   { status: 403, code: "session_expired" },
+  { status: 400, code: "usage_limited" },
   { status: 402, code: "usage_limited" },
   { status: 429, code: "usage_limited" },
   { status: 500, code: "tunnel_error" },
@@ -1889,7 +1890,9 @@ for (const { status, code } of [
         error: {
           code: code === "usage_limited" ? "account=user@example.com:plan_id=pro+stripe-sub-abc/123" : "server_error",
           type: code === "usage_limited" ? "billing/account=user@example.com" : "server_error",
-          message: "Authorization: Bearer secret-cookie-like-token failed",
+          message: code === "usage_limited"
+            ? "quota exceeded for this billing account; Authorization: Bearer secret-cookie-like-token failed"
+            : "Authorization: Bearer secret-cookie-like-token failed",
         },
       }));
     }, async (baseUrl) => {

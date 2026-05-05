@@ -590,10 +590,30 @@ function providerFailureWithDiagnostic(reason, message, httpStatus, raw = null, 
   };
 }
 
-function classifyHttpFailure(status) {
+function providerFailureDetail(parsed) {
+  if (!parsed.ok) return {};
+  const value = parsed.value;
+  if (value && typeof value === "object" && "error" in value && value.error != null) return value.error;
+  return value ?? {};
+}
+
+function providerFailureDetailText(parsed) {
+  return JSON.stringify(providerFailureDetail(parsed) ?? {});
+}
+
+function providerFailureDetailObject(parsed) {
+  const detail = providerFailureDetail(parsed);
+  return detail && typeof detail === "object" && !Array.isArray(detail) ? detail : {};
+}
+
+function isUsageLimitDetail(detail) {
+  return /(?:\binsufficient_quota\b|\bpayment_required\b|\bquota\b|\busage limit\b|\bbilling[_ -]?(?:cycle|account|limit|hard[_ -]?limit|quota)\b|\bcredit limit\b|\binsufficient credits\b)/i.test(String(detail ?? ""));
+}
+
+function classifyHttpFailure(status, parsed) {
+  const detail = parsed.ok ? providerFailureDetailText(parsed) : "";
   if (status === 401 || status === 403) return "session_expired";
-  if (status === 402) return "usage_limited";
-  if (status === 429) return "usage_limited";
+  if (status === 402 || status === 429 || isUsageLimitDetail(detail)) return "usage_limited";
   if (status >= 500) return "tunnel_error";
   return "tunnel_error";
 }
@@ -654,9 +674,9 @@ function safeDiagnosticString(value) {
 }
 
 function costQuotaDiagnostics(httpStatus, parsed) {
-  const value = parsed.ok ? parsed.value : null;
-  const error = value?.error && typeof value.error === "object" ? value.error : {};
-  const usageLimited = httpStatus === 402 || httpStatus === 429;
+  const error = providerFailureDetailObject(parsed);
+  const detail = parsed.ok ? providerFailureDetailText(parsed) : "";
+  const usageLimited = httpStatus === 402 || httpStatus === 429 || isUsageLimitDetail(detail);
   return {
     classification: usageLimited ? "usage_limited" : "not_reported",
     http_status: httpStatus ?? null,
@@ -691,7 +711,7 @@ async function callGrokTunnel(cfg, prompt, env = process.env) {
     const parsed = parseJson(text);
     if (!response.ok) {
       return providerFailureWithDiagnostic(
-        classifyHttpFailure(response.status),
+        classifyHttpFailure(response.status, parsed),
         errorMessageFromResponse(parsed, text, redact),
         response.status,
         parsed.ok ? parsed.value : null,
