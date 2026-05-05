@@ -357,11 +357,15 @@ function addScopeFile(files, normalizedRel, text, totalBytes) {
   files.push({ path: normalizedRel, text });
 }
 
-async function readUtf8ScopeFileWithinLimit(filePath, normalizedRel) {
+async function readUtf8ScopeFileWithinLimit(filePath, normalizedRel, beforeOpen = null) {
+  beforeOpen ??= await lstat(filePath);
   const handle = await open(filePath, SCOPE_FILE_OPEN_FLAGS);
   try {
     const info = await handle.stat();
     if (!info.isFile()) return null;
+    if (!sameFileIdentity(beforeOpen, info)) {
+      throw new Error(`unsafe_scope_path:${normalizedRel}: file changed before secure open`);
+    }
     if (info.size > MAX_SCOPE_FILE_BYTES) {
       throw new Error(`scope_file_too_large:${normalizedRel}: ${info.size} bytes exceeds ${MAX_SCOPE_FILE_BYTES} byte limit`);
     }
@@ -442,7 +446,7 @@ async function readFilesystemScopeFiles(workspaceRoot, relPaths) {
     if (realRel.startsWith("..") || realRel === "") {
       throw new Error(`unsafe_scope_path:${relPath}`);
     }
-    const text = await readUtf8ScopeFileWithinLimit(realAbs, normalizedRel);
+    const text = await readUtf8ScopeFileWithinLimit(realAbs, normalizedRel, beforeOpen);
     if (text === null) continue;
     addScopeFile(files, normalizedRel, text, totalBytes);
   }

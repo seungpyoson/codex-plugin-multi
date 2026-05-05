@@ -1705,8 +1705,9 @@ test("scope file reads use canonical real paths after symlink boundary check", (
   assert.match(source, /if \(beforeOpen\.isSymbolicLink\(\)\) \{/);
   assert.match(source, /const handle = await open\(filePath, SCOPE_FILE_OPEN_FLAGS\);/);
   assert.match(source, /const info = await handle\.stat\(\);/);
+  assert.match(source, /if \(!sameFileIdentity\(beforeOpen, info\)\) \{/);
   assert.match(source, /const \{ bytesRead \} = await handle\.read\(buffer, 0, buffer\.length, null\);/);
-  assert.match(source, /const text = await readUtf8ScopeFileWithinLimit\(realAbs, normalizedRel\);/);
+  assert.match(source, /const text = await readUtf8ScopeFileWithinLimit\(realAbs, normalizedRel, beforeOpen\);/);
   assert.doesNotMatch(source, /const text = await readFile\(realAbs, "utf8"\);/);
 });
 
