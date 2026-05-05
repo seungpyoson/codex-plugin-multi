@@ -1051,14 +1051,14 @@ async function cmdRun(options) {
       execution = providerFailure(e.message.startsWith("bad_args:") ? "bad_args" : "scope_failed", redactor()(e.message), null, null, false);
     }
     if (!execution) try {
-      if (lifecycleEvents === "jsonl") {
-        printJsonLine({
+      if (lifecycleEvents) {
+        printLifecycleJson({
           event: "external_review_launched",
           job_id: jobId,
           target: "grok-web",
           status: "launched",
           external_review: buildLaunchExternalReview({ cfg, mode, options: runOptions, scopeInfo }),
-        });
+        }, lifecycleEvents);
       }
       execution = await callGrokTunnel(cfg, prompt);
     } catch (e) {

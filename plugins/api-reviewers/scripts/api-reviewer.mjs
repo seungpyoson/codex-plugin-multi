@@ -1300,14 +1300,14 @@ async function cmdRun(options) {
     };
   }
   if (!execution) {
-    if (lifecycleEvents === "jsonl") {
-      printJsonLine({
+    if (lifecycleEvents) {
+      printLifecycleJson({
         event: "external_review_launched",
         job_id: jobId,
         target: provider,
         status: "launched",
         external_review: buildLaunchExternalReview({ cfg, mode, options: runOptions, scopeInfo }),
-      });
+      }, lifecycleEvents);
     }
     try {
       execution = await callProvider(provider, cfg, promptFor(mode, options.prompt ?? "", scopeInfo, cfg.display_name));

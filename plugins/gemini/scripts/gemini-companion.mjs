@@ -468,8 +468,11 @@ async function executeRun(invocation, prompt, { foreground, lifecycleEvents = nu
     process.exit(0);
   }
 
-  if (foreground && lifecycleEvents === "jsonl") {
-    printJsonLine(externalReviewLaunchedEvent(invocation, externalReviewForInvocation(invocation)));
+  if (foreground && lifecycleEvents) {
+    printLifecycleJson(
+      externalReviewLaunchedEvent(invocation, externalReviewForInvocation(invocation)),
+      lifecycleEvents,
+    );
   }
 
   let execution;

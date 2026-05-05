@@ -133,6 +133,32 @@ test("companion background launch events use shared helper", () => {
   }
 });
 
+test("foreground launch events use shared lifecycle renderer when opted in", () => {
+  for (const rel of [
+    "plugins/claude/scripts/claude-companion.mjs",
+    "plugins/gemini/scripts/gemini-companion.mjs",
+    "plugins/kimi/scripts/kimi-companion.mjs",
+  ]) {
+    const source = readFileSync(resolve(rel), "utf8");
+    assert.doesNotMatch(source, /printJsonLine\(externalReviewLaunchedEvent/,
+      `${rel} must not bypass printLifecycleJson for foreground launch events`);
+    assert.match(source, /if \(foreground && lifecycleEvents\) \{[\s\S]*printLifecycleJson\(\s*externalReviewLaunchedEvent/s,
+      `${rel} must render opted-in foreground launch events through printLifecycleJson`);
+  }
+
+  for (const rel of [
+    "plugins/api-reviewers/scripts/api-reviewer.mjs",
+    "plugins/grok/scripts/grok-web-reviewer.mjs",
+  ]) {
+    const source = readFileSync(resolve(rel), "utf8");
+    const launch = source.indexOf('event: "external_review_launched"');
+    assert.notEqual(launch, -1, `${rel} must emit foreground launch events when opted in`);
+    const block = source.slice(Math.max(0, launch - 180), launch + 500);
+    assert.match(block, /if \(lifecycleEvents\) \{[\s\S]*printLifecycleJson\(\{/s,
+      `${rel} must render opted-in foreground launch events through printLifecycleJson`);
+  }
+});
+
 test("companion continue commands accept lifecycle events", () => {
   for (const rel of [
     "plugins/claude/scripts/claude-companion.mjs",
