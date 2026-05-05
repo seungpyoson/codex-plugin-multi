@@ -404,7 +404,7 @@ async function readGitScopeFiles(gitCwd, workspaceRoot, relPaths) {
   const totalBytes = { value: 0 };
   for (const relPath of relPaths) {
     const { normalizedRel } = validateScopePath(workspaceRoot, relPath);
-    const blobSpec = `HEAD:${relPath}`;
+    const blobSpec = `HEAD:${normalizedRel}`;
     const sizeText = gitRaw(["cat-file", "-s", blobSpec], gitCwd, { allowFailure: true });
     if (sizeText === null) continue;
     const blobBytes = Number.parseInt(sizeText.trim(), 10);
