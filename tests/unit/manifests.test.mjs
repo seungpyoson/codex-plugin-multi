@@ -99,6 +99,10 @@ function assertApiReviewerWorkflowInvocation(skill, provider, workflow, rel) {
   assert.doesNotMatch(skill, /--foreground\b/, `${rel} must not document ignored --foreground flag`);
   assert.match(skill, /--lifecycle-events\s+jsonl\b/, `${rel} missing lifecycle jsonl option`);
   assert.match(skill, /external_review_launched/, `${rel} missing launch event rendering guidance`);
+  assert.match(skill, /`error_code`/, `${rel} missing failed JobRecord error_code rendering guidance`);
+  assert.match(skill, /`error_message`/, `${rel} missing failed JobRecord error_message rendering guidance`);
+  assert.match(skill, /`http_status`/, `${rel} missing failed JobRecord http_status rendering guidance`);
+  assert.match(skill, /`suggested_action`/, `${rel} missing failed JobRecord suggested_action rendering guidance`);
   assert.match(skill, /--prompt\s+"<focus>"/, `${rel} missing prompt placeholder`);
   assert.match(skill, /`<focus>` is the user's review prompt or focus area/, `${rel} must define focus placeholder`);
   if (workflow === "custom-review") {
@@ -126,6 +130,10 @@ function assertApiReviewerCommandDoc(command, workflow, rel) {
     assert.match(command, /--lifecycle-events\s+jsonl\b/, `${rel} missing lifecycle jsonl option`);
     assert.match(command, /external_review_launched/, `${rel} missing launch event rendering guidance`);
     assert.match(command, /external_review.*before the review result/, `${rel} missing external_review rendering guidance`);
+    assert.match(command, /`error_code`/, `${rel} missing failed JobRecord error_code rendering guidance`);
+    assert.match(command, /`error_message`/, `${rel} missing failed JobRecord error_message rendering guidance`);
+    assert.match(command, /`http_status`/, `${rel} missing failed JobRecord http_status rendering guidance`);
+    assert.match(command, /`suggested_action`/, `${rel} missing failed JobRecord suggested_action rendering guidance`);
   }
   if (["review", "adversarial-review"].includes(workflow)) {
     assert.match(command, /argument-hint:\s*"\[--scope-base REF\] \[review prompt\]"/, `${rel} missing scope-base argument hint`);
