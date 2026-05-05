@@ -190,6 +190,19 @@ test("foreground launch events use shared lifecycle renderer when opted in", () 
   }
 });
 
+test("companion foreground cancelled terminal records exit cleanly", () => {
+  for (const rel of [
+    "plugins/claude/scripts/claude-companion.mjs",
+    "plugins/gemini/scripts/gemini-companion.mjs",
+    "plugins/kimi/scripts/kimi-companion.mjs",
+  ]) {
+    const source = readFileSync(resolve(rel), "utf8");
+    assert.match(source,
+      /process\.exit\(finalRecord\.status === "completed" \|\| finalRecord\.status === "cancelled" \? 0 : 2\);/,
+      `${rel} must preserve cancelled as a clean foreground terminal exit`);
+  }
+});
+
 test("companion continue commands accept lifecycle events", () => {
   for (const rel of [
     "plugins/claude/scripts/claude-companion.mjs",

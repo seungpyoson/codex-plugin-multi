@@ -714,7 +714,7 @@ async function executeRun(invocation, prompt, { foreground, lifecycleEvents = nu
   if (neutralCwd) rmSync(neutralCwd, { recursive: true, force: true });
   if (containment.disposed && disposeEffective) containment.cleanup();
   if (foreground) printLifecycleJson(finalRecord, lifecycleEvents);
-  process.exit(finalRecord.status === "completed" ? 0 : 2);
+  process.exit(finalRecord.status === "completed" || finalRecord.status === "cancelled" ? 0 : 2);
 }
 
 function writeSidecar(workspaceRoot, jobId, name, contents) {

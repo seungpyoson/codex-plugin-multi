@@ -432,7 +432,7 @@ async function executeRun(invocation, prompt, { foreground, lifecycleEvents = nu
 
   cleanupExecutionResources(executionScope, mutationContext);
   if (foreground) printLifecycleJson(finalRecord, lifecycleEvents);
-  process.exit(finalRecord.status === "completed" ? 0 : 2);
+  process.exit(finalRecord.status === "completed" || finalRecord.status === "cancelled" ? 0 : 2);
 }
 
 function setupExecutionScopeOrExit(invocation, profile, { foreground, lifecycleEvents }) {
