@@ -398,6 +398,11 @@ test("provider workflow skills are user-invocable and command-backed", () => {
       assert.equal(existsSync(path.join(REPO_ROOT, commandRel)), true, `${commandRel} missing`);
       const command = readFileSync(path.join(REPO_ROOT, commandRel), "utf8");
       assertNoBracketedCliFlagsInShellFences(command, commandRel);
+      if (["review", "adversarial-review"].includes(workflow)) {
+        assert.match(command, /--lifecycle-events\s+jsonl\b/, `${commandRel} missing lifecycle jsonl option`);
+        assert.match(command, /external_review_launched/, `${commandRel} missing launch event rendering guidance`);
+        assert.match(command, /external_review.*before/, `${commandRel} missing external_review rendering guidance`);
+      }
       assert.match(skill, new RegExp(commandRel.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
     }
   }
