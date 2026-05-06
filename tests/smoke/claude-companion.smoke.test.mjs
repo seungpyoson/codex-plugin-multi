@@ -1961,6 +1961,39 @@ process.exit(1);
   }
 });
 
+test("doctor: OAuth status empty stdout reports status parse failure", () => {
+  const tmp = mkdtempSync(path.join(tmpdir(), "claude-doctor-oauth-status-empty-"));
+  const binary = writeExecutable(tmp, "claude-oauth-status-empty", `#!/usr/bin/env node
+const args = process.argv.slice(2);
+if (args[0] === "auth" && args[1] === "status") {
+  process.exit(0);
+}
+process.stdout.write(JSON.stringify({
+  type: "result",
+  is_error: true,
+  api_error_status: 401,
+  result: "Failed to authenticate. API Error: 401 Invalid authentication credentials",
+  session_id: "33333333-3333-4333-8333-333333333333",
+  usage: { input_tokens: 0, output_tokens: 0 }
+}) + "\\n");
+process.exit(1);
+`);
+  const { stdout, status, dataDir } = runCompanion(
+    ["doctor", "--binary", binary, "--model", "claude-haiku-4-5-20251001"],
+    { cwd: tmpdir(), env: { ANTHROPIC_API_KEY: "", CLAUDE_API_KEY: "" } },
+  );
+  try {
+    assert.equal(status, 2);
+    const result = JSON.parse(stdout);
+    assert.equal(result.status, "not_authed");
+    assert.equal(result.oauth_status?.available, false);
+    assert.equal(result.oauth_status?.detail, "status_parse_failed");
+  } finally {
+    cleanup(dataDir);
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
 test("run: OAuth inference 401 is rejected before launch, not recorded as a failed review slot", () => {
   const cwd = mkdtempSync(path.join(tmpdir(), "claude-run-oauth-print-401-cwd-"));
   seedMinimalRepo(cwd);
@@ -2105,6 +2138,32 @@ process.exit(1);
     assert.equal(record.pid_info, null);
     assert.equal(record.review_metadata.audit_manifest.review_quality.failed_review_slot, false);
     assert.doesNotMatch(stdout, /user@example.com/);
+  } finally {
+    cleanup(dataDir);
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("run: OAuth preflight spawn failure fails before review launch", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "claude-run-oauth-preflight-spawn-fail-"));
+  seedMinimalRepo(cwd);
+  const missingBinary = path.join(cwd, "missing-claude");
+  const { stdout, status, dataDir } = runCompanion(
+    ["run", "--mode=review", "--foreground", "--lifecycle-events", "jsonl", "--binary", missingBinary,
+     "--model", "claude-haiku-4-5-20251001", "--cwd", cwd, "--", "review this change"],
+    { cwd, env: { ANTHROPIC_API_KEY: "", CLAUDE_API_KEY: "" } },
+  );
+  try {
+    assert.equal(status, 2);
+    const lines = stdout.trim().split("\n").map((line) => JSON.parse(line));
+    assert.equal(lines.length, 1, "preflight spawn failure must not emit external_review_launched");
+    const [record] = lines;
+    assert.equal(record.status, "failed");
+    assert.equal(record.error_code, "spawn_failed");
+    assert.equal(record.pid_info, null);
+    assert.equal(record.external_review.source_content_transmission, "not_sent");
+    assert.equal(record.review_metadata.audit_manifest.error_code, "spawn_failed");
+    assert.equal(record.review_metadata.audit_manifest.review_quality.failed_review_slot, false);
   } finally {
     cleanup(dataDir);
     rmSync(cwd, { recursive: true, force: true });

@@ -664,6 +664,18 @@ test("isOAuthInferenceRejected fails closed without auth context", () => {
   assert.equal(isOAuthInferenceRejected(execution), false);
 });
 
+test("isOAuthInferenceRejected fails closed when auth path is absent", () => {
+  const execution = {
+    parsed: {
+      ok: false,
+      result: "Failed to authenticate. API Error: 401 Invalid authentication credentials",
+      raw: { api_error_status: 401 },
+    },
+  };
+
+  assert.equal(isOAuthInferenceRejected(execution, {}), false);
+});
+
 test("buildJobRecord: API-key 401 is not classified as OAuth inference rejection", () => {
   const rec = buildJobRecord(makeInvocation({
     auth_mode: "api_key",

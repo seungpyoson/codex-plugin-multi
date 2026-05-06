@@ -914,8 +914,17 @@ async function claudeOAuthInferencePreflight(invocation, authSelection) {
       timeoutMs: Math.min(Number(invocation.timeout_ms ?? 15000), 15000),
       allowedApiKeyEnv: authSelection.allowed_env_credentials,
     });
-  } catch {
-    return null;
+  } catch (e) {
+    return {
+      preflight: true,
+      exitCode: null,
+      parsed: null,
+      pidInfo: null,
+      claudeSessionId: null,
+      stdout: "",
+      stderr: "",
+      errorMessage: e.message,
+    };
   }
   if (execution.parsed?.ok === true) return null;
   const detail = pingFailureDetail(execution);
@@ -969,6 +978,7 @@ function buildClaudeFinalRecord(invocation, execution, cancelMarker, mutations, 
     parsed: execution.parsed,
     pidInfo: execution.pidInfo,
     claudeSessionId: execution.claudeSessionId ?? null,
+    errorMessage: execution.errorMessage,
     ...(cancelMarker ? { status: "cancelled" } : {}),
     signal: execution.signal ?? null,
     timedOut: execution.timedOut === true,
@@ -1380,7 +1390,7 @@ function isClaudeAuthStatusObject(value) {
 
 function parseJsonObjectOutput(stdout, acceptsObject = () => true) {
   const text = String(stdout ?? "").trim();
-  if (!text) return {};
+  if (!text) throw new Error("no_json_object");
   try {
     const parsed = JSON.parse(text);
     if (acceptsObject(parsed)) return parsed;

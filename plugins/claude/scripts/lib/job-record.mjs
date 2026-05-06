@@ -165,8 +165,7 @@ const OAUTH_INFERENCE_REJECTED_PREFIX = "oauth_inference_rejected:";
 
 export function isOAuthInferenceRejected(execution, authContext = null) {
   if (!authContext) return false;
-  if (authContext?.selected_auth_path && authContext.selected_auth_path !== "subscription_oauth") return false;
-  if (!authContext?.selected_auth_path && authContext?.auth_mode === "api_key") return false;
+  if (authContext.selected_auth_path !== "subscription_oauth") return false;
   const raw = execution?.parsed?.raw;
   const status = raw && typeof raw === "object" ? raw.api_error_status : null;
   const result = String(execution?.parsed?.result ?? "");
