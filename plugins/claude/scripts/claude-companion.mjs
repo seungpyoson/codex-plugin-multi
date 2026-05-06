@@ -713,8 +713,9 @@ async function executeRun(invocation, prompt, { foreground, lifecycleEvents = nu
       executionScope.addDir,
       runtimeDiagnostics,
     );
-    commitJobRecord(workspaceRoot, jobId, finalRecord);
+    const { metaError, stateError } = commitJobRecord(workspaceRoot, jobId, finalRecord);
     writeExecutionSidecars(workspaceRoot, jobId, oauthPreflightExecution);
+    exitIfFinalizationFailed(invocation, oauthPreflightExecution, finalRecord, mutationContext, executionScope, { metaError, stateError });
     cleanupExecutionResources(executionScope, mutationContext);
     if (foreground) printLifecycleJson(finalRecord, lifecycleEvents);
     process.exit(2);
@@ -895,7 +896,7 @@ async function claudeOAuthInferencePreflight(invocation, authSelection) {
   if (execution.parsed?.ok === true) return null;
   const detail = pingFailureDetail(execution);
   if (!PING_AUTH_RE.test(detail)) return null;
-  const oauthStatus = safeClaudeOAuthStatus(invocation.binary, authSelection);
+  const oauthStatus = safeClaudeOAuthStatus(invocation.binary, authSelection, invocation.cwd);
   if (oauthStatus?.logged_in !== true || !/401|invalid authentication credentials/i.test(detail)) return null;
   return {
     ...execution,
@@ -1308,11 +1309,11 @@ function oauthInferenceRejectedFields() {
   };
 }
 
-function safeClaudeOAuthStatus(binary, authSelection) {
+function safeClaudeOAuthStatus(binary, authSelection, cwd = process.cwd()) {
   if (authSelection.selected_auth_path !== "subscription_oauth") return null;
   const env = sanitizeTargetEnv(process.env, { allowedApiKeyEnv: authSelection.allowed_env_credentials });
   const result = runCommand(binary, ["auth", "status", "--json"], {
-    cwd: process.cwd(),
+    cwd,
     env,
     maxBuffer: 1024 * 1024,
     timeout: CLAUDE_AUTH_STATUS_TIMEOUT_MS,

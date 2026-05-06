@@ -1792,6 +1792,102 @@ process.exit(1);
   }
 });
 
+test("run: OAuth preflight auth-status resolves relative binary from invocation cwd", () => {
+  const launcherCwd = mkdtempSync(path.join(tmpdir(), "claude-run-oauth-relative-launcher-"));
+  const cwd = mkdtempSync(path.join(tmpdir(), "claude-run-oauth-relative-cwd-"));
+  seedMinimalRepo(cwd);
+  writeExecutable(cwd, "claude", `#!/usr/bin/env node
+if (process.argv.slice(2).join(" ") === "auth status --json") {
+  process.stdout.write(JSON.stringify({
+    loggedIn: true,
+    authMethod: "claude.ai",
+    apiProvider: "firstParty",
+    subscriptionType: "max"
+  }) + "\\n");
+  process.exit(0);
+}
+process.stdout.write(JSON.stringify({
+  type: "result",
+  is_error: true,
+  api_error_status: 401,
+  result: "Failed to authenticate. API Error: 401 Invalid authentication credentials",
+  session_id: "33333333-3333-4333-8333-333333333333",
+  usage: { input_tokens: 0, output_tokens: 0 }
+}) + "\\n");
+process.exit(1);
+`);
+  const { stdout, status, dataDir } = runCompanion(
+    ["run", "--mode=review", "--foreground", "--lifecycle-events", "jsonl", "--binary", "./claude",
+     "--model", "claude-haiku-4-5-20251001", "--cwd", cwd, "--", "review this change"],
+    { cwd: launcherCwd, env: { ANTHROPIC_API_KEY: "", CLAUDE_API_KEY: "" } },
+  );
+  try {
+    assert.equal(status, 2);
+    const lines = stdout.trim().split("\n").map((line) => JSON.parse(line));
+    assert.equal(lines.length, 1, "relative binary OAuth rejection must be caught before review launch");
+    const [record] = lines;
+    assert.equal(record.error_code, "oauth_inference_rejected");
+    assert.equal(record.external_review.source_content_transmission, "not_sent");
+    assert.equal(record.pid_info, null);
+  } finally {
+    cleanup(dataDir);
+    rmSync(cwd, { recursive: true, force: true });
+    rmSync(launcherCwd, { recursive: true, force: true });
+  }
+});
+
+test("run: OAuth preflight finalization failure is surfaced instead of silently ignored", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "claude-run-oauth-meta-conflict-cwd-"));
+  seedMinimalRepo(cwd);
+  const tmp = mkdtempSync(path.join(tmpdir(), "claude-run-oauth-meta-conflict-bin-"));
+  const stateModule = path.join(REPO_ROOT, "plugins/claude/scripts/lib/state.mjs");
+  const binary = writeExecutable(tmp, "claude-oauth-meta-conflict", `#!/usr/bin/env node
+import { mkdirSync, readdirSync, rmSync } from "node:fs";
+import { resolve } from "node:path";
+const { resolveJobsDir } = await import(${JSON.stringify(stateModule)});
+if (process.argv.slice(2).join(" ") === "auth status --json") {
+  process.stdout.write(JSON.stringify({
+    loggedIn: true,
+    authMethod: "claude.ai",
+    apiProvider: "firstParty",
+    subscriptionType: "max"
+  }) + "\\n");
+  process.exit(0);
+}
+const jobsDir = resolveJobsDir(process.cwd());
+for (const name of readdirSync(jobsDir)) {
+  if (!name.endsWith(".json")) continue;
+  const metaPath = resolve(jobsDir, name);
+  rmSync(metaPath, { force: true, recursive: true });
+  mkdirSync(metaPath, { recursive: true });
+}
+process.stdout.write(JSON.stringify({
+  type: "result",
+  is_error: true,
+  api_error_status: 401,
+  result: "Failed to authenticate. API Error: 401 Invalid authentication credentials",
+  session_id: "33333333-3333-4333-8333-333333333333",
+  usage: { input_tokens: 0, output_tokens: 0 }
+}) + "\\n");
+process.exit(1);
+`);
+  const { stdout, stderr, status, dataDir } = runCompanion(
+    ["run", "--mode=review", "--foreground", "--binary", binary,
+     "--model", "claude-haiku-4-5-20251001", "--cwd", cwd, "--", "review this change"],
+    { cwd, env: { ANTHROPIC_API_KEY: "", CLAUDE_API_KEY: "" } },
+  );
+  try {
+    assert.notEqual(status, 0, "meta write failure must exit non-zero");
+    assert.doesNotMatch(stderr, /unhandled/i);
+    const err = JSON.parse(stdout);
+    assert.equal(err.error, "finalization_failed");
+  } finally {
+    cleanup(dataDir);
+    rmSync(cwd, { recursive: true, force: true });
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
 test("run: auto auth without API keys classifies OAuth inference 401 distinctly", () => {
   const cwd = mkdtempSync(path.join(tmpdir(), "claude-run-auto-oauth-print-401-cwd-"));
   seedMinimalRepo(cwd);
