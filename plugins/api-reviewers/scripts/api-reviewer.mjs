@@ -1946,9 +1946,15 @@ async function cmdApprovalRequest(options) {
     } catch (e) {
       throw runBadArgs(e.message);
     }
-    const scopeInfo = await collectScope({ ...options, mode });
     if (!hasPromptText(options.prompt)) throw runBadArgs("bad_args: prompt is required (pass --prompt <focus>)");
-    printJson(buildApprovalRequest({ provider, cfg, mode, options, scopeInfo }));
+    const scopeInfo = await collectScope({ ...options, mode });
+    let approvalRequest;
+    try {
+      approvalRequest = buildApprovalRequest({ provider, cfg, mode, options, scopeInfo });
+    } catch (e) {
+      throw runProviderFailure("approval_request_failed", e?.message ?? String(e));
+    }
+    printJson(approvalRequest);
   } catch (e) {
     const reason = e.apiReviewersReason ?? "scope_failed";
     printJson({

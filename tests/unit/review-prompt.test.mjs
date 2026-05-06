@@ -67,6 +67,11 @@ function assertReviewPromptContract(targetBuildReviewPrompt = buildReviewPrompt,
     assert.match(prompt, new RegExp(item.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
   }
   assert.match(prompt, /For every checklist item, report PASS, FAIL, or NOT REVIEWED/);
+  assert.match(prompt, /supplied in this prompt as the authoritative review evidence/);
+  assert.match(prompt, /git, GitHub, network, filesystem, or tool access is unavailable/);
+  assert.match(prompt, /mark only that check as NOT REVIEWED/);
+  assert.match(prompt, /Do not report missing external tool access as a blocking code finding by itself/);
+  assert.match(prompt, /runtime\/tool limitations/);
   assert.match(prompt, /Blocking findings first/);
   assert.match(prompt, /Timed out, truncated, interrupted, blocked, or shallow output is NOT an approval/);
   assert.match(prompt, /User prompt:\nFocus on control-flow bugs\./);

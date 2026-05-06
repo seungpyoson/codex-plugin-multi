@@ -294,29 +294,32 @@ test("README documents host-owned pre-launch provider denials as outside compani
 });
 
 test("direct API reviewer docs require explicit approval for external source transmission", () => {
-  const docs = [
-    readRepoFile("plugins/api-reviewers/skills/api-reviewers-delegation/SKILL.md"),
-    readRepoFile("plugins/api-reviewers/skills/deepseek-review/SKILL.md"),
-    readRepoFile("plugins/api-reviewers/skills/deepseek-adversarial-review/SKILL.md"),
-    readRepoFile("plugins/api-reviewers/skills/deepseek-custom-review/SKILL.md"),
-    readRepoFile("plugins/api-reviewers/skills/glm-review/SKILL.md"),
-    readRepoFile("plugins/api-reviewers/skills/glm-adversarial-review/SKILL.md"),
-    readRepoFile("plugins/api-reviewers/skills/glm-custom-review/SKILL.md"),
-    readRepoFile("plugins/api-reviewers/commands/deepseek-review.md"),
-    readRepoFile("plugins/api-reviewers/commands/deepseek-adversarial-review.md"),
-    readRepoFile("plugins/api-reviewers/commands/deepseek-custom-review.md"),
-    readRepoFile("plugins/api-reviewers/commands/glm-review.md"),
-    readRepoFile("plugins/api-reviewers/commands/glm-adversarial-review.md"),
-    readRepoFile("plugins/api-reviewers/commands/glm-custom-review.md"),
-  ].join("\n");
+  const docPaths = [
+    "plugins/api-reviewers/skills/api-reviewers-delegation/SKILL.md",
+    "plugins/api-reviewers/skills/deepseek-review/SKILL.md",
+    "plugins/api-reviewers/skills/deepseek-adversarial-review/SKILL.md",
+    "plugins/api-reviewers/skills/deepseek-custom-review/SKILL.md",
+    "plugins/api-reviewers/skills/glm-review/SKILL.md",
+    "plugins/api-reviewers/skills/glm-adversarial-review/SKILL.md",
+    "plugins/api-reviewers/skills/glm-custom-review/SKILL.md",
+    "plugins/api-reviewers/commands/deepseek-review.md",
+    "plugins/api-reviewers/commands/deepseek-adversarial-review.md",
+    "plugins/api-reviewers/commands/deepseek-custom-review.md",
+    "plugins/api-reviewers/commands/glm-review.md",
+    "plugins/api-reviewers/commands/glm-adversarial-review.md",
+    "plugins/api-reviewers/commands/glm-custom-review.md",
+  ];
 
-  assert.match(docs, /approval-request/);
-  assert.match(docs, /explicit approval/i);
-  assert.match(docs, /selected source content/i);
-  assert.match(docs, /external provider|external API/i);
-  assert.match(docs, /recommended_tool_justification/);
-  assert.match(docs, /relay prompt/i);
-  assert.match(docs, /approval is denied/i);
+  for (const docPath of docPaths) {
+    const doc = readRepoFile(docPath);
+    assert.match(doc, /approval-request/, docPath);
+    assert.match(doc, /explicit approval/i, docPath);
+    assert.match(doc, /selected source content/i, docPath);
+    assert.match(doc, /external provider|external API/i, docPath);
+    assert.match(doc, /recommended_tool_justification/, docPath);
+    assert.match(doc, /relay prompt/i, docPath);
+    assert.match(doc, /approval is denied/i, docPath);
+  }
 });
 
 test("README documents Codex sandbox setup and provider-specific failure modes", () => {

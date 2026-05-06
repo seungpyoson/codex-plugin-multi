@@ -3291,6 +3291,34 @@ test("direct API reviewers approval-request reports structured bad args", async 
   assert.doesNotMatch(result.stdout, /^\{\s*"ok": false,\s*"error"/m);
 });
 
+test("direct API reviewers approval-request validates prompt before collecting scope", async () => {
+  const cwd = makeWorkspace();
+  try {
+    const result = await run([
+      "approval-request",
+      "--provider", "glm",
+      "--mode", "custom-review",
+      "--scope", "custom",
+      "--scope-paths", "missing.txt",
+    ], {
+      cwd,
+      env: { GLM_API_KEY: "secret-test-value" },
+    });
+
+    assert.equal(result.status, 1);
+    const parsed = parseJson(result.stdout);
+    assert.equal(parsed.ok, false);
+    assert.equal(parsed.provider, "glm");
+    assert.equal(parsed.status, "bad_args");
+    assert.equal(parsed.error_code, "bad_args");
+    assert.match(parsed.error_message, /prompt is required/);
+    assert.doesNotMatch(parsed.error_message, /missing\.txt/);
+    assert.doesNotMatch(result.stdout, /secret-test-value/);
+  } finally {
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
 test("direct API reviewers lifecycle jsonl suppresses launch on invalid provider env", async () => {
   const cwd = makeWorkspace();
   const result = await run([
