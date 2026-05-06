@@ -130,23 +130,35 @@ if (process.env.CLAUDE_MOCK_RECORD_RESUME === "1") {
 }
 
 // Fixture key: "<model>-<promptSha>.json". Fall back to "<model>-default.json".
-const candidates = [
-  resolve(FIXTURE_DIR, `${model}-${promptSha}.json`),
-  resolve(FIXTURE_DIR, `${model}-default.json`),
-  resolve(FIXTURE_DIR, `default.json`),
-];
-
+// CLAUDE_MOCK_FIXTURE_PATH overrides everything — used by replay tests
+// (#106 AC7-8) so they can plant a tmp fixture without touching FIXTURE_DIR.
 let fixturePath = null;
-for (const p of candidates) {
-  if (existsSync(p)) { fixturePath = p; break; }
+const fixtureOverride = process.env.CLAUDE_MOCK_FIXTURE_PATH;
+if (fixtureOverride) {
+  if (!existsSync(fixtureOverride)) {
+    process.stderr.write(`claude-mock: CLAUDE_MOCK_FIXTURE_PATH not found: ${fixtureOverride}\n`);
+    process.exit(1);
+  }
+  fixturePath = fixtureOverride;
 }
+
 if (!fixturePath) {
-  process.stderr.write(
-    `claude-mock: no fixture for model=${model} promptSha=${promptSha}\n` +
-    `  tried: ${candidates.join(", ")}\n` +
-    `  add a fixture or set CLAUDE_MOCK_ALLOW_SYNTHETIC=1 for auto-synthesis.\n`
-  );
-  process.exit(1);
+  const candidates = [
+    resolve(FIXTURE_DIR, `${model}-${promptSha}.json`),
+    resolve(FIXTURE_DIR, `${model}-default.json`),
+    resolve(FIXTURE_DIR, `default.json`),
+  ];
+  for (const p of candidates) {
+    if (existsSync(p)) { fixturePath = p; break; }
+  }
+  if (!fixturePath) {
+    process.stderr.write(
+      `claude-mock: no fixture for model=${model} promptSha=${promptSha}\n` +
+      `  tried: ${candidates.join(", ")}\n` +
+      `  add a fixture or set CLAUDE_MOCK_ALLOW_SYNTHETIC=1 for auto-synthesis.\n`
+    );
+    process.exit(1);
+  }
 }
 
 const fixture = JSON.parse(readFileSync(fixturePath, "utf8"));

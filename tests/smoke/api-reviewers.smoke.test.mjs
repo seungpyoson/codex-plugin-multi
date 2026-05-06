@@ -2611,3 +2611,103 @@ test("direct API reviewers mark malformed mock responses as not sent", async () 
   assert.equal(record.external_review.source_content_transmission, "not_sent");
   assert.equal(record.disclosure_note, record.external_review.disclosure);
 });
+
+// AC7-AC8 (#106): smoke replay against recorded fixtures.
+//
+// For each recorded fixture under tests/smoke/fixtures/api-reviewers-*/,
+// synthesize the HTTP response shape the real provider returned, run the
+// wrapper through the existing 127.0.0.1 server harness, and assert the
+// replayed JobRecord matches the recorded fixture's *shape* (status,
+// error_code, http_status, transmission, schema_version). Field-level
+// content (cwd, endpoint, sessions, exact prompt hash) is NOT compared —
+// only the architecture's schema invariants.
+
+const REPLAY_FIXTURES_ROOT = path.join(REPO_ROOT, "tests", "smoke", "fixtures");
+
+function readReplayFixture(plugin, scenario) {
+  const fixturePath = path.join(REPLAY_FIXTURES_ROOT, plugin, `${scenario}.response.json`);
+  return JSON.parse(readFileSync(fixturePath, "utf8"));
+}
+
+function buildHttpResponseFromApiReviewersFixture(fixture) {
+  if (fixture.status === "completed" && fixture.http_status === 200) {
+    return {
+      statusCode: 200,
+      body: JSON.stringify({
+        id: "chatcmpl-replay",
+        object: "chat.completion",
+        model: fixture.raw_model ?? fixture.model,
+        choices: [{
+          index: 0,
+          finish_reason: "stop",
+          message: { role: "assistant", content: fixture.result ?? "PASS" },
+        }],
+        usage: fixture.usage ?? { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
+      }),
+    };
+  }
+  return {
+    statusCode: fixture.http_status ?? 500,
+    body: JSON.stringify({ error: { message: fixture.error_message ?? "replay error" } }),
+  };
+}
+
+for (const scenarioCase of [
+  { plugin: "api-reviewers-deepseek", scenario: "happy-path-review", provider: "deepseek", credentialEnv: "DEEPSEEK_API_KEY" },
+  { plugin: "api-reviewers-deepseek", scenario: "auth-rejected", provider: "deepseek", credentialEnv: "DEEPSEEK_API_KEY" },
+]) {
+  test(`smoke replay: ${scenarioCase.plugin}/${scenarioCase.scenario} reproduces recorded JobRecord shape`, async () => {
+    const fixture = readReplayFixture(scenarioCase.plugin, scenarioCase.scenario);
+    const httpResp = buildHttpResponseFromApiReviewersFixture(fixture);
+    const cwd = makeWorkspace();
+    const dataDir = mkdtempSync(path.join(tmpdir(), "api-reviewers-replay-"));
+    const pluginRoot = makeInstalledApiReviewersRoot();
+    const server = await startChatServer((req, res) => {
+      req.resume();
+      res.writeHead(httpResp.statusCode, { "content-type": "application/json" });
+      res.end(httpResp.body);
+    });
+    try {
+      const { port } = server.address();
+      writeDeepSeekProviderConfig(pluginRoot, `http://127.0.0.1:${port}`);
+      const result = await run([
+        "run",
+        "--provider", scenarioCase.provider,
+        "--mode", "custom-review",
+        "--scope", "custom",
+        "--scope-paths", "seed.txt",
+        "--foreground",
+        "--prompt", "Replayed against recorded fixture.",
+      ], {
+        cwd,
+        companion: path.join(pluginRoot, "scripts", "api-reviewer.mjs"),
+        env: {
+          API_REVIEWERS_PLUGIN_DATA: dataDir,
+          [scenarioCase.credentialEnv]: "secret-test-value",
+        },
+      });
+      assert.equal(result.status, fixture.exit_code, result.stderr || result.stdout);
+      const replayed = parseJson(result.stdout);
+      assert.deepEqual(Object.keys(replayed), [...API_REVIEWER_EXPECTED_KEYS]);
+      assert.equal(replayed.schema_version, fixture.schema_version);
+      assert.equal(replayed.status, fixture.status);
+      assert.equal(replayed.error_code, fixture.error_code);
+      assert.equal(replayed.http_status, fixture.http_status);
+      assert.equal(replayed.target, fixture.target);
+      assert.equal(replayed.provider, fixture.provider);
+      assert.equal(replayed.review_metadata.prompt_provider, fixture.review_metadata.prompt_provider);
+      assert.equal(
+        replayed.review_metadata.audit_manifest.schema_version,
+        fixture.review_metadata.audit_manifest.schema_version,
+      );
+      assert.equal(
+        replayed.external_review.source_content_transmission,
+        fixture.external_review.source_content_transmission,
+        "transmission must match recorded fixture (security-critical invariant)",
+      );
+      assert.doesNotMatch(result.stdout, /secret-test-value/);
+    } finally {
+      server.close();
+    }
+  });
+}

@@ -2199,3 +2199,117 @@ test("help exposes only subscription-backed Grok commands", () => {
   assert.equal(parsed.default_auth_mode, "subscription_web");
   assert.doesNotMatch(JSON.stringify(parsed), /api\.x\.ai/i);
 });
+
+// AC7-AC8 (#106): smoke replay against recorded grok fixtures.
+//
+// happy-path-review.response.json: recorded under the models_ok_chat_400
+// state (#77) — models endpoint healthy, chat endpoint returns 400.
+// tunnel-error.response.json: recorded against an unreachable tunnel
+// (http_status null, error_code tunnel_unavailable). Replay reproduces the
+// same JobRecord shape: status, error_code, http_status, transmission.
+
+const GROK_REPLAY_FIXTURES_ROOT = path.join(REPO_ROOT, "tests", "smoke", "fixtures", "grok");
+
+function readGrokReplayFixture(scenario) {
+  const fixturePath = path.join(GROK_REPLAY_FIXTURES_ROOT, `${scenario}.response.json`);
+  return JSON.parse(readFileSync(fixturePath, "utf8"));
+}
+
+test("smoke replay: grok/happy-path-review reproduces recorded JobRecord shape (models_ok_chat_400)", async () => {
+  const fixture = readGrokReplayFixture("happy-path-review");
+  const cwd = mkdtempSync(path.join(tmpdir(), "grok-replay-workspace-"));
+  const dataDir = mkdtempSync(path.join(tmpdir(), "grok-replay-data-"));
+  writeFileSync(path.join(cwd, "review.js"), "export const value = 1;\n");
+
+  await withServer(async (req, res) => {
+    res.setHeader("content-type", "application/json");
+    if (req.url === "/api/models") {
+      res.end(JSON.stringify({ data: [{ id: "grok-4.20-fast" }] }));
+      return;
+    }
+    if (req.url === "/api/chat/completions") {
+      await readJsonRequest(req);
+      res.writeHead(400);
+      res.end(JSON.stringify({
+        error: { message: "Chat upstream returned 400", type: "upstream_error", code: "upstream_error" },
+      }));
+      return;
+    }
+    res.writeHead(404);
+    res.end(JSON.stringify({ error: { message: "not found" } }));
+  }, async (baseUrl) => {
+    const result = await runAsync([
+      "run",
+      "--mode", "custom-review",
+      "--scope", "custom",
+      "--scope-paths", "review.js",
+      "--foreground",
+      "--prompt", "Replayed against recorded fixture.",
+    ], {
+      cwd,
+      env: {
+        GROK_WEB_BASE_URL: baseUrl,
+        GROK_WEB_TUNNEL_API_KEY: "secret-cookie-like-token",
+        GROK_PLUGIN_DATA: dataDir,
+      },
+    });
+    assert.equal(result.status, fixture.exit_code, result.stderr || result.stdout);
+    const replayed = parseStdout(result);
+    assert.deepEqual(Object.keys(replayed), [...GROK_EXPECTED_KEYS]);
+    assert.equal(replayed.schema_version, fixture.schema_version);
+    assert.equal(replayed.status, fixture.status);
+    assert.equal(replayed.error_code, fixture.error_code);
+    assert.equal(replayed.http_status, fixture.http_status);
+    assert.equal(replayed.target, fixture.target);
+    assert.equal(replayed.provider, fixture.provider);
+    assert.equal(replayed.review_metadata.prompt_provider, fixture.review_metadata.prompt_provider);
+    assert.equal(
+      replayed.review_metadata.audit_manifest.schema_version,
+      fixture.review_metadata.audit_manifest.schema_version,
+    );
+    assert.equal(
+      replayed.external_review.source_content_transmission,
+      fixture.external_review.source_content_transmission,
+      "transmission must match recorded fixture (security-critical invariant)",
+    );
+  });
+});
+
+test("smoke replay: grok/tunnel-error reproduces recorded JobRecord shape (tunnel unreachable)", async () => {
+  const fixture = readGrokReplayFixture("tunnel-error");
+  const cwd = mkdtempSync(path.join(tmpdir(), "grok-replay-workspace-"));
+  const dataDir = mkdtempSync(path.join(tmpdir(), "grok-replay-data-"));
+  writeFileSync(path.join(cwd, "review.js"), "export const value = 1;\n");
+
+  // Point at port 1 — fetch will fail with ECONNREFUSED, mirroring the
+  // recorded "fetch failed" cause.
+  const result = await runAsync([
+    "run",
+    "--mode", "custom-review",
+    "--scope", "custom",
+    "--scope-paths", "review.js",
+    "--foreground",
+    "--prompt", "Replayed against recorded fixture.",
+  ], {
+    cwd,
+    env: {
+      GROK_WEB_BASE_URL: "http://127.0.0.1:1/v1",
+      GROK_PLUGIN_DATA: dataDir,
+    },
+  });
+  assert.equal(result.status, fixture.exit_code, result.stderr || result.stdout);
+  const replayed = parseStdout(result);
+  assert.deepEqual(Object.keys(replayed), [...GROK_EXPECTED_KEYS]);
+  assert.equal(replayed.schema_version, fixture.schema_version);
+  assert.equal(replayed.status, fixture.status);
+  assert.equal(replayed.error_code, fixture.error_code);
+  assert.equal(replayed.http_status, fixture.http_status);
+  assert.equal(replayed.target, fixture.target);
+  assert.equal(replayed.provider, fixture.provider);
+  assert.equal(replayed.review_metadata.prompt_provider, fixture.review_metadata.prompt_provider);
+  assert.equal(
+    replayed.external_review.source_content_transmission,
+    fixture.external_review.source_content_transmission,
+    "transmission must match recorded fixture (security-critical invariant)",
+  );
+});
