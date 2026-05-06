@@ -701,6 +701,31 @@ test("buildJobRecord: API-key 401 is not classified as OAuth inference rejection
   assert.equal(rec.external_review.source_content_transmission, "sent");
 });
 
+test("buildJobRecord: missing API-key path 401 is not classified as OAuth inference rejection", () => {
+  const rec = buildJobRecord(makeInvocation({
+    auth_mode: "api_key",
+    selected_auth_path: "api_key_env_missing",
+  }), {
+    exitCode: 1,
+    parsed: {
+      ok: false,
+      reason: "is_error",
+      result: "Failed to authenticate. API Error: 401 Invalid authentication credentials",
+      raw: { api_error_status: 401 },
+      structured: null,
+      denials: [],
+      costUsd: null,
+      usage: null,
+    },
+    pidInfo: makePidInfo(),
+    claudeSessionId: null,
+    stdout: "", stderr: "",
+  }, []);
+  assert.equal(rec.status, "failed");
+  assert.equal(rec.error_code, "claude_error");
+  assert.equal(rec.external_review.source_content_transmission, "sent");
+});
+
 test("gemini buildJobRecord: failure path uses gemini_error, not claude_error", () => {
   const rec = buildGeminiJobRecord(makeInvocation({
     target: "gemini",

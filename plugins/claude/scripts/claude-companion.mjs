@@ -915,6 +915,7 @@ async function claudeOAuthInferencePreflight(invocation, authSelection) {
       allowedApiKeyEnv: authSelection.allowed_env_credentials,
     });
   } catch (e) {
+    const message = e instanceof Error ? e.message : String(e);
     return {
       preflight: true,
       exitCode: null,
@@ -923,7 +924,7 @@ async function claudeOAuthInferencePreflight(invocation, authSelection) {
       claudeSessionId: null,
       stdout: "",
       stderr: "",
-      errorMessage: e.message,
+      errorMessage: message,
     };
   }
   if (execution.parsed?.ok === true) return null;
@@ -1346,6 +1347,8 @@ function oauthInferenceRejectedFields() {
 function safeClaudeOAuthStatus(binary, authSelection, cwd = process.cwd()) {
   if (authSelection.selected_auth_path !== "subscription_oauth") return null;
   const env = sanitizeTargetEnv(process.env, { allowedApiKeyEnv: authSelection.allowed_env_credentials });
+  // Keep cwd tied to the invocation so explicit relative binaries resolve the
+  // same way as the review run; this metadata query does not receive source.
   const result = runCommand(binary, ["auth", "status", "--json"], {
     cwd,
     env,
@@ -1382,10 +1385,18 @@ function claudeAuthStatusErrorDetail(error) {
 }
 
 function isClaudeAuthStatusObject(value) {
-  return value !== null &&
-    typeof value === "object" &&
-    !Array.isArray(value) &&
-    ("loggedIn" in value || "authMethod" in value || "apiProvider" in value || "subscriptionType" in value);
+  return claudeAuthStatusObjectScore(value) > 0;
+}
+
+function claudeAuthStatusObjectScore(value) {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return 0;
+  const hasLoggedIn = Object.hasOwn(value, "loggedIn");
+  const statusFieldCount = ["authMethod", "apiProvider", "subscriptionType"]
+    .filter((field) => Object.hasOwn(value, field)).length;
+  if (!hasLoggedIn && statusFieldCount === 0) return 0;
+  if (value.loggedIn === true) return 10 + statusFieldCount;
+  if (hasLoggedIn && statusFieldCount > 0) return 5 + statusFieldCount;
+  return statusFieldCount;
 }
 
 function parseJsonObjectOutput(stdout, acceptsObject = () => true) {
@@ -1393,21 +1404,38 @@ function parseJsonObjectOutput(stdout, acceptsObject = () => true) {
   if (!text) throw new Error("no_json_object");
   try {
     const parsed = JSON.parse(text);
-    if (acceptsObject(parsed)) return parsed;
+    if (acceptsObject(parsed) ||
+        (acceptsObject === isClaudeAuthStatusObject && isClaudeLoggedInObject(parsed))) return parsed;
   } catch {
     // Fall through to balanced-object scanning below.
   }
-  const parsed = parseFirstBalancedJsonObject(text, acceptsObject);
+  const parsed = parseFirstBalancedJsonObject(text, acceptsObject,
+    acceptsObject === isClaudeAuthStatusObject ? claudeAuthStatusObjectScore : null);
   if (parsed !== null) return parsed;
   throw new Error("no_json_object");
 }
 
-function parseFirstBalancedJsonObject(text, acceptsObject = () => true) {
+function isClaudeLoggedInObject(value) {
+  return value !== null &&
+    typeof value === "object" &&
+    !Array.isArray(value) &&
+    Object.hasOwn(value, "loggedIn");
+}
+
+function parseFirstBalancedJsonObject(text, acceptsObject = () => true, scoreObject = null) {
+  let best = null;
+  let bestScore = -Infinity;
   for (let start = text.indexOf("{"); start >= 0; start = text.indexOf("{", start + 1)) {
     const parsed = parseBalancedJsonCandidate(text, start);
-    if (parsed !== null && acceptsObject(parsed)) return parsed;
+    if (parsed === null || !acceptsObject(parsed)) continue;
+    if (!scoreObject) return parsed;
+    const score = scoreObject(parsed);
+    if (score > bestScore) {
+      best = parsed;
+      bestScore = score;
+    }
   }
-  return null;
+  return best;
 }
 
 function parseBalancedJsonCandidate(text, start) {

@@ -95,6 +95,22 @@ function readOnlyJobRecord(dataDir) {
   return records[0];
 }
 
+async function waitForOnlyJobRecord(dataDir, predicate, label, timeoutMs = CLAUDE_SMOKE_POLL_TIMEOUT_MS) {
+  const deadline = Date.now() + timeoutMs;
+  let lastRecord = null;
+  while (Date.now() < deadline) {
+    try {
+      const { record } = readOnlyJobRecord(dataDir);
+      lastRecord = record;
+      if (predicate(record)) return record;
+    } catch {
+      // The worker may not have written the first record yet.
+    }
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  assert.fail(`${label}; last record=${JSON.stringify(lastRecord)}`);
+}
+
 // T7.2: review mode's profile has scope=working-tree, which populates via
 // `git ls-files` + copy. Non-git cwds can no longer run review (spec §21.4).
 // Uses fixtureSeedRepo (#16 follow-up 9) so a stale GIT_DIR /
@@ -1621,6 +1637,37 @@ test("ping: returns status=ok with the mock claude binary", () => {
   }
 });
 
+test("ping: parent-relative binary is resolved from caller cwd before tmpdir spawn", () => {
+  const parent = mkdtempSync(path.join(tmpdir(), "claude-ping-parent-relative-parent-"));
+  const cwd = path.join(parent, "work");
+  const binDir = path.join(parent, "bin");
+  mkdirSync(cwd);
+  mkdirSync(binDir);
+  writeExecutable(binDir, "claude", `#!/usr/bin/env node
+process.stdout.write(JSON.stringify({
+  type: "result",
+  is_error: false,
+  result: "pong",
+  session_id: "11111111-1111-4111-8111-111111111111",
+  usage: { input_tokens: 1, output_tokens: 1 }
+}) + "\\n");
+process.exit(0);
+`);
+  const { stdout, stderr, status, dataDir } = runCompanion(
+    ["ping", "--binary", "../bin/claude", "--model", "claude-haiku-4-5-20251001"],
+    { cwd, env: { ANTHROPIC_API_KEY: "", CLAUDE_API_KEY: "" } },
+  );
+  try {
+    assert.equal(status, 0, stderr || stdout);
+    const result = JSON.parse(stdout);
+    assert.equal(result.status, "ok");
+    assert.equal(result.ready, true);
+  } finally {
+    cleanup(dataDir);
+    rmSync(parent, { recursive: true, force: true });
+  }
+});
+
 test("ping: treats empty successful result as ok", () => {
   const tmp = mkdtempSync(path.join(tmpdir(), "claude-ping-empty-ok-"));
   const binary = writeExecutable(tmp, "claude-empty-ok", `#!/usr/bin/env node
@@ -1961,6 +2008,48 @@ process.exit(1);
   }
 });
 
+test("doctor: OAuth status JSON prefers real status over weak loggedIn prefix", () => {
+  const tmp = mkdtempSync(path.join(tmpdir(), "claude-doctor-oauth-status-loggedin-prefix-"));
+  const binary = writeExecutable(tmp, "claude-oauth-status-loggedin-prefix", `#!/usr/bin/env node
+const args = process.argv.slice(2);
+if (args[0] === "auth" && args[1] === "status") {
+  process.stdout.write(JSON.stringify({ loggedIn: false, reason: "refreshing" }) + "\\n");
+  process.stdout.write(JSON.stringify({
+    loggedIn: true,
+    authMethod: "claude.ai",
+    apiProvider: "firstParty",
+    email: "user@example.com",
+    subscriptionType: "max"
+  }) + "\\n");
+  process.exit(0);
+}
+process.stdout.write(JSON.stringify({
+  type: "result",
+  is_error: true,
+  api_error_status: 401,
+  result: "Failed to authenticate. API Error: 401 Invalid authentication credentials",
+  session_id: "33333333-3333-4333-8333-333333333333",
+  usage: { input_tokens: 0, output_tokens: 0 }
+}) + "\\n");
+process.exit(1);
+`);
+  const { stdout, status, dataDir } = runCompanion(
+    ["doctor", "--binary", binary, "--model", "claude-haiku-4-5-20251001"],
+    { cwd: tmpdir(), env: { ANTHROPIC_API_KEY: "", CLAUDE_API_KEY: "" } },
+  );
+  try {
+    assert.equal(status, 2);
+    const result = JSON.parse(stdout);
+    assert.equal(result.status, "oauth_inference_rejected");
+    assert.equal(result.oauth_status?.logged_in, true);
+    assert.equal(result.oauth_status?.subscription_type, "max");
+    assert.doesNotMatch(stdout, /user@example.com/);
+  } finally {
+    cleanup(dataDir);
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
 test("doctor: OAuth status empty stdout reports status parse failure", () => {
   const tmp = mkdtempSync(path.join(tmpdir(), "claude-doctor-oauth-status-empty-"));
   const binary = writeExecutable(tmp, "claude-oauth-status-empty", `#!/usr/bin/env node
@@ -1988,6 +2077,110 @@ process.exit(1);
     assert.equal(result.status, "not_authed");
     assert.equal(result.oauth_status?.available, false);
     assert.equal(result.oauth_status?.detail, "status_parse_failed");
+  } finally {
+    cleanup(dataDir);
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("doctor: OAuth status nonzero exit reports status failure", () => {
+  const tmp = mkdtempSync(path.join(tmpdir(), "claude-doctor-oauth-status-nonzero-"));
+  const binary = writeExecutable(tmp, "claude-oauth-status-nonzero", `#!/usr/bin/env node
+const args = process.argv.slice(2);
+if (args[0] === "auth" && args[1] === "status") {
+  process.stderr.write("auth status failed\\n");
+  process.exit(3);
+}
+process.stdout.write(JSON.stringify({
+  type: "result",
+  is_error: true,
+  api_error_status: 401,
+  result: "Failed to authenticate. API Error: 401 Invalid authentication credentials",
+  session_id: "33333333-3333-4333-8333-333333333333",
+  usage: { input_tokens: 0, output_tokens: 0 }
+}) + "\\n");
+process.exit(1);
+`);
+  const { stdout, status, dataDir } = runCompanion(
+    ["doctor", "--binary", binary, "--model", "claude-haiku-4-5-20251001"],
+    { cwd: tmpdir(), env: { ANTHROPIC_API_KEY: "", CLAUDE_API_KEY: "" } },
+  );
+  try {
+    assert.equal(status, 2);
+    const result = JSON.parse(stdout);
+    assert.equal(result.status, "not_authed");
+    assert.equal(result.oauth_status?.available, false);
+    assert.equal(result.oauth_status?.detail, "status_failed");
+  } finally {
+    cleanup(dataDir);
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("doctor: OAuth status killed by signal reports status failure", () => {
+  const tmp = mkdtempSync(path.join(tmpdir(), "claude-doctor-oauth-status-signal-"));
+  const binary = writeExecutable(tmp, "claude-oauth-status-signal", `#!/usr/bin/env node
+const args = process.argv.slice(2);
+if (args[0] === "auth" && args[1] === "status") {
+  process.kill(process.pid, "SIGTERM");
+}
+process.stdout.write(JSON.stringify({
+  type: "result",
+  is_error: true,
+  api_error_status: 401,
+  result: "Failed to authenticate. API Error: 401 Invalid authentication credentials",
+  session_id: "33333333-3333-4333-8333-333333333333",
+  usage: { input_tokens: 0, output_tokens: 0 }
+}) + "\\n");
+process.exit(1);
+`);
+  const { stdout, status, dataDir } = runCompanion(
+    ["doctor", "--binary", binary, "--model", "claude-haiku-4-5-20251001"],
+    { cwd: tmpdir(), env: { ANTHROPIC_API_KEY: "", CLAUDE_API_KEY: "" } },
+  );
+  try {
+    assert.equal(status, 2);
+    const result = JSON.parse(stdout);
+    assert.equal(result.status, "not_authed");
+    assert.equal(result.oauth_status?.available, false);
+    assert.equal(result.oauth_status?.detail, "status_failed");
+  } finally {
+    cleanup(dataDir);
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("doctor: OAuth status missing binary after ping reports not found", () => {
+  const tmp = mkdtempSync(path.join(tmpdir(), "claude-doctor-oauth-status-enoent-"));
+  const binary = writeExecutable(tmp, "claude-oauth-status-enoent", `#!/usr/bin/env node
+const { unlinkSync } = require("node:fs");
+const self = process.argv[1];
+const args = process.argv.slice(2);
+if (args[0] === "auth" && args[1] === "status") {
+  process.stdout.write("unexpected auth status execution\\n");
+  process.exit(0);
+}
+unlinkSync(self);
+process.stdout.write(JSON.stringify({
+  type: "result",
+  is_error: true,
+  api_error_status: 401,
+  result: "Failed to authenticate. API Error: 401 Invalid authentication credentials",
+  session_id: "33333333-3333-4333-8333-333333333333",
+  usage: { input_tokens: 0, output_tokens: 0 }
+}) + "\\n");
+process.exit(1);
+`);
+  const { stdout, status, dataDir } = runCompanion(
+    ["doctor", "--binary", binary, "--model", "claude-haiku-4-5-20251001"],
+    { cwd: tmpdir(), env: { ANTHROPIC_API_KEY: "", CLAUDE_API_KEY: "" } },
+  );
+  try {
+    assert.equal(status, 2);
+    const result = JSON.parse(stdout);
+    assert.equal(result.status, "not_authed");
+    assert.equal(result.oauth_status?.available, false);
+    assert.equal(result.oauth_status?.detail, "not_found");
   } finally {
     cleanup(dataDir);
     rmSync(tmp, { recursive: true, force: true });
@@ -2167,6 +2360,126 @@ test("run: OAuth preflight spawn failure fails before review launch", () => {
   } finally {
     cleanup(dataDir);
     rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("run --background: OAuth preflight rejection finalizes without failed review slot", async () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "claude-bg-oauth-preflight-reject-"));
+  seedMinimalRepo(cwd);
+  const tmp = mkdtempSync(path.join(tmpdir(), "claude-bg-oauth-preflight-reject-bin-"));
+  const countPath = path.join(tmp, "count.txt");
+  const binary = writeExecutable(tmp, "claude-bg-oauth-preflight-reject", `#!/usr/bin/env node
+const { existsSync, readFileSync, writeFileSync } = require("node:fs");
+const countPath = ${JSON.stringify(countPath)};
+const args = process.argv.slice(2);
+if (args[0] === "auth" && args[1] === "status") {
+  process.stdout.write(JSON.stringify({
+    loggedIn: true,
+    authMethod: "claude.ai",
+    apiProvider: "firstParty",
+    subscriptionType: "max",
+    email: "user@example.com"
+  }) + "\\n");
+  process.exit(0);
+}
+const count = existsSync(countPath) ? Number(readFileSync(countPath, "utf8")) : 0;
+writeFileSync(countPath, String(count + 1), "utf8");
+process.stdout.write(JSON.stringify({
+  type: "result",
+  is_error: true,
+  api_error_status: 401,
+  result: "Failed to authenticate. API Error: 401 Invalid authentication credentials",
+  session_id: "33333333-3333-4333-8333-333333333333",
+  usage: { input_tokens: 0, output_tokens: 0 }
+}) + "\\n");
+process.exit(1);
+`);
+  const { stdout, status, stderr, dataDir } = runCompanion(
+    ["run", "--mode=review", "--background", "--binary", binary,
+     "--model", "claude-haiku-4-5-20251001", "--cwd", cwd, "--", "review this change"],
+    { cwd, env: { ANTHROPIC_API_KEY: "", CLAUDE_API_KEY: "" } },
+  );
+  try {
+    assert.equal(status, 0, stderr || stdout);
+    const launched = JSON.parse(stdout);
+    const record = await waitForOnlyJobRecord(
+      dataDir,
+      (candidate) => candidate.id === launched.job_id && candidate.status === "failed",
+      "background OAuth preflight rejection did not finalize",
+    );
+    assert.equal(record.error_code, "oauth_inference_rejected");
+    assert.equal(record.pid_info, null);
+    assert.equal(record.external_review.source_content_transmission, "not_sent");
+    assert.equal(record.review_metadata.audit_manifest.error_code, "oauth_inference_rejected");
+    assert.equal(record.review_metadata.audit_manifest.review_quality.failed_review_slot, false);
+    assert.equal(readFileSync(countPath, "utf8"), "1", "target review must not launch after preflight rejection");
+  } finally {
+    cleanup(dataDir);
+    rmSync(cwd, { recursive: true, force: true });
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("run --background: cancel during OAuth preflight exits before target launch", async () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "claude-bg-oauth-preflight-cancel-"));
+  seedMinimalRepo(cwd);
+  const tmp = mkdtempSync(path.join(tmpdir(), "claude-bg-oauth-preflight-cancel-bin-"));
+  const countPath = path.join(tmp, "count.txt");
+  const targetLaunchedPath = path.join(tmp, "target-launched.txt");
+  const binary = writeExecutable(tmp, "claude-bg-oauth-preflight-cancel", `#!/usr/bin/env node
+const { existsSync, readFileSync, writeFileSync } = require("node:fs");
+const countPath = ${JSON.stringify(countPath)};
+const targetLaunchedPath = ${JSON.stringify(targetLaunchedPath)};
+const args = process.argv.slice(2);
+if (args[0] === "auth" && args[1] === "status") {
+  process.stdout.write(JSON.stringify({ loggedIn: true, authMethod: "claude.ai", apiProvider: "firstParty" }) + "\\n");
+  process.exit(0);
+}
+const count = existsSync(countPath) ? Number(readFileSync(countPath, "utf8")) : 0;
+writeFileSync(countPath, String(count + 1), "utf8");
+if (count > 0) writeFileSync(targetLaunchedPath, "target launched", "utf8");
+Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 1200);
+process.stdout.write(JSON.stringify({
+  type: "result",
+  is_error: false,
+  result: "pong",
+  session_id: "11111111-1111-4111-8111-111111111111",
+  usage: { input_tokens: 1, output_tokens: 1 }
+}) + "\\n");
+process.exit(0);
+`);
+  const { stdout, status, stderr, dataDir } = runCompanion(
+    ["run", "--mode=review", "--background", "--binary", binary,
+     "--model", "claude-haiku-4-5-20251001", "--cwd", cwd, "--", "review this change"],
+    { cwd, env: { ANTHROPIC_API_KEY: "", CLAUDE_API_KEY: "" } },
+  );
+  try {
+    assert.equal(status, 0, stderr || stdout);
+    const launched = JSON.parse(stdout);
+    const cancelRes = spawnSync("node", [
+      COMPANION,
+      "cancel", "--job", launched.job_id, "--cwd", cwd,
+    ], {
+      cwd,
+      encoding: "utf8",
+      env: { ...process.env, CLAUDE_PLUGIN_DATA: dataDir },
+    });
+    assert.equal(cancelRes.status, 0, cancelRes.stderr || cancelRes.stdout);
+    const cancel = JSON.parse(cancelRes.stdout);
+    assert.equal(cancel.status, "cancel_pending");
+    const record = await waitForOnlyJobRecord(
+      dataDir,
+      (candidate) => candidate.id === launched.job_id && candidate.status === "cancelled",
+      "background job cancelled during OAuth preflight did not finalize as cancelled",
+    );
+    assert.equal(record.error_code, null);
+    assert.equal(record.pid_info, null);
+    assert.equal(record.external_review.source_content_transmission, "not_sent");
+    assert.equal(existsSync(targetLaunchedPath), false);
+  } finally {
+    cleanup(dataDir);
+    rmSync(cwd, { recursive: true, force: true });
+    rmSync(tmp, { recursive: true, force: true });
   }
 });
 
