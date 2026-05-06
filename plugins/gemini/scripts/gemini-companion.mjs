@@ -1258,9 +1258,9 @@ async function cmdPing(rest) {
       }
       break;
     }
-    if (execution.parsed.ok) {
+    if (execution.parsed?.ok) {
       const payload = { status: "ok", ...pingOkFields(modelFallback), ...authDiagnosticFields(authSelection), model: selectedModel ?? null,
-        session_id: execution.geminiSessionId, usage: execution.parsed.usage };
+        session_id: execution.geminiSessionId, usage: execution.parsed?.usage };
       printJson(payload);
       process.exit(0);
     }
