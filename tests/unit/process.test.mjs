@@ -31,7 +31,7 @@ test("runCommand: supports bounded spawnSync timeouts", () => {
     "setTimeout(() => {}, 1000)",
   ], { timeout: 50 });
 
-  assert.equal(result.status, 0);
+  assert.equal(result.status, null);
   assert.equal(result.error?.code, "ETIMEDOUT");
 });
 

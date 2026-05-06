@@ -173,7 +173,7 @@ export function isOAuthInferenceRejected(execution, invocation = null) {
   return status === 401 && /invalid authentication credentials|failed to authenticate/i.test(result);
 }
 
-export function classifyExecution(execution, invocation = null) {
+function classifyLifecycleState(execution) {
   if (!execution) {
     return {
       status: "queued",
@@ -210,32 +210,68 @@ export function classifyExecution(execution, invocation = null) {
       error_message: execution.errorMessage ?? "stale_active_job",
     };
   }
-  if (execution.errorMessage) {
-    if (String(execution.errorMessage).startsWith(OAUTH_INFERENCE_REJECTED_PREFIX)) {
-      return {
-        status: "failed",
-        error_code: "oauth_inference_rejected",
-        error_message: String(execution.errorMessage).slice(OAUTH_INFERENCE_REJECTED_PREFIX.length).trim(),
-      };
-    }
-    if (isScopeFailure(execution.errorMessage)) {
-      return {
-        status: "failed",
-        error_code: "scope_failed",
-        error_message: execution.errorMessage,
-      };
-    }
-    // Distinguish finalization_failed (post-target persistence failure) from
-    // spawn_failed (target never ran). The companion's executeRun fallback
-    // synthesizes the former with a fixed prefix; everything else is a true
-    // pre-spawn failure. PR #21 review HIGH 1.
-    const isFinalization = String(execution.errorMessage).startsWith(FINALIZATION_FAILED_PREFIX);
+  return null;
+}
+
+function classifyErrorMessage(message) {
+  if (!message) return null;
+  const text = String(message);
+  if (text.startsWith(OAUTH_INFERENCE_REJECTED_PREFIX)) {
     return {
       status: "failed",
-      error_code: isFinalization ? "finalization_failed" : "spawn_failed",
-      error_message: execution.errorMessage,
+      error_code: "oauth_inference_rejected",
+      error_message: text.slice(OAUTH_INFERENCE_REJECTED_PREFIX.length).trim(),
     };
   }
+  if (isScopeFailure(message)) {
+    return {
+      status: "failed",
+      error_code: "scope_failed",
+      error_message: message,
+    };
+  }
+  // Distinguish finalization_failed (post-target persistence failure) from
+  // spawn_failed (target never ran). The companion's executeRun fallback
+  // synthesizes the former with a fixed prefix; everything else is a true
+  // pre-spawn failure. PR #21 review HIGH 1.
+  const isFinalization = text.startsWith(FINALIZATION_FAILED_PREFIX);
+  return {
+    status: "failed",
+    error_code: isFinalization ? "finalization_failed" : "spawn_failed",
+    error_message: message,
+  };
+}
+
+function classifyParsedFailure(execution, invocation, parsed) {
+  const reason = parsed.reason ?? null;
+  if (reason === "json_parse_error" || reason === "empty_stdout") {
+    return {
+      status: "failed",
+      error_code: "parse_error",
+      error_message: parsed.error ?? reason,
+    };
+  }
+  if (isOAuthInferenceRejected(execution, invocation)) {
+    return {
+      status: "failed",
+      error_code: "oauth_inference_rejected",
+      error_message: parsed.result ?? parsed.error ?? null,
+    };
+  }
+  return {
+    status: "failed",
+    error_code: "claude_error",
+    error_message: parsed.error ?? null,
+  };
+}
+
+export function classifyExecution(execution, invocation = null) {
+  const lifecycleState = classifyLifecycleState(execution);
+  if (lifecycleState) return lifecycleState;
+
+  const errorMessageState = classifyErrorMessage(execution.errorMessage);
+  if (errorMessageState) return errorMessageState;
+
   // #16 follow-up 1 / 2: a wall-clock timeout fires SIGTERM too, so check
   // timedOut FIRST. Only signal-driven exits without timedOut are cancels.
   if (execution.timedOut === true) {
@@ -257,26 +293,7 @@ export function classifyExecution(execution, invocation = null) {
     return { status: "completed", error_code: null, error_message: null };
   }
   if (parsed && parsed.ok === false) {
-    const reason = parsed.reason ?? null;
-    if (reason === "json_parse_error" || reason === "empty_stdout") {
-      return {
-        status: "failed",
-        error_code: "parse_error",
-        error_message: parsed.error ?? reason,
-      };
-    }
-    if (isOAuthInferenceRejected(execution, invocation)) {
-      return {
-        status: "failed",
-        error_code: "oauth_inference_rejected",
-        error_message: parsed.result ?? parsed.error ?? null,
-      };
-    }
-    return {
-      status: "failed",
-      error_code: "claude_error",
-      error_message: parsed.error ?? null,
-    };
+    return classifyParsedFailure(execution, invocation, parsed);
   }
   // Non-zero exit with no parsed JSON diagnostic — treat as claude_error.
   return {

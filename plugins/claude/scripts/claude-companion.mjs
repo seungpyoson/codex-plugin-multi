@@ -210,6 +210,12 @@ function scopeResolutionReason(invocation) {
   return invocation.scope ?? null;
 }
 
+function reviewAuditStatus(execution) {
+  if (execution?.preflight === true) return "preflight_failed";
+  if (execution?.exitCode === 0 && execution?.parsed?.ok === true) return "completed";
+  return "failed";
+}
+
 function reviewAuditManifest(invocation, prompt, containmentPath, execution) {
   if (!invocation.review_prompt_contract_version || invocation.mode_profile_name === "rescue") return null;
   const meta = promptMetadata(invocation);
@@ -247,9 +253,7 @@ function reviewAuditManifest(invocation, prompt, containmentPath, execution) {
       reason: scopeResolutionReason(invocation),
     },
     result: execution?.parsed?.result ?? "",
-    status: execution?.preflight === true
-      ? "preflight_failed"
-      : (execution?.exitCode === 0 && execution?.parsed?.ok === true ? "completed" : "failed"),
+    status: reviewAuditStatus(execution),
     errorCode,
   });
 }
@@ -1317,9 +1321,7 @@ function safeClaudeOAuthStatus(binary, authSelection, cwd = process.cwd()) {
     timeout: CLAUDE_AUTH_STATUS_TIMEOUT_MS,
   });
   if (result.error) {
-    const detail = result.error.code === "ENOENT"
-      ? "not_found"
-      : (result.error.code === "ETIMEDOUT" ? "timeout" : "error");
+    const detail = claudeAuthStatusErrorDetail(result.error);
     return { checked: true, available: false, detail };
   }
   if (result.status !== 0) {
@@ -1341,6 +1343,12 @@ function safeClaudeOAuthStatus(binary, authSelection, cwd = process.cwd()) {
   }
 }
 
+function claudeAuthStatusErrorDetail(error) {
+  if (error.code === "ENOENT") return "not_found";
+  if (error.code === "ETIMEDOUT") return "timeout";
+  return "error";
+}
+
 function parseJsonObjectOutput(stdout) {
   const text = String(stdout ?? "").trim();
   if (!text) return {};
@@ -1355,38 +1363,49 @@ function parseJsonObjectOutput(stdout) {
 
 function parseFirstBalancedJsonObject(text) {
   for (let start = text.indexOf("{"); start >= 0; start = text.indexOf("{", start + 1)) {
-    let depth = 0;
-    let inString = false;
-    let escaped = false;
-    for (let index = start; index < text.length; index += 1) {
-      const char = text[index];
-      if (inString) {
-        if (escaped) {
-          escaped = false;
-        } else if (char === "\\") {
-          escaped = true;
-        } else if (char === "\"") {
-          inString = false;
-        }
-        continue;
-      }
-      if (char === "\"") {
-        inString = true;
-      } else if (char === "{") {
-        depth += 1;
-      } else if (char === "}") {
-        depth -= 1;
-        if (depth === 0) {
-          try {
-            return JSON.parse(text.slice(start, index + 1));
-          } catch {
-            break;
-          }
-        }
-      }
-    }
+    const parsed = parseBalancedJsonCandidate(text, start);
+    if (parsed !== null) return parsed;
   }
   return null;
+}
+
+function parseBalancedJsonCandidate(text, start) {
+  const state = { depth: 0, inString: false, escaped: false };
+  for (let index = start; index < text.length; index += 1) {
+    updateJsonScanState(state, text[index]);
+    if (state.depth === 0) return parseJsonSlice(text, start, index + 1);
+  }
+  return null;
+}
+
+function updateJsonScanState(state, char) {
+  if (state.inString) {
+    updateJsonStringState(state, char);
+    return;
+  }
+  if (char === "\"") state.inString = true;
+  if (char === "{") state.depth += 1;
+  if (char === "}") state.depth -= 1;
+}
+
+function updateJsonStringState(state, char) {
+  if (state.escaped) {
+    state.escaped = false;
+    return;
+  }
+  if (char === "\\") {
+    state.escaped = true;
+    return;
+  }
+  if (char === "\"") state.inString = false;
+}
+
+function parseJsonSlice(text, start, end) {
+  try {
+    return JSON.parse(text.slice(start, end));
+  } catch {
+    return null;
+  }
 }
 
 function pingFailureDetail(execution) {
@@ -1411,6 +1430,58 @@ function pingFailureDetail(execution) {
     .some((line) => line.trimStart().startsWith("at "));
   const concise = hasStackFrame && firstLine ? firstLine : detail;
   return concise.slice(0, 500);
+}
+
+function printPingSpawnError(error, authSelection) {
+  if (error.code === "ENOENT") {
+    printJson({ status: "not_found", ...pingNotFoundFields(),
+      ...authDiagnosticFields(authSelection),
+      detail: `claude binary not found on PATH (or CLAUDE_BINARY override)`,
+      install_url: "https://claude.com/claude-code" });
+    process.exit(2);
+  }
+  printJson({ status: "error", ...pingErrorFields(), ...authDiagnosticFields(authSelection), detail: error.message });
+  process.exit(2);
+}
+
+function printPingSuccess(execution, authSelection, model) {
+  // T7.4: drop the legacy `.sessionId` alias. Ping uses claudeSessionId
+  // (Claude's echo) with sessionIdSent fallback when the mock short-circuits.
+  const payload = { status: "ok", ...pingOkFields(), ...authDiagnosticFields(authSelection), model: model ?? null,
+    session_id: execution.claudeSessionId ?? execution.sessionIdSent,
+    cost_usd: execution.parsed.costUsd, usage: execution.parsed.usage };
+  printJson(payload);
+  process.exit(0);
+}
+
+function printPingNotAuthed(detail, authSelection, authStatus) {
+  printJson({ status: "not_authed", ...pingNotAuthedFields(), detail,
+    ...authDiagnosticFields(authSelection),
+    ...(authStatus ? { oauth_status: authStatus } : {}),
+    hint: authSelection.selected_auth_path === "api_key_env"
+      ? "Claude was launched with explicit API-key auth. Check the provider key and CLI support."
+      : "Run `claude` interactively to complete OAuth. API-key env vars are ignored by subscription-mode policy." });
+  process.exit(2);
+}
+
+function printPingExecutionFailure(execution, authSelection, binary) {
+  const detail = pingFailureDetail(execution);
+  if (/rate limit|429|overloaded/i.test(detail)) {
+    printJson({ status: "rate_limited", ...pingRateLimitedFields(), ...authDiagnosticFields(authSelection), detail });
+    process.exit(2);
+  }
+  const oauthStatus = isOAuthInferenceRejected(execution, authSelection)
+    ? safeClaudeOAuthStatus(binary, authSelection)
+    : null;
+  if (oauthStatus?.logged_in === true) {
+    printJson({ status: "oauth_inference_rejected", ...oauthInferenceRejectedFields(), detail,
+      ...authDiagnosticFields(authSelection),
+      oauth_status: oauthStatus });
+    process.exit(2);
+  }
+  if (PING_AUTH_RE.test(detail)) printPingNotAuthed(detail, authSelection, oauthStatus ?? safeClaudeOAuthStatus(binary, authSelection));
+  printJson({ status: "error", ...pingErrorFields(), ...authDiagnosticFields(authSelection), exit_code: execution.exitCode, detail });
+  process.exit(2);
 }
 
 // ——— subcommand: ping (OAuth health probe per spec §7.5) ———
@@ -1443,53 +1514,14 @@ async function cmdPing(rest) {
       allowedApiKeyEnv: authSelection.allowed_env_credentials,
     });
   } catch (e) {
-    if (e.code === "ENOENT") {
-      printJson({ status: "not_found", ...pingNotFoundFields(),
-        ...authDiagnosticFields(authSelection),
-        detail: `claude binary not found on PATH (or CLAUDE_BINARY override)`,
-        install_url: "https://claude.com/claude-code" });
-      process.exit(2);
-    }
-    printJson({ status: "error", ...pingErrorFields(), ...authDiagnosticFields(authSelection), detail: e.message });
-    process.exit(2);
+    printPingSpawnError(e, authSelection);
   }
   // Classify. Real Claude error texts change per version; match on signals only.
   if (execution.parsed?.ok === true) {
-    // T7.4: drop the legacy `.sessionId` alias. Ping uses claudeSessionId
-    // (Claude's echo) with sessionIdSent fallback when the mock short-circuits.
-    const payload = { status: "ok", ...pingOkFields(), ...authDiagnosticFields(authSelection), model: model ?? null,
-      session_id: execution.claudeSessionId ?? execution.sessionIdSent,
-      cost_usd: execution.parsed.costUsd, usage: execution.parsed.usage };
-    printJson(payload);
-    process.exit(0);
+    printPingSuccess(execution, authSelection, model);
   }
   if (execution.exitCode !== 0) {
-    const detail = pingFailureDetail(execution);
-    if (/rate limit|429|overloaded/i.test(detail)) {
-      printJson({ status: "rate_limited", ...pingRateLimitedFields(), ...authDiagnosticFields(authSelection), detail });
-      process.exit(2);
-    }
-    const oauthStatus = isOAuthInferenceRejected(execution, authSelection)
-      ? safeClaudeOAuthStatus(binary, authSelection)
-      : null;
-    if (oauthStatus?.logged_in === true) {
-      printJson({ status: "oauth_inference_rejected", ...oauthInferenceRejectedFields(), detail,
-        ...authDiagnosticFields(authSelection),
-        oauth_status: oauthStatus });
-      process.exit(2);
-    }
-    if (PING_AUTH_RE.test(detail)) {
-      const authStatus = oauthStatus ?? safeClaudeOAuthStatus(binary, authSelection);
-      printJson({ status: "not_authed", ...pingNotAuthedFields(), detail,
-        ...authDiagnosticFields(authSelection),
-        ...(authStatus ? { oauth_status: authStatus } : {}),
-        hint: authSelection.selected_auth_path === "api_key_env"
-          ? "Claude was launched with explicit API-key auth. Check the provider key and CLI support."
-          : "Run `claude` interactively to complete OAuth. API-key env vars are ignored by subscription-mode policy." });
-      process.exit(2);
-    }
-    printJson({ status: "error", ...pingErrorFields(), ...authDiagnosticFields(authSelection), exit_code: execution.exitCode, detail });
-    process.exit(2);
+    printPingExecutionFailure(execution, authSelection, binary);
   }
   printJson({ status: "error", ...pingErrorFields(), ...authDiagnosticFields(authSelection),
     detail: "parsed result missing", raw: execution.parsed.raw });

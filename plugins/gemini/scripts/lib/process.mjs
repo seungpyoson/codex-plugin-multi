@@ -18,7 +18,7 @@ export function runCommand(command, args = [], options = {}) {
   return {
     command,
     args,
-    status: result.status ?? 0,
+    status: result.status,
     signal: result.signal ?? null,
     stdout: result.stdout ?? "",
     stderr: result.stderr ?? "",
