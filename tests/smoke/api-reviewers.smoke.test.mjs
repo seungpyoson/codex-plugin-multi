@@ -1,11 +1,11 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFile, execFileSync } from "node:child_process";
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { hostname, tmpdir } from "node:os";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { externalReviewLaunchedEvent } from "../../scripts/lib/companion-common.mjs";
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
@@ -115,6 +115,30 @@ function assertDirectApiNotSent(record, displayName) {
     `Selected source content was not sent to ${displayName} through direct API auth.`,
   );
   assert.equal(record.disclosure_note, record.external_review.disclosure);
+}
+
+async function importApiReviewerInternalsForTest() {
+  const tempScriptsDir = mkdtempSync(path.join(tmpdir(), "api-reviewers-module-"));
+  const source = readFileSync(COMPANION, "utf8");
+  const footer = `try {
+  await main();
+} catch (e) {
+  printJson({ ok: false, error: e.message });
+  process.exit(1);
+}
+`;
+  assert.match(source, /async function readUtf8ScopeFileWithinLimit/);
+  assert.match(source, /try \{\n  await main\(\);/);
+  const testSource = source.replace(footer, "export { readUtf8ScopeFileWithinLimit, sameFileIdentity };\n");
+  assert.notEqual(testSource, source);
+  cpSync(path.join(REPO_ROOT, "plugins/api-reviewers/scripts/lib"), path.join(tempScriptsDir, "lib"), { recursive: true });
+  const modulePath = path.join(tempScriptsDir, "api-reviewer.mjs");
+  writeFileSync(modulePath, testSource);
+  try {
+    return await import(pathToFileURL(modulePath).href);
+  } finally {
+    rmSync(tempScriptsDir, { recursive: true, force: true });
+  }
 }
 
 function makeWorkspace() {
@@ -1848,6 +1872,21 @@ test("scope file reads open canonical paths after symlink boundary check", () =>
   assert.match(source, /if \(e\?\.code === "ENOENT"\) return null;/);
   assert.match(source, /const text = await readUtf8ScopeFileWithinLimit\(realAbs, normalizedRel, beforeOpen\);/);
   assert.doesNotMatch(source, /readUtf8ScopeFileWithinLimit\(abs, normalizedRel\)/);
+});
+
+test("scope file reads reject stale file identity after secure open", async () => {
+  const cwd = makeWorkspace();
+  const first = path.join(cwd, "first.txt");
+  const second = path.join(cwd, "second.txt");
+  writeFileSync(first, "first file\n");
+  writeFileSync(second, "second file\n");
+  const beforeOpen = lstatSync(first);
+  const { readUtf8ScopeFileWithinLimit } = await importApiReviewerInternalsForTest();
+
+  await assert.rejects(
+    () => readUtf8ScopeFileWithinLimit(second, "first.txt", beforeOpen),
+    /unsafe_scope_path:first\.txt: file changed before secure open/,
+  );
 });
 
 test("custom-review rejects oversized scope files before provider delivery", async () => {

@@ -1528,7 +1528,14 @@ async function runCli() {
   }
 }
 
-export { releaseStateLock, sortJobSummaries, staleLockReason, withStateLock };
+export {
+  readUtf8ScopeFileWithinLimit,
+  releaseStateLock,
+  sameFileIdentity,
+  sortJobSummaries,
+  staleLockReason,
+  withStateLock,
+};
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   await runCli();

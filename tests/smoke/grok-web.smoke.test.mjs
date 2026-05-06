@@ -1,10 +1,10 @@
 import { once } from "node:events";
 import { execFileSync, spawn, spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import http from "node:http";
 import { hostname, tmpdir } from "node:os";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { externalReviewLaunchedEvent } from "../../scripts/lib/companion-common.mjs";
@@ -1839,6 +1839,21 @@ test("scope file reads use canonical real paths after symlink boundary check", (
   assert.match(source, /const \{ bytesRead \} = await handle\.read\(buffer, 0, buffer\.length, null\);/);
   assert.match(source, /const text = await readUtf8ScopeFileWithinLimit\(realAbs, normalizedRel, beforeOpen\);/);
   assert.doesNotMatch(source, /const text = await readFile\(realAbs, "utf8"\);/);
+});
+
+test("scope file reads reject stale file identity after secure open", async () => {
+  const cwd = realpathSync(mkdtempSync(path.join(tmpdir(), "grok-web-workspace-")));
+  const first = path.join(cwd, "first.txt");
+  const second = path.join(cwd, "second.txt");
+  writeFileSync(first, "first file\n");
+  writeFileSync(second, "second file\n");
+  const beforeOpen = lstatSync(first);
+  const { readUtf8ScopeFileWithinLimit } = await import(pathToFileURL(COMPANION).href);
+
+  await assert.rejects(
+    () => readUtf8ScopeFileWithinLimit(second, "first.txt", beforeOpen),
+    /unsafe_scope_path:first\.txt: file changed before secure open/,
+  );
 });
 
 test("tunnel invocation catch is separated from prompt construction catch", () => {
