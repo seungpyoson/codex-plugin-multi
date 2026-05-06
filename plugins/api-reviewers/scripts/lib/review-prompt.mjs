@@ -159,7 +159,7 @@ function qualityFlags({ result = "", status = null, errorCode = null } = {}) {
     ]),
     checklist_items_seen: checklistItemsSeen,
     looks_shallow: text.trim().length > 0 && text.trim().length < 500,
-    failed_review_slot: status !== "completed" || errorCode !== null,
+    failed_review_slot: status !== "preflight_failed" && (status !== "completed" || errorCode !== null),
   });
 }
 

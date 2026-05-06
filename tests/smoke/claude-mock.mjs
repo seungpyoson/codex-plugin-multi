@@ -208,7 +208,8 @@ if (process.env.CLAUDE_MOCK_LIST_ADDDIR && addDir) {
 // (worktree containment). Keeps the hook additive: leaving the env unset
 // is identical to pre-T7.6 behavior.
 const mutateRel = process.env.CLAUDE_MOCK_MUTATE_FILE;
-if (mutateRel) {
+const isPingPrompt = prompt === "reply with exactly: pong. Do not use any tools, do not read files, and do not explore the workspace.";
+if (mutateRel && !isPingPrompt) {
   const { writeFileSync: wf, mkdirSync: mk } = await import("node:fs");
   const { isAbsolute, dirname: dn } = await import("node:path");
   let target;

@@ -12,6 +12,7 @@ const COPIES = [
     path.join(REPO_ROOT, `plugins/${plugin}/scripts/lib/external-review.mjs`)
   ),
   path.join(REPO_ROOT, "plugins/api-reviewers/scripts/lib/external-review.mjs"),
+  path.join(REPO_ROOT, "plugins/grok/scripts/lib/external-review.mjs"),
 ];
 
 const checkOnly = process.argv.includes("--check");
