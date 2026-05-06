@@ -2219,8 +2219,12 @@ test("smoke replay: grok/happy-path-review reproduces recorded JobRecord shape (
   const fixture = readGrokReplayFixture("happy-path-review");
   const cwd = mkdtempSync(path.join(tmpdir(), "grok-replay-workspace-"));
   const dataDir = mkdtempSync(path.join(tmpdir(), "grok-replay-data-"));
-  writeFileSync(path.join(cwd, "review.js"), "export const value = 1;\n");
+  writeFileSync(path.join(cwd, "review.js"), "export const grok_replay_marker = 1;\n");
 
+  // Capture the request the wrapper sends to the chat endpoint so we can
+  // assert that the outgoing payload matches what the recorded fixture
+  // implies (model, auth shape, content delivery).
+  const chatCaptured = { method: null, authorization: null, body: null };
   await withServer(async (req, res) => {
     res.setHeader("content-type", "application/json");
     if (req.url === "/api/models") {
@@ -2228,7 +2232,9 @@ test("smoke replay: grok/happy-path-review reproduces recorded JobRecord shape (
       return;
     }
     if (req.url === "/api/chat/completions") {
-      await readJsonRequest(req);
+      chatCaptured.method = req.method;
+      chatCaptured.authorization = req.headers.authorization ?? null;
+      chatCaptured.body = await readJsonRequest(req);
       res.writeHead(400);
       res.end(JSON.stringify({
         error: { message: "Chat upstream returned 400", type: "upstream_error", code: "upstream_error" },
@@ -2271,6 +2277,25 @@ test("smoke replay: grok/happy-path-review reproduces recorded JobRecord shape (
       replayed.external_review.source_content_transmission,
       fixture.external_review.source_content_transmission,
       "transmission must match recorded fixture (security-critical invariant)",
+    );
+    // Request-side: the wrapper actually POSTed to the chat endpoint with
+    // Bearer auth, the configured model, and the seed content delivered
+    // inside the message body. transmission=sent without delivery is a bug.
+    assert.equal(chatCaptured.method, "POST", "wrapper must POST to chat endpoint");
+    assert.equal(
+      chatCaptured.authorization,
+      "Bearer secret-cookie-like-token",
+      "wrapper must present Bearer auth with the configured tunnel key",
+    );
+    assert.ok(chatCaptured.body, "request body must be parsed");
+    assert.equal(chatCaptured.body.model, "grok-4.20-fast", "request body must carry the configured model");
+    assert.equal(chatCaptured.body.stream, false, "tunnel chat must remain non-streaming");
+    assert.ok(Array.isArray(chatCaptured.body.messages) && chatCaptured.body.messages.length >= 1,
+      "request body must include at least one message");
+    assert.match(
+      chatCaptured.body.messages[0].content,
+      /grok_replay_marker/,
+      "transmission=sent paths must put the selected source content into the request body",
     );
   });
 });

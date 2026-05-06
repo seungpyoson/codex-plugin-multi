@@ -2244,7 +2244,7 @@ test("smoke replay: claude/happy-path-review reproduces recorded JobRecord shape
   const tmpFixturePath = path.join(tmpFixtureDir, "stdout.json");
   writeFileSync(tmpFixturePath, JSON.stringify(projected), "utf8");
   const cwd = mkdtempSync(path.join(tmpdir(), "claude-replay-cwd-"));
-  writeFileSync(path.join(cwd, "seed.txt"), "replay seed\n");
+  writeFileSync(path.join(cwd, "seed.txt"), "claude_replay_marker_seed_text\n");
   const dataDir = mkdtempSync(path.join(tmpdir(), "claude-replay-data-"));
   try {
     const res = spawnSync("node", [
@@ -2260,10 +2260,26 @@ test("smoke replay: claude/happy-path-review reproduces recorded JobRecord shape
         CLAUDE_BINARY: MOCK,
         CLAUDE_PLUGIN_DATA: dataDir,
         CLAUDE_MOCK_FIXTURE_PATH: tmpFixturePath,
+        // Request-side assertion: the wrapper must render the delegated
+        // review contract template before invoking the binary. The mock
+        // exits 1 if this substring is missing. Companion architecture
+        // does not inline file content into the prompt (Claude reads via
+        // --add-dir tools), so the right request-side check here is on
+        // the contract scaffold, not on file content. Transmission of the
+        // file content itself is asserted via the source_content_transmission
+        // field below.
+        CLAUDE_MOCK_ASSERT_PROMPT_INCLUDES: "Provider: Claude Code",
       },
     });
     assert.equal(res.status, fixture.exit_code, res.stderr || res.stdout);
     const replayed = JSON.parse(res.stdout);
+    // Full key-set parity with the recorded fixture: regressions that drop
+    // (or silently rename) a JobRecord key fail here.
+    assert.deepEqual(
+      Object.keys(replayed).sort(),
+      Object.keys(fixture).sort(),
+      "replayed JobRecord must carry the same key set as the recorded fixture",
+    );
     assert.equal(replayed.schema_version, fixture.schema_version);
     assert.equal(replayed.status, fixture.status);
     assert.equal(replayed.error_code, fixture.error_code);

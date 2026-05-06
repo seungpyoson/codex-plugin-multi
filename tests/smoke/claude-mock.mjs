@@ -9,6 +9,18 @@
 //
 // The mock writes exactly one JSON line on stdout (matching Claude
 // --output-format=json) and exits 0 on a fixture hit.
+//
+// Env knobs (used by smoke tests):
+//   CLAUDE_MOCK_FIXTURE_PATH   absolute path to a single fixture file;
+//                              overrides the (model, sha) → fixture lookup.
+//                              Used by #106 replay tests so they can plant
+//                              a tmp fixture without touching FIXTURE_DIR.
+//   CLAUDE_MOCK_ASSERT_PROMPT_INCLUDES
+//                              substring required to appear in the prompt;
+//                              mock exits 1 if absent. Use this in replay
+//                              tests to assert request-side payload shape.
+//   CLAUDE_MOCK_OMIT_SESSION_ID, CLAUDE_MOCK_RECORD_RESUME, CLAUDE_MOCK_*
+//                              other test-oracle knobs (see below).
 
 import { readFileSync, existsSync, realpathSync } from "node:fs";
 import { resolve, dirname } from "node:path";

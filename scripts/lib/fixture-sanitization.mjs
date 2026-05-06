@@ -35,14 +35,14 @@ const MIN_SECRET_REDACTION_LENGTH_CURATED = 4;     // operator-curated env_keys
 // in process.env at sanitize time. Conservative default; lets us scrub
 // echo-attacks where the provider response includes a hardcoded test key.
 const SECRET_PREFIX_PATTERNS = Object.freeze([
-  /sk-[a-zA-Z0-9]{20,}/g,                    // OpenAI / Anthropic style
-  /sk-or-v[0-9]+-[a-zA-Z0-9]{20,}/g,         // OpenRouter
-  /sk-ant-api[0-9]+-[a-zA-Z0-9_-]{20,}/g,    // Anthropic prefixed
+  /sk-[a-zA-Z\d]{20,}/g,                     // OpenAI / Anthropic style
+  /sk-or-v\d+-[a-zA-Z\d]{20,}/g,             // OpenRouter
+  /sk-ant-api\d+-[a-zA-Z\d_-]{20,}/g,        // Anthropic prefixed
   /AKIA[0-9A-Z]{16}/g,                       // AWS access key
   /AIza[0-9A-Za-z_-]{35}/g,                  // Google API key
   /glpat-[a-zA-Z0-9_-]{20,}/g,               // GitLab personal access token
   /gh[ps]_[a-zA-Z0-9]{36}/g,                 // GitHub token (pat / server)
-  /github_pat_[a-zA-Z0-9_]{20,}/g,           // GitHub fine-grained PAT
+  /github_pat_\w{20,}/g,                     // GitHub fine-grained PAT
   /eyJ[a-zA-Z0-9_-]+\.[a-zA-Z0-9_-]+\.[a-zA-Z0-9_-]+/g, // JWT
 ]);
 
@@ -124,11 +124,11 @@ export function buildEnvSecretRedactor(env, { curatedEnvKeys = [] } = {}) {
 export function redactKnownPatterns(input) {
   let out = String(input ?? "");
   for (const pattern of SECRET_PREFIX_PATTERNS) {
-    out = out.replace(pattern, REDACTED);
+    out = out.replaceAll(pattern, REDACTED);
   }
-  out = out.replace(AUTHORIZATION_HEADER, `Authorization: ${REDACTED}`);
-  out = out.replace(BEARER_TOKEN, `Bearer ${REDACTED}`);
-  out = out.replace(PATH_SCRUB, "/Users/<user>");
+  out = out.replaceAll(AUTHORIZATION_HEADER, `Authorization: ${REDACTED}`);
+  out = out.replaceAll(BEARER_TOKEN, `Bearer ${REDACTED}`);
+  out = out.replaceAll(PATH_SCRUB, "/Users/<user>");
   return out;
 }
 
@@ -161,27 +161,36 @@ function sanitizeValue(value, ctx) {
     return value.map((item) => sanitizeValue(item, ctx));
   }
   if (typeof value === "object") {
-    const out = {};
-    for (const [key, sub] of Object.entries(value)) {
-      if (ctx.architecture === "companion" && COMPANION_SESSION_ID_FIELDS.includes(key)) {
-        out[key] = sub == null ? null : REDACTED;
-        continue;
-      }
-      if (ALWAYS_REDACT_STRING_FIELDS.includes(key)) {
-        if (sub == null) out[key] = null;
-        else if (typeof sub === "string") out[key] = REDACTED;
-        else out[key] = sanitizeValue(sub, ctx);
-        continue;
-      }
-      if (ALWAYS_SANITIZE_FIELDS.includes(key) && typeof sub === "string") {
-        out[key] = sanitizeString(sub, ctx.redactEnvSecrets);
-        continue;
-      }
-      out[key] = sanitizeValue(sub, ctx);
-    }
-    return out;
+    return sanitizeObject(value, ctx);
   }
   return value;
+}
+
+function sanitizeObject(value, ctx) {
+  const out = {};
+  for (const [key, sub] of Object.entries(value)) {
+    out[key] = sanitizeObjectField(key, sub, ctx);
+  }
+  return out;
+}
+
+function sanitizeObjectField(key, sub, ctx) {
+  if (ctx.architecture === "companion" && COMPANION_SESSION_ID_FIELDS.includes(key)) {
+    return sub == null ? null : REDACTED;
+  }
+  if (ALWAYS_REDACT_STRING_FIELDS.includes(key)) {
+    return sanitizeAlwaysRedactedField(sub, ctx);
+  }
+  if (ALWAYS_SANITIZE_FIELDS.includes(key) && typeof sub === "string") {
+    return sanitizeString(sub, ctx.redactEnvSecrets);
+  }
+  return sanitizeValue(sub, ctx);
+}
+
+function sanitizeAlwaysRedactedField(value, ctx) {
+  if (value == null) return null;
+  if (typeof value === "string") return REDACTED;
+  return sanitizeValue(value, ctx);
 }
 
 /**

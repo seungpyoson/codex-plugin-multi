@@ -221,7 +221,7 @@ function recordResponse(scriptPath, args, env) {
     process.stderr.write(`smoke-rerecord: script not found: ${fullScript}\n`);
     process.exit(2);
   }
-  const result = spawnSync("node", [fullScript, ...args], {
+  const result = spawnSync(process.execPath, [fullScript, ...args], {
     cwd: REPO_ROOT,
     env,
     encoding: "utf8",

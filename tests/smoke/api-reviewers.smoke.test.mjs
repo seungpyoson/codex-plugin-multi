@@ -2662,8 +2662,20 @@ for (const scenarioCase of [
     const cwd = makeWorkspace();
     const dataDir = mkdtempSync(path.join(tmpdir(), "api-reviewers-replay-"));
     const pluginRoot = makeInstalledApiReviewersRoot();
-    const server = await startChatServer((req, res) => {
-      req.resume();
+    // Capture the request the wrapper sends so we can assert that the
+    // outgoing payload matches what the recorded fixture implies (model,
+    // auth shape, content delivery). Without this, a regression that broke
+    // the wrapper's request side would still pass — server returns canned
+    // bytes regardless.
+    const captured = { url: null, method: null, authorization: null, body: null };
+    const server = await startChatServer(async (req, res) => {
+      captured.url = req.url;
+      captured.method = req.method;
+      captured.authorization = req.headers.authorization ?? null;
+      let raw = "";
+      req.setEncoding("utf8");
+      for await (const chunk of req) raw += chunk;
+      try { captured.body = JSON.parse(raw); } catch { captured.body = raw; }
       res.writeHead(httpResp.statusCode, { "content-type": "application/json" });
       res.end(httpResp.body);
     });
@@ -2706,6 +2718,37 @@ for (const scenarioCase of [
         "transmission must match recorded fixture (security-critical invariant)",
       );
       assert.doesNotMatch(result.stdout, /secret-test-value/);
+      // Round-trip the raw provider result text on happy path. Skipped for
+      // negative paths where fixture.result is null.
+      if (fixture.status === "completed" && typeof fixture.result === "string") {
+        assert.equal(
+          replayed.result,
+          fixture.result,
+          "binary result text must round-trip through the wrapper",
+        );
+      }
+      // Request-side assertions: the wrapper actually hit the chat endpoint,
+      // POSTed an OpenAI-compat body with the configured model + the seed
+      // content, and presented Bearer auth. Without these, the replay only
+      // checks what the wrapper accepts; we want to also pin what it sends.
+      assert.equal(captured.method, "POST", "wrapper must POST to chat endpoint");
+      assert.equal(captured.url, "/chat/completions", "wrapper must hit /chat/completions");
+      assert.match(
+        captured.authorization ?? "",
+        /^Bearer secret-test-value$/,
+        "wrapper must present Bearer auth with the configured key",
+      );
+      assert.equal(typeof captured.body, "object", "request body must be JSON");
+      assert.equal(captured.body.model, "deepseek-v4-flash", "request body must carry the configured model");
+      assert.ok(Array.isArray(captured.body.messages) && captured.body.messages.length >= 1,
+        "request body must include at least one message");
+      const firstMessage = captured.body.messages[0];
+      assert.equal(typeof firstMessage.content, "string", "first message must have string content");
+      assert.match(
+        firstMessage.content,
+        /hello from selected scope/,
+        "transmission=sent paths must put the selected source content into the request body",
+      );
     } finally {
       server.close();
     }
