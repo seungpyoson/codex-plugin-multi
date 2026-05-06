@@ -236,6 +236,7 @@ export function buildReviewAuditManifest({
       scope_paths: Array.isArray(scope.paths) ? Object.freeze([...scope.paths]) : null,
       reason: scope.reason ?? null,
     }),
+    error_code: errorCode,
     review_quality: qualityFlags({ result, status, errorCode }),
   });
 }

@@ -1782,6 +1782,7 @@ process.exit(1);
     assert.equal(record.external_review.source_content_transmission, "not_sent");
     assert.match(record.external_review.disclosure, /not sent/);
     assert.equal(record.pid_info, null);
+    assert.equal(record.review_metadata.audit_manifest.error_code, "oauth_inference_rejected");
     assert.equal(record.review_metadata.audit_manifest.review_quality.failed_review_slot, false);
     assert.doesNotMatch(stdout, /user@example.com/);
   } finally {
