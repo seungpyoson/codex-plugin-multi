@@ -58,12 +58,20 @@ const COMPANION_SESSION_ID_FIELDS = Object.freeze([
   "kimi_session_id",
 ]);
 
-// Other fields that always sanitize (across architectures): present on
-// JobRecord-shaped output and tied to local user identity.
+// Field names that ALWAYS get redacted when present as strings, regardless
+// of architecture. These are user-identity-linked or path-leaking.
+const ALWAYS_REDACT_STRING_FIELDS = Object.freeze([
+  // Doctor/ping output uses bare "session_id" (not provider-prefixed). Redact.
+  "session_id",
+  "request_id",     // api-reviewers + provider request-id (sometimes echoed)
+]);
+
+// Fields that are sanitized as strings (path scrub, env-secret redaction)
+// but kept rather than replaced wholesale.
 const ALWAYS_SANITIZE_FIELDS = Object.freeze([
   "cwd",          // absolute paths reveal /Users/<name>
   "workspace_root",
-  "endpoint",     // api-reviewers: contains base URL; safe to keep; here defensively kept
+  "endpoint",     // api-reviewers: contains base URL; defensively sanitized
 ]);
 
 const PATH_SCRUB = /\/Users\/[^/\s]+/g;  // macOS user-home leak
@@ -157,6 +165,12 @@ function sanitizeValue(value, ctx) {
     for (const [key, sub] of Object.entries(value)) {
       if (ctx.architecture === "companion" && COMPANION_SESSION_ID_FIELDS.includes(key)) {
         out[key] = sub == null ? null : REDACTED;
+        continue;
+      }
+      if (ALWAYS_REDACT_STRING_FIELDS.includes(key)) {
+        if (sub == null) out[key] = null;
+        else if (typeof sub === "string") out[key] = REDACTED;
+        else out[key] = sanitizeValue(sub, ctx);
         continue;
       }
       if (ALWAYS_SANITIZE_FIELDS.includes(key) && typeof sub === "string") {

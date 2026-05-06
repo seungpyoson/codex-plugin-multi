@@ -93,7 +93,7 @@
       },
       "provider_ids": {
         "request_id": null,
-        "session_id": "8a15f741-2960-46d3-8c74-034f2b3f2005"
+        "session_id": "[REDACTED]"
       },
       "scope_resolution": {
         "scope": "custom",
@@ -129,7 +129,7 @@
     "provider": "DeepSeek",
     "run_kind": "foreground",
     "job_id": "job_5a54dd80-6d60-455d-bc0a-0d30357d5c08",
-    "session_id": "8a15f741-2960-46d3-8c74-034f2b3f2005",
+    "session_id": "[REDACTED]",
     "parent_job_id": null,
     "mode": "custom-review",
     "scope": "custom",

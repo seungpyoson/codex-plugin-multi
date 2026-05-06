@@ -155,6 +155,40 @@ test("redactKnownPatterns: scrubs macOS user-home leak", () => {
   assert.match(out, /\/Users\/<user>\/.config/);
 });
 
+test("sanitize: bare session_id field redacts across all architectures", () => {
+  // Doctor/ping output uses bare "session_id" rather than provider-prefixed
+  // claude_session_id/etc. These are still user-identity-linked and must
+  // sanitize to [REDACTED] regardless of architecture.
+  for (const arch of ["companion", "grok", "api-reviewers"]) {
+    const record = {
+      session_id: "b22d36b8-c2c4-4b6c-b386-67e9a3fdc8bc",
+      ready: true,
+    };
+    const out = sanitize(record, { architecture: arch, env: {} });
+    assert.equal(out.session_id, REDACTED,
+      `${arch}: bare session_id must redact to [REDACTED]`);
+    assert.equal(out.ready, true, `${arch}: non-secret fields preserved`);
+  }
+});
+
+test("sanitize: bare request_id field redacts across all architectures", () => {
+  const out = sanitize(
+    { request_id: "req_abc-1234-5678", other: "fine" },
+    { architecture: "api-reviewers", env: {} },
+  );
+  assert.equal(out.request_id, REDACTED);
+  assert.equal(out.other, "fine");
+});
+
+test("sanitize: null session_id stays null", () => {
+  const out = sanitize(
+    { session_id: null, request_id: null },
+    { architecture: "grok", env: {} },
+  );
+  assert.equal(out.session_id, null);
+  assert.equal(out.request_id, null);
+});
+
 test("sanitize: companion architecture redacts session-id fields", () => {
   const record = {
     job_id: "11111111-2222-4333-8444-555555555555",

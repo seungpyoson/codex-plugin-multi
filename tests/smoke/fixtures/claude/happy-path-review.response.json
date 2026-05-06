@@ -1,6 +1,6 @@
 {
-  "id": "ee882b41-2971-4c4b-ace2-e07c0ab6cdea",
-  "job_id": "ee882b41-2971-4c4b-ace2-e07c0ab6cdea",
+  "id": "[REDACTED]",
+  "job_id": "[REDACTED]",
   "target": "claude",
   "parent_job_id": null,
   "claude_session_id": "[REDACTED]",
@@ -96,7 +96,7 @@
       },
       "provider_ids": {
         "request_id": null,
-        "session_id": "ee882b41-2971-4c4b-ace2-e07c0ab6cdea"
+        "session_id": "[REDACTED]"
       },
       "scope_resolution": {
         "scope": "custom",
@@ -131,8 +131,8 @@
     "marker": "EXTERNAL REVIEW",
     "provider": "Claude Code",
     "run_kind": "foreground",
-    "job_id": "ee882b41-2971-4c4b-ace2-e07c0ab6cdea",
-    "session_id": "ee882b41-2971-4c4b-ace2-e07c0ab6cdea",
+    "job_id": "[REDACTED]",
+    "session_id": "[REDACTED]",
     "parent_job_id": null,
     "mode": "custom-review",
     "scope": "custom",
