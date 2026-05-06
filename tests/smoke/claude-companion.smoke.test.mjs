@@ -1712,6 +1712,29 @@ process.exit(7);
   }
 });
 
+test("ping: malformed successful stdout reports parsed result missing without crashing", () => {
+  const tmp = mkdtempSync(path.join(tmpdir(), "claude-ping-malformed-ok-"));
+  const binary = writeExecutable(tmp, "claude-malformed-ok", `#!/usr/bin/env node
+process.stdout.write("not json\\n");
+process.exit(0);
+`);
+  const { stdout, status, dataDir } = runCompanion(
+    ["ping", "--model", "claude-haiku-4-5-20251001"],
+    { cwd: tmpdir(), env: { CLAUDE_BINARY: binary } },
+  );
+  try {
+    assert.equal(status, 2);
+    const result = JSON.parse(stdout);
+    assert.equal(result.status, "error");
+    assert.equal(result.ready, false);
+    assert.equal(result.detail, "parsed result missing");
+    assert.match(JSON.stringify(result.raw), /json_parse_error|not json/);
+  } finally {
+    cleanup(dataDir);
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
 test("status: empty workspace returns empty jobs list", () => {
   const cwd = mkdtempSync(path.join(tmpdir(), "smoke-status-"));
   const { stdout, status, dataDir } = runCompanion(["status", "--cwd", cwd], { cwd });
