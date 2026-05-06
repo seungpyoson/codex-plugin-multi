@@ -105,17 +105,17 @@ Critically: redaction is applied to the **persisted record on disk**, not just s
 
 Unlike companion plugins (which delegate state to companion-common), api-reviewers persists job state directly:
 
-- State directory: `~/.codex/api-reviewers/`
+- State directory: **`.codex-plugin-data/api-reviewers/`** (resolved relative to `cwd` via `apiReviewerDataRoot()` at `api-reviewer.mjs:124`). Override with the `API_REVIEWERS_PLUGIN_DATA` env var.
 - Per-job: `jobs/<job_id>/meta.json`
 - Index: `state.json`
-- Locking + pruning + concurrency at `api-reviewer.mjs:251-449`.
+- Two-stage locking via `.state.lock.gate` then `.state.lock`, with explicit cross-host hostname refusal (locks owned by a different host are not reclaimed) and rename-and-re-read race detection. See `tryReclaimStaleApiReviewerStateLock` and surrounding code at `api-reviewer.mjs:251-449`.
 
 This introduces a separate failure surface (lock timeout, pruning, cross-host owner detection) tested in `tests/smoke/api-reviewers.smoke.test.mjs` (extensive coverage under "direct API reviewer persistence" / "lock" titles).
 
 ## What's UNIQUE to api-reviewers
 
 - **Direct HTTP via `fetch()`** — introduces network-native errors (`ENOTFOUND`/`ECONNREFUSED`/`ETIMEDOUT`) classified at `api-reviewer.mjs:1349-1351`.
-- **Built-in job persistence** to `~/.codex/api-reviewers/` with locking + pruning.
+- **Built-in job persistence** to `.codex-plugin-data/api-reviewers/` (cwd-relative; override via `API_REVIEWERS_PLUGIN_DATA`) with two-stage locking + pruning.
 - **No subprocess env isolation** — credentials passed directly as `Authorization: Bearer <key>` headers (`api-reviewer.mjs:1271`). Output redaction is the only defense against echo-attacks.
 - **Configuration-driven providers** — `providers.json` defines the providers; same code serves DeepSeek + GLM + future providers.
 - **Two providers under one plugin** — DeepSeek and GLM share output shape but have separate config, separate credentials, and distinct provider-side failure modes.

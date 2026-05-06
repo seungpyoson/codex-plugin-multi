@@ -63,14 +63,14 @@ Redaction is **not** uniform across plugins. Three separate implementations prot
 
 **Strategy:** `redactor()` returns a function that takes a string and substitutes matched substrings with the literal `[REDACTED]`. Applied recursively via `redactValue()` (`api-reviewer.mjs:654-663`).
 
-**Patterns matched** (`api-reviewer.mjs:632-652`):
+**Patterns matched** (`api-reviewer.mjs:632-652`, with `MIN_SECRET_REDACTION_LENGTH = 8`):
 
-1. **Configured secrets**: every value listed in the resolved provider config's `cfg.env_keys`, when ≥ `MIN_SECRET_REDACTION_LENGTH` (= 8) characters. Replaced with `[REDACTED]`.
-2. **Auto-detected secret env vars**: env keys matching `/(?:^|_)(?:API_KEY|TOKEN|ACCESS_KEY|SECRET|ADMIN_KEY)$/`, with value length ≥8. Replaced with `[REDACTED]`.
+1. **Configured secrets**: every value listed in the resolved provider config's `cfg.env_keys`, when **≥4 characters** (`api-reviewer.mjs:731`). Replaced with `[REDACTED]`. Lower threshold than auto-detected because configured names are explicit operator intent.
+2. **Auto-detected secret env vars**: env keys matching `/(?:^|_)(?:API_KEY|TOKEN|ACCESS_KEY|SECRET|ADMIN_KEY)$/`, with value length **≥8** (`api-reviewer.mjs:732`). Replaced with `[REDACTED]`.
 3. **Authorization headers**: `Authorization:\s*\S.*$` (any case). Replaced with `Authorization: [REDACTED]`.
 4. **Bearer tokens**: `Bearer\s+\S+` (any case). Replaced with `Bearer [REDACTED]`.
 
-**Why the 8-char threshold:** prevents one-byte collision false positives. A `DEEPSEEK_CREDENTIAL="a"` env value won't redact every standalone `"a"` in output. Verified by smoke test `tests/smoke/api-reviewers.smoke.test.mjs:1455-1467`.
+**Why two thresholds:** the 8-char floor prevents one-byte collision false positives — a `DEEPSEEK_CREDENTIAL="a"` env value won't cause every standalone `"a"` in output to be redacted. Verified by smoke test `tests/smoke/api-reviewers.smoke.test.mjs:1455-1467`. The 4-char floor on configured names trades a slightly higher false-positive risk for catching short configured tokens, on the assumption that `cfg.env_keys` is operator-curated.
 
 **Where applied** (`api-reviewer.mjs:1637, 1668`):
 
@@ -88,7 +88,7 @@ Redaction is **not** uniform across plugins. Three separate implementations prot
 | gemini | spawn env | drop key | n/a | n/a |
 | kimi | spawn env | drop key | n/a | n/a |
 | grok | output (errors + JSON tree) | regex match → substitute | unverified (likely `[REDACTED]`) | ≥8 chars |
-| api-reviewers | output (stdout + persisted meta.json) | regex match + Authorization/Bearer patterns → substitute | `[REDACTED]` | ≥8 chars (configured secrets), no threshold for Authorization/Bearer |
+| api-reviewers | output (stdout + persisted meta.json) | regex match + Authorization/Bearer patterns → substitute | `[REDACTED]` | ≥4 chars (configured `cfg.env_keys` values), ≥8 chars (auto-detected `*_API_KEY`/`TOKEN`/etc.), no threshold for Authorization/Bearer |
 
 ## Implications for property-based testing
 
