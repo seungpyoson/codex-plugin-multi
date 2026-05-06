@@ -1,0 +1,169 @@
+{
+  "id": "job_5a54dd80-6d60-455d-bc0a-0d30357d5c08",
+  "job_id": "job_5a54dd80-6d60-455d-bc0a-0d30357d5c08",
+  "target": "deepseek",
+  "provider": "deepseek",
+  "parent_job_id": null,
+  "claude_session_id": null,
+  "gemini_session_id": null,
+  "kimi_session_id": null,
+  "resume_chain": [],
+  "pid_info": null,
+  "mode": "custom-review",
+  "mode_profile_name": "custom-review",
+  "model": "deepseek-v4-pro",
+  "cwd": "/Users/<user>/Projects/Claude/codex-plugin-multi-103-spec",
+  "workspace_root": "/Users/<user>/Projects/Claude/codex-plugin-multi-103-spec",
+  "containment": "none",
+  "scope": "custom",
+  "dispose_effective": false,
+  "scope_base": null,
+  "scope_paths": [
+    "scripts/lib/plugin-targets.mjs"
+  ],
+  "prompt_head": "Custom review: read scripts/lib/plugin-targets.mjs and reply only with the verdict 'PASS' on its own line. No other commentary.",
+  "review_metadata": {
+    "prompt_contract_version": 1,
+    "prompt_provider": "DeepSeek",
+    "scope": "custom",
+    "scope_base": null,
+    "scope_paths": [
+      "scripts/lib/plugin-targets.mjs"
+    ],
+    "raw_output": {
+      "http_status": 200,
+      "raw_model": "deepseek-v4-pro",
+      "parsed_ok": true,
+      "result_chars": 4
+    },
+    "audit_manifest": {
+      "schema_version": 1,
+      "rendered_prompt_hash": {
+        "algorithm": "sha256",
+        "value": "6ead656d5070d8307710ad08aa048fae5f5be6e1dd6a8903fc2cf4e4d2e6c63e"
+      },
+      "selected_source": {
+        "files": [
+          {
+            "path": "scripts/lib/plugin-targets.mjs",
+            "bytes": 436,
+            "lines": 6,
+            "content_hash": {
+              "algorithm": "sha256",
+              "value": "910dd7ad76ebbb3e114f75c4281cf1dbed7095b3b199b9019962dae91c42813d"
+            }
+          }
+        ],
+        "totals": {
+          "files": 1,
+          "bytes": 436,
+          "lines": 6
+        }
+      },
+      "git_identity": {
+        "remote": "seungpyoson/codex-plugin-multi",
+        "branch": "feat/106-fixture-recording-mvp",
+        "base_ref": null,
+        "base_sha": null,
+        "head_ref": "feat/106-fixture-recording-mvp",
+        "head_sha": "68a34e06965443d987368930f28cc4a92ff05276",
+        "diff_stat": null
+      },
+      "prompt_builder": {
+        "contract_version": 1,
+        "plugin_version": "0.1.0",
+        "plugin_commit": "68a34e06965443d987368930f28cc4a92ff05276"
+      },
+      "request": {
+        "provider": "DeepSeek",
+        "model": "deepseek-v4-pro",
+        "timeout_ms": 600000,
+        "max_tokens": 65536,
+        "max_steps_per_turn": null,
+        "temperature": 0,
+        "stream": false
+      },
+      "truncation": {
+        "prompt": false,
+        "prompt_at_chars": null,
+        "source": false,
+        "source_at_bytes": null,
+        "output": false,
+        "output_at_chars": null
+      },
+      "provider_ids": {
+        "request_id": null,
+        "session_id": "8a15f741-2960-46d3-8c74-034f2b3f2005"
+      },
+      "scope_resolution": {
+        "scope": "custom",
+        "scope_base": null,
+        "scope_paths": [
+          "scripts/lib/plugin-targets.mjs"
+        ],
+        "reason": "explicit --scope-paths"
+      },
+      "review_quality": {
+        "has_verdict": false,
+        "has_blocking_section": false,
+        "has_non_blocking_section": false,
+        "checklist_items_seen": 0,
+        "looks_shallow": true,
+        "failed_review_slot": false
+      }
+    }
+  },
+  "schema_spec": null,
+  "binary": null,
+  "status": "completed",
+  "started_at": "2026-05-06T14:38:03.093Z",
+  "ended_at": "2026-05-06T14:38:41.056Z",
+  "exit_code": 0,
+  "error_code": null,
+  "error_message": null,
+  "error_summary": null,
+  "error_cause": null,
+  "suggested_action": null,
+  "external_review": {
+    "marker": "EXTERNAL REVIEW",
+    "provider": "DeepSeek",
+    "run_kind": "foreground",
+    "job_id": "job_5a54dd80-6d60-455d-bc0a-0d30357d5c08",
+    "session_id": "8a15f741-2960-46d3-8c74-034f2b3f2005",
+    "parent_job_id": null,
+    "mode": "custom-review",
+    "scope": "custom",
+    "scope_base": null,
+    "scope_paths": [
+      "scripts/lib/plugin-targets.mjs"
+    ],
+    "source_content_transmission": "sent",
+    "disclosure": "Selected source content was sent to DeepSeek through direct API auth."
+  },
+  "disclosure_note": "Selected source content was sent to DeepSeek through direct API auth.",
+  "runtime_diagnostics": null,
+  "result": "PASS",
+  "structured_output": null,
+  "permission_denials": [],
+  "mutations": [],
+  "cost_usd": null,
+  "usage": {
+    "prompt_tokens": 670,
+    "completion_tokens": 1206,
+    "total_tokens": 1876,
+    "prompt_tokens_details": {
+      "cached_tokens": 0
+    },
+    "completion_tokens_details": {
+      "reasoning_tokens": 1203
+    },
+    "prompt_cache_hit_tokens": 0,
+    "prompt_cache_miss_tokens": 670
+  },
+  "auth_mode": "api_key",
+  "credential_ref": "DEEPSEEK_API_KEY",
+  "endpoint": "https://api.deepseek.com",
+  "http_status": 200,
+  "raw_model": "deepseek-v4-pro",
+  "schema_version": 10
+}

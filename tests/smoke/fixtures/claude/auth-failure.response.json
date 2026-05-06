@@ -1,0 +1,42 @@
+{
+  "status": "ok",
+  "ready": true,
+  "summary": "Claude Code is ready using first-party CLI auth.",
+  "next_action": "Run a Claude review command.",
+  "auth_mode": "subscription",
+  "selected_auth_path": "subscription_oauth",
+  "auth_policy": "subscription_oauth",
+  "model": null,
+  "session_id": "b22d36b8-c2c4-4b6c-b386-67e9a3fdc8bc",
+  "cost_usd": 0.06010025,
+  "usage": {
+    "input_tokens": 6,
+    "cache_creation_input_tokens": 8897,
+    "cache_read_input_tokens": 8628,
+    "output_tokens": 6,
+    "server_tool_use": {
+      "web_search_requests": 0,
+      "web_fetch_requests": 0
+    },
+    "service_tier": "standard",
+    "cache_creation": {
+      "ephemeral_1h_input_tokens": 8897,
+      "ephemeral_5m_input_tokens": 0
+    },
+    "inference_geo": "",
+    "iterations": [
+      {
+        "input_tokens": 6,
+        "output_tokens": 6,
+        "cache_read_input_tokens": 8628,
+        "cache_creation_input_tokens": 8897,
+        "cache_creation": {
+          "ephemeral_5m_input_tokens": 0,
+          "ephemeral_1h_input_tokens": 8897
+        },
+        "type": "message"
+      }
+    ],
+    "speed": "standard"
+  }
+}
