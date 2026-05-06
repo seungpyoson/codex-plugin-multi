@@ -293,6 +293,32 @@ test("README documents host-owned pre-launch provider denials as outside compani
   assert.match(readme, /https:\/\/github\.com\/seungpyoson\/codex-plugin-multi\/issues\/13/);
 });
 
+test("direct API reviewer docs require explicit approval for external source transmission", () => {
+  const docs = [
+    readRepoFile("plugins/api-reviewers/skills/api-reviewers-delegation/SKILL.md"),
+    readRepoFile("plugins/api-reviewers/skills/deepseek-review/SKILL.md"),
+    readRepoFile("plugins/api-reviewers/skills/deepseek-adversarial-review/SKILL.md"),
+    readRepoFile("plugins/api-reviewers/skills/deepseek-custom-review/SKILL.md"),
+    readRepoFile("plugins/api-reviewers/skills/glm-review/SKILL.md"),
+    readRepoFile("plugins/api-reviewers/skills/glm-adversarial-review/SKILL.md"),
+    readRepoFile("plugins/api-reviewers/skills/glm-custom-review/SKILL.md"),
+    readRepoFile("plugins/api-reviewers/commands/deepseek-review.md"),
+    readRepoFile("plugins/api-reviewers/commands/deepseek-adversarial-review.md"),
+    readRepoFile("plugins/api-reviewers/commands/deepseek-custom-review.md"),
+    readRepoFile("plugins/api-reviewers/commands/glm-review.md"),
+    readRepoFile("plugins/api-reviewers/commands/glm-adversarial-review.md"),
+    readRepoFile("plugins/api-reviewers/commands/glm-custom-review.md"),
+  ].join("\n");
+
+  assert.match(docs, /approval-request/);
+  assert.match(docs, /explicit approval/i);
+  assert.match(docs, /selected source content/i);
+  assert.match(docs, /external provider|external API/i);
+  assert.match(docs, /recommended_tool_justification/);
+  assert.match(docs, /relay prompt/i);
+  assert.match(docs, /approval is denied/i);
+});
+
 test("README documents Codex sandbox setup and provider-specific failure modes", () => {
   const readme = readRepoFile("README.md");
 

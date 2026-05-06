@@ -286,7 +286,7 @@ test("help malformed providers config returns structured diagnostic", async () =
   const parsed = parseJson(result.stdout);
   assert.equal(parsed.ok, false);
   assert.equal(parsed.status, "config_error");
-  assert.deepEqual(parsed.commands, ["doctor", "ping", "run"]);
+  assert.deepEqual(parsed.commands, ["doctor", "ping", "approval-request", "run"]);
   assert.deepEqual(parsed.providers, []);
   assert.match(parsed.error_message, /providers config unreadable/);
   assert.doesNotMatch(result.stdout, /secret-test-value/);
@@ -3196,6 +3196,99 @@ test("direct API reviewers lifecycle jsonl suppresses launch when API key is mis
   assert.equal(record.error_code, "missing_key");
   assert.equal(record.external_review.source_content_transmission, "not_sent");
   assert.equal(record.disclosure_note, record.external_review.disclosure);
+});
+
+test("direct API reviewers approval-request describes external source transmission without sending source", async () => {
+  const dataDir = mkdtempSync(path.join(tmpdir(), "api-reviewers-data-"));
+  const cwd = makeWorkspace();
+  try {
+    writeFileSync(path.join(cwd, "seed.txt"), "hello from selected scope\n");
+
+    const result = await run([
+      "approval-request",
+      "--provider", "glm",
+      "--mode", "custom-review",
+      "--scope", "custom",
+      "--scope-paths", "seed.txt",
+      "--prompt", "Review seed file only.",
+    ], {
+      cwd,
+      env: {
+        API_REVIEWERS_PLUGIN_DATA: dataDir,
+        GLM_API_KEY: "secret-test-value",
+      },
+    });
+
+    assert.equal(result.status, 0);
+    const request = parseJson(result.stdout);
+    assert.equal(request.event, "external_review_approval_request");
+    assert.equal(request.provider, "glm");
+    assert.equal(request.display_name, "GLM");
+    assert.equal(request.mode, "custom-review");
+    assert.equal(request.scope, "custom");
+    assert.deepEqual(request.scope_paths, ["seed.txt"]);
+    assert.equal(request.source_content_transmission, "not_sent");
+    assert.match(request.approval_question, /Allow sending 1 selected file \(26 bytes, 1 line\) to GLM for external review\?/);
+    assert.match(request.recommended_tool_justification, /Allow sending 1 selected file \(26 bytes, 1 line\) to GLM for external review\?/);
+    assert.match(request.denial_fallback, /generate a relay prompt/i);
+    assert.equal(request.selected_source.totals.files, 1);
+    assert.equal(request.selected_source.totals.bytes, 26);
+    assert.equal(request.selected_source.totals.lines, 1);
+    assert.deepEqual(request.selected_source.files.map((file) => file.path), ["seed.txt"]);
+    assert.match(request.rendered_prompt_hash.value, /^[a-f0-9]{64}$/);
+    assert.equal(request.request.timeout_ms, 600000);
+    assert.equal(request.request.model, "glm-5.1");
+    assert.equal(JSON.stringify(request).includes("hello from selected scope"), false);
+    assert.equal(JSON.stringify(request).includes("secret-test-value"), false);
+  } finally {
+    rmSync(dataDir, { recursive: true, force: true });
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("direct API reviewers approval-request reports structured config errors", async () => {
+  const pluginRoot = makeInstalledApiReviewersRoot();
+  const companion = path.join(pluginRoot, "scripts", "api-reviewer.mjs");
+  writeFileSync(path.join(pluginRoot, "config", "providers.json"), "{not json\n");
+  const result = await run([
+    "approval-request",
+    "--provider", "glm",
+    "--mode", "review",
+    "--prompt", "Review this branch.",
+  ], {
+    companion,
+    env: { GLM_API_KEY: "secret-test-value" },
+  });
+
+  assert.equal(result.status, 1);
+  const parsed = parseJson(result.stdout);
+  assert.equal(parsed.ok, false);
+  assert.equal(parsed.provider, "glm");
+  assert.equal(parsed.status, "config_error");
+  assert.equal(parsed.error_code, "config_error");
+  assert.match(parsed.error_message, /providers config unreadable/);
+  assert.doesNotMatch(result.stdout, /secret-test-value/);
+  assert.doesNotMatch(result.stdout, /^\{\s*"ok": false,\s*"error"/m);
+});
+
+test("direct API reviewers approval-request reports structured bad args", async () => {
+  const result = await run([
+    "approval-request",
+    "--mode", "rescue",
+    "--prompt", "Review this branch.",
+  ], {
+    env: { GLM_API_KEY: "secret-test-value" },
+  });
+
+  assert.equal(result.status, 1);
+  const parsed = parseJson(result.stdout);
+  assert.equal(parsed.ok, false);
+  assert.equal(parsed.provider, null);
+  assert.equal(parsed.status, "bad_args");
+  assert.equal(parsed.error_code, "bad_args");
+  assert.match(parsed.error_message, /--provider is required/);
+  assert.doesNotMatch(result.stdout, /secret-test-value/);
+  assert.doesNotMatch(result.stdout, /^\{\s*"ok": false,\s*"error"/m);
 });
 
 test("direct API reviewers lifecycle jsonl suppresses launch on invalid provider env", async () => {

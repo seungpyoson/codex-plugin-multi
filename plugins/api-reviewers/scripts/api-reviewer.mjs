@@ -1610,6 +1610,105 @@ function buildLaunchExternalReview({ cfg, mode, options, scopeInfo }) {
   });
 }
 
+function plural(count, singular, pluralValue = `${singular}s`) {
+  return count === 1 ? singular : pluralValue;
+}
+
+function requestSettingsForApproval(cfg, env = process.env) {
+  const maxTokensOverride = parseMaxTokensOverride(env);
+  if (!maxTokensOverride.ok) throw runBadArgs(maxTokensOverride.error);
+  const timeoutMs = parseProviderTimeoutMs(env);
+  if (!timeoutMs.ok) throw runBadArgs(timeoutMs.error);
+  const requestBody = {
+    model: cfg.model,
+    messages: [],
+    temperature: 0,
+  };
+  const defaultsResult = applyRequestDefaults(requestBody, cfg.request_defaults);
+  if (!defaultsResult.ok) throw runBadArgs(defaultsResult.error);
+  if (maxTokensOverride.value !== null) {
+    requestBody.max_tokens = maxTokensOverride.value;
+  } else if (!Object.hasOwn(requestBody, "max_tokens")) {
+    requestBody.max_tokens = 4096;
+  }
+  return {
+    timeout_ms: timeoutMs.value,
+    max_tokens: requestBody.max_tokens ?? null,
+    temperature: requestBody.temperature ?? null,
+    stream: false,
+  };
+}
+
+function buildApprovalRequest({ provider, cfg, mode, options, scopeInfo }) {
+  const renderedPrompt = promptFor(mode, options.prompt ?? "", scopeInfo, cfg.display_name);
+  const request = requestSettingsForApproval(cfg);
+  const auditManifest = buildReviewAuditManifest({
+    prompt: renderedPrompt,
+    sourceFiles: scopeInfo.files,
+    git: {
+      remote: scopeInfo.repository ?? null,
+      branch: scopeInfo.head_ref ?? null,
+      baseRef: scopeInfo.scope_base ?? null,
+      baseCommit: scopeInfo.base_commit ?? null,
+      headRef: scopeInfo.head_ref ?? null,
+      headCommit: scopeInfo.head_commit ?? null,
+    },
+    promptBuilder: {
+      contractVersion: REVIEW_PROMPT_CONTRACT_VERSION,
+      pluginVersion: "0.1.0",
+      pluginCommit: gitCommitForPrompt(PLUGIN_ROOT, "HEAD"),
+    },
+    request: {
+      provider: cfg.display_name,
+      model: cfg.model,
+      timeoutMs: request.timeout_ms,
+      maxTokens: request.max_tokens,
+      temperature: request.temperature,
+      stream: request.stream,
+    },
+    truncation: {
+      prompt: false,
+      source: false,
+      output: false,
+    },
+    scope: {
+      name: scopeInfo.scope,
+      base: scopeInfo.scope_base ?? null,
+      paths: scopeInfo.scope_paths ?? null,
+      reason: scopeResolutionReason(scopeInfo),
+    },
+    status: "approval_request",
+    errorCode: null,
+  });
+  const totals = auditManifest.selected_source.totals;
+  const approvalQuestion = `Allow sending ${totals.files} selected ${plural(totals.files, "file")} (${totals.bytes} ${plural(totals.bytes, "byte")}, ${totals.lines} ${plural(totals.lines, "line")}) to ${cfg.display_name} for external review?`;
+  return Object.freeze({
+    event: "external_review_approval_request",
+    provider,
+    display_name: cfg.display_name,
+    mode,
+    scope: scopeInfo.scope,
+    scope_base: scopeInfo.scope_base ?? null,
+    scope_paths: scopeInfo.scope_paths ?? null,
+    source_content_transmission: SOURCE_CONTENT_TRANSMISSION.NOT_SENT,
+    disclosure: `Selected source content has not been sent to ${cfg.display_name}. Running the review will send the selected source content to ${cfg.display_name} through direct API auth.`,
+    approval_question: approvalQuestion,
+    recommended_tool_justification: approvalQuestion,
+    selected_source: auditManifest.selected_source,
+    rendered_prompt_hash: auditManifest.rendered_prompt_hash,
+    request: Object.freeze({
+      provider: cfg.display_name,
+      model: cfg.model,
+      timeout_ms: request.timeout_ms,
+      max_tokens: request.max_tokens,
+      temperature: request.temperature,
+      stream: request.stream,
+    }),
+    scope_resolution: auditManifest.scope_resolution,
+    denial_fallback: "If approval is denied, stop the direct API retry and generate a relay prompt instead of treating the reviewer as approved or failed by the provider.",
+  });
+}
+
 function errorCauseFor(errorCode) {
   if (errorCode === "bad_args") return "caller";
   if (errorCode === "config_error") return "provider_config";
@@ -1829,6 +1928,40 @@ async function cmdDoctor(options) {
   printJson(doctorFields(provider, cfg));
 }
 
+async function cmdApprovalRequest(options) {
+  const provider = options.provider ?? null;
+  const mode = options.mode ?? "review";
+  try {
+    if (!provider) throw runBadArgs("bad_args: --provider is required");
+    if (!VALID_MODES.has(mode)) throw runBadArgs(`bad_args: unsupported --mode ${mode}`);
+    let providers;
+    try {
+      providers = await loadProviders();
+    } catch (e) {
+      throw runConfigError(`config_error: ${providersConfigErrorMessage(e)}`);
+    }
+    let cfg;
+    try {
+      cfg = providerConfig(providers, provider);
+    } catch (e) {
+      throw runBadArgs(e.message);
+    }
+    const scopeInfo = await collectScope({ ...options, mode });
+    if (!hasPromptText(options.prompt)) throw runBadArgs("bad_args: prompt is required (pass --prompt <focus>)");
+    printJson(buildApprovalRequest({ provider, cfg, mode, options, scopeInfo }));
+  } catch (e) {
+    const reason = e.apiReviewersReason ?? "scope_failed";
+    printJson({
+      ok: false,
+      provider,
+      status: reason,
+      error_code: reason,
+      error_message: redactor()(e?.message ?? String(e)),
+    });
+    process.exit(1);
+  }
+}
+
 async function cmdRun(options) {
   const provider = options.provider ?? null;
   const mode = options.mode ?? "review";
@@ -1934,6 +2067,7 @@ async function main() {
   const [cmd = "help", ...rest] = process.argv.slice(2);
   const options = parseArgs(rest);
   if (cmd === "doctor" || cmd === "ping") return cmdDoctor(options);
+  if (cmd === "approval-request") return cmdApprovalRequest(options);
   if (cmd === "run") return cmdRun(options);
   if (cmd === "help" || cmd === "--help" || cmd === "-h") {
     let providers;
@@ -1942,13 +2076,13 @@ async function main() {
     } catch (e) {
       printJson({
         ok: false,
-        commands: ["doctor", "ping", "run"],
+        commands: ["doctor", "ping", "approval-request", "run"],
         providers: [],
         ...providersConfigErrorFields(e),
       });
       process.exit(1);
     }
-    printJson({ ok: true, commands: ["doctor", "ping", "run"], providers: Object.keys(providers) });
+    printJson({ ok: true, commands: ["doctor", "ping", "approval-request", "run"], providers: Object.keys(providers) });
     return;
   }
   throw new Error(`unknown_command:${cmd}`);

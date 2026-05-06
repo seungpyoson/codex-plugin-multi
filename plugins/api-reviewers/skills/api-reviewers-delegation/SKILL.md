@@ -29,11 +29,21 @@ Render the JSON fields directly:
 
 ## Review
 
+Direct API reviews send selected source content to an external provider. Before
+launching a review or retry that may transmit source, run the matching
+`approval-request` command first, render its `selected_source` manifest and
+`approval_question`, then request explicit approval using
+`recommended_tool_justification`. If approval is denied, stop and generate a
+relay prompt instead of running the external API command.
+
 Run reviews with:
 
 ```bash
+node plugins/api-reviewers/scripts/api-reviewer.mjs approval-request --provider deepseek --mode review --scope branch-diff --prompt "<focus>"
 node plugins/api-reviewers/scripts/api-reviewer.mjs run --provider deepseek --mode review --scope branch-diff --lifecycle-events jsonl --prompt "<focus>"
+node plugins/api-reviewers/scripts/api-reviewer.mjs approval-request --provider glm --mode adversarial-review --scope branch-diff --prompt "<focus>"
 node plugins/api-reviewers/scripts/api-reviewer.mjs run --provider glm --mode adversarial-review --scope branch-diff --lifecycle-events jsonl --prompt "<focus>"
+node plugins/api-reviewers/scripts/api-reviewer.mjs approval-request --provider deepseek --mode custom-review --scope custom --scope-paths "<file1>,<file2>" --prompt "<focus>"
 node plugins/api-reviewers/scripts/api-reviewer.mjs run --provider deepseek --mode custom-review --scope custom --scope-paths "<file1>,<file2>" --lifecycle-events jsonl --prompt "<focus>"
 ```
 
