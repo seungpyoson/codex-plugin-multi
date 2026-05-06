@@ -93,12 +93,20 @@ function isExplicitRelativeBinary(binary) {
     binary.startsWith("./") ||
     binary.startsWith("../") ||
     binary.startsWith(".\\") ||
-    binary.startsWith("..\\");
+    binary.startsWith("..\\") ||
+    (!isAbsolute(binary) && (binary.includes("/") || binary.includes("\\")));
 }
 
 function resolveCliBinary(cwd, binary) {
   if (!isExplicitRelativeBinary(binary)) return binary;
   return resolvePath(cwd, binary);
+}
+
+function authSelectionClassifierContext(authSelection) {
+  return {
+    auth_mode: authSelection.auth_mode,
+    selected_auth_path: authSelection.selected_auth_path,
+  };
 }
 
 function loadModels() {
@@ -1342,7 +1350,7 @@ function safeClaudeOAuthStatus(binary, authSelection, cwd = process.cwd()) {
     return { checked: true, available: false, detail: "status_failed" };
   }
   try {
-    const parsed = parseJsonObjectOutput(result.stdout);
+    const parsed = parseJsonObjectOutput(result.stdout, isClaudeAuthStatusObject);
     // Explicit allowlist: do not add user, email, org, or account fields here.
     return {
       checked: true,
@@ -1363,22 +1371,31 @@ function claudeAuthStatusErrorDetail(error) {
   return "error";
 }
 
-function parseJsonObjectOutput(stdout) {
+function isClaudeAuthStatusObject(value) {
+  return value !== null &&
+    typeof value === "object" &&
+    !Array.isArray(value) &&
+    ("loggedIn" in value || "authMethod" in value || "apiProvider" in value || "subscriptionType" in value);
+}
+
+function parseJsonObjectOutput(stdout, acceptsObject = () => true) {
   const text = String(stdout ?? "").trim();
   if (!text) return {};
   try {
-    return JSON.parse(text);
+    const parsed = JSON.parse(text);
+    if (acceptsObject(parsed)) return parsed;
   } catch {
-    const parsed = parseFirstBalancedJsonObject(text);
-    if (parsed !== null) return parsed;
-    throw new Error("no_json_object");
+    // Fall through to balanced-object scanning below.
   }
+  const parsed = parseFirstBalancedJsonObject(text, acceptsObject);
+  if (parsed !== null) return parsed;
+  throw new Error("no_json_object");
 }
 
-function parseFirstBalancedJsonObject(text) {
+function parseFirstBalancedJsonObject(text, acceptsObject = () => true) {
   for (let start = text.indexOf("{"); start >= 0; start = text.indexOf("{", start + 1)) {
     const parsed = parseBalancedJsonCandidate(text, start);
-    if (parsed !== null) return parsed;
+    if (parsed !== null && acceptsObject(parsed)) return parsed;
   }
   return null;
 }
@@ -1484,7 +1501,7 @@ function printPingExecutionFailure(execution, authSelection, binary) {
     printJson({ status: "rate_limited", ...pingRateLimitedFields(), ...authDiagnosticFields(authSelection), detail });
     process.exit(2);
   }
-  const oauthStatus = isOAuthInferenceRejected(execution, authSelection)
+  const oauthStatus = isOAuthInferenceRejected(execution, authSelectionClassifierContext(authSelection))
     ? safeClaudeOAuthStatus(binary, authSelection)
     : null;
   if (oauthStatus?.logged_in === true) {
@@ -1534,12 +1551,14 @@ async function cmdPing(rest) {
   // Classify. Real Claude error texts change per version; match on signals only.
   if (execution.parsed?.ok === true) {
     printPingSuccess(execution, authSelection, model);
+    return;
   }
   if (execution.exitCode !== 0) {
     printPingExecutionFailure(execution, authSelection, binary);
+    return;
   }
   printJson({ status: "error", ...pingErrorFields(), ...authDiagnosticFields(authSelection),
-    detail: "parsed result missing", raw: execution.parsed.raw });
+    detail: "parsed result missing", raw: execution.parsed?.raw });
   process.exit(2);
 }
 

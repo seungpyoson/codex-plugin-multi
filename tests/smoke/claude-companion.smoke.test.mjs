@@ -1569,6 +1569,35 @@ process.exit(0);
   }
 });
 
+test("ping: path-like relative binary is resolved from caller cwd before tmpdir spawn", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "claude-ping-relative-path-cwd-"));
+  const binDir = path.join(cwd, "bin");
+  mkdirSync(binDir);
+  writeExecutable(binDir, "claude", `#!/usr/bin/env node
+process.stdout.write(JSON.stringify({
+  type: "result",
+  is_error: false,
+  result: "pong",
+  session_id: "11111111-1111-4111-8111-111111111111",
+  usage: { input_tokens: 1, output_tokens: 1 }
+}) + "\\n");
+process.exit(0);
+`);
+  const { stdout, stderr, status, dataDir } = runCompanion(
+    ["ping", "--binary", "bin/claude", "--model", "claude-haiku-4-5-20251001"],
+    { cwd, env: { ANTHROPIC_API_KEY: "", CLAUDE_API_KEY: "" } },
+  );
+  try {
+    assert.equal(status, 0, stderr || stdout);
+    const result = JSON.parse(stdout);
+    assert.equal(result.status, "ok");
+    assert.equal(result.ready, true);
+  } finally {
+    cleanup(dataDir);
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
 test("ping: returns status=ok with the mock claude binary", () => {
   const { stdout, status, dataDir } = runCompanion(
     ["ping", "--model", "claude-haiku-4-5-20251001"],
@@ -1890,6 +1919,48 @@ process.exit(1);
   }
 });
 
+test("doctor: OAuth status JSON skips structured prefix notices", () => {
+  const tmp = mkdtempSync(path.join(tmpdir(), "claude-doctor-oauth-status-prefix-json-"));
+  const binary = writeExecutable(tmp, "claude-oauth-status-prefix-json", `#!/usr/bin/env node
+const args = process.argv.slice(2);
+if (args[0] === "auth" && args[1] === "status") {
+  process.stdout.write(JSON.stringify({ event: "refreshing" }) + "\\n");
+  process.stdout.write(JSON.stringify({
+    loggedIn: true,
+    authMethod: "claude.ai",
+    apiProvider: "firstParty",
+    email: "user@example.com",
+    subscriptionType: "max"
+  }) + "\\n");
+  process.exit(0);
+}
+process.stdout.write(JSON.stringify({
+  type: "result",
+  is_error: true,
+  api_error_status: 401,
+  result: "Failed to authenticate. API Error: 401 Invalid authentication credentials",
+  session_id: "33333333-3333-4333-8333-333333333333",
+  usage: { input_tokens: 0, output_tokens: 0 }
+}) + "\\n");
+process.exit(1);
+`);
+  const { stdout, status, dataDir } = runCompanion(
+    ["doctor", "--binary", binary, "--model", "claude-haiku-4-5-20251001"],
+    { cwd: tmpdir(), env: { ANTHROPIC_API_KEY: "", CLAUDE_API_KEY: "" } },
+  );
+  try {
+    assert.equal(status, 2);
+    const result = JSON.parse(stdout);
+    assert.equal(result.status, "oauth_inference_rejected");
+    assert.equal(result.oauth_status?.logged_in, true);
+    assert.equal(result.oauth_status?.subscription_type, "max");
+    assert.doesNotMatch(stdout, /user@example.com/);
+  } finally {
+    cleanup(dataDir);
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
 test("run: OAuth inference 401 is rejected before launch, not recorded as a failed review slot", () => {
   const cwd = mkdtempSync(path.join(tmpdir(), "claude-run-oauth-print-401-cwd-"));
   seedMinimalRepo(cwd);
@@ -1990,6 +2061,53 @@ process.exit(1);
     cleanup(dataDir);
     rmSync(cwd, { recursive: true, force: true });
     rmSync(binDir, { recursive: true, force: true });
+  }
+});
+
+test("run: OAuth preflight resolves path-like relative binary from invocation cwd", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "claude-run-oauth-pathlike-cwd-"));
+  seedMinimalRepo(cwd);
+  const binDir = path.join(cwd, "bin");
+  mkdirSync(binDir);
+  writeExecutable(binDir, "claude", `#!/usr/bin/env node
+if (process.argv.slice(2).join(" ") === "auth status --json") {
+  process.stdout.write(JSON.stringify({
+    loggedIn: true,
+    authMethod: "claude.ai",
+    apiProvider: "firstParty",
+    subscriptionType: "max",
+    email: "user@example.com"
+  }) + "\\n");
+  process.exit(0);
+}
+process.stdout.write(JSON.stringify({
+  type: "result",
+  is_error: true,
+  api_error_status: 401,
+  result: "Failed to authenticate. API Error: 401 Invalid authentication credentials",
+  session_id: "33333333-3333-4333-8333-333333333333",
+  usage: { input_tokens: 0, output_tokens: 0 }
+}) + "\\n");
+process.exit(1);
+`);
+  const { stdout, status, dataDir } = runCompanion(
+    ["run", "--mode=review", "--foreground", "--lifecycle-events", "jsonl", "--binary", "bin/claude",
+     "--model", "claude-haiku-4-5-20251001", "--cwd", cwd, "--", "review this change"],
+    { cwd, env: { ANTHROPIC_API_KEY: "", CLAUDE_API_KEY: "" } },
+  );
+  try {
+    assert.equal(status, 2);
+    const lines = stdout.trim().split("\n").map((line) => JSON.parse(line));
+    assert.equal(lines.length, 1, "path-like binary OAuth rejection must be caught before review launch");
+    const [record] = lines;
+    assert.equal(record.error_code, "oauth_inference_rejected");
+    assert.equal(record.external_review.source_content_transmission, "not_sent");
+    assert.equal(record.pid_info, null);
+    assert.equal(record.review_metadata.audit_manifest.review_quality.failed_review_slot, false);
+    assert.doesNotMatch(stdout, /user@example.com/);
+  } finally {
+    cleanup(dataDir);
+    rmSync(cwd, { recursive: true, force: true });
   }
 });
 
