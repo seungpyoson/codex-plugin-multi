@@ -2211,11 +2211,9 @@ test("claude _run-worker refuses terminal JobRecord without overwriting it", () 
 // fields (result, usage, cost_usd, permission_denials) into a stdout-shape
 // fixture and pointing the mock at it via CLAUDE_MOCK_FIXTURE_PATH.
 //
-// auth-failure.response.json is intentionally NOT replayed: that fixture
-// captured a doctor-success run because the recipe's env scrub didn't
-// disable OAuth (tracked in PR #116's follow-up comment as sub-task #2).
-// Replaying it as a JobRecord would assert the wrong invariant — better to
-// re-record once the recipe is fixed.
+// auth-failure.response.json is intentionally NOT replayed: ping/doctor
+// fixtures are readiness-contract JSON, while this replay path verifies the
+// JobRecord shape produced by run/custom-review.
 
 const CLAUDE_REPLAY_FIXTURE = path.join(REPO_ROOT, "tests/smoke/fixtures/claude/happy-path-review.response.json");
 
@@ -2260,6 +2258,7 @@ test("smoke replay: claude/happy-path-review reproduces recorded JobRecord shape
         CLAUDE_BINARY: MOCK,
         CLAUDE_PLUGIN_DATA: dataDir,
         CLAUDE_MOCK_FIXTURE_PATH: tmpFixturePath,
+        CLAUDE_MOCK_ASSERT_FILE: "seed.txt",
         // Request-side assertion: the wrapper must render the delegated
         // review contract template before invoking the binary. The mock
         // exits 1 if this substring is missing. Companion architecture
@@ -2296,6 +2295,17 @@ test("smoke replay: claude/happy-path-review reproduces recorded JobRecord shape
       replayed.external_review.source_content_transmission,
       fixture.external_review.source_content_transmission,
       "transmission must match recorded fixture (security-critical invariant)",
+    );
+    const stdoutFixture = readStdoutLog(dataDir, replayed.job_id);
+    assert.equal(
+      stdoutFixture.t7_saw_file,
+      true,
+      "Claude replay must deliver selected scope content through --add-dir",
+    );
+    assert.equal(
+      stdoutFixture.t7_add_dir,
+      replayed.runtime_diagnostics.add_dir,
+      "Claude replay mock must inspect the same --add-dir path recorded in runtime diagnostics",
     );
     assert.equal(replayed.result, fixture.result, "binary result text must round-trip through the wrapper");
   } finally {

@@ -67,9 +67,10 @@ const RECIPES = Object.freeze({
     plugin: "claude",
     spawnArgs: () => ({
       script: "plugins/claude/scripts/claude-companion.mjs",
-      args: ["ping"],
+      args: ["ping", "--auth-mode", "api_key"],
       env: scrubAuth(process.env, ["ANTHROPIC_API_KEY", "CLAUDE_API_KEY", "CLAUDE_CONFIG_DIR"]),
-      // No required env — we WANT auth to fail.
+      // Force explicit API-key mode with keys scrubbed so local OAuth state
+      // cannot turn this negative recipe into a successful doctor response.
     }),
   },
 
@@ -144,6 +145,42 @@ const RECIPES = Object.freeze({
       // Inject a known-bad key — provider returns 401/403 → auth_rejected.
       env: { ...process.env, DEEPSEEK_API_KEY: "sk-this-is-a-deliberately-invalid-key-for-fixture-recording" },
       curatedEnvKeys: ["DEEPSEEK_API_KEY"],
+    }),
+  },
+  "api-reviewers-glm/happy-path-review": {
+    architecture: "api-reviewers",
+    plugin: "api-reviewers-glm",
+    spawnArgs: () => ({
+      script: "plugins/api-reviewers/scripts/api-reviewer.mjs",
+      args: [
+        "run",
+        "--provider", "glm",
+        "--mode", "custom-review",
+        "--scope", "custom",
+        "--scope-paths", "scripts/lib/plugin-targets.mjs",
+        "--prompt", HAPPY_PATH_PROMPT,
+      ],
+      env: { ...process.env },
+      requireEnvAny: ["ZAI_API_KEY", "ZAI_GLM_API_KEY"],
+      curatedEnvKeys: ["ZAI_API_KEY", "ZAI_GLM_API_KEY"],
+    }),
+  },
+  "api-reviewers-glm/auth-rejected": {
+    architecture: "api-reviewers",
+    plugin: "api-reviewers-glm",
+    spawnArgs: () => ({
+      script: "plugins/api-reviewers/scripts/api-reviewer.mjs",
+      args: [
+        "run",
+        "--provider", "glm",
+        "--mode", "custom-review",
+        "--scope", "custom",
+        "--scope-paths", "scripts/lib/plugin-targets.mjs",
+        "--prompt", NEGATIVE_PROMPT,
+      ],
+      // Inject a known-bad key — provider returns 401/403 → auth_rejected.
+      env: { ...process.env, ZAI_API_KEY: "sk-this-is-a-deliberately-invalid-key-for-fixture-recording" },
+      curatedEnvKeys: ["ZAI_API_KEY", "ZAI_GLM_API_KEY"],
     }),
   },
 });

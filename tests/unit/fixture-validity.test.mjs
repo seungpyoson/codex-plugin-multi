@@ -201,17 +201,17 @@ test("fixtures: no obvious public-prefix tokens leak (sk-, AKIA, ghp_, ghs_, git
   for (const f of FIXTURES) {
     const text = readFileSync(f.responsePath, "utf8");
     const patterns = [
-      { name: "OpenAI/Anthropic sk-", re: /sk-[a-zA-Z0-9]{20,}/g },
-      { name: "OpenRouter sk-or-v*", re: /sk-or-v[0-9]+-[a-zA-Z0-9]{20,}/g },
-      { name: "Anthropic sk-ant-api*", re: /sk-ant-api[0-9]+-[a-zA-Z0-9_-]{20,}/g },
+      { name: "OpenAI/Anthropic sk-", re: /sk-[a-zA-Z\d]{20,}/g },
+      { name: "OpenRouter sk-or-v*", re: /sk-or-v\d+-[a-zA-Z\d]{20,}/g },
+      { name: "Anthropic sk-ant-api*", re: /sk-ant-api\d+-[a-zA-Z\d_-]{20,}/g },
       { name: "AWS AKIA", re: /AKIA[0-9A-Z]{16}/g },
       { name: "Google AIza", re: /AIza[0-9A-Za-z_-]{35}/g },
       { name: "GitLab glpat-", re: /glpat-[a-zA-Z0-9_-]{20,}/g },
       { name: "GitHub PAT", re: /gh[ps]_[a-zA-Z0-9]{36}/g },
-      { name: "GitHub fine-grained PAT", re: /github_pat_[a-zA-Z0-9_]{22,}/g },
+      { name: "GitHub fine-grained PAT", re: /github_pat_\w{20,}/g },
       {
         name: "JWT",
-        re: /eyJ[a-zA-Z0-9_-]{10,}\.[a-zA-Z0-9_-]{10,}\.[a-zA-Z0-9_-]{10,}/g,
+        re: /eyJ[a-zA-Z0-9_-]+\.[a-zA-Z0-9_-]+\.[a-zA-Z0-9_-]+/g,
       },
     ];
     for (const { name, re } of patterns) {

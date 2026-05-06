@@ -122,6 +122,7 @@ test("redactKnownPatterns: redacts GitHub PATs (ghp_, ghs_, github_pat_)", () =>
   const out = redactKnownPatterns([
     "ghp_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
     "ghs_BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
+    "github_pat_aaaaaaaaaaaaaaaaaaaa",
     "github_pat_aaaaaaaaaaaaaaaaaaaaaa",
   ].join(" "));
   assert.equal(out.includes("ghp_AAAA"), false);
@@ -131,8 +132,10 @@ test("redactKnownPatterns: redacts GitHub PATs (ghp_, ghs_, github_pat_)", () =>
 
 test("redactKnownPatterns: redacts JWTs", () => {
   const jwt = "eyJhbGciOiJIUzI1NiIs.eyJzdWIiOiIxMjM0NTY3ODkwIn0.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c";
-  const out = redactKnownPatterns(`Bearer-style JWT: ${jwt}`);
+  const shortJwt = "eyJa.b.c";
+  const out = redactKnownPatterns(`Bearer-style JWT: ${jwt} short ${shortJwt}`);
   assert.equal(out.includes("eyJhbGciOiJIUzI1NiIs"), false);
+  assert.equal(out.includes(shortJwt), false);
 });
 
 test("redactKnownPatterns: redacts Authorization headers (any case)", () => {
