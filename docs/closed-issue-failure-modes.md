@@ -1,5 +1,16 @@
 # Closed-issue failure modes — regression-test archaeology
 
+## How to use this doc
+
+This is a *descriptive audit*. To turn it into operational behavior, follow these rules:
+
+1. **Before adding a regression test for a new bug, search this table for similar failure-signature strings.** 9 of 11 high-signal bugs are covered semantically without citing the issue. Adding another semantically-equivalent test is duplication; *that's* the gap your test would close, not absent coverage.
+2. **When you DO need to add a regression test, name it by the failure signature the bug surfaces, not by issue number.** `scope_total_too_large includes file-size manifest` is auditable. `Regression test for #83` is opaque to anyone who hasn't read #83. The semantic-match search method only works when test names contain the signature.
+3. **When you close a bug-labeled issue with a fix PR, the PR description must include the failure-signature string** that distinguishes this bug from any other. This is the substrate for follow-up issue C (PR-diff regression linker).
+4. **Treat `spec_gap` rows as documentation work, not test work.** Layer 2 found that ~70% of the gap surface is "invariant tested but not documented in `docs/contracts/`." Adding tests for those gaps is double-coverage; documenting them is the actual fix.
+5. **Treat `test_gap` rows as the only places new tests are needed.** Two such rows exist (Grok `models_ok_chat_400`, scope manifest). They map to follow-up issue acceptance criteria — see `docs/IMPLEMENTATION-PLAN.md` for current owners.
+6. **Update this table when a closed bug gets a new regression test in a future branch.** The table's value depends on staying current.
+
 **Scope:** 48 closed issues at the time of this audit (issue numbers 1–86). Recent PR-numbered commits (#88, #91, #94, #95, #100, #102) appear in the merged-PR list and are referenced where relevant; their issues either don't exist (numbers were PR-only) or are outside this window.
 
 ## Methodology
