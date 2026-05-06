@@ -91,19 +91,19 @@ function targetPromptFor(invocation, userPrompt) {
     mode: invocation.mode,
     repository: invocation.workspace_root ?? null,
     baseRef: invocation.scope_base,
-    baseCommit: gitCommitForPrompt(invocation.cwd, invocation.scope_base),
+    baseCommit: gitCommitForPrompt(invocation.cwd, invocation.scope_base, invocation.workspace_root),
     headRef: "HEAD",
-    headCommit: gitCommitForPrompt(invocation.cwd, "HEAD"),
+    headCommit: gitCommitForPrompt(invocation.cwd, "HEAD", invocation.workspace_root),
     scope: invocation.scope,
     scopePaths: invocation.scope_paths,
     userPrompt,
   });
 }
 
-function gitCommitForPrompt(cwd, ref) {
+function gitCommitForPrompt(cwd, ref, workspaceRoot = null) {
   if (!ref) return null;
   try {
-    return execFileSync(resolveGitBinary({ cwd }), ["-C", cwd, "rev-parse", "--verify", `${ref}^{commit}`], {
+    return execFileSync(resolveGitBinary({ cwd, workspaceRoot }), ["-C", cwd, "rev-parse", "--verify", `${ref}^{commit}`], {
       cwd,
       env: gitEnv(cleanGitEnv()),
       encoding: "utf8",
@@ -114,9 +114,9 @@ function gitCommitForPrompt(cwd, ref) {
   }
 }
 
-function gitText(args, cwd) {
+function gitText(args, cwd, workspaceRoot = null) {
   try {
-    return execFileSync(resolveGitBinary({ cwd }), ["-C", cwd, ...args], {
+    return execFileSync(resolveGitBinary({ cwd, workspaceRoot }), ["-C", cwd, ...args], {
       encoding: "utf8",
       stdio: ["ignore", "pipe", "ignore"],
       env: gitEnv(cleanGitEnv()),
@@ -127,7 +127,7 @@ function gitText(args, cwd) {
 }
 
 function repositoryIdentity(cwd, workspaceRoot) {
-  const remote = gitText(["remote", "get-url", "origin"], cwd);
+  const remote = gitText(["remote", "get-url", "origin"], cwd, workspaceRoot);
   if (!remote) return workspaceRoot;
   const match = /[:/]([^/:]+\/[^/]+?)(?:\.git)?$/.exec(remote);
   return match ? match[1] : remote;
@@ -137,9 +137,9 @@ function promptMetadata(invocation) {
   return {
     repository: repositoryIdentity(invocation.cwd, invocation.workspace_root),
     baseRef: invocation.scope_base ?? null,
-    baseCommit: gitCommitForPrompt(invocation.cwd, invocation.scope_base),
-    headRef: gitText(["branch", "--show-current"], invocation.cwd) ?? "HEAD",
-    headCommit: gitCommitForPrompt(invocation.cwd, "HEAD"),
+    baseCommit: gitCommitForPrompt(invocation.cwd, invocation.scope_base, invocation.workspace_root),
+    headRef: gitText(["branch", "--show-current"], invocation.cwd, invocation.workspace_root) ?? "HEAD",
+    headCommit: gitCommitForPrompt(invocation.cwd, "HEAD", invocation.workspace_root),
   };
 }
 
@@ -226,8 +226,8 @@ function reviewAuditManifest(invocation, prompt, containmentPath, execution) {
 // scope.mjs. PR #21 review: previous local 5-key list missed
 // GIT_CONFIG_GLOBAL — fold onto plugin lib's canonical scrub.
 
-function gitStatus(args, cwd) {
-  return execFileSync(resolveGitBinary({ cwd }), ["-C", cwd, ...args], {
+function gitStatus(args, cwd, workspaceRoot = null) {
+  return execFileSync(resolveGitBinary({ cwd, workspaceRoot }), ["-C", cwd, ...args], {
     encoding: "utf8",
     stdio: ["ignore", "pipe", "pipe"],
     env: gitEnv(cleanGitEnv()),
@@ -645,7 +645,7 @@ function prepareMutationContext(invocation, profile) {
     context.mutations.push(mutationDetectionFailure(e, "neutral cwd setup failed"));
   }
   try {
-    context.gitStatusBefore = gitStatus(["status", "-s", "--untracked-files=all"], invocation.cwd);
+    context.gitStatusBefore = gitStatus(["status", "-s", "--untracked-files=all"], invocation.cwd, invocation.workspace_root);
     writeSidecar(invocation.workspace_root, invocation.job_id, "git-status-before.txt", context.gitStatusBefore);
   } catch (e) {
     context.mutations.push(mutationDetectionFailure(e));
@@ -760,7 +760,7 @@ function recordPostRunMutations(invocation, mutationContext) {
   if (!mutationContext.checkMutations || mutationContext.gitStatusBefore === null) return;
   let gitStatusAfter = null;
   try {
-    gitStatusAfter = gitStatus(["status", "-s", "--untracked-files=all"], invocation.cwd);
+    gitStatusAfter = gitStatus(["status", "-s", "--untracked-files=all"], invocation.cwd, invocation.workspace_root);
     writeGitStatusAfterSidecar(invocation, gitStatusAfter);
   } catch (e) {
     mutationContext.mutations.push(mutationDetectionFailure(e));

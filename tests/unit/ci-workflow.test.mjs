@@ -225,8 +225,8 @@ test("companion mutation-detection git calls use safe git resolver", () => {
     assert.notEqual(gitCallStart, -1, `${rel} must define mutation-detection git helper`);
     const gitCallEnd = source.indexOf("\nfunction ", gitCallStart + 1);
     const gitCallBlock = source.slice(gitCallStart, gitCallEnd === -1 ? source.length : gitCallEnd);
-    assert.match(gitCallBlock, /execFileSync\(resolveGitBinary\(\{ cwd \}\),/,
-      `${rel} mutation-detection git helper must use the safe git resolver`);
+    assert.match(gitCallBlock, /execFileSync\(resolveGitBinary\(\{ cwd, workspaceRoot \}\),/,
+      `${rel} mutation-detection git helper must use the safe git resolver with the authoritative workspace root`);
     assert.match(gitCallBlock, /env:\s*gitEnv\(cleanGitEnv\(\)\)/,
       `${rel} mutation-detection git helper must not inherit caller PATH`);
     assert.doesNotMatch(gitCallBlock, /env:\s*cleanGitEnv\(\)/,
@@ -242,8 +242,8 @@ test("direct reviewer branch-diff git calls use safe git resolver", () => {
     const source = readFileSync(resolve(rel), "utf8");
     assert.match(source, /import \{ gitEnv, resolveGitBinary \} from "\.\/lib\/git-binary\.mjs";/,
       `${rel} must use the shared safe git resolver`);
-    assert.match(source, /runCommand\(resolveGitBinary\(\{ cwd \}\),[\s\S]*env:\s*gitEnv\(cleanGitEnv\(\)\)/s,
-      `${rel} branch-diff git calls must not inherit caller PATH`);
+    assert.match(source, /runCommand\(resolveGitBinary\(\{ cwd, workspaceRoot: options\.workspaceRoot \}\),[\s\S]*env:\s*gitEnv\(cleanGitEnv\(\)\)/s,
+      `${rel} branch-diff git calls must use the safe resolver and not inherit caller PATH`);
   }
 });
 

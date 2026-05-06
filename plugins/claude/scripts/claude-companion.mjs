@@ -141,19 +141,19 @@ function targetPromptFor(invocation, userPrompt) {
     mode: invocation.mode,
     repository: invocation.workspace_root ?? null,
     baseRef: invocation.scope_base,
-    baseCommit: gitCommitForPrompt(invocation.cwd, invocation.scope_base),
+    baseCommit: gitCommitForPrompt(invocation.cwd, invocation.scope_base, invocation.workspace_root),
     headRef: "HEAD",
-    headCommit: gitCommitForPrompt(invocation.cwd, "HEAD"),
+    headCommit: gitCommitForPrompt(invocation.cwd, "HEAD", invocation.workspace_root),
     scope: invocation.scope,
     scopePaths: invocation.scope_paths,
     userPrompt,
   });
 }
 
-function gitCommitForPrompt(cwd, ref) {
+function gitCommitForPrompt(cwd, ref, workspaceRoot = null) {
   if (!ref) return null;
   try {
-    return execFileSync(resolveGitBinary({ cwd }), ["-C", cwd, "rev-parse", "--verify", `${ref}^{commit}`], {
+    return execFileSync(resolveGitBinary({ cwd, workspaceRoot }), ["-C", cwd, "rev-parse", "--verify", `${ref}^{commit}`], {
       cwd,
       env: gitEnv(cleanGitEnv()),
       encoding: "utf8",
@@ -164,9 +164,9 @@ function gitCommitForPrompt(cwd, ref) {
   }
 }
 
-function gitText(args, cwd) {
+function gitText(args, cwd, workspaceRoot = null) {
   try {
-    return execFileSync(resolveGitBinary({ cwd }), ["-C", cwd, ...args], {
+    return execFileSync(resolveGitBinary({ cwd, workspaceRoot }), ["-C", cwd, ...args], {
       encoding: "utf8",
       stdio: ["ignore", "pipe", "ignore"],
       env: gitEnv(cleanGitEnv()),
@@ -177,7 +177,7 @@ function gitText(args, cwd) {
 }
 
 function repositoryIdentity(cwd, workspaceRoot) {
-  const remote = gitText(["remote", "get-url", "origin"], cwd);
+  const remote = gitText(["remote", "get-url", "origin"], cwd, workspaceRoot);
   if (!remote) return workspaceRoot;
   const match = /[:/]([^/:]+\/[^/]+?)(?:\.git)?$/.exec(remote);
   return match ? match[1] : remote;
@@ -187,9 +187,9 @@ function promptMetadata(invocation) {
   return {
     repository: repositoryIdentity(invocation.cwd, invocation.workspace_root),
     baseRef: invocation.scope_base ?? null,
-    baseCommit: gitCommitForPrompt(invocation.cwd, invocation.scope_base),
-    headRef: gitText(["branch", "--show-current"], invocation.cwd) ?? "HEAD",
-    headCommit: gitCommitForPrompt(invocation.cwd, "HEAD"),
+    baseCommit: gitCommitForPrompt(invocation.cwd, invocation.scope_base, invocation.workspace_root),
+    headRef: gitText(["branch", "--show-current"], invocation.cwd, invocation.workspace_root) ?? "HEAD",
+    headCommit: gitCommitForPrompt(invocation.cwd, "HEAD", invocation.workspace_root),
   };
 }
 
@@ -316,9 +316,9 @@ function buildRuntimeDiagnostics(invocation, containmentPath, childCwd) {
 // detection's git invocations. PR #21 review: the previous local
 // 5-key strip list missed GIT_CONFIG_GLOBAL → fold onto the canonical list.
 
-function tryGit(args, cwd) {
+function tryGit(args, cwd, workspaceRoot = null) {
   try {
-    const stdout = execFileSync(resolveGitBinary({ cwd }), ["-C", cwd, ...args], {
+    const stdout = execFileSync(resolveGitBinary({ cwd, workspaceRoot }), ["-C", cwd, ...args], {
       encoding: "utf8",
       stdio: ["ignore", "pipe", "pipe"],
       env: gitEnv(cleanGitEnv()),
@@ -826,7 +826,7 @@ function prepareMutationContext(invocation, profile) {
   } catch (e) {
     context.mutations.push(mutationDetectionFailure(e));
   }
-  const before = tryGit(["status", "-s", "--untracked-files=all"], invocation.cwd);
+  const before = tryGit(["status", "-s", "--untracked-files=all"], invocation.cwd, invocation.workspace_root);
   if (!before.ok) {
     context.mutations.push(mutationDetectionFailure(before.error));
     return context;
@@ -949,7 +949,7 @@ function writeRunningRecord(invocation, pidInfo, mutations, runtimeDiagnostics =
 
 function recordPostRunMutations(invocation, mutationContext) {
   if (!mutationContext.checkMutations || mutationContext.gitStatusBefore === null) return;
-  const after = tryGit(["status", "-s", "--untracked-files=all"], invocation.cwd);
+  const after = tryGit(["status", "-s", "--untracked-files=all"], invocation.cwd, invocation.workspace_root);
   if (!after.ok) {
     mutationContext.mutations.push(mutationDetectionFailure(after.error));
     return;

@@ -50,7 +50,8 @@ export function resolveGitBinary(options = {}) {
   }
 
   const workspaceRoot = options.workspaceRoot ?? nearestWorkspaceBoundary(options.cwd);
-  const cacheKey = `${override}\0${options.cwd ?? ""}\0${workspaceRoot ?? ""}`;
+  const cacheBoundary = workspaceRoot ?? "";
+  const cacheKey = `${override}\0${cacheBoundary}`;
   const cached = resolvedGitCache.get(cacheKey);
   if (cached) return cached;
 

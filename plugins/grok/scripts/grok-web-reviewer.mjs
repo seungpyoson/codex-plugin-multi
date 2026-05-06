@@ -249,7 +249,7 @@ function runCommand(command, args = [], options = {}) {
 }
 
 function git(args, cwd, options = {}) {
-  const res = runCommand(resolveGitBinary({ cwd }), args, { cwd, env: gitEnv(cleanGitEnv()) });
+  const res = runCommand(resolveGitBinary({ cwd, workspaceRoot: options.workspaceRoot }), args, { cwd, env: gitEnv(cleanGitEnv()) });
   if (res.error) throw new Error(`git_failed:${res.error.message}`);
   if (res.signal) throw new Error(`git_failed:signal:${res.signal}`);
   if (res.status !== 0) {
@@ -261,7 +261,7 @@ function git(args, cwd, options = {}) {
 }
 
 function gitRaw(args, cwd, options = {}) {
-  const res = runCommand(resolveGitBinary({ cwd }), args, {
+  const res = runCommand(resolveGitBinary({ cwd, workspaceRoot: options.workspaceRoot }), args, {
     cwd,
     env: gitEnv(cleanGitEnv()),
     maxBuffer: options.maxBuffer,
@@ -276,10 +276,10 @@ function gitRaw(args, cwd, options = {}) {
   return res.stdout;
 }
 
-function gitCommitForPrompt(cwd, ref) {
+function gitCommitForPrompt(cwd, ref, workspaceRoot = null) {
   if (!ref) return null;
   try {
-    return git(["rev-parse", "--verify", `${ref}^{commit}`], cwd, { allowFailure: true }) || null;
+    return git(["rev-parse", "--verify", `${ref}^{commit}`], cwd, { allowFailure: true, workspaceRoot }) || null;
   } catch {
     return null;
   }
@@ -338,7 +338,7 @@ function safeScopeBase(base) {
   return value;
 }
 
-function selectedScopePaths(scope, options, cwd) {
+function selectedScopePaths(scope, options, cwd, workspaceRoot = null) {
   if (scope === "custom") {
     const relPaths = splitScopePaths(options["scope-paths"]);
     if (relPaths.length === 0) throw new Error("scope_paths_required: custom-review requires --scope-paths");
@@ -346,7 +346,7 @@ function selectedScopePaths(scope, options, cwd) {
   }
   if (scope === "branch-diff") {
     const base = safeScopeBase(options["scope-base"]);
-    const changed = gitRaw(["diff", "-z", "--name-only", `${base}...HEAD`, "--"], cwd);
+    const changed = gitRaw(["diff", "-z", "--name-only", `${base}...HEAD`, "--"], cwd, { workspaceRoot });
     const requested = splitScopePaths(options["scope-paths"]);
     const changedPaths = splitGitPathList(changed);
     const relPaths = requested.length > 0
@@ -432,7 +432,7 @@ async function readGitScopeFiles(gitCwd, workspaceRoot, relPaths) {
   for (const relPath of relPaths) {
     const { normalizedRel } = validateScopePath(workspaceRoot, relPath);
     const blobSpec = `HEAD:${relPath}`;
-    const sizeText = gitRaw(["cat-file", "-s", blobSpec], gitCwd, { allowFailure: true });
+    const sizeText = gitRaw(["cat-file", "-s", blobSpec], gitCwd, { allowFailure: true, workspaceRoot });
     if (sizeText === null) continue;
     const blobBytes = Number.parseInt(sizeText.trim(), 10);
     if (!Number.isSafeInteger(blobBytes) || blobBytes < 0) {
@@ -444,6 +444,7 @@ async function readGitScopeFiles(gitCwd, workspaceRoot, relPaths) {
     const text = gitRaw(["show", blobSpec], gitCwd, {
       allowFailure: true,
       maxBuffer: GIT_SHOW_MAX_BUFFER_BYTES,
+      workspaceRoot,
     });
     if (text === null) continue;
     addScopeFile(files, normalizedRel, text, totalBytes);
@@ -506,7 +507,7 @@ async function collectScope(options) {
   const workspaceRoot = git(["rev-parse", "--show-toplevel"], cwd, { allowFailure: true }) || cwd;
   const scope = scopeName(options);
   const scopeBase = scope === "branch-diff" ? options["scope-base"] ?? "main" : null;
-  const relPaths = selectedScopePaths(scope, options, cwd);
+  const relPaths = selectedScopePaths(scope, options, cwd, workspaceRoot);
   const files = scope === "branch-diff"
     ? await readGitScopeFiles(cwd, workspaceRoot, relPaths)
     : await readFilesystemScopeFiles(workspaceRoot, relPaths);
@@ -517,15 +518,15 @@ async function collectScope(options) {
     scope_base: scopeBase,
     scope_paths: relPaths,
     repository: repositoryIdentity(cwd, workspaceRoot),
-    base_commit: scopeBase ? gitCommitForPrompt(cwd, scopeBase) : null,
-    head_ref: git(["branch", "--show-current"], cwd, { allowFailure: true }) || "HEAD",
-    head_commit: gitCommitForPrompt(cwd, "HEAD"),
+    base_commit: scopeBase ? gitCommitForPrompt(cwd, scopeBase, workspaceRoot) : null,
+    head_ref: git(["branch", "--show-current"], cwd, { allowFailure: true, workspaceRoot }) || "HEAD",
+    head_commit: gitCommitForPrompt(cwd, "HEAD", workspaceRoot),
     files,
   };
 }
 
 function repositoryIdentity(cwd, workspaceRoot) {
-  const remote = git(["remote", "get-url", "origin"], cwd, { allowFailure: true });
+  const remote = git(["remote", "get-url", "origin"], cwd, { allowFailure: true, workspaceRoot });
   if (!remote) return workspaceRoot;
   const match = /[:/]([^/:]+\/[^/]+?)(?:\.git)?$/.exec(remote);
   return match ? match[1] : remote;

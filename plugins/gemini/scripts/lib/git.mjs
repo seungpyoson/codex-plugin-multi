@@ -11,7 +11,7 @@ import { gitEnv, resolveGitBinary } from "./git-binary.mjs";
 // family, and indexed config injection.
 function git(cwd, args, options = {}) {
   const env = gitEnv(cleanGitEnv(options.env ?? process.env));
-  return runCommand(resolveGitBinary({ cwd, env: options.env ?? process.env }), args, { cwd, ...options, env });
+  return runCommand(resolveGitBinary({ cwd, workspaceRoot: options.workspaceRoot, env: options.env ?? process.env }), args, { cwd, ...options, env });
 }
 
 export function ensureGitRepository(cwd) {

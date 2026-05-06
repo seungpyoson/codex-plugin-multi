@@ -197,6 +197,27 @@ test("resolveGitBinary honors an explicit workspaceRoot option", () => {
   }
 });
 
+test("resolveGitBinary rechecks explicit workspaceRoot after an outside-cwd cache entry", () => {
+  const workspace = tempDir("git-binary-explicit-cache-root-");
+  const cwd = tempDir("git-binary-explicit-cache-cwd-");
+  try {
+    const localGit = path.join(workspace, "git");
+    writeExecutable(localGit);
+    const env = { [GIT_BINARY_ENV]: localGit };
+    assert.equal(
+      resolveGitBinary({ cwd, env }),
+      realpathSync.native(localGit),
+    );
+    assert.throws(
+      () => resolveGitBinary({ cwd, workspaceRoot: workspace, env }),
+      /must not point inside the current workspace/,
+    );
+  } finally {
+    rmSync(workspace, { recursive: true, force: true });
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
 test("resolveGitBinary rejects node_modules bin overrides", () => {
   const root = tempDir("git-binary-node-modules-");
   const workspace = tempDir("git-binary-workspace-");

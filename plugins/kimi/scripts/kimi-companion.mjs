@@ -80,9 +80,9 @@ function targetPromptFor(profile, userPrompt, invocation = {}) {
     mode: profile.name,
     repository: invocation.workspace_root ?? null,
     baseRef: invocation.scope_base ?? null,
-    baseCommit: gitCommitForPrompt(invocation.cwd, invocation.scope_base),
+    baseCommit: gitCommitForPrompt(invocation.cwd, invocation.scope_base, invocation.workspace_root),
     headRef: "HEAD",
-    headCommit: gitCommitForPrompt(invocation.cwd, "HEAD"),
+    headCommit: gitCommitForPrompt(invocation.cwd, "HEAD", invocation.workspace_root),
     scope: invocation.scope ?? profile.scope,
     scopePaths: invocation.scope_paths ?? null,
     userPrompt,
@@ -94,10 +94,10 @@ function targetPromptFor(profile, userPrompt, invocation = {}) {
   });
 }
 
-function gitCommitForPrompt(cwd, ref) {
+function gitCommitForPrompt(cwd, ref, workspaceRoot = null) {
   if (!ref) return null;
   try {
-    return execFileSync(resolveGitBinary({ cwd }), ["-C", cwd, "rev-parse", "--verify", `${ref}^{commit}`], {
+    return execFileSync(resolveGitBinary({ cwd, workspaceRoot }), ["-C", cwd, "rev-parse", "--verify", `${ref}^{commit}`], {
       cwd,
       env: gitEnv(cleanGitEnv()),
       encoding: "utf8",
@@ -108,9 +108,9 @@ function gitCommitForPrompt(cwd, ref) {
   }
 }
 
-function gitText(args, cwd) {
+function gitText(args, cwd, workspaceRoot = null) {
   try {
-    return execFileSync(resolveGitBinary({ cwd }), ["-C", cwd, ...args], {
+    return execFileSync(resolveGitBinary({ cwd, workspaceRoot }), ["-C", cwd, ...args], {
       encoding: "utf8",
       stdio: ["ignore", "pipe", "ignore"],
       env: gitEnv(cleanGitEnv()),
@@ -121,7 +121,7 @@ function gitText(args, cwd) {
 }
 
 function repositoryIdentity(cwd, workspaceRoot) {
-  const remote = gitText(["remote", "get-url", "origin"], cwd);
+  const remote = gitText(["remote", "get-url", "origin"], cwd, workspaceRoot);
   if (!remote) return workspaceRoot;
   const match = /[:/]([^/:]+\/[^/]+?)(?:\.git)?$/.exec(remote);
   return match ? match[1] : remote;
@@ -131,9 +131,9 @@ function promptMetadata(invocation) {
   return {
     repository: repositoryIdentity(invocation.cwd, invocation.workspace_root),
     baseRef: invocation.scope_base ?? null,
-    baseCommit: gitCommitForPrompt(invocation.cwd, invocation.scope_base),
-    headRef: gitText(["branch", "--show-current"], invocation.cwd) ?? "HEAD",
-    headCommit: gitCommitForPrompt(invocation.cwd, "HEAD"),
+    baseCommit: gitCommitForPrompt(invocation.cwd, invocation.scope_base, invocation.workspace_root),
+    headRef: gitText(["branch", "--show-current"], invocation.cwd, invocation.workspace_root) ?? "HEAD",
+    headCommit: gitCommitForPrompt(invocation.cwd, "HEAD", invocation.workspace_root),
   };
 }
 
@@ -220,8 +220,8 @@ function reviewAuditManifest(invocation, prompt, containmentPath, execution) {
 // scope.mjs. PR #21 review: previous local 5-key list missed
 // GIT_CONFIG_GLOBAL — fold onto plugin lib's canonical scrub.
 
-function gitStatus(args, cwd) {
-  return execFileSync(resolveGitBinary({ cwd }), ["-C", cwd, ...args], {
+function gitStatus(args, cwd, workspaceRoot = null) {
+  return execFileSync(resolveGitBinary({ cwd, workspaceRoot }), ["-C", cwd, ...args], {
     encoding: "utf8",
     stdio: ["ignore", "pipe", "pipe"],
     env: gitEnv(cleanGitEnv()),
@@ -632,7 +632,7 @@ async function executeRun(invocation, prompt, { foreground, lifecycleEvents = nu
       mutations.push(mutationDetectionFailure(e, "neutral cwd setup failed"));
     }
     try {
-      gitStatusBefore = gitStatus(["status", "-s", "--untracked-files=all"], cwd);
+      gitStatusBefore = gitStatus(["status", "-s", "--untracked-files=all"], cwd, workspaceRoot);
       writeSidecar(workspaceRoot, jobId, "git-status-before.txt", gitStatusBefore);
     } catch (e) {
       mutations.push(mutationDetectionFailure(e));
@@ -742,7 +742,7 @@ async function executeRun(invocation, prompt, { foreground, lifecycleEvents = nu
   if (checkMutations && gitStatusBefore !== null) {
     let gitStatusAfter;
     try {
-      gitStatusAfter = gitStatus(["status", "-s", "--untracked-files=all"], cwd);
+      gitStatusAfter = gitStatus(["status", "-s", "--untracked-files=all"], cwd, workspaceRoot);
       try { writeSidecar(workspaceRoot, jobId, "git-status-after.txt", gitStatusAfter); }
       catch (e) { process.stderr.write(`kimi-companion: warning: sidecar git-status-after.txt write failed: ${e.message}\n`); }
     } catch (e) {
