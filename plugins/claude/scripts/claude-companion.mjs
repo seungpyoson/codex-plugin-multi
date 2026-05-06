@@ -87,6 +87,20 @@ const PREFLIGHT_MODES = Object.freeze(["review", "adversarial-review", "custom-r
 const GIT_PROMPT_BINARY = "/usr/bin/git";
 const GIT_PROMPT_SAFE_PATH = "/usr/bin:/bin";
 
+function isExplicitRelativeBinary(binary) {
+  return binary === "." ||
+    binary === ".." ||
+    binary.startsWith("./") ||
+    binary.startsWith("../") ||
+    binary.startsWith(".\\") ||
+    binary.startsWith("..\\");
+}
+
+function resolveCliBinary(cwd, binary) {
+  if (!isExplicitRelativeBinary(binary)) return binary;
+  return resolvePath(cwd, binary);
+}
+
 function loadModels() {
   if (!existsSync(MODELS_CONFIG_PATH)) return { review_quality: null, rescue: null };
   return JSON.parse(_readFileSync(MODELS_CONFIG_PATH, "utf8"));
@@ -888,7 +902,7 @@ async function claudeOAuthInferencePreflight(invocation, authSelection) {
       promptText: PING_PROMPT,
       sessionId: newJobId(),
       cwd: tmpdir(),
-      binary: resolvePath(invocation.cwd, invocation.binary),
+      binary: resolveCliBinary(invocation.cwd, invocation.binary),
       timeoutMs: Math.min(Number(invocation.timeout_ms ?? 15000), 15000),
       allowedApiKeyEnv: authSelection.allowed_env_credentials,
     });
@@ -1492,7 +1506,8 @@ async function cmdPing(rest) {
   });
   const profile = resolveProfile("ping");
   const model = options.model ?? resolveModelForProfile(profile, loadModels());
-  const binary = resolvePath(process.cwd(), options.binary ?? process.env.CLAUDE_BINARY ?? "claude");
+  const rawBinary = options.binary ?? process.env.CLAUDE_BINARY ?? "claude";
+  const binary = resolveCliBinary(process.cwd(), rawBinary);
   const timeoutMs = Number(options["timeout-ms"] ?? 15000);
   const authSelection = resolveAuthSelection(options["auth-mode"]);
   if (authSelection.selected_auth_path === "api_key_env_missing") {
