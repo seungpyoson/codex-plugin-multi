@@ -164,6 +164,7 @@ const FINALIZATION_FAILED_PREFIX = "finalization_failed:";
 const OAUTH_INFERENCE_REJECTED_PREFIX = "oauth_inference_rejected:";
 
 export function isOAuthInferenceRejected(execution, invocation = null) {
+  if (!invocation) return false;
   if (invocation?.selected_auth_path && invocation.selected_auth_path !== "subscription_oauth") return false;
   if (!invocation?.selected_auth_path && invocation?.auth_mode === "api_key") return false;
   const raw = execution?.parsed?.raw;
@@ -172,7 +173,7 @@ export function isOAuthInferenceRejected(execution, invocation = null) {
   return status === 401 && /invalid authentication credentials|failed to authenticate/i.test(result);
 }
 
-function classifyExecution(execution, invocation = null) {
+export function classifyExecution(execution, invocation = null) {
   if (!execution) {
     return {
       status: "queued",
@@ -316,7 +317,7 @@ function buildErrorDiagnostic(invocation, status, error_code, error_message) {
       error_summary: "Claude OAuth non-interactive inference was rejected.",
       error_cause:
         "Claude Code reported HTTP 401 while the companion was using subscription/OAuth mode. " +
-        "`claude auth status` can still report logged in; when detected by preflight, the review source is not sent.",
+        "`claude auth status` can still report logged in; non-interactive inference was rejected.",
       suggested_action:
         "Run `/claude-setup`, refresh Claude OAuth in a normal terminal if needed, and verify OAuth-only `claude -p` inference works before retrying the review.",
       disclosure_note: null,

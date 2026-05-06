@@ -14,6 +14,7 @@ import { dirname, resolve as resolvePath } from "node:path";
 import {
   buildJobRecord,
   EXPECTED_KEYS,
+  isOAuthInferenceRejected,
   SCHEMA_VERSION,
 } from "../../plugins/claude/scripts/lib/job-record.mjs";
 import {
@@ -644,11 +645,23 @@ test("buildJobRecord: OAuth inference 401 is distinct from generic claude_error"
   assert.equal(rec.error_code, "oauth_inference_rejected");
   assert.match(rec.error_summary, /OAuth non-interactive inference was rejected/i);
   assert.match(rec.error_cause, /HTTP 401/i);
-  assert.match(rec.error_cause, /review source is not sent/i);
+  assert.doesNotMatch(rec.error_cause, /not sent/i);
   assert.match(rec.suggested_action, /\/claude-setup/);
   assert.match(rec.suggested_action, /OAuth-only `claude -p` inference/i);
   assert.equal(rec.external_review.source_content_transmission, "sent");
   assert.equal(rec.external_review.disclosure, sentButNoCleanResult("Claude Code"));
+});
+
+test("isOAuthInferenceRejected fails closed without auth context", () => {
+  const execution = {
+    parsed: {
+      ok: false,
+      result: "Failed to authenticate. API Error: 401 Invalid authentication credentials",
+      raw: { api_error_status: 401 },
+    },
+  };
+
+  assert.equal(isOAuthInferenceRejected(execution), false);
 });
 
 test("buildJobRecord: API-key 401 is not classified as OAuth inference rejection", () => {

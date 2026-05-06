@@ -40,7 +40,7 @@ import { resolveProfile, resolveModelForProfile } from "./lib/mode-profiles.mjs"
 import { setupContainment } from "./lib/containment.mjs";
 import { populateScope } from "./lib/scope.mjs";
 import { newJobId, verifyPidInfo } from "./lib/identity.mjs";
-import { buildJobRecord, externalReviewForInvocation, isOAuthInferenceRejected } from "./lib/job-record.mjs";
+import { buildJobRecord, classifyExecution, externalReviewForInvocation, isOAuthInferenceRejected } from "./lib/job-record.mjs";
 import { reconcileActiveJobs } from "./lib/reconcile.mjs";
 import { cleanGitEnv } from "./lib/git-env.mjs";
 import { sanitizeTargetEnv } from "./lib/provider-env.mjs";
@@ -213,11 +213,7 @@ function scopeResolutionReason(invocation) {
 function reviewAuditManifest(invocation, prompt, containmentPath, execution) {
   if (!invocation.review_prompt_contract_version || invocation.mode_profile_name === "rescue") return null;
   const meta = promptMetadata(invocation);
-  let errorCode = execution?.parsed?.reason ?? null;
-  if (String(execution?.errorMessage ?? "").startsWith("oauth_inference_rejected:")
-      || isOAuthInferenceRejected(execution, invocation)) {
-    errorCode = "oauth_inference_rejected";
-  }
+  const { error_code: errorCode } = classifyExecution(execution, invocation);
   return buildReviewAuditManifest({
     prompt,
     sourceFiles: auditSourceFiles(containmentPath),
@@ -887,8 +883,8 @@ async function claudeOAuthInferencePreflight(invocation, authSelection) {
       model: invocation.model,
       promptText: PING_PROMPT,
       sessionId: newJobId(),
-      cwd: invocation.cwd,
-      binary: invocation.binary,
+      cwd: tmpdir(),
+      binary: resolvePath(invocation.cwd, invocation.binary),
       timeoutMs: Math.min(Number(invocation.timeout_ms ?? 15000), 15000),
       allowedApiKeyEnv: authSelection.allowed_env_credentials,
     });
@@ -1425,7 +1421,7 @@ async function cmdPing(rest) {
   });
   const profile = resolveProfile("ping");
   const model = options.model ?? resolveModelForProfile(profile, loadModels());
-  const binary = options.binary ?? process.env.CLAUDE_BINARY ?? "claude";
+  const binary = resolvePath(process.cwd(), options.binary ?? process.env.CLAUDE_BINARY ?? "claude");
   const timeoutMs = Number(options["timeout-ms"] ?? 15000);
   const authSelection = resolveAuthSelection(options["auth-mode"]);
   if (authSelection.selected_auth_path === "api_key_env_missing") {
@@ -1441,7 +1437,7 @@ async function cmdPing(rest) {
       model,
       promptText: PING_PROMPT,
       sessionId,
-      cwd: process.cwd(),
+      cwd: tmpdir(),
       binary,
       timeoutMs,
       allowedApiKeyEnv: authSelection.allowed_env_credentials,

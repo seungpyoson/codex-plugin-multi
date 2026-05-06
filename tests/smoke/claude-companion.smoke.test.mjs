@@ -152,6 +152,62 @@ test("run --mode=review --foreground: emits JobRecord with status=completed", ()
   }
 });
 
+test("run --mode=review --foreground: audit manifest uses canonical claude_error", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "smoke-cwd-claude-error-audit-"));
+  seedMinimalRepo(cwd);
+  const tmp = mkdtempSync(path.join(tmpdir(), "claude-error-audit-bin-"));
+  const counterPath = path.join(tmp, "counter.txt");
+  writeFileSync(counterPath, "0", "utf8");
+  const binary = writeExecutable(tmp, "claude-error-audit", `#!/usr/bin/env node
+import { readFileSync, writeFileSync } from "node:fs";
+if (process.argv.slice(2).join(" ") === "auth status --json") {
+  process.stdout.write(JSON.stringify({
+    loggedIn: true,
+    authMethod: "claude.ai",
+    apiProvider: "firstParty",
+    subscriptionType: "max"
+  }) + "\\n");
+  process.exit(0);
+}
+const counterPath = ${JSON.stringify(counterPath)};
+const count = Number(readFileSync(counterPath, "utf8"));
+writeFileSync(counterPath, String(count + 1));
+if (count === 0) {
+  process.stdout.write(JSON.stringify({
+    type: "result",
+    is_error: false,
+    result: "pong",
+    session_id: "11111111-1111-4111-8111-111111111111",
+    usage: { input_tokens: 1, output_tokens: 1 }
+  }) + "\\n");
+  process.exit(0);
+}
+process.stdout.write(JSON.stringify({
+  type: "result",
+  is_error: true,
+  result: "tool denied",
+  session_id: "22222222-2222-4222-8222-222222222222",
+  usage: { input_tokens: 0, output_tokens: 0 }
+}) + "\\n");
+process.exit(1);
+`);
+  const { stdout, status, dataDir } = runCompanion(
+    ["run", "--mode=review", "--foreground", "--binary", binary,
+     "--model", "claude-haiku-4-5-20251001", "--cwd", cwd, "--", "review this change"],
+    { cwd, env: { ANTHROPIC_API_KEY: "", CLAUDE_API_KEY: "" } },
+  );
+  try {
+    assert.equal(status, 2);
+    const record = JSON.parse(stdout);
+    assert.equal(record.error_code, "claude_error");
+    assert.equal(record.review_metadata.audit_manifest.error_code, "claude_error");
+  } finally {
+    cleanup(dataDir);
+    rmSync(cwd, { recursive: true, force: true });
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
 test("run --mode=review --foreground lifecycle jsonl emits launch event before terminal JobRecord", () => {
   const cwd = mkdtempSync(path.join(tmpdir(), "smoke-lifecycle-cwd-"));
   seedMinimalRepo(cwd);
@@ -1688,8 +1744,11 @@ process.exit(1);
 });
 
 test("doctor: OAuth status success but non-interactive inference 401 is classified distinctly", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "claude-doctor-oauth-print-401-cwd-"));
   const tmp = mkdtempSync(path.join(tmpdir(), "claude-doctor-oauth-print-401-"));
+  const probeCwdPath = path.join(tmp, "probe-cwd.txt");
   const binary = writeExecutable(tmp, "claude-oauth-print-401", `#!/usr/bin/env node
+import { writeFileSync } from "node:fs";
 const args = process.argv.slice(2);
 if (args[0] === "auth" && args[1] === "status") {
   process.stdout.write("claude notice: auth cache refreshed\\n");
@@ -1701,6 +1760,11 @@ if (args[0] === "auth" && args[1] === "status") {
     subscriptionType: "max"
   }, null, 2) + "\\n");
   process.exit(0);
+}
+writeFileSync(${JSON.stringify(probeCwdPath)}, process.cwd(), "utf8");
+if (process.cwd() === ${JSON.stringify(cwd)}) {
+  process.stderr.write("inference probe ran in caller cwd\\n");
+  process.exit(43);
 }
 process.stdout.write(JSON.stringify({
   type: "result",
@@ -1714,7 +1778,7 @@ process.exit(1);
 `);
   const { stdout, status, dataDir } = runCompanion(
     ["doctor", "--binary", binary, "--model", "claude-haiku-4-5-20251001"],
-    { cwd: tmpdir(), env: { ANTHROPIC_API_KEY: "", CLAUDE_API_KEY: "" } },
+    { cwd, env: { ANTHROPIC_API_KEY: "", CLAUDE_API_KEY: "" } },
   );
   try {
     assert.equal(status, 2);
@@ -1730,8 +1794,10 @@ process.exit(1);
     assert.match(result.summary, /OAuth.*non-interactive/i);
     assert.match(result.next_action, /claude auth login|OAuth/i);
     assert.doesNotMatch(stdout, /user@example.com/);
+    assert.notEqual(readFileSync(probeCwdPath, "utf8"), cwd);
   } finally {
     cleanup(dataDir);
+    rmSync(cwd, { recursive: true, force: true });
     rmSync(tmp, { recursive: true, force: true });
   }
 });
@@ -1901,7 +1967,9 @@ test("run: OAuth preflight auth-status resolves relative binary from invocation 
   const launcherCwd = mkdtempSync(path.join(tmpdir(), "claude-run-oauth-relative-launcher-"));
   const cwd = mkdtempSync(path.join(tmpdir(), "claude-run-oauth-relative-cwd-"));
   seedMinimalRepo(cwd);
+  const probeCwdPath = path.join(cwd, "probe-cwd.txt");
   writeExecutable(cwd, "claude", `#!/usr/bin/env node
+import { writeFileSync } from "node:fs";
 if (process.argv.slice(2).join(" ") === "auth status --json") {
   process.stdout.write(JSON.stringify({
     loggedIn: true,
@@ -1910,6 +1978,11 @@ if (process.argv.slice(2).join(" ") === "auth status --json") {
     subscriptionType: "max"
   }) + "\\n");
   process.exit(0);
+}
+writeFileSync(${JSON.stringify(probeCwdPath)}, process.cwd(), "utf8");
+if (process.cwd() === ${JSON.stringify(cwd)}) {
+  process.stderr.write("inference preflight ran in invocation cwd\\n");
+  process.exit(43);
 }
 process.stdout.write(JSON.stringify({
   type: "result",
@@ -1934,6 +2007,7 @@ process.exit(1);
     assert.equal(record.error_code, "oauth_inference_rejected");
     assert.equal(record.external_review.source_content_transmission, "not_sent");
     assert.equal(record.pid_info, null);
+    assert.notEqual(readFileSync(probeCwdPath, "utf8"), cwd);
   } finally {
     cleanup(dataDir);
     rmSync(cwd, { recursive: true, force: true });
@@ -1959,7 +2033,7 @@ if (process.argv.slice(2).join(" ") === "auth status --json") {
   }) + "\\n");
   process.exit(0);
 }
-const jobsDir = resolveJobsDir(process.cwd());
+const jobsDir = resolveJobsDir(${JSON.stringify(cwd)});
 for (const name of readdirSync(jobsDir)) {
   if (!name.endsWith(".json")) continue;
   const metaPath = resolve(jobsDir, name);
