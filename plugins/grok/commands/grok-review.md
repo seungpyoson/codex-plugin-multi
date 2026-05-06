@@ -16,4 +16,4 @@ present. If the JobRecord failed, report `error_code`, `error_message`,
 cookies, tunnel API keys, or bearer token values.
 Do not recommend direct xAI API keys as a fallback for subscription web mode.
 
-Review timeout defaults to 600000 ms. Use `GROK_WEB_TIMEOUT_MS=<ms>` to override it; the effective value is persisted in `review_metadata.audit_manifest.request.timeout_ms`. Doctor timeouts remain separate readiness checks.
+Review timeout defaults to 600000 ms. Use `GROK_WEB_TIMEOUT_MS=<ms>` to override it; the effective value is persisted in `review_metadata.audit_manifest.request.timeout_ms`. Rendered prompts above `GROK_WEB_MAX_PROMPT_CHARS` (default 400000) fail before tunnel launch with `source_content_transmission: "not_sent"`; split or narrow the scope instead of relying on truncation. Doctor timeouts remain separate readiness checks.

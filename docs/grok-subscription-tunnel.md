@@ -135,6 +135,12 @@ works but `/chat/completions` rejects the configured model, the doctor reports
 `grok_chat_model_rejected` and points at `GROK_WEB_MODEL` instead of session
 refresh guidance.
 
+Review runs also preflight the rendered prompt length. Prompts above
+`GROK_WEB_MAX_PROMPT_CHARS` (default 400000) fail before tunnel launch with
+`source_content_transmission: "not_sent"`. Narrow the scope or split the review
+into explicit custom-review shards; raise the limit only after confirming the
+local tunnel and selected Grok model accept larger prompts.
+
 Live E2E:
 
 ```sh

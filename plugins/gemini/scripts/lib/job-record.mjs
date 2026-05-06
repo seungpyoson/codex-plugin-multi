@@ -256,6 +256,7 @@ function classifyExecution(execution) {
 const SCOPE_FAILURE_PREFIXES = [
   "unsafe_symlink:",
   "scope_population_failed:",
+  "scope_base_invalid:",
   "scope_base_missing:",
   "scope_requires_git:",
   "scope_requires_head:",
@@ -311,16 +312,16 @@ function buildErrorDiagnostic(invocation, status, error_code, error_message) {
     };
   }
 
-  if (message.startsWith("scope_base_missing:")) {
+  if (message.startsWith("scope_base_invalid:") || message.startsWith("scope_base_missing:")) {
     return {
       error_summary: "Review scope was rejected before target launch.",
       error_cause:
-        "A missing base ref or unresolvable git ref prevented scope preparation. " +
+        "A missing, unsafe, or unresolvable git base ref prevented scope preparation. " +
         "Branch-diff scopes require a valid, fetchable base ref.",
       suggested_action:
-        "To fix this, choose a valid base ref (a branch name, tag, or commit SHA) and " +
+        "To fix this, choose a valid base ref (a branch name, tag, remote ref, or commit SHA) and " +
         "pass it via `--scope-base <ref>`. Alternatively, use working-tree scope which " +
-        "does not require a base ref.",
+        "does not require a base ref. Option-shaped values beginning with '-' are rejected before git branch-diff runs.",
       disclosure_note: disclosure,
     };
   }
@@ -370,9 +371,10 @@ function buildErrorDiagnostic(invocation, status, error_code, error_message) {
         "The selected scope was empty and resolved to no reviewable files. Launching the target " +
         "would produce a misleading completed review with no useful source context.",
       suggested_action:
-        "For pinned bundles or selected files, retry with `--mode=custom-review` " +
-        "and explicit `--scope-paths <glob,...>`. For branch diffs, check the " +
-        "`--scope-base <ref>` value and run preflight before launching the provider.",
+        "Branch-diff reviews committed HEAD-vs-base changes only; it does not include dirty working-tree edits. " +
+        "For branch diffs, choose a different --scope-base <ref> if this branch should have committed changes, " +
+        "or retry with --scope-base HEAD~1 to review the last commit. For uncommitted, already-merged, or no-diff branches, " +
+        "retry with `--mode=custom-review` and explicit `--scope-paths <glob,...>` so source selection stays explicit.",
       disclosure_note: disclosure,
     };
   }

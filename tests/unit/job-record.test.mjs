@@ -695,8 +695,20 @@ test("buildJobRecord: scope_base_missing provides targeted diagnostic", () => {
   }, []);
   assert.equal(rec.status, "failed");
   assert.equal(rec.error_code, "scope_failed");
-  assert.match(rec.error_cause, /unresolvable git ref/);
+  assert.match(rec.error_cause, /unresolvable git base ref/);
   assert.match(rec.suggested_action, /choose a valid base ref/);
+});
+
+test("buildJobRecord: scope_base_invalid remains a pre-launch scope failure", () => {
+  const rec = buildJobRecord(makeInvocation(), {
+    exitCode: null, parsed: null, pidInfo: null, claudeSessionId: null,
+    errorMessage: "scope_base_invalid: base ref \"--bad\" is not safe for git branch-diff",
+  }, []);
+  assert.equal(rec.status, "failed");
+  assert.equal(rec.error_code, "scope_failed");
+  assert.match(rec.error_cause, /unsafe/);
+  assert.match(rec.suggested_action, /Option-shaped values/);
+  assert.equal(rec.external_review.source_content_transmission, "not_sent");
 });
 
 test("buildJobRecord: scope_requires_git provides targeted diagnostic", () => {
@@ -744,6 +756,9 @@ test("buildJobRecord: scope_empty provides targeted diagnostic", () => {
   assert.equal(rec.error_code, "scope_failed");
   assert.match(rec.error_cause, /empty/i);
   assert.match(rec.suggested_action, /custom-review|--scope-paths/);
+  assert.match(rec.suggested_action, /different --scope-base/);
+  assert.match(rec.suggested_action, /--scope-base HEAD~1/);
+  assert.doesNotMatch(rec.suggested_action, /--scope head/);
 });
 
 test("buildJobRecord: invalid_profile provides targeted diagnostic", () => {
@@ -1234,6 +1249,34 @@ test("gemini buildJobRecord: scope_base_missing carries targeted base-ref diagno
   assert.match(rec.disclosure_note, /external provider/);
 });
 
+test("gemini buildJobRecord: scope_base_invalid remains a pre-launch scope failure", () => {
+  const rec = buildGeminiJobRecord(makeInvocation({ target: "gemini", binary: "gemini" }), {
+    exitCode: null, parsed: null, pidInfo: null, geminiSessionId: null,
+    errorMessage: "scope_base_invalid: base ref \"--bad\" is not safe for git branch-diff",
+  }, []);
+  assert.equal(rec.status, "failed");
+  assert.equal(rec.error_code, "scope_failed");
+  assert.match(rec.error_cause, /unsafe/);
+  assert.match(rec.suggested_action, /Option-shaped values/);
+  assert.equal(rec.external_review.source_content_transmission, "not_sent");
+});
+
+test("kimi buildJobRecord: scope_base_invalid remains a pre-launch scope failure", () => {
+  const rec = buildKimiJobRecord(makeInvocation({
+    target: "kimi",
+    binary: "kimi",
+    review_prompt_provider: "Kimi",
+  }), {
+    exitCode: null, parsed: null, pidInfo: null, kimiSessionId: null,
+    errorMessage: "scope_base_invalid: base ref \"--bad\" is not safe for git branch-diff",
+  }, []);
+  assert.equal(rec.status, "failed");
+  assert.equal(rec.error_code, "scope_failed");
+  assert.match(rec.error_cause, /unsafe/);
+  assert.match(rec.suggested_action, /Option-shaped values/);
+  assert.equal(rec.external_review.source_content_transmission, "not_sent");
+});
+
 test("gemini buildJobRecord: scope_requires_git carries git-worktree diagnostic", () => {
   const rec = buildGeminiJobRecord(makeInvocation({ target: "gemini", binary: "gemini" }), {
     exitCode: null, parsed: null, pidInfo: null, geminiSessionId: null,
@@ -1279,7 +1322,21 @@ test("gemini buildJobRecord: scope_empty carries empty-scope diagnostic", () => 
   assert.equal(rec.error_code, "scope_failed");
   assert.match(rec.error_cause, /empty/i);
   assert.match(rec.suggested_action, /--scope-paths/);
+  assert.match(rec.suggested_action, /--scope-base HEAD~1/);
+  assert.doesNotMatch(rec.suggested_action, /--scope head/);
   assert.match(rec.disclosure_note, /external provider/);
+});
+
+test("kimi buildJobRecord: scope_empty carries HEAD~1 recovery diagnostic", () => {
+  const rec = buildKimiJobRecord(makeInvocation({ target: "kimi", binary: "kimi" }), {
+    exitCode: null, parsed: null, pidInfo: null, kimiSessionId: null,
+    errorMessage: "scope_empty: branch-diff selected no files under /tmp/review-bundle",
+  }, []);
+  assert.equal(rec.status, "failed");
+  assert.equal(rec.error_code, "scope_failed");
+  assert.match(rec.error_cause, /empty/i);
+  assert.match(rec.suggested_action, /--scope-base HEAD~1/);
+  assert.doesNotMatch(rec.suggested_action, /--scope head/);
 });
 
 test("gemini buildJobRecord: invalid_profile carries plugin-bug diagnostic, raw error preserved", () => {

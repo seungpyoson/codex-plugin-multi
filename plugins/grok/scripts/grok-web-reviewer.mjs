@@ -2,7 +2,7 @@
 import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { constants as fsConstants } from "node:fs";
-import { mkdir, open, readFile, readdir, realpath, rename, rm, rmdir, stat, unlink, writeFile } from "node:fs/promises";
+import { lstat, mkdir, open, readFile, readdir, realpath, rename, rm, rmdir, stat, unlink, writeFile } from "node:fs/promises";
 import { hostname } from "node:os";
 import { dirname, isAbsolute, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -19,6 +19,7 @@ const DEFAULT_MODEL = "grok-4.20-fast";
 const DEFAULT_TIMEOUT_MS = 600000;
 const DEFAULT_DOCTOR_TIMEOUT_MS = 2000;
 const DEFAULT_CHAT_DOCTOR_TIMEOUT_MS = 10000;
+const DEFAULT_MAX_PROMPT_CHARS = 400000;
 const MAX_SCOPE_FILE_BYTES = 256 * 1024;
 const MAX_SCOPE_TOTAL_BYTES = 1024 * 1024;
 const GIT_SHOW_MAX_BUFFER_BYTES = 16 * 1024 * 1024;
@@ -144,6 +145,7 @@ function config(env = process.env) {
   const timeoutMs = parsePositiveIntegerEnv(env, "GROK_WEB_TIMEOUT_MS", DEFAULT_TIMEOUT_MS);
   const doctorTimeoutMs = parsePositiveIntegerEnv(env, "GROK_WEB_DOCTOR_TIMEOUT_MS", DEFAULT_DOCTOR_TIMEOUT_MS);
   const chatDoctorTimeoutMs = parsePositiveIntegerEnv(env, "GROK_WEB_CHAT_DOCTOR_TIMEOUT_MS", DEFAULT_CHAT_DOCTOR_TIMEOUT_MS);
+  const maxPromptChars = parsePositiveIntegerEnv(env, "GROK_WEB_MAX_PROMPT_CHARS", DEFAULT_MAX_PROMPT_CHARS, "character count");
   return {
     provider: "grok-web",
     display_name: "Grok Web",
@@ -153,17 +155,34 @@ function config(env = process.env) {
     timeout_ms: timeoutMs,
     doctor_timeout_ms: doctorTimeoutMs,
     chat_doctor_timeout_ms: chatDoctorTimeoutMs,
+    max_prompt_chars: maxPromptChars,
     credential_ref: env.GROK_WEB_TUNNEL_API_KEY ? "GROK_WEB_TUNNEL_API_KEY" : null,
     credential_value: env.GROK_WEB_TUNNEL_API_KEY || null,
   };
 }
 
-function parsePositiveIntegerEnv(env, name, fallback) {
+function fallbackConfig(env = process.env) {
+  return {
+    provider: "grok-web",
+    display_name: "Grok Web",
+    auth_mode: "subscription_web",
+    base_url: normalizeBaseUrl(env.GROK_WEB_BASE_URL),
+    model: env.GROK_WEB_MODEL || DEFAULT_MODEL,
+    timeout_ms: DEFAULT_TIMEOUT_MS,
+    doctor_timeout_ms: DEFAULT_DOCTOR_TIMEOUT_MS,
+    chat_doctor_timeout_ms: DEFAULT_CHAT_DOCTOR_TIMEOUT_MS,
+    max_prompt_chars: DEFAULT_MAX_PROMPT_CHARS,
+    credential_ref: env.GROK_WEB_TUNNEL_API_KEY ? "GROK_WEB_TUNNEL_API_KEY" : null,
+    credential_value: env.GROK_WEB_TUNNEL_API_KEY || null,
+  };
+}
+
+function parsePositiveIntegerEnv(env, name, fallback, unit = "number of milliseconds") {
   const value = env[name];
   if (value === undefined || value === null || value === "") return fallback;
   const parsed = Number(value);
   if (!Number.isSafeInteger(parsed) || parsed <= 0) {
-    throw new Error(`bad_args: ${name} must be a positive integer number of milliseconds; got ${JSON.stringify(value)}`);
+    throw new Error(`bad_args: ${name} must be a positive integer ${unit}; got ${JSON.stringify(value)}`);
   }
   return parsed;
 }
@@ -312,6 +331,14 @@ function scopeName(options) {
   return options.scope ?? (options.mode === "custom-review" ? "custom" : "branch-diff");
 }
 
+function safeScopeBase(base) {
+  const value = base ?? "main";
+  if (typeof value !== "string" || value.trim() === "" || value.startsWith("-")) {
+    throw new Error(`scope_base_invalid: base ref ${JSON.stringify(value)} is not safe for git branch-diff`);
+  }
+  return value;
+}
+
 function selectedScopePaths(scope, options, cwd) {
   if (scope === "custom") {
     const relPaths = splitScopePaths(options["scope-paths"]);
@@ -319,7 +346,7 @@ function selectedScopePaths(scope, options, cwd) {
     return relPaths;
   }
   if (scope === "branch-diff") {
-    const base = options["scope-base"] ?? "main";
+    const base = safeScopeBase(options["scope-base"]);
     const changed = gitRaw(["diff", "-z", "--name-only", `${base}...HEAD`, "--"], cwd);
     const requested = splitScopePaths(options["scope-paths"]);
     const changedPaths = splitGitPathList(changed);
@@ -333,7 +360,7 @@ function selectedScopePaths(scope, options, cwd) {
 }
 
 function validateScopePath(workspaceRoot, relPath) {
-  if (relPath.includes("..") || isAbsolute(relPath) || relPath.includes("\\")) {
+  if (relPath.includes("..") || isAbsolute(relPath) || relPath.includes("\\") || /[\u0000-\u001f\u007f]/u.test(relPath)) {
     throw new Error(`unsafe_scope_path:${relPath}`);
   }
   const abs = resolve(workspaceRoot, relPath);
@@ -357,11 +384,22 @@ function addScopeFile(files, normalizedRel, text, totalBytes) {
   files.push({ path: normalizedRel, text });
 }
 
-async function readUtf8ScopeFileWithinLimit(filePath, normalizedRel) {
-  const handle = await open(filePath, SCOPE_FILE_OPEN_FLAGS);
+async function readUtf8ScopeFileWithinLimit(filePath, normalizedRel, beforeOpen = null) {
+  beforeOpen ??= await lstat(filePath);
+  let handle;
+  try {
+    handle = await open(filePath, SCOPE_FILE_OPEN_FLAGS);
+  } catch (e) {
+    if (e?.code === "ELOOP") throw new Error(`unsafe_scope_path:${normalizedRel}`);
+    if (e?.code === "ENOENT") return null;
+    throw e;
+  }
   try {
     const info = await handle.stat();
     if (!info.isFile()) return null;
+    if (!sameFileIdentity(beforeOpen, info)) {
+      throw new Error(`unsafe_scope_path:${normalizedRel}: file changed before secure open`);
+    }
     if (info.size > MAX_SCOPE_FILE_BYTES) {
       throw new Error(`scope_file_too_large:${normalizedRel}: ${info.size} bytes exceeds ${MAX_SCOPE_FILE_BYTES} byte limit`);
     }
@@ -385,7 +423,7 @@ async function readUtf8ScopeFileWithinLimit(filePath, normalizedRel) {
     if (total === 0) return "";
     return Buffer.concat(chunks, total).toString("utf8");
   } finally {
-    await handle.close();
+    await handle?.close();
   }
 }
 
@@ -421,18 +459,22 @@ async function readFilesystemScopeFiles(workspaceRoot, relPaths) {
   const realWorkspaceRoot = await realpath(workspaceRoot);
   for (const relPath of relPaths) {
     const { abs, normalizedRel } = validateScopePath(workspaceRoot, relPath);
-    let realAbs;
+    let beforeOpen;
     try {
-      realAbs = await realpath(abs);
+      beforeOpen = await lstat(abs);
     } catch (error) {
       if (error?.code === "ENOENT") continue;
       throw error;
     }
+    if (beforeOpen.isSymbolicLink()) {
+      throw new Error(`unsafe_scope_path:${normalizedRel}`);
+    }
+    const realAbs = await realpath(abs);
     const realRel = relative(realWorkspaceRoot, realAbs);
     if (realRel.startsWith("..") || realRel === "") {
       throw new Error(`unsafe_scope_path:${relPath}`);
     }
-    const text = await readUtf8ScopeFileWithinLimit(realAbs, normalizedRel);
+    const text = await readUtf8ScopeFileWithinLimit(realAbs, normalizedRel, beforeOpen);
     if (text === null) continue;
     addScopeFile(files, normalizedRel, text, totalBytes);
   }
@@ -818,9 +860,20 @@ function disclosure(cfg, completed, payloadSent) {
   return `Selected source content may have been sent to ${cfg.display_name} through a subscription-backed web session.`;
 }
 
-function suggestedAction(errorCode) {
+function suggestedAction(errorCode, errorMessage = "") {
   if (errorCode === "bad_args") return "Correct the grok-web command arguments and retry.";
-  if (errorCode === "scope_failed") return "Adjust --scope, --scope-base, or --scope-paths and retry.";
+  if (errorCode === "scope_failed") {
+    if (/scope_empty:\s*branch-diff selected no files/i.test(errorMessage)) {
+      return "Branch-diff selected no files before tunnel launch. Branch-diff reviews committed HEAD-vs-base changes only; it does not include dirty working-tree edits. Choose a different --scope-base <ref> if this branch should have committed changes, use --scope-base HEAD~1 to review the last commit, or use custom-review with explicit --scope-paths for uncommitted, already-merged, or no-diff branches.";
+    }
+    if (/scope_base_invalid:/i.test(errorMessage)) {
+      return "Use a concrete branch, tag, remote ref, or commit SHA for --scope-base; option-shaped values beginning with '-' are rejected before git branch-diff runs.";
+    }
+    if (/prompt_too_large:/i.test(errorMessage)) {
+      return "Rendered prompt exceeds the Grok prompt budget before tunnel launch. Use a narrower scope, split the review into explicit custom-review shards, or raise GROK_WEB_MAX_PROMPT_CHARS only after confirming the local tunnel/model accepts larger prompts.";
+    }
+    return "Adjust --scope, --scope-base, or --scope-paths and retry.";
+  }
   if (errorCode === "tunnel_unavailable") return "Start the local Grok web tunnel, verify GROK_WEB_BASE_URL, then retry.";
   if (errorCode === "tunnel_timeout") return "The local Grok web tunnel did not respond before GROK_WEB_TIMEOUT_MS; inspect the tunnel and retry.";
   if (errorCode === "session_expired") return "Refresh the Grok web login/session used by the local tunnel, then retry.";
@@ -991,7 +1044,7 @@ function buildRecord({ cfg, mode, options, scopeInfo, execution, startedAt, ende
     error_message: errorMessage,
     error_summary: completed ? null : diagnostic,
     error_cause: completed ? null : errorCauseFor(errorCode),
-    suggested_action: completed ? null : suggestedAction(errorCode),
+    suggested_action: completed ? null : suggestedAction(errorCode, errorMessage),
     external_review: buildTerminalExternalReview({ cfg, mode, options, scopeInfo, execution, transmission, reviewDisclosure }),
     disclosure_note: reviewDisclosure,
     runtime_diagnostics: null,
@@ -1363,16 +1416,18 @@ async function cmdRun(options) {
   const mode = options.mode ?? "review";
   let lifecycleEvents = null;
   const startedAt = new Date().toISOString();
-  const cfg = config();
+  let cfg = null;
   const jobId = `job_${randomUUID()}`;
   const runOptions = { ...options, jobId };
   let scopeInfo;
   let execution;
   try {
     lifecycleEvents = parseLifecycleEventsMode(options["lifecycle-events"]);
+    cfg = config();
     if (!VALID_MODES.has(mode)) throw new Error(`bad_args: unsupported --mode ${mode}`);
     scopeInfo = await collectScope({ ...runOptions, mode });
   } catch (e) {
+    cfg ??= fallbackConfig();
     const cwd = resolve(process.cwd());
     scopeInfo = {
       cwd,
@@ -1392,6 +1447,10 @@ async function cmdRun(options) {
     let prompt;
     try {
       prompt = promptFor(mode, options.prompt ?? "", scopeInfo);
+      if (prompt.length > cfg.max_prompt_chars) {
+        execution = providerFailure("scope_failed", redactor()(`prompt_too_large:${prompt.length} chars exceeds GROK_WEB_MAX_PROMPT_CHARS=${cfg.max_prompt_chars}`), null, null, false);
+        execution.prompt = prompt;
+      }
     } catch (e) {
       execution = providerFailure(e.message.startsWith("bad_args:") ? "bad_args" : "scope_failed", redactor()(e.message), null, null, false);
     }
@@ -1469,7 +1528,14 @@ async function runCli() {
   }
 }
 
-export { releaseStateLock, sortJobSummaries, staleLockReason, withStateLock };
+export {
+  readUtf8ScopeFileWithinLimit,
+  releaseStateLock,
+  sameFileIdentity,
+  sortJobSummaries,
+  staleLockReason,
+  withStateLock,
+};
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   await runCli();
