@@ -1829,7 +1829,7 @@ test("direct API billing-provider outages are provider unavailable, not cost-quo
       error: {
         code: "billing_provider_outage",
         type: "provider_unavailable",
-        message: "billing system unavailable; retry later",
+        message: "billing account quota verifier unavailable; retry later",
       },
     }));
   });
