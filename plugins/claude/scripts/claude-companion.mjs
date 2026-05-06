@@ -1302,7 +1302,7 @@ async function cmdPing(rest) {
     process.exit(2);
   }
   // Classify. Real Claude error texts change per version; match on signals only.
-  if (execution.parsed?.ok && (execution.parsed?.result || execution.parsed?.structured)) {
+  if (execution.parsed.ok && (execution.parsed.result || execution.parsed.structured)) {
     // T7.4: drop the legacy `.sessionId` alias. Ping uses claudeSessionId
     // (Claude's echo) with sessionIdSent fallback when the mock short-circuits.
     const payload = { status: "ok", ...pingOkFields(), ...authDiagnosticFields(authSelection), model: model ?? null,
@@ -1329,7 +1329,7 @@ async function cmdPing(rest) {
     process.exit(2);
   }
   printJson({ status: "error", ...pingErrorFields(), ...authDiagnosticFields(authSelection),
-    detail: "parsed result missing", raw: execution.parsed?.raw ?? null });
+    detail: "parsed result missing", raw: execution.parsed.raw });
   process.exit(2);
 }
 
