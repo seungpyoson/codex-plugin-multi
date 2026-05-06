@@ -1402,7 +1402,7 @@ function providerFailureDetailObject(parsed) {
 function classifyHttpFailure(status, parsed) {
   const detail = parsed.ok ? providerFailureDetailText(parsed) : "";
   if (status === 401 || status === 403) return "auth_rejected";
-  if (status === 408 || status === 409 || status === 425 || status === 500 || status === 502 || status === 503 || status === 504 || /capacity|resource|overload|unavailable/i.test(detail)) {
+  if (status === 408 || status === 409 || status === 425 || status === 500 || status === 501 || status === 502 || status === 503 || status === 504 || /capacity|resource|overload|unavailable/i.test(detail)) {
     return "provider_unavailable";
   }
   if (status === 402 || status === 429 || isUsageLimitDetail(detail)) return "usage_limited";
@@ -1422,8 +1422,8 @@ function costQuotaDiagnostics(httpStatus, parsed) {
   const error = providerFailureDetailObject(parsed);
   const detail = parsed.ok ? providerFailureDetailText(parsed) : "";
   const authRejected = httpStatus === 401 || httpStatus === 403;
-  const serverFailure = httpStatus === 408 || httpStatus === 409 || httpStatus === 425 || httpStatus === 500 || httpStatus === 502 || httpStatus === 503 || httpStatus === 504;
-  const usageLimited = !authRejected && !serverFailure && (httpStatus === 402 || httpStatus === 429 || isUsageLimitDetail(detail));
+  const providerUnavailable = httpStatus === 408 || httpStatus === 409 || httpStatus === 425 || httpStatus === 500 || httpStatus === 501 || httpStatus === 502 || httpStatus === 503 || httpStatus === 504 || /capacity|resource|overload|unavailable/i.test(detail);
+  const usageLimited = !authRejected && !providerUnavailable && (httpStatus === 402 || httpStatus === 429 || isUsageLimitDetail(detail));
   return {
     classification: usageLimited ? "usage_limited" : "not_reported",
     http_status: httpStatus ?? null,

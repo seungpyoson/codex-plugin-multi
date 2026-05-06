@@ -1874,6 +1874,7 @@ test("tunnel invocation catch is separated from prompt construction catch", () =
 for (const { status, code, quotaBody = false } of [
   { status: 401, code: "session_expired", quotaBody: true },
   { status: 403, code: "session_expired" },
+  { status: 408, code: "tunnel_error", quotaBody: true },
   { status: 400, code: "usage_limited" },
   { status: 402, code: "usage_limited" },
   { status: 429, code: "usage_limited" },
