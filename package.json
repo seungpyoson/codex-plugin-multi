@@ -34,6 +34,7 @@
     "smoke:grok": "node --test --test-reporter=spec tests/smoke/grok-web.smoke.test.mjs tests/smoke/grok-session-sync.smoke.test.mjs",
     "grok:sync-browser-session": "node plugins/grok/scripts/grok-sync-browser-session.mjs",
     "smoke:api-reviewers": "node --test --test-reporter=spec tests/smoke/api-reviewers.smoke.test.mjs",
+    "smoke:rerecord": "node scripts/smoke-rerecord.mjs",
     "e2e:claude": "node --test --test-reporter=spec tests/e2e/claude.e2e.test.mjs",
     "e2e:gemini": "node --test --test-reporter=spec tests/e2e/gemini.e2e.test.mjs",
     "e2e:kimi": "node --test --test-reporter=spec tests/e2e/kimi.e2e.test.mjs",
