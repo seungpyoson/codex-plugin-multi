@@ -213,6 +213,9 @@ function scopeResolutionReason(invocation) {
 function reviewAuditManifest(invocation, prompt, containmentPath, execution) {
   if (!invocation.review_prompt_contract_version || invocation.mode_profile_name === "rescue") return null;
   const meta = promptMetadata(invocation);
+  const errorCode = String(execution?.errorMessage ?? "").startsWith("oauth_inference_rejected:")
+    ? "oauth_inference_rejected"
+    : (execution?.parsed?.reason ?? null);
   return buildReviewAuditManifest({
     prompt,
     sourceFiles: auditSourceFiles(containmentPath),
@@ -249,7 +252,7 @@ function reviewAuditManifest(invocation, prompt, containmentPath, execution) {
     status: execution?.preflight === true
       ? "preflight_failed"
       : (execution?.exitCode === 0 && execution?.parsed?.ok === true ? "completed" : "failed"),
-    errorCode: execution?.parsed?.reason ?? null,
+    errorCode,
   });
 }
 
@@ -1325,6 +1328,7 @@ function safeClaudeOAuthStatus(binary, authSelection) {
   }
   try {
     const parsed = parseJsonObjectOutput(result.stdout);
+    // Explicit allowlist: do not add user, email, org, or account fields here.
     return {
       checked: true,
       available: true,
