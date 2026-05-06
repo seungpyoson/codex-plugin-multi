@@ -113,7 +113,7 @@ function buildReviewMetadata(invocation, execution = null, parsed = null) {
 }
 
 export function externalReviewForInvocation(invocation, execution = null) {
-  const { status, error_code } = classifyExecution(execution);
+  const { status, error_code } = classifyExecution(execution, invocation);
   const sourceContentTransmission = sourceContentTransmissionForExecution({
     status,
     errorCode: error_code,
@@ -149,6 +149,10 @@ export function externalReviewForInvocation(invocation, execution = null) {
  *                         with missing-binary errors. PR #21 review HIGH 1.
  *   parse_error     — parsed.ok === false with reason starting "json_parse"/"empty_stdout".
  *   timeout         — execution.timedOut === true (companion's wall-clock kill).
+ *   oauth_inference_rejected — subscription/OAuth review inference returned
+ *                     HTTP 401 even though CLI auth status may still report
+ *                     logged-in. This must not be hidden as generic
+ *                     claude_error.
  *   claude_error    — exitCode !== 0 with parseable JSON (target's is_error=true).
  *                     Also covers exitCode === 0 but parsed.ok === false with
  *                     is_error semantics.
@@ -157,8 +161,18 @@ export function externalReviewForInvocation(invocation, execution = null) {
  */
 const CANCEL_SIGNALS = new Set(["SIGTERM", "SIGKILL", "SIGINT", "SIGHUP"]);
 const FINALIZATION_FAILED_PREFIX = "finalization_failed:";
+const OAUTH_INFERENCE_REJECTED_PREFIX = "oauth_inference_rejected:";
 
-function classifyExecution(execution) {
+function isOAuthInferenceRejected(execution, invocation = null) {
+  if (invocation?.selected_auth_path && invocation.selected_auth_path !== "subscription_oauth") return false;
+  if (!invocation?.selected_auth_path && invocation?.auth_mode === "api_key") return false;
+  const raw = execution?.parsed?.raw;
+  const status = raw && typeof raw === "object" ? raw.api_error_status : null;
+  const result = String(execution?.parsed?.result ?? "");
+  return status === 401 && /invalid authentication credentials|failed to authenticate/i.test(result);
+}
+
+function classifyExecution(execution, invocation = null) {
   if (!execution) {
     return {
       status: "queued",
@@ -196,6 +210,13 @@ function classifyExecution(execution) {
     };
   }
   if (execution.errorMessage) {
+    if (String(execution.errorMessage).startsWith(OAUTH_INFERENCE_REJECTED_PREFIX)) {
+      return {
+        status: "failed",
+        error_code: "oauth_inference_rejected",
+        error_message: String(execution.errorMessage).slice(OAUTH_INFERENCE_REJECTED_PREFIX.length).trim(),
+      };
+    }
     if (isScopeFailure(execution.errorMessage)) {
       return {
         status: "failed",
@@ -243,6 +264,13 @@ function classifyExecution(execution) {
         error_message: parsed.error ?? reason,
       };
     }
+    if (isOAuthInferenceRejected(execution, invocation)) {
+      return {
+        status: "failed",
+        error_code: "oauth_inference_rejected",
+        error_message: parsed.result ?? parsed.error ?? null,
+      };
+    }
     return {
       status: "failed",
       error_code: "claude_error",
@@ -280,7 +308,21 @@ function buildErrorDiagnostic(invocation, status, error_code, error_message) {
     suggested_action: null,
     disclosure_note: null,
   };
-  if (status !== "failed" || error_code !== "scope_failed" || !error_message) {
+  if (status !== "failed") {
+    return empty;
+  }
+  if (error_code === "oauth_inference_rejected") {
+    return {
+      error_summary: "Claude OAuth non-interactive inference was rejected.",
+      error_cause:
+        "Claude Code reported HTTP 401 while the companion was using subscription/OAuth mode. " +
+        "`claude auth status` can still report logged in; when detected by preflight, the review source is not sent.",
+      suggested_action:
+        "Run `/claude-setup`, refresh Claude OAuth in a normal terminal if needed, and verify OAuth-only `claude -p` inference works before retrying the review.",
+      disclosure_note: null,
+    };
+  }
+  if (error_code !== "scope_failed" || !error_message) {
     return empty;
   }
 
@@ -518,7 +560,7 @@ export function buildJobRecord(invocation, execution, mutations) {
   if (!Array.isArray(mutations)) {
     throw new Error("buildJobRecord: mutations must be an array (empty ok)");
   }
-  const { status, error_code, error_message } = classifyExecution(execution);
+  const { status, error_code, error_message } = classifyExecution(execution, invocation);
   const diagnostic = buildErrorDiagnostic(invocation, status, error_code, error_message);
 
   const parsed = execution?.parsed ?? null;

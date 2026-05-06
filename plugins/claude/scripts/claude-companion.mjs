@@ -43,6 +43,8 @@ import { newJobId, verifyPidInfo } from "./lib/identity.mjs";
 import { buildJobRecord, externalReviewForInvocation } from "./lib/job-record.mjs";
 import { reconcileActiveJobs } from "./lib/reconcile.mjs";
 import { cleanGitEnv } from "./lib/git-env.mjs";
+import { sanitizeTargetEnv } from "./lib/provider-env.mjs";
+import { runCommand } from "./lib/process.mjs";
 import {
   authDiagnosticFields,
   apiKeyMissingFields as buildApiKeyMissingFields,
@@ -78,6 +80,7 @@ configureState({
 
 const MODELS_CONFIG_PATH = resolvePath(PLUGIN_ROOT, "config/models.json");
 const DEFAULT_CLAUDE_REVIEW_TIMEOUT_MS = 600000;
+const CLAUDE_AUTH_STATUS_TIMEOUT_MS = 10000;
 const CONTINUABLE_STATUSES = new Set(["completed", "failed", "cancelled", "stale"]);
 const RUN_MODES = Object.freeze(["review", "adversarial-review", "custom-review", "rescue"]);
 const PREFLIGHT_MODES = Object.freeze(["review", "adversarial-review", "custom-review"]);
@@ -243,7 +246,9 @@ function reviewAuditManifest(invocation, prompt, containmentPath, execution) {
       reason: scopeResolutionReason(invocation),
     },
     result: execution?.parsed?.result ?? "",
-    status: execution?.exitCode === 0 && execution?.parsed?.ok === true ? "completed" : "failed",
+    status: execution?.preflight === true
+      ? "preflight_failed"
+      : (execution?.exitCode === 0 && execution?.parsed?.ok === true ? "completed" : "failed"),
     errorCode: execution?.parsed?.reason ?? null,
   });
 }
@@ -677,8 +682,14 @@ async function cmdRun(rest) {
 // prompt; background worker calls it after reading the prompt sidecar.
 // EXACTLY ONE buildJobRecord call per terminal state — §21.3.2 convergence.
 async function executeRun(invocation, prompt, { foreground, lifecycleEvents = null }) {
+  const authSelection = resolveAuthSelection(invocation.auth_mode);
+  invocation = Object.freeze({
+    ...invocation,
+    selected_auth_path: authSelection.selected_auth_path,
+  });
   const { job_id: jobId, workspace_root: workspaceRoot } = invocation;
   const profile = resolveProfile(invocation.mode_profile_name);
+
   const executionScope = setupExecutionScopeOrExit(invocation, profile, { foreground, lifecycleEvents });
   const mutationContext = prepareMutationContext(invocation, profile);
   const runtimeDiagnostics = buildRuntimeDiagnostics(
@@ -687,6 +698,24 @@ async function executeRun(invocation, prompt, { foreground, lifecycleEvents = nu
     mutationContext.neutralCwd ?? executionScope.childCwd,
   );
   const resumeId = latestResumeId(invocation);
+
+  const oauthPreflightExecution = await claudeOAuthInferencePreflight(invocation, authSelection);
+  if (oauthPreflightExecution) {
+    const finalRecord = buildClaudeFinalRecord(
+      invocation,
+      oauthPreflightExecution,
+      null,
+      mutationContext.mutations,
+      prompt,
+      executionScope.addDir,
+      runtimeDiagnostics,
+    );
+    commitJobRecord(workspaceRoot, jobId, finalRecord);
+    writeExecutionSidecars(workspaceRoot, jobId, oauthPreflightExecution);
+    cleanupExecutionResources(executionScope, mutationContext);
+    if (foreground) printLifecycleJson(finalRecord, lifecycleEvents);
+    process.exit(2);
+  }
 
   exitIfCancelledBeforeSpawn(invocation, executionScope, mutationContext, {
     foreground,
@@ -841,6 +870,37 @@ async function spawnClaudeOrExit(invocation, profile, prompt, executionScope, mu
     if (options.foreground) printLifecycleJson(errorRecord, options.lifecycleEvents);
     process.exit(2);
   }
+}
+
+async function claudeOAuthInferencePreflight(invocation, authSelection) {
+  if (authSelection.selected_auth_path !== "subscription_oauth") return null;
+  const profile = resolveProfile("ping");
+  let execution;
+  try {
+    execution = await spawnClaude(profile, {
+      model: invocation.model,
+      promptText: PING_PROMPT,
+      sessionId: newJobId(),
+      cwd: invocation.cwd,
+      binary: invocation.binary,
+      timeoutMs: Math.min(Number(invocation.timeout_ms ?? 15000), 15000),
+      allowedApiKeyEnv: authSelection.allowed_env_credentials,
+    });
+  } catch {
+    return null;
+  }
+  if (execution.parsed?.ok === true) return null;
+  const detail = pingFailureDetail(execution);
+  if (!PING_AUTH_RE.test(detail)) return null;
+  const oauthStatus = safeClaudeOAuthStatus(invocation.binary, authSelection);
+  if (oauthStatus?.logged_in !== true || !/401|invalid authentication credentials/i.test(detail)) return null;
+  return {
+    ...execution,
+    pidInfo: null,
+    claudeSessionId: null,
+    preflight: true,
+    errorMessage: `oauth_inference_rejected: ${detail}`,
+  };
 }
 
 function writeRunningRecord(invocation, pidInfo, mutations, runtimeDiagnostics = null) {
@@ -1237,6 +1297,62 @@ function pingErrorFields() {
   };
 }
 
+function oauthInferenceRejectedFields() {
+  return {
+    ready: false,
+    summary: "Claude Code OAuth login is present, but OAuth non-interactive inference is rejected.",
+    next_action: "Refresh Claude OAuth in a normal terminal with `claude auth login`, then verify OAuth-only `claude -p` inference works.",
+  };
+}
+
+function safeClaudeOAuthStatus(binary, authSelection) {
+  if (authSelection.selected_auth_path !== "subscription_oauth") return null;
+  const env = sanitizeTargetEnv(process.env, { allowedApiKeyEnv: authSelection.allowed_env_credentials });
+  const result = runCommand(binary, ["auth", "status", "--json"], {
+    cwd: process.cwd(),
+    env,
+    maxBuffer: 1024 * 1024,
+    timeout: CLAUDE_AUTH_STATUS_TIMEOUT_MS,
+  });
+  if (result.error) {
+    const detail = result.error.code === "ENOENT"
+      ? "not_found"
+      : (result.error.code === "ETIMEDOUT" ? "timeout" : "error");
+    return { checked: true, available: false, detail };
+  }
+  if (result.status !== 0) {
+    return { checked: true, available: false, detail: "status_failed" };
+  }
+  try {
+    const parsed = parseJsonObjectOutput(result.stdout);
+    return {
+      checked: true,
+      available: true,
+      logged_in: parsed.loggedIn === true,
+      auth_method: typeof parsed.authMethod === "string" ? parsed.authMethod : null,
+      api_provider: typeof parsed.apiProvider === "string" ? parsed.apiProvider : null,
+      subscription_type: typeof parsed.subscriptionType === "string" ? parsed.subscriptionType : null,
+    };
+  } catch {
+    return { checked: true, available: false, detail: "status_parse_failed" };
+  }
+}
+
+function parseJsonObjectOutput(stdout) {
+  const text = String(stdout ?? "").trim();
+  if (!text) return {};
+  try {
+    return JSON.parse(text);
+  } catch {
+    const start = text.indexOf("{");
+    const end = text.lastIndexOf("}");
+    if (start >= 0 && end >= start) {
+      return JSON.parse(text.slice(start, end + 1));
+    }
+    throw new Error("no_json_object");
+  }
+}
+
 function pingFailureDetail(execution) {
   const raw = execution?.parsed?.raw;
   const rawText = typeof raw === "string"
@@ -1302,7 +1418,7 @@ async function cmdPing(rest) {
     process.exit(2);
   }
   // Classify. Real Claude error texts change per version; match on signals only.
-  if (execution.parsed.ok && (execution.parsed.result || execution.parsed.structured)) {
+  if (execution.parsed?.ok === true) {
     // T7.4: drop the legacy `.sessionId` alias. Ping uses claudeSessionId
     // (Claude's echo) with sessionIdSent fallback when the mock short-circuits.
     const payload = { status: "ok", ...pingOkFields(), ...authDiagnosticFields(authSelection), model: model ?? null,
@@ -1318,8 +1434,16 @@ async function cmdPing(rest) {
       process.exit(2);
     }
     if (PING_AUTH_RE.test(detail)) {
+      const oauthStatus = safeClaudeOAuthStatus(binary, authSelection);
+      if (oauthStatus?.logged_in === true && /401|invalid authentication credentials/i.test(detail)) {
+        printJson({ status: "oauth_inference_rejected", ...oauthInferenceRejectedFields(), detail,
+          ...authDiagnosticFields(authSelection),
+          oauth_status: oauthStatus });
+        process.exit(2);
+      }
       printJson({ status: "not_authed", ...pingNotAuthedFields(), detail,
         ...authDiagnosticFields(authSelection),
+        ...(oauthStatus ? { oauth_status: oauthStatus } : {}),
         hint: authSelection.selected_auth_path === "api_key_env"
           ? "Claude was launched with explicit API-key auth. Check the provider key and CLI support."
           : "Run `claude` interactively to complete OAuth. API-key env vars are ignored by subscription-mode policy." });
