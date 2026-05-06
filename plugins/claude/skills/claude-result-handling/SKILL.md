@@ -59,7 +59,7 @@ comes back to you.
   "started_at":          "<iso-8601>",
   "ended_at":            null | "<iso-8601>",
   "exit_code":           null | 0 | 1 | 2,
-  "error_code":          null | "scope_failed" | "spawn_failed" | "claude_error" | "gemini_error" | "kimi_error" | "parse_error" | "oauth_inference_rejected" | "step_limit_exceeded" | "usage_limited" | "finalization_failed" | "timeout" | "stale_active_job",
+  "error_code":          null | "scope_failed" | "spawn_failed" | "claude_error" | "gemini_error" | "kimi_error" | "parse_error" | "step_limit_exceeded" | "usage_limited" | "finalization_failed" | "timeout" | "stale_active_job",
   "error_message":       null | "<human>",
   "error_summary":       null | "<short operator-facing summary>",
   "error_cause":         null | "<why this happened>",
@@ -213,11 +213,6 @@ from short-lived index contention.
   target CLI or external provider.
 - `claude_error` — Claude ran but returned `is_error: true`. `result` may
   still contain partial text worth showing.
-- `oauth_inference_rejected` — Claude Code returned an HTTP 401 authentication
-  rejection from non-interactive inference while the companion was using
-  subscription/OAuth mode. Treat this as a failed review slot, not a model
-  verdict or approval. Tell the user to run `/claude-setup`; `claude auth
-  status` may be a false positive for review readiness.
 - `gemini_error` / `kimi_error` — the corresponding external CLI ran but
   returned a target-level failure. `result` may contain partial text worth
   showing if present; otherwise use the structured diagnostic fields.

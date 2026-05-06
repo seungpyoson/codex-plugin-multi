@@ -8,6 +8,7 @@ const pkg = JSON.parse(readFileSync(resolve("package.json"), "utf8"));
 const workflow = readFileSync(resolve(".github/workflows/pull-request-ci.yml"), "utf8");
 const e2eDocs = readFileSync(resolve("docs/e2e.md"), "utf8");
 const sonarConfig = readFileSync(resolve(".sonarcloud.properties"), "utf8");
+const syncExternalReview = readFileSync(resolve("scripts/ci/sync-external-review.mjs"), "utf8");
 
 test("package scripts expose per-target smoke commands", () => {
   assert.match(pkg.scripts["smoke:claude"] ?? "", /claude-companion\.smoke\.test\.mjs/);
@@ -37,6 +38,10 @@ test("pull-request CI runs shared-copy sync checks", () => {
   assert.match(pkg.scripts["lint:sync"] ?? "", /sync-auth-selection\.mjs --check/);
   assert.match(pkg.scripts["lint:sync"] ?? "", /sync-provider-env\.mjs --check/);
   assert.match(workflow, /npm run lint:sync/);
+});
+
+test("external-review sync script includes the Grok packaged copy", () => {
+  assert.match(syncExternalReview, /plugins\/grok\/scripts\/lib\/external-review\.mjs/);
 });
 
 test("pull-request CI runs the enforced coverage gate", () => {

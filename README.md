@@ -20,10 +20,7 @@ lets Claude Code delegate to Codex.
 
 - Codex with plugin marketplace support.
 - Git and Node.js available on `PATH`.
-- Claude Code installed and OAuth-authenticated if you enable the Claude plugin.
-  `claude auth status` alone is not enough for review readiness; `/claude-setup`
-  also verifies OAuth-only non-interactive `claude -p` inference because status
-  can report logged-in while print-mode inference returns HTTP 401.
+- Claude Code installed and authenticated if you enable the Claude plugin.
 - Gemini CLI installed and authenticated if you enable the Gemini plugin.
 - Kimi Code CLI installed and authenticated if you enable the Kimi plugin.
 - A local Grok web tunnel if you enable the Grok plugin. The default endpoint
@@ -283,7 +280,7 @@ command docs:
 
 | Command | Status | Behavior |
 |---|---|---|
-| `/claude-setup` / `/gemini-setup` / `/kimi-setup` | Packaged | Target CLI availability and OAuth readiness check. Claude setup includes an OAuth-only non-interactive inference probe, not just `claude auth status`. |
+| `/claude-setup` / `/gemini-setup` / `/kimi-setup` | Packaged | Target CLI availability and OAuth readiness check. |
 | `/deepseek-setup` / `/glm-setup` | Packaged | Direct API-key readiness check; reports key names only. |
 | `/grok-setup` | Packaged | Grok subscription-backed local tunnel readiness check; probes `/v1/models` by default and reports key names only. |
 | `/claude-review [focus]` / `/gemini-review [focus]` / `/kimi-review [focus]` | Packaged | Read-only review profile over the selected scope. |

@@ -14,7 +14,6 @@ import { readFileSync, existsSync, realpathSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createHash } from "node:crypto";
-import { PING_PROMPT } from "../../plugins/claude/scripts/lib/companion-common.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const FIXTURE_DIR = resolve(HERE, "fixtures/claude");
@@ -209,8 +208,7 @@ if (process.env.CLAUDE_MOCK_LIST_ADDDIR && addDir) {
 // (worktree containment). Keeps the hook additive: leaving the env unset
 // is identical to pre-T7.6 behavior.
 const mutateRel = process.env.CLAUDE_MOCK_MUTATE_FILE;
-const isPingPrompt = prompt === PING_PROMPT;
-if (mutateRel && !isPingPrompt) {
+if (mutateRel) {
   const { writeFileSync: wf, mkdirSync: mk } = await import("node:fs");
   const { isAbsolute, dirname: dn } = await import("node:path");
   let target;
