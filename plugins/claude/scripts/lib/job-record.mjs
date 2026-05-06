@@ -113,7 +113,7 @@ function buildReviewMetadata(invocation, execution = null, parsed = null) {
 }
 
 export function externalReviewForInvocation(invocation, execution = null) {
-  const { status, error_code } = classifyExecution(execution);
+  const { status, error_code } = classifyExecution(execution, invocation);
   const sourceContentTransmission = sourceContentTransmissionForExecution({
     status,
     errorCode: error_code,
@@ -149,6 +149,10 @@ export function externalReviewForInvocation(invocation, execution = null) {
  *                         with missing-binary errors. PR #21 review HIGH 1.
  *   parse_error     — parsed.ok === false with reason starting "json_parse"/"empty_stdout".
  *   timeout         — execution.timedOut === true (companion's wall-clock kill).
+ *   oauth_inference_rejected — subscription/OAuth review inference returned
+ *                     HTTP 401 even though CLI auth status may still report
+ *                     logged-in. This must not be hidden as generic
+ *                     claude_error.
  *   claude_error    — exitCode !== 0 with parseable JSON (target's is_error=true).
  *                     Also covers exitCode === 0 but parsed.ok === false with
  *                     is_error semantics.
@@ -157,8 +161,18 @@ export function externalReviewForInvocation(invocation, execution = null) {
  */
 const CANCEL_SIGNALS = new Set(["SIGTERM", "SIGKILL", "SIGINT", "SIGHUP"]);
 const FINALIZATION_FAILED_PREFIX = "finalization_failed:";
+const OAUTH_INFERENCE_REJECTED_PREFIX = "oauth_inference_rejected:";
 
-function classifyExecution(execution) {
+export function isOAuthInferenceRejected(execution, authContext = null) {
+  if (!authContext) return false;
+  if (authContext.selected_auth_path !== "subscription_oauth") return false;
+  const raw = execution?.parsed?.raw;
+  const status = raw && typeof raw === "object" ? raw.api_error_status : null;
+  const result = String(execution?.parsed?.result ?? "");
+  return status === 401 && /invalid authentication credentials|failed to authenticate/i.test(result);
+}
+
+function classifyLifecycleState(execution) {
   if (!execution) {
     return {
       status: "queued",
@@ -195,25 +209,68 @@ function classifyExecution(execution) {
       error_message: execution.errorMessage ?? "stale_active_job",
     };
   }
-  if (execution.errorMessage) {
-    if (isScopeFailure(execution.errorMessage)) {
-      return {
-        status: "failed",
-        error_code: "scope_failed",
-        error_message: execution.errorMessage,
-      };
-    }
-    // Distinguish finalization_failed (post-target persistence failure) from
-    // spawn_failed (target never ran). The companion's executeRun fallback
-    // synthesizes the former with a fixed prefix; everything else is a true
-    // pre-spawn failure. PR #21 review HIGH 1.
-    const isFinalization = String(execution.errorMessage).startsWith(FINALIZATION_FAILED_PREFIX);
+  return null;
+}
+
+function classifyErrorMessage(message) {
+  if (!message) return null;
+  const text = String(message);
+  if (text.startsWith(OAUTH_INFERENCE_REJECTED_PREFIX)) {
     return {
       status: "failed",
-      error_code: isFinalization ? "finalization_failed" : "spawn_failed",
-      error_message: execution.errorMessage,
+      error_code: "oauth_inference_rejected",
+      error_message: text.slice(OAUTH_INFERENCE_REJECTED_PREFIX.length).trim(),
     };
   }
+  if (isScopeFailure(message)) {
+    return {
+      status: "failed",
+      error_code: "scope_failed",
+      error_message: message,
+    };
+  }
+  // Distinguish finalization_failed (post-target persistence failure) from
+  // spawn_failed (target never ran). The companion's executeRun fallback
+  // synthesizes the former with a fixed prefix; everything else is a true
+  // pre-spawn failure. PR #21 review HIGH 1.
+  const isFinalization = text.startsWith(FINALIZATION_FAILED_PREFIX);
+  return {
+    status: "failed",
+    error_code: isFinalization ? "finalization_failed" : "spawn_failed",
+    error_message: message,
+  };
+}
+
+function classifyParsedFailure(execution, invocation, parsed) {
+  const reason = parsed.reason ?? null;
+  if (reason === "json_parse_error" || reason === "empty_stdout") {
+    return {
+      status: "failed",
+      error_code: "parse_error",
+      error_message: parsed.error ?? reason,
+    };
+  }
+  if (isOAuthInferenceRejected(execution, invocation)) {
+    return {
+      status: "failed",
+      error_code: "oauth_inference_rejected",
+      error_message: parsed.result ?? parsed.error ?? null,
+    };
+  }
+  return {
+    status: "failed",
+    error_code: "claude_error",
+    error_message: parsed.error ?? null,
+  };
+}
+
+export function classifyExecution(execution, invocation = null) {
+  const lifecycleState = classifyLifecycleState(execution);
+  if (lifecycleState) return lifecycleState;
+
+  const errorMessageState = classifyErrorMessage(execution.errorMessage);
+  if (errorMessageState) return errorMessageState;
+
   // #16 follow-up 1 / 2: a wall-clock timeout fires SIGTERM too, so check
   // timedOut FIRST. Only signal-driven exits without timedOut are cancels.
   if (execution.timedOut === true) {
@@ -235,19 +292,7 @@ function classifyExecution(execution) {
     return { status: "completed", error_code: null, error_message: null };
   }
   if (parsed && parsed.ok === false) {
-    const reason = parsed.reason ?? null;
-    if (reason === "json_parse_error" || reason === "empty_stdout") {
-      return {
-        status: "failed",
-        error_code: "parse_error",
-        error_message: parsed.error ?? reason,
-      };
-    }
-    return {
-      status: "failed",
-      error_code: "claude_error",
-      error_message: parsed.error ?? null,
-    };
+    return classifyParsedFailure(execution, invocation, parsed);
   }
   // Non-zero exit with no parsed JSON diagnostic — treat as claude_error.
   return {
@@ -280,7 +325,21 @@ function buildErrorDiagnostic(invocation, status, error_code, error_message) {
     suggested_action: null,
     disclosure_note: null,
   };
-  if (status !== "failed" || error_code !== "scope_failed" || !error_message) {
+  if (status !== "failed") {
+    return empty;
+  }
+  if (error_code === "oauth_inference_rejected") {
+    return {
+      error_summary: "Claude OAuth non-interactive inference was rejected.",
+      error_cause:
+        "Claude Code reported HTTP 401 while the companion was using subscription/OAuth mode. " +
+        "`claude auth status` can still report logged in; non-interactive inference was rejected.",
+      suggested_action:
+        "Run `/claude-setup`, refresh Claude OAuth in a normal terminal if needed, and verify OAuth-only `claude -p` inference works before retrying the review.",
+      disclosure_note: null,
+    };
+  }
+  if (error_code !== "scope_failed" || !error_message) {
     return empty;
   }
 
@@ -518,7 +577,7 @@ export function buildJobRecord(invocation, execution, mutations) {
   if (!Array.isArray(mutations)) {
     throw new Error("buildJobRecord: mutations must be an array (empty ok)");
   }
-  const { status, error_code, error_message } = classifyExecution(execution);
+  const { status, error_code, error_message } = classifyExecution(execution, invocation);
   const diagnostic = buildErrorDiagnostic(invocation, status, error_code, error_message);
 
   const parsed = execution?.parsed ?? null;

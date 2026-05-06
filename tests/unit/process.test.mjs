@@ -25,6 +25,16 @@ test("runCommand: captures stdout, stderr, status, and command metadata", () => 
   assert.equal(result.error, null);
 });
 
+test("runCommand: supports bounded spawnSync timeouts", () => {
+  const result = runCommand(process.execPath, [
+    "-e",
+    "setTimeout(() => {}, 1000)",
+  ], { timeout: 50 });
+
+  assert.equal(result.status, null);
+  assert.equal(result.error?.code, "ETIMEDOUT");
+});
+
 test("runCommandChecked: returns successful result and throws formatted failures", () => {
   const ok = runCommandChecked(process.execPath, ["-e", "process.stdout.write('ok')"]);
   assert.equal(ok.stdout, "ok");
