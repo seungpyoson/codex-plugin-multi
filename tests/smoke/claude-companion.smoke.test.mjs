@@ -1736,6 +1736,49 @@ process.exit(1);
   }
 });
 
+test("doctor: OAuth status JSON tolerates trailing notices with braces", () => {
+  const tmp = mkdtempSync(path.join(tmpdir(), "claude-doctor-oauth-status-trailing-brace-"));
+  const binary = writeExecutable(tmp, "claude-oauth-status-trailing-brace", `#!/usr/bin/env node
+const args = process.argv.slice(2);
+if (args[0] === "auth" && args[1] === "status") {
+  process.stdout.write("claude notice: auth cache refreshed\\n");
+  process.stdout.write(JSON.stringify({
+    loggedIn: true,
+    authMethod: "claude.ai",
+    apiProvider: "firstParty",
+    email: "user@example.com",
+    subscriptionType: "max"
+  }) + "\\n");
+  process.stdout.write("claude notice: trailing diagnostic }\\n");
+  process.exit(0);
+}
+process.stdout.write(JSON.stringify({
+  type: "result",
+  is_error: true,
+  api_error_status: 401,
+  result: "Failed to authenticate. API Error: 401 Invalid authentication credentials",
+  session_id: "33333333-3333-4333-8333-333333333333",
+  usage: { input_tokens: 0, output_tokens: 0 }
+}) + "\\n");
+process.exit(1);
+`);
+  const { stdout, status, dataDir } = runCompanion(
+    ["doctor", "--binary", binary, "--model", "claude-haiku-4-5-20251001"],
+    { cwd: tmpdir(), env: { ANTHROPIC_API_KEY: "", CLAUDE_API_KEY: "" } },
+  );
+  try {
+    assert.equal(status, 2);
+    const result = JSON.parse(stdout);
+    assert.equal(result.status, "oauth_inference_rejected");
+    assert.equal(result.oauth_status?.logged_in, true);
+    assert.equal(result.oauth_status?.subscription_type, "max");
+    assert.doesNotMatch(stdout, /user@example.com/);
+  } finally {
+    cleanup(dataDir);
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
 test("run: OAuth inference 401 is rejected before launch, not recorded as a failed review slot", () => {
   const cwd = mkdtempSync(path.join(tmpdir(), "claude-run-oauth-print-401-cwd-"));
   seedMinimalRepo(cwd);
@@ -1784,6 +1827,68 @@ process.exit(1);
     assert.equal(record.pid_info, null);
     assert.equal(record.review_metadata.audit_manifest.error_code, "oauth_inference_rejected");
     assert.equal(record.review_metadata.audit_manifest.review_quality.failed_review_slot, false);
+    assert.doesNotMatch(stdout, /user@example.com/);
+  } finally {
+    cleanup(dataDir);
+    rmSync(cwd, { recursive: true, force: true });
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("run: post-spawn OAuth inference 401 is mirrored into audit manifest", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "claude-run-oauth-postspawn-cwd-"));
+  seedMinimalRepo(cwd);
+  writeFileSync(path.join(cwd, "file.txt"), "changed\\n", "utf8");
+  const tmp = mkdtempSync(path.join(tmpdir(), "claude-run-oauth-postspawn-bin-"));
+  const counterPath = path.join(tmp, "counter.txt");
+  writeFileSync(counterPath, "0", "utf8");
+  const binary = writeExecutable(tmp, "claude-oauth-postspawn-401", `#!/usr/bin/env node
+import { readFileSync, writeFileSync } from "node:fs";
+if (process.argv.slice(2).join(" ") === "auth status --json") {
+  process.stdout.write(JSON.stringify({
+    loggedIn: true,
+    authMethod: "claude.ai",
+    apiProvider: "firstParty",
+    subscriptionType: "max",
+    email: "user@example.com"
+  }) + "\\n");
+  process.exit(0);
+}
+const counterPath = ${JSON.stringify(counterPath)};
+const count = Number(readFileSync(counterPath, "utf8"));
+writeFileSync(counterPath, String(count + 1));
+if (count === 0) {
+  process.stdout.write(JSON.stringify({
+    type: "result",
+    is_error: false,
+    result: "pong",
+    session_id: "11111111-1111-4111-8111-111111111111",
+    usage: { input_tokens: 1, output_tokens: 1 }
+  }) + "\\n");
+  process.exit(0);
+}
+process.stdout.write(JSON.stringify({
+  type: "result",
+  is_error: true,
+  api_error_status: 401,
+  result: "Failed to authenticate. API Error: 401 Invalid authentication credentials",
+  session_id: "22222222-2222-4222-8222-222222222222",
+  usage: { input_tokens: 0, output_tokens: 0 }
+}) + "\\n");
+process.exit(1);
+`);
+  const { stdout, status, dataDir } = runCompanion(
+    ["run", "--mode=review", "--foreground", "--binary", binary,
+     "--model", "claude-haiku-4-5-20251001", "--cwd", cwd, "--", "review this change"],
+    { cwd, env: { ANTHROPIC_API_KEY: "", CLAUDE_API_KEY: "" } },
+  );
+  try {
+    assert.equal(status, 2);
+    const record = JSON.parse(stdout);
+    assert.equal(record.error_code, "oauth_inference_rejected");
+    assert.equal(record.external_review.source_content_transmission, "sent");
+    assert.equal(record.review_metadata.audit_manifest.error_code, "oauth_inference_rejected");
+    assert.equal(record.review_metadata.audit_manifest.review_quality.failed_review_slot, true);
     assert.doesNotMatch(stdout, /user@example.com/);
   } finally {
     cleanup(dataDir);

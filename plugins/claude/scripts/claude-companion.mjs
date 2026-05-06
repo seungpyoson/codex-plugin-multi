@@ -40,7 +40,7 @@ import { resolveProfile, resolveModelForProfile } from "./lib/mode-profiles.mjs"
 import { setupContainment } from "./lib/containment.mjs";
 import { populateScope } from "./lib/scope.mjs";
 import { newJobId, verifyPidInfo } from "./lib/identity.mjs";
-import { buildJobRecord, externalReviewForInvocation } from "./lib/job-record.mjs";
+import { buildJobRecord, externalReviewForInvocation, isOAuthInferenceRejected } from "./lib/job-record.mjs";
 import { reconcileActiveJobs } from "./lib/reconcile.mjs";
 import { cleanGitEnv } from "./lib/git-env.mjs";
 import { sanitizeTargetEnv } from "./lib/provider-env.mjs";
@@ -213,9 +213,11 @@ function scopeResolutionReason(invocation) {
 function reviewAuditManifest(invocation, prompt, containmentPath, execution) {
   if (!invocation.review_prompt_contract_version || invocation.mode_profile_name === "rescue") return null;
   const meta = promptMetadata(invocation);
-  const errorCode = String(execution?.errorMessage ?? "").startsWith("oauth_inference_rejected:")
-    ? "oauth_inference_rejected"
-    : (execution?.parsed?.reason ?? null);
+  let errorCode = execution?.parsed?.reason ?? null;
+  if (String(execution?.errorMessage ?? "").startsWith("oauth_inference_rejected:")
+      || isOAuthInferenceRejected(execution, invocation)) {
+    errorCode = "oauth_inference_rejected";
+  }
   return buildReviewAuditManifest({
     prompt,
     sourceFiles: auditSourceFiles(containmentPath),
@@ -895,9 +897,9 @@ async function claudeOAuthInferencePreflight(invocation, authSelection) {
   }
   if (execution.parsed?.ok === true) return null;
   const detail = pingFailureDetail(execution);
-  if (!PING_AUTH_RE.test(detail)) return null;
+  if (!isOAuthInferenceRejected(execution, invocation)) return null;
   const oauthStatus = safeClaudeOAuthStatus(invocation.binary, authSelection, invocation.cwd);
-  if (oauthStatus?.logged_in !== true || !/401|invalid authentication credentials/i.test(detail)) return null;
+  if (oauthStatus?.logged_in !== true) return null;
   return {
     ...execution,
     pidInfo: null,
@@ -1349,13 +1351,46 @@ function parseJsonObjectOutput(stdout) {
   try {
     return JSON.parse(text);
   } catch {
-    const start = text.indexOf("{");
-    const end = text.lastIndexOf("}");
-    if (start >= 0 && end >= start) {
-      return JSON.parse(text.slice(start, end + 1));
-    }
+    const parsed = parseFirstBalancedJsonObject(text);
+    if (parsed !== null) return parsed;
     throw new Error("no_json_object");
   }
+}
+
+function parseFirstBalancedJsonObject(text) {
+  for (let start = text.indexOf("{"); start >= 0; start = text.indexOf("{", start + 1)) {
+    let depth = 0;
+    let inString = false;
+    let escaped = false;
+    for (let index = start; index < text.length; index += 1) {
+      const char = text[index];
+      if (inString) {
+        if (escaped) {
+          escaped = false;
+        } else if (char === "\\") {
+          escaped = true;
+        } else if (char === "\"") {
+          inString = false;
+        }
+        continue;
+      }
+      if (char === "\"") {
+        inString = true;
+      } else if (char === "{") {
+        depth += 1;
+      } else if (char === "}") {
+        depth -= 1;
+        if (depth === 0) {
+          try {
+            return JSON.parse(text.slice(start, index + 1));
+          } catch {
+            break;
+          }
+        }
+      }
+    }
+  }
+  return null;
 }
 
 function pingFailureDetail(execution) {
@@ -1438,17 +1473,20 @@ async function cmdPing(rest) {
       printJson({ status: "rate_limited", ...pingRateLimitedFields(), ...authDiagnosticFields(authSelection), detail });
       process.exit(2);
     }
+    const oauthStatus = isOAuthInferenceRejected(execution, authSelection)
+      ? safeClaudeOAuthStatus(binary, authSelection)
+      : null;
+    if (oauthStatus?.logged_in === true) {
+      printJson({ status: "oauth_inference_rejected", ...oauthInferenceRejectedFields(), detail,
+        ...authDiagnosticFields(authSelection),
+        oauth_status: oauthStatus });
+      process.exit(2);
+    }
     if (PING_AUTH_RE.test(detail)) {
-      const oauthStatus = safeClaudeOAuthStatus(binary, authSelection);
-      if (oauthStatus?.logged_in === true && /401|invalid authentication credentials/i.test(detail)) {
-        printJson({ status: "oauth_inference_rejected", ...oauthInferenceRejectedFields(), detail,
-          ...authDiagnosticFields(authSelection),
-          oauth_status: oauthStatus });
-        process.exit(2);
-      }
+      const authStatus = oauthStatus ?? safeClaudeOAuthStatus(binary, authSelection);
       printJson({ status: "not_authed", ...pingNotAuthedFields(), detail,
         ...authDiagnosticFields(authSelection),
-        ...(oauthStatus ? { oauth_status: oauthStatus } : {}),
+        ...(authStatus ? { oauth_status: authStatus } : {}),
         hint: authSelection.selected_auth_path === "api_key_env"
           ? "Claude was launched with explicit API-key auth. Check the provider key and CLI support."
           : "Run `claude` interactively to complete OAuth. API-key env vars are ignored by subscription-mode policy." });

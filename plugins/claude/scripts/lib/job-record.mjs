@@ -163,7 +163,7 @@ const CANCEL_SIGNALS = new Set(["SIGTERM", "SIGKILL", "SIGINT", "SIGHUP"]);
 const FINALIZATION_FAILED_PREFIX = "finalization_failed:";
 const OAUTH_INFERENCE_REJECTED_PREFIX = "oauth_inference_rejected:";
 
-function isOAuthInferenceRejected(execution, invocation = null) {
+export function isOAuthInferenceRejected(execution, invocation = null) {
   if (invocation?.selected_auth_path && invocation.selected_auth_path !== "subscription_oauth") return false;
   if (!invocation?.selected_auth_path && invocation?.auth_mode === "api_key") return false;
   const raw = execution?.parsed?.raw;
