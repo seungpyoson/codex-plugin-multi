@@ -14,9 +14,6 @@ Setup readiness check for the Claude plugin.
    - Always show `summary`.
    - If `ready: true`, report that Claude Code is ready.
    - If `ready: false`, show `next_action` exactly.
-   - If `status: "oauth_inference_rejected"`, explain that OAuth status is
-     present but non-interactive `claude -p` inference failed; this is a failed
-     review slot, not a model verdict.
    - If `ignored_env_credentials` is present, explain that those env vars were intentionally ignored by plugin policy; never print values.
 3. Print a smoke-test hint: ask Codex to use the Claude delegation skill for a
    read-only review.
@@ -24,7 +21,5 @@ Setup readiness check for the Claude plugin.
 ## Guardrails
 
 - Never read or write `ANTHROPIC_API_KEY` or any `*_API_KEY` env var.
-- Never treat API-key fallback as a valid setup result for subscription/OAuth
-  review readiness unless the user explicitly asked for API-key mode.
 - Never persist credentials.
 - Never auto-install or auto-update Claude Code.

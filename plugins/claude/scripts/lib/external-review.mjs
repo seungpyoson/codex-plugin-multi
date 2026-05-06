@@ -37,7 +37,6 @@ const CONTENT_RECEIVED_ERROR_CODES = Object.freeze(new Set([
   "gemini_error",
   "kimi_error",
   "parse_error",
-  "oauth_inference_rejected",
   "step_limit_exceeded",
   "usage_limited",
   "finalization_failed",
@@ -58,7 +57,6 @@ const NOT_SENT_DISCLOSURE_BY_STATUS = Object.freeze({
 const NOT_SENT_DISCLOSURE_BY_ERROR = Object.freeze({
   scope_failed: (provider) => `Selected source content was not sent to ${provider}; the review scope was rejected before the target process was started.`,
   spawn_failed: (provider) => `Selected source content was not sent to ${provider}; the target process was not spawned.`,
-  oauth_inference_rejected: (provider) => `Selected source content was not sent to ${provider}; OAuth inference readiness was rejected before the review target was started.`,
 });
 
 const UNKNOWN_DISCLOSURE_BY_STATUS = Object.freeze({
@@ -109,9 +107,6 @@ export function sourceContentTransmissionForExecution({ status, errorCode, pidIn
     return SOURCE_CONTENT_TRANSMISSION.UNKNOWN;
   }
   if (errorCode === "scope_failed" || errorCode === "spawn_failed") {
-    return SOURCE_CONTENT_TRANSMISSION.NOT_SENT;
-  }
-  if (errorCode === "oauth_inference_rejected" && !pidInfo) {
     return SOURCE_CONTENT_TRANSMISSION.NOT_SENT;
   }
   if (status === "cancelled") {

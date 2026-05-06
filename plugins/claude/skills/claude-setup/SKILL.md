@@ -14,4 +14,4 @@ Use the Claude companion setup workflow. Current Codex builds expose it as `clau
 node "<plugin-root>/scripts/claude-companion.mjs" doctor
 ```
 
-Show `summary`, `ready`, and `next_action` exactly. If `status` is `oauth_inference_rejected`, report that Claude OAuth status is present but non-interactive `claude -p` inference failed, so Claude review slots are not ready. Never print secret values or suggest Claude API keys for subscription/OAuth setup.
+Show `summary`, `ready`, and `next_action` exactly. Never print secret values or suggest Claude API keys for subscription/OAuth setup.
