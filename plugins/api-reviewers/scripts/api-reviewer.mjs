@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { spawnSync } from "node:child_process";
 import { lstat, mkdir, open, readFile, readdir, realpath, rename, rm, unlink, writeFile } from "node:fs/promises";
-import { constants as fsConstants, existsSync } from "node:fs";
+import { constants as fsConstants } from "node:fs";
 import { dirname, isAbsolute, resolve, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import { randomUUID } from "node:crypto";
@@ -34,6 +34,7 @@ const GIT_SAFE_PATH = "/usr/bin:/bin";
 const SCOPE_FILE_OPEN_FLAGS = fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0);
 const MAX_SCOPE_FILE_BYTES = 256 * 1024;
 const MAX_SCOPE_TOTAL_BYTES = 1024 * 1024;
+const DEFAULT_MAX_PROMPT_CHARS = 600000;
 const GIT_SHOW_MAX_BUFFER_BYTES = MAX_SCOPE_FILE_BYTES + 1;
 const API_REVIEWER_EXPECTED_KEYS = Object.freeze([
   "id",
@@ -627,6 +628,10 @@ function parseMaxTokensOverride(env = process.env) {
   return parsePositiveIntegerEnv(env, "API_REVIEWERS_MAX_TOKENS", "tokens");
 }
 
+function parseMaxPromptCharsOverride(env = process.env) {
+  return parsePositiveIntegerEnv(env, "API_REVIEWERS_MAX_PROMPT_CHARS", "characters");
+}
+
 function parseProviderTimeoutMs(env = process.env) {
   const parsed = parsePositiveIntegerEnv(env, "API_REVIEWERS_TIMEOUT_MS", "milliseconds");
   return parsed.value === null ? { ok: true, value: 600000 } : parsed;
@@ -657,6 +662,10 @@ function validateDirectApiRunPreflight(cfg, provider, env = process.env) {
   if (!maxTokensOverride.ok) {
     return { ok: false, reason: "bad_args", error: maxTokensOverride.error };
   }
+  const maxPromptCharsOverride = parseMaxPromptCharsOverride(env);
+  if (!maxPromptCharsOverride.ok) {
+    return { ok: false, reason: "bad_args", error: maxPromptCharsOverride.error };
+  }
   const timeoutMs = parseProviderTimeoutMs(env);
   if (!timeoutMs.ok) {
     return { ok: false, reason: "bad_args", error: timeoutMs.error };
@@ -677,7 +686,40 @@ function validateDirectApiRunPreflight(cfg, provider, env = process.env) {
   if (!requestDefaultsProbe.ok) {
     return { ok: false, reason: "bad_args", error: requestDefaultsProbe.error };
   }
-  return { ok: true, maxTokensOverride, timeoutMs, credential };
+  return { ok: true, maxTokensOverride, maxPromptCharsOverride, timeoutMs, credential };
+}
+
+function maxPromptCharsFor(cfg, env = process.env) {
+  const override = parseMaxPromptCharsOverride(env);
+  if (!override.ok) return override;
+  if (override.value !== null) return override;
+  const configured = cfg.max_prompt_chars;
+  if (configured === undefined || configured === null || configured === "") {
+    return { ok: true, value: DEFAULT_MAX_PROMPT_CHARS };
+  }
+  const parsed = Number(configured);
+  if (!Number.isSafeInteger(parsed) || parsed <= 0) {
+    return {
+      ok: false,
+      error: `${cfg.display_name} max_prompt_chars must be a positive integer number of characters; got ${JSON.stringify(configured)}`,
+    };
+  }
+  return { ok: true, value: parsed };
+}
+
+function validateRenderedPromptBudget(prompt, cfg, env = process.env) {
+  const maxPromptChars = maxPromptCharsFor(cfg, env);
+  if (!maxPromptChars.ok) {
+    return { ok: false, reason: "bad_args", error: maxPromptChars.error };
+  }
+  if (prompt.length > maxPromptChars.value) {
+    return {
+      ok: false,
+      reason: "scope_failed",
+      error: `prompt_too_large:${prompt.length} chars exceeds ${cfg.display_name} max_prompt_chars=${maxPromptChars.value}`,
+    };
+  }
+  return { ok: true, maxPromptChars };
 }
 
 function redactor(env = process.env, configuredSecretNames = []) {
@@ -852,23 +894,48 @@ function matchGlob(rel, pattern) {
   return new RegExp(re).test(rel);
 }
 
-async function readUtf8ScopeFileWithinLimit(abs, relPath) {
+async function readUtf8ScopeFileWithinLimit(filePath, normalizedRel, beforeOpen = null) {
+  beforeOpen ??= await lstat(filePath);
   let handle;
   try {
-    handle = await open(abs, SCOPE_FILE_OPEN_FLAGS);
-    const info = await handle.stat();
-    if (!info.isFile()) return null;
-    if (info.size > MAX_SCOPE_FILE_BYTES) {
-      throw new Error(`scope_file_too_large:${relPath}: ${info.size} bytes exceeds ${MAX_SCOPE_FILE_BYTES} byte limit`);
-    }
-    return await handle.readFile({ encoding: "utf8" });
+    handle = await open(filePath, SCOPE_FILE_OPEN_FLAGS);
   } catch (e) {
-    if (e?.code === "ELOOP") throw new Error(`unsafe_scope_path:${relPath}`);
+    if (e?.code === "ELOOP") throw new Error(`unsafe_scope_path:${normalizedRel}`);
     if (e?.code === "ENOENT") return null;
     throw e;
+  }
+  try {
+    const info = await handle.stat();
+    if (!info.isFile()) return null;
+    if (!sameFileIdentity(beforeOpen, info)) {
+      throw new Error(`unsafe_scope_path:${normalizedRel}: file changed before secure open`);
+    }
+    if (info.size > MAX_SCOPE_FILE_BYTES) {
+      throw new Error(`scope_file_too_large:${normalizedRel}: ${info.size} bytes exceeds ${MAX_SCOPE_FILE_BYTES} byte limit`);
+    }
+
+    const chunks = [];
+    let total = 0;
+    for (;;) {
+      const remaining = MAX_SCOPE_FILE_BYTES + 1 - total;
+      const buffer = Buffer.allocUnsafe(Math.min(remaining, 64 * 1024));
+      const { bytesRead } = await handle.read(buffer, 0, buffer.length, null);
+      if (bytesRead === 0) break;
+      total += bytesRead;
+      if (total > MAX_SCOPE_FILE_BYTES) {
+        throw new Error(`scope_file_too_large:${normalizedRel}: ${total} bytes exceeds ${MAX_SCOPE_FILE_BYTES} byte limit`);
+      }
+      chunks.push(buffer.subarray(0, bytesRead));
+    }
+    if (total === 0) return "";
+    return Buffer.concat(chunks, total).toString("utf8");
   } finally {
     await handle?.close();
   }
+}
+
+function sameFileIdentity(left, right) {
+  return left.dev === right.dev && left.ino === right.ino;
 }
 
 function addScopeFile(files, normalizedRel, text, totalBytes) {
@@ -888,6 +955,14 @@ function scopeName(options) {
   return options.scope ?? (options.mode === "custom-review" ? "custom" : "branch-diff");
 }
 
+function safeScopeBase(base) {
+  const value = base ?? "main";
+  if (typeof value !== "string" || value.trim() === "" || value.startsWith("-")) {
+    throw new Error(`scope_base_invalid: base ref ${JSON.stringify(value)} is not safe for git branch-diff`);
+  }
+  return value;
+}
+
 function selectedScopePaths(scope, options, cwd) {
   if (scope === "custom") {
     const relPaths = splitScopePaths(options["scope-paths"]);
@@ -895,7 +970,7 @@ function selectedScopePaths(scope, options, cwd) {
     return relPaths;
   }
   if (scope === "branch-diff") {
-    const base = options["scope-base"] ?? "main";
+    const base = safeScopeBase(options["scope-base"]);
     const changed = gitRaw(["diff", "-z", "--name-only", `${base}...HEAD`, "--"], cwd);
     const requested = splitScopePaths(options["scope-paths"]);
     const changedPaths = splitGitPathList(changed);
@@ -909,7 +984,7 @@ function selectedScopePaths(scope, options, cwd) {
 }
 
 function validateScopePath(workspaceRoot, relPath) {
-  if (relPath.includes("..") || isAbsolute(relPath) || relPath.includes("\\")) {
+  if (relPath.includes("..") || isAbsolute(relPath) || relPath.includes("\\") || /[\u0000-\u001f\u007f]/u.test(relPath)) {
     throw new Error(`unsafe_scope_path:${relPath}`);
   }
   const abs = resolve(workspaceRoot, relPath);
@@ -952,13 +1027,22 @@ async function readFilesystemScopeFiles(workspaceRoot, relPaths) {
   const realWorkspaceRoot = await realpath(workspaceRoot);
   for (const relPath of relPaths) {
     const { abs, normalizedRel } = validateScopePath(workspaceRoot, relPath);
-    if (!existsSync(abs)) continue;
+    let beforeOpen;
+    try {
+      beforeOpen = await lstat(abs);
+    } catch (error) {
+      if (error?.code === "ENOENT") continue;
+      throw error;
+    }
+    if (beforeOpen.isSymbolicLink()) {
+      throw new Error(`unsafe_scope_path:${normalizedRel}`);
+    }
     const realAbs = await realpath(abs);
     const realRel = relative(realWorkspaceRoot, realAbs);
     if (realRel.startsWith("..") || realRel === "") {
       throw new Error(`unsafe_scope_path:${relPath}`);
     }
-    const text = await readUtf8ScopeFileWithinLimit(abs, normalizedRel);
+    const text = await readUtf8ScopeFileWithinLimit(realAbs, normalizedRel, beforeOpen);
     if (text === null) continue;
     addScopeFile(files, normalizedRel, text, totalBytes);
   }
@@ -1005,6 +1089,26 @@ function repositoryIdentity(cwd, workspaceRoot) {
   return match ? match[1] : remote;
 }
 
+function fileContentDelimiter(file, index) {
+  let delimiter = `API REVIEWER FILE ${index}: ${file.path}`;
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    if (!file.text.includes(`BEGIN ${delimiter}`) && !file.text.includes(`END ${delimiter}`)) {
+      return delimiter;
+    }
+    delimiter = `${delimiter} #`;
+  }
+  throw new Error(`scope_delimiter_collision:${file.path}`);
+}
+
+function promptFileBlock(file, index) {
+  const delimiter = fileContentDelimiter(file, index);
+  return [
+    `BEGIN ${delimiter}`,
+    file.text,
+    `END ${delimiter}`,
+  ].join("\n");
+}
+
 function promptFor(mode, userPrompt, scopeInfo, providerName = "Direct API reviewer") {
   const modeLine = mode === "adversarial-review"
     ? "You are performing an adversarial code review. Prioritize correctness bugs, security risks, regressions, and missing tests."
@@ -1015,12 +1119,7 @@ function promptFor(mode, userPrompt, scopeInfo, providerName = "Direct API revie
     "- Do not reject model IDs or endpoint hosts solely because they differ from general public documentation; require current run failure evidence or repo-local contradictory evidence.",
     "- The JobRecord will include the actual endpoint, HTTP status, raw model, credential key name, and usage metadata when the provider returns them.",
   ].join("\n");
-  const files = scopeInfo.files.map((file) => [
-    `### ${file.path}`,
-    "```",
-    file.text,
-    "```",
-  ].join("\n")).join("\n\n");
+  const files = scopeInfo.files.map((file, index) => promptFileBlock(file, index + 1)).join("\n\n");
   return buildReviewPrompt({
     provider: providerName,
     mode,
@@ -1079,6 +1178,10 @@ function mockProviderExecution(cfg, prompt, credential, env, requestBody) {
   const expectedPromptText = env.API_REVIEWERS_MOCK_ASSERT_PROMPT_INCLUDES;
   if (expectedPromptText && !prompt.includes(expectedPromptText)) {
     return providerFailureWithDiagnostics("mock_assertion_failed", `prompt missing expected text: ${expectedPromptText}`, 200, null, false, diagnostics());
+  }
+  const excludedPromptText = env.API_REVIEWERS_MOCK_ASSERT_PROMPT_EXCLUDES;
+  if (excludedPromptText && prompt.includes(excludedPromptText)) {
+    return providerFailureWithDiagnostics("mock_assertion_failed", `prompt included excluded text: ${excludedPromptText}`, 200, null, false, diagnostics());
   }
   if (env.API_REVIEWERS_MOCK_ASSERT_REQUEST_BODY) {
     const parsedExpected = parseJson(env.API_REVIEWERS_MOCK_ASSERT_REQUEST_BODY);
@@ -1297,6 +1400,30 @@ function providerFailureWithDiagnostics(reason, message, httpStatus, raw = null,
   };
 }
 
+function providerUnavailableSuggestedAction(errorMessage = "", httpStatus = null, env = process.env) {
+  const looksLikeNetworkFailure = /fetch failed|ENOTFOUND|EAI_AGAIN|ECONNREFUSED|EHOSTUNREACH|ENETUNREACH|ETIMEDOUT/i.test(errorMessage);
+  if (httpStatus == null && isCodexSandbox(env) && looksLikeNetworkFailure) {
+    return `If running inside Codex, set [sandbox_workspace_write].network_access = true in ~/.codex/config.toml, start a fresh Codex session, then retry; or run this direct API reviewer outside sandbox. If network is already enabled, retry later or switch reviewer provider.`;
+  }
+  if (httpStatus == null && looksLikeNetworkFailure) {
+    return `Check network access, retry later, or switch reviewer provider.`;
+  }
+  return `Retry later or switch reviewer provider.`;
+}
+
+function scopeFailedSuggestedAction(errorMessage = "") {
+  if (/scope_empty:\s*branch-diff selected no files/i.test(errorMessage)) {
+    return "Branch-diff selected no files before provider launch. Branch-diff reviews committed HEAD-vs-base changes only; it does not include dirty working-tree edits. Choose a different --scope-base <ref> if this branch should have committed changes, use --scope-base HEAD~1 to review the last commit, or use custom-review with explicit --scope-paths for uncommitted, already-merged, or no-diff branches.";
+  }
+  if (/scope_base_invalid:/i.test(errorMessage)) {
+    return "Use a concrete branch, tag, remote ref, or commit SHA for --scope-base; option-shaped values beginning with '-' are rejected before git branch-diff runs.";
+  }
+  if (/prompt_too_large:/i.test(errorMessage)) {
+    return "Rendered prompt exceeds the direct API provider prompt budget before launch. Use a narrower scope, split the review into explicit custom-review shards, or raise API_REVIEWERS_MAX_PROMPT_CHARS only after confirming the selected provider accepts larger prompts.";
+  }
+  return "Adjust --scope, --scope-base, or --scope-paths and retry.";
+}
+
 function suggestedAction(errorCode, provider, cfg, errorMessage = "", httpStatus = null, env = process.env) {
   if (errorCode === "bad_args") return "Correct the api-reviewer command arguments and retry.";
   if (errorCode === "config_error") return "Reinstall or repair plugins/api-reviewers/config/providers.json and retry.";
@@ -1304,17 +1431,8 @@ function suggestedAction(errorCode, provider, cfg, errorMessage = "", httpStatus
   if (errorCode === "auth_rejected") return `Check the ${cfg.display_name} API key and billing/plan for ${cfg.model}.`;
   if (errorCode === "rate_limited") return `Wait and retry, or lower concurrency for ${provider}.`;
   if (errorCode === "timeout") return `The provider did not respond within the timeout window. Retry later, increase API_REVIEWERS_TIMEOUT_MS, or switch reviewer provider.`;
-  if (errorCode === "provider_unavailable") {
-    const looksLikeNetworkFailure = /fetch failed|ENOTFOUND|EAI_AGAIN|ECONNREFUSED|EHOSTUNREACH|ENETUNREACH|ETIMEDOUT/i.test(errorMessage);
-    if (httpStatus == null && isCodexSandbox(env) && looksLikeNetworkFailure) {
-      return `If running inside Codex, set [sandbox_workspace_write].network_access = true in ~/.codex/config.toml, start a fresh Codex session, then retry; or run this direct API reviewer outside sandbox. If network is already enabled, retry later or switch reviewer provider.`;
-    }
-    if (httpStatus == null && looksLikeNetworkFailure) {
-      return `Check network access, retry later, or switch reviewer provider.`;
-    }
-    return `Retry later or switch reviewer provider.`;
-  }
-  if (errorCode === "scope_failed") return "Adjust --scope, --scope-base, or --scope-paths and retry.";
+  if (errorCode === "provider_unavailable") return providerUnavailableSuggestedAction(errorMessage, httpStatus, env);
+  if (errorCode === "scope_failed") return scopeFailedSuggestedAction(errorMessage);
   return "Inspect error_message and retry after correcting the provider or request configuration.";
 }
 
@@ -1633,6 +1751,20 @@ async function cmdRun(options) {
     }
   }
   if (!execution) {
+    let renderedPrompt = null;
+    try {
+      renderedPrompt = promptFor(mode, options.prompt ?? "", scopeInfo, cfg.display_name);
+      const promptBudget = validateRenderedPromptBudget(renderedPrompt, cfg, process.env);
+      if (!promptBudget.ok) {
+        execution = providerFailure(promptBudget.reason, redactor(process.env)(promptBudget.error), null, null, false);
+        execution.prompt = renderedPrompt;
+      }
+    } catch (e) {
+      execution = providerFailure("scope_failed", redactor(process.env)(e?.message ?? String(e)), null, null, false);
+    }
+    if (execution) {
+      // handled below by the terminal JobRecord path without a launch event
+    } else {
     if (lifecycleEvents) {
       printLifecycleJson({
         event: "external_review_launched",
@@ -1643,11 +1775,12 @@ async function cmdRun(options) {
       }, lifecycleEvents);
     }
     try {
-      const renderedPrompt = promptFor(mode, options.prompt ?? "", scopeInfo, cfg.display_name);
       execution = await callProvider(provider, cfg, renderedPrompt);
       execution.prompt = renderedPrompt;
     } catch (e) {
       execution = providerFailure("provider_unavailable", redactor(process.env)(e?.message ?? String(e)), null, null, null);
+      execution.prompt = renderedPrompt;
+    }
     }
   }
   const record = redactRecord(buildRecord({

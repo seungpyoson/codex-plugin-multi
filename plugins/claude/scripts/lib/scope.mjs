@@ -130,6 +130,14 @@ function scopeEmpty(message) {
   throw new Error(`scope_empty: ${message}`);
 }
 
+function safeScopeBase(base) {
+  const value = base ?? "main";
+  if (typeof value !== "string" || value.trim() === "" || value.startsWith("-")) {
+    throw new Error(`scope_base_invalid: base ref ${JSON.stringify(value)} is not safe for git branch-diff`);
+  }
+  return value;
+}
+
 function lstatForScope(abs, rel) {
   try {
     return lstatSync(abs);
@@ -718,7 +726,7 @@ function scopeBranchDiff(sourceCwd, targetPath, scopeBase, scopePaths = []) {
   assertGitWorktree(sourceCwd);
   const ctx = gitScopeContext(sourceCwd);
   assertGitHead(ctx, sourceCwd);
-  const base = scopeBase ?? "main";
+  const base = safeScopeBase(scopeBase);
   // Verify base exists. `rev-parse --verify` exits non-zero if not.
   try {
     git(ctx.gitRoot, ["rev-parse", "--verify", "--quiet", base]);

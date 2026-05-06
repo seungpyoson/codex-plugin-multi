@@ -2154,6 +2154,23 @@ test("populateScope scope=branch-diff: throws scope_base_missing when base ref i
   }
 });
 
+test("populateScope scope=branch-diff: rejects option-shaped base refs before git diff", () => {
+  const src = seedRepo();
+  const tgt = mkTarget();
+  try {
+    writeFileSync(path.join(src, "A.txt"), "a\n");
+    git(src, "add", ".");
+    git(src, "commit", "-qm", "seed");
+
+    assert.throws(
+      () => populateScope(profile("branch-diff"), src, tgt, { scopeBase: "--definitely-not-a-real-ref" }),
+      /scope_base_invalid/,
+    );
+  } finally {
+    cleanup(src, tgt);
+  }
+});
+
 test("populateScope scope=branch-diff: throws scope_base_missing when base has no merge-base with HEAD", () => {
   const src = seedRepo();
   const tgt = mkTarget();

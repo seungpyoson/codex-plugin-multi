@@ -109,6 +109,18 @@ function rmTree(dir) {
   rmSync(dir, { recursive: true, force: true });
 }
 
+function makeEmptyBranchDiffWorkspace() {
+  const cwd = realpathSync(mkdtempSync(path.join(tmpdir(), "grok-web-empty-branch-diff-")));
+  writeFileSync(path.join(cwd, "review.js"), "export const value = 1;\n");
+  execFileSync("git", ["init", "-b", "main"], { cwd, stdio: "ignore" });
+  execFileSync("git", ["config", "user.email", "test@example.com"], { cwd });
+  execFileSync("git", ["config", "user.name", "Test User"], { cwd });
+  execFileSync("git", ["add", "review.js"], { cwd });
+  execFileSync("git", ["commit", "-m", "base"], { cwd, stdio: "ignore" });
+  execFileSync("git", ["checkout", "-b", "feature"], { cwd, stdio: "ignore" });
+  return cwd;
+}
+
 async function withServer(handler, fn) {
   const server = http.createServer(handler);
   server.listen(0, "127.0.0.1");
@@ -342,8 +354,41 @@ test("custom-review rejects invalid GROK_WEB_TIMEOUT_MS env", () => {
     const parsed = parseStdout(result);
 
     assert.equal(result.status, 1);
+    assert.deepEqual(Object.keys(parsed), [...GROK_EXPECTED_KEYS]);
+    assert.equal(parsed.status, "failed");
     assert.equal(parsed.error_code, "bad_args");
     assert.match(parsed.error_message, /GROK_WEB_TIMEOUT_MS must be a positive integer number of milliseconds/);
+    assert.equal(parsed.external_review.source_content_transmission, "not_sent");
+  } finally {
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("custom-review rejects invalid GROK_WEB_MAX_PROMPT_CHARS env", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "grok-web-invalid-prompt-budget-cwd-"));
+  try {
+    writeFileSync(path.join(cwd, "review.js"), "export const value = 42;\n");
+    const result = run([
+      "run",
+      "--mode", "custom-review",
+      "--scope", "custom",
+      "--scope-paths", "review.js",
+      "--foreground",
+      "--prompt", "Check this file.",
+    ], {
+      cwd,
+      env: {
+        GROK_WEB_MAX_PROMPT_CHARS: "not-a-number",
+      },
+    });
+    const parsed = parseStdout(result);
+
+    assert.equal(result.status, 1);
+    assert.deepEqual(Object.keys(parsed), [...GROK_EXPECTED_KEYS]);
+    assert.equal(parsed.status, "failed");
+    assert.equal(parsed.error_code, "bad_args");
+    assert.match(parsed.error_message, /GROK_WEB_MAX_PROMPT_CHARS must be a positive integer character count/);
+    assert.equal(parsed.external_review.source_content_transmission, "not_sent");
   } finally {
     rmSync(cwd, { recursive: true, force: true });
   }
@@ -899,6 +944,102 @@ test("custom-review rejects aggregate selected source that exceeds the prompt ca
   assert.match(record.error_message, /scope_total_too_large/);
   assert.equal(record.external_review.source_content_transmission, "not_sent");
   assert.match(record.external_review.disclosure, /not sent/i);
+});
+
+test("branch-diff with no changed files explains recovery before contacting the tunnel", async () => {
+  const cwd = makeEmptyBranchDiffWorkspace();
+  const result = await runAsync([
+    "run",
+    "--mode", "adversarial-review",
+    "--scope", "branch-diff",
+    "--scope-base", "main",
+    "--foreground",
+    "--lifecycle-events", "jsonl",
+    "--prompt", "Review this branch.",
+  ], {
+    cwd,
+    env: { GROK_WEB_BASE_URL: "http://127.0.0.1:9/api" },
+  });
+  const lines = parseJsonLines(result);
+  assert.equal(result.status, 1);
+  assert.equal(lines.length, 1);
+  const [record] = lines;
+  assert.equal(record.status, "failed");
+  assert.equal(record.error_code, "scope_failed");
+  assert.match(record.error_message, /scope_empty: branch-diff selected no files/);
+  assert.match(record.suggested_action, /different --scope-base/);
+  assert.match(record.suggested_action, /--scope-base HEAD~1/);
+  assert.match(record.suggested_action, /custom-review/);
+  assert.equal(record.external_review.source_content_transmission, "not_sent");
+  assert.match(record.external_review.disclosure, /not sent/i);
+  assert.doesNotMatch(result.stdout, /external_review_launched/);
+});
+
+test("branch-diff rejects option-shaped scope-base before contacting the tunnel", async () => {
+  const cwd = makeEmptyBranchDiffWorkspace();
+  try {
+    const result = await runAsync([
+      "run",
+      "--mode", "adversarial-review",
+      "--scope", "branch-diff",
+      "--scope-base", "--definitely-not-a-real-ref",
+      "--foreground",
+      "--lifecycle-events", "jsonl",
+      "--prompt", "Review this branch.",
+    ], {
+      cwd,
+      env: { GROK_WEB_BASE_URL: "http://127.0.0.1:9/api" },
+    });
+    const lines = parseJsonLines(result);
+    assert.equal(result.status, 1);
+    assert.equal(lines.length, 1);
+    const [record] = lines;
+    assert.equal(record.status, "failed");
+    assert.equal(record.error_code, "scope_failed");
+    assert.match(record.error_message, /scope_base_invalid/);
+    assert.match(record.suggested_action, /option-shaped values/);
+    assert.equal(record.external_review.source_content_transmission, "not_sent");
+    assert.match(record.external_review.disclosure, /not sent/i);
+    assert.doesNotMatch(result.stdout, /external_review_launched/);
+    assert.doesNotMatch(result.stdout, /invalid option/);
+  } finally {
+    rmTree(cwd);
+  }
+});
+
+test("rendered prompt over Grok budget fails before contacting the tunnel", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "grok-web-workspace-"));
+  writeFileSync(path.join(cwd, "review.js"), "export const value = 42;\n");
+
+  const result = run([
+    "run",
+    "--mode", "custom-review",
+    "--scope", "custom",
+    "--scope-paths", "review.js",
+    "--foreground",
+    "--lifecycle-events", "jsonl",
+    "--prompt", "Check this file.",
+  ], {
+    cwd,
+    env: {
+      GROK_WEB_BASE_URL: "http://127.0.0.1:9/api",
+      GROK_WEB_MAX_PROMPT_CHARS: "100",
+    },
+  });
+  const lines = parseJsonLines(result);
+  assert.equal(result.status, 1);
+  assert.equal(lines.length, 1);
+  const [record] = lines;
+  assert.equal(record.status, "failed");
+  assert.equal(record.error_code, "scope_failed");
+  assert.match(record.error_message, /prompt_too_large:/);
+  assert.match(record.suggested_action, /narrower scope|split/i);
+  assert.match(record.review_metadata.audit_manifest.rendered_prompt_hash.value, /^[a-f0-9]{64}$/);
+  assert.equal(record.review_metadata.audit_manifest.selected_source.files.length, 1);
+  assert.equal(JSON.stringify(record.review_metadata.audit_manifest).includes("Check this file"), false);
+  assert.equal(JSON.stringify(record.review_metadata.audit_manifest).includes("export const value"), false);
+  assert.equal(record.external_review.source_content_transmission, "not_sent");
+  assert.doesNotMatch(result.stdout, /external_review_launched/);
 });
 
 test("concurrent Grok runs preserve every completed job in the state index", async () => {
@@ -1690,10 +1831,13 @@ test("scope file reads use canonical real paths after symlink boundary check", (
   // and must read through the bounded file-handle helper instead of unbounded readFile().
   const source = readFileSync(COMPANION, "utf8");
   assert.match(source, /const SCOPE_FILE_OPEN_FLAGS = fsConstants\.O_RDONLY \| \(fsConstants\.O_NOFOLLOW \?\? 0\);/);
-  assert.match(source, /const handle = await open\(filePath, SCOPE_FILE_OPEN_FLAGS\);/);
+  assert.match(source, /handle = await open\(filePath, SCOPE_FILE_OPEN_FLAGS\);/);
   assert.match(source, /const info = await handle\.stat\(\);/);
+  assert.match(source, /if \(!sameFileIdentity\(beforeOpen, info\)\)/);
+  assert.match(source, /beforeOpen = await lstat\(abs\);/);
+  assert.match(source, /if \(beforeOpen\.isSymbolicLink\(\)\)/);
   assert.match(source, /const \{ bytesRead \} = await handle\.read\(buffer, 0, buffer\.length, null\);/);
-  assert.match(source, /const text = await readUtf8ScopeFileWithinLimit\(realAbs, normalizedRel\);/);
+  assert.match(source, /const text = await readUtf8ScopeFileWithinLimit\(realAbs, normalizedRel, beforeOpen\);/);
   assert.doesNotMatch(source, /const text = await readFile\(realAbs, "utf8"\);/);
 });
 
@@ -1919,6 +2063,33 @@ test("custom-review rejects unsafe scope paths before contacting the tunnel", ()
     "--mode", "custom-review",
     "--scope", "custom",
     "--scope-paths", "../review.js",
+    "--foreground",
+    "--prompt", "Check this file.",
+  ], {
+    cwd,
+    env: {
+      GROK_WEB_BASE_URL: "http://127.0.0.1:9/api",
+      GROK_WEB_TUNNEL_API_KEY: "secret-cookie-like-token",
+    },
+  });
+  const record = parseStdout(result);
+
+  assert.equal(result.status, 1);
+  assert.equal(record.status, "failed");
+  assert.equal(record.error_code, "scope_failed");
+  assert.match(record.error_message, /unsafe_scope_path/);
+  assert.equal(record.external_review.source_content_transmission, "not_sent");
+});
+
+test("custom-review rejects control characters in scope paths before contacting the tunnel", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "grok-web-workspace-"));
+  writeFileSync(path.join(cwd, "review.js"), "export const value = 42;\n");
+
+  const result = run([
+    "run",
+    "--mode", "custom-review",
+    "--scope", "custom",
+    "--scope-paths", "review.js\tother.js",
     "--foreground",
     "--prompt", "Check this file.",
   ], {

@@ -16,7 +16,11 @@ Run:
 node "<plugin-root>/scripts/kimi-companion.mjs" run --mode=adversarial-review --foreground --lifecycle-events jsonl -- "<focus text>"
 ```
 Review timeout defaults to 600000 ms. Use `--timeout-ms <ms>` or `KIMI_REVIEW_TIMEOUT_MS`; the effective value is persisted in `review_metadata.audit_manifest.request.timeout_ms`.
-`branch-diff` is object-pure: checkout filters, replace refs, and grafts are ignored.
+`branch-diff` is object-pure and committed-only: checkout filters, replace refs,
+grafts, and dirty working-tree edits are ignored. If the target changes are
+uncommitted, do not use adversarial branch-diff as the review evidence; use
+`run --mode=review` for working-tree scope or an explicit `custom-review` bundle
+instead.
 It reduces the selected review scope, but a successful run still sends those
 selected source files to Kimi. If a private-repo approval reviewer denies the
 run as external-provider disclosure before launch, report the workflow as

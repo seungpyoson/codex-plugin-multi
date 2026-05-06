@@ -18,7 +18,11 @@ Adversarial review via Claude Code. Assumes the author is wrong; looks for failu
    ```
    (Containment=worktree, scope=branch-diff, dispose=true all come from the profile — spec §21.4.)
    Review timeout defaults to 600000 ms. Use `--timeout-ms <ms>` or `CLAUDE_REVIEW_TIMEOUT_MS`; the effective value is persisted in `review_metadata.audit_manifest.request.timeout_ms`.
-   `branch-diff` is object-pure: checkout filters, replace refs, and grafts are ignored.
+   `branch-diff` is object-pure and committed-only: checkout filters, replace
+   refs, grafts, and dirty working-tree edits are ignored. If the target
+   changes are uncommitted, do not use adversarial branch-diff as the review
+   evidence; use `run --mode=review` for working-tree scope or an explicit
+   `custom-review` bundle instead.
    For a pinned review bundle, run `preflight` and then use
    `run --mode=custom-review --scope-paths <g1,g2,...>` with prompt wording
    that names relative paths inside the selected bundle scope.
