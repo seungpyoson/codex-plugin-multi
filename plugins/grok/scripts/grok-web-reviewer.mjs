@@ -669,8 +669,9 @@ function safeSessionId(value) {
 }
 
 function safeDiagnosticString(value) {
-  if (typeof value !== "string") return null;
-  return /^[A-Za-z][A-Za-z0-9_.-]{0,63}$/.test(value) ? value : null;
+  if (typeof value !== "string" && typeof value !== "number") return null;
+  const text = String(value);
+  return /^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$/.test(text) ? text : null;
 }
 
 function costQuotaDiagnostics(httpStatus, parsed) {

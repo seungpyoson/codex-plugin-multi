@@ -1939,6 +1939,46 @@ for (const { status, code, quotaBody = false } of [
   });
 }
 
+test("custom-review preserves safe numeric cost-quota provider codes", async () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "grok-web-workspace-"));
+  writeFileSync(path.join(cwd, "review.js"), "export const value = 42;\n");
+
+  await withServer(async (_req, res) => {
+    res.statusCode = 402;
+    res.setHeader("content-type", "application/json");
+    res.end(JSON.stringify({
+      error: {
+        code: 429,
+        type: "billing",
+        message: "quota exceeded for this billing account; Authorization: Bearer secret-cookie-like-token failed",
+      },
+    }));
+  }, async (baseUrl) => {
+    const result = await runAsync([
+      "run",
+      "--mode", "custom-review",
+      "--scope", "custom",
+      "--scope-paths", "review.js",
+      "--foreground",
+      "--prompt", "Check this file.",
+    ], {
+      cwd,
+      env: {
+        GROK_WEB_BASE_URL: baseUrl,
+        GROK_WEB_TUNNEL_API_KEY: "secret-cookie-like-token",
+      },
+    });
+    const record = parseStdout(result);
+
+    assert.equal(result.status, 1);
+    assert.equal(record.error_code, "usage_limited");
+    assert.equal(record.runtime_diagnostics.cost_quota.classification, "usage_limited");
+    assert.equal(record.runtime_diagnostics.cost_quota.provider_error_code, "429");
+    assert.equal(record.runtime_diagnostics.cost_quota.provider_error_type, "billing");
+    assert.doesNotMatch(result.stdout, /secret-cookie-like-token/);
+  });
+});
+
 test("custom-review maps malformed tunnel responses", async () => {
   const cwd = mkdtempSync(path.join(tmpdir(), "grok-web-workspace-"));
   writeFileSync(path.join(cwd, "review.js"), "export const value = 42;\n");

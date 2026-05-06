@@ -1402,10 +1402,11 @@ function providerFailureDetailObject(parsed) {
 function classifyHttpFailure(status, parsed) {
   const detail = parsed.ok ? providerFailureDetailText(parsed) : "";
   if (status === 401 || status === 403) return "auth_rejected";
+  if (status === 402 || status === 429) return "usage_limited";
   if (status === 408 || status === 409 || status === 425 || status === 500 || status === 501 || status === 502 || status === 503 || status === 504 || /capacity|resource|overload|unavailable/i.test(detail)) {
     return "provider_unavailable";
   }
-  if (status === 402 || status === 429 || isUsageLimitDetail(detail)) return "usage_limited";
+  if (isUsageLimitDetail(detail)) return "usage_limited";
   return "provider_error";
 }
 
@@ -1414,16 +1415,18 @@ function isUsageLimitDetail(detail) {
 }
 
 function safeDiagnosticString(value) {
-  if (typeof value !== "string") return null;
-  return /^[A-Za-z][A-Za-z0-9_.-]{0,63}$/.test(value) ? value : null;
+  if (typeof value !== "string" && typeof value !== "number") return null;
+  const text = String(value);
+  return /^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$/.test(text) ? text : null;
 }
 
 function costQuotaDiagnostics(httpStatus, parsed) {
   const error = providerFailureDetailObject(parsed);
   const detail = parsed.ok ? providerFailureDetailText(parsed) : "";
   const authRejected = httpStatus === 401 || httpStatus === 403;
-  const providerUnavailable = httpStatus === 408 || httpStatus === 409 || httpStatus === 425 || httpStatus === 500 || httpStatus === 501 || httpStatus === 502 || httpStatus === 503 || httpStatus === 504 || /capacity|resource|overload|unavailable/i.test(detail);
-  const usageLimited = !authRejected && !providerUnavailable && (httpStatus === 402 || httpStatus === 429 || isUsageLimitDetail(detail));
+  const usageLimitStatus = httpStatus === 402 || httpStatus === 429;
+  const providerUnavailable = !usageLimitStatus && (httpStatus === 408 || httpStatus === 409 || httpStatus === 425 || httpStatus === 500 || httpStatus === 501 || httpStatus === 502 || httpStatus === 503 || httpStatus === 504 || /capacity|resource|overload|unavailable/i.test(detail));
+  const usageLimited = !authRejected && (usageLimitStatus || (!providerUnavailable && isUsageLimitDetail(detail)));
   return {
     classification: usageLimited ? "usage_limited" : "not_reported",
     http_status: httpStatus ?? null,

@@ -231,7 +231,9 @@ from short-lived index contention.
   review result. This can come from Claude, Gemini, Kimi, Grok, or the direct
   API reviewers. Selected source content may have been sent; render
   `error_summary`, `error_cause`, and `suggested_action`. Do not infer that the
-  plugin can buy credits, upgrade tiers, or change billing state; any financial
+  plugin can buy credits, upgrade tiers, or change billing state. When present,
+  `runtime_diagnostics.cost_quota` contains safe provider status/code/type
+  metadata and `billing_mutation: "not_attempted"`; any financial
   transaction must be a separate explicit user-approved action.
 - `finalization_failed` — the target ran, but the companion failed while
   writing the terminal record or state. Render the structured diagnostic
