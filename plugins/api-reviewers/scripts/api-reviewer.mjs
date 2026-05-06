@@ -1641,6 +1641,8 @@ function requestSettingsForApproval(cfg, env = process.env) {
 
 function buildApprovalRequest({ provider, cfg, mode, options, scopeInfo }) {
   const renderedPrompt = promptFor(mode, options.prompt ?? "", scopeInfo, cfg.display_name);
+  const promptBudget = validateRenderedPromptBudget(renderedPrompt, cfg);
+  if (!promptBudget.ok) throw runProviderFailure(promptBudget.reason, promptBudget.error);
   const request = requestSettingsForApproval(cfg);
   const auditManifest = buildReviewAuditManifest({
     prompt: renderedPrompt,
@@ -1931,6 +1933,7 @@ async function cmdDoctor(options) {
 async function cmdApprovalRequest(options) {
   const provider = options.provider ?? null;
   const mode = options.mode ?? "review";
+  let configuredSecretNames = [];
   try {
     if (!provider) throw runBadArgs("bad_args: --provider is required");
     if (!VALID_MODES.has(mode)) throw runBadArgs(`bad_args: unsupported --mode ${mode}`);
@@ -1943,6 +1946,7 @@ async function cmdApprovalRequest(options) {
     let cfg;
     try {
       cfg = providerConfig(providers, provider);
+      configuredSecretNames = cfg.env_keys ?? [];
     } catch (e) {
       throw runBadArgs(e.message);
     }
@@ -1952,17 +1956,19 @@ async function cmdApprovalRequest(options) {
     try {
       approvalRequest = buildApprovalRequest({ provider, cfg, mode, options, scopeInfo });
     } catch (e) {
+      if (e?.apiReviewersReason) throw e;
       throw runProviderFailure("approval_request_failed", e?.message ?? String(e));
     }
     printJson(approvalRequest);
   } catch (e) {
     const reason = e.apiReviewersReason ?? "scope_failed";
+    const redact = redactor(process.env, configuredSecretNames);
     printJson({
       ok: false,
       provider,
       status: reason,
       error_code: reason,
-      error_message: redactor()(e?.message ?? String(e)),
+      error_message: redact(e?.message ?? String(e)),
     });
     process.exit(1);
   }

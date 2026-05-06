@@ -234,6 +234,16 @@ test("review quality verdict ignores incidental pass/fail prose", () => {
   assert.equal(manifest.review_quality.has_verdict, false);
 });
 
+test("review audit manifest does not count approval requests as failed review slots", () => {
+  const manifest = buildReviewAuditManifest({
+    prompt: "approval prompt",
+    sourceFiles: [],
+    status: "approval_request",
+  });
+
+  assert.equal(manifest.review_quality.failed_review_slot, false);
+});
+
 for (const [name, file] of REVIEW_PROMPT_MODULES) {
   test(`scope resolution reason falls back to scope name without explicit paths (${name})`, async () => {
     const {

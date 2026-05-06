@@ -3246,6 +3246,72 @@ test("direct API reviewers approval-request describes external source transmissi
   }
 });
 
+test("direct API reviewers approval-request rejects rendered prompt over provider budget", async () => {
+  const cwd = makeWorkspace();
+  const result = await run([
+    "approval-request",
+    "--provider", "deepseek",
+    "--mode", "custom-review",
+    "--scope", "custom",
+    "--scope-paths", "seed.txt",
+    "--prompt", "Check this file.",
+  ], {
+    cwd,
+    env: {
+      API_REVIEWERS_MAX_PROMPT_CHARS: "100",
+      DEEPSEEK_API_KEY: "secret-test-value",
+    },
+  });
+
+  assert.equal(result.status, 1);
+  const parsed = parseJson(result.stdout);
+  assert.equal(parsed.ok, false);
+  assert.equal(parsed.provider, "deepseek");
+  assert.equal(parsed.status, "scope_failed");
+  assert.equal(parsed.error_code, "scope_failed");
+  assert.match(parsed.error_message, /prompt_too_large:/);
+  assert.doesNotMatch(result.stdout, /external_review_approval_request/);
+  assert.doesNotMatch(result.stdout, /hello from selected scope/);
+  assert.doesNotMatch(result.stdout, /secret-test-value/);
+});
+
+test("direct API reviewers approval-request redacts configured non-generic credential names", async () => {
+  const cwd = makeBranchDiffWorkspace();
+  const pluginRoot = makeInstalledApiReviewersRoot();
+  writeFileSync(path.join(pluginRoot, "config", "providers.json"), JSON.stringify({
+    custom: {
+      display_name: "CustomProvider",
+      auth_mode: "api_key",
+      env_keys: ["CUSTOM_CREDENTIAL"],
+      base_url: "https://custom.example.invalid",
+      model: "custom-reviewer",
+    },
+  }, null, 2));
+
+  const result = await run([
+    "approval-request",
+    "--provider", "custom",
+    "--mode", "review",
+    "--scope-base", "token-token-value",
+    "--prompt", "Review this branch.",
+  ], {
+    cwd,
+    companion: path.join(pluginRoot, "scripts", "api-reviewer.mjs"),
+    env: {
+      CUSTOM_CREDENTIAL: "token-token-value",
+    },
+  });
+
+  assert.equal(result.status, 1);
+  const parsed = parseJson(result.stdout);
+  assert.equal(parsed.ok, false);
+  assert.equal(parsed.provider, "custom");
+  assert.equal(parsed.status, "scope_failed");
+  assert.equal(parsed.error_code, "scope_failed");
+  assert.match(parsed.error_message, /\[REDACTED\]/);
+  assert.doesNotMatch(result.stdout, /token-token-value/);
+});
+
 test("direct API reviewers approval-request reports structured config errors", async () => {
   const pluginRoot = makeInstalledApiReviewersRoot();
   const companion = path.join(pluginRoot, "scripts", "api-reviewer.mjs");
