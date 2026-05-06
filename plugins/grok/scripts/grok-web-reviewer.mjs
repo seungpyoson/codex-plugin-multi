@@ -1667,6 +1667,7 @@ async function runCli() {
 }
 
 export {
+  buildReviewMetadata,
   readUtf8ScopeFileWithinLimit,
   releaseStateLock,
   sameFileIdentity,
