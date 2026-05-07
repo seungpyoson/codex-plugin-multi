@@ -1645,7 +1645,7 @@ test("direct API timeout marks selected content as sent", async () => {
   }
 });
 
-test("direct API HTTP failures mark selected content as sent", async () => {
+test("direct API generic 429 rate limits stay rate_limited and mark selected content as sent", async () => {
   const cwd = makeWorkspace();
   const dataDir = mkdtempSync(path.join(tmpdir(), "api-reviewers-data-"));
   const pluginRoot = makeInstalledApiReviewersRoot();
@@ -1675,8 +1675,9 @@ test("direct API HTTP failures mark selected content as sent", async () => {
     });
     assert.equal(result.status, 1);
     const record = parseJson(result.stdout);
-    assert.equal(record.error_code, "usage_limited");
-    assert.equal(record.runtime_diagnostics.cost_quota.classification, "usage_limited");
+    assert.equal(record.error_code, "rate_limited");
+    assert.equal(record.error_cause, "direct_api_provider");
+    assert.equal(record.runtime_diagnostics.cost_quota.classification, "not_reported");
     assert.equal(record.external_review.source_content_transmission, "sent");
     assert.equal(record.external_review.disclosure,
       "Selected source content was sent to DeepSeek through direct API auth, but the provider did not return a clean result.");
@@ -1727,6 +1728,54 @@ test("direct API 429 quota status outranks unavailable wording and preserves num
     assert.equal(record.runtime_diagnostics.cost_quota.http_status, 429);
     assert.equal(record.runtime_diagnostics.cost_quota.provider_error_code, "429");
     assert.equal(record.runtime_diagnostics.cost_quota.provider_error_type, "rate_limit");
+    assert.doesNotMatch(result.stdout, /secret-test-value/);
+  } finally {
+    server.close();
+  }
+});
+
+test("direct API 501 compatibility errors stay provider_error", async () => {
+  const cwd = makeWorkspace();
+  const dataDir = mkdtempSync(path.join(tmpdir(), "api-reviewers-data-"));
+  const pluginRoot = makeInstalledApiReviewersRoot();
+  const server = await startChatServer((req, res) => {
+    req.resume();
+    res.writeHead(501, { "content-type": "application/json" });
+    res.end(JSON.stringify({
+      error: {
+        code: "not_implemented",
+        type: "unsupported_operation",
+        message: "The requested model or method is not implemented.",
+      },
+    }));
+  });
+  try {
+    const { port } = server.address();
+    writeDeepSeekProviderConfig(pluginRoot, `http://127.0.0.1:${port}`);
+    const result = await run([
+      "run",
+      "--provider", "deepseek",
+      "--mode", "custom-review",
+      "--scope", "custom",
+      "--scope-paths", "seed.txt",
+      "--foreground",
+      "--prompt", "Check this file.",
+    ], {
+      cwd,
+      companion: path.join(pluginRoot, "scripts", "api-reviewer.mjs"),
+      env: {
+        API_REVIEWERS_PLUGIN_DATA: dataDir,
+        DEEPSEEK_API_KEY: "secret-test-value",
+      },
+    });
+    assert.equal(result.status, 1);
+    const record = parseJson(result.stdout);
+    assert.equal(record.error_code, "provider_error");
+    assert.equal(record.error_cause, "direct_api_provider");
+    assert.equal(record.runtime_diagnostics.cost_quota.classification, "not_reported");
+    assert.equal(record.runtime_diagnostics.cost_quota.http_status, 501);
+    assert.equal(record.runtime_diagnostics.cost_quota.provider_error_code, "not_implemented");
+    assert.equal(record.runtime_diagnostics.cost_quota.provider_error_type, "unsupported_operation");
     assert.doesNotMatch(result.stdout, /secret-test-value/);
   } finally {
     server.close();
