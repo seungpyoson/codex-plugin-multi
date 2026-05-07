@@ -1782,6 +1782,91 @@ test("direct API 403 quota payloads are usage_limited, not auth_rejected", async
   }
 });
 
+test("direct API status-only quota failures use safe diagnostics", async () => {
+  const cwd = makeWorkspace();
+  const dataDir = mkdtempSync(path.join(tmpdir(), "api-reviewers-data-"));
+  const pluginRoot = makeInstalledApiReviewersRoot();
+  const server = await startChatServer((req, res) => {
+    req.resume();
+    res.writeHead(402, { "content-type": "application/json" });
+    res.end(JSON.stringify({
+      error: {
+        code: "card_required",
+        type: "checkout_required",
+        message: "Payment required: see checkout session cs_test_abc123 and customer cus_NXLKj1H.",
+      },
+    }));
+  });
+  try {
+    const { port } = server.address();
+    writeDeepSeekProviderConfig(pluginRoot, `http://127.0.0.1:${port}`);
+    const result = await run([
+      "run",
+      "--provider", "deepseek",
+      "--mode", "custom-review",
+      "--scope", "custom",
+      "--scope-paths", "seed.txt",
+      "--foreground",
+      "--prompt", "Check this file.",
+    ], {
+      cwd,
+      companion: path.join(pluginRoot, "scripts", "api-reviewer.mjs"),
+      env: {
+        API_REVIEWERS_PLUGIN_DATA: dataDir,
+        DEEPSEEK_API_KEY: "secret-test-value",
+      },
+    });
+    assert.equal(result.status, 1);
+    const record = parseJson(result.stdout);
+    assert.equal(record.error_code, "usage_limited");
+    assert.equal(record.error_cause, "cost_quota_usage_limit");
+    assert.equal(record.runtime_diagnostics.cost_quota.classification, "usage_limited");
+    assert.doesNotMatch(result.stdout, /cs_test|cus_NXLKj1H|secret-test-value/);
+  } finally {
+    server.close();
+  }
+});
+
+test("direct API non-JSON quota payloads are usage_limited with safe diagnostics", async () => {
+  const cwd = makeWorkspace();
+  const dataDir = mkdtempSync(path.join(tmpdir(), "api-reviewers-data-"));
+  const pluginRoot = makeInstalledApiReviewersRoot();
+  const server = await startChatServer((req, res) => {
+    req.resume();
+    res.writeHead(403, { "content-type": "text/plain" });
+    res.end("insufficient_quota for billing account user@example.com plan_id=pro+stripe-sub-abc/123");
+  });
+  try {
+    const { port } = server.address();
+    writeDeepSeekProviderConfig(pluginRoot, `http://127.0.0.1:${port}`);
+    const result = await run([
+      "run",
+      "--provider", "deepseek",
+      "--mode", "custom-review",
+      "--scope", "custom",
+      "--scope-paths", "seed.txt",
+      "--foreground",
+      "--prompt", "Check this file.",
+    ], {
+      cwd,
+      companion: path.join(pluginRoot, "scripts", "api-reviewer.mjs"),
+      env: {
+        API_REVIEWERS_PLUGIN_DATA: dataDir,
+        DEEPSEEK_API_KEY: "secret-test-value",
+      },
+    });
+    assert.equal(result.status, 1);
+    const record = parseJson(result.stdout);
+    assert.equal(record.error_code, "usage_limited");
+    assert.equal(record.error_cause, "cost_quota_usage_limit");
+    assert.equal(record.runtime_diagnostics.cost_quota.classification, "usage_limited");
+    assert.equal(record.runtime_diagnostics.cost_quota.http_status, 403);
+    assert.doesNotMatch(result.stdout, /user@example\.com|stripe-sub|plan_id|secret-test-value/);
+  } finally {
+    server.close();
+  }
+});
+
 test("direct API 501 compatibility errors stay provider_error", async () => {
   const cwd = makeWorkspace();
   const dataDir = mkdtempSync(path.join(tmpdir(), "api-reviewers-data-"));
@@ -1869,6 +1954,50 @@ test("direct API auth failures outrank billing-looking error text", async () => 
     assert.equal(record.error_cause, "direct_api_provider");
     assert.equal(record.runtime_diagnostics.cost_quota.classification, "not_reported");
     assert.equal(record.external_review.source_content_transmission, "sent");
+  } finally {
+    server.close();
+  }
+});
+
+test("direct API 403 auth failure with bare error code stays auth_rejected", async () => {
+  const cwd = makeWorkspace();
+  const dataDir = mkdtempSync(path.join(tmpdir(), "api-reviewers-data-"));
+  const pluginRoot = makeInstalledApiReviewersRoot();
+  const server = await startChatServer((req, res) => {
+    req.resume();
+    res.writeHead(403, { "content-type": "application/json" });
+    res.end(JSON.stringify({
+      error: {
+        code: "permission_denied",
+        message: "Error code: 403\nAuthentication failed.",
+      },
+    }));
+  });
+  try {
+    const { port } = server.address();
+    writeDeepSeekProviderConfig(pluginRoot, `http://127.0.0.1:${port}`);
+    const result = await run([
+      "run",
+      "--provider", "deepseek",
+      "--mode", "custom-review",
+      "--scope", "custom",
+      "--scope-paths", "seed.txt",
+      "--foreground",
+      "--prompt", "Check this file.",
+    ], {
+      cwd,
+      companion: path.join(pluginRoot, "scripts", "api-reviewer.mjs"),
+      env: {
+        API_REVIEWERS_PLUGIN_DATA: dataDir,
+        DEEPSEEK_API_KEY: "secret-test-value",
+      },
+    });
+    assert.equal(result.status, 1);
+    const record = parseJson(result.stdout);
+    assert.equal(record.error_code, "auth_rejected");
+    assert.equal(record.error_cause, "direct_api_provider");
+    assert.equal(record.runtime_diagnostics.cost_quota.classification, "not_reported");
+    assert.equal(record.runtime_diagnostics.cost_quota.http_status, 403);
   } finally {
     server.close();
   }
@@ -2111,8 +2240,8 @@ test("direct API cost-quota diagnostics drop PII-shaped provider error tokens", 
     res.writeHead(402, { "content-type": "application/json" });
     res.end(JSON.stringify({
       error: {
-        code: "account=user@example.com:plan_id=pro+stripe-sub-abc/123",
-        type: "billing/account=user@example.com",
+        code: "cus_NXLKj1H",
+        type: "acct_test_12345",
         message: "Credit limit exceeded for this billing cycle.",
       },
     }));
@@ -2142,7 +2271,7 @@ test("direct API cost-quota diagnostics drop PII-shaped provider error tokens", 
     assert.equal(record.runtime_diagnostics.cost_quota.classification, "usage_limited");
     assert.equal(record.runtime_diagnostics.cost_quota.provider_error_code, null);
     assert.equal(record.runtime_diagnostics.cost_quota.provider_error_type, null);
-    assert.doesNotMatch(result.stdout, /user@example\.com/);
+    assert.doesNotMatch(result.stdout, /cus_NXLKj1H|acct_test_12345/);
   } finally {
     server.close();
   }

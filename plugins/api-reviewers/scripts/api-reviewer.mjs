@@ -11,7 +11,7 @@ import { cleanGitEnv } from "./lib/git-env.mjs";
 import { GIT_BINARY_ENV, gitEnv, isGitBinaryPolicyError, resolveGitBinary } from "./lib/git-binary.mjs";
 import { isCodexSandbox } from "./lib/codex-env.mjs";
 import { REVIEW_PROMPT_CONTRACT_VERSION, buildReviewAuditManifest, buildReviewPrompt, scopeResolutionReason } from "./lib/review-prompt.mjs";
-import { isUsageLimitDetail, usageLimitMessage } from "./lib/usage-limit.mjs";
+import { USAGE_LIMIT_SAFE_MESSAGE, isUsageLimitDetail } from "./lib/usage-limit.mjs";
 import {
   EXTERNAL_REVIEW_KEYS,
   SOURCE_CONTENT_TRANSMISSION,
@@ -738,11 +738,62 @@ function redactor(env = process.env, configuredSecretNames = []) {
     for (const secret of secrets) out = out.split(secret).join("[REDACTED]");
     out = out.replace(/Authorization:\s*\S.*$/gim, "Authorization: [REDACTED]");
     out = out.replace(/Bearer\s+\S+/gi, "Bearer [REDACTED]");
-    out = out.replace(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi, "[REDACTED]");
-    out = out.replace(/\bplan[_-]?id=[^\s,;:)]+/gi, "[REDACTED]");
-    out = out.replace(/\bstripe-[^\s,;:)]+/gi, "[REDACTED]");
+    out = redactEmailTokens(out);
+    out = out.replaceAll(/\bplan[_-]?id=[^\s,;:)]+/gi, "[REDACTED]");
+    out = out.replaceAll(/\bstripe-[^\s,;:)]+/gi, "[REDACTED]");
     return out;
   };
+}
+
+function redactEmailTokens(text) {
+  let out = "";
+  let token = "";
+  const flush = () => {
+    out += redactEmailToken(token);
+    token = "";
+  };
+  for (const ch of String(text ?? "")) {
+    if (isEmailTokenChar(ch)) {
+      token += ch;
+    } else {
+      flush();
+      out += ch;
+    }
+  }
+  flush();
+  return out;
+}
+
+function isEmailTokenChar(ch) {
+  const code = ch.charCodeAt(0);
+  return (
+    (code >= 48 && code <= 57) ||
+    (code >= 65 && code <= 90) ||
+    (code >= 97 && code <= 122) ||
+    ch === "." || ch === "_" || ch === "%" || ch === "+" || ch === "-" || ch === "@"
+  );
+}
+
+function redactEmailToken(token) {
+  if (!token) return "";
+  let end = token.length;
+  while (end > 0 && token[end - 1] === ".") end -= 1;
+  const core = token.slice(0, end);
+  const suffix = token.slice(end);
+  return isEmailLikeToken(core) ? `[REDACTED]${suffix}` : token;
+}
+
+function isEmailLikeToken(token) {
+  const at = token.indexOf("@");
+  if (at <= 0 || at !== token.lastIndexOf("@") || at === token.length - 1) return false;
+  const domain = token.slice(at + 1);
+  const dot = domain.lastIndexOf(".");
+  if (dot <= 0 || dot >= domain.length - 2) return false;
+  for (let i = dot + 1; i < domain.length; i += 1) {
+    const code = domain.charCodeAt(i);
+    if (!((code >= 65 && code <= 90) || (code >= 97 && code <= 122))) return false;
+  }
+  return true;
 }
 
 function redactValue(value, redact) {
@@ -1289,7 +1340,7 @@ async function callProvider(provider, cfg, prompt, env = process.env) {
     const text = await response.text();
     const parsed = parseJson(text);
     if (!response.ok) {
-      const errorCode = classifyHttpFailure(response.status, parsed);
+      const errorCode = classifyHttpFailure(response.status, parsed, text);
       return providerFailureWithDiagnostics(
         errorCode,
         providerErrorMessage(parsed, text, redact, { safeUsageLimit: errorCode === "usage_limited" }),
@@ -1299,7 +1350,7 @@ async function callProvider(provider, cfg, prompt, env = process.env) {
         {
           ...diagnostics(),
           elapsed_ms: Date.now() - started,
-          cost_quota: costQuotaDiagnostics(response.status, parsed),
+          cost_quota: costQuotaDiagnostics(errorCode, response.status, parsed),
         },
       );
     }
@@ -1381,14 +1432,11 @@ function parseJson(text) {
 }
 
 function providerErrorMessage(parsed, text, redact, { safeUsageLimit = false } = {}) {
+  if (safeUsageLimit) return USAGE_LIMIT_SAFE_MESSAGE;
   if (parsed.ok) {
     const message = parsed.value?.error?.message ?? parsed.value?.message ?? JSON.stringify(parsed.value).slice(0, 800);
-    const usageLimited = safeUsageLimit ? usageLimitMessage(message) : null;
-    if (usageLimited) return usageLimited;
     return redact(message);
   }
-  const usageLimited = safeUsageLimit ? usageLimitMessage(text) : null;
-  if (usageLimited) return usageLimited;
   return redact(text).slice(0, 800);
 }
 
@@ -1408,8 +1456,8 @@ function providerFailureDetailObject(parsed) {
   return detail && typeof detail === "object" && !Array.isArray(detail) ? detail : {};
 }
 
-function classifyHttpFailure(status, parsed) {
-  const detail = parsed.ok ? providerFailureDetailText(parsed) : "";
+function classifyHttpFailure(status, parsed, text = "") {
+  const detail = parsed.ok ? providerFailureDetailText(parsed) : String(text ?? "");
   const usageLimitDetail = isUsageLimitDetail(detail);
   if (status === 401 || (status === 403 && !usageLimitDetail)) return "auth_rejected";
   if (status === 402 || (status === 403 && usageLimitDetail) || (status === 429 && usageLimitDetail)) return "usage_limited";
@@ -1424,19 +1472,14 @@ function classifyHttpFailure(status, parsed) {
 function safeDiagnosticString(value) {
   if (typeof value !== "string" && typeof value !== "number") return null;
   const text = String(value);
+  if (/^(?:stripe-|cus_|acct_|cs_(?:test|live)_|pi_|sub_|in_|ch_|seti_|setp_|price_|prod_|iv_)/i.test(text)) return null;
   return /^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$/.test(text) ? text : null;
 }
 
-function costQuotaDiagnostics(httpStatus, parsed) {
+function costQuotaDiagnostics(errorCode, httpStatus, parsed) {
   const error = providerFailureDetailObject(parsed);
-  const detail = parsed.ok ? providerFailureDetailText(parsed) : "";
-  const usageLimitDetail = isUsageLimitDetail(detail);
-  const authRejected = httpStatus === 401 || (httpStatus === 403 && !usageLimitDetail);
-  const usageLimitStatus = httpStatus === 402 || (httpStatus === 403 && usageLimitDetail) || (httpStatus === 429 && usageLimitDetail);
-  const providerUnavailable = !usageLimitStatus && (httpStatus === 408 || httpStatus === 409 || httpStatus === 425 || httpStatus === 500 || httpStatus === 502 || httpStatus === 503 || httpStatus === 504 || /capacity|resource|overload|unavailable/i.test(detail));
-  const usageLimited = !authRejected && (usageLimitStatus || (!providerUnavailable && isUsageLimitDetail(detail)));
   return {
-    classification: usageLimited ? "usage_limited" : "not_reported",
+    classification: errorCode === "usage_limited" ? "usage_limited" : "not_reported",
     http_status: httpStatus ?? null,
     provider_error_code: safeDiagnosticString(error.code) ?? null,
     provider_error_type: safeDiagnosticString(error.type) ?? null,

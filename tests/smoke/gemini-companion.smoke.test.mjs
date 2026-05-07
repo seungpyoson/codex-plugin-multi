@@ -1435,7 +1435,7 @@ test("gemini review foreground rejects invalid GEMINI_REVIEW_TIMEOUT_MS", () => 
   }
 });
 
-test("gemini review uses configured review_quality fallback when primary capacity is exhausted", () => {
+test("gemini review does not silently fallback when review_quality capacity is exhausted", () => {
   const cwd = mkdtempSync(path.join(tmpdir(), "gemini-review-fallback-cwd-"));
   seedMinimalRepo(cwd);
   const { stdout, stderr, status, dataDir } = runCompanion(
@@ -1443,12 +1443,11 @@ test("gemini review uses configured review_quality fallback when primary capacit
     { cwd, env: { GEMINI_MOCK_CAPACITY_MODEL: "gemini-3.1-pro-preview" } },
   );
   try {
-    assert.equal(status, 0, `exit ${status}: ${stderr}`);
-    assert.match(stderr, /retrying with gemini-3-flash-preview/);
+    assert.equal(status, 2, `exit ${status}: ${stderr}`);
+    assert.doesNotMatch(stderr, /retrying with gemini-3-flash-preview/);
     const record = JSON.parse(stdout);
-    assert.equal(record.status, "completed");
-    assert.equal(record.model, "gemini-3-flash-preview");
-    assert.equal(record.review_metadata.audit_manifest.request.model, "gemini-3-flash-preview");
+    assert.equal(record.status, "failed");
+    assert.equal(record.model, "gemini-3.1-pro-preview");
   } finally {
     rmTree(dataDir);
     rmTree(cwd);
@@ -1877,21 +1876,20 @@ test("gemini doctor returns readiness contract", () => {
   }
 });
 
-test("gemini doctor probes review-quality fallback candidates, not only native auth", () => {
+test("gemini doctor reports review-quality capacity exhaustion without fallback", () => {
   const cwd = mkdtempSync(path.join(tmpdir(), "gemini-doctor-review-fallback-cwd-"));
   const { stdout, stderr, status, dataDir } = runCompanion(
     ["doctor"],
     { cwd, env: { GEMINI_MOCK_CAPACITY_MODEL: "gemini-3.1-pro-preview" } },
   );
   try {
-    assert.equal(status, 0, `exit ${status}: ${stderr}`);
-    assert.match(stderr, /retrying with gemini-3-flash-preview/);
+    assert.equal(status, 2, `exit ${status}: ${stderr}`);
+    assert.doesNotMatch(stderr, /retrying with gemini-3-flash-preview/);
     const parsed = JSON.parse(stdout);
-    assert.equal(parsed.status, "ok");
-    assert.equal(parsed.ready, true);
-    assert.equal(parsed.model, "gemini-3-flash-preview");
-    assert.equal(parsed.model_fallback.from, "gemini-3.1-pro-preview");
-    assert.equal(parsed.model_fallback.to, "gemini-3-flash-preview");
+    assert.equal(parsed.status, "rate_limited");
+    assert.equal(parsed.ready, false);
+    assert.equal(parsed.model_fallback, undefined);
+    assert.match(parsed.summary, /capacity-limited/i);
   } finally {
     rmTree(dataDir);
     rmTree(cwd);

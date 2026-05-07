@@ -2042,6 +2042,119 @@ test("custom-review preserves safe numeric cost-quota provider codes", async () 
   });
 });
 
+test("custom-review status-only usage limits use safe diagnostics", async () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "grok-web-workspace-"));
+  writeFileSync(path.join(cwd, "review.js"), "export const value = 42;\n");
+
+  await withServer(async (_req, res) => {
+    res.statusCode = 402;
+    res.setHeader("content-type", "application/json");
+    res.end(JSON.stringify({
+      error: {
+        code: "card_required",
+        type: "checkout_required",
+        message: "Payment required: see checkout session cs_test_abc123 and customer cus_NXLKj1H.",
+      },
+    }));
+  }, async (baseUrl) => {
+    const result = await runAsync([
+      "run",
+      "--mode", "custom-review",
+      "--scope", "custom",
+      "--scope-paths", "review.js",
+      "--foreground",
+      "--prompt", "Check this file.",
+    ], {
+      cwd,
+      env: {
+        GROK_WEB_BASE_URL: baseUrl,
+        GROK_WEB_TUNNEL_API_KEY: "secret-cookie-like-token",
+      },
+    });
+    const record = parseStdout(result);
+
+    assert.equal(result.status, 1);
+    assert.equal(record.error_code, "usage_limited");
+    assert.equal(record.error_cause, "cost_quota_usage_limit");
+    assert.equal(record.runtime_diagnostics.cost_quota.classification, "usage_limited");
+    assert.doesNotMatch(result.stdout, /cs_test|cus_NXLKj1H|secret-cookie-like-token/);
+  });
+});
+
+test("custom-review cost-quota diagnostics drop account-shaped provider tokens", async () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "grok-web-workspace-"));
+  writeFileSync(path.join(cwd, "review.js"), "export const value = 42;\n");
+
+  await withServer(async (_req, res) => {
+    res.statusCode = 402;
+    res.setHeader("content-type", "application/json");
+    res.end(JSON.stringify({
+      error: {
+        code: "cs_test_abc123",
+        type: "acct_test_12345",
+        message: "Credit limit exceeded for this billing cycle.",
+      },
+    }));
+  }, async (baseUrl) => {
+    const result = await runAsync([
+      "run",
+      "--mode", "custom-review",
+      "--scope", "custom",
+      "--scope-paths", "review.js",
+      "--foreground",
+      "--prompt", "Check this file.",
+    ], {
+      cwd,
+      env: {
+        GROK_WEB_BASE_URL: baseUrl,
+        GROK_WEB_TUNNEL_API_KEY: "secret-cookie-like-token",
+      },
+    });
+    const record = parseStdout(result);
+
+    assert.equal(result.status, 1);
+    assert.equal(record.error_code, "usage_limited");
+    assert.equal(record.runtime_diagnostics.cost_quota.classification, "usage_limited");
+    assert.equal(record.runtime_diagnostics.cost_quota.provider_error_code, null);
+    assert.equal(record.runtime_diagnostics.cost_quota.provider_error_type, null);
+    assert.doesNotMatch(result.stdout, /cs_test_abc123|acct_test_12345/);
+  });
+});
+
+test("custom-review non-JSON quota payloads use safe diagnostics", async () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "grok-web-workspace-"));
+  writeFileSync(path.join(cwd, "review.js"), "export const value = 42;\n");
+
+  await withServer(async (_req, res) => {
+    res.statusCode = 400;
+    res.setHeader("content-type", "text/plain");
+    res.end("quota exceeded for billing account user@example.com plan_id=pro+stripe-sub-abc/123");
+  }, async (baseUrl) => {
+    const result = await runAsync([
+      "run",
+      "--mode", "custom-review",
+      "--scope", "custom",
+      "--scope-paths", "review.js",
+      "--foreground",
+      "--prompt", "Check this file.",
+    ], {
+      cwd,
+      env: {
+        GROK_WEB_BASE_URL: baseUrl,
+        GROK_WEB_TUNNEL_API_KEY: "secret-cookie-like-token",
+      },
+    });
+    const record = parseStdout(result);
+
+    assert.equal(result.status, 1);
+    assert.equal(record.error_code, "usage_limited");
+    assert.equal(record.error_cause, "cost_quota_usage_limit");
+    assert.equal(record.runtime_diagnostics.cost_quota.classification, "usage_limited");
+    assert.equal(record.runtime_diagnostics.cost_quota.http_status, 400);
+    assert.doesNotMatch(result.stdout, /user@example\.com|stripe-sub|plan_id|secret-cookie-like-token/);
+  });
+});
+
 test("custom-review maps malformed tunnel responses", async () => {
   const cwd = mkdtempSync(path.join(tmpdir(), "grok-web-workspace-"));
   writeFileSync(path.join(cwd, "review.js"), "export const value = 42;\n");

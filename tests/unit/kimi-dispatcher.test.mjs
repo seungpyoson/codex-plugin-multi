@@ -1,8 +1,12 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
 
-import { buildKimiArgs, parseKimiResult } from "../../plugins/kimi/scripts/lib/kimi.mjs";
+import { buildKimiArgs, parseKimiResult, spawnKimi } from "../../plugins/kimi/scripts/lib/kimi.mjs";
 import { MODE_PROFILES, resolveProfile } from "../../plugins/kimi/scripts/lib/mode-profiles.mjs";
+import { sanitizeTargetEnv } from "../../plugins/kimi/scripts/lib/provider-env.mjs";
 
 const KIMI_SESSION_ID = "22222222-3333-4444-9555-666666666666";
 
@@ -95,6 +99,90 @@ test("parseKimiResult: classifies mixed JSON plus sentinel when Kimi exits nonze
   assert.equal(parsed.error, "Max number of steps reached: 8");
   assert.equal(parsed.stepLimit, 8);
   assert.equal(parsed.sessionId, KIMI_SESSION_ID);
+});
+
+test("parseKimiResult: classifies mixed JSON plus sentinel when Kimi exits by signal", () => {
+  const parsed = parseKimiResult(
+    `{"content":"partial","session_id":"${KIMI_SESSION_ID}"}\nMax number of steps reached: 8\n`,
+    "",
+    { exitCode: null, signal: "SIGTERM" },
+  );
+
+  assert.equal(parsed.ok, false);
+  assert.equal(parsed.reason, "step_limit_exceeded");
+  assert.equal(parsed.error, "Max number of steps reached: 8");
+  assert.equal(parsed.stepLimit, 8);
+  assert.equal(parsed.sessionId, KIMI_SESSION_ID);
+});
+
+test("spawnKimi: forwards child signal so mixed JSON plus sentinel is step_limit_exceeded", async () => {
+  const dir = mkdtempSync(path.join(tmpdir(), "kimi-signal-step-limit-"));
+  const binary = path.join(dir, "kimi-signal-step-limit.mjs");
+  writeFileSync(binary, `#!/usr/bin/env node
+process.stdout.write(${JSON.stringify(`{"content":"partial","session_id":"${KIMI_SESSION_ID}"}\n`)});
+process.stdout.write("Max number of steps reached: 8\\n");
+process.kill(process.pid, "SIGABRT");
+`);
+  chmodSync(binary, 0o755);
+  try {
+    const result = await spawnKimi(resolveProfile("custom-review"), {
+      binary,
+      model: "kimi-code/kimi-for-coding",
+      promptText: "Review this scope.",
+    });
+
+    assert.equal(result.exitCode, null);
+    assert.equal(result.signal, "SIGABRT");
+    assert.equal(result.parsed.ok, false);
+    assert.equal(result.parsed.reason, "step_limit_exceeded");
+    assert.equal(result.parsed.error, "Max number of steps reached: 8");
+    assert.equal(result.kimiSessionId, KIMI_SESSION_ID);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("sanitizeTargetEnv: strips provider routing and API-key variables for Kimi", () => {
+  const sanitized = sanitizeTargetEnv({
+    PATH: "/usr/bin",
+    HOME: "/tmp/home",
+    KIMI_CONFIG_DIR: "/tmp/kimi",
+    KIMI_API_KEY: "kimi-secret",
+    MOONSHOT_BASE_URL: "https://moonshot.example",
+    OPENAI_API_KEY: "openai-secret",
+    AWS_PROFILE: "prod",
+    GOOGLE_APPLICATION_CREDENTIALS: "/tmp/google.json",
+    GOOGLE_GENAI_USE_VERTEXAI: "true",
+    CLOUD_ML_REGION: "us-central1",
+    LITELLM_PROXY_API_KEY: "proxy-secret",
+    OLLAMA_HOST: "http://127.0.0.1:11434",
+    HTTP_PROXY: "http://proxy.example",
+  });
+
+  assert.deepEqual(sanitized, {
+    PATH: "/usr/bin",
+    HOME: "/tmp/home",
+    KIMI_CONFIG_DIR: "/tmp/kimi",
+    HTTP_PROXY: "http://proxy.example",
+  });
+});
+
+test("sanitizeTargetEnv: strips proxy variables only when requested", () => {
+  assert.deepEqual(
+    sanitizeTargetEnv({
+      PATH: "/usr/bin",
+      HTTP_PROXY: "http://proxy.example",
+      HTTPS_PROXY: "https://proxy.example",
+      NO_PROXY: "localhost",
+      npm_config_proxy: "http://npm-proxy.example",
+      CODEX_PLUGIN_STRIP_PROXY_ENV: "1",
+    }),
+    { PATH: "/usr/bin" },
+  );
+});
+
+test("sanitizeTargetEnv: accepts nullish env as empty", () => {
+  assert.deepEqual(sanitizeTargetEnv(null), {});
 });
 
 test("parseKimiResult: keeps scanning stream-json lines for session id on step limit", () => {
@@ -215,6 +303,23 @@ test("parseKimiResult: usage limits omit account and payment artifacts", () => {
     "",
     "Error code: 403\nYou've reached your usage limit for user@example.com plan_id=pro+stripe-sub-abc/123.\n",
     { exitCode: 1 },
+  );
+
+  assert.equal(parsed.ok, false);
+  assert.equal(parsed.reason, "usage_limited");
+  assert.match(parsed.error, /quota|usage-tier|billing|credit/i);
+  assert.doesNotMatch(parsed.error, /user@example\.com|stripe-sub|plan_id/);
+});
+
+test("parseKimiResult: structured JSON usage errors omit account and payment artifacts", () => {
+  const parsed = parseKimiResult(
+    JSON.stringify({
+      error: {
+        code: "insufficient_quota",
+        message: "Credit limit exceeded for user@example.com plan_id=pro+stripe-sub-abc/123.",
+      },
+    }),
+    "",
   );
 
   assert.equal(parsed.ok, false);

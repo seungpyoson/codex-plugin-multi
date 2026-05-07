@@ -4,7 +4,6 @@ import assert from "node:assert/strict";
 import {
   isUsageLimitDetail,
   usageLimitMessage,
-  usageLimitMessageWithMaxLength,
 } from "../../scripts/lib/usage-limit.mjs";
 
 test("usage-limit helper detects durable quota and billing markers", () => {
@@ -27,6 +26,7 @@ test("usage-limit helper does not classify transient rate or capacity wording", 
     "Rate limit exceeded for requests per minute. Retry later.",
     "MODEL_CAPACITY_EXHAUSTED: No capacity available; model is capacity-limited.",
     "Provider rate limit overloaded this shard.",
+    "Error code: 403\nAuthentication failed.",
     "Error code: 4030",
     "Error code: 40300",
   ]) {
@@ -37,7 +37,7 @@ test("usage-limit helper does not classify transient rate or capacity wording", 
 
 test("usage-limit helper returns stable safe summary", () => {
   const message = `usage limit ${"x".repeat(20)}`;
-  assert.match(usageLimitMessageWithMaxLength(12, message), /quota|usage-tier|billing|credit/i);
+  assert.match(usageLimitMessage(message), /quota|usage-tier|billing|credit/i);
 });
 
 test("usage-limit helper does not return account or payment artifacts", () => {
