@@ -16,6 +16,7 @@ import { fileURLToPath } from "node:url";
 import path from "node:path";
 
 import {
+  ALWAYS_REDACT_STRING_FIELDS,
   COMPANION_SESSION_ID_FIELDS,
   PATH_SCRUB_PROBES,
 } from "../../scripts/lib/fixture-sanitization.mjs";
@@ -401,8 +402,11 @@ test("fixtures: companion fixtures have session_id fields nulled or [REDACTED]",
   }
 });
 
-test("fixtures: bare session_id and request_id fields are nulled or [REDACTED] (any arch)", () => {
-  // Catches the doctor/ping output shape where the field is just "session_id".
+test("fixtures: always-redacted session/request id fields are nulled or [REDACTED] (any arch)", () => {
+  // Catches the doctor/ping output shape where the field is just "session_id",
+  // and the camelCase variants the sanitizer also treats as always-redacted.
+  // Import the shared field list so the committed-fixture gate stays in sync
+  // with the sanitizer if new always-redacted field variants are added.
   for (const f of FIXTURES) {
     const response = readJson(f.responsePath);
     walk(response, []);
@@ -414,7 +418,7 @@ test("fixtures: bare session_id and request_id fields are nulled or [REDACTED] (
       }
       if (typeof value !== "object") return;
       for (const [k, v] of Object.entries(value)) {
-        if ((k === "session_id" || k === "request_id") && v != null) {
+        if (ALWAYS_REDACT_STRING_FIELDS.includes(k) && v != null) {
           assert.equal(
             v,
             "[REDACTED]",
@@ -425,6 +429,13 @@ test("fixtures: bare session_id and request_id fields are nulled or [REDACTED] (
       }
     }
   }
+});
+
+test("fixtures: always-redacted field gate covers snake_case and camelCase variants", () => {
+  assert.deepEqual(
+    new Set(ALWAYS_REDACT_STRING_FIELDS),
+    new Set(["session_id", "request_id", "sessionId", "requestId"]),
+  );
 });
 
 test("fixtures: JobRecord-shaped responses carry schema_version", () => {

@@ -137,7 +137,7 @@ export const COMPANION_SESSION_ID_FIELDS = Object.freeze([
 
 // Field names that ALWAYS get redacted when present, regardless of
 // architecture and value type. snake_case + camelCase.
-const ALWAYS_REDACT_STRING_FIELDS = Object.freeze([
+export const ALWAYS_REDACT_STRING_FIELDS = Object.freeze([
   "session_id",
   "request_id",
   "sessionId",
