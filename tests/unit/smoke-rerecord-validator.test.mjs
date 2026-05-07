@@ -1,29 +1,26 @@
 // tests/unit/smoke-rerecord-validator.test.mjs
 //
 // Structural-invariant tests for the recipe schema validator
-// (`validateRecipes` in scripts/smoke-rerecord.mjs). Each describe block
-// targets a *class* of drift the validator must catch. Recipe-specific
-// semantic tests live in smoke-rerecord-recipes.test.mjs; this file is
-// for the recipe-construction rules themselves, exercised against
-// fabricated input so the assertions don't depend on the live RECIPES
-// shape.
+// (`validateRecipes` in scripts/smoke-rerecord.mjs) and the helper
+// (`invalidateProviderKeys`) that the validator co-verifies through
+// recipe shape. Each describe block targets a *class* of drift the
+// validator must catch. Recipe-specific semantic tests live in
+// smoke-rerecord-recipes.test.mjs; this file is for the recipe-
+// construction rules themselves, exercised against fabricated input
+// so the assertions don't depend on the live RECIPES shape.
 //
-// Findings these tests close (round-14 internal review of #106):
-//
-//   B (validator scope narrower than the rule): the *-auth-rejected
-//     invalidate-every-key check sits inside `if (architecture ===
-//     api-reviewers)`. A future companion or grok recipe named
-//     `*-auth-rejected` would bypass it entirely. The convention
-//     "auth-rejected belongs only to api-reviewers; companion/grok use
-//     auth-failure" was implicit. These tests force it to be enforced.
-//
-//   C (no encoded rule that expectExit must be CI-characterized): negative
-//     recipes (expectExit !== [0]) have historically been declared from
-//     local probes whose state can leak through environment scrubs.
-//     Round-13 caught one wrong value (claude/auth-failure: [1] -> [2])
-//     only because workflow_dispatch was run. The validator now requires
-//     a per-recipe `expectExitObservedRun: <positive integer>` field
-//     citing the workflow run ID that observed the declared exit code.
+// Rules these tests pin:
+//   - `*-auth-rejected` recipe naming is reserved for api-reviewers
+//     architecture. Companion / grok recipes use `*-auth-failure`
+//     instead. Without this, a future cross-architecture recipe with
+//     the wrong env-shape bypasses the invalidate-every-key check.
+//   - Recipes whose declared exit code is non-zero must cite the
+//     GitHub Actions run ID that observed the exit on a sterile CI
+//     runner. Local probes can be wrong because dev `~/.claude` state
+//     leaks through environment scrubs (see round-13 incident).
+//   - `invalidateProviderKeys(provider)` returns a frozen-shape
+//     overlay sentineling every accepted key for that provider, and
+//     throws on unknown providers.
 
 import { strict as assert } from "node:assert";
 import { describe, it } from "node:test";
@@ -35,6 +32,7 @@ import {
 } from "../../scripts/lib/recipe-architecture.mjs";
 import {
   INVALID_PROVIDER_KEY_SENTINEL,
+  invalidateProviderKeys,
   validateRecipes,
 } from "../../scripts/smoke-rerecord.mjs";
 
@@ -55,10 +53,10 @@ function makeRecipe(over = {}) {
 }
 
 // ───────────────────────────────────────────────────────────────────────
-// Finding B — auth-rejected naming convention is architecture-bound
+// *-auth-rejected naming is reserved for api-reviewers architecture
 // ───────────────────────────────────────────────────────────────────────
 
-describe("validateRecipes — *-auth-rejected naming convention (finding B)", () => {
+describe("validateRecipes — *-auth-rejected is reserved for api-reviewers architecture", () => {
   it("rejects auth-rejected recipes with companion architecture", () => {
     // Reproduction: a contributor adds `claude/auth-rejected` (companion
     // architecture) with a buggy env override. Without this convention
@@ -109,10 +107,10 @@ describe("validateRecipes — *-auth-rejected naming convention (finding B)", ()
 });
 
 // ───────────────────────────────────────────────────────────────────────
-// Finding C — expectExit for negative recipes must cite a CI run
+// Negative recipes must cite a CI-observed workflow run
 // ───────────────────────────────────────────────────────────────────────
 
-describe("validateRecipes — expectExitObservedRun for negative recipes (finding C)", () => {
+describe("validateRecipes — negative recipes must cite a CI-observed workflow run", () => {
   it("rejects a negative recipe (expectExit !== [0]) lacking expectExitObservedRun", () => {
     // Reproduction: a contributor adds a new negative recipe and
     // declares an exit code from a local probe. Without an explicit
@@ -226,5 +224,42 @@ describe("validateRecipes — live RECIPES module-load contract", () => {
     // surprising recipe-validation error.
     assert.equal(typeof INVALID_PROVIDER_KEY_SENTINEL, "string");
     assert.ok(INVALID_PROVIDER_KEY_SENTINEL.length > 0);
+  });
+});
+
+// ───────────────────────────────────────────────────────────────────────
+// invalidateProviderKeys — direct unit tests
+// ───────────────────────────────────────────────────────────────────────
+//
+// The helper is co-verified through the validator's runtime check on
+// auth-rejected recipes (`spec.env[k] === SENTINEL` for every k in the
+// canonical list). Direct tests here uncouple the helper's contract
+// from the recipe-shape coupling: a future refactor that changes the
+// helper's signature without touching the recipes — e.g. adds a third
+// parameter that defaults wrong — would still satisfy the validator's
+// shape check but would surface in these tests.
+
+describe("invalidateProviderKeys", () => {
+  it("returns a single-key overlay for a one-key provider (deepseek)", () => {
+    const out = invalidateProviderKeys("deepseek");
+    assert.deepEqual(out, { DEEPSEEK_API_KEY: INVALID_PROVIDER_KEY_SENTINEL });
+  });
+
+  it("returns an overlay with EVERY canonical key sentineled (glm)", () => {
+    // The whole point of round-12: a multi-key provider must have all
+    // its accepted keys invalidated. A typo or omission here is the
+    // class of bug greptile P1 #3199 caught.
+    const out = invalidateProviderKeys("glm");
+    assert.deepEqual(out, {
+      ZAI_API_KEY: INVALID_PROVIDER_KEY_SENTINEL,
+      ZAI_GLM_API_KEY: INVALID_PROVIDER_KEY_SENTINEL,
+    });
+  });
+
+  it("throws on an unknown provider with a clear remediation", () => {
+    assert.throws(
+      () => invalidateProviderKeys("does-not-exist"),
+      /unknown provider/,
+    );
   });
 });

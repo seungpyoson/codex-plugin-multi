@@ -84,7 +84,14 @@ export const INVALID_PROVIDER_KEY_SENTINEL =
 // fall through to happy-path in a negative fixture). Iterating the
 // canonical list means adding a new accepted key automatically
 // invalidates it in every negative recipe; nothing else needs to change.
-function invalidateProviderKeys(provider) {
+//
+// Exported so tests/unit/smoke-rerecord-validator.test.mjs can pin the
+// helper's behavior directly. The validator-side check (every
+// canonical key is the sentinel) co-verifies this through recipe
+// shape, but a refactor that changes the helper's signature without
+// touching the recipes would slip past the validator while still
+// breaking the invariant — direct tests catch that.
+export function invalidateProviderKeys(provider) {
   const keys = API_REVIEWER_PROVIDER_KEYS[provider];
   if (!keys) {
     throw new Error(
