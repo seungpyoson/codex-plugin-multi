@@ -1076,6 +1076,40 @@ test("run rejects Git binary policy errors distinctly before direct API scope co
   assert.doesNotMatch(result.stdout, /secret-test-value/);
 });
 
+test("approval-request rejects Git binary policy errors distinctly before source approval", async () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "api-reviewers-approval-git-policy-"));
+  const marker = path.join(cwd, "executed");
+  const maliciousGit = path.join(cwd, "malicious-git");
+  writeFileSync(maliciousGit, `#!/bin/sh\necho executed > ${JSON.stringify(marker)}\nexit 0\n`, "utf8");
+  chmodSync(maliciousGit, 0o700);
+  writeFileSync(path.join(cwd, "seed.txt"), "selected source\n");
+
+  const result = await run([
+    "approval-request",
+    "--provider", "deepseek",
+    "--mode", "custom-review",
+    "--scope", "custom",
+    "--scope-paths", "seed.txt",
+    "--prompt", "Check this file.",
+  ], {
+    cwd,
+    env: {
+      DEEPSEEK_API_KEY: "secret-test-value",
+      CODEX_PLUGIN_MULTI_GIT_BINARY: maliciousGit,
+    },
+  });
+
+  assert.equal(result.status, 1);
+  const record = parseJson(result.stdout);
+  assert.equal(record.ok, false);
+  assert.equal(record.provider, "deepseek");
+  assert.equal(record.error_code, "git_binary_rejected");
+  assert.match(record.error_message, /CODEX_PLUGIN_MULTI_GIT_BINARY/);
+  assert.doesNotMatch(result.stdout, /external_review_approval_request/);
+  assert.equal(existsSync(marker), false, "rejected git override must not execute");
+  assert.doesNotMatch(result.stdout, /secret-test-value/);
+});
+
 test("branch-diff git revision failure redacts API key values from stderr", async () => {
   const cwd = makeBranchDiffWorkspace();
   const dataDir = mkdtempSync(path.join(tmpdir(), "api-reviewers-data-"));

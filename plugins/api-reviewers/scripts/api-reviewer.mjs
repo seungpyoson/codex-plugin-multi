@@ -1961,7 +1961,7 @@ async function cmdApprovalRequest(options) {
     }
     printJson(approvalRequest);
   } catch (e) {
-    const reason = e.apiReviewersReason ?? "scope_failed";
+    const reason = isGitBinaryPolicyError(e) ? "git_binary_rejected" : (e.apiReviewersReason ?? "scope_failed");
     const redact = redactor(process.env, configuredSecretNames);
     printJson({
       ok: false,
