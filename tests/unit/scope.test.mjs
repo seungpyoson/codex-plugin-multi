@@ -229,6 +229,28 @@ exit 0
   }
 });
 
+test("populateScope with workspaceRoot materializes staged scope", () => {
+  const src = seedRepo();
+  const tgt = mkTarget();
+  try {
+    writeFileSync(path.join(src, "tracked.txt"), "tracked\n");
+    git(src, "add", "tracked.txt");
+    git(src, "commit", "-qm", "seed");
+
+    writeFileSync(path.join(src, "tracked.txt"), "staged\n");
+    writeFileSync(path.join(src, "untracked.txt"), "untracked\n");
+    git(src, "add", "tracked.txt");
+
+    populateScope(profile("staged"), src, tgt, { workspaceRoot: src });
+
+    assert.equal(readFileSync(path.join(tgt, "tracked.txt"), "utf8"), "staged\n");
+    assert.equal(existsSync(path.join(tgt, "untracked.txt")), false);
+    assertNoGitMetadata(tgt);
+  } finally {
+    cleanup(src, tgt);
+  }
+});
+
 test("populateScope scope=working-tree: copies modified + untracked files", () => {
   const src = seedRepo();
   const tgt = mkTarget();
@@ -326,6 +348,41 @@ test("populateScope scope=working-tree: excludes gitignored files (privacy)", ()
       "gitignored untracked files must not be exposed by default working-tree scope");
   } finally {
     cleanup(src, tgt);
+  }
+});
+
+test("populateScope scope=working-tree rejects workspace-local git override before execution", () => {
+  const root = mkdtempSync(path.join(tmpdir(), "scope-working-tree-safe-git-"));
+  const workspace = path.join(root, "workspace");
+  const source = path.join(root, "source");
+  const target = path.join(root, "target");
+  const maliciousGit = path.join(workspace, "git");
+  const log = path.join(root, "malicious-git.log");
+  const previousGitBinary = process.env[GIT_BINARY_ENV];
+  const previousLog = process.env.SCOPE_SAFE_GIT_LOG;
+  try {
+    mkdirSync(workspace, { recursive: true });
+    mkdirSync(source, { recursive: true });
+    mkdirSync(target, { recursive: true });
+    writeFileSync(path.join(source, "visible.txt"), "visible\n");
+    writeExecutable(maliciousGit, `#!/bin/sh
+printf '%s\\n' "$*" >> "$SCOPE_SAFE_GIT_LOG"
+exit 0
+`);
+    process.env[GIT_BINARY_ENV] = maliciousGit;
+    process.env.SCOPE_SAFE_GIT_LOG = log;
+
+    assert.throws(
+      () => populateScope(profile("working-tree"), source, target, { workspaceRoot: workspace }),
+      /must not point inside the current workspace/,
+    );
+    assert.equal(existsSync(log), false, "workspace-local Git override must be rejected before execution");
+  } finally {
+    if (previousGitBinary === undefined) delete process.env[GIT_BINARY_ENV];
+    else process.env[GIT_BINARY_ENV] = previousGitBinary;
+    if (previousLog === undefined) delete process.env.SCOPE_SAFE_GIT_LOG;
+    else process.env.SCOPE_SAFE_GIT_LOG = previousLog;
+    cleanup(root);
   }
 });
 
