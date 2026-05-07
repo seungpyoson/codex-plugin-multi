@@ -61,7 +61,7 @@ const MIN_SECRET_REDACTION_LENGTH_CURATED = 4;     // operator-curated env_keys
 // Common public-prefix shapes. Match-anywhere even if the env value isn't
 // in process.env at sanitize time. Conservative default; lets us scrub
 // echo-attacks where the provider response includes a hardcoded test key.
-const SECRET_PREFIX_PATTERNS = Object.freeze([
+export const SECRET_PREFIX_PATTERNS = Object.freeze([
   /sk-[a-zA-Z\d]{20,}/g,                     // OpenAI / Anthropic style
   /sk-or-v\d+-[a-zA-Z\d]{20,}/g,             // OpenRouter
   /sk-ant-api\d+-[a-zA-Z\d_-]{20,}/g,        // Anthropic prefixed

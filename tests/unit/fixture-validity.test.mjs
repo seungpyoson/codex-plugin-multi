@@ -19,6 +19,7 @@ import {
   ALWAYS_REDACT_STRING_FIELDS,
   COMPANION_SESSION_ID_FIELDS,
   PATH_SCRUB_PROBES,
+  SECRET_PREFIX_PATTERNS,
 } from "../../scripts/lib/fixture-sanitization.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -108,12 +109,16 @@ export function filterFixturesByChangedEnv(allFixtures, changedEnv, repoRoot) {
   const trimmed = String(changedEnv).trim();
   if (trimmed === "") return [];
   const changed = new Set(
-    trimmed.split("\n").map((line) => line.trim()).filter(Boolean),
+    trimmed.split("\n").map((line) => toGitPath(line.trim())).filter(Boolean),
   );
   return allFixtures.filter((f) =>
-    changed.has(path.relative(repoRoot, f.responsePath))
-    || changed.has(path.relative(repoRoot, f.provenancePath)),
+    changed.has(toGitPath(path.relative(repoRoot, f.responsePath)))
+    || changed.has(toGitPath(path.relative(repoRoot, f.provenancePath))),
   );
+}
+
+function toGitPath(p) {
+  return p.split(path.sep).join("/").replaceAll("\\", "/");
 }
 
 function isPrScopedRun() {
@@ -189,6 +194,18 @@ test("filterFixturesByChangedEnv: env matches by provenance path too", () => {
     "/repo",
   );
   assert.equal(out.length, 1, "provenance-path match must select the pair");
+});
+
+test("filterFixturesByChangedEnv: normalizes path separators before matching", () => {
+  const all = [
+    { plugin: "a", responsePath: "/repo/tests/smoke/fixtures/a/x.response.json", provenancePath: "/repo/tests/smoke/fixtures/a/x.provenance.json" },
+  ];
+  const out = filterFixturesByChangedEnv(
+    all,
+    "tests\\smoke\\fixtures\\a\\x.response.json",
+    "/repo",
+  );
+  assert.equal(out.length, 1, "git-style and platform-style relative paths must match");
 });
 
 test("filterFixturesByChangedEnv: env with whitespace-only blank lines is filtered", () => {
@@ -392,25 +409,12 @@ test("fixtures: no unredacted Authorization or Bearer values", () => {
 test("fixtures: no obvious public-prefix tokens leak (sk-, AKIA, ghp_, ghs_, github_pat_, AIza, glpat-, JWT)", () => {
   for (const f of FIXTURES) {
     const text = readFileSync(f.responsePath, "utf8");
-    const patterns = [
-      { name: "OpenAI/Anthropic sk-", re: /sk-[a-zA-Z\d]{20,}/g },
-      { name: "OpenRouter sk-or-v*", re: /sk-or-v\d+-[a-zA-Z\d]{20,}/g },
-      { name: "Anthropic sk-ant-api*", re: /sk-ant-api\d+-[a-zA-Z\d_-]{20,}/g },
-      { name: "AWS AKIA", re: /AKIA[0-9A-Z]{16}/g },
-      { name: "Google AIza", re: /AIza[0-9A-Za-z_-]{35}/g },
-      { name: "GitLab glpat-", re: /glpat-[a-zA-Z0-9_-]{20,}/g },
-      { name: "GitHub PAT", re: /gh[ps]_[a-zA-Z0-9]{36}/g },
-      { name: "GitHub fine-grained PAT", re: /github_pat_\w{20,}/g },
-      {
-        name: "JWT",
-        re: /eyJ[a-zA-Z0-9_-]+\.[a-zA-Z0-9_-]+\.[a-zA-Z0-9_-]+/g,
-      },
-    ];
-    for (const { name, re } of patterns) {
-      const m = text.match(re);
+    for (const pattern of SECRET_PREFIX_PATTERNS) {
+      pattern.lastIndex = 0;
+      const m = text.match(pattern);
       if (m && m.length > 0) {
         assert.fail(
-          `${f.plugin}/${f.scenario}: ${name} pattern leaked: ${m[0].slice(0, 30)}...`,
+          `${f.plugin}/${f.scenario}: public-prefix token pattern leaked: ${m[0].slice(0, 30)}...`,
         );
       }
     }
