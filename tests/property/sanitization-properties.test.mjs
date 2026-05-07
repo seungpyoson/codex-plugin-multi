@@ -26,6 +26,7 @@ import {
   buildEnvSecretRedactor,
   redactKnownPatterns,
   FIXTURE_SANITIZATION_REDACTED_TOKEN as REDACTED,
+  SECRET_ENV_NAME_CORES,
   FIXTURE_SANITIZATION_AUTO_LENGTH_FLOOR,
   FIXTURE_SANITIZATION_CURATED_LENGTH_FLOOR,
 } from "../../scripts/lib/fixture-sanitization.mjs";
@@ -63,14 +64,14 @@ const jsonValue = fc.letrec((tie) => ({
 // A non-secret-shaped env name. Excludes the secret-suffix patterns so
 // generators can mix benign + secret env names.
 const benignEnvName = fc.stringMatching(/^[A-Z][A-Z0-9_]{0,15}$/)
-  .filter((s) => !/(?:^|_)(?:API_KEY|TOKEN|ACCESS_KEY|SECRET|ADMIN_KEY|COOKIE|SESSION|SSO)$/i.test(s));
+  .filter((s) => !new RegExp(`(?:^|_)(?:${SECRET_ENV_NAME_CORES.join("|")})$`, "i").test(s));
 
 // A secret-shaped env name. Includes trailing-suffix variants
 // (e.g., AWS_ACCESS_KEY_ID, OPENAI_API_KEY_PROD) so the redactor's
 // SECRET_ENV_NAME pattern is exercised at the trailing-anchor edge.
 const secretEnvName = fc.tuple(
   fc.stringMatching(/^[A-Z][A-Z0-9_]{0,8}_$/),
-  fc.constantFrom("API_KEY", "TOKEN", "ACCESS_KEY", "SECRET", "ADMIN_KEY", "COOKIE", "SESSION", "SSO"),
+  fc.constantFrom(...SECRET_ENV_NAME_CORES),
   fc.constantFrom("", "_ID", "_PROD", "_BACKUP", "_V2", "_LIVE", "_ROTATED"),
 ).map(([prefix, suffix, trailing]) => prefix + suffix + trailing);
 

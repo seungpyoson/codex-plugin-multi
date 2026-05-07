@@ -88,5 +88,105 @@ describe("smoke-rerecord recipes — auth invariants", () => {
         + "hardcoding a local array reintroduces the round-6 decoy bug class",
       );
     });
+
+    it("declares expectExit: [0] (refuse to write a fixture if the spawn fails)", () => {
+      assert.deepEqual(spec.expectExit, [0]);
+    });
+  });
+
+  describe("claude/auth-failure", () => {
+    const spec = RECIPES["claude/auth-failure"].spawnArgs();
+    it("forces api_key auth and a sterile HOME so OAuth cannot rescue the negative", () => {
+      assert.ok(spec.args.includes("--auth-mode"));
+      assert.equal(spec.args[spec.args.indexOf("--auth-mode") + 1], "api_key");
+      assert.equal(spec.env.HOME, "/var/empty");
+      assert.equal(spec.env.ANTHROPIC_API_KEY, undefined);
+      assert.equal(spec.env.CLAUDE_API_KEY, undefined);
+    });
+    it("declares expectExit: [1] (negative recipe characterized via probe)", () => {
+      assert.deepEqual(spec.expectExit, [1]);
+    });
+  });
+
+  describe("grok/happy-path-review", () => {
+    const spec = RECIPES["grok/happy-path-review"].spawnArgs();
+    it("declares a tunnel URL so the operator knows what must be reachable", () => {
+      assert.ok(typeof spec.requireTunnel?.url === "string");
+      assert.match(spec.requireTunnel.url, /^https?:\/\//);
+    });
+    it("declares expectExit: [0]", () => {
+      assert.deepEqual(spec.expectExit, [0]);
+    });
+  });
+
+  describe("grok/tunnel-error", () => {
+    const spec = RECIPES["grok/tunnel-error"].spawnArgs();
+    it("forces tunnel-unavailable via an unreachable port (intent-encoded in env)", () => {
+      // Negative recipe: must point GROK_WEB_BASE_URL at a port nothing
+      // listens on so the spawn deterministically hits a tunnel error
+      // even on a developer machine where the real tunnel is up.
+      assert.match(spec.env.GROK_WEB_BASE_URL, /127\.0\.0\.1:1\b/);
+    });
+    it("declares expectExit: [1]", () => {
+      assert.deepEqual(spec.expectExit, [1]);
+    });
+  });
+
+  for (const provider of ["deepseek", "glm"]) {
+    const happyKey = `api-reviewers-${provider}/happy-path-review`;
+    const negKey = `api-reviewers-${provider}/auth-rejected`;
+
+    describe(happyKey, () => {
+      const spec = RECIPES[happyKey].spawnArgs();
+      it("passes --provider <name> matching the recipe key", () => {
+        const idx = spec.args.indexOf("--provider");
+        assert.notEqual(idx, -1);
+        assert.equal(spec.args[idx + 1], provider);
+      });
+      it("declares requireEnvAny matching API_REVIEWER_PROVIDER_KEYS (validated by validateRecipes)", () => {
+        // Per-provider envAny correctness is validated structurally at
+        // module load by validateRecipes; this test pins that the
+        // recipe HAS a non-empty requireEnvAny so absent envAny doesn't
+        // fall through silently.
+        assert.ok(Array.isArray(spec.requireEnvAny));
+        assert.ok(spec.requireEnvAny.length > 0);
+      });
+      it("declares expectExit: [0]", () => {
+        assert.deepEqual(spec.expectExit, [0]);
+      });
+    });
+
+    describe(negKey, () => {
+      const spec = RECIPES[negKey].spawnArgs();
+      it("injects a deliberately-invalid provider key (intent-encoded in env)", () => {
+        // Each negative recipe sets the FIRST provider env-var name
+        // (the canonical happy-path key) to the sentinel invalid value,
+        // forcing the provider to return 401/403.
+        const sentinel = "sk-this-is-a-deliberately-invalid-key-for-fixture-recording";
+        const happyKeys = RECIPES[happyKey].spawnArgs().requireEnvAny;
+        assert.equal(spec.env[happyKeys[0]], sentinel);
+      });
+      it("declares expectExit: [1]", () => {
+        assert.deepEqual(spec.expectExit, [1]);
+      });
+    });
+  }
+});
+
+describe("smoke-rerecord recipes — completeness", () => {
+  it("RECIPES contains every plugin × scenario pair we expect", () => {
+    // Hard-coded list as a tripwire: adding or removing a recipe forces
+    // an explicit edit here, preventing accidental loss via merge.
+    const expected = [
+      "claude/happy-path-review",
+      "claude/auth-failure",
+      "grok/happy-path-review",
+      "grok/tunnel-error",
+      "api-reviewers-deepseek/happy-path-review",
+      "api-reviewers-deepseek/auth-rejected",
+      "api-reviewers-glm/happy-path-review",
+      "api-reviewers-glm/auth-rejected",
+    ];
+    assert.deepEqual([...Object.keys(RECIPES)].sort(), [...expected].sort());
   });
 });

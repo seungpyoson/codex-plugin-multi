@@ -29,7 +29,7 @@
 
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, realpathSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
@@ -37,8 +37,18 @@ import {
   buildProvenance,
   sanitize,
 } from "./lib/fixture-sanitization.mjs";
-import { checkAuthOrFile } from "./lib/smoke-rerecord-preflight.mjs";
+import {
+  checkAuthOrFile,
+  checkEnvAny,
+  renderAuthOrFileHelp,
+} from "./lib/smoke-rerecord-preflight.mjs";
 import { CLAUDE_PROVIDER_API_KEY_ENV } from "../plugins/claude/scripts/lib/claude-provider-keys.mjs";
+import {
+  ARCHITECTURE_API_REVIEWERS,
+  ARCHITECTURE_COMPANION,
+  ARCHITECTURE_GROK,
+  ARCHITECTURE_KINDS,
+} from "./lib/recipe-architecture.mjs";
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const FIXTURE_ROOT = path.join(REPO_ROOT, "tests/smoke/fixtures");
@@ -51,10 +61,19 @@ const HAPPY_PATH_PROMPT =
 const NEGATIVE_PROMPT =
   "This prompt should not be sent because credentials are missing.";
 
+// Provider-key env names declared by api-reviewers recipes. Source of
+// truth lives here (no plugin-side counterpart yet); validateRecipes
+// asserts every api-reviewers/* recipe declares envAny matching the
+// per-provider list below.
+const API_REVIEWER_PROVIDER_KEYS = Object.freeze({
+  deepseek: Object.freeze(["DEEPSEEK_API_KEY"]),
+  glm: Object.freeze(["ZAI_API_KEY", "ZAI_GLM_API_KEY"]),
+});
+
 export const RECIPES = Object.freeze({
   // ─── companion ──────────────────────────────────────────────────────
   "claude/happy-path-review": {
-    architecture: "companion",
+    architecture: ARCHITECTURE_COMPANION,
     plugin: "claude",
     spawnArgs: () => ({
       script: "plugins/claude/scripts/claude-companion.mjs",
@@ -74,24 +93,15 @@ export const RECIPES = Object.freeze({
         "--", HAPPY_PATH_PROMPT,
       ],
       env: { ...process.env },
-      // Either an existing claude-cli OAuth dir at ~/.claude OR a wired
-      // ANTHROPIC_API_KEY / CLAUDE_API_KEY env var is sufficient. The
-      // workflow (smoke-rerecord.yml) wires both secrets so a fresh CI
-      // runner without ~/.claude can still record. (Greptile P1
-      // #3199437297 — file-only check rejected secret-only runners.)
       requireEnvOrFile: {
-        envAny: CLAUDE_PROVIDER_API_KEY_ENV,  // shared with claude-companion.mjs (lib/claude-provider-keys.mjs)
+        envAny: CLAUDE_PROVIDER_API_KEY_ENV,
         file: path.join(process.env.HOME ?? "", ".claude"),
       },
-      // Refuse to write a fixture if the spawned claude exits non-zero.
-      // A happy-path recording that auth-fails or hits a transient 5xx
-      // would otherwise parse the error JSON and commit it as if it
-      // were a real review (silent fixture corruption).
       expectExit: [0],
     }),
   },
   "claude/auth-failure": {
-    architecture: "companion",
+    architecture: ARCHITECTURE_COMPANION,
     plugin: "claude",
     spawnArgs: () => ({
       script: "plugins/claude/scripts/claude-companion.mjs",
@@ -107,12 +117,15 @@ export const RECIPES = Object.freeze({
         ...scrubAuth(process.env, ["ANTHROPIC_API_KEY", "CLAUDE_API_KEY", "CLAUDE_CONFIG_DIR"]),
         HOME: "/var/empty",
       },
+      // Negative recipes characterized by round-10 probe (cpm-r10-exit-probe.sh):
+      // claude/auth-failure exits 1 when the companion can't auth.
+      expectExit: [1],
     }),
   },
 
   // ─── grok ───────────────────────────────────────────────────────────
   "grok/happy-path-review": {
-    architecture: "grok",
+    architecture: ARCHITECTURE_GROK,
     plugin: "grok",
     spawnArgs: () => ({
       script: "plugins/grok/scripts/grok-web-reviewer.mjs",
@@ -126,10 +139,11 @@ export const RECIPES = Object.freeze({
       ],
       env: { ...process.env },
       requireTunnel: { url: process.env.GROK_WEB_BASE_URL ?? "http://127.0.0.1:8000/v1" },
+      expectExit: [0],
     }),
   },
   "grok/tunnel-error": {
-    architecture: "grok",
+    architecture: ARCHITECTURE_GROK,
     plugin: "grok",
     spawnArgs: () => ({
       script: "plugins/grok/scripts/grok-web-reviewer.mjs",
@@ -143,12 +157,13 @@ export const RECIPES = Object.freeze({
       ],
       // Force tunnel-unavailable by pointing at a port nothing listens on.
       env: { ...process.env, GROK_WEB_BASE_URL: "http://127.0.0.1:1/v1" },
+      expectExit: [1],
     }),
   },
 
   // ─── api-reviewers ──────────────────────────────────────────────────
   "api-reviewers-deepseek/happy-path-review": {
-    architecture: "api-reviewers",
+    architecture: ARCHITECTURE_API_REVIEWERS,
     plugin: "api-reviewers-deepseek",
     spawnArgs: () => ({
       script: "plugins/api-reviewers/scripts/api-reviewer.mjs",
@@ -161,12 +176,13 @@ export const RECIPES = Object.freeze({
         "--prompt", HAPPY_PATH_PROMPT,
       ],
       env: { ...process.env },
-      requireEnvAny: ["DEEPSEEK_API_KEY"],
-      curatedEnvKeys: ["DEEPSEEK_API_KEY"],
+      requireEnvAny: API_REVIEWER_PROVIDER_KEYS.deepseek,
+      curatedEnvKeys: API_REVIEWER_PROVIDER_KEYS.deepseek,
+      expectExit: [0],
     }),
   },
   "api-reviewers-deepseek/auth-rejected": {
-    architecture: "api-reviewers",
+    architecture: ARCHITECTURE_API_REVIEWERS,
     plugin: "api-reviewers-deepseek",
     spawnArgs: () => ({
       script: "plugins/api-reviewers/scripts/api-reviewer.mjs",
@@ -180,11 +196,12 @@ export const RECIPES = Object.freeze({
       ],
       // Inject a known-bad key — provider returns 401/403 → auth_rejected.
       env: { ...process.env, DEEPSEEK_API_KEY: "sk-this-is-a-deliberately-invalid-key-for-fixture-recording" },
-      curatedEnvKeys: ["DEEPSEEK_API_KEY"],
+      curatedEnvKeys: API_REVIEWER_PROVIDER_KEYS.deepseek,
+      expectExit: [1],
     }),
   },
   "api-reviewers-glm/happy-path-review": {
-    architecture: "api-reviewers",
+    architecture: ARCHITECTURE_API_REVIEWERS,
     plugin: "api-reviewers-glm",
     spawnArgs: () => ({
       script: "plugins/api-reviewers/scripts/api-reviewer.mjs",
@@ -197,12 +214,13 @@ export const RECIPES = Object.freeze({
         "--prompt", HAPPY_PATH_PROMPT,
       ],
       env: { ...process.env },
-      requireEnvAny: ["ZAI_API_KEY", "ZAI_GLM_API_KEY"],
-      curatedEnvKeys: ["ZAI_API_KEY", "ZAI_GLM_API_KEY"],
+      requireEnvAny: API_REVIEWER_PROVIDER_KEYS.glm,
+      curatedEnvKeys: API_REVIEWER_PROVIDER_KEYS.glm,
+      expectExit: [0],
     }),
   },
   "api-reviewers-glm/auth-rejected": {
-    architecture: "api-reviewers",
+    architecture: ARCHITECTURE_API_REVIEWERS,
     plugin: "api-reviewers-glm",
     spawnArgs: () => ({
       script: "plugins/api-reviewers/scripts/api-reviewer.mjs",
@@ -216,10 +234,110 @@ export const RECIPES = Object.freeze({
       ],
       // Inject a known-bad key — provider returns 401/403 → auth_rejected.
       env: { ...process.env, ZAI_API_KEY: "sk-this-is-a-deliberately-invalid-key-for-fixture-recording" },
-      curatedEnvKeys: ["ZAI_API_KEY", "ZAI_GLM_API_KEY"],
+      curatedEnvKeys: API_REVIEWER_PROVIDER_KEYS.glm,
+      expectExit: [1],
     }),
   },
 });
+
+// Recipe-schema validator. Runs at module load (after RECIPES is
+// defined) so any malformed recipe blows up at import, not at recording
+// time. This is the round-10 systematic close for the "implicit recipe
+// shape" contract — previously, omitting envAny / expectExit / a
+// required field went undetected until the first recording hit the gap.
+export function validateRecipes(recipes) {
+  for (const [key, recipe] of Object.entries(recipes)) {
+    const where = `recipe ${JSON.stringify(key)}`;
+    if (!recipe || typeof recipe !== "object") {
+      throw new TypeError(`${where}: must be an object`);
+    }
+    if (!ARCHITECTURE_KINDS.includes(recipe.architecture)) {
+      throw new TypeError(
+        `${where}: architecture ${JSON.stringify(recipe.architecture)} is not in ARCHITECTURE_KINDS (${ARCHITECTURE_KINDS.join(", ")})`,
+      );
+    }
+    if (typeof recipe.plugin !== "string" || recipe.plugin.length === 0) {
+      throw new TypeError(`${where}: plugin must be a non-empty string`);
+    }
+    if (typeof recipe.spawnArgs !== "function") {
+      throw new TypeError(`${where}: spawnArgs must be a function`);
+    }
+
+    let spec;
+    try {
+      spec = recipe.spawnArgs();
+    } catch (e) {
+      throw new Error(`${where}: spawnArgs() threw: ${e.message ?? e}`);
+    }
+    if (!spec || typeof spec !== "object") {
+      throw new TypeError(`${where}: spawnArgs() must return an object`);
+    }
+    if (typeof spec.script !== "string" || spec.script.length === 0) {
+      throw new TypeError(`${where}: spawnArgs().script must be a non-empty string`);
+    }
+    if (!Array.isArray(spec.args)) {
+      throw new TypeError(`${where}: spawnArgs().args must be an array`);
+    }
+    if (!spec.env || typeof spec.env !== "object") {
+      throw new TypeError(`${where}: spawnArgs().env must be an object`);
+    }
+    if (!Array.isArray(spec.expectExit) || spec.expectExit.length === 0
+        || !spec.expectExit.every((n) => Number.isInteger(n))) {
+      throw new TypeError(
+        `${where}: spawnArgs().expectExit must be a non-empty array of integers (got ${JSON.stringify(spec.expectExit)})`,
+      );
+    }
+    if (spec.requireEnvAny !== undefined && (!Array.isArray(spec.requireEnvAny)
+        || !spec.requireEnvAny.every((s) => typeof s === "string" && s.length > 0))) {
+      throw new TypeError(`${where}: spawnArgs().requireEnvAny must be a non-empty array of strings if set`);
+    }
+    if (spec.requireEnvOrFile !== undefined) {
+      if (!spec.requireEnvOrFile || typeof spec.requireEnvOrFile !== "object") {
+        throw new TypeError(`${where}: spawnArgs().requireEnvOrFile must be an object if set`);
+      }
+      const eo = spec.requireEnvOrFile.envAny;
+      if (eo !== undefined && (!Array.isArray(eo) || !eo.every((s) => typeof s === "string" && s.length > 0))) {
+        throw new TypeError(`${where}: spawnArgs().requireEnvOrFile.envAny must be an array of strings if set`);
+      }
+      const fo = spec.requireEnvOrFile.file;
+      if (fo !== undefined && typeof fo !== "string") {
+        throw new TypeError(`${where}: spawnArgs().requireEnvOrFile.file must be a string if set`);
+      }
+    }
+    if (spec.curatedEnvKeys !== undefined
+        && (!Array.isArray(spec.curatedEnvKeys)
+            || !spec.curatedEnvKeys.every((s) => typeof s === "string"))) {
+      throw new TypeError(`${where}: spawnArgs().curatedEnvKeys must be an array of strings if set`);
+    }
+
+    // Architecture-specific structural checks. Keep narrow — semantic
+    // per-recipe checks live in tests/unit/smoke-rerecord-recipes.test.mjs.
+    if (recipe.architecture === ARCHITECTURE_API_REVIEWERS) {
+      const provider = spec.args[spec.args.indexOf("--provider") + 1];
+      if (typeof provider !== "string" || provider.length === 0) {
+        throw new TypeError(
+          `${where}: api-reviewers recipe must pass --provider <name> in args`,
+        );
+      }
+      const expected = API_REVIEWER_PROVIDER_KEYS[provider];
+      if (!expected) {
+        throw new TypeError(
+          `${where}: --provider ${JSON.stringify(provider)} not in API_REVIEWER_PROVIDER_KEYS (${Object.keys(API_REVIEWER_PROVIDER_KEYS).join(", ")})`,
+        );
+      }
+      // For happy-path recipes, requireEnvAny must match the provider's keys.
+      if (key.endsWith("/happy-path-review")) {
+        if (!spec.requireEnvAny || spec.requireEnvAny !== expected) {
+          throw new TypeError(
+            `${where}: happy-path requireEnvAny must reference API_REVIEWER_PROVIDER_KEYS.${provider} (drift = decoy preflight)`,
+          );
+        }
+      }
+    }
+  }
+}
+
+validateRecipes(RECIPES);
 
 function scrubAuth(env, keys) {
   const out = { ...env };
@@ -266,21 +384,26 @@ function listRecipes() {
 }
 
 function preflightCheck(spec) {
+  // Both branches consult spec.env (the env that recordResponse will
+  // pass to the spawn), not process.env. Recipes that mutate env in
+  // spawnArgs() (e.g. claude/auth-failure scrubs auth) need preflight
+  // to validate against the post-mutation environment.
   if (spec.requireEnvAny) {
-    const found = spec.requireEnvAny.find((key) => process.env[key]);
-    if (!found) {
-      process.stderr.write(
-        `smoke-rerecord: required env not set. One of: ${spec.requireEnvAny.join(", ")}\n`,
-      );
+    const r = checkEnvAny({ envAny: spec.requireEnvAny }, { env: spec.env });
+    if (!r.ok) {
+      process.stderr.write(`smoke-rerecord: ${r.reason}\n`);
+      process.stderr.write(`  Set ${spec.requireEnvAny.join(" or ")} in env.\n`);
       process.exit(2);
     }
   }
   if (spec.requireEnvOrFile) {
-    const result = checkAuthOrFile(spec.requireEnvOrFile);
-    if (!result.ok) {
-      process.stderr.write(
-        `smoke-rerecord: ${result.reason}. Sign in to the CLI first or set the relevant *_API_KEY env var.\n`,
-      );
+    const r = checkAuthOrFile(spec.requireEnvOrFile, {
+      env: spec.env,
+      fileExists: existsSync,
+    });
+    if (!r.ok) {
+      process.stderr.write(`smoke-rerecord: ${r.reason}\n`);
+      process.stderr.write(`  ${renderAuthOrFileHelp(r.missing)}\n`);
       process.exit(2);
     }
   }
@@ -384,14 +507,10 @@ function main() {
   process.stderr.write(`Exit code: ${result.exitCode}\n`);
   if (result.signal) process.stderr.write(`Signal: ${result.signal}\n`);
 
-  // Exit-code gate: a recipe may declare `expectExit: number[]` to refuse
-  // fixture writes when the spawned plugin's status doesn't match. Without
-  // this, a happy-path recording that auth-fails (or hits a transient 5xx)
-  // would parse the error JSON and write it as if it were a real review —
-  // silent fixture corruption. Recipes that omit expectExit accept any
-  // exit code (preserving the prior behavior for negative recipes whose
-  // exit codes haven't been characterized yet).
-  if (Array.isArray(spec.expectExit) && !spec.expectExit.includes(result.exitCode)) {
+  // Exit-code gate. Every recipe declares expectExit (validateRecipes
+  // enforces this at module load), so a recording that doesn't match
+  // the recipe's intent is refused before any fixture is written.
+  if (!spec.expectExit.includes(result.exitCode)) {
     process.stderr.write(
       `smoke-rerecord: child exit ${result.exitCode} not in expectExit ${JSON.stringify(spec.expectExit)} - refusing to write fixture.\n`,
     );
@@ -458,7 +577,7 @@ function main() {
       "- public-prefix tokens (sk-, AKIA, AIza, ghp_, eyJ-, ...)",
       "- Authorization headers and Bearer tokens",
       "- macOS user-home paths (/Users/<user>)",
-      recipe.architecture === "companion" ? "- companion session_id fields" : "",
+      recipe.architecture === ARCHITECTURE_COMPANION ? "- companion session_id fields" : "",
     ].filter(Boolean).join("\n"),
     recordedBy: process.env.SMOKE_RERECORD_RUN_REF ?? "manual: scripts/smoke-rerecord.mjs",
   });
@@ -470,6 +589,23 @@ function main() {
 // Run main() only when invoked as the entry script. Importers (e.g.
 // recipe-shape tests) get the module exports without triggering arg
 // parsing or process.exit.
-if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {
+//
+// Robust against:
+//   - relative argv[1] (`node scripts/smoke-rerecord.mjs ...` from repo
+//     root passes a relative path; pathToFileURL needs absolute)
+//   - symlinks (npm/npx shims, /var/symlinks/, etc.) via realpathSync
+const isEntryScript = (() => {
+  const argv1 = process.argv[1];
+  if (typeof argv1 !== "string" || argv1.length === 0) return false;
+  let resolved;
+  try {
+    resolved = realpathSync(path.resolve(argv1));
+  } catch {
+    resolved = path.resolve(argv1);
+  }
+  return import.meta.url === pathToFileURL(resolved).href;
+})();
+
+if (isEntryScript) {
   main();
 }
