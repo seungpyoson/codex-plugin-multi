@@ -105,9 +105,14 @@ export function buildEnvSecretRedactor(env, { curatedEnvKeys = [] } = {}) {
     secrets.add(value);
   }
 
+  // Sort by length descending so longer secrets are replaced first. Without
+  // this, if env had MY_TOKEN=abc123 and MY_TOKEN_LONG=abc123_extra, replacing
+  // abc123 first would leave the trailing _extra of the longer token exposed.
+  const sortedSecrets = [...secrets].sort((a, b) => b.length - a.length);
+
   return function redactEnvSecrets(input) {
     let out = String(input ?? "");
-    for (const secret of secrets) {
+    for (const secret of sortedSecrets) {
       // Use split/join for literal replacement (no regex injection risk).
       if (out.includes(secret)) {
         out = out.split(secret).join(REDACTED);

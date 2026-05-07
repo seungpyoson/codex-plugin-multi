@@ -77,8 +77,14 @@ jobs:
           ZAI_API_KEY: ${{ secrets.ZAI_API_KEY }}
           ZAI_GLM_API_KEY: ${{ secrets.ZAI_GLM_API_KEY }}
           SMOKE_RERECORD_RUN_REF: "github.actions: ${{ github.workflow }} run ${{ github.run_id }}"
+          # Move user inputs out of the run-block template so bash never sees
+          # them as code. Inputs.plugin is already constrained by `type: choice`
+          # but inputs.scenario is free-form text — both go through env vars
+          # and are referenced as quoted shell parameters only.
+          PLUGIN: ${{ inputs.plugin }}
+          SCENARIO: ${{ inputs.scenario }}
         run: |
-          npm run smoke:rerecord -- --plugin "${{ inputs.plugin }}" --scenario "${{ inputs.scenario }}"
+          npm run smoke:rerecord -- --plugin "$PLUGIN" --scenario "$SCENARIO"
 
       - name: Run fixture-validity gate against the new fixture
         run: |
@@ -103,16 +109,23 @@ jobs:
         if: steps.detect.outputs.changed == 'true'
         env:
           BRANCH_NAME: smoke-rerecord/${{ inputs.plugin }}-${{ inputs.scenario }}-${{ github.run_id }}
+          PLUGIN: ${{ inputs.plugin }}
+          SCENARIO: ${{ inputs.scenario }}
+          RUN_ID: ${{ github.run_id }}
         run: |
           git checkout -b "$BRANCH_NAME"
           git add tests/smoke/fixtures/
-          git commit -m "fixture: rerecord ${{ inputs.plugin }}/${{ inputs.scenario }}
-
-Triggered via workflow_dispatch run #${{ github.run_id }}.
-Sanitization invariants verified by tests/unit/fixture-validity.test.mjs.
-
-Provenance:
-$(cat tests/smoke/fixtures/${{ inputs.plugin }}/${{ inputs.scenario }}.provenance.json || echo '(provenance file not found)')"
+          # Build the commit message in a temp file so user-controlled inputs
+          # are never re-evaluated by bash inside command substitutions.
+          {
+            printf 'fixture: rerecord %s/%s\n\n' "$PLUGIN" "$SCENARIO"
+            printf 'Triggered via workflow_dispatch run #%s.\n' "$RUN_ID"
+            printf 'Sanitization invariants verified by tests/unit/fixture-validity.test.mjs.\n\n'
+            printf 'Provenance:\n'
+            cat "tests/smoke/fixtures/${PLUGIN}/${SCENARIO}.provenance.json" 2>/dev/null \
+              || printf '(provenance file not found)\n'
+          } > /tmp/smoke-rerecord-commit-msg.txt
+          git commit -F /tmp/smoke-rerecord-commit-msg.txt
           git push origin "$BRANCH_NAME"
 
       - name: Open PR
@@ -120,18 +133,22 @@ $(cat tests/smoke/fixtures/${{ inputs.plugin }}/${{ inputs.scenario }}.provenanc
         env:
           GH_TOKEN: ${{ github.token }}
           BRANCH_NAME: smoke-rerecord/${{ inputs.plugin }}-${{ inputs.scenario }}-${{ github.run_id }}
+          PLUGIN: ${{ inputs.plugin }}
+          SCENARIO: ${{ inputs.scenario }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          RUN_ID: ${{ github.run_id }}
         run: |
+          {
+            printf 'Automated re-recording of `%s/%s`.\n\n' "$PLUGIN" "$SCENARIO"
+            printf 'Triggered via [workflow run #%s](%s).\n\n' "$RUN_ID" "$RUN_URL"
+            printf 'Sanitization invariants verified by `tests/unit/fixture-validity.test.mjs` before PR creation.\n\n'
+            printf 'Reviewer: please verify the diff against the previous fixture and ensure no regressions in shape, no new credential surfaces, and that any change in the sanitized response reflects real provider behavior change rather than a sanitization bug.\n'
+          } > /tmp/smoke-rerecord-pr-body.txt
           gh pr create \
             --base main \
             --head "$BRANCH_NAME" \
-            --title "fixture: rerecord ${{ inputs.plugin }}/${{ inputs.scenario }}" \
-            --body "Automated re-recording of \`${{ inputs.plugin }}/${{ inputs.scenario }}\`.
-
-Triggered via [workflow run #${{ github.run_id }}](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}).
-
-Sanitization invariants verified by \`tests/unit/fixture-validity.test.mjs\` before PR creation.
-
-Reviewer: please verify the diff against the previous fixture and ensure no regressions in shape, no new credential surfaces, and that any change in the sanitized response reflects real provider behavior change rather than a sanitization bug."
+            --title "fixture: rerecord ${PLUGIN}/${SCENARIO}" \
+            --body-file /tmp/smoke-rerecord-pr-body.txt
 
       - name: Summary
         if: steps.detect.outputs.changed == 'false'

@@ -360,9 +360,7 @@ function main() {
   }
 
   // Build sanitization context.
-  const promptForHash = recipe.spawnArgs === RECIPES[key].spawnArgs
-    ? (spec.args.find((arg) => typeof arg === "string" && arg.length > 50) ?? "")
-    : "";
+  const promptForHash = spec.args.find((arg) => typeof arg === "string" && arg.length > 50) ?? "";
   const promptHash = createHash("sha256").update(promptForHash).digest("hex");
 
   const sanitizationOptions = {

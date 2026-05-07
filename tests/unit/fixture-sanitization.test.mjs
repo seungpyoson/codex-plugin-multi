@@ -92,6 +92,22 @@ test("buildEnvSecretRedactor: redacts case-insensitive (COOKIE, Cookie, cookie)"
   assert.equal(out.includes("sso-token-value"), false);
 });
 
+test("buildEnvSecretRedactor: longer secret containing shorter secret as prefix is fully redacted", () => {
+  // Regression test for the partial-redaction edge case: if env has both
+  // a short secret and a longer secret that contains the short one as a
+  // prefix, iterate-shortest-first would replace the prefix and leave the
+  // tail of the longer secret exposed. Sort-by-length-desc fixes it.
+  // Both env keys end in _TOKEN so auto-detect picks up both values.
+  const env = {
+    SHORT_TOKEN: "abc12345_secret",                  // 15 chars, auto-detected
+    LONG_TOKEN:  "abc12345_secret_extra_tail",       // 26 chars, auto-detected
+  };
+  const redact = buildEnvSecretRedactor(env);
+  const out = redact("the long token is abc12345_secret_extra_tail and the short one is abc12345_secret");
+  assert.equal(out.includes("abc12345_secret"), false, "neither secret should appear in output");
+  assert.equal(out.includes("_extra_tail"), false, "longer secret's tail must not leak past the shorter secret's redaction");
+});
+
 test("redactKnownPatterns: redacts OpenAI/Anthropic-style sk- keys", () => {
   const out = redactKnownPatterns("the value is sk-1234567890abcdefghijklmno and also sk-ant-api03-abcdef-ghijkl-1234567");
   assert.equal(out.includes("sk-1234567890"), false);
