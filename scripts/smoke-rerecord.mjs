@@ -141,9 +141,16 @@ export const RECIPES = Object.freeze({
         ...scrubAuth(process.env, ["ANTHROPIC_API_KEY", "CLAUDE_API_KEY", "CLAUDE_CONFIG_DIR"]),
         HOME: "/var/empty",
       },
-      // Negative recipes characterized by round-10 probe (cpm-r10-exit-probe.sh):
-      // claude/auth-failure exits 1 when the companion can't auth.
-      expectExit: [1],
+      // Characterized by an actual smoke-rerecord workflow run on a
+      // sterile GitHub runner (run #25488952576): the companion's `ping`
+      // path hits the "no provider key, structured pre-spawn auth
+      // rejection" branch and exits with code 2 (matching the codebase's
+      // standard "structured bad-args / preflight rejection" exit).
+      // Round-10's local probe hit a different state (likely a partial
+      // ~/.claude on the dev box leaking through) and saw exit 1; that
+      // characterization was wrong and is replaced here with the
+      // workflow-observed value.
+      expectExit: [2],
     }),
   },
 

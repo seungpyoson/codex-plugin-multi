@@ -106,8 +106,13 @@ describe("smoke-rerecord recipes — auth invariants", () => {
       assert.equal(spec.env.ANTHROPIC_API_KEY, undefined);
       assert.equal(spec.env.CLAUDE_API_KEY, undefined);
     });
-    it("declares expectExit: [1] (negative recipe characterized via probe)", () => {
-      assert.deepEqual(spec.expectExit, [1]);
+    it("declares expectExit: [2] (negative recipe characterized via CI workflow run)", () => {
+      // Round-12: actual workflow_dispatch run on a sterile GitHub
+      // runner (#25488952576) showed the companion hits the structured
+      // pre-spawn auth-rejection path and exits 2, not 1 as the local
+      // round-10 probe claimed. expectExit values for negative recipes
+      // are now characterized against the CI environment, not local.
+      assert.deepEqual(spec.expectExit, [2]);
     });
   });
 
