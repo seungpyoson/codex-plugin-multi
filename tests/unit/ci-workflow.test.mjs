@@ -234,6 +234,34 @@ test("companion mutation-detection git calls use safe git resolver", () => {
   }
 });
 
+test("scope population git calls use authoritative workspace root", () => {
+  for (const rel of [
+    "plugins/claude/scripts/lib/scope.mjs",
+    "plugins/gemini/scripts/lib/scope.mjs",
+    "plugins/kimi/scripts/lib/scope.mjs",
+  ]) {
+    const source = readFileSync(resolve(rel), "utf8");
+    assert.match(source, /import \{ GIT_BINARY_ENV, gitEnv, resolveGitBinary \} from "\.\/git-binary\.mjs";/,
+      `${rel} must use the shared safe git resolver`);
+    assert.match(source, /const workspaceRoot = runtimeInputs\.workspaceRoot \?\? null;/,
+      `${rel} populateScope must read the caller's authoritative workspace root`);
+    assert.match(source, /resolveGitBinary\(\{ cwd: sourceCwd, workspaceRoot \}\)/,
+      `${rel} git helpers must pass workspaceRoot to the safe resolver`);
+    assert.match(source, /writeGitBlobToFile\(ctx\.gitRoot, object, dst, mode, rel, ctx\.workspaceRoot\)/,
+      `${rel} git blob materialization must retain the authoritative workspace root`);
+  }
+
+  for (const rel of [
+    "plugins/claude/scripts/claude-companion.mjs",
+    "plugins/gemini/scripts/gemini-companion.mjs",
+    "plugins/kimi/scripts/kimi-companion.mjs",
+  ]) {
+    const source = readFileSync(resolve(rel), "utf8");
+    assert.match(source, /populateScope\(profile,[\s\S]*workspaceRoot/s,
+      `${rel} must pass workspaceRoot into scope population`);
+  }
+});
+
 test("direct reviewer branch-diff git calls use safe git resolver", () => {
   for (const rel of [
     "plugins/api-reviewers/scripts/api-reviewer.mjs",

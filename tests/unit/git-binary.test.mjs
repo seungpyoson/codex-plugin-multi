@@ -42,16 +42,16 @@ test("resolveGitBinary rejects relative overrides", () => {
   );
 });
 
-test("resolveGitBinary accepts explicit overrides without a cwd", () => {
+test("resolveGitBinary rejects explicit overrides without a workspace boundary", () => {
   const trusted = tempDir("git-binary-no-cwd-");
   try {
     const trustedGit = path.join(trusted, "git");
     writeExecutable(trustedGit);
-    assert.equal(
-      resolveGitBinary({
+    assert.throws(
+      () => resolveGitBinary({
         env: { [GIT_BINARY_ENV]: trustedGit },
       }),
-      realpathSync.native(trustedGit),
+      /requires a workspace boundary/,
     );
   } finally {
     rmSync(trusted, { recursive: true, force: true });
@@ -61,6 +61,7 @@ test("resolveGitBinary accepts explicit overrides without a cwd", () => {
 test("resolveGitBinary rejects workspace-local overrides", () => {
   const workspace = tempDir("git-binary-workspace-");
   try {
+    mkdirSync(path.join(workspace, ".git"));
     const localGit = path.join(workspace, "git");
     writeExecutable(localGit);
     assert.throws(
@@ -133,19 +134,19 @@ test("resolveGitBinary treats .git files as workspace boundaries", () => {
   }
 });
 
-test("resolveGitBinary rechecks workspace boundary before cache hits", () => {
+test("resolveGitBinary requires a real workspace boundary before override validation", () => {
   const workspace = tempDir("git-binary-cache-boundary-");
   try {
     const cwd = path.join(workspace, "nested");
     mkdirSync(cwd);
     const localGit = path.join(workspace, "git");
     writeExecutable(localGit);
-    assert.equal(
-      resolveGitBinary({
+    assert.throws(
+      () => resolveGitBinary({
         cwd,
         env: { [GIT_BINARY_ENV]: localGit },
       }),
-      realpathSync.native(localGit),
+      /requires a workspace boundary/,
     );
     mkdirSync(path.join(workspace, ".git"));
     assert.throws(
@@ -164,6 +165,7 @@ test("resolveGitBinary returns cached executable paths for the same resolved con
   const workspace = tempDir("git-binary-cache-hit-workspace-");
   const trusted = tempDir("git-binary-cache-hit-trusted-");
   try {
+    mkdirSync(path.join(workspace, ".git"));
     const trustedGit = path.join(trusted, "git");
     writeExecutable(trustedGit);
     const expected = realpathSync.native(trustedGit);
@@ -201,6 +203,7 @@ test("resolveGitBinary rechecks explicit workspaceRoot after an outside-cwd cach
   const workspace = tempDir("git-binary-explicit-cache-root-");
   const cwd = tempDir("git-binary-explicit-cache-cwd-");
   try {
+    mkdirSync(path.join(cwd, ".git"));
     const localGit = path.join(workspace, "git");
     writeExecutable(localGit);
     const env = { [GIT_BINARY_ENV]: localGit };
@@ -222,6 +225,7 @@ test("resolveGitBinary rejects node_modules bin overrides", () => {
   const root = tempDir("git-binary-node-modules-");
   const workspace = tempDir("git-binary-workspace-");
   try {
+    mkdirSync(path.join(workspace, ".git"));
     const binDir = path.join(root, "node_modules", ".bin");
     mkdirSync(binDir, { recursive: true });
     const localGit = path.join(binDir, "git");
@@ -243,6 +247,7 @@ test("resolveGitBinary rejects directory overrides without leaking the path", ()
   const workspace = tempDir("git-binary-workspace-");
   const trusted = tempDir("git-binary-directory-");
   try {
+    mkdirSync(path.join(workspace, ".git"));
     const error = captureThrown(() =>
       resolveGitBinary({
         cwd: workspace,
@@ -261,6 +266,7 @@ test("resolveGitBinary rejects non-executable file overrides without leaking the
   const workspace = tempDir("git-binary-workspace-");
   const trusted = tempDir("git-binary-non-exec-");
   try {
+    mkdirSync(path.join(workspace, ".git"));
     const trustedGit = path.join(trusted, "git");
     writeFileSync(trustedGit, "#!/bin/sh\nexit 0\n", "utf8");
     chmodSync(trustedGit, 0o600);
@@ -304,6 +310,7 @@ test("resolveGitBinary accepts explicit executable overrides outside the workspa
   const workspace = tempDir("git-binary-workspace-");
   const trusted = tempDir("git-binary-trusted-");
   try {
+    mkdirSync(path.join(workspace, ".git"));
     const trustedGit = path.join(trusted, "git");
     writeExecutable(trustedGit);
     assert.equal(
@@ -324,6 +331,7 @@ test("resolveGitBinary accepts symlinked overrides that resolve outside the work
   const trusted = tempDir("git-binary-trusted-");
   const links = tempDir("git-binary-links-");
   try {
+    mkdirSync(path.join(workspace, ".git"));
     const trustedGit = path.join(trusted, "git");
     writeExecutable(trustedGit);
     const linkGit = path.join(links, "git");
@@ -347,12 +355,12 @@ test("resolveGitBinary does not treat filesystem root as the current workspace",
   try {
     const trustedGit = path.join(trusted, "git");
     writeExecutable(trustedGit);
-    assert.equal(
-      resolveGitBinary({
+    assert.throws(
+      () => resolveGitBinary({
         cwd: path.parse(trusted).root,
         env: { [GIT_BINARY_ENV]: trustedGit },
       }),
-      realpathSync.native(trustedGit),
+      /requires a workspace boundary/,
     );
   } finally {
     rmSync(trusted, { recursive: true, force: true });

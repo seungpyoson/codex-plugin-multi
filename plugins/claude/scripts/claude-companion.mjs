@@ -532,6 +532,7 @@ function cmdPreflight(rest) {
     populateScope(profile, cwd, containment.path, {
       scopeBase: options["scope-base"] ?? null,
       scopePaths,
+      workspaceRoot,
     }, containment);
     const summary = summarizeScopeDirectory(containment.path);
     printJson({
@@ -788,6 +789,7 @@ function setupExecutionScopeOrExit(invocation, profile, { foreground, lifecycleE
     populateScope(profile, invocation.cwd, containment.path, {
       scopeBase: invocation.scope_base,
       scopePaths: invocation.scope_paths,
+      workspaceRoot: invocation.workspace_root,
     }, containment);
     return {
       containment,
@@ -1819,6 +1821,9 @@ async function main() {
 }
 
 main().catch((e) => {
+  if (e instanceof Error && e.message.includes("CODEX_PLUGIN_MULTI_GIT_BINARY")) {
+    fail("git_binary_rejected", e.message);
+  }
   process.stderr.write(`claude-companion: unhandled: ${e.stack ?? e.message ?? e}\n`);
   process.exit(1);
 });

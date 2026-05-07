@@ -35,7 +35,7 @@ function nearestWorkspaceBoundary(cwd) {
   for (;;) {
     if (existsSync(path.join(current, ".git"))) found = current;
     const parent = path.dirname(current);
-    if (parent === current) return found ?? (start === current ? null : start);
+    if (parent === current) return found;
     current = parent;
   }
 }
@@ -50,6 +50,9 @@ export function resolveGitBinary(options = {}) {
   }
 
   const workspaceRoot = options.workspaceRoot ?? nearestWorkspaceBoundary(options.cwd);
+  if (!workspaceRoot) {
+    throw new Error(`${GIT_BINARY_ENV} requires a workspace boundary; run from inside a Git workspace before using an override.`);
+  }
   const cacheBoundary = workspaceRoot ?? "";
   const cacheKey = `${override}\0${cacheBoundary}`;
   const cached = resolvedGitCache.get(cacheKey);

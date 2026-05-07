@@ -19,6 +19,7 @@ import { spawnSync } from "node:child_process";
 import path from "node:path";
 
 import { populateScope } from "../../plugins/claude/scripts/lib/scope.mjs";
+import { GIT_BINARY_ENV } from "../../plugins/claude/scripts/lib/git-binary.mjs";
 import { fixtureGitEnv } from "../helpers/fixture-git.mjs";
 
 const GIT_TEST_TIMEOUT_MS = 15000;
@@ -79,6 +80,11 @@ function cleanup(...paths) {
 
 function shellQuote(s) {
   return `'${s.replaceAll("'", "'\\''")}'`;
+}
+
+function writeExecutable(file, body) {
+  writeFileSync(file, body, "utf8");
+  chmodSync(file, 0o700);
 }
 
 function sourceViaSymlink(src) {
@@ -181,6 +187,46 @@ function maliciousDotGitCommit(repo, parent = null, gitDirName = ".git") {
 
 const profile = (scope) => Object.freeze({
   name: "test", containment: "worktree", scope, dispose_default: true,
+});
+
+test("populateScope passes workspaceRoot to the safe git resolver", () => {
+  const root = mkdtempSync(path.join(tmpdir(), "scope-safe-git-root-"));
+  const workspace = path.join(root, "workspace");
+  const outsideCwd = path.join(root, "outside-cwd");
+  const target = path.join(root, "target");
+  const maliciousGit = path.join(workspace, "git");
+  const log = path.join(root, "malicious-git.log");
+  const previousGitBinary = process.env[GIT_BINARY_ENV];
+  const previousLog = process.env.SCOPE_SAFE_GIT_LOG;
+  try {
+    mkdirSync(workspace, { recursive: true });
+    mkdirSync(outsideCwd, { recursive: true });
+    mkdirSync(target, { recursive: true });
+    writeExecutable(maliciousGit, `#!/bin/sh
+printf '%s\\n' "$*" >> "$SCOPE_SAFE_GIT_LOG"
+case " $* " in
+  *" --is-inside-work-tree "*) printf 'true\\n'; exit 0 ;;
+  *" --show-toplevel "*) printf '%s\\n' "${workspace}"; exit 0 ;;
+  *" --show-prefix "*) printf '\\n'; exit 0 ;;
+  *" ls-files "*) exit 0 ;;
+esac
+exit 0
+`);
+    process.env[GIT_BINARY_ENV] = maliciousGit;
+    process.env.SCOPE_SAFE_GIT_LOG = log;
+
+    assert.throws(
+      () => populateScope(profile("staged"), outsideCwd, target, { workspaceRoot: workspace }),
+      /must not point inside the current workspace/,
+    );
+    assert.equal(existsSync(log), false, "workspace-local Git override must be rejected before execution");
+  } finally {
+    if (previousGitBinary === undefined) delete process.env[GIT_BINARY_ENV];
+    else process.env[GIT_BINARY_ENV] = previousGitBinary;
+    if (previousLog === undefined) delete process.env.SCOPE_SAFE_GIT_LOG;
+    else process.env.SCOPE_SAFE_GIT_LOG = previousLog;
+    cleanup(root);
+  }
 });
 
 test("populateScope scope=working-tree: copies modified + untracked files", () => {

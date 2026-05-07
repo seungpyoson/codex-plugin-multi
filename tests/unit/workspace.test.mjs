@@ -1,10 +1,11 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { chmodSync, mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
 import { resolveWorkspaceRoot } from "../../plugins/claude/scripts/lib/workspace.mjs";
+import { GIT_BINARY_ENV } from "../../plugins/claude/scripts/lib/git-binary.mjs";
 // PR #21 review HIGH 5: this file used to call execSync("git ...") with raw
 // process.env so a parent GIT_DIR override would hijack the fixture init
 // into the caller checkout. Route every fixture git through the scrubbed
@@ -57,5 +58,28 @@ test("resolveWorkspaceRoot: falls back to cwd when not in git repo", () => {
     );
   } finally {
     rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("resolveWorkspaceRoot: preserves Git binary policy errors", () => {
+  const root = mkdtempSync(path.join(tmpdir(), "workspace-git-policy-"));
+  const previous = process.env[GIT_BINARY_ENV];
+  try {
+    const workspace = path.join(root, "workspace");
+    const outside = path.join(root, "outside");
+    mkdirSync(workspace, { recursive: true });
+    mkdirSync(outside, { recursive: true });
+    const git = path.join(workspace, "git");
+    writeFileSync(git, "#!/bin/sh\nexit 0\n", "utf8");
+    chmodSync(git, 0o700);
+    process.env[GIT_BINARY_ENV] = git;
+    assert.throws(
+      () => resolveWorkspaceRoot(outside),
+      /requires a workspace boundary/,
+    );
+  } finally {
+    if (previous === undefined) delete process.env[GIT_BINARY_ENV];
+    else process.env[GIT_BINARY_ENV] = previous;
+    rmSync(root, { recursive: true, force: true });
   }
 });

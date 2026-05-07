@@ -48,7 +48,7 @@ import {
 import path from "node:path";
 
 import { cleanGitEnv as scrubGitEnv } from "./git-env.mjs";
-import { gitEnv, resolveGitBinary } from "./git-binary.mjs";
+import { GIT_BINARY_ENV, gitEnv, resolveGitBinary } from "./git-binary.mjs";
 
 const VALID_SCOPES = new Set(["working-tree", "staged", "branch-diff", "head", "custom"]);
 const MAX_GIT_SYMLINK_HOPS = 40;
@@ -75,31 +75,38 @@ function cleanGitEnv() {
   };
 }
 
+function isGitBinaryPolicyError(err) {
+  return err instanceof Error && err.message.includes(GIT_BINARY_ENV);
+}
+
 function git(sourceCwd, args, opts = {}) {
-  return execFileSync(resolveGitBinary({ cwd: sourceCwd }), [...OBJECT_PURE_GIT_CONFIG, "-C", sourceCwd, ...args], {
+  const { workspaceRoot = null, ...execOpts } = opts;
+  return execFileSync(resolveGitBinary({ cwd: sourceCwd, workspaceRoot }), [...OBJECT_PURE_GIT_CONFIG, "-C", sourceCwd, ...args], {
     encoding: "utf8",
-    stdio: ["ignore", "pipe", opts.stderrInherit ? "inherit" : "pipe"],
+    stdio: ["ignore", "pipe", execOpts.stderrInherit ? "inherit" : "pipe"],
     env: gitEnv(cleanGitEnv()),
     maxBuffer: 1024 * 1024 * 64,
-    ...opts,
+    ...execOpts,
   });
 }
 
 function gitBuffer(sourceCwd, args, opts = {}) {
-  return execFileSync(resolveGitBinary({ cwd: sourceCwd }), [...OBJECT_PURE_GIT_CONFIG, "-C", sourceCwd, ...args], {
+  const { workspaceRoot = null, ...execOpts } = opts;
+  return execFileSync(resolveGitBinary({ cwd: sourceCwd, workspaceRoot }), [...OBJECT_PURE_GIT_CONFIG, "-C", sourceCwd, ...args], {
     encoding: null,
-    stdio: ["ignore", "pipe", opts.stderrInherit ? "inherit" : "pipe"],
+    stdio: ["ignore", "pipe", execOpts.stderrInherit ? "inherit" : "pipe"],
     env: gitEnv(cleanGitEnv()),
     maxBuffer: 1024 * 1024 * 64,
-    ...opts,
+    ...execOpts,
   });
 }
 
-function assertGitWorktree(sourceCwd) {
+function assertGitWorktree(sourceCwd, workspaceRoot = null) {
   try {
-    const inside = git(sourceCwd, ["rev-parse", "--is-inside-work-tree"]).trim();
+    const inside = git(sourceCwd, ["rev-parse", "--is-inside-work-tree"], { workspaceRoot }).trim();
     if (inside === "true") return;
-  } catch {
+  } catch (err) {
+    if (isGitBinaryPolicyError(err)) throw err;
     // Fall through to the stable, scope-level error below.
   }
   throw new Error(`scope_requires_git: scope requires a git worktree at ${sourceCwd}`);
@@ -107,9 +114,10 @@ function assertGitWorktree(sourceCwd) {
 
 function assertGitHead(ctx, sourceCwd) {
   try {
-    git(ctx.gitRoot, ["rev-parse", "--verify", "--quiet", "HEAD^{commit}"]);
+    git(ctx.gitRoot, ["rev-parse", "--verify", "--quiet", "HEAD^{commit}"], { workspaceRoot: ctx.workspaceRoot });
     return;
-  } catch {
+  } catch (err) {
+    if (isGitBinaryPolicyError(err)) throw err;
     throw new Error(`scope_requires_head: scope requires a committed HEAD at ${sourceCwd}`);
   }
 }
@@ -279,13 +287,14 @@ function copyLiveFile(sourceCwd, targetPath, rel, sourceRoot, ignored = null) {
   }
 }
 
-function gitScopeContext(sourceCwd) {
+function gitScopeContext(sourceCwd, workspaceRoot = null) {
   const sourceRoot = realpathSync(sourceCwd);
-  const gitRoot = path.resolve(git(sourceCwd, ["rev-parse", "--show-toplevel"]).trim());
-  const rawPrefix = git(sourceCwd, ["rev-parse", "--show-prefix"]).trim();
+  const gitRoot = path.resolve(git(sourceCwd, ["rev-parse", "--show-toplevel"], { workspaceRoot }).trim());
+  const rawPrefix = git(sourceCwd, ["rev-parse", "--show-prefix"], { workspaceRoot }).trim();
   const sourcePrefix = rawPrefix.replace(/\/+$/, "");
   return {
     gitRoot,
+    workspaceRoot: workspaceRoot ?? gitRoot,
     sourceRoot,
     sourcePrefix,
     sourcePrefixes: gitSourcePrefixes(sourceCwd, sourceRoot),
@@ -324,23 +333,23 @@ function parseGitEntryList(raw) {
   }).filter(Boolean);
 }
 
-function indexEntries(sourceCwd) {
-  return parseGitEntryList(git(sourceCwd, ["ls-files", "-s", "-z"]));
+function indexEntries(sourceCwd, workspaceRoot = null) {
+  return parseGitEntryList(git(sourceCwd, ["ls-files", "-s", "-z"], { workspaceRoot }));
 }
 
-function indexSymlinkEntries(sourceCwd) {
-  return indexEntries(sourceCwd)
+function indexSymlinkEntries(sourceCwd, workspaceRoot = null) {
+  return indexEntries(sourceCwd, workspaceRoot)
     .filter((entry) => entry.stage === "0")
     .filter((entry) => entry.mode === "120000")
     .map((entry) => entry.rel);
 }
 
-function headEntries(sourceCwd) {
-  return parseGitEntryList(git(sourceCwd, ["ls-tree", "-r", "-z", "HEAD"]));
+function headEntries(sourceCwd, workspaceRoot = null) {
+  return parseGitEntryList(git(sourceCwd, ["ls-tree", "-r", "-z", "HEAD"], { workspaceRoot }));
 }
 
-function headSymlinkEntries(sourceCwd) {
-  return headEntries(sourceCwd)
+function headSymlinkEntries(sourceCwd, workspaceRoot = null) {
+  return headEntries(sourceCwd, workspaceRoot)
     .filter((entry) => entry.mode === "120000")
     .map((entry) => entry.rel);
 }
@@ -378,7 +387,7 @@ function snapshotAccess(ctx, entriesByRel) {
     blob: (_sourceCwd, rel) => {
       const entry = entriesByRel.get(rel);
       if (!entry?.object) throw new Error(`missing object for ${rel}`);
-      return gitBuffer(ctx.gitRoot, ["cat-file", "blob", entry.object]);
+      return gitBuffer(ctx.gitRoot, ["cat-file", "blob", entry.object], { workspaceRoot: ctx.workspaceRoot });
     },
     hasPathPrefix: (_sourceCwd, rel) => {
       if (!isSafeSnapshotRel(rel)) return false;
@@ -388,11 +397,11 @@ function snapshotAccess(ctx, entriesByRel) {
       }
       return false;
     },
-    writeObject: (_sourceCwd, object, dst, mode, rel) => writeGitBlobToFile(ctx.gitRoot, object, dst, mode, rel),
+    writeObject: (_sourceCwd, object, dst, mode, rel) => writeGitBlobToFile(ctx.gitRoot, object, dst, mode, rel, ctx.workspaceRoot),
   };
 }
 
-function writeGitBlobToFile(sourceCwd, objectSpec, dst, mode, rel = objectSpec) {
+function writeGitBlobToFile(sourceCwd, objectSpec, dst, mode, rel = objectSpec, workspaceRoot = null) {
   try {
     mkdirSync(path.dirname(dst), { recursive: true });
   } catch (err) {
@@ -406,12 +415,13 @@ function writeGitBlobToFile(sourceCwd, objectSpec, dst, mode, rel = objectSpec) 
   }
   let copyFailed = false;
   try {
-    execFileSync(resolveGitBinary({ cwd: sourceCwd }), [...OBJECT_PURE_GIT_CONFIG, "-C", sourceCwd, "cat-file", "blob", objectSpec], {
+    execFileSync(resolveGitBinary({ cwd: sourceCwd, workspaceRoot }), [...OBJECT_PURE_GIT_CONFIG, "-C", sourceCwd, "cat-file", "blob", objectSpec], {
       stdio: ["ignore", fd, "pipe"],
       env: gitEnv(cleanGitEnv()),
       maxBuffer: 1024 * 1024 * 64,
     });
   } catch (err) {
+    if (isGitBinaryPolicyError(err)) throw err;
     copyFailed = true;
     unlinkIfExists(dst, rel);
     scopePopulationFailed(`cannot copy git blob ${rel}: ${err.message}`);
@@ -652,17 +662,18 @@ function sleepBackoffSync(ms) {
   while (Date.now() < end) { /* spin */ }
 }
 
-function listIgnoredUntrackedFiles(sourceCwd) {
+function listIgnoredUntrackedFiles(sourceCwd, workspaceRoot = null) {
   let lastErr = null;
   for (let attempt = 1; attempt <= MAX_GIT_LSFILES_ATTEMPTS; attempt += 1) {
     try {
       const raw = git(sourceCwd, [
         "ls-files", "--others", "--ignored", "--exclude-standard", "-z", "--", ".",
-      ]);
+      ], { workspaceRoot });
       return new Set(
         raw.split("\0").filter(Boolean).map((rel) => rel.replace(/\\/g, "/")),
       );
     } catch (err) {
+      if (isGitBinaryPolicyError(err)) throw err;
       lastErr = err;
       if (attempt < MAX_GIT_LSFILES_ATTEMPTS) sleepBackoffSync(GIT_LSFILES_BACKOFF_MS);
     }
@@ -673,7 +684,7 @@ function listIgnoredUntrackedFiles(sourceCwd) {
   return null;
 }
 
-function scopeWorkingTree(sourceCwd, targetPath) {
+function scopeWorkingTree(sourceCwd, targetPath, workspaceRoot = null) {
   // Default review must not expose ignored/private files like `.env` (PR #14
   // blocker 3). Walk the live filesystem and then drop any file that git
   // considers an ignored untracked entry. If the source is a git worktree but
@@ -682,17 +693,17 @@ function scopeWorkingTree(sourceCwd, targetPath) {
   // contract to enforce.
   const sourceRoot = realpathSync(sourceCwd);
   const all = listLiveWorkingTreeFiles(sourceCwd);
-  const ignored = listIgnoredUntrackedFiles(sourceCwd);
+  const ignored = listIgnoredUntrackedFiles(sourceCwd, workspaceRoot);
   const rels = ignored == null ? all : all.filter((rel) => !isIgnoredLiveRel(ignored, rel));
   for (const rel of rels) {
     copyLiveFile(sourceCwd, targetPath, rel, sourceRoot, ignored);
   }
 }
 
-function scopeStaged(sourceCwd, targetPath) {
-  assertGitWorktree(sourceCwd);
-  const ctx = gitScopeContext(sourceCwd);
-  const entries = indexEntries(ctx.gitRoot);
+function scopeStaged(sourceCwd, targetPath, workspaceRoot = null) {
+  assertGitWorktree(sourceCwd, workspaceRoot);
+  const ctx = gitScopeContext(sourceCwd, workspaceRoot);
+  const entries = indexEntries(ctx.gitRoot, ctx.workspaceRoot);
   assertNoUnmergedIndexEntries(ctx, entries);
   const unsupported = scopedGitEntries(ctx, entries)
     .filter((entry) => entry.stage === "0")
@@ -707,7 +718,7 @@ function scopeStaged(sourceCwd, targetPath) {
   const access = snapshotAccess(ctx, entriesByRel);
   prepareGitSnapshotTarget(sourceCwd, targetPath);
   try {
-    const symlinkSnapshotRels = scopedGitEntries(ctx, indexSymlinkEntries(ctx.gitRoot).map((rel) => ({ rel })))
+    const symlinkSnapshotRels = scopedGitEntries(ctx, indexSymlinkEntries(ctx.gitRoot, ctx.workspaceRoot).map((rel) => ({ rel })))
       .map((entry) => entry.snapshotRel);
     for (const entry of scopedEntries) {
       if (entry.mode === "120000") continue;
@@ -723,27 +734,29 @@ function scopeStaged(sourceCwd, targetPath) {
   }
 }
 
-function scopeBranchDiff(sourceCwd, targetPath, scopeBase, scopePaths = []) {
-  assertGitWorktree(sourceCwd);
-  const ctx = gitScopeContext(sourceCwd);
+function scopeBranchDiff(sourceCwd, targetPath, scopeBase, scopePaths = [], workspaceRoot = null) {
+  assertGitWorktree(sourceCwd, workspaceRoot);
+  const ctx = gitScopeContext(sourceCwd, workspaceRoot);
   assertGitHead(ctx, sourceCwd);
   const base = safeScopeBase(scopeBase);
   // Verify base exists. `rev-parse --verify` exits non-zero if not.
   try {
-    git(ctx.gitRoot, ["rev-parse", "--verify", "--quiet", base]);
-  } catch {
+    git(ctx.gitRoot, ["rev-parse", "--verify", "--quiet", base], { workspaceRoot: ctx.workspaceRoot });
+  } catch (err) {
+    if (isGitBinaryPolicyError(err)) throw err;
     throw new Error(`scope_base_missing: base ref ${JSON.stringify(base)} does not exist in ${sourceCwd}`);
   }
   // Files changed between base..HEAD. Use merge-base range to avoid picking
   // up files that moved on the base side only.
   let mergeBase;
   try {
-    mergeBase = git(ctx.gitRoot, ["merge-base", base, "HEAD"]).trim();
-  } catch {
+    mergeBase = git(ctx.gitRoot, ["merge-base", base, "HEAD"], { workspaceRoot: ctx.workspaceRoot }).trim();
+  } catch (err) {
+    if (isGitBinaryPolicyError(err)) throw err;
     throw new Error(`scope_base_missing: base ref ${JSON.stringify(base)} has no merge-base with HEAD in ${sourceCwd}`);
   }
   prepareGitSnapshotTarget(sourceCwd, targetPath);
-  const raw = git(ctx.gitRoot, ["diff", "--name-only", "-z", `${mergeBase}..HEAD`]);
+  const raw = git(ctx.gitRoot, ["diff", "--name-only", "-z", `${mergeBase}..HEAD`], { workspaceRoot: ctx.workspaceRoot });
   let files = [];
   for (const gitRel of raw.split("\0").filter(Boolean)) {
     const snapshotRel = toSnapshotRel(ctx, gitRel);
@@ -763,7 +776,7 @@ function scopeBranchDiff(sourceCwd, targetPath, scopeBase, scopePaths = []) {
     scopeEmpty(`branch-diff selected no files${qualifier} under ${sourceCwd} against base ${JSON.stringify(base)}`);
   }
   const materializations = [];
-  const entriesByRel = entryMap(scopedGitEntries(ctx, headEntries(ctx.gitRoot)));
+  const entriesByRel = entryMap(scopedGitEntries(ctx, headEntries(ctx.gitRoot, ctx.workspaceRoot)));
   const access = snapshotAccess(ctx, entriesByRel);
   for (const { gitRel, snapshotRel } of files) {
     const entry = entriesByRel.get(snapshotRel);
@@ -804,11 +817,11 @@ function scopeBranchDiff(sourceCwd, targetPath, scopeBase, scopePaths = []) {
   }
 }
 
-function scopeHead(sourceCwd, targetPath, containmentHandle) {
-  assertGitWorktree(sourceCwd);
-  const ctx = gitScopeContext(sourceCwd);
+function scopeHead(sourceCwd, targetPath, containmentHandle, workspaceRoot = null) {
+  assertGitWorktree(sourceCwd, workspaceRoot);
+  const ctx = gitScopeContext(sourceCwd, workspaceRoot);
   assertGitHead(ctx, sourceCwd);
-  const entries = headEntries(ctx.gitRoot);
+  const entries = headEntries(ctx.gitRoot, ctx.workspaceRoot);
   const unsupported = scopedGitEntries(ctx, entries)
     .find((entry) => !isRegularGitFileMode(entry.mode) && entry.mode !== "120000" && entry.mode !== "160000");
   if (unsupported) {
@@ -820,7 +833,7 @@ function scopeHead(sourceCwd, targetPath, containmentHandle) {
   const access = snapshotAccess(ctx, entriesByRel);
   prepareGitSnapshotTarget(sourceCwd, targetPath);
   try {
-    const symlinkSnapshotRels = scopedGitEntries(ctx, headSymlinkEntries(ctx.gitRoot).map((rel) => ({ rel })))
+    const symlinkSnapshotRels = scopedGitEntries(ctx, headSymlinkEntries(ctx.gitRoot, ctx.workspaceRoot).map((rel) => ({ rel })))
       .map((entry) => entry.snapshotRel);
     for (const entry of scopedEntries) {
       if (entry.mode === "120000") continue;
@@ -890,11 +903,13 @@ export function populateScope(profile, sourceCwd, targetPath, runtimeInputs = {}
   // when containment=none" is the single source of truth.
   if (path.resolve(targetPath) === path.resolve(sourceCwd)) return;
 
+  const workspaceRoot = runtimeInputs.workspaceRoot ?? null;
+
   switch (profile.scope) {
-    case "working-tree": scopeWorkingTree(sourceCwd, targetPath); break;
-    case "staged":       scopeStaged(sourceCwd, targetPath); break;
-    case "branch-diff":  scopeBranchDiff(sourceCwd, targetPath, runtimeInputs.scopeBase, runtimeInputs.scopePaths); break;
-    case "head":         scopeHead(sourceCwd, targetPath, containmentHandle); break;
+    case "working-tree": scopeWorkingTree(sourceCwd, targetPath, workspaceRoot); break;
+    case "staged":       scopeStaged(sourceCwd, targetPath, workspaceRoot); break;
+    case "branch-diff":  scopeBranchDiff(sourceCwd, targetPath, runtimeInputs.scopeBase, runtimeInputs.scopePaths, workspaceRoot); break;
+    case "head":         scopeHead(sourceCwd, targetPath, containmentHandle, workspaceRoot); break;
     case "custom":       scopeCustom(sourceCwd, targetPath, runtimeInputs.scopePaths); break;
     default:
       // Defensive: VALID_SCOPES check above makes this unreachable.

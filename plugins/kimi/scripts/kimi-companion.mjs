@@ -460,6 +460,7 @@ function cmdPreflight(rest) {
     populateScope(profile, cwd, containment.path, {
       scopeBase: options["scope-base"] ?? null,
       scopePaths,
+      workspaceRoot,
     }, containment);
     const summary = summarizeScopeDirectory(containment.path);
     printJson({
@@ -608,6 +609,7 @@ async function executeRun(invocation, prompt, { foreground, lifecycleEvents = nu
     populateScope(profile, cwd, containment.path, {
       scopeBase: invocation.scope_base,
       scopePaths: invocation.scope_paths,
+      workspaceRoot,
     }, containment);
   } catch (e) {
     if (containment) { try { containment.cleanup(); } catch { /* best-effort */ } }
@@ -847,6 +849,7 @@ function validateBackgroundExecutionScopeOrExit(invocation, lifecycleEvents) {
     populateScope(profile, cwd, containment.path, {
       scopeBase: invocation.scope_base,
       scopePaths: invocation.scope_paths,
+      workspaceRoot,
     }, containment);
   } catch (e) {
     if (containment) { try { containment.cleanup(); } catch { /* best-effort */ } }
@@ -1473,6 +1476,9 @@ async function main() {
 }
 
 main().catch((e) => {
+  if (e instanceof Error && e.message.includes("CODEX_PLUGIN_MULTI_GIT_BINARY")) {
+    fail("git_binary_rejected", e.message);
+  }
   process.stderr.write(`kimi-companion: unhandled: ${e.stack ?? e.message ?? e}\n`);
   process.exit(1);
 });
