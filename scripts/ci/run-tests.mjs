@@ -12,10 +12,13 @@ import { fileURLToPath } from "node:url";
 import { cleanGitEnv } from "../../plugins/claude/scripts/lib/git-env.mjs";
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
-// Walks tests/unit AND tests/smoke. Smoke tests can be skipped by pointing
-// CODEX_PLUGIN_SKIP_SMOKE=1 (CI sets this when a smoke fixture is missing).
+// Walks tests/unit, tests/property, and tests/smoke. Smoke tests can be
+// skipped by setting CODEX_PLUGIN_SKIP_SMOKE=1 (CI sets this when a fixture
+// is missing). Property tests are the merge gate for the sanitization
+// contract — fast subset uses 1000 runs (~300ms), full subset uses 10000.
 const TEST_DIRS = [
   resolve(REPO_ROOT, "tests/unit"),
+  resolve(REPO_ROOT, "tests/property"),
   ...(process.env.CODEX_PLUGIN_SKIP_SMOKE ? [] : [resolve(REPO_ROOT, "tests/smoke")]),
 ];
 

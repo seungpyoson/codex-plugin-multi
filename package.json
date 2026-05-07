@@ -40,5 +40,7 @@
     "e2e:kimi": "node --test --test-reporter=spec tests/e2e/kimi.e2e.test.mjs",
     "e2e:grok": "node --test --test-reporter=spec tests/e2e/grok.e2e.test.mjs"
   },
-  "devDependencies": {}
+  "devDependencies": {
+    "fast-check": "^4.7.0"
+  }
 }

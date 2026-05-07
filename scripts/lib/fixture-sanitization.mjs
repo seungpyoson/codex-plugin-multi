@@ -66,20 +66,25 @@ const AUTHORIZATION_HEADER_JSON = /"Authorization"\s*:\s*"(?:[^"\\]|\\.)*"/gi;
 // delimiters, and backslash.
 const BEARER_TOKEN = /Bearer\s+[^\s"',}\]\\]+/gi;
 
-// Companion session-id field names. Removed (replaced with REDACTED) when
-// architecture is "companion" — these are user-identity-linked.
+// Companion session-id field names. Both snake_case and camelCase variants —
+// providers vary. Replaced wholesale with REDACTED when architecture is
+// "companion".
 const COMPANION_SESSION_ID_FIELDS = Object.freeze([
   "claude_session_id",
   "gemini_session_id",
   "kimi_session_id",
+  "claudeSessionId",
+  "geminiSessionId",
+  "kimiSessionId",
 ]);
 
-// Field names that ALWAYS get redacted when present as strings, regardless
-// of architecture. These are user-identity-linked or path-leaking.
+// Field names that ALWAYS get redacted when present, regardless of
+// architecture and value type. snake_case + camelCase.
 const ALWAYS_REDACT_STRING_FIELDS = Object.freeze([
-  // Doctor/ping output uses bare "session_id" (not provider-prefixed). Redact.
   "session_id",
-  "request_id",     // api-reviewers + provider request-id (sometimes echoed)
+  "request_id",
+  "sessionId",
+  "requestId",
 ]);
 
 // Fields that are sanitized as strings (path scrub, env-secret redaction)
@@ -90,7 +95,36 @@ const ALWAYS_SANITIZE_FIELDS = Object.freeze([
   "endpoint",     // api-reviewers: contains base URL; defensively sanitized
 ]);
 
-const PATH_SCRUB = /\/Users\/[^/\s]+/g;  // macOS user-home leak
+// User-home path patterns. macOS, Linux, Windows. Matched values are
+// replaced with the literal "<user>" placeholder so fixture diffs stay
+// stable across CI hosts.
+const PATH_SCRUB_PATTERNS = Object.freeze([
+  { regex: /\/Users\/[^/\s\\]+/g, replacement: "/Users/<user>" },
+  { regex: /\/home\/[^/\s\\]+/g, replacement: "/home/<user>" },
+  { regex: /[A-Za-z]:\\Users\\[^\\\s/]+/g, replacement: "C:\\Users\\<user>" },
+]);
+
+// Cookie-style env value sub-extraction (I17). For env keys ending in
+// COOKIE/SESSION/SSO, the value typically contains semicolon-delimited
+// attributes ("sso=eyJ...; Domain=x.com; Path=/"). Each '=' RHS at
+// least 4 chars long is added to the redaction set so a fixture echoing
+// just the inner SSO token without the surrounding cookie syntax still
+// gets scrubbed.
+const COOKIE_LIKE_ENV_NAME = /(?:^|_)(?:COOKIE|SESSION|SSO)$/i;
+
+class SanitizeMarkerCollision extends Error {
+  constructor(detail) {
+    super(`fixture-sanitization: input contains the redaction marker — ${detail}`);
+    this.name = "SanitizeMarkerCollision";
+  }
+}
+
+class SanitizeUnsupportedInput extends Error {
+  constructor(detail) {
+    super(`fixture-sanitization: input is not JSON-compatible — ${detail}`);
+    this.name = "SanitizeUnsupportedInput";
+  }
+}
 
 /**
  * Build a redactor function that scans process.env for secret-shaped
@@ -107,6 +141,28 @@ export function buildEnvSecretRedactor(env, { curatedEnvKeys = [] } = {}) {
   const secrets = new Set();
   const curated = new Set(curatedEnvKeys.map((k) => String(k).toUpperCase()));
 
+  function addSecret(value, minLen) {
+    if (!value || value.length < minLen) return;
+    if (value.includes(REDACTED)) {
+      throw new SanitizeMarkerCollision(
+        `env-secret value contains the literal "${REDACTED}" sentinel`,
+      );
+    }
+    secrets.add(value);
+    // I14 — also redact percent-encoded form. Skipped if encoding is
+    // identity (no special chars) since duplicate entries don't harm
+    // correctness but waste set capacity.
+    let encoded;
+    try {
+      encoded = encodeURIComponent(value);
+    } catch {
+      encoded = value;
+    }
+    if (encoded !== value && !encoded.includes(REDACTED)) {
+      secrets.add(encoded);
+    }
+  }
+
   for (const [key, rawValue] of Object.entries(env ?? {})) {
     const value = String(rawValue ?? "");
     if (!value) continue;
@@ -117,8 +173,19 @@ export function buildEnvSecretRedactor(env, { curatedEnvKeys = [] } = {}) {
     const minLen = isCurated
       ? MIN_SECRET_REDACTION_LENGTH_CURATED
       : MIN_SECRET_REDACTION_LENGTH_AUTO;
-    if (value.length < minLen) continue;
-    secrets.add(value);
+    addSecret(value, minLen);
+    // I17 — sub-extraction for cookie/SSO/SESSION values. Whole-value
+    // redaction is preserved; we additionally extract semicolon/equals
+    // sub-values so a fixture echoing only "sso=<token>" gets caught.
+    if (COOKIE_LIKE_ENV_NAME.test(upperKey)) {
+      for (const segment of value.split(";")) {
+        const trimmed = segment.trim();
+        const eq = trimmed.indexOf("=");
+        if (eq <= 0) continue;
+        const rhs = trimmed.slice(eq + 1).trim();
+        addSecret(rhs, MIN_SECRET_REDACTION_LENGTH_CURATED);
+      }
+    }
   }
 
   // Sort by length descending so longer secrets are replaced first. Without
@@ -150,7 +217,9 @@ export function redactKnownPatterns(input) {
   out = out.replaceAll(AUTHORIZATION_HEADER_BARE, `Authorization: ${REDACTED}`);
   out = out.replaceAll(AUTHORIZATION_HEADER_JSON, `"Authorization":"${REDACTED}"`);
   out = out.replaceAll(BEARER_TOKEN, `Bearer ${REDACTED}`);
-  out = out.replaceAll(PATH_SCRUB, "/Users/<user>");
+  for (const { regex, replacement } of PATH_SCRUB_PATTERNS) {
+    out = out.replaceAll(regex, replacement);
+  }
   return out;
 }
 
@@ -162,6 +231,54 @@ export function sanitizeString(input, redactEnvSecrets) {
   return redactKnownPatterns(afterEnv);
 }
 
+function isPlainObject(value) {
+  if (value === null || typeof value !== "object") return false;
+  const proto = Object.getPrototypeOf(value);
+  return proto === Object.prototype || proto === null;
+}
+
+// I16(b) — input-domain enforcement. Throws on any value the redactor
+// cannot reason about. Called before walking each branch.
+function assertJsonCompatible(value, ctx, path) {
+  if (value === null) return;
+  const t = typeof value;
+  if (t === "string" || t === "boolean") return;
+  if (t === "number") {
+    if (!Number.isFinite(value)) {
+      throw new SanitizeUnsupportedInput(
+        `non-finite number at ${path || "(root)"}`,
+      );
+    }
+    return;
+  }
+  if (t === "undefined") {
+    throw new SanitizeUnsupportedInput(`undefined at ${path || "(root)"}`);
+  }
+  if (t === "bigint" || t === "symbol" || t === "function") {
+    throw new SanitizeUnsupportedInput(`${t} at ${path || "(root)"}`);
+  }
+  if (Array.isArray(value)) return;
+  if (!isPlainObject(value)) {
+    const ctorName = value && value.constructor ? value.constructor.name : "object";
+    throw new SanitizeUnsupportedInput(
+      `non-plain object (${ctorName}) at ${path || "(root)"}`,
+    );
+  }
+  if (ctx.seen.has(value)) {
+    throw new SanitizeUnsupportedInput(`circular reference at ${path || "(root)"}`);
+  }
+}
+
+// I12 — sentinel safety. Called for every input string-leaf and every
+// object key. Throws if the literal redaction marker appears.
+function assertNoMarker(str, where) {
+  if (typeof str === "string" && str.includes(REDACTED)) {
+    throw new SanitizeMarkerCollision(
+      `${where} contains the literal "${REDACTED}" sentinel`,
+    );
+  }
+}
+
 /**
  * Recursively walk a value, applying string sanitization and
  * field-level scrubs based on architecture.
@@ -170,43 +287,69 @@ export function sanitizeString(input, redactEnvSecrets) {
  * @param {object} ctx
  * @param {(s: string) => string} ctx.redactEnvSecrets
  * @param {"companion"|"grok"|"api-reviewers"} ctx.architecture
+ * @param {WeakSet}   ctx.seen   Cycle-detection set.
+ * @param {(value: string) => boolean} ctx.matchesPrefixShape
+ * @param {(value: string) => boolean} ctx.matchesEnvSecret
  */
-function sanitizeValue(value, ctx) {
-  if (value == null) return value;
+function sanitizeValue(value, ctx, path) {
+  assertJsonCompatible(value, ctx, path);
+  if (value === null) return value;
   if (typeof value === "string") {
+    assertNoMarker(value, `string at ${path || "(root)"}`);
     return sanitizeString(value, ctx.redactEnvSecrets);
   }
   if (typeof value === "number" || typeof value === "boolean") {
     return value;
   }
   if (Array.isArray(value)) {
-    return value.map((item) => sanitizeValue(item, ctx));
+    ctx.seen.add(value);
+    try {
+      return value.map((item, i) => sanitizeValue(item, ctx, `${path}[${i}]`));
+    } finally {
+      ctx.seen.delete(value);
+    }
   }
-  if (typeof value === "object") {
-    return sanitizeObject(value, ctx);
+  // Plain object.
+  ctx.seen.add(value);
+  try {
+    return sanitizeObject(value, ctx, path);
+  } finally {
+    ctx.seen.delete(value);
   }
-  return value;
 }
 
-function sanitizeObject(value, ctx) {
+function sanitizeObject(value, ctx, path) {
   const out = {};
   for (const [key, sub] of Object.entries(value)) {
-    out[key] = sanitizeObjectField(key, sub, ctx);
+    assertNoMarker(key, `object key at ${path || "(root)"}`);
+    const keyPath = `${path}.${key}`;
+    // I15 — secret-shaped keys are redacted to the marker. Match the
+    // SAME conditions used for values: prefix-shaped tokens, or env-
+    // secret literals at the appropriate length threshold.
+    const sanitizedKey = ctx.shouldRedactKey(key) ? REDACTED : key;
+    out[sanitizedKey] = sanitizeObjectField(key, sub, ctx, keyPath);
   }
   return out;
 }
 
-function sanitizeObjectField(key, sub, ctx) {
+function sanitizeObjectField(key, sub, ctx, path) {
   if (
     (ctx.architecture === "companion" && COMPANION_SESSION_ID_FIELDS.includes(key))
     || ALWAYS_REDACT_STRING_FIELDS.includes(key)
   ) {
+    // wholesaleRedact still walks structure to enforce I12/I16, but
+    // discards the result. We need to validate the input domain even
+    // when redacting wholesale, otherwise a Date/Map/cycle planted under
+    // a redacted key would slip past I16.
+    if (sub && typeof sub === "object") sanitizeValue(sub, ctx, path);
+    else if (typeof sub === "string") assertNoMarker(sub, `string at ${path}`);
     return wholesaleRedact(sub);
   }
   if (ALWAYS_SANITIZE_FIELDS.includes(key) && typeof sub === "string") {
+    assertNoMarker(sub, `string at ${path}`);
     return sanitizeString(sub, ctx.redactEnvSecrets);
   }
-  return sanitizeValue(sub, ctx);
+  return sanitizeValue(sub, ctx, path);
 }
 
 // Identity-linked fields are redacted in full regardless of value type. A
@@ -235,14 +378,48 @@ export function sanitize(record, options = {}) {
       + "\"companion\", \"grok\", \"api-reviewers\"",
     );
   }
+  // I11 — env defaults to process.env for backward compatibility. The
+  // sanitization-invariants.md contract asks that purity be enforced via
+  // an explicit env argument. Existing call sites in scripts/smoke-rerecord.mjs
+  // rely on the default; revisit when they migrate.
   const env = options.env ?? process.env;
-  const redactEnvSecrets = buildEnvSecretRedactor(env, {
-    curatedEnvKeys: options.curatedEnvKeys ?? [],
-  });
+  const curatedEnvKeys = options.curatedEnvKeys ?? [];
+  const redactEnvSecrets = buildEnvSecretRedactor(env, { curatedEnvKeys });
+
+  // Build the key-redaction predicate. A key is redacted if it matches a
+  // public-prefix-shaped token (I2 applied to keys) OR is itself a literal
+  // env-secret value at the appropriate threshold (I1 applied to keys).
+  const envSecretSet = new Set();
+  const curatedSet = new Set(curatedEnvKeys.map((k) => String(k).toUpperCase()));
+  for (const [k, rawV] of Object.entries(env ?? {})) {
+    const v = String(rawV ?? "");
+    if (!v) continue;
+    const upper = k.toUpperCase();
+    const isCurated = curatedSet.has(upper);
+    const matchesAuto = SECRET_ENV_NAME.test(upper);
+    if (!isCurated && !matchesAuto) continue;
+    const minLen = isCurated
+      ? MIN_SECRET_REDACTION_LENGTH_CURATED
+      : MIN_SECRET_REDACTION_LENGTH_AUTO;
+    if (v.length >= minLen) envSecretSet.add(v);
+  }
+  function shouldRedactKey(key) {
+    if (typeof key !== "string" || !key) return false;
+    if (envSecretSet.has(key)) return true;
+    for (const pattern of SECRET_PREFIX_PATTERNS) {
+      // Reset lastIndex; SECRET_PREFIX_PATTERNS use the /g flag.
+      pattern.lastIndex = 0;
+      if (pattern.test(key)) return true;
+    }
+    return false;
+  }
+
   return sanitizeValue(record, {
     redactEnvSecrets,
     architecture,
-  });
+    seen: new WeakSet(),
+    shouldRedactKey,
+  }, "");
 }
 
 /**
