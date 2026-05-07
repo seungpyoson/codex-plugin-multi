@@ -103,8 +103,13 @@ describe("smoke-rerecord recipes — auth invariants", () => {
       assert.ok(spec.args.includes("--auth-mode"));
       assert.equal(spec.args[spec.args.indexOf("--auth-mode") + 1], "api_key");
       assert.equal(spec.env.HOME, "/var/empty");
-      assert.equal(spec.env.ANTHROPIC_API_KEY, undefined);
-      assert.equal(spec.env.CLAUDE_API_KEY, undefined);
+      for (const key of CLAUDE_PROVIDER_API_KEY_ENV) {
+        assert.equal(
+          spec.env[key],
+          undefined,
+          `claude/auth-failure must scrub shared Claude provider key ${key}`,
+        );
+      }
     });
     it("declares expectExit: [2] (negative recipe characterized via CI workflow run)", () => {
       // Round-12: actual workflow_dispatch run on a sterile GitHub

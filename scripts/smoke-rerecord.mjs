@@ -145,7 +145,7 @@ export const RECIPES = Object.freeze({
       // HOME at /var/empty (always exists, always empty on macOS/Linux)
       // ensures any home-directory lookup misses. (Gemini #3198727893.)
       env: {
-        ...scrubAuth(process.env, ["ANTHROPIC_API_KEY", "CLAUDE_API_KEY", "CLAUDE_CONFIG_DIR"]),
+        ...scrubAuth(process.env, [...CLAUDE_PROVIDER_API_KEY_ENV, "CLAUDE_CONFIG_DIR"]),
         HOME: "/var/empty",
       },
       // Characterized by an actual smoke-rerecord workflow run on a
