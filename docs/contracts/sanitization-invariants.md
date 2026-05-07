@@ -337,10 +337,10 @@ Assert all 5 outputs are deep-equal.
 **Statement.** The marker string `"[REDACTED]"` is reserved. For all
 inputs:
 
-1. **Input precondition** (caller-enforced — `sanitize` validates and
-   throws on violation): no env-secret value, no curated key value,
-   and no input string-fragment shall equal `"[REDACTED]"` or contain
-   it as a substring. If the precondition is violated, `sanitize`
+1. **Input precondition** (`sanitize` validates and throws on
+   violation): no env-secret value, no curated key value, and no
+   input string-fragment shall equal `"[REDACTED]"` or contain it
+   as a substring. If the precondition is violated, `sanitize`
    SHALL throw a typed error (`SanitizeMarkerCollision`) rather than
    silently produce ambiguous output.
 2. **Output postcondition:** every occurrence of `"[REDACTED]"` in
@@ -432,12 +432,16 @@ benign strings, env-secret literals, and I2-prefix-shaped strings.
 
 1. For every JSON-compatible input (per the Surface section), `sanitize`
    terminates in time bounded by `O(n)` in input size, without
-   throwing, at any nesting depth up to 10³ (1,000).
-   Higher depths are untested and out of contract: the recursive
-   walker would risk a Node.js stack overflow at depths approaching
-   10⁴, and no real fixture exercises that range. If the contract
-   needs to extend to 10⁴+, the implementation must move from
-   recursion to an explicit-stack iterative walk.
+   throwing, at any nesting depth up to 10³ (1,000). The property
+   test exercises this depth and passes.
+   Higher depths are out of contract. Empirical measurement on
+   Node v24.13.0 (round-17 probe): the recursive walker overflows
+   the call stack at depth ~2,003 and succeeds up to ~2,000. The 1,000
+   contract leaves a ~2× safety margin. Extending the contract to
+   depths approaching or exceeding the overflow threshold would
+   require switching the implementation from recursion to an
+   explicit-stack iterative walk; no real fixture currently
+   exercises that range.
 2. For inputs containing cycles, `Map`, `Set`, `Date`, `RegExp`,
    `Buffer`/typed arrays, `Symbol`, `BigInt`, functions, getters,
    proxies, or non-plain prototypes, `sanitize` SHALL throw a typed

@@ -253,6 +253,28 @@ describe("derivePromptForHash — explicit-anchor-only detection", () => {
     // value) because layer 3 ("last non-flag positional") couldn't
     // distinguish flag values from real positionals. New behavior:
     // honest "" when there is no prompt to hash.
+    //
+    // Empirical catch-rate proof (round-17, run inline against the
+    // pre-round-16 IIFE that lived at scripts/smoke-rerecord.mjs:670):
+    //
+    //   const oldDerive = (args) => {
+    //     const i = args.indexOf("--prompt");
+    //     if (i !== -1 && args[i+1]) return args[i+1];
+    //     const dd = args.indexOf("--");
+    //     if (dd !== -1 && args[dd+1]) return args[dd+1];
+    //     if (args.length > 0) {
+    //       const last = args[args.length-1];
+    //       if (typeof last === "string" && !last.startsWith("-")) return last;
+    //     }
+    //     return args.find(a => typeof a === "string" && a.length > 50) ?? "";
+    //   };
+    //   oldDerive(["ping", "--auth-mode", "api_key"]) // → "api_key"  ❌
+    //   oldDerive(["run","--scope-paths","/Users/dev/.../plugin-targets.mjs"])
+    //                                                  // → "/Users/dev/..." ❌
+    //
+    // This test fails against the old code (returns "api_key" not "")
+    // and passes against the new code. Same for the long-path test
+    // below. Round-16 is structurally a fix, not a re-arrangement.
     const args = ["ping", "--auth-mode", "api_key"];
     assert.equal(derivePromptForHash(args), "");
   });
