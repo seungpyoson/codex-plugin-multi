@@ -313,7 +313,7 @@ test("populateScope scope=working-tree: excludes gitignored files (privacy)", ()
   const src = seedRepo();
   const tgt = mkTarget();
   try {
-    writeFileSync(path.join(src, ".gitignore"), ".env\nignored.log\n");
+    writeFileSync(path.join(src, ".gitignore"), ".env\nignored.log\nprivate/\n");
     writeFileSync(path.join(src, "tracked.txt"), "original\n");
     git(src, "add", ".");
     git(src, "commit", "-qm", "seed");
@@ -325,8 +325,11 @@ test("populateScope scope=working-tree: excludes gitignored files (privacy)", ()
     // Add gitignored files → must NOT appear.
     writeFileSync(path.join(src, ".env"), "SECRET=value\n");
     writeFileSync(path.join(src, "ignored.log"), "garbage\n");
+    mkdirSync(path.join(src, "private"));
+    writeFileSync(path.join(src, "private", "secret.txt"), "SECRET=dir\n");
     // A non-ignored symlink must not bypass the ignored target filter.
     symlinkSync(".env", path.join(src, "config-link"));
+    symlinkSync("private", path.join(src, "private-link"));
 
     // Sanity: confirm git agrees those files are ignored.
     const ignoreCheck = spawnSync("git", ["-C", src, "check-ignore", "-v", ".env", "ignored.log"], {
@@ -344,6 +347,8 @@ test("populateScope scope=working-tree: excludes gitignored files (privacy)", ()
       ".env (gitignored) must not be exposed by default working-tree scope");
     assert.equal(existsSync(path.join(tgt, "config-link")), false,
       "symlinks resolving to gitignored targets must not expose ignored content");
+    assert.equal(existsSync(path.join(tgt, "private-link")), false,
+      "symlinks resolving to gitignored directories must not expose ignored content");
     assert.equal(existsSync(path.join(tgt, "ignored.log")), false,
       "gitignored untracked files must not be exposed by default working-tree scope");
   } finally {
