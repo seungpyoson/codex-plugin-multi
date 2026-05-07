@@ -19,8 +19,13 @@
 //   api-reviewers-deepseek:  DEEPSEEK_API_KEY
 //   api-reviewers-glm:       ZAI_API_KEY or ZAI_GLM_API_KEY
 //
-// The companion plugins use the user's existing OAuth by default — if you
-// want a fixed snapshot, set the relevant *_API_KEY env var.
+// Companion auth: claude/happy-path-review uses --auth-mode auto, which
+// selects api_key_env when ANTHROPIC_API_KEY (or CLAUDE_API_KEY) is set
+// in the environment, and falls back to subscription_oauth otherwise.
+// On a CI runner with the secret wired, recordings use API-key auth;
+// on a developer machine without those vars, OAuth is used. Setting
+// either *_API_KEY env var on a developer machine that also has
+// ~/.claude OAuth will silently switch the recording to API-key auth.
 
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -77,6 +82,11 @@ export const RECIPES = Object.freeze({
         envAny: ["ANTHROPIC_API_KEY", "CLAUDE_API_KEY"],
         file: path.join(process.env.HOME ?? "", ".claude"),
       },
+      // Refuse to write a fixture if the spawned claude exits non-zero.
+      // A happy-path recording that auth-fails or hits a transient 5xx
+      // would otherwise parse the error JSON and commit it as if it
+      // were a real review (silent fixture corruption).
+      expectExit: [0],
     }),
   },
   "claude/auth-failure": {
@@ -372,6 +382,24 @@ function main() {
 
   process.stderr.write(`Exit code: ${result.exitCode}\n`);
   if (result.signal) process.stderr.write(`Signal: ${result.signal}\n`);
+
+  // Exit-code gate: a recipe may declare `expectExit: number[]` to refuse
+  // fixture writes when the spawned plugin's status doesn't match. Without
+  // this, a happy-path recording that auth-fails (or hits a transient 5xx)
+  // would parse the error JSON and write it as if it were a real review —
+  // silent fixture corruption. Recipes that omit expectExit accept any
+  // exit code (preserving the prior behavior for negative recipes whose
+  // exit codes haven't been characterized yet).
+  if (Array.isArray(spec.expectExit) && !spec.expectExit.includes(result.exitCode)) {
+    process.stderr.write(
+      `smoke-rerecord: child exit ${result.exitCode} not in expectExit ${JSON.stringify(spec.expectExit)} - refusing to write fixture.\n`,
+    );
+    process.stderr.write("First 500 chars of stdout:\n");
+    process.stderr.write(`${result.stdout.slice(0, 500)}\n`);
+    process.stderr.write("stderr (first 500 chars):\n");
+    process.stderr.write(`${result.stderr.slice(0, 500)}\n`);
+    process.exit(4);
+  }
 
   const parsed = tryParseJson(result.stdout);
   if (!parsed) {

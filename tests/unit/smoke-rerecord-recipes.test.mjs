@@ -20,10 +20,20 @@
 // fail the suite.
 
 import { strict as assert } from "node:assert";
+import { readFileSync } from "node:fs";
+import path from "node:path";
 import { describe, it } from "node:test";
+import { fileURLToPath } from "node:url";
 
 import { RECIPES } from "../../scripts/smoke-rerecord.mjs";
 import { checkAuthOrFile } from "../../scripts/lib/smoke-rerecord-preflight.mjs";
+
+const HERE = path.dirname(fileURLToPath(import.meta.url));
+const REPO_ROOT = path.resolve(HERE, "..", "..");
+const COMPANION_PATH = path.join(
+  REPO_ROOT,
+  "plugins/claude/scripts/claude-companion.mjs",
+);
 
 describe("smoke-rerecord recipes — auth invariants", () => {
   describe("claude/happy-path-review", () => {
@@ -72,6 +82,32 @@ describe("smoke-rerecord recipes — auth invariants", () => {
         fileExists: () => false,
       });
       assert.equal(r.ok, false);
+    });
+
+    it("envAny matches the companion's provider key list (no silent drift)", () => {
+      // Recipe's envAny and claude-companion.mjs's PING_PROVIDER_API_KEY_ENV
+      // are independently maintained strings. If they drift, preflight can
+      // pass with a key that auth-selection.mjs's auto mode then ignores
+      // (filtered out by providerApiKeyEnv()), and sanitizeTargetEnv strips
+      // the key before exec — same failure mode as the round-6 decoy. The
+      // companion module cannot be imported (its main() runs unguarded at
+      // file end), so the canonical list is parsed from source.
+      const source = readFileSync(COMPANION_PATH, "utf8");
+      const m = source.match(
+        /const\s+PING_PROVIDER_API_KEY_ENV\s*=\s*(\[[^\]]*\])\s*;/,
+      );
+      assert.ok(
+        m,
+        `could not locate PING_PROVIDER_API_KEY_ENV in ${COMPANION_PATH}`,
+      );
+      const companionEnvs = JSON.parse(m[1]);
+      const recipeEnvs = spec.requireEnvOrFile.envAny;
+      assert.deepEqual(
+        [...recipeEnvs].sort(),
+        [...companionEnvs].sort(),
+        "recipe envAny must match PING_PROVIDER_API_KEY_ENV exactly — drift "
+        + "between the two reintroduces the round-6 decoy bug class",
+      );
     });
   });
 });
