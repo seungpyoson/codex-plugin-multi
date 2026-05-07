@@ -242,6 +242,29 @@ function assertCompanionSessionIdFieldsRedacted(f, response) {
   }
 }
 
+function assertAlwaysRedactedFieldsRedacted(f, response) {
+  walk(response, []);
+  function walk(value, fieldPath) {
+    if (value == null) return;
+    if (Array.isArray(value)) {
+      value.forEach((v, i) => walk(v, [...fieldPath, i]));
+      return;
+    }
+    if (typeof value !== "object") return;
+    for (const [k, v] of Object.entries(value)) {
+      const currentPath = [...fieldPath, k];
+      if (ALWAYS_REDACT_STRING_FIELDS.includes(k) && v != null) {
+        assert.equal(
+          v,
+          "[REDACTED]",
+          `${f.plugin}/${f.scenario}: ${currentPath.join(".")} must be [REDACTED]; got ${JSON.stringify(v)}`,
+        );
+      }
+      walk(v, currentPath);
+    }
+  }
+}
+
 test("fixtures: every response has a paired provenance", () => {
   for (const f of FIXTURES) {
     assert.ok(
@@ -409,33 +432,27 @@ test("fixtures: always-redacted session/request id fields are nulled or [REDACTE
   // with the sanitizer if new always-redacted field variants are added.
   for (const f of FIXTURES) {
     const response = readJson(f.responsePath);
-    walk(response, []);
-    function walk(value, path) {
-      if (value == null) return;
-      if (Array.isArray(value)) {
-        value.forEach((v, i) => walk(v, [...path, i]));
-        return;
-      }
-      if (typeof value !== "object") return;
-      for (const [k, v] of Object.entries(value)) {
-        if (ALWAYS_REDACT_STRING_FIELDS.includes(k) && v != null) {
-          assert.equal(
-            v,
-            "[REDACTED]",
-            `${f.plugin}/${f.scenario}: ${[...path, k].join(".")} must be null or [REDACTED]; got ${JSON.stringify(v)}`,
-          );
-        }
-        walk(v, [...path, k]);
-      }
-    }
+    assertAlwaysRedactedFieldsRedacted(f, response);
   }
 });
 
-test("fixtures: always-redacted field gate covers snake_case and camelCase variants", () => {
-  assert.deepEqual(
-    new Set(ALWAYS_REDACT_STRING_FIELDS),
-    new Set(["session_id", "request_id", "sessionId", "requestId"]),
+test("always-redacted field validity check catches nested camelCase leaks", () => {
+  assert.throws(
+    () => assertAlwaysRedactedFieldsRedacted(
+      { plugin: "synthetic", scenario: "session-id-leak" },
+      { metadata: { sessionId: "live-session-id" } },
+    ),
+    /metadata\.sessionId must be \[REDACTED\]/,
   );
+});
+
+test("fixtures: always-redacted field gate covers snake_case and camelCase variants", () => {
+  for (const field of ["session_id", "request_id", "sessionId", "requestId"]) {
+    assert.ok(
+      ALWAYS_REDACT_STRING_FIELDS.includes(field),
+      `ALWAYS_REDACT_STRING_FIELDS must include ${field}`,
+    );
+  }
 });
 
 test("fixtures: JobRecord-shaped responses carry schema_version", () => {
