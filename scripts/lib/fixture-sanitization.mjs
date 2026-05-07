@@ -46,9 +46,21 @@ const SECRET_PREFIX_PATTERNS = Object.freeze([
   /eyJ[a-zA-Z0-9_-]+\.[a-zA-Z0-9_-]+\.[a-zA-Z0-9_-]+/g, // JWT
 ]);
 
-// Authorization-header and Bearer-token patterns from api-reviewer.mjs:646-651.
-const AUTHORIZATION_HEADER = /Authorization:\s*\S.*$/gim;
-const BEARER_TOKEN = /Bearer\s+\S+/gi;
+// Authorization-header patterns. Two surfaces:
+//   1. Bare HTTP form: "Authorization: Bearer xyz" (stderr / log lines).
+//   2. JSON-quoted form: "\"Authorization\":\"Bearer xyz\"" (provider error
+//      bodies that echo the original request as JSON).
+// Without the JSON-quoted form, non-Bearer schemes (Basic, ApiKey, Token,
+// Digest) embedded in echoed request bodies leak past sanitization because
+// the literal "Authorization:" substring never appears — the JSON form is
+// "Authorization":, with a quote before the colon.
+const AUTHORIZATION_HEADER_BARE = /Authorization:\s*\S.*$/gim;
+const AUTHORIZATION_HEADER_JSON = /"Authorization"\s*:\s*"[^"]*"/gi;
+// Bearer-token match stops at JSON syntax so a token embedded in a JSON
+// string ('{"auth":"Bearer xyz"}') doesn't have its closing quote/brace
+// consumed by a greedy \S+. Excludes whitespace, ASCII quotes, JSON
+// delimiters, and backslash.
+const BEARER_TOKEN = /Bearer\s+[^\s"',}\]\\]+/gi;
 
 // Companion session-id field names. Removed (replaced with REDACTED) when
 // architecture is "companion" — these are user-identity-linked.
@@ -131,7 +143,8 @@ export function redactKnownPatterns(input) {
   for (const pattern of SECRET_PREFIX_PATTERNS) {
     out = out.replaceAll(pattern, REDACTED);
   }
-  out = out.replaceAll(AUTHORIZATION_HEADER, `Authorization: ${REDACTED}`);
+  out = out.replaceAll(AUTHORIZATION_HEADER_BARE, `Authorization: ${REDACTED}`);
+  out = out.replaceAll(AUTHORIZATION_HEADER_JSON, `"Authorization":"${REDACTED}"`);
   out = out.replaceAll(BEARER_TOKEN, `Bearer ${REDACTED}`);
   out = out.replaceAll(PATH_SCRUB, "/Users/<user>");
   return out;
@@ -180,11 +193,11 @@ function sanitizeObject(value, ctx) {
 }
 
 function sanitizeObjectField(key, sub, ctx) {
-  if (ctx.architecture === "companion" && COMPANION_SESSION_ID_FIELDS.includes(key)) {
-    return sub == null ? null : REDACTED;
-  }
-  if (ALWAYS_REDACT_STRING_FIELDS.includes(key)) {
-    return sanitizeAlwaysRedactedField(sub, ctx);
+  if (
+    (ctx.architecture === "companion" && COMPANION_SESSION_ID_FIELDS.includes(key))
+    || ALWAYS_REDACT_STRING_FIELDS.includes(key)
+  ) {
+    return wholesaleRedact(sub);
   }
   if (ALWAYS_SANITIZE_FIELDS.includes(key) && typeof sub === "string") {
     return sanitizeString(sub, ctx.redactEnvSecrets);
@@ -192,10 +205,12 @@ function sanitizeObjectField(key, sub, ctx) {
   return sanitizeValue(sub, ctx);
 }
 
-function sanitizeAlwaysRedactedField(value, ctx) {
-  if (value == null) return null;
-  if (typeof value === "string") return REDACTED;
-  return sanitizeValue(value, ctx);
+// Identity-linked fields are redacted in full regardless of value type. A
+// provider that returns session_id or claude_session_id as an object instead
+// of a string must not leak structure or content. null stays null so the
+// fixture's "field-was-absent" semantics survive.
+function wholesaleRedact(value) {
+  return value == null ? null : REDACTED;
 }
 
 /**

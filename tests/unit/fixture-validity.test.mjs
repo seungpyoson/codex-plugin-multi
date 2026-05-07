@@ -83,9 +83,34 @@ function readJson(p) {
   return JSON.parse(readFileSync(p, "utf8"));
 }
 
-const FIXTURES = listFixturePairs();
+// PR-scoped sweep: when SMOKE_FIXTURE_CHANGED is set (newline-separated list
+// of repo-root-relative paths), the gate runs only over fixtures the PR
+// actually changed. Without it, the gate sweeps every committed fixture
+// (default for nightly + main runs). This avoids the trap where tightening a
+// sanitization rule retroactively breaks unrelated PRs by failing on stale
+// fixtures the PR didn't touch.
+function getFixturesToCheck() {
+  const all = listFixturePairs();
+  const changedEnv = process.env.SMOKE_FIXTURE_CHANGED;
+  if (changedEnv == null) return all;
+  const changed = new Set(
+    changedEnv.split("\n").map((line) => line.trim()).filter(Boolean),
+  );
+  return all.filter((f) =>
+    changed.has(path.relative(REPO_ROOT, f.responsePath))
+    || changed.has(path.relative(REPO_ROOT, f.provenancePath)),
+  );
+}
+
+const FIXTURES = getFixturesToCheck();
 
 test("fixtures: at least one fixture pair exists (MVP scope)", () => {
+  if (process.env.SMOKE_FIXTURE_CHANGED != null) {
+    // PR-scoped run; an empty changed-fixture set is the normal case for PRs
+    // that don't touch fixtures. The full-sweep nightly run still asserts
+    // MVP-scope.
+    return;
+  }
   assert.ok(
     FIXTURES.length > 0,
     "expected at least one fixture pair under tests/smoke/fixtures/<plugin>/",
@@ -178,12 +203,26 @@ test("fixtures: no /Users/<actual-name> path leaks (only /Users/<user>)", () => 
 test("fixtures: no unredacted Authorization or Bearer values", () => {
   for (const f of FIXTURES) {
     const text = readFileSync(f.responsePath, "utf8");
-    const authMatches = [...text.matchAll(/Authorization:\s*([^\s"]+)/gi)];
-    for (const match of authMatches) {
+    // Bare HTTP form: "Authorization: <value>".
+    const bareAuthMatches = [...text.matchAll(/Authorization:\s*([^\s"]+)/gi)];
+    for (const match of bareAuthMatches) {
       assert.equal(
         match[1],
         "[REDACTED]",
         `${f.plugin}/${f.scenario}: Authorization value not redacted: ${match[0].slice(0, 60)}...`,
+      );
+    }
+    // JSON-quoted form: "\"Authorization\": \"<value>\"". The bare regex
+    // misses this because the literal substring is "Authorization":, not
+    // "Authorization:". Without this scan, non-Bearer schemes (Basic,
+    // ApiKey, Token, Digest) embedded in echoed request bodies leak past
+    // the gate.
+    const jsonAuthMatches = [...text.matchAll(/"Authorization"\s*:\s*"([^"]*)"/gi)];
+    for (const match of jsonAuthMatches) {
+      assert.equal(
+        match[1],
+        "[REDACTED]",
+        `${f.plugin}/${f.scenario}: JSON-quoted Authorization value not redacted: ${match[0].slice(0, 80)}...`,
       );
     }
     const bearerMatches = [...text.matchAll(/Bearer\s+([^\s"]+)/gi)];

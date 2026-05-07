@@ -2272,13 +2272,17 @@ test("smoke replay: claude/happy-path-review reproduces recorded JobRecord shape
     });
     assert.equal(res.status, fixture.exit_code, res.stderr || res.stdout);
     const replayed = JSON.parse(res.stdout);
-    // Full key-set parity with the recorded fixture: regressions that drop
-    // (or silently rename) a JobRecord key fail here.
-    assert.deepEqual(
-      Object.keys(replayed).sort(),
-      Object.keys(fixture).sort(),
-      "replayed JobRecord must carry the same key set as the recorded fixture",
-    );
+    // Subset-key check: regressions that drop (or silently rename) a
+    // JobRecord key still fail here, but additive schema changes (new
+    // optional fields appearing on `replayed` that aren't in the recorded
+    // fixture) do not. Strict key-set equality would lock the wrapper into
+    // re-recording every fixture for any benign field addition.
+    for (const key of Object.keys(fixture)) {
+      assert.ok(
+        Object.prototype.hasOwnProperty.call(replayed, key),
+        `replayed JobRecord must include all recorded keys; missing: ${key}`,
+      );
+    }
     assert.equal(replayed.schema_version, fixture.schema_version);
     assert.equal(replayed.status, fixture.status);
     assert.equal(replayed.error_code, fixture.error_code);

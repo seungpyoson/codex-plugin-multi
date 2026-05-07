@@ -38,7 +38,7 @@ on:
         required: true
         type: string
       open_pr:
-        description: "Open a PR with the new fixture (vs only commit to a temp branch)"
+        description: "Open a PR with the new fixture. If false, the workflow validates the recording and emits a step-summary diff but does NOT push the temp branch (avoids orphan branches accumulating on origin)."
         required: false
         type: boolean
         default: true
@@ -126,6 +126,23 @@ jobs:
               || printf '(provenance file not found)\n'
           } > /tmp/smoke-rerecord-commit-msg.txt
           git commit -F /tmp/smoke-rerecord-commit-msg.txt
+          # Surface the diff in the workflow step summary so a preview run
+          # (open_pr=false) is still useful: the operator can inspect the
+          # recorded change without an orphan branch on origin.
+          {
+            printf '## Fixture diff (%s/%s)\n\n' "$PLUGIN" "$SCENARIO"
+            printf '```diff\n'
+            git show HEAD --stat -- tests/smoke/fixtures/
+            printf '\n'
+            git show HEAD -- tests/smoke/fixtures/ | head -200
+            printf '\n```\n'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Push branch (only when opening a PR)
+        if: steps.detect.outputs.changed == 'true' && inputs.open_pr == true
+        env:
+          BRANCH_NAME: smoke-rerecord/${{ inputs.plugin }}-${{ inputs.scenario }}-${{ github.run_id }}
+        run: |
           git push origin "$BRANCH_NAME"
 
       - name: Open PR

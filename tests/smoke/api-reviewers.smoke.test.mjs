@@ -2700,7 +2700,15 @@ for (const scenarioCase of [
       });
       assert.equal(result.status, fixture.exit_code, result.stderr || result.stdout);
       const replayed = parseJson(result.stdout);
-      assert.deepEqual(Object.keys(replayed), [...API_REVIEWER_EXPECTED_KEYS]);
+      // Subset-key check: regressions that drop an expected key still fail,
+      // but additive schema changes (new optional fields) don't force a
+      // re-record. See AC7-AC8 (#106) commentary above.
+      for (const key of API_REVIEWER_EXPECTED_KEYS) {
+        assert.ok(
+          Object.prototype.hasOwnProperty.call(replayed, key),
+          `replayed JobRecord must include expected key: ${key}`,
+        );
+      }
       assert.equal(replayed.schema_version, fixture.schema_version);
       assert.equal(replayed.status, fixture.status);
       assert.equal(replayed.error_code, fixture.error_code);

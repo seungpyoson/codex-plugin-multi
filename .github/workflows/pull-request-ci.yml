@@ -23,10 +23,30 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          # Need history vs origin/main so the fixture-validity gate can be
+          # scoped to fixtures the PR actually changed (avoids retroactive
+          # blocking when a sanitization rule is tightened later).
+          fetch-depth: 0
       - uses: actions/setup-node@v4
         with:
           node-version: "20"
       - run: npm ci --ignore-scripts || npm install --ignore-scripts
+      - name: Compute changed fixtures (PR + feature branches)
+        if: github.ref != 'refs/heads/main'
+        run: |
+          git fetch --no-tags --no-recurse-submodules --depth=50 origin main || true
+          BASE=$(git merge-base origin/main HEAD 2>/dev/null || true)
+          if [ -n "$BASE" ] && [ "$BASE" != "$(git rev-parse HEAD)" ]; then
+            CHANGED=$(git diff --name-only "$BASE" HEAD -- 'tests/smoke/fixtures/' || true)
+          else
+            CHANGED=""
+          fi
+          {
+            echo "SMOKE_FIXTURE_CHANGED<<EOF"
+            echo "$CHANGED"
+            echo "EOF"
+          } >> "$GITHUB_ENV"
       - name: Run tests under hostile git-hook env
         env:
           CODEX_PLUGIN_SKIP_SMOKE: "1"

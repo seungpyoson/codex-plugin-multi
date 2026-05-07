@@ -366,3 +366,103 @@ test("buildProvenance: requires all mandatory fields", () => {
     /recordedBy is required/,
   );
 });
+
+// Regression: the original AUTHORIZATION_HEADER regex required a literal
+// "Authorization:" substring. JSON serialization of headers produces
+// "Authorization":, with a quote between the field name and the colon, so
+// non-Bearer auth schemes (Basic, ApiKey, Token) embedded in echoed request
+// bodies leaked past sanitize(). The Bearer regex caught its own scheme via
+// a separate pattern but missed the rest. The fix scans both the bare HTTP
+// form and the JSON-quoted form.
+test("redactKnownPatterns: redacts JSON-quoted Authorization (Basic, ApiKey, Token)", () => {
+  const cases = [
+    { input: '{"headers":{"Authorization":"Basic dGVzdDp0ZXN0"}}', leak: "dGVzdDp0ZXN0" },
+    { input: '{"headers":{"Authorization":"ApiKey abcd1234567890"}}', leak: "abcd1234567890" },
+    { input: '{"headers":{"Authorization":"Token deadbeef-9876"}}', leak: "deadbeef-9876" },
+    { input: '{"Authorization":"Negotiate YII..."}',                  leak: "YII..." },
+  ];
+  for (const c of cases) {
+    const out = redactKnownPatterns(c.input);
+    assert.equal(out.includes(c.leak), false,
+      `JSON-quoted Authorization must redact value; input=${c.input} output=${out}`);
+    assert.match(out, /"Authorization":"\[REDACTED\]"/i);
+  }
+});
+
+test("sanitize: JSON-quoted Authorization in echoed error body redacts non-Bearer schemes", () => {
+  const record = {
+    error_body: '{"error":"unauthorized","echoed_request":{"headers":{"Authorization":"Basic dGVzdDp0ZXN0"}}}',
+  };
+  const out = sanitize(record, { architecture: "api-reviewers", env: {} });
+  assert.equal(out.error_body.includes("dGVzdDp0ZXN0"), false,
+    "Basic auth credential embedded in echoed JSON body must not leak past sanitize()");
+  assert.match(out.error_body, /"Authorization":"\[REDACTED\]"/);
+});
+
+// Regression: Bearer\s+\S+ greedily ate trailing JSON syntax (closing quote,
+// brace, bracket, comma) when the token was embedded in a JSON-stringified
+// blob. Secret was redacted but the surrounding structure was corrupted.
+test("redactKnownPatterns: Bearer match stops at JSON syntax (does not eat closing tokens)", () => {
+  const cases = [
+    {
+      input: 'request was: {"auth":"Bearer sk-abc1234567890"} - failed',
+      preserve: '"} - failed',
+      leak: "sk-abc1234567890",
+    },
+    {
+      input: '["Bearer xyz-abc-12345","next-element"]',
+      preserve: '","next-element"]',
+      leak: "xyz-abc-12345",
+    },
+    {
+      input: '{"a":"Bearer one-two-three","b":"two"}',
+      preserve: '","b":"two"}',
+      leak: "one-two-three",
+    },
+  ];
+  for (const c of cases) {
+    const out = redactKnownPatterns(c.input);
+    assert.equal(out.includes(c.preserve), true,
+      `Bearer redactor must preserve trailing JSON syntax; input=${c.input} output=${out}`);
+    assert.equal(out.includes(c.leak), false,
+      `Bearer redactor must still remove the secret; input=${c.input}`);
+  }
+});
+
+// Regression: companion *_session_id fields previously coerced any non-null
+// value to the literal string "[REDACTED]", flattening object/array shape.
+// The bare ALWAYS_REDACT_STRING_FIELDS path went the opposite direction —
+// recursing into non-strings and leaving structured PII intact. Both paths
+// now redact wholesale: any non-null value becomes "[REDACTED]".
+test("sanitize: companion session_id with non-string value redacts wholesale", () => {
+  const cases = [
+    { field: "claude_session_id", value: { id: "abc", trace_id: "deadbeef" }, label: "object" },
+    { field: "gemini_session_id", value: ["a-1", "b-2"], label: "array" },
+    { field: "kimi_session_id", value: 42, label: "number" },
+    { field: "claude_session_id", value: true, label: "boolean" },
+  ];
+  for (const c of cases) {
+    const out = sanitize(
+      { [c.field]: c.value },
+      { architecture: "companion", env: {} },
+    );
+    assert.equal(out[c.field], REDACTED,
+      `companion ${c.field} with ${c.label} value must redact wholesale`);
+  }
+});
+
+test("sanitize: bare session_id and request_id redact wholesale even when value is structured", () => {
+  const cases = [
+    { field: "session_id", value: { user_id: "alice", trace_id: "deadbeef" }, label: "object" },
+    { field: "request_id", value: ["req-a", "req-b"], label: "array" },
+    { field: "session_id", value: 42, label: "number" },
+  ];
+  for (const c of cases) {
+    const out = sanitize(
+      { [c.field]: c.value },
+      { architecture: "api-reviewers", env: {} },
+    );
+    assert.equal(out[c.field], REDACTED,
+      `${c.field} with ${c.label} value must redact wholesale (no structure passthrough)`);
+  }
+});
