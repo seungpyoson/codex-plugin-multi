@@ -3,6 +3,7 @@ import { spawn } from "node:child_process";
 import { attachPidCapture } from "./identity.mjs";
 import { sanitizeTargetEnv } from "./provider-env.mjs";
 import { isCodexSandbox } from "./codex-env.mjs";
+import { usageLimitMessage } from "./usage-limit.mjs";
 
 function assertProfile(profile) {
   if (!profile || typeof profile !== "object") {
@@ -56,17 +57,6 @@ function summarizeStderr(stderr) {
   const trimmed = String(stderr ?? "").trim();
   if (!trimmed) return null;
   return trimmed.length > 4000 ? `${trimmed.slice(0, 4000)}...` : trimmed;
-}
-
-function usageLimitMessage(...values) {
-  const text = values.filter((value) => value != null).map((value) => (
-    typeof value === "string" ? value : JSON.stringify(value)
-  )).join("\n").trim();
-  if (!text) return null;
-  if (/(?:usage limit|quota|billing cycle|billing account|credit limit|insufficient credits)/i.test(text)) {
-    return text.length > 800 ? `${text.slice(0, 800)}...` : text;
-  }
-  return null;
 }
 
 export function parseGeminiResult(stdout, stderr = "") {

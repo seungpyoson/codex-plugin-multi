@@ -11,6 +11,7 @@ import { cleanGitEnv } from "./lib/git-env.mjs";
 import { GIT_BINARY_ENV, gitEnv, isGitBinaryPolicyError, resolveGitBinary } from "./lib/git-binary.mjs";
 import { isCodexSandbox } from "./lib/codex-env.mjs";
 import { REVIEW_PROMPT_CONTRACT_VERSION, buildReviewAuditManifest, buildReviewPrompt, scopeResolutionReason } from "./lib/review-prompt.mjs";
+import { isUsageLimitDetail } from "./lib/usage-limit.mjs";
 import {
   EXTERNAL_REVIEW_KEYS,
   SOURCE_CONTENT_TRANSMISSION,
@@ -1409,10 +1410,6 @@ function classifyHttpFailure(status, parsed) {
   }
   if (isUsageLimitDetail(detail)) return "usage_limited";
   return "provider_error";
-}
-
-function isUsageLimitDetail(detail) {
-  return /(?:\binsufficient_quota\b|\bpayment_required\b|\bquota\b|\busage limit\b|\bbilling[_ -]?(?:cycle|account|limit|hard[_ -]?limit|quota)\b|\bcredit limit\b|\binsufficient credits\b)/i.test(String(detail ?? ""));
 }
 
 function safeDiagnosticString(value) {

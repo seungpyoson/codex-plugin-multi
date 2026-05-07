@@ -202,6 +202,20 @@ test("parseClaudeResult: classifies subscription usage limit errors", () => {
   assert.match(r.error, /usage limit/i);
 });
 
+test("parseClaudeResult: classifies provider quota code errors", () => {
+  const r = parseClaudeResult(JSON.stringify({
+    type: "result",
+    is_error: true,
+    error: { code: "insufficient_quota", message: "payment_required" },
+    session_id: UUID,
+    permission_denials: [],
+  }));
+
+  assert.equal(r.ok, false);
+  assert.equal(r.reason, "usage_limited");
+  assert.match(r.error, /insufficient_quota/);
+});
+
 test("parseClaudeResult: transient rate-limit text is not billed as usage limited", () => {
   const r = parseClaudeResult(JSON.stringify({
     type: "result",

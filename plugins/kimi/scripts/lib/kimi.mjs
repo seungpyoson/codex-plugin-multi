@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 
 import { attachPidCapture } from "./identity.mjs";
 import { sanitizeTargetEnv } from "./provider-env.mjs";
+import { usageLimitMessageWithMaxLength } from "./usage-limit.mjs";
 
 function assertProfile(profile) {
   if (!profile || typeof profile !== "object") {
@@ -68,7 +69,6 @@ function parseResumeSessionId(text) {
 }
 
 const STEP_LIMIT_RE = /^Max number of steps reached:\s*(\d+)\s*$/;
-const USAGE_LIMIT_RE = /(?:Error code:\s*403|usage limit|quota|billing cycle)/i;
 
 function parseJsonLineSessionId(text) {
   for (const line of String(text ?? "").split("\n").reverse()) {
@@ -94,10 +94,7 @@ function findStepLimitLine(stdout) {
 }
 
 function usageLimitMessage(stdout, stderr) {
-  const combined = `${stdout ?? ""}\n${stderr ?? ""}`;
-  if (!USAGE_LIMIT_RE.test(combined)) return null;
-  const trimmed = combined.trim();
-  return trimmed.length > 4000 ? `${trimmed.slice(0, 4000)}...` : trimmed;
+  return usageLimitMessageWithMaxLength(4000, stdout, stderr);
 }
 
 function stepLimitResult(match, stdout, stderr) {

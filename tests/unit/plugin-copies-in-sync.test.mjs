@@ -37,6 +37,7 @@ const VERBATIM_FILES = [
   "cancel-marker.mjs",
   "companion-common.mjs",
   "external-review.mjs",
+  "usage-limit.mjs",
 ];
 
 const CLAUDE_GEMINI_VERBATIM_FILES = [
@@ -135,6 +136,24 @@ test("lib/git-binary.mjs: grok packaging copy matches the companion shared sourc
     "utf8"
   );
   assert.equal(copy, canonical, "git-binary.mjs packaging copy drifted in grok");
+});
+
+test("lib/usage-limit.mjs: api-reviewers packaging copy matches the companion shared source", () => {
+  const canonical = readFileSync(path.join(REPO_ROOT, "plugins/claude/scripts/lib/usage-limit.mjs"), "utf8");
+  const copy = readFileSync(
+    path.join(REPO_ROOT, "plugins/api-reviewers/scripts/lib/usage-limit.mjs"),
+    "utf8"
+  );
+  assert.equal(copy, canonical, "usage-limit.mjs packaging copy drifted in api-reviewers");
+});
+
+test("lib/usage-limit.mjs: grok packaging copy matches the companion shared source", () => {
+  const canonical = readFileSync(path.join(REPO_ROOT, "plugins/claude/scripts/lib/usage-limit.mjs"), "utf8");
+  const copy = readFileSync(
+    path.join(REPO_ROOT, "plugins/grok/scripts/lib/usage-limit.mjs"),
+    "utf8"
+  );
+  assert.equal(copy, canonical, "usage-limit.mjs packaging copy drifted in grok");
 });
 
 test("lib/git-env.mjs: kimi stripped key list matches the companion shared source", () => {

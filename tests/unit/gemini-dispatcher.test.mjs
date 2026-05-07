@@ -171,6 +171,19 @@ Quota exceeded for this billing account. Please upgrade your usage tier.
   assert.match(parsed.error, /quota exceeded/i);
 });
 
+test("parseGeminiResult: classifies provider quota codes as usage limited", () => {
+  const parsed = parseGeminiResult(JSON.stringify({
+    error: {
+      code: "payment_required",
+      message: "insufficient_quota",
+    },
+  }));
+
+  assert.equal(parsed.ok, false);
+  assert.equal(parsed.reason, "usage_limited");
+  assert.match(parsed.error, /payment_required/);
+});
+
 test("parseGeminiResult: JSON errors are not reclassified by incidental billing stderr", () => {
   const parsed = parseGeminiResult(
     JSON.stringify({ error: { code: 400, message: "invalid response schema" } }),
