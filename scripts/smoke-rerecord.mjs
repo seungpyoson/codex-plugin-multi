@@ -38,6 +38,7 @@ import {
   sanitize,
 } from "./lib/fixture-sanitization.mjs";
 import { checkAuthOrFile } from "./lib/smoke-rerecord-preflight.mjs";
+import { CLAUDE_PROVIDER_API_KEY_ENV } from "../plugins/claude/scripts/lib/claude-provider-keys.mjs";
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const FIXTURE_ROOT = path.join(REPO_ROOT, "tests/smoke/fixtures");
@@ -79,7 +80,7 @@ export const RECIPES = Object.freeze({
       // runner without ~/.claude can still record. (Greptile P1
       // #3199437297 — file-only check rejected secret-only runners.)
       requireEnvOrFile: {
-        envAny: ["ANTHROPIC_API_KEY", "CLAUDE_API_KEY"],
+        envAny: CLAUDE_PROVIDER_API_KEY_ENV,  // shared with claude-companion.mjs (lib/claude-provider-keys.mjs)
         file: path.join(process.env.HOME ?? "", ".claude"),
       },
       // Refuse to write a fixture if the spawned claude exits non-zero.

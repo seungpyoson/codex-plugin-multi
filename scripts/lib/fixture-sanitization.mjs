@@ -115,11 +115,51 @@ const ALWAYS_SANITIZE_FIELDS = Object.freeze([
 //                a closing /)
 // Allowing only spaces inside the segment keeps the regex bounded
 // while still scrubbing space-containing usernames in full.
-const PATH_SCRUB_PATTERNS = Object.freeze([
-  { regex: /\/Users\/[^/"'\\\n\r\t]+/g, replacement: "/Users/<user>" },
-  { regex: /\/home\/[^/"'\\\n\r\t]+/g, replacement: "/home/<user>" },
-  { regex: /[A-Za-z]:\\Users\\[^\\"'/\n\r\t]+/g, replacement: "C:\\Users\\<user>" },
+// Single rule table: both PATH_SCRUB_PATTERNS (used by the redactor)
+// and PATH_SCRUB_PROBES (used by tests/unit/fixture-validity.test.mjs to
+// detect path leaks in committed fixtures) derive from this one list.
+// Adding a new platform requires editing one row; the redactor and the
+// validity test both pick up the change automatically. (Round-9
+// systematic fix: prevents the cross-module-contract drift class.)
+//
+// Each rule's prefixSource and userClass are regex-source strings. The
+// prefixLiteral is the literal form used in test diagnostics.
+const PATH_SCRUB_RULES = Object.freeze([
+  {
+    prefixSource: "\\/Users\\/",
+    prefixLiteral: "/Users/",
+    userClass: "[^/\"'\\\\\\n\\r\\t]+",
+    replacement: "/Users/<user>",
+  },
+  {
+    prefixSource: "\\/home\\/",
+    prefixLiteral: "/home/",
+    userClass: "[^/\"'\\\\\\n\\r\\t]+",
+    replacement: "/home/<user>",
+  },
+  {
+    prefixSource: "[A-Za-z]:\\\\Users\\\\",
+    prefixLiteral: "C:\\Users\\",
+    userClass: "[^\\\\\"'/\\n\\r\\t]+",
+    replacement: "C:\\Users\\<user>",
+  },
 ]);
+
+const PATH_SCRUB_PATTERNS = Object.freeze(
+  PATH_SCRUB_RULES.map((rule) => ({
+    regex: new RegExp(rule.prefixSource + rule.userClass, "g"),
+    replacement: rule.replacement,
+  })),
+);
+
+// Probes carry a capture group around the userClass so callers can
+// extract the leaked username for diagnostic messages.
+export const PATH_SCRUB_PROBES = Object.freeze(
+  PATH_SCRUB_RULES.map((rule) => ({
+    regex: new RegExp(rule.prefixSource + "(" + rule.userClass + ")", "g"),
+    prefix: rule.prefixLiteral,
+  })),
+);
 
 // Cookie-style env value sub-extraction (I17). For env keys ending in
 // COOKIE/SESSION/SSO, the value typically contains semicolon-delimited

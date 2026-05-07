@@ -65,6 +65,11 @@
       "branches": 100.0,
       "functions": 100.0
     },
+    "plugins/claude/scripts/lib/claude-provider-keys.mjs": {
+      "lines": 100.0,
+      "branches": 100.0,
+      "functions": 100.0
+    },
     "plugins/claude/scripts/lib/claude.mjs": {
       "lines": 96.48,
       "branches": 76.36,
@@ -85,12 +90,12 @@
       "branches": 95.65,
       "functions": 100.0
     },
-    "plugins/claude/scripts/lib/git.mjs": {
+    "plugins/claude/scripts/lib/git-env.mjs": {
       "lines": 100.0,
       "branches": 100.0,
       "functions": 100.0
     },
-    "plugins/claude/scripts/lib/git-env.mjs": {
+    "plugins/claude/scripts/lib/git.mjs": {
       "lines": 100.0,
       "branches": 100.0,
       "functions": 100.0
@@ -105,16 +110,6 @@
       "branches": 86.36,
       "functions": 60.0
     },
-    "plugins/claude/scripts/lib/reconcile.mjs": {
-      "lines": 95.79,
-      "branches": 81.0,
-      "functions": 100.0
-    },
-    "plugins/claude/scripts/lib/review-prompt.mjs": {
-      "lines": 100.0,
-      "branches": 0.0,
-      "functions": 100.0
-    },
     "plugins/claude/scripts/lib/mode-profiles.mjs": {
       "lines": 86.67,
       "branches": 100.0,
@@ -128,6 +123,16 @@
     "plugins/claude/scripts/lib/provider-env.mjs": {
       "lines": 100.0,
       "branches": 90.91,
+      "functions": 100.0
+    },
+    "plugins/claude/scripts/lib/reconcile.mjs": {
+      "lines": 95.79,
+      "branches": 81.0,
+      "functions": 100.0
+    },
+    "plugins/claude/scripts/lib/review-prompt.mjs": {
+      "lines": 100.0,
+      "branches": 0.0,
       "functions": 100.0
     },
     "plugins/claude/scripts/lib/scope.mjs": {
@@ -185,12 +190,12 @@
       "branches": 88.0,
       "functions": 81.82
     },
-    "plugins/gemini/scripts/lib/git.mjs": {
+    "plugins/gemini/scripts/lib/git-env.mjs": {
       "lines": 100.0,
       "branches": 100.0,
       "functions": 100.0
     },
-    "plugins/gemini/scripts/lib/git-env.mjs": {
+    "plugins/gemini/scripts/lib/git.mjs": {
       "lines": 100.0,
       "branches": 100.0,
       "functions": 100.0
@@ -205,16 +210,6 @@
       "branches": 78.33,
       "functions": 60.0
     },
-    "plugins/gemini/scripts/lib/reconcile.mjs": {
-      "lines": 95.79,
-      "branches": 81.0,
-      "functions": 100.0
-    },
-    "plugins/gemini/scripts/lib/review-prompt.mjs": {
-      "lines": 100.0,
-      "branches": 0.0,
-      "functions": 100.0
-    },
     "plugins/gemini/scripts/lib/mode-profiles.mjs": {
       "lines": 66.67,
       "branches": 88.89,
@@ -228,6 +223,16 @@
     "plugins/gemini/scripts/lib/provider-env.mjs": {
       "lines": 100.0,
       "branches": 90.91,
+      "functions": 100.0
+    },
+    "plugins/gemini/scripts/lib/reconcile.mjs": {
+      "lines": 95.79,
+      "branches": 81.0,
+      "functions": 100.0
+    },
+    "plugins/gemini/scripts/lib/review-prompt.mjs": {
+      "lines": 100.0,
+      "branches": 0.0,
       "functions": 100.0
     },
     "plugins/gemini/scripts/lib/scope.mjs": {

@@ -15,6 +15,8 @@ import { readFileSync, readdirSync, statSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 
+import { PATH_SCRUB_PROBES } from "../../scripts/lib/fixture-sanitization.mjs";
+
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(HERE, "..", "..");
 const FIXTURE_ROOT = path.resolve(HERE, "..", "smoke", "fixtures");
@@ -278,22 +280,13 @@ test("fixtures: response is parseable JSON object (not array, not primitive)", (
 });
 
 test("fixtures: no user-home path leaks (macOS, Linux, Windows; only <user>)", () => {
-  // Cross-platform path-leak detector. Mirrors PATH_SCRUB_PATTERNS in
-  // scripts/lib/fixture-sanitization.mjs — fixtures recorded on any of
-  // the three host OSes must scrub the username segment to literal
-  // "<user>". Linux/CI runners under /home/runner/, Windows under
-  // C:\Users\<actual>\, macOS under /Users/<actual>/. The character
-  // class matches the sanitize lib: stops at JSON delimiters, newlines,
-  // tabs, and backslash so the segment boundary is unambiguous and
-  // usernames containing spaces are still flagged in full.
-  const PROBES = [
-    { regex: /\/Users\/([^/"'\\\n\r\t]+)/g, prefix: "/Users/" },
-    { regex: /\/home\/([^/"'\\\n\r\t]+)/g, prefix: "/home/" },
-    { regex: /[A-Za-z]:\\Users\\([^\\"'/\n\r\t]+)/g, prefix: "C:\\Users\\" },
-  ];
+  // Cross-platform path-leak detector. Reuses PATH_SCRUB_PROBES from
+  // scripts/lib/fixture-sanitization.mjs — both the redactor and this
+  // detector derive from the same PATH_SCRUB_RULES table, so adding a
+  // new platform updates both via one edit.
   for (const f of FIXTURES) {
     const text = readFileSync(f.responsePath, "utf8");
-    for (const probe of PROBES) {
+    for (const probe of PATH_SCRUB_PROBES) {
       for (const match of [...text.matchAll(probe.regex)]) {
         assert.equal(
           match[1],
