@@ -8,7 +8,7 @@ import { randomUUID } from "node:crypto";
 import { hostname } from "node:os";
 
 import { cleanGitEnv } from "./lib/git-env.mjs";
-import { gitEnv, resolveGitBinary } from "./lib/git-binary.mjs";
+import { GIT_BINARY_ENV, gitEnv, resolveGitBinary } from "./lib/git-binary.mjs";
 import { isCodexSandbox } from "./lib/codex-env.mjs";
 import { REVIEW_PROMPT_CONTRACT_VERSION, buildReviewAuditManifest, buildReviewPrompt, scopeResolutionReason } from "./lib/review-prompt.mjs";
 import {
@@ -852,10 +852,15 @@ function gitRaw(args, cwd, options = {}) {
   return res.stdout;
 }
 
+function isGitBinaryPolicyError(error) {
+  return error instanceof Error && error.message.includes(GIT_BINARY_ENV);
+}
+
 function bestEffortWorkspaceRoot(cwd) {
   try {
     return git(["rev-parse", "--show-toplevel"], cwd, { allowFailure: true }) || cwd;
-  } catch {
+  } catch (error) {
+    if (isGitBinaryPolicyError(error)) throw error;
     return cwd;
   }
 }
@@ -1077,7 +1082,8 @@ function gitCommitForPrompt(cwd, ref, workspaceRoot = null) {
   if (!ref) return null;
   try {
     return git(["rev-parse", "--verify", `${ref}^{commit}`], cwd, { allowFailure: true, workspaceRoot }) || null;
-  } catch {
+  } catch (error) {
+    if (isGitBinaryPolicyError(error)) throw error;
     return null;
   }
 }
@@ -1729,12 +1735,13 @@ async function cmdRun(options) {
     scopeInfo = await collectScope({ ...runOptions, mode });
   } catch (e) {
     const redact = redactor();
-    const reason = e.apiReviewersReason ?? "scope_failed";
+    const policyError = isGitBinaryPolicyError(e);
+    const reason = policyError ? "git_binary_rejected" : (e.apiReviewersReason ?? "scope_failed");
     cfg ??= fallbackProviderConfig(provider);
     const cwd = resolve(process.cwd());
     scopeInfo = {
       cwd,
-      workspaceRoot: bestEffortWorkspaceRoot(cwd),
+      workspaceRoot: policyError ? cwd : bestEffortWorkspaceRoot(cwd),
       scope: options.scope ?? null,
       scope_base: options["scope-base"] ?? null,
       scope_paths: splitScopePaths(options["scope-paths"]),

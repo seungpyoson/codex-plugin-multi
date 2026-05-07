@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { chmodSync, mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, mkdirSync, writeFileSync, rmSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
@@ -77,6 +77,33 @@ test("resolveWorkspaceRoot: preserves Git binary policy errors", () => {
       () => resolveWorkspaceRoot(outside),
       /requires a workspace boundary/,
     );
+  } finally {
+    if (previous === undefined) delete process.env[GIT_BINARY_ENV];
+    else process.env[GIT_BINARY_ENV] = previous;
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("resolveWorkspaceRoot: rejects symlinked cwd before executing workspace-local override", () => {
+  const root = mkdtempSync(path.join(tmpdir(), "workspace-git-symlink-policy-"));
+  const previous = process.env[GIT_BINARY_ENV];
+  try {
+    const workspace = path.join(root, "workspace");
+    const linkedRepo = path.join(root, "linked-repo");
+    mkdirSync(path.join(workspace, ".git"), { recursive: true });
+    mkdirSync(path.join(linkedRepo, ".git"), { recursive: true });
+    const marker = path.join(root, "executed");
+    const git = path.join(workspace, "git");
+    writeFileSync(git, `#!/bin/sh\necho executed > ${JSON.stringify(marker)}\necho ${JSON.stringify(linkedRepo)}\nexit 0\n`, "utf8");
+    chmodSync(git, 0o700);
+    symlinkSync(linkedRepo, path.join(workspace, "link"));
+    process.env[GIT_BINARY_ENV] = git;
+
+    assert.throws(
+      () => resolveWorkspaceRoot(path.join(workspace, "link")),
+      /must not point inside the current workspace/,
+    );
+    assert.equal(existsSync(marker), false, "rejected git override must not execute");
   } finally {
     if (previous === undefined) delete process.env[GIT_BINARY_ENV];
     else process.env[GIT_BINARY_ENV] = previous;

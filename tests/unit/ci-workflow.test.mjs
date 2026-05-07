@@ -218,7 +218,7 @@ test("companion mutation-detection git calls use safe git resolver", () => {
     "plugins/kimi/scripts/kimi-companion.mjs",
   ]) {
     const source = readFileSync(resolve(rel), "utf8");
-    assert.match(source, /import \{ gitEnv, resolveGitBinary \} from "\.\/lib\/git-binary\.mjs";/,
+    assert.match(source, /import \{ (?:GIT_BINARY_ENV, )?gitEnv, resolveGitBinary \} from "\.\/lib\/git-binary\.mjs";/,
       `${rel} must use the shared safe git resolver`);
 
     const gitCallStart = source.indexOf(rel.includes("claude") ? "function tryGit" : "function gitStatus");
@@ -268,7 +268,7 @@ test("direct reviewer branch-diff git calls use safe git resolver", () => {
     "plugins/grok/scripts/grok-web-reviewer.mjs",
   ]) {
     const source = readFileSync(resolve(rel), "utf8");
-    assert.match(source, /import \{ gitEnv, resolveGitBinary \} from "\.\/lib\/git-binary\.mjs";/,
+    assert.match(source, /import \{ (?:GIT_BINARY_ENV, )?gitEnv, resolveGitBinary \} from "\.\/lib\/git-binary\.mjs";/,
       `${rel} must use the shared safe git resolver`);
     assert.match(source, /runCommand\(resolveGitBinary\(\{ cwd, workspaceRoot: options\.workspaceRoot \}\),[\s\S]*env:\s*gitEnv\(cleanGitEnv\(\)\)/s,
       `${rel} branch-diff git calls must use the safe resolver and not inherit caller PATH`);

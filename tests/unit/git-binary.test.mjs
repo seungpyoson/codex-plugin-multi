@@ -306,6 +306,74 @@ test("resolveGitBinary rejects symlinked overrides that resolve inside the works
   }
 });
 
+test("resolveGitBinary rejects literal workspace-local symlink overrides even when target is outside", () => {
+  const workspace = tempDir("git-binary-workspace-");
+  const trusted = tempDir("git-binary-trusted-");
+  try {
+    mkdirSync(path.join(workspace, ".git"));
+    mkdirSync(path.join(workspace, "scripts"));
+    const trustedGit = path.join(trusted, "git");
+    writeExecutable(trustedGit);
+    const linkGit = path.join(workspace, "scripts", "git");
+    symlinkSync(trustedGit, linkGit);
+    assert.throws(
+      () => resolveGitBinary({
+        cwd: workspace,
+        env: { [GIT_BINARY_ENV]: linkGit },
+      }),
+      /must not point inside the current workspace/,
+    );
+  } finally {
+    rmSync(workspace, { recursive: true, force: true });
+    rmSync(trusted, { recursive: true, force: true });
+  }
+});
+
+test("resolveGitBinary rejects workspace-local overrides when cwd is a workspace symlink", () => {
+  const workspace = tempDir("git-binary-workspace-");
+  const linkedRepo = tempDir("git-binary-linked-repo-");
+  try {
+    mkdirSync(path.join(workspace, ".git"));
+    mkdirSync(path.join(linkedRepo, ".git"));
+    const linkedCwd = path.join(workspace, "linked");
+    symlinkSync(linkedRepo, linkedCwd);
+    const localGit = path.join(workspace, "git");
+    writeExecutable(localGit);
+    assert.throws(
+      () => resolveGitBinary({
+        cwd: linkedCwd,
+        env: { [GIT_BINARY_ENV]: localGit },
+      }),
+      /must not point inside the current workspace/,
+    );
+  } finally {
+    rmSync(workspace, { recursive: true, force: true });
+    rmSync(linkedRepo, { recursive: true, force: true });
+  }
+});
+
+test("resolveGitBinary rejects mixed-case node_modules bin overrides", () => {
+  const workspace = tempDir("git-binary-workspace-");
+  const packageRoot = tempDir("git-binary-package-");
+  try {
+    mkdirSync(path.join(workspace, ".git"));
+    const binDir = path.join(packageRoot, "Node_Modules", ".bin");
+    mkdirSync(binDir, { recursive: true });
+    const packageGit = path.join(binDir, "git");
+    writeExecutable(packageGit);
+    assert.throws(
+      () => resolveGitBinary({
+        cwd: workspace,
+        env: { [GIT_BINARY_ENV]: packageGit },
+      }),
+      /must not point inside node_modules\/\.bin/,
+    );
+  } finally {
+    rmSync(workspace, { recursive: true, force: true });
+    rmSync(packageRoot, { recursive: true, force: true });
+  }
+});
+
 test("resolveGitBinary accepts explicit executable overrides outside the workspace", () => {
   const workspace = tempDir("git-binary-workspace-");
   const trusted = tempDir("git-binary-trusted-");

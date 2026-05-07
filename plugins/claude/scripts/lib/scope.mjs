@@ -80,24 +80,24 @@ function isGitBinaryPolicyError(err) {
 }
 
 function git(sourceCwd, args, opts = {}) {
-  const { workspaceRoot = null, ...execOpts } = opts;
+  const { workspaceRoot = null, env: _discardEnv, ...execOpts } = opts;
   return execFileSync(resolveGitBinary({ cwd: sourceCwd, workspaceRoot }), [...OBJECT_PURE_GIT_CONFIG, "-C", sourceCwd, ...args], {
     encoding: "utf8",
     stdio: ["ignore", "pipe", execOpts.stderrInherit ? "inherit" : "pipe"],
-    env: gitEnv(cleanGitEnv()),
     maxBuffer: 1024 * 1024 * 64,
     ...execOpts,
+    env: gitEnv(cleanGitEnv()),
   });
 }
 
 function gitBuffer(sourceCwd, args, opts = {}) {
-  const { workspaceRoot = null, ...execOpts } = opts;
+  const { workspaceRoot = null, env: _discardEnv, ...execOpts } = opts;
   return execFileSync(resolveGitBinary({ cwd: sourceCwd, workspaceRoot }), [...OBJECT_PURE_GIT_CONFIG, "-C", sourceCwd, ...args], {
     encoding: null,
     stdio: ["ignore", "pipe", execOpts.stderrInherit ? "inherit" : "pipe"],
-    env: gitEnv(cleanGitEnv()),
     maxBuffer: 1024 * 1024 * 64,
     ...execOpts,
+    env: gitEnv(cleanGitEnv()),
   });
 }
 

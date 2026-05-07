@@ -18,7 +18,7 @@ import { newJobId, verifyPidInfo } from "./lib/identity.mjs";
 import { buildJobRecord, externalReviewForInvocation } from "./lib/job-record.mjs";
 import { reconcileActiveJobs } from "./lib/reconcile.mjs";
 import { cleanGitEnv } from "./lib/git-env.mjs";
-import { gitEnv, resolveGitBinary } from "./lib/git-binary.mjs";
+import { GIT_BINARY_ENV, gitEnv, resolveGitBinary } from "./lib/git-binary.mjs";
 import { spawnKimi } from "./lib/kimi.mjs";
 import { writeCancelMarker, consumeCancelMarker } from "./lib/cancel-marker.mjs";
 import { isCodexSandbox } from "./lib/codex-env.mjs";
@@ -103,7 +103,8 @@ function gitCommitForPrompt(cwd, ref, workspaceRoot = null) {
       encoding: "utf8",
       stdio: ["ignore", "pipe", "ignore"],
     }).trim();
-  } catch {
+  } catch (error) {
+    if (isGitBinaryPolicyError(error)) throw error;
     return null;
   }
 }
@@ -115,9 +116,14 @@ function gitText(args, cwd, workspaceRoot = null) {
       stdio: ["ignore", "pipe", "ignore"],
       env: gitEnv(cleanGitEnv()),
     }).trim() || null;
-  } catch {
+  } catch (error) {
+    if (isGitBinaryPolicyError(error)) throw error;
     return null;
   }
+}
+
+function isGitBinaryPolicyError(error) {
+  return error instanceof Error && error.message.includes(GIT_BINARY_ENV);
 }
 
 function repositoryIdentity(cwd, workspaceRoot) {
@@ -1476,7 +1482,7 @@ async function main() {
 }
 
 main().catch((e) => {
-  if (e instanceof Error && e.message.includes("CODEX_PLUGIN_MULTI_GIT_BINARY")) {
+  if (isGitBinaryPolicyError(e)) {
     fail("git_binary_rejected", e.message);
   }
   process.stderr.write(`kimi-companion: unhandled: ${e.stack ?? e.message ?? e}\n`);

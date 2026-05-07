@@ -7,7 +7,7 @@ import { hostname } from "node:os";
 import { dirname, isAbsolute, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { cleanGitEnv as cleanCanonicalGitEnv } from "./lib/git-env.mjs";
-import { gitEnv, resolveGitBinary } from "./lib/git-binary.mjs";
+import { GIT_BINARY_ENV, gitEnv, resolveGitBinary } from "./lib/git-binary.mjs";
 import { REVIEW_PROMPT_CONTRACT_VERSION, buildReviewAuditManifest, buildReviewPrompt, scopeResolutionReason } from "./lib/review-prompt.mjs";
 import {
   EXTERNAL_REVIEW_KEYS,
@@ -276,11 +276,16 @@ function gitRaw(args, cwd, options = {}) {
   return res.stdout;
 }
 
+function isGitBinaryPolicyError(error) {
+  return error instanceof Error && error.message.includes(GIT_BINARY_ENV);
+}
+
 function gitCommitForPrompt(cwd, ref, workspaceRoot = null) {
   if (!ref) return null;
   try {
     return git(["rev-parse", "--verify", `${ref}^{commit}`], cwd, { allowFailure: true, workspaceRoot }) || null;
-  } catch {
+  } catch (error) {
+    if (isGitBinaryPolicyError(error)) throw error;
     return null;
   }
 }
@@ -288,7 +293,8 @@ function gitCommitForPrompt(cwd, ref, workspaceRoot = null) {
 function bestEffortWorkspaceRoot(cwd) {
   try {
     return git(["rev-parse", "--show-toplevel"], cwd, { allowFailure: true }) || cwd;
-  } catch {
+  } catch (error) {
+    if (isGitBinaryPolicyError(error)) throw error;
     return cwd;
   }
 }
@@ -1429,14 +1435,15 @@ async function cmdRun(options) {
   } catch (e) {
     cfg ??= fallbackConfig();
     const cwd = resolve(process.cwd());
+    const policyError = isGitBinaryPolicyError(e);
     scopeInfo = {
       cwd,
-      workspaceRoot: bestEffortWorkspaceRoot(cwd),
+      workspaceRoot: policyError ? cwd : bestEffortWorkspaceRoot(cwd),
       scope: options.scope ?? null,
       scope_base: options["scope-base"] ?? null,
       scope_paths: splitScopePaths(options["scope-paths"]),
     };
-    execution = providerFailure(e.message.startsWith("bad_args:") ? "bad_args" : "scope_failed", redactor()(e.message), null, null, false);
+    execution = providerFailure(policyError ? "git_binary_rejected" : (e.message.startsWith("bad_args:") ? "bad_args" : "scope_failed"), redactor()(e.message), null, null, false);
   }
   if (!execution) {
     if (!hasPromptText(options.prompt)) {

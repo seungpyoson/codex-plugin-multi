@@ -13,7 +13,7 @@ function isInsidePath(root, candidate) {
 }
 
 function hasNodeModulesBinSegment(candidate) {
-  const parts = candidate.split(path.sep).filter(Boolean);
+  const parts = candidate.split(path.sep).filter(Boolean).map((part) => part.toLowerCase());
   for (let index = 0; index < parts.length - 1; index += 1) {
     if (parts[index] === "node_modules" && parts[index + 1] === ".bin") {
       return true;
@@ -22,15 +22,9 @@ function hasNodeModulesBinSegment(candidate) {
   return false;
 }
 
-function nearestWorkspaceBoundary(cwd) {
+function outermostWorkspaceBoundaryFrom(cwd) {
   if (!cwd) return null;
-  let current;
-  try {
-    current = realpathSync.native(cwd);
-  } catch {
-    current = path.resolve(cwd);
-  }
-  const start = current;
+  let current = path.resolve(cwd);
   let found = null;
   for (;;) {
     if (existsSync(path.join(current, ".git"))) found = current;
@@ -38,6 +32,21 @@ function nearestWorkspaceBoundary(cwd) {
     if (parent === current) return found;
     current = parent;
   }
+}
+
+function workspaceBoundaryCandidates(cwd) {
+  const candidates = [];
+  const logicalBoundary = outermostWorkspaceBoundaryFrom(cwd);
+  if (logicalBoundary) candidates.push(logicalBoundary);
+  try {
+    const realCwd = realpathSync.native(cwd);
+    const realBoundary = outermostWorkspaceBoundaryFrom(realCwd);
+    if (realBoundary) candidates.push(realBoundary);
+  } catch {
+    // If cwd itself cannot be resolved, the logical walk above is the only
+    // safe boundary evidence available.
+  }
+  return [...new Set(candidates)];
 }
 
 export function resolveGitBinary(options = {}) {
@@ -49,15 +58,18 @@ export function resolveGitBinary(options = {}) {
     throw new Error(`${GIT_BINARY_ENV} must be an absolute path to a Git executable.`);
   }
 
-  const workspaceRoot = options.workspaceRoot ?? nearestWorkspaceBoundary(options.cwd);
+  const boundaryCandidates = options.workspaceRoot
+    ? [...new Set([options.workspaceRoot, ...workspaceBoundaryCandidates(options.cwd)])]
+    : workspaceBoundaryCandidates(options.cwd);
+  const workspaceRoot = boundaryCandidates[0] ?? null;
   if (!workspaceRoot) {
     throw new Error(`${GIT_BINARY_ENV} requires a workspace boundary; run from inside a Git workspace before using an override.`);
   }
-  const cacheBoundary = workspaceRoot ?? "";
-  const cacheKey = `${override}\0${cacheBoundary}`;
+  const cacheKey = `${override}\0${workspaceRoot}`;
   const cached = resolvedGitCache.get(cacheKey);
   if (cached) return cached;
 
+  const literalGit = path.resolve(override);
   let realGit;
   try {
     realGit = realpathSync.native(override);
@@ -70,19 +82,24 @@ export function resolveGitBinary(options = {}) {
     throw new Error(`${GIT_BINARY_ENV} must point to an executable regular file.`);
   }
 
-  if (workspaceRoot) {
-    let realWorkspace = null;
+  for (const candidateRoot of boundaryCandidates) {
+    const logicalWorkspace = path.resolve(candidateRoot);
+    let realWorkspace;
     try {
-      realWorkspace = realpathSync.native(workspaceRoot);
+      realWorkspace = realpathSync.native(candidateRoot);
     } catch {
-      realWorkspace = path.resolve(workspaceRoot);
+      realWorkspace = logicalWorkspace;
     }
-    if (isInsidePath(realWorkspace, realGit)) {
-      throw new Error(`${GIT_BINARY_ENV} must not point inside the current workspace.`);
+    for (const workspace of new Set([logicalWorkspace, realWorkspace])) {
+      for (const gitPath of new Set([literalGit, realGit])) {
+        if (isInsidePath(workspace, gitPath)) {
+          throw new Error(`${GIT_BINARY_ENV} must not point inside the current workspace.`);
+        }
+      }
     }
   }
 
-  if (hasNodeModulesBinSegment(realGit)) {
+  if (hasNodeModulesBinSegment(literalGit) || hasNodeModulesBinSegment(realGit)) {
     throw new Error(`${GIT_BINARY_ENV} must not point inside node_modules/.bin.`);
   }
 
