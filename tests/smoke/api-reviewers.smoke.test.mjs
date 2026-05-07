@@ -7,6 +7,7 @@ import { hostname, tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { externalReviewLaunchedEvent } from "../../scripts/lib/companion-common.mjs";
+import { assertJobRecordShape } from "../helpers/job-record-shape.mjs";
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const COMPANION = path.join(REPO_ROOT, "plugins/api-reviewers/scripts/api-reviewer.mjs");
@@ -2700,15 +2701,12 @@ for (const scenarioCase of [
       });
       assert.equal(result.status, fixture.exit_code, result.stderr || result.stdout);
       const replayed = parseJson(result.stdout);
-      // Subset-key check: regressions that drop an expected key still fail,
-      // but additive schema changes (new optional fields) don't force a
-      // re-record. See AC7-AC8 (#106) commentary above.
-      for (const key of API_REVIEWER_EXPECTED_KEYS) {
-        assert.ok(
-          Object.prototype.hasOwnProperty.call(replayed, key),
-          `replayed JobRecord must include expected key: ${key}`,
-        );
-      }
+      // Two-axis shape check: subset (every expected key present) plus an
+      // internal-state guard (no extra key matches a suspicious internal
+      // pattern). See tests/helpers/job-record-shape.mjs.
+      assertJobRecordShape(replayed, [...API_REVIEWER_EXPECTED_KEYS], {
+        label: `${scenarioCase.plugin}/${scenarioCase.scenario}`,
+      });
       assert.equal(replayed.schema_version, fixture.schema_version);
       assert.equal(replayed.status, fixture.status);
       assert.equal(replayed.error_code, fixture.error_code);

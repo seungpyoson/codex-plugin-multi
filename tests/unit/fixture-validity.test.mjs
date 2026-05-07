@@ -16,6 +16,7 @@ import { fileURLToPath } from "node:url";
 import path from "node:path";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
+const REPO_ROOT = path.resolve(HERE, "..", "..");
 const FIXTURE_ROOT = path.resolve(HERE, "..", "smoke", "fixtures");
 
 // Required provenance keys per docs/contracts/api-reviewers-output.md.
@@ -86,35 +87,127 @@ function readJson(p) {
 // PR-scoped sweep: when SMOKE_FIXTURE_CHANGED is set (newline-separated list
 // of repo-root-relative paths), the gate runs only over fixtures the PR
 // actually changed. Without it, the gate sweeps every committed fixture
-// (default for nightly + main runs). This avoids the trap where tightening a
-// sanitization rule retroactively breaks unrelated PRs by failing on stale
-// fixtures the PR didn't touch.
-function getFixturesToCheck() {
-  const all = listFixturePairs();
-  const changedEnv = process.env.SMOKE_FIXTURE_CHANGED;
-  if (changedEnv == null) return all;
+// (default for nightly + main runs). This avoids the trap where tightening
+// a sanitization rule retroactively breaks unrelated PRs by failing on
+// stale fixtures the PR didn't touch.
+//
+// Three states the env can be in, each with a distinct meaning:
+//
+//   - unset (null/undefined): full-sweep fallback. The caller (CI on main,
+//     nightly, or any path that couldn't determine the diff) wants every
+//     fixture validated.
+//   - empty string (or whitespace-only): PR-scoped no-op. The caller
+//     determined the PR touched no fixtures.
+//   - non-empty: PR-scoped to the listed paths.
+//
+// CI MUST distinguish "couldn't compute the diff" (leave env unset) from
+// "computed an empty diff" (set env to ""). Conflating them would either
+// bypass the gate on infrastructure failure (silent no-op) or revive the
+// retroactive-blocking trap on benign no-fixture PRs.
+export function filterFixturesByChangedEnv(allFixtures, changedEnv, repoRoot) {
+  if (changedEnv == null) return allFixtures;
+  const trimmed = String(changedEnv).trim();
+  if (trimmed === "") return [];
   const changed = new Set(
-    changedEnv.split("\n").map((line) => line.trim()).filter(Boolean),
+    trimmed.split("\n").map((line) => line.trim()).filter(Boolean),
   );
-  return all.filter((f) =>
-    changed.has(path.relative(REPO_ROOT, f.responsePath))
-    || changed.has(path.relative(REPO_ROOT, f.provenancePath)),
+  return allFixtures.filter((f) =>
+    changed.has(path.relative(repoRoot, f.responsePath))
+    || changed.has(path.relative(repoRoot, f.provenancePath)),
   );
 }
 
-const FIXTURES = getFixturesToCheck();
+function isPrScopedRun() {
+  // Any env-set state (including empty) is PR-scoped. Only a missing env
+  // means the caller wants a full sweep.
+  return process.env.SMOKE_FIXTURE_CHANGED != null;
+}
+
+const FIXTURES = filterFixturesByChangedEnv(
+  listFixturePairs(),
+  process.env.SMOKE_FIXTURE_CHANGED,
+  REPO_ROOT,
+);
 
 test("fixtures: at least one fixture pair exists (MVP scope)", () => {
-  if (process.env.SMOKE_FIXTURE_CHANGED != null) {
-    // PR-scoped run; an empty changed-fixture set is the normal case for PRs
-    // that don't touch fixtures. The full-sweep nightly run still asserts
-    // MVP-scope.
+  if (isPrScopedRun()) {
+    // PR-scoped run; an empty changed-fixture set is the normal case for
+    // PRs that don't touch fixtures. The full-sweep nightly run still
+    // asserts MVP-scope.
     return;
   }
   assert.ok(
     FIXTURES.length > 0,
     "expected at least one fixture pair under tests/smoke/fixtures/<plugin>/",
   );
+});
+
+test("filterFixturesByChangedEnv: undefined env returns all (full sweep)", () => {
+  const all = [
+    { plugin: "a", responsePath: "/repo/a.json", provenancePath: "/repo/a.prov.json" },
+    { plugin: "b", responsePath: "/repo/b.json", provenancePath: "/repo/b.prov.json" },
+  ];
+  const out = filterFixturesByChangedEnv(all, undefined, "/repo");
+  assert.equal(out.length, 2);
+});
+
+test("filterFixturesByChangedEnv: empty env is a PR-scoped no-op (PR touched no fixtures)", () => {
+  // The CI workflow MUST set env="" only when it computed a diff and the
+  // diff was empty. CI failure to compute the diff (merge-base failed,
+  // shallow fetch, etc.) MUST leave env unset. Conflating these would
+  // either bypass the gate on infrastructure failure (silent no-op) or
+  // revive the retroactive-blocking trap on benign no-fixture PRs. See
+  // .github/workflows/pull-request-ci.yml for the CI side of the contract.
+  const all = [
+    { plugin: "a", responsePath: "/repo/a.json", provenancePath: "/repo/a.prov.json" },
+  ];
+  assert.equal(filterFixturesByChangedEnv(all, "", "/repo").length, 0);
+  assert.equal(filterFixturesByChangedEnv(all, "   \n  \n", "/repo").length, 0,
+    "whitespace-only env trims to empty and stays a PR-scoped no-op");
+});
+
+test("filterFixturesByChangedEnv: env scopes to listed response paths", () => {
+  const all = [
+    { plugin: "a", responsePath: "/repo/tests/smoke/fixtures/a/x.response.json", provenancePath: "/repo/tests/smoke/fixtures/a/x.provenance.json" },
+    { plugin: "b", responsePath: "/repo/tests/smoke/fixtures/b/y.response.json", provenancePath: "/repo/tests/smoke/fixtures/b/y.provenance.json" },
+  ];
+  const out = filterFixturesByChangedEnv(
+    all,
+    "tests/smoke/fixtures/a/x.response.json",
+    "/repo",
+  );
+  assert.equal(out.length, 1);
+  assert.equal(out[0].plugin, "a");
+});
+
+test("filterFixturesByChangedEnv: env matches by provenance path too", () => {
+  const all = [
+    { plugin: "a", responsePath: "/repo/tests/smoke/fixtures/a/x.response.json", provenancePath: "/repo/tests/smoke/fixtures/a/x.provenance.json" },
+  ];
+  const out = filterFixturesByChangedEnv(
+    all,
+    "tests/smoke/fixtures/a/x.provenance.json",
+    "/repo",
+  );
+  assert.equal(out.length, 1, "provenance-path match must select the pair");
+});
+
+test("filterFixturesByChangedEnv: env with whitespace-only blank lines is filtered", () => {
+  const all = [
+    { plugin: "a", responsePath: "/repo/a.json", provenancePath: "/repo/a.prov.json" },
+    { plugin: "b", responsePath: "/repo/b.json", provenancePath: "/repo/b.prov.json" },
+  ];
+  const out = filterFixturesByChangedEnv(all, "a.json\n\n   \nb.json", "/repo");
+  assert.equal(out.length, 2);
+});
+
+test("filterFixturesByChangedEnv: env with no matches returns empty (genuine PR-scoped no-op)", () => {
+  const all = [
+    { plugin: "a", responsePath: "/repo/a.json", provenancePath: "/repo/a.prov.json" },
+  ];
+  const out = filterFixturesByChangedEnv(all, "tests/something/else.json", "/repo");
+  assert.equal(out.length, 0,
+    "a non-empty env that matches no fixtures is a real PR-scoped no-op (PR didn't touch any fixture)");
 });
 
 test("fixtures: every response has a paired provenance", () => {
@@ -216,8 +309,10 @@ test("fixtures: no unredacted Authorization or Bearer values", () => {
     // misses this because the literal substring is "Authorization":, not
     // "Authorization:". Without this scan, non-Bearer schemes (Basic,
     // ApiKey, Token, Digest) embedded in echoed request bodies leak past
-    // the gate.
-    const jsonAuthMatches = [...text.matchAll(/"Authorization"\s*:\s*"([^"]*)"/gi)];
+    // the gate. The value pattern allows JSON escape sequences (e.g. `\"`
+    // in Digest's `realm=\"example\"`); a naive `[^"]*` would stop at the
+    // first escaped quote and miss everything after it.
+    const jsonAuthMatches = [...text.matchAll(/"Authorization"\s*:\s*"((?:[^"\\]|\\.)*)"/gi)];
     for (const match of jsonAuthMatches) {
       assert.equal(
         match[1],

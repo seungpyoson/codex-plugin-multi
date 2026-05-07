@@ -54,8 +54,12 @@ const SECRET_PREFIX_PATTERNS = Object.freeze([
 // Digest) embedded in echoed request bodies leak past sanitization because
 // the literal "Authorization:" substring never appears — the JSON form is
 // "Authorization":, with a quote before the colon.
+//
+// The JSON value pattern allows JSON escape sequences inside the value
+// (e.g. `\"` in Digest's `realm=\"example\"`). A naive `[^"]*` would stop
+// at the first escaped quote and leak everything after it.
 const AUTHORIZATION_HEADER_BARE = /Authorization:\s*\S.*$/gim;
-const AUTHORIZATION_HEADER_JSON = /"Authorization"\s*:\s*"[^"]*"/gi;
+const AUTHORIZATION_HEADER_JSON = /"Authorization"\s*:\s*"(?:[^"\\]|\\.)*"/gi;
 // Bearer-token match stops at JSON syntax so a token embedded in a JSON
 // string ('{"auth":"Bearer xyz"}') doesn't have its closing quote/brace
 // consumed by a greedy \S+. Excludes whitespace, ASCII quotes, JSON

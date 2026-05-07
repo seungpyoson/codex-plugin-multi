@@ -399,6 +399,29 @@ test("sanitize: JSON-quoted Authorization in echoed error body redacts non-Beare
   assert.match(out.error_body, /"Authorization":"\[REDACTED\]"/);
 });
 
+// Regression: a naive `[^"]*` body would stop at the first JSON-escaped
+// quote, leaving Digest auth values (which contain `\"realm=\"example\"\"`
+// after JSON serialization) partially exposed. The fix uses
+// `(?:[^"\\]|\\.)*` so escape sequences are consumed.
+test("redactKnownPatterns: JSON-quoted Authorization with internal escaped quotes (Digest auth)", () => {
+  const inputs = [
+    // Digest auth typical shape after JSON serialization
+    '{"Authorization":"Digest username=\\"alice\\", realm=\\"example.com\\", nonce=\\"abc123\\""}',
+    // Bearer with JWT containing an internal escaped quote inside an inner
+    // structure (rare but possible in echoed payloads)
+    '{"Authorization":"Bearer eyJhbGciOi.\\"escaped\\".sig"}',
+  ];
+  for (const input of inputs) {
+    const out = redactKnownPatterns(input);
+    assert.equal(out.includes("alice"), false, `Digest username must not leak; out=${out}`);
+    assert.equal(out.includes("example.com"), false, `Digest realm must not leak; out=${out}`);
+    assert.equal(out.includes("abc123"), false, `Digest nonce must not leak; out=${out}`);
+    assert.equal(out.includes("eyJhbGciOi"), false, `Bearer JWT must not leak; out=${out}`);
+    assert.match(out, /"Authorization":"\[REDACTED\]"/,
+      `redacted form must replace the entire JSON-quoted value; out=${out}`);
+  }
+});
+
 // Regression: Bearer\s+\S+ greedily ate trailing JSON syntax (closing quote,
 // brace, bracket, comma) when the token was embedded in a JSON-stringified
 // blob. Secret was redacted but the surrounding structure was corrupted.

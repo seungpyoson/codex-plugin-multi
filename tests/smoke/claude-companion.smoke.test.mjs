@@ -13,6 +13,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { fixtureGitEnv, fixtureSeedRepo } from "../helpers/fixture-git.mjs";
+import { assertJobRecordShape } from "../helpers/job-record-shape.mjs";
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const COMPANION = path.join(REPO_ROOT, "plugins/claude/scripts/claude-companion.mjs");
@@ -2272,17 +2273,14 @@ test("smoke replay: claude/happy-path-review reproduces recorded JobRecord shape
     });
     assert.equal(res.status, fixture.exit_code, res.stderr || res.stdout);
     const replayed = JSON.parse(res.stdout);
-    // Subset-key check: regressions that drop (or silently rename) a
-    // JobRecord key still fail here, but additive schema changes (new
-    // optional fields appearing on `replayed` that aren't in the recorded
-    // fixture) do not. Strict key-set equality would lock the wrapper into
-    // re-recording every fixture for any benign field addition.
-    for (const key of Object.keys(fixture)) {
-      assert.ok(
-        Object.prototype.hasOwnProperty.call(replayed, key),
-        `replayed JobRecord must include all recorded keys; missing: ${key}`,
-      );
-    }
+    // Two-axis shape check: subset (every recorded key present) plus an
+    // internal-state guard (no extra key matches a suspicious internal
+    // pattern). Strict key-set equality forced re-records on additive
+    // changes; bare subset would miss accidental exposure of internal
+    // wrapper state. See tests/helpers/job-record-shape.mjs.
+    assertJobRecordShape(replayed, Object.keys(fixture), {
+      label: "claude/happy-path-review",
+    });
     assert.equal(replayed.schema_version, fixture.schema_version);
     assert.equal(replayed.status, fixture.status);
     assert.equal(replayed.error_code, fixture.error_code);

@@ -35,18 +35,26 @@ jobs:
       - name: Compute changed fixtures (PR + feature branches)
         if: github.ref != 'refs/heads/main'
         run: |
+          # Three-state contract with the fixture-validity gate:
+          #   - env unset           → full sweep (CI infrastructure failure)
+          #   - env = ""            → PR-scoped no-op (no fixtures changed)
+          #   - env = <paths>       → scoped to listed paths
+          # See tests/unit/fixture-validity.test.mjs filterFixturesByChangedEnv.
+          # We only write the env when merge-base succeeded; otherwise
+          # leaving it unset triggers the safe full-sweep fallback rather
+          # than silently bypassing the gate.
           git fetch --no-tags --no-recurse-submodules --depth=50 origin main || true
           BASE=$(git merge-base origin/main HEAD 2>/dev/null || true)
           if [ -n "$BASE" ] && [ "$BASE" != "$(git rev-parse HEAD)" ]; then
             CHANGED=$(git diff --name-only "$BASE" HEAD -- 'tests/smoke/fixtures/' || true)
+            {
+              echo "SMOKE_FIXTURE_CHANGED<<EOF"
+              echo "$CHANGED"
+              echo "EOF"
+            } >> "$GITHUB_ENV"
           else
-            CHANGED=""
+            echo "merge-base unavailable; leaving SMOKE_FIXTURE_CHANGED unset (full-sweep fallback)" >&2
           fi
-          {
-            echo "SMOKE_FIXTURE_CHANGED<<EOF"
-            echo "$CHANGED"
-            echo "EOF"
-          } >> "$GITHUB_ENV"
       - name: Run tests under hostile git-hook env
         env:
           CODEX_PLUGIN_SKIP_SMOKE: "1"
