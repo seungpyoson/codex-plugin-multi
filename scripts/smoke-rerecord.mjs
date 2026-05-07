@@ -142,15 +142,16 @@ export const RECIPES = Object.freeze({
         HOME: "/var/empty",
       },
       // Characterized by an actual smoke-rerecord workflow run on a
-      // sterile GitHub runner (run #25488952576): the companion's `ping`
-      // path hits the "no provider key, structured pre-spawn auth
-      // rejection" branch and exits with code 2 (matching the codebase's
-      // standard "structured bad-args / preflight rejection" exit).
-      // Round-10's local probe hit a different state (likely a partial
-      // ~/.claude on the dev box leaking through) and saw exit 1; that
+      // sterile GitHub runner: the companion's `ping` path hits the
+      // "no provider key, structured pre-spawn auth rejection" branch
+      // and exits with code 2 (matching the codebase's standard
+      // "structured bad-args / preflight rejection" exit). Round-10's
+      // local probe hit a different state (likely a partial ~/.claude
+      // on the dev box leaking through) and saw exit 1; that
       // characterization was wrong and is replaced here with the
-      // workflow-observed value.
+      // workflow-observed value cited in expectExitObservedRun.
       expectExit: [2],
+      expectExitObservedRun: 25489163404,
     }),
   },
 
@@ -188,7 +189,11 @@ export const RECIPES = Object.freeze({
       ],
       // Force tunnel-unavailable by pointing at a port nothing listens on.
       env: { ...process.env, GROK_WEB_BASE_URL: "http://127.0.0.1:1/v1" },
+      // CI-characterized via workflow_dispatch (round-14 follow-up to
+      // round-13's class-of-problem fix): all negative recipes must cite
+      // the run that observed their exit code, not a local probe.
       expectExit: [1],
+      expectExitObservedRun: 25489291490,
     }),
   },
 
@@ -233,6 +238,7 @@ export const RECIPES = Object.freeze({
       env: { ...process.env, ...invalidateProviderKeys("deepseek") },
       curatedEnvKeys: API_REVIEWER_PROVIDER_KEYS.deepseek,
       expectExit: [1],
+      expectExitObservedRun: 25489292659,
     }),
   },
   "api-reviewers-glm/happy-path-review": {
@@ -273,9 +279,19 @@ export const RECIPES = Object.freeze({
       // wired would fall back to the second key and silently record a
       // happy-path response in the negative fixture. invalidateProviderKeys
       // iterates the canonical list, structurally closing the gap.
+      //
+      // Round-14 honesty note: the live-CI run referenced by
+      // expectExitObservedRun does NOT differentially exercise the
+      // round-12 fix on this repo because no provider secrets are wired
+      // (gh secret list is empty; owner is a User account, no org
+      // inheritance, no environment-keyed secrets in the workflow). The
+      // run does prove the recipe's exit code is 1 on a sterile runner,
+      // which is what the field asserts. The round-12 fix is verified
+      // logically via the locally-reproducible catch-rate.
       env: { ...process.env, ...invalidateProviderKeys("glm") },
       curatedEnvKeys: API_REVIEWER_PROVIDER_KEYS.glm,
       expectExit: [1],
+      expectExitObservedRun: 25489293908,
     }),
   },
 });
@@ -348,6 +364,44 @@ export function validateRecipes(recipes) {
         && (!Array.isArray(spec.curatedEnvKeys)
             || !spec.curatedEnvKeys.every((s) => typeof s === "string"))) {
       throw new TypeError(`${where}: spawnArgs().curatedEnvKeys must be an array of strings if set`);
+    }
+
+    // Round-14 finding B — auth-rejected naming convention is bound to
+    // api-reviewers architecture only. Companion / grok recipes that
+    // need to record an auth failure use the *-auth-failure naming
+    // (claude/auth-failure is the canonical example). Without this
+    // gate, a future companion recipe named "*/auth-rejected" would
+    // bypass the invalidate-every-key validator below — which is
+    // architecture-keyed — and silently ship a recipe whose negative
+    // path could be a happy-path decoy on a wired runner.
+    if (key.endsWith("/auth-rejected") && recipe.architecture !== ARCHITECTURE_API_REVIEWERS) {
+      throw new TypeError(
+        `${where}: only api-reviewers architecture may use the *-auth-rejected naming convention; `
+        + `for ${recipe.architecture} architecture, use *-auth-failure instead `
+        + `(claude/auth-failure is the canonical example)`,
+      );
+    }
+
+    // Round-14 finding C — negative recipes (expectExit !== [0]) must
+    // cite the workflow_dispatch run that observed their declared exit.
+    // Round-13 caught one wrong locally-probed value (claude/auth-failure
+    // declared [1], CI observed [2]); the bug pattern is "dev ~/.claude
+    // state leaks through scrubAuth despite HOME=/var/empty." The fix
+    // is process-level: a contributor either runs the workflow and cites
+    // the run ID, or the recipe blows up at module load. Happy-path
+    // recipes (expectExit: [0]) do not need this — any wrong value
+    // fails the workflow obviously, no silent acceptance risk.
+    const isNegativeRecipe = !spec.expectExit.includes(0);
+    if (isNegativeRecipe) {
+      const obs = spec.expectExitObservedRun;
+      if (typeof obs !== "number" || !Number.isInteger(obs) || obs <= 0) {
+        throw new TypeError(
+          `${where}: negative recipes (expectExit ${JSON.stringify(spec.expectExit)}) must declare `
+          + `spawnArgs().expectExitObservedRun as a positive integer (the GitHub Actions run ID that `
+          + `observed the declared exit code on a sterile CI runner). Got ${JSON.stringify(obs)}. `
+          + `Run smoke-rerecord.yml via workflow_dispatch and cite the run ID.`,
+        );
+      }
     }
 
     // Architecture-specific structural checks. Keep narrow — semantic
