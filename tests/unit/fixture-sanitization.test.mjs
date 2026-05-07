@@ -155,6 +155,19 @@ test("redactKnownPatterns: redacts JWTs", () => {
   assert.equal(out.includes(shortJwt), false);
 });
 
+test("sanitize: rejects multiple redacted object keys instead of silently dropping entries", () => {
+  assert.throws(
+    () => sanitize(
+      {
+        "sk-abcdefghijklmnopqrstuvwxyz": "first",
+        "sk-zyxwvutsrqponmlkjihgfedcba": "second",
+      },
+      { architecture: "api-reviewers", env: {}, curatedEnvKeys: [] },
+    ),
+    /redacted object key collision/i,
+  );
+});
+
 test("redactKnownPatterns: redacts Authorization headers (any case)", () => {
   const out1 = redactKnownPatterns("Authorization: Bearer some-token-here-1234");
   const out2 = redactKnownPatterns("authorization: Basic dXNlcjpwYXNz");

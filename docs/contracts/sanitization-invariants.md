@@ -410,11 +410,11 @@ or an I2 prefix-shaped pattern is replaced with `"[REDACTED]"`. The
 associated value is preserved (subject to other invariants applied to
 it independently).
 
-**Edge case:** if multiple keys in the same object collide on
-`"[REDACTED]"` after redaction, all but one are dropped (this is
-acceptable because the original keys were secrets and the resulting
-object cannot represent them anyway). The test must NOT assert key
-count preservation in the secret-key case.
+**Edge case:** if multiple distinct keys in the same object would
+collide on `"[REDACTED]"` after redaction, `sanitize` MUST throw rather
+than silently discard earlier entries. A fixture recorder can then fail
+loudly and force a human decision about how to preserve the response
+shape without committing secret-bearing keys.
 
 **Why.** API error payloads sometimes echo the offending API key as
 the object key (`{"sk-ant-…": "rate_limited"}`). I9's structure
@@ -422,7 +422,9 @@ preservation specifically does NOT cover this case (the redaction is
 the desired structural change).
 
 **Generator.** Random objects whose keys are drawn from a mix of
-benign strings, env-secret literals, and I2-prefix-shaped strings.
+benign strings, env-secret literals, and I2-prefix-shaped strings, plus
+a collision case with two distinct I2-prefix-shaped keys in the same
+object.
 
 **Coverage proof:** raised by Gemini and GPT (round 4).
 

@@ -2212,11 +2212,13 @@ test("claude _run-worker refuses terminal JobRecord without overwriting it", () 
 // fields (result, usage, cost_usd, permission_denials) into a stdout-shape
 // fixture and pointing the mock at it via CLAUDE_MOCK_FIXTURE_PATH.
 //
-// auth-failure.response.json is intentionally NOT replayed: ping/doctor
-// fixtures are readiness-contract JSON, while this replay path verifies the
-// JobRecord shape produced by run/custom-review.
+// auth-failure.response.json is replayed separately below because ping/doctor
+// fixtures are readiness-contract JSON, not JobRecord JSON. AC7 covers all six
+// fixture scenarios; AC8's JobRecord shape assertion applies to the
+// review-wrapper fixture.
 
 const CLAUDE_REPLAY_FIXTURE = path.join(REPO_ROOT, "tests/smoke/fixtures/claude/happy-path-review.response.json");
+const CLAUDE_AUTH_FAILURE_REPLAY_FIXTURE = path.join(REPO_ROOT, "tests/smoke/fixtures/claude/auth-failure.response.json");
 
 function projectJobRecordToClaudeStdout(fixture) {
   return {
@@ -2314,5 +2316,28 @@ test("smoke replay: claude/happy-path-review reproduces recorded JobRecord shape
     rmSync(tmpFixtureDir, { recursive: true, force: true });
     rmSync(dataDir, { recursive: true, force: true });
     rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("smoke replay: claude/auth-failure reproduces recorded readiness contract", () => {
+  const fixture = JSON.parse(readFileSync(CLAUDE_AUTH_FAILURE_REPLAY_FIXTURE, "utf8"));
+  const { stdout, status, dataDir } = runCompanion(
+    ["ping", "--auth-mode", "api_key"],
+    {
+      cwd: tmpdir(),
+      env: {
+        ANTHROPIC_API_KEY: "",
+        CLAUDE_API_KEY: "",
+        HOME: "/var/empty",
+      },
+    },
+  );
+  try {
+    assert.equal(status, 2, stdout);
+    const replayed = JSON.parse(stdout);
+    assert.deepEqual(Object.keys(replayed), Object.keys(fixture));
+    assert.deepEqual(replayed, fixture);
+  } finally {
+    cleanup(dataDir);
   }
 });

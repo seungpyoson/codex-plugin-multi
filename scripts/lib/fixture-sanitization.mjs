@@ -405,6 +405,12 @@ function sanitizeObject(value, ctx, path) {
     // SAME conditions used for values: prefix-shaped tokens, or env-
     // secret literals at the appropriate length threshold.
     const sanitizedKey = ctx.shouldRedactKey(key) ? REDACTED : key;
+    if (Object.prototype.hasOwnProperty.call(out, sanitizedKey)) {
+      throw new Error(
+        `fixture-sanitization: redacted object key collision at ${path || "(root)"}; `
+        + "multiple input keys sanitize to the same output key",
+      );
+    }
     out[sanitizedKey] = sanitizeObjectField(key, sub, ctx, keyPath);
   }
   return out;

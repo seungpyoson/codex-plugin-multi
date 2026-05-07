@@ -804,6 +804,35 @@ describe("I15 — secret-shaped object keys are redacted", () => {
       { numRuns: RUNS },
     );
   });
+
+  it("distinct secret-shaped keys that collide on [REDACTED] throw", () => {
+    fc.assert(
+      fc.property(
+        prefixShape(),
+        prefixShape(),
+        fc.string({ minLength: 1, maxLength: 10 }),
+        fc.string({ minLength: 1, maxLength: 10 }),
+        arch(),
+        (leftKind, rightKind, leftValue, rightValue, architecture) => {
+          const leftKey = generatePrefixedToken(leftKind);
+          const rightKey = generatePrefixedToken(rightKind);
+          fc.pre(leftKey !== rightKey);
+
+          assert.throws(
+            () => sanitize(
+              {
+                [leftKey]: leftValue,
+                [rightKey]: rightValue,
+              },
+              { architecture, env: {} },
+            ),
+            /redacted object key collision/i,
+          );
+        },
+      ),
+      { numRuns: RUNS },
+    );
+  });
 });
 
 // --------------------------------------------------------------------

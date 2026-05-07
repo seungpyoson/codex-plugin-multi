@@ -208,6 +208,39 @@ test("filterFixturesByChangedEnv: env with no matches returns empty (genuine PR-
     "a non-empty env that matches no fixtures is a real PR-scoped no-op (PR didn't touch any fixture)");
 });
 
+test("companion session-id validity check catches nested camelCase leaks", () => {
+  assert.throws(
+    () => assertCompanionSessionIdFieldsRedacted(
+      { plugin: "claude", scenario: "synthetic-nested-leak" },
+      { metadata: { claudeSessionId: "live-session-id" } },
+    ),
+    /metadata\.claudeSessionId must be null or \[REDACTED\]/,
+  );
+});
+
+function assertCompanionSessionIdFieldsRedacted(f, response) {
+  walk(response, []);
+  function walk(value, fieldPath) {
+    if (value == null) return;
+    if (Array.isArray(value)) {
+      value.forEach((v, i) => walk(v, [...fieldPath, i]));
+      return;
+    }
+    if (typeof value !== "object") return;
+    for (const [k, v] of Object.entries(value)) {
+      const currentPath = [...fieldPath, k];
+      if (COMPANION_SESSION_ID_FIELDS.includes(k) && v != null) {
+        assert.equal(
+          v,
+          "[REDACTED]",
+          `${f.plugin}/${f.scenario}: ${currentPath.join(".")} must be null or [REDACTED]; got ${JSON.stringify(v)}`,
+        );
+      }
+      walk(v, currentPath);
+    }
+  }
+}
+
 test("fixtures: every response has a paired provenance", () => {
   for (const f of FIXTURES) {
     assert.ok(
@@ -364,15 +397,7 @@ test("fixtures: companion fixtures have session_id fields nulled or [REDACTED]",
   const companionFixtures = FIXTURES.filter((f) => f.architecture === "companion");
   for (const f of companionFixtures) {
     const response = readJson(f.responsePath);
-    for (const field of COMPANION_SESSION_ID_FIELDS) {
-      const value = response[field];
-      if (value == null) continue;
-      assert.equal(
-        value,
-        "[REDACTED]",
-        `${f.plugin}/${f.scenario}: ${field} must be null or [REDACTED]; got ${JSON.stringify(value)}`,
-      );
-    }
+    assertCompanionSessionIdFieldsRedacted(f, response);
   }
 });
 
