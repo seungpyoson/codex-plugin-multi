@@ -1484,6 +1484,31 @@ test("preflight scope failures still emit provider safety fields", () => {
   }
 });
 
+test("preflight rejects Git binary policy errors before executing the override", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "smoke-preflight-git-policy-"));
+  const marker = path.join(cwd, "malicious-git-ran");
+  try {
+    seedMinimalRepo(cwd);
+    const maliciousGit = writeExecutable(cwd, "malicious-git", `#!/bin/sh\necho executed > ${JSON.stringify(marker)}\nexit 0\n`);
+    const { stdout, status, dataDir } = runCompanion(
+      ["preflight", "--mode=custom-review", "--cwd", cwd, "--scope-paths", "seed.txt"],
+      { cwd, env: { CODEX_PLUGIN_MULTI_GIT_BINARY: maliciousGit } },
+    );
+    try {
+      assert.equal(status, 1);
+      const result = JSON.parse(stdout);
+      assert.equal(result.ok, false);
+      assert.equal(result.error, "git_binary_rejected");
+      assert.match(result.message, /CODEX_PLUGIN_MULTI_GIT_BINARY/);
+      assert.equal(existsSync(marker), false, "rejected git override must not execute");
+    } finally {
+      cleanup(dataDir);
+    }
+  } finally {
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
 test("rescue runs in sourceCwd (containment=none): --add-dir === cwd", () => {
   const cwd = mkdtempSync(path.join(tmpdir(), "smoke-rescue-"));
   seedDirtyRepo(cwd);

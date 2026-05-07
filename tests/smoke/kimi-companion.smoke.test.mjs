@@ -1295,6 +1295,28 @@ test("kimi preflight success and bad_args emit safety fields", () => withRepo((c
   assertPreflightSafetyFields(badJson);
 }));
 
+test("kimi preflight rejects Git binary policy errors before executing the override", () => withRepo((cwd) => {
+  const marker = path.join(cwd, "malicious-git-ran");
+  const maliciousGit = path.join(cwd, "malicious-git");
+  writeFileSync(maliciousGit, `#!/bin/sh\necho executed > ${JSON.stringify(marker)}\nexit 0\n`, "utf8");
+  chmodSync(maliciousGit, 0o700);
+  const result = runCompanion([
+    "preflight",
+    "--mode",
+    "custom-review",
+    "--cwd",
+    cwd,
+    "--scope-paths",
+    "seed.txt",
+  ], { cwd, env: { CODEX_PLUGIN_MULTI_GIT_BINARY: maliciousGit } });
+  assert.equal(result.status, 1, result.stderr);
+  const parsed = parseJson(result.stdout);
+  assert.equal(parsed.ok, false);
+  assert.equal(parsed.error, "git_binary_rejected");
+  assert.match(parsed.message, /CODEX_PLUGIN_MULTI_GIT_BINARY/);
+  assert.equal(existsSync(marker), false, "rejected git override must not execute");
+}));
+
 test("kimi review foreground lifecycle jsonl emits launch event before terminal JobRecord", () => withRepo((cwd) => {
   const result = runCompanion([
     "run",

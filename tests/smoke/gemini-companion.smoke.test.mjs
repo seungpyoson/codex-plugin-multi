@@ -1552,6 +1552,31 @@ test("gemini preflight scope failures still emit provider safety fields", () => 
   }
 });
 
+test("gemini preflight rejects Git binary policy errors before executing the override", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "gemini-preflight-git-policy-"));
+  const dataDir = mkdtempSync(path.join(tmpdir(), "gemini-preflight-git-policy-data-"));
+  const marker = path.join(cwd, "malicious-git-ran");
+  try {
+    seedMinimalRepo(cwd);
+    const maliciousGit = path.join(cwd, "malicious-git");
+    writeFileSync(maliciousGit, `#!/bin/sh\necho executed > ${JSON.stringify(marker)}\nexit 0\n`, "utf8");
+    chmodSync(maliciousGit, 0o700);
+    const res = runCompanion(
+      ["preflight", "--mode=custom-review", "--cwd", cwd, "--scope-paths", "seed.txt"],
+      { cwd, dataDir, env: { CODEX_PLUGIN_MULTI_GIT_BINARY: maliciousGit } },
+    );
+    assert.equal(res.status, 1, `exit ${res.status}: ${res.stderr}`);
+    const parsed = JSON.parse(res.stdout);
+    assert.equal(parsed.ok, false);
+    assert.equal(parsed.error, "git_binary_rejected");
+    assert.match(parsed.message, /CODEX_PLUGIN_MULTI_GIT_BINARY/);
+    assert.equal(existsSync(marker), false, "rejected git override must not execute");
+  } finally {
+    rmTree(dataDir);
+    rmTree(cwd);
+  }
+});
+
 test("gemini review fails closed when pre-run ignore filtering is unavailable", () => {
   const cwd = mkdtempSync(path.join(tmpdir(), "gemini-mut-pre-cwd-"));
   seedMinimalRepo(cwd);
