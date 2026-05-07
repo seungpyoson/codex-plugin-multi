@@ -68,9 +68,17 @@ const RECIPES = Object.freeze({
     spawnArgs: () => ({
       script: "plugins/claude/scripts/claude-companion.mjs",
       args: ["ping", "--auth-mode", "api_key"],
-      env: scrubAuth(process.env, ["ANTHROPIC_API_KEY", "CLAUDE_API_KEY", "CLAUDE_CONFIG_DIR"]),
-      // Force explicit API-key mode with keys scrubbed so local OAuth state
-      // cannot turn this negative recipe into a successful doctor response.
+      // Force explicit API-key mode with keys scrubbed so local OAuth
+      // state cannot turn this negative recipe into a successful doctor
+      // response. Also override HOME to a sterile path: claude-cli reads
+      // OAuth tokens / project config from ~ (~/.claude/), and just
+      // scrubbing the env vars leaves on-disk state intact. Pointing
+      // HOME at /var/empty (always exists, always empty on macOS/Linux)
+      // ensures any home-directory lookup misses. (Gemini #3198727893.)
+      env: {
+        ...scrubAuth(process.env, ["ANTHROPIC_API_KEY", "CLAUDE_API_KEY", "CLAUDE_CONFIG_DIR"]),
+        HOME: "/var/empty",
+      },
     }),
   },
 
@@ -360,7 +368,25 @@ function main() {
   }
 
   // Build sanitization context.
-  const promptForHash = spec.args.find((arg) => typeof arg === "string" && arg.length > 50) ?? "";
+  //
+  // Prompt-for-hash detection. Layered: (1) explicit `--prompt <value>`
+  // anchor; (2) trailing positional after `--` separator; (3) last
+  // non-flag positional arg; (4) length>50 fallback for legacy. The
+  // length-only heuristic was fragile per Gemini code-review (#116
+  // bot comments 3198445563 / 3198672662 / 3198727895) — `--scope-paths`
+  // values and other long file paths could be misidentified as prompts.
+  const promptForHash = (() => {
+    const args = spec.args ?? [];
+    const promptIdx = args.indexOf("--prompt");
+    if (promptIdx !== -1 && args[promptIdx + 1]) return args[promptIdx + 1];
+    const ddIdx = args.indexOf("--");
+    if (ddIdx !== -1 && args[ddIdx + 1]) return args[ddIdx + 1];
+    if (args.length > 0) {
+      const last = args[args.length - 1];
+      if (typeof last === "string" && !last.startsWith("-")) return last;
+    }
+    return args.find((arg) => typeof arg === "string" && arg.length > 50) ?? "";
+  })();
   const promptHash = createHash("sha256").update(promptForHash).digest("hex");
 
   const sanitizationOptions = {

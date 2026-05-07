@@ -277,18 +277,30 @@ test("fixtures: response is parseable JSON object (not array, not primitive)", (
   }
 });
 
-test("fixtures: no /Users/<actual-name> path leaks (only /Users/<user>)", () => {
+test("fixtures: no user-home path leaks (macOS, Linux, Windows; only <user>)", () => {
+  // Cross-platform path-leak detector. Mirrors PATH_SCRUB_PATTERNS in
+  // scripts/lib/fixture-sanitization.mjs — fixtures recorded on any of
+  // the three host OSes must scrub the username segment to literal
+  // "<user>". Linux/CI runners under /home/runner/, Windows under
+  // C:\Users\<actual>\, macOS under /Users/<actual>/. The character
+  // class matches the sanitize lib: stops at JSON delimiters, newlines,
+  // tabs, and backslash so the segment boundary is unambiguous and
+  // usernames containing spaces are still flagged in full.
+  const PROBES = [
+    { regex: /\/Users\/([^/"'\\\n\r\t]+)/g, prefix: "/Users/" },
+    { regex: /\/home\/([^/"'\\\n\r\t]+)/g, prefix: "/home/" },
+    { regex: /[A-Za-z]:\\Users\\([^\\"'/\n\r\t]+)/g, prefix: "C:\\Users\\" },
+  ];
   for (const f of FIXTURES) {
     const text = readFileSync(f.responsePath, "utf8");
-    // /Users/<user> is the sanitized form. Any other /Users/<NAME>/ where
-    // NAME != "<user>" indicates a path-scrub leak.
-    const matches = [...text.matchAll(/\/Users\/([^/\s"]+)/g)];
-    for (const match of matches) {
-      assert.equal(
-        match[1],
-        "<user>",
-        `${f.plugin}/${f.scenario}: path leak detected: /Users/${match[1]} (must be /Users/<user>)`,
-      );
+    for (const probe of PROBES) {
+      for (const match of [...text.matchAll(probe.regex)]) {
+        assert.equal(
+          match[1],
+          "<user>",
+          `${f.plugin}/${f.scenario}: path leak detected: ${probe.prefix}${match[1]} (must be ${probe.prefix}<user>)`,
+        );
+      }
     }
   }
 });
@@ -422,8 +434,17 @@ test("fixtures: JobRecord-shaped responses carry schema_version", () => {
 test("fixtures: every architecture has at least one success and one negative fixture covered", () => {
   // The MVP shipping criterion. Allows extra fixtures; only fails if any
   // architecture has zero coverage on either side.
+  //
+  // Greptile P1 (#3198731228): the coverage check must run against the
+  // FULL fixture inventory, not the PR-scoped FIXTURES list. Otherwise
+  // a future PR that touches only one architecture's fixtures sees
+  // byArch missing the other two and fails CI with a false "no fixtures
+  // recorded yet" — even though the unchanged-on-disk fixtures still
+  // satisfy the criterion. listFixturePairs() is the source of truth
+  // for the inventory; FIXTURES is the PR-scoped subset for sanitization
+  // gating only.
   const byArch = new Map();
-  for (const f of FIXTURES) {
+  for (const f of listFixturePairs()) {
     if (!byArch.has(f.architecture)) byArch.set(f.architecture, new Set());
     byArch.get(f.architecture).add(f.scenario);
   }

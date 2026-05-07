@@ -65,11 +65,14 @@ const jsonValue = fc.letrec((tie) => ({
 const benignEnvName = fc.stringMatching(/^[A-Z][A-Z0-9_]{0,15}$/)
   .filter((s) => !/(?:^|_)(?:API_KEY|TOKEN|ACCESS_KEY|SECRET|ADMIN_KEY|COOKIE|SESSION|SSO)$/i.test(s));
 
-// A secret-shaped env name. Suffix matches SECRET_ENV_NAME.
+// A secret-shaped env name. Includes trailing-suffix variants
+// (e.g., AWS_ACCESS_KEY_ID, OPENAI_API_KEY_PROD) so the redactor's
+// SECRET_ENV_NAME pattern is exercised at the trailing-anchor edge.
 const secretEnvName = fc.tuple(
   fc.stringMatching(/^[A-Z][A-Z0-9_]{0,8}_$/),
   fc.constantFrom("API_KEY", "TOKEN", "ACCESS_KEY", "SECRET", "ADMIN_KEY", "COOKIE", "SESSION", "SSO"),
-).map(([prefix, suffix]) => prefix + suffix);
+  fc.constantFrom("", "_ID", "_PROD", "_BACKUP", "_V2", "_LIVE", "_ROTATED"),
+).map(([prefix, suffix, trailing]) => prefix + suffix + trailing);
 
 // Random secret value, ≥8 chars by default (auto threshold). Excludes
 // the literal redaction marker per I12.
@@ -445,6 +448,39 @@ describe("I5 — user-home paths scrubbed (macOS, Linux, Windows)", () => {
       { numRuns: RUNS },
     );
   });
+
+  it("usernames containing spaces (e.g., \"john doe\") are fully redacted", () => {
+    fc.assert(
+      fc.property(
+        homePrefix(),
+        // Username generator: TWO segments of the username, separated
+        // by a single internal space. Each segment is at least 4
+        // characters of alphanumerics + dot/dash/underscore — enough
+        // to be unambiguously a PII fragment if it survives in output.
+        fc.tuple(
+          fc.stringMatching(/^[A-Za-z0-9_.-]{4,8}$/).filter((s) => !s.includes(REDACTED)),
+          fc.stringMatching(/^[A-Za-z0-9_.-]{4,8}$/).filter((s) => !s.includes(REDACTED)),
+        ),
+        fc.constantFrom(`/file.txt"`, `/proj/code.js"`, `/.cache/x"`),
+        arch(),
+        (prefix, [head, tail], suffix, architecture) => {
+          const username = `${head} ${tail}`;
+          const planted = `"path":"${prefix}${username}${suffix}`;
+          const sanitized = sanitize(planted, { architecture, env: {} });
+          // Property: neither half of the space-containing username
+          // survives. The bug shape is "/Users/<user> doe/..." where
+          // the redactor stopped at the space and left the suffix
+          // exposed. Catches that AND the inverse "/Users/john
+          // <user>/..." shape if the regex were ever changed to anchor
+          // at the end of the username instead.
+          return !sanitized.includes(head)
+            && !sanitized.includes(tail)
+            && sanitized.includes("<user>");
+        },
+      ),
+      { numRuns: RUNS },
+    );
+  });
 });
 
 // --------------------------------------------------------------------
@@ -663,7 +699,9 @@ describe("I12 — input containing the literal marker triggers a typed error", (
         arch(),
         (kinds, architecture) => {
           const tokens = kinds.map((k) => generatePrefixedToken(k));
-          const planted = `start ${tokens.join(" mid ")} end`;
+          let planted = "start";
+          for (const t of tokens) planted += ` mid ${t}`;
+          planted += " end";
           const sanitized = sanitize(planted, { architecture, env: {} });
           const matches = sanitized.match(/\[REDACTED\]/g) || [];
           return matches.length <= tokens.length;

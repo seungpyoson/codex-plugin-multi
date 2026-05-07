@@ -25,7 +25,13 @@ const REDACTED = "[REDACTED]";
 
 // Union of grok's and api-reviewers' env-name patterns. Either matches → the
 // env value is treated as a secret.
-const SECRET_ENV_NAME = /(?:^|_)(?:API_KEY|TOKEN|ACCESS_KEY|SECRET|ADMIN_KEY|COOKIE|SESSION|SSO)$/i;
+//
+// Trailing alternation `(?:_|$)` rather than just `$` so common rotated/
+// scoped suffix names match too: AWS_ACCESS_KEY_ID, OPENAI_API_KEY_PROD,
+// STRIPE_SECRET_KEY_LIVE, etc. False positives over-redact (a fixture
+// echoing the env value gets `[REDACTED]` even if the var wasn't actually
+// secret); false negatives leak. Conservative side.
+const SECRET_ENV_NAME = /(?:^|_)(?:API_KEY|TOKEN|ACCESS_KEY|SECRET|ADMIN_KEY|COOKIE|SESSION|SSO)(?:_|$)/i;
 
 // Default minimum length thresholds (mirror api-reviewer.mjs).
 const MIN_SECRET_REDACTION_LENGTH_AUTO = 8;        // auto-detected env names
@@ -98,10 +104,21 @@ const ALWAYS_SANITIZE_FIELDS = Object.freeze([
 // User-home path patterns. macOS, Linux, Windows. Matched values are
 // replaced with the literal "<user>" placeholder so fixture diffs stay
 // stable across CI hosts.
+//
+// Username segment allows internal spaces (real macOS usernames can
+// contain them — e.g., "John Doe"). The character class stops at:
+//   /  — next path segment
+//   "  '  — JSON / quoted-string boundary
+//   \  — Windows path separator and JSON escape
+//   \n \r \t  — line terminator / tab (these end log lines or
+//                indicate the username segment is over even without
+//                a closing /)
+// Allowing only spaces inside the segment keeps the regex bounded
+// while still scrubbing space-containing usernames in full.
 const PATH_SCRUB_PATTERNS = Object.freeze([
-  { regex: /\/Users\/[^/\s\\]+/g, replacement: "/Users/<user>" },
-  { regex: /\/home\/[^/\s\\]+/g, replacement: "/home/<user>" },
-  { regex: /[A-Za-z]:\\Users\\[^\\\s/]+/g, replacement: "C:\\Users\\<user>" },
+  { regex: /\/Users\/[^/"'\\\n\r\t]+/g, replacement: "/Users/<user>" },
+  { regex: /\/home\/[^/"'\\\n\r\t]+/g, replacement: "/home/<user>" },
+  { regex: /[A-Za-z]:\\Users\\[^\\"'/\n\r\t]+/g, replacement: "C:\\Users\\<user>" },
 ]);
 
 // Cookie-style env value sub-extraction (I17). For env keys ending in
