@@ -73,6 +73,36 @@ const SECRET_PREFIX_PATTERNS = Object.freeze([
   /eyJ[a-zA-Z0-9_-]+\.[a-zA-Z0-9_-]+\.[a-zA-Z0-9_-]+/g, // JWT
 ]);
 
+const URL_ENCODED_CANDIDATE = /(?:%[0-9A-Fa-f]{2}|[A-Za-z0-9._~!$&'()*+,;=:@/?-]){8,}/g;
+
+function tryDecodeURIComponent(value) {
+  if (typeof value !== "string" || !value.includes("%")) return null;
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return null;
+  }
+}
+
+function matchesSecretPrefix(value) {
+  if (typeof value !== "string" || !value) return false;
+  for (const pattern of SECRET_PREFIX_PATTERNS) {
+    // Reset lastIndex; SECRET_PREFIX_PATTERNS use the /g flag.
+    pattern.lastIndex = 0;
+    if (pattern.test(value)) return true;
+  }
+  return false;
+}
+
+function redactUrlEncodedCandidates(input, shouldRedactDecoded) {
+  if (!input.includes("%")) return input;
+  return input.replaceAll(URL_ENCODED_CANDIDATE, (candidate) => {
+    const decoded = tryDecodeURIComponent(candidate);
+    if (decoded == null) return candidate;
+    return shouldRedactDecoded(decoded) ? REDACTED : candidate;
+  });
+}
+
 // Authorization-header patterns. Two surfaces:
 //   1. Bare HTTP form: "Authorization: Bearer xyz" (stderr / log lines).
 //   2. JSON-quoted form: "\"Authorization\":\"Bearer xyz\"" (provider error
@@ -279,6 +309,7 @@ export function buildEnvSecretRedactor(env, { curatedEnvKeys = [] } = {}) {
         out = out.split(secret).join(REDACTED);
       }
     }
+    out = redactUrlEncodedCandidates(out, (decoded) => sortedSecrets.some((secret) => decoded.includes(secret)));
     return out;
   };
 }
@@ -292,6 +323,7 @@ export function redactKnownPatterns(input) {
   for (const pattern of SECRET_PREFIX_PATTERNS) {
     out = out.replaceAll(pattern, REDACTED);
   }
+  out = redactUrlEncodedCandidates(out, matchesSecretPrefix);
   out = out.replaceAll(AUTHORIZATION_HEADER_BARE, `Authorization: ${REDACTED}`);
   out = out.replaceAll(AUTHORIZATION_HEADER_JSON, `"Authorization":"${REDACTED}"`);
   out = out.replaceAll(BEARER_TOKEN, `Bearer ${REDACTED}`);
@@ -491,10 +523,11 @@ export function sanitize(record, options = {}) {
   function shouldRedactKey(key) {
     if (typeof key !== "string" || !key) return false;
     if (envSecretSet.has(key)) return true;
-    for (const pattern of SECRET_PREFIX_PATTERNS) {
-      // Reset lastIndex; SECRET_PREFIX_PATTERNS use the /g flag.
-      pattern.lastIndex = 0;
-      if (pattern.test(key)) return true;
+    if (matchesSecretPrefix(key)) return true;
+    const decoded = tryDecodeURIComponent(key);
+    if (decoded != null) {
+      if (envSecretSet.has(decoded)) return true;
+      if (matchesSecretPrefix(decoded)) return true;
     }
     return false;
   }

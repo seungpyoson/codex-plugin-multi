@@ -155,6 +155,25 @@ test("redactKnownPatterns: redacts JWTs", () => {
   assert.equal(out.includes(shortJwt), false);
 });
 
+test("sanitize: redacts percent-encoded public-prefix tokens in strings", () => {
+  const encoded = `%73%6B-${"a".repeat(22)}`;
+  const out = sanitize(
+    `prefix ${encoded} suffix`,
+    { architecture: "api-reviewers", env: {}, curatedEnvKeys: [] },
+  );
+  assert.equal(out.includes(encoded), false);
+  assert.equal(out, `prefix ${REDACTED} suffix`);
+});
+
+test("sanitize: redacts percent-encoded public-prefix tokens in object keys", () => {
+  const encoded = `%73%6B-${"a".repeat(22)}`;
+  const out = sanitize(
+    { [encoded]: "rate_limited" },
+    { architecture: "api-reviewers", env: {}, curatedEnvKeys: [] },
+  );
+  assert.deepEqual(out, { [REDACTED]: "rate_limited" });
+});
+
 test("sanitize: rejects multiple redacted object keys instead of silently dropping entries", () => {
   assert.throws(
     () => sanitize(

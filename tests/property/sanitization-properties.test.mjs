@@ -214,6 +214,12 @@ function generatePrefixedToken(kind) {
   }
 }
 
+function percentEncodeOneByte(value, position) {
+  const idx = value.length === 0 ? 0 : position % value.length;
+  const hex = value.charCodeAt(idx).toString(16).toUpperCase().padStart(2, "0");
+  return `${value.slice(0, idx)}%${hex}${value.slice(idx + 1)}`;
+}
+
 describe("I2 — public-prefix-shaped tokens are redacted", () => {
   it("any prefix shape spliced into any host string is redacted", () => {
     fc.assert(
@@ -718,20 +724,41 @@ describe("I12 — input containing the literal marker triggers a typed error", (
 // --------------------------------------------------------------------
 
 describe("I14 — URL-encoded secrets are redacted", () => {
-  it("encodeURIComponent(prefix-shaped token) is redacted", () => {
+  it("percent-encoded prefix-shaped token is redacted", () => {
     fc.assert(
       fc.property(
         prefixShape(),
         fc.string({ maxLength: 20 }).filter((s) => !s.includes(REDACTED) && !/%/.test(s)),
+        fc.integer({ min: 0, max: 200 }),
         arch(),
-        (kind, host, architecture) => {
+        (kind, host, position, architecture) => {
           const token = generatePrefixedToken(kind);
-          const encoded = encodeURIComponent(token);
-          // Skip cases where encoding is identity (no special chars).
-          if (encoded === token) return true;
+          const encoded = percentEncodeOneByte(token, position);
           const planted = `${host}?key=${encoded}`;
           const sanitized = sanitize(planted, { architecture, env: {} });
           return !sanitized.includes(token) && !sanitized.includes(encoded);
+        },
+      ),
+      { numRuns: RUNS },
+    );
+  });
+
+  it("percent-encoded prefix-shaped object key is redacted", () => {
+    fc.assert(
+      fc.property(
+        prefixShape(),
+        fc.string({ minLength: 1, maxLength: 10 }),
+        fc.integer({ min: 0, max: 200 }),
+        arch(),
+        (kind, value, position, architecture) => {
+          const token = generatePrefixedToken(kind);
+          const encoded = percentEncodeOneByte(token, position);
+          const sanitized = sanitize(
+            { [encoded]: value },
+            { architecture, env: {} },
+          );
+          return !Object.keys(sanitized).includes(encoded)
+            && Object.keys(sanitized).includes(REDACTED);
         },
       ),
       { numRuns: RUNS },
