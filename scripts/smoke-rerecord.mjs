@@ -313,10 +313,16 @@ export function validateRecipes(recipes) {
     // Architecture-specific structural checks. Keep narrow — semantic
     // per-recipe checks live in tests/unit/smoke-rerecord-recipes.test.mjs.
     if (recipe.architecture === ARCHITECTURE_API_REVIEWERS) {
-      const provider = spec.args[spec.args.indexOf("--provider") + 1];
+      const idx = spec.args.indexOf("--provider");
+      if (idx === -1) {
+        throw new TypeError(
+          `${where}: api-reviewers recipe must include --provider in args`,
+        );
+      }
+      const provider = spec.args[idx + 1];
       if (typeof provider !== "string" || provider.length === 0) {
         throw new TypeError(
-          `${where}: api-reviewers recipe must pass --provider <name> in args`,
+          `${where}: --provider must be followed by a non-empty name`,
         );
       }
       const expected = API_REVIEWER_PROVIDER_KEYS[provider];
@@ -383,7 +389,7 @@ function listRecipes() {
   }
 }
 
-function preflightCheck(spec) {
+export function preflightCheck(spec) {
   // Both branches consult spec.env (the env that recordResponse will
   // pass to the spawn), not process.env. Recipes that mutate env in
   // spawnArgs() (e.g. claude/auth-failure scrubs auth) need preflight
@@ -586,16 +592,16 @@ function main() {
   process.stderr.write("OK\n");
 }
 
-// Run main() only when invoked as the entry script. Importers (e.g.
-// recipe-shape tests) get the module exports without triggering arg
-// parsing or process.exit.
+// Predicate for "this module is being invoked as the entry script".
+// Exported so the wiring can be unit-tested with synthetic argv values
+// (relative paths, symlinks, mismatching paths) — empirical proof of
+// the npm/npx-shim guard rather than code-reading.
 //
 // Robust against:
 //   - relative argv[1] (`node scripts/smoke-rerecord.mjs ...` from repo
 //     root passes a relative path; pathToFileURL needs absolute)
 //   - symlinks (npm/npx shims, /var/symlinks/, etc.) via realpathSync
-const isEntryScript = (() => {
-  const argv1 = process.argv[1];
+export function isEntryScript(scriptUrl, argv1) {
   if (typeof argv1 !== "string" || argv1.length === 0) return false;
   let resolved;
   try {
@@ -603,9 +609,9 @@ const isEntryScript = (() => {
   } catch {
     resolved = path.resolve(argv1);
   }
-  return import.meta.url === pathToFileURL(resolved).href;
-})();
+  return scriptUrl === pathToFileURL(resolved).href;
+}
 
-if (isEntryScript) {
+if (isEntryScript(import.meta.url, process.argv[1])) {
   main();
 }

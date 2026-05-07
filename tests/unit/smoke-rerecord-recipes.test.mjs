@@ -122,10 +122,12 @@ describe("smoke-rerecord recipes — auth invariants", () => {
   describe("grok/tunnel-error", () => {
     const spec = RECIPES["grok/tunnel-error"].spawnArgs();
     it("forces tunnel-unavailable via an unreachable port (intent-encoded in env)", () => {
-      // Negative recipe: must point GROK_WEB_BASE_URL at a port nothing
-      // listens on so the spawn deterministically hits a tunnel error
-      // even on a developer machine where the real tunnel is up.
-      assert.match(spec.env.GROK_WEB_BASE_URL, /127\.0\.0\.1:1\b/);
+      // Negative recipe: must point GROK_WEB_BASE_URL at port 1
+      // (universally unreachable) so the spawn deterministically hits a
+      // tunnel error even on a developer machine where the real tunnel
+      // is up. Exact match prevents accidental drift to ports like 11
+      // or 1234 which `\b` would have allowed through.
+      assert.equal(spec.env.GROK_WEB_BASE_URL, "http://127.0.0.1:1/v1");
     });
     it("declares expectExit: [1]", () => {
       assert.deepEqual(spec.expectExit, [1]);
