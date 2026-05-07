@@ -32,6 +32,7 @@ import {
   buildProvenance,
   sanitize,
 } from "./lib/fixture-sanitization.mjs";
+import { checkAuthOrFile } from "./lib/smoke-rerecord-preflight.mjs";
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const FIXTURE_ROOT = path.join(REPO_ROOT, "tests/smoke/fixtures");
@@ -59,7 +60,15 @@ const RECIPES = Object.freeze({
         "--", HAPPY_PATH_PROMPT,
       ],
       env: { ...process.env },
-      requireEnvOrFile: { file: path.join(process.env.HOME ?? "", ".claude") },
+      // Either an existing claude-cli OAuth dir at ~/.claude OR a wired
+      // ANTHROPIC_API_KEY / CLAUDE_API_KEY env var is sufficient. The
+      // workflow (smoke-rerecord.yml) wires both secrets so a fresh CI
+      // runner without ~/.claude can still record. (Greptile P1
+      // #3199437297 — file-only check rejected secret-only runners.)
+      requireEnvOrFile: {
+        envAny: ["ANTHROPIC_API_KEY", "CLAUDE_API_KEY"],
+        file: path.join(process.env.HOME ?? "", ".claude"),
+      },
     }),
   },
   "claude/auth-failure": {
@@ -248,10 +257,10 @@ function preflightCheck(spec) {
     }
   }
   if (spec.requireEnvOrFile) {
-    const file = spec.requireEnvOrFile.file;
-    if (!existsSync(file)) {
+    const result = checkAuthOrFile(spec.requireEnvOrFile);
+    if (!result.ok) {
       process.stderr.write(
-        `smoke-rerecord: ${file} not found and no API key in env. Sign in to the CLI first or set the relevant *_API_KEY env var.\n`,
+        `smoke-rerecord: ${result.reason}. Sign in to the CLI first or set the relevant *_API_KEY env var.\n`,
       );
       process.exit(2);
     }
