@@ -15,6 +15,7 @@ import {
   redactKnownPatterns,
   sanitize,
   sanitizeString,
+  COMPANION_SESSION_ID_FIELDS,
   FIXTURE_SANITIZATION_REDACTED_TOKEN,
   FIXTURE_SANITIZATION_AUTO_LENGTH_FLOOR,
   FIXTURE_SANITIZATION_CURATED_LENGTH_FLOOR,
@@ -230,6 +231,25 @@ test("sanitize: companion architecture redacts session-id fields", () => {
     "absolute home path scrubbed");
   assert.equal(out.job_id, "11111111-2222-4333-8444-555555555555",
     "non-secret job_id survives");
+});
+
+test("sanitize: companion session-id field contract includes snake_case and camelCase names", () => {
+  assert.deepEqual(COMPANION_SESSION_ID_FIELDS, Object.freeze([
+    "claude_session_id",
+    "gemini_session_id",
+    "kimi_session_id",
+    "claudeSessionId",
+    "geminiSessionId",
+    "kimiSessionId",
+  ]));
+  const out = sanitize({
+    claudeSessionId: "camel-claude-session",
+    geminiSessionId: "camel-gemini-session",
+    kimiSessionId: "camel-kimi-session",
+  }, { architecture: "companion", env: {} });
+  assert.equal(out.claudeSessionId, REDACTED);
+  assert.equal(out.geminiSessionId, REDACTED);
+  assert.equal(out.kimiSessionId, REDACTED);
 });
 
 test("sanitize: grok architecture preserves session-id fields (not present in grok records)", () => {

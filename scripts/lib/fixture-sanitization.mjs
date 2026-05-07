@@ -96,7 +96,7 @@ const BEARER_TOKEN = /Bearer\s+[^\s"',}\]\\]+/gi;
 // Companion session-id field names. Both snake_case and camelCase variants —
 // providers vary. Replaced wholesale with REDACTED when architecture is
 // "companion".
-const COMPANION_SESSION_ID_FIELDS = Object.freeze([
+export const COMPANION_SESSION_ID_FIELDS = Object.freeze([
   "claude_session_id",
   "gemini_session_id",
   "kimi_session_id",
