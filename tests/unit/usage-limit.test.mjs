@@ -27,6 +27,8 @@ test("usage-limit helper does not classify transient rate or capacity wording", 
     "Rate limit exceeded for requests per minute. Retry later.",
     "MODEL_CAPACITY_EXHAUSTED: No capacity available; model is capacity-limited.",
     "Provider rate limit overloaded this shard.",
+    "Error code: 4030",
+    "Error code: 40300",
   ]) {
     assert.equal(isUsageLimitDetail(detail), false, detail);
     assert.equal(usageLimitMessage(detail), null, detail);
