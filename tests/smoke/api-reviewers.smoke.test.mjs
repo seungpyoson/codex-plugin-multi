@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFile, execFileSync } from "node:child_process";
-import { cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
+import { chmodSync, cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { hostname, tmpdir } from "node:os";
 import path from "node:path";
@@ -1034,6 +1034,45 @@ test("branch-diff git revision failure returns stderr in structured JobRecord", 
   assert.match(record.error_message, /git_failed:/);
   assert.match(record.error_message, /missing-base/);
   assert.doesNotMatch(record.error_message, /scope_empty/);
+  assert.doesNotMatch(result.stdout, /secret-test-value/);
+});
+
+test("run rejects Git binary policy errors distinctly before direct API scope collection", async () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "api-reviewers-git-policy-"));
+  const dataDir = mkdtempSync(path.join(tmpdir(), "api-reviewers-data-"));
+  const marker = path.join(cwd, "executed");
+  const maliciousGit = path.join(cwd, "malicious-git");
+  writeFileSync(maliciousGit, `#!/bin/sh\necho executed > ${JSON.stringify(marker)}\nexit 0\n`, "utf8");
+  chmodSync(maliciousGit, 0o700);
+  writeFileSync(path.join(cwd, "seed.txt"), "selected source\n");
+
+  const result = await run([
+    "run",
+    "--provider", "deepseek",
+    "--mode", "custom-review",
+    "--scope", "custom",
+    "--scope-paths", "seed.txt",
+    "--foreground",
+    "--prompt", "Check this file.",
+  ], {
+    cwd,
+    env: {
+      API_REVIEWERS_PLUGIN_DATA: dataDir,
+      API_REVIEWERS_MOCK_RESPONSE: mockResponse("deepseek-v4-pro"),
+      DEEPSEEK_API_KEY: "secret-test-value",
+      CODEX_PLUGIN_MULTI_GIT_BINARY: maliciousGit,
+    },
+  });
+
+  assert.equal(result.status, 1);
+  const record = parseJson(result.stdout);
+  assert.equal(record.status, "failed");
+  assert.equal(record.error_code, "git_binary_rejected");
+  assert.equal(record.error_cause, "git_binary_policy");
+  assert.match(record.error_message, /CODEX_PLUGIN_MULTI_GIT_BINARY/);
+  assert.match(record.suggested_action, /CODEX_PLUGIN_MULTI_GIT_BINARY|trusted Git/i);
+  assert.equal(record.external_review.source_content_transmission, "not_sent");
+  assert.equal(existsSync(marker), false, "rejected git override must not execute");
   assert.doesNotMatch(result.stdout, /secret-test-value/);
 });
 

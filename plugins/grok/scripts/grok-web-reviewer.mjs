@@ -7,6 +7,7 @@ import { hostname } from "node:os";
 import { dirname, isAbsolute, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { cleanGitEnv as cleanCanonicalGitEnv } from "./lib/git-env.mjs";
+import { GIT_BINARY_ENV, gitEnv, isGitBinaryPolicyError, resolveGitBinary } from "./lib/git-binary.mjs";
 import { REVIEW_PROMPT_CONTRACT_VERSION, buildReviewAuditManifest, buildReviewPrompt, scopeResolutionReason } from "./lib/review-prompt.mjs";
 import {
   EXTERNAL_REVIEW_KEYS,
@@ -27,8 +28,6 @@ const MAX_STATE_JOBS = 50;
 const STATE_LOCK_STALE_MS = 60 * 1000;
 const SCHEMA_VERSION = 10;
 const MIN_SECRET_REDACTION_LENGTH = 8;
-const GIT_BINARY = "/usr/bin/git";
-const GIT_SAFE_PATH = "/usr/bin:/bin";
 const PLUGIN_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const SCOPE_FILE_OPEN_FLAGS = fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0);
 const GROK_EXPECTED_KEYS = Object.freeze([
@@ -250,7 +249,7 @@ function runCommand(command, args = [], options = {}) {
 }
 
 function git(args, cwd, options = {}) {
-  const res = runCommand(GIT_BINARY, args, { cwd, env: { ...cleanGitEnv(), PATH: GIT_SAFE_PATH } });
+  const res = runCommand(resolveGitBinary({ cwd, workspaceRoot: options.workspaceRoot }), args, { cwd, env: gitEnv(cleanGitEnv()) });
   if (res.error) throw new Error(`git_failed:${res.error.message}`);
   if (res.signal) throw new Error(`git_failed:signal:${res.signal}`);
   if (res.status !== 0) {
@@ -262,9 +261,9 @@ function git(args, cwd, options = {}) {
 }
 
 function gitRaw(args, cwd, options = {}) {
-  const res = runCommand(GIT_BINARY, args, {
+  const res = runCommand(resolveGitBinary({ cwd, workspaceRoot: options.workspaceRoot }), args, {
     cwd,
-    env: { ...cleanGitEnv(), PATH: GIT_SAFE_PATH },
+    env: gitEnv(cleanGitEnv()),
     maxBuffer: options.maxBuffer,
   });
   if (res.error) throw new Error(`git_failed:${res.error.message}`);
@@ -277,11 +276,12 @@ function gitRaw(args, cwd, options = {}) {
   return res.stdout;
 }
 
-function gitCommitForPrompt(cwd, ref) {
+function gitCommitForPrompt(cwd, ref, workspaceRoot = null) {
   if (!ref) return null;
   try {
-    return git(["rev-parse", "--verify", `${ref}^{commit}`], cwd, { allowFailure: true }) || null;
-  } catch {
+    return git(["rev-parse", "--verify", `${ref}^{commit}`], cwd, { allowFailure: true, workspaceRoot }) || null;
+  } catch (error) {
+    if (isGitBinaryPolicyError(error)) throw error;
     return null;
   }
 }
@@ -289,7 +289,8 @@ function gitCommitForPrompt(cwd, ref) {
 function bestEffortWorkspaceRoot(cwd) {
   try {
     return git(["rev-parse", "--show-toplevel"], cwd, { allowFailure: true }) || cwd;
-  } catch {
+  } catch (error) {
+    if (isGitBinaryPolicyError(error)) throw error;
     return cwd;
   }
 }
@@ -339,7 +340,7 @@ function safeScopeBase(base) {
   return value;
 }
 
-function selectedScopePaths(scope, options, cwd) {
+function selectedScopePaths(scope, options, cwd, workspaceRoot = null) {
   if (scope === "custom") {
     const relPaths = splitScopePaths(options["scope-paths"]);
     if (relPaths.length === 0) throw new Error("scope_paths_required: custom-review requires --scope-paths");
@@ -347,7 +348,7 @@ function selectedScopePaths(scope, options, cwd) {
   }
   if (scope === "branch-diff") {
     const base = safeScopeBase(options["scope-base"]);
-    const changed = gitRaw(["diff", "-z", "--name-only", `${base}...HEAD`, "--"], cwd);
+    const changed = gitRaw(["diff", "-z", "--name-only", `${base}...HEAD`, "--"], cwd, { workspaceRoot });
     const requested = splitScopePaths(options["scope-paths"]);
     const changedPaths = splitGitPathList(changed);
     const relPaths = requested.length > 0
@@ -433,7 +434,7 @@ async function readGitScopeFiles(gitCwd, workspaceRoot, relPaths) {
   for (const relPath of relPaths) {
     const { normalizedRel } = validateScopePath(workspaceRoot, relPath);
     const blobSpec = `HEAD:${relPath}`;
-    const sizeText = gitRaw(["cat-file", "-s", blobSpec], gitCwd, { allowFailure: true });
+    const sizeText = gitRaw(["cat-file", "-s", blobSpec], gitCwd, { allowFailure: true, workspaceRoot });
     if (sizeText === null) continue;
     const blobBytes = Number.parseInt(sizeText.trim(), 10);
     if (!Number.isSafeInteger(blobBytes) || blobBytes < 0) {
@@ -445,6 +446,7 @@ async function readGitScopeFiles(gitCwd, workspaceRoot, relPaths) {
     const text = gitRaw(["show", blobSpec], gitCwd, {
       allowFailure: true,
       maxBuffer: GIT_SHOW_MAX_BUFFER_BYTES,
+      workspaceRoot,
     });
     if (text === null) continue;
     addScopeFile(files, normalizedRel, text, totalBytes);
@@ -507,7 +509,7 @@ async function collectScope(options) {
   const workspaceRoot = git(["rev-parse", "--show-toplevel"], cwd, { allowFailure: true }) || cwd;
   const scope = scopeName(options);
   const scopeBase = scope === "branch-diff" ? options["scope-base"] ?? "main" : null;
-  const relPaths = selectedScopePaths(scope, options, cwd);
+  const relPaths = selectedScopePaths(scope, options, cwd, workspaceRoot);
   const files = scope === "branch-diff"
     ? await readGitScopeFiles(cwd, workspaceRoot, relPaths)
     : await readFilesystemScopeFiles(workspaceRoot, relPaths);
@@ -518,15 +520,15 @@ async function collectScope(options) {
     scope_base: scopeBase,
     scope_paths: relPaths,
     repository: repositoryIdentity(cwd, workspaceRoot),
-    base_commit: scopeBase ? gitCommitForPrompt(cwd, scopeBase) : null,
-    head_ref: git(["branch", "--show-current"], cwd, { allowFailure: true }) || "HEAD",
-    head_commit: gitCommitForPrompt(cwd, "HEAD"),
+    base_commit: scopeBase ? gitCommitForPrompt(cwd, scopeBase, workspaceRoot) : null,
+    head_ref: git(["branch", "--show-current"], cwd, { allowFailure: true, workspaceRoot }) || "HEAD",
+    head_commit: gitCommitForPrompt(cwd, "HEAD", workspaceRoot),
     files,
   };
 }
 
 function repositoryIdentity(cwd, workspaceRoot) {
-  const remote = git(["remote", "get-url", "origin"], cwd, { allowFailure: true });
+  const remote = git(["remote", "get-url", "origin"], cwd, { allowFailure: true, workspaceRoot });
   if (!remote) return workspaceRoot;
   const match = /[:/]([^/:]+\/[^/]+?)(?:\.git)?$/.exec(remote);
   return match ? match[1] : remote;
@@ -882,12 +884,14 @@ function suggestedAction(errorCode, errorMessage = "") {
   if (errorCode === "grok_chat_timeout") return "The Grok chat readiness probe exceeded GROK_WEB_CHAT_DOCTOR_TIMEOUT_MS; inspect the local tunnel latency or raise that timeout, then retry.";
   if (errorCode === "models_ok_chat_400") return "The tunnel lists models but chat is not review-capable; refresh the Grok web session, inspect tunnel logs and rate-limit endpoint health, then retry.";
   if (errorCode === "malformed_response") return "Inspect or update the local Grok web tunnel; it returned an unsupported response shape.";
+  if (errorCode === "git_binary_rejected") return `Set ${GIT_BINARY_ENV} to a trusted Git executable outside the workspace, or unset it to use the default Git binary.`;
   return "Inspect error_message and repair the local Grok web tunnel before retrying.";
 }
 
 function errorCauseFor(errorCode) {
   if (errorCode === "bad_args") return "caller";
   if (errorCode === "scope_failed") return "scope_resolution";
+  if (errorCode === "git_binary_rejected") return "git_binary_policy";
   return "grok_web_tunnel";
 }
 
@@ -1429,14 +1433,15 @@ async function cmdRun(options) {
   } catch (e) {
     cfg ??= fallbackConfig();
     const cwd = resolve(process.cwd());
+    const policyError = isGitBinaryPolicyError(e);
     scopeInfo = {
       cwd,
-      workspaceRoot: bestEffortWorkspaceRoot(cwd),
+      workspaceRoot: policyError ? cwd : bestEffortWorkspaceRoot(cwd),
       scope: options.scope ?? null,
       scope_base: options["scope-base"] ?? null,
       scope_paths: splitScopePaths(options["scope-paths"]),
     };
-    execution = providerFailure(e.message.startsWith("bad_args:") ? "bad_args" : "scope_failed", redactor()(e.message), null, null, false);
+    execution = providerFailure(policyError ? "git_binary_rejected" : (e.message.startsWith("bad_args:") ? "bad_args" : "scope_failed"), redactor()(e.message), null, null, false);
   }
   if (!execution) {
     if (!hasPromptText(options.prompt)) {

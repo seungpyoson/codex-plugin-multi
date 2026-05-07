@@ -45,6 +45,11 @@
       "branches": 100.0,
       "functions": 100.0
     },
+    "plugins/api-reviewers/scripts/lib/git-binary.mjs": {
+      "lines": 88.24,
+      "branches": 92.86,
+      "functions": 100.0
+    },
     "plugins/api-reviewers/scripts/lib/review-prompt.mjs": {
       "lines": 100.0,
       "branches": 0.0,
@@ -93,6 +98,11 @@
     "plugins/claude/scripts/lib/git-env.mjs": {
       "lines": 100.0,
       "branches": 100.0,
+      "functions": 100.0
+    },
+    "plugins/claude/scripts/lib/git-binary.mjs": {
+      "lines": 88.24,
+      "branches": 92.86,
       "functions": 100.0
     },
     "plugins/claude/scripts/lib/identity.mjs": {
@@ -195,6 +205,11 @@
       "branches": 100.0,
       "functions": 100.0
     },
+    "plugins/gemini/scripts/lib/git-binary.mjs": {
+      "lines": 88.24,
+      "branches": 92.86,
+      "functions": 100.0
+    },
     "plugins/gemini/scripts/lib/identity.mjs": {
       "lines": 25.77,
       "branches": 0.0,
@@ -279,6 +294,11 @@
       "lines": 0.0,
       "branches": 66.67,
       "functions": 0.0
+    },
+    "plugins/kimi/scripts/lib/git-binary.mjs": {
+      "lines": 88.24,
+      "branches": 92.86,
+      "functions": 100.0
     },
     "plugins/kimi/scripts/lib/git.mjs": {
       "lines": 100.0,

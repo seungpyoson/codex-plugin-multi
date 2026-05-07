@@ -2069,6 +2069,41 @@ test("branch-diff rejects oversized committed files before contacting the tunnel
   assert.equal(record.external_review.source_content_transmission, "not_sent");
 });
 
+test("run rejects Git binary policy errors distinctly before Grok scope collection", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "grok-web-git-policy-"));
+  const marker = path.join(cwd, "executed");
+  const maliciousGit = path.join(cwd, "malicious-git");
+  writeFileSync(maliciousGit, `#!/bin/sh\necho executed > ${JSON.stringify(marker)}\nexit 0\n`, "utf8");
+  chmodSync(maliciousGit, 0o700);
+  writeFileSync(path.join(cwd, "review.js"), "export const value = 42;\n");
+
+  const result = run([
+    "run",
+    "--mode", "custom-review",
+    "--scope", "custom",
+    "--scope-paths", "review.js",
+    "--foreground",
+    "--prompt", "Review this file.",
+  ], {
+    cwd,
+    env: {
+      GROK_WEB_BASE_URL: "http://127.0.0.1:9/api",
+      GROK_WEB_TUNNEL_API_KEY: "secret-cookie-like-token",
+      CODEX_PLUGIN_MULTI_GIT_BINARY: maliciousGit,
+    },
+  });
+  const record = parseStdout(result);
+
+  assert.equal(result.status, 1);
+  assert.equal(record.status, "failed");
+  assert.equal(record.error_code, "git_binary_rejected");
+  assert.equal(record.error_cause, "git_binary_policy");
+  assert.match(record.error_message, /CODEX_PLUGIN_MULTI_GIT_BINARY/);
+  assert.match(record.suggested_action, /CODEX_PLUGIN_MULTI_GIT_BINARY|trusted Git/i);
+  assert.equal(record.external_review.source_content_transmission, "not_sent");
+  assert.equal(existsSync(marker), false, "rejected git override must not execute");
+});
+
 test("custom-review rejects unsafe scope paths before contacting the tunnel", () => {
   const cwd = mkdtempSync(path.join(tmpdir(), "grok-web-workspace-"));
   writeFileSync(path.join(cwd, "review.js"), "export const value = 42;\n");

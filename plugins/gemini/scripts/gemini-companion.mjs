@@ -18,6 +18,7 @@ import { newJobId, verifyPidInfo } from "./lib/identity.mjs";
 import { buildJobRecord, externalReviewForInvocation } from "./lib/job-record.mjs";
 import { reconcileActiveJobs } from "./lib/reconcile.mjs";
 import { cleanGitEnv } from "./lib/git-env.mjs";
+import { gitEnv, isGitBinaryPolicyError, resolveGitBinary } from "./lib/git-binary.mjs";
 import { spawnGemini } from "./lib/gemini.mjs";
 import { writeCancelMarker, consumeCancelMarker } from "./lib/cancel-marker.mjs";
 import {
@@ -51,8 +52,6 @@ const DEFAULT_GEMINI_REVIEW_TIMEOUT_MS = 600000;
 const CONTINUABLE_STATUSES = new Set(["completed", "failed", "cancelled", "stale"]);
 const RUN_MODES = Object.freeze(["review", "adversarial-review", "custom-review", "rescue"]);
 const PREFLIGHT_MODES = Object.freeze(["review", "adversarial-review", "custom-review"]);
-const GIT_PROMPT_BINARY = "/usr/bin/git";
-const GIT_PROMPT_SAFE_PATH = "/usr/bin:/bin";
 
 configureState({
   pluginDataEnv: "GEMINI_PLUGIN_DATA",
@@ -92,43 +91,45 @@ function targetPromptFor(invocation, userPrompt) {
     mode: invocation.mode,
     repository: invocation.workspace_root ?? null,
     baseRef: invocation.scope_base,
-    baseCommit: gitCommitForPrompt(invocation.cwd, invocation.scope_base),
+    baseCommit: gitCommitForPrompt(invocation.cwd, invocation.scope_base, invocation.workspace_root),
     headRef: "HEAD",
-    headCommit: gitCommitForPrompt(invocation.cwd, "HEAD"),
+    headCommit: gitCommitForPrompt(invocation.cwd, "HEAD", invocation.workspace_root),
     scope: invocation.scope,
     scopePaths: invocation.scope_paths,
     userPrompt,
   });
 }
 
-function gitCommitForPrompt(cwd, ref) {
+function gitCommitForPrompt(cwd, ref, workspaceRoot = null) {
   if (!ref) return null;
   try {
-    return execFileSync(GIT_PROMPT_BINARY, ["rev-parse", "--verify", `${ref}^{commit}`], {
+    return execFileSync(resolveGitBinary({ cwd, workspaceRoot }), ["-C", cwd, "rev-parse", "--verify", `${ref}^{commit}`], {
       cwd,
-      env: cleanGitPromptEnv(),
+      env: gitEnv(cleanGitEnv()),
       encoding: "utf8",
       stdio: ["ignore", "pipe", "ignore"],
     }).trim();
-  } catch {
+  } catch (error) {
+    if (isGitBinaryPolicyError(error)) throw error;
     return null;
   }
 }
 
-function gitText(args, cwd) {
+function gitText(args, cwd, workspaceRoot = null) {
   try {
-    return execFileSync(GIT_PROMPT_BINARY, ["-C", cwd, ...args], {
+    return execFileSync(resolveGitBinary({ cwd, workspaceRoot }), ["-C", cwd, ...args], {
       encoding: "utf8",
       stdio: ["ignore", "pipe", "ignore"],
-      env: cleanGitPromptEnv(),
+      env: gitEnv(cleanGitEnv()),
     }).trim() || null;
-  } catch {
+  } catch (error) {
+    if (isGitBinaryPolicyError(error)) throw error;
     return null;
   }
 }
 
 function repositoryIdentity(cwd, workspaceRoot) {
-  const remote = gitText(["remote", "get-url", "origin"], cwd);
+  const remote = gitText(["remote", "get-url", "origin"], cwd, workspaceRoot);
   if (!remote) return workspaceRoot;
   const match = /[:/]([^/:]+\/[^/]+?)(?:\.git)?$/.exec(remote);
   return match ? match[1] : remote;
@@ -138,9 +139,9 @@ function promptMetadata(invocation) {
   return {
     repository: repositoryIdentity(invocation.cwd, invocation.workspace_root),
     baseRef: invocation.scope_base ?? null,
-    baseCommit: gitCommitForPrompt(invocation.cwd, invocation.scope_base),
-    headRef: gitText(["branch", "--show-current"], invocation.cwd) ?? "HEAD",
-    headCommit: gitCommitForPrompt(invocation.cwd, "HEAD"),
+    baseCommit: gitCommitForPrompt(invocation.cwd, invocation.scope_base, invocation.workspace_root),
+    headRef: gitText(["branch", "--show-current"], invocation.cwd, invocation.workspace_root) ?? "HEAD",
+    headCommit: gitCommitForPrompt(invocation.cwd, "HEAD", invocation.workspace_root),
   };
 }
 
@@ -223,21 +224,15 @@ function reviewAuditManifest(invocation, prompt, containmentPath, execution) {
   });
 }
 
-function cleanGitPromptEnv() {
-  const env = cleanGitEnv();
-  env.PATH = GIT_PROMPT_SAFE_PATH;
-  return env;
-}
-
 // Mutation-detection git scrub: same shared list as claude-companion +
 // scope.mjs. PR #21 review: previous local 5-key list missed
 // GIT_CONFIG_GLOBAL — fold onto plugin lib's canonical scrub.
 
-function gitStatus(args, cwd) {
-  return execFileSync(GIT_PROMPT_BINARY, ["-C", cwd, ...args], {
+function gitStatus(args, cwd, workspaceRoot = null) {
+  return execFileSync(resolveGitBinary({ cwd, workspaceRoot }), ["-C", cwd, ...args], {
     encoding: "utf8",
     stdio: ["ignore", "pipe", "pipe"],
-    env: cleanGitPromptEnv(),
+    env: gitEnv(cleanGitEnv()),
   });
 }
 
@@ -428,6 +423,7 @@ function cmdPreflight(rest) {
     populateScope(profile, cwd, containment.path, {
       scopeBase: options["scope-base"] ?? null,
       scopePaths,
+      workspaceRoot,
     }, containment);
     const summary = summarizeScopeDirectory(containment.path);
     printJson({
@@ -448,6 +444,7 @@ function cmdPreflight(rest) {
     });
   } catch (e) {
     exitCode = 2;
+    const error = isGitBinaryPolicyError(e) ? "git_binary_rejected" : "scope_failed";
     printJson({
       ok: false,
       event: "preflight",
@@ -459,7 +456,7 @@ function cmdPreflight(rest) {
       scope: profile.scope,
       scope_base: options["scope-base"] ?? null,
       scope_paths: scopePaths,
-      error: "scope_failed",
+      error,
       error_message: e.message,
       ...preflightSafetyFields(),
       disclosure_note: preflightDisclosure("Gemini"),
@@ -618,6 +615,7 @@ function setupExecutionScopeOrExit(invocation, profile, { foreground, lifecycleE
     populateScope(profile, invocation.cwd, containment.path, {
       scopeBase: invocation.scope_base,
       scopePaths: invocation.scope_paths,
+      workspaceRoot: invocation.workspace_root,
     }, containment);
     return { containment, disposeEffective: invocation.dispose_effective };
   } catch (e) {
@@ -652,9 +650,10 @@ function prepareMutationContext(invocation, profile) {
     context.mutations.push(mutationDetectionFailure(e, "neutral cwd setup failed"));
   }
   try {
-    context.gitStatusBefore = gitStatus(["status", "-s", "--untracked-files=all"], invocation.cwd);
+    context.gitStatusBefore = gitStatus(["status", "-s", "--untracked-files=all"], invocation.cwd, invocation.workspace_root);
     writeSidecar(invocation.workspace_root, invocation.job_id, "git-status-before.txt", context.gitStatusBefore);
   } catch (e) {
+    if (isGitBinaryPolicyError(e)) throw e;
     context.mutations.push(mutationDetectionFailure(e));
   }
   return context;
@@ -767,9 +766,10 @@ function recordPostRunMutations(invocation, mutationContext) {
   if (!mutationContext.checkMutations || mutationContext.gitStatusBefore === null) return;
   let gitStatusAfter = null;
   try {
-    gitStatusAfter = gitStatus(["status", "-s", "--untracked-files=all"], invocation.cwd);
+    gitStatusAfter = gitStatus(["status", "-s", "--untracked-files=all"], invocation.cwd, invocation.workspace_root);
     writeGitStatusAfterSidecar(invocation, gitStatusAfter);
   } catch (e) {
+    if (isGitBinaryPolicyError(e)) throw e;
     mutationContext.mutations.push(mutationDetectionFailure(e));
   }
   if (!gitStatusAfter || gitStatusAfter === mutationContext.gitStatusBefore) return;
@@ -1448,6 +1448,9 @@ async function main() {
 }
 
 main().catch((e) => {
+  if (isGitBinaryPolicyError(e)) {
+    fail("git_binary_rejected", e.message);
+  }
   process.stderr.write(`gemini-companion: unhandled: ${e.stack ?? e.message ?? e}\n`);
   process.exit(1);
 });

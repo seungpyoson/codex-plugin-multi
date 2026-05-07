@@ -25,6 +25,7 @@ import {
   buildExternalReview,
   sourceContentTransmissionForExecution,
 } from "./external-review.mjs";
+import { isGitBinaryPolicyError } from "./git-binary.mjs";
 import path from "node:path";
 
 export const SCHEMA_VERSION = 10;
@@ -140,6 +141,7 @@ export function externalReviewForInvocation(invocation, execution = null) {
  *
  * error_code classification:
  *   null            — completed or cancelled.
+ *   git_binary_rejected — CODEX_PLUGIN_MULTI_GIT_BINARY policy rejected an override.
  *   scope_failed    — execution.errorMessage describes scope preparation refusal.
  *   spawn_failed    — execution.errorMessage set (spawn threw before target ran).
  *   finalization_failed — errorMessage starts "finalization_failed:" — the
@@ -220,6 +222,13 @@ function classifyErrorMessage(message) {
       status: "failed",
       error_code: "oauth_inference_rejected",
       error_message: text.slice(OAUTH_INFERENCE_REJECTED_PREFIX.length).trim(),
+    };
+  }
+  if (isGitBinaryPolicyError(new Error(text))) {
+    return {
+      status: "failed",
+      error_code: "git_binary_rejected",
+      error_message: message,
     };
   }
   if (isScopeFailure(message)) {

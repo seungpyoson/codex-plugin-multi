@@ -19,7 +19,14 @@ lets Claude Code delegate to Codex.
 ## Requirements
 
 - Codex with plugin marketplace support.
-- Git and Node.js available on `PATH`.
+- Node.js available on `PATH`.
+- Git 2.x or newer on macOS/Linux. Reviewer scope collection defaults to the
+  hardened `/usr/bin/git` path and does not resolve `git` from the caller's
+  ambient `PATH`; set `CODEX_PLUGIN_MULTI_GIT_BINARY` to an absolute executable
+  Git path when your supported environment installs Git elsewhere. Relative,
+  workspace-local, and `node_modules/.bin` overrides are rejected. The configured
+  override is trusted for the current process after first validation, so point it
+  at an operator-controlled path that cannot be replaced by the reviewed repo.
 - Claude Code installed and OAuth-authenticated if you enable the Claude plugin.
   `claude auth status` alone is not enough for review readiness; `/claude-setup`
   also verifies OAuth-only non-interactive `claude -p` inference because status

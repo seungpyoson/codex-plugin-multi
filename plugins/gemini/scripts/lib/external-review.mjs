@@ -108,7 +108,7 @@ export function sourceContentTransmissionForExecution({ status, errorCode, pidIn
     // no-pid cases conservative instead of claiming not_sent.
     return SOURCE_CONTENT_TRANSMISSION.UNKNOWN;
   }
-  if (errorCode === "scope_failed" || errorCode === "spawn_failed") {
+  if (errorCode === "git_binary_rejected" || errorCode === "scope_failed" || errorCode === "spawn_failed") {
     return SOURCE_CONTENT_TRANSMISSION.NOT_SENT;
   }
   if (errorCode === "oauth_inference_rejected" && !pidInfo) {

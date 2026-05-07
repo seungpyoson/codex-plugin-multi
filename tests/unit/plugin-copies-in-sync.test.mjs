@@ -31,6 +31,7 @@ const VERBATIM_FILES = [
   "process.mjs",
   "args.mjs",
   "git.mjs",
+  "git-binary.mjs",
   "identity.mjs",
   "scope.mjs",
   "cancel-marker.mjs",
@@ -116,6 +117,24 @@ test("lib/git-env.mjs: grok packaging copy matches the companion shared source",
     "utf8"
   );
   assert.equal(copy, canonical, "git-env.mjs packaging copy drifted in grok");
+});
+
+test("lib/git-binary.mjs: api-reviewers packaging copy matches the companion shared source", () => {
+  const canonical = readFileSync(path.join(REPO_ROOT, "plugins/claude/scripts/lib/git-binary.mjs"), "utf8");
+  const copy = readFileSync(
+    path.join(REPO_ROOT, "plugins/api-reviewers/scripts/lib/git-binary.mjs"),
+    "utf8"
+  );
+  assert.equal(copy, canonical, "git-binary.mjs packaging copy drifted in api-reviewers");
+});
+
+test("lib/git-binary.mjs: grok packaging copy matches the companion shared source", () => {
+  const canonical = readFileSync(path.join(REPO_ROOT, "plugins/claude/scripts/lib/git-binary.mjs"), "utf8");
+  const copy = readFileSync(
+    path.join(REPO_ROOT, "plugins/grok/scripts/lib/git-binary.mjs"),
+    "utf8"
+  );
+  assert.equal(copy, canonical, "git-binary.mjs packaging copy drifted in grok");
 });
 
 test("lib/git-env.mjs: kimi stripped key list matches the companion shared source", () => {
