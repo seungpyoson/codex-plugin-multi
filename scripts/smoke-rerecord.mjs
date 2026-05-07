@@ -70,6 +70,30 @@ const API_REVIEWER_PROVIDER_KEYS = Object.freeze({
   glm: Object.freeze(["ZAI_API_KEY", "ZAI_GLM_API_KEY"]),
 });
 
+// Auth-rejected recipes inject this sentinel into every accepted
+// provider key so the upstream provider returns 401/403 deterministically.
+// Exported so tests can assert against the same literal — drift between
+// recipe and test would silently turn a negative recipe into a decoy.
+export const INVALID_PROVIDER_KEY_SENTINEL =
+  "sk-this-is-a-deliberately-invalid-key-for-fixture-recording";
+
+// Build an env-overlay that invalidates every accepted key for `provider`.
+// Closing the C1-class drift one more step: the recipe-side override
+// previously knew about one key while the plugin accepted multiple
+// (#3199-class P1 — glm wiring with ZAI_GLM_API_KEY left intact would
+// fall through to happy-path in a negative fixture). Iterating the
+// canonical list means adding a new accepted key automatically
+// invalidates it in every negative recipe; nothing else needs to change.
+function invalidateProviderKeys(provider) {
+  const keys = API_REVIEWER_PROVIDER_KEYS[provider];
+  if (!keys) {
+    throw new Error(
+      `invalidateProviderKeys: unknown provider ${JSON.stringify(provider)}`,
+    );
+  }
+  return Object.fromEntries(keys.map((k) => [k, INVALID_PROVIDER_KEY_SENTINEL]));
+}
+
 export const RECIPES = Object.freeze({
   // ─── companion ──────────────────────────────────────────────────────
   "claude/happy-path-review": {
@@ -194,8 +218,12 @@ export const RECIPES = Object.freeze({
         "--scope-paths", "scripts/lib/plugin-targets.mjs",
         "--prompt", NEGATIVE_PROMPT,
       ],
-      // Inject a known-bad key — provider returns 401/403 → auth_rejected.
-      env: { ...process.env, DEEPSEEK_API_KEY: "sk-this-is-a-deliberately-invalid-key-for-fixture-recording" },
+      // Invalidate every accepted provider key so the request reaches the
+      // provider and returns 401/403 → auth_rejected. Iterating the
+      // canonical list (rather than naming one key) prevents the C1-class
+      // drift where adding a new accepted key silently turns this negative
+      // recipe into a happy-path decoy.
+      env: { ...process.env, ...invalidateProviderKeys("deepseek") },
       curatedEnvKeys: API_REVIEWER_PROVIDER_KEYS.deepseek,
       expectExit: [1],
     }),
@@ -232,8 +260,13 @@ export const RECIPES = Object.freeze({
         "--scope-paths", "scripts/lib/plugin-targets.mjs",
         "--prompt", NEGATIVE_PROMPT,
       ],
-      // Inject a known-bad key — provider returns 401/403 → auth_rejected.
-      env: { ...process.env, ZAI_API_KEY: "sk-this-is-a-deliberately-invalid-key-for-fixture-recording" },
+      // Same invalidation strategy as deepseek/auth-rejected. Greptile
+      // P1 #3199 caught this concretely: ZAI_API_KEY alone left
+      // ZAI_GLM_API_KEY untouched, so a CI runner with both secrets
+      // wired would fall back to the second key and silently record a
+      // happy-path response in the negative fixture. invalidateProviderKeys
+      // iterates the canonical list, structurally closing the gap.
+      env: { ...process.env, ...invalidateProviderKeys("glm") },
       curatedEnvKeys: API_REVIEWER_PROVIDER_KEYS.glm,
       expectExit: [1],
     }),
@@ -337,6 +370,26 @@ export function validateRecipes(recipes) {
           throw new TypeError(
             `${where}: happy-path requireEnvAny must reference API_REVIEWER_PROVIDER_KEYS.${provider} (drift = decoy preflight)`,
           );
+        }
+      }
+      // For auth-rejected recipes, every canonical provider key must be
+      // sentinelled. A recipe that names only the first key (the round-11
+      // pattern) lets a runner with the second key wired record a
+      // happy-path response into a negative fixture — the same C1-class
+      // drift, in negative-recipe shape. Validator catches it at module
+      // load instead of at recording time.
+      if (key.endsWith("/auth-rejected")) {
+        for (const k of expected) {
+          if (spec.env[k] !== INVALID_PROVIDER_KEY_SENTINEL) {
+            // Diagnostic intentionally omits the actual value — even in a
+            // throw-path, a recipe-validator error must not serialize an
+            // env value (Rule 10: no credential surfaces). The key name
+            // and the expectation are enough to localize the fix.
+            throw new TypeError(
+              `${where}: auth-rejected must invalidate every key in API_REVIEWER_PROVIDER_KEYS.${provider}; `
+              + `spec.env[${JSON.stringify(k)}] is not the sentinel (use invalidateProviderKeys(${JSON.stringify(provider)}))`,
+            );
+          }
         }
       }
     }

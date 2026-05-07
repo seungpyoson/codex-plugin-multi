@@ -22,7 +22,10 @@
 import { strict as assert } from "node:assert";
 import { describe, it } from "node:test";
 
-import { RECIPES } from "../../scripts/smoke-rerecord.mjs";
+import {
+  INVALID_PROVIDER_KEY_SENTINEL,
+  RECIPES,
+} from "../../scripts/smoke-rerecord.mjs";
 import { checkAuthOrFile } from "../../scripts/lib/smoke-rerecord-preflight.mjs";
 import { CLAUDE_PROVIDER_API_KEY_ENV } from "../../plugins/claude/scripts/lib/claude-provider-keys.mjs";
 
@@ -160,13 +163,30 @@ describe("smoke-rerecord recipes — auth invariants", () => {
 
     describe(negKey, () => {
       const spec = RECIPES[negKey].spawnArgs();
-      it("injects a deliberately-invalid provider key (intent-encoded in env)", () => {
-        // Each negative recipe sets the FIRST provider env-var name
-        // (the canonical happy-path key) to the sentinel invalid value,
-        // forcing the provider to return 401/403.
-        const sentinel = "sk-this-is-a-deliberately-invalid-key-for-fixture-recording";
+      it("invalidates EVERY canonical provider key (greptile P1 #3199 — class fix)", () => {
+        // Round-11 had this assert only `happyKeys[0]` — vacuous when the
+        // recipe also only set the first key. The class-of-problem fix
+        // (invalidateProviderKeys iterates API_REVIEWER_PROVIDER_KEYS[provider])
+        // closes the gap structurally; this test pins it: a recipe that
+        // forgets a key gets caught here, and `validateRecipes` catches it
+        // at module load. Without iterating, a runner with the secondary
+        // key wired (e.g. ZAI_GLM_API_KEY for glm) would silently record
+        // a happy-path response in the negative fixture.
         const happyKeys = RECIPES[happyKey].spawnArgs().requireEnvAny;
-        assert.equal(spec.env[happyKeys[0]], sentinel);
+        assert.ok(happyKeys.length > 0);
+        for (const k of happyKeys) {
+          // Diagnostic intentionally avoids interpolating spec.env[k] —
+          // when this assertion fires locally, the failing value is
+          // typically the developer's real provider key (because the
+          // recipe spread process.env and forgot to override one slot),
+          // and surfacing it in the assertion message is a credential
+          // leak (Rule 10).
+          assert.equal(
+            spec.env[k],
+            INVALID_PROVIDER_KEY_SENTINEL,
+            `auth-rejected must sentinel every canonical key for ${provider}; ${k} is not the sentinel`,
+          );
+        }
       });
       it("declares expectExit: [1]", () => {
         assert.deepEqual(spec.expectExit, [1]);
