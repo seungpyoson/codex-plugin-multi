@@ -472,6 +472,40 @@ function scrubAuth(env, keys) {
   return out;
 }
 
+// Derive the prompt string used to compute the provenance promptHash.
+//
+// Earlier rounds layered four detectors (explicit `--prompt`,
+// `--` separator, last non-flag positional, length>50 fallback). The
+// last two were fragile: a flag VALUE that didn't start with `-`
+// (e.g. `--auth-mode api_key` → `api_key`) was misclassified as a
+// positional prompt by layer 3, and a long path arg slipped through
+// layer 4. Both produced wrong promptHash values silently.
+//
+// Round-16 root fix: use ONLY explicit anchors. If neither
+// `--prompt <value>` nor `-- <value>` is present, the recipe has no
+// prompt and we hash the empty string. Honest "no prompt detected"
+// beats a wrong heuristic.
+//
+// Live recipes audit at round-16 commit time:
+//   - claude/happy-path-review     uses `-- HAPPY_PATH_PROMPT` ✓
+//   - claude/auth-failure          no prompt anchor → "" (correct,
+//                                   it's a `ping` doctor call)
+//   - grok/*                       use `--prompt …` ✓
+//   - api-reviewers-*/             use `--prompt …` ✓
+// Only claude/auth-failure changes (was incorrectly hashing "api_key").
+export function derivePromptForHash(args) {
+  if (!Array.isArray(args)) return "";
+  const promptIdx = args.indexOf("--prompt");
+  if (promptIdx !== -1 && typeof args[promptIdx + 1] === "string") {
+    return args[promptIdx + 1];
+  }
+  const ddIdx = args.indexOf("--");
+  if (ddIdx !== -1 && typeof args[ddIdx + 1] === "string") {
+    return args[ddIdx + 1];
+  }
+  return "";
+}
+
 function parseArgs(argv) {
   const out = { plugin: null, scenario: null, list: false, dry: false };
   for (let i = 0; i < argv.length; i += 1) {
@@ -660,25 +694,7 @@ function main() {
   }
 
   // Build sanitization context.
-  //
-  // Prompt-for-hash detection. Layered: (1) explicit `--prompt <value>`
-  // anchor; (2) trailing positional after `--` separator; (3) last
-  // non-flag positional arg; (4) length>50 fallback for legacy. The
-  // length-only heuristic was fragile per Gemini code-review (#116
-  // bot comments 3198445563 / 3198672662 / 3198727895) — `--scope-paths`
-  // values and other long file paths could be misidentified as prompts.
-  const promptForHash = (() => {
-    const args = spec.args ?? [];
-    const promptIdx = args.indexOf("--prompt");
-    if (promptIdx !== -1 && args[promptIdx + 1]) return args[promptIdx + 1];
-    const ddIdx = args.indexOf("--");
-    if (ddIdx !== -1 && args[ddIdx + 1]) return args[ddIdx + 1];
-    if (args.length > 0) {
-      const last = args[args.length - 1];
-      if (typeof last === "string" && !last.startsWith("-")) return last;
-    }
-    return args.find((arg) => typeof arg === "string" && arg.length > 50) ?? "";
-  })();
+  const promptForHash = derivePromptForHash(spec.args);
   const promptHash = createHash("sha256").update(promptForHash).digest("hex");
 
   const sanitizationOptions = {

@@ -23,7 +23,11 @@ import path from "node:path";
 import { describe, it } from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
-import { isEntryScript, preflightCheck } from "../../scripts/smoke-rerecord.mjs";
+import {
+  derivePromptForHash,
+  isEntryScript,
+  preflightCheck,
+} from "../../scripts/smoke-rerecord.mjs";
 
 // On macOS, os.tmpdir() can return "/var/folders/.../T" which is a
 // symlink to "/private/var/folders/.../T". The runtime guard inside
@@ -208,5 +212,88 @@ describe("isEntryScript — wiring (C10)", () => {
     ).href;
     // process.argv[1] here is the test runner, not smoke-rerecord.
     assert.equal(isEntryScript(smokeRerecordUrl, process.argv[1]), false);
+  });
+});
+
+// ───────────────────────────────────────────────────────────────────────
+// derivePromptForHash — explicit-anchor-only prompt detection
+// ───────────────────────────────────────────────────────────────────────
+//
+// Gemini code-review on `b57619b`/`4c91e17` flagged the layered detector
+// as fragile (length>50 fallback could misidentify a long file path as
+// a prompt). Round-16 root fix: the detector now uses ONLY explicit
+// anchors — `--prompt <value>` and the `--` end-of-flags separator. If
+// neither is present, the recipe has no prompt and the helper returns
+// "" (empty string). This is honest: no false positives, and no
+// recipe in the live RECIPES set relies on the heuristic layers.
+
+describe("derivePromptForHash — explicit-anchor-only detection", () => {
+  it("returns the value after --prompt", () => {
+    const args = ["run", "--mode=review", "--prompt", "Tell me something."];
+    assert.equal(derivePromptForHash(args), "Tell me something.");
+  });
+
+  it("returns the first arg after the -- separator (claude/run-style)", () => {
+    const args = ["run", "--auth-mode", "auto", "--", "Hello, claude."];
+    assert.equal(derivePromptForHash(args), "Hello, claude.");
+  });
+
+  it("--prompt takes priority when both anchors are present", () => {
+    // A recipe author might mix conventions; the explicit --prompt
+    // anchor wins because it's unambiguous about which arg is the
+    // prompt.
+    const args = ["run", "--prompt", "explicit", "--", "fallback"];
+    assert.equal(derivePromptForHash(args), "explicit");
+  });
+
+  it("returns empty string when no anchor is present", () => {
+    // Reproduction of the gemini finding: a recipe like claude/auth-failure
+    // has args ["ping", "--auth-mode", "api_key"] — no prompt anchor.
+    // Pre-round-16 the heuristic returned "api_key" (the auth-mode
+    // value) because layer 3 ("last non-flag positional") couldn't
+    // distinguish flag values from real positionals. New behavior:
+    // honest "" when there is no prompt to hash.
+    const args = ["ping", "--auth-mode", "api_key"];
+    assert.equal(derivePromptForHash(args), "");
+  });
+
+  it("returns empty string for an args array containing only flags", () => {
+    const args = ["--foreground", "--mode=review"];
+    assert.equal(derivePromptForHash(args), "");
+  });
+
+  it("returns empty string for an empty args array", () => {
+    assert.equal(derivePromptForHash([]), "");
+  });
+
+  it("does NOT promote a long file path to prompt status (length-heuristic regression)", () => {
+    // Pre-round-16 the layer-4 fallback would scan args for a string
+    // length > 50 and use it. A long --scope-paths value or any other
+    // long path would be misidentified as a prompt. The fix drops the
+    // heuristic entirely; this test pins that behavior.
+    const args = [
+      "run",
+      "--mode=custom-review",
+      "--scope-paths", "/Users/dev/src/codex-plugin-multi/scripts/lib/plugin-targets.mjs",
+    ];
+    assert.equal(derivePromptForHash(args), "");
+  });
+
+  it("returns empty string when --prompt is the last arg with no value", () => {
+    // Defensive: a malformed args array shouldn't index out-of-bounds.
+    const args = ["run", "--prompt"];
+    assert.equal(derivePromptForHash(args), "");
+  });
+
+  it("returns empty string when -- is the last arg with no value", () => {
+    const args = ["run", "--"];
+    assert.equal(derivePromptForHash(args), "");
+  });
+
+  it("ignores non-string args defensively", () => {
+    // Not part of the live recipes, but the detector shouldn't throw
+    // on weird shapes — return "" and let the caller decide.
+    assert.equal(derivePromptForHash(undefined), "");
+    assert.equal(derivePromptForHash(null), "");
   });
 });
