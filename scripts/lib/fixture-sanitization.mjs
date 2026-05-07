@@ -444,7 +444,7 @@ function wholesaleRedact(value) {
  * @param {*} record  The recorded response object (will be deep-cloned).
  * @param {object} options
  * @param {"companion"|"grok"|"api-reviewers"} options.architecture
- * @param {object} [options.env]            Defaults to process.env.
+ * @param {object} options.env              Explicit env-name/value map.
  * @param {string[]} [options.curatedEnvKeys]  api-reviewers cfg.env_keys list.
  * @returns {*}  A deep-cloned, sanitized copy of `record`.
  */
@@ -456,11 +456,12 @@ export function sanitize(record, options = {}) {
       + "\"companion\", \"grok\", \"api-reviewers\"",
     );
   }
-  // I11 — env defaults to process.env for backward compatibility. The
-  // sanitization-invariants.md contract asks that purity be enforced via
-  // an explicit env argument. Existing call sites in scripts/smoke-rerecord.mjs
-  // rely on the default; revisit when they migrate.
-  const env = options.env ?? process.env;
+  if (!Object.prototype.hasOwnProperty.call(options, "env")
+      || !options.env
+      || typeof options.env !== "object") {
+    throw new Error("fixture-sanitization: options.env is required");
+  }
+  const env = options.env;
   const curatedEnvKeys = options.curatedEnvKeys ?? [];
   const redactEnvSecrets = buildEnvSecretRedactor(env, { curatedEnvKeys });
 

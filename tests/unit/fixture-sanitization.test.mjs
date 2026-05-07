@@ -308,6 +308,17 @@ test("sanitize: rejects unknown architecture", () => {
   );
 });
 
+test("sanitize: requires explicit env map", () => {
+  assert.throws(
+    () => sanitize({}, { architecture: "companion" }),
+    /options\.env is required/,
+  );
+  assert.throws(
+    () => sanitize({}, { architecture: "companion", env: null }),
+    /options\.env is required/,
+  );
+});
+
 test("sanitize: returns deep-cloned object (caller can't mutate input via output)", () => {
   const record = {
     job_id: "abc",
