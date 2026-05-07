@@ -285,6 +285,64 @@ test("doctor does not classify quota 400s that mention model as model rejection"
   });
 });
 
+test("doctor maps non-OK model probe responses without throwing", async () => {
+  await withServer(async (_req, res) => {
+    res.setHeader("content-type", "application/json");
+    res.writeHead(500);
+    res.end(JSON.stringify({
+      error: { message: "quota verifier unavailable; retry later" },
+    }));
+  }, async (baseUrl) => {
+    const result = await runAsync(["doctor"], {
+      env: {
+        GROK_WEB_BASE_URL: baseUrl,
+      },
+    });
+    const parsed = parseStdout(result);
+
+    assert.equal(result.status, 0);
+    assert.equal(parsed.ready, false);
+    assert.equal(parsed.reachable, false);
+    assert.equal(parsed.error_code, "tunnel_error");
+    assert.equal(parsed.http_status, 500);
+    assert.match(parsed.error_message, /quota verifier unavailable/);
+  });
+});
+
+test("doctor maps non-OK chat probe responses without throwing", async () => {
+  await withServer(async (req, res) => {
+    res.setHeader("content-type", "application/json");
+    if (req.url === "/api/models") {
+      res.end(JSON.stringify({ data: [{ id: "grok-4.20-fast" }] }));
+      return;
+    }
+    if (req.url === "/api/chat/completions") {
+      res.writeHead(500);
+      res.end(JSON.stringify({
+        error: { message: "billing quota verifier unavailable; retry later" },
+      }));
+      return;
+    }
+    res.writeHead(404);
+    res.end(JSON.stringify({ error: { message: "not found" } }));
+  }, async (baseUrl) => {
+    const result = await runAsync(["doctor"], {
+      env: {
+        GROK_WEB_BASE_URL: baseUrl,
+      },
+    });
+    const parsed = parseStdout(result);
+
+    assert.equal(result.status, 0);
+    assert.equal(parsed.ready, false);
+    assert.equal(parsed.reachable, true);
+    assert.equal(parsed.chat_ready, false);
+    assert.equal(parsed.error_code, "tunnel_error");
+    assert.equal(parsed.chat_http_status, 500);
+    assert.match(parsed.error_message, /billing quota verifier unavailable/);
+  });
+});
+
 test("doctor chat probe uses a separate configurable timeout", async () => {
   await withServer(async (req, res) => {
     res.setHeader("content-type", "application/json");

@@ -805,7 +805,7 @@ async function probeGrokTunnel(cfg, env = process.env) {
     if (!response.ok) {
       return {
         reachable: false,
-        error_code: classifyHttpFailure(response.status),
+        error_code: classifyHttpFailure(response.status, parsed),
         error_message: errorMessageFromResponse(parsed, text, redact),
         http_status: response.status,
         probe_endpoint: endpoint,
@@ -856,7 +856,7 @@ async function probeGrokChat(cfg, env = process.env) {
     if (!response.ok) {
       return {
         chat_ready: false,
-        error_code: response.status === 400 ? chatBadRequestCode(parsed, text) : classifyHttpFailure(response.status),
+        error_code: response.status === 400 ? chatBadRequestCode(parsed, text) : classifyHttpFailure(response.status, parsed),
         error_message: errorMessageFromResponse(parsed, text, redact),
         http_status: response.status,
         probe_endpoint: endpoint,
