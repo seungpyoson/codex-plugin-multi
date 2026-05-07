@@ -199,7 +199,22 @@ test("parseClaudeResult: classifies subscription usage limit errors", () => {
 
   assert.equal(r.ok, false);
   assert.equal(r.reason, "usage_limited");
-  assert.match(r.error, /usage limit/i);
+  assert.match(r.error, /quota|usage-tier|billing|credit/i);
+});
+
+test("parseClaudeResult: usage limits omit account and payment artifacts", () => {
+  const r = parseClaudeResult(JSON.stringify({
+    type: "result",
+    is_error: true,
+    result: "usage limit reached for billing account user@example.com plan_id=pro+stripe-sub-abc/123",
+    session_id: UUID,
+    permission_denials: [],
+  }));
+
+  assert.equal(r.ok, false);
+  assert.equal(r.reason, "usage_limited");
+  assert.match(r.error, /quota|usage-tier|billing|credit/i);
+  assert.doesNotMatch(r.error, /user@example\.com|stripe-sub|plan_id/i);
 });
 
 test("parseClaudeResult: classifies provider quota code errors", () => {
@@ -213,7 +228,7 @@ test("parseClaudeResult: classifies provider quota code errors", () => {
 
   assert.equal(r.ok, false);
   assert.equal(r.reason, "usage_limited");
-  assert.match(r.error, /insufficient_quota/);
+  assert.match(r.error, /quota|usage-tier|billing|credit/i);
 });
 
 test("parseClaudeResult: transient rate-limit text is not billed as usage limited", () => {

@@ -1734,6 +1734,54 @@ test("direct API 429 quota status outranks unavailable wording and preserves num
   }
 });
 
+test("direct API 403 quota payloads are usage_limited, not auth_rejected", async () => {
+  const cwd = makeWorkspace();
+  const dataDir = mkdtempSync(path.join(tmpdir(), "api-reviewers-data-"));
+  const pluginRoot = makeInstalledApiReviewersRoot();
+  const server = await startChatServer((req, res) => {
+    req.resume();
+    res.writeHead(403, { "content-type": "application/json" });
+    res.end(JSON.stringify({
+      error: {
+        code: "insufficient_quota",
+        type: "billing",
+        message: "Credit limit exceeded for billing account user@example.com plan_id=pro+stripe-sub-abc/123.",
+      },
+    }));
+  });
+  try {
+    const { port } = server.address();
+    writeDeepSeekProviderConfig(pluginRoot, `http://127.0.0.1:${port}`);
+    const result = await run([
+      "run",
+      "--provider", "deepseek",
+      "--mode", "custom-review",
+      "--scope", "custom",
+      "--scope-paths", "seed.txt",
+      "--foreground",
+      "--prompt", "Check this file.",
+    ], {
+      cwd,
+      companion: path.join(pluginRoot, "scripts", "api-reviewer.mjs"),
+      env: {
+        API_REVIEWERS_PLUGIN_DATA: dataDir,
+        DEEPSEEK_API_KEY: "secret-test-value",
+      },
+    });
+    assert.equal(result.status, 1);
+    const record = parseJson(result.stdout);
+    assert.equal(record.error_code, "usage_limited");
+    assert.equal(record.error_cause, "cost_quota_usage_limit");
+    assert.equal(record.runtime_diagnostics.cost_quota.classification, "usage_limited");
+    assert.equal(record.runtime_diagnostics.cost_quota.http_status, 403);
+    assert.equal(record.runtime_diagnostics.cost_quota.provider_error_code, "insufficient_quota");
+    assert.equal(record.runtime_diagnostics.cost_quota.provider_error_type, "billing");
+    assert.doesNotMatch(result.stdout, /user@example\.com|stripe-sub|plan_id|secret-test-value/);
+  } finally {
+    server.close();
+  }
+});
+
 test("direct API 501 compatibility errors stay provider_error", async () => {
   const cwd = makeWorkspace();
   const dataDir = mkdtempSync(path.join(tmpdir(), "api-reviewers-data-"));

@@ -168,7 +168,18 @@ Quota exceeded for this billing account. Please upgrade your usage tier.
 
   assert.equal(parsed.ok, false);
   assert.equal(parsed.reason, "usage_limited");
-  assert.match(parsed.error, /quota exceeded/i);
+  assert.match(parsed.error, /quota|usage-tier|billing|credit/i);
+});
+
+test("parseGeminiResult: usage limits omit account and payment artifacts", () => {
+  const parsed = parseGeminiResult("", `
+Quota exceeded for billing account user@example.com plan_id=pro+stripe-sub-abc/123.
+`);
+
+  assert.equal(parsed.ok, false);
+  assert.equal(parsed.reason, "usage_limited");
+  assert.match(parsed.error, /quota|usage-tier|billing|credit/i);
+  assert.doesNotMatch(parsed.error, /user@example\.com|stripe-sub|plan_id/i);
 });
 
 test("parseGeminiResult: classifies provider quota codes as usage limited", () => {
@@ -181,7 +192,7 @@ test("parseGeminiResult: classifies provider quota codes as usage limited", () =
 
   assert.equal(parsed.ok, false);
   assert.equal(parsed.reason, "usage_limited");
-  assert.match(parsed.error, /payment_required/);
+  assert.match(parsed.error, /quota|usage-tier|billing|credit/i);
 });
 
 test("parseGeminiResult: JSON errors are not reclassified by incidental billing stderr", () => {

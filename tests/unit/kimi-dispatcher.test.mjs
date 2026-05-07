@@ -193,7 +193,7 @@ test("parseKimiResult: classifies plain-text usage limit failures before JSON pa
 
   assert.equal(parsed.ok, false);
   assert.equal(parsed.reason, "usage_limited");
-  assert.match(parsed.error, /usage limit/i);
+  assert.match(parsed.error, /quota|usage-tier|billing|credit/i);
   assert.doesNotMatch(parsed.error, /not valid JSON|Unexpected token/);
 });
 
@@ -206,8 +206,21 @@ test("parseKimiResult: classifies stderr-only usage limit failures", () => {
 
   assert.equal(parsed.ok, false);
   assert.equal(parsed.reason, "usage_limited");
-  assert.match(parsed.error, /usage limit/i);
+  assert.match(parsed.error, /quota|usage-tier|billing|credit/i);
   assert.equal(parsed.raw, "");
+});
+
+test("parseKimiResult: usage limits omit account and payment artifacts", () => {
+  const parsed = parseKimiResult(
+    "",
+    "Error code: 403\nYou've reached your usage limit for user@example.com plan_id=pro+stripe-sub-abc/123.\n",
+    { exitCode: 1 },
+  );
+
+  assert.equal(parsed.ok, false);
+  assert.equal(parsed.reason, "usage_limited");
+  assert.match(parsed.error, /quota|usage-tier|billing|credit/i);
+  assert.doesNotMatch(parsed.error, /user@example\.com|stripe-sub|plan_id/);
 });
 
 test("buildKimiArgs: review modes use safer max-step defaults and allow overrides", () => {

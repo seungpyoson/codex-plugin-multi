@@ -11,7 +11,7 @@ import { cleanGitEnv } from "./lib/git-env.mjs";
 import { GIT_BINARY_ENV, gitEnv, isGitBinaryPolicyError, resolveGitBinary } from "./lib/git-binary.mjs";
 import { isCodexSandbox } from "./lib/codex-env.mjs";
 import { REVIEW_PROMPT_CONTRACT_VERSION, buildReviewAuditManifest, buildReviewPrompt, scopeResolutionReason } from "./lib/review-prompt.mjs";
-import { isUsageLimitDetail } from "./lib/usage-limit.mjs";
+import { isUsageLimitDetail, usageLimitMessage } from "./lib/usage-limit.mjs";
 import {
   EXTERNAL_REVIEW_KEYS,
   SOURCE_CONTENT_TRANSMISSION,
@@ -738,6 +738,9 @@ function redactor(env = process.env, configuredSecretNames = []) {
     for (const secret of secrets) out = out.split(secret).join("[REDACTED]");
     out = out.replace(/Authorization:\s*\S.*$/gim, "Authorization: [REDACTED]");
     out = out.replace(/Bearer\s+\S+/gi, "Bearer [REDACTED]");
+    out = out.replace(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi, "[REDACTED]");
+    out = out.replace(/\bplan[_-]?id=[^\s,;:)]+/gi, "[REDACTED]");
+    out = out.replace(/\bstripe-[^\s,;:)]+/gi, "[REDACTED]");
     return out;
   };
 }
@@ -1286,9 +1289,10 @@ async function callProvider(provider, cfg, prompt, env = process.env) {
     const text = await response.text();
     const parsed = parseJson(text);
     if (!response.ok) {
+      const errorCode = classifyHttpFailure(response.status, parsed);
       return providerFailureWithDiagnostics(
-        classifyHttpFailure(response.status, parsed),
-        providerErrorMessage(parsed, text, redact),
+        errorCode,
+        providerErrorMessage(parsed, text, redact, { safeUsageLimit: errorCode === "usage_limited" }),
         response.status,
         parsed,
         true,
@@ -1376,11 +1380,15 @@ function parseJson(text) {
   }
 }
 
-function providerErrorMessage(parsed, text, redact) {
+function providerErrorMessage(parsed, text, redact, { safeUsageLimit = false } = {}) {
   if (parsed.ok) {
     const message = parsed.value?.error?.message ?? parsed.value?.message ?? JSON.stringify(parsed.value).slice(0, 800);
+    const usageLimited = safeUsageLimit ? usageLimitMessage(message) : null;
+    if (usageLimited) return usageLimited;
     return redact(message);
   }
+  const usageLimited = safeUsageLimit ? usageLimitMessage(text) : null;
+  if (usageLimited) return usageLimited;
   return redact(text).slice(0, 800);
 }
 
@@ -1402,8 +1410,9 @@ function providerFailureDetailObject(parsed) {
 
 function classifyHttpFailure(status, parsed) {
   const detail = parsed.ok ? providerFailureDetailText(parsed) : "";
-  if (status === 401 || status === 403) return "auth_rejected";
-  if (status === 402 || (status === 429 && isUsageLimitDetail(detail))) return "usage_limited";
+  const usageLimitDetail = isUsageLimitDetail(detail);
+  if (status === 401 || (status === 403 && !usageLimitDetail)) return "auth_rejected";
+  if (status === 402 || (status === 403 && usageLimitDetail) || (status === 429 && usageLimitDetail)) return "usage_limited";
   if (status === 429) return "rate_limited";
   if (status === 408 || status === 409 || status === 425 || status === 500 || status === 502 || status === 503 || status === 504 || /capacity|resource|overload|unavailable/i.test(detail)) {
     return "provider_unavailable";
@@ -1421,8 +1430,9 @@ function safeDiagnosticString(value) {
 function costQuotaDiagnostics(httpStatus, parsed) {
   const error = providerFailureDetailObject(parsed);
   const detail = parsed.ok ? providerFailureDetailText(parsed) : "";
-  const authRejected = httpStatus === 401 || httpStatus === 403;
-  const usageLimitStatus = httpStatus === 402 || (httpStatus === 429 && isUsageLimitDetail(detail));
+  const usageLimitDetail = isUsageLimitDetail(detail);
+  const authRejected = httpStatus === 401 || (httpStatus === 403 && !usageLimitDetail);
+  const usageLimitStatus = httpStatus === 402 || (httpStatus === 403 && usageLimitDetail) || (httpStatus === 429 && usageLimitDetail);
   const providerUnavailable = !usageLimitStatus && (httpStatus === 408 || httpStatus === 409 || httpStatus === 425 || httpStatus === 500 || httpStatus === 502 || httpStatus === 503 || httpStatus === 504 || /capacity|resource|overload|unavailable/i.test(detail));
   const usageLimited = !authRejected && (usageLimitStatus || (!providerUnavailable && isUsageLimitDetail(detail)));
   return {

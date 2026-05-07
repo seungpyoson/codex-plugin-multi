@@ -9,7 +9,7 @@ import { fileURLToPath } from "node:url";
 import { cleanGitEnv as cleanCanonicalGitEnv } from "./lib/git-env.mjs";
 import { GIT_BINARY_ENV, gitEnv, isGitBinaryPolicyError, resolveGitBinary } from "./lib/git-binary.mjs";
 import { REVIEW_PROMPT_CONTRACT_VERSION, buildReviewAuditManifest, buildReviewPrompt, scopeResolutionReason } from "./lib/review-prompt.mjs";
-import { isUsageLimitDetail } from "./lib/usage-limit.mjs";
+import { isUsageLimitDetail, usageLimitMessage } from "./lib/usage-limit.mjs";
 import {
   EXTERNAL_REVIEW_KEYS,
   SOURCE_CONTENT_TRANSMISSION,
@@ -205,6 +205,9 @@ function redactor(env = process.env) {
     for (const secret of secrets) out = out.split(secret).join("[REDACTED]");
     out = out.replace(/Authorization:\s*\S+(?:\s+\S{8,})?/gi, "Authorization: [REDACTED]");
     out = out.replace(/Bearer\s+\S{8,}/gi, "Bearer [REDACTED]");
+    out = out.replace(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi, "[REDACTED]");
+    out = out.replace(/\bplan[_-]?id=[^\s,;:)]+/gi, "[REDACTED]");
+    out = out.replace(/\bstripe-[^\s,;:)]+/gi, "[REDACTED]");
     return out;
   };
 }
@@ -615,10 +618,15 @@ function classifyHttpFailure(status, parsed) {
   return "tunnel_error";
 }
 
-function errorMessageFromResponse(parsed, text, redact) {
+function errorMessageFromResponse(parsed, text, redact, { safeUsageLimit = false } = {}) {
   if (parsed.ok) {
-    return redact(parsed.value?.error?.message ?? parsed.value?.message ?? JSON.stringify(parsed.value)).slice(0, 800);
+    const message = parsed.value?.error?.message ?? parsed.value?.message ?? JSON.stringify(parsed.value);
+    const usageLimited = safeUsageLimit ? usageLimitMessage(message) : null;
+    if (usageLimited) return usageLimited;
+    return redact(message).slice(0, 800);
   }
+  const usageLimited = safeUsageLimit ? usageLimitMessage(text) : null;
+  if (usageLimited) return usageLimited;
   return redact(text).slice(0, 800);
 }
 
@@ -710,9 +718,10 @@ async function callGrokTunnel(cfg, prompt, env = process.env) {
     const text = await response.text();
     const parsed = parseJson(text);
     if (!response.ok) {
+      const errorCode = classifyHttpFailure(response.status, parsed);
       return providerFailureWithDiagnostic(
-        classifyHttpFailure(response.status, parsed),
-        errorMessageFromResponse(parsed, text, redact),
+        errorCode,
+        errorMessageFromResponse(parsed, text, redact, { safeUsageLimit: errorCode === "usage_limited" }),
         response.status,
         parsed.ok ? parsed.value : null,
         true,
@@ -803,10 +812,11 @@ async function probeGrokTunnel(cfg, env = process.env) {
     const text = await response.text();
     const parsed = text ? parseJson(text) : { ok: true, value: null };
     if (!response.ok) {
+      const errorCode = classifyHttpFailure(response.status, parsed);
       return {
         reachable: false,
-        error_code: classifyHttpFailure(response.status, parsed),
-        error_message: errorMessageFromResponse(parsed, text, redact),
+        error_code: errorCode,
+        error_message: errorMessageFromResponse(parsed, text, redact, { safeUsageLimit: errorCode === "usage_limited" }),
         http_status: response.status,
         probe_endpoint: endpoint,
       };
@@ -854,10 +864,11 @@ async function probeGrokChat(cfg, env = process.env) {
     const text = await response.text();
     const parsed = text ? parseJson(text) : { ok: true, value: null };
     if (!response.ok) {
+      const errorCode = response.status === 400 ? chatBadRequestCode(parsed, text) : classifyHttpFailure(response.status, parsed);
       return {
         chat_ready: false,
-        error_code: response.status === 400 ? chatBadRequestCode(parsed, text) : classifyHttpFailure(response.status, parsed),
-        error_message: errorMessageFromResponse(parsed, text, redact),
+        error_code: errorCode,
+        error_message: errorMessageFromResponse(parsed, text, redact, { safeUsageLimit: errorCode === "usage_limited" }),
         http_status: response.status,
         probe_endpoint: endpoint,
       };

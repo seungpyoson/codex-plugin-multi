@@ -1950,7 +1950,7 @@ for (const { status, code, quotaBody = false } of [
           code: code === "usage_limited" || quotaBody ? "account=user@example.com:plan_id=pro+stripe-sub-abc/123" : "server_error",
           type: code === "usage_limited" || quotaBody ? "billing/account=user@example.com" : "server_error",
           message: code === "usage_limited" || quotaBody
-            ? "quota exceeded for this billing account; Authorization: Bearer secret-cookie-like-token failed"
+            ? "quota exceeded for billing account user@example.com plan_id=pro+stripe-sub-abc/123; Authorization: Bearer secret-cookie-like-token failed"
             : "Authorization: Bearer secret-cookie-like-token failed",
         },
       }));
@@ -1992,7 +1992,12 @@ for (const { status, code, quotaBody = false } of [
         assert.equal(record.runtime_diagnostics.cost_quota.http_status, status);
       }
       assert.doesNotMatch(result.stdout, /secret-cookie-like-token/);
-      assert.match(record.error_message, /\[REDACTED\]/);
+      assert.doesNotMatch(result.stdout, /user@example\.com|stripe-sub|plan_id/);
+      if (code === "usage_limited" || quotaBody) {
+        assert.match(record.error_message, /quota|usage-tier|billing|credit/i);
+      } else {
+        assert.match(record.error_message, /\[REDACTED\]/);
+      }
     });
   });
 }
