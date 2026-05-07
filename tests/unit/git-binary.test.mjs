@@ -9,6 +9,7 @@ import {
   GIT_BINARY_ENV,
   GIT_SAFE_PATH,
   gitEnv,
+  isGitBinaryPolicyError,
   resolveGitBinary,
 } from "../../plugins/claude/scripts/lib/git-binary.mjs";
 
@@ -33,6 +34,12 @@ function writeExecutable(file, body = "#!/bin/sh\nexit 0\n") {
 test("resolveGitBinary defaults to the hardened system git path", () => {
   assert.equal(resolveGitBinary({ env: {} }), DEFAULT_GIT_BINARY);
   assert.equal(gitEnv({ PATH: "/hostile" }).PATH, GIT_SAFE_PATH);
+});
+
+test("isGitBinaryPolicyError identifies resolver policy errors", () => {
+  assert.equal(isGitBinaryPolicyError(new Error(`${GIT_BINARY_ENV} must not point inside the current workspace.`)), true);
+  assert.equal(isGitBinaryPolicyError(new Error("git_failed: not a git repository")), false);
+  assert.equal(isGitBinaryPolicyError("CODEX_PLUGIN_MULTI_GIT_BINARY"), false);
 });
 
 test("resolveGitBinary rejects relative overrides", () => {

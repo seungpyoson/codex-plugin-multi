@@ -48,7 +48,7 @@ import {
 import path from "node:path";
 
 import { cleanGitEnv as scrubGitEnv } from "./git-env.mjs";
-import { GIT_BINARY_ENV, gitEnv, resolveGitBinary } from "./git-binary.mjs";
+import { gitEnv, isGitBinaryPolicyError, resolveGitBinary } from "./git-binary.mjs";
 
 const VALID_SCOPES = new Set(["working-tree", "staged", "branch-diff", "head", "custom"]);
 const MAX_GIT_SYMLINK_HOPS = 40;
@@ -73,10 +73,6 @@ function cleanGitEnv() {
     GIT_GRAFT_FILE: process.platform === "win32" ? "NUL" : "/dev/null",
     GIT_CONFIG_NOSYSTEM: "1",
   };
-}
-
-function isGitBinaryPolicyError(err) {
-  return err instanceof Error && err.message.includes(GIT_BINARY_ENV);
 }
 
 function git(sourceCwd, args, opts = {}) {

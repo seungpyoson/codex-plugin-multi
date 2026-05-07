@@ -8,7 +8,7 @@ import { randomUUID } from "node:crypto";
 import { hostname } from "node:os";
 
 import { cleanGitEnv } from "./lib/git-env.mjs";
-import { GIT_BINARY_ENV, gitEnv, resolveGitBinary } from "./lib/git-binary.mjs";
+import { gitEnv, isGitBinaryPolicyError, resolveGitBinary } from "./lib/git-binary.mjs";
 import { isCodexSandbox } from "./lib/codex-env.mjs";
 import { REVIEW_PROMPT_CONTRACT_VERSION, buildReviewAuditManifest, buildReviewPrompt, scopeResolutionReason } from "./lib/review-prompt.mjs";
 import {
@@ -850,10 +850,6 @@ function gitRaw(args, cwd, options = {}) {
     throw new Error(`git_failed:${detail}`);
   }
   return res.stdout;
-}
-
-function isGitBinaryPolicyError(error) {
-  return error instanceof Error && error.message.includes(GIT_BINARY_ENV);
 }
 
 function bestEffortWorkspaceRoot(cwd) {

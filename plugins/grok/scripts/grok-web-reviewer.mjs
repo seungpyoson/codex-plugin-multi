@@ -7,7 +7,7 @@ import { hostname } from "node:os";
 import { dirname, isAbsolute, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { cleanGitEnv as cleanCanonicalGitEnv } from "./lib/git-env.mjs";
-import { GIT_BINARY_ENV, gitEnv, resolveGitBinary } from "./lib/git-binary.mjs";
+import { gitEnv, isGitBinaryPolicyError, resolveGitBinary } from "./lib/git-binary.mjs";
 import { REVIEW_PROMPT_CONTRACT_VERSION, buildReviewAuditManifest, buildReviewPrompt, scopeResolutionReason } from "./lib/review-prompt.mjs";
 import {
   EXTERNAL_REVIEW_KEYS,
@@ -274,10 +274,6 @@ function gitRaw(args, cwd, options = {}) {
     throw new Error(`git_failed:${detail}`);
   }
   return res.stdout;
-}
-
-function isGitBinaryPolicyError(error) {
-  return error instanceof Error && error.message.includes(GIT_BINARY_ENV);
 }
 
 function gitCommitForPrompt(cwd, ref, workspaceRoot = null) {

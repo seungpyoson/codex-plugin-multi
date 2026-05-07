@@ -43,7 +43,7 @@ import { newJobId, verifyPidInfo } from "./lib/identity.mjs";
 import { buildJobRecord, classifyExecution, externalReviewForInvocation, isOAuthInferenceRejected } from "./lib/job-record.mjs";
 import { reconcileActiveJobs } from "./lib/reconcile.mjs";
 import { cleanGitEnv } from "./lib/git-env.mjs";
-import { GIT_BINARY_ENV, gitEnv, resolveGitBinary } from "./lib/git-binary.mjs";
+import { gitEnv, isGitBinaryPolicyError, resolveGitBinary } from "./lib/git-binary.mjs";
 import { sanitizeTargetEnv } from "./lib/provider-env.mjs";
 import { runCommand } from "./lib/process.mjs";
 import {
@@ -176,10 +176,6 @@ function gitText(args, cwd, workspaceRoot = null) {
     if (isGitBinaryPolicyError(error)) throw error;
     return null;
   }
-}
-
-function isGitBinaryPolicyError(error) {
-  return error instanceof Error && error.message.includes(GIT_BINARY_ENV);
 }
 
 function repositoryIdentity(cwd, workspaceRoot) {

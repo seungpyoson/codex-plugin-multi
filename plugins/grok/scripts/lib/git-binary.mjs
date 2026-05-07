@@ -110,3 +110,7 @@ export function resolveGitBinary(options = {}) {
 export function gitEnv(baseEnv = process.env) {
   return { ...baseEnv, PATH: GIT_SAFE_PATH };
 }
+
+export function isGitBinaryPolicyError(error) {
+  return error instanceof Error && error.message.includes(GIT_BINARY_ENV);
+}
