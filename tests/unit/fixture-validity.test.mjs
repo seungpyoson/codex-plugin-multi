@@ -15,7 +15,10 @@ import { readFileSync, readdirSync, statSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 
-import { PATH_SCRUB_PROBES } from "../../scripts/lib/fixture-sanitization.mjs";
+import {
+  COMPANION_SESSION_ID_FIELDS,
+  PATH_SCRUB_PROBES,
+} from "../../scripts/lib/fixture-sanitization.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(HERE, "..", "..");
@@ -40,13 +43,6 @@ const PLUGIN_TO_ARCHITECTURE = Object.freeze({
   "api-reviewers-deepseek": "api-reviewers",
   "api-reviewers-glm": "api-reviewers",
 });
-
-// Companion session_id fields per docs/contracts/job-record.md.
-const COMPANION_SESSION_ID_FIELDS = Object.freeze([
-  "claude_session_id",
-  "gemini_session_id",
-  "kimi_session_id",
-]);
 
 function listFixturePairs() {
   const pairs = [];
