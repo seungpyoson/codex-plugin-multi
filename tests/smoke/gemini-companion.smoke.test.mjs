@@ -1435,7 +1435,7 @@ test("gemini review foreground rejects invalid GEMINI_REVIEW_TIMEOUT_MS", () => 
   }
 });
 
-test("gemini review does not silently fallback when review_quality capacity is exhausted", () => {
+test("gemini review uses configured review_quality fallback when primary capacity is exhausted", () => {
   const cwd = mkdtempSync(path.join(tmpdir(), "gemini-review-fallback-cwd-"));
   seedMinimalRepo(cwd);
   const { stdout, stderr, status, dataDir } = runCompanion(
@@ -1443,11 +1443,12 @@ test("gemini review does not silently fallback when review_quality capacity is e
     { cwd, env: { GEMINI_MOCK_CAPACITY_MODEL: "gemini-3.1-pro-preview" } },
   );
   try {
-    assert.equal(status, 2, `exit ${status}: ${stderr}`);
-    assert.doesNotMatch(stderr, /retrying with gemini-2\.5-flash/);
+    assert.equal(status, 0, `exit ${status}: ${stderr}`);
+    assert.match(stderr, /retrying with gemini-3-flash-preview/);
     const record = JSON.parse(stdout);
-    assert.equal(record.status, "failed");
-    assert.equal(record.model, "gemini-3.1-pro-preview");
+    assert.equal(record.status, "completed");
+    assert.equal(record.model, "gemini-3-flash-preview");
+    assert.equal(record.review_metadata.audit_manifest.request.model, "gemini-3-flash-preview");
   } finally {
     rmTree(dataDir);
     rmTree(cwd);
@@ -1858,7 +1859,7 @@ test("gemini ping returns ok with the mock gemini binary", () => {
   }
 });
 
-test("gemini doctor returns the same readiness contract as ping", () => {
+test("gemini doctor returns readiness contract", () => {
   const cwd = mkdtempSync(path.join(tmpdir(), "gemini-doctor-cwd-"));
   const { stdout, stderr, status, dataDir } = runCompanion(["doctor"], { cwd });
   try {
@@ -1870,6 +1871,27 @@ test("gemini doctor returns the same readiness contract as ping", () => {
     assert.match(parsed.next_action, /review/i);
     assert.equal(parsed.auth_mode, "subscription");
     assert.equal(parsed.selected_auth_path, "subscription_oauth");
+  } finally {
+    rmTree(dataDir);
+    rmTree(cwd);
+  }
+});
+
+test("gemini doctor probes review-quality fallback candidates, not only native auth", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "gemini-doctor-review-fallback-cwd-"));
+  const { stdout, stderr, status, dataDir } = runCompanion(
+    ["doctor"],
+    { cwd, env: { GEMINI_MOCK_CAPACITY_MODEL: "gemini-3.1-pro-preview" } },
+  );
+  try {
+    assert.equal(status, 0, `exit ${status}: ${stderr}`);
+    assert.match(stderr, /retrying with gemini-3-flash-preview/);
+    const parsed = JSON.parse(stdout);
+    assert.equal(parsed.status, "ok");
+    assert.equal(parsed.ready, true);
+    assert.equal(parsed.model, "gemini-3-flash-preview");
+    assert.equal(parsed.model_fallback.from, "gemini-3.1-pro-preview");
+    assert.equal(parsed.model_fallback.to, "gemini-3-flash-preview");
   } finally {
     rmTree(dataDir);
     rmTree(cwd);
