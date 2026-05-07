@@ -1068,7 +1068,9 @@ test("run rejects Git binary policy errors distinctly before direct API scope co
   const record = parseJson(result.stdout);
   assert.equal(record.status, "failed");
   assert.equal(record.error_code, "git_binary_rejected");
+  assert.equal(record.error_cause, "git_binary_policy");
   assert.match(record.error_message, /CODEX_PLUGIN_MULTI_GIT_BINARY/);
+  assert.match(record.suggested_action, /CODEX_PLUGIN_MULTI_GIT_BINARY|trusted Git/i);
   assert.equal(record.external_review.source_content_transmission, "not_sent");
   assert.equal(existsSync(marker), false, "rejected git override must not execute");
   assert.doesNotMatch(result.stdout, /secret-test-value/);

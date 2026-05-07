@@ -5,6 +5,9 @@ export const GIT_BINARY_ENV = "CODEX_PLUGIN_MULTI_GIT_BINARY";
 export const DEFAULT_GIT_BINARY = "/usr/bin/git";
 export const GIT_SAFE_PATH = "/usr/bin:/bin";
 
+// Cache validation for the current process only. A configured override binary
+// is trusted not to be replaced after first validation; it must live outside
+// every workspace boundary and be controlled by the operator, not the repo.
 const resolvedGitCache = new Map();
 
 function isInsidePath(root, candidate) {

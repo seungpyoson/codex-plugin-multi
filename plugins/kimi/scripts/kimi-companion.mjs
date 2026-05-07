@@ -483,6 +483,7 @@ function cmdPreflight(rest) {
     });
   } catch (e) {
     exitCode = 2;
+    const error = isGitBinaryPolicyError(e) ? "git_binary_rejected" : "scope_failed";
     printJson({
       ok: false,
       event: "preflight",
@@ -494,7 +495,7 @@ function cmdPreflight(rest) {
       scope: profile.scope,
       scope_base: options["scope-base"] ?? null,
       scope_paths: scopePaths,
-      error: "scope_failed",
+      error,
       error_message: e.message,
       ...preflightSafetyFields(),
       disclosure_note: preflightDisclosure("Kimi"),

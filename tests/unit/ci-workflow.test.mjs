@@ -242,6 +242,24 @@ test("companion mutation-detection git calls use safe git resolver", () => {
   }
 });
 
+test("companion preflight preserves Git binary policy error classification", () => {
+  for (const rel of [
+    "plugins/claude/scripts/claude-companion.mjs",
+    "plugins/gemini/scripts/gemini-companion.mjs",
+    "plugins/kimi/scripts/kimi-companion.mjs",
+  ]) {
+    const source = readFileSync(resolve(rel), "utf8");
+    const cmdPreflightStart = source.indexOf("function cmdPreflight");
+    assert.notEqual(cmdPreflightStart, -1, `${rel} must define cmdPreflight`);
+    const cmdPreflightEnd = source.indexOf("\nfunction ", cmdPreflightStart + 1);
+    const cmdPreflightBlock = source.slice(cmdPreflightStart, cmdPreflightEnd === -1 ? source.length : cmdPreflightEnd);
+    assert.match(cmdPreflightBlock, /const error = isGitBinaryPolicyError\(e\) \? "git_binary_rejected" : "scope_failed";/,
+      `${rel} preflight must classify Git binary policy errors distinctly`);
+    assert.match(cmdPreflightBlock, /error,/,
+      `${rel} preflight failure JSON must use the classified error`);
+  }
+});
+
 test("scope population git calls use authoritative workspace root", () => {
   for (const rel of [
     "plugins/claude/scripts/lib/scope.mjs",
@@ -276,7 +294,7 @@ test("direct reviewer branch-diff git calls use safe git resolver", () => {
     "plugins/grok/scripts/grok-web-reviewer.mjs",
   ]) {
     const source = readFileSync(resolve(rel), "utf8");
-    assert.match(source, /import \{ gitEnv, isGitBinaryPolicyError, resolveGitBinary \} from "\.\/lib\/git-binary\.mjs";/,
+    assert.match(source, /import \{ GIT_BINARY_ENV, gitEnv, isGitBinaryPolicyError, resolveGitBinary \} from "\.\/lib\/git-binary\.mjs";/,
       `${rel} must use the shared safe git resolver`);
     assert.match(source, /runCommand\(resolveGitBinary\(\{ cwd, workspaceRoot: options\.workspaceRoot \}\),[\s\S]*env:\s*gitEnv\(cleanGitEnv\(\)\)/s,
       `${rel} branch-diff git calls must use the safe resolver and not inherit caller PATH`);
