@@ -1038,6 +1038,28 @@ test("buildJobRecord: spawn_failed path (execution threw before claude)", () => 
   assert.equal(rec.external_review.disclosure, notSentSpawnFailed("Claude Code"));
 });
 
+test("buildJobRecord: Git binary policy errors are distinct from spawn failures", () => {
+  const policyMessage =
+    "CODEX_PLUGIN_MULTI_GIT_BINARY must not point inside the current workspace: /tmp/src/malicious-git";
+  const cases = [
+    [buildJobRecord, makeInvocation()],
+    [buildGeminiJobRecord, makeInvocation({ target: "gemini", model: "gemini-3-flash-preview" })],
+    [buildKimiJobRecord, makeInvocation({ target: "kimi", model: "kimi-k2-0905" })],
+  ];
+  for (const [builder, invocation] of cases) {
+    const rec = builder(invocation, {
+      exitCode: null,
+      parsed: null,
+      pidInfo: null,
+      errorMessage: policyMessage,
+    }, []);
+    assert.equal(rec.status, "failed");
+    assert.equal(rec.error_code, "git_binary_rejected");
+    assert.equal(rec.error_message, policyMessage);
+    assert.equal(rec.external_review.source_content_transmission, "not_sent");
+  }
+});
+
 test("buildJobRecord: finalization_failed errorMessage classifies as finalization_failed (PR #21 review HIGH 1)", () => {
   // The companion's executeRun fallback synthesizes a record with
   // errorMessage="finalization_failed: meta=… ; state=…" when writeJobFile

@@ -652,6 +652,7 @@ function prepareMutationContext(invocation, profile) {
     context.gitStatusBefore = gitStatus(["status", "-s", "--untracked-files=all"], invocation.cwd, invocation.workspace_root);
     writeSidecar(invocation.workspace_root, invocation.job_id, "git-status-before.txt", context.gitStatusBefore);
   } catch (e) {
+    if (isGitBinaryPolicyError(e)) throw e;
     context.mutations.push(mutationDetectionFailure(e));
   }
   return context;
@@ -767,6 +768,7 @@ function recordPostRunMutations(invocation, mutationContext) {
     gitStatusAfter = gitStatus(["status", "-s", "--untracked-files=all"], invocation.cwd, invocation.workspace_root);
     writeGitStatusAfterSidecar(invocation, gitStatusAfter);
   } catch (e) {
+    if (isGitBinaryPolicyError(e)) throw e;
     mutationContext.mutations.push(mutationDetectionFailure(e));
   }
   if (!gitStatusAfter || gitStatusAfter === mutationContext.gitStatusBefore) return;

@@ -231,6 +231,14 @@ test("companion mutation-detection git calls use safe git resolver", () => {
       `${rel} mutation-detection git helper must not inherit caller PATH`);
     assert.doesNotMatch(gitCallBlock, /env:\s*cleanGitEnv\(\)/,
       `${rel} mutation-detection git helper must use the safe PATH wrapper`);
+
+    if (!rel.includes("claude")) {
+      const mutationPolicyRethrows = [...source.matchAll(
+        /catch \(e\) \{\s+if \(isGitBinaryPolicyError\(e\)\) throw e;\s+[^}]*mutationDetectionFailure\(e/g,
+      )];
+      assert.equal(mutationPolicyRethrows.length, 2,
+        `${rel} must rethrow Git binary policy errors from pre- and post-run mutation detection`);
+    }
   }
 });
 

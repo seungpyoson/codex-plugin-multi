@@ -639,6 +639,7 @@ async function executeRun(invocation, prompt, { foreground, lifecycleEvents = nu
       gitStatusBefore = gitStatus(["status", "-s", "--untracked-files=all"], cwd, workspaceRoot);
       writeSidecar(workspaceRoot, jobId, "git-status-before.txt", gitStatusBefore);
     } catch (e) {
+      if (isGitBinaryPolicyError(e)) throw e;
       mutations.push(mutationDetectionFailure(e));
     }
   }
@@ -750,6 +751,7 @@ async function executeRun(invocation, prompt, { foreground, lifecycleEvents = nu
       try { writeSidecar(workspaceRoot, jobId, "git-status-after.txt", gitStatusAfter); }
       catch (e) { process.stderr.write(`kimi-companion: warning: sidecar git-status-after.txt write failed: ${e.message}\n`); }
     } catch (e) {
+      if (isGitBinaryPolicyError(e)) throw e;
       mutations.push(mutationDetectionFailure(e));
       gitStatusAfter = null;
     }
