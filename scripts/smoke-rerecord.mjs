@@ -26,7 +26,7 @@ import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 import {
   buildProvenance,
@@ -45,7 +45,7 @@ const HAPPY_PATH_PROMPT =
 const NEGATIVE_PROMPT =
   "This prompt should not be sent because credentials are missing.";
 
-const RECIPES = Object.freeze({
+export const RECIPES = Object.freeze({
   // ─── companion ──────────────────────────────────────────────────────
   "claude/happy-path-review": {
     architecture: "companion",
@@ -57,6 +57,14 @@ const RECIPES = Object.freeze({
         "--mode=custom-review",
         "--foreground",
         "--scope-paths", "scripts/lib/plugin-targets.mjs",
+        // Without --auth-mode auto, the run subcommand defaults to
+        // subscription, which sets allowed_env_credentials=[] and
+        // strips API keys via sanitizeTargetEnv before exec — making
+        // envAny preflight a decoy on env-only CI runners. Auto mode
+        // selects api_key_env when a provider key is present and
+        // falls back to subscription_oauth otherwise, exactly mirroring
+        // the recipe's "OAuth OR API key" semantics.
+        "--auth-mode", "auto",
         "--", HAPPY_PATH_PROMPT,
       ],
       env: { ...process.env },
@@ -430,4 +438,9 @@ function main() {
   process.stderr.write("OK\n");
 }
 
-main();
+// Run main() only when invoked as the entry script. Importers (e.g.
+// recipe-shape tests) get the module exports without triggering arg
+// parsing or process.exit.
+if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {
+  main();
+}
