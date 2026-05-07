@@ -131,6 +131,14 @@ test("external_review treats known post-spawn failure codes as sent", () => {
   }), SOURCE_CONTENT_TRANSMISSION.SENT);
 });
 
+test("external_review treats Git binary policy rejection as not sent", () => {
+  assert.equal(sourceContentTransmissionForExecution({
+    status: "failed",
+    errorCode: "git_binary_rejected",
+    pidInfo: null,
+  }), SOURCE_CONTENT_TRANSMISSION.NOT_SENT);
+});
+
 test("EXPECTED_KEYS is the spec §21.3 canonical list", () => {
   const required = [
     "id", "job_id", "target", "parent_job_id", "claude_session_id", "gemini_session_id", "kimi_session_id",

@@ -56,7 +56,6 @@ const NOT_SENT_DISCLOSURE_BY_STATUS = Object.freeze({
 });
 
 const NOT_SENT_DISCLOSURE_BY_ERROR = Object.freeze({
-  git_binary_rejected: (provider) => `Selected source content was not sent to ${provider}; the Git binary override was rejected before the target process was started.`,
   scope_failed: (provider) => `Selected source content was not sent to ${provider}; the review scope was rejected before the target process was started.`,
   spawn_failed: (provider) => `Selected source content was not sent to ${provider}; the target process was not spawned.`,
   oauth_inference_rejected: (provider) => `Selected source content was not sent to ${provider}; OAuth inference readiness was rejected before the review target was started.`,
