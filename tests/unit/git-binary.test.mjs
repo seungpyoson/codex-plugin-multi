@@ -39,6 +39,7 @@ test("resolveGitBinary defaults to the hardened system git path", () => {
 test("isGitBinaryPolicyError identifies resolver policy errors", () => {
   assert.equal(isGitBinaryPolicyError(new Error(`${GIT_BINARY_ENV} must not point inside the current workspace.`)), true);
   assert.equal(isGitBinaryPolicyError(new Error("git_failed: not a git repository")), false);
+  assert.equal(isGitBinaryPolicyError(new Error(`git_failed: stderr mentioned ${GIT_BINARY_ENV} but this was not resolver policy`)), false);
   assert.equal(isGitBinaryPolicyError("CODEX_PLUGIN_MULTI_GIT_BINARY"), false);
 });
 
@@ -225,6 +226,32 @@ test("resolveGitBinary rechecks explicit workspaceRoot after an outside-cwd cach
   } finally {
     rmSync(workspace, { recursive: true, force: true });
     rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("resolveGitBinary rechecks cwd-derived boundaries after a broader cached context", () => {
+  const workspace = tempDir("git-binary-cache-broader-workspace-");
+  const linkedRepo = tempDir("git-binary-cache-linked-repo-");
+  try {
+    mkdirSync(path.join(workspace, ".git"));
+    mkdirSync(path.join(linkedRepo, ".git"));
+    const linkedCwd = path.join(workspace, "linked");
+    symlinkSync(linkedRepo, linkedCwd);
+    const linkedRepoGit = path.join(linkedRepo, "git");
+    writeExecutable(linkedRepoGit);
+    const env = { [GIT_BINARY_ENV]: linkedRepoGit };
+
+    assert.equal(
+      resolveGitBinary({ cwd: workspace, workspaceRoot: workspace, env }),
+      realpathSync.native(linkedRepoGit),
+    );
+    assert.throws(
+      () => resolveGitBinary({ cwd: linkedCwd, workspaceRoot: workspace, env }),
+      /must not point inside the current workspace/,
+    );
+  } finally {
+    rmSync(workspace, { recursive: true, force: true });
+    rmSync(linkedRepo, { recursive: true, force: true });
   }
 });
 

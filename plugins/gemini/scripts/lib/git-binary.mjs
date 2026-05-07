@@ -61,11 +61,10 @@ export function resolveGitBinary(options = {}) {
   const boundaryCandidates = options.workspaceRoot
     ? [...new Set([options.workspaceRoot, ...workspaceBoundaryCandidates(options.cwd)])]
     : workspaceBoundaryCandidates(options.cwd);
-  const workspaceRoot = boundaryCandidates[0] ?? null;
-  if (!workspaceRoot) {
+  if (boundaryCandidates.length === 0) {
     throw new Error(`${GIT_BINARY_ENV} requires a workspace boundary; run from inside a Git workspace before using an override.`);
   }
-  const cacheKey = `${override}\0${workspaceRoot}`;
+  const cacheKey = `${override}\0${boundaryCandidates.map((candidate) => path.resolve(candidate)).join("\0")}`;
   const cached = resolvedGitCache.get(cacheKey);
   if (cached) return cached;
 
@@ -112,5 +111,5 @@ export function gitEnv(baseEnv = process.env) {
 }
 
 export function isGitBinaryPolicyError(error) {
-  return error instanceof Error && error.message.includes(GIT_BINARY_ENV);
+  return error instanceof Error && error.message.startsWith(`${GIT_BINARY_ENV} `);
 }

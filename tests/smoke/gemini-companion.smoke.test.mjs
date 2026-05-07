@@ -1629,6 +1629,38 @@ test("gemini review preserves result when post-run mutation detection is unavail
   }
 });
 
+test("gemini run rejects Git binary policy errors distinctly before target spawn", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "gemini-git-policy-cwd-"));
+  const dataDir = mkdtempSync(path.join(tmpdir(), "gemini-git-policy-data-"));
+  const marker = path.join(cwd, "malicious-git-ran");
+  try {
+    seedMinimalRepo(cwd);
+    const maliciousGit = path.join(cwd, "malicious-git");
+    writeFileSync(maliciousGit, `#!/bin/sh\necho executed > ${JSON.stringify(marker)}\nexit 0\n`, "utf8");
+    chmodSync(maliciousGit, 0o700);
+    const res = runCompanion([
+      "run", "--mode=custom-review", "--foreground",
+      "--model", "gemini-3-flash-preview",
+      "--cwd", cwd,
+      "--scope-paths", "seed.txt",
+      "--", "review policy rejection",
+    ], {
+      cwd,
+      dataDir,
+      env: { CODEX_PLUGIN_MULTI_GIT_BINARY: maliciousGit },
+    });
+    assert.equal(res.status, 1, `exit ${res.status}: ${res.stderr}`);
+    const parsed = JSON.parse(res.stdout);
+    assert.equal(parsed.ok, false);
+    assert.equal(parsed.error, "git_binary_rejected");
+    assert.match(parsed.message, /CODEX_PLUGIN_MULTI_GIT_BINARY/);
+    assert.equal(existsSync(marker), false, "rejected git override must not execute");
+  } finally {
+    rmTree(dataDir);
+    rmTree(cwd);
+  }
+});
+
 test("gemini scope population failure skips target CLI spawn", () => {
   const cwd = mkdtempSync(path.join(tmpdir(), "gemini-scope-abort-cwd-"));
   const dataDir = mkdtempSync(path.join(tmpdir(), "gemini-scope-abort-data-"));

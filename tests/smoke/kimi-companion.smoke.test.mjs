@@ -538,6 +538,31 @@ test("kimi foreground review --timeout-ms overrides review timeout audit metadat
   assert.equal(persisted.review_metadata.audit_manifest.request.timeout_ms, 123456);
 }));
 
+test("kimi run rejects Git binary policy errors distinctly before target spawn", () => withRepo((cwd) => {
+  const marker = path.join(cwd, "malicious-git-ran");
+  const maliciousGit = path.join(cwd, "malicious-git");
+  writeFileSync(maliciousGit, `#!/bin/sh\necho executed > ${JSON.stringify(marker)}\nexit 0\n`, "utf8");
+  chmodSync(maliciousGit, 0o700);
+  const result = runCompanion([
+    "run",
+    "--mode",
+    "custom-review",
+    "--cwd",
+    cwd,
+    "--scope-paths",
+    "seed.txt",
+    "--foreground",
+    "--",
+    "Review this scope.",
+  ], { cwd, env: { CODEX_PLUGIN_MULTI_GIT_BINARY: maliciousGit } });
+  assert.equal(result.status, 1, result.stderr);
+  const parsed = parseJson(result.stdout);
+  assert.equal(parsed.ok, false);
+  assert.equal(parsed.error, "git_binary_rejected");
+  assert.match(parsed.message, /CODEX_PLUGIN_MULTI_GIT_BINARY/);
+  assert.equal(existsSync(marker), false, "rejected git override must not execute");
+}));
+
 test("kimi foreground review KIMI_REVIEW_TIMEOUT_MS sets review timeout audit metadata", () => withRepo((cwd) => {
   const result = runCompanion([
     "run",
