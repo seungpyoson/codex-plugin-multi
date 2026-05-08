@@ -185,6 +185,11 @@ test("doctor reports subscription-backed local tunnel mode and checks chat readi
     assert.equal(parsed.probe_endpoint, `${baseUrl}/models`);
     assert.equal(parsed.chat_probe_endpoint, `${baseUrl}/chat/completions`);
     assert.equal(parsed.chat_doctor_timeout_ms, 10000);
+    assert.deepEqual(parsed.cost_quota_readiness, {
+      status: "unknown_not_probed",
+      source: "doctor_does_not_call_billing_or_usage_endpoints",
+      billing_mutation: "not_supported",
+    });
     assert.match(parsed.summary, /subscription-backed/i);
     assert.match(parsed.next_action, /Grok web review/i);
     assert.equal(parsed.credential_ref, "GROK_WEB_TUNNEL_API_KEY");
@@ -273,10 +278,68 @@ test("doctor does not classify quota 400s that mention model as model rejection"
     assert.equal(result.status, 0);
     assert.equal(parsed.reachable, true);
     assert.equal(parsed.chat_ready, false);
-    assert.equal(parsed.error_code, "models_ok_chat_400");
+    assert.equal(parsed.error_code, "usage_limited");
     assert.equal(parsed.chat_http_status, 400);
-    assert.match(parsed.error_message, /quota exceeded/);
+    assert.match(parsed.error_message, /quota|usage-tier|billing|credit/i);
     assert.doesNotMatch(parsed.next_action, /GROK_WEB_MODEL/);
+  });
+});
+
+test("doctor maps non-OK model probe responses without throwing", async () => {
+  await withServer(async (_req, res) => {
+    res.setHeader("content-type", "application/json");
+    res.writeHead(500);
+    res.end(JSON.stringify({
+      error: { message: "quota verifier unavailable; retry later" },
+    }));
+  }, async (baseUrl) => {
+    const result = await runAsync(["doctor"], {
+      env: {
+        GROK_WEB_BASE_URL: baseUrl,
+      },
+    });
+    const parsed = parseStdout(result);
+
+    assert.equal(result.status, 0);
+    assert.equal(parsed.ready, false);
+    assert.equal(parsed.reachable, false);
+    assert.equal(parsed.error_code, "tunnel_error");
+    assert.equal(parsed.http_status, 500);
+    assert.match(parsed.error_message, /quota verifier unavailable/);
+  });
+});
+
+test("doctor maps non-OK chat probe responses without throwing", async () => {
+  await withServer(async (req, res) => {
+    res.setHeader("content-type", "application/json");
+    if (req.url === "/api/models") {
+      res.end(JSON.stringify({ data: [{ id: "grok-4.20-fast" }] }));
+      return;
+    }
+    if (req.url === "/api/chat/completions") {
+      res.writeHead(500);
+      res.end(JSON.stringify({
+        error: { message: "billing quota verifier unavailable; retry later" },
+      }));
+      return;
+    }
+    res.writeHead(404);
+    res.end(JSON.stringify({ error: { message: "not found" } }));
+  }, async (baseUrl) => {
+    const result = await runAsync(["doctor"], {
+      env: {
+        GROK_WEB_BASE_URL: baseUrl,
+      },
+    });
+    const parsed = parseStdout(result);
+
+    assert.equal(result.status, 0);
+    assert.equal(parsed.ready, false);
+    assert.equal(parsed.reachable, true);
+    assert.equal(parsed.chat_ready, false);
+    assert.equal(parsed.error_code, "tunnel_error");
+    assert.equal(parsed.chat_http_status, 500);
+    assert.match(parsed.error_message, /billing quota verifier unavailable/);
   });
 });
 
@@ -1866,11 +1929,14 @@ test("tunnel invocation catch is separated from prompt construction catch", () =
   assert.match(source, /payloadSentForFetchError\(e\)/);
 });
 
-for (const { status, code } of [
-  { status: 401, code: "session_expired" },
+for (const { status, code, quotaBody = false } of [
+  { status: 401, code: "session_expired", quotaBody: true },
   { status: 403, code: "session_expired" },
+  { status: 408, code: "tunnel_error", quotaBody: true },
+  { status: 400, code: "usage_limited" },
+  { status: 402, code: "usage_limited" },
   { status: 429, code: "usage_limited" },
-  { status: 500, code: "tunnel_error" },
+  { status: 500, code: "tunnel_error", quotaBody: true },
 ]) {
   test(`custom-review maps HTTP ${status} to ${code} without leaking secrets`, async () => {
     const cwd = mkdtempSync(path.join(tmpdir(), "grok-web-workspace-"));
@@ -1879,7 +1945,15 @@ for (const { status, code } of [
     await withServer(async (_req, res) => {
       res.statusCode = status;
       res.setHeader("content-type", "application/json");
-      res.end(JSON.stringify({ error: { message: "Authorization: Bearer secret-cookie-like-token failed" } }));
+      res.end(JSON.stringify({
+        error: {
+          code: code === "usage_limited" || quotaBody ? "account=user@example.com:plan_id=pro+stripe-sub-abc/123" : "server_error",
+          type: code === "usage_limited" || quotaBody ? "billing/account=user@example.com" : "server_error",
+          message: code === "usage_limited" || quotaBody
+            ? "quota exceeded for billing account user@example.com plan_id=pro+stripe-sub-abc/123 customer cus_NXLKj1H invoice item ii_1Mt5L0HabcDEF12345; Authorization: Bearer secret-cookie-like-token failed"
+            : "Authorization: Bearer secret-cookie-like-token failed",
+        },
+      }));
     }, async (baseUrl) => {
       const result = await runAsync([
         "run",
@@ -1903,11 +1977,223 @@ for (const { status, code } of [
       assert.equal(record.http_status, status);
       assert.equal(record.review_metadata.audit_manifest.request.timeout_ms, 600000);
       assert.match(record.error_summary, /configured_timeout_ms=600000/);
+      if (code === "usage_limited") {
+        assert.equal(record.error_cause, "cost_quota_usage_limit");
+        assert.equal(record.runtime_diagnostics.cost_quota.classification, "usage_limited");
+        assert.equal(record.runtime_diagnostics.cost_quota.http_status, status);
+        assert.equal(record.runtime_diagnostics.cost_quota.provider_error_code, null);
+        assert.equal(record.runtime_diagnostics.cost_quota.provider_error_type, null);
+        assert.equal(record.runtime_diagnostics.tunnel_request.configured_timeout_ms, 600000);
+        assert.doesNotMatch(record.error_summary, /\[object Object\]/);
+        assert.match(record.suggested_action, /subscription usage|manual approval/i);
+      } else if (quotaBody) {
+        assert.notEqual(record.error_cause, "cost_quota_usage_limit");
+        assert.equal(record.runtime_diagnostics.cost_quota.classification, "not_reported");
+        assert.equal(record.runtime_diagnostics.cost_quota.http_status, status);
+      }
       assert.doesNotMatch(result.stdout, /secret-cookie-like-token/);
-      assert.match(record.error_message, /\[REDACTED\]/);
+      assert.doesNotMatch(result.stdout, /user@example\.com|stripe-sub|plan_id|cus_NXLKj1H|ii_1Mt5L0HabcDEF12345/);
+      if (code === "usage_limited" || quotaBody) {
+        assert.match(record.error_message, /quota|usage-tier|billing|credit/i);
+      } else {
+        assert.match(record.error_message, /\[REDACTED\]/);
+      }
     });
   });
 }
+
+test("custom-review preserves safe numeric cost-quota provider codes", async () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "grok-web-workspace-"));
+  writeFileSync(path.join(cwd, "review.js"), "export const value = 42;\n");
+
+  await withServer(async (_req, res) => {
+    res.statusCode = 402;
+    res.setHeader("content-type", "application/json");
+    res.end(JSON.stringify({
+      error: {
+        code: 429,
+        type: "billing",
+        message: "quota exceeded for this billing account; Authorization: Bearer secret-cookie-like-token failed",
+      },
+    }));
+  }, async (baseUrl) => {
+    const result = await runAsync([
+      "run",
+      "--mode", "custom-review",
+      "--scope", "custom",
+      "--scope-paths", "review.js",
+      "--foreground",
+      "--prompt", "Check this file.",
+    ], {
+      cwd,
+      env: {
+        GROK_WEB_BASE_URL: baseUrl,
+        GROK_WEB_TUNNEL_API_KEY: "secret-cookie-like-token",
+      },
+    });
+    const record = parseStdout(result);
+
+    assert.equal(result.status, 1);
+    assert.equal(record.error_code, "usage_limited");
+    assert.equal(record.runtime_diagnostics.cost_quota.classification, "usage_limited");
+    assert.equal(record.runtime_diagnostics.cost_quota.provider_error_code, "429");
+    assert.equal(record.runtime_diagnostics.cost_quota.provider_error_type, "billing");
+    assert.doesNotMatch(result.stdout, /secret-cookie-like-token/);
+  });
+});
+
+test("custom-review status-only usage limits use safe diagnostics", async () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "grok-web-workspace-"));
+  writeFileSync(path.join(cwd, "review.js"), "export const value = 42;\n");
+
+  await withServer(async (_req, res) => {
+    res.statusCode = 402;
+    res.setHeader("content-type", "application/json");
+    res.end(JSON.stringify({
+      error: {
+        code: "card_required",
+        type: "checkout_required",
+        message: "Payment required: see checkout session cs_test_abc123 and customer cus_NXLKj1H.",
+      },
+    }));
+  }, async (baseUrl) => {
+    const result = await runAsync([
+      "run",
+      "--mode", "custom-review",
+      "--scope", "custom",
+      "--scope-paths", "review.js",
+      "--foreground",
+      "--prompt", "Check this file.",
+    ], {
+      cwd,
+      env: {
+        GROK_WEB_BASE_URL: baseUrl,
+        GROK_WEB_TUNNEL_API_KEY: "secret-cookie-like-token",
+      },
+    });
+    const record = parseStdout(result);
+
+    assert.equal(result.status, 1);
+    assert.equal(record.error_code, "usage_limited");
+    assert.equal(record.error_cause, "cost_quota_usage_limit");
+    assert.equal(record.runtime_diagnostics.cost_quota.classification, "usage_limited");
+    assert.doesNotMatch(result.stdout, /cs_test|cus_NXLKj1H|secret-cookie-like-token/);
+  });
+});
+
+test("custom-review preserves non-payment prefixed provider diagnostic tokens", async () => {
+  await withServer(async (req, res) => {
+    await readJsonRequest(req);
+    res.setHeader("content-type", "application/json");
+    res.writeHead(500);
+    res.end(JSON.stringify({
+      error: {
+        code: "in_progress",
+        type: "sub_required",
+        message: "Internal tunnel error while enabling provider feature.",
+      },
+    }));
+  }, async (baseUrl) => {
+    const cwd = mkdtempSync(path.join(tmpdir(), "grok-web-workspace-"));
+    writeFileSync(path.join(cwd, "review.js"), "export const value = 42;\n");
+    const dataDir = mkdtempSync(path.join(tmpdir(), "grok-web-data-"));
+    const result = await runAsync([
+      "run",
+      "--mode", "custom-review",
+      "--scope", "custom",
+      "--scope-paths", "review.js",
+      "--foreground",
+      "--prompt", "Check this file.",
+    ], {
+      cwd,
+      env: {
+        GROK_WEB_BASE_URL: baseUrl,
+        GROK_PLUGIN_DATA: dataDir,
+        GROK_WEB_TUNNEL_API_KEY: "secret-cookie-like-token",
+      },
+    });
+    assert.equal(result.status, 1);
+    const record = parseStdout(result);
+    assert.equal(record.error_code, "tunnel_error");
+    assert.equal(record.runtime_diagnostics.cost_quota.classification, "not_reported");
+    assert.equal(record.runtime_diagnostics.cost_quota.provider_error_code, "in_progress");
+    assert.equal(record.runtime_diagnostics.cost_quota.provider_error_type, "sub_required");
+  });
+});
+
+test("custom-review cost-quota diagnostics drop account-shaped provider tokens", async () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "grok-web-workspace-"));
+  writeFileSync(path.join(cwd, "review.js"), "export const value = 42;\n");
+
+  await withServer(async (_req, res) => {
+    res.statusCode = 402;
+    res.setHeader("content-type", "application/json");
+    res.end(JSON.stringify({
+      error: {
+        code: "ii_1Mt5L0HabcDEF12345",
+        type: "acct_test_12345",
+        message: "Credit limit exceeded for this billing cycle.",
+      },
+    }));
+  }, async (baseUrl) => {
+    const result = await runAsync([
+      "run",
+      "--mode", "custom-review",
+      "--scope", "custom",
+      "--scope-paths", "review.js",
+      "--foreground",
+      "--prompt", "Check this file.",
+    ], {
+      cwd,
+      env: {
+        GROK_WEB_BASE_URL: baseUrl,
+        GROK_WEB_TUNNEL_API_KEY: "secret-cookie-like-token",
+      },
+    });
+    const record = parseStdout(result);
+
+    assert.equal(result.status, 1);
+    assert.equal(record.error_code, "usage_limited");
+    assert.equal(record.runtime_diagnostics.cost_quota.classification, "usage_limited");
+    assert.equal(record.runtime_diagnostics.cost_quota.provider_error_code, null);
+    assert.equal(record.runtime_diagnostics.cost_quota.provider_error_type, null);
+    assert.doesNotMatch(result.stdout, /ii_1Mt5L0HabcDEF12345|acct_test_12345/);
+  });
+});
+
+test("custom-review non-JSON quota payloads use safe diagnostics", async () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "grok-web-workspace-"));
+  writeFileSync(path.join(cwd, "review.js"), "export const value = 42;\n");
+
+  await withServer(async (_req, res) => {
+    res.statusCode = 400;
+    res.setHeader("content-type", "text/plain");
+    res.end("quota exceeded for billing account user@example.com plan_id=pro+stripe-sub-abc/123");
+  }, async (baseUrl) => {
+    const result = await runAsync([
+      "run",
+      "--mode", "custom-review",
+      "--scope", "custom",
+      "--scope-paths", "review.js",
+      "--foreground",
+      "--prompt", "Check this file.",
+    ], {
+      cwd,
+      env: {
+        GROK_WEB_BASE_URL: baseUrl,
+        GROK_WEB_TUNNEL_API_KEY: "secret-cookie-like-token",
+      },
+    });
+    const record = parseStdout(result);
+
+    assert.equal(result.status, 1);
+    assert.equal(record.error_code, "usage_limited");
+    assert.equal(record.error_cause, "cost_quota_usage_limit");
+    assert.equal(record.runtime_diagnostics.cost_quota.classification, "usage_limited");
+    assert.equal(record.runtime_diagnostics.cost_quota.http_status, 400);
+    assert.doesNotMatch(result.stdout, /user@example\.com|stripe-sub|plan_id|secret-cookie-like-token/);
+  });
+});
 
 test("custom-review maps malformed tunnel responses", async () => {
   const cwd = mkdtempSync(path.join(tmpdir(), "grok-web-workspace-"));

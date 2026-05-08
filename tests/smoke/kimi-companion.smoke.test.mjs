@@ -198,6 +198,24 @@ test("kimi ping reports OAuth readiness and ignored API-key diagnostics", () => 
   }
 });
 
+test("kimi doctor probes configured review model, not only native auth", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "kimi-doctor-review-model-"));
+  try {
+    const result = runCompanion(["doctor"], {
+      cwd,
+      env: { KIMI_MOCK_CAPACITY_MODEL: "kimi-code/kimi-for-coding" },
+    });
+    assert.equal(result.status, 2, result.stderr);
+    const parsed = parseJson(result.stdout);
+    assert.equal(parsed.status, "rate_limited");
+    assert.equal(parsed.ready, false);
+    assert.match(parsed.summary, /capacity-limited/i);
+    assert.match(parsed.detail, /kimi-code\/kimi-for-coding/);
+  } finally {
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
 test("kimi ping classifies missing binary with readiness fields", () => {
   const cwd = mkdtempSync(path.join(tmpdir(), "kimi-ping-missing-"));
   try {

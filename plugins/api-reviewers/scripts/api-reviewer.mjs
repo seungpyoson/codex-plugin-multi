@@ -11,6 +11,7 @@ import { cleanGitEnv } from "./lib/git-env.mjs";
 import { GIT_BINARY_ENV, gitEnv, isGitBinaryPolicyError, resolveGitBinary } from "./lib/git-binary.mjs";
 import { isCodexSandbox } from "./lib/codex-env.mjs";
 import { REVIEW_PROMPT_CONTRACT_VERSION, buildReviewAuditManifest, buildReviewPrompt, scopeResolutionReason } from "./lib/review-prompt.mjs";
+import { USAGE_LIMIT_SAFE_MESSAGE, isUsageLimitDetail } from "./lib/usage-limit.mjs";
 import {
   EXTERNAL_REVIEW_KEYS,
   SOURCE_CONTENT_TRANSMISSION,
@@ -88,6 +89,8 @@ const API_REVIEWER_EXPECTED_KEYS = Object.freeze([
 const ALLOWED_REQUEST_DEFAULT_KEYS = new Set(["thinking", "reasoning_effort", "max_tokens", "top_p", "stop"]);
 // Avoid corrupting structured fields when a broken local env has a tiny API-key placeholder.
 const MIN_SECRET_REDACTION_LENGTH = 8;
+const ACCOUNT_PAYMENT_TOKEN_RE = /\b(?:stripe-[^\s,;:)]+|cus_[A-Za-z0-9]{6,}|acct_(?:test_)?[A-Za-z0-9]{5,}|cs_(?:test|live)_[A-Za-z0-9]{6,}|(?:pi|sub|in|ii|ch|seti|setp|price|prod|iv)_(?=[A-Za-z0-9]*\d)[A-Za-z0-9]{5,})/gi;
+const ACCOUNT_PAYMENT_DIAGNOSTIC_RE = /^(?:stripe-.+|cus_[A-Za-z0-9]{6,}|acct_(?:test_)?[A-Za-z0-9]{5,}|cs_(?:test|live)_[A-Za-z0-9]{6,}|(?:pi|sub|in|ii|ch|seti|setp|price|prod|iv)_(?=[A-Za-z0-9]*\d)[A-Za-z0-9]{5,})$/i;
 
 function printJson(obj) {
   process.stdout.write(`${JSON.stringify(obj, null, 2)}\n`);
@@ -737,8 +740,62 @@ function redactor(env = process.env, configuredSecretNames = []) {
     for (const secret of secrets) out = out.split(secret).join("[REDACTED]");
     out = out.replace(/Authorization:\s*\S.*$/gim, "Authorization: [REDACTED]");
     out = out.replace(/Bearer\s+\S+/gi, "Bearer [REDACTED]");
+    out = redactEmailTokens(out);
+    out = out.replaceAll(/\bplan[_-]?id=[^\s,;:)]+/gi, "[REDACTED]");
+    out = out.replaceAll(ACCOUNT_PAYMENT_TOKEN_RE, "[REDACTED]");
     return out;
   };
+}
+
+function redactEmailTokens(text) {
+  let out = "";
+  let token = "";
+  const flush = () => {
+    out += redactEmailToken(token);
+    token = "";
+  };
+  for (const ch of String(text ?? "")) {
+    if (isEmailTokenChar(ch)) {
+      token += ch;
+    } else {
+      flush();
+      out += ch;
+    }
+  }
+  flush();
+  return out;
+}
+
+function isEmailTokenChar(ch) {
+  const code = ch.charCodeAt(0);
+  return (
+    (code >= 48 && code <= 57) ||
+    (code >= 65 && code <= 90) ||
+    (code >= 97 && code <= 122) ||
+    ch === "." || ch === "_" || ch === "%" || ch === "+" || ch === "-" || ch === "@"
+  );
+}
+
+function redactEmailToken(token) {
+  if (!token) return "";
+  let end = token.length;
+  while (end > 0 && token[end - 1] === ".") end -= 1;
+  const core = token.slice(0, end);
+  const suffix = token.slice(end);
+  return isEmailLikeToken(core) ? `[REDACTED]${suffix}` : token;
+}
+
+function isEmailLikeToken(token) {
+  const at = token.indexOf("@");
+  if (at <= 0 || at !== token.lastIndexOf("@") || at === token.length - 1) return false;
+  const domain = token.slice(at + 1);
+  const dot = domain.lastIndexOf(".");
+  if (dot <= 0 || dot >= domain.length - 2) return false;
+  for (let i = dot + 1; i < domain.length; i += 1) {
+    const code = domain.charCodeAt(i);
+    if (!((code >= 65 && code <= 90) || (code >= 97 && code <= 122))) return false;
+  }
+  return true;
 }
 
 function redactValue(value, redact) {
@@ -765,6 +822,11 @@ function baseUrlFor(cfg) {
 function doctorFields(provider, cfg, env = process.env) {
   const credential = selectedCredential(cfg, env);
   const endpoint = baseUrlFor(cfg);
+  const costQuotaReadiness = {
+    status: "unknown_not_probed",
+    source: "doctor_does_not_call_billing_or_usage_endpoints",
+    billing_mutation: "not_supported",
+  };
   if (!VALID_AUTH_MODES.has(cfg.auth_mode)) {
     return {
       provider,
@@ -774,6 +836,7 @@ function doctorFields(provider, cfg, env = process.env) {
       next_action: `Set ${provider} auth_mode to api_key or auto.`,
       auth_mode: cfg.auth_mode,
       endpoint,
+      cost_quota_readiness: costQuotaReadiness,
     };
   }
   if (!credential.value) {
@@ -786,6 +849,7 @@ function doctorFields(provider, cfg, env = process.env) {
       auth_mode: cfg.auth_mode,
       credential_candidates: cfg.env_keys ?? [],
       endpoint,
+      cost_quota_readiness: costQuotaReadiness,
     };
   }
   return {
@@ -798,6 +862,7 @@ function doctorFields(provider, cfg, env = process.env) {
     credential_ref: credential.keyName,
     endpoint,
     model: cfg.model,
+    cost_quota_readiness: costQuotaReadiness,
   };
 }
 
@@ -1277,13 +1342,18 @@ async function callProvider(provider, cfg, prompt, env = process.env) {
     const text = await response.text();
     const parsed = parseJson(text);
     if (!response.ok) {
+      const errorCode = classifyHttpFailure(response.status, parsed, text);
       return providerFailureWithDiagnostics(
-        classifyHttpFailure(response.status, parsed),
-        providerErrorMessage(parsed, text, redact),
+        errorCode,
+        providerErrorMessage(parsed, text, redact, { safeUsageLimit: errorCode === "usage_limited" }),
         response.status,
         parsed,
         true,
-        diagnostics(),
+        {
+          ...diagnostics(),
+          elapsed_ms: Date.now() - started,
+          cost_quota: costQuotaDiagnostics(errorCode, response.status, parsed),
+        },
       );
     }
     if (!parsed.ok) {
@@ -1363,7 +1433,8 @@ function parseJson(text) {
   }
 }
 
-function providerErrorMessage(parsed, text, redact) {
+function providerErrorMessage(parsed, text, redact, { safeUsageLimit = false } = {}) {
+  if (safeUsageLimit) return USAGE_LIMIT_SAFE_MESSAGE;
   if (parsed.ok) {
     const message = parsed.value?.error?.message ?? parsed.value?.message ?? JSON.stringify(parsed.value).slice(0, 800);
     return redact(message);
@@ -1371,14 +1442,56 @@ function providerErrorMessage(parsed, text, redact) {
   return redact(text).slice(0, 800);
 }
 
-function classifyHttpFailure(status, parsed) {
-  const detail = parsed.ok ? JSON.stringify(parsed.value?.error ?? parsed.value ?? {}) : "";
-  if (status === 401 || status === 403) return "auth_rejected";
+function providerFailureDetail(parsed) {
+  if (!parsed.ok) return {};
+  const value = parsed.value;
+  if (value && typeof value === "object" && "error" in value && value.error != null) return value.error;
+  return value ?? {};
+}
+
+function providerFailureDetailText(parsed) {
+  return JSON.stringify(providerFailureDetail(parsed) ?? {});
+}
+
+function providerFailureDetailObject(parsed) {
+  const detail = providerFailureDetail(parsed);
+  return detail && typeof detail === "object" && !Array.isArray(detail) ? detail : {};
+}
+
+function classifyHttpFailure(status, parsed, text = "") {
+  const detail = parsed.ok ? providerFailureDetailText(parsed) : String(text ?? "");
+  const usageLimitDetail = isUsageLimitDetail(detail);
+  if (status === 401 || (status === 403 && !usageLimitDetail)) return "auth_rejected";
+  if (status === 402 || (status === 403 && usageLimitDetail) || (status === 429 && usageLimitDetail)) return "usage_limited";
   if (status === 429) return "rate_limited";
-  if (status === 408 || status === 409 || status === 425 || status === 500 || status === 502 || status === 503 || status === 504 || /capacity|resource|overload|unavailable/i.test(detail)) {
+  if (status === 501) return "provider_error";
+  if (status === 408 || status === 409 || status === 425 || status === 500 || status === 502 || status === 503 || status === 504) {
     return "provider_unavailable";
   }
+  if (status >= 500 && status <= 599) return "provider_error";
+  if (/capacity|resource|overload|unavailable/i.test(detail)) {
+    return "provider_unavailable";
+  }
+  if (isUsageLimitDetail(detail)) return "usage_limited";
   return "provider_error";
+}
+
+function safeDiagnosticString(value) {
+  if (typeof value !== "string" && typeof value !== "number") return null;
+  const text = String(value);
+  if (ACCOUNT_PAYMENT_DIAGNOSTIC_RE.test(text)) return null;
+  return /^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$/.test(text) ? text : null;
+}
+
+function costQuotaDiagnostics(errorCode, httpStatus, parsed) {
+  const error = providerFailureDetailObject(parsed);
+  return {
+    classification: errorCode === "usage_limited" ? "usage_limited" : "not_reported",
+    http_status: httpStatus ?? null,
+    provider_error_code: safeDiagnosticString(error.code) ?? null,
+    provider_error_type: safeDiagnosticString(error.type) ?? null,
+    billing_mutation: "not_attempted",
+  };
 }
 
 function providerFailure(reason, message, httpStatus, raw = null, payloadSent = null) {
@@ -1431,6 +1544,8 @@ function suggestedAction(errorCode, provider, cfg, errorMessage = "", httpStatus
   if (errorCode === "config_error") return "Reinstall or repair plugins/api-reviewers/config/providers.json and retry.";
   if (errorCode === "missing_key") return `Expose one of these key names to Codex: ${(cfg.env_keys ?? []).join(", ")}.`;
   if (errorCode === "auth_rejected") return `Check the ${cfg.display_name} API key and billing/plan for ${cfg.model}.`;
+  if (errorCode === "usage_limited") return `${cfg.display_name} reported a quota, usage-tier, billing, or credit limit. This plugin does not purchase credits or upgrade tiers automatically; inspect the provider account and perform any billing transaction only after explicit user approval.`;
+  // Kept for backward compatibility with older persisted records and future non-HTTP callers.
   if (errorCode === "rate_limited") return `Wait and retry, or lower concurrency for ${provider}.`;
   if (errorCode === "timeout") return `The provider did not respond within the timeout window. Retry later, increase API_REVIEWERS_TIMEOUT_MS, or switch reviewer provider.`;
   if (errorCode === "provider_unavailable") return providerUnavailableSuggestedAction(errorMessage, httpStatus, env);
@@ -1500,6 +1615,7 @@ function errorCauseFor(errorCode) {
   if (errorCode === "config_error") return "provider_config";
   if (errorCode === "scope_failed") return "scope_resolution";
   if (errorCode === "git_binary_rejected") return "git_binary_policy";
+  if (errorCode === "usage_limited") return "cost_quota_usage_limit";
   return "direct_api_provider";
 }
 
@@ -1614,6 +1730,17 @@ function buildRecord({ provider, cfg, mode, options, scopeInfo, execution, start
     source_content_transmission: sourceContentTransmission,
     disclosure,
   });
+  const runtimeDiagnostics = execution.diagnostics ? {
+    provider_request: {
+      configured_timeout_ms: execution.diagnostics.configured_timeout_ms ?? null,
+      elapsed_ms: execution.diagnostics.elapsed_ms ?? null,
+      prompt_chars: execution.diagnostics.prompt_chars ?? null,
+      request_defaults: execution.diagnostics.request_defaults ?? null,
+      max_tokens: execution.diagnostics.max_tokens ?? null,
+      temperature: execution.diagnostics.temperature ?? null,
+    },
+    cost_quota: execution.diagnostics.cost_quota ?? null,
+  } : null;
   return freezeRecord({
     id: options.jobId,
     job_id: options.jobId,
@@ -1650,7 +1777,7 @@ function buildRecord({ provider, cfg, mode, options, scopeInfo, execution, start
     suggested_action: completed ? null : suggestedAction(errorCode, provider, cfg, errorMessage, execution.http_status ?? null),
     external_review: externalReview,
     disclosure_note: disclosure,
-    runtime_diagnostics: null,
+    runtime_diagnostics: runtimeDiagnostics,
     result,
     structured_output: null,
     permission_denials: [],

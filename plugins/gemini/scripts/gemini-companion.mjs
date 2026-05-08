@@ -1205,9 +1205,9 @@ function pingFailureDetail(execution) {
   return concise.slice(0, 500);
 }
 
-async function cmdPing(rest) {
+async function cmdPing(rest, { readinessProfileName = "ping" } = {}) {
   const { options } = parseArgs(rest, { valueOptions: ["model", "binary", "timeout-ms", "auth-mode"], booleanOptions: [] });
-  const profile = resolveProfile("ping");
+  const profile = resolveProfile(readinessProfileName);
   const modelsConfig = loadModels();
   const model = options.model ?? resolveModelForProfile(profile, modelsConfig);
   const modelCandidates = options.model
@@ -1436,7 +1436,7 @@ async function main() {
     case "result": return cmdResult(rest);
     case "continue": return cmdContinue(rest);
     case "cancel": return cmdCancel(rest);
-    case "doctor": return cmdPing(rest);
+    case "doctor": return cmdPing(rest, { readinessProfileName: "review" });
     case "--help":
     case "-h":
     case undefined:

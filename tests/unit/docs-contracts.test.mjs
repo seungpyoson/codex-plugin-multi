@@ -322,6 +322,24 @@ test("README documents Grok subscription-backed default and no paid API fallback
   assert.match(readme, /does not silently fall back/i);
 });
 
+test("cost and quota docs require safe diagnostics and explicit billing action", () => {
+  const docs = [
+    readRepoFile("README.md"),
+    readRepoFile("docs/e2e.md"),
+    readRepoFile("docs/grok-subscription-tunnel.md"),
+    readRepoFile("plugins/claude/skills/claude-result-handling/SKILL.md"),
+  ].join("\n");
+
+  assert.match(docs, /runtime_diagnostics\.cost_quota/);
+  assert.match(docs, /usage_limited/);
+  assert.match(docs, /quota|usage-tier|billing|credit-limit/i);
+  assert.match(docs, /does not purchase credits|never purchases credits/i);
+  assert.match(docs, /upgrade.*tiers|changes.*subscription tiers/i);
+  assert.match(docs, /separate explicit user-approved action/i);
+  assert.match(docs, /must not include[\s\S]*payment details/i);
+  assert.match(docs, /full prompts|source bundles|raw provider payloads/i);
+});
+
 test("Grok setup docs describe a live local tunnel probe", () => {
   const docs = [
     readRepoFile("README.md"),

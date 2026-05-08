@@ -36,6 +36,7 @@ test("pull-request CI runs shared-copy sync checks", () => {
   assert.match(pkg.scripts["lint:sync"] ?? "", /sync-review-prompt\.mjs --check/);
   assert.match(pkg.scripts["lint:sync"] ?? "", /sync-auth-selection\.mjs --check/);
   assert.match(pkg.scripts["lint:sync"] ?? "", /sync-provider-env\.mjs --check/);
+  assert.match(pkg.scripts["lint:sync"] ?? "", /sync-usage-limit\.mjs --check/);
   assert.match(workflow, /npm run lint:sync/);
 });
 
@@ -55,6 +56,12 @@ test("Sonar CPD excludes intentional packaging and entrypoint copies", () => {
     "plugins/grok/scripts/grok-web-reviewer.mjs",
     "plugins/grok/scripts/grok-sync-browser-session.mjs",
     "plugins/grok/scripts/lib/git-env.mjs",
+    "scripts/lib/usage-limit.mjs",
+    "plugins/api-reviewers/scripts/lib/usage-limit.mjs",
+    "plugins/claude/scripts/lib/usage-limit.mjs",
+    "plugins/gemini/scripts/lib/usage-limit.mjs",
+    "plugins/grok/scripts/lib/usage-limit.mjs",
+    "plugins/kimi/scripts/lib/usage-limit.mjs",
     "plugins/api-reviewers/scripts/lib/git-binary.mjs",
     "plugins/claude/scripts/lib/git-binary.mjs",
     "plugins/gemini/scripts/lib/git-binary.mjs",

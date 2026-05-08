@@ -12,6 +12,7 @@ import { spawn } from "node:child_process";
 
 import { attachPidCapture } from "./identity.mjs";
 import { sanitizeTargetEnv } from "./provider-env.mjs";
+import { usageLimitMessage } from "./usage-limit.mjs";
 
 // Claude requires UUIDv4 for --session-id. We always pass one up-front so we
 // know the session ID before the call returns and can --resume later.
@@ -136,8 +137,10 @@ export function parseClaudeResult(stdout) {
   }
   const structured = parsed.structured_output ?? null;
   const resultText = typeof parsed.result === "string" ? parsed.result : null;
+  const usageLimited = parsed.is_error ? usageLimitMessage(resultText, parsed.error) : null;
   return {
     ok: !parsed.is_error,
+    reason: usageLimited ? "usage_limited" : undefined,
     sessionId: parsed.session_id ?? null,
     result: resultText,
     structured,
@@ -145,6 +148,7 @@ export function parseClaudeResult(stdout) {
     apiKeySource: parsed.apiKeySource ?? null,
     usage: parsed.usage ?? null,
     costUsd: parsed.total_cost_usd ?? null,
+    error: usageLimited ?? null,
     raw: parsed,
   };
 }

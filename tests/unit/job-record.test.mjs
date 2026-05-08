@@ -1204,6 +1204,42 @@ test("kimi buildJobRecord: usage limits are actionable and documented", () => {
   assert.match(skill, /`usage_limited`/);
 });
 
+test("claude and gemini buildJobRecord: usage limits are distinct from auth or parse failures", () => {
+  const claude = buildJobRecord(makeInvocation(), {
+    exitCode: 1,
+    parsed: {
+      ok: false,
+      reason: "usage_limited",
+      error: "Usage limit reached for this billing cycle.",
+      result: null,
+      structured: null,
+      denials: [],
+    },
+    pidInfo: makePidInfo(),
+    claudeSessionId: null,
+  }, []);
+  assert.equal(claude.error_code, "usage_limited");
+  assert.match(claude.error_cause, /quota|billing|usage/i);
+  assert.match(claude.suggested_action, /usage/i);
+
+  const gemini = buildGeminiJobRecord(makeInvocation({ target: "gemini", binary: "gemini" }), {
+    exitCode: 1,
+    parsed: {
+      ok: false,
+      reason: "usage_limited",
+      error: "Quota exceeded for this billing account.",
+      result: null,
+      structured: null,
+      denials: [],
+    },
+    pidInfo: makePidInfo(),
+    geminiSessionId: null,
+  }, []);
+  assert.equal(gemini.error_code, "usage_limited");
+  assert.match(gemini.error_cause, /quota|billing|usage/i);
+  assert.match(gemini.suggested_action, /usage/i);
+});
+
 test("kimi buildJobRecord: timeout diagnostics use Claude target display name", () => {
   const rec = buildKimiJobRecord(makeInvocation({ target: "claude", binary: "claude" }), {
     exitCode: null,

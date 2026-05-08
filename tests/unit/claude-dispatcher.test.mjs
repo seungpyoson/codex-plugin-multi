@@ -188,6 +188,63 @@ test("parseClaudeResult: malformed JSON returns error", () => {
   assert.equal(r.reason, "json_parse_error");
 });
 
+test("parseClaudeResult: classifies subscription usage limit errors", () => {
+  const r = parseClaudeResult(JSON.stringify({
+    type: "result",
+    is_error: true,
+    result: "Error: usage limit reached for this billing cycle.",
+    session_id: UUID,
+    permission_denials: [],
+  }));
+
+  assert.equal(r.ok, false);
+  assert.equal(r.reason, "usage_limited");
+  assert.match(r.error, /quota|usage-tier|billing|credit/i);
+});
+
+test("parseClaudeResult: usage limits omit account and payment artifacts", () => {
+  const r = parseClaudeResult(JSON.stringify({
+    type: "result",
+    is_error: true,
+    result: "usage limit reached for billing account user@example.com plan_id=pro+stripe-sub-abc/123",
+    session_id: UUID,
+    permission_denials: [],
+  }));
+
+  assert.equal(r.ok, false);
+  assert.equal(r.reason, "usage_limited");
+  assert.match(r.error, /quota|usage-tier|billing|credit/i);
+  assert.doesNotMatch(r.error, /user@example\.com|stripe-sub|plan_id/i);
+});
+
+test("parseClaudeResult: classifies provider quota code errors", () => {
+  const r = parseClaudeResult(JSON.stringify({
+    type: "result",
+    is_error: true,
+    error: { code: "insufficient_quota", message: "payment_required" },
+    session_id: UUID,
+    permission_denials: [],
+  }));
+
+  assert.equal(r.ok, false);
+  assert.equal(r.reason, "usage_limited");
+  assert.match(r.error, /quota|usage-tier|billing|credit/i);
+});
+
+test("parseClaudeResult: transient rate-limit text is not billed as usage limited", () => {
+  const r = parseClaudeResult(JSON.stringify({
+    type: "result",
+    is_error: true,
+    result: "Error: Rate limit exceeded for requests per minute. Retry later.",
+    session_id: UUID,
+    permission_denials: [],
+  }));
+
+  assert.equal(r.ok, false);
+  assert.equal(r.reason, undefined);
+  assert.equal(r.error, null);
+});
+
 test("parseClaudeResult: prefers structured_output when present", () => {
   const payload = JSON.stringify({
     type: "result", is_error: false,

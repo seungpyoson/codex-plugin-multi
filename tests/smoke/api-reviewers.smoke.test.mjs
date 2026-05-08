@@ -1645,7 +1645,7 @@ test("direct API timeout marks selected content as sent", async () => {
   }
 });
 
-test("direct API HTTP failures mark selected content as sent", async () => {
+test("direct API generic 429 rate limits stay rate_limited and mark selected content as sent", async () => {
   const cwd = makeWorkspace();
   const dataDir = mkdtempSync(path.join(tmpdir(), "api-reviewers-data-"));
   const pluginRoot = makeInstalledApiReviewersRoot();
@@ -1676,9 +1676,695 @@ test("direct API HTTP failures mark selected content as sent", async () => {
     assert.equal(result.status, 1);
     const record = parseJson(result.stdout);
     assert.equal(record.error_code, "rate_limited");
+    assert.equal(record.error_cause, "direct_api_provider");
+    assert.equal(record.runtime_diagnostics.cost_quota.classification, "not_reported");
     assert.equal(record.external_review.source_content_transmission, "sent");
     assert.equal(record.external_review.disclosure,
       "Selected source content was sent to DeepSeek through direct API auth, but the provider did not return a clean result.");
+  } finally {
+    server.close();
+  }
+});
+
+test("direct API 429 quota status outranks unavailable wording and preserves numeric codes", async () => {
+  const cwd = makeWorkspace();
+  const dataDir = mkdtempSync(path.join(tmpdir(), "api-reviewers-data-"));
+  const pluginRoot = makeInstalledApiReviewersRoot();
+  const server = await startChatServer((req, res) => {
+    req.resume();
+    res.writeHead(429, { "content-type": "application/json" });
+    res.end(JSON.stringify({
+      error: {
+        code: 429,
+        type: "rate_limit",
+        message: "Payment required; service unavailable for the billing account.",
+      },
+    }));
+  });
+  try {
+    const { port } = server.address();
+    writeDeepSeekProviderConfig(pluginRoot, `http://127.0.0.1:${port}`);
+    const result = await run([
+      "run",
+      "--provider", "deepseek",
+      "--mode", "custom-review",
+      "--scope", "custom",
+      "--scope-paths", "seed.txt",
+      "--foreground",
+      "--prompt", "Check this file.",
+    ], {
+      cwd,
+      companion: path.join(pluginRoot, "scripts", "api-reviewer.mjs"),
+      env: {
+        API_REVIEWERS_PLUGIN_DATA: dataDir,
+        DEEPSEEK_API_KEY: "secret-test-value",
+      },
+    });
+    assert.equal(result.status, 1);
+    const record = parseJson(result.stdout);
+    assert.equal(record.error_code, "usage_limited");
+    assert.equal(record.error_cause, "cost_quota_usage_limit");
+    assert.equal(record.runtime_diagnostics.cost_quota.classification, "usage_limited");
+    assert.equal(record.runtime_diagnostics.cost_quota.http_status, 429);
+    assert.equal(record.runtime_diagnostics.cost_quota.provider_error_code, "429");
+    assert.equal(record.runtime_diagnostics.cost_quota.provider_error_type, "rate_limit");
+    assert.doesNotMatch(result.stdout, /secret-test-value/);
+  } finally {
+    server.close();
+  }
+});
+
+test("direct API 403 quota payloads are usage_limited, not auth_rejected", async () => {
+  const cwd = makeWorkspace();
+  const dataDir = mkdtempSync(path.join(tmpdir(), "api-reviewers-data-"));
+  const pluginRoot = makeInstalledApiReviewersRoot();
+  const server = await startChatServer((req, res) => {
+    req.resume();
+    res.writeHead(403, { "content-type": "application/json" });
+    res.end(JSON.stringify({
+      error: {
+        code: "insufficient_quota",
+        type: "billing",
+        message: "Credit limit exceeded for billing account user@example.com plan_id=pro+stripe-sub-abc/123.",
+      },
+    }));
+  });
+  try {
+    const { port } = server.address();
+    writeDeepSeekProviderConfig(pluginRoot, `http://127.0.0.1:${port}`);
+    const result = await run([
+      "run",
+      "--provider", "deepseek",
+      "--mode", "custom-review",
+      "--scope", "custom",
+      "--scope-paths", "seed.txt",
+      "--foreground",
+      "--prompt", "Check this file.",
+    ], {
+      cwd,
+      companion: path.join(pluginRoot, "scripts", "api-reviewer.mjs"),
+      env: {
+        API_REVIEWERS_PLUGIN_DATA: dataDir,
+        DEEPSEEK_API_KEY: "secret-test-value",
+      },
+    });
+    assert.equal(result.status, 1);
+    const record = parseJson(result.stdout);
+    assert.equal(record.error_code, "usage_limited");
+    assert.equal(record.error_cause, "cost_quota_usage_limit");
+    assert.equal(record.runtime_diagnostics.cost_quota.classification, "usage_limited");
+    assert.equal(record.runtime_diagnostics.cost_quota.http_status, 403);
+    assert.equal(record.runtime_diagnostics.cost_quota.provider_error_code, "insufficient_quota");
+    assert.equal(record.runtime_diagnostics.cost_quota.provider_error_type, "billing");
+    assert.doesNotMatch(result.stdout, /user@example\.com|stripe-sub|plan_id|secret-test-value/);
+  } finally {
+    server.close();
+  }
+});
+
+test("direct API status-only quota failures use safe diagnostics", async () => {
+  const cwd = makeWorkspace();
+  const dataDir = mkdtempSync(path.join(tmpdir(), "api-reviewers-data-"));
+  const pluginRoot = makeInstalledApiReviewersRoot();
+  const server = await startChatServer((req, res) => {
+    req.resume();
+    res.writeHead(402, { "content-type": "application/json" });
+    res.end(JSON.stringify({
+      error: {
+        code: "card_required",
+        type: "checkout_required",
+        message: "Payment required: see checkout session cs_test_abc123 and customer cus_NXLKj1H.",
+      },
+    }));
+  });
+  try {
+    const { port } = server.address();
+    writeDeepSeekProviderConfig(pluginRoot, `http://127.0.0.1:${port}`);
+    const result = await run([
+      "run",
+      "--provider", "deepseek",
+      "--mode", "custom-review",
+      "--scope", "custom",
+      "--scope-paths", "seed.txt",
+      "--foreground",
+      "--prompt", "Check this file.",
+    ], {
+      cwd,
+      companion: path.join(pluginRoot, "scripts", "api-reviewer.mjs"),
+      env: {
+        API_REVIEWERS_PLUGIN_DATA: dataDir,
+        DEEPSEEK_API_KEY: "secret-test-value",
+      },
+    });
+    assert.equal(result.status, 1);
+    const record = parseJson(result.stdout);
+    assert.equal(record.error_code, "usage_limited");
+    assert.equal(record.error_cause, "cost_quota_usage_limit");
+    assert.equal(record.runtime_diagnostics.cost_quota.classification, "usage_limited");
+    assert.doesNotMatch(result.stdout, /cs_test|cus_NXLKj1H|secret-test-value/);
+  } finally {
+    server.close();
+  }
+});
+
+test("direct API non-JSON quota payloads are usage_limited with safe diagnostics", async () => {
+  const cwd = makeWorkspace();
+  const dataDir = mkdtempSync(path.join(tmpdir(), "api-reviewers-data-"));
+  const pluginRoot = makeInstalledApiReviewersRoot();
+  const server = await startChatServer((req, res) => {
+    req.resume();
+    res.writeHead(403, { "content-type": "text/plain" });
+    res.end("insufficient_quota for billing account user@example.com plan_id=pro+stripe-sub-abc/123");
+  });
+  try {
+    const { port } = server.address();
+    writeDeepSeekProviderConfig(pluginRoot, `http://127.0.0.1:${port}`);
+    const result = await run([
+      "run",
+      "--provider", "deepseek",
+      "--mode", "custom-review",
+      "--scope", "custom",
+      "--scope-paths", "seed.txt",
+      "--foreground",
+      "--prompt", "Check this file.",
+    ], {
+      cwd,
+      companion: path.join(pluginRoot, "scripts", "api-reviewer.mjs"),
+      env: {
+        API_REVIEWERS_PLUGIN_DATA: dataDir,
+        DEEPSEEK_API_KEY: "secret-test-value",
+      },
+    });
+    assert.equal(result.status, 1);
+    const record = parseJson(result.stdout);
+    assert.equal(record.error_code, "usage_limited");
+    assert.equal(record.error_cause, "cost_quota_usage_limit");
+    assert.equal(record.runtime_diagnostics.cost_quota.classification, "usage_limited");
+    assert.equal(record.runtime_diagnostics.cost_quota.http_status, 403);
+    assert.doesNotMatch(result.stdout, /user@example\.com|stripe-sub|plan_id|secret-test-value/);
+  } finally {
+    server.close();
+  }
+});
+
+test("direct API 501 compatibility errors stay provider_error", async () => {
+  const cwd = makeWorkspace();
+  const dataDir = mkdtempSync(path.join(tmpdir(), "api-reviewers-data-"));
+  const pluginRoot = makeInstalledApiReviewersRoot();
+  const server = await startChatServer((req, res) => {
+    req.resume();
+    res.writeHead(501, { "content-type": "application/json" });
+    res.end(JSON.stringify({
+      error: {
+        code: "insufficient_quota",
+        type: "unsupported_operation",
+        message: "The requested model or method is not implemented for this quota endpoint.",
+      },
+    }));
+  });
+  try {
+    const { port } = server.address();
+    writeDeepSeekProviderConfig(pluginRoot, `http://127.0.0.1:${port}`);
+    const result = await run([
+      "run",
+      "--provider", "deepseek",
+      "--mode", "custom-review",
+      "--scope", "custom",
+      "--scope-paths", "seed.txt",
+      "--foreground",
+      "--prompt", "Check this file.",
+    ], {
+      cwd,
+      companion: path.join(pluginRoot, "scripts", "api-reviewer.mjs"),
+      env: {
+        API_REVIEWERS_PLUGIN_DATA: dataDir,
+        DEEPSEEK_API_KEY: "secret-test-value",
+      },
+    });
+    assert.equal(result.status, 1);
+    const record = parseJson(result.stdout);
+    assert.equal(record.error_code, "provider_error");
+    assert.equal(record.error_cause, "direct_api_provider");
+    assert.equal(record.runtime_diagnostics.cost_quota.classification, "not_reported");
+    assert.equal(record.runtime_diagnostics.cost_quota.http_status, 501);
+    assert.equal(record.runtime_diagnostics.cost_quota.provider_error_code, "insufficient_quota");
+    assert.equal(record.runtime_diagnostics.cost_quota.provider_error_type, "unsupported_operation");
+    assert.doesNotMatch(result.stdout, /secret-test-value/);
+  } finally {
+    server.close();
+  }
+});
+
+test("direct API unlisted 5xx quota-looking errors stay provider_error", async () => {
+  const cwd = makeWorkspace();
+  const dataDir = mkdtempSync(path.join(tmpdir(), "api-reviewers-data-"));
+  const pluginRoot = makeInstalledApiReviewersRoot();
+  const server = await startChatServer((req, res) => {
+    req.resume();
+    res.writeHead(505, { "content-type": "application/json" });
+    res.end(JSON.stringify({
+      error: {
+        code: "insufficient_quota",
+        type: "unsupported_http_version",
+        message: "quota endpoint unavailable for this unsupported HTTP version.",
+      },
+    }));
+  });
+  try {
+    const { port } = server.address();
+    writeDeepSeekProviderConfig(pluginRoot, `http://127.0.0.1:${port}`);
+    const result = await run([
+      "run",
+      "--provider", "deepseek",
+      "--mode", "custom-review",
+      "--scope", "custom",
+      "--scope-paths", "seed.txt",
+      "--foreground",
+      "--prompt", "Check this file.",
+    ], {
+      cwd,
+      companion: path.join(pluginRoot, "scripts", "api-reviewer.mjs"),
+      env: {
+        API_REVIEWERS_PLUGIN_DATA: dataDir,
+        DEEPSEEK_API_KEY: "secret-test-value",
+      },
+    });
+    assert.equal(result.status, 1);
+    const record = parseJson(result.stdout);
+    assert.equal(record.error_code, "provider_error");
+    assert.equal(record.runtime_diagnostics.cost_quota.classification, "not_reported");
+    assert.equal(record.runtime_diagnostics.cost_quota.http_status, 505);
+    assert.equal(record.runtime_diagnostics.cost_quota.provider_error_code, "insufficient_quota");
+    assert.equal(record.runtime_diagnostics.cost_quota.provider_error_type, "unsupported_http_version");
+    assert.doesNotMatch(result.stdout, /secret-test-value/);
+  } finally {
+    server.close();
+  }
+});
+
+test("direct API auth failures outrank billing-looking error text", async () => {
+  const cwd = makeWorkspace();
+  const dataDir = mkdtempSync(path.join(tmpdir(), "api-reviewers-data-"));
+  const pluginRoot = makeInstalledApiReviewersRoot();
+  const server = await startChatServer((req, res) => {
+    req.resume();
+    res.writeHead(401, { "content-type": "application/json" });
+    res.end(JSON.stringify({
+      error: {
+        code: "invalid_api_key",
+        message: "API key rejected for a billing-gated quota tier.",
+      },
+    }));
+  });
+  try {
+    const { port } = server.address();
+    writeDeepSeekProviderConfig(pluginRoot, `http://127.0.0.1:${port}`);
+    const result = await run([
+      "run",
+      "--provider", "deepseek",
+      "--mode", "custom-review",
+      "--scope", "custom",
+      "--scope-paths", "seed.txt",
+      "--foreground",
+      "--prompt", "Check this file.",
+    ], {
+      cwd,
+      companion: path.join(pluginRoot, "scripts", "api-reviewer.mjs"),
+      env: {
+        API_REVIEWERS_PLUGIN_DATA: dataDir,
+        DEEPSEEK_API_KEY: "secret-test-value",
+      },
+    });
+    assert.equal(result.status, 1);
+    const record = parseJson(result.stdout);
+    assert.equal(record.error_code, "auth_rejected");
+    assert.equal(record.error_cause, "direct_api_provider");
+    assert.equal(record.runtime_diagnostics.cost_quota.classification, "not_reported");
+    assert.equal(record.external_review.source_content_transmission, "sent");
+  } finally {
+    server.close();
+  }
+});
+
+test("direct API 403 auth failure with bare error code stays auth_rejected", async () => {
+  const cwd = makeWorkspace();
+  const dataDir = mkdtempSync(path.join(tmpdir(), "api-reviewers-data-"));
+  const pluginRoot = makeInstalledApiReviewersRoot();
+  const server = await startChatServer((req, res) => {
+    req.resume();
+    res.writeHead(403, { "content-type": "application/json" });
+    res.end(JSON.stringify({
+      error: {
+        code: "permission_denied",
+        message: "Error code: 403\nAuthentication failed.",
+      },
+    }));
+  });
+  try {
+    const { port } = server.address();
+    writeDeepSeekProviderConfig(pluginRoot, `http://127.0.0.1:${port}`);
+    const result = await run([
+      "run",
+      "--provider", "deepseek",
+      "--mode", "custom-review",
+      "--scope", "custom",
+      "--scope-paths", "seed.txt",
+      "--foreground",
+      "--prompt", "Check this file.",
+    ], {
+      cwd,
+      companion: path.join(pluginRoot, "scripts", "api-reviewer.mjs"),
+      env: {
+        API_REVIEWERS_PLUGIN_DATA: dataDir,
+        DEEPSEEK_API_KEY: "secret-test-value",
+      },
+    });
+    assert.equal(result.status, 1);
+    const record = parseJson(result.stdout);
+    assert.equal(record.error_code, "auth_rejected");
+    assert.equal(record.error_cause, "direct_api_provider");
+    assert.equal(record.runtime_diagnostics.cost_quota.classification, "not_reported");
+    assert.equal(record.runtime_diagnostics.cost_quota.http_status, 403);
+  } finally {
+    server.close();
+  }
+});
+
+test("direct API non-quota rate wording on provider errors is not cost-quota usage limited", async () => {
+  const cwd = makeWorkspace();
+  const dataDir = mkdtempSync(path.join(tmpdir(), "api-reviewers-data-"));
+  const pluginRoot = makeInstalledApiReviewersRoot();
+  const server = await startChatServer((req, res) => {
+    req.resume();
+    res.writeHead(500, { "content-type": "application/json" });
+    res.end(JSON.stringify({
+      error: {
+        code: "rate_limited",
+        type: "server_overloaded",
+        message: "Provider rate limit overloaded this shard.",
+      },
+    }));
+  });
+  try {
+    const { port } = server.address();
+    writeDeepSeekProviderConfig(pluginRoot, `http://127.0.0.1:${port}`);
+    const result = await run([
+      "run",
+      "--provider", "deepseek",
+      "--mode", "custom-review",
+      "--scope", "custom",
+      "--scope-paths", "seed.txt",
+      "--foreground",
+      "--prompt", "Check this file.",
+    ], {
+      cwd,
+      companion: path.join(pluginRoot, "scripts", "api-reviewer.mjs"),
+      env: {
+        API_REVIEWERS_PLUGIN_DATA: dataDir,
+        DEEPSEEK_API_KEY: "secret-test-value",
+      },
+    });
+    assert.equal(result.status, 1);
+    const record = parseJson(result.stdout);
+    assert.equal(record.error_code, "provider_unavailable");
+    assert.equal(record.runtime_diagnostics.cost_quota.classification, "not_reported");
+    assert.equal(record.external_review.source_content_transmission, "sent");
+  } finally {
+    server.close();
+  }
+});
+
+test("direct API provider-unavailable wording keeps quota diagnostics aligned on 400s", async () => {
+  const cwd = makeWorkspace();
+  const dataDir = mkdtempSync(path.join(tmpdir(), "api-reviewers-data-"));
+  const pluginRoot = makeInstalledApiReviewersRoot();
+  const server = await startChatServer((req, res) => {
+    req.resume();
+    res.writeHead(400, { "content-type": "application/json" });
+    res.end(JSON.stringify({
+      error: {
+        code: "billing_account_unavailable",
+        type: "provider_unavailable",
+        message: "billing account quota verifier unavailable; retry later",
+      },
+    }));
+  });
+  try {
+    const { port } = server.address();
+    writeDeepSeekProviderConfig(pluginRoot, `http://127.0.0.1:${port}`);
+    const result = await run([
+      "run",
+      "--provider", "deepseek",
+      "--mode", "custom-review",
+      "--scope", "custom",
+      "--scope-paths", "seed.txt",
+      "--foreground",
+      "--prompt", "Check this file.",
+    ], {
+      cwd,
+      companion: path.join(pluginRoot, "scripts", "api-reviewer.mjs"),
+      env: {
+        API_REVIEWERS_PLUGIN_DATA: dataDir,
+        DEEPSEEK_API_KEY: "secret-test-value",
+      },
+    });
+    assert.equal(result.status, 1);
+    const record = parseJson(result.stdout);
+    assert.equal(record.error_code, "provider_unavailable");
+    assert.equal(record.runtime_diagnostics.cost_quota.classification, "not_reported");
+    assert.equal(record.runtime_diagnostics.cost_quota.provider_error_code, "billing_account_unavailable");
+    assert.equal(record.runtime_diagnostics.cost_quota.provider_error_type, "provider_unavailable");
+    assert.equal(record.external_review.source_content_transmission, "sent");
+  } finally {
+    server.close();
+  }
+});
+
+test("direct API preserves non-payment prefixed provider diagnostic tokens", async () => {
+  const cwd = makeWorkspace();
+  const dataDir = mkdtempSync(path.join(tmpdir(), "api-reviewers-data-"));
+  const pluginRoot = makeInstalledApiReviewersRoot();
+  const server = await startChatServer((req, res) => {
+    req.resume();
+    res.writeHead(501, { "content-type": "application/json" });
+    res.end(JSON.stringify({
+      error: {
+        code: "in_progress",
+        type: "sub_required",
+        message: "Provider feature is still being enabled.",
+      },
+    }));
+  });
+  try {
+    const { port } = server.address();
+    writeDeepSeekProviderConfig(pluginRoot, `http://127.0.0.1:${port}`);
+    const result = await run([
+      "run",
+      "--provider", "deepseek",
+      "--mode", "custom-review",
+      "--scope", "custom",
+      "--scope-paths", "seed.txt",
+      "--foreground",
+      "--prompt", "Check this file.",
+    ], {
+      cwd,
+      companion: path.join(pluginRoot, "scripts", "api-reviewer.mjs"),
+      env: {
+        API_REVIEWERS_PLUGIN_DATA: dataDir,
+        DEEPSEEK_API_KEY: "secret-test-value",
+      },
+    });
+    assert.equal(result.status, 1);
+    const record = parseJson(result.stdout);
+    assert.equal(record.error_code, "provider_error");
+    assert.equal(record.runtime_diagnostics.cost_quota.classification, "not_reported");
+    assert.equal(record.runtime_diagnostics.cost_quota.provider_error_code, "in_progress");
+    assert.equal(record.runtime_diagnostics.cost_quota.provider_error_type, "sub_required");
+  } finally {
+    server.close();
+  }
+});
+
+test("direct API flat quota response keeps diagnostics aligned with error code", async () => {
+  const cwd = makeWorkspace();
+  const dataDir = mkdtempSync(path.join(tmpdir(), "api-reviewers-data-"));
+  const pluginRoot = makeInstalledApiReviewersRoot();
+  const server = await startChatServer((req, res) => {
+    req.resume();
+    res.writeHead(400, { "content-type": "application/json" });
+    res.end(JSON.stringify({
+      message: "quota exceeded for this billing account",
+    }));
+  });
+  try {
+    const { port } = server.address();
+    writeDeepSeekProviderConfig(pluginRoot, `http://127.0.0.1:${port}`);
+    const result = await run([
+      "run",
+      "--provider", "deepseek",
+      "--mode", "custom-review",
+      "--scope", "custom",
+      "--scope-paths", "seed.txt",
+      "--foreground",
+      "--prompt", "Check this file.",
+    ], {
+      cwd,
+      companion: path.join(pluginRoot, "scripts", "api-reviewer.mjs"),
+      env: {
+        API_REVIEWERS_PLUGIN_DATA: dataDir,
+        DEEPSEEK_API_KEY: "secret-test-value",
+      },
+    });
+    assert.equal(result.status, 1);
+    const record = parseJson(result.stdout);
+    assert.equal(record.error_code, "usage_limited");
+    assert.equal(record.error_cause, "cost_quota_usage_limit");
+    assert.equal(record.runtime_diagnostics.cost_quota.classification, "usage_limited");
+    assert.equal(record.runtime_diagnostics.cost_quota.http_status, 400);
+    assert.equal(record.runtime_diagnostics.cost_quota.provider_error_code, null);
+    assert.equal(record.runtime_diagnostics.cost_quota.provider_error_type, null);
+    assert.equal(record.external_review.source_content_transmission, "sent");
+    assert.doesNotMatch(result.stdout, /secret-test-value/);
+  } finally {
+    server.close();
+  }
+});
+
+test("direct API billing-provider outages are provider unavailable, not cost-quota usage limited", async () => {
+  const cwd = makeWorkspace();
+  const dataDir = mkdtempSync(path.join(tmpdir(), "api-reviewers-data-"));
+  const pluginRoot = makeInstalledApiReviewersRoot();
+  const server = await startChatServer((req, res) => {
+    req.resume();
+    res.writeHead(500, { "content-type": "application/json" });
+    res.end(JSON.stringify({
+      error: {
+        code: "billing_provider_outage",
+        type: "provider_unavailable",
+        message: "billing account quota verifier unavailable for customer cus_NXLKj1H; retry later",
+      },
+    }));
+  });
+  try {
+    const { port } = server.address();
+    writeDeepSeekProviderConfig(pluginRoot, `http://127.0.0.1:${port}`);
+    const result = await run([
+      "run",
+      "--provider", "deepseek",
+      "--mode", "custom-review",
+      "--scope", "custom",
+      "--scope-paths", "seed.txt",
+      "--foreground",
+      "--prompt", "Check this file.",
+    ], {
+      cwd,
+      companion: path.join(pluginRoot, "scripts", "api-reviewer.mjs"),
+      env: {
+        API_REVIEWERS_PLUGIN_DATA: dataDir,
+        DEEPSEEK_API_KEY: "secret-test-value",
+      },
+    });
+    assert.equal(result.status, 1);
+    const record = parseJson(result.stdout);
+    assert.equal(record.error_code, "provider_unavailable");
+    assert.equal(record.runtime_diagnostics.cost_quota.classification, "not_reported");
+    assert.equal(record.external_review.source_content_transmission, "sent");
+    assert.doesNotMatch(result.stdout, /cus_NXLKj1H/);
+  } finally {
+    server.close();
+  }
+});
+
+test("direct API quota and billing failures are classified as usage_limited with safe diagnostics", async () => {
+  const cwd = makeWorkspace();
+  const dataDir = mkdtempSync(path.join(tmpdir(), "api-reviewers-data-"));
+  const pluginRoot = makeInstalledApiReviewersRoot();
+  const server = await startChatServer((req, res) => {
+    req.resume();
+    res.writeHead(402, { "content-type": "application/json" });
+    res.end(JSON.stringify({
+      error: {
+        code: "insufficient_quota",
+        type: "billing",
+        message: "Credit limit exceeded for this billing cycle.",
+      },
+    }));
+  });
+  try {
+    const { port } = server.address();
+    writeDeepSeekProviderConfig(pluginRoot, `http://127.0.0.1:${port}`);
+    const result = await run([
+      "run",
+      "--provider", "deepseek",
+      "--mode", "custom-review",
+      "--scope", "custom",
+      "--scope-paths", "seed.txt",
+      "--foreground",
+      "--prompt", "Check this file.",
+    ], {
+      cwd,
+      companion: path.join(pluginRoot, "scripts", "api-reviewer.mjs"),
+      env: {
+        API_REVIEWERS_PLUGIN_DATA: dataDir,
+        DEEPSEEK_API_KEY: "secret-test-value",
+      },
+    });
+    assert.equal(result.status, 1);
+    const record = parseJson(result.stdout);
+    assert.equal(record.error_code, "usage_limited");
+    assert.equal(record.error_cause, "cost_quota_usage_limit");
+    assert.match(record.suggested_action, /does not purchase credits|does not upgrade tiers/i);
+    assert.equal(record.runtime_diagnostics.cost_quota.classification, "usage_limited");
+    assert.equal(record.runtime_diagnostics.cost_quota.http_status, 402);
+    assert.equal(record.runtime_diagnostics.cost_quota.provider_error_code, "insufficient_quota");
+    assert.equal(record.runtime_diagnostics.cost_quota.provider_error_type, "billing");
+    assert.doesNotMatch(result.stdout, /secret-test-value/);
+  } finally {
+    server.close();
+  }
+});
+
+test("direct API cost-quota diagnostics drop PII-shaped provider error tokens", async () => {
+  const cwd = makeWorkspace();
+  const dataDir = mkdtempSync(path.join(tmpdir(), "api-reviewers-data-"));
+  const pluginRoot = makeInstalledApiReviewersRoot();
+  const server = await startChatServer((req, res) => {
+    req.resume();
+    res.writeHead(402, { "content-type": "application/json" });
+    res.end(JSON.stringify({
+      error: {
+        code: "ii_1Mt5L0HabcDEF12345",
+        type: "acct_test_12345",
+        message: "Credit limit exceeded for this billing cycle.",
+      },
+    }));
+  });
+  try {
+    const { port } = server.address();
+    writeDeepSeekProviderConfig(pluginRoot, `http://127.0.0.1:${port}`);
+    const result = await run([
+      "run",
+      "--provider", "deepseek",
+      "--mode", "custom-review",
+      "--scope", "custom",
+      "--scope-paths", "seed.txt",
+      "--foreground",
+      "--prompt", "Check this file.",
+    ], {
+      cwd,
+      companion: path.join(pluginRoot, "scripts", "api-reviewer.mjs"),
+      env: {
+        API_REVIEWERS_PLUGIN_DATA: dataDir,
+        DEEPSEEK_API_KEY: "secret-test-value",
+      },
+    });
+    assert.equal(result.status, 1);
+    const record = parseJson(result.stdout);
+    assert.equal(record.error_code, "usage_limited");
+    assert.equal(record.runtime_diagnostics.cost_quota.classification, "usage_limited");
+    assert.equal(record.runtime_diagnostics.cost_quota.provider_error_code, null);
+    assert.equal(record.runtime_diagnostics.cost_quota.provider_error_type, null);
+    assert.doesNotMatch(result.stdout, /ii_1Mt5L0HabcDEF12345|acct_test_12345/);
   } finally {
     server.close();
   }

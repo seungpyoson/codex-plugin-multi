@@ -1593,7 +1593,7 @@ test("run: pre/post git-status sidecars written in a git cwd", () => {
   }
 });
 
-test("doctor: returns the same readiness contract as ping", () => {
+test("doctor: returns readiness contract", () => {
   const cwd = mkdtempSync(path.join(tmpdir(), "smoke-cwd-"));
   const { stdout, status, dataDir } = runCompanion(["doctor"], { cwd });
   try {
@@ -1605,6 +1605,21 @@ test("doctor: returns the same readiness contract as ping", () => {
     assert.match(result.next_action, /review/i);
     assert.equal(result.auth_mode, "subscription");
     assert.equal(result.selected_auth_path, "subscription_oauth");
+  } finally {
+    cleanup(dataDir);
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("doctor: probes configured review model, not only native auth", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "claude-doctor-review-model-cwd-"));
+  const { stdout, status, dataDir } = runCompanion(["doctor"], { cwd });
+  try {
+    assert.equal(status, 0);
+    const result = JSON.parse(stdout);
+    assert.equal(result.status, "ok");
+    assert.equal(result.ready, true);
+    assert.equal(result.model, "claude-opus-4-7");
   } finally {
     cleanup(dataDir);
     rmSync(cwd, { recursive: true, force: true });

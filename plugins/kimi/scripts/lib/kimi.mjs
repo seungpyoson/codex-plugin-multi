@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 
 import { attachPidCapture } from "./identity.mjs";
 import { sanitizeTargetEnv } from "./provider-env.mjs";
+import { usageLimitMessage } from "./usage-limit.mjs";
 
 function assertProfile(profile) {
   if (!profile || typeof profile !== "object") {
@@ -68,7 +69,6 @@ function parseResumeSessionId(text) {
 }
 
 const STEP_LIMIT_RE = /^Max number of steps reached:\s*(\d+)\s*$/;
-const USAGE_LIMIT_RE = /(?:Error code:\s*403|usage limit|quota|billing cycle)/i;
 
 function parseJsonLineSessionId(text) {
   for (const line of String(text ?? "").split("\n").reverse()) {
@@ -91,13 +91,6 @@ function findStepLimitLine(stdout) {
     if (match) return match;
   }
   return null;
-}
-
-function usageLimitMessage(stdout, stderr) {
-  const combined = `${stdout ?? ""}\n${stderr ?? ""}`;
-  if (!USAGE_LIMIT_RE.test(combined)) return null;
-  const trimmed = combined.trim();
-  return trimmed.length > 4000 ? `${trimmed.slice(0, 4000)}...` : trimmed;
 }
 
 function stepLimitResult(match, stdout, stderr) {
@@ -138,9 +131,7 @@ export function parseKimiResult(stdout, stderr = "", options = {}) {
   if (stepLimitMatch) {
     return stepLimitResult(stepLimitMatch, stdout, stderr);
   }
-  // Signal-killed runs have exitCode null; mixed sentinels are ignored so crash/timeout
-  // classification is not masked, while sole sentinels are still caught above.
-  if (Number.isInteger(options?.exitCode) && options.exitCode !== 0) {
+  if ((Number.isInteger(options?.exitCode) && options.exitCode !== 0) || options?.signal != null) {
     const failedStepLimitMatch = findStepLimitLine(stdout);
     if (failedStepLimitMatch) {
       return stepLimitResult(failedStepLimitMatch, stdout, stderr);
@@ -173,8 +164,10 @@ export function parseKimiResult(stdout, stderr = "", options = {}) {
   const parsedError = parsed.error == null
     ? null
     : (typeof parsed.error === "string" ? parsed.error : JSON.stringify(parsed.error));
+  const usageLimited = parsed.error == null ? null : usageLimitMessage(parsedError, stderr);
   return {
     ok: parsed.error == null,
+    reason: usageLimited ? "usage_limited" : undefined,
     sessionId: parsed.session_id ?? parsed.sessionId ?? resumeMatch ?? null,
     result: typeof parsed.content === "string"
       ? parsed.content
@@ -183,7 +176,7 @@ export function parseKimiResult(stdout, stderr = "", options = {}) {
     denials: Array.isArray(parsed.permission_denials) ? parsed.permission_denials : [],
     usage: parsed.stats ?? null,
     costUsd: parsed.total_cost_usd ?? null,
-    error: parsedError,
+    error: usageLimited ?? parsedError,
     raw: parsed,
   };
 }
@@ -246,7 +239,7 @@ export async function spawnKimi(profile, runtimeInputs = {}) {
       finishReject(Object.assign(new Error(`spawn ${binary} failed: ${e.message}`), { code: e.code }));
     });
     child.on("close", (exitCode, signal) => {
-      const parsed = parseKimiResult(stdout, stderr, { exitCode });
+      const parsed = parseKimiResult(stdout, stderr, { exitCode, signal });
       finishResolve({
         exitCode,
         signal,

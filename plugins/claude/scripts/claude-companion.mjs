@@ -1553,12 +1553,12 @@ function printPingExecutionFailure(execution, authSelection, binary) {
 }
 
 // ——— subcommand: ping (OAuth health probe per spec §7.5) ———
-async function cmdPing(rest) {
+async function cmdPing(rest, { readinessProfileName = "ping" } = {}) {
   const { options } = parseArgs(rest, {
     valueOptions: ["model", "binary", "timeout-ms", "auth-mode"],
     booleanOptions: [],
   });
-  const profile = resolveProfile("ping");
+  const profile = resolveProfile(readinessProfileName);
   const model = options.model ?? resolveModelForProfile(profile, loadModels());
   const rawBinary = options.binary ?? process.env.CLAUDE_BINARY ?? "claude";
   const binary = resolveCliBinary(process.cwd(), rawBinary);
@@ -1813,7 +1813,7 @@ async function main() {
     case "cancel":  return cmdCancel(rest);
     case "continue": return cmdContinue(rest);
     case "_run-worker": return cmdRunWorker(rest);
-    case "doctor":  return cmdPing(rest);
+    case "doctor":  return cmdPing(rest, { readinessProfileName: "review" });
     case "--help":
     case "-h":
     case undefined:

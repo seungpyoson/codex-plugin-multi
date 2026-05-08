@@ -141,6 +141,13 @@ Review runs also preflight the rendered prompt length. Prompts above
 into explicit custom-review shards; raise the limit only after confirming the
 local tunnel and selected Grok model accept larger prompts.
 
+HTTP 402 and HTTP 429 tunnel responses are classified as `usage_limited`.
+Grok JobRecords may include safe `runtime_diagnostics.cost_quota` metadata such
+as status and provider error code/type tokens. They do not
+persist cookies, bearer values, payment details, full prompts, source bundles,
+or raw provider payloads, and the plugin never purchases credits or changes
+subscription tiers automatically.
+
 Live E2E:
 
 ```sh

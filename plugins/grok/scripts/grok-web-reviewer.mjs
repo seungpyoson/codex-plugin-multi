@@ -9,6 +9,7 @@ import { fileURLToPath } from "node:url";
 import { cleanGitEnv as cleanCanonicalGitEnv } from "./lib/git-env.mjs";
 import { GIT_BINARY_ENV, gitEnv, isGitBinaryPolicyError, resolveGitBinary } from "./lib/git-binary.mjs";
 import { REVIEW_PROMPT_CONTRACT_VERSION, buildReviewAuditManifest, buildReviewPrompt, scopeResolutionReason } from "./lib/review-prompt.mjs";
+import { USAGE_LIMIT_SAFE_MESSAGE, isUsageLimitDetail } from "./lib/usage-limit.mjs";
 import {
   EXTERNAL_REVIEW_KEYS,
   SOURCE_CONTENT_TRANSMISSION,
@@ -28,6 +29,8 @@ const MAX_STATE_JOBS = 50;
 const STATE_LOCK_STALE_MS = 60 * 1000;
 const SCHEMA_VERSION = 10;
 const MIN_SECRET_REDACTION_LENGTH = 8;
+const ACCOUNT_PAYMENT_TOKEN_RE = /\b(?:stripe-[^\s,;:)]+|cus_[A-Za-z0-9]{6,}|acct_(?:test_)?[A-Za-z0-9]{5,}|cs_(?:test|live)_[A-Za-z0-9]{6,}|(?:pi|sub|in|ii|ch|seti|setp|price|prod|iv)_(?=[A-Za-z0-9]*\d)[A-Za-z0-9]{5,})/gi;
+const ACCOUNT_PAYMENT_DIAGNOSTIC_RE = /^(?:stripe-.+|cus_[A-Za-z0-9]{6,}|acct_(?:test_)?[A-Za-z0-9]{5,}|cs_(?:test|live)_[A-Za-z0-9]{6,}|(?:pi|sub|in|ii|ch|seti|setp|price|prod|iv)_(?=[A-Za-z0-9]*\d)[A-Za-z0-9]{5,})$/i;
 const PLUGIN_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const SCOPE_FILE_OPEN_FLAGS = fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0);
 const GROK_EXPECTED_KEYS = Object.freeze([
@@ -204,8 +207,62 @@ function redactor(env = process.env) {
     for (const secret of secrets) out = out.split(secret).join("[REDACTED]");
     out = out.replace(/Authorization:\s*\S+(?:\s+\S{8,})?/gi, "Authorization: [REDACTED]");
     out = out.replace(/Bearer\s+\S{8,}/gi, "Bearer [REDACTED]");
+    out = redactEmailTokens(out);
+    out = out.replaceAll(/\bplan[_-]?id=[^\s,;:)]+/gi, "[REDACTED]");
+    out = out.replaceAll(ACCOUNT_PAYMENT_TOKEN_RE, "[REDACTED]");
     return out;
   };
+}
+
+function redactEmailTokens(text) {
+  let out = "";
+  let token = "";
+  const flush = () => {
+    out += redactEmailToken(token);
+    token = "";
+  };
+  for (const ch of String(text ?? "")) {
+    if (isEmailTokenChar(ch)) {
+      token += ch;
+    } else {
+      flush();
+      out += ch;
+    }
+  }
+  flush();
+  return out;
+}
+
+function isEmailTokenChar(ch) {
+  const code = ch.charCodeAt(0);
+  return (
+    (code >= 48 && code <= 57) ||
+    (code >= 65 && code <= 90) ||
+    (code >= 97 && code <= 122) ||
+    ch === "." || ch === "_" || ch === "%" || ch === "+" || ch === "-" || ch === "@"
+  );
+}
+
+function redactEmailToken(token) {
+  if (!token) return "";
+  let end = token.length;
+  while (end > 0 && token[end - 1] === ".") end -= 1;
+  const core = token.slice(0, end);
+  const suffix = token.slice(end);
+  return isEmailLikeToken(core) ? `[REDACTED]${suffix}` : token;
+}
+
+function isEmailLikeToken(token) {
+  const at = token.indexOf("@");
+  if (at <= 0 || at !== token.lastIndexOf("@") || at === token.length - 1) return false;
+  const domain = token.slice(at + 1);
+  const dot = domain.lastIndexOf(".");
+  if (dot <= 0 || dot >= domain.length - 2) return false;
+  for (let i = dot + 1; i < domain.length; i += 1) {
+    const code = domain.charCodeAt(i);
+    if (!((code >= 65 && code <= 90) || (code >= 97 && code <= 122))) return false;
+  }
+  return true;
 }
 
 function cleanGitEnv(baseEnv = process.env) {
@@ -590,22 +647,49 @@ function providerFailureWithDiagnostic(reason, message, httpStatus, raw = null, 
   };
 }
 
-function classifyHttpFailure(status) {
+function providerFailureDetail(parsed) {
+  if (!parsed.ok) return {};
+  const value = parsed.value;
+  if (value && typeof value === "object" && "error" in value && value.error != null) return value.error;
+  return value ?? {};
+}
+
+function providerFailureDetailText(parsed) {
+  return JSON.stringify(providerFailureDetail(parsed) ?? {});
+}
+
+function providerFailureDetailObject(parsed) {
+  const detail = providerFailureDetail(parsed);
+  return detail && typeof detail === "object" && !Array.isArray(detail) ? detail : {};
+}
+
+function classifyHttpFailure(status, parsed, text = "") {
+  const detail = parsed.ok ? providerFailureDetailText(parsed) : String(text ?? "");
   if (status === 401 || status === 403) return "session_expired";
-  if (status === 429) return "usage_limited";
-  if (status >= 500) return "tunnel_error";
+  if (status === 408 || status === 409 || status === 425 || status >= 500) return "tunnel_error";
+  if (status === 402 || status === 429 || isUsageLimitDetail(detail)) return "usage_limited";
   return "tunnel_error";
 }
 
-function errorMessageFromResponse(parsed, text, redact) {
+function errorMessageFromResponse(parsed, text, redact, { safeUsageLimit = false } = {}) {
+  if (safeUsageLimit) return USAGE_LIMIT_SAFE_MESSAGE;
   if (parsed.ok) {
-    return redact(parsed.value?.error?.message ?? parsed.value?.message ?? JSON.stringify(parsed.value)).slice(0, 800);
+    const message = parsed.value?.error?.message ?? parsed.value?.message ?? JSON.stringify(parsed.value);
+    return redact(message).slice(0, 800);
   }
   return redact(text).slice(0, 800);
 }
 
 function chatBadRequestCode(parsed, text) {
   const value = parsed.ok ? parsed.value : null;
+  const usageDetail = [
+    value?.error?.code,
+    value?.error?.type,
+    value?.error?.message,
+    value?.message,
+    text,
+  ].filter(Boolean).join(" ");
+  if (isUsageLimitDetail(usageDetail)) return "usage_limited";
   const codeOrType = [
     value?.error?.code,
     value?.error?.type,
@@ -647,6 +731,24 @@ function safeSessionId(value) {
   return /^[A-Za-z0-9._:/=+@-]{1,200}$/.test(value) ? value : null;
 }
 
+function safeDiagnosticString(value) {
+  if (typeof value !== "string" && typeof value !== "number") return null;
+  const text = String(value);
+  if (ACCOUNT_PAYMENT_DIAGNOSTIC_RE.test(text)) return null;
+  return /^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$/.test(text) ? text : null;
+}
+
+function costQuotaDiagnostics(errorCode, httpStatus, parsed) {
+  const error = providerFailureDetailObject(parsed);
+  return {
+    classification: errorCode === "usage_limited" ? "usage_limited" : "not_reported",
+    http_status: httpStatus ?? null,
+    provider_error_code: safeDiagnosticString(error.code) ?? null,
+    provider_error_type: safeDiagnosticString(error.type) ?? null,
+    billing_mutation: "not_attempted",
+  };
+}
+
 async function callGrokTunnel(cfg, prompt, env = process.env) {
   const endpoint = `${cfg.base_url}/chat/completions`;
   const requestBody = {
@@ -671,9 +773,10 @@ async function callGrokTunnel(cfg, prompt, env = process.env) {
     const text = await response.text();
     const parsed = parseJson(text);
     if (!response.ok) {
+      const errorCode = classifyHttpFailure(response.status, parsed, text);
       return providerFailureWithDiagnostic(
-        classifyHttpFailure(response.status),
-        errorMessageFromResponse(parsed, text, redact),
+        errorCode,
+        errorMessageFromResponse(parsed, text, redact, { safeUsageLimit: errorCode === "usage_limited" }),
         response.status,
         parsed.ok ? parsed.value : null,
         true,
@@ -685,6 +788,7 @@ async function callGrokTunnel(cfg, prompt, env = process.env) {
           stream: false,
           message_count: requestBody.messages.length,
           prompt_chars: prompt.length,
+          cost_quota: costQuotaDiagnostics(errorCode, response.status, parsed),
         },
       );
     }
@@ -763,10 +867,11 @@ async function probeGrokTunnel(cfg, env = process.env) {
     const text = await response.text();
     const parsed = text ? parseJson(text) : { ok: true, value: null };
     if (!response.ok) {
+      const errorCode = classifyHttpFailure(response.status, parsed, text);
       return {
         reachable: false,
-        error_code: classifyHttpFailure(response.status),
-        error_message: errorMessageFromResponse(parsed, text, redact),
+        error_code: errorCode,
+        error_message: errorMessageFromResponse(parsed, text, redact, { safeUsageLimit: errorCode === "usage_limited" }),
         http_status: response.status,
         probe_endpoint: endpoint,
       };
@@ -814,10 +919,11 @@ async function probeGrokChat(cfg, env = process.env) {
     const text = await response.text();
     const parsed = text ? parseJson(text) : { ok: true, value: null };
     if (!response.ok) {
+      const errorCode = response.status === 400 ? chatBadRequestCode(parsed, text) : classifyHttpFailure(response.status, parsed, text);
       return {
         chat_ready: false,
-        error_code: response.status === 400 ? chatBadRequestCode(parsed, text) : classifyHttpFailure(response.status),
-        error_message: errorMessageFromResponse(parsed, text, redact),
+        error_code: errorCode,
+        error_message: errorMessageFromResponse(parsed, text, redact, { safeUsageLimit: errorCode === "usage_limited" }),
         http_status: response.status,
         probe_endpoint: endpoint,
       };
@@ -879,7 +985,7 @@ function suggestedAction(errorCode, errorMessage = "") {
   if (errorCode === "tunnel_unavailable") return "Start the local Grok web tunnel, verify GROK_WEB_BASE_URL, then retry.";
   if (errorCode === "tunnel_timeout") return "The local Grok web tunnel did not respond before GROK_WEB_TIMEOUT_MS; inspect the tunnel and retry.";
   if (errorCode === "session_expired") return "Refresh the Grok web login/session used by the local tunnel, then retry.";
-  if (errorCode === "usage_limited") return "Wait for Grok subscription usage to recover, reduce concurrency, or inspect the local tunnel.";
+  if (errorCode === "usage_limited") return "Wait for Grok subscription usage to recover, reduce concurrency, or inspect the local tunnel. Any billing, credit, or tier change must be a separate manual action with explicit user approval.";
   if (errorCode === "grok_chat_model_rejected") return "The tunnel lists models, but the configured GROK_WEB_MODEL is not accepted by chat; correct GROK_WEB_MODEL or tunnel model routing, then retry.";
   if (errorCode === "grok_chat_timeout") return "The Grok chat readiness probe exceeded GROK_WEB_CHAT_DOCTOR_TIMEOUT_MS; inspect the local tunnel latency or raise that timeout, then retry.";
   if (errorCode === "models_ok_chat_400") return "The tunnel lists models but chat is not review-capable; refresh the Grok web session, inspect tunnel logs and rate-limit endpoint health, then retry.";
@@ -892,6 +998,7 @@ function errorCauseFor(errorCode) {
   if (errorCode === "bad_args") return "caller";
   if (errorCode === "scope_failed") return "scope_resolution";
   if (errorCode === "git_binary_rejected") return "git_binary_policy";
+  if (errorCode === "usage_limited") return "cost_quota_usage_limit";
   return "grok_web_tunnel";
 }
 
@@ -1011,10 +1118,23 @@ function buildRecord({ cfg, mode, options, scopeInfo, execution, startedAt, ende
   const errorCode = completed ? null : (execution.parsed?.reason ?? "tunnel_error");
   const errorMessage = completed ? null : (execution.parsed?.error ?? "");
   const diagnostic = execution.diagnostics
-    ? `${errorMessage || errorCode} (${Object.entries(execution.diagnostics).map(([key, value]) => `${key}=${value}`).join(" ")})`
+    ? `${errorMessage || errorCode} (${formatDiagnosticPairs(execution.diagnostics)})`
     : (errorMessage || errorCode);
   const reviewDisclosure = disclosure(cfg, completed, execution.payload_sent ?? null);
   const transmission = sourceTransmission(completed, execution.payload_sent ?? null);
+  const runtimeDiagnostics = execution.diagnostics ? {
+    tunnel_request: {
+      endpoint_class: execution.diagnostics.endpoint_class ?? null,
+      model: execution.diagnostics.model ?? cfg.model,
+      stream: execution.diagnostics.stream ?? null,
+      message_count: execution.diagnostics.message_count ?? null,
+      prompt_chars: execution.diagnostics.prompt_chars ?? null,
+      configured_timeout_ms: execution.diagnostics.configured_timeout_ms ?? null,
+      max_tokens: execution.diagnostics.max_tokens ?? null,
+      temperature: execution.diagnostics.temperature ?? null,
+    },
+    cost_quota: execution.diagnostics.cost_quota ?? null,
+  } : null;
   return freezeRecord({
     id: options.jobId,
     job_id: options.jobId,
@@ -1051,7 +1171,7 @@ function buildRecord({ cfg, mode, options, scopeInfo, execution, startedAt, ende
     suggested_action: completed ? null : suggestedAction(errorCode, errorMessage),
     external_review: buildTerminalExternalReview({ cfg, mode, options, scopeInfo, execution, transmission, reviewDisclosure }),
     disclosure_note: reviewDisclosure,
-    runtime_diagnostics: null,
+    runtime_diagnostics: runtimeDiagnostics,
     result: completed ? execution.parsed.result : null,
     structured_output: null,
     permission_denials: [],
@@ -1065,6 +1185,13 @@ function buildRecord({ cfg, mode, options, scopeInfo, execution, startedAt, ende
     raw_model: execution.parsed?.raw_model ?? null,
     schema_version: SCHEMA_VERSION,
   });
+}
+
+function formatDiagnosticPairs(diagnostics) {
+  return Object.entries(diagnostics)
+    .filter(([, value]) => value == null || typeof value !== "object")
+    .map(([key, value]) => `${key}=${value}`)
+    .join(" ");
 }
 
 function dataRoot(env = process.env) {
@@ -1376,6 +1503,11 @@ async function cmdList(env = process.env) {
 
 async function doctorFields(env = process.env) {
   const cfg = config(env);
+  const costQuotaReadiness = {
+    status: "unknown_not_probed",
+    source: "doctor_does_not_call_billing_or_usage_endpoints",
+    billing_mutation: "not_supported",
+  };
   const probe = await probeGrokTunnel(cfg, env);
   const chatProbe = probe.reachable ? await probeGrokChat(cfg, env) : {
     chat_ready: false,
@@ -1409,6 +1541,7 @@ async function doctorFields(env = process.env) {
     timeout_ms: cfg.timeout_ms,
     doctor_timeout_ms: cfg.doctor_timeout_ms,
     chat_doctor_timeout_ms: cfg.chat_doctor_timeout_ms,
+    cost_quota_readiness: costQuotaReadiness,
     error_code: errorCode,
     error_message: ready ? null : (chatProbe.error_message ?? probe.error_message),
     http_status: probe.http_status,

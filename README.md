@@ -55,7 +55,9 @@ The Grok plugin defaults to Grok subscription usage through a local tunnel that
 is backed by a subscription-backed web session. It is not an `api.x.ai`
 integration and does not silently fall back to paid xAI API billing. If the
 local tunnel is unavailable or the web session expires, the Grok JobRecord
-reports that failure instead of switching billing paths.
+reports that failure instead of switching billing paths. Subscription usage
+limits are reported as `usage_limited`; the plugin does not purchase credits,
+upgrade tiers, or switch to a paid fallback automatically.
 `/grok-setup` and the `doctor` command make a live `GET /models` probe against
 the configured tunnel endpoint. `ready: true` means the local tunnel was
 reachable; `tunnel_unavailable` means start the local Grok web tunnel and retry.
@@ -339,6 +341,14 @@ inspect the terminal record.
   `auth_mode: "subscription_web"` through a local tunnel and does not silently
   fall back to paid xAI API billing. Tunnel bearer values and session cookies
   must stay in user-managed env or tunnel state and must not be printed.
+- **Cost/quota diagnostics are safe metadata only.** Reviewer records may include
+  bounded `runtime_diagnostics.provider_request` metadata such as timeout,
+  prompt-character count, and request-default summaries. Failed reviewer records
+  may also include `runtime_diagnostics.cost_quota`, plus provider-reported
+  `cost_usd` or `usage` where a target already returns those fields. They must not include invoices, payment details, secrets, cookies, full prompts, source
+  bundles, or raw provider payloads. The plugin never purchases credits, upgrades
+  usage tiers, or changes billing state automatically; any financial transaction
+  must be a separate explicit user-approved action.
 - **Preflight before uncertain disclosure.** `preflight` reports selected files,
   file count, and byte count without launching the target provider. Use
   `custom-review` plus explicit `--scope-paths` for pinned review bundles, and

@@ -50,6 +50,11 @@
       "branches": 92.86,
       "functions": 100.0
     },
+    "plugins/api-reviewers/scripts/lib/usage-limit.mjs": {
+      "lines": 100.0,
+      "branches": 100.0,
+      "functions": 100.0
+    },
     "plugins/api-reviewers/scripts/lib/review-prompt.mjs": {
       "lines": 100.0,
       "branches": 0.0,
@@ -138,6 +143,11 @@
     "plugins/claude/scripts/lib/provider-env.mjs": {
       "lines": 100.0,
       "branches": 90.91,
+      "functions": 100.0
+    },
+    "plugins/claude/scripts/lib/usage-limit.mjs": {
+      "lines": 100.0,
+      "branches": 100.0,
       "functions": 100.0
     },
     "plugins/claude/scripts/lib/scope.mjs": {
@@ -245,6 +255,11 @@
       "branches": 90.91,
       "functions": 100.0
     },
+    "plugins/gemini/scripts/lib/usage-limit.mjs": {
+      "lines": 100.0,
+      "branches": 100.0,
+      "functions": 100.0
+    },
     "plugins/gemini/scripts/lib/scope.mjs": {
       "lines": 90.34,
       "branches": 74.9,
@@ -334,6 +349,11 @@
       "lines": 0.0,
       "branches": 100.0,
       "functions": 0.0
+    },
+    "plugins/kimi/scripts/lib/usage-limit.mjs": {
+      "lines": 100.0,
+      "branches": 100.0,
+      "functions": 100.0
     },
     "plugins/kimi/scripts/lib/reconcile.mjs": {
       "lines": 0.0,

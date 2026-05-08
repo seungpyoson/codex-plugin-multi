@@ -161,6 +161,72 @@ test("parseGeminiResult: preserves stderr-only Gemini API failures as Gemini err
   assert.equal(parsed.raw, "");
 });
 
+test("parseGeminiResult: classifies quota and billing stderr as usage limited", () => {
+  const parsed = parseGeminiResult("", `Error when talking to Gemini API
+Quota exceeded for this billing account. Please upgrade your usage tier.
+`);
+
+  assert.equal(parsed.ok, false);
+  assert.equal(parsed.reason, "usage_limited");
+  assert.match(parsed.error, /quota|usage-tier|billing|credit/i);
+});
+
+test("parseGeminiResult: usage limits omit account and payment artifacts", () => {
+  const parsed = parseGeminiResult("", `
+Quota exceeded for billing account user@example.com plan_id=pro+stripe-sub-abc/123.
+`);
+
+  assert.equal(parsed.ok, false);
+  assert.equal(parsed.reason, "usage_limited");
+  assert.match(parsed.error, /quota|usage-tier|billing|credit/i);
+  assert.doesNotMatch(parsed.error, /user@example\.com|stripe-sub|plan_id/i);
+});
+
+test("parseGeminiResult: classifies provider quota codes as usage limited", () => {
+  const parsed = parseGeminiResult(JSON.stringify({
+    error: {
+      code: "payment_required",
+      message: "insufficient_quota",
+    },
+  }));
+
+  assert.equal(parsed.ok, false);
+  assert.equal(parsed.reason, "usage_limited");
+  assert.match(parsed.error, /quota|usage-tier|billing|credit/i);
+});
+
+test("parseGeminiResult: JSON errors are not reclassified by incidental billing stderr", () => {
+  const parsed = parseGeminiResult(
+    JSON.stringify({ error: { code: 400, message: "invalid response schema" } }),
+    "background warning: quota status unavailable for billing account",
+  );
+
+  assert.equal(parsed.ok, false);
+  assert.equal(parsed.reason, undefined);
+  assert.match(parsed.error, /invalid response schema/);
+  assert.doesNotMatch(parsed.error, /billing account/);
+});
+
+test("parseGeminiResult: transient rate-limit stderr is not billed as usage limited", () => {
+  const parsed = parseGeminiResult("", `Error when talking to Gemini API
+Rate limit exceeded for requests per minute. Retry later.
+`);
+
+  assert.equal(parsed.ok, false);
+  assert.equal(parsed.reason, "gemini_stderr");
+  assert.match(parsed.error, /rate limit exceeded/i);
+});
+
+test("parseGeminiResult: provider capacity stderr is not billed as usage limited", () => {
+  const parsed = parseGeminiResult("", `Error when talking to Gemini API
+MODEL_CAPACITY_EXHAUSTED: No capacity available; model is capacity-limited.
+`);
+
+  assert.equal(parsed.ok, false);
+  assert.equal(parsed.reason, "gemini_stderr");
+  assert.match(parsed.error, /capacity-limited/i);
+});
+
 test("parseGeminiResult: covers empty, malformed, and newline-delimited JSON outputs", () => {
   assert.deepEqual(parseGeminiResult(""), { ok: false, reason: "empty_stdout", raw: "" });
 

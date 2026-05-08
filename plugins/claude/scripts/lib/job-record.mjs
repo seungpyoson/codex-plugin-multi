@@ -252,6 +252,13 @@ function classifyErrorMessage(message) {
 
 function classifyParsedFailure(execution, invocation, parsed) {
   const reason = parsed.reason ?? null;
+  if (reason === "usage_limited") {
+    return {
+      status: "failed",
+      error_code: "usage_limited",
+      error_message: parsed.error ?? reason,
+    };
+  }
   if (reason === "json_parse_error" || reason === "empty_stdout") {
     return {
       status: "failed",
@@ -345,6 +352,19 @@ function buildErrorDiagnostic(invocation, status, error_code, error_message) {
         "`claude auth status` can still report logged in; non-interactive inference was rejected.",
       suggested_action:
         "Run `/claude-setup`, refresh Claude OAuth in a normal terminal if needed, and verify OAuth-only `claude -p` inference works before retrying the review.",
+      disclosure_note: null,
+    };
+  }
+  if (error_code === "usage_limited") {
+    const target = invocation.target === "gemini" ? "Gemini" : "Claude";
+    return {
+      error_summary: `${target} reported a quota, usage-tier, or billing-cycle limit before returning a review result.`,
+      error_cause:
+        `${target} surfaced a provider account limit rather than an auth, timeout, request-size, or parse failure. ` +
+        "The companion records this as usage_limited without storing payment details or raw billing artifacts.",
+      suggested_action:
+        `Wait for ${target} usage to recover, reduce reviewer concurrency, or inspect the provider account manually. ` +
+        "Any tier upgrade or credit purchase must be a separate explicit user-approved transaction.",
       disclosure_note: null,
     };
   }

@@ -1444,7 +1444,7 @@ test("gemini review does not silently fallback when review_quality capacity is e
   );
   try {
     assert.equal(status, 2, `exit ${status}: ${stderr}`);
-    assert.doesNotMatch(stderr, /retrying with gemini-2\.5-flash/);
+    assert.doesNotMatch(stderr, /retrying with gemini-3-flash-preview/);
     const record = JSON.parse(stdout);
     assert.equal(record.status, "failed");
     assert.equal(record.model, "gemini-3.1-pro-preview");
@@ -1858,7 +1858,7 @@ test("gemini ping returns ok with the mock gemini binary", () => {
   }
 });
 
-test("gemini doctor returns the same readiness contract as ping", () => {
+test("gemini doctor returns readiness contract", () => {
   const cwd = mkdtempSync(path.join(tmpdir(), "gemini-doctor-cwd-"));
   const { stdout, stderr, status, dataDir } = runCompanion(["doctor"], { cwd });
   try {
@@ -1870,6 +1870,26 @@ test("gemini doctor returns the same readiness contract as ping", () => {
     assert.match(parsed.next_action, /review/i);
     assert.equal(parsed.auth_mode, "subscription");
     assert.equal(parsed.selected_auth_path, "subscription_oauth");
+  } finally {
+    rmTree(dataDir);
+    rmTree(cwd);
+  }
+});
+
+test("gemini doctor reports review-quality capacity exhaustion without fallback", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "gemini-doctor-review-fallback-cwd-"));
+  const { stdout, stderr, status, dataDir } = runCompanion(
+    ["doctor"],
+    { cwd, env: { GEMINI_MOCK_CAPACITY_MODEL: "gemini-3.1-pro-preview" } },
+  );
+  try {
+    assert.equal(status, 2, `exit ${status}: ${stderr}`);
+    assert.doesNotMatch(stderr, /retrying with gemini-3-flash-preview/);
+    const parsed = JSON.parse(stdout);
+    assert.equal(parsed.status, "rate_limited");
+    assert.equal(parsed.ready, false);
+    assert.equal(parsed.model_fallback, undefined);
+    assert.match(parsed.summary, /capacity-limited/i);
   } finally {
     rmTree(dataDir);
     rmTree(cwd);
