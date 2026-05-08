@@ -139,7 +139,7 @@ test("lib/git-binary.mjs: grok packaging copy matches the companion shared sourc
 });
 
 test("lib/usage-limit.mjs: api-reviewers packaging copy matches the companion shared source", () => {
-  const canonical = readFileSync(path.join(REPO_ROOT, "plugins/claude/scripts/lib/usage-limit.mjs"), "utf8");
+  const canonical = readFileSync(path.join(REPO_ROOT, "scripts/lib/usage-limit.mjs"), "utf8");
   const copy = readFileSync(
     path.join(REPO_ROOT, "plugins/api-reviewers/scripts/lib/usage-limit.mjs"),
     "utf8"
@@ -148,12 +148,23 @@ test("lib/usage-limit.mjs: api-reviewers packaging copy matches the companion sh
 });
 
 test("lib/usage-limit.mjs: grok packaging copy matches the companion shared source", () => {
-  const canonical = readFileSync(path.join(REPO_ROOT, "plugins/claude/scripts/lib/usage-limit.mjs"), "utf8");
+  const canonical = readFileSync(path.join(REPO_ROOT, "scripts/lib/usage-limit.mjs"), "utf8");
   const copy = readFileSync(
     path.join(REPO_ROOT, "plugins/grok/scripts/lib/usage-limit.mjs"),
     "utf8"
   );
   assert.equal(copy, canonical, "usage-limit.mjs packaging copy drifted in grok");
+});
+
+test("lib/usage-limit.mjs: companion packaging copies match the top-level shared source", () => {
+  const canonical = readFileSync(path.join(REPO_ROOT, "scripts/lib/usage-limit.mjs"), "utf8");
+  for (const plugin of COMPANION_PLUGIN_TARGETS) {
+    const copy = readFileSync(
+      path.join(REPO_ROOT, `plugins/${plugin}/scripts/lib/usage-limit.mjs`),
+      "utf8"
+    );
+    assert.equal(copy, canonical, `usage-limit.mjs packaging copy drifted in ${plugin}`);
+  }
 });
 
 test("lib/git-env.mjs: kimi stripped key list matches the companion shared source", () => {

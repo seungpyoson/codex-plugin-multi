@@ -2093,6 +2093,51 @@ test("direct API provider-unavailable wording keeps quota diagnostics aligned on
   }
 });
 
+test("direct API preserves non-payment prefixed provider diagnostic tokens", async () => {
+  const cwd = makeWorkspace();
+  const dataDir = mkdtempSync(path.join(tmpdir(), "api-reviewers-data-"));
+  const pluginRoot = makeInstalledApiReviewersRoot();
+  const server = await startChatServer((req, res) => {
+    req.resume();
+    res.writeHead(501, { "content-type": "application/json" });
+    res.end(JSON.stringify({
+      error: {
+        code: "in_progress",
+        type: "sub_required",
+        message: "Provider feature is still being enabled.",
+      },
+    }));
+  });
+  try {
+    const { port } = server.address();
+    writeDeepSeekProviderConfig(pluginRoot, `http://127.0.0.1:${port}`);
+    const result = await run([
+      "run",
+      "--provider", "deepseek",
+      "--mode", "custom-review",
+      "--scope", "custom",
+      "--scope-paths", "seed.txt",
+      "--foreground",
+      "--prompt", "Check this file.",
+    ], {
+      cwd,
+      companion: path.join(pluginRoot, "scripts", "api-reviewer.mjs"),
+      env: {
+        API_REVIEWERS_PLUGIN_DATA: dataDir,
+        DEEPSEEK_API_KEY: "secret-test-value",
+      },
+    });
+    assert.equal(result.status, 1);
+    const record = parseJson(result.stdout);
+    assert.equal(record.error_code, "provider_error");
+    assert.equal(record.runtime_diagnostics.cost_quota.classification, "not_reported");
+    assert.equal(record.runtime_diagnostics.cost_quota.provider_error_code, "in_progress");
+    assert.equal(record.runtime_diagnostics.cost_quota.provider_error_type, "sub_required");
+  } finally {
+    server.close();
+  }
+});
+
 test("direct API flat quota response keeps diagnostics aligned with error code", async () => {
   const cwd = makeWorkspace();
   const dataDir = mkdtempSync(path.join(tmpdir(), "api-reviewers-data-"));

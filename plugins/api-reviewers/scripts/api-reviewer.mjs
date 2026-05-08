@@ -89,8 +89,8 @@ const API_REVIEWER_EXPECTED_KEYS = Object.freeze([
 const ALLOWED_REQUEST_DEFAULT_KEYS = new Set(["thinking", "reasoning_effort", "max_tokens", "top_p", "stop"]);
 // Avoid corrupting structured fields when a broken local env has a tiny API-key placeholder.
 const MIN_SECRET_REDACTION_LENGTH = 8;
-const ACCOUNT_PAYMENT_TOKEN_RE = /\b(?:stripe-|cus_|acct_|cs_(?:test|live)_|pi_|sub_|in_|ii_|ch_|seti_|setp_|price_|prod_|iv_)[^\s,;:)]+/gi;
-const ACCOUNT_PAYMENT_DIAGNOSTIC_PREFIX_RE = /^(?:stripe-|cus_|acct_|cs_(?:test|live)_|pi_|sub_|in_|ii_|ch_|seti_|setp_|price_|prod_|iv_)/i;
+const ACCOUNT_PAYMENT_TOKEN_RE = /\b(?:stripe-[^\s,;:)]+|cus_[A-Za-z0-9]{6,}|acct_(?:test_)?[A-Za-z0-9]{5,}|cs_(?:test|live)_[A-Za-z0-9]{6,}|(?:pi|sub|in|ii|ch|seti|setp|price|prod|iv)_(?=[A-Za-z0-9]*\d)[A-Za-z0-9]{5,})/gi;
+const ACCOUNT_PAYMENT_DIAGNOSTIC_RE = /^(?:stripe-.+|cus_[A-Za-z0-9]{6,}|acct_(?:test_)?[A-Za-z0-9]{5,}|cs_(?:test|live)_[A-Za-z0-9]{6,}|(?:pi|sub|in|ii|ch|seti|setp|price|prod|iv)_(?=[A-Za-z0-9]*\d)[A-Za-z0-9]{5,})$/i;
 
 function printJson(obj) {
   process.stdout.write(`${JSON.stringify(obj, null, 2)}\n`);
@@ -1474,7 +1474,7 @@ function classifyHttpFailure(status, parsed, text = "") {
 function safeDiagnosticString(value) {
   if (typeof value !== "string" && typeof value !== "number") return null;
   const text = String(value);
-  if (ACCOUNT_PAYMENT_DIAGNOSTIC_PREFIX_RE.test(text)) return null;
+  if (ACCOUNT_PAYMENT_DIAGNOSTIC_RE.test(text)) return null;
   return /^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$/.test(text) ? text : null;
 }
 

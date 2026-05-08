@@ -29,8 +29,8 @@ const MAX_STATE_JOBS = 50;
 const STATE_LOCK_STALE_MS = 60 * 1000;
 const SCHEMA_VERSION = 10;
 const MIN_SECRET_REDACTION_LENGTH = 8;
-const ACCOUNT_PAYMENT_TOKEN_RE = /\b(?:stripe-|cus_|acct_|cs_(?:test|live)_|pi_|sub_|in_|ii_|ch_|seti_|setp_|price_|prod_|iv_)[^\s,;:)]+/gi;
-const ACCOUNT_PAYMENT_DIAGNOSTIC_PREFIX_RE = /^(?:stripe-|cus_|acct_|cs_(?:test|live)_|pi_|sub_|in_|ii_|ch_|seti_|setp_|price_|prod_|iv_)/i;
+const ACCOUNT_PAYMENT_TOKEN_RE = /\b(?:stripe-[^\s,;:)]+|cus_[A-Za-z0-9]{6,}|acct_(?:test_)?[A-Za-z0-9]{5,}|cs_(?:test|live)_[A-Za-z0-9]{6,}|(?:pi|sub|in|ii|ch|seti|setp|price|prod|iv)_(?=[A-Za-z0-9]*\d)[A-Za-z0-9]{5,})/gi;
+const ACCOUNT_PAYMENT_DIAGNOSTIC_RE = /^(?:stripe-.+|cus_[A-Za-z0-9]{6,}|acct_(?:test_)?[A-Za-z0-9]{5,}|cs_(?:test|live)_[A-Za-z0-9]{6,}|(?:pi|sub|in|ii|ch|seti|setp|price|prod|iv)_(?=[A-Za-z0-9]*\d)[A-Za-z0-9]{5,})$/i;
 const PLUGIN_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const SCOPE_FILE_OPEN_FLAGS = fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0);
 const GROK_EXPECTED_KEYS = Object.freeze([
@@ -682,6 +682,14 @@ function errorMessageFromResponse(parsed, text, redact, { safeUsageLimit = false
 
 function chatBadRequestCode(parsed, text) {
   const value = parsed.ok ? parsed.value : null;
+  const usageDetail = [
+    value?.error?.code,
+    value?.error?.type,
+    value?.error?.message,
+    value?.message,
+    text,
+  ].filter(Boolean).join(" ");
+  if (isUsageLimitDetail(usageDetail)) return "usage_limited";
   const codeOrType = [
     value?.error?.code,
     value?.error?.type,
@@ -726,7 +734,7 @@ function safeSessionId(value) {
 function safeDiagnosticString(value) {
   if (typeof value !== "string" && typeof value !== "number") return null;
   const text = String(value);
-  if (ACCOUNT_PAYMENT_DIAGNOSTIC_PREFIX_RE.test(text)) return null;
+  if (ACCOUNT_PAYMENT_DIAGNOSTIC_RE.test(text)) return null;
   return /^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$/.test(text) ? text : null;
 }
 

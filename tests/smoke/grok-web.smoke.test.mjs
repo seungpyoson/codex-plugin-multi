@@ -278,9 +278,9 @@ test("doctor does not classify quota 400s that mention model as model rejection"
     assert.equal(result.status, 0);
     assert.equal(parsed.reachable, true);
     assert.equal(parsed.chat_ready, false);
-    assert.equal(parsed.error_code, "models_ok_chat_400");
+    assert.equal(parsed.error_code, "usage_limited");
     assert.equal(parsed.chat_http_status, 400);
-    assert.match(parsed.error_message, /quota exceeded/);
+    assert.match(parsed.error_message, /quota|usage-tier|billing|credit/i);
     assert.doesNotMatch(parsed.next_action, /GROK_WEB_MODEL/);
   });
 });
@@ -2078,6 +2078,46 @@ test("custom-review status-only usage limits use safe diagnostics", async () => 
     assert.equal(record.error_cause, "cost_quota_usage_limit");
     assert.equal(record.runtime_diagnostics.cost_quota.classification, "usage_limited");
     assert.doesNotMatch(result.stdout, /cs_test|cus_NXLKj1H|secret-cookie-like-token/);
+  });
+});
+
+test("custom-review preserves non-payment prefixed provider diagnostic tokens", async () => {
+  await withServer(async (req, res) => {
+    await readJsonRequest(req);
+    res.setHeader("content-type", "application/json");
+    res.writeHead(500);
+    res.end(JSON.stringify({
+      error: {
+        code: "in_progress",
+        type: "sub_required",
+        message: "Internal tunnel error while enabling provider feature.",
+      },
+    }));
+  }, async (baseUrl) => {
+    const cwd = mkdtempSync(path.join(tmpdir(), "grok-web-workspace-"));
+    writeFileSync(path.join(cwd, "review.js"), "export const value = 42;\n");
+    const dataDir = mkdtempSync(path.join(tmpdir(), "grok-web-data-"));
+    const result = await runAsync([
+      "run",
+      "--mode", "custom-review",
+      "--scope", "custom",
+      "--scope-paths", "review.js",
+      "--foreground",
+      "--prompt", "Check this file.",
+    ], {
+      cwd,
+      env: {
+        GROK_WEB_BASE_URL: baseUrl,
+        GROK_PLUGIN_DATA: dataDir,
+        GROK_WEB_TUNNEL_API_KEY: "secret-cookie-like-token",
+      },
+    });
+    assert.equal(result.status, 1);
+    const record = parseStdout(result);
+    assert.equal(record.error_code, "tunnel_error");
+    assert.equal(record.runtime_diagnostics.cost_quota.classification, "not_reported");
+    assert.equal(record.runtime_diagnostics.cost_quota.provider_error_code, "in_progress");
+    assert.equal(record.runtime_diagnostics.cost_quota.provider_error_type, "sub_required");
   });
 });
 
