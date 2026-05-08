@@ -72,6 +72,28 @@ function listFixturePairs() {
   return pairs;
 }
 
+function listOrphanedProvenanceFiles(
+  root = FIXTURE_ROOT,
+  statFn = statSyncOrNull,
+  readDirFn = readdirSync,
+) {
+  const orphaned = [];
+  if (!statFn(root)) return orphaned;
+  for (const plugin of readDirFn(root)) {
+    const pluginDir = path.join(root, plugin);
+    const pluginStat = statFn(pluginDir);
+    if (!pluginStat?.isDirectory()) continue;
+    const files = readDirFn(pluginDir);
+    for (const provenanceFile of files.filter((f) => f.endsWith(".provenance.json"))) {
+      const responseFile = provenanceFile.replace(/\.provenance\.json$/, ".response.json");
+      if (!files.includes(responseFile)) {
+        orphaned.push(path.join(pluginDir, provenanceFile));
+      }
+    }
+  }
+  return orphaned;
+}
+
 function statSyncOrNull(p) {
   try {
     return statSync(p);
@@ -124,6 +146,18 @@ function assertNoUnredactedAuthorizationText(text, fixtureLabel) {
       "[REDACTED]",
       `${fixtureLabel}: Bearer token not redacted: ${match[0].slice(0, 60)}...`,
     );
+  }
+}
+
+function assertNoPublicPrefixTokensText(text, fixtureLabel) {
+  for (const pattern of SECRET_PREFIX_PATTERNS) {
+    pattern.lastIndex = 0;
+    const m = text.match(pattern);
+    if (m && m.length > 0) {
+      assert.fail(
+        `${fixtureLabel}: public-prefix token pattern leaked: ${m[0].slice(0, 30)}...`,
+      );
+    }
   }
 }
 
@@ -211,6 +245,29 @@ test("fixtures: every committed rerecord fixture pair has a live recipe", () => 
     orphaned,
     [],
     "committed rerecord fixtures must not outlive their recipe; remove stale pairs or restore the recipe",
+  );
+});
+
+test("fixtures: every provenance file has a paired response", () => {
+  assert.deepEqual(
+    listOrphanedProvenanceFiles().map((p) => path.relative(REPO_ROOT, p)),
+    [],
+    "committed provenance files must not exist without a matching response fixture",
+  );
+});
+
+test("listOrphanedProvenanceFiles detects provenance files without responses", () => {
+  const root = path.join("/repo", "fixtures");
+  const fakeFiles = new Map([
+    [root, ["claude"]],
+    [path.join(root, "claude"), ["orphan.provenance.json", "paired.response.json", "paired.provenance.json"]],
+  ]);
+  const fakeStat = (p) => fakeFiles.has(p) ? { isDirectory: () => true } : null;
+  const fakeReadDir = (p) => fakeFiles.get(p) ?? [];
+  assert.deepEqual(
+    listOrphanedProvenanceFiles(root, fakeStat, fakeReadDir)
+      .map((p) => p.replace(root, "")),
+    ["/claude/orphan.provenance.json"],
   );
 });
 
@@ -487,17 +544,25 @@ test("authorization validity gate rejects single-quoted Authorization leaks", ()
 
 test("fixtures: no obvious public-prefix tokens leak (sk-, AKIA, GitHub gh*_ prefixes, github_pat_, AIza, glpat-, JWT)", () => {
   for (const f of FIXTURES) {
-    const text = readFileSync(f.responsePath, "utf8");
-    for (const pattern of SECRET_PREFIX_PATTERNS) {
-      pattern.lastIndex = 0;
-      const m = text.match(pattern);
-      if (m && m.length > 0) {
-        assert.fail(
-          `${f.plugin}/${f.scenario}: public-prefix token pattern leaked: ${m[0].slice(0, 30)}...`,
-        );
-      }
-    }
+    assertNoPublicPrefixTokensText(
+      readFileSync(f.responsePath, "utf8"),
+      `${f.plugin}/${f.scenario} response`,
+    );
+    assertNoPublicPrefixTokensText(
+      readFileSync(f.provenancePath, "utf8"),
+      `${f.plugin}/${f.scenario} provenance`,
+    );
   }
+});
+
+test("public-prefix validity gate rejects provenance leaks", () => {
+  assert.throws(
+    () => assertNoPublicPrefixTokensText(
+      "recorded_by: gho_CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC",
+      "synthetic/provenance",
+    ),
+    /public-prefix token pattern leaked/,
+  );
 });
 
 test("fixtures: companion fixtures have session_id fields nulled or [REDACTED]", () => {

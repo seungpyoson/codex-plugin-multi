@@ -253,6 +253,11 @@ describe("derivePromptForHash — explicit-anchor-only detection", () => {
     assert.equal(derivePromptForHash(args), "Hello, claude.");
   });
 
+  it("treats option-shaped args after -- as literal prompt text", () => {
+    const args = ["run", "--", "--prompt=literal user prompt"];
+    assert.equal(derivePromptForHash(args), "--prompt=literal user prompt");
+  });
+
   it("--prompt takes priority when both anchors are present", () => {
     // A recipe author might mix conventions; the explicit --prompt
     // anchor wins because it's unambiguous about which arg is the

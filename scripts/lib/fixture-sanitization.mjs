@@ -357,8 +357,11 @@ export function redactKnownPatterns(input) {
  * Apply both env-secret redaction and pattern redaction to a string.
  */
 export function sanitizeString(input, redactEnvSecrets) {
-  const afterKnownPatterns = redactKnownPatterns(input);
-  return redactEnvSecrets ? redactEnvSecrets(afterKnownPatterns) : afterKnownPatterns;
+  const original = String(input ?? "");
+  if (!redactEnvSecrets) return redactKnownPatterns(original);
+  const envThenKnown = redactKnownPatterns(redactEnvSecrets(original));
+  const knownThenEnv = redactEnvSecrets(redactKnownPatterns(original));
+  return knownThenEnv.length <= envThenKnown.length ? knownThenEnv : envThenKnown;
 }
 
 function isPlainObject(value) {
@@ -592,8 +595,8 @@ export function buildProvenance({
     model_id: modelId,
     recorded_at: now,
     prompt_hash: promptHash.startsWith("sha256:") ? promptHash : `sha256:${promptHash}`,
-    sanitization_notes: sanitizationNotes,
-    recorded_by: recordedBy,
+    sanitization_notes: redactKnownPatterns(sanitizationNotes),
+    recorded_by: redactKnownPatterns(recordedBy),
     stale_after: staleAfter,
   });
 }

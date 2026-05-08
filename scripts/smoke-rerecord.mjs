@@ -440,7 +440,9 @@ function scrubAuth(env, keys) {
 export function derivePromptForHash(args) {
   if (!Array.isArray(args)) return "";
   let prompt = null;
-  for (let i = 0; i < args.length; i += 1) {
+  const ddIdx = args.indexOf("--");
+  const optionEnd = ddIdx === -1 ? args.length : ddIdx;
+  for (let i = 0; i < optionEnd; i += 1) {
     const arg = args[i];
     if (typeof arg === "string" && arg.startsWith("--prompt=")) {
       prompt = arg.slice("--prompt=".length);
@@ -452,7 +454,6 @@ export function derivePromptForHash(args) {
     }
   }
   if (prompt != null) return prompt;
-  const ddIdx = args.indexOf("--");
   if (ddIdx !== -1) {
     return args.slice(ddIdx + 1)
       .filter((arg) => typeof arg === "string")

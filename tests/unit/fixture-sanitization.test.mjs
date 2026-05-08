@@ -165,6 +165,17 @@ test("sanitizeString: prefix patterns run before env-secret redaction to avoid p
   assert.match(out, /\[REDACTED\]/);
 });
 
+test("sanitizeString: env redaction removes suffixes after public-prefix redaction", () => {
+  const secret = "sk-12345678901234567890-SUFFIXSECRET";
+  const redactor = buildEnvSecretRedactor(
+    { API_KEY: secret },
+    { curatedEnvKeys: ["API_KEY"] },
+  );
+  const out = sanitizeString(`provider echoed ${secret}`, redactor);
+  assert.equal(out.includes("SUFFIXSECRET"), false);
+  assert.match(out, /\[REDACTED\]/);
+});
+
 test("redactKnownPatterns: redacts single-character bare Authorization values", () => {
   const out = redactKnownPatterns("Authorization: a");
   assert.equal(out, "Authorization: [REDACTED]");
@@ -434,6 +445,19 @@ test("buildProvenance: generates schema-conformant record", () => {
     "stale_after = recorded_at + 90 days");
   assert.equal(out.recorded_by, "manual: workflow_dispatch run #42");
   assert.equal(Object.isFrozen(out), true);
+});
+
+test("buildProvenance: sanitizes free-text provenance fields", () => {
+  const out = buildProvenance({
+    modelId: "claude",
+    promptHash: "abc123def456",
+    sanitizationNotes: "public-prefix ghp_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+    recordedBy: "manual gho_CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC",
+    recordedAt: "2025-01-01T00:00:00.000Z",
+  });
+
+  assert.equal(out.sanitization_notes.includes("ghp_AAAA"), false);
+  assert.equal(out.recorded_by.includes("gho_CCCC"), false);
 });
 
 test("buildProvenance: prompt_hash already prefixed sha256: is not double-prefixed", () => {
