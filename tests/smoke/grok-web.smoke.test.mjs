@@ -1950,7 +1950,7 @@ for (const { status, code, quotaBody = false } of [
           code: code === "usage_limited" || quotaBody ? "account=user@example.com:plan_id=pro+stripe-sub-abc/123" : "server_error",
           type: code === "usage_limited" || quotaBody ? "billing/account=user@example.com" : "server_error",
           message: code === "usage_limited" || quotaBody
-            ? "quota exceeded for billing account user@example.com plan_id=pro+stripe-sub-abc/123; Authorization: Bearer secret-cookie-like-token failed"
+            ? "quota exceeded for billing account user@example.com plan_id=pro+stripe-sub-abc/123 customer cus_NXLKj1H invoice item ii_1Mt5L0HabcDEF12345; Authorization: Bearer secret-cookie-like-token failed"
             : "Authorization: Bearer secret-cookie-like-token failed",
         },
       }));
@@ -1992,7 +1992,7 @@ for (const { status, code, quotaBody = false } of [
         assert.equal(record.runtime_diagnostics.cost_quota.http_status, status);
       }
       assert.doesNotMatch(result.stdout, /secret-cookie-like-token/);
-      assert.doesNotMatch(result.stdout, /user@example\.com|stripe-sub|plan_id/);
+      assert.doesNotMatch(result.stdout, /user@example\.com|stripe-sub|plan_id|cus_NXLKj1H|ii_1Mt5L0HabcDEF12345/);
       if (code === "usage_limited" || quotaBody) {
         assert.match(record.error_message, /quota|usage-tier|billing|credit/i);
       } else {
@@ -2090,7 +2090,7 @@ test("custom-review cost-quota diagnostics drop account-shaped provider tokens",
     res.setHeader("content-type", "application/json");
     res.end(JSON.stringify({
       error: {
-        code: "cs_test_abc123",
+        code: "ii_1Mt5L0HabcDEF12345",
         type: "acct_test_12345",
         message: "Credit limit exceeded for this billing cycle.",
       },
@@ -2117,7 +2117,7 @@ test("custom-review cost-quota diagnostics drop account-shaped provider tokens",
     assert.equal(record.runtime_diagnostics.cost_quota.classification, "usage_limited");
     assert.equal(record.runtime_diagnostics.cost_quota.provider_error_code, null);
     assert.equal(record.runtime_diagnostics.cost_quota.provider_error_type, null);
-    assert.doesNotMatch(result.stdout, /cs_test_abc123|acct_test_12345/);
+    assert.doesNotMatch(result.stdout, /ii_1Mt5L0HabcDEF12345|acct_test_12345/);
   });
 });
 

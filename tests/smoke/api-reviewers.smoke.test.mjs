@@ -2149,7 +2149,7 @@ test("direct API billing-provider outages are provider unavailable, not cost-quo
       error: {
         code: "billing_provider_outage",
         type: "provider_unavailable",
-        message: "billing account quota verifier unavailable; retry later",
+        message: "billing account quota verifier unavailable for customer cus_NXLKj1H; retry later",
       },
     }));
   });
@@ -2177,6 +2177,7 @@ test("direct API billing-provider outages are provider unavailable, not cost-quo
     assert.equal(record.error_code, "provider_unavailable");
     assert.equal(record.runtime_diagnostics.cost_quota.classification, "not_reported");
     assert.equal(record.external_review.source_content_transmission, "sent");
+    assert.doesNotMatch(result.stdout, /cus_NXLKj1H/);
   } finally {
     server.close();
   }
@@ -2240,7 +2241,7 @@ test("direct API cost-quota diagnostics drop PII-shaped provider error tokens", 
     res.writeHead(402, { "content-type": "application/json" });
     res.end(JSON.stringify({
       error: {
-        code: "cus_NXLKj1H",
+        code: "ii_1Mt5L0HabcDEF12345",
         type: "acct_test_12345",
         message: "Credit limit exceeded for this billing cycle.",
       },
@@ -2271,7 +2272,7 @@ test("direct API cost-quota diagnostics drop PII-shaped provider error tokens", 
     assert.equal(record.runtime_diagnostics.cost_quota.classification, "usage_limited");
     assert.equal(record.runtime_diagnostics.cost_quota.provider_error_code, null);
     assert.equal(record.runtime_diagnostics.cost_quota.provider_error_type, null);
-    assert.doesNotMatch(result.stdout, /cus_NXLKj1H|acct_test_12345/);
+    assert.doesNotMatch(result.stdout, /ii_1Mt5L0HabcDEF12345|acct_test_12345/);
   } finally {
     server.close();
   }

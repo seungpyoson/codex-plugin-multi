@@ -89,6 +89,8 @@ const API_REVIEWER_EXPECTED_KEYS = Object.freeze([
 const ALLOWED_REQUEST_DEFAULT_KEYS = new Set(["thinking", "reasoning_effort", "max_tokens", "top_p", "stop"]);
 // Avoid corrupting structured fields when a broken local env has a tiny API-key placeholder.
 const MIN_SECRET_REDACTION_LENGTH = 8;
+const ACCOUNT_PAYMENT_TOKEN_RE = /\b(?:stripe-|cus_|acct_|cs_(?:test|live)_|pi_|sub_|in_|ii_|ch_|seti_|setp_|price_|prod_|iv_)[^\s,;:)]+/gi;
+const ACCOUNT_PAYMENT_DIAGNOSTIC_PREFIX_RE = /^(?:stripe-|cus_|acct_|cs_(?:test|live)_|pi_|sub_|in_|ii_|ch_|seti_|setp_|price_|prod_|iv_)/i;
 
 function printJson(obj) {
   process.stdout.write(`${JSON.stringify(obj, null, 2)}\n`);
@@ -740,7 +742,7 @@ function redactor(env = process.env, configuredSecretNames = []) {
     out = out.replace(/Bearer\s+\S+/gi, "Bearer [REDACTED]");
     out = redactEmailTokens(out);
     out = out.replaceAll(/\bplan[_-]?id=[^\s,;:)]+/gi, "[REDACTED]");
-    out = out.replaceAll(/\bstripe-[^\s,;:)]+/gi, "[REDACTED]");
+    out = out.replaceAll(ACCOUNT_PAYMENT_TOKEN_RE, "[REDACTED]");
     return out;
   };
 }
@@ -1472,7 +1474,7 @@ function classifyHttpFailure(status, parsed, text = "") {
 function safeDiagnosticString(value) {
   if (typeof value !== "string" && typeof value !== "number") return null;
   const text = String(value);
-  if (/^(?:stripe-|cus_|acct_|cs_(?:test|live)_|pi_|sub_|in_|ch_|seti_|setp_|price_|prod_|iv_)/i.test(text)) return null;
+  if (ACCOUNT_PAYMENT_DIAGNOSTIC_PREFIX_RE.test(text)) return null;
   return /^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$/.test(text) ? text : null;
 }
 
