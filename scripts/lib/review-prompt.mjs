@@ -159,7 +159,7 @@ function qualityFlags({ result = "", status = null, errorCode = null } = {}) {
     ]),
     checklist_items_seen: checklistItemsSeen,
     looks_shallow: text.trim().length > 0 && text.trim().length < 500,
-    failed_review_slot: status !== "preflight_failed" && (status !== "completed" || errorCode !== null),
+    failed_review_slot: !["approval_request", "preflight_failed"].includes(status) && (status !== "completed" || errorCode !== null),
   });
 }
 
@@ -281,6 +281,10 @@ export function buildReviewPrompt({
     checklist,
     "",
     "Output requirements",
+    "- Treat the repository, refs, commits, scope paths, selected source, and audit metadata supplied in this prompt as the authoritative review evidence.",
+    "- If git, GitHub, network, filesystem, or tool access is unavailable, mark only that check as NOT REVIEWED unless the required evidence is supplied here.",
+    "- Do not report missing external tool access as a blocking code finding by itself.",
+    "- Distinguish real blocking code findings from missing supplied evidence, runtime/tool limitations, and stale or unavailable external comments.",
     "- For every checklist item, report PASS, FAIL, or NOT REVIEWED.",
     "- Blocking findings first, with concrete file/function/control-flow evidence.",
     "- Non-blocking concerns separately.",

@@ -2,9 +2,9 @@
 import { spawnSync } from "node:child_process";
 import { lstat, mkdir, open, readFile, readdir, realpath, rename, rm, unlink, writeFile } from "node:fs/promises";
 import { constants as fsConstants } from "node:fs";
-import { dirname, isAbsolute, resolve, relative } from "node:path";
+import { basename, dirname, isAbsolute, resolve, relative } from "node:path";
 import { fileURLToPath } from "node:url";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { hostname } from "node:os";
 
 import { cleanGitEnv } from "./lib/git-env.mjs";
@@ -1151,7 +1151,7 @@ function gitCommitForPrompt(cwd, ref, workspaceRoot = null) {
 
 function repositoryIdentity(cwd, workspaceRoot) {
   const remote = git(["remote", "get-url", "origin"], cwd, { allowFailure: true, workspaceRoot });
-  if (!remote) return workspaceRoot;
+  if (!remote) return basename(workspaceRoot);
   const match = /[:/]([^/:]+\/[^/]+?)(?:\.git)?$/.exec(remote);
   return match ? match[1] : remote;
 }
@@ -1541,6 +1541,7 @@ function scopeFailedSuggestedAction(errorMessage = "") {
 
 function suggestedAction(errorCode, provider, cfg, errorMessage = "", httpStatus = null, env = process.env) {
   if (errorCode === "bad_args") return "Correct the api-reviewer command arguments and retry.";
+  if (errorCode === "approval_required") return "Run approval-request, render the approval summary to the user, and pass the returned approval_token.value with --approval-token only after explicit approval.";
   if (errorCode === "config_error") return "Reinstall or repair plugins/api-reviewers/config/providers.json and retry.";
   if (errorCode === "missing_key") return `Expose one of these key names to Codex: ${(cfg.env_keys ?? []).join(", ")}.`;
   if (errorCode === "auth_rejected") return `Check the ${cfg.display_name} API key and billing/plan for ${cfg.model}.`;
@@ -1610,8 +1611,158 @@ function buildLaunchExternalReview({ cfg, mode, options, scopeInfo }) {
   });
 }
 
+function plural(count, singular, pluralValue = `${singular}s`) {
+  return count === 1 ? singular : pluralValue;
+}
+
+function requestSettingsForApproval(cfg, env = process.env) {
+  const maxTokensOverride = parseMaxTokensOverride(env);
+  if (!maxTokensOverride.ok) throw runBadArgs(maxTokensOverride.error);
+  const timeoutMs = parseProviderTimeoutMs(env);
+  if (!timeoutMs.ok) throw runBadArgs(timeoutMs.error);
+  const requestBody = {
+    model: cfg.model,
+    messages: [],
+    temperature: 0,
+  };
+  const defaultsResult = applyRequestDefaults(requestBody, cfg.request_defaults);
+  if (!defaultsResult.ok) throw runBadArgs(defaultsResult.error);
+  if (maxTokensOverride.value !== null) {
+    requestBody.max_tokens = maxTokensOverride.value;
+  } else if (!Object.hasOwn(requestBody, "max_tokens")) {
+    requestBody.max_tokens = 4096;
+  }
+  return {
+    timeout_ms: timeoutMs.value,
+    max_tokens: requestBody.max_tokens ?? null,
+    max_steps_per_turn: null,
+    temperature: requestBody.temperature ?? null,
+    stream: false,
+  };
+}
+
+function approvalTokenFor({ provider, mode, auditManifest }) {
+  const payload = JSON.stringify({
+    provider,
+    mode,
+    selected_source: auditManifest.selected_source,
+    rendered_prompt_hash: auditManifest.rendered_prompt_hash,
+    request: auditManifest.request,
+    scope_resolution: auditManifest.scope_resolution,
+  });
+  return Object.freeze({
+    algorithm: "sha256",
+    value: createHash("sha256").update(payload).digest("hex"),
+  });
+}
+
+function buildApprovalAuditManifest({ cfg, renderedPrompt, request, scopeInfo }) {
+  return buildReviewAuditManifest({
+    prompt: renderedPrompt,
+    sourceFiles: scopeInfo.files,
+    git: {
+      remote: scopeInfo.repository ?? null,
+      branch: scopeInfo.head_ref ?? null,
+      baseRef: scopeInfo.scope_base ?? null,
+      baseCommit: scopeInfo.base_commit ?? null,
+      headRef: scopeInfo.head_ref ?? null,
+      headCommit: scopeInfo.head_commit ?? null,
+    },
+    promptBuilder: {
+      contractVersion: REVIEW_PROMPT_CONTRACT_VERSION,
+      pluginVersion: "0.1.0",
+      pluginCommit: gitCommitForPrompt(PLUGIN_ROOT, "HEAD"),
+    },
+    request: {
+      provider: cfg.display_name,
+      model: cfg.model,
+      timeoutMs: request.timeout_ms,
+      maxTokens: request.max_tokens,
+      maxStepsPerTurn: request.max_steps_per_turn,
+      temperature: request.temperature,
+      stream: request.stream,
+    },
+    truncation: {
+      prompt: false,
+      source: false,
+      output: false,
+    },
+    scope: {
+      name: scopeInfo.scope,
+      base: scopeInfo.scope_base ?? null,
+      paths: scopeInfo.scope_paths ?? null,
+      reason: scopeResolutionReason(scopeInfo),
+    },
+    status: "approval_request",
+    errorCode: null,
+  });
+}
+
+function approvalDiagnostics(cfg, request, renderedPrompt) {
+  return {
+    configured_timeout_ms: request.timeout_ms,
+    prompt_chars: renderedPrompt.length,
+    request_defaults: summarizeRequestDefaults(cfg.request_defaults),
+    max_tokens: request.max_tokens ?? null,
+    temperature: request.temperature ?? null,
+  };
+}
+
+function shouldRequireApprovalToken(env = process.env) {
+  return !env.API_REVIEWERS_MOCK_RESPONSE || env.API_REVIEWERS_REQUIRE_APPROVAL_TOKEN_IN_MOCKS === "1";
+}
+
+function validateApprovalToken(options, expectedToken) {
+  const provided = typeof options["approval-token"] === "string" ? options["approval-token"].trim() : "";
+  return provided.length > 0 && provided === expectedToken.value;
+}
+
+function buildApprovalRequest({ provider, cfg, mode, options, scopeInfo }) {
+  const renderedPrompt = promptFor(mode, options.prompt ?? "", scopeInfo, cfg.display_name);
+  const promptBudget = validateRenderedPromptBudget(renderedPrompt, cfg);
+  if (!promptBudget.ok) throw runProviderFailure(promptBudget.reason, promptBudget.error);
+  const request = requestSettingsForApproval(cfg);
+  const auditManifest = buildApprovalAuditManifest({ cfg, renderedPrompt, request, scopeInfo });
+  const approvalToken = approvalTokenFor({ provider, mode, auditManifest });
+  const totals = auditManifest.selected_source.totals;
+  const approvalQuestion = `Allow sending ${totals.files} selected ${plural(totals.files, "file")} (${totals.bytes} ${plural(totals.bytes, "byte")}, ${totals.lines} ${plural(totals.lines, "line")}) to ${cfg.display_name} for external review?`;
+  const disclosure = `Selected source content has not been sent to ${cfg.display_name}. Running the review will send the selected source content to ${cfg.display_name} through direct API auth.`;
+  return Object.freeze({
+    event: "external_review_approval_request",
+    provider,
+    display_name: cfg.display_name,
+    mode,
+    scope: scopeInfo.scope,
+    scope_base: scopeInfo.scope_base ?? null,
+    scope_paths: scopeInfo.scope_paths ?? null,
+    source_content_transmission: SOURCE_CONTENT_TRANSMISSION.NOT_SENT,
+    disclosure,
+    approval_question: approvalQuestion,
+    recommended_tool_justification: `${disclosure} ${approvalQuestion} If approved, pass approval_token.value with --approval-token before running the external API command.`,
+    approval_token: approvalToken,
+    selected_source: auditManifest.selected_source,
+    rendered_prompt_hash: auditManifest.rendered_prompt_hash,
+    request: Object.freeze({
+      provider: cfg.display_name,
+      model: cfg.model,
+      timeout_ms: request.timeout_ms,
+      max_tokens: request.max_tokens,
+      max_steps_per_turn: request.max_steps_per_turn,
+      temperature: request.temperature,
+      stream: request.stream,
+    }),
+    scope_resolution: auditManifest.scope_resolution,
+    denial_action: Object.freeze({
+      action: "generate_relay_prompt",
+      source_content_transmission: SOURCE_CONTENT_TRANSMISSION.NOT_SENT,
+    }),
+    denial_fallback: "If approval is denied, stop the direct API retry and generate a relay prompt instead of treating the reviewer as approved or failed by the provider.",
+  });
+}
+
 function errorCauseFor(errorCode) {
   if (errorCode === "bad_args") return "caller";
+  if (errorCode === "approval_required") return "approval_gate";
   if (errorCode === "config_error") return "provider_config";
   if (errorCode === "scope_failed") return "scope_resolution";
   if (errorCode === "git_binary_rejected") return "git_binary_policy";
@@ -1829,6 +1980,50 @@ async function cmdDoctor(options) {
   printJson(doctorFields(provider, cfg));
 }
 
+async function cmdApprovalRequest(options) {
+  const provider = options.provider ?? null;
+  const mode = options.mode ?? "review";
+  let configuredSecretNames = [];
+  try {
+    if (!provider) throw runBadArgs("bad_args: --provider is required");
+    if (!VALID_MODES.has(mode)) throw runBadArgs(`bad_args: unsupported --mode ${mode}`);
+    let providers;
+    try {
+      providers = await loadProviders();
+    } catch (e) {
+      throw runConfigError(`config_error: ${providersConfigErrorMessage(e)}`);
+    }
+    let cfg;
+    try {
+      cfg = providerConfig(providers, provider);
+      configuredSecretNames = cfg.env_keys ?? [];
+    } catch (e) {
+      throw runBadArgs(e.message);
+    }
+    if (!hasPromptText(options.prompt)) throw runBadArgs("bad_args: prompt is required (pass --prompt <focus>)");
+    const scopeInfo = await collectScope({ ...options, mode });
+    let approvalRequest;
+    try {
+      approvalRequest = buildApprovalRequest({ provider, cfg, mode, options, scopeInfo });
+    } catch (e) {
+      if (e?.apiReviewersReason) throw e;
+      throw runProviderFailure("approval_request_failed", e?.message ?? String(e));
+    }
+    printJson(approvalRequest);
+  } catch (e) {
+    const reason = isGitBinaryPolicyError(e) ? "git_binary_rejected" : (e.apiReviewersReason ?? "scope_failed");
+    const redact = redactor(process.env, configuredSecretNames);
+    printJson({
+      ok: false,
+      provider,
+      status: reason,
+      error_code: reason,
+      error_message: redact(e?.message ?? String(e)),
+    });
+    process.exit(1);
+  }
+}
+
 async function cmdRun(options) {
   const provider = options.provider ?? null;
   const mode = options.mode ?? "review";
@@ -1891,6 +2086,22 @@ async function cmdRun(options) {
         execution = providerFailure(promptBudget.reason, redactor(process.env)(promptBudget.error), null, null, false);
         execution.prompt = renderedPrompt;
       }
+      if (!execution && shouldRequireApprovalToken(process.env)) {
+        const request = requestSettingsForApproval(cfg);
+        const auditManifest = buildApprovalAuditManifest({ cfg, renderedPrompt, request, scopeInfo });
+        const expectedToken = approvalTokenFor({ provider, mode, auditManifest });
+        if (!validateApprovalToken(options, expectedToken)) {
+          execution = providerFailureWithDiagnostics(
+            "approval_required",
+            "approval_required: run approval-request, show the approval summary to the user, and pass the returned approval_token.value with --approval-token after explicit approval",
+            null,
+            null,
+            false,
+            approvalDiagnostics(cfg, request, renderedPrompt),
+          );
+          execution.prompt = renderedPrompt;
+        }
+      }
     } catch (e) {
       execution = providerFailure("scope_failed", redactor(process.env)(e?.message ?? String(e)), null, null, false);
     }
@@ -1934,6 +2145,7 @@ async function main() {
   const [cmd = "help", ...rest] = process.argv.slice(2);
   const options = parseArgs(rest);
   if (cmd === "doctor" || cmd === "ping") return cmdDoctor(options);
+  if (cmd === "approval-request") return cmdApprovalRequest(options);
   if (cmd === "run") return cmdRun(options);
   if (cmd === "help" || cmd === "--help" || cmd === "-h") {
     let providers;
@@ -1942,13 +2154,13 @@ async function main() {
     } catch (e) {
       printJson({
         ok: false,
-        commands: ["doctor", "ping", "run"],
+        commands: ["doctor", "ping", "approval-request", "run"],
         providers: [],
         ...providersConfigErrorFields(e),
       });
       process.exit(1);
     }
-    printJson({ ok: true, commands: ["doctor", "ping", "run"], providers: Object.keys(providers) });
+    printJson({ ok: true, commands: ["doctor", "ping", "approval-request", "run"], providers: Object.keys(providers) });
     return;
   }
   throw new Error(`unknown_command:${cmd}`);

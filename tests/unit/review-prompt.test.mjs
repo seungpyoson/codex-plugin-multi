@@ -67,6 +67,11 @@ function assertReviewPromptContract(targetBuildReviewPrompt = buildReviewPrompt,
     assert.match(prompt, new RegExp(item.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
   }
   assert.match(prompt, /For every checklist item, report PASS, FAIL, or NOT REVIEWED/);
+  assert.match(prompt, /supplied in this prompt as the authoritative review evidence/);
+  assert.match(prompt, /git, GitHub, network, filesystem, or tool access is unavailable/);
+  assert.match(prompt, /mark only that check as NOT REVIEWED/);
+  assert.match(prompt, /Do not report missing external tool access as a blocking code finding by itself/);
+  assert.match(prompt, /runtime\/tool limitations/);
   assert.match(prompt, /Blocking findings first/);
   assert.match(prompt, /Timed out, truncated, interrupted, blocked, or shallow output is NOT an approval/);
   assert.match(prompt, /User prompt:\nFocus on control-flow bugs\./);
@@ -227,6 +232,16 @@ test("review quality verdict ignores incidental pass/fail prose", () => {
   });
 
   assert.equal(manifest.review_quality.has_verdict, false);
+});
+
+test("review audit manifest does not count approval requests as failed review slots", () => {
+  const manifest = buildReviewAuditManifest({
+    prompt: "approval prompt",
+    sourceFiles: [],
+    status: "approval_request",
+  });
+
+  assert.equal(manifest.review_quality.failed_review_slot, false);
 });
 
 for (const [name, file] of REVIEW_PROMPT_MODULES) {
