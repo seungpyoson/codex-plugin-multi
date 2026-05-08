@@ -317,6 +317,9 @@ test("direct API reviewer docs require explicit approval for external source tra
     assert.match(doc, /selected source content/i, docPath);
     assert.match(doc, /external provider|external API/i, docPath);
     assert.match(doc, /recommended_tool_justification/, docPath);
+    assert.match(doc, /approval_token\.value/, docPath);
+    assert.match(doc, /--approval-token/, docPath);
+    assert.match(doc, /denial_action/, docPath);
     assert.match(doc, /relay prompt/i, docPath);
     assert.match(doc, /approval is denied/i, docPath);
   }

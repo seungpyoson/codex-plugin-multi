@@ -61,9 +61,42 @@ const API_REVIEWER_EXPECTED_KEYS = Object.freeze([
   "schema_version",
 ]);
 
-function run(args, { cwd = REPO_ROOT, env = {}, companion = COMPANION } = {}) {
+function approvalArgsForRun(args) {
+  if (args[0] !== "run") return null;
+  const approvalArgs = ["approval-request"];
+  for (let index = 1; index < args.length; index += 1) {
+    const token = args[index];
+    if (token === "--foreground" || token === "--background") continue;
+    if (token === "--lifecycle-events" || token === "--approval-token") {
+      index += 1;
+      continue;
+    }
+    approvalArgs.push(token);
+  }
+  return approvalArgs;
+}
+
+async function run(args, { cwd = REPO_ROOT, env = {}, companion = COMPANION } = {}) {
+  let finalArgs = args;
+  if (env.API_REVIEWERS_TEST_AUTO_APPROVAL !== "0" && !args.includes("--approval-token")) {
+    const approvalArgs = approvalArgsForRun(args);
+    if (approvalArgs) {
+      const approval = await run(approvalArgs, {
+        cwd,
+        companion,
+        env: {
+          ...env,
+          API_REVIEWERS_TEST_AUTO_APPROVAL: "0",
+        },
+      });
+      if (approval.status === 0) {
+        const parsed = parseJson(approval.stdout);
+        finalArgs = [...args, "--approval-token", parsed.approval_token.value];
+      }
+    }
+  }
   return new Promise((resolve) => {
-    execFile(process.execPath, [companion, ...args], {
+    execFile(process.execPath, [companion, ...finalArgs], {
       cwd,
       env: { ...process.env, ...env },
       timeout: 10000,
@@ -3263,8 +3296,16 @@ test("direct API reviewers approval-request describes external source transmissi
     assert.deepEqual(request.scope_paths, ["seed.txt"]);
     assert.equal(request.source_content_transmission, "not_sent");
     assert.match(request.approval_question, /Allow sending 1 selected file \(26 bytes, 1 line\) to GLM for external review\?/);
-    assert.match(request.recommended_tool_justification, /Allow sending 1 selected file \(26 bytes, 1 line\) to GLM for external review\?/);
+    assert.notEqual(request.recommended_tool_justification, request.approval_question);
+    assert.match(request.recommended_tool_justification, /Selected source content has not been sent to GLM/);
+    assert.match(request.recommended_tool_justification, /approval_token/);
+    assert.match(request.approval_token.value, /^[a-f0-9]{64}$/);
+    assert.equal(request.approval_token.algorithm, "sha256");
     assert.match(request.denial_fallback, /generate a relay prompt/i);
+    assert.deepEqual(request.denial_action, {
+      action: "generate_relay_prompt",
+      source_content_transmission: "not_sent",
+    });
     assert.equal(request.selected_source.totals.files, 1);
     assert.equal(request.selected_source.totals.bytes, 26);
     assert.equal(request.selected_source.totals.lines, 1);
@@ -3274,6 +3315,7 @@ test("direct API reviewers approval-request describes external source transmissi
     assert.equal(request.request.model, "glm-5.1");
     assert.equal(JSON.stringify(request).includes("hello from selected scope"), false);
     assert.equal(JSON.stringify(request).includes("secret-test-value"), false);
+    assert.equal(JSON.stringify(request).includes(cwd), false);
   } finally {
     rmSync(dataDir, { recursive: true, force: true });
     rmSync(cwd, { recursive: true, force: true });
@@ -3334,18 +3376,21 @@ test("direct API reviewers approval-request matches run prompt hash and request 
       "disclosure",
       "approval_question",
       "recommended_tool_justification",
+      "approval_token",
       "selected_source",
       "rendered_prompt_hash",
       "request",
       "scope_resolution",
+      "denial_action",
       "denial_fallback",
     ]);
 
-    const runResult = await run(["run", ...commonArgs, "--foreground"], {
+    const runResult = await run(["run", ...commonArgs, "--foreground", "--approval-token", approval.approval_token.value], {
       cwd,
       companion,
       env: {
         ...commonEnv,
+        API_REVIEWERS_REQUIRE_APPROVAL_TOKEN_IN_MOCKS: "1",
         API_REVIEWERS_MOCK_RESPONSE: mockResponse("custom-review-model"),
       },
     });
@@ -3368,6 +3413,94 @@ test("direct API reviewers approval-request matches run prompt hash and request 
     rmSync(dataDir, { recursive: true, force: true });
     rmSync(cwd, { recursive: true, force: true });
     rmSync(path.dirname(path.dirname(pluginRoot)), { recursive: true, force: true });
+  }
+});
+
+test("direct API reviewers run requires approval token before provider execution", async () => {
+  const cwd = makeWorkspace();
+  const dataDir = mkdtempSync(path.join(tmpdir(), "api-reviewers-data-"));
+  try {
+    const result = await run([
+      "run",
+      "--provider", "deepseek",
+      "--mode", "custom-review",
+      "--scope", "custom",
+      "--scope-paths", "seed.txt",
+      "--foreground",
+      "--prompt", "Check this file.",
+    ], {
+      cwd,
+      env: {
+        API_REVIEWERS_PLUGIN_DATA: dataDir,
+        API_REVIEWERS_TEST_AUTO_APPROVAL: "0",
+        DEEPSEEK_API_KEY: "secret-test-value",
+      },
+    });
+
+    assert.equal(result.status, 1);
+    const record = parseJson(result.stdout);
+    assert.equal(record.status, "failed");
+    assert.equal(record.error_code, "approval_required");
+    assert.match(record.error_message, /approval-request/);
+    assertDirectApiNotSent(record, "DeepSeek");
+    assert.doesNotMatch(result.stdout, /hello from selected scope/);
+    assert.doesNotMatch(result.stdout, /secret-test-value/);
+  } finally {
+    rmSync(dataDir, { recursive: true, force: true });
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("direct API reviewers run rejects approval token when prompt changes", async () => {
+  const cwd = makeWorkspace();
+  const dataDir = mkdtempSync(path.join(tmpdir(), "api-reviewers-data-"));
+  try {
+    const approvalResult = await run([
+      "approval-request",
+      "--provider", "deepseek",
+      "--mode", "custom-review",
+      "--scope", "custom",
+      "--scope-paths", "seed.txt",
+      "--prompt", "Check this file.",
+    ], {
+      cwd,
+      env: {
+        API_REVIEWERS_PLUGIN_DATA: dataDir,
+        DEEPSEEK_API_KEY: "secret-test-value",
+      },
+    });
+    assert.equal(approvalResult.status, 0, approvalResult.stderr || approvalResult.stdout);
+    const approval = parseJson(approvalResult.stdout);
+
+    const result = await run([
+      "run",
+      "--provider", "deepseek",
+      "--mode", "custom-review",
+      "--scope", "custom",
+      "--scope-paths", "seed.txt",
+      "--foreground",
+      "--prompt", "Check this file with a changed prompt.",
+      "--approval-token", approval.approval_token.value,
+    ], {
+      cwd,
+      env: {
+        API_REVIEWERS_PLUGIN_DATA: dataDir,
+        API_REVIEWERS_REQUIRE_APPROVAL_TOKEN_IN_MOCKS: "1",
+        API_REVIEWERS_MOCK_RESPONSE: mockResponse("deepseek-reasoner"),
+        DEEPSEEK_API_KEY: "secret-test-value",
+      },
+    });
+
+    assert.equal(result.status, 1);
+    const record = parseJson(result.stdout);
+    assert.equal(record.status, "failed");
+    assert.equal(record.error_code, "approval_required");
+    assertDirectApiNotSent(record, "DeepSeek");
+    assert.doesNotMatch(result.stdout, /hello from selected scope/);
+    assert.doesNotMatch(result.stdout, /secret-test-value/);
+  } finally {
+    rmSync(dataDir, { recursive: true, force: true });
+    rmSync(cwd, { recursive: true, force: true });
   }
 });
 
