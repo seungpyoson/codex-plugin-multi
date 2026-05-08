@@ -294,7 +294,7 @@ immediately before and after each match survive verbatim.
 4. **I10/I4** — `Bearer <token>`: the next character (any of
    `"`, `'`, `}`, `]`, `,`, whitespace, `\\`) survives. **Specific
    regression** (GLM/DeepSeek round 2): greedy `\S+` ate trailing `"}`.
-5. **I10/I2** — public-prefix tokens (`sk-…`, `AIza…`, `ghp_…`, etc.):
+5. **I10/I2** — public-prefix tokens (`sk-…`, `AIza…`, GitHub `gh*_…` prefixes, etc.):
    character immediately before and after the matched prefix survives.
 6. **I10/I1** — env-secret literal substring: characters immediately
    surrounding the redacted span survive (also exercises I13 ordering

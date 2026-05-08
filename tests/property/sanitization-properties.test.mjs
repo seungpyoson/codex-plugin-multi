@@ -187,7 +187,7 @@ describe("I1 — env-secret values are redacted", () => {
 // --------------------------------------------------------------------
 
 const prefixShape = () => fc.constantFrom(
-  "sk", "sk-or-v", "sk-ant-api", "AKIA", "AIza", "glpat", "ghp", "ghs", "github_pat", "jwt",
+  "sk", "sk-or-v", "sk-ant-api", "AKIA", "AIza", "glpat", "ghp", "gho", "ghu", "ghs", "ghr", "github_pat", "jwt",
 );
 
 function generatePrefixedToken(kind) {
@@ -207,7 +207,10 @@ function generatePrefixedToken(kind) {
     case "AIza": return `AIza${body35}`;
     case "glpat": return `glpat-${body22}`;
     case "ghp": return `ghp_${body36}`;
+    case "gho": return `gho_${body36}`;
+    case "ghu": return `ghu_${body36}`;
     case "ghs": return `ghs_${body36}`;
+    case "ghr": return `ghr_${body36}`;
     case "github_pat": return `github_pat_${body22}`;
     case "jwt": return `eyJ${body22}.${body22}.${body22}`;
     default: return body22;
@@ -702,7 +705,7 @@ describe("I12 — input containing the literal marker triggers a typed error", (
   it("output marker count <= count of distinct redaction targets in input", () => {
     fc.assert(
       fc.property(
-        fc.array(fc.constantFrom(...["sk", "AIza", "ghp", "AKIA"]), { maxLength: 5 }),
+        fc.array(fc.constantFrom(...["sk", "AIza", "ghp", "gho", "ghu", "ghs", "ghr", "AKIA"]), { maxLength: 5 }),
         arch(),
         (kinds, architecture) => {
           const tokens = kinds.map((k) => generatePrefixedToken(k));

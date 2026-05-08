@@ -439,18 +439,24 @@ function scrubAuth(env, keys) {
 // Only claude/auth-failure changes (was incorrectly hashing "api_key").
 export function derivePromptForHash(args) {
   if (!Array.isArray(args)) return "";
-  const promptValueArg = args.find((arg) =>
-    typeof arg === "string" && arg.startsWith("--prompt="));
-  if (promptValueArg) {
-    return promptValueArg.slice("--prompt=".length);
+  let prompt = null;
+  for (let i = 0; i < args.length; i += 1) {
+    const arg = args[i];
+    if (typeof arg === "string" && arg.startsWith("--prompt=")) {
+      prompt = arg.slice("--prompt=".length);
+      continue;
+    }
+    if (arg === "--prompt" && typeof args[i + 1] === "string") {
+      prompt = args[i + 1];
+      i += 1;
+    }
   }
-  const promptIdx = args.indexOf("--prompt");
-  if (promptIdx !== -1 && typeof args[promptIdx + 1] === "string") {
-    return args[promptIdx + 1];
-  }
+  if (prompt != null) return prompt;
   const ddIdx = args.indexOf("--");
-  if (ddIdx !== -1 && typeof args[ddIdx + 1] === "string") {
-    return args[ddIdx + 1];
+  if (ddIdx !== -1) {
+    return args.slice(ddIdx + 1)
+      .filter((arg) => typeof arg === "string")
+      .join(" ");
   }
   return "";
 }
@@ -666,7 +672,7 @@ function main() {
       "redacted per scripts/lib/fixture-sanitization.mjs:",
       "- env-secret values for keys matching auto-detected pattern (>=8 chars)",
       `- curated env_keys: ${(spec.curatedEnvKeys ?? []).join(",") || "(none)"}`,
-      "- public-prefix tokens (sk-, AKIA, AIza, ghp_, eyJ-, ...)",
+      "- public-prefix tokens (sk-, AKIA, AIza, GitHub gh*_ prefixes, eyJ-, ...)",
       "- Authorization headers and Bearer tokens, including JSON-quoted and single-quoted echoes",
       "- user-home and per-user temp paths (/Users/<user>, /home/<user>, /root/<user>, /var/folders/<user>, C:\\Users\\<user>)",
       recipe.architecture === ARCHITECTURE_COMPANION ? "- companion session_id fields" : "",

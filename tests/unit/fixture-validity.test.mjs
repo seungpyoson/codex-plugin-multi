@@ -84,6 +84,49 @@ function readJson(p) {
   return JSON.parse(readFileSync(p, "utf8"));
 }
 
+function assertNoUnredactedAuthorizationText(text, fixtureLabel) {
+  // Bare HTTP form: "Authorization: <value>".
+  const bareAuthMatches = [...text.matchAll(/Authorization:\s*([^\s"]+)/gi)];
+  for (const match of bareAuthMatches) {
+    assert.equal(
+      match[1],
+      "[REDACTED]",
+      `${fixtureLabel}: Authorization value not redacted: ${match[0].slice(0, 60)}...`,
+    );
+  }
+  // JSON-quoted form: "\"Authorization\": \"<value>\"". The bare regex
+  // misses this because the literal substring is "Authorization":, not
+  // "Authorization:". Without this scan, non-Bearer schemes (Basic,
+  // ApiKey, Token, Digest) embedded in echoed request bodies leak past
+  // the gate. The value pattern allows JSON escape sequences (e.g. `\"`
+  // in Digest's `realm=\"example\"`); a naive `[^"]*` would stop at the
+  // first escaped quote and miss everything after it.
+  const jsonAuthMatches = [...text.matchAll(/"Authorization"\s*:\s*"((?:[^"\\]|\\.)*)"/gi)];
+  for (const match of jsonAuthMatches) {
+    assert.equal(
+      match[1],
+      "[REDACTED]",
+      `${fixtureLabel}: JSON-quoted Authorization value not redacted: ${match[0].slice(0, 80)}...`,
+    );
+  }
+  const singleAuthMatches = [...text.matchAll(/'Authorization'\s*:\s*'((?:[^'\\]|\\.)*)'/gi)];
+  for (const match of singleAuthMatches) {
+    assert.equal(
+      match[1],
+      "[REDACTED]",
+      `${fixtureLabel}: single-quoted Authorization value not redacted: ${match[0].slice(0, 80)}...`,
+    );
+  }
+  const bearerMatches = [...text.matchAll(/Bearer\s+(\[REDACTED\]|[^\s"',;:()<>}\]\\]+)/gi)];
+  for (const match of bearerMatches) {
+    assert.equal(
+      match[1],
+      "[REDACTED]",
+      `${fixtureLabel}: Bearer token not redacted: ${match[0].slice(0, 60)}...`,
+    );
+  }
+}
+
 // PR-scoped sweep: when SMOKE_FIXTURE_CHANGED is set (newline-separated list
 // of repo-root-relative paths), the gate runs only over fixtures the PR
 // actually changed. Without it, the gate sweeps every committed fixture
@@ -417,38 +460,7 @@ test("fixtures: no user-home path leaks (macOS, Linux, Windows; only <user>)", (
 test("fixtures: no unredacted Authorization or Bearer values", () => {
   for (const f of FIXTURES) {
     const text = readFileSync(f.responsePath, "utf8");
-    // Bare HTTP form: "Authorization: <value>".
-    const bareAuthMatches = [...text.matchAll(/Authorization:\s*([^\s"]+)/gi)];
-    for (const match of bareAuthMatches) {
-      assert.equal(
-        match[1],
-        "[REDACTED]",
-        `${f.plugin}/${f.scenario}: Authorization value not redacted: ${match[0].slice(0, 60)}...`,
-      );
-    }
-    // JSON-quoted form: "\"Authorization\": \"<value>\"". The bare regex
-    // misses this because the literal substring is "Authorization":, not
-    // "Authorization:". Without this scan, non-Bearer schemes (Basic,
-    // ApiKey, Token, Digest) embedded in echoed request bodies leak past
-    // the gate. The value pattern allows JSON escape sequences (e.g. `\"`
-    // in Digest's `realm=\"example\"`); a naive `[^"]*` would stop at the
-    // first escaped quote and miss everything after it.
-    const jsonAuthMatches = [...text.matchAll(/"Authorization"\s*:\s*"((?:[^"\\]|\\.)*)"/gi)];
-    for (const match of jsonAuthMatches) {
-      assert.equal(
-        match[1],
-        "[REDACTED]",
-        `${f.plugin}/${f.scenario}: JSON-quoted Authorization value not redacted: ${match[0].slice(0, 80)}...`,
-      );
-    }
-    const bearerMatches = [...text.matchAll(/Bearer\s+(\[REDACTED\]|[^\s"',;:()<>}\]\\]+)/gi)];
-    for (const match of bearerMatches) {
-      assert.equal(
-        match[1],
-        "[REDACTED]",
-        `${f.plugin}/${f.scenario}: Bearer token not redacted: ${match[0].slice(0, 60)}...`,
-      );
-    }
+    assertNoUnredactedAuthorizationText(text, `${f.plugin}/${f.scenario}`);
   }
 });
 
@@ -463,7 +475,17 @@ test("authorization validity patterns match sanitizer redaction boundaries", () 
   assert.equal(singleAuthMatches[0][1], "[REDACTED]");
 });
 
-test("fixtures: no obvious public-prefix tokens leak (sk-, AKIA, ghp_, ghs_, github_pat_, AIza, glpat-, JWT)", () => {
+test("authorization validity gate rejects single-quoted Authorization leaks", () => {
+  assert.throws(
+    () => assertNoUnredactedAuthorizationText(
+      "{'Authorization':'Basic dGVzdA=='}",
+      "synthetic/single-quoted-auth",
+    ),
+    /single-quoted Authorization value not redacted/,
+  );
+});
+
+test("fixtures: no obvious public-prefix tokens leak (sk-, AKIA, GitHub gh*_ prefixes, github_pat_, AIza, glpat-, JWT)", () => {
   for (const f of FIXTURES) {
     const text = readFileSync(f.responsePath, "utf8");
     for (const pattern of SECRET_PREFIX_PATTERNS) {

@@ -137,16 +137,37 @@ test("redactKnownPatterns: redacts Google AIza keys", () => {
   assert.match(out, /\[REDACTED\]/);
 });
 
-test("redactKnownPatterns: redacts GitHub PATs (ghp_, ghs_, github_pat_)", () => {
+test("redactKnownPatterns: redacts GitHub token prefixes", () => {
   const out = redactKnownPatterns([
     "ghp_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
     "ghs_BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
+    "gho_CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC",
+    "ghu_DDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD",
+    "ghr_EEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEE",
     "github_pat_aaaaaaaaaaaaaaaaaaaa",
     "github_pat_aaaaaaaaaaaaaaaaaaaaaa",
   ].join(" "));
   assert.equal(out.includes("ghp_AAAA"), false);
   assert.equal(out.includes("ghs_BBBB"), false);
+  assert.equal(out.includes("gho_CCCC"), false);
+  assert.equal(out.includes("ghu_DDDD"), false);
+  assert.equal(out.includes("ghr_EEEE"), false);
   assert.equal(out.includes("github_pat_aaaa"), false);
+});
+
+test("sanitizeString: prefix patterns run before env-secret redaction to avoid partial public-token leaks", () => {
+  const redactor = buildEnvSecretRedactor(
+    { API_KEY: "sk-12345678" },
+    { curatedEnvKeys: ["API_KEY"] },
+  );
+  const out = sanitizeString("provider echoed sk-12345678901234567890", redactor);
+  assert.equal(out.includes("901234567890"), false);
+  assert.match(out, /\[REDACTED\]/);
+});
+
+test("redactKnownPatterns: redacts single-character bare Authorization values", () => {
+  const out = redactKnownPatterns("Authorization: a");
+  assert.equal(out, "Authorization: [REDACTED]");
 });
 
 test("redactKnownPatterns: redacts JWTs", () => {

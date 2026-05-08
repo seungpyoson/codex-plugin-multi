@@ -71,7 +71,7 @@ export const SECRET_PREFIX_PATTERNS = Object.freeze([
   /AKIA[0-9A-Z]{16}/g,                       // AWS access key
   /AIza[0-9A-Za-z_-]{35}/g,                  // Google API key
   /glpat-[a-zA-Z0-9_-]{20,}/g,               // GitLab personal access token
-  /gh[ps]_[a-zA-Z0-9]{36}/g,                 // GitHub token (pat / server)
+  /gh[pousr]_[a-zA-Z0-9]{36}/g,              // GitHub token (PAT / OAuth / server / refresh)
   /github_pat_\w{20,}/g,                     // GitHub fine-grained PAT
   /eyJ[a-zA-Z0-9_-]+\.[a-zA-Z0-9_-]+\.[a-zA-Z0-9_-]+/g, // JWT
 ]);
@@ -357,8 +357,8 @@ export function redactKnownPatterns(input) {
  * Apply both env-secret redaction and pattern redaction to a string.
  */
 export function sanitizeString(input, redactEnvSecrets) {
-  const afterEnv = redactEnvSecrets ? redactEnvSecrets(input) : String(input ?? "");
-  return redactKnownPatterns(afterEnv);
+  const afterKnownPatterns = redactKnownPatterns(input);
+  return redactEnvSecrets ? redactEnvSecrets(afterKnownPatterns) : afterKnownPatterns;
 }
 
 function isPlainObject(value) {

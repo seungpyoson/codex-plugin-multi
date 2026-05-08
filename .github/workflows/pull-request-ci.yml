@@ -55,6 +55,7 @@ jobs:
               'scripts/lib/smoke-rerecord-preflight.mjs' \
               'tests/unit/fixture-validity.test.mjs' \
               'scripts/smoke-rerecord.mjs' \
+              '.github/workflows/pull-request-ci.yml' \
               '.github/workflows/smoke-rerecord.yml' \
               || true)
             if [ -n "$CONTROL_CHANGED" ]; then

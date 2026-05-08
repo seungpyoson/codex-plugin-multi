@@ -238,8 +238,18 @@ describe("derivePromptForHash — explicit-anchor-only detection", () => {
     assert.equal(derivePromptForHash(args), "Tell me something.");
   });
 
-  it("returns the first arg after the -- separator (claude/run-style)", () => {
-    const args = ["run", "--auth-mode", "auto", "--", "Hello, claude."];
+  it("uses the last --prompt value to mirror CLI option precedence", () => {
+    const args = ["run", "--prompt", "stale", "--mode=review", "--prompt=actual"];
+    assert.equal(derivePromptForHash(args), "actual");
+  });
+
+  it("uses the last space-separated --prompt value", () => {
+    const args = ["run", "--prompt", "stale", "--mode=review", "--prompt", "actual"];
+    assert.equal(derivePromptForHash(args), "actual");
+  });
+
+  it("joins every arg after the -- separator (claude/run-style)", () => {
+    const args = ["run", "--auth-mode", "auto", "--", "Hello,", "claude."];
     assert.equal(derivePromptForHash(args), "Hello, claude.");
   });
 
