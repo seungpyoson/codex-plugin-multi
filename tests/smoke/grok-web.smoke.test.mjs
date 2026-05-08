@@ -1929,6 +1929,35 @@ test("tunnel invocation catch is separated from prompt construction catch", () =
   assert.match(source, /payloadSentForFetchError\(e\)/);
 });
 
+test("audit manifest timeout falls back to configured Grok timeout", async () => {
+  const { buildReviewMetadata } = await import(`file://${COMPANION}`);
+  const metadata = buildReviewMetadata({
+    display_name: "Grok Web",
+    model: "grok-test",
+    timeout_ms: 777777,
+  }, {
+    scope: "custom",
+    scope_base: "HEAD~1",
+    scope_paths: ["review.js"],
+    files: [{ path: "review.js", text: "export const value = 1;\n" }],
+    repository: "owner/repo",
+    head_ref: "feature/audit-timeout",
+    base_commit: "base-sha",
+    head_commit: "head-sha",
+  }, {
+    prompt: "Review this selected source.",
+    parsed: { ok: true, result: "Verdict: no findings." },
+    exitCode: 0,
+    session_id: "grok-test-session",
+  });
+
+  assert.equal(metadata.audit_manifest.request.timeout_ms, 777777);
+  assert.equal(metadata.audit_manifest.request.model, "grok-test");
+  assert.equal(metadata.audit_manifest.provider_ids.session_id, "grok-test-session");
+  assert.equal(JSON.stringify(metadata.audit_manifest).includes("Review this selected source."), false);
+  assert.equal(JSON.stringify(metadata.audit_manifest).includes("export const value = 1"), false);
+});
+
 for (const { status, code, quotaBody = false } of [
   { status: 401, code: "session_expired", quotaBody: true },
   { status: 403, code: "session_expired" },

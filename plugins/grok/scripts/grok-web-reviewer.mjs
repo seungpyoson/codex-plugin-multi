@@ -1074,7 +1074,7 @@ function buildReviewMetadata(cfg, scopeInfo, execution = null) {
     request: {
       provider: cfg.display_name,
       model: cfg.model,
-      timeoutMs: execution.diagnostics?.configured_timeout_ms ?? null,
+      timeoutMs: execution.diagnostics?.configured_timeout_ms ?? cfg.timeout_ms ?? null,
       maxTokens: execution.diagnostics?.max_tokens ?? null,
       temperature: execution.diagnostics?.temperature ?? null,
       stream: false,
@@ -1667,6 +1667,7 @@ async function runCli() {
 }
 
 export {
+  buildReviewMetadata,
   readUtf8ScopeFileWithinLimit,
   releaseStateLock,
   sameFileIdentity,
