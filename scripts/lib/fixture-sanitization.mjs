@@ -636,6 +636,11 @@ export function sanitize(record, options = {}) {
       if (envSecretSet.has(decoded)) return true;
       if (matchesSecretPrefix(decoded)) return true;
     }
+    const formDecoded = tryDecodeFormComponent(key);
+    if (formDecoded != null) {
+      if (envSecretSet.has(formDecoded)) return true;
+      if (matchesSecretPrefix(formDecoded)) return true;
+    }
     return false;
   }
 
