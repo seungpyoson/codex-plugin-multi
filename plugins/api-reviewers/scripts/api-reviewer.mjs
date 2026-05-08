@@ -1464,9 +1464,11 @@ function classifyHttpFailure(status, parsed, text = "") {
   if (status === 401 || (status === 403 && !usageLimitDetail)) return "auth_rejected";
   if (status === 402 || (status === 403 && usageLimitDetail) || (status === 429 && usageLimitDetail)) return "usage_limited";
   if (status === 429) return "rate_limited";
+  if (status === 501) return "provider_error";
   if (status === 408 || status === 409 || status === 425 || status === 500 || status === 502 || status === 503 || status === 504 || /capacity|resource|overload|unavailable/i.test(detail)) {
     return "provider_unavailable";
   }
+  if (status >= 500 && status <= 599) return "provider_error";
   if (isUsageLimitDetail(detail)) return "usage_limited";
   return "provider_error";
 }

@@ -1876,9 +1876,9 @@ test("direct API 501 compatibility errors stay provider_error", async () => {
     res.writeHead(501, { "content-type": "application/json" });
     res.end(JSON.stringify({
       error: {
-        code: "not_implemented",
+        code: "insufficient_quota",
         type: "unsupported_operation",
-        message: "The requested model or method is not implemented.",
+        message: "The requested model or method is not implemented for this quota endpoint.",
       },
     }));
   });
@@ -1907,8 +1907,55 @@ test("direct API 501 compatibility errors stay provider_error", async () => {
     assert.equal(record.error_cause, "direct_api_provider");
     assert.equal(record.runtime_diagnostics.cost_quota.classification, "not_reported");
     assert.equal(record.runtime_diagnostics.cost_quota.http_status, 501);
-    assert.equal(record.runtime_diagnostics.cost_quota.provider_error_code, "not_implemented");
+    assert.equal(record.runtime_diagnostics.cost_quota.provider_error_code, "insufficient_quota");
     assert.equal(record.runtime_diagnostics.cost_quota.provider_error_type, "unsupported_operation");
+    assert.doesNotMatch(result.stdout, /secret-test-value/);
+  } finally {
+    server.close();
+  }
+});
+
+test("direct API unlisted 5xx quota-looking errors stay provider_error", async () => {
+  const cwd = makeWorkspace();
+  const dataDir = mkdtempSync(path.join(tmpdir(), "api-reviewers-data-"));
+  const pluginRoot = makeInstalledApiReviewersRoot();
+  const server = await startChatServer((req, res) => {
+    req.resume();
+    res.writeHead(505, { "content-type": "application/json" });
+    res.end(JSON.stringify({
+      error: {
+        code: "insufficient_quota",
+        type: "unsupported_http_version",
+        message: "quota endpoint does not support this HTTP version.",
+      },
+    }));
+  });
+  try {
+    const { port } = server.address();
+    writeDeepSeekProviderConfig(pluginRoot, `http://127.0.0.1:${port}`);
+    const result = await run([
+      "run",
+      "--provider", "deepseek",
+      "--mode", "custom-review",
+      "--scope", "custom",
+      "--scope-paths", "seed.txt",
+      "--foreground",
+      "--prompt", "Check this file.",
+    ], {
+      cwd,
+      companion: path.join(pluginRoot, "scripts", "api-reviewer.mjs"),
+      env: {
+        API_REVIEWERS_PLUGIN_DATA: dataDir,
+        DEEPSEEK_API_KEY: "secret-test-value",
+      },
+    });
+    assert.equal(result.status, 1);
+    const record = parseJson(result.stdout);
+    assert.equal(record.error_code, "provider_error");
+    assert.equal(record.runtime_diagnostics.cost_quota.classification, "not_reported");
+    assert.equal(record.runtime_diagnostics.cost_quota.http_status, 505);
+    assert.equal(record.runtime_diagnostics.cost_quota.provider_error_code, "insufficient_quota");
+    assert.equal(record.runtime_diagnostics.cost_quota.provider_error_type, "unsupported_http_version");
     assert.doesNotMatch(result.stdout, /secret-test-value/);
   } finally {
     server.close();
