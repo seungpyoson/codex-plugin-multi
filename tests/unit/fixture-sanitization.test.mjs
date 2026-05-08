@@ -3,7 +3,7 @@
 // The sanitization library is the security floor for fixture recording —
 // any leak here ships the leaked credential into a committed fixture file
 // where it survives indefinitely. These tests exercise the patterns named
-// in docs/contracts/redaction.md plus session-id removal for companion
+// in docs/contracts/sanitization-invariants.md plus session-id removal for companion
 // architectures.
 
 import { test } from "node:test";
@@ -25,7 +25,7 @@ import {
 
 const REDACTED = FIXTURE_SANITIZATION_REDACTED_TOKEN;
 
-test("constants: thresholds match docs/contracts/redaction.md", () => {
+test("constants: thresholds match docs/contracts/sanitization-invariants.md", () => {
   assert.equal(FIXTURE_SANITIZATION_AUTO_LENGTH_FLOOR, 8);
   assert.equal(FIXTURE_SANITIZATION_CURATED_LENGTH_FLOOR, 4);
   assert.equal(REDACTED, "[REDACTED]");
@@ -596,6 +596,13 @@ test("buildEnvSecretRedactor: cookie sub-extraction redacts hyphenated secret at
   assert.equal(redact("abcdef123456 ghijkl789012 dark"), "[REDACTED] [REDACTED] dark");
 });
 
+test("buildEnvSecretRedactor: cookie sub-extraction redacts Authorization attributes", () => {
+  const redact = buildEnvSecretRedactor({
+    APP_COOKIE: "Authorization=opaque-cookie-secret-12345; theme=dark",
+  });
+  assert.equal(redact("opaque-cookie-secret-12345 dark"), "[REDACTED] dark");
+});
+
 test("sanitize: JSON-quoted Authorization in echoed error body redacts non-Bearer schemes", () => {
   const record = {
     error_body: '{"error":"unauthorized","echoed_request":{"headers":{"Authorization":"Basic dGVzdDp0ZXN0"}}}',
@@ -700,4 +707,21 @@ test("sanitize: bare session_id and request_id redact wholesale even when value 
     assert.equal(out[c.field], REDACTED,
       `${c.field} with ${c.label} value must redact wholesale (no structure passthrough)`);
   }
+});
+
+test("sanitize: wholesale-redacted special keys still reject unsupported input", () => {
+  assert.throws(
+    () => sanitize(
+      { session_id: Symbol("not-json") },
+      { architecture: "api-reviewers", env: {} },
+    ),
+    /not JSON-compatible.*symbol at \.?session_id/i,
+  );
+  assert.throws(
+    () => sanitize(
+      { claude_session_id: undefined },
+      { architecture: "companion", env: {} },
+    ),
+    /not JSON-compatible.*undefined at \.?claude_session_id/i,
+  );
 });

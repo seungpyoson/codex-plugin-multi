@@ -5,7 +5,7 @@ import { ARCHITECTURE_KINDS } from "./recipe-architecture.mjs";
 // real provider responses before committing them as smoke fixtures.
 //
 // Three architectures, three different redaction needs (per
-// docs/contracts/redaction.md):
+// docs/contracts/sanitization-invariants.md):
 //
 //   1. Companion (claude/gemini/kimi): the runtime defense is pre-spawn
 //      env-strip via sanitizeTargetEnv. Fixture sanitization here is
@@ -339,7 +339,7 @@ export const PATH_SCRUB_PROBES = Object.freeze(
 // just the inner SSO token without the surrounding cookie syntax still
 // gets scrubbed.
 const COOKIE_LIKE_ENV_NAME = /(?:^|_)(?:COOKIE|SESSION|SSO)$/i;
-const COOKIE_LIKE_SECRET_ATTR_NAME = /(?:^|[_-])(?:AUTH|BEARER|COOKIE|KEY|SECRET|SESSION|SSO|TOKEN)(?:[_-]|$)/i;
+const COOKIE_LIKE_SECRET_ATTR_NAME = /(?:^|[_-])(?:AUTH|AUTHORIZATION|BEARER|COOKIE|KEY|SECRET|SESSION|SSO|TOKEN)(?:[_-]|$)/i;
 
 class SanitizeMarkerCollision extends Error {
   constructor(detail) {
@@ -559,6 +559,7 @@ function sanitizeObjectField(key, sub, ctx, path) {
     (ctx.architecture === "companion" && COMPANION_SESSION_ID_FIELDS.includes(key))
     || ALWAYS_REDACT_STRING_FIELDS.includes(key)
   ) {
+    assertJsonCompatible(sub, ctx, path);
     // wholesaleRedact still walks structure to enforce I12/I16, but
     // discards the result. We need to validate the input domain even
     // when redacting wholesale, otherwise a Date/Map/cycle planted under
@@ -647,8 +648,7 @@ export function sanitize(record, options = {}) {
 }
 
 /**
- * Build a provenance object for the recorded fixture per
- * docs/contracts/api-reviewers-output.md schema.
+ * Build a provenance object for the recorded fixture schema.
  *
  * @param {object} options
  * @param {string} options.modelId

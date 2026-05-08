@@ -1311,7 +1311,7 @@ function pingNotAuthedFields() {
   return {
     ready: false,
     summary: "Claude Code subscription/OAuth auth is not available to this companion process.",
-    next_action: "In a normal terminal, unset ANTHROPIC_API_KEY and CLAUDE_API_KEY, then run: claude auth login",
+    next_action: `In a normal terminal, unset ${CLAUDE_PROVIDER_API_KEY_ENV.join(" and ")}, then run: claude auth login`,
   };
 }
 

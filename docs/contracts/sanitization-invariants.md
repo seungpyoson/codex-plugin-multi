@@ -4,11 +4,8 @@ Formal contract for `scripts/lib/fixture-sanitization.mjs`. The unit and
 smoke test suites contain *example* tests; this document defines the
 *property* tests that gate merge.
 
-This is a different surface from `docs/contracts/redaction.md`. That
-document describes the three runtime redaction surfaces (companion env
-strip, grok output redaction, api-reviewers output redaction). This
-document describes the offline sanitization library that runs once over
-*recorded* fixtures before they are committed to the repo.
+This document describes the offline sanitization library that runs once
+over *recorded* fixtures before they are committed to the repo.
 
 If a property test in `tests/property/sanitization-properties.test.mjs`
 fails, the invariant — not the test — is wrong. Either the library is

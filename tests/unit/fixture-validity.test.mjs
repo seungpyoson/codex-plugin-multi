@@ -27,7 +27,7 @@ const HERE = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(HERE, "..", "..");
 const FIXTURE_ROOT = path.resolve(HERE, "..", "smoke", "fixtures");
 
-// Required provenance keys per docs/contracts/api-reviewers-output.md.
+// Required keys for each fixture provenance record.
 const PROVENANCE_REQUIRED_KEYS = Object.freeze([
   "model_id",
   "recorded_at",

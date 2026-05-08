@@ -14,6 +14,7 @@ import { fileURLToPath } from "node:url";
 
 import { fixtureGitEnv, fixtureSeedRepo } from "../helpers/fixture-git.mjs";
 import { assertJobRecordShape } from "../helpers/job-record-shape.mjs";
+import { CLAUDE_PROVIDER_API_KEY_ENV } from "../../plugins/claude/scripts/lib/claude-provider-keys.mjs";
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const COMPANION = path.join(REPO_ROOT, "plugins/claude/scripts/claude-companion.mjs");
@@ -1901,6 +1902,7 @@ process.exit(7);
     assert.equal(result.status, "not_authed");
     assert.equal(result.ready, false);
     assert.match(result.next_action, /claude auth login/);
+    assert.match(result.next_action, new RegExp(CLAUDE_PROVIDER_API_KEY_ENV.join(" and ")));
     assert.match(result.detail, /OAuth2 flow incomplete/);
   } finally {
     cleanup(dataDir);
