@@ -1,0 +1,9 @@
+{
+  "status": "not_authed",
+  "ready": false,
+  "summary": "Claude API-key auth was requested, but no Claude provider API key is available.",
+  "next_action": "Set ANTHROPIC_API_KEY or CLAUDE_API_KEY, or rerun with --auth-mode subscription after completing Claude OAuth.",
+  "auth_mode": "api_key",
+  "selected_auth_path": "api_key_env_missing",
+  "auth_policy": "api_key_env_required"
+}

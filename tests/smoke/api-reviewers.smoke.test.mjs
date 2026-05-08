@@ -7,6 +7,7 @@ import { hostname, tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { externalReviewLaunchedEvent } from "../../scripts/lib/companion-common.mjs";
+import { assertJobRecordShape } from "../helpers/job-record-shape.mjs";
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const COMPANION = path.join(REPO_ROOT, "plugins/api-reviewers/scripts/api-reviewer.mjs");
@@ -3781,3 +3782,151 @@ test("direct API reviewers mark malformed mock responses as not sent", async () 
   assert.equal(record.external_review.source_content_transmission, "not_sent");
   assert.equal(record.disclosure_note, record.external_review.disclosure);
 });
+
+// AC7-AC8 (#106): smoke replay against recorded fixtures.
+//
+// For each recorded fixture under tests/smoke/fixtures/api-reviewers-*/,
+// synthesize the HTTP response shape the real provider returned, run the
+// wrapper through the existing 127.0.0.1 server harness, and assert the
+// replayed JobRecord matches the recorded fixture's *shape* (status,
+// error_code, http_status, transmission, schema_version). Field-level
+// content (cwd, endpoint, sessions, exact prompt hash) is NOT compared —
+// only the architecture's schema invariants.
+
+const REPLAY_FIXTURES_ROOT = path.join(REPO_ROOT, "tests", "smoke", "fixtures");
+
+function readReplayFixture(plugin, scenario) {
+  const fixturePath = path.join(REPLAY_FIXTURES_ROOT, plugin, `${scenario}.response.json`);
+  return JSON.parse(readFileSync(fixturePath, "utf8"));
+}
+
+function buildHttpResponseFromApiReviewersFixture(fixture) {
+  if (fixture.status === "completed" && fixture.http_status === 200) {
+    return {
+      statusCode: 200,
+      body: JSON.stringify({
+        id: "chatcmpl-replay",
+        object: "chat.completion",
+        model: fixture.raw_model ?? fixture.model,
+        choices: [{
+          index: 0,
+          finish_reason: "stop",
+          message: { role: "assistant", content: fixture.result ?? "PASS" },
+        }],
+        usage: fixture.usage ?? { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
+      }),
+    };
+  }
+  return {
+    statusCode: fixture.http_status ?? 500,
+    body: JSON.stringify({ error: { message: fixture.error_message ?? "replay error" } }),
+  };
+}
+
+for (const scenarioCase of [
+  { plugin: "api-reviewers-deepseek", scenario: "happy-path-review", provider: "deepseek", credentialEnv: "DEEPSEEK_API_KEY" },
+  { plugin: "api-reviewers-deepseek", scenario: "auth-rejected", provider: "deepseek", credentialEnv: "DEEPSEEK_API_KEY" },
+]) {
+  test(`smoke replay: ${scenarioCase.plugin}/${scenarioCase.scenario} reproduces recorded JobRecord shape`, async () => {
+    const fixture = readReplayFixture(scenarioCase.plugin, scenarioCase.scenario);
+    const httpResp = buildHttpResponseFromApiReviewersFixture(fixture);
+    const cwd = makeWorkspace();
+    const dataDir = mkdtempSync(path.join(tmpdir(), "api-reviewers-replay-"));
+    const pluginRoot = makeInstalledApiReviewersRoot();
+    // Capture the request the wrapper sends so we can assert that the
+    // outgoing payload matches what the recorded fixture implies (model,
+    // auth shape, content delivery). Without this, a regression that broke
+    // the wrapper's request side would still pass — server returns canned
+    // bytes regardless.
+    const captured = { url: null, method: null, authorization: null, body: null };
+    const server = await startChatServer(async (req, res) => {
+      captured.url = req.url;
+      captured.method = req.method;
+      captured.authorization = req.headers.authorization ?? null;
+      let raw = "";
+      req.setEncoding("utf8");
+      for await (const chunk of req) raw += chunk;
+      try { captured.body = JSON.parse(raw); } catch { captured.body = raw; }
+      res.writeHead(httpResp.statusCode, { "content-type": "application/json" });
+      res.end(httpResp.body);
+    });
+    try {
+      const { port } = server.address();
+      writeDeepSeekProviderConfig(pluginRoot, `http://127.0.0.1:${port}`);
+      const result = await run([
+        "run",
+        "--provider", scenarioCase.provider,
+        "--mode", "custom-review",
+        "--scope", "custom",
+        "--scope-paths", "seed.txt",
+        "--foreground",
+        "--prompt", "Replayed against recorded fixture.",
+      ], {
+        cwd,
+        companion: path.join(pluginRoot, "scripts", "api-reviewer.mjs"),
+        env: {
+          API_REVIEWERS_PLUGIN_DATA: dataDir,
+          [scenarioCase.credentialEnv]: "secret-test-value",
+        },
+      });
+      assert.equal(result.status, fixture.exit_code, result.stderr || result.stdout);
+      const replayed = parseJson(result.stdout);
+      // Two-axis shape check: subset (every expected key present) plus an
+      // internal-state guard (no extra key matches a suspicious internal
+      // pattern). See tests/helpers/job-record-shape.mjs.
+      assertJobRecordShape(replayed, [...API_REVIEWER_EXPECTED_KEYS], {
+        label: `${scenarioCase.plugin}/${scenarioCase.scenario}`,
+      });
+      assert.equal(replayed.schema_version, fixture.schema_version);
+      assert.equal(replayed.status, fixture.status);
+      assert.equal(replayed.error_code, fixture.error_code);
+      assert.equal(replayed.http_status, fixture.http_status);
+      assert.equal(replayed.target, fixture.target);
+      assert.equal(replayed.provider, fixture.provider);
+      assert.equal(replayed.review_metadata.prompt_provider, fixture.review_metadata.prompt_provider);
+      assert.equal(
+        replayed.review_metadata.audit_manifest.schema_version,
+        fixture.review_metadata.audit_manifest.schema_version,
+      );
+      assert.equal(
+        replayed.external_review.source_content_transmission,
+        fixture.external_review.source_content_transmission,
+        "transmission must match recorded fixture (security-critical invariant)",
+      );
+      assert.doesNotMatch(result.stdout, /secret-test-value/);
+      // Round-trip the raw provider result text on happy path. Skipped for
+      // negative paths where fixture.result is null.
+      if (fixture.status === "completed" && typeof fixture.result === "string") {
+        assert.equal(
+          replayed.result,
+          fixture.result,
+          "binary result text must round-trip through the wrapper",
+        );
+      }
+      // Request-side assertions: the wrapper actually hit the chat endpoint,
+      // POSTed an OpenAI-compat body with the configured model + the seed
+      // content, and presented Bearer auth. Without these, the replay only
+      // checks what the wrapper accepts; we want to also pin what it sends.
+      assert.equal(captured.method, "POST", "wrapper must POST to chat endpoint");
+      assert.equal(captured.url, "/chat/completions", "wrapper must hit /chat/completions");
+      assert.match(
+        captured.authorization ?? "",
+        /^Bearer secret-test-value$/,
+        "wrapper must present Bearer auth with the configured key",
+      );
+      assert.equal(typeof captured.body, "object", "request body must be JSON");
+      assert.equal(captured.body.model, "deepseek-v4-flash", "request body must carry the configured model");
+      assert.ok(Array.isArray(captured.body.messages) && captured.body.messages.length >= 1,
+        "request body must include at least one message");
+      const firstMessage = captured.body.messages[0];
+      assert.equal(typeof firstMessage.content, "string", "first message must have string content");
+      assert.match(
+        firstMessage.content,
+        /hello from selected scope/,
+        "transmission=sent paths must put the selected source content into the request body",
+      );
+    } finally {
+      server.close();
+    }
+  });
+}

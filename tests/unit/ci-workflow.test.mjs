@@ -3,9 +3,11 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { EXTERNAL_REVIEW_KEYS } from "../../scripts/lib/external-review.mjs";
+import { RECIPES } from "../../scripts/smoke-rerecord.mjs";
 
 const pkg = JSON.parse(readFileSync(resolve("package.json"), "utf8"));
 const workflow = readFileSync(resolve(".github/workflows/pull-request-ci.yml"), "utf8");
+const smokeRerecordWorkflow = readFileSync(resolve(".github/workflows/smoke-rerecord.yml"), "utf8");
 const e2eDocs = readFileSync(resolve("docs/e2e.md"), "utf8");
 const sonarConfig = readFileSync(resolve(".sonarcloud.properties"), "utf8");
 
@@ -44,6 +46,34 @@ test("pull-request CI runs the enforced coverage gate", () => {
   assert.match(workflow, /COVERAGE_ENFORCE_TARGET:\s*"1"/);
   assert.match(workflow, /Run coverage gate[\s\S]*CODEX_PLUGIN_SKIP_SMOKE:\s*"1"/);
   assert.match(workflow, /npm run test:coverage/);
+});
+
+test("pull-request CI full-sweeps fixtures when fixture-control code changes", () => {
+  assert.match(
+    workflow,
+    /CONTROL_CHANGED=\$\(git diff --name-only "\$BASE" HEAD -- [\s\S]*scripts\/lib\/fixture-sanitization\.mjs[\s\S]*scripts\/lib\/recipe-architecture\.mjs[\s\S]*scripts\/lib\/smoke-rerecord-preflight\.mjs[\s\S]*tests\/unit\/fixture-validity\.test\.mjs[\s\S]*scripts\/smoke-rerecord\.mjs[\s\S]*\.github\/workflows\/pull-request-ci\.yml[\s\S]*\.github\/workflows\/smoke-rerecord\.yml/,
+    "CI must detect fixture sanitizer/gate/rerecord code changes, not only fixture file changes",
+  );
+  assert.match(
+    workflow,
+    /\[ -n "\$CONTROL_CHANGED" \][\s\S]*leaving SMOKE_FIXTURE_CHANGED unset \(full-sweep fixture-control change\)/,
+    "fixture-control changes must leave SMOKE_FIXTURE_CHANGED unset so fixture-validity scans every committed fixture",
+  );
+});
+
+test("smoke-rerecord workflow plugin choices match live RECIPES plugins", () => {
+  const optionsBlock = smokeRerecordWorkflow.match(/plugin:[\s\S]*?options:\n([\s\S]*?)\n\s+scenario:/);
+  assert.ok(optionsBlock, "smoke-rerecord workflow must expose plugin choices");
+  const workflowPlugins = [...optionsBlock[1].matchAll(/^\s+-\s+([^\s#]+)\s*$/gm)]
+    .map((match) => match[1])
+    .sort();
+  const recipePlugins = [...new Set(Object.keys(RECIPES).map((key) => key.split("/")[0]))]
+    .sort();
+  assert.deepEqual(
+    workflowPlugins,
+    recipePlugins,
+    "manual smoke-rerecord plugin choices must not advertise plugins without live recipes",
+  );
 });
 
 test("Sonar CPD excludes intentional packaging and entrypoint copies", () => {

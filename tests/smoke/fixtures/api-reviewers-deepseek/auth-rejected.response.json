@@ -1,0 +1,157 @@
+{
+  "id": "job_4a323e1f-2324-4325-be37-40590facef3e",
+  "job_id": "job_4a323e1f-2324-4325-be37-40590facef3e",
+  "target": "deepseek",
+  "provider": "deepseek",
+  "parent_job_id": null,
+  "claude_session_id": null,
+  "gemini_session_id": null,
+  "kimi_session_id": null,
+  "resume_chain": [],
+  "pid_info": null,
+  "mode": "custom-review",
+  "mode_profile_name": "custom-review",
+  "model": "deepseek-v4-pro",
+  "cwd": "/Users/<user>/Projects/Claude/codex-plugin-multi-103-spec",
+  "workspace_root": "/Users/<user>/Projects/Claude/codex-plugin-multi-103-spec",
+  "containment": "none",
+  "scope": "custom",
+  "dispose_effective": false,
+  "scope_base": null,
+  "scope_paths": [
+    "scripts/lib/plugin-targets.mjs"
+  ],
+  "prompt_head": "This prompt should not be sent because credentials are missing.",
+  "review_metadata": {
+    "prompt_contract_version": 1,
+    "prompt_provider": "DeepSeek",
+    "scope": "custom",
+    "scope_base": null,
+    "scope_paths": [
+      "scripts/lib/plugin-targets.mjs"
+    ],
+    "raw_output": {
+      "http_status": 401,
+      "raw_model": null,
+      "parsed_ok": false,
+      "result_chars": null
+    },
+    "audit_manifest": {
+      "schema_version": 1,
+      "rendered_prompt_hash": {
+        "algorithm": "sha256",
+        "value": "2a91a08f45a451ec1576c2326169117856602b937a5b0590d500fb0eab166301"
+      },
+      "selected_source": {
+        "files": [
+          {
+            "path": "scripts/lib/plugin-targets.mjs",
+            "bytes": 436,
+            "lines": 6,
+            "content_hash": {
+              "algorithm": "sha256",
+              "value": "910dd7ad76ebbb3e114f75c4281cf1dbed7095b3b199b9019962dae91c42813d"
+            }
+          }
+        ],
+        "totals": {
+          "files": 1,
+          "bytes": 436,
+          "lines": 6
+        }
+      },
+      "git_identity": {
+        "remote": "seungpyoson/codex-plugin-multi",
+        "branch": "feat/106-fixture-recording-mvp",
+        "base_ref": null,
+        "base_sha": null,
+        "head_ref": "feat/106-fixture-recording-mvp",
+        "head_sha": "68a34e06965443d987368930f28cc4a92ff05276",
+        "diff_stat": null
+      },
+      "prompt_builder": {
+        "contract_version": 1,
+        "plugin_version": "0.1.0",
+        "plugin_commit": "68a34e06965443d987368930f28cc4a92ff05276"
+      },
+      "request": {
+        "provider": "DeepSeek",
+        "model": "deepseek-v4-pro",
+        "timeout_ms": 600000,
+        "max_tokens": 65536,
+        "max_steps_per_turn": null,
+        "temperature": 0,
+        "stream": false
+      },
+      "truncation": {
+        "prompt": false,
+        "prompt_at_chars": null,
+        "source": false,
+        "source_at_bytes": null,
+        "output": false,
+        "output_at_chars": null
+      },
+      "provider_ids": {
+        "request_id": null,
+        "session_id": null
+      },
+      "scope_resolution": {
+        "scope": "custom",
+        "scope_base": null,
+        "scope_paths": [
+          "scripts/lib/plugin-targets.mjs"
+        ],
+        "reason": "explicit --scope-paths"
+      },
+      "review_quality": {
+        "has_verdict": false,
+        "has_blocking_section": false,
+        "has_non_blocking_section": false,
+        "checklist_items_seen": 0,
+        "looks_shallow": false,
+        "failed_review_slot": true
+      }
+    }
+  },
+  "schema_spec": null,
+  "binary": null,
+  "status": "failed",
+  "started_at": "2026-05-06T14:37:18.094Z",
+  "ended_at": "2026-05-06T14:37:18.384Z",
+  "exit_code": 1,
+  "error_code": "auth_rejected",
+  "error_message": "Authentication Fails, Your api key: [REDACTED] is invalid",
+  "error_summary": "Authentication Fails, Your api key: [REDACTED] is invalid",
+  "error_cause": "direct_api_provider",
+  "suggested_action": "Check the DeepSeek API key and billing/plan for deepseek-v4-pro.",
+  "external_review": {
+    "marker": "EXTERNAL REVIEW",
+    "provider": "DeepSeek",
+    "run_kind": "foreground",
+    "job_id": "job_4a323e1f-2324-4325-be37-40590facef3e",
+    "session_id": null,
+    "parent_job_id": null,
+    "mode": "custom-review",
+    "scope": "custom",
+    "scope_base": null,
+    "scope_paths": [
+      "scripts/lib/plugin-targets.mjs"
+    ],
+    "source_content_transmission": "sent",
+    "disclosure": "Selected source content was sent to DeepSeek through direct API auth, but the provider did not return a clean result."
+  },
+  "disclosure_note": "Selected source content was sent to DeepSeek through direct API auth, but the provider did not return a clean result.",
+  "runtime_diagnostics": null,
+  "result": null,
+  "structured_output": null,
+  "permission_denials": [],
+  "mutations": [],
+  "cost_usd": null,
+  "usage": null,
+  "auth_mode": "api_key",
+  "credential_ref": null,
+  "endpoint": "https://api.deepseek.com",
+  "http_status": 401,
+  "raw_model": null,
+  "schema_version": 10
+}

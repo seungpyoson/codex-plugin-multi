@@ -23,10 +23,54 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          # Need history vs origin/main so the fixture-validity gate can be
+          # scoped to fixtures the PR actually changed (avoids retroactive
+          # blocking when a sanitization rule is tightened later).
+          fetch-depth: 0
       - uses: actions/setup-node@v4
         with:
           node-version: "20"
       - run: npm ci --ignore-scripts || npm install --ignore-scripts
+      - name: Compute changed fixtures (PR + feature branches)
+        if: github.ref != 'refs/heads/main'
+        run: |
+          # Three-state contract with the fixture-validity gate:
+          #   - env unset           → full sweep (CI infrastructure failure)
+          #   - env = ""            → PR-scoped no-op (no fixtures changed)
+          #   - env = <paths>       → scoped to listed paths
+          # See tests/unit/fixture-validity.test.mjs filterFixturesByChangedEnv.
+          # We only write the env when merge-base succeeded; otherwise
+          # leaving it unset triggers the safe full-sweep fallback rather
+          # than silently bypassing the gate.
+          # Fixture-control changes also leave the env unset: sanitizer,
+          # validity-gate, or re-record workflow edits must be checked
+          # against every committed fixture, not only touched fixture files.
+          git fetch --no-tags --no-recurse-submodules --depth=50 origin main || true
+          BASE=$(git merge-base origin/main HEAD 2>/dev/null || true)
+          if [ -n "$BASE" ] && [ "$BASE" != "$(git rev-parse HEAD)" ]; then
+            CONTROL_CHANGED=$(git diff --name-only "$BASE" HEAD -- \
+              'scripts/lib/fixture-sanitization.mjs' \
+              'scripts/lib/recipe-architecture.mjs' \
+              'scripts/lib/smoke-rerecord-preflight.mjs' \
+              'tests/unit/fixture-validity.test.mjs' \
+              'scripts/smoke-rerecord.mjs' \
+              '.github/workflows/pull-request-ci.yml' \
+              '.github/workflows/smoke-rerecord.yml' \
+              || true)
+            if [ -n "$CONTROL_CHANGED" ]; then
+              echo "fixture-control files changed; leaving SMOKE_FIXTURE_CHANGED unset (full-sweep fixture-control change)" >&2
+              exit 0
+            fi
+            CHANGED=$(git diff --name-only "$BASE" HEAD -- 'tests/smoke/fixtures/' || true)
+            {
+              echo "SMOKE_FIXTURE_CHANGED<<EOF"
+              echo "$CHANGED"
+              echo "EOF"
+            } >> "$GITHUB_ENV"
+          else
+            echo "merge-base unavailable; leaving SMOKE_FIXTURE_CHANGED unset (full-sweep fallback)" >&2
+          fi
       - name: Run tests under hostile git-hook env
         env:
           CODEX_PLUGIN_SKIP_SMOKE: "1"

@@ -8,6 +8,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { externalReviewLaunchedEvent } from "../../scripts/lib/companion-common.mjs";
+import { assertJobRecordShape } from "../helpers/job-record-shape.mjs";
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const COMPANION = path.join(REPO_ROOT, "plugins/grok/scripts/grok-web-reviewer.mjs");
@@ -2548,4 +2549,148 @@ test("help exposes only subscription-backed Grok commands", () => {
   assert.equal(parsed.provider, "grok-web");
   assert.equal(parsed.default_auth_mode, "subscription_web");
   assert.doesNotMatch(JSON.stringify(parsed), /api\.x\.ai/i);
+});
+
+// AC7-AC8 (#106): smoke replay against recorded grok fixtures.
+//
+// happy-path-review.response.json: recorded under a clean local tunnel
+// success — chat endpoint returns a completed review response.
+// tunnel-error.response.json: recorded against an unreachable tunnel
+// (http_status null, error_code tunnel_unavailable). Replay reproduces the
+// same JobRecord shape: status, error_code, http_status, transmission.
+
+const GROK_REPLAY_FIXTURES_ROOT = path.join(REPO_ROOT, "tests", "smoke", "fixtures", "grok");
+
+function readGrokReplayFixture(scenario) {
+  const fixturePath = path.join(GROK_REPLAY_FIXTURES_ROOT, `${scenario}.response.json`);
+  return JSON.parse(readFileSync(fixturePath, "utf8"));
+}
+
+test("smoke replay: grok/happy-path-review reproduces recorded JobRecord shape (success)", async () => {
+  const fixture = readGrokReplayFixture("happy-path-review");
+  const cwd = mkdtempSync(path.join(tmpdir(), "grok-replay-workspace-"));
+  const dataDir = mkdtempSync(path.join(tmpdir(), "grok-replay-data-"));
+  writeFileSync(path.join(cwd, "review.js"), "export const grok_replay_marker = 1;\n");
+
+  // Capture the request the wrapper sends to the chat endpoint so we can
+  // assert that the outgoing payload matches what the recorded fixture
+  // implies (model, auth shape, content delivery).
+  const chatCaptured = { method: null, authorization: null, body: null };
+  await withServer(async (req, res) => {
+    res.setHeader("content-type", "application/json");
+    if (req.url === "/api/models") {
+      res.end(JSON.stringify({ data: [{ id: "grok-4.20-fast" }] }));
+      return;
+    }
+    if (req.url === "/api/chat/completions") {
+      chatCaptured.method = req.method;
+      chatCaptured.authorization = req.headers.authorization ?? null;
+      chatCaptured.body = await readJsonRequest(req);
+      res.end(JSON.stringify({
+        choices: [{ message: { content: "Verdict: PASS" } }],
+        usage: { prompt_tokens: 10, completion_tokens: 2, total_tokens: 12 },
+      }));
+      return;
+    }
+    res.writeHead(404);
+    res.end(JSON.stringify({ error: { message: "not found" } }));
+  }, async (baseUrl) => {
+    const result = await runAsync([
+      "run",
+      "--mode", "custom-review",
+      "--scope", "custom",
+      "--scope-paths", "review.js",
+      "--foreground",
+      "--prompt", "Replayed against recorded fixture.",
+    ], {
+      cwd,
+      env: {
+        GROK_WEB_BASE_URL: baseUrl,
+        GROK_WEB_TUNNEL_API_KEY: "secret-cookie-like-token",
+        GROK_PLUGIN_DATA: dataDir,
+      },
+    });
+    assert.equal(result.status, fixture.exit_code, result.stderr || result.stdout);
+    const replayed = parseStdout(result);
+    // Two-axis shape check: subset (every expected key present) plus an
+    // internal-state guard (no extra key matches a suspicious internal
+    // pattern). See tests/helpers/job-record-shape.mjs.
+    assertJobRecordShape(replayed, [...GROK_EXPECTED_KEYS], {
+      label: "grok-web replay",
+    });
+    assert.equal(replayed.schema_version, fixture.schema_version);
+    assert.equal(replayed.status, fixture.status);
+    assert.equal(replayed.error_code, fixture.error_code);
+    assert.equal(replayed.http_status, fixture.http_status);
+    assert.equal(replayed.target, fixture.target);
+    assert.equal(replayed.provider, fixture.provider);
+    assert.equal(replayed.review_metadata.prompt_provider, fixture.review_metadata.prompt_provider);
+    assert.equal(
+      replayed.review_metadata.audit_manifest.schema_version,
+      fixture.review_metadata.audit_manifest.schema_version,
+    );
+    assert.equal(
+      replayed.external_review.source_content_transmission,
+      fixture.external_review.source_content_transmission,
+      "transmission must match recorded fixture (security-critical invariant)",
+    );
+    // Request-side: the wrapper actually POSTed to the chat endpoint with
+    // Bearer auth, the configured model, and the seed content delivered
+    // inside the message body. transmission=sent without delivery is a bug.
+    assert.equal(chatCaptured.method, "POST", "wrapper must POST to chat endpoint");
+    assert.equal(
+      chatCaptured.authorization,
+      "Bearer secret-cookie-like-token",
+      "wrapper must present Bearer auth with the configured tunnel key",
+    );
+    assert.ok(chatCaptured.body, "request body must be parsed");
+    assert.equal(chatCaptured.body.model, "grok-4.20-fast", "request body must carry the configured model");
+    assert.equal(chatCaptured.body.stream, false, "tunnel chat must remain non-streaming");
+    assert.ok(Array.isArray(chatCaptured.body.messages) && chatCaptured.body.messages.length >= 1,
+      "request body must include at least one message");
+    assert.match(
+      chatCaptured.body.messages[0].content,
+      /grok_replay_marker/,
+      "transmission=sent paths must put the selected source content into the request body",
+    );
+  });
+});
+
+test("smoke replay: grok/tunnel-error reproduces recorded JobRecord shape (tunnel unreachable)", async () => {
+  const fixture = readGrokReplayFixture("tunnel-error");
+  const cwd = mkdtempSync(path.join(tmpdir(), "grok-replay-workspace-"));
+  const dataDir = mkdtempSync(path.join(tmpdir(), "grok-replay-data-"));
+  writeFileSync(path.join(cwd, "review.js"), "export const value = 1;\n");
+
+  // Point at port 1 — fetch will fail with ECONNREFUSED, mirroring the
+  // recorded "fetch failed" cause.
+  const result = await runAsync([
+    "run",
+    "--mode", "custom-review",
+    "--scope", "custom",
+    "--scope-paths", "review.js",
+    "--foreground",
+    "--prompt", "Replayed against recorded fixture.",
+  ], {
+    cwd,
+    env: {
+      GROK_WEB_BASE_URL: "http://127.0.0.1:1/v1",
+      GROK_PLUGIN_DATA: dataDir,
+    },
+  });
+  assert.equal(result.status, fixture.exit_code, result.stderr || result.stdout);
+  const replayed = parseStdout(result);
+  assert.deepEqual(Object.keys(replayed), [...GROK_EXPECTED_KEYS]);
+  assert.equal(replayed.schema_version, fixture.schema_version);
+  assert.equal(replayed.status, fixture.status);
+  assert.equal(replayed.error_code, fixture.error_code);
+  assert.equal(replayed.http_status, fixture.http_status);
+  assert.equal(replayed.target, fixture.target);
+  assert.equal(replayed.provider, fixture.provider);
+  assert.equal(replayed.review_metadata.prompt_provider, fixture.review_metadata.prompt_provider);
+  assert.equal(
+    replayed.external_review.source_content_transmission,
+    fixture.external_review.source_content_transmission,
+    "transmission must match recorded fixture (security-critical invariant)",
+  );
 });

@@ -52,6 +52,7 @@ import {
   apiKeyMissingMessage as buildApiKeyMissingMessage,
   resolveAuthSelection as resolveAuthSelectionForProvider,
 } from "./lib/auth-selection.mjs";
+import { CLAUDE_PROVIDER_API_KEY_ENV } from "./lib/claude-provider-keys.mjs";
 import {
   PING_PROMPT,
   consumePromptSidecar,
@@ -1272,7 +1273,10 @@ async function cmdNotImplemented(name) {
 }
 
 const PING_AUTH_RE = /\b(auth(?:enticat\w*)?|login|credential\w*|oauth2?|unauthenticated|signin|sign-in)\b/i;
-const PING_PROVIDER_API_KEY_ENV = ["ANTHROPIC_API_KEY", "CLAUDE_API_KEY"];
+// Source of truth: ./lib/claude-provider-keys.mjs (also imported by
+// scripts/smoke-rerecord.mjs so the recipe's envAny cannot drift from
+// what auth-selection.mjs's auto mode accepts).
+const PING_PROVIDER_API_KEY_ENV = CLAUDE_PROVIDER_API_KEY_ENV;
 
 function resolveAuthSelection(requestedMode = "subscription") {
   return resolveAuthSelectionForProvider({
@@ -1307,7 +1311,7 @@ function pingNotAuthedFields() {
   return {
     ready: false,
     summary: "Claude Code subscription/OAuth auth is not available to this companion process.",
-    next_action: "In a normal terminal, unset ANTHROPIC_API_KEY and CLAUDE_API_KEY, then run: claude auth login",
+    next_action: `In a normal terminal, unset ${CLAUDE_PROVIDER_API_KEY_ENV.join(" and ")}, then run: claude auth login`,
   };
 }
 
