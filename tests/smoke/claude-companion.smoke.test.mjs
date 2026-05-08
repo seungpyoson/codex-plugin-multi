@@ -13,6 +13,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { fixtureGitEnv, fixtureSeedRepo } from "../helpers/fixture-git.mjs";
+import { assertJobRecordShape } from "../helpers/job-record-shape.mjs";
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const COMPANION = path.join(REPO_ROOT, "plugins/claude/scripts/claude-companion.mjs");
@@ -3302,6 +3303,119 @@ test("claude _run-worker refuses terminal JobRecord without overwriting it", () 
     assert.equal(record.status, "completed", "terminal worker re-entry must not overwrite record");
     assert.equal(record.job_id, completed.job_id);
   } finally {
+    rmSync(dataDir, { recursive: true, force: true });
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+// AC7-AC8 (#106): smoke replay against the recorded companion fixture.
+//
+// The recorded fixture under tests/smoke/fixtures/claude/ is JobRecord-shaped
+// (the wrapper's output). claude-mock.mjs expects a different shape (the
+// binary's stdout). Bridge by projecting the JobRecord's binary-derived
+// fields (result, usage, cost_usd, permission_denials) into a stdout-shape
+// fixture and pointing the mock at it via CLAUDE_MOCK_FIXTURE_PATH.
+//
+// auth-failure.response.json is intentionally NOT replayed: ping/doctor
+// fixtures are readiness-contract JSON, while this replay path verifies the
+// JobRecord shape produced by run/custom-review.
+
+const CLAUDE_REPLAY_FIXTURE = path.join(REPO_ROOT, "tests/smoke/fixtures/claude/happy-path-review.response.json");
+
+function projectJobRecordToClaudeStdout(fixture) {
+  return {
+    type: "result",
+    subtype: fixture.exit_code === 0 ? "success" : "error",
+    is_error: fixture.exit_code !== 0,
+    result: fixture.result ?? "",
+    structured_output: fixture.structured_output ?? null,
+    num_turns: 1,
+    duration_ms: 100,
+    duration_api_ms: 80,
+    total_cost_usd: fixture.cost_usd ?? 0,
+    usage: fixture.usage ?? { input_tokens: 0, output_tokens: 0, service_tier: "standard" },
+    permission_denials: fixture.permission_denials ?? [],
+    apiKeySource: "None",
+    modelUsage: {},
+  };
+}
+
+test("smoke replay: claude/happy-path-review reproduces recorded JobRecord shape", () => {
+  const fixture = JSON.parse(readFileSync(CLAUDE_REPLAY_FIXTURE, "utf8"));
+  const projected = projectJobRecordToClaudeStdout(fixture);
+  const tmpFixtureDir = mkdtempSync(path.join(tmpdir(), "claude-replay-fixture-"));
+  const tmpFixturePath = path.join(tmpFixtureDir, "stdout.json");
+  writeFileSync(tmpFixturePath, JSON.stringify(projected), "utf8");
+  const cwd = mkdtempSync(path.join(tmpdir(), "claude-replay-cwd-"));
+  writeFileSync(path.join(cwd, "seed.txt"), "claude_replay_marker_seed_text\n");
+  const dataDir = mkdtempSync(path.join(tmpdir(), "claude-replay-data-"));
+  try {
+    const res = spawnSync("node", [
+      path.join(REPO_ROOT, "plugins/claude/scripts/claude-companion.mjs"),
+      "run", "--mode=custom-review", "--foreground",
+      "--model", fixture.model,
+      "--scope-paths", "seed.txt",
+      "--cwd", cwd, "--", "Replayed against recorded fixture.",
+    ], {
+      cwd, encoding: "utf8",
+      env: {
+        ...process.env,
+        CLAUDE_BINARY: MOCK,
+        CLAUDE_PLUGIN_DATA: dataDir,
+        CLAUDE_MOCK_FIXTURE_PATH: tmpFixturePath,
+        CLAUDE_MOCK_ASSERT_FILE: "seed.txt",
+        // Request-side assertion: the wrapper must render the delegated
+        // review contract template before invoking the binary. The mock
+        // exits 1 if this substring is missing. Companion architecture
+        // does not inline file content into the prompt (Claude reads via
+        // --add-dir tools), so the right request-side check here is on
+        // the contract scaffold, not on file content. Transmission of the
+        // file content itself is asserted via the source_content_transmission
+        // field below.
+        CLAUDE_MOCK_ASSERT_PROMPT_INCLUDES: "Provider: Claude Code",
+      },
+    });
+    assert.equal(res.status, fixture.exit_code, res.stderr || res.stdout);
+    const replayed = JSON.parse(res.stdout);
+    // Two-axis shape check: subset (every recorded key present) plus an
+    // internal-state guard (no extra key matches a suspicious internal
+    // pattern). Strict key-set equality forced re-records on additive
+    // changes; bare subset would miss accidental exposure of internal
+    // wrapper state. See tests/helpers/job-record-shape.mjs.
+    assertJobRecordShape(replayed, Object.keys(fixture), {
+      label: "claude/happy-path-review",
+    });
+    assert.equal(replayed.schema_version, fixture.schema_version);
+    assert.equal(replayed.status, fixture.status);
+    assert.equal(replayed.error_code, fixture.error_code);
+    assert.equal(replayed.target, fixture.target);
+    assert.equal(replayed.mode, fixture.mode);
+    assert.equal(replayed.model, fixture.model);
+    assert.equal(replayed.review_metadata.prompt_provider, fixture.review_metadata.prompt_provider);
+    assert.equal(
+      replayed.review_metadata.audit_manifest.schema_version,
+      fixture.review_metadata.audit_manifest.schema_version,
+    );
+    assert.equal(replayed.review_metadata.raw_output.parsed_ok, true);
+    assert.equal(
+      replayed.external_review.source_content_transmission,
+      fixture.external_review.source_content_transmission,
+      "transmission must match recorded fixture (security-critical invariant)",
+    );
+    const stdoutFixture = readStdoutLog(dataDir, replayed.job_id);
+    assert.equal(
+      stdoutFixture.t7_saw_file,
+      true,
+      "Claude replay must deliver selected scope content through --add-dir",
+    );
+    assert.equal(
+      stdoutFixture.t7_add_dir,
+      replayed.runtime_diagnostics.add_dir,
+      "Claude replay mock must inspect the same --add-dir path recorded in runtime diagnostics",
+    );
+    assert.equal(replayed.result, fixture.result, "binary result text must round-trip through the wrapper");
+  } finally {
+    rmSync(tmpFixtureDir, { recursive: true, force: true });
     rmSync(dataDir, { recursive: true, force: true });
     rmSync(cwd, { recursive: true, force: true });
   }

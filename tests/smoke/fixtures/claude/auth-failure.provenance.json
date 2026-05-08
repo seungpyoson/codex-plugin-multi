@@ -1,0 +1,8 @@
+{
+  "model_id": "claude",
+  "recorded_at": "2026-05-06T16:09:18.115Z",
+  "prompt_hash": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "sanitization_notes": "redacted per scripts/lib/fixture-sanitization.mjs:\n- env-secret values for keys matching auto-detected pattern (>=8 chars)\n- curated env_keys: (none)\n- public-prefix tokens (sk-, AKIA, AIza, ghp_, eyJ-, ...)\n- Authorization headers and Bearer tokens\n- macOS user-home paths (/Users/<user>)\n- companion session_id fields",
+  "recorded_by": "manual: scripts/smoke-rerecord.mjs",
+  "stale_after": "2026-08-04T16:09:18.115Z"
+}

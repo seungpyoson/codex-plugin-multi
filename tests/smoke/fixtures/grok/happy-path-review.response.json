@@ -1,0 +1,157 @@
+{
+  "id": "job_b3bbf2e8-05c2-4b35-b2dc-c533e21aa1d7",
+  "job_id": "job_b3bbf2e8-05c2-4b35-b2dc-c533e21aa1d7",
+  "target": "grok-web",
+  "provider": "grok-web",
+  "parent_job_id": null,
+  "claude_session_id": null,
+  "gemini_session_id": null,
+  "kimi_session_id": null,
+  "resume_chain": [],
+  "pid_info": null,
+  "mode": "custom-review",
+  "mode_profile_name": "custom-review",
+  "model": "grok-4.20-fast",
+  "cwd": "/Users/<user>/Projects/Claude/codex-plugin-multi-103-spec",
+  "workspace_root": "/Users/<user>/Projects/Claude/codex-plugin-multi-103-spec",
+  "containment": "none",
+  "scope": "custom",
+  "dispose_effective": false,
+  "scope_base": null,
+  "scope_paths": [
+    "scripts/lib/plugin-targets.mjs"
+  ],
+  "prompt_head": "Custom review: read scripts/lib/plugin-targets.mjs and reply only with the verdict 'PASS' on its own line. No other commentary.",
+  "review_metadata": {
+    "prompt_contract_version": 1,
+    "prompt_provider": "Grok Web",
+    "scope": "custom",
+    "scope_base": null,
+    "scope_paths": [
+      "scripts/lib/plugin-targets.mjs"
+    ],
+    "raw_output": {
+      "http_status": 400,
+      "raw_model": null,
+      "parsed_ok": false,
+      "result_chars": null
+    },
+    "audit_manifest": {
+      "schema_version": 1,
+      "rendered_prompt_hash": {
+        "algorithm": "sha256",
+        "value": "27df4b4989ace49b831333b66d3bdc1a2f48d6bc5a13df86c538f47362e0b9b1"
+      },
+      "selected_source": {
+        "files": [
+          {
+            "path": "scripts/lib/plugin-targets.mjs",
+            "bytes": 436,
+            "lines": 6,
+            "content_hash": {
+              "algorithm": "sha256",
+              "value": "910dd7ad76ebbb3e114f75c4281cf1dbed7095b3b199b9019962dae91c42813d"
+            }
+          }
+        ],
+        "totals": {
+          "files": 1,
+          "bytes": 436,
+          "lines": 6
+        }
+      },
+      "git_identity": {
+        "remote": "seungpyoson/codex-plugin-multi",
+        "branch": "feat/106-fixture-recording-mvp",
+        "base_ref": null,
+        "base_sha": null,
+        "head_ref": "feat/106-fixture-recording-mvp",
+        "head_sha": "68a34e06965443d987368930f28cc4a92ff05276",
+        "diff_stat": null
+      },
+      "prompt_builder": {
+        "contract_version": 1,
+        "plugin_version": "0.1.0",
+        "plugin_commit": "68a34e06965443d987368930f28cc4a92ff05276"
+      },
+      "request": {
+        "provider": "Grok Web",
+        "model": "grok-4.20-fast",
+        "timeout_ms": 600000,
+        "max_tokens": null,
+        "max_steps_per_turn": null,
+        "temperature": null,
+        "stream": false
+      },
+      "truncation": {
+        "prompt": false,
+        "prompt_at_chars": null,
+        "source": false,
+        "source_at_bytes": null,
+        "output": false,
+        "output_at_chars": null
+      },
+      "provider_ids": {
+        "request_id": null,
+        "session_id": null
+      },
+      "scope_resolution": {
+        "scope": "custom",
+        "scope_base": null,
+        "scope_paths": [
+          "scripts/lib/plugin-targets.mjs"
+        ],
+        "reason": "explicit --scope-paths"
+      },
+      "review_quality": {
+        "has_verdict": false,
+        "has_blocking_section": false,
+        "has_non_blocking_section": false,
+        "checklist_items_seen": 0,
+        "looks_shallow": false,
+        "failed_review_slot": true
+      }
+    }
+  },
+  "schema_spec": null,
+  "binary": null,
+  "status": "failed",
+  "started_at": "2026-05-06T14:39:25.266Z",
+  "ended_at": "2026-05-06T14:39:25.401Z",
+  "exit_code": 1,
+  "error_code": "tunnel_error",
+  "error_message": "Chat upstream returned 400",
+  "error_summary": "Chat upstream returned 400 (configured_timeout_ms=600000 elapsed_ms=78 endpoint_class=chat_completions model=grok-4.20-fast stream=false message_count=1 prompt_chars=2014)",
+  "error_cause": "grok_web_tunnel",
+  "suggested_action": "Inspect error_message and repair the local Grok web tunnel before retrying.",
+  "external_review": {
+    "marker": "EXTERNAL REVIEW",
+    "provider": "Grok Web",
+    "run_kind": "foreground",
+    "job_id": "job_b3bbf2e8-05c2-4b35-b2dc-c533e21aa1d7",
+    "session_id": null,
+    "parent_job_id": null,
+    "mode": "custom-review",
+    "scope": "custom",
+    "scope_base": null,
+    "scope_paths": [
+      "scripts/lib/plugin-targets.mjs"
+    ],
+    "source_content_transmission": "sent",
+    "disclosure": "Selected source content was sent to Grok Web through a subscription-backed web session, but the tunnel did not return a clean result."
+  },
+  "disclosure_note": "Selected source content was sent to Grok Web through a subscription-backed web session, but the tunnel did not return a clean result.",
+  "runtime_diagnostics": null,
+  "result": null,
+  "structured_output": null,
+  "permission_denials": [],
+  "mutations": [],
+  "cost_usd": null,
+  "usage": null,
+  "auth_mode": "subscription_web",
+  "credential_ref": null,
+  "endpoint": "http://127.0.0.1:8000/v1",
+  "http_status": 400,
+  "raw_model": null,
+  "schema_version": 10
+}
