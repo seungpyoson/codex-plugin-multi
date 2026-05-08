@@ -1634,6 +1634,7 @@ function requestSettingsForApproval(cfg, env = process.env) {
   return {
     timeout_ms: timeoutMs.value,
     max_tokens: requestBody.max_tokens ?? null,
+    max_steps_per_turn: null,
     temperature: requestBody.temperature ?? null,
     stream: false,
   };
@@ -1665,6 +1666,7 @@ function buildApprovalRequest({ provider, cfg, mode, options, scopeInfo }) {
       model: cfg.model,
       timeoutMs: request.timeout_ms,
       maxTokens: request.max_tokens,
+      maxStepsPerTurn: request.max_steps_per_turn,
       temperature: request.temperature,
       stream: request.stream,
     },
@@ -1703,6 +1705,7 @@ function buildApprovalRequest({ provider, cfg, mode, options, scopeInfo }) {
       model: cfg.model,
       timeout_ms: request.timeout_ms,
       max_tokens: request.max_tokens,
+      max_steps_per_turn: request.max_steps_per_turn,
       temperature: request.temperature,
       stream: request.stream,
     }),

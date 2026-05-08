@@ -3280,6 +3280,97 @@ test("direct API reviewers approval-request describes external source transmissi
   }
 });
 
+test("direct API reviewers approval-request matches run prompt hash and request settings", async () => {
+  const dataDir = mkdtempSync(path.join(tmpdir(), "api-reviewers-data-"));
+  const cwd = makeWorkspace();
+  const pluginRoot = makeInstalledApiReviewersRoot();
+  const companion = path.join(pluginRoot, "scripts", "api-reviewer.mjs");
+  const sourceText = "hello from selected scope\n";
+  try {
+    writeFileSync(path.join(cwd, "seed.txt"), sourceText);
+    writeFileSync(path.join(pluginRoot, "config", "providers.json"), JSON.stringify({
+      custom: {
+        display_name: "Custom Reviewer",
+        auth_mode: "api_key",
+        env_keys: ["CUSTOM_API_KEY"],
+        base_url: "https://custom.example.invalid",
+        model: "custom-review-model",
+        request_defaults: {
+          max_tokens: 7777,
+          top_p: 0.85,
+        },
+      },
+    }, null, 2));
+
+    const commonArgs = [
+      "--provider", "custom",
+      "--mode", "custom-review",
+      "--scope", "custom",
+      "--scope-paths", "seed.txt",
+      "--prompt", "Review seed file only.",
+    ];
+    const commonEnv = {
+      API_REVIEWERS_PLUGIN_DATA: dataDir,
+      API_REVIEWERS_TIMEOUT_MS: "234567",
+      CUSTOM_API_KEY: "secret-test-value",
+    };
+
+    const approvalResult = await run(["approval-request", ...commonArgs], {
+      cwd,
+      companion,
+      env: commonEnv,
+    });
+    assert.equal(approvalResult.status, 0, approvalResult.stderr || approvalResult.stdout);
+    const approval = parseJson(approvalResult.stdout);
+    assert.deepEqual(Object.keys(approval), [
+      "event",
+      "provider",
+      "display_name",
+      "mode",
+      "scope",
+      "scope_base",
+      "scope_paths",
+      "source_content_transmission",
+      "disclosure",
+      "approval_question",
+      "recommended_tool_justification",
+      "selected_source",
+      "rendered_prompt_hash",
+      "request",
+      "scope_resolution",
+      "denial_fallback",
+    ]);
+
+    const runResult = await run(["run", ...commonArgs, "--foreground"], {
+      cwd,
+      companion,
+      env: {
+        ...commonEnv,
+        API_REVIEWERS_MOCK_RESPONSE: mockResponse("custom-review-model"),
+      },
+    });
+    assert.equal(runResult.status, 0, runResult.stderr || runResult.stdout);
+    const record = parseJson(runResult.stdout);
+    const auditManifest = record.review_metadata.audit_manifest;
+
+    assert.deepEqual(approval.request, auditManifest.request);
+    assert.deepEqual(approval.selected_source, auditManifest.selected_source);
+    assert.deepEqual(approval.scope_resolution, auditManifest.scope_resolution);
+    assert.equal(approval.rendered_prompt_hash.value, auditManifest.rendered_prompt_hash.value);
+    assert.equal(approval.request.timeout_ms, 234567);
+    assert.equal(approval.request.max_tokens, 7777);
+    assert.equal(approval.request.max_steps_per_turn, null);
+    assert.equal(approval.request.temperature, 0);
+    assert.equal(approval.request.stream, false);
+    assert.equal(JSON.stringify(approval).includes(sourceText.trim()), false);
+    assert.equal(JSON.stringify(approval).includes("secret-test-value"), false);
+  } finally {
+    rmSync(dataDir, { recursive: true, force: true });
+    rmSync(cwd, { recursive: true, force: true });
+    rmSync(path.dirname(path.dirname(pluginRoot)), { recursive: true, force: true });
+  }
+});
+
 test("direct API reviewers approval-request rejects rendered prompt over provider budget", async () => {
   const cwd = makeWorkspace();
   const result = await run([
