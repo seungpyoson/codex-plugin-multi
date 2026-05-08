@@ -106,6 +106,72 @@ function matchesSecretPrefix(value) {
   return false;
 }
 
+function isMaskedTailChar(char) {
+  if (!char) return false;
+  const code = char.charCodeAt(0);
+  return (
+    (code >= 48 && code <= 57) ||
+    (code >= 65 && code <= 90) ||
+    (code >= 97 && code <= 122) ||
+    char === "_" ||
+    char === "-"
+  );
+}
+
+function isAsciiWhitespace(char) {
+  return char === " " || char === "\t" || char === "\n" || char === "\r" || char === "\f";
+}
+
+function skipAsciiWhitespace(value, cursor) {
+  let next = cursor;
+  while (next < value.length && isAsciiWhitespace(value[next])) next += 1;
+  return next;
+}
+
+function scanRepeatedChar(value, cursor, char) {
+  let next = cursor;
+  while (value[next] === char) next += 1;
+  return next;
+}
+
+function scanMaskedTail(value, cursor) {
+  let next = cursor;
+  while (isMaskedTailChar(value[next])) next += 1;
+  return next;
+}
+
+function findMaskedApiKeySpan(value, label, searchFrom) {
+  const index = value.toLowerCase().indexOf(label, searchFrom);
+  if (index === -1) return null;
+
+  const start = skipAsciiWhitespace(value, index + label.length);
+  const starsEnd = scanRepeatedChar(value, start, "*");
+  if (starsEnd - start < 2) return { index, redact: false, next: Math.max(start + 1, starsEnd) };
+
+  const end = scanMaskedTail(value, starsEnd);
+  if (end - starsEnd < 2) return { index, redact: false, next: Math.max(starsEnd + 1, end) };
+
+  return { start, end, redact: true };
+}
+
+function redactMaskedApiKeyTails(input) {
+  let out = String(input ?? "");
+  for (const label of MASKED_API_KEY_LABELS) {
+    let searchFrom = 0;
+    while (searchFrom < out.length) {
+      const span = findMaskedApiKeySpan(out, label, searchFrom);
+      if (span == null) break;
+      if (!span.redact) {
+        searchFrom = span.next;
+        continue;
+      }
+      out = `${out.slice(0, span.start)}${REDACTED}${out.slice(span.end)}`;
+      searchFrom = span.start + REDACTED.length;
+    }
+  }
+  return out;
+}
+
 function redactUrlEncodedCandidates(input, shouldRedactDecoded) {
   if (!input.includes("%") && !input.includes("+")) return input;
   return input.replaceAll(URL_ENCODED_CANDIDATE, (candidate) => {
@@ -132,7 +198,7 @@ function redactUrlEncodedCandidates(input, shouldRedactDecoded) {
 const AUTHORIZATION_HEADER_BARE = /Authorization:\s*\S.*$/gim;
 const AUTHORIZATION_HEADER_JSON = /"Authorization"\s*:\s*"(?:[^"\\]|\\.)*"/gi;
 const AUTHORIZATION_HEADER_SINGLE_QUOTED = /'Authorization'\s*:\s*'(?:[^'\\]|\\.)*'/gi;
-const MASKED_API_KEY_TAIL = /\bapi[_ -]?key:\s*\*{2,}[A-Za-z0-9_-]{2,}\b/gi;
+const MASKED_API_KEY_LABELS = Object.freeze(["api key:", "api_key:", "api-key:"]);
 // Bearer-token match stops at JSON syntax so a token embedded in a JSON
 // string ('{"auth":"Bearer xyz"}') doesn't have its closing quote/brace
 // consumed by a greedy \S+. Excludes whitespace, ASCII quotes, JSON
@@ -362,8 +428,7 @@ export function redactKnownPatterns(input) {
   out = out.replaceAll(AUTHORIZATION_HEADER_BARE, `Authorization: ${REDACTED}`);
   out = out.replaceAll(AUTHORIZATION_HEADER_JSON, `"Authorization":"${REDACTED}"`);
   out = out.replaceAll(AUTHORIZATION_HEADER_SINGLE_QUOTED, `'Authorization':'${REDACTED}'`);
-  out = out.replaceAll(MASKED_API_KEY_TAIL, (match) =>
-    match.replace(/\*{2,}[A-Za-z0-9_-]{2,}\b/, REDACTED));
+  out = redactMaskedApiKeyTails(out);
   out = out.replaceAll(BEARER_TOKEN, `Bearer ${REDACTED}`);
   for (const { regex, replacement } of PATH_SCRUB_PATTERNS) {
     out = out.replaceAll(regex, replacement);
