@@ -439,6 +439,11 @@ function scrubAuth(env, keys) {
 // Only claude/auth-failure changes (was incorrectly hashing "api_key").
 export function derivePromptForHash(args) {
   if (!Array.isArray(args)) return "";
+  const promptValueArg = args.find((arg) =>
+    typeof arg === "string" && arg.startsWith("--prompt="));
+  if (promptValueArg) {
+    return promptValueArg.slice("--prompt=".length);
+  }
   const promptIdx = args.indexOf("--prompt");
   if (promptIdx !== -1 && typeof args[promptIdx + 1] === "string") {
     return args[promptIdx + 1];
@@ -662,8 +667,8 @@ function main() {
       "- env-secret values for keys matching auto-detected pattern (>=8 chars)",
       `- curated env_keys: ${(spec.curatedEnvKeys ?? []).join(",") || "(none)"}`,
       "- public-prefix tokens (sk-, AKIA, AIza, ghp_, eyJ-, ...)",
-      "- Authorization headers and Bearer tokens",
-      "- macOS user-home paths (/Users/<user>)",
+      "- Authorization headers and Bearer tokens, including JSON-quoted and single-quoted echoes",
+      "- user-home and per-user temp paths (/Users/<user>, /home/<user>, /root/<user>, /var/folders/<user>, C:\\Users\\<user>)",
       recipe.architecture === ARCHITECTURE_COMPANION ? "- companion session_id fields" : "",
     ].filter(Boolean).join("\n"),
     recordedBy: process.env.SMOKE_RERECORD_RUN_REF ?? "manual: scripts/smoke-rerecord.mjs",

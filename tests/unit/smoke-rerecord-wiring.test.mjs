@@ -233,6 +233,11 @@ describe("derivePromptForHash — explicit-anchor-only detection", () => {
     assert.equal(derivePromptForHash(args), "Tell me something.");
   });
 
+  it("returns the value from --prompt=value", () => {
+    const args = ["run", "--mode=review", "--prompt=Tell me something."];
+    assert.equal(derivePromptForHash(args), "Tell me something.");
+  });
+
   it("returns the first arg after the -- separator (claude/run-style)", () => {
     const args = ["run", "--auth-mode", "auto", "--", "Hello, claude."];
     assert.equal(derivePromptForHash(args), "Hello, claude.");

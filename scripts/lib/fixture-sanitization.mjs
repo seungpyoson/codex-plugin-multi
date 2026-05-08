@@ -76,7 +76,7 @@ export const SECRET_PREFIX_PATTERNS = Object.freeze([
   /eyJ[a-zA-Z0-9_-]+\.[a-zA-Z0-9_-]+\.[a-zA-Z0-9_-]+/g, // JWT
 ]);
 
-const URL_ENCODED_CANDIDATE = /(?:%[0-9A-Fa-f]{2}|[A-Za-z0-9._~!$&'()*+,;=:@/?-]){8,}/g;
+const URL_ENCODED_CANDIDATE = /(?:%[0-9A-Fa-f]{2}|[A-Za-z0-9._~!$'()*+,;-]){8,}/g;
 
 function tryDecodeURIComponent(value) {
   if (typeof value !== "string" || !value.includes("%")) return null;
@@ -235,7 +235,7 @@ export const PATH_SCRUB_PROBES = Object.freeze(
 // just the inner SSO token without the surrounding cookie syntax still
 // gets scrubbed.
 const COOKIE_LIKE_ENV_NAME = /(?:^|_)(?:COOKIE|SESSION|SSO)$/i;
-const COOKIE_LIKE_SECRET_ATTR_NAME = /(?:^|_)(?:AUTH|BEARER|COOKIE|KEY|SECRET|SESSION|SSO|TOKEN)(?:_|$)/i;
+const COOKIE_LIKE_SECRET_ATTR_NAME = /(?:^|[_-])(?:AUTH|BEARER|COOKIE|KEY|SECRET|SESSION|SSO|TOKEN)(?:[_-]|$)/i;
 
 class SanitizeMarkerCollision extends Error {
   constructor(detail) {

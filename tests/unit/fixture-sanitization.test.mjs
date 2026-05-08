@@ -167,6 +167,15 @@ test("sanitize: redacts percent-encoded public-prefix tokens in strings", () => 
   assert.equal(out, `prefix ${REDACTED} suffix`);
 });
 
+test("sanitize: redacts percent-encoded public-prefix tokens without replacing whole URL", () => {
+  const encoded = `%73%6B-${"a".repeat(22)}`;
+  const out = sanitize(
+    `http://example.com/path?q=foo%20bar&token=${encoded}&ok=1`,
+    { architecture: "api-reviewers", env: {}, curatedEnvKeys: [] },
+  );
+  assert.equal(out, `http://example.com/path?q=foo%20bar&token=${REDACTED}&ok=1`);
+});
+
 test("sanitize: redacts percent-encoded public-prefix tokens in object keys", () => {
   const encoded = `%73%6B-${"a".repeat(22)}`;
   const out = sanitize(
@@ -492,6 +501,13 @@ test("buildEnvSecretRedactor: cookie sub-extraction ignores non-secret attribute
     APP_COOKIE: "theme=dark; Path=/; session=abcdef123456",
   });
   assert.equal(redact("theme dark path / session abcdef123456"), "theme dark path / session [REDACTED]");
+});
+
+test("buildEnvSecretRedactor: cookie sub-extraction redacts hyphenated secret attributes", () => {
+  const redact = buildEnvSecretRedactor({
+    APP_COOKIE: "session-id=abcdef123456; auth-token=ghijkl789012; theme=dark",
+  });
+  assert.equal(redact("abcdef123456 ghijkl789012 dark"), "[REDACTED] [REDACTED] dark");
 });
 
 test("sanitize: JSON-quoted Authorization in echoed error body redacts non-Bearer schemes", () => {

@@ -441,7 +441,7 @@ test("fixtures: no unredacted Authorization or Bearer values", () => {
         `${f.plugin}/${f.scenario}: JSON-quoted Authorization value not redacted: ${match[0].slice(0, 80)}...`,
       );
     }
-    const bearerMatches = [...text.matchAll(/Bearer\s+([^\s"]+)/gi)];
+    const bearerMatches = [...text.matchAll(/Bearer\s+(\[REDACTED\]|[^\s"',;:()<>}\]\\]+)/gi)];
     for (const match of bearerMatches) {
       assert.equal(
         match[1],
@@ -450,6 +450,17 @@ test("fixtures: no unredacted Authorization or Bearer values", () => {
       );
     }
   }
+});
+
+test("authorization validity patterns match sanitizer redaction boundaries", () => {
+  const text = [
+    "Bearer [REDACTED])",
+    "{'Authorization':'[REDACTED]'}",
+  ].join("\n");
+  const bearerMatches = [...text.matchAll(/Bearer\s+(\[REDACTED\]|[^\s"',;:()<>}\]\\]+)/gi)];
+  assert.equal(bearerMatches[0][1], "[REDACTED]");
+  const singleAuthMatches = [...text.matchAll(/'Authorization'\s*:\s*'((?:[^'\\]|\\.)*)'/gi)];
+  assert.equal(singleAuthMatches[0][1], "[REDACTED]");
 });
 
 test("fixtures: no obvious public-prefix tokens leak (sk-, AKIA, ghp_, ghs_, github_pat_, AIza, glpat-, JWT)", () => {
