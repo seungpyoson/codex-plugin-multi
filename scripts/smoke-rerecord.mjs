@@ -13,11 +13,8 @@
 //
 // Required env per plugin (the script aborts loudly if missing):
 //   claude:        existing ~/.claude OAuth OR ANTHROPIC_API_KEY
-//   gemini:        existing gemini CLI auth OR GEMINI_API_KEY
-//   kimi:          existing kimi CLI auth OR KIMI_CODE_API_KEY/KIMI_API_KEY/MOONSHOT_API_KEY
 //   grok:          local grok2api tunnel running on http://127.0.0.1:8000/v1 with valid session
 //   api-reviewers-deepseek:  DEEPSEEK_API_KEY
-//   api-reviewers-glm:       ZAI_API_KEY or ZAI_GLM_API_KEY
 //
 // Companion auth: claude/happy-path-review uses --auth-mode auto, which
 // selects api_key_env when ANTHROPIC_API_KEY (or CLAUDE_API_KEY) is set
@@ -145,7 +142,7 @@ export const RECIPES = Object.freeze({
       // HOME at /var/empty (always exists, always empty on macOS/Linux)
       // ensures any home-directory lookup misses. (Gemini #3198727893.)
       env: {
-        ...scrubAuth(process.env, ["ANTHROPIC_API_KEY", "CLAUDE_API_KEY", "CLAUDE_CONFIG_DIR"]),
+        ...scrubAuth(process.env, [...CLAUDE_PROVIDER_API_KEY_ENV, "CLAUDE_CONFIG_DIR"]),
         HOME: "/var/empty",
       },
       // Characterized by an actual smoke-rerecord workflow run on a
@@ -246,59 +243,6 @@ export const RECIPES = Object.freeze({
       curatedEnvKeys: API_REVIEWER_PROVIDER_KEYS.deepseek,
       expectExit: [1],
       expectExitObservedRun: 25489292659,
-    }),
-  },
-  "api-reviewers-glm/happy-path-review": {
-    architecture: ARCHITECTURE_API_REVIEWERS,
-    plugin: "api-reviewers-glm",
-    spawnArgs: () => ({
-      script: "plugins/api-reviewers/scripts/api-reviewer.mjs",
-      args: [
-        "run",
-        "--provider", "glm",
-        "--mode", "custom-review",
-        "--scope", "custom",
-        "--scope-paths", "scripts/lib/plugin-targets.mjs",
-        "--prompt", HAPPY_PATH_PROMPT,
-      ],
-      env: { ...process.env },
-      requireEnvAny: API_REVIEWER_PROVIDER_KEYS.glm,
-      curatedEnvKeys: API_REVIEWER_PROVIDER_KEYS.glm,
-      expectExit: [0],
-    }),
-  },
-  "api-reviewers-glm/auth-rejected": {
-    architecture: ARCHITECTURE_API_REVIEWERS,
-    plugin: "api-reviewers-glm",
-    spawnArgs: () => ({
-      script: "plugins/api-reviewers/scripts/api-reviewer.mjs",
-      args: [
-        "run",
-        "--provider", "glm",
-        "--mode", "custom-review",
-        "--scope", "custom",
-        "--scope-paths", "scripts/lib/plugin-targets.mjs",
-        "--prompt", NEGATIVE_PROMPT,
-      ],
-      // Same invalidation strategy as deepseek/auth-rejected. Greptile
-      // P1 #3199 caught this concretely: ZAI_API_KEY alone left
-      // ZAI_GLM_API_KEY untouched, so a CI runner with both secrets
-      // wired would fall back to the second key and silently record a
-      // happy-path response in the negative fixture. invalidateProviderKeys
-      // iterates the canonical list, structurally closing the gap.
-      //
-      // Round-14 honesty note: the live-CI run referenced by
-      // expectExitObservedRun does NOT differentially exercise the
-      // round-12 fix on this repo because no provider secrets are wired
-      // (gh secret list is empty; owner is a User account, no org
-      // inheritance, no environment-keyed secrets in the workflow). The
-      // run does prove the recipe's exit code is 1 on a sterile runner,
-      // which is what the field asserts. The round-12 fix is verified
-      // logically via the locally-reproducible catch-rate.
-      env: { ...process.env, ...invalidateProviderKeys("glm") },
-      curatedEnvKeys: API_REVIEWER_PROVIDER_KEYS.glm,
-      expectExit: [1],
-      expectExitObservedRun: 25489293908,
     }),
   },
 });
@@ -495,13 +439,25 @@ function scrubAuth(env, keys) {
 // Only claude/auth-failure changes (was incorrectly hashing "api_key").
 export function derivePromptForHash(args) {
   if (!Array.isArray(args)) return "";
-  const promptIdx = args.indexOf("--prompt");
-  if (promptIdx !== -1 && typeof args[promptIdx + 1] === "string") {
-    return args[promptIdx + 1];
-  }
+  let prompt = null;
   const ddIdx = args.indexOf("--");
-  if (ddIdx !== -1 && typeof args[ddIdx + 1] === "string") {
-    return args[ddIdx + 1];
+  const optionEnd = ddIdx === -1 ? args.length : ddIdx;
+  for (let i = 0; i < optionEnd; i += 1) {
+    const arg = args[i];
+    if (typeof arg === "string" && arg.startsWith("--prompt=")) {
+      prompt = arg.slice("--prompt=".length);
+      continue;
+    }
+    if (arg === "--prompt" && i + 1 < optionEnd && typeof args[i + 1] === "string") {
+      prompt = args[i + 1];
+      i += 1;
+    }
+  }
+  if (prompt != null) return prompt;
+  if (ddIdx !== -1) {
+    return args.slice(ddIdx + 1)
+      .filter((arg) => typeof arg === "string")
+      .join(" ");
   }
   return "";
 }
@@ -717,9 +673,9 @@ function main() {
       "redacted per scripts/lib/fixture-sanitization.mjs:",
       "- env-secret values for keys matching auto-detected pattern (>=8 chars)",
       `- curated env_keys: ${(spec.curatedEnvKeys ?? []).join(",") || "(none)"}`,
-      "- public-prefix tokens (sk-, AKIA, AIza, ghp_, eyJ-, ...)",
-      "- Authorization headers and Bearer tokens",
-      "- macOS user-home paths (/Users/<user>)",
+      "- public-prefix tokens (sk-, AKIA, AIza, GitHub gh*_ prefixes, eyJ-, ...)",
+      "- Authorization headers and Bearer tokens, including JSON-quoted and single-quoted echoes",
+      "- user-home and per-user temp paths (/Users/<user>, /home/<user>, /root/<user>, /var/folders/<user>, C:\\Users\\<user>)",
       recipe.architecture === ARCHITECTURE_COMPANION ? "- companion session_id fields" : "",
     ].filter(Boolean).join("\n"),
     recordedBy: process.env.SMOKE_RERECORD_RUN_REF ?? "manual: scripts/smoke-rerecord.mjs",

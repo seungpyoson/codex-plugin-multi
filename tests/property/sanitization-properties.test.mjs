@@ -187,7 +187,7 @@ describe("I1 — env-secret values are redacted", () => {
 // --------------------------------------------------------------------
 
 const prefixShape = () => fc.constantFrom(
-  "sk", "sk-or-v", "sk-ant-api", "AKIA", "AIza", "glpat", "ghp", "ghs", "github_pat", "jwt",
+  "sk", "sk-or-v", "sk-ant-api", "AKIA", "AIza", "glpat", "ghp", "gho", "ghu", "ghs", "ghr", "github_pat", "jwt",
 );
 
 function generatePrefixedToken(kind) {
@@ -207,11 +207,20 @@ function generatePrefixedToken(kind) {
     case "AIza": return `AIza${body35}`;
     case "glpat": return `glpat-${body22}`;
     case "ghp": return `ghp_${body36}`;
+    case "gho": return `gho_${body36}`;
+    case "ghu": return `ghu_${body36}`;
     case "ghs": return `ghs_${body36}`;
+    case "ghr": return `ghr_${body36}`;
     case "github_pat": return `github_pat_${body22}`;
     case "jwt": return `eyJ${body22}.${body22}.${body22}`;
     default: return body22;
   }
+}
+
+function percentEncodeOneByte(value, position) {
+  const idx = value.length === 0 ? 0 : position % value.length;
+  const hex = value.charCodeAt(idx).toString(16).toUpperCase().padStart(2, "0");
+  return `${value.slice(0, idx)}%${hex}${value.slice(idx + 1)}`;
 }
 
 describe("I2 — public-prefix-shaped tokens are redacted", () => {
@@ -312,10 +321,10 @@ describe("I4 — Bearer tokens are redacted with JSON syntax intact", () => {
         // Token: random non-empty string with no whitespace, no JSON
         // delimiters, no marker. Shape-bias = "is a Bearer token shape."
         fc.string({ minLength: 4, maxLength: 30 })
-          .filter((s) => !/[\s"',}\]\\]/.test(s) && !s.includes(REDACTED)),
+          .filter((s) => !/[\s"',;:()<>}\]\\]/.test(s) && !s.includes(REDACTED)),
         // Suffix character: a JSON delimiter. The greedy-\S+ bug ate
         // these in round-2 review.
-        fc.constantFrom('"', "'", "}", "]", ",", " "),
+        fc.constantFrom('"', "'", "}", "]", ",", " ", ")"),
         arch(),
         (token, suffix, architecture) => {
           // Embed in a JSON-shaped string.
@@ -571,8 +580,8 @@ describe("I10/I4 — Bearer redaction preserves the byte after the token", () =>
     fc.assert(
       fc.property(
         fc.string({ minLength: 4, maxLength: 30 })
-          .filter((s) => !/[\s"',}\]\\]/.test(s) && !s.includes(REDACTED)),
-        fc.constantFrom('"', "'", "}", "]", ",", " ", "\n"),
+          .filter((s) => !/[\s"',;:()<>}\]\\]/.test(s) && !s.includes(REDACTED)),
+        fc.constantFrom('"', "'", "}", "]", ",", " ", "\n", ")"),
         arch(),
         (token, delim, architecture) => {
           const host = `pre Bearer ${token}${delim}post`;
@@ -696,7 +705,7 @@ describe("I12 — input containing the literal marker triggers a typed error", (
   it("output marker count <= count of distinct redaction targets in input", () => {
     fc.assert(
       fc.property(
-        fc.array(fc.constantFrom(...["sk", "AIza", "ghp", "AKIA"]), { maxLength: 5 }),
+        fc.array(fc.constantFrom(...["sk", "AIza", "ghp", "gho", "ghu", "ghs", "ghr", "AKIA"]), { maxLength: 5 }),
         arch(),
         (kinds, architecture) => {
           const tokens = kinds.map((k) => generatePrefixedToken(k));
@@ -718,20 +727,41 @@ describe("I12 — input containing the literal marker triggers a typed error", (
 // --------------------------------------------------------------------
 
 describe("I14 — URL-encoded secrets are redacted", () => {
-  it("encodeURIComponent(prefix-shaped token) is redacted", () => {
+  it("percent-encoded prefix-shaped token is redacted", () => {
     fc.assert(
       fc.property(
         prefixShape(),
         fc.string({ maxLength: 20 }).filter((s) => !s.includes(REDACTED) && !/%/.test(s)),
+        fc.integer({ min: 0, max: 200 }),
         arch(),
-        (kind, host, architecture) => {
+        (kind, host, position, architecture) => {
           const token = generatePrefixedToken(kind);
-          const encoded = encodeURIComponent(token);
-          // Skip cases where encoding is identity (no special chars).
-          if (encoded === token) return true;
+          const encoded = percentEncodeOneByte(token, position);
           const planted = `${host}?key=${encoded}`;
           const sanitized = sanitize(planted, { architecture, env: {} });
           return !sanitized.includes(token) && !sanitized.includes(encoded);
+        },
+      ),
+      { numRuns: RUNS },
+    );
+  });
+
+  it("percent-encoded prefix-shaped object key is redacted", () => {
+    fc.assert(
+      fc.property(
+        prefixShape(),
+        fc.string({ minLength: 1, maxLength: 10 }),
+        fc.integer({ min: 0, max: 200 }),
+        arch(),
+        (kind, value, position, architecture) => {
+          const token = generatePrefixedToken(kind);
+          const encoded = percentEncodeOneByte(token, position);
+          const sanitized = sanitize(
+            { [encoded]: value },
+            { architecture, env: {} },
+          );
+          return !Object.keys(sanitized).includes(encoded)
+            && Object.keys(sanitized).includes(REDACTED);
         },
       ),
       { numRuns: RUNS },
@@ -755,6 +785,29 @@ describe("I14 — URL-encoded secrets are redacted", () => {
             env: { [envName]: secret },
           });
           return !sanitized.includes(encoded) && !sanitized.includes(secret);
+        },
+      ),
+      { numRuns: RUNS },
+    );
+  });
+
+  it("form-encoded env-secret spaces are redacted", () => {
+    fc.assert(
+      fc.property(
+        secretEnvName,
+        fc.tuple(
+          fc.stringMatching(/^[A-Za-z0-9]{4,12}$/),
+          fc.stringMatching(/^[A-Za-z0-9]{4,12}$/),
+        ),
+        arch(),
+        (envName, [left, right], architecture) => {
+          const secret = `${left} ${right}`;
+          const formEncoded = `${left}+${right}`;
+          const sanitized = sanitize(`prefix ${formEncoded} suffix`, {
+            architecture,
+            env: { [envName]: secret },
+          });
+          return !sanitized.includes(formEncoded) && !sanitized.includes(secret);
         },
       ),
       { numRuns: RUNS },
@@ -804,6 +857,35 @@ describe("I15 — secret-shaped object keys are redacted", () => {
       { numRuns: RUNS },
     );
   });
+
+  it("distinct secret-shaped keys that collide on [REDACTED] throw", () => {
+    fc.assert(
+      fc.property(
+        prefixShape(),
+        prefixShape(),
+        fc.string({ minLength: 1, maxLength: 10 }),
+        fc.string({ minLength: 1, maxLength: 10 }),
+        arch(),
+        (leftKind, rightKind, leftValue, rightValue, architecture) => {
+          const leftKey = generatePrefixedToken(leftKind);
+          const rightKey = generatePrefixedToken(rightKind);
+          fc.pre(leftKey !== rightKey);
+
+          assert.throws(
+            () => sanitize(
+              {
+                [leftKey]: leftValue,
+                [rightKey]: rightValue,
+              },
+              { architecture, env: {} },
+            ),
+            /redacted object key collision/i,
+          );
+        },
+      ),
+      { numRuns: RUNS },
+    );
+  });
 });
 
 // --------------------------------------------------------------------
@@ -811,10 +893,10 @@ describe("I15 — secret-shaped object keys are redacted", () => {
 // --------------------------------------------------------------------
 
 describe("I16(a) — terminates on JSON-compatible input at depth", () => {
-  it("nested JSON-compatible value up to depth 100: no throw", () => {
+  it("nested JSON-compatible value up to depth 1000: no throw", () => {
     fc.assert(
       fc.property(
-        fc.integer({ min: 1, max: 100 }),
+        fc.integer({ min: 1, max: 1000 }),
         arch(),
         (depth, architecture) => {
           let record = { leaf: 1 };

@@ -12,6 +12,7 @@ import assert from "node:assert/strict";
 import {
   buildEnvSecretRedactor,
   buildProvenance,
+  PATH_SCRUB_PROBES,
   redactKnownPatterns,
   sanitize,
   sanitizeString,
@@ -19,6 +20,7 @@ import {
   FIXTURE_SANITIZATION_REDACTED_TOKEN,
   FIXTURE_SANITIZATION_AUTO_LENGTH_FLOOR,
   FIXTURE_SANITIZATION_CURATED_LENGTH_FLOOR,
+  SECRET_ENV_NAME_CORES,
 } from "../../scripts/lib/fixture-sanitization.mjs";
 
 const REDACTED = FIXTURE_SANITIZATION_REDACTED_TOKEN;
@@ -135,16 +137,68 @@ test("redactKnownPatterns: redacts Google AIza keys", () => {
   assert.match(out, /\[REDACTED\]/);
 });
 
-test("redactKnownPatterns: redacts GitHub PATs (ghp_, ghs_, github_pat_)", () => {
+test("redactKnownPatterns: redacts GitHub token prefixes", () => {
   const out = redactKnownPatterns([
     "ghp_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
     "ghs_BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
+    "gho_CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC",
+    "ghu_DDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD",
+    "ghr_EEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEE",
     "github_pat_aaaaaaaaaaaaaaaaaaaa",
     "github_pat_aaaaaaaaaaaaaaaaaaaaaa",
   ].join(" "));
   assert.equal(out.includes("ghp_AAAA"), false);
   assert.equal(out.includes("ghs_BBBB"), false);
+  assert.equal(out.includes("gho_CCCC"), false);
+  assert.equal(out.includes("ghu_DDDD"), false);
+  assert.equal(out.includes("ghr_EEEE"), false);
   assert.equal(out.includes("github_pat_aaaa"), false);
+});
+
+test("sanitizeString: prefix patterns run before env-secret redaction to avoid partial public-token leaks", () => {
+  const redactor = buildEnvSecretRedactor(
+    { API_KEY: "sk-12345678" },
+    { curatedEnvKeys: ["API_KEY"] },
+  );
+  const out = sanitizeString("provider echoed sk-12345678901234567890", redactor);
+  assert.equal(out.includes("901234567890"), false);
+  assert.match(out, /\[REDACTED\]/);
+});
+
+test("sanitizeString: env redaction removes suffixes after public-prefix redaction", () => {
+  const secret = "sk-12345678901234567890-SUFFIXSECRET";
+  const redactor = buildEnvSecretRedactor(
+    { API_KEY: secret },
+    { curatedEnvKeys: ["API_KEY"] },
+  );
+  const out = sanitizeString(`provider echoed ${secret}`, redactor);
+  assert.equal(out.includes("SUFFIXSECRET"), false);
+  assert.match(out, /\[REDACTED\]/);
+});
+
+test("sanitizeString: redacts form-encoded env secrets with plus spaces", () => {
+  const redactor = buildEnvSecretRedactor(
+    { API_KEY: "foo bar" },
+    { curatedEnvKeys: ["API_KEY"] },
+  );
+  const out = sanitizeString("provider echoed foo+bar", redactor);
+  assert.equal(out.includes("foo+bar"), false);
+  assert.match(out, /\[REDACTED\]/);
+});
+
+test("redactKnownPatterns: redacts single-character bare Authorization values", () => {
+  const out = redactKnownPatterns("Authorization: a");
+  assert.equal(out, "Authorization: [REDACTED]");
+});
+
+test("redactKnownPatterns: redacts masked API-key tails", () => {
+  const out = redactKnownPatterns("Your api key: ****a1b2 is invalid");
+  assert.equal(out, "Your api key: [REDACTED] is invalid");
+});
+
+test("redactKnownPatterns: redacts compact masked apikey tails", () => {
+  const out = redactKnownPatterns("Your apikey: ****a1b2 is invalid");
+  assert.equal(out, "Your apikey: [REDACTED] is invalid");
 });
 
 test("redactKnownPatterns: redacts JWTs", () => {
@@ -153,6 +207,47 @@ test("redactKnownPatterns: redacts JWTs", () => {
   const out = redactKnownPatterns(`Bearer-style JWT: ${jwt} short ${shortJwt}`);
   assert.equal(out.includes("eyJhbGciOiJIUzI1NiIs"), false);
   assert.equal(out.includes(shortJwt), false);
+});
+
+test("sanitize: redacts percent-encoded public-prefix tokens in strings", () => {
+  const encoded = `%73%6B-${"a".repeat(22)}`;
+  const out = sanitize(
+    `prefix ${encoded} suffix`,
+    { architecture: "api-reviewers", env: {}, curatedEnvKeys: [] },
+  );
+  assert.equal(out.includes(encoded), false);
+  assert.equal(out, `prefix ${REDACTED} suffix`);
+});
+
+test("sanitize: redacts percent-encoded public-prefix tokens without replacing whole URL", () => {
+  const encoded = `%73%6B-${"a".repeat(22)}`;
+  const out = sanitize(
+    `http://example.com/path?q=foo%20bar&token=${encoded}&ok=1`,
+    { architecture: "api-reviewers", env: {}, curatedEnvKeys: [] },
+  );
+  assert.equal(out, `http://example.com/path?q=foo%20bar&token=${REDACTED}&ok=1`);
+});
+
+test("sanitize: redacts percent-encoded public-prefix tokens in object keys", () => {
+  const encoded = `%73%6B-${"a".repeat(22)}`;
+  const out = sanitize(
+    { [encoded]: "rate_limited" },
+    { architecture: "api-reviewers", env: {}, curatedEnvKeys: [] },
+  );
+  assert.deepEqual(out, { [REDACTED]: "rate_limited" });
+});
+
+test("sanitize: rejects multiple redacted object keys instead of silently dropping entries", () => {
+  assert.throws(
+    () => sanitize(
+      {
+        "sk-abcdefghijklmnopqrstuvwxyz": "first",
+        "sk-zyxwvutsrqponmlkjihgfedcba": "second",
+      },
+      { architecture: "api-reviewers", env: {}, curatedEnvKeys: [] },
+    ),
+    /redacted object key collision/i,
+  );
 });
 
 test("redactKnownPatterns: redacts Authorization headers (any case)", () => {
@@ -308,6 +403,26 @@ test("sanitize: rejects unknown architecture", () => {
   );
 });
 
+test("sanitize: circular arrays throw SanitizeUnsupportedInput", () => {
+  const a = [];
+  a.push(a);
+  assert.throws(
+    () => sanitize(a, { architecture: "companion", env: {} }),
+    /SanitizeUnsupportedInput|circular reference/,
+  );
+});
+
+test("sanitize: requires explicit env map", () => {
+  assert.throws(
+    () => sanitize({}, { architecture: "companion" }),
+    /options\.env is required/,
+  );
+  assert.throws(
+    () => sanitize({}, { architecture: "companion", env: null }),
+    /options\.env is required/,
+  );
+});
+
 test("sanitize: returns deep-cloned object (caller can't mutate input via output)", () => {
   const record = {
     job_id: "abc",
@@ -361,6 +476,19 @@ test("buildProvenance: generates schema-conformant record", () => {
   assert.equal(Object.isFrozen(out), true);
 });
 
+test("buildProvenance: sanitizes free-text provenance fields", () => {
+  const out = buildProvenance({
+    modelId: "claude",
+    promptHash: "abc123def456",
+    sanitizationNotes: "public-prefix ghp_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+    recordedBy: "manual gho_CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC",
+    recordedAt: "2025-01-01T00:00:00.000Z",
+  });
+
+  assert.equal(out.sanitization_notes.includes("ghp_AAAA"), false);
+  assert.equal(out.recorded_by.includes("gho_CCCC"), false);
+});
+
 test("buildProvenance: prompt_hash already prefixed sha256: is not double-prefixed", () => {
   const out = buildProvenance({
     modelId: "x",
@@ -407,6 +535,53 @@ test("redactKnownPatterns: redacts JSON-quoted Authorization (Basic, ApiKey, Tok
       `JSON-quoted Authorization must redact value; input=${c.input} output=${out}`);
     assert.match(out, /"Authorization":"\[REDACTED\]"/i);
   }
+});
+
+test("redactKnownPatterns: redacts single-quoted Authorization echo bodies", () => {
+  const out = redactKnownPatterns("{'Authorization':'Basic dGVzdDp0ZXN0','x':1}");
+  assert.equal(out, "{'Authorization':'[REDACTED]','x':1}");
+  assert.doesNotMatch(out, /dGVzdDp0ZXN0/);
+});
+
+test("redactKnownPatterns: preserves closing paren after Bearer token redaction", () => {
+  const out = redactKnownPatterns("(Bearer abc123xyz) next");
+  assert.equal(out, "(Bearer [REDACTED]) next");
+});
+
+test("redactKnownPatterns: scrubs root and macOS per-user temp paths", () => {
+  const out = redactKnownPatterns([
+    "/root/worktree/foo",
+    "/var/folders/y5/syb9vj4n3l10028h1jst4_tm0000gn/T/claude-worktree-JAc2KX",
+  ].join("\n"));
+  assert.match(out, /\/root\/<user>\/foo/);
+  assert.match(out, /\/var\/folders\/<user>\/T\/claude-worktree-JAc2KX/);
+  assert.doesNotMatch(out, /syb9vj4n3l10028h1jst4_tm0000gn/);
+});
+
+test("PATH_SCRUB_PROBES include root and macOS per-user temp paths", () => {
+  const probes = PATH_SCRUB_PROBES.map((probe) => probe.prefix);
+  assert.ok(probes.includes("/root/"));
+  assert.ok(probes.includes("/var/folders/"));
+});
+
+test("buildEnvSecretRedactor: PASSWORD env names are auto-redacted", () => {
+  assert.ok(SECRET_ENV_NAME_CORES.includes("PASSWORD"));
+  const redact = buildEnvSecretRedactor({ DB_PASSWORD: "hunter2secret" });
+  assert.equal(redact("hello hunter2secret"), "hello [REDACTED]");
+});
+
+test("buildEnvSecretRedactor: cookie sub-extraction ignores non-secret attributes", () => {
+  const redact = buildEnvSecretRedactor({
+    APP_COOKIE: "theme=dark; Path=/; session=abcdef123456",
+  });
+  assert.equal(redact("theme dark path / session abcdef123456"), "theme dark path / session [REDACTED]");
+});
+
+test("buildEnvSecretRedactor: cookie sub-extraction redacts hyphenated secret attributes", () => {
+  const redact = buildEnvSecretRedactor({
+    APP_COOKIE: "session-id=abcdef123456; auth-token=ghijkl789012; theme=dark",
+  });
+  assert.equal(redact("abcdef123456 ghijkl789012 dark"), "[REDACTED] [REDACTED] dark");
 });
 
 test("sanitize: JSON-quoted Authorization in echoed error body redacts non-Bearer schemes", () => {
@@ -470,6 +645,11 @@ test("redactKnownPatterns: Bearer match stops at JSON syntax (does not eat closi
     assert.equal(out.includes(c.leak), false,
       `Bearer redactor must still remove the secret; input=${c.input}`);
   }
+});
+
+test("redactKnownPatterns: Bearer public-prefix token does not leave a bracket artifact", () => {
+  const out = redactKnownPatterns("Bearer sk-abcdefghijklmnopqrstuv");
+  assert.equal(out, "Bearer [REDACTED]");
 });
 
 // Regression: companion *_session_id fields previously coerced any non-null

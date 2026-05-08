@@ -10,11 +10,8 @@ name: smoke-rerecord
 #
 # Secrets required (add per-architecture, only the ones you'll use):
 #   ANTHROPIC_API_KEY     for claude/* recipes (alternative: existing OAuth)
-#   GEMINI_API_KEY        for gemini/* recipes (alternative: existing OAuth)
-#   KIMI_CODE_API_KEY     for kimi/* recipes (alternative: existing OAuth)
 #   GROK_WEB_BASE_URL     for grok/* recipes (override of default localhost tunnel)
 #   DEEPSEEK_API_KEY      for api-reviewers-deepseek/* recipes
-#   ZAI_API_KEY           for api-reviewers-glm/* recipes
 #
 # A run that doesn't have the required secret for the chosen recipe will
 # fail loudly via the rerecord script's preflight check.
@@ -28,11 +25,8 @@ on:
         type: choice
         options:
           - claude
-          - gemini
-          - kimi
           - grok
           - api-reviewers-deepseek
-          - api-reviewers-glm
       scenario:
         description: "Scenario name (e.g. happy-path-review, auth-failure)"
         required: true
@@ -68,14 +62,8 @@ jobs:
       - name: Run smoke:rerecord
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-          KIMI_CODE_API_KEY: ${{ secrets.KIMI_CODE_API_KEY }}
-          KIMI_API_KEY: ${{ secrets.KIMI_API_KEY }}
-          MOONSHOT_API_KEY: ${{ secrets.MOONSHOT_API_KEY }}
           GROK_WEB_BASE_URL: ${{ secrets.GROK_WEB_BASE_URL }}
           DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
-          ZAI_API_KEY: ${{ secrets.ZAI_API_KEY }}
-          ZAI_GLM_API_KEY: ${{ secrets.ZAI_GLM_API_KEY }}
           SMOKE_RERECORD_RUN_REF: "github.actions: ${{ github.workflow }} run ${{ github.run_id }}"
           # Move user inputs out of the run-block template so bash never sees
           # them as code. Inputs.plugin is already constrained by `type: choice`

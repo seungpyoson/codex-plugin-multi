@@ -16,9 +16,12 @@ import { fileURLToPath } from "node:url";
 import path from "node:path";
 
 import {
+  ALWAYS_REDACT_STRING_FIELDS,
   COMPANION_SESSION_ID_FIELDS,
   PATH_SCRUB_PROBES,
+  SECRET_PREFIX_PATTERNS,
 } from "../../scripts/lib/fixture-sanitization.mjs";
+import { RECIPES } from "../../scripts/smoke-rerecord.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(HERE, "..", "..");
@@ -41,7 +44,6 @@ const PLUGIN_TO_ARCHITECTURE = Object.freeze({
   kimi: "companion",
   grok: "grok",
   "api-reviewers-deepseek": "api-reviewers",
-  "api-reviewers-glm": "api-reviewers",
 });
 
 function listFixturePairs() {
@@ -70,6 +72,28 @@ function listFixturePairs() {
   return pairs;
 }
 
+function listOrphanedProvenanceFiles(
+  root = FIXTURE_ROOT,
+  statFn = statSyncOrNull,
+  readDirFn = readdirSync,
+) {
+  const orphaned = [];
+  if (!statFn(root)) return orphaned;
+  for (const plugin of readDirFn(root)) {
+    const pluginDir = path.join(root, plugin);
+    const pluginStat = statFn(pluginDir);
+    if (!pluginStat?.isDirectory()) continue;
+    const files = readDirFn(pluginDir);
+    for (const provenanceFile of files.filter((f) => f.endsWith(".provenance.json"))) {
+      const responseFile = provenanceFile.replace(/\.provenance\.json$/, ".response.json");
+      if (!files.includes(responseFile)) {
+        orphaned.push(path.join(pluginDir, provenanceFile));
+      }
+    }
+  }
+  return orphaned;
+}
+
 function statSyncOrNull(p) {
   try {
     return statSync(p);
@@ -80,6 +104,70 @@ function statSyncOrNull(p) {
 
 function readJson(p) {
   return JSON.parse(readFileSync(p, "utf8"));
+}
+
+function assertNoUnredactedAuthorizationText(text, fixtureLabel) {
+  // Bare HTTP form: "Authorization: <value>".
+  const bareAuthMatches = [...text.matchAll(/Authorization:\s*([^\s"]+)/gi)];
+  for (const match of bareAuthMatches) {
+    assert.equal(
+      match[1],
+      "[REDACTED]",
+      `${fixtureLabel}: Authorization value not redacted: ${match[0].slice(0, 60)}...`,
+    );
+  }
+  // JSON-quoted form: "\"Authorization\": \"<value>\"". The bare regex
+  // misses this because the literal substring is "Authorization":, not
+  // "Authorization:". Without this scan, non-Bearer schemes (Basic,
+  // ApiKey, Token, Digest) embedded in echoed request bodies leak past
+  // the gate. The value pattern allows JSON escape sequences (e.g. `\"`
+  // in Digest's `realm=\"example\"`); a naive `[^"]*` would stop at the
+  // first escaped quote and miss everything after it.
+  const jsonAuthMatches = [...text.matchAll(/"Authorization"\s*:\s*"((?:[^"\\]|\\.)*)"/gi)];
+  for (const match of jsonAuthMatches) {
+    assert.equal(
+      match[1],
+      "[REDACTED]",
+      `${fixtureLabel}: JSON-quoted Authorization value not redacted: ${match[0].slice(0, 80)}...`,
+    );
+  }
+  const singleAuthMatches = [...text.matchAll(/'Authorization'\s*:\s*'((?:[^'\\]|\\.)*)'/gi)];
+  for (const match of singleAuthMatches) {
+    assert.equal(
+      match[1],
+      "[REDACTED]",
+      `${fixtureLabel}: single-quoted Authorization value not redacted: ${match[0].slice(0, 80)}...`,
+    );
+  }
+  const bearerMatches = [...text.matchAll(/Bearer\s+(\[REDACTED\]|[^\s"',;:()<>}\]\\]+)/gi)];
+  for (const match of bearerMatches) {
+    assert.equal(
+      match[1],
+      "[REDACTED]",
+      `${fixtureLabel}: Bearer token not redacted: ${match[0].slice(0, 60)}...`,
+    );
+  }
+}
+
+function assertNoResidualMaskedApiKeyTailText(text, fixtureLabel) {
+  const matches = [...text.matchAll(/api[_ -]?key:\s*\*{2,}[A-Za-z0-9_-]{2,}/gi)];
+  assert.deepEqual(
+    matches.map((match) => match[0]),
+    [],
+    `${fixtureLabel}: masked API-key tail must be fully redacted`,
+  );
+}
+
+function assertNoPublicPrefixTokensText(text, fixtureLabel) {
+  for (const pattern of SECRET_PREFIX_PATTERNS) {
+    pattern.lastIndex = 0;
+    const m = text.match(pattern);
+    if (m && m.length > 0) {
+      assert.fail(
+        `${fixtureLabel}: public-prefix token pattern leaked: ${m[0].slice(0, 30)}...`,
+      );
+    }
+  }
 }
 
 // PR-scoped sweep: when SMOKE_FIXTURE_CHANGED is set (newline-separated list
@@ -107,12 +195,16 @@ export function filterFixturesByChangedEnv(allFixtures, changedEnv, repoRoot) {
   const trimmed = String(changedEnv).trim();
   if (trimmed === "") return [];
   const changed = new Set(
-    trimmed.split("\n").map((line) => line.trim()).filter(Boolean),
+    trimmed.split("\n").map((line) => toGitPath(line.trim())).filter(Boolean),
   );
   return allFixtures.filter((f) =>
-    changed.has(path.relative(repoRoot, f.responsePath))
-    || changed.has(path.relative(repoRoot, f.provenancePath)),
+    changed.has(toGitPath(path.relative(repoRoot, f.responsePath)))
+    || changed.has(toGitPath(path.relative(repoRoot, f.provenancePath))),
   );
+}
+
+function toGitPath(p) {
+  return p.split(path.sep).join("/").replaceAll("\\", "/");
 }
 
 function isPrScopedRun() {
@@ -137,6 +229,74 @@ test("fixtures: at least one fixture pair exists (MVP scope)", () => {
   assert.ok(
     FIXTURES.length > 0,
     "expected at least one fixture pair under tests/smoke/fixtures/<plugin>/",
+  );
+});
+
+test("fixtures: every smoke-rerecord recipe has a committed fixture pair", () => {
+  if (isPrScopedRun()) return;
+  const committedPairs = new Set(FIXTURES.map((f) => `${f.plugin}/${f.scenario}`));
+  const missing = Object.keys(RECIPES).filter((key) => !committedPairs.has(key));
+  assert.deepEqual(
+    missing,
+    [],
+    "every smoke-rerecord recipe must have paired committed fixtures; "
+    + "remove out-of-scope recipes or commit their response/provenance pair",
+  );
+});
+
+test("fixtures: every committed rerecord fixture pair has a live recipe", () => {
+  if (isPrScopedRun()) return;
+  const liveRecipes = new Set(Object.keys(RECIPES));
+  const orphaned = FIXTURES
+    .map((f) => `${f.plugin}/${f.scenario}`)
+    .filter((key) => !liveRecipes.has(key));
+  assert.deepEqual(
+    orphaned,
+    [],
+    "committed rerecord fixtures must not outlive their recipe; remove stale pairs or restore the recipe",
+  );
+});
+
+test("fixtures: every provenance file has a paired response", () => {
+  assert.deepEqual(
+    listOrphanedProvenanceFiles().map((p) => path.relative(REPO_ROOT, p)),
+    [],
+    "committed provenance files must not exist without a matching response fixture",
+  );
+});
+
+test("listOrphanedProvenanceFiles detects provenance files without responses", () => {
+  const root = path.join("/repo", "fixtures");
+  const fakeFiles = new Map([
+    [root, ["claude"]],
+    [path.join(root, "claude"), ["orphan.provenance.json", "paired.response.json", "paired.provenance.json"]],
+  ]);
+  const fakeStat = (p) => fakeFiles.has(p) ? { isDirectory: () => true } : null;
+  const fakeReadDir = (p) => fakeFiles.get(p) ?? [];
+  assert.deepEqual(
+    listOrphanedProvenanceFiles(root, fakeStat, fakeReadDir)
+      .map((p) => p.replace(root, "")),
+    ["/claude/orphan.provenance.json"],
+  );
+});
+
+test("fixtures: committed rerecord fixture exit codes match recipe expectExit", () => {
+  const mismatches = [];
+  for (const f of FIXTURES) {
+    const key = `${f.plugin}/${f.scenario}`;
+    const recipe = RECIPES[key];
+    if (!recipe) continue;
+    const response = readJson(f.responsePath);
+    if (!Object.prototype.hasOwnProperty.call(response, "exit_code")) continue;
+    const spec = recipe.spawnArgs();
+    if (!spec.expectExit.includes(response.exit_code)) {
+      mismatches.push(`${key}: fixture exit_code ${response.exit_code} not in expectExit ${JSON.stringify(spec.expectExit)}`);
+    }
+  }
+  assert.deepEqual(
+    mismatches,
+    [],
+    "committed fixture exit_code must be reproducible by the live rerecord recipe",
   );
 });
 
@@ -190,6 +350,18 @@ test("filterFixturesByChangedEnv: env matches by provenance path too", () => {
   assert.equal(out.length, 1, "provenance-path match must select the pair");
 });
 
+test("filterFixturesByChangedEnv: normalizes path separators before matching", () => {
+  const all = [
+    { plugin: "a", responsePath: "/repo/tests/smoke/fixtures/a/x.response.json", provenancePath: "/repo/tests/smoke/fixtures/a/x.provenance.json" },
+  ];
+  const out = filterFixturesByChangedEnv(
+    all,
+    "tests\\smoke\\fixtures\\a\\x.response.json",
+    "/repo",
+  );
+  assert.equal(out.length, 1, "git-style and platform-style relative paths must match");
+});
+
 test("filterFixturesByChangedEnv: env with whitespace-only blank lines is filtered", () => {
   const all = [
     { plugin: "a", responsePath: "/repo/a.json", provenancePath: "/repo/a.prov.json" },
@@ -207,6 +379,62 @@ test("filterFixturesByChangedEnv: env with no matches returns empty (genuine PR-
   assert.equal(out.length, 0,
     "a non-empty env that matches no fixtures is a real PR-scoped no-op (PR didn't touch any fixture)");
 });
+
+test("companion session-id validity check catches nested camelCase leaks", () => {
+  assert.throws(
+    () => assertCompanionSessionIdFieldsRedacted(
+      { plugin: "claude", scenario: "synthetic-nested-leak" },
+      { metadata: { claudeSessionId: "live-session-id" } },
+    ),
+    /metadata\.claudeSessionId must be null or \[REDACTED\]/,
+  );
+});
+
+function assertCompanionSessionIdFieldsRedacted(f, response) {
+  walk(response, []);
+  function walk(value, fieldPath) {
+    if (value == null) return;
+    if (Array.isArray(value)) {
+      value.forEach((v, i) => walk(v, [...fieldPath, i]));
+      return;
+    }
+    if (typeof value !== "object") return;
+    for (const [k, v] of Object.entries(value)) {
+      const currentPath = [...fieldPath, k];
+      if (COMPANION_SESSION_ID_FIELDS.includes(k) && v != null) {
+        assert.equal(
+          v,
+          "[REDACTED]",
+          `${f.plugin}/${f.scenario}: ${currentPath.join(".")} must be null or [REDACTED]; got ${JSON.stringify(v)}`,
+        );
+      }
+      walk(v, currentPath);
+    }
+  }
+}
+
+function assertAlwaysRedactedFieldsRedacted(f, response) {
+  walk(response, []);
+  function walk(value, fieldPath) {
+    if (value == null) return;
+    if (Array.isArray(value)) {
+      value.forEach((v, i) => walk(v, [...fieldPath, i]));
+      return;
+    }
+    if (typeof value !== "object") return;
+    for (const [k, v] of Object.entries(value)) {
+      const currentPath = [...fieldPath, k];
+      if (ALWAYS_REDACT_STRING_FIELDS.includes(k) && v != null) {
+        assert.equal(
+          v,
+          "[REDACTED]",
+          `${f.plugin}/${f.scenario}: ${currentPath.join(".")} must be [REDACTED]; got ${JSON.stringify(v)}`,
+        );
+      }
+      walk(v, currentPath);
+    }
+  }
+}
 
 test("fixtures: every response has a paired provenance", () => {
   for (const f of FIXTURES) {
@@ -297,108 +525,106 @@ test("fixtures: no user-home path leaks (macOS, Linux, Windows; only <user>)", (
 test("fixtures: no unredacted Authorization or Bearer values", () => {
   for (const f of FIXTURES) {
     const text = readFileSync(f.responsePath, "utf8");
-    // Bare HTTP form: "Authorization: <value>".
-    const bareAuthMatches = [...text.matchAll(/Authorization:\s*([^\s"]+)/gi)];
-    for (const match of bareAuthMatches) {
-      assert.equal(
-        match[1],
-        "[REDACTED]",
-        `${f.plugin}/${f.scenario}: Authorization value not redacted: ${match[0].slice(0, 60)}...`,
-      );
-    }
-    // JSON-quoted form: "\"Authorization\": \"<value>\"". The bare regex
-    // misses this because the literal substring is "Authorization":, not
-    // "Authorization:". Without this scan, non-Bearer schemes (Basic,
-    // ApiKey, Token, Digest) embedded in echoed request bodies leak past
-    // the gate. The value pattern allows JSON escape sequences (e.g. `\"`
-    // in Digest's `realm=\"example\"`); a naive `[^"]*` would stop at the
-    // first escaped quote and miss everything after it.
-    const jsonAuthMatches = [...text.matchAll(/"Authorization"\s*:\s*"((?:[^"\\]|\\.)*)"/gi)];
-    for (const match of jsonAuthMatches) {
-      assert.equal(
-        match[1],
-        "[REDACTED]",
-        `${f.plugin}/${f.scenario}: JSON-quoted Authorization value not redacted: ${match[0].slice(0, 80)}...`,
-      );
-    }
-    const bearerMatches = [...text.matchAll(/Bearer\s+([^\s"]+)/gi)];
-    for (const match of bearerMatches) {
-      assert.equal(
-        match[1],
-        "[REDACTED]",
-        `${f.plugin}/${f.scenario}: Bearer token not redacted: ${match[0].slice(0, 60)}...`,
-      );
-    }
+    assertNoUnredactedAuthorizationText(text, `${f.plugin}/${f.scenario}`);
   }
 });
 
-test("fixtures: no obvious public-prefix tokens leak (sk-, AKIA, ghp_, ghs_, github_pat_, AIza, glpat-, JWT)", () => {
+test("fixtures: no residual masked API-key tails", () => {
   for (const f of FIXTURES) {
     const text = readFileSync(f.responsePath, "utf8");
-    const patterns = [
-      { name: "OpenAI/Anthropic sk-", re: /sk-[a-zA-Z\d]{20,}/g },
-      { name: "OpenRouter sk-or-v*", re: /sk-or-v\d+-[a-zA-Z\d]{20,}/g },
-      { name: "Anthropic sk-ant-api*", re: /sk-ant-api\d+-[a-zA-Z\d_-]{20,}/g },
-      { name: "AWS AKIA", re: /AKIA[0-9A-Z]{16}/g },
-      { name: "Google AIza", re: /AIza[0-9A-Za-z_-]{35}/g },
-      { name: "GitLab glpat-", re: /glpat-[a-zA-Z0-9_-]{20,}/g },
-      { name: "GitHub PAT", re: /gh[ps]_[a-zA-Z0-9]{36}/g },
-      { name: "GitHub fine-grained PAT", re: /github_pat_\w{20,}/g },
-      {
-        name: "JWT",
-        re: /eyJ[a-zA-Z0-9_-]+\.[a-zA-Z0-9_-]+\.[a-zA-Z0-9_-]+/g,
-      },
-    ];
-    for (const { name, re } of patterns) {
-      const m = text.match(re);
-      if (m && m.length > 0) {
-        assert.fail(
-          `${f.plugin}/${f.scenario}: ${name} pattern leaked: ${m[0].slice(0, 30)}...`,
-        );
-      }
-    }
+    assertNoResidualMaskedApiKeyTailText(text, `${f.plugin}/${f.scenario}`);
   }
+});
+
+test("masked API-key tail validity gate rejects stale masked tails", () => {
+  assert.throws(
+    () => assertNoResidualMaskedApiKeyTailText(
+      "Authentication Fails, Your api key: ****ding is invalid",
+      "synthetic/masked-tail",
+    ),
+    /masked API-key tail must be fully redacted/,
+  );
+});
+
+test("authorization validity patterns match sanitizer redaction boundaries", () => {
+  const text = [
+    "Bearer [REDACTED])",
+    "{'Authorization':'[REDACTED]'}",
+  ].join("\n");
+  const bearerMatches = [...text.matchAll(/Bearer\s+(\[REDACTED\]|[^\s"',;:()<>}\]\\]+)/gi)];
+  assert.equal(bearerMatches[0][1], "[REDACTED]");
+  const singleAuthMatches = [...text.matchAll(/'Authorization'\s*:\s*'((?:[^'\\]|\\.)*)'/gi)];
+  assert.equal(singleAuthMatches[0][1], "[REDACTED]");
+});
+
+test("authorization validity gate rejects single-quoted Authorization leaks", () => {
+  assert.throws(
+    () => assertNoUnredactedAuthorizationText(
+      "{'Authorization':'Basic dGVzdA=='}",
+      "synthetic/single-quoted-auth",
+    ),
+    /single-quoted Authorization value not redacted/,
+  );
+});
+
+test("fixtures: no obvious public-prefix tokens leak (sk-, AKIA, GitHub gh*_ prefixes, github_pat_, AIza, glpat-, JWT)", () => {
+  for (const f of FIXTURES) {
+    assertNoPublicPrefixTokensText(
+      readFileSync(f.responsePath, "utf8"),
+      `${f.plugin}/${f.scenario} response`,
+    );
+    assertNoPublicPrefixTokensText(
+      readFileSync(f.provenancePath, "utf8"),
+      `${f.plugin}/${f.scenario} provenance`,
+    );
+  }
+});
+
+test("public-prefix validity gate rejects provenance leaks", () => {
+  assert.throws(
+    () => assertNoPublicPrefixTokensText(
+      "recorded_by: gho_CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC",
+      "synthetic/provenance",
+    ),
+    /public-prefix token pattern leaked/,
+  );
 });
 
 test("fixtures: companion fixtures have session_id fields nulled or [REDACTED]", () => {
   const companionFixtures = FIXTURES.filter((f) => f.architecture === "companion");
   for (const f of companionFixtures) {
     const response = readJson(f.responsePath);
-    for (const field of COMPANION_SESSION_ID_FIELDS) {
-      const value = response[field];
-      if (value == null) continue;
-      assert.equal(
-        value,
-        "[REDACTED]",
-        `${f.plugin}/${f.scenario}: ${field} must be null or [REDACTED]; got ${JSON.stringify(value)}`,
-      );
-    }
+    assertCompanionSessionIdFieldsRedacted(f, response);
   }
 });
 
-test("fixtures: bare session_id and request_id fields are nulled or [REDACTED] (any arch)", () => {
-  // Catches the doctor/ping output shape where the field is just "session_id".
+test("fixtures: always-redacted session/request id fields are nulled or [REDACTED] (any arch)", () => {
+  // Catches the doctor/ping output shape where the field is just "session_id",
+  // and the camelCase variants the sanitizer also treats as always-redacted.
+  // Import the shared field list so the committed-fixture gate stays in sync
+  // with the sanitizer if new always-redacted field variants are added.
   for (const f of FIXTURES) {
     const response = readJson(f.responsePath);
-    walk(response, []);
-    function walk(value, path) {
-      if (value == null) return;
-      if (Array.isArray(value)) {
-        value.forEach((v, i) => walk(v, [...path, i]));
-        return;
-      }
-      if (typeof value !== "object") return;
-      for (const [k, v] of Object.entries(value)) {
-        if ((k === "session_id" || k === "request_id") && v != null) {
-          assert.equal(
-            v,
-            "[REDACTED]",
-            `${f.plugin}/${f.scenario}: ${[...path, k].join(".")} must be null or [REDACTED]; got ${JSON.stringify(v)}`,
-          );
-        }
-        walk(v, [...path, k]);
-      }
-    }
+    assertAlwaysRedactedFieldsRedacted(f, response);
+  }
+});
+
+test("always-redacted field validity check catches nested camelCase leaks", () => {
+  assert.throws(
+    () => assertAlwaysRedactedFieldsRedacted(
+      { plugin: "synthetic", scenario: "session-id-leak" },
+      { metadata: { sessionId: "live-session-id" } },
+    ),
+    /metadata\.sessionId must be \[REDACTED\]/,
+  );
+});
+
+test("fixtures: always-redacted field gate covers snake_case and camelCase variants", () => {
+  for (const field of ["session_id", "request_id", "sessionId", "requestId"]) {
+    assert.ok(
+      ALWAYS_REDACT_STRING_FIELDS.includes(field),
+      `ALWAYS_REDACT_STRING_FIELDS must include ${field}`,
+    );
   }
 });
 
@@ -435,24 +661,26 @@ test("fixtures: every architecture has at least one success and one negative fix
   const byArch = new Map();
   for (const f of listFixturePairs()) {
     if (!byArch.has(f.architecture)) byArch.set(f.architecture, new Set());
-    byArch.get(f.architecture).add(f.scenario);
+    const response = readJson(f.responsePath);
+    const side = response.exit_code === 0 && response.status === "completed"
+      ? "success"
+      : "negative";
+    byArch.get(f.architecture).add(side);
   }
   const expectedArchitectures = ["companion", "grok", "api-reviewers"];
   for (const arch of expectedArchitectures) {
-    const scenarios = byArch.get(arch);
+    const sides = byArch.get(arch);
     assert.ok(
-      scenarios && scenarios.size > 0,
+      sides && sides.size > 0,
       `architecture ${arch}: no fixtures recorded yet`,
     );
-    const hasHappy = [...scenarios].some((s) => s.includes("happy") || s === "ok" || s === "success");
-    const hasNegative = [...scenarios].some((s) => !s.includes("happy") && s !== "ok" && s !== "success");
     assert.ok(
-      hasHappy,
-      `architecture ${arch}: no happy-path fixture (must include at least one with "happy" in the name)`,
+      sides.has("success"),
+      `architecture ${arch}: no successful fixture (must include at least one completed fixture with exit_code 0)`,
     );
     assert.ok(
-      hasNegative,
-      `architecture ${arch}: no negative-path fixture (must include at least one fixture without "happy" in the name)`,
+      sides.has("negative"),
+      `architecture ${arch}: no negative-path fixture (must include at least one non-completed or non-zero fixture)`,
     );
   }
 });

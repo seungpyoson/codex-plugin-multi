@@ -1,6 +1,6 @@
 {
-  "id": "job_b3bbf2e8-05c2-4b35-b2dc-c533e21aa1d7",
-  "job_id": "job_b3bbf2e8-05c2-4b35-b2dc-c533e21aa1d7",
+  "id": "job_4ec1ef40-38d6-4461-9c58-ba1ce56a25ea",
+  "job_id": "job_4ec1ef40-38d6-4461-9c58-ba1ce56a25ea",
   "target": "grok-web",
   "provider": "grok-web",
   "parent_job_id": null,
@@ -12,8 +12,8 @@
   "mode": "custom-review",
   "mode_profile_name": "custom-review",
   "model": "grok-4.20-fast",
-  "cwd": "/Users/<user>/Projects/Claude/codex-plugin-multi-103-spec",
-  "workspace_root": "/Users/<user>/Projects/Claude/codex-plugin-multi-103-spec",
+  "cwd": "/private/tmp/cpm-pr116",
+  "workspace_root": "/private/tmp/cpm-pr116",
   "containment": "none",
   "scope": "custom",
   "dispose_effective": false,
@@ -31,16 +31,16 @@
       "scripts/lib/plugin-targets.mjs"
     ],
     "raw_output": {
-      "http_status": 400,
+      "http_status": 200,
       "raw_model": null,
-      "parsed_ok": false,
-      "result_chars": null
+      "parsed_ok": true,
+      "result_chars": 13
     },
     "audit_manifest": {
       "schema_version": 1,
       "rendered_prompt_hash": {
         "algorithm": "sha256",
-        "value": "27df4b4989ace49b831333b66d3bdc1a2f48d6bc5a13df86c538f47362e0b9b1"
+        "value": "afff27ca6ba12e163fe7b650218d1cb5b6a15ff169572a5b7111783b71c16ace"
       },
       "selected_source": {
         "files": [
@@ -62,25 +62,25 @@
       },
       "git_identity": {
         "remote": "seungpyoson/codex-plugin-multi",
-        "branch": "feat/106-fixture-recording-mvp",
+        "branch": "HEAD",
         "base_ref": null,
         "base_sha": null,
-        "head_ref": "feat/106-fixture-recording-mvp",
-        "head_sha": "68a34e06965443d987368930f28cc4a92ff05276",
+        "head_ref": "HEAD",
+        "head_sha": "27886d9fe928466c3a63a0d9790ca148dc8965c4",
         "diff_stat": null
       },
       "prompt_builder": {
         "contract_version": 1,
         "plugin_version": "0.1.0",
-        "plugin_commit": "68a34e06965443d987368930f28cc4a92ff05276"
+        "plugin_commit": "27886d9fe928466c3a63a0d9790ca148dc8965c4"
       },
       "request": {
         "provider": "Grok Web",
         "model": "grok-4.20-fast",
-        "timeout_ms": 600000,
+        "timeout_ms": 15000,
         "max_tokens": null,
         "max_steps_per_turn": null,
-        "temperature": null,
+        "temperature": 0,
         "stream": false
       },
       "truncation": {
@@ -104,31 +104,31 @@
         "reason": "explicit --scope-paths"
       },
       "review_quality": {
-        "has_verdict": false,
+        "has_verdict": true,
         "has_blocking_section": false,
         "has_non_blocking_section": false,
         "checklist_items_seen": 0,
-        "looks_shallow": false,
-        "failed_review_slot": true
+        "looks_shallow": true,
+        "failed_review_slot": false
       }
     }
   },
   "schema_spec": null,
   "binary": null,
-  "status": "failed",
-  "started_at": "2026-05-06T14:39:25.266Z",
-  "ended_at": "2026-05-06T14:39:25.401Z",
-  "exit_code": 1,
-  "error_code": "tunnel_error",
-  "error_message": "Chat upstream returned 400",
-  "error_summary": "Chat upstream returned 400 (configured_timeout_ms=600000 elapsed_ms=78 endpoint_class=chat_completions model=grok-4.20-fast stream=false message_count=1 prompt_chars=2014)",
-  "error_cause": "grok_web_tunnel",
-  "suggested_action": "Inspect error_message and repair the local Grok web tunnel before retrying.",
+  "status": "completed",
+  "started_at": "2026-05-08T05:55:45.783Z",
+  "ended_at": "2026-05-08T05:55:45.840Z",
+  "exit_code": 0,
+  "error_code": null,
+  "error_message": null,
+  "error_summary": null,
+  "error_cause": null,
+  "suggested_action": null,
   "external_review": {
     "marker": "EXTERNAL REVIEW",
     "provider": "Grok Web",
     "run_kind": "foreground",
-    "job_id": "job_b3bbf2e8-05c2-4b35-b2dc-c533e21aa1d7",
+    "job_id": "job_4ec1ef40-38d6-4461-9c58-ba1ce56a25ea",
     "session_id": null,
     "parent_job_id": null,
     "mode": "custom-review",
@@ -138,20 +138,24 @@
       "scripts/lib/plugin-targets.mjs"
     ],
     "source_content_transmission": "sent",
-    "disclosure": "Selected source content was sent to Grok Web through a subscription-backed web session, but the tunnel did not return a clean result."
+    "disclosure": "Selected source content was sent to Grok Web through a subscription-backed web session."
   },
-  "disclosure_note": "Selected source content was sent to Grok Web through a subscription-backed web session, but the tunnel did not return a clean result.",
+  "disclosure_note": "Selected source content was sent to Grok Web through a subscription-backed web session.",
   "runtime_diagnostics": null,
-  "result": null,
+  "result": "Verdict: PASS",
   "structured_output": null,
   "permission_denials": [],
   "mutations": [],
   "cost_usd": null,
-  "usage": null,
+  "usage": {
+    "prompt_tokens": 10,
+    "completion_tokens": 2,
+    "total_tokens": 12
+  },
   "auth_mode": "subscription_web",
-  "credential_ref": null,
-  "endpoint": "http://127.0.0.1:8000/v1",
-  "http_status": 400,
+  "credential_ref": "GROK_WEB_TUNNEL_API_KEY",
+  "endpoint": "http://127.0.0.1:59087/api",
+  "http_status": 200,
   "raw_model": null,
   "schema_version": 10
 }

@@ -194,7 +194,7 @@ describe("validateRecipes — negative recipes must cite a CI-observed workflow 
 // ───────────────────────────────────────────────────────────────────────
 
 describe("validateRecipes — live RECIPES module-load contract", () => {
-  it("all four negative recipes in the live RECIPES carry expectExitObservedRun", async () => {
+  it("all negative recipes in the live RECIPES carry expectExitObservedRun", async () => {
     // Importing scripts/smoke-rerecord.mjs runs validateRecipes(RECIPES)
     // at the bottom of the module — if any negative recipe lacked the
     // observed-run field, the import would throw. Re-importing here

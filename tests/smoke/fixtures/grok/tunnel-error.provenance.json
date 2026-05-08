@@ -2,7 +2,7 @@
   "model_id": "grok-4.20-fast",
   "recorded_at": "2026-05-06T14:37:49.424Z",
   "prompt_hash": "sha256:b931ea803f1a5adef7da13552ecf2135cfb3dde1bfebf937ced15f266b3041a7",
-  "sanitization_notes": "redacted per scripts/lib/fixture-sanitization.mjs:\n- env-secret values for keys matching auto-detected pattern (>=8 chars)\n- curated env_keys: (none)\n- public-prefix tokens (sk-, AKIA, AIza, ghp_, eyJ-, ...)\n- Authorization headers and Bearer tokens\n- macOS user-home paths (/Users/<user>)",
+  "sanitization_notes": "redacted per scripts/lib/fixture-sanitization.mjs:\n- env-secret values for keys matching auto-detected pattern (>=8 chars)\n- curated env_keys: (none)\n- public-prefix tokens (sk-, AKIA, AIza, GitHub gh*_ prefixes, eyJ-, ...)\n- Authorization headers and Bearer tokens, including JSON-quoted and single-quoted echoes\n- user-home and per-user temp paths (/Users/<user>, /home/<user>, /root/<user>, /var/folders/<user>, C:\\Users\\<user>)",
   "recorded_by": "manual: scripts/smoke-rerecord.mjs",
   "stale_after": "2026-08-04T14:37:49.424Z"
 }

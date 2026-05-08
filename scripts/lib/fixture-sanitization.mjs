@@ -1,3 +1,5 @@
+import { ARCHITECTURE_KINDS } from "./recipe-architecture.mjs";
+
 // Fixture sanitization library. Used by scripts/smoke-rerecord.mjs and the
 // .github/workflows/smoke-rerecord.yml workflow_dispatch path to sanitize
 // real provider responses before committing them as smoke fixtures.
@@ -42,6 +44,7 @@ export const SECRET_ENV_NAME_CORES = Object.freeze([
   "API_KEY",
   "TOKEN",
   "ACCESS_KEY",
+  "PASSWORD",
   "SECRET",
   "ADMIN_KEY",
   "COOKIE",
@@ -61,17 +64,124 @@ const MIN_SECRET_REDACTION_LENGTH_CURATED = 4;     // operator-curated env_keys
 // Common public-prefix shapes. Match-anywhere even if the env value isn't
 // in process.env at sanitize time. Conservative default; lets us scrub
 // echo-attacks where the provider response includes a hardcoded test key.
-const SECRET_PREFIX_PATTERNS = Object.freeze([
+export const SECRET_PREFIX_PATTERNS = Object.freeze([
   /sk-[a-zA-Z\d]{20,}/g,                     // OpenAI / Anthropic style
   /sk-or-v\d+-[a-zA-Z\d]{20,}/g,             // OpenRouter
   /sk-ant-api\d+-[a-zA-Z\d_-]{20,}/g,        // Anthropic prefixed
   /AKIA[0-9A-Z]{16}/g,                       // AWS access key
   /AIza[0-9A-Za-z_-]{35}/g,                  // Google API key
   /glpat-[a-zA-Z0-9_-]{20,}/g,               // GitLab personal access token
-  /gh[ps]_[a-zA-Z0-9]{36}/g,                 // GitHub token (pat / server)
+  /gh[pousr]_[a-zA-Z0-9]{36}/g,              // GitHub token (PAT / OAuth / server / refresh)
   /github_pat_\w{20,}/g,                     // GitHub fine-grained PAT
   /eyJ[a-zA-Z0-9_-]+\.[a-zA-Z0-9_-]+\.[a-zA-Z0-9_-]+/g, // JWT
 ]);
+
+const URL_ENCODED_CANDIDATE = /(?:%[0-9A-Fa-f]{2}|[A-Za-z0-9._~!$'()*+,;-]){8,}/g;
+
+function tryDecodeURIComponent(value) {
+  if (typeof value !== "string" || !value.includes("%")) return null;
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return null;
+  }
+}
+
+function tryDecodeFormComponent(value) {
+  if (typeof value !== "string" || !value.includes("+")) return null;
+  try {
+    return decodeURIComponent(value.replaceAll("+", "%20"));
+  } catch {
+    return null;
+  }
+}
+
+function matchesSecretPrefix(value) {
+  if (typeof value !== "string" || !value) return false;
+  for (const pattern of SECRET_PREFIX_PATTERNS) {
+    // Reset lastIndex; SECRET_PREFIX_PATTERNS use the /g flag.
+    pattern.lastIndex = 0;
+    if (pattern.test(value)) return true;
+  }
+  return false;
+}
+
+function isMaskedTailChar(char) {
+  if (!char) return false;
+  const code = char.charCodeAt(0);
+  return (
+    (code >= 48 && code <= 57) ||
+    (code >= 65 && code <= 90) ||
+    (code >= 97 && code <= 122) ||
+    char === "_" ||
+    char === "-"
+  );
+}
+
+function isAsciiWhitespace(char) {
+  return char === " " || char === "\t" || char === "\n" || char === "\r" || char === "\f";
+}
+
+function skipAsciiWhitespace(value, cursor) {
+  let next = cursor;
+  while (next < value.length && isAsciiWhitespace(value[next])) next += 1;
+  return next;
+}
+
+function scanRepeatedChar(value, cursor, char) {
+  let next = cursor;
+  while (value[next] === char) next += 1;
+  return next;
+}
+
+function scanMaskedTail(value, cursor) {
+  let next = cursor;
+  while (isMaskedTailChar(value[next])) next += 1;
+  return next;
+}
+
+function findMaskedApiKeySpan(value, label, searchFrom) {
+  const index = value.toLowerCase().indexOf(label, searchFrom);
+  if (index === -1) return null;
+
+  const start = skipAsciiWhitespace(value, index + label.length);
+  const starsEnd = scanRepeatedChar(value, start, "*");
+  if (starsEnd - start < 2) return { index, redact: false, next: Math.max(start + 1, starsEnd) };
+
+  const end = scanMaskedTail(value, starsEnd);
+  if (end - starsEnd < 2) return { index, redact: false, next: Math.max(starsEnd + 1, end) };
+
+  return { start, end, redact: true };
+}
+
+function redactMaskedApiKeyTails(input) {
+  let out = String(input ?? "");
+  for (const label of MASKED_API_KEY_LABELS) {
+    let searchFrom = 0;
+    while (searchFrom < out.length) {
+      const span = findMaskedApiKeySpan(out, label, searchFrom);
+      if (span == null) break;
+      if (!span.redact) {
+        searchFrom = span.next;
+        continue;
+      }
+      out = `${out.slice(0, span.start)}${REDACTED}${out.slice(span.end)}`;
+      searchFrom = span.start + REDACTED.length;
+    }
+  }
+  return out;
+}
+
+function redactUrlEncodedCandidates(input, shouldRedactDecoded) {
+  if (!input.includes("%") && !input.includes("+")) return input;
+  return input.replaceAll(URL_ENCODED_CANDIDATE, (candidate) => {
+    const decoded = tryDecodeURIComponent(candidate);
+    if (decoded != null && shouldRedactDecoded(decoded)) return REDACTED;
+    const formDecoded = tryDecodeFormComponent(candidate);
+    if (formDecoded != null && shouldRedactDecoded(formDecoded)) return REDACTED;
+    return candidate;
+  });
+}
 
 // Authorization-header patterns. Two surfaces:
 //   1. Bare HTTP form: "Authorization: Bearer xyz" (stderr / log lines).
@@ -87,11 +197,13 @@ const SECRET_PREFIX_PATTERNS = Object.freeze([
 // at the first escaped quote and leak everything after it.
 const AUTHORIZATION_HEADER_BARE = /Authorization:\s*\S.*$/gim;
 const AUTHORIZATION_HEADER_JSON = /"Authorization"\s*:\s*"(?:[^"\\]|\\.)*"/gi;
+const AUTHORIZATION_HEADER_SINGLE_QUOTED = /'Authorization'\s*:\s*'(?:[^'\\]|\\.)*'/gi;
+const MASKED_API_KEY_LABELS = Object.freeze(["api key:", "api_key:", "api-key:", "apikey:"]);
 // Bearer-token match stops at JSON syntax so a token embedded in a JSON
 // string ('{"auth":"Bearer xyz"}') doesn't have its closing quote/brace
 // consumed by a greedy \S+. Excludes whitespace, ASCII quotes, JSON
 // delimiters, and backslash.
-const BEARER_TOKEN = /Bearer\s+[^\s"',}\]\\]+/gi;
+const BEARER_TOKEN = /Bearer\s+(?:\[REDACTED\]|[^\s"',;:()<>}\]\\]+)/gi;
 
 // Companion session-id field names. Both snake_case and camelCase variants —
 // providers vary. Replaced wholesale with REDACTED when architecture is
@@ -107,7 +219,7 @@ export const COMPANION_SESSION_ID_FIELDS = Object.freeze([
 
 // Field names that ALWAYS get redacted when present, regardless of
 // architecture and value type. snake_case + camelCase.
-const ALWAYS_REDACT_STRING_FIELDS = Object.freeze([
+export const ALWAYS_REDACT_STRING_FIELDS = Object.freeze([
   "session_id",
   "request_id",
   "sessionId",
@@ -159,6 +271,18 @@ const PATH_SCRUB_RULES = Object.freeze([
     replacement: "/home/<user>",
   },
   {
+    prefixSource: "\\/root\\/",
+    prefixLiteral: "/root/",
+    userClass: "[^/\"'\\\\\\n\\r\\t]+",
+    replacement: "/root/<user>",
+  },
+  {
+    prefixSource: "\\/var\\/folders\\/[A-Za-z0-9]{2}\\/",
+    prefixLiteral: "/var/folders/",
+    userClass: "[^/\"'\\\\\\n\\r\\t]+",
+    replacement: "/var/folders/<user>",
+  },
+  {
     prefixSource: "[A-Za-z]:\\\\Users\\\\",
     prefixLiteral: "C:\\Users\\",
     userClass: "[^\\\\\"'/\\n\\r\\t]+",
@@ -189,6 +313,7 @@ export const PATH_SCRUB_PROBES = Object.freeze(
 // just the inner SSO token without the surrounding cookie syntax still
 // gets scrubbed.
 const COOKIE_LIKE_ENV_NAME = /(?:^|_)(?:COOKIE|SESSION|SSO)$/i;
+const COOKIE_LIKE_SECRET_ATTR_NAME = /(?:^|[_-])(?:AUTH|BEARER|COOKIE|KEY|SECRET|SESSION|SSO|TOKEN)(?:[_-]|$)/i;
 
 class SanitizeMarkerCollision extends Error {
   constructor(detail) {
@@ -239,6 +364,10 @@ export function buildEnvSecretRedactor(env, { curatedEnvKeys = [] } = {}) {
     if (encoded !== value && !encoded.includes(REDACTED)) {
       secrets.add(encoded);
     }
+    const formEncoded = encoded.replaceAll("%20", "+");
+    if (formEncoded !== value && !formEncoded.includes(REDACTED)) {
+      secrets.add(formEncoded);
+    }
   }
 
   for (const [key, rawValue] of Object.entries(env ?? {})) {
@@ -260,6 +389,8 @@ export function buildEnvSecretRedactor(env, { curatedEnvKeys = [] } = {}) {
         const trimmed = segment.trim();
         const eq = trimmed.indexOf("=");
         if (eq <= 0) continue;
+        const lhs = trimmed.slice(0, eq).trim();
+        if (!COOKIE_LIKE_SECRET_ATTR_NAME.test(lhs)) continue;
         const rhs = trimmed.slice(eq + 1).trim();
         addSecret(rhs, MIN_SECRET_REDACTION_LENGTH_CURATED);
       }
@@ -279,6 +410,7 @@ export function buildEnvSecretRedactor(env, { curatedEnvKeys = [] } = {}) {
         out = out.split(secret).join(REDACTED);
       }
     }
+    out = redactUrlEncodedCandidates(out, (decoded) => sortedSecrets.some((secret) => decoded.includes(secret)));
     return out;
   };
 }
@@ -292,8 +424,11 @@ export function redactKnownPatterns(input) {
   for (const pattern of SECRET_PREFIX_PATTERNS) {
     out = out.replaceAll(pattern, REDACTED);
   }
+  out = redactUrlEncodedCandidates(out, matchesSecretPrefix);
   out = out.replaceAll(AUTHORIZATION_HEADER_BARE, `Authorization: ${REDACTED}`);
   out = out.replaceAll(AUTHORIZATION_HEADER_JSON, `"Authorization":"${REDACTED}"`);
+  out = out.replaceAll(AUTHORIZATION_HEADER_SINGLE_QUOTED, `'Authorization':'${REDACTED}'`);
+  out = redactMaskedApiKeyTails(out);
   out = out.replaceAll(BEARER_TOKEN, `Bearer ${REDACTED}`);
   for (const { regex, replacement } of PATH_SCRUB_PATTERNS) {
     out = out.replaceAll(regex, replacement);
@@ -305,8 +440,11 @@ export function redactKnownPatterns(input) {
  * Apply both env-secret redaction and pattern redaction to a string.
  */
 export function sanitizeString(input, redactEnvSecrets) {
-  const afterEnv = redactEnvSecrets ? redactEnvSecrets(input) : String(input ?? "");
-  return redactKnownPatterns(afterEnv);
+  const original = String(input ?? "");
+  if (!redactEnvSecrets) return redactKnownPatterns(original);
+  const envThenKnown = redactKnownPatterns(redactEnvSecrets(original));
+  const knownThenEnv = redactEnvSecrets(redactKnownPatterns(original));
+  return knownThenEnv.length <= envThenKnown.length ? knownThenEnv : envThenKnown;
 }
 
 function isPlainObject(value) {
@@ -335,15 +473,15 @@ function assertJsonCompatible(value, ctx, path) {
   if (t === "bigint" || t === "symbol" || t === "function") {
     throw new SanitizeUnsupportedInput(`${t} at ${path || "(root)"}`);
   }
+  if (ctx.seen.has(value)) {
+    throw new SanitizeUnsupportedInput(`circular reference at ${path || "(root)"}`);
+  }
   if (Array.isArray(value)) return;
   if (!isPlainObject(value)) {
     const ctorName = value && value.constructor ? value.constructor.name : "object";
     throw new SanitizeUnsupportedInput(
       `non-plain object (${ctorName}) at ${path || "(root)"}`,
     );
-  }
-  if (ctx.seen.has(value)) {
-    throw new SanitizeUnsupportedInput(`circular reference at ${path || "(root)"}`);
   }
 }
 
@@ -405,6 +543,12 @@ function sanitizeObject(value, ctx, path) {
     // SAME conditions used for values: prefix-shaped tokens, or env-
     // secret literals at the appropriate length threshold.
     const sanitizedKey = ctx.shouldRedactKey(key) ? REDACTED : key;
+    if (Object.prototype.hasOwnProperty.call(out, sanitizedKey)) {
+      throw new Error(
+        `fixture-sanitization: redacted object key collision at ${path || "(root)"}; `
+        + "multiple input keys sanitize to the same output key",
+      );
+    }
     out[sanitizedKey] = sanitizeObjectField(key, sub, ctx, keyPath);
   }
   return out;
@@ -444,23 +588,24 @@ function wholesaleRedact(value) {
  * @param {*} record  The recorded response object (will be deep-cloned).
  * @param {object} options
  * @param {"companion"|"grok"|"api-reviewers"} options.architecture
- * @param {object} [options.env]            Defaults to process.env.
+ * @param {object} options.env              Explicit env-name/value map.
  * @param {string[]} [options.curatedEnvKeys]  api-reviewers cfg.env_keys list.
  * @returns {*}  A deep-cloned, sanitized copy of `record`.
  */
 export function sanitize(record, options = {}) {
   const architecture = options.architecture;
-  if (!architecture || !["companion", "grok", "api-reviewers"].includes(architecture)) {
+  if (!architecture || !ARCHITECTURE_KINDS.includes(architecture)) {
     throw new Error(
       "fixture-sanitization: options.architecture must be one of "
-      + "\"companion\", \"grok\", \"api-reviewers\"",
+      + ARCHITECTURE_KINDS.map((kind) => JSON.stringify(kind)).join(", "),
     );
   }
-  // I11 — env defaults to process.env for backward compatibility. The
-  // sanitization-invariants.md contract asks that purity be enforced via
-  // an explicit env argument. Existing call sites in scripts/smoke-rerecord.mjs
-  // rely on the default; revisit when they migrate.
-  const env = options.env ?? process.env;
+  if (!Object.prototype.hasOwnProperty.call(options, "env")
+      || !options.env
+      || typeof options.env !== "object") {
+    throw new Error("fixture-sanitization: options.env is required");
+  }
+  const env = options.env;
   const curatedEnvKeys = options.curatedEnvKeys ?? [];
   const redactEnvSecrets = buildEnvSecretRedactor(env, { curatedEnvKeys });
 
@@ -484,10 +629,11 @@ export function sanitize(record, options = {}) {
   function shouldRedactKey(key) {
     if (typeof key !== "string" || !key) return false;
     if (envSecretSet.has(key)) return true;
-    for (const pattern of SECRET_PREFIX_PATTERNS) {
-      // Reset lastIndex; SECRET_PREFIX_PATTERNS use the /g flag.
-      pattern.lastIndex = 0;
-      if (pattern.test(key)) return true;
+    if (matchesSecretPrefix(key)) return true;
+    const decoded = tryDecodeURIComponent(key);
+    if (decoded != null) {
+      if (envSecretSet.has(decoded)) return true;
+      if (matchesSecretPrefix(decoded)) return true;
     }
     return false;
   }
@@ -532,8 +678,8 @@ export function buildProvenance({
     model_id: modelId,
     recorded_at: now,
     prompt_hash: promptHash.startsWith("sha256:") ? promptHash : `sha256:${promptHash}`,
-    sanitization_notes: sanitizationNotes,
-    recorded_by: recordedBy,
+    sanitization_notes: redactKnownPatterns(sanitizationNotes),
+    recorded_by: redactKnownPatterns(recordedBy),
     stale_after: staleAfter,
   });
 }

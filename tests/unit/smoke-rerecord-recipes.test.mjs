@@ -103,8 +103,18 @@ describe("smoke-rerecord recipes — auth invariants", () => {
       assert.ok(spec.args.includes("--auth-mode"));
       assert.equal(spec.args[spec.args.indexOf("--auth-mode") + 1], "api_key");
       assert.equal(spec.env.HOME, "/var/empty");
-      assert.equal(spec.env.ANTHROPIC_API_KEY, undefined);
-      assert.equal(spec.env.CLAUDE_API_KEY, undefined);
+      for (const key of CLAUDE_PROVIDER_API_KEY_ENV) {
+        assert.equal(
+          spec.env[key],
+          undefined,
+          `claude/auth-failure must scrub shared Claude provider key ${key}`,
+        );
+      }
+      assert.equal(
+        spec.env.CLAUDE_CONFIG_DIR,
+        undefined,
+        "claude/auth-failure must scrub CLAUDE_CONFIG_DIR so HOME=/var/empty cannot be bypassed",
+      );
     });
     it("declares expectExit: [2] (negative recipe characterized via CI workflow run)", () => {
       // Round-12: actual workflow_dispatch run on a sterile GitHub
@@ -142,7 +152,7 @@ describe("smoke-rerecord recipes — auth invariants", () => {
     });
   });
 
-  for (const provider of ["deepseek", "glm"]) {
+  for (const provider of ["deepseek"]) {
     const happyKey = `api-reviewers-${provider}/happy-path-review`;
     const negKey = `api-reviewers-${provider}/auth-rejected`;
 
@@ -174,9 +184,9 @@ describe("smoke-rerecord recipes — auth invariants", () => {
         // (invalidateProviderKeys iterates API_REVIEWER_PROVIDER_KEYS[provider])
         // closes the gap structurally; this test pins it: a recipe that
         // forgets a key gets caught here, and `validateRecipes` catches it
-        // at module load. Without iterating, a runner with the secondary
-        // key wired (e.g. ZAI_GLM_API_KEY for glm) would silently record
-        // a happy-path response in the negative fixture.
+        // at module load. Without iterating, a runner with a secondary
+        // provider key wired would silently record a happy-path response
+        // in the negative fixture.
         const happyKeys = RECIPES[happyKey].spawnArgs().requireEnvAny;
         assert.ok(happyKeys.length > 0);
         for (const k of happyKeys) {
@@ -211,8 +221,6 @@ describe("smoke-rerecord recipes — completeness", () => {
       "grok/tunnel-error",
       "api-reviewers-deepseek/happy-path-review",
       "api-reviewers-deepseek/auth-rejected",
-      "api-reviewers-glm/happy-path-review",
-      "api-reviewers-glm/auth-rejected",
     ];
     assert.deepEqual([...Object.keys(RECIPES)].sort(), [...expected].sort());
   });
