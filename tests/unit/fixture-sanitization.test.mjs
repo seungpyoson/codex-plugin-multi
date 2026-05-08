@@ -196,6 +196,11 @@ test("redactKnownPatterns: redacts masked API-key tails", () => {
   assert.equal(out, "Your api key: [REDACTED] is invalid");
 });
 
+test("redactKnownPatterns: redacts compact masked apikey tails", () => {
+  const out = redactKnownPatterns("Your apikey: ****a1b2 is invalid");
+  assert.equal(out, "Your apikey: [REDACTED] is invalid");
+});
+
 test("redactKnownPatterns: redacts JWTs", () => {
   const jwt = "eyJhbGciOiJIUzI1NiIs.eyJzdWIiOiIxMjM0NTY3ODkwIn0.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c";
   const shortJwt = "eyJa.b.c";
@@ -640,6 +645,11 @@ test("redactKnownPatterns: Bearer match stops at JSON syntax (does not eat closi
     assert.equal(out.includes(c.leak), false,
       `Bearer redactor must still remove the secret; input=${c.input}`);
   }
+});
+
+test("redactKnownPatterns: Bearer public-prefix token does not leave a bracket artifact", () => {
+  const out = redactKnownPatterns("Bearer sk-abcdefghijklmnopqrstuv");
+  assert.equal(out, "Bearer [REDACTED]");
 });
 
 // Regression: companion *_session_id fields previously coerced any non-null

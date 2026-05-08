@@ -149,6 +149,15 @@ function assertNoUnredactedAuthorizationText(text, fixtureLabel) {
   }
 }
 
+function assertNoResidualMaskedApiKeyTailText(text, fixtureLabel) {
+  const matches = [...text.matchAll(/api[_ -]?key:\s*\*{2,}[A-Za-z0-9_-]{2,}/gi)];
+  assert.deepEqual(
+    matches.map((match) => match[0]),
+    [],
+    `${fixtureLabel}: masked API-key tail must be fully redacted`,
+  );
+}
+
 function assertNoPublicPrefixTokensText(text, fixtureLabel) {
   for (const pattern of SECRET_PREFIX_PATTERNS) {
     pattern.lastIndex = 0;
@@ -272,7 +281,6 @@ test("listOrphanedProvenanceFiles detects provenance files without responses", (
 });
 
 test("fixtures: committed rerecord fixture exit codes match recipe expectExit", () => {
-  if (isPrScopedRun()) return;
   const mismatches = [];
   for (const f of FIXTURES) {
     const key = `${f.plugin}/${f.scenario}`;
@@ -519,6 +527,23 @@ test("fixtures: no unredacted Authorization or Bearer values", () => {
     const text = readFileSync(f.responsePath, "utf8");
     assertNoUnredactedAuthorizationText(text, `${f.plugin}/${f.scenario}`);
   }
+});
+
+test("fixtures: no residual masked API-key tails", () => {
+  for (const f of FIXTURES) {
+    const text = readFileSync(f.responsePath, "utf8");
+    assertNoResidualMaskedApiKeyTailText(text, `${f.plugin}/${f.scenario}`);
+  }
+});
+
+test("masked API-key tail validity gate rejects stale masked tails", () => {
+  assert.throws(
+    () => assertNoResidualMaskedApiKeyTailText(
+      "Authentication Fails, Your api key: ****ding is invalid",
+      "synthetic/masked-tail",
+    ),
+    /masked API-key tail must be fully redacted/,
+  );
 });
 
 test("authorization validity patterns match sanitizer redaction boundaries", () => {

@@ -198,12 +198,12 @@ function redactUrlEncodedCandidates(input, shouldRedactDecoded) {
 const AUTHORIZATION_HEADER_BARE = /Authorization:\s*\S.*$/gim;
 const AUTHORIZATION_HEADER_JSON = /"Authorization"\s*:\s*"(?:[^"\\]|\\.)*"/gi;
 const AUTHORIZATION_HEADER_SINGLE_QUOTED = /'Authorization'\s*:\s*'(?:[^'\\]|\\.)*'/gi;
-const MASKED_API_KEY_LABELS = Object.freeze(["api key:", "api_key:", "api-key:"]);
+const MASKED_API_KEY_LABELS = Object.freeze(["api key:", "api_key:", "api-key:", "apikey:"]);
 // Bearer-token match stops at JSON syntax so a token embedded in a JSON
 // string ('{"auth":"Bearer xyz"}') doesn't have its closing quote/brace
 // consumed by a greedy \S+. Excludes whitespace, ASCII quotes, JSON
 // delimiters, and backslash.
-const BEARER_TOKEN = /Bearer\s+[^\s"',;:()<>}\]\\]+/gi;
+const BEARER_TOKEN = /Bearer\s+(?:\[REDACTED\]|[^\s"',;:()<>}\]\\]+)/gi;
 
 // Companion session-id field names. Both snake_case and camelCase variants —
 // providers vary. Replaced wholesale with REDACTED when architecture is

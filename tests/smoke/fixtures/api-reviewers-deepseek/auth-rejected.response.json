@@ -120,8 +120,8 @@
   "ended_at": "2026-05-06T14:37:18.384Z",
   "exit_code": 1,
   "error_code": "auth_rejected",
-  "error_message": "Authentication Fails, Your api key: ****ding is invalid",
-  "error_summary": "Authentication Fails, Your api key: ****ding is invalid",
+  "error_message": "Authentication Fails, Your api key: [REDACTED] is invalid",
+  "error_summary": "Authentication Fails, Your api key: [REDACTED] is invalid",
   "error_cause": "direct_api_provider",
   "suggested_action": "Check the DeepSeek API key and billing/plan for deepseek-v4-pro.",
   "external_review": {
