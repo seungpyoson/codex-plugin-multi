@@ -87,6 +87,15 @@ function tryDecodeURIComponent(value) {
   }
 }
 
+function tryDecodeFormComponent(value) {
+  if (typeof value !== "string" || !value.includes("+")) return null;
+  try {
+    return decodeURIComponent(value.replaceAll("+", "%20"));
+  } catch {
+    return null;
+  }
+}
+
 function matchesSecretPrefix(value) {
   if (typeof value !== "string" || !value) return false;
   for (const pattern of SECRET_PREFIX_PATTERNS) {
@@ -98,11 +107,13 @@ function matchesSecretPrefix(value) {
 }
 
 function redactUrlEncodedCandidates(input, shouldRedactDecoded) {
-  if (!input.includes("%")) return input;
+  if (!input.includes("%") && !input.includes("+")) return input;
   return input.replaceAll(URL_ENCODED_CANDIDATE, (candidate) => {
     const decoded = tryDecodeURIComponent(candidate);
-    if (decoded == null) return candidate;
-    return shouldRedactDecoded(decoded) ? REDACTED : candidate;
+    if (decoded != null && shouldRedactDecoded(decoded)) return REDACTED;
+    const formDecoded = tryDecodeFormComponent(candidate);
+    if (formDecoded != null && shouldRedactDecoded(formDecoded)) return REDACTED;
+    return candidate;
   });
 }
 
@@ -121,6 +132,7 @@ function redactUrlEncodedCandidates(input, shouldRedactDecoded) {
 const AUTHORIZATION_HEADER_BARE = /Authorization:\s*\S.*$/gim;
 const AUTHORIZATION_HEADER_JSON = /"Authorization"\s*:\s*"(?:[^"\\]|\\.)*"/gi;
 const AUTHORIZATION_HEADER_SINGLE_QUOTED = /'Authorization'\s*:\s*'(?:[^'\\]|\\.)*'/gi;
+const MASKED_API_KEY_TAIL = /\bapi[_ -]?key:\s*\*{2,}[A-Za-z0-9_-]{2,}\b/gi;
 // Bearer-token match stops at JSON syntax so a token embedded in a JSON
 // string ('{"auth":"Bearer xyz"}') doesn't have its closing quote/brace
 // consumed by a greedy \S+. Excludes whitespace, ASCII quotes, JSON
@@ -286,6 +298,10 @@ export function buildEnvSecretRedactor(env, { curatedEnvKeys = [] } = {}) {
     if (encoded !== value && !encoded.includes(REDACTED)) {
       secrets.add(encoded);
     }
+    const formEncoded = encoded.replaceAll("%20", "+");
+    if (formEncoded !== value && !formEncoded.includes(REDACTED)) {
+      secrets.add(formEncoded);
+    }
   }
 
   for (const [key, rawValue] of Object.entries(env ?? {})) {
@@ -346,6 +362,8 @@ export function redactKnownPatterns(input) {
   out = out.replaceAll(AUTHORIZATION_HEADER_BARE, `Authorization: ${REDACTED}`);
   out = out.replaceAll(AUTHORIZATION_HEADER_JSON, `"Authorization":"${REDACTED}"`);
   out = out.replaceAll(AUTHORIZATION_HEADER_SINGLE_QUOTED, `'Authorization':'${REDACTED}'`);
+  out = out.replaceAll(MASKED_API_KEY_TAIL, (match) =>
+    match.replace(/\*{2,}[A-Za-z0-9_-]{2,}\b/, REDACTED));
   out = out.replaceAll(BEARER_TOKEN, `Bearer ${REDACTED}`);
   for (const { regex, replacement } of PATH_SCRUB_PATTERNS) {
     out = out.replaceAll(regex, replacement);
@@ -390,15 +408,15 @@ function assertJsonCompatible(value, ctx, path) {
   if (t === "bigint" || t === "symbol" || t === "function") {
     throw new SanitizeUnsupportedInput(`${t} at ${path || "(root)"}`);
   }
+  if (ctx.seen.has(value)) {
+    throw new SanitizeUnsupportedInput(`circular reference at ${path || "(root)"}`);
+  }
   if (Array.isArray(value)) return;
   if (!isPlainObject(value)) {
     const ctorName = value && value.constructor ? value.constructor.name : "object";
     throw new SanitizeUnsupportedInput(
       `non-plain object (${ctorName}) at ${path || "(root)"}`,
     );
-  }
-  if (ctx.seen.has(value)) {
-    throw new SanitizeUnsupportedInput(`circular reference at ${path || "(root)"}`);
   }
 }
 

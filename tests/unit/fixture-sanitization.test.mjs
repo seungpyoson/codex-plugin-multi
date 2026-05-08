@@ -176,9 +176,24 @@ test("sanitizeString: env redaction removes suffixes after public-prefix redacti
   assert.match(out, /\[REDACTED\]/);
 });
 
+test("sanitizeString: redacts form-encoded env secrets with plus spaces", () => {
+  const redactor = buildEnvSecretRedactor(
+    { API_KEY: "foo bar" },
+    { curatedEnvKeys: ["API_KEY"] },
+  );
+  const out = sanitizeString("provider echoed foo+bar", redactor);
+  assert.equal(out.includes("foo+bar"), false);
+  assert.match(out, /\[REDACTED\]/);
+});
+
 test("redactKnownPatterns: redacts single-character bare Authorization values", () => {
   const out = redactKnownPatterns("Authorization: a");
   assert.equal(out, "Authorization: [REDACTED]");
+});
+
+test("redactKnownPatterns: redacts masked API-key tails", () => {
+  const out = redactKnownPatterns("Your api key: ****a1b2 is invalid");
+  assert.equal(out, "Your api key: [REDACTED] is invalid");
 });
 
 test("redactKnownPatterns: redacts JWTs", () => {
@@ -380,6 +395,15 @@ test("sanitize: rejects unknown architecture", () => {
   assert.throws(
     () => sanitize({}, { architecture: "frontend", env: {} }),
     /architecture must be one of/,
+  );
+});
+
+test("sanitize: circular arrays throw SanitizeUnsupportedInput", () => {
+  const a = [];
+  a.push(a);
+  assert.throws(
+    () => sanitize(a, { architecture: "companion", env: {} }),
+    /SanitizeUnsupportedInput|circular reference/,
   );
 });
 

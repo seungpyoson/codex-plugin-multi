@@ -790,6 +790,29 @@ describe("I14 — URL-encoded secrets are redacted", () => {
       { numRuns: RUNS },
     );
   });
+
+  it("form-encoded env-secret spaces are redacted", () => {
+    fc.assert(
+      fc.property(
+        secretEnvName,
+        fc.tuple(
+          fc.stringMatching(/^[A-Za-z0-9]{4,12}$/),
+          fc.stringMatching(/^[A-Za-z0-9]{4,12}$/),
+        ),
+        arch(),
+        (envName, [left, right], architecture) => {
+          const secret = `${left} ${right}`;
+          const formEncoded = `${left}+${right}`;
+          const sanitized = sanitize(`prefix ${formEncoded} suffix`, {
+            architecture,
+            env: { [envName]: secret },
+          });
+          return !sanitized.includes(formEncoded) && !sanitized.includes(secret);
+        },
+      ),
+      { numRuns: RUNS },
+    );
+  });
 });
 
 // --------------------------------------------------------------------

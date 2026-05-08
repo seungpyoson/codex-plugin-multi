@@ -448,7 +448,7 @@ export function derivePromptForHash(args) {
       prompt = arg.slice("--prompt=".length);
       continue;
     }
-    if (arg === "--prompt" && typeof args[i + 1] === "string") {
+    if (arg === "--prompt" && i + 1 < optionEnd && typeof args[i + 1] === "string") {
       prompt = args[i + 1];
       i += 1;
     }
