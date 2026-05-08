@@ -2203,8 +2203,8 @@ test("help exposes only subscription-backed Grok commands", () => {
 
 // AC7-AC8 (#106): smoke replay against recorded grok fixtures.
 //
-// happy-path-review.response.json: recorded under the models_ok_chat_400
-// state (#77) — models endpoint healthy, chat endpoint returns 400.
+// happy-path-review.response.json: recorded under a clean local tunnel
+// success — chat endpoint returns a completed review response.
 // tunnel-error.response.json: recorded against an unreachable tunnel
 // (http_status null, error_code tunnel_unavailable). Replay reproduces the
 // same JobRecord shape: status, error_code, http_status, transmission.
@@ -2216,7 +2216,7 @@ function readGrokReplayFixture(scenario) {
   return JSON.parse(readFileSync(fixturePath, "utf8"));
 }
 
-test("smoke replay: grok/happy-path-review reproduces recorded JobRecord shape (models_ok_chat_400)", async () => {
+test("smoke replay: grok/happy-path-review reproduces recorded JobRecord shape (success)", async () => {
   const fixture = readGrokReplayFixture("happy-path-review");
   const cwd = mkdtempSync(path.join(tmpdir(), "grok-replay-workspace-"));
   const dataDir = mkdtempSync(path.join(tmpdir(), "grok-replay-data-"));
@@ -2236,9 +2236,9 @@ test("smoke replay: grok/happy-path-review reproduces recorded JobRecord shape (
       chatCaptured.method = req.method;
       chatCaptured.authorization = req.headers.authorization ?? null;
       chatCaptured.body = await readJsonRequest(req);
-      res.writeHead(400);
       res.end(JSON.stringify({
-        error: { message: "Chat upstream returned 400", type: "upstream_error", code: "upstream_error" },
+        choices: [{ message: { content: "Verdict: PASS" } }],
+        usage: { prompt_tokens: 10, completion_tokens: 2, total_tokens: 12 },
       }));
       return;
     }

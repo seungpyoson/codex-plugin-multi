@@ -158,6 +158,40 @@ test("fixtures: every smoke-rerecord recipe has a committed fixture pair", () =>
   );
 });
 
+test("fixtures: every committed rerecord fixture pair has a live recipe", () => {
+  if (isPrScopedRun()) return;
+  const liveRecipes = new Set(Object.keys(RECIPES));
+  const orphaned = FIXTURES
+    .map((f) => `${f.plugin}/${f.scenario}`)
+    .filter((key) => !liveRecipes.has(key));
+  assert.deepEqual(
+    orphaned,
+    [],
+    "committed rerecord fixtures must not outlive their recipe; remove stale pairs or restore the recipe",
+  );
+});
+
+test("fixtures: committed rerecord fixture exit codes match recipe expectExit", () => {
+  if (isPrScopedRun()) return;
+  const mismatches = [];
+  for (const f of FIXTURES) {
+    const key = `${f.plugin}/${f.scenario}`;
+    const recipe = RECIPES[key];
+    if (!recipe) continue;
+    const response = readJson(f.responsePath);
+    if (!Object.prototype.hasOwnProperty.call(response, "exit_code")) continue;
+    const spec = recipe.spawnArgs();
+    if (!spec.expectExit.includes(response.exit_code)) {
+      mismatches.push(`${key}: fixture exit_code ${response.exit_code} not in expectExit ${JSON.stringify(spec.expectExit)}`);
+    }
+  }
+  assert.deepEqual(
+    mismatches,
+    [],
+    "committed fixture exit_code must be reproducible by the live rerecord recipe",
+  );
+});
+
 test("filterFixturesByChangedEnv: undefined env returns all (full sweep)", () => {
   const all = [
     { plugin: "a", responsePath: "/repo/a.json", provenancePath: "/repo/a.prov.json" },
@@ -504,24 +538,26 @@ test("fixtures: every architecture has at least one success and one negative fix
   const byArch = new Map();
   for (const f of listFixturePairs()) {
     if (!byArch.has(f.architecture)) byArch.set(f.architecture, new Set());
-    byArch.get(f.architecture).add(f.scenario);
+    const response = readJson(f.responsePath);
+    const side = response.exit_code === 0 && response.status === "completed"
+      ? "success"
+      : "negative";
+    byArch.get(f.architecture).add(side);
   }
   const expectedArchitectures = ["companion", "grok", "api-reviewers"];
   for (const arch of expectedArchitectures) {
-    const scenarios = byArch.get(arch);
+    const sides = byArch.get(arch);
     assert.ok(
-      scenarios && scenarios.size > 0,
+      sides && sides.size > 0,
       `architecture ${arch}: no fixtures recorded yet`,
     );
-    const hasHappy = [...scenarios].some((s) => s.includes("happy") || s === "ok" || s === "success");
-    const hasNegative = [...scenarios].some((s) => !s.includes("happy") && s !== "ok" && s !== "success");
     assert.ok(
-      hasHappy,
-      `architecture ${arch}: no happy-path fixture (must include at least one with "happy" in the name)`,
+      sides.has("success"),
+      `architecture ${arch}: no successful fixture (must include at least one completed fixture with exit_code 0)`,
     );
     assert.ok(
-      hasNegative,
-      `architecture ${arch}: no negative-path fixture (must include at least one fixture without "happy" in the name)`,
+      sides.has("negative"),
+      `architecture ${arch}: no negative-path fixture (must include at least one non-completed or non-zero fixture)`,
     );
   }
 });

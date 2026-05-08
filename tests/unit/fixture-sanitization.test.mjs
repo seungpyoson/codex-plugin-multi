@@ -12,6 +12,7 @@ import assert from "node:assert/strict";
 import {
   buildEnvSecretRedactor,
   buildProvenance,
+  PATH_SCRUB_PROBES,
   redactKnownPatterns,
   sanitize,
   sanitizeString,
@@ -19,6 +20,7 @@ import {
   FIXTURE_SANITIZATION_REDACTED_TOKEN,
   FIXTURE_SANITIZATION_AUTO_LENGTH_FLOOR,
   FIXTURE_SANITIZATION_CURATED_LENGTH_FLOOR,
+  SECRET_ENV_NAME_CORES,
 } from "../../scripts/lib/fixture-sanitization.mjs";
 
 const REDACTED = FIXTURE_SANITIZATION_REDACTED_TOKEN;
@@ -450,6 +452,46 @@ test("redactKnownPatterns: redacts JSON-quoted Authorization (Basic, ApiKey, Tok
       `JSON-quoted Authorization must redact value; input=${c.input} output=${out}`);
     assert.match(out, /"Authorization":"\[REDACTED\]"/i);
   }
+});
+
+test("redactKnownPatterns: redacts single-quoted Authorization echo bodies", () => {
+  const out = redactKnownPatterns("{'Authorization':'Basic dGVzdDp0ZXN0','x':1}");
+  assert.equal(out, "{'Authorization':'[REDACTED]','x':1}");
+  assert.doesNotMatch(out, /dGVzdDp0ZXN0/);
+});
+
+test("redactKnownPatterns: preserves closing paren after Bearer token redaction", () => {
+  const out = redactKnownPatterns("(Bearer abc123xyz) next");
+  assert.equal(out, "(Bearer [REDACTED]) next");
+});
+
+test("redactKnownPatterns: scrubs root and macOS per-user temp paths", () => {
+  const out = redactKnownPatterns([
+    "/root/worktree/foo",
+    "/var/folders/y5/syb9vj4n3l10028h1jst4_tm0000gn/T/claude-worktree-JAc2KX",
+  ].join("\n"));
+  assert.match(out, /\/root\/<user>\/foo/);
+  assert.match(out, /\/var\/folders\/<user>\/T\/claude-worktree-JAc2KX/);
+  assert.doesNotMatch(out, /syb9vj4n3l10028h1jst4_tm0000gn/);
+});
+
+test("PATH_SCRUB_PROBES include root and macOS per-user temp paths", () => {
+  const probes = PATH_SCRUB_PROBES.map((probe) => probe.prefix);
+  assert.ok(probes.includes("/root/"));
+  assert.ok(probes.includes("/var/folders/"));
+});
+
+test("buildEnvSecretRedactor: PASSWORD env names are auto-redacted", () => {
+  assert.ok(SECRET_ENV_NAME_CORES.includes("PASSWORD"));
+  const redact = buildEnvSecretRedactor({ DB_PASSWORD: "hunter2secret" });
+  assert.equal(redact("hello hunter2secret"), "hello [REDACTED]");
+});
+
+test("buildEnvSecretRedactor: cookie sub-extraction ignores non-secret attributes", () => {
+  const redact = buildEnvSecretRedactor({
+    APP_COOKIE: "theme=dark; Path=/; session=abcdef123456",
+  });
+  assert.equal(redact("theme dark path / session abcdef123456"), "theme dark path / session [REDACTED]");
 });
 
 test("sanitize: JSON-quoted Authorization in echoed error body redacts non-Bearer schemes", () => {

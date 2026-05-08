@@ -318,10 +318,10 @@ describe("I4 — Bearer tokens are redacted with JSON syntax intact", () => {
         // Token: random non-empty string with no whitespace, no JSON
         // delimiters, no marker. Shape-bias = "is a Bearer token shape."
         fc.string({ minLength: 4, maxLength: 30 })
-          .filter((s) => !/[\s"',}\]\\]/.test(s) && !s.includes(REDACTED)),
+          .filter((s) => !/[\s"',;:()<>}\]\\]/.test(s) && !s.includes(REDACTED)),
         // Suffix character: a JSON delimiter. The greedy-\S+ bug ate
         // these in round-2 review.
-        fc.constantFrom('"', "'", "}", "]", ",", " "),
+        fc.constantFrom('"', "'", "}", "]", ",", " ", ")"),
         arch(),
         (token, suffix, architecture) => {
           // Embed in a JSON-shaped string.
@@ -577,8 +577,8 @@ describe("I10/I4 — Bearer redaction preserves the byte after the token", () =>
     fc.assert(
       fc.property(
         fc.string({ minLength: 4, maxLength: 30 })
-          .filter((s) => !/[\s"',}\]\\]/.test(s) && !s.includes(REDACTED)),
-        fc.constantFrom('"', "'", "}", "]", ",", " ", "\n"),
+          .filter((s) => !/[\s"',;:()<>}\]\\]/.test(s) && !s.includes(REDACTED)),
+        fc.constantFrom('"', "'", "}", "]", ",", " ", "\n", ")"),
         arch(),
         (token, delim, architecture) => {
           const host = `pre Bearer ${token}${delim}post`;

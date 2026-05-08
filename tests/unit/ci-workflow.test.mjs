@@ -50,7 +50,7 @@ test("pull-request CI runs the enforced coverage gate", () => {
 test("pull-request CI full-sweeps fixtures when fixture-control code changes", () => {
   assert.match(
     workflow,
-    /CONTROL_CHANGED=\$\(git diff --name-only "\$BASE" HEAD -- [\s\S]*scripts\/lib\/fixture-sanitization\.mjs[\s\S]*tests\/unit\/fixture-validity\.test\.mjs[\s\S]*scripts\/smoke-rerecord\.mjs[\s\S]*\.github\/workflows\/smoke-rerecord\.yml/,
+    /CONTROL_CHANGED=\$\(git diff --name-only "\$BASE" HEAD -- [\s\S]*scripts\/lib\/fixture-sanitization\.mjs[\s\S]*scripts\/lib\/recipe-architecture\.mjs[\s\S]*scripts\/lib\/smoke-rerecord-preflight\.mjs[\s\S]*tests\/unit\/fixture-validity\.test\.mjs[\s\S]*scripts\/smoke-rerecord\.mjs[\s\S]*\.github\/workflows\/smoke-rerecord\.yml/,
     "CI must detect fixture sanitizer/gate/rerecord code changes, not only fixture file changes",
   );
   assert.match(

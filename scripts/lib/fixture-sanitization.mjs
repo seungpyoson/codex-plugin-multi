@@ -1,3 +1,5 @@
+import { ARCHITECTURE_KINDS } from "./recipe-architecture.mjs";
+
 // Fixture sanitization library. Used by scripts/smoke-rerecord.mjs and the
 // .github/workflows/smoke-rerecord.yml workflow_dispatch path to sanitize
 // real provider responses before committing them as smoke fixtures.
@@ -42,6 +44,7 @@ export const SECRET_ENV_NAME_CORES = Object.freeze([
   "API_KEY",
   "TOKEN",
   "ACCESS_KEY",
+  "PASSWORD",
   "SECRET",
   "ADMIN_KEY",
   "COOKIE",
@@ -117,11 +120,12 @@ function redactUrlEncodedCandidates(input, shouldRedactDecoded) {
 // at the first escaped quote and leak everything after it.
 const AUTHORIZATION_HEADER_BARE = /Authorization:\s*\S.*$/gim;
 const AUTHORIZATION_HEADER_JSON = /"Authorization"\s*:\s*"(?:[^"\\]|\\.)*"/gi;
+const AUTHORIZATION_HEADER_SINGLE_QUOTED = /'Authorization'\s*:\s*'(?:[^'\\]|\\.)*'/gi;
 // Bearer-token match stops at JSON syntax so a token embedded in a JSON
 // string ('{"auth":"Bearer xyz"}') doesn't have its closing quote/brace
 // consumed by a greedy \S+. Excludes whitespace, ASCII quotes, JSON
 // delimiters, and backslash.
-const BEARER_TOKEN = /Bearer\s+[^\s"',}\]\\]+/gi;
+const BEARER_TOKEN = /Bearer\s+[^\s"',;:()<>}\]\\]+/gi;
 
 // Companion session-id field names. Both snake_case and camelCase variants —
 // providers vary. Replaced wholesale with REDACTED when architecture is
@@ -189,6 +193,18 @@ const PATH_SCRUB_RULES = Object.freeze([
     replacement: "/home/<user>",
   },
   {
+    prefixSource: "\\/root\\/",
+    prefixLiteral: "/root/",
+    userClass: "[^/\"'\\\\\\n\\r\\t]+",
+    replacement: "/root/<user>",
+  },
+  {
+    prefixSource: "\\/var\\/folders\\/[A-Za-z0-9]{2}\\/",
+    prefixLiteral: "/var/folders/",
+    userClass: "[^/\"'\\\\\\n\\r\\t]+",
+    replacement: "/var/folders/<user>",
+  },
+  {
     prefixSource: "[A-Za-z]:\\\\Users\\\\",
     prefixLiteral: "C:\\Users\\",
     userClass: "[^\\\\\"'/\\n\\r\\t]+",
@@ -219,6 +235,7 @@ export const PATH_SCRUB_PROBES = Object.freeze(
 // just the inner SSO token without the surrounding cookie syntax still
 // gets scrubbed.
 const COOKIE_LIKE_ENV_NAME = /(?:^|_)(?:COOKIE|SESSION|SSO)$/i;
+const COOKIE_LIKE_SECRET_ATTR_NAME = /(?:^|_)(?:AUTH|BEARER|COOKIE|KEY|SECRET|SESSION|SSO|TOKEN)(?:_|$)/i;
 
 class SanitizeMarkerCollision extends Error {
   constructor(detail) {
@@ -290,6 +307,8 @@ export function buildEnvSecretRedactor(env, { curatedEnvKeys = [] } = {}) {
         const trimmed = segment.trim();
         const eq = trimmed.indexOf("=");
         if (eq <= 0) continue;
+        const lhs = trimmed.slice(0, eq).trim();
+        if (!COOKIE_LIKE_SECRET_ATTR_NAME.test(lhs)) continue;
         const rhs = trimmed.slice(eq + 1).trim();
         addSecret(rhs, MIN_SECRET_REDACTION_LENGTH_CURATED);
       }
@@ -326,6 +345,7 @@ export function redactKnownPatterns(input) {
   out = redactUrlEncodedCandidates(out, matchesSecretPrefix);
   out = out.replaceAll(AUTHORIZATION_HEADER_BARE, `Authorization: ${REDACTED}`);
   out = out.replaceAll(AUTHORIZATION_HEADER_JSON, `"Authorization":"${REDACTED}"`);
+  out = out.replaceAll(AUTHORIZATION_HEADER_SINGLE_QUOTED, `'Authorization':'${REDACTED}'`);
   out = out.replaceAll(BEARER_TOKEN, `Bearer ${REDACTED}`);
   for (const { regex, replacement } of PATH_SCRUB_PATTERNS) {
     out = out.replaceAll(regex, replacement);
@@ -488,10 +508,10 @@ function wholesaleRedact(value) {
  */
 export function sanitize(record, options = {}) {
   const architecture = options.architecture;
-  if (!architecture || !["companion", "grok", "api-reviewers"].includes(architecture)) {
+  if (!architecture || !ARCHITECTURE_KINDS.includes(architecture)) {
     throw new Error(
       "fixture-sanitization: options.architecture must be one of "
-      + "\"companion\", \"grok\", \"api-reviewers\"",
+      + ARCHITECTURE_KINDS.map((kind) => JSON.stringify(kind)).join(", "),
     );
   }
   if (!Object.prototype.hasOwnProperty.call(options, "env")

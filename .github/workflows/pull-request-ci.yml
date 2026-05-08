@@ -51,6 +51,8 @@ jobs:
           if [ -n "$BASE" ] && [ "$BASE" != "$(git rev-parse HEAD)" ]; then
             CONTROL_CHANGED=$(git diff --name-only "$BASE" HEAD -- \
               'scripts/lib/fixture-sanitization.mjs' \
+              'scripts/lib/recipe-architecture.mjs' \
+              'scripts/lib/smoke-rerecord-preflight.mjs' \
               'tests/unit/fixture-validity.test.mjs' \
               'scripts/smoke-rerecord.mjs' \
               '.github/workflows/smoke-rerecord.yml' \
