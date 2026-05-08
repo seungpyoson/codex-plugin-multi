@@ -237,6 +237,18 @@ test("sanitize: redacts percent-encoded public-prefix tokens in object keys", ()
   assert.deepEqual(out, { [REDACTED]: "rate_limited" });
 });
 
+test("sanitize: redacts form-encoded env secrets in object keys", () => {
+  const out = sanitize(
+    { "foo+bar+baz": "provider echoed secret as a key" },
+    {
+      architecture: "api-reviewers",
+      env: { API_KEY: "foo bar baz" },
+      curatedEnvKeys: ["API_KEY"],
+    },
+  );
+  assert.deepEqual(out, { [REDACTED]: "provider echoed secret as a key" });
+});
+
 test("sanitize: rejects multiple redacted object keys instead of silently dropping entries", () => {
   assert.throws(
     () => sanitize(

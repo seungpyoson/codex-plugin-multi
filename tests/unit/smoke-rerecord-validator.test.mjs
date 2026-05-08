@@ -190,6 +190,43 @@ describe("validateRecipes — negative recipes must cite a CI-observed workflow 
 });
 
 // ───────────────────────────────────────────────────────────────────────
+// API reviewer happy-path preflight keys are value-equal to provider keys
+// ───────────────────────────────────────────────────────────────────────
+
+describe("validateRecipes — api-reviewers happy-path env keys", () => {
+  it("accepts a value-equal copy of the provider key list", () => {
+    const fake = {
+      "api-reviewers-deepseek/happy-path-review": makeRecipe({
+        architecture: ARCHITECTURE_API_REVIEWERS,
+        plugin: "api-reviewers-deepseek",
+        spec: {
+          args: ["run", "--provider", "deepseek"],
+          requireEnvAny: ["DEEPSEEK_API_KEY"],
+        },
+      }),
+    };
+    assert.doesNotThrow(() => validateRecipes(fake));
+  });
+
+  it("rejects a happy-path recipe with a decoy preflight key", () => {
+    const fake = {
+      "api-reviewers-deepseek/happy-path-review": makeRecipe({
+        architecture: ARCHITECTURE_API_REVIEWERS,
+        plugin: "api-reviewers-deepseek",
+        spec: {
+          args: ["run", "--provider", "deepseek"],
+          requireEnvAny: ["DEEPSEEK_API_TOKEN"],
+        },
+      }),
+    };
+    assert.throws(
+      () => validateRecipes(fake),
+      /happy-path requireEnvAny/,
+    );
+  });
+});
+
+// ───────────────────────────────────────────────────────────────────────
 // Sanity: the live RECIPES module-load passes the new checks
 // ───────────────────────────────────────────────────────────────────────
 

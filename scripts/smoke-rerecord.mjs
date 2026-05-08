@@ -98,6 +98,18 @@ export function invalidateProviderKeys(provider) {
   return Object.fromEntries(keys.map((k) => [k, INVALID_PROVIDER_KEY_SENTINEL]));
 }
 
+function sameStringSet(actual, expected) {
+  if (!Array.isArray(actual) || !Array.isArray(expected)) return false;
+  if (actual.length !== expected.length) return false;
+  const actualSet = new Set(actual);
+  const expectedSet = new Set(expected);
+  if (actualSet.size !== actual.length || expectedSet.size !== expected.length) return false;
+  for (const item of actualSet) {
+    if (!expectedSet.has(item)) return false;
+  }
+  return true;
+}
+
 export const RECIPES = Object.freeze({
   // ─── companion ──────────────────────────────────────────────────────
   "claude/happy-path-review": {
@@ -378,9 +390,9 @@ export function validateRecipes(recipes) {
       }
       // For happy-path recipes, requireEnvAny must match the provider's keys.
       if (key.endsWith("/happy-path-review")) {
-        if (!spec.requireEnvAny || spec.requireEnvAny !== expected) {
+        if (!sameStringSet(spec.requireEnvAny, expected)) {
           throw new TypeError(
-            `${where}: happy-path requireEnvAny must reference API_REVIEWER_PROVIDER_KEYS.${provider} (drift = decoy preflight)`,
+            `${where}: happy-path requireEnvAny must match API_REVIEWER_PROVIDER_KEYS.${provider} (drift = decoy preflight)`,
           );
         }
       }

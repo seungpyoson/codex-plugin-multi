@@ -61,6 +61,32 @@ const SECRET_ENV_NAME = new RegExp(
 const MIN_SECRET_REDACTION_LENGTH_AUTO = 8;        // auto-detected env names
 const MIN_SECRET_REDACTION_LENGTH_CURATED = 4;     // operator-curated env_keys
 
+function addEnvSecretVariants(secrets, value, minLen) {
+  if (!value || value.length < minLen) return;
+  if (value.includes(REDACTED)) {
+    throw new SanitizeMarkerCollision(
+      `env-secret value contains the literal "${REDACTED}" sentinel`,
+    );
+  }
+  secrets.add(value);
+  // I14 — also redact percent-encoded form. Skipped if encoding is
+  // identity (no special chars) since duplicate entries don't harm
+  // correctness but waste set capacity.
+  let encoded;
+  try {
+    encoded = encodeURIComponent(value);
+  } catch {
+    encoded = value;
+  }
+  if (encoded !== value && !encoded.includes(REDACTED)) {
+    secrets.add(encoded);
+  }
+  const formEncoded = encoded.replaceAll("%20", "+");
+  if (formEncoded !== value && !formEncoded.includes(REDACTED)) {
+    secrets.add(formEncoded);
+  }
+}
+
 // Common public-prefix shapes. Match-anywhere even if the env value isn't
 // in process.env at sanitize time. Conservative default; lets us scrub
 // echo-attacks where the provider response includes a hardcoded test key.
@@ -344,32 +370,6 @@ export function buildEnvSecretRedactor(env, { curatedEnvKeys = [] } = {}) {
   const secrets = new Set();
   const curated = new Set(curatedEnvKeys.map((k) => String(k).toUpperCase()));
 
-  function addSecret(value, minLen) {
-    if (!value || value.length < minLen) return;
-    if (value.includes(REDACTED)) {
-      throw new SanitizeMarkerCollision(
-        `env-secret value contains the literal "${REDACTED}" sentinel`,
-      );
-    }
-    secrets.add(value);
-    // I14 — also redact percent-encoded form. Skipped if encoding is
-    // identity (no special chars) since duplicate entries don't harm
-    // correctness but waste set capacity.
-    let encoded;
-    try {
-      encoded = encodeURIComponent(value);
-    } catch {
-      encoded = value;
-    }
-    if (encoded !== value && !encoded.includes(REDACTED)) {
-      secrets.add(encoded);
-    }
-    const formEncoded = encoded.replaceAll("%20", "+");
-    if (formEncoded !== value && !formEncoded.includes(REDACTED)) {
-      secrets.add(formEncoded);
-    }
-  }
-
   for (const [key, rawValue] of Object.entries(env ?? {})) {
     const value = String(rawValue ?? "");
     if (!value) continue;
@@ -380,7 +380,7 @@ export function buildEnvSecretRedactor(env, { curatedEnvKeys = [] } = {}) {
     const minLen = isCurated
       ? MIN_SECRET_REDACTION_LENGTH_CURATED
       : MIN_SECRET_REDACTION_LENGTH_AUTO;
-    addSecret(value, minLen);
+    addEnvSecretVariants(secrets, value, minLen);
     // I17 — sub-extraction for cookie/SSO/SESSION values. Whole-value
     // redaction is preserved; we additionally extract semicolon/equals
     // sub-values so a fixture echoing only "sso=<token>" gets caught.
@@ -392,7 +392,7 @@ export function buildEnvSecretRedactor(env, { curatedEnvKeys = [] } = {}) {
         const lhs = trimmed.slice(0, eq).trim();
         if (!COOKIE_LIKE_SECRET_ATTR_NAME.test(lhs)) continue;
         const rhs = trimmed.slice(eq + 1).trim();
-        addSecret(rhs, MIN_SECRET_REDACTION_LENGTH_CURATED);
+        addEnvSecretVariants(secrets, rhs, MIN_SECRET_REDACTION_LENGTH_CURATED);
       }
     }
   }
@@ -624,7 +624,7 @@ export function sanitize(record, options = {}) {
     const minLen = isCurated
       ? MIN_SECRET_REDACTION_LENGTH_CURATED
       : MIN_SECRET_REDACTION_LENGTH_AUTO;
-    if (v.length >= minLen) envSecretSet.add(v);
+    addEnvSecretVariants(envSecretSet, v, minLen);
   }
   function shouldRedactKey(key) {
     if (typeof key !== "string" || !key) return false;
