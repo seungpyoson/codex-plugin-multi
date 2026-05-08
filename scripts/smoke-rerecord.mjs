@@ -13,8 +13,6 @@
 //
 // Required env per plugin (the script aborts loudly if missing):
 //   claude:        existing ~/.claude OAuth OR ANTHROPIC_API_KEY
-//   gemini:        existing gemini CLI auth OR GEMINI_API_KEY
-//   kimi:          existing kimi CLI auth OR KIMI_CODE_API_KEY/KIMI_API_KEY/MOONSHOT_API_KEY
 //   grok:          local grok2api tunnel running on http://127.0.0.1:8000/v1 with valid session
 //   api-reviewers-deepseek:  DEEPSEEK_API_KEY
 //
