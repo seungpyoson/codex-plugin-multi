@@ -31,7 +31,28 @@ const REDACTED = "[REDACTED]";
 // STRIPE_SECRET_KEY_LIVE, etc. False positives over-redact (a fixture
 // echoing the env value gets `[REDACTED]` even if the var wasn't actually
 // secret); false negatives leak. Conservative side.
-const SECRET_ENV_NAME = /(?:^|_)(?:API_KEY|TOKEN|ACCESS_KEY|SECRET|ADMIN_KEY|COOKIE|SESSION|SSO)(?:_|$)/i;
+// Single rule list: SECRET_ENV_NAME_CORES is the canonical set of
+// env-var-name fragments that mark a secret. Both the SECRET_ENV_NAME
+// regex (consumer here) and tests/property/sanitization-properties.test.mjs's
+// I1 generator (consumer there) derive from this one list. Adding a
+// new core fragment updates both via one edit; the round-5 mirroring
+// class (regex anchor vs. generator core list) is now structurally
+// closed.
+export const SECRET_ENV_NAME_CORES = Object.freeze([
+  "API_KEY",
+  "TOKEN",
+  "ACCESS_KEY",
+  "SECRET",
+  "ADMIN_KEY",
+  "COOKIE",
+  "SESSION",
+  "SSO",
+]);
+
+const SECRET_ENV_NAME = new RegExp(
+  `(?:^|_)(?:${SECRET_ENV_NAME_CORES.join("|")})(?:_|$)`,
+  "i",
+);
 
 // Default minimum length thresholds (mirror api-reviewer.mjs).
 const MIN_SECRET_REDACTION_LENGTH_AUTO = 8;        // auto-detected env names
@@ -75,7 +96,7 @@ const BEARER_TOKEN = /Bearer\s+[^\s"',}\]\\]+/gi;
 // Companion session-id field names. Both snake_case and camelCase variants —
 // providers vary. Replaced wholesale with REDACTED when architecture is
 // "companion".
-const COMPANION_SESSION_ID_FIELDS = Object.freeze([
+export const COMPANION_SESSION_ID_FIELDS = Object.freeze([
   "claude_session_id",
   "gemini_session_id",
   "kimi_session_id",

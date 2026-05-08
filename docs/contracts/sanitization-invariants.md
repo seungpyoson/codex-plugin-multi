@@ -238,7 +238,8 @@ with mixed-type values.
 
 ### I8 — Idempotence
 
-**Statement.** For all inputs `R, E, C`:
+**Statement.** For all `(R, opts)` (a record `R` and a sanitization
+context `opts = {env, architecture, curatedEnvKeys, ...}`):
 `sanitize(sanitize(R, opts), opts) === sanitize(R, opts)` (deep-equal).
 
 **Why.** A second sanitization pass must not introduce new redactions or
@@ -336,12 +337,12 @@ Assert all 5 outputs are deep-equal.
 **Statement.** The marker string `"[REDACTED]"` is reserved. For all
 inputs:
 
-1. **Input precondition** (caller-enforced via I12a): no env-secret
-   value, no curated key value, and no input string-fragment shall
-   equal `"[REDACTED]"` or contain it as a substring. If the
-   precondition is violated, `sanitize` SHALL throw a typed error
-   (`SanitizeMarkerCollision`) rather than silently produce ambiguous
-   output.
+1. **Input precondition** (`sanitize` validates and throws on
+   violation): no env-secret value, no curated key value, and no
+   input string-fragment shall equal `"[REDACTED]"` or contain it
+   as a substring. If the precondition is violated, `sanitize`
+   SHALL throw a typed error (`SanitizeMarkerCollision`) rather than
+   silently produce ambiguous output.
 2. **Output postcondition:** every occurrence of `"[REDACTED]"` in
    output corresponds to a redaction event (a value or substring that
    matched I1/I2/I3/I4/I5/I6/I7/I15). Count of marker occurrences in
@@ -431,7 +432,16 @@ benign strings, env-secret literals, and I2-prefix-shaped strings.
 
 1. For every JSON-compatible input (per the Surface section), `sanitize`
    terminates in time bounded by `O(n)` in input size, without
-   throwing, at any nesting depth up to 10⁴.
+   throwing, at any nesting depth up to 10³ (1,000). The property
+   test exercises this depth and passes.
+   Higher depths are out of contract. Empirical measurement on
+   Node v24.13.0 (round-17 probe): the recursive walker overflows
+   the call stack at depth ~2,003 and succeeds up to ~2,000. The 1,000
+   contract leaves a ~2× safety margin. Extending the contract to
+   depths approaching or exceeding the overflow threshold would
+   require switching the implementation from recursion to an
+   explicit-stack iterative walk; no real fixture currently
+   exercises that range.
 2. For inputs containing cycles, `Map`, `Set`, `Date`, `RegExp`,
    `Buffer`/typed arrays, `Symbol`, `BigInt`, functions, getters,
    proxies, or non-plain prototypes, `sanitize` SHALL throw a typed

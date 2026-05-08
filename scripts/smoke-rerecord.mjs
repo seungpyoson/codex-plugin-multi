@@ -29,7 +29,7 @@
 
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, realpathSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
@@ -37,8 +37,18 @@ import {
   buildProvenance,
   sanitize,
 } from "./lib/fixture-sanitization.mjs";
-import { checkAuthOrFile } from "./lib/smoke-rerecord-preflight.mjs";
+import {
+  checkAuthOrFile,
+  checkEnvAny,
+  renderAuthOrFileHelp,
+} from "./lib/smoke-rerecord-preflight.mjs";
 import { CLAUDE_PROVIDER_API_KEY_ENV } from "../plugins/claude/scripts/lib/claude-provider-keys.mjs";
+import {
+  ARCHITECTURE_API_REVIEWERS,
+  ARCHITECTURE_COMPANION,
+  ARCHITECTURE_GROK,
+  ARCHITECTURE_KINDS,
+} from "./lib/recipe-architecture.mjs";
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const FIXTURE_ROOT = path.join(REPO_ROOT, "tests/smoke/fixtures");
@@ -51,10 +61,50 @@ const HAPPY_PATH_PROMPT =
 const NEGATIVE_PROMPT =
   "This prompt should not be sent because credentials are missing.";
 
+// Provider-key env names declared by api-reviewers recipes. Source of
+// truth lives here (no plugin-side counterpart yet); validateRecipes
+// asserts every api-reviewers/* recipe declares envAny matching the
+// per-provider list below.
+const API_REVIEWER_PROVIDER_KEYS = Object.freeze({
+  deepseek: Object.freeze(["DEEPSEEK_API_KEY"]),
+  glm: Object.freeze(["ZAI_API_KEY", "ZAI_GLM_API_KEY"]),
+});
+
+// Auth-rejected recipes inject this sentinel into every accepted
+// provider key so the upstream provider returns 401/403 deterministically.
+// Exported so tests can assert against the same literal — drift between
+// recipe and test would silently turn a negative recipe into a decoy.
+export const INVALID_PROVIDER_KEY_SENTINEL =
+  "sk-this-is-a-deliberately-invalid-key-for-fixture-recording";
+
+// Build an env-overlay that invalidates every accepted key for `provider`.
+// Closing the C1-class drift one more step: the recipe-side override
+// previously knew about one key while the plugin accepted multiple
+// (#3199-class P1 — glm wiring with ZAI_GLM_API_KEY left intact would
+// fall through to happy-path in a negative fixture). Iterating the
+// canonical list means adding a new accepted key automatically
+// invalidates it in every negative recipe; nothing else needs to change.
+//
+// Exported so tests/unit/smoke-rerecord-validator.test.mjs can pin the
+// helper's behavior directly. The validator-side check (every
+// canonical key is the sentinel) co-verifies this through recipe
+// shape, but a refactor that changes the helper's signature without
+// touching the recipes would slip past the validator while still
+// breaking the invariant — direct tests catch that.
+export function invalidateProviderKeys(provider) {
+  const keys = API_REVIEWER_PROVIDER_KEYS[provider];
+  if (!keys) {
+    throw new Error(
+      `invalidateProviderKeys: unknown provider ${JSON.stringify(provider)}`,
+    );
+  }
+  return Object.fromEntries(keys.map((k) => [k, INVALID_PROVIDER_KEY_SENTINEL]));
+}
+
 export const RECIPES = Object.freeze({
   // ─── companion ──────────────────────────────────────────────────────
   "claude/happy-path-review": {
-    architecture: "companion",
+    architecture: ARCHITECTURE_COMPANION,
     plugin: "claude",
     spawnArgs: () => ({
       script: "plugins/claude/scripts/claude-companion.mjs",
@@ -74,24 +124,15 @@ export const RECIPES = Object.freeze({
         "--", HAPPY_PATH_PROMPT,
       ],
       env: { ...process.env },
-      // Either an existing claude-cli OAuth dir at ~/.claude OR a wired
-      // ANTHROPIC_API_KEY / CLAUDE_API_KEY env var is sufficient. The
-      // workflow (smoke-rerecord.yml) wires both secrets so a fresh CI
-      // runner without ~/.claude can still record. (Greptile P1
-      // #3199437297 — file-only check rejected secret-only runners.)
       requireEnvOrFile: {
-        envAny: CLAUDE_PROVIDER_API_KEY_ENV,  // shared with claude-companion.mjs (lib/claude-provider-keys.mjs)
+        envAny: CLAUDE_PROVIDER_API_KEY_ENV,
         file: path.join(process.env.HOME ?? "", ".claude"),
       },
-      // Refuse to write a fixture if the spawned claude exits non-zero.
-      // A happy-path recording that auth-fails or hits a transient 5xx
-      // would otherwise parse the error JSON and commit it as if it
-      // were a real review (silent fixture corruption).
       expectExit: [0],
     }),
   },
   "claude/auth-failure": {
-    architecture: "companion",
+    architecture: ARCHITECTURE_COMPANION,
     plugin: "claude",
     spawnArgs: () => ({
       script: "plugins/claude/scripts/claude-companion.mjs",
@@ -107,12 +148,23 @@ export const RECIPES = Object.freeze({
         ...scrubAuth(process.env, ["ANTHROPIC_API_KEY", "CLAUDE_API_KEY", "CLAUDE_CONFIG_DIR"]),
         HOME: "/var/empty",
       },
+      // Characterized by an actual smoke-rerecord workflow run on a
+      // sterile GitHub runner: the companion's `ping` path hits the
+      // "no provider key, structured pre-spawn auth rejection" branch
+      // and exits with code 2 (matching the codebase's standard
+      // "structured bad-args / preflight rejection" exit). Round-10's
+      // local probe hit a different state (likely a partial ~/.claude
+      // on the dev box leaking through) and saw exit 1; that
+      // characterization was wrong and is replaced here with the
+      // workflow-observed value cited in expectExitObservedRun.
+      expectExit: [2],
+      expectExitObservedRun: 25489163404,
     }),
   },
 
   // ─── grok ───────────────────────────────────────────────────────────
   "grok/happy-path-review": {
-    architecture: "grok",
+    architecture: ARCHITECTURE_GROK,
     plugin: "grok",
     spawnArgs: () => ({
       script: "plugins/grok/scripts/grok-web-reviewer.mjs",
@@ -126,10 +178,11 @@ export const RECIPES = Object.freeze({
       ],
       env: { ...process.env },
       requireTunnel: { url: process.env.GROK_WEB_BASE_URL ?? "http://127.0.0.1:8000/v1" },
+      expectExit: [0],
     }),
   },
   "grok/tunnel-error": {
-    architecture: "grok",
+    architecture: ARCHITECTURE_GROK,
     plugin: "grok",
     spawnArgs: () => ({
       script: "plugins/grok/scripts/grok-web-reviewer.mjs",
@@ -143,12 +196,17 @@ export const RECIPES = Object.freeze({
       ],
       // Force tunnel-unavailable by pointing at a port nothing listens on.
       env: { ...process.env, GROK_WEB_BASE_URL: "http://127.0.0.1:1/v1" },
+      // CI-characterized via workflow_dispatch (round-14 follow-up to
+      // round-13's class-of-problem fix): all negative recipes must cite
+      // the run that observed their exit code, not a local probe.
+      expectExit: [1],
+      expectExitObservedRun: 25489291490,
     }),
   },
 
   // ─── api-reviewers ──────────────────────────────────────────────────
   "api-reviewers-deepseek/happy-path-review": {
-    architecture: "api-reviewers",
+    architecture: ARCHITECTURE_API_REVIEWERS,
     plugin: "api-reviewers-deepseek",
     spawnArgs: () => ({
       script: "plugins/api-reviewers/scripts/api-reviewer.mjs",
@@ -161,12 +219,13 @@ export const RECIPES = Object.freeze({
         "--prompt", HAPPY_PATH_PROMPT,
       ],
       env: { ...process.env },
-      requireEnvAny: ["DEEPSEEK_API_KEY"],
-      curatedEnvKeys: ["DEEPSEEK_API_KEY"],
+      requireEnvAny: API_REVIEWER_PROVIDER_KEYS.deepseek,
+      curatedEnvKeys: API_REVIEWER_PROVIDER_KEYS.deepseek,
+      expectExit: [0],
     }),
   },
   "api-reviewers-deepseek/auth-rejected": {
-    architecture: "api-reviewers",
+    architecture: ARCHITECTURE_API_REVIEWERS,
     plugin: "api-reviewers-deepseek",
     spawnArgs: () => ({
       script: "plugins/api-reviewers/scripts/api-reviewer.mjs",
@@ -178,13 +237,19 @@ export const RECIPES = Object.freeze({
         "--scope-paths", "scripts/lib/plugin-targets.mjs",
         "--prompt", NEGATIVE_PROMPT,
       ],
-      // Inject a known-bad key — provider returns 401/403 → auth_rejected.
-      env: { ...process.env, DEEPSEEK_API_KEY: "sk-this-is-a-deliberately-invalid-key-for-fixture-recording" },
-      curatedEnvKeys: ["DEEPSEEK_API_KEY"],
+      // Invalidate every accepted provider key so the request reaches the
+      // provider and returns 401/403 → auth_rejected. Iterating the
+      // canonical list (rather than naming one key) prevents the C1-class
+      // drift where adding a new accepted key silently turns this negative
+      // recipe into a happy-path decoy.
+      env: { ...process.env, ...invalidateProviderKeys("deepseek") },
+      curatedEnvKeys: API_REVIEWER_PROVIDER_KEYS.deepseek,
+      expectExit: [1],
+      expectExitObservedRun: 25489292659,
     }),
   },
   "api-reviewers-glm/happy-path-review": {
-    architecture: "api-reviewers",
+    architecture: ARCHITECTURE_API_REVIEWERS,
     plugin: "api-reviewers-glm",
     spawnArgs: () => ({
       script: "plugins/api-reviewers/scripts/api-reviewer.mjs",
@@ -197,12 +262,13 @@ export const RECIPES = Object.freeze({
         "--prompt", HAPPY_PATH_PROMPT,
       ],
       env: { ...process.env },
-      requireEnvAny: ["ZAI_API_KEY", "ZAI_GLM_API_KEY"],
-      curatedEnvKeys: ["ZAI_API_KEY", "ZAI_GLM_API_KEY"],
+      requireEnvAny: API_REVIEWER_PROVIDER_KEYS.glm,
+      curatedEnvKeys: API_REVIEWER_PROVIDER_KEYS.glm,
+      expectExit: [0],
     }),
   },
   "api-reviewers-glm/auth-rejected": {
-    architecture: "api-reviewers",
+    architecture: ARCHITECTURE_API_REVIEWERS,
     plugin: "api-reviewers-glm",
     spawnArgs: () => ({
       script: "plugins/api-reviewers/scripts/api-reviewer.mjs",
@@ -214,17 +280,230 @@ export const RECIPES = Object.freeze({
         "--scope-paths", "scripts/lib/plugin-targets.mjs",
         "--prompt", NEGATIVE_PROMPT,
       ],
-      // Inject a known-bad key — provider returns 401/403 → auth_rejected.
-      env: { ...process.env, ZAI_API_KEY: "sk-this-is-a-deliberately-invalid-key-for-fixture-recording" },
-      curatedEnvKeys: ["ZAI_API_KEY", "ZAI_GLM_API_KEY"],
+      // Same invalidation strategy as deepseek/auth-rejected. Greptile
+      // P1 #3199 caught this concretely: ZAI_API_KEY alone left
+      // ZAI_GLM_API_KEY untouched, so a CI runner with both secrets
+      // wired would fall back to the second key and silently record a
+      // happy-path response in the negative fixture. invalidateProviderKeys
+      // iterates the canonical list, structurally closing the gap.
+      //
+      // Round-14 honesty note: the live-CI run referenced by
+      // expectExitObservedRun does NOT differentially exercise the
+      // round-12 fix on this repo because no provider secrets are wired
+      // (gh secret list is empty; owner is a User account, no org
+      // inheritance, no environment-keyed secrets in the workflow). The
+      // run does prove the recipe's exit code is 1 on a sterile runner,
+      // which is what the field asserts. The round-12 fix is verified
+      // logically via the locally-reproducible catch-rate.
+      env: { ...process.env, ...invalidateProviderKeys("glm") },
+      curatedEnvKeys: API_REVIEWER_PROVIDER_KEYS.glm,
+      expectExit: [1],
+      expectExitObservedRun: 25489293908,
     }),
   },
 });
+
+// Recipe-schema validator. Runs at module load (after RECIPES is
+// defined) so any malformed recipe blows up at import, not at recording
+// time. This is the round-10 systematic close for the "implicit recipe
+// shape" contract — previously, omitting envAny / expectExit / a
+// required field went undetected until the first recording hit the gap.
+export function validateRecipes(recipes) {
+  for (const [key, recipe] of Object.entries(recipes)) {
+    const where = `recipe ${JSON.stringify(key)}`;
+    if (!recipe || typeof recipe !== "object") {
+      throw new TypeError(`${where}: must be an object`);
+    }
+    if (!ARCHITECTURE_KINDS.includes(recipe.architecture)) {
+      throw new TypeError(
+        `${where}: architecture ${JSON.stringify(recipe.architecture)} is not in ARCHITECTURE_KINDS (${ARCHITECTURE_KINDS.join(", ")})`,
+      );
+    }
+    if (typeof recipe.plugin !== "string" || recipe.plugin.length === 0) {
+      throw new TypeError(`${where}: plugin must be a non-empty string`);
+    }
+    if (typeof recipe.spawnArgs !== "function") {
+      throw new TypeError(`${where}: spawnArgs must be a function`);
+    }
+
+    let spec;
+    try {
+      spec = recipe.spawnArgs();
+    } catch (e) {
+      throw new Error(`${where}: spawnArgs() threw: ${e.message ?? e}`);
+    }
+    if (!spec || typeof spec !== "object") {
+      throw new TypeError(`${where}: spawnArgs() must return an object`);
+    }
+    if (typeof spec.script !== "string" || spec.script.length === 0) {
+      throw new TypeError(`${where}: spawnArgs().script must be a non-empty string`);
+    }
+    if (!Array.isArray(spec.args)) {
+      throw new TypeError(`${where}: spawnArgs().args must be an array`);
+    }
+    if (!spec.env || typeof spec.env !== "object") {
+      throw new TypeError(`${where}: spawnArgs().env must be an object`);
+    }
+    if (!Array.isArray(spec.expectExit) || spec.expectExit.length === 0
+        || !spec.expectExit.every((n) => Number.isInteger(n))) {
+      throw new TypeError(
+        `${where}: spawnArgs().expectExit must be a non-empty array of integers (got ${JSON.stringify(spec.expectExit)})`,
+      );
+    }
+    if (spec.requireEnvAny !== undefined && (!Array.isArray(spec.requireEnvAny)
+        || !spec.requireEnvAny.every((s) => typeof s === "string" && s.length > 0))) {
+      throw new TypeError(`${where}: spawnArgs().requireEnvAny must be a non-empty array of strings if set`);
+    }
+    if (spec.requireEnvOrFile !== undefined) {
+      if (!spec.requireEnvOrFile || typeof spec.requireEnvOrFile !== "object") {
+        throw new TypeError(`${where}: spawnArgs().requireEnvOrFile must be an object if set`);
+      }
+      const eo = spec.requireEnvOrFile.envAny;
+      if (eo !== undefined && (!Array.isArray(eo) || !eo.every((s) => typeof s === "string" && s.length > 0))) {
+        throw new TypeError(`${where}: spawnArgs().requireEnvOrFile.envAny must be an array of strings if set`);
+      }
+      const fo = spec.requireEnvOrFile.file;
+      if (fo !== undefined && typeof fo !== "string") {
+        throw new TypeError(`${where}: spawnArgs().requireEnvOrFile.file must be a string if set`);
+      }
+    }
+    if (spec.curatedEnvKeys !== undefined
+        && (!Array.isArray(spec.curatedEnvKeys)
+            || !spec.curatedEnvKeys.every((s) => typeof s === "string"))) {
+      throw new TypeError(`${where}: spawnArgs().curatedEnvKeys must be an array of strings if set`);
+    }
+
+    // Round-14 finding B — auth-rejected naming convention is bound to
+    // api-reviewers architecture only. Companion / grok recipes that
+    // need to record an auth failure use the *-auth-failure naming
+    // (claude/auth-failure is the canonical example). Without this
+    // gate, a future companion recipe named "*/auth-rejected" would
+    // bypass the invalidate-every-key validator below — which is
+    // architecture-keyed — and silently ship a recipe whose negative
+    // path could be a happy-path decoy on a wired runner.
+    if (key.endsWith("/auth-rejected") && recipe.architecture !== ARCHITECTURE_API_REVIEWERS) {
+      throw new TypeError(
+        `${where}: only api-reviewers architecture may use the *-auth-rejected naming convention; `
+        + `for ${recipe.architecture} architecture, use *-auth-failure instead `
+        + `(claude/auth-failure is the canonical example)`,
+      );
+    }
+
+    // Round-14 finding C — negative recipes (expectExit !== [0]) must
+    // cite the workflow_dispatch run that observed their declared exit.
+    // Round-13 caught one wrong locally-probed value (claude/auth-failure
+    // declared [1], CI observed [2]); the bug pattern is "dev ~/.claude
+    // state leaks through scrubAuth despite HOME=/var/empty." The fix
+    // is process-level: a contributor either runs the workflow and cites
+    // the run ID, or the recipe blows up at module load. Happy-path
+    // recipes (expectExit: [0]) do not need this — any wrong value
+    // fails the workflow obviously, no silent acceptance risk.
+    const isNegativeRecipe = !spec.expectExit.includes(0);
+    if (isNegativeRecipe) {
+      const obs = spec.expectExitObservedRun;
+      if (typeof obs !== "number" || !Number.isInteger(obs) || obs <= 0) {
+        throw new TypeError(
+          `${where}: negative recipes (expectExit ${JSON.stringify(spec.expectExit)}) must declare `
+          + `spawnArgs().expectExitObservedRun as a positive integer (the GitHub Actions run ID that `
+          + `observed the declared exit code on a sterile CI runner). Got ${JSON.stringify(obs)}. `
+          + `Run smoke-rerecord.yml via workflow_dispatch and cite the run ID.`,
+        );
+      }
+    }
+
+    // Architecture-specific structural checks. Keep narrow — semantic
+    // per-recipe checks live in tests/unit/smoke-rerecord-recipes.test.mjs.
+    if (recipe.architecture === ARCHITECTURE_API_REVIEWERS) {
+      const idx = spec.args.indexOf("--provider");
+      if (idx === -1) {
+        throw new TypeError(
+          `${where}: api-reviewers recipe must include --provider in args`,
+        );
+      }
+      const provider = spec.args[idx + 1];
+      if (typeof provider !== "string" || provider.length === 0) {
+        throw new TypeError(
+          `${where}: --provider must be followed by a non-empty name`,
+        );
+      }
+      const expected = API_REVIEWER_PROVIDER_KEYS[provider];
+      if (!expected) {
+        throw new TypeError(
+          `${where}: --provider ${JSON.stringify(provider)} not in API_REVIEWER_PROVIDER_KEYS (${Object.keys(API_REVIEWER_PROVIDER_KEYS).join(", ")})`,
+        );
+      }
+      // For happy-path recipes, requireEnvAny must match the provider's keys.
+      if (key.endsWith("/happy-path-review")) {
+        if (!spec.requireEnvAny || spec.requireEnvAny !== expected) {
+          throw new TypeError(
+            `${where}: happy-path requireEnvAny must reference API_REVIEWER_PROVIDER_KEYS.${provider} (drift = decoy preflight)`,
+          );
+        }
+      }
+      // For auth-rejected recipes, every canonical provider key must be
+      // sentinelled. A recipe that names only the first key (the round-11
+      // pattern) lets a runner with the second key wired record a
+      // happy-path response into a negative fixture — the same C1-class
+      // drift, in negative-recipe shape. Validator catches it at module
+      // load instead of at recording time.
+      if (key.endsWith("/auth-rejected")) {
+        for (const k of expected) {
+          if (spec.env[k] !== INVALID_PROVIDER_KEY_SENTINEL) {
+            // Diagnostic intentionally omits the actual value — even in a
+            // throw-path, a recipe-validator error must not serialize an
+            // env value (Rule 10: no credential surfaces). The key name
+            // and the expectation are enough to localize the fix.
+            throw new TypeError(
+              `${where}: auth-rejected must invalidate every key in API_REVIEWER_PROVIDER_KEYS.${provider}; `
+              + `spec.env[${JSON.stringify(k)}] is not the sentinel (use invalidateProviderKeys(${JSON.stringify(provider)}))`,
+            );
+          }
+        }
+      }
+    }
+  }
+}
+
+validateRecipes(RECIPES);
 
 function scrubAuth(env, keys) {
   const out = { ...env };
   for (const key of keys) delete out[key];
   return out;
+}
+
+// Derive the prompt string used to compute the provenance promptHash.
+//
+// Earlier rounds layered four detectors (explicit `--prompt`,
+// `--` separator, last non-flag positional, length>50 fallback). The
+// last two were fragile: a flag VALUE that didn't start with `-`
+// (e.g. `--auth-mode api_key` → `api_key`) was misclassified as a
+// positional prompt by layer 3, and a long path arg slipped through
+// layer 4. Both produced wrong promptHash values silently.
+//
+// Round-16 root fix: use ONLY explicit anchors. If neither
+// `--prompt <value>` nor `-- <value>` is present, the recipe has no
+// prompt and we hash the empty string. Honest "no prompt detected"
+// beats a wrong heuristic.
+//
+// Live recipes audit at round-16 commit time:
+//   - claude/happy-path-review     uses `-- HAPPY_PATH_PROMPT` ✓
+//   - claude/auth-failure          no prompt anchor → "" (correct,
+//                                   it's a `ping` doctor call)
+//   - grok/*                       use `--prompt …` ✓
+//   - api-reviewers-*/             use `--prompt …` ✓
+// Only claude/auth-failure changes (was incorrectly hashing "api_key").
+export function derivePromptForHash(args) {
+  if (!Array.isArray(args)) return "";
+  const promptIdx = args.indexOf("--prompt");
+  if (promptIdx !== -1 && typeof args[promptIdx + 1] === "string") {
+    return args[promptIdx + 1];
+  }
+  const ddIdx = args.indexOf("--");
+  if (ddIdx !== -1 && typeof args[ddIdx + 1] === "string") {
+    return args[ddIdx + 1];
+  }
+  return "";
 }
 
 function parseArgs(argv) {
@@ -265,22 +544,27 @@ function listRecipes() {
   }
 }
 
-function preflightCheck(spec) {
+export function preflightCheck(spec) {
+  // Both branches consult spec.env (the env that recordResponse will
+  // pass to the spawn), not process.env. Recipes that mutate env in
+  // spawnArgs() (e.g. claude/auth-failure scrubs auth) need preflight
+  // to validate against the post-mutation environment.
   if (spec.requireEnvAny) {
-    const found = spec.requireEnvAny.find((key) => process.env[key]);
-    if (!found) {
-      process.stderr.write(
-        `smoke-rerecord: required env not set. One of: ${spec.requireEnvAny.join(", ")}\n`,
-      );
+    const r = checkEnvAny({ envAny: spec.requireEnvAny }, { env: spec.env });
+    if (!r.ok) {
+      process.stderr.write(`smoke-rerecord: ${r.reason}\n`);
+      process.stderr.write(`  Set ${spec.requireEnvAny.join(" or ")} in env.\n`);
       process.exit(2);
     }
   }
   if (spec.requireEnvOrFile) {
-    const result = checkAuthOrFile(spec.requireEnvOrFile);
-    if (!result.ok) {
-      process.stderr.write(
-        `smoke-rerecord: ${result.reason}. Sign in to the CLI first or set the relevant *_API_KEY env var.\n`,
-      );
+    const r = checkAuthOrFile(spec.requireEnvOrFile, {
+      env: spec.env,
+      fileExists: existsSync,
+    });
+    if (!r.ok) {
+      process.stderr.write(`smoke-rerecord: ${r.reason}\n`);
+      process.stderr.write(`  ${renderAuthOrFileHelp(r.missing)}\n`);
       process.exit(2);
     }
   }
@@ -384,14 +668,10 @@ function main() {
   process.stderr.write(`Exit code: ${result.exitCode}\n`);
   if (result.signal) process.stderr.write(`Signal: ${result.signal}\n`);
 
-  // Exit-code gate: a recipe may declare `expectExit: number[]` to refuse
-  // fixture writes when the spawned plugin's status doesn't match. Without
-  // this, a happy-path recording that auth-fails (or hits a transient 5xx)
-  // would parse the error JSON and write it as if it were a real review —
-  // silent fixture corruption. Recipes that omit expectExit accept any
-  // exit code (preserving the prior behavior for negative recipes whose
-  // exit codes haven't been characterized yet).
-  if (Array.isArray(spec.expectExit) && !spec.expectExit.includes(result.exitCode)) {
+  // Exit-code gate. Every recipe declares expectExit (validateRecipes
+  // enforces this at module load), so a recording that doesn't match
+  // the recipe's intent is refused before any fixture is written.
+  if (!spec.expectExit.includes(result.exitCode)) {
     process.stderr.write(
       `smoke-rerecord: child exit ${result.exitCode} not in expectExit ${JSON.stringify(spec.expectExit)} - refusing to write fixture.\n`,
     );
@@ -414,25 +694,7 @@ function main() {
   }
 
   // Build sanitization context.
-  //
-  // Prompt-for-hash detection. Layered: (1) explicit `--prompt <value>`
-  // anchor; (2) trailing positional after `--` separator; (3) last
-  // non-flag positional arg; (4) length>50 fallback for legacy. The
-  // length-only heuristic was fragile per Gemini code-review (#116
-  // bot comments 3198445563 / 3198672662 / 3198727895) — `--scope-paths`
-  // values and other long file paths could be misidentified as prompts.
-  const promptForHash = (() => {
-    const args = spec.args ?? [];
-    const promptIdx = args.indexOf("--prompt");
-    if (promptIdx !== -1 && args[promptIdx + 1]) return args[promptIdx + 1];
-    const ddIdx = args.indexOf("--");
-    if (ddIdx !== -1 && args[ddIdx + 1]) return args[ddIdx + 1];
-    if (args.length > 0) {
-      const last = args[args.length - 1];
-      if (typeof last === "string" && !last.startsWith("-")) return last;
-    }
-    return args.find((arg) => typeof arg === "string" && arg.length > 50) ?? "";
-  })();
+  const promptForHash = derivePromptForHash(spec.args);
   const promptHash = createHash("sha256").update(promptForHash).digest("hex");
 
   const sanitizationOptions = {
@@ -458,7 +720,7 @@ function main() {
       "- public-prefix tokens (sk-, AKIA, AIza, ghp_, eyJ-, ...)",
       "- Authorization headers and Bearer tokens",
       "- macOS user-home paths (/Users/<user>)",
-      recipe.architecture === "companion" ? "- companion session_id fields" : "",
+      recipe.architecture === ARCHITECTURE_COMPANION ? "- companion session_id fields" : "",
     ].filter(Boolean).join("\n"),
     recordedBy: process.env.SMOKE_RERECORD_RUN_REF ?? "manual: scripts/smoke-rerecord.mjs",
   });
@@ -467,9 +729,26 @@ function main() {
   process.stderr.write("OK\n");
 }
 
-// Run main() only when invoked as the entry script. Importers (e.g.
-// recipe-shape tests) get the module exports without triggering arg
-// parsing or process.exit.
-if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {
+// Predicate for "this module is being invoked as the entry script".
+// Exported so the wiring can be unit-tested with synthetic argv values
+// (relative paths, symlinks, mismatching paths) — empirical proof of
+// the npm/npx-shim guard rather than code-reading.
+//
+// Robust against:
+//   - relative argv[1] (`node scripts/smoke-rerecord.mjs ...` from repo
+//     root passes a relative path; pathToFileURL needs absolute)
+//   - symlinks (npm/npx shims, /var/symlinks/, etc.) via realpathSync
+export function isEntryScript(scriptUrl, argv1) {
+  if (typeof argv1 !== "string" || argv1.length === 0) return false;
+  let resolved;
+  try {
+    resolved = realpathSync(path.resolve(argv1));
+  } catch {
+    resolved = path.resolve(argv1);
+  }
+  return scriptUrl === pathToFileURL(resolved).href;
+}
+
+if (isEntryScript(import.meta.url, process.argv[1])) {
   main();
 }

@@ -14,7 +14,11 @@
 import { strict as assert } from "node:assert";
 import { describe, it } from "node:test";
 
-import { checkAuthOrFile } from "../../scripts/lib/smoke-rerecord-preflight.mjs";
+import {
+  checkAuthOrFile,
+  checkEnvAny,
+  renderAuthOrFileHelp,
+} from "../../scripts/lib/smoke-rerecord-preflight.mjs";
 
 describe("checkAuthOrFile", () => {
   it("ok when an envAny key has a non-empty value (env branch)", () => {
@@ -118,5 +122,100 @@ describe("checkAuthOrFile", () => {
     assert.equal(r.ok, false);
     assert.match(r.reason, /no env keys configured/);
     assert.match(r.reason, /no file path configured/);
+  });
+
+  it("returns structured `missing` for conditional help rendering", () => {
+    const r = checkAuthOrFile(
+      { envAny: ["FOO_KEY", "BAR_KEY"], file: "/missing" },
+      { env: {}, fileExists: () => false },
+    );
+    assert.equal(r.ok, false);
+    assert.deepEqual(r.missing.envAny, ["FOO_KEY", "BAR_KEY"]);
+    assert.equal(r.missing.file, "/missing");
+  });
+
+  it("throws TypeError when opts.env is missing (no silent process.env fallback)", () => {
+    // Round-10: dropped the existsSync default and the process.env
+    // default to honor the module's "pure functions only" header. A
+    // helper that read process.env by default could let the call site
+    // validate one environment while the spawn used another (the
+    // round-7 internal SO2 finding).
+    assert.throws(
+      () => checkAuthOrFile({ envAny: ["X"] }, { fileExists: () => false }),
+      /opts\.env is required/,
+    );
+  });
+
+  it("throws TypeError when opts.fileExists is missing (forces explicit injection)", () => {
+    assert.throws(
+      () => checkAuthOrFile({ envAny: ["X"] }, { env: {} }),
+      /opts\.fileExists is required/,
+    );
+  });
+});
+
+describe("checkEnvAny", () => {
+  it("ok when an envAny key has a non-empty value", () => {
+    const r = checkEnvAny(
+      { envAny: ["FOO", "BAR"] },
+      { env: { BAR: "v" } },
+    );
+    assert.equal(r.ok, true);
+    assert.equal(r.source, "env");
+    assert.equal(r.key, "BAR");
+  });
+
+  it("treats empty-string env values as unset (same predicate as checkAuthOrFile)", () => {
+    // Round-10 C6 close: requireEnvAny used a truthy `if (env[k])`
+    // predicate, while checkAuthOrFile used string-non-empty. The
+    // mismatch reintroduced the empty-string-leaks-through bug class
+    // for api-reviewers recipes. Both helpers now share isEnvValueSet.
+    const r = checkEnvAny(
+      { envAny: ["FOO"] },
+      { env: { FOO: "" } },
+    );
+    assert.equal(r.ok, false);
+    assert.deepEqual(r.missing.envAny, ["FOO"]);
+  });
+
+  it("fails with a structured reason when no key matches", () => {
+    const r = checkEnvAny(
+      { envAny: ["FOO", "BAR"] },
+      { env: {} },
+    );
+    assert.equal(r.ok, false);
+    assert.match(r.reason, /need one of FOO \/ BAR/);
+  });
+
+  it("throws TypeError when opts.env is missing", () => {
+    assert.throws(
+      () => checkEnvAny({ envAny: ["X"] }, undefined),
+      /opts\.env is required/,
+    );
+  });
+});
+
+describe("renderAuthOrFileHelp", () => {
+  it("returns env-only suggestion when only envAny is missing", () => {
+    const help = renderAuthOrFileHelp({ envAny: ["FOO"], file: null });
+    assert.match(help, /Set FOO in env/);
+    assert.doesNotMatch(help, /sign in/i);
+  });
+
+  it("returns file-only suggestion when only file is missing", () => {
+    const help = renderAuthOrFileHelp({ envAny: [], file: "/path/.claude" });
+    assert.match(help, /Sign in to the CLI to populate \/path\/\.claude/);
+    assert.doesNotMatch(help, /env/i);
+  });
+
+  it("returns both options when both are missing", () => {
+    const help = renderAuthOrFileHelp({ envAny: ["FOO"], file: "/p" });
+    assert.match(help, /Set FOO in env/);
+    assert.match(help, /sign in to populate \/p/);
+  });
+
+  it("handles a spec with no auth requirements configured", () => {
+    const help = renderAuthOrFileHelp({ envAny: [], file: null });
+    assert.match(help, /no auth requirements/);
   });
 });
