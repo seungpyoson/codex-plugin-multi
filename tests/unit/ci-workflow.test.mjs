@@ -45,6 +45,19 @@ test("pull-request CI runs the enforced coverage gate", () => {
   assert.match(workflow, /npm run test:coverage/);
 });
 
+test("pull-request CI full-sweeps fixtures when fixture-control code changes", () => {
+  assert.match(
+    workflow,
+    /CONTROL_CHANGED=\$\(git diff --name-only "\$BASE" HEAD -- [\s\S]*scripts\/lib\/fixture-sanitization\.mjs[\s\S]*tests\/unit\/fixture-validity\.test\.mjs[\s\S]*scripts\/smoke-rerecord\.mjs[\s\S]*\.github\/workflows\/smoke-rerecord\.yml/,
+    "CI must detect fixture sanitizer/gate/rerecord code changes, not only fixture file changes",
+  );
+  assert.match(
+    workflow,
+    /\[ -n "\$CONTROL_CHANGED" \][\s\S]*leaving SMOKE_FIXTURE_CHANGED unset \(full-sweep fixture-control change\)/,
+    "fixture-control changes must leave SMOKE_FIXTURE_CHANGED unset so fixture-validity scans every committed fixture",
+  );
+});
+
 test("Sonar CPD excludes intentional packaging and entrypoint copies", () => {
   for (const path of [
     "scripts/lib/external-review.mjs",
