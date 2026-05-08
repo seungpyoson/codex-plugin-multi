@@ -867,10 +867,10 @@ describe("I15 — secret-shaped object keys are redacted", () => {
 // --------------------------------------------------------------------
 
 describe("I16(a) — terminates on JSON-compatible input at depth", () => {
-  it("nested JSON-compatible value up to depth 100: no throw", () => {
+  it("nested JSON-compatible value up to depth 1000: no throw", () => {
     fc.assert(
       fc.property(
-        fc.integer({ min: 1, max: 100 }),
+        fc.integer({ min: 1, max: 1000 }),
         arch(),
         (depth, architecture) => {
           let record = { leaf: 1 };
