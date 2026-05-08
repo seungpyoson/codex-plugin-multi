@@ -1926,7 +1926,7 @@ test("direct API unlisted 5xx quota-looking errors stay provider_error", async (
       error: {
         code: "insufficient_quota",
         type: "unsupported_http_version",
-        message: "quota endpoint does not support this HTTP version.",
+        message: "quota endpoint unavailable for this unsupported HTTP version.",
       },
     }));
   });
