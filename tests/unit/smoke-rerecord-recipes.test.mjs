@@ -152,7 +152,7 @@ describe("smoke-rerecord recipes — auth invariants", () => {
     });
   });
 
-  for (const provider of ["deepseek", "glm"]) {
+  for (const provider of ["deepseek"]) {
     const happyKey = `api-reviewers-${provider}/happy-path-review`;
     const negKey = `api-reviewers-${provider}/auth-rejected`;
 
@@ -184,9 +184,9 @@ describe("smoke-rerecord recipes — auth invariants", () => {
         // (invalidateProviderKeys iterates API_REVIEWER_PROVIDER_KEYS[provider])
         // closes the gap structurally; this test pins it: a recipe that
         // forgets a key gets caught here, and `validateRecipes` catches it
-        // at module load. Without iterating, a runner with the secondary
-        // key wired (e.g. ZAI_GLM_API_KEY for glm) would silently record
-        // a happy-path response in the negative fixture.
+        // at module load. Without iterating, a runner with a secondary
+        // provider key wired would silently record a happy-path response
+        // in the negative fixture.
         const happyKeys = RECIPES[happyKey].spawnArgs().requireEnvAny;
         assert.ok(happyKeys.length > 0);
         for (const k of happyKeys) {
@@ -221,8 +221,6 @@ describe("smoke-rerecord recipes — completeness", () => {
       "grok/tunnel-error",
       "api-reviewers-deepseek/happy-path-review",
       "api-reviewers-deepseek/auth-rejected",
-      "api-reviewers-glm/happy-path-review",
-      "api-reviewers-glm/auth-rejected",
     ];
     assert.deepEqual([...Object.keys(RECIPES)].sort(), [...expected].sort());
   });

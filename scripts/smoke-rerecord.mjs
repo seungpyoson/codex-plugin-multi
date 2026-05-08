@@ -17,7 +17,6 @@
 //   kimi:          existing kimi CLI auth OR KIMI_CODE_API_KEY/KIMI_API_KEY/MOONSHOT_API_KEY
 //   grok:          local grok2api tunnel running on http://127.0.0.1:8000/v1 with valid session
 //   api-reviewers-deepseek:  DEEPSEEK_API_KEY
-//   api-reviewers-glm:       ZAI_API_KEY or ZAI_GLM_API_KEY
 //
 // Companion auth: claude/happy-path-review uses --auth-mode auto, which
 // selects api_key_env when ANTHROPIC_API_KEY (or CLAUDE_API_KEY) is set
@@ -246,59 +245,6 @@ export const RECIPES = Object.freeze({
       curatedEnvKeys: API_REVIEWER_PROVIDER_KEYS.deepseek,
       expectExit: [1],
       expectExitObservedRun: 25489292659,
-    }),
-  },
-  "api-reviewers-glm/happy-path-review": {
-    architecture: ARCHITECTURE_API_REVIEWERS,
-    plugin: "api-reviewers-glm",
-    spawnArgs: () => ({
-      script: "plugins/api-reviewers/scripts/api-reviewer.mjs",
-      args: [
-        "run",
-        "--provider", "glm",
-        "--mode", "custom-review",
-        "--scope", "custom",
-        "--scope-paths", "scripts/lib/plugin-targets.mjs",
-        "--prompt", HAPPY_PATH_PROMPT,
-      ],
-      env: { ...process.env },
-      requireEnvAny: API_REVIEWER_PROVIDER_KEYS.glm,
-      curatedEnvKeys: API_REVIEWER_PROVIDER_KEYS.glm,
-      expectExit: [0],
-    }),
-  },
-  "api-reviewers-glm/auth-rejected": {
-    architecture: ARCHITECTURE_API_REVIEWERS,
-    plugin: "api-reviewers-glm",
-    spawnArgs: () => ({
-      script: "plugins/api-reviewers/scripts/api-reviewer.mjs",
-      args: [
-        "run",
-        "--provider", "glm",
-        "--mode", "custom-review",
-        "--scope", "custom",
-        "--scope-paths", "scripts/lib/plugin-targets.mjs",
-        "--prompt", NEGATIVE_PROMPT,
-      ],
-      // Same invalidation strategy as deepseek/auth-rejected. Greptile
-      // P1 #3199 caught this concretely: ZAI_API_KEY alone left
-      // ZAI_GLM_API_KEY untouched, so a CI runner with both secrets
-      // wired would fall back to the second key and silently record a
-      // happy-path response in the negative fixture. invalidateProviderKeys
-      // iterates the canonical list, structurally closing the gap.
-      //
-      // Round-14 honesty note: the live-CI run referenced by
-      // expectExitObservedRun does NOT differentially exercise the
-      // round-12 fix on this repo because no provider secrets are wired
-      // (gh secret list is empty; owner is a User account, no org
-      // inheritance, no environment-keyed secrets in the workflow). The
-      // run does prove the recipe's exit code is 1 on a sterile runner,
-      // which is what the field asserts. The round-12 fix is verified
-      // logically via the locally-reproducible catch-rate.
-      env: { ...process.env, ...invalidateProviderKeys("glm") },
-      curatedEnvKeys: API_REVIEWER_PROVIDER_KEYS.glm,
-      expectExit: [1],
-      expectExitObservedRun: 25489293908,
     }),
   },
 });

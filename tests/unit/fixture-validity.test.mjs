@@ -21,6 +21,7 @@ import {
   PATH_SCRUB_PROBES,
   SECRET_PREFIX_PATTERNS,
 } from "../../scripts/lib/fixture-sanitization.mjs";
+import { RECIPES } from "../../scripts/smoke-rerecord.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(HERE, "..", "..");
@@ -43,7 +44,6 @@ const PLUGIN_TO_ARCHITECTURE = Object.freeze({
   kimi: "companion",
   grok: "grok",
   "api-reviewers-deepseek": "api-reviewers",
-  "api-reviewers-glm": "api-reviewers",
 });
 
 function listFixturePairs() {
@@ -143,6 +143,18 @@ test("fixtures: at least one fixture pair exists (MVP scope)", () => {
   assert.ok(
     FIXTURES.length > 0,
     "expected at least one fixture pair under tests/smoke/fixtures/<plugin>/",
+  );
+});
+
+test("fixtures: every smoke-rerecord recipe has a committed fixture pair", () => {
+  if (isPrScopedRun()) return;
+  const committedPairs = new Set(FIXTURES.map((f) => `${f.plugin}/${f.scenario}`));
+  const missing = Object.keys(RECIPES).filter((key) => !committedPairs.has(key));
+  assert.deepEqual(
+    missing,
+    [],
+    "every smoke-rerecord recipe must have paired committed fixtures; "
+    + "remove out-of-scope recipes or commit their response/provenance pair",
   );
 });
 
