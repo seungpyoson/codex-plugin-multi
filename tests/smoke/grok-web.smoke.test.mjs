@@ -680,6 +680,60 @@ test("doctor identifies grok2api admin/runtime token-table divergence", async ()
   });
 });
 
+test("doctor reports runtime status probe failures when admin tokens look healthy", async () => {
+  const validToken = "eyJhbGciOiJub25lIn0.eyJzdWIiOiJncm9rIn0.signature";
+  await withServer(async (req, res) => {
+    res.setHeader("content-type", "application/json");
+    if (req.url === "/api/models") {
+      res.end(JSON.stringify({ data: [{ id: "grok-4.20-fast" }] }));
+      return;
+    }
+    if (req.url === "/api/chat/completions") {
+      await readJsonRequest(req);
+      res.writeHead(400);
+      res.end(JSON.stringify({
+        error: { message: "Chat upstream returned 400", type: "upstream_error", code: "upstream_error" },
+      }));
+      return;
+    }
+    if (req.url === "/admin/api/tokens") {
+      res.end(JSON.stringify({
+        tokens: [
+          { token: validToken, pool: "super", status: "active", deleted: false },
+        ],
+      }));
+      return;
+    }
+    if (req.url === "/status") {
+      res.writeHead(503);
+      res.end(JSON.stringify({ error: { message: "runtime status down" } }));
+      return;
+    }
+    res.writeHead(404);
+    res.end(JSON.stringify({ error: { message: "not found" } }));
+  }, async (baseUrl) => {
+    const adminBaseUrl = baseUrl.replace(/\/api$/, "");
+    const result = await runAsync(["doctor"], {
+      env: {
+        GROK_WEB_BASE_URL: baseUrl,
+        GROK2API_BASE_URL: adminBaseUrl,
+      },
+    });
+    const parsed = parseStdout(result);
+
+    assert.equal(result.status, 0);
+    assert.equal(parsed.ready, false);
+    assert.equal(parsed.error_code, "grok_runtime_status_unavailable");
+    assert.equal(parsed.session_diagnostics.status, "checked");
+    assert.equal(parsed.session_diagnostics.active_token_count, 1);
+    assert.equal(parsed.session_diagnostics.runtime_status, "unknown");
+    assert.equal(parsed.session_diagnostics.runtime_error_code, "grok_runtime_status_unavailable");
+    assert.equal(parsed.session_diagnostics.runtime_http_status, 503);
+    assert.match(parsed.next_action, /runtime status|restart|refresh.*tunnel/i);
+    assert.doesNotMatch(result.stdout, /eyJhbGci/);
+  });
+});
+
 test("doctor reports tunnel_unavailable when the local Grok tunnel is not reachable", () => {
   const result = run(["doctor"], {
     env: {

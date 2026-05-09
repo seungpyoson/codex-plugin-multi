@@ -824,6 +824,7 @@ async function probeGrokSessionDiagnostics(cfg, env = process.env) {
     const runtimeDiverged = runtimeDiagnostics.status === "checked"
       && tokenDiagnostics.active_token_count > 0
       && runtimeDiagnostics.runtime_size === 0;
+    const runtimeProbeFailed = runtimeDiagnostics.status === "unknown";
     return {
       ...tokenDiagnostics,
       ...(runtimeDiagnostics.status === "checked" ? {
@@ -831,8 +832,16 @@ async function probeGrokSessionDiagnostics(cfg, env = process.env) {
         runtime_revision: runtimeDiagnostics.runtime_revision,
         runtime_selection_strategy: runtimeDiagnostics.runtime_selection_strategy,
       } : {}),
-      error_code: runtimeDiverged ? "grok_session_runtime_admin_divergence" : tokenDiagnostics.error_code,
-      error_message: null,
+      ...(runtimeProbeFailed ? {
+        runtime_status: runtimeDiagnostics.status,
+        runtime_error_code: runtimeDiagnostics.error_code,
+        runtime_http_status: runtimeDiagnostics.http_status,
+        runtime_probe_endpoint: runtimeDiagnostics.probe_endpoint,
+      } : {}),
+      error_code: runtimeDiverged
+        ? "grok_session_runtime_admin_divergence"
+        : (runtimeProbeFailed ? runtimeDiagnostics.error_code : tokenDiagnostics.error_code),
+      error_message: runtimeProbeFailed ? runtimeDiagnostics.error_message : null,
       http_status: response.status,
       probe_endpoint: endpoint,
     };
@@ -1124,6 +1133,8 @@ function suggestedAction(errorCode, errorMessage = "") {
   if (errorCode === "grok_session_no_runtime_tokens") return "The local Grok tunnel has no active runtime session tokens; sync the browser session or import a valid Grok cookie, then retry.";
   if (errorCode === "grok_session_malformed_active_token") return "The local Grok tunnel has a malformed active Grok session token; remove the malformed token, import a JWT-shaped Grok cookie, restart or refresh the tunnel, then retry.";
   if (errorCode === "grok_session_runtime_admin_divergence") return "The grok2api admin token list has active tokens but the runtime token table is empty; restart or refresh the local Grok tunnel, then retry.";
+  if (errorCode === "grok_runtime_status_unavailable") return "The grok2api admin token list has active tokens, but the runtime status endpoint is unavailable; restart or refresh the local Grok tunnel, then retry.";
+  if (errorCode === "grok_runtime_status_timeout") return "The grok2api admin token list has active tokens, but the runtime status endpoint timed out; inspect local tunnel latency, restart or refresh the tunnel, then retry.";
   if (errorCode === "models_ok_chat_400") return "The tunnel lists models but chat is not review-capable; refresh the Grok web session, inspect tunnel logs and rate-limit endpoint health, then retry.";
   if (errorCode === "review_not_completed") return "Treat this Grok slot as failed. Inspect the raw result and runtime diagnostics, then retry only with a source packet and prompt contract the reviewer can inspect and answer substantively.";
   if (errorCode === "malformed_response") return "Inspect or update the local Grok web tunnel; it returned an unsupported response shape.";
@@ -1677,6 +1688,7 @@ async function doctorFields(env = process.env) {
   const ready = probe.reachable === true && chatProbe.chat_ready === true;
   const sessionErrorCode = sessionDiagnostics.status === "checked" ? sessionDiagnostics.error_code : null;
   const errorCode = ready ? null : (sessionErrorCode ?? chatProbe.error_code ?? probe.error_code);
+  const sessionErrorMessage = sessionDiagnostics.status === "checked" ? sessionDiagnostics.error_message : null;
   return {
     provider: "grok-web",
     status: "ok",
@@ -1703,7 +1715,7 @@ async function doctorFields(env = process.env) {
     session_diagnostics: sessionDiagnostics,
     cost_quota_readiness: costQuotaReadiness,
     error_code: errorCode,
-    error_message: ready ? null : (chatProbe.error_message ?? probe.error_message),
+    error_message: ready ? null : (sessionErrorMessage ?? chatProbe.error_message ?? probe.error_message),
     http_status: probe.http_status,
     chat_http_status: chatProbe.http_status,
   };
