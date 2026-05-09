@@ -147,6 +147,30 @@ test("review panel markdown renders one visibly explicit provider row per record
   assert.match(markdown, /not_reviewed/);
 });
 
+test("review panel does not call NOT REVIEWED a permission block without read-denial evidence", () => {
+  const [row] = buildReviewPanelRows([
+    {
+      target: "claude",
+      status: "failed",
+      error_code: "review_not_completed",
+      external_review: { source_content_transmission: "sent" },
+      review_metadata: {
+        raw_output: { elapsed_ms: 1200 },
+        audit_manifest: {
+          review_quality: {
+            failed_review_slot: true,
+            semantic_failure_reasons: ["not_reviewed"],
+          },
+        },
+      },
+      result: "NOT REVIEWED: no substantive review was produced.",
+    },
+  ]);
+
+  assert.equal(row.inspection, "unknown");
+  assert.equal(row.reasons, "not_reviewed");
+});
+
 test("review panel CLI renders markdown from a JSON array file", () => {
   const dir = mkdtempSync(join(tmpdir(), "review-panel-"));
   const file = join(dir, "records.json");

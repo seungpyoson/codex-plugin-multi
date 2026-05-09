@@ -15,6 +15,7 @@ import {
   EXTERNAL_REVIEW_KEYS,
   SOURCE_CONTENT_TRANSMISSION,
 } from "./lib/external-review.mjs";
+import { isJwtShapedToken } from "./lib/jwt.mjs";
 
 const VALID_MODES = new Set(["review", "adversarial-review", "custom-review"]);
 const DEFAULT_BASE_URL = "http://127.0.0.1:8000/v1";
@@ -726,10 +727,6 @@ function payloadSentForFetchError(error) {
   if (["ECONNREFUSED", "ENOTFOUND", "EHOSTUNREACH", "EAI_AGAIN"].includes(code)) return false;
   if (/bad port/i.test(`${error?.message ?? ""} ${error?.cause?.message ?? ""}`)) return false;
   return null;
-}
-
-function isJwtShapedToken(value) {
-  return typeof value === "string" && /^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/.test(value);
 }
 
 function sessionTokenDiagnostics(tokens) {

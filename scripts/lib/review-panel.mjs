@@ -37,11 +37,12 @@ function elapsedMs(record) {
 function hasPermissionDenial(record) {
   const denials = valueAt(record, ["runtime_diagnostics", "permission_denials"], []);
   if (Array.isArray(denials) && denials.length > 0) return true;
-  return /\b(permission denied|read denied|could not inspect|not reviewed)\b/i.test(String(record.result ?? ""));
+  return /\b(permission denied|read denied|could not inspect)\b/i.test(String(record.result ?? ""));
 }
 
 function inspectionStatus(record) {
   if (hasPermissionDenial(record)) return "blocked";
+  if (/\bnot reviewed\b/i.test(String(record.result ?? ""))) return "unknown";
   if (/\b(inspected|reviewed|read)\b/i.test(String(record.result ?? ""))) return "inspected";
   return "unknown";
 }

@@ -5,6 +5,7 @@ import { copyFileSync, existsSync, mkdtempSync, readFileSync, rmSync } from "nod
 import { homedir, tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { isJwtShapedToken } from "./lib/jwt.mjs";
 
 const DEFAULT_GROK2API_BASE_URL = "http://127.0.0.1:8000";
 const DEFAULT_ADMIN_KEY = "grok2api";
@@ -80,10 +81,6 @@ function sanitizeToken(raw) {
     .replace(/^(?:(?:sso-rw|sso)=)+/i, "")
     .replace(/;.*/, "")
     .replaceAll(/\s+/g, "");
-}
-
-function isJwtShapedToken(value) {
-  return /^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/.test(value);
 }
 
 function parsePositiveInteger(value, fallback) {
