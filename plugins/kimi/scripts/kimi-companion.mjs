@@ -226,7 +226,7 @@ function scopedTargetPromptForOrExit(invocation, profile, userPrompt, lifecycleE
   if (!invocation.review_prompt_contract_version || profile.permission_mode !== "plan") {
     return targetPromptFor(profile, userPrompt, invocation);
   }
-  const { job_id: jobId, cwd, workspace_root: workspaceRoot, dispose_effective: disposeEffective } = invocation;
+  const { job_id: jobId, cwd, workspace_root: workspaceRoot } = invocation;
   let containment = null;
   let containmentCleaned = false;
   const cleanupContainment = () => {
@@ -255,9 +255,7 @@ function scopedTargetPromptForOrExit(invocation, profile, userPrompt, lifecycleE
     printLifecycleJson(errorRecord, lifecycleEvents);
     process.exit(2);
   } finally {
-    if (containment && disposeEffective) {
-      cleanupContainment();
-    }
+    cleanupContainment();
   }
 }
 
