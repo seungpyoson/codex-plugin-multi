@@ -228,6 +228,14 @@ function scopedTargetPromptForOrExit(invocation, profile, userPrompt, lifecycleE
   }
   const { job_id: jobId, cwd, workspace_root: workspaceRoot, dispose_effective: disposeEffective } = invocation;
   let containment = null;
+  let containmentCleaned = false;
+  const cleanupContainment = () => {
+    if (!containment || containmentCleaned) return;
+    try {
+      containment.cleanup();
+      containmentCleaned = true;
+    } catch { /* best-effort */ }
+  };
   try {
     containment = setupContainment(profile, cwd);
     populateScope(profile, cwd, containment.path, {
@@ -237,7 +245,7 @@ function scopedTargetPromptForOrExit(invocation, profile, userPrompt, lifecycleE
     }, containment);
     return targetPromptFor(profile, userPrompt, invocation, auditSourceFiles(containment.path));
   } catch (e) {
-    if (containment) { try { containment.cleanup(); } catch { /* best-effort */ } }
+    cleanupContainment();
     const errorRecord = buildJobRecord(invocation, {
       exitCode: null, parsed: null, pidInfo: null, kimiSessionId: null,
       errorMessage: e.message,
@@ -248,7 +256,7 @@ function scopedTargetPromptForOrExit(invocation, profile, userPrompt, lifecycleE
     process.exit(2);
   } finally {
     if (containment && disposeEffective) {
-      try { containment.cleanup(); } catch { /* best-effort */ }
+      cleanupContainment();
     }
   }
 }
