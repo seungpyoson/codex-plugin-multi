@@ -91,4 +91,3 @@ export function evaluateSeededReviewPacket({ packet, output }) {
     false_positive: falsePositive,
   });
 }
-

@@ -327,6 +327,19 @@ test("buildJobRecord: semantic review-quality failures override successful proce
   }
 });
 
+test("buildJobRecord providers gate review_not_completed diagnostics to failed records", () => {
+  const sources = [
+    readFileSync(resolvePath(HERE, "..", "..", "plugins/claude/scripts/lib/job-record.mjs"), "utf8"),
+    readFileSync(resolvePath(HERE, "..", "..", "plugins/gemini/scripts/lib/job-record.mjs"), "utf8"),
+    readFileSync(resolvePath(HERE, "..", "..", "plugins/kimi/scripts/lib/job-record.mjs"), "utf8"),
+  ];
+
+  for (const source of sources) {
+    assert.match(source, /status === "failed" && error_code === "review_not_completed"/);
+    assert.doesNotMatch(source, /if\s*\(\s*error_code === "review_not_completed"\s*\)/);
+  }
+});
+
 test("buildJobRecord: queued/pre-run state (no execution)", () => {
   const rec = buildJobRecord(makeInvocation(), null, []);
   assert.deepEqual(Object.keys(rec).sort(), [...EXPECTED_KEYS].sort());

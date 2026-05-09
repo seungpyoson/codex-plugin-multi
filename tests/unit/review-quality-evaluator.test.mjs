@@ -1,9 +1,20 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import { dirname, resolve as resolvePath } from "node:path";
 
 import {
   evaluateSeededReviewPacket,
 } from "../../scripts/lib/review-quality-evaluator.mjs";
+
+const HERE = dirname(fileURLToPath(import.meta.url));
+
+test("seeded evaluator source does not keep unused local helper functions", () => {
+  const source = readFileSync(resolvePath(HERE, "..", "..", "scripts/lib/review-quality-evaluator.mjs"), "utf8");
+
+  assert.doesNotMatch(source, /function hasPattern\b/);
+});
 
 test("seeded evaluator rejects adjacent packet2 security findings that miss ordering bypass", () => {
   const output = `
