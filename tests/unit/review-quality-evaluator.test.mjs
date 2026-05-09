@@ -179,6 +179,23 @@ ${blockingLine}
   }
 });
 
+test("seeded evaluator stops packet3 blocking scan at common non-blocking heading variants", () => {
+  const result = evaluateSeededReviewPacket({
+    packet: "packet3_clean",
+    output: `
+## Verdict
+APPROVE
+## Blocking findings
+No actual blockers found.
+## Suggestions
+- Document that canReadDocument expects user.roles to be an array.
+`,
+  });
+
+  assert.equal(result.false_positive, false);
+  assert.equal(result.expected_findings_found, true);
+});
+
 test("seeded evaluator detects clean-packet false positives under Markdown headings", () => {
   const result = evaluateSeededReviewPacket({
     packet: "packet3_clean",

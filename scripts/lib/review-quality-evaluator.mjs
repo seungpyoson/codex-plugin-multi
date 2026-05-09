@@ -60,6 +60,20 @@ function normalizedHeading(line) {
   return withoutNumber.replace(/:$/, "").trim().toLowerCase();
 }
 
+const BLOCKING_SECTION_STOP_HEADINGS = new Set([
+  "non-blocking",
+  "non blocking",
+  "non-blocking concerns",
+  "non blocking concerns",
+  "non-blocking findings",
+  "non blocking findings",
+  "suggestions",
+  "minor issues",
+  "checklist",
+  "test gaps",
+  "inspection status",
+]);
+
 function blockingSectionBody(output) {
   const lines = text(output).split(/\r?\n/);
   let start = -1;
@@ -74,8 +88,7 @@ function blockingSectionBody(output) {
   const body = [];
   for (let index = start; index < lines.length; index += 1) {
     const heading = normalizedHeading(lines[index]);
-    if (heading === "non-blocking concerns" || heading === "non blocking concerns"
-      || heading === "test gaps" || heading === "inspection status") {
+    if (BLOCKING_SECTION_STOP_HEADINGS.has(heading)) {
       break;
     }
     body.push(lines[index]);
