@@ -1,5 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve as resolvePath } from "node:path";
@@ -7,13 +8,65 @@ import { dirname, resolve as resolvePath } from "node:path";
 import {
   evaluateSeededReviewPacket,
 } from "../../scripts/lib/review-quality-evaluator.mjs";
+import {
+  AB_REVIEW_PACKETS,
+  COMMON_AB_REVIEW_PROMPT,
+  MANUAL_RELAY_JUDGE_CONTEXT,
+  buildManualRelayPacketPrompt,
+} from "../../scripts/lib/review-quality-ab-fixture.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
+const REPO_ROOT = resolvePath(HERE, "..", "..");
 
 test("seeded evaluator source does not keep unused local helper functions", () => {
   const source = readFileSync(resolvePath(HERE, "..", "..", "scripts/lib/review-quality-evaluator.mjs"), "utf8");
 
   assert.doesNotMatch(source, /function hasPattern\b/);
+});
+
+test("A/B fixture preserves the exact review packets, common prompt, expected findings, and timing contract", () => {
+  assert.deepEqual(AB_REVIEW_PACKETS.map((packet) => packet.id), [
+    "packet1_correctness",
+    "packet2_security",
+    "packet3_clean",
+  ]);
+  assert.match(AB_REVIEW_PACKETS[0].files[0].source, /sum - item\.price/);
+  assert.match(AB_REVIEW_PACKETS[0].files[0].source, /user\.plan = "pro"/);
+  assert.match(AB_REVIEW_PACKETS[1].files[0].source, /codeMayConstructGateConfig/);
+  assert.match(AB_REVIEW_PACKETS[1].expected_findings[0], /gate-config.*before.*approvable/i);
+  assert.match(AB_REVIEW_PACKETS[2].expected_result, /No blocking findings/i);
+  assert.match(COMMON_AB_REVIEW_PROMPT, /Do not invent findings/i);
+  assert.match(COMMON_AB_REVIEW_PROMPT, /State explicitly if you could not inspect/i);
+  assert.match(COMMON_AB_REVIEW_PROMPT, /elapsed wall time/i);
+  assert.match(MANUAL_RELAY_JUDGE_CONTEXT, /Expected seeded findings/i);
+  assert.match(MANUAL_RELAY_JUDGE_CONTEXT, /packet2_security/);
+});
+
+test("manual relay packet prompt uses the same common review contract without leaking judge-only answers", () => {
+  const prompt = buildManualRelayPacketPrompt("packet2_security");
+
+  assert.match(prompt, /Adversarially review the selected files/);
+  assert.match(prompt, /File: packet2_security\/gate\.js/);
+  assert.match(prompt, /function shouldDeny/);
+  assert.doesNotMatch(prompt, /Expected seeded findings/);
+  assert.doesNotMatch(prompt, /gate-config.*before.*approvable/i);
+});
+
+test("A/B fixture CLI prints packet prompts and judge context separately", () => {
+  const packetPrompt = execFileSync(process.execPath, ["scripts/review-quality-ab-fixture.mjs", "--packet", "packet2_security"], {
+    cwd: REPO_ROOT,
+    encoding: "utf8",
+  });
+  assert.match(packetPrompt, /File: packet2_security\/gate\.js/);
+  assert.match(packetPrompt, /elapsed wall time/);
+  assert.doesNotMatch(packetPrompt, /Expected seeded findings/);
+
+  const judgeContext = execFileSync(process.execPath, ["scripts/review-quality-ab-fixture.mjs", "--judge-context"], {
+    cwd: REPO_ROOT,
+    encoding: "utf8",
+  });
+  assert.match(judgeContext, /Expected seeded findings/);
+  assert.match(judgeContext, /packet3_clean/);
 });
 
 test("seeded evaluator parses packet3 blocking section without a lazy dot-star regex", () => {

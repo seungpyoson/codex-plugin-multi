@@ -57,6 +57,12 @@ must use `status`, `error_code`, and `review_quality.failed_review_slot` to
 decide whether the reviewer completed the task. This prevents placeholder output
 from being treated as a successful external review.
 
+The seeded A/B quality fixture is source-controlled in
+`scripts/lib/review-quality-ab-fixture.mjs` and exposed through
+`scripts/review-quality-ab-fixture.mjs`. Reviewer prompts and judge-only answer
+keys are deliberately separate so manual relay and plugin runs can use the same
+review contract without leaking expected findings into the model prompt.
+
 ### Identity Types Stay Distinct
 
 `job_id`, target session IDs, resume chains, and PID ownership tuples are

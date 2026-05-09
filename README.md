@@ -128,6 +128,12 @@ Troubleshooting signals:
 - Grok `tunnel_unavailable` means the subscription-backed local tunnel is not
   reachable at `GROK_WEB_BASE_URL`. Start or repair the tunnel rather than
   adding xAI API keys.
+- Grok `models_ok_chat_400` is now the generic fallback only after local
+  session probes fail to identify a sharper cause. `grok_session_no_runtime_tokens`
+  means the tunnel has no active runtime session, `grok_session_malformed_active_token`
+  means the active token is not JWT-shaped, and
+  `grok_session_runtime_admin_divergence` means grok2api admin state has active
+  tokens while runtime status still reports an empty token table.
 - Reviewer runs with `review_not_completed` and
   `error_cause: "review_quality"` reached the provider or companion but did
   not return a usable review. Treat shallow summaries, permission-denied
@@ -137,6 +143,17 @@ Troubleshooting signals:
 - Claude/Gemini/Kimi subscription/OAuth modes intentionally ignore unrelated
   API-key env vars. Do not treat stripped API keys as the cause unless you
   explicitly selected API-key auth for a provider that supports it.
+
+Review-quality A/B prompts:
+
+- `node scripts/review-quality-ab-fixture.mjs --packet packet1_correctness`
+- `node scripts/review-quality-ab-fixture.mjs --packet packet2_security`
+- `node scripts/review-quality-ab-fixture.mjs --packet packet3_clean`
+- `node scripts/review-quality-ab-fixture.mjs --judge-context`
+
+Use the packet prompt for both plugin and manual-relay reviewers. Use the
+judge context only for scoring; it contains the seeded answer key and must not
+be pasted into reviewer prompts.
 
 ## Install
 
