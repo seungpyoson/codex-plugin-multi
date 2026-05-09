@@ -780,6 +780,29 @@ test("review audit manifest does not count status-looking prose as checklist ite
   assert.equal(manifest.review_quality.failed_review_slot, false);
 });
 
+test("review audit manifest does not drop hyphenated pass-through prose as a PASS checklist line", () => {
+  const manifest = buildReviewAuditManifest({
+    prompt: "rendered prompt",
+    sourceFiles: [{ path: "sample.js", text: "export const value = 1;\n" }],
+    result: [
+      "Verdict: APPROVE",
+      "Blocking findings: no blocking code finding is claimed.",
+      "Non-blocking concerns:",
+      "- Null check: pass-through for trusted callers, but I could not inspect the error path.",
+      "- This second concern keeps the review substantive enough to isolate the hyphenated status collision.",
+      "Test gaps:",
+      "- None.",
+      "Inspection statement: I inspected sample.js.",
+    ].join("\n"),
+    status: "completed",
+    errorCode: null,
+  });
+
+  assert.equal(manifest.review_quality.checklist_items_seen, 0);
+  assert.equal(manifest.review_quality.semantic_failure_reasons.includes("not_reviewed"), true);
+  assert.equal(manifest.review_quality.failed_review_slot, true);
+});
+
 test("review audit manifest does not drop hyphenated failure prose as a PASS checklist line", () => {
   const manifest = buildReviewAuditManifest({
     prompt: "rendered prompt",

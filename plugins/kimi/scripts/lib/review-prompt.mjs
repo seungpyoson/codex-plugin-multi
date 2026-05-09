@@ -179,7 +179,7 @@ function checklistStatus(line) {
   if (startsWithToken(lower, "not reviewed")) return "not_reviewed";
   const statusMatch = lower.match(/(?:^|[\u2013\u2014|]|(?:^|\s)-)\s*(pass|fail|not reviewed)\b/)
     ?? lower.match(/:\s*(not reviewed)\b/)
-    ?? lower.match(/:\s*(pass|fail)\b(?=\s*(?:$|[().;,\u2013\u2014-]))/);
+    ?? lower.match(/:\s*(pass|fail)\b(?=\s*(?:$|[().;,\u2013\u2014]))/);
   if (!statusMatch) return null;
   return statusMatch[1].replace(" ", "_");
 }
