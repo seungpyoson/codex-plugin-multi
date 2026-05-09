@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -100,6 +100,12 @@ test("codex plugin cache doctor reports stale runtime files even when skill name
   assert.equal(profile.cache_in_sync, false);
   assert.deepEqual(profile.missing_skills, []);
   assert.deepEqual(profile.changed_files, ["scripts/grok-web-reviewer.mjs"]);
+});
+
+test("codex plugin cache doctor sorts file lists with explicit comparators", () => {
+  const source = readFileSync(DOCTOR, "utf8");
+
+  assert.doesNotMatch(source, /\[\.\.\.(?:expected|cached)\.keys\(\)\]\.sort\(\)/);
 });
 
 test("codex plugin cache doctor rejects unsafe or missing option values", () => {

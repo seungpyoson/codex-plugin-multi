@@ -73,6 +73,19 @@ test("seeded evaluator parses packet3 blocking section without a lazy dot-star r
   const source = readFileSync(resolvePath(HERE, "..", "..", "scripts/lib/review-quality-evaluator.mjs"), "utf8");
 
   assert.doesNotMatch(source, /\[\\s\\S\]\*\?/);
+  assert.doesNotMatch(source, /\(\?:\^\|\\n\)\\s\*\(\?:\[-\*\]\|\\d\+\[\.\)\]\)\\s\+\\S/);
+});
+
+test("seeded evaluator scans packet3 blocking bullets in linear time", () => {
+  const longCleanBody = `${"a".repeat(200_000)}\n3. Non-blocking concerns\n- none`;
+  const start = performance.now();
+  const result = evaluateSeededReviewPacket({
+    packet: "packet3_clean",
+    output: `1. Verdict: APPROVE\n2. Blocking findings\n${longCleanBody}`,
+  });
+
+  assert.equal(result.false_positive, false);
+  assert.ok(performance.now() - start < 250);
 });
 
 test("seeded evaluator rejects adjacent packet2 security findings that miss ordering bypass", () => {

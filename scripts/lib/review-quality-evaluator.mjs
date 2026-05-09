@@ -82,13 +82,31 @@ function blockingSectionBody(output) {
   return body.join("\n");
 }
 
+function isBulletListItem(line) {
+  const trimmed = text(line).trimStart();
+  if (trimmed.length < 3) return false;
+  if ((trimmed[0] === "-" || trimmed[0] === "*") && /\s/.test(trimmed[1])) {
+    return trimmed.slice(2).trim().length > 0;
+  }
+  let index = 0;
+  while (index < trimmed.length && trimmed.charCodeAt(index) >= 48 && trimmed.charCodeAt(index) <= 57) {
+    index += 1;
+  }
+  if (index === 0 || (trimmed[index] !== "." && trimmed[index] !== ")")) return false;
+  return /\s/.test(trimmed[index + 1] ?? "") && trimmed.slice(index + 2).trim().length > 0;
+}
+
+function hasBulletListItem(body) {
+  return text(body).split(/\r?\n/).some((line) => isBulletListItem(line));
+}
+
 function cleanPacketFalsePositive(output) {
   const squashed = compact(output);
   if (/verdict\s*:\s*request changes/i.test(squashed)) return true;
   const body = blockingSectionBody(output);
   if (body === null) return false;
   if (/\b(none|no blocking|no blockers|no issues found)\b/i.test(body)) return false;
-  return /(?:^|\n)\s*(?:[-*]|\d+[.)])\s+\S/.test(body);
+  return hasBulletListItem(body);
 }
 
 function packet3Findings(output) {

@@ -7,6 +7,10 @@ import { homedir } from "node:os";
 const MARKETPLACE = "codex-plugin-multi";
 const DEFAULT_PLUGINS = ["api-reviewers", "claude", "gemini", "grok", "kimi"];
 
+function comparePathStrings(a, b) {
+  return a.localeCompare(b);
+}
+
 function parseArgs(argv) {
   const out = Object.create(null);
   out.plugins = [];
@@ -35,7 +39,7 @@ function listSkills(root, plugin) {
   return readdirSync(dir, { withFileTypes: true })
     .filter((entry) => entry.isDirectory() && existsSync(join(dir, entry.name, "SKILL.md")))
     .map((entry) => entry.name)
-    .sort();
+    .sort(comparePathStrings);
 }
 
 function comparablePluginFile(rel) {
@@ -56,7 +60,7 @@ function listComparableFiles(pluginRoot) {
   const stack = [pluginRoot];
   while (stack.length > 0) {
     const dir = stack.pop();
-    for (const entry of readdirSync(dir, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))) {
+    for (const entry of readdirSync(dir, { withFileTypes: true }).sort((a, b) => comparePathStrings(a.name, b.name))) {
       const full = join(dir, entry.name);
       if (entry.isDirectory()) {
         if (entry.name === "node_modules" || entry.name === ".git") continue;
@@ -72,8 +76,8 @@ function listComparableFiles(pluginRoot) {
 }
 
 function compareFileHashes(expected, cached) {
-  const expectedNames = [...expected.keys()].sort();
-  const cachedNames = [...cached.keys()].sort();
+  const expectedNames = [...expected.keys()].sort(comparePathStrings);
+  const cachedNames = [...cached.keys()].sort(comparePathStrings);
   return {
     expected_files: expectedNames,
     cached_files: cachedNames,
