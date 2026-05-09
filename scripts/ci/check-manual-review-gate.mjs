@@ -38,9 +38,20 @@ async function getJson(url, token) {
 
 function nextUrlFromLinkHeader(linkHeader, baseUrl) {
   for (const link of String(linkHeader ?? "").split(",")) {
-    const match = link.match(/<([^>]+)>\s*;\s*rel="next"/u);
-    if (match) {
-      return new URL(match[1], baseUrl);
+    const trimmed = link.trim();
+    if (!trimmed.startsWith("<")) {
+      continue;
+    }
+    const targetEnd = trimmed.indexOf(">");
+    if (targetEnd < 0) {
+      continue;
+    }
+    const target = trimmed.slice(1, targetEnd);
+    const params = trimmed.slice(targetEnd + 1)
+      .split(";")
+      .map((param) => param.trim().toLowerCase());
+    if (params.includes("rel=\"next\"") || params.includes("rel=next")) {
+      return new URL(target, baseUrl);
     }
   }
   return null;
