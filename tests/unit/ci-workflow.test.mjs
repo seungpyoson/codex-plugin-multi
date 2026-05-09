@@ -35,6 +35,8 @@ test("pull-request CI runs unit tests and per-target smoke matrix separately", (
 });
 
 test("pull-request CI runs shared-copy sync checks", () => {
+  assert.match(pkg.scripts["lint"] ?? "", /check-manifests\.mjs/);
+  assert.match(pkg.scripts["lint"] ?? "", /npm run lint:sync/);
   assert.match(pkg.scripts["lint:sync"] ?? "", /sync-codex-env\.mjs --check/);
   assert.match(pkg.scripts["lint:sync"] ?? "", /sync-companion-common\.mjs --check/);
   assert.match(pkg.scripts["lint:sync"] ?? "", /sync-external-review\.mjs --check/);
@@ -47,7 +49,7 @@ test("pull-request CI runs shared-copy sync checks", () => {
 });
 
 test("no-mistakes test gate bootstraps dependencies in disposable worktrees", () => {
-  assert.match(noMistakesConfig, /test:\s*"npm ci && npm run test:full"/);
+  assert.match(noMistakesConfig, /test:\s*"npm ci && npm run lint && npm run test:full"/);
 });
 
 test("design docs cover review-quality failure contract", () => {
