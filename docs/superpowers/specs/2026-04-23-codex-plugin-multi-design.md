@@ -964,11 +964,13 @@ If a later feature legitimately needs the original prompt text (e.g., reproducib
 #### 21.3.3 — Review-quality audit metadata
 
 Review and custom-review paths persist `review_metadata` with the review prompt
-contract version, provider label, a `provider_runtime.elapsed_ms` wall-clock
-duration, and an `audit_manifest`. The audit manifest records safe metadata only: request
-settings, prompt/source hashes and counts, `selected_source` file paths with
-`bytes`, `lines`, and `content_hash`, scope resolution, provider IDs, truncation
-flags, and `review_quality`.
+contract version, provider label, raw-output metadata, and an
+`audit_manifest`. The `raw_output` object records safe runtime counters:
+`stdout_bytes`, `stderr_bytes`, `parsed_ok`, `result_chars`, and
+`elapsed_ms`. The audit manifest records safe metadata only: request settings,
+prompt/source hashes and counts, `selected_source` file paths with `bytes`,
+`lines`, and `content_hash`, scope resolution, provider IDs, truncation flags,
+and `review_quality`.
 
 `review_quality` is the post-transport gate that decides whether a technically
 successful reviewer response is usable. Its shape includes:
