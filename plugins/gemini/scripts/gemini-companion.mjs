@@ -798,6 +798,7 @@ function buildGeminiFinalRecord(invocation, execution, cancelMarker, mutations, 
   execution.reviewAuditManifest = reviewAuditManifest(invocation, prompt, containmentPath, execution);
   return buildJobRecord(invocation, {
     exitCode: execution.exitCode,
+    endedAt: execution.endedAt,
     parsed: execution.parsed,
     pidInfo: execution.pidInfo,
     geminiSessionId: execution.geminiSessionId,
@@ -836,6 +837,7 @@ function persistFinalizationFallback(invocation, execution, finalRecord, mutatio
   try {
     fallbackRecord = buildJobRecord(invocation, {
       exitCode: execution.exitCode,
+      endedAt: execution.endedAt,
       parsed: execution.parsed,
       pidInfo: execution.pidInfo,
       geminiSessionId: execution.geminiSessionId ?? null,

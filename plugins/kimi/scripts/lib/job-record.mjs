@@ -597,7 +597,7 @@ function normalizeRuntimeDiagnostics(input, denials) {
  *                    binary, started_at }
  *
  *   execution  — null when writing the pre-run/queued record. Otherwise:
- *                  { exitCode, parsed: {ok, result?, structured?, denials?,
+ *                  { exitCode, endedAt?, parsed: {ok, result?, structured?, denials?,
  *                                        costUsd?, usage?, reason?, error?},
  *                    claudeSessionId?, geminiSessionId?, kimiSessionId?, pidInfo,
  *                    errorMessage?, stdout?, stderr? }
@@ -617,7 +617,9 @@ export function buildJobRecord(invocation, execution, mutations) {
   const diagnostic = buildErrorDiagnostic(invocation, status, error_code, error_message);
 
   const parsed = execution?.parsed ?? null;
-  const endedAt = execution && status !== "running" ? new Date().toISOString() : null;
+  const endedAt = execution && status !== "running"
+    ? (execution.endedAt ?? new Date().toISOString())
+    : null;
   const permissionDenials = Array.isArray(parsed?.denials) ? parsed.denials : [];
   const runtimeDiagnostics = normalizeRuntimeDiagnostics(
     execution?.runtimeDiagnostics ?? null,

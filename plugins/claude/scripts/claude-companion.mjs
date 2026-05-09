@@ -985,6 +985,7 @@ function buildClaudeFinalRecord(invocation, execution, cancelMarker, mutations, 
   execution.runtimeDiagnostics = runtimeDiagnostics;
   return buildJobRecord(invocation, {
     exitCode: execution.exitCode,
+    endedAt: execution.endedAt,
     parsed: execution.parsed,
     pidInfo: execution.pidInfo,
     claudeSessionId: execution.claudeSessionId ?? null,
@@ -1025,6 +1026,7 @@ function persistFinalizationFallback(invocation, execution, finalRecord, mutatio
   try {
     fallbackRecord = buildJobRecord(invocation, {
       exitCode: execution.exitCode,
+      endedAt: execution.endedAt,
       parsed: execution.parsed,
       pidInfo: execution.pidInfo,
       claudeSessionId: execution.claudeSessionId ?? null,

@@ -239,11 +239,13 @@ export async function spawnKimi(profile, runtimeInputs = {}) {
       finishReject(Object.assign(new Error(`spawn ${binary} failed: ${e.message}`), { code: e.code }));
     });
     child.on("close", (exitCode, signal) => {
+      const endedAt = new Date().toISOString();
       const parsed = parseKimiResult(stdout, stderr, { exitCode, signal });
       finishResolve({
         exitCode,
         signal,
         timedOut,
+        endedAt,
         stdout,
         stderr,
         kimiSessionId: parsed.sessionId ?? null,

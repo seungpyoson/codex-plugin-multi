@@ -306,6 +306,8 @@ test("spawnClaude: returns claudeSessionId from stdout and pidInfo tuple", async
     "claudeSessionId must come from parsed.session_id, not what we sent");
   // sessionIdSent preserves what we passed (legacy name was `sessionId`).
   assert.equal(result.sessionIdSent, UUID);
+  assert.equal(typeof result.endedAt, "string");
+  assert.equal(Number.isNaN(Date.parse(result.endedAt)), false);
   // pidInfo tuple captured at spawn.
   assert.ok(result.pidInfo, "pidInfo must be present");
   assert.equal(typeof result.pidInfo.pid, "number");

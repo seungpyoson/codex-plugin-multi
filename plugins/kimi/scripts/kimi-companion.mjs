@@ -813,6 +813,7 @@ async function executeRun(invocation, prompt, { foreground, lifecycleEvents = nu
   // timedOut wins so wall-clock kills classify as timeout failures.
   const finalRecord = buildJobRecord(executedInvocation, {
     exitCode: execution.exitCode,
+    endedAt: execution.endedAt,
     parsed: execution.parsed,
     pidInfo: execution.pidInfo,
     kimiSessionId: execution.kimiSessionId,
@@ -848,6 +849,7 @@ async function executeRun(invocation, prompt, { foreground, lifecycleEvents = nu
     try {
       fallbackRecord = buildJobRecord(invocation, {
         exitCode: execution.exitCode,
+        endedAt: execution.endedAt,
         parsed: execution.parsed,
         pidInfo: execution.pidInfo,
         kimiSessionId: execution.kimiSessionId ?? null,

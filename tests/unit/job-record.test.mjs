@@ -252,6 +252,30 @@ test("buildJobRecord: terminal companion review metadata records elapsed_ms", ()
   }
 });
 
+test("buildJobRecord: terminal companion elapsed_ms uses execution endedAt", () => {
+  const startedAt = "2026-05-09T10:00:00.000Z";
+  const endedAt = "2026-05-09T10:00:02.500Z";
+  const providers = [
+    [buildJobRecord, makeInvocation({ started_at: startedAt })],
+    [buildGeminiJobRecord, makeInvocation({ target: "gemini", binary: "gemini", model: "gemini-3.1-pro-preview", started_at: startedAt })],
+    [buildKimiJobRecord, makeInvocation({ target: "kimi", binary: "kimi", model: "kimi-k2-0905", started_at: startedAt })],
+  ];
+
+  for (const [providerBuildJobRecord, invocation] of providers) {
+    const rec = providerBuildJobRecord(invocation, {
+      exitCode: 0,
+      parsed: { ok: true, result: "done", structured: null, denials: [] },
+      pidInfo: makePidInfo(),
+      stdout: "",
+      stderr: "",
+      endedAt,
+    }, []);
+
+    assert.equal(rec.ended_at, endedAt);
+    assert.equal(rec.review_metadata.raw_output.elapsed_ms, 2500);
+  }
+});
+
 test("buildJobRecord: review_metadata persists privacy-safe audit manifests for every companion", () => {
   const auditManifest = Object.freeze({
     schema_version: 1,

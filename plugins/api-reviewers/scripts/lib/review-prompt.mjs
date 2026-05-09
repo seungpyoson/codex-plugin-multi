@@ -220,6 +220,8 @@ function includesPathToken(text, path) {
       const afterIndex = index + needle.length;
       const after = value[afterIndex];
       if (isPathTokenBoundary(after)) return true;
+      // A path token can end a sentence: match "a.js." without making "."
+      // a general boundary, which would also match inside "data.js".
       if (after === "." && (afterIndex + 1 === value.length || isTokenWhitespace(value[afterIndex + 1]))) {
         return true;
       }
