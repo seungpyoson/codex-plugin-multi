@@ -93,6 +93,17 @@ function startsWithLabel(line, label) {
   return line.slice(label.length).trimStart().startsWith(":");
 }
 
+function isReviewMarkupSpace(char) {
+  return char === undefined || char === " " || char === "\t";
+}
+
+function bulletText(line) {
+  const marker = line[0];
+  if (marker !== "-" && marker !== "*") return null;
+  if (!isReviewMarkupSpace(line[1])) return null;
+  return line.slice(1).trimStart();
+}
+
 function stripLeadingReviewMarkup(line) {
   let out = String(line ?? "").trimStart();
   for (let i = 0; i < 10; i += 1) {
@@ -101,7 +112,8 @@ function stripLeadingReviewMarkup(line) {
     if (checklist) out = checklist;
     out = out.trimStart();
     while (out.startsWith(">")) out = out.slice(1).trimStart();
-    while (out.startsWith("-") || out.startsWith("*")) out = out.slice(1).trimStart();
+    const bullet = bulletText(out);
+    if (bullet !== null) out = bullet;
     while (out.startsWith("**") || out.startsWith("__")) out = out.slice(2).trimStart();
     while (out.startsWith("`")) out = out.slice(1).trimStart();
     if (out === before) break;
@@ -130,7 +142,8 @@ function hasVerdict(text) {
 
 function checklistText(line) {
   const trimmed = line.trimStart();
-  if (trimmed.startsWith("-") || trimmed.startsWith("*")) return trimmed.slice(1).trimStart();
+  const bullet = bulletText(trimmed);
+  if (bullet !== null) return bullet;
   let index = 0;
   while (index < trimmed.length) {
     const code = trimmed.charCodeAt(index);

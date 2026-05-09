@@ -499,6 +499,24 @@ test("review quality verdict ignores incidental pass/fail prose", () => {
   assert.equal(manifest.review_quality.failed_review_slot, true);
 });
 
+test("review quality parser does not treat compact hyphen prefixes as markdown bullets", () => {
+  const manifest = buildReviewAuditManifest({
+    prompt: "rendered prompt",
+    sourceFiles: [{ path: "-Verdict", text: "literal leading hyphen path\n" }],
+    result: [
+      "-Verdict: APPROVE is a literal selected path label, not a verdict section.",
+      "Blocking findings: none.",
+      "Non-blocking concerns: none.",
+      "I inspected -Verdict.",
+    ].join("\n"),
+    status: "completed",
+  });
+
+  assert.equal(manifest.review_quality.has_verdict, false);
+  assert.equal(manifest.review_quality.failed_review_slot, true);
+  assert.equal(manifest.review_quality.semantic_failure_reasons.includes("missing_verdict"), true);
+});
+
 test("review audit manifest accepts markdown-bold verdict labels with colon outside bold", () => {
   const manifest = buildReviewAuditManifest({
     prompt: "rendered prompt",
