@@ -100,12 +100,16 @@ function hasBulletListItem(body) {
   return text(body).split(/\r?\n/).some((line) => isBulletListItem(line));
 }
 
+function blockingSectionSaysClean(body) {
+  return /\b(none|no blocking|no blockers|no issues found|no significant issues|no actual problems|no real (?:concerns|issues)|nothing blocking)\b/i.test(body);
+}
+
 function cleanPacketFalsePositive(output) {
   const squashed = compact(output);
   if (/verdict\s*:\s*request changes/i.test(squashed)) return true;
   const body = blockingSectionBody(output);
   if (body === null) return false;
-  if (/\b(none|no blocking|no blockers|no issues found)\b/i.test(body)) return false;
+  if (blockingSectionSaysClean(body)) return false;
   return hasBulletListItem(body);
 }
 

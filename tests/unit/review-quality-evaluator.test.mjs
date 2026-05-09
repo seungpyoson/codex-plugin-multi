@@ -153,6 +153,32 @@ None.
   assert.equal(falsePositive.expected_findings_found, false);
 });
 
+test("seeded evaluator accepts common clean-packet no-blocker phrasing", () => {
+  const cleanSynonyms = [
+    "- No significant issues.",
+    "- No actual problems found.",
+    "- No real concerns identified.",
+    "- Nothing blocking.",
+    "- No real issues identified.",
+  ];
+
+  for (const blockingLine of cleanSynonyms) {
+    const result = evaluateSeededReviewPacket({
+      packet: "packet3_clean",
+      output: `
+1. Verdict: APPROVE
+2. Blocking findings
+${blockingLine}
+3. Non-blocking concerns
+- canReadDocument assumes user.roles is an array; worth documenting as caller contract.
+`,
+    });
+
+    assert.equal(result.false_positive, false, blockingLine);
+    assert.equal(result.expected_findings_found, true, blockingLine);
+  }
+});
+
 test("seeded evaluator requires both packet1 correctness blockers", () => {
   const partial = evaluateSeededReviewPacket({
     packet: "packet1_correctness",

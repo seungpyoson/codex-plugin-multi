@@ -102,6 +102,21 @@ for (const [name, file] of REVIEW_PROMPT_MODULES) {
 }
 
 for (const [name, file] of REVIEW_PROMPT_MODULES) {
+  test(`selected source prompt block rejects path-only file objects (${name})`, async () => {
+    const {
+      buildSelectedSourcePromptBlock: targetBuildSelectedSourcePromptBlock,
+    } = file === "scripts/lib/review-prompt.mjs"
+      ? { buildSelectedSourcePromptBlock }
+      : await import(pathToFileURL(resolve(file)).href);
+
+    assert.throws(
+      () => targetBuildSelectedSourcePromptBlock([{ path: "path-only.js" }]),
+      /scope_source_content_missing:path-only\.js/,
+    );
+  });
+}
+
+for (const [name, file] of REVIEW_PROMPT_MODULES) {
   test(`semantic failure helper has no unused lowerText parameter (${name})`, () => {
     const source = readFileSync(resolve(file), "utf8");
     assert.doesNotMatch(source, /function semanticFailureReasons\(text,\s*lowerText,/);

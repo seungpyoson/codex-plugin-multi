@@ -26,7 +26,8 @@ function contentBuffer(file) {
   const content = file?.content;
   if (Buffer.isBuffer(content)) return content;
   if (content instanceof Uint8Array) return Buffer.from(content);
-  return Buffer.from(String(file?.text ?? ""), "utf8");
+  if (typeof file?.text === "string") return Buffer.from(file.text, "utf8");
+  throw new Error(`scope_source_content_missing:${String(file?.path ?? "unknown")}`);
 }
 
 function sha256(value) {
