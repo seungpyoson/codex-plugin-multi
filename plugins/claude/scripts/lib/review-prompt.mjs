@@ -145,7 +145,7 @@ function checklistText(line) {
   const bullet = bulletText(trimmed);
   if (bullet !== null) return bullet;
   let index = 0;
-  while (index < trimmed.length) {
+  while (index < trimmed.length && index < 10) {
     const code = trimmed.charCodeAt(index);
     if (code < 48 || code > 57) break;
     index += 1;
