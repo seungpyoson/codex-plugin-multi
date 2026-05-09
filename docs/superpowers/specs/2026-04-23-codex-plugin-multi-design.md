@@ -983,7 +983,8 @@ successful reviewer response is usable. Its shape includes:
   concerns section matching the prompt contract.
 - `checklist_items_seen`: count of explicit checklist status lines.
 - `looks_shallow`: true when the response is too thin for the prompt contract;
-  tiny selected-source packets have a bounded exception.
+  reviews under 500 characters fail this gate unless the selected-source packet
+  is tiny and the response still names or clearly inspects the selected file.
 - `semantic_failure_reasons`: zero or more of `not_reviewed`,
   `permission_blocked`, `shallow_output`, and `missing_verdict`.
 - `failed_review_slot`: true when the process failed, returned a non-null

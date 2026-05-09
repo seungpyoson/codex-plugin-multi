@@ -354,9 +354,9 @@ function qualityFlags({
   const looksShallow = text.trim().length > 0
     && text.trim().length < 500
     && !conciseTinyReview;
-  const terminalReviewStatus = !["approval_request", "preflight_failed"].includes(status);
+  const isFinalReviewAttempt = !["approval_request", "preflight_failed"].includes(status);
   const failureReasons = [...semanticFailureReasons(text, looksShallow, selectedSource)];
-  if (terminalReviewStatus && status === "completed" && !hasVerdictFlag) {
+  if (isFinalReviewAttempt && status === "completed" && !hasVerdictFlag) {
     failureReasons.push("missing_verdict");
   }
   const semanticReasons = Object.freeze([...new Set(failureReasons)]);
@@ -367,7 +367,7 @@ function qualityFlags({
     checklist_items_seen: checklistItemsSeen,
     looks_shallow: looksShallow,
     semantic_failure_reasons: semanticReasons,
-    failed_review_slot: terminalReviewStatus && (status !== "completed" || errorCode !== null || semanticReasons.length > 0),
+    failed_review_slot: isFinalReviewAttempt && (status !== "completed" || errorCode !== null || semanticReasons.length > 0),
   });
 }
 
