@@ -12,6 +12,7 @@ import { GIT_BINARY_ENV, gitEnv, isGitBinaryPolicyError, resolveGitBinary } from
 import { isCodexSandbox } from "./lib/codex-env.mjs";
 import { REVIEW_PROMPT_CONTRACT_VERSION, buildReviewAuditManifest, buildReviewPrompt, scopeResolutionReason } from "./lib/review-prompt.mjs";
 import { USAGE_LIMIT_SAFE_MESSAGE, isUsageLimitDetail } from "./lib/usage-limit.mjs";
+import { elapsedMs } from "./lib/time.mjs";
 import {
   EXTERNAL_REVIEW_KEYS,
   SOURCE_CONTENT_TRANSMISSION,
@@ -1805,13 +1806,6 @@ function diagnosticErrorSummary(errorCode, errorMessage, scopeInfo, execution, s
     `estimated_tokens=${estimatedTokens}`,
     `max_tokens=${diagnostics.max_tokens ?? "unknown"}`,
   ].join(" ");
-}
-
-function elapsedMs(startedAt, endedAt) {
-  const start = Date.parse(String(startedAt ?? ""));
-  const end = Date.parse(String(endedAt ?? ""));
-  if (!Number.isFinite(start) || !Number.isFinite(end)) return null;
-  return Math.max(0, end - start);
 }
 
 function buildReviewMetadata(cfg, scopeInfo, execution = null, startedAt = null, endedAt = null) {

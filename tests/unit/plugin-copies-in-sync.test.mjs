@@ -37,6 +37,7 @@ const VERBATIM_FILES = [
   "cancel-marker.mjs",
   "companion-common.mjs",
   "external-review.mjs",
+  "time.mjs",
   "usage-limit.mjs",
 ];
 
@@ -66,6 +67,32 @@ test("lib/external-review.mjs: plugin packaging copies match the canonical share
       "utf8"
     );
     assert.equal(copy, canonical, `external-review.mjs packaging copy drifted in ${plugin}`);
+  }
+});
+
+test("lib/time.mjs: plugin packaging copies match the canonical shared source", () => {
+  const canonical = readFileSync(path.join(REPO_ROOT, "scripts/lib/time.mjs"), "utf8");
+  for (const plugin of [...COMPANION_PLUGIN_TARGETS, "api-reviewers", "grok"]) {
+    const copy = readFileSync(
+      path.join(REPO_ROOT, `plugins/${plugin}/scripts/lib/time.mjs`),
+      "utf8"
+    );
+    assert.equal(copy, canonical, `time.mjs packaging copy drifted in ${plugin}`);
+  }
+});
+
+test("reviewer runtimes use the shared elapsedMs helper", () => {
+  const runtimePaths = [
+    "plugins/api-reviewers/scripts/api-reviewer.mjs",
+    "plugins/claude/scripts/lib/job-record.mjs",
+    "plugins/gemini/scripts/lib/job-record.mjs",
+    "plugins/grok/scripts/grok-web-reviewer.mjs",
+    "plugins/kimi/scripts/lib/job-record.mjs",
+  ];
+  for (const runtimePath of runtimePaths) {
+    const text = readFileSync(path.join(REPO_ROOT, runtimePath), "utf8");
+    assert.match(text, /import\s+\{\s*elapsedMs\s*\}\s+from\s+["']\.\/lib\/time\.mjs["']|import\s+\{\s*elapsedMs\s*\}\s+from\s+["']\.\/time\.mjs["']/);
+    assert.doesNotMatch(text, /\nfunction\s+elapsedMs\s*\(/, `${runtimePath} defines elapsedMs locally`);
   }
 });
 

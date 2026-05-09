@@ -26,6 +26,7 @@ import {
   sourceContentTransmissionForExecution,
 } from "./external-review.mjs";
 import { isGitBinaryPolicyError } from "./git-binary.mjs";
+import { elapsedMs } from "./time.mjs";
 import path from "node:path";
 
 export const SCHEMA_VERSION = 10;
@@ -93,13 +94,6 @@ const EXPECTED_KEYS_SET = new Set(EXPECTED_KEYS);
 
 function stringBytes(value) {
   return Buffer.byteLength(String(value ?? ""), "utf8");
-}
-
-function elapsedMs(startedAt, endedAt) {
-  const start = Date.parse(String(startedAt ?? ""));
-  const end = Date.parse(String(endedAt ?? ""));
-  if (!Number.isFinite(start) || !Number.isFinite(end)) return null;
-  return Math.max(0, end - start);
 }
 
 function buildReviewMetadata(invocation, execution = null, parsed = null, endedAt = null) {
