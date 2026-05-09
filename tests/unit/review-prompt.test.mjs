@@ -65,6 +65,38 @@ for (const [name, file] of REVIEW_PROMPT_MODULES) {
 }
 
 for (const [name, file] of REVIEW_PROMPT_MODULES) {
+  test(`selected source prompt block reuses each file content buffer (${name})`, async () => {
+    const {
+      buildSelectedSourcePromptBlock: targetBuildSelectedSourcePromptBlock,
+    } = file === "scripts/lib/review-prompt.mjs"
+      ? { buildSelectedSourcePromptBlock }
+      : await import(pathToFileURL(resolve(file)).href);
+
+    let reads = 0;
+    const block = targetBuildSelectedSourcePromptBlock([{
+      path: "once.js",
+      get content() {
+        reads += 1;
+        return Buffer.from("export const once = true;\n");
+      },
+    }]);
+
+    assert.equal(reads, 1);
+    assert.match(block, /BEGIN REVIEW FILE 1: once\.js/);
+    assert.match(block, /export const once = true;/);
+    assert.match(block, /END REVIEW FILE 1: once\.js/);
+  });
+}
+
+for (const [name, file] of REVIEW_PROMPT_MODULES) {
+  test(`semantic failure helper has no unused lowerText parameter (${name})`, () => {
+    const source = readFileSync(resolve(file), "utf8");
+    assert.doesNotMatch(source, /function semanticFailureReasons\(text,\s*lowerText,/);
+    assert.doesNotMatch(source, /semanticFailureReasons\(text,\s*lowerText,/);
+  });
+}
+
+for (const [name, file] of REVIEW_PROMPT_MODULES) {
   test(`review prompt contract includes exact identity and checklist metadata (${name})`, async () => {
     const {
       REVIEW_PROMPT_CHECKLIST: targetChecklist,

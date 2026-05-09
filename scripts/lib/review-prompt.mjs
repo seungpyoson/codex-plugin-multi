@@ -13,8 +13,9 @@ export const REVIEW_PROMPT_CONTRACT_VERSION = 1;
 export const REVIEW_AUDIT_MANIFEST_VERSION = 1;
 
 function contentBuffer(file) {
-  if (Buffer.isBuffer(file?.content)) return file.content;
-  if (file?.content instanceof Uint8Array) return Buffer.from(file.content);
+  const content = file?.content;
+  if (Buffer.isBuffer(content)) return content;
+  if (content instanceof Uint8Array) return Buffer.from(content);
   return Buffer.from(String(file?.text ?? ""), "utf8");
 }
 
@@ -205,7 +206,7 @@ function lineDeniesSelectedSourceInspection(line, selectedSource) {
   ]);
 }
 
-function semanticFailureReasons(text, lowerText, looksShallow, selectedSource = null) {
+function semanticFailureReasons(text, looksShallow, selectedSource = null) {
   const reasons = [];
   const hasNotReviewedVerdict = reviewLines(text).some((rawLine) => {
     const line = unmarkReviewText(rawLine).toLowerCase();
@@ -302,7 +303,7 @@ function qualityFlags({
     && text.trim().length < 500
     && !conciseTinyReview;
   const terminalReviewStatus = !["approval_request", "preflight_failed"].includes(status);
-  const failureReasons = [...semanticFailureReasons(text, lowerText, looksShallow, selectedSource)];
+  const failureReasons = [...semanticFailureReasons(text, looksShallow, selectedSource)];
   if (terminalReviewStatus && status === "completed" && !hasVerdictFlag) {
     failureReasons.push("missing_verdict");
   }
@@ -406,9 +407,8 @@ function listBlock(title, values) {
   return [title, ...entries.map((value) => `- ${value}`)].join("\n");
 }
 
-function sourceBlockDelimiter(file, index, delimiterPrefix) {
+function sourceBlockDelimiter(file, index, delimiterPrefix, text) {
   let delimiter = `${delimiterPrefix} ${index}: ${file.path}`;
-  const text = contentBuffer(file).toString("utf8");
   for (let attempt = 0; attempt < 100; attempt += 1) {
     if (!text.includes(`BEGIN ${delimiter}`) && !text.includes(`END ${delimiter}`)) {
       return delimiter;
@@ -425,10 +425,11 @@ export function buildSelectedSourcePromptBlock(sourceFiles = [], {
   const files = Array.isArray(sourceFiles) ? sourceFiles : [];
   if (files.length === 0) return null;
   const blocks = files.map((file, index) => {
-    const delimiter = sourceBlockDelimiter(file, index + 1, delimiterPrefix);
+    const text = contentBuffer(file).toString("utf8");
+    const delimiter = sourceBlockDelimiter(file, index + 1, delimiterPrefix, text);
     return [
       `BEGIN ${delimiter}`,
-      contentBuffer(file).toString("utf8"),
+      text,
       `END ${delimiter}`,
     ].join("\n");
   });
