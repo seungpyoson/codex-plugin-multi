@@ -1783,9 +1783,10 @@ function scopeDiagnostics(scopeInfo) {
   };
 }
 
-function diagnosticErrorSummary(errorCode, errorMessage, scopeInfo, execution) {
+function diagnosticErrorSummary(errorCode, errorMessage, scopeInfo, execution, semanticReasons = null) {
   if (errorCode === "review_not_completed") {
-    const reasons = execution.review_metadata?.audit_manifest?.review_quality?.semantic_failure_reasons;
+    const reasons = semanticReasons
+      ?? execution.review_metadata?.audit_manifest?.review_quality?.semantic_failure_reasons;
     const suffix = Array.isArray(reasons) && reasons.length > 0 ? ` (${reasons.join(",")})` : "";
     return `review did not complete as a usable external review${suffix}`;
   }
@@ -1946,7 +1947,7 @@ function buildRecord({ provider, cfg, mode, options, scopeInfo, execution, start
     exit_code: execution.exitCode,
     error_code: errorCode,
     error_message: errorMessage,
-    error_summary: completed ? null : diagnosticErrorSummary(errorCode, errorMessage, scopeInfo, execution),
+    error_summary: completed ? null : diagnosticErrorSummary(errorCode, errorMessage, scopeInfo, execution, semanticReasons),
     error_cause: completed ? null : errorCauseFor(errorCode),
     suggested_action: completed ? null : suggestedAction(errorCode, provider, cfg, errorMessage, execution.http_status ?? null),
     external_review: externalReview,

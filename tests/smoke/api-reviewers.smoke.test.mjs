@@ -1428,6 +1428,7 @@ test("direct API reviewers fail closed on shallow HTTP 200 review output", async
   const record = parseJson(result.stdout);
   assert.equal(record.status, "failed");
   assert.equal(record.error_code, "review_not_completed");
+  assert.match(record.error_summary, /shallow_output/);
   assert.equal(record.result, shallowResult);
   assert.equal(record.external_review.source_content_transmission, "sent");
   assert.equal(typeof record.review_metadata.raw_output.elapsed_ms, "number");
