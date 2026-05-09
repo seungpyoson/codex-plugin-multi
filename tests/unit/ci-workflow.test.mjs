@@ -7,8 +7,10 @@ import { RECIPES } from "../../scripts/smoke-rerecord.mjs";
 
 const pkg = JSON.parse(readFileSync(resolve("package.json"), "utf8"));
 const workflow = readFileSync(resolve(".github/workflows/pull-request-ci.yml"), "utf8");
+const manualReviewWorkflow = readFileSync(resolve(".github/workflows/manual-review-gate.yml"), "utf8");
 const smokeRerecordWorkflow = readFileSync(resolve(".github/workflows/smoke-rerecord.yml"), "utf8");
 const e2eDocs = readFileSync(resolve("docs/e2e.md"), "utf8");
+const reviewEnforcementDocs = readFileSync(resolve("docs/review-enforcement.md"), "utf8");
 const designSpec = readFileSync(resolve("docs/superpowers/specs/2026-04-23-codex-plugin-multi-design.md"), "utf8");
 const architectureRecord = readFileSync(resolve("docs/architecture-record.md"), "utf8");
 const sonarConfig = readFileSync(resolve(".sonarcloud.properties"), "utf8");
@@ -47,6 +49,32 @@ test("pull-request CI runs shared-copy sync checks", () => {
   assert.match(pkg.scripts["lint:sync"] ?? "", /sync-provider-env\.mjs --check/);
   assert.match(pkg.scripts["lint:sync"] ?? "", /sync-usage-limit\.mjs --check/);
   assert.match(workflow, /npm run lint:sync/);
+});
+
+test("manual external review gate runs on PRs and PR comments", () => {
+  assert.match(manualReviewWorkflow, /^name:\s*manual-review-gate/m);
+  assert.match(manualReviewWorkflow, /pull_request:/);
+  assert.match(manualReviewWorkflow, /issue_comment:/);
+  assert.match(manualReviewWorkflow, /pull-requests:\s*read/);
+  assert.match(manualReviewWorkflow, /issues:\s*read/);
+  assert.match(manualReviewWorkflow, /statuses:\s*write/);
+  assert.match(manualReviewWorkflow, /node scripts\/ci\/check-manual-review-gate\.mjs/);
+  assert.match(manualReviewWorkflow, /MANUAL_REVIEW_GATE_STATUS_CONTEXT:\s*manual-review-gate/);
+});
+
+test("review enforcement docs name the required branch protection settings", () => {
+  assert.match(reviewEnforcementDocs, /manual-review-gate/);
+  assert.match(reviewEnforcementDocs, /required status check/i);
+  assert.match(reviewEnforcementDocs, /pull-request-ci \/ lint/);
+  assert.match(reviewEnforcementDocs, /pull-request-ci \/ test/);
+  assert.match(reviewEnforcementDocs, /pull-request-ci \/ smoke \(claude\)/);
+  assert.doesNotMatch(reviewEnforcementDocs, /^- `Greptile Review`$/m);
+  assert.match(reviewEnforcementDocs, /Bot reviews such as Greptile are useful advisory signals/);
+  assert.match(reviewEnforcementDocs, /required approving review count.*1/i);
+  assert.match(reviewEnforcementDocs, /require conversation resolution/i);
+  assert.match(reviewEnforcementDocs, /Head: <40-char head SHA>/);
+  assert.match(reviewEnforcementDocs, /Reviewer: Claude/);
+  assert.match(reviewEnforcementDocs, /Verdict: APPROVE/);
 });
 
 test("no-mistakes test gate bootstraps dependencies in disposable worktrees", () => {
