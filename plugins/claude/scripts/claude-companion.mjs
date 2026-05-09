@@ -297,7 +297,7 @@ function scopedTargetPromptForOrExit(invocation, profile, userPrompt, lifecycleE
   try {
     return targetPromptFor(invocation, userPrompt, auditSourceFiles(executionScope.addDir));
   } finally {
-    cleanupExecutionResources(executionScope, { neutralCwd: null });
+    cleanupScopedPromptExecutionScope(executionScope);
   }
 }
 
@@ -1048,6 +1048,10 @@ function cleanupExecutionResources(executionScope, mutationContext) {
   if (executionScope.disposeEffective) {
     try { executionScope.containment.cleanup(); } catch { /* best-effort */ }
   }
+}
+
+function cleanupScopedPromptExecutionScope(executionScope) {
+  try { executionScope.containment.cleanup(); } catch { /* best-effort */ }
 }
 
 function cleanupNeutralCwd(neutralCwd) {
