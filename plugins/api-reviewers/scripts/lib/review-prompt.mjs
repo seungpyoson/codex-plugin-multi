@@ -293,8 +293,6 @@ function semanticFailureReasons(text, looksShallow, selectedSource = null) {
     "permission-denied",
     "read denied",
     "read-denied",
-    "access denied",
-    "tool denied",
   ])) {
     reasons.push("permission_blocked");
   }

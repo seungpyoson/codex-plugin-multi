@@ -638,6 +638,39 @@ test("review audit manifest accepts markdown heading verdict labels", () => {
   assert.equal(manifest.review_quality.failed_review_slot, false);
 });
 
+test("review audit manifest does not treat application access-denied prose as permission blocked", () => {
+  const manifest = buildReviewAuditManifest({
+    prompt: "rendered prompt",
+    sourceFiles: [
+      {
+        path: "auth.js",
+        text: [
+          "export function canAccess(user) {",
+          "  return user?.roles?.includes(\"admin\") ? true : \"access denied\";",
+          "}",
+        ].join("\n"),
+      },
+    ],
+    result: [
+      "Verdict: APPROVE",
+      "Blocking findings:",
+      "- No blocking findings in `auth.js`.",
+      "Non-blocking concerns:",
+      "- The middleware returns 403 when access is denied, which matches the intended auth behavior.",
+      "- The tool denied path in the policy fixture is covered by the rejection tests.",
+      "Test gaps:",
+      "- None.",
+      "Inspection statement:",
+      "- I inspected the selected file `auth.js`.",
+    ].join("\n"),
+    status: "completed",
+    errorCode: null,
+  });
+
+  assert.deepEqual(manifest.review_quality.semantic_failure_reasons, []);
+  assert.equal(manifest.review_quality.failed_review_slot, false);
+});
+
 test("review audit manifest accepts out-of-scope NOT REVIEWED prose after selected-file inspection", () => {
   const manifest = buildReviewAuditManifest({
     prompt: "rendered prompt",
