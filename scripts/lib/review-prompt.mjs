@@ -11,6 +11,8 @@ export const REVIEW_PROMPT_CHECKLIST = Object.freeze([
 
 export const REVIEW_PROMPT_CONTRACT_VERSION = 1;
 export const REVIEW_AUDIT_MANIFEST_VERSION = 1;
+const MAX_REVIEW_MARKUP_STRIPS = 10;
+const MAX_CHECKLIST_NUMBER_DIGITS = 10;
 
 function contentBuffer(file) {
   const content = file?.content;
@@ -106,7 +108,7 @@ function bulletText(line) {
 
 function stripLeadingReviewMarkup(line) {
   let out = String(line ?? "").trimStart();
-  for (let i = 0; i < 10; i += 1) {
+  for (let i = 0; i < MAX_REVIEW_MARKUP_STRIPS; i += 1) {
     const before = out;
     const checklist = checklistText(out);
     if (checklist) out = checklist;
@@ -145,7 +147,7 @@ function checklistText(line) {
   const bullet = bulletText(trimmed);
   if (bullet !== null) return bullet;
   let index = 0;
-  while (index < trimmed.length) {
+  while (index < trimmed.length && index < MAX_CHECKLIST_NUMBER_DIGITS) {
     const code = trimmed.charCodeAt(index);
     if (code < 48 || code > 57) break;
     index += 1;

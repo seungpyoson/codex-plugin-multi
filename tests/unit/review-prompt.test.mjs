@@ -674,6 +674,26 @@ test("review audit manifest ignores en-dash PASS checklist lines with failure te
   assert.equal(manifest.review_quality.failed_review_slot, false);
 });
 
+test("review audit manifest ignores pathologically long numbered checklist prefixes", () => {
+  const manifest = buildReviewAuditManifest({
+    prompt: "rendered prompt",
+    sourceFiles: [{ path: "sample.js", text: "export const value = 1;\n" }],
+    result: [
+      "Verdict: APPROVE",
+      "Blocking findings: none.",
+      "Non-blocking concerns: none.",
+      "Inspection statement: I inspected sample.js.",
+      "12345678901. PASS This overlong numeric prefix is treated as prose, not a checklist item.",
+    ].join("\n"),
+    status: "completed",
+    errorCode: null,
+  });
+
+  assert.equal(manifest.review_quality.checklist_items_seen, 0);
+  assert.deepEqual(manifest.review_quality.semantic_failure_reasons, []);
+  assert.equal(manifest.review_quality.failed_review_slot, false);
+});
+
 test("review audit manifest does not count approval requests as failed review slots", () => {
   const manifest = buildReviewAuditManifest({
     prompt: "approval prompt",
