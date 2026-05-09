@@ -9,6 +9,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { externalReviewLaunchedEvent } from "../../scripts/lib/companion-common.mjs";
 import { assertJobRecordShape } from "../helpers/job-record-shape.mjs";
+import { substantiveReviewFixture } from "../helpers/review-fixtures.mjs";
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const COMPANION = path.join(REPO_ROOT, "plugins/grok/scripts/grok-web-reviewer.mjs");
@@ -104,25 +105,6 @@ function parseStdout(result) {
 function parseJsonLines(result) {
   assert.doesNotMatch(result.stderr, /secret|token|cookie|xai/i);
   return result.stdout.trim().split(/\n+/).filter(Boolean).map((line) => JSON.parse(line));
-}
-
-function substantiveReview(extra = "") {
-  return [
-    "1. Verdict: APPROVE",
-    "2. Blocking findings",
-    "- None. I inspected the selected file content supplied in the prompt and found no blocking correctness or security issue for this fixture.",
-    "3. Non-blocking concerns",
-    "- None for this fixture.",
-    "4. Test gaps",
-    "- Existing test coverage is sufficient for the fixture path being exercised here.",
-    "5. Inspection status",
-    "- I inspected the selected files and did not encounter a read denial, permission denial, timeout, truncated output, or placeholder response.",
-    "Checklist:",
-    "- PASS selected source was inspectable.",
-    "- PASS the response is not a shallow placeholder.",
-    "- PASS no blocking finding is invented for the fixture.",
-    extra,
-  ].filter(Boolean).join("\n");
 }
 
 function rmTree(dir) {
@@ -587,7 +569,7 @@ test("doctor explains XAI_KEY is ignored for subscription web mode", () => {
 test("custom-review sends selected source to a local Grok web tunnel and persists a JobRecord", async () => {
   const cwd = mkdtempSync(path.join(tmpdir(), "grok-web-workspace-"));
   const dataDir = mkdtempSync(path.join(tmpdir(), "grok-web-data-"));
-  const firstReviewText = substantiveReview("Provider marker: no findings 1.");
+  const firstReviewText = substantiveReviewFixture("Provider marker: no findings 1.");
   writeFileSync(path.join(cwd, "review.js"), "export const value = 42;\n// ``` nested markdown fence\n");
 
   let requestCount = 0;
@@ -611,7 +593,7 @@ test("custom-review sends selected source to a local Grok web tunnel and persist
     res.end(JSON.stringify({
       id: `grok-web-session-${requestCount}`,
       model: "grok-4.20-fast",
-      choices: [{ message: { content: substantiveReview(`Provider marker: no findings ${requestCount}.`) } }],
+      choices: [{ message: { content: substantiveReviewFixture(`Provider marker: no findings ${requestCount}.`) } }],
       usage: { prompt_tokens: 12, completion_tokens: 5, total_tokens: 17 },
     }));
   }, async (baseUrl) => {
@@ -799,7 +781,7 @@ test("custom-review fails closed when Grok tunnel returns shallow HTTP 200 outpu
 
 test("custom-review lifecycle jsonl emits launch before terminal record", async () => {
   const cwd = mkdtempSync(path.join(tmpdir(), "grok-web-workspace-"));
-  const reviewText = substantiveReview("Lifecycle marker: no findings.");
+  const reviewText = substantiveReviewFixture("Lifecycle marker: no findings.");
   writeFileSync(path.join(cwd, "review.js"), "export const value = 42;\n");
 
   await withServer(async (_req, res) => {
@@ -844,7 +826,7 @@ test("custom-review lifecycle jsonl emits launch before terminal record", async 
 
 test("custom-review escalates Grok file delimiters when selected source collides", async () => {
   const cwd = mkdtempSync(path.join(tmpdir(), "grok-web-workspace-"));
-  const reviewText = substantiveReview("Delimiter marker: delimiter collision handled.");
+  const reviewText = substantiveReviewFixture("Delimiter marker: delimiter collision handled.");
   writeFileSync(path.join(cwd, "review.js"), [
     "const marker = `BEGIN GROK FILE 1: review.js`;",
     "const end = `END GROK FILE 1: review.js`;",
@@ -1215,7 +1197,7 @@ test("concurrent Grok runs preserve every completed job in the state index", asy
     res.setHeader("content-type", "application/json");
     res.end(JSON.stringify({
       id: `grok-web-concurrent-${received}`,
-      choices: [{ message: { content: substantiveReview(`Concurrent marker: ${received}.`) } }],
+      choices: [{ message: { content: substantiveReviewFixture(`Concurrent marker: ${received}.`) } }],
     }));
   }, async (baseUrl) => {
     const results = await Promise.all(Array.from({ length: runCount }, (_, i) => runAsync([
@@ -1271,7 +1253,7 @@ test("Grok state index recovers stale locks owned by dead same-host processes", 
     res.setHeader("content-type", "application/json");
     res.end(JSON.stringify({
       id: "grok-web-stale-lock",
-      choices: [{ message: { content: substantiveReview("State marker: stale lock recovered.") } }],
+      choices: [{ message: { content: substantiveReviewFixture("State marker: stale lock recovered.") } }],
     }));
   }, async (baseUrl) => {
     const result = await runAsync([
@@ -1317,7 +1299,7 @@ test("Grok state index recovers stale locks without owner metadata by age", asyn
     res.setHeader("content-type", "application/json");
     res.end(JSON.stringify({
       id: "grok-web-stale-lock-missing-owner",
-      choices: [{ message: { content: substantiveReview("State marker: stale missing-owner lock recovered.") } }],
+      choices: [{ message: { content: substantiveReviewFixture("State marker: stale missing-owner lock recovered.") } }],
     }));
   }, async (baseUrl) => {
     const result = await runAsync([
@@ -1360,7 +1342,7 @@ test("Grok state index recovers old locks owned by different hosts", async () =>
     res.setHeader("content-type", "application/json");
     res.end(JSON.stringify({
       id: "grok-web-stale-lock-other-host",
-      choices: [{ message: { content: substantiveReview("State marker: stale different-host lock recovered.") } }],
+      choices: [{ message: { content: substantiveReviewFixture("State marker: stale different-host lock recovered.") } }],
     }));
   }, async (baseUrl) => {
     const result = await runAsync([
@@ -1387,7 +1369,7 @@ test("Grok state index recovers old locks owned by different hosts", async () =>
 test("custom-review repairs malformed state index from persisted JobRecords", async () => {
   const cwd = mkdtempSync(path.join(tmpdir(), "grok-web-workspace-"));
   const dataDir = mkdtempSync(path.join(tmpdir(), "grok-web-data-"));
-  const reviewText = substantiveReview("State marker: malformed state repaired.");
+  const reviewText = substantiveReviewFixture("State marker: malformed state repaired.");
   writeFileSync(path.join(cwd, "review.js"), "export const value = 42;\n");
   writeFileSync(path.join(dataDir, "state.json"), "{bad json");
 
@@ -1483,7 +1465,7 @@ test("state index updates do not import orphaned job records when state is healt
     res.setHeader("content-type", "application/json");
     res.end(JSON.stringify({
       id: "grok-web-healthy-state",
-      choices: [{ message: { content: substantiveReview("State marker: healthy state.") } }],
+      choices: [{ message: { content: substantiveReviewFixture("State marker: healthy state.") } }],
     }));
   }, async (baseUrl) => {
     const result = await runAsync([
@@ -1530,7 +1512,7 @@ test("Grok state lock does not reclaim live same-host owners by age", async () =
     res.setHeader("content-type", "application/json");
     res.end(JSON.stringify({
       id: "grok-web-live-lock",
-      choices: [{ message: { content: substantiveReview("State marker: live lock preserved.") } }],
+      choices: [{ message: { content: substantiveReviewFixture("State marker: live lock preserved.") } }],
     }));
   }, async (baseUrl) => {
     const result = await runAsync([
@@ -1834,7 +1816,7 @@ test("review mode uses branch-diff scope with scrubbed git environment", async (
   writeFileSync(path.join(cwd, "review.js"), "GROK_DIRTY_SELECTED_SECRET\n");
   writeFileSync(path.join(cwd, "local-config.txt"), "GROK_LOCAL_DIRTY_SECRET\n");
   writeFileSync(path.join(cwd, "untracked-secret.js"), "GROK_UNTRACKED_SECRET\n");
-  const reviewText = substantiveReview("Branch diff marker: branch diff reviewed.");
+  const reviewText = substantiveReviewFixture("Branch diff marker: branch diff reviewed.");
 
   await withServer(async (req, res) => {
     assert.equal(req.method, "POST");
@@ -1900,7 +1882,7 @@ test("review mode uses branch-diff scope with scrubbed git environment", async (
 test("branch-diff treats **/ as a path segment glob", async () => {
   const cwd = mkdtempSync(path.join(tmpdir(), "grok-web-branch-"));
   const dataDir = mkdtempSync(path.join(tmpdir(), "grok-web-data-"));
-  const reviewText = substantiveReview("Glob marker: glob reviewed.");
+  const reviewText = substantiveReviewFixture("Glob marker: glob reviewed.");
   execFileSync("git", ["init", "-b", "main"], { cwd, stdio: "ignore" });
   execFileSync("git", ["config", "user.email", "test@example.com"], { cwd });
   execFileSync("git", ["config", "user.name", "Test User"], { cwd });
@@ -2600,7 +2582,7 @@ test("custom-review accepts files when cwd itself is a symlink to the workspace"
   const realWorkspace = mkdtempSync(path.join(tmpdir(), "grok-web-real-workspace-"));
   const linkRoot = mkdtempSync(path.join(tmpdir(), "grok-web-link-root-"));
   const linkedWorkspace = path.join(linkRoot, "workspace");
-  const reviewText = substantiveReview("Symlink marker: symlinked cwd accepted.");
+  const reviewText = substantiveReviewFixture("Symlink marker: symlinked cwd accepted.");
   writeFileSync(path.join(realWorkspace, "review.js"), "export const value = 42;\n");
   symlinkSync(realWorkspace, linkedWorkspace);
 
@@ -2681,7 +2663,7 @@ test("smoke replay: grok/happy-path-review reproduces recorded JobRecord shape (
       chatCaptured.authorization = req.headers.authorization ?? null;
       chatCaptured.body = await readJsonRequest(req);
       res.end(JSON.stringify({
-        choices: [{ message: { content: substantiveReview("Replay marker: fixture happy path.") } }],
+        choices: [{ message: { content: substantiveReviewFixture("Replay marker: fixture happy path.") } }],
         usage: { prompt_tokens: 10, completion_tokens: 2, total_tokens: 12 },
       }));
       return;

@@ -8,6 +8,7 @@ import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { externalReviewLaunchedEvent } from "../../scripts/lib/companion-common.mjs";
 import { assertJobRecordShape } from "../helpers/job-record-shape.mjs";
+import { substantiveReviewFixture } from "../helpers/review-fixtures.mjs";
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const COMPANION = path.join(REPO_ROOT, "plugins/api-reviewers/scripts/api-reviewer.mjs");
@@ -125,26 +126,7 @@ async function waitForValue(fn, { timeoutMs = 2000, intervalMs = 25 } = {}) {
   assert.fail("timed out waiting for expected value");
 }
 
-function substantiveReview(extra = "") {
-  return [
-    "1. Verdict: APPROVE",
-    "2. Blocking findings",
-    "- None. I inspected the selected file content supplied in the prompt and found no blocking correctness or security issue for this fixture.",
-    "3. Non-blocking concerns",
-    "- None for this fixture.",
-    "4. Test gaps",
-    "- Existing test coverage is sufficient for the fixture path being exercised here.",
-    "5. Inspection status",
-    "- I inspected the selected files and did not encounter a read denial, permission denial, timeout, truncated output, or placeholder response.",
-    "Checklist:",
-    "- PASS selected source was inspectable.",
-    "- PASS the response is not a shallow placeholder.",
-    "- PASS no blocking finding is invented for the fixture.",
-    extra,
-  ].filter(Boolean).join("\n");
-}
-
-function mockResponse(model, id = "chatcmpl-test", content = substantiveReview(`Provider model: ${model}`)) {
+function mockResponse(model, id = "chatcmpl-test", content = substantiveReviewFixture(`Provider model: ${model}`)) {
   return JSON.stringify({
     id,
     object: "chat.completion",
@@ -1445,7 +1427,7 @@ test("direct API JobRecord construction does not mutate execution input", async 
     exitCode: 0,
     parsed: {
       ok: true,
-      result: substantiveReview("Inspection statement: I inspected seed.txt."),
+      result: substantiveReviewFixture("Inspection statement: I inspected seed.txt."),
       raw_model: "deepseek-v4-pro",
     },
     http_status: 200,
@@ -1597,7 +1579,7 @@ test("direct API reviewers redact provider results before printing or persisting
   ], {
     cwd,
     env: {
-      API_REVIEWERS_MOCK_RESPONSE: mockResponse("deepseek-v4-flash", "chatcmpl-test", substantiveReview("Echoed secret-test-value in provider output")),
+      API_REVIEWERS_MOCK_RESPONSE: mockResponse("deepseek-v4-flash", "chatcmpl-test", substantiveReviewFixture("Echoed secret-test-value in provider output")),
       DEEPSEEK_API_KEY: "secret-test-value",
     },
   });
@@ -1621,7 +1603,7 @@ test("direct API reviewers redact authorization-shaped provider echoes", async (
   ], {
     cwd,
     env: {
-      API_REVIEWERS_MOCK_RESPONSE: mockResponse("deepseek-v4-flash", "chatcmpl-test", substantiveReview("Echoed Authorization: Bearer reflected-token-value\nAuthorization: Token abc1234\nBearer shrt\nBearer alternate-token-value")),
+      API_REVIEWERS_MOCK_RESPONSE: mockResponse("deepseek-v4-flash", "chatcmpl-test", substantiveReviewFixture("Echoed Authorization: Bearer reflected-token-value\nAuthorization: Token abc1234\nBearer shrt\nBearer alternate-token-value")),
       DEEPSEEK_API_KEY: "secret-test-value",
     },
   });
@@ -1657,7 +1639,7 @@ test("direct API reviewers redact configured non-API_KEY credential names", asyn
     cwd,
     companion: path.join(pluginRoot, "scripts", "api-reviewer.mjs"),
     env: {
-      API_REVIEWERS_MOCK_RESPONSE: mockResponse("deepseek-v4-flash", "chatcmpl-test", substantiveReview("Echoed token-token-value in provider output")),
+      API_REVIEWERS_MOCK_RESPONSE: mockResponse("deepseek-v4-flash", "chatcmpl-test", substantiveReviewFixture("Echoed token-token-value in provider output")),
       DEEPSEEK_CREDENTIAL: "token-token-value",
     },
   });
@@ -1693,7 +1675,7 @@ test("direct API reviewers redact realistic short configured credentials without
     cwd,
     companion: path.join(pluginRoot, "scripts", "api-reviewer.mjs"),
     env: {
-      API_REVIEWERS_MOCK_RESPONSE: mockResponse("deepseek-v4-flash", "chatcmpl-test", substantiveReview("a normal alphabet payload")),
+      API_REVIEWERS_MOCK_RESPONSE: mockResponse("deepseek-v4-flash", "chatcmpl-test", substantiveReviewFixture("a normal alphabet payload")),
       DEEPSEEK_CREDENTIAL: "a",
     },
   });
@@ -1715,7 +1697,7 @@ test("direct API reviewers redact realistic short configured credentials without
     cwd,
     companion: path.join(pluginRoot, "scripts", "api-reviewer.mjs"),
     env: {
-      API_REVIEWERS_MOCK_RESPONSE: mockResponse("deepseek-v4-flash", "chatcmpl-test", substantiveReview("provider echoed abcd")),
+      API_REVIEWERS_MOCK_RESPONSE: mockResponse("deepseek-v4-flash", "chatcmpl-test", substantiveReviewFixture("provider echoed abcd")),
       DEEPSEEK_CREDENTIAL: "abcd",
     },
   });
@@ -3925,7 +3907,7 @@ function buildHttpResponseFromApiReviewersFixture(fixture) {
         choices: [{
           index: 0,
           finish_reason: "stop",
-          message: { role: "assistant", content: fixture.result ?? substantiveReview("Replay fixture marker.") },
+          message: { role: "assistant", content: fixture.result ?? substantiveReviewFixture("Replay fixture marker.") },
         }],
         usage: fixture.usage ?? { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
       }),

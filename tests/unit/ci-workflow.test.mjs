@@ -141,6 +141,17 @@ test("standalone lifecycle smoke tests guard launch event shape against shared h
   }
 });
 
+test("standalone API smoke tests share substantive review fixture text", () => {
+  for (const rel of [
+    "tests/smoke/api-reviewers.smoke.test.mjs",
+    "tests/smoke/grok-web.smoke.test.mjs",
+  ]) {
+    const smoke = readFileSync(resolve(rel), "utf8");
+    assert.match(smoke, /substantiveReviewFixture/);
+    assert.doesNotMatch(smoke, /function substantiveReview\(/);
+  }
+});
+
 test("grok external_review shapes are runtime-guarded", () => {
   const source = readFileSync(resolve("plugins/grok/scripts/grok-web-reviewer.mjs"), "utf8");
   assert.match(source, /EXTERNAL_REVIEW_KEYS/, "Grok must use the canonical external_review key order");
