@@ -36,6 +36,40 @@ async function getJson(url, token) {
   return response.json();
 }
 
+function nextUrlFromLinkHeader(linkHeader, baseUrl) {
+  for (const link of String(linkHeader ?? "").split(",")) {
+    const match = link.match(/<([^>]+)>\s*;\s*rel="next"/u);
+    if (match) {
+      return new URL(match[1], baseUrl);
+    }
+  }
+  return null;
+}
+
+async function getJsonPages(url, token) {
+  const items = [];
+  let nextUrl = url;
+  while (nextUrl) {
+    const response = await fetch(nextUrl, {
+      headers: {
+        accept: "application/vnd.github+json",
+        authorization: `Bearer ${token}`,
+        "x-github-api-version": "2022-11-28",
+      },
+    });
+    if (!response.ok) {
+      throw new Error(`GET ${nextUrl} failed: HTTP ${response.status}`);
+    }
+    const pageItems = await response.json();
+    if (!Array.isArray(pageItems)) {
+      throw new Error(`GET ${nextUrl} failed: expected paginated array response`);
+    }
+    items.push(...pageItems);
+    nextUrl = nextUrlFromLinkHeader(response.headers.get("link"), nextUrl);
+  }
+  return items;
+}
+
 async function postJson(url, token, body) {
   const response = await fetch(url, {
     method: "POST",
@@ -96,8 +130,8 @@ async function loadGithubEvidence({ env = process.env } = {}) {
     : event.pull_request;
   const headSha = context.headSha ?? pull.head?.sha;
   const [comments, reviews] = await Promise.all([
-    getJson(githubApiUrl(apiUrl, ["repos", owner, repoName, "issues", context.prNumber, "comments"], { per_page: 100 }), token),
-    getJson(githubApiUrl(apiUrl, ["repos", owner, repoName, "pulls", context.prNumber, "reviews"], { per_page: 100 }), token),
+    getJsonPages(githubApiUrl(apiUrl, ["repos", owner, repoName, "issues", context.prNumber, "comments"], { per_page: 100 }), token),
+    getJsonPages(githubApiUrl(apiUrl, ["repos", owner, repoName, "pulls", context.prNumber, "reviews"], { per_page: 100 }), token),
   ]);
   return {
     shouldRun: true,

@@ -1,6 +1,10 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { createServer } from "node:http";
 
 import {
   DEFAULT_MANUAL_REVIEW_REQUIREMENTS,
@@ -20,6 +24,37 @@ function evidence(author, body) {
     body,
     url: `https://example.test/${author}`,
   };
+}
+
+async function withServer(handler, callback) {
+  const server = createServer(handler);
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  try {
+    const { port } = server.address();
+    return await callback(`http://127.0.0.1:${port}`);
+  } finally {
+    await new Promise((resolve, reject) => {
+      server.close((error) => (error ? reject(error) : resolve()));
+    });
+  }
+}
+
+function runNodeScript(args, options) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, args, options);
+    let stdout = "";
+    let stderr = "";
+    child.stdout.on("data", (chunk) => {
+      stdout += chunk;
+    });
+    child.stderr.on("data", (chunk) => {
+      stderr += chunk;
+    });
+    child.on("error", reject);
+    child.on("close", (status, signal) => {
+      resolve({ status, signal, stdout, stderr });
+    });
+  });
 }
 
 test("manual review gate passes only when every required reviewer approves the exact head", () => {
@@ -315,6 +350,77 @@ test("manual review gate CLI evaluates fixture evidence from env", () => {
   });
   assert.equal(invalidHead.status, 1);
   assert.match(invalidHead.stderr, /40-character git SHA/);
+});
+
+test("manual review gate CLI follows paginated GitHub comments and reviews", async () => {
+  const tempDir = await mkdtemp(join(tmpdir(), "manual-review-gate-"));
+  try {
+    const eventPath = join(tempDir, "event.json");
+    await writeFile(eventPath, JSON.stringify({
+      pull_request: {
+        number: 136,
+        head: { sha: HEAD },
+      },
+    }));
+    const relayBodies = [
+      ["Claude", "APPROVE"],
+      ["Gemini", "APPROVE"],
+      ["Kimi", "APPROVE"],
+      ["DeepSeek", "APPROVE"],
+      ["GLM", "APPROVE"],
+    ].map(([reviewer, verdict]) => `<!-- codex-plugin-multi:manual-external-adversarial-review -->\nHead: ${HEAD}\nReviewer: ${reviewer}\nVerdict: ${verdict}`);
+
+    await withServer((request, response) => {
+      const url = new URL(request.url, "http://127.0.0.1");
+      response.setHeader("content-type", "application/json");
+      if (url.pathname === "/repos/owner/repo/issues/136/comments") {
+        if (url.searchParams.get("page") === "2") {
+          response.end(JSON.stringify(relayBodies.slice(0, 3).map((body, index) => ({
+            body,
+            html_url: `https://github.test/comment/${index + 1}`,
+            user: { login: "manual-relay" },
+          }))));
+          return;
+        }
+        response.setHeader("link", `</repos/owner/repo/issues/136/comments?per_page=100&page=2>; rel="next"`);
+        response.end("[]");
+        return;
+      }
+      if (url.pathname === "/repos/owner/repo/pulls/136/reviews") {
+        if (url.searchParams.get("page") === "2") {
+          response.end(JSON.stringify(relayBodies.slice(3).map((body, index) => ({
+            body,
+            html_url: `https://github.test/review/${index + 1}`,
+            user: { login: "manual-relay" },
+            state: "COMMENTED",
+          }))));
+          return;
+        }
+        response.setHeader("link", `</repos/owner/repo/pulls/136/reviews?per_page=100&page=2>; rel="next"`);
+        response.end("[]");
+        return;
+      }
+      response.statusCode = 404;
+      response.end(JSON.stringify({ message: "not found" }));
+    }, async (apiUrl) => {
+      const result = await runNodeScript(["scripts/ci/check-manual-review-gate.mjs"], {
+        cwd: process.cwd(),
+        encoding: "utf8",
+        env: {
+          ...process.env,
+          GITHUB_API_URL: apiUrl,
+          GITHUB_EVENT_PATH: eventPath,
+          GITHUB_REPOSITORY: "owner/repo",
+          GITHUB_TOKEN: "test-token",
+        },
+      });
+
+      assert.equal(result.status, 0, result.stderr || result.stdout);
+      assert.match(result.stdout, /manual review gate passed/i);
+    });
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
 });
 
 test("manual review gate builds commit status payloads for branch protection", () => {
