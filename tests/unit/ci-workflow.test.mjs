@@ -65,9 +65,20 @@ test("manual external review gate runs on PRs and PR comments", () => {
 test("review enforcement docs name the required branch protection settings", () => {
   assert.match(reviewEnforcementDocs, /manual-review-gate/);
   assert.match(reviewEnforcementDocs, /required status check/i);
-  assert.match(reviewEnforcementDocs, /pull-request-ci \/ lint/);
-  assert.match(reviewEnforcementDocs, /pull-request-ci \/ test/);
-  assert.match(reviewEnforcementDocs, /pull-request-ci \/ smoke \(claude\)/);
+  for (const context of [
+    "manual-review-gate",
+    "lint",
+    "test",
+    "smoke (api-reviewers)",
+    "smoke (claude)",
+    "smoke (gemini)",
+    "smoke (grok)",
+    "smoke (kimi)",
+    "SonarCloud Code Analysis",
+  ]) {
+    assert.match(reviewEnforcementDocs, new RegExp(`^- \`${context.replace(/[()]/g, "\\$&")}\`$`, "m"));
+  }
+  assert.doesNotMatch(reviewEnforcementDocs, /pull-request-ci \//);
   assert.doesNotMatch(reviewEnforcementDocs, /^- `Greptile Review`$/m);
   assert.match(reviewEnforcementDocs, /Bot reviews such as Greptile are useful advisory signals/);
   assert.match(reviewEnforcementDocs, /required approving review count.*1/i);

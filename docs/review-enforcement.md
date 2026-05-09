@@ -28,16 +28,17 @@ new source commit.
 
 ## Required Branch Protection
 
-Repo settings must configure these as required status checks on `main`:
+Repo settings must configure these as required status checks on `main`. The
+active `CI gates` ruleset uses the raw check/status context names below:
 
 - `manual-review-gate`
-- `pull-request-ci / lint`
-- `pull-request-ci / test`
-- `pull-request-ci / smoke (claude)`
-- `pull-request-ci / smoke (gemini)`
-- `pull-request-ci / smoke (kimi)`
-- `pull-request-ci / smoke (grok)`
-- `pull-request-ci / smoke (api-reviewers)`
+- `lint`
+- `test`
+- `smoke (api-reviewers)`
+- `smoke (claude)`
+- `smoke (gemini)`
+- `smoke (grok)`
+- `smoke (kimi)`
 - `SonarCloud Code Analysis`
 
 Repo settings must also set:
