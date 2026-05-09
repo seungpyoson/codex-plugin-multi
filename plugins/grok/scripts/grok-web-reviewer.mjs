@@ -18,6 +18,8 @@ import {
 
 const VALID_MODES = new Set(["review", "adversarial-review", "custom-review"]);
 const DEFAULT_BASE_URL = "http://127.0.0.1:8000/v1";
+const DEFAULT_GROK2API_BASE_URL = "http://127.0.0.1:8000";
+const DEFAULT_GROK2API_ADMIN_KEY = "grok2api";
 const DEFAULT_MODEL = "grok-4.20-fast";
 const DEFAULT_TIMEOUT_MS = 600000;
 const DEFAULT_DOCTOR_TIMEOUT_MS = 2000;
@@ -144,6 +146,13 @@ function normalizeBaseUrl(value) {
   return url;
 }
 
+function normalizeGrok2ApiBaseUrl(value, tunnelBaseUrl = DEFAULT_BASE_URL) {
+  const fallback = normalizeBaseUrl(tunnelBaseUrl).replace(/\/(?:v1|api)$/, "");
+  let url = String(value || fallback || DEFAULT_GROK2API_BASE_URL);
+  while (url.endsWith("/")) url = url.slice(0, -1);
+  return url;
+}
+
 function config(env = process.env) {
   const timeoutMs = parsePositiveIntegerEnv(env, "GROK_WEB_TIMEOUT_MS", DEFAULT_TIMEOUT_MS);
   const doctorTimeoutMs = parsePositiveIntegerEnv(env, "GROK_WEB_DOCTOR_TIMEOUT_MS", DEFAULT_DOCTOR_TIMEOUT_MS);
@@ -161,6 +170,8 @@ function config(env = process.env) {
     max_prompt_chars: maxPromptChars,
     credential_ref: env.GROK_WEB_TUNNEL_API_KEY ? "GROK_WEB_TUNNEL_API_KEY" : null,
     credential_value: env.GROK_WEB_TUNNEL_API_KEY || null,
+    grok2api_base_url: normalizeGrok2ApiBaseUrl(env.GROK2API_BASE_URL, env.GROK_WEB_BASE_URL),
+    grok2api_admin_key: env.GROK2API_ADMIN_KEY || DEFAULT_GROK2API_ADMIN_KEY,
   };
 }
 
@@ -717,6 +728,130 @@ function payloadSentForFetchError(error) {
   return null;
 }
 
+function isJwtShapedToken(value) {
+  return typeof value === "string" && /^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/.test(value);
+}
+
+function sessionTokenDiagnostics(tokens) {
+  const entries = Array.isArray(tokens) ? tokens : [];
+  const active = entries.filter((entry) => {
+    const status = String(entry?.status ?? "").toLowerCase();
+    return entry?.deleted !== true && status !== "deleted" && status !== "inactive";
+  });
+  const malformedActive = active.filter((entry) => !isJwtShapedToken(entry?.token));
+  const deleted = entries.filter((entry) => entry?.deleted === true || String(entry?.status ?? "").toLowerCase() === "deleted");
+  const errorCode = active.length === 0
+    ? "grok_session_no_runtime_tokens"
+    : (malformedActive.length > 0 ? "grok_session_malformed_active_token" : null);
+  return {
+    status: "checked",
+    total_token_count: entries.length,
+    active_token_count: active.length,
+    malformed_active_token_count: malformedActive.length,
+    deleted_token_count: deleted.length,
+    error_code: errorCode,
+  };
+}
+
+async function probeGrokRuntimeStatus(cfg, env = process.env) {
+  const endpoint = `${cfg.grok2api_base_url}/status`;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), cfg.doctor_timeout_ms);
+  const redact = redactor(env);
+  try {
+    const response = await fetch(endpoint, {
+      method: "GET",
+      signal: controller.signal,
+    });
+    const text = await response.text();
+    const parsed = text ? parseJson(text) : { ok: true, value: null };
+    if (!response.ok || !parsed.ok) {
+      return {
+        status: "unknown",
+        error_code: "grok_runtime_status_unavailable",
+        error_message: response.ok ? "grok2api runtime status response was not valid JSON." : errorMessageFromResponse(parsed, text, redact),
+        http_status: response.status,
+        probe_endpoint: endpoint,
+      };
+    }
+    const size = Number.isSafeInteger(parsed.value?.size) ? parsed.value.size : null;
+    return {
+      status: "checked",
+      runtime_size: size,
+      runtime_revision: Number.isSafeInteger(parsed.value?.revision) ? parsed.value.revision : null,
+      runtime_selection_strategy: typeof parsed.value?.selection_strategy === "string" ? parsed.value.selection_strategy : null,
+      error_code: null,
+      error_message: null,
+      http_status: response.status,
+      probe_endpoint: endpoint,
+    };
+  } catch (error) {
+    return {
+      status: "unknown",
+      error_code: error?.name === "AbortError" ? "grok_runtime_status_timeout" : "grok_runtime_status_unavailable",
+      error_message: tunnelTransportMessage(error, env, redact),
+      http_status: null,
+      probe_endpoint: endpoint,
+    };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function probeGrokSessionDiagnostics(cfg, env = process.env) {
+  const endpoint = `${cfg.grok2api_base_url}/admin/api/tokens`;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), cfg.doctor_timeout_ms);
+  const redact = redactor(env);
+  try {
+    const response = await fetch(endpoint, {
+      method: "GET",
+      headers: { authorization: `Bearer ${cfg.grok2api_admin_key}` },
+      signal: controller.signal,
+    });
+    const text = await response.text();
+    const parsed = text ? parseJson(text) : { ok: true, value: null };
+    if (!response.ok || !parsed.ok) {
+      return {
+        status: "unknown",
+        error_code: response.ok ? "grok_session_diagnostics_unavailable" : classifyHttpFailure(response.status, parsed, text),
+        error_message: response.ok ? "grok2api admin token response was not valid JSON." : errorMessageFromResponse(parsed, text, redact),
+        http_status: response.status,
+        probe_endpoint: endpoint,
+      };
+    }
+    const tokenDiagnostics = sessionTokenDiagnostics(parsed.value?.tokens);
+    const runtimeDiagnostics = tokenDiagnostics.active_token_count > 0 && tokenDiagnostics.error_code === null
+      ? await probeGrokRuntimeStatus(cfg, env)
+      : { status: "not_checked", error_code: null };
+    const runtimeDiverged = runtimeDiagnostics.status === "checked"
+      && tokenDiagnostics.active_token_count > 0
+      && runtimeDiagnostics.runtime_size === 0;
+    return {
+      ...tokenDiagnostics,
+      ...(runtimeDiagnostics.status === "checked" ? {
+        runtime_size: runtimeDiagnostics.runtime_size,
+        runtime_revision: runtimeDiagnostics.runtime_revision,
+        runtime_selection_strategy: runtimeDiagnostics.runtime_selection_strategy,
+      } : {}),
+      error_code: runtimeDiverged ? "grok_session_runtime_admin_divergence" : tokenDiagnostics.error_code,
+      error_message: null,
+      http_status: response.status,
+      probe_endpoint: endpoint,
+    };
+  } catch (error) {
+    return {
+      status: "unknown",
+      error_code: error?.name === "AbortError" ? "grok_session_diagnostics_timeout" : "grok_session_diagnostics_unavailable",
+      error_message: tunnelTransportMessage(error, env, redact),
+      http_status: null,
+      probe_endpoint: endpoint,
+    };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 function tunnelTransportMessage(error, env, redact) {
   const detail = redact(error?.message ?? String(error));
   const ignoredKeys = ["GROK_API_KEY", "XAI_API_KEY", "XAI_KEY"].filter((key) => env[key]);
@@ -989,6 +1124,9 @@ function suggestedAction(errorCode, errorMessage = "") {
   if (errorCode === "usage_limited") return "Wait for Grok subscription usage to recover, reduce concurrency, or inspect the local tunnel. Any billing, credit, or tier change must be a separate manual action with explicit user approval.";
   if (errorCode === "grok_chat_model_rejected") return "The tunnel lists models, but the configured GROK_WEB_MODEL is not accepted by chat; correct GROK_WEB_MODEL or tunnel model routing, then retry.";
   if (errorCode === "grok_chat_timeout") return "The Grok chat readiness probe exceeded GROK_WEB_CHAT_DOCTOR_TIMEOUT_MS; inspect the local tunnel latency or raise that timeout, then retry.";
+  if (errorCode === "grok_session_no_runtime_tokens") return "The local Grok tunnel has no active runtime session tokens; sync the browser session or import a valid Grok cookie, then retry.";
+  if (errorCode === "grok_session_malformed_active_token") return "The local Grok tunnel has a malformed active Grok session token; remove the malformed token, import a JWT-shaped Grok cookie, restart or refresh the tunnel, then retry.";
+  if (errorCode === "grok_session_runtime_admin_divergence") return "The grok2api admin token list has active tokens but the runtime token table is empty; restart or refresh the local Grok tunnel, then retry.";
   if (errorCode === "models_ok_chat_400") return "The tunnel lists models but chat is not review-capable; refresh the Grok web session, inspect tunnel logs and rate-limit endpoint health, then retry.";
   if (errorCode === "review_not_completed") return "Treat this Grok slot as failed. Inspect the raw result and runtime diagnostics, then retry only with a source packet and prompt contract the reviewer can inspect and answer substantively.";
   if (errorCode === "malformed_response") return "Inspect or update the local Grok web tunnel; it returned an unsupported response shape.";
@@ -1532,8 +1670,16 @@ async function doctorFields(env = process.env) {
     http_status: null,
     probe_endpoint: `${cfg.base_url}/chat/completions`,
   };
+  const sessionDiagnostics = probe.reachable && chatProbe.chat_ready !== true
+    ? await probeGrokSessionDiagnostics(cfg, env)
+    : {
+      status: "not_checked",
+      reason: "chat_probe_ready_or_tunnel_unreachable",
+      error_code: null,
+    };
   const ready = probe.reachable === true && chatProbe.chat_ready === true;
-  const errorCode = ready ? null : (chatProbe.error_code ?? probe.error_code);
+  const sessionErrorCode = sessionDiagnostics.status === "checked" ? sessionDiagnostics.error_code : null;
+  const errorCode = ready ? null : (sessionErrorCode ?? chatProbe.error_code ?? probe.error_code);
   return {
     provider: "grok-web",
     status: "ok",
@@ -1557,6 +1703,7 @@ async function doctorFields(env = process.env) {
     timeout_ms: cfg.timeout_ms,
     doctor_timeout_ms: cfg.doctor_timeout_ms,
     chat_doctor_timeout_ms: cfg.chat_doctor_timeout_ms,
+    session_diagnostics: sessionDiagnostics,
     cost_quota_readiness: costQuotaReadiness,
     error_code: errorCode,
     error_message: ready ? null : (chatProbe.error_message ?? probe.error_message),

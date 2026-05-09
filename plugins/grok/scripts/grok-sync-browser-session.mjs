@@ -82,6 +82,10 @@ function sanitizeToken(raw) {
     .replaceAll(/\s+/g, "");
 }
 
+function isJwtShapedToken(value) {
+  return /^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/.test(value);
+}
+
 function parsePositiveInteger(value, fallback) {
   if (value === undefined || value === null || value === "") return fallback;
   const parsed = Number(value);
@@ -357,6 +361,13 @@ async function main(argv = process.argv.slice(2)) {
   const selected = selectCookie(cookies);
   if (!selected) {
     fail("cookie_not_found", "No usable sso-rw or sso cookie was found for grok.com.", { source });
+  }
+  if (!isJwtShapedToken(selected.value)) {
+    fail(
+      "malformed_cookie_token",
+      `Selected ${selected.name} cookie is not JWT-shaped; refusing to import a likely malformed browser-decrypt result as an active Grok session token.`,
+      { source, selected_cookie: selected.name },
+    );
   }
 
   const toDelete = tokensToReplace(existingTokens, selected.value, pool, append);
