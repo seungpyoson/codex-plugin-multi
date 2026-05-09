@@ -10,6 +10,7 @@ const workflow = readFileSync(resolve(".github/workflows/pull-request-ci.yml"), 
 const smokeRerecordWorkflow = readFileSync(resolve(".github/workflows/smoke-rerecord.yml"), "utf8");
 const e2eDocs = readFileSync(resolve("docs/e2e.md"), "utf8");
 const sonarConfig = readFileSync(resolve(".sonarcloud.properties"), "utf8");
+const noMistakesConfig = readFileSync(resolve(".no-mistakes.yaml"), "utf8");
 
 test("package scripts expose per-target smoke commands", () => {
   assert.match(pkg.scripts["smoke:claude"] ?? "", /claude-companion\.smoke\.test\.mjs/);
@@ -40,6 +41,10 @@ test("pull-request CI runs shared-copy sync checks", () => {
   assert.match(pkg.scripts["lint:sync"] ?? "", /sync-provider-env\.mjs --check/);
   assert.match(pkg.scripts["lint:sync"] ?? "", /sync-usage-limit\.mjs --check/);
   assert.match(workflow, /npm run lint:sync/);
+});
+
+test("no-mistakes test gate bootstraps dependencies in disposable worktrees", () => {
+  assert.match(noMistakesConfig, /test:\s*"npm ci && npm run test:full"/);
 });
 
 test("pull-request CI runs the enforced coverage gate", () => {

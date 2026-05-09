@@ -8,11 +8,11 @@
 
 commands:
   # Full unit matrix (~140s+) — matches CLAUDE.md's "run npm run test:full
-  # locally before opening a PR" guidance. no-mistakes runs at the
-  # `git push` gate, so this is the right place for the strict gate.
+  # locally before opening a PR" guidance. no-mistakes runs in a disposable
+  # worktree, so bootstrap dev dependencies before the strict gate.
   # The faster `npm test` (default fast subset, ~40s) still runs in the
   # pre-commit hook for incremental commits.
-  test: "npm run test:full"
+  test: "npm ci && npm run test:full"
 
   # Manifest/sync linter — verifies generated artifacts and config
   # invariants. See package.json:scripts.lint.
