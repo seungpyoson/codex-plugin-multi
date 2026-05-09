@@ -735,7 +735,7 @@ test("custom-review sends selected source to a local Grok web tunnel and persist
 test("custom-review fails closed when Grok tunnel returns shallow HTTP 200 output", async () => {
   const cwd = mkdtempSync(path.join(tmpdir(), "grok-web-workspace-"));
   const dataDir = mkdtempSync(path.join(tmpdir(), "grok-web-data-"));
-  const shallowResult = "Verdict: APPROVE\nNo blocking findings.";
+  const shallowResult = "Verdict: APPROVE\nNo blocking findings. secret-cookie-like-token";
   writeFileSync(path.join(cwd, "review.js"), "export const value = 42;\n");
 
   await withServer(async (req, res) => {
@@ -774,12 +774,26 @@ test("custom-review fails closed when Grok tunnel returns shallow HTTP 200 outpu
     assert.equal(record.error_code, "review_not_completed");
     assert.equal(record.error_cause, "review_quality");
     assert.match(record.error_message, /review_quality_failed:shallow_output/);
-    assert.equal(record.result, shallowResult);
+    assert.equal(record.result, "Verdict: APPROVE\nNo blocking findings. [REDACTED]");
     assert.equal(record.external_review.source_content_transmission, "sent");
     assert.equal(typeof record.review_metadata.raw_output.elapsed_ms, "number");
     assert.ok(record.review_metadata.raw_output.elapsed_ms >= 0);
     assert.equal(record.review_metadata.audit_manifest.review_quality.failed_review_slot, true);
     assert.deepEqual(record.review_metadata.audit_manifest.review_quality.semantic_failure_reasons, ["shallow_output"]);
+
+    const persisted = JSON.parse(readFileSync(path.join(dataDir, "jobs", record.job_id, "meta.json"), "utf8"));
+    assert.equal(persisted.result, "Verdict: APPROVE\nNo blocking findings. [REDACTED]");
+
+    const lookup = run(["result", "--job-id", record.job_id], {
+      cwd,
+      env: {
+        GROK_PLUGIN_DATA: dataDir,
+        GROK_WEB_TUNNEL_API_KEY: "secret-cookie-like-token",
+      },
+    });
+    const lookedUp = parseStdout(lookup);
+    assert.equal(lookup.status, 0);
+    assert.equal(lookedUp.result, "Verdict: APPROVE\nNo blocking findings. [REDACTED]");
   });
 });
 

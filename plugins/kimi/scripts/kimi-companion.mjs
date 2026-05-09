@@ -885,33 +885,6 @@ async function executeRun(invocation, prompt, { foreground, lifecycleEvents = nu
   process.exit(finalRecord.status === "completed" || finalRecord.status === "cancelled" ? 0 : 2);
 }
 
-function validateBackgroundExecutionScopeOrExit(invocation, lifecycleEvents) {
-  const { job_id: jobId, cwd, workspace_root: workspaceRoot, dispose_effective: disposeEffective } = invocation;
-  const profile = resolveProfile(invocation.mode_profile_name);
-  let containment = null;
-  try {
-    containment = setupContainment(profile, cwd);
-    populateScope(profile, cwd, containment.path, {
-      scopeBase: invocation.scope_base,
-      scopePaths: invocation.scope_paths,
-      workspaceRoot,
-    }, containment);
-  } catch (e) {
-    if (containment) { try { containment.cleanup(); } catch { /* best-effort */ } }
-    const errorRecord = buildJobRecord(invocation, {
-      exitCode: null, parsed: null, pidInfo: null, kimiSessionId: null,
-      errorMessage: e.message,
-    }, []);
-    writeJobFile(workspaceRoot, jobId, errorRecord);
-    upsertJob(workspaceRoot, errorRecord);
-    printLifecycleJson(errorRecord, lifecycleEvents);
-    process.exit(2);
-  }
-  if (disposeEffective) {
-    try { containment.cleanup(); } catch { /* best-effort */ }
-  }
-}
-
 function writeSidecar(workspaceRoot, jobId, name, contents) {
   const dir = `${resolveJobsDir(workspaceRoot)}/${jobId}`;
   mkdirSync(dir, { recursive: true, mode: 0o700 });

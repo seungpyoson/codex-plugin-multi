@@ -13,3 +13,14 @@ test("kimi scoped prompt preflight cleanup is unconditional and idempotent", () 
   assert.match(match[0], /finally\s*\{\s*cleanupContainment\(\);\s*\}/);
   assert.doesNotMatch(match[0], /disposeEffective/);
 });
+
+test("companion scoped prompt refactor leaves no dead background scope validators", () => {
+  for (const rel of [
+    "plugins/claude/scripts/claude-companion.mjs",
+    "plugins/gemini/scripts/gemini-companion.mjs",
+    "plugins/kimi/scripts/kimi-companion.mjs",
+  ]) {
+    const source = readFileSync(resolvePath(rel), "utf8");
+    assert.doesNotMatch(source, /function validateBackgroundExecutionScopeOrExit\b/, rel);
+  }
+});

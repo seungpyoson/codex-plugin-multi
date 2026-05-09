@@ -649,15 +649,6 @@ function setupExecutionScopeOrExit(invocation, profile, { foreground, lifecycleE
   }
 }
 
-function validateBackgroundExecutionScopeOrExit(invocation, lifecycleEvents) {
-  const profile = resolveProfile(invocation.mode_profile_name);
-  const executionScope = setupExecutionScopeOrExit(invocation, profile, {
-    foreground: true,
-    lifecycleEvents,
-  });
-  cleanupExecutionResources(executionScope, { neutralCwd: null });
-}
-
 function prepareMutationContext(invocation, profile) {
   const checkMutations = profile.permission_mode === "plan";
   const context = { checkMutations, gitStatusBefore: null, neutralCwd: null, mutations: [] };
