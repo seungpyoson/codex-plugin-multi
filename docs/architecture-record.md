@@ -63,6 +63,12 @@ The seeded A/B quality fixture is source-controlled in
 keys are deliberately separate so manual relay and plugin runs can use the same
 review contract without leaking expected findings into the model prompt.
 
+Provider panels are rendered from JobRecords with `scripts/review-panel.mjs`.
+The panel row is the user-facing reliability surface: provider readiness,
+terminal status, source transmission, elapsed time, semantic failed-slot state,
+inspection state, error code, HTTP status, and semantic failure reasons must be
+visible together so broken review slots are not hidden behind result prose.
+
 ### Identity Types Stay Distinct
 
 `job_id`, target session IDs, resume chains, and PID ownership tuples are

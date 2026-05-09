@@ -155,6 +155,18 @@ Use the packet prompt for both plugin and manual-relay reviewers. Use the
 judge context only for scoring; it contains the seeded answer key and must not
 be pasted into reviewer prompts.
 
+Render collected JobRecords into a provider panel before judging quality:
+
+```bash
+node scripts/review-panel.mjs /path/to/job-records.json
+```
+
+The panel shows one row per provider with readiness, status, source
+transmission, elapsed milliseconds, semantic failed-slot state, inspection
+state, error code, HTTP status, and semantic failure reasons. A provider that
+could not inspect files, returned shallow output, or hit Grok chat/session
+readiness must appear as a failed row instead of being buried in prose.
+
 ## Install
 
 From Codex:
