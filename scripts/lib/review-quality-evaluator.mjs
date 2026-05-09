@@ -6,10 +6,6 @@ function compact(value) {
   return text(value).replace(/\s+/g, " ").trim();
 }
 
-function hasPattern(output, pattern) {
-  return pattern.test(output);
-}
-
 function finding(id, found) {
   return Object.freeze({ id, found: Boolean(found) });
 }

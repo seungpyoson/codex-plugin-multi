@@ -386,7 +386,7 @@ function buildErrorDiagnostic(invocation, status, error_code, error_message) {
       disclosure_note: null,
     };
   }
-  if (error_code === "review_not_completed") {
+  if (status === "failed" && error_code === "review_not_completed") {
     const target = invocation.target === "gemini" ? "Gemini" : "Claude";
     return {
       error_summary: `${target} review did not complete as a usable external review.`,
