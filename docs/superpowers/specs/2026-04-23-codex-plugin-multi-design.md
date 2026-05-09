@@ -975,6 +975,10 @@ successful reviewer response is usable. Its shape includes:
 
 - `has_verdict`: whether the output contained an approval/rejection style
   verdict.
+- `has_blocking_section`: whether the output contained a blocking-findings
+  section matching the prompt contract.
+- `has_non_blocking_section`: whether the output contained a non-blocking
+  concerns section matching the prompt contract.
 - `checklist_items_seen`: count of explicit checklist status lines.
 - `looks_shallow`: true when the response is too thin for the prompt contract;
   tiny selected-source packets have a bounded exception.

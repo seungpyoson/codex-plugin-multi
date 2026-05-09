@@ -325,6 +325,23 @@ test("direct API reviewer docs require explicit approval for external source tra
   }
 });
 
+test("architecture spec documents the full review quality audit shape", () => {
+  const spec = readRepoFile("docs/superpowers/specs/2026-04-23-codex-plugin-multi-design.md");
+  const requiredFields = [
+    "has_verdict",
+    "has_blocking_section",
+    "has_non_blocking_section",
+    "checklist_items_seen",
+    "looks_shallow",
+    "semantic_failure_reasons",
+    "failed_review_slot",
+  ];
+
+  for (const field of requiredFields) {
+    assert.match(spec, new RegExp(`\`${field}\``), `missing review_quality field ${field}`);
+  }
+});
+
 test("README documents Codex sandbox setup and provider-specific failure modes", () => {
   const readme = readRepoFile("README.md");
 
