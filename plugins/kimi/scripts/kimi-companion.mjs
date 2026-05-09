@@ -252,6 +252,7 @@ function scopedTargetPromptForOrExit(invocation, profile, userPrompt, lifecycleE
     writeJobFile(workspaceRoot, jobId, errorRecord);
     upsertJob(workspaceRoot, errorRecord);
     printLifecycleJson(errorRecord, lifecycleEvents);
+    cleanupContainment();
     process.exit(2);
   } finally {
     cleanupContainment();

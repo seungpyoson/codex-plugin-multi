@@ -148,7 +148,7 @@ function normalizeBaseUrl(value) {
 }
 
 function normalizeGrok2ApiBaseUrl(value, tunnelBaseUrl = DEFAULT_BASE_URL) {
-  const fallback = normalizeBaseUrl(tunnelBaseUrl).replace(/\/(?:v1|api)$/, "");
+  const fallback = normalizeBaseUrl(tunnelBaseUrl).replace(/\/(?:(?:api\/)?v1|api)$/, "");
   let url = String(value || fallback || DEFAULT_GROK2API_BASE_URL);
   while (url.endsWith("/")) url = url.slice(0, -1);
   return url;

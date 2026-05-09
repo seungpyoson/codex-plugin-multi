@@ -8,8 +8,11 @@ test("kimi scoped prompt preflight cleanup is unconditional and idempotent", () 
   const match = /function scopedTargetPromptForOrExit[\s\S]*?\n}\n\n\/\/ Mutation-detection/.exec(source);
   assert.ok(match, "expected to find kimi scopedTargetPromptForOrExit");
 
-  const cleanupCalls = match[0].match(/containment\.cleanup\(\)/g) ?? [];
-  assert.equal(cleanupCalls.length, 1);
+  const directCleanupCalls = match[0].match(/containment\.cleanup\(\)/g) ?? [];
+  const wrapperCleanupCalls = match[0].match(/cleanupContainment\(\);/g) ?? [];
+  assert.equal(directCleanupCalls.length, 1);
+  assert.equal(wrapperCleanupCalls.length, 2);
+  assert.match(match[0], /catch\s*\([^)]*\)\s*\{[\s\S]*cleanupContainment\(\);[\s\S]*process\.exit\(2\);/);
   assert.match(match[0], /finally\s*\{\s*cleanupContainment\(\);\s*\}/);
   assert.doesNotMatch(match[0], /disposeEffective/);
 });

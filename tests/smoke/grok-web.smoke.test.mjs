@@ -545,6 +545,49 @@ test("doctor identifies malformed active Grok session tokens instead of generic 
   });
 });
 
+test("doctor derives Grok admin base from tunnel URLs ending in /api/v1", async () => {
+  await withServer(async (req, res) => {
+    res.setHeader("content-type", "application/json");
+    if (req.url === "/api/v1/models") {
+      res.end(JSON.stringify({ data: [{ id: "grok-4.20-fast" }] }));
+      return;
+    }
+    if (req.url === "/api/v1/chat/completions") {
+      await readJsonRequest(req);
+      res.writeHead(400);
+      res.end(JSON.stringify({
+        error: { message: "Chat upstream returned 400", type: "upstream_error", code: "upstream_error" },
+      }));
+      return;
+    }
+    if (req.url === "/admin/api/tokens") {
+      res.end(JSON.stringify({
+        tokens: [
+          { token: "malformed-control-looking-cookie", pool: "super", status: "active", deleted: false },
+        ],
+      }));
+      return;
+    }
+    res.writeHead(404);
+    res.end(JSON.stringify({ error: { message: `not found: ${req.url}` } }));
+  }, async (baseUrl) => {
+    const result = await runAsync(["doctor"], {
+      env: {
+        GROK_WEB_BASE_URL: `${baseUrl}/v1`,
+      },
+    });
+    const parsed = parseStdout(result);
+
+    assert.equal(result.status, 0);
+    assert.equal(parsed.ready, false);
+    assert.equal(parsed.chat_ready, false);
+    assert.equal(parsed.error_code, "grok_session_malformed_active_token");
+    assert.equal(parsed.session_diagnostics.status, "checked");
+    assert.equal(parsed.session_diagnostics.malformed_active_token_count, 1);
+    assert.doesNotMatch(result.stdout, /malformed-control-looking-cookie/);
+  });
+});
+
 test("doctor identifies missing active Grok runtime tokens instead of generic chat 400", async () => {
   await withServer(async (req, res) => {
     res.setHeader("content-type", "application/json");
