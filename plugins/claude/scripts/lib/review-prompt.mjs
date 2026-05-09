@@ -127,6 +127,7 @@ function stripLeadingReviewMarkup(line) {
     if (bullet !== null) out = bullet;
     while (out.startsWith("**") || out.startsWith("__")) out = out.slice(2).trimStart();
     while (out.startsWith("`")) out = out.slice(1).trimStart();
+    while (out.startsWith("#")) out = out.slice(1).trimStart();
     if (out === before) break;
   }
   return out;

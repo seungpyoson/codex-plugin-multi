@@ -616,6 +616,28 @@ test("review audit manifest accepts markdown verdicts and scoped NOT REVIEWED ga
   assert.equal(manifest.review_quality.failed_review_slot, false);
 });
 
+test("review audit manifest accepts markdown heading verdict labels", () => {
+  const manifest = buildReviewAuditManifest({
+    prompt: "rendered prompt",
+    sourceFiles: [{ path: "README.md", text: "# E2E\n" }],
+    result: [
+      "## Verdict: APPROVE",
+      "## Blocking findings",
+      "No blocking findings.",
+      "## Non-blocking concerns",
+      "None.",
+      "## Inspection statement",
+      "I inspected the selected file `README.md`.",
+    ].join("\n"),
+    status: "completed",
+    errorCode: null,
+  });
+
+  assert.equal(manifest.review_quality.has_verdict, true);
+  assert.deepEqual(manifest.review_quality.semantic_failure_reasons, []);
+  assert.equal(manifest.review_quality.failed_review_slot, false);
+});
+
 test("review audit manifest accepts out-of-scope NOT REVIEWED prose after selected-file inspection", () => {
   const manifest = buildReviewAuditManifest({
     prompt: "rendered prompt",
