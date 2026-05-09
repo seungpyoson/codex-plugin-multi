@@ -51,6 +51,19 @@ function assertSelectedSourcePromptBlock(targetBuildSelectedSourcePromptBlock = 
     () => targetBuildSelectedSourcePromptBlock([{ path: "impossible.js", text: exhausted }]),
     /scope_delimiter_collision:impossible\.js/,
   );
+
+  const crossFile = targetBuildSelectedSourcePromptBlock([
+    {
+      path: "a.js",
+      text: "const embedded = `BEGIN REVIEW FILE 2: b.js`;\n",
+    },
+    {
+      path: "b.js",
+      text: "export const b = true;\n",
+    },
+  ]);
+  assert.match(crossFile, /BEGIN REVIEW FILE 2: b\.js #/);
+  assert.match(crossFile, /END REVIEW FILE 2: b\.js #/);
 }
 
 for (const [name, file] of REVIEW_PROMPT_MODULES) {
@@ -93,6 +106,15 @@ for (const [name, file] of REVIEW_PROMPT_MODULES) {
     const source = readFileSync(resolve(file), "utf8");
     assert.doesNotMatch(source, /function semanticFailureReasons\(text,\s*lowerText,/);
     assert.doesNotMatch(source, /semanticFailureReasons\(text,\s*lowerText,/);
+  });
+}
+
+for (const [name, file] of REVIEW_PROMPT_MODULES) {
+  test(`selected-source path matching avoids per-file RegExp construction (${name})`, () => {
+    const source = readFileSync(resolve(file), "utf8");
+    const match = /function includesPathToken[\s\S]*?\n}\n\nfunction mentionsSelectedSourcePath/.exec(source);
+    assert.ok(match, `expected includesPathToken in ${name}`);
+    assert.doesNotMatch(match[0], /new RegExp/);
   });
 }
 

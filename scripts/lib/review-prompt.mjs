@@ -169,15 +169,41 @@ function includesAny(text, phrases) {
   return phrases.some((phrase) => text.includes(phrase));
 }
 
-function escapeRegExp(text) {
-  return String(text).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+function isPathTokenBoundary(char) {
+  if (!char) return true;
+  const code = char.charCodeAt(0);
+  return !(
+    (code >= 48 && code <= 57)
+    || (code >= 65 && code <= 90)
+    || (code >= 97 && code <= 122)
+    || char === "_"
+    || char === "."
+    || char === "/"
+    || char === "-"
+  );
+}
+
+function isTokenWhitespace(char) {
+  return char === " " || char === "\t" || char === "\n" || char === "\r" || char === "\f" || char === "\v";
 }
 
 function includesPathToken(text, path) {
-  const escapedPath = escapeRegExp(path);
-  const boundary = "[^A-Za-z0-9_./-]";
-  const terminalBoundary = `(?:$|${boundary}|\\.(?:\\s|$))`;
-  return new RegExp(`(?:^|${boundary})${escapedPath}(?=${terminalBoundary})`, "u").test(text);
+  const value = String(text ?? "");
+  const needle = String(path ?? "");
+  if (!needle) return false;
+  let index = value.indexOf(needle);
+  while (index !== -1) {
+    if (isPathTokenBoundary(value[index - 1])) {
+      const afterIndex = index + needle.length;
+      const after = value[afterIndex];
+      if (isPathTokenBoundary(after)) return true;
+      if (after === "." && (afterIndex + 1 === value.length || isTokenWhitespace(value[afterIndex + 1]))) {
+        return true;
+      }
+    }
+    index = value.indexOf(needle, index + 1);
+  }
+  return false;
 }
 
 function mentionsSelectedSourcePath(lowerLine, selectedSource) {
@@ -411,10 +437,10 @@ function listBlock(title, values) {
   return [title, ...entries.map((value) => `- ${value}`)].join("\n");
 }
 
-function sourceBlockDelimiter(file, index, delimiterPrefix, text) {
+function sourceBlockDelimiter(file, index, delimiterPrefix, delimiterCorpus) {
   let delimiter = `${delimiterPrefix} ${index}: ${file.path}`;
   for (let attempt = 0; attempt < 100; attempt += 1) {
-    if (!text.includes(`BEGIN ${delimiter}`) && !text.includes(`END ${delimiter}`)) {
+    if (!delimiterCorpus.includes(`BEGIN ${delimiter}`) && !delimiterCorpus.includes(`END ${delimiter}`)) {
       return delimiter;
     }
     delimiter = `${delimiter} #`;
@@ -428,9 +454,13 @@ export function buildSelectedSourcePromptBlock(sourceFiles = [], {
 } = {}) {
   const files = Array.isArray(sourceFiles) ? sourceFiles : [];
   if (files.length === 0) return null;
-  const blocks = files.map((file, index) => {
-    const text = contentBuffer(file).toString("utf8");
-    const delimiter = sourceBlockDelimiter(file, index + 1, delimiterPrefix, text);
+  const entries = files.map((file) => ({
+    file,
+    text: contentBuffer(file).toString("utf8"),
+  }));
+  const delimiterCorpus = entries.map((entry) => entry.text).join("\n");
+  const blocks = entries.map(({ file, text }, index) => {
+    const delimiter = sourceBlockDelimiter(file, index + 1, delimiterPrefix, delimiterCorpus);
     return [
       `BEGIN ${delimiter}`,
       text,

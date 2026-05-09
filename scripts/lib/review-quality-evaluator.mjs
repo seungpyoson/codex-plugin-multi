@@ -53,12 +53,40 @@ function packet2Findings(output) {
   ];
 }
 
+function normalizedHeading(line) {
+  const trimmed = text(line).trim();
+  const withoutNumber = trimmed.replace(/^\d+[.)]\s*/, "");
+  return withoutNumber.replace(/:$/, "").trim().toLowerCase();
+}
+
+function blockingSectionBody(output) {
+  const lines = text(output).split(/\r?\n/);
+  let start = -1;
+  for (let index = 0; index < lines.length; index += 1) {
+    if (normalizedHeading(lines[index]) === "blocking findings") {
+      start = index + 1;
+      break;
+    }
+  }
+  if (start === -1) return null;
+
+  const body = [];
+  for (let index = start; index < lines.length; index += 1) {
+    const heading = normalizedHeading(lines[index]);
+    if (heading === "non-blocking concerns" || heading === "non blocking concerns"
+      || heading === "test gaps" || heading === "inspection status") {
+      break;
+    }
+    body.push(lines[index]);
+  }
+  return body.join("\n");
+}
+
 function cleanPacketFalsePositive(output) {
   const squashed = compact(output);
   if (/verdict\s*:\s*request changes/i.test(squashed)) return true;
-  const blockingSection = /(?:^|\n)\s*(?:\d+\.\s*)?blocking findings\s*:?\s*([\s\S]*?)(?:\n\s*(?:\d+\.\s*)?(?:non[- ]blocking|test gaps|inspection status)\b|$)/i.exec(output);
-  if (!blockingSection) return false;
-  const body = blockingSection[1] ?? "";
+  const body = blockingSectionBody(output);
+  if (body === null) return false;
   if (/\b(none|no blocking|no blockers|no issues found)\b/i.test(body)) return false;
   return /(?:^|\n)\s*(?:[-*]|\d+[.)])\s+\S/.test(body);
 }

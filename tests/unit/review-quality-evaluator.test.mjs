@@ -16,6 +16,12 @@ test("seeded evaluator source does not keep unused local helper functions", () =
   assert.doesNotMatch(source, /function hasPattern\b/);
 });
 
+test("seeded evaluator parses packet3 blocking section without a lazy dot-star regex", () => {
+  const source = readFileSync(resolvePath(HERE, "..", "..", "scripts/lib/review-quality-evaluator.mjs"), "utf8");
+
+  assert.doesNotMatch(source, /\[\\s\\S\]\*\?/);
+});
+
 test("seeded evaluator rejects adjacent packet2 security findings that miss ordering bypass", () => {
   const output = `
 1. Verdict: REQUEST CHANGES
