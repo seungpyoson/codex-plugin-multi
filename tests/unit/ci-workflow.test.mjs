@@ -9,6 +9,8 @@ const pkg = JSON.parse(readFileSync(resolve("package.json"), "utf8"));
 const workflow = readFileSync(resolve(".github/workflows/pull-request-ci.yml"), "utf8");
 const smokeRerecordWorkflow = readFileSync(resolve(".github/workflows/smoke-rerecord.yml"), "utf8");
 const e2eDocs = readFileSync(resolve("docs/e2e.md"), "utf8");
+const designSpec = readFileSync(resolve("docs/superpowers/specs/2026-04-23-codex-plugin-multi-design.md"), "utf8");
+const architectureRecord = readFileSync(resolve("docs/architecture-record.md"), "utf8");
 const sonarConfig = readFileSync(resolve(".sonarcloud.properties"), "utf8");
 const noMistakesConfig = readFileSync(resolve(".no-mistakes.yaml"), "utf8");
 
@@ -45,6 +47,29 @@ test("pull-request CI runs shared-copy sync checks", () => {
 
 test("no-mistakes test gate bootstraps dependencies in disposable worktrees", () => {
   assert.match(noMistakesConfig, /test:\s*"npm ci && npm run test:full"/);
+});
+
+test("design docs cover review-quality failure contract", () => {
+  for (const token of [
+    "review_metadata",
+    "review_not_completed",
+    "semantic_failure_reasons",
+    "failed_review_slot",
+    "looks_shallow",
+    "selected_source",
+    "elapsed_ms",
+  ]) {
+    assert.match(designSpec, new RegExp(token));
+  }
+  assert.match(architectureRecord, /Review Quality Gate/);
+  assert.match(architectureRecord, /review_not_completed/);
+});
+
+test("review-quality exports carry maintainer-facing JSDoc", () => {
+  const reviewPrompt = readFileSync(resolve("scripts/lib/review-prompt.mjs"), "utf8");
+  const evaluator = readFileSync(resolve("scripts/lib/review-quality-evaluator.mjs"), "utf8");
+  assert.match(reviewPrompt, /\/\*\*[\s\S]*delimiter-guarded[\s\S]*export function buildSelectedSourcePromptBlock/);
+  assert.match(evaluator, /\/\*\*[\s\S]*seeded review packet[\s\S]*export function evaluateSeededReviewPacket/);
 });
 
 test("pull-request CI runs the enforced coverage gate", () => {

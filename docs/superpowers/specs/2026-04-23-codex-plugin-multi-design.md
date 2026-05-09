@@ -898,7 +898,7 @@ ModeProfile {
 
 **Rule:** exactly one schema describes everything the companion durably persists about one invocation. The same schema is what `cmdResult` returns, what the `run --foreground` stdout prints (success path), and what the Claude result-handling skill and Gemini result command docs describe.
 
-**The schema (v8):**
+**The schema (v10):**
 
 ```
 JobRecord {
@@ -911,6 +911,7 @@ JobRecord {
   mode_profile_name, model, cwd, workspace_root
   isolation = { containment, scope, dispose }
   prompt_head               // first 200 chars — see §21.3.1 below
+  review_metadata?          // review contract/audit metadata — see §21.3.3 below
   schema_spec?              // --json-schema value if used
   binary                    // claude | gemini | <override>
 
@@ -928,7 +929,7 @@ JobRecord {
   cost_usd?, usage?
 
   // Bookkeeping — required
-  schema_version: 8
+  schema_version: 10
 }
 ```
 
@@ -959,6 +960,34 @@ If a later feature legitimately needs the original prompt text (e.g., reproducib
 - The `*-result-handling` skill's "success path" section renders the fields of `JobRecord` verbatim — no fields present in the skill that aren't in the schema, no fields in the schema that the skill fails to mention.
 
 **Why:** Finding #1/H1 (background result lost), #9 (full prompt persisted), and docs drift (H1) collapse to one problem: three different places hand-assemble three different shapes. One schema, one helper, no drift.
+
+#### 21.3.3 — Review-quality audit metadata
+
+Review and custom-review paths persist `review_metadata` with the review prompt
+contract version, provider label, `elapsed_ms` wall-clock time, and an
+`audit_manifest`. The audit manifest records safe metadata only: request
+settings, prompt/source hashes and counts, `selected_source` file paths with
+`bytes`, `lines`, and `content_hash`, scope resolution, provider IDs, truncation
+flags, and `review_quality`.
+
+`review_quality` is the post-transport gate that decides whether a technically
+successful reviewer response is usable. Its shape includes:
+
+- `has_verdict`: whether the output contained an approval/rejection style
+  verdict.
+- `checklist_items_seen`: count of explicit checklist status lines.
+- `looks_shallow`: true when the response is too thin for the prompt contract;
+  tiny selected-source packets have a bounded exception.
+- `semantic_failure_reasons`: zero or more of `not_reviewed`,
+  `permission_blocked`, `shallow_output`, and `missing_verdict`.
+- `failed_review_slot`: true when the process failed, returned a non-null
+  error code, or produced semantic failure reasons.
+
+When a reviewer process exits successfully but `failed_review_slot` is true, the
+terminal `JobRecord` status is `failed` with
+`error_code: "review_not_completed"` and `error_cause: "review_quality"`.
+This preserves the raw `result` for diagnosis while refusing to count shallow,
+permission-blocked, or non-inspecting output as a completed review.
 
 ---
 

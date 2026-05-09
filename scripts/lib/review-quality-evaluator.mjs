@@ -103,6 +103,13 @@ const PACKET_FINDERS = Object.freeze({
   packet3_clean: packet3Findings,
 });
 
+/**
+ * Evaluates one A/B seeded review packet against its expected findings.
+ *
+ * Supported packet names are packet1_correctness, packet2_security, and
+ * packet3_clean. The returned object reports found/missing seeded findings and
+ * whether the clean packet received an invented blocking finding.
+ */
 export function evaluateSeededReviewPacket({ packet, output }) {
   if (!Object.hasOwn(PACKET_FINDERS, packet)) {
     throw new Error(`unsupported seeded packet: ${packet}`);

@@ -443,6 +443,13 @@ function sourceBlockDelimiter(file, index, delimiterPrefix, delimiterCorpus) {
   throw new Error(`scope_delimiter_collision:${file.path}`);
 }
 
+/**
+ * Builds a delimiter-guarded source block for review prompts.
+ *
+ * Each selected file is wrapped in BEGIN/END markers that are escalated when
+ * the marker text already appears in any selected source file. Returns null
+ * when no source files are selected.
+ */
 export function buildSelectedSourcePromptBlock(sourceFiles = [], {
   title = "Selected files",
   delimiterPrefix = "REVIEW FILE",

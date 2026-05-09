@@ -44,6 +44,19 @@ different per-path response blobs.
 This makes job lifecycle behavior auditable and keeps status/result semantics
 consistent across foreground and background runs.
 
+### Review Quality Gate
+
+Reviewer transport success is not enough. A slot that exits cleanly can still be
+failed when the answer is shallow, permission-blocked, missing a verdict, or says
+it could not inspect the selected source. Those cases produce
+`error_code: "review_not_completed"` with `error_cause: "review_quality"` and
+`review_metadata.audit_manifest.review_quality.semantic_failure_reasons`.
+
+The raw `result` remains in the failed `JobRecord` for diagnosis, but consumers
+must use `status`, `error_code`, and `review_quality.failed_review_slot` to
+decide whether the reviewer completed the task. This prevents placeholder output
+from being treated as a successful external review.
+
 ### Identity Types Stay Distinct
 
 `job_id`, target session IDs, resume chains, and PID ownership tuples are
