@@ -989,6 +989,7 @@ function suggestedAction(errorCode, errorMessage = "") {
   if (errorCode === "grok_chat_model_rejected") return "The tunnel lists models, but the configured GROK_WEB_MODEL is not accepted by chat; correct GROK_WEB_MODEL or tunnel model routing, then retry.";
   if (errorCode === "grok_chat_timeout") return "The Grok chat readiness probe exceeded GROK_WEB_CHAT_DOCTOR_TIMEOUT_MS; inspect the local tunnel latency or raise that timeout, then retry.";
   if (errorCode === "models_ok_chat_400") return "The tunnel lists models but chat is not review-capable; refresh the Grok web session, inspect tunnel logs and rate-limit endpoint health, then retry.";
+  if (errorCode === "review_not_completed") return "Treat this Grok slot as failed. Inspect the raw result and runtime diagnostics, then retry only with a source packet and prompt contract the reviewer can inspect and answer substantively.";
   if (errorCode === "malformed_response") return "Inspect or update the local Grok web tunnel; it returned an unsupported response shape.";
   if (errorCode === "git_binary_rejected") return `Set ${GIT_BINARY_ENV} to a trusted Git executable outside the workspace, or unset it to use the default Git binary.`;
   return "Inspect error_message and repair the local Grok web tunnel before retrying.";
@@ -999,6 +1000,7 @@ function errorCauseFor(errorCode) {
   if (errorCode === "scope_failed") return "scope_resolution";
   if (errorCode === "git_binary_rejected") return "git_binary_policy";
   if (errorCode === "usage_limited") return "cost_quota_usage_limit";
+  if (errorCode === "review_not_completed") return "review_quality";
   return "grok_web_tunnel";
 }
 
@@ -1054,7 +1056,14 @@ function buildTerminalExternalReview({ cfg, mode, options, scopeInfo, execution,
   });
 }
 
-function buildReviewMetadata(cfg, scopeInfo, execution = null) {
+function elapsedMs(startedAt, endedAt) {
+  const start = Date.parse(String(startedAt ?? ""));
+  const end = Date.parse(String(endedAt ?? ""));
+  if (!Number.isFinite(start) || !Number.isFinite(end)) return null;
+  return Math.max(0, end - start);
+}
+
+function buildReviewMetadata(cfg, scopeInfo, execution = null, startedAt = null, endedAt = null) {
   const auditManifest = execution?.prompt ? buildReviewAuditManifest({
     prompt: execution.prompt,
     sourceFiles: scopeInfo.files ?? [],
@@ -1108,20 +1117,33 @@ function buildReviewMetadata(cfg, scopeInfo, execution = null) {
       raw_model: execution.parsed?.raw_model ?? null,
       parsed_ok: execution.parsed?.ok ?? null,
       result_chars: typeof execution.parsed?.result === "string" ? execution.parsed.result.length : null,
+      elapsed_ms: elapsedMs(startedAt, endedAt),
     } : null,
     audit_manifest: auditManifest,
   };
 }
 
 function buildRecord({ cfg, mode, options, scopeInfo, execution, startedAt, endedAt }) {
-  const completed = execution.exitCode === 0 && execution.parsed?.ok === true;
-  const errorCode = completed ? null : (execution.parsed?.reason ?? "tunnel_error");
-  const errorMessage = completed ? null : (execution.parsed?.error ?? "");
-  const diagnostic = execution.diagnostics
-    ? `${errorMessage || errorCode} (${formatDiagnosticPairs(execution.diagnostics)})`
-    : (errorMessage || errorCode);
-  const reviewDisclosure = disclosure(cfg, completed, execution.payload_sent ?? null);
-  const transmission = sourceTransmission(completed, execution.payload_sent ?? null);
+  const reviewMetadata = buildReviewMetadata(cfg, scopeInfo, execution, startedAt, endedAt);
+  const processCompleted = execution.exitCode === 0 && execution.parsed?.ok === true;
+  const reviewQuality = reviewMetadata?.audit_manifest?.review_quality ?? null;
+  const reviewQualityFailed = processCompleted && reviewQuality?.failed_review_slot === true;
+  const completed = processCompleted && !reviewQualityFailed;
+  const qualityReasons = reviewQuality?.semantic_failure_reasons ?? [];
+  const errorCode = completed ? null : (reviewQualityFailed ? "review_not_completed" : (execution.parsed?.reason ?? "tunnel_error"));
+  const errorMessage = completed ? null : (
+    reviewQualityFailed
+      ? `review_quality_failed:${qualityReasons.join(",") || "unknown"}`
+      : (execution.parsed?.error ?? "")
+  );
+  const diagnostic = reviewQualityFailed
+    ? `review did not complete as a usable external review (${qualityReasons.join(", ") || "review_quality_failed"})`
+    : (execution.diagnostics
+      ? `${errorMessage || errorCode} (${formatDiagnosticPairs(execution.diagnostics)})`
+      : (errorMessage || errorCode));
+  const payloadSent = execution.payload_sent ?? (processCompleted ? true : null);
+  const reviewDisclosure = disclosure(cfg, completed, payloadSent);
+  const transmission = sourceTransmission(completed, payloadSent);
   const runtimeDiagnostics = execution.diagnostics ? {
     tunnel_request: {
       endpoint_class: execution.diagnostics.endpoint_class ?? null,
@@ -1157,7 +1179,7 @@ function buildRecord({ cfg, mode, options, scopeInfo, execution, startedAt, ende
     scope_base: scopeInfo.scope_base ?? null,
     scope_paths: scopeInfo.scope_paths ?? null,
     prompt_head: promptHead(options.prompt),
-    review_metadata: buildReviewMetadata(cfg, scopeInfo, execution),
+    review_metadata: reviewMetadata,
     schema_spec: null,
     binary: null,
     status: completed ? "completed" : "failed",
@@ -1172,7 +1194,7 @@ function buildRecord({ cfg, mode, options, scopeInfo, execution, startedAt, ende
     external_review: buildTerminalExternalReview({ cfg, mode, options, scopeInfo, execution, transmission, reviewDisclosure }),
     disclosure_note: reviewDisclosure,
     runtime_diagnostics: runtimeDiagnostics,
-    result: completed ? execution.parsed.result : null,
+    result: processCompleted ? execution.parsed.result : null,
     structured_output: null,
     permission_denials: [],
     mutations: [],

@@ -34,7 +34,7 @@
       "http_status": 200,
       "raw_model": "deepseek-v4-pro",
       "parsed_ok": true,
-      "result_chars": 4
+      "result_chars": 596
     },
     "audit_manifest": {
       "schema_version": 1,
@@ -104,11 +104,12 @@
         "reason": "explicit --scope-paths"
       },
       "review_quality": {
-        "has_verdict": false,
-        "has_blocking_section": false,
-        "has_non_blocking_section": false,
-        "checklist_items_seen": 0,
-        "looks_shallow": true,
+        "has_verdict": true,
+        "has_blocking_section": true,
+        "has_non_blocking_section": true,
+        "checklist_items_seen": 3,
+        "looks_shallow": false,
+        "semantic_failure_reasons": [],
         "failed_review_slot": false
       }
     }
@@ -142,7 +143,7 @@
   },
   "disclosure_note": "Selected source content was sent to DeepSeek through direct API auth.",
   "runtime_diagnostics": null,
-  "result": "PASS",
+  "result": "Verdict: APPROVE\nBlocking findings\n- None. I inspected the selected source supplied for this fixture and found no blocking issue.\nNon-blocking concerns\n- None for this fixture.\nTest gaps\n- Existing replay coverage is sufficient for this wrapper path, including result persistence and schema replay.\nInspection status\n- The selected source was available and the response is substantive, not a placeholder. It contains enough review structure to satisfy the quality gate.\nChecklist:\n- PASS selected source was inspectable.\n- PASS the response is not shallow.\n- PASS no blocking finding is invented.",
   "structured_output": null,
   "permission_denials": [],
   "mutations": [],

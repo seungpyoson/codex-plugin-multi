@@ -65,7 +65,22 @@ if (process.env.GEMINI_MOCK_CAPACITY_MODEL === model) {
 
 const fixture = {
   session_id: sessionId,
-  response: "Mock Gemini response.",
+  response: [
+    "Verdict: APPROVE",
+    "Blocking findings",
+    "- None. I inspected the selected source made available to the Gemini smoke fixture and found no blocking issue.",
+    "Non-blocking concerns",
+    "- None for this fixture.",
+    "Test gaps",
+    "- Existing smoke fixture coverage is sufficient for this wrapper path.",
+    "Inspection status",
+    "- The selected source was available and the mock returned a complete review, not a placeholder.",
+    "Checklist:",
+    "- PASS selected scope was available.",
+    "- PASS selected source was inspected before verdict.",
+    "- PASS no blocker was invented.",
+    "Mock Gemini response.",
+  ].join("\n"),
   stats: {
     models: {
       [model]: {

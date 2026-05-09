@@ -125,7 +125,26 @@ async function waitForValue(fn, { timeoutMs = 2000, intervalMs = 25 } = {}) {
   assert.fail("timed out waiting for expected value");
 }
 
-function mockResponse(model, id = "chatcmpl-test", content = `Verdict: APPROVE\nProvider model: ${model}`) {
+function substantiveReview(extra = "") {
+  return [
+    "1. Verdict: APPROVE",
+    "2. Blocking findings",
+    "- None. I inspected the selected file content supplied in the prompt and found no blocking correctness or security issue for this fixture.",
+    "3. Non-blocking concerns",
+    "- None for this fixture.",
+    "4. Test gaps",
+    "- Existing test coverage is sufficient for the fixture path being exercised here.",
+    "5. Inspection status",
+    "- I inspected the selected files and did not encounter a read denial, permission denial, timeout, truncated output, or placeholder response.",
+    "Checklist:",
+    "- PASS selected source was inspectable.",
+    "- PASS the response is not a shallow placeholder.",
+    "- PASS no blocking finding is invented for the fixture.",
+    extra,
+  ].filter(Boolean).join("\n");
+}
+
+function mockResponse(model, id = "chatcmpl-test", content = substantiveReview(`Provider model: ${model}`)) {
   return JSON.stringify({
     id,
     object: "chat.completion",
@@ -163,7 +182,7 @@ async function importApiReviewerInternalsForTest() {
 `;
   assert.match(source, /async function readUtf8ScopeFileWithinLimit/);
   assert.match(source, /try \{\n  await main\(\);/);
-  const testSource = source.replace(footer, "export { readUtf8ScopeFileWithinLimit, sameFileIdentity };\n");
+  const testSource = source.replace(footer, "export { buildRecord, readUtf8ScopeFileWithinLimit, sameFileIdentity };\n");
   assert.notEqual(testSource, source);
   cpSync(path.join(REPO_ROOT, "plugins/api-reviewers/scripts/lib"), path.join(tempScriptsDir, "lib"), { recursive: true });
   const modulePath = path.join(tempScriptsDir, "api-reviewer.mjs");
@@ -1382,6 +1401,100 @@ test("DeepSeek direct API custom-review completes and persists JobRecord", async
   assert.doesNotMatch(result.stdout, /secret-test-value/);
 });
 
+test("direct API reviewers fail closed on shallow HTTP 200 review output", async () => {
+  const cwd = makeWorkspace();
+  const dataDir = mkdtempSync(path.join(tmpdir(), "api-reviewers-data-"));
+  const shallowResult = "Verdict: APPROVE\nNo blocking findings.";
+  writeFileSync(path.join(cwd, "seed.txt"), "export const value = 1;\n");
+
+  const result = await run([
+    "run",
+    "--provider", "deepseek",
+    "--mode", "custom-review",
+    "--scope", "custom",
+    "--scope-paths", "seed.txt",
+    "--foreground",
+    "--prompt", "Review this file.",
+  ], {
+    cwd,
+    env: {
+      API_REVIEWERS_PLUGIN_DATA: dataDir,
+      API_REVIEWERS_MOCK_RESPONSE: mockResponse("deepseek-v4-pro", "chatcmpl-shallow", shallowResult),
+      DEEPSEEK_API_KEY: "secret-test-value",
+    },
+  });
+
+  assert.equal(result.status, 1, result.stderr || result.stdout);
+  const record = parseJson(result.stdout);
+  assert.equal(record.status, "failed");
+  assert.equal(record.error_code, "review_not_completed");
+  assert.equal(record.result, shallowResult);
+  assert.equal(record.external_review.source_content_transmission, "sent");
+  assert.equal(typeof record.review_metadata.raw_output.elapsed_ms, "number");
+  assert.ok(record.review_metadata.raw_output.elapsed_ms >= 0);
+  assert.equal(record.review_metadata.audit_manifest.review_quality.failed_review_slot, true);
+  assert.deepEqual(record.review_metadata.audit_manifest.review_quality.semantic_failure_reasons, ["shallow_output"]);
+});
+
+test("direct API JobRecord construction does not mutate execution input", async () => {
+  const { buildRecord } = await importApiReviewerInternalsForTest();
+  const startedAt = "2026-01-01T00:00:00.000Z";
+  const endedAt = "2026-01-01T00:00:01.000Z";
+  const execution = Object.freeze({
+    exitCode: 0,
+    parsed: {
+      ok: true,
+      result: substantiveReview("Inspection statement: I inspected seed.txt."),
+      raw_model: "deepseek-v4-pro",
+    },
+    http_status: 200,
+    session_id: "chatcmpl-test",
+    payload_sent: true,
+    prompt: "Review seed.txt\n\nSelected Source\nseed text",
+    diagnostics: Object.freeze({
+      configured_timeout_ms: 123456,
+      elapsed_ms: 1000,
+      prompt_chars: 42,
+      request_defaults: Object.freeze({}),
+      max_tokens: 65536,
+      temperature: 0,
+    }),
+  });
+
+  const record = buildRecord({
+    provider: "deepseek",
+    cfg: {
+      display_name: "DeepSeek",
+      env_keys: ["DEEPSEEK_API_KEY"],
+      model: "deepseek-v4-pro",
+    },
+    mode: "custom-review",
+    options: {
+      jobId: "job-test",
+      prompt: "Review seed.txt",
+    },
+    scopeInfo: {
+      cwd: "/tmp/workspace",
+      workspaceRoot: "/tmp/workspace",
+      scope: "custom",
+      scope_base: null,
+      scope_paths: ["seed.txt"],
+      files: [{ path: "seed.txt", text: "seed text\n" }],
+      repository: "repo",
+      head_ref: "main",
+      base_commit: null,
+      head_commit: "abc123",
+    },
+    execution,
+    startedAt,
+    endedAt,
+  });
+
+  assert.equal(record.status, "completed");
+  assert.equal(record.review_metadata.raw_output.elapsed_ms, 1000);
+  assert.equal(Object.hasOwn(execution, "review_metadata"), false);
+});
+
 test("direct API reviewer chooses a collision-free source delimiter", async () => {
   const cwd = makeWorkspace();
   const dataDir = mkdtempSync(path.join(tmpdir(), "api-reviewers-data-"));
@@ -1483,14 +1596,14 @@ test("direct API reviewers redact provider results before printing or persisting
   ], {
     cwd,
     env: {
-      API_REVIEWERS_MOCK_RESPONSE: mockResponse("deepseek-v4-flash", "chatcmpl-test", "Echoed secret-test-value in provider output"),
+      API_REVIEWERS_MOCK_RESPONSE: mockResponse("deepseek-v4-flash", "chatcmpl-test", substantiveReview("Echoed secret-test-value in provider output")),
       DEEPSEEK_API_KEY: "secret-test-value",
     },
   });
   assert.equal(result.status, 0, result.stderr || result.stdout);
   const record = parseJson(result.stdout);
   assert.equal(record.status, "completed");
-  assert.equal(record.result, "Echoed [REDACTED] in provider output");
+  assert.match(record.result, /Echoed \[REDACTED\] in provider output/);
   assert.doesNotMatch(result.stdout, /secret-test-value/);
 });
 
@@ -1507,7 +1620,7 @@ test("direct API reviewers redact authorization-shaped provider echoes", async (
   ], {
     cwd,
     env: {
-      API_REVIEWERS_MOCK_RESPONSE: mockResponse("deepseek-v4-flash", "chatcmpl-test", "Echoed Authorization: Bearer reflected-token-value\nAuthorization: Token abc1234\nBearer shrt\nBearer alternate-token-value"),
+      API_REVIEWERS_MOCK_RESPONSE: mockResponse("deepseek-v4-flash", "chatcmpl-test", substantiveReview("Echoed Authorization: Bearer reflected-token-value\nAuthorization: Token abc1234\nBearer shrt\nBearer alternate-token-value")),
       DEEPSEEK_API_KEY: "secret-test-value",
     },
   });
@@ -1543,7 +1656,7 @@ test("direct API reviewers redact configured non-API_KEY credential names", asyn
     cwd,
     companion: path.join(pluginRoot, "scripts", "api-reviewer.mjs"),
     env: {
-      API_REVIEWERS_MOCK_RESPONSE: mockResponse("deepseek-v4-flash", "chatcmpl-test", "Echoed token-token-value in provider output"),
+      API_REVIEWERS_MOCK_RESPONSE: mockResponse("deepseek-v4-flash", "chatcmpl-test", substantiveReview("Echoed token-token-value in provider output")),
       DEEPSEEK_CREDENTIAL: "token-token-value",
     },
   });
@@ -1551,7 +1664,7 @@ test("direct API reviewers redact configured non-API_KEY credential names", asyn
   const record = parseJson(result.stdout);
   assert.equal(record.status, "completed");
   assert.equal(record.credential_ref, "DEEPSEEK_CREDENTIAL");
-  assert.equal(record.result, "Echoed [REDACTED] in provider output");
+  assert.match(record.result, /Echoed \[REDACTED\] in provider output/);
   assert.doesNotMatch(result.stdout, /token-token-value/);
 });
 
@@ -1579,14 +1692,14 @@ test("direct API reviewers redact realistic short configured credentials without
     cwd,
     companion: path.join(pluginRoot, "scripts", "api-reviewer.mjs"),
     env: {
-      API_REVIEWERS_MOCK_RESPONSE: mockResponse("deepseek-v4-flash", "chatcmpl-test", "a normal alphabet payload"),
+      API_REVIEWERS_MOCK_RESPONSE: mockResponse("deepseek-v4-flash", "chatcmpl-test", substantiveReview("a normal alphabet payload")),
       DEEPSEEK_CREDENTIAL: "a",
     },
   });
   assert.equal(result.status, 0, result.stderr || result.stdout);
   const record = parseJson(result.stdout);
   assert.equal(record.status, "completed");
-  assert.equal(record.result, "a normal alphabet payload");
+  assert.match(record.result, /a normal alphabet payload/);
   assert.doesNotMatch(result.stdout, /\[REDACTED\] normal/);
 
   const shortSecretResult = await run([
@@ -1601,14 +1714,14 @@ test("direct API reviewers redact realistic short configured credentials without
     cwd,
     companion: path.join(pluginRoot, "scripts", "api-reviewer.mjs"),
     env: {
-      API_REVIEWERS_MOCK_RESPONSE: mockResponse("deepseek-v4-flash", "chatcmpl-test", "provider echoed abcd"),
+      API_REVIEWERS_MOCK_RESPONSE: mockResponse("deepseek-v4-flash", "chatcmpl-test", substantiveReview("provider echoed abcd")),
       DEEPSEEK_CREDENTIAL: "abcd",
     },
   });
   assert.equal(shortSecretResult.status, 0, shortSecretResult.stderr || shortSecretResult.stdout);
   const shortSecretRecord = parseJson(shortSecretResult.stdout);
   assert.equal(shortSecretRecord.status, "completed");
-  assert.equal(shortSecretRecord.result, "provider echoed [REDACTED]");
+  assert.match(shortSecretRecord.result, /provider echoed \[REDACTED\]/);
   assert.doesNotMatch(shortSecretResult.stdout, /provider echoed abcd/);
 });
 
@@ -3811,7 +3924,7 @@ function buildHttpResponseFromApiReviewersFixture(fixture) {
         choices: [{
           index: 0,
           finish_reason: "stop",
-          message: { role: "assistant", content: fixture.result ?? "PASS" },
+          message: { role: "assistant", content: fixture.result ?? substantiveReview("Replay fixture marker.") },
         }],
         usage: fixture.usage ?? { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
       }),

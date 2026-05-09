@@ -494,6 +494,39 @@ for (const mode of ["review", "adversarial-review", "custom-review"]) {
   }));
 }
 
+test("kimi custom-review prompt includes selected source content", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "kimi-inline-source-cwd-"));
+  try {
+    fixtureSeedRepo(cwd, {
+      fileName: "seed.txt",
+      fileContents: "kimi inline source sentinel\n",
+    });
+    const result = runCompanion([
+      "run",
+      "--mode",
+      "custom-review",
+      "--cwd",
+      cwd,
+      "--scope-paths",
+      "seed.txt",
+      "--foreground",
+      "--",
+      "Review this scope.",
+    ], {
+      cwd,
+      env: {
+        KIMI_MOCK_ASSERT_PROMPT_INCLUDES: "kimi inline source sentinel",
+      },
+    });
+    assert.equal(result.status, 0, result.stderr);
+    const record = parseJson(result.stdout);
+    assert.equal(record.status, "completed");
+    assert.equal(record.external_review.source_content_transmission, "sent");
+  } finally {
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
 test("kimi adversarial prompt uses invocation mode, not profile name, for mode line", () => withRepo((cwd) => {
   const result = runCompanion(kimiPromptAssertionArgs(cwd, "adversarial-review"), {
     cwd,
@@ -660,7 +693,7 @@ test("kimi background run: launched event and terminal JobRecord carry external_
     const meta = await waitForTerminalJob(result.dataDir, launched.job_id);
     assert.equal(meta.status, "completed");
     assert.equal(meta.review_metadata.audit_manifest.request.timeout_ms, 345678);
-    assert.equal(meta.result, "Mock Kimi response.");
+    assert.match(meta.result, /Mock Kimi response\./);
     assert.equal(meta.kimi_session_id, KIMI_SESSION_ID);
     assert.deepEqual(meta.external_review, {
       marker: "EXTERNAL REVIEW",
@@ -938,7 +971,7 @@ test("kimi background review preserves configured max-step budget outside public
 
   const record = waitForTerminalRecord(dataDir, payload.job_id);
   assert.equal(record.status, "completed");
-  assert.equal(record.result, "Mock Kimi response.");
+  assert.match(record.result, /Mock Kimi response\./);
   assert.equal("max_steps_per_turn" in record, false);
   const paths = findJobPaths(dataDir, payload.job_id);
   assert.equal(existsSync(paths.legacyRuntimeOptionsPath), false);
@@ -1486,7 +1519,7 @@ for (const mode of ["review", "adversarial-review", "custom-review"]) {
     assert.equal(record.target, "kimi");
     assert.equal(record.mode, mode);
     assert.equal(record.status, "completed");
-    assert.equal(record.result, "Mock Kimi response.");
+    assert.match(record.result, /Mock Kimi response\./);
     assert.equal(record.kimi_session_id, KIMI_SESSION_ID);
     assert.equal(record.claude_session_id, null);
     assert.deepEqual(record.external_review, {
@@ -1505,7 +1538,7 @@ for (const mode of ["review", "adversarial-review", "custom-review"]) {
     });
     const { record: persisted } = readOnlyJobRecord(result.dataDir);
     assert.equal(persisted.job_id, record.job_id);
-    assert.equal(persisted.result, "Mock Kimi response.");
+    assert.match(persisted.result, /Mock Kimi response\./);
     assert.deepEqual(persisted.external_review, record.external_review);
     const fx = readStdoutLog(result.dataDir, record.job_id);
     assert.ok(fx.t7_cwd, "mock didn't record cwd");

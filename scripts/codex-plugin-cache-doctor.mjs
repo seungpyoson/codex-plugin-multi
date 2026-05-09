@@ -1,6 +1,7 @@
 #!/usr/bin/env node
+import { createHash } from "node:crypto";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { join, relative, resolve } from "node:path";
 import { homedir } from "node:os";
 
 const MARKETPLACE = "codex-plugin-multi";
@@ -37,6 +38,51 @@ function listSkills(root, plugin) {
     .sort();
 }
 
+function comparablePluginFile(rel) {
+  if (rel === "package.json" || rel === ".codex-plugin/plugin.json") return true;
+  return rel.startsWith("commands/")
+    || rel.startsWith("skills/")
+    || rel.startsWith("scripts/")
+    || rel.startsWith("config/");
+}
+
+function fileHash(file) {
+  return createHash("sha256").update(readFileSync(file)).digest("hex");
+}
+
+function listComparableFiles(pluginRoot) {
+  const files = new Map();
+  if (!existsSync(pluginRoot)) return files;
+  const stack = [pluginRoot];
+  while (stack.length > 0) {
+    const dir = stack.pop();
+    for (const entry of readdirSync(dir, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))) {
+      const full = join(dir, entry.name);
+      if (entry.isDirectory()) {
+        if (entry.name === "node_modules" || entry.name === ".git") continue;
+        stack.push(full);
+        continue;
+      }
+      if (!entry.isFile()) continue;
+      const rel = relative(pluginRoot, full);
+      if (comparablePluginFile(rel)) files.set(rel, fileHash(full));
+    }
+  }
+  return files;
+}
+
+function compareFileHashes(expected, cached) {
+  const expectedNames = [...expected.keys()].sort();
+  const cachedNames = [...cached.keys()].sort();
+  return {
+    expected_files: expectedNames,
+    cached_files: cachedNames,
+    missing_files: expectedNames.filter((file) => !cached.has(file)),
+    extra_files: cachedNames.filter((file) => !expected.has(file)),
+    changed_files: expectedNames.filter((file) => cached.has(file) && cached.get(file) !== expected.get(file)),
+  };
+}
+
 function enabledInConfig(home, plugin) {
   const config = join(home, "config.toml");
   if (!existsSync(config)) return false;
@@ -51,11 +97,17 @@ function profileReport(name, home, plugins, sourceRoot) {
   let ok = true;
   for (const plugin of plugins) {
     const expected = listSkills(sourceRoot, plugin);
+    const sourcePluginRoot = join(sourceRoot, plugin);
     const cacheRoot = join(home, "plugins", "cache", MARKETPLACE, plugin, "0.1.0");
     const cached = listSkills(cacheRoot, ".");
     const missing = expected.filter((skill) => !cached.includes(skill));
     const extra = cached.filter((skill) => !expected.includes(skill));
-    const inSync = missing.length === 0 && extra.length === 0 && expected.length > 0;
+    const fileComparison = compareFileHashes(listComparableFiles(sourcePluginRoot), listComparableFiles(cacheRoot));
+    const filesInSync = fileComparison.missing_files.length === 0
+      && fileComparison.extra_files.length === 0
+      && fileComparison.changed_files.length === 0
+      && fileComparison.expected_files.length > 0;
+    const inSync = missing.length === 0 && extra.length === 0 && expected.length > 0 && filesInSync;
     const enabled = enabledInConfig(home, plugin);
     if (!inSync || !enabled) ok = false;
     pluginReports[plugin] = {
@@ -66,6 +118,7 @@ function profileReport(name, home, plugins, sourceRoot) {
       cached_skills: cached,
       missing_skills: missing,
       extra_skills: extra,
+      ...fileComparison,
     };
   }
   return {
@@ -74,6 +127,9 @@ function profileReport(name, home, plugins, sourceRoot) {
     enabled: plugins.length === 1 ? pluginReports[plugins[0]].enabled : undefined,
     cache_in_sync: plugins.length === 1 ? pluginReports[plugins[0]].cache_in_sync : undefined,
     missing_skills: plugins.length === 1 ? pluginReports[plugins[0]].missing_skills : undefined,
+    missing_files: plugins.length === 1 ? pluginReports[plugins[0]].missing_files : undefined,
+    extra_files: plugins.length === 1 ? pluginReports[plugins[0]].extra_files : undefined,
+    changed_files: plugins.length === 1 ? pluginReports[plugins[0]].changed_files : undefined,
     plugins: pluginReports,
     ok,
   };

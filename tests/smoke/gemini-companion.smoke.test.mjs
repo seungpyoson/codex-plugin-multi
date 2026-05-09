@@ -109,7 +109,7 @@ function writeIndexCorruptingBinary(dir, repoPath) {
   writeFileSync(binary, [
     "#!/bin/sh",
     `printf corrupt > ${JSON.stringify(path.join(repoPath, ".git", "index"))}`,
-    "printf '{\"session_id\":\"22222222-3333-4444-9555-666666666666\",\"response\":\"spawned after corrupting index\"}\\n'",
+    "printf '{\"session_id\":\"22222222-3333-4444-9555-666666666666\",\"response\":\"Verdict: APPROVE\\\\nBlocking findings\\\\n- None. The selected source was inspected before mutation detection failed.\\\\nNon-blocking concerns\\\\n- None for this fixture.\\\\nTest gaps\\\\n- Existing smoke coverage exercises this post-run mutation failure path, including preserving the completed result when the later mutation scan fails.\\\\nInspection status\\\\n- Source inspection completed; the later mutation scan failed independently and is surfaced as metadata rather than a review failure.\\\\nChecklist:\\\\n- PASS selected source was inspected.\\\\n- PASS no blocker was invented.\\\\n- PASS mutation failure was surfaced.\"}\\n'",
     "exit 0",
     "",
   ].join("\n"));
@@ -195,7 +195,7 @@ test("gemini custom-review background: launched event and terminal JobRecord", a
     assert.ok(meta, "worker never wrote terminal meta");
     assert.equal(meta.status, "completed");
     assert.equal(meta.review_metadata.audit_manifest.request.timeout_ms, 345678);
-    assert.equal(meta.result, "Mock Gemini response.");
+    assert.match(meta.result, /Mock Gemini response\./);
     assert.equal(meta.gemini_session_id, GEMINI_SESSION_ID);
     assert.deepEqual(meta.external_review, {
       ...launched.external_review,
@@ -1022,7 +1022,7 @@ test("gemini continue background: launched event and resumed terminal JobRecord"
     assert.equal(meta.status, "completed");
     assert.equal(meta.parent_job_id, prior.job_id);
     assert.deepEqual(meta.resume_chain, [prior.gemini_session_id]);
-    assert.equal(meta.result, "Mock Gemini response.");
+    assert.match(meta.result, /Mock Gemini response\./);
     assert.equal(meta.gemini_session_id, RESUMED_GEMINI_SESSION_ID);
     assert.equal(meta.external_review.parent_job_id, prior.job_id);
     assert.equal(meta.external_review.run_kind, "background");
@@ -1092,7 +1092,7 @@ test("gemini _run-worker refuses terminal JobRecord without overwriting it", asy
     assert.notEqual(rerun.status, 0, "manual _run-worker re-entry should fail");
     const after = JSON.parse(readFileSync(metaPath, "utf8"));
     assert.equal(after.status, "completed");
-    assert.equal(after.result, "Mock Gemini response.");
+    assert.match(after.result, /Mock Gemini response\./);
     assert.equal(after.gemini_session_id, GEMINI_SESSION_ID);
   } finally {
     rmTree(dataDir);
@@ -1175,7 +1175,7 @@ test("gemini review foreground: policy-first, stdin transport, /tmp cwd, scoped 
     const record = JSON.parse(stdout);
     assert.equal(record.target, "gemini");
     assert.equal(record.status, "completed");
-    assert.equal(record.result, "Mock Gemini response.");
+    assert.match(record.result, /Mock Gemini response\./);
     assert.equal(record.claude_session_id, null);
     assert.equal(record.gemini_session_id, GEMINI_SESSION_ID);
     assert.equal(record.containment, "worktree");
@@ -1230,7 +1230,7 @@ test("gemini review foreground lifecycle jsonl emits launch event before termina
     });
     assert.equal(record.status, "completed");
     assert.equal(record.external_review.source_content_transmission, "sent");
-    assert.equal(record.result, "Mock Gemini response.");
+    assert.match(record.result, /Mock Gemini response\./);
   } finally {
     rmTree(dataDir);
     rmTree(cwd);
@@ -1344,6 +1344,30 @@ test("gemini review foreground: omits native Gemini sandbox inside Codex sandbox
     assert.equal(fx.t7_sandbox, false, "Gemini -s must be omitted under Codex to avoid nested sandbox-exec");
     assert.equal(fx.t7_skip_trust, true, "Gemini review must still pass --skip-trust");
     assert.equal(fx.t7_prompt_from_stdin, true, "Gemini prompt must arrive on stdin, not argv");
+  } finally {
+    rmTree(dataDir);
+    rmTree(cwd);
+  }
+});
+
+test("gemini custom-review prompt includes selected source content", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "gemini-inline-source-cwd-"));
+  fixtureSeedRepo(cwd, {
+    fileName: "seed.txt",
+    fileContents: "gemini inline source sentinel\n",
+  });
+  const { stdout, stderr, status, dataDir } = runCompanion(
+    ["run", "--mode=custom-review", "--foreground", "--cwd", cwd, "--scope-paths", "seed.txt", "--", "review selected source"],
+    { cwd, env: {
+      CODEX_SANDBOX: "seatbelt",
+      GEMINI_MOCK_ASSERT_PROMPT_INCLUDES: "gemini inline source sentinel",
+    } },
+  );
+  try {
+    assert.equal(status, 0, `exit ${status}: ${stderr}; stdout=${stdout}`);
+    const record = JSON.parse(stdout);
+    assert.equal(record.status, "completed");
+    assert.equal(record.external_review.source_content_transmission, "sent");
   } finally {
     rmTree(dataDir);
     rmTree(cwd);
@@ -1645,7 +1669,7 @@ test("gemini review preserves result when post-run mutation detection is unavail
     assert.equal(res.status, 0, `exit ${res.status}: ${res.stderr}`);
     const record = JSON.parse(res.stdout);
     assert.equal(record.status, "completed");
-    assert.equal(record.result, "spawned after corrupting index");
+    assert.match(record.result, /mutation detection failed/);
     assert.ok(record.mutations.some((m) => m.startsWith("mutation_detection_failed:")),
       `mutation detection failure must be surfaced, got ${JSON.stringify(record.mutations)}`);
   } finally {

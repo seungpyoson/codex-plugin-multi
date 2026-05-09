@@ -155,8 +155,10 @@ node plugins/api-reviewers/scripts/api-reviewer.mjs doctor --provider glm
 Manual live custom review:
 
 ```sh
-node plugins/api-reviewers/scripts/api-reviewer.mjs run --provider deepseek --mode custom-review --scope custom --scope-paths README.md --foreground --prompt "Review for correctness risks."
-node plugins/api-reviewers/scripts/api-reviewer.mjs run --provider glm --mode custom-review --scope custom --scope-paths README.md --foreground --prompt "Review for correctness risks."
+node plugins/api-reviewers/scripts/api-reviewer.mjs approval-request --provider deepseek --mode custom-review --scope custom --scope-paths README.md --prompt "Review README.md and return: 1. Verdict. 2. Blocking findings. 3. Non-blocking concerns. 4. Test gaps. 5. Inspection status."
+node plugins/api-reviewers/scripts/api-reviewer.mjs run --provider deepseek --mode custom-review --scope custom --scope-paths README.md --approval-token "<approval_token.value>" --foreground --prompt "Review README.md and return: 1. Verdict. 2. Blocking findings. 3. Non-blocking concerns. 4. Test gaps. 5. Inspection status."
+node plugins/api-reviewers/scripts/api-reviewer.mjs approval-request --provider glm --mode custom-review --scope custom --scope-paths README.md --prompt "Review README.md and return: 1. Verdict. 2. Blocking findings. 3. Non-blocking concerns. 4. Test gaps. 5. Inspection status."
+node plugins/api-reviewers/scripts/api-reviewer.mjs run --provider glm --mode custom-review --scope custom --scope-paths README.md --approval-token "<approval_token.value>" --foreground --prompt "Review README.md and return: 1. Verdict. 2. Blocking findings. 3. Non-blocking concerns. 4. Test gaps. 5. Inspection status."
 ```
 
 Custom review scope sends the exact `--scope-paths` file contents to the direct

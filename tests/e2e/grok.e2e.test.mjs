@@ -8,6 +8,14 @@ import { fileURLToPath } from "node:url";
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const COMPANION = path.join(REPO_ROOT, "plugins/grok/scripts/grok-web-reviewer.mjs");
+const LIVE_REVIEW_PROMPT = `Live E2E smoke: review README.md as a selected source file.
+Return:
+
+1. Verdict: APPROVE or REQUEST CHANGES.
+2. Blocking findings first, with file/function evidence. If none, say "No blocking findings."
+3. Non-blocking concerns. If none, say "None."
+4. Test gaps or verification gaps. If none, say "None."
+5. State explicitly whether you inspected the selected file.`;
 
 function runGrok(args, options = {}) {
   return spawnSync(process.execPath, [COMPANION, ...args], {
@@ -39,7 +47,7 @@ test("live Grok subscription-backed local tunnel custom review completes", {
       cwd,
       env: { GROK_PLUGIN_DATA: dataDir },
     });
-    assert.equal(doctor.status, 0, doctor.stderr);
+    assert.equal(doctor.status, 0, [doctor.stderr, doctor.stdout].filter(Boolean).join("\n"));
     const readiness = parseJson(doctor);
     assert.equal(readiness.provider, "grok-web");
     assert.equal(readiness.auth_mode, "subscription_web");
@@ -53,13 +61,13 @@ test("live Grok subscription-backed local tunnel custom review completes", {
       "--scope", "custom",
       "--scope-paths", "README.md",
       "--foreground",
-      "--prompt", "Live E2E smoke: summarize README.md in one sentence and do not edit files.",
+      "--prompt", LIVE_REVIEW_PROMPT,
     ], {
       cwd,
       env: { GROK_PLUGIN_DATA: dataDir },
     });
 
-    assert.equal(review.status, 0, review.stderr);
+    assert.equal(review.status, 0, [review.stderr, review.stdout].filter(Boolean).join("\n"));
     const record = parseJson(review);
     assert.equal(record.target, "grok-web");
     assert.equal(record.provider, "grok-web");
@@ -68,6 +76,10 @@ test("live Grok subscription-backed local tunnel custom review completes", {
     assert.equal(record.external_review.source_content_transmission, "sent");
     assert.ok(record.job_id);
     assert.ok(record.result);
+    assert.equal(record.review_metadata.audit_manifest.review_quality.failed_review_slot, false);
+    assert.equal(record.review_metadata.audit_manifest.review_quality.looks_shallow, false);
+    assert.equal(record.review_metadata.audit_manifest.review_quality.has_verdict, true);
+    assert.equal(typeof record.review_metadata.raw_output.elapsed_ms, "number");
     assert.doesNotMatch(review.stdout, /api\.x\.ai/i);
   } finally {
     rmSync(dataDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });

@@ -186,7 +186,7 @@ test("run --mode=review --foreground: emits JobRecord with status=completed", ()
     assert.equal(result.mode, "review");
     assert.equal(result.model, "claude-haiku-4-5-20251001");
     assert.ok(result.job_id, "job_id set");
-    assert.equal(result.result, "Mock Claude response.");
+    assert.match(result.result, /Mock Claude response\./);
     assert.deepEqual(result.permission_denials, []);
     assert.equal(result.schema_version, 10, "schema_version bumped for delegated review metadata and runtime diagnostics");
     assert.equal(result.review_metadata.prompt_contract_version, 1);
@@ -210,6 +210,28 @@ test("run --mode=review --foreground: emits JobRecord with status=completed", ()
       "§21.3.2: no hand-assembled `ok` field; consumers derive from status");
     assert.equal("warning" in result, false,
       "§21.3: no top-level warning; mutations array is the signal");
+  } finally {
+    cleanup(dataDir);
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("custom-review prompt includes selected source content", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "claude-inline-source-cwd-"));
+  fixtureSeedRepo(cwd, {
+    fileName: "seed.txt",
+    fileContents: "claude inline source sentinel\n",
+  });
+  const { stdout, stderr, status, dataDir } = runCompanion(
+    ["run", "--mode=custom-review", "--foreground", "--model", "claude-haiku-4-5-20251001",
+     "--cwd", cwd, "--scope-paths", "seed.txt", "--", "review selected source"],
+    { cwd, env: { CLAUDE_MOCK_ASSERT_PROMPT_INCLUDES: "claude inline source sentinel" } }
+  );
+  try {
+    assert.equal(status, 0, `exit ${status}: stderr=${stderr}; stdout=${stdout}`);
+    const record = JSON.parse(stdout);
+    assert.equal(record.status, "completed");
+    assert.equal(record.external_review.source_content_transmission, "sent");
   } finally {
     cleanup(dataDir);
     rmSync(cwd, { recursive: true, force: true });
@@ -480,7 +502,7 @@ test("run --mode=review --foreground: surfaces mutation detection failure withou
     assert.equal(status, 0, `exit ${status}: stderr=${stderr}`);
     const result = JSON.parse(stdout);
     assert.equal(result.status, "completed");
-    assert.equal(result.result, "Mock Claude response.");
+    assert.match(result.result, /Mock Claude response\./);
     assert.ok(result.mutations.some((m) => m.startsWith("mutation_detection_failed:")),
       `mutation detection failure must be surfaced, got ${JSON.stringify(result.mutations)}`);
   } finally {
@@ -575,7 +597,7 @@ test("run: meta.json persisted to workspace state", () => {
     assert.equal("prompt" in meta, false,
       "§21.3.1: full `prompt` field must not be persisted");
     // T7.4: result field populated on foreground completion (symmetry with bg).
-    assert.equal(meta.result, "Mock Claude response.");
+    assert.match(meta.result, /Mock Claude response\./);
   } finally {
     cleanup(dataDir);
     rmSync(cwd, { recursive: true, force: true });

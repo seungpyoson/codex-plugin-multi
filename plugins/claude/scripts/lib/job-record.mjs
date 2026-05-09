@@ -95,7 +95,14 @@ function stringBytes(value) {
   return Buffer.byteLength(String(value ?? ""), "utf8");
 }
 
-function buildReviewMetadata(invocation, execution = null, parsed = null) {
+function elapsedMs(startedAt, endedAt) {
+  const start = Date.parse(String(startedAt ?? ""));
+  const end = Date.parse(String(endedAt ?? ""));
+  if (!Number.isFinite(start) || !Number.isFinite(end)) return null;
+  return Math.max(0, end - start);
+}
+
+function buildReviewMetadata(invocation, execution = null, parsed = null, endedAt = null) {
   if (!invocation.review_prompt_contract_version) return null;
   return Object.freeze({
     prompt_contract_version: invocation.review_prompt_contract_version,
@@ -108,6 +115,7 @@ function buildReviewMetadata(invocation, execution = null, parsed = null) {
       stderr_bytes: stringBytes(execution.stderr),
       parsed_ok: parsed?.ok ?? null,
       result_chars: typeof parsed?.result === "string" ? parsed.result.length : null,
+      elapsed_ms: elapsedMs(invocation.started_at, endedAt),
     }) : null,
     audit_manifest: execution?.reviewAuditManifest ?? null,
   });
@@ -305,6 +313,16 @@ export function classifyExecution(execution, invocation = null) {
   }
   const parsed = execution.parsed ?? null;
   if (execution.exitCode === 0 && parsed && parsed.ok === true) {
+    if (execution.reviewAuditManifest?.review_quality?.failed_review_slot === true) {
+      const reasons = Array.isArray(execution.reviewAuditManifest.review_quality.semantic_failure_reasons)
+        ? execution.reviewAuditManifest.review_quality.semantic_failure_reasons.join(",")
+        : "review_quality_failed";
+      return {
+        status: "failed",
+        error_code: "review_not_completed",
+        error_message: `review_quality_failed:${reasons}`,
+      };
+    }
     return { status: "completed", error_code: null, error_message: null };
   }
   if (parsed && parsed.ok === false) {
@@ -365,6 +383,18 @@ function buildErrorDiagnostic(invocation, status, error_code, error_message) {
       suggested_action:
         `Wait for ${target} usage to recover, reduce reviewer concurrency, or inspect the provider account manually. ` +
         "Any tier upgrade or credit purchase must be a separate explicit user-approved transaction.",
+      disclosure_note: null,
+    };
+  }
+  if (error_code === "review_not_completed") {
+    const target = invocation.target === "gemini" ? "Gemini" : "Claude";
+    return {
+      error_summary: `${target} review did not complete as a usable external review.`,
+      error_cause:
+        "The target process returned successfully, but the review-quality audit marked the slot as failed. " +
+        "Common causes are NOT REVIEWED output, permission/read denial, or shallow output.",
+      suggested_action:
+        "Treat this slot as failed, inspect runtime diagnostics and the raw result, then retry with a source packet the reviewer can inspect.",
       disclosure_note: null,
     };
   }
@@ -523,7 +553,18 @@ function assertInvocation(invocation) {
 function targetFromDenial(denial) {
   if (typeof denial === "string") return denial;
   if (!denial || typeof denial !== "object") return null;
-  return denial.target ?? denial.path ?? denial.file_path ?? denial.file ?? null;
+  const toolInput = denial.tool_input && typeof denial.tool_input === "object"
+    ? denial.tool_input
+    : null;
+  return denial.target
+    ?? denial.path
+    ?? denial.file_path
+    ?? denial.file
+    ?? toolInput?.target
+    ?? toolInput?.path
+    ?? toolInput?.file_path
+    ?? toolInput?.file
+    ?? null;
 }
 
 function toolFromDenial(denial) {
@@ -610,6 +651,7 @@ export function buildJobRecord(invocation, execution, mutations) {
   const diagnostic = buildErrorDiagnostic(invocation, status, error_code, error_message);
 
   const parsed = execution?.parsed ?? null;
+  const endedAt = execution && status !== "running" ? new Date().toISOString() : null;
   const permissionDenials = Array.isArray(parsed?.denials) ? parsed.denials : [];
   const runtimeDiagnostics = normalizeRuntimeDiagnostics(
     execution?.runtimeDiagnostics ?? null,
@@ -641,14 +683,14 @@ export function buildJobRecord(invocation, execution, mutations) {
     scope_base: invocation.scope_base ?? null,
     scope_paths: invocation.scope_paths ?? null,
     prompt_head: invocation.prompt_head,
-    review_metadata: buildReviewMetadata(invocation, execution, parsed),
+    review_metadata: buildReviewMetadata(invocation, execution, parsed, endedAt),
     schema_spec: invocation.schema_spec ?? null,
     binary: invocation.binary,
 
     // Lifecycle
     status,
     started_at: invocation.started_at,
-    ended_at: execution && status !== "running" ? new Date().toISOString() : null,
+    ended_at: endedAt,
     exit_code: execution?.exitCode ?? null,
     error_code,
     error_message,
