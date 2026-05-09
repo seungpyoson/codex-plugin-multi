@@ -119,6 +119,16 @@ for (const [name, file] of REVIEW_PROMPT_MODULES) {
 }
 
 for (const [name, file] of REVIEW_PROMPT_MODULES) {
+  test(`selected-source inspection reuses path matcher (${name})`, () => {
+    const source = readFileSync(resolve(file), "utf8");
+    const match = /function mentionsSelectedSourceInspection[\s\S]*?\n}\n\nconst TINY_SOURCE_MAX_FILES/.exec(source);
+    assert.ok(match, `expected mentionsSelectedSourceInspection in ${name}`);
+    assert.match(match[0], /mentionsSelectedSourcePath\(lowerText, selectedSource\)/);
+    assert.doesNotMatch(match[0], /includesPathToken/);
+  });
+}
+
+for (const [name, file] of REVIEW_PROMPT_MODULES) {
   test(`review prompt contract includes exact identity and checklist metadata (${name})`, async () => {
     const {
       REVIEW_PROMPT_CHECKLIST: targetChecklist,

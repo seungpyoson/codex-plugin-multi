@@ -277,12 +277,7 @@ function semanticFailureReasons(text, looksShallow, selectedSource = null) {
 
 function mentionsSelectedSourceInspection(lowerText, selectedSource) {
   if (!includesAny(lowerText, ["inspected", "reviewed"])) return false;
-  const files = selectedSource?.files;
-  if (!Array.isArray(files) || files.length === 0) return false;
-  return files.some((file) => {
-    const path = String(file?.path ?? "").toLowerCase();
-    return path && includesPathToken(lowerText, path);
-  });
+  return mentionsSelectedSourcePath(lowerText, selectedSource);
 }
 
 const TINY_SOURCE_MAX_FILES = 1;
