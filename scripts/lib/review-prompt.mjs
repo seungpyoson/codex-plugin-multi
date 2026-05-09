@@ -259,15 +259,19 @@ function mentionsSelectedSourceInspection(lowerText, selectedSource) {
   });
 }
 
+const TINY_SOURCE_MAX_FILES = 1;
+const TINY_SOURCE_MAX_BYTES = 512;
+const TINY_SOURCE_MAX_LINES = 5;
+
 function isTinySelectedSource(selectedSource) {
   const totals = selectedSource?.totals;
   return Number.isInteger(totals?.files)
     && Number.isInteger(totals?.bytes)
     && Number.isInteger(totals?.lines)
     && totals.files > 0
-    && totals.files <= 1
-    && totals.bytes <= 512
-    && totals.lines <= 5;
+    && totals.files <= TINY_SOURCE_MAX_FILES
+    && totals.bytes <= TINY_SOURCE_MAX_BYTES
+    && totals.lines <= TINY_SOURCE_MAX_LINES;
 }
 
 function qualityFlags({
