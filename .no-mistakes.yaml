@@ -7,11 +7,17 @@
 # a per-developer choice rather than a repo-wide one.
 
 commands:
-  # Fast subset (~40s) so the pre-commit gate stays under 60s.
-  # Set `CODEX_PLUGIN_FULL_TESTS=1` (or use `npm run test:full`) for the
-  # full unit matrix — see CLAUDE.md for the rationale.
-  test: "npm test"
+  # Full unit matrix (~140s+) — matches CLAUDE.md's "run npm run test:full
+  # locally before opening a PR" guidance. no-mistakes runs at the
+  # `git push` gate, so this is the right place for the strict gate.
+  # The faster `npm test` (default fast subset, ~40s) still runs in the
+  # pre-commit hook for incremental commits.
+  test: "npm run test:full"
 
   # Manifest/sync linter — verifies generated artifacts and config
   # invariants. See package.json:scripts.lint.
   lint: "npm run lint"
+  # commands.format intentionally omitted — repo has no formatter
+  # configured (no `format` script in package.json, no prettier/biome
+  # config). If a formatter is adopted later, wire it here so AI-driven
+  # auto-fixes normalize before commit.
