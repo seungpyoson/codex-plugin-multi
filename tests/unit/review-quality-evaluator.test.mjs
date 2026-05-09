@@ -179,6 +179,23 @@ ${blockingLine}
   }
 });
 
+test("seeded evaluator detects clean-packet false positives under Markdown headings", () => {
+  const result = evaluateSeededReviewPacket({
+    packet: "packet3_clean",
+    output: `
+## Verdict
+APPROVE
+## Blocking findings
+- safe.js should reject non-array input before reducing.
+## Non-blocking concerns
+- none
+`,
+  });
+
+  assert.equal(result.false_positive, true);
+  assert.equal(result.expected_findings_found, false);
+});
+
 test("seeded evaluator requires both packet1 correctness blockers", () => {
   const partial = evaluateSeededReviewPacket({
     packet: "packet1_correctness",

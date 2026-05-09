@@ -55,7 +55,8 @@ function packet2Findings(output) {
 
 function normalizedHeading(line) {
   const trimmed = text(line).trim();
-  const withoutNumber = trimmed.replace(/^\d+[.)]\s*/, "");
+  const withoutMarkdown = trimmed.replace(/^#{1,6}\s+/, "");
+  const withoutNumber = withoutMarkdown.replace(/^\d+[.)]\s*/, "");
   return withoutNumber.replace(/:$/, "").trim().toLowerCase();
 }
 
