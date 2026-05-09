@@ -13,6 +13,7 @@ const designSpec = readFileSync(resolve("docs/superpowers/specs/2026-04-23-codex
 const architectureRecord = readFileSync(resolve("docs/architecture-record.md"), "utf8");
 const sonarConfig = readFileSync(resolve(".sonarcloud.properties"), "utf8");
 const noMistakesConfig = readFileSync(resolve(".no-mistakes.yaml"), "utf8");
+const claudeProjectNotes = readFileSync(resolve("CLAUDE.md"), "utf8");
 
 test("package scripts expose per-target smoke commands", () => {
   assert.match(pkg.scripts["smoke:claude"] ?? "", /claude-companion\.smoke\.test\.mjs/);
@@ -50,6 +51,15 @@ test("pull-request CI runs shared-copy sync checks", () => {
 
 test("no-mistakes test gate bootstraps dependencies in disposable worktrees", () => {
   assert.match(noMistakesConfig, /test:\s*"npm ci && npm run lint && npm run test:full"/);
+});
+
+test("no-mistakes timing docs avoid stale hard-coded local duration budgets", () => {
+  for (const [label, contents] of [
+    ["CLAUDE.md", claudeProjectNotes],
+    [".no-mistakes.yaml", noMistakesConfig],
+  ]) {
+    assert.doesNotMatch(contents, /~40s|75s|60s pre-commit|fits the 60s/i, label);
+  }
 });
 
 test("design docs cover review-quality failure contract", () => {

@@ -7,12 +7,12 @@
 # a per-developer choice rather than a repo-wide one.
 
 commands:
-  # Full unit matrix (~140s+) — matches CLAUDE.md's "run npm run test:full
+  # Full unit matrix — matches CLAUDE.md's "run npm run test:full
   # locally before opening a PR" guidance. no-mistakes runs in a disposable
   # worktree, so bootstrap dev dependencies and run the fast manifest/sync
   # verifier before the slower full matrix.
-  # The faster `npm test` (default fast subset, ~40s) still runs in the
-  # pre-commit hook for incremental commits.
+  # The faster `npm test` default subset still runs in the pre-commit hook for
+  # incremental commits.
   test: "npm ci && npm run lint && npm run test:full"
 
   # Manifest/sync linter — verifies generated artifacts and config
