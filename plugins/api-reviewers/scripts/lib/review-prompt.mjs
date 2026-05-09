@@ -13,6 +13,14 @@ export const REVIEW_PROMPT_CONTRACT_VERSION = 1;
 export const REVIEW_AUDIT_MANIFEST_VERSION = 1;
 const MAX_REVIEW_MARKUP_STRIPS = 10;
 const MAX_CHECKLIST_NUMBER_DIGITS = 10;
+const SELECTED_SOURCE_INSPECTION_VERBS = Object.freeze([
+  "analyzed",
+  "checked",
+  "evaluated",
+  "examined",
+  "inspected",
+  "reviewed",
+]);
 
 function contentBuffer(file) {
   const content = file?.content;
@@ -291,7 +299,7 @@ function semanticFailureReasons(text, looksShallow, selectedSource = null) {
 }
 
 function mentionsSelectedSourceInspection(lowerText, selectedSource) {
-  if (!includesAny(lowerText, ["inspected", "reviewed"])) return false;
+  if (!includesAny(lowerText, SELECTED_SOURCE_INSPECTION_VERBS)) return false;
   return mentionsSelectedSourcePath(lowerText, selectedSource);
 }
 

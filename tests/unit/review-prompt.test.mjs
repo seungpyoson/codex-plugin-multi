@@ -390,6 +390,21 @@ for (const [name, file] of REVIEW_PROMPT_MODULES) {
     assert.equal(conciseTiny.review_quality.looks_shallow, false);
     assert.equal(conciseTiny.review_quality.failed_review_slot, false);
 
+    const conciseTinySynonym = targetBuildReviewAuditManifest({
+      prompt: "rendered prompt",
+      sourceFiles: [{ path: "README.md", text: "# E2E\n" }],
+      result: [
+        "Verdict: APPROVE.",
+        "Blocking findings: No blocking findings apply to README.md.",
+        "Non-blocking concerns: None for README.md.",
+        "Inspection statement: I examined README.md.",
+      ].join("\n"),
+      status: "completed",
+      errorCode: null,
+    });
+    assert.equal(conciseTinySynonym.review_quality.looks_shallow, false);
+    assert.equal(conciseTinySynonym.review_quality.failed_review_slot, false);
+
     const substringPathMention = targetBuildReviewAuditManifest({
       prompt: "rendered prompt",
       sourceFiles: [{ path: "a.js", text: "x\n" }],
