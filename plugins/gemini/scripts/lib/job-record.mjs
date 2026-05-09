@@ -305,7 +305,7 @@ function buildErrorDiagnostic(invocation, status, error_code, error_message) {
     disclosure_note: null,
   };
   if (status === "failed" && error_code === "usage_limited") {
-    const target = invocation.target === "claude" ? "Claude" : "Gemini";
+    const target = "Gemini";
     return {
       error_summary: `${target} reported a quota, usage-tier, or billing-cycle limit before returning a review result.`,
       error_cause:
@@ -318,7 +318,7 @@ function buildErrorDiagnostic(invocation, status, error_code, error_message) {
     };
   }
   if (status === "failed" && error_code === "review_not_completed") {
-    const target = invocation.target === "claude" ? "Claude" : "Gemini";
+    const target = "Gemini";
     return {
       error_summary: `${target} review did not complete as a usable external review.`,
       error_cause:

@@ -689,6 +689,27 @@ test("review audit manifest ignores en-dash PASS checklist lines with failure te
   assert.equal(manifest.review_quality.failed_review_slot, false);
 });
 
+test("review audit manifest does not count status-looking prose as checklist items", () => {
+  const manifest = buildReviewAuditManifest({
+    prompt: "rendered prompt",
+    sourceFiles: [{ path: "sample.js", text: "export const value = 1;\n" }],
+    result: [
+      "Verdict: APPROVE",
+      "Blocking findings: no blocking findings apply to sample.js.",
+      "Non-blocking concerns:",
+      "- The existing parser should pass through ordinary prose without treating this sentence as a checklist status.",
+      "- A reviewer may write note: pass because the value is acceptable, but that is still prose.",
+      "Inspection statement: I inspected sample.js.",
+    ].join("\n"),
+    status: "completed",
+    errorCode: null,
+  });
+
+  assert.equal(manifest.review_quality.checklist_items_seen, 0);
+  assert.deepEqual(manifest.review_quality.semantic_failure_reasons, []);
+  assert.equal(manifest.review_quality.failed_review_slot, false);
+});
+
 test("review audit manifest ignores pathologically long numbered checklist prefixes", () => {
   const manifest = buildReviewAuditManifest({
     prompt: "rendered prompt",

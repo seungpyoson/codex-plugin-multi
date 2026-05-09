@@ -175,7 +175,9 @@ function checklistStatus(line) {
   if (startsWithToken(lower, "pass")) return "pass";
   if (startsWithToken(lower, "fail")) return "fail";
   if (startsWithToken(lower, "not reviewed")) return "not_reviewed";
-  const statusMatch = lower.match(/(?:^|[:\-.\u2013\u2014|])\s*(pass|fail|not reviewed)\b/);
+  const statusMatch = lower.match(/(?:^|[\-.\u2013\u2014|])\s*(pass|fail|not reviewed)\b/)
+    ?? lower.match(/:\s*(not reviewed)\b/)
+    ?? lower.match(/:\s*(pass|fail)\b(?=\s*(?:$|[().;,\u2013\u2014-]))/);
   if (!statusMatch) return null;
   return statusMatch[1].replace(" ", "_");
 }
@@ -206,7 +208,7 @@ function isPathTokenBoundary(char) {
   );
 }
 
-function isTokenWhitespace(char) {
+function isWhitespace(char) {
   return char === " " || char === "\t" || char === "\n" || char === "\r" || char === "\f" || char === "\v";
 }
 
@@ -222,7 +224,7 @@ function includesPathToken(text, path) {
       if (isPathTokenBoundary(after)) return true;
       // A path token can end a sentence: match "a.js." without making "."
       // a general boundary, which would also match inside "data.js".
-      if (after === "." && (afterIndex + 1 === value.length || isTokenWhitespace(value[afterIndex + 1]))) {
+      if (after === "." && (afterIndex + 1 === value.length || isWhitespace(value[afterIndex + 1]))) {
         return true;
       }
     }
@@ -481,6 +483,8 @@ export function buildSelectedSourcePromptBlock(sourceFiles = [], {
 } = {}) {
   const files = Array.isArray(sourceFiles) ? sourceFiles : [];
   if (files.length === 0) return null;
+  // Prompt rendering materializes text independently from audit metadata so
+  // either artifact can be built by callers without sharing mutable state.
   const entries = files.map((file) => ({
     file,
     text: contentBuffer(file).toString("utf8"),

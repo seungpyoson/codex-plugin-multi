@@ -364,6 +364,34 @@ test("buildJobRecord providers gate review_not_completed diagnostics to failed r
   }
 });
 
+test("buildJobRecord providers use stable plugin names for review_not_completed diagnostics", () => {
+  const auditManifest = Object.freeze({
+    review_quality: { failed_review_slot: true },
+  });
+  const parsed = { ok: true, result: "No blocking findings.", structured: null, denials: [] };
+  const providers = [
+    [
+      buildJobRecord,
+      makeInvocation({ target: "unexpected", review_prompt_provider: "Claude Code" }),
+      { exitCode: 0, parsed, pidInfo: makePidInfo(), claudeSessionId: CLAUDE_UUID, stdout: "ok", stderr: "", reviewAuditManifest: auditManifest },
+      /^Claude review did not complete/,
+    ],
+    [
+      buildGeminiJobRecord,
+      makeInvocation({ target: "unexpected", binary: "gemini", review_prompt_provider: "Gemini CLI" }),
+      { exitCode: 0, parsed, pidInfo: makePidInfo(), geminiSessionId: GEMINI_UUID, stdout: "ok", stderr: "", reviewAuditManifest: auditManifest },
+      /^Gemini review did not complete/,
+    ],
+  ];
+
+  for (const [providerBuildJobRecord, invocation, execution, summaryPattern] of providers) {
+    const rec = providerBuildJobRecord(invocation, execution, []);
+    assert.equal(rec.status, "failed");
+    assert.equal(rec.error_code, "review_not_completed");
+    assert.match(rec.error_summary, summaryPattern);
+  }
+});
+
 test("buildJobRecord: queued/pre-run state (no execution)", () => {
   const rec = buildJobRecord(makeInvocation(), null, []);
   assert.deepEqual(Object.keys(rec).sort(), [...EXPECTED_KEYS].sort());
