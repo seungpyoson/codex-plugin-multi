@@ -128,6 +128,12 @@ Troubleshooting signals:
 - Grok `tunnel_unavailable` means the subscription-backed local tunnel is not
   reachable at `GROK_WEB_BASE_URL`. Start or repair the tunnel rather than
   adding xAI API keys.
+- Reviewer runs with `review_not_completed` and
+  `error_cause: "review_quality"` reached the provider or companion but did
+  not return a usable review. Treat shallow summaries, permission-denied
+  output, or text that admits the selected files were not inspected as failed
+  review slots; rerun with a reviewer that can inspect the selected source
+  instead of counting the slot as approved.
 - Claude/Gemini/Kimi subscription/OAuth modes intentionally ignore unrelated
   API-key env vars. Do not treat stripped API keys as the cause unless you
   explicitly selected API-key auth for a provider that supports it.
@@ -192,10 +198,12 @@ For `second-codex`, inspect both profiles:
 npm run doctor:cache -- --second-codex-home "$HOME/.codex-second"
 ```
 
-The report compares marketplace/plugin skill files against
-`plugins/cache/codex-plugin-multi/<plugin>/0.1.0`, checks whether each plugin is
-enabled in `config.toml`, and prints next actions. For Git marketplace installs,
-start with:
+The report compares marketplace/plugin files against
+`plugins/cache/codex-plugin-multi/<plugin>/0.1.0`, including SHA-256 checks for
+bundled `commands/`, `skills/`, `scripts/`, and `config/` files. It reports
+`missing_files`, `extra_files`, and `changed_files`, checks whether each plugin
+is enabled in `config.toml`, and prints next actions. For Git marketplace
+installs, start with:
 
 ```bash
 codex plugin marketplace upgrade codex-plugin-multi

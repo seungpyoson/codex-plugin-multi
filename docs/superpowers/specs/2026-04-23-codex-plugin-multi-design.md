@@ -964,8 +964,8 @@ If a later feature legitimately needs the original prompt text (e.g., reproducib
 #### 21.3.3 — Review-quality audit metadata
 
 Review and custom-review paths persist `review_metadata` with the review prompt
-contract version, provider label, `elapsed_ms` wall-clock time, and an
-`audit_manifest`. The audit manifest records safe metadata only: request
+contract version, provider label, a `provider_runtime.elapsed_ms` wall-clock
+duration, and an `audit_manifest`. The audit manifest records safe metadata only: request
 settings, prompt/source hashes and counts, `selected_source` file paths with
 `bytes`, `lines`, and `content_hash`, scope resolution, provider IDs, truncation
 flags, and `review_quality`.
@@ -986,6 +986,13 @@ successful reviewer response is usable. Its shape includes:
   `permission_blocked`, `shallow_output`, and `missing_verdict`.
 - `failed_review_slot`: true when the process failed, returned a non-null
   error code, or produced semantic failure reasons.
+
+The quality gate uses the audit manifest's `selected_source` metadata as part
+of the semantic check. A tiny review can only escape the `looks_shallow` flag
+when it names or clearly inspects at least one selected file path. Lines that
+deny inspection of the selected source, report permission/read denial, or say
+the selected files could not be accessed produce semantic failure reasons even
+when the transport returned HTTP 200 or the companion process exited 0.
 
 When a reviewer process exits successfully but `failed_review_slot` is true, the
 terminal `JobRecord` status is `failed` with
@@ -1018,6 +1025,16 @@ Git-derived scopes (`staged`, `branch-diff`, `head`) are **object-pure snapshots
 2. Populate it according to `scope` (or if `containment = none`, skip populate).
 3. Pass `--add-dir <containment-path>` to Claude.
 4. On completion, if `dispose`, remove the tempdir.
+
+**Scoped prompt pipeline for reviews:** review prompts embed the selected source
+content directly, bounded by explicit begin/end file delimiters, so the reviewer
+can inspect the exact files covered by `selected_source`. Claude, Gemini, and
+Kimi set up the scoped execution directory temporarily to build that prompt for
+both foreground and background review paths, then clean the temporary scope
+before launching the target reviewer process. This is separate from the target
+process containment lifecycle: the scoped prompt copy exists only long enough to
+construct the prompt, while target execution still follows the mode profile's
+containment and disposal rules.
 
 **Forbidden patterns:**
 
