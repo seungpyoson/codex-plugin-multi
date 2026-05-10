@@ -98,7 +98,7 @@ function stringBytes(value) {
 
 function buildReviewMetadata(invocation, execution = null, parsed = null, endedAt = null) {
   if (!invocation.review_prompt_contract_version) return null;
-  return Object.freeze({
+  const metadata = {
     prompt_contract_version: invocation.review_prompt_contract_version,
     prompt_provider: invocation.review_prompt_provider ?? invocation.target,
     scope: invocation.scope,
@@ -112,7 +112,12 @@ function buildReviewMetadata(invocation, execution = null, parsed = null, endedA
       elapsed_ms: elapsedMs(invocation.started_at, endedAt),
     }) : null,
     audit_manifest: execution?.reviewAuditManifest ?? null,
-  });
+  };
+  if (Array.isArray(execution?.permissionModeAttempts)) {
+    metadata.permission_mode_attempts = Object.freeze(execution.permissionModeAttempts.map((attempt) => Object.freeze({ ...attempt })));
+    metadata.permission_mode_effective = execution.permissionModeEffective ?? null;
+  }
+  return Object.freeze(metadata);
 }
 
 export function externalReviewForInvocation(invocation, execution = null) {

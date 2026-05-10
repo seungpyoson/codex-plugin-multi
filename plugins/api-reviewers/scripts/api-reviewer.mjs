@@ -5,7 +5,7 @@ import { constants as fsConstants } from "node:fs";
 import { basename, dirname, isAbsolute, resolve, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createHash, randomUUID } from "node:crypto";
-import { hostname } from "node:os";
+import { hostname, tmpdir } from "node:os";
 
 import { cleanGitEnv } from "./lib/git-env.mjs";
 import { GIT_BINARY_ENV, gitEnv, isGitBinaryPolicyError, resolveGitBinary } from "./lib/git-binary.mjs";
@@ -126,8 +126,15 @@ function assertSafeJobId(jobId) {
   }
 }
 
-function apiReviewerDataRoot(env = process.env) {
-  return resolve(env.API_REVIEWERS_PLUGIN_DATA ?? ".codex-plugin-data/api-reviewers");
+function defaultDataRoot(pluginName, cwd = process.cwd()) {
+  const workspace = resolve(cwd);
+  const slug = basename(workspace).replace(/[^A-Za-z0-9._-]/g, "_").slice(0, 48) || "workspace";
+  const hash = createHash("sha256").update(workspace).digest("hex").slice(0, 16);
+  return resolve(tmpdir(), "codex-plugin-multi", pluginName, `${slug}-${hash}`);
+}
+
+function apiReviewerDataRoot(env = process.env, cwd = process.cwd()) {
+  return resolve(env.API_REVIEWERS_PLUGIN_DATA ?? defaultDataRoot("api-reviewers", cwd));
 }
 
 function apiReviewerJobsDir(root) {

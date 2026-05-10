@@ -780,6 +780,154 @@ test("review audit manifest does not count status-looking prose as checklist ite
   assert.equal(manifest.review_quality.failed_review_slot, false);
 });
 
+for (const [name, file] of REVIEW_PROMPT_MODULES) {
+  test(`review audit manifest accepts live reviewer verdict shapes without treating policy checklist text as failures (${name})`, async () => {
+    const { buildReviewAuditManifest: targetBuildReviewAuditManifest } = file === "scripts/lib/review-prompt.mjs"
+      ? { buildReviewAuditManifest }
+      : await import(pathToFileURL(resolve(file)).href);
+    const sourceFiles = [{ path: "cart.js", text: "export function total(items) {\n  return items.reduce((sum, item) => sum + item.price, 0);\n}\n" }];
+
+    const grokLike = targetBuildReviewAuditManifest({
+      prompt: "rendered prompt",
+      sourceFiles,
+      result: [
+        "**Review Summary**",
+        "**Selected file inspected:** `cart.js`.",
+        "**Overall verdict:** APPROVE (no blocking findings).",
+        "### Checklist Results",
+        "1. **Verify exact base/head refs and commits:** NOT REVIEWED (no diff supplied; only final file content at head commit was provided).",
+        "2. **Review only the declared scope:** PASS (`cart.js` is the only file in scope; no gaps).",
+        "3. **Correctness bugs, security risks, regressions, missing tests:** PASS. No blockers.",
+        "4. **Known review comments / residual threads:** NOT REVIEWED (none supplied in prompt).",
+        "5. **Blocking vs non-blocking separation:** PASS.",
+        "6. **Review integrity:** PASS (full file content supplied; no truncation, timeout, or permission issues).",
+        "### Blocking Findings",
+        "None for cart.js.",
+        "### Non-Blocking Concerns",
+        "No non-blocking concerns for cart.js.",
+      ].join("\n"),
+      status: "completed",
+      errorCode: null,
+    });
+    assert.equal(grokLike.review_quality.has_verdict, true);
+    assert.deepEqual(grokLike.review_quality.semantic_failure_reasons, []);
+    assert.equal(grokLike.review_quality.failed_review_slot, false);
+
+    const grokFinalVerdictLike = targetBuildReviewAuditManifest({
+      prompt: "rendered prompt",
+      sourceFiles,
+      result: [
+        "**Final Verdict: DO NOT APPROVE**",
+        "### Blocking Findings",
+        "**File inspected: cart.js**",
+        "cart.js returns the wrong value for malformed cart inputs.",
+        "### Non-Blocking Concerns",
+        "Tests are missing for malformed inputs.",
+        "### Checklist Summary",
+        "- Base/head refs & commits: NOT REVIEWED (unknown / not supplied).",
+        "- Scope adherence: PASS - Only `cart.js` was inspected.",
+        "- Correctness bugs: FAIL (see blocking finding above).",
+        "- Security risks: PASS - No injection, auth, or data-flow risks in this trivial function.",
+        "- Regressions: FAIL - Behavior deviates from standard add semantics.",
+        "- Known comments / residual threads: NOT REVIEWED (none supplied).",
+      ].join("\n"),
+      status: "completed",
+      errorCode: null,
+    });
+    assert.equal(grokFinalVerdictLike.review_quality.has_verdict, true);
+    assert.deepEqual(grokFinalVerdictLike.review_quality.semantic_failure_reasons, []);
+    assert.equal(grokFinalVerdictLike.review_quality.failed_review_slot, false);
+
+    const geminiLike = targetBuildReviewAuditManifest({
+      prompt: "rendered prompt",
+      sourceFiles,
+      result: [
+        "...94>thought",
+        "Checklist to follow:",
+        "6. Treat timeout, truncation, interruption, permission block, or shallow output as a failed review slot.",
+        "Timed out, truncated, interrupted, blocked, or shallow output is NOT an approval.",
+        "Analysis of `cart.js`:",
+        "The selected file was inspected from the prompt.",
+        "**Checklist**",
+        "1. **Verify exact base/head refs and commits:** PASS.",
+        "2. **Review only the declared scope:** PASS. Only `cart.js` was reviewed.",
+        "3. **Evaluate correctness bugs, security risks, regressions, and missing tests:** PASS.",
+        "4. **Check known review comments or residual threads:** NOT REVIEWED. No known review comments were supplied in the prompt.",
+        "5. **Separate blocking findings from non-blocking concerns:** PASS.",
+        "6. **Treat timeout, truncation, interruption, permission block, or shallow output as a failed review slot:** PASS.",
+        "**Blocking Findings**",
+        "No blocking findings are present in cart.js.",
+        "**Non-Blocking Concerns**",
+        "Missing tests should cover empty arrays and malformed items.",
+        "**Status:** APPROVE with non-blocking concerns and test gaps.",
+      ].join("\n"),
+      status: "completed",
+      errorCode: null,
+    });
+    assert.equal(geminiLike.review_quality.has_verdict, true);
+    assert.deepEqual(geminiLike.review_quality.semantic_failure_reasons, []);
+    assert.equal(geminiLike.review_quality.failed_review_slot, false);
+
+    const claudePlanPreambleLike = targetBuildReviewAuditManifest({
+      prompt: "rendered prompt",
+      sourceFiles,
+      result: [
+        "The Write tool isn't available, so I can't create the plan file. Given the review contract explicitly says \"Do not edit files,\" I'll deliver the review as my response.",
+        "# Code Review - `cart.js`",
+        "## Files Inspected",
+        "- `cart.js` (declared scope; full content supplied inline in the contract)",
+        "## Checklist Results",
+        "1. Verify exact base/head refs and commits before judging the diff. - NOT REVIEWED: base ref is unknown.",
+        "2. Review only the declared scope and list any scope gaps as NOT REVIEWED. - PASS: `cart.js` is the declared scope.",
+        "3. Evaluate correctness bugs, security risks, regressions, and missing tests. - FAIL: one blocking correctness issue found.",
+        "4. Check known review comments or residual threads when the prompt includes them. - NOT REVIEWED: none supplied.",
+        "5. Separate blocking findings from non-blocking concerns. - PASS.",
+        "6. Treat timeout, truncation, interruption, permission block, or shallow output as a failed review slot. - PASS.",
+        "`cart.js` was supplied inline in full. No timeout, truncation, interruption, or permission block occurred while inspecting it.",
+        "## Blocking Findings",
+        "cart.js returns a non-numeric value on one branch.",
+        "## Non-Blocking Concerns",
+        "Tests are missing for invalid operands.",
+        "Verdict: DO NOT APPROVE",
+      ].join("\n"),
+      status: "completed",
+      errorCode: null,
+    });
+    assert.equal(claudePlanPreambleLike.review_quality.has_verdict, true);
+    assert.deepEqual(claudePlanPreambleLike.review_quality.semantic_failure_reasons, []);
+    assert.equal(claudePlanPreambleLike.review_quality.failed_review_slot, false);
+
+    const kimiLike = targetBuildReviewAuditManifest({
+      prompt: "rendered prompt",
+      sourceFiles,
+      result: [
+        "## Review: `cart.js`",
+        "**File inspected:** `cart.js`",
+        "### Checklist",
+        "| # | Item | Status |",
+        "|---|------|--------|",
+        "| 1 | Verify exact base/head refs and commits | **NOT REVIEWED** - base ref was not supplied. |",
+        "| 2 | Review only the declared scope | **PASS** - reviewed only `cart.js` as scoped. |",
+        "| 3 | Evaluate correctness bugs, security risks, regressions, missing tests | **FAIL** - concrete correctness bugs identified. |",
+        "| 4 | Check known review comments or residual threads | **NOT REVIEWED** - no prior comments or threads were supplied in the prompt. |",
+        "| 5 | Separate blocking findings from non-blocking concerns | **PASS** - separated below. |",
+        "| 6 | Treat timeout, truncation, interruption, permission block, or shallow output as a failed review slot | **PASS** - review completed without truncation or interruption. |",
+        "### Blocking Findings",
+        "cart.js can throw for null inputs.",
+        "### Non-Blocking Concerns",
+        "Tests are missing for malformed items.",
+        "### Verdict",
+        "**DO NOT APPROVE** - cart.js contains concrete correctness bugs.",
+      ].join("\n"),
+      status: "completed",
+      errorCode: null,
+    });
+    assert.equal(kimiLike.review_quality.has_verdict, true);
+    assert.deepEqual(kimiLike.review_quality.semantic_failure_reasons, []);
+    assert.equal(kimiLike.review_quality.failed_review_slot, false);
+  });
+}
+
 test("review audit manifest does not drop hyphenated pass-through prose as a PASS checklist line", () => {
   const manifest = buildReviewAuditManifest({
     prompt: "rendered prompt",

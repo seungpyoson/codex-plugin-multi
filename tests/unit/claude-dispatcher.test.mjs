@@ -44,6 +44,18 @@ test("buildClaudeArgs: review mode passes --disallowedTools + plan + setting-sou
   assert.equal(args[args.indexOf("--setting-sources") + 1], "");
 });
 
+test("buildClaudeArgs: review mode can override permission mode for the retry ladder", () => {
+  const args = buildClaudeArgs(resolveProfile("review"), {
+    model: "claude-haiku-4-5-20251001",
+    promptText: "hi",
+    sessionId: UUID,
+    permissionMode: "dontAsk",
+  });
+  assert.equal(args[args.indexOf("--permission-mode") + 1], "dontAsk");
+  assert.ok(args.includes("--disallowedTools"));
+  assert.ok(args.includes("--setting-sources"));
+});
+
 test("buildClaudeArgs: rescue mode uses acceptEdits, no disallowedTools", () => {
   const args = buildClaudeArgs(resolveProfile("rescue"), {
     model: "claude-opus-4-7",

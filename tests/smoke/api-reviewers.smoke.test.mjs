@@ -208,6 +208,34 @@ function writeSingleProviderConfig(pluginRoot, provider, cfg) {
   }, null, 2));
 }
 
+test("direct API reviewers default plugin state outside the reviewed workspace", async () => {
+  const cwd = makeWorkspace();
+  try {
+    const result = await run([
+      "run",
+      "--provider", "deepseek",
+      "--mode", "custom-review",
+      "--scope", "custom",
+      "--scope-paths", "seed.txt",
+      "--foreground",
+      "--prompt", "Check this file.",
+    ], {
+      cwd,
+      env: {
+        API_REVIEWERS_MOCK_RESPONSE: mockResponse("deepseek-v4-flash"),
+        DEEPSEEK_API_KEY: "secret-test-value",
+      },
+    });
+    const record = parseJson(result.stdout);
+
+    assert.equal(result.status, 0);
+    assert.equal(record.status, "completed");
+    assert.equal(existsSync(path.join(cwd, ".codex-plugin-data")), false);
+  } finally {
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
 function startChatServer(handler) {
   const server = createServer((req, res) => {
     if (req.url === "/chat/completions") {

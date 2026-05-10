@@ -25,7 +25,8 @@ const EMPTY_TOOLS = Object.freeze([]);
  * Each profile row has exactly these fields:
  *   name             — the mode key (kept in the value for self-description)
  *   model_tier       — "review_quality" | "rescue" | "native" (§8)
- *   permission_mode  — "plan" | "acceptEdits" (§4.5)
+ *   permission_mode  — profile default. Review runners may override this
+ *                      per attempt through the Claude permission-mode ladder.
  *   strip_context    — emit `--setting-sources ""`? (§4.6)
  *   disallowed_tools — hard blocklist (§4.5). Empty array means don't pass
  *                      `--disallowedTools` at all.

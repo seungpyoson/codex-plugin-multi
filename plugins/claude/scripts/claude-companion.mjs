@@ -88,6 +88,10 @@ const CLAUDE_AUTH_STATUS_TIMEOUT_MS = 10000;
 const CONTINUABLE_STATUSES = new Set(["completed", "failed", "cancelled", "stale"]);
 const RUN_MODES = Object.freeze(["review", "adversarial-review", "custom-review", "rescue"]);
 const PREFLIGHT_MODES = Object.freeze(["review", "adversarial-review", "custom-review"]);
+const REVIEW_MODE_SET = new Set(PREFLIGHT_MODES);
+const DEFAULT_REVIEW_PERMISSION_MODE_LADDER = Object.freeze(["dontAsk", "auto", "acceptEdits"]);
+const ALLOWED_REVIEW_PERMISSION_MODES = new Set(["default", "plan", "acceptEdits", "dontAsk", "auto", "bypassPermissions"]);
+const PERMISSION_MODE_RETRYABLE_ERROR_CODES = new Set(["review_not_completed", "timeout", "parse_error", "claude_error"]);
 
 function isExplicitRelativeBinary(binary) {
   return binary === "." ||
@@ -135,6 +139,43 @@ function parseReviewTimeoutMs(cliValue, env = process.env, fallback = DEFAULT_CL
     fail("bad_args", `${source} must be a positive integer number of milliseconds; got ${JSON.stringify(raw)}`);
   }
   return parsed;
+}
+
+function envAllowsBypassPermissions(env = process.env) {
+  return /^(1|true|yes)$/i.test(String(env.CLAUDE_REVIEW_ALLOW_BYPASS_PERMISSIONS ?? ""));
+}
+
+function parseReviewPermissionModeLadder(raw, source) {
+  const modes = String(raw)
+    .split(",")
+    .map((mode) => mode.trim())
+    .filter(Boolean);
+  if (modes.length === 0) {
+    throw new Error(`${source} must include at least one Claude permission mode`);
+  }
+  const unique = [];
+  for (const mode of modes) {
+    if (!ALLOWED_REVIEW_PERMISSION_MODES.has(mode)) {
+      throw new Error(`${source} contains unsupported Claude permission mode ${JSON.stringify(mode)}; allowed=${[...ALLOWED_REVIEW_PERMISSION_MODES].join("|")}`);
+    }
+    if (!unique.includes(mode)) unique.push(mode);
+  }
+  return Object.freeze(unique);
+}
+
+function resolveReviewPermissionModeLadder(profile, { env = process.env, allowBypassPermissions = false } = {}) {
+  if (!REVIEW_MODE_SET.has(profile.name)) return Object.freeze([profile.permission_mode]);
+  const source = env.CLAUDE_REVIEW_PERMISSION_MODES === undefined
+    ? "default review permission ladder"
+    : "CLAUDE_REVIEW_PERMISSION_MODES";
+  const modes = env.CLAUDE_REVIEW_PERMISSION_MODES === undefined
+    ? DEFAULT_REVIEW_PERMISSION_MODE_LADDER
+    : parseReviewPermissionModeLadder(env.CLAUDE_REVIEW_PERMISSION_MODES, source);
+  const bypassAllowed = allowBypassPermissions || envAllowsBypassPermissions(env);
+  if (modes.includes("bypassPermissions") && !bypassAllowed) {
+    throw new Error(`${source} includes bypassPermissions, but that mode requires --allow-bypass-permissions or CLAUDE_REVIEW_ALLOW_BYPASS_PERMISSIONS=1`);
+  }
+  return Object.freeze([...modes]);
 }
 
 function targetPromptFor(invocation, userPrompt, sourceFiles = []) {
@@ -390,7 +431,11 @@ function writeRuntimeOptionsSidecar(workspaceRoot, jobId, options) {
   const file = runtimeOptionsSidecarPath(workspaceRoot, jobId);
   const tmpFile = `${file}.${process.pid}.${Date.now()}.tmp`;
   try {
-    writeFileSync(tmpFile, `${JSON.stringify({ timeout_ms: options.timeout_ms }, null, 2)}\n`, { mode: 0o600, encoding: "utf8" });
+    const payload = {};
+    if (Number.isSafeInteger(options.timeout_ms) && options.timeout_ms > 0) payload.timeout_ms = options.timeout_ms;
+    if (Array.isArray(options.permission_mode_ladder)) payload.permission_mode_ladder = [...options.permission_mode_ladder];
+    if (typeof options.allow_bypass_permissions === "boolean") payload.allow_bypass_permissions = options.allow_bypass_permissions;
+    writeFileSync(tmpFile, `${JSON.stringify(payload, null, 2)}\n`, { mode: 0o600, encoding: "utf8" });
     try { chmodSync(tmpFile, 0o600); } catch { /* best-effort on non-POSIX */ }
     renameSync(tmpFile, file);
   } catch (e) {
@@ -405,8 +450,17 @@ function readRuntimeOptionsSidecar(workspaceRoot, jobId) {
   try {
     const parsed = JSON.parse(_readFileSync(file, "utf8"));
     if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+    const out = {};
     const timeoutMs = parsed.timeout_ms;
-    return Number.isSafeInteger(timeoutMs) && timeoutMs > 0 ? { timeout_ms: timeoutMs } : {};
+    if (Number.isSafeInteger(timeoutMs) && timeoutMs > 0) out.timeout_ms = timeoutMs;
+    if (Array.isArray(parsed.permission_mode_ladder)) {
+      const modes = parsed.permission_mode_ladder.filter((mode) => typeof mode === "string");
+      if (modes.length > 0) out.permission_mode_ladder = Object.freeze(modes);
+    }
+    if (typeof parsed.allow_bypass_permissions === "boolean") {
+      out.allow_bypass_permissions = parsed.allow_bypass_permissions;
+    }
+    return out;
   } catch {
     return {};
   }
@@ -439,6 +493,10 @@ function invocationFromRecord(record, fallbackAuthMode = "subscription", runtime
       runtimeOptions.timeout_ms ??
       record.review_metadata?.audit_manifest?.request?.timeout_ms ??
       DEFAULT_CLAUDE_REVIEW_TIMEOUT_MS,
+    permission_mode_ladder: Array.isArray(runtimeOptions.permission_mode_ladder)
+      ? Object.freeze([...runtimeOptions.permission_mode_ladder])
+      : null,
+    allow_bypass_permissions: runtimeOptions.allow_bypass_permissions === true || envAllowsBypassPermissions(),
     started_at: record.started_at,
   });
 }
@@ -605,7 +663,7 @@ function cmdPreflight(rest) {
 async function cmdRun(rest) {
   const { options, positionals } = parseArgs(rest, {
     valueOptions: ["mode", "model", "cwd", "schema", "binary", "scope-base", "scope-paths", "override-dispose", "auth-mode", "timeout-ms", "lifecycle-events"],
-    booleanOptions: ["background", "foreground"],
+    booleanOptions: ["background", "foreground", "allow-bypass-permissions"],
     aliasMap: {},
   });
 
@@ -658,6 +716,13 @@ async function cmdRun(rest) {
   if (authSelection.selected_auth_path === "api_key_env_missing") {
     fail("not_authed", apiKeyMissingMessage(), apiKeyMissingFields(authSelection));
   }
+  const allowBypassPermissions = Boolean(options["allow-bypass-permissions"]) || envAllowsBypassPermissions();
+  let permissionModeLadder;
+  try {
+    permissionModeLadder = resolveReviewPermissionModeLadder(profile, { allowBypassPermissions });
+  } catch (error) {
+    fail("bad_args", error.message);
+  }
 
   const jobId = newJobId();
   const startedAt = new Date().toISOString();
@@ -688,6 +753,8 @@ async function cmdRun(rest) {
     binary: options.binary ?? process.env.CLAUDE_BINARY ?? "claude",
     run_kind: options.background ? "background" : "foreground",
     auth_mode: authSelection.auth_mode,
+    permission_mode_ladder: permissionModeLadder,
+    allow_bypass_permissions: allowBypassPermissions,
     started_at: startedAt,
   });
 
@@ -703,7 +770,11 @@ async function cmdRun(rest) {
     // and deletes — prompt text does NOT live on the JobRecord.
     try {
       writePromptSidecar(resolveJobsDir(workspaceRoot), jobId, targetPrompt);
-      writeRuntimeOptionsSidecar(workspaceRoot, jobId, { timeout_ms: timeoutMs });
+      writeRuntimeOptionsSidecar(workspaceRoot, jobId, {
+        timeout_ms: timeoutMs,
+        permission_mode_ladder: permissionModeLadder,
+        allow_bypass_permissions: allowBypassPermissions,
+      });
     } catch (error) {
       failBackgroundPromptSidecarWrite(workspaceRoot, invocation, error);
     }
@@ -836,7 +907,7 @@ function setupExecutionScopeOrExit(invocation, profile, { foreground, lifecycleE
 }
 
 function prepareMutationContext(invocation, profile) {
-  const checkMutations = profile.permission_mode === "plan";
+  const checkMutations = profile.permission_mode === "plan" || REVIEW_MODE_SET.has(profile.name);
   const context = { checkMutations, gitStatusBefore: null, neutralCwd: null, mutations: [] };
   if (!checkMutations) return context;
   try {
@@ -881,22 +952,74 @@ function exitIfCancelledBeforeSpawn(invocation, executionScope, mutationContext,
   process.exit(0);
 }
 
+function permissionModeLadderForInvocation(invocation, profile) {
+  if (Array.isArray(invocation.permission_mode_ladder) && invocation.permission_mode_ladder.length > 0) {
+    return Object.freeze([...invocation.permission_mode_ladder]);
+  }
+  return resolveReviewPermissionModeLadder(profile, {
+    allowBypassPermissions: invocation.allow_bypass_permissions === true,
+  });
+}
+
+function permissionModeAttemptSummary(mode, execution, invocation, elapsedMs) {
+  const { status, error_code, error_message } = classifyExecution(execution, invocation);
+  const quality = execution.reviewAuditManifest?.review_quality ?? null;
+  return Object.freeze({
+    mode,
+    status,
+    error_code,
+    error_message,
+    exit_code: execution.exitCode ?? null,
+    timed_out: execution.timedOut === true,
+    failed_review_slot: quality?.failed_review_slot ?? null,
+    semantic_failure_reasons: Array.isArray(quality?.semantic_failure_reasons)
+      ? [...quality.semantic_failure_reasons]
+      : [],
+    elapsed_ms: elapsedMs,
+  });
+}
+
+function shouldRetryPermissionModeAttempt(attempt, hasNextMode) {
+  if (!hasNextMode) return false;
+  if (attempt.status === "completed") return false;
+  return PERMISSION_MODE_RETRYABLE_ERROR_CODES.has(attempt.error_code);
+}
+
 async function spawnClaudeOrExit(invocation, profile, prompt, executionScope, mutationContext, options) {
   try {
     const authSelection = resolveAuthSelection(invocation.auth_mode);
-    return await spawnClaude(profile, {
-      model: invocation.model,
-      promptText: prompt,
-      sessionId: invocation.job_id,
-      addDirPath: executionScope.addDir,
-      cwd: mutationContext.neutralCwd ?? executionScope.childCwd,
-      binary: invocation.binary,
-      jsonSchema: invocation.schema_spec,
-      resumeId: options.resumeId,
-      timeoutMs: invocation.timeout_ms,
-      allowedApiKeyEnv: authSelection.allowed_env_credentials,
-      onSpawn: (pidInfo) => writeRunningRecord(invocation, pidInfo, mutationContext.mutations, options.runtimeDiagnostics),
-    });
+    const permissionModes = permissionModeLadderForInvocation(invocation, profile);
+    const attempts = [];
+    let lastExecution = null;
+    for (let i = 0; i < permissionModes.length; i += 1) {
+      const permissionMode = permissionModes[i];
+      const startedAtMs = Date.now();
+      const execution = await spawnClaude(profile, {
+        model: invocation.model,
+        promptText: prompt,
+        sessionId: invocation.job_id,
+        addDirPath: executionScope.addDir,
+        cwd: mutationContext.neutralCwd ?? executionScope.childCwd,
+        binary: invocation.binary,
+        jsonSchema: invocation.schema_spec,
+        resumeId: options.resumeId,
+        timeoutMs: invocation.timeout_ms,
+        allowedApiKeyEnv: authSelection.allowed_env_credentials,
+        permissionMode,
+        onSpawn: (pidInfo) => writeRunningRecord(invocation, pidInfo, mutationContext.mutations, options.runtimeDiagnostics),
+      });
+      const elapsedMs = Math.max(0, Date.now() - startedAtMs);
+      execution.reviewAuditManifest = reviewAuditManifest(invocation, prompt, executionScope.addDir, execution);
+      const attempt = permissionModeAttemptSummary(permissionMode, execution, invocation, elapsedMs);
+      attempts.push(attempt);
+      execution.permissionModeEffective = permissionMode;
+      execution.permissionModeAttempts = attempts;
+      lastExecution = execution;
+      if (!shouldRetryPermissionModeAttempt(attempt, i < permissionModes.length - 1)) {
+        return execution;
+      }
+    }
+    return lastExecution;
   } catch (e) {
     const message = e instanceof Error ? e.message : String(e);
     const errorRecord = buildJobRecord(invocation, {
@@ -1029,6 +1152,10 @@ function buildClaudeFinalRecord(invocation, execution, cancelMarker, mutations, 
     signal: execution.signal ?? null,
     timedOut: execution.timedOut === true,
     reviewAuditManifest: execution.reviewAuditManifest,
+    permissionModeEffective: execution.permissionModeEffective ?? null,
+    permissionModeAttempts: Array.isArray(execution.permissionModeAttempts)
+      ? execution.permissionModeAttempts
+      : null,
     runtimeDiagnostics: execution.runtimeDiagnostics,
   }, mutations);
 }
@@ -1179,7 +1306,7 @@ async function cmdRunWorker(rest) {
 async function cmdContinue(rest) {
   const { options, positionals } = parseArgs(rest, {
     valueOptions: ["job", "cwd", "model", "binary", "auth-mode", "timeout-ms", "lifecycle-events"],
-    booleanOptions: ["background", "foreground"],
+    booleanOptions: ["background", "foreground", "allow-bypass-permissions"],
   });
   if (!options.job) fail("bad_args", "--job <id> is required");
   if (options.background && options.foreground) {
@@ -1239,6 +1366,13 @@ async function cmdContinue(rest) {
   if (authSelection.selected_auth_path === "api_key_env_missing") {
     fail("not_authed", apiKeyMissingMessage(), apiKeyMissingFields(authSelection));
   }
+  const allowBypassPermissions = Boolean(options["allow-bypass-permissions"]) || envAllowsBypassPermissions();
+  let permissionModeLadder;
+  try {
+    permissionModeLadder = resolveReviewPermissionModeLadder(priorProfile, { allowBypassPermissions });
+  } catch (error) {
+    fail("bad_args", error.message);
+  }
 
   // §21.1: resume_chain grows newest-last. The LAST entry is the UUID that
   // executeRun passes to spawnClaude via --resume (see the resumeId
@@ -1269,6 +1403,8 @@ async function cmdContinue(rest) {
     binary: options.binary ?? process.env.CLAUDE_BINARY ?? "claude",
     run_kind: options.background ? "background" : "foreground",
     auth_mode: authSelection.auth_mode,
+    permission_mode_ladder: permissionModeLadder,
+    allow_bypass_permissions: allowBypassPermissions,
     started_at: new Date().toISOString(),
   });
 
@@ -1280,7 +1416,11 @@ async function cmdContinue(rest) {
   if (options.background) {
     try {
       writePromptSidecar(resolveJobsDir(workspaceRoot), newJobId_, targetPrompt);
-      writeRuntimeOptionsSidecar(workspaceRoot, newJobId_, { timeout_ms: timeoutMs });
+      writeRuntimeOptionsSidecar(workspaceRoot, newJobId_, {
+        timeout_ms: timeoutMs,
+        permission_mode_ladder: permissionModeLadder,
+        allow_bypass_permissions: allowBypassPermissions,
+      });
     } catch (error) {
       failBackgroundPromptSidecarWrite(workspaceRoot, invocation, error);
     }

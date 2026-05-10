@@ -161,6 +161,47 @@ async function readJsonRequest(req) {
   return JSON.parse(body);
 }
 
+test("run defaults plugin state outside the reviewed workspace", async () => {
+  const cwd = realpathSync(mkdtempSync(path.join(tmpdir(), "grok-web-clean-workspace-")));
+  writeFileSync(path.join(cwd, "review.js"), "export const value = 42;\n");
+  try {
+    await withServer(async (req, res) => {
+      assert.equal(req.headers.authorization, "Bearer secret-cookie-like-token");
+      assert.equal(req.url, "/api/chat/completions");
+      const body = await readJsonRequest(req);
+      assert.match(body.messages[0].content, /BEGIN GROK FILE 1: review\.js/);
+      res.setHeader("content-type", "application/json");
+      res.end(JSON.stringify({
+        id: "grok-web-clean-state",
+        model: "grok-4.20-fast",
+        choices: [{ message: { content: substantiveReviewFixture("Clean workspace state root.") } }],
+      }));
+    }, async (baseUrl) => {
+      const result = await runAsync([
+        "run",
+        "--mode", "custom-review",
+        "--scope", "custom",
+        "--scope-paths", "review.js",
+        "--foreground",
+        "--prompt", "Check this file.",
+      ], {
+        cwd,
+        env: {
+          GROK_WEB_BASE_URL: baseUrl,
+          GROK_WEB_TUNNEL_API_KEY: "secret-cookie-like-token",
+        },
+      });
+      const record = parseStdout(result);
+
+      assert.equal(result.status, 0);
+      assert.equal(record.status, "completed");
+      assert.equal(existsSync(path.join(cwd, ".codex-plugin-data")), false);
+    });
+  } finally {
+    rmTree(cwd);
+  }
+});
+
 test("doctor reports subscription-backed local tunnel mode and checks chat readiness", async () => {
   await withServer(async (req, res) => {
     assert.equal(req.headers.authorization, "Bearer secret-cookie-like-token");

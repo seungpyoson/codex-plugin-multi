@@ -238,6 +238,129 @@ test("custom-review prompt includes selected source content", () => {
   }
 });
 
+test("custom-review permission-mode ladder retries an unusable Claude slot and records attempts", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "claude-permission-ladder-cwd-"));
+  fixtureSeedRepo(cwd, {
+    fileName: "seed.txt",
+    fileContents: "claude permission ladder sentinel\n",
+  });
+  const tmp = mkdtempSync(path.join(tmpdir(), "claude-permission-ladder-bin-"));
+  const attemptsPath = path.join(tmp, "attempts.jsonl");
+  const binary = writeExecutable(tmp, "claude-ladder", `#!/usr/bin/env node
+import { appendFileSync } from "node:fs";
+
+const argv = process.argv.slice(2);
+const modeIndex = argv.indexOf("--permission-mode");
+const mode = modeIndex >= 0 ? argv[modeIndex + 1] : null;
+const sessionIndex = argv.indexOf("--session-id");
+const sessionId = sessionIndex >= 0 ? argv[sessionIndex + 1] : "11111111-1111-4111-8111-111111111111";
+appendFileSync(${JSON.stringify(attemptsPath)}, JSON.stringify({ mode }) + "\\n");
+
+if (mode === "dontAsk") {
+  process.stdout.write(JSON.stringify({
+    type: "result",
+    is_error: false,
+    result: "None",
+    session_id: sessionId,
+    usage: { input_tokens: 1, output_tokens: 1 },
+    permission_denials: []
+  }) + "\\n");
+  process.exit(0);
+}
+
+if (mode === "auto") {
+  process.stdout.write(JSON.stringify({
+    type: "result",
+    is_error: false,
+    result: [
+      "Verdict: DO NOT APPROVE",
+      "Blocking findings",
+      "- seed.txt: I inspected the selected source content and found the seeded ladder sentinel should be treated as a blocking fixture issue.",
+      "Non-blocking concerns",
+      "- None.",
+      "Test gaps",
+      "- Fixture-only review path.",
+      "Inspection status",
+      "- I inspected seed.txt from the selected custom-review scope.",
+      "Checklist:",
+      "- PASS selected file path seed.txt was named.",
+      "- PASS selected source content was inspected before verdict.",
+      "- PASS no timeout, truncation, interruption, permission block, or shallow output occurred."
+    ].join("\\n"),
+    session_id: sessionId,
+    usage: { input_tokens: 10, output_tokens: 20 },
+    permission_denials: []
+  }) + "\\n");
+  process.exit(0);
+}
+
+process.stderr.write("unexpected permission mode " + mode + "\\n");
+process.exit(9);
+`);
+  const { stdout, stderr, status, dataDir } = runCompanion(
+    ["run", "--mode=custom-review", "--foreground", "--auth-mode", "api_key",
+     "--binary", binary, "--model", "claude-haiku-4-5-20251001",
+     "--cwd", cwd, "--scope-paths", "seed.txt", "--", "review selected source"],
+    {
+      cwd,
+      env: {
+        ANTHROPIC_API_KEY: "test-key",
+        CLAUDE_API_KEY: "",
+        CLAUDE_REVIEW_PERMISSION_MODES: "dontAsk,auto,acceptEdits",
+      },
+    },
+  );
+  try {
+    assert.equal(status, 0, `exit ${status}: stderr=${stderr}; stdout=${stdout}`);
+    const record = JSON.parse(stdout);
+    assert.equal(record.status, "completed");
+    assert.equal(record.review_metadata.permission_mode_effective, "auto");
+    assert.deepEqual(record.review_metadata.permission_mode_attempts.map((attempt) => attempt.mode), ["dontAsk", "auto"]);
+    assert.equal(record.review_metadata.permission_mode_attempts[0].error_code, "review_not_completed");
+    assert.equal(record.review_metadata.permission_mode_attempts[0].failed_review_slot, true);
+    assert.equal(record.review_metadata.permission_mode_attempts[1].error_code, null);
+    assert.equal(record.review_metadata.permission_mode_attempts[1].failed_review_slot, false);
+    const modesSeen = readFileSync(attemptsPath, "utf8").trim().split("\n")
+      .map((line) => JSON.parse(line).mode);
+    assert.deepEqual(modesSeen, ["dontAsk", "auto"]);
+  } finally {
+    cleanup(dataDir);
+    rmSync(cwd, { recursive: true, force: true });
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("custom-review permission-mode ladder refuses bypassPermissions without explicit opt-in", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "claude-permission-bypass-cwd-"));
+  fixtureSeedRepo(cwd, {
+    fileName: "seed.txt",
+    fileContents: "claude bypass gate sentinel\n",
+  });
+  const { stdout, stderr, status, dataDir } = runCompanion(
+    ["run", "--mode=custom-review", "--foreground", "--auth-mode", "api_key",
+     "--model", "claude-haiku-4-5-20251001",
+     "--cwd", cwd, "--scope-paths", "seed.txt", "--", "review selected source"],
+    {
+      cwd,
+      env: {
+        ANTHROPIC_API_KEY: "test-key",
+        CLAUDE_API_KEY: "",
+        CLAUDE_REVIEW_PERMISSION_MODES: "bypassPermissions",
+      },
+    },
+  );
+  try {
+    assert.equal(status, 1, `exit ${status}: stderr=${stderr}; stdout=${stdout}`);
+    const result = JSON.parse(stdout);
+    assert.equal(result.error, "bad_args");
+    assert.match(result.message, /bypassPermissions/);
+    assert.match(result.message, /--allow-bypass-permissions|CLAUDE_REVIEW_ALLOW_BYPASS_PERMISSIONS=1/);
+  } finally {
+    cleanup(dataDir);
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
 test("run --mode=review --foreground: audit manifest uses canonical claude_error", () => {
   const cwd = mkdtempSync(path.join(tmpdir(), "smoke-cwd-claude-error-audit-"));
   seedMinimalRepo(cwd);

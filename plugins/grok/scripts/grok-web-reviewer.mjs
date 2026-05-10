@@ -1,10 +1,10 @@
 #!/usr/bin/env node
 import { spawnSync } from "node:child_process";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { constants as fsConstants } from "node:fs";
 import { lstat, mkdir, open, readFile, readdir, realpath, rename, rm, rmdir, stat, unlink, writeFile } from "node:fs/promises";
-import { hostname } from "node:os";
-import { dirname, isAbsolute, relative, resolve } from "node:path";
+import { hostname, tmpdir } from "node:os";
+import { basename, dirname, isAbsolute, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { cleanGitEnv as cleanCanonicalGitEnv } from "./lib/git-env.mjs";
 import { GIT_BINARY_ENV, gitEnv, isGitBinaryPolicyError, resolveGitBinary } from "./lib/git-binary.mjs";
@@ -1401,8 +1401,15 @@ function formatDiagnosticPairs(diagnostics) {
     .join(" ");
 }
 
-function dataRoot(env = process.env) {
-  return resolve(env.GROK_PLUGIN_DATA ?? ".codex-plugin-data/grok");
+function defaultDataRoot(pluginName, cwd = process.cwd()) {
+  const workspace = resolve(cwd);
+  const slug = basename(workspace).replace(/[^A-Za-z0-9._-]/g, "_").slice(0, 48) || "workspace";
+  const hash = createHash("sha256").update(workspace).digest("hex").slice(0, 16);
+  return resolve(tmpdir(), "codex-plugin-multi", pluginName, `${slug}-${hash}`);
+}
+
+function dataRoot(env = process.env, cwd = process.cwd()) {
+  return resolve(env.GROK_PLUGIN_DATA ?? defaultDataRoot("grok", cwd));
 }
 
 async function writeJsonFile(file, value) {

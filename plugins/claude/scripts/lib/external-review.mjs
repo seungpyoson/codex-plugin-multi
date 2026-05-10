@@ -42,6 +42,7 @@ const CONTENT_RECEIVED_ERROR_CODES = Object.freeze(new Set([
   "usage_limited",
   "finalization_failed",
   "timeout",
+  "review_not_completed",
 ]));
 
 const PRE_TARGET_NOT_SENT_ERROR_CODES = Object.freeze(new Set([

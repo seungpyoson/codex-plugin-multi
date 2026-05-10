@@ -537,6 +537,11 @@ test("external-review shared helper covers disclosure and transmission branches"
     }), T.SENT);
     assert.equal(mod.sourceContentTransmissionForExecution({
       status: "failed",
+      errorCode: "review_not_completed",
+      pidInfo: null,
+    }), T.SENT);
+    assert.equal(mod.sourceContentTransmissionForExecution({
+      status: "failed",
       errorCode: "unknown_target_failure",
       pidInfo: null,
     }), T.UNKNOWN);
