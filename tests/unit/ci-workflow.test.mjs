@@ -75,8 +75,9 @@ test("review enforcement docs name the required branch protection settings", () 
   assert.doesNotMatch(reviewEnforcementDocs, /^- `Greptile Review`$/m);
   assert.match(reviewEnforcementDocs, /Bot reviews such as Greptile are useful advisory signals/);
   assert.match(reviewEnforcementDocs, /External reviewers must run through the plugin reviewers/i);
-  assert.match(reviewEnforcementDocs, /required approving review count.*1/i);
+  assert.match(reviewEnforcementDocs, /required approving review count.*0/i);
   assert.match(reviewEnforcementDocs, /require conversation resolution/i);
+  assert.doesNotMatch(reviewEnforcementDocs, /require last push approval:\s*true/i);
 });
 
 test("no-mistakes test gate bootstraps dependencies in disposable worktrees", () => {

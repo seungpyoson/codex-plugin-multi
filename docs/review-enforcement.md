@@ -25,11 +25,9 @@ active `CI gates` ruleset uses the raw check/status context names below:
 
 Repo settings must also set:
 
-- required approving review count: 1
+- required approving review count: 0
 - require conversation resolution: true
-- dismiss stale reviews on push: true
-- require last push approval: true, when the repository plan supports it
 
 Without those GitHub settings, CI remains visible but is not a hard merge gate.
-Bot reviews such as Greptile are useful advisory signals, but they do not
-replace the required human approving review.
+Bot reviews such as Greptile are useful advisory signals, but they are not
+required status checks.
