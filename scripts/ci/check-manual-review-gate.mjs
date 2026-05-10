@@ -9,6 +9,8 @@ import {
   statusPayloadForManualReviewResult,
 } from "../lib/manual-review-gate.mjs";
 
+const MAX_PAGINATED_PAGES = 100;
+
 function reportAndExit(result) {
   if (result.ok) {
     process.stdout.write(`manual review gate passed for ${result.headSha}: ${result.approvedReviewers.join(", ")}\n`);
@@ -60,7 +62,16 @@ function nextUrlFromLinkHeader(linkHeader, baseUrl) {
 async function getJsonPages(url, token) {
   const items = [];
   let nextUrl = url;
+  const visited = new Set();
   while (nextUrl) {
+    const pageUrl = String(nextUrl);
+    if (visited.has(pageUrl)) {
+      throw new Error(`GET ${pageUrl} failed: pagination cycle detected`);
+    }
+    visited.add(pageUrl);
+    if (visited.size > MAX_PAGINATED_PAGES) {
+      throw new Error(`GET ${pageUrl} failed: pagination exceeded ${MAX_PAGINATED_PAGES} pages`);
+    }
     const response = await fetch(nextUrl, {
       headers: {
         accept: "application/vnd.github+json",

@@ -39,9 +39,14 @@ async function withServer(handler, callback) {
   }
 }
 
-function runNodeScript(args, options) {
+function runNodeScript(args, options, { timeoutMs = null } = {}) {
   return new Promise((resolve, reject) => {
     const child = spawn(process.execPath, args, options);
+    let timedOut = false;
+    const timeout = timeoutMs === null ? null : setTimeout(() => {
+      timedOut = true;
+      child.kill("SIGTERM");
+    }, timeoutMs);
     let stdout = "";
     let stderr = "";
     child.stdout.on("data", (chunk) => {
@@ -52,7 +57,8 @@ function runNodeScript(args, options) {
     });
     child.on("error", reject);
     child.on("close", (status, signal) => {
-      resolve({ status, signal, stdout, stderr });
+      if (timeout) clearTimeout(timeout);
+      resolve({ status, signal, stdout, stderr, timedOut });
     });
   });
 }
@@ -159,6 +165,26 @@ test("manual review gate treats PASS and FAIL relay verdicts as exact-head appro
   assert.equal(fail.ok, false);
   assert.deepEqual(fail.blockingReviewers, ["claude"]);
   assert.deepEqual(fail.missingReviewers, []);
+});
+
+test("manual review gate treats line-broken REQUEST CHANGES relay verdicts as blocking evidence", () => {
+  const result = evaluateManualReviewEvidence({
+    headSha: HEAD,
+    items: [
+      evidence("operator", `
+        <!-- codex-plugin-multi:manual-external-adversarial-review -->
+        Head: ${HEAD}
+        Reviewer: Claude
+        Verdict: REQUEST
+          CHANGES
+      `),
+    ],
+    requirements: { requiredReviewers: ["claude"] },
+  });
+
+  assert.equal(result.ok, false);
+  assert.deepEqual(result.blockingReviewers, ["claude"]);
+  assert.deepEqual(result.missingReviewers, []);
 });
 
 test("manual review gate rejects all-stale required evidence", () => {
@@ -487,6 +513,53 @@ test("manual review gate CLI follows paginated GitHub comments and reviews", asy
 
       assert.equal(result.status, 0, result.stderr || result.stdout);
       assert.match(result.stdout, /manual review gate passed/i);
+    });
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("manual review gate CLI fails closed on self-referential pagination links", async () => {
+  const tempDir = await mkdtemp(join(tmpdir(), "manual-review-gate-"));
+  try {
+    const eventPath = join(tempDir, "event.json");
+    await writeFile(eventPath, JSON.stringify({
+      pull_request: {
+        number: 136,
+        head: { sha: HEAD },
+      },
+    }));
+
+    await withServer((request, response) => {
+      const url = new URL(request.url, "http://127.0.0.1");
+      response.setHeader("content-type", "application/json");
+      if (url.pathname === "/repos/owner/repo/issues/136/comments") {
+        response.setHeader("link", `<${url.pathname}${url.search}>; rel="next"`);
+        response.end("[]");
+        return;
+      }
+      if (url.pathname === "/repos/owner/repo/pulls/136/reviews") {
+        response.end("[]");
+        return;
+      }
+      response.statusCode = 404;
+      response.end(JSON.stringify({ message: "not found" }));
+    }, async (apiUrl) => {
+      const result = await runNodeScript(["scripts/ci/check-manual-review-gate.mjs"], {
+        cwd: process.cwd(),
+        encoding: "utf8",
+        env: {
+          ...process.env,
+          GITHUB_API_URL: apiUrl,
+          GITHUB_EVENT_PATH: eventPath,
+          GITHUB_REPOSITORY: "owner/repo",
+          GITHUB_TOKEN: "test-token",
+        },
+      }, { timeoutMs: 1000 });
+
+      assert.equal(result.timedOut, false, "manual review gate should fail before the test timeout");
+      assert.notEqual(result.status, 0);
+      assert.match(result.stderr, /pagination/i);
     });
   } finally {
     await rm(tempDir, { recursive: true, force: true });

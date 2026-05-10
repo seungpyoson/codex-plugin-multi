@@ -45,6 +45,17 @@ function extractField(body, name) {
   return body.match(pattern)?.[1]?.trim() ?? "";
 }
 
+function extractVerdictField(body) {
+  const verdict = extractField(body, "Verdict");
+  if (
+    /^request$/i.test(verdict)
+    && /^\s*Verdict\s*:\s*REQUEST\s*\r?\n\s*CHANGES\s*$/im.test(body)
+  ) {
+    return "REQUEST CHANGES";
+  }
+  return verdict;
+}
+
 function normalizeVerdict(value) {
   const verdict = String(value ?? "").trim().toUpperCase();
   if (verdict === "PASS") return "APPROVE";
@@ -57,7 +68,7 @@ function parseManualReviewEvidence(item) {
   if (!body.includes(MANUAL_REVIEW_MARKER)) return null;
   const reviewer = normalizeReviewer(extractField(body, "Reviewer"));
   if (!reviewer) return null;
-  const verdict = normalizeVerdict(extractField(body, "Verdict"));
+  const verdict = normalizeVerdict(extractVerdictField(body));
   return {
     reviewer,
     verdict,
