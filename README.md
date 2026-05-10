@@ -78,11 +78,28 @@ API. Keep Codex workspace-write sandboxing enabled, but allow the minimum host
 capabilities needed for the providers you use.
 
 For DeepSeek and GLM direct API reviewers, Codex must allow outbound network
-access:
+access. Their setup commands perform a source-free live chat readiness probe, so
+network or auth failures are reported before any selected repository source is
+sent:
 
 ```toml
 [sandbox_workspace_write]
 network_access = true
+```
+
+Claude, Gemini, and Kimi use first-party CLIs that read or write local OAuth,
+session, config, or log state. If setup or review returns `sandbox_blocked`
+with a `.claude`, `.gemini`, or `.kimi` path, add the provider state directory
+as a writable root and start a fresh Codex session before retrying. Claude and
+Gemini usually need their full state trees because OAuth/session files can move
+across releases:
+
+```toml
+[sandbox_workspace_write]
+writable_roots = [
+  "/Users/<you>/.claude",
+  "/Users/<you>/.gemini"
+]
 ```
 
 For Kimi, the first-party CLI normally writes state and logs below `~/.kimi`;
@@ -123,6 +140,14 @@ Troubleshooting signals:
   `ENOTFOUND`, `EAI_AGAIN`, or `ECONNREFUSED` usually need network access or a
   one-off escalation. HTTP 5xx responses mean the provider was reached; retry
   later or switch provider instead of weakening sandbox policy.
+- Direct API reviewers with `sandbox_blocked` need `API_REVIEWERS_PLUGIN_DATA`
+  to resolve to a writable path inside the workspace or another approved
+  writable root. Runs preflight this data root before collecting scope or
+  sending source.
+- Claude `Operation not permitted`, `Permission denied`, `EACCES`, or `EPERM`
+  errors on `.claude` paths need `/Users/<you>/.claude` in writable roots.
+- Gemini `Operation not permitted`, `Permission denied`, `EACCES`, or `EPERM`
+  errors on `.gemini` paths need `/Users/<you>/.gemini` in writable roots.
 - Kimi `Operation not permitted`, `Permission denied`, `EACCES`, or `EPERM`
   errors on `.kimi` paths need a Kimi writable root.
 - Grok `tunnel_unavailable` means the subscription-backed local tunnel is not
@@ -227,12 +252,14 @@ For `second-codex`, inspect both profiles:
 npm run doctor:cache -- --second-codex-home "$HOME/.codex-second"
 ```
 
-The report compares marketplace/plugin files against
-`plugins/cache/codex-plugin-multi/<plugin>/0.1.0`, including SHA-256 checks for
-bundled `commands/`, `skills/`, `scripts/`, and `config/` files. It reports
-`missing_files`, `extra_files`, and `changed_files`, checks whether each plugin
-is enabled in `config.toml`, and prints next actions. For Git marketplace
-installs, start with:
+The report compares both marketplace/plugin files and this repo's `plugins/`
+tree against `plugins/cache/codex-plugin-multi/<plugin>/0.1.0`, including
+SHA-256 checks for bundled `commands/`, `skills/`, `scripts/`, and `config/`
+files. It reports `missing_files`, `extra_files`, `changed_files`, and
+`repo_changed_files`, checks whether each plugin is enabled in `config.toml`,
+and prints next actions. `cache_in_sync: true` with
+`repo_cache_in_sync: false` means new Codex sessions will still run stale
+installed plugin code. For Git marketplace installs, start with:
 
 ```bash
 codex plugin marketplace upgrade codex-plugin-multi
@@ -330,7 +357,7 @@ command docs:
 | Command | Status | Behavior |
 |---|---|---|
 | `/claude-setup` / `/gemini-setup` / `/kimi-setup` | Packaged | Target CLI availability and OAuth readiness check. Claude setup includes an OAuth-only non-interactive inference probe, not just `claude auth status`. |
-| `/deepseek-setup` / `/glm-setup` | Packaged | Direct API-key readiness check; reports key names only. |
+| `/deepseek-setup` / `/glm-setup` | Packaged | Direct API-key readiness check plus source-free live provider probe; reports key names and probe status only. |
 | `/grok-setup` | Packaged | Grok subscription-backed local tunnel readiness check; probes `/v1/models` by default and reports key names only. |
 | `/claude-review [focus]` / `/gemini-review [focus]` / `/kimi-review [focus]` | Packaged | Read-only review profile over the selected scope. |
 | `/grok-review [focus]` | Packaged | Subscription-backed Grok web review over the selected scope. |

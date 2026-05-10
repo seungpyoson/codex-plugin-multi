@@ -176,11 +176,16 @@ test("review docs expose custom-review, preflight, and blocked-review wording", 
 test("setup docs do not claim unimplemented target version-floor checks", () => {
   const docs = [
     readRepoFile("plugins/claude/commands/claude-setup.md"),
+    readRepoFile("plugins/claude/skills/claude-setup/SKILL.md"),
     readRepoFile("plugins/gemini/commands/gemini-setup.md"),
+    readRepoFile("plugins/gemini/skills/gemini-setup/SKILL.md"),
   ].join("\n");
 
   assert.doesNotMatch(docs, /min-versions\.json/);
   assert.doesNotMatch(docs, /version is below floor/i);
+  assert.match(docs, /sandbox_blocked[\s\S]*~\/\.claude/);
+  assert.match(docs, /sandbox_blocked[\s\S]*~\/\.gemini/);
+  assert.match(docs, /fresh Codex session/i);
 });
 
 test("gemini command docs match background/continue runtime and wired cancel", () => {
@@ -348,8 +353,12 @@ test("README documents Codex sandbox setup and provider-specific failure modes",
   assert.match(readme, /\[sandbox_workspace_write\]/);
   assert.match(readme, /network_access = true/);
   assert.match(readme, /writable_roots/);
+  assert.match(readme, /\/Users\/<you>\/\.claude/);
+  assert.match(readme, /\/Users\/<you>\/\.gemini/);
   assert.match(readme, /\/Users\/<you>\/\.kimi\/logs/);
   assert.match(readme, /\/Users\/<you>\/\.kimi/);
+  assert.match(readme, /sandbox_blocked[\s\S]*\.claude/);
+  assert.match(readme, /sandbox_blocked[\s\S]*\.gemini/);
   assert.match(readme, /one-off escalation/i);
   assert.match(readme, /approve only that command/i);
   assert.match(readme, /danger-full-access|dangerously-bypass-approvals-and-sandbox/i);

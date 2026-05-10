@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
+import { PING_PROMPT } from "../../plugins/kimi/scripts/lib/companion-common.mjs";
 
 if (process.argv.includes("--version") || process.argv.includes("-v")) {
   process.stdout.write("1.41.0\n");
@@ -36,6 +37,8 @@ const parsed = parseCli(process.argv.slice(2));
 const stdin = readFileSync(0, "utf8");
 const promptArg = parsed.flags["-p"] ?? parsed.flags["--prompt"] ?? "";
 const prompt = `${promptArg}${stdin}`;
+const isPingPrompt = prompt.trim() === PING_PROMPT;
+const isCompanionPreflight = isPingPrompt && process.env.KIMI_COMPANION_PREFLIGHT === "1";
 const includeDirs = String(parsed.flags["--add-dir"] ?? "")
   .split(",")
   .map((s) => s.trim())
@@ -46,7 +49,7 @@ const sessionId = (parsed.flags["--session"] ?? parsed.flags["--resume"])
 const model = parsed.flags["-m"] ?? parsed.flags["--model"] ?? "unknown";
 
 const expectedPromptText = process.env.KIMI_MOCK_ASSERT_PROMPT_INCLUDES;
-if (expectedPromptText && !prompt.includes(expectedPromptText)) {
+if (expectedPromptText && !isCompanionPreflight && !prompt.includes(expectedPromptText)) {
   process.stderr.write(`kimi-mock: prompt missing expected text: ${expectedPromptText}\n`);
   process.exit(1);
 }
@@ -61,7 +64,7 @@ if (expectedMaxSteps && String(parsed.flags["--max-steps-per-turn"] ?? "") !== e
 
 const expectedResumeId = process.env.KIMI_MOCK_ASSERT_RESUME_ID;
 const actualResumeId = parsed.flags["--session"] ?? parsed.flags["--resume"] ?? "";
-if (expectedResumeId && actualResumeId !== expectedResumeId) {
+if (expectedResumeId && !isCompanionPreflight && actualResumeId !== expectedResumeId) {
   process.stderr.write(
     `kimi-mock: resume id mismatch: expected ${expectedResumeId}, got ${actualResumeId || "<missing>"}\n`,
   );
@@ -83,7 +86,7 @@ if (process.env.KIMI_MOCK_CAPACITY_MODEL === model) {
   process.exit(1);
 }
 
-if (process.env.KIMI_MOCK_STEP_LIMIT) {
+if (!isCompanionPreflight && process.env.KIMI_MOCK_STEP_LIMIT) {
   const limit = process.env.KIMI_MOCK_STEP_LIMIT;
   if (process.env.KIMI_MOCK_STEP_LIMIT_PREFIX_JSON === "1") {
     process.stdout.write(JSON.stringify({ content: "Partial Kimi response.", session_id: sessionId }) + "\n");
@@ -207,7 +210,7 @@ if (process.env.KIMI_MOCK_TRAP_SIGTERM === "1") {
   });
 }
 
-const delayMs = Number(process.env.KIMI_MOCK_DELAY_MS ?? "0");
+const delayMs = isCompanionPreflight ? 0 : Number(process.env.KIMI_MOCK_DELAY_MS ?? "0");
 if (Number.isFinite(delayMs) && delayMs > 0) {
   setTimeout(() => {
     process.stdout.write(JSON.stringify(fixture) + "\n");

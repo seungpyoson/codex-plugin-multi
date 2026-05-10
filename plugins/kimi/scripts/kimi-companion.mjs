@@ -15,7 +15,7 @@ import { resolveProfile, resolveModelForProfile, resolveModelCandidatesForProfil
 import { setupContainment } from "./lib/containment.mjs";
 import { populateScope } from "./lib/scope.mjs";
 import { newJobId, verifyPidInfo } from "./lib/identity.mjs";
-import { buildJobRecord, externalReviewForInvocation } from "./lib/job-record.mjs";
+import { buildJobRecord, classifyExecution, externalReviewForInvocation } from "./lib/job-record.mjs";
 import { reconcileActiveJobs } from "./lib/reconcile.mjs";
 import { cleanGitEnv } from "./lib/git-env.mjs";
 import { gitEnv, isGitBinaryPolicyError, resolveGitBinary } from "./lib/git-binary.mjs";
@@ -46,7 +46,9 @@ const MODELS_CONFIG_PATH = resolvePath(PLUGIN_ROOT, "config/models.json");
 const CONTINUABLE_STATUSES = new Set(["completed", "failed", "cancelled", "stale"]);
 const RUN_MODES = Object.freeze(["review", "adversarial-review", "custom-review", "rescue"]);
 const PREFLIGHT_MODES = Object.freeze(["review", "adversarial-review", "custom-review"]);
-const DEFAULT_KIMI_REVIEW_TIMEOUT_MS = 600000;
+const DEFAULT_KIMI_REVIEW_TIMEOUT_MS = 900000;
+const DEFAULT_KIMI_PING_TIMEOUT_MS = 900000;
+const KIMI_READINESS_PREFLIGHT_TIMEOUT_MS = 900000;
 
 configureState({
   pluginDataEnv: "KIMI_PLUGIN_DATA",
@@ -184,6 +186,7 @@ function scopeResolutionReason(invocation) {
 function reviewAuditManifest(invocation, prompt, containmentPath, execution) {
   if (!invocation.review_prompt_contract_version || invocation.mode_profile_name === "rescue") return null;
   const meta = promptMetadata(invocation);
+  const { error_code: errorCode } = classifyExecution(execution);
   return buildReviewAuditManifest({
     prompt,
     sourceFiles: auditSourceFiles(containmentPath),
@@ -217,8 +220,10 @@ function reviewAuditManifest(invocation, prompt, containmentPath, execution) {
       reason: scopeResolutionReason(invocation),
     },
     result: execution?.parsed?.result ?? "",
-    status: execution?.exitCode === 0 && execution?.parsed?.ok === true ? "completed" : "failed",
-    errorCode: execution?.parsed?.reason ?? null,
+    status: execution?.preflight === true
+      ? "preflight_failed"
+      : (execution?.exitCode === 0 && execution?.parsed?.ok === true ? "completed" : "failed"),
+    errorCode,
   });
 }
 
@@ -294,6 +299,62 @@ function modelCandidatesForInvocation(profile, invocation) {
   if (configuredPrimary !== invocation.model) return [invocation.model];
   const candidates = resolveModelCandidatesForProfile(profile, modelsConfig);
   return candidates.length > 0 ? candidates : [invocation.model];
+}
+
+async function kimiReadinessPreflight(invocation, profile) {
+  const readinessProfile = resolveProfile("ping");
+  const candidates = modelCandidatesForInvocation(profile, invocation);
+  let execution = null;
+  try {
+    for (let i = 0; i < candidates.length; i++) {
+      execution = await spawnKimi(readinessProfile, {
+        model: candidates[i],
+        promptText: PING_PROMPT,
+        cwd: tmpdir(),
+        binary: invocation.binary,
+        env: { ...process.env, KIMI_COMPANION_PREFLIGHT: "1" },
+        timeoutMs: KIMI_READINESS_PREFLIGHT_TIMEOUT_MS,
+        maxStepsPerTurn: invocation.max_steps_per_turn,
+      });
+      if (execution.parsed?.ok === true) return null;
+      if (
+        execution.exitCode !== 0 &&
+        i < candidates.length - 1 &&
+        retryableModelCapacityFailure(execution)
+      ) {
+        continue;
+      }
+      break;
+    }
+  } catch (e) {
+    const detail = e instanceof Error ? e.message : String(e);
+    return {
+      preflight: true,
+      exitCode: null,
+      parsed: null,
+      pidInfo: null,
+      kimiSessionId: null,
+      stdout: "",
+      stderr: "",
+      errorMessage: isKimiCodexSandboxBlocked(detail) ? `sandbox_blocked: ${detail}` : detail,
+    };
+  }
+
+  const failureText = pingFailureText(execution);
+  const detail = pingFailureDetail(execution);
+  let errorMessage = detail || "Kimi Code CLI readiness check failed before review launch.";
+  if (isKimiCodexSandboxBlocked(failureText)) {
+    errorMessage = `sandbox_blocked: ${detail}`;
+  } else if (PING_AUTH_RE.test(detail)) {
+    errorMessage = `not_authed: ${detail}`;
+  }
+  return {
+    ...execution,
+    pidInfo: null,
+    kimiSessionId: null,
+    preflight: true,
+    errorMessage,
+  };
 }
 
 function runtimeOptionsSidecarPath(workspaceRoot, jobId) {
@@ -714,6 +775,37 @@ async function executeRun(invocation, prompt, { foreground, lifecycleEvents = nu
     upsertJob(workspaceRoot, cancelledRecord);
     if (foreground) printLifecycleJson(cancelledRecord, lifecycleEvents);
     process.exit(0);
+  }
+
+  const preflightExecution = await kimiReadinessPreflight(invocation, profile);
+  if (preflightExecution) {
+    preflightExecution.reviewAuditManifest = reviewAuditManifest(invocation, prompt, containment.path, preflightExecution);
+    const errorRecord = buildJobRecord(invocation, {
+      exitCode: preflightExecution.exitCode,
+      endedAt: preflightExecution.endedAt,
+      parsed: preflightExecution.parsed,
+      pidInfo: null,
+      kimiSessionId: null,
+      errorMessage: preflightExecution.errorMessage,
+      signal: preflightExecution.signal ?? null,
+      timedOut: preflightExecution.timedOut === true,
+      reviewAuditManifest: preflightExecution.reviewAuditManifest,
+    }, mutations);
+    writeJobFile(workspaceRoot, jobId, errorRecord);
+    upsertJob(workspaceRoot, errorRecord);
+    for (const [name, contents] of [
+      ["stdout.log", preflightExecution.stdout],
+      ["stderr.log", preflightExecution.stderr],
+    ]) {
+      try { writeSidecar(workspaceRoot, jobId, name, contents); }
+      catch (e) {
+        process.stderr.write(`kimi-companion: warning: sidecar ${name} write failed: ${e.message}\n`);
+      }
+    }
+    if (neutralCwd) rmSync(neutralCwd, { recursive: true, force: true });
+    if (disposeEffective) containment.cleanup();
+    if (foreground) printLifecycleJson(errorRecord, lifecycleEvents);
+    process.exit(2);
   }
 
   if (foreground && lifecycleEvents) {
@@ -1255,7 +1347,7 @@ async function cmdPing(rest, { readinessProfileName = "ping" } = {}) {
     ? [options.model]
     : resolveModelCandidatesForProfile(profile, modelsConfig);
   const candidates = modelCandidates.length > 0 ? modelCandidates : [model];
-  const timeoutMs = parsePositiveTimeoutMs(options["timeout-ms"], 30000);
+  const timeoutMs = parsePositiveTimeoutMs(options["timeout-ms"], DEFAULT_KIMI_PING_TIMEOUT_MS);
   try {
     let execution = null;
     let selectedModel = model;

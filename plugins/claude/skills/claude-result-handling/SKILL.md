@@ -59,7 +59,7 @@ comes back to you.
   "started_at":          "<iso-8601>",
   "ended_at":            null | "<iso-8601>",
   "exit_code":           null | 0 | 1 | 2,
-  "error_code":          null | "scope_failed" | "spawn_failed" | "claude_error" | "gemini_error" | "kimi_error" | "parse_error" | "oauth_inference_rejected" | "step_limit_exceeded" | "usage_limited" | "finalization_failed" | "timeout" | "stale_active_job",
+  "error_code":          null | "scope_failed" | "spawn_failed" | "claude_error" | "gemini_error" | "kimi_error" | "parse_error" | "oauth_inference_rejected" | "not_authed" | "sandbox_blocked" | "step_limit_exceeded" | "usage_limited" | "finalization_failed" | "timeout" | "stale_active_job",
   "error_message":       null | "<human>",
   "error_summary":       null | "<short operator-facing summary>",
   "error_cause":         null | "<why this happened>",
@@ -218,6 +218,12 @@ from short-lived index contention.
   subscription/OAuth mode. Treat this as a failed review slot, not a model
   verdict or approval. Tell the user to run `/claude-setup`; `claude auth
   status` may be a false positive for review readiness.
+- `not_authed` — same-process readiness preflight found no usable CLI login
+  before selected source was sent. Render `suggested_action` exactly.
+- `sandbox_blocked` — same-process readiness preflight found Codex could not
+  access provider state before selected source was sent. Render
+  `suggested_action` exactly; changing `writable_roots` requires a fresh Codex
+  session.
 - `gemini_error` / `kimi_error` — the corresponding external CLI ran but
   returned a target-level failure. `result` may contain partial text worth
   showing if present; otherwise use the structured diagnostic fields.

@@ -36,6 +36,8 @@ const SCOPE_FILE_OPEN_FLAGS = fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 
 const MAX_SCOPE_FILE_BYTES = 256 * 1024;
 const MAX_SCOPE_TOTAL_BYTES = 1024 * 1024;
 const DEFAULT_MAX_PROMPT_CHARS = 600000;
+const DEFAULT_PROVIDER_TIMEOUT_MS = 900000;
+const DOCTOR_PROBE_PROMPT = "Return exactly: ok";
 const GIT_SHOW_MAX_BUFFER_BYTES = MAX_SCOPE_FILE_BYTES + 1;
 const API_REVIEWER_EXPECTED_KEYS = Object.freeze([
   "id",
@@ -261,6 +263,24 @@ async function writeApiReviewerState(root, state) {
   } catch (e) {
     try { await unlink(tmpFile); } catch { /* already gone */ }
     throw e;
+  }
+}
+
+async function verifyApiReviewerDataRootWritable(env = process.env) {
+  const root = apiReviewerDataRoot(env);
+  const probeFile = resolve(root, `.write-preflight-${process.pid}-${Date.now()}-${randomUUID()}.tmp`);
+  try {
+    await mkdir(root, { recursive: true });
+    await writeFile(probeFile, "ok\n", { mode: 0o600 });
+    await unlink(probeFile);
+    return { ok: true, root };
+  } catch (e) {
+    try { await unlink(probeFile); } catch { /* best-effort cleanup */ }
+    return {
+      ok: false,
+      root,
+      error: `API_REVIEWERS_PLUGIN_DATA is not writable at ${root}: ${e?.message ?? String(e)}`,
+    };
   }
 }
 
@@ -637,7 +657,7 @@ function parseMaxPromptCharsOverride(env = process.env) {
 
 function parseProviderTimeoutMs(env = process.env) {
   const parsed = parsePositiveIntegerEnv(env, "API_REVIEWERS_TIMEOUT_MS", "milliseconds");
-  return parsed.value === null ? { ok: true, value: 600000 } : parsed;
+  return parsed.value === null ? { ok: true, value: DEFAULT_PROVIDER_TIMEOUT_MS } : parsed;
 }
 
 function applyRequestDefaults(requestBody, requestDefaults = {}) {
@@ -820,7 +840,22 @@ function baseUrlFor(cfg) {
   return url;
 }
 
-function doctorFields(provider, cfg, env = process.env) {
+function sourceFreeProviderProbeFields(execution, cfg) {
+  const status = execution.exitCode === 0 && execution.parsed?.ok === true
+    ? "ok"
+    : (execution.parsed?.reason ?? "provider_error");
+  return {
+    status,
+    http_status: execution.http_status ?? null,
+    endpoint: execution.endpoint ?? baseUrlFor(cfg),
+    model: cfg.model,
+    raw_model: execution.parsed?.raw_model ?? null,
+    source_content_transmission: SOURCE_CONTENT_TRANSMISSION.NOT_SENT,
+    prompt_chars: DOCTOR_PROBE_PROMPT.length,
+  };
+}
+
+async function doctorFields(provider, cfg, env = process.env) {
   const credential = selectedCredential(cfg, env);
   const endpoint = baseUrlFor(cfg);
   const costQuotaReadiness = {
@@ -853,17 +888,39 @@ function doctorFields(provider, cfg, env = process.env) {
       cost_quota_readiness: costQuotaReadiness,
     };
   }
+  const execution = await callProvider(provider, cfg, DOCTOR_PROBE_PROMPT, env);
+  const providerProbe = sourceFreeProviderProbeFields(execution, cfg);
+  if (providerProbe.status !== "ok") {
+    const errorMessage = redactor(env, cfg.env_keys)(execution.parsed?.error ?? providerProbe.status);
+    return {
+      provider,
+      status: providerProbe.status,
+      ready: false,
+      summary: `${cfg.display_name} direct API reviewer source-free readiness probe failed: ${providerProbe.status}.`,
+      next_action: suggestedAction(providerProbe.status, provider, cfg, errorMessage, execution.http_status ?? null, env),
+      auth_mode: cfg.auth_mode,
+      credential_ref: credential.keyName,
+      endpoint,
+      model: cfg.model,
+      provider_probe: {
+        ...providerProbe,
+        error_message: errorMessage,
+      },
+      cost_quota_readiness: execution.diagnostics?.cost_quota ?? costQuotaReadiness,
+    };
+  }
   return {
     provider,
     status: "ok",
     ready: true,
-    summary: `${cfg.display_name} direct API reviewer is ready using ${credential.keyName}.`,
+    summary: `${cfg.display_name} direct API reviewer is ready using ${credential.keyName}; source-free live probe succeeded.`,
     next_action: "Run a direct API review.",
     auth_mode: cfg.auth_mode,
     credential_ref: credential.keyName,
     endpoint,
     model: cfg.model,
-    cost_quota_readiness: costQuotaReadiness,
+    provider_probe: providerProbe,
+    cost_quota_readiness: execution.diagnostics?.cost_quota ?? costQuotaReadiness,
   };
 }
 
@@ -1553,6 +1610,7 @@ function suggestedAction(errorCode, provider, cfg, errorMessage = "", httpStatus
   if (errorCode === "provider_unavailable") return providerUnavailableSuggestedAction(errorMessage, httpStatus, env);
   if (errorCode === "review_not_completed") return "Treat this reviewer slot as failed, inspect the raw result and review_quality reasons, then retry with a source packet the reviewer can inspect.";
   if (errorCode === "scope_failed") return scopeFailedSuggestedAction(errorMessage);
+  if (errorCode === "sandbox_blocked") return "Set API_REVIEWERS_PLUGIN_DATA to a writable path inside the Codex workspace or another approved writable root, start a fresh Codex session if sandbox roots changed, then retry.";
   if (errorCode === "git_binary_rejected") return `Set ${GIT_BINARY_ENV} to a trusted Git executable outside the workspace, or unset it to use the default Git binary.`;
   return "Inspect error_message and retry after correcting the provider or request configuration.";
 }
@@ -1768,6 +1826,7 @@ function errorCauseFor(errorCode) {
   if (errorCode === "config_error") return "provider_config";
   if (errorCode === "scope_failed") return "scope_resolution";
   if (errorCode === "git_binary_rejected") return "git_binary_policy";
+  if (errorCode === "sandbox_blocked") return "sandbox_access";
   if (errorCode === "usage_limited") return "cost_quota_usage_limit";
   if (errorCode === "review_not_completed") return "review_quality";
   return "direct_api_provider";
@@ -1995,7 +2054,9 @@ async function cmdDoctor(options) {
   }
   if (!provider) throw new Error("bad_args: --provider is required");
   const cfg = providerConfig(providers, provider);
-  printJson(doctorFields(provider, cfg));
+  const fields = await doctorFields(provider, cfg);
+  printJson(fields);
+  if (fields.ready !== true) process.exit(1);
 }
 
 async function cmdApprovalRequest(options) {
@@ -2070,6 +2131,8 @@ async function cmdRun(options) {
     const preflight = validateDirectApiRunPreflight(cfg, provider, process.env);
     if (!preflight.ok && preflight.reason === "bad_args") throw runBadArgs(preflight.error);
     if (!preflight.ok) throw runProviderFailure(preflight.reason, preflight.error);
+    const statePreflight = await verifyApiReviewerDataRootWritable(process.env);
+    if (!statePreflight.ok) throw runProviderFailure("sandbox_blocked", statePreflight.error);
     scopeInfo = await collectScope({ ...runOptions, mode });
   } catch (e) {
     const redact = redactor();
@@ -2154,7 +2217,9 @@ async function cmdRun(options) {
     startedAt,
     endedAt: new Date().toISOString(),
   }), process.env, cfg.env_keys);
-  const printableRecord = await persistRecordBestEffort(record, process.env, cfg.env_keys);
+  const printableRecord = record.error_code === "sandbox_blocked"
+    ? record
+    : await persistRecordBestEffort(record, process.env, cfg.env_keys);
   printLifecycleJson(printableRecord, lifecycleEvents);
   process.exit(record.status === "completed" ? 0 : 1);
 }

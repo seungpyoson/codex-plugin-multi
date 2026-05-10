@@ -103,7 +103,8 @@ const resumeId = parsed.flags["--resume"] ?? null;
 const promptSha = createHash("sha256").update(prompt).digest("hex").slice(0, 16);
 
 const expectedPromptText = process.env.CLAUDE_MOCK_ASSERT_PROMPT_INCLUDES;
-if (expectedPromptText && !prompt.includes(expectedPromptText)) {
+const readinessPrompt = prompt.includes("reply with exactly: pong.") && prompt.includes("Do not use any tools");
+if (expectedPromptText && !readinessPrompt && !prompt.includes(expectedPromptText)) {
   process.stderr.write(`claude-mock: prompt missing expected text: ${expectedPromptText}\n`);
   process.exit(1);
 }
@@ -257,7 +258,7 @@ if (mutateRel && !isPingPrompt) {
 // well-behaved CLI that traps signals to flush partial output. Without the
 // cancel-marker fix, classifyExecution would mis-report this as "completed"
 // even when the operator had asked for a cancel.
-if (process.env.CLAUDE_MOCK_TRAP_SIGTERM === "1") {
+if (process.env.CLAUDE_MOCK_TRAP_SIGTERM === "1" && !readinessPrompt) {
   process.on("SIGTERM", () => {
     process.stdout.write(JSON.stringify(fixture) + "\n");
     process.exit(0);
@@ -268,7 +269,7 @@ if (process.env.CLAUDE_MOCK_TRAP_SIGTERM === "1") {
 // stdout + exiting. Exercises the `timeoutMs` branch in `spawnClaude`, which
 // has no regression coverage today (M6 reviewer flagged "timeoutMs never
 // exercised"). Delay < timeout = normal completion; delay > timeout = SIGTERM.
-const delayMs = Number(process.env.CLAUDE_MOCK_DELAY_MS ?? "0");
+const delayMs = readinessPrompt ? 0 : Number(process.env.CLAUDE_MOCK_DELAY_MS ?? "0");
 if (Number.isFinite(delayMs) && delayMs > 0) {
   setTimeout(() => {
     process.stdout.write(JSON.stringify(fixture) + "\n");

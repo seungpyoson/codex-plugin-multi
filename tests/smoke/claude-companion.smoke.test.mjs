@@ -194,7 +194,7 @@ test("run --mode=review --foreground: emits JobRecord with status=completed", ()
     assert.equal(result.review_metadata.raw_output.parsed_ok, true);
     assert.match(result.review_metadata.audit_manifest.rendered_prompt_hash.value, /^[a-f0-9]{64}$/);
     assert.equal(result.review_metadata.audit_manifest.request.model, "claude-haiku-4-5-20251001");
-    assert.equal(result.review_metadata.audit_manifest.request.timeout_ms, 600000);
+    assert.equal(result.review_metadata.audit_manifest.request.timeout_ms, 900000);
     assert.match(result.review_metadata.audit_manifest.prompt_builder.plugin_commit, /^[a-f0-9]{40}$/);
     assert.notEqual(
       result.review_metadata.audit_manifest.prompt_builder.plugin_commit,
@@ -1869,6 +1869,30 @@ test("ping: api_key auth fails before Claude spawn when no provider key is prese
   }
 });
 
+test("ping: classifies Codex sandbox denial for Claude state as sandbox_blocked", () => {
+  const tmp = mkdtempSync(path.join(tmpdir(), "claude-ping-sandbox-blocked-"));
+  const binary = writeExecutable(tmp, "claude-sandbox-blocked", `#!/usr/bin/env node
+process.stderr.write("PermissionError: [Errno 1] Operation not permitted: '/Users/test/.claude/settings.json'\\n");
+process.exit(1);
+`);
+  const { stdout, status, dataDir } = runCompanion(
+    ["ping", "--binary", binary, "--model", "claude-haiku-4-5-20251001"],
+    { cwd: tmpdir(), env: { CODEX_SANDBOX: "seatbelt", ANTHROPIC_API_KEY: "", CLAUDE_API_KEY: "" } },
+  );
+  try {
+    assert.equal(status, 2);
+    const result = JSON.parse(stdout);
+    assert.equal(result.status, "sandbox_blocked");
+    assert.equal(result.ready, false);
+    assert.match(result.summary, /sandbox/i);
+    assert.match(result.next_action, /~\/\.claude|writable_roots/);
+    assert.match(result.detail, /\.claude\/settings\.json/);
+  } finally {
+    cleanup(dataDir);
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
 test("ping: not_found includes readiness guidance", () => {
   const missingBinary = path.join(tmpdir(), "missing-claude-ping-binary");
   const { stdout, status, dataDir } = runCompanion(
@@ -2329,6 +2353,94 @@ process.exit(1);
     assert.match(record.external_review.disclosure, /not sent/);
     assert.equal(record.pid_info, null);
     assert.equal(record.review_metadata.audit_manifest.error_code, "oauth_inference_rejected");
+    assert.equal(record.review_metadata.audit_manifest.review_quality.failed_review_slot, false);
+    assert.doesNotMatch(stdout, /user@example.com/);
+  } finally {
+    cleanup(dataDir);
+    rmSync(cwd, { recursive: true, force: true });
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("run: Claude sandbox denial fails closed before review launch", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "claude-run-sandbox-blocked-cwd-"));
+  seedMinimalRepo(cwd);
+  const tmp = mkdtempSync(path.join(tmpdir(), "claude-run-sandbox-blocked-bin-"));
+  const binary = writeExecutable(tmp, "claude-sandbox-blocked", `#!/usr/bin/env node
+if (process.argv.slice(2).join(" ") === "auth status --json") {
+  process.stdout.write(JSON.stringify({
+    loggedIn: true,
+    authMethod: "claude.ai",
+    apiProvider: "firstParty",
+    subscriptionType: "max"
+  }) + "\\n");
+  process.exit(0);
+}
+process.stderr.write("PermissionError: [Errno 1] Operation not permitted: '/Users/test/.claude/session.json'\\n");
+process.exit(1);
+`);
+  const { stdout, status, dataDir } = runCompanion(
+    ["run", "--mode=review", "--foreground", "--lifecycle-events", "jsonl", "--binary", binary,
+     "--model", "claude-haiku-4-5-20251001", "--cwd", cwd, "--", "review this change"],
+    { cwd, env: { CODEX_SANDBOX: "seatbelt", ANTHROPIC_API_KEY: "", CLAUDE_API_KEY: "" } },
+  );
+  try {
+    assert.equal(status, 2);
+    const lines = stdout.trim().split("\n").map((line) => JSON.parse(line));
+    assert.equal(lines.length, 1, "sandbox preflight must not emit external_review_launched");
+    const [record] = lines;
+    assert.equal(record.status, "failed");
+    assert.equal(record.error_code, "sandbox_blocked");
+    assert.match(record.error_summary, /sandbox/i);
+    assert.match(record.suggested_action, /~\/\.claude|writable_roots/);
+    assert.equal(record.pid_info, null);
+    assert.equal(record.external_review.source_content_transmission, "not_sent");
+    assert.match(record.external_review.disclosure, /not sent/);
+    assert.equal(record.review_metadata.audit_manifest.error_code, "sandbox_blocked");
+    assert.equal(record.review_metadata.audit_manifest.review_quality.failed_review_slot, false);
+  } finally {
+    cleanup(dataDir);
+    rmSync(cwd, { recursive: true, force: true });
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("run: logged-out Claude CLI fails closed before review launch", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "claude-run-logged-out-cwd-"));
+  seedMinimalRepo(cwd);
+  const tmp = mkdtempSync(path.join(tmpdir(), "claude-run-logged-out-bin-"));
+  const binary = writeExecutable(tmp, "claude-logged-out", `#!/usr/bin/env node
+if (process.argv.slice(2).join(" ") === "auth status --json") {
+  process.stdout.write(JSON.stringify({
+    loggedIn: false,
+    authMethod: "claude.ai",
+    apiProvider: "firstParty",
+    subscriptionType: "max",
+    email: "user@example.com"
+  }) + "\\n");
+  process.exit(0);
+}
+process.stderr.write("Not logged in · Please run /login\\n");
+process.exit(1);
+`);
+  const { stdout, status, dataDir } = runCompanion(
+    ["run", "--mode=review", "--foreground", "--lifecycle-events", "jsonl", "--binary", binary,
+     "--model", "claude-haiku-4-5-20251001", "--cwd", cwd, "--", "review this change"],
+    { cwd, env: { ANTHROPIC_API_KEY: "", CLAUDE_API_KEY: "" } },
+  );
+  try {
+    assert.equal(status, 2);
+    const lines = stdout.trim().split("\n").map((line) => JSON.parse(line));
+    assert.equal(lines.length, 1, "logged-out preflight must not emit external_review_launched");
+    const [record] = lines;
+    assert.equal(record.status, "failed");
+    assert.equal(record.error_code, "not_authed");
+    assert.match(record.error_summary, /Claude Code is not logged in/);
+    assert.match(record.suggested_action, /claude auth login|claude-setup/);
+    assert.equal(record.pid_info, null);
+    assert.equal(record.external_review.source_content_transmission, "not_sent");
+    assert.match(record.external_review.disclosure, /not sent/);
+    assert.equal(record.review_metadata.audit_manifest.error_code, "not_authed");
     assert.equal(record.review_metadata.audit_manifest.review_quality.failed_review_slot, false);
     assert.doesNotMatch(stdout, /user@example.com/);
   } finally {

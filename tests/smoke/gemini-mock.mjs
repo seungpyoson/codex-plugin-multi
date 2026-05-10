@@ -43,7 +43,8 @@ const sessionId = parsed.flags["--resume"]
 const model = parsed.flags["-m"] ?? parsed.flags["--model"] ?? "unknown";
 
 const expectedPromptText = process.env.GEMINI_MOCK_ASSERT_PROMPT_INCLUDES;
-if (expectedPromptText && !prompt.includes(expectedPromptText)) {
+const readinessPrompt = prompt.includes("reply with exactly: pong.") && prompt.includes("Do not use any tools");
+if (expectedPromptText && !readinessPrompt && !prompt.includes(expectedPromptText)) {
   process.stderr.write(`gemini-mock: prompt missing expected text: ${expectedPromptText}\n`);
   process.exit(1);
 }
@@ -164,14 +165,14 @@ if (process.env.GEMINI_MOCK_META_CONFLICT === "1") {
 // well-behaved CLI that traps signals. Without the cancel-marker fix,
 // classifyExecution would mis-report this as "completed" even when the
 // operator had asked for a cancel.
-if (process.env.GEMINI_MOCK_TRAP_SIGTERM === "1") {
+if (process.env.GEMINI_MOCK_TRAP_SIGTERM === "1" && !readinessPrompt) {
   process.on("SIGTERM", () => {
     process.stdout.write(JSON.stringify(fixture) + "\n");
     process.exit(0);
   });
 }
 
-const delayMs = Number(process.env.GEMINI_MOCK_DELAY_MS ?? "0");
+const delayMs = readinessPrompt ? 0 : Number(process.env.GEMINI_MOCK_DELAY_MS ?? "0");
 if (Number.isFinite(delayMs) && delayMs > 0) {
   setTimeout(() => {
     process.stdout.write(JSON.stringify(fixture) + "\n");

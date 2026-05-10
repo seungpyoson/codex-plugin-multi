@@ -441,6 +441,14 @@ test("external-review shared helper covers disclosure and transmission branches"
       "Selected source content was not sent to Provider; the target process was not spawned.",
     );
     assert.equal(
+      mod.externalReviewDisclosure("Provider", "failed", T.NOT_SENT, "not_authed"),
+      "Selected source content was not sent to Provider; auth readiness failed before the review target was started.",
+    );
+    assert.equal(
+      mod.externalReviewDisclosure("Provider", "failed", T.NOT_SENT, "sandbox_blocked"),
+      "Selected source content was not sent to Provider; sandbox access was blocked before the review target was started.",
+    );
+    assert.equal(
       mod.externalReviewDisclosure("Provider", "failed", T.NOT_SENT, "oauth_inference_rejected"),
       "Selected source content was not sent to Provider; OAuth inference readiness was rejected before the review target was started.",
     );
@@ -485,6 +493,16 @@ test("external-review shared helper covers disclosure and transmission branches"
     assert.equal(mod.sourceContentTransmissionForExecution({
       status: "failed",
       errorCode: "spawn_failed",
+      pidInfo: null,
+    }), T.NOT_SENT);
+    assert.equal(mod.sourceContentTransmissionForExecution({
+      status: "failed",
+      errorCode: "not_authed",
+      pidInfo: null,
+    }), T.NOT_SENT);
+    assert.equal(mod.sourceContentTransmissionForExecution({
+      status: "failed",
+      errorCode: "sandbox_blocked",
       pidInfo: null,
     }), T.NOT_SENT);
     assert.equal(mod.sourceContentTransmissionForExecution({

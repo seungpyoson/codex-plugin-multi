@@ -17,7 +17,7 @@ Review via Claude Code. Read-only; changes detected post-hoc, never auto-reverte
    node "<plugin-root>/scripts/claude-companion.mjs" run --mode=review --foreground --lifecycle-events jsonl -- "<focus text>"
    ```
    (Containment + scope + dispose are all carried by the review profile — spec §21.4.)
-   Review timeout defaults to 600000 ms. Use `--timeout-ms <ms>` or `CLAUDE_REVIEW_TIMEOUT_MS`; the effective value is persisted in `review_metadata.audit_manifest.request.timeout_ms`.
+   Review timeout defaults to 900000 ms. Use `--timeout-ms <ms>` or `CLAUDE_REVIEW_TIMEOUT_MS`; the effective value is persisted in `review_metadata.audit_manifest.request.timeout_ms`.
    For a pinned review bundle or hand-picked files, first run `preflight`, then use
    `run --mode=custom-review --scope-paths <g1,g2,...>` and refer to files by
    relative paths inside the selected scope.

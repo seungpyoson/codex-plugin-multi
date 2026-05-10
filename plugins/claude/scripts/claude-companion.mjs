@@ -44,6 +44,7 @@ import { buildJobRecord, classifyExecution, externalReviewForInvocation, isOAuth
 import { reconcileActiveJobs } from "./lib/reconcile.mjs";
 import { cleanGitEnv } from "./lib/git-env.mjs";
 import { gitEnv, isGitBinaryPolicyError, resolveGitBinary } from "./lib/git-binary.mjs";
+import { isCodexSandbox } from "./lib/codex-env.mjs";
 import { sanitizeTargetEnv } from "./lib/provider-env.mjs";
 import { runCommand } from "./lib/process.mjs";
 import {
@@ -81,7 +82,8 @@ configureState({
 });
 
 const MODELS_CONFIG_PATH = resolvePath(PLUGIN_ROOT, "config/models.json");
-const DEFAULT_CLAUDE_REVIEW_TIMEOUT_MS = 600000;
+const DEFAULT_CLAUDE_REVIEW_TIMEOUT_MS = 900000;
+const DEFAULT_CLAUDE_PING_TIMEOUT_MS = 900000;
 const CLAUDE_AUTH_STATUS_TIMEOUT_MS = 10000;
 const CONTINUABLE_STATUSES = new Set(["completed", "failed", "cancelled", "stale"]);
 const RUN_MODES = Object.freeze(["review", "adversarial-review", "custom-review", "rescue"]);
@@ -896,9 +898,10 @@ async function spawnClaudeOrExit(invocation, profile, prompt, executionScope, mu
       onSpawn: (pidInfo) => writeRunningRecord(invocation, pidInfo, mutationContext.mutations, options.runtimeDiagnostics),
     });
   } catch (e) {
+    const message = e instanceof Error ? e.message : String(e);
     const errorRecord = buildJobRecord(invocation, {
       exitCode: null, parsed: null, pidInfo: null, claudeSessionId: null,
-      errorMessage: e.message,
+      errorMessage: isClaudeCodexSandboxBlocked(message) ? `sandbox_blocked: ${message}` : message,
       runtimeDiagnostics: options.runtimeDiagnostics,
     }, mutationContext.mutations);
     writeJobFile(invocation.workspace_root, invocation.job_id, errorRecord);
@@ -911,6 +914,19 @@ async function spawnClaudeOrExit(invocation, profile, prompt, executionScope, mu
 
 async function claudeOAuthInferencePreflight(invocation, authSelection) {
   if (authSelection.selected_auth_path !== "subscription_oauth") return null;
+  const oauthStatus = safeClaudeOAuthStatus(invocation.binary, authSelection, invocation.cwd);
+  if (oauthStatus?.available === true && oauthStatus.logged_in === false) {
+    return {
+      preflight: true,
+      exitCode: null,
+      parsed: null,
+      pidInfo: null,
+      claudeSessionId: null,
+      stdout: "",
+      stderr: "",
+      errorMessage: "not_authed: Claude Code auth status reports loggedIn=false. Run `claude auth login` before retrying.",
+    };
+  }
   const profile = resolveProfile("ping");
   let execution;
   try {
@@ -920,7 +936,7 @@ async function claudeOAuthInferencePreflight(invocation, authSelection) {
       sessionId: newJobId(),
       cwd: tmpdir(),
       binary: resolveCliBinary(invocation.cwd, invocation.binary),
-      timeoutMs: Math.min(Number(invocation.timeout_ms ?? 15000), 15000),
+      timeoutMs: Math.min(Number(invocation.timeout_ms ?? DEFAULT_CLAUDE_PING_TIMEOUT_MS), DEFAULT_CLAUDE_PING_TIMEOUT_MS),
       allowedApiKeyEnv: authSelection.allowed_env_credentials,
     });
   } catch (e) {
@@ -933,21 +949,40 @@ async function claudeOAuthInferencePreflight(invocation, authSelection) {
       claudeSessionId: null,
       stdout: "",
       stderr: "",
-      errorMessage: message,
+      errorMessage: isClaudeCodexSandboxBlocked(message) ? `sandbox_blocked: ${message}` : message,
     };
   }
   if (execution.parsed?.ok === true) return null;
+  const failureText = pingFailureText(execution);
   const detail = pingFailureDetail(execution);
-  if (!isOAuthInferenceRejected(execution, invocation)) return null;
-  const oauthStatus = safeClaudeOAuthStatus(invocation.binary, authSelection, invocation.cwd);
-  if (oauthStatus?.logged_in !== true) return null;
-  return {
-    ...execution,
-    pidInfo: null,
-    claudeSessionId: null,
-    preflight: true,
-    errorMessage: `oauth_inference_rejected: ${detail}`,
-  };
+  if (isClaudeCodexSandboxBlocked(failureText)) {
+    return {
+      ...execution,
+      pidInfo: null,
+      claudeSessionId: null,
+      preflight: true,
+      errorMessage: `sandbox_blocked: ${detail}`,
+    };
+  }
+  if (isOAuthInferenceRejected(execution, invocation) && oauthStatus?.logged_in === true) {
+    return {
+      ...execution,
+      pidInfo: null,
+      claudeSessionId: null,
+      preflight: true,
+      errorMessage: `oauth_inference_rejected: ${detail}`,
+    };
+  }
+  if (PING_AUTH_RE.test(detail) || oauthStatus?.logged_in === false) {
+    return {
+      ...execution,
+      pidInfo: null,
+      claudeSessionId: null,
+      preflight: true,
+      errorMessage: `not_authed: ${detail || "Claude Code auth is not available to this Codex session."}`,
+    };
+  }
+  return null;
 }
 
 function writeRunningRecord(invocation, pidInfo, mutations, runtimeDiagnostics = null) {
@@ -1353,6 +1388,14 @@ function pingErrorFields() {
   };
 }
 
+function pingSandboxBlockedFields() {
+  return {
+    ready: false,
+    summary: "Claude Code is blocked by Codex sandbox access to Claude state.",
+    next_action: "Add ~/.claude to [sandbox_workspace_write].writable_roots in ~/.codex/config.toml, start a fresh Codex session, then rerun /claude-setup. Alternatively, run this check outside sandbox.",
+  };
+}
+
 function oauthInferenceRejectedFields() {
   return {
     ready: false,
@@ -1494,7 +1537,7 @@ function parseJsonSlice(text, start, end) {
   }
 }
 
-function pingFailureDetail(execution) {
+function pingFailureText(execution) {
   const raw = execution?.parsed?.raw;
   const rawText = typeof raw === "string"
     ? raw
@@ -1502,14 +1545,26 @@ function pingFailureDetail(execution) {
   const parsedError = execution?.parsed?.reason === "json_parse_error"
     ? null
     : execution?.parsed?.error;
-  const detail = [
+  return [
     execution?.stderr,
     parsedError,
     execution?.parsed?.result,
     execution?.stdout,
     rawText,
+    execution?.timedOut ? "target CLI exceeded the configured timeoutMs" : "",
+    execution?.signal ? `signal ${execution.signal}` : "",
     execution?.exitCode == null ? "" : `exit ${execution.exitCode}`,
-  ].map((s) => String(s ?? "").trim()).find(Boolean) ?? "";
+  ].map((s) => String(s ?? "").trim()).filter(Boolean).join("\n");
+}
+
+function pingFailureDetail(execution) {
+  const parsedResult = String(execution?.parsed?.result ?? "").trim();
+  if (parsedResult) return parsedResult.slice(0, 500);
+  const parsedError = execution?.parsed?.reason === "json_parse_error"
+    ? ""
+    : String(execution?.parsed?.error ?? "").trim();
+  if (parsedError) return parsedError.slice(0, 500);
+  const detail = pingFailureText(execution);
   const firstLine = detail.split("\n").map((line) => line.trim()).find(Boolean);
   const hasStackFrame = detail
     .split("\n")
@@ -1518,12 +1573,28 @@ function pingFailureDetail(execution) {
   return concise.slice(0, 500);
 }
 
+function isClaudeCodexSandboxBlocked(detail) {
+  if (!isCodexSandbox(process.env)) return false;
+  const permissionRe = /Operation not permitted|Permission denied|PermissionError|EACCES|EPERM/i;
+  const claudePathRe = /(?:^|[/\\])\.claude(?:[/\\]|['"\s:)]|$)/;
+  const lines = String(detail ?? "").split("\n");
+  return lines.some((line, i) => {
+    if (permissionRe.test(line) && claudePathRe.test(line)) return true;
+    const nextLine = lines[i + 1] ?? "";
+    return permissionRe.test(line) && /^\s/.test(nextLine) && claudePathRe.test(nextLine);
+  });
+}
+
 function printPingSpawnError(error, authSelection) {
   if (error.code === "ENOENT") {
     printJson({ status: "not_found", ...pingNotFoundFields(),
       ...authDiagnosticFields(authSelection),
       detail: `claude binary not found on PATH (or CLAUDE_BINARY override)`,
       install_url: "https://claude.com/claude-code" });
+    process.exit(2);
+  }
+  if (isClaudeCodexSandboxBlocked(error.message)) {
+    printJson({ status: "sandbox_blocked", ...pingSandboxBlockedFields(), ...authDiagnosticFields(authSelection), detail: error.message });
     process.exit(2);
   }
   printJson({ status: "error", ...pingErrorFields(), ...authDiagnosticFields(authSelection), detail: error.message });
@@ -1551,7 +1622,12 @@ function printPingNotAuthed(detail, authSelection, authStatus) {
 }
 
 function printPingExecutionFailure(execution, authSelection, binary) {
+  const failureText = pingFailureText(execution);
   const detail = pingFailureDetail(execution);
+  if (isClaudeCodexSandboxBlocked(failureText)) {
+    printJson({ status: "sandbox_blocked", ...pingSandboxBlockedFields(), ...authDiagnosticFields(authSelection), exit_code: execution.exitCode, detail });
+    process.exit(2);
+  }
   if (/rate limit|429|overloaded/i.test(detail)) {
     printJson({ status: "rate_limited", ...pingRateLimitedFields(), ...authDiagnosticFields(authSelection), detail });
     process.exit(2);
@@ -1580,7 +1656,7 @@ async function cmdPing(rest, { readinessProfileName = "ping" } = {}) {
   const model = options.model ?? resolveModelForProfile(profile, loadModels());
   const rawBinary = options.binary ?? process.env.CLAUDE_BINARY ?? "claude";
   const binary = resolveCliBinary(process.cwd(), rawBinary);
-  const timeoutMs = Number(options["timeout-ms"] ?? 15000);
+  const timeoutMs = Number(options["timeout-ms"] ?? DEFAULT_CLAUDE_PING_TIMEOUT_MS);
   const authSelection = resolveAuthSelection(options["auth-mode"]);
   if (authSelection.selected_auth_path === "api_key_env_missing") {
     printJson({ status: "not_authed", ...apiKeyMissingFields(authSelection, pingNotAuthedFields()) });

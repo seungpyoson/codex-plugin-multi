@@ -216,6 +216,23 @@ test("kimi doctor probes configured review model, not only native auth", () => {
   }
 });
 
+test("kimi doctor default timeout allows slow review-model startup", { timeout: 70000 }, () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "kimi-doctor-slow-review-model-"));
+  try {
+    const result = runCompanion(["doctor"], {
+      cwd,
+      env: { KIMI_MOCK_DELAY_MS: "31000" },
+    });
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    const parsed = parseJson(result.stdout);
+    assert.equal(parsed.status, "ok");
+    assert.equal(parsed.ready, true);
+    assert.equal(parsed.model, "kimi-code/kimi-for-coding");
+  } finally {
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
 test("kimi ping classifies missing binary with readiness fields", () => {
   const cwd = mkdtempSync(path.join(tmpdir(), "kimi-ping-missing-"));
   try {
@@ -564,6 +581,44 @@ test("kimi foreground review timeout returns actionable JobRecord", () => withRe
   const { record: persisted } = readOnlyJobRecord(result.dataDir);
   assert.equal(persisted.job_id, record.job_id);
   assert.equal(persisted.error_code, "timeout");
+}));
+
+test("kimi foreground run fails closed on Codex sandbox denial before review launch", () => withRepo((cwd) => {
+  const bin = path.join(cwd, "kimi-state-denied");
+  writeFileSync(bin, `#!/usr/bin/env node
+process.stderr.write("PermissionError: [Errno 1] Operation not permitted: '/Users/test/.kimi/logs/kimi.log'\\n");
+process.exit(1);
+`, "utf8");
+  chmodSync(bin, 0o755);
+  const result = runCompanion([
+    "run",
+    "--mode",
+    "custom-review",
+    "--cwd",
+    cwd,
+    "--scope-paths",
+    "seed.txt",
+    "--foreground",
+    "--lifecycle-events",
+    "jsonl",
+    "--binary",
+    bin,
+    "--",
+    "Review this scope.",
+  ], { cwd, env: { CODEX_SANDBOX: "seatbelt" } });
+  assert.equal(result.status, 2);
+  const lines = result.stdout.trim().split("\n").map((line) => JSON.parse(line));
+  assert.equal(lines.length, 1, "sandbox preflight must not emit external_review_launched");
+  const [record] = lines;
+  assert.equal(record.status, "failed");
+  assert.equal(record.error_code, "sandbox_blocked");
+  assert.match(record.error_summary, /Codex sandbox/);
+  assert.match(record.suggested_action, /writable_roots|~\/\.kimi/);
+  assert.equal(record.pid_info, null);
+  assert.equal(record.external_review.source_content_transmission, "not_sent");
+  assert.match(record.external_review.disclosure, /not sent/);
+  assert.equal(record.review_metadata.audit_manifest.error_code, "sandbox_blocked");
+  assert.equal(record.review_metadata.audit_manifest.review_quality.failed_review_slot, false);
 }));
 
 test("kimi foreground review --timeout-ms overrides review timeout audit metadata", () => withRepo((cwd) => {
@@ -1553,7 +1608,7 @@ for (const mode of ["review", "adversarial-review", "custom-review"]) {
     assert.equal(persisted.review_metadata.raw_output.parsed_ok, true);
     assert.match(persisted.review_metadata.audit_manifest.rendered_prompt_hash.value, /^[a-f0-9]{64}$/);
     assert.equal(persisted.review_metadata.audit_manifest.request.model, persisted.model);
-    assert.equal(persisted.review_metadata.audit_manifest.request.timeout_ms, 600000);
+    assert.equal(persisted.review_metadata.audit_manifest.request.timeout_ms, 900000);
     assert.match(persisted.review_metadata.audit_manifest.prompt_builder.plugin_commit, /^[a-f0-9]{40}$/);
     assert.notEqual(
       persisted.review_metadata.audit_manifest.prompt_builder.plugin_commit,

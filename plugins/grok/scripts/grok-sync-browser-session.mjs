@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { spawnSync } from "node:child_process";
-import { createDecipheriv, pbkdf2Sync } from "node:crypto";
+import { createDecipheriv, createHash, pbkdf2Sync } from "node:crypto";
 import { copyFileSync, existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import path from "node:path";
@@ -271,7 +271,19 @@ function sqliteCookieRows(dbPath) {
   }
 }
 
-export function chromeDecrypt(encryptedHex, password) {
+export function decodeCookiePlaintext(plaintext, hostKey = "") {
+  const full = plaintext.toString("utf8");
+  if (isJwtShapedToken(sanitizeToken(full))) return full;
+  if (hostKey && plaintext.length > 32) {
+    const hostDigest = createHash("sha256").update(hostKey).digest();
+    if (plaintext.subarray(0, 32).equals(hostDigest)) {
+      return plaintext.subarray(32).toString("utf8");
+    }
+  }
+  return full;
+}
+
+export function chromeDecrypt(encryptedHex, password, hostKey = "") {
   if (!encryptedHex) return "";
   const encrypted = Buffer.from(encryptedHex, "hex");
   if (!encrypted.length) return "";
@@ -286,15 +298,22 @@ export function chromeDecrypt(encryptedHex, password) {
   const key = pbkdf2Sync(Buffer.from(password, "utf8"), Buffer.from("saltysalt"), 1003, 16, "sha1");
   const iv = Buffer.alloc(16, " ");
   const decipher = createDecipheriv("aes-128-cbc", key, iv);
-  return Buffer.concat([decipher.update(payload), decipher.final()]).toString("utf8");
+  return decodeCookiePlaintext(Buffer.concat([decipher.update(payload), decipher.final()]), hostKey);
 }
 
 function selectCookie(cookies) {
+  let firstCandidate = null;
   for (const name of COOKIE_NAMES) {
-    const match = cookies.find((cookie) => cookie.name === name && sanitizeToken(cookie.value));
-    if (match) return { name, value: sanitizeToken(match.value) };
+    for (const cookie of cookies) {
+      if (cookie.name !== name) continue;
+      const value = sanitizeToken(cookie.value);
+      if (!value) continue;
+      const selected = { name, value };
+      if (!firstCandidate) firstCandidate = selected;
+      if (isJwtShapedToken(value)) return selected;
+    }
   }
-  return null;
+  return firstCandidate;
 }
 
 function cookiesFromJson(filePath) {
@@ -315,7 +334,7 @@ function cookiesFromBrowser(options) {
   const rows = sqliteCookieRows(dbPath);
   return rows.map((row) => ({
     name: row.name,
-    value: sanitizeToken(row.value || chromeDecrypt(row.encrypted_hex, password)),
+    value: sanitizeToken(row.value || chromeDecrypt(row.encrypted_hex, password, row.host_key)),
   }));
 }
 

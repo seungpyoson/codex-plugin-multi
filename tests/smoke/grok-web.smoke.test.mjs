@@ -123,8 +123,26 @@ function makeEmptyBranchDiffWorkspace() {
   return cwd;
 }
 
-async function withServer(handler, fn) {
-  const server = http.createServer(handler);
+async function withServer(handler, fn, options = {}) {
+  const autoPreflight = options.autoPreflight !== false;
+  const server = http.createServer(async (req, res) => {
+    if (autoPreflight && req.headers["x-codex-grok-readiness-preflight"] === "1") {
+      assert.equal(req.method, "POST");
+      assert.equal(req.url, "/api/chat/completions");
+      const body = await readJsonRequest(req);
+      assert.equal(body.messages.length, 1);
+      assert.equal(body.messages[0].content, "Return exactly: ok");
+      assert.doesNotMatch(body.messages[0].content, /review\.js|BEGIN GROK FILE|export const/);
+      res.setHeader("content-type", "application/json");
+      res.end(JSON.stringify({
+        id: "grok-web-readiness-preflight",
+        model: "grok-4.20-fast",
+        choices: [{ message: { content: "ok" } }],
+      }));
+      return;
+    }
+    await handler(req, res);
+  });
   server.listen(0, "127.0.0.1");
   await once(server, "listening");
   try {
@@ -2319,15 +2337,15 @@ for (const { status, code, quotaBody = false } of [
       assert.equal(record.status, "failed");
       assert.equal(record.error_code, code);
       assert.equal(record.http_status, status);
-      assert.equal(record.review_metadata.audit_manifest.request.timeout_ms, 600000);
-      assert.match(record.error_summary, /configured_timeout_ms=600000/);
+      assert.equal(record.review_metadata.audit_manifest.request.timeout_ms, 900000);
+      assert.match(record.error_summary, /configured_timeout_ms=900000/);
       if (code === "usage_limited") {
         assert.equal(record.error_cause, "cost_quota_usage_limit");
         assert.equal(record.runtime_diagnostics.cost_quota.classification, "usage_limited");
         assert.equal(record.runtime_diagnostics.cost_quota.http_status, status);
         assert.equal(record.runtime_diagnostics.cost_quota.provider_error_code, null);
         assert.equal(record.runtime_diagnostics.cost_quota.provider_error_type, null);
-        assert.equal(record.runtime_diagnostics.tunnel_request.configured_timeout_ms, 600000);
+        assert.equal(record.runtime_diagnostics.tunnel_request.configured_timeout_ms, 900000);
         assert.doesNotMatch(record.error_summary, /\[object Object\]/);
         assert.match(record.suggested_action, /subscription usage|manual approval/i);
       } else if (quotaBody) {
@@ -2566,7 +2584,7 @@ test("custom-review maps malformed tunnel responses", async () => {
     assert.equal(result.status, 1);
     assert.equal(record.status, "failed");
     assert.equal(record.error_code, "malformed_response");
-    assert.equal(record.review_metadata.audit_manifest.request.timeout_ms, 600000);
+    assert.equal(record.review_metadata.audit_manifest.request.timeout_ms, 900000);
     assert.match(record.suggested_action, /unsupported response shape/i);
   });
 });
@@ -2588,6 +2606,7 @@ test("local tunnel connection failure is structured as not sent", () => {
       GROK_WEB_BASE_URL: "http://127.0.0.1:9/api",
       GROK_WEB_TUNNEL_API_KEY: "secret-cookie-like-token",
       GROK_WEB_TIMEOUT_MS: "500",
+      GROK_WEB_CHAT_DOCTOR_TIMEOUT_MS: "500",
     },
   });
   const record = parseStdout(result);
@@ -2601,7 +2620,7 @@ test("local tunnel connection failure is structured as not sent", () => {
   assert.doesNotMatch(result.stdout, /secret-cookie-like-token/);
 });
 
-test("local tunnel connection failure lifecycle jsonl emits launch then failed terminal record", () => {
+test("local tunnel connection failure lifecycle jsonl suppresses launch before tunnel readiness", () => {
   const cwd = mkdtempSync(path.join(tmpdir(), "grok-web-workspace-"));
   writeFileSync(path.join(cwd, "review.js"), "export const value = 42;\n");
 
@@ -2623,16 +2642,74 @@ test("local tunnel connection failure lifecycle jsonl emits launch then failed t
   });
   const lines = parseJsonLines(result);
   assert.equal(result.status, 1);
-  assert.equal(lines.length, 2);
-  const [launch, record] = lines;
-  assert.deepEqual(launch, externalReviewLaunchedEvent({
-    job_id: launch.job_id,
-    target: "grok-web",
-  }, launch.external_review));
+  assert.equal(lines.length, 1);
+  const [record] = lines;
   assert.equal(record.status, "failed");
   assert.equal(record.error_code, "tunnel_unavailable");
   assert.equal(record.external_review.source_content_transmission, "not_sent");
+  assert.doesNotMatch(result.stdout, /external_review_launched/);
   assert.doesNotMatch(result.stdout, /secret-cookie-like-token/);
+});
+
+test("custom-review fails closed when Grok chat readiness has no runtime tokens", async () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "grok-web-workspace-"));
+  writeFileSync(path.join(cwd, "review.js"), "export const value = 42;\n");
+
+  const requests = [];
+  await withServer(async (req, res) => {
+    res.setHeader("content-type", "application/json");
+    if (req.url === "/api/chat/completions") {
+      const body = await readJsonRequest(req);
+      requests.push({
+        method: req.method,
+        url: req.url,
+        preflight: req.headers["x-codex-grok-readiness-preflight"] === "1",
+        prompt: body.messages?.[0]?.content ?? "",
+      });
+      res.statusCode = 429;
+      res.end(JSON.stringify({ error: { message: "No active runtime tokens." } }));
+      return;
+    }
+    if (req.url === "/admin/api/tokens") {
+      requests.push({ method: req.method, url: req.url, preflight: false, prompt: null });
+      assert.equal(req.method, "GET");
+      res.end(JSON.stringify({ tokens: [] }));
+      return;
+    }
+    res.statusCode = 404;
+    res.end(JSON.stringify({ error: { message: "unexpected endpoint" } }));
+  }, async (baseUrl) => {
+    const result = await runAsync([
+      "run",
+      "--mode", "custom-review",
+      "--scope", "custom",
+      "--scope-paths", "review.js",
+      "--foreground",
+      "--lifecycle-events", "jsonl",
+      "--prompt", "Check this file.",
+    ], {
+      cwd,
+      env: {
+        GROK_WEB_BASE_URL: baseUrl,
+        GROK_WEB_TUNNEL_API_KEY: "secret-cookie-like-token",
+      },
+    });
+    const lines = parseJsonLines(result);
+    assert.equal(result.status, 1);
+    assert.equal(lines.length, 1);
+    const [record] = lines;
+    assert.equal(record.status, "failed");
+    assert.equal(record.error_code, "grok_session_no_runtime_tokens");
+    assert.equal(record.external_review.source_content_transmission, "not_sent");
+    assert.match(record.suggested_action, /no active runtime session tokens/i);
+    assert.doesNotMatch(result.stdout, /external_review_launched|secret-cookie-like-token/);
+  }, { autoPreflight: false });
+  assert.deepEqual(requests.map((request) => [request.method, request.url, request.preflight]), [
+    ["POST", "/api/chat/completions", true],
+    ["GET", "/admin/api/tokens", false],
+  ]);
+  assert.equal(requests[0].prompt, "Return exactly: ok");
+  assert.doesNotMatch(requests[0].prompt, /review\.js|BEGIN GROK FILE|export const value/);
 });
 
 test("custom-review rejects oversized selected files before contacting the tunnel", () => {

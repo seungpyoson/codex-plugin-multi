@@ -1327,7 +1327,7 @@ test("gemini review foreground: omits native Gemini sandbox inside Codex sandbox
     assert.equal(record.review_metadata.raw_output.parsed_ok, true);
     assert.match(record.review_metadata.audit_manifest.rendered_prompt_hash.value, /^[a-f0-9]{64}$/);
     assert.equal(record.review_metadata.audit_manifest.request.model, record.model);
-    assert.equal(record.review_metadata.audit_manifest.request.timeout_ms, 600000);
+    assert.equal(record.review_metadata.audit_manifest.request.timeout_ms, 900000);
     assert.match(record.review_metadata.audit_manifest.prompt_builder.plugin_commit, /^[a-f0-9]{40}$/);
     assert.notEqual(
       record.review_metadata.audit_manifest.prompt_builder.plugin_commit,
@@ -2007,6 +2007,63 @@ test("gemini ping api_key auth fails before target spawn when no provider key is
   }
 });
 
+test("gemini ping classifies Codex sandbox denial for Gemini state as sandbox_blocked", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "gemini-ping-sandbox-blocked-cwd-"));
+  const binDir = mkdtempSync(path.join(tmpdir(), "gemini-ping-sandbox-blocked-bin-"));
+  const binary = path.join(binDir, "gemini-sandbox-blocked");
+  writeFileSync(binary, `#!/usr/bin/env node
+process.stderr.write("PermissionError: [Errno 1] Operation not permitted: '/Users/test/.gemini/settings.json'\\n");
+process.exit(1);
+`, "utf8");
+  chmodSync(binary, 0o755);
+  const { stdout, status, dataDir } = runCompanion(
+    ["ping", "--binary", binary, "--model", "gemini-3-flash-preview"],
+    { cwd, env: { CODEX_SANDBOX: "seatbelt", GEMINI_API_KEY: "", GOOGLE_API_KEY: "" } },
+  );
+  try {
+    assert.equal(status, 2);
+    const parsed = JSON.parse(stdout);
+    assert.equal(parsed.status, "sandbox_blocked");
+    assert.equal(parsed.ready, false);
+    assert.match(parsed.summary, /sandbox/i);
+    assert.match(parsed.next_action, /~\/\.gemini|writable_roots/);
+    assert.match(parsed.detail, /\.gemini\/settings\.json/);
+  } finally {
+    rmTree(dataDir);
+    rmTree(cwd);
+    rmTree(binDir);
+  }
+});
+
+test("gemini ping default timeout allows slow OAuth startup", { timeout: 25000 }, () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "gemini-ping-slow-cwd-"));
+  const binDir = mkdtempSync(path.join(tmpdir(), "gemini-ping-slow-bin-"));
+  const binary = path.join(binDir, "gemini-slow-ok");
+  writeFileSync(binary, `#!/usr/bin/env node
+setTimeout(() => {
+  process.stdout.write(JSON.stringify({
+    session_id: "${GEMINI_SESSION_ID}",
+    response: "ready after slow OAuth startup"
+  }) + "\\n");
+}, 16000);
+`, "utf8");
+  chmodSync(binary, 0o755);
+  const { stdout, stderr, status, dataDir } = runCompanion(
+    ["ping", "--binary", binary, "--model", "gemini-3-flash-preview"],
+    { cwd, env: { GEMINI_API_KEY: "", GOOGLE_API_KEY: "" } },
+  );
+  try {
+    assert.equal(status, 0, `exit ${status}: ${stderr || stdout}`);
+    const parsed = JSON.parse(stdout);
+    assert.equal(parsed.status, "ok");
+    assert.equal(parsed.ready, true);
+  } finally {
+    rmTree(dataDir);
+    rmTree(cwd);
+    rmTree(binDir);
+  }
+});
+
 test("gemini ping succeeds without --model and forbids tool exploration in the prompt", () => {
   const cwd = mkdtempSync(path.join(tmpdir(), "gemini-ping-default-cwd-"));
   const { stdout, stderr, status, dataDir } = runCompanion(
@@ -2045,6 +2102,42 @@ test("gemini ping reports native capacity exhaustion without silent fallback", (
   } finally {
     rmTree(dataDir);
     rmTree(cwd);
+  }
+});
+
+test("gemini run sandbox denial fails closed before review launch", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "gemini-run-sandbox-blocked-cwd-"));
+  seedMinimalRepo(cwd);
+  const binDir = mkdtempSync(path.join(tmpdir(), "gemini-run-sandbox-blocked-bin-"));
+  const binary = path.join(binDir, "gemini-sandbox-blocked");
+  writeFileSync(binary, `#!/usr/bin/env node
+process.stderr.write("PermissionError: [Errno 1] Operation not permitted: '/Users/test/.gemini/oauth.json'\\n");
+process.exit(1);
+`, "utf8");
+  chmodSync(binary, 0o755);
+  const { stdout, status, dataDir } = runCompanion(
+    ["run", "--mode=review", "--foreground", "--lifecycle-events", "jsonl", "--binary", binary,
+     "--model", "gemini-3-flash-preview", "--cwd", cwd, "--", "review this change"],
+    { cwd, env: { CODEX_SANDBOX: "seatbelt", GEMINI_API_KEY: "", GOOGLE_API_KEY: "" } },
+  );
+  try {
+    assert.equal(status, 2);
+    const lines = stdout.trim().split("\n").map((line) => JSON.parse(line));
+    assert.equal(lines.length, 1, "sandbox preflight must not emit external_review_launched");
+    const [record] = lines;
+    assert.equal(record.status, "failed");
+    assert.equal(record.error_code, "sandbox_blocked");
+    assert.match(record.error_summary, /sandbox/i);
+    assert.match(record.suggested_action, /~\/\.gemini|writable_roots/);
+    assert.equal(record.pid_info, null);
+    assert.equal(record.external_review.source_content_transmission, "not_sent");
+    assert.match(record.external_review.disclosure, /not sent/);
+    assert.equal(record.review_metadata.audit_manifest.error_code, "sandbox_blocked");
+    assert.equal(record.review_metadata.audit_manifest.review_quality.failed_review_slot, false);
+  } finally {
+    rmTree(dataDir);
+    rmTree(cwd);
+    rmTree(binDir);
   }
 });
 

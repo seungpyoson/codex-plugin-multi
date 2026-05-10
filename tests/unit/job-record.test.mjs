@@ -69,6 +69,14 @@ function notSentSpawnFailed(provider) {
   return `Selected source content was not sent to ${provider}; the target process was not spawned.`;
 }
 
+function notSentAuthFailed(provider) {
+  return `Selected source content was not sent to ${provider}; auth readiness failed before the review target was started.`;
+}
+
+function notSentSandboxBlocked(provider) {
+  return `Selected source content was not sent to ${provider}; sandbox access was blocked before the review target was started.`;
+}
+
 test("JobRecord schema_version is bumped for delegated review metadata and runtime diagnostics", () => {
   assert.equal(SCHEMA_VERSION, 10);
   assert.equal(GEMINI_SCHEMA_VERSION, 10);
@@ -1181,6 +1189,83 @@ test("buildJobRecord: spawn_failed path (execution threw before claude)", () => 
   assert.equal(rec.result, null);
   assert.equal(rec.external_review.source_content_transmission, "not_sent");
   assert.equal(rec.external_review.disclosure, notSentSpawnFailed("Claude Code"));
+});
+
+test("buildJobRecord: preflight auth and sandbox failures are actionable and not sent", () => {
+  const cases = [
+    {
+      message: "not_authed: claude login missing",
+      errorCode: "not_authed",
+      summary: /not logged in/i,
+      suggestedAction: /claude auth login/,
+      disclosure: notSentAuthFailed("Claude Code"),
+    },
+    {
+      message: "sandbox_blocked: operation not permitted: /Users/example/.claude.json",
+      errorCode: "sandbox_blocked",
+      summary: /sandbox access/i,
+      suggestedAction: /writable_roots/,
+      disclosure: notSentSandboxBlocked("Claude Code"),
+    },
+  ];
+
+  for (const entry of cases) {
+    const rec = buildJobRecord(makeInvocation(), {
+      exitCode: null,
+      parsed: null,
+      pidInfo: null,
+      claudeSessionId: null,
+      errorMessage: entry.message,
+    }, []);
+
+    assert.equal(rec.status, "failed");
+    assert.equal(rec.error_code, entry.errorCode);
+    assert.match(rec.error_summary, entry.summary);
+    assert.match(rec.suggested_action, entry.suggestedAction);
+    assert.equal(rec.external_review.source_content_transmission, "not_sent");
+    assert.equal(rec.external_review.disclosure, entry.disclosure);
+  }
+});
+
+test("gemini buildJobRecord: preflight auth and sandbox failures are actionable and not sent", () => {
+  const invocation = makeInvocation({
+    target: "gemini",
+    model: "gemini-3-flash-preview",
+    binary: "gemini",
+  });
+  const cases = [
+    {
+      message: "not_authed: gemini login missing",
+      errorCode: "not_authed",
+      summary: /not logged in/i,
+      suggestedAction: /gemini/i,
+      disclosure: notSentAuthFailed("Gemini CLI"),
+    },
+    {
+      message: "sandbox_blocked: operation not permitted: /Users/example/.gemini/settings.json",
+      errorCode: "sandbox_blocked",
+      summary: /sandbox access/i,
+      suggestedAction: /writable_roots/,
+      disclosure: notSentSandboxBlocked("Gemini CLI"),
+    },
+  ];
+
+  for (const entry of cases) {
+    const rec = buildGeminiJobRecord(invocation, {
+      exitCode: null,
+      parsed: null,
+      pidInfo: null,
+      geminiSessionId: null,
+      errorMessage: entry.message,
+    }, []);
+
+    assert.equal(rec.status, "failed");
+    assert.equal(rec.error_code, entry.errorCode);
+    assert.match(rec.error_summary, entry.summary);
+    assert.match(rec.suggested_action, entry.suggestedAction);
+    assert.equal(rec.external_review.source_content_transmission, "not_sent");
+    assert.equal(rec.external_review.disclosure, entry.disclosure);
+  }
 });
 
 test("buildJobRecord: Git binary policy errors are distinct from spawn failures", () => {

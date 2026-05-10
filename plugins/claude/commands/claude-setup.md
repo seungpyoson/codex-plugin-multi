@@ -17,6 +17,9 @@ Setup readiness check for the Claude plugin.
    - If `status: "oauth_inference_rejected"`, explain that OAuth status is
      present but non-interactive `claude -p` inference failed; this is a failed
      review slot, not a model verdict.
+   - If `status: "sandbox_blocked"`, show `next_action` exactly and explain
+     that `~/.claude` must be in Codex `writable_roots`; the user must start a
+     fresh Codex session after changing sandbox roots.
    - If `ignored_env_credentials` is present, explain that those env vars were intentionally ignored by plugin policy; never print values.
 3. Print a smoke-test hint: ask Codex to use the Claude delegation skill for a
    read-only review.

@@ -141,6 +141,7 @@ export async function spawnGemini(profile, runtimeInputs = {}) {
 
   const args = buildGeminiArgs(profile, { model, policyPath, includeDirPath, resumeId, env });
   const targetEnv = sanitizeTargetEnv(env, { allowedApiKeyEnv });
+  targetEnv.GEMINI_CLI_NO_RELAUNCH = "true";
 
   return new Promise((resolve, reject) => {
     const child = spawn(binary, args, { cwd, env: targetEnv, stdio: ["pipe", "pipe", "pipe"] });

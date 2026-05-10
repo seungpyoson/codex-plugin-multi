@@ -16,6 +16,6 @@ node "<plugin-root>/scripts/gemini-companion.mjs" run --mode=review --foreground
 
 If the user provides a base ref, add `--scope-base REF` before `--`.
 If the user provides a review timeout, add `--timeout-ms MS` before `--`.
-The review default is 600000 ms; `GEMINI_REVIEW_TIMEOUT_MS` is the non-interactive fallback.
+The review default is 900000 ms; `GEMINI_REVIEW_TIMEOUT_MS` is the non-interactive fallback.
 
 Render the returned JobRecord, render `external_review_launched` as soon as it appears, then render `external_review` before normal prose when present, and surface `mutations`. Do not claim `/gemini-review` is available in Codex builds that do not register plugin command files.

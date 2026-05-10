@@ -22,10 +22,12 @@ const DEFAULT_BASE_URL = "http://127.0.0.1:8000/v1";
 const DEFAULT_GROK2API_BASE_URL = "http://127.0.0.1:8000";
 const DEFAULT_GROK2API_ADMIN_KEY = "grok2api";
 const DEFAULT_MODEL = "grok-4.20-fast";
-const DEFAULT_TIMEOUT_MS = 600000;
+const DEFAULT_TIMEOUT_MS = 900000;
 const DEFAULT_DOCTOR_TIMEOUT_MS = 2000;
 const DEFAULT_CHAT_DOCTOR_TIMEOUT_MS = 10000;
 const DEFAULT_MAX_PROMPT_CHARS = 400000;
+const REVIEW_READINESS_PREFLIGHT_HEADER = "x-codex-grok-readiness-preflight";
+const REVIEW_READINESS_PREFLIGHT_PROMPT = "Return exactly: ok";
 const MAX_SCOPE_FILE_BYTES = 256 * 1024;
 const MAX_SCOPE_TOTAL_BYTES = 1024 * 1024;
 const GIT_SHOW_MAX_BUFFER_BYTES = 16 * 1024 * 1024;
@@ -1038,19 +1040,21 @@ async function probeGrokTunnel(cfg, env = process.env) {
   }
 }
 
-async function probeGrokChat(cfg, env = process.env) {
+async function probeGrokChat(cfg, env = process.env, options = {}) {
   const endpoint = `${cfg.base_url}/chat/completions`;
-  const headers = { "content-type": "application/json" };
+  const headers = { "content-type": "application/json", ...(options.headers ?? {}) };
   if (cfg.credential_value) headers.authorization = `Bearer ${cfg.credential_value}`;
   const redact = redactor(env);
+  const prompt = options.prompt ?? REVIEW_READINESS_PREFLIGHT_PROMPT;
   const requestBody = {
     model: cfg.model,
     stream: false,
-    messages: [{ role: "user", content: "Return exactly: ok" }],
+    messages: [{ role: "user", content: prompt }],
     temperature: 0,
   };
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), cfg.chat_doctor_timeout_ms);
+  const timeoutMs = options.timeout_ms ?? cfg.chat_doctor_timeout_ms;
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
     const response = await fetch(endpoint, {
       method: "POST",
@@ -1088,6 +1092,47 @@ async function probeGrokChat(cfg, env = process.env) {
   } finally {
     clearTimeout(timer);
   }
+}
+
+async function grokReviewReadinessPreflight(cfg, env = process.env) {
+  const chatProbe = await probeGrokChat(cfg, env, {
+    headers: { [REVIEW_READINESS_PREFLIGHT_HEADER]: "1" },
+  });
+  if (chatProbe.chat_ready === true) return null;
+
+  const sessionDiagnostics = await probeGrokSessionDiagnostics(cfg, env);
+  const sessionErrorCode = sessionDiagnostics.status === "checked" ? sessionDiagnostics.error_code : null;
+  const sessionErrorMessage = sessionDiagnostics.status === "checked" ? sessionDiagnostics.error_message : null;
+  const errorCode = sessionErrorCode ?? chatProbe.error_code ?? "tunnel_error";
+  const execution = providerFailureWithDiagnostic(
+    errorCode,
+    sessionErrorMessage ?? chatProbe.error_message ?? errorCode,
+    chatProbe.http_status,
+    null,
+    false,
+    {
+      preflight: true,
+      configured_timeout_ms: cfg.chat_doctor_timeout_ms,
+      endpoint_class: "chat_completions_preflight",
+      model: cfg.model,
+      stream: false,
+      message_count: 1,
+      prompt_chars: REVIEW_READINESS_PREFLIGHT_PROMPT.length,
+      max_tokens: null,
+      temperature: 0,
+      cost_quota: {
+        classification: errorCode === "usage_limited" ? "usage_limited" : "not_reported",
+        http_status: chatProbe.http_status ?? null,
+        provider_error_code: null,
+        provider_error_type: null,
+        billing_mutation: "not_attempted",
+      },
+      session_diagnostics: sessionDiagnostics,
+    },
+  );
+  execution.credential_ref = cfg.credential_ref;
+  execution.endpoint = cfg.base_url;
+  return execution;
 }
 
 function sourceTransmission(completed, payloadSent) {
@@ -1765,7 +1810,8 @@ async function cmdRun(options) {
       execution = providerFailure(e.message.startsWith("bad_args:") ? "bad_args" : "scope_failed", redactor()(e.message), null, null, false);
     }
     if (!execution) try {
-      if (lifecycleEvents) {
+      execution = await grokReviewReadinessPreflight(cfg);
+      if (!execution && lifecycleEvents) {
         printLifecycleJson({
           event: "external_review_launched",
           job_id: jobId,
@@ -1774,7 +1820,7 @@ async function cmdRun(options) {
           external_review: buildLaunchExternalReview({ cfg, mode, options: runOptions, scopeInfo }),
         }, lifecycleEvents);
       }
-      execution = await callGrokTunnel(cfg, prompt);
+      if (!execution) execution = await callGrokTunnel(cfg, prompt);
       execution.prompt = prompt;
     } catch (e) {
       execution = providerFailureWithDiagnostic(

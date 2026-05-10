@@ -80,7 +80,7 @@
       "request": {
         "provider": "Claude Code",
         "model": "claude-opus-4-7",
-        "timeout_ms": 600000,
+        "timeout_ms": 900000,
         "max_tokens": null,
         "max_steps_per_turn": null,
         "temperature": null,

@@ -146,6 +146,10 @@ export function externalReviewForInvocation(invocation, execution = null) {
  *   git_binary_rejected — CODEX_PLUGIN_MULTI_GIT_BINARY policy rejected an override.
  *   scope_failed    — execution.errorMessage describes scope preparation refusal.
  *   spawn_failed    — execution.errorMessage set (spawn threw before Kimi ran).
+ *   not_authed      — same-process auth/readiness preflight found no usable
+ *                     Kimi login before selected source was sent.
+ *   sandbox_blocked — same-process readiness preflight found Codex sandbox
+ *                     denying access to Kimi state before selected source was sent.
  *   finalization_failed — errorMessage starts "finalization_failed:" — the
  *                         companion's executeRun fallback path (#16 follow-up 1).
  *                         Distinguished from spawn_failed so monitoring/automation
@@ -163,8 +167,10 @@ export function externalReviewForInvocation(invocation, execution = null) {
  */
 const CANCEL_SIGNALS = new Set(["SIGTERM", "SIGKILL", "SIGINT", "SIGHUP"]);
 const FINALIZATION_FAILED_PREFIX = "finalization_failed:";
+const NOT_AUTHED_PREFIX = "not_authed:";
+const SANDBOX_BLOCKED_PREFIX = "sandbox_blocked:";
 
-function classifyExecution(execution) {
+export function classifyExecution(execution) {
   if (!execution) {
     return {
       status: "queued",
@@ -198,6 +204,20 @@ function classifyExecution(execution) {
     };
   }
   if (execution.errorMessage) {
+    if (String(execution.errorMessage).startsWith(NOT_AUTHED_PREFIX)) {
+      return {
+        status: "failed",
+        error_code: "not_authed",
+        error_message: String(execution.errorMessage).slice(NOT_AUTHED_PREFIX.length).trim(),
+      };
+    }
+    if (String(execution.errorMessage).startsWith(SANDBOX_BLOCKED_PREFIX)) {
+      return {
+        status: "failed",
+        error_code: "sandbox_blocked",
+        error_message: String(execution.errorMessage).slice(SANDBOX_BLOCKED_PREFIX.length).trim(),
+      };
+    }
     if (isGitBinaryPolicyError(new Error(execution.errorMessage))) {
       return {
         status: "failed",
@@ -346,6 +366,26 @@ function buildErrorDiagnostic(invocation, status, error_code, error_message) {
       suggested_action:
         `Wait for ${target.displayName} quota to recover, reduce reviewer concurrency, or run ` +
         `\`${target.binaryName}\` interactively to inspect account usage. Track tier or credit changes separately from this review run.`,
+      disclosure_note: null,
+    };
+  }
+  if (status === "failed" && error_code === "not_authed") {
+    return {
+      error_summary: `${target.displayName} Code CLI is not logged in for this Codex session.`,
+      error_cause:
+        `The companion checked ${target.displayName} readiness in the same process before launching the review target, and the CLI did not report a usable login.`,
+      suggested_action:
+        `Run \`${target.binaryName} login\` in a normal terminal, rerun /kimi-setup, then retry the review.`,
+      disclosure_note: null,
+    };
+  }
+  if (status === "failed" && error_code === "sandbox_blocked") {
+    return {
+      error_summary: `${target.displayName} Code CLI is blocked by Codex sandbox access to Kimi state.`,
+      error_cause:
+        "The companion ran a same-process readiness preflight before sending selected source, and Kimi could not read or write its ~/.kimi state/log files from this Codex sandbox.",
+      suggested_action:
+        "Add ~/.kimi/logs to [sandbox_workspace_write].writable_roots in ~/.codex/config.toml, keep KIMI_SHARE_DIR unset, start a fresh Codex session, and rerun /kimi-setup. If the next denial is another ~/.kimi auth/config path, use ~/.kimi as the writable root.",
       disclosure_note: null,
     };
   }

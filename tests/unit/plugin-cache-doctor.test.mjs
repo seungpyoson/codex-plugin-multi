@@ -102,6 +102,35 @@ test("codex plugin cache doctor reports stale runtime files even when skill name
   assert.deepEqual(profile.changed_files, ["scripts/grok-web-reviewer.mjs"]);
 });
 
+test("codex plugin cache doctor flags repo changes even when marketplace cache is in sync", () => {
+  const repo = mkdtempSync(path.join(tmpdir(), "plugin-cache-doctor-dirty-repo-"));
+  const primary = mkdtempSync(path.join(tmpdir(), "plugin-cache-doctor-dirty-home-"));
+  const marketplace = path.join(primary, ".tmp", "marketplaces", "codex-plugin-multi", "plugins");
+
+  writeSkill(path.join(repo, "plugins"), "api-reviewers", "deepseek-setup");
+  writeSkill(marketplace, "api-reviewers", "deepseek-setup");
+  writeCachedSkill(primary, "api-reviewers", "deepseek-setup");
+  writePluginFile(path.join(repo, "plugins"), "api-reviewers", "scripts/api-reviewer.mjs", "export const version = 'repo-new';\n");
+  writePluginFile(marketplace, "api-reviewers", "scripts/api-reviewer.mjs", "export const version = 'marketplace-old';\n");
+  writeCachedPluginFile(primary, "api-reviewers", "scripts/api-reviewer.mjs", "export const version = 'marketplace-old';\n");
+  writeConfig(primary, "api-reviewers", true);
+
+  const stdout = execFileSync(process.execPath, [
+    DOCTOR,
+    "--repo", repo,
+    "--codex-home", primary,
+    "--plugin", "api-reviewers",
+  ], { encoding: "utf8" });
+  const report = JSON.parse(stdout);
+  const profile = report.profiles.primary;
+
+  assert.equal(report.ok, false);
+  assert.equal(profile.cache_in_sync, true);
+  assert.equal(profile.repo_cache_in_sync, false);
+  assert.deepEqual(profile.repo_changed_files, ["scripts/api-reviewer.mjs"]);
+  assert.match(report.next_actions.join("\n"), /repo working tree differs from installed plugin cache/i);
+});
+
 test("codex plugin cache doctor sorts file lists with explicit comparators", () => {
   const source = readFileSync(DOCTOR, "utf8");
 

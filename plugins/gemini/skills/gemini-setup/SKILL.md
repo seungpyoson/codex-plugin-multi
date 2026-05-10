@@ -14,4 +14,4 @@ Use the Gemini companion setup workflow. Current Codex builds expose it as `gemi
 node "<plugin-root>/scripts/gemini-companion.mjs" doctor
 ```
 
-Show `summary`, `ready`, `next_action`, and any model fallback diagnostics. Never print secret values.
+Show `summary`, `ready`, `next_action`, and any model fallback diagnostics. If `status` is `sandbox_blocked`, report that `~/.gemini` must be added to Codex `writable_roots` and a fresh Codex session is required. Never print secret values.

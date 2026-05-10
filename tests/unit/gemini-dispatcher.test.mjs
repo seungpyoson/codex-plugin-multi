@@ -402,6 +402,10 @@ if (process.env.PATH !== ${JSON.stringify(process.env.PATH ?? "")} || process.en
   process.stderr.write("PATH/HOME must pass through unchanged\\n");
   process.exit(44);
 }
+if (process.env.GEMINI_CLI_NO_RELAUNCH !== "true") {
+  process.stderr.write("Gemini relaunch guard must be forced for supervised companion runs\\n");
+  process.exit(46);
+}
 process.stdin.resume();
 process.stdout.write(JSON.stringify({
   session_id: "22222222-3333-4444-9555-666666666666",
@@ -464,6 +468,9 @@ process.stdout.write(JSON.stringify({
         // these to reach the public internet at all (#16 follow-up 7).
         HTTPS_PROXY: "http://corp-proxy.invalid:3128",
         NO_PROXY: "localhost,.internal",
+        // The companion must override stale parent values so it supervises
+        // the real Gemini process instead of Gemini's relauncher.
+        GEMINI_CLI_NO_RELAUNCH: "0",
       },
     });
 

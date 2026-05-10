@@ -16,7 +16,7 @@ Run:
 node "<plugin-root>/scripts/gemini-companion.mjs" run --mode=review --foreground --lifecycle-events jsonl -- "<focus text>"
 ```
 
-Review timeout defaults to 600000 ms. Use `--timeout-ms <ms>` or `GEMINI_REVIEW_TIMEOUT_MS`; the effective value is persisted in `review_metadata.audit_manifest.request.timeout_ms`.
+Review timeout defaults to 900000 ms. Use `--timeout-ms <ms>` or `GEMINI_REVIEW_TIMEOUT_MS`; the effective value is persisted in `review_metadata.audit_manifest.request.timeout_ms`.
 
 For a pinned review bundle or selected files, first run `preflight`, then use
 `run --mode=custom-review --scope-paths <g1,g2,...>` and refer to files by

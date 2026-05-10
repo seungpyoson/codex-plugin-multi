@@ -315,7 +315,7 @@ test("foreground launch events use shared lifecycle renderer when opted in", () 
     const launch = source.indexOf('event: "external_review_launched"');
     assert.notEqual(launch, -1, `${rel} must emit foreground launch events when opted in`);
     const block = source.slice(Math.max(0, launch - 180), launch + 500);
-    assert.match(block, /if \(lifecycleEvents\) \{[\s\S]*printLifecycleJson\(\{/s,
+    assert.match(block, /if \((?:!execution && )?lifecycleEvents\) \{[\s\S]*printLifecycleJson\(\{/s,
       `${rel} must render opted-in foreground launch events through printLifecycleJson`);
   }
 });

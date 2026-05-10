@@ -153,6 +153,11 @@ export function externalReviewForInvocation(invocation, execution = null) {
  *                         with missing-binary errors. PR #21 review HIGH 1.
  *   parse_error     — parsed.ok === false with reason starting "json_parse"/"empty_stdout".
  *   timeout         — execution.timedOut === true (companion's wall-clock kill).
+ *   not_authed      — same-process auth/readiness preflight found no usable
+ *                     Gemini login before selected source was sent.
+ *   sandbox_blocked — same-process readiness preflight found Codex sandbox
+ *                     could not access Gemini state before selected source
+ *                     was sent.
  *   gemini_error    — exitCode !== 0 with parseable JSON from Gemini.
  *                     Also covers exitCode === 0 but parsed.ok === false with
  *                     is_error semantics.
@@ -161,8 +166,10 @@ export function externalReviewForInvocation(invocation, execution = null) {
  */
 const CANCEL_SIGNALS = new Set(["SIGTERM", "SIGKILL", "SIGINT", "SIGHUP"]);
 const FINALIZATION_FAILED_PREFIX = "finalization_failed:";
+const NOT_AUTHED_PREFIX = "not_authed:";
+const SANDBOX_BLOCKED_PREFIX = "sandbox_blocked:";
 
-function classifyExecution(execution) {
+export function classifyExecution(execution) {
   if (!execution) {
     return {
       status: "queued",
@@ -196,6 +203,21 @@ function classifyExecution(execution) {
     };
   }
   if (execution.errorMessage) {
+    const messageText = String(execution.errorMessage);
+    if (messageText.startsWith(NOT_AUTHED_PREFIX)) {
+      return {
+        status: "failed",
+        error_code: "not_authed",
+        error_message: messageText.slice(NOT_AUTHED_PREFIX.length).trim(),
+      };
+    }
+    if (messageText.startsWith(SANDBOX_BLOCKED_PREFIX)) {
+      return {
+        status: "failed",
+        error_code: "sandbox_blocked",
+        error_message: messageText.slice(SANDBOX_BLOCKED_PREFIX.length).trim(),
+      };
+    }
     if (isGitBinaryPolicyError(new Error(execution.errorMessage))) {
       return {
         status: "failed",
@@ -214,7 +236,7 @@ function classifyExecution(execution) {
     // spawn_failed (target never ran). The companion's executeRun fallback
     // synthesizes the former with a fixed prefix; everything else is a true
     // pre-spawn failure. PR #21 review HIGH 1.
-    const isFinalization = String(execution.errorMessage).startsWith(FINALIZATION_FAILED_PREFIX);
+    const isFinalization = messageText.startsWith(FINALIZATION_FAILED_PREFIX);
     return {
       status: "failed",
       error_code: isFinalization ? "finalization_failed" : "spawn_failed",
@@ -326,6 +348,26 @@ function buildErrorDiagnostic(invocation, status, error_code, error_message) {
         "Common causes are NOT REVIEWED output, permission/read denial, or shallow output.",
       suggested_action:
         "Treat this slot as failed, inspect runtime diagnostics and the raw result, then retry with a source packet the reviewer can inspect.",
+      disclosure_note: null,
+    };
+  }
+  if (status === "failed" && error_code === "not_authed") {
+    return {
+      error_summary: "Gemini CLI is not logged in for this Codex session.",
+      error_cause:
+        "The companion checked Gemini subscription/OAuth readiness in the same process before launching the review target, and Gemini did not report a usable login.",
+      suggested_action:
+        "Run `gemini` in a normal terminal, complete /auth if prompted, rerun /gemini-setup, then retry the review.",
+      disclosure_note: null,
+    };
+  }
+  if (status === "failed" && error_code === "sandbox_blocked") {
+    return {
+      error_summary: "Gemini CLI is blocked by Codex sandbox access to Gemini state.",
+      error_cause:
+        "The companion ran a same-process readiness preflight before sending selected source, and Gemini could not read or write its ~/.gemini state files from this Codex sandbox.",
+      suggested_action:
+        "Add ~/.gemini to [sandbox_workspace_write].writable_roots in ~/.codex/config.toml, start a fresh Codex session, rerun /gemini-setup, then retry the review.",
       disclosure_note: null,
     };
   }
