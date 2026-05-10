@@ -24,7 +24,7 @@ function packet1Findings(output) {
     /user\.plan\s*=\s*["']pro["']/i.test(output)
     || (
       /\b(hasDiscount|user\.plan|plan)\b/i.test(squashed)
-      && /\b(assign|assignment|mutate|mutates|mutation|invalid[- ]?lhs|syntaxerror|comparison|===)\b/i.test(squashed)
+      && /\b(assign|assignment|mutate|mutates|mutation|invalid[- ]?lhs|syntaxerror)\b/i.test(squashed)
     )
   );
   return [
@@ -120,7 +120,7 @@ function blockingSectionSaysClean(body) {
 
 function cleanPacketFalsePositive(output) {
   const squashed = compact(output);
-  if (/verdict\s*:\s*request changes/i.test(squashed)) return true;
+  if (/verdict\s*:\s*(?:request changes|reject(?:ed)?|fail)\b/i.test(squashed)) return true;
   const body = blockingSectionBody(output);
   if (body === null) return false;
   if (blockingSectionSaysClean(body)) return false;

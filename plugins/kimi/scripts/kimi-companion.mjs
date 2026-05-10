@@ -223,7 +223,7 @@ function reviewAuditManifest(invocation, prompt, containmentPath, execution) {
 }
 
 function scopedTargetPromptForOrExit(invocation, profile, userPrompt, lifecycleEvents) {
-  if (!invocation.review_prompt_contract_version || profile.permission_mode !== "plan") {
+  if (!invocation.review_prompt_contract_version || invocation.mode_profile_name === "rescue") {
     return targetPromptFor(profile, userPrompt, invocation);
   }
   const { job_id: jobId, cwd, workspace_root: workspaceRoot } = invocation;

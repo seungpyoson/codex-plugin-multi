@@ -45,12 +45,19 @@ function extractField(body, name) {
   return body.match(pattern)?.[1]?.trim() ?? "";
 }
 
+function normalizeVerdict(value) {
+  const verdict = String(value ?? "").trim().toUpperCase();
+  if (verdict === "PASS") return "APPROVE";
+  if (verdict === "FAIL") return "REQUEST CHANGES";
+  return verdict;
+}
+
 function parseManualReviewEvidence(item) {
   const body = String(item?.body ?? "");
   if (!body.includes(MANUAL_REVIEW_MARKER)) return null;
   const reviewer = normalizeReviewer(extractField(body, "Reviewer"));
   if (!reviewer) return null;
-  const verdict = extractField(body, "Verdict").toUpperCase();
+  const verdict = normalizeVerdict(extractField(body, "Verdict"));
   return {
     reviewer,
     verdict,
@@ -115,6 +122,7 @@ export function evidenceItemsFromGithubRecords({ comments = [], reviews = [] } =
     ...comments.map((comment) => ({
       author: comment?.user?.login ?? null,
       body: String(comment?.body ?? ""),
+      createdAt: comment?.created_at ?? null,
       source: "issue_comment",
       url: comment?.html_url ?? null,
     })),
@@ -123,10 +131,17 @@ export function evidenceItemsFromGithubRecords({ comments = [], reviews = [] } =
       .map((review) => ({
         author: review?.user?.login ?? null,
         body: String(review?.body ?? ""),
+        createdAt: review?.submitted_at ?? null,
         source: "pull_request_review",
         url: review?.html_url ?? null,
       })),
-  ];
+  ].sort((left, right) => {
+    const leftTime = Date.parse(left.createdAt ?? "");
+    const rightTime = Date.parse(right.createdAt ?? "");
+    const leftOrder = Number.isNaN(leftTime) ? 0 : leftTime;
+    const rightOrder = Number.isNaN(rightTime) ? 0 : rightTime;
+    return leftOrder - rightOrder;
+  });
 }
 
 export function githubEventContext(event) {

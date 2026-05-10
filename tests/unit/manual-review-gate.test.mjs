@@ -125,6 +125,42 @@ test("manual review gate rejects stale-head and request-changes evidence", () =>
   assert.deepEqual(result.missingReviewers, ["claude", "deepseek", "glm", "kimi"]);
 });
 
+test("manual review gate treats PASS and FAIL relay verdicts as exact-head approval and blocking evidence", () => {
+  const pass = evaluateManualReviewEvidence({
+    headSha: HEAD,
+    items: [
+      evidence("operator", `
+        <!-- codex-plugin-multi:manual-external-adversarial-review -->
+        Head: ${HEAD}
+        Reviewer: Claude
+        Verdict: PASS
+      `),
+    ],
+    requirements: { requiredReviewers: ["claude"] },
+  });
+
+  assert.equal(pass.ok, true);
+  assert.deepEqual(pass.approvedReviewers, ["claude"]);
+  assert.deepEqual(pass.missingReviewers, []);
+
+  const fail = evaluateManualReviewEvidence({
+    headSha: HEAD,
+    items: [
+      evidence("operator", `
+        <!-- codex-plugin-multi:manual-external-adversarial-review -->
+        Head: ${HEAD}
+        Reviewer: Claude
+        Verdict: FAIL
+      `),
+    ],
+    requirements: { requiredReviewers: ["claude"] },
+  });
+
+  assert.equal(fail.ok, false);
+  assert.deepEqual(fail.blockingReviewers, ["claude"]);
+  assert.deepEqual(fail.missingReviewers, []);
+});
+
 test("manual review gate rejects all-stale required evidence", () => {
   const result = evaluateManualReviewEvidence({
     headSha: HEAD,
@@ -232,16 +268,49 @@ test("manual review gate converts GitHub comments and reviews into evidence item
     {
       author: "spson",
       body: `<!-- codex-plugin-multi:manual-external-adversarial-review -->\nHead: ${HEAD}\nReviewer: Claude\nVerdict: APPROVE`,
+      createdAt: null,
       source: "issue_comment",
       url: "https://github.test/comment/1",
     },
     {
       author: "gemini-code-assist",
       body: `<!-- codex-plugin-multi:manual-external-adversarial-review -->\nHead: ${HEAD}\nReviewer: Gemini\nVerdict: APPROVE`,
+      createdAt: null,
       source: "pull_request_review",
       url: "https://github.test/review/1",
     },
   ]);
+});
+
+test("manual review gate orders mixed GitHub comments and PR reviews chronologically before applying latest evidence", () => {
+  const items = evidenceItemsFromGithubRecords({
+    comments: [{
+      body: `<!-- codex-plugin-multi:manual-external-adversarial-review -->\nHead: ${HEAD}\nReviewer: Claude\nVerdict: APPROVE`,
+      created_at: "2026-05-10T10:00:00Z",
+      html_url: "https://github.test/comment/latest",
+      user: { login: "spson" },
+    }],
+    reviews: [{
+      body: `<!-- codex-plugin-multi:manual-external-adversarial-review -->\nHead: ${HEAD}\nReviewer: Claude\nVerdict: REQUEST CHANGES`,
+      html_url: "https://github.test/review/earlier",
+      submitted_at: "2026-05-10T09:00:00Z",
+      user: { login: "claude-relay" },
+      state: "CHANGES_REQUESTED",
+    }],
+  });
+  const result = evaluateManualReviewEvidence({
+    headSha: HEAD,
+    items,
+    requirements: { requiredReviewers: ["claude"] },
+  });
+
+  assert.deepEqual(items.map((item) => item.url), [
+    "https://github.test/review/earlier",
+    "https://github.test/comment/latest",
+  ]);
+  assert.equal(result.ok, true);
+  assert.deepEqual(result.approvedReviewers, ["claude"]);
+  assert.deepEqual(result.blockingReviewers, []);
 });
 
 test("manual review gate ignores dismissed GitHub PR review evidence", () => {
@@ -265,6 +334,7 @@ test("manual review gate ignores dismissed GitHub PR review evidence", () => {
   assert.deepEqual(items, [{
     author: "gemini-relay",
     body: `<!-- codex-plugin-multi:manual-external-adversarial-review -->\nHead: ${HEAD}\nReviewer: Gemini\nVerdict: APPROVE`,
+    createdAt: null,
     source: "pull_request_review",
     url: "https://github.test/review/current",
   }]);

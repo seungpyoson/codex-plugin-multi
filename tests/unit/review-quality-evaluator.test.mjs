@@ -153,6 +153,22 @@ None.
   assert.equal(falsePositive.expected_findings_found, false);
 });
 
+test("seeded evaluator treats explicit reject and fail verdicts as clean-packet false positives", () => {
+  for (const verdict of ["REJECT", "REJECTED", "FAIL"]) {
+    const result = evaluateSeededReviewPacket({
+      packet: "packet3_clean",
+      output: `
+1. Verdict: ${verdict}
+2. Blocking findings
+None.
+`,
+    });
+
+    assert.equal(result.false_positive, true, verdict);
+    assert.equal(result.expected_findings_found, false, verdict);
+  }
+});
+
 test("seeded evaluator accepts common clean-packet no-blocker phrasing", () => {
   const cleanSynonyms = [
     "- No significant issues.",
@@ -238,4 +254,19 @@ test("seeded evaluator requires both packet1 correctness blockers", () => {
 
   assert.equal(complete.expected_findings_found, true);
   assert.deepEqual(complete.missing_expected_findings, []);
+});
+
+test("seeded evaluator does not count quoting the expected equality operator as finding the packet1 assignment bug", () => {
+  const result = evaluateSeededReviewPacket({
+    packet: "packet1_correctness",
+    output: `
+1. Verdict: REQUEST CHANGES
+2. Blocking findings
+- total uses sum - item.price instead of adding item.price.
+- hasDiscount comparison should use user.plan === "pro" before applying the discount.
+`,
+  });
+
+  assert.equal(result.expected_findings_found, false);
+  assert.deepEqual(result.missing_expected_findings, ["has_discount_assignment"]);
 });

@@ -3,6 +3,15 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { resolve as resolvePath } from "node:path";
 
+test("kimi scoped review prompts use the same contract guard as claude and gemini", () => {
+  const source = readFileSync(resolvePath("plugins/kimi/scripts/kimi-companion.mjs"), "utf8");
+  const match = /function scopedTargetPromptForOrExit[\s\S]*?\n}\n\n\/\/ Mutation-detection/.exec(source);
+  assert.ok(match, "expected to find kimi scopedTargetPromptForOrExit");
+
+  assert.match(match[0], /invocation\.mode_profile_name\s*===\s*"rescue"/);
+  assert.doesNotMatch(match[0], /profile\.permission_mode\s*!==\s*"plan"/);
+});
+
 test("kimi scoped prompt preflight cleanup is unconditional and idempotent", () => {
   const source = readFileSync(resolvePath("plugins/kimi/scripts/kimi-companion.mjs"), "utf8");
   const match = /function scopedTargetPromptForOrExit[\s\S]*?\n}\n\n\/\/ Mutation-detection/.exec(source);
