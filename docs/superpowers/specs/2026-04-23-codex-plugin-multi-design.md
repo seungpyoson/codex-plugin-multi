@@ -898,7 +898,7 @@ ModeProfile {
 
 **Rule:** exactly one schema describes everything the companion durably persists about one invocation. The same schema is what `cmdResult` returns, what the `run --foreground` stdout prints (success path), and what the Claude result-handling skill and Gemini result command docs describe.
 
-**The schema (v8):**
+**The schema (v10):**
 
 ```
 JobRecord {
@@ -911,6 +911,7 @@ JobRecord {
   mode_profile_name, model, cwd, workspace_root
   isolation = { containment, scope, dispose }
   prompt_head               // first 200 chars — see §21.3.1 below
+  review_metadata?          // review contract/audit metadata — see §21.3.3 below
   schema_spec?              // --json-schema value if used
   binary                    // claude | gemini | <override>
 
@@ -928,7 +929,7 @@ JobRecord {
   cost_usd?, usage?
 
   // Bookkeeping — required
-  schema_version: 8
+  schema_version: 10
 }
 ```
 
@@ -960,6 +961,48 @@ If a later feature legitimately needs the original prompt text (e.g., reproducib
 
 **Why:** Finding #1/H1 (background result lost), #9 (full prompt persisted), and docs drift (H1) collapse to one problem: three different places hand-assemble three different shapes. One schema, one helper, no drift.
 
+#### 21.3.3 — Review-quality audit metadata
+
+Review and custom-review paths persist `review_metadata` with the review prompt
+contract version, provider label, raw-output metadata, and an
+`audit_manifest`. The `raw_output` object records safe runtime counters:
+`stdout_bytes`, `stderr_bytes`, `parsed_ok`, `result_chars`, and
+`elapsed_ms`. The audit manifest records safe metadata only: request settings,
+prompt/source hashes and counts, `selected_source` file paths with `bytes`,
+`lines`, and `content_hash`, scope resolution, provider IDs, truncation flags,
+and `review_quality`.
+
+`review_quality` is the post-transport gate that decides whether a technically
+successful reviewer response is usable. Its shape includes:
+
+- `has_verdict`: whether the output contained an approval/rejection style
+  verdict.
+- `has_blocking_section`: whether the output contained a blocking-findings
+  section matching the prompt contract.
+- `has_non_blocking_section`: whether the output contained a non-blocking
+  concerns section matching the prompt contract.
+- `checklist_items_seen`: count of explicit checklist status lines.
+- `looks_shallow`: true when the response is too thin for the prompt contract;
+  reviews under 500 characters fail this gate unless the selected-source packet
+  is tiny and the response still names or clearly inspects the selected file.
+- `semantic_failure_reasons`: zero or more of `not_reviewed`,
+  `permission_blocked`, `shallow_output`, and `missing_verdict`.
+- `failed_review_slot`: true when the process failed, returned a non-null
+  error code, or produced semantic failure reasons.
+
+The quality gate uses the audit manifest's `selected_source` metadata as part
+of the semantic check. A tiny review can only escape the `looks_shallow` flag
+when it names or clearly inspects at least one selected file path. Lines that
+deny inspection of the selected source, report permission/read denial, or say
+the selected files could not be accessed produce semantic failure reasons even
+when the transport returned HTTP 200 or the companion process exited 0.
+
+When a reviewer process exits successfully but `failed_review_slot` is true, the
+terminal `JobRecord` status is `failed` with
+`error_code: "review_not_completed"` and `error_cause: "review_quality"`.
+This preserves the raw `result` for diagnosis while refusing to count shallow,
+permission-blocked, or non-inspecting output as a completed review.
+
 ---
 
 ### 21.4 Containment and scope are orthogonal
@@ -985,6 +1028,16 @@ Git-derived scopes (`staged`, `branch-diff`, `head`) are **object-pure snapshots
 2. Populate it according to `scope` (or if `containment = none`, skip populate).
 3. Pass `--add-dir <containment-path>` to Claude.
 4. On completion, if `dispose`, remove the tempdir.
+
+**Scoped prompt pipeline for reviews:** review prompts embed the selected source
+content directly, bounded by explicit begin/end file delimiters, so the reviewer
+can inspect the exact files covered by `selected_source`. Claude, Gemini, and
+Kimi set up the scoped execution directory temporarily to build that prompt for
+both foreground and background review paths, then clean the temporary scope
+before launching the target reviewer process. This is separate from the target
+process containment lifecycle: the scoped prompt copy exists only long enough to
+construct the prompt, while target execution still follows the mode profile's
+containment and disposal rules.
 
 **Forbidden patterns:**
 

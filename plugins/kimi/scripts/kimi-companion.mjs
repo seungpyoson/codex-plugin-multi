@@ -39,7 +39,7 @@ import {
   summarizeScopeDirectory,
   writePromptSidecar,
 } from "./lib/companion-common.mjs";
-import { REVIEW_PROMPT_CONTRACT_VERSION, buildReviewAuditManifest, buildReviewPrompt } from "./lib/review-prompt.mjs";
+import { REVIEW_PROMPT_CONTRACT_VERSION, buildReviewAuditManifest, buildReviewPrompt, buildSelectedSourcePromptBlock } from "./lib/review-prompt.mjs";
 
 const PLUGIN_ROOT = resolvePath(dirname(fileURLToPath(import.meta.url)), "..");
 const MODELS_CONFIG_PATH = resolvePath(PLUGIN_ROOT, "config/models.json");
@@ -64,8 +64,11 @@ function fail(code, message, details = {}) {
   process.exit(1);
 }
 
-function targetPromptFor(profile, userPrompt, invocation = {}) {
+function targetPromptFor(profile, userPrompt, invocation = {}, sourceFiles = []) {
   if (profile.permission_mode !== "plan") return userPrompt;
+  const selectedSource = buildSelectedSourcePromptBlock(sourceFiles, {
+    delimiterPrefix: "KIMI FILE",
+  });
   const modeLine = profile.name === "adversarial-review"
     ? "You are performing an adversarial code review. Prioritize correctness bugs, security risks, regressions, and missing tests."
     : "You are performing a code review. Prioritize bugs, behavioral regressions, and missing tests.";
@@ -90,6 +93,7 @@ function targetPromptFor(profile, userPrompt, invocation = {}) {
       modeLine,
       "Your final answer must be self-contained and must not refer to prior, previous, above, or already-provided answers.",
       liveContext,
+      ...(selectedSource ? [selectedSource] : []),
     ],
   });
 }
@@ -216,6 +220,43 @@ function reviewAuditManifest(invocation, prompt, containmentPath, execution) {
     status: execution?.exitCode === 0 && execution?.parsed?.ok === true ? "completed" : "failed",
     errorCode: execution?.parsed?.reason ?? null,
   });
+}
+
+function scopedTargetPromptForOrExit(invocation, profile, userPrompt, lifecycleEvents) {
+  if (!invocation.review_prompt_contract_version || invocation.mode_profile_name === "rescue") {
+    return targetPromptFor(profile, userPrompt, invocation);
+  }
+  const { job_id: jobId, cwd, workspace_root: workspaceRoot } = invocation;
+  let containment = null;
+  let containmentCleaned = false;
+  const cleanupContainment = () => {
+    if (!containment || containmentCleaned) return;
+    try {
+      containment.cleanup();
+      containmentCleaned = true;
+    } catch { /* best-effort */ }
+  };
+  try {
+    containment = setupContainment(profile, cwd);
+    populateScope(profile, cwd, containment.path, {
+      scopeBase: invocation.scope_base,
+      scopePaths: invocation.scope_paths,
+      workspaceRoot,
+    }, containment);
+    return targetPromptFor(profile, userPrompt, invocation, auditSourceFiles(containment.path));
+  } catch (e) {
+    const errorRecord = buildJobRecord(invocation, {
+      exitCode: null, parsed: null, pidInfo: null, kimiSessionId: null,
+      errorMessage: e.message,
+    }, []);
+    writeJobFile(workspaceRoot, jobId, errorRecord);
+    upsertJob(workspaceRoot, errorRecord);
+    printLifecycleJson(errorRecord, lifecycleEvents);
+    cleanupContainment();
+    process.exit(2);
+  } finally {
+    cleanupContainment();
+  }
 }
 
 // Mutation-detection git scrub: same shared list as claude-companion +
@@ -580,10 +621,9 @@ async function cmdRun(rest) {
   writeRuntimeOptionsSidecar(workspaceRoot, jobId, { timeout_ms: timeoutMs, max_steps_per_turn: maxStepsPerTurn });
   writeJobFile(workspaceRoot, jobId, queuedRecord);
   upsertJob(workspaceRoot, queuedRecord);
-  const targetPrompt = targetPromptFor(profile, prompt, invocation);
+  const targetPrompt = scopedTargetPromptForOrExit(invocation, profile, prompt, lifecycleEvents);
 
   if (options.background) {
-    validateBackgroundExecutionScopeOrExit(invocation, lifecycleEvents);
     try {
       writePromptSidecar(resolveJobsDir(workspaceRoot), jobId, targetPrompt);
     } catch (error) {
@@ -773,6 +813,7 @@ async function executeRun(invocation, prompt, { foreground, lifecycleEvents = nu
   // timedOut wins so wall-clock kills classify as timeout failures.
   const finalRecord = buildJobRecord(executedInvocation, {
     exitCode: execution.exitCode,
+    endedAt: execution.endedAt,
     parsed: execution.parsed,
     pidInfo: execution.pidInfo,
     kimiSessionId: execution.kimiSessionId,
@@ -808,6 +849,7 @@ async function executeRun(invocation, prompt, { foreground, lifecycleEvents = nu
     try {
       fallbackRecord = buildJobRecord(invocation, {
         exitCode: execution.exitCode,
+        endedAt: execution.endedAt,
         parsed: execution.parsed,
         pidInfo: execution.pidInfo,
         kimiSessionId: execution.kimiSessionId ?? null,
@@ -843,33 +885,6 @@ async function executeRun(invocation, prompt, { foreground, lifecycleEvents = nu
   if (containment.disposed && disposeEffective) containment.cleanup();
   if (foreground) printLifecycleJson(finalRecord, lifecycleEvents);
   process.exit(finalRecord.status === "completed" || finalRecord.status === "cancelled" ? 0 : 2);
-}
-
-function validateBackgroundExecutionScopeOrExit(invocation, lifecycleEvents) {
-  const { job_id: jobId, cwd, workspace_root: workspaceRoot, dispose_effective: disposeEffective } = invocation;
-  const profile = resolveProfile(invocation.mode_profile_name);
-  let containment = null;
-  try {
-    containment = setupContainment(profile, cwd);
-    populateScope(profile, cwd, containment.path, {
-      scopeBase: invocation.scope_base,
-      scopePaths: invocation.scope_paths,
-      workspaceRoot,
-    }, containment);
-  } catch (e) {
-    if (containment) { try { containment.cleanup(); } catch { /* best-effort */ } }
-    const errorRecord = buildJobRecord(invocation, {
-      exitCode: null, parsed: null, pidInfo: null, kimiSessionId: null,
-      errorMessage: e.message,
-    }, []);
-    writeJobFile(workspaceRoot, jobId, errorRecord);
-    upsertJob(workspaceRoot, errorRecord);
-    printLifecycleJson(errorRecord, lifecycleEvents);
-    process.exit(2);
-  }
-  if (disposeEffective) {
-    try { containment.cleanup(); } catch { /* best-effort */ }
-  }
 }
 
 function writeSidecar(workspaceRoot, jobId, name, contents) {
@@ -1052,10 +1067,9 @@ async function cmdContinue(rest) {
   writeRuntimeOptionsSidecar(workspaceRoot, newJobId_, { timeout_ms: timeoutMs, max_steps_per_turn: maxStepsPerTurn });
   writeJobFile(workspaceRoot, newJobId_, queuedRecord);
   upsertJob(workspaceRoot, queuedRecord);
-  const targetPrompt = targetPromptFor(priorProfile, prompt, invocation);
+  const targetPrompt = scopedTargetPromptForOrExit(invocation, priorProfile, prompt, lifecycleEvents);
 
   if (options.background) {
-    validateBackgroundExecutionScopeOrExit(invocation, lifecycleEvents);
     try {
       writePromptSidecar(resolveJobsDir(workspaceRoot), newJobId_, targetPrompt);
     } catch (error) {

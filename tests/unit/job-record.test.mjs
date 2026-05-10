@@ -200,6 +200,7 @@ test("buildJobRecord: foreground success path has EXACTLY the expected keys", ()
       stderr_bytes: 0,
       parsed_ok: true,
       result_chars: 4,
+      elapsed_ms: rec.review_metadata.raw_output.elapsed_ms,
     },
     audit_manifest: null,
   });
@@ -230,6 +231,51 @@ test("buildJobRecord: foreground success path has EXACTLY the expected keys", ()
   assert.equal(rec.id, rec.job_id, "id is legacy alias for job_id");
 });
 
+test("buildJobRecord: terminal companion review metadata records elapsed_ms", () => {
+  const startedAt = new Date(Date.now() - 250).toISOString();
+  const providers = [
+    [buildJobRecord, makeInvocation({ started_at: startedAt })],
+    [buildGeminiJobRecord, makeInvocation({ target: "gemini", binary: "gemini", model: "gemini-3.1-pro-preview", started_at: startedAt })],
+    [buildKimiJobRecord, makeInvocation({ target: "kimi", binary: "kimi", model: "kimi-k2-0905", started_at: startedAt })],
+  ];
+
+  for (const [providerBuildJobRecord, invocation] of providers) {
+    const rec = providerBuildJobRecord(invocation, {
+      exitCode: 0,
+      parsed: { ok: true, result: "done", structured: null, denials: [] },
+      pidInfo: makePidInfo(),
+      stdout: "", stderr: "",
+    }, []);
+
+    assert.equal(typeof rec.review_metadata.raw_output.elapsed_ms, "number");
+    assert.ok(rec.review_metadata.raw_output.elapsed_ms >= 0);
+  }
+});
+
+test("buildJobRecord: terminal companion elapsed_ms uses execution endedAt", () => {
+  const startedAt = "2026-05-09T10:00:00.000Z";
+  const endedAt = "2026-05-09T10:00:02.500Z";
+  const providers = [
+    [buildJobRecord, makeInvocation({ started_at: startedAt })],
+    [buildGeminiJobRecord, makeInvocation({ target: "gemini", binary: "gemini", model: "gemini-3.1-pro-preview", started_at: startedAt })],
+    [buildKimiJobRecord, makeInvocation({ target: "kimi", binary: "kimi", model: "kimi-k2-0905", started_at: startedAt })],
+  ];
+
+  for (const [providerBuildJobRecord, invocation] of providers) {
+    const rec = providerBuildJobRecord(invocation, {
+      exitCode: 0,
+      parsed: { ok: true, result: "done", structured: null, denials: [] },
+      pidInfo: makePidInfo(),
+      stdout: "",
+      stderr: "",
+      endedAt,
+    }, []);
+
+    assert.equal(rec.ended_at, endedAt);
+    assert.equal(rec.review_metadata.raw_output.elapsed_ms, 2500);
+  }
+});
+
 test("buildJobRecord: review_metadata persists privacy-safe audit manifests for every companion", () => {
   const auditManifest = Object.freeze({
     schema_version: 1,
@@ -241,17 +287,17 @@ test("buildJobRecord: review_metadata persists privacy-safe audit manifests for 
     [
       buildJobRecord,
       makeInvocation(),
-      { parsed, pidInfo: makePidInfo(), claudeSessionId: CLAUDE_UUID, stdout: "ok", stderr: "" },
+      { exitCode: 0, parsed, pidInfo: makePidInfo(), claudeSessionId: CLAUDE_UUID, stdout: "ok", stderr: "" },
     ],
     [
       buildGeminiJobRecord,
       makeInvocation({ target: "gemini", binary: "gemini", review_prompt_provider: "Gemini CLI" }),
-      { parsed, pidInfo: makePidInfo(), geminiSessionId: GEMINI_UUID, stdout: "ok", stderr: "" },
+      { exitCode: 0, parsed, pidInfo: makePidInfo(), geminiSessionId: GEMINI_UUID, stdout: "ok", stderr: "" },
     ],
     [
       buildKimiJobRecord,
       makeInvocation({ target: "kimi", binary: "kimi", review_prompt_provider: "Kimi Code" }),
-      { parsed, pidInfo: makePidInfo(), kimiSessionId: "kimi-session-123", stdout: "ok", stderr: "" },
+      { exitCode: 0, parsed, pidInfo: makePidInfo(), kimiSessionId: "kimi-session-123", stdout: "ok", stderr: "" },
     ],
   ];
 
@@ -259,6 +305,90 @@ test("buildJobRecord: review_metadata persists privacy-safe audit manifests for 
     const rec = providerBuildJobRecord(invocation, { ...execution, reviewAuditManifest: auditManifest }, []);
     assert.equal(rec.review_metadata.audit_manifest, auditManifest);
     assert.equal(JSON.stringify(rec).includes("full prompt text"), false);
+  }
+});
+
+test("buildJobRecord: semantic review-quality failures override successful process exits", () => {
+  const auditManifest = Object.freeze({
+    schema_version: 1,
+    rendered_prompt_hash: { algorithm: "sha256", value: "a".repeat(64) },
+    selected_source: { files: [{ path: "sample.js" }], totals: { files: 1, bytes: 20, lines: 1 } },
+    review_quality: {
+      failed_review_slot: true,
+      semantic_failure_reasons: ["not_reviewed"],
+    },
+  });
+  const parsed = {
+    ok: true,
+    result: "Verdict: NOT REVIEWED / failed review slot. This is not an approval.",
+    structured: null,
+    denials: [],
+  };
+  const providers = [
+    [
+      buildJobRecord,
+      makeInvocation(),
+      { exitCode: 0, parsed, pidInfo: makePidInfo(), claudeSessionId: CLAUDE_UUID, stdout: "ok", stderr: "" },
+    ],
+    [
+      buildGeminiJobRecord,
+      makeInvocation({ target: "gemini", binary: "gemini", review_prompt_provider: "Gemini CLI" }),
+      { exitCode: 0, parsed, pidInfo: makePidInfo(), geminiSessionId: GEMINI_UUID, stdout: "ok", stderr: "" },
+    ],
+    [
+      buildKimiJobRecord,
+      makeInvocation({ target: "kimi", binary: "kimi", review_prompt_provider: "Kimi Code" }),
+      { exitCode: 0, parsed, pidInfo: makePidInfo(), kimiSessionId: "kimi-session-123", stdout: "ok", stderr: "" },
+    ],
+  ];
+
+  for (const [providerBuildJobRecord, invocation, execution] of providers) {
+    const rec = providerBuildJobRecord(invocation, { ...execution, reviewAuditManifest: auditManifest }, []);
+    assert.equal(rec.status, "failed");
+    assert.equal(rec.error_code, "review_not_completed");
+    assert.match(rec.error_summary, /review did not complete/i);
+    assert.equal(rec.review_metadata.audit_manifest, auditManifest);
+  }
+});
+
+test("buildJobRecord providers gate review_not_completed diagnostics to failed records", () => {
+  const sources = [
+    readFileSync(resolvePath(HERE, "..", "..", "plugins/claude/scripts/lib/job-record.mjs"), "utf8"),
+    readFileSync(resolvePath(HERE, "..", "..", "plugins/gemini/scripts/lib/job-record.mjs"), "utf8"),
+    readFileSync(resolvePath(HERE, "..", "..", "plugins/kimi/scripts/lib/job-record.mjs"), "utf8"),
+  ];
+
+  for (const source of sources) {
+    assert.match(source, /status === "failed" && error_code === "review_not_completed"/);
+    assert.doesNotMatch(source, /if\s*\(\s*error_code === "review_not_completed"\s*\)/);
+  }
+});
+
+test("buildJobRecord providers use stable plugin names for review_not_completed diagnostics", () => {
+  const auditManifest = Object.freeze({
+    review_quality: { failed_review_slot: true },
+  });
+  const parsed = { ok: true, result: "No blocking findings.", structured: null, denials: [] };
+  const providers = [
+    [
+      buildJobRecord,
+      makeInvocation({ target: "unexpected", review_prompt_provider: "Claude Code" }),
+      { exitCode: 0, parsed, pidInfo: makePidInfo(), claudeSessionId: CLAUDE_UUID, stdout: "ok", stderr: "", reviewAuditManifest: auditManifest },
+      /^Claude review did not complete/,
+    ],
+    [
+      buildGeminiJobRecord,
+      makeInvocation({ target: "unexpected", binary: "gemini", review_prompt_provider: "Gemini CLI" }),
+      { exitCode: 0, parsed, pidInfo: makePidInfo(), geminiSessionId: GEMINI_UUID, stdout: "ok", stderr: "", reviewAuditManifest: auditManifest },
+      /^Gemini review did not complete/,
+    ],
+  ];
+
+  for (const [providerBuildJobRecord, invocation, execution, summaryPattern] of providers) {
+    const rec = providerBuildJobRecord(invocation, execution, []);
+    assert.equal(rec.status, "failed");
+    assert.equal(rec.error_code, "review_not_completed");
+    assert.match(rec.error_summary, summaryPattern);
   }
 });
 
@@ -378,6 +508,7 @@ test("buildJobRecord: persists runtime diagnostics and classifies permission-den
         "/tmp/claude-worktree-abc123",
         { tool: "Read", target: "/tmp/src/private.log" },
         { tool: "Read", file: "relative-private.log" },
+        { tool: "Read", tool_input: { file_path: "/tmp/claude-worktree-abc123/nested.diff" } },
         { tool: "Bash", command: "pwd" },
       ],
       costUsd: null,
@@ -433,6 +564,12 @@ test("buildJobRecord: persists runtime diagnostics and classifies permission-den
       target: "relative-private.log",
       inside_add_dir: null,
       relative_to_add_dir: null,
+    },
+    {
+      tool: "Read",
+      target: "/tmp/claude-worktree-abc123/nested.diff",
+      inside_add_dir: true,
+      relative_to_add_dir: "nested.diff",
     },
     {
       tool: "Bash",

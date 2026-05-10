@@ -12,6 +12,7 @@ import { GIT_BINARY_ENV, gitEnv, isGitBinaryPolicyError, resolveGitBinary } from
 import { isCodexSandbox } from "./lib/codex-env.mjs";
 import { REVIEW_PROMPT_CONTRACT_VERSION, buildReviewAuditManifest, buildReviewPrompt, scopeResolutionReason } from "./lib/review-prompt.mjs";
 import { USAGE_LIMIT_SAFE_MESSAGE, isUsageLimitDetail } from "./lib/usage-limit.mjs";
+import { elapsedMs } from "./lib/time.mjs";
 import {
   EXTERNAL_REVIEW_KEYS,
   SOURCE_CONTENT_TRANSMISSION,
@@ -1550,6 +1551,7 @@ function suggestedAction(errorCode, provider, cfg, errorMessage = "", httpStatus
   if (errorCode === "rate_limited") return `Wait and retry, or lower concurrency for ${provider}.`;
   if (errorCode === "timeout") return `The provider did not respond within the timeout window. Retry later, increase API_REVIEWERS_TIMEOUT_MS, or switch reviewer provider.`;
   if (errorCode === "provider_unavailable") return providerUnavailableSuggestedAction(errorMessage, httpStatus, env);
+  if (errorCode === "review_not_completed") return "Treat this reviewer slot as failed, inspect the raw result and review_quality reasons, then retry with a source packet the reviewer can inspect.";
   if (errorCode === "scope_failed") return scopeFailedSuggestedAction(errorMessage);
   if (errorCode === "git_binary_rejected") return `Set ${GIT_BINARY_ENV} to a trusted Git executable outside the workspace, or unset it to use the default Git binary.`;
   return "Inspect error_message and retry after correcting the provider or request configuration.";
@@ -1767,6 +1769,7 @@ function errorCauseFor(errorCode) {
   if (errorCode === "scope_failed") return "scope_resolution";
   if (errorCode === "git_binary_rejected") return "git_binary_policy";
   if (errorCode === "usage_limited") return "cost_quota_usage_limit";
+  if (errorCode === "review_not_completed") return "review_quality";
   return "direct_api_provider";
 }
 
@@ -1781,7 +1784,13 @@ function scopeDiagnostics(scopeInfo) {
   };
 }
 
-function diagnosticErrorSummary(errorCode, errorMessage, scopeInfo, execution) {
+function diagnosticErrorSummary(errorCode, errorMessage, scopeInfo, execution, semanticReasons = null) {
+  if (errorCode === "review_not_completed") {
+    const reasons = semanticReasons
+      ?? execution.review_metadata?.audit_manifest?.review_quality?.semantic_failure_reasons;
+    const suffix = Array.isArray(reasons) && reasons.length > 0 ? ` (${reasons.join(",")})` : "";
+    return `review did not complete as a usable external review${suffix}`;
+  }
   if (errorCode !== "timeout") return errorMessage || errorCode;
   const scope = scopeDiagnostics(scopeInfo);
   const diagnostics = execution.diagnostics ?? {};
@@ -1799,7 +1808,7 @@ function diagnosticErrorSummary(errorCode, errorMessage, scopeInfo, execution) {
   ].join(" ");
 }
 
-function buildReviewMetadata(cfg, scopeInfo, execution = null) {
+function buildReviewMetadata(cfg, scopeInfo, execution = null, startedAt = null, endedAt = null) {
   const auditManifest = execution?.prompt ? buildReviewAuditManifest({
     prompt: execution.prompt,
     sourceFiles: scopeInfo.files,
@@ -1853,20 +1862,29 @@ function buildReviewMetadata(cfg, scopeInfo, execution = null) {
       raw_model: execution.parsed?.raw_model ?? null,
       parsed_ok: execution.parsed?.ok ?? null,
       result_chars: typeof execution.parsed?.result === "string" ? execution.parsed.result.length : null,
+      elapsed_ms: elapsedMs(startedAt, endedAt),
     } : null,
     audit_manifest: auditManifest,
   };
 }
 
 function buildRecord({ provider, cfg, mode, options, scopeInfo, execution, startedAt, endedAt }) {
-  const completed = execution.exitCode === 0 && execution.parsed?.ok === true;
+  const reviewMetadata = buildReviewMetadata(cfg, scopeInfo, execution, startedAt, endedAt);
+  const processCompleted = execution.exitCode === 0 && execution.parsed?.ok === true;
+  const reviewQualityFailed = processCompleted && reviewMetadata?.audit_manifest?.review_quality?.failed_review_slot === true;
+  const completed = processCompleted && !reviewQualityFailed;
   const redact = redactor(process.env, cfg.env_keys);
-  const result = completed ? redact(execution.parsed.result) : null;
-  const errorMessage = completed ? null : redact(execution.parsed?.error ?? "");
-  const errorCode = completed ? null : (execution.parsed?.reason ?? "provider_error");
+  const result = processCompleted ? redact(execution.parsed.result) : null;
+  const semanticReasons = reviewMetadata?.audit_manifest?.review_quality?.semantic_failure_reasons;
+  const semanticMessage = Array.isArray(semanticReasons) && semanticReasons.length > 0
+    ? `review_quality_failed:${semanticReasons.join(",")}`
+    : "review_quality_failed";
+  const errorMessage = completed ? null : (reviewQualityFailed ? semanticMessage : redact(execution.parsed?.error ?? ""));
+  const errorCode = completed ? null : (reviewQualityFailed ? "review_not_completed" : (execution.parsed?.reason ?? "provider_error"));
   const target = provider;
-  const sourceContentTransmission = directApiTransmission(completed, execution.payload_sent ?? null);
-  const disclosure = directApiDisclosure(cfg.display_name, completed, execution.payload_sent ?? null);
+  const payloadSent = execution.payload_sent ?? (processCompleted ? true : null);
+  const sourceContentTransmission = directApiTransmission(completed, payloadSent);
+  const disclosure = directApiDisclosure(cfg.display_name, completed, payloadSent);
   const externalReview = freezeExternalReview({
     marker: "EXTERNAL REVIEW",
     provider: cfg.display_name,
@@ -1914,7 +1932,7 @@ function buildRecord({ provider, cfg, mode, options, scopeInfo, execution, start
     scope_base: scopeInfo.scope_base ?? null,
     scope_paths: scopeInfo.scope_paths ?? null,
     prompt_head: promptHead(options.prompt),
-    review_metadata: buildReviewMetadata(cfg, scopeInfo, execution),
+    review_metadata: reviewMetadata,
     schema_spec: null,
     binary: null,
     status: completed ? "completed" : "failed",
@@ -1923,7 +1941,7 @@ function buildRecord({ provider, cfg, mode, options, scopeInfo, execution, start
     exit_code: execution.exitCode,
     error_code: errorCode,
     error_message: errorMessage,
-    error_summary: completed ? null : diagnosticErrorSummary(errorCode, errorMessage, scopeInfo, execution),
+    error_summary: completed ? null : diagnosticErrorSummary(errorCode, errorMessage, scopeInfo, execution, semanticReasons),
     error_cause: completed ? null : errorCauseFor(errorCode),
     suggested_action: completed ? null : suggestedAction(errorCode, provider, cfg, errorMessage, execution.http_status ?? null),
     external_review: externalReview,

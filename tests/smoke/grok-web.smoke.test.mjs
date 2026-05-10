@@ -9,6 +9,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { externalReviewLaunchedEvent } from "../../scripts/lib/companion-common.mjs";
 import { assertJobRecordShape } from "../helpers/job-record-shape.mjs";
+import { substantiveReviewFixture } from "../helpers/review-fixtures.mjs";
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const COMPANION = path.join(REPO_ROOT, "plugins/grok/scripts/grok-web-reviewer.mjs");
@@ -494,6 +495,245 @@ test("doctor is not review-ready when models work but chat returns upstream 400"
   });
 });
 
+test("doctor identifies malformed active Grok session tokens instead of generic chat 400", async () => {
+  await withServer(async (req, res) => {
+    res.setHeader("content-type", "application/json");
+    if (req.url === "/api/models") {
+      res.end(JSON.stringify({ data: [{ id: "grok-4.20-fast" }] }));
+      return;
+    }
+    if (req.url === "/api/chat/completions") {
+      await readJsonRequest(req);
+      res.writeHead(400);
+      res.end(JSON.stringify({
+        error: { message: "Chat upstream returned 400", type: "upstream_error", code: "upstream_error" },
+      }));
+      return;
+    }
+    if (req.url === "/admin/api/tokens") {
+      assert.equal(req.headers.authorization, "Bearer grok2api");
+      res.end(JSON.stringify({
+        tokens: [
+          { token: "malformed-control-looking-cookie", pool: "super", status: "active", deleted: false },
+        ],
+      }));
+      return;
+    }
+    res.writeHead(404);
+    res.end(JSON.stringify({ error: { message: "not found" } }));
+  }, async (baseUrl) => {
+    const adminBaseUrl = baseUrl.replace(/\/api$/, "");
+    const result = await runAsync(["doctor"], {
+      env: {
+        GROK_WEB_BASE_URL: baseUrl,
+        GROK2API_BASE_URL: adminBaseUrl,
+      },
+    });
+    const parsed = parseStdout(result);
+
+    assert.equal(result.status, 0);
+    assert.equal(parsed.ready, false);
+    assert.equal(parsed.reachable, true);
+    assert.equal(parsed.chat_ready, false);
+    assert.equal(parsed.error_code, "grok_session_malformed_active_token");
+    assert.equal(parsed.chat_http_status, 400);
+    assert.equal(parsed.session_diagnostics.status, "checked");
+    assert.equal(parsed.session_diagnostics.active_token_count, 1);
+    assert.equal(parsed.session_diagnostics.malformed_active_token_count, 1);
+    assert.match(parsed.next_action, /malformed.*Grok.*session/i);
+    assert.doesNotMatch(result.stdout, /malformed-control-looking-cookie/);
+  });
+});
+
+test("doctor derives Grok admin base from tunnel URLs ending in /api/v1", async () => {
+  await withServer(async (req, res) => {
+    res.setHeader("content-type", "application/json");
+    if (req.url === "/api/v1/models") {
+      res.end(JSON.stringify({ data: [{ id: "grok-4.20-fast" }] }));
+      return;
+    }
+    if (req.url === "/api/v1/chat/completions") {
+      await readJsonRequest(req);
+      res.writeHead(400);
+      res.end(JSON.stringify({
+        error: { message: "Chat upstream returned 400", type: "upstream_error", code: "upstream_error" },
+      }));
+      return;
+    }
+    if (req.url === "/admin/api/tokens") {
+      res.end(JSON.stringify({
+        tokens: [
+          { token: "malformed-control-looking-cookie", pool: "super", status: "active", deleted: false },
+        ],
+      }));
+      return;
+    }
+    res.writeHead(404);
+    res.end(JSON.stringify({ error: { message: `not found: ${req.url}` } }));
+  }, async (baseUrl) => {
+    const result = await runAsync(["doctor"], {
+      env: {
+        GROK_WEB_BASE_URL: `${baseUrl}/v1`,
+      },
+    });
+    const parsed = parseStdout(result);
+
+    assert.equal(result.status, 0);
+    assert.equal(parsed.ready, false);
+    assert.equal(parsed.chat_ready, false);
+    assert.equal(parsed.error_code, "grok_session_malformed_active_token");
+    assert.equal(parsed.session_diagnostics.status, "checked");
+    assert.equal(parsed.session_diagnostics.malformed_active_token_count, 1);
+    assert.doesNotMatch(result.stdout, /malformed-control-looking-cookie/);
+  });
+});
+
+test("doctor identifies missing active Grok runtime tokens instead of generic chat 400", async () => {
+  await withServer(async (req, res) => {
+    res.setHeader("content-type", "application/json");
+    if (req.url === "/api/models") {
+      res.end(JSON.stringify({ data: [{ id: "grok-4.20-fast" }] }));
+      return;
+    }
+    if (req.url === "/api/chat/completions") {
+      await readJsonRequest(req);
+      res.writeHead(400);
+      res.end(JSON.stringify({
+        error: { message: "Chat upstream returned 400", type: "upstream_error", code: "upstream_error" },
+      }));
+      return;
+    }
+    if (req.url === "/admin/api/tokens") {
+      res.end(JSON.stringify({ tokens: [] }));
+      return;
+    }
+    res.writeHead(404);
+    res.end(JSON.stringify({ error: { message: "not found" } }));
+  }, async (baseUrl) => {
+    const adminBaseUrl = baseUrl.replace(/\/api$/, "");
+    const result = await runAsync(["doctor"], {
+      env: {
+        GROK_WEB_BASE_URL: baseUrl,
+        GROK2API_BASE_URL: adminBaseUrl,
+      },
+    });
+    const parsed = parseStdout(result);
+
+    assert.equal(result.status, 0);
+    assert.equal(parsed.ready, false);
+    assert.equal(parsed.error_code, "grok_session_no_runtime_tokens");
+    assert.equal(parsed.session_diagnostics.status, "checked");
+    assert.equal(parsed.session_diagnostics.active_token_count, 0);
+    assert.match(parsed.next_action, /no active runtime session tokens|sync/i);
+  });
+});
+
+test("doctor identifies grok2api admin/runtime token-table divergence", async () => {
+  const validToken = "eyJhbGciOiJub25lIn0.eyJzdWIiOiJncm9rIn0.signature";
+  await withServer(async (req, res) => {
+    res.setHeader("content-type", "application/json");
+    if (req.url === "/api/models") {
+      res.end(JSON.stringify({ data: [{ id: "grok-4.20-fast" }] }));
+      return;
+    }
+    if (req.url === "/api/chat/completions") {
+      await readJsonRequest(req);
+      res.writeHead(400);
+      res.end(JSON.stringify({
+        error: { message: "Chat upstream returned 400", type: "upstream_error", code: "upstream_error" },
+      }));
+      return;
+    }
+    if (req.url === "/admin/api/tokens") {
+      res.end(JSON.stringify({
+        tokens: [
+          { token: validToken, pool: "super", status: "active", deleted: false },
+        ],
+      }));
+      return;
+    }
+    if (req.url === "/status") {
+      res.end(JSON.stringify({ status: "ok", size: 0, revision: 146, selection_strategy: "quota" }));
+      return;
+    }
+    res.writeHead(404);
+    res.end(JSON.stringify({ error: { message: "not found" } }));
+  }, async (baseUrl) => {
+    const adminBaseUrl = baseUrl.replace(/\/api$/, "");
+    const result = await runAsync(["doctor"], {
+      env: {
+        GROK_WEB_BASE_URL: baseUrl,
+        GROK2API_BASE_URL: adminBaseUrl,
+      },
+    });
+    const parsed = parseStdout(result);
+
+    assert.equal(result.status, 0);
+    assert.equal(parsed.ready, false);
+    assert.equal(parsed.error_code, "grok_session_runtime_admin_divergence");
+    assert.equal(parsed.session_diagnostics.status, "checked");
+    assert.equal(parsed.session_diagnostics.active_token_count, 1);
+    assert.equal(parsed.session_diagnostics.runtime_size, 0);
+    assert.equal(parsed.session_diagnostics.runtime_revision, 146);
+    assert.match(parsed.next_action, /restart|refresh.*tunnel/i);
+    assert.doesNotMatch(result.stdout, /eyJhbGci/);
+  });
+});
+
+test("doctor reports runtime status probe failures when admin tokens look healthy", async () => {
+  const validToken = "eyJhbGciOiJub25lIn0.eyJzdWIiOiJncm9rIn0.signature";
+  await withServer(async (req, res) => {
+    res.setHeader("content-type", "application/json");
+    if (req.url === "/api/models") {
+      res.end(JSON.stringify({ data: [{ id: "grok-4.20-fast" }] }));
+      return;
+    }
+    if (req.url === "/api/chat/completions") {
+      await readJsonRequest(req);
+      res.writeHead(400);
+      res.end(JSON.stringify({
+        error: { message: "Chat upstream returned 400", type: "upstream_error", code: "upstream_error" },
+      }));
+      return;
+    }
+    if (req.url === "/admin/api/tokens") {
+      res.end(JSON.stringify({
+        tokens: [
+          { token: validToken, pool: "super", status: "active", deleted: false },
+        ],
+      }));
+      return;
+    }
+    if (req.url === "/status") {
+      res.writeHead(503);
+      res.end(JSON.stringify({ error: { message: "runtime status down" } }));
+      return;
+    }
+    res.writeHead(404);
+    res.end(JSON.stringify({ error: { message: "not found" } }));
+  }, async (baseUrl) => {
+    const adminBaseUrl = baseUrl.replace(/\/api$/, "");
+    const result = await runAsync(["doctor"], {
+      env: {
+        GROK_WEB_BASE_URL: baseUrl,
+        GROK2API_BASE_URL: adminBaseUrl,
+      },
+    });
+    const parsed = parseStdout(result);
+
+    assert.equal(result.status, 0);
+    assert.equal(parsed.ready, false);
+    assert.equal(parsed.error_code, "grok_runtime_status_unavailable");
+    assert.equal(parsed.session_diagnostics.status, "checked");
+    assert.equal(parsed.session_diagnostics.active_token_count, 1);
+    assert.equal(parsed.session_diagnostics.runtime_status, "unknown");
+    assert.equal(parsed.session_diagnostics.runtime_error_code, "grok_runtime_status_unavailable");
+    assert.equal(parsed.session_diagnostics.runtime_http_status, 503);
+    assert.match(parsed.next_action, /runtime status|restart|refresh.*tunnel/i);
+    assert.doesNotMatch(result.stdout, /eyJhbGci/);
+  });
+});
+
 test("doctor reports tunnel_unavailable when the local Grok tunnel is not reachable", () => {
   const result = run(["doctor"], {
     env: {
@@ -568,6 +808,7 @@ test("doctor explains XAI_KEY is ignored for subscription web mode", () => {
 test("custom-review sends selected source to a local Grok web tunnel and persists a JobRecord", async () => {
   const cwd = mkdtempSync(path.join(tmpdir(), "grok-web-workspace-"));
   const dataDir = mkdtempSync(path.join(tmpdir(), "grok-web-data-"));
+  const firstReviewText = substantiveReviewFixture("Provider marker: no findings 1.");
   writeFileSync(path.join(cwd, "review.js"), "export const value = 42;\n// ``` nested markdown fence\n");
 
   let requestCount = 0;
@@ -591,7 +832,7 @@ test("custom-review sends selected source to a local Grok web tunnel and persist
     res.end(JSON.stringify({
       id: `grok-web-session-${requestCount}`,
       model: "grok-4.20-fast",
-      choices: [{ message: { content: `Verdict: no findings ${requestCount}.` } }],
+      choices: [{ message: { content: substantiveReviewFixture(`Provider marker: no findings ${requestCount}.`) } }],
       usage: { prompt_tokens: 12, completion_tokens: 5, total_tokens: 17 },
     }));
   }, async (baseUrl) => {
@@ -619,7 +860,7 @@ test("custom-review sends selected source to a local Grok web tunnel and persist
     assert.equal(record.provider, "grok-web");
     assert.equal(record.auth_mode, "subscription_web");
     assert.equal(record.status, "completed");
-    assert.equal(record.result, "Verdict: no findings 1.");
+    assert.equal(record.result, firstReviewText);
     assert.equal(record.schema_version, 10);
     assert.equal(record.review_metadata.prompt_contract_version, 1);
     assert.equal(record.review_metadata.prompt_provider, "Grok Web");
@@ -629,8 +870,11 @@ test("custom-review sends selected source to a local Grok web tunnel and persist
       http_status: 200,
       raw_model: "grok-4.20-fast",
       parsed_ok: true,
-      result_chars: "Verdict: no findings 1.".length,
+      result_chars: firstReviewText.length,
+      elapsed_ms: record.review_metadata.raw_output.elapsed_ms,
     });
+    assert.equal(typeof record.review_metadata.raw_output.elapsed_ms, "number");
+    assert.ok(record.review_metadata.raw_output.elapsed_ms >= 0);
     assert.match(record.review_metadata.audit_manifest.rendered_prompt_hash.value, /^[a-f0-9]{64}$/);
     assert.equal(record.review_metadata.audit_manifest.request.model, "grok-4.20-fast");
     assert.equal(record.review_metadata.audit_manifest.request.timeout_ms, 123456);
@@ -658,7 +902,7 @@ test("custom-review sends selected source to a local Grok web tunnel and persist
     assert.doesNotMatch(result.stdout, /secret-cookie-like-token/);
 
     const persisted = JSON.parse(readFileSync(path.join(dataDir, "jobs", record.job_id, "meta.json"), "utf8"));
-    assert.equal(persisted.result, "Verdict: no findings 1.");
+    assert.equal(persisted.result, firstReviewText);
     assert.equal(persisted.external_review.session_id, "grok-web-session-1");
     assert.equal(Object.hasOwn(persisted, "grok_session_id"), false);
     assert.doesNotMatch(JSON.stringify(persisted), /secret-cookie-like-token/);
@@ -673,7 +917,7 @@ test("custom-review sends selected source to a local Grok web tunnel and persist
     const lookedUp = parseStdout(resultLookup);
     assert.equal(resultLookup.status, 0);
     assert.equal(lookedUp.job_id, record.job_id);
-    assert.equal(lookedUp.result, "Verdict: no findings 1.");
+    assert.equal(lookedUp.result, firstReviewText);
     assert.doesNotMatch(resultLookup.stdout, /secret-cookie-like-token/);
 
     const secondResult = await runAsync([
@@ -709,8 +953,74 @@ test("custom-review sends selected source to a local Grok web tunnel and persist
   });
 });
 
+test("custom-review fails closed when Grok tunnel returns shallow HTTP 200 output", async () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "grok-web-workspace-"));
+  const dataDir = mkdtempSync(path.join(tmpdir(), "grok-web-data-"));
+  const shallowResult = "Verdict: APPROVE\nNo blocking findings. secret-cookie-like-token";
+  writeFileSync(path.join(cwd, "review.js"), "export const value = 42;\n");
+
+  await withServer(async (req, res) => {
+    assert.equal(req.method, "POST");
+    assert.equal(req.url, "/api/chat/completions");
+    const body = await readJsonRequest(req);
+    assert.match(body.messages[0].content, /review\.js/);
+    assert.match(body.messages[0].content, /export const value = 42/);
+    res.setHeader("content-type", "application/json");
+    res.end(JSON.stringify({
+      id: "grok-web-shallow-session",
+      model: "grok-4.20-fast",
+      choices: [{ message: { content: shallowResult } }],
+      usage: { prompt_tokens: 12, completion_tokens: 5, total_tokens: 17 },
+    }));
+  }, async (baseUrl) => {
+    const result = await runAsync([
+      "run",
+      "--mode", "custom-review",
+      "--scope", "custom",
+      "--scope-paths", "review.js",
+      "--foreground",
+      "--prompt", "Check this file.",
+    ], {
+      cwd,
+      env: {
+        GROK_WEB_BASE_URL: baseUrl,
+        GROK_WEB_TUNNEL_API_KEY: "secret-cookie-like-token",
+        GROK_PLUGIN_DATA: dataDir,
+      },
+    });
+    const record = parseStdout(result);
+
+    assert.equal(result.status, 1);
+    assert.equal(record.status, "failed");
+    assert.equal(record.error_code, "review_not_completed");
+    assert.equal(record.error_cause, "review_quality");
+    assert.match(record.error_message, /review_quality_failed:shallow_output/);
+    assert.equal(record.result, "Verdict: APPROVE\nNo blocking findings. [REDACTED]");
+    assert.equal(record.external_review.source_content_transmission, "sent");
+    assert.equal(typeof record.review_metadata.raw_output.elapsed_ms, "number");
+    assert.ok(record.review_metadata.raw_output.elapsed_ms >= 0);
+    assert.equal(record.review_metadata.audit_manifest.review_quality.failed_review_slot, true);
+    assert.deepEqual(record.review_metadata.audit_manifest.review_quality.semantic_failure_reasons, ["shallow_output"]);
+
+    const persisted = JSON.parse(readFileSync(path.join(dataDir, "jobs", record.job_id, "meta.json"), "utf8"));
+    assert.equal(persisted.result, "Verdict: APPROVE\nNo blocking findings. [REDACTED]");
+
+    const lookup = run(["result", "--job-id", record.job_id], {
+      cwd,
+      env: {
+        GROK_PLUGIN_DATA: dataDir,
+        GROK_WEB_TUNNEL_API_KEY: "secret-cookie-like-token",
+      },
+    });
+    const lookedUp = parseStdout(lookup);
+    assert.equal(lookup.status, 0);
+    assert.equal(lookedUp.result, "Verdict: APPROVE\nNo blocking findings. [REDACTED]");
+  });
+});
+
 test("custom-review lifecycle jsonl emits launch before terminal record", async () => {
   const cwd = mkdtempSync(path.join(tmpdir(), "grok-web-workspace-"));
+  const reviewText = substantiveReviewFixture("Lifecycle marker: no findings.");
   writeFileSync(path.join(cwd, "review.js"), "export const value = 42;\n");
 
   await withServer(async (_req, res) => {
@@ -718,7 +1028,7 @@ test("custom-review lifecycle jsonl emits launch before terminal record", async 
     res.end(JSON.stringify({
       id: "grok-web-session-lifecycle",
       model: "grok-4.20-fast",
-      choices: [{ message: { content: "Verdict: no findings." } }],
+      choices: [{ message: { content: reviewText } }],
       usage: { prompt_tokens: 12, completion_tokens: 5, total_tokens: 17 },
     }));
   }, async (baseUrl) => {
@@ -755,6 +1065,7 @@ test("custom-review lifecycle jsonl emits launch before terminal record", async 
 
 test("custom-review escalates Grok file delimiters when selected source collides", async () => {
   const cwd = mkdtempSync(path.join(tmpdir(), "grok-web-workspace-"));
+  const reviewText = substantiveReviewFixture("Delimiter marker: delimiter collision handled.");
   writeFileSync(path.join(cwd, "review.js"), [
     "const marker = `BEGIN GROK FILE 1: review.js`;",
     "const end = `END GROK FILE 1: review.js`;",
@@ -771,7 +1082,7 @@ test("custom-review escalates Grok file delimiters when selected source collides
     res.setHeader("content-type", "application/json");
     res.end(JSON.stringify({
       id: "grok-web-delimiter-session",
-      choices: [{ message: { content: "Verdict: delimiter collision handled." } }],
+      choices: [{ message: { content: reviewText } }],
     }));
   }, async (baseUrl) => {
     const result = await runAsync([
@@ -787,7 +1098,7 @@ test("custom-review escalates Grok file delimiters when selected source collides
     });
     const record = parseStdout(result);
     assert.equal(result.status, 0);
-    assert.equal(record.result, "Verdict: delimiter collision handled.");
+    assert.equal(record.result, reviewText);
   });
 });
 
@@ -1125,7 +1436,7 @@ test("concurrent Grok runs preserve every completed job in the state index", asy
     res.setHeader("content-type", "application/json");
     res.end(JSON.stringify({
       id: `grok-web-concurrent-${received}`,
-      choices: [{ message: { content: `Verdict: concurrent ${received}.` } }],
+      choices: [{ message: { content: substantiveReviewFixture(`Concurrent marker: ${received}.`) } }],
     }));
   }, async (baseUrl) => {
     const results = await Promise.all(Array.from({ length: runCount }, (_, i) => runAsync([
@@ -1181,7 +1492,7 @@ test("Grok state index recovers stale locks owned by dead same-host processes", 
     res.setHeader("content-type", "application/json");
     res.end(JSON.stringify({
       id: "grok-web-stale-lock",
-      choices: [{ message: { content: "Verdict: stale lock recovered." } }],
+      choices: [{ message: { content: substantiveReviewFixture("State marker: stale lock recovered.") } }],
     }));
   }, async (baseUrl) => {
     const result = await runAsync([
@@ -1227,7 +1538,7 @@ test("Grok state index recovers stale locks without owner metadata by age", asyn
     res.setHeader("content-type", "application/json");
     res.end(JSON.stringify({
       id: "grok-web-stale-lock-missing-owner",
-      choices: [{ message: { content: "Verdict: stale missing-owner lock recovered." } }],
+      choices: [{ message: { content: substantiveReviewFixture("State marker: stale missing-owner lock recovered.") } }],
     }));
   }, async (baseUrl) => {
     const result = await runAsync([
@@ -1270,7 +1581,7 @@ test("Grok state index recovers old locks owned by different hosts", async () =>
     res.setHeader("content-type", "application/json");
     res.end(JSON.stringify({
       id: "grok-web-stale-lock-other-host",
-      choices: [{ message: { content: "Verdict: stale different-host lock recovered." } }],
+      choices: [{ message: { content: substantiveReviewFixture("State marker: stale different-host lock recovered.") } }],
     }));
   }, async (baseUrl) => {
     const result = await runAsync([
@@ -1297,6 +1608,7 @@ test("Grok state index recovers old locks owned by different hosts", async () =>
 test("custom-review repairs malformed state index from persisted JobRecords", async () => {
   const cwd = mkdtempSync(path.join(tmpdir(), "grok-web-workspace-"));
   const dataDir = mkdtempSync(path.join(tmpdir(), "grok-web-data-"));
+  const reviewText = substantiveReviewFixture("State marker: malformed state repaired.");
   writeFileSync(path.join(cwd, "review.js"), "export const value = 42;\n");
   writeFileSync(path.join(dataDir, "state.json"), "{bad json");
 
@@ -1307,7 +1619,7 @@ test("custom-review repairs malformed state index from persisted JobRecords", as
     res.end(JSON.stringify({
       id: "grok-web-session-corrupt-state",
       model: "grok-4.20-fast",
-      choices: [{ message: { content: "Verdict: state index malformed." } }],
+      choices: [{ message: { content: reviewText } }],
     }));
   }, async (baseUrl) => {
     const runReview = () => runAsync([
@@ -1333,7 +1645,7 @@ test("custom-review repairs malformed state index from persisted JobRecords", as
 
     const persisted = JSON.parse(readFileSync(path.join(dataDir, "jobs", record.job_id, "meta.json"), "utf8"));
     assert.equal(persisted.job_id, record.job_id);
-    assert.equal(persisted.result, "Verdict: state index malformed.");
+    assert.equal(persisted.result, reviewText);
 
     const resultLookup = run(["result", "--job-id", record.job_id], {
       cwd,
@@ -1342,7 +1654,7 @@ test("custom-review repairs malformed state index from persisted JobRecords", as
     const lookedUp = parseStdout(resultLookup);
     assert.equal(resultLookup.status, 0);
     assert.equal(lookedUp.job_id, record.job_id);
-    assert.equal(lookedUp.result, "Verdict: state index malformed.");
+    assert.equal(lookedUp.result, reviewText);
     assert.doesNotMatch(lookedUp.disclosure_note, /JobRecord persistence failed/i);
 
     const secondResult = await runReview();
@@ -1392,7 +1704,7 @@ test("state index updates do not import orphaned job records when state is healt
     res.setHeader("content-type", "application/json");
     res.end(JSON.stringify({
       id: "grok-web-healthy-state",
-      choices: [{ message: { content: "Verdict: healthy state." } }],
+      choices: [{ message: { content: substantiveReviewFixture("State marker: healthy state.") } }],
     }));
   }, async (baseUrl) => {
     const result = await runAsync([
@@ -1439,7 +1751,7 @@ test("Grok state lock does not reclaim live same-host owners by age", async () =
     res.setHeader("content-type", "application/json");
     res.end(JSON.stringify({
       id: "grok-web-live-lock",
-      choices: [{ message: { content: "Verdict: live lock preserved." } }],
+      choices: [{ message: { content: substantiveReviewFixture("State marker: live lock preserved.") } }],
     }));
   }, async (baseUrl) => {
     const result = await runAsync([
@@ -1743,6 +2055,7 @@ test("review mode uses branch-diff scope with scrubbed git environment", async (
   writeFileSync(path.join(cwd, "review.js"), "GROK_DIRTY_SELECTED_SECRET\n");
   writeFileSync(path.join(cwd, "local-config.txt"), "GROK_LOCAL_DIRTY_SECRET\n");
   writeFileSync(path.join(cwd, "untracked-secret.js"), "GROK_UNTRACKED_SECRET\n");
+  const reviewText = substantiveReviewFixture("Branch diff marker: branch diff reviewed.");
 
   await withServer(async (req, res) => {
     assert.equal(req.method, "POST");
@@ -1762,7 +2075,7 @@ test("review mode uses branch-diff scope with scrubbed git environment", async (
     res.setHeader("content-type", "application/json");
     res.end(JSON.stringify({
       id: "grok-web-branch-session",
-      choices: [{ message: { content: "Verdict: branch diff reviewed." } }],
+      choices: [{ message: { content: reviewText } }],
     }));
   }, async (baseUrl) => {
     const result = await runAsync([
@@ -1800,7 +2113,7 @@ test("review mode uses branch-diff scope with scrubbed git environment", async (
       record.review_metadata.audit_manifest.scope_resolution.reason,
       "git diff -z --name-only review-base...HEAD -- filtered by explicit --scope-paths"
     );
-    assert.equal(record.result, "Verdict: branch diff reviewed.");
+    assert.equal(record.result, reviewText);
     assert.equal(existsSync(hostileGitMarker), false);
   });
 });
@@ -1808,6 +2121,7 @@ test("review mode uses branch-diff scope with scrubbed git environment", async (
 test("branch-diff treats **/ as a path segment glob", async () => {
   const cwd = mkdtempSync(path.join(tmpdir(), "grok-web-branch-"));
   const dataDir = mkdtempSync(path.join(tmpdir(), "grok-web-data-"));
+  const reviewText = substantiveReviewFixture("Glob marker: glob reviewed.");
   execFileSync("git", ["init", "-b", "main"], { cwd, stdio: "ignore" });
   execFileSync("git", ["config", "user.email", "test@example.com"], { cwd });
   execFileSync("git", ["config", "user.name", "Test User"], { cwd });
@@ -1831,7 +2145,7 @@ test("branch-diff treats **/ as a path segment glob", async () => {
     res.setHeader("content-type", "application/json");
     res.end(JSON.stringify({
       id: "grok-web-glob-session",
-      choices: [{ message: { content: "Verdict: glob reviewed." } }],
+      choices: [{ message: { content: reviewText } }],
     }));
   }, async (baseUrl) => {
     const result = await runAsync([
@@ -1858,7 +2172,7 @@ test("branch-diff treats **/ as a path segment glob", async () => {
       record.review_metadata.audit_manifest.selected_source.files.map((file) => file.path),
       ["feature.txt", "nested/feature.txt"]
     );
-    assert.equal(record.result, "Verdict: glob reviewed.");
+    assert.equal(record.result, reviewText);
   });
 });
 
@@ -2507,6 +2821,7 @@ test("custom-review accepts files when cwd itself is a symlink to the workspace"
   const realWorkspace = mkdtempSync(path.join(tmpdir(), "grok-web-real-workspace-"));
   const linkRoot = mkdtempSync(path.join(tmpdir(), "grok-web-link-root-"));
   const linkedWorkspace = path.join(linkRoot, "workspace");
+  const reviewText = substantiveReviewFixture("Symlink marker: symlinked cwd accepted.");
   writeFileSync(path.join(realWorkspace, "review.js"), "export const value = 42;\n");
   symlinkSync(realWorkspace, linkedWorkspace);
 
@@ -2516,7 +2831,7 @@ test("custom-review accepts files when cwd itself is a symlink to the workspace"
     res.setHeader("content-type", "application/json");
     res.end(JSON.stringify({
       id: "grok-web-session-linked-workspace",
-      choices: [{ message: { content: "Verdict: symlinked cwd accepted." } }],
+      choices: [{ message: { content: reviewText } }],
     }));
   }, async (baseUrl) => {
     const result = await runAsync([
@@ -2534,7 +2849,7 @@ test("custom-review accepts files when cwd itself is a symlink to the workspace"
 
     assert.equal(result.status, 0);
     assert.equal(record.status, "completed");
-    assert.equal(record.result, "Verdict: symlinked cwd accepted.");
+    assert.equal(record.result, reviewText);
   });
 });
 
@@ -2587,7 +2902,7 @@ test("smoke replay: grok/happy-path-review reproduces recorded JobRecord shape (
       chatCaptured.authorization = req.headers.authorization ?? null;
       chatCaptured.body = await readJsonRequest(req);
       res.end(JSON.stringify({
-        choices: [{ message: { content: "Verdict: PASS" } }],
+        choices: [{ message: { content: substantiveReviewFixture("Replay marker: fixture happy path.") } }],
         usage: { prompt_tokens: 10, completion_tokens: 2, total_tokens: 12 },
       }));
       return;

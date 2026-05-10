@@ -179,11 +179,13 @@ export async function spawnGemini(profile, runtimeInputs = {}) {
       finishReject(Object.assign(new Error(`spawn ${binary} failed: ${e.message}`), { code: e.code }));
     });
     child.on("close", (exitCode, signal) => {
+      const endedAt = new Date().toISOString();
       const parsed = parseGeminiResult(stdout, stderr);
       finishResolve({
         exitCode,
         signal,
         timedOut,
+        endedAt,
         stdout,
         stderr,
         geminiSessionId: parsed.sessionId ?? null,

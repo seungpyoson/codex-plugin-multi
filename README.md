@@ -128,9 +128,44 @@ Troubleshooting signals:
 - Grok `tunnel_unavailable` means the subscription-backed local tunnel is not
   reachable at `GROK_WEB_BASE_URL`. Start or repair the tunnel rather than
   adding xAI API keys.
+- Grok `models_ok_chat_400` is now the generic fallback only after local
+  session probes fail to identify a sharper cause. `grok_session_no_runtime_tokens`
+  means the tunnel has no active runtime session, `grok_session_malformed_active_token`
+  means the active token is not JWT-shaped, and
+  `grok_session_runtime_admin_divergence` means grok2api admin state has active
+  tokens while runtime status still reports an empty token table.
+- Reviewer runs with `review_not_completed` and
+  `error_cause: "review_quality"` reached the provider or companion but did
+  not return a usable review. Treat shallow summaries, permission-denied
+  output, or text that admits the selected files were not inspected as failed
+  review slots; rerun with a reviewer that can inspect the selected source
+  instead of counting the slot as approved.
 - Claude/Gemini/Kimi subscription/OAuth modes intentionally ignore unrelated
   API-key env vars. Do not treat stripped API keys as the cause unless you
   explicitly selected API-key auth for a provider that supports it.
+
+Review-quality A/B prompts:
+
+- `node scripts/review-quality-ab-fixture.mjs --packet packet1_correctness`
+- `node scripts/review-quality-ab-fixture.mjs --packet packet2_security`
+- `node scripts/review-quality-ab-fixture.mjs --packet packet3_clean`
+- `node scripts/review-quality-ab-fixture.mjs --judge-context`
+
+Use the packet prompt for both plugin and manual-relay reviewers. Use the
+judge context only for scoring; it contains the seeded answer key and must not
+be pasted into reviewer prompts.
+
+Render collected JobRecords into a provider panel before judging quality:
+
+```bash
+node scripts/review-panel.mjs /path/to/job-records.json
+```
+
+The panel shows one row per provider with readiness, status, source
+transmission, elapsed milliseconds, semantic failed-slot state, inspection
+state, error code, HTTP status, and semantic failure reasons. A provider that
+could not inspect files, returned shallow output, or hit Grok chat/session
+readiness must appear as a failed row instead of being buried in prose.
 
 ## Install
 
@@ -192,10 +227,12 @@ For `second-codex`, inspect both profiles:
 npm run doctor:cache -- --second-codex-home "$HOME/.codex-second"
 ```
 
-The report compares marketplace/plugin skill files against
-`plugins/cache/codex-plugin-multi/<plugin>/0.1.0`, checks whether each plugin is
-enabled in `config.toml`, and prints next actions. For Git marketplace installs,
-start with:
+The report compares marketplace/plugin files against
+`plugins/cache/codex-plugin-multi/<plugin>/0.1.0`, including SHA-256 checks for
+bundled `commands/`, `skills/`, `scripts/`, and `config/` files. It reports
+`missing_files`, `extra_files`, and `changed_files`, checks whether each plugin
+is enabled in `config.toml`, and prints next actions. For Git marketplace
+installs, start with:
 
 ```bash
 codex plugin marketplace upgrade codex-plugin-multi

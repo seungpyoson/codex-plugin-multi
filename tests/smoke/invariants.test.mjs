@@ -481,7 +481,7 @@ test("M6-finding-1-H1: background worker persists parsed.result on terminal JobR
     // The exact regression: pre-T7.4 the bg worker dropped parsed.result onto
     // the floor between the foreground→worker split. cmdResult then returned
     // meta without `result`.
-    assert.equal(meta.result, "Mock Claude response.",
+    assert.match(meta.result, /Mock Claude response\./,
       "background worker must persist parsed.result on the JobRecord");
     assert.deepEqual(meta.permission_denials, []);
     assert.ok("mutations" in meta, "background JobRecord carries mutations array");

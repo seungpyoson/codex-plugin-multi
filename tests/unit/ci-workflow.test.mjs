@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { EXTERNAL_REVIEW_KEYS } from "../../scripts/lib/external-review.mjs";
 import { RECIPES } from "../../scripts/smoke-rerecord.mjs";
@@ -9,7 +9,12 @@ const pkg = JSON.parse(readFileSync(resolve("package.json"), "utf8"));
 const workflow = readFileSync(resolve(".github/workflows/pull-request-ci.yml"), "utf8");
 const smokeRerecordWorkflow = readFileSync(resolve(".github/workflows/smoke-rerecord.yml"), "utf8");
 const e2eDocs = readFileSync(resolve("docs/e2e.md"), "utf8");
+const reviewEnforcementDocs = readFileSync(resolve("docs/review-enforcement.md"), "utf8");
+const designSpec = readFileSync(resolve("docs/superpowers/specs/2026-04-23-codex-plugin-multi-design.md"), "utf8");
+const architectureRecord = readFileSync(resolve("docs/architecture-record.md"), "utf8");
 const sonarConfig = readFileSync(resolve(".sonarcloud.properties"), "utf8");
+const noMistakesConfig = readFileSync(resolve(".no-mistakes.yaml"), "utf8");
+const claudeProjectNotes = readFileSync(resolve("CLAUDE.md"), "utf8");
 
 test("package scripts expose per-target smoke commands", () => {
   assert.match(pkg.scripts["smoke:claude"] ?? "", /claude-companion\.smoke\.test\.mjs/);
@@ -32,14 +37,83 @@ test("pull-request CI runs unit tests and per-target smoke matrix separately", (
 });
 
 test("pull-request CI runs shared-copy sync checks", () => {
+  assert.match(pkg.scripts["lint"] ?? "", /check-manifests\.mjs/);
+  assert.match(pkg.scripts["lint"] ?? "", /npm run lint:sync/);
   assert.match(pkg.scripts["lint:sync"] ?? "", /sync-codex-env\.mjs --check/);
   assert.match(pkg.scripts["lint:sync"] ?? "", /sync-companion-common\.mjs --check/);
   assert.match(pkg.scripts["lint:sync"] ?? "", /sync-external-review\.mjs --check/);
+  assert.match(pkg.scripts["lint:sync"] ?? "", /sync-time\.mjs --check/);
   assert.match(pkg.scripts["lint:sync"] ?? "", /sync-review-prompt\.mjs --check/);
   assert.match(pkg.scripts["lint:sync"] ?? "", /sync-auth-selection\.mjs --check/);
   assert.match(pkg.scripts["lint:sync"] ?? "", /sync-provider-env\.mjs --check/);
   assert.match(pkg.scripts["lint:sync"] ?? "", /sync-usage-limit\.mjs --check/);
   assert.match(workflow, /npm run lint:sync/);
+});
+
+test("manual external review relays are not merge gates", () => {
+  assert.equal(existsSync(resolve(".github/workflows/manual-review-gate.yml")), false);
+  assert.doesNotMatch(reviewEnforcementDocs, /manual-review-gate/);
+  assert.doesNotMatch(reviewEnforcementDocs, /codex-plugin-multi:manual-external-adversarial-review/);
+  assert.doesNotMatch(reviewEnforcementDocs, /manual relay/i);
+});
+
+test("review enforcement docs name the required branch protection settings", () => {
+  assert.match(reviewEnforcementDocs, /required status check/i);
+  for (const context of [
+    "lint",
+    "test",
+    "smoke (api-reviewers)",
+    "smoke (claude)",
+    "smoke (gemini)",
+    "smoke (grok)",
+    "smoke (kimi)",
+    "SonarCloud Code Analysis",
+  ]) {
+    assert.match(reviewEnforcementDocs, new RegExp(`^- \`${context.replace(/[()]/g, "\\$&")}\`$`, "m"));
+  }
+  assert.doesNotMatch(reviewEnforcementDocs, /pull-request-ci \//);
+  assert.doesNotMatch(reviewEnforcementDocs, /^- `Greptile Review`$/m);
+  assert.match(reviewEnforcementDocs, /Bot reviews such as Greptile are useful advisory signals/);
+  assert.match(reviewEnforcementDocs, /External reviewers must run through the plugin reviewers/i);
+  assert.match(reviewEnforcementDocs, /required approving review count.*0/i);
+  assert.match(reviewEnforcementDocs, /require conversation resolution/i);
+  assert.doesNotMatch(reviewEnforcementDocs, /require last push approval:\s*true/i);
+});
+
+test("no-mistakes test gate bootstraps dependencies in disposable worktrees", () => {
+  assert.match(noMistakesConfig, /test:\s*"npm ci && npm run lint && npm run test:full"/);
+});
+
+test("no-mistakes timing docs avoid stale hard-coded local duration budgets", () => {
+  for (const [label, contents] of [
+    ["CLAUDE.md", claudeProjectNotes],
+    [".no-mistakes.yaml", noMistakesConfig],
+  ]) {
+    assert.doesNotMatch(contents, /~40s|75s|60s pre-commit|fits the 60s/i, label);
+  }
+});
+
+test("design docs cover review-quality failure contract", () => {
+  for (const token of [
+    "review_metadata",
+    "review_not_completed",
+    "semantic_failure_reasons",
+    "failed_review_slot",
+    "looks_shallow",
+    "selected_source",
+    "elapsed_ms",
+  ]) {
+    assert.match(designSpec, new RegExp(token));
+  }
+  assert.match(architectureRecord, /Review Quality Gate/);
+  assert.match(architectureRecord, /review_not_completed/);
+});
+
+test("review-quality exports carry maintainer-facing JSDoc", () => {
+  const reviewPrompt = readFileSync(resolve("scripts/lib/review-prompt.mjs"), "utf8");
+  const evaluator = readFileSync(resolve("scripts/lib/review-quality-evaluator.mjs"), "utf8");
+  assert.match(reviewPrompt, /\/\*\*[\s\S]*delimiter-guarded[\s\S]*export function buildSelectedSourcePromptBlock/);
+  assert.match(evaluator, /\/\*\*[\s\S]*seeded review packet[\s\S]*export function evaluateSeededReviewPacket/);
 });
 
 test("pull-request CI runs the enforced coverage gate", () => {
@@ -133,6 +207,17 @@ test("standalone lifecycle smoke tests guard launch event shape against shared h
   ]) {
     const smoke = readFileSync(resolve(rel), "utf8");
     assert.match(smoke, /externalReviewLaunchedEvent/, `${rel} must compare launch events with shared helper`);
+  }
+});
+
+test("standalone API smoke tests share substantive review fixture text", () => {
+  for (const rel of [
+    "tests/smoke/api-reviewers.smoke.test.mjs",
+    "tests/smoke/grok-web.smoke.test.mjs",
+  ]) {
+    const smoke = readFileSync(resolve(rel), "utf8");
+    assert.match(smoke, /substantiveReviewFixture/);
+    assert.doesNotMatch(smoke, /function substantiveReview\(/);
   }
 });
 

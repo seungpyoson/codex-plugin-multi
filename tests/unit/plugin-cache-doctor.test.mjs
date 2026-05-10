@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -19,6 +19,18 @@ function writeCachedSkill(home, plugin, skill) {
   const dir = path.join(home, "plugins", "cache", "codex-plugin-multi", plugin, "0.1.0", "skills", skill);
   mkdirSync(dir, { recursive: true });
   writeFileSync(path.join(dir, "SKILL.md"), `---\nname: ${skill}\n---\n`, "utf8");
+}
+
+function writePluginFile(root, plugin, rel, content) {
+  const file = path.join(root, plugin, rel);
+  mkdirSync(path.dirname(file), { recursive: true });
+  writeFileSync(file, content, "utf8");
+}
+
+function writeCachedPluginFile(home, plugin, rel, content) {
+  const file = path.join(home, "plugins", "cache", "codex-plugin-multi", plugin, "0.1.0", rel);
+  mkdirSync(path.dirname(file), { recursive: true });
+  writeFileSync(file, content, "utf8");
 }
 
 function writeConfig(home, plugin, enabled = true) {
@@ -62,6 +74,38 @@ test("codex plugin cache doctor reports stale cache, enablement, and restart gui
   assert.match(report.next_actions.join("\n"), /codex plugin marketplace upgrade codex-plugin-multi/);
   assert.match(report.next_actions.join("\n"), /restart/i);
   assert.match(report.next_actions.join("\n"), /codex debug prompt-input 'list skills'/);
+});
+
+test("codex plugin cache doctor reports stale runtime files even when skill names match", () => {
+  const repo = mkdtempSync(path.join(tmpdir(), "plugin-cache-doctor-runtime-repo-"));
+  const primary = mkdtempSync(path.join(tmpdir(), "plugin-cache-doctor-runtime-home-"));
+
+  writeSkill(path.join(repo, "plugins"), "grok", "grok-review");
+  writeCachedSkill(primary, "grok", "grok-review");
+  writePluginFile(path.join(repo, "plugins"), "grok", "scripts/grok-web-reviewer.mjs", "export const version = 'source';\n");
+  writeCachedPluginFile(primary, "grok", "scripts/grok-web-reviewer.mjs", "export const version = 'stale-cache';\n");
+  writeConfig(primary, "grok", true);
+
+  const stdout = execFileSync(process.execPath, [
+    DOCTOR,
+    "--repo", repo,
+    "--codex-home", primary,
+    "--plugin", "grok",
+  ], { encoding: "utf8" });
+  const report = JSON.parse(stdout);
+  const profile = report.profiles.primary;
+
+  assert.equal(report.ok, false);
+  assert.equal(profile.enabled, true);
+  assert.equal(profile.cache_in_sync, false);
+  assert.deepEqual(profile.missing_skills, []);
+  assert.deepEqual(profile.changed_files, ["scripts/grok-web-reviewer.mjs"]);
+});
+
+test("codex plugin cache doctor sorts file lists with explicit comparators", () => {
+  const source = readFileSync(DOCTOR, "utf8");
+
+  assert.doesNotMatch(source, /\[\.\.\.(?:expected|cached)\.keys\(\)\]\.sort\(\)/);
 });
 
 test("codex plugin cache doctor rejects unsafe or missing option values", () => {

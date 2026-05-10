@@ -300,6 +300,49 @@ test("fixtures: committed rerecord fixture exit codes match recipe expectExit", 
   );
 });
 
+test("fixtures: successful review fixtures do not contain failed-review-slot text", () => {
+  const failedReviewText = /\bNOT REVIEWED\b|failed review slot|scope is unreachable|could not inspect|unable to inspect|did not inspect|no file content examined|read denied|permission denied/i;
+  const offenders = [];
+  for (const f of FIXTURES) {
+    const response = readJson(f.responsePath);
+    const quality = response.review_metadata?.audit_manifest?.review_quality;
+    const recordedAsSuccessfulReview =
+      response.exit_code === 0
+      && response.status === "completed"
+      && response.error_code == null
+      && quality?.failed_review_slot === false;
+    if (recordedAsSuccessfulReview && failedReviewText.test(String(response.result ?? ""))) {
+      offenders.push(`${f.plugin}/${f.scenario}`);
+    }
+  }
+  assert.deepEqual(
+    offenders,
+    [],
+    "fixtures recorded as successful reviews must not contain text that says the source was not reviewed",
+  );
+});
+
+test("fixtures: successful review fixtures are not shallow placeholders", () => {
+  const offenders = [];
+  for (const f of FIXTURES) {
+    const response = readJson(f.responsePath);
+    const quality = response.review_metadata?.audit_manifest?.review_quality;
+    const recordedAsSuccessfulReview =
+      response.exit_code === 0
+      && response.status === "completed"
+      && response.error_code == null
+      && quality?.failed_review_slot === false;
+    if (recordedAsSuccessfulReview && quality?.looks_shallow === true) {
+      offenders.push(`${f.plugin}/${f.scenario}`);
+    }
+  }
+  assert.deepEqual(
+    offenders,
+    [],
+    "fixtures recorded as successful reviews must not be shallow placeholders",
+  );
+});
+
 test("filterFixturesByChangedEnv: undefined env returns all (full sweep)", () => {
   const all = [
     { plugin: "a", responsePath: "/repo/a.json", provenancePath: "/repo/a.prov.json" },

@@ -11,11 +11,23 @@ export const REVIEW_PROMPT_CHECKLIST = Object.freeze([
 
 export const REVIEW_PROMPT_CONTRACT_VERSION = 1;
 export const REVIEW_AUDIT_MANIFEST_VERSION = 1;
+const MAX_REVIEW_MARKUP_STRIPS = 10;
+const MAX_CHECKLIST_NUMBER_DIGITS = 10;
+const SELECTED_SOURCE_INSPECTION_VERBS = Object.freeze([
+  "analyzed",
+  "checked",
+  "evaluated",
+  "examined",
+  "inspected",
+  "reviewed",
+]);
 
 function contentBuffer(file) {
-  if (Buffer.isBuffer(file?.content)) return file.content;
-  if (file?.content instanceof Uint8Array) return Buffer.from(file.content);
-  return Buffer.from(String(file?.text ?? ""), "utf8");
+  const content = file?.content;
+  if (Buffer.isBuffer(content)) return content;
+  if (content instanceof Uint8Array) return Buffer.from(content);
+  if (typeof file?.text === "string") return Buffer.from(file.text, "utf8");
+  throw new Error(`scope_source_content_missing:${String(file?.path ?? "unknown")}`);
 }
 
 function sha256(value) {
@@ -92,6 +104,35 @@ function startsWithLabel(line, label) {
   return line.slice(label.length).trimStart().startsWith(":");
 }
 
+function isReviewMarkupSpace(char) {
+  return char === undefined || char === " " || char === "\t";
+}
+
+function bulletText(line) {
+  const marker = line[0];
+  if (marker !== "-" && marker !== "*") return null;
+  if (!isReviewMarkupSpace(line[1])) return null;
+  return line.slice(1).trimStart();
+}
+
+function stripLeadingReviewMarkup(line) {
+  let out = String(line ?? "").trimStart();
+  for (let i = 0; i < MAX_REVIEW_MARKUP_STRIPS; i += 1) {
+    const before = out;
+    const checklist = checklistText(out);
+    if (checklist) out = checklist;
+    out = out.trimStart();
+    while (out.startsWith(">")) out = out.slice(1).trimStart();
+    const bullet = bulletText(out);
+    if (bullet !== null) out = bullet;
+    while (out.startsWith("**") || out.startsWith("__")) out = out.slice(2).trimStart();
+    while (out.startsWith("`")) out = out.slice(1).trimStart();
+    while (out.startsWith("#")) out = out.slice(1).trimStart();
+    if (out === before) break;
+  }
+  return out;
+}
+
 function reviewLines(text) {
   return String(text ?? "").split("\n").map((line) => (
     line.endsWith("\r") ? line.slice(0, -1) : line
@@ -100,7 +141,7 @@ function reviewLines(text) {
 
 function hasVerdict(text) {
   return reviewLines(text).some((rawLine) => {
-    const line = rawLine.toLowerCase();
+    const line = unmarkReviewText(rawLine).toLowerCase();
     return startsWithLabel(line, "verdict")
       || startsWithLabel(line, "summary")
       || startsWithToken(line, "approve")
@@ -113,9 +154,10 @@ function hasVerdict(text) {
 
 function checklistText(line) {
   const trimmed = line.trimStart();
-  if (trimmed.startsWith("-") || trimmed.startsWith("*")) return trimmed.slice(1).trimStart();
+  const bullet = bulletText(trimmed);
+  if (bullet !== null) return bullet;
   let index = 0;
-  while (index < trimmed.length) {
+  while (index < trimmed.length && index < MAX_CHECKLIST_NUMBER_DIGITS) {
     const code = trimmed.charCodeAt(index);
     if (code < 48 || code > 57) break;
     index += 1;
@@ -124,42 +166,208 @@ function checklistText(line) {
   return trimmed.slice(index + 1).trimStart();
 }
 
-function isChecklistVerdict(line) {
+function unmarkReviewText(text) {
+  return stripLeadingReviewMarkup(text).replace(/[*_`]/g, "");
+}
+
+function checklistStatus(line) {
   const text = checklistText(line);
-  if (!text) return false;
-  const lower = text.toLowerCase();
-  return startsWithToken(lower, "pass")
-    || startsWithToken(lower, "fail")
-    || startsWithToken(lower, "not reviewed");
+  if (!text) return null;
+  const lower = unmarkReviewText(text).toLowerCase();
+  if (startsWithToken(lower, "pass")) return "pass";
+  if (startsWithToken(lower, "fail")) return "fail";
+  if (startsWithToken(lower, "not reviewed")) return "not_reviewed";
+  const statusMatch = lower.match(/(?:^|[\u2013\u2014|]|(?:^|\s)-)\s*(pass|fail|not reviewed)\b/)
+    ?? lower.match(/:\s*(not reviewed)\b/)
+    ?? lower.match(/:\s*(pass|fail)\b(?=\s*(?:$|[().;,\u2013\u2014]))/);
+  if (!statusMatch) return null;
+  return statusMatch[1].replace(" ", "_");
+}
+
+function isChecklistVerdict(line) {
+  return checklistStatus(line) !== null;
+}
+
+function isPassingChecklistLine(line) {
+  return checklistStatus(line) === "pass";
 }
 
 function includesAny(text, phrases) {
   return phrases.some((phrase) => text.includes(phrase));
 }
 
-function qualityFlags({ result = "", status = null, errorCode = null } = {}) {
+function isPathTokenBoundary(char) {
+  if (!char) return true;
+  const code = char.charCodeAt(0);
+  return !(
+    (code >= 48 && code <= 57)
+    || (code >= 65 && code <= 90)
+    || (code >= 97 && code <= 122)
+    || char === "_"
+    || char === "."
+    || char === "/"
+    || char === "-"
+  );
+}
+
+function isWhitespace(char) {
+  return char === " " || char === "\t" || char === "\n" || char === "\r" || char === "\f" || char === "\v";
+}
+
+function includesPathToken(text, path) {
+  const value = String(text ?? "");
+  const needle = String(path ?? "");
+  if (!needle) return false;
+  let index = value.indexOf(needle);
+  while (index !== -1) {
+    if (isPathTokenBoundary(value[index - 1])) {
+      const afterIndex = index + needle.length;
+      const after = value[afterIndex];
+      if (isPathTokenBoundary(after)) return true;
+      // A path token can end a sentence: match "a.js." without making "."
+      // a general boundary, which would also match inside "data.js".
+      if (after === "." && (afterIndex + 1 === value.length || isWhitespace(value[afterIndex + 1]))) {
+        return true;
+      }
+    }
+    index = value.indexOf(needle, index + 1);
+  }
+  return false;
+}
+
+function mentionsSelectedSourcePath(lowerLine, selectedSource) {
+  const files = selectedSource?.files;
+  if (!Array.isArray(files) || files.length === 0) return false;
+  return files.some((file) => {
+    const path = String(file?.path ?? "").toLowerCase();
+    return path && includesPathToken(lowerLine, path);
+  });
+}
+
+function lineDeniesSelectedSourceInspection(line, selectedSource) {
+  const lower = stripLeadingReviewMarkup(line).toLowerCase();
+  if (!includesAny(lower, ["did not inspect", "not inspected", "could not inspect", "unable to inspect"])) {
+    return false;
+  }
+  if (mentionsSelectedSourcePath(lower, selectedSource)) return true;
+  return includesAny(lower, [
+    "selected file",
+    "selected files",
+    "selected source",
+    "source file",
+    "source files",
+    "target file",
+    "target files",
+  ]);
+}
+
+function semanticFailureReasons(text, looksShallow, selectedSource = null) {
+  const reasons = [];
+  const hasNotReviewedVerdict = reviewLines(text).some((rawLine) => {
+    const line = unmarkReviewText(rawLine).toLowerCase();
+    return startsWithLabel(line, "verdict") && line.includes("not reviewed");
+  });
+  const semanticLines = reviewLines(text).filter((line) => !isPassingChecklistLine(line));
+  const semanticText = semanticLines.join("\n").toLowerCase();
+  if (hasNotReviewedVerdict || includesAny(semanticText, [
+    "failed review slot",
+    "this is not an approval",
+    "no file content examined",
+    "no files examined",
+    "no source inspected",
+    "selected file inspection failed",
+    "selected source inspection failed",
+    "selected files were not inspected",
+    "selected source was not inspected",
+    "could not inspect",
+    "unable to inspect",
+    "scope is unreachable",
+    "target file not present",
+    "target file was not present",
+  ]) || semanticLines.some((line) => lineDeniesSelectedSourceInspection(line, selectedSource))) {
+    reasons.push("not_reviewed");
+  }
+  if (includesAny(semanticText, [
+    "permission denied",
+    "permission block",
+    "permission-denied",
+    "read denied",
+    "read-denied",
+  ])) {
+    reasons.push("permission_blocked");
+  }
+  if (looksShallow) {
+    reasons.push("shallow_output");
+  }
+  return Object.freeze([...new Set(reasons)]);
+}
+
+function mentionsSelectedSourceInspection(lowerText, selectedSource) {
+  if (!includesAny(lowerText, SELECTED_SOURCE_INSPECTION_VERBS)) return false;
+  return mentionsSelectedSourcePath(lowerText, selectedSource);
+}
+
+const TINY_SOURCE_MAX_FILES = 1;
+const TINY_SOURCE_MAX_BYTES = 512;
+const TINY_SOURCE_MAX_LINES = 5;
+
+function isTinySelectedSource(selectedSource) {
+  const totals = selectedSource?.totals;
+  return Number.isInteger(totals?.files)
+    && Number.isInteger(totals?.bytes)
+    && Number.isInteger(totals?.lines)
+    && totals.files > 0
+    && totals.files <= TINY_SOURCE_MAX_FILES
+    && totals.bytes <= TINY_SOURCE_MAX_BYTES
+    && totals.lines <= TINY_SOURCE_MAX_LINES;
+}
+
+function qualityFlags({
+  result = "",
+  status = null,
+  errorCode = null,
+  selectedSource = null,
+} = {}) {
   const text = String(result ?? "");
   const lowerText = text.toLowerCase();
   const checklistItemsSeen = reviewLines(text).filter((line) => isChecklistVerdict(line)).length;
+  const hasVerdictFlag = hasVerdict(text);
+  const hasBlockingSection = includesAny(lowerText, [
+    "blocking finding",
+    "blocking findings",
+    "blocker",
+    "blockers",
+  ]);
+  const hasNonBlockingSection = includesAny(lowerText, [
+    "non-blocking",
+    "non blocking",
+    "minor concern",
+    "minor concerns",
+    "residual risk",
+    "residual risks",
+  ]);
+  const conciseTinyReview = isTinySelectedSource(selectedSource)
+    && hasVerdictFlag
+    && hasBlockingSection
+    && hasNonBlockingSection
+    && mentionsSelectedSourceInspection(lowerText, selectedSource);
+  const looksShallow = text.trim().length > 0
+    && text.trim().length < 500
+    && !conciseTinyReview;
+  const isFinalReviewAttempt = !["approval_request", "preflight_failed"].includes(status);
+  const failureReasons = [...semanticFailureReasons(text, looksShallow, selectedSource)];
+  if (isFinalReviewAttempt && status === "completed" && !hasVerdictFlag) {
+    failureReasons.push("missing_verdict");
+  }
+  const semanticReasons = Object.freeze([...new Set(failureReasons)]);
   return Object.freeze({
-    has_verdict: hasVerdict(text),
-    has_blocking_section: includesAny(lowerText, [
-      "blocking finding",
-      "blocking findings",
-      "blocker",
-      "blockers",
-    ]),
-    has_non_blocking_section: includesAny(lowerText, [
-      "non-blocking",
-      "non blocking",
-      "minor concern",
-      "minor concerns",
-      "residual risk",
-      "residual risks",
-    ]),
+    has_verdict: hasVerdictFlag,
+    has_blocking_section: hasBlockingSection,
+    has_non_blocking_section: hasNonBlockingSection,
     checklist_items_seen: checklistItemsSeen,
-    looks_shallow: text.trim().length > 0 && text.trim().length < 500,
-    failed_review_slot: !["approval_request", "preflight_failed"].includes(status) && (status !== "completed" || errorCode !== null),
+    looks_shallow: looksShallow,
+    semantic_failure_reasons: semanticReasons,
+    failed_review_slot: isFinalReviewAttempt && (status !== "completed" || errorCode !== null || semanticReasons.length > 0),
   });
 }
 
@@ -191,10 +399,11 @@ export function buildReviewAuditManifest({
   status = null,
   errorCode = null,
 } = {}) {
+  const selectedSource = sourceManifest(sourceFiles);
   return Object.freeze({
     schema_version: REVIEW_AUDIT_MANIFEST_VERSION,
     rendered_prompt_hash: hashObject(prompt),
-    selected_source: sourceManifest(sourceFiles),
+    selected_source: selectedSource,
     git_identity: Object.freeze({
       remote: git.remote ?? null,
       branch: git.branch ?? null,
@@ -237,7 +446,7 @@ export function buildReviewAuditManifest({
       reason: scope.reason ?? null,
     }),
     error_code: errorCode,
-    review_quality: qualityFlags({ result, status, errorCode }),
+    review_quality: qualityFlags({ result, status, errorCode, selectedSource }),
   });
 }
 
@@ -248,6 +457,48 @@ function line(name, value) {
 function listBlock(title, values) {
   const entries = Array.isArray(values) && values.length > 0 ? values : ["unknown"];
   return [title, ...entries.map((value) => `- ${value}`)].join("\n");
+}
+
+function sourceBlockDelimiter(file, index, delimiterPrefix, delimiterCorpus) {
+  let delimiter = `${delimiterPrefix} ${index}: ${file.path}`;
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    if (!delimiterCorpus.includes(`BEGIN ${delimiter}`) && !delimiterCorpus.includes(`END ${delimiter}`)) {
+      return delimiter;
+    }
+    delimiter = `${delimiter} #`;
+  }
+  throw new Error(`scope_delimiter_collision:${file.path}`);
+}
+
+/**
+ * Builds a delimiter-guarded source block for review prompts.
+ *
+ * Each selected file is wrapped in BEGIN/END markers that are escalated when
+ * the marker text already appears in any selected source file. Returns null
+ * when no source files are selected.
+ */
+export function buildSelectedSourcePromptBlock(sourceFiles = [], {
+  title = "Selected files",
+  delimiterPrefix = "REVIEW FILE",
+} = {}) {
+  const files = Array.isArray(sourceFiles) ? sourceFiles : [];
+  if (files.length === 0) return null;
+  // Prompt rendering materializes text independently from audit metadata so
+  // either artifact can be built by callers without sharing mutable state.
+  const entries = files.map((file) => ({
+    file,
+    text: contentBuffer(file).toString("utf8"),
+  }));
+  const delimiterCorpus = entries.map((entry) => entry.text).join("\n");
+  const blocks = entries.map(({ file, text }, index) => {
+    const delimiter = sourceBlockDelimiter(file, index + 1, delimiterPrefix, delimiterCorpus);
+    return [
+      `BEGIN ${delimiter}`,
+      text,
+      `END ${delimiter}`,
+    ].join("\n");
+  });
+  return [title, ...blocks].join("\n");
 }
 
 export function buildReviewPrompt({
@@ -287,6 +538,11 @@ export function buildReviewPrompt({
     "- Distinguish real blocking code findings from missing supplied evidence, runtime/tool limitations, and stale or unavailable external comments.",
     "- For every checklist item, report PASS, FAIL, or NOT REVIEWED.",
     "- Blocking findings first, with concrete file/function/control-flow evidence.",
+    "- A usable review must name the selected file path(s) inspected; bare numbered answers or section bodies such as only 'None' are shallow and invalid.",
+    "- If a section has no findings, write a complete sentence that names the relevant selected file or scope and explains why no finding applies.",
+    "- For control-flow and security code, explicitly inspect overlapping predicates, early returns, and branch ordering before concluding no blocker exists.",
+    "- Do not upgrade speculative input-validation hardening into a blocking finding when the code is acceptable under the stated caller contract; use non-blocking concerns or test gaps instead.",
+    "- APPROVE with non-blocking concerns or test gaps when code is acceptable and no concrete blocker is present.",
     "- Non-blocking concerns separately.",
     "- Timed out, truncated, interrupted, blocked, or shallow output is NOT an approval.",
     "- Do not edit files.",

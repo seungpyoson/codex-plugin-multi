@@ -69,7 +69,7 @@ import {
   summarizeScopeDirectory,
   writePromptSidecar,
 } from "./lib/companion-common.mjs";
-import { REVIEW_PROMPT_CONTRACT_VERSION, buildReviewAuditManifest, buildReviewPrompt } from "./lib/review-prompt.mjs";
+import { REVIEW_PROMPT_CONTRACT_VERSION, buildReviewAuditManifest, buildReviewPrompt, buildSelectedSourcePromptBlock } from "./lib/review-prompt.mjs";
 
 // ——— plugin-root self-resolution (upstream pattern, spec §4.14) ———
 const PLUGIN_ROOT = resolvePath(dirname(fileURLToPath(import.meta.url)), "..");
@@ -135,8 +135,11 @@ function parseReviewTimeoutMs(cliValue, env = process.env, fallback = DEFAULT_CL
   return parsed;
 }
 
-function targetPromptFor(invocation, userPrompt) {
+function targetPromptFor(invocation, userPrompt, sourceFiles = []) {
   if (invocation.mode_profile_name === "rescue") return userPrompt;
+  const selectedSource = buildSelectedSourcePromptBlock(sourceFiles, {
+    delimiterPrefix: "CLAUDE FILE",
+  });
   return buildReviewPrompt({
     provider: "Claude Code",
     mode: invocation.mode,
@@ -148,6 +151,7 @@ function targetPromptFor(invocation, userPrompt) {
     scope: invocation.scope,
     scopePaths: invocation.scope_paths,
     userPrompt,
+    extraInstructions: selectedSource ? [selectedSource] : [],
   });
 }
 
@@ -280,6 +284,21 @@ function reviewAuditManifest(invocation, prompt, containmentPath, execution) {
     status: reviewAuditStatus(execution),
     errorCode,
   });
+}
+
+function scopedTargetPromptForOrExit(invocation, profile, userPrompt, lifecycleEvents) {
+  if (!invocation.review_prompt_contract_version || invocation.mode_profile_name === "rescue") {
+    return targetPromptFor(invocation, userPrompt);
+  }
+  const executionScope = setupExecutionScopeOrExit(invocation, profile, {
+    foreground: true,
+    lifecycleEvents,
+  });
+  try {
+    return targetPromptFor(invocation, userPrompt, auditSourceFiles(executionScope.addDir));
+  } finally {
+    cleanupScopedPromptExecutionScope(executionScope);
+  }
 }
 
 function isInsidePath(base, target) {
@@ -675,10 +694,9 @@ async function cmdRun(rest) {
   const queuedRecord = buildJobRecord(invocation, null, []);
   writeJobFile(workspaceRoot, jobId, queuedRecord);
   upsertJob(workspaceRoot, queuedRecord);
-  const targetPrompt = targetPromptFor(invocation, prompt);
+  const targetPrompt = scopedTargetPromptForOrExit(invocation, profile, prompt, lifecycleEvents);
 
   if (options.background) {
-    validateBackgroundExecutionScopeOrExit(invocation, lifecycleEvents);
     // Write prompt to private sidecar (§21.3.1 handoff buffer). Worker reads
     // and deletes — prompt text does NOT live on the JobRecord.
     try {
@@ -813,15 +831,6 @@ function setupExecutionScopeOrExit(invocation, profile, { foreground, lifecycleE
     if (foreground) printLifecycleJson(errorRecord, lifecycleEvents);
     process.exit(2);
   }
-}
-
-function validateBackgroundExecutionScopeOrExit(invocation, lifecycleEvents) {
-  const profile = resolveProfile(invocation.mode_profile_name);
-  const executionScope = setupExecutionScopeOrExit(invocation, profile, {
-    foreground: true,
-    lifecycleEvents,
-  });
-  cleanupExecutionResources(executionScope, { neutralCwd: null });
 }
 
 function prepareMutationContext(invocation, profile) {
@@ -976,6 +985,7 @@ function buildClaudeFinalRecord(invocation, execution, cancelMarker, mutations, 
   execution.runtimeDiagnostics = runtimeDiagnostics;
   return buildJobRecord(invocation, {
     exitCode: execution.exitCode,
+    endedAt: execution.endedAt,
     parsed: execution.parsed,
     pidInfo: execution.pidInfo,
     claudeSessionId: execution.claudeSessionId ?? null,
@@ -1016,6 +1026,7 @@ function persistFinalizationFallback(invocation, execution, finalRecord, mutatio
   try {
     fallbackRecord = buildJobRecord(invocation, {
       exitCode: execution.exitCode,
+      endedAt: execution.endedAt,
       parsed: execution.parsed,
       pidInfo: execution.pidInfo,
       claudeSessionId: execution.claudeSessionId ?? null,
@@ -1039,6 +1050,10 @@ function cleanupExecutionResources(executionScope, mutationContext) {
   if (executionScope.disposeEffective) {
     try { executionScope.containment.cleanup(); } catch { /* best-effort */ }
   }
+}
+
+function cleanupScopedPromptExecutionScope(executionScope) {
+  try { executionScope.containment.cleanup(); } catch { /* best-effort */ }
 }
 
 function cleanupNeutralCwd(neutralCwd) {
@@ -1225,10 +1240,9 @@ async function cmdContinue(rest) {
   const queuedRecord = buildJobRecord(invocation, null, []);
   writeJobFile(workspaceRoot, newJobId_, queuedRecord);
   upsertJob(workspaceRoot, queuedRecord);
-  const targetPrompt = targetPromptFor(invocation, prompt);
+  const targetPrompt = scopedTargetPromptForOrExit(invocation, priorProfile, prompt, lifecycleEvents);
 
   if (options.background) {
-    validateBackgroundExecutionScopeOrExit(invocation, lifecycleEvents);
     try {
       writePromptSidecar(resolveJobsDir(workspaceRoot), newJobId_, targetPrompt);
       writeRuntimeOptionsSidecar(workspaceRoot, newJobId_, { timeout_ms: timeoutMs });

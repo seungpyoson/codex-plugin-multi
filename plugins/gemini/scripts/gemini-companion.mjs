@@ -43,7 +43,7 @@ import {
   summarizeScopeDirectory,
   writePromptSidecar,
 } from "./lib/companion-common.mjs";
-import { REVIEW_PROMPT_CONTRACT_VERSION, buildReviewAuditManifest, buildReviewPrompt } from "./lib/review-prompt.mjs";
+import { REVIEW_PROMPT_CONTRACT_VERSION, buildReviewAuditManifest, buildReviewPrompt, buildSelectedSourcePromptBlock } from "./lib/review-prompt.mjs";
 
 const PLUGIN_ROOT = resolvePath(dirname(fileURLToPath(import.meta.url)), "..");
 const MODELS_CONFIG_PATH = resolvePath(PLUGIN_ROOT, "config/models.json");
@@ -84,8 +84,11 @@ function parseReviewTimeoutMs(cliValue, env = process.env, fallback = DEFAULT_GE
   return parsed;
 }
 
-function targetPromptFor(invocation, userPrompt) {
+function targetPromptFor(invocation, userPrompt, sourceFiles = []) {
   if (invocation.mode_profile_name === "rescue") return userPrompt;
+  const selectedSource = buildSelectedSourcePromptBlock(sourceFiles, {
+    delimiterPrefix: "GEMINI FILE",
+  });
   return buildReviewPrompt({
     provider: "Gemini CLI",
     mode: invocation.mode,
@@ -97,6 +100,7 @@ function targetPromptFor(invocation, userPrompt) {
     scope: invocation.scope,
     scopePaths: invocation.scope_paths,
     userPrompt,
+    extraInstructions: selectedSource ? [selectedSource] : [],
   });
 }
 
@@ -222,6 +226,21 @@ function reviewAuditManifest(invocation, prompt, containmentPath, execution) {
     status: execution?.exitCode === 0 && execution?.parsed?.ok === true ? "completed" : "failed",
     errorCode: execution?.parsed?.reason ?? null,
   });
+}
+
+function scopedTargetPromptForOrExit(invocation, profile, userPrompt, lifecycleEvents) {
+  if (!invocation.review_prompt_contract_version || invocation.mode_profile_name === "rescue") {
+    return targetPromptFor(invocation, userPrompt);
+  }
+  const executionScope = setupExecutionScopeOrExit(invocation, profile, {
+    foreground: true,
+    lifecycleEvents,
+  });
+  try {
+    return targetPromptFor(invocation, userPrompt, auditSourceFiles(executionScope.containment.path));
+  } finally {
+    cleanupScopedPromptExecutionScope(executionScope);
+  }
 }
 
 // Mutation-detection git scrub: same shared list as claude-companion +
@@ -538,10 +557,9 @@ async function cmdRun(rest) {
   const queuedRecord = buildJobRecord(invocation, null, []);
   writeJobFile(workspaceRoot, jobId, queuedRecord);
   upsertJob(workspaceRoot, queuedRecord);
-  const targetPrompt = targetPromptFor(invocation, prompt);
+  const targetPrompt = scopedTargetPromptForOrExit(invocation, profile, prompt, lifecycleEvents);
 
   if (options.background) {
-    validateBackgroundExecutionScopeOrExit(invocation, lifecycleEvents);
     try {
       writePromptSidecar(resolveJobsDir(workspaceRoot), jobId, targetPrompt);
       writeRuntimeOptionsSidecar(workspaceRoot, jobId, { timeout_ms: timeoutMs });
@@ -629,15 +647,6 @@ function setupExecutionScopeOrExit(invocation, profile, { foreground, lifecycleE
     if (foreground) printLifecycleJson(errorRecord, lifecycleEvents);
     process.exit(2);
   }
-}
-
-function validateBackgroundExecutionScopeOrExit(invocation, lifecycleEvents) {
-  const profile = resolveProfile(invocation.mode_profile_name);
-  const executionScope = setupExecutionScopeOrExit(invocation, profile, {
-    foreground: true,
-    lifecycleEvents,
-  });
-  cleanupExecutionResources(executionScope, { neutralCwd: null });
 }
 
 function prepareMutationContext(invocation, profile) {
@@ -789,6 +798,7 @@ function buildGeminiFinalRecord(invocation, execution, cancelMarker, mutations, 
   execution.reviewAuditManifest = reviewAuditManifest(invocation, prompt, containmentPath, execution);
   return buildJobRecord(invocation, {
     exitCode: execution.exitCode,
+    endedAt: execution.endedAt,
     parsed: execution.parsed,
     pidInfo: execution.pidInfo,
     geminiSessionId: execution.geminiSessionId,
@@ -827,6 +837,7 @@ function persistFinalizationFallback(invocation, execution, finalRecord, mutatio
   try {
     fallbackRecord = buildJobRecord(invocation, {
       exitCode: execution.exitCode,
+      endedAt: execution.endedAt,
       parsed: execution.parsed,
       pidInfo: execution.pidInfo,
       geminiSessionId: execution.geminiSessionId ?? null,
@@ -852,6 +863,10 @@ function cleanupExecutionResources(executionScope, mutationContext) {
   if (executionScope.disposeEffective) {
     try { executionScope.containment.cleanup(); } catch { /* best-effort */ }
   }
+}
+
+function cleanupScopedPromptExecutionScope(executionScope) {
+  try { executionScope.containment.cleanup(); } catch { /* best-effort */ }
 }
 
 function writeSidecar(workspaceRoot, jobId, name, contents) {
@@ -1043,10 +1058,9 @@ async function cmdContinue(rest) {
   const queuedRecord = buildJobRecord(invocation, null, []);
   writeJobFile(workspaceRoot, newJobId_, queuedRecord);
   upsertJob(workspaceRoot, queuedRecord);
-  const targetPrompt = targetPromptFor(invocation, prompt);
+  const targetPrompt = scopedTargetPromptForOrExit(invocation, priorProfile, prompt, lifecycleEvents);
 
   if (options.background) {
-    validateBackgroundExecutionScopeOrExit(invocation, lifecycleEvents);
     try {
       writePromptSidecar(resolveJobsDir(workspaceRoot), newJobId_, targetPrompt);
       writeRuntimeOptionsSidecar(workspaceRoot, newJobId_, { timeout_ms: timeoutMs });

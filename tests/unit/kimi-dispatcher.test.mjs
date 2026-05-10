@@ -137,6 +137,8 @@ process.kill(process.pid, "SIGABRT");
     assert.equal(result.parsed.reason, "step_limit_exceeded");
     assert.equal(result.parsed.error, "Max number of steps reached: 8");
     assert.equal(result.kimiSessionId, KIMI_SESSION_ID);
+    assert.equal(typeof result.endedAt, "string");
+    assert.equal(Number.isNaN(Date.parse(result.endedAt)), false);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

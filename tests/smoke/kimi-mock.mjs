@@ -100,7 +100,22 @@ if (process.env.KIMI_MOCK_STEP_LIMIT) {
 
 const fixture = {
   session_id: sessionId,
-  response: "Mock Kimi response.",
+  response: [
+    "Verdict: APPROVE",
+    "Blocking findings",
+    "- None. I inspected the selected source made available to the Kimi smoke fixture and found no blocking issue.",
+    "Non-blocking concerns",
+    "- None for this fixture.",
+    "Test gaps",
+    "- Existing smoke fixture coverage is sufficient for this wrapper path.",
+    "Inspection status",
+    "- The selected source was available and the mock returned a complete review, not a placeholder.",
+    "Checklist:",
+    "- PASS selected scope was available.",
+    "- PASS selected source was inspected before verdict.",
+    "- PASS no blocker was invented.",
+    "Mock Kimi response.",
+  ].join("\n"),
   stats: {
     models: {
       [model]: {

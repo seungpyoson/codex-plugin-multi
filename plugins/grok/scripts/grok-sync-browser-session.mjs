@@ -5,6 +5,7 @@ import { copyFileSync, existsSync, mkdtempSync, readFileSync, rmSync } from "nod
 import { homedir, tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { isJwtShapedToken } from "./lib/jwt.mjs";
 
 const DEFAULT_GROK2API_BASE_URL = "http://127.0.0.1:8000";
 const DEFAULT_ADMIN_KEY = "grok2api";
@@ -357,6 +358,13 @@ async function main(argv = process.argv.slice(2)) {
   const selected = selectCookie(cookies);
   if (!selected) {
     fail("cookie_not_found", "No usable sso-rw or sso cookie was found for grok.com.", { source });
+  }
+  if (!isJwtShapedToken(selected.value)) {
+    fail(
+      "malformed_cookie_token",
+      `Selected ${selected.name} cookie is not JWT-shaped; refusing to import a likely malformed browser-decrypt result as an active Grok session token.`,
+      { source, selected_cookie: selected.name },
+    );
   }
 
   const toDelete = tokensToReplace(existingTokens, selected.value, pool, append);

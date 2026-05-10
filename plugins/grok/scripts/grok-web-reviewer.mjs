@@ -10,13 +10,17 @@ import { cleanGitEnv as cleanCanonicalGitEnv } from "./lib/git-env.mjs";
 import { GIT_BINARY_ENV, gitEnv, isGitBinaryPolicyError, resolveGitBinary } from "./lib/git-binary.mjs";
 import { REVIEW_PROMPT_CONTRACT_VERSION, buildReviewAuditManifest, buildReviewPrompt, scopeResolutionReason } from "./lib/review-prompt.mjs";
 import { USAGE_LIMIT_SAFE_MESSAGE, isUsageLimitDetail } from "./lib/usage-limit.mjs";
+import { elapsedMs } from "./lib/time.mjs";
 import {
   EXTERNAL_REVIEW_KEYS,
   SOURCE_CONTENT_TRANSMISSION,
 } from "./lib/external-review.mjs";
+import { isJwtShapedToken } from "./lib/jwt.mjs";
 
 const VALID_MODES = new Set(["review", "adversarial-review", "custom-review"]);
 const DEFAULT_BASE_URL = "http://127.0.0.1:8000/v1";
+const DEFAULT_GROK2API_BASE_URL = "http://127.0.0.1:8000";
+const DEFAULT_GROK2API_ADMIN_KEY = "grok2api";
 const DEFAULT_MODEL = "grok-4.20-fast";
 const DEFAULT_TIMEOUT_MS = 600000;
 const DEFAULT_DOCTOR_TIMEOUT_MS = 2000;
@@ -143,6 +147,13 @@ function normalizeBaseUrl(value) {
   return url;
 }
 
+function normalizeGrok2ApiBaseUrl(value, tunnelBaseUrl = DEFAULT_BASE_URL) {
+  const fallback = normalizeBaseUrl(tunnelBaseUrl).replace(/\/(?:(?:api\/)?v1|api)$/, "");
+  let url = String(value || fallback || DEFAULT_GROK2API_BASE_URL);
+  while (url.endsWith("/")) url = url.slice(0, -1);
+  return url;
+}
+
 function config(env = process.env) {
   const timeoutMs = parsePositiveIntegerEnv(env, "GROK_WEB_TIMEOUT_MS", DEFAULT_TIMEOUT_MS);
   const doctorTimeoutMs = parsePositiveIntegerEnv(env, "GROK_WEB_DOCTOR_TIMEOUT_MS", DEFAULT_DOCTOR_TIMEOUT_MS);
@@ -160,6 +171,8 @@ function config(env = process.env) {
     max_prompt_chars: maxPromptChars,
     credential_ref: env.GROK_WEB_TUNNEL_API_KEY ? "GROK_WEB_TUNNEL_API_KEY" : null,
     credential_value: env.GROK_WEB_TUNNEL_API_KEY || null,
+    grok2api_base_url: normalizeGrok2ApiBaseUrl(env.GROK2API_BASE_URL, env.GROK_WEB_BASE_URL),
+    grok2api_admin_key: env.GROK2API_ADMIN_KEY || DEFAULT_GROK2API_ADMIN_KEY,
   };
 }
 
@@ -716,6 +729,135 @@ function payloadSentForFetchError(error) {
   return null;
 }
 
+function sessionTokenDiagnostics(tokens) {
+  const entries = Array.isArray(tokens) ? tokens : [];
+  const active = entries.filter((entry) => {
+    const status = String(entry?.status ?? "").toLowerCase();
+    return entry?.deleted !== true && status !== "deleted" && status !== "inactive";
+  });
+  const malformedActive = active.filter((entry) => !isJwtShapedToken(entry?.token));
+  const deleted = entries.filter((entry) => entry?.deleted === true || String(entry?.status ?? "").toLowerCase() === "deleted");
+  const errorCode = active.length === 0
+    ? "grok_session_no_runtime_tokens"
+    : (malformedActive.length > 0 ? "grok_session_malformed_active_token" : null);
+  return {
+    status: "checked",
+    total_token_count: entries.length,
+    active_token_count: active.length,
+    malformed_active_token_count: malformedActive.length,
+    deleted_token_count: deleted.length,
+    error_code: errorCode,
+  };
+}
+
+async function probeGrokRuntimeStatus(cfg, env = process.env) {
+  const endpoint = `${cfg.grok2api_base_url}/status`;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), cfg.doctor_timeout_ms);
+  const redact = redactor(env);
+  try {
+    const response = await fetch(endpoint, {
+      method: "GET",
+      signal: controller.signal,
+    });
+    const text = await response.text();
+    const parsed = text ? parseJson(text) : { ok: true, value: null };
+    if (!response.ok || !parsed.ok) {
+      return {
+        status: "unknown",
+        error_code: "grok_runtime_status_unavailable",
+        error_message: response.ok ? "grok2api runtime status response was not valid JSON." : errorMessageFromResponse(parsed, text, redact),
+        http_status: response.status,
+        probe_endpoint: endpoint,
+      };
+    }
+    const size = Number.isSafeInteger(parsed.value?.size) ? parsed.value.size : null;
+    return {
+      status: "checked",
+      runtime_size: size,
+      runtime_revision: Number.isSafeInteger(parsed.value?.revision) ? parsed.value.revision : null,
+      runtime_selection_strategy: typeof parsed.value?.selection_strategy === "string" ? parsed.value.selection_strategy : null,
+      error_code: null,
+      error_message: null,
+      http_status: response.status,
+      probe_endpoint: endpoint,
+    };
+  } catch (error) {
+    return {
+      status: "unknown",
+      error_code: error?.name === "AbortError" ? "grok_runtime_status_timeout" : "grok_runtime_status_unavailable",
+      error_message: tunnelTransportMessage(error, env, redact),
+      http_status: null,
+      probe_endpoint: endpoint,
+    };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function probeGrokSessionDiagnostics(cfg, env = process.env) {
+  const endpoint = `${cfg.grok2api_base_url}/admin/api/tokens`;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), cfg.doctor_timeout_ms);
+  const redact = redactor(env);
+  try {
+    const response = await fetch(endpoint, {
+      method: "GET",
+      headers: { authorization: `Bearer ${cfg.grok2api_admin_key}` },
+      signal: controller.signal,
+    });
+    const text = await response.text();
+    const parsed = text ? parseJson(text) : { ok: true, value: null };
+    if (!response.ok || !parsed.ok) {
+      return {
+        status: "unknown",
+        error_code: response.ok ? "grok_session_diagnostics_unavailable" : classifyHttpFailure(response.status, parsed, text),
+        error_message: response.ok ? "grok2api admin token response was not valid JSON." : errorMessageFromResponse(parsed, text, redact),
+        http_status: response.status,
+        probe_endpoint: endpoint,
+      };
+    }
+    const tokenDiagnostics = sessionTokenDiagnostics(parsed.value?.tokens);
+    const runtimeDiagnostics = tokenDiagnostics.active_token_count > 0 && tokenDiagnostics.error_code === null
+      ? await probeGrokRuntimeStatus(cfg, env)
+      : { status: "not_checked", error_code: null };
+    const runtimeDiverged = runtimeDiagnostics.status === "checked"
+      && tokenDiagnostics.active_token_count > 0
+      && runtimeDiagnostics.runtime_size === 0;
+    const runtimeProbeFailed = runtimeDiagnostics.status === "unknown";
+    return {
+      ...tokenDiagnostics,
+      ...(runtimeDiagnostics.status === "checked" ? {
+        runtime_size: runtimeDiagnostics.runtime_size,
+        runtime_revision: runtimeDiagnostics.runtime_revision,
+        runtime_selection_strategy: runtimeDiagnostics.runtime_selection_strategy,
+      } : {}),
+      ...(runtimeProbeFailed ? {
+        runtime_status: runtimeDiagnostics.status,
+        runtime_error_code: runtimeDiagnostics.error_code,
+        runtime_http_status: runtimeDiagnostics.http_status,
+        runtime_probe_endpoint: runtimeDiagnostics.probe_endpoint,
+      } : {}),
+      error_code: runtimeDiverged
+        ? "grok_session_runtime_admin_divergence"
+        : (runtimeProbeFailed ? runtimeDiagnostics.error_code : tokenDiagnostics.error_code),
+      error_message: runtimeProbeFailed ? runtimeDiagnostics.error_message : null,
+      http_status: response.status,
+      probe_endpoint: endpoint,
+    };
+  } catch (error) {
+    return {
+      status: "unknown",
+      error_code: error?.name === "AbortError" ? "grok_session_diagnostics_timeout" : "grok_session_diagnostics_unavailable",
+      error_message: tunnelTransportMessage(error, env, redact),
+      http_status: null,
+      probe_endpoint: endpoint,
+    };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 function tunnelTransportMessage(error, env, redact) {
   const detail = redact(error?.message ?? String(error));
   const ignoredKeys = ["GROK_API_KEY", "XAI_API_KEY", "XAI_KEY"].filter((key) => env[key]);
@@ -988,7 +1130,13 @@ function suggestedAction(errorCode, errorMessage = "") {
   if (errorCode === "usage_limited") return "Wait for Grok subscription usage to recover, reduce concurrency, or inspect the local tunnel. Any billing, credit, or tier change must be a separate manual action with explicit user approval.";
   if (errorCode === "grok_chat_model_rejected") return "The tunnel lists models, but the configured GROK_WEB_MODEL is not accepted by chat; correct GROK_WEB_MODEL or tunnel model routing, then retry.";
   if (errorCode === "grok_chat_timeout") return "The Grok chat readiness probe exceeded GROK_WEB_CHAT_DOCTOR_TIMEOUT_MS; inspect the local tunnel latency or raise that timeout, then retry.";
+  if (errorCode === "grok_session_no_runtime_tokens") return "The local Grok tunnel has no active runtime session tokens; sync the browser session or import a valid Grok cookie, then retry.";
+  if (errorCode === "grok_session_malformed_active_token") return "The local Grok tunnel has a malformed active Grok session token; remove the malformed token, import a JWT-shaped Grok cookie, restart or refresh the tunnel, then retry.";
+  if (errorCode === "grok_session_runtime_admin_divergence") return "The grok2api admin token list has active tokens but the runtime token table is empty; restart or refresh the local Grok tunnel, then retry.";
+  if (errorCode === "grok_runtime_status_unavailable") return "The grok2api admin token list has active tokens, but the runtime status endpoint is unavailable; restart or refresh the local Grok tunnel, then retry.";
+  if (errorCode === "grok_runtime_status_timeout") return "The grok2api admin token list has active tokens, but the runtime status endpoint timed out; inspect local tunnel latency, restart or refresh the tunnel, then retry.";
   if (errorCode === "models_ok_chat_400") return "The tunnel lists models but chat is not review-capable; refresh the Grok web session, inspect tunnel logs and rate-limit endpoint health, then retry.";
+  if (errorCode === "review_not_completed") return "Treat this Grok slot as failed. Inspect the raw result and runtime diagnostics, then retry only with a source packet and prompt contract the reviewer can inspect and answer substantively.";
   if (errorCode === "malformed_response") return "Inspect or update the local Grok web tunnel; it returned an unsupported response shape.";
   if (errorCode === "git_binary_rejected") return `Set ${GIT_BINARY_ENV} to a trusted Git executable outside the workspace, or unset it to use the default Git binary.`;
   return "Inspect error_message and repair the local Grok web tunnel before retrying.";
@@ -999,6 +1147,7 @@ function errorCauseFor(errorCode) {
   if (errorCode === "scope_failed") return "scope_resolution";
   if (errorCode === "git_binary_rejected") return "git_binary_policy";
   if (errorCode === "usage_limited") return "cost_quota_usage_limit";
+  if (errorCode === "review_not_completed") return "review_quality";
   return "grok_web_tunnel";
 }
 
@@ -1054,7 +1203,7 @@ function buildTerminalExternalReview({ cfg, mode, options, scopeInfo, execution,
   });
 }
 
-function buildReviewMetadata(cfg, scopeInfo, execution = null) {
+function buildReviewMetadata(cfg, scopeInfo, execution = null, startedAt = null, endedAt = null) {
   const auditManifest = execution?.prompt ? buildReviewAuditManifest({
     prompt: execution.prompt,
     sourceFiles: scopeInfo.files ?? [],
@@ -1108,20 +1257,33 @@ function buildReviewMetadata(cfg, scopeInfo, execution = null) {
       raw_model: execution.parsed?.raw_model ?? null,
       parsed_ok: execution.parsed?.ok ?? null,
       result_chars: typeof execution.parsed?.result === "string" ? execution.parsed.result.length : null,
+      elapsed_ms: elapsedMs(startedAt, endedAt),
     } : null,
     audit_manifest: auditManifest,
   };
 }
 
 function buildRecord({ cfg, mode, options, scopeInfo, execution, startedAt, endedAt }) {
-  const completed = execution.exitCode === 0 && execution.parsed?.ok === true;
-  const errorCode = completed ? null : (execution.parsed?.reason ?? "tunnel_error");
-  const errorMessage = completed ? null : (execution.parsed?.error ?? "");
-  const diagnostic = execution.diagnostics
-    ? `${errorMessage || errorCode} (${formatDiagnosticPairs(execution.diagnostics)})`
-    : (errorMessage || errorCode);
-  const reviewDisclosure = disclosure(cfg, completed, execution.payload_sent ?? null);
-  const transmission = sourceTransmission(completed, execution.payload_sent ?? null);
+  const reviewMetadata = buildReviewMetadata(cfg, scopeInfo, execution, startedAt, endedAt);
+  const processCompleted = execution.exitCode === 0 && execution.parsed?.ok === true;
+  const reviewQuality = reviewMetadata?.audit_manifest?.review_quality ?? null;
+  const reviewQualityFailed = processCompleted && reviewQuality?.failed_review_slot === true;
+  const completed = processCompleted && !reviewQualityFailed;
+  const qualityReasons = reviewQuality?.semantic_failure_reasons ?? [];
+  const errorCode = completed ? null : (reviewQualityFailed ? "review_not_completed" : (execution.parsed?.reason ?? "tunnel_error"));
+  const errorMessage = completed ? null : (
+    reviewQualityFailed
+      ? `review_quality_failed:${qualityReasons.join(",") || "unknown"}`
+      : (execution.parsed?.error ?? "")
+  );
+  const diagnostic = reviewQualityFailed
+    ? `review did not complete as a usable external review (${qualityReasons.join(", ") || "review_quality_failed"})`
+    : (execution.diagnostics
+      ? `${errorMessage || errorCode} (${formatDiagnosticPairs(execution.diagnostics)})`
+      : (errorMessage || errorCode));
+  const payloadSent = execution.payload_sent ?? (processCompleted ? true : null);
+  const reviewDisclosure = disclosure(cfg, completed, payloadSent);
+  const transmission = sourceTransmission(completed, payloadSent);
   const runtimeDiagnostics = execution.diagnostics ? {
     tunnel_request: {
       endpoint_class: execution.diagnostics.endpoint_class ?? null,
@@ -1157,7 +1319,7 @@ function buildRecord({ cfg, mode, options, scopeInfo, execution, startedAt, ende
     scope_base: scopeInfo.scope_base ?? null,
     scope_paths: scopeInfo.scope_paths ?? null,
     prompt_head: promptHead(options.prompt),
-    review_metadata: buildReviewMetadata(cfg, scopeInfo, execution),
+    review_metadata: reviewMetadata,
     schema_spec: null,
     binary: null,
     status: completed ? "completed" : "failed",
@@ -1172,7 +1334,7 @@ function buildRecord({ cfg, mode, options, scopeInfo, execution, startedAt, ende
     external_review: buildTerminalExternalReview({ cfg, mode, options, scopeInfo, execution, transmission, reviewDisclosure }),
     disclosure_note: reviewDisclosure,
     runtime_diagnostics: runtimeDiagnostics,
-    result: completed ? execution.parsed.result : null,
+    result: processCompleted ? execution.parsed.result : null,
     structured_output: null,
     permission_denials: [],
     mutations: [],
@@ -1516,8 +1678,17 @@ async function doctorFields(env = process.env) {
     http_status: null,
     probe_endpoint: `${cfg.base_url}/chat/completions`,
   };
+  const sessionDiagnostics = probe.reachable && chatProbe.chat_ready !== true
+    ? await probeGrokSessionDiagnostics(cfg, env)
+    : {
+      status: "not_checked",
+      reason: "chat_probe_ready_or_tunnel_unreachable",
+      error_code: null,
+    };
   const ready = probe.reachable === true && chatProbe.chat_ready === true;
-  const errorCode = ready ? null : (chatProbe.error_code ?? probe.error_code);
+  const sessionErrorCode = sessionDiagnostics.status === "checked" ? sessionDiagnostics.error_code : null;
+  const errorCode = ready ? null : (sessionErrorCode ?? chatProbe.error_code ?? probe.error_code);
+  const sessionErrorMessage = sessionDiagnostics.status === "checked" ? sessionDiagnostics.error_message : null;
   return {
     provider: "grok-web",
     status: "ok",
@@ -1541,9 +1712,10 @@ async function doctorFields(env = process.env) {
     timeout_ms: cfg.timeout_ms,
     doctor_timeout_ms: cfg.doctor_timeout_ms,
     chat_doctor_timeout_ms: cfg.chat_doctor_timeout_ms,
+    session_diagnostics: sessionDiagnostics,
     cost_quota_readiness: costQuotaReadiness,
     error_code: errorCode,
-    error_message: ready ? null : (chatProbe.error_message ?? probe.error_message),
+    error_message: ready ? null : (sessionErrorMessage ?? chatProbe.error_message ?? probe.error_message),
     http_status: probe.http_status,
     chat_http_status: chatProbe.http_status,
   };

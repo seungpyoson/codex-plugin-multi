@@ -45,6 +45,11 @@ prints only sanitized pool/quota status. It adds and refreshes the new token
 before deleting old grok2api accounts in the same target pool, so an
 add/refresh failure does not empty the existing pool and accounts in other pools
 are preserved. Pass `--append` to keep existing accounts in the target pool too.
+The selected Grok cookie must be JWT-shaped. If Chrome decrypt returns
+malformed bytes, the helper fails with `malformed_cookie_token` before adding,
+refreshing, or deleting any grok2api token. Use the explicit
+`--cookie-source-json` fallback with a freshly copied `sso-rw`/`sso` value from
+the browser instead of importing a malformed decrypted value.
 If deleting stale grok2api tokens fails after the new token is imported, the
 failure JSON reports `stale_token_count` so operators know the pool still
 contains old entries. It defaults the local pool to `super` because grok2api may
@@ -134,6 +139,23 @@ as unavailable just because the model listing endpoint is fast. If `/models`
 works but `/chat/completions` rejects the configured model, the doctor reports
 `grok_chat_model_rejected` and points at `GROK_WEB_MODEL` instead of session
 refresh guidance.
+
+When `/models` works but chat returns HTTP 400, doctor also probes the local
+grok2api admin/session state without printing token values. It reports:
+
+- `grok_session_no_runtime_tokens` when the admin token list has no active
+  runtime session tokens.
+- `grok_session_malformed_active_token` when an active token is not JWT-shaped,
+  which usually means browser cookie decrypt/import produced malformed bytes.
+- `grok_session_runtime_admin_divergence` when the admin token list has an
+  active JWT-shaped token but the runtime `/status` table still reports
+  `size: 0`. Restart or refresh the local grok2api tunnel in that state.
+- `models_ok_chat_400` only when the tunnel is reachable and chat returns 400
+  but the local token probes do not identify a more specific session failure.
+
+Set `GROK2API_BASE_URL` and `GROK2API_ADMIN_KEY` if the grok2api admin API is
+not at the same host/port as `GROK_WEB_BASE_URL` or does not use the default
+admin key.
 
 Review runs also preflight the rendered prompt length. Prompts above
 `GROK_WEB_MAX_PROMPT_CHARS` (default 400000) fail before tunnel launch with

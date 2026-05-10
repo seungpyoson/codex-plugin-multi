@@ -26,6 +26,7 @@ import {
   sourceContentTransmissionForExecution,
 } from "./external-review.mjs";
 import { isGitBinaryPolicyError } from "./git-binary.mjs";
+import { elapsedMs } from "./time.mjs";
 import path from "node:path";
 
 export const SCHEMA_VERSION = 10;
@@ -95,7 +96,7 @@ function stringBytes(value) {
   return Buffer.byteLength(String(value ?? ""), "utf8");
 }
 
-function buildReviewMetadata(invocation, execution = null, parsed = null) {
+function buildReviewMetadata(invocation, execution = null, parsed = null, endedAt = null) {
   if (!invocation.review_prompt_contract_version) return null;
   return Object.freeze({
     prompt_contract_version: invocation.review_prompt_contract_version,
@@ -108,6 +109,7 @@ function buildReviewMetadata(invocation, execution = null, parsed = null) {
       stderr_bytes: stringBytes(execution.stderr),
       parsed_ok: parsed?.ok ?? null,
       result_chars: typeof parsed?.result === "string" ? parsed.result.length : null,
+      elapsed_ms: elapsedMs(invocation.started_at, endedAt),
     }) : null,
     audit_manifest: execution?.reviewAuditManifest ?? null,
   });
@@ -239,6 +241,16 @@ function classifyExecution(execution) {
   }
   const parsed = execution.parsed ?? null;
   if (execution.exitCode === 0 && parsed && parsed.ok === true) {
+    if (execution.reviewAuditManifest?.review_quality?.failed_review_slot === true) {
+      const reasons = Array.isArray(execution.reviewAuditManifest.review_quality.semantic_failure_reasons)
+        ? execution.reviewAuditManifest.review_quality.semantic_failure_reasons.join(",")
+        : "review_quality_failed";
+      return {
+        status: "failed",
+        error_code: "review_not_completed",
+        error_message: `review_quality_failed:${reasons}`,
+      };
+    }
     return { status: "completed", error_code: null, error_message: null };
   }
   if (parsed && parsed.ok === false) {
@@ -334,6 +346,17 @@ function buildErrorDiagnostic(invocation, status, error_code, error_message) {
       suggested_action:
         `Wait for ${target.displayName} quota to recover, reduce reviewer concurrency, or run ` +
         `\`${target.binaryName}\` interactively to inspect account usage. Track tier or credit changes separately from this review run.`,
+      disclosure_note: null,
+    };
+  }
+  if (status === "failed" && error_code === "review_not_completed") {
+    return {
+      error_summary: `${target.displayName} Code CLI review did not complete as a usable external review.`,
+      error_cause:
+        "The target process returned successfully, but the review-quality audit marked the slot as failed. " +
+        "Common causes are NOT REVIEWED output, permission/read denial, or shallow output.",
+      suggested_action:
+        "Treat this slot as failed, inspect runtime diagnostics and the raw result, then retry with a source packet the reviewer can inspect.",
       disclosure_note: null,
     };
   }
@@ -496,7 +519,18 @@ function assertInvocation(invocation) {
 function targetFromDenial(denial) {
   if (typeof denial === "string") return denial;
   if (!denial || typeof denial !== "object") return null;
-  return denial.target ?? denial.path ?? denial.file_path ?? denial.file ?? null;
+  const toolInput = denial.tool_input && typeof denial.tool_input === "object"
+    ? denial.tool_input
+    : null;
+  return denial.target
+    ?? denial.path
+    ?? denial.file_path
+    ?? denial.file
+    ?? toolInput?.target
+    ?? toolInput?.path
+    ?? toolInput?.file_path
+    ?? toolInput?.file
+    ?? null;
 }
 
 function toolFromDenial(denial) {
@@ -563,7 +597,7 @@ function normalizeRuntimeDiagnostics(input, denials) {
  *                    binary, started_at }
  *
  *   execution  — null when writing the pre-run/queued record. Otherwise:
- *                  { exitCode, parsed: {ok, result?, structured?, denials?,
+ *                  { exitCode, endedAt?, parsed: {ok, result?, structured?, denials?,
  *                                        costUsd?, usage?, reason?, error?},
  *                    claudeSessionId?, geminiSessionId?, kimiSessionId?, pidInfo,
  *                    errorMessage?, stdout?, stderr? }
@@ -583,6 +617,9 @@ export function buildJobRecord(invocation, execution, mutations) {
   const diagnostic = buildErrorDiagnostic(invocation, status, error_code, error_message);
 
   const parsed = execution?.parsed ?? null;
+  const endedAt = execution && status !== "running"
+    ? (execution.endedAt ?? new Date().toISOString())
+    : null;
   const permissionDenials = Array.isArray(parsed?.denials) ? parsed.denials : [];
   const runtimeDiagnostics = normalizeRuntimeDiagnostics(
     execution?.runtimeDiagnostics ?? null,
@@ -614,14 +651,14 @@ export function buildJobRecord(invocation, execution, mutations) {
     scope_base: invocation.scope_base ?? null,
     scope_paths: invocation.scope_paths ?? null,
     prompt_head: invocation.prompt_head,
-    review_metadata: buildReviewMetadata(invocation, execution, parsed),
+    review_metadata: buildReviewMetadata(invocation, execution, parsed, endedAt),
     schema_spec: invocation.schema_spec ?? null,
     binary: invocation.binary,
 
     // Lifecycle
     status,
     started_at: invocation.started_at,
-    ended_at: execution && status !== "running" ? new Date().toISOString() : null,
+    ended_at: endedAt,
     exit_code: execution?.exitCode ?? null,
     error_code,
     error_message,

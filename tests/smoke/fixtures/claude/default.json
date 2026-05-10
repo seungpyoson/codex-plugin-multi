@@ -2,7 +2,7 @@
   "type": "result",
   "subtype": "success",
   "is_error": false,
-  "result": "Mock Claude response.",
+  "result": "Verdict: APPROVE\nBlocking findings\n- None. I inspected the selected source made available to the Claude smoke fixture and found no blocking issue.\nNon-blocking concerns\n- None for this fixture.\nTest gaps\n- Existing smoke fixture coverage is sufficient for this wrapper path.\nInspection status\n- The selected source was available and the mock returned a complete review, not a placeholder.\nChecklist:\n- PASS selected scope was available.\n- PASS selected source was inspected before verdict.\n- PASS no blocker was invented.\nMock Claude response.",
   "num_turns": 1,
   "duration_ms": 100,
   "duration_api_ms": 80,

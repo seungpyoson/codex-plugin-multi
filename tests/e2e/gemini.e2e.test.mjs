@@ -8,6 +8,14 @@ import { fileURLToPath } from "node:url";
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const COMPANION = path.join(REPO_ROOT, "plugins/gemini/scripts/gemini-companion.mjs");
+const LIVE_REVIEW_PROMPT = `Live E2E smoke: review README.md as a selected source file.
+Return:
+
+1. Verdict: APPROVE or REQUEST CHANGES.
+2. Blocking findings first, with file/function evidence. If none, say "No blocking findings."
+3. Non-blocking concerns. If none, say "None."
+4. Test gaps or verification gaps. If none, say "None."
+5. State explicitly whether you inspected the selected file.`;
 
 // #16 follow-up 9: env scrub so a stale GIT_DIR / GIT_WORK_TREE in the
 // parent process cannot hijack fixture commits into the caller checkout.
@@ -41,7 +49,7 @@ test("live Gemini foreground review completes", {
       "--foreground",
       "--cwd", cwd,
       "--",
-      "Live E2E smoke: summarize README.md in one sentence and do not edit files.",
+      LIVE_REVIEW_PROMPT,
     ], {
       cwd,
       encoding: "utf8",
@@ -52,12 +60,16 @@ test("live Gemini foreground review completes", {
       },
     });
 
-    assert.equal(res.status, 0, res.stderr);
+    assert.equal(res.status, 0, [res.stderr, res.stdout].filter(Boolean).join("\n"));
     const record = JSON.parse(res.stdout);
     assert.equal(record.target, "gemini");
     assert.equal(record.status, "completed");
     assert.ok(record.job_id);
     assert.ok("result" in record);
+    assert.equal(record.review_metadata.audit_manifest.review_quality.failed_review_slot, false);
+    assert.equal(record.review_metadata.audit_manifest.review_quality.looks_shallow, false);
+    assert.equal(record.review_metadata.audit_manifest.review_quality.has_verdict, true);
+    assert.equal(typeof record.review_metadata.raw_output.elapsed_ms, "number");
   } finally {
     rmSync(dataDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
     rmSync(cwd, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });

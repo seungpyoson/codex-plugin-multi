@@ -290,6 +290,8 @@ process.stdin.on("end", () => {
     assert.equal(execution.parsed.ok, true);
     assert.equal(execution.geminiSessionId, "22222222-3333-4444-9555-666666666666");
     assert.equal(execution.parsed.result, "hello from stdin");
+    assert.equal(typeof execution.endedAt, "string");
+    assert.equal(Number.isNaN(Date.parse(execution.endedAt)), false);
     assert.equal(Number.isInteger(execution.pidInfo.pid), true);
     assert.equal(spawnedPidInfo.pid, execution.pidInfo.pid);
   } finally {

@@ -209,11 +209,13 @@ export async function spawnClaude(profile, runtimeInputs = {}) {
     });
     child.on("close", (exitCode, signal) => {
       if (timer) clearTimeout(timer);
+      const endedAt = new Date().toISOString();
       const parsed = parseClaudeResult(stdout);
       resolve({
         exitCode,
         signal,
         timedOut,
+        endedAt,
         stdout,
         stderr,
         // What the companion SENT as --session-id (or null on resume). Not a
