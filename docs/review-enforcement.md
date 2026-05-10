@@ -1,37 +1,19 @@
 # Review Enforcement
 
-This repository treats plugin-generated external reviews as untrusted until
-manual external adversarial reviews are recorded for the exact pull-request
-head SHA.
+This repository does not use manually relayed external-review comments as a
+merge gate. External reviewers must run through the plugin reviewers so their
+findings, runtime failures, and follow-up fixes stay inside the repo workflow
+instead of being copied into ad hoc PR comments.
 
-## Manual Relay Evidence
-
-Post one PR comment or PR review body per external reviewer with this marker
-and fields:
-
-```text
-<!-- codex-plugin-multi:manual-external-adversarial-review -->
-Head: <40-char head SHA>
-Reviewer: Claude
-Verdict: APPROVE
-```
-
-Allowed reviewers are `Claude`, `Gemini`, `Kimi`, `DeepSeek`, and `GLM`.
-`Verdict: REQUEST CHANGES` blocks the gate. Evidence for an older head SHA is
-reported as stale and does not approve the current head.
-
-The `manual-review-gate` workflow runs `node scripts/ci/check-manual-review-gate.mjs`
-on pull-request updates, PR review updates, and PR comment changes. It also
-posts a `manual-review-gate` commit status for the exact head SHA so a comment
-or review update can refresh a branch-protectable status without requiring a
-new source commit.
+Plugin reviewer output is an advisory signal for maintainers. Blocking findings
+from Claude, Gemini, Kimi, Grok, DeepSeek, GLM, Greptile, or another reviewer
+must be addressed with normal commits and verified by CI before merge.
 
 ## Required Branch Protection
 
 Repo settings must configure these as required status checks on `main`. The
 active `CI gates` ruleset uses the raw check/status context names below:
 
-- `manual-review-gate`
 - `lint`
 - `test`
 - `smoke (api-reviewers)`
@@ -48,10 +30,6 @@ Repo settings must also set:
 - dismiss stale reviews on push: true
 - require last push approval: true, when the repository plan supports it
 
-Without those GitHub settings, the workflow is visible but not a hard merge
-gate.
-
-Bot reviews such as Greptile are useful advisory signals, but they are not the
-hard external-review gate. The hard gate is `manual-review-gate`, because it
-requires manual relay evidence for the exact head SHA from all required
-external reviewers and can be refreshed by PR comment or review updates.
+Without those GitHub settings, CI remains visible but is not a hard merge gate.
+Bot reviews such as Greptile are useful advisory signals, but they do not
+replace the required human approving review.
