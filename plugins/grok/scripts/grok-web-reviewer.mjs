@@ -515,7 +515,7 @@ function uvExecutionEnv(env = process.env) {
   return {
     ...env,
     PATH: GROK2API_FIXED_EXEC_PATH,
-    UV_CACHE_DIR: env.UV_CACHE_DIR || defaultGrok2ApiUvCacheDir(),
+    UV_CACHE_DIR: env.UV_CACHE_DIR ?? defaultGrok2ApiUvCacheDir(),
   };
 }
 
