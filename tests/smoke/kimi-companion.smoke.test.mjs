@@ -11,6 +11,7 @@ import { fixtureGit, fixtureSeedRepo } from "../helpers/fixture-git.mjs";
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const COMPANION = path.join(REPO_ROOT, "plugins/kimi/scripts/kimi-companion.mjs");
 const MOCK = path.join(REPO_ROOT, "tests/smoke/kimi-mock.mjs");
+const MODELS_CONFIG = path.join(REPO_ROOT, "plugins/kimi/config/models.json");
 const KIMI_SESSION_ID = "22222222-3333-4444-9555-666666666666";
 const KIMI_RESUMED_SESSION_ID = "77777777-8888-4999-aaaa-bbbbbbbbbbbb";
 
@@ -113,6 +114,16 @@ function readStdoutLog(dataDir, jobId) {
 
 function parseJson(stdout) {
   return JSON.parse(stdout);
+}
+
+function withKimiModelsConfig(config, fn) {
+  const prior = readFileSync(MODELS_CONFIG, "utf8");
+  writeFileSync(MODELS_CONFIG, `${JSON.stringify(config, null, 2)}\n`, "utf8");
+  try {
+    return fn();
+  } finally {
+    writeFileSync(MODELS_CONFIG, prior, "utf8");
+  }
 }
 
 function waitForTerminalRecord(dataDir, jobId, { timeoutMs = 5000 } = {}) {
@@ -646,6 +657,40 @@ test("kimi foreground review --timeout-ms overrides review timeout audit metadat
   const { record: persisted } = readOnlyJobRecord(result.dataDir);
   assert.equal(persisted.review_metadata.audit_manifest.request.timeout_ms, 123456);
 }));
+
+test("kimi foreground review retries a capacity-limited primary model with configured fallback", () => withRepo((cwd) => withKimiModelsConfig({
+  review_quality: "kimi-code/primary-capacity-limited",
+  rescue: "kimi-code/primary-capacity-limited",
+  fallbacks: {
+    review_quality: ["kimi-code/fallback-review"],
+    rescue: [],
+    native: [],
+  },
+}, () => {
+  const result = runCompanion([
+    "run",
+    "--mode",
+    "custom-review",
+    "--cwd",
+    cwd,
+    "--scope-paths",
+    "seed.txt",
+    "--foreground",
+    "--",
+    "Review this scope.",
+  ], {
+    cwd,
+    env: { KIMI_MOCK_CAPACITY_MODEL: "kimi-code/primary-capacity-limited" },
+  });
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  assert.match(result.stderr, /primary-capacity-limited.*retrying with kimi-code\/fallback-review/);
+  const record = parseJson(result.stdout);
+  assert.equal(record.status, "completed");
+  assert.equal(record.model, "kimi-code/fallback-review");
+  assert.equal(record.review_metadata.audit_manifest.request.model, "kimi-code/fallback-review");
+  const { record: persisted } = readOnlyJobRecord(result.dataDir);
+  assert.equal(persisted.model, "kimi-code/fallback-review");
+})));
 
 test("kimi run rejects Git binary policy errors distinctly before target spawn", () => withRepo((cwd) => {
   const marker = path.join(cwd, "malicious-git-ran");

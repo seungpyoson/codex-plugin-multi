@@ -303,6 +303,89 @@ process.exit(9);
   }
 });
 
+test("custom-review permission-mode ladder retries parse errors in the next mode", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "claude-permission-parse-retry-cwd-"));
+  fixtureSeedRepo(cwd, {
+    fileName: "seed.txt",
+    fileContents: "claude permission parse retry sentinel\n",
+  });
+  const tmp = mkdtempSync(path.join(tmpdir(), "claude-permission-parse-retry-bin-"));
+  const attemptsPath = path.join(tmp, "attempts.jsonl");
+  const binary = writeExecutable(tmp, "claude-parse-retry", `#!/usr/bin/env node
+import { appendFileSync } from "node:fs";
+
+const argv = process.argv.slice(2);
+const modeIndex = argv.indexOf("--permission-mode");
+const mode = modeIndex >= 0 ? argv[modeIndex + 1] : null;
+const sessionIndex = argv.indexOf("--session-id");
+const sessionId = sessionIndex >= 0 ? argv[sessionIndex + 1] : "11111111-1111-4111-8111-111111111111";
+appendFileSync(${JSON.stringify(attemptsPath)}, JSON.stringify({ mode }) + "\\n");
+
+if (mode === "dontAsk") {
+  process.stdout.write("{not valid json\\n");
+  process.exit(0);
+}
+
+if (mode === "auto") {
+  process.stdout.write(JSON.stringify({
+    type: "result",
+    is_error: false,
+    result: [
+      "Verdict: APPROVE",
+      "Blocking findings",
+      "- None. I inspected the selected source provided to this Claude smoke fixture and found no blocking issue.",
+      "Non-blocking concerns",
+      "- None for this fixture.",
+      "Test gaps",
+      "- Existing smoke fixture coverage is sufficient for this wrapper path.",
+      "Inspection status",
+      "- The selected source was available and the mock returned a complete review, not a placeholder.",
+      "Checklist:",
+      "- PASS selected scope was available.",
+      "- PASS selected source was inspected before verdict.",
+      "- PASS no blocker was invented."
+    ].join("\\n"),
+    session_id: sessionId,
+    usage: { input_tokens: 1, output_tokens: 1 },
+    permission_denials: []
+  }) + "\\n");
+  process.exit(0);
+}
+
+process.stderr.write("unexpected retry through permission mode " + mode + "\\n");
+process.exit(9);
+`);
+  const { stdout, stderr, status, dataDir } = runCompanion(
+    ["run", "--mode=custom-review", "--foreground", "--auth-mode", "api_key",
+     "--binary", binary, "--model", "claude-haiku-4-5-20251001",
+     "--cwd", cwd, "--scope-paths", "seed.txt", "--", "review selected source"],
+    {
+      cwd,
+      env: {
+        ANTHROPIC_API_KEY: "test-key",
+        CLAUDE_API_KEY: "",
+        CLAUDE_REVIEW_PERMISSION_MODES: "dontAsk,auto,acceptEdits",
+      },
+    },
+  );
+  try {
+    assert.equal(status, 0, `exit ${status}: stderr=${stderr}; stdout=${stdout}`);
+    const record = JSON.parse(stdout);
+    assert.equal(record.status, "completed");
+    assert.equal(record.review_metadata.permission_mode_effective, "auto");
+    assert.deepEqual(record.review_metadata.permission_mode_attempts.map((attempt) => attempt.mode), ["dontAsk", "auto"]);
+    assert.equal(record.review_metadata.permission_mode_attempts[0].error_code, "parse_error");
+    assert.equal(record.review_metadata.permission_mode_attempts[1].status, "completed");
+    const modesSeen = readFileSync(attemptsPath, "utf8").trim().split("\n")
+      .map((line) => JSON.parse(line).mode);
+    assert.deepEqual(modesSeen, ["dontAsk", "auto"]);
+  } finally {
+    cleanup(dataDir);
+    rmSync(cwd, { recursive: true, force: true });
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
 test("custom-review permission-mode ladder does not retry after timeout", () => {
   const cwd = mkdtempSync(path.join(tmpdir(), "claude-permission-timeout-cwd-"));
   fixtureSeedRepo(cwd, {

@@ -406,7 +406,15 @@ async function main(argv = process.argv.slice(2)) {
     });
     process.exit(0);
   } catch (error) {
-    fail(error.code || "grok2api_import_failed", redactMessage(error.message, [selected.value, adminKey, ...toDelete]), {
+    const existingTokenValues = existingTokens
+      .map((entry) => sanitizeToken(entry?.token))
+      .filter(Boolean);
+    fail(error.code || "grok2api_import_failed", redactMessage(error.message, [
+      selected.value,
+      adminKey,
+      ...existingTokenValues,
+      ...toDelete,
+    ]), {
       source,
       selected_cookie: selected.name,
       previous_pool_count: existingTokens.length,

@@ -37,7 +37,9 @@ lets Claude Code delegate to Codex.
   targets grok2api at `GROK_WEB_BASE_URL=http://127.0.0.1:8000/v1`; the plugin
   can bootstrap a local grok2api checkout into its temp runtime directory and
   auto-start the non-Docker
-  `uv run granian ... app.main:app` tunnel when it is down. Set
+  `uv run granian ... app.main:app` tunnel when it is down. Successfully
+  auto-started tunnels are left running for reuse; failed starts are cleaned up
+  with SIGTERM/verify/SIGKILL diagnostics. Set
   `GROK2API_HOME` or `GROK2API_BOOTSTRAP_DIR` only when you want a specific
   checkout or runtime directory. Set
   `GROK_WEB_TUNNEL_API_KEY` only if your local tunnel requires a bearer value.

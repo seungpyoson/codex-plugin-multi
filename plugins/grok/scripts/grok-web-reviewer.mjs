@@ -451,12 +451,14 @@ async function maybeBootstrapGrok2ApiHome(env = process.env) {
     };
   }
 
-  const result = spawnSync(gitBinary, ["clone", "--depth", "1", repoUrl.url, target.path], {
+  const clonePath = `${target.path}.clone-${process.pid}-${randomUUID()}`;
+  const result = spawnSync(gitBinary, ["clone", "--depth", "1", repoUrl.url, clonePath], {
     env: gitEnv(env),
     encoding: "utf8",
     stdio: ["ignore", "pipe", "pipe"],
   });
   if (result.status !== 0) {
+    try { await rm(clonePath, { recursive: true, force: true }); } catch { /* best-effort failed clone cleanup */ }
     return {
       ok: false,
       status: "failed",
@@ -468,13 +470,28 @@ async function maybeBootstrapGrok2ApiHome(env = process.env) {
       home_path: target.path,
     };
   }
-  if (!await looksLikeGrok2ApiHome(target.path)) {
+  if (!await looksLikeGrok2ApiHome(clonePath)) {
+    try { await rm(clonePath, { recursive: true, force: true }); } catch { /* best-effort invalid clone cleanup */ }
     return {
       ok: false,
       status: "failed",
       attempted: true,
       error_code: "grok2api_bootstrap_invalid",
       message: "The cloned grok2api checkout does not contain app/main.py and pyproject.toml or uv.lock.",
+      home_source: target.source,
+      home_path: target.path,
+    };
+  }
+  try {
+    await rename(clonePath, target.path);
+  } catch (error) {
+    try { await rm(clonePath, { recursive: true, force: true }); } catch { /* best-effort failed rename cleanup */ }
+    return {
+      ok: false,
+      status: "failed",
+      attempted: true,
+      error_code: "grok2api_bootstrap_failed",
+      message: `Failed to finalize grok2api bootstrap checkout: ${error?.message ?? String(error)}`,
       home_source: target.source,
       home_path: target.path,
     };
@@ -1502,8 +1519,10 @@ async function maybeStartGrokTunnel(cfg, env = process.env) {
       status: "started",
       attempted: true,
       error_code: null,
-      message: "Started local grok2api tunnel without Docker.",
+      message: "Started local grok2api tunnel without Docker; leaving it running for reuse.",
       pid: child.pid,
+      cleanup_policy: "persistent_reuse",
+      cleanup_on_exit: false,
       home_source: home.source,
       home_path: home.path,
       uv_source: uvBinary.source,

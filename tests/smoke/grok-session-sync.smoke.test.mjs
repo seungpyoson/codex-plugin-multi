@@ -403,6 +403,41 @@ test("sync-browser-session preserves grok2api_timeout during mid-import hangs", 
   });
 });
 
+test("sync-browser-session redacts existing pool tokens when append import fails", async () => {
+  const dir = mkdtempSync(path.join(tmpdir(), "grok-sync-"));
+  const secret = VALID_SESSION_TOKEN;
+  const existingToken = "prior-working-token";
+  const cookieSource = path.join(dir, "cookies.json");
+  writeFileSync(cookieSource, JSON.stringify([{ name: "sso-rw", value: secret }]));
+
+  await withGrok2ApiServer(async (req, res) => {
+    res.setHeader("content-type", "application/json");
+    if (req.method === "GET" && req.url === "/admin/api/tokens") {
+      res.end(JSON.stringify({ tokens: [{ token: existingToken, pool: "super", status: "active", quota: {} }] }));
+      return;
+    }
+    if (req.method === "POST" && req.url === "/admin/api/tokens/add") {
+      res.statusCode = 500;
+      res.end(JSON.stringify({ error: { message: `append conflict with ${existingToken}` } }));
+      return;
+    }
+    res.statusCode = 404;
+    res.end(JSON.stringify({ error: "not found" }));
+  }, async (baseUrl) => {
+    const result = await runAsync([
+      "--cookie-source-json", cookieSource,
+      "--grok2api-base-url", baseUrl,
+      "--pool", "super",
+      "--append",
+      "true",
+    ]);
+    assert.equal(result.status, 1);
+    assert.doesNotMatch(result.stdout, /eyJhbGci/);
+    assert.doesNotMatch(result.stdout, /prior-working-token/);
+    assert.match(result.stdout, /\[REDACTED\]/);
+  });
+});
+
 test("sync-browser-session redacts before truncating non-json admin errors", async () => {
   const dir = mkdtempSync(path.join(tmpdir(), "grok-sync-"));
   const secret = VALID_SESSION_TOKEN;

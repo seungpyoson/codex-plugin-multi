@@ -232,7 +232,7 @@ if (mode === "unreachable") {
   return binDir;
 }
 
-function makeFakeGitBinary() {
+function makeFakeGitBinary({ mode = "success" } = {}) {
   const binDir = mkdtempSync(path.join(tmpdir(), "fake-git-bin-"));
   const gitPath = path.join(binDir, "git");
   writeFileSync(gitPath, `#!${process.execPath}
@@ -244,6 +244,11 @@ if (process.argv[2] !== "clone") {
 }
 const dest = process.argv[process.argv.length - 1];
 fs.mkdirSync(path.join(dest, "app"), { recursive: true });
+if (${JSON.stringify(mode)} === "partial-fail") {
+  fs.writeFileSync(path.join(dest, "app", "partial.py"), "partial clone\\n");
+  console.error("simulated clone failure after creating destination");
+  process.exit(128);
+}
 fs.writeFileSync(path.join(dest, "app", "main.py"), "app = object()\\n");
 fs.writeFileSync(path.join(dest, "pyproject.toml"), "[project]\\nname = \\"fake-grok2api\\"\\n");
 `);
@@ -385,6 +390,8 @@ test("doctor auto-starts a local grok2api checkout without Docker", async () => 
     assert.match(parsed.tunnel_start.command, /uv run granian/);
     assert.match(parsed.tunnel_start.command, /app\.main:app/);
     assert.doesNotMatch(parsed.tunnel_start.command, /docker/i);
+    assert.equal(parsed.tunnel_start.cleanup_policy, "persistent_reuse");
+    assert.equal(parsed.tunnel_start.cleanup_on_exit, false);
   } finally {
     if (parsed?.tunnel_start?.pid) {
       try { process.kill(parsed.tunnel_start.pid, "SIGTERM"); } catch { /* already exited */ }
@@ -497,6 +504,8 @@ test("doctor bootstraps a missing grok2api checkout and starts it without Docker
     assert.equal(existsSync(path.join(bootstrapDir, "app", "main.py")), true);
     assert.match(parsed.tunnel_start.command, /uv run granian/);
     assert.doesNotMatch(parsed.tunnel_start.command, /docker/i);
+    assert.equal(parsed.tunnel_start.cleanup_policy, "persistent_reuse");
+    assert.equal(parsed.tunnel_start.cleanup_on_exit, false);
   } finally {
     if (parsed?.tunnel_start?.pid) {
       try { process.kill(parsed.tunnel_start.pid, "SIGTERM"); } catch { /* already exited */ }
@@ -504,6 +513,35 @@ test("doctor bootstraps a missing grok2api checkout and starts it without Docker
     rmTree(bootstrapRoot);
     rmTree(fakeGit.binDir);
     rmTree(binDir);
+  }
+});
+
+test("doctor failed auto-bootstrap does not leave a partial checkout at the target path", async () => {
+  const port = await unusedLoopbackPort();
+  const bootstrapRoot = mkdtempSync(path.join(tmpdir(), "grok2api-bootstrap-fail-root-"));
+  const bootstrapDir = path.join(bootstrapRoot, "grok2api");
+  const fakeGit = makeFakeGitBinary({ mode: "partial-fail" });
+  try {
+    const result = await runAsync(["doctor"], {
+      env: {
+        GROK_WEB_BASE_URL: `http://127.0.0.1:${port}/v1`,
+        GROK2API_BOOTSTRAP_DIR: bootstrapDir,
+        CODEX_PLUGIN_MULTI_GIT_BINARY: fakeGit.gitPath,
+        GROK_WEB_DOCTOR_TIMEOUT_MS: "100",
+        GROK_WEB_CHAT_DOCTOR_TIMEOUT_MS: "100",
+        GROK_WEB_TUNNEL_START_TIMEOUT_MS: "100",
+      },
+    });
+    const parsed = parseStdout(result);
+
+    assert.equal(result.status, 0);
+    assert.equal(parsed.ready, false);
+    assert.equal(parsed.tunnel_start.status, "failed");
+    assert.equal(parsed.tunnel_start.error_code, "grok2api_bootstrap_failed");
+    assert.equal(existsSync(bootstrapDir), false, "failed clone must not leave the final bootstrap target populated");
+  } finally {
+    rmTree(bootstrapRoot);
+    rmTree(fakeGit.binDir);
   }
 });
 
