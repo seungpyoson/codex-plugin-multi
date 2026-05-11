@@ -12,17 +12,13 @@
 //   node scripts/smoke-rerecord.mjs --list
 //
 // Required env per plugin (the script aborts loudly if missing):
-//   claude:        existing ~/.claude OAuth OR ANTHROPIC_API_KEY
+//   claude:        existing ~/.claude OAuth
 //   grok:          local grok2api tunnel running on http://127.0.0.1:8000/v1 with valid session
 //   api-reviewers-deepseek:  DEEPSEEK_API_KEY
 //
-// Companion auth: claude/happy-path-review uses --auth-mode auto, which
-// selects api_key_env when ANTHROPIC_API_KEY (or CLAUDE_API_KEY) is set
-// in the environment, and falls back to subscription_oauth otherwise.
-// On a CI runner with the secret wired, recordings use API-key auth;
-// on a developer machine without those vars, OAuth is used. Setting
-// either *_API_KEY env var on a developer machine that also has
-// ~/.claude OAuth will silently switch the recording to API-key auth.
+// Companion auth: claude/happy-path-review uses --auth-mode subscription, so
+// recordings exercise Claude Code OAuth even when ANTHROPIC_API_KEY or
+// CLAUDE_API_KEY is set. Use an explicit API-key scenario for API-key fixtures.
 
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -122,16 +118,12 @@ export const RECIPES = Object.freeze({
         "--mode=custom-review",
         "--foreground",
         "--scope-paths", "scripts/lib/plugin-targets.mjs",
-        // Spell out --auth-mode auto even though it is the companion
-        // default. The recipe's "OAuth OR API key" preflight is only
-        // honest if runtime auth also selects api_key_env when a provider
-        // key is present and falls back to subscription_oauth otherwise.
-        "--auth-mode", "auto",
+        "--auth-mode", "subscription",
         "--", HAPPY_PATH_PROMPT,
       ],
       env: { ...process.env },
       requireEnvOrFile: {
-        envAny: CLAUDE_PROVIDER_API_KEY_ENV,
+        envAny: [],
         file: path.join(process.env.HOME ?? "", ".claude"),
       },
       expectExit: [0],

@@ -9,12 +9,12 @@ export function providerApiKeyEnv(providerApiKeyEnvNames, env = process.env) {
 }
 
 export function resolveAuthSelection({
-  requestedMode = "auto",
+  requestedMode = "subscription",
   providerApiKeyEnvNames,
   fail,
   env = process.env,
 }) {
-  const authMode = requestedMode ?? "auto";
+  const authMode = requestedMode ?? "subscription";
   if (!AUTH_MODES.has(authMode)) {
     fail("bad_args", `--auth-mode must be one of subscription|api_key|auto; got ${JSON.stringify(authMode)}`);
     return null;

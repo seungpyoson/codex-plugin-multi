@@ -1463,11 +1463,10 @@ async function cmdNotImplemented(name) {
 
 const PING_AUTH_RE = /\b(auth(?:enticat\w*)?|login|credential\w*|oauth2?|unauthenticated|signin|sign-in)\b/i;
 // Source of truth: ./lib/claude-provider-keys.mjs (also imported by
-// scripts/smoke-rerecord.mjs so the recipe's envAny cannot drift from
-// what auth-selection.mjs's auto mode accepts).
+// scripts/smoke-rerecord.mjs for explicit API-key scenarios).
 const PING_PROVIDER_API_KEY_ENV = CLAUDE_PROVIDER_API_KEY_ENV;
 
-function resolveAuthSelection(requestedMode = "auto") {
+function resolveAuthSelection(requestedMode = "subscription") {
   return resolveAuthSelectionForProvider({
     requestedMode,
     providerApiKeyEnvNames: PING_PROVIDER_API_KEY_ENV,

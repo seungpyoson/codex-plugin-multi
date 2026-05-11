@@ -1857,7 +1857,7 @@ test("gemini run --foreground: meta-write conflict produces fallback failed reco
   }
 });
 
-test("gemini ping returns ok with the mock gemini binary using default auto auth", () => {
+test("gemini ping returns ok with the mock gemini binary using default subscription auth", () => {
   const cwd = mkdtempSync(path.join(tmpdir(), "gemini-ping-cwd-"));
   const tempRoot = realpathSync(tmpdir());
   const { stdout, stderr, status, dataDir } = runCompanion(
@@ -1877,10 +1877,10 @@ test("gemini ping returns ok with the mock gemini binary using default auto auth
     assert.equal(parsed.status, "ok");
     assert.equal(parsed.ready, true);
     assert.match(parsed.summary, /ready/i);
-    assert.deepEqual(parsed.allowed_env_credentials, ["GEMINI_API_KEY"]);
-    assert.equal(parsed.auth_policy, "api_key_env_allowed");
-    assert.equal(parsed.auth_mode, "auto");
-    assert.equal(parsed.selected_auth_path, "api_key_env");
+    assert.deepEqual(parsed.ignored_env_credentials, ["GEMINI_API_KEY"]);
+    assert.equal(parsed.auth_policy, "api_key_env_ignored");
+    assert.equal(parsed.auth_mode, "subscription");
+    assert.equal(parsed.selected_auth_path, "subscription_oauth");
     assert.doesNotMatch(stdout, /secret-test-value/);
     assert.equal(parsed.model, "gemini-3-flash-preview");
     assert.equal(parsed.session_id, GEMINI_SESSION_ID);
@@ -1903,9 +1903,10 @@ test("gemini doctor returns readiness contract", () => {
     assert.equal(parsed.ready, true);
     assert.match(parsed.summary, /ready/i);
     assert.match(parsed.next_action, /review/i);
-    assert.equal(parsed.auth_mode, "auto");
-    assert.equal(parsed.selected_auth_path, "api_key_env");
-    assert.deepEqual(parsed.allowed_env_credentials, ["GEMINI_API_KEY"]);
+    assert.equal(parsed.auth_mode, "subscription");
+    assert.equal(parsed.selected_auth_path, "subscription_oauth");
+    assert.deepEqual(parsed.ignored_env_credentials, ["GEMINI_API_KEY"]);
+    assert.equal(parsed.auth_policy, "api_key_env_ignored");
     assert.doesNotMatch(stdout, /secret-test-value/);
   } finally {
     rmTree(dataDir);
@@ -2168,7 +2169,8 @@ test("gemini ping not_found includes readiness guidance", () => {
     assert.equal(parsed.ready, false);
     assert.match(parsed.summary, /not found/i);
     assert.match(parsed.next_action, /Install Gemini CLI/);
-    assert.deepEqual(parsed.allowed_env_credentials, ["GEMINI_API_KEY"]);
+    assert.deepEqual(parsed.ignored_env_credentials, ["GEMINI_API_KEY"]);
+    assert.equal(parsed.auth_policy, "api_key_env_ignored");
     assert.doesNotMatch(stdout, /secret-test-value/);
   } finally {
     rmTree(dataDir);
@@ -2308,8 +2310,8 @@ process.exit(7);
     assert.equal(status, 2);
     const parsed = JSON.parse(stdout);
     assert.equal(parsed.status, "not_authed");
-    assert.deepEqual(parsed.allowed_env_credentials, ["GEMINI_API_KEY"]);
-    assert.equal(parsed.auth_policy, "api_key_env_allowed");
+    assert.deepEqual(parsed.ignored_env_credentials, ["GEMINI_API_KEY"]);
+    assert.equal(parsed.auth_policy, "api_key_env_ignored");
     assert.doesNotMatch(stdout, /secret-test-value/);
   } finally {
     rmTree(dataDir);

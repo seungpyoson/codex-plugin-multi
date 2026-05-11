@@ -1238,7 +1238,7 @@ async function cmdResult(rest) {
 const PING_AUTH_RE = /\b(auth(?:enticat\w*)?|login|credential\w*|oauth2?|unauthenticated|signin|sign-in)\b/i;
 const PING_PROVIDER_API_KEY_ENV = ["GEMINI_API_KEY", "GOOGLE_API_KEY"];
 
-function resolveAuthSelection(requestedMode = "auto") {
+function resolveAuthSelection(requestedMode = "subscription") {
   return resolveAuthSelectionForProvider({
     requestedMode,
     providerApiKeyEnvNames: PING_PROVIDER_API_KEY_ENV,

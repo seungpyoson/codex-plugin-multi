@@ -1753,9 +1753,10 @@ test("doctor: returns readiness contract", () => {
     assert.equal(result.ready, true);
     assert.match(result.summary, /ready/i);
     assert.match(result.next_action, /review/i);
-    assert.equal(result.auth_mode, "auto");
-    assert.equal(result.selected_auth_path, "api_key_env");
-    assert.deepEqual(result.allowed_env_credentials, ["ANTHROPIC_API_KEY"]);
+    assert.equal(result.auth_mode, "subscription");
+    assert.equal(result.selected_auth_path, "subscription_oauth");
+    assert.deepEqual(result.ignored_env_credentials, ["ANTHROPIC_API_KEY"]);
+    assert.equal(result.auth_policy, "api_key_env_ignored");
     assert.doesNotMatch(stdout, /secret-test-value/);
   } finally {
     cleanup(dataDir);
@@ -1836,7 +1837,7 @@ process.exit(0);
   }
 });
 
-test("ping: returns status=ok with the mock claude binary using default auto auth", () => {
+test("ping: returns status=ok with the mock claude binary using default subscription auth", () => {
   const { stdout, status, dataDir } = runCompanion(
     ["ping", "--model", "claude-haiku-4-5-20251001"],
     { cwd: tmpdir(), env: { ANTHROPIC_API_KEY: "secret-test-value" } }
@@ -1847,10 +1848,10 @@ test("ping: returns status=ok with the mock claude binary using default auto aut
     assert.equal(result.status, "ok");
     assert.equal(result.ready, true);
     assert.match(result.summary, /ready/i);
-    assert.deepEqual(result.allowed_env_credentials, ["ANTHROPIC_API_KEY"]);
-    assert.equal(result.auth_policy, "api_key_env_allowed");
-    assert.equal(result.auth_mode, "auto");
-    assert.equal(result.selected_auth_path, "api_key_env");
+    assert.deepEqual(result.ignored_env_credentials, ["ANTHROPIC_API_KEY"]);
+    assert.equal(result.auth_policy, "api_key_env_ignored");
+    assert.equal(result.auth_mode, "subscription");
+    assert.equal(result.selected_auth_path, "subscription_oauth");
     assert.doesNotMatch(stdout, /secret-test-value/);
     assert.equal(result.model, "claude-haiku-4-5-20251001");
     assert.ok(result.session_id);
@@ -2035,7 +2036,8 @@ test("ping: not_found includes readiness guidance", () => {
     assert.equal(result.ready, false);
     assert.match(result.summary, /not found/i);
     assert.match(result.next_action, /Install Claude Code/);
-    assert.deepEqual(result.allowed_env_credentials, ["ANTHROPIC_API_KEY"]);
+    assert.deepEqual(result.ignored_env_credentials, ["ANTHROPIC_API_KEY"]);
+    assert.equal(result.auth_policy, "api_key_env_ignored");
     assert.doesNotMatch(stdout, /secret-test-value/);
   } finally {
     cleanup(dataDir);
@@ -3050,8 +3052,8 @@ process.exit(1);
     assert.equal(status, 2);
     const result = JSON.parse(stdout);
     assert.equal(result.status, "not_authed");
-    assert.deepEqual(result.allowed_env_credentials, ["ANTHROPIC_API_KEY"]);
-    assert.equal(result.auth_policy, "api_key_env_allowed");
+    assert.deepEqual(result.ignored_env_credentials, ["ANTHROPIC_API_KEY"]);
+    assert.equal(result.auth_policy, "api_key_env_ignored");
     assert.doesNotMatch(stdout, /secret-test-value/);
   } finally {
     cleanup(dataDir);
