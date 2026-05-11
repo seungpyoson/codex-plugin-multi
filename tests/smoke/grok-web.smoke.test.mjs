@@ -389,10 +389,10 @@ test("doctor auto-start gives uv a sandbox-writable default cache dir", async ()
       },
     });
     parsed = parseStdout(result);
-    const captured = JSON.parse(readFileSync(capturePath, "utf8"));
 
     assert.equal(result.status, 0);
     assert.equal(parsed.tunnel_start.status, "started");
+    const captured = JSON.parse(readFileSync(capturePath, "utf8"));
     assert.equal(
       captured.UV_CACHE_DIR,
       path.join(tmpdir(), "codex-plugin-multi", "runtime", "uv-cache"),
@@ -427,10 +427,10 @@ test("doctor auto-start preserves an explicit UV_CACHE_DIR", async () => {
       },
     });
     parsed = parseStdout(result);
-    const captured = JSON.parse(readFileSync(capturePath, "utf8"));
 
     assert.equal(result.status, 0);
     assert.equal(parsed.tunnel_start.status, "started");
+    const captured = JSON.parse(readFileSync(capturePath, "utf8"));
     assert.equal(captured.UV_CACHE_DIR, explicitUvCache);
   } finally {
     if (parsed?.tunnel_start?.pid) {
@@ -461,10 +461,10 @@ test("doctor auto-start treats empty UV_CACHE_DIR as unset", async () => {
       },
     });
     parsed = parseStdout(result);
-    const captured = JSON.parse(readFileSync(capturePath, "utf8"));
 
     assert.equal(result.status, 0);
     assert.equal(parsed.tunnel_start.status, "started");
+    const captured = JSON.parse(readFileSync(capturePath, "utf8"));
     assert.equal(
       captured.UV_CACHE_DIR,
       path.join(tmpdir(), "codex-plugin-multi", "runtime", "uv-cache"),
