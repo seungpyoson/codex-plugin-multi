@@ -88,12 +88,16 @@ function containsFullPromptKey(value) {
   });
 }
 
+function hasRenderedPromptHash(value) {
+  return Boolean(
+    valueAt(value, ["review_metadata", "audit_manifest", "rendered_prompt_hash"], null)
+      ?? valueAt(value, ["rendered_prompt_hash"], null),
+  );
+}
+
 function promptPersistenceStatus(evidence) {
   if (evidence.some((item) => containsFullPromptKey(item))) return "full_prompt_found";
-  if (evidence.some((item) => valueAt(item, ["review_metadata", "audit_manifest", "rendered_prompt_hash"], null))) {
-    return "hash_only";
-  }
-  if (evidence.some((item) => valueAt(item, ["audit_manifest", "rendered_prompt_hash"], null))) {
+  if (evidence.some((item) => hasRenderedPromptHash(item))) {
     return "hash_only";
   }
   return "not_checked";
@@ -129,9 +133,8 @@ function errorCode(doctor, review) {
     ?? null;
 }
 
-function failureClass({ provider, doctor, review, approval }) {
+function failureClass({ provider, doctor, review, approval, failedReviewSlot }) {
   const code = errorCode(doctor, review);
-  const failedReviewSlot = valueAt(review, ["review_metadata", "audit_manifest", "review_quality", "failed_review_slot"], null);
   if (failedReviewSlot === true || code === "review_not_completed" || review?.error_cause === "review_quality") return "review_quality";
   if (DIRECT_API_PROVIDERS.has(provider) && !review) return "approval_gate";
   if (code === "approval_required") return "approval_gate";
@@ -173,7 +176,7 @@ function rowFor(provider, evidenceDir) {
     doctor_status: doctorStatus(doctor),
     review_status: reviewStatus(review),
     approval_status: approvalStatus(provider, approval),
-    failure_class: failureClass({ provider, doctor, review, approval }),
+    failure_class: failureClass({ provider, doctor, review, approval, failedReviewSlot }),
     source_content_transmission: sourceTransmission(review, approval),
     failed_review_slot: typeof failedReviewSlot === "boolean" ? failedReviewSlot : null,
     mutation_status: mutations === null ? "not_checked" : (mutations.length === 0 ? "clean" : "dirty"),

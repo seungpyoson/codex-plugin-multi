@@ -88,6 +88,7 @@ test("provider readiness manifest normalizes six provider evidence rows", () => 
     event: "external_review_approval_request",
     source_content_transmission: "not_sent",
     approval_question: "Allow sending 1 selected file?",
+    rendered_prompt_hash: { algorithm: "sha256", value: "c".repeat(64) },
     denial_action: { source_content_transmission: "not_sent" },
   });
   writeJson(path.join(evidenceDir, "deepseek-review.json"), reviewRecord({ provider: "deepseek" }));
@@ -96,6 +97,7 @@ test("provider readiness manifest normalizes six provider evidence rows", () => 
     event: "external_review_approval_request",
     source_content_transmission: "not_sent",
     approval_question: "Allow sending 1 selected file?",
+    rendered_prompt_hash: { algorithm: "sha256", value: "d".repeat(64) },
     denial_action: { source_content_transmission: "not_sent" },
   });
 
@@ -130,6 +132,7 @@ test("provider readiness manifest normalizes six provider evidence rows", () => 
   assert.equal(rows.glm.approval_status, "not_sent");
   assert.equal(rows.glm.review_status, "not_run");
   assert.equal(rows.glm.failure_class, "approval_gate");
+  assert.equal(rows.glm.prompt_persistence_status, "hash_only");
 
   assert.equal(manifest.summary.providers_total, 6);
   assert.equal(manifest.summary.prompt_persistence_failures, 0);
