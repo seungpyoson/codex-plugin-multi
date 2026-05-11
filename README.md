@@ -34,7 +34,12 @@ lets Claude Code delegate to Codex.
 - Gemini CLI installed and authenticated if you enable the Gemini plugin.
 - Kimi Code CLI installed and authenticated if you enable the Kimi plugin.
 - A local Grok web tunnel if you enable the Grok plugin. The default endpoint
-  targets grok2api at `GROK_WEB_BASE_URL=http://127.0.0.1:8000/v1`; set
+  targets grok2api at `GROK_WEB_BASE_URL=http://127.0.0.1:8000/v1`; the plugin
+  can bootstrap a local grok2api checkout into its temp runtime directory and
+  auto-start the non-Docker
+  `uv run granian ... app.main:app` tunnel when it is down. Set
+  `GROK2API_HOME` or `GROK2API_BOOTSTRAP_DIR` only when you want a specific
+  checkout or runtime directory. Set
   `GROK_WEB_TUNNEL_API_KEY` only if your local tunnel requires a bearer value.
 - `DEEPSEEK_API_KEY` if you enable the DeepSeek direct API reviewer.
 - `ZAI_API_KEY` if you enable the GLM direct API reviewer. `ZAI_GLM_API_KEY`
@@ -61,7 +66,14 @@ limits are reported as `usage_limited`; the plugin does not purchase credits,
 upgrade tiers, or switch to a paid fallback automatically.
 `/grok-setup` and the `doctor` command make a live `GET /models` probe against
 the configured tunnel endpoint. `ready: true` means the local tunnel was
-reachable; `tunnel_unavailable` means start the local Grok web tunnel and retry.
+reachable. If a loopback grok2api `/v1` endpoint is unavailable, the doctor/run
+path tries to use an existing `GROK2API_HOME`, `GROK2API_BOOTSTRAP_DIR`, temp
+runtime checkout, or common local checkout path. If no checkout exists, it can
+clone `https://github.com/chenyme/grok2api.git` into the bootstrap directory and
+then start `uv run granian --interface asgi --host 127.0.0.1 --port 8000
+--workers 1 app.main:app`; no Docker path is required. `tunnel_unavailable`
+after that means no usable clone/start path was available or the started process
+did not become reachable.
 Grok run records can be inspected with
 `node plugins/grok/scripts/grok-web-reviewer.mjs list` and
 `node plugins/grok/scripts/grok-web-reviewer.mjs result --job-id <job_id>`.
@@ -152,8 +164,11 @@ Troubleshooting signals:
 - Kimi `Operation not permitted`, `Permission denied`, `EACCES`, or `EPERM`
   errors on `.kimi` paths need a Kimi writable root.
 - Grok `tunnel_unavailable` means the subscription-backed local tunnel is not
-  reachable at `GROK_WEB_BASE_URL`. Start or repair the tunnel rather than
-  adding xAI API keys.
+  reachable at `GROK_WEB_BASE_URL`. Check `tunnel_start`: the plugin tries to
+  bootstrap or start the non-Docker grok2api tunnel automatically. If
+  `tunnel_start.error_code` is `grok2api_bootstrap_failed`, inspect the safe
+  `detail` field; if it is `grok2api_uv_missing`, install/expose `uv`. Do not
+  add xAI API keys.
 - Grok `models_ok_chat_400` is now the generic fallback only after local
   session probes fail to identify a sharper cause. `grok_session_no_runtime_tokens`
   means the tunnel has no active runtime session, `grok_session_malformed_active_token`

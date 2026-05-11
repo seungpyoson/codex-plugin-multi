@@ -40,9 +40,16 @@ uv sync
 uv run granian --interface asgi --host 127.0.0.1 --port 8000 --workers 1 app.main:app
 ```
 
-If you keep the checkout elsewhere, set `GROK2API_HOME` to that directory in
-your shell notes/runbook so new Codex sessions know where to start or inspect
-the local tunnel.
+The manual clone is no longer required for the default path. The Grok plugin
+doctor/run path first checks `GROK2API_HOME`, `GROK2API_BOOTSTRAP_DIR`, the
+temp runtime directory, and common local checkout locations such as
+`~/grok2api`, `~/Projects/grok2api`, and `~/Projects/Claude/grok2api`. If none
+exists, it bootstraps
+`https://github.com/chenyme/grok2api.git` into the default runtime directory,
+then auto-starts a loopback grok2api `/v1` endpoint with `uv run granian
+--interface asgi --host <host> --port <port> --workers 1 app.main:app`. Docker
+is not required. Set `GROK_WEB_TUNNEL_AUTO_BOOTSTRAP=0` to forbid cloning, or
+`GROK_WEB_TUNNEL_AUTO_START=0` to forbid process start.
 3. On macOS Chrome-family browsers, sync the local Grok web session into
    grok2api:
 
@@ -194,8 +201,11 @@ Expected E2E result:
 - `external_review.source_content_transmission` is `"sent"`.
 - Secret values are not printed.
 
-If readiness returns `tunnel_unavailable`, start or repair the local Grok web
-tunnel and retry.
+If readiness returns `tunnel_unavailable`, inspect the `tunnel_start` field.
+`grok2api_bootstrap_failed` means the automatic clone failed and includes only a
+sanitized `detail` snippet; `grok2api_uv_missing` means install or expose `uv`;
+`started_unreachable` means the plugin launched the non-Docker process but
+`/models` did not become reachable before `GROK_WEB_TUNNEL_START_TIMEOUT_MS`.
 
 Review runs persist a redacted JobRecord under
 `GROK_PLUGIN_DATA` or `.codex-plugin-data/grok`. The helper can inspect that

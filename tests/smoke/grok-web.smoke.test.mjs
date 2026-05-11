@@ -154,6 +154,78 @@ async function withServer(handler, fn, options = {}) {
   }
 }
 
+async function unusedLoopbackPort() {
+  const server = http.createServer();
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+  const { port } = server.address();
+  await new Promise((resolve) => server.close(resolve));
+  return port;
+}
+
+function makeFakeGrok2ApiHome() {
+  const home = mkdtempSync(path.join(tmpdir(), "fake-grok2api-home-"));
+  mkdirSync(path.join(home, "app"), { recursive: true });
+  writeFileSync(path.join(home, "app", "main.py"), "app = object()\n");
+  writeFileSync(path.join(home, "pyproject.toml"), "[project]\nname = \"fake-grok2api\"\n");
+  return home;
+}
+
+function makeFakeUvBin() {
+  const binDir = mkdtempSync(path.join(tmpdir(), "fake-uv-bin-"));
+  const uvPath = path.join(binDir, "uv");
+  writeFileSync(uvPath, `#!/usr/bin/env node
+const http = require("node:http");
+if (process.argv.includes("--version")) {
+  console.log("uv 0.0.0-fake");
+  process.exit(0);
+}
+const port = Number(process.argv[process.argv.indexOf("--port") + 1]);
+const host = process.argv[process.argv.indexOf("--host") + 1] || "127.0.0.1";
+const server = http.createServer(async (req, res) => {
+  res.setHeader("content-type", "application/json");
+  if (req.url === "/v1/models") {
+    res.end(JSON.stringify({ data: [{ id: "grok-4.20-fast" }] }));
+    return;
+  }
+  if (req.url === "/v1/chat/completions") {
+    res.end(JSON.stringify({
+      id: "fake-grok2api-chat",
+      model: "grok-4.20-fast",
+      choices: [{ message: { content: "ok" } }],
+    }));
+    return;
+  }
+  res.writeHead(404);
+  res.end(JSON.stringify({ error: { message: "not found" } }));
+});
+server.listen(port, host);
+process.on("SIGTERM", () => server.close(() => process.exit(0)));
+setTimeout(() => process.exit(0), 30000);
+`);
+  chmodSync(uvPath, 0o700);
+  return binDir;
+}
+
+function makeFakeGitBinary() {
+  const binDir = mkdtempSync(path.join(tmpdir(), "fake-git-bin-"));
+  const gitPath = path.join(binDir, "git");
+  writeFileSync(gitPath, `#!${process.execPath}
+const fs = require("node:fs");
+const path = require("node:path");
+if (process.argv[2] !== "clone") {
+  console.error("unexpected git command");
+  process.exit(2);
+}
+const dest = process.argv[process.argv.length - 1];
+fs.mkdirSync(path.join(dest, "app"), { recursive: true });
+fs.writeFileSync(path.join(dest, "app", "main.py"), "app = object()\\n");
+fs.writeFileSync(path.join(dest, "pyproject.toml"), "[project]\\nname = \\"fake-grok2api\\"\\n");
+`);
+  chmodSync(gitPath, 0o700);
+  return { binDir, gitPath };
+}
+
 async function readJsonRequest(req) {
   let body = "";
   req.setEncoding("utf8");
@@ -257,6 +329,85 @@ test("doctor reports subscription-backed local tunnel mode and checks chat readi
     assert.doesNotMatch(result.stdout, /secret-cookie-like-token/);
     assert.doesNotMatch(result.stdout, /api\.x\.ai/i);
   });
+});
+
+test("doctor auto-starts a local grok2api checkout without Docker", async () => {
+  const port = await unusedLoopbackPort();
+  const home = makeFakeGrok2ApiHome();
+  const binDir = makeFakeUvBin();
+  let parsed = null;
+  try {
+    const result = await runAsync(["doctor"], {
+      env: {
+        GROK_WEB_BASE_URL: `http://127.0.0.1:${port}/v1`,
+        GROK2API_HOME: home,
+        PATH: `${binDir}${path.delimiter}${process.env.PATH}`,
+        GROK_WEB_DOCTOR_TIMEOUT_MS: "500",
+        GROK_WEB_CHAT_DOCTOR_TIMEOUT_MS: "1000",
+        GROK_WEB_TUNNEL_START_TIMEOUT_MS: "5000",
+      },
+    });
+    parsed = parseStdout(result);
+
+    assert.equal(result.status, 0);
+    assert.equal(parsed.ready, true);
+    assert.equal(parsed.reachable, true);
+    assert.equal(parsed.chat_ready, true);
+    assert.equal(parsed.error_code, null);
+    assert.equal(parsed.tunnel_start.status, "started");
+    assert.equal(parsed.tunnel_start.attempted, true);
+    assert.equal(parsed.tunnel_start.home_source, "GROK2API_HOME");
+    assert.match(parsed.tunnel_start.command, /uv run granian/);
+    assert.match(parsed.tunnel_start.command, /app\.main:app/);
+    assert.doesNotMatch(parsed.tunnel_start.command, /docker/i);
+  } finally {
+    if (parsed?.tunnel_start?.pid) {
+      try { process.kill(parsed.tunnel_start.pid, "SIGTERM"); } catch { /* already exited */ }
+    }
+    rmTree(home);
+    rmTree(binDir);
+  }
+});
+
+test("doctor bootstraps a missing grok2api checkout and starts it without Docker", async () => {
+  const port = await unusedLoopbackPort();
+  const bootstrapRoot = mkdtempSync(path.join(tmpdir(), "grok2api-bootstrap-root-"));
+  const bootstrapDir = path.join(bootstrapRoot, "grok2api");
+  const fakeGit = makeFakeGitBinary();
+  const binDir = makeFakeUvBin();
+  let parsed = null;
+  try {
+    const result = await runAsync(["doctor"], {
+      env: {
+        GROK_WEB_BASE_URL: `http://127.0.0.1:${port}/v1`,
+        GROK2API_BOOTSTRAP_DIR: bootstrapDir,
+        CODEX_PLUGIN_MULTI_GIT_BINARY: fakeGit.gitPath,
+        PATH: `${binDir}${path.delimiter}${process.env.PATH}`,
+        GROK_WEB_DOCTOR_TIMEOUT_MS: "500",
+        GROK_WEB_CHAT_DOCTOR_TIMEOUT_MS: "1000",
+        GROK_WEB_TUNNEL_START_TIMEOUT_MS: "5000",
+      },
+    });
+    parsed = parseStdout(result);
+
+    assert.equal(result.status, 0);
+    assert.equal(parsed.ready, true);
+    assert.equal(parsed.tunnel_start.status, "started");
+    assert.equal(parsed.tunnel_start.home_source, "GROK2API_BOOTSTRAP_DIR");
+    assert.equal(parsed.tunnel_start.bootstrap.status, "bootstrapped");
+    assert.equal(parsed.tunnel_start.bootstrap.attempted, true);
+    assert.equal(parsed.tunnel_start.bootstrap.error_code, null);
+    assert.equal(existsSync(path.join(bootstrapDir, "app", "main.py")), true);
+    assert.match(parsed.tunnel_start.command, /uv run granian/);
+    assert.doesNotMatch(parsed.tunnel_start.command, /docker/i);
+  } finally {
+    if (parsed?.tunnel_start?.pid) {
+      try { process.kill(parsed.tunnel_start.pid, "SIGTERM"); } catch { /* already exited */ }
+    }
+    rmTree(bootstrapRoot);
+    rmTree(fakeGit.binDir);
+    rmTree(binDir);
+  }
 });
 
 test("rejects prototype-shaped option keys", () => {
@@ -810,7 +961,7 @@ test("doctor reports tunnel_unavailable when the local Grok tunnel is not reacha
   assert.match(parsed.endpoint, /^http:\/\/127\.0\.0\.1:9\/v1$/);
   assert.equal(parsed.probe_endpoint, "http://127.0.0.1:9/v1/models");
   assert.match(parsed.summary, /local tunnel is not reachable/i);
-  assert.match(parsed.next_action, /Start the local Grok web tunnel/i);
+  assert.match(parsed.next_action, /GROK2API_HOME|local Grok web tunnel/i);
   assert.doesNotMatch(result.stdout, /api\.x\.ai/i);
 });
 
@@ -830,7 +981,7 @@ test("doctor explains direct Grok API keys are ignored for subscription web mode
   assert.equal(parsed.error_code, "tunnel_unavailable");
   assert.match(parsed.error_message, /GROK_API_KEY is ignored/i);
   assert.match(parsed.error_message, /GROK_WEB_TUNNEL_API_KEY/i);
-  assert.match(parsed.next_action, /Start the local Grok web tunnel/i);
+  assert.match(parsed.next_action, /GROK2API_HOME|local Grok web tunnel/i);
   assert.doesNotMatch(result.stdout, /xai-direct-api-key/);
 });
 
@@ -2657,7 +2808,7 @@ test("local tunnel connection failure is structured as not sent", () => {
   assert.equal(record.error_code, "tunnel_unavailable");
   assert.equal(record.review_metadata.audit_manifest.request.timeout_ms, 500);
   assert.equal(record.external_review.source_content_transmission, "not_sent");
-  assert.match(record.suggested_action, /Start the local Grok web tunnel/i);
+  assert.match(record.suggested_action, /non-grok2api tunnel|GROK2API_HOME|local Grok web tunnel/i);
   assert.doesNotMatch(result.stdout, /secret-cookie-like-token/);
 });
 

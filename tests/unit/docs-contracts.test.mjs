@@ -408,7 +408,7 @@ test("Grok setup docs describe a live local tunnel probe", () => {
   assert.match(docs, /\/api\/models|\/models/);
   assert.match(docs, /reachable/i);
   assert.match(docs, /tunnel_unavailable/);
-  assert.match(docs, /Start the local Grok web tunnel/i);
+  assert.match(docs, /auto-start|GROK2API_HOME/i);
 });
 
 test("Grok subscription tunnel runbook documents compatible setup without exposing cookies", () => {

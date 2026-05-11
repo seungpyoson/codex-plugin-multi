@@ -1,10 +1,10 @@
 #!/usr/bin/env node
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { constants as fsConstants } from "node:fs";
 import { lstat, mkdir, open, readFile, readdir, realpath, rename, rm, rmdir, stat, unlink, writeFile } from "node:fs/promises";
-import { hostname, tmpdir } from "node:os";
-import { basename, dirname, isAbsolute, relative, resolve } from "node:path";
+import { homedir, hostname, tmpdir } from "node:os";
+import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { cleanGitEnv as cleanCanonicalGitEnv } from "./lib/git-env.mjs";
 import { GIT_BINARY_ENV, gitEnv, isGitBinaryPolicyError, resolveGitBinary } from "./lib/git-binary.mjs";
@@ -25,6 +25,9 @@ const DEFAULT_MODEL = "grok-4.20-fast";
 const DEFAULT_TIMEOUT_MS = 900000;
 const DEFAULT_DOCTOR_TIMEOUT_MS = 2000;
 const DEFAULT_CHAT_DOCTOR_TIMEOUT_MS = 10000;
+const DEFAULT_TUNNEL_START_TIMEOUT_MS = 8000;
+const DEFAULT_GROK2API_REPO_URL = "https://github.com/chenyme/grok2api.git";
+const TUNNEL_START_POLL_MS = 250;
 const DEFAULT_MAX_PROMPT_CHARS = 400000;
 const REVIEW_READINESS_PREFLIGHT_HEADER = "x-codex-grok-readiness-preflight";
 const REVIEW_READINESS_PREFLIGHT_PROMPT = "Return exactly: ok";
@@ -160,6 +163,7 @@ function config(env = process.env) {
   const timeoutMs = parsePositiveIntegerEnv(env, "GROK_WEB_TIMEOUT_MS", DEFAULT_TIMEOUT_MS);
   const doctorTimeoutMs = parsePositiveIntegerEnv(env, "GROK_WEB_DOCTOR_TIMEOUT_MS", DEFAULT_DOCTOR_TIMEOUT_MS);
   const chatDoctorTimeoutMs = parsePositiveIntegerEnv(env, "GROK_WEB_CHAT_DOCTOR_TIMEOUT_MS", DEFAULT_CHAT_DOCTOR_TIMEOUT_MS);
+  const tunnelStartTimeoutMs = parsePositiveIntegerEnv(env, "GROK_WEB_TUNNEL_START_TIMEOUT_MS", DEFAULT_TUNNEL_START_TIMEOUT_MS);
   const maxPromptChars = parsePositiveIntegerEnv(env, "GROK_WEB_MAX_PROMPT_CHARS", DEFAULT_MAX_PROMPT_CHARS, "character count");
   return {
     provider: "grok-web",
@@ -170,6 +174,7 @@ function config(env = process.env) {
     timeout_ms: timeoutMs,
     doctor_timeout_ms: doctorTimeoutMs,
     chat_doctor_timeout_ms: chatDoctorTimeoutMs,
+    tunnel_start_timeout_ms: tunnelStartTimeoutMs,
     max_prompt_chars: maxPromptChars,
     credential_ref: env.GROK_WEB_TUNNEL_API_KEY ? "GROK_WEB_TUNNEL_API_KEY" : null,
     credential_value: env.GROK_WEB_TUNNEL_API_KEY || null,
@@ -188,6 +193,7 @@ function fallbackConfig(env = process.env) {
     timeout_ms: DEFAULT_TIMEOUT_MS,
     doctor_timeout_ms: DEFAULT_DOCTOR_TIMEOUT_MS,
     chat_doctor_timeout_ms: DEFAULT_CHAT_DOCTOR_TIMEOUT_MS,
+    tunnel_start_timeout_ms: DEFAULT_TUNNEL_START_TIMEOUT_MS,
     max_prompt_chars: DEFAULT_MAX_PROMPT_CHARS,
     credential_ref: env.GROK_WEB_TUNNEL_API_KEY ? "GROK_WEB_TUNNEL_API_KEY" : null,
     credential_value: env.GROK_WEB_TUNNEL_API_KEY || null,
@@ -202,6 +208,301 @@ function parsePositiveIntegerEnv(env, name, fallback, unit = "number of millisec
     throw new Error(`bad_args: ${name} must be a positive integer ${unit}; got ${JSON.stringify(value)}`);
   }
   return parsed;
+}
+
+function envFlagEnabled(env, name, fallback = true) {
+  const value = env[name];
+  if (value === undefined || value === null || value === "") return fallback;
+  return !/^(?:0|false|no|off)$/i.test(String(value).trim());
+}
+
+function isLoopbackHost(hostnameValue) {
+  const host = String(hostnameValue || "").toLowerCase();
+  return host === "localhost" || host === "127.0.0.1" || host === "::1" || host === "[::1]";
+}
+
+function grok2ApiStartTarget(cfg) {
+  let baseUrl;
+  let apiUrl;
+  try {
+    baseUrl = new URL(cfg.grok2api_base_url);
+    apiUrl = new URL(cfg.base_url);
+  } catch {
+    return { ok: false, error_code: "grok2api_endpoint_invalid", reason: "GROK_WEB_BASE_URL or GROK2API_BASE_URL is not a valid URL." };
+  }
+  if (baseUrl.protocol !== "http:" || apiUrl.protocol !== "http:") {
+    return { ok: false, error_code: "grok2api_endpoint_not_local_http", reason: "automatic tunnel start is limited to local http endpoints." };
+  }
+  if (!isLoopbackHost(baseUrl.hostname) || !isLoopbackHost(apiUrl.hostname)) {
+    return { ok: false, error_code: "grok2api_endpoint_not_loopback", reason: "automatic tunnel start is limited to loopback endpoints." };
+  }
+  if (apiUrl.pathname !== "/v1") {
+    return { ok: false, error_code: "grok2api_endpoint_not_grok2api", reason: "automatic tunnel start only supports grok2api-style /v1 endpoints." };
+  }
+  const port = Number(baseUrl.port || "80");
+  if (!Number.isSafeInteger(port) || port <= 1024 || port > 65535) {
+    return { ok: false, error_code: "grok2api_port_unsupported", reason: "automatic tunnel start requires an unprivileged loopback port." };
+  }
+  return {
+    ok: true,
+    host: baseUrl.hostname === "::1" || baseUrl.hostname === "[::1]" ? "::1" : baseUrl.hostname,
+    port,
+    base_url: cfg.grok2api_base_url,
+  };
+}
+
+function grok2ApiHomeCandidates(env = process.env) {
+  const candidates = [];
+  if (env.GROK2API_HOME) candidates.push({ path: resolve(env.GROK2API_HOME), source: "GROK2API_HOME" });
+  if (env.GROK2API_BOOTSTRAP_DIR) {
+    candidates.push({ path: resolve(env.GROK2API_BOOTSTRAP_DIR), source: "GROK2API_BOOTSTRAP_DIR" });
+  }
+  candidates.push({ path: defaultGrok2ApiBootstrapDir(env), source: "default_bootstrap_dir" });
+  const home = homedir();
+  for (const rel of [
+    "grok2api",
+    join("Projects", "grok2api"),
+    join("Projects", "Claude", "grok2api"),
+    join("Developer", "grok2api"),
+    join("Code", "grok2api"),
+    join("src", "grok2api"),
+  ]) {
+    candidates.push({ path: resolve(home, rel), source: "well_known_path" });
+  }
+  const seen = new Set();
+  return candidates.filter((candidate) => {
+    if (seen.has(candidate.path)) return false;
+    seen.add(candidate.path);
+    return true;
+  });
+}
+
+function defaultGrok2ApiBootstrapDir(env = process.env) {
+  return resolve(env.GROK2API_BOOTSTRAP_DIR || join(tmpdir(), "codex-plugin-multi", "runtime", "grok2api"));
+}
+
+async function isDirectory(pathValue) {
+  try {
+    return (await stat(pathValue)).isDirectory();
+  } catch {
+    return false;
+  }
+}
+
+async function isFile(pathValue) {
+  try {
+    return (await stat(pathValue)).isFile();
+  } catch {
+    return false;
+  }
+}
+
+async function pathExists(pathValue) {
+  try {
+    await stat(pathValue);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function looksLikeGrok2ApiHome(pathValue) {
+  return await isDirectory(pathValue)
+    && await isFile(resolve(pathValue, "app", "main.py"))
+    && (await isFile(resolve(pathValue, "pyproject.toml")) || await isFile(resolve(pathValue, "uv.lock")));
+}
+
+async function resolveGrok2ApiHome(env = process.env) {
+  const candidates = grok2ApiHomeCandidates(env);
+  for (const candidate of candidates) {
+    if (await looksLikeGrok2ApiHome(candidate.path)) {
+      return {
+        ok: true,
+        path: candidate.path,
+        source: candidate.source,
+        checked_candidate_count: candidates.length,
+      };
+    }
+    if (candidate.source === "GROK2API_HOME" && await isDirectory(candidate.path)) {
+      return {
+        ok: false,
+        error_code: "grok2api_home_invalid",
+        error_message: "GROK2API_HOME exists but does not look like a grok2api checkout with app/main.py and pyproject.toml or uv.lock.",
+        source: candidate.source,
+        path: candidate.path,
+        checked_candidate_count: candidates.length,
+      };
+    }
+  }
+  return {
+    ok: false,
+    error_code: "grok2api_home_missing",
+    error_message: "No local grok2api checkout was found. Set GROK2API_HOME to a chenyme/grok2api checkout; Docker is not required.",
+    checked_candidate_count: candidates.length,
+  };
+}
+
+function bootstrapTarget(env = process.env) {
+  if (env.GROK2API_HOME) return { path: resolve(env.GROK2API_HOME), source: "GROK2API_HOME" };
+  if (env.GROK2API_BOOTSTRAP_DIR) {
+    return { path: resolve(env.GROK2API_BOOTSTRAP_DIR), source: "GROK2API_BOOTSTRAP_DIR" };
+  }
+  return { path: defaultGrok2ApiBootstrapDir(env), source: "default_bootstrap_dir" };
+}
+
+function safeGrok2ApiRepoUrl(env = process.env) {
+  const value = env.GROK2API_REPO_URL || DEFAULT_GROK2API_REPO_URL;
+  let parsed;
+  try {
+    parsed = new URL(value);
+  } catch {
+    return { ok: false, error_code: "grok2api_bootstrap_url_invalid", message: "GROK2API_REPO_URL is not a valid URL." };
+  }
+  if (parsed.protocol !== "https:" || parsed.username || parsed.password) {
+    return {
+      ok: false,
+      error_code: "grok2api_bootstrap_url_invalid",
+      message: "GROK2API_REPO_URL must be an https URL without embedded credentials.",
+    };
+  }
+  return { ok: true, url: parsed.toString() };
+}
+
+function shortCommandOutput(result, env = process.env) {
+  const redact = redactor(env);
+  const text = [result.stderr, result.stdout].filter(Boolean).join("\n").trim();
+  if (!text) return null;
+  const safe = redact(text).replace(/\s+/g, " ").trim();
+  return safe.length > 240 ? `${safe.slice(0, 240)}...` : safe;
+}
+
+async function maybeBootstrapGrok2ApiHome(env = process.env) {
+  const enabled = envFlagEnabled(env, "GROK_WEB_TUNNEL_AUTO_BOOTSTRAP", true);
+  if (!enabled) {
+    return {
+      ok: false,
+      status: "not_configured",
+      attempted: false,
+      error_code: "grok2api_auto_bootstrap_disabled",
+      message: "GROK_WEB_TUNNEL_AUTO_BOOTSTRAP disabled missing-checkout bootstrap.",
+    };
+  }
+  const repoUrl = safeGrok2ApiRepoUrl(env);
+  if (!repoUrl.ok) {
+    return {
+      ok: false,
+      status: "blocked",
+      attempted: false,
+      error_code: repoUrl.error_code,
+      message: repoUrl.message,
+    };
+  }
+  const target = bootstrapTarget(env);
+  if (await pathExists(target.path)) {
+    return {
+      ok: false,
+      status: "blocked",
+      attempted: false,
+      error_code: "grok2api_bootstrap_dir_invalid",
+      message: "The configured grok2api bootstrap directory already exists but is not a valid grok2api checkout.",
+      home_source: target.source,
+      home_path: target.path,
+    };
+  }
+
+  let gitBinary;
+  try {
+    gitBinary = resolveGitBinary({ cwd: process.cwd(), env });
+  } catch (error) {
+    return {
+      ok: false,
+      status: "blocked",
+      attempted: false,
+      error_code: "grok2api_git_unavailable",
+      message: `Cannot bootstrap grok2api because Git is unavailable or rejected: ${error?.message ?? String(error)}`,
+      home_source: target.source,
+      home_path: target.path,
+    };
+  }
+
+  try {
+    await mkdir(dirname(target.path), { recursive: true });
+  } catch (error) {
+    return {
+      ok: false,
+      status: "failed",
+      attempted: true,
+      error_code: "grok2api_bootstrap_failed",
+      message: `Failed to create grok2api bootstrap parent directory: ${error?.message ?? String(error)}`,
+      home_source: target.source,
+      home_path: target.path,
+    };
+  }
+
+  const result = spawnSync(gitBinary, ["clone", "--depth", "1", repoUrl.url, target.path], {
+    env: gitEnv(env),
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  if (result.status !== 0) {
+    return {
+      ok: false,
+      status: "failed",
+      attempted: true,
+      error_code: "grok2api_bootstrap_failed",
+      message: "Failed to clone grok2api for local tunnel bootstrap.",
+      detail: shortCommandOutput(result, env),
+      home_source: target.source,
+      home_path: target.path,
+    };
+  }
+  if (!await looksLikeGrok2ApiHome(target.path)) {
+    return {
+      ok: false,
+      status: "failed",
+      attempted: true,
+      error_code: "grok2api_bootstrap_invalid",
+      message: "The cloned grok2api checkout does not contain app/main.py and pyproject.toml or uv.lock.",
+      home_source: target.source,
+      home_path: target.path,
+    };
+  }
+  return {
+    ok: true,
+    status: "bootstrapped",
+    attempted: true,
+    error_code: null,
+    message: "Bootstrapped local grok2api checkout without Docker.",
+    path: target.path,
+    source: target.source,
+  };
+}
+
+function uvAvailable(cwd, env = process.env) {
+  const result = spawnSync("uv", ["--version"], {
+    cwd,
+    env,
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  return result.status === 0;
+}
+
+function tunnelStartCommand(target) {
+  return [
+    "uv",
+    "run",
+    "granian",
+    "--interface",
+    "asgi",
+    "--host",
+    target.host,
+    "--port",
+    String(target.port),
+    "--workers",
+    "1",
+    "app.main:app",
+  ];
 }
 
 function redactor(env = process.env) {
@@ -1040,6 +1341,165 @@ async function probeGrokTunnel(cfg, env = process.env) {
   }
 }
 
+async function waitForGrokTunnel(cfg, env, deadlineMs) {
+  const started = Date.now();
+  let lastProbe = null;
+  while (Date.now() - started < deadlineMs) {
+    await sleep(TUNNEL_START_POLL_MS);
+    lastProbe = await probeGrokTunnel(cfg, env);
+    if (lastProbe.reachable === true) {
+      return { reachable: true, probe: lastProbe, elapsed_ms: Date.now() - started };
+    }
+  }
+  return { reachable: false, probe: lastProbe, elapsed_ms: Date.now() - started };
+}
+
+async function maybeStartGrokTunnel(cfg, env = process.env) {
+  const enabled = envFlagEnabled(env, "GROK_WEB_TUNNEL_AUTO_START", true);
+  if (!enabled) {
+    return {
+      status: "disabled",
+      attempted: false,
+      error_code: "grok2api_auto_start_disabled",
+      message: "GROK_WEB_TUNNEL_AUTO_START disabled local tunnel auto-start.",
+    };
+  }
+  const target = grok2ApiStartTarget(cfg);
+  if (!target.ok) {
+    return {
+      status: "not_applicable",
+      attempted: false,
+      error_code: target.error_code,
+      message: target.reason,
+    };
+  }
+  let home = await resolveGrok2ApiHome(env);
+  let bootstrap = null;
+  if (!home.ok && home.error_code === "grok2api_home_missing") {
+    bootstrap = await maybeBootstrapGrok2ApiHome(env);
+    if (bootstrap.ok) {
+      home = {
+        ok: true,
+        path: bootstrap.path,
+        source: bootstrap.source,
+        checked_candidate_count: home.checked_candidate_count,
+      };
+    }
+  }
+  if (!home.ok) {
+    return {
+      status: bootstrap?.status ?? "not_configured",
+      attempted: bootstrap?.attempted ?? false,
+      error_code: bootstrap?.error_code ?? home.error_code,
+      message: bootstrap?.message ?? home.error_message,
+      checked_candidate_count: home.checked_candidate_count,
+      ...(home.source ? { home_source: home.source } : {}),
+      ...(bootstrap?.detail ? { detail: bootstrap.detail } : {}),
+      ...(bootstrap?.home_source ? { home_source: bootstrap.home_source } : {}),
+      ...(bootstrap?.home_path ? { home_path: bootstrap.home_path } : {}),
+      ...(bootstrap ? { bootstrap } : {}),
+    };
+  }
+  if (!uvAvailable(home.path, env)) {
+    return {
+      status: "blocked",
+      attempted: false,
+      error_code: "grok2api_uv_missing",
+      message: "uv is required to start grok2api without Docker, but `uv --version` did not succeed.",
+      home_source: home.source,
+      home_path: home.path,
+      ...(bootstrap ? { bootstrap } : {}),
+    };
+  }
+
+  const command = tunnelStartCommand(target);
+  let child;
+  try {
+    child = spawn(command[0], command.slice(1), {
+      cwd: home.path,
+      env,
+      detached: true,
+      stdio: "ignore",
+    });
+    child.on("error", () => {});
+    child.unref();
+  } catch (error) {
+    return {
+      status: "failed",
+      attempted: true,
+      error_code: "grok2api_start_failed",
+      message: `Failed to start grok2api: ${error?.message ?? String(error)}`,
+      home_source: home.source,
+      home_path: home.path,
+      command: command.join(" "),
+      ...(bootstrap ? { bootstrap } : {}),
+    };
+  }
+
+  const wait = await waitForGrokTunnel(cfg, env, cfg.tunnel_start_timeout_ms);
+  if (wait.reachable) {
+    return {
+      status: "started",
+      attempted: true,
+      error_code: null,
+      message: "Started local grok2api tunnel without Docker.",
+      pid: child.pid,
+      home_source: home.source,
+      home_path: home.path,
+      command: command.join(" "),
+      elapsed_ms: wait.elapsed_ms,
+      probe: wait.probe,
+      ...(bootstrap ? { bootstrap } : {}),
+    };
+  }
+  return {
+    status: "started_unreachable",
+    attempted: true,
+    error_code: wait.probe?.error_code ?? "grok2api_start_timeout",
+    message: `Started grok2api process but ${cfg.base_url}/models did not become reachable before GROK_WEB_TUNNEL_START_TIMEOUT_MS.`,
+    pid: child.pid,
+    home_source: home.source,
+    home_path: home.path,
+    command: command.join(" "),
+    elapsed_ms: wait.elapsed_ms,
+    probe: wait.probe,
+    ...(bootstrap ? { bootstrap } : {}),
+  };
+}
+
+async function ensureGrokTunnelReachable(cfg, env = process.env, initialProbe = null) {
+  const probe = initialProbe ?? await probeGrokTunnel(cfg, env);
+  if (probe.reachable === true) {
+    return {
+      probe,
+      tunnel_start: {
+        status: "not_needed",
+        attempted: false,
+        error_code: null,
+      },
+    };
+  }
+  if (probe.error_code !== "tunnel_unavailable" && probe.error_code !== "tunnel_timeout") {
+    return {
+      probe,
+      tunnel_start: {
+        status: "not_attempted",
+        attempted: false,
+        error_code: "probe_failed_before_start",
+        message: "The tunnel endpoint responded, but not with a startable transport failure.",
+      },
+    };
+  }
+  const tunnelStart = await maybeStartGrokTunnel(cfg, env);
+  return {
+    probe: tunnelStart.probe ?? probe,
+    tunnel_start: {
+      ...tunnelStart,
+      probe: undefined,
+    },
+  };
+}
+
 async function probeGrokChat(cfg, env = process.env, options = {}) {
   const endpoint = `${cfg.base_url}/chat/completions`;
   const headers = { "content-type": "application/json", ...(options.headers ?? {}) };
@@ -1135,6 +1595,11 @@ async function grokReviewReadinessPreflight(cfg, env = process.env) {
   return execution;
 }
 
+function isTunnelTransportExecution(execution) {
+  const reason = execution?.parsed?.reason;
+  return reason === "tunnel_unavailable" || reason === "tunnel_timeout";
+}
+
 function sourceTransmission(completed, payloadSent) {
   if (completed || payloadSent === true) return SOURCE_CONTENT_TRANSMISSION.SENT;
   if (payloadSent === false) return SOURCE_CONTENT_TRANSMISSION.NOT_SENT;
@@ -1155,7 +1620,40 @@ function disclosure(cfg, completed, payloadSent) {
   return `Selected source content may have been sent to ${cfg.display_name} through a subscription-backed web session.`;
 }
 
-function suggestedAction(errorCode, errorMessage = "") {
+function suggestedAction(errorCode, errorMessage = "", tunnelStart = null) {
+  if (tunnelStart?.error_code === "grok2api_home_missing") {
+    return "Set GROK2API_HOME to a local chenyme/grok2api checkout, or clone it once, then rerun setup. Docker is not required; after GROK2API_HOME is available the plugin will start the local tunnel with uv automatically.";
+  }
+  if (tunnelStart?.error_code === "grok2api_home_invalid") {
+    return "Point GROK2API_HOME at a valid chenyme/grok2api checkout containing app/main.py and pyproject.toml or uv.lock, then rerun setup.";
+  }
+  if (tunnelStart?.error_code === "grok2api_auto_bootstrap_disabled") {
+    return "Unset GROK_WEB_TUNNEL_AUTO_BOOTSTRAP=0, set GROK2API_HOME to an existing checkout, or start the configured local Grok web tunnel yourself.";
+  }
+  if (tunnelStart?.error_code === "grok2api_bootstrap_failed") {
+    return "Automatic grok2api bootstrap failed. Inspect tunnel_start.detail, fix Git/network access or set GROK2API_HOME to an existing checkout, then retry. Docker is not required.";
+  }
+  if (tunnelStart?.error_code === "grok2api_git_unavailable") {
+    return "Install Git or set CODEX_PLUGIN_MULTI_GIT_BINARY to an approved absolute Git path, then rerun setup. Docker is not required.";
+  }
+  if (tunnelStart?.error_code === "grok2api_bootstrap_dir_invalid") {
+    return "Point GROK2API_BOOTSTRAP_DIR or GROK2API_HOME at an empty path or a valid grok2api checkout, then rerun setup.";
+  }
+  if (tunnelStart?.error_code === "grok2api_bootstrap_url_invalid") {
+    return "Use the default grok2api source or set GROK2API_REPO_URL to an https URL without embedded credentials.";
+  }
+  if (tunnelStart?.error_code === "grok2api_uv_missing") {
+    return "Install uv or put it on PATH, then rerun setup. Docker is not required; the plugin starts grok2api with `uv run granian ... app.main:app`.";
+  }
+  if (tunnelStart?.error_code === "grok2api_auto_start_disabled") {
+    return "Unset GROK_WEB_TUNNEL_AUTO_START=0 or start the local Grok web tunnel yourself, then retry.";
+  }
+  if (tunnelStart?.error_code === "grok2api_endpoint_not_grok2api") {
+    return "Automatic start only supports grok2api /v1 endpoints. Start the configured non-grok2api tunnel yourself or set GROK_WEB_BASE_URL to a local grok2api /v1 endpoint.";
+  }
+  if (tunnelStart?.status === "started_unreachable") {
+    return "The plugin started grok2api, but the /models endpoint did not become reachable in time. Inspect the local grok2api process/logs, raise GROK_WEB_TUNNEL_START_TIMEOUT_MS if startup is slow, then retry.";
+  }
   if (errorCode === "bad_args") return "Correct the grok-web command arguments and retry.";
   if (errorCode === "scope_failed") {
     if (/scope_empty:\s*branch-diff selected no files/i.test(errorMessage)) {
@@ -1169,7 +1667,7 @@ function suggestedAction(errorCode, errorMessage = "") {
     }
     return "Adjust --scope, --scope-base, or --scope-paths and retry.";
   }
-  if (errorCode === "tunnel_unavailable") return "Start the local Grok web tunnel, verify GROK_WEB_BASE_URL, then retry. For grok2api without Docker: cd $GROK2API_HOME, run uv sync once, then run uv run granian --interface asgi --host 127.0.0.1 --port 8000 --workers 1 app.main:app.";
+  if (errorCode === "tunnel_unavailable") return "The plugin could not bootstrap or start the non-Docker grok2api tunnel. Inspect tunnel_start, fix the reported Git/uv/path/start issue, or start the configured local Grok web tunnel yourself and retry.";
   if (errorCode === "tunnel_timeout") return "The local Grok web tunnel did not respond before GROK_WEB_TIMEOUT_MS; inspect the tunnel and retry.";
   if (errorCode === "session_expired") return "Refresh the Grok web login/session used by the local tunnel, then retry.";
   if (errorCode === "usage_limited") return "Wait for Grok subscription usage to recover, reduce concurrency, or inspect the local tunnel. Any billing, credit, or tier change must be a separate manual action with explicit user approval.";
@@ -1340,6 +1838,7 @@ function buildRecord({ cfg, mode, options, scopeInfo, execution, startedAt, ende
       max_tokens: execution.diagnostics.max_tokens ?? null,
       temperature: execution.diagnostics.temperature ?? null,
     },
+    tunnel_start: execution.diagnostics.tunnel_start ?? null,
     cost_quota: execution.diagnostics.cost_quota ?? null,
   } : null;
   return freezeRecord({
@@ -1375,7 +1874,7 @@ function buildRecord({ cfg, mode, options, scopeInfo, execution, startedAt, ende
     error_message: errorMessage,
     error_summary: completed ? null : diagnostic,
     error_cause: completed ? null : errorCauseFor(errorCode),
-    suggested_action: completed ? null : suggestedAction(errorCode, errorMessage),
+    suggested_action: completed ? null : suggestedAction(errorCode, errorMessage, execution.diagnostics?.tunnel_start),
     external_review: buildTerminalExternalReview({ cfg, mode, options, scopeInfo, execution, transmission, reviewDisclosure }),
     disclosure_note: reviewDisclosure,
     runtime_diagnostics: runtimeDiagnostics,
@@ -1722,7 +2221,9 @@ async function doctorFields(env = process.env) {
     source: "doctor_does_not_call_billing_or_usage_endpoints",
     billing_mutation: "not_supported",
   };
-  const probe = await probeGrokTunnel(cfg, env);
+  const readiness = await ensureGrokTunnelReachable(cfg, env);
+  const probe = readiness.probe;
+  const tunnelStart = readiness.tunnel_start;
   const chatProbe = probe.reachable ? await probeGrokChat(cfg, env) : {
     chat_ready: false,
     error_code: probe.error_code,
@@ -1754,7 +2255,7 @@ async function doctorFields(env = process.env) {
         : "Grok subscription-backed local tunnel is not reachable."),
     next_action: ready
       ? "Run a Grok web review."
-      : suggestedAction(errorCode),
+      : suggestedAction(errorCode, "", tunnelStart),
     auth_mode: cfg.auth_mode,
     credential_ref: cfg.credential_ref,
     endpoint: cfg.base_url,
@@ -1764,6 +2265,8 @@ async function doctorFields(env = process.env) {
     timeout_ms: cfg.timeout_ms,
     doctor_timeout_ms: cfg.doctor_timeout_ms,
     chat_doctor_timeout_ms: cfg.chat_doctor_timeout_ms,
+    tunnel_start_timeout_ms: cfg.tunnel_start_timeout_ms,
+    tunnel_start: tunnelStart,
     session_diagnostics: sessionDiagnostics,
     cost_quota_readiness: costQuotaReadiness,
     error_code: errorCode,
@@ -1807,6 +2310,7 @@ async function cmdRun(options) {
   }
   if (!execution) {
     let prompt;
+    let tunnelStart = null;
     try {
       prompt = promptFor(mode, options.prompt ?? "", scopeInfo);
       if (prompt.length > cfg.max_prompt_chars) {
@@ -1818,6 +2322,12 @@ async function cmdRun(options) {
     }
     if (!execution) try {
       execution = await grokReviewReadinessPreflight(cfg);
+      if (execution && isTunnelTransportExecution(execution)) {
+        ({ tunnel_start: tunnelStart } = await ensureGrokTunnelReachable(cfg));
+        if (tunnelStart?.status === "started") {
+          execution = await grokReviewReadinessPreflight(cfg);
+        }
+      }
       if (!execution && lifecycleEvents) {
         printLifecycleJson({
           event: "external_review_launched",
@@ -1828,6 +2338,10 @@ async function cmdRun(options) {
         }, lifecycleEvents);
       }
       if (!execution) execution = await callGrokTunnel(cfg, prompt);
+      execution.diagnostics = {
+        ...(execution.diagnostics ?? {}),
+        tunnel_start: tunnelStart,
+      };
       execution.prompt = prompt;
     } catch (e) {
       execution = providerFailureWithDiagnostic(
@@ -1836,7 +2350,7 @@ async function cmdRun(options) {
         null,
         null,
         payloadSentForFetchError(e),
-        { configured_timeout_ms: cfg.timeout_ms },
+        { configured_timeout_ms: cfg.timeout_ms, tunnel_start: tunnelStart },
       );
     }
   }
