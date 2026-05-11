@@ -671,6 +671,60 @@ test("review audit manifest does not treat application access-denied prose as pe
   assert.equal(manifest.review_quality.failed_review_slot, false);
 });
 
+for (const [name, file] of REVIEW_PROMPT_MODULES) {
+  test(`review audit manifest accepts explicit fail verdict prose (${name})`, async () => {
+    const { buildReviewAuditManifest: targetBuildReviewAuditManifest } = file === "scripts/lib/review-prompt.mjs"
+      ? { buildReviewAuditManifest }
+      : await import(pathToFileURL(resolve(file)).href);
+    const manifest = targetBuildReviewAuditManifest({
+      prompt: "rendered prompt",
+      sourceFiles: [{ path: "sample.js", text: "export const value = 1;\n" }],
+      result: [
+        "Failed blocking review after inspecting sample.js.",
+        "Blocking findings:",
+        "- sample.js returns the wrong value.",
+        "Non-blocking concerns:",
+        "- None beyond the blocking finding.",
+        "Inspection statement: I inspected sample.js.",
+      ].join("\n"),
+      status: "completed",
+      errorCode: null,
+    });
+
+    assert.equal(manifest.review_quality.has_verdict, true);
+    assert.deepEqual(manifest.review_quality.semantic_failure_reasons, []);
+    assert.equal(manifest.review_quality.failed_review_slot, false);
+  });
+
+  test(`review audit manifest ignores supported negated permission-block wording (${name})`, async () => {
+    const { buildReviewAuditManifest: targetBuildReviewAuditManifest } = file === "scripts/lib/review-prompt.mjs"
+      ? { buildReviewAuditManifest }
+      : await import(pathToFileURL(resolve(file)).href);
+    for (const line of [
+      "No such failure occurred: no permission block.",
+      "The review completed without timeout and no permission block.",
+      "Review completed without a permission block.",
+      "Without a permission block and with no truncation.",
+    ]) {
+      const manifest = targetBuildReviewAuditManifest({
+        prompt: "rendered prompt",
+        sourceFiles: [{ path: "sample.js", text: "export const value = 1;\n" }],
+        result: [
+          "Verdict: APPROVE",
+          "Blocking findings: no blocking findings apply to sample.js.",
+          "Non-blocking concerns: none for sample.js.",
+          `Inspection statement: I inspected sample.js. ${line}`,
+        ].join("\n"),
+        status: "completed",
+        errorCode: null,
+      });
+
+      assert.deepEqual(manifest.review_quality.semantic_failure_reasons, []);
+      assert.equal(manifest.review_quality.failed_review_slot, false);
+    }
+  });
+}
+
 test("review audit manifest accepts out-of-scope NOT REVIEWED prose after selected-file inspection", () => {
   const manifest = buildReviewAuditManifest({
     prompt: "rendered prompt",
