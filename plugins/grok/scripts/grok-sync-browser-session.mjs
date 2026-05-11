@@ -278,9 +278,7 @@ export function decodeCookiePlaintext(plaintext, hostKey = "") {
       return plaintext.subarray(32).toString("utf8");
     }
   }
-  const full = plaintext.toString("utf8");
-  if (isJwtShapedToken(sanitizeToken(full))) return full;
-  return full;
+  return plaintext.toString("utf8");
 }
 
 export function chromeDecrypt(encryptedHex, password, hostKey = "") {
