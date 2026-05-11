@@ -47,7 +47,7 @@ foreground subscription-tunnel runs.
 
 | Artifact | Root | Contents | Needed for | Safe deletion point | Owner |
 | --- | --- | --- | --- | --- | --- |
-| `state.json` | `GROK_PLUGIN_DATA` or `.codex-plugin-data/grok` | Recent Grok job summaries, newest first | `grok-web-reviewer.mjs list` and local diagnostics | Never as per-job cleanup | `grok-web-reviewer.mjs` |
+| `state.json` | `GROK_PLUGIN_DATA` or `$TMPDIR/codex-plugin-multi/grok/<workspace-slug>-<hash>` | Recent Grok job summaries, newest first | `grok-web-reviewer.mjs list` and local diagnostics | Never as per-job cleanup | `grok-web-reviewer.mjs` |
 | `jobs/<jobId>/meta.json` | Grok data root | Canonical Grok Web JobRecord | `grok-web-reviewer.mjs result --job-id <jobId>` and retained diagnostics | Manual cleanup or future retained-history pruning | `grok-web-reviewer.mjs` |
 | `jobs/<jobId>/meta.json.*.tmp` | Grok job dir | Partial atomic write | Nothing after interrupted write | Removed on write failure; containing job dir may be manually deleted with the JobRecord | `grok-web-reviewer.mjs` |
 

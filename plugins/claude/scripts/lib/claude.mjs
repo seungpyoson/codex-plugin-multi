@@ -1,6 +1,7 @@
 // Claude-specific dispatcher. Spawns `claude -p ...` per spec §7.2 / §10
-// with the layered-defense flag stack for read-only review and the
-// acceptEdits permission mode for rescue. Pure Claude concerns live here;
+// with the layered-defense flag stack for read-only review, the review
+// permission-mode ladder, and acceptEdits permission mode for rescue. Pure
+// Claude concerns live here;
 // job-store / workspace concerns live in the companion and state.mjs.
 //
 // Post-M7 (spec §21.2): `buildClaudeArgs` and `spawnClaude` take a PROFILE
@@ -13,6 +14,8 @@ import { spawn } from "node:child_process";
 import { attachPidCapture } from "./identity.mjs";
 import { sanitizeTargetEnv } from "./provider-env.mjs";
 import { usageLimitMessage } from "./usage-limit.mjs";
+
+const ALLOWED_PERMISSION_MODES = new Set(["default", "plan", "acceptEdits", "dontAsk", "auto", "bypassPermissions"]);
 
 // Claude requires UUIDv4 for --session-id. We always pass one up-front so we
 // know the session ID before the call returns and can --resume later.
@@ -33,6 +36,12 @@ function assertProfile(profile) {
   }
 }
 
+function assertPermissionMode(permissionMode) {
+  if (!ALLOWED_PERMISSION_MODES.has(permissionMode)) {
+    throw new Error(`buildClaudeArgs: permissionMode must be one of ${[...ALLOWED_PERMISSION_MODES].join("|")}; got ${JSON.stringify(permissionMode)}`);
+  }
+}
+
 /**
  * Build the argv array for `claude -p ...` from a mode profile and the
  * per-invocation runtime inputs. Extracted for unit testing; the actual
@@ -46,6 +55,7 @@ function assertProfile(profile) {
  *     resumeId?,      // UUIDv4 — emits --resume instead of --session-id
  *     addDirPath?,    // workspace path. Passed only when profile.add_dir=true.
  *     jsonSchema?,    // JSON Schema string. Passed only when profile.schema_allowed=true.
+ *     permissionMode?, // optional runtime override for review retry ladders.
  *   }
  *
  * Unknown fields in runtimeInputs are ignored — legacy callers passing
@@ -60,6 +70,7 @@ export function buildClaudeArgs(profile, runtimeInputs = {}) {
     resumeId = null,
     addDirPath = null,
     jsonSchema = null,
+    permissionMode = null,
   } = runtimeInputs;
 
   if (typeof promptText !== "string" || promptText.length === 0) {
@@ -74,6 +85,8 @@ export function buildClaudeArgs(profile, runtimeInputs = {}) {
   if ((typeof model !== "string" || !model) && profile.name !== "ping") {
     throw new Error("buildClaudeArgs: model is required (full ID, no aliases)");
   }
+  const effectivePermissionMode = permissionMode ?? profile.permission_mode;
+  assertPermissionMode(effectivePermissionMode);
 
   const args = [
     "-p", promptText,
@@ -94,8 +107,10 @@ export function buildClaudeArgs(profile, runtimeInputs = {}) {
   // false so the user's CLAUDE.md context is preserved (§9).
   if (profile.strip_context) args.push("--setting-sources", "");
 
-  // Permission mode is directly from the profile — no mode-branching here.
-  args.push("--permission-mode", profile.permission_mode);
+  // Permission mode normally comes from the profile. Review runners may
+  // override it per attempt so a blocked/shallow slot can retry in a less
+  // interactive Claude Code mode.
+  args.push("--permission-mode", effectivePermissionMode);
 
   // Hard blocklist (§4.5). Empty array means don't pass the flag at all;
   // rescue profile has an empty list so `--disallowedTools` is absent.
@@ -178,10 +193,11 @@ export async function spawnClaude(profile, runtimeInputs = {}) {
     binary = "claude",
     allowedApiKeyEnv = [],
     onSpawn = null,
+    permissionMode = null,
   } = runtimeInputs;
 
   const args = buildClaudeArgs(profile, {
-    model, promptText, sessionId, resumeId, addDirPath, jsonSchema,
+    model, promptText, sessionId, resumeId, addDirPath, jsonSchema, permissionMode,
   });
   const targetEnv = sanitizeTargetEnv(env, { allowedApiKeyEnv });
 

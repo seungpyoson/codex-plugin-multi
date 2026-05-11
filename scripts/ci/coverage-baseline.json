@@ -90,6 +90,11 @@
       "branches": 76.36,
       "functions": 91.67
     },
+    "plugins/claude/scripts/lib/codex-env.mjs": {
+      "lines": 100.0,
+      "branches": 100.0,
+      "functions": 100.0
+    },
     "plugins/claude/scripts/lib/companion-common.mjs": {
       "lines": 85.29,
       "branches": 73.68,

@@ -30,8 +30,36 @@ Other tunnels can work if they provide:
 ## grok2api Setup
 
 1. Start from a logged-in Grok browser session.
-2. Install and start grok2api according to that project's local or Docker
-   Compose instructions.
+2. Install and start grok2api. Docker Compose is optional; the local path is:
+
+```sh
+git clone https://github.com/chenyme/grok2api
+cd grok2api
+cp .env.example .env
+uv sync
+uv run granian --interface asgi --host 127.0.0.1 --port 8000 --workers 1 app.main:app
+```
+
+The manual clone is no longer required for the default path. The Grok plugin
+doctor/run path first checks `GROK2API_HOME`, `GROK2API_BOOTSTRAP_DIR`, the
+temp runtime directory, and common local checkout locations such as
+`~/grok2api`, `~/Projects/grok2api`, and `~/Projects/Claude/grok2api`. If none
+exists, it bootstraps
+`https://github.com/chenyme/grok2api.git` into the default runtime directory,
+then auto-starts a loopback grok2api `/v1` endpoint with `uv run granian
+--interface asgi --host <host> --port <port> --workers 1 app.main:app`. Docker
+is not required. Set `GROK_WEB_TUNNEL_AUTO_BOOTSTRAP=0` to forbid cloning, or
+`GROK_WEB_TUNNEL_AUTO_START=0` to forbid process start.
+Auto-bootstrap uses the current default upstream checkout; environments that
+require pinned third-party code should disable auto-bootstrap and point
+`GROK2API_HOME` at a pre-provisioned, pinned checkout.
+
+Successful auto-started tunnels are intentionally left running for warm reuse
+by later doctor/review calls. The `cleanup_policy: "persistent_reuse"`
+diagnostic makes that explicit. Automatic cleanup is only for failed starts
+where the launched process never becomes reachable; those paths report
+`started_unreachable` plus `cleanup` diagnostics for SIGTERM/verify/SIGKILL.
+
 3. On macOS Chrome-family browsers, sync the local Grok web session into
    grok2api:
 
@@ -49,7 +77,10 @@ The selected Grok cookie must be JWT-shaped. If Chrome decrypt returns
 malformed bytes, the helper fails with `malformed_cookie_token` before adding,
 refreshing, or deleting any grok2api token. Use the explicit
 `--cookie-source-json` fallback with a freshly copied `sso-rw`/`sso` value from
-the browser instead of importing a malformed decrypted value.
+the browser instead of importing a malformed decrypted value. A malformed
+`sso-rw` blocks fallback to `sso` by design because `sso-rw` is the preferred
+cookie and a malformed decrypt means the browser-cookie extraction path is not
+trusted.
 If deleting stale grok2api tokens fails after the new token is imported, the
 failure JSON reports `stale_token_count` so operators know the pool still
 contains old entries. It defaults the local pool to `super` because grok2api may
@@ -183,13 +214,21 @@ Expected E2E result:
 - `external_review.source_content_transmission` is `"sent"`.
 - Secret values are not printed.
 
-If readiness returns `tunnel_unavailable`, start or repair the local Grok web
-tunnel and retry.
+If readiness returns `tunnel_unavailable`, inspect the `tunnel_start` field.
+`grok2api_bootstrap_failed` means the automatic clone failed and includes only a
+sanitized `detail` snippet. Clone attempts use a temporary directory and only
+rename it into the final bootstrap path after the checkout shape is verified, so
+a transient clone failure should not poison the final bootstrap path.
+`grok2api_uv_missing` means install or expose `uv`; `started_unreachable` means
+the plugin launched the non-Docker process but `/models` did not become
+reachable before `GROK_WEB_TUNNEL_START_TIMEOUT_MS`.
 
 Review runs persist a redacted JobRecord under
-`GROK_PLUGIN_DATA` or `.codex-plugin-data/grok`. The helper can inspect that
-local state without contacting Grok. `list` returns the recent local index, with
-the newest job first; `result` reads a specific per-job record:
+`GROK_PLUGIN_DATA` or the workspace-scoped default under
+`$TMPDIR/codex-plugin-multi/grok/<workspace-slug>-<hash>`. The helper can
+inspect that local state without contacting Grok. `list` returns the recent
+local index, with the newest job first; `result` reads a specific per-job
+record:
 
 ```sh
 node plugins/grok/scripts/grok-web-reviewer.mjs list

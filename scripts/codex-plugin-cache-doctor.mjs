@@ -96,33 +96,47 @@ function enabledInConfig(home, plugin) {
   return match ? /\benabled\s*=\s*true\b/.test(match[1]) : false;
 }
 
-function profileReport(name, home, plugins, sourceRoot) {
+function profileReport(name, home, plugins, sourceRoot, repoPlugins) {
   const pluginReports = {};
   let ok = true;
   for (const plugin of plugins) {
     const expected = listSkills(sourceRoot, plugin);
     const sourcePluginRoot = join(sourceRoot, plugin);
+    const repoPluginRoot = join(repoPlugins, plugin);
+    const repoPluginPresent = existsSync(repoPluginRoot);
     const cacheRoot = join(home, "plugins", "cache", MARKETPLACE, plugin, "0.1.0");
     const cached = listSkills(cacheRoot, ".");
     const missing = expected.filter((skill) => !cached.includes(skill));
     const extra = cached.filter((skill) => !expected.includes(skill));
     const fileComparison = compareFileHashes(listComparableFiles(sourcePluginRoot), listComparableFiles(cacheRoot));
+    const repoFileComparison = compareFileHashes(listComparableFiles(repoPluginRoot), listComparableFiles(cacheRoot));
     const filesInSync = fileComparison.missing_files.length === 0
       && fileComparison.extra_files.length === 0
       && fileComparison.changed_files.length === 0
       && fileComparison.expected_files.length > 0;
+    const repoFilesInSync = repoFileComparison.missing_files.length === 0
+      && repoFileComparison.extra_files.length === 0
+      && repoFileComparison.changed_files.length === 0
+      && repoFileComparison.expected_files.length > 0;
     const inSync = missing.length === 0 && extra.length === 0 && expected.length > 0 && filesInSync;
+    const repoInSync = repoPluginPresent ? repoFilesInSync : null;
     const enabled = enabledInConfig(home, plugin);
-    if (!inSync || !enabled) ok = false;
+    if (!inSync || repoInSync === false || !enabled) ok = false;
     pluginReports[plugin] = {
       enabled,
       cache_path: cacheRoot,
       cache_in_sync: inSync,
+      repo_present: repoPluginPresent,
+      repo_cache_in_sync: repoInSync,
       expected_skills: expected,
       cached_skills: cached,
       missing_skills: missing,
       extra_skills: extra,
       ...fileComparison,
+      repo_expected_files: repoFileComparison.expected_files,
+      repo_missing_files: repoFileComparison.missing_files,
+      repo_extra_files: repoFileComparison.extra_files,
+      repo_changed_files: repoFileComparison.changed_files,
     };
   }
   return {
@@ -130,10 +144,13 @@ function profileReport(name, home, plugins, sourceRoot) {
     home,
     enabled: plugins.length === 1 ? pluginReports[plugins[0]].enabled : undefined,
     cache_in_sync: plugins.length === 1 ? pluginReports[plugins[0]].cache_in_sync : undefined,
+    repo_present: plugins.length === 1 ? pluginReports[plugins[0]].repo_present : undefined,
+    repo_cache_in_sync: plugins.length === 1 ? pluginReports[plugins[0]].repo_cache_in_sync : undefined,
     missing_skills: plugins.length === 1 ? pluginReports[plugins[0]].missing_skills : undefined,
     missing_files: plugins.length === 1 ? pluginReports[plugins[0]].missing_files : undefined,
     extra_files: plugins.length === 1 ? pluginReports[plugins[0]].extra_files : undefined,
     changed_files: plugins.length === 1 ? pluginReports[plugins[0]].changed_files : undefined,
+    repo_changed_files: plugins.length === 1 ? pluginReports[plugins[0]].repo_changed_files : undefined,
     plugins: pluginReports,
     ok,
   };
@@ -151,9 +168,9 @@ function main() {
   const sourceRoot = existsSync(marketplacePlugins) ? marketplacePlugins : repoPlugins;
 
   const profiles = {
-    primary: profileReport("primary", primaryHome, plugins, sourceRoot),
+    primary: profileReport("primary", primaryHome, plugins, sourceRoot, repoPlugins),
   };
-  if (secondHome) profiles.second = profileReport("second", secondHome, plugins, sourceRoot);
+  if (secondHome) profiles.second = profileReport("second", secondHome, plugins, sourceRoot, repoPlugins);
 
   const ok = Object.values(profiles).every((profile) => profile.ok);
   const nextActions = [];
@@ -162,6 +179,7 @@ function main() {
   } else {
     nextActions.push("Refresh Git marketplace installs with `codex plugin marketplace upgrade codex-plugin-multi`.");
   }
+  nextActions.push("If repo working tree differs from installed plugin cache, commit/publish or refresh marketplace/cache before opening new Codex sessions.");
   nextActions.push("If upgrade reports `not configured as a Git marketplace`, remove and re-add the marketplace from GitHub.");
   nextActions.push("Enable missing plugins in `/plugins` or config.toml for the Codex profile that will run reviews.");
   nextActions.push("Restart already-open Codex TUI sessions; skill picker inventory is loaded in memory.");

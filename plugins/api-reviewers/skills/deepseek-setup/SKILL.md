@@ -14,4 +14,5 @@ Run from the repository root:
 node plugins/api-reviewers/scripts/api-reviewer.mjs doctor --provider deepseek
 ```
 
-Show `summary`, `ready`, `next_action`, and credential key names only.
+Show `summary`, `ready`, `next_action`, credential key names, and
+`provider_probe.status` only. Do not print API-key values.

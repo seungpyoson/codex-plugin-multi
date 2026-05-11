@@ -56,7 +56,7 @@ Long tasks: the caller typically invokes this with `--background`, so favor thor
 
 ## Anti-patterns
 
-- **Don't describe the flag stack in the prompt.** Claude doesn't need to know it's running in `--permission-mode plan`; the runtime enforces that.
+- **Don't describe the flag stack in the prompt.** Claude doesn't need to know which permission-mode ladder attempt is running; the runtime enforces that.
 - **Don't tell Claude to ignore its instructions.** If the caller wants context stripped, the runtime passes `--setting-sources ""` — don't reinforce in prose.
 - **Don't pad with role-play.** "You are a senior staff engineer" adds nothing; the frames above carry the same weight in fewer tokens.
 - **Don't leak schema JSON into the review body.** When `--schema` is set, the prose frame should stop after "Scope: ..." and instruct Claude to emit only JSON.

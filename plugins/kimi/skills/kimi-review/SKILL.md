@@ -16,6 +16,6 @@ node "<plugin-root>/scripts/kimi-companion.mjs" run --mode=review --foreground -
 
 If the user provides them, add `--scope-base REF`, `--timeout-ms MS`, and/or
 `--max-steps-per-turn N` before `--`; `N` must be a positive integer.
-The review timeout default is 600000 ms; `KIMI_REVIEW_TIMEOUT_MS` is the non-interactive fallback.
+The review timeout default is 900000 ms; `KIMI_REVIEW_TIMEOUT_MS` is the non-interactive fallback.
 
 Render the returned JobRecord, render `external_review_launched` as soon as it appears, then render `external_review` before normal prose when present, and surface `mutations`. Do not claim `/kimi-review` is available in Codex builds that do not register plugin command files.

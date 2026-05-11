@@ -104,6 +104,24 @@ function startsWithLabel(line, label) {
   return line.slice(label.length).trimStart().startsWith(":");
 }
 
+function startsWithFailVerdict(line) {
+  if (!startsWithToken(line, "fail") && !startsWithToken(line, "failed")) return false;
+  return /\b(blocking|do not approve|request changes|reject|rejected)\b/i.test(line);
+}
+
+function startsWithVerdictLabel(line, label) {
+  if (!startsWithLabel(line, label)) return false;
+  const delimiterIndex = line.indexOf(":");
+  const value = delimiterIndex >= 0 ? line.slice(delimiterIndex + 1).trimStart() : "";
+  return startsWithToken(value, "do not approve")
+    || startsWithToken(value, "approve")
+    || startsWithToken(value, "approved")
+    || startsWithToken(value, "request changes")
+    || startsWithFailVerdict(value)
+    || startsWithToken(value, "reject")
+    || startsWithToken(value, "rejected");
+}
+
 function isReviewMarkupSpace(char) {
   return char === undefined || char === " " || char === "\t";
 }
@@ -143,10 +161,21 @@ function hasVerdict(text) {
   return reviewLines(text).some((rawLine) => {
     const line = unmarkReviewText(rawLine).toLowerCase();
     return startsWithLabel(line, "verdict")
-      || startsWithLabel(line, "summary")
+      || startsWithLabel(line, "review verdict")
+      || startsWithLabel(line, "code review verdict")
+      || startsWithLabel(line, "overall verdict")
+      || startsWithLabel(line, "final verdict")
+      || startsWithVerdictLabel(line, "status")
+      || startsWithVerdictLabel(line, "summary")
+      || startsWithToken(line, "review verdict")
+      || startsWithToken(line, "code review verdict")
+      || startsWithToken(line, "overall verdict")
+      || startsWithToken(line, "final verdict")
+      || startsWithToken(line, "do not approve")
       || startsWithToken(line, "approve")
       || startsWithToken(line, "approved")
       || startsWithToken(line, "request changes")
+      || startsWithFailVerdict(line)
       || startsWithToken(line, "reject")
       || startsWithToken(line, "rejected");
   });
@@ -171,6 +200,8 @@ function unmarkReviewText(text) {
 }
 
 function checklistStatus(line) {
+  const tableStatus = markdownTableChecklistStatus(line);
+  if (tableStatus) return tableStatus;
   const text = checklistText(line);
   if (!text) return null;
   const lower = unmarkReviewText(text).toLowerCase();
@@ -182,6 +213,22 @@ function checklistStatus(line) {
     ?? lower.match(/:\s*(pass|fail)\b(?=\s*(?:$|[().;,\u2013\u2014]))/);
   if (!statusMatch) return null;
   return statusMatch[1].replace(" ", "_");
+}
+
+function markdownTableChecklistStatus(line) {
+  const trimmed = String(line ?? "").trim();
+  if (!trimmed.startsWith("|") || !trimmed.endsWith("|")) return null;
+  const cells = trimmed.slice(1, -1)
+    .split("|")
+    .map((cell) => unmarkReviewText(cell).trim().toLowerCase())
+    .filter(Boolean);
+  if (cells.length < 3) return null;
+  for (const cell of cells.slice(2)) {
+    if (startsWithToken(cell, "pass")) return "pass";
+    if (startsWithToken(cell, "fail")) return "fail";
+    if (startsWithToken(cell, "not reviewed")) return "not_reviewed";
+  }
+  return null;
 }
 
 function isChecklistVerdict(line) {
@@ -267,7 +314,11 @@ function semanticFailureReasons(text, looksShallow, selectedSource = null) {
     const line = unmarkReviewText(rawLine).toLowerCase();
     return startsWithLabel(line, "verdict") && line.includes("not reviewed");
   });
-  const semanticLines = reviewLines(text).filter((line) => !isPassingChecklistLine(line));
+  const semanticLines = reviewLines(text).filter((line) => (
+    !isPassingChecklistLine(line)
+      && !isPromptPolicyEchoLine(line)
+      && !isNegatedPermissionBlockLine(line)
+  ));
   const semanticText = semanticLines.join("\n").toLowerCase();
   if (hasNotReviewedVerdict || includesAny(semanticText, [
     "failed review slot",
@@ -300,6 +351,37 @@ function semanticFailureReasons(text, looksShallow, selectedSource = null) {
     reasons.push("shallow_output");
   }
   return Object.freeze([...new Set(reasons)]);
+}
+
+function isPromptPolicyEchoLine(line) {
+  const lower = unmarkReviewText(line).toLowerCase();
+  return (
+    lower.includes("treat timeout, truncation, interruption, permission block")
+    && lower.includes("failed review slot")
+  ) || (
+    lower.includes("timed out, truncated, interrupted")
+    && lower.includes("not an approval")
+    && lower.includes("shallow")
+  );
+}
+
+function isNegatedPermissionBlockLine(line) {
+  const lower = unmarkReviewText(line).toLowerCase();
+  return (
+    lower.includes("permission block")
+    && (
+      lower.includes("no timeout")
+      || lower.includes("no such failure")
+      || lower.includes("without timeout")
+      || lower.includes("review completed without")
+      || lower.includes("no truncation")
+    )
+    && (
+      lower.includes("occurred")
+      || lower.includes("completed")
+      || lower.includes("without")
+    )
+  );
 }
 
 function mentionsSelectedSourceInspection(lowerText, selectedSource) {

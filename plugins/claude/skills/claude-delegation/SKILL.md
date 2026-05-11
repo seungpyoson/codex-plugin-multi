@@ -25,17 +25,17 @@ In the repository checkout, it is `plugins/claude`.
 
 - Setup/OAuth check:
   ```bash
-  node "<plugin-root>/scripts/claude-companion.mjs" doctor
+  node "<plugin-root>/scripts/claude-companion.mjs" doctor --auth-mode subscription
   ```
 For review or adversarial-review, add `--scope-base REF` before `--` when the user provides a base ref.
 
 - Read-only review:
   ```bash
-  node "<plugin-root>/scripts/claude-companion.mjs" run --mode=review --foreground --lifecycle-events jsonl --cwd "<workspace>" -- "<review focus>"
+  node "<plugin-root>/scripts/claude-companion.mjs" run --mode=review --foreground --auth-mode subscription --lifecycle-events jsonl --cwd "<workspace>" -- "<review focus>"
   ```
 - Adversarial review:
   ```bash
-  node "<plugin-root>/scripts/claude-companion.mjs" run --mode=adversarial-review --foreground --lifecycle-events jsonl --cwd "<workspace>" -- "<design or diff to challenge>"
+  node "<plugin-root>/scripts/claude-companion.mjs" run --mode=adversarial-review --foreground --auth-mode subscription --lifecycle-events jsonl --cwd "<workspace>" -- "<design or diff to challenge>"
   ```
 - Disclosure/scope preflight:
   ```bash
@@ -43,7 +43,7 @@ For review or adversarial-review, add `--scope-base REF` before `--` when the us
   ```
 - Pinned bundle or selected-file review:
   ```bash
-  node "<plugin-root>/scripts/claude-companion.mjs" run --mode=custom-review --foreground --lifecycle-events jsonl --cwd "<bundle-or-workspace>" --scope-paths "PR.diff,docs/*.md" -- "<review focus using relative paths>"
+  node "<plugin-root>/scripts/claude-companion.mjs" run --mode=custom-review --foreground --auth-mode subscription --lifecycle-events jsonl --cwd "<bundle-or-workspace>" --scope-paths "PR.diff,docs/*.md" -- "<review focus using relative paths>"
   ```
 - Rescue/investigation:
   ```bash

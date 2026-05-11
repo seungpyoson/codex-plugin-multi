@@ -21,17 +21,23 @@ claude-companion.mjs run     --mode=review|adversarial-review|custom-review|resc
                              [--scope-base <ref>] [--scope-paths <g1,g2,…>]
                              [--override-dispose <true|false>]
                              [--schema <json>] [--binary <path>]
-                             [--timeout-ms <ms>]
+                             [--auth-mode subscription|api_key|auto]
+                             [--timeout-ms <ms>] [--allow-bypass-permissions]
                              -- <prompt>
 claude-companion.mjs continue --job <id> [--foreground|--background]
                               [--model <full-id>] [--cwd <path>]
-                              [--binary <path>] [--timeout-ms <ms>]
+                              [--binary <path>]
+                              [--auth-mode subscription|api_key|auto]
+                              [--timeout-ms <ms>]
+                              [--allow-bypass-permissions]
                               -- <prompt>
 
 claude-companion.mjs preflight --mode=review|adversarial-review|custom-review
                                [--cwd <path>] [--scope-base <ref>]
                                [--scope-paths <g1,g2,…>]
-claude-companion.mjs ping    [--model <id>] [--binary <path>] [--timeout-ms <ms>]
+claude-companion.mjs ping    [--model <id>] [--binary <path>]
+                             [--auth-mode subscription|api_key|auto]
+                             [--timeout-ms <ms>]
 claude-companion.mjs status  [--job <id>] [--cwd <path>] [--all]
 claude-companion.mjs result  --job <id> [--cwd <path>]
 claude-companion.mjs cancel  --job <id> [--cwd <path>] [--force]
@@ -46,14 +52,16 @@ claude-companion.mjs cancel  --job <id> [--cwd <path>] [--force]
 - **Custom review**: use `--mode=custom-review --scope-paths <g1,g2,…>` for pinned bundles or hand-picked files. Prompts should refer to selected files by relative paths inside the granted scope, never by an absolute parent checkout path.
 - **Preflight**: run `preflight` before external review when disclosure or bundle scope is uncertain. It computes file count, byte count, and selected relative paths without launching Claude.
 - **Session IDs**: the companion mints a UUID v4 `job_id`, passes it to fresh Claude runs as `--session-id`, then persists `claude_session_id` from Claude's JSON stdout. Callers do not supply session IDs.
-- **Timeouts**: review run/continue paths default to `600000` ms, accept `--timeout-ms <ms>`, and fall back to `CLAUDE_REVIEW_TIMEOUT_MS` for non-interactive use. The effective value is persisted in `review_metadata.audit_manifest.request.timeout_ms`.
+- **Timeouts**: review run/continue paths default to `900000` ms, accept `--timeout-ms <ms>`, and fall back to `CLAUDE_REVIEW_TIMEOUT_MS` for non-interactive use. The effective value is persisted in `review_metadata.audit_manifest.request.timeout_ms`.
+- **Review permission ladder**: review/adversarial/custom-review default to `dontAsk,auto,acceptEdits`. The companion retries the next mode only when the prior slot is unusable (`review_not_completed`, timeout, parse failure, or target error), and stops on the first usable review regardless of APPROVE/DO NOT APPROVE verdict. Override with `CLAUDE_REVIEW_PERMISSION_MODES=mode1,mode2`. `bypassPermissions` is refused unless the command includes `--allow-bypass-permissions` or the environment sets `CLAUDE_REVIEW_ALLOW_BYPASS_PERMISSIONS=1`. Terminal review records include `review_metadata.permission_mode_attempts` and `review_metadata.permission_mode_effective`.
+- **Review auth**: command skills should pass `--auth-mode subscription` for Claude review, adversarial-review, custom-review, and setup checks. Subscription mode ignores Claude provider API-key env vars and proves the OAuth/subscription inference path. Use `--auth-mode api_key` only when the user explicitly requests API-key auth; `--auth-mode auto` is a compatibility mode that tries OAuth/subscription first and falls back to API-key auth only when subscription readiness is unavailable.
 - **Cancel scope**: `cancel` is for background jobs only. Foreground runs stay attached to the active terminal and should be interrupted with Ctrl+C.
 
 ## Flag-stack per mode (enforced by `lib/claude.mjs`)
 
 Callers do not pass the inner flags — the companion adds them. This is documentation of what the child `claude -p` actually receives.
 
-- **review / adversarial-review / custom-review**: `--setting-sources "" --permission-mode plan --disallowedTools "Write Edit MultiEdit NotebookEdit Bash WebFetch Agent Task mcp__*" --no-session-persistence --output-format json --session-id <uuid> --model <id>`. Optionally `--add-dir <cwd>` + `--json-schema <schema>`.
+- **review / adversarial-review / custom-review**: `--setting-sources "" --permission-mode <ladder-attempt> --disallowedTools "Write Edit MultiEdit NotebookEdit Bash WebFetch Agent Task mcp__*" --no-session-persistence --output-format json --session-id <uuid> --model <id>`. Default ladder attempts are `dontAsk`, then `auto`, then `acceptEdits`; optionally `--add-dir <cwd>` + `--json-schema <schema>`.
 - **rescue**: `--permission-mode acceptEdits --no-session-persistence --output-format json --session-id <uuid> --model <id> --add-dir <cwd>`. No disallowed-tools blocklist and no `--setting-sources ""` — rescue is write-capable and keeps project context by design.
 
 ## Output contract

@@ -34,22 +34,30 @@ lets Claude Code delegate to Codex.
 - Gemini CLI installed and authenticated if you enable the Gemini plugin.
 - Kimi Code CLI installed and authenticated if you enable the Kimi plugin.
 - A local Grok web tunnel if you enable the Grok plugin. The default endpoint
-  targets grok2api at `GROK_WEB_BASE_URL=http://127.0.0.1:8000/v1`; set
+  targets grok2api at `GROK_WEB_BASE_URL=http://127.0.0.1:8000/v1`; the plugin
+  can bootstrap a local grok2api checkout into its temp runtime directory and
+  auto-start the non-Docker
+  `uv run granian ... app.main:app` tunnel when it is down. Successfully
+  auto-started tunnels are left running for reuse; failed starts are cleaned up
+  with SIGTERM/verify/SIGKILL diagnostics. Set
+  `GROK2API_HOME` or `GROK2API_BOOTSTRAP_DIR` only when you want a specific
+  checkout or runtime directory. Set
   `GROK_WEB_TUNNEL_API_KEY` only if your local tunnel requires a bearer value.
 - `DEEPSEEK_API_KEY` if you enable the DeepSeek direct API reviewer.
 - `ZAI_API_KEY` if you enable the GLM direct API reviewer. `ZAI_GLM_API_KEY`
   is accepted as a compatibility alias. GLM Coding Plan calls use
   `https://api.z.ai/api/coding/paas/v4`, not the general Z.ai endpoint.
 
-Claude and Gemini default to each target CLI's native OAuth login and ignore
-provider API-key env vars. They also support an explicit companion
-`--auth-mode subscription|api_key|auto` option for `setup`/`doctor`, `run`, and
-`continue`: `subscription` strips API keys, `api_key` allows only that
-provider's key names through intentionally, and `auto` uses API-key env auth
-only when a provider key is already present. The selected path is reported as
-`selected_auth_path`; secret values are never printed. Kimi remains
-subscription/OAuth-only. Direct API reviewers are separate and only use API keys
-through explicit `auth_mode: "api_key"` provider config.
+Claude and Gemini default to `--auth-mode subscription`: provider API-key env
+vars are stripped and the target CLI's native OAuth/subscription path must pass
+the live readiness probe. They also support explicit
+`--auth-mode subscription|api_key|auto` for `setup`/`doctor`, `run`, and
+`continue`: `api_key` requires a matching provider key, and `auto` is a
+compatibility mode that tries OAuth/subscription first and falls back to a
+provider key only when subscription readiness is unavailable. The selected path
+is reported as `selected_auth_path`; secret values are never printed. Kimi remains subscription/OAuth-only. Direct API
+reviewers are separate and only use API keys through explicit
+`auth_mode: "api_key"` provider config.
 
 The Grok plugin defaults to Grok subscription usage through a local tunnel that
 is backed by a subscription-backed web session. It is not an `api.x.ai`
@@ -60,7 +68,14 @@ limits are reported as `usage_limited`; the plugin does not purchase credits,
 upgrade tiers, or switch to a paid fallback automatically.
 `/grok-setup` and the `doctor` command make a live `GET /models` probe against
 the configured tunnel endpoint. `ready: true` means the local tunnel was
-reachable; `tunnel_unavailable` means start the local Grok web tunnel and retry.
+reachable. If a loopback grok2api `/v1` endpoint is unavailable, the doctor/run
+path tries to use an existing `GROK2API_HOME`, `GROK2API_BOOTSTRAP_DIR`, temp
+runtime checkout, or common local checkout path. If no checkout exists, it can
+clone `https://github.com/chenyme/grok2api.git` into the bootstrap directory and
+then start `uv run granian --interface asgi --host 127.0.0.1 --port 8000
+--workers 1 app.main:app`; no Docker path is required. `tunnel_unavailable`
+after that means no usable clone/start path was available or the started process
+did not become reachable.
 Grok run records can be inspected with
 `node plugins/grok/scripts/grok-web-reviewer.mjs list` and
 `node plugins/grok/scripts/grok-web-reviewer.mjs result --job-id <job_id>`.
@@ -78,11 +93,28 @@ API. Keep Codex workspace-write sandboxing enabled, but allow the minimum host
 capabilities needed for the providers you use.
 
 For DeepSeek and GLM direct API reviewers, Codex must allow outbound network
-access:
+access. Their setup commands perform a source-free live chat readiness probe, so
+network or auth failures are reported before any selected repository source is
+sent:
 
 ```toml
 [sandbox_workspace_write]
 network_access = true
+```
+
+Claude, Gemini, and Kimi use first-party CLIs that read or write local OAuth,
+session, config, or log state. If setup or review returns `sandbox_blocked`
+with a `.claude`, `.gemini`, or `.kimi` path, add the provider state directory
+as a writable root and start a fresh Codex session before retrying. Claude and
+Gemini usually need their full state trees because OAuth/session files can move
+across releases:
+
+```toml
+[sandbox_workspace_write]
+writable_roots = [
+  "/Users/<you>/.claude",
+  "/Users/<you>/.gemini"
+]
 ```
 
 For Kimi, the first-party CLI normally writes state and logs below `~/.kimi`;
@@ -123,11 +155,22 @@ Troubleshooting signals:
   `ENOTFOUND`, `EAI_AGAIN`, or `ECONNREFUSED` usually need network access or a
   one-off escalation. HTTP 5xx responses mean the provider was reached; retry
   later or switch provider instead of weakening sandbox policy.
+- Direct API reviewers with `sandbox_blocked` need `API_REVIEWERS_PLUGIN_DATA`
+  to resolve to a writable path inside the workspace or another approved
+  writable root. Runs preflight this data root before collecting scope or
+  sending source.
+- Claude `Operation not permitted`, `Permission denied`, `EACCES`, or `EPERM`
+  errors on `.claude` paths need `/Users/<you>/.claude` in writable roots.
+- Gemini `Operation not permitted`, `Permission denied`, `EACCES`, or `EPERM`
+  errors on `.gemini` paths need `/Users/<you>/.gemini` in writable roots.
 - Kimi `Operation not permitted`, `Permission denied`, `EACCES`, or `EPERM`
   errors on `.kimi` paths need a Kimi writable root.
 - Grok `tunnel_unavailable` means the subscription-backed local tunnel is not
-  reachable at `GROK_WEB_BASE_URL`. Start or repair the tunnel rather than
-  adding xAI API keys.
+  reachable at `GROK_WEB_BASE_URL`. Check `tunnel_start`: the plugin tries to
+  bootstrap or start the non-Docker grok2api tunnel automatically. If
+  `tunnel_start.error_code` is `grok2api_bootstrap_failed`, inspect the safe
+  `detail` field; if it is `grok2api_uv_missing`, install/expose `uv`. Do not
+  add xAI API keys.
 - Grok `models_ok_chat_400` is now the generic fallback only after local
   session probes fail to identify a sharper cause. `grok_session_no_runtime_tokens`
   means the tunnel has no active runtime session, `grok_session_malformed_active_token`
@@ -227,12 +270,14 @@ For `second-codex`, inspect both profiles:
 npm run doctor:cache -- --second-codex-home "$HOME/.codex-second"
 ```
 
-The report compares marketplace/plugin files against
-`plugins/cache/codex-plugin-multi/<plugin>/0.1.0`, including SHA-256 checks for
-bundled `commands/`, `skills/`, `scripts/`, and `config/` files. It reports
-`missing_files`, `extra_files`, and `changed_files`, checks whether each plugin
-is enabled in `config.toml`, and prints next actions. For Git marketplace
-installs, start with:
+The report compares both marketplace/plugin files and this repo's `plugins/`
+tree against `plugins/cache/codex-plugin-multi/<plugin>/0.1.0`, including
+SHA-256 checks for bundled `commands/`, `skills/`, `scripts/`, and `config/`
+files. It reports `missing_files`, `extra_files`, `changed_files`, and
+`repo_changed_files`, checks whether each plugin is enabled in `config.toml`,
+and prints next actions. `cache_in_sync: true` with
+`repo_cache_in_sync: false` means new Codex sessions will still run stale
+installed plugin code. For Git marketplace installs, start with:
 
 ```bash
 codex plugin marketplace upgrade codex-plugin-multi
@@ -330,7 +375,7 @@ command docs:
 | Command | Status | Behavior |
 |---|---|---|
 | `/claude-setup` / `/gemini-setup` / `/kimi-setup` | Packaged | Target CLI availability and OAuth readiness check. Claude setup includes an OAuth-only non-interactive inference probe, not just `claude auth status`. |
-| `/deepseek-setup` / `/glm-setup` | Packaged | Direct API-key readiness check; reports key names only. |
+| `/deepseek-setup` / `/glm-setup` | Packaged | Direct API-key readiness check plus source-free live provider probe; reports key names and probe status only. |
 | `/grok-setup` | Packaged | Grok subscription-backed local tunnel readiness check; probes `/v1/models` by default and reports key names only. |
 | `/claude-review [focus]` / `/gemini-review [focus]` / `/kimi-review [focus]` | Packaged | Read-only review profile over the selected scope. |
 | `/grok-review [focus]` | Packaged | Subscription-backed Grok web review over the selected scope. |
@@ -367,13 +412,15 @@ inspect the terminal record.
 - **Scope narrowing is not provider isolation.** `branch-diff` reduces which
   files are reviewed, but a successful external review still sends selected
   source content to the target provider.
-- **API-key auth is explicit.** Claude and Gemini use `--auth-mode subscription`
-  by default and strip provider API-key env vars. `--auth-mode api_key` allows
-  only Claude or Gemini provider key names through; `--auth-mode auto` gives
-  those key names precedence only when they are already present. DeepSeek and
-  GLM direct API reviewers use `auth_mode: "api_key"` in
-  `plugins/api-reviewers/config/providers.json`. Diagnostics report key names
-  only and never print secret values.
+- **Claude/Gemini auth is explicit and reported.** Claude and Gemini default to
+  `--auth-mode subscription`: provider API-key env vars are ignored and the
+  target CLI's OAuth/subscription inference path must work. `--auth-mode
+  api_key` requires a matching provider key, and `--auth-mode auto` is an
+  explicit compatibility mode that tries OAuth/subscription first and falls
+  back to API-key auth only when subscription readiness is unavailable.
+  DeepSeek and GLM direct API reviewers use
+  `auth_mode: "api_key"` in `plugins/api-reviewers/config/providers.json`.
+  Diagnostics report key names only and never print secret values.
 - **Grok subscription is the default Grok path.** Grok uses
   `auth_mode: "subscription_web"` through a local tunnel and does not silently
   fall back to paid xAI API billing. Tunnel bearer values and session cookies

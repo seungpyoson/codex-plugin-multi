@@ -202,6 +202,40 @@ function writeDeepSeekProviderConfig(pluginRoot, baseUrl) {
   }, null, 2));
 }
 
+function writeSingleProviderConfig(pluginRoot, provider, cfg) {
+  writeFileSync(path.join(pluginRoot, "config", "providers.json"), JSON.stringify({
+    [provider]: cfg,
+  }, null, 2));
+}
+
+test("direct API reviewers default plugin state outside the reviewed workspace", async () => {
+  const cwd = makeWorkspace();
+  try {
+    const result = await run([
+      "run",
+      "--provider", "deepseek",
+      "--mode", "custom-review",
+      "--scope", "custom",
+      "--scope-paths", "seed.txt",
+      "--foreground",
+      "--prompt", "Check this file.",
+    ], {
+      cwd,
+      env: {
+        API_REVIEWERS_MOCK_RESPONSE: mockResponse("deepseek-v4-flash"),
+        DEEPSEEK_API_KEY: "secret-test-value",
+      },
+    });
+    const record = parseJson(result.stdout);
+
+    assert.equal(result.status, 0);
+    assert.equal(record.status, "completed");
+    assert.equal(existsSync(path.join(cwd, ".codex-plugin-data")), false);
+  } finally {
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
 function startChatServer(handler) {
   const server = createServer((req, res) => {
     if (req.url === "/chat/completions") {
@@ -251,16 +285,41 @@ function makeEmptyBranchDiffWorkspace() {
 }
 
 test("doctor reports DeepSeek API-key readiness by key name only", async () => {
-  const result = await run(["doctor", "--provider", "deepseek"], {
-    env: { DEEPSEEK_API_KEY: "secret-test-value" },
+  const pluginRoot = makeInstalledApiReviewersRoot();
+  let requestBody = null;
+  const server = await startChatServer((req, res) => {
+    let body = "";
+    req.setEncoding("utf8");
+    req.on("data", (chunk) => { body += chunk; });
+    req.on("end", () => {
+      requestBody = JSON.parse(body);
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(mockResponse("deepseek-v4-flash", "chatcmpl-doctor", "ok"));
+    });
   });
-  assert.equal(result.status, 0);
-  const parsed = parseJson(result.stdout);
-  assert.equal(parsed.provider, "deepseek");
-  assert.equal(parsed.ready, true);
-  assert.equal(parsed.credential_ref, "DEEPSEEK_API_KEY");
-  assert.equal(parsed.auth_mode, "api_key");
-  assert.doesNotMatch(result.stdout, /secret-test-value/);
+  try {
+    const { port } = server.address();
+    writeDeepSeekProviderConfig(pluginRoot, `http://127.0.0.1:${port}`);
+    const result = await run(["doctor", "--provider", "deepseek"], {
+      companion: path.join(pluginRoot, "scripts", "api-reviewer.mjs"),
+      env: { DEEPSEEK_API_KEY: "secret-test-value" },
+    });
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    const parsed = parseJson(result.stdout);
+    assert.equal(parsed.provider, "deepseek");
+    assert.equal(parsed.ready, true);
+    assert.equal(parsed.credential_ref, "DEEPSEEK_API_KEY");
+    assert.equal(parsed.auth_mode, "api_key");
+    assert.equal(parsed.provider_probe.status, "ok");
+    assert.equal(parsed.provider_probe.source_content_transmission, "not_sent");
+    assert.equal(requestBody.model, "deepseek-v4-flash");
+    assert.equal(requestBody.messages.length, 1);
+    assert.match(requestBody.messages[0].content, /Return exactly: ok/);
+    assert.doesNotMatch(JSON.stringify(requestBody), /seed\.txt|hello from selected scope/);
+    assert.doesNotMatch(result.stdout, /secret-test-value/);
+  } finally {
+    server.close();
+  }
 });
 
 test("rejects prototype-shaped option keys", async () => {
@@ -276,15 +335,59 @@ test("rejects prototype-shaped option keys", async () => {
 });
 
 test("doctor reports GLM compatibility alias without leaking value", async () => {
-  const result = await run(["doctor", "--provider", "glm"], {
-    env: { ZAI_API_KEY: "", ZAI_GLM_API_KEY: "secret-test-value" },
+  const pluginRoot = makeInstalledApiReviewersRoot();
+  const server = await startChatServer((req, res) => {
+    req.resume();
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end(mockResponse("glm-5.1", "chatcmpl-doctor", "ok"));
   });
-  assert.equal(result.status, 0);
+  try {
+    const { port } = server.address();
+    writeSingleProviderConfig(pluginRoot, "glm", {
+      display_name: "GLM",
+      auth_mode: "api_key",
+      env_keys: ["ZAI_API_KEY", "ZAI_GLM_API_KEY"],
+      base_url: `http://127.0.0.1:${port}`,
+      model: "glm-5.1",
+    });
+    const result = await run(["doctor", "--provider", "glm"], {
+      companion: path.join(pluginRoot, "scripts", "api-reviewer.mjs"),
+      env: { ZAI_API_KEY: "", ZAI_GLM_API_KEY: "secret-test-value" },
+    });
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    const parsed = parseJson(result.stdout);
+    assert.equal(parsed.provider, "glm");
+    assert.equal(parsed.ready, true);
+    assert.equal(parsed.credential_ref, "ZAI_GLM_API_KEY");
+    assert.equal(parsed.endpoint, `http://127.0.0.1:${port}`);
+    assert.equal(parsed.provider_probe.status, "ok");
+    assert.equal(parsed.provider_probe.source_content_transmission, "not_sent");
+    assert.doesNotMatch(result.stdout, /secret-test-value/);
+  } finally {
+    server.close();
+  }
+});
+
+test("doctor source-free live probe classifies network sandbox failures", async () => {
+  const pluginRoot = makeInstalledApiReviewersRoot();
+  writeDeepSeekProviderConfig(pluginRoot, "http://127.0.0.1:9");
+
+  const result = await run(["doctor", "--provider", "deepseek"], {
+    companion: path.join(pluginRoot, "scripts", "api-reviewer.mjs"),
+    env: {
+      CODEX_SANDBOX: "seatbelt",
+      DEEPSEEK_API_KEY: "secret-test-value",
+    },
+  });
+
+  assert.equal(result.status, 1);
   const parsed = parseJson(result.stdout);
-  assert.equal(parsed.provider, "glm");
-  assert.equal(parsed.ready, true);
-  assert.equal(parsed.credential_ref, "ZAI_GLM_API_KEY");
-  assert.equal(parsed.endpoint, "https://api.z.ai/api/coding/paas/v4");
+  assert.equal(parsed.provider, "deepseek");
+  assert.equal(parsed.ready, false);
+  assert.equal(parsed.status, "provider_unavailable");
+  assert.equal(parsed.provider_probe.status, "provider_unavailable");
+  assert.equal(parsed.provider_probe.source_content_transmission, "not_sent");
+  assert.match(parsed.next_action, /network_access = true/);
   assert.doesNotMatch(result.stdout, /secret-test-value/);
 });
 
@@ -1213,64 +1316,104 @@ test("provider request defaults cannot override canonical request fields", async
   assert.doesNotMatch(result.stdout, /secret-test-value/);
 });
 
-test("persist failure still prints structured JobRecord", async () => {
+test("direct API reviewer fails closed before provider contact when plugin data root is unwritable", async () => {
   const cwd = makeWorkspace();
   const dataRoot = path.join(tmpdir(), `api-reviewers-data-file-${Date.now()}-${process.pid}-secret-test-value`);
   writeFileSync(dataRoot, "not a directory\n");
-  const result = await run([
-    "run",
-    "--provider", "glm",
-    "--mode", "custom-review",
-    "--scope", "custom",
-    "--scope-paths", "seed.txt",
-    "--foreground",
-    "--prompt", "Check this file.",
-  ], {
-    cwd,
-    env: {
-      API_REVIEWERS_PLUGIN_DATA: dataRoot,
-      API_REVIEWERS_MOCK_RESPONSE: mockResponse("glm-5.1"),
-      ZAI_API_KEY: "secret-test-value",
-    },
+  const pluginRoot = makeInstalledApiReviewersRoot();
+  let requestCount = 0;
+  const server = await startChatServer((req, res) => {
+    requestCount += 1;
+    req.resume();
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end(mockResponse("deepseek-v4-flash"));
   });
+  try {
+    const { port } = server.address();
+    writeDeepSeekProviderConfig(pluginRoot, `http://127.0.0.1:${port}`);
+    const result = await run([
+      "run",
+      "--provider", "deepseek",
+      "--mode", "custom-review",
+      "--scope", "custom",
+      "--scope-paths", "seed.txt",
+      "--foreground",
+      "--prompt", "Check this file.",
+    ], {
+      cwd,
+      companion: path.join(pluginRoot, "scripts", "api-reviewer.mjs"),
+      env: {
+        API_REVIEWERS_PLUGIN_DATA: dataRoot,
+        DEEPSEEK_API_KEY: "secret-test-value",
+      },
+    });
 
-  assert.equal(result.status, 0, result.stderr || result.stdout);
-  const record = parseJson(result.stdout);
-  assert.equal(record.status, "completed");
-  assert.equal(record.provider, "glm");
-  assert.match(record.disclosure_note, /JobRecord persistence failed:/);
-  assert.match(record.disclosure_note, /\[REDACTED\]/);
-  assert.doesNotMatch(result.stdout, /secret-test-value/);
+    assert.equal(requestCount, 0);
+    assert.equal(result.status, 1);
+    const record = parseJson(result.stdout);
+    assert.equal(record.status, "failed");
+    assert.equal(record.provider, "deepseek");
+    assert.equal(record.error_code, "sandbox_blocked");
+    assert.equal(record.error_cause, "sandbox_access");
+    assert.match(record.suggested_action, /API_REVIEWERS_PLUGIN_DATA|writable/);
+    assertDirectApiNotSent(record, "DeepSeek");
+    assert.doesNotMatch(result.stdout, /secret-test-value/);
+  } finally {
+    server.close();
+  }
 });
 
 for (const scenario of [
   {
     provider: "deepseek",
+    displayName: "DeepSeek",
     env: { DEEPSEEK_API_KEY: "secret-test-value" },
+    envKeys: ["DEEPSEEK_API_KEY"],
     credentialRef: "DEEPSEEK_API_KEY",
-    endpoint: "https://api.deepseek.com",
+    model: "deepseek-v4-flash",
   },
   {
     provider: "glm",
+    displayName: "GLM",
     env: { ZAI_API_KEY: "secret-test-value", ZAI_GLM_API_KEY: "" },
+    envKeys: ["ZAI_API_KEY", "ZAI_GLM_API_KEY"],
     credentialRef: "ZAI_API_KEY",
-    endpoint: "https://api.z.ai/api/coding/paas/v4",
+    model: "glm-5.1",
   },
 ]) {
   test(`installed api-reviewers package layout is self-contained for ${scenario.provider} doctor`, async () => {
     const pluginRoot = makeInstalledApiReviewersRoot();
     const companion = path.join(pluginRoot, "scripts", "api-reviewer.mjs");
-    const result = await run(["doctor", "--provider", scenario.provider], {
-      companion,
-      env: scenario.env,
+    const server = await startChatServer((req, res) => {
+      req.resume();
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(mockResponse(scenario.model, "chatcmpl-doctor", "ok"));
     });
-    assert.equal(result.status, 0, result.stderr || result.stdout);
-    const parsed = parseJson(result.stdout);
-    assert.equal(parsed.provider, scenario.provider);
-    assert.equal(parsed.ready, true);
-    assert.equal(parsed.credential_ref, scenario.credentialRef);
-    assert.equal(parsed.endpoint, scenario.endpoint);
-    assert.doesNotMatch(result.stdout, /secret-test-value/);
+    try {
+      const { port } = server.address();
+      const endpoint = `http://127.0.0.1:${port}`;
+      writeSingleProviderConfig(pluginRoot, scenario.provider, {
+        display_name: scenario.displayName,
+        auth_mode: "api_key",
+        env_keys: scenario.envKeys,
+        base_url: endpoint,
+        model: scenario.model,
+      });
+      const result = await run(["doctor", "--provider", scenario.provider], {
+        companion,
+        env: scenario.env,
+      });
+      assert.equal(result.status, 0, result.stderr || result.stdout);
+      const parsed = parseJson(result.stdout);
+      assert.equal(parsed.provider, scenario.provider);
+      assert.equal(parsed.ready, true);
+      assert.equal(parsed.credential_ref, scenario.credentialRef);
+      assert.equal(parsed.endpoint, endpoint);
+      assert.equal(parsed.provider_probe.status, "ok");
+      assert.doesNotMatch(result.stdout, /secret-test-value/);
+    } finally {
+      server.close();
+    }
   });
 }
 
@@ -3144,6 +3287,35 @@ test("direct API reviewers reject missing prompt before launch or source transmi
   assert.doesNotMatch(result.stdout, /secret-test-value/);
 });
 
+test("direct API reviewers validate missing prompt before collecting scope", async () => {
+  const cwd = makeWorkspace();
+  const result = await run([
+    "run",
+    "--provider", "deepseek",
+    "--mode", "custom-review",
+    "--scope", "custom",
+    "--scope-paths", "missing-source.txt",
+    "--foreground",
+    "--lifecycle-events", "jsonl",
+  ], {
+    cwd,
+    env: {
+      API_REVIEWERS_MOCK_RESPONSE: mockResponse("deepseek-v4-pro"),
+      DEEPSEEK_API_KEY: "secret-test-value",
+    },
+  });
+  assert.equal(result.status, 1);
+  const lines = parseJsonLines(result.stdout);
+  assert.equal(lines.length, 1);
+  const [record] = lines;
+  assert.equal(record.status, "failed");
+  assert.equal(record.error_code, "bad_args");
+  assert.match(record.error_message, /prompt is required/);
+  assertDirectApiNotSent(record, "DeepSeek");
+  assert.doesNotMatch(result.stdout, /external_review_launched/);
+  assert.doesNotMatch(result.stdout, /secret-test-value/);
+});
+
 test("direct API reviewers explain empty branch-diff recovery before launch", async () => {
   const cwd = makeEmptyBranchDiffWorkspace();
   const result = await run([
@@ -3408,7 +3580,7 @@ test("direct API reviewers approval-request describes external source transmissi
     assert.equal(request.selected_source.totals.lines, 1);
     assert.deepEqual(request.selected_source.files.map((file) => file.path), ["seed.txt"]);
     assert.match(request.rendered_prompt_hash.value, /^[a-f0-9]{64}$/);
-    assert.equal(request.request.timeout_ms, 600000);
+    assert.equal(request.request.timeout_ms, 900000);
     assert.equal(request.request.model, "glm-5.1");
     assert.equal(JSON.stringify(request).includes("hello from selected scope"), false);
     assert.equal(JSON.stringify(request).includes("secret-test-value"), false);

@@ -44,10 +44,12 @@ import { buildJobRecord, classifyExecution, externalReviewForInvocation, isOAuth
 import { reconcileActiveJobs } from "./lib/reconcile.mjs";
 import { cleanGitEnv } from "./lib/git-env.mjs";
 import { gitEnv, isGitBinaryPolicyError, resolveGitBinary } from "./lib/git-binary.mjs";
+import { isCodexSandbox } from "./lib/codex-env.mjs";
 import { sanitizeTargetEnv } from "./lib/provider-env.mjs";
 import { runCommand } from "./lib/process.mjs";
 import {
   authDiagnosticFields,
+  apiKeyFallbackSelection,
   apiKeyMissingFields as buildApiKeyMissingFields,
   apiKeyMissingMessage as buildApiKeyMissingMessage,
   resolveAuthSelection as resolveAuthSelectionForProvider,
@@ -81,11 +83,16 @@ configureState({
 });
 
 const MODELS_CONFIG_PATH = resolvePath(PLUGIN_ROOT, "config/models.json");
-const DEFAULT_CLAUDE_REVIEW_TIMEOUT_MS = 600000;
+const DEFAULT_CLAUDE_REVIEW_TIMEOUT_MS = 900000;
+const DEFAULT_CLAUDE_PING_TIMEOUT_MS = 900000;
 const CLAUDE_AUTH_STATUS_TIMEOUT_MS = 10000;
 const CONTINUABLE_STATUSES = new Set(["completed", "failed", "cancelled", "stale"]);
 const RUN_MODES = Object.freeze(["review", "adversarial-review", "custom-review", "rescue"]);
 const PREFLIGHT_MODES = Object.freeze(["review", "adversarial-review", "custom-review"]);
+const REVIEW_MODE_SET = new Set(PREFLIGHT_MODES);
+const DEFAULT_REVIEW_PERMISSION_MODE_LADDER = Object.freeze(["dontAsk", "auto", "acceptEdits"]);
+const ALLOWED_REVIEW_PERMISSION_MODES = new Set(["default", "plan", "acceptEdits", "dontAsk", "auto", "bypassPermissions"]);
+const PERMISSION_MODE_RETRYABLE_ERROR_CODES = new Set(["parse_error", "claude_error"]);
 
 function isExplicitRelativeBinary(binary) {
   return binary === "." ||
@@ -133,6 +140,49 @@ function parseReviewTimeoutMs(cliValue, env = process.env, fallback = DEFAULT_CL
     fail("bad_args", `${source} must be a positive integer number of milliseconds; got ${JSON.stringify(raw)}`);
   }
   return parsed;
+}
+
+function envAllowsBypassPermissions(env = process.env) {
+  return /^(1|true|yes)$/i.test(String(env.CLAUDE_REVIEW_ALLOW_BYPASS_PERMISSIONS ?? ""));
+}
+
+function normalizeReviewPermissionModeLadder(modes, source) {
+  if (modes.length === 0) {
+    throw new Error(`${source} must include at least one Claude permission mode`);
+  }
+  const unique = [];
+  for (const mode of modes) {
+    if (!ALLOWED_REVIEW_PERMISSION_MODES.has(mode)) {
+      throw new Error(`${source} contains unsupported Claude permission mode ${JSON.stringify(mode)}; allowed=${[...ALLOWED_REVIEW_PERMISSION_MODES].join("|")}`);
+    }
+    if (!unique.includes(mode)) unique.push(mode);
+  }
+  return Object.freeze(unique);
+}
+
+function parseReviewPermissionModeLadder(raw, source) {
+  return normalizeReviewPermissionModeLadder(
+    String(raw)
+      .split(",")
+      .map((mode) => mode.trim())
+      .filter(Boolean),
+    source,
+  );
+}
+
+function resolveReviewPermissionModeLadder(profile, { env = process.env, allowBypassPermissions = false } = {}) {
+  if (!REVIEW_MODE_SET.has(profile.name)) return Object.freeze([profile.permission_mode]);
+  const source = env.CLAUDE_REVIEW_PERMISSION_MODES === undefined
+    ? "default review permission ladder"
+    : "CLAUDE_REVIEW_PERMISSION_MODES";
+  const modes = env.CLAUDE_REVIEW_PERMISSION_MODES === undefined
+    ? DEFAULT_REVIEW_PERMISSION_MODE_LADDER
+    : parseReviewPermissionModeLadder(env.CLAUDE_REVIEW_PERMISSION_MODES, source);
+  const bypassAllowed = allowBypassPermissions || envAllowsBypassPermissions(env);
+  if (modes.includes("bypassPermissions") && !bypassAllowed) {
+    throw new Error(`${source} includes bypassPermissions, but that mode requires --allow-bypass-permissions or CLAUDE_REVIEW_ALLOW_BYPASS_PERMISSIONS=1`);
+  }
+  return Object.freeze([...modes]);
 }
 
 function targetPromptFor(invocation, userPrompt, sourceFiles = []) {
@@ -388,7 +438,11 @@ function writeRuntimeOptionsSidecar(workspaceRoot, jobId, options) {
   const file = runtimeOptionsSidecarPath(workspaceRoot, jobId);
   const tmpFile = `${file}.${process.pid}.${Date.now()}.tmp`;
   try {
-    writeFileSync(tmpFile, `${JSON.stringify({ timeout_ms: options.timeout_ms }, null, 2)}\n`, { mode: 0o600, encoding: "utf8" });
+    const payload = {};
+    if (Number.isSafeInteger(options.timeout_ms) && options.timeout_ms > 0) payload.timeout_ms = options.timeout_ms;
+    if (Array.isArray(options.permission_mode_ladder)) payload.permission_mode_ladder = [...options.permission_mode_ladder];
+    if (typeof options.allow_bypass_permissions === "boolean") payload.allow_bypass_permissions = options.allow_bypass_permissions;
+    writeFileSync(tmpFile, `${JSON.stringify(payload, null, 2)}\n`, { mode: 0o600, encoding: "utf8" });
     try { chmodSync(tmpFile, 0o600); } catch { /* best-effort on non-POSIX */ }
     renameSync(tmpFile, file);
   } catch (e) {
@@ -403,8 +457,17 @@ function readRuntimeOptionsSidecar(workspaceRoot, jobId) {
   try {
     const parsed = JSON.parse(_readFileSync(file, "utf8"));
     if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+    const out = {};
     const timeoutMs = parsed.timeout_ms;
-    return Number.isSafeInteger(timeoutMs) && timeoutMs > 0 ? { timeout_ms: timeoutMs } : {};
+    if (Number.isSafeInteger(timeoutMs) && timeoutMs > 0) out.timeout_ms = timeoutMs;
+    if (Array.isArray(parsed.permission_mode_ladder)) {
+      const modes = parsed.permission_mode_ladder.filter((mode) => typeof mode === "string");
+      if (modes.length > 0) out.permission_mode_ladder = Object.freeze(modes);
+    }
+    if (typeof parsed.allow_bypass_permissions === "boolean") {
+      out.allow_bypass_permissions = parsed.allow_bypass_permissions;
+    }
+    return out;
   } catch {
     return {};
   }
@@ -437,6 +500,10 @@ function invocationFromRecord(record, fallbackAuthMode = "subscription", runtime
       runtimeOptions.timeout_ms ??
       record.review_metadata?.audit_manifest?.request?.timeout_ms ??
       DEFAULT_CLAUDE_REVIEW_TIMEOUT_MS,
+    permission_mode_ladder: Array.isArray(runtimeOptions.permission_mode_ladder)
+      ? Object.freeze([...runtimeOptions.permission_mode_ladder])
+      : null,
+    allow_bypass_permissions: runtimeOptions.allow_bypass_permissions === true || envAllowsBypassPermissions(),
     started_at: record.started_at,
   });
 }
@@ -603,7 +670,7 @@ function cmdPreflight(rest) {
 async function cmdRun(rest) {
   const { options, positionals } = parseArgs(rest, {
     valueOptions: ["mode", "model", "cwd", "schema", "binary", "scope-base", "scope-paths", "override-dispose", "auth-mode", "timeout-ms", "lifecycle-events"],
-    booleanOptions: ["background", "foreground"],
+    booleanOptions: ["background", "foreground", "allow-bypass-permissions"],
     aliasMap: {},
   });
 
@@ -656,6 +723,13 @@ async function cmdRun(rest) {
   if (authSelection.selected_auth_path === "api_key_env_missing") {
     fail("not_authed", apiKeyMissingMessage(), apiKeyMissingFields(authSelection));
   }
+  const allowBypassPermissions = Boolean(options["allow-bypass-permissions"]) || envAllowsBypassPermissions();
+  let permissionModeLadder;
+  try {
+    permissionModeLadder = resolveReviewPermissionModeLadder(profile, { allowBypassPermissions });
+  } catch (error) {
+    fail("bad_args", error.message);
+  }
 
   const jobId = newJobId();
   const startedAt = new Date().toISOString();
@@ -686,6 +760,8 @@ async function cmdRun(rest) {
     binary: options.binary ?? process.env.CLAUDE_BINARY ?? "claude",
     run_kind: options.background ? "background" : "foreground",
     auth_mode: authSelection.auth_mode,
+    permission_mode_ladder: permissionModeLadder,
+    allow_bypass_permissions: allowBypassPermissions,
     started_at: startedAt,
   });
 
@@ -701,7 +777,11 @@ async function cmdRun(rest) {
     // and deletes — prompt text does NOT live on the JobRecord.
     try {
       writePromptSidecar(resolveJobsDir(workspaceRoot), jobId, targetPrompt);
-      writeRuntimeOptionsSidecar(workspaceRoot, jobId, { timeout_ms: timeoutMs });
+      writeRuntimeOptionsSidecar(workspaceRoot, jobId, {
+        timeout_ms: timeoutMs,
+        permission_mode_ladder: permissionModeLadder,
+        allow_bypass_permissions: allowBypassPermissions,
+      });
     } catch (error) {
       failBackgroundPromptSidecarWrite(workspaceRoot, invocation, error);
     }
@@ -726,11 +806,8 @@ async function cmdRun(rest) {
 // prompt; background worker calls it after reading the prompt sidecar.
 // EXACTLY ONE buildJobRecord call per terminal state — §21.3.2 convergence.
 async function executeRun(invocation, prompt, { foreground, lifecycleEvents = null }) {
-  const authSelection = resolveAuthSelection(invocation.auth_mode);
-  invocation = Object.freeze({
-    ...invocation,
-    selected_auth_path: authSelection.selected_auth_path,
-  });
+  let authSelection = resolveAuthSelection(invocation.auth_mode);
+  invocation = invocationWithAuthSelection(invocation, authSelection);
   const { job_id: jobId, workspace_root: workspaceRoot } = invocation;
   const profile = resolveProfile(invocation.mode_profile_name);
 
@@ -743,23 +820,31 @@ async function executeRun(invocation, prompt, { foreground, lifecycleEvents = nu
   );
   const resumeId = latestResumeId(invocation);
 
-  const oauthPreflightExecution = await claudeOAuthInferencePreflight(invocation, authSelection);
-  if (oauthPreflightExecution) {
-    const finalRecord = buildClaudeFinalRecord(
-      invocation,
-      oauthPreflightExecution,
-      null,
-      mutationContext.mutations,
-      prompt,
-      executionScope.addDir,
-      runtimeDiagnostics,
-    );
-    const { metaError, stateError } = commitJobRecord(workspaceRoot, jobId, finalRecord);
-    writeExecutionSidecars(workspaceRoot, jobId, oauthPreflightExecution);
-    exitIfFinalizationFailed(invocation, oauthPreflightExecution, finalRecord, mutationContext, executionScope, { metaError, stateError });
-    cleanupExecutionResources(executionScope, mutationContext);
-    if (foreground) printLifecycleJson(finalRecord, lifecycleEvents);
-    process.exit(2);
+  let preflightExecution = await claudeOAuthInferencePreflight(invocation, authSelection);
+  if (preflightExecution) {
+    const fallbackSelection = autoApiKeyFallbackSelectionForClaudeFailure(authSelection, preflightExecution);
+    if (fallbackSelection) {
+      authSelection = fallbackSelection;
+      invocation = invocationWithAuthSelection(invocation, authSelection);
+      preflightExecution = await claudeOAuthInferencePreflight(invocation, authSelection, { allowApiKey: true });
+    }
+    if (preflightExecution) {
+      const finalRecord = buildClaudeFinalRecord(
+        invocation,
+        preflightExecution,
+        null,
+        mutationContext.mutations,
+        prompt,
+        executionScope.addDir,
+        runtimeDiagnostics,
+      );
+      const { metaError, stateError } = commitJobRecord(workspaceRoot, jobId, finalRecord);
+      writeExecutionSidecars(workspaceRoot, jobId, preflightExecution);
+      exitIfFinalizationFailed(invocation, preflightExecution, finalRecord, mutationContext, executionScope, { metaError, stateError });
+      cleanupExecutionResources(executionScope, mutationContext);
+      if (foreground) printLifecycleJson(finalRecord, lifecycleEvents);
+      process.exit(2);
+    }
   }
 
   exitIfCancelledBeforeSpawn(invocation, executionScope, mutationContext, {
@@ -780,6 +865,7 @@ async function executeRun(invocation, prompt, { foreground, lifecycleEvents = nu
     lifecycleEvents,
     runtimeDiagnostics,
     resumeId,
+    authSelection,
   });
 
   recordPostRunMutations(invocation, mutationContext);
@@ -803,6 +889,33 @@ async function executeRun(invocation, prompt, { foreground, lifecycleEvents = nu
 
   if (foreground) printLifecycleJson(finalRecord, lifecycleEvents);
   process.exit(finalRecord.status === "completed" || finalRecord.status === "cancelled" ? 0 : 2);
+}
+
+function invocationWithAuthSelection(invocation, authSelection) {
+  return Object.freeze({
+    ...invocation,
+    selected_auth_path: authSelection.selected_auth_path,
+    ...(authSelection.auth_fallback ? { auth_fallback: authSelection.auth_fallback } : {}),
+  });
+}
+
+function autoApiKeyFallbackSelectionForClaudeFailure(authSelection, execution) {
+  const reason = claudeAuthFallbackReason(authSelection, execution);
+  return reason ? apiKeyFallbackSelection(authSelection, reason) : null;
+}
+
+function claudeAuthFallbackReason(authSelection, execution) {
+  if (authSelection?.auth_mode !== "auto" || authSelection.selected_auth_path !== "subscription_oauth") return null;
+  const message = String(execution?.errorMessage ?? "");
+  if (message.startsWith("not_authed:")) return "not_authed";
+  if (message.startsWith("oauth_inference_rejected:")) return "oauth_inference_rejected";
+  if (message.startsWith("sandbox_blocked:")) return "sandbox_blocked";
+  const failureText = pingFailureText(execution);
+  const detail = pingFailureDetail(execution);
+  if (isClaudeCodexSandboxBlocked(failureText)) return "sandbox_blocked";
+  if (isOAuthInferenceRejected(execution, authSelectionClassifierContext(authSelection))) return "oauth_inference_rejected";
+  if (PING_AUTH_RE.test(detail)) return "not_authed";
+  return null;
 }
 
 function setupExecutionScopeOrExit(invocation, profile, { foreground, lifecycleEvents }) {
@@ -834,7 +947,7 @@ function setupExecutionScopeOrExit(invocation, profile, { foreground, lifecycleE
 }
 
 function prepareMutationContext(invocation, profile) {
-  const checkMutations = profile.permission_mode === "plan";
+  const checkMutations = profile.permission_mode === "plan" || REVIEW_MODE_SET.has(profile.name);
   const context = { checkMutations, gitStatusBefore: null, neutralCwd: null, mutations: [] };
   if (!checkMutations) return context;
   try {
@@ -879,26 +992,84 @@ function exitIfCancelledBeforeSpawn(invocation, executionScope, mutationContext,
   process.exit(0);
 }
 
+function permissionModeLadderForInvocation(invocation, profile) {
+  if (Array.isArray(invocation.permission_mode_ladder) && invocation.permission_mode_ladder.length > 0) {
+    const source = "runtime-options permission_mode_ladder";
+    const modes = normalizeReviewPermissionModeLadder(invocation.permission_mode_ladder, source);
+    if (modes.includes("bypassPermissions") && invocation.allow_bypass_permissions !== true) {
+      throw new Error(`${source} includes bypassPermissions, but that mode requires --allow-bypass-permissions or CLAUDE_REVIEW_ALLOW_BYPASS_PERMISSIONS=1`);
+    }
+    return modes;
+  }
+  return resolveReviewPermissionModeLadder(profile, {
+    allowBypassPermissions: invocation.allow_bypass_permissions === true,
+  });
+}
+
+function permissionModeAttemptSummary(mode, execution, invocation, elapsedMs) {
+  const { status, error_code, error_message } = classifyExecution(execution, invocation);
+  const quality = execution.reviewAuditManifest?.review_quality ?? null;
+  return Object.freeze({
+    mode,
+    status,
+    error_code,
+    error_message,
+    exit_code: execution.exitCode ?? null,
+    timed_out: execution.timedOut === true,
+    failed_review_slot: quality?.failed_review_slot ?? null,
+    semantic_failure_reasons: Array.isArray(quality?.semantic_failure_reasons)
+      ? [...quality.semantic_failure_reasons]
+      : [],
+    elapsed_ms: elapsedMs,
+  });
+}
+
+function shouldRetryPermissionModeAttempt(attempt, hasNextMode) {
+  if (!hasNextMode) return false;
+  if (attempt.status === "completed") return false;
+  return PERMISSION_MODE_RETRYABLE_ERROR_CODES.has(attempt.error_code);
+}
+
 async function spawnClaudeOrExit(invocation, profile, prompt, executionScope, mutationContext, options) {
   try {
-    const authSelection = resolveAuthSelection(invocation.auth_mode);
-    return await spawnClaude(profile, {
-      model: invocation.model,
-      promptText: prompt,
-      sessionId: invocation.job_id,
-      addDirPath: executionScope.addDir,
-      cwd: mutationContext.neutralCwd ?? executionScope.childCwd,
-      binary: invocation.binary,
-      jsonSchema: invocation.schema_spec,
-      resumeId: options.resumeId,
-      timeoutMs: invocation.timeout_ms,
-      allowedApiKeyEnv: authSelection.allowed_env_credentials,
-      onSpawn: (pidInfo) => writeRunningRecord(invocation, pidInfo, mutationContext.mutations, options.runtimeDiagnostics),
-    });
+    const authSelection = options.authSelection ?? resolveAuthSelection(invocation.auth_mode);
+    const permissionModes = permissionModeLadderForInvocation(invocation, profile);
+    const attempts = [];
+    let lastExecution = null;
+    for (let i = 0; i < permissionModes.length; i += 1) {
+      const permissionMode = permissionModes[i];
+      const startedAtMs = Date.now();
+      const execution = await spawnClaude(profile, {
+        model: invocation.model,
+        promptText: prompt,
+        sessionId: invocation.job_id,
+        addDirPath: executionScope.addDir,
+        cwd: mutationContext.neutralCwd ?? executionScope.childCwd,
+        binary: invocation.binary,
+        jsonSchema: invocation.schema_spec,
+        resumeId: options.resumeId,
+        timeoutMs: invocation.timeout_ms,
+        allowedApiKeyEnv: authSelection.allowed_env_credentials,
+        permissionMode,
+        onSpawn: (pidInfo) => writeRunningRecord(invocation, pidInfo, mutationContext.mutations, options.runtimeDiagnostics),
+      });
+      const elapsedMs = Math.max(0, Date.now() - startedAtMs);
+      execution.reviewAuditManifest = reviewAuditManifest(invocation, prompt, executionScope.addDir, execution);
+      const attempt = permissionModeAttemptSummary(permissionMode, execution, invocation, elapsedMs);
+      attempts.push(attempt);
+      execution.permissionModeEffective = permissionMode;
+      execution.permissionModeAttempts = attempts;
+      lastExecution = execution;
+      if (!shouldRetryPermissionModeAttempt(attempt, i < permissionModes.length - 1)) {
+        return execution;
+      }
+    }
+    return lastExecution;
   } catch (e) {
+    const message = e instanceof Error ? e.message : String(e);
     const errorRecord = buildJobRecord(invocation, {
       exitCode: null, parsed: null, pidInfo: null, claudeSessionId: null,
-      errorMessage: e.message,
+      errorMessage: isClaudeCodexSandboxBlocked(message) ? `sandbox_blocked: ${message}` : message,
       runtimeDiagnostics: options.runtimeDiagnostics,
     }, mutationContext.mutations);
     writeJobFile(invocation.workspace_root, invocation.job_id, errorRecord);
@@ -909,8 +1080,26 @@ async function spawnClaudeOrExit(invocation, profile, prompt, executionScope, mu
   }
 }
 
-async function claudeOAuthInferencePreflight(invocation, authSelection) {
-  if (authSelection.selected_auth_path !== "subscription_oauth") return null;
+async function claudeOAuthInferencePreflight(invocation, authSelection, { allowApiKey = false } = {}) {
+  if (
+    authSelection.selected_auth_path !== "subscription_oauth" &&
+    (!allowApiKey || authSelection.selected_auth_path !== "api_key_env")
+  ) return null;
+  const oauthStatus = authSelection.selected_auth_path === "subscription_oauth"
+    ? safeClaudeOAuthStatus(invocation.binary, authSelection, invocation.cwd)
+    : null;
+  if (authSelection.selected_auth_path === "subscription_oauth" && oauthStatus?.available === true && oauthStatus.logged_in === false) {
+    return {
+      preflight: true,
+      exitCode: null,
+      parsed: null,
+      pidInfo: null,
+      claudeSessionId: null,
+      stdout: "",
+      stderr: "",
+      errorMessage: "not_authed: Claude Code auth status reports loggedIn=false. Run `claude auth login` before retrying.",
+    };
+  }
   const profile = resolveProfile("ping");
   let execution;
   try {
@@ -920,7 +1109,7 @@ async function claudeOAuthInferencePreflight(invocation, authSelection) {
       sessionId: newJobId(),
       cwd: tmpdir(),
       binary: resolveCliBinary(invocation.cwd, invocation.binary),
-      timeoutMs: Math.min(Number(invocation.timeout_ms ?? 15000), 15000),
+      timeoutMs: Math.min(Number(invocation.timeout_ms ?? DEFAULT_CLAUDE_PING_TIMEOUT_MS), DEFAULT_CLAUDE_PING_TIMEOUT_MS),
       allowedApiKeyEnv: authSelection.allowed_env_credentials,
     });
   } catch (e) {
@@ -933,21 +1122,40 @@ async function claudeOAuthInferencePreflight(invocation, authSelection) {
       claudeSessionId: null,
       stdout: "",
       stderr: "",
-      errorMessage: message,
+      errorMessage: isClaudeCodexSandboxBlocked(message) ? `sandbox_blocked: ${message}` : message,
     };
   }
   if (execution.parsed?.ok === true) return null;
+  const failureText = pingFailureText(execution);
   const detail = pingFailureDetail(execution);
-  if (!isOAuthInferenceRejected(execution, invocation)) return null;
-  const oauthStatus = safeClaudeOAuthStatus(invocation.binary, authSelection, invocation.cwd);
-  if (oauthStatus?.logged_in !== true) return null;
-  return {
-    ...execution,
-    pidInfo: null,
-    claudeSessionId: null,
-    preflight: true,
-    errorMessage: `oauth_inference_rejected: ${detail}`,
-  };
+  if (isClaudeCodexSandboxBlocked(failureText)) {
+    return {
+      ...execution,
+      pidInfo: null,
+      claudeSessionId: null,
+      preflight: true,
+      errorMessage: `sandbox_blocked: ${detail}`,
+    };
+  }
+  if (isOAuthInferenceRejected(execution, invocation) && oauthStatus?.logged_in === true) {
+    return {
+      ...execution,
+      pidInfo: null,
+      claudeSessionId: null,
+      preflight: true,
+      errorMessage: `oauth_inference_rejected: ${detail}`,
+    };
+  }
+  if (PING_AUTH_RE.test(detail) || oauthStatus?.logged_in === false) {
+    return {
+      ...execution,
+      pidInfo: null,
+      claudeSessionId: null,
+      preflight: true,
+      errorMessage: `not_authed: ${detail || "Claude Code auth is not available to this Codex session."}`,
+    };
+  }
+  return null;
 }
 
 function writeRunningRecord(invocation, pidInfo, mutations, runtimeDiagnostics = null) {
@@ -994,6 +1202,10 @@ function buildClaudeFinalRecord(invocation, execution, cancelMarker, mutations, 
     signal: execution.signal ?? null,
     timedOut: execution.timedOut === true,
     reviewAuditManifest: execution.reviewAuditManifest,
+    permissionModeEffective: execution.permissionModeEffective ?? null,
+    permissionModeAttempts: Array.isArray(execution.permissionModeAttempts)
+      ? execution.permissionModeAttempts
+      : null,
     runtimeDiagnostics: execution.runtimeDiagnostics,
   }, mutations);
 }
@@ -1144,7 +1356,7 @@ async function cmdRunWorker(rest) {
 async function cmdContinue(rest) {
   const { options, positionals } = parseArgs(rest, {
     valueOptions: ["job", "cwd", "model", "binary", "auth-mode", "timeout-ms", "lifecycle-events"],
-    booleanOptions: ["background", "foreground"],
+    booleanOptions: ["background", "foreground", "allow-bypass-permissions"],
   });
   if (!options.job) fail("bad_args", "--job <id> is required");
   if (options.background && options.foreground) {
@@ -1204,6 +1416,13 @@ async function cmdContinue(rest) {
   if (authSelection.selected_auth_path === "api_key_env_missing") {
     fail("not_authed", apiKeyMissingMessage(), apiKeyMissingFields(authSelection));
   }
+  const allowBypassPermissions = Boolean(options["allow-bypass-permissions"]) || envAllowsBypassPermissions();
+  let permissionModeLadder;
+  try {
+    permissionModeLadder = resolveReviewPermissionModeLadder(priorProfile, { allowBypassPermissions });
+  } catch (error) {
+    fail("bad_args", error.message);
+  }
 
   // §21.1: resume_chain grows newest-last. The LAST entry is the UUID that
   // executeRun passes to spawnClaude via --resume (see the resumeId
@@ -1234,6 +1453,8 @@ async function cmdContinue(rest) {
     binary: options.binary ?? process.env.CLAUDE_BINARY ?? "claude",
     run_kind: options.background ? "background" : "foreground",
     auth_mode: authSelection.auth_mode,
+    permission_mode_ladder: permissionModeLadder,
+    allow_bypass_permissions: allowBypassPermissions,
     started_at: new Date().toISOString(),
   });
 
@@ -1245,7 +1466,11 @@ async function cmdContinue(rest) {
   if (options.background) {
     try {
       writePromptSidecar(resolveJobsDir(workspaceRoot), newJobId_, targetPrompt);
-      writeRuntimeOptionsSidecar(workspaceRoot, newJobId_, { timeout_ms: timeoutMs });
+      writeRuntimeOptionsSidecar(workspaceRoot, newJobId_, {
+        timeout_ms: timeoutMs,
+        permission_mode_ladder: permissionModeLadder,
+        allow_bypass_permissions: allowBypassPermissions,
+      });
     } catch (error) {
       failBackgroundPromptSidecarWrite(workspaceRoot, invocation, error);
     }
@@ -1288,8 +1513,7 @@ async function cmdNotImplemented(name) {
 
 const PING_AUTH_RE = /\b(auth(?:enticat\w*)?|login|credential\w*|oauth2?|unauthenticated|signin|sign-in)\b/i;
 // Source of truth: ./lib/claude-provider-keys.mjs (also imported by
-// scripts/smoke-rerecord.mjs so the recipe's envAny cannot drift from
-// what auth-selection.mjs's auto mode accepts).
+// scripts/smoke-rerecord.mjs for explicit API-key scenarios).
 const PING_PROVIDER_API_KEY_ENV = CLAUDE_PROVIDER_API_KEY_ENV;
 
 function resolveAuthSelection(requestedMode = "subscription") {
@@ -1313,10 +1537,13 @@ function apiKeyMissingFields(selection, notAuthedFields = {}) {
   });
 }
 
-function pingOkFields() {
+function pingOkFields(authSelection = null) {
+  const summary = authSelection?.selected_auth_path === "api_key_env"
+    ? "Claude Code is ready using API-key auth."
+    : "Claude Code is ready using first-party CLI auth.";
   return {
     ready: true,
-    summary: "Claude Code is ready using first-party CLI auth.",
+    summary,
     next_action: "Run a Claude review command.",
   };
 }
@@ -1350,6 +1577,14 @@ function pingErrorFields() {
     ready: false,
     summary: "Claude Code ping failed before readiness could be confirmed.",
     next_action: "Inspect detail, fix the Claude CLI error, then rerun setup.",
+  };
+}
+
+function pingSandboxBlockedFields() {
+  return {
+    ready: false,
+    summary: "Claude Code is blocked by Codex sandbox access to Claude state.",
+    next_action: "Add ~/.claude to [sandbox_workspace_write].writable_roots in ~/.codex/config.toml, start a fresh Codex session, then rerun /claude-setup. Alternatively, run this check outside sandbox.",
   };
 }
 
@@ -1494,7 +1729,7 @@ function parseJsonSlice(text, start, end) {
   }
 }
 
-function pingFailureDetail(execution) {
+function pingFailureText(execution) {
   const raw = execution?.parsed?.raw;
   const rawText = typeof raw === "string"
     ? raw
@@ -1502,20 +1737,44 @@ function pingFailureDetail(execution) {
   const parsedError = execution?.parsed?.reason === "json_parse_error"
     ? null
     : execution?.parsed?.error;
-  const detail = [
+  return [
     execution?.stderr,
     parsedError,
     execution?.parsed?.result,
     execution?.stdout,
     rawText,
+    execution?.timedOut ? "target CLI exceeded the configured timeoutMs" : "",
+    execution?.signal ? `signal ${execution.signal}` : "",
     execution?.exitCode == null ? "" : `exit ${execution.exitCode}`,
-  ].map((s) => String(s ?? "").trim()).find(Boolean) ?? "";
+  ].map((s) => String(s ?? "").trim()).filter(Boolean).join("\n");
+}
+
+function pingFailureDetail(execution) {
+  const parsedResult = String(execution?.parsed?.result ?? "").trim();
+  if (parsedResult) return parsedResult.slice(0, 500);
+  const parsedError = execution?.parsed?.reason === "json_parse_error"
+    ? ""
+    : String(execution?.parsed?.error ?? "").trim();
+  if (parsedError) return parsedError.slice(0, 500);
+  const detail = pingFailureText(execution);
   const firstLine = detail.split("\n").map((line) => line.trim()).find(Boolean);
   const hasStackFrame = detail
     .split("\n")
     .some((line) => line.trimStart().startsWith("at "));
   const concise = hasStackFrame && firstLine ? firstLine : detail;
   return concise.slice(0, 500);
+}
+
+function isClaudeCodexSandboxBlocked(detail) {
+  if (!isCodexSandbox(process.env)) return false;
+  const permissionRe = /Operation not permitted|Permission denied|PermissionError|EACCES|EPERM/i;
+  const claudePathRe = /(?:^|[/\\])\.claude(?:[/\\]|['"\s:)]|$)/;
+  const lines = String(detail ?? "").split("\n");
+  return lines.some((line, i) => {
+    if (permissionRe.test(line) && claudePathRe.test(line)) return true;
+    const nextLine = lines[i + 1] ?? "";
+    return permissionRe.test(line) && /^\s/.test(nextLine) && claudePathRe.test(nextLine);
+  });
 }
 
 function printPingSpawnError(error, authSelection) {
@@ -1526,6 +1785,10 @@ function printPingSpawnError(error, authSelection) {
       install_url: "https://claude.com/claude-code" });
     process.exit(2);
   }
+  if (isClaudeCodexSandboxBlocked(error.message)) {
+    printJson({ status: "sandbox_blocked", ...pingSandboxBlockedFields(), ...authDiagnosticFields(authSelection), detail: error.message });
+    process.exit(2);
+  }
   printJson({ status: "error", ...pingErrorFields(), ...authDiagnosticFields(authSelection), detail: error.message });
   process.exit(2);
 }
@@ -1533,7 +1796,7 @@ function printPingSpawnError(error, authSelection) {
 function printPingSuccess(execution, authSelection, model) {
   // T7.4: drop the legacy `.sessionId` alias. Ping uses claudeSessionId
   // (Claude's echo) with sessionIdSent fallback when the mock short-circuits.
-  const payload = { status: "ok", ...pingOkFields(), ...authDiagnosticFields(authSelection), model: model ?? null,
+  const payload = { status: "ok", ...pingOkFields(authSelection), ...authDiagnosticFields(authSelection), model: model ?? null,
     session_id: execution.claudeSessionId ?? execution.sessionIdSent,
     cost_usd: execution.parsed.costUsd, usage: execution.parsed.usage };
   printJson(payload);
@@ -1551,7 +1814,12 @@ function printPingNotAuthed(detail, authSelection, authStatus) {
 }
 
 function printPingExecutionFailure(execution, authSelection, binary) {
+  const failureText = pingFailureText(execution);
   const detail = pingFailureDetail(execution);
+  if (isClaudeCodexSandboxBlocked(failureText)) {
+    printJson({ status: "sandbox_blocked", ...pingSandboxBlockedFields(), ...authDiagnosticFields(authSelection), exit_code: execution.exitCode, detail });
+    process.exit(2);
+  }
   if (/rate limit|429|overloaded/i.test(detail)) {
     printJson({ status: "rate_limited", ...pingRateLimitedFields(), ...authDiagnosticFields(authSelection), detail });
     process.exit(2);
@@ -1580,21 +1848,20 @@ async function cmdPing(rest, { readinessProfileName = "ping" } = {}) {
   const model = options.model ?? resolveModelForProfile(profile, loadModels());
   const rawBinary = options.binary ?? process.env.CLAUDE_BINARY ?? "claude";
   const binary = resolveCliBinary(process.cwd(), rawBinary);
-  const timeoutMs = Number(options["timeout-ms"] ?? 15000);
-  const authSelection = resolveAuthSelection(options["auth-mode"]);
+  const timeoutMs = Number(options["timeout-ms"] ?? DEFAULT_CLAUDE_PING_TIMEOUT_MS);
+  let authSelection = resolveAuthSelection(options["auth-mode"]);
   if (authSelection.selected_auth_path === "api_key_env_missing") {
     printJson({ status: "not_authed", ...apiKeyMissingFields(authSelection, pingNotAuthedFields()) });
     process.exit(2);
   }
   // Ping is ephemeral (no durable record), so reuse newJobId() purely for its
   // UUIDv4 guarantee — Claude rejects a non-v4 --session-id. Nothing persists.
-  const sessionId = newJobId();
   let execution;
   try {
     execution = await spawnClaude(profile, {
       model,
       promptText: PING_PROMPT,
-      sessionId,
+      sessionId: newJobId(),
       cwd: tmpdir(),
       binary,
       timeoutMs,
@@ -1602,6 +1869,23 @@ async function cmdPing(rest, { readinessProfileName = "ping" } = {}) {
     });
   } catch (e) {
     printPingSpawnError(e, authSelection);
+  }
+  const fallbackSelection = autoApiKeyFallbackSelectionForClaudeFailure(authSelection, execution);
+  if (fallbackSelection) {
+    authSelection = fallbackSelection;
+    try {
+      execution = await spawnClaude(profile, {
+        model,
+        promptText: PING_PROMPT,
+        sessionId: newJobId(),
+        cwd: tmpdir(),
+        binary,
+        timeoutMs,
+        allowedApiKeyEnv: authSelection.allowed_env_credentials,
+      });
+    } catch (e) {
+      printPingSpawnError(e, authSelection);
+    }
   }
   // Classify. Real Claude error texts change per version; match on signals only.
   if (execution.parsed?.ok === true) {

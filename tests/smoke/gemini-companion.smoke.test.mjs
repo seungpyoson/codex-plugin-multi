@@ -1327,7 +1327,7 @@ test("gemini review foreground: omits native Gemini sandbox inside Codex sandbox
     assert.equal(record.review_metadata.raw_output.parsed_ok, true);
     assert.match(record.review_metadata.audit_manifest.rendered_prompt_hash.value, /^[a-f0-9]{64}$/);
     assert.equal(record.review_metadata.audit_manifest.request.model, record.model);
-    assert.equal(record.review_metadata.audit_manifest.request.timeout_ms, 600000);
+    assert.equal(record.review_metadata.audit_manifest.request.timeout_ms, 900000);
     assert.match(record.review_metadata.audit_manifest.prompt_builder.plugin_commit, /^[a-f0-9]{40}$/);
     assert.notEqual(
       record.review_metadata.audit_manifest.prompt_builder.plugin_commit,
@@ -1857,11 +1857,19 @@ test("gemini run --foreground: meta-write conflict produces fallback failed reco
   }
 });
 
-test("gemini ping returns ok with the mock gemini binary", () => {
+test("gemini ping returns ok with the mock gemini binary using default subscription auth", () => {
   const cwd = mkdtempSync(path.join(tmpdir(), "gemini-ping-cwd-"));
+  const tempRoot = realpathSync(tmpdir());
   const { stdout, stderr, status, dataDir } = runCompanion(
     ["ping", "--model", "gemini-3-flash-preview"],
-    { cwd, env: { GEMINI_API_KEY: "secret-test-value" } },
+    {
+      cwd,
+      env: {
+        GEMINI_API_KEY: "secret-test-value",
+        GEMINI_MOCK_ASSERT_CWD_PREFIX: tempRoot,
+        GEMINI_MOCK_ASSERT_CWD_NOT: tempRoot,
+      },
+    },
   );
   try {
     assert.equal(status, 0, `exit ${status}: ${stderr}`);
@@ -1884,7 +1892,10 @@ test("gemini ping returns ok with the mock gemini binary", () => {
 
 test("gemini doctor returns readiness contract", () => {
   const cwd = mkdtempSync(path.join(tmpdir(), "gemini-doctor-cwd-"));
-  const { stdout, stderr, status, dataDir } = runCompanion(["doctor"], { cwd });
+  const { stdout, stderr, status, dataDir } = runCompanion(
+    ["doctor"],
+    { cwd, env: { GEMINI_API_KEY: "secret-test-value" } },
+  );
   try {
     assert.equal(status, 0, `exit ${status}: ${stderr}`);
     const parsed = JSON.parse(stdout);
@@ -1894,6 +1905,9 @@ test("gemini doctor returns readiness contract", () => {
     assert.match(parsed.next_action, /review/i);
     assert.equal(parsed.auth_mode, "subscription");
     assert.equal(parsed.selected_auth_path, "subscription_oauth");
+    assert.deepEqual(parsed.ignored_env_credentials, ["GEMINI_API_KEY"]);
+    assert.equal(parsed.auth_policy, "api_key_env_ignored");
+    assert.doesNotMatch(stdout, /secret-test-value/);
   } finally {
     rmTree(dataDir);
     rmTree(cwd);
@@ -1954,13 +1968,13 @@ process.stdout.write(JSON.stringify({
   }
 });
 
-test("gemini ping auto auth prefers API key when present", () => {
-  const cwd = mkdtempSync(path.join(tmpdir(), "gemini-ping-auto-auth-cwd-"));
-  const binDir = mkdtempSync(path.join(tmpdir(), "gemini-ping-auto-auth-bin-"));
-  const binary = path.join(binDir, "gemini-auto-auth");
+test("gemini ping auto auth prefers subscription when API key is present", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "gemini-ping-auto-subscription-cwd-"));
+  const binDir = mkdtempSync(path.join(tmpdir(), "gemini-ping-auto-subscription-bin-"));
+  const binary = path.join(binDir, "gemini-auto-subscription");
   writeFileSync(binary, `#!/usr/bin/env node
-if (process.env.GEMINI_API_KEY !== "secret-test-value") {
-  process.stderr.write("missing GEMINI_API_KEY\\n");
+if (process.env.GEMINI_API_KEY) {
+  process.stderr.write("GEMINI_API_KEY should be ignored for initial auto subscription probe\\n");
   process.exit(9);
 }
 process.stdout.write(JSON.stringify({
@@ -1977,8 +1991,49 @@ process.stdout.write(JSON.stringify({
     assert.equal(status, 0);
     const parsed = JSON.parse(stdout);
     assert.equal(parsed.auth_mode, "auto");
+    assert.equal(parsed.selected_auth_path, "subscription_oauth");
+    assert.deepEqual(parsed.ignored_env_credentials, ["GEMINI_API_KEY"]);
+    assert.equal(parsed.auth_policy, "subscription_oauth_with_api_key_fallback");
+    assert.doesNotMatch(stdout, /secret-test-value/);
+  } finally {
+    rmTree(dataDir);
+    rmTree(cwd);
+    rmTree(binDir);
+  }
+});
+
+test("gemini ping auto auth falls back to API key when subscription is unavailable", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "gemini-ping-auto-api-fallback-cwd-"));
+  const binDir = mkdtempSync(path.join(tmpdir(), "gemini-ping-auto-api-fallback-bin-"));
+  const binary = path.join(binDir, "gemini-auto-api-fallback");
+  writeFileSync(binary, `#!/usr/bin/env node
+if (process.env.GEMINI_API_KEY === "secret-test-value") {
+  process.stdout.write(JSON.stringify({
+    session_id: "${GEMINI_SESSION_ID}",
+    response: "Mock Gemini response."
+  }) + "\\n");
+  process.exit(0);
+}
+process.stderr.write("OAuth2 not authenticated\\n");
+process.exit(1);
+`, "utf8");
+  chmodSync(binary, 0o755);
+  const { stdout, status, dataDir } = runCompanion(
+    ["ping", "--auth-mode", "auto", "--binary", binary, "--model", "gemini-3-flash-preview"],
+    { cwd, env: { GEMINI_API_KEY: "secret-test-value" } },
+  );
+  try {
+    assert.equal(status, 0);
+    const parsed = JSON.parse(stdout);
+    assert.equal(parsed.auth_mode, "auto");
     assert.equal(parsed.selected_auth_path, "api_key_env");
     assert.deepEqual(parsed.allowed_env_credentials, ["GEMINI_API_KEY"]);
+    assert.equal(parsed.auth_policy, "api_key_env_fallback");
+    assert.deepEqual(parsed.auth_fallback, {
+      from: "subscription_oauth",
+      to: "api_key_env",
+      reason: "not_authed",
+    });
     assert.doesNotMatch(stdout, /secret-test-value/);
   } finally {
     rmTree(dataDir);
@@ -2004,6 +2059,63 @@ test("gemini ping api_key auth fails before target spawn when no provider key is
   } finally {
     rmTree(dataDir);
     rmTree(cwd);
+  }
+});
+
+test("gemini ping classifies Codex sandbox denial for Gemini state as sandbox_blocked", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "gemini-ping-sandbox-blocked-cwd-"));
+  const binDir = mkdtempSync(path.join(tmpdir(), "gemini-ping-sandbox-blocked-bin-"));
+  const binary = path.join(binDir, "gemini-sandbox-blocked");
+  writeFileSync(binary, `#!/usr/bin/env node
+process.stderr.write("PermissionError: [Errno 1] Operation not permitted: '/Users/test/.gemini/settings.json'\\n");
+process.exit(1);
+`, "utf8");
+  chmodSync(binary, 0o755);
+  const { stdout, status, dataDir } = runCompanion(
+    ["ping", "--binary", binary, "--model", "gemini-3-flash-preview"],
+    { cwd, env: { CODEX_SANDBOX: "seatbelt", GEMINI_API_KEY: "", GOOGLE_API_KEY: "" } },
+  );
+  try {
+    assert.equal(status, 2);
+    const parsed = JSON.parse(stdout);
+    assert.equal(parsed.status, "sandbox_blocked");
+    assert.equal(parsed.ready, false);
+    assert.match(parsed.summary, /sandbox/i);
+    assert.match(parsed.next_action, /~\/\.gemini|writable_roots/);
+    assert.match(parsed.detail, /\.gemini\/settings\.json/);
+  } finally {
+    rmTree(dataDir);
+    rmTree(cwd);
+    rmTree(binDir);
+  }
+});
+
+test("gemini ping default timeout allows slow OAuth startup", { timeout: 25000 }, () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "gemini-ping-slow-cwd-"));
+  const binDir = mkdtempSync(path.join(tmpdir(), "gemini-ping-slow-bin-"));
+  const binary = path.join(binDir, "gemini-slow-ok");
+  writeFileSync(binary, `#!/usr/bin/env node
+setTimeout(() => {
+  process.stdout.write(JSON.stringify({
+    session_id: "${GEMINI_SESSION_ID}",
+    response: "ready after slow OAuth startup"
+  }) + "\\n");
+}, 16000);
+`, "utf8");
+  chmodSync(binary, 0o755);
+  const { stdout, stderr, status, dataDir } = runCompanion(
+    ["ping", "--binary", binary, "--model", "gemini-3-flash-preview"],
+    { cwd, env: { GEMINI_API_KEY: "", GOOGLE_API_KEY: "" } },
+  );
+  try {
+    assert.equal(status, 0, `exit ${status}: ${stderr || stdout}`);
+    const parsed = JSON.parse(stdout);
+    assert.equal(parsed.status, "ok");
+    assert.equal(parsed.ready, true);
+  } finally {
+    rmTree(dataDir);
+    rmTree(cwd);
+    rmTree(binDir);
   }
 });
 
@@ -2048,6 +2160,100 @@ test("gemini ping reports native capacity exhaustion without silent fallback", (
   }
 });
 
+test("gemini run sandbox denial fails closed before review launch", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "gemini-run-sandbox-blocked-cwd-"));
+  seedMinimalRepo(cwd);
+  const binDir = mkdtempSync(path.join(tmpdir(), "gemini-run-sandbox-blocked-bin-"));
+  const binary = path.join(binDir, "gemini-sandbox-blocked");
+  writeFileSync(binary, `#!/usr/bin/env node
+process.stderr.write("PermissionError: [Errno 1] Operation not permitted: '/Users/test/.gemini/oauth.json'\\n");
+process.exit(1);
+`, "utf8");
+  chmodSync(binary, 0o755);
+  const { stdout, status, dataDir } = runCompanion(
+    ["run", "--mode=review", "--foreground", "--lifecycle-events", "jsonl", "--binary", binary,
+     "--model", "gemini-3-flash-preview", "--cwd", cwd, "--", "review this change"],
+    { cwd, env: { CODEX_SANDBOX: "seatbelt", GEMINI_API_KEY: "", GOOGLE_API_KEY: "" } },
+  );
+  try {
+    assert.equal(status, 2);
+    const lines = stdout.trim().split("\n").map((line) => JSON.parse(line));
+    assert.equal(lines.length, 1, "sandbox preflight must not emit external_review_launched");
+    const [record] = lines;
+    assert.equal(record.status, "failed");
+    assert.equal(record.error_code, "sandbox_blocked");
+    assert.match(record.error_summary, /sandbox/i);
+    assert.match(record.suggested_action, /~\/\.gemini|writable_roots/);
+    assert.equal(record.pid_info, null);
+    assert.equal(record.external_review.source_content_transmission, "not_sent");
+    assert.match(record.external_review.disclosure, /not sent/);
+    assert.equal(record.review_metadata.audit_manifest.error_code, "sandbox_blocked");
+    assert.equal(record.review_metadata.audit_manifest.review_quality.failed_review_slot, false);
+  } finally {
+    rmTree(dataDir);
+    rmTree(cwd);
+    rmTree(binDir);
+  }
+});
+
+test("gemini run auto auth re-preflights API-key fallback before review launch", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "gemini-run-auto-api-fallback-preflight-cwd-"));
+  fixtureSeedRepo(cwd, {
+    fileName: "seed.txt",
+    fileContents: "GEMINI_AUTO_FALLBACK_SOURCE_SENTINEL\n",
+  });
+  const binDir = mkdtempSync(path.join(tmpdir(), "gemini-run-auto-api-fallback-preflight-bin-"));
+  const leakMarker = path.join(binDir, "source-leaked");
+  const binary = path.join(binDir, "gemini-auto-api-fallback-preflight");
+  writeFileSync(binary, `#!/usr/bin/env node
+import { writeFileSync } from "node:fs";
+
+let prompt = "";
+process.stdin.setEncoding("utf8");
+process.stdin.on("data", (chunk) => { prompt += chunk; });
+process.stdin.on("end", () => {
+  if (process.env.GEMINI_API_KEY !== "secret-test-value") {
+    process.stderr.write("OAuth2 not authenticated\\n");
+    process.exit(1);
+  }
+  if (prompt.includes("reply with exactly: pong")) {
+    process.stderr.write("API key revoked: not authenticated\\n");
+    process.exit(1);
+  }
+  if (prompt.includes("GEMINI_AUTO_FALLBACK_SOURCE_SENTINEL")) {
+    writeFileSync(${JSON.stringify(leakMarker)}, "leaked");
+  }
+  process.stdout.write(JSON.stringify({
+    session_id: "${GEMINI_SESSION_ID}",
+    response: "Verdict: APPROVE\\nBlocking findings\\n- None.\\nNon-blocking concerns\\n- None.\\nInspection status\\n- I inspected seed.txt."
+  }) + "\\n");
+  process.exit(0);
+});
+`, "utf8");
+  chmodSync(binary, 0o755);
+  const { stdout, status, dataDir } = runCompanion(
+    ["run", "--mode=custom-review", "--foreground", "--lifecycle-events", "jsonl",
+     "--auth-mode", "auto", "--binary", binary, "--model", "gemini-3-flash-preview",
+     "--cwd", cwd, "--scope-paths", "seed.txt", "--", "review selected source"],
+    { cwd, env: { GEMINI_API_KEY: "secret-test-value", GOOGLE_API_KEY: "" } },
+  );
+  try {
+    assert.equal(status, 2);
+    const lines = stdout.trim().split("\n").map((line) => JSON.parse(line));
+    assert.equal(lines.length, 1, "fallback preflight failure must not emit external_review_launched");
+    const [record] = lines;
+    assert.equal(record.status, "failed");
+    assert.equal(record.error_code, "not_authed");
+    assert.equal(record.external_review.source_content_transmission, "not_sent");
+    assert.equal(existsSync(leakMarker), false, "selected source reached fallback review spawn");
+    assert.doesNotMatch(stdout, /secret-test-value/);
+  } finally {
+    rmTree(dataDir);
+    rmTree(cwd);
+    rmTree(binDir);
+  }
+});
+
 test("gemini ping not_found includes readiness guidance", () => {
   const cwd = mkdtempSync(path.join(tmpdir(), "gemini-ping-missing-cwd-"));
   const missingBinary = path.join(tmpdir(), "missing-gemini-ping-binary");
@@ -2063,6 +2269,7 @@ test("gemini ping not_found includes readiness guidance", () => {
     assert.match(parsed.summary, /not found/i);
     assert.match(parsed.next_action, /Install Gemini CLI/);
     assert.deepEqual(parsed.ignored_env_credentials, ["GEMINI_API_KEY"]);
+    assert.equal(parsed.auth_policy, "api_key_env_ignored");
     assert.doesNotMatch(stdout, /secret-test-value/);
   } finally {
     rmTree(dataDir);

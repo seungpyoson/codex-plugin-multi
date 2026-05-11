@@ -1,5 +1,6 @@
 import { once } from "node:events";
 import { execFileSync, spawn } from "node:child_process";
+import { createHash } from "node:crypto";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import http from "node:http";
 import { tmpdir } from "node:os";
@@ -7,10 +8,37 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { decodeCookiePlaintext, selectCookie } from "../../plugins/grok/scripts/grok-sync-browser-session.mjs";
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const SYNC = path.join(REPO_ROOT, "plugins/grok/scripts/grok-sync-browser-session.mjs");
 const VALID_SESSION_TOKEN = "eyJhbGciOiJub25lIn0.eyJzdWIiOiJ0ZXN0In0.signature";
+
+test("decodeCookiePlaintext strips Chromium host digest prefix before UTF-8 fallback", () => {
+  const hostKey = ".grok.com";
+  const plaintext = Buffer.concat([
+    createHash("sha256").update(hostKey).digest(),
+    Buffer.from(VALID_SESSION_TOKEN, "utf8"),
+  ]);
+
+  assert.equal(decodeCookiePlaintext(plaintext, hostKey), VALID_SESSION_TOKEN);
+  assert.equal(
+    decodeCookiePlaintext(plaintext),
+    plaintext.toString("utf8"),
+  );
+});
+
+test("selectCookie preserves sso-rw priority before JWT preference across names", () => {
+  const selected = selectCookie([
+    { name: "sso-rw", value: "decrypted-control-looking-cookie-value" },
+    { name: "sso", value: VALID_SESSION_TOKEN },
+  ]);
+
+  assert.deepEqual(selected, {
+    name: "sso-rw",
+    value: "decrypted-control-looking-cookie-value",
+  });
+});
 
 function runAsync(args, options = {}) {
   return new Promise((resolve) => {
@@ -151,6 +179,49 @@ test("sync-browser-session rejects malformed non-JWT cookie values before mutati
   });
 
   assert.deepEqual(requests, ["GET /admin/api/tokens"]);
+});
+
+test("sync-browser-session rejects malformed sso-rw before falling back to sso", async () => {
+  const dir = mkdtempSync(path.join(tmpdir(), "grok-sync-"));
+  const secret = VALID_SESSION_TOKEN;
+  const cookieSource = path.join(dir, "cookies.json");
+  writeFileSync(cookieSource, JSON.stringify([
+    { name: "sso-rw", value: "decrypted-control-looking-cookie-value" },
+    { name: "sso", value: secret },
+  ]));
+
+  let currentTokens = [];
+  await withGrok2ApiServer(async (req, res) => {
+    res.setHeader("content-type", "application/json");
+    if (req.method === "GET" && req.url === "/admin/api/tokens") {
+      res.end(JSON.stringify({ tokens: currentTokens }));
+      return;
+    }
+    if (req.method === "POST" && req.url === "/admin/api/tokens/add") {
+      assert.fail("malformed preferred cookie should block mutation before add");
+      return;
+    }
+    if (req.method === "POST" && req.url === "/admin/api/batch/refresh") {
+      res.end(JSON.stringify({ status: "success" }));
+      return;
+    }
+    res.statusCode = 404;
+    res.end(JSON.stringify({ error: "not found" }));
+  }, async (baseUrl) => {
+    const result = await runAsync([
+      "--cookie-source-json", cookieSource,
+      "--grok2api-base-url", baseUrl,
+      "--pool", "super",
+    ]);
+    assert.equal(result.status, 1);
+    const parsed = JSON.parse(result.stdout);
+    assert.equal(parsed.ok, false);
+    assert.equal(parsed.selected_cookie, "sso-rw");
+    assert.equal(parsed.error_code, "malformed_cookie_token");
+    assert.match(parsed.error_message, /JWT-shaped/i);
+    assert.doesNotMatch(result.stdout, /eyJhbGci/);
+    assert.doesNotMatch(result.stderr, /eyJhbGci/);
+  });
 });
 
 test("sync-browser-session append mode keeps existing same-pool tokens", async () => {
@@ -329,6 +400,41 @@ test("sync-browser-session preserves grok2api_timeout during mid-import hangs", 
     assert.equal(parsed.pool_emptied, false);
     assert.doesNotMatch(result.stdout, /eyJhbGci/);
     assert.doesNotMatch(result.stdout, /prior-working-token/);
+  });
+});
+
+test("sync-browser-session redacts existing pool tokens when append import fails", async () => {
+  const dir = mkdtempSync(path.join(tmpdir(), "grok-sync-"));
+  const secret = VALID_SESSION_TOKEN;
+  const existingToken = "prior-working-token";
+  const cookieSource = path.join(dir, "cookies.json");
+  writeFileSync(cookieSource, JSON.stringify([{ name: "sso-rw", value: secret }]));
+
+  await withGrok2ApiServer(async (req, res) => {
+    res.setHeader("content-type", "application/json");
+    if (req.method === "GET" && req.url === "/admin/api/tokens") {
+      res.end(JSON.stringify({ tokens: [{ token: existingToken, pool: "super", status: "active", quota: {} }] }));
+      return;
+    }
+    if (req.method === "POST" && req.url === "/admin/api/tokens/add") {
+      res.statusCode = 500;
+      res.end(JSON.stringify({ error: { message: `append conflict with ${existingToken}` } }));
+      return;
+    }
+    res.statusCode = 404;
+    res.end(JSON.stringify({ error: "not found" }));
+  }, async (baseUrl) => {
+    const result = await runAsync([
+      "--cookie-source-json", cookieSource,
+      "--grok2api-base-url", baseUrl,
+      "--pool", "super",
+      "--append",
+      "true",
+    ]);
+    assert.equal(result.status, 1);
+    assert.doesNotMatch(result.stdout, /eyJhbGci/);
+    assert.doesNotMatch(result.stdout, /prior-working-token/);
+    assert.match(result.stdout, /\[REDACTED\]/);
   });
 });
 

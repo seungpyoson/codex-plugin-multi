@@ -15,14 +15,16 @@ import { resolveProfile, resolveModelForProfile, resolveModelCandidatesForProfil
 import { setupContainment } from "./lib/containment.mjs";
 import { populateScope } from "./lib/scope.mjs";
 import { newJobId, verifyPidInfo } from "./lib/identity.mjs";
-import { buildJobRecord, externalReviewForInvocation } from "./lib/job-record.mjs";
+import { buildJobRecord, classifyExecution, externalReviewForInvocation } from "./lib/job-record.mjs";
 import { reconcileActiveJobs } from "./lib/reconcile.mjs";
 import { cleanGitEnv } from "./lib/git-env.mjs";
 import { gitEnv, isGitBinaryPolicyError, resolveGitBinary } from "./lib/git-binary.mjs";
+import { isCodexSandbox } from "./lib/codex-env.mjs";
 import { spawnGemini } from "./lib/gemini.mjs";
 import { writeCancelMarker, consumeCancelMarker } from "./lib/cancel-marker.mjs";
 import {
   authDiagnosticFields,
+  apiKeyFallbackSelection,
   apiKeyMissingFields as buildApiKeyMissingFields,
   apiKeyMissingMessage as buildApiKeyMissingMessage,
   resolveAuthSelection as resolveAuthSelectionForProvider,
@@ -48,7 +50,9 @@ import { REVIEW_PROMPT_CONTRACT_VERSION, buildReviewAuditManifest, buildReviewPr
 const PLUGIN_ROOT = resolvePath(dirname(fileURLToPath(import.meta.url)), "..");
 const MODELS_CONFIG_PATH = resolvePath(PLUGIN_ROOT, "config/models.json");
 const READ_ONLY_POLICY = resolvePath(PLUGIN_ROOT, "policies/read-only.toml");
-const DEFAULT_GEMINI_REVIEW_TIMEOUT_MS = 600000;
+const DEFAULT_GEMINI_REVIEW_TIMEOUT_MS = 900000;
+const DEFAULT_GEMINI_PING_TIMEOUT_MS = 900000;
+const GEMINI_READINESS_PREFLIGHT_TIMEOUT_MS = 900000;
 const CONTINUABLE_STATUSES = new Set(["completed", "failed", "cancelled", "stale"]);
 const RUN_MODES = Object.freeze(["review", "adversarial-review", "custom-review", "rescue"]);
 const PREFLIGHT_MODES = Object.freeze(["review", "adversarial-review", "custom-review"]);
@@ -190,6 +194,7 @@ function scopeResolutionReason(invocation) {
 function reviewAuditManifest(invocation, prompt, containmentPath, execution) {
   if (!invocation.review_prompt_contract_version || invocation.mode_profile_name === "rescue") return null;
   const meta = promptMetadata(invocation);
+  const { error_code: errorCode } = classifyExecution(execution);
   return buildReviewAuditManifest({
     prompt,
     sourceFiles: auditSourceFiles(containmentPath),
@@ -223,8 +228,10 @@ function reviewAuditManifest(invocation, prompt, containmentPath, execution) {
       reason: scopeResolutionReason(invocation),
     },
     result: execution?.parsed?.result ?? "",
-    status: execution?.exitCode === 0 && execution?.parsed?.ok === true ? "completed" : "failed",
-    errorCode: execution?.parsed?.reason ?? null,
+    status: execution?.preflight === true
+      ? "preflight_failed"
+      : (execution?.exitCode === 0 && execution?.parsed?.ok === true ? "completed" : "failed"),
+    errorCode,
   });
 }
 
@@ -278,6 +285,76 @@ function modelCandidatesForInvocation(profile, invocation) {
   if (configuredPrimary !== invocation.model) return [invocation.model];
   const candidates = resolveModelCandidatesForProfile(profile, modelsConfig);
   return candidates.length > 0 ? candidates : [invocation.model];
+}
+
+function makeGeminiPingCwd() {
+  const dir = mkdtempSync(joinPath(tmpdir(), "gemini-ping-neutral-"));
+  try {
+    process.once("exit", () => {
+      try { rmSync(dir, { recursive: true, force: true }); } catch { /* best-effort */ }
+    });
+  } catch {
+    // Exit cleanup is best-effort; readiness must not fail because cleanup
+    // registration failed.
+  }
+  return dir;
+}
+
+async function geminiReadinessPreflight(invocation, profile, authSelection = resolveAuthSelection(invocation.auth_mode)) {
+  const readinessProfile = resolveProfile("ping");
+  const candidates = modelCandidatesForInvocation(profile, invocation);
+  let execution = null;
+  const pingCwd = makeGeminiPingCwd();
+  try {
+    for (let i = 0; i < candidates.length; i++) {
+      execution = await spawnGemini(readinessProfile, {
+        model: candidates[i],
+        promptText: PING_PROMPT,
+        policyPath: READ_ONLY_POLICY,
+        cwd: pingCwd,
+        binary: invocation.binary,
+        timeoutMs: GEMINI_READINESS_PREFLIGHT_TIMEOUT_MS,
+        allowedApiKeyEnv: authSelection.allowed_env_credentials,
+      });
+      if (execution.parsed?.ok === true) return null;
+      if (
+        execution.exitCode !== 0 &&
+        i < candidates.length - 1 &&
+        retryableModelCapacityFailure(execution)
+      ) {
+        continue;
+      }
+      break;
+    }
+  } catch (e) {
+    const detail = e instanceof Error ? e.message : String(e);
+    return {
+      preflight: true,
+      exitCode: null,
+      parsed: null,
+      pidInfo: null,
+      geminiSessionId: null,
+      stdout: "",
+      stderr: "",
+      errorMessage: isGeminiCodexSandboxBlocked(detail) ? `sandbox_blocked: ${detail}` : detail,
+    };
+  }
+
+  const failureText = pingFailureText(execution);
+  const detail = pingFailureDetail(execution);
+  let errorMessage = detail || "Gemini CLI readiness check failed before review launch.";
+  if (isGeminiCodexSandboxBlocked(failureText)) {
+    errorMessage = `sandbox_blocked: ${detail}`;
+  } else if (PING_AUTH_RE.test(detail)) {
+    errorMessage = `not_authed: ${detail}`;
+  }
+  return {
+    ...execution,
+    pidInfo: null,
+    geminiSessionId: null,
+    preflight: true,
+    errorMessage,
+  };
 }
 
 function runtimeOptionsSidecarPath(workspaceRoot, jobId) {
@@ -581,6 +658,8 @@ async function cmdRun(rest) {
 }
 
 async function executeRun(invocation, prompt, { foreground, lifecycleEvents = null }) {
+  let authSelection = resolveAuthSelection(invocation.auth_mode);
+  invocation = invocationWithAuthSelection(invocation, authSelection);
   const { job_id: jobId, workspace_root: workspaceRoot } = invocation;
   const profile = resolveProfile(invocation.mode_profile_name);
   const executionScope = setupExecutionScopeOrExit(invocation, profile, { foreground, lifecycleEvents });
@@ -588,6 +667,44 @@ async function executeRun(invocation, prompt, { foreground, lifecycleEvents = nu
   const resumeId = latestResumeId(invocation);
 
   exitIfCancelledBeforeSpawn(invocation, executionScope, mutationContext, { foreground, lifecycleEvents });
+
+  let preflightExecution = await geminiReadinessPreflight(invocation, profile, authSelection);
+  if (preflightExecution) {
+    const fallbackSelection = autoApiKeyFallbackSelectionForGeminiFailure(authSelection, preflightExecution);
+    if (fallbackSelection) {
+      authSelection = fallbackSelection;
+      invocation = invocationWithAuthSelection(invocation, authSelection);
+      preflightExecution = await geminiReadinessPreflight(invocation, profile, authSelection);
+    }
+    if (preflightExecution) {
+      preflightExecution.reviewAuditManifest = reviewAuditManifest(invocation, prompt, executionScope.containment.path, preflightExecution);
+      const errorRecord = buildJobRecord(invocation, {
+        exitCode: preflightExecution.exitCode,
+        endedAt: preflightExecution.endedAt,
+        parsed: preflightExecution.parsed,
+        pidInfo: null,
+        geminiSessionId: null,
+        errorMessage: preflightExecution.errorMessage,
+        signal: preflightExecution.signal ?? null,
+        timedOut: preflightExecution.timedOut === true,
+        reviewAuditManifest: preflightExecution.reviewAuditManifest,
+      }, mutationContext.mutations);
+      writeJobFile(workspaceRoot, jobId, errorRecord);
+      upsertJob(workspaceRoot, errorRecord);
+      for (const [name, contents] of [
+        ["stdout.log", preflightExecution.stdout],
+        ["stderr.log", preflightExecution.stderr],
+      ]) {
+        try { writeSidecar(workspaceRoot, jobId, name, contents); }
+        catch (e) {
+          process.stderr.write(`gemini-companion: warning: sidecar ${name} write failed: ${e.message}\n`);
+        }
+      }
+      cleanupExecutionResources(executionScope, mutationContext);
+      if (foreground) printLifecycleJson(errorRecord, lifecycleEvents);
+      process.exit(2);
+    }
+  }
 
   if (foreground && lifecycleEvents) {
     printLifecycleJson(
@@ -602,7 +719,7 @@ async function executeRun(invocation, prompt, { foreground, lifecycleEvents = nu
     prompt,
     executionScope,
     mutationContext,
-    { foreground, lifecycleEvents, resumeId },
+    { foreground, lifecycleEvents, resumeId, authSelection },
   );
 
   recordPostRunMutations(invocation, mutationContext);
@@ -624,6 +741,31 @@ async function executeRun(invocation, prompt, { foreground, lifecycleEvents = nu
   cleanupExecutionResources(executionScope, mutationContext);
   if (foreground) printLifecycleJson(finalRecord, lifecycleEvents);
   process.exit(finalRecord.status === "completed" || finalRecord.status === "cancelled" ? 0 : 2);
+}
+
+function invocationWithAuthSelection(invocation, authSelection) {
+  return Object.freeze({
+    ...invocation,
+    selected_auth_path: authSelection.selected_auth_path,
+    ...(authSelection.auth_fallback ? { auth_fallback: authSelection.auth_fallback } : {}),
+  });
+}
+
+function autoApiKeyFallbackSelectionForGeminiFailure(authSelection, execution) {
+  const reason = geminiAuthFallbackReason(authSelection, execution);
+  return reason ? apiKeyFallbackSelection(authSelection, reason) : null;
+}
+
+function geminiAuthFallbackReason(authSelection, execution) {
+  if (authSelection?.auth_mode !== "auto" || authSelection.selected_auth_path !== "subscription_oauth") return null;
+  const message = String(execution?.errorMessage ?? "");
+  if (message.startsWith("not_authed:")) return "not_authed";
+  if (message.startsWith("sandbox_blocked:")) return "sandbox_blocked";
+  const failureText = pingFailureText(execution);
+  const detail = pingFailureDetail(execution);
+  if (isGeminiCodexSandboxBlocked(failureText)) return "sandbox_blocked";
+  if (PING_AUTH_RE.test(detail)) return "not_authed";
+  return null;
 }
 
 function setupExecutionScopeOrExit(invocation, profile, { foreground, lifecycleEvents }) {
@@ -708,7 +850,7 @@ async function spawnGeminiOrExit(invocation, profile, prompt, executionScope, mu
 }
 
 async function spawnGeminiWithFallbacks(invocation, profile, prompt, executionScope, mutationContext, options) {
-  const authSelection = resolveAuthSelection(invocation.auth_mode);
+  const authSelection = options.authSelection ?? resolveAuthSelection(invocation.auth_mode);
   const modelCandidates = modelCandidatesForInvocation(profile, invocation);
   let execution;
   let executedInvocation = invocation;
@@ -1152,12 +1294,15 @@ function apiKeyMissingFields(selection, notAuthedFields = {}) {
   });
 }
 
-function pingOkFields(modelFallback = null) {
+function pingOkFields(authSelection = null, modelFallback = null) {
+  const authSummary = authSelection?.selected_auth_path === "api_key_env"
+    ? "Gemini CLI is ready using API-key auth."
+    : "Gemini CLI is ready using first-party CLI auth.";
   return {
     ready: true,
     summary: modelFallback
       ? "Gemini CLI is ready; the preferred model was capacity-limited and a configured fallback was used."
-      : "Gemini CLI is ready using first-party CLI auth.",
+      : authSummary,
     next_action: "Run a Gemini review command.",
     ...(modelFallback ? { model_fallback: modelFallback } : {}),
   };
@@ -1195,7 +1340,15 @@ function pingErrorFields() {
   };
 }
 
-function pingFailureDetail(execution) {
+function pingSandboxBlockedFields() {
+  return {
+    ready: false,
+    summary: "Gemini CLI is blocked by Codex sandbox access to Gemini state.",
+    next_action: "Add ~/.gemini to [sandbox_workspace_write].writable_roots in ~/.codex/config.toml, start a fresh Codex session, then rerun /gemini-setup. Alternatively, run this check outside sandbox.",
+  };
+}
+
+function pingFailureText(execution) {
   const raw = execution?.parsed?.raw;
   const rawText = typeof raw === "string"
     ? raw
@@ -1203,20 +1356,80 @@ function pingFailureDetail(execution) {
   const parsedError = execution?.parsed?.reason === "json_parse_error"
     ? null
     : execution?.parsed?.error;
-  const detail = [
+  return [
     execution?.stderr,
     parsedError,
     execution?.parsed?.result,
     execution?.stdout,
     rawText,
+    execution?.timedOut ? "target CLI exceeded the configured timeoutMs" : "",
+    execution?.signal ? `signal ${execution.signal}` : "",
     execution?.exitCode == null ? "" : `exit ${execution.exitCode}`,
-  ].map((s) => String(s ?? "").trim()).find(Boolean) ?? "";
+  ].map((s) => String(s ?? "").trim()).filter(Boolean).join("\n");
+}
+
+function pingFailureDetail(execution) {
+  const detail = pingFailureText(execution);
   const firstLine = detail.split("\n").map((line) => line.trim()).find(Boolean);
   const hasStackFrame = detail
     .split("\n")
     .some((line) => line.trimStart().startsWith("at "));
   const concise = hasStackFrame && firstLine ? firstLine : detail;
   return concise.slice(0, 500);
+}
+
+function isGeminiCodexSandboxBlocked(detail) {
+  if (!isCodexSandbox(process.env)) return false;
+  const permissionRe = /Operation not permitted|Permission denied|PermissionError|EACCES|EPERM/i;
+  const geminiPathRe = /(?:^|[/\\])\.gemini(?:[/\\]|['"\s:)]|$)/;
+  const lines = String(detail ?? "").split("\n");
+  return lines.some((line, i) => {
+    if (permissionRe.test(line) && geminiPathRe.test(line)) return true;
+    const nextLine = lines[i + 1] ?? "";
+    return permissionRe.test(line) && /^\s/.test(nextLine) && geminiPathRe.test(nextLine);
+  });
+}
+
+async function runGeminiPingAttempts({ profile, candidates, model, binary, timeoutMs, authSelection }) {
+  let execution = null;
+  let selectedModel = model;
+  let modelFallback = null;
+  const modelFallbackHops = [];
+  for (let i = 0; i < candidates.length; i++) {
+    selectedModel = candidates[i];
+    execution = await spawnGemini(profile, {
+      model: selectedModel,
+      promptText: PING_PROMPT,
+      policyPath: READ_ONLY_POLICY,
+      cwd: makeGeminiPingCwd(),
+      binary,
+      timeoutMs,
+      allowedApiKeyEnv: authSelection.allowed_env_credentials,
+    });
+    if (
+      execution.exitCode !== 0 &&
+      i < candidates.length - 1 &&
+      retryableModelCapacityFailure(execution)
+    ) {
+      const hop = {
+        from: selectedModel,
+        to: candidates[i + 1],
+        reason: "capacity_limited",
+      };
+      modelFallbackHops.push(hop);
+      modelFallback = {
+        ...hop,
+        hops: [...modelFallbackHops],
+      };
+      process.stderr.write(
+        `gemini-companion: warning: ping model ${selectedModel ?? "<native>"} capacity-limited; ` +
+        `retrying with ${candidates[i + 1]}\n`,
+      );
+      continue;
+    }
+    break;
+  }
+  return { execution, selectedModel, modelFallback };
 }
 
 async function cmdPing(rest, { readinessProfileName = "ping" } = {}) {
@@ -1228,57 +1441,43 @@ async function cmdPing(rest, { readinessProfileName = "ping" } = {}) {
     ? [options.model]
     : resolveModelCandidatesForProfile(profile, modelsConfig);
   const candidates = modelCandidates.length > 0 ? modelCandidates : [model];
-  const authSelection = resolveAuthSelection(options["auth-mode"]);
+  let authSelection = resolveAuthSelection(options["auth-mode"]);
   if (authSelection.selected_auth_path === "api_key_env_missing") {
     printJson({ status: "not_authed", ...apiKeyMissingFields(authSelection, pingNotAuthedFields()) });
     process.exit(2);
   }
   try {
-    let execution = null;
-    let selectedModel = model;
-    let modelFallback = null;
-    const modelFallbackHops = [];
-    for (let i = 0; i < candidates.length; i++) {
-      selectedModel = candidates[i];
-      execution = await spawnGemini(profile, {
-        model: selectedModel,
-        promptText: PING_PROMPT,
-        policyPath: READ_ONLY_POLICY,
-        cwd: "/tmp",
-        binary: options.binary ?? process.env.GEMINI_BINARY ?? "gemini",
-        timeoutMs: Number(options["timeout-ms"] ?? 15000),
-        allowedApiKeyEnv: authSelection.allowed_env_credentials,
-      });
-      if (
-        execution.exitCode !== 0 &&
-        i < candidates.length - 1 &&
-        retryableModelCapacityFailure(execution)
-      ) {
-        const hop = {
-          from: selectedModel,
-          to: candidates[i + 1],
-          reason: "capacity_limited",
-        };
-        modelFallbackHops.push(hop);
-        modelFallback = {
-          ...hop,
-          hops: [...modelFallbackHops],
-        };
-        process.stderr.write(
-          `gemini-companion: warning: ping model ${selectedModel ?? "<native>"} capacity-limited; ` +
-          `retrying with ${candidates[i + 1]}\n`,
-        );
-        continue;
-      }
-      break;
+    const pingInputs = {
+      profile,
+      candidates,
+      model,
+      binary: options.binary ?? process.env.GEMINI_BINARY ?? "gemini",
+      timeoutMs: Number(options["timeout-ms"] ?? DEFAULT_GEMINI_PING_TIMEOUT_MS),
+    };
+    let { execution, selectedModel, modelFallback } = await runGeminiPingAttempts({
+      ...pingInputs,
+      authSelection,
+    });
+    const fallbackSelection = autoApiKeyFallbackSelectionForGeminiFailure(authSelection, execution);
+    if (fallbackSelection) {
+      authSelection = fallbackSelection;
+      ({ execution, selectedModel, modelFallback } = await runGeminiPingAttempts({
+        ...pingInputs,
+        authSelection,
+      }));
     }
     if (execution.parsed.ok) {
-      const payload = { status: "ok", ...pingOkFields(modelFallback), ...authDiagnosticFields(authSelection), model: selectedModel ?? null,
+      const payload = { status: "ok", ...pingOkFields(authSelection, modelFallback), ...authDiagnosticFields(authSelection), model: selectedModel ?? null,
         session_id: execution.geminiSessionId, usage: execution.parsed.usage };
       printJson(payload);
       process.exit(0);
     }
     const detail = pingFailureDetail(execution);
+    const failureText = pingFailureText(execution);
+    if (isGeminiCodexSandboxBlocked(failureText)) {
+      printJson({ status: "sandbox_blocked", ...pingSandboxBlockedFields(), ...authDiagnosticFields(authSelection), exit_code: execution.exitCode, detail });
+      process.exit(2);
+    }
     if (/rate limit|429|overloaded/i.test(detail)) {
       printJson({ status: "rate_limited", ...pingRateLimitedFields(), ...authDiagnosticFields(authSelection), detail });
       process.exit(2);
@@ -1299,6 +1498,10 @@ async function cmdPing(rest, { readinessProfileName = "ping" } = {}) {
         ...authDiagnosticFields(authSelection),
         detail: "gemini binary not found on PATH (or GEMINI_BINARY override)",
         install_url: "https://github.com/google-gemini/gemini-cli" });
+      process.exit(2);
+    }
+    if (isGeminiCodexSandboxBlocked(e.message)) {
+      printJson({ status: "sandbox_blocked", ...pingSandboxBlockedFields(), ...authDiagnosticFields(authSelection), detail: e.message });
       process.exit(2);
     }
     printJson({ status: "error", ...pingErrorFields(), ...authDiagnosticFields(authSelection), detail: e.message });

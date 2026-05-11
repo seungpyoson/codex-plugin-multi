@@ -11,11 +11,11 @@ Use the Claude companion review workflow. Current Codex builds expose it as `cla
 `<plugin-root>` is `plugins/claude` or an absolute path to that plugin directory; `<workspace>` is the repository or bundle directory to review; `<focus>` is the user's review prompt or focus area. Run:
 
 ```bash
-node "<plugin-root>/scripts/claude-companion.mjs" run --mode=review --foreground --lifecycle-events jsonl --cwd "<workspace>" -- "<focus>"
+node "<plugin-root>/scripts/claude-companion.mjs" run --mode=review --foreground --auth-mode subscription --lifecycle-events jsonl --cwd "<workspace>" -- "<focus>"
 ```
 
 If the user provides a base ref, add `--scope-base REF` before `--`.
 If the user provides a review timeout, add `--timeout-ms MS` before `--`.
-The review default is 600000 ms; `CLAUDE_REVIEW_TIMEOUT_MS` is the non-interactive fallback.
+The review default is 900000 ms; `CLAUDE_REVIEW_TIMEOUT_MS` is the non-interactive fallback.
 
 Render companion JSON according to `claude-result-handling`; render `external_review_launched` as soon as it appears, then render `external_review` before normal prose when present. Do not claim `/claude-review` is available in Codex builds that do not register plugin command files.

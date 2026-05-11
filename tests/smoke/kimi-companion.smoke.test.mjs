@@ -11,6 +11,7 @@ import { fixtureGit, fixtureSeedRepo } from "../helpers/fixture-git.mjs";
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const COMPANION = path.join(REPO_ROOT, "plugins/kimi/scripts/kimi-companion.mjs");
 const MOCK = path.join(REPO_ROOT, "tests/smoke/kimi-mock.mjs");
+const MODELS_CONFIG = path.join(REPO_ROOT, "plugins/kimi/config/models.json");
 const KIMI_SESSION_ID = "22222222-3333-4444-9555-666666666666";
 const KIMI_RESUMED_SESSION_ID = "77777777-8888-4999-aaaa-bbbbbbbbbbbb";
 
@@ -115,6 +116,16 @@ function parseJson(stdout) {
   return JSON.parse(stdout);
 }
 
+function withKimiModelsConfig(config, fn) {
+  const prior = readFileSync(MODELS_CONFIG, "utf8");
+  writeFileSync(MODELS_CONFIG, `${JSON.stringify(config, null, 2)}\n`, "utf8");
+  try {
+    return fn();
+  } finally {
+    writeFileSync(MODELS_CONFIG, prior, "utf8");
+  }
+}
+
 function waitForTerminalRecord(dataDir, jobId, { timeoutMs = 5000 } = {}) {
   const deadline = Date.now() + timeoutMs;
   let last = null;
@@ -176,11 +187,14 @@ test("kimi mock rejects unknown CLI flags", () => {
 
 test("kimi ping reports OAuth readiness and ignored API-key diagnostics", () => {
   const cwd = mkdtempSync(path.join(tmpdir(), "kimi-ping-"));
+  const tempRoot = realpathSync(tmpdir());
   try {
     const result = runCompanion(["ping"], {
       cwd,
       env: {
         KIMI_CODE_API_KEY: "secret-test-value",
+        KIMI_MOCK_ASSERT_CWD_NOT: tempRoot,
+        KIMI_MOCK_ASSERT_CWD_PREFIX: tempRoot,
         MOONSHOT_API_KEY: "secret-test-value",
       },
     });
@@ -211,6 +225,23 @@ test("kimi doctor probes configured review model, not only native auth", () => {
     assert.equal(parsed.ready, false);
     assert.match(parsed.summary, /capacity-limited/i);
     assert.match(parsed.detail, /kimi-code\/kimi-for-coding/);
+  } finally {
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("kimi doctor default timeout allows slow review-model startup", { timeout: 70000 }, () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "kimi-doctor-slow-review-model-"));
+  try {
+    const result = runCompanion(["doctor"], {
+      cwd,
+      env: { KIMI_MOCK_DELAY_MS: "31000" },
+    });
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    const parsed = parseJson(result.stdout);
+    assert.equal(parsed.status, "ok");
+    assert.equal(parsed.ready, true);
+    assert.equal(parsed.model, "kimi-code/kimi-for-coding");
   } finally {
     rmSync(cwd, { recursive: true, force: true });
   }
@@ -566,6 +597,44 @@ test("kimi foreground review timeout returns actionable JobRecord", () => withRe
   assert.equal(persisted.error_code, "timeout");
 }));
 
+test("kimi foreground run fails closed on Codex sandbox denial before review launch", () => withRepo((cwd) => {
+  const bin = path.join(cwd, "kimi-state-denied");
+  writeFileSync(bin, `#!/usr/bin/env node
+process.stderr.write("PermissionError: [Errno 1] Operation not permitted: '/Users/test/.kimi/logs/kimi.log'\\n");
+process.exit(1);
+`, "utf8");
+  chmodSync(bin, 0o755);
+  const result = runCompanion([
+    "run",
+    "--mode",
+    "custom-review",
+    "--cwd",
+    cwd,
+    "--scope-paths",
+    "seed.txt",
+    "--foreground",
+    "--lifecycle-events",
+    "jsonl",
+    "--binary",
+    bin,
+    "--",
+    "Review this scope.",
+  ], { cwd, env: { CODEX_SANDBOX: "seatbelt" } });
+  assert.equal(result.status, 2);
+  const lines = result.stdout.trim().split("\n").map((line) => JSON.parse(line));
+  assert.equal(lines.length, 1, "sandbox preflight must not emit external_review_launched");
+  const [record] = lines;
+  assert.equal(record.status, "failed");
+  assert.equal(record.error_code, "sandbox_blocked");
+  assert.match(record.error_summary, /Codex sandbox/);
+  assert.match(record.suggested_action, /writable_roots|~\/\.kimi/);
+  assert.equal(record.pid_info, null);
+  assert.equal(record.external_review.source_content_transmission, "not_sent");
+  assert.match(record.external_review.disclosure, /not sent/);
+  assert.equal(record.review_metadata.audit_manifest.error_code, "sandbox_blocked");
+  assert.equal(record.review_metadata.audit_manifest.review_quality.failed_review_slot, false);
+}));
+
 test("kimi foreground review --timeout-ms overrides review timeout audit metadata", () => withRepo((cwd) => {
   const result = runCompanion([
     "run",
@@ -588,6 +657,40 @@ test("kimi foreground review --timeout-ms overrides review timeout audit metadat
   const { record: persisted } = readOnlyJobRecord(result.dataDir);
   assert.equal(persisted.review_metadata.audit_manifest.request.timeout_ms, 123456);
 }));
+
+test("kimi foreground review retries a capacity-limited primary model with configured fallback", () => withRepo((cwd) => withKimiModelsConfig({
+  review_quality: "kimi-code/primary-capacity-limited",
+  rescue: "kimi-code/primary-capacity-limited",
+  fallbacks: {
+    review_quality: ["kimi-code/fallback-review"],
+    rescue: [],
+    native: [],
+  },
+}, () => {
+  const result = runCompanion([
+    "run",
+    "--mode",
+    "custom-review",
+    "--cwd",
+    cwd,
+    "--scope-paths",
+    "seed.txt",
+    "--foreground",
+    "--",
+    "Review this scope.",
+  ], {
+    cwd,
+    env: { KIMI_MOCK_CAPACITY_MODEL: "kimi-code/primary-capacity-limited" },
+  });
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  assert.match(result.stderr, /primary-capacity-limited.*retrying with kimi-code\/fallback-review/);
+  const record = parseJson(result.stdout);
+  assert.equal(record.status, "completed");
+  assert.equal(record.model, "kimi-code/fallback-review");
+  assert.equal(record.review_metadata.audit_manifest.request.model, "kimi-code/fallback-review");
+  const { record: persisted } = readOnlyJobRecord(result.dataDir);
+  assert.equal(persisted.model, "kimi-code/fallback-review");
+})));
 
 test("kimi run rejects Git binary policy errors distinctly before target spawn", () => withRepo((cwd) => {
   const marker = path.join(cwd, "malicious-git-ran");
@@ -1384,7 +1487,8 @@ test("kimi review foreground lifecycle jsonl emits launch event before terminal 
     cwd,
     env: {
       KIMI_MOCK_ASSERT_FILE: "seed.txt",
-      KIMI_MOCK_ASSERT_CWD: realpathSync(tmpdir()),
+      KIMI_MOCK_ASSERT_CWD_NOT: realpathSync(tmpdir()),
+      KIMI_MOCK_ASSERT_CWD_PREFIX: realpathSync(tmpdir()),
     },
   });
   assert.equal(result.status, 0, result.stderr);
@@ -1511,7 +1615,8 @@ for (const mode of ["review", "adversarial-review", "custom-review"]) {
       cwd,
       env: {
         KIMI_MOCK_ASSERT_FILE: mode === "adversarial-review" ? "changed.txt" : "seed.txt",
-        KIMI_MOCK_ASSERT_CWD: realpathSync(tmpdir()),
+        KIMI_MOCK_ASSERT_CWD_NOT: realpathSync(tmpdir()),
+        KIMI_MOCK_ASSERT_CWD_PREFIX: realpathSync(tmpdir()),
       },
     });
     assert.equal(result.status, 0, result.stderr);
@@ -1553,7 +1658,7 @@ for (const mode of ["review", "adversarial-review", "custom-review"]) {
     assert.equal(persisted.review_metadata.raw_output.parsed_ok, true);
     assert.match(persisted.review_metadata.audit_manifest.rendered_prompt_hash.value, /^[a-f0-9]{64}$/);
     assert.equal(persisted.review_metadata.audit_manifest.request.model, persisted.model);
-    assert.equal(persisted.review_metadata.audit_manifest.request.timeout_ms, 600000);
+    assert.equal(persisted.review_metadata.audit_manifest.request.timeout_ms, 900000);
     assert.match(persisted.review_metadata.audit_manifest.prompt_builder.plugin_commit, /^[a-f0-9]{40}$/);
     assert.notEqual(
       persisted.review_metadata.audit_manifest.prompt_builder.plugin_commit,

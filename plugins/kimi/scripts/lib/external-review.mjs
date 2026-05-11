@@ -42,6 +42,15 @@ const CONTENT_RECEIVED_ERROR_CODES = Object.freeze(new Set([
   "usage_limited",
   "finalization_failed",
   "timeout",
+  "review_not_completed",
+]));
+
+const PRE_TARGET_NOT_SENT_ERROR_CODES = Object.freeze(new Set([
+  "git_binary_rejected",
+  "scope_failed",
+  "spawn_failed",
+  "not_authed",
+  "sandbox_blocked",
 ]));
 
 const SENT_DISCLOSURE_BY_STATUS = Object.freeze({
@@ -72,12 +81,24 @@ export function externalReviewDisclosure(provider, status, sourceContentTransmis
     case SOURCE_CONTENT_TRANSMISSION.SENT:
       return (SENT_DISCLOSURE_BY_STATUS[status] ?? sentWithoutCleanResult)(provider);
     case SOURCE_CONTENT_TRANSMISSION.NOT_SENT:
-      return (NOT_SENT_DISCLOSURE_BY_STATUS[status]
-        ?? NOT_SENT_DISCLOSURE_BY_ERROR[errorCode]
-        ?? notSentTargetNotStarted)(provider);
+      return notSentDisclosure(provider, status, errorCode);
     default:
       return (UNKNOWN_DISCLOSURE_BY_STATUS[status] ?? unknownWithoutCleanResult)(provider);
   }
+}
+
+function notSentDisclosure(provider, status, errorCode) {
+  const statusDisclosure = NOT_SENT_DISCLOSURE_BY_STATUS[status];
+  if (statusDisclosure) return statusDisclosure(provider);
+  const errorDisclosure = NOT_SENT_DISCLOSURE_BY_ERROR[errorCode];
+  if (errorDisclosure) return errorDisclosure(provider);
+  if (errorCode === "not_authed") {
+    return `Selected source content was not sent to ${provider}; auth readiness failed before the review target was started.`;
+  }
+  if (errorCode === "sandbox_blocked") {
+    return `Selected source content was not sent to ${provider}; sandbox access was blocked before the review target was started.`;
+  }
+  return notSentTargetNotStarted(provider);
 }
 
 function sentWithoutCleanResult(provider) {
@@ -108,7 +129,7 @@ export function sourceContentTransmissionForExecution({ status, errorCode, pidIn
     // no-pid cases conservative instead of claiming not_sent.
     return SOURCE_CONTENT_TRANSMISSION.UNKNOWN;
   }
-  if (errorCode === "git_binary_rejected" || errorCode === "scope_failed" || errorCode === "spawn_failed") {
+  if (PRE_TARGET_NOT_SENT_ERROR_CODES.has(errorCode)) {
     return SOURCE_CONTENT_TRANSMISSION.NOT_SENT;
   }
   if (errorCode === "oauth_inference_rejected" && !pidInfo) {

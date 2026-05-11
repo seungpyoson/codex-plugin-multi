@@ -15,7 +15,7 @@ Run:
 ```
 node "<plugin-root>/scripts/kimi-companion.mjs" run --mode=adversarial-review --foreground --lifecycle-events jsonl -- "<focus text>"
 ```
-Review timeout defaults to 600000 ms. Use `--timeout-ms <ms>` or `KIMI_REVIEW_TIMEOUT_MS`; the effective value is persisted in `review_metadata.audit_manifest.request.timeout_ms`.
+Review timeout defaults to 900000 ms. Use `--timeout-ms <ms>` or `KIMI_REVIEW_TIMEOUT_MS`; the effective value is persisted in `review_metadata.audit_manifest.request.timeout_ms`.
 `branch-diff` is object-pure and committed-only: checkout filters, replace refs,
 grafts, and dirty working-tree edits are ignored. If the target changes are
 uncommitted, do not use adversarial branch-diff as the review evidence; use

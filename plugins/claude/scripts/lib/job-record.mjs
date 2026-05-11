@@ -98,7 +98,7 @@ function stringBytes(value) {
 
 function buildReviewMetadata(invocation, execution = null, parsed = null, endedAt = null) {
   if (!invocation.review_prompt_contract_version) return null;
-  return Object.freeze({
+  const metadata = {
     prompt_contract_version: invocation.review_prompt_contract_version,
     prompt_provider: invocation.review_prompt_provider ?? invocation.target,
     scope: invocation.scope,
@@ -112,7 +112,12 @@ function buildReviewMetadata(invocation, execution = null, parsed = null, endedA
       elapsed_ms: elapsedMs(invocation.started_at, endedAt),
     }) : null,
     audit_manifest: execution?.reviewAuditManifest ?? null,
-  });
+  };
+  if (Array.isArray(execution?.permissionModeAttempts)) {
+    metadata.permission_mode_attempts = Object.freeze(execution.permissionModeAttempts.map((attempt) => Object.freeze({ ...attempt })));
+    metadata.permission_mode_effective = execution.permissionModeEffective ?? null;
+  }
+  return Object.freeze(metadata);
 }
 
 export function externalReviewForInvocation(invocation, execution = null) {
@@ -157,6 +162,11 @@ export function externalReviewForInvocation(invocation, execution = null) {
  *                     HTTP 401 even though CLI auth status may still report
  *                     logged-in. This must not be hidden as generic
  *                     claude_error.
+ *   not_authed      — same-process auth/readiness preflight found no usable
+ *                     Claude login before selected source was sent.
+ *   sandbox_blocked — same-process readiness preflight found Codex sandbox
+ *                     could not access Claude state before selected source
+ *                     was sent.
  *   claude_error    — exitCode !== 0 with parseable JSON (target's is_error=true).
  *                     Also covers exitCode === 0 but parsed.ok === false with
  *                     is_error semantics.
@@ -166,6 +176,8 @@ export function externalReviewForInvocation(invocation, execution = null) {
 const CANCEL_SIGNALS = new Set(["SIGTERM", "SIGKILL", "SIGINT", "SIGHUP"]);
 const FINALIZATION_FAILED_PREFIX = "finalization_failed:";
 const OAUTH_INFERENCE_REJECTED_PREFIX = "oauth_inference_rejected:";
+const NOT_AUTHED_PREFIX = "not_authed:";
+const SANDBOX_BLOCKED_PREFIX = "sandbox_blocked:";
 
 export function isOAuthInferenceRejected(execution, authContext = null) {
   if (!authContext) return false;
@@ -224,6 +236,20 @@ function classifyErrorMessage(message) {
       status: "failed",
       error_code: "oauth_inference_rejected",
       error_message: text.slice(OAUTH_INFERENCE_REJECTED_PREFIX.length).trim(),
+    };
+  }
+  if (text.startsWith(NOT_AUTHED_PREFIX)) {
+    return {
+      status: "failed",
+      error_code: "not_authed",
+      error_message: text.slice(NOT_AUTHED_PREFIX.length).trim(),
+    };
+  }
+  if (text.startsWith(SANDBOX_BLOCKED_PREFIX)) {
+    return {
+      status: "failed",
+      error_code: "sandbox_blocked",
+      error_message: text.slice(SANDBOX_BLOCKED_PREFIX.length).trim(),
     };
   }
   if (isGitBinaryPolicyError(new Error(text))) {
@@ -364,6 +390,26 @@ function buildErrorDiagnostic(invocation, status, error_code, error_message) {
         "`claude auth status` can still report logged in; non-interactive inference was rejected.",
       suggested_action:
         "Run `/claude-setup`, refresh Claude OAuth in a normal terminal if needed, and verify OAuth-only `claude -p` inference works before retrying the review.",
+      disclosure_note: null,
+    };
+  }
+  if (error_code === "not_authed") {
+    return {
+      error_summary: "Claude Code is not logged in for this Codex session.",
+      error_cause:
+        "The companion checked Claude subscription/OAuth readiness in the same process before launching the review target, and Claude did not report a usable login.",
+      suggested_action:
+        "Run `claude auth login` in a normal terminal, rerun `/claude-setup`, then retry the review.",
+      disclosure_note: null,
+    };
+  }
+  if (error_code === "sandbox_blocked") {
+    return {
+      error_summary: "Claude Code is blocked by Codex sandbox access to Claude state.",
+      error_cause:
+        "The companion ran a same-process readiness preflight before sending selected source, and Claude could not read or write its ~/.claude state files from this Codex sandbox.",
+      suggested_action:
+        "Add ~/.claude to [sandbox_workspace_write].writable_roots in ~/.codex/config.toml, start a fresh Codex session, rerun /claude-setup, then retry the review.",
       disclosure_note: null,
     };
   }

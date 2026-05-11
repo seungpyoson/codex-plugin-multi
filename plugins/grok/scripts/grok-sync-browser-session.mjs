@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { spawnSync } from "node:child_process";
-import { createDecipheriv, pbkdf2Sync } from "node:crypto";
+import { createDecipheriv, createHash, pbkdf2Sync } from "node:crypto";
 import { copyFileSync, existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import path from "node:path";
@@ -271,7 +271,17 @@ function sqliteCookieRows(dbPath) {
   }
 }
 
-export function chromeDecrypt(encryptedHex, password) {
+export function decodeCookiePlaintext(plaintext, hostKey = "") {
+  if (hostKey && plaintext.length > 32) {
+    const hostDigest = createHash("sha256").update(hostKey).digest();
+    if (plaintext.subarray(0, 32).equals(hostDigest)) {
+      return plaintext.subarray(32).toString("utf8");
+    }
+  }
+  return plaintext.toString("utf8");
+}
+
+export function chromeDecrypt(encryptedHex, password, hostKey = "") {
   if (!encryptedHex) return "";
   const encrypted = Buffer.from(encryptedHex, "hex");
   if (!encrypted.length) return "";
@@ -286,13 +296,21 @@ export function chromeDecrypt(encryptedHex, password) {
   const key = pbkdf2Sync(Buffer.from(password, "utf8"), Buffer.from("saltysalt"), 1003, 16, "sha1");
   const iv = Buffer.alloc(16, " ");
   const decipher = createDecipheriv("aes-128-cbc", key, iv);
-  return Buffer.concat([decipher.update(payload), decipher.final()]).toString("utf8");
+  return decodeCookiePlaintext(Buffer.concat([decipher.update(payload), decipher.final()]), hostKey);
 }
 
-function selectCookie(cookies) {
+export function selectCookie(cookies) {
   for (const name of COOKIE_NAMES) {
-    const match = cookies.find((cookie) => cookie.name === name && sanitizeToken(cookie.value));
-    if (match) return { name, value: sanitizeToken(match.value) };
+    let firstCandidateForName = null;
+    for (const cookie of cookies) {
+      if (cookie.name !== name) continue;
+      const value = sanitizeToken(cookie.value);
+      if (!value) continue;
+      const selected = { name, value };
+      if (!firstCandidateForName) firstCandidateForName = selected;
+      if (isJwtShapedToken(value)) return selected;
+    }
+    if (firstCandidateForName) return firstCandidateForName;
   }
   return null;
 }
@@ -315,7 +333,7 @@ function cookiesFromBrowser(options) {
   const rows = sqliteCookieRows(dbPath);
   return rows.map((row) => ({
     name: row.name,
-    value: sanitizeToken(row.value || chromeDecrypt(row.encrypted_hex, password)),
+    value: sanitizeToken(row.value || chromeDecrypt(row.encrypted_hex, password, row.host_key)),
   }));
 }
 
@@ -388,7 +406,15 @@ async function main(argv = process.argv.slice(2)) {
     });
     process.exit(0);
   } catch (error) {
-    fail(error.code || "grok2api_import_failed", redactMessage(error.message, [selected.value, adminKey, ...toDelete]), {
+    const existingTokenValues = existingTokens
+      .map((entry) => sanitizeToken(entry?.token))
+      .filter(Boolean);
+    fail(error.code || "grok2api_import_failed", redactMessage(error.message, [
+      selected.value,
+      adminKey,
+      ...existingTokenValues,
+      ...toDelete,
+    ]), {
       source,
       selected_cookie: selected.name,
       previous_pool_count: existingTokens.length,

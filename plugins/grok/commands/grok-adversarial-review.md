@@ -18,4 +18,4 @@ Do not recommend direct xAI API keys as a fallback for subscription web mode.
 
 `branch-diff` is committed-only and does not include dirty working-tree edits. If the target changes are uncommitted, do not use adversarial branch-diff as the review evidence; run `grok-custom-review` with explicit `--scope-paths` instead.
 
-Review timeout defaults to 600000 ms. Use `GROK_WEB_TIMEOUT_MS=<ms>` to override it; the effective value is persisted in `review_metadata.audit_manifest.request.timeout_ms`. Rendered prompts above `GROK_WEB_MAX_PROMPT_CHARS` (default 400000) fail before tunnel launch with `source_content_transmission: "not_sent"`; split or narrow the scope instead of relying on truncation. Doctor timeouts remain separate readiness checks.
+Review timeout defaults to 900000 ms. Use `GROK_WEB_TIMEOUT_MS=<ms>` to override it; the effective value is persisted in `review_metadata.audit_manifest.request.timeout_ms`. Rendered prompts above `GROK_WEB_MAX_PROMPT_CHARS` (default 400000) fail before tunnel launch with `source_content_transmission: "not_sent"`; split or narrow the scope instead of relying on truncation. Doctor timeouts remain separate readiness checks.
