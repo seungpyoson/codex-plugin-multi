@@ -12,10 +12,10 @@
 
 ## Phase 2: Provider Manifest Harness
 
-- [ ] T005 [US1] Design CLI contract for six-provider readiness manifest.
-- [ ] T006 [US1] Add tests for manifest row failure classes and prompt-persistence checks.
-- [ ] T007 [US1] Implement manifest builder.
-- [ ] T008 [US1] Document synthetic fixture live-smoke process.
+- [X] T005 [US1] Design CLI contract for six-provider readiness manifest.
+- [X] T006 [US1] Add tests for manifest row failure classes and prompt-persistence checks.
+- [X] T007 [US1] Implement manifest builder.
+- [X] T008 [US1] Document synthetic fixture live-smoke process.
 
 ## Phase 3: Review Quality Repeatability
 
@@ -27,4 +27,4 @@
 - [X] T011 Run `npm run lint`.
 - [X] T012 Run relevant smoke tests.
 - [X] T013 Run `npm run test:full`.
-- [X] T014 Push through no-mistakes gate before PR.
+- [ ] T014 Push through no-mistakes gate before PR.

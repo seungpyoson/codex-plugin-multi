@@ -4,7 +4,8 @@
 
 - `provider`: `claude`, `gemini`, `kimi`, `grok`, `deepseek`, `glm`
 - `doctor_status`: `ready`, `not_ready`, `not_run`
-- `review_status`: `completed`, `failed`, `not_applicable`, `not_run`
+- `review_status`: `completed`, `failed`, provider-specific status string, `not_run`
+- `approval_status`: `not_required`, `not_sent`, `missing`, `invalid`
 - `failure_class`: `none`, `sandbox`, `auth`, `provider`, `tunnel`, `session_tokens`, `review_quality`, `approval_gate`, `cache_install`
 - `source_content_transmission`: `not_sent`, `may_be_sent`, `sent`
 - `failed_review_slot`: boolean or null
@@ -25,5 +26,20 @@
 
 - `path`
 - `head_sha`
-- `selected_files`
-- `content_hashes`
+- `status_porcelain`: tracked and untracked fixture mutations from `git status --porcelain=v1 --untracked-files=all`
+- `selected_files`: tracked fixture files only
+- `selected_files[].content_hash`: SHA-256 hash of tracked fixture content
+
+## Evidence File Contract
+
+The manifest builder reads JSON artifacts from one evidence directory:
+
+- `<provider>-doctor.json`
+- `<provider>-review.json`
+- `<provider>-approval.json` for `deepseek` and `glm`
+
+Valid providers are `claude`, `gemini`, `kimi`, `grok`, `deepseek`, and `glm`.
+The manifest builder never persists fixture source bodies. Prompt persistence
+is classified as `full_prompt_found` if evidence contains a full prompt key
+such as `prompt`, `rendered_prompt`, `prompt_text`, `renderedPrompt`, or
+`promptText`.
