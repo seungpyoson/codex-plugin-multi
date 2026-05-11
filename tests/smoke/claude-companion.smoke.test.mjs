@@ -386,6 +386,96 @@ process.exit(9);
   }
 });
 
+test("custom-review permission-mode ladder retries claude_error in the next mode", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "claude-permission-error-retry-cwd-"));
+  fixtureSeedRepo(cwd, {
+    fileName: "seed.txt",
+    fileContents: "claude permission claude_error retry sentinel\n",
+  });
+  const tmp = mkdtempSync(path.join(tmpdir(), "claude-permission-error-retry-bin-"));
+  const attemptsPath = path.join(tmp, "attempts.jsonl");
+  const binary = writeExecutable(tmp, "claude-error-retry", `#!/usr/bin/env node
+import { appendFileSync } from "node:fs";
+
+const argv = process.argv.slice(2);
+const modeIndex = argv.indexOf("--permission-mode");
+const mode = modeIndex >= 0 ? argv[modeIndex + 1] : null;
+const sessionIndex = argv.indexOf("--session-id");
+const sessionId = sessionIndex >= 0 ? argv[sessionIndex + 1] : "11111111-1111-4111-8111-111111111111";
+appendFileSync(${JSON.stringify(attemptsPath)}, JSON.stringify({ mode }) + "\\n");
+
+if (mode === "dontAsk") {
+  process.stdout.write(JSON.stringify({
+    type: "result",
+    is_error: true,
+    result: "tool denied in dontAsk",
+    session_id: sessionId,
+    usage: { input_tokens: 1, output_tokens: 1 },
+    permission_denials: []
+  }) + "\\n");
+  process.exit(1);
+}
+
+if (mode === "auto") {
+  process.stdout.write(JSON.stringify({
+    type: "result",
+    is_error: false,
+    result: [
+      "Verdict: APPROVE",
+      "Blocking findings",
+      "- None. I inspected the selected source provided to this Claude smoke fixture and found no blocking issue.",
+      "Non-blocking concerns",
+      "- None for this fixture.",
+      "Test gaps",
+      "- Existing smoke fixture coverage is sufficient for this wrapper path.",
+      "Inspection status",
+      "- The selected source was available and the mock returned a complete review, not a placeholder.",
+      "Checklist:",
+      "- PASS selected scope was available.",
+      "- PASS selected source was inspected before verdict.",
+      "- PASS no blocker was invented."
+    ].join("\\n"),
+    session_id: sessionId,
+    usage: { input_tokens: 1, output_tokens: 1 },
+    permission_denials: []
+  }) + "\\n");
+  process.exit(0);
+}
+
+process.stderr.write("unexpected retry through permission mode " + mode + "\\n");
+process.exit(9);
+`);
+  const { stdout, stderr, status, dataDir } = runCompanion(
+    ["run", "--mode=custom-review", "--foreground", "--auth-mode", "api_key",
+     "--binary", binary, "--model", "claude-haiku-4-5-20251001",
+     "--cwd", cwd, "--scope-paths", "seed.txt", "--", "review selected source"],
+    {
+      cwd,
+      env: {
+        ANTHROPIC_API_KEY: "test-key",
+        CLAUDE_API_KEY: "",
+        CLAUDE_REVIEW_PERMISSION_MODES: "dontAsk,auto,acceptEdits",
+      },
+    },
+  );
+  try {
+    assert.equal(status, 0, `exit ${status}: stderr=${stderr}; stdout=${stdout}`);
+    const record = JSON.parse(stdout);
+    assert.equal(record.status, "completed");
+    assert.equal(record.review_metadata.permission_mode_effective, "auto");
+    assert.deepEqual(record.review_metadata.permission_mode_attempts.map((attempt) => attempt.mode), ["dontAsk", "auto"]);
+    assert.equal(record.review_metadata.permission_mode_attempts[0].error_code, "claude_error");
+    assert.equal(record.review_metadata.permission_mode_attempts[1].status, "completed");
+    const modesSeen = readFileSync(attemptsPath, "utf8").trim().split("\n")
+      .map((line) => JSON.parse(line).mode);
+    assert.deepEqual(modesSeen, ["dontAsk", "auto"]);
+  } finally {
+    cleanup(dataDir);
+    rmSync(cwd, { recursive: true, force: true });
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
 test("custom-review permission-mode ladder does not retry after timeout", () => {
   const cwd = mkdtempSync(path.join(tmpdir(), "claude-permission-timeout-cwd-"));
   fixtureSeedRepo(cwd, {
@@ -3529,6 +3619,98 @@ test("_run-worker: cancel marker prevents target spawn, sets status=cancelled", 
       "worker must consume (unlink) the marker on pickup");
     assert.equal(existsSync(promptPath), false,
       "worker must remove prompt sidecar when queued cancel prevents target spawn");
+  } finally {
+    rmSync(dataDir, { recursive: true, force: true });
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("_run-worker rejects sidecar bypassPermissions without explicit opt-in", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "claude-worker-bypass-sidecar-cwd-"));
+  fixtureSeedRepo(cwd, {
+    fileName: "seed.txt",
+    fileContents: "claude worker bypass sidecar sentinel\n",
+  });
+  const dataDir = mkdtempSync(path.join(tmpdir(), "claude-worker-bypass-sidecar-data-"));
+  const markerPath = path.join(dataDir, "spawned-mode.txt");
+  const binary = writeExecutable(dataDir, "claude-worker-bypass-marker", `#!/usr/bin/env node
+import { writeFileSync } from "node:fs";
+const argv = process.argv.slice(2);
+const modeIndex = argv.indexOf("--permission-mode");
+const mode = modeIndex >= 0 ? argv[modeIndex + 1] : null;
+writeFileSync(${JSON.stringify(markerPath)}, String(mode ?? "missing"));
+process.stdout.write(JSON.stringify({
+  type: "result",
+  is_error: false,
+  result: [
+    "Verdict: APPROVE",
+    "Blocking findings",
+    "- None. I inspected the selected source provided to this Claude smoke fixture and found no blocking issue.",
+    "Non-blocking concerns",
+    "- None for this fixture.",
+    "Test gaps",
+    "- Existing smoke fixture coverage is sufficient for this wrapper path.",
+    "Inspection status",
+    "- The selected source was available and the mock returned a complete review, not a placeholder.",
+    "Checklist:",
+    "- PASS selected scope was available.",
+    "- PASS selected source was inspected before verdict.",
+    "- PASS no blocker was invented."
+  ].join("\\n"),
+  session_id: "11111111-1111-4111-8111-111111111111",
+  usage: { input_tokens: 1, output_tokens: 1 },
+  permission_denials: []
+}) + "\\n");
+process.exit(0);
+`);
+  try {
+    const runRes = runCompanion(
+      ["run", "--mode=custom-review", "--foreground", "--auth-mode", "api_key",
+       "--binary", binary, "--model", "claude-haiku-4-5-20251001",
+       "--cwd", cwd, "--scope-paths", "seed.txt", "--", "review selected source"],
+      {
+        cwd,
+        dataDir,
+        env: {
+          ANTHROPIC_API_KEY: "test-key",
+          CLAUDE_API_KEY: "",
+          CLAUDE_REVIEW_PERMISSION_MODES: "dontAsk",
+        },
+      },
+    );
+    assert.equal(runRes.status, 0, `exit ${runRes.status}: stderr=${runRes.stderr}; stdout=${runRes.stdout}`);
+    const { metaPath, record } = readOnlyJobRecord(dataDir);
+    writeFileSync(metaPath,
+      `${JSON.stringify({ ...record, status: "queued", pid_info: null }, null, 2)}\n`, "utf8");
+
+    const sidecarDir = path.join(path.dirname(metaPath), record.job_id);
+    mkdirSync(sidecarDir, { recursive: true });
+    writeFileSync(path.join(sidecarDir, "prompt.txt"), "queued prompt with selected source\n", { mode: 0o600 });
+    writeFileSync(path.join(sidecarDir, "runtime-options.json"), `${JSON.stringify({
+      permission_mode_ladder: ["bypassPermissions"],
+      allow_bypass_permissions: false,
+    }, null, 2)}\n`, { mode: 0o600 });
+
+    rmSync(markerPath, { force: true });
+    const workerRes = spawnSync("node", [
+      path.join(REPO_ROOT, "plugins/claude/scripts/claude-companion.mjs"),
+      "_run-worker", "--cwd", cwd, "--job", record.job_id, "--auth-mode", "api_key",
+    ], {
+      cwd,
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        ANTHROPIC_API_KEY: "test-key",
+        CLAUDE_API_KEY: "",
+        CLAUDE_PLUGIN_DATA: dataDir,
+      },
+    });
+
+    assert.equal(workerRes.status, 2, `worker must reject tampered bypass sidecar; stderr=${workerRes.stderr}; stdout=${workerRes.stdout}`);
+    assert.equal(existsSync(markerPath), false, "worker must reject bypassPermissions before spawning Claude");
+    const finalMeta = JSON.parse(readFileSync(metaPath, "utf8"));
+    assert.equal(finalMeta.status, "failed");
+    assert.match(finalMeta.error_message, /bypassPermissions/);
   } finally {
     rmSync(dataDir, { recursive: true, force: true });
     rmSync(cwd, { recursive: true, force: true });

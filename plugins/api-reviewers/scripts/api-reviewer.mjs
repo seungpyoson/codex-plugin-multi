@@ -2138,6 +2138,7 @@ async function cmdRun(options) {
     const preflight = validateDirectApiRunPreflight(cfg, provider, process.env);
     if (!preflight.ok && preflight.reason === "bad_args") throw runBadArgs(preflight.error);
     if (!preflight.ok) throw runProviderFailure(preflight.reason, preflight.error);
+    if (!hasPromptText(options.prompt)) throw runBadArgs("bad_args: prompt is required (pass --prompt <focus>)");
     const statePreflight = await verifyApiReviewerDataRootWritable(process.env);
     if (!statePreflight.ok) throw runProviderFailure("sandbox_blocked", statePreflight.error);
     scopeInfo = await collectScope({ ...runOptions, mode });
@@ -2159,11 +2160,6 @@ async function cmdRun(options) {
       parsed: { ok: false, reason, error: redact(e.message) },
       payload_sent: false,
     };
-  }
-  if (!execution) {
-    if (!hasPromptText(options.prompt)) {
-      execution = providerFailure("bad_args", "prompt is required (pass --prompt <focus>)", null, null, false);
-    }
   }
   if (!execution) {
     let renderedPrompt = null;

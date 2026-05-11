@@ -146,11 +146,7 @@ function envAllowsBypassPermissions(env = process.env) {
   return /^(1|true|yes)$/i.test(String(env.CLAUDE_REVIEW_ALLOW_BYPASS_PERMISSIONS ?? ""));
 }
 
-function parseReviewPermissionModeLadder(raw, source) {
-  const modes = String(raw)
-    .split(",")
-    .map((mode) => mode.trim())
-    .filter(Boolean);
+function normalizeReviewPermissionModeLadder(modes, source) {
   if (modes.length === 0) {
     throw new Error(`${source} must include at least one Claude permission mode`);
   }
@@ -162,6 +158,16 @@ function parseReviewPermissionModeLadder(raw, source) {
     if (!unique.includes(mode)) unique.push(mode);
   }
   return Object.freeze(unique);
+}
+
+function parseReviewPermissionModeLadder(raw, source) {
+  return normalizeReviewPermissionModeLadder(
+    String(raw)
+      .split(",")
+      .map((mode) => mode.trim())
+      .filter(Boolean),
+    source,
+  );
 }
 
 function resolveReviewPermissionModeLadder(profile, { env = process.env, allowBypassPermissions = false } = {}) {
@@ -988,7 +994,12 @@ function exitIfCancelledBeforeSpawn(invocation, executionScope, mutationContext,
 
 function permissionModeLadderForInvocation(invocation, profile) {
   if (Array.isArray(invocation.permission_mode_ladder) && invocation.permission_mode_ladder.length > 0) {
-    return Object.freeze([...invocation.permission_mode_ladder]);
+    const source = "runtime-options permission_mode_ladder";
+    const modes = normalizeReviewPermissionModeLadder(invocation.permission_mode_ladder, source);
+    if (modes.includes("bypassPermissions") && invocation.allow_bypass_permissions !== true) {
+      throw new Error(`${source} includes bypassPermissions, but that mode requires --allow-bypass-permissions or CLAUDE_REVIEW_ALLOW_BYPASS_PERMISSIONS=1`);
+    }
+    return modes;
   }
   return resolveReviewPermissionModeLadder(profile, {
     allowBypassPermissions: invocation.allow_bypass_permissions === true,
