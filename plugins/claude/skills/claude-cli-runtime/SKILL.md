@@ -21,18 +21,23 @@ claude-companion.mjs run     --mode=review|adversarial-review|custom-review|resc
                              [--scope-base <ref>] [--scope-paths <g1,g2,…>]
                              [--override-dispose <true|false>]
                              [--schema <json>] [--binary <path>]
+                             [--auth-mode subscription|api_key|auto]
                              [--timeout-ms <ms>] [--allow-bypass-permissions]
                              -- <prompt>
 claude-companion.mjs continue --job <id> [--foreground|--background]
                               [--model <full-id>] [--cwd <path>]
-                              [--binary <path>] [--timeout-ms <ms>]
+                              [--binary <path>]
+                              [--auth-mode subscription|api_key|auto]
+                              [--timeout-ms <ms>]
                               [--allow-bypass-permissions]
                               -- <prompt>
 
 claude-companion.mjs preflight --mode=review|adversarial-review|custom-review
                                [--cwd <path>] [--scope-base <ref>]
                                [--scope-paths <g1,g2,…>]
-claude-companion.mjs ping    [--model <id>] [--binary <path>] [--timeout-ms <ms>]
+claude-companion.mjs ping    [--model <id>] [--binary <path>]
+                             [--auth-mode subscription|api_key|auto]
+                             [--timeout-ms <ms>]
 claude-companion.mjs status  [--job <id>] [--cwd <path>] [--all]
 claude-companion.mjs result  --job <id> [--cwd <path>]
 claude-companion.mjs cancel  --job <id> [--cwd <path>] [--force]
@@ -49,6 +54,7 @@ claude-companion.mjs cancel  --job <id> [--cwd <path>] [--force]
 - **Session IDs**: the companion mints a UUID v4 `job_id`, passes it to fresh Claude runs as `--session-id`, then persists `claude_session_id` from Claude's JSON stdout. Callers do not supply session IDs.
 - **Timeouts**: review run/continue paths default to `900000` ms, accept `--timeout-ms <ms>`, and fall back to `CLAUDE_REVIEW_TIMEOUT_MS` for non-interactive use. The effective value is persisted in `review_metadata.audit_manifest.request.timeout_ms`.
 - **Review permission ladder**: review/adversarial/custom-review default to `dontAsk,auto,acceptEdits`. The companion retries the next mode only when the prior slot is unusable (`review_not_completed`, timeout, parse failure, or target error), and stops on the first usable review regardless of APPROVE/DO NOT APPROVE verdict. Override with `CLAUDE_REVIEW_PERMISSION_MODES=mode1,mode2`. `bypassPermissions` is refused unless the command includes `--allow-bypass-permissions` or the environment sets `CLAUDE_REVIEW_ALLOW_BYPASS_PERMISSIONS=1`. Terminal review records include `review_metadata.permission_mode_attempts` and `review_metadata.permission_mode_effective`.
+- **Review auth**: command skills should pass `--auth-mode auto` for Claude review, adversarial-review, custom-review, and setup checks. Auto uses an existing Claude provider API key when present and otherwise falls back to subscription/OAuth. This avoids a broken OAuth cache blocking a Codex session that already has valid API-key auth.
 - **Cancel scope**: `cancel` is for background jobs only. Foreground runs stay attached to the active terminal and should be interrupted with Ctrl+C.
 
 ## Flag-stack per mode (enforced by `lib/claude.mjs`)

@@ -104,6 +104,11 @@ function startsWithLabel(line, label) {
   return line.slice(label.length).trimStart().startsWith(":");
 }
 
+function startsWithFailVerdict(line) {
+  if (!startsWithToken(line, "fail") && !startsWithToken(line, "failed")) return false;
+  return /\b(blocking|do not approve|request changes|reject|rejected)\b/i.test(line);
+}
+
 function isReviewMarkupSpace(char) {
   return char === undefined || char === " " || char === "\t";
 }
@@ -143,14 +148,21 @@ function hasVerdict(text) {
   return reviewLines(text).some((rawLine) => {
     const line = unmarkReviewText(rawLine).toLowerCase();
     return startsWithLabel(line, "verdict")
+      || startsWithLabel(line, "review verdict")
+      || startsWithLabel(line, "code review verdict")
       || startsWithLabel(line, "overall verdict")
       || startsWithLabel(line, "final verdict")
       || startsWithLabel(line, "status")
       || startsWithLabel(line, "summary")
+      || startsWithToken(line, "review verdict")
+      || startsWithToken(line, "code review verdict")
+      || startsWithToken(line, "overall verdict")
+      || startsWithToken(line, "final verdict")
       || startsWithToken(line, "do not approve")
       || startsWithToken(line, "approve")
       || startsWithToken(line, "approved")
       || startsWithToken(line, "request changes")
+      || startsWithFailVerdict(line)
       || startsWithToken(line, "reject")
       || startsWithToken(line, "rejected");
   });

@@ -11,7 +11,7 @@ Use the Claude companion review workflow. Current Codex builds expose it as `cla
 `<plugin-root>` is `plugins/claude` or an absolute path to that plugin directory; `<workspace>` is the repository or bundle directory to review; `<focus>` is the user's review prompt or focus area. Run:
 
 ```bash
-node "<plugin-root>/scripts/claude-companion.mjs" run --mode=review --foreground --lifecycle-events jsonl --cwd "<workspace>" -- "<focus>"
+node "<plugin-root>/scripts/claude-companion.mjs" run --mode=review --foreground --auth-mode auto --lifecycle-events jsonl --cwd "<workspace>" -- "<focus>"
 ```
 
 If the user provides a base ref, add `--scope-base REF` before `--`.

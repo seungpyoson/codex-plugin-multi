@@ -14,7 +14,7 @@ Adversarial review via Claude Code. Assumes the author is wrong; looks for failu
 1. Consult the `claude-prompting` skill for adversarial prompt framing.
 2. Run:
    ```
-   node "<plugin-root>/scripts/claude-companion.mjs" run --mode=adversarial-review --foreground --lifecycle-events jsonl -- "<focus text>"
+   node "<plugin-root>/scripts/claude-companion.mjs" run --mode=adversarial-review --foreground --auth-mode auto --lifecycle-events jsonl -- "<focus text>"
    ```
    (Containment=worktree, scope=branch-diff, dispose=true all come from the profile — spec §21.4.)
    Review timeout defaults to 900000 ms. Use `--timeout-ms <ms>` or `CLAUDE_REVIEW_TIMEOUT_MS`; the effective value is persisted in `review_metadata.audit_manifest.request.timeout_ms`.
@@ -24,8 +24,8 @@ Adversarial review via Claude Code. Assumes the author is wrong; looks for failu
    evidence; use `run --mode=review` for working-tree scope or an explicit
    `custom-review` bundle instead.
    For a pinned review bundle, run `preflight` and then use
-   `run --mode=custom-review --scope-paths <g1,g2,...>` with prompt wording
-   that names relative paths inside the selected bundle scope.
+   `run --mode=custom-review --auth-mode auto --scope-paths <g1,g2,...>` with
+   prompt wording that names relative paths inside the selected bundle scope.
 3. If `external_review_launched` appears, render it immediately. If `external_review` is present on the terminal record, render it before the review result.
 4. Render findings by severity. Do not downgrade Claude's concerns even if you (Codex) disagree — the job is to surface them.
 5. Watch for a non-empty `mutations` list in the result and surface it. If target read permission denials leave no findings, report review blocked / no findings produced.

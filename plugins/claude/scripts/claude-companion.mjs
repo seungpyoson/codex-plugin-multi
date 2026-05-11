@@ -1488,10 +1488,13 @@ function apiKeyMissingFields(selection, notAuthedFields = {}) {
   });
 }
 
-function pingOkFields() {
+function pingOkFields(authSelection = null) {
+  const summary = authSelection?.selected_auth_path === "api_key_env"
+    ? "Claude Code is ready using API-key auth."
+    : "Claude Code is ready using first-party CLI auth.";
   return {
     ready: true,
-    summary: "Claude Code is ready using first-party CLI auth.",
+    summary,
     next_action: "Run a Claude review command.",
   };
 }
@@ -1744,7 +1747,7 @@ function printPingSpawnError(error, authSelection) {
 function printPingSuccess(execution, authSelection, model) {
   // T7.4: drop the legacy `.sessionId` alias. Ping uses claudeSessionId
   // (Claude's echo) with sessionIdSent fallback when the mock short-circuits.
-  const payload = { status: "ok", ...pingOkFields(), ...authDiagnosticFields(authSelection), model: model ?? null,
+  const payload = { status: "ok", ...pingOkFields(authSelection), ...authDiagnosticFields(authSelection), model: model ?? null,
     session_id: execution.claudeSessionId ?? execution.sessionIdSent,
     cost_usd: execution.parsed.costUsd, usage: execution.parsed.usage };
   printJson(payload);

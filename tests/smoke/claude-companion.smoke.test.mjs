@@ -1966,6 +1966,7 @@ process.stdout.write(JSON.stringify({
     const result = JSON.parse(stdout);
     assert.equal(result.auth_mode, "auto");
     assert.equal(result.selected_auth_path, "api_key_env");
+    assert.match(result.summary, /API-key auth/);
     assert.deepEqual(result.allowed_env_credentials, ["ANTHROPIC_API_KEY"]);
     assert.doesNotMatch(stdout, /secret-test-value/);
   } finally {

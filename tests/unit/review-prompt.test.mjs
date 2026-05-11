@@ -868,6 +868,83 @@ for (const [name, file] of REVIEW_PROMPT_MODULES) {
     assert.deepEqual(geminiLike.review_quality.semantic_failure_reasons, []);
     assert.equal(geminiLike.review_quality.failed_review_slot, false);
 
+    const geminiRequestChangesLike = targetBuildReviewAuditManifest({
+      prompt: "rendered prompt",
+      sourceFiles,
+      result: [
+        "### Code Review Verdict: REQUEST CHANGES",
+        "**Files Inspected:**",
+        "- `cart.js`",
+        "#### Blocking Findings",
+        "- `cart.js` returns `a - b` even though the scoped contract requires addition.",
+        "#### Non-Blocking Concerns & Test Gaps",
+        "- Add unit coverage for addition semantics.",
+        "#### Checklist Evaluation",
+        "1. Verify exact base/head refs and commits before judging the diff: PASS.",
+        "2. Review only the declared scope and list any scope gaps as NOT REVIEWED: PASS.",
+        "3. Evaluate correctness bugs, security risks, regressions, and missing tests: FAIL.",
+        "4. Check known review comments or residual threads when the prompt includes them: NOT REVIEWED.",
+        "5. Separate blocking findings from non-blocking concerns: PASS.",
+        "6. Treat timeout, truncation, interruption, permission block, or shallow output as a failed review slot: PASS.",
+      ].join("\n"),
+      status: "completed",
+      errorCode: null,
+    });
+    assert.equal(geminiRequestChangesLike.review_quality.has_verdict, true);
+    assert.deepEqual(geminiRequestChangesLike.review_quality.semantic_failure_reasons, []);
+    assert.equal(geminiRequestChangesLike.review_quality.failed_review_slot, false);
+
+    const glmFailLike = targetBuildReviewAuditManifest({
+      prompt: "rendered prompt",
+      sourceFiles,
+      result: [
+        "# Code Review Verdict — cart.js",
+        "**Scope:** `cart.js`",
+        "## Verdict",
+        "**FAIL — Request Changes.** The selected file contains a blocking correctness bug.",
+        "### Blocking Findings",
+        "- `cart.js` implements subtraction instead of addition.",
+        "### Non-Blocking Concerns",
+        "- Add a test for `add(1, 2) === 3`.",
+        "### Checklist",
+        "1. Verify exact base/head refs and commits before judging the diff: PASS.",
+        "2. Review only the declared scope and list any scope gaps as NOT REVIEWED: PASS.",
+        "3. Evaluate correctness bugs, security risks, regressions, and missing tests: FAIL.",
+        "4. Check known review comments or residual threads when the prompt includes them: NOT REVIEWED.",
+        "5. Separate blocking findings from non-blocking concerns: PASS.",
+        "6. Treat timeout, truncation, interruption, permission block, or shallow output as a failed review slot: PASS.",
+      ].join("\n"),
+      status: "completed",
+      errorCode: null,
+    });
+    assert.equal(glmFailLike.review_quality.has_verdict, true);
+    assert.deepEqual(glmFailLike.review_quality.semantic_failure_reasons, []);
+    assert.equal(glmFailLike.review_quality.failed_review_slot, false);
+
+    const kimiReviewVerdictForFileLike = targetBuildReviewAuditManifest({
+      prompt: "rendered prompt",
+      sourceFiles,
+      result: [
+        "**Review Verdict for `cart.js`**",
+        "**Blocking Finding**",
+        "- `cart.js:1-3` performs subtraction instead of addition.",
+        "**Checklist**",
+        "1. Verify exact base/head refs and commits — NOT REVIEWED.",
+        "2. Review only the declared scope — PASS.",
+        "3. Evaluate correctness bugs, security risks, regressions, and missing tests — FAIL.",
+        "4. Check known review comments or residual threads — NOT REVIEWED.",
+        "5. Separate blocking findings from non-blocking concerns — PASS.",
+        "6. Treat timeout, truncation, interruption, permission block, or shallow output — PASS.",
+        "**Non-blocking concerns**",
+        "- Add unit tests for the addition contract.",
+      ].join("\n"),
+      status: "completed",
+      errorCode: null,
+    });
+    assert.equal(kimiReviewVerdictForFileLike.review_quality.has_verdict, true);
+    assert.deepEqual(kimiReviewVerdictForFileLike.review_quality.semantic_failure_reasons, []);
+    assert.equal(kimiReviewVerdictForFileLike.review_quality.failed_review_slot, false);
+
     const claudePlanPreambleLike = targetBuildReviewAuditManifest({
       prompt: "rendered prompt",
       sourceFiles,
