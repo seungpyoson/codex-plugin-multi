@@ -92,7 +92,7 @@ const PREFLIGHT_MODES = Object.freeze(["review", "adversarial-review", "custom-r
 const REVIEW_MODE_SET = new Set(PREFLIGHT_MODES);
 const DEFAULT_REVIEW_PERMISSION_MODE_LADDER = Object.freeze(["dontAsk", "auto", "acceptEdits"]);
 const ALLOWED_REVIEW_PERMISSION_MODES = new Set(["default", "plan", "acceptEdits", "dontAsk", "auto", "bypassPermissions"]);
-const PERMISSION_MODE_RETRYABLE_ERROR_CODES = new Set(["review_not_completed", "parse_error", "claude_error"]);
+const PERMISSION_MODE_RETRYABLE_ERROR_CODES = new Set(["parse_error", "claude_error"]);
 
 function isExplicitRelativeBinary(binary) {
   return binary === "." ||

@@ -301,16 +301,30 @@ function modelCandidatesForInvocation(profile, invocation) {
   return candidates.length > 0 ? candidates : [invocation.model];
 }
 
+function makeKimiPingCwd() {
+  const dir = mkdtempSync(joinPath(tmpdir(), "kimi-ping-neutral-"));
+  try {
+    process.once("exit", () => {
+      try { rmSync(dir, { recursive: true, force: true }); } catch { /* best-effort */ }
+    });
+  } catch {
+    // Exit cleanup is best-effort; readiness must not fail because cleanup
+    // registration failed.
+  }
+  return dir;
+}
+
 async function kimiReadinessPreflight(invocation, profile) {
   const readinessProfile = resolveProfile("ping");
   const candidates = modelCandidatesForInvocation(profile, invocation);
   let execution = null;
+  const pingCwd = makeKimiPingCwd();
   try {
     for (let i = 0; i < candidates.length; i++) {
       execution = await spawnKimi(readinessProfile, {
         model: candidates[i],
         promptText: PING_PROMPT,
-        cwd: tmpdir(),
+        cwd: pingCwd,
         binary: invocation.binary,
         env: { ...process.env, KIMI_COMPANION_PREFLIGHT: "1" },
         timeoutMs: KIMI_READINESS_PREFLIGHT_TIMEOUT_MS,
@@ -1348,6 +1362,7 @@ async function cmdPing(rest, { readinessProfileName = "ping" } = {}) {
     : resolveModelCandidatesForProfile(profile, modelsConfig);
   const candidates = modelCandidates.length > 0 ? modelCandidates : [model];
   const timeoutMs = parsePositiveTimeoutMs(options["timeout-ms"], DEFAULT_KIMI_PING_TIMEOUT_MS);
+  const pingCwd = makeKimiPingCwd();
   try {
     let execution = null;
     let selectedModel = model;
@@ -1358,7 +1373,7 @@ async function cmdPing(rest, { readinessProfileName = "ping" } = {}) {
       execution = await spawnKimi(profile, {
         model: selectedModel,
         promptText: PING_PROMPT,
-        cwd: "/tmp",
+        cwd: pingCwd,
         binary: options.binary ?? process.env.KIMI_BINARY ?? "kimi",
         timeoutMs,
       });

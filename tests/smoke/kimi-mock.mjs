@@ -141,6 +141,20 @@ if (assertCwdAbs) {
   fixture.t7_cwd = process.cwd();
 }
 
+const assertCwdNot = process.env.KIMI_MOCK_ASSERT_CWD_NOT;
+if (assertCwdNot && process.cwd() === assertCwdNot) {
+  process.stderr.write(`kimi-mock: cwd must not be ${assertCwdNot}\n`);
+  process.exit(1);
+}
+if (assertCwdNot) fixture.t7_cwd = process.cwd();
+
+const assertCwdPrefix = process.env.KIMI_MOCK_ASSERT_CWD_PREFIX;
+if (assertCwdPrefix && !process.cwd().startsWith(assertCwdPrefix)) {
+  process.stderr.write(`kimi-mock: cwd ${process.cwd()} does not start with ${assertCwdPrefix}\n`);
+  process.exit(1);
+}
+if (assertCwdPrefix) fixture.t7_cwd = process.cwd();
+
 const assertFileRel = process.env.KIMI_MOCK_ASSERT_FILE;
 if (assertFileRel) {
   fixture.t7_saw_file = includeDirs.some((dir) => existsSync(resolve(dir, assertFileRel)));

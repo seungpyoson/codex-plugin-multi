@@ -238,7 +238,7 @@ test("custom-review prompt includes selected source content", () => {
   }
 });
 
-test("custom-review permission-mode ladder retries an unusable Claude slot and records attempts", () => {
+test("custom-review permission-mode ladder does not retry an unusable Claude review slot", () => {
   const cwd = mkdtempSync(path.join(tmpdir(), "claude-permission-ladder-cwd-"));
   fixtureSeedRepo(cwd, {
     fileName: "seed.txt",
@@ -268,33 +268,7 @@ if (mode === "dontAsk") {
   process.exit(0);
 }
 
-if (mode === "auto") {
-  process.stdout.write(JSON.stringify({
-    type: "result",
-    is_error: false,
-    result: [
-      "Verdict: DO NOT APPROVE",
-      "Blocking findings",
-      "- seed.txt: I inspected the selected source content and found the seeded ladder sentinel should be treated as a blocking fixture issue.",
-      "Non-blocking concerns",
-      "- None.",
-      "Test gaps",
-      "- Fixture-only review path.",
-      "Inspection status",
-      "- I inspected seed.txt from the selected custom-review scope.",
-      "Checklist:",
-      "- PASS selected file path seed.txt was named.",
-      "- PASS selected source content was inspected before verdict.",
-      "- PASS no timeout, truncation, interruption, permission block, or shallow output occurred."
-    ].join("\\n"),
-    session_id: sessionId,
-    usage: { input_tokens: 10, output_tokens: 20 },
-    permission_denials: []
-  }) + "\\n");
-  process.exit(0);
-}
-
-process.stderr.write("unexpected permission mode " + mode + "\\n");
+process.stderr.write("unexpected retry through permission mode " + mode + "\\n");
 process.exit(9);
 `);
   const { stdout, stderr, status, dataDir } = runCompanion(
@@ -311,18 +285,17 @@ process.exit(9);
     },
   );
   try {
-    assert.equal(status, 0, `exit ${status}: stderr=${stderr}; stdout=${stdout}`);
+    assert.equal(status, 2, `exit ${status}: stderr=${stderr}; stdout=${stdout}`);
     const record = JSON.parse(stdout);
-    assert.equal(record.status, "completed");
-    assert.equal(record.review_metadata.permission_mode_effective, "auto");
-    assert.deepEqual(record.review_metadata.permission_mode_attempts.map((attempt) => attempt.mode), ["dontAsk", "auto"]);
+    assert.equal(record.status, "failed");
+    assert.equal(record.error_code, "review_not_completed");
+    assert.equal(record.review_metadata.permission_mode_effective, "dontAsk");
+    assert.deepEqual(record.review_metadata.permission_mode_attempts.map((attempt) => attempt.mode), ["dontAsk"]);
     assert.equal(record.review_metadata.permission_mode_attempts[0].error_code, "review_not_completed");
     assert.equal(record.review_metadata.permission_mode_attempts[0].failed_review_slot, true);
-    assert.equal(record.review_metadata.permission_mode_attempts[1].error_code, null);
-    assert.equal(record.review_metadata.permission_mode_attempts[1].failed_review_slot, false);
     const modesSeen = readFileSync(attemptsPath, "utf8").trim().split("\n")
       .map((line) => JSON.parse(line).mode);
-    assert.deepEqual(modesSeen, ["dontAsk", "auto"]);
+    assert.deepEqual(modesSeen, ["dontAsk"]);
   } finally {
     cleanup(dataDir);
     rmSync(cwd, { recursive: true, force: true });

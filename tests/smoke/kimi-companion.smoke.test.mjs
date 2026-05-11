@@ -176,11 +176,14 @@ test("kimi mock rejects unknown CLI flags", () => {
 
 test("kimi ping reports OAuth readiness and ignored API-key diagnostics", () => {
   const cwd = mkdtempSync(path.join(tmpdir(), "kimi-ping-"));
+  const tempRoot = realpathSync(tmpdir());
   try {
     const result = runCompanion(["ping"], {
       cwd,
       env: {
         KIMI_CODE_API_KEY: "secret-test-value",
+        KIMI_MOCK_ASSERT_CWD_NOT: tempRoot,
+        KIMI_MOCK_ASSERT_CWD_PREFIX: tempRoot,
         MOONSHOT_API_KEY: "secret-test-value",
       },
     });
@@ -1439,7 +1442,8 @@ test("kimi review foreground lifecycle jsonl emits launch event before terminal 
     cwd,
     env: {
       KIMI_MOCK_ASSERT_FILE: "seed.txt",
-      KIMI_MOCK_ASSERT_CWD: realpathSync(tmpdir()),
+      KIMI_MOCK_ASSERT_CWD_NOT: realpathSync(tmpdir()),
+      KIMI_MOCK_ASSERT_CWD_PREFIX: realpathSync(tmpdir()),
     },
   });
   assert.equal(result.status, 0, result.stderr);
@@ -1566,7 +1570,8 @@ for (const mode of ["review", "adversarial-review", "custom-review"]) {
       cwd,
       env: {
         KIMI_MOCK_ASSERT_FILE: mode === "adversarial-review" ? "changed.txt" : "seed.txt",
-        KIMI_MOCK_ASSERT_CWD: realpathSync(tmpdir()),
+        KIMI_MOCK_ASSERT_CWD_NOT: realpathSync(tmpdir()),
+        KIMI_MOCK_ASSERT_CWD_PREFIX: realpathSync(tmpdir()),
       },
     });
     assert.equal(result.status, 0, result.stderr);
