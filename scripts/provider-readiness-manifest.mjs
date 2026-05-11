@@ -133,11 +133,11 @@ function errorCode(doctor, review) {
     ?? null;
 }
 
-function failureClass({ provider, doctor, review, approval, failedReviewSlot }) {
+function failureClass({ provider, doctor, review, failedReviewSlot, approvalState }) {
   const code = errorCode(doctor, review);
-  if (failedReviewSlot === true || code === "review_not_completed" || review?.error_cause === "review_quality") return "review_quality";
-  if (DIRECT_API_PROVIDERS.has(provider) && !review) return "approval_gate";
   if (code === "approval_required") return "approval_gate";
+  if (DIRECT_API_PROVIDERS.has(provider) && (!review || approvalState !== "not_sent")) return "approval_gate";
+  if (failedReviewSlot === true || code === "review_not_completed" || review?.error_cause === "review_quality") return "review_quality";
   if (code === "sandbox_blocked") return "sandbox";
   if (["not_authed", "oauth_inference_rejected", "auth_not_configured", "session_expired"].includes(code)) return "auth";
   if (["tunnel_unavailable", "grok2api_start_failed", "tunnel_error"].includes(code)) return "tunnel";
@@ -170,13 +170,14 @@ function rowFor(provider, evidenceDir) {
   const approval = readJsonIfExists(approvalPath);
   const evidence = [doctor, review, approval].filter(Boolean);
   const failedReviewSlot = valueAt(review, ["review_metadata", "audit_manifest", "review_quality", "failed_review_slot"], null);
+  const approvalState = approvalStatus(provider, approval);
   const mutations = Array.isArray(review?.mutations) ? review.mutations : null;
   return {
     provider,
     doctor_status: doctorStatus(doctor),
     review_status: reviewStatus(review),
-    approval_status: approvalStatus(provider, approval),
-    failure_class: failureClass({ provider, doctor, review, approval, failedReviewSlot }),
+    approval_status: approvalState,
+    failure_class: failureClass({ provider, doctor, review, failedReviewSlot, approvalState }),
     source_content_transmission: sourceTransmission(review, approval),
     failed_review_slot: typeof failedReviewSlot === "boolean" ? failedReviewSlot : null,
     mutation_status: mutations === null ? "not_checked" : (mutations.length === 0 ? "clean" : "dirty"),

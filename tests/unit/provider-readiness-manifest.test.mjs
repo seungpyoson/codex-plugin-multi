@@ -191,6 +191,31 @@ test("provider readiness manifest classifies direct api doctor-only evidence as 
   assert.equal(deepseek.failure_class, "approval_gate");
 });
 
+test("provider readiness manifest classifies direct api review without approval proof as approval gate", () => {
+  const fixtureRoot = mkdtempSync(path.join(tmpdir(), "provider-readiness-missing-approval-fixture-"));
+  const evidenceDir = mkdtempSync(path.join(tmpdir(), "provider-readiness-missing-approval-evidence-"));
+  mkdirSync(path.join(fixtureRoot, "fixtures"), { recursive: true });
+  fixtureSeedRepo(fixtureRoot, {
+    fileName: "fixtures/smoke.js",
+    fileContents: "export const value = 1;\n",
+  });
+
+  writeJson(path.join(evidenceDir, "deepseek-doctor.json"), { ready: true, status: "ok" });
+  writeJson(path.join(evidenceDir, "deepseek-review.json"), reviewRecord({ provider: "deepseek" }));
+
+  const stdout = execFileSync(process.execPath, [
+    MANIFEST,
+    "--fixture-root", fixtureRoot,
+    "--evidence-dir", evidenceDir,
+  ], { encoding: "utf8" });
+
+  const manifest = JSON.parse(stdout);
+  const deepseek = manifest.providers.find((row) => row.provider === "deepseek");
+  assert.equal(deepseek.approval_status, "missing");
+  assert.equal(deepseek.review_status, "completed");
+  assert.equal(deepseek.failure_class, "approval_gate");
+});
+
 test("provider readiness manifest does not resolve git through caller PATH", () => {
   const fixtureRoot = mkdtempSync(path.join(tmpdir(), "provider-readiness-safe-git-fixture-"));
   const evidenceDir = mkdtempSync(path.join(tmpdir(), "provider-readiness-safe-git-evidence-"));
