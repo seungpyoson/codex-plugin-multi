@@ -1205,6 +1205,27 @@ test("review audit manifest fails completed slots that are shallow despite succe
   assert.equal(manifest.review_quality.failed_review_slot, true);
 });
 
+test("review audit manifest does not treat non-committal status or summary labels as verdicts", () => {
+  const body = Array(10).fill(
+    "I inspected the selected file and considered correctness, security, regressions, and missing tests, "
+      + "but this output deliberately remains non-committal and never says approve, reject, request changes, or final verdict.",
+  ).join("\n");
+
+  for (const label of ["Status: Pending", "Summary: Inconclusive"]) {
+    const manifest = buildReviewAuditManifest({
+      prompt: "rendered prompt",
+      sourceFiles: [{ path: "sample.js", text: "export const value = 1;\n" }],
+      result: `${label}\n${body}`,
+      status: "completed",
+      errorCode: null,
+    });
+
+    assert.equal(manifest.review_quality.has_verdict, false, label);
+    assert.deepEqual(manifest.review_quality.semantic_failure_reasons, ["missing_verdict"], label);
+    assert.equal(manifest.review_quality.failed_review_slot, true, label);
+  }
+});
+
 for (const [name, file] of REVIEW_PROMPT_MODULES) {
   test(`scope resolution reason falls back to scope name without explicit paths (${name})`, async () => {
     const {

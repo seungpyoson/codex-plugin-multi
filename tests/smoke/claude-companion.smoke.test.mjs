@@ -3123,6 +3123,81 @@ process.exit(1);
   }
 });
 
+test("run: auto auth re-preflights API-key fallback before review launch", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "claude-run-auto-api-fallback-preflight-cwd-"));
+  fixtureSeedRepo(cwd, {
+    fileName: "seed.txt",
+    fileContents: "CLAUDE_AUTO_FALLBACK_SOURCE_SENTINEL\n",
+  });
+  const tmp = mkdtempSync(path.join(tmpdir(), "claude-run-auto-api-fallback-preflight-bin-"));
+  const leakMarker = path.join(tmp, "source-leaked");
+  const binary = writeExecutable(tmp, "claude-auto-api-fallback-preflight", `#!/usr/bin/env node
+import { writeFileSync } from "node:fs";
+
+const argv = process.argv.slice(2);
+if (argv.join(" ") === "auth status --json") {
+  process.stdout.write(JSON.stringify({
+    loggedIn: true,
+    authMethod: "claude.ai",
+    apiProvider: "firstParty",
+    subscriptionType: "max"
+  }) + "\\n");
+  process.exit(0);
+}
+
+const prompt = argv[argv.indexOf("-p") + 1] ?? "";
+if (process.env.ANTHROPIC_API_KEY !== "secret-test-value") {
+  process.stdout.write(JSON.stringify({
+    type: "result",
+    is_error: true,
+    api_error_status: 401,
+    result: "Failed to authenticate. API Error: 401 Invalid authentication credentials",
+    session_id: "33333333-3333-4333-8333-333333333333",
+    usage: { input_tokens: 0, output_tokens: 0 }
+  }) + "\\n");
+  process.exit(1);
+}
+
+if (prompt.includes("reply with exactly: pong")) {
+  process.stderr.write("API key revoked: not authenticated\\n");
+  process.exit(1);
+}
+
+if (prompt.includes("CLAUDE_AUTO_FALLBACK_SOURCE_SENTINEL")) {
+  writeFileSync(${JSON.stringify(leakMarker)}, "leaked");
+}
+process.stdout.write(JSON.stringify({
+  type: "result",
+  is_error: false,
+  result: "Verdict: APPROVE\\nBlocking findings\\n- None.\\nNon-blocking concerns\\n- None.\\nInspection status\\n- I inspected seed.txt.",
+  session_id: "33333333-3333-4333-8333-333333333333",
+  usage: { input_tokens: 1, output_tokens: 1 }
+}) + "\\n");
+process.exit(0);
+`);
+  const { stdout, status, dataDir } = runCompanion(
+    ["run", "--mode=custom-review", "--foreground", "--lifecycle-events", "jsonl",
+     "--auth-mode", "auto", "--binary", binary, "--model", "claude-haiku-4-5-20251001",
+     "--cwd", cwd, "--scope-paths", "seed.txt", "--", "review selected source"],
+    { cwd, env: { ANTHROPIC_API_KEY: "secret-test-value", CLAUDE_API_KEY: "" } },
+  );
+  try {
+    assert.equal(status, 2);
+    const lines = stdout.trim().split("\n").map((line) => JSON.parse(line));
+    assert.equal(lines.length, 1, "fallback preflight failure must not emit external_review_launched");
+    const [record] = lines;
+    assert.equal(record.status, "failed");
+    assert.equal(record.error_code, "not_authed");
+    assert.equal(record.external_review.source_content_transmission, "not_sent");
+    assert.equal(existsSync(leakMarker), false, "selected source reached fallback review spawn");
+    assert.doesNotMatch(stdout, /secret-test-value/);
+  } finally {
+    cleanup(dataDir);
+    rmSync(cwd, { recursive: true, force: true });
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
 test("ping: not_authed reports ignored parent API-key auth without exposing values", () => {
   const tmp = mkdtempSync(path.join(tmpdir(), "claude-ping-api-key-auth-"));
   const binary = writeExecutable(tmp, "claude-api-key-auth-error", `#!/usr/bin/env node

@@ -186,6 +186,23 @@ if (mode === "unreachable") {
   process.on("SIGTERM", () => process.exit(0));
   setInterval(() => {}, 1000);
   setTimeout(() => process.exit(0), 30000);
+} else if (mode === "late-reachable-ignore-sigterm") {
+  process.on("SIGTERM", () => {});
+  const port = Number(process.argv[process.argv.indexOf("--port") + 1]);
+  const host = process.argv[process.argv.indexOf("--host") + 1] || "127.0.0.1";
+  setTimeout(() => {
+    const server = http.createServer(async (req, res) => {
+      res.setHeader("content-type", "application/json");
+      if (req.url === "/v1/models") {
+        res.end(JSON.stringify({ data: [{ id: "grok-4.20-fast" }] }));
+        return;
+      }
+      res.writeHead(404);
+      res.end(JSON.stringify({ error: { message: "not found" } }));
+    });
+    server.listen(port, host);
+  }, 350);
+  setTimeout(() => process.exit(0), 30000);
 } else {
   const port = Number(process.argv[process.argv.indexOf("--port") + 1]);
   const host = process.argv[process.argv.indexOf("--host") + 1] || "127.0.0.1";
@@ -405,6 +422,44 @@ test("doctor terminates auto-started grok2api when it stays unreachable", async 
   } finally {
     if (parsed?.tunnel_start?.pid) {
       try { process.kill(parsed.tunnel_start.pid, "SIGTERM"); } catch { /* already exited */ }
+    }
+    rmTree(home);
+    rmTree(binDir);
+  }
+});
+
+test("doctor force kills auto-started grok2api when SIGTERM leaves it reachable", async () => {
+  const port = await unusedLoopbackPort();
+  const home = makeFakeGrok2ApiHome();
+  const binDir = makeFakeUvBin({ mode: "late-reachable-ignore-sigterm" });
+  let parsed = null;
+  try {
+    const result = await runAsync(["doctor"], {
+      env: {
+        GROK_WEB_BASE_URL: `http://127.0.0.1:${port}/v1`,
+        GROK2API_HOME: home,
+        GROK2API_UV_BINARY: path.join(binDir, "uv"),
+        GROK_WEB_DOCTOR_TIMEOUT_MS: "100",
+        GROK_WEB_CHAT_DOCTOR_TIMEOUT_MS: "100",
+        GROK_WEB_TUNNEL_START_TIMEOUT_MS: "100",
+        GROK_WEB_TUNNEL_CLEANUP_TIMEOUT_MS: "700",
+      },
+    });
+    parsed = parseStdout(result);
+
+    assert.equal(result.status, 0);
+    assert.equal(parsed.ready, false);
+    assert.equal(parsed.tunnel_start.status, "started_unreachable");
+    assert.equal(parsed.tunnel_start.cleanup?.signal, "SIGTERM");
+    assert.equal(parsed.tunnel_start.cleanup?.force_signal, "SIGKILL");
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    await assert.rejects(
+      fetch(`http://127.0.0.1:${port}/v1/models`, { signal: AbortSignal.timeout(200) }),
+    );
+  } finally {
+    if (parsed?.tunnel_start?.pid) {
+      try { process.kill(-parsed.tunnel_start.pid, "SIGKILL"); } catch { /* already exited */ }
+      try { process.kill(parsed.tunnel_start.pid, "SIGKILL"); } catch { /* already exited */ }
     }
     rmTree(home);
     rmTree(binDir);

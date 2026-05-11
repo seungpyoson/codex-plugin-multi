@@ -668,13 +668,15 @@ async function executeRun(invocation, prompt, { foreground, lifecycleEvents = nu
 
   exitIfCancelledBeforeSpawn(invocation, executionScope, mutationContext, { foreground, lifecycleEvents });
 
-  const preflightExecution = await geminiReadinessPreflight(invocation, profile, authSelection);
+  let preflightExecution = await geminiReadinessPreflight(invocation, profile, authSelection);
   if (preflightExecution) {
     const fallbackSelection = autoApiKeyFallbackSelectionForGeminiFailure(authSelection, preflightExecution);
     if (fallbackSelection) {
       authSelection = fallbackSelection;
       invocation = invocationWithAuthSelection(invocation, authSelection);
-    } else {
+      preflightExecution = await geminiReadinessPreflight(invocation, profile, authSelection);
+    }
+    if (preflightExecution) {
       preflightExecution.reviewAuditManifest = reviewAuditManifest(invocation, prompt, executionScope.containment.path, preflightExecution);
       const errorRecord = buildJobRecord(invocation, {
         exitCode: preflightExecution.exitCode,

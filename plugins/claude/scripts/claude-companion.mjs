@@ -814,16 +814,18 @@ async function executeRun(invocation, prompt, { foreground, lifecycleEvents = nu
   );
   const resumeId = latestResumeId(invocation);
 
-  const oauthPreflightExecution = await claudeOAuthInferencePreflight(invocation, authSelection);
-  if (oauthPreflightExecution) {
-    const fallbackSelection = autoApiKeyFallbackSelectionForClaudeFailure(authSelection, oauthPreflightExecution);
+  let preflightExecution = await claudeOAuthInferencePreflight(invocation, authSelection);
+  if (preflightExecution) {
+    const fallbackSelection = autoApiKeyFallbackSelectionForClaudeFailure(authSelection, preflightExecution);
     if (fallbackSelection) {
       authSelection = fallbackSelection;
       invocation = invocationWithAuthSelection(invocation, authSelection);
-    } else {
+      preflightExecution = await claudeOAuthInferencePreflight(invocation, authSelection, { allowApiKey: true });
+    }
+    if (preflightExecution) {
       const finalRecord = buildClaudeFinalRecord(
         invocation,
-        oauthPreflightExecution,
+        preflightExecution,
         null,
         mutationContext.mutations,
         prompt,
@@ -831,8 +833,8 @@ async function executeRun(invocation, prompt, { foreground, lifecycleEvents = nu
         runtimeDiagnostics,
       );
       const { metaError, stateError } = commitJobRecord(workspaceRoot, jobId, finalRecord);
-      writeExecutionSidecars(workspaceRoot, jobId, oauthPreflightExecution);
-      exitIfFinalizationFailed(invocation, oauthPreflightExecution, finalRecord, mutationContext, executionScope, { metaError, stateError });
+      writeExecutionSidecars(workspaceRoot, jobId, preflightExecution);
+      exitIfFinalizationFailed(invocation, preflightExecution, finalRecord, mutationContext, executionScope, { metaError, stateError });
       cleanupExecutionResources(executionScope, mutationContext);
       if (foreground) printLifecycleJson(finalRecord, lifecycleEvents);
       process.exit(2);
@@ -1067,10 +1069,15 @@ async function spawnClaudeOrExit(invocation, profile, prompt, executionScope, mu
   }
 }
 
-async function claudeOAuthInferencePreflight(invocation, authSelection) {
-  if (authSelection.selected_auth_path !== "subscription_oauth") return null;
-  const oauthStatus = safeClaudeOAuthStatus(invocation.binary, authSelection, invocation.cwd);
-  if (oauthStatus?.available === true && oauthStatus.logged_in === false) {
+async function claudeOAuthInferencePreflight(invocation, authSelection, { allowApiKey = false } = {}) {
+  if (
+    authSelection.selected_auth_path !== "subscription_oauth" &&
+    (!allowApiKey || authSelection.selected_auth_path !== "api_key_env")
+  ) return null;
+  const oauthStatus = authSelection.selected_auth_path === "subscription_oauth"
+    ? safeClaudeOAuthStatus(invocation.binary, authSelection, invocation.cwd)
+    : null;
+  if (authSelection.selected_auth_path === "subscription_oauth" && oauthStatus?.available === true && oauthStatus.logged_in === false) {
     return {
       preflight: true,
       exitCode: null,

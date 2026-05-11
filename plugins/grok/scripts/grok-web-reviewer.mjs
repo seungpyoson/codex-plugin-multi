@@ -26,6 +26,7 @@ const DEFAULT_TIMEOUT_MS = 900000;
 const DEFAULT_DOCTOR_TIMEOUT_MS = 2000;
 const DEFAULT_CHAT_DOCTOR_TIMEOUT_MS = 10000;
 const DEFAULT_TUNNEL_START_TIMEOUT_MS = 8000;
+const DEFAULT_TUNNEL_CLEANUP_TIMEOUT_MS = 2000;
 const DEFAULT_GROK2API_REPO_URL = "https://github.com/chenyme/grok2api.git";
 const TUNNEL_START_POLL_MS = 250;
 const GROK2API_UV_BINARY_ENV = "GROK2API_UV_BINARY";
@@ -172,6 +173,7 @@ function config(env = process.env) {
   const doctorTimeoutMs = parsePositiveIntegerEnv(env, "GROK_WEB_DOCTOR_TIMEOUT_MS", DEFAULT_DOCTOR_TIMEOUT_MS);
   const chatDoctorTimeoutMs = parsePositiveIntegerEnv(env, "GROK_WEB_CHAT_DOCTOR_TIMEOUT_MS", DEFAULT_CHAT_DOCTOR_TIMEOUT_MS);
   const tunnelStartTimeoutMs = parsePositiveIntegerEnv(env, "GROK_WEB_TUNNEL_START_TIMEOUT_MS", DEFAULT_TUNNEL_START_TIMEOUT_MS);
+  const tunnelCleanupTimeoutMs = parsePositiveIntegerEnv(env, "GROK_WEB_TUNNEL_CLEANUP_TIMEOUT_MS", DEFAULT_TUNNEL_CLEANUP_TIMEOUT_MS);
   const maxPromptChars = parsePositiveIntegerEnv(env, "GROK_WEB_MAX_PROMPT_CHARS", DEFAULT_MAX_PROMPT_CHARS, "character count");
   return {
     provider: "grok-web",
@@ -183,6 +185,7 @@ function config(env = process.env) {
     doctor_timeout_ms: doctorTimeoutMs,
     chat_doctor_timeout_ms: chatDoctorTimeoutMs,
     tunnel_start_timeout_ms: tunnelStartTimeoutMs,
+    tunnel_cleanup_timeout_ms: tunnelCleanupTimeoutMs,
     max_prompt_chars: maxPromptChars,
     credential_ref: env.GROK_WEB_TUNNEL_API_KEY ? "GROK_WEB_TUNNEL_API_KEY" : null,
     credential_value: env.GROK_WEB_TUNNEL_API_KEY || null,
@@ -202,6 +205,7 @@ function fallbackConfig(env = process.env) {
     doctor_timeout_ms: DEFAULT_DOCTOR_TIMEOUT_MS,
     chat_doctor_timeout_ms: DEFAULT_CHAT_DOCTOR_TIMEOUT_MS,
     tunnel_start_timeout_ms: DEFAULT_TUNNEL_START_TIMEOUT_MS,
+    tunnel_cleanup_timeout_ms: DEFAULT_TUNNEL_CLEANUP_TIMEOUT_MS,
     max_prompt_chars: DEFAULT_MAX_PROMPT_CHARS,
     credential_ref: env.GROK_WEB_TUNNEL_API_KEY ? "GROK_WEB_TUNNEL_API_KEY" : null,
     credential_value: env.GROK_WEB_TUNNEL_API_KEY || null,
@@ -1509,7 +1513,7 @@ async function maybeStartGrokTunnel(cfg, env = process.env) {
       ...(bootstrap ? { bootstrap } : {}),
     };
   }
-  const cleanup = terminateStartedGrokTunnel(child);
+  const cleanup = await terminateStartedGrokTunnel(child, cfg, env);
   return {
     status: "started_unreachable",
     attempted: true,
@@ -1527,11 +1531,10 @@ async function maybeStartGrokTunnel(cfg, env = process.env) {
   };
 }
 
-function terminateStartedGrokTunnel(child) {
+function signalStartedGrokTunnel(child, signal) {
   if (!child?.pid) {
-    return { attempted: false, signal: null, target: null, error: null };
+    return { attempted: false, signal, target: null, error: null };
   }
-  const signal = "SIGTERM";
   const target = process.platform === "win32" ? "process" : "process_group";
   try {
     if (process.platform === "win32") {
@@ -1548,6 +1551,48 @@ function terminateStartedGrokTunnel(child) {
       error: error?.message ?? String(error),
     };
   }
+}
+
+async function waitForGrokTunnelUnavailable(cfg, env, deadlineMs) {
+  const started = Date.now();
+  let probe = null;
+  do {
+    probe = await probeGrokTunnel(cfg, env);
+    if (!probe.reachable) {
+      return {
+        unreachable: true,
+        elapsed_ms: Date.now() - started,
+        probe,
+      };
+    }
+    await new Promise((resolveDelay) => setTimeout(resolveDelay, TUNNEL_START_POLL_MS));
+  } while (Date.now() - started < deadlineMs);
+  return {
+    unreachable: false,
+    elapsed_ms: Date.now() - started,
+    probe,
+  };
+}
+
+async function terminateStartedGrokTunnel(child, cfg, env = process.env) {
+  const cleanup = signalStartedGrokTunnel(child, "SIGTERM");
+  if (!cleanup.attempted || cleanup.error) return cleanup;
+
+  const afterSignal = await waitForGrokTunnel(cfg, env, cfg.tunnel_cleanup_timeout_ms);
+  cleanup.reachable_after_signal = afterSignal.reachable === true;
+  cleanup.verify_elapsed_ms = afterSignal.elapsed_ms;
+  if (afterSignal.reachable !== true) return cleanup;
+
+  const force = signalStartedGrokTunnel(child, "SIGKILL");
+  cleanup.force_signal = force.signal;
+  cleanup.force_target = force.target;
+  cleanup.force_error = force.error;
+  if (force.error) return cleanup;
+
+  const afterForce = await waitForGrokTunnelUnavailable(cfg, env, cfg.tunnel_cleanup_timeout_ms);
+  cleanup.unreachable_after_force = afterForce.unreachable === true;
+  cleanup.force_verify_elapsed_ms = afterForce.elapsed_ms;
+  return cleanup;
 }
 
 async function ensureGrokTunnelReachable(cfg, env = process.env, initialProbe = null) {
@@ -2349,6 +2394,7 @@ async function doctorFields(env = process.env) {
     doctor_timeout_ms: cfg.doctor_timeout_ms,
     chat_doctor_timeout_ms: cfg.chat_doctor_timeout_ms,
     tunnel_start_timeout_ms: cfg.tunnel_start_timeout_ms,
+    tunnel_cleanup_timeout_ms: cfg.tunnel_cleanup_timeout_ms,
     tunnel_start: tunnelStart,
     session_diagnostics: sessionDiagnostics,
     cost_quota_readiness: costQuotaReadiness,

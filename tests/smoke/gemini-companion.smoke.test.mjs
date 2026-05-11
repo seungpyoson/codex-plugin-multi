@@ -2196,6 +2196,64 @@ process.exit(1);
   }
 });
 
+test("gemini run auto auth re-preflights API-key fallback before review launch", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "gemini-run-auto-api-fallback-preflight-cwd-"));
+  fixtureSeedRepo(cwd, {
+    fileName: "seed.txt",
+    fileContents: "GEMINI_AUTO_FALLBACK_SOURCE_SENTINEL\n",
+  });
+  const binDir = mkdtempSync(path.join(tmpdir(), "gemini-run-auto-api-fallback-preflight-bin-"));
+  const leakMarker = path.join(binDir, "source-leaked");
+  const binary = path.join(binDir, "gemini-auto-api-fallback-preflight");
+  writeFileSync(binary, `#!/usr/bin/env node
+import { writeFileSync } from "node:fs";
+
+let prompt = "";
+process.stdin.setEncoding("utf8");
+process.stdin.on("data", (chunk) => { prompt += chunk; });
+process.stdin.on("end", () => {
+  if (process.env.GEMINI_API_KEY !== "secret-test-value") {
+    process.stderr.write("OAuth2 not authenticated\\n");
+    process.exit(1);
+  }
+  if (prompt.includes("reply with exactly: pong")) {
+    process.stderr.write("API key revoked: not authenticated\\n");
+    process.exit(1);
+  }
+  if (prompt.includes("GEMINI_AUTO_FALLBACK_SOURCE_SENTINEL")) {
+    writeFileSync(${JSON.stringify(leakMarker)}, "leaked");
+  }
+  process.stdout.write(JSON.stringify({
+    session_id: "${GEMINI_SESSION_ID}",
+    response: "Verdict: APPROVE\\nBlocking findings\\n- None.\\nNon-blocking concerns\\n- None.\\nInspection status\\n- I inspected seed.txt."
+  }) + "\\n");
+  process.exit(0);
+});
+`, "utf8");
+  chmodSync(binary, 0o755);
+  const { stdout, status, dataDir } = runCompanion(
+    ["run", "--mode=custom-review", "--foreground", "--lifecycle-events", "jsonl",
+     "--auth-mode", "auto", "--binary", binary, "--model", "gemini-3-flash-preview",
+     "--cwd", cwd, "--scope-paths", "seed.txt", "--", "review selected source"],
+    { cwd, env: { GEMINI_API_KEY: "secret-test-value", GOOGLE_API_KEY: "" } },
+  );
+  try {
+    assert.equal(status, 2);
+    const lines = stdout.trim().split("\n").map((line) => JSON.parse(line));
+    assert.equal(lines.length, 1, "fallback preflight failure must not emit external_review_launched");
+    const [record] = lines;
+    assert.equal(record.status, "failed");
+    assert.equal(record.error_code, "not_authed");
+    assert.equal(record.external_review.source_content_transmission, "not_sent");
+    assert.equal(existsSync(leakMarker), false, "selected source reached fallback review spawn");
+    assert.doesNotMatch(stdout, /secret-test-value/);
+  } finally {
+    rmTree(dataDir);
+    rmTree(cwd);
+    rmTree(binDir);
+  }
+});
+
 test("gemini ping not_found includes readiness guidance", () => {
   const cwd = mkdtempSync(path.join(tmpdir(), "gemini-ping-missing-cwd-"));
   const missingBinary = path.join(tmpdir(), "missing-gemini-ping-binary");
