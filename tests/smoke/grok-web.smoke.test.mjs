@@ -415,6 +415,7 @@ test("doctor terminates auto-started grok2api when it stays unreachable", async 
         GROK_WEB_DOCTOR_TIMEOUT_MS: "100",
         GROK_WEB_CHAT_DOCTOR_TIMEOUT_MS: "100",
         GROK_WEB_TUNNEL_START_TIMEOUT_MS: "500",
+        GROK_WEB_TUNNEL_CLEANUP_TIMEOUT_MS: "3000",
       },
     });
     parsed = parseStdout(result);
@@ -426,6 +427,12 @@ test("doctor terminates auto-started grok2api when it stays unreachable", async 
     assert.equal(parsed.tunnel_start.cleanup?.attempted, true);
     assert.equal(parsed.tunnel_start.cleanup?.signal, "SIGTERM");
     assert.equal(parsed.tunnel_start.cleanup?.error, null);
+    assert.equal(parsed.tunnel_start.cleanup?.reachable_after_signal, false);
+    assert.equal(parsed.tunnel_start.cleanup?.exited_after_signal, true);
+    assert.ok(
+      parsed.tunnel_start.cleanup?.verify_elapsed_ms < 1000,
+      `SIGTERM cleanup should stop polling soon after the tunnel is unreachable, got ${parsed.tunnel_start.cleanup?.verify_elapsed_ms}ms`,
+    );
   } finally {
     if (parsed?.tunnel_start?.pid) {
       try { process.kill(parsed.tunnel_start.pid, "SIGTERM"); } catch { /* already exited */ }
@@ -458,6 +465,8 @@ test("doctor force kills auto-started grok2api when SIGTERM leaves it reachable"
     assert.equal(parsed.ready, false);
     assert.equal(parsed.tunnel_start.status, "started_unreachable");
     assert.equal(parsed.tunnel_start.cleanup?.signal, "SIGTERM");
+    assert.equal(parsed.tunnel_start.cleanup?.reachable_after_signal, true);
+    assert.equal(parsed.tunnel_start.cleanup?.exited_after_signal, false);
     assert.equal(parsed.tunnel_start.cleanup?.force_signal, "SIGKILL");
     await new Promise((resolve) => setTimeout(resolve, 500));
     await assert.rejects(

@@ -1593,14 +1593,58 @@ async function waitForGrokTunnelUnavailable(cfg, env, deadlineMs) {
   };
 }
 
+function startedGrokTunnelExited(child) {
+  return Boolean(child) && (child.exitCode !== null || child.signalCode !== null);
+}
+
+async function waitForStartedGrokTunnelAfterSignal(child, cfg, env, deadlineMs) {
+  const started = Date.now();
+  let probe = null;
+  do {
+    if (startedGrokTunnelExited(child)) {
+      return {
+        exited: true,
+        reachable: false,
+        elapsed_ms: Date.now() - started,
+        probe,
+      };
+    }
+    probe = await probeGrokTunnel(cfg, env);
+    if (probe.reachable) {
+      return {
+        exited: startedGrokTunnelExited(child),
+        reachable: true,
+        elapsed_ms: Date.now() - started,
+        probe,
+      };
+    }
+    if (startedGrokTunnelExited(child)) {
+      return {
+        exited: true,
+        reachable: false,
+        elapsed_ms: Date.now() - started,
+        probe,
+      };
+    }
+    await new Promise((resolveDelay) => setTimeout(resolveDelay, TUNNEL_START_POLL_MS));
+  } while (Date.now() - started < deadlineMs);
+  return {
+    exited: startedGrokTunnelExited(child),
+    reachable: probe?.reachable === true,
+    elapsed_ms: Date.now() - started,
+    probe,
+  };
+}
+
 async function terminateStartedGrokTunnel(child, cfg, env = process.env) {
   const cleanup = signalStartedGrokTunnel(child, "SIGTERM");
   if (!cleanup.attempted || cleanup.error) return cleanup;
 
-  const afterSignal = await waitForGrokTunnel(cfg, env, cfg.tunnel_cleanup_timeout_ms);
+  const afterSignal = await waitForStartedGrokTunnelAfterSignal(child, cfg, env, cfg.tunnel_cleanup_timeout_ms);
   cleanup.reachable_after_signal = afterSignal.reachable === true;
+  cleanup.exited_after_signal = afterSignal.exited === true;
   cleanup.verify_elapsed_ms = afterSignal.elapsed_ms;
-  if (afterSignal.reachable !== true) return cleanup;
+  if (afterSignal.exited && !afterSignal.reachable) return cleanup;
 
   const force = signalStartedGrokTunnel(child, "SIGKILL");
   cleanup.force_signal = force.signal;
