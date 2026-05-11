@@ -41,7 +41,8 @@ lets Claude Code delegate to Codex.
   auto-started tunnels are left running for reuse; failed starts are cleaned up
   with SIGTERM/verify/SIGKILL diagnostics. Set
   `GROK2API_HOME` or `GROK2API_BOOTSTRAP_DIR` only when you want a specific
-  checkout or runtime directory. Set
+  checkout or runtime directory. Set `UV_CACHE_DIR` only when you want `uv` to
+  use a caller-managed cache instead of the plugin's sandbox-writable default. Set
   `GROK_WEB_TUNNEL_API_KEY` only if your local tunnel requires a bearer value.
 - `DEEPSEEK_API_KEY` if you enable the DeepSeek direct API reviewer.
 - `ZAI_API_KEY` if you enable the GLM direct API reviewer. `ZAI_GLM_API_KEY`

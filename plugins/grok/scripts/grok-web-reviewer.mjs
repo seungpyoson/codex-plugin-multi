@@ -293,6 +293,10 @@ function defaultGrok2ApiBootstrapDir(env = process.env) {
   return resolve(env.GROK2API_BOOTSTRAP_DIR || join(tmpdir(), "codex-plugin-multi", "runtime", "grok2api"));
 }
 
+function defaultGrok2ApiUvCacheDir() {
+  return resolve(join(tmpdir(), "codex-plugin-multi", "runtime", "uv-cache"));
+}
+
 async function isDirectory(pathValue) {
   try {
     return (await stat(pathValue)).isDirectory();
@@ -511,6 +515,7 @@ function uvExecutionEnv(env = process.env) {
   return {
     ...env,
     PATH: GROK2API_FIXED_EXEC_PATH,
+    UV_CACHE_DIR: env.UV_CACHE_DIR || defaultGrok2ApiUvCacheDir(),
   };
 }
 

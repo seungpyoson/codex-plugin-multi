@@ -173,13 +173,22 @@ function makeFakeGrok2ApiHome() {
 
 function makeFakeUvBin(options = {}) {
   const mode = options.mode ?? "reachable";
+  const envCapturePath = options.envCapturePath ?? null;
   const binDir = mkdtempSync(path.join(tmpdir(), "fake-uv-bin-"));
   const uvPath = path.join(binDir, "uv");
   writeFileSync(uvPath, `#!${process.execPath}
 const http = require("node:http");
+const fs = require("node:fs");
 if (process.argv.includes("--version")) {
   console.log("uv 0.0.0-fake");
   process.exit(0);
+}
+const envCapturePath = ${JSON.stringify(envCapturePath)};
+if (envCapturePath) {
+  fs.writeFileSync(envCapturePath, JSON.stringify({
+    UV_CACHE_DIR: Object.prototype.hasOwnProperty.call(process.env, "UV_CACHE_DIR") ? process.env.UV_CACHE_DIR : null,
+    PATH: process.env.PATH || null,
+  }));
 }
 const mode = ${JSON.stringify(mode)};
 if (mode === "unreachable") {
@@ -359,6 +368,78 @@ test("doctor reports subscription-backed local tunnel mode and checks chat readi
     assert.doesNotMatch(result.stdout, /secret-cookie-like-token/);
     assert.doesNotMatch(result.stdout, /api\.x\.ai/i);
   });
+});
+
+test("doctor auto-start gives uv a sandbox-writable default cache dir", async () => {
+  const port = await unusedLoopbackPort();
+  const home = makeFakeGrok2ApiHome();
+  const capturePath = path.join(mkdtempSync(path.join(tmpdir(), "fake-uv-env-")), "env.json");
+  const binDir = makeFakeUvBin({ envCapturePath: capturePath });
+  let parsed = null;
+  try {
+    const result = await runAsync(["doctor"], {
+      env: {
+        GROK_WEB_BASE_URL: `http://127.0.0.1:${port}/v1`,
+        GROK2API_HOME: home,
+        GROK2API_UV_BINARY: path.join(binDir, "uv"),
+        UV_CACHE_DIR: undefined,
+        GROK_WEB_DOCTOR_TIMEOUT_MS: "500",
+        GROK_WEB_CHAT_DOCTOR_TIMEOUT_MS: "1000",
+        GROK_WEB_TUNNEL_START_TIMEOUT_MS: "5000",
+      },
+    });
+    parsed = parseStdout(result);
+    const captured = JSON.parse(readFileSync(capturePath, "utf8"));
+
+    assert.equal(result.status, 0);
+    assert.equal(parsed.tunnel_start.status, "started");
+    assert.equal(
+      captured.UV_CACHE_DIR,
+      path.join(tmpdir(), "codex-plugin-multi", "runtime", "uv-cache"),
+    );
+  } finally {
+    if (parsed?.tunnel_start?.pid) {
+      try { process.kill(parsed.tunnel_start.pid, "SIGTERM"); } catch { /* already exited */ }
+    }
+    rmTree(home);
+    rmTree(binDir);
+    rmTree(path.dirname(capturePath));
+  }
+});
+
+test("doctor auto-start preserves an explicit UV_CACHE_DIR", async () => {
+  const port = await unusedLoopbackPort();
+  const home = makeFakeGrok2ApiHome();
+  const capturePath = path.join(mkdtempSync(path.join(tmpdir(), "fake-uv-env-")), "env.json");
+  const explicitUvCache = path.join(tmpdir(), "caller-uv-cache");
+  const binDir = makeFakeUvBin({ envCapturePath: capturePath });
+  let parsed = null;
+  try {
+    const result = await runAsync(["doctor"], {
+      env: {
+        GROK_WEB_BASE_URL: `http://127.0.0.1:${port}/v1`,
+        GROK2API_HOME: home,
+        GROK2API_UV_BINARY: path.join(binDir, "uv"),
+        UV_CACHE_DIR: explicitUvCache,
+        GROK_WEB_DOCTOR_TIMEOUT_MS: "500",
+        GROK_WEB_CHAT_DOCTOR_TIMEOUT_MS: "1000",
+        GROK_WEB_TUNNEL_START_TIMEOUT_MS: "5000",
+      },
+    });
+    parsed = parseStdout(result);
+    const captured = JSON.parse(readFileSync(capturePath, "utf8"));
+
+    assert.equal(result.status, 0);
+    assert.equal(parsed.tunnel_start.status, "started");
+    assert.equal(captured.UV_CACHE_DIR, explicitUvCache);
+  } finally {
+    if (parsed?.tunnel_start?.pid) {
+      try { process.kill(parsed.tunnel_start.pid, "SIGTERM"); } catch { /* already exited */ }
+    }
+    rmTree(home);
+    rmTree(binDir);
+    rmTree(path.dirname(capturePath));
+  }
 });
 
 test("doctor auto-starts a local grok2api checkout without Docker", async () => {
