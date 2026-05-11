@@ -103,6 +103,7 @@ function profileReport(name, home, plugins, sourceRoot, repoPlugins) {
     const expected = listSkills(sourceRoot, plugin);
     const sourcePluginRoot = join(sourceRoot, plugin);
     const repoPluginRoot = join(repoPlugins, plugin);
+    const repoPluginPresent = existsSync(repoPluginRoot);
     const cacheRoot = join(home, "plugins", "cache", MARKETPLACE, plugin, "0.1.0");
     const cached = listSkills(cacheRoot, ".");
     const missing = expected.filter((skill) => !cached.includes(skill));
@@ -118,13 +119,14 @@ function profileReport(name, home, plugins, sourceRoot, repoPlugins) {
       && repoFileComparison.changed_files.length === 0
       && repoFileComparison.expected_files.length > 0;
     const inSync = missing.length === 0 && extra.length === 0 && expected.length > 0 && filesInSync;
-    const repoInSync = repoFilesInSync;
+    const repoInSync = repoPluginPresent ? repoFilesInSync : null;
     const enabled = enabledInConfig(home, plugin);
-    if (!inSync || !repoInSync || !enabled) ok = false;
+    if (!inSync || repoInSync === false || !enabled) ok = false;
     pluginReports[plugin] = {
       enabled,
       cache_path: cacheRoot,
       cache_in_sync: inSync,
+      repo_present: repoPluginPresent,
       repo_cache_in_sync: repoInSync,
       expected_skills: expected,
       cached_skills: cached,
@@ -142,6 +144,7 @@ function profileReport(name, home, plugins, sourceRoot, repoPlugins) {
     home,
     enabled: plugins.length === 1 ? pluginReports[plugins[0]].enabled : undefined,
     cache_in_sync: plugins.length === 1 ? pluginReports[plugins[0]].cache_in_sync : undefined,
+    repo_present: plugins.length === 1 ? pluginReports[plugins[0]].repo_present : undefined,
     repo_cache_in_sync: plugins.length === 1 ? pluginReports[plugins[0]].repo_cache_in_sync : undefined,
     missing_skills: plugins.length === 1 ? pluginReports[plugins[0]].missing_skills : undefined,
     missing_files: plugins.length === 1 ? pluginReports[plugins[0]].missing_files : undefined,

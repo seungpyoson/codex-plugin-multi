@@ -8,13 +8,13 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { decodeCookiePlaintext } from "../../plugins/grok/scripts/grok-sync-browser-session.mjs";
+import { decodeCookiePlaintext, selectCookie } from "../../plugins/grok/scripts/grok-sync-browser-session.mjs";
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const SYNC = path.join(REPO_ROOT, "plugins/grok/scripts/grok-sync-browser-session.mjs");
 const VALID_SESSION_TOKEN = "eyJhbGciOiJub25lIn0.eyJzdWIiOiJ0ZXN0In0.signature";
 
-test("decodeCookiePlaintext strips Chromium host digest prefix before JWT validation", () => {
+test("decodeCookiePlaintext strips Chromium host digest prefix before UTF-8 fallback", () => {
   const hostKey = ".grok.com";
   const plaintext = Buffer.concat([
     createHash("sha256").update(hostKey).digest(),
@@ -22,6 +22,22 @@ test("decodeCookiePlaintext strips Chromium host digest prefix before JWT valida
   ]);
 
   assert.equal(decodeCookiePlaintext(plaintext, hostKey), VALID_SESSION_TOKEN);
+  assert.equal(
+    decodeCookiePlaintext(plaintext),
+    plaintext.toString("utf8"),
+  );
+});
+
+test("selectCookie preserves sso-rw priority before JWT preference across names", () => {
+  const selected = selectCookie([
+    { name: "sso-rw", value: "decrypted-control-looking-cookie-value" },
+    { name: "sso", value: VALID_SESSION_TOKEN },
+  ]);
+
+  assert.deepEqual(selected, {
+    name: "sso-rw",
+    value: "decrypted-control-looking-cookie-value",
+  });
 });
 
 function runAsync(args, options = {}) {
@@ -165,7 +181,7 @@ test("sync-browser-session rejects malformed non-JWT cookie values before mutati
   assert.deepEqual(requests, ["GET /admin/api/tokens"]);
 });
 
-test("sync-browser-session falls back when preferred cookie is malformed but sso is JWT-shaped", async () => {
+test("sync-browser-session rejects malformed sso-rw before falling back to sso", async () => {
   const dir = mkdtempSync(path.join(tmpdir(), "grok-sync-"));
   const secret = VALID_SESSION_TOKEN;
   const cookieSource = path.join(dir, "cookies.json");
@@ -182,10 +198,7 @@ test("sync-browser-session falls back when preferred cookie is malformed but sso
       return;
     }
     if (req.method === "POST" && req.url === "/admin/api/tokens/add") {
-      const body = await readJsonRequest(req);
-      assert.deepEqual(body, { pool: "super", tokens: [secret] });
-      currentTokens.push({ token: secret, pool: "super", status: "active", quota: {} });
-      res.end(JSON.stringify({ status: "success", count: 1 }));
+      assert.fail("malformed preferred cookie should block mutation before add");
       return;
     }
     if (req.method === "POST" && req.url === "/admin/api/batch/refresh") {
@@ -200,11 +213,12 @@ test("sync-browser-session falls back when preferred cookie is malformed but sso
       "--grok2api-base-url", baseUrl,
       "--pool", "super",
     ]);
-    assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.status, 1);
     const parsed = JSON.parse(result.stdout);
-    assert.equal(parsed.ok, true);
-    assert.equal(parsed.selected_cookie, "sso");
-    assert.deepEqual(parsed.tokens.map((entry) => entry.pool), ["super"]);
+    assert.equal(parsed.ok, false);
+    assert.equal(parsed.selected_cookie, "sso-rw");
+    assert.equal(parsed.error_code, "malformed_cookie_token");
+    assert.match(parsed.error_message, /JWT-shaped/i);
     assert.doesNotMatch(result.stdout, /eyJhbGci/);
     assert.doesNotMatch(result.stderr, /eyJhbGci/);
   });

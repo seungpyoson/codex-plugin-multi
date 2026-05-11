@@ -171,37 +171,45 @@ function makeFakeGrok2ApiHome() {
   return home;
 }
 
-function makeFakeUvBin() {
+function makeFakeUvBin(options = {}) {
+  const mode = options.mode ?? "reachable";
   const binDir = mkdtempSync(path.join(tmpdir(), "fake-uv-bin-"));
   const uvPath = path.join(binDir, "uv");
-  writeFileSync(uvPath, `#!/usr/bin/env node
+  writeFileSync(uvPath, `#!${process.execPath}
 const http = require("node:http");
 if (process.argv.includes("--version")) {
   console.log("uv 0.0.0-fake");
   process.exit(0);
 }
-const port = Number(process.argv[process.argv.indexOf("--port") + 1]);
-const host = process.argv[process.argv.indexOf("--host") + 1] || "127.0.0.1";
-const server = http.createServer(async (req, res) => {
-  res.setHeader("content-type", "application/json");
-  if (req.url === "/v1/models") {
-    res.end(JSON.stringify({ data: [{ id: "grok-4.20-fast" }] }));
-    return;
-  }
-  if (req.url === "/v1/chat/completions") {
-    res.end(JSON.stringify({
-      id: "fake-grok2api-chat",
-      model: "grok-4.20-fast",
-      choices: [{ message: { content: "ok" } }],
-    }));
-    return;
-  }
-  res.writeHead(404);
-  res.end(JSON.stringify({ error: { message: "not found" } }));
-});
-server.listen(port, host);
-process.on("SIGTERM", () => server.close(() => process.exit(0)));
-setTimeout(() => process.exit(0), 30000);
+const mode = ${JSON.stringify(mode)};
+if (mode === "unreachable") {
+  process.on("SIGTERM", () => process.exit(0));
+  setInterval(() => {}, 1000);
+  setTimeout(() => process.exit(0), 30000);
+} else {
+  const port = Number(process.argv[process.argv.indexOf("--port") + 1]);
+  const host = process.argv[process.argv.indexOf("--host") + 1] || "127.0.0.1";
+  const server = http.createServer(async (req, res) => {
+    res.setHeader("content-type", "application/json");
+    if (req.url === "/v1/models") {
+      res.end(JSON.stringify({ data: [{ id: "grok-4.20-fast" }] }));
+      return;
+    }
+    if (req.url === "/v1/chat/completions") {
+      res.end(JSON.stringify({
+        id: "fake-grok2api-chat",
+        model: "grok-4.20-fast",
+        choices: [{ message: { content: "ok" } }],
+      }));
+      return;
+    }
+    res.writeHead(404);
+    res.end(JSON.stringify({ error: { message: "not found" } }));
+  });
+  server.listen(port, host);
+  process.on("SIGTERM", () => server.close(() => process.exit(0)));
+  setTimeout(() => process.exit(0), 30000);
+}
 `);
   chmodSync(uvPath, 0o700);
   return binDir;
@@ -341,7 +349,7 @@ test("doctor auto-starts a local grok2api checkout without Docker", async () => 
       env: {
         GROK_WEB_BASE_URL: `http://127.0.0.1:${port}/v1`,
         GROK2API_HOME: home,
-        PATH: `${binDir}${path.delimiter}${process.env.PATH}`,
+        GROK2API_UV_BINARY: path.join(binDir, "uv"),
         GROK_WEB_DOCTOR_TIMEOUT_MS: "500",
         GROK_WEB_CHAT_DOCTOR_TIMEOUT_MS: "1000",
         GROK_WEB_TUNNEL_START_TIMEOUT_MS: "5000",
@@ -369,6 +377,40 @@ test("doctor auto-starts a local grok2api checkout without Docker", async () => 
   }
 });
 
+test("doctor terminates auto-started grok2api when it stays unreachable", async () => {
+  const port = await unusedLoopbackPort();
+  const home = makeFakeGrok2ApiHome();
+  const binDir = makeFakeUvBin({ mode: "unreachable" });
+  let parsed = null;
+  try {
+    const result = await runAsync(["doctor"], {
+      env: {
+        GROK_WEB_BASE_URL: `http://127.0.0.1:${port}/v1`,
+        GROK2API_HOME: home,
+        GROK2API_UV_BINARY: path.join(binDir, "uv"),
+        GROK_WEB_DOCTOR_TIMEOUT_MS: "100",
+        GROK_WEB_CHAT_DOCTOR_TIMEOUT_MS: "100",
+        GROK_WEB_TUNNEL_START_TIMEOUT_MS: "500",
+      },
+    });
+    parsed = parseStdout(result);
+
+    assert.equal(result.status, 0);
+    assert.equal(parsed.ready, false);
+    assert.equal(parsed.tunnel_start.status, "started_unreachable");
+    assert.equal(parsed.tunnel_start.attempted, true);
+    assert.equal(parsed.tunnel_start.cleanup?.attempted, true);
+    assert.equal(parsed.tunnel_start.cleanup?.signal, "SIGTERM");
+    assert.equal(parsed.tunnel_start.cleanup?.error, null);
+  } finally {
+    if (parsed?.tunnel_start?.pid) {
+      try { process.kill(parsed.tunnel_start.pid, "SIGTERM"); } catch { /* already exited */ }
+    }
+    rmTree(home);
+    rmTree(binDir);
+  }
+});
+
 test("doctor bootstraps a missing grok2api checkout and starts it without Docker", async () => {
   const port = await unusedLoopbackPort();
   const bootstrapRoot = mkdtempSync(path.join(tmpdir(), "grok2api-bootstrap-root-"));
@@ -382,7 +424,7 @@ test("doctor bootstraps a missing grok2api checkout and starts it without Docker
         GROK_WEB_BASE_URL: `http://127.0.0.1:${port}/v1`,
         GROK2API_BOOTSTRAP_DIR: bootstrapDir,
         CODEX_PLUGIN_MULTI_GIT_BINARY: fakeGit.gitPath,
-        PATH: `${binDir}${path.delimiter}${process.env.PATH}`,
+        GROK2API_UV_BINARY: path.join(binDir, "uv"),
         GROK_WEB_DOCTOR_TIMEOUT_MS: "500",
         GROK_WEB_CHAT_DOCTOR_TIMEOUT_MS: "1000",
         GROK_WEB_TUNNEL_START_TIMEOUT_MS: "5000",
@@ -2806,7 +2848,7 @@ test("local tunnel connection failure is structured as not sent", () => {
   assert.equal(result.status, 1);
   assert.equal(record.status, "failed");
   assert.equal(record.error_code, "tunnel_unavailable");
-  assert.equal(record.review_metadata.audit_manifest.request.timeout_ms, 500);
+  assert.equal(record.review_metadata.audit_manifest, null);
   assert.equal(record.external_review.source_content_transmission, "not_sent");
   assert.match(record.suggested_action, /non-grok2api tunnel|GROK2API_HOME|local Grok web tunnel/i);
   assert.doesNotMatch(result.stdout, /secret-cookie-like-token/);
@@ -2893,8 +2935,10 @@ test("custom-review fails closed when Grok chat readiness has no runtime tokens"
     assert.equal(record.status, "failed");
     assert.equal(record.error_code, "grok_session_no_runtime_tokens");
     assert.equal(record.external_review.source_content_transmission, "not_sent");
+    assert.equal(record.review_metadata.audit_manifest, null);
     assert.match(record.suggested_action, /no active runtime session tokens/i);
     assert.doesNotMatch(result.stdout, /external_review_launched|secret-cookie-like-token/);
+    assert.doesNotMatch(JSON.stringify(record), /BEGIN GROK FILE|export const value/);
   }, { autoPreflight: false });
   assert.deepEqual(requests.map((request) => [request.method, request.url, request.preflight]), [
     ["POST", "/api/chat/completions", true],

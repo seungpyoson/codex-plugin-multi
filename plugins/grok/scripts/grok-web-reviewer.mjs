@@ -28,6 +28,14 @@ const DEFAULT_CHAT_DOCTOR_TIMEOUT_MS = 10000;
 const DEFAULT_TUNNEL_START_TIMEOUT_MS = 8000;
 const DEFAULT_GROK2API_REPO_URL = "https://github.com/chenyme/grok2api.git";
 const TUNNEL_START_POLL_MS = 250;
+const GROK2API_UV_BINARY_ENV = "GROK2API_UV_BINARY";
+const GROK2API_FIXED_EXEC_PATH = "/usr/bin:/bin:/usr/sbin:/sbin";
+const GROK2API_UV_BINARY_CANDIDATES = Object.freeze([
+  "/opt/homebrew/bin/uv",
+  "/usr/local/bin/uv",
+  "/usr/bin/uv",
+  "uv",
+]);
 const DEFAULT_MAX_PROMPT_CHARS = 400000;
 const REVIEW_READINESS_PREFLIGHT_HEADER = "x-codex-grok-readiness-preflight";
 const REVIEW_READINESS_PREFLIGHT_PROMPT = "Return exactly: ok";
@@ -478,19 +486,65 @@ async function maybeBootstrapGrok2ApiHome(env = process.env) {
   };
 }
 
-function uvAvailable(cwd, env = process.env) {
-  const result = spawnSync("uv", ["--version"], {
+function uvExecutionEnv(env = process.env) {
+  return {
+    ...env,
+    PATH: GROK2API_FIXED_EXEC_PATH,
+  };
+}
+
+function uvBinaryCandidates(env = process.env) {
+  const configured = env[GROK2API_UV_BINARY_ENV];
+  if (!configured) {
+    return {
+      ok: true,
+      candidates: GROK2API_UV_BINARY_CANDIDATES.map((command) => ({
+        command,
+        source: isAbsolute(command) ? "fixed_candidate" : "fixed_path",
+      })),
+    };
+  }
+  if (!isAbsolute(configured)) {
+    return {
+      ok: false,
+      error_code: "grok2api_uv_binary_invalid",
+      message: `${GROK2API_UV_BINARY_ENV} must be an absolute path.`,
+    };
+  }
+  return {
+    ok: true,
+    candidates: [{ command: configured, source: GROK2API_UV_BINARY_ENV }],
+  };
+}
+
+function uvAvailable(cwd, command, env = process.env) {
+  const result = spawnSync(command, ["--version"], {
     cwd,
-    env,
+    env: uvExecutionEnv(env),
     encoding: "utf8",
     stdio: ["ignore", "pipe", "pipe"],
   });
   return result.status === 0;
 }
 
-function tunnelStartCommand(target) {
+function findUvBinary(cwd, env = process.env) {
+  const candidates = uvBinaryCandidates(env);
+  if (!candidates.ok) return candidates;
+  for (const candidate of candidates.candidates) {
+    if (uvAvailable(cwd, candidate.command, env)) {
+      return { ok: true, ...candidate };
+    }
+  }
+  return {
+    ok: false,
+    error_code: "grok2api_uv_missing",
+    message: `uv is required to start grok2api without Docker, but no fixed uv candidate worked. Set ${GROK2API_UV_BINARY_ENV} to an absolute uv path if uv is installed elsewhere.`,
+  };
+}
+
+function tunnelStartCommand(target, uvBinary) {
   return [
-    "uv",
+    uvBinary,
     "run",
     "granian",
     "--interface",
@@ -1400,24 +1454,25 @@ async function maybeStartGrokTunnel(cfg, env = process.env) {
       ...(bootstrap ? { bootstrap } : {}),
     };
   }
-  if (!uvAvailable(home.path, env)) {
+  const uvBinary = findUvBinary(home.path, env);
+  if (!uvBinary.ok) {
     return {
       status: "blocked",
       attempted: false,
-      error_code: "grok2api_uv_missing",
-      message: "uv is required to start grok2api without Docker, but `uv --version` did not succeed.",
+      error_code: uvBinary.error_code,
+      message: uvBinary.message,
       home_source: home.source,
       home_path: home.path,
       ...(bootstrap ? { bootstrap } : {}),
     };
   }
 
-  const command = tunnelStartCommand(target);
+  const command = tunnelStartCommand(target, uvBinary.command);
   let child;
   try {
     child = spawn(command[0], command.slice(1), {
       cwd: home.path,
-      env,
+      env: uvExecutionEnv(env),
       detached: true,
       stdio: "ignore",
     });
@@ -1431,6 +1486,7 @@ async function maybeStartGrokTunnel(cfg, env = process.env) {
       message: `Failed to start grok2api: ${error?.message ?? String(error)}`,
       home_source: home.source,
       home_path: home.path,
+      uv_source: uvBinary.source,
       command: command.join(" "),
       ...(bootstrap ? { bootstrap } : {}),
     };
@@ -1446,12 +1502,14 @@ async function maybeStartGrokTunnel(cfg, env = process.env) {
       pid: child.pid,
       home_source: home.source,
       home_path: home.path,
+      uv_source: uvBinary.source,
       command: command.join(" "),
       elapsed_ms: wait.elapsed_ms,
       probe: wait.probe,
       ...(bootstrap ? { bootstrap } : {}),
     };
   }
+  const cleanup = terminateStartedGrokTunnel(child);
   return {
     status: "started_unreachable",
     attempted: true,
@@ -1460,11 +1518,36 @@ async function maybeStartGrokTunnel(cfg, env = process.env) {
     pid: child.pid,
     home_source: home.source,
     home_path: home.path,
+    uv_source: uvBinary.source,
     command: command.join(" "),
     elapsed_ms: wait.elapsed_ms,
     probe: wait.probe,
+    cleanup,
     ...(bootstrap ? { bootstrap } : {}),
   };
+}
+
+function terminateStartedGrokTunnel(child) {
+  if (!child?.pid) {
+    return { attempted: false, signal: null, target: null, error: null };
+  }
+  const signal = "SIGTERM";
+  const target = process.platform === "win32" ? "process" : "process_group";
+  try {
+    if (process.platform === "win32") {
+      process.kill(child.pid, signal);
+    } else {
+      process.kill(-child.pid, signal);
+    }
+    return { attempted: true, signal, target, error: null };
+  } catch (error) {
+    return {
+      attempted: true,
+      signal,
+      target,
+      error: error?.message ?? String(error),
+    };
+  }
 }
 
 async function ensureGrokTunnelReachable(cfg, env = process.env, initialProbe = null) {
@@ -2311,6 +2394,7 @@ async function cmdRun(options) {
   if (!execution) {
     let prompt;
     let tunnelStart = null;
+    let promptSentToTunnel = false;
     try {
       prompt = promptFor(mode, options.prompt ?? "", scopeInfo);
       if (prompt.length > cfg.max_prompt_chars) {
@@ -2337,12 +2421,15 @@ async function cmdRun(options) {
           external_review: buildLaunchExternalReview({ cfg, mode, options: runOptions, scopeInfo }),
         }, lifecycleEvents);
       }
-      if (!execution) execution = await callGrokTunnel(cfg, prompt);
+      if (!execution) {
+        promptSentToTunnel = true;
+        execution = await callGrokTunnel(cfg, prompt);
+      }
       execution.diagnostics = {
         ...(execution.diagnostics ?? {}),
         tunnel_start: tunnelStart,
       };
-      execution.prompt = prompt;
+      if (promptSentToTunnel) execution.prompt = prompt;
     } catch (e) {
       execution = providerFailureWithDiagnostic(
         e.message.startsWith("bad_args:") ? "bad_args" : "tunnel_error",
@@ -2352,6 +2439,7 @@ async function cmdRun(options) {
         payloadSentForFetchError(e),
         { configured_timeout_ms: cfg.timeout_ms, tunnel_start: tunnelStart },
       );
+      if (promptSentToTunnel && prompt) execution.prompt = prompt;
     }
   }
   const record = redactValue(buildRecord({

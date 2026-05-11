@@ -330,6 +330,56 @@ process.exit(9);
   }
 });
 
+test("custom-review permission-mode ladder does not retry after timeout", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "claude-permission-timeout-cwd-"));
+  fixtureSeedRepo(cwd, {
+    fileName: "seed.txt",
+    fileContents: "claude permission timeout sentinel\n",
+  });
+  const tmp = mkdtempSync(path.join(tmpdir(), "claude-permission-timeout-bin-"));
+  const attemptsPath = path.join(tmp, "attempts.jsonl");
+  const binary = writeExecutable(tmp, "claude-timeout", `#!/usr/bin/env node
+import { appendFileSync } from "node:fs";
+
+const argv = process.argv.slice(2);
+const modeIndex = argv.indexOf("--permission-mode");
+const mode = modeIndex >= 0 ? argv[modeIndex + 1] : null;
+appendFileSync(${JSON.stringify(attemptsPath)}, JSON.stringify({ mode }) + "\\n");
+setInterval(() => {}, 1000);
+`);
+  const { stdout, stderr, status, dataDir } = runCompanion(
+    ["run", "--mode=custom-review", "--foreground", "--auth-mode", "api_key",
+     "--binary", binary, "--model", "claude-haiku-4-5-20251001",
+     "--cwd", cwd, "--timeout-ms", "1000", "--scope-paths", "seed.txt", "--", "review selected source"],
+    {
+      cwd,
+      env: {
+        ANTHROPIC_API_KEY: "test-key",
+        CLAUDE_API_KEY: "",
+        CLAUDE_REVIEW_PERMISSION_MODES: "dontAsk,auto,acceptEdits",
+      },
+    },
+  );
+  try {
+    assert.equal(status, 2, `exit ${status}: stderr=${stderr}; stdout=${stdout}`);
+    const record = JSON.parse(stdout);
+    assert.equal(record.status, "failed");
+    assert.equal(record.error_code, "timeout");
+    assert.equal(record.review_metadata.permission_mode_effective, "dontAsk");
+    assert.deepEqual(record.review_metadata.permission_mode_attempts.map((attempt) => attempt.mode), ["dontAsk"]);
+    assert.equal(record.review_metadata.permission_mode_attempts[0].error_code, "timeout");
+    if (existsSync(attemptsPath)) {
+      const modesSeen = readFileSync(attemptsPath, "utf8").trim().split("\n")
+        .map((line) => JSON.parse(line).mode);
+      assert.deepEqual(modesSeen, ["dontAsk"]);
+    }
+  } finally {
+    cleanup(dataDir);
+    rmSync(cwd, { recursive: true, force: true });
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
 test("custom-review permission-mode ladder refuses bypassPermissions without explicit opt-in", () => {
   const cwd = mkdtempSync(path.join(tmpdir(), "claude-permission-bypass-cwd-"));
   fixtureSeedRepo(cwd, {

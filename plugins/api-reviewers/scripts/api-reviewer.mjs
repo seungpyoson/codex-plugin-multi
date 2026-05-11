@@ -279,8 +279,6 @@ async function verifyApiReviewerDataRootWritable(env = process.env) {
   try {
     await mkdir(root, { recursive: true });
     await writeFile(probeFile, "ok\n", { mode: 0o600 });
-    await unlink(probeFile);
-    return { ok: true, root };
   } catch (e) {
     try { await unlink(probeFile); } catch { /* best-effort cleanup */ }
     return {
@@ -289,6 +287,8 @@ async function verifyApiReviewerDataRootWritable(env = process.env) {
       error: `API_REVIEWERS_PLUGIN_DATA is not writable at ${root}: ${e?.message ?? String(e)}`,
     };
   }
+  try { await unlink(probeFile); } catch { /* best-effort cleanup */ }
+  return { ok: true, root };
 }
 
 async function writeApiReviewerMetaRecord(root, record) {

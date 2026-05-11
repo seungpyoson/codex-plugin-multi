@@ -272,14 +272,14 @@ function sqliteCookieRows(dbPath) {
 }
 
 export function decodeCookiePlaintext(plaintext, hostKey = "") {
-  const full = plaintext.toString("utf8");
-  if (isJwtShapedToken(sanitizeToken(full))) return full;
   if (hostKey && plaintext.length > 32) {
     const hostDigest = createHash("sha256").update(hostKey).digest();
     if (plaintext.subarray(0, 32).equals(hostDigest)) {
       return plaintext.subarray(32).toString("utf8");
     }
   }
+  const full = plaintext.toString("utf8");
+  if (isJwtShapedToken(sanitizeToken(full))) return full;
   return full;
 }
 
@@ -301,19 +301,20 @@ export function chromeDecrypt(encryptedHex, password, hostKey = "") {
   return decodeCookiePlaintext(Buffer.concat([decipher.update(payload), decipher.final()]), hostKey);
 }
 
-function selectCookie(cookies) {
-  let firstCandidate = null;
+export function selectCookie(cookies) {
   for (const name of COOKIE_NAMES) {
+    let firstCandidateForName = null;
     for (const cookie of cookies) {
       if (cookie.name !== name) continue;
       const value = sanitizeToken(cookie.value);
       if (!value) continue;
       const selected = { name, value };
-      if (!firstCandidate) firstCandidate = selected;
+      if (!firstCandidateForName) firstCandidateForName = selected;
       if (isJwtShapedToken(value)) return selected;
     }
+    if (firstCandidateForName) return firstCandidateForName;
   }
-  return firstCandidate;
+  return null;
 }
 
 function cookiesFromJson(filePath) {
