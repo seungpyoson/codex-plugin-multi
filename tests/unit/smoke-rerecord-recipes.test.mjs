@@ -8,11 +8,10 @@
 //       runner with the API-key secret wired but no ~/.claude on disk
 //       can still pass preflight (greptile P1 #3199437297).
 //   (2) claude/happy-path-review must pass --auth-mode auto so the
-//       spawned claude-companion does NOT strip the env key. Without
-//       it, the run subcommand defaults to subscription, sets
-//       allowed_env_credentials=[], and sanitizeTargetEnv removes
-//       ANTHROPIC_API_KEY before exec — preflight green, runtime auth
-//       fail. (auth-selection.mjs:42-47, claude-companion.mjs:818-829.)
+//       recipe pins the intended runtime auth path instead of relying
+//       on the companion default. Auto mode selects api_key_env when a
+//       provider key is present and falls back to subscription_oauth
+//       otherwise.
 //
 // Either piece in isolation is insufficient. Dropping (1) resurrects
 // the original P1; dropping (2) makes (1) a decoy. The test below

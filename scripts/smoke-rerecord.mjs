@@ -122,13 +122,10 @@ export const RECIPES = Object.freeze({
         "--mode=custom-review",
         "--foreground",
         "--scope-paths", "scripts/lib/plugin-targets.mjs",
-        // Without --auth-mode auto, the run subcommand defaults to
-        // subscription, which sets allowed_env_credentials=[] and
-        // strips API keys via sanitizeTargetEnv before exec — making
-        // envAny preflight a decoy on env-only CI runners. Auto mode
-        // selects api_key_env when a provider key is present and
-        // falls back to subscription_oauth otherwise, exactly mirroring
-        // the recipe's "OAuth OR API key" semantics.
+        // Spell out --auth-mode auto even though it is the companion
+        // default. The recipe's "OAuth OR API key" preflight is only
+        // honest if runtime auth also selects api_key_env when a provider
+        // key is present and falls back to subscription_oauth otherwise.
         "--auth-mode", "auto",
         "--", HAPPY_PATH_PROMPT,
       ],

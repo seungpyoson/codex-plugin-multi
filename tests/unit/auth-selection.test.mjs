@@ -128,11 +128,26 @@ for (const { plugin, providerName, keys } of AUTH_MODULES) {
         env: {},
       }),
       {
-        auth_mode: "subscription",
+        auth_mode: "auto",
         selected_auth_path: "subscription_oauth",
         allowed_env_credentials: [],
         ignored_env_credentials: [],
         auth_policy: "subscription_oauth",
+      },
+    );
+    assert.deepEqual(
+      mod.resolveAuthSelection({
+        requestedMode: undefined,
+        providerApiKeyEnvNames: keys,
+        fail,
+        env: { [keys[0]]: "secret-value" },
+      }),
+      {
+        auth_mode: "auto",
+        selected_auth_path: "api_key_env",
+        allowed_env_credentials: [keys[0]],
+        ignored_env_credentials: [],
+        auth_policy: "api_key_env_allowed",
       },
     );
 

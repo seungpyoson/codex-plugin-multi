@@ -41,12 +41,12 @@ lets Claude Code delegate to Codex.
   is accepted as a compatibility alias. GLM Coding Plan calls use
   `https://api.z.ai/api/coding/paas/v4`, not the general Z.ai endpoint.
 
-Claude and Gemini default to each target CLI's native OAuth login and ignore
-provider API-key env vars. They also support an explicit companion
-`--auth-mode subscription|api_key|auto` option for `setup`/`doctor`, `run`, and
-`continue`: `subscription` strips API keys, `api_key` allows only that
-provider's key names through intentionally, and `auto` uses API-key env auth
-only when a provider key is already present. The selected path is reported as
+Claude and Gemini default to `--auth-mode auto`: if the matching provider API
+key is already present, the companion allows only that provider key through;
+otherwise it falls back to each target CLI's native OAuth login. They also
+support explicit `--auth-mode subscription|api_key|auto` for `setup`/`doctor`,
+`run`, and `continue`: `subscription` strips API keys and forces OAuth, and
+`api_key` requires a matching provider key. The selected path is reported as
 `selected_auth_path`; secret values are never printed. Kimi remains
 subscription/OAuth-only. Direct API reviewers are separate and only use API keys
 through explicit `auth_mode: "api_key"` provider config.
@@ -394,11 +394,12 @@ inspect the terminal record.
 - **Scope narrowing is not provider isolation.** `branch-diff` reduces which
   files are reviewed, but a successful external review still sends selected
   source content to the target provider.
-- **API-key auth is explicit.** Claude and Gemini use `--auth-mode subscription`
-  by default and strip provider API-key env vars. `--auth-mode api_key` allows
-  only Claude or Gemini provider key names through; `--auth-mode auto` gives
-  those key names precedence only when they are already present. DeepSeek and
-  GLM direct API reviewers use `auth_mode: "api_key"` in
+- **Claude/Gemini auth is explicit and reported.** Claude and Gemini default to
+  `--auth-mode auto`: existing provider API-key env vars are allowed through by
+  name only, otherwise the companion falls back to subscription/OAuth.
+  `--auth-mode subscription` still strips provider keys and forces OAuth;
+  `--auth-mode api_key` requires a matching provider key. DeepSeek and GLM
+  direct API reviewers use `auth_mode: "api_key"` in
   `plugins/api-reviewers/config/providers.json`. Diagnostics report key names
   only and never print secret values.
 - **Grok subscription is the default Grok path.** Grok uses

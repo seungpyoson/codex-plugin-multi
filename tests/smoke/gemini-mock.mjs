@@ -49,6 +49,18 @@ if (expectedPromptText && !readinessPrompt && !prompt.includes(expectedPromptTex
   process.exit(1);
 }
 
+const assertCwdNot = process.env.GEMINI_MOCK_ASSERT_CWD_NOT;
+if (assertCwdNot && process.cwd() === assertCwdNot) {
+  process.stderr.write(`gemini-mock: cwd must not be ${assertCwdNot}\n`);
+  process.exit(1);
+}
+
+const assertCwdPrefix = process.env.GEMINI_MOCK_ASSERT_CWD_PREFIX;
+if (assertCwdPrefix && !process.cwd().startsWith(assertCwdPrefix)) {
+  process.stderr.write(`gemini-mock: cwd ${process.cwd()} does not start with ${assertCwdPrefix}\n`);
+  process.exit(1);
+}
+
 if (process.env.GEMINI_MOCK_CAPACITY_MODEL === model) {
   process.stderr.write(JSON.stringify({
     error: {

@@ -466,7 +466,7 @@ function readRuntimeOptionsSidecar(workspaceRoot, jobId) {
   }
 }
 
-function invocationFromRecord(record, fallbackAuthMode = "subscription", runtimeOptions = {}) {
+function invocationFromRecord(record, fallbackAuthMode = "auto", runtimeOptions = {}) {
   return Object.freeze({
     job_id: record.job_id,
     target: record.target,
@@ -487,7 +487,7 @@ function invocationFromRecord(record, fallbackAuthMode = "subscription", runtime
     review_prompt_provider: record.review_metadata?.prompt_provider ?? null,
     schema_spec: record.schema_spec ?? null,
     run_kind: runKindFromRecord(record),
-    auth_mode: record.auth_mode ?? fallbackAuthMode ?? "subscription",
+    auth_mode: record.auth_mode ?? fallbackAuthMode ?? "auto",
     binary: record.binary,
     timeout_ms:
       runtimeOptions.timeout_ms ??
@@ -1467,7 +1467,7 @@ const PING_AUTH_RE = /\b(auth(?:enticat\w*)?|login|credential\w*|oauth2?|unauthe
 // what auth-selection.mjs's auto mode accepts).
 const PING_PROVIDER_API_KEY_ENV = CLAUDE_PROVIDER_API_KEY_ENV;
 
-function resolveAuthSelection(requestedMode = "subscription") {
+function resolveAuthSelection(requestedMode = "auto") {
   return resolveAuthSelectionForProvider({
     requestedMode,
     providerApiKeyEnvNames: PING_PROVIDER_API_KEY_ENV,

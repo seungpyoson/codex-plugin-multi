@@ -30,8 +30,19 @@ Other tunnels can work if they provide:
 ## grok2api Setup
 
 1. Start from a logged-in Grok browser session.
-2. Install and start grok2api according to that project's local or Docker
-   Compose instructions.
+2. Install and start grok2api. Docker Compose is optional; the local path is:
+
+```sh
+git clone https://github.com/chenyme/grok2api
+cd grok2api
+cp .env.example .env
+uv sync
+uv run granian --interface asgi --host 127.0.0.1 --port 8000 --workers 1 app.main:app
+```
+
+If you keep the checkout elsewhere, set `GROK2API_HOME` to that directory in
+your shell notes/runbook so new Codex sessions know where to start or inspect
+the local tunnel.
 3. On macOS Chrome-family browsers, sync the local Grok web session into
    grok2api:
 

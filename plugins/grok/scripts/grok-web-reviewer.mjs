@@ -1169,7 +1169,7 @@ function suggestedAction(errorCode, errorMessage = "") {
     }
     return "Adjust --scope, --scope-base, or --scope-paths and retry.";
   }
-  if (errorCode === "tunnel_unavailable") return "Start the local Grok web tunnel, verify GROK_WEB_BASE_URL, then retry.";
+  if (errorCode === "tunnel_unavailable") return "Start the local Grok web tunnel, verify GROK_WEB_BASE_URL, then retry. For grok2api without Docker: cd $GROK2API_HOME, run uv sync once, then run uv run granian --interface asgi --host 127.0.0.1 --port 8000 --workers 1 app.main:app.";
   if (errorCode === "tunnel_timeout") return "The local Grok web tunnel did not respond before GROK_WEB_TIMEOUT_MS; inspect the tunnel and retry.";
   if (errorCode === "session_expired") return "Refresh the Grok web login/session used by the local tunnel, then retry.";
   if (errorCode === "usage_limited") return "Wait for Grok subscription usage to recover, reduce concurrency, or inspect the local tunnel. Any billing, credit, or tier change must be a separate manual action with explicit user approval.";

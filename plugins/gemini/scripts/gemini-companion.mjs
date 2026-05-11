@@ -286,18 +286,32 @@ function modelCandidatesForInvocation(profile, invocation) {
   return candidates.length > 0 ? candidates : [invocation.model];
 }
 
+function makeGeminiPingCwd() {
+  const dir = mkdtempSync(joinPath(tmpdir(), "gemini-ping-neutral-"));
+  try {
+    process.once("exit", () => {
+      try { rmSync(dir, { recursive: true, force: true }); } catch { /* best-effort */ }
+    });
+  } catch {
+    // Exit cleanup is best-effort; readiness must not fail because cleanup
+    // registration failed.
+  }
+  return dir;
+}
+
 async function geminiReadinessPreflight(invocation, profile) {
   const authSelection = resolveAuthSelection(invocation.auth_mode);
   const readinessProfile = resolveProfile("ping");
   const candidates = modelCandidatesForInvocation(profile, invocation);
   let execution = null;
+  const pingCwd = makeGeminiPingCwd();
   try {
     for (let i = 0; i < candidates.length; i++) {
       execution = await spawnGemini(readinessProfile, {
         model: candidates[i],
         promptText: PING_PROMPT,
         policyPath: READ_ONLY_POLICY,
-        cwd: tmpdir(),
+        cwd: pingCwd,
         binary: invocation.binary,
         timeoutMs: GEMINI_READINESS_PREFLIGHT_TIMEOUT_MS,
         allowedApiKeyEnv: authSelection.allowed_env_credentials,
@@ -380,7 +394,7 @@ function readRuntimeOptionsSidecar(workspaceRoot, jobId) {
   }
 }
 
-function invocationFromRecord(record, fallbackAuthMode = "subscription", runtimeOptions = {}) {
+function invocationFromRecord(record, fallbackAuthMode = "auto", runtimeOptions = {}) {
   return Object.freeze({
     job_id: record.job_id,
     target: record.target,
@@ -401,7 +415,7 @@ function invocationFromRecord(record, fallbackAuthMode = "subscription", runtime
     review_prompt_provider: record.review_metadata?.prompt_provider ?? null,
     schema_spec: record.schema_spec ?? null,
     run_kind: runKindFromRecord(record),
-    auth_mode: record.auth_mode ?? fallbackAuthMode ?? "subscription",
+    auth_mode: record.auth_mode ?? fallbackAuthMode ?? "auto",
     binary: record.binary,
     timeout_ms:
       runtimeOptions.timeout_ms ??
@@ -1224,7 +1238,7 @@ async function cmdResult(rest) {
 const PING_AUTH_RE = /\b(auth(?:enticat\w*)?|login|credential\w*|oauth2?|unauthenticated|signin|sign-in)\b/i;
 const PING_PROVIDER_API_KEY_ENV = ["GEMINI_API_KEY", "GOOGLE_API_KEY"];
 
-function resolveAuthSelection(requestedMode = "subscription") {
+function resolveAuthSelection(requestedMode = "auto") {
   return resolveAuthSelectionForProvider({
     requestedMode,
     providerApiKeyEnvNames: PING_PROVIDER_API_KEY_ENV,
@@ -1245,12 +1259,15 @@ function apiKeyMissingFields(selection, notAuthedFields = {}) {
   });
 }
 
-function pingOkFields(modelFallback = null) {
+function pingOkFields(authSelection = null, modelFallback = null) {
+  const authSummary = authSelection?.selected_auth_path === "api_key_env"
+    ? "Gemini CLI is ready using API-key auth."
+    : "Gemini CLI is ready using first-party CLI auth.";
   return {
     ready: true,
     summary: modelFallback
       ? "Gemini CLI is ready; the preferred model was capacity-limited and a configured fallback was used."
-      : "Gemini CLI is ready using first-party CLI auth.",
+      : authSummary,
     next_action: "Run a Gemini review command.",
     ...(modelFallback ? { model_fallback: modelFallback } : {}),
   };
@@ -1363,7 +1380,7 @@ async function cmdPing(rest, { readinessProfileName = "ping" } = {}) {
         model: selectedModel,
         promptText: PING_PROMPT,
         policyPath: READ_ONLY_POLICY,
-        cwd: "/tmp",
+        cwd: makeGeminiPingCwd(),
         binary: options.binary ?? process.env.GEMINI_BINARY ?? "gemini",
         timeoutMs: Number(options["timeout-ms"] ?? DEFAULT_GEMINI_PING_TIMEOUT_MS),
         allowedApiKeyEnv: authSelection.allowed_env_credentials,
@@ -1392,7 +1409,7 @@ async function cmdPing(rest, { readinessProfileName = "ping" } = {}) {
       break;
     }
     if (execution.parsed.ok) {
-      const payload = { status: "ok", ...pingOkFields(modelFallback), ...authDiagnosticFields(authSelection), model: selectedModel ?? null,
+      const payload = { status: "ok", ...pingOkFields(authSelection, modelFallback), ...authDiagnosticFields(authSelection), model: selectedModel ?? null,
         session_id: execution.geminiSessionId, usage: execution.parsed.usage };
       printJson(payload);
       process.exit(0);

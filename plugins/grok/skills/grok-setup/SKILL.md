@@ -19,4 +19,7 @@ node plugins/grok/scripts/grok-web-reviewer.mjs doctor
 Show `summary`, `ready`, `next_action`, and credential key names only. Never
 print session cookies, tunnel API-key values, or bearer token values. If the
 tunnel is unavailable, tell the user to start or repair the local Grok web
-tunnel rather than adding direct xAI API keys.
+tunnel rather than adding direct xAI API keys. Docker is not required for
+grok2api; the local start path is `cd $GROK2API_HOME && uv sync && uv run
+granian --interface asgi --host 127.0.0.1 --port 8000 --workers 1
+app.main:app`.
