@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -186,4 +186,32 @@ test("provider readiness manifest classifies direct api doctor-only evidence as 
   assert.equal(deepseek.approval_status, "missing");
   assert.equal(deepseek.review_status, "not_run");
   assert.equal(deepseek.failure_class, "approval_gate");
+});
+
+test("provider readiness manifest does not resolve git through caller PATH", () => {
+  const fixtureRoot = mkdtempSync(path.join(tmpdir(), "provider-readiness-safe-git-fixture-"));
+  const evidenceDir = mkdtempSync(path.join(tmpdir(), "provider-readiness-safe-git-evidence-"));
+  const fakeBin = mkdtempSync(path.join(tmpdir(), "provider-readiness-fake-bin-"));
+  const marker = path.join(fakeBin, "called");
+  mkdirSync(path.join(fixtureRoot, "fixtures"), { recursive: true });
+  fixtureSeedRepo(fixtureRoot, {
+    fileName: "fixtures/smoke.js",
+    fileContents: "export const value = 1;\n",
+  });
+  writeJson(path.join(evidenceDir, "claude-doctor.json"), { ready: true, status: "ok" });
+  writeFileSync(path.join(fakeBin, "git"), `#!/bin/sh\ntouch "${marker}"\nexit 99\n`, "utf8");
+  chmodSync(path.join(fakeBin, "git"), 0o700);
+
+  const stdout = execFileSync(process.execPath, [
+    MANIFEST,
+    "--fixture-root", fixtureRoot,
+    "--evidence-dir", evidenceDir,
+  ], {
+    encoding: "utf8",
+    env: { ...process.env, PATH: `${fakeBin}${path.delimiter}${process.env.PATH ?? ""}` },
+  });
+
+  const manifest = JSON.parse(stdout);
+  assert.equal(manifest.fixture.selected_files[0].path, "fixtures/smoke.js");
+  assert.equal(existsSync(marker), false);
 });

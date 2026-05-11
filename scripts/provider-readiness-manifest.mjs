@@ -3,11 +3,14 @@ import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
+import { DEFAULT_GIT_BINARY, gitEnv } from "../plugins/api-reviewers/scripts/lib/git-binary.mjs";
+import { cleanGitEnv } from "../plugins/api-reviewers/scripts/lib/git-env.mjs";
 
 const SCHEMA_VERSION = 1;
 const PROVIDERS = Object.freeze(["claude", "gemini", "kimi", "grok", "deepseek", "glm"]);
 const DIRECT_API_PROVIDERS = new Set(["deepseek", "glm"]);
 const TRANSMISSION_VALUES = new Set(["not_sent", "may_be_sent", "sent"]);
+const TRUSTED_GIT_ENV = gitEnv(cleanGitEnv());
 
 function parseArgs(argv) {
   const args = Object.create(null);
@@ -33,7 +36,7 @@ function readJsonIfExists(file) {
 }
 
 function runGit(cwd, args) {
-  return execFileSync("git", ["-C", cwd, ...args], { encoding: "utf8" }).trim();
+  return execFileSync(DEFAULT_GIT_BINARY, ["-C", cwd, ...args], { encoding: "utf8", env: TRUSTED_GIT_ENV }).trim();
 }
 
 function sha256File(file) {
@@ -43,7 +46,10 @@ function sha256File(file) {
 function fixtureSummary(fixtureRoot) {
   const headSha = runGit(fixtureRoot, ["rev-parse", "HEAD"]);
   const status = runGit(fixtureRoot, ["status", "--porcelain=v1", "--untracked-files=all"]);
-  const trackedRaw = execFileSync("git", ["-C", fixtureRoot, "ls-files", "-z"], { encoding: "utf8" });
+  const trackedRaw = execFileSync(DEFAULT_GIT_BINARY, ["-C", fixtureRoot, "ls-files", "-z"], {
+    encoding: "utf8",
+    env: TRUSTED_GIT_ENV,
+  });
   const selectedFiles = trackedRaw
     .split("\0")
     .filter(Boolean)
