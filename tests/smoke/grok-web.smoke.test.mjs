@@ -442,6 +442,43 @@ test("doctor auto-start preserves an explicit UV_CACHE_DIR", async () => {
   }
 });
 
+test("doctor auto-start treats empty UV_CACHE_DIR as unset", async () => {
+  const port = await unusedLoopbackPort();
+  const home = makeFakeGrok2ApiHome();
+  const capturePath = path.join(mkdtempSync(path.join(tmpdir(), "fake-uv-env-")), "env.json");
+  const binDir = makeFakeUvBin({ envCapturePath: capturePath });
+  let parsed = null;
+  try {
+    const result = await runAsync(["doctor"], {
+      env: {
+        GROK_WEB_BASE_URL: `http://127.0.0.1:${port}/v1`,
+        GROK2API_HOME: home,
+        GROK2API_UV_BINARY: path.join(binDir, "uv"),
+        UV_CACHE_DIR: "",
+        GROK_WEB_DOCTOR_TIMEOUT_MS: "500",
+        GROK_WEB_CHAT_DOCTOR_TIMEOUT_MS: "1000",
+        GROK_WEB_TUNNEL_START_TIMEOUT_MS: "5000",
+      },
+    });
+    parsed = parseStdout(result);
+    const captured = JSON.parse(readFileSync(capturePath, "utf8"));
+
+    assert.equal(result.status, 0);
+    assert.equal(parsed.tunnel_start.status, "started");
+    assert.equal(
+      captured.UV_CACHE_DIR,
+      path.join(tmpdir(), "codex-plugin-multi", "runtime", "uv-cache"),
+    );
+  } finally {
+    if (parsed?.tunnel_start?.pid) {
+      try { process.kill(parsed.tunnel_start.pid, "SIGTERM"); } catch { /* already exited */ }
+    }
+    rmTree(home);
+    rmTree(binDir);
+    rmTree(path.dirname(capturePath));
+  }
+});
+
 test("doctor auto-starts a local grok2api checkout without Docker", async () => {
   const port = await unusedLoopbackPort();
   const home = makeFakeGrok2ApiHome();
