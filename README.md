@@ -46,9 +46,9 @@ vars are stripped and the target CLI's native OAuth/subscription path must pass
 the live readiness probe. They also support explicit
 `--auth-mode subscription|api_key|auto` for `setup`/`doctor`, `run`, and
 `continue`: `api_key` requires a matching provider key, and `auto` is a
-compatibility mode that allows a provider key when present and otherwise falls
-back to OAuth. The selected path is reported as `selected_auth_path`; secret
-values are never printed. Kimi remains subscription/OAuth-only. Direct API
+compatibility mode that tries OAuth/subscription first and falls back to a
+provider key only when subscription readiness is unavailable. The selected path
+is reported as `selected_auth_path`; secret values are never printed. Kimi remains subscription/OAuth-only. Direct API
 reviewers are separate and only use API keys through explicit
 `auth_mode: "api_key"` provider config.
 
@@ -399,8 +399,9 @@ inspect the terminal record.
   `--auth-mode subscription`: provider API-key env vars are ignored and the
   target CLI's OAuth/subscription inference path must work. `--auth-mode
   api_key` requires a matching provider key, and `--auth-mode auto` is an
-  explicit compatibility mode that may select API-key auth when a provider key
-  is present. DeepSeek and GLM direct API reviewers use
+  explicit compatibility mode that tries OAuth/subscription first and falls
+  back to API-key auth only when subscription readiness is unavailable.
+  DeepSeek and GLM direct API reviewers use
   `auth_mode: "api_key"` in `plugins/api-reviewers/config/providers.json`.
   Diagnostics report key names only and never print secret values.
 - **Grok subscription is the default Grok path.** Grok uses

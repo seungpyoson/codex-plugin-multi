@@ -49,6 +49,7 @@ import { sanitizeTargetEnv } from "./lib/provider-env.mjs";
 import { runCommand } from "./lib/process.mjs";
 import {
   authDiagnosticFields,
+  apiKeyFallbackSelection,
   apiKeyMissingFields as buildApiKeyMissingFields,
   apiKeyMissingMessage as buildApiKeyMissingMessage,
   resolveAuthSelection as resolveAuthSelectionForProvider,
@@ -466,7 +467,7 @@ function readRuntimeOptionsSidecar(workspaceRoot, jobId) {
   }
 }
 
-function invocationFromRecord(record, fallbackAuthMode = "auto", runtimeOptions = {}) {
+function invocationFromRecord(record, fallbackAuthMode = "subscription", runtimeOptions = {}) {
   return Object.freeze({
     job_id: record.job_id,
     target: record.target,
@@ -487,7 +488,7 @@ function invocationFromRecord(record, fallbackAuthMode = "auto", runtimeOptions 
     review_prompt_provider: record.review_metadata?.prompt_provider ?? null,
     schema_spec: record.schema_spec ?? null,
     run_kind: runKindFromRecord(record),
-    auth_mode: record.auth_mode ?? fallbackAuthMode ?? "auto",
+    auth_mode: record.auth_mode ?? fallbackAuthMode ?? "subscription",
     binary: record.binary,
     timeout_ms:
       runtimeOptions.timeout_ms ??
@@ -799,11 +800,8 @@ async function cmdRun(rest) {
 // prompt; background worker calls it after reading the prompt sidecar.
 // EXACTLY ONE buildJobRecord call per terminal state — §21.3.2 convergence.
 async function executeRun(invocation, prompt, { foreground, lifecycleEvents = null }) {
-  const authSelection = resolveAuthSelection(invocation.auth_mode);
-  invocation = Object.freeze({
-    ...invocation,
-    selected_auth_path: authSelection.selected_auth_path,
-  });
+  let authSelection = resolveAuthSelection(invocation.auth_mode);
+  invocation = invocationWithAuthSelection(invocation, authSelection);
   const { job_id: jobId, workspace_root: workspaceRoot } = invocation;
   const profile = resolveProfile(invocation.mode_profile_name);
 
@@ -818,21 +816,27 @@ async function executeRun(invocation, prompt, { foreground, lifecycleEvents = nu
 
   const oauthPreflightExecution = await claudeOAuthInferencePreflight(invocation, authSelection);
   if (oauthPreflightExecution) {
-    const finalRecord = buildClaudeFinalRecord(
-      invocation,
-      oauthPreflightExecution,
-      null,
-      mutationContext.mutations,
-      prompt,
-      executionScope.addDir,
-      runtimeDiagnostics,
-    );
-    const { metaError, stateError } = commitJobRecord(workspaceRoot, jobId, finalRecord);
-    writeExecutionSidecars(workspaceRoot, jobId, oauthPreflightExecution);
-    exitIfFinalizationFailed(invocation, oauthPreflightExecution, finalRecord, mutationContext, executionScope, { metaError, stateError });
-    cleanupExecutionResources(executionScope, mutationContext);
-    if (foreground) printLifecycleJson(finalRecord, lifecycleEvents);
-    process.exit(2);
+    const fallbackSelection = autoApiKeyFallbackSelectionForClaudeFailure(authSelection, oauthPreflightExecution);
+    if (fallbackSelection) {
+      authSelection = fallbackSelection;
+      invocation = invocationWithAuthSelection(invocation, authSelection);
+    } else {
+      const finalRecord = buildClaudeFinalRecord(
+        invocation,
+        oauthPreflightExecution,
+        null,
+        mutationContext.mutations,
+        prompt,
+        executionScope.addDir,
+        runtimeDiagnostics,
+      );
+      const { metaError, stateError } = commitJobRecord(workspaceRoot, jobId, finalRecord);
+      writeExecutionSidecars(workspaceRoot, jobId, oauthPreflightExecution);
+      exitIfFinalizationFailed(invocation, oauthPreflightExecution, finalRecord, mutationContext, executionScope, { metaError, stateError });
+      cleanupExecutionResources(executionScope, mutationContext);
+      if (foreground) printLifecycleJson(finalRecord, lifecycleEvents);
+      process.exit(2);
+    }
   }
 
   exitIfCancelledBeforeSpawn(invocation, executionScope, mutationContext, {
@@ -853,6 +857,7 @@ async function executeRun(invocation, prompt, { foreground, lifecycleEvents = nu
     lifecycleEvents,
     runtimeDiagnostics,
     resumeId,
+    authSelection,
   });
 
   recordPostRunMutations(invocation, mutationContext);
@@ -876,6 +881,33 @@ async function executeRun(invocation, prompt, { foreground, lifecycleEvents = nu
 
   if (foreground) printLifecycleJson(finalRecord, lifecycleEvents);
   process.exit(finalRecord.status === "completed" || finalRecord.status === "cancelled" ? 0 : 2);
+}
+
+function invocationWithAuthSelection(invocation, authSelection) {
+  return Object.freeze({
+    ...invocation,
+    selected_auth_path: authSelection.selected_auth_path,
+    ...(authSelection.auth_fallback ? { auth_fallback: authSelection.auth_fallback } : {}),
+  });
+}
+
+function autoApiKeyFallbackSelectionForClaudeFailure(authSelection, execution) {
+  const reason = claudeAuthFallbackReason(authSelection, execution);
+  return reason ? apiKeyFallbackSelection(authSelection, reason) : null;
+}
+
+function claudeAuthFallbackReason(authSelection, execution) {
+  if (authSelection?.auth_mode !== "auto" || authSelection.selected_auth_path !== "subscription_oauth") return null;
+  const message = String(execution?.errorMessage ?? "");
+  if (message.startsWith("not_authed:")) return "not_authed";
+  if (message.startsWith("oauth_inference_rejected:")) return "oauth_inference_rejected";
+  if (message.startsWith("sandbox_blocked:")) return "sandbox_blocked";
+  const failureText = pingFailureText(execution);
+  const detail = pingFailureDetail(execution);
+  if (isClaudeCodexSandboxBlocked(failureText)) return "sandbox_blocked";
+  if (isOAuthInferenceRejected(execution, authSelectionClassifierContext(authSelection))) return "oauth_inference_rejected";
+  if (PING_AUTH_RE.test(detail)) return "not_authed";
+  return null;
 }
 
 function setupExecutionScopeOrExit(invocation, profile, { foreground, lifecycleEvents }) {
@@ -987,7 +1019,7 @@ function shouldRetryPermissionModeAttempt(attempt, hasNextMode) {
 
 async function spawnClaudeOrExit(invocation, profile, prompt, executionScope, mutationContext, options) {
   try {
-    const authSelection = resolveAuthSelection(invocation.auth_mode);
+    const authSelection = options.authSelection ?? resolveAuthSelection(invocation.auth_mode);
     const permissionModes = permissionModeLadderForInvocation(invocation, profile);
     const attempts = [];
     let lastExecution = null;
@@ -1799,20 +1831,19 @@ async function cmdPing(rest, { readinessProfileName = "ping" } = {}) {
   const rawBinary = options.binary ?? process.env.CLAUDE_BINARY ?? "claude";
   const binary = resolveCliBinary(process.cwd(), rawBinary);
   const timeoutMs = Number(options["timeout-ms"] ?? DEFAULT_CLAUDE_PING_TIMEOUT_MS);
-  const authSelection = resolveAuthSelection(options["auth-mode"]);
+  let authSelection = resolveAuthSelection(options["auth-mode"]);
   if (authSelection.selected_auth_path === "api_key_env_missing") {
     printJson({ status: "not_authed", ...apiKeyMissingFields(authSelection, pingNotAuthedFields()) });
     process.exit(2);
   }
   // Ping is ephemeral (no durable record), so reuse newJobId() purely for its
   // UUIDv4 guarantee — Claude rejects a non-v4 --session-id. Nothing persists.
-  const sessionId = newJobId();
   let execution;
   try {
     execution = await spawnClaude(profile, {
       model,
       promptText: PING_PROMPT,
-      sessionId,
+      sessionId: newJobId(),
       cwd: tmpdir(),
       binary,
       timeoutMs,
@@ -1820,6 +1851,23 @@ async function cmdPing(rest, { readinessProfileName = "ping" } = {}) {
     });
   } catch (e) {
     printPingSpawnError(e, authSelection);
+  }
+  const fallbackSelection = autoApiKeyFallbackSelectionForClaudeFailure(authSelection, execution);
+  if (fallbackSelection) {
+    authSelection = fallbackSelection;
+    try {
+      execution = await spawnClaude(profile, {
+        model,
+        promptText: PING_PROMPT,
+        sessionId: newJobId(),
+        cwd: tmpdir(),
+        binary,
+        timeoutMs,
+        allowedApiKeyEnv: authSelection.allowed_env_credentials,
+      });
+    } catch (e) {
+      printPingSpawnError(e, authSelection);
+    }
   }
   // Classify. Real Claude error texts change per version; match on signals only.
   if (execution.parsed?.ok === true) {

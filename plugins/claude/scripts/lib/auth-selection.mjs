@@ -29,13 +29,13 @@ export function resolveAuthSelection({
       auth_policy: providerKeys.length > 0 ? "api_key_env_allowed" : "api_key_env_required",
     };
   }
-  if (authMode === "auto" && providerKeys.length > 0) {
+  if (authMode === "auto") {
     return {
       auth_mode: authMode,
-      selected_auth_path: "api_key_env",
-      allowed_env_credentials: providerKeys,
-      ignored_env_credentials: [],
-      auth_policy: "api_key_env_allowed",
+      selected_auth_path: "subscription_oauth",
+      allowed_env_credentials: [],
+      ignored_env_credentials: providerKeys,
+      auth_policy: providerKeys.length > 0 ? "subscription_oauth_with_api_key_fallback" : "subscription_oauth",
     };
   }
   return {
@@ -47,6 +47,25 @@ export function resolveAuthSelection({
   };
 }
 
+export function apiKeyFallbackSelection(selection, reason = "subscription_unavailable") {
+  const fallbackKeys = Array.isArray(selection?.ignored_env_credentials)
+    ? selection.ignored_env_credentials
+    : [];
+  if (selection?.auth_mode !== "auto" || fallbackKeys.length === 0) return null;
+  return {
+    auth_mode: "auto",
+    selected_auth_path: "api_key_env",
+    allowed_env_credentials: fallbackKeys,
+    ignored_env_credentials: [],
+    auth_policy: "api_key_env_fallback",
+    auth_fallback: {
+      from: "subscription_oauth",
+      to: "api_key_env",
+      reason,
+    },
+  };
+}
+
 export function authDiagnosticFields(selection) {
   return {
     auth_mode: selection.auth_mode,
@@ -54,6 +73,7 @@ export function authDiagnosticFields(selection) {
     ...(selection.allowed_env_credentials.length > 0 ? { allowed_env_credentials: selection.allowed_env_credentials } : {}),
     ...(selection.ignored_env_credentials.length > 0 ? { ignored_env_credentials: selection.ignored_env_credentials } : {}),
     auth_policy: selection.auth_policy,
+    ...(selection.auth_fallback ? { auth_fallback: selection.auth_fallback } : {}),
   };
 }
 

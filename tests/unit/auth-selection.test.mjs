@@ -114,12 +114,42 @@ for (const { plugin, providerName, keys } of AUTH_MODULES) {
       }),
       {
         auth_mode: "auto",
-        selected_auth_path: "api_key_env",
-        allowed_env_credentials: [keys[0]],
-        ignored_env_credentials: [],
-        auth_policy: "api_key_env_allowed",
+        selected_auth_path: "subscription_oauth",
+        allowed_env_credentials: [],
+        ignored_env_credentials: [keys[0]],
+        auth_policy: "subscription_oauth_with_api_key_fallback",
       },
     );
+    const autoWithKey = mod.resolveAuthSelection({
+      requestedMode: "auto",
+      providerApiKeyEnvNames: keys,
+      fail,
+      env: { [keys[0]]: "secret-value" },
+    });
+    const fallback = mod.apiKeyFallbackSelection(autoWithKey, "not_authed");
+    assert.deepEqual(fallback, {
+      auth_mode: "auto",
+      selected_auth_path: "api_key_env",
+      allowed_env_credentials: [keys[0]],
+      ignored_env_credentials: [],
+      auth_policy: "api_key_env_fallback",
+      auth_fallback: {
+        from: "subscription_oauth",
+        to: "api_key_env",
+        reason: "not_authed",
+      },
+    });
+    assert.deepEqual(mod.authDiagnosticFields(fallback), {
+      auth_mode: "auto",
+      selected_auth_path: "api_key_env",
+      allowed_env_credentials: [keys[0]],
+      auth_policy: "api_key_env_fallback",
+      auth_fallback: {
+        from: "subscription_oauth",
+        to: "api_key_env",
+        reason: "not_authed",
+      },
+    });
     assert.deepEqual(
       mod.resolveAuthSelection({
         requestedMode: undefined,

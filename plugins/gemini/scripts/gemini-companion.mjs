@@ -24,6 +24,7 @@ import { spawnGemini } from "./lib/gemini.mjs";
 import { writeCancelMarker, consumeCancelMarker } from "./lib/cancel-marker.mjs";
 import {
   authDiagnosticFields,
+  apiKeyFallbackSelection,
   apiKeyMissingFields as buildApiKeyMissingFields,
   apiKeyMissingMessage as buildApiKeyMissingMessage,
   resolveAuthSelection as resolveAuthSelectionForProvider,
@@ -299,8 +300,7 @@ function makeGeminiPingCwd() {
   return dir;
 }
 
-async function geminiReadinessPreflight(invocation, profile) {
-  const authSelection = resolveAuthSelection(invocation.auth_mode);
+async function geminiReadinessPreflight(invocation, profile, authSelection = resolveAuthSelection(invocation.auth_mode)) {
   const readinessProfile = resolveProfile("ping");
   const candidates = modelCandidatesForInvocation(profile, invocation);
   let execution = null;
@@ -394,7 +394,7 @@ function readRuntimeOptionsSidecar(workspaceRoot, jobId) {
   }
 }
 
-function invocationFromRecord(record, fallbackAuthMode = "auto", runtimeOptions = {}) {
+function invocationFromRecord(record, fallbackAuthMode = "subscription", runtimeOptions = {}) {
   return Object.freeze({
     job_id: record.job_id,
     target: record.target,
@@ -415,7 +415,7 @@ function invocationFromRecord(record, fallbackAuthMode = "auto", runtimeOptions 
     review_prompt_provider: record.review_metadata?.prompt_provider ?? null,
     schema_spec: record.schema_spec ?? null,
     run_kind: runKindFromRecord(record),
-    auth_mode: record.auth_mode ?? fallbackAuthMode ?? "auto",
+    auth_mode: record.auth_mode ?? fallbackAuthMode ?? "subscription",
     binary: record.binary,
     timeout_ms:
       runtimeOptions.timeout_ms ??
@@ -658,6 +658,8 @@ async function cmdRun(rest) {
 }
 
 async function executeRun(invocation, prompt, { foreground, lifecycleEvents = null }) {
+  let authSelection = resolveAuthSelection(invocation.auth_mode);
+  invocation = invocationWithAuthSelection(invocation, authSelection);
   const { job_id: jobId, workspace_root: workspaceRoot } = invocation;
   const profile = resolveProfile(invocation.mode_profile_name);
   const executionScope = setupExecutionScopeOrExit(invocation, profile, { foreground, lifecycleEvents });
@@ -666,34 +668,40 @@ async function executeRun(invocation, prompt, { foreground, lifecycleEvents = nu
 
   exitIfCancelledBeforeSpawn(invocation, executionScope, mutationContext, { foreground, lifecycleEvents });
 
-  const preflightExecution = await geminiReadinessPreflight(invocation, profile);
+  const preflightExecution = await geminiReadinessPreflight(invocation, profile, authSelection);
   if (preflightExecution) {
-    preflightExecution.reviewAuditManifest = reviewAuditManifest(invocation, prompt, executionScope.containment.path, preflightExecution);
-    const errorRecord = buildJobRecord(invocation, {
-      exitCode: preflightExecution.exitCode,
-      endedAt: preflightExecution.endedAt,
-      parsed: preflightExecution.parsed,
-      pidInfo: null,
-      geminiSessionId: null,
-      errorMessage: preflightExecution.errorMessage,
-      signal: preflightExecution.signal ?? null,
-      timedOut: preflightExecution.timedOut === true,
-      reviewAuditManifest: preflightExecution.reviewAuditManifest,
-    }, mutationContext.mutations);
-    writeJobFile(workspaceRoot, jobId, errorRecord);
-    upsertJob(workspaceRoot, errorRecord);
-    for (const [name, contents] of [
-      ["stdout.log", preflightExecution.stdout],
-      ["stderr.log", preflightExecution.stderr],
-    ]) {
-      try { writeSidecar(workspaceRoot, jobId, name, contents); }
-      catch (e) {
-        process.stderr.write(`gemini-companion: warning: sidecar ${name} write failed: ${e.message}\n`);
+    const fallbackSelection = autoApiKeyFallbackSelectionForGeminiFailure(authSelection, preflightExecution);
+    if (fallbackSelection) {
+      authSelection = fallbackSelection;
+      invocation = invocationWithAuthSelection(invocation, authSelection);
+    } else {
+      preflightExecution.reviewAuditManifest = reviewAuditManifest(invocation, prompt, executionScope.containment.path, preflightExecution);
+      const errorRecord = buildJobRecord(invocation, {
+        exitCode: preflightExecution.exitCode,
+        endedAt: preflightExecution.endedAt,
+        parsed: preflightExecution.parsed,
+        pidInfo: null,
+        geminiSessionId: null,
+        errorMessage: preflightExecution.errorMessage,
+        signal: preflightExecution.signal ?? null,
+        timedOut: preflightExecution.timedOut === true,
+        reviewAuditManifest: preflightExecution.reviewAuditManifest,
+      }, mutationContext.mutations);
+      writeJobFile(workspaceRoot, jobId, errorRecord);
+      upsertJob(workspaceRoot, errorRecord);
+      for (const [name, contents] of [
+        ["stdout.log", preflightExecution.stdout],
+        ["stderr.log", preflightExecution.stderr],
+      ]) {
+        try { writeSidecar(workspaceRoot, jobId, name, contents); }
+        catch (e) {
+          process.stderr.write(`gemini-companion: warning: sidecar ${name} write failed: ${e.message}\n`);
+        }
       }
+      cleanupExecutionResources(executionScope, mutationContext);
+      if (foreground) printLifecycleJson(errorRecord, lifecycleEvents);
+      process.exit(2);
     }
-    cleanupExecutionResources(executionScope, mutationContext);
-    if (foreground) printLifecycleJson(errorRecord, lifecycleEvents);
-    process.exit(2);
   }
 
   if (foreground && lifecycleEvents) {
@@ -709,7 +717,7 @@ async function executeRun(invocation, prompt, { foreground, lifecycleEvents = nu
     prompt,
     executionScope,
     mutationContext,
-    { foreground, lifecycleEvents, resumeId },
+    { foreground, lifecycleEvents, resumeId, authSelection },
   );
 
   recordPostRunMutations(invocation, mutationContext);
@@ -731,6 +739,31 @@ async function executeRun(invocation, prompt, { foreground, lifecycleEvents = nu
   cleanupExecutionResources(executionScope, mutationContext);
   if (foreground) printLifecycleJson(finalRecord, lifecycleEvents);
   process.exit(finalRecord.status === "completed" || finalRecord.status === "cancelled" ? 0 : 2);
+}
+
+function invocationWithAuthSelection(invocation, authSelection) {
+  return Object.freeze({
+    ...invocation,
+    selected_auth_path: authSelection.selected_auth_path,
+    ...(authSelection.auth_fallback ? { auth_fallback: authSelection.auth_fallback } : {}),
+  });
+}
+
+function autoApiKeyFallbackSelectionForGeminiFailure(authSelection, execution) {
+  const reason = geminiAuthFallbackReason(authSelection, execution);
+  return reason ? apiKeyFallbackSelection(authSelection, reason) : null;
+}
+
+function geminiAuthFallbackReason(authSelection, execution) {
+  if (authSelection?.auth_mode !== "auto" || authSelection.selected_auth_path !== "subscription_oauth") return null;
+  const message = String(execution?.errorMessage ?? "");
+  if (message.startsWith("not_authed:")) return "not_authed";
+  if (message.startsWith("sandbox_blocked:")) return "sandbox_blocked";
+  const failureText = pingFailureText(execution);
+  const detail = pingFailureDetail(execution);
+  if (isGeminiCodexSandboxBlocked(failureText)) return "sandbox_blocked";
+  if (PING_AUTH_RE.test(detail)) return "not_authed";
+  return null;
 }
 
 function setupExecutionScopeOrExit(invocation, profile, { foreground, lifecycleEvents }) {
@@ -815,7 +848,7 @@ async function spawnGeminiOrExit(invocation, profile, prompt, executionScope, mu
 }
 
 async function spawnGeminiWithFallbacks(invocation, profile, prompt, executionScope, mutationContext, options) {
-  const authSelection = resolveAuthSelection(invocation.auth_mode);
+  const authSelection = options.authSelection ?? resolveAuthSelection(invocation.auth_mode);
   const modelCandidates = modelCandidatesForInvocation(profile, invocation);
   let execution;
   let executedInvocation = invocation;
@@ -1355,6 +1388,48 @@ function isGeminiCodexSandboxBlocked(detail) {
   });
 }
 
+async function runGeminiPingAttempts({ profile, candidates, model, binary, timeoutMs, authSelection }) {
+  let execution = null;
+  let selectedModel = model;
+  let modelFallback = null;
+  const modelFallbackHops = [];
+  for (let i = 0; i < candidates.length; i++) {
+    selectedModel = candidates[i];
+    execution = await spawnGemini(profile, {
+      model: selectedModel,
+      promptText: PING_PROMPT,
+      policyPath: READ_ONLY_POLICY,
+      cwd: makeGeminiPingCwd(),
+      binary,
+      timeoutMs,
+      allowedApiKeyEnv: authSelection.allowed_env_credentials,
+    });
+    if (
+      execution.exitCode !== 0 &&
+      i < candidates.length - 1 &&
+      retryableModelCapacityFailure(execution)
+    ) {
+      const hop = {
+        from: selectedModel,
+        to: candidates[i + 1],
+        reason: "capacity_limited",
+      };
+      modelFallbackHops.push(hop);
+      modelFallback = {
+        ...hop,
+        hops: [...modelFallbackHops],
+      };
+      process.stderr.write(
+        `gemini-companion: warning: ping model ${selectedModel ?? "<native>"} capacity-limited; ` +
+        `retrying with ${candidates[i + 1]}\n`,
+      );
+      continue;
+    }
+    break;
+  }
+  return { execution, selectedModel, modelFallback };
+}
+
 async function cmdPing(rest, { readinessProfileName = "ping" } = {}) {
   const { options } = parseArgs(rest, { valueOptions: ["model", "binary", "timeout-ms", "auth-mode"], booleanOptions: [] });
   const profile = resolveProfile(readinessProfileName);
@@ -1364,49 +1439,30 @@ async function cmdPing(rest, { readinessProfileName = "ping" } = {}) {
     ? [options.model]
     : resolveModelCandidatesForProfile(profile, modelsConfig);
   const candidates = modelCandidates.length > 0 ? modelCandidates : [model];
-  const authSelection = resolveAuthSelection(options["auth-mode"]);
+  let authSelection = resolveAuthSelection(options["auth-mode"]);
   if (authSelection.selected_auth_path === "api_key_env_missing") {
     printJson({ status: "not_authed", ...apiKeyMissingFields(authSelection, pingNotAuthedFields()) });
     process.exit(2);
   }
   try {
-    let execution = null;
-    let selectedModel = model;
-    let modelFallback = null;
-    const modelFallbackHops = [];
-    for (let i = 0; i < candidates.length; i++) {
-      selectedModel = candidates[i];
-      execution = await spawnGemini(profile, {
-        model: selectedModel,
-        promptText: PING_PROMPT,
-        policyPath: READ_ONLY_POLICY,
-        cwd: makeGeminiPingCwd(),
-        binary: options.binary ?? process.env.GEMINI_BINARY ?? "gemini",
-        timeoutMs: Number(options["timeout-ms"] ?? DEFAULT_GEMINI_PING_TIMEOUT_MS),
-        allowedApiKeyEnv: authSelection.allowed_env_credentials,
-      });
-      if (
-        execution.exitCode !== 0 &&
-        i < candidates.length - 1 &&
-        retryableModelCapacityFailure(execution)
-      ) {
-        const hop = {
-          from: selectedModel,
-          to: candidates[i + 1],
-          reason: "capacity_limited",
-        };
-        modelFallbackHops.push(hop);
-        modelFallback = {
-          ...hop,
-          hops: [...modelFallbackHops],
-        };
-        process.stderr.write(
-          `gemini-companion: warning: ping model ${selectedModel ?? "<native>"} capacity-limited; ` +
-          `retrying with ${candidates[i + 1]}\n`,
-        );
-        continue;
-      }
-      break;
+    const pingInputs = {
+      profile,
+      candidates,
+      model,
+      binary: options.binary ?? process.env.GEMINI_BINARY ?? "gemini",
+      timeoutMs: Number(options["timeout-ms"] ?? DEFAULT_GEMINI_PING_TIMEOUT_MS),
+    };
+    let { execution, selectedModel, modelFallback } = await runGeminiPingAttempts({
+      ...pingInputs,
+      authSelection,
+    });
+    const fallbackSelection = autoApiKeyFallbackSelectionForGeminiFailure(authSelection, execution);
+    if (fallbackSelection) {
+      authSelection = fallbackSelection;
+      ({ execution, selectedModel, modelFallback } = await runGeminiPingAttempts({
+        ...pingInputs,
+        authSelection,
+      }));
     }
     if (execution.parsed.ok) {
       const payload = { status: "ok", ...pingOkFields(authSelection, modelFallback), ...authDiagnosticFields(authSelection), model: selectedModel ?? null,

@@ -1968,13 +1968,13 @@ process.stdout.write(JSON.stringify({
   }
 });
 
-test("gemini ping auto auth prefers API key when present", () => {
-  const cwd = mkdtempSync(path.join(tmpdir(), "gemini-ping-auto-auth-cwd-"));
-  const binDir = mkdtempSync(path.join(tmpdir(), "gemini-ping-auto-auth-bin-"));
-  const binary = path.join(binDir, "gemini-auto-auth");
+test("gemini ping auto auth prefers subscription when API key is present", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "gemini-ping-auto-subscription-cwd-"));
+  const binDir = mkdtempSync(path.join(tmpdir(), "gemini-ping-auto-subscription-bin-"));
+  const binary = path.join(binDir, "gemini-auto-subscription");
   writeFileSync(binary, `#!/usr/bin/env node
-if (process.env.GEMINI_API_KEY !== "secret-test-value") {
-  process.stderr.write("missing GEMINI_API_KEY\\n");
+if (process.env.GEMINI_API_KEY) {
+  process.stderr.write("GEMINI_API_KEY should be ignored for initial auto subscription probe\\n");
   process.exit(9);
 }
 process.stdout.write(JSON.stringify({
@@ -1991,8 +1991,49 @@ process.stdout.write(JSON.stringify({
     assert.equal(status, 0);
     const parsed = JSON.parse(stdout);
     assert.equal(parsed.auth_mode, "auto");
+    assert.equal(parsed.selected_auth_path, "subscription_oauth");
+    assert.deepEqual(parsed.ignored_env_credentials, ["GEMINI_API_KEY"]);
+    assert.equal(parsed.auth_policy, "subscription_oauth_with_api_key_fallback");
+    assert.doesNotMatch(stdout, /secret-test-value/);
+  } finally {
+    rmTree(dataDir);
+    rmTree(cwd);
+    rmTree(binDir);
+  }
+});
+
+test("gemini ping auto auth falls back to API key when subscription is unavailable", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "gemini-ping-auto-api-fallback-cwd-"));
+  const binDir = mkdtempSync(path.join(tmpdir(), "gemini-ping-auto-api-fallback-bin-"));
+  const binary = path.join(binDir, "gemini-auto-api-fallback");
+  writeFileSync(binary, `#!/usr/bin/env node
+if (process.env.GEMINI_API_KEY === "secret-test-value") {
+  process.stdout.write(JSON.stringify({
+    session_id: "${GEMINI_SESSION_ID}",
+    response: "Mock Gemini response."
+  }) + "\\n");
+  process.exit(0);
+}
+process.stderr.write("OAuth2 not authenticated\\n");
+process.exit(1);
+`, "utf8");
+  chmodSync(binary, 0o755);
+  const { stdout, status, dataDir } = runCompanion(
+    ["ping", "--auth-mode", "auto", "--binary", binary, "--model", "gemini-3-flash-preview"],
+    { cwd, env: { GEMINI_API_KEY: "secret-test-value" } },
+  );
+  try {
+    assert.equal(status, 0);
+    const parsed = JSON.parse(stdout);
+    assert.equal(parsed.auth_mode, "auto");
     assert.equal(parsed.selected_auth_path, "api_key_env");
     assert.deepEqual(parsed.allowed_env_credentials, ["GEMINI_API_KEY"]);
+    assert.equal(parsed.auth_policy, "api_key_env_fallback");
+    assert.deepEqual(parsed.auth_fallback, {
+      from: "subscription_oauth",
+      to: "api_key_env",
+      reason: "not_authed",
+    });
     assert.doesNotMatch(stdout, /secret-test-value/);
   } finally {
     rmTree(dataDir);

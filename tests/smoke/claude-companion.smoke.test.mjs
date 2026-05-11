@@ -1949,11 +1949,11 @@ process.stdout.write(JSON.stringify({
   }
 });
 
-test("ping: auto auth prefers Claude API key when present", () => {
-  const tmp = mkdtempSync(path.join(tmpdir(), "claude-ping-auto-auth-"));
-  const binary = writeExecutable(tmp, "claude-auto-auth", `#!/usr/bin/env node
-if (process.env.ANTHROPIC_API_KEY !== "secret-test-value") {
-  process.stderr.write("missing ANTHROPIC_API_KEY\\n");
+test("ping: auto auth prefers Claude subscription when API key is present", () => {
+  const tmp = mkdtempSync(path.join(tmpdir(), "claude-ping-auto-subscription-"));
+  const binary = writeExecutable(tmp, "claude-auto-subscription", `#!/usr/bin/env node
+if (process.env.ANTHROPIC_API_KEY) {
+  process.stderr.write("ANTHROPIC_API_KEY should be ignored for initial auto subscription probe\\n");
   process.exit(9);
 }
 process.stdout.write(JSON.stringify({
@@ -1971,9 +1971,49 @@ process.stdout.write(JSON.stringify({
     assert.equal(status, 0);
     const result = JSON.parse(stdout);
     assert.equal(result.auth_mode, "auto");
+    assert.equal(result.selected_auth_path, "subscription_oauth");
+    assert.match(result.summary, /first-party CLI auth/);
+    assert.deepEqual(result.ignored_env_credentials, ["ANTHROPIC_API_KEY"]);
+    assert.equal(result.auth_policy, "subscription_oauth_with_api_key_fallback");
+    assert.doesNotMatch(stdout, /secret-test-value/);
+  } finally {
+    cleanup(dataDir);
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("ping: auto auth falls back to Claude API key when subscription is unavailable", () => {
+  const tmp = mkdtempSync(path.join(tmpdir(), "claude-ping-auto-api-fallback-"));
+  const binary = writeExecutable(tmp, "claude-auto-api-fallback", `#!/usr/bin/env node
+if (process.env.ANTHROPIC_API_KEY === "secret-test-value") {
+  process.stdout.write(JSON.stringify({
+    type: "result",
+    is_error: false,
+    result: "ok",
+    session_id: "33333333-3333-4333-8333-333333333333"
+  }) + "\\n");
+  process.exit(0);
+}
+process.stderr.write("not authenticated\\n");
+process.exit(1);
+`);
+  const { stdout, status, dataDir } = runCompanion(
+    ["ping", "--auth-mode", "auto", "--binary", binary, "--model", "claude-haiku-4-5-20251001"],
+    { cwd: tmpdir(), env: { ANTHROPIC_API_KEY: "secret-test-value" } },
+  );
+  try {
+    assert.equal(status, 0);
+    const result = JSON.parse(stdout);
+    assert.equal(result.auth_mode, "auto");
     assert.equal(result.selected_auth_path, "api_key_env");
     assert.match(result.summary, /API-key auth/);
     assert.deepEqual(result.allowed_env_credentials, ["ANTHROPIC_API_KEY"]);
+    assert.equal(result.auth_policy, "api_key_env_fallback");
+    assert.deepEqual(result.auth_fallback, {
+      from: "subscription_oauth",
+      to: "api_key_env",
+      reason: "not_authed",
+    });
     assert.doesNotMatch(stdout, /secret-test-value/);
   } finally {
     cleanup(dataDir);
