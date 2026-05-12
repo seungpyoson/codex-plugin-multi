@@ -214,7 +214,8 @@ The panel shows one row per provider job with provider, job id, operator state,
 source transmission, elapsed/configured timeout, verdict/error summary,
 readiness, terminal status, semantic failed-slot state, inspection state, error
 code, HTTP status, and semantic failure reasons. It aggregates Claude, Gemini,
-Kimi, Grok, DeepSeek, and GLM persisted JobRecords from their plugin data roots.
+Kimi, Grok, and API Reviewers persisted JobRecords from their plugin data roots;
+DeepSeek and GLM appear as sub-providers from the API Reviewers root.
 A provider that is running, blocked before source send, waiting after source
 send, timed out, unavailable, approval-gated, completed, or completed with a
 failed review slot must appear as an explicit row instead of being buried in

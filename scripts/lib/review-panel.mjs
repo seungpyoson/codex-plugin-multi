@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { execFileSync } from "node:child_process";
 import { existsSync, readdirSync, readFileSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join, resolve } from "node:path";
@@ -48,6 +49,10 @@ function reasons(record) {
   return Array.isArray(raw) ? raw.join(",") : "";
 }
 
+function isActiveStatus(status) {
+  return status === "running" || status === "queued";
+}
+
 function elapsedMs(record) {
   const value = valueAt(record, ["review_metadata", "raw_output", "elapsed_ms"], null);
   return typeof value === "number" && Number.isFinite(value) ? value : "";
@@ -79,6 +84,9 @@ function readiness(record) {
   if (record.status === "completed" && quality(record).failed_review_slot !== true) {
     return "review-ready";
   }
+  if (record.status === "completed" && quality(record).failed_review_slot === true) {
+    return "review failed";
+  }
   if (record.status === "failed") return "review failed";
   return "unknown";
 }
@@ -94,11 +102,11 @@ function jobId(record) {
 function failedState(sent, code) {
   if (code === "approval_required") return "approval_required";
   if (code === "timeout" && sent === "sent") return "source_sent_timeout";
-  if (sent === "not_sent") return "failed_before_source_send";
   if (PROVIDER_UNAVAILABLE_CODES.includes(code)) return "provider_unavailable";
   if (AUTH_FAILURE_CODES.includes(code)) return "auth_session_failure";
   if (code === "rate_limited") return "rate_limited";
   if (code === "usage_limited") return "usage_limited";
+  if (sent === "not_sent") return "failed_before_source_send";
   return "failed";
 }
 
@@ -134,9 +142,9 @@ function operatorState(record) {
  * error_code on failure, parsed Verdict keyword, or empty string.
  */
 function resultSummary(record) {
-  if (record.status === "running" || record.status === "queued") return "-";
-  if (quality(record).failed_review_slot === true) return "failed_review_slot";
+  if (isActiveStatus(record.status)) return "-";
   if (record.status === "failed" && record.error_code) return record.error_code;
+  if (quality(record).failed_review_slot === true) return "failed_review_slot";
   const verdict = VERDICT_RE.exec(String(record.result ?? ""));
   if (!verdict) return "";
   return verdict[1].toLowerCase().replace(/\s+/g, "_");
@@ -156,7 +164,8 @@ function cell(value) {
  */
 export function buildReviewPanelRows(records = []) {
   return records.map((record) => {
-    const semanticFailed = quality(record).failed_review_slot === true;
+    const showReviewQuality = !isActiveStatus(record.status);
+    const semanticFailed = showReviewQuality && quality(record).failed_review_slot === true;
     return Object.freeze({
       provider: providerName(record),
       job_id: jobId(record),
@@ -170,9 +179,9 @@ export function buildReviewPanelRows(records = []) {
       result: resultSummary(record),
       semantic_failed: semanticFailed,
       inspection: inspectionStatus(record),
-      error_code: record.error_code ?? "",
+      error_code: record.status === "failed" ? (record.error_code ?? "") : "",
       http_status: record.http_status ?? "",
-      reasons: reasons(record),
+      reasons: showReviewQuality ? reasons(record) : "",
     });
   });
 }
@@ -195,7 +204,7 @@ function trimHyphens(value) {
 }
 
 function companionStateId(cwd) {
-  const workspaceRoot = resolve(cwd);
+  const workspaceRoot = resolvePanelWorkspaceRoot(cwd);
   const canonical = canonicalWorkspace(workspaceRoot);
   const slug = trimHyphens((basename(workspaceRoot) || "workspace").replace(/[^a-zA-Z0-9._-]+/g, "-")) || "workspace";
   const hash = createHash("sha256").update(canonical).digest("hex").slice(0, 16);
@@ -205,8 +214,21 @@ function companionStateId(cwd) {
 function defaultDataRoot(pluginName, cwd) {
   const workspace = resolve(cwd);
   const slug = basename(workspace).replace(/[^A-Za-z0-9._-]/g, "_").slice(0, 48) || "workspace";
-  const hash = createHash("sha256").update(canonicalWorkspace(workspace)).digest("hex").slice(0, 16);
+  const hash = createHash("sha256").update(workspace).digest("hex").slice(0, 16);
   return resolve(tmpdir(), "codex-plugin-multi", pluginName, `${slug}-${hash}`);
+}
+
+function resolvePanelWorkspaceRoot(cwd) {
+  const workspace = resolve(cwd);
+  try {
+    return execFileSync("git", ["-C", workspace, "rev-parse", "--show-toplevel"], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+      timeout: 5000,
+    }).trim();
+  } catch {
+    return workspace;
+  }
 }
 
 function readRecord(file) {
@@ -254,14 +276,15 @@ function recordsFromCompanionProvider({ env, fallback }, cwd, processEnv) {
 }
 
 function recordsFromDirectProvider({ env, plugin }, cwd, processEnv) {
-  const root = processEnv[env] ? resolve(processEnv[env]) : defaultDataRoot(plugin, cwd);
-  return recordsFromJobsDir(join(root, "jobs"));
+  if (processEnv[env]) return recordsFromJobsDir(join(resolve(processEnv[env]), "jobs"));
+  const roots = [defaultDataRoot(plugin, cwd), defaultDataRoot(plugin, canonicalWorkspace(cwd))];
+  return [...new Set(roots)].flatMap((root) => recordsFromJobsDir(join(root, "jobs")));
 }
 
-function recordWorkspaceMatches(record, canonicalCwd) {
+function recordWorkspaceMatches(record, canonicalWorkspaces) {
   const recordWorkspace = record.workspace_root ?? record.workspaceRoot ?? null;
-  if (!recordWorkspace) return false;
-  return canonicalWorkspace(recordWorkspace) === canonicalCwd;
+  if (typeof recordWorkspace !== "string" || recordWorkspace.length === 0) return false;
+  return canonicalWorkspaces.has(canonicalWorkspace(recordWorkspace));
 }
 
 function timestamp(record) {
@@ -288,11 +311,14 @@ function providerOrderIndex(provider) {
  *   then descending timestamp, then job_id.
  */
 export function collectReviewPanelRecords({ cwd = process.cwd(), env = process.env } = {}) {
-  const workspaceCanonical = canonicalWorkspace(cwd);
+  const workspaceCanonicals = new Set([
+    canonicalWorkspace(cwd),
+    canonicalWorkspace(resolvePanelWorkspaceRoot(cwd)),
+  ]);
   const records = [
     ...COMPANION_PROVIDERS.flatMap((provider) => recordsFromCompanionProvider(provider, cwd, env)),
     ...DIRECT_ROOTS.flatMap((provider) => recordsFromDirectProvider(provider, cwd, env)),
-  ].filter((record) => recordWorkspaceMatches(record, workspaceCanonical));
+  ].filter((record) => recordWorkspaceMatches(record, workspaceCanonicals));
   return records.sort((left, right) => {
     const providerDiff = providerOrderIndex(providerName(left)) - providerOrderIndex(providerName(right));
     if (providerDiff !== 0) return providerDiff;

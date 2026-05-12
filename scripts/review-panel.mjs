@@ -14,8 +14,9 @@ function usage() {
     "stdin.",
     "",
     "With --workspace, the panel auto-discovers live/recent JobRecords from all",
-    "provider state roots (Claude, Gemini, Kimi, Grok, DeepSeek, GLM) and",
-    "filters by canonical workspace, so no input file is needed.",
+    "provider state roots (Claude, Gemini, Kimi, Grok, and API Reviewers records",
+    "for DeepSeek/GLM) and filters by canonical workspace, so no input file is",
+    "needed.",
   ].join("\n");
 }
 
@@ -30,7 +31,7 @@ function parseArgs(argv) {
     if (token === "--workspace") {
       if (out.input) throw new Error("--workspace and a file argument are mutually exclusive");
       const value = argv[++i];
-      if (!value || value.startsWith("--")) throw new Error("--workspace requires a value");
+      if (!value) throw new Error("--workspace requires a value");
       out.workspace = value;
       continue;
     }

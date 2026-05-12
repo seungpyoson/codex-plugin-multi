@@ -1,9 +1,10 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join, resolve } from "node:path";
 
 import {
   buildReviewPanelRows,
@@ -98,7 +99,7 @@ test("review panel rows expose operational and semantic review state", () => {
       source_sent: "sent",
       elapsed_ms: 337917,
       timeout_ms: "",
-      result: "failed_review_slot",
+      result: "review_not_completed",
       semantic_failed: true,
       inspection: "blocked",
       error_code: "review_not_completed",
@@ -115,7 +116,7 @@ test("review panel rows expose operational and semantic review state", () => {
       source_sent: "not_sent",
       elapsed_ms: 554,
       timeout_ms: "",
-      result: "failed_review_slot",
+      result: "models_ok_chat_400",
       semantic_failed: true,
       inspection: "unknown",
       error_code: "models_ok_chat_400",
@@ -241,6 +242,31 @@ test("review panel CLI rejects workspace and file arguments together", () => {
   assert.match(res.stderr, /--workspace and a file argument are mutually exclusive/);
 });
 
+test("review panel CLI accepts workspace paths that start with dashes", () => {
+  const parent = mkdtempSync(join(tmpdir(), "review-panel-dash-parent-"));
+  const workspace = join(parent, "--staging");
+  mkdirSync(workspace);
+
+  const res = spawnSync(process.execPath, [
+    resolve("scripts/review-panel.mjs"),
+    "--workspace", "--staging",
+  ], {
+    cwd: parent,
+    encoding: "utf8",
+    env: {
+      ...process.env,
+      CLAUDE_PLUGIN_DATA: mkdtempSync(join(tmpdir(), "review-panel-empty-claude-")),
+      GEMINI_PLUGIN_DATA: mkdtempSync(join(tmpdir(), "review-panel-empty-gemini-")),
+      KIMI_PLUGIN_DATA: mkdtempSync(join(tmpdir(), "review-panel-empty-kimi-")),
+      GROK_PLUGIN_DATA: mkdtempSync(join(tmpdir(), "review-panel-empty-grok-")),
+      API_REVIEWERS_PLUGIN_DATA: mkdtempSync(join(tmpdir(), "review-panel-empty-api-")),
+    },
+  });
+
+  assert.equal(res.status, 0);
+  assert.match(res.stdout, /Provider \| Job ID \| State/);
+});
+
 test("review panel treats queued jobs as active even with stale approval error code", () => {
   const [row] = buildReviewPanelRows([
     {
@@ -274,6 +300,30 @@ test("review panel does not show stale failed-review-slot result for active jobs
 
   assert.equal(row.state, "source_sent_waiting");
   assert.equal(row.result, "-");
+  assert.equal(row.semantic_failed, false);
+  assert.equal(row.reasons, "");
+});
+
+test("review panel prioritizes failed error codes over stale failed-review-slot metadata", () => {
+  const [row] = buildReviewPanelRows([
+    {
+      provider: "gemini",
+      status: "failed",
+      error_code: "timeout",
+      external_review: { source_content_transmission: "sent" },
+      review_metadata: {
+        audit_manifest: {
+          review_quality: {
+            failed_review_slot: true,
+            semantic_failure_reasons: ["missing_verdict"],
+          },
+        },
+      },
+    },
+  ]);
+
+  assert.equal(row.state, "source_sent_timeout");
+  assert.equal(row.result, "timeout");
 });
 
 test("review panel distinguishes transient rate limits from quota exhaustion", () => {
@@ -282,18 +332,32 @@ test("review panel distinguishes transient rate limits from quota exhaustion", (
       provider: "deepseek",
       status: "failed",
       error_code: "rate_limited",
-      external_review: { source_content_transmission: "sent" },
+      external_review: { source_content_transmission: "not_sent" },
     },
     {
       provider: "glm",
       status: "failed",
       error_code: "usage_limited",
-      external_review: { source_content_transmission: "sent" },
+      external_review: { source_content_transmission: "not_sent" },
+    },
+    {
+      provider: "grok",
+      status: "failed",
+      error_code: "tunnel_unavailable",
+      external_review: { source_content_transmission: "not_sent" },
+    },
+    {
+      provider: "claude",
+      status: "failed",
+      error_code: "session_expired",
+      external_review: { source_content_transmission: "not_sent" },
     },
   ]);
 
   assert.equal(rows[0].state, "rate_limited");
   assert.equal(rows[1].state, "usage_limited");
+  assert.equal(rows[2].state, "provider_unavailable");
+  assert.equal(rows[3].state, "auth_session_failure");
 });
 
 function writeRecord(root, record, stateSubdir = null) {
@@ -303,6 +367,20 @@ function writeRecord(root, record, stateSubdir = null) {
     : join(root, "jobs", jobId);
   mkdirSync(dir, { recursive: true });
   writeFileSync(join(dir, "meta.json"), JSON.stringify(record, null, 2));
+}
+
+function writerDefaultDataRoot(pluginName, cwd) {
+  const workspace = resolve(cwd);
+  const slug = basename(workspace).replace(/[^A-Za-z0-9._-]/g, "_").slice(0, 48) || "workspace";
+  const hash = createHash("sha256").update(workspace).digest("hex").slice(0, 16);
+  return resolve(tmpdir(), "codex-plugin-multi", pluginName, `${slug}-${hash}`);
+}
+
+function companionStateIdForWorkspaceRoot(workspaceRoot) {
+  const canonical = realpathSync.native(resolve(workspaceRoot));
+  const slug = (basename(workspaceRoot) || "workspace").replace(/[^a-zA-Z0-9._-]+/g, "-").replace(/^-+|-+$/g, "") || "workspace";
+  const hash = createHash("sha256").update(canonical).digest("hex").slice(0, 16);
+  return `${slug}-${hash}`;
 }
 
 test("review panel CLI aggregates live and recent jobs across provider state roots", () => {
@@ -417,7 +495,7 @@ test("review panel CLI aggregates live and recent jobs across provider state roo
   assert.match(output, /claude \| job_11111111-1111-4111-8111-111111111111 \| source_sent_waiting \| sent \| 1234 \|  \| -/);
   assert.match(output, /gemini \| job_22222222-2222-4222-8222-222222222222 \| source_sent_timeout \| sent \| 600000 \|  \| timeout/);
   assert.match(output, /kimi \| job_66666666-6666-4666-8666-666666666666 \| provider_unavailable \| sent \| 99 \|  \| provider_unavailable/);
-  assert.match(output, /grok \| job_33333333-3333-4333-8333-333333333333 \| failed_before_source_send \| not_sent \| 8000 \|  \| tunnel_unavailable/);
+  assert.match(output, /grok \| job_33333333-3333-4333-8333-333333333333 \| provider_unavailable \| not_sent \| 8000 \|  \| tunnel_unavailable/);
   assert.match(output, /deepseek \| job_44444444-4444-4444-8444-444444444444 \| approval_required \| not_sent \| 34 \|  \| approval_required/);
   assert.match(output, /glm \| job_55555555-5555-4555-8555-555555555555 \| completed \| sent \| 45422 \|  \| approve/);
   assert.match(output, /glm \| job_77777777-7777-4777-8777-777777777777 \| completed_failed_review_slot \| sent \| 91 \|  \| failed_review_slot/);
@@ -425,6 +503,7 @@ test("review panel CLI aggregates live and recent jobs across provider state roo
 
 test("review panel workspace collection excludes records without workspace metadata from scanned state roots", () => {
   const workspace = mkdtempSync(join(tmpdir(), "review-panel-workspace-"));
+  const otherWorkspace = mkdtempSync(join(tmpdir(), "review-panel-other-"));
   const claudeData = mkdtempSync(join(tmpdir(), "review-panel-claude-"));
 
   writeRecord(claudeData, {
@@ -442,6 +521,14 @@ test("review panel workspace collection excludes records without workspace metad
     result: "Verdict: APPROVE",
   }, "other-workspace-without-metadata");
 
+  writeRecord(claudeData, {
+    job_id: "job_cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+    provider: "claude",
+    status: "completed",
+    workspace_root: otherWorkspace,
+    result: "Verdict: APPROVE",
+  }, "other-workspace");
+
   const records = collectReviewPanelRecords({
     cwd: workspace,
     env: {
@@ -456,6 +543,108 @@ test("review panel workspace collection excludes records without workspace metad
 
   assert.deepEqual(records.map((record) => record.job_id), [
     "job_aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+  ]);
+});
+
+test("review panel skips malformed workspace metadata without aborting collection", () => {
+  const workspace = mkdtempSync(join(tmpdir(), "review-panel-workspace-"));
+  const claudeData = mkdtempSync(join(tmpdir(), "review-panel-claude-"));
+
+  writeRecord(claudeData, {
+    job_id: "job_valid-0000-4000-8000-000000000000",
+    provider: "claude",
+    status: "completed",
+    workspace_root: workspace,
+    result: "Verdict: APPROVE",
+  }, "workspace-a");
+
+  writeRecord(claudeData, {
+    job_id: "job_bad-0000-4000-8000-000000000000",
+    provider: "claude",
+    status: "completed",
+    workspace_root: [workspace],
+    result: "Verdict: APPROVE",
+  }, "workspace-a");
+
+  const records = collectReviewPanelRecords({
+    cwd: workspace,
+    env: {
+      ...process.env,
+      CLAUDE_PLUGIN_DATA: claudeData,
+      GEMINI_PLUGIN_DATA: mkdtempSync(join(tmpdir(), "review-panel-empty-gemini-")),
+      KIMI_PLUGIN_DATA: mkdtempSync(join(tmpdir(), "review-panel-empty-kimi-")),
+      GROK_PLUGIN_DATA: mkdtempSync(join(tmpdir(), "review-panel-empty-grok-")),
+      API_REVIEWERS_PLUGIN_DATA: mkdtempSync(join(tmpdir(), "review-panel-empty-api-")),
+    },
+  });
+
+  assert.deepEqual(records.map((record) => record.job_id), [
+    "job_valid-0000-4000-8000-000000000000",
+  ]);
+});
+
+test("review panel direct fallback finds records written with lexical workspace hashes", () => {
+  const realWorkspace = mkdtempSync(join(tmpdir(), "review-panel-real-"));
+  const linkParent = mkdtempSync(join(tmpdir(), "review-panel-link-parent-"));
+  const linkWorkspace = join(linkParent, "workspace-link");
+  symlinkSync(realWorkspace, linkWorkspace, "dir");
+  const grokData = writerDefaultDataRoot("grok", linkWorkspace);
+
+  writeRecord(grokData, {
+    job_id: "job_grok-0000-4000-8000-000000000000",
+    provider: "grok",
+    status: "completed",
+    workspace_root: realWorkspace,
+    result: "Verdict: APPROVE",
+  });
+
+  const records = collectReviewPanelRecords({
+    cwd: linkWorkspace,
+    env: {
+      ...process.env,
+      CLAUDE_PLUGIN_DATA: mkdtempSync(join(tmpdir(), "review-panel-empty-claude-")),
+      GEMINI_PLUGIN_DATA: mkdtempSync(join(tmpdir(), "review-panel-empty-gemini-")),
+      KIMI_PLUGIN_DATA: mkdtempSync(join(tmpdir(), "review-panel-empty-kimi-")),
+      API_REVIEWERS_PLUGIN_DATA: mkdtempSync(join(tmpdir(), "review-panel-empty-api-")),
+      GROK_PLUGIN_DATA: "",
+    },
+  });
+
+  assert.deepEqual(records.map((record) => record.job_id), [
+    "job_grok-0000-4000-8000-000000000000",
+  ]);
+});
+
+test("review panel companion fallback finds records from git root when workspace is a subdir", () => {
+  const repo = mkdtempSync(join(tmpdir(), "review-panel-repo-"));
+  execFileSync("git", ["init"], { cwd: repo, stdio: "ignore" });
+  const subdir = join(repo, "packages", "tool");
+  mkdirSync(subdir, { recursive: true });
+  const stateId = companionStateIdForWorkspaceRoot(repo);
+  const jobsRoot = join(tmpdir(), "claude-companion", stateId);
+
+  writeRecord(jobsRoot, {
+    job_id: "job_claude-0000-4000-8000-000000000000",
+    provider: "claude",
+    status: "completed",
+    workspace_root: repo,
+    result: "Verdict: APPROVE",
+  });
+
+  const records = collectReviewPanelRecords({
+    cwd: subdir,
+    env: {
+      ...process.env,
+      GEMINI_PLUGIN_DATA: mkdtempSync(join(tmpdir(), "review-panel-empty-gemini-")),
+      KIMI_PLUGIN_DATA: mkdtempSync(join(tmpdir(), "review-panel-empty-kimi-")),
+      GROK_PLUGIN_DATA: mkdtempSync(join(tmpdir(), "review-panel-empty-grok-")),
+      API_REVIEWERS_PLUGIN_DATA: mkdtempSync(join(tmpdir(), "review-panel-empty-api-")),
+      CLAUDE_PLUGIN_DATA: "",
+    },
+  });
+
+  assert.deepEqual(records.map((record) => record.job_id), [
+    "job_claude-0000-4000-8000-000000000000",
   ]);
 });
 
