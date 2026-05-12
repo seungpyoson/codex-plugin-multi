@@ -6,8 +6,8 @@ import { basename, join, resolve } from "node:path";
 
 const PROVIDER_ORDER = ["claude", "gemini", "kimi", "grok", "deepseek", "glm"];
 const VERDICT_RE = /\bVerdict:\s*(APPROVE|REQUEST CHANGES|FAIL|REJECT)\b/i;
-const PROVIDER_UNAVAILABLE_CODES = ["provider_unavailable", "spawn_failed", "claude_error", "gemini_error", "kimi_error", "tunnel_unavailable"];
-const AUTH_FAILURE_CODES = ["not_authed", "oauth_inference_rejected", "auth_not_configured", "session_expired"];
+const PROVIDER_UNAVAILABLE_CODES = new Set(["provider_unavailable", "spawn_failed", "claude_error", "gemini_error", "kimi_error", "tunnel_unavailable"]);
+const AUTH_FAILURE_CODES = new Set(["not_authed", "oauth_inference_rejected", "auth_not_configured", "session_expired"]);
 const COMPANION_PROVIDERS = [
   { provider: "claude", env: "CLAUDE_PLUGIN_DATA", fallback: "claude-companion" },
   { provider: "gemini", env: "GEMINI_PLUGIN_DATA", fallback: "gemini-companion" },
@@ -102,8 +102,8 @@ function jobId(record) {
 function failedState(sent, code) {
   if (code === "approval_required") return "approval_required";
   if (code === "timeout" && sent === "sent") return "source_sent_timeout";
-  if (PROVIDER_UNAVAILABLE_CODES.includes(code)) return "provider_unavailable";
-  if (AUTH_FAILURE_CODES.includes(code)) return "auth_session_failure";
+  if (PROVIDER_UNAVAILABLE_CODES.has(code)) return "provider_unavailable";
+  if (AUTH_FAILURE_CODES.has(code)) return "auth_session_failure";
   if (code === "rate_limited") return "rate_limited";
   if (code === "usage_limited") return "usage_limited";
   if (sent === "not_sent") return "failed_before_source_send";
@@ -198,8 +198,8 @@ function canonicalWorkspace(cwd) {
 function trimHyphens(value) {
   let start = 0;
   let end = value.length;
-  while (start < end && value.charCodeAt(start) === 45) start += 1;
-  while (end > start && value.charCodeAt(end - 1) === 45) end -= 1;
+  while (start < end && value.codePointAt(start) === 45) start += 1;
+  while (end > start && value.codePointAt(end - 1) === 45) end -= 1;
   return value.slice(start, end);
 }
 
