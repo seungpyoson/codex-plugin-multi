@@ -120,6 +120,19 @@ test("README documents cache doctor automation for stale plugin skill discovery"
   assert.match(readme, /codex debug prompt-input 'list skills'/);
 });
 
+test("provider readiness spec avoids user-local uv cache paths", () => {
+  const docs = [
+    "specs/140-no-mistakes-provider-readiness/spec.md",
+    "specs/140-no-mistakes-provider-readiness/plan.md",
+    "specs/140-no-mistakes-provider-readiness/research.md",
+    "specs/140-no-mistakes-provider-readiness/quickstart.md",
+    "specs/140-no-mistakes-provider-readiness/data-model.md",
+    "specs/140-no-mistakes-provider-readiness/tasks.md",
+  ].map(readRepoFile).join("\n");
+
+  assert.doesNotMatch(docs, /\/Users\/spson\/\.cache\/uv/);
+});
+
 test("claude review command docs use current mutation schema fields", () => {
   const docs = [
     readRepoFile("plugins/claude/commands/claude-review.md"),

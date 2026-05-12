@@ -209,6 +209,46 @@ test("provider readiness manifest flags message and system prompt persistence", 
   assert.equal(manifest.summary.prompt_persistence_failures, 2);
 });
 
+test("provider readiness manifest ignores empty or redacted prompt carriers", () => {
+  const fixtureRoot = mkdtempSync(path.join(tmpdir(), "provider-readiness-empty-prompt-fixture-"));
+  const evidenceDir = mkdtempSync(path.join(tmpdir(), "provider-readiness-empty-prompt-evidence-"));
+  mkdirSync(path.join(fixtureRoot, "fixtures"), { recursive: true });
+  fixtureSeedRepo(fixtureRoot, {
+    fileName: "fixtures/smoke.js",
+    fileContents: "export const value = 1;\n",
+  });
+
+  writeJson(path.join(evidenceDir, "claude-review.json"), {
+    ...reviewRecord({ provider: "claude" }),
+    prompt: "",
+  });
+  writeJson(path.join(evidenceDir, "gemini-review.json"), {
+    ...reviewRecord({ provider: "gemini" }),
+    system_prompt: null,
+  });
+  writeJson(path.join(evidenceDir, "kimi-review.json"), {
+    ...reviewRecord({ provider: "kimi" }),
+    request: {
+      messages: [
+        { role: "user", content: "" },
+      ],
+    },
+  });
+
+  const stdout = execFileSync(process.execPath, [
+    MANIFEST,
+    "--fixture-root", fixtureRoot,
+    "--evidence-dir", evidenceDir,
+  ], { encoding: "utf8" });
+
+  const manifest = JSON.parse(stdout);
+  const rows = Object.fromEntries(manifest.providers.map((row) => [row.provider, row]));
+  assert.equal(rows.claude.prompt_persistence_status, "hash_only");
+  assert.equal(rows.gemini.prompt_persistence_status, "hash_only");
+  assert.equal(rows.kimi.prompt_persistence_status, "hash_only");
+  assert.equal(manifest.summary.prompt_persistence_failures, 0);
+});
+
 test("provider readiness manifest treats review records without transmission metadata as ambiguous", () => {
   const fixtureRoot = mkdtempSync(path.join(tmpdir(), "provider-readiness-ambiguous-transmission-fixture-"));
   const evidenceDir = mkdtempSync(path.join(tmpdir(), "provider-readiness-ambiguous-transmission-evidence-"));
@@ -272,7 +312,7 @@ test("provider readiness manifest reports malformed evidence json with file path
 
   const badJsonPath = path.join(evidenceDir, "claude-doctor.json");
   mkdirSync(evidenceDir, { recursive: true });
-  writeFileSync(badJsonPath, "{bad json\n", "utf8");
+  writeFileSync(badJsonPath, "{\"prompt\":\"sensitive-leading-content\"\n", "utf8");
 
   const res = spawnSync(process.execPath, [
     MANIFEST,
@@ -283,6 +323,8 @@ test("provider readiness manifest reports malformed evidence json with file path
   assert.notEqual(res.status, 0);
   assert.match(res.stderr, /invalid JSON evidence file/);
   assert.match(res.stderr, /claude-doctor\.json/);
+  assert.doesNotMatch(res.stderr, /sensitive-leading-content/);
+  assert.doesNotMatch(res.stderr, /prompt/);
 });
 
 test("provider readiness manifest prints cli usage", () => {
@@ -395,6 +437,35 @@ test("provider readiness manifest classifies direct api review without approval 
   assert.match(deepseek.next_action, /approval proof/i);
 });
 
+test("provider readiness manifest classifies invalid direct api approval proof as approval gate", () => {
+  const fixtureRoot = mkdtempSync(path.join(tmpdir(), "provider-readiness-invalid-approval-fixture-"));
+  const evidenceDir = mkdtempSync(path.join(tmpdir(), "provider-readiness-invalid-approval-evidence-"));
+  mkdirSync(path.join(fixtureRoot, "fixtures"), { recursive: true });
+  fixtureSeedRepo(fixtureRoot, {
+    fileName: "fixtures/smoke.js",
+    fileContents: "export const value = 1;\n",
+  });
+
+  writeJson(path.join(evidenceDir, "deepseek-doctor.json"), { ready: true, status: "ok" });
+  writeJson(path.join(evidenceDir, "deepseek-approval.json"), {
+    event: "external_review_approval_request",
+    source_content_transmission: "sent",
+    denial_action: { source_content_transmission: "not_sent" },
+  });
+
+  const stdout = execFileSync(process.execPath, [
+    MANIFEST,
+    "--fixture-root", fixtureRoot,
+    "--evidence-dir", evidenceDir,
+  ], { encoding: "utf8" });
+
+  const manifest = JSON.parse(stdout);
+  const deepseek = manifest.providers.find((row) => row.provider === "deepseek");
+  assert.equal(deepseek.approval_status, "invalid");
+  assert.equal(deepseek.failure_class, "approval_gate");
+  assert.match(deepseek.next_action, /Regenerate direct API approval proof/i);
+});
+
 test("provider readiness manifest classifies Grok cache and token failures with next actions", () => {
   const fixtureRoot = mkdtempSync(path.join(tmpdir(), "provider-readiness-grok-failures-fixture-"));
   const evidenceDir = mkdtempSync(path.join(tmpdir(), "provider-readiness-grok-failures-evidence-"));
@@ -468,6 +539,63 @@ test("provider readiness manifest lets a fresh not-ready doctor override stale r
   const grok = JSON.parse(stdout).providers.find((row) => row.provider === "grok");
   assert.equal(grok.failure_class, "session_tokens");
   assert.match(grok.next_action, /runtime session tokens/i);
+});
+
+test("provider readiness manifest lets fresh doctor failures override stale failed-review-slot metadata", () => {
+  const fixtureRoot = mkdtempSync(path.join(tmpdir(), "provider-readiness-stale-slot-fixture-"));
+  const evidenceDir = mkdtempSync(path.join(tmpdir(), "provider-readiness-stale-slot-evidence-"));
+  mkdirSync(path.join(fixtureRoot, "fixtures"), { recursive: true });
+  fixtureSeedRepo(fixtureRoot, {
+    fileName: "fixtures/smoke.js",
+    fileContents: "export const value = 1;\n",
+  });
+
+  writeJson(path.join(evidenceDir, "claude-doctor.json"), {
+    provider: "claude",
+    ready: false,
+    status: "error",
+    error_code: "sandbox_blocked",
+  });
+  writeJson(path.join(evidenceDir, "claude-review.json"), reviewRecord({
+    provider: "claude",
+    status: "failed",
+    errorCode: "review_not_completed",
+    failedReviewSlot: true,
+  }));
+
+  const stdout = execFileSync(process.execPath, [
+    MANIFEST,
+    "--fixture-root", fixtureRoot,
+    "--evidence-dir", evidenceDir,
+  ], { encoding: "utf8" });
+
+  const claude = JSON.parse(stdout).providers.find((row) => row.provider === "claude");
+  assert.equal(claude.failure_class, "sandbox");
+  assert.match(claude.next_action, /sandbox/i);
+});
+
+test("provider readiness manifest classifies absent evidence as missing evidence", () => {
+  const fixtureRoot = mkdtempSync(path.join(tmpdir(), "provider-readiness-missing-evidence-fixture-"));
+  const evidenceDir = mkdtempSync(path.join(tmpdir(), "provider-readiness-missing-evidence-"));
+  mkdirSync(path.join(fixtureRoot, "fixtures"), { recursive: true });
+  mkdirSync(evidenceDir, { recursive: true });
+  fixtureSeedRepo(fixtureRoot, {
+    fileName: "fixtures/smoke.js",
+    fileContents: "export const value = 1;\n",
+  });
+
+  const stdout = execFileSync(process.execPath, [
+    MANIFEST,
+    "--fixture-root", fixtureRoot,
+    "--evidence-dir", evidenceDir,
+  ], { encoding: "utf8" });
+
+  const manifest = JSON.parse(stdout);
+  assert.deepEqual(
+    manifest.providers.map((row) => row.failure_class),
+    ["missing_evidence", "missing_evidence", "missing_evidence", "missing_evidence", "missing_evidence", "missing_evidence"],
+  );
+  assert.match(manifest.providers[0].next_action, /Run the provider doctor/i);
 });
 
 test("provider readiness manifest does not resolve git through caller PATH", () => {

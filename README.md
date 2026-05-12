@@ -504,10 +504,10 @@ COVERAGE_ENFORCE_TARGET=1 npm run test:coverage
 `readiness:manifest` normalizes Claude, Gemini, Kimi, Grok, DeepSeek, and GLM
 doctor/review/approval artifacts into one readiness manifest. It classifies
 failures as `sandbox`, `auth`, `provider`, `tunnel`, `session_tokens`,
-`review_quality`, `approval_gate`, or `cache_install`, emits `next_action`
-guidance, distinguishes missing mutation evidence from an intentionally
-not-checked provider, and checks prompt persistence plus fixture mutation state
-without storing source bodies.
+`review_quality`, `approval_gate`, `cache_install`, or `missing_evidence`,
+emits `next_action` guidance, distinguishes missing mutation evidence from an
+intentionally not-checked provider, and checks prompt persistence plus fixture
+mutation state without storing source bodies.
 
 Repository layout:
 

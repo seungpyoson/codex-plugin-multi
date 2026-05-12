@@ -88,7 +88,7 @@ Maintainers can distinguish model/provider defects from operator prompt-shape mi
 - **SC-002**: Grok default auto-start smoke proves no inherited sandbox-blocked uv cache path is required.
 - **SC-003**: Direct API approval-request rows show `source_content_transmission: "not_sent"` before approved runs.
 - **SC-004**: Every completed source-bearing row has `failed_review_slot=false`, no tracked fixture mutation, and no persisted full prompt key.
-- **SC-005**: Failure classes are explicit: `sandbox`, `auth`, `provider`, `tunnel`, `session_tokens`, `review_quality`, `approval_gate`, or `cache/install`.
+- **SC-005**: Failure classes are explicit: `sandbox`, `auth`, `provider`, `tunnel`, `session_tokens`, `review_quality`, `approval_gate`, `cache_install`, or `missing_evidence`.
 
 ## Assumptions
 

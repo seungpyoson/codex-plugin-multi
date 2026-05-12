@@ -78,9 +78,17 @@ function readJsonIfExists(file) {
   try {
     return JSON.parse(readFileSync(file, "utf8"));
   } catch (err) {
-    const reason = err instanceof Error ? err.message : String(err);
+    const reason = jsonParseFailureReason(err);
     throw new Error(`invalid JSON evidence file ${file}: ${reason}`);
   }
+}
+
+function jsonParseFailureReason(err) {
+  if (err instanceof SyntaxError) {
+    const position = /\bposition \d+\b/.exec(err.message)?.[0];
+    return position ? `SyntaxError at ${position}` : "SyntaxError";
+  }
+  return err instanceof Error ? (err.name || "Error") : "Error";
 }
 
 function runGit(cwd, args) {
@@ -132,7 +140,7 @@ function containsFullPromptKey(value, parentKey = "") {
   if (!value || typeof value !== "object") return false;
   if (Array.isArray(value)) return value.some((item) => containsFullPromptKey(item, parentKey));
   return Object.entries(value).some(([key, child]) => {
-    if (FULL_PROMPT_KEYS.has(key)) return true;
+    if (FULL_PROMPT_KEYS.has(key)) return typeof child === "string" && child.length > 0;
     if (parentKey === "messages" && key === "content" && typeof child === "string" && child.length > 0) return true;
     return containsFullPromptKey(child, key);
   });
@@ -188,13 +196,13 @@ function errorCode(doctor, review) {
 
 function errorCodeFailureClass(code, review, failedReviewSlot) {
   if (code === "approval_required") return "approval_gate";
-  if (failedReviewSlot === true || code === "review_not_completed" || review?.error_cause === "review_quality") return "review_quality";
   if (code === "sandbox_blocked") return "sandbox";
   if (AUTH_ERROR_CODES.has(code)) return "auth";
   if (TUNNEL_ERROR_CODES.has(code)) return "tunnel";
   if (SESSION_TOKEN_ERROR_CODES.has(code)) return "session_tokens";
   if (CACHE_INSTALL_ERROR_CODES.has(code)) return "cache_install";
   if (PROVIDER_ERROR_CODES.has(code)) return "provider";
+  if (failedReviewSlot === true || code === "review_not_completed" || review?.error_cause === "review_quality") return "review_quality";
   return null;
 }
 
@@ -209,11 +217,11 @@ function providerFailedAfterReviewOrDoctor(doctor, review) {
   return Boolean(doctor && doctorStatus(doctor) !== "ready" && !review);
 }
 
-function failureClass({ provider, doctor, review, failedReviewSlot, approvalState }) {
+function failureClass({ provider, doctor, review, approval, failedReviewSlot, approvalState }) {
   const classified = errorCodeFailureClass(errorCode(doctor, review), review, failedReviewSlot);
   if (classified) return classified;
   if (directApiNeedsApproval(provider, doctor, review, approvalState)) return "approval_gate";
-  if (doctorStatus(doctor) === "not_run" && !review) return "cache_install";
+  if (doctorStatus(doctor) === "not_run" && !review && !approval) return "missing_evidence";
   if (providerFailedAfterReviewOrDoctor(doctor, review)) return "provider";
   return "none";
 }
@@ -243,6 +251,9 @@ function evidencePath({ doctor, doctorPath, review, reviewPath, approval, approv
 
 function nextAction({ provider, failureClassValue, code, approvalState, review }) {
   if (failureClassValue === "none") return "No action required.";
+  if (failureClassValue === "missing_evidence") {
+    return "Run the provider doctor and capture evidence before interpreting readiness.";
+  }
   if (failureClassValue === "cache_install") {
     if (code === "grok2api_uv_missing") {
       return "Install or expose uv, then rerun Grok doctor; leave UV_CACHE_DIR unset for the sandbox-writable default or set it to a writable cache.";
@@ -287,7 +298,7 @@ function rowFor(provider, evidenceDir) {
   const failedReviewSlot = valueAt(review, ["review_metadata", "audit_manifest", "review_quality", "failed_review_slot"], null);
   const approvalState = approvalStatus(provider, approval);
   const code = errorCode(doctor, review);
-  const failureClassValue = failureClass({ provider, doctor, review, failedReviewSlot, approvalState });
+  const failureClassValue = failureClass({ provider, doctor, review, approval, failedReviewSlot, approvalState });
   return {
     provider,
     doctor_status: doctorStatus(doctor),

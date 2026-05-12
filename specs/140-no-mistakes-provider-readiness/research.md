@@ -6,7 +6,7 @@ This repo already configures `.no-mistakes.yaml` with `test: "npm ci && npm run 
 
 ## Decision: Fix Grok uv cache at spawn env boundary
 
-Root cause: Grok auto-start spawns `uv` with fixed `PATH` only. In Codex sandbox, `uv` tries `/Users/spson/.cache/uv` and fails `Operation not permitted`. The spawn env boundary is the correct fix seam because both `uv --version` and `uv run granian` use `uvExecutionEnv`.
+Root cause: Grok auto-start spawns `uv` with fixed `PATH` only. In Codex sandbox, `uv` tries the user's default uv cache directory (for example `$HOME/.cache/uv`) and fails `Operation not permitted`. The spawn env boundary is the correct fix seam because both `uv --version` and `uv run granian` use `uvExecutionEnv`.
 
 ## Decision: Treat session tokens separately from tunnel startup
 
