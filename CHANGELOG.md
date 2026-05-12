@@ -2,7 +2,47 @@
 
 ## Unreleased
 
+### Added
+
+- Added `--workspace` mode to the review panel CLI (`scripts/review-panel.mjs`)
+  that aggregates live/recent JobRecords across all provider state roots,
+  filters by canonical workspace, and renders the provider panel without a
+  manual JSON file argument.
+
+### Fixed
+
+- `operatorState` now only surfaces `approval_required` when the job status is
+  strictly `"failed"`; running or queued jobs with stale approval_required
+  error codes now correctly show their live `running`/`source_sent_waiting`
+  state instead.
+- `resultSummary` returns `"-"` for running and queued jobs before any other
+  check, preventing stale `failed_review_slot` results from leaking into the
+  panel for jobs that are still in progress.
+- Running and queued review panel rows now also suppress stale semantic failure
+  and reason fields, and failed jobs now prioritize the current `error_code`
+  over stale semantic failed-slot metadata in the Result column.
+- Failed review panel states now preserve specific pre-send operational causes
+  such as `provider_unavailable`, `auth_session_failure`, `rate_limited`, and
+  `usage_limited` before falling back to `failed_before_source_send`.
+- `recordWorkspaceMatches` excludes records that lack workspace metadata
+  (`workspace_root` / `workspaceRoot`), instead of incorrectly admitting them
+  into workspace-filtered collections.
+- `recordWorkspaceMatches` skips malformed non-string workspace metadata
+  instead of aborting the whole provider panel.
+- Review panel fallback discovery now scans provider state roots and filters by
+  stored workspace metadata, so default discovery works across symlinked
+  workspaces without depending on matching slug/hash algorithms.
+- Review panel `--workspace` subdirectory matching now requires an ancestor
+  workspace record to point at a real Git repository; non-Git workspaces still
+  match when the panel is run from the exact recorded workspace path.
+
 ### Changed
+
+- Review panel rows now include Job ID, operator State, Sent, Elapsed ms,
+  Timeout ms, and Result columns to surface per-job identity, operational
+  phase, configured timeout, and verdict/error summary alongside the existing
+  readiness, terminal status, semantic, inspection, Error Code, HTTP, and reason
+  columns.
 
 - Added Kimi Code CLI as a third plugin with setup, preflight, review,
   adversarial-review, custom-review, rescue, status, result, cancel, mock smoke
