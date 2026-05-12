@@ -158,11 +158,7 @@ function canonicalWorkspace(cwd) {
 }
 
 function trimHyphens(value) {
-  let start = 0;
-  let end = value.length;
-  while (start < end && value[start] === "-") start += 1;
-  while (end > start && value[end - 1] === "-") end -= 1;
-  return value.slice(start, end);
+  return value.replace(/^-+|-+$/g, "");
 }
 
 function companionStateId(cwd) {
@@ -176,7 +172,7 @@ function companionStateId(cwd) {
 function defaultDataRoot(pluginName, cwd) {
   const workspace = resolve(cwd);
   const slug = basename(workspace).replace(/[^A-Za-z0-9._-]/g, "_").slice(0, 48) || "workspace";
-  const hash = createHash("sha256").update(workspace).digest("hex").slice(0, 16);
+  const hash = createHash("sha256").update(canonicalWorkspace(workspace)).digest("hex").slice(0, 16);
   return resolve(tmpdir(), "codex-plugin-multi", pluginName, `${slug}-${hash}`);
 }
 
@@ -217,10 +213,11 @@ function recordsFromDirectProvider({ env, plugin }, cwd, processEnv) {
   return recordsFromJobsDir(join(root, "jobs"));
 }
 
-function recordWorkspaceMatches(record, cwd) {
+function recordWorkspaceMatches(record, cwd, canonicalCwd) {
   const recordWorkspace = record.workspace_root ?? record.workspaceRoot ?? null;
   if (!recordWorkspace) return true;
-  return canonicalWorkspace(recordWorkspace) === canonicalWorkspace(cwd);
+  const cwdCanonical = canonicalCwd ?? canonicalWorkspace(cwd);
+  return canonicalWorkspace(recordWorkspace) === cwdCanonical;
 }
 
 function timestamp(record) {
@@ -230,10 +227,11 @@ function timestamp(record) {
 }
 
 export function collectReviewPanelRecords({ cwd = process.cwd(), env = process.env } = {}) {
+  const workspaceCanonical = canonicalWorkspace(cwd);
   const records = [
     ...COMPANION_PROVIDERS.flatMap((provider) => recordsFromCompanionProvider(provider, cwd, env)),
     ...DIRECT_ROOTS.flatMap((provider) => recordsFromDirectProvider(provider, cwd, env)),
-  ].filter((record) => recordWorkspaceMatches(record, cwd));
+  ].filter((record) => recordWorkspaceMatches(record, cwd, workspaceCanonical));
   return records.sort((left, right) => {
     const providerDiff = PROVIDER_ORDER.indexOf(providerName(left)) - PROVIDER_ORDER.indexOf(providerName(right));
     if (providerDiff !== 0) return providerDiff;
