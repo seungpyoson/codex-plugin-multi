@@ -221,7 +221,7 @@ function failureClass({ provider, doctor, review, approval, failedReviewSlot, ap
   const classified = errorCodeFailureClass(errorCode(doctor, review), review, failedReviewSlot);
   if (classified) return classified;
   if (directApiNeedsApproval(provider, doctor, review, approvalState)) return "approval_gate";
-  if (doctorStatus(doctor) === "not_run" && !review && !approval) return "missing_evidence";
+  if (doctorStatus(doctor) === "not_run" && !review) return "missing_evidence";
   if (providerFailedAfterReviewOrDoctor(doctor, review)) return "provider";
   return "none";
 }
@@ -276,6 +276,9 @@ function nextAction({ provider, failureClassValue, code, approvalState, review }
     return "Treat the review slot as failed; inspect review_quality.semantic_failure_reasons and retry with a source packet the provider can inspect.";
   }
   if (failureClassValue === "approval_gate") {
+    if (DIRECT_API_PROVIDERS.has(provider) && approvalState === "not_sent" && !review) {
+      return "Approval proof is present; run the direct API source review using the captured not_sent evidence.";
+    }
     if (DIRECT_API_PROVIDERS.has(provider) && approvalState === "missing" && review) {
       return "Discard this source-bearing direct API review until approval proof is present; run approval-request and capture not_sent evidence first.";
     }

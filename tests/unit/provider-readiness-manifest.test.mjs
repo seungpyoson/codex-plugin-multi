@@ -377,6 +377,68 @@ test("provider readiness manifest classifies direct api doctor-only evidence as 
   assert.match(deepseek.next_action, /approval-request/i);
 });
 
+test("provider readiness manifest classifies direct api approval-only evidence as missing evidence", () => {
+  const fixtureRoot = mkdtempSync(path.join(tmpdir(), "provider-readiness-approval-only-fixture-"));
+  const evidenceDir = mkdtempSync(path.join(tmpdir(), "provider-readiness-approval-only-evidence-"));
+  mkdirSync(path.join(fixtureRoot, "fixtures"), { recursive: true });
+  fixtureSeedRepo(fixtureRoot, {
+    fileName: "fixtures/smoke.js",
+    fileContents: "export const value = 1;\n",
+  });
+
+  writeJson(path.join(evidenceDir, "deepseek-approval.json"), {
+    event: "external_review_approval_request",
+    source_content_transmission: "not_sent",
+    denial_action: { source_content_transmission: "not_sent" },
+  });
+
+  const stdout = execFileSync(process.execPath, [
+    MANIFEST,
+    "--fixture-root", fixtureRoot,
+    "--evidence-dir", evidenceDir,
+  ], { encoding: "utf8" });
+
+  const manifest = JSON.parse(stdout);
+  const deepseek = manifest.providers.find((row) => row.provider === "deepseek");
+  assert.equal(deepseek.doctor_status, "not_run");
+  assert.equal(deepseek.approval_status, "not_sent");
+  assert.equal(deepseek.review_status, "not_run");
+  assert.equal(deepseek.failure_class, "missing_evidence");
+  assert.match(deepseek.next_action, /Run the provider doctor/i);
+});
+
+test("provider readiness manifest tells direct api providers to review after valid approval", () => {
+  const fixtureRoot = mkdtempSync(path.join(tmpdir(), "provider-readiness-approved-review-fixture-"));
+  const evidenceDir = mkdtempSync(path.join(tmpdir(), "provider-readiness-approved-review-evidence-"));
+  mkdirSync(path.join(fixtureRoot, "fixtures"), { recursive: true });
+  fixtureSeedRepo(fixtureRoot, {
+    fileName: "fixtures/smoke.js",
+    fileContents: "export const value = 1;\n",
+  });
+
+  writeJson(path.join(evidenceDir, "deepseek-doctor.json"), { ready: true, status: "ok" });
+  writeJson(path.join(evidenceDir, "deepseek-approval.json"), {
+    event: "external_review_approval_request",
+    source_content_transmission: "not_sent",
+    denial_action: { source_content_transmission: "not_sent" },
+  });
+
+  const stdout = execFileSync(process.execPath, [
+    MANIFEST,
+    "--fixture-root", fixtureRoot,
+    "--evidence-dir", evidenceDir,
+  ], { encoding: "utf8" });
+
+  const manifest = JSON.parse(stdout);
+  const deepseek = manifest.providers.find((row) => row.provider === "deepseek");
+  assert.equal(deepseek.doctor_status, "ready");
+  assert.equal(deepseek.approval_status, "not_sent");
+  assert.equal(deepseek.review_status, "not_run");
+  assert.equal(deepseek.failure_class, "approval_gate");
+  assert.match(deepseek.next_action, /run the direct API source review/i);
+  assert.doesNotMatch(deepseek.next_action, /approval-request/i);
+});
+
 test("provider readiness manifest preserves direct api doctor auth and sandbox classes before approval gate", () => {
   const fixtureRoot = mkdtempSync(path.join(tmpdir(), "provider-readiness-direct-api-preflight-fixture-"));
   const evidenceDir = mkdtempSync(path.join(tmpdir(), "provider-readiness-direct-api-preflight-evidence-"));
