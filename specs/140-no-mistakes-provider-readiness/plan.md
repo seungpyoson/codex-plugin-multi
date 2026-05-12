@@ -11,7 +11,7 @@ Make delegated reviewer usage auditable across all providers. First TDD slice fi
 **Language/Version**: Node.js 20+
 **Primary Dependencies**: Node built-ins, plugin companion scripts, `uv` for grok2api
 **Storage**: Local JobRecord JSON, plugin data dirs, synthetic `/private/tmp` fixture repos
-**Testing**: `node:test`, smoke tests, `npm run lint`, `npm run test:full`, no-mistakes gate
+**Testing**: `node:test`, smoke tests, `npm run lint`, `npm run test:full`, GitHub CI
 **Target Platform**: macOS/Linux Codex local sessions
 **Project Type**: CLI/plugin bundle
 **Performance Goals**: Keep unit/smoke tests deterministic; live smoke records elapsed time instead of enforcing brittle provider latency budgets
@@ -23,7 +23,7 @@ Make delegated reviewer usage auditable across all providers. First TDD slice fi
 - Evidence first: use real command output and audit fields.
 - TDD: public CLI seam tests before fixes.
 - No full prompt persistence.
-- no-mistakes: keep `.no-mistakes.yaml` full gate intact.
+- no-mistakes: keep `.no-mistakes.yaml` full gate intact, but do not use it as authoritative merge evidence until `seungpyoson/claude-config#780` is fixed.
 
 ## Project Structure
 

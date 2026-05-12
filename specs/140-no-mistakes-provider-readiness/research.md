@@ -1,8 +1,8 @@
 # Research: No-Mistakes Provider Readiness
 
-## Decision: Use no-mistakes as PR gate, not replacement for tests
+## Decision: Keep no-mistakes configured, but do not rely on it until the fix loop is deterministic
 
-`no-mistakes` pushes through a local git proxy, runs validation in a disposable worktree, forwards upstream only after checks pass, and can open a clean PR. This repo already configures `.no-mistakes.yaml` with `test: "npm ci && npm run lint && npm run test:full"`. Keep that gate; add tests that make the gate meaningful.
+This repo already configures `.no-mistakes.yaml` with `test: "npm ci && npm run lint && npm run test:full"`. Keep that configuration, but do not treat no-mistakes as authoritative PR readiness evidence while `seungpyoson/claude-config#780` is open. That issue documents a review/fix-loop defect where selected findings can remain unresolved without reaching a deterministic terminal state. Until fixed, use direct local verification and GitHub CI as the merge-readiness evidence.
 
 ## Decision: Fix Grok uv cache at spawn env boundary
 

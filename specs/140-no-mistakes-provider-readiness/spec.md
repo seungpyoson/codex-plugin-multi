@@ -94,5 +94,5 @@ Maintainers can distinguish model/provider defects from operator prompt-shape mi
 
 - Synthetic fixture source can be sent to live providers after explicit approval for direct APIs.
 - Real secrets remain in existing runtime stores and are never printed.
-- no-mistakes remains the PR gate and runs `npm ci && npm run lint && npm run test:full`.
-- This slice can fix Grok uv-cache behavior before building the full live manifest CLI.
+- `.no-mistakes.yaml` remains configured with `npm ci && npm run lint && npm run test:full`, but no-mistakes is not authoritative merge evidence until `seungpyoson/claude-config#780` is fixed.
+- Direct local verification and GitHub CI are authoritative for this slice while no-mistakes has the review/fix-loop defect.
