@@ -53,7 +53,7 @@ function readJsonIfExists(file) {
 }
 
 function runGit(cwd, args) {
-  return execFileSync(DEFAULT_GIT_BINARY, ["-C", cwd, ...args], { encoding: "utf8", env: TRUSTED_GIT_ENV }).trim();
+  return execFileSync(DEFAULT_GIT_BINARY, ["-C", cwd, ...args], { encoding: "utf8", env: TRUSTED_GIT_ENV, timeout: 15000 }).trim();
 }
 
 function sha256File(file) {
@@ -66,6 +66,7 @@ function fixtureSummary(fixtureRoot) {
   const trackedRaw = execFileSync(DEFAULT_GIT_BINARY, ["-C", fixtureRoot, "ls-files", "-z"], {
     encoding: "utf8",
     env: TRUSTED_GIT_ENV,
+    timeout: 15000,
   });
   const selectedFiles = trackedRaw
     .split("\0")
