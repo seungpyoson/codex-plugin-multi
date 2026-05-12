@@ -221,7 +221,13 @@ function readRecord(file) {
 function recordsFromJobsDir(jobsDir) {
   if (!existsSync(jobsDir)) return [];
   const out = [];
-  for (const entry of readdirSync(jobsDir, { withFileTypes: true })) {
+  let entries;
+  try {
+    entries = readdirSync(jobsDir, { withFileTypes: true });
+  } catch {
+    return [];
+  }
+  for (const entry of entries) {
     if (!entry.isDirectory()) continue;
     const record = readRecord(join(jobsDir, entry.name, "meta.json"));
     if (record) out.push(record);
@@ -236,7 +242,13 @@ function recordsFromCompanionProvider({ env, fallback }, cwd, processEnv) {
   }
   const stateRoot = join(pluginData, "state");
   if (!existsSync(stateRoot)) return [];
-  return readdirSync(stateRoot, { withFileTypes: true })
+  let stateEntries;
+  try {
+    stateEntries = readdirSync(stateRoot, { withFileTypes: true });
+  } catch {
+    return [];
+  }
+  return stateEntries
     .filter((entry) => entry.isDirectory())
     .flatMap((entry) => recordsFromJobsDir(join(stateRoot, entry.name, "jobs")));
 }
