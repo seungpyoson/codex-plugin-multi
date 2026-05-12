@@ -206,11 +206,25 @@ Render collected JobRecords into a provider panel before judging quality:
 node scripts/review-panel.mjs /path/to/job-records.json
 ```
 
-The panel shows one row per provider with readiness, status, source
-transmission, elapsed milliseconds, semantic failed-slot state, inspection
-state, error code, HTTP status, and semantic failure reasons. A provider that
-could not inspect files, returned shallow output, or hit Grok chat/session
-readiness must appear as a failed row instead of being buried in prose.
+Render the live/recent multi-provider panel for the current workspace:
+
+```bash
+node scripts/review-panel.mjs --workspace .
+```
+
+The panel shows one row per provider job with provider, job id, operator state,
+source transmission, elapsed/configured timeout, verdict/error summary,
+readiness, terminal status, semantic failed-slot state, inspection state, error
+code, HTTP status, and semantic failure reasons. It aggregates Claude, Gemini,
+Kimi, Grok, and API Reviewers persisted JobRecords from their plugin data roots;
+DeepSeek and GLM appear as sub-providers from the API Reviewers root.
+When `--workspace` points inside a recorded workspace, the ancestor record is
+included only if that ancestor is a real Git repository; non-Git workspaces are
+matched by their exact recorded path.
+A provider that is running, blocked before source send, waiting after source
+send, timed out, unavailable, approval-gated, completed, or completed with a
+failed review slot must appear as an explicit row instead of being buried in
+background terminal counts or prose.
 
 ## Install
 

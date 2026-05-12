@@ -64,10 +64,17 @@ keys are deliberately separate so manual relay and plugin runs can use the same
 review contract without leaking expected findings into the model prompt.
 
 Provider panels are rendered from JobRecords with `scripts/review-panel.mjs`.
-The panel row is the user-facing reliability surface: provider readiness,
-terminal status, source transmission, elapsed time, semantic failed-slot state,
+The panel row is the user-facing reliability surface: provider, Job ID,
+operator State, source transmission (Sent), elapsed/configured timeout,
+verdict/error Result, readiness, terminal status, semantic failed-slot state,
 inspection state, error code, HTTP status, and semantic failure reasons must be
 visible together so broken review slots are not hidden behind result prose.
+The `--workspace` discovery path scans companion state directories and filters
+by stored workspace root, while direct-provider fallback records stay
+provider-data-root scoped to match the paths each writer uses when no explicit
+plugin data root is configured. A record whose workspace root is an ancestor of
+the requested workspace is included only when that ancestor is a real Git
+repository; non-Git workspaces match only by exact recorded path.
 `scripts/provider-readiness-manifest.mjs` extends that reliability surface for
 operator smoke runs by normalizing each provider's doctor, review, and approval
 artifacts into one manifest row. The row keeps failure class, source
