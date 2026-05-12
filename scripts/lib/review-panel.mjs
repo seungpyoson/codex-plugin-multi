@@ -84,6 +84,17 @@ function jobId(record) {
   return record.job_id ?? record.id ?? "";
 }
 
+/**
+ * Classifies a job record into a priority-ordered operational state.
+ *
+ * The state machine checks conditions in load-bearing order: approval_required
+ * is only surfaced when status is strictly "failed" (never for running/queued
+ * jobs, even with a stale approval_required error code). Returns one of:
+ * approval_required, completed_failed_review_slot, completed,
+ * source_sent_waiting, running, source_sent_timeout,
+ * failed_before_source_send, provider_unavailable, auth_session_failure,
+ * quota_usage_limited, or the raw status as a fallback.
+ */
 function operatorState(record) {
   const status = String(record.status ?? "");
   const sent = sourceTransmission(record);
@@ -105,6 +116,14 @@ function operatorState(record) {
   return status || "unknown";
 }
 
+/**
+ * Returns a compact summary of the job outcome.
+ *
+ * Active jobs (running/queued) return "-" before any other check so that stale
+ * failed_review_slot metadata from a prior run never leaks into an in-flight
+ * row. After the active guard, priority order is: failed_review_slot, explicit
+ * error_code on failure, parsed Verdict keyword, or empty string.
+ */
 function resultSummary(record) {
   if (record.status === "running" || record.status === "queued") return "-";
   if (quality(record).failed_review_slot === true) return "failed_review_slot";

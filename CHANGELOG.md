@@ -9,6 +9,19 @@
   filters by canonical workspace, and renders the provider panel without a
   manual JSON file argument.
 
+### Fixed
+
+- `operatorState` now only surfaces `approval_required` when the job status is
+  strictly `"failed"`; running or queued jobs with stale approval_required
+  error codes now correctly show their live `running`/`source_sent_waiting`
+  state instead.
+- `resultSummary` returns `"-"` for running and queued jobs before any other
+  check, preventing stale `failed_review_slot` results from leaking into the
+  panel for jobs that are still in progress.
+- `recordWorkspaceMatches` excludes records that lack workspace metadata
+  (`workspace_root` / `workspaceRoot`), instead of incorrectly admitting them
+  into workspace-filtered collections.
+
 ### Changed
 
 - Review panel rows now include Job ID, operator State, Sent, Elapsed ms,
