@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -10,6 +10,11 @@ import {
   collectReviewPanelRecords,
   renderReviewPanelMarkdown,
 } from "../../scripts/lib/review-panel.mjs";
+
+test("review panel slug trimming avoids Sonar-flagged boundary alternation regex", () => {
+  const source = readFileSync(new URL("../../scripts/lib/review-panel.mjs", import.meta.url), "utf8");
+  assert.doesNotMatch(source, /value\.replace\(\s*\/\^-\+\|-\+\$\/g/);
+});
 
 test("review panel rows expose operational and semantic review state", () => {
   const rows = buildReviewPanelRows([
