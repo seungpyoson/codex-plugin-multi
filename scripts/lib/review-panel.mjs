@@ -216,8 +216,7 @@ function recordsFromDirectProvider({ env, plugin }, cwd, processEnv) {
 function recordWorkspaceMatches(record, cwd, canonicalCwd) {
   const recordWorkspace = record.workspace_root ?? record.workspaceRoot ?? null;
   if (!recordWorkspace) return true;
-  const cwdCanonical = canonicalCwd ?? canonicalWorkspace(cwd);
-  return canonicalWorkspace(recordWorkspace) === cwdCanonical;
+  return canonicalWorkspace(recordWorkspace) === canonicalCwd;
 }
 
 function timestamp(record) {
