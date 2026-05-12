@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -214,6 +214,25 @@ test("review panel CLI renders markdown from a JSON array file", () => {
   });
 
   assert.match(output, /deepseek \|  \| completed \| sent \| 44211/);
+});
+
+test("review panel CLI rejects workspace and file arguments together", () => {
+  const dir = mkdtempSync(join(tmpdir(), "review-panel-"));
+  const file = join(dir, "records.json");
+  writeFileSync(file, JSON.stringify([]));
+
+  const res = spawnSync(process.execPath, [
+    "scripts/review-panel.mjs",
+    "--workspace", dir,
+    file,
+  ], {
+    cwd: new URL("../..", import.meta.url),
+    encoding: "utf8",
+  });
+
+  assert.equal(res.status, 1);
+  assert.equal(res.stdout, "");
+  assert.match(res.stderr, /--workspace and a file argument are mutually exclusive/);
 });
 
 function writeRecord(root, record, stateSubdir = null) {

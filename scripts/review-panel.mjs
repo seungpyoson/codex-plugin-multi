@@ -23,11 +23,13 @@ function parseArgs(argv) {
       continue;
     }
     if (token === "--workspace") {
+      if (out.input) throw new Error("--workspace and a file argument are mutually exclusive");
       const value = argv[++i];
       if (!value || value.startsWith("--")) throw new Error("--workspace requires a value");
       out.workspace = value;
       continue;
     }
+    if (out.workspace) throw new Error("--workspace and a file argument are mutually exclusive");
     if (out.input) throw new Error(`unexpected argument ${token}`);
     out.input = token;
   }
