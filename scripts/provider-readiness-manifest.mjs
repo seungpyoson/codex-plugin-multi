@@ -177,6 +177,7 @@ function failureClass({ provider, doctor, review, failedReviewSlot, approvalStat
 function sourceTransmission(review, approval) {
   const reviewValue = valueAt(review, ["external_review", "source_content_transmission"], null);
   if (reviewValue) return normalizeTransmission(reviewValue);
+  if (review) return "may_be_sent";
   const approvalValue = approval?.source_content_transmission ?? null;
   if (approvalValue) return normalizeTransmission(approvalValue);
   return "not_sent";

@@ -167,6 +167,31 @@ test("provider readiness manifest flags persisted full prompt keys", () => {
   assert.equal(manifest.summary.prompt_persistence_failures, 1);
 });
 
+test("provider readiness manifest treats review records without transmission metadata as ambiguous", () => {
+  const fixtureRoot = mkdtempSync(path.join(tmpdir(), "provider-readiness-ambiguous-transmission-fixture-"));
+  const evidenceDir = mkdtempSync(path.join(tmpdir(), "provider-readiness-ambiguous-transmission-evidence-"));
+  mkdirSync(path.join(fixtureRoot, "fixtures"), { recursive: true });
+  fixtureSeedRepo(fixtureRoot, {
+    fileName: "fixtures/smoke.js",
+    fileContents: "export const value = 1;\n",
+  });
+
+  const review = reviewRecord({ provider: "claude" });
+  delete review.external_review;
+  writeJson(path.join(evidenceDir, "claude-review.json"), review);
+
+  const stdout = execFileSync(process.execPath, [
+    MANIFEST,
+    "--fixture-root", fixtureRoot,
+    "--evidence-dir", evidenceDir,
+  ], { encoding: "utf8" });
+
+  const manifest = JSON.parse(stdout);
+  const claude = manifest.providers.find((row) => row.provider === "claude");
+  assert.equal(claude.review_status, "completed");
+  assert.equal(claude.source_content_transmission, "may_be_sent");
+});
+
 test("provider readiness manifest reports malformed evidence json with file path", () => {
   const fixtureRoot = mkdtempSync(path.join(tmpdir(), "provider-readiness-bad-json-fixture-"));
   const evidenceDir = mkdtempSync(path.join(tmpdir(), "provider-readiness-bad-json-evidence-"));
