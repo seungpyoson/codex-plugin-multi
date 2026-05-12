@@ -121,9 +121,10 @@ function cell(value) {
 /**
  * Normalizes heterogeneous provider JobRecords into one provider-panel row.
  *
- * The row intentionally keeps product-state columns together: readiness,
- * transport status, source transmission, timing, semantic failure, inspection,
- * provider error code, HTTP status, and semantic reasons.
+ * The row exposes per-job identity and operational columns (Job ID, operator
+ * State, Sent, Elapsed ms, Timeout ms, Result) alongside product-state columns
+ * (readiness, terminal status, semantic failure, inspection, provider error
+ * code, HTTP status, and semantic reasons).
  */
 export function buildReviewPanelRows(records = []) {
   return records.map((record) => {
@@ -225,6 +226,18 @@ function timestamp(record) {
   return Number.isFinite(parsed) ? parsed : 0;
 }
 
+/**
+ * Aggregates live/recent JobRecords across companion and direct provider state
+ * roots, filters to the canonical workspace, and returns them sorted by
+ * provider order then timestamp.
+ *
+ * Providers scanned: Claude, Gemini, Kimi (companion), Grok, and
+ * api-reviewers (direct). Records without workspace metadata are excluded.
+ *
+ * @param {{ cwd?: string, env?: Record<string, string> }} [options]
+ * @returns {object[]} workspace-matched JobRecords sorted by provider order,
+ *   then descending timestamp, then job_id.
+ */
 export function collectReviewPanelRecords({ cwd = process.cwd(), env = process.env } = {}) {
   const workspaceCanonical = canonicalWorkspace(cwd);
   const records = [

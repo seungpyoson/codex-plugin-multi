@@ -2,7 +2,19 @@
 
 ## Unreleased
 
+### Added
+
+- Added `--workspace` mode to the review panel CLI (`scripts/review-panel.mjs`)
+  that aggregates live/recent JobRecords across all provider state roots,
+  filters by canonical workspace, and renders the provider panel without a
+  manual JSON file argument.
+
 ### Changed
+
+- Review panel rows now include Job ID, operator State, Sent, Elapsed ms,
+  Timeout ms, and Result columns to surface per-job identity, operational
+  phase, configured timeout, and verdict/error summary alongside the existing
+  readiness, terminal status, semantic, inspection, and reason columns.
 
 - Added Kimi Code CLI as a third plugin with setup, preflight, review,
   adversarial-review, custom-review, rescue, status, result, cancel, mock smoke
