@@ -88,26 +88,26 @@ function operatorState(record) {
   const status = String(record.status ?? "");
   const sent = sourceTransmission(record);
   const code = String(record.error_code ?? "");
-  if (code === "approval_required") return "approval_required";
+  if (code === "approval_required" && status !== "running" && status !== "completed") return "approval_required";
   if (status === "completed" && quality(record).failed_review_slot === true) return "completed_failed_review_slot";
   if (status === "completed") return "completed";
   if ((status === "running" || status === "queued") && sent === "sent") return "source_sent_waiting";
   if (status === "running" || status === "queued") return "running";
   if (status === "failed" && code === "timeout" && sent === "sent") return "source_sent_timeout";
   if (status === "failed" && sent === "not_sent") return "failed_before_source_send";
-  if (["provider_unavailable", "spawn_failed", "claude_error", "gemini_error", "kimi_error"].includes(code)) {
+  if (status === "failed" && ["provider_unavailable", "spawn_failed", "claude_error", "gemini_error", "kimi_error", "tunnel_unavailable"].includes(code)) {
     return "provider_unavailable";
   }
-  if (["not_authed", "oauth_inference_rejected", "auth_not_configured", "session_expired"].includes(code)) {
+  if (status === "failed" && ["not_authed", "oauth_inference_rejected", "auth_not_configured", "session_expired"].includes(code)) {
     return "auth_session_failure";
   }
-  if (["usage_limited", "rate_limited"].includes(code)) return "quota_usage_limited";
+  if (status === "failed" && ["usage_limited", "rate_limited"].includes(code)) return "quota_usage_limited";
   return status || "unknown";
 }
 
 function resultSummary(record) {
   if (quality(record).failed_review_slot === true) return "failed_review_slot";
-  if (record.error_code) return record.error_code;
+  if (record.status === "failed" && record.error_code) return record.error_code;
   if (record.status === "running" || record.status === "queued") return "-";
   const verdict = /\bVerdict:\s*(APPROVE|REQUEST CHANGES|FAIL|REJECT)\b/i.exec(String(record.result ?? ""));
   if (!verdict) return "";
