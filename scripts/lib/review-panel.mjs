@@ -7,7 +7,6 @@ const PROVIDER_ORDER = ["claude", "gemini", "kimi", "grok", "deepseek", "glm"];
 const VERDICT_RE = /\bVerdict:\s*(APPROVE|REQUEST CHANGES|FAIL|REJECT)\b/i;
 const PROVIDER_UNAVAILABLE_CODES = ["provider_unavailable", "spawn_failed", "claude_error", "gemini_error", "kimi_error", "tunnel_unavailable"];
 const AUTH_FAILURE_CODES = ["not_authed", "oauth_inference_rejected", "auth_not_configured", "session_expired"];
-const QUOTA_LIMITED_CODES = ["usage_limited", "rate_limited"];
 const COMPANION_PROVIDERS = [
   { provider: "claude", env: "CLAUDE_PLUGIN_DATA", fallback: "claude-companion" },
   { provider: "gemini", env: "GEMINI_PLUGIN_DATA", fallback: "gemini-companion" },
@@ -98,7 +97,8 @@ function failedState(sent, code) {
   if (sent === "not_sent") return "failed_before_source_send";
   if (PROVIDER_UNAVAILABLE_CODES.includes(code)) return "provider_unavailable";
   if (AUTH_FAILURE_CODES.includes(code)) return "auth_session_failure";
-  if (QUOTA_LIMITED_CODES.includes(code)) return "quota_usage_limited";
+  if (code === "rate_limited") return "rate_limited";
+  if (code === "usage_limited") return "usage_limited";
   return "failed";
 }
 
@@ -111,7 +111,7 @@ function failedState(sent, code) {
  * approval_required, completed_failed_review_slot, completed,
  * source_sent_waiting, running, source_sent_timeout,
  * failed_before_source_send, provider_unavailable, auth_session_failure,
- * quota_usage_limited, or the raw status as a fallback.
+ * rate_limited, usage_limited, or the raw status as a fallback.
  */
 function operatorState(record) {
   const status = String(record.status ?? "");
@@ -258,6 +258,11 @@ function timestamp(record) {
   return Number.isFinite(parsed) ? parsed : 0;
 }
 
+function providerOrderIndex(provider) {
+  const index = PROVIDER_ORDER.indexOf(provider);
+  return index === -1 ? PROVIDER_ORDER.length : index;
+}
+
 /**
  * Aggregates live/recent JobRecords across companion and direct provider state
  * roots, filters to the canonical workspace, and returns them sorted by
@@ -277,7 +282,7 @@ export function collectReviewPanelRecords({ cwd = process.cwd(), env = process.e
     ...DIRECT_ROOTS.flatMap((provider) => recordsFromDirectProvider(provider, cwd, env)),
   ].filter((record) => recordWorkspaceMatches(record, workspaceCanonical));
   return records.sort((left, right) => {
-    const providerDiff = PROVIDER_ORDER.indexOf(providerName(left)) - PROVIDER_ORDER.indexOf(providerName(right));
+    const providerDiff = providerOrderIndex(providerName(left)) - providerOrderIndex(providerName(right));
     if (providerDiff !== 0) return providerDiff;
     return timestamp(right) - timestamp(left) || String(jobId(left)).localeCompare(String(jobId(right)));
   });

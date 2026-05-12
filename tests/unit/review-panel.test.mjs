@@ -276,6 +276,26 @@ test("review panel does not show stale failed-review-slot result for active jobs
   assert.equal(row.result, "-");
 });
 
+test("review panel distinguishes transient rate limits from quota exhaustion", () => {
+  const rows = buildReviewPanelRows([
+    {
+      provider: "deepseek",
+      status: "failed",
+      error_code: "rate_limited",
+      external_review: { source_content_transmission: "sent" },
+    },
+    {
+      provider: "glm",
+      status: "failed",
+      error_code: "usage_limited",
+      external_review: { source_content_transmission: "sent" },
+    },
+  ]);
+
+  assert.equal(rows[0].state, "rate_limited");
+  assert.equal(rows[1].state, "usage_limited");
+});
+
 function writeRecord(root, record, stateSubdir = null) {
   const jobId = record.job_id ?? record.id;
   const dir = stateSubdir
@@ -436,5 +456,43 @@ test("review panel workspace collection excludes records without workspace metad
 
   assert.deepEqual(records.map((record) => record.job_id), [
     "job_aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+  ]);
+});
+
+test("review panel workspace collection sorts unknown providers after known providers", () => {
+  const workspace = mkdtempSync(join(tmpdir(), "review-panel-workspace-"));
+  const claudeData = mkdtempSync(join(tmpdir(), "review-panel-claude-"));
+  const apiData = mkdtempSync(join(tmpdir(), "review-panel-api-"));
+
+  writeRecord(apiData, {
+    id: "job_unknown-0000-4000-8000-000000000000",
+    job_id: "job_unknown-0000-4000-8000-000000000000",
+    provider: "unknown-provider",
+    status: "completed",
+    workspace_root: workspace,
+  });
+
+  writeRecord(claudeData, {
+    job_id: "job_known-0000-4000-8000-000000000000",
+    provider: "claude",
+    status: "completed",
+    workspace_root: workspace,
+  }, "workspace-a");
+
+  const records = collectReviewPanelRecords({
+    cwd: workspace,
+    env: {
+      ...process.env,
+      CLAUDE_PLUGIN_DATA: claudeData,
+      GEMINI_PLUGIN_DATA: mkdtempSync(join(tmpdir(), "review-panel-empty-gemini-")),
+      KIMI_PLUGIN_DATA: mkdtempSync(join(tmpdir(), "review-panel-empty-kimi-")),
+      GROK_PLUGIN_DATA: mkdtempSync(join(tmpdir(), "review-panel-empty-grok-")),
+      API_REVIEWERS_PLUGIN_DATA: apiData,
+    },
+  });
+
+  assert.deepEqual(records.map((record) => record.provider), [
+    "claude",
+    "unknown-provider",
   ]);
 });
