@@ -69,9 +69,10 @@ operator State, source transmission (Sent), elapsed/configured timeout,
 verdict/error Result, readiness, terminal status, semantic failed-slot state,
 inspection state, error code, HTTP status, and semantic failure reasons must be
 visible together so broken review slots are not hidden behind result prose.
-The `--workspace` discovery path treats companion records as repo-root scoped
-and direct-provider fallback records as provider-data-root scoped, matching the
-paths each writer uses when no explicit plugin data root is configured.
+The `--workspace` discovery path scans companion state directories and filters
+by stored workspace root, while direct-provider fallback records stay
+provider-data-root scoped to match the paths each writer uses when no explicit
+plugin data root is configured.
 
 ### Identity Types Stay Distinct
 

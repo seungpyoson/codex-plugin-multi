@@ -1,8 +1,7 @@
 import { createHash } from "node:crypto";
-import { execFileSync } from "node:child_process";
 import { existsSync, readdirSync, readFileSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { basename, join, resolve } from "node:path";
+import { basename, isAbsolute, join, relative, resolve } from "node:path";
 
 const PROVIDER_ORDER = ["claude", "gemini", "kimi", "grok", "deepseek", "glm"];
 const VERDICT_RE = /\bVerdict:\s*(APPROVE|REQUEST CHANGES|FAIL|REJECT)\b/i;
@@ -195,40 +194,11 @@ function canonicalWorkspace(cwd) {
   }
 }
 
-function trimHyphens(value) {
-  let start = 0;
-  let end = value.length;
-  while (start < end && value.codePointAt(start) === 45) start += 1;
-  while (end > start && value.codePointAt(end - 1) === 45) end -= 1;
-  return value.slice(start, end);
-}
-
-function companionStateId(cwd) {
-  const workspaceRoot = resolvePanelWorkspaceRoot(cwd);
-  const canonical = canonicalWorkspace(workspaceRoot);
-  const slug = trimHyphens((basename(workspaceRoot) || "workspace").replace(/[^a-zA-Z0-9._-]+/g, "-")) || "workspace";
-  const hash = createHash("sha256").update(canonical).digest("hex").slice(0, 16);
-  return `${slug}-${hash}`;
-}
-
 function defaultDataRoot(pluginName, cwd) {
   const workspace = resolve(cwd);
   const slug = basename(workspace).replace(/[^A-Za-z0-9._-]/g, "_").slice(0, 48) || "workspace";
   const hash = createHash("sha256").update(workspace).digest("hex").slice(0, 16);
   return resolve(tmpdir(), "codex-plugin-multi", pluginName, `${slug}-${hash}`);
-}
-
-function resolvePanelWorkspaceRoot(cwd) {
-  const workspace = resolve(cwd);
-  try {
-    return execFileSync("git", ["-C", workspace, "rev-parse", "--show-toplevel"], {
-      encoding: "utf8",
-      stdio: ["ignore", "pipe", "ignore"],
-      timeout: 5000,
-    }).trim();
-  } catch {
-    return workspace;
-  }
 }
 
 function readRecord(file) {
@@ -259,10 +229,7 @@ function recordsFromJobsDir(jobsDir) {
 
 function recordsFromCompanionProvider({ env, fallback }, cwd, processEnv) {
   const pluginData = processEnv[env];
-  if (!pluginData) {
-    return recordsFromJobsDir(join(tmpdir(), fallback, companionStateId(cwd), "jobs"));
-  }
-  const stateRoot = join(pluginData, "state");
+  const stateRoot = pluginData ? join(pluginData, "state") : join(tmpdir(), fallback);
   if (!existsSync(stateRoot)) return [];
   let stateEntries;
   try {
@@ -281,10 +248,12 @@ function recordsFromDirectProvider({ env, plugin }, cwd, processEnv) {
   return [...new Set(roots)].flatMap((root) => recordsFromJobsDir(join(root, "jobs")));
 }
 
-function recordWorkspaceMatches(record, canonicalWorkspaces) {
+function recordWorkspaceMatches(record, canonicalCwd) {
   const recordWorkspace = record.workspace_root ?? record.workspaceRoot ?? null;
   if (typeof recordWorkspace !== "string" || recordWorkspace.length === 0) return false;
-  return canonicalWorkspaces.has(canonicalWorkspace(recordWorkspace));
+  const recordCanonical = canonicalWorkspace(recordWorkspace);
+  const rel = relative(recordCanonical, canonicalCwd);
+  return rel === "" || (rel !== "" && !rel.startsWith("..") && !isAbsolute(rel));
 }
 
 function timestamp(record) {
@@ -311,14 +280,11 @@ function providerOrderIndex(provider) {
  *   then descending timestamp, then job_id.
  */
 export function collectReviewPanelRecords({ cwd = process.cwd(), env = process.env } = {}) {
-  const workspaceCanonicals = new Set([
-    canonicalWorkspace(cwd),
-    canonicalWorkspace(resolvePanelWorkspaceRoot(cwd)),
-  ]);
+  const workspaceCanonical = canonicalWorkspace(cwd);
   const records = [
     ...COMPANION_PROVIDERS.flatMap((provider) => recordsFromCompanionProvider(provider, cwd, env)),
     ...DIRECT_ROOTS.flatMap((provider) => recordsFromDirectProvider(provider, cwd, env)),
-  ].filter((record) => recordWorkspaceMatches(record, workspaceCanonicals));
+  ].filter((record) => recordWorkspaceMatches(record, workspaceCanonical));
   return records.sort((left, right) => {
     const providerDiff = providerOrderIndex(providerName(left)) - providerOrderIndex(providerName(right));
     if (providerDiff !== 0) return providerDiff;
