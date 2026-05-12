@@ -1,22 +1,40 @@
 #!/usr/bin/env node
 import { readFileSync } from "node:fs";
 
-import { renderReviewPanelMarkdown } from "./lib/review-panel.mjs";
+import { collectReviewPanelRecords, renderReviewPanelMarkdown } from "./lib/review-panel.mjs";
 
 function usage() {
   return [
     "Usage:",
     "  node scripts/review-panel.mjs <records.json>",
+    "  node scripts/review-panel.mjs --workspace <path>",
     "",
     "Input must be a JobRecord object, a JSON array of JobRecords, or an object",
     "with a records array. Use '-' to read JSON from stdin.",
   ].join("\n");
 }
 
-function readInput(path) {
-  if (!path || path === "--help" || path === "-h") {
-    return null;
+function parseArgs(argv) {
+  const out = { input: null, workspace: null, help: false };
+  for (let i = 0; i < argv.length; i += 1) {
+    const token = argv[i];
+    if (token === "--help" || token === "-h") {
+      out.help = true;
+      continue;
+    }
+    if (token === "--workspace") {
+      const value = argv[++i];
+      if (!value || value.startsWith("--")) throw new Error("--workspace requires a value");
+      out.workspace = value;
+      continue;
+    }
+    if (out.input) throw new Error(`unexpected argument ${token}`);
+    out.input = token;
   }
+  return out;
+}
+
+function readInput(path) {
   if (path === "-") return readFileSync(0, "utf8");
   return readFileSync(path, "utf8");
 }
@@ -29,12 +47,14 @@ function normalizeRecords(parsed) {
 }
 
 try {
-  const input = readInput(process.argv[2]);
-  if (input === null) {
+  const args = parseArgs(process.argv.slice(2));
+  if (args.help || (!args.input && !args.workspace)) {
     console.log(usage());
     process.exit(0);
   }
-  const records = normalizeRecords(JSON.parse(input));
+  const records = args.workspace
+    ? collectReviewPanelRecords({ cwd: args.workspace, env: process.env })
+    : normalizeRecords(JSON.parse(readInput(args.input)));
   console.log(renderReviewPanelMarkdown(records));
 } catch (error) {
   console.error(JSON.stringify({
