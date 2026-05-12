@@ -42,8 +42,9 @@ lets Claude Code delegate to Codex.
   with SIGTERM/verify/SIGKILL diagnostics. Set
   `GROK2API_HOME` or `GROK2API_BOOTSTRAP_DIR` only when you want a specific
   checkout or runtime directory. Set `UV_CACHE_DIR` only when you want `uv` to
-  use a caller-managed cache instead of the plugin's sandbox-writable default. Set
-  `GROK_WEB_TUNNEL_API_KEY` only if your local tunnel requires a bearer value.
+  use a caller-managed cache instead of the plugin's sandbox-writable default;
+  an empty `UV_CACHE_DIR=""` is treated as unset. Set `GROK_WEB_TUNNEL_API_KEY`
+  only if your local tunnel requires a bearer value.
 - `DEEPSEEK_API_KEY` if you enable the DeepSeek direct API reviewer.
 - `ZAI_API_KEY` if you enable the GLM direct API reviewer. `ZAI_GLM_API_KEY`
   is accepted as a compatibility alias. GLM Coding Plan calls use
@@ -482,8 +483,15 @@ npm run smoke:claude
 npm run smoke:gemini
 npm run smoke:kimi
 npm run smoke:api-reviewers
+npm run readiness:manifest -- --fixture-root <git-fixture> --evidence-dir <dir> --out <manifest.json>
 COVERAGE_ENFORCE_TARGET=1 npm run test:coverage
 ```
+
+`readiness:manifest` normalizes Claude, Gemini, Kimi, Grok, DeepSeek, and GLM
+doctor/review/approval artifacts into one readiness manifest. It classifies
+failures as `sandbox`, `auth`, `provider`, `tunnel`, `session_tokens`,
+`review_quality`, `approval_gate`, or `cache_install`, and checks prompt
+persistence plus fixture mutation state without storing source bodies.
 
 Repository layout:
 
@@ -500,6 +508,7 @@ codex-plugin-multi/
   docs/superpowers/specs/2026-04-23-codex-plugin-multi-design.md
   docs/archive/
   scripts/ci/check-manifests.mjs
+  scripts/provider-readiness-manifest.mjs
   tests/
 ```
 

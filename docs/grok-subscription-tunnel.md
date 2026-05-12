@@ -48,11 +48,12 @@ exists, it bootstraps
 `https://github.com/chenyme/grok2api.git` into the default runtime directory,
 then auto-starts a loopback grok2api `/v1` endpoint with `uv run granian
 --interface asgi --host <host> --port <port> --workers 1 app.main:app`. Docker
-is not required. When `UV_CACHE_DIR` is unset, the plugin gives `uv` a
-sandbox-writable cache under the plugin temp runtime area so Codex does not
-need write access to the user's default `~/.cache/uv`; an explicit
-`UV_CACHE_DIR` is preserved. Set `GROK_WEB_TUNNEL_AUTO_BOOTSTRAP=0` to forbid
-cloning, or `GROK_WEB_TUNNEL_AUTO_START=0` to forbid process start.
+is not required. When `UV_CACHE_DIR` is unset or an empty string, the plugin
+gives `uv` a sandbox-writable cache under the plugin temp runtime area so Codex
+does not need write access to the user's default `~/.cache/uv`; an explicit
+non-empty `UV_CACHE_DIR` is preserved. Set
+`GROK_WEB_TUNNEL_AUTO_BOOTSTRAP=0` to forbid cloning, or
+`GROK_WEB_TUNNEL_AUTO_START=0` to forbid process start.
 Auto-bootstrap uses the current default upstream checkout; environments that
 require pinned third-party code should disable auto-bootstrap and point
 `GROK2API_HOME` at a pre-provisioned, pinned checkout.

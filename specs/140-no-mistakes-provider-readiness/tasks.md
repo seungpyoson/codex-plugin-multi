@@ -16,6 +16,8 @@
 - [X] T006 [US1] Add tests for manifest row failure classes and prompt-persistence checks.
 - [X] T007 [US1] Implement manifest builder.
 - [X] T008 [US1] Document synthetic fixture live-smoke process.
+- [X] T015 [US1] Add regression coverage proving direct API auth/sandbox doctor failures keep their exact failure classes before approval-gate checks.
+- [X] T016 [US1] Add malformed-evidence diagnostics and manifest CLI usage documentation.
 
 ## Phase 3: Review Quality Repeatability
 

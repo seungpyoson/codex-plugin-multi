@@ -1,4 +1,6 @@
 #!/usr/bin/env node
+// Builds a six-provider readiness manifest from doctor, review, and approval
+// evidence JSON files. See `npm run readiness:manifest -- --help`.
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -11,9 +13,19 @@ const PROVIDERS = Object.freeze(["claude", "gemini", "kimi", "grok", "deepseek",
 const DIRECT_API_PROVIDERS = new Set(["deepseek", "glm"]);
 const TRANSMISSION_VALUES = new Set(["not_sent", "may_be_sent", "sent"]);
 const TRUSTED_GIT_ENV = gitEnv(cleanGitEnv());
+const USAGE = `Usage: npm run readiness:manifest -- --fixture-root <git-fixture> --evidence-dir <dir> [--out <manifest.json>]
+
+Builds a six-provider readiness manifest for claude, gemini, kimi, grok, deepseek, and glm.
+Evidence files are named <provider>-doctor.json, <provider>-review.json, and <provider>-approval.json.
+Direct API approval evidence must prove source_content_transmission="not_sent" before source-bearing reviews count as valid.
+`;
 
 function parseArgs(argv) {
   const args = Object.create(null);
+  if (argv.includes("--help") || argv.includes("-h")) {
+    args.help = true;
+    return args;
+  }
   for (let i = 0; i < argv.length; i += 1) {
     const token = argv[i];
     if (!token.startsWith("--")) throw new Error(`unexpected argument ${token}`);
@@ -32,7 +44,12 @@ function parseArgs(argv) {
 
 function readJsonIfExists(file) {
   if (!existsSync(file)) return null;
-  return JSON.parse(readFileSync(file, "utf8"));
+  try {
+    return JSON.parse(readFileSync(file, "utf8"));
+  } catch (err) {
+    const reason = err instanceof Error ? err.message : String(err);
+    throw new Error(`invalid JSON evidence file ${file}: ${reason}`);
+  }
 }
 
 function runGit(cwd, args) {
@@ -136,7 +153,6 @@ function errorCode(doctor, review) {
 function failureClass({ provider, doctor, review, failedReviewSlot, approvalState }) {
   const code = errorCode(doctor, review);
   if (code === "approval_required") return "approval_gate";
-  if (DIRECT_API_PROVIDERS.has(provider) && (!review || approvalState !== "not_sent")) return "approval_gate";
   if (failedReviewSlot === true || code === "review_not_completed" || review?.error_cause === "review_quality") return "review_quality";
   if (code === "sandbox_blocked") return "sandbox";
   if (["not_authed", "oauth_inference_rejected", "auth_not_configured", "session_expired"].includes(code)) return "auth";
@@ -147,6 +163,10 @@ function failureClass({ provider, doctor, review, failedReviewSlot, approvalStat
     "grok_session_runtime_admin_divergence",
   ].includes(code)) return "session_tokens";
   if (["spawn_failed", "provider_unavailable", "rate_limited", "usage_limited", "timeout", "claude_error", "gemini_error", "kimi_error"].includes(code)) return "provider";
+  if (DIRECT_API_PROVIDERS.has(provider)) {
+    const doctorReady = doctorStatus(doctor) === "ready";
+    if ((doctorReady && !review) || (review && approvalState !== "not_sent")) return "approval_gate";
+  }
   if (doctorStatus(doctor) === "not_run" && !review) return "cache_install";
   if (review && reviewStatus(review) !== "completed") return "provider";
   if (doctor && doctorStatus(doctor) !== "ready" && !review) return "provider";
@@ -211,17 +231,27 @@ function buildManifest({ fixtureRoot, evidenceDir }) {
 }
 
 function main() {
-  const args = parseArgs(process.argv.slice(2));
-  const fixtureRoot = resolve(args["fixture-root"]);
-  const evidenceDir = resolve(args["evidence-dir"]);
-  const manifest = buildManifest({ fixtureRoot, evidenceDir });
-  const text = `${JSON.stringify(manifest, null, 2)}\n`;
-  if (args.out) {
-    const out = resolve(args.out);
-    mkdirSync(dirname(out), { recursive: true });
-    writeFileSync(out, text, "utf8");
-  } else {
-    process.stdout.write(text);
+  try {
+    const args = parseArgs(process.argv.slice(2));
+    if (args.help === true) {
+      process.stdout.write(USAGE);
+      return;
+    }
+    const fixtureRoot = resolve(args["fixture-root"]);
+    const evidenceDir = resolve(args["evidence-dir"]);
+    const manifest = buildManifest({ fixtureRoot, evidenceDir });
+    const text = `${JSON.stringify(manifest, null, 2)}\n`;
+    if (args.out) {
+      const out = resolve(args.out);
+      mkdirSync(dirname(out), { recursive: true });
+      writeFileSync(out, text, "utf8");
+    } else {
+      process.stdout.write(text);
+    }
+  } catch (err) {
+    const reason = err instanceof Error ? err.message : String(err);
+    process.stderr.write(`provider-readiness-manifest: ${reason}\n`);
+    process.exitCode = 1;
   }
 }
 

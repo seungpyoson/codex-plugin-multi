@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -167,6 +167,55 @@ test("provider readiness manifest flags persisted full prompt keys", () => {
   assert.equal(manifest.summary.prompt_persistence_failures, 1);
 });
 
+test("provider readiness manifest reports malformed evidence json with file path", () => {
+  const fixtureRoot = mkdtempSync(path.join(tmpdir(), "provider-readiness-bad-json-fixture-"));
+  const evidenceDir = mkdtempSync(path.join(tmpdir(), "provider-readiness-bad-json-evidence-"));
+  mkdirSync(path.join(fixtureRoot, "fixtures"), { recursive: true });
+  fixtureSeedRepo(fixtureRoot, {
+    fileName: "fixtures/smoke.js",
+    fileContents: "export const value = 1;\n",
+  });
+
+  const badJsonPath = path.join(evidenceDir, "claude-doctor.json");
+  mkdirSync(evidenceDir, { recursive: true });
+  writeFileSync(badJsonPath, "{bad json\n", "utf8");
+
+  const res = spawnSync(process.execPath, [
+    MANIFEST,
+    "--fixture-root", fixtureRoot,
+    "--evidence-dir", evidenceDir,
+  ], { encoding: "utf8" });
+
+  assert.notEqual(res.status, 0);
+  assert.match(res.stderr, /invalid JSON evidence file/);
+  assert.match(res.stderr, /claude-doctor\.json/);
+});
+
+test("provider readiness manifest prints cli usage", () => {
+  const res = spawnSync(process.execPath, [MANIFEST, "--help"], { encoding: "utf8" });
+
+  assert.equal(res.status, 0);
+  assert.match(res.stdout, /Usage: npm run readiness:manifest/);
+  assert.match(res.stdout, /--fixture-root <git-fixture>/);
+  assert.match(res.stdout, /--evidence-dir <dir>/);
+});
+
+test("provider readiness manifest reports runtime failures without a stack trace", () => {
+  const fixtureRoot = mkdtempSync(path.join(tmpdir(), "provider-readiness-non-git-fixture-"));
+  const evidenceDir = mkdtempSync(path.join(tmpdir(), "provider-readiness-runtime-error-evidence-"));
+
+  const res = spawnSync(process.execPath, [
+    MANIFEST,
+    "--fixture-root", fixtureRoot,
+    "--evidence-dir", evidenceDir,
+  ], { encoding: "utf8" });
+
+  assert.notEqual(res.status, 0);
+  assert.match(res.stderr, /provider-readiness-manifest:/);
+  assert.doesNotMatch(res.stderr, /\n\s+at\s+/);
+  assert.doesNotMatch(res.stderr, /node:internal/);
+});
+
 test("provider readiness manifest classifies direct api doctor-only evidence as approval gate", () => {
   const fixtureRoot = mkdtempSync(path.join(tmpdir(), "provider-readiness-direct-api-fixture-"));
   const evidenceDir = mkdtempSync(path.join(tmpdir(), "provider-readiness-direct-api-evidence-"));
@@ -189,6 +238,38 @@ test("provider readiness manifest classifies direct api doctor-only evidence as 
   assert.equal(deepseek.approval_status, "missing");
   assert.equal(deepseek.review_status, "not_run");
   assert.equal(deepseek.failure_class, "approval_gate");
+});
+
+test("provider readiness manifest preserves direct api doctor auth and sandbox classes before approval gate", () => {
+  const fixtureRoot = mkdtempSync(path.join(tmpdir(), "provider-readiness-direct-api-preflight-fixture-"));
+  const evidenceDir = mkdtempSync(path.join(tmpdir(), "provider-readiness-direct-api-preflight-evidence-"));
+  mkdirSync(path.join(fixtureRoot, "fixtures"), { recursive: true });
+  fixtureSeedRepo(fixtureRoot, {
+    fileName: "fixtures/smoke.js",
+    fileContents: "export const value = 1;\n",
+  });
+
+  writeJson(path.join(evidenceDir, "deepseek-doctor.json"), {
+    ready: false,
+    status: "error",
+    error_code: "sandbox_blocked",
+  });
+  writeJson(path.join(evidenceDir, "glm-doctor.json"), {
+    ready: false,
+    status: "error",
+    error_code: "not_authed",
+  });
+
+  const stdout = execFileSync(process.execPath, [
+    MANIFEST,
+    "--fixture-root", fixtureRoot,
+    "--evidence-dir", evidenceDir,
+  ], { encoding: "utf8" });
+
+  const manifest = JSON.parse(stdout);
+  const rows = Object.fromEntries(manifest.providers.map((row) => [row.provider, row]));
+  assert.equal(rows.deepseek.failure_class, "sandbox");
+  assert.equal(rows.glm.failure_class, "auth");
 });
 
 test("provider readiness manifest classifies direct api review without approval proof as approval gate", () => {
