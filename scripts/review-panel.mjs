@@ -9,8 +9,13 @@ function usage() {
     "  node scripts/review-panel.mjs <records.json>",
     "  node scripts/review-panel.mjs --workspace <path>",
     "",
-    "Input must be a JobRecord object, a JSON array of JobRecords, or an object",
-    "with a records array. Use '-' to read JSON from stdin.",
+    "With a file argument, input must be a JobRecord object, a JSON array of",
+    "JobRecords, or an object with a records array. Use '-' to read JSON from",
+    "stdin.",
+    "",
+    "With --workspace, the panel auto-discovers live/recent JobRecords from all",
+    "provider state roots (Claude, Gemini, Kimi, Grok, DeepSeek, GLM) and",
+    "filters by canonical workspace, so no input file is needed.",
   ].join("\n");
 }
 
