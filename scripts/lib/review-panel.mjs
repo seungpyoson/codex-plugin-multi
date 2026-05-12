@@ -4,6 +4,10 @@ import { tmpdir } from "node:os";
 import { basename, join, resolve } from "node:path";
 
 const PROVIDER_ORDER = ["claude", "gemini", "kimi", "grok", "deepseek", "glm"];
+const VERDICT_RE = /\bVerdict:\s*(APPROVE|REQUEST CHANGES|FAIL|REJECT)\b/i;
+const PROVIDER_UNAVAILABLE_CODES = ["provider_unavailable", "spawn_failed", "claude_error", "gemini_error", "kimi_error", "tunnel_unavailable"];
+const AUTH_FAILURE_CODES = ["not_authed", "oauth_inference_rejected", "auth_not_configured", "session_expired"];
+const QUOTA_LIMITED_CODES = ["usage_limited", "rate_limited"];
 const COMPANION_PROVIDERS = [
   { provider: "claude", env: "CLAUDE_PLUGIN_DATA", fallback: "claude-companion" },
   { provider: "gemini", env: "GEMINI_PLUGIN_DATA", fallback: "gemini-companion" },
@@ -85,6 +89,20 @@ function jobId(record) {
 }
 
 /**
+ * Resolves the sub-state of a failed job from its transmission state and error
+ * code.  Called only when record.status === "failed".
+ */
+function failedState(sent, code) {
+  if (code === "approval_required") return "approval_required";
+  if (code === "timeout" && sent === "sent") return "source_sent_timeout";
+  if (sent === "not_sent") return "failed_before_source_send";
+  if (PROVIDER_UNAVAILABLE_CODES.includes(code)) return "provider_unavailable";
+  if (AUTH_FAILURE_CODES.includes(code)) return "auth_session_failure";
+  if (QUOTA_LIMITED_CODES.includes(code)) return "quota_usage_limited";
+  return "failed";
+}
+
+/**
  * Classifies a job record into a priority-ordered operational state.
  *
  * The state machine checks conditions in load-bearing order: approval_required
@@ -99,20 +117,11 @@ function operatorState(record) {
   const status = String(record.status ?? "");
   const sent = sourceTransmission(record);
   const code = String(record.error_code ?? "");
-  if (code === "approval_required" && status === "failed") return "approval_required";
+  if (status === "failed") return failedState(sent, code);
   if (status === "completed" && quality(record).failed_review_slot === true) return "completed_failed_review_slot";
   if (status === "completed") return "completed";
   if ((status === "running" || status === "queued") && sent === "sent") return "source_sent_waiting";
   if (status === "running" || status === "queued") return "running";
-  if (status === "failed" && code === "timeout" && sent === "sent") return "source_sent_timeout";
-  if (status === "failed" && sent === "not_sent") return "failed_before_source_send";
-  if (status === "failed" && ["provider_unavailable", "spawn_failed", "claude_error", "gemini_error", "kimi_error", "tunnel_unavailable"].includes(code)) {
-    return "provider_unavailable";
-  }
-  if (status === "failed" && ["not_authed", "oauth_inference_rejected", "auth_not_configured", "session_expired"].includes(code)) {
-    return "auth_session_failure";
-  }
-  if (status === "failed" && ["usage_limited", "rate_limited"].includes(code)) return "quota_usage_limited";
   return status || "unknown";
 }
 
@@ -128,7 +137,7 @@ function resultSummary(record) {
   if (record.status === "running" || record.status === "queued") return "-";
   if (quality(record).failed_review_slot === true) return "failed_review_slot";
   if (record.status === "failed" && record.error_code) return record.error_code;
-  const verdict = /\bVerdict:\s*(APPROVE|REQUEST CHANGES|FAIL|REJECT)\b/i.exec(String(record.result ?? ""));
+  const verdict = VERDICT_RE.exec(String(record.result ?? ""));
   if (!verdict) return "";
   return verdict[1].toLowerCase().replace(/\s+/g, "_");
 }
