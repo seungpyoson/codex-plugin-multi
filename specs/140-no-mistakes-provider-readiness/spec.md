@@ -27,7 +27,7 @@ An operator runs installed reviewer setup or smoke checks from a fresh Codex ses
 
 An operator runs Grok setup without pre-setting `UV_CACHE_DIR`; the plugin starts `uv` with a sandbox-writable cache or reports a session-token problem after the tunnel becomes reachable.
 
-**Why this priority**: Current default Grok path dies before tunnel startup because `uv` tries `/Users/spson/.cache/uv`, which is blocked in Codex sandbox.
+**Why this priority**: Current default Grok path dies before tunnel startup because `uv` tries the operator's home cache directory (for example `$HOME/.cache/uv`), which is blocked in Codex sandbox.
 
 **Independent Test**: Run Grok smoke with fake `uv` that records env and assert the plugin injects a writable `UV_CACHE_DIR` when caller did not provide one, while preserving explicit caller values.
 

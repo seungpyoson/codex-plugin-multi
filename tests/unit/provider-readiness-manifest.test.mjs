@@ -167,6 +167,48 @@ test("provider readiness manifest flags persisted full prompt keys", () => {
   assert.equal(manifest.summary.prompt_persistence_failures, 1);
 });
 
+test("provider readiness manifest flags message and system prompt persistence", () => {
+  const fixtureRoot = mkdtempSync(path.join(tmpdir(), "provider-readiness-prompt-carrier-fixture-"));
+  const evidenceDir = mkdtempSync(path.join(tmpdir(), "provider-readiness-prompt-carrier-evidence-"));
+  mkdirSync(path.join(fixtureRoot, "fixtures"), { recursive: true });
+  fixtureSeedRepo(fixtureRoot, {
+    fileName: "fixtures/smoke.js",
+    fileContents: "export const value = 1;\n",
+  });
+
+  writeJson(path.join(evidenceDir, "claude-review.json"), {
+    ...reviewRecord({ provider: "claude" }),
+    request: {
+      messages: [
+        { role: "system", content: "full system prompt with source contract" },
+        { role: "user", content: "full rendered prompt with selected source" },
+      ],
+    },
+  });
+  writeJson(path.join(evidenceDir, "gemini-review.json"), {
+    ...reviewRecord({ provider: "gemini" }),
+    system_prompt: "full system prompt with selected source",
+  });
+  writeJson(path.join(evidenceDir, "kimi-review.json"), {
+    ...reviewRecord({ provider: "kimi" }),
+    rendered_prompt_hash: { algorithm: "sha256", value: "e".repeat(64) },
+    result: "The response mentioned a generic content field but persisted no prompt carrier.",
+  });
+
+  const stdout = execFileSync(process.execPath, [
+    MANIFEST,
+    "--fixture-root", fixtureRoot,
+    "--evidence-dir", evidenceDir,
+  ], { encoding: "utf8" });
+
+  const manifest = JSON.parse(stdout);
+  const rows = Object.fromEntries(manifest.providers.map((row) => [row.provider, row]));
+  assert.equal(rows.claude.prompt_persistence_status, "full_prompt_found");
+  assert.equal(rows.gemini.prompt_persistence_status, "full_prompt_found");
+  assert.equal(rows.kimi.prompt_persistence_status, "hash_only");
+  assert.equal(manifest.summary.prompt_persistence_failures, 2);
+});
+
 test("provider readiness manifest treats review records without transmission metadata as ambiguous", () => {
   const fixtureRoot = mkdtempSync(path.join(tmpdir(), "provider-readiness-ambiguous-transmission-fixture-"));
   const evidenceDir = mkdtempSync(path.join(tmpdir(), "provider-readiness-ambiguous-transmission-evidence-"));
@@ -190,6 +232,33 @@ test("provider readiness manifest treats review records without transmission met
   const claude = manifest.providers.find((row) => row.provider === "claude");
   assert.equal(claude.review_status, "completed");
   assert.equal(claude.source_content_transmission, "may_be_sent");
+});
+
+test("provider readiness manifest distinguishes missing mutation evidence from no review", () => {
+  const fixtureRoot = mkdtempSync(path.join(tmpdir(), "provider-readiness-mutation-fixture-"));
+  const evidenceDir = mkdtempSync(path.join(tmpdir(), "provider-readiness-mutation-evidence-"));
+  mkdirSync(path.join(fixtureRoot, "fixtures"), { recursive: true });
+  fixtureSeedRepo(fixtureRoot, {
+    fileName: "fixtures/smoke.js",
+    fileContents: "export const value = 1;\n",
+  });
+
+  const review = reviewRecord({ provider: "claude" });
+  delete review.mutations;
+  writeJson(path.join(evidenceDir, "claude-review.json"), review);
+
+  const stdout = execFileSync(process.execPath, [
+    MANIFEST,
+    "--fixture-root", fixtureRoot,
+    "--evidence-dir", evidenceDir,
+  ], { encoding: "utf8" });
+
+  const manifest = JSON.parse(stdout);
+  const rows = Object.fromEntries(manifest.providers.map((row) => [row.provider, row]));
+  assert.equal(rows.claude.review_status, "completed");
+  assert.equal(rows.claude.mutation_status, "missing");
+  assert.equal(rows.gemini.review_status, "not_run");
+  assert.equal(rows.gemini.mutation_status, "not_checked");
 });
 
 test("provider readiness manifest reports malformed evidence json with file path", () => {
@@ -263,6 +332,7 @@ test("provider readiness manifest classifies direct api doctor-only evidence as 
   assert.equal(deepseek.approval_status, "missing");
   assert.equal(deepseek.review_status, "not_run");
   assert.equal(deepseek.failure_class, "approval_gate");
+  assert.match(deepseek.next_action, /approval-request/i);
 });
 
 test("provider readiness manifest preserves direct api doctor auth and sandbox classes before approval gate", () => {
@@ -294,7 +364,9 @@ test("provider readiness manifest preserves direct api doctor auth and sandbox c
   const manifest = JSON.parse(stdout);
   const rows = Object.fromEntries(manifest.providers.map((row) => [row.provider, row]));
   assert.equal(rows.deepseek.failure_class, "sandbox");
+  assert.match(rows.deepseek.next_action, /sandbox/i);
   assert.equal(rows.glm.failure_class, "auth");
+  assert.match(rows.glm.next_action, /auth/i);
 });
 
 test("provider readiness manifest classifies direct api review without approval proof as approval gate", () => {
@@ -320,6 +392,82 @@ test("provider readiness manifest classifies direct api review without approval 
   assert.equal(deepseek.approval_status, "missing");
   assert.equal(deepseek.review_status, "completed");
   assert.equal(deepseek.failure_class, "approval_gate");
+  assert.match(deepseek.next_action, /approval proof/i);
+});
+
+test("provider readiness manifest classifies Grok cache and token failures with next actions", () => {
+  const fixtureRoot = mkdtempSync(path.join(tmpdir(), "provider-readiness-grok-failures-fixture-"));
+  const evidenceDir = mkdtempSync(path.join(tmpdir(), "provider-readiness-grok-failures-evidence-"));
+  mkdirSync(path.join(fixtureRoot, "fixtures"), { recursive: true });
+  fixtureSeedRepo(fixtureRoot, {
+    fileName: "fixtures/smoke.js",
+    fileContents: "export const value = 1;\n",
+  });
+
+  writeJson(path.join(evidenceDir, "grok-doctor.json"), {
+    provider: "grok-web",
+    ready: false,
+    status: "error",
+    error_code: "grok2api_uv_missing",
+  });
+
+  let stdout = execFileSync(process.execPath, [
+    MANIFEST,
+    "--fixture-root", fixtureRoot,
+    "--evidence-dir", evidenceDir,
+  ], { encoding: "utf8" });
+  let grok = JSON.parse(stdout).providers.find((row) => row.provider === "grok");
+  assert.equal(grok.failure_class, "cache_install");
+  assert.match(grok.next_action, /install or expose uv/i);
+
+  writeJson(path.join(evidenceDir, "grok-doctor.json"), {
+    provider: "grok-web",
+    ready: false,
+    status: "error",
+    error_code: "grok_session_no_runtime_tokens",
+  });
+
+  stdout = execFileSync(process.execPath, [
+    MANIFEST,
+    "--fixture-root", fixtureRoot,
+    "--evidence-dir", evidenceDir,
+  ], { encoding: "utf8" });
+  grok = JSON.parse(stdout).providers.find((row) => row.provider === "grok");
+  assert.equal(grok.failure_class, "session_tokens");
+  assert.match(grok.next_action, /grok:sync-browser-session|GROK2API_HOME/i);
+});
+
+test("provider readiness manifest lets a fresh not-ready doctor override stale review errors", () => {
+  const fixtureRoot = mkdtempSync(path.join(tmpdir(), "provider-readiness-stale-review-fixture-"));
+  const evidenceDir = mkdtempSync(path.join(tmpdir(), "provider-readiness-stale-review-evidence-"));
+  mkdirSync(path.join(fixtureRoot, "fixtures"), { recursive: true });
+  fixtureSeedRepo(fixtureRoot, {
+    fileName: "fixtures/smoke.js",
+    fileContents: "export const value = 1;\n",
+  });
+
+  writeJson(path.join(evidenceDir, "grok-doctor.json"), {
+    provider: "grok-web",
+    ready: false,
+    status: "error",
+    error_code: "grok_session_no_runtime_tokens",
+  });
+  writeJson(path.join(evidenceDir, "grok-review.json"), reviewRecord({
+    provider: "grok-web",
+    status: "failed",
+    errorCode: "timeout",
+    transmission: "sent",
+  }));
+
+  const stdout = execFileSync(process.execPath, [
+    MANIFEST,
+    "--fixture-root", fixtureRoot,
+    "--evidence-dir", evidenceDir,
+  ], { encoding: "utf8" });
+
+  const grok = JSON.parse(stdout).providers.find((row) => row.provider === "grok");
+  assert.equal(grok.failure_class, "session_tokens");
+  assert.match(grok.next_action, /runtime session tokens/i);
 });
 
 test("provider readiness manifest does not resolve git through caller PATH", () => {

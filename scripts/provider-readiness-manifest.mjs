@@ -12,6 +12,19 @@ const SCHEMA_VERSION = 1;
 const PROVIDERS = Object.freeze(["claude", "gemini", "kimi", "grok", "deepseek", "glm"]);
 const DIRECT_API_PROVIDERS = new Set(["deepseek", "glm"]);
 const TRANSMISSION_VALUES = new Set(["not_sent", "may_be_sent", "sent"]);
+const FULL_PROMPT_KEYS = new Set([
+  "prompt",
+  "rendered_prompt",
+  "renderedPrompt",
+  "prompt_text",
+  "promptText",
+  "system_prompt",
+  "systemPrompt",
+  "developer_prompt",
+  "developerPrompt",
+  "user_prompt",
+  "userPrompt",
+]);
 const AUTH_ERROR_CODES = new Set(["not_authed", "oauth_inference_rejected", "auth_not_configured", "session_expired"]);
 const TUNNEL_ERROR_CODES = new Set(["tunnel_unavailable", "grok2api_start_failed", "tunnel_error"]);
 const SESSION_TOKEN_ERROR_CODES = new Set([
@@ -19,6 +32,7 @@ const SESSION_TOKEN_ERROR_CODES = new Set([
   "grok_session_malformed_active_token",
   "grok_session_runtime_admin_divergence",
 ]);
+const CACHE_INSTALL_ERROR_CODES = new Set(["grok2api_uv_missing"]);
 const PROVIDER_ERROR_CODES = new Set([
   "spawn_failed",
   "provider_unavailable",
@@ -114,12 +128,13 @@ function normalizeTransmission(value) {
   return TRANSMISSION_VALUES.has(value) ? value : "may_be_sent";
 }
 
-function containsFullPromptKey(value) {
+function containsFullPromptKey(value, parentKey = "") {
   if (!value || typeof value !== "object") return false;
-  if (Array.isArray(value)) return value.some((item) => containsFullPromptKey(item));
+  if (Array.isArray(value)) return value.some((item) => containsFullPromptKey(item, parentKey));
   return Object.entries(value).some(([key, child]) => {
-    if (/^(prompt|rendered_prompt|renderedPrompt|prompt_text|promptText)$/.test(key)) return true;
-    return containsFullPromptKey(child);
+    if (FULL_PROMPT_KEYS.has(key)) return true;
+    if (parentKey === "messages" && key === "content" && typeof child === "string" && child.length > 0) return true;
+    return containsFullPromptKey(child, key);
   });
 }
 
@@ -160,12 +175,15 @@ function approvalStatus(provider, approval) {
   return "invalid";
 }
 
+function recordErrorCode(record) {
+  return record?.error_code ?? record?.errorCode ?? null;
+}
+
 function errorCode(doctor, review) {
-  return review?.error_code
-    ?? review?.errorCode
-    ?? doctor?.error_code
-    ?? doctor?.errorCode
-    ?? null;
+  const doctorCode = recordErrorCode(doctor);
+  const reviewCode = recordErrorCode(review);
+  if (doctorStatus(doctor) === "not_ready" && doctorCode) return doctorCode;
+  return reviewCode ?? doctorCode ?? null;
 }
 
 function errorCodeFailureClass(code, review, failedReviewSlot) {
@@ -175,6 +193,7 @@ function errorCodeFailureClass(code, review, failedReviewSlot) {
   if (AUTH_ERROR_CODES.has(code)) return "auth";
   if (TUNNEL_ERROR_CODES.has(code)) return "tunnel";
   if (SESSION_TOKEN_ERROR_CODES.has(code)) return "session_tokens";
+  if (CACHE_INSTALL_ERROR_CODES.has(code)) return "cache_install";
   if (PROVIDER_ERROR_CODES.has(code)) return "provider";
   return null;
 }
@@ -208,9 +227,11 @@ function sourceTransmission(review, approval) {
   return "not_sent";
 }
 
-function mutationStatus(mutations) {
-  if (mutations === null) return "not_checked";
-  return mutations.length === 0 ? "clean" : "dirty";
+function mutationStatus(review) {
+  if (!review) return "not_checked";
+  if (!Object.prototype.hasOwnProperty.call(review, "mutations")) return "missing";
+  if (!Array.isArray(review.mutations)) return "missing";
+  return review.mutations.length === 0 ? "clean" : "dirty";
 }
 
 function evidencePath({ doctor, doctorPath, review, reviewPath, approval, approvalPath }) {
@@ -218,6 +239,41 @@ function evidencePath({ doctor, doctorPath, review, reviewPath, approval, approv
   if (approval) return approvalPath;
   if (doctor) return doctorPath;
   return null;
+}
+
+function nextAction({ provider, failureClassValue, code, approvalState, review }) {
+  if (failureClassValue === "none") return "No action required.";
+  if (failureClassValue === "cache_install") {
+    if (code === "grok2api_uv_missing") {
+      return "Install or expose uv, then rerun Grok doctor; leave UV_CACHE_DIR unset for the sandbox-writable default or set it to a writable cache.";
+    }
+    return "Install or expose the missing provider runtime/cache prerequisite, then rerun the doctor.";
+  }
+  if (failureClassValue === "session_tokens") {
+    return "Run npm run grok:sync-browser-session or set GROK2API_HOME to a grok2api runtime with active runtime session tokens, then rerun Grok doctor before source review.";
+  }
+  if (failureClassValue === "sandbox") {
+    return "Classify this as a sandbox boundary first; rerun outside the sandbox or grant the needed host capability before calling it an install failure.";
+  }
+  if (failureClassValue === "auth") {
+    return "Refresh provider authentication and rerun the provider doctor before source review.";
+  }
+  if (failureClassValue === "tunnel") {
+    return "Inspect tunnel diagnostics, start or repair the local tunnel, then rerun the provider doctor.";
+  }
+  if (failureClassValue === "review_quality") {
+    return "Treat the review slot as failed; inspect review_quality.semantic_failure_reasons and retry with a source packet the provider can inspect.";
+  }
+  if (failureClassValue === "approval_gate") {
+    if (DIRECT_API_PROVIDERS.has(provider) && approvalState === "missing" && review) {
+      return "Discard this source-bearing direct API review until approval proof is present; run approval-request and capture not_sent evidence first.";
+    }
+    if (DIRECT_API_PROVIDERS.has(provider) && approvalState === "invalid") {
+      return "Regenerate direct API approval proof; it must include source_content_transmission=not_sent and denial_action.source_content_transmission=not_sent.";
+    }
+    return "Run approval-request and capture not_sent approval evidence before any direct API source-bearing review.";
+  }
+  return "Inspect the provider evidence error_code/detail and rerun the doctor or review after fixing the reported provider failure.";
 }
 
 function rowFor(provider, evidenceDir) {
@@ -230,16 +286,18 @@ function rowFor(provider, evidenceDir) {
   const evidence = [doctor, review, approval].filter(Boolean);
   const failedReviewSlot = valueAt(review, ["review_metadata", "audit_manifest", "review_quality", "failed_review_slot"], null);
   const approvalState = approvalStatus(provider, approval);
-  const mutations = Array.isArray(review?.mutations) ? review.mutations : null;
+  const code = errorCode(doctor, review);
+  const failureClassValue = failureClass({ provider, doctor, review, failedReviewSlot, approvalState });
   return {
     provider,
     doctor_status: doctorStatus(doctor),
     review_status: reviewStatus(review),
     approval_status: approvalState,
-    failure_class: failureClass({ provider, doctor, review, failedReviewSlot, approvalState }),
+    failure_class: failureClassValue,
+    next_action: nextAction({ provider, failureClassValue, code, approvalState, review }),
     source_content_transmission: sourceTransmission(review, approval),
     failed_review_slot: typeof failedReviewSlot === "boolean" ? failedReviewSlot : null,
-    mutation_status: mutationStatus(mutations),
+    mutation_status: mutationStatus(review),
     prompt_persistence_status: promptPersistenceStatus(evidence),
     elapsed_ms: valueAt(review, ["review_metadata", "raw_output", "elapsed_ms"], null),
     evidence_path: evidencePath({ doctor, doctorPath, review, reviewPath, approval, approvalPath }),

@@ -42,7 +42,9 @@ npm run readiness:manifest -- \
 The manifest is a normalizer, not a provider runner. It classifies missing
 direct-API approval as `approval_gate`, Grok runtime-token issues as
 `session_tokens`, audit failures as `review_quality`, and persisted full prompt
-keys as `full_prompt_found`.
+keys as `full_prompt_found`. Each row includes `next_action` so sandbox,
+approval, cache-install, tunnel, session-token, provider, and review-quality
+failures remain operator-actionable.
 
 ## no-mistakes gate
 

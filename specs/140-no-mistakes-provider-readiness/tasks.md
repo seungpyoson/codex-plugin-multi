@@ -21,8 +21,8 @@
 
 ## Phase 3: Review Quality Repeatability
 
-- [ ] T009 [US3] Add regression coverage for shallow/missing-verdict Kimi output as `review_not_completed`.
-- [ ] T010 [US3] Add current-prompt-shape smoke replay fixture that passes review-quality gate.
+- [X] T009 [US3] Add regression coverage for shallow/missing-verdict Kimi output as `review_not_completed`.
+- [X] T010 [US3] Add current-prompt-shape smoke replay fixture that passes review-quality gate.
 
 ## Phase 4: Final Gates
 

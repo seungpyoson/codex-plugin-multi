@@ -553,6 +553,8 @@ test("kimi custom-review prompt includes selected source content", () => {
     const record = parseJson(result.stdout);
     assert.equal(record.status, "completed");
     assert.equal(record.external_review.source_content_transmission, "sent");
+    assert.equal(record.review_metadata.audit_manifest.review_quality.failed_review_slot, false);
+    assert.deepEqual(record.review_metadata.audit_manifest.review_quality.semantic_failure_reasons, []);
   } finally {
     rmSync(cwd, { recursive: true, force: true });
   }
