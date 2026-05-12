@@ -1,7 +1,6 @@
-import { createHash } from "node:crypto";
 import { existsSync, readdirSync, readFileSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { basename, isAbsolute, join, relative, resolve } from "node:path";
+import { isAbsolute, join, parse, relative, resolve } from "node:path";
 
 const PROVIDER_ORDER = ["claude", "gemini", "kimi", "grok", "deepseek", "glm"];
 const VERDICT_RE = /\bVerdict:\s*(APPROVE|REQUEST CHANGES|FAIL|REJECT)\b/i;
@@ -13,8 +12,8 @@ const COMPANION_PROVIDERS = [
   { provider: "kimi", env: "KIMI_PLUGIN_DATA", fallback: "kimi-companion" },
 ];
 const DIRECT_ROOTS = [
-  { provider: "grok", env: "GROK_PLUGIN_DATA", plugin: "grok" },
-  { provider: "api-reviewers", env: "API_REVIEWERS_PLUGIN_DATA", plugin: "api-reviewers" },
+  { env: "GROK_PLUGIN_DATA", plugin: "grok" },
+  { env: "API_REVIEWERS_PLUGIN_DATA", plugin: "api-reviewers" },
 ];
 
 function valueAt(record, path, fallback = null) {
@@ -77,16 +76,18 @@ function inspectionStatus(record) {
 
 function readiness(record) {
   const errorCode = record.error_code ?? "";
-  if (errorCode === "models_ok_chat_400" || errorCode.startsWith("grok_session_")) {
-    return "not review-ready";
-  }
   if (record.status === "completed" && quality(record).failed_review_slot !== true) {
     return "review-ready";
   }
   if (record.status === "completed" && quality(record).failed_review_slot === true) {
     return "review failed";
   }
-  if (record.status === "failed") return "review failed";
+  if (record.status === "failed") {
+    if (errorCode === "models_ok_chat_400" || errorCode.startsWith("grok_session_")) {
+      return "not review-ready";
+    }
+    return "review failed";
+  }
   return "unknown";
 }
 
@@ -137,8 +138,8 @@ function operatorState(record) {
  *
  * Active jobs (running/queued) return "-" before any other check so that stale
  * failed_review_slot metadata from a prior run never leaks into an in-flight
- * row. After the active guard, priority order is: failed_review_slot, explicit
- * error_code on failure, parsed Verdict keyword, or empty string.
+ * row. After the active guard, priority order is: explicit error_code on
+ * failure, failed_review_slot, parsed Verdict keyword, or empty string.
  */
 function resultSummary(record) {
   if (isActiveStatus(record.status)) return "-";
@@ -172,6 +173,7 @@ export function buildReviewPanelRows(records = []) {
       status: record.status ?? "",
       readiness: readiness(record),
       sent: sourceTransmission(record),
+      // Backward-compatible alias for consumers that still read the old field.
       source_sent: sourceTransmission(record),
       elapsed_ms: elapsedMs(record),
       timeout_ms: timeoutMs(record),
@@ -194,13 +196,6 @@ function canonicalWorkspace(cwd) {
   }
 }
 
-function defaultDataRoot(pluginName, cwd) {
-  const workspace = resolve(cwd);
-  const slug = basename(workspace).replace(/[^A-Za-z0-9._-]/g, "_").slice(0, 48) || "workspace";
-  const hash = createHash("sha256").update(workspace).digest("hex").slice(0, 16);
-  return resolve(tmpdir(), "codex-plugin-multi", pluginName, `${slug}-${hash}`);
-}
-
 function readRecord(file) {
   try {
     const parsed = JSON.parse(readFileSync(file, "utf8"));
@@ -220,16 +215,19 @@ function recordsFromJobsDir(jobsDir) {
     return [];
   }
   for (const entry of entries) {
-    if (!entry.isDirectory()) continue;
-    const record = readRecord(join(jobsDir, entry.name, "meta.json"));
+    if (entry.isSymbolicLink()) continue;
+    let record = null;
+    if (entry.isDirectory()) {
+      record = readRecord(join(jobsDir, entry.name, "meta.json"));
+    } else if (entry.isFile() && entry.name.endsWith(".json")) {
+      record = readRecord(join(jobsDir, entry.name));
+    }
     if (record) out.push(record);
   }
   return out;
 }
 
-function recordsFromCompanionProvider({ env, fallback }, cwd, processEnv) {
-  const pluginData = processEnv[env];
-  const stateRoot = pluginData ? join(pluginData, "state") : join(tmpdir(), fallback);
+function recordsFromStateRoot(stateRoot) {
   if (!existsSync(stateRoot)) return [];
   let stateEntries;
   try {
@@ -238,22 +236,45 @@ function recordsFromCompanionProvider({ env, fallback }, cwd, processEnv) {
     return [];
   }
   return stateEntries
-    .filter((entry) => entry.isDirectory())
+    .filter((entry) => entry.isDirectory() && !entry.isSymbolicLink())
     .flatMap((entry) => recordsFromJobsDir(join(stateRoot, entry.name, "jobs")));
 }
 
-function recordsFromDirectProvider({ env, plugin }, cwd, processEnv) {
+function recordsFromCompanionProvider({ env, fallback }, processEnv) {
+  const pluginData = processEnv[env];
+  const stateRoot = pluginData ? join(pluginData, "state") : join(tmpdir(), fallback);
+  return recordsFromStateRoot(stateRoot);
+}
+
+function directFallbackStateRoot(plugin) {
+  return resolve(tmpdir(), "codex-plugin-multi", plugin);
+}
+
+function recordsFromDirectProvider({ env, plugin }, processEnv) {
   if (processEnv[env]) return recordsFromJobsDir(join(resolve(processEnv[env]), "jobs"));
-  const roots = [defaultDataRoot(plugin, cwd), defaultDataRoot(plugin, canonicalWorkspace(cwd))];
-  return [...new Set(roots)].flatMap((root) => recordsFromJobsDir(join(root, "jobs")));
+  return recordsFromStateRoot(directFallbackStateRoot(plugin));
+}
+
+function isPathWithin(parent, child) {
+  const rel = relative(parent, child);
+  return rel === "" || (rel !== "" && !rel.startsWith("..") && !isAbsolute(rel));
+}
+
+function isUnsafeWorkspaceAncestor(recordCanonical, canonicalCwd) {
+  if (recordCanonical === canonicalCwd) return false;
+  if (recordCanonical === parse(recordCanonical).root) return true;
+  if (recordCanonical === canonicalWorkspace(tmpdir())) return true;
+  return false;
 }
 
 function recordWorkspaceMatches(record, canonicalCwd) {
   const recordWorkspace = record.workspace_root ?? record.workspaceRoot ?? null;
   if (typeof recordWorkspace !== "string" || recordWorkspace.length === 0) return false;
   const recordCanonical = canonicalWorkspace(recordWorkspace);
-  const rel = relative(recordCanonical, canonicalCwd);
-  return rel === "" || (rel !== "" && !rel.startsWith("..") && !isAbsolute(rel));
+  if (!isPathWithin(recordCanonical, canonicalCwd)) return false;
+  if (recordCanonical === canonicalCwd) return true;
+  if (isUnsafeWorkspaceAncestor(recordCanonical, canonicalCwd)) return false;
+  return existsSync(join(recordCanonical, ".git"));
 }
 
 function timestamp(record) {
@@ -282,8 +303,8 @@ function providerOrderIndex(provider) {
 export function collectReviewPanelRecords({ cwd = process.cwd(), env = process.env } = {}) {
   const workspaceCanonical = canonicalWorkspace(cwd);
   const records = [
-    ...COMPANION_PROVIDERS.flatMap((provider) => recordsFromCompanionProvider(provider, cwd, env)),
-    ...DIRECT_ROOTS.flatMap((provider) => recordsFromDirectProvider(provider, cwd, env)),
+    ...COMPANION_PROVIDERS.flatMap((provider) => recordsFromCompanionProvider(provider, env)),
+    ...DIRECT_ROOTS.flatMap((provider) => recordsFromDirectProvider(provider, env)),
   ].filter((record) => recordWorkspaceMatches(record, workspaceCanonical));
   return records.sort((left, right) => {
     const providerDiff = providerOrderIndex(providerName(left)) - providerOrderIndex(providerName(right));
