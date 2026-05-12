@@ -29,9 +29,12 @@
   into workspace-filtered collections.
 - `recordWorkspaceMatches` skips malformed non-string workspace metadata
   instead of aborting the whole provider panel.
-- Review panel fallback discovery now matches direct-provider lexical data-root
-  hashing and companion git-root state directories, so default discovery works
-  across symlinked workspaces and git subdirectories.
+- Review panel fallback discovery now scans provider state roots and filters by
+  stored workspace metadata, so default discovery works across symlinked
+  workspaces without depending on matching slug/hash algorithms.
+- Review panel `--workspace` subdirectory matching now requires an ancestor
+  workspace record to point at a real Git repository; non-Git workspaces still
+  match when the panel is run from the exact recorded workspace path.
 
 ### Changed
 

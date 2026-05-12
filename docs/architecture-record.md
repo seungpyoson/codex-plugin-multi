@@ -72,7 +72,9 @@ visible together so broken review slots are not hidden behind result prose.
 The `--workspace` discovery path scans companion state directories and filters
 by stored workspace root, while direct-provider fallback records stay
 provider-data-root scoped to match the paths each writer uses when no explicit
-plugin data root is configured.
+plugin data root is configured. A record whose workspace root is an ancestor of
+the requested workspace is included only when that ancestor is a real Git
+repository; non-Git workspaces match only by exact recorded path.
 
 ### Identity Types Stay Distinct
 

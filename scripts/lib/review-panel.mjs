@@ -1,4 +1,4 @@
-import { existsSync, readdirSync, readFileSync, realpathSync } from "node:fs";
+import { existsSync, lstatSync, readdirSync, readFileSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { isAbsolute, join, parse, relative, resolve } from "node:path";
 
@@ -25,6 +25,10 @@ function valueAt(record, path, fallback = null) {
     current = current[key];
   }
   return current ?? fallback;
+}
+
+function isRecordObject(record) {
+  return record && typeof record === "object" && !Array.isArray(record);
 }
 
 function providerName(record) {
@@ -163,7 +167,7 @@ function cell(value) {
  * code, HTTP status, and semantic reasons).
  */
 export function buildReviewPanelRows(records = []) {
-  return records.map((record) => {
+  return records.filter(isRecordObject).map((record) => {
     const showReviewQuality = !isActiveStatus(record.status);
     const semanticFailed = showReviewQuality && quality(record).failed_review_slot === true;
     return Object.freeze({
@@ -199,7 +203,7 @@ function canonicalWorkspace(cwd) {
 function readRecord(file) {
   try {
     const parsed = JSON.parse(readFileSync(file, "utf8"));
-    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : null;
+    return isRecordObject(parsed) ? parsed : null;
   } catch {
     return null;
   }
@@ -207,6 +211,12 @@ function readRecord(file) {
 
 function recordsFromJobsDir(jobsDir) {
   if (!existsSync(jobsDir)) return [];
+  try {
+    const jobsDirStat = lstatSync(jobsDir);
+    if (!jobsDirStat.isDirectory() || jobsDirStat.isSymbolicLink()) return [];
+  } catch {
+    return [];
+  }
   const out = [];
   let entries;
   try {
@@ -214,10 +224,16 @@ function recordsFromJobsDir(jobsDir) {
   } catch {
     return [];
   }
+  const flatJobIds = new Set(
+    entries
+      .filter((entry) => !entry.isSymbolicLink() && entry.isFile() && entry.name.endsWith(".json"))
+      .map((entry) => entry.name.slice(0, -".json".length)),
+  );
   for (const entry of entries) {
     if (entry.isSymbolicLink()) continue;
     let record = null;
     if (entry.isDirectory()) {
+      if (flatJobIds.has(entry.name)) continue;
       record = readRecord(join(jobsDir, entry.name, "meta.json"));
     } else if (entry.isFile() && entry.name.endsWith(".json")) {
       record = readRecord(join(jobsDir, entry.name));
@@ -251,7 +267,7 @@ function directFallbackStateRoot(plugin) {
 }
 
 function recordsFromDirectProvider({ env, plugin }, processEnv) {
-  if (processEnv[env]) return recordsFromJobsDir(join(resolve(processEnv[env]), "jobs"));
+  if (processEnv[env] != null) return recordsFromJobsDir(join(resolve(processEnv[env]), "jobs"));
   return recordsFromStateRoot(directFallbackStateRoot(plugin));
 }
 
@@ -263,8 +279,42 @@ function isPathWithin(parent, child) {
 function isUnsafeWorkspaceAncestor(recordCanonical, canonicalCwd) {
   if (recordCanonical === canonicalCwd) return false;
   if (recordCanonical === parse(recordCanonical).root) return true;
-  if (recordCanonical === canonicalWorkspace(tmpdir())) return true;
+  if (recordCanonical === canonicalTmpdir()) return true;
   return false;
+}
+
+let canonicalTmpdirValue = null;
+function canonicalTmpdir() {
+  canonicalTmpdirValue ??= canonicalWorkspace(tmpdir());
+  return canonicalTmpdirValue;
+}
+
+function isGitRepositoryRoot(workspace) {
+  const gitPath = join(workspace, ".git");
+  let gitStat;
+  try {
+    gitStat = lstatSync(gitPath);
+  } catch {
+    return false;
+  }
+  if (gitStat.isDirectory()) return existsSync(join(gitPath, "HEAD"));
+  if (!gitStat.isFile()) return false;
+
+  let firstLine;
+  try {
+    [firstLine = ""] = readFileSync(gitPath, "utf8").split(/\r?\n/, 1);
+  } catch {
+    return false;
+  }
+  if (!firstLine.startsWith("gitdir:")) return false;
+  const rawGitDir = firstLine.slice("gitdir:".length).trim();
+  if (!rawGitDir) return false;
+  const gitDir = isAbsolute(rawGitDir) ? rawGitDir : resolve(workspace, rawGitDir);
+  try {
+    return lstatSync(gitDir).isDirectory() && existsSync(join(gitDir, "HEAD"));
+  } catch {
+    return false;
+  }
 }
 
 function recordWorkspaceMatches(record, canonicalCwd) {
@@ -274,7 +324,7 @@ function recordWorkspaceMatches(record, canonicalCwd) {
   if (!isPathWithin(recordCanonical, canonicalCwd)) return false;
   if (recordCanonical === canonicalCwd) return true;
   if (isUnsafeWorkspaceAncestor(recordCanonical, canonicalCwd)) return false;
-  return existsSync(join(recordCanonical, ".git"));
+  return isGitRepositoryRoot(recordCanonical);
 }
 
 function timestamp(record) {

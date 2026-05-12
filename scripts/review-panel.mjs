@@ -16,7 +16,8 @@ function usage() {
     "With --workspace, the panel auto-discovers live/recent JobRecords from all",
     "provider state roots (Claude, Gemini, Kimi, Grok, and API Reviewers records",
     "for DeepSeek/GLM) and filters by canonical workspace, so no input file is",
-    "needed.",
+    "needed. Subdirectory matches require the recorded ancestor to be a real",
+    "Git repository; non-Git workspaces match only by exact recorded path.",
   ].join("\n");
 }
 

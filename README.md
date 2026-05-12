@@ -216,6 +216,9 @@ readiness, terminal status, semantic failed-slot state, inspection state, error
 code, HTTP status, and semantic failure reasons. It aggregates Claude, Gemini,
 Kimi, Grok, and API Reviewers persisted JobRecords from their plugin data roots;
 DeepSeek and GLM appear as sub-providers from the API Reviewers root.
+When `--workspace` points inside a recorded workspace, the ancestor record is
+included only if that ancestor is a real Git repository; non-Git workspaces are
+matched by their exact recorded path.
 A provider that is running, blocked before source send, waiting after source
 send, timed out, unavailable, approval-gated, completed, or completed with a
 failed review slot must appear as an explicit row instead of being buried in
