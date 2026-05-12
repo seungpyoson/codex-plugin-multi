@@ -7,6 +7,7 @@ import { join } from "node:path";
 
 import {
   buildReviewPanelRows,
+  collectReviewPanelRecords,
   renderReviewPanelMarkdown,
 } from "../../scripts/lib/review-panel.mjs";
 
@@ -235,6 +236,41 @@ test("review panel CLI rejects workspace and file arguments together", () => {
   assert.match(res.stderr, /--workspace and a file argument are mutually exclusive/);
 });
 
+test("review panel treats queued jobs as active even with stale approval error code", () => {
+  const [row] = buildReviewPanelRows([
+    {
+      provider: "deepseek",
+      status: "queued",
+      error_code: "approval_required",
+      external_review: { source_content_transmission: "not_sent" },
+    },
+  ]);
+
+  assert.equal(row.state, "running");
+  assert.equal(row.result, "-");
+});
+
+test("review panel does not show stale failed-review-slot result for active jobs", () => {
+  const [row] = buildReviewPanelRows([
+    {
+      provider: "claude",
+      status: "running",
+      external_review: { source_content_transmission: "sent" },
+      review_metadata: {
+        audit_manifest: {
+          review_quality: {
+            failed_review_slot: true,
+            semantic_failure_reasons: ["missing_verdict"],
+          },
+        },
+      },
+    },
+  ]);
+
+  assert.equal(row.state, "source_sent_waiting");
+  assert.equal(row.result, "-");
+});
+
 function writeRecord(root, record, stateSubdir = null) {
   const jobId = record.job_id ?? record.id;
   const dir = stateSubdir
@@ -360,4 +396,40 @@ test("review panel CLI aggregates live and recent jobs across provider state roo
   assert.match(output, /deepseek \| job_44444444-4444-4444-8444-444444444444 \| approval_required \| not_sent \| 34 \|  \| approval_required/);
   assert.match(output, /glm \| job_55555555-5555-4555-8555-555555555555 \| completed \| sent \| 45422 \|  \| approve/);
   assert.match(output, /glm \| job_77777777-7777-4777-8777-777777777777 \| completed_failed_review_slot \| sent \| 91 \|  \| failed_review_slot/);
+});
+
+test("review panel workspace collection excludes records without workspace metadata from scanned state roots", () => {
+  const workspace = mkdtempSync(join(tmpdir(), "review-panel-workspace-"));
+  const claudeData = mkdtempSync(join(tmpdir(), "review-panel-claude-"));
+
+  writeRecord(claudeData, {
+    job_id: "job_aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+    provider: "claude",
+    status: "completed",
+    workspace_root: workspace,
+    result: "Verdict: APPROVE",
+  }, "workspace-a");
+
+  writeRecord(claudeData, {
+    job_id: "job_bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+    provider: "claude",
+    status: "completed",
+    result: "Verdict: APPROVE",
+  }, "other-workspace-without-metadata");
+
+  const records = collectReviewPanelRecords({
+    cwd: workspace,
+    env: {
+      ...process.env,
+      CLAUDE_PLUGIN_DATA: claudeData,
+      GEMINI_PLUGIN_DATA: mkdtempSync(join(tmpdir(), "review-panel-empty-gemini-")),
+      KIMI_PLUGIN_DATA: mkdtempSync(join(tmpdir(), "review-panel-empty-kimi-")),
+      GROK_PLUGIN_DATA: mkdtempSync(join(tmpdir(), "review-panel-empty-grok-")),
+      API_REVIEWERS_PLUGIN_DATA: mkdtempSync(join(tmpdir(), "review-panel-empty-api-")),
+    },
+  });
+
+  assert.deepEqual(records.map((record) => record.job_id), [
+    "job_aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+  ]);
 });

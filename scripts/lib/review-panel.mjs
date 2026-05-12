@@ -88,7 +88,7 @@ function operatorState(record) {
   const status = String(record.status ?? "");
   const sent = sourceTransmission(record);
   const code = String(record.error_code ?? "");
-  if (code === "approval_required" && status !== "running" && status !== "completed") return "approval_required";
+  if (code === "approval_required" && status === "failed") return "approval_required";
   if (status === "completed" && quality(record).failed_review_slot === true) return "completed_failed_review_slot";
   if (status === "completed") return "completed";
   if ((status === "running" || status === "queued") && sent === "sent") return "source_sent_waiting";
@@ -106,9 +106,9 @@ function operatorState(record) {
 }
 
 function resultSummary(record) {
+  if (record.status === "running" || record.status === "queued") return "-";
   if (quality(record).failed_review_slot === true) return "failed_review_slot";
   if (record.status === "failed" && record.error_code) return record.error_code;
-  if (record.status === "running" || record.status === "queued") return "-";
   const verdict = /\bVerdict:\s*(APPROVE|REQUEST CHANGES|FAIL|REJECT)\b/i.exec(String(record.result ?? ""));
   if (!verdict) return "";
   return verdict[1].toLowerCase().replace(/\s+/g, "_");
@@ -213,9 +213,9 @@ function recordsFromDirectProvider({ env, plugin }, cwd, processEnv) {
   return recordsFromJobsDir(join(root, "jobs"));
 }
 
-function recordWorkspaceMatches(record, cwd, canonicalCwd) {
+function recordWorkspaceMatches(record, canonicalCwd) {
   const recordWorkspace = record.workspace_root ?? record.workspaceRoot ?? null;
-  if (!recordWorkspace) return true;
+  if (!recordWorkspace) return false;
   return canonicalWorkspace(recordWorkspace) === canonicalCwd;
 }
 
@@ -230,7 +230,7 @@ export function collectReviewPanelRecords({ cwd = process.cwd(), env = process.e
   const records = [
     ...COMPANION_PROVIDERS.flatMap((provider) => recordsFromCompanionProvider(provider, cwd, env)),
     ...DIRECT_ROOTS.flatMap((provider) => recordsFromDirectProvider(provider, cwd, env)),
-  ].filter((record) => recordWorkspaceMatches(record, cwd, workspaceCanonical));
+  ].filter((record) => recordWorkspaceMatches(record, workspaceCanonical));
   return records.sort((left, right) => {
     const providerDiff = PROVIDER_ORDER.indexOf(providerName(left)) - PROVIDER_ORDER.indexOf(providerName(right));
     if (providerDiff !== 0) return providerDiff;
