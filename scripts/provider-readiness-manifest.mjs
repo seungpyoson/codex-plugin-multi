@@ -12,6 +12,23 @@ const SCHEMA_VERSION = 1;
 const PROVIDERS = Object.freeze(["claude", "gemini", "kimi", "grok", "deepseek", "glm"]);
 const DIRECT_API_PROVIDERS = new Set(["deepseek", "glm"]);
 const TRANSMISSION_VALUES = new Set(["not_sent", "may_be_sent", "sent"]);
+const AUTH_ERROR_CODES = new Set(["not_authed", "oauth_inference_rejected", "auth_not_configured", "session_expired"]);
+const TUNNEL_ERROR_CODES = new Set(["tunnel_unavailable", "grok2api_start_failed", "tunnel_error"]);
+const SESSION_TOKEN_ERROR_CODES = new Set([
+  "grok_session_no_runtime_tokens",
+  "grok_session_malformed_active_token",
+  "grok_session_runtime_admin_divergence",
+]);
+const PROVIDER_ERROR_CODES = new Set([
+  "spawn_failed",
+  "provider_unavailable",
+  "rate_limited",
+  "usage_limited",
+  "timeout",
+  "claude_error",
+  "gemini_error",
+  "kimi_error",
+]);
 const TRUSTED_GIT_ENV = gitEnv(cleanGitEnv());
 const USAGE = `Usage: npm run readiness:manifest -- --fixture-root <git-fixture> --evidence-dir <dir> [--out <manifest.json>]
 
@@ -151,26 +168,34 @@ function errorCode(doctor, review) {
     ?? null;
 }
 
-function failureClass({ provider, doctor, review, failedReviewSlot, approvalState }) {
-  const code = errorCode(doctor, review);
+function errorCodeFailureClass(code, review, failedReviewSlot) {
   if (code === "approval_required") return "approval_gate";
   if (failedReviewSlot === true || code === "review_not_completed" || review?.error_cause === "review_quality") return "review_quality";
   if (code === "sandbox_blocked") return "sandbox";
-  if (["not_authed", "oauth_inference_rejected", "auth_not_configured", "session_expired"].includes(code)) return "auth";
-  if (["tunnel_unavailable", "grok2api_start_failed", "tunnel_error"].includes(code)) return "tunnel";
-  if ([
-    "grok_session_no_runtime_tokens",
-    "grok_session_malformed_active_token",
-    "grok_session_runtime_admin_divergence",
-  ].includes(code)) return "session_tokens";
-  if (["spawn_failed", "provider_unavailable", "rate_limited", "usage_limited", "timeout", "claude_error", "gemini_error", "kimi_error"].includes(code)) return "provider";
-  if (DIRECT_API_PROVIDERS.has(provider)) {
-    const doctorReady = doctorStatus(doctor) === "ready";
-    if ((doctorReady && !review) || (review && approvalState !== "not_sent")) return "approval_gate";
-  }
+  if (AUTH_ERROR_CODES.has(code)) return "auth";
+  if (TUNNEL_ERROR_CODES.has(code)) return "tunnel";
+  if (SESSION_TOKEN_ERROR_CODES.has(code)) return "session_tokens";
+  if (PROVIDER_ERROR_CODES.has(code)) return "provider";
+  return null;
+}
+
+function directApiNeedsApproval(provider, doctor, review, approvalState) {
+  if (!DIRECT_API_PROVIDERS.has(provider)) return false;
+  if (doctorStatus(doctor) === "ready" && !review) return true;
+  return Boolean(review && approvalState !== "not_sent");
+}
+
+function providerFailedAfterReviewOrDoctor(doctor, review) {
+  if (review && reviewStatus(review) !== "completed") return true;
+  return Boolean(doctor && doctorStatus(doctor) !== "ready" && !review);
+}
+
+function failureClass({ provider, doctor, review, failedReviewSlot, approvalState }) {
+  const classified = errorCodeFailureClass(errorCode(doctor, review), review, failedReviewSlot);
+  if (classified) return classified;
+  if (directApiNeedsApproval(provider, doctor, review, approvalState)) return "approval_gate";
   if (doctorStatus(doctor) === "not_run" && !review) return "cache_install";
-  if (review && reviewStatus(review) !== "completed") return "provider";
-  if (doctor && doctorStatus(doctor) !== "ready" && !review) return "provider";
+  if (providerFailedAfterReviewOrDoctor(doctor, review)) return "provider";
   return "none";
 }
 
@@ -181,6 +206,18 @@ function sourceTransmission(review, approval) {
   const approvalValue = approval?.source_content_transmission ?? null;
   if (approvalValue) return normalizeTransmission(approvalValue);
   return "not_sent";
+}
+
+function mutationStatus(mutations) {
+  if (mutations === null) return "not_checked";
+  return mutations.length === 0 ? "clean" : "dirty";
+}
+
+function evidencePath({ doctor, doctorPath, review, reviewPath, approval, approvalPath }) {
+  if (review) return reviewPath;
+  if (approval) return approvalPath;
+  if (doctor) return doctorPath;
+  return null;
 }
 
 function rowFor(provider, evidenceDir) {
@@ -202,10 +239,10 @@ function rowFor(provider, evidenceDir) {
     failure_class: failureClass({ provider, doctor, review, failedReviewSlot, approvalState }),
     source_content_transmission: sourceTransmission(review, approval),
     failed_review_slot: typeof failedReviewSlot === "boolean" ? failedReviewSlot : null,
-    mutation_status: mutations === null ? "not_checked" : (mutations.length === 0 ? "clean" : "dirty"),
+    mutation_status: mutationStatus(mutations),
     prompt_persistence_status: promptPersistenceStatus(evidence),
     elapsed_ms: valueAt(review, ["review_metadata", "raw_output", "elapsed_ms"], null),
-    evidence_path: review ? reviewPath : (approval ? approvalPath : (doctor ? doctorPath : null)),
+    evidence_path: evidencePath({ doctor, doctorPath, review, reviewPath, approval, approvalPath }),
   };
 }
 
