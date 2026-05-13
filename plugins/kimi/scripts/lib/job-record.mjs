@@ -398,7 +398,7 @@ function buildErrorDiagnostic(invocation, status, error_code, error_message) {
   }
   if (status === "failed" && error_code === "review_not_completed") {
     const reasons = reviewQualityReasons(error_message);
-    if (invocation.target === "kimi" && reasons.includes("missing_verdict")) {
+    if (invocation.target === "kimi" && reasons.includes("missing_verdict") && !reasons.includes("shallow_output")) {
       return {
         error_summary: "Kimi Code CLI returned review prose but omitted the required verdict marker.",
         error_cause:

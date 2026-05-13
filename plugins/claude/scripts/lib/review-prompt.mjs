@@ -271,7 +271,6 @@ function lineHasConcretePermissionFailure(line) {
     "unable to access",
     "being removed",
     "be removed",
-    "resolved",
   ]);
 }
 

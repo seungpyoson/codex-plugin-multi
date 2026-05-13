@@ -927,6 +927,30 @@ test("review audit manifest still flags permission denial inside a passing check
   assert.equal(manifest.review_quality.failed_review_slot, true);
 });
 
+test("review audit manifest does not flag passing permission-block resolved prose", () => {
+  const manifest = buildReviewAuditManifest({
+    prompt: "rendered prompt",
+    sourceFiles: [{ path: "sample.js", text: "export const value = 1;\n" }],
+    result: [
+      "Verdict: APPROVE",
+      "Checklist item 1 (base/head verification): PASS - refs match.",
+      "Checklist item 2 (scope adherence): PASS - only sample.js reviewed.",
+      "Checklist item 3 (correctness bugs, security risks, regressions, missing tests): PASS - no findings.",
+      "Checklist item 4 (known comments/threads): PASS - none supplied.",
+      "Checklist item 5 (separation of findings): PASS - no blocking findings.",
+      "Checklist item 6 (timeout/truncation/etc.): PASS - no permission blocks occurred; all access concerns were resolved.",
+      "Blocking findings: none.",
+      "Non-blocking concerns: none.",
+      "Inspection statement: I inspected sample.js.",
+    ].join("\n"),
+    status: "completed",
+    errorCode: null,
+  });
+
+  assert.deepEqual(manifest.review_quality.semantic_failure_reasons, []);
+  assert.equal(manifest.review_quality.failed_review_slot, false);
+});
+
 test("review audit manifest does not count status-looking prose as checklist items", () => {
   const manifest = buildReviewAuditManifest({
     prompt: "rendered prompt",

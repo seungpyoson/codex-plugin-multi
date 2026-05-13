@@ -220,6 +220,10 @@ function assertSafeJobId(jobId) {
   }
 }
 
+function isUnsafeJobIdError(error) {
+  return error instanceof Error && error.message.startsWith("Unsafe jobId:");
+}
+
 function defaultDataRoot(pluginName, cwd = process.cwd()) {
   const workspace = resolve(cwd);
   const slug = basename(workspace).replace(/[^A-Za-z0-9._-]/g, "_").slice(0, 48) || "workspace";
@@ -2159,6 +2163,10 @@ async function cmdResult(options) {
     const record = await readApiReviewerMetaRecord(root, options.job);
     printJson(redactRecord(record));
   } catch (e) {
+    if (isUnsafeJobIdError(e)) {
+      printJson({ ok: false, error_code: "bad_args", error: "unsafe_job_id" });
+      process.exit(1);
+    }
     if (e?.code === "ENOENT") {
       printJson({ ok: false, error_code: "not_found", job_id: options.job });
       process.exit(1);
@@ -2167,7 +2175,7 @@ async function cmdResult(options) {
       printJson({ ok: false, error_code: "malformed_record", job_id: options.job });
       process.exit(1);
     }
-    printJson({ ok: false, error_code: "read_failed", job_id: options.job, error: e?.message ?? String(e) });
+    printJson({ ok: false, error_code: "read_failed", job_id: options.job, error: "read_failed" });
     process.exit(1);
   }
 }

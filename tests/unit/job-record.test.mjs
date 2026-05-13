@@ -354,13 +354,38 @@ test("buildJobRecord: semantic review-quality failures override successful proce
     const rec = providerBuildJobRecord(invocation, { ...execution, reviewAuditManifest: auditManifest }, []);
     assert.equal(rec.status, "failed");
     assert.equal(rec.error_code, "review_not_completed");
-    if (invocation.target === "kimi") {
-      assert.match(rec.error_summary, /omitted the required verdict marker/i);
-    } else {
-      assert.match(rec.error_summary, /review did not complete/i);
-    }
+    assert.match(rec.error_summary, /review did not complete/i);
     assert.equal(rec.review_metadata.audit_manifest, auditManifest);
   }
+});
+
+test("buildJobRecord: Kimi missing-verdict diagnostic requires non-shallow output", () => {
+  const auditManifest = Object.freeze({
+    schema_version: 1,
+    rendered_prompt_hash: { algorithm: "sha256", value: "a".repeat(64) },
+    selected_source: { files: [{ path: "sample.js" }], totals: { files: 1, bytes: 20, lines: 1 } },
+    review_quality: {
+      failed_review_slot: true,
+      semantic_failure_reasons: ["missing_verdict"],
+    },
+  });
+  const rec = buildKimiJobRecord(
+    makeInvocation({ target: "kimi", binary: "kimi", review_prompt_provider: "Kimi Code" }),
+    {
+      exitCode: 0,
+      parsed: { ok: true, result: "Substantive review prose with no verdict.", structured: null, denials: [] },
+      pidInfo: makePidInfo(),
+      kimiSessionId: "kimi-session-123",
+      stdout: "ok",
+      stderr: "",
+      reviewAuditManifest: auditManifest,
+    },
+    [],
+  );
+
+  assert.equal(rec.status, "failed");
+  assert.equal(rec.error_code, "review_not_completed");
+  assert.match(rec.error_summary, /omitted the required verdict marker/i);
 });
 
 test("buildJobRecord providers gate review_not_completed diagnostics to failed records", () => {
