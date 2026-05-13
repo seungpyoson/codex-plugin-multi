@@ -447,6 +447,9 @@ function writeRuntimeOptionsSidecar(workspaceRoot, jobId, options) {
     if (Number.isSafeInteger(options.timeout_ms) && options.timeout_ms > 0) payload.timeout_ms = options.timeout_ms;
     if (Array.isArray(options.permission_mode_ladder)) payload.permission_mode_ladder = [...options.permission_mode_ladder];
     if (typeof options.allow_bypass_permissions === "boolean") payload.allow_bypass_permissions = options.allow_bypass_permissions;
+    if (typeof options.claude_project_cwd === "string" && options.claude_project_cwd.length > 0) {
+      payload.claude_project_cwd = options.claude_project_cwd;
+    }
     writeFileSync(tmpFile, `${JSON.stringify(payload, null, 2)}\n`, { mode: 0o600, encoding: "utf8" });
     try { chmodSync(tmpFile, 0o600); } catch { /* best-effort on non-POSIX */ }
     renameSync(tmpFile, file);
@@ -472,10 +475,29 @@ function readRuntimeOptionsSidecar(workspaceRoot, jobId) {
     if (typeof parsed.allow_bypass_permissions === "boolean") {
       out.allow_bypass_permissions = parsed.allow_bypass_permissions;
     }
+    if (typeof parsed.claude_project_cwd === "string" && parsed.claude_project_cwd.length > 0) {
+      out.claude_project_cwd = parsed.claude_project_cwd;
+    }
     return out;
   } catch {
     return {};
   }
+}
+
+function claudeProjectCwdForJob(workspaceRoot, jobId) {
+  return joinPath(resolveJobsDir(workspaceRoot), jobId, "claude-project-cwd");
+}
+
+function claudeProjectCwdFromRecord(record) {
+  const value = record?.runtime_diagnostics?.child_cwd;
+  return typeof value === "string" && value.length > 0 ? value : null;
+}
+
+function ensureClaudeProjectCwd(dir) {
+  if (!dir) return null;
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
+  try { chmodSync(dir, 0o700); } catch { /* best-effort on non-POSIX */ }
+  return dir;
 }
 
 function invocationFromRecord(record, fallbackAuthMode = "subscription", runtimeOptions = {}) {
@@ -505,6 +527,10 @@ function invocationFromRecord(record, fallbackAuthMode = "subscription", runtime
       runtimeOptions.timeout_ms ??
       record.review_metadata?.audit_manifest?.request?.timeout_ms ??
       DEFAULT_CLAUDE_REVIEW_TIMEOUT_MS,
+    claude_project_cwd:
+      runtimeOptions.claude_project_cwd ??
+      claudeProjectCwdFromRecord(record) ??
+      null,
     permission_mode_ladder: Array.isArray(runtimeOptions.permission_mode_ladder)
       ? Object.freeze([...runtimeOptions.permission_mode_ladder])
       : null,
@@ -769,6 +795,7 @@ async function cmdRun(rest) {
     auth_mode: authSelection.auth_mode,
     permission_mode_ladder: permissionModeLadder,
     allow_bypass_permissions: allowBypassPermissions,
+    claude_project_cwd: claudeProjectCwdForJob(workspaceRoot, jobId),
     started_at: startedAt,
   });
 
@@ -788,6 +815,7 @@ async function cmdRun(rest) {
         timeout_ms: timeoutMs,
         permission_mode_ladder: permissionModeLadder,
         allow_bypass_permissions: allowBypassPermissions,
+        claude_project_cwd: invocation.claude_project_cwd,
       });
     } catch (error) {
       failBackgroundPromptSidecarWrite(workspaceRoot, invocation, error);
@@ -964,10 +992,12 @@ function setupExecutionScopeOrExit(invocation, profile, { foreground, lifecycleE
 
 function prepareMutationContext(invocation, profile) {
   const checkMutations = profile.permission_mode === "plan" || REVIEW_MODE_SET.has(profile.name);
-  const context = { checkMutations, gitStatusBefore: null, neutralCwd: null, mutations: [] };
+  const context = { checkMutations, gitStatusBefore: null, neutralCwd: null, cleanupNeutralCwd: false, mutations: [] };
   if (!checkMutations) return context;
   try {
-    context.neutralCwd = mkdtempSync(joinPath(tmpdir(), "claude-neutral-cwd-"));
+    context.neutralCwd = ensureClaudeProjectCwd(invocation.claude_project_cwd)
+      ?? mkdtempSync(joinPath(tmpdir(), "claude-neutral-cwd-"));
+    context.cleanupNeutralCwd = true;
   } catch (e) {
     context.mutations.push(mutationDetectionFailure(e));
   }
@@ -1278,7 +1308,7 @@ function persistFinalizationFallback(invocation, execution, finalRecord, mutatio
 }
 
 function cleanupExecutionResources(executionScope, mutationContext) {
-  cleanupNeutralCwd(mutationContext.neutralCwd);
+  cleanupNeutralCwd(mutationContext);
   if (executionScope.disposeEffective) {
     try { executionScope.containment.cleanup(); } catch { /* best-effort */ }
   }
@@ -1288,9 +1318,9 @@ function cleanupScopedPromptExecutionScope(executionScope) {
   try { executionScope.containment.cleanup(); } catch { /* best-effort */ }
 }
 
-function cleanupNeutralCwd(neutralCwd) {
-  if (!neutralCwd) return;
-  try { rmSync(neutralCwd, { recursive: true, force: true }); } catch { /* best-effort */ }
+function cleanupNeutralCwd(mutationContext) {
+  if (!mutationContext?.cleanupNeutralCwd || !mutationContext.neutralCwd) return;
+  try { rmSync(mutationContext.neutralCwd, { recursive: true, force: true }); } catch { /* best-effort */ }
 }
 
 // ——— subcommand: _run-worker (hidden; detached worker for --background) ———
@@ -1477,6 +1507,10 @@ async function cmdContinue(rest) {
     auth_mode: authSelection.auth_mode,
     permission_mode_ladder: permissionModeLadder,
     allow_bypass_permissions: allowBypassPermissions,
+    claude_project_cwd:
+      priorRuntimeOptions.claude_project_cwd ??
+      claudeProjectCwdFromRecord(prior) ??
+      null,
     started_at: new Date().toISOString(),
   });
 
@@ -1492,6 +1526,7 @@ async function cmdContinue(rest) {
         timeout_ms: timeoutMs,
         permission_mode_ladder: permissionModeLadder,
         allow_bypass_permissions: allowBypassPermissions,
+        claude_project_cwd: invocation.claude_project_cwd,
       });
     } catch (error) {
       failBackgroundPromptSidecarWrite(workspaceRoot, invocation, error);

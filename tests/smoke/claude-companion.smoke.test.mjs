@@ -97,6 +97,17 @@ function readOnlyJobRecord(dataDir) {
   return records[0];
 }
 
+function readJobRecord(dataDir, jobId) {
+  const stateRoot = path.join(dataDir, "state");
+  for (const workspaceDir of readdirSync(stateRoot)) {
+    const metaPath = path.join(stateRoot, workspaceDir, "jobs", `${jobId}.json`);
+    if (existsSync(metaPath)) {
+      return JSON.parse(readFileSync(metaPath, "utf8"));
+    }
+  }
+  assert.fail(`meta.json for job ${jobId} not found under ${stateRoot}`);
+}
+
 async function waitForOnlyJobRecord(dataDir, predicate, label, timeoutMs = CLAUDE_SMOKE_POLL_TIMEOUT_MS) {
   const deadline = Date.now() + timeoutMs;
   let lastRecord = null;
@@ -1314,7 +1325,16 @@ test("continue --job: resumes a prior session via --resume", () => {
   const cwd = mkdtempSync(path.join(tmpdir(), "smoke-continue-"));
   writeFileSync(path.join(cwd, "seed.txt"), "continue timeout seed\n");
   const dataDir = mkdtempSync(path.join(tmpdir(), "continue-data-"));
+  const sessionStore = path.join(dataDir, "mock-project-sessions");
   const priorTimeoutMs = 777777;
+  const env = {
+    ...process.env,
+    CLAUDE_BINARY: MOCK,
+    CLAUDE_PLUGIN_DATA: dataDir,
+    CLAUDE_REVIEW_TIMEOUT_MS: "",
+    CLAUDE_MOCK_ENFORCE_PROJECT_SESSIONS: "1",
+    CLAUDE_MOCK_PROJECT_SESSION_STORE: sessionStore,
+  };
   try {
     const runRes = spawnSync("node", [
       path.join(REPO_ROOT, "plugins/claude/scripts/claude-companion.mjs"),
@@ -1324,14 +1344,14 @@ test("continue --job: resumes a prior session via --resume", () => {
       "--timeout-ms", String(priorTimeoutMs),
       "--cwd", cwd, "--", "seed",
     ], { cwd, encoding: "utf8",
-        env: { ...process.env, CLAUDE_BINARY: MOCK, CLAUDE_PLUGIN_DATA: dataDir, CLAUDE_REVIEW_TIMEOUT_MS: "" } });
+        env });
     const { job_id } = JSON.parse(runRes.stdout);
     const contRes = spawnSync("node", [
       path.join(REPO_ROOT, "plugins/claude/scripts/claude-companion.mjs"),
       "continue", "--job", job_id, "--foreground", "--lifecycle-events", "jsonl",
       "--cwd", cwd, "--", "follow-up",
     ], { cwd, encoding: "utf8",
-        env: { ...process.env, CLAUDE_BINARY: MOCK, CLAUDE_PLUGIN_DATA: dataDir, CLAUDE_REVIEW_TIMEOUT_MS: "" } });
+        env });
     assert.equal(contRes.status, 0, contRes.stderr);
     const lines = contRes.stdout.trim().split("\n").map((line) => JSON.parse(line));
     assert.equal(lines.length, 2);
@@ -1343,6 +1363,12 @@ test("continue --job: resumes a prior session via --resume", () => {
     assert.equal(out.status, "completed");
     assert.equal(out.parent_job_id, job_id, "resume carries parent_job_id");
     assert.equal(out.review_metadata.audit_manifest.request.timeout_ms, priorTimeoutMs);
+    const prior = readJobRecord(dataDir, job_id);
+    assert.equal(
+      out.runtime_diagnostics.child_cwd,
+      prior.runtime_diagnostics.child_cwd,
+      "continue must run Claude from the same project cwd so --resume can find the persisted session"
+    );
   } finally {
     rmSync(dataDir, { recursive: true, force: true });
     rmSync(cwd, { recursive: true, force: true });

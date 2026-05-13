@@ -22,7 +22,7 @@
 //   CLAUDE_MOCK_OMIT_SESSION_ID, CLAUDE_MOCK_RECORD_RESUME, CLAUDE_MOCK_*
 //                              other test-oracle knobs (see below).
 
-import { readFileSync, existsSync, realpathSync } from "node:fs";
+import { mkdirSync, readFileSync, existsSync, realpathSync, writeFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createHash } from "node:crypto";
@@ -107,6 +107,29 @@ const readinessPrompt = prompt.includes("reply with exactly: pong.") && prompt.i
 if (expectedPromptText && !readinessPrompt && !prompt.includes(expectedPromptText)) {
   process.stderr.write(`claude-mock: prompt missing expected text: ${expectedPromptText}\n`);
   process.exit(1);
+}
+
+if (process.env.CLAUDE_MOCK_ENFORCE_PROJECT_SESSIONS === "1" && !readinessPrompt) {
+  const store = process.env.CLAUDE_MOCK_PROJECT_SESSION_STORE;
+  if (!store) {
+    process.stderr.write("claude-mock: CLAUDE_MOCK_PROJECT_SESSION_STORE is required\n");
+    process.exit(1);
+  }
+  mkdirSync(store, { recursive: true, mode: 0o700 });
+  const sessionFile = resolve(store, `${resumeId ?? sessionId}.json`);
+  if (resumeId) {
+    if (!existsSync(sessionFile)) {
+      process.stderr.write(`No conversation found with session ID: ${resumeId}\n`);
+      process.exit(1);
+    }
+    const stored = JSON.parse(readFileSync(sessionFile, "utf8"));
+    if (stored.cwd !== process.cwd()) {
+      process.stderr.write(`No conversation found with session ID: ${resumeId}\n`);
+      process.exit(1);
+    }
+  } else {
+    writeFileSync(sessionFile, `${JSON.stringify({ cwd: process.cwd() })}\n`, { mode: 0o600 });
+  }
 }
 
 if (process.env.CLAUDE_MOCK_SIDECAR_CONFLICT === "1") {
