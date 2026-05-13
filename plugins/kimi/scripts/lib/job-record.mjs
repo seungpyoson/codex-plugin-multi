@@ -326,6 +326,13 @@ function isScopeFailure(message) {
   return SCOPE_FAILURE_PREFIXES.some((prefix) => String(message ?? "").startsWith(prefix));
 }
 
+function reviewQualityReasons(errorMessage) {
+  const prefix = "review_quality_failed:";
+  const text = String(errorMessage ?? "");
+  if (!text.startsWith(prefix)) return [];
+  return text.slice(prefix.length).split(",").map((reason) => reason.trim()).filter(Boolean);
+}
+
 function buildErrorDiagnostic(invocation, status, error_code, error_message) {
   const empty = {
     error_summary: null,
@@ -390,6 +397,17 @@ function buildErrorDiagnostic(invocation, status, error_code, error_message) {
     };
   }
   if (status === "failed" && error_code === "review_not_completed") {
+    const reasons = reviewQualityReasons(error_message);
+    if (invocation.target === "kimi" && reasons.includes("missing_verdict")) {
+      return {
+        error_summary: "Kimi Code CLI returned review prose but omitted the required verdict marker.",
+        error_cause:
+          "Kimi returned substantive review prose after source was sent, but the review-quality audit requires an explicit verdict marker before the slot can count as completed.",
+        suggested_action:
+          "Treat this Kimi slot as failed. Retry by narrowing the scope, sharding the source packet, relaying the prompt to another ready reviewer, or running interactive Kimi and ensuring the first line is `Verdict: APPROVE`, `Verdict: REQUEST_CHANGES`, or `Verdict: NOT_REVIEWED`.",
+        disclosure_note: null,
+      };
+    }
     return {
       error_summary: `${target.displayName} Code CLI review did not complete as a usable external review.`,
       error_cause:

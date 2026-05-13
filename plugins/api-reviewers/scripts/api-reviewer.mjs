@@ -400,6 +400,11 @@ async function writeApiReviewerMetaRecord(root, record) {
   }
 }
 
+async function readApiReviewerMetaRecord(root, jobId) {
+  assertSafeJobId(jobId);
+  return JSON.parse(await readFile(resolve(apiReviewerJobsDir(root), jobId, "meta.json"), "utf8"));
+}
+
 async function readApiReviewerLockOwnerRaw(lockOwnerFile) {
   try {
     return await readFile(lockOwnerFile, "utf8");
@@ -2144,6 +2149,29 @@ async function persistRecordBestEffort(record, env = process.env, configuredSecr
   }
 }
 
+async function cmdResult(options) {
+  if (!options.job) {
+    printJson({ ok: false, error_code: "bad_args", error: "--job <id> is required" });
+    process.exit(1);
+  }
+  const root = apiReviewerDataRoot(process.env, options.cwd ? resolve(options.cwd) : process.cwd());
+  try {
+    const record = await readApiReviewerMetaRecord(root, options.job);
+    printJson(redactRecord(record));
+  } catch (e) {
+    if (e?.code === "ENOENT") {
+      printJson({ ok: false, error_code: "not_found", job_id: options.job });
+      process.exit(1);
+    }
+    if (e instanceof SyntaxError) {
+      printJson({ ok: false, error_code: "malformed_record", job_id: options.job });
+      process.exit(1);
+    }
+    printJson({ ok: false, error_code: "read_failed", job_id: options.job, error: e?.message ?? String(e) });
+    process.exit(1);
+  }
+}
+
 async function cmdDoctor(options) {
   const provider = options.provider;
   let providers;
@@ -2330,6 +2358,7 @@ async function main() {
   if (cmd === "doctor" || cmd === "ping") return cmdDoctor(options);
   if (cmd === "approval-request") return cmdApprovalRequest(options);
   if (cmd === "run") return cmdRun(options);
+  if (cmd === "result") return cmdResult(options);
   if (cmd === "help" || cmd === "--help" || cmd === "-h") {
     let providers;
     try {
@@ -2337,13 +2366,13 @@ async function main() {
     } catch (e) {
       printJson({
         ok: false,
-        commands: ["doctor", "ping", "approval-request", "run"],
+        commands: ["doctor", "ping", "approval-request", "run", "result"],
         providers: [],
         ...providersConfigErrorFields(e),
       });
       process.exit(1);
     }
-    printJson({ ok: true, commands: ["doctor", "ping", "approval-request", "run"], providers: Object.keys(providers) });
+    printJson({ ok: true, commands: ["doctor", "ping", "approval-request", "run", "result"], providers: Object.keys(providers) });
     return;
   }
   throw new Error(`unknown_command:${cmd}`);

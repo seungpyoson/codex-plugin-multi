@@ -599,6 +599,65 @@ test("kimi custom-review fails shallow missing-verdict output as review_not_comp
   }
 });
 
+test("kimi custom-review missing verdict replay gives bounded source-bearing recovery guidance", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "kimi-missing-verdict-replay-cwd-"));
+  const exactKimiResult = [
+    "The Phase 6 external review is complete. The review identified **3 blocking findings** that must be fixed before implementation approval:",
+    "",
+    "1. **CRITICAL**: The admission state wiring through `build_bolt_v3_live_node` → strategy registration → `run_bolt_v3_live_node` is entirely unspecified in the plan.",
+    "2. **HIGH**: `StrategyRegistrationContext` and `StrategyBuildContext` lack admission state fields, creating a hidden trap that risks global state or dual paths.",
+    "3. **HIGH**: The `run_bolt_v3_live_node` signature change needed to receive and arm the state is not documented.",
+    "",
+    "Additionally, `src/strategies/eth_chainlink_taker.rs` was declared in scope but not supplied, so it was marked **NOT REVIEWED**.",
+    "",
+    "The full severity-ranked findings, non-blocking concerns, and answers to the five review questions are in the approved plan file. Let me know if you want me to help draft the fixes for the blocking findings or update the plan documents accordingly.",
+  ].join("\n");
+  try {
+    fixtureSeedRepo(cwd, {
+      fileName: "seed.txt",
+      fileContents: "kimi missing verdict replay sentinel\n",
+    });
+    const result = runCompanion([
+      "run",
+      "--mode",
+      "custom-review",
+      "--cwd",
+      cwd,
+      "--scope-paths",
+      "seed.txt",
+      "--foreground",
+      "--",
+      "Review this scope.",
+    ], {
+      cwd,
+      env: {
+        KIMI_MOCK_RESPONSE: exactKimiResult,
+      },
+    });
+
+    assert.equal(result.status, 2, result.stderr);
+    const record = parseJson(result.stdout);
+    assert.equal(record.status, "failed");
+    assert.equal(record.error_code, "review_not_completed");
+    assert.equal(record.error_message, "review_quality_failed:missing_verdict");
+    assert.match(record.error_summary, /omitted the required verdict marker/);
+    assert.match(record.error_cause, /substantive review prose/);
+    assert.match(record.suggested_action, /narrowing the scope/);
+    assert.match(record.suggested_action, /sharding/);
+    assert.match(record.suggested_action, /relaying/);
+    assert.match(record.suggested_action, /interactive Kimi/);
+    assert.equal(record.external_review.source_content_transmission, "sent");
+    assert.equal(record.result, exactKimiResult);
+    assert.deepEqual(
+      record.review_metadata.audit_manifest.review_quality.semantic_failure_reasons,
+      ["missing_verdict"],
+    );
+    assert.equal(record.review_metadata.audit_manifest.review_quality.failed_review_slot, true);
+  } finally {
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
 test("kimi adversarial prompt uses invocation mode, not profile name, for mode line", () => withRepo((cwd) => {
   const result = runCompanion(kimiPromptAssertionArgs(cwd, "adversarial-review"), {
     cwd,

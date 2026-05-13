@@ -432,7 +432,7 @@ test("help malformed providers config returns structured diagnostic", async () =
   const parsed = parseJson(result.stdout);
   assert.equal(parsed.ok, false);
   assert.equal(parsed.status, "config_error");
-  assert.deepEqual(parsed.commands, ["doctor", "ping", "approval-request", "run"]);
+  assert.deepEqual(parsed.commands, ["doctor", "ping", "approval-request", "run", "result"]);
   assert.deepEqual(parsed.providers, []);
   assert.match(parsed.error_message, /providers config unreadable/);
   assert.doesNotMatch(result.stdout, /secret-test-value/);
@@ -1533,6 +1533,54 @@ test("DeepSeek direct API custom-review completes and persists JobRecord", async
   assert.deepEqual(record.usage, { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 });
   assert.doesNotMatch(result.stdout, /secret-test-value/);
 });
+
+for (const { provider, model, key } of [
+  { provider: "deepseek", model: "deepseek-v4-pro", key: "DEEPSEEK_API_KEY" },
+  { provider: "glm", model: "glm-5.1", key: "ZAI_API_KEY" },
+]) {
+  test(`${provider} result --job returns a completed direct API JobRecord`, async () => {
+    const cwd = makeWorkspace();
+    const dataDir = mkdtempSync(path.join(tmpdir(), "api-reviewers-data-"));
+    const result = await run([
+      "run",
+      "--provider", provider,
+      "--mode", "custom-review",
+      "--scope", "custom",
+      "--scope-paths", "seed.txt",
+      "--foreground",
+      "--prompt", "Check this file.",
+    ], {
+      cwd,
+      env: {
+        API_REVIEWERS_PLUGIN_DATA: dataDir,
+        API_REVIEWERS_MOCK_RESPONSE: mockResponse(model),
+        [key]: "secret-test-value",
+      },
+    });
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    const record = parseJson(result.stdout);
+
+    const retrieved = await run([
+      "result",
+      "--job", record.job_id,
+      "--cwd", cwd,
+    ], {
+      cwd,
+      env: {
+        API_REVIEWERS_PLUGIN_DATA: dataDir,
+        [key]: "secret-test-value",
+      },
+    });
+
+    assert.equal(retrieved.status, 0, retrieved.stderr || retrieved.stdout);
+    const parsed = parseJson(retrieved.stdout);
+    assert.equal(parsed.job_id, record.job_id);
+    assert.equal(parsed.status, "completed");
+    assert.equal(parsed.provider, provider);
+    assert.equal(parsed.result, record.result);
+    assert.doesNotMatch(retrieved.stdout, /secret-test-value/);
+  });
+}
 
 test("direct API reviewers fail closed on shallow HTTP 200 review output", async () => {
   const cwd = makeWorkspace();

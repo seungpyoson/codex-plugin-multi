@@ -354,7 +354,11 @@ test("buildJobRecord: semantic review-quality failures override successful proce
     const rec = providerBuildJobRecord(invocation, { ...execution, reviewAuditManifest: auditManifest }, []);
     assert.equal(rec.status, "failed");
     assert.equal(rec.error_code, "review_not_completed");
-    assert.match(rec.error_summary, /review did not complete/i);
+    if (invocation.target === "kimi") {
+      assert.match(rec.error_summary, /omitted the required verdict marker/i);
+    } else {
+      assert.match(rec.error_summary, /review did not complete/i);
+    }
     assert.equal(rec.review_metadata.audit_manifest, auditManifest);
   }
 });
