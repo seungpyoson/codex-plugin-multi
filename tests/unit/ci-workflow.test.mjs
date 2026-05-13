@@ -44,6 +44,7 @@ test("pull-request CI runs shared-copy sync checks", () => {
   assert.match(pkg.scripts["lint:sync"] ?? "", /sync-external-review\.mjs --check/);
   assert.match(pkg.scripts["lint:sync"] ?? "", /sync-time\.mjs --check/);
   assert.match(pkg.scripts["lint:sync"] ?? "", /sync-review-prompt\.mjs --check/);
+  assert.match(pkg.scripts["lint:sync"] ?? "", /sync-external-model-contracts\.mjs --check/);
   assert.match(pkg.scripts["lint:sync"] ?? "", /sync-auth-selection\.mjs --check/);
   assert.match(pkg.scripts["lint:sync"] ?? "", /sync-provider-env\.mjs --check/);
   assert.match(pkg.scripts["lint:sync"] ?? "", /sync-usage-limit\.mjs --check/);
