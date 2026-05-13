@@ -944,6 +944,20 @@ function redactRecord(record, env = process.env, configuredSecretNames = []) {
   return redactValue(record, redactor(env, configuredSecretNames));
 }
 
+function configuredSecretNamesFromProviders(providers) {
+  return Object.values(providers ?? {}).flatMap((cfg) => (
+    Array.isArray(cfg?.env_keys) ? cfg.env_keys.filter((name) => typeof name === "string" && name.length > 0) : []
+  ));
+}
+
+async function configuredSecretNamesForResult() {
+  try {
+    return configuredSecretNamesFromProviders(await loadProviders());
+  } catch {
+    return [];
+  }
+}
+
 function baseUrlFor(cfg) {
   let url = String(cfg.base_url);
   while (url.endsWith("/")) url = url.slice(0, -1);
@@ -2161,7 +2175,8 @@ async function cmdResult(options) {
   const root = apiReviewerDataRoot(process.env, options.cwd ? resolve(options.cwd) : process.cwd());
   try {
     const record = await readApiReviewerMetaRecord(root, options.job);
-    printJson(redactRecord(record));
+    const configuredSecretNames = await configuredSecretNamesForResult();
+    printJson(redactRecord(record, process.env, configuredSecretNames));
   } catch (e) {
     if (isUnsafeJobIdError(e)) {
       printJson({ ok: false, error_code: "bad_args", error: "unsafe_job_id" });

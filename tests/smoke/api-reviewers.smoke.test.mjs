@@ -1663,6 +1663,47 @@ test("api reviewer result --job reports unreadable records without exposing path
   assert.doesNotMatch(result.stdout, /secret-test-value/);
 });
 
+test("api reviewer result --job redacts configured nonstandard credential names at read time", async () => {
+  const cwd = makeWorkspace();
+  const dataDir = mkdtempSync(path.join(tmpdir(), "api-reviewers-data-"));
+  const pluginRoot = makeInstalledApiReviewersRoot();
+  writeSingleProviderConfig(pluginRoot, "deepseek", {
+    display_name: "DeepSeek",
+    auth_mode: "api_key",
+    env_keys: ["CUSTOM_CRED"],
+    base_url: "https://api.deepseek.com",
+    model: "deepseek-v4-flash",
+  });
+  const jobId = "custom-redaction-job";
+  const jobDir = path.join(dataDir, "jobs", jobId);
+  mkdirSync(jobDir, { recursive: true });
+  writeFileSync(path.join(jobDir, "meta.json"), JSON.stringify({
+    job_id: jobId,
+    target: "deepseek",
+    provider: "deepseek",
+    result: "provider echoed custom-secret-1234",
+    runtime_diagnostics: {
+      detail: "custom-secret-1234",
+    },
+  }, null, 2));
+
+  const result = await run(["result", "--job", jobId], {
+    cwd,
+    companion: path.join(pluginRoot, "scripts", "api-reviewer.mjs"),
+    env: {
+      API_REVIEWERS_PLUGIN_DATA: dataDir,
+      CUSTOM_CRED: "custom-secret-1234",
+    },
+  });
+
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  const parsed = parseJson(result.stdout);
+  assert.equal(parsed.job_id, jobId);
+  assert.equal(parsed.result, "provider echoed [REDACTED]");
+  assert.equal(parsed.runtime_diagnostics.detail, "[REDACTED]");
+  assert.doesNotMatch(result.stdout, /custom-secret-1234/);
+});
+
 for (const { provider, model, key } of [
   { provider: "deepseek", model: "deepseek-v4-pro", key: "DEEPSEEK_API_KEY" },
   { provider: "glm", model: "glm-5.1", key: "ZAI_API_KEY" },
