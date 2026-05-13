@@ -843,6 +843,7 @@ test("doctor warns when the configured grok2api bootstrap home is under TMPDIR",
 
 test("doctor warns about an existing default TMPDIR grok2api home when tunnel is already running", async () => {
   const tmpRoot = mkdtempSync(path.join(tmpdir(), "grok2api-existing-default-home-tmp-"));
+  const managedRuntimeRoot = mkdtempSync(path.join(tmpdir(), "grok2api-existing-default-home-runtime-"));
   const defaultHome = path.join(tmpRoot, "codex-plugin-multi", "runtime", "grok2api");
   mkdirSync(path.join(defaultHome, "app"), { recursive: true });
   writeFileSync(path.join(defaultHome, "app", "main.py"), "app = object()\n");
@@ -869,6 +870,7 @@ test("doctor warns about an existing default TMPDIR grok2api home when tunnel is
       const result = await runAsync(["doctor"], {
         env: {
           TMPDIR: `${tmpRoot}${path.sep}`,
+          CODEX_PLUGIN_MULTI_RUNTIME_DIR: managedRuntimeRoot,
           GROK_WEB_BASE_URL: baseUrl,
         },
       });
@@ -884,6 +886,7 @@ test("doctor warns about an existing default TMPDIR grok2api home when tunnel is
     });
   } finally {
     rmTree(tmpRoot);
+    rmTree(managedRuntimeRoot);
   }
 });
 
