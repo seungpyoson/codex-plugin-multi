@@ -2,7 +2,7 @@ import { existsSync, lstatSync, readdirSync, readFileSync, realpathSync } from "
 import { tmpdir } from "node:os";
 import { isAbsolute, join, parse, relative, resolve } from "node:path";
 
-const PROVIDER_ORDER = ["claude", "gemini", "kimi", "grok", "deepseek", "glm"];
+const PROVIDER_ORDER = ["claude", "gemini", "kimi", "grok", "grok-web", "deepseek", "glm"];
 const VERDICT_RE = /\bVerdict:\s*(APPROVE|REQUEST CHANGES|FAIL|REJECT)\b/i;
 const PROVIDER_UNAVAILABLE_CODES = new Set(["provider_unavailable", "spawn_failed", "claude_error", "gemini_error", "kimi_error", "tunnel_unavailable"]);
 const AUTH_FAILURE_CODES = new Set(["not_authed", "oauth_inference_rejected", "auth_not_configured", "session_expired"]);

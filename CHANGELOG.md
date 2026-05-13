@@ -54,6 +54,10 @@
   with browser-session sync for grok2api, subscription-only diagnostics,
   result/list lookup, scope-size guardrails, smoke coverage, and opt-in live
   E2E coverage.
+- Made Grok's auto-started `uv run granian` tunnel use a sandbox-writable
+  default `UV_CACHE_DIR` while preserving caller-provided `UV_CACHE_DIR` values.
+- Added `npm run readiness:manifest` to normalize six-provider doctor, review,
+  and approval evidence into one readiness manifest.
 - Hardened Claude and Gemini preflight output with explicit safety fields that
   report no target spawn, no selected-scope send, and the external-provider
   consent requirement.

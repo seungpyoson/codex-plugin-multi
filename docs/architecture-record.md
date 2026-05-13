@@ -75,6 +75,13 @@ provider-data-root scoped to match the paths each writer uses when no explicit
 plugin data root is configured. A record whose workspace root is an ancestor of
 the requested workspace is included only when that ancestor is a real Git
 repository; non-Git workspaces match only by exact recorded path.
+`scripts/provider-readiness-manifest.mjs` extends that reliability surface for
+operator smoke runs by normalizing each provider's doctor, review, and approval
+artifacts into one manifest row. The row keeps failure class, source
+transmission, prompt-persistence status, review-quality status, and fixture
+mutation status together so sandbox/auth/provider/tunnel/session-token/review
+quality/approval-gate failures remain MECE instead of collapsing into a generic
+failed run.
 
 ### Identity Types Stay Distinct
 

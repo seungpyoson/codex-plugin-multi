@@ -20,5 +20,7 @@ is unavailable, doctor tries to use an existing checkout or bootstrap
 then starts it with `uv run granian --interface asgi --host 127.0.0.1 --port
 8000 --workers 1 app.main:app`; Docker is not required. If bootstrap/start
 cannot run, surface `tunnel_start.error_code` and do not suggest direct xAI API
-keys. Do not import browser cookies unless the user explicitly requests that
-session sync step.
+keys. When `UV_CACHE_DIR` is unset, the plugin provides `uv` a
+sandbox-writable default; `UV_CACHE_DIR=""` is treated as unset, and an explicit
+non-empty `UV_CACHE_DIR` is preserved. Do not import
+browser cookies unless the user explicitly requests that session sync step.

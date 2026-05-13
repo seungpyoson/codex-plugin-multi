@@ -323,7 +323,7 @@ test("buildJobRecord: semantic review-quality failures override successful proce
     selected_source: { files: [{ path: "sample.js" }], totals: { files: 1, bytes: 20, lines: 1 } },
     review_quality: {
       failed_review_slot: true,
-      semantic_failure_reasons: ["not_reviewed"],
+      semantic_failure_reasons: ["shallow_output", "missing_verdict"],
     },
   });
   const parsed = {

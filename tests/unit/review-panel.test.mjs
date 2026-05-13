@@ -980,3 +980,39 @@ test("review panel workspace collection sorts unknown providers after known prov
     "unknown-provider",
   ]);
 });
+
+test("review panel sorts grok-web records with Grok", () => {
+  const workspace = mkdtempSync(join(tmpdir(), "review-panel-grok-web-workspace-"));
+  const grokData = mkdtempSync(join(tmpdir(), "review-panel-grok-web-data-"));
+  const apiData = mkdtempSync(join(tmpdir(), "review-panel-grok-web-api-"));
+
+  writeRecord(apiData, {
+    id: "job_deepseek-0000-4000-8000-000000000000",
+    job_id: "job_deepseek-0000-4000-8000-000000000000",
+    provider: "deepseek",
+    status: "completed",
+    workspace_root: workspace,
+  });
+
+  writeRecord(grokData, {
+    id: "job_grok-web-0000-4000-8000-000000000000",
+    job_id: "job_grok-web-0000-4000-8000-000000000000",
+    provider: "grok-web",
+    status: "completed",
+    workspace_root: workspace,
+  });
+
+  const records = collectReviewPanelRecords({
+    cwd: workspace,
+    env: {
+      ...process.env,
+      CLAUDE_PLUGIN_DATA: mkdtempSync(join(tmpdir(), "review-panel-empty-claude-")),
+      GEMINI_PLUGIN_DATA: mkdtempSync(join(tmpdir(), "review-panel-empty-gemini-")),
+      KIMI_PLUGIN_DATA: mkdtempSync(join(tmpdir(), "review-panel-empty-kimi-")),
+      GROK_PLUGIN_DATA: grokData,
+      API_REVIEWERS_PLUGIN_DATA: apiData,
+    },
+  });
+
+  assert.deepEqual(records.map((record) => record.provider), ["grok-web", "deepseek"]);
+});

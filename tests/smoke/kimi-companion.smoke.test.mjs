@@ -553,6 +553,47 @@ test("kimi custom-review prompt includes selected source content", () => {
     const record = parseJson(result.stdout);
     assert.equal(record.status, "completed");
     assert.equal(record.external_review.source_content_transmission, "sent");
+    assert.equal(record.review_metadata.audit_manifest.review_quality.failed_review_slot, false);
+    assert.deepEqual(record.review_metadata.audit_manifest.review_quality.semantic_failure_reasons, []);
+  } finally {
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("kimi custom-review fails shallow missing-verdict output as review_not_completed", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "kimi-shallow-review-cwd-"));
+  try {
+    fixtureSeedRepo(cwd, {
+      fileName: "seed.txt",
+      fileContents: "kimi shallow review sentinel\n",
+    });
+    const result = runCompanion([
+      "run",
+      "--mode",
+      "custom-review",
+      "--cwd",
+      cwd,
+      "--scope-paths",
+      "seed.txt",
+      "--foreground",
+      "--",
+      "Review this scope.",
+    ], {
+      cwd,
+      env: {
+        KIMI_MOCK_RESPONSE: "Looks fine.",
+      },
+    });
+    assert.equal(result.status, 2, result.stderr);
+    const record = parseJson(result.stdout);
+    assert.equal(record.status, "failed");
+    assert.equal(record.error_code, "review_not_completed");
+    assert.equal(record.external_review.source_content_transmission, "sent");
+    assert.equal(record.review_metadata.audit_manifest.review_quality.failed_review_slot, true);
+    assert.deepEqual(
+      record.review_metadata.audit_manifest.review_quality.semantic_failure_reasons,
+      ["shallow_output", "missing_verdict"],
+    );
   } finally {
     rmSync(cwd, { recursive: true, force: true });
   }
