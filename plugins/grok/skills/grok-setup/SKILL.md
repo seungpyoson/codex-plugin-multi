@@ -16,8 +16,9 @@ Show credential key names only. Never print session cookies, tunnel API-key valu
 If a loopback grok2api `/v1` endpoint is unavailable, the doctor tries to use an existing checkout or bootstrap `https://github.com/chenyme/grok2api.git` into the durable managed runtime directory.
 The bootstrap start command is `uv run granian --interface asgi --host 127.0.0.1 --port 8000 --workers 1 app.main:app`; Docker is not required.
 When `UV_CACHE_DIR` is unset, the plugin provides `uv` a sandbox-writable default; `UV_CACHE_DIR=""` is treated as unset, and an explicit non-empty `UV_CACHE_DIR` is preserved.
-If `durability_warnings` reports `grok2api_ephemeral_bootstrap_home`, configure a durable `GROK2API_HOME` or `CODEX_PLUGIN_MULTI_RUNTIME_DIR` before syncing browser session state.
-If `session_diagnostics.error_code` is `grok_session_no_runtime_tokens`, the tunnel process is up but its account/session pool is empty; use `npm run grok:repair-session` and run browser-session sync only after explicit operator approval.
+Explicit `GROK2API_HOME` and `GROK2API_BOOTSTRAP_DIR` are authoritative; stale explicit paths should be fixed rather than silently ignored.
+If `durability_warnings` reports `grok2api_ephemeral_bootstrap_home`, configure a durable `GROK2API_HOME` or `CODEX_PLUGIN_MULTI_RUNTIME_DIR` before syncing browser session state, even when the temporary path came from explicit `GROK2API_HOME`.
+If `session_diagnostics.error_code` is `grok_session_no_runtime_tokens` or `grok_session_malformed_active_token`, the tunnel process is up but its account/session pool needs browser-backed session repair; use `npm run grok:repair-session` and run browser-session sync only after explicit operator approval.
 If bootstrap/start cannot run, report the specific `tunnel_start.error_code` and do not suggest direct xAI API keys.
 Do not import browser cookies unless the user explicitly requests that session sync step.
 When the user approves session repair, run `npm run grok:repair-session -- --approve-browser-session-sync`; the command reruns doctor after sync and prints redacted readiness fields.

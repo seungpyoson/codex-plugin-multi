@@ -43,7 +43,11 @@ lets Claude Code delegate to Codex.
   with SIGTERM/verify/SIGKILL diagnostics. Set
   `GROK2API_HOME`, `GROK2API_BOOTSTRAP_DIR`, or
   `CODEX_PLUGIN_MULTI_RUNTIME_DIR` only when you want a specific checkout or
-  runtime directory. Set `UV_CACHE_DIR` only when you want `uv` to
+  runtime directory. `GROK2API_HOME` and `GROK2API_BOOTSTRAP_DIR` are
+  authoritative: if either points at a stale or invalid location, doctor reports
+  that path instead of silently falling back. Any grok2api home under `$TMPDIR`,
+  including an explicit `GROK2API_HOME`, produces a durability warning before
+  browser/session sync. Set `UV_CACHE_DIR` only when you want `uv` to
   use a caller-managed cache instead of the plugin's sandbox-writable default;
   an empty `UV_CACHE_DIR=""` is treated as unset. Set `GROK_WEB_TUNNEL_API_KEY`
   only if your local tunnel requires a bearer value.
@@ -75,8 +79,11 @@ the configured tunnel endpoint plus chat/session readiness probes. `ready:
 true` means the local tunnel listener, model list, session pool, and chat probe
 are usable. If a loopback grok2api `/v1` endpoint is unavailable, the doctor/run
 path tries to use an existing `GROK2API_HOME`, `GROK2API_BOOTSTRAP_DIR`, the
-durable managed runtime checkout, the legacy temp runtime checkout, or common
-local checkout paths. If no checkout exists, it can clone
+durable managed runtime checkout, or common local checkout paths. Explicit
+`GROK2API_HOME` and `GROK2API_BOOTSTRAP_DIR` take precedence over fallback
+locations, so stale explicit paths are reported directly. Legacy temp runtime
+checkouts are not reused for new starts, but doctor warns if one is present
+while a tunnel is already running. If no checkout exists, it can clone
 `https://github.com/chenyme/grok2api.git` into the bootstrap directory and then
 start `uv run granian --interface asgi --host 127.0.0.1 --port 8000 --workers 1
 app.main:app`; no Docker path is required. `tunnel_unavailable` after that

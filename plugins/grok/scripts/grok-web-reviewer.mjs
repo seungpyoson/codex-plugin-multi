@@ -49,6 +49,7 @@ const SCHEMA_VERSION = 10;
 const MIN_SECRET_REDACTION_LENGTH = 8;
 const ACCOUNT_PAYMENT_TOKEN_RE = /\b(?:stripe-[^\s,;:)]+|cus_[A-Za-z0-9]{6,}|acct_(?:test_)?[A-Za-z0-9]{5,}|cs_(?:test|live)_[A-Za-z0-9]{6,}|(?:pi|sub|in|ii|ch|seti|setp|price|prod|iv)_(?=[A-Za-z0-9]*\d)[A-Za-z0-9]{5,})/gi;
 const ACCOUNT_PAYMENT_DIAGNOSTIC_RE = /^(?:stripe-.+|cus_[A-Za-z0-9]{6,}|acct_(?:test_)?[A-Za-z0-9]{5,}|cs_(?:test|live)_[A-Za-z0-9]{6,}|(?:pi|sub|in|ii|ch|seti|setp|price|prod|iv)_(?=[A-Za-z0-9]*\d)[A-Za-z0-9]{5,})$/i;
+const JWT_SHAPED_TOKEN_RE = /\b[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{3,}\b/g;
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 const PLUGIN_ROOT = resolve(SCRIPT_DIR, "..");
 const GROK_SESSION_SYNC_SCRIPT = resolve(SCRIPT_DIR, "grok-sync-browser-session.mjs");
@@ -616,6 +617,7 @@ function redactor(env = process.env) {
     for (const secret of secrets) out = out.split(secret).join("[REDACTED]");
     out = out.replace(/Authorization:\s*\S+(?:\s+\S{8,})?/gi, "Authorization: [REDACTED]");
     out = out.replace(/Bearer\s+\S{8,}/gi, "Bearer [REDACTED]");
+    out = out.replace(JWT_SHAPED_TOKEN_RE, (token) => isJwtShapedToken(token) ? "[REDACTED]" : token);
     out = redactEmailTokens(out);
     out = out.replaceAll(/\bplan[_-]?id=[^\s,;:)]+/gi, "[REDACTED]");
     out = out.replaceAll(ACCOUNT_PAYMENT_TOKEN_RE, "[REDACTED]");
@@ -1473,7 +1475,18 @@ async function probeGrokTunnel(cfg, env = process.env) {
       };
     }
     const modelCount = parsed.ok ? modelCountFromPayload(parsed.value) : null;
-    const modelsReady = modelCount === null ? true : modelCount > 0;
+    if (modelCount === null) {
+      return {
+        reachable: true,
+        models_ready: false,
+        model_count: null,
+        error_code: "malformed_response",
+        error_message: "grok2api /models response did not include a data or models array.",
+        http_status: response.status,
+        probe_endpoint: endpoint,
+      };
+    }
+    const modelsReady = modelCount > 0;
     return {
       reachable: true,
       models_ready: modelsReady,
@@ -2496,12 +2509,12 @@ function pathIsUnder(childPath, parentPath) {
 }
 
 function grok2ApiDurabilityWarning(homeSource, homePath) {
-  if (!homePath || homeSource === "GROK2API_HOME") return null;
+  if (!homePath) return null;
   if (!pathIsUnder(homePath, tmpdir())) return null;
   return {
     code: "grok2api_ephemeral_bootstrap_home",
     home_source: homeSource ?? null,
-    message: "grok2api is using a bootstrap home under TMPDIR, so synced runtime account/session state can disappear after OS cleanup or reboot.",
+    message: "grok2api is using a home under TMPDIR, so synced runtime account/session state can disappear after OS cleanup or reboot.",
     recommendation: "Set GROK2API_HOME or CODEX_PLUGIN_MULTI_RUNTIME_DIR to a durable location before syncing browser session state.",
   };
 }
@@ -2604,9 +2617,11 @@ function buildReadinessLayers({ probe, tunnelStart, chatProbe, sessionDiagnostic
 function doctorErrorCode({ ready, probe, tunnelStart, chatProbe, sessionDiagnostics }) {
   if (ready) return null;
   const sessionErrorCode = sessionDiagnostics?.status === "checked" ? sessionDiagnostics.error_code : null;
-  if (sessionErrorCode) return sessionErrorCode;
+  if (String(sessionErrorCode ?? "").startsWith("grok_session_")) return sessionErrorCode;
   if (chatProbe?.error_code === "grok_session_no_runtime_tokens") return chatProbe.error_code;
   if (probe?.error_code === "grok_session_no_runtime_tokens") return probe.error_code;
+  if (probe?.error_code === "malformed_response") return probe.error_code;
+  if (sessionErrorCode) return sessionErrorCode;
   if (tunnelStart?.error_code === "grok2api_start_timeout") return tunnelStart.error_code;
   return chatProbe?.error_code ?? probe?.error_code ?? tunnelStart?.error_code ?? "tunnel_error";
 }
@@ -2650,11 +2665,13 @@ async function doctorFields(env = process.env) {
     chat_ready: chatProbe.chat_ready,
     summary: ready
       ? "Grok subscription-backed local tunnel reviewer is configured and chat-ready."
-      : (probe.reachable && probe.models_ready === false
+      : (probe.reachable && probe.models_ready === false && probe.error_code === "grok_session_no_runtime_tokens"
         ? "Grok tunnel listener is reachable, but the grok2api model/account pool is empty."
+        : (probe.reachable && probe.models_ready === false
+        ? "Grok tunnel listener is reachable, but the grok2api models endpoint returned an unsupported response shape."
         : (probe.reachable
         ? "Grok tunnel models endpoint is reachable, but chat completion is not review-ready."
-        : "Grok subscription-backed local tunnel is not reachable.")),
+        : "Grok subscription-backed local tunnel is not reachable."))),
     next_action: ready
       ? "Run a Grok web review."
       : suggestedAction(errorCode, "", tunnelStart),
@@ -2718,9 +2735,14 @@ function safeDoctorForRepair(doctor) {
 }
 
 function repairNeedsSessionSync(doctor) {
-  return doctor?.error_code === "grok_session_no_runtime_tokens"
-    || doctor?.session_diagnostics?.error_code === "grok_session_no_runtime_tokens"
-    || doctor?.chat_probe?.error_code === "grok_session_no_runtime_tokens";
+  return isSessionSyncRepairableError(doctor?.error_code)
+    || isSessionSyncRepairableError(doctor?.session_diagnostics?.error_code)
+    || isSessionSyncRepairableError(doctor?.chat_probe?.error_code);
+}
+
+function isSessionSyncRepairableError(errorCode) {
+  return errorCode === "grok_session_no_runtime_tokens"
+    || errorCode === "grok_session_malformed_active_token";
 }
 
 function repairSyncApproved(options) {

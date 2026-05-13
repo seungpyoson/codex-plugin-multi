@@ -470,6 +470,37 @@ test("sync-browser-session redacts before truncating non-json admin errors", asy
   });
 });
 
+test("sync-browser-session redacts JWT-shaped admin error details", async () => {
+  const dir = mkdtempSync(path.join(tmpdir(), "grok-sync-"));
+  const secret = VALID_SESSION_TOKEN;
+  const leakedToken = "eyJhbGciOiJub25lIn0.eyJsZWFrIjoic3luYy1jbGkifQ.signature";
+  const cookieSource = path.join(dir, "cookies.json");
+  writeFileSync(cookieSource, JSON.stringify([{ name: "sso-rw", value: secret }]));
+
+  await withGrok2ApiServer(async (req, res) => {
+    res.setHeader("content-type", "application/json");
+    if (req.method === "GET" && req.url === "/admin/api/tokens") {
+      res.end(JSON.stringify({ tokens: [] }));
+      return;
+    }
+    if (req.method === "POST" && req.url === "/admin/api/tokens/add") {
+      res.statusCode = 500;
+      res.end(JSON.stringify({ error: { message: `upstream leaked ${leakedToken}` } }));
+      return;
+    }
+    res.statusCode = 404;
+    res.end(JSON.stringify({ error: "not found" }));
+  }, async (baseUrl) => {
+    const result = await runAsync([
+      "--cookie-source-json", cookieSource,
+      "--grok2api-base-url", baseUrl,
+    ]);
+    assert.equal(result.status, 1);
+    assert.equal(result.stdout.includes(leakedToken), false);
+    assert.match(result.stdout, /\[REDACTED\]/);
+  });
+});
+
 test("sync-browser-session redacts short custom admin keys from import failures", async () => {
   const dir = mkdtempSync(path.join(tmpdir(), "grok-sync-"));
   const secret = VALID_SESSION_TOKEN;

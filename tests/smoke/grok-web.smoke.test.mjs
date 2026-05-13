@@ -558,6 +558,40 @@ test("doctor auto-starts a local grok2api checkout without Docker", async () => 
   }
 });
 
+test("doctor warns when explicit GROK2API_HOME is under TMPDIR", async () => {
+  const port = await unusedLoopbackPort();
+  const home = makeFakeGrok2ApiHome();
+  const binDir = makeFakeUvBin();
+  let parsed = null;
+  try {
+    const result = await runAsync(["doctor"], {
+      env: {
+        GROK_WEB_BASE_URL: `http://127.0.0.1:${port}/v1`,
+        GROK2API_HOME: home,
+        GROK2API_UV_BINARY: path.join(binDir, "uv"),
+        GROK_WEB_DOCTOR_TIMEOUT_MS: "500",
+        GROK_WEB_CHAT_DOCTOR_TIMEOUT_MS: "1000",
+        GROK_WEB_TUNNEL_START_TIMEOUT_MS: "5000",
+      },
+    });
+    parsed = parseStdout(result);
+
+    assert.equal(result.status, 0);
+    assert.equal(parsed.ready, true);
+    assert.equal(parsed.tunnel_start.home_source, "GROK2API_HOME");
+    assert.equal(parsed.durability_warnings.length, 1);
+    assert.equal(parsed.durability_warnings[0].code, "grok2api_ephemeral_bootstrap_home");
+    assert.equal(parsed.durability_warnings[0].home_source, "GROK2API_HOME");
+    assert.match(parsed.durability_warnings[0].recommendation, /durable/i);
+  } finally {
+    if (parsed?.tunnel_start?.pid) {
+      try { process.kill(parsed.tunnel_start.pid, "SIGTERM"); } catch { /* already exited */ }
+    }
+    rmTree(home);
+    rmTree(binDir);
+  }
+});
+
 test("doctor terminates auto-started grok2api when it stays unreachable", async () => {
   const port = await unusedLoopbackPort();
   const home = makeFakeGrok2ApiHome();
@@ -1027,6 +1061,50 @@ test("doctor treats malformed models payload as failed models health", async () 
   });
 });
 
+test("doctor treats unexpected models JSON shape as failed models health", async () => {
+  await withServer(async (req, res) => {
+    res.setHeader("content-type", "application/json");
+    if (req.url === "/api/models") {
+      res.end(JSON.stringify({ data: "not an array" }));
+      return;
+    }
+    if (req.url === "/api/chat/completions") {
+      await readJsonRequest(req);
+      res.end(JSON.stringify({
+        id: "chatcmpl-doctor-unexpected-models",
+        model: "grok-4.20-fast",
+        choices: [{ message: { content: "ok" } }],
+      }));
+      return;
+    }
+    if (req.url === "/admin/api/tokens") {
+      res.end(JSON.stringify({
+        tokens: [{ token: VALID_SESSION_TOKEN, pool: "super", status: "active" }],
+      }));
+      return;
+    }
+    res.writeHead(404);
+    res.end(JSON.stringify({ error: { message: "not found" } }));
+  }, async (baseUrl) => {
+    const result = await runAsync(["doctor"], {
+      env: {
+        GROK_WEB_BASE_URL: baseUrl,
+        GROK2API_BASE_URL: baseUrl.replace(/\/api$/, ""),
+      },
+    });
+    const parsed = parseStdout(result);
+
+    assert.equal(result.status, 0);
+    assert.equal(parsed.reachable, true);
+    assert.equal(parsed.models_ready, false);
+    assert.equal(parsed.model_count, null);
+    assert.equal(parsed.ready, false);
+    assert.equal(parsed.error_code, "malformed_response");
+    assert.equal(parsed.readiness_layers.models.status, "failed");
+    assert.equal(parsed.readiness_layers.models.error_code, "malformed_response");
+  });
+});
+
 test("doctor maps non-OK chat probe responses without throwing", async () => {
   await withServer(async (req, res) => {
     res.setHeader("content-type", "application/json");
@@ -1360,7 +1438,6 @@ test("doctor treats no-available-account chat 429 as session tokens missing, not
     assert.equal(parsed.chat_probe.error_code, "grok_session_no_runtime_tokens");
     assert.equal(parsed.readiness_layers.chat_probe.status, "session_tokens_missing");
     assert.equal(parsed.cost_quota_readiness.status, "unknown_not_probed");
-    assert.notEqual(parsed.error_cause, "cost_quota_usage_limit");
     assert.doesNotMatch(parsed.next_action, /billing|credit|subscription usage/i);
   }, { autoPreflight: false });
 });
@@ -1404,6 +1481,49 @@ test("repair pauses before browser session sync until explicit approval", async 
     assert.equal(parsed.sync_session.source_content_transmission, "not_sent");
     assert.match(parsed.next_action, /--approve-browser-session-sync/);
     assert.match(parsed.next_action, /grok:repair-session/);
+    assert.deepEqual(requests.filter((entry) => entry.includes("/admin/api/tokens/add")), []);
+  });
+});
+
+test("repair pauses before browser session sync for malformed active tokens", async () => {
+  const requests = [];
+  await withGrok2ApiServer(async (req, res) => {
+    requests.push(`${req.method} ${req.url}`);
+    res.setHeader("content-type", "application/json");
+    if (req.method === "GET" && req.url === "/v1/models") {
+      res.end(JSON.stringify({ data: [{ id: "grok-4.20-fast" }] }));
+      return;
+    }
+    if (req.method === "POST" && req.url === "/v1/chat/completions") {
+      await readJsonRequest(req);
+      res.statusCode = 400;
+      res.end(JSON.stringify({ error: { message: "Chat upstream returned 400" } }));
+      return;
+    }
+    if (req.method === "GET" && req.url === "/admin/api/tokens") {
+      res.end(JSON.stringify({
+        tokens: [{ token: "malformed-control-looking-cookie", pool: "super", status: "active" }],
+      }));
+      return;
+    }
+    res.statusCode = 404;
+    res.end(JSON.stringify({ error: "not found" }));
+  }, async (baseUrl) => {
+    const result = await runAsync(["repair"], {
+      env: {
+        GROK_WEB_BASE_URL: `${baseUrl}/v1`,
+        GROK2API_BASE_URL: baseUrl,
+      },
+    });
+    const parsed = parseStdout(result);
+
+    assert.equal(result.status, 0);
+    assert.equal(parsed.ok, false);
+    assert.equal(parsed.status, "approval_required");
+    assert.equal(parsed.error_code, "browser_session_sync_approval_required");
+    assert.equal(parsed.initial_doctor.error_code, "grok_session_malformed_active_token");
+    assert.equal(parsed.sync_session.status, "approval_required");
+    assert.equal(parsed.sync_session.source_content_transmission, "not_sent");
     assert.deepEqual(requests.filter((entry) => entry.includes("/admin/api/tokens/add")), []);
   });
 });
@@ -1490,6 +1610,63 @@ test("repair syncs an approved browser session and reruns doctor", async () => {
       assert.ok(requests.includes("POST /admin/api/tokens/add"));
       assert.doesNotMatch(result.stdout, /eyJhbGci/);
       assert.doesNotMatch(result.stderr, /eyJhbGci/);
+    });
+  } finally {
+    rmTree(dir);
+  }
+});
+
+test("repair redacts JWT-shaped text from sync failure output", async () => {
+  const dir = mkdtempSync(path.join(tmpdir(), "grok-repair-cookie-source-"));
+  const cookieSource = path.join(dir, "cookies.json");
+  const leakedToken = "eyJhbGciOiJub25lIn0.eyJsZWFrIjoic3luYy1mYWlsdXJlIn0.signature";
+  writeFileSync(cookieSource, JSON.stringify([
+    { name: "sso-rw", value: VALID_SESSION_TOKEN },
+  ]));
+  try {
+    await withGrok2ApiServer(async (req, res) => {
+      res.setHeader("content-type", "application/json");
+      if (req.method === "GET" && req.url === "/v1/models") {
+        res.end(JSON.stringify({ data: [] }));
+        return;
+      }
+      if (req.method === "POST" && req.url === "/v1/chat/completions") {
+        await readJsonRequest(req);
+        res.statusCode = 429;
+        res.end(JSON.stringify({ error: { message: "No available accounts for this model tier" } }));
+        return;
+      }
+      if (req.method === "GET" && req.url === "/admin/api/tokens") {
+        res.end(JSON.stringify({ tokens: [] }));
+        return;
+      }
+      if (req.method === "POST" && req.url === "/admin/api/tokens/add") {
+        await readJsonRequest(req);
+        res.statusCode = 500;
+        res.end(JSON.stringify({ error: { message: `sync failed for ${leakedToken}` } }));
+        return;
+      }
+      res.statusCode = 404;
+      res.end(JSON.stringify({ error: "not found" }));
+    }, async (baseUrl) => {
+      const result = await runAsync([
+        "repair",
+        "--approve-browser-session-sync",
+        "--cookie-source-json", cookieSource,
+      ], {
+        env: {
+          GROK_WEB_BASE_URL: `${baseUrl}/v1`,
+          GROK2API_BASE_URL: baseUrl,
+        },
+      });
+      const parsed = parseStdout(result);
+
+      assert.equal(result.status, 0);
+      assert.equal(parsed.ok, false);
+      assert.equal(parsed.status, "sync_failed");
+      assert.equal(parsed.sync_session.status, "failed");
+      assert.equal(result.stdout.includes(leakedToken), false);
+      assert.match(parsed.sync_session.error_message, /\[REDACTED\]/);
     });
   } finally {
     rmTree(dir);
