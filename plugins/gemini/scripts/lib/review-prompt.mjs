@@ -185,6 +185,9 @@ function checklistText(line) {
   const trimmed = line.trimStart();
   const bullet = bulletText(trimmed);
   if (bullet !== null) return bullet;
+  const unmarked = trimmed.replace(/[*_`]/g, "");
+  const checklistItem = unmarked.match(/^(?:checklist\s+)?item\s+\d{1,10}\b[^:]*:\s*(.+)$/i);
+  if (checklistItem) return checklistItem[1].trimStart();
   let index = 0;
   while (index < trimmed.length && index < MAX_CHECKLIST_NUMBER_DIGITS) {
     const code = trimmed.charCodeAt(index);
@@ -367,6 +370,7 @@ function isPromptPolicyEchoLine(line) {
 
 function isNegatedPermissionBlockLine(line) {
   const lower = unmarkReviewText(line).toLowerCase();
+  if (/\bwithout\b[^\n.]*\bpermission blocks?\b/.test(lower)) return true;
   return (
     lower.includes("permission block")
     && (

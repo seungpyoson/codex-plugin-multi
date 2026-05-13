@@ -33,6 +33,7 @@ test("buildClaudeArgs: review mode passes --disallowedTools + plan + setting-sou
     promptText: "hi",
     sessionId: UUID,
   });
+  assert.equal(args.includes("--no-session-persistence"), false);
   assert.ok(args.includes("--permission-mode"));
   assert.equal(args[args.indexOf("--permission-mode") + 1], "plan");
   assert.ok(args.includes("--disallowedTools"));
@@ -54,6 +55,16 @@ test("buildClaudeArgs: review mode can override permission mode for the retry la
   assert.equal(args[args.indexOf("--permission-mode") + 1], "dontAsk");
   assert.ok(args.includes("--disallowedTools"));
   assert.ok(args.includes("--setting-sources"));
+});
+
+test("buildClaudeArgs: non-persistent fresh invocation emits --no-session-persistence", () => {
+  const args = buildClaudeArgs(resolveProfile("ping"), {
+    promptText: "ping",
+    sessionId: UUID,
+    sessionPersistence: false,
+  });
+  assert.equal(args.includes("--no-session-persistence"), true);
+  assert.equal(args.includes("--resume"), false);
 });
 
 test("buildClaudeArgs: rescue mode uses acceptEdits, no disallowedTools", () => {
@@ -122,6 +133,19 @@ test("buildClaudeArgs: resumeId emits --resume and omits --session-id", () => {
   assert.ok(!args.includes("--session-id"));
   const idx = args.indexOf("--resume");
   assert.equal(args[idx + 1], "11111111-2222-4333-8444-555555555555");
+});
+
+test("buildClaudeArgs: non-persistent invocations cannot be resumed", () => {
+  assert.throws(
+    () => buildClaudeArgs(resolveProfile("review"), {
+      model: "claude-haiku-4-5-20251001",
+      promptText: "continue work",
+      sessionId: UUID,
+      resumeId: "11111111-2222-4333-8444-555555555555",
+      sessionPersistence: false,
+    }),
+    /non-persistent Claude sessions cannot be resumed/,
+  );
 });
 
 test("buildClaudeArgs: rejects non-UUIDv4 resumeId", () => {
@@ -330,6 +354,30 @@ test("spawnClaude: returns claudeSessionId from stdout and pidInfo tuple", async
     "starttime" in result.pidInfo && "argv0" in result.pidInfo,
     "pidInfo always has starttime/argv0 keys (may be null)"
   );
+});
+
+test("spawnClaude: empty stdout promotes first stderr line into parse error", async () => {
+  const dir = mkdtempSync(path.join(tmpdir(), "claude-empty-stdout-"));
+  try {
+    const binary = writeExecutable(dir, "claude-empty-stdout.mjs", `#!/usr/bin/env node
+process.stderr.write("No conversation found with session ID: ${UUID}\\nsecond line\\n");
+process.exit(1);
+`);
+    const result = await spawnClaude(resolveProfile("review"), {
+      model: "claude-haiku-4-5-20251001",
+      promptText: "continue work",
+      sessionId: UUID,
+      resumeId: "11111111-2222-4333-8444-555555555555",
+      binary,
+    });
+
+    assert.equal(result.exitCode, 1);
+    assert.equal(result.parsed.ok, false);
+    assert.equal(result.parsed.reason, "empty_stdout");
+    assert.equal(result.parsed.error, `No conversation found with session ID: ${UUID}`);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 test("spawnClaude: sends prompt on stdin so large prompts do not hit argv limits", async () => {
