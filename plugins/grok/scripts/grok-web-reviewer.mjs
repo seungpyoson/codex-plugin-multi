@@ -515,6 +515,7 @@ function uvExecutionEnv(env = process.env) {
   return {
     ...env,
     PATH: GROK2API_FIXED_EXEC_PATH,
+    // Empty UV_CACHE_DIR is treated as unset; see the doctor auto-start smoke coverage.
     UV_CACHE_DIR: env.UV_CACHE_DIR || defaultGrok2ApiUvCacheDir(),
   };
 }

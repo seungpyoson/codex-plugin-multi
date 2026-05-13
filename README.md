@@ -509,6 +509,11 @@ emits `next_action` guidance, distinguishes missing mutation evidence from an
 intentionally not-checked provider, and checks prompt persistence plus fixture
 mutation state without storing source bodies.
 
+`no-mistakes` remains configured, but it is not authoritative merge evidence
+while https://github.com/seungpyoson/claude-config/issues/780 is open. Use
+direct local verification and GitHub CI as the readiness evidence until that
+review/fix-loop issue is resolved.
+
 Repository layout:
 
 ```text

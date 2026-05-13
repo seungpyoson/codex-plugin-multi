@@ -133,6 +133,14 @@ test("provider readiness spec avoids user-local uv cache paths", () => {
   assert.doesNotMatch(docs, /\/Users\/spson\/\.cache\/uv/);
 });
 
+test("README documents no-mistakes as non-authoritative while issue 780 is open", () => {
+  const readme = readRepoFile("README.md");
+
+  assert.match(readme, /no-mistakes/i);
+  assert.match(readme, /claude-config\/issues\/780/);
+  assert.match(readme, /not authoritative/i);
+});
+
 test("claude review command docs use current mutation schema fields", () => {
   const docs = [
     readRepoFile("plugins/claude/commands/claude-review.md"),

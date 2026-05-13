@@ -43,6 +43,15 @@ const PROVIDER_ERROR_CODES = new Set([
   "gemini_error",
   "kimi_error",
 ]);
+const NEXT_ACTION_BY_FAILURE_CLASS = Object.freeze({
+  none: "No action required.",
+  missing_evidence: "Run the provider doctor and capture evidence before interpreting readiness.",
+  session_tokens: "Run npm run grok:sync-browser-session or set GROK2API_HOME to a grok2api runtime with active runtime session tokens, then rerun Grok doctor before source review.",
+  sandbox: "Classify this as a sandbox boundary first; rerun outside the sandbox or grant the needed host capability before calling it an install failure.",
+  auth: "Refresh provider authentication and rerun the provider doctor before source review.",
+  tunnel: "Inspect tunnel diagnostics, start or repair the local tunnel, then rerun the provider doctor.",
+  review_quality: "Treat the review slot as failed; inspect review_quality.semantic_failure_reasons and retry with a source packet the provider can inspect.",
+});
 const TRUSTED_GIT_ENV = gitEnv(cleanGitEnv());
 const USAGE = `Usage: npm run readiness:manifest -- --fixture-root <git-fixture> --evidence-dir <dir> [--out <manifest.json>]
 
@@ -232,12 +241,12 @@ function sourceTransmission(review, approval) {
   if (review) return "may_be_sent";
   const approvalValue = approval?.source_content_transmission ?? null;
   if (approvalValue) return normalizeTransmission(approvalValue);
-  return "not_sent";
+  return "may_be_sent";
 }
 
 function mutationStatus(review) {
   if (!review) return "not_checked";
-  if (!Object.prototype.hasOwnProperty.call(review, "mutations")) return "missing";
+  if (!Object.hasOwn(review, "mutations")) return "missing";
   if (!Array.isArray(review.mutations)) return "missing";
   return review.mutations.length === 0 ? "clean" : "dirty";
 }
@@ -249,44 +258,30 @@ function evidencePath({ doctor, doctorPath, review, reviewPath, approval, approv
   return null;
 }
 
+function cacheInstallNextAction(code) {
+  if (code === "grok2api_uv_missing") {
+    return "Install or expose uv, then rerun Grok doctor; leave UV_CACHE_DIR unset for the sandbox-writable default or set it to a writable cache.";
+  }
+  return "Install or expose the missing provider runtime/cache prerequisite, then rerun the doctor.";
+}
+
+function approvalGateNextAction(provider, approvalState, review) {
+  if (DIRECT_API_PROVIDERS.has(provider) && approvalState === "not_sent" && !review) {
+    return "Approval proof is present; run the direct API source review using the captured not_sent evidence.";
+  }
+  if (DIRECT_API_PROVIDERS.has(provider) && approvalState === "missing" && review) {
+    return "Discard this source-bearing direct API review until approval proof is present; run approval-request and capture not_sent evidence first.";
+  }
+  if (DIRECT_API_PROVIDERS.has(provider) && approvalState === "invalid") {
+    return "Regenerate direct API approval proof; it must include source_content_transmission=not_sent and denial_action.source_content_transmission=not_sent.";
+  }
+  return "Run approval-request and capture not_sent approval evidence before any direct API source-bearing review.";
+}
+
 function nextAction({ provider, failureClassValue, code, approvalState, review }) {
-  if (failureClassValue === "none") return "No action required.";
-  if (failureClassValue === "missing_evidence") {
-    return "Run the provider doctor and capture evidence before interpreting readiness.";
-  }
-  if (failureClassValue === "cache_install") {
-    if (code === "grok2api_uv_missing") {
-      return "Install or expose uv, then rerun Grok doctor; leave UV_CACHE_DIR unset for the sandbox-writable default or set it to a writable cache.";
-    }
-    return "Install or expose the missing provider runtime/cache prerequisite, then rerun the doctor.";
-  }
-  if (failureClassValue === "session_tokens") {
-    return "Run npm run grok:sync-browser-session or set GROK2API_HOME to a grok2api runtime with active runtime session tokens, then rerun Grok doctor before source review.";
-  }
-  if (failureClassValue === "sandbox") {
-    return "Classify this as a sandbox boundary first; rerun outside the sandbox or grant the needed host capability before calling it an install failure.";
-  }
-  if (failureClassValue === "auth") {
-    return "Refresh provider authentication and rerun the provider doctor before source review.";
-  }
-  if (failureClassValue === "tunnel") {
-    return "Inspect tunnel diagnostics, start or repair the local tunnel, then rerun the provider doctor.";
-  }
-  if (failureClassValue === "review_quality") {
-    return "Treat the review slot as failed; inspect review_quality.semantic_failure_reasons and retry with a source packet the provider can inspect.";
-  }
-  if (failureClassValue === "approval_gate") {
-    if (DIRECT_API_PROVIDERS.has(provider) && approvalState === "not_sent" && !review) {
-      return "Approval proof is present; run the direct API source review using the captured not_sent evidence.";
-    }
-    if (DIRECT_API_PROVIDERS.has(provider) && approvalState === "missing" && review) {
-      return "Discard this source-bearing direct API review until approval proof is present; run approval-request and capture not_sent evidence first.";
-    }
-    if (DIRECT_API_PROVIDERS.has(provider) && approvalState === "invalid") {
-      return "Regenerate direct API approval proof; it must include source_content_transmission=not_sent and denial_action.source_content_transmission=not_sent.";
-    }
-    return "Run approval-request and capture not_sent approval evidence before any direct API source-bearing review.";
-  }
+  if (NEXT_ACTION_BY_FAILURE_CLASS[failureClassValue]) return NEXT_ACTION_BY_FAILURE_CLASS[failureClassValue];
+  if (failureClassValue === "cache_install") return cacheInstallNextAction(code);
+  if (failureClassValue === "approval_gate") return approvalGateNextAction(provider, approvalState, review);
   return "Inspect the provider evidence error_code/detail and rerun the doctor or review after fixing the reported provider failure.";
 }
 

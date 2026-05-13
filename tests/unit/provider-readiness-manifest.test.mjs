@@ -657,6 +657,10 @@ test("provider readiness manifest classifies absent evidence as missing evidence
     manifest.providers.map((row) => row.failure_class),
     ["missing_evidence", "missing_evidence", "missing_evidence", "missing_evidence", "missing_evidence", "missing_evidence"],
   );
+  assert.deepEqual(
+    manifest.providers.map((row) => row.source_content_transmission),
+    ["may_be_sent", "may_be_sent", "may_be_sent", "may_be_sent", "may_be_sent", "may_be_sent"],
+  );
   assert.match(manifest.providers[0].next_action, /Run the provider doctor/i);
 });
 
