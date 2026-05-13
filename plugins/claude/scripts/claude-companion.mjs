@@ -57,7 +57,10 @@ import {
 import { CLAUDE_PROVIDER_API_KEY_ENV } from "./lib/claude-provider-keys.mjs";
 import {
   PING_PROMPT,
+  cancelNoPidInfoSuggestedAction,
+  cancelUnverifiableSuggestedAction,
   consumePromptSidecar,
+  effectiveProfileForOptions,
   externalReviewBackgroundLaunchedEvent,
   externalReviewLaunchedEvent,
   gitStatusLines,
@@ -68,6 +71,8 @@ import {
   printJson,
   printLifecycleJson,
   runKindFromRecord,
+  scopeBaseForOptions,
+  startExternalReviewHeartbeat,
   summarizeScopeDirectory,
   writePromptSidecar,
 } from "./lib/companion-common.mjs";
@@ -612,15 +617,16 @@ function cmdPreflight(rest) {
     });
   }
 
-  const profile = resolveProfile(mode);
+  const profile = effectiveProfileForOptions(resolveProfile(mode), options);
   const workspaceRoot = resolveWorkspaceRoot(cwd);
   const scopePaths = parseScopePathsOption(options["scope-paths"]);
+  const scopeBase = scopeBaseForOptions(options);
   let containment = null;
   let exitCode = 0;
   try {
     containment = setupContainment(profile, cwd);
     populateScope(profile, cwd, containment.path, {
-      scopeBase: options["scope-base"] ?? null,
+      scopeBase,
       scopePaths,
       workspaceRoot,
     }, containment);
@@ -635,7 +641,7 @@ function cmdPreflight(rest) {
       workspace_root: workspaceRoot,
       containment: profile.containment,
       scope: profile.scope,
-      scope_base: options["scope-base"] ?? null,
+      scope_base: scopeBase,
       scope_paths: scopePaths,
       ...summary,
       ...preflightSafetyFields(),
@@ -653,7 +659,7 @@ function cmdPreflight(rest) {
       workspace_root: workspaceRoot,
       containment: profile.containment,
       scope: profile.scope,
-      scope_base: options["scope-base"] ?? null,
+      scope_base: scopeBase,
       scope_paths: scopePaths,
       error,
       error_message: e.message,
@@ -684,7 +690,8 @@ async function cmdRun(rest) {
 
   // Mode → profile, resolved EXACTLY ONCE at entry (spec §21.2). No downstream
   // code branches on `mode` to pick a flag — everything flows from `profile`.
-  const profile = resolveProfile(mode);
+  const profile = effectiveProfileForOptions(resolveProfile(mode), options);
+  const scopeBase = scopeBaseForOptions(options);
 
   // Model resolution goes through the profile's tier — the historical
   // ternary that branched on mode but returned "default" on both sides
@@ -750,7 +757,7 @@ async function cmdRun(rest) {
     containment: profile.containment,
     scope: profile.scope,
     dispose_effective: disposeEffective,
-    scope_base: options["scope-base"] ?? null,
+    scope_base: scopeBase,
     scope_paths: scopePaths,
     prompt_head: prompt.slice(0, 200),          // §21.3.1 — no full prompt
     review_prompt_contract_version: profile.name === "rescue" ? null : REVIEW_PROMPT_CONTRACT_VERSION,
@@ -860,13 +867,20 @@ async function executeRun(invocation, prompt, { foreground, lifecycleEvents = nu
     );
   }
 
-  const execution = await spawnClaudeOrExit(invocation, profile, prompt, executionScope, mutationContext, {
-    foreground,
-    lifecycleEvents,
-    runtimeDiagnostics,
-    resumeId,
-    authSelection,
-  });
+  const stopHeartbeat = foreground ? startExternalReviewHeartbeat(invocation, lifecycleEvents) : () => {};
+  let execution;
+  try {
+    execution = await spawnClaudeOrExit(invocation, profile, prompt, executionScope, mutationContext, {
+      foreground,
+      lifecycleEvents,
+      runtimeDiagnostics,
+      resumeId,
+      authSelection,
+      stopHeartbeat,
+    });
+  } finally {
+    stopHeartbeat();
+  }
 
   recordPostRunMutations(invocation, mutationContext);
 
@@ -1075,6 +1089,7 @@ async function spawnClaudeOrExit(invocation, profile, prompt, executionScope, mu
     writeJobFile(invocation.workspace_root, invocation.job_id, errorRecord);
     upsertJob(invocation.workspace_root, errorRecord);
     cleanupExecutionResources(executionScope, mutationContext);
+    options.stopHeartbeat?.();
     if (options.foreground) printLifecycleJson(errorRecord, options.lifecycleEvents);
     process.exit(2);
   }
@@ -2022,17 +2037,31 @@ async function cmdCancel(rest) {
       status: "no_pid_info",
       detail: "job has no pid_info; cannot safely signal (legacy record or race)",
       job_id: options.job,
+      suggested_action: cancelNoPidInfoSuggestedAction(),
     });
     process.exit(2);
   }
-  if (pidInfo.capture_error || !pidInfo.starttime || !pidInfo.argv0) {
+  if (pidInfo.capture_error) {
+    printJson({
+      ok: false,
+      status: "unverifiable",
+      detail: "could not verify pid ownership because process inspection was blocked; refusing to signal",
+      job_id: options.job,
+      pid: pidInfo.pid,
+      capture_error: pidInfo.capture_error,
+      suggested_action: cancelUnverifiableSuggestedAction(pidInfo.pid),
+    });
+    process.exit(2);
+  }
+  if (!pidInfo.starttime || !pidInfo.argv0) {
     printJson({
       ok: false,
       status: "no_pid_info",
       detail: "job has pid but no complete ownership proof; refusing to signal",
       job_id: options.job,
       pid: pidInfo.pid,
-      capture_error: pidInfo.capture_error ?? null,
+      capture_error: null,
+      suggested_action: cancelNoPidInfoSuggestedAction(),
     });
     process.exit(2);
   }
@@ -2062,6 +2091,7 @@ async function cmdCancel(rest) {
         detail: "could not verify pid ownership; refusing to signal",
         job_id: options.job,
         pid: pidInfo.pid,
+        suggested_action: cancelUnverifiableSuggestedAction(pidInfo.pid),
       });
       process.exit(2);
     }

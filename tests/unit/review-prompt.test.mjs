@@ -191,6 +191,10 @@ function assertReviewPromptContract(targetBuildReviewPrompt = buildReviewPrompt,
   assert.match(prompt, /Do not report missing external tool access as a blocking code finding by itself/);
   assert.match(prompt, /runtime\/tool limitations/);
   assert.match(prompt, /Blocking findings first/);
+  assert.match(prompt, /Start the first line with exactly one verdict marker/);
+  assert.match(prompt, /Verdict: APPROVE/);
+  assert.match(prompt, /Verdict: REQUEST_CHANGES/);
+  assert.match(prompt, /Verdict: NOT_REVIEWED/);
   assert.match(prompt, /overlapping predicates, early returns, and branch ordering/);
   assert.match(prompt, /Do not upgrade speculative input-validation hardening into a blocking finding/);
   assert.match(prompt, /APPROVE with non-blocking concerns or test gaps when code is acceptable/);
