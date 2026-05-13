@@ -83,11 +83,11 @@ function parseCli(argv) {
 
 const parsed = parseCli(process.argv.slice(2));
 
-// Prompt source: argv positional (`claude -p "..."`) OR stdin (if --input-format stream-json).
+// Prompt source: argv positional (`claude -p "..."`) OR stdin (if --input-format text/stream-json).
 let prompt;
 if (parsed.positional.length > 0) {
   prompt = parsed.positional.join(" ");
-} else if (parsed.flags["--input-format"] === "stream-json") {
+} else if (["text", "stream-json"].includes(parsed.flags["--input-format"])) {
   prompt = readFileSync(0, "utf8");
 } else {
   // Claude real behavior: errors if -p lacks both positional and stdin.

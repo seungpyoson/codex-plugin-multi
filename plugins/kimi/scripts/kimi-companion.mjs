@@ -727,7 +727,9 @@ async function cmdRun(rest) {
 
 async function executeRun(invocation, prompt, { foreground, lifecycleEvents = null }) {
   const { job_id: jobId, cwd, workspace_root: workspaceRoot, dispose_effective: disposeEffective } = invocation;
-  const profile = resolveProfile(invocation.mode_profile_name);
+  const profile = effectiveProfileForOptions(resolveProfile(invocation.mode_profile_name), {
+    "scope-base": invocation.scope_base,
+  });
   let containment = null;
   try {
     containment = setupContainment(profile, cwd);
@@ -1142,7 +1144,9 @@ async function cmdContinue(rest) {
   const newJobId_ = newJobId();
   const model = options.model ?? prior.model;
   const priorModeName = prior.mode_profile_name ?? prior.mode;
-  const priorProfile = resolveProfile(priorModeName);
+  const priorProfile = effectiveProfileForOptions(resolveProfile(priorModeName), {
+    "scope-base": prior.scope_base,
+  });
   const priorResumeChain = Array.isArray(prior.resume_chain) ? prior.resume_chain : [];
   const priorRuntimeOptions = readRuntimeOptionsSidecar(workspaceRoot, options.job);
   const priorTimeoutMs =

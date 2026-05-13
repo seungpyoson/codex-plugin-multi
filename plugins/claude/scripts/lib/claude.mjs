@@ -1,4 +1,4 @@
-// Claude-specific dispatcher. Spawns `claude -p ...` per spec §7.2 / §10
+// Claude-specific dispatcher. Spawns `claude -p` and sends the prompt via stdin
 // with the layered-defense flag stack for read-only review, the review
 // permission-mode ladder, and acceptEdits permission mode for rescue. Pure
 // Claude concerns live here;
@@ -42,8 +42,39 @@ function assertPermissionMode(permissionMode) {
   }
 }
 
+function makeSettler(resolve, reject, cleanup) {
+  let settled = false;
+  const finish = (fn, value) => {
+    if (settled) return;
+    settled = true;
+    cleanup();
+    fn(value);
+  };
+  return {
+    resolve: (value) => finish(resolve, value),
+    reject: (error) => finish(reject, error),
+  };
+}
+
+function collectChildOutput(child) {
+  const output = { stdout: "", stderr: "" };
+  child.stdout.on("data", (chunk) => { output.stdout += chunk.toString("utf8"); });
+  child.stderr.on("data", (chunk) => { output.stderr += chunk.toString("utf8"); });
+  return output;
+}
+
+function armChildTimeout(child, timeoutMs, onTimeout) {
+  if (timeoutMs <= 0) return () => {};
+  const timer = setTimeout(() => {
+    onTimeout();
+    try { child.kill("SIGTERM"); } catch { /* already gone */ }
+    setTimeout(() => { try { child.kill("SIGKILL"); } catch { /* already gone */ } }, 2000).unref();
+  }, timeoutMs);
+  return () => clearTimeout(timer);
+}
+
 /**
- * Build the argv array for `claude -p ...` from a mode profile and the
+ * Build the argv array for `claude -p` from a mode profile and the
  * per-invocation runtime inputs. Extracted for unit testing; the actual
  * spawn lives in spawnClaude() below.
  *
@@ -89,7 +120,8 @@ export function buildClaudeArgs(profile, runtimeInputs = {}) {
   assertPermissionMode(effectivePermissionMode);
 
   const args = [
-    "-p", promptText,
+    "-p",
+    "--input-format", "text",
     "--output-format", "json",
     "--no-session-persistence",
   ];
@@ -202,38 +234,25 @@ export async function spawnClaude(profile, runtimeInputs = {}) {
   const targetEnv = sanitizeTargetEnv(env, { allowedApiKeyEnv });
 
   return new Promise((resolve, reject) => {
-    // Claude receives the prompt via argv and ignores stdin, so there is no
-    // stdin EPIPE race to coordinate here. Gemini has a write/close harness.
-    const child = spawn(binary, args, { cwd, env: targetEnv, stdio: ["ignore", "pipe", "pipe"] });
+    const child = spawn(binary, args, { cwd, env: targetEnv, stdio: ["pipe", "pipe", "pipe"] });
     const getPidInfo = attachPidCapture(child, onSpawn);
-    let stdout = "";
-    let stderr = "";
     let timedOut = false;
-    let timer = null;
-    if (timeoutMs > 0) {
-      timer = setTimeout(() => {
-        timedOut = true;
-        try { child.kill("SIGTERM"); } catch { /* already gone */ }
-        setTimeout(() => { try { child.kill("SIGKILL"); } catch { /* already gone */ } }, 2000).unref();
-      }, timeoutMs);
-    }
-    child.stdout.on("data", (chunk) => { stdout += chunk.toString("utf8"); });
-    child.stderr.on("data", (chunk) => { stderr += chunk.toString("utf8"); });
+    const output = collectChildOutput(child);
+    const disarmTimeout = armChildTimeout(child, timeoutMs, () => { timedOut = true; });
+    const finish = makeSettler(resolve, reject, disarmTimeout);
     child.on("error", (e) => {
-      if (timer) clearTimeout(timer);
-      reject(Object.assign(new Error(`spawn ${binary} failed: ${e.message}`), { code: e.code }));
+      finish.reject(Object.assign(new Error(`spawn ${binary} failed: ${e.message}`), { code: e.code }));
     });
     child.on("close", (exitCode, signal) => {
-      if (timer) clearTimeout(timer);
       const endedAt = new Date().toISOString();
-      const parsed = parseClaudeResult(stdout);
-      resolve({
+      const parsed = parseClaudeResult(output.stdout);
+      finish.resolve({
         exitCode,
         signal,
         timedOut,
         endedAt,
-        stdout,
-        stderr,
+        stdout: output.stdout,
+        stderr: output.stderr,
         // What the companion SENT as --session-id (or null on resume). Not a
         // durable identity — persisted records store claudeSessionId instead.
         sessionIdSent: resumeId ? null : sessionId,
@@ -250,6 +269,11 @@ export async function spawnClaude(profile, runtimeInputs = {}) {
         parsed,
       });
     });
+    child.stdin.on("error", (e) => {
+      if (e?.code === "EPIPE") return;
+      finish.reject(Object.assign(new Error(`write to ${binary} stdin failed: ${e.message}`), { code: e.code }));
+    });
+    child.stdin.end(promptText);
   });
 }
 

@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
-  existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync,
+  existsSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, realpathSync, rmSync, symlinkSync, writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -127,6 +127,12 @@ function runCancel(companion, cwd, dataDir, jobId) {
   });
   return { ...res, json: JSON.parse(res.stdout) };
 }
+
+test("Claude smoke command shim is a relative symlink for portable worktrees", () => {
+  const linkTarget = readlinkSync(path.join(REPO_ROOT, "tests/smoke/claude"));
+  assert.equal(path.isAbsolute(linkTarget), false);
+  assert.equal(linkTarget, "claude-mock.mjs");
+});
 
 test("Claude/Gemini/Kimi review --scope-base selects branch-diff, not dirty working-tree scope", () => {
   for (const companion of COMPANIONS) {

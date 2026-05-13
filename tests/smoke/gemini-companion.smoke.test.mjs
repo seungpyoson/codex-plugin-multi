@@ -9,7 +9,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { fixtureSeedRepo } from "../helpers/fixture-git.mjs";
+import { fixtureBranchDiffRepo, fixtureSeedRepo } from "../helpers/fixture-git.mjs";
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const COMPANION = path.join(REPO_ROOT, "plugins/gemini/scripts/gemini-companion.mjs");
@@ -1192,6 +1192,55 @@ test("gemini review foreground: policy-first, stdin transport, /tmp cwd, scoped 
     assert.equal(fx.t7_sandbox, true, "Gemini review must pass the sandbox flag");
     assert.equal(fx.t7_skip_trust, true, "Gemini review must pass --skip-trust so plan approval is not downgraded");
     assert.equal(fx.t7_prompt_from_stdin, true, "Gemini prompt must arrive on stdin, not argv");
+  } finally {
+    rmTree(dataDir);
+    rmTree(cwd);
+  }
+});
+
+test("gemini review --scope-base preserves branch-diff scope through target execution", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "gemini-review-scope-base-"));
+  const { base } = fixtureBranchDiffRepo(cwd);
+  const { stdout, stderr, status, dataDir } = runCompanion(
+    ["run", "--mode=review", "--foreground", "--cwd", cwd, "--scope-base", base, "--", "review: x=1"],
+    { cwd },
+  );
+  try {
+    assert.equal(status, 0, `exit ${status}: ${stderr}`);
+    const record = JSON.parse(stdout);
+    assert.equal(record.scope, "branch-diff");
+    assert.deepEqual(
+      record.review_metadata.audit_manifest.selected_source.files.map((file) => file.path),
+      ["foo.md"]
+    );
+  } finally {
+    rmTree(dataDir);
+    rmTree(cwd);
+  }
+});
+
+test("gemini continue preserves prior review branch-diff scope through target execution", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "gemini-continue-scope-base-"));
+  const { base } = fixtureBranchDiffRepo(cwd);
+  const dataDir = mkdtempSync(path.join(tmpdir(), "gemini-continue-scope-base-data-"));
+  try {
+    const runRes = runCompanion(
+      ["run", "--mode=review", "--foreground", "--cwd", cwd, "--scope-base", base, "--", "review: x=1"],
+      { cwd, dataDir },
+    );
+    assert.equal(runRes.status, 0, runRes.stderr);
+    const prior = JSON.parse(runRes.stdout);
+    const contRes = runCompanion(
+      ["continue", "--job", prior.job_id, "--foreground", "--cwd", cwd, "--", "follow-up"],
+      { cwd, dataDir },
+    );
+    assert.equal(contRes.status, 0, contRes.stderr);
+    const continued = JSON.parse(contRes.stdout);
+    assert.equal(continued.scope, "branch-diff");
+    assert.deepEqual(
+      continued.review_metadata.audit_manifest.selected_source.files.map((file) => file.path),
+      ["foo.md"]
+    );
   } finally {
     rmTree(dataDir);
     rmTree(cwd);

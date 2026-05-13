@@ -12,7 +12,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { fixtureGitEnv, fixtureSeedRepo } from "../helpers/fixture-git.mjs";
+import { fixtureBranchDiffRepo, fixtureGitEnv, fixtureSeedRepo } from "../helpers/fixture-git.mjs";
 import { assertJobRecordShape } from "../helpers/job-record-shape.mjs";
 import { CLAUDE_PROVIDER_API_KEY_ENV } from "../../plugins/claude/scripts/lib/claude-provider-keys.mjs";
 
@@ -1660,6 +1660,64 @@ test("adversarial-review scope=branch-diff: only changed files appear in --add-d
   }
 });
 
+test("review --scope-base preserves branch-diff scope through target execution", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "smoke-review-scope-base-"));
+  const { base } = fixtureBranchDiffRepo(cwd);
+  const { stdout, status, stderr, dataDir } = runCompanion(
+    ["run", "--mode=review", "--foreground",
+     "--model", "claude-haiku-4-5-20251001",
+     "--cwd", cwd, "--scope-base", base, "--", "focus"],
+    { cwd, env: { CLAUDE_MOCK_LIST_ADDDIR: "1" } }
+  );
+  try {
+    assert.equal(status, 0, `exit ${status}: ${stderr}`);
+    const result = JSON.parse(stdout);
+    const fx = readStdoutLog(dataDir, result.job_id);
+    const files = fx.t7_add_dir_files ?? [];
+    assert.deepEqual(files, ["foo.md"]);
+    assert.deepEqual(
+      result.review_metadata.audit_manifest.selected_source.files.map((file) => file.path),
+      ["foo.md"]
+    );
+  } finally {
+    cleanup(dataDir);
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("continue preserves prior review branch-diff scope through target execution", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "smoke-continue-scope-base-"));
+  const { base } = fixtureBranchDiffRepo(cwd);
+  const dataDir = mkdtempSync(path.join(tmpdir(), "continue-scope-base-data-"));
+  try {
+    const runRes = runCompanion(
+      ["run", "--mode=review", "--foreground",
+       "--model", "claude-haiku-4-5-20251001",
+       "--cwd", cwd, "--scope-base", base, "--", "focus"],
+      { cwd, dataDir, env: { CLAUDE_MOCK_LIST_ADDDIR: "1" } }
+    );
+    assert.equal(runRes.status, 0, runRes.stderr);
+    const prior = JSON.parse(runRes.stdout);
+    const contRes = runCompanion(
+      ["continue", "--job", prior.job_id, "--foreground",
+       "--cwd", cwd, "--", "follow-up"],
+      { cwd, dataDir, env: { CLAUDE_MOCK_LIST_ADDDIR: "1" } }
+    );
+    assert.equal(contRes.status, 0, contRes.stderr);
+    const continued = JSON.parse(contRes.stdout);
+    const fx = readStdoutLog(dataDir, continued.job_id);
+    assert.equal(continued.scope, "branch-diff");
+    assert.deepEqual(fx.t7_add_dir_files ?? [], ["foo.md"]);
+    assert.deepEqual(
+      continued.review_metadata.audit_manifest.selected_source.files.map((file) => file.path),
+      ["foo.md"]
+    );
+  } finally {
+    cleanup(dataDir);
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
 test("adversarial-review scope=branch-diff: scope paths narrow copied and audited files", () => {
   const cwd = mkdtempSync(path.join(tmpdir(), "smoke-adv-paths-"));
   spawnSync("git", ["init", "-q", "-b", "main"], { cwd, env: fixtureGitEnv() });
@@ -3279,7 +3337,7 @@ test("run: auto auth re-preflights API-key fallback before review launch", () =>
   const tmp = mkdtempSync(path.join(tmpdir(), "claude-run-auto-api-fallback-preflight-bin-"));
   const leakMarker = path.join(tmp, "source-leaked");
   const binary = writeExecutable(tmp, "claude-auto-api-fallback-preflight", `#!/usr/bin/env node
-import { writeFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 
 const argv = process.argv.slice(2);
 if (argv.join(" ") === "auth status --json") {
@@ -3292,7 +3350,7 @@ if (argv.join(" ") === "auth status --json") {
   process.exit(0);
 }
 
-const prompt = argv[argv.indexOf("-p") + 1] ?? "";
+const prompt = argv.includes("--input-format") ? readFileSync(0, "utf8") : (argv[argv.indexOf("-p") + 1] ?? "");
 if (process.env.ANTHROPIC_API_KEY !== "secret-test-value") {
   process.stdout.write(JSON.stringify({
     type: "result",

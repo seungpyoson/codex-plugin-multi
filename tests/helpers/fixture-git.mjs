@@ -90,3 +90,34 @@ export function fixtureSeedRepo(cwd, {
     throw new Error(`fixtureSeedRepo: git commit failed: ${commit.stderr ?? ""}`);
   }
 }
+
+export function fixtureBranchDiffRepo(cwd, {
+  baseFileName = "old.md",
+  baseFileContents = "old\n",
+  changedFileName = "foo.md",
+  changedFileContents = "foo\n",
+} = {}) {
+  fixtureSeedRepo(cwd, {
+    fileName: baseFileName,
+    fileContents: baseFileContents,
+    message: "main",
+  });
+  const base = fixtureGit(cwd, ["rev-parse", "HEAD"]).stdout.trim();
+
+  const checkout = fixtureGit(cwd, ["checkout", "-qb", "feature"]);
+  if (checkout.status !== 0) {
+    throw new Error(`fixtureBranchDiffRepo: git checkout failed: ${checkout.stderr ?? ""}`);
+  }
+
+  writeFileSync(joinPath(cwd, changedFileName), changedFileContents);
+  const add = fixtureGit(cwd, ["add", changedFileName]);
+  if (add.status !== 0) {
+    throw new Error(`fixtureBranchDiffRepo: git add failed: ${add.stderr ?? ""}`);
+  }
+  const commit = fixtureGit(cwd, ["commit", "-q", "-m", "feature"]);
+  if (commit.status !== 0) {
+    throw new Error(`fixtureBranchDiffRepo: git commit failed: ${commit.stderr ?? ""}`);
+  }
+
+  return { base, changedFileName, baseFileName };
+}
