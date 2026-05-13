@@ -107,6 +107,11 @@ function parseJsonLines(result) {
   return result.stdout.trim().split(/\n+/).filter(Boolean).map((line) => JSON.parse(line));
 }
 
+function parseCompactJsonLines(result) {
+  assert.doesNotMatch(result.stderr, /secret|token|cookie|xai/i);
+  return result.stdout.split(/\n/).filter((line) => line.startsWith("{")).map((line) => JSON.parse(line));
+}
+
 function rmTree(dir) {
   rmSync(dir, { recursive: true, force: true });
 }
@@ -1553,6 +1558,7 @@ test("custom-review lifecycle markdown emits launch and terminal cards on succes
   writeFileSync(path.join(cwd, "review.js"), "export const value = 42;\n");
 
   await withServer(async (_req, res) => {
+    await sleep(100);
     res.setHeader("content-type", "application/json");
     res.end(JSON.stringify({
       id: "grok-web-session-markdown-lifecycle",
@@ -1572,6 +1578,7 @@ test("custom-review lifecycle markdown emits launch and terminal cards on succes
     ], {
       cwd,
       env: {
+        CODEX_PLUGIN_EXTERNAL_REVIEW_HEARTBEAT_MS: "5",
         GROK_WEB_BASE_URL: baseUrl,
         GROK_WEB_TUNNEL_API_KEY: "secret-cookie-like-token",
       },
@@ -1584,8 +1591,12 @@ test("custom-review lifecycle markdown emits launch and terminal cards on succes
     assert.match(result.stdout, /\| Status \| launched \|/);
     assert.match(result.stdout, /\| Source \| sent \|/);
     assert.match(result.stdout, /\| Status \| completed \|/);
+    const progress = parseCompactJsonLines(result).find((line) => line.event === "external_review_progress");
+    assert.equal(progress?.target, "grok-web");
+    assert.equal(progress?.status, "running");
+    assert.equal(progress?.heartbeat, 1);
     assert.doesNotMatch(result.stdout, /secret-cookie-like-token/);
-    assert.doesNotMatch(result.stdout, /^\{/);
+    assert.doesNotMatch(result.stdout, /^\{\n/m);
   });
 });
 

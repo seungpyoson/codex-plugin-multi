@@ -152,7 +152,7 @@ function printLifecycleJson(obj, lifecycleEvents, output = process.stdout) {
   else if (lifecycleEvents === "markdown") {
     const markdown = renderLifecycleMarkdown(obj);
     if (markdown) writableOutput(output).write(markdown);
-    else printJson(obj, output);
+    else printJsonLine(obj, output);
   }
   else printJson(obj, output);
 }
@@ -182,7 +182,7 @@ function startLifecycleHeartbeat(
   lifecycleEvents,
   { intervalMs = lifecycleHeartbeatIntervalMs(), output = process.stdout, now = Date.now } = {},
 ) {
-  if (lifecycleEvents !== "jsonl") return () => {};
+  if (lifecycleEvents !== "jsonl" && lifecycleEvents !== "markdown") return () => {};
   const interval = Number.isSafeInteger(intervalMs) && intervalMs > 0 ? intervalMs : lifecycleHeartbeatIntervalMs();
   const started = now();
   let sequence = 0;

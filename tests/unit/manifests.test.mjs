@@ -98,6 +98,7 @@ function assertApiReviewerWorkflowInvocation(skill, provider, workflow, rel) {
   assert.match(skill, new RegExp(`--mode\\s+${workflow}\\b`), `${rel} missing --mode ${workflow}`);
   assert.doesNotMatch(skill, /--foreground\b/, `${rel} must not document ignored --foreground flag`);
   assert.match(skill, /--lifecycle-events\s+markdown\b/, `${rel} missing lifecycle markdown option`);
+  assert.match(skill, /Render lifecycle markdown cards directly\./, `${rel} missing lifecycle markdown rendering guidance`);
   assert.match(skill, /external_review_launched/, `${rel} missing launch event rendering guidance`);
   assert.match(skill, /`error_code`/, `${rel} missing failed JobRecord error_code rendering guidance`);
   assert.match(skill, /`error_message`/, `${rel} missing failed JobRecord error_message rendering guidance`);
@@ -128,6 +129,7 @@ function assertApiReviewerCommandDoc(command, workflow, rel) {
   assert.doesNotMatch(command, /--foreground\b/, `${rel} must not document ignored --foreground flag`);
   if (workflow !== "setup") {
     assert.match(command, /--lifecycle-events\s+markdown\b/, `${rel} missing lifecycle markdown option`);
+    assert.match(command, /Render lifecycle markdown cards directly\./, `${rel} missing lifecycle markdown rendering guidance`);
     assert.match(command, /external_review_launched/, `${rel} missing launch event rendering guidance`);
     assert.match(command, /external_review.*before the review result/, `${rel} missing external_review rendering guidance`);
     assert.match(command, /`error_code`/, `${rel} missing failed JobRecord error_code rendering guidance`);
@@ -168,6 +170,7 @@ function assertGrokWorkflowInvocation(skill, workflow, rel) {
   assert.match(skill, new RegExp(`--mode\\s+${workflow}\\b`), `${rel} missing --mode ${workflow}`);
   assert.match(skill, /--foreground\b/, `${rel} missing --foreground`);
   assert.match(skill, /--lifecycle-events\s+markdown\b/, `${rel} missing lifecycle markdown option`);
+  assert.match(skill, /Render lifecycle markdown cards directly\./, `${rel} missing lifecycle markdown rendering guidance`);
   assert.match(skill, /external_review_launched/, `${rel} missing launch event rendering guidance`);
   assert.match(skill, /`error_code`/, `${rel} missing failed JobRecord error_code rendering guidance`);
   assert.match(skill, /`error_message`/, `${rel} missing failed JobRecord error_message rendering guidance`);
@@ -200,6 +203,7 @@ function assertGrokCommandDoc(command, workflow, rel) {
   assert.match(command, new RegExp(`--mode\\s+${workflow}\\b`), `${rel} missing --mode ${workflow}`);
   assert.match(command, /--foreground\b/, `${rel} missing --foreground`);
   assert.match(command, /--lifecycle-events\s+markdown\b/, `${rel} missing lifecycle markdown option`);
+  assert.match(command, /Render lifecycle markdown cards directly\./, `${rel} missing lifecycle markdown rendering guidance`);
   assert.match(command, /external_review_launched/, `${rel} missing launch event rendering guidance`);
   assert.match(command, /external_review.*before the review result/, `${rel} missing external_review rendering guidance`);
   assert.match(command, /`error_code`/, `${rel} missing failed JobRecord error_code rendering guidance`);

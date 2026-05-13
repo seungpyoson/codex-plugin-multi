@@ -194,6 +194,17 @@ test("provider-specific external model contracts keep mechanical safety clauses"
     );
   }
 
+  for (const target of EXTERNAL_MODEL_CONTRACT_DOC_TARGETS.filter((item) =>
+    ["api-reviewers", "grok"].includes(item.family) && item.workflow !== "setup"
+  )) {
+    const rendered = renderExternalModelContractDoc(target);
+    assert.equal(
+      countOccurrences(rendered, "Render lifecycle markdown cards directly."),
+      1,
+      `${target.path} should include lifecycle rendering prose once`,
+    );
+  }
+
   assert.match(docs, /--lifecycle-events markdown/);
   assert.doesNotMatch(docs, /--lifecycle-events jsonl/);
 

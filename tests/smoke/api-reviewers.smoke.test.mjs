@@ -116,6 +116,10 @@ function parseJsonLines(stdout) {
   return stdout.trim().split(/\n+/).filter(Boolean).map((line) => JSON.parse(line));
 }
 
+function parseCompactJsonLines(stdout) {
+  return stdout.split(/\n/).filter((line) => line.startsWith("{")).map((line) => JSON.parse(line));
+}
+
 async function waitForValue(fn, { timeoutMs = 2000, intervalMs = 25 } = {}) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
@@ -3315,32 +3319,51 @@ test("direct API reviewers render lifecycle markdown cards before source transmi
 
 test("direct API reviewers lifecycle markdown emits launch and terminal cards on success", async () => {
   const cwd = makeWorkspace();
-  const result = await run([
-    "run",
-    "--provider", "deepseek",
-    "--mode", "custom-review",
-    "--scope", "custom",
-    "--scope-paths", "seed.txt",
-    "--foreground",
-    "--lifecycle-events", "markdown",
-    "--prompt", "Check this file.",
-  ], {
-    cwd,
-    env: {
-      API_REVIEWERS_MOCK_RESPONSE: mockResponse("deepseek-v4-pro"),
-      DEEPSEEK_API_KEY: "secret-test-value",
-    },
+  const pluginRoot = makeInstalledApiReviewersRoot();
+  const server = await startChatServer(async (req, res) => {
+    req.resume();
+    await sleep(100);
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end(mockResponse("deepseek-v4-pro"));
   });
+  try {
+    const { port } = server.address();
+    writeDeepSeekProviderConfig(pluginRoot, `http://127.0.0.1:${port}`);
+    const result = await run([
+      "run",
+      "--provider", "deepseek",
+      "--mode", "custom-review",
+      "--scope", "custom",
+      "--scope-paths", "seed.txt",
+      "--foreground",
+      "--lifecycle-events", "markdown",
+      "--prompt", "Check this file.",
+    ], {
+      companion: path.join(pluginRoot, "scripts", "api-reviewer.mjs"),
+      cwd,
+      env: {
+        CODEX_PLUGIN_EXTERNAL_REVIEW_HEARTBEAT_MS: "5",
+        DEEPSEEK_API_KEY: "secret-test-value",
+      },
+    });
 
-  assert.equal(result.status, 0, result.stderr || result.stdout);
-  assert.equal((result.stdout.match(/^### EXTERNAL REVIEW/gm) ?? []).length, 2);
-  assert.match(result.stdout, /\| Provider \| DeepSeek \|/);
-  assert.match(result.stdout, /\| Source \| may_be_sent \|/);
-  assert.match(result.stdout, /\| Status \| launched \|/);
-  assert.match(result.stdout, /\| Source \| sent \|/);
-  assert.match(result.stdout, /\| Status \| completed \|/);
-  assert.doesNotMatch(result.stdout, /secret-test-value/);
-  assert.doesNotMatch(result.stdout, /^\{/);
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    assert.equal((result.stdout.match(/^### EXTERNAL REVIEW/gm) ?? []).length, 2);
+    assert.match(result.stdout, /\| Provider \| DeepSeek \|/);
+    assert.match(result.stdout, /\| Source \| may_be_sent \|/);
+    assert.match(result.stdout, /\| Status \| launched \|/);
+    assert.match(result.stdout, /\| Source \| sent \|/);
+    assert.match(result.stdout, /\| Status \| completed \|/);
+    const progress = parseCompactJsonLines(result.stdout).find((line) => line.event === "external_review_progress");
+    assert.equal(progress?.target, "deepseek");
+    assert.equal(progress?.status, "running");
+    assert.equal(progress?.heartbeat, 1);
+    assert.doesNotMatch(result.stdout, /secret-test-value/);
+    assert.doesNotMatch(result.stdout, /^\{\n/m);
+  } finally {
+    server.close();
+    rmSync(pluginRoot, { recursive: true, force: true });
+  }
 });
 
 test("direct API reviewers reject missing prompt before launch or source transmission", async () => {

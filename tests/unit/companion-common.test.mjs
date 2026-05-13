@@ -81,6 +81,17 @@ test("shared companion helpers cover small provider-agnostic behavior", () => {
   let lifecycleJsonl = "";
   printLifecycleJson({ ok: true }, "jsonl", { write: (chunk) => { lifecycleJsonl += chunk; } });
   assert.equal(lifecycleJsonl, "{\"ok\":true}\n");
+  let lifecycleMarkdownProgress = "";
+  printLifecycleJson(
+    externalReviewProgressEvent(
+      { job_id: "job-1", target: "claude", mode: "review", run_kind: "foreground" },
+      { sequence: 1, elapsedMs: 123 },
+    ),
+    "markdown",
+    { write: (chunk) => { lifecycleMarkdownProgress += chunk; } },
+  );
+  assert.match(lifecycleMarkdownProgress, /^\{"event":"external_review_progress"/);
+  assert.doesNotMatch(lifecycleMarkdownProgress, /^\{\n/);
   let lifecycleMarkdown = "";
   printLifecycleJson({
     event: "external_review_launched",
@@ -228,6 +239,30 @@ test("startExternalReviewHeartbeat emits jsonl progress until stopped", async ()
   assert.equal(Number.isInteger(event.elapsed_ms), true);
 });
 
+test("startExternalReviewHeartbeat emits markdown progress as compact jsonl until stopped", async () => {
+  const chunks = [];
+  const stop = startExternalReviewHeartbeat(
+    { job_id: "job-heartbeat-markdown", target: "gemini", mode: "review", run_kind: "foreground" },
+    "markdown",
+    { intervalMs: 5, output: { write: (chunk) => chunks.push(chunk) } },
+  );
+
+  await new Promise((resolve) => setTimeout(resolve, 18));
+  stop();
+  const countAfterStop = chunks.length;
+  await new Promise((resolve) => setTimeout(resolve, 12));
+
+  assert.ok(countAfterStop >= 1, "markdown heartbeat must emit at least one progress event");
+  assert.equal(chunks.length, countAfterStop, "stop must cancel future markdown heartbeats");
+  assert.doesNotMatch(chunks[0], /^\{\n/);
+  const event = JSON.parse(chunks[0]);
+  assert.equal(event.event, "external_review_progress");
+  assert.equal(event.job_id, "job-heartbeat-markdown");
+  assert.equal(event.target, "gemini");
+  assert.equal(event.status, "running");
+  assert.equal(event.heartbeat, 1);
+});
+
 test("summarizeScopeDirectory returns sorted files and byte totals", () => {
   const root = mkdtempSync(path.join(tmpdir(), "companion-common-scope-"));
   const nested = path.join(root, "nested");
@@ -363,6 +398,17 @@ async function assertCopyHelperBranches(mod, plugin) {
   let lifecycleJsonl = "";
   mod.printLifecycleJson({ plugin }, "jsonl", { write: (chunk) => { lifecycleJsonl += chunk; } });
   assert.equal(lifecycleJsonl, `{"plugin":"${plugin}"}\n`);
+  let lifecycleMarkdownProgress = "";
+  mod.printLifecycleJson(
+    mod.externalReviewProgressEvent(
+      { job_id: `copy-job-${plugin}`, target: plugin, mode: "review", run_kind: "foreground" },
+      { sequence: 1, elapsedMs: 123 },
+    ),
+    "markdown",
+    { write: (chunk) => { lifecycleMarkdownProgress += chunk; } },
+  );
+  assert.match(lifecycleMarkdownProgress, /^\{"event":"external_review_progress"/);
+  assert.doesNotMatch(lifecycleMarkdownProgress, /^\{\n/);
   let lifecycleMarkdown = "";
   mod.printLifecycleJson({
     event: "external_review_launched",
@@ -492,6 +538,20 @@ async function assertCopyHelperBranches(mod, plugin) {
   const heartbeat = JSON.parse(chunks[0]);
   assert.equal(heartbeat.event, "external_review_progress");
   assert.equal(heartbeat.target, plugin);
+
+  const markdownChunks = [];
+  const stopMarkdown = mod.startExternalReviewHeartbeat(
+    { job_id: `copy-heartbeat-markdown-${plugin}`, target: plugin, mode: "review", run_kind: "foreground" },
+    "markdown",
+    { intervalMs: 5, output: { write: (chunk) => markdownChunks.push(chunk) } },
+  );
+  await new Promise((resolve) => setTimeout(resolve, 12));
+  stopMarkdown();
+  assert.ok(markdownChunks.length >= 1, `${plugin}: copied markdown heartbeat helper must emit progress`);
+  assert.doesNotMatch(markdownChunks[0], /^\{\n/);
+  const markdownHeartbeat = JSON.parse(markdownChunks[0]);
+  assert.equal(markdownHeartbeat.event, "external_review_progress");
+  assert.equal(markdownHeartbeat.target, plugin);
 
   const jobsDir = mkdtempSync(path.join(tmpdir(), `companion-common-copy-jobs-${plugin}-`));
   assert.equal(mod.consumePromptSidecar(jobsDir, "job-1"), null);

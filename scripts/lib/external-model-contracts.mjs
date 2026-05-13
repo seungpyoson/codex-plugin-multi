@@ -805,6 +805,7 @@ function apiCommandDoc(target) {
     reviewOnlyContract(),
     apiApprovalContract(),
     apiFailureRenderingContract(),
+    lifecycleRenderingContract(),
     scopeSafetyContract(),
     secretSafetyContract(),
     `This command backs \`plugins/api-reviewers/skills/${skillName}/SKILL.md\`.`,
@@ -849,6 +850,7 @@ function apiSkillDoc(target) {
     reviewOnlyContract(),
     apiApprovalContract(),
     apiFailureRenderingContract(),
+    lifecycleRenderingContract(),
     scopeSafetyContract(),
     secretSafetyContract(),
   );
@@ -977,6 +979,7 @@ function grokCommandDoc(target) {
     scopeLines,
     reviewOnlyContract(),
     grokFailureRenderingContract(),
+    lifecycleRenderingContract(),
     grokTunnelContract(),
     scopeSafetyContract(),
     `This command backs \`plugins/grok/skills/${skillName}/SKILL.md\`.`,
@@ -1025,6 +1028,7 @@ function grokSkillDoc(target) {
     scopeLines,
     reviewOnlyContract(),
     grokFailureRenderingContract(),
+    lifecycleRenderingContract(),
     grokTunnelContract(),
     scopeSafetyContract(),
   );
