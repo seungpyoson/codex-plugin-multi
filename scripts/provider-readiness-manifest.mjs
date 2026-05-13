@@ -31,7 +31,6 @@ const SESSION_TOKEN_ERROR_CODES = new Set([
   "grok_session_no_runtime_tokens",
   "grok_session_malformed_active_token",
   "grok_session_runtime_admin_divergence",
-  "session_tokens_missing",
 ]);
 const CACHE_INSTALL_ERROR_CODES = new Set(["grok2api_uv_missing"]);
 const PROVIDER_ERROR_CODES = new Set([

@@ -2505,7 +2505,7 @@ async function cmdList(env = process.env) {
 
 function pathIsUnder(childPath, parentPath) {
   const rel = relative(resolve(parentPath), resolve(childPath));
-  return rel === "" || (rel && !rel.startsWith("..") && !rel.startsWith("/") && !rel.startsWith("\\"));
+  return rel === "" || (rel && !rel.startsWith("..") && !isAbsolute(rel));
 }
 
 function grok2ApiDurabilityWarning(homeSource, homePath) {
