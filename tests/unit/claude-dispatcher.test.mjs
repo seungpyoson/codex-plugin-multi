@@ -332,6 +332,33 @@ test("spawnClaude: returns claudeSessionId from stdout and pidInfo tuple", async
   );
 });
 
+test("spawnClaude: sends prompt on stdin so large prompts do not hit argv limits", async () => {
+  const result = await spawnClaude(resolveProfile("rescue"), {
+    model: "claude-haiku-4-5-20251001",
+    promptText: "x".repeat(1_100_000),
+    sessionId: UUID,
+    binary: MOCK,
+  });
+  assert.equal(result.exitCode, 0, `mock exited ${result.exitCode}: ${result.stderr}`);
+  assert.equal(result.claudeSessionId, UUID);
+});
+
+test("spawnClaude: spawn failures reject with structured code", async () => {
+  await assert.rejects(
+    spawnClaude(resolveProfile("rescue"), {
+      model: "claude-haiku-4-5-20251001",
+      promptText: "hello",
+      sessionId: UUID,
+      binary: "/definitely/not/a/claude/binary",
+    }),
+    (error) => {
+      assert.match(error.message, /spawn .* failed/);
+      assert.equal(error.code, "ENOENT");
+      return true;
+    }
+  );
+});
+
 test("spawnClaude: onSpawn fires asynchronously via 'spawn' event, not synchronously (issue #25)", async () => {
   // Regression for the argv0_mismatch flake: capturePidInfo must run
   // AFTER the child's execve completes, otherwise /proc/<pid>/cmdline
@@ -355,6 +382,19 @@ test("spawnClaude: onSpawn fires asynchronously via 'spawn' event, not synchrono
   // Once the spawn settles, onSpawn must have fired.
   assert.equal(onSpawnFired, true, "onSpawn must fire by the time spawnClaude resolves");
   assert.ok(result.pidInfo, "pidInfo must be present after a successful spawn");
+});
+
+test("spawnClaude: onSpawn callback failures do not strand terminal results", async () => {
+  const result = await spawnClaude(resolveProfile("rescue"), {
+    model: "claude-haiku-4-5-20251001",
+    promptText: "hello",
+    sessionId: UUID,
+    binary: MOCK,
+    onSpawn: () => { throw new Error("boom"); },
+  });
+
+  assert.equal(result.exitCode, 0, `mock exited ${result.exitCode}: ${result.stderr}`);
+  assert.equal(result.claudeSessionId, UUID);
 });
 
 test("spawnClaude: strips provider creds and routing env before launching target CLI", async () => {

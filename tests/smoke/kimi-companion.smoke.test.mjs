@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { fixtureGit, fixtureSeedRepo } from "../helpers/fixture-git.mjs";
+import { fixtureBranchDiffRepo, fixtureGit, fixtureSeedRepo } from "../helpers/fixture-git.mjs";
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const COMPANION = path.join(REPO_ROOT, "plugins/kimi/scripts/kimi-companion.mjs");
@@ -1557,6 +1557,73 @@ test("kimi review foreground lifecycle jsonl emits launch event before terminal 
   assert.equal(record.status, "completed");
   assert.equal(record.external_review.source_content_transmission, "sent");
 }));
+
+test("kimi review --scope-base preserves branch-diff scope through target execution", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "kimi-review-scope-base-"));
+  try {
+    const { base } = fixtureBranchDiffRepo(cwd);
+    const result = runCompanion([
+      "run",
+      "--mode",
+      "review",
+      "--cwd",
+      cwd,
+      "--scope-base",
+      base,
+      "--foreground",
+      "--",
+      "Review this scope.",
+    ], {
+      cwd,
+      env: {
+        KIMI_MOCK_ASSERT_FILE: "foo.md",
+        KIMI_MOCK_ASSERT_CWD_NOT: realpathSync(tmpdir()),
+        KIMI_MOCK_ASSERT_CWD_PREFIX: realpathSync(tmpdir()),
+      },
+    });
+    assert.equal(result.status, 0, result.stderr);
+    const record = parseJson(result.stdout);
+    assert.equal(record.scope, "branch-diff");
+    const { record: persisted } = readOnlyJobRecord(result.dataDir);
+    assert.deepEqual(
+      persisted.review_metadata.audit_manifest.selected_source.files.map((file) => file.path),
+      ["foo.md"]
+    );
+    rmSync(result.dataDir, { recursive: true, force: true });
+  } finally {
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("kimi continue preserves prior review branch-diff scope through target execution", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "kimi-continue-scope-base-"));
+  try {
+    const { base } = fixtureBranchDiffRepo(cwd);
+    const dataDir = mkdtempSync(path.join(tmpdir(), "kimi-continue-scope-base-data-"));
+    try {
+      const runRes = runCompanion([
+        "run", "--mode", "review", "--cwd", cwd, "--scope-base", base,
+        "--foreground", "--", "Review this scope.",
+      ], { cwd, dataDir });
+      assert.equal(runRes.status, 0, runRes.stderr);
+      const prior = parseJson(runRes.stdout);
+      const contRes = runCompanion([
+        "continue", "--job", prior.job_id, "--foreground", "--cwd", cwd, "--", "follow-up",
+      ], { cwd, dataDir });
+      assert.equal(contRes.status, 0, contRes.stderr);
+      const continued = parseJson(contRes.stdout);
+      assert.equal(continued.scope, "branch-diff");
+      assert.deepEqual(
+        continued.review_metadata.audit_manifest.selected_source.files.map((file) => file.path),
+        ["foo.md"]
+      );
+    } finally {
+      rmSync(dataDir, { recursive: true, force: true });
+    }
+  } finally {
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
 
 test("kimi review foreground lifecycle jsonl suppresses launch event on scope failure", () => withRepo((cwd) => {
   writeFileSync(path.join(cwd, ".git", "index"), "corrupt index");

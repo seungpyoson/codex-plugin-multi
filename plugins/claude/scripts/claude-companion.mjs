@@ -816,7 +816,9 @@ async function executeRun(invocation, prompt, { foreground, lifecycleEvents = nu
   let authSelection = resolveAuthSelection(invocation.auth_mode);
   invocation = invocationWithAuthSelection(invocation, authSelection);
   const { job_id: jobId, workspace_root: workspaceRoot } = invocation;
-  const profile = resolveProfile(invocation.mode_profile_name);
+  const profile = effectiveProfileForOptions(resolveProfile(invocation.mode_profile_name), {
+    "scope-base": invocation.scope_base,
+  });
 
   const executionScope = setupExecutionScopeOrExit(invocation, profile, { foreground, lifecycleEvents });
   const mutationContext = prepareMutationContext(invocation, profile);
@@ -1419,7 +1421,9 @@ async function cmdContinue(rest) {
   const newJobId_ = newJobId();
   const model = options.model ?? prior.model;
   const priorModeName = prior.mode_profile_name ?? prior.mode;
-  const priorProfile = resolveProfile(priorModeName);
+  const priorProfile = effectiveProfileForOptions(resolveProfile(priorModeName), {
+    "scope-base": prior.scope_base,
+  });
   const priorResumeChain = Array.isArray(prior.resume_chain) ? prior.resume_chain : [];
   const priorRuntimeOptions = readRuntimeOptionsSidecar(workspaceRoot, options.job);
   const priorTimeoutMs =
