@@ -993,6 +993,67 @@ test("review audit manifest does not count item-prefixed prose as checklist evid
 });
 
 for (const [name, file] of REVIEW_PROMPT_MODULES) {
+  test(`review audit manifest counts item checklist labels with optional spacing (${name})`, async () => {
+    const { buildReviewAuditManifest: targetBuildReviewAuditManifest } = file === "scripts/lib/review-prompt.mjs"
+      ? { buildReviewAuditManifest }
+      : await import(pathToFileURL(resolve(file)).href);
+    const manifest = targetBuildReviewAuditManifest({
+      prompt: "rendered prompt",
+      sourceFiles: [{ path: "sample.js", text: "export const value = 1;\n" }],
+      result: [
+        "Verdict: APPROVE",
+        "Checklist item 1 (base/head verification): PASS - refs match.",
+        "Item 2 \t: PASS - only sample.js reviewed.",
+        "Checklist item 3 (findings): PASS - no findings.",
+        "Item 4: PASS - no supplied comments.",
+        "Checklist item 5 (separation): PASS - no blocking concerns.",
+        "Item 6: PASS - no timeout, truncation, interruption, permission block, or shallow output.",
+        "Blocking findings: none.",
+        "Non-blocking concerns: none.",
+        "Inspection statement: I inspected sample.js.",
+      ].join("\n"),
+      status: "completed",
+      errorCode: null,
+    });
+
+    assert.equal(manifest.review_quality.checklist_items_seen, 6);
+    assert.deepEqual(manifest.review_quality.semantic_failure_reasons, []);
+    assert.equal(manifest.review_quality.failed_review_slot, false);
+  });
+}
+
+for (const [name, file] of REVIEW_PROMPT_MODULES) {
+  test(`review audit manifest ignores malformed checklist item labels (${name})`, async () => {
+    const { buildReviewAuditManifest: targetBuildReviewAuditManifest } = file === "scripts/lib/review-prompt.mjs"
+      ? { buildReviewAuditManifest }
+      : await import(pathToFileURL(resolve(file)).href);
+    const manifest = targetBuildReviewAuditManifest({
+      prompt: "rendered prompt",
+      sourceFiles: [{ path: "sample.js", text: "export const value = 1;\n" }],
+      result: [
+        "Verdict: APPROVE",
+        "Checklist item alpha: PASS - not a numbered checklist line.",
+        "Checklist item 12345678901: PASS - too many digits.",
+        "Checklist item 7 PASS - missing colon.",
+        "Item alpha: PASS - not a numbered checklist line.",
+        "Item 8 PASS - missing colon.",
+        "Item 9a: PASS - digit suffix is not a checklist number.",
+        "Item 10 - PASS - dash is not a checklist colon.",
+        "Blocking findings: none.",
+        "Non-blocking concerns: none.",
+        "Inspection statement: I inspected sample.js.",
+      ].join("\n"),
+      status: "completed",
+      errorCode: null,
+    });
+
+    assert.equal(manifest.review_quality.checklist_items_seen, 0);
+    assert.deepEqual(manifest.review_quality.semantic_failure_reasons, []);
+    assert.equal(manifest.review_quality.failed_review_slot, false);
+  });
+}
+
+for (const [name, file] of REVIEW_PROMPT_MODULES) {
   test(`review audit manifest accepts live reviewer verdict shapes without treating policy checklist text as failures (${name})`, async () => {
     const { buildReviewAuditManifest: targetBuildReviewAuditManifest } = file === "scripts/lib/review-prompt.mjs"
       ? { buildReviewAuditManifest }

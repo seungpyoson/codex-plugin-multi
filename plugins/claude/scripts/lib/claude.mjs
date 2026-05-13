@@ -16,6 +16,7 @@ import { sanitizeTargetEnv } from "./provider-env.mjs";
 import { usageLimitMessage } from "./usage-limit.mjs";
 
 const ALLOWED_PERMISSION_MODES = new Set(["default", "plan", "acceptEdits", "dontAsk", "auto", "bypassPermissions"]);
+const EMPTY_STDOUT_REASON = "empty_stdout";
 
 // Claude requires UUIDv4 for --session-id. We always pass one up-front so we
 // know the session ID before the call returns and can --resume later.
@@ -213,7 +214,7 @@ function firstStderrLine(stderr) {
 }
 
 function promoteStderrParseError(parsed, stderr) {
-  if (parsed?.ok !== false || parsed.reason !== "empty_stdout" || parsed.error) return parsed;
+  if (parsed?.ok !== false || parsed.reason !== EMPTY_STDOUT_REASON || parsed.error) return parsed;
   const error = firstStderrLine(stderr);
   return error ? { ...parsed, error } : parsed;
 }
