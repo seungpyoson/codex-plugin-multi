@@ -42,10 +42,16 @@ uv run granian --interface asgi --host 127.0.0.1 --port 8000 --workers 1 app.mai
 
 The manual clone is no longer required for the default path. The Grok plugin
 doctor/run path first checks `GROK2API_HOME`, `GROK2API_BOOTSTRAP_DIR`, the
-temp runtime directory, and common local checkout locations such as
-`~/grok2api`, `~/Projects/grok2api`, and `~/Projects/Claude/grok2api`. If none
-exists, it bootstraps
-`https://github.com/chenyme/grok2api.git` into the default runtime directory,
+durable managed runtime directory (`~/.codex-plugin-multi/runtime/grok2api` by
+default, or `CODEX_PLUGIN_MULTI_RUNTIME_DIR/grok2api` when set), and common
+local checkout locations such as `~/grok2api`, `~/Projects/grok2api`, and
+`~/Projects/Claude/grok2api`. Explicit `GROK2API_HOME` and
+`GROK2API_BOOTSTRAP_DIR` are authoritative; when either is set, doctor reports
+that configured path if it is stale or invalid instead of silently falling back
+to another checkout. Legacy temp runtime checkouts are not reused for new
+starts, but doctor warns if one is present while a tunnel is already running. If
+none exists, it
+bootstraps `https://github.com/chenyme/grok2api.git` into the default runtime directory,
 then auto-starts a loopback grok2api `/v1` endpoint with `uv run granian
 --interface asgi --host <host> --port <port> --workers 1 app.main:app`. Docker
 is not required. When `UV_CACHE_DIR` is unset or an empty string, the plugin
@@ -66,6 +72,21 @@ where the launched process never becomes reachable; those paths report
 
 3. On macOS Chrome-family browsers, sync the local Grok web session into
    grok2api:
+
+```sh
+npm run grok:repair-session
+npm run grok:repair-session -- --approve-browser-session-sync
+```
+
+`grok:repair-session` automates the normal readiness path: doctor, durable
+checkout/bootstrap, tunnel start, session-pool diagnosis, approval-gated browser
+session sync, and final doctor rerun. It stops with
+`browser_session_sync_approval_required` before reading browser-backed session
+material. Rerun with `--approve-browser-session-sync` only after explicit
+operator approval in the current invocation.
+
+The lower-level sync helper is still available when you intentionally want only
+the import step:
 
 ```sh
 npm run grok:sync-browser-session
@@ -163,9 +184,12 @@ Expected readiness:
 - `auth_mode: "subscription_web"`
 - `ready: true`
 - `reachable: true`
+- `models_ready: true`
 - `chat_ready: true`
 - `probe_endpoint` ending in `/models`
 - `chat_probe_endpoint` ending in `/chat/completions`
+- `readiness_layers` showing `uv_cache`, `checkout_bootstrap`,
+  `process_start`, `listener`, `models`, `session_pool`, and `chat_probe`
 
 The doctor uses `GROK_WEB_DOCTOR_TIMEOUT_MS` for the cheap `/models` probe and
 `GROK_WEB_CHAT_DOCTOR_TIMEOUT_MS` for the chat-readiness probe. The chat
@@ -175,11 +199,18 @@ works but `/chat/completions` rejects the configured model, the doctor reports
 `grok_chat_model_rejected` and points at `GROK_WEB_MODEL` instead of session
 refresh guidance.
 
-When `/models` works but chat returns HTTP 400, doctor also probes the local
-grok2api admin/session state without printing token values. It reports:
+When `/models` returns an empty `data: []` list, or when chat returns
+`No available accounts for this model tier`, doctor treats that as an empty
+grok2api account/session pool. That state is reported as
+`grok_session_no_runtime_tokens`, not `tunnel_unavailable` and not
+`usage_limited`.
+
+When `/models` works but chat is not review-ready, doctor also probes the local
+grok2api admin/session state without printing token values. It reports redacted
+numeric counters only:
 
 - `grok_session_no_runtime_tokens` when the admin token list has no active
-  runtime session tokens.
+  runtime session tokens or the account/session pool counters are zero.
 - `grok_session_malformed_active_token` when an active token is not JWT-shaped,
   which usually means browser cookie decrypt/import produced malformed bytes.
 - `grok_session_runtime_admin_divergence` when the admin token list has an
@@ -192,13 +223,23 @@ Set `GROK2API_BASE_URL` and `GROK2API_ADMIN_KEY` if the grok2api admin API is
 not at the same host/port as `GROK_WEB_BASE_URL` or does not use the default
 admin key.
 
+If doctor reports `durability_warnings[].code:
+grok2api_ephemeral_bootstrap_home`, the grok2api checkout is using the default
+or configured home under `$TMPDIR`, including an explicit `GROK2API_HOME`.
+Configure a durable `GROK2API_HOME` or `CODEX_PLUGIN_MULTI_RUNTIME_DIR` before
+syncing browser session state. Run
+`npm run grok:repair-session -- --approve-browser-session-sync` or
+`npm run grok:sync-browser-session` only after explicit operator approval in the
+current session.
+
 Review runs also preflight the rendered prompt length. Prompts above
 `GROK_WEB_MAX_PROMPT_CHARS` (default 400000) fail before tunnel launch with
 `source_content_transmission: "not_sent"`. Narrow the scope or split the review
 into explicit custom-review shards; raise the limit only after confirming the
 local tunnel and selected Grok model accept larger prompts.
 
-HTTP 402 and HTTP 429 tunnel responses are classified as `usage_limited`.
+HTTP 402 and HTTP 429 tunnel responses are classified as `usage_limited` only
+when they do not contain empty account/session-pool diagnostics.
 Grok JobRecords may include safe `runtime_diagnostics.cost_quota` metadata such
 as status and provider error code/type tokens. They do not
 persist cookies, bearer values, payment details, full prompts, source bundles,

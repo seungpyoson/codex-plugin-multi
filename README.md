@@ -35,13 +35,19 @@ lets Claude Code delegate to Codex.
 - Kimi Code CLI installed and authenticated if you enable the Kimi plugin.
 - A local Grok web tunnel if you enable the Grok plugin. The default endpoint
   targets grok2api at `GROK_WEB_BASE_URL=http://127.0.0.1:8000/v1`; the plugin
-  can bootstrap a local grok2api checkout into its temp runtime directory and
+  can bootstrap a local grok2api checkout into its durable managed runtime
+  directory, defaulting to `~/.codex-plugin-multi/runtime/grok2api`, and
   auto-start the non-Docker
   `uv run granian ... app.main:app` tunnel when it is down. Successfully
   auto-started tunnels are left running for reuse; failed starts are cleaned up
   with SIGTERM/verify/SIGKILL diagnostics. Set
-  `GROK2API_HOME` or `GROK2API_BOOTSTRAP_DIR` only when you want a specific
-  checkout or runtime directory. Set `UV_CACHE_DIR` only when you want `uv` to
+  `GROK2API_HOME`, `GROK2API_BOOTSTRAP_DIR`, or
+  `CODEX_PLUGIN_MULTI_RUNTIME_DIR` only when you want a specific checkout or
+  runtime directory. `GROK2API_HOME` and `GROK2API_BOOTSTRAP_DIR` are
+  authoritative: if either points at a stale or invalid location, doctor reports
+  that path instead of silently falling back. Any grok2api home under `$TMPDIR`,
+  including an explicit `GROK2API_HOME`, produces a durability warning before
+  browser/session sync. Set `UV_CACHE_DIR` only when you want `uv` to
   use a caller-managed cache instead of the plugin's sandbox-writable default;
   an empty `UV_CACHE_DIR=""` is treated as unset. Set `GROK_WEB_TUNNEL_API_KEY`
   only if your local tunnel requires a bearer value.
@@ -69,18 +75,28 @@ reports that failure instead of switching billing paths. Subscription usage
 limits are reported as `usage_limited`; the plugin does not purchase credits,
 upgrade tiers, or switch to a paid fallback automatically.
 `/grok-setup` and the `doctor` command make a live `GET /models` probe against
-the configured tunnel endpoint. `ready: true` means the local tunnel was
-reachable. If a loopback grok2api `/v1` endpoint is unavailable, the doctor/run
-path tries to use an existing `GROK2API_HOME`, `GROK2API_BOOTSTRAP_DIR`, temp
-runtime checkout, or common local checkout path. If no checkout exists, it can
-clone `https://github.com/chenyme/grok2api.git` into the bootstrap directory and
-then start `uv run granian --interface asgi --host 127.0.0.1 --port 8000
---workers 1 app.main:app`; no Docker path is required. `tunnel_unavailable`
-after that means no usable clone/start path was available or the started process
-did not become reachable.
+the configured tunnel endpoint plus chat/session readiness probes. `ready:
+true` means the local tunnel listener, model list, session pool, and chat probe
+are usable. If a loopback grok2api `/v1` endpoint is unavailable, the doctor/run
+path tries to use an existing `GROK2API_HOME`, `GROK2API_BOOTSTRAP_DIR`, the
+durable managed runtime checkout, or common local checkout paths. Explicit
+`GROK2API_HOME` and `GROK2API_BOOTSTRAP_DIR` take precedence over fallback
+locations, so stale explicit paths are reported directly. Legacy temp runtime
+checkouts are not reused for new starts, but doctor warns if one is present
+while a tunnel is already running. If no checkout exists, it can clone
+`https://github.com/chenyme/grok2api.git` into the bootstrap directory and then
+start `uv run granian --interface asgi --host 127.0.0.1 --port 8000 --workers 1
+app.main:app`; no Docker path is required. `tunnel_unavailable` after that
+means no usable clone/start path was available or the started process did not
+become reachable.
 Grok run records can be inspected with
 `node plugins/grok/scripts/grok-web-reviewer.mjs list` and
 `node plugins/grok/scripts/grok-web-reviewer.mjs result --job-id <job_id>`.
+`npm run grok:repair-session` automates doctor, durable checkout/bootstrap,
+tunnel start, approval-gated browser/session sync, and a final doctor rerun. It
+pauses with `browser_session_sync_approval_required` before reading browser
+session material; rerun it with `-- --approve-browser-session-sync` only after
+approving that secret-read step for the current invocation.
 For grok2api session setup on macOS, `npm run grok:sync-browser-session`
 performs a loud local Chrome-family cookie import into `grok2api`; it announces
 the browser profile it reads, may require Keychain access, and prints only
@@ -508,6 +524,9 @@ failures as `sandbox`, `auth`, `provider`, `tunnel`, `session_tokens`,
 emits `next_action` guidance, distinguishes missing mutation evidence from an
 intentionally not-checked provider, and checks prompt persistence plus fixture
 mutation state without storing source bodies.
+For Grok, nested `session_diagnostics`, `chat_probe`, and
+`readiness_layers.session_pool` session-token errors outrank quota-looking
+HTTP 429 text so an empty grok2api account pool maps to `session_tokens`.
 
 `no-mistakes` remains configured, but it is not authoritative merge evidence
 while https://github.com/seungpyoson/claude-config/issues/780 is open. Use

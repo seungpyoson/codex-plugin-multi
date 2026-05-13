@@ -13,6 +13,7 @@ const DEFAULT_ADMIN_TIMEOUT_MS = 10000;
 const DEFAULT_POOL = "super";
 const COOKIE_NAMES = ["sso-rw", "sso"];
 const MIN_SECRET_REDACTION_LENGTH = 4;
+const JWT_SHAPED_TOKEN_RE = /\b[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{3,}\b/g;
 
 const BROWSERS = {
   chrome: {
@@ -97,6 +98,7 @@ function redactMessage(message, secrets = []) {
   }
   out = out.replace(/Authorization:\s*\S+(?:\s+\S{8,})?/gi, "Authorization: [REDACTED]");
   out = out.replace(/Bearer\s+\S{8,}/gi, "Bearer [REDACTED]");
+  out = out.replace(JWT_SHAPED_TOKEN_RE, (token) => isJwtShapedToken(token) ? "[REDACTED]" : token);
   return out;
 }
 

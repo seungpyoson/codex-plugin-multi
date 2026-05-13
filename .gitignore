@@ -8,14 +8,14 @@ coverage/
 .env
 .env.*
 !.env.example
-.claude/findings/
 
 # Per-developer agent tooling (spec-kit, mattpocock skills, aider cache)
 .specify/
 .opencode/
 .pi/
+.claude/
 .gemini/
-.claude/skills/speckit-*
+.worktrees/
 .codex/prompts/speckit-*
 .agents/
 AGENTS.md
