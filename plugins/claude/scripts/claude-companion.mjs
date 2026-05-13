@@ -1128,6 +1128,7 @@ async function claudeOAuthInferencePreflight(invocation, authSelection, { allowA
       binary: resolveCliBinary(invocation.cwd, invocation.binary),
       timeoutMs: Math.min(Number(invocation.timeout_ms ?? DEFAULT_CLAUDE_PING_TIMEOUT_MS), DEFAULT_CLAUDE_PING_TIMEOUT_MS),
       allowedApiKeyEnv: authSelection.allowed_env_credentials,
+      sessionPersistence: false,
     });
   } catch (e) {
     const message = e instanceof Error ? e.message : String(e);
@@ -1214,6 +1215,8 @@ function buildClaudeFinalRecord(invocation, execution, cancelMarker, mutations, 
     parsed: execution.parsed,
     pidInfo: execution.pidInfo,
     claudeSessionId: execution.claudeSessionId ?? null,
+    stdout: execution.stdout,
+    stderr: execution.stderr,
     errorMessage: execution.errorMessage,
     ...(cancelMarker ? { status: "cancelled" } : {}),
     signal: execution.signal ?? null,
@@ -1885,6 +1888,7 @@ async function cmdPing(rest, { readinessProfileName = "ping" } = {}) {
       binary,
       timeoutMs,
       allowedApiKeyEnv: authSelection.allowed_env_credentials,
+      sessionPersistence: false,
     });
   } catch (e) {
     printPingSpawnError(e, authSelection);
@@ -1901,6 +1905,7 @@ async function cmdPing(rest, { readinessProfileName = "ping" } = {}) {
         binary,
         timeoutMs,
         allowedApiKeyEnv: authSelection.allowed_env_credentials,
+        sessionPersistence: false,
       });
     } catch (e) {
       printPingSpawnError(e, authSelection);

@@ -217,16 +217,15 @@ test("buildClaudeArgs: review produces the exact §4.5/§9 argv", () => {
     sessionId: UUID,
   });
   // Core prefix.
-  assert.deepEqual(args.slice(0, 11), [
+  assert.deepEqual(args.slice(0, 10), [
     "-p",
     "--input-format", "text",
     "--output-format", "json",
-    "--no-session-persistence",
     "--model", "claude-haiku-4-5-20251001",
     "--effort", "max",
     "--session-id",
   ]);
-  assert.equal(args[11], UUID);
+  assert.equal(args[10], UUID);
   assert.equal(args.includes("review this"), false);
   // Layer 1 — strip_context.
   assert.ok(args.includes("--setting-sources"));

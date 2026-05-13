@@ -16,6 +16,7 @@ import { sanitizeTargetEnv } from "./provider-env.mjs";
 import { usageLimitMessage } from "./usage-limit.mjs";
 
 const ALLOWED_PERMISSION_MODES = new Set(["default", "plan", "acceptEdits", "dontAsk", "auto", "bypassPermissions"]);
+const EMPTY_STDOUT_REASON = "empty_stdout";
 
 // Claude requires UUIDv4 for --session-id. We always pass one up-front so we
 // know the session ID before the call returns and can --resume later.
@@ -87,6 +88,7 @@ function armChildTimeout(child, timeoutMs, onTimeout) {
  *     addDirPath?,    // workspace path. Passed only when profile.add_dir=true.
  *     jsonSchema?,    // JSON Schema string. Passed only when profile.schema_allowed=true.
  *     permissionMode?, // optional runtime override for review retry ladders.
+ *     sessionPersistence?, // false emits --no-session-persistence; cannot resume.
  *   }
  *
  * Unknown fields in runtimeInputs are ignored — legacy callers passing
@@ -102,6 +104,7 @@ export function buildClaudeArgs(profile, runtimeInputs = {}) {
     addDirPath = null,
     jsonSchema = null,
     permissionMode = null,
+    sessionPersistence = true,
   } = runtimeInputs;
 
   if (typeof promptText !== "string" || promptText.length === 0) {
@@ -113,6 +116,12 @@ export function buildClaudeArgs(profile, runtimeInputs = {}) {
   if (resumeId === null && !isUuidV4(sessionId)) {
     throw new Error(`buildClaudeArgs: sessionId must be UUID v4; got ${JSON.stringify(sessionId)}`);
   }
+  if (sessionPersistence !== true && sessionPersistence !== false) {
+    throw new Error("buildClaudeArgs: sessionPersistence must be boolean");
+  }
+  if (resumeId !== null && sessionPersistence === false) {
+    throw new Error("buildClaudeArgs: non-persistent Claude sessions cannot be resumed");
+  }
   if ((typeof model !== "string" || !model) && profile.name !== "ping") {
     throw new Error("buildClaudeArgs: model is required (full ID, no aliases)");
   }
@@ -123,8 +132,8 @@ export function buildClaudeArgs(profile, runtimeInputs = {}) {
     "-p",
     "--input-format", "text",
     "--output-format", "json",
-    "--no-session-persistence",
   ];
+  if (sessionPersistence === false) args.push("--no-session-persistence");
   if (typeof model === "string" && model) args.push("--model", model, "--effort", "max");
   if (resumeId) {
     // --resume continues a prior Claude session; a fresh --session-id must NOT
@@ -200,6 +209,16 @@ export function parseClaudeResult(stdout) {
   };
 }
 
+function firstStderrLine(stderr) {
+  return String(stderr ?? "").trim().split("\n").map((line) => line.trim()).find(Boolean) ?? null;
+}
+
+function promoteStderrParseError(parsed, stderr) {
+  if (parsed?.ok !== false || parsed.reason !== EMPTY_STDOUT_REASON || parsed.error) return parsed;
+  const error = firstStderrLine(stderr);
+  return error ? { ...parsed, error } : parsed;
+}
+
 /**
  * Spawn `claude -p` and return the parsed result. Single-shot (no streaming).
  * Timeouts and signal handling live here, not in the caller.
@@ -226,10 +245,11 @@ export async function spawnClaude(profile, runtimeInputs = {}) {
     allowedApiKeyEnv = [],
     onSpawn = null,
     permissionMode = null,
+    sessionPersistence = true,
   } = runtimeInputs;
 
   const args = buildClaudeArgs(profile, {
-    model, promptText, sessionId, resumeId, addDirPath, jsonSchema, permissionMode,
+    model, promptText, sessionId, resumeId, addDirPath, jsonSchema, permissionMode, sessionPersistence,
   });
   const targetEnv = sanitizeTargetEnv(env, { allowedApiKeyEnv });
 
@@ -245,7 +265,7 @@ export async function spawnClaude(profile, runtimeInputs = {}) {
     });
     child.on("close", (exitCode, signal) => {
       const endedAt = new Date().toISOString();
-      const parsed = parseClaudeResult(output.stdout);
+      const parsed = promoteStderrParseError(parseClaudeResult(output.stdout), output.stderr);
       finish.resolve({
         exitCode,
         signal,

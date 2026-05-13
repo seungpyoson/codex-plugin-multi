@@ -185,6 +185,9 @@ function checklistText(line) {
   const trimmed = line.trimStart();
   const bullet = bulletText(trimmed);
   if (bullet !== null) return bullet;
+  const unmarked = trimmed.replace(/[*_`]/g, "");
+  const checklistItem = checklistItemText(unmarked);
+  if (checklistItem !== null) return checklistItem;
   let index = 0;
   while (index < trimmed.length && index < MAX_CHECKLIST_NUMBER_DIGITS) {
     const code = trimmed.charCodeAt(index);
@@ -193,6 +196,50 @@ function checklistText(line) {
   }
   if (index === 0 || (trimmed[index] !== "." && trimmed[index] !== ")")) return null;
   return trimmed.slice(index + 1).trimStart();
+}
+
+function checklistItemText(line) {
+  const lower = line.toLowerCase();
+  if (lower.startsWith("checklist item ")) {
+    return checklistItemWithDescriptionText(line, "checklist item ".length);
+  }
+  if (lower.startsWith("item ")) {
+    return bareItemText(line, "item ".length);
+  }
+  return null;
+}
+
+function checklistItemWithDescriptionText(line, index) {
+  const afterDigits = scanChecklistDigits(line, index);
+  if (afterDigits === null) return null;
+  const colon = line.indexOf(":", afterDigits);
+  if (colon === -1) return null;
+  return line.slice(colon + 1).trimStart();
+}
+
+function bareItemText(line, index) {
+  const afterDigits = scanChecklistDigits(line, index);
+  if (afterDigits === null) return null;
+  let cursor = afterDigits;
+  while (line[cursor] === " " || line[cursor] === "\t") cursor += 1;
+  if (line[cursor] !== ":") return null;
+  return line.slice(cursor + 1).trimStart();
+}
+
+function scanChecklistDigits(line, index) {
+  let cursor = index;
+  while (cursor < line.length && cursor - index < MAX_CHECKLIST_NUMBER_DIGITS) {
+    const code = line.charCodeAt(cursor);
+    if (code < 48 || code > 57) break;
+    cursor += 1;
+  }
+  if (cursor === index) return null;
+  const nextCode = line.charCodeAt(cursor);
+  if (
+    Number.isFinite(nextCode) &&
+    ((nextCode >= 48 && nextCode <= 57) || (nextCode >= 65 && nextCode <= 90) || (nextCode >= 97 && nextCode <= 122))
+  ) return null;
+  return cursor;
 }
 
 function unmarkReviewText(text) {
@@ -241,6 +288,36 @@ function isPassingChecklistLine(line) {
 
 function includesAny(text, phrases) {
   return phrases.some((phrase) => text.includes(phrase));
+}
+
+function lineHasConcretePermissionFailure(line) {
+  const lower = unmarkReviewText(line).toLowerCase();
+  if (includesAny(lower, [
+    "permission denied",
+    "permission-denied",
+    "read denied",
+    "read-denied",
+  ])) {
+    return true;
+  }
+  return lower.includes("permission block") && (
+    includesAny(lower, [
+      "could not inspect",
+      "cannot inspect",
+      "can't inspect",
+      "unable to inspect",
+      "could not read",
+      "cannot read",
+      "can't read",
+      "unable to read",
+      "could not access",
+      "cannot access",
+      "can't access",
+      "unable to access",
+      "permission block prevented",
+      "permission blocks prevented",
+    ])
+  );
 }
 
 function isPathTokenBoundary(char) {
@@ -314,11 +391,14 @@ function semanticFailureReasons(text, looksShallow, selectedSource = null) {
     const line = unmarkReviewText(rawLine).toLowerCase();
     return startsWithLabel(line, "verdict") && line.includes("not reviewed");
   });
-  const semanticLines = reviewLines(text).filter((line) => (
-    !isPassingChecklistLine(line)
-      && !isPromptPolicyEchoLine(line)
-      && !isNegatedPermissionBlockLine(line)
-  ));
+  const semanticLines = reviewLines(text).filter((line) => {
+    const hasPermissionFailure = lineHasConcretePermissionFailure(line);
+    return (
+      !(isPassingChecklistLine(line) && !hasPermissionFailure)
+        && !isPromptPolicyEchoLine(line)
+        && !isNegatedPermissionBlockLine(line)
+    );
+  });
   const semanticText = semanticLines.join("\n").toLowerCase();
   if (hasNotReviewedVerdict || includesAny(semanticText, [
     "failed review slot",
@@ -338,13 +418,7 @@ function semanticFailureReasons(text, looksShallow, selectedSource = null) {
   ]) || semanticLines.some((line) => lineDeniesSelectedSourceInspection(line, selectedSource))) {
     reasons.push("not_reviewed");
   }
-  if (includesAny(semanticText, [
-    "permission denied",
-    "permission block",
-    "permission-denied",
-    "read denied",
-    "read-denied",
-  ])) {
+  if (semanticLines.some((line) => lineHasConcretePermissionFailure(line))) {
     reasons.push("permission_blocked");
   }
   if (looksShallow) {
@@ -367,6 +441,8 @@ function isPromptPolicyEchoLine(line) {
 
 function isNegatedPermissionBlockLine(line) {
   const lower = unmarkReviewText(line).toLowerCase();
+  if (lineHasConcretePermissionFailure(line)) return false;
+  if (/\bwithout\b[^\n.]*\bpermission blocks?\b/.test(lower)) return true;
   return (
     lower.includes("permission block")
     && (

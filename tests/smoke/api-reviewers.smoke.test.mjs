@@ -190,6 +190,12 @@ function makeWorkspace() {
   return cwd;
 }
 
+function apiReviewerMetaPath(dataDir, jobId) {
+  const candidate = path.join(dataDir, "jobs", jobId, "meta.json");
+  assert.equal(existsSync(candidate), true, `expected meta.json for ${jobId}`);
+  return candidate;
+}
+
 function makeInstalledApiReviewersRoot() {
   const root = mkdtempSync(path.join(tmpdir(), "api-reviewers-installed-"));
   const pluginRoot = path.join(root, "api-reviewers", "0.1.0");
@@ -432,7 +438,7 @@ test("help malformed providers config returns structured diagnostic", async () =
   const parsed = parseJson(result.stdout);
   assert.equal(parsed.ok, false);
   assert.equal(parsed.status, "config_error");
-  assert.deepEqual(parsed.commands, ["doctor", "ping", "approval-request", "run"]);
+  assert.deepEqual(parsed.commands, ["doctor", "ping", "approval-request", "run", "result"]);
   assert.deepEqual(parsed.providers, []);
   assert.match(parsed.error_message, /providers config unreadable/);
   assert.doesNotMatch(result.stdout, /secret-test-value/);
@@ -1533,6 +1539,290 @@ test("DeepSeek direct API custom-review completes and persists JobRecord", async
   assert.deepEqual(record.usage, { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 });
   assert.doesNotMatch(result.stdout, /secret-test-value/);
 });
+
+test("api reviewer result --job requires a job id", async () => {
+  const result = await run(["result"], {
+    cwd: makeWorkspace(),
+    env: { API_REVIEWERS_PLUGIN_DATA: mkdtempSync(path.join(tmpdir(), "api-reviewers-data-")) },
+  });
+
+  assert.equal(result.status, 1);
+  const parsed = parseJson(result.stdout);
+  assert.equal(parsed.ok, false);
+  assert.equal(parsed.error_code, "bad_args");
+  assert.match(parsed.error, /--job <id> is required/);
+});
+
+test("api reviewer result --job reports missing records as not_found", async () => {
+  const result = await run(["result", "--job", "missing-job-123"], {
+    cwd: makeWorkspace(),
+    env: { API_REVIEWERS_PLUGIN_DATA: mkdtempSync(path.join(tmpdir(), "api-reviewers-data-")) },
+  });
+
+  assert.equal(result.status, 1);
+  const parsed = parseJson(result.stdout);
+  assert.equal(parsed.ok, false);
+  assert.equal(parsed.error_code, "not_found");
+  assert.equal(parsed.job_id, "missing-job-123");
+});
+
+test("api reviewer result --job reports malformed records without echoing file contents", async () => {
+  const cwd = makeWorkspace();
+  const dataDir = mkdtempSync(path.join(tmpdir(), "api-reviewers-data-"));
+  const created = await run([
+    "run",
+    "--provider", "deepseek",
+    "--mode", "custom-review",
+    "--scope", "custom",
+    "--scope-paths", "seed.txt",
+    "--foreground",
+    "--prompt", "Check this file.",
+  ], {
+    cwd,
+    env: {
+      API_REVIEWERS_PLUGIN_DATA: dataDir,
+      API_REVIEWERS_MOCK_RESPONSE: mockResponse("deepseek-v4-pro"),
+      DEEPSEEK_API_KEY: "secret-test-value",
+    },
+  });
+  assert.equal(created.status, 0, created.stderr || created.stdout);
+  const record = parseJson(created.stdout);
+  writeFileSync(apiReviewerMetaPath(dataDir, record.job_id), "{ malformed secret-test-value");
+
+  const result = await run(["result", "--job", record.job_id], {
+    cwd,
+    env: {
+      API_REVIEWERS_PLUGIN_DATA: dataDir,
+      DEEPSEEK_API_KEY: "secret-test-value",
+    },
+  });
+
+  assert.equal(result.status, 1);
+  const parsed = parseJson(result.stdout);
+  assert.equal(parsed.ok, false);
+  assert.equal(parsed.error_code, "malformed_record");
+  assert.equal(parsed.job_id, record.job_id);
+  assert.doesNotMatch(result.stdout, /secret-test-value/);
+});
+
+test("api reviewer result --job rejects unsafe job ids before filesystem access", async () => {
+  const result = await run(["result", "--job", "../../etc/passwd"], {
+    cwd: makeWorkspace(),
+    env: { API_REVIEWERS_PLUGIN_DATA: mkdtempSync(path.join(tmpdir(), "api-reviewers-data-")) },
+  });
+
+  assert.equal(result.status, 1);
+  const parsed = parseJson(result.stdout);
+  assert.equal(parsed.ok, false);
+  assert.equal(parsed.error_code, "bad_args");
+  assert.equal(parsed.error, "unsafe_job_id");
+  assert.doesNotMatch(result.stdout, /\.\./);
+  assert.doesNotMatch(result.stdout, /passwd/);
+});
+
+test("api reviewer result --job reports unreadable records without exposing paths", async () => {
+  const cwd = makeWorkspace();
+  const dataDir = mkdtempSync(path.join(tmpdir(), "api-reviewers-data-"));
+  const created = await run([
+    "run",
+    "--provider", "glm",
+    "--mode", "custom-review",
+    "--scope", "custom",
+    "--scope-paths", "seed.txt",
+    "--foreground",
+    "--prompt", "Check this file.",
+  ], {
+    cwd,
+    env: {
+      API_REVIEWERS_PLUGIN_DATA: dataDir,
+      API_REVIEWERS_MOCK_RESPONSE: mockResponse("glm-5.1"),
+      ZAI_API_KEY: "secret-test-value",
+    },
+  });
+  assert.equal(created.status, 0, created.stderr || created.stdout);
+  const record = parseJson(created.stdout);
+  const metaPath = apiReviewerMetaPath(dataDir, record.job_id);
+  rmSync(metaPath);
+  mkdirSync(metaPath);
+
+  const result = await run(["result", "--job", record.job_id], {
+    cwd,
+    env: {
+      API_REVIEWERS_PLUGIN_DATA: dataDir,
+      ZAI_API_KEY: "secret-test-value",
+    },
+  });
+
+  assert.equal(result.status, 1);
+  const parsed = parseJson(result.stdout);
+  assert.equal(parsed.ok, false);
+  assert.equal(parsed.error_code, "read_failed");
+  assert.equal(parsed.job_id, record.job_id);
+  assert.equal(parsed.error, "read_failed");
+  assert.doesNotMatch(result.stdout, new RegExp(dataDir.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+  assert.doesNotMatch(result.stdout, /secret-test-value/);
+});
+
+test("api reviewer result --job redacts configured nonstandard credential names at read time", async () => {
+  const cwd = makeWorkspace();
+  const dataDir = mkdtempSync(path.join(tmpdir(), "api-reviewers-data-"));
+  const pluginRoot = makeInstalledApiReviewersRoot();
+  writeSingleProviderConfig(pluginRoot, "deepseek", {
+    display_name: "DeepSeek",
+    auth_mode: "api_key",
+    env_keys: ["CUSTOM_CRED"],
+    base_url: "https://api.deepseek.com",
+    model: "deepseek-v4-flash",
+  });
+  const jobId = "custom-redaction-job";
+  const jobDir = path.join(dataDir, "jobs", jobId);
+  mkdirSync(jobDir, { recursive: true });
+  writeFileSync(path.join(jobDir, "meta.json"), JSON.stringify({
+    job_id: jobId,
+    target: "deepseek",
+    provider: "deepseek",
+    result: "provider echoed custom-secret-1234",
+    runtime_diagnostics: {
+      detail: "custom-secret-1234",
+    },
+  }, null, 2));
+
+  const result = await run(["result", "--job", jobId], {
+    cwd,
+    companion: path.join(pluginRoot, "scripts", "api-reviewer.mjs"),
+    env: {
+      API_REVIEWERS_PLUGIN_DATA: dataDir,
+      CUSTOM_CRED: "custom-secret-1234",
+    },
+  });
+
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  const parsed = parseJson(result.stdout);
+  assert.equal(parsed.job_id, jobId);
+  assert.equal(parsed.result, "provider echoed [REDACTED]");
+  assert.equal(parsed.runtime_diagnostics.detail, "[REDACTED]");
+  assert.doesNotMatch(result.stdout, /custom-secret-1234/);
+});
+
+test("api reviewer result --job fails closed when provider config cannot load for read-time redaction", async () => {
+  const cwd = makeWorkspace();
+  const dataDir = mkdtempSync(path.join(tmpdir(), "api-reviewers-data-"));
+  const pluginRoot = makeInstalledApiReviewersRoot();
+  writeFileSync(path.join(pluginRoot, "config", "providers.json"), "{ malformed custom-secret-1234");
+  const jobId = "custom-redaction-config-error-job";
+  const jobDir = path.join(dataDir, "jobs", jobId);
+  mkdirSync(jobDir, { recursive: true });
+  writeFileSync(path.join(jobDir, "meta.json"), JSON.stringify({
+    job_id: jobId,
+    target: "deepseek",
+    provider: "deepseek",
+    result: "provider echoed custom-secret-1234",
+    runtime_diagnostics: {
+      detail: "custom-secret-1234",
+    },
+  }, null, 2));
+
+  const result = await run(["result", "--job", jobId], {
+    cwd,
+    companion: path.join(pluginRoot, "scripts", "api-reviewer.mjs"),
+    env: {
+      API_REVIEWERS_PLUGIN_DATA: dataDir,
+      CUSTOM_CRED: "custom-secret-1234",
+    },
+  });
+
+  assert.equal(result.status, 1);
+  const parsed = parseJson(result.stdout);
+  assert.equal(parsed.ok, false);
+  assert.equal(parsed.error_code, "config_error");
+  assert.equal(parsed.error, "provider_config_unavailable");
+  assert.equal(parsed.job_id, jobId);
+  assert.doesNotMatch(result.stdout, /custom-secret-1234/);
+  assert.doesNotMatch(result.stderr, /custom-secret-1234/);
+  assert.doesNotMatch(result.stdout, /malformed/);
+});
+
+test("api reviewer result --job fails closed when provider config is missing for read-time redaction", async () => {
+  const cwd = makeWorkspace();
+  const dataDir = mkdtempSync(path.join(tmpdir(), "api-reviewers-data-"));
+  const pluginRoot = makeInstalledApiReviewersRoot();
+  rmSync(path.join(pluginRoot, "config", "providers.json"));
+  const jobId = "custom-redaction-missing-config-job";
+  const jobDir = path.join(dataDir, "jobs", jobId);
+  mkdirSync(jobDir, { recursive: true });
+  writeFileSync(path.join(jobDir, "meta.json"), JSON.stringify({
+    job_id: jobId,
+    target: "deepseek",
+    provider: "deepseek",
+    result: "provider echoed custom-secret-1234",
+  }, null, 2));
+
+  const result = await run(["result", "--job", jobId], {
+    cwd,
+    companion: path.join(pluginRoot, "scripts", "api-reviewer.mjs"),
+    env: {
+      API_REVIEWERS_PLUGIN_DATA: dataDir,
+      CUSTOM_CRED: "custom-secret-1234",
+    },
+  });
+
+  assert.equal(result.status, 1);
+  const parsed = parseJson(result.stdout);
+  assert.equal(parsed.ok, false);
+  assert.equal(parsed.error_code, "config_error");
+  assert.equal(parsed.error, "provider_config_unavailable");
+  assert.equal(parsed.job_id, jobId);
+  assert.doesNotMatch(result.stdout, /custom-secret-1234/);
+  assert.doesNotMatch(result.stderr, /custom-secret-1234/);
+});
+
+for (const { provider, model, key } of [
+  { provider: "deepseek", model: "deepseek-v4-pro", key: "DEEPSEEK_API_KEY" },
+  { provider: "glm", model: "glm-5.1", key: "ZAI_API_KEY" },
+]) {
+  test(`${provider} result --job returns a completed direct API JobRecord`, async () => {
+    const cwd = makeWorkspace();
+    const dataDir = mkdtempSync(path.join(tmpdir(), "api-reviewers-data-"));
+    const result = await run([
+      "run",
+      "--provider", provider,
+      "--mode", "custom-review",
+      "--scope", "custom",
+      "--scope-paths", "seed.txt",
+      "--foreground",
+      "--prompt", "Check this file.",
+    ], {
+      cwd,
+      env: {
+        API_REVIEWERS_PLUGIN_DATA: dataDir,
+        API_REVIEWERS_MOCK_RESPONSE: mockResponse(model),
+        [key]: "secret-test-value",
+      },
+    });
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    const record = parseJson(result.stdout);
+
+    const retrieved = await run([
+      "result",
+      "--job", record.job_id,
+      "--cwd", cwd,
+    ], {
+      cwd,
+      env: {
+        API_REVIEWERS_PLUGIN_DATA: dataDir,
+        [key]: "secret-test-value",
+      },
+    });
+
+    assert.equal(retrieved.status, 0, retrieved.stderr || retrieved.stdout);
+    const parsed = parseJson(retrieved.stdout);
+    assert.equal(parsed.job_id, record.job_id);
+    assert.equal(parsed.status, "completed");
+    assert.equal(parsed.provider, provider);
+    assert.equal(parsed.result, record.result);
+    assert.doesNotMatch(retrieved.stdout, /secret-test-value/);
+  });
+}
 
 test("direct API reviewers fail closed on shallow HTTP 200 review output", async () => {
   const cwd = makeWorkspace();
