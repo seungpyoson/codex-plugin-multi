@@ -95,12 +95,16 @@ const MIN_SECRET_REDACTION_LENGTH = 8;
 const ACCOUNT_PAYMENT_TOKEN_RE = /\b(?:stripe-[^\s,;:)]+|cus_[A-Za-z0-9]{6,}|acct_(?:test_)?[A-Za-z0-9]{5,}|cs_(?:test|live)_[A-Za-z0-9]{6,}|(?:pi|sub|in|ii|ch|seti|setp|price|prod|iv)_(?=[A-Za-z0-9]*\d)[A-Za-z0-9]{5,})/gi;
 const ACCOUNT_PAYMENT_DIAGNOSTIC_RE = /^(?:stripe-.+|cus_[A-Za-z0-9]{6,}|acct_(?:test_)?[A-Za-z0-9]{5,}|cs_(?:test|live)_[A-Za-z0-9]{6,}|(?:pi|sub|in|ii|ch|seti|setp|price|prod|iv)_(?=[A-Za-z0-9]*\d)[A-Za-z0-9]{5,})$/i;
 
+function writableOutput(output) {
+  return output && typeof output.write === "function" ? output : process.stdout;
+}
+
 function printJson(obj, output = process.stdout) {
-  output.write(`${JSON.stringify(obj, null, 2)}\n`);
+  writableOutput(output).write(`${JSON.stringify(obj, null, 2)}\n`);
 }
 
 function printJsonLine(obj, output = process.stdout) {
-  output.write(`${JSON.stringify(obj)}\n`);
+  writableOutput(output).write(`${JSON.stringify(obj)}\n`);
 }
 
 function printLifecycleJson(obj, lifecycleEvents, output = process.stdout) {
@@ -115,7 +119,7 @@ function externalReviewProgressEvent(invocation, { sequence, elapsedMs }) {
     target: invocation.target,
     status: "running",
     mode: invocation.mode ?? null,
-    run_kind: "foreground",
+    run_kind: invocation.run_kind ?? "foreground",
     heartbeat: sequence,
     elapsed_ms: Math.max(0, Math.trunc(elapsedMs ?? 0)),
   };
@@ -131,9 +135,10 @@ function lifecycleHeartbeatIntervalMs(env = process.env) {
 function startLifecycleHeartbeat(
   invocation,
   lifecycleEvents,
-  { intervalMs = lifecycleHeartbeatIntervalMs(), output = null, now = Date.now } = {},
+  { intervalMs = lifecycleHeartbeatIntervalMs(), output = process.stdout, now = Date.now } = {},
 ) {
   if (lifecycleEvents !== "jsonl") return () => {};
+  const interval = Number.isSafeInteger(intervalMs) && intervalMs > 0 ? intervalMs : lifecycleHeartbeatIntervalMs();
   const started = now();
   let sequence = 0;
   const timer = setInterval(() => {
@@ -144,9 +149,9 @@ function startLifecycleHeartbeat(
         elapsedMs: now() - started,
       }),
       lifecycleEvents,
-      output ?? undefined,
+      output,
     );
-  }, intervalMs);
+  }, interval);
   timer.unref?.();
   return () => clearInterval(timer);
 }

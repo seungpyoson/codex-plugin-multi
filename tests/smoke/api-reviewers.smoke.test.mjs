@@ -3207,7 +3207,7 @@ test("direct API reviewers lifecycle jsonl emits launch before terminal record",
   const pluginRoot = makeInstalledApiReviewersRoot();
   const server = await startChatServer(async (req, res) => {
     req.resume();
-    await sleep(25);
+    await sleep(100);
     res.writeHead(200, { "content-type": "application/json" });
     res.end(mockResponse("deepseek-v4-pro"));
   });

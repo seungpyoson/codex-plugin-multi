@@ -166,6 +166,31 @@ test("Claude/Gemini/Kimi review with empty --scope-base preserves plain working-
       assert.equal(res.status, 0, `${companion.target}: ${res.stderr}`);
       assert.equal(res.json.ok, true, companion.target);
       assert.equal(res.json.scope, "working-tree", companion.target);
+      assert.equal(res.json.scope_base, null, companion.target);
+      assert.ok(res.json.files.includes("old.md"), companion.target);
+      assert.equal(res.json.selected_scope_sent_to_provider, false, companion.target);
+    } finally {
+      cleanup(cwd);
+    }
+  }
+});
+
+test("Claude/Gemini/Kimi review with whitespace --scope-base also preserves working-tree scope", () => {
+  for (const companion of COMPANIONS) {
+    const { cwd } = seedBranchDiffRepo();
+    try {
+      writeFileSync(path.join(cwd, "old.md"), "dirty old\n");
+
+      const res = runPreflight(companion, cwd, [
+        "--mode=review",
+        "--cwd", cwd,
+        "--scope-base", "   ",
+      ]);
+
+      assert.equal(res.status, 0, `${companion.target}: ${res.stderr}`);
+      assert.equal(res.json.ok, true, companion.target);
+      assert.equal(res.json.scope, "working-tree", companion.target);
+      assert.equal(res.json.scope_base, null, companion.target);
       assert.ok(res.json.files.includes("old.md"), companion.target);
       assert.equal(res.json.selected_scope_sent_to_provider, false, companion.target);
     } finally {

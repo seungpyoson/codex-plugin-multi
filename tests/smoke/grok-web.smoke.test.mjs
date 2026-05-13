@@ -1500,7 +1500,7 @@ test("custom-review lifecycle jsonl emits launch before terminal record", async 
   writeFileSync(path.join(cwd, "review.js"), "export const value = 42;\n");
 
   await withServer(async (_req, res) => {
-    await sleep(25);
+    await sleep(100);
     res.setHeader("content-type", "application/json");
     res.end(JSON.stringify({
       id: "grok-web-session-lifecycle",

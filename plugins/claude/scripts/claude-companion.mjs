@@ -71,6 +71,7 @@ import {
   printJson,
   printLifecycleJson,
   runKindFromRecord,
+  scopeBaseForOptions,
   startExternalReviewHeartbeat,
   summarizeScopeDirectory,
   writePromptSidecar,
@@ -619,12 +620,13 @@ function cmdPreflight(rest) {
   const profile = effectiveProfileForOptions(resolveProfile(mode), options);
   const workspaceRoot = resolveWorkspaceRoot(cwd);
   const scopePaths = parseScopePathsOption(options["scope-paths"]);
+  const scopeBase = scopeBaseForOptions(options);
   let containment = null;
   let exitCode = 0;
   try {
     containment = setupContainment(profile, cwd);
     populateScope(profile, cwd, containment.path, {
-      scopeBase: options["scope-base"] ?? null,
+      scopeBase,
       scopePaths,
       workspaceRoot,
     }, containment);
@@ -639,7 +641,7 @@ function cmdPreflight(rest) {
       workspace_root: workspaceRoot,
       containment: profile.containment,
       scope: profile.scope,
-      scope_base: options["scope-base"] ?? null,
+      scope_base: scopeBase,
       scope_paths: scopePaths,
       ...summary,
       ...preflightSafetyFields(),
@@ -657,7 +659,7 @@ function cmdPreflight(rest) {
       workspace_root: workspaceRoot,
       containment: profile.containment,
       scope: profile.scope,
-      scope_base: options["scope-base"] ?? null,
+      scope_base: scopeBase,
       scope_paths: scopePaths,
       error,
       error_message: e.message,
@@ -689,6 +691,7 @@ async function cmdRun(rest) {
   // Mode → profile, resolved EXACTLY ONCE at entry (spec §21.2). No downstream
   // code branches on `mode` to pick a flag — everything flows from `profile`.
   const profile = effectiveProfileForOptions(resolveProfile(mode), options);
+  const scopeBase = scopeBaseForOptions(options);
 
   // Model resolution goes through the profile's tier — the historical
   // ternary that branched on mode but returned "default" on both sides
@@ -754,7 +757,7 @@ async function cmdRun(rest) {
     containment: profile.containment,
     scope: profile.scope,
     dispose_effective: disposeEffective,
-    scope_base: options["scope-base"] ?? null,
+    scope_base: scopeBase,
     scope_paths: scopePaths,
     prompt_head: prompt.slice(0, 200),          // §21.3.1 — no full prompt
     review_prompt_contract_version: profile.name === "rescue" ? null : REVIEW_PROMPT_CONTRACT_VERSION,
@@ -873,6 +876,7 @@ async function executeRun(invocation, prompt, { foreground, lifecycleEvents = nu
       runtimeDiagnostics,
       resumeId,
       authSelection,
+      stopHeartbeat,
     });
   } finally {
     stopHeartbeat();
@@ -1085,6 +1089,7 @@ async function spawnClaudeOrExit(invocation, profile, prompt, executionScope, mu
     writeJobFile(invocation.workspace_root, invocation.job_id, errorRecord);
     upsertJob(invocation.workspace_root, errorRecord);
     cleanupExecutionResources(executionScope, mutationContext);
+    options.stopHeartbeat?.();
     if (options.foreground) printLifecycleJson(errorRecord, options.lifecycleEvents);
     process.exit(2);
   }

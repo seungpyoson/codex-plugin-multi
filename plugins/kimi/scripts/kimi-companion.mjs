@@ -39,6 +39,7 @@ import {
   printJson,
   printLifecycleJson,
   runKindFromRecord,
+  scopeBaseForOptions,
   startExternalReviewHeartbeat,
   summarizeScopeDirectory,
   writePromptSidecar,
@@ -575,12 +576,13 @@ function cmdPreflight(rest) {
   const profile = effectiveProfileForOptions(resolveProfile(mode), options);
   const workspaceRoot = resolveWorkspaceRoot(cwd);
   const scopePaths = parseScopePathsOption(options["scope-paths"]);
+  const scopeBase = scopeBaseForOptions(options);
   let containment = null;
   let exitCode = 0;
   try {
     containment = setupContainment(profile, cwd);
     populateScope(profile, cwd, containment.path, {
-      scopeBase: options["scope-base"] ?? null,
+      scopeBase,
       scopePaths,
       workspaceRoot,
     }, containment);
@@ -595,7 +597,7 @@ function cmdPreflight(rest) {
       workspace_root: workspaceRoot,
       containment: profile.containment,
       scope: profile.scope,
-      scope_base: options["scope-base"] ?? null,
+      scope_base: scopeBase,
       scope_paths: scopePaths,
       ...summary,
       ...preflightSafetyFields(),
@@ -613,7 +615,7 @@ function cmdPreflight(rest) {
       workspace_root: workspaceRoot,
       containment: profile.containment,
       scope: profile.scope,
-      scope_base: options["scope-base"] ?? null,
+      scope_base: scopeBase,
       scope_paths: scopePaths,
       error,
       error_message: e.message,
@@ -639,6 +641,7 @@ async function cmdRun(rest) {
     fail("bad_args", "--background and --foreground are mutually exclusive");
   }
   const profile = effectiveProfileForOptions(resolveProfile(mode), options);
+  const scopeBase = scopeBaseForOptions(options);
   const model = options.model ?? resolveModelForProfile(profile, loadModels()) ?? null;
   if (!model) fail("no_model", "no model resolved; pass --model or populate config/models.json");
 
@@ -683,7 +686,7 @@ async function cmdRun(rest) {
     containment: profile.containment,
     scope: profile.scope,
     dispose_effective: disposeEffective,
-    scope_base: options["scope-base"] ?? null,
+    scope_base: scopeBase,
     scope_paths: scopePaths,
     prompt_head: prompt.slice(0, 200),
     review_prompt_contract_version: profile.name === "rescue" ? null : REVIEW_PROMPT_CONTRACT_VERSION,
@@ -885,6 +888,7 @@ async function executeRun(invocation, prompt, { foreground, lifecycleEvents = nu
     upsertJob(workspaceRoot, errorRecord);
     if (neutralCwd) rmSync(neutralCwd, { recursive: true, force: true });
     if (disposeEffective) containment.cleanup();
+    stopHeartbeat();
     if (foreground) printLifecycleJson(errorRecord, lifecycleEvents);
     process.exit(2);
   } finally {

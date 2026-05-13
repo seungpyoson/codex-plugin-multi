@@ -102,12 +102,16 @@ const GROK_EXPECTED_KEYS = Object.freeze([
   "schema_version",
 ]);
 
+function writableOutput(output) {
+  return output && typeof output.write === "function" ? output : process.stdout;
+}
+
 function printJson(obj, output = process.stdout) {
-  output.write(`${JSON.stringify(obj, null, 2)}\n`);
+  writableOutput(output).write(`${JSON.stringify(obj, null, 2)}\n`);
 }
 
 function printJsonLine(obj, output = process.stdout) {
-  output.write(`${JSON.stringify(obj)}\n`);
+  writableOutput(output).write(`${JSON.stringify(obj)}\n`);
 }
 
 function printLifecycleJson(obj, lifecycleEvents, output = process.stdout) {
@@ -122,7 +126,7 @@ function externalReviewProgressEvent(invocation, { sequence, elapsedMs }) {
     target: invocation.target,
     status: "running",
     mode: invocation.mode ?? null,
-    run_kind: "foreground",
+    run_kind: invocation.run_kind ?? "foreground",
     heartbeat: sequence,
     elapsed_ms: Math.max(0, Math.trunc(elapsedMs ?? 0)),
   };
@@ -138,9 +142,10 @@ function lifecycleHeartbeatIntervalMs(env = process.env) {
 function startLifecycleHeartbeat(
   invocation,
   lifecycleEvents,
-  { intervalMs = lifecycleHeartbeatIntervalMs(), output = null, now = Date.now } = {},
+  { intervalMs = lifecycleHeartbeatIntervalMs(), output = process.stdout, now = Date.now } = {},
 ) {
   if (lifecycleEvents !== "jsonl") return () => {};
+  const interval = Number.isSafeInteger(intervalMs) && intervalMs > 0 ? intervalMs : lifecycleHeartbeatIntervalMs();
   const started = now();
   let sequence = 0;
   const timer = setInterval(() => {
@@ -151,9 +156,9 @@ function startLifecycleHeartbeat(
         elapsedMs: now() - started,
       }),
       lifecycleEvents,
-      output ?? undefined,
+      output,
     );
-  }, intervalMs);
+  }, interval);
   timer.unref?.();
   return () => clearInterval(timer);
 }

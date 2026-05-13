@@ -26,6 +26,7 @@ import {
   printLifecycleJson,
   promptSidecarPath,
   runKindFromRecord,
+  scopeBaseForOptions,
   startExternalReviewHeartbeat,
   summarizeScopeDirectory,
   writePromptSidecar,
@@ -145,12 +146,17 @@ test("shared companion helpers cover small provider-agnostic behavior", () => {
   assert.equal(externalReviewHeartbeatIntervalMs({}), 30000);
   assert.equal(externalReviewHeartbeatIntervalMs({ CODEX_PLUGIN_EXTERNAL_REVIEW_HEARTBEAT_MS: "7" }), 7);
   assert.equal(externalReviewHeartbeatIntervalMs({ CODEX_PLUGIN_EXTERNAL_REVIEW_HEARTBEAT_MS: "0" }), 30000);
+  assert.equal(scopeBaseForOptions({}), null);
+  assert.equal(scopeBaseForOptions({ "scope-base": "" }), null);
+  assert.equal(scopeBaseForOptions({ "scope-base": "   " }), null);
+  assert.equal(scopeBaseForOptions({ "scope-base": "origin/main" }), "origin/main");
   const reviewProfile = Object.freeze({ name: "review", scope: "working-tree" });
   assert.deepEqual(effectiveProfileForOptions(reviewProfile, { "scope-base": "origin/main" }), {
     name: "review",
     scope: "branch-diff",
   });
   assert.equal(effectiveProfileForOptions(reviewProfile, { "scope-base": "" }), reviewProfile);
+  assert.equal(effectiveProfileForOptions(reviewProfile, { "scope-base": "   " }), reviewProfile);
   const customProfile = Object.freeze({ name: "custom-review", scope: "custom" });
   assert.equal(effectiveProfileForOptions(customProfile, { "scope-base": "origin/main" }), customProfile);
   assert.match(cancelUnverifiableSuggestedAction(1234), /pid 1234/);
@@ -387,12 +393,17 @@ async function assertCopyHelperBranches(mod, plugin) {
   assert.equal(mod.externalReviewHeartbeatIntervalMs({}), 30000);
   assert.equal(mod.externalReviewHeartbeatIntervalMs({ CODEX_PLUGIN_EXTERNAL_REVIEW_HEARTBEAT_MS: "7" }), 7);
   assert.equal(mod.externalReviewHeartbeatIntervalMs({ CODEX_PLUGIN_EXTERNAL_REVIEW_HEARTBEAT_MS: "0" }), 30000);
+  assert.equal(mod.scopeBaseForOptions({}), null);
+  assert.equal(mod.scopeBaseForOptions({ "scope-base": "" }), null);
+  assert.equal(mod.scopeBaseForOptions({ "scope-base": "   " }), null);
+  assert.equal(mod.scopeBaseForOptions({ "scope-base": "origin/main" }), "origin/main");
   const reviewProfile = Object.freeze({ name: "review", scope: "working-tree" });
   assert.deepEqual(mod.effectiveProfileForOptions(reviewProfile, { "scope-base": "origin/main" }), {
     name: "review",
     scope: "branch-diff",
   });
   assert.equal(mod.effectiveProfileForOptions(reviewProfile, { "scope-base": "" }), reviewProfile);
+  assert.equal(mod.effectiveProfileForOptions(reviewProfile, { "scope-base": "   " }), reviewProfile);
   const customProfile = Object.freeze({ name: "custom-review", scope: "custom" });
   assert.equal(mod.effectiveProfileForOptions(customProfile, { "scope-base": "origin/main" }), customProfile);
   assert.match(mod.cancelUnverifiableSuggestedAction(1234), /pid 1234/);
