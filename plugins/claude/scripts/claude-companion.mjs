@@ -995,9 +995,15 @@ function prepareMutationContext(invocation, profile) {
   const context = { checkMutations, gitStatusBefore: null, neutralCwd: null, cleanupNeutralCwd: false, mutations: [] };
   if (!checkMutations) return context;
   try {
-    context.neutralCwd = ensureClaudeProjectCwd(invocation.claude_project_cwd)
-      ?? mkdtempSync(joinPath(tmpdir(), "claude-neutral-cwd-"));
-    context.cleanupNeutralCwd = true;
+    const projectCwd = ensureClaudeProjectCwd(invocation.claude_project_cwd);
+    if (projectCwd) {
+      // Retain this per-job project cwd: Claude resolves persisted sessions by
+      // project path, and the directory lives under the job sidecar state.
+      context.neutralCwd = projectCwd;
+    } else {
+      context.neutralCwd = mkdtempSync(joinPath(tmpdir(), "claude-neutral-cwd-"));
+      context.cleanupNeutralCwd = true;
+    }
   } catch (e) {
     context.mutations.push(mutationDetectionFailure(e));
   }
