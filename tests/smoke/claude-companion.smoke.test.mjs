@@ -1085,8 +1085,9 @@ test("run --background: active job is visible as running and can be cancelled", 
       // cancel post-condition (process gone) holds.
       assert.equal(cancelRes.status, 2,
         `capture_error path must exit 2 (refused, unverifiable); stderr=${cancelRes.stderr}`);
-      assert.equal(cancel.status, "no_pid_info");
-      // No pid_info → no signal sent → job will run to natural completion
+      assert.equal(cancel.status, "unverifiable");
+      assert.match(cancel.suggested_action, /process inspection|ownership/i);
+      // Unverifiable pid_info → no signal sent → job will run to natural completion
       // (or remain running until timeout). We just need it to reach SOME
       // terminal state so the test doesn't leak background workers.
       const terminalDeadline = Date.now() + 7000;

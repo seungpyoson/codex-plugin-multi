@@ -293,7 +293,7 @@ test("gemini cancel: signals a running background job (issue #22 sub-task 1)", a
       cwd, encoding: "utf8",
       env: { ...process.env, GEMINI_PLUGIN_DATA: dataDir },
     });
-    // Two acceptable outcomes: signaled (signal landed) or no_pid_info
+    // Two acceptable outcomes: signaled (signal landed) or unverifiable
     // (mock spawn raced and pid capture failed). What MUST NOT happen is
     // a "not_implemented" error from the dispatch.
     assert.notEqual(cancelRes.status, 1, `gemini cancel must be implemented; stderr=${cancelRes.stderr}`);
@@ -307,7 +307,8 @@ test("gemini cancel: signals a running background job (issue #22 sub-task 1)", a
       // lie that the cancel post-condition (process gone) holds.
       assert.equal(cancelRes.status, 2,
         `capture_error path must exit 2 (refused, unverifiable); stderr=${cancelRes.stderr}`);
-      assert.equal(cancel.status, "no_pid_info");
+      assert.equal(cancel.status, "unverifiable");
+      assert.match(cancel.suggested_action, /process inspection|ownership/i);
     } else {
       // Mock can exit between attachPidCapture's 'spawn' snapshot and
       // verifyPidInfo at cancel time. All four post-spawn outcomes are

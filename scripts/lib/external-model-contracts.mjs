@@ -245,6 +245,7 @@ function lifecycleRenderingContract() {
     "## Rendering Contract",
     "Render companion JSON directly.",
     "If `external_review_launched` is present, render it immediately.",
+    "`external_review_progress` is a heartbeat for long foreground runs; keep the existing launch card visible and do not render it as a terminal result.",
     "If a background launch envelope has `event: \"launched\"` with an `external_review` field, render the same launch card immediately with session pending.",
     "If `external_review` is present, render it before normal prose.",
     "Launch cards should include provider, job, session, run kind, and scope when those fields are present.",
@@ -427,6 +428,7 @@ function renderCompanionCommandBody(provider, workflow, commandName) {
       `Run \`node "<plugin-root>/scripts/${provider.binary}" cancel --job "$ARGUMENTS" --cwd "<workspace>"\`.`,
       "This command is for background jobs only. Foreground runs are owned by the active terminal; interrupt them with Ctrl+C.",
       "The companion does not signal attached foreground processes.",
+      "For no_pid_info or unverifiable, render `suggested_action` when present and do not invent a PID kill command without an ownership check.",
       "",
       "Statuses:",
       statusRows,
@@ -546,6 +548,7 @@ function renderCompanionSkillBody(provider, workflow, skillName) {
       `Run \`node "<plugin-root>/scripts/${provider.binary}" cancel --job "<job-id>" --cwd "<workspace>"\`.`,
       "Cancel is for background jobs only.",
       "Foreground runs are owned by the active terminal; interrupt them with Ctrl+C.",
+      "For no_pid_info or unverifiable, render `suggested_action` when present and do not invent a PID kill command without an ownership check.",
       secretSafetyContract(),
     );
   }

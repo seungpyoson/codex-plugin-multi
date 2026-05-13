@@ -58,6 +58,7 @@ Do not print API-key values.
 ## Rendering Contract
 Render companion JSON directly.
 If `external_review_launched` is present, render it immediately.
+`external_review_progress` is a heartbeat for long foreground runs; keep the existing launch card visible and do not render it as a terminal result.
 If a background launch envelope has `event: "launched"` with an `external_review` field, render the same launch card immediately with session pending.
 If `external_review` is present, render it before normal prose.
 Launch cards should include provider, job, session, run kind, and scope when those fields are present.

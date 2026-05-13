@@ -8,12 +8,16 @@ import { resolve as resolvePath, sep } from "node:path";
 export const PING_PROMPT =
   "reply with exactly: pong. Do not use any tools, do not read files, and do not explore the workspace.";
 
+function writableOutput(output) {
+  return output && typeof output.write === "function" ? output : process.stdout;
+}
+
 export function printJson(obj, output = process.stdout) {
-  output.write(`${JSON.stringify(obj, null, 2)}\n`);
+  writableOutput(output).write(`${JSON.stringify(obj, null, 2)}\n`);
 }
 
 export function printJsonLine(obj, output = process.stdout) {
-  output.write(`${JSON.stringify(obj)}\n`);
+  writableOutput(output).write(`${JSON.stringify(obj)}\n`);
 }
 
 export function parseLifecycleEventsMode(value) {
@@ -29,6 +33,19 @@ export function externalReviewLaunchedEvent(invocation, externalReview) {
     target: invocation.target,
     status: "launched",
     external_review: externalReview,
+  };
+}
+
+export function externalReviewProgressEvent(invocation, { sequence, elapsedMs }) {
+  return {
+    event: "external_review_progress",
+    job_id: invocation.job_id,
+    target: invocation.target,
+    status: "running",
+    mode: invocation.mode ?? null,
+    run_kind: invocation.run_kind ?? "foreground",
+    heartbeat: sequence,
+    elapsed_ms: Math.max(0, Math.trunc(elapsedMs ?? 0)),
   };
 }
 
@@ -48,6 +65,62 @@ export function externalReviewBackgroundLaunchedEvent(invocation, pid, externalR
 export function printLifecycleJson(obj, lifecycleEvents, output = process.stdout) {
   if (lifecycleEvents === "jsonl") printJsonLine(obj, output);
   else printJson(obj, output);
+}
+
+export function externalReviewHeartbeatIntervalMs(env = process.env) {
+  const raw = env.CODEX_PLUGIN_EXTERNAL_REVIEW_HEARTBEAT_MS;
+  if (raw === undefined || raw === null || raw === "") return 30000;
+  const parsed = Number(raw);
+  return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : 30000;
+}
+
+export function startExternalReviewHeartbeat(
+  invocation,
+  lifecycleEvents,
+  { intervalMs = externalReviewHeartbeatIntervalMs(), output = process.stdout, now = Date.now } = {},
+) {
+  if (lifecycleEvents !== "jsonl") return () => {};
+  const interval = Number.isSafeInteger(intervalMs) && intervalMs > 0 ? intervalMs : externalReviewHeartbeatIntervalMs();
+  const started = now();
+  let sequence = 0;
+  const timer = setInterval(() => {
+    sequence += 1;
+    printLifecycleJson(
+      externalReviewProgressEvent(invocation, {
+        sequence,
+        elapsedMs: now() - started,
+      }),
+      lifecycleEvents,
+      output,
+    );
+  }, interval);
+  timer.unref?.();
+  return () => clearInterval(timer);
+}
+
+export function effectiveProfileForOptions(profile, options) {
+  if (profile.name === "review" && scopeBaseForOptions(options) !== null) {
+    return Object.freeze({ ...profile, scope: "branch-diff" });
+  }
+  return profile;
+}
+
+export function scopeBaseForOptions(options) {
+  const value = options["scope-base"];
+  if (value == null) return null;
+  return String(value).trim() === "" ? null : String(value);
+}
+
+export function cancelUnverifiableSuggestedAction(pid) {
+  return (
+    "Retry cancel from a less restricted shell where process inspection works. " +
+    `If you manually inspect pid ${pid} and confirm ownership matches this job, ` +
+    "terminate it outside the sandbox; otherwise leave it running and use status/result after it exits."
+  );
+}
+
+export function cancelNoPidInfoSuggestedAction() {
+  return "Use status/result to refresh the job record. Do not signal manually unless you can independently verify process ownership.";
 }
 
 export function parseScopePathsOption(value) {
