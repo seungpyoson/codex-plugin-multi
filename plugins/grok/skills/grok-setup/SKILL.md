@@ -13,13 +13,14 @@ Use skill `grok:grok-setup`. Command doc: `plugins/grok/commands/grok-setup.md`.
 Run `node plugins/grok/scripts/grok-web-reviewer.mjs doctor`.
 Show `summary`, `ready`, `next_action`, `tunnel_start`, `session_diagnostics.error_code`, redacted account counters, and whether `durability_warnings` is present.
 Show credential key names only. Never print session cookies, tunnel API-key values, or bearer token values.
-If a loopback grok2api `/v1` endpoint is unavailable, the doctor tries to use an existing checkout or bootstrap `https://github.com/chenyme/grok2api.git` into the default runtime directory.
+If a loopback grok2api `/v1` endpoint is unavailable, the doctor tries to use an existing checkout or bootstrap `https://github.com/chenyme/grok2api.git` into the durable managed runtime directory.
 The bootstrap start command is `uv run granian --interface asgi --host 127.0.0.1 --port 8000 --workers 1 app.main:app`; Docker is not required.
 When `UV_CACHE_DIR` is unset, the plugin provides `uv` a sandbox-writable default; `UV_CACHE_DIR=""` is treated as unset, and an explicit non-empty `UV_CACHE_DIR` is preserved.
-If `durability_warnings` reports `grok2api_ephemeral_bootstrap_home`, configure a durable `GROK2API_HOME` before syncing browser session state.
-If `session_diagnostics.error_code` is `grok_session_no_runtime_tokens`, the tunnel process is up but its account/session pool is empty; run browser-session sync only after explicit operator approval.
+If `durability_warnings` reports `grok2api_ephemeral_bootstrap_home`, configure a durable `GROK2API_HOME` or `CODEX_PLUGIN_MULTI_RUNTIME_DIR` before syncing browser session state.
+If `session_diagnostics.error_code` is `grok_session_no_runtime_tokens`, the tunnel process is up but its account/session pool is empty; use `npm run grok:repair-session` and run browser-session sync only after explicit operator approval.
 If bootstrap/start cannot run, report the specific `tunnel_start.error_code` and do not suggest direct xAI API keys.
 Do not import browser cookies unless the user explicitly requests that session sync step.
+When the user approves session repair, run `npm run grok:repair-session -- --approve-browser-session-sync`; the command reruns doctor after sync and prints redacted readiness fields.
 
 ## Grok Tunnel Contract
 Grok Web is subscription-backed through a local tunnel and must not silently fall back to paid xAI API billing.

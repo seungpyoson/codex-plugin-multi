@@ -6,6 +6,7 @@
   "license": "AGPL-3.0-only",
   "scripts": {
     "smoke": "node --test --test-reporter=spec ../../tests/smoke/grok-web.smoke.test.mjs ../../tests/smoke/grok-session-sync.smoke.test.mjs",
+    "repair-session": "node scripts/grok-web-reviewer.mjs repair",
     "sync-browser-session": "node scripts/grok-sync-browser-session.mjs"
   }
 }

@@ -42,10 +42,11 @@ uv run granian --interface asgi --host 127.0.0.1 --port 8000 --workers 1 app.mai
 
 The manual clone is no longer required for the default path. The Grok plugin
 doctor/run path first checks `GROK2API_HOME`, `GROK2API_BOOTSTRAP_DIR`, the
-temp runtime directory, and common local checkout locations such as
-`~/grok2api`, `~/Projects/grok2api`, and `~/Projects/Claude/grok2api`. If none
-exists, it bootstraps
-`https://github.com/chenyme/grok2api.git` into the default runtime directory,
+durable managed runtime directory (`~/.codex-plugin-multi/runtime/grok2api` by
+default, or `CODEX_PLUGIN_MULTI_RUNTIME_DIR/grok2api` when set), the legacy temp
+runtime directory, and common local checkout locations such as `~/grok2api`,
+`~/Projects/grok2api`, and `~/Projects/Claude/grok2api`. If none exists, it
+bootstraps `https://github.com/chenyme/grok2api.git` into the default runtime directory,
 then auto-starts a loopback grok2api `/v1` endpoint with `uv run granian
 --interface asgi --host <host> --port <port> --workers 1 app.main:app`. Docker
 is not required. When `UV_CACHE_DIR` is unset or an empty string, the plugin
@@ -66,6 +67,21 @@ where the launched process never becomes reachable; those paths report
 
 3. On macOS Chrome-family browsers, sync the local Grok web session into
    grok2api:
+
+```sh
+npm run grok:repair-session
+npm run grok:repair-session -- --approve-browser-session-sync
+```
+
+`grok:repair-session` automates the normal readiness path: doctor, durable
+checkout/bootstrap, tunnel start, session-pool diagnosis, approval-gated browser
+session sync, and final doctor rerun. It stops with
+`browser_session_sync_approval_required` before reading browser-backed session
+material. Rerun with `--approve-browser-session-sync` only after explicit
+operator approval in the current invocation.
+
+The lower-level sync helper is still available when you intentionally want only
+the import step:
 
 ```sh
 npm run grok:sync-browser-session
@@ -204,9 +220,11 @@ admin key.
 
 If doctor reports `durability_warnings[].code:
 grok2api_ephemeral_bootstrap_home`, the grok2api checkout is using the default
-bootstrap home under `$TMPDIR`. Configure a durable `GROK2API_HOME` before
-syncing browser session state. Run `npm run grok:sync-browser-session` only
-after explicit operator approval in the current session.
+or configured bootstrap home under `$TMPDIR`. Configure a durable
+`GROK2API_HOME` or `CODEX_PLUGIN_MULTI_RUNTIME_DIR` before syncing browser
+session state. Run `npm run grok:repair-session -- --approve-browser-session-sync`
+or `npm run grok:sync-browser-session` only after explicit operator approval in
+the current session.
 
 Review runs also preflight the rendered prompt length. Prompts above
 `GROK_WEB_MAX_PROMPT_CHARS` (default 400000) fail before tunnel launch with

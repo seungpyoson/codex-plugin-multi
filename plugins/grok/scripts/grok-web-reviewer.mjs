@@ -49,7 +49,9 @@ const SCHEMA_VERSION = 10;
 const MIN_SECRET_REDACTION_LENGTH = 8;
 const ACCOUNT_PAYMENT_TOKEN_RE = /\b(?:stripe-[^\s,;:)]+|cus_[A-Za-z0-9]{6,}|acct_(?:test_)?[A-Za-z0-9]{5,}|cs_(?:test|live)_[A-Za-z0-9]{6,}|(?:pi|sub|in|ii|ch|seti|setp|price|prod|iv)_(?=[A-Za-z0-9]*\d)[A-Za-z0-9]{5,})/gi;
 const ACCOUNT_PAYMENT_DIAGNOSTIC_RE = /^(?:stripe-.+|cus_[A-Za-z0-9]{6,}|acct_(?:test_)?[A-Za-z0-9]{5,}|cs_(?:test|live)_[A-Za-z0-9]{6,}|(?:pi|sub|in|ii|ch|seti|setp|price|prod|iv)_(?=[A-Za-z0-9]*\d)[A-Za-z0-9]{5,})$/i;
-const PLUGIN_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
+const PLUGIN_ROOT = resolve(SCRIPT_DIR, "..");
+const GROK_SESSION_SYNC_SCRIPT = resolve(SCRIPT_DIR, "grok-sync-browser-session.mjs");
 const SCOPE_FILE_OPEN_FLAGS = fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0);
 const GROK_EXPECTED_KEYS = Object.freeze([
   "id",
@@ -265,9 +267,9 @@ function grok2ApiStartTarget(cfg) {
 
 function grok2ApiHomeCandidates(env = process.env) {
   const candidates = [];
-  if (env.GROK2API_HOME) candidates.push({ path: resolve(env.GROK2API_HOME), source: "GROK2API_HOME" });
+  if (env.GROK2API_HOME) return [{ path: resolve(env.GROK2API_HOME), source: "GROK2API_HOME" }];
   if (env.GROK2API_BOOTSTRAP_DIR) {
-    candidates.push({ path: resolve(env.GROK2API_BOOTSTRAP_DIR), source: "GROK2API_BOOTSTRAP_DIR" });
+    return [{ path: resolve(env.GROK2API_BOOTSTRAP_DIR), source: "GROK2API_BOOTSTRAP_DIR" }];
   }
   candidates.push({ path: defaultGrok2ApiBootstrapDir(env), source: "default_bootstrap_dir" });
   const home = homedir();
@@ -290,7 +292,15 @@ function grok2ApiHomeCandidates(env = process.env) {
 }
 
 function defaultGrok2ApiBootstrapDir(env = process.env) {
-  return resolve(env.GROK2API_BOOTSTRAP_DIR || join(tmpdir(), "codex-plugin-multi", "runtime", "grok2api"));
+  return resolve(env.GROK2API_BOOTSTRAP_DIR || join(defaultManagedRuntimeDir(env), "grok2api"));
+}
+
+function defaultManagedRuntimeDir(env = process.env) {
+  return resolve(env.CODEX_PLUGIN_MULTI_RUNTIME_DIR || join(homedir(), ".codex-plugin-multi", "runtime"));
+}
+
+function legacyTmpGrok2ApiBootstrapDir(env = process.env) {
+  return resolve(join(env.TMPDIR || tmpdir(), "codex-plugin-multi", "runtime", "grok2api"));
 }
 
 function defaultGrok2ApiUvCacheDir() {
@@ -508,6 +518,8 @@ async function maybeBootstrapGrok2ApiHome(env = process.env) {
     message: "Bootstrapped local grok2api checkout without Docker.",
     path: target.path,
     source: target.source,
+    home_path: target.path,
+    home_source: target.source,
   };
 }
 
@@ -2485,12 +2497,12 @@ function pathIsUnder(childPath, parentPath) {
 
 function grok2ApiDurabilityWarning(homeSource, homePath) {
   if (!homePath || homeSource === "GROK2API_HOME") return null;
-  if (homeSource !== "default_bootstrap_dir" && !pathIsUnder(homePath, tmpdir())) return null;
+  if (!pathIsUnder(homePath, tmpdir())) return null;
   return {
     code: "grok2api_ephemeral_bootstrap_home",
     home_source: homeSource ?? null,
-    message: "grok2api is using the default bootstrap home under TMPDIR, so synced runtime account/session state can disappear after OS cleanup or reboot.",
-    recommendation: "Set GROK2API_HOME to a durable chenyme/grok2api checkout before syncing browser session state.",
+    message: "grok2api is using a bootstrap home under TMPDIR, so synced runtime account/session state can disappear after OS cleanup or reboot.",
+    recommendation: "Set GROK2API_HOME or CODEX_PLUGIN_MULTI_RUNTIME_DIR to a durable location before syncing browser session state.",
   };
 }
 
@@ -2498,9 +2510,17 @@ async function durabilityWarningsForDoctor(tunnelStart, env = process.env) {
   const warning = grok2ApiDurabilityWarning(tunnelStart?.home_source, tunnelStart?.home_path);
   if (warning) return [warning];
   const home = await resolveGrok2ApiHome(env);
-  if (!home.ok) return [];
-  const resolvedWarning = grok2ApiDurabilityWarning(home.source, home.path);
-  return resolvedWarning ? [resolvedWarning] : [];
+  if (home.ok) {
+    const resolvedWarning = grok2ApiDurabilityWarning(home.source, home.path);
+    if (resolvedWarning) return [resolvedWarning];
+    return [];
+  }
+  const legacyTmpHome = legacyTmpGrok2ApiBootstrapDir(env);
+  if (await looksLikeGrok2ApiHome(legacyTmpHome)) {
+    const legacyWarning = grok2ApiDurabilityWarning("legacy_tmp_bootstrap_dir", legacyTmpHome);
+    if (legacyWarning) return [legacyWarning];
+  }
+  return [];
 }
 
 function sessionPoolStatus(sessionDiagnostics) {
@@ -2668,6 +2688,190 @@ async function doctorFields(env = process.env) {
   };
 }
 
+function safeDoctorForRepair(doctor) {
+  return {
+    ready: doctor.ready === true,
+    summary: doctor.summary ?? null,
+    next_action: doctor.next_action ?? null,
+    error_code: doctor.error_code ?? null,
+    tunnel_start: {
+      error_code: doctor.tunnel_start?.error_code ?? null,
+    },
+    session_diagnostics: {
+      error_code: doctor.session_diagnostics?.error_code ?? null,
+      total_token_count: doctor.session_diagnostics?.total_token_count ?? null,
+      active_token_count: doctor.session_diagnostics?.active_token_count ?? null,
+      malformed_active_token_count: doctor.session_diagnostics?.malformed_active_token_count ?? null,
+      deleted_token_count: doctor.session_diagnostics?.deleted_token_count ?? null,
+      account_count: doctor.session_diagnostics?.account_count ?? null,
+      pool_count: doctor.session_diagnostics?.pool_count ?? null,
+    },
+    models_ready: doctor.models_ready ?? null,
+    model_count: doctor.model_count ?? null,
+    chat_probe: {
+      status: doctor.chat_probe?.status ?? null,
+      error_code: doctor.chat_probe?.error_code ?? null,
+      http_status: doctor.chat_probe?.http_status ?? null,
+    },
+    durability_warning_present: Array.isArray(doctor.durability_warnings) && doctor.durability_warnings.length > 0,
+  };
+}
+
+function repairNeedsSessionSync(doctor) {
+  return doctor?.error_code === "grok_session_no_runtime_tokens"
+    || doctor?.session_diagnostics?.error_code === "grok_session_no_runtime_tokens"
+    || doctor?.chat_probe?.error_code === "grok_session_no_runtime_tokens";
+}
+
+function repairSyncApproved(options) {
+  return options["approve-browser-session-sync"] === true
+    || String(options["approve-browser-session-sync"] ?? "").toLowerCase() === "true";
+}
+
+function repairSyncArgs(options) {
+  const args = [];
+  for (const key of ["browser", "profile", "cookie-source-json", "cookie-db", "pool", "admin-timeout-ms"]) {
+    if (options[key] !== undefined && options[key] !== true) args.push(`--${key}`, String(options[key]));
+  }
+  if (options.append === true || String(options.append ?? "").toLowerCase() === "true") args.push("--append");
+  return args;
+}
+
+function summarizeSyncResult(result, env = process.env) {
+  const redact = redactor(env);
+  let parsed = null;
+  try {
+    parsed = result.stdout ? JSON.parse(result.stdout) : null;
+  } catch {
+    parsed = null;
+  }
+  if (result.status === 0 && parsed?.ok === true) {
+    return {
+      status: "completed",
+      error_code: null,
+      source: parsed.source ?? null,
+      selected_cookie: parsed.selected_cookie ?? null,
+      pool: parsed.pool ?? null,
+      append: parsed.append ?? null,
+      deleted_count: parsed.deleted_count ?? null,
+      token_count: Array.isArray(parsed.tokens) ? parsed.tokens.length : null,
+    };
+  }
+  return {
+    status: "failed",
+    error_code: parsed?.error_code ?? "grok_browser_session_sync_failed",
+    error_message: redact(parsed?.error_message ?? result.stderr ?? result.stdout ?? `sync exited ${result.status ?? "unknown"}`),
+    source: parsed?.source ?? null,
+  };
+}
+
+function runBrowserSessionSync(cfg, options, env = process.env) {
+  const childEnv = {
+    ...env,
+    GROK2API_BASE_URL: cfg.grok2api_base_url,
+    GROK2API_ADMIN_KEY: cfg.grok2api_admin_key,
+  };
+  const result = spawnSync(process.execPath, [GROK_SESSION_SYNC_SCRIPT, ...repairSyncArgs(options)], {
+    cwd: process.cwd(),
+    env: childEnv,
+    encoding: "utf8",
+    windowsHide: true,
+    maxBuffer: 2 * 1024 * 1024,
+  });
+  return summarizeSyncResult(result, childEnv);
+}
+
+async function repairFields(options = {}, env = process.env) {
+  const cfg = config(env);
+  const initialDoctor = await doctorFields(env);
+  const initialSafe = safeDoctorForRepair(initialDoctor);
+  if (initialDoctor.ready === true) {
+    return {
+      ok: true,
+      status: "ready",
+      provider: "grok-web",
+      summary: "Grok reviewer is already ready.",
+      next_action: "Run a Grok web review.",
+      error_code: null,
+      initial_doctor: initialSafe,
+      sync_session: {
+        status: "not_needed",
+        source_content_transmission: "not_sent",
+      },
+      final_doctor: initialSafe,
+    };
+  }
+  if (!repairNeedsSessionSync(initialDoctor)) {
+    return {
+      ok: false,
+      status: "not_repairable",
+      provider: "grok-web",
+      summary: initialDoctor.summary,
+      next_action: initialDoctor.next_action,
+      error_code: initialDoctor.error_code,
+      initial_doctor: initialSafe,
+      sync_session: {
+        status: "not_attempted",
+        source_content_transmission: "not_sent",
+      },
+      final_doctor: initialSafe,
+    };
+  }
+  if (!repairSyncApproved(options)) {
+    return {
+      ok: false,
+      status: "approval_required",
+      provider: "grok-web",
+      summary: "Grok tunnel is reachable, but session repair requires explicit approval before browser-backed session material is read.",
+      next_action: "Rerun npm run grok:repair-session -- --approve-browser-session-sync after approving browser/session sync for this invocation.",
+      error_code: "browser_session_sync_approval_required",
+      initial_doctor: initialSafe,
+      sync_session: {
+        status: "approval_required",
+        error_code: "browser_session_sync_approval_required",
+        source_content_transmission: "not_sent",
+      },
+      final_doctor: initialSafe,
+    };
+  }
+
+  const syncSession = runBrowserSessionSync(cfg, options, env);
+  if (syncSession.status !== "completed") {
+    return {
+      ok: false,
+      status: "sync_failed",
+      provider: "grok-web",
+      summary: "Browser/session sync failed; Grok reviewer readiness was not repaired.",
+      next_action: "Inspect sync_session.error_code and rerun repair after fixing the reported browser/session sync issue.",
+      error_code: syncSession.error_code,
+      initial_doctor: initialSafe,
+      sync_session: {
+        ...syncSession,
+        source_content_transmission: "sent_after_explicit_approval",
+      },
+      final_doctor: initialSafe,
+    };
+  }
+
+  const finalDoctor = await doctorFields(env);
+  return {
+    ok: finalDoctor.ready === true,
+    status: finalDoctor.ready === true ? "ready" : "not_ready",
+    provider: "grok-web",
+    summary: finalDoctor.ready === true
+      ? "Grok browser/session sync completed and doctor is now ready."
+      : "Grok browser/session sync completed, but doctor is still not ready.",
+    next_action: finalDoctor.ready === true ? "Run a Grok web review." : finalDoctor.next_action,
+    error_code: finalDoctor.ready === true ? null : finalDoctor.error_code,
+    initial_doctor: initialSafe,
+    sync_session: {
+      ...syncSession,
+      source_content_transmission: "sent_after_explicit_approval",
+    },
+    final_doctor: safeDoctorForRepair(finalDoctor),
+  };
+}
+
 async function cmdRun(options) {
   const mode = options.mode ?? "review";
   let lifecycleEvents = null;
@@ -2772,13 +2976,17 @@ async function main() {
     printJson(redactValue(await doctorFields(), redactor()));
     return;
   }
+  if (cmd === "repair") {
+    printJson(redactValue(await repairFields(options), redactor()));
+    return;
+  }
   if (cmd === "run") return cmdRun(options);
   if (cmd === "result") return cmdResult(options);
   if (cmd === "list") return cmdList();
   if (cmd === "help" || cmd === "--help" || cmd === "-h") {
     printJson({
       ok: true,
-      commands: ["doctor", "ping", "run", "result", "list"],
+      commands: ["doctor", "ping", "repair", "run", "result", "list"],
       provider: "grok-web",
       default_auth_mode: "subscription_web",
       default_endpoint: DEFAULT_BASE_URL,
