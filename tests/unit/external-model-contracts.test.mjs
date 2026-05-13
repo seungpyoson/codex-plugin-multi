@@ -89,6 +89,7 @@ test("shared review contracts keep upstream-parity review-only guarantees", () =
     "Return the runtime output verbatim; do not summarize or rewrite findings.",
     "If there is no substantive result or structured output, report review blocked / no findings produced.",
     "Render `external_review_launched` as soon as it appears.",
+    "`external_review_progress` is a heartbeat for long foreground runs; keep the existing launch card visible and do not render it as a terminal result.",
     "Render `external_review` before findings, status prose, or the review result.",
   ]) {
     assert.match(reviewDocs, new RegExp(escapeRegExp(required)));

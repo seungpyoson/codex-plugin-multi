@@ -111,6 +111,10 @@ function rmTree(dir) {
   rmSync(dir, { recursive: true, force: true });
 }
 
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 function makeEmptyBranchDiffWorkspace() {
   const cwd = realpathSync(mkdtempSync(path.join(tmpdir(), "grok-web-empty-branch-diff-")));
   writeFileSync(path.join(cwd, "review.js"), "export const value = 1;\n");
@@ -1496,6 +1500,7 @@ test("custom-review lifecycle jsonl emits launch before terminal record", async 
   writeFileSync(path.join(cwd, "review.js"), "export const value = 42;\n");
 
   await withServer(async (_req, res) => {
+    await sleep(100);
     res.setHeader("content-type", "application/json");
     res.end(JSON.stringify({
       id: "grok-web-session-lifecycle",
@@ -1515,18 +1520,25 @@ test("custom-review lifecycle jsonl emits launch before terminal record", async 
     ], {
       cwd,
       env: {
+        CODEX_PLUGIN_EXTERNAL_REVIEW_HEARTBEAT_MS: "5",
         GROK_WEB_BASE_URL: baseUrl,
         GROK_WEB_TUNNEL_API_KEY: "secret-cookie-like-token",
       },
     });
     assert.equal(result.status, 0, result.stderr || result.stdout);
     const lines = parseJsonLines(result);
-    assert.equal(lines.length, 2);
-    const [launch, record] = lines;
+    assert.ok(lines.length >= 3, result.stdout);
+    const [launch] = lines;
+    const progress = lines.find((line) => line.event === "external_review_progress");
+    const record = lines.at(-1);
     assert.deepEqual(launch, externalReviewLaunchedEvent({
       job_id: launch.job_id,
       target: "grok-web",
     }, launch.external_review));
+    assert.equal(progress.job_id, launch.job_id);
+    assert.equal(progress.target, "grok-web");
+    assert.equal(progress.status, "running");
+    assert.equal(progress.heartbeat, 1);
     assert.equal(launch.external_review.provider, "Grok Web");
     assert.equal(launch.external_review.source_content_transmission, "may_be_sent");
     assert.equal(record.status, "completed");

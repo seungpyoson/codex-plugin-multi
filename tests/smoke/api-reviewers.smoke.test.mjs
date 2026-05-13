@@ -126,6 +126,10 @@ async function waitForValue(fn, { timeoutMs = 2000, intervalMs = 25 } = {}) {
   assert.fail("timed out waiting for expected value");
 }
 
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 function mockResponse(model, id = "chatcmpl-test", content = substantiveReviewFixture(`Provider model: ${model}`)) {
   return JSON.stringify({
     id,
@@ -3200,35 +3204,56 @@ test("branch-diff rejects oversized committed scope files before provider delive
 
 test("direct API reviewers lifecycle jsonl emits launch before terminal record", async () => {
   const cwd = makeWorkspace();
-  const result = await run([
-    "run",
-    "--provider", "deepseek",
-    "--mode", "custom-review",
-    "--scope", "custom",
-    "--scope-paths", "seed.txt",
-    "--foreground",
-    "--lifecycle-events", "jsonl",
-    "--prompt", "Check this file.",
-  ], {
-    cwd,
-    env: {
-      API_REVIEWERS_MOCK_RESPONSE: mockResponse("deepseek-v4-pro"),
-      DEEPSEEK_API_KEY: "secret-test-value",
-    },
+  const pluginRoot = makeInstalledApiReviewersRoot();
+  const server = await startChatServer(async (req, res) => {
+    req.resume();
+    await sleep(100);
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end(mockResponse("deepseek-v4-pro"));
   });
-  assert.equal(result.status, 0, result.stderr || result.stdout);
-  const lines = parseJsonLines(result.stdout);
-  assert.equal(lines.length, 2);
-  const [launch, record] = lines;
-  assert.deepEqual(launch, externalReviewLaunchedEvent({
-    job_id: launch.job_id,
-    target: "deepseek",
-  }, launch.external_review));
-  assert.equal(launch.external_review.provider, "DeepSeek");
-  assert.equal(launch.external_review.source_content_transmission, "may_be_sent");
-  assert.equal(record.status, "completed");
-  assert.equal(record.external_review.source_content_transmission, "sent");
-  assert.doesNotMatch(result.stdout, /secret-test-value/);
+  try {
+    const { port } = server.address();
+    writeDeepSeekProviderConfig(pluginRoot, `http://127.0.0.1:${port}`);
+    const result = await run([
+      "run",
+      "--provider", "deepseek",
+      "--mode", "custom-review",
+      "--scope", "custom",
+      "--scope-paths", "seed.txt",
+      "--foreground",
+      "--lifecycle-events", "jsonl",
+      "--prompt", "Check this file.",
+    ], {
+      companion: path.join(pluginRoot, "scripts", "api-reviewer.mjs"),
+      cwd,
+      env: {
+        CODEX_PLUGIN_EXTERNAL_REVIEW_HEARTBEAT_MS: "5",
+        DEEPSEEK_API_KEY: "secret-test-value",
+      },
+    });
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    const lines = parseJsonLines(result.stdout);
+    assert.ok(lines.length >= 3, result.stdout);
+    const [launch] = lines;
+    const progress = lines.find((line) => line.event === "external_review_progress");
+    const record = lines.at(-1);
+    assert.deepEqual(launch, externalReviewLaunchedEvent({
+      job_id: launch.job_id,
+      target: "deepseek",
+    }, launch.external_review));
+    assert.equal(progress.job_id, launch.job_id);
+    assert.equal(progress.target, "deepseek");
+    assert.equal(progress.status, "running");
+    assert.equal(progress.heartbeat, 1);
+    assert.equal(launch.external_review.provider, "DeepSeek");
+    assert.equal(launch.external_review.source_content_transmission, "may_be_sent");
+    assert.equal(record.status, "completed");
+    assert.equal(record.external_review.source_content_transmission, "sent");
+    assert.doesNotMatch(result.stdout, /secret-test-value/);
+  } finally {
+    server.close();
+    rmSync(pluginRoot, { recursive: true, force: true });
+  }
 });
 
 test("direct API reviewers reject invalid lifecycle event mode as bad args", async () => {

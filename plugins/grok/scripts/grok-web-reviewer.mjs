@@ -102,12 +102,12 @@ const GROK_EXPECTED_KEYS = Object.freeze([
   "schema_version",
 ]);
 
-function printJson(obj) {
-  process.stdout.write(`${JSON.stringify(obj, null, 2)}\n`);
+function writableOutput(output) {
+  return output && typeof output.write === "function" ? output : process.stdout;
 }
 
-function printJsonLine(obj) {
-  process.stdout.write(`${JSON.stringify(obj)}\n`);
+function printJson(obj, output = process.stdout) {
+  writableOutput(output).write(`${JSON.stringify(obj, null, 2)}\n`);
 }
 
 function markdownCell(value) {
@@ -150,14 +150,62 @@ function renderLifecycleMarkdown(obj) {
   ].join("\n");
 }
 
-function printLifecycleJson(obj, lifecycleEvents) {
-  if (lifecycleEvents === "jsonl") printJsonLine(obj);
+function printJsonLine(obj, output = process.stdout) {
+  writableOutput(output).write(`${JSON.stringify(obj)}\n`);
+}
+
+function printLifecycleJson(obj, lifecycleEvents, output = process.stdout) {
+  if (lifecycleEvents === "jsonl") printJsonLine(obj, output);
   else if (lifecycleEvents === "markdown") {
     const markdown = renderLifecycleMarkdown(obj);
-    if (markdown) process.stdout.write(markdown);
-    else printJson(obj);
+    if (markdown) writableOutput(output).write(markdown);
+    else printJson(obj, output);
   }
-  else printJson(obj);
+  else printJson(obj, output);
+}
+
+function externalReviewProgressEvent(invocation, { sequence, elapsedMs }) {
+  return {
+    event: "external_review_progress",
+    job_id: invocation.job_id,
+    target: invocation.target,
+    status: "running",
+    mode: invocation.mode ?? null,
+    run_kind: invocation.run_kind ?? "foreground",
+    heartbeat: sequence,
+    elapsed_ms: Math.max(0, Math.trunc(elapsedMs ?? 0)),
+  };
+}
+
+function lifecycleHeartbeatIntervalMs(env = process.env) {
+  const raw = env.CODEX_PLUGIN_EXTERNAL_REVIEW_HEARTBEAT_MS;
+  if (raw === undefined || raw === null || raw === "") return 30000;
+  const parsed = Number(raw);
+  return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : 30000;
+}
+
+function startLifecycleHeartbeat(
+  invocation,
+  lifecycleEvents,
+  { intervalMs = lifecycleHeartbeatIntervalMs(), output = process.stdout, now = Date.now } = {},
+) {
+  if (lifecycleEvents !== "jsonl") return () => {};
+  const interval = Number.isSafeInteger(intervalMs) && intervalMs > 0 ? intervalMs : lifecycleHeartbeatIntervalMs();
+  const started = now();
+  let sequence = 0;
+  const timer = setInterval(() => {
+    sequence += 1;
+    printLifecycleJson(
+      externalReviewProgressEvent(invocation, {
+        sequence,
+        elapsedMs: now() - started,
+      }),
+      lifecycleEvents,
+      output,
+    );
+  }, interval);
+  timer.unref?.();
+  return () => clearInterval(timer);
 }
 
 function parseLifecycleEventsMode(value) {
@@ -2583,8 +2631,13 @@ async function cmdRun(options) {
         }, lifecycleEvents);
       }
       if (!execution) {
-        promptSentToTunnel = true;
-        execution = await callGrokTunnel(cfg, prompt);
+        const stopHeartbeat = startLifecycleHeartbeat({ job_id: jobId, target: "grok-web", mode }, lifecycleEvents);
+        try {
+          promptSentToTunnel = true;
+          execution = await callGrokTunnel(cfg, prompt);
+        } finally {
+          stopHeartbeat();
+        }
       }
       execution.diagnostics = {
         ...(execution.diagnostics ?? {}),

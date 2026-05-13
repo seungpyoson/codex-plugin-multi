@@ -95,12 +95,12 @@ const MIN_SECRET_REDACTION_LENGTH = 8;
 const ACCOUNT_PAYMENT_TOKEN_RE = /\b(?:stripe-[^\s,;:)]+|cus_[A-Za-z0-9]{6,}|acct_(?:test_)?[A-Za-z0-9]{5,}|cs_(?:test|live)_[A-Za-z0-9]{6,}|(?:pi|sub|in|ii|ch|seti|setp|price|prod|iv)_(?=[A-Za-z0-9]*\d)[A-Za-z0-9]{5,})/gi;
 const ACCOUNT_PAYMENT_DIAGNOSTIC_RE = /^(?:stripe-.+|cus_[A-Za-z0-9]{6,}|acct_(?:test_)?[A-Za-z0-9]{5,}|cs_(?:test|live)_[A-Za-z0-9]{6,}|(?:pi|sub|in|ii|ch|seti|setp|price|prod|iv)_(?=[A-Za-z0-9]*\d)[A-Za-z0-9]{5,})$/i;
 
-function printJson(obj) {
-  process.stdout.write(`${JSON.stringify(obj, null, 2)}\n`);
+function writableOutput(output) {
+  return output && typeof output.write === "function" ? output : process.stdout;
 }
 
-function printJsonLine(obj) {
-  process.stdout.write(`${JSON.stringify(obj)}\n`);
+function printJson(obj, output = process.stdout) {
+  writableOutput(output).write(`${JSON.stringify(obj, null, 2)}\n`);
 }
 
 function markdownCell(value) {
@@ -143,14 +143,62 @@ function renderLifecycleMarkdown(obj) {
   ].join("\n");
 }
 
-function printLifecycleJson(obj, lifecycleEvents) {
-  if (lifecycleEvents === "jsonl") printJsonLine(obj);
+function printJsonLine(obj, output = process.stdout) {
+  writableOutput(output).write(`${JSON.stringify(obj)}\n`);
+}
+
+function printLifecycleJson(obj, lifecycleEvents, output = process.stdout) {
+  if (lifecycleEvents === "jsonl") printJsonLine(obj, output);
   else if (lifecycleEvents === "markdown") {
     const markdown = renderLifecycleMarkdown(obj);
-    if (markdown) process.stdout.write(markdown);
-    else printJson(obj);
+    if (markdown) writableOutput(output).write(markdown);
+    else printJson(obj, output);
   }
-  else printJson(obj);
+  else printJson(obj, output);
+}
+
+function externalReviewProgressEvent(invocation, { sequence, elapsedMs }) {
+  return {
+    event: "external_review_progress",
+    job_id: invocation.job_id,
+    target: invocation.target,
+    status: "running",
+    mode: invocation.mode ?? null,
+    run_kind: invocation.run_kind ?? "foreground",
+    heartbeat: sequence,
+    elapsed_ms: Math.max(0, Math.trunc(elapsedMs ?? 0)),
+  };
+}
+
+function lifecycleHeartbeatIntervalMs(env = process.env) {
+  const raw = env.CODEX_PLUGIN_EXTERNAL_REVIEW_HEARTBEAT_MS;
+  if (raw === undefined || raw === null || raw === "") return 30000;
+  const parsed = Number(raw);
+  return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : 30000;
+}
+
+function startLifecycleHeartbeat(
+  invocation,
+  lifecycleEvents,
+  { intervalMs = lifecycleHeartbeatIntervalMs(), output = process.stdout, now = Date.now } = {},
+) {
+  if (lifecycleEvents !== "jsonl") return () => {};
+  const interval = Number.isSafeInteger(intervalMs) && intervalMs > 0 ? intervalMs : lifecycleHeartbeatIntervalMs();
+  const started = now();
+  let sequence = 0;
+  const timer = setInterval(() => {
+    sequence += 1;
+    printLifecycleJson(
+      externalReviewProgressEvent(invocation, {
+        sequence,
+        elapsedMs: now() - started,
+      }),
+      lifecycleEvents,
+      output,
+    );
+  }, interval);
+  timer.unref?.();
+  return () => clearInterval(timer);
 }
 
 function parseLifecycleEventsMode(value) {
@@ -2238,22 +2286,25 @@ async function cmdRun(options) {
     if (execution) {
       // handled below by the terminal JobRecord path without a launch event
     } else {
-    if (lifecycleEvents) {
-      printLifecycleJson({
-        event: "external_review_launched",
-        job_id: jobId,
-        target: provider,
-        status: "launched",
-        external_review: buildLaunchExternalReview({ cfg, mode, options: runOptions, scopeInfo }),
-      }, lifecycleEvents);
-    }
-    try {
-      execution = await callProvider(provider, cfg, renderedPrompt);
-      execution.prompt = renderedPrompt;
-    } catch (e) {
-      execution = providerFailure("provider_unavailable", redactor(process.env)(e?.message ?? String(e)), null, null, null);
-      execution.prompt = renderedPrompt;
-    }
+      if (lifecycleEvents) {
+        printLifecycleJson({
+          event: "external_review_launched",
+          job_id: jobId,
+          target: provider,
+          status: "launched",
+          external_review: buildLaunchExternalReview({ cfg, mode, options: runOptions, scopeInfo }),
+        }, lifecycleEvents);
+      }
+      const stopHeartbeat = startLifecycleHeartbeat({ job_id: jobId, target: provider, mode }, lifecycleEvents);
+      try {
+        execution = await callProvider(provider, cfg, renderedPrompt);
+        execution.prompt = renderedPrompt;
+      } catch (e) {
+        execution = providerFailure("provider_unavailable", redactor(process.env)(e?.message ?? String(e)), null, null, null);
+        execution.prompt = renderedPrompt;
+      } finally {
+        stopHeartbeat();
+      }
     }
   }
   const record = redactRecord(buildRecord({
