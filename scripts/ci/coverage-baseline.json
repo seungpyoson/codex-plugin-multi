@@ -65,6 +65,11 @@
       "branches": 0.0,
       "functions": 100.0
     },
+    "plugins/api-reviewers/scripts/lib/review-panel.mjs": {
+      "lines": 44.95,
+      "branches": 18.18,
+      "functions": 52.94
+    },
     "plugins/claude/scripts/lib/args.mjs": {
       "lines": 91.43,
       "branches": 86.0,
@@ -169,6 +174,11 @@
       "lines": 100.0,
       "branches": 0.0,
       "functions": 100.0
+    },
+    "plugins/claude/scripts/lib/review-panel.mjs": {
+      "lines": 44.95,
+      "branches": 18.18,
+      "functions": 52.94
     },
     "plugins/claude/scripts/lib/scope.mjs": {
       "lines": 90.34,
@@ -285,6 +295,11 @@
       "branches": 0.0,
       "functions": 100.0
     },
+    "plugins/gemini/scripts/lib/review-panel.mjs": {
+      "lines": 44.95,
+      "branches": 18.18,
+      "functions": 52.94
+    },
     "plugins/gemini/scripts/lib/scope.mjs": {
       "lines": 90.34,
       "branches": 74.9,
@@ -297,6 +312,46 @@
     },
     "plugins/gemini/scripts/lib/workspace.mjs": {
       "lines": 85.71,
+      "branches": 100.0,
+      "functions": 100.0
+    },
+    "plugins/grok/scripts/lib/external-review.mjs": {
+      "lines": 89.0,
+      "branches": 96.88,
+      "functions": 100.0
+    },
+    "plugins/grok/scripts/lib/git-binary.mjs": {
+      "lines": 97.83,
+      "branches": 100.0,
+      "functions": 100.0
+    },
+    "plugins/grok/scripts/lib/git-env.mjs": {
+      "lines": 100.0,
+      "branches": 100.0,
+      "functions": 100.0
+    },
+    "plugins/grok/scripts/lib/jwt.mjs": {
+      "lines": 0.0,
+      "branches": 0.0,
+      "functions": 0.0
+    },
+    "plugins/grok/scripts/lib/review-panel.mjs": {
+      "lines": 44.95,
+      "branches": 18.18,
+      "functions": 52.94
+    },
+    "plugins/grok/scripts/lib/review-prompt.mjs": {
+      "lines": 100.0,
+      "branches": 89.62,
+      "functions": 100.0
+    },
+    "plugins/grok/scripts/lib/time.mjs": {
+      "lines": 100.0,
+      "branches": 100.0,
+      "functions": 100.0
+    },
+    "plugins/grok/scripts/lib/usage-limit.mjs": {
+      "lines": 100.0,
       "branches": 100.0,
       "functions": 100.0
     },
@@ -394,6 +449,11 @@
       "lines": 100.0,
       "branches": 0.0,
       "functions": 100.0
+    },
+    "plugins/kimi/scripts/lib/review-panel.mjs": {
+      "lines": 44.95,
+      "branches": 18.18,
+      "functions": 52.94
     },
     "plugins/kimi/scripts/lib/scope.mjs": {
       "lines": 92.0,

@@ -14,7 +14,7 @@ Scope: `branch-diff`. Preserve raw `$ARGUMENTS` except for documented routing.
 `$ARGUMENTS` is optional `--scope-base REF` followed by review prompt text.
 Route `--scope-base REF` before `--prompt` and pass the remaining prompt text to `--prompt`.
 Run `node plugins/api-reviewers/scripts/api-reviewer.mjs approval-request --provider glm --mode review --scope branch-diff --scope-base REF --prompt "<prompt text>"`.
-Run `node plugins/api-reviewers/scripts/api-reviewer.mjs run --provider glm --mode review --scope branch-diff --scope-base REF --approval-token "<approval_token.value>" --lifecycle-events jsonl --prompt "<prompt text>"`.
+Run `node plugins/api-reviewers/scripts/api-reviewer.mjs run --provider glm --mode review --scope branch-diff --scope-base REF --approval-token "<approval_token.value>" --lifecycle-events markdown --prompt "<prompt text>"`.
 ## Review Contract
 This is a review-only contract.
 Do not fix findings, apply patches, edit files, or start rescue work from a review result.
@@ -41,6 +41,34 @@ Render `external_review_launched` as soon as it appears.
 If `external_review` is present, render it before the review result.
 If the JobRecord failed, report `error_code`, `error_message`, `http_status` when present, and `suggested_action`.
 Do not print API-key values.
+
+## Rendering Contract
+Request `--lifecycle-events markdown` for foreground and background review flows.
+Render lifecycle markdown cards directly.
+If a legacy JSON lifecycle envelope appears, render `external_review_launched` immediately.
+`external_review_progress` is a heartbeat for long foreground runs; keep the existing launch card visible and do not render it as a terminal result.
+If a background launch envelope has `event: "launched"` with an `external_review` field, render the same launch card immediately with session pending.
+If a legacy JSON `external_review` field appears, render it before normal prose.
+Lifecycle cards should include provider, job, session, run kind, mode, scope, source transmission, status, error code, error message, HTTP status, and suggested action when those fields are present.
+
+```md
+### EXTERNAL REVIEW
+
+| Field | Value |
+| --- | --- |
+| Provider | <provider> |
+| Job | <job_id> |
+| Session | <session_id or pending> |
+| Run | <foreground|background|unknown> |
+| Mode | <mode> |
+| Scope | <scope and scope_base/scope_paths> |
+| Source | <source_content_transmission> |
+| Status | <status> |
+| Error | <error_code> |
+| Message | <error_message> |
+| HTTP | <http_status> |
+| Action | <suggested_action> |
+```
 
 ## Scope Safety
 A git worktree can filter gitignored files before selected source is sent.

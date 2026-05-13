@@ -12,7 +12,7 @@ EXTERNAL_MODEL_CONTRACT_VERSION=1
 
 `$ARGUMENTS` is optional `--scope-base REF` followed by review prompt text.
 Route `--scope-base REF` before `--prompt` and pass the remaining prompt text to `--prompt`.
-Run `node plugins/grok/scripts/grok-web-reviewer.mjs run --mode adversarial-review --scope branch-diff --scope-base REF --foreground --lifecycle-events jsonl --prompt "<prompt text>"`.
+Run `node plugins/grok/scripts/grok-web-reviewer.mjs run --mode adversarial-review --scope branch-diff --scope-base REF --foreground --lifecycle-events markdown --prompt "<prompt text>"`.
 ## Review Contract
 This is a review-only contract.
 Do not fix findings, apply patches, edit files, or start rescue work from a review result.
@@ -31,6 +31,34 @@ If `external_review` is present, render it before the review result.
 If the JobRecord failed, report `error_code`, `error_message`, `http_status` when present, and `suggested_action`.
 Review timeout defaults to 900000 ms. Use `GROK_WEB_TIMEOUT_MS=<ms>` to override it; the effective value is persisted in `review_metadata.audit_manifest.request.timeout_ms`.
 Rendered prompts above `GROK_WEB_MAX_PROMPT_CHARS` fail before tunnel launch with `source_content_transmission: "not_sent"`; split or narrow the scope instead of relying on truncation.
+
+## Rendering Contract
+Request `--lifecycle-events markdown` for foreground and background review flows.
+Render lifecycle markdown cards directly.
+If a legacy JSON lifecycle envelope appears, render `external_review_launched` immediately.
+`external_review_progress` is a heartbeat for long foreground runs; keep the existing launch card visible and do not render it as a terminal result.
+If a background launch envelope has `event: "launched"` with an `external_review` field, render the same launch card immediately with session pending.
+If a legacy JSON `external_review` field appears, render it before normal prose.
+Lifecycle cards should include provider, job, session, run kind, mode, scope, source transmission, status, error code, error message, HTTP status, and suggested action when those fields are present.
+
+```md
+### EXTERNAL REVIEW
+
+| Field | Value |
+| --- | --- |
+| Provider | <provider> |
+| Job | <job_id> |
+| Session | <session_id or pending> |
+| Run | <foreground|background|unknown> |
+| Mode | <mode> |
+| Scope | <scope and scope_base/scope_paths> |
+| Source | <source_content_transmission> |
+| Status | <status> |
+| Error | <error_code> |
+| Message | <error_message> |
+| HTTP | <http_status> |
+| Action | <suggested_action> |
+```
 
 ## Grok Tunnel Contract
 Grok Web is subscription-backed through a local tunnel and must not silently fall back to paid xAI API billing.
