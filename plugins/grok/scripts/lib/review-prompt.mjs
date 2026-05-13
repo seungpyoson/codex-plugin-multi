@@ -300,22 +300,24 @@ function lineHasConcretePermissionFailure(line) {
   ])) {
     return true;
   }
-  return lower.includes("permission block") && includesAny(lower, [
-    "could not inspect",
-    "cannot inspect",
-    "can't inspect",
-    "unable to inspect",
-    "could not read",
-    "cannot read",
-    "can't read",
-    "unable to read",
-    "could not access",
-    "cannot access",
-    "can't access",
-    "unable to access",
-    "being removed",
-    "be removed",
-  ]);
+  return lower.includes("permission block") && (
+    includesAny(lower, [
+      "could not inspect",
+      "cannot inspect",
+      "can't inspect",
+      "unable to inspect",
+      "could not read",
+      "cannot read",
+      "can't read",
+      "unable to read",
+      "could not access",
+      "cannot access",
+      "can't access",
+      "unable to access",
+      "permission block prevented",
+      "permission blocks prevented",
+    ])
+  );
 }
 
 function isPathTokenBoundary(char) {
@@ -416,13 +418,7 @@ function semanticFailureReasons(text, looksShallow, selectedSource = null) {
   ]) || semanticLines.some((line) => lineDeniesSelectedSourceInspection(line, selectedSource))) {
     reasons.push("not_reviewed");
   }
-  if (includesAny(semanticText, [
-    "permission denied",
-    "permission block",
-    "permission-denied",
-    "read denied",
-    "read-denied",
-  ])) {
+  if (semanticLines.some((line) => lineHasConcretePermissionFailure(line))) {
     reasons.push("permission_blocked");
   }
   if (looksShallow) {

@@ -904,6 +904,25 @@ test("review audit manifest still flags inspection failure phrased with permissi
   assert.equal(manifest.review_quality.failed_review_slot, true);
 });
 
+test("review audit manifest still flags concrete permission-block prevention prose", () => {
+  const manifest = buildReviewAuditManifest({
+    prompt: "rendered prompt",
+    sourceFiles: [{ path: "sample.js", text: "export const value = 1;\n" }],
+    result: [
+      "Verdict: APPROVE",
+      "Blocking findings: none.",
+      "Non-blocking concerns: none.",
+      "Permission block prevented file access to sample.js.",
+      "Inspection statement: I inspected sample.js.",
+    ].join("\n"),
+    status: "completed",
+    errorCode: null,
+  });
+
+  assert.equal(manifest.review_quality.semantic_failure_reasons.includes("permission_blocked"), true);
+  assert.equal(manifest.review_quality.failed_review_slot, true);
+});
+
 test("review audit manifest still flags permission denial inside a passing checklist line", () => {
   const manifest = buildReviewAuditManifest({
     prompt: "rendered prompt",
@@ -939,6 +958,31 @@ test("review audit manifest does not flag passing permission-block resolved pros
       "Checklist item 4 (known comments/threads): PASS - none supplied.",
       "Checklist item 5 (separation of findings): PASS - no blocking findings.",
       "Checklist item 6 (timeout/truncation/etc.): PASS - no permission blocks occurred; all access concerns were resolved.",
+      "Blocking findings: none.",
+      "Non-blocking concerns: none.",
+      "Inspection statement: I inspected sample.js.",
+    ].join("\n"),
+    status: "completed",
+    errorCode: null,
+  });
+
+  assert.deepEqual(manifest.review_quality.semantic_failure_reasons, []);
+  assert.equal(manifest.review_quality.failed_review_slot, false);
+});
+
+test("review audit manifest does not flag passing permission-block removal prose", () => {
+  const manifest = buildReviewAuditManifest({
+    prompt: "rendered prompt",
+    sourceFiles: [{ path: "sample.js", text: "export const value = 1;\n" }],
+    result: [
+      "Verdict: APPROVE",
+      "Checklist item 1 (base/head verification): PASS - refs match.",
+      "Checklist item 2 (scope adherence): PASS - only sample.js reviewed.",
+      "Checklist item 3 (correctness bugs, security risks, regressions, missing tests): PASS - no findings.",
+      "Checklist item 4 (known comments/threads): PASS - none supplied.",
+      "Checklist item 5 (separation of findings): PASS - no blocking findings.",
+      "Checklist item 6 (timeout/truncation/etc.): PASS - no timeout, truncation, interruption, permission block, or shallow output.",
+      "The review completed with permission blocks being removed from the inspection context, granting full access.",
       "Blocking findings: none.",
       "Non-blocking concerns: none.",
       "Inspection statement: I inspected sample.js.",
