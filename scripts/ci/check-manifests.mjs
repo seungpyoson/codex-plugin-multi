@@ -18,13 +18,12 @@ const BARE_NAME = /^[a-z0-9]+(-[a-z0-9]+)*$/;
 // core-plugins/src/marketplace_tests.rs:1168,1204,1296,1320).
 const CAPABILITY_ENUM = ["Interactive", "Read", "Write"];
 
-// Command frontmatter keys allowed by Codex (verified in openai/plugins:
-// vercel/commands/*.md use `description`; cloudflare uses +`argument-hint` +
-// `allowed-tools`. No other keys observed).
+// Command frontmatter keys allowed by Codex and upstream command contracts.
 const COMMAND_FRONTMATTER_KEYS = new Set([
   "description",
   "argument-hint",
   "allowed-tools",
+  "disable-model-invocation",
 ]);
 
 const FORBIDDEN_PLUGIN_MANIFEST_KEYS = new Map([

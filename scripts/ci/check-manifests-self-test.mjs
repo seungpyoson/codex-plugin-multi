@@ -91,7 +91,7 @@ await expectFail(
     const p = join(dir, "plugins/claude/commands/claude-review.md");
     await writeFile(
       p,
-      `---\ndescription: ok\ndisable-model-invocation: true\n---\nBody\n`
+      `---\ndescription: ok\nunknown-command-key: true\n---\nBody\n`
     );
   },
   `unknown frontmatter key`

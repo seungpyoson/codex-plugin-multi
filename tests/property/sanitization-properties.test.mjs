@@ -440,6 +440,10 @@ describe("I9b — input record is not mutated", () => {
 
 const homePrefix = () => fc.constantFrom("/Users/", "/home/", "C:\\Users\\");
 
+const spacedUsernamePart = () => (
+  fc.stringMatching(/^[A-Za-z0-9_.-]{4,8}$/).filter((s) => !s.includes(REDACTED))
+);
+
 describe("I5 — user-home paths scrubbed (macOS, Linux, Windows)", () => {
   it("/Users/<name>/, /home/<name>/, C:\\Users\\<name>\\ all redacted", () => {
     fc.assert(
@@ -462,18 +466,22 @@ describe("I5 — user-home paths scrubbed (macOS, Linux, Windows)", () => {
   it("usernames containing spaces (e.g., \"john doe\") are fully redacted", () => {
     fc.assert(
       fc.property(
-        homePrefix(),
         // Username generator: TWO segments of the username, separated
-        // by a single internal space. Each segment is at least 4
-        // characters of alphanumerics + dot/dash/underscore — enough
-        // to be unambiguously a PII fragment if it survives in output.
+        // by a single internal space. Reject fragments already present
+        // in the expected redacted wrapper; otherwise benign text such
+        // as "/Users" or "/.cache" can make the post-redaction oracle
+        // ambiguous.
         fc.tuple(
-          fc.stringMatching(/^[A-Za-z0-9_.-]{4,8}$/).filter((s) => !s.includes(REDACTED)),
-          fc.stringMatching(/^[A-Za-z0-9_.-]{4,8}$/).filter((s) => !s.includes(REDACTED)),
-        ),
-        fc.constantFrom(`/file.txt"`, `/proj/code.js"`, `/.cache/x"`),
+          homePrefix(),
+          spacedUsernamePart(),
+          spacedUsernamePart(),
+          fc.constantFrom(`/file.txt"`, `/proj/code.js"`, `/.cache/x"`),
+        ).filter(([prefix, head, tail, suffix]) => {
+          const redactedPath = `${prefix}<user>${suffix}`;
+          return !redactedPath.includes(head) && !redactedPath.includes(tail);
+        }),
         arch(),
-        (prefix, [head, tail], suffix, architecture) => {
+        ([prefix, head, tail, suffix], architecture) => {
           const username = `${head} ${tail}`;
           const planted = `"path":"${prefix}${username}${suffix}`;
           const sanitized = sanitize(planted, { architecture, env: {} });
