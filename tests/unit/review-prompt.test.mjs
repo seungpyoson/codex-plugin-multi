@@ -867,6 +867,66 @@ test("review audit manifest still flags real permission denial prose", () => {
   assert.equal(manifest.review_quality.failed_review_slot, true);
 });
 
+test("review audit manifest still flags permission denial co-located with negated permission-block prose", () => {
+  const manifest = buildReviewAuditManifest({
+    prompt: "rendered prompt",
+    sourceFiles: [{ path: "sample.js", text: "export const value = 1;\n" }],
+    result: [
+      "Verdict: APPROVE",
+      "Blocking findings: none.",
+      "Non-blocking concerns: none.",
+      "Inspection statement: Permission denied while reading sample.js without permission blocks being removed.",
+    ].join("\n"),
+    status: "completed",
+    errorCode: null,
+  });
+
+  assert.equal(manifest.review_quality.semantic_failure_reasons.includes("permission_blocked"), true);
+  assert.equal(manifest.review_quality.failed_review_slot, true);
+});
+
+test("review audit manifest still flags inspection failure phrased with permission blocks", () => {
+  const manifest = buildReviewAuditManifest({
+    prompt: "rendered prompt",
+    sourceFiles: [{ path: "sample.js", text: "export const value = 1;\n" }],
+    result: [
+      "Verdict: APPROVE",
+      "Blocking findings: none.",
+      "Non-blocking concerns: none.",
+      "Inspection statement: Could not inspect sample.js without permission blocks being removed.",
+    ].join("\n"),
+    status: "completed",
+    errorCode: null,
+  });
+
+  assert.equal(manifest.review_quality.semantic_failure_reasons.includes("not_reviewed"), true);
+  assert.equal(manifest.review_quality.semantic_failure_reasons.includes("permission_blocked"), true);
+  assert.equal(manifest.review_quality.failed_review_slot, true);
+});
+
+test("review audit manifest still flags permission denial inside a passing checklist line", () => {
+  const manifest = buildReviewAuditManifest({
+    prompt: "rendered prompt",
+    sourceFiles: [{ path: "sample.js", text: "export const value = 1;\n" }],
+    result: [
+      "Verdict: APPROVE",
+      "Checklist item 1 (base/head verification): PASS - refs match.",
+      "Checklist item 2 (scope adherence): PASS - only sample.js reviewed.",
+      "Checklist item 3 (correctness bugs, security risks, regressions, missing tests): PASS - no findings.",
+      "Checklist item 4 (known comments/threads): PASS - none supplied.",
+      "Checklist item 5 (separation of findings): PASS - no blocking findings.",
+      "Checklist item 6 (timeout/truncation/etc.): PASS - full file contents supplied without permission blocks; permission denied while reading sample.js.",
+      "Blocking findings: none.",
+      "Non-blocking concerns: none.",
+    ].join("\n"),
+    status: "completed",
+    errorCode: null,
+  });
+
+  assert.equal(manifest.review_quality.semantic_failure_reasons.includes("permission_blocked"), true);
+  assert.equal(manifest.review_quality.failed_review_slot, true);
+});
+
 test("review audit manifest does not count status-looking prose as checklist items", () => {
   const manifest = buildReviewAuditManifest({
     prompt: "rendered prompt",
@@ -877,6 +937,26 @@ test("review audit manifest does not count status-looking prose as checklist ite
       "Non-blocking concerns:",
       "- The existing parser should pass through ordinary prose without treating this sentence as a checklist status.",
       "- A reviewer may write note: pass because the value is acceptable, but that is still prose.",
+      "Inspection statement: I inspected sample.js.",
+    ].join("\n"),
+    status: "completed",
+    errorCode: null,
+  });
+
+  assert.equal(manifest.review_quality.checklist_items_seen, 0);
+  assert.deepEqual(manifest.review_quality.semantic_failure_reasons, []);
+  assert.equal(manifest.review_quality.failed_review_slot, false);
+});
+
+test("review audit manifest does not count item-prefixed prose as checklist evidence", () => {
+  const manifest = buildReviewAuditManifest({
+    prompt: "rendered prompt",
+    sourceFiles: [{ path: "sample.js", text: "export const value = 1;\n" }],
+    result: [
+      "Verdict: APPROVE",
+      "Blocking findings: no blocking findings apply to sample.js.",
+      "Non-blocking concerns:",
+      "- Item 42 of the changelog: Pass through the new module without altering behavior.",
       "Inspection statement: I inspected sample.js.",
     ].join("\n"),
     status: "completed",

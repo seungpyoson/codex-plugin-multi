@@ -186,7 +186,7 @@ function checklistText(line) {
   const bullet = bulletText(trimmed);
   if (bullet !== null) return bullet;
   const unmarked = trimmed.replace(/[*_`]/g, "");
-  const checklistItem = unmarked.match(/^(?:checklist\s+)?item\s+\d{1,10}\b[^:]*:\s*(.+)$/i);
+  const checklistItem = unmarked.match(/^(?:(?:checklist\s+item\s+\d{1,10}\b[^:]*)|(?:item\s+\d{1,10}\s*)):\s*(.+)$/i);
   if (checklistItem) return checklistItem[1].trimStart();
   let index = 0;
   while (index < trimmed.length && index < MAX_CHECKLIST_NUMBER_DIGITS) {
@@ -244,6 +244,35 @@ function isPassingChecklistLine(line) {
 
 function includesAny(text, phrases) {
   return phrases.some((phrase) => text.includes(phrase));
+}
+
+function lineHasConcretePermissionFailure(line) {
+  const lower = unmarkReviewText(line).toLowerCase();
+  if (includesAny(lower, [
+    "permission denied",
+    "permission-denied",
+    "read denied",
+    "read-denied",
+  ])) {
+    return true;
+  }
+  return lower.includes("permission block") && includesAny(lower, [
+    "could not inspect",
+    "cannot inspect",
+    "can't inspect",
+    "unable to inspect",
+    "could not read",
+    "cannot read",
+    "can't read",
+    "unable to read",
+    "could not access",
+    "cannot access",
+    "can't access",
+    "unable to access",
+    "being removed",
+    "be removed",
+    "resolved",
+  ]);
 }
 
 function isPathTokenBoundary(char) {
@@ -317,11 +346,14 @@ function semanticFailureReasons(text, looksShallow, selectedSource = null) {
     const line = unmarkReviewText(rawLine).toLowerCase();
     return startsWithLabel(line, "verdict") && line.includes("not reviewed");
   });
-  const semanticLines = reviewLines(text).filter((line) => (
-    !isPassingChecklistLine(line)
-      && !isPromptPolicyEchoLine(line)
-      && !isNegatedPermissionBlockLine(line)
-  ));
+  const semanticLines = reviewLines(text).filter((line) => {
+    const hasPermissionFailure = lineHasConcretePermissionFailure(line);
+    return (
+      !(isPassingChecklistLine(line) && !hasPermissionFailure)
+        && !isPromptPolicyEchoLine(line)
+        && !isNegatedPermissionBlockLine(line)
+    );
+  });
   const semanticText = semanticLines.join("\n").toLowerCase();
   if (hasNotReviewedVerdict || includesAny(semanticText, [
     "failed review slot",
@@ -370,6 +402,7 @@ function isPromptPolicyEchoLine(line) {
 
 function isNegatedPermissionBlockLine(line) {
   const lower = unmarkReviewText(line).toLowerCase();
+  if (lineHasConcretePermissionFailure(line)) return false;
   if (/\bwithout\b[^\n.]*\bpermission blocks?\b/.test(lower)) return true;
   return (
     lower.includes("permission block")
