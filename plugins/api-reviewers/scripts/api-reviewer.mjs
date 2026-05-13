@@ -953,8 +953,11 @@ function configuredSecretNamesFromProviders(providers) {
 async function configuredSecretNamesForResult() {
   try {
     return configuredSecretNamesFromProviders(await loadProviders());
-  } catch {
-    return [];
+  } catch (cause) {
+    const error = new Error("provider_config_unavailable");
+    error.apiReviewersReason = "config_error";
+    error.cause = cause;
+    throw error;
   }
 }
 
@@ -2188,6 +2191,10 @@ async function cmdResult(options) {
     }
     if (e instanceof SyntaxError) {
       printJson({ ok: false, error_code: "malformed_record", job_id: options.job });
+      process.exit(1);
+    }
+    if (e?.apiReviewersReason === "config_error") {
+      printJson({ ok: false, error_code: "config_error", job_id: options.job, error: "provider_config_unavailable" });
       process.exit(1);
     }
     printJson({ ok: false, error_code: "read_failed", job_id: options.job, error: "read_failed" });

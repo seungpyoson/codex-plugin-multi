@@ -1704,6 +1704,44 @@ test("api reviewer result --job redacts configured nonstandard credential names 
   assert.doesNotMatch(result.stdout, /custom-secret-1234/);
 });
 
+test("api reviewer result --job fails closed when provider config cannot load for read-time redaction", async () => {
+  const cwd = makeWorkspace();
+  const dataDir = mkdtempSync(path.join(tmpdir(), "api-reviewers-data-"));
+  const pluginRoot = makeInstalledApiReviewersRoot();
+  writeFileSync(path.join(pluginRoot, "config", "providers.json"), "{ malformed custom-secret-1234");
+  const jobId = "custom-redaction-config-error-job";
+  const jobDir = path.join(dataDir, "jobs", jobId);
+  mkdirSync(jobDir, { recursive: true });
+  writeFileSync(path.join(jobDir, "meta.json"), JSON.stringify({
+    job_id: jobId,
+    target: "deepseek",
+    provider: "deepseek",
+    result: "provider echoed custom-secret-1234",
+    runtime_diagnostics: {
+      detail: "custom-secret-1234",
+    },
+  }, null, 2));
+
+  const result = await run(["result", "--job", jobId], {
+    cwd,
+    companion: path.join(pluginRoot, "scripts", "api-reviewer.mjs"),
+    env: {
+      API_REVIEWERS_PLUGIN_DATA: dataDir,
+      CUSTOM_CRED: "custom-secret-1234",
+    },
+  });
+
+  assert.equal(result.status, 1);
+  const parsed = parseJson(result.stdout);
+  assert.equal(parsed.ok, false);
+  assert.equal(parsed.error_code, "config_error");
+  assert.equal(parsed.error, "provider_config_unavailable");
+  assert.equal(parsed.job_id, jobId);
+  assert.doesNotMatch(result.stdout, /custom-secret-1234/);
+  assert.doesNotMatch(result.stderr, /custom-secret-1234/);
+  assert.doesNotMatch(result.stdout, /malformed/);
+});
+
 for (const { provider, model, key } of [
   { provider: "deepseek", model: "deepseek-v4-pro", key: "DEEPSEEK_API_KEY" },
   { provider: "glm", model: "glm-5.1", key: "ZAI_API_KEY" },
