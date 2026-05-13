@@ -11,6 +11,7 @@ import {
   collectReviewPanelRecords,
   renderReviewPanelMarkdown,
 } from "../../scripts/lib/review-panel.mjs";
+import { REVIEW_PROMPT_PLUGIN_TARGETS } from "../../scripts/lib/plugin-targets.mjs";
 
 test("review panel slug trimming avoids Sonar-flagged boundary alternation regex", () => {
   const source = readFileSync(new URL("../../scripts/lib/review-panel.mjs", import.meta.url), "utf8");
@@ -221,6 +222,42 @@ test("review panel CLI renders markdown from a JSON array file", () => {
   });
 
   assert.match(output, /deepseek \|  \| completed \| sent \| 44211/);
+});
+
+test("review panel CLI is packaged with each reviewer plugin", () => {
+  const dir = mkdtempSync(join(tmpdir(), "review-panel-"));
+  const file = join(dir, "records.json");
+  writeFileSync(file, JSON.stringify([
+    {
+      target: "deepseek",
+      status: "completed",
+      http_status: 200,
+      external_review: { source_content_transmission: "sent" },
+      review_metadata: {
+        raw_output: { elapsed_ms: 44211 },
+        audit_manifest: {
+          review_quality: {
+            failed_review_slot: false,
+            semantic_failure_reasons: [],
+          },
+        },
+      },
+      result: "Verdict: REQUEST CHANGES\nInspection status\n- I inspected the selected file.",
+    },
+  ]));
+
+  for (const plugin of REVIEW_PROMPT_PLUGIN_TARGETS) {
+    const res = spawnSync(process.execPath, [
+      `plugins/${plugin}/scripts/review-panel.mjs`,
+      file,
+    ], {
+      cwd: new URL("../..", import.meta.url),
+      encoding: "utf8",
+    });
+
+    assert.equal(res.status, 0, `${plugin} review-panel exited with stderr: ${res.stderr}`);
+    assert.match(res.stdout, /deepseek \|  \| completed \| sent \| 44211/);
+  }
 });
 
 test("review panel CLI rejects workspace and file arguments together", () => {

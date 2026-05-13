@@ -51,7 +51,7 @@ async function discoverTestFiles() {
 
 async function discoverLibFiles() {
   const files = [];
-  for (const plugin of new Set([...COMPANION_PLUGIN_TARGETS, ...CODEX_ENV_PLUGIN_TARGETS, "api-reviewers"])) {
+  for (const plugin of new Set([...COMPANION_PLUGIN_TARGETS, ...CODEX_ENV_PLUGIN_TARGETS, "api-reviewers", "grok"])) {
     files.push(...await walk(
       resolve(REPO_ROOT, "plugins", plugin, "scripts", "lib"),
       (f) => f.endsWith(".mjs"),

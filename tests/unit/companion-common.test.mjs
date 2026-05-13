@@ -81,10 +81,60 @@ test("shared companion helpers cover small provider-agnostic behavior", () => {
   let lifecycleJsonl = "";
   printLifecycleJson({ ok: true }, "jsonl", { write: (chunk) => { lifecycleJsonl += chunk; } });
   assert.equal(lifecycleJsonl, "{\"ok\":true}\n");
+  let lifecycleMarkdownProgress = "";
+  printLifecycleJson(
+    externalReviewProgressEvent(
+      { job_id: "job-1", target: "claude", mode: "review", run_kind: "foreground" },
+      { sequence: 1, elapsedMs: 123 },
+    ),
+    "markdown",
+    { write: (chunk) => { lifecycleMarkdownProgress += chunk; } },
+  );
+  assert.match(lifecycleMarkdownProgress, /^\{"event":"external_review_progress"/);
+  assert.doesNotMatch(lifecycleMarkdownProgress, /^\{\n/);
+  let lifecycleMarkdown = "";
+  printLifecycleJson({
+    event: "external_review_launched",
+    job_id: "job-1",
+    target: "claude",
+    status: "launched",
+    error_code: "scope_empty",
+    error_message: "scope failed | no files selected",
+    error_summary: "No files matched the selected scope.",
+    http_status: 400,
+    suggested_action: "retry with explicit paths",
+    external_review: {
+      marker: "EXTERNAL REVIEW",
+      provider: "Claude Code",
+      run_kind: "foreground",
+      job_id: "job-1",
+      session_id: null,
+      mode: "review",
+      scope: "branch-diff",
+      scope_base: "origin/main",
+      scope_paths: null,
+      source_content_transmission: "may_be_sent",
+      disclosure: "Selected source content may be sent to Claude Code for external review.",
+    },
+  }, "markdown", { write: (chunk) => { lifecycleMarkdown += chunk; } });
+  assert.match(lifecycleMarkdown, /^### EXTERNAL REVIEW/m);
+  assert.match(lifecycleMarkdown, /\| Provider \| Claude Code \|/);
+  assert.match(lifecycleMarkdown, /\| Job \| job-1 \|/);
+  assert.match(lifecycleMarkdown, /\| Session \| pending \|/);
+  assert.match(lifecycleMarkdown, /\| Run \| foreground \|/);
+  assert.match(lifecycleMarkdown, /\| Scope \| branch-diff origin\/main \|/);
+  assert.match(lifecycleMarkdown, /\| Source \| may_be_sent \|/);
+  assert.match(lifecycleMarkdown, /\| Error \| scope_empty \|/);
+  assert.match(lifecycleMarkdown, /\| Message \| scope failed \\| no files selected \|/);
+  assert.match(lifecycleMarkdown, /\| Summary \| No files matched the selected scope\. \|/);
+  assert.match(lifecycleMarkdown, /\| HTTP \| 400 \|/);
+  assert.match(lifecycleMarkdown, /\| Action \| retry with explicit paths \|/);
+  assert.doesNotMatch(lifecycleMarkdown, /^\{/);
   assert.equal(parseLifecycleEventsMode(undefined), null);
   assert.equal(parseLifecycleEventsMode(false), null);
   assert.equal(parseLifecycleEventsMode("jsonl"), "jsonl");
-  assert.throws(() => parseLifecycleEventsMode("pretty"), /--lifecycle-events must be jsonl/);
+  assert.equal(parseLifecycleEventsMode("markdown"), "markdown");
+  assert.throws(() => parseLifecycleEventsMode("pretty"), /--lifecycle-events must be jsonl or markdown/);
   assert.deepEqual(
     externalReviewLaunchedEvent(
       { job_id: "job-1", target: "claude" },
@@ -115,6 +165,7 @@ test("shared companion helpers cover small provider-agnostic behavior", () => {
       job_id: "job-1",
       target: "claude",
       parent_job_id: "parent-1",
+      status: "launched",
       mode: "review",
       pid: 1234,
       workspace_root: "/tmp/workspace",
@@ -186,6 +237,30 @@ test("startExternalReviewHeartbeat emits jsonl progress until stopped", async ()
   assert.equal(event.status, "running");
   assert.equal(event.heartbeat, 1);
   assert.equal(Number.isInteger(event.elapsed_ms), true);
+});
+
+test("startExternalReviewHeartbeat emits markdown progress as compact jsonl until stopped", async () => {
+  const chunks = [];
+  const stop = startExternalReviewHeartbeat(
+    { job_id: "job-heartbeat-markdown", target: "gemini", mode: "review", run_kind: "foreground" },
+    "markdown",
+    { intervalMs: 5, output: { write: (chunk) => chunks.push(chunk) } },
+  );
+
+  await new Promise((resolve) => setTimeout(resolve, 18));
+  stop();
+  const countAfterStop = chunks.length;
+  await new Promise((resolve) => setTimeout(resolve, 12));
+
+  assert.ok(countAfterStop >= 1, "markdown heartbeat must emit at least one progress event");
+  assert.equal(chunks.length, countAfterStop, "stop must cancel future markdown heartbeats");
+  assert.doesNotMatch(chunks[0], /^\{\n/);
+  const event = JSON.parse(chunks[0]);
+  assert.equal(event.event, "external_review_progress");
+  assert.equal(event.job_id, "job-heartbeat-markdown");
+  assert.equal(event.target, "gemini");
+  assert.equal(event.status, "running");
+  assert.equal(event.heartbeat, 1);
 });
 
 test("summarizeScopeDirectory returns sorted files and byte totals", () => {
@@ -323,10 +398,50 @@ async function assertCopyHelperBranches(mod, plugin) {
   let lifecycleJsonl = "";
   mod.printLifecycleJson({ plugin }, "jsonl", { write: (chunk) => { lifecycleJsonl += chunk; } });
   assert.equal(lifecycleJsonl, `{"plugin":"${plugin}"}\n`);
+  let lifecycleMarkdownProgress = "";
+  mod.printLifecycleJson(
+    mod.externalReviewProgressEvent(
+      { job_id: `copy-job-${plugin}`, target: plugin, mode: "review", run_kind: "foreground" },
+      { sequence: 1, elapsedMs: 123 },
+    ),
+    "markdown",
+    { write: (chunk) => { lifecycleMarkdownProgress += chunk; } },
+  );
+  assert.match(lifecycleMarkdownProgress, /^\{"event":"external_review_progress"/);
+  assert.doesNotMatch(lifecycleMarkdownProgress, /^\{\n/);
+  let lifecycleMarkdown = "";
+  mod.printLifecycleJson({
+    event: "external_review_launched",
+    job_id: "copy-job",
+    target: plugin,
+    status: "launched",
+    error_code: "scope_empty",
+    error_message: "scope failed",
+    error_summary: "copy scope failed",
+    external_review: {
+      marker: "EXTERNAL REVIEW",
+      provider: plugin,
+      run_kind: "foreground",
+      job_id: "copy-job",
+      session_id: null,
+      mode: "review",
+      scope: "branch-diff",
+      scope_base: "origin/main",
+      scope_paths: null,
+      source_content_transmission: "may_be_sent",
+    },
+  }, "markdown", { write: (chunk) => { lifecycleMarkdown += chunk; } });
+  assert.match(lifecycleMarkdown, /^### EXTERNAL REVIEW/m);
+  assert.match(lifecycleMarkdown, new RegExp(`\\| Provider \\| ${plugin} \\|`));
+  assert.match(lifecycleMarkdown, /\| Job \| copy-job \|/);
+  assert.match(lifecycleMarkdown, /\| Error \| scope_empty \|/);
+  assert.match(lifecycleMarkdown, /\| Message \| scope failed \|/);
+  assert.match(lifecycleMarkdown, /\| Summary \| copy scope failed \|/);
   assert.equal(mod.parseLifecycleEventsMode(undefined), null);
   assert.equal(mod.parseLifecycleEventsMode(false), null);
   assert.equal(mod.parseLifecycleEventsMode("jsonl"), "jsonl");
-  assert.throws(() => mod.parseLifecycleEventsMode("pretty"), /--lifecycle-events must be jsonl/);
+  assert.equal(mod.parseLifecycleEventsMode("markdown"), "markdown");
+  assert.throws(() => mod.parseLifecycleEventsMode("pretty"), /--lifecycle-events must be jsonl or markdown/);
   assert.deepEqual(
     mod.externalReviewLaunchedEvent(
       { job_id: "copy-job", target: plugin },
@@ -357,6 +472,7 @@ async function assertCopyHelperBranches(mod, plugin) {
       job_id: "copy-job",
       target: plugin,
       parent_job_id: "copy-parent",
+      status: "launched",
       mode: "review",
       pid: 1234,
       workspace_root: "/tmp/copy-workspace",
@@ -422,6 +538,20 @@ async function assertCopyHelperBranches(mod, plugin) {
   const heartbeat = JSON.parse(chunks[0]);
   assert.equal(heartbeat.event, "external_review_progress");
   assert.equal(heartbeat.target, plugin);
+
+  const markdownChunks = [];
+  const stopMarkdown = mod.startExternalReviewHeartbeat(
+    { job_id: `copy-heartbeat-markdown-${plugin}`, target: plugin, mode: "review", run_kind: "foreground" },
+    "markdown",
+    { intervalMs: 5, output: { write: (chunk) => markdownChunks.push(chunk) } },
+  );
+  await new Promise((resolve) => setTimeout(resolve, 12));
+  stopMarkdown();
+  assert.ok(markdownChunks.length >= 1, `${plugin}: copied markdown heartbeat helper must emit progress`);
+  assert.doesNotMatch(markdownChunks[0], /^\{\n/);
+  const markdownHeartbeat = JSON.parse(markdownChunks[0]);
+  assert.equal(markdownHeartbeat.event, "external_review_progress");
+  assert.equal(markdownHeartbeat.target, plugin);
 
   const jobsDir = mkdtempSync(path.join(tmpdir(), `companion-common-copy-jobs-${plugin}-`));
   assert.equal(mod.consumePromptSidecar(jobsDir, "job-1"), null);

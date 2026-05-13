@@ -155,7 +155,7 @@ test("provider-specific external model contracts keep mechanical safety clauses"
   ]) {
     const rendered = renderedByPath.get(relPath);
     assert.ok(rendered, `missing generated target ${relPath}`);
-    assert.match(rendered, /run --mode=rescue --auth-mode subscription --foreground --lifecycle-events jsonl/);
+    assert.match(rendered, /run --mode=rescue --auth-mode subscription --foreground --lifecycle-events markdown/);
     assert.match(rendered, /run --mode=rescue --auth-mode subscription --background/);
   }
 
@@ -180,7 +180,7 @@ test("provider-specific external model contracts keep mechanical safety clauses"
   ]) {
     const rendered = renderedByPath.get(relPath);
     assert.ok(rendered, `missing generated target ${relPath}`);
-    assert.match(rendered, /run --mode=rescue [^\n`]*--foreground --lifecycle-events jsonl/);
+    assert.match(rendered, /run --mode=rescue [^\n`]*--foreground --lifecycle-events markdown/);
   }
 
   for (const target of EXTERNAL_MODEL_CONTRACT_DOC_TARGETS.filter((item) =>
@@ -188,11 +188,25 @@ test("provider-specific external model contracts keep mechanical safety clauses"
   )) {
     const rendered = renderExternalModelContractDoc(target);
     assert.equal(
-      countOccurrences(rendered, "Render companion JSON directly."),
+      countOccurrences(rendered, "Render lifecycle markdown cards directly."),
       1,
       `${target.path} should not duplicate lifecycle rendering prose`,
     );
   }
+
+  for (const target of EXTERNAL_MODEL_CONTRACT_DOC_TARGETS.filter((item) =>
+    ["api-reviewers", "grok"].includes(item.family) && item.workflow !== "setup"
+  )) {
+    const rendered = renderExternalModelContractDoc(target);
+    assert.equal(
+      countOccurrences(rendered, "Render lifecycle markdown cards directly."),
+      1,
+      `${target.path} should include lifecycle rendering prose once`,
+    );
+  }
+
+  assert.match(docs, /--lifecycle-events markdown/);
+  assert.doesNotMatch(docs, /--lifecycle-events jsonl/);
 
   const apiDelegation = renderedByPath.get("plugins/api-reviewers/skills/api-reviewers-delegation/SKILL.md");
   assert.ok(apiDelegation, "missing API reviewers delegation target");

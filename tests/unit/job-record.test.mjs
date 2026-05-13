@@ -1758,27 +1758,24 @@ test("schema parity — every EXPECTED_KEYS field is documented in claude-result
     `claude-result-handling/SKILL.md must mention every JobRecord field. Missing: ${missing.join(", ")}`);
 });
 
-test("external-review SKILL ASCII box rows are aligned", () => {
-  let boxCount = 0;
+test("external-review SKILL markdown cards are table-shaped", () => {
+  let cardCount = 0;
   for (const skillPath of EXTERNAL_REVIEW_SKILL_MDS) {
     const skillText = readFileSync(skillPath, "utf8");
-    const boxes = [...skillText.matchAll(/```text\n([\s\S]*?)```/g)]
+    const cards = [...skillText.matchAll(/```md\n([\s\S]*?)```/g)]
       .map((match) => match[1])
-      .filter((block) => block.includes("EXTERNAL REVIEW"))
-      .filter((block) => block.split("\n").some((line) => /^ *\+/.test(line)));
+      .filter((block) => block.includes("### EXTERNAL REVIEW"));
 
-    for (const box of boxes) {
-      boxCount += 1;
-      const rows = box.split("\n").filter((line) => /^ *[|+]/.test(line));
-      assert.ok(rows.length >= 3, `expected bordered rows in ${skillPath}:\n${box}`);
-      const commonIndent = rows[0].match(/^ */)[0].length;
-      const indents = new Set(rows.map((line) => line.match(/^ */)[0].length));
-      assert.deepEqual([...indents], [commonIndent],
-        `external-review box rows have inconsistent leading spaces in ${skillPath}:\n${box}`);
-      const widths = new Set(rows.map((line) => line.slice(commonIndent).length));
-      assert.equal(widths.size, 1,
-        `external-review box rows have inconsistent widths in ${skillPath}:\n${box}`);
+    for (const card of cards) {
+      cardCount += 1;
+      const rows = card.split("\n").filter((line) => line.startsWith("|"));
+      assert.ok(rows.includes("| Field | Value |"), `expected Field/Value header in ${skillPath}:\n${card}`);
+      assert.ok(rows.includes("| --- | --- |"), `expected markdown separator in ${skillPath}:\n${card}`);
+      for (const required of ["Provider", "Job", "Session", "Run", "Mode", "Scope", "Source", "Status"]) {
+        assert.ok(rows.some((line) => line.startsWith(`| ${required} |`)),
+          `expected ${required} row in ${skillPath}:\n${card}`);
+      }
     }
   }
-  assert.ok(boxCount > 0, "expected at least one EXTERNAL REVIEW text box");
+  assert.ok(cardCount > 0, "expected at least one EXTERNAL REVIEW markdown card");
 });

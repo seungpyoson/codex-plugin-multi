@@ -108,6 +108,11 @@ function parseJsonLines(result) {
   return result.stdout.trim().split(/\n+/).filter(Boolean).map((line) => JSON.parse(line));
 }
 
+function parseCompactJsonLines(result) {
+  assert.doesNotMatch(result.stderr, /secret|token|cookie|xai/i);
+  return result.stdout.split(/\n/).filter((line) => line.startsWith("{")).map((line) => JSON.parse(line));
+}
+
 function rmTree(dir) {
   rmSync(dir, { recursive: true, force: true });
 }
@@ -2256,6 +2261,54 @@ test("custom-review lifecycle jsonl emits launch before terminal record", async 
   });
 });
 
+test("custom-review lifecycle markdown emits launch and terminal cards on success", async () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "grok-web-workspace-"));
+  const reviewText = substantiveReviewFixture("Markdown lifecycle success marker.");
+  writeFileSync(path.join(cwd, "review.js"), "export const value = 42;\n");
+
+  await withServer(async (_req, res) => {
+    await sleep(100);
+    res.setHeader("content-type", "application/json");
+    res.end(JSON.stringify({
+      id: "grok-web-session-markdown-lifecycle",
+      model: "grok-4.20-fast",
+      choices: [{ message: { content: reviewText } }],
+      usage: { prompt_tokens: 12, completion_tokens: 5, total_tokens: 17 },
+    }));
+  }, async (baseUrl) => {
+    const result = await runAsync([
+      "run",
+      "--mode", "custom-review",
+      "--scope", "custom",
+      "--scope-paths", "review.js",
+      "--foreground",
+      "--lifecycle-events", "markdown",
+      "--prompt", "Check this file.",
+    ], {
+      cwd,
+      env: {
+        CODEX_PLUGIN_EXTERNAL_REVIEW_HEARTBEAT_MS: "5",
+        GROK_WEB_BASE_URL: baseUrl,
+        GROK_WEB_TUNNEL_API_KEY: "secret-cookie-like-token",
+      },
+    });
+
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    assert.equal((result.stdout.match(/^### EXTERNAL REVIEW/gm) ?? []).length, 2);
+    assert.match(result.stdout, /\| Provider \| Grok Web \|/);
+    assert.match(result.stdout, /\| Source \| may_be_sent \|/);
+    assert.match(result.stdout, /\| Status \| launched \|/);
+    assert.match(result.stdout, /\| Source \| sent \|/);
+    assert.match(result.stdout, /\| Status \| completed \|/);
+    const progress = parseCompactJsonLines(result).find((line) => line.event === "external_review_progress");
+    assert.equal(progress?.target, "grok-web");
+    assert.equal(progress?.status, "running");
+    assert.equal(progress?.heartbeat, 1);
+    assert.doesNotMatch(result.stdout, /secret-cookie-like-token/);
+    assert.doesNotMatch(result.stdout, /^\{\n/m);
+  });
+});
+
 test("custom-review escalates Grok file delimiters when selected source collides", async () => {
   const cwd = mkdtempSync(path.join(tmpdir(), "grok-web-workspace-"));
   const reviewText = substantiveReviewFixture("Delimiter marker: delimiter collision handled.");
@@ -2395,6 +2448,45 @@ test("run rejects invalid lifecycle event mode as bad args", () => {
     assert.equal(record.error_code, "bad_args");
     assert.match(record.error_message, /--lifecycle-events must be jsonl/);
     assert.equal(record.external_review.source_content_transmission, "not_sent");
+  } finally {
+    rmTree(cwd);
+    rmTree(dataDir);
+  }
+});
+
+test("run renders lifecycle markdown cards before source transmission", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "grok-web-workspace-"));
+  const dataDir = mkdtempSync(path.join(tmpdir(), "grok-web-data-"));
+  try {
+    writeFileSync(path.join(cwd, "review.js"), "export const value = 42;\n");
+
+    const result = run([
+      "run",
+      "--mode", "custom-review",
+      "--scope", "custom",
+      "--scope-paths", "review.js",
+      "--foreground",
+      "--lifecycle-events", "markdown",
+    ], {
+      cwd,
+      env: {
+        GROK_PLUGIN_DATA: dataDir,
+        GROK_WEB_BASE_URL: "http://127.0.0.1:9/api",
+        GROK_WEB_TUNNEL_API_KEY: "secret-cookie-like-token",
+      },
+    });
+
+    assert.equal(result.status, 1);
+    assert.match(result.stdout, /^### EXTERNAL REVIEW/m);
+    assert.match(result.stdout, /\| Provider \| Grok Web \|/);
+    assert.match(result.stdout, /\| Source \| not_sent \|/);
+    assert.match(result.stdout, /\| Status \| failed \|/);
+    assert.match(result.stdout, /\| Error \| bad_args \|/);
+    assert.match(result.stdout, /\| Message \| [^|]*prompt is required[^|]*--prompt <focus>[^|]* \|/);
+    assert.match(result.stdout, /\| Summary \| [^|]+ \|/);
+    assert.match(result.stdout, /\| Action \| Correct the grok-web command arguments and retry\. \|/);
+    assert.doesNotMatch(result.stdout, /secret-cookie-like-token/);
+    assert.doesNotMatch(result.stdout, /^\{/);
   } finally {
     rmTree(cwd);
     rmTree(dataDir);
