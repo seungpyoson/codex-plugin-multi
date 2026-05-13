@@ -243,21 +243,30 @@ function rescueContract() {
 function lifecycleRenderingContract() {
   return lines(
     "## Rendering Contract",
-    "Render companion JSON directly.",
-    "If `external_review_launched` is present, render it immediately.",
+    "Request `--lifecycle-events markdown` for foreground and background review flows.",
+    "Render lifecycle markdown cards directly.",
+    "If a legacy JSON lifecycle envelope appears, render `external_review_launched` immediately.",
     "If a background launch envelope has `event: \"launched\"` with an `external_review` field, render the same launch card immediately with session pending.",
-    "If `external_review` is present, render it before normal prose.",
-    "Launch cards should include provider, job, session, run kind, and scope when those fields are present.",
+    "If a legacy JSON `external_review` field appears, render it before normal prose.",
+    "Lifecycle cards should include provider, job, session, run kind, mode, scope, source transmission, status, error code, error message, HTTP status, and suggested action when those fields are present.",
     "",
-    "```text",
-    "+------------------------------------------------+",
-    "| EXTERNAL REVIEW                                |",
-    "| Provider: <provider>                           |",
-    "| Job:      <job_id>                             |",
-    "| Session:  <session_id or pending>              |",
-    "| Run:      <foreground|background|unknown>      |",
-    "| Scope:    <scope and scope_base/scope_paths>   |",
-    "+------------------------------------------------+",
+    "```md",
+    "### EXTERNAL REVIEW",
+    "",
+    "| Field | Value |",
+    "| --- | --- |",
+    "| Provider | <provider> |",
+    "| Job | <job_id> |",
+    "| Session | <session_id or pending> |",
+    "| Run | <foreground|background|unknown> |",
+    "| Mode | <mode> |",
+    "| Scope | <scope and scope_base/scope_paths> |",
+    "| Source | <source_content_transmission> |",
+    "| Status | <status> |",
+    "| Error | <error_code> |",
+    "| Message | <error_message> |",
+    "| HTTP | <http_status> |",
+    "| Action | <suggested_action> |",
     "```",
   );
 }
@@ -338,7 +347,7 @@ function renderCompanionCommandBody(provider, workflow, commandName) {
     const maxSteps = provider.hasMaxSteps
       ? "Route `--max-steps-per-turn N` before `--`; `N` must be a positive integer."
       : "";
-    const runLine = companionRunCommand(provider, workflow, "--foreground --lifecycle-events jsonl -- \"<focus text>\"");
+    const runLine = companionRunCommand(provider, workflow, "--foreground --lifecycle-events markdown -- \"<focus text>\"");
     return lines(
       sharedHeader(title),
       "`$ARGUMENTS` is optional `--scope-base REF`, optional `--timeout-ms MS`, and focus text.",
@@ -364,8 +373,8 @@ function renderCompanionCommandBody(provider, workflow, commandName) {
     const maxSteps = provider.hasMaxSteps
       ? "If the user provides a step budget, add `--max-steps-per-turn N` before `--`; `N` must be a positive integer."
       : "";
-    const backgroundLine = companionRunCommand(provider, workflow, "--background --lifecycle-events jsonl -- \"$ARGUMENTS\"");
-    const foregroundLine = companionRunCommand(provider, workflow, "--foreground --lifecycle-events jsonl -- \"$ARGUMENTS\"");
+    const backgroundLine = companionRunCommand(provider, workflow, "--background --lifecycle-events markdown -- \"$ARGUMENTS\"");
+    const foregroundLine = companionRunCommand(provider, workflow, "--foreground --lifecycle-events markdown -- \"$ARGUMENTS\"");
     return lines(
       sharedHeader(title),
       "`$ARGUMENTS` is the raw user rescue request. Preserve raw `$ARGUMENTS` after routing `--foreground`, `--background`, and documented model flags.",
@@ -470,7 +479,7 @@ function renderCompanionSkillBody(provider, workflow, skillName) {
       "`<focus>` is the user's review prompt or focus area.",
       companionTimeoutContract(provider),
       "",
-      `Run \`${companionRunCommand(provider, workflow, "--foreground --lifecycle-events jsonl --cwd \"<workspace>\" --scope-base REF -- \"<focus>\"")}\`.`,
+      `Run \`${companionRunCommand(provider, workflow, "--foreground --lifecycle-events markdown --cwd \"<workspace>\" --scope-base REF -- \"<focus>\"")}\`.`,
       maxSteps,
       reviewOnlyContract(),
       "custom-review uses explicit relative paths. Scope validation must complete before selected source is transmitted.",
@@ -491,8 +500,8 @@ function renderCompanionSkillBody(provider, workflow, skillName) {
       "`<workspace>` is the repository where the rescue task should run.",
       "`<task>` is the user's investigation, implementation, or follow-up rescue request.",
       "",
-      `Run foreground: \`${companionRunCommand(provider, "rescue", "--foreground --lifecycle-events jsonl --cwd \"<workspace>\" -- \"<task>\"")}\`.`,
-      `Run background: \`${companionRunCommand(provider, "rescue", "--background --lifecycle-events jsonl --cwd \"<workspace>\" -- \"<task>\"")}\`.`,
+      `Run foreground: \`${companionRunCommand(provider, "rescue", "--foreground --lifecycle-events markdown --cwd \"<workspace>\" -- \"<task>\"")}\`.`,
+      `Run background: \`${companionRunCommand(provider, "rescue", "--background --lifecycle-events markdown --cwd \"<workspace>\" -- \"<task>\"")}\`.`,
       maxSteps,
       rescueContract(),
       lifecycleRenderingContract(),
@@ -569,20 +578,20 @@ function companionDelegationSkillDoc(target) {
     `\`<plugin-root>\` is \`plugins/${provider.plugin}\` or an absolute path to that plugin directory. Use skill \`${provider.plugin}:${skillName}\`.`,
     "",
     "Run review:",
-    `- \`${companionRunCommand(provider, "review", "--foreground --lifecycle-events jsonl --cwd \"<workspace>\" --scope-base REF -- \"<review focus>\"")}\``,
+    `- \`${companionRunCommand(provider, "review", "--foreground --lifecycle-events markdown --cwd \"<workspace>\" --scope-base REF -- \"<review focus>\"")}\``,
     "",
     "Run adversarial review:",
-    `- \`${companionRunCommand(provider, "adversarial-review", "--foreground --lifecycle-events jsonl --cwd \"<workspace>\" --scope-base REF -- \"<design or diff to challenge>\"")}\``,
+    `- \`${companionRunCommand(provider, "adversarial-review", "--foreground --lifecycle-events markdown --cwd \"<workspace>\" --scope-base REF -- \"<design or diff to challenge>\"")}\``,
     "",
     "Run custom-review:",
-    `- \`${companionRunCommand(provider, "custom-review", "--foreground --lifecycle-events jsonl --cwd \"<bundle-or-workspace>\" --scope-paths \"PR.diff,docs/*.md\" -- \"<review focus using relative paths>\"")}\``,
+    `- \`${companionRunCommand(provider, "custom-review", "--foreground --lifecycle-events markdown --cwd \"<bundle-or-workspace>\" --scope-paths \"PR.diff,docs/*.md\" -- \"<review focus using relative paths>\"")}\``,
     "",
     "Run rescue:",
-    `- \`${companionRunCommand(provider, "rescue", "--foreground --lifecycle-events jsonl --cwd \"<workspace>\" -- \"<task>\"")}\``,
-    `- \`${companionRunCommand(provider, "rescue", "--background --lifecycle-events jsonl --cwd \"<workspace>\" -- \"<task>\"")}\``,
+    `- \`${companionRunCommand(provider, "rescue", "--foreground --lifecycle-events markdown --cwd \"<workspace>\" -- \"<task>\"")}\``,
+    `- \`${companionRunCommand(provider, "rescue", "--background --lifecycle-events markdown --cwd \"<workspace>\" -- \"<task>\"")}\``,
     "",
     "Continue a job:",
-    `- \`${companionContinueCommand(provider, "--job \"<job-id>\" --foreground --lifecycle-events jsonl --cwd \"<workspace>\" -- \"<follow-up>\"")}\``,
+    `- \`${companionContinueCommand(provider, "--job \"<job-id>\" --foreground --lifecycle-events markdown --cwd \"<workspace>\" -- \"<follow-up>\"")}\``,
     "",
     "Cancel a background job:",
     `- \`node "<plugin-root>/scripts/${provider.binary}" cancel --job "<job-id>" --cwd "<workspace>"\``,
@@ -778,13 +787,13 @@ function apiCommandDoc(target) {
       "Replace `<file1>,<file2>` with comma- or newline-separated concrete relative paths.",
       "Expand globs before running; do not pass glob characters as `--scope-paths`.",
       `Run \`node plugins/api-reviewers/scripts/api-reviewer.mjs approval-request --provider ${provider.provider} --mode ${mode} --scope custom --scope-paths "<file1>,<file2>" --prompt "<prompt text>"\`.`,
-      `Run \`node plugins/api-reviewers/scripts/api-reviewer.mjs run --provider ${provider.provider} --mode ${mode} --scope custom --scope-paths "<file1>,<file2>" --approval-token "<approval_token.value>" --lifecycle-events jsonl --prompt "<prompt text>"\`.`,
+      `Run \`node plugins/api-reviewers/scripts/api-reviewer.mjs run --provider ${provider.provider} --mode ${mode} --scope custom --scope-paths "<file1>,<file2>" --approval-token "<approval_token.value>" --lifecycle-events markdown --prompt "<prompt text>"\`.`,
     ]
     : [
       "`$ARGUMENTS` is optional `--scope-base REF` followed by review prompt text.",
       "Route `--scope-base REF` before `--prompt` and pass the remaining prompt text to `--prompt`.",
       `Run \`node plugins/api-reviewers/scripts/api-reviewer.mjs approval-request --provider ${provider.provider} --mode ${mode} --scope branch-diff --scope-base REF --prompt "<prompt text>"\`.`,
-      `Run \`node plugins/api-reviewers/scripts/api-reviewer.mjs run --provider ${provider.provider} --mode ${mode} --scope branch-diff --scope-base REF --approval-token "<approval_token.value>" --lifecycle-events jsonl --prompt "<prompt text>"\`.`,
+      `Run \`node plugins/api-reviewers/scripts/api-reviewer.mjs run --provider ${provider.provider} --mode ${mode} --scope branch-diff --scope-base REF --approval-token "<approval_token.value>" --lifecycle-events markdown --prompt "<prompt text>"\`.`,
     ];
   return fm + lines(
     sharedHeader(title),
@@ -821,12 +830,12 @@ function apiSkillDoc(target) {
   const scope = workflow === "custom-review" ? "custom" : "branch-diff";
   const scopeLines = workflow === "custom-review"
     ? [
-      `Run \`node plugins/api-reviewers/scripts/api-reviewer.mjs run --provider ${provider.provider} --mode ${workflow} --scope custom --scope-paths "<file1>,<file2>" --approval-token "<approval_token.value>" --lifecycle-events jsonl --prompt "<focus>"\`.`,
+      `Run \`node plugins/api-reviewers/scripts/api-reviewer.mjs run --provider ${provider.provider} --mode ${workflow} --scope custom --scope-paths "<file1>,<file2>" --approval-token "<approval_token.value>" --lifecycle-events markdown --prompt "<focus>"\`.`,
       "Replace `<file1>,<file2>` with comma- or newline-separated concrete relative `--scope-paths`.",
       "Expand globs before running; do not pass glob characters or space-separated paths.",
     ]
     : [
-      `Run \`node plugins/api-reviewers/scripts/api-reviewer.mjs run --provider ${provider.provider} --mode ${workflow} --scope branch-diff --scope-base REF --approval-token "<approval_token.value>" --lifecycle-events jsonl --prompt "<focus>"\`.`,
+      `Run \`node plugins/api-reviewers/scripts/api-reviewer.mjs run --provider ${provider.provider} --mode ${workflow} --scope branch-diff --scope-base REF --approval-token "<approval_token.value>" --lifecycle-events markdown --prompt "<focus>"\`.`,
     ];
   return fm + lines(
     sharedHeader(title),
@@ -857,13 +866,13 @@ function apiDelegationSkillDoc() {
     providerLines((provider) => `- \`node plugins/api-reviewers/scripts/api-reviewer.mjs doctor --provider ${provider.provider}\``),
     "",
     "Run review:",
-    providerLines((provider) => `- \`node plugins/api-reviewers/scripts/api-reviewer.mjs run --provider ${provider.provider} --mode review --scope branch-diff --scope-base REF --approval-token "<approval_token.value>" --lifecycle-events jsonl --prompt "<focus>"\``),
+    providerLines((provider) => `- \`node plugins/api-reviewers/scripts/api-reviewer.mjs run --provider ${provider.provider} --mode review --scope branch-diff --scope-base REF --approval-token "<approval_token.value>" --lifecycle-events markdown --prompt "<focus>"\``),
     "",
     "Run adversarial review:",
-    providerLines((provider) => `- \`node plugins/api-reviewers/scripts/api-reviewer.mjs run --provider ${provider.provider} --mode adversarial-review --scope branch-diff --scope-base REF --approval-token "<approval_token.value>" --lifecycle-events jsonl --prompt "<focus>"\``),
+    providerLines((provider) => `- \`node plugins/api-reviewers/scripts/api-reviewer.mjs run --provider ${provider.provider} --mode adversarial-review --scope branch-diff --scope-base REF --approval-token "<approval_token.value>" --lifecycle-events markdown --prompt "<focus>"\``),
     "",
     "Run custom-review:",
-    providerLines((provider) => `- \`node plugins/api-reviewers/scripts/api-reviewer.mjs run --provider ${provider.provider} --mode custom-review --scope custom --scope-paths "<file1>,<file2>" --approval-token "<approval_token.value>" --lifecycle-events jsonl --prompt "<focus>"\``),
+    providerLines((provider) => `- \`node plugins/api-reviewers/scripts/api-reviewer.mjs run --provider ${provider.provider} --mode custom-review --scope custom --scope-paths "<file1>,<file2>" --approval-token "<approval_token.value>" --lifecycle-events markdown --prompt "<focus>"\``),
     "",
     "`<focus>` is the user's review prompt or focus area.",
     "Replace `<file1>,<file2>` with comma- or newline-separated concrete relative paths. Use comma- or newline-separated concrete relative `--scope-paths`; expand globs before running.",
@@ -953,12 +962,12 @@ function grokCommandDoc(target) {
       "Route `--scope-paths <files>` before `--prompt` and pass the remaining prompt text to `--prompt`.",
       "Replace `<file1>,<file2>` with comma- or newline-separated concrete relative paths.",
       "Expand globs before running; do not pass glob characters as `--scope-paths`.",
-      `Run \`node plugins/grok/scripts/grok-web-reviewer.mjs run --mode ${workflow} --scope custom --scope-paths "<file1>,<file2>" --foreground --lifecycle-events jsonl --prompt "<prompt text>"\`.`,
+      `Run \`node plugins/grok/scripts/grok-web-reviewer.mjs run --mode ${workflow} --scope custom --scope-paths "<file1>,<file2>" --foreground --lifecycle-events markdown --prompt "<prompt text>"\`.`,
     ]
     : [
       "`$ARGUMENTS` is optional `--scope-base REF` followed by review prompt text.",
       "Route `--scope-base REF` before `--prompt` and pass the remaining prompt text to `--prompt`.",
-      `Run \`node plugins/grok/scripts/grok-web-reviewer.mjs run --mode ${workflow} --scope branch-diff --scope-base REF --foreground --lifecycle-events jsonl --prompt "<prompt text>"\`.`,
+      `Run \`node plugins/grok/scripts/grok-web-reviewer.mjs run --mode ${workflow} --scope branch-diff --scope-base REF --foreground --lifecycle-events markdown --prompt "<prompt text>"\`.`,
     ];
   return fm + lines(
     sharedHeader(title),
@@ -999,12 +1008,12 @@ function grokSkillDoc(target) {
 
   const scopeLines = workflow === "custom-review"
     ? [
-      `Run \`node plugins/grok/scripts/grok-web-reviewer.mjs run --mode ${workflow} --scope custom --scope-paths "<file1>,<file2>" --foreground --lifecycle-events jsonl --prompt "<focus>"\`.`,
+      `Run \`node plugins/grok/scripts/grok-web-reviewer.mjs run --mode ${workflow} --scope custom --scope-paths "<file1>,<file2>" --foreground --lifecycle-events markdown --prompt "<focus>"\`.`,
       "Replace `<file1>,<file2>` with comma- or newline-separated concrete relative `--scope-paths`.",
       "Expand globs before running; do not pass glob characters.",
     ]
     : [
-      `Run \`node plugins/grok/scripts/grok-web-reviewer.mjs run --mode ${workflow} --scope branch-diff --scope-base REF --foreground --lifecycle-events jsonl --prompt "<focus>"\`.`,
+      `Run \`node plugins/grok/scripts/grok-web-reviewer.mjs run --mode ${workflow} --scope branch-diff --scope-base REF --foreground --lifecycle-events markdown --prompt "<focus>"\`.`,
     ];
   return fm + lines(
     sharedHeader(title),
@@ -1031,13 +1040,13 @@ function grokDelegationSkillDoc() {
     "- `node plugins/grok/scripts/grok-web-reviewer.mjs doctor`",
     "",
     "Run review:",
-    "- `node plugins/grok/scripts/grok-web-reviewer.mjs run --mode review --scope branch-diff --scope-base REF --foreground --lifecycle-events jsonl --prompt \"<focus>\"`",
+    "- `node plugins/grok/scripts/grok-web-reviewer.mjs run --mode review --scope branch-diff --scope-base REF --foreground --lifecycle-events markdown --prompt \"<focus>\"`",
     "",
     "Run adversarial review:",
-    "- `node plugins/grok/scripts/grok-web-reviewer.mjs run --mode adversarial-review --scope branch-diff --scope-base REF --foreground --lifecycle-events jsonl --prompt \"<focus>\"`",
+    "- `node plugins/grok/scripts/grok-web-reviewer.mjs run --mode adversarial-review --scope branch-diff --scope-base REF --foreground --lifecycle-events markdown --prompt \"<focus>\"`",
     "",
     "Run custom-review:",
-    "- `node plugins/grok/scripts/grok-web-reviewer.mjs run --mode custom-review --scope custom --scope-paths \"<file1>,<file2>\" --foreground --lifecycle-events jsonl --prompt \"<focus>\"`",
+    "- `node plugins/grok/scripts/grok-web-reviewer.mjs run --mode custom-review --scope custom --scope-paths \"<file1>,<file2>\" --foreground --lifecycle-events markdown --prompt \"<focus>\"`",
     "",
     "`<focus>` is the user's review prompt or focus area.",
     "Replace `<file1>,<file2>` with comma- or newline-separated concrete relative paths. Use comma- or newline-separated concrete relative `--scope-paths`; expand globs before running.",

@@ -19,6 +19,7 @@ import {
   CLAUDE_GEMINI_PLUGIN_TARGETS,
   CODEX_ENV_PLUGIN_TARGETS,
   COMPANION_PLUGIN_TARGETS,
+  REVIEW_PROMPT_PLUGIN_TARGETS,
 } from "../../scripts/lib/plugin-targets.mjs";
 import { STRIPPED_GIT_ENV_KEYS as CLAUDE_STRIPPED_GIT_ENV_KEYS } from "../../plugins/claude/scripts/lib/git-env.mjs";
 import { STRIPPED_GIT_ENV_KEYS as GROK_STRIPPED_GIT_ENV_KEYS } from "../../plugins/grok/scripts/lib/git-env.mjs";
@@ -78,6 +79,22 @@ test("lib/time.mjs: plugin packaging copies match the canonical shared source", 
       "utf8"
     );
     assert.equal(copy, canonical, `time.mjs packaging copy drifted in ${plugin}`);
+  }
+});
+
+test("review-panel.mjs: plugin packaging CLIs match the canonical shared source", () => {
+  const canonical = readFileSync(path.join(REPO_ROOT, "scripts/review-panel.mjs"), "utf8");
+  for (const plugin of REVIEW_PROMPT_PLUGIN_TARGETS) {
+    const copy = readFileSync(path.join(REPO_ROOT, `plugins/${plugin}/scripts/review-panel.mjs`), "utf8");
+    assert.equal(copy, canonical, `review-panel.mjs packaging copy drifted in ${plugin}`);
+  }
+});
+
+test("lib/review-panel.mjs: plugin packaging copies match the canonical shared source", () => {
+  const canonical = readFileSync(path.join(REPO_ROOT, "scripts/lib/review-panel.mjs"), "utf8");
+  for (const plugin of REVIEW_PROMPT_PLUGIN_TARGETS) {
+    const copy = readFileSync(path.join(REPO_ROOT, `plugins/${plugin}/scripts/lib/review-panel.mjs`), "utf8");
+    assert.equal(copy, canonical, `lib/review-panel.mjs packaging copy drifted in ${plugin}`);
   }
 });
 

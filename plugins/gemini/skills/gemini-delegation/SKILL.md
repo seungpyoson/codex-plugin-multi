@@ -12,20 +12,20 @@ EXTERNAL_MODEL_CONTRACT_VERSION=1
 `<plugin-root>` is `plugins/gemini` or an absolute path to that plugin directory. Use skill `gemini:gemini-delegation`.
 
 Run review:
-- `node "<plugin-root>/scripts/gemini-companion.mjs" run --mode=review --foreground --lifecycle-events jsonl --cwd "<workspace>" --scope-base REF -- "<review focus>"`
+- `node "<plugin-root>/scripts/gemini-companion.mjs" run --mode=review --foreground --lifecycle-events markdown --cwd "<workspace>" --scope-base REF -- "<review focus>"`
 
 Run adversarial review:
-- `node "<plugin-root>/scripts/gemini-companion.mjs" run --mode=adversarial-review --foreground --lifecycle-events jsonl --cwd "<workspace>" --scope-base REF -- "<design or diff to challenge>"`
+- `node "<plugin-root>/scripts/gemini-companion.mjs" run --mode=adversarial-review --foreground --lifecycle-events markdown --cwd "<workspace>" --scope-base REF -- "<design or diff to challenge>"`
 
 Run custom-review:
-- `node "<plugin-root>/scripts/gemini-companion.mjs" run --mode=custom-review --foreground --lifecycle-events jsonl --cwd "<bundle-or-workspace>" --scope-paths "PR.diff,docs/*.md" -- "<review focus using relative paths>"`
+- `node "<plugin-root>/scripts/gemini-companion.mjs" run --mode=custom-review --foreground --lifecycle-events markdown --cwd "<bundle-or-workspace>" --scope-paths "PR.diff,docs/*.md" -- "<review focus using relative paths>"`
 
 Run rescue:
-- `node "<plugin-root>/scripts/gemini-companion.mjs" run --mode=rescue --foreground --lifecycle-events jsonl --cwd "<workspace>" -- "<task>"`
-- `node "<plugin-root>/scripts/gemini-companion.mjs" run --mode=rescue --background --lifecycle-events jsonl --cwd "<workspace>" -- "<task>"`
+- `node "<plugin-root>/scripts/gemini-companion.mjs" run --mode=rescue --foreground --lifecycle-events markdown --cwd "<workspace>" -- "<task>"`
+- `node "<plugin-root>/scripts/gemini-companion.mjs" run --mode=rescue --background --lifecycle-events markdown --cwd "<workspace>" -- "<task>"`
 
 Continue a job:
-- `node "<plugin-root>/scripts/gemini-companion.mjs" continue --job "<job-id>" --foreground --lifecycle-events jsonl --cwd "<workspace>" -- "<follow-up>"`
+- `node "<plugin-root>/scripts/gemini-companion.mjs" continue --job "<job-id>" --foreground --lifecycle-events markdown --cwd "<workspace>" -- "<follow-up>"`
 
 Cancel a background job:
 - `node "<plugin-root>/scripts/gemini-companion.mjs" cancel --job "<job-id>" --cwd "<workspace>"`
@@ -55,21 +55,30 @@ Return the runtime output verbatim; do not hide failed or incomplete rescue work
 Failed or incomplete rescue is not success. Report the failed state and the next safe action.
 
 ## Rendering Contract
-Render companion JSON directly.
-If `external_review_launched` is present, render it immediately.
+Request `--lifecycle-events markdown` for foreground and background review flows.
+Render lifecycle markdown cards directly.
+If a legacy JSON lifecycle envelope appears, render `external_review_launched` immediately.
 If a background launch envelope has `event: "launched"` with an `external_review` field, render the same launch card immediately with session pending.
-If `external_review` is present, render it before normal prose.
-Launch cards should include provider, job, session, run kind, and scope when those fields are present.
+If a legacy JSON `external_review` field appears, render it before normal prose.
+Lifecycle cards should include provider, job, session, run kind, mode, scope, source transmission, status, error code, error message, HTTP status, and suggested action when those fields are present.
 
-```text
-+------------------------------------------------+
-| EXTERNAL REVIEW                                |
-| Provider: <provider>                           |
-| Job:      <job_id>                             |
-| Session:  <session_id or pending>              |
-| Run:      <foreground|background|unknown>      |
-| Scope:    <scope and scope_base/scope_paths>   |
-+------------------------------------------------+
+```md
+### EXTERNAL REVIEW
+
+| Field | Value |
+| --- | --- |
+| Provider | <provider> |
+| Job | <job_id> |
+| Session | <session_id or pending> |
+| Run | <foreground|background|unknown> |
+| Mode | <mode> |
+| Scope | <scope and scope_base/scope_paths> |
+| Source | <source_content_transmission> |
+| Status | <status> |
+| Error | <error_code> |
+| Message | <error_message> |
+| HTTP | <http_status> |
+| Action | <suggested_action> |
 ```
 
 Do not claim commands are available in Codex builds that do not register plugin command files.

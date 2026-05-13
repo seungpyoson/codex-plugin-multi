@@ -3258,6 +3258,66 @@ test("direct API reviewers reject invalid lifecycle event mode as bad args", asy
   assert.doesNotMatch(result.stdout, /secret-test-value/);
 });
 
+test("direct API reviewers render lifecycle markdown cards before source transmission", async () => {
+  const cwd = makeWorkspace();
+  const result = await run([
+    "run",
+    "--provider", "deepseek",
+    "--mode", "custom-review",
+    "--scope", "custom",
+    "--scope-paths", "seed.txt",
+    "--foreground",
+    "--lifecycle-events", "markdown",
+  ], {
+    cwd,
+    env: {
+      API_REVIEWERS_MOCK_RESPONSE: mockResponse("deepseek-v4-pro"),
+      DEEPSEEK_API_KEY: "secret-test-value",
+    },
+  });
+  assert.equal(result.status, 1);
+  assert.match(result.stdout, /^### EXTERNAL REVIEW/m);
+  assert.match(result.stdout, /\| Provider \| DeepSeek \|/);
+  assert.match(result.stdout, /\| Source \| not_sent \|/);
+  assert.match(result.stdout, /\| Status \| failed \|/);
+  assert.match(result.stdout, /\| Error \| bad_args \|/);
+  assert.match(result.stdout, /\| Message \| [^|]*prompt is required[^|]*--prompt <focus>[^|]* \|/);
+  assert.match(result.stdout, /\| Summary \| [^|]+ \|/);
+  assert.match(result.stdout, /\| Action \| Correct the api-reviewer command arguments and retry\. \|/);
+  assert.doesNotMatch(result.stdout, /secret-test-value/);
+  assert.doesNotMatch(result.stdout, /^\{/);
+});
+
+test("direct API reviewers lifecycle markdown emits launch and terminal cards on success", async () => {
+  const cwd = makeWorkspace();
+  const result = await run([
+    "run",
+    "--provider", "deepseek",
+    "--mode", "custom-review",
+    "--scope", "custom",
+    "--scope-paths", "seed.txt",
+    "--foreground",
+    "--lifecycle-events", "markdown",
+    "--prompt", "Check this file.",
+  ], {
+    cwd,
+    env: {
+      API_REVIEWERS_MOCK_RESPONSE: mockResponse("deepseek-v4-pro"),
+      DEEPSEEK_API_KEY: "secret-test-value",
+    },
+  });
+
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  assert.equal((result.stdout.match(/^### EXTERNAL REVIEW/gm) ?? []).length, 2);
+  assert.match(result.stdout, /\| Provider \| DeepSeek \|/);
+  assert.match(result.stdout, /\| Source \| may_be_sent \|/);
+  assert.match(result.stdout, /\| Status \| launched \|/);
+  assert.match(result.stdout, /\| Source \| sent \|/);
+  assert.match(result.stdout, /\| Status \| completed \|/);
+  assert.doesNotMatch(result.stdout, /secret-test-value/);
+  assert.doesNotMatch(result.stdout, /^\{/);
+});
+
 test("direct API reviewers reject missing prompt before launch or source transmission", async () => {
   const cwd = makeWorkspace();
   const result = await run([

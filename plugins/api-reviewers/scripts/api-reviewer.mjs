@@ -103,15 +103,61 @@ function printJsonLine(obj) {
   process.stdout.write(`${JSON.stringify(obj)}\n`);
 }
 
+function markdownCell(value) {
+  return String(value ?? "").replace(/\|/g, "\\|").replace(/\s+/g, " ").trim();
+}
+
+function lifecycleScope(externalReview) {
+  const scope = externalReview?.scope ?? "";
+  const base = externalReview?.scope_base ?? null;
+  const paths = Array.isArray(externalReview?.scope_paths) ? externalReview.scope_paths.join(",") : null;
+  return [scope, base, paths].filter(Boolean).join(" ") || "unknown";
+}
+
+function renderLifecycleMarkdown(obj) {
+  const externalReview = obj?.external_review && typeof obj.external_review === "object" ? obj.external_review : null;
+  if (!externalReview) return null;
+  const rows = [
+    ["Provider", externalReview.provider ?? obj.provider ?? obj.target ?? "unknown"],
+    ["Job", externalReview.job_id ?? obj.job_id ?? "unknown"],
+    ["Session", externalReview.session_id ?? "pending"],
+    ["Run", externalReview.run_kind ?? "unknown"],
+    ["Mode", externalReview.mode ?? obj.mode ?? "unknown"],
+    ["Scope", lifecycleScope(externalReview)],
+    ["Source", externalReview.source_content_transmission ?? "unknown"],
+    ["Status", obj.status ?? "unknown"],
+  ];
+  if (obj.error_code) rows.push(["Error", obj.error_code]);
+  if (obj.error_message) rows.push(["Message", obj.error_message]);
+  if (obj.error_summary) rows.push(["Summary", obj.error_summary]);
+  if (obj.http_status != null) rows.push(["HTTP", obj.http_status]);
+  if (obj.suggested_action) rows.push(["Action", obj.suggested_action]);
+  if (externalReview.disclosure) rows.push(["Disclosure", externalReview.disclosure]);
+  return [
+    "### EXTERNAL REVIEW",
+    "",
+    "| Field | Value |",
+    "| --- | --- |",
+    ...rows.map(([key, value]) => `| ${markdownCell(key)} | ${markdownCell(value)} |`),
+    "",
+  ].join("\n");
+}
+
 function printLifecycleJson(obj, lifecycleEvents) {
   if (lifecycleEvents === "jsonl") printJsonLine(obj);
+  else if (lifecycleEvents === "markdown") {
+    const markdown = renderLifecycleMarkdown(obj);
+    if (markdown) process.stdout.write(markdown);
+    else printJson(obj);
+  }
   else printJson(obj);
 }
 
 function parseLifecycleEventsMode(value) {
   if (value == null || value === false) return null;
   if (value === "jsonl") return "jsonl";
-  throw runBadArgs("--lifecycle-events must be jsonl");
+  if (value === "markdown") return "markdown";
+  throw runBadArgs("--lifecycle-events must be jsonl or markdown");
 }
 
 function isActiveJob(job) {

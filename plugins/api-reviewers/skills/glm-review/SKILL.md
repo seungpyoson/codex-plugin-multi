@@ -12,7 +12,7 @@ EXTERNAL_MODEL_CONTRACT_VERSION=1
 Use skill `api-reviewers:glm-review`. Command doc: `plugins/api-reviewers/commands/glm-review.md`.
 Scope: `branch-diff`.
 `<focus>` is the user's review prompt or focus area.
-Run `node plugins/api-reviewers/scripts/api-reviewer.mjs run --provider glm --mode review --scope branch-diff --scope-base REF --approval-token "<approval_token.value>" --lifecycle-events jsonl --prompt "<focus>"`.
+Run `node plugins/api-reviewers/scripts/api-reviewer.mjs run --provider glm --mode review --scope branch-diff --scope-base REF --approval-token "<approval_token.value>" --lifecycle-events markdown --prompt "<focus>"`.
 ## Review Contract
 This is a review-only contract.
 Do not fix findings, apply patches, edit files, or start rescue work from a review result.

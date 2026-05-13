@@ -75,7 +75,7 @@ function assertCompanionWorkflowInvocation(skill, plugin, workflow, rel) {
     assert.match(skill, /--foreground\b/, `${rel} missing --foreground`);
   }
   if (["review", "adversarial-review"].includes(workflow)) {
-    assert.match(skill, /--lifecycle-events\s+jsonl\b/, `${rel} missing lifecycle jsonl option`);
+    assert.match(skill, /--lifecycle-events\s+markdown\b/, `${rel} missing lifecycle markdown option`);
     assert.match(skill, /external_review_launched/, `${rel} missing launch event rendering guidance`);
     assert.match(skill, /--scope-base REF/, `${rel} missing optional --scope-base`);
     assert.match(skill, /`<focus>` is the user's review prompt or focus area/, `${rel} must define focus placeholder`);
@@ -97,7 +97,7 @@ function assertApiReviewerWorkflowInvocation(skill, provider, workflow, rel) {
 
   assert.match(skill, new RegExp(`--mode\\s+${workflow}\\b`), `${rel} missing --mode ${workflow}`);
   assert.doesNotMatch(skill, /--foreground\b/, `${rel} must not document ignored --foreground flag`);
-  assert.match(skill, /--lifecycle-events\s+jsonl\b/, `${rel} missing lifecycle jsonl option`);
+  assert.match(skill, /--lifecycle-events\s+markdown\b/, `${rel} missing lifecycle markdown option`);
   assert.match(skill, /external_review_launched/, `${rel} missing launch event rendering guidance`);
   assert.match(skill, /`error_code`/, `${rel} missing failed JobRecord error_code rendering guidance`);
   assert.match(skill, /`error_message`/, `${rel} missing failed JobRecord error_message rendering guidance`);
@@ -127,7 +127,7 @@ function assertApiReviewerCommandDoc(command, workflow, rel) {
   assertNoBracketedCliFlagsInShellFences(command, rel);
   assert.doesNotMatch(command, /--foreground\b/, `${rel} must not document ignored --foreground flag`);
   if (workflow !== "setup") {
-    assert.match(command, /--lifecycle-events\s+jsonl\b/, `${rel} missing lifecycle jsonl option`);
+    assert.match(command, /--lifecycle-events\s+markdown\b/, `${rel} missing lifecycle markdown option`);
     assert.match(command, /external_review_launched/, `${rel} missing launch event rendering guidance`);
     assert.match(command, /external_review.*before the review result/, `${rel} missing external_review rendering guidance`);
     assert.match(command, /`error_code`/, `${rel} missing failed JobRecord error_code rendering guidance`);
@@ -167,7 +167,7 @@ function assertGrokWorkflowInvocation(skill, workflow, rel) {
   assert.match(skill, /grok-web-reviewer\.mjs\s+run\b/, `${rel} missing run subcommand`);
   assert.match(skill, new RegExp(`--mode\\s+${workflow}\\b`), `${rel} missing --mode ${workflow}`);
   assert.match(skill, /--foreground\b/, `${rel} missing --foreground`);
-  assert.match(skill, /--lifecycle-events\s+jsonl\b/, `${rel} missing lifecycle jsonl option`);
+  assert.match(skill, /--lifecycle-events\s+markdown\b/, `${rel} missing lifecycle markdown option`);
   assert.match(skill, /external_review_launched/, `${rel} missing launch event rendering guidance`);
   assert.match(skill, /`error_code`/, `${rel} missing failed JobRecord error_code rendering guidance`);
   assert.match(skill, /`error_message`/, `${rel} missing failed JobRecord error_message rendering guidance`);
@@ -199,7 +199,7 @@ function assertGrokCommandDoc(command, workflow, rel) {
 
   assert.match(command, new RegExp(`--mode\\s+${workflow}\\b`), `${rel} missing --mode ${workflow}`);
   assert.match(command, /--foreground\b/, `${rel} missing --foreground`);
-  assert.match(command, /--lifecycle-events\s+jsonl\b/, `${rel} missing lifecycle jsonl option`);
+  assert.match(command, /--lifecycle-events\s+markdown\b/, `${rel} missing lifecycle markdown option`);
   assert.match(command, /external_review_launched/, `${rel} missing launch event rendering guidance`);
   assert.match(command, /external_review.*before the review result/, `${rel} missing external_review rendering guidance`);
   assert.match(command, /`error_code`/, `${rel} missing failed JobRecord error_code rendering guidance`);
@@ -425,7 +425,7 @@ test("provider workflow skills are user-invocable and command-backed", () => {
       const command = readFileSync(path.join(REPO_ROOT, commandRel), "utf8");
       assertNoBracketedCliFlagsInShellFences(command, commandRel);
       if (["review", "adversarial-review"].includes(workflow)) {
-        assert.match(command, /--lifecycle-events\s+jsonl\b/, `${commandRel} missing lifecycle jsonl option`);
+        assert.match(command, /--lifecycle-events\s+markdown\b/, `${commandRel} missing lifecycle markdown option`);
         assert.match(command, /external_review_launched/, `${commandRel} missing launch event rendering guidance`);
         assert.match(command, /external_review.*before/, `${commandRel} missing external_review rendering guidance`);
       }

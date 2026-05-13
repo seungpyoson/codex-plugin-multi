@@ -14,7 +14,7 @@ Scope: `branch-diff`. Preserve raw `$ARGUMENTS` except for documented routing.
 `$ARGUMENTS` is optional `--scope-base REF` followed by review prompt text.
 Route `--scope-base REF` before `--prompt` and pass the remaining prompt text to `--prompt`.
 Run `node plugins/api-reviewers/scripts/api-reviewer.mjs approval-request --provider glm --mode adversarial-review --scope branch-diff --scope-base REF --prompt "<prompt text>"`.
-Run `node plugins/api-reviewers/scripts/api-reviewer.mjs run --provider glm --mode adversarial-review --scope branch-diff --scope-base REF --approval-token "<approval_token.value>" --lifecycle-events jsonl --prompt "<prompt text>"`.
+Run `node plugins/api-reviewers/scripts/api-reviewer.mjs run --provider glm --mode adversarial-review --scope branch-diff --scope-base REF --approval-token "<approval_token.value>" --lifecycle-events markdown --prompt "<prompt text>"`.
 ## Review Contract
 This is a review-only contract.
 Do not fix findings, apply patches, edit files, or start rescue work from a review result.

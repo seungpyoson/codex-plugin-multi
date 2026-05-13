@@ -11,7 +11,7 @@ EXTERNAL_MODEL_CONTRACT_VERSION=1
 
 Use skill `grok:grok-custom-review`. Command doc: `plugins/grok/commands/grok-custom-review.md`.
 `<focus>` is the user's review prompt or focus area.
-Run `node plugins/grok/scripts/grok-web-reviewer.mjs run --mode custom-review --scope custom --scope-paths "<file1>,<file2>" --foreground --lifecycle-events jsonl --prompt "<focus>"`.
+Run `node plugins/grok/scripts/grok-web-reviewer.mjs run --mode custom-review --scope custom --scope-paths "<file1>,<file2>" --foreground --lifecycle-events markdown --prompt "<focus>"`.
 Replace `<file1>,<file2>` with comma- or newline-separated concrete relative `--scope-paths`.
 Expand globs before running; do not pass glob characters.
 ## Review Contract

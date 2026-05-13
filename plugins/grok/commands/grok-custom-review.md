@@ -14,7 +14,7 @@ EXTERNAL_MODEL_CONTRACT_VERSION=1
 Route `--scope-paths <files>` before `--prompt` and pass the remaining prompt text to `--prompt`.
 Replace `<file1>,<file2>` with comma- or newline-separated concrete relative paths.
 Expand globs before running; do not pass glob characters as `--scope-paths`.
-Run `node plugins/grok/scripts/grok-web-reviewer.mjs run --mode custom-review --scope custom --scope-paths "<file1>,<file2>" --foreground --lifecycle-events jsonl --prompt "<prompt text>"`.
+Run `node plugins/grok/scripts/grok-web-reviewer.mjs run --mode custom-review --scope custom --scope-paths "<file1>,<file2>" --foreground --lifecycle-events markdown --prompt "<prompt text>"`.
 ## Review Contract
 This is a review-only contract.
 Do not fix findings, apply patches, edit files, or start rescue work from a review result.

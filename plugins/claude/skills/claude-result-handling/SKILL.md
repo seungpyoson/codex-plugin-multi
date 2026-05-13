@@ -71,21 +71,30 @@ For `source_content_transmission: "sent"`, disclose that selected source content
 For `source_content_transmission: "may_be_sent"`, say the runtime could not prove whether source was transmitted.
 
 ## Rendering Contract
-Render companion JSON directly.
-If `external_review_launched` is present, render it immediately.
+Request `--lifecycle-events markdown` for foreground and background review flows.
+Render lifecycle markdown cards directly.
+If a legacy JSON lifecycle envelope appears, render `external_review_launched` immediately.
 If a background launch envelope has `event: "launched"` with an `external_review` field, render the same launch card immediately with session pending.
-If `external_review` is present, render it before normal prose.
-Launch cards should include provider, job, session, run kind, and scope when those fields are present.
+If a legacy JSON `external_review` field appears, render it before normal prose.
+Lifecycle cards should include provider, job, session, run kind, mode, scope, source transmission, status, error code, error message, HTTP status, and suggested action when those fields are present.
 
-```text
-+------------------------------------------------+
-| EXTERNAL REVIEW                                |
-| Provider: <provider>                           |
-| Job:      <job_id>                             |
-| Session:  <session_id or pending>              |
-| Run:      <foreground|background|unknown>      |
-| Scope:    <scope and scope_base/scope_paths>   |
-+------------------------------------------------+
+```md
+### EXTERNAL REVIEW
+
+| Field | Value |
+| --- | --- |
+| Provider | <provider> |
+| Job | <job_id> |
+| Session | <session_id or pending> |
+| Run | <foreground|background|unknown> |
+| Mode | <mode> |
+| Scope | <scope and scope_base/scope_paths> |
+| Source | <source_content_transmission> |
+| Status | <status> |
+| Error | <error_code> |
+| Message | <error_message> |
+| HTTP | <http_status> |
+| Action | <suggested_action> |
 ```
 
 ## Scope Safety

@@ -12,7 +12,7 @@ EXTERNAL_MODEL_CONTRACT_VERSION=1
 
 `$ARGUMENTS` is optional `--scope-base REF` followed by review prompt text.
 Route `--scope-base REF` before `--prompt` and pass the remaining prompt text to `--prompt`.
-Run `node plugins/grok/scripts/grok-web-reviewer.mjs run --mode adversarial-review --scope branch-diff --scope-base REF --foreground --lifecycle-events jsonl --prompt "<prompt text>"`.
+Run `node plugins/grok/scripts/grok-web-reviewer.mjs run --mode adversarial-review --scope branch-diff --scope-base REF --foreground --lifecycle-events markdown --prompt "<prompt text>"`.
 ## Review Contract
 This is a review-only contract.
 Do not fix findings, apply patches, edit files, or start rescue work from a review result.

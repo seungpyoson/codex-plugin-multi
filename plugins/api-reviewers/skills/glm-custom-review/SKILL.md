@@ -12,7 +12,7 @@ EXTERNAL_MODEL_CONTRACT_VERSION=1
 Use skill `api-reviewers:glm-custom-review`. Command doc: `plugins/api-reviewers/commands/glm-custom-review.md`.
 Scope: `custom`.
 `<focus>` is the user's review prompt or focus area.
-Run `node plugins/api-reviewers/scripts/api-reviewer.mjs run --provider glm --mode custom-review --scope custom --scope-paths "<file1>,<file2>" --approval-token "<approval_token.value>" --lifecycle-events jsonl --prompt "<focus>"`.
+Run `node plugins/api-reviewers/scripts/api-reviewer.mjs run --provider glm --mode custom-review --scope custom --scope-paths "<file1>,<file2>" --approval-token "<approval_token.value>" --lifecycle-events markdown --prompt "<focus>"`.
 Replace `<file1>,<file2>` with comma- or newline-separated concrete relative `--scope-paths`.
 Expand globs before running; do not pass glob characters or space-separated paths.
 ## Review Contract
