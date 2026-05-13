@@ -186,8 +186,8 @@ function checklistText(line) {
   const bullet = bulletText(trimmed);
   if (bullet !== null) return bullet;
   const unmarked = trimmed.replace(/[*_`]/g, "");
-  const checklistItem = unmarked.match(/^(?:(?:checklist\s+item\s+\d{1,10}\b[^:]*)|(?:item\s+\d{1,10}\s*)):\s*(.+)$/i);
-  if (checklistItem) return checklistItem[1].trimStart();
+  const checklistItem = checklistItemText(unmarked);
+  if (checklistItem !== null) return checklistItem;
   let index = 0;
   while (index < trimmed.length && index < MAX_CHECKLIST_NUMBER_DIGITS) {
     const code = trimmed.charCodeAt(index);
@@ -196,6 +196,50 @@ function checklistText(line) {
   }
   if (index === 0 || (trimmed[index] !== "." && trimmed[index] !== ")")) return null;
   return trimmed.slice(index + 1).trimStart();
+}
+
+function checklistItemText(line) {
+  const lower = line.toLowerCase();
+  if (lower.startsWith("checklist item ")) {
+    return checklistItemWithDescriptionText(line, "checklist item ".length);
+  }
+  if (lower.startsWith("item ")) {
+    return bareItemText(line, "item ".length);
+  }
+  return null;
+}
+
+function checklistItemWithDescriptionText(line, index) {
+  const afterDigits = scanChecklistDigits(line, index);
+  if (afterDigits === null) return null;
+  const colon = line.indexOf(":", afterDigits);
+  if (colon === -1) return null;
+  return line.slice(colon + 1).trimStart();
+}
+
+function bareItemText(line, index) {
+  const afterDigits = scanChecklistDigits(line, index);
+  if (afterDigits === null) return null;
+  let cursor = afterDigits;
+  while (line[cursor] === " " || line[cursor] === "\t") cursor += 1;
+  if (line[cursor] !== ":") return null;
+  return line.slice(cursor + 1).trimStart();
+}
+
+function scanChecklistDigits(line, index) {
+  let cursor = index;
+  while (cursor < line.length && cursor - index < MAX_CHECKLIST_NUMBER_DIGITS) {
+    const code = line.charCodeAt(cursor);
+    if (code < 48 || code > 57) break;
+    cursor += 1;
+  }
+  if (cursor === index) return null;
+  const nextCode = line.charCodeAt(cursor);
+  if (
+    Number.isFinite(nextCode) &&
+    ((nextCode >= 48 && nextCode <= 57) || (nextCode >= 65 && nextCode <= 90) || (nextCode >= 97 && nextCode <= 122))
+  ) return null;
+  return cursor;
 }
 
 function unmarkReviewText(text) {
