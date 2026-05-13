@@ -102,17 +102,17 @@ const GROK_EXPECTED_KEYS = Object.freeze([
   "schema_version",
 ]);
 
-function printJson(obj) {
-  process.stdout.write(`${JSON.stringify(obj, null, 2)}\n`);
+function printJson(obj, output = process.stdout) {
+  output.write(`${JSON.stringify(obj, null, 2)}\n`);
 }
 
-function printJsonLine(obj) {
-  process.stdout.write(`${JSON.stringify(obj)}\n`);
+function printJsonLine(obj, output = process.stdout) {
+  output.write(`${JSON.stringify(obj)}\n`);
 }
 
-function printLifecycleJson(obj, lifecycleEvents) {
-  if (lifecycleEvents === "jsonl") printJsonLine(obj);
-  else printJson(obj);
+function printLifecycleJson(obj, lifecycleEvents, output = process.stdout) {
+  if (lifecycleEvents === "jsonl") printJsonLine(obj, output);
+  else printJson(obj, output);
 }
 
 function externalReviewProgressEvent(invocation, { sequence, elapsedMs }) {
@@ -135,18 +135,23 @@ function lifecycleHeartbeatIntervalMs(env = process.env) {
   return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : 30000;
 }
 
-function startLifecycleHeartbeat(invocation, lifecycleEvents, intervalMs = lifecycleHeartbeatIntervalMs()) {
+function startLifecycleHeartbeat(
+  invocation,
+  lifecycleEvents,
+  { intervalMs = lifecycleHeartbeatIntervalMs(), output = null, now = Date.now } = {},
+) {
   if (lifecycleEvents !== "jsonl") return () => {};
-  const started = Date.now();
+  const started = now();
   let sequence = 0;
   const timer = setInterval(() => {
     sequence += 1;
     printLifecycleJson(
       externalReviewProgressEvent(invocation, {
         sequence,
-        elapsedMs: Date.now() - started,
+        elapsedMs: now() - started,
       }),
       lifecycleEvents,
+      output ?? undefined,
     );
   }, intervalMs);
   timer.unref?.();

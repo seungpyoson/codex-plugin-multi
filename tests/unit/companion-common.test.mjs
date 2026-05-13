@@ -6,11 +6,15 @@ import path from "node:path";
 
 import {
   PING_PROMPT,
+  cancelNoPidInfoSuggestedAction,
+  cancelUnverifiableSuggestedAction,
   comparePathStrings,
   consumePromptSidecar,
   credentialNameDiagnostics,
+  effectiveProfileForOptions,
   externalReviewBackgroundLaunchedEvent,
   externalReviewLaunchedEvent,
+  externalReviewHeartbeatIntervalMs,
   externalReviewProgressEvent,
   gitStatusLines,
   parseLifecycleEventsMode,
@@ -138,6 +142,20 @@ test("shared companion helpers cover small provider-agnostic behavior", () => {
   assert.deepEqual(gitStatusLines(" M a.js  \n\n?? b.js\n"), [" M a.js", "?? b.js"]);
   assert.equal(runKindFromRecord({ external_review: { run_kind: "foreground" } }), "foreground");
   assert.equal(runKindFromRecord({}), "unknown");
+  assert.equal(externalReviewHeartbeatIntervalMs({}), 30000);
+  assert.equal(externalReviewHeartbeatIntervalMs({ CODEX_PLUGIN_EXTERNAL_REVIEW_HEARTBEAT_MS: "7" }), 7);
+  assert.equal(externalReviewHeartbeatIntervalMs({ CODEX_PLUGIN_EXTERNAL_REVIEW_HEARTBEAT_MS: "0" }), 30000);
+  const reviewProfile = Object.freeze({ name: "review", scope: "working-tree" });
+  assert.deepEqual(effectiveProfileForOptions(reviewProfile, { "scope-base": "origin/main" }), {
+    name: "review",
+    scope: "branch-diff",
+  });
+  assert.equal(effectiveProfileForOptions(reviewProfile, { "scope-base": "" }), reviewProfile);
+  const customProfile = Object.freeze({ name: "custom-review", scope: "custom" });
+  assert.equal(effectiveProfileForOptions(customProfile, { "scope-base": "origin/main" }), customProfile);
+  assert.match(cancelUnverifiableSuggestedAction(1234), /pid 1234/);
+  assert.match(cancelUnverifiableSuggestedAction(1234), /ownership/);
+  assert.match(cancelNoPidInfoSuggestedAction(), /verify process ownership/);
 });
 
 test("startExternalReviewHeartbeat emits jsonl progress until stopped", async () => {
@@ -282,11 +300,11 @@ test("plugin packaging copies expose the canonical helper behavior", async () =>
     assert.deepEqual(mod.parseScopePathsOption("one,two"), ["one", "two"]);
     assert.deepEqual(mod.gitStatusLines(" M x\n"), [" M x"]);
     assert.equal(mod.runKindFromRecord({}), "unknown");
-    assertCopyHelperBranches(mod, plugin);
+    await assertCopyHelperBranches(mod, plugin);
   }
 });
 
-function assertCopyHelperBranches(mod, plugin) {
+async function assertCopyHelperBranches(mod, plugin) {
   let printed = "";
   mod.printJson({ plugin }, { write: (chunk) => { printed += chunk; } });
   assert.equal(printed, `{\n  "plugin": "${plugin}"\n}\n`);
@@ -366,6 +384,33 @@ function assertCopyHelperBranches(mod, plugin) {
   assert.deepEqual(mod.gitStatusLines(" M a.js  \n\n?? b.js\n"), [" M a.js", "?? b.js"]);
   assert.equal(mod.runKindFromRecord({ external_review: { run_kind: "background" } }), "background");
   assert.equal(mod.runKindFromRecord({}), "unknown");
+  assert.equal(mod.externalReviewHeartbeatIntervalMs({}), 30000);
+  assert.equal(mod.externalReviewHeartbeatIntervalMs({ CODEX_PLUGIN_EXTERNAL_REVIEW_HEARTBEAT_MS: "7" }), 7);
+  assert.equal(mod.externalReviewHeartbeatIntervalMs({ CODEX_PLUGIN_EXTERNAL_REVIEW_HEARTBEAT_MS: "0" }), 30000);
+  const reviewProfile = Object.freeze({ name: "review", scope: "working-tree" });
+  assert.deepEqual(mod.effectiveProfileForOptions(reviewProfile, { "scope-base": "origin/main" }), {
+    name: "review",
+    scope: "branch-diff",
+  });
+  assert.equal(mod.effectiveProfileForOptions(reviewProfile, { "scope-base": "" }), reviewProfile);
+  const customProfile = Object.freeze({ name: "custom-review", scope: "custom" });
+  assert.equal(mod.effectiveProfileForOptions(customProfile, { "scope-base": "origin/main" }), customProfile);
+  assert.match(mod.cancelUnverifiableSuggestedAction(1234), /pid 1234/);
+  assert.match(mod.cancelUnverifiableSuggestedAction(1234), /ownership/);
+  assert.match(mod.cancelNoPidInfoSuggestedAction(), /verify process ownership/);
+
+  const chunks = [];
+  const stop = mod.startExternalReviewHeartbeat(
+    { job_id: `copy-heartbeat-${plugin}`, target: plugin, mode: "review", run_kind: "foreground" },
+    "jsonl",
+    { intervalMs: 5, output: { write: (chunk) => chunks.push(chunk) } },
+  );
+  await new Promise((resolve) => setTimeout(resolve, 12));
+  stop();
+  assert.ok(chunks.length >= 1, `${plugin}: copied heartbeat helper must emit progress`);
+  const heartbeat = JSON.parse(chunks[0]);
+  assert.equal(heartbeat.event, "external_review_progress");
+  assert.equal(heartbeat.target, plugin);
 
   const jobsDir = mkdtempSync(path.join(tmpdir(), `companion-common-copy-jobs-${plugin}-`));
   assert.equal(mod.consumePromptSidecar(jobsDir, "job-1"), null);

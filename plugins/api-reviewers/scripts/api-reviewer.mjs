@@ -95,17 +95,17 @@ const MIN_SECRET_REDACTION_LENGTH = 8;
 const ACCOUNT_PAYMENT_TOKEN_RE = /\b(?:stripe-[^\s,;:)]+|cus_[A-Za-z0-9]{6,}|acct_(?:test_)?[A-Za-z0-9]{5,}|cs_(?:test|live)_[A-Za-z0-9]{6,}|(?:pi|sub|in|ii|ch|seti|setp|price|prod|iv)_(?=[A-Za-z0-9]*\d)[A-Za-z0-9]{5,})/gi;
 const ACCOUNT_PAYMENT_DIAGNOSTIC_RE = /^(?:stripe-.+|cus_[A-Za-z0-9]{6,}|acct_(?:test_)?[A-Za-z0-9]{5,}|cs_(?:test|live)_[A-Za-z0-9]{6,}|(?:pi|sub|in|ii|ch|seti|setp|price|prod|iv)_(?=[A-Za-z0-9]*\d)[A-Za-z0-9]{5,})$/i;
 
-function printJson(obj) {
-  process.stdout.write(`${JSON.stringify(obj, null, 2)}\n`);
+function printJson(obj, output = process.stdout) {
+  output.write(`${JSON.stringify(obj, null, 2)}\n`);
 }
 
-function printJsonLine(obj) {
-  process.stdout.write(`${JSON.stringify(obj)}\n`);
+function printJsonLine(obj, output = process.stdout) {
+  output.write(`${JSON.stringify(obj)}\n`);
 }
 
-function printLifecycleJson(obj, lifecycleEvents) {
-  if (lifecycleEvents === "jsonl") printJsonLine(obj);
-  else printJson(obj);
+function printLifecycleJson(obj, lifecycleEvents, output = process.stdout) {
+  if (lifecycleEvents === "jsonl") printJsonLine(obj, output);
+  else printJson(obj, output);
 }
 
 function externalReviewProgressEvent(invocation, { sequence, elapsedMs }) {
@@ -128,18 +128,23 @@ function lifecycleHeartbeatIntervalMs(env = process.env) {
   return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : 30000;
 }
 
-function startLifecycleHeartbeat(invocation, lifecycleEvents, intervalMs = lifecycleHeartbeatIntervalMs()) {
+function startLifecycleHeartbeat(
+  invocation,
+  lifecycleEvents,
+  { intervalMs = lifecycleHeartbeatIntervalMs(), output = null, now = Date.now } = {},
+) {
   if (lifecycleEvents !== "jsonl") return () => {};
-  const started = Date.now();
+  const started = now();
   let sequence = 0;
   const timer = setInterval(() => {
     sequence += 1;
     printLifecycleJson(
       externalReviewProgressEvent(invocation, {
         sequence,
-        elapsedMs: Date.now() - started,
+        elapsedMs: now() - started,
       }),
       lifecycleEvents,
+      output ?? undefined,
     );
   }, intervalMs);
   timer.unref?.();

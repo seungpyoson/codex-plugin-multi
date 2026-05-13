@@ -57,7 +57,10 @@ import {
 import { CLAUDE_PROVIDER_API_KEY_ENV } from "./lib/claude-provider-keys.mjs";
 import {
   PING_PROMPT,
+  cancelNoPidInfoSuggestedAction,
+  cancelUnverifiableSuggestedAction,
   consumePromptSidecar,
+  effectiveProfileForOptions,
   externalReviewBackgroundLaunchedEvent,
   externalReviewLaunchedEvent,
   gitStatusLines,
@@ -590,25 +593,6 @@ function failBackgroundPromptSidecarWrite(workspaceRoot, invocation, error) {
   writeJobFile(workspaceRoot, invocation.job_id, errorRecord);
   upsertJob(workspaceRoot, errorRecord);
   fail("sidecar_failed", message, { error_code: error?.code ?? null });
-}
-
-function effectiveProfileForOptions(profile, options) {
-  if (profile.name === "review" && options["scope-base"] !== undefined) {
-    return Object.freeze({ ...profile, scope: "branch-diff" });
-  }
-  return profile;
-}
-
-function cancelUnverifiableSuggestedAction(pid) {
-  return (
-    "Retry cancel from a less restricted shell where process inspection works. " +
-    `If you manually inspect pid ${pid} and confirm ownership matches this job, ` +
-    "terminate it outside the sandbox; otherwise leave it running and use status/result after it exits."
-  );
-}
-
-function cancelNoPidInfoSuggestedAction() {
-  return "Use status/result to refresh the job record. Do not signal manually unless you can independently verify process ownership.";
 }
 
 // ——— subcommand: preflight ———

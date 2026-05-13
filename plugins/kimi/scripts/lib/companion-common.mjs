@@ -94,6 +94,25 @@ export function startExternalReviewHeartbeat(
   return () => clearInterval(timer);
 }
 
+export function effectiveProfileForOptions(profile, options) {
+  if (profile.name === "review" && options["scope-base"] != null && options["scope-base"] !== "") {
+    return Object.freeze({ ...profile, scope: "branch-diff" });
+  }
+  return profile;
+}
+
+export function cancelUnverifiableSuggestedAction(pid) {
+  return (
+    "Retry cancel from a less restricted shell where process inspection works. " +
+    `If you manually inspect pid ${pid} and confirm ownership matches this job, ` +
+    "terminate it outside the sandbox; otherwise leave it running and use status/result after it exits."
+  );
+}
+
+export function cancelNoPidInfoSuggestedAction() {
+  return "Use status/result to refresh the job record. Do not signal manually unless you can independently verify process ownership.";
+}
+
 export function parseScopePathsOption(value) {
   return value
     ? String(value).split(",").map((s) => s.trim()).filter(Boolean)
