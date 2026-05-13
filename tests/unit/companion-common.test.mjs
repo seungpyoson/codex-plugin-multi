@@ -11,6 +11,7 @@ import {
   credentialNameDiagnostics,
   externalReviewBackgroundLaunchedEvent,
   externalReviewLaunchedEvent,
+  externalReviewProgressEvent,
   gitStatusLines,
   parseLifecycleEventsMode,
   parseScopePathsOption,
@@ -21,6 +22,7 @@ import {
   printLifecycleJson,
   promptSidecarPath,
   runKindFromRecord,
+  startExternalReviewHeartbeat,
   summarizeScopeDirectory,
   writePromptSidecar,
 } from "../../scripts/lib/companion-common.mjs";
@@ -114,12 +116,52 @@ test("shared companion helpers cover small provider-agnostic behavior", () => {
       external_review: { marker: "EXTERNAL REVIEW", run_kind: "background" },
     },
   );
+  assert.deepEqual(
+    externalReviewProgressEvent(
+      { job_id: "job-1", target: "claude", mode: "review", run_kind: "foreground" },
+      { sequence: 2, elapsedMs: 1234 },
+    ),
+    {
+      event: "external_review_progress",
+      job_id: "job-1",
+      target: "claude",
+      status: "running",
+      mode: "review",
+      run_kind: "foreground",
+      heartbeat: 2,
+      elapsed_ms: 1234,
+    },
+  );
   assert.deepEqual(parseScopePathsOption(" a.js, ,src/b.js "), ["a.js", "src/b.js"]);
   assert.equal(parseScopePathsOption(""), null);
   assert.deepEqual(["b", "a", "aa"].sort(comparePathStrings), ["a", "aa", "b"]);
   assert.deepEqual(gitStatusLines(" M a.js  \n\n?? b.js\n"), [" M a.js", "?? b.js"]);
   assert.equal(runKindFromRecord({ external_review: { run_kind: "foreground" } }), "foreground");
   assert.equal(runKindFromRecord({}), "unknown");
+});
+
+test("startExternalReviewHeartbeat emits jsonl progress until stopped", async () => {
+  const chunks = [];
+  const stop = startExternalReviewHeartbeat(
+    { job_id: "job-heartbeat", target: "gemini", mode: "review", run_kind: "foreground" },
+    "jsonl",
+    { intervalMs: 5, output: { write: (chunk) => chunks.push(chunk) } },
+  );
+
+  await new Promise((resolve) => setTimeout(resolve, 18));
+  stop();
+  const countAfterStop = chunks.length;
+  await new Promise((resolve) => setTimeout(resolve, 12));
+
+  assert.ok(countAfterStop >= 1, "heartbeat must emit at least one progress event");
+  assert.equal(chunks.length, countAfterStop, "stop must cancel future heartbeats");
+  const event = JSON.parse(chunks[0]);
+  assert.equal(event.event, "external_review_progress");
+  assert.equal(event.job_id, "job-heartbeat");
+  assert.equal(event.target, "gemini");
+  assert.equal(event.status, "running");
+  assert.equal(event.heartbeat, 1);
+  assert.equal(Number.isInteger(event.elapsed_ms), true);
 });
 
 test("summarizeScopeDirectory returns sorted files and byte totals", () => {

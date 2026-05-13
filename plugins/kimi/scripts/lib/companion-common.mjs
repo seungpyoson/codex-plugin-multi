@@ -32,6 +32,19 @@ export function externalReviewLaunchedEvent(invocation, externalReview) {
   };
 }
 
+export function externalReviewProgressEvent(invocation, { sequence, elapsedMs }) {
+  return {
+    event: "external_review_progress",
+    job_id: invocation.job_id,
+    target: invocation.target,
+    status: "running",
+    mode: invocation.mode ?? null,
+    run_kind: invocation.run_kind ?? "foreground",
+    heartbeat: sequence,
+    elapsed_ms: Math.max(0, Math.trunc(elapsedMs ?? 0)),
+  };
+}
+
 export function externalReviewBackgroundLaunchedEvent(invocation, pid, externalReview) {
   return {
     event: "launched",
@@ -48,6 +61,37 @@ export function externalReviewBackgroundLaunchedEvent(invocation, pid, externalR
 export function printLifecycleJson(obj, lifecycleEvents, output = process.stdout) {
   if (lifecycleEvents === "jsonl") printJsonLine(obj, output);
   else printJson(obj, output);
+}
+
+export function externalReviewHeartbeatIntervalMs(env = process.env) {
+  const raw = env.CODEX_PLUGIN_EXTERNAL_REVIEW_HEARTBEAT_MS;
+  if (raw === undefined || raw === null || raw === "") return 30000;
+  const parsed = Number(raw);
+  return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : 30000;
+}
+
+export function startExternalReviewHeartbeat(
+  invocation,
+  lifecycleEvents,
+  { intervalMs = externalReviewHeartbeatIntervalMs(), output = process.stdout, now = Date.now } = {},
+) {
+  if (lifecycleEvents !== "jsonl") return () => {};
+  const interval = Number.isSafeInteger(intervalMs) && intervalMs > 0 ? intervalMs : externalReviewHeartbeatIntervalMs();
+  const started = now();
+  let sequence = 0;
+  const timer = setInterval(() => {
+    sequence += 1;
+    printLifecycleJson(
+      externalReviewProgressEvent(invocation, {
+        sequence,
+        elapsedMs: now() - started,
+      }),
+      lifecycleEvents,
+      output,
+    );
+  }, interval);
+  timer.unref?.();
+  return () => clearInterval(timer);
 }
 
 export function parseScopePathsOption(value) {

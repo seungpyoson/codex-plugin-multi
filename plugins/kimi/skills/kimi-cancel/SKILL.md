@@ -15,6 +15,7 @@ EXTERNAL_MODEL_CONTRACT_VERSION=1
 Run `node "<plugin-root>/scripts/kimi-companion.mjs" cancel --job "<job-id>" --cwd "<workspace>"`.
 Cancel is for background jobs only.
 Foreground runs are owned by the active terminal; interrupt them with Ctrl+C.
+For no_pid_info or unverifiable, render `suggested_action` when present and do not invent a PID kill command without an ownership check.
 ## Secret Safety
 Do not print raw OAuth tokens, API-key values, session cookies, tunnel API keys, bearer tokens, or raw secret values.
 Credential diagnostics may show key names only.

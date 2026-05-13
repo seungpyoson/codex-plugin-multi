@@ -427,6 +427,7 @@ function renderCompanionCommandBody(provider, workflow, commandName) {
       `Run \`node "<plugin-root>/scripts/${provider.binary}" cancel --job "$ARGUMENTS" --cwd "<workspace>"\`.`,
       "This command is for background jobs only. Foreground runs are owned by the active terminal; interrupt them with Ctrl+C.",
       "The companion does not signal attached foreground processes.",
+      "For no_pid_info or unverifiable, render `suggested_action` when present and do not invent a PID kill command without an ownership check.",
       "",
       "Statuses:",
       statusRows,
@@ -546,6 +547,7 @@ function renderCompanionSkillBody(provider, workflow, skillName) {
       `Run \`node "<plugin-root>/scripts/${provider.binary}" cancel --job "<job-id>" --cwd "<workspace>"\`.`,
       "Cancel is for background jobs only.",
       "Foreground runs are owned by the active terminal; interrupt them with Ctrl+C.",
+      "For no_pid_info or unverifiable, render `suggested_action` when present and do not invent a PID kill command without an ownership check.",
       secretSafetyContract(),
     );
   }

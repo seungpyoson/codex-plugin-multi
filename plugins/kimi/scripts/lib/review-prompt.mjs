@@ -620,6 +620,7 @@ export function buildReviewPrompt({
     "- Distinguish real blocking code findings from missing supplied evidence, runtime/tool limitations, and stale or unavailable external comments.",
     "- For every checklist item, report PASS, FAIL, or NOT REVIEWED.",
     "- Blocking findings first, with concrete file/function/control-flow evidence.",
+    "- Start the first line with exactly one verdict marker: \"Verdict: APPROVE\", \"Verdict: REQUEST_CHANGES\", or \"Verdict: NOT_REVIEWED\".",
     "- A usable review must name the selected file path(s) inspected; bare numbered answers or section bodies such as only 'None' are shallow and invalid.",
     "- If a section has no findings, write a complete sentence that names the relevant selected file or scope and explains why no finding applies.",
     "- For control-flow and security code, explicitly inspect overlapping predicates, early returns, and branch ordering before concluding no blocker exists.",

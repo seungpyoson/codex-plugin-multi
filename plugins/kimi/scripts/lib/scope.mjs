@@ -226,9 +226,12 @@ function isIgnoredLiveRel(ignored, rel) {
   if (ignored == null || rel === "") return false;
   const normalized = rel.replace(/\\/g, "/");
   if (ignored.has(normalized)) return true;
-  const prefix = `${normalized}/`;
-  for (const ignoredRel of ignored) {
-    if (ignoredRel.startsWith(prefix)) return true;
+  const relPrefix = `${normalized}/`;
+  for (const rawIgnoredRel of ignored) {
+    const ignoredRel = rawIgnoredRel.replace(/\\/g, "/");
+    const ignoredPrefix = ignoredRel.endsWith("/") ? ignoredRel : `${ignoredRel}/`;
+    if (normalized.startsWith(ignoredPrefix)) return true;
+    if (ignoredRel.startsWith(relPrefix)) return true;
   }
   return false;
 }
