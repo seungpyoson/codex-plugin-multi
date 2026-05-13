@@ -12,12 +12,14 @@ EXTERNAL_MODEL_CONTRACT_VERSION=1
 
 Run `node plugins/grok/scripts/grok-web-reviewer.mjs doctor`.
 Render the returned JSON. Show key names only. Do not print session cookies, tunnel API keys, or bearer token values.
-This command performs a live `GET /models` probe against the configured local tunnel.
-Treat `ready: true` and `reachable: true` as evidence that the subscription-backed tunnel is reachable.
+This command performs live `/models`, chat readiness, and redacted session-pool probes against the configured local tunnel.
+Treat `ready: true`, `reachable: true`, `models_ready: true`, and `chat_ready: true` as evidence that the subscription-backed tunnel is usable.
 If a loopback grok2api `/v1` endpoint is unavailable, doctor tries to use an existing checkout or bootstrap `https://github.com/chenyme/grok2api.git` into the default runtime directory.
 The bootstrap start command is `uv run granian --interface asgi --host 127.0.0.1 --port 8000 --workers 1 app.main:app`; Docker is not required.
 If bootstrap/start cannot run, surface `tunnel_start.error_code` and do not suggest direct xAI API keys.
 When `UV_CACHE_DIR` is unset, the plugin provides `uv` a sandbox-writable default; `UV_CACHE_DIR=""` is treated as unset, and an explicit non-empty `UV_CACHE_DIR` is preserved.
+If `durability_warnings` reports `grok2api_ephemeral_bootstrap_home`, configure a durable `GROK2API_HOME` before syncing browser session state.
+If `session_diagnostics.error_code` is `grok_session_no_runtime_tokens`, the tunnel process is up but its account/session pool is empty; run browser-session sync only after explicit operator approval.
 Do not import browser cookies unless the user explicitly requests that session sync step.
 
 ## Grok Tunnel Contract

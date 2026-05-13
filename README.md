@@ -508,6 +508,9 @@ failures as `sandbox`, `auth`, `provider`, `tunnel`, `session_tokens`,
 emits `next_action` guidance, distinguishes missing mutation evidence from an
 intentionally not-checked provider, and checks prompt persistence plus fixture
 mutation state without storing source bodies.
+For Grok, nested `session_diagnostics`, `chat_probe`, and
+`readiness_layers.session_pool` session-token errors outrank quota-looking
+HTTP 429 text so an empty grok2api account pool maps to `session_tokens`.
 
 `no-mistakes` remains configured, but it is not authoritative merge evidence
 while https://github.com/seungpyoson/claude-config/issues/780 is open. Use

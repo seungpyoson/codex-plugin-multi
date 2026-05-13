@@ -6,6 +6,7 @@
 - `doctor_status`: `ready`, `not_ready`, `not_run`
 - `review_status`: `completed`, `failed`, provider-specific status string, `not_run`
 - `approval_status`: `not_required`, `not_sent`, `missing`, `invalid`
+- `error_code`: normalized top-level or nested diagnostic error code, or null
 - `failure_class`: `none`, `sandbox`, `auth`, `provider`, `tunnel`, `session_tokens`, `review_quality`, `approval_gate`, `cache_install`, `missing_evidence`
 - `next_action`: operator guidance derived from the failure class and evidence
 - `source_content_transmission`: `not_sent`, `may_be_sent`, `sent`

@@ -26,11 +26,12 @@ const FULL_PROMPT_KEYS = new Set([
   "userPrompt",
 ]);
 const AUTH_ERROR_CODES = new Set(["not_authed", "oauth_inference_rejected", "auth_not_configured", "session_expired"]);
-const TUNNEL_ERROR_CODES = new Set(["tunnel_unavailable", "grok2api_start_failed", "tunnel_error"]);
+const TUNNEL_ERROR_CODES = new Set(["tunnel_unavailable", "grok2api_start_failed", "grok2api_start_timeout", "tunnel_error"]);
 const SESSION_TOKEN_ERROR_CODES = new Set([
   "grok_session_no_runtime_tokens",
   "grok_session_malformed_active_token",
   "grok_session_runtime_admin_divergence",
+  "session_tokens_missing",
 ]);
 const CACHE_INSTALL_ERROR_CODES = new Set(["grok2api_uv_missing"]);
 const PROVIDER_ERROR_CODES = new Set([
@@ -46,7 +47,7 @@ const PROVIDER_ERROR_CODES = new Set([
 const NEXT_ACTION_BY_FAILURE_CLASS = Object.freeze({
   none: "No action required.",
   missing_evidence: "Run the provider doctor and capture evidence before interpreting readiness.",
-  session_tokens: "Run npm run grok:sync-browser-session or set GROK2API_HOME to a grok2api runtime with active runtime session tokens, then rerun Grok doctor before source review.",
+  session_tokens: "Configure durable GROK2API_HOME with active runtime session tokens, then run npm run grok:sync-browser-session only after explicit operator approval; rerun Grok doctor before source review.",
   sandbox: "Classify this as a sandbox boundary first; rerun outside the sandbox or grant the needed host capability before calling it an install failure.",
   auth: "Refresh provider authentication and rerun the provider doctor before source review.",
   tunnel: "Inspect tunnel diagnostics, start or repair the local tunnel, then rerun the provider doctor.",
@@ -192,13 +193,28 @@ function approvalStatus(provider, approval) {
   return "invalid";
 }
 
-function recordErrorCode(record) {
+function nestedGrokSessionErrorCode(record) {
+  const candidates = [
+    valueAt(record, ["session_diagnostics", "error_code"], null),
+    valueAt(record, ["chat_probe", "error_code"], null),
+    valueAt(record, ["readiness_layers", "session_pool", "error_code"], null),
+    valueAt(record, ["runtime_diagnostics", "session_diagnostics", "error_code"], null),
+    valueAt(record, ["runtime_diagnostics", "readiness_layers", "session_pool", "error_code"], null),
+  ];
+  return candidates.find((candidate) => SESSION_TOKEN_ERROR_CODES.has(candidate)) ?? null;
+}
+
+function recordErrorCode(provider, record) {
+  if (provider === "grok") {
+    const sessionCode = nestedGrokSessionErrorCode(record);
+    if (sessionCode) return sessionCode;
+  }
   return record?.error_code ?? record?.errorCode ?? null;
 }
 
-function errorCode(doctor, review) {
-  const doctorCode = recordErrorCode(doctor);
-  const reviewCode = recordErrorCode(review);
+function errorCode(provider, doctor, review) {
+  const doctorCode = recordErrorCode(provider, doctor);
+  const reviewCode = recordErrorCode(provider, review);
   if (doctorStatus(doctor) === "not_ready" && doctorCode) return doctorCode;
   return reviewCode ?? doctorCode ?? null;
 }
@@ -227,7 +243,7 @@ function providerFailedAfterReviewOrDoctor(doctor, review) {
 }
 
 function failureClass({ provider, doctor, review, approval, failedReviewSlot, approvalState }) {
-  const classified = errorCodeFailureClass(errorCode(doctor, review), review, failedReviewSlot);
+  const classified = errorCodeFailureClass(errorCode(provider, doctor, review), review, failedReviewSlot);
   if (classified) return classified;
   if (directApiNeedsApproval(provider, doctor, review, approvalState)) return "approval_gate";
   if (doctorStatus(doctor) === "not_run" && !review) return "missing_evidence";
@@ -295,13 +311,14 @@ function rowFor(provider, evidenceDir) {
   const evidence = [doctor, review, approval].filter(Boolean);
   const failedReviewSlot = valueAt(review, ["review_metadata", "audit_manifest", "review_quality", "failed_review_slot"], null);
   const approvalState = approvalStatus(provider, approval);
-  const code = errorCode(doctor, review);
+  const code = errorCode(provider, doctor, review);
   const failureClassValue = failureClass({ provider, doctor, review, approval, failedReviewSlot, approvalState });
   return {
     provider,
     doctor_status: doctorStatus(doctor),
     review_status: reviewStatus(review),
     approval_status: approvalState,
+    error_code: code,
     failure_class: failureClassValue,
     next_action: nextAction({ provider, failureClassValue, code, approvalState, review }),
     source_content_transmission: sourceTransmission(review, approval),

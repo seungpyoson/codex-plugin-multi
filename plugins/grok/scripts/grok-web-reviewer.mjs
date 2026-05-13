@@ -1060,8 +1060,13 @@ function providerFailureDetailObject(parsed) {
   return detail && typeof detail === "object" && !Array.isArray(detail) ? detail : {};
 }
 
+function isNoRuntimeAccountsDetail(detail) {
+  return /\bno\s+available\s+accounts?\b|no_available_accounts|\bno\s+active\s+runtime\s+(?:session\s+)?tokens?\b|\bruntime\s+account\s+pool\s+is\s+empty\b|runtime_account_pool["\s:,_-]+empty|\baccount[_ -]?count\s*[:=]\s*0\b|\bpool[_ -]?count\s*[:=]\s*0\b/i.test(String(detail ?? ""));
+}
+
 function classifyHttpFailure(status, parsed, text = "") {
   const detail = parsed.ok ? providerFailureDetailText(parsed) : String(text ?? "");
+  if (isNoRuntimeAccountsDetail(detail)) return "grok_session_no_runtime_tokens";
   if (status === 401 || status === 403) return "session_expired";
   if (status === 408 || status === 409 || status === 425 || status >= 500) return "tunnel_error";
   if (status === 402 || status === 429 || isUsageLimitDetail(detail)) return "usage_limited";
@@ -1086,6 +1091,7 @@ function chatBadRequestCode(parsed, text) {
     value?.message,
     text,
   ].filter(Boolean).join(" ");
+  if (isNoRuntimeAccountsDetail(usageDetail)) return "grok_session_no_runtime_tokens";
   if (isUsageLimitDetail(usageDetail)) return "usage_limited";
   const codeOrType = [
     value?.error?.code,
@@ -1113,23 +1119,56 @@ function payloadSentForFetchError(error) {
   return null;
 }
 
-function sessionTokenDiagnostics(tokens) {
-  const entries = Array.isArray(tokens) ? tokens : [];
+function safeNonNegativeInteger(value) {
+  return Number.isSafeInteger(value) && value >= 0 ? value : null;
+}
+
+function firstCounterValue(obj, keys) {
+  if (!obj || typeof obj !== "object") return null;
+  for (const key of keys) {
+    const value = safeNonNegativeInteger(obj[key]);
+    if (value !== null) return value;
+  }
+  return null;
+}
+
+function modelCountFromPayload(value) {
+  if (Array.isArray(value?.data)) return value.data.length;
+  if (Array.isArray(value?.models)) return value.models.length;
+  return null;
+}
+
+function sessionTokenDiagnostics(payload) {
+  const source = Array.isArray(payload) ? { tokens: payload } : (payload && typeof payload === "object" ? payload : {});
+  const entries = Array.isArray(source.tokens) ? source.tokens : [];
   const active = entries.filter((entry) => {
     const status = String(entry?.status ?? "").toLowerCase();
     return entry?.deleted !== true && status !== "deleted" && status !== "inactive";
   });
   const malformedActive = active.filter((entry) => !isJwtShapedToken(entry?.token));
   const deleted = entries.filter((entry) => entry?.deleted === true || String(entry?.status ?? "").toLowerCase() === "deleted");
-  const errorCode = active.length === 0
+  const totalTokenCount = firstCounterValue(source, ["total_token_count", "totalTokenCount", "total", "count"]) ?? entries.length;
+  const activeTokenCount = firstCounterValue(source, ["active_token_count", "activeTokenCount", "active"]) ?? active.length;
+  const deletedTokenCount = firstCounterValue(source, ["deleted_token_count", "deletedTokenCount", "deleted"]) ?? deleted.length;
+  const malformedActiveTokenCount = firstCounterValue(source, [
+    "malformed_active_token_count",
+    "malformedActiveTokenCount",
+    "malformed",
+  ]) ?? malformedActive.length;
+  const accountCount = firstCounterValue(source, ["account_count", "accountCount", "total_accounts", "totalAccounts"]);
+  const poolCount = firstCounterValue(source, ["pool_count", "poolCount", "runtime_pool_count", "runtimePoolCount"]);
+  const accountPoolEmpty = accountCount === 0 || poolCount === 0;
+  const errorCode = activeTokenCount === 0 || accountPoolEmpty
     ? "grok_session_no_runtime_tokens"
-    : (malformedActive.length > 0 ? "grok_session_malformed_active_token" : null);
+    : (malformedActiveTokenCount > 0 ? "grok_session_malformed_active_token" : null);
   return {
     status: "checked",
-    total_token_count: entries.length,
-    active_token_count: active.length,
-    malformed_active_token_count: malformedActive.length,
-    deleted_token_count: deleted.length,
+    total_token_count: totalTokenCount,
+    active_token_count: activeTokenCount,
+    malformed_active_token_count: malformedActiveTokenCount,
+    deleted_token_count: deletedTokenCount,
+    account_count: accountCount,
+    pool_count: poolCount,
     error_code: errorCode,
   };
 }
@@ -1155,10 +1194,14 @@ async function probeGrokRuntimeStatus(cfg, env = process.env) {
         probe_endpoint: endpoint,
       };
     }
-    const size = Number.isSafeInteger(parsed.value?.size) ? parsed.value.size : null;
+    const size = safeNonNegativeInteger(parsed.value?.size);
+    const accountCount = firstCounterValue(parsed.value, ["account_count", "accountCount", "total_accounts", "totalAccounts"]);
+    const poolCount = firstCounterValue(parsed.value, ["pool_count", "poolCount", "runtime_pool_count", "runtimePoolCount"]) ?? size;
     return {
       status: "checked",
       runtime_size: size,
+      account_count: accountCount,
+      pool_count: poolCount,
       runtime_revision: Number.isSafeInteger(parsed.value?.revision) ? parsed.value.revision : null,
       runtime_selection_strategy: typeof parsed.value?.selection_strategy === "string" ? parsed.value.selection_strategy : null,
       error_code: null,
@@ -1201,18 +1244,20 @@ async function probeGrokSessionDiagnostics(cfg, env = process.env) {
         probe_endpoint: endpoint,
       };
     }
-    const tokenDiagnostics = sessionTokenDiagnostics(parsed.value?.tokens);
-    const runtimeDiagnostics = tokenDiagnostics.active_token_count > 0 && tokenDiagnostics.error_code === null
-      ? await probeGrokRuntimeStatus(cfg, env)
-      : { status: "not_checked", error_code: null };
+    const tokenDiagnostics = sessionTokenDiagnostics(parsed.value);
+    const runtimeDiagnostics = await probeGrokRuntimeStatus(cfg, env);
     const runtimeDiverged = runtimeDiagnostics.status === "checked"
       && tokenDiagnostics.active_token_count > 0
       && runtimeDiagnostics.runtime_size === 0;
-    const runtimeProbeFailed = runtimeDiagnostics.status === "unknown";
+    const runtimeProbeFailed = tokenDiagnostics.active_token_count > 0
+      && tokenDiagnostics.error_code === null
+      && runtimeDiagnostics.status === "unknown";
     return {
       ...tokenDiagnostics,
       ...(runtimeDiagnostics.status === "checked" ? {
         runtime_size: runtimeDiagnostics.runtime_size,
+        runtime_account_count: runtimeDiagnostics.account_count,
+        runtime_pool_count: runtimeDiagnostics.pool_count,
         runtime_revision: runtimeDiagnostics.runtime_revision,
         runtime_selection_strategy: runtimeDiagnostics.runtime_selection_strategy,
       } : {}),
@@ -1396,22 +1441,41 @@ async function probeGrokTunnel(cfg, env = process.env) {
       const errorCode = classifyHttpFailure(response.status, parsed, text);
       return {
         reachable: false,
+        models_ready: false,
+        model_count: null,
         error_code: errorCode,
         error_message: errorMessageFromResponse(parsed, text, redact, { safeUsageLimit: errorCode === "usage_limited" }),
         http_status: response.status,
         probe_endpoint: endpoint,
       };
     }
+    if (!parsed.ok) {
+      return {
+        reachable: true,
+        models_ready: false,
+        model_count: null,
+        error_code: "malformed_response",
+        error_message: "grok2api /models response was not valid JSON.",
+        http_status: response.status,
+        probe_endpoint: endpoint,
+      };
+    }
+    const modelCount = parsed.ok ? modelCountFromPayload(parsed.value) : null;
+    const modelsReady = modelCount === null ? true : modelCount > 0;
     return {
       reachable: true,
-      error_code: null,
-      error_message: null,
+      models_ready: modelsReady,
+      model_count: modelCount,
+      error_code: modelsReady ? null : "grok_session_no_runtime_tokens",
+      error_message: modelsReady ? null : "grok2api /models returned no models; the runtime account/session pool appears empty.",
       http_status: response.status,
       probe_endpoint: endpoint,
     };
   } catch (e) {
     return {
       reachable: false,
+      models_ready: false,
+      model_count: null,
       error_code: e?.name === "AbortError" ? "tunnel_timeout" : "tunnel_unavailable",
       error_message: tunnelTransportMessage(e, env, redact),
       http_status: null,
@@ -1542,7 +1606,8 @@ async function maybeStartGrokTunnel(cfg, env = process.env) {
   return {
     status: "started_unreachable",
     attempted: true,
-    error_code: wait.probe?.error_code ?? "grok2api_start_timeout",
+    error_code: "grok2api_start_timeout",
+    last_probe_error_code: wait.probe?.error_code ?? null,
     message: `Started grok2api process but ${cfg.base_url}/models did not become reachable before GROK_WEB_TUNNEL_START_TIMEOUT_MS.`,
     pid: child.pid,
     home_source: home.source,
@@ -1870,8 +1935,8 @@ function suggestedAction(errorCode, errorMessage = "", tunnelStart = null) {
   if (errorCode === "usage_limited") return "Wait for Grok subscription usage to recover, reduce concurrency, or inspect the local tunnel. Any billing, credit, or tier change must be a separate manual action with explicit user approval.";
   if (errorCode === "grok_chat_model_rejected") return "The tunnel lists models, but the configured GROK_WEB_MODEL is not accepted by chat; correct GROK_WEB_MODEL or tunnel model routing, then retry.";
   if (errorCode === "grok_chat_timeout") return "The Grok chat readiness probe exceeded GROK_WEB_CHAT_DOCTOR_TIMEOUT_MS; inspect the local tunnel latency or raise that timeout, then retry.";
-  if (errorCode === "grok_session_no_runtime_tokens") return "The local Grok tunnel has no active runtime session tokens; sync the browser session or import a valid Grok cookie, then retry.";
-  if (errorCode === "grok_session_malformed_active_token") return "The local Grok tunnel has a malformed active Grok session token; remove the malformed token, import a JWT-shaped Grok cookie, restart or refresh the tunnel, then retry.";
+  if (errorCode === "grok_session_no_runtime_tokens") return "The local Grok tunnel has no active runtime session tokens. Configure a durable GROK2API_HOME outside temporary directories, then only after explicit operator approval run npm run grok:sync-browser-session or refresh the browser-backed session state, restart the tunnel, and retry.";
+  if (errorCode === "grok_session_malformed_active_token") return "The local Grok tunnel has a malformed active Grok session token. Configure a durable GROK2API_HOME outside temporary directories, refresh the browser-backed session state only after explicit operator approval, restart or refresh the tunnel, then retry.";
   if (errorCode === "grok_session_runtime_admin_divergence") return "The grok2api admin token list has active tokens but the runtime token table is empty; restart or refresh the local Grok tunnel, then retry.";
   if (errorCode === "grok_runtime_status_unavailable") return "The grok2api admin token list has active tokens, but the runtime status endpoint is unavailable; restart or refresh the local Grok tunnel, then retry.";
   if (errorCode === "grok_runtime_status_timeout") return "The grok2api admin token list has active tokens, but the runtime status endpoint timed out; inspect local tunnel latency, restart or refresh the tunnel, then retry.";
@@ -1887,6 +1952,8 @@ function errorCauseFor(errorCode) {
   if (errorCode === "scope_failed") return "scope_resolution";
   if (errorCode === "git_binary_rejected") return "git_binary_policy";
   if (errorCode === "usage_limited") return "cost_quota_usage_limit";
+  if (String(errorCode ?? "").startsWith("grok_session_")) return "session_tokens";
+  if (errorCode === "grok2api_start_timeout") return "process_start_timeout";
   if (errorCode === "review_not_completed") return "review_quality";
   return "grok_web_tunnel";
 }
@@ -2411,6 +2478,119 @@ async function cmdList(env = process.env) {
   }
 }
 
+function pathIsUnder(childPath, parentPath) {
+  const rel = relative(resolve(parentPath), resolve(childPath));
+  return rel === "" || (rel && !rel.startsWith("..") && !rel.startsWith("/") && !rel.startsWith("\\"));
+}
+
+function grok2ApiDurabilityWarning(homeSource, homePath) {
+  if (!homePath || homeSource === "GROK2API_HOME") return null;
+  if (homeSource !== "default_bootstrap_dir" && !pathIsUnder(homePath, tmpdir())) return null;
+  return {
+    code: "grok2api_ephemeral_bootstrap_home",
+    home_source: homeSource ?? null,
+    message: "grok2api is using the default bootstrap home under TMPDIR, so synced runtime account/session state can disappear after OS cleanup or reboot.",
+    recommendation: "Set GROK2API_HOME to a durable chenyme/grok2api checkout before syncing browser session state.",
+  };
+}
+
+async function durabilityWarningsForDoctor(tunnelStart, env = process.env) {
+  const warning = grok2ApiDurabilityWarning(tunnelStart?.home_source, tunnelStart?.home_path);
+  if (warning) return [warning];
+  const home = await resolveGrok2ApiHome(env);
+  if (!home.ok) return [];
+  const resolvedWarning = grok2ApiDurabilityWarning(home.source, home.path);
+  return resolvedWarning ? [resolvedWarning] : [];
+}
+
+function sessionPoolStatus(sessionDiagnostics) {
+  if (sessionDiagnostics?.status !== "checked") return "not_checked";
+  if (sessionDiagnostics.error_code === "grok_session_no_runtime_tokens") return "empty";
+  if (sessionDiagnostics.error_code === "grok_session_malformed_active_token") return "malformed";
+  if (sessionDiagnostics.error_code) return "failed";
+  return "ready";
+}
+
+function chatProbeStatus(chatProbe) {
+  if (chatProbe?.chat_ready === true) return "ready";
+  if (chatProbe?.error_code === "grok_session_no_runtime_tokens") return "session_tokens_missing";
+  if (chatProbe?.error_code === "usage_limited") return "usage_limited";
+  if (chatProbe?.error_code) return "failed";
+  return "not_checked";
+}
+
+function processStartStatus(tunnelStart) {
+  if (!tunnelStart?.attempted) return tunnelStart?.status ?? "not_attempted";
+  if (tunnelStart.status === "started") return "started";
+  if (tunnelStart.error_code === "grok2api_start_timeout") return "timeout";
+  if (tunnelStart.error_code) return "failed";
+  return tunnelStart.status ?? "unknown";
+}
+
+function modelsLayerStatus(probe) {
+  if (probe?.reachable !== true) return "not_checked";
+  if (probe.error_code === "grok_session_no_runtime_tokens") return "empty";
+  if (probe.models_ready === false) return "failed";
+  return "available";
+}
+
+function buildReadinessLayers({ probe, tunnelStart, chatProbe, sessionDiagnostics }) {
+  return {
+    uv_cache: {
+      status: tunnelStart?.uv_source ? "ready" : (tunnelStart?.error_code === "grok2api_uv_missing" ? "blocked" : "not_checked"),
+      error_code: tunnelStart?.error_code === "grok2api_uv_missing" ? tunnelStart.error_code : null,
+    },
+    checkout_bootstrap: {
+      status: tunnelStart?.home_source ? "ready" : (tunnelStart?.error_code === "grok2api_home_missing" ? "missing" : "not_checked"),
+      home_source: tunnelStart?.home_source ?? null,
+      bootstrap_status: tunnelStart?.bootstrap?.status ?? null,
+      error_code: ["grok2api_home_missing", "grok2api_home_invalid", "grok2api_bootstrap_failed", "grok2api_bootstrap_dir_invalid"].includes(tunnelStart?.error_code)
+        ? tunnelStart.error_code
+        : null,
+    },
+    process_start: {
+      status: processStartStatus(tunnelStart),
+      attempted: tunnelStart?.attempted === true,
+      error_code: tunnelStart?.error_code ?? null,
+    },
+    listener: {
+      status: probe?.reachable === true ? "reachable" : "unreachable",
+      error_code: probe?.reachable === true ? null : (probe?.error_code ?? null),
+      http_status: probe?.http_status ?? null,
+    },
+    models: {
+      status: modelsLayerStatus(probe),
+      model_count: probe?.model_count ?? null,
+      error_code: probe?.models_ready === false ? (probe.error_code ?? "grok_session_no_runtime_tokens") : null,
+      http_status: probe?.http_status ?? null,
+    },
+    session_pool: {
+      status: sessionPoolStatus(sessionDiagnostics),
+      error_code: sessionDiagnostics?.error_code ?? null,
+      total_token_count: sessionDiagnostics?.total_token_count ?? null,
+      active_token_count: sessionDiagnostics?.active_token_count ?? null,
+      account_count: sessionDiagnostics?.account_count ?? null,
+      pool_count: sessionDiagnostics?.pool_count ?? null,
+      runtime_size: sessionDiagnostics?.runtime_size ?? null,
+    },
+    chat_probe: {
+      status: chatProbeStatus(chatProbe),
+      error_code: chatProbe?.error_code ?? null,
+      http_status: chatProbe?.http_status ?? null,
+    },
+  };
+}
+
+function doctorErrorCode({ ready, probe, tunnelStart, chatProbe, sessionDiagnostics }) {
+  if (ready) return null;
+  const sessionErrorCode = sessionDiagnostics?.status === "checked" ? sessionDiagnostics.error_code : null;
+  if (sessionErrorCode) return sessionErrorCode;
+  if (chatProbe?.error_code === "grok_session_no_runtime_tokens") return chatProbe.error_code;
+  if (probe?.error_code === "grok_session_no_runtime_tokens") return probe.error_code;
+  if (tunnelStart?.error_code === "grok2api_start_timeout") return tunnelStart.error_code;
+  return chatProbe?.error_code ?? probe?.error_code ?? tunnelStart?.error_code ?? "tunnel_error";
+}
+
 async function doctorFields(env = process.env) {
   const cfg = config(env);
   const costQuotaReadiness = {
@@ -2428,28 +2608,33 @@ async function doctorFields(env = process.env) {
     http_status: null,
     probe_endpoint: `${cfg.base_url}/chat/completions`,
   };
-  const sessionDiagnostics = probe.reachable && chatProbe.chat_ready !== true
+  const sessionDiagnostics = probe.reachable && (chatProbe.chat_ready !== true || probe.models_ready === false)
     ? await probeGrokSessionDiagnostics(cfg, env)
     : {
       status: "not_checked",
       reason: "chat_probe_ready_or_tunnel_unreachable",
       error_code: null,
     };
-  const ready = probe.reachable === true && chatProbe.chat_ready === true;
-  const sessionErrorCode = sessionDiagnostics.status === "checked" ? sessionDiagnostics.error_code : null;
-  const errorCode = ready ? null : (sessionErrorCode ?? chatProbe.error_code ?? probe.error_code);
+  const ready = probe.reachable === true && probe.models_ready !== false && chatProbe.chat_ready === true;
+  const errorCode = doctorErrorCode({ ready, probe, tunnelStart, chatProbe, sessionDiagnostics });
   const sessionErrorMessage = sessionDiagnostics.status === "checked" ? sessionDiagnostics.error_message : null;
+  const readinessLayers = buildReadinessLayers({ probe, tunnelStart, chatProbe, sessionDiagnostics });
+  const durabilityWarnings = await durabilityWarningsForDoctor(tunnelStart, env);
   return {
     provider: "grok-web",
     status: "ok",
     ready,
     reachable: probe.reachable,
+    models_ready: probe.models_ready ?? null,
+    model_count: probe.model_count ?? null,
     chat_ready: chatProbe.chat_ready,
     summary: ready
       ? "Grok subscription-backed local tunnel reviewer is configured and chat-ready."
-      : (probe.reachable
+      : (probe.reachable && probe.models_ready === false
+        ? "Grok tunnel listener is reachable, but the grok2api model/account pool is empty."
+        : (probe.reachable
         ? "Grok tunnel models endpoint is reachable, but chat completion is not review-ready."
-        : "Grok subscription-backed local tunnel is not reachable."),
+        : "Grok subscription-backed local tunnel is not reachable.")),
     next_action: ready
       ? "Run a Grok web review."
       : suggestedAction(errorCode, "", tunnelStart),
@@ -2465,10 +2650,19 @@ async function doctorFields(env = process.env) {
     tunnel_start_timeout_ms: cfg.tunnel_start_timeout_ms,
     tunnel_cleanup_timeout_ms: cfg.tunnel_cleanup_timeout_ms,
     tunnel_start: tunnelStart,
+    durability_warnings: durabilityWarnings,
+    readiness_layers: readinessLayers,
+    chat_probe: {
+      status: chatProbeStatus(chatProbe),
+      error_code: chatProbe.error_code ?? null,
+      error_message: chatProbe.error_message ?? null,
+      http_status: chatProbe.http_status ?? null,
+      probe_endpoint: chatProbe.probe_endpoint ?? null,
+    },
     session_diagnostics: sessionDiagnostics,
     cost_quota_readiness: costQuotaReadiness,
     error_code: errorCode,
-    error_message: ready ? null : (sessionErrorMessage ?? chatProbe.error_message ?? probe.error_message),
+    error_message: ready ? null : (sessionErrorMessage ?? chatProbe.error_message ?? probe.error_message ?? tunnelStart?.message ?? null),
     http_status: probe.http_status,
     chat_http_status: chatProbe.http_status,
   };

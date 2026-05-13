@@ -570,6 +570,53 @@ test("provider readiness manifest classifies Grok cache and token failures with 
   assert.match(grok.next_action, /grok:sync-browser-session|GROK2API_HOME/i);
 });
 
+test("provider readiness manifest lets Grok session diagnostics outrank quota-looking errors", () => {
+  const fixtureRoot = mkdtempSync(path.join(tmpdir(), "provider-readiness-grok-session-diagnostics-fixture-"));
+  const evidenceDir = mkdtempSync(path.join(tmpdir(), "provider-readiness-grok-session-diagnostics-evidence-"));
+  mkdirSync(path.join(fixtureRoot, "fixtures"), { recursive: true });
+  fixtureSeedRepo(fixtureRoot, {
+    fileName: "fixtures/smoke.js",
+    fileContents: "export const value = 1;\n",
+  });
+
+  writeJson(path.join(evidenceDir, "grok-doctor.json"), {
+    provider: "grok-web",
+    ready: false,
+    status: "ok",
+    error_code: "usage_limited",
+    chat_probe: {
+      http_status: 429,
+      error_code: "grok_session_no_runtime_tokens",
+    },
+    session_diagnostics: {
+      status: "checked",
+      error_code: "grok_session_no_runtime_tokens",
+      total_token_count: 0,
+      active_token_count: 0,
+      account_count: 0,
+      pool_count: 0,
+    },
+    readiness_layers: {
+      session_pool: {
+        status: "empty",
+        error_code: "grok_session_no_runtime_tokens",
+      },
+    },
+  });
+
+  const stdout = execFileSync(process.execPath, [
+    MANIFEST,
+    "--fixture-root", fixtureRoot,
+    "--evidence-dir", evidenceDir,
+  ], { encoding: "utf8" });
+
+  const grok = JSON.parse(stdout).providers.find((row) => row.provider === "grok");
+  assert.equal(grok.error_code, "grok_session_no_runtime_tokens");
+  assert.equal(grok.failure_class, "session_tokens");
+  assert.match(grok.next_action, /GROK2API_HOME/i);
+  assert.match(grok.next_action, /approval/i);
+});
+
 test("provider readiness manifest lets a fresh not-ready doctor override stale review errors", () => {
   const fixtureRoot = mkdtempSync(path.join(tmpdir(), "provider-readiness-stale-review-fixture-"));
   const evidenceDir = mkdtempSync(path.join(tmpdir(), "provider-readiness-stale-review-evidence-"));

@@ -212,6 +212,31 @@ if (mode === "unreachable") {
     server.listen(port, host);
   }, 350);
   setTimeout(() => process.exit(0), 30000);
+} else if (mode === "slow-reachable") {
+  process.on("SIGTERM", () => process.exit(0));
+  const port = Number(process.argv[process.argv.indexOf("--port") + 1]);
+  const host = process.argv[process.argv.indexOf("--host") + 1] || "127.0.0.1";
+  setTimeout(() => {
+    const server = http.createServer(async (req, res) => {
+      res.setHeader("content-type", "application/json");
+      if (req.url === "/v1/models") {
+        res.end(JSON.stringify({ data: [{ id: "grok-4.20-fast" }] }));
+        return;
+      }
+      if (req.url === "/v1/chat/completions") {
+        res.end(JSON.stringify({
+          id: "fake-grok2api-slow-chat",
+          model: "grok-4.20-fast",
+          choices: [{ message: { content: "ok" } }],
+        }));
+        return;
+      }
+      res.writeHead(404);
+      res.end(JSON.stringify({ error: { message: "not found" } }));
+    });
+    server.listen(port, host);
+  }, 750);
+  setTimeout(() => process.exit(0), 30000);
 } else {
   const port = Number(process.argv[process.argv.indexOf("--port") + 1]);
   const host = process.argv[process.argv.indexOf("--host") + 1] || "127.0.0.1";
@@ -643,6 +668,89 @@ test("doctor bootstraps a missing grok2api checkout and starts it without Docker
   }
 });
 
+test("doctor warns when the default grok2api bootstrap home is under TMPDIR", async () => {
+  const port = await unusedLoopbackPort();
+  const tmpRoot = mkdtempSync(path.join(tmpdir(), "grok2api-default-bootstrap-tmp-"));
+  const fakeGit = makeFakeGitBinary();
+  const binDir = makeFakeUvBin();
+  let parsed = null;
+  try {
+    const result = await runAsync(["doctor"], {
+      env: {
+        TMPDIR: `${tmpRoot}${path.sep}`,
+        GROK_WEB_BASE_URL: `http://127.0.0.1:${port}/v1`,
+        CODEX_PLUGIN_MULTI_GIT_BINARY: fakeGit.gitPath,
+        GROK2API_UV_BINARY: path.join(binDir, "uv"),
+        GROK_WEB_DOCTOR_TIMEOUT_MS: "500",
+        GROK_WEB_CHAT_DOCTOR_TIMEOUT_MS: "1000",
+        GROK_WEB_TUNNEL_START_TIMEOUT_MS: "5000",
+      },
+    });
+    parsed = parseStdout(result);
+
+    assert.equal(result.status, 0);
+    assert.equal(parsed.ready, true);
+    assert.equal(parsed.tunnel_start.home_source, "default_bootstrap_dir");
+    assert.equal(parsed.durability_warnings.length, 1);
+    assert.equal(parsed.durability_warnings[0].code, "grok2api_ephemeral_bootstrap_home");
+    assert.match(parsed.durability_warnings[0].message, /TMPDIR|temporary/i);
+    assert.match(parsed.durability_warnings[0].recommendation, /GROK2API_HOME/i);
+  } finally {
+    if (parsed?.tunnel_start?.pid) {
+      try { process.kill(parsed.tunnel_start.pid, "SIGTERM"); } catch { /* already exited */ }
+    }
+    rmTree(tmpRoot);
+    rmTree(fakeGit.binDir);
+    rmTree(binDir);
+  }
+});
+
+test("doctor warns about an existing default TMPDIR grok2api home when tunnel is already running", async () => {
+  const tmpRoot = mkdtempSync(path.join(tmpdir(), "grok2api-existing-default-home-tmp-"));
+  const defaultHome = path.join(tmpRoot, "codex-plugin-multi", "runtime", "grok2api");
+  mkdirSync(path.join(defaultHome, "app"), { recursive: true });
+  writeFileSync(path.join(defaultHome, "app", "main.py"), "app = object()\n");
+  writeFileSync(path.join(defaultHome, "pyproject.toml"), "[project]\nname = \"fake-grok2api\"\n");
+  try {
+    await withServer(async (req, res) => {
+      res.setHeader("content-type", "application/json");
+      if (req.url === "/api/models") {
+        res.end(JSON.stringify({ data: [{ id: "grok-4.20-fast" }] }));
+        return;
+      }
+      if (req.url === "/api/chat/completions") {
+        await readJsonRequest(req);
+        res.end(JSON.stringify({
+          id: "chatcmpl-doctor-existing-home",
+          model: "grok-4.20-fast",
+          choices: [{ message: { content: "ok" } }],
+        }));
+        return;
+      }
+      res.writeHead(404);
+      res.end(JSON.stringify({ error: { message: "not found" } }));
+    }, async (baseUrl) => {
+      const result = await runAsync(["doctor"], {
+        env: {
+          TMPDIR: `${tmpRoot}${path.sep}`,
+          GROK_WEB_BASE_URL: baseUrl,
+        },
+      });
+      const parsed = parseStdout(result);
+
+      assert.equal(result.status, 0);
+      assert.equal(parsed.ready, true);
+      assert.equal(parsed.tunnel_start.status, "not_needed");
+      assert.equal(parsed.durability_warnings.length, 1);
+      assert.equal(parsed.durability_warnings[0].code, "grok2api_ephemeral_bootstrap_home");
+      assert.equal(parsed.durability_warnings[0].home_source, "default_bootstrap_dir");
+      assert.match(parsed.durability_warnings[0].recommendation, /GROK2API_HOME/i);
+    });
+  } finally {
+    rmTree(tmpRoot);
+  }
+});
+
 test("doctor failed auto-bootstrap does not leave a partial checkout at the target path", async () => {
   const port = await unusedLoopbackPort();
   const bootstrapRoot = mkdtempSync(path.join(tmpdir(), "grok2api-bootstrap-fail-root-"));
@@ -780,6 +888,40 @@ test("doctor maps non-OK model probe responses without throwing", async () => {
     assert.equal(parsed.error_code, "tunnel_error");
     assert.equal(parsed.http_status, 500);
     assert.match(parsed.error_message, /quota verifier unavailable/);
+  });
+});
+
+test("doctor treats malformed models payload as failed models health", async () => {
+  await withServer(async (req, res) => {
+    if (req.url === "/api/models") {
+      res.setHeader("content-type", "application/json");
+      res.end("not json");
+      return;
+    }
+    if (req.url === "/api/chat/completions") {
+      await readJsonRequest(req);
+      res.setHeader("content-type", "application/json");
+      res.end(JSON.stringify({
+        id: "chatcmpl-doctor",
+        model: "grok-4.20-fast",
+        choices: [{ message: { content: "ok" } }],
+      }));
+      return;
+    }
+    res.writeHead(404);
+    res.end(JSON.stringify({ error: { message: "not found" } }));
+  }, async (baseUrl) => {
+    const result = await runAsync(["doctor"], {
+      env: { GROK_WEB_BASE_URL: baseUrl },
+    });
+    const parsed = parseStdout(result);
+
+    assert.equal(result.status, 0);
+    assert.equal(parsed.reachable, true);
+    assert.equal(parsed.models_ready, false);
+    assert.equal(parsed.ready, false);
+    assert.equal(parsed.error_code, "malformed_response");
+    assert.equal(parsed.readiness_layers.models.status, "failed");
   });
 });
 
@@ -931,6 +1073,43 @@ test("custom-review rejects invalid GROK_WEB_MAX_PROMPT_CHARS env", () => {
   }
 });
 
+test("doctor reports startup timeout instead of a generic tunnel root cause during slow cold start", async () => {
+  const port = await unusedLoopbackPort();
+  const home = makeFakeGrok2ApiHome();
+  const binDir = makeFakeUvBin({ mode: "slow-reachable" });
+  let parsed = null;
+  try {
+    const result = await runAsync(["doctor"], {
+      env: {
+        GROK_WEB_BASE_URL: `http://127.0.0.1:${port}/v1`,
+        GROK2API_HOME: home,
+        GROK2API_UV_BINARY: path.join(binDir, "uv"),
+        GROK_WEB_DOCTOR_TIMEOUT_MS: "50",
+        GROK_WEB_CHAT_DOCTOR_TIMEOUT_MS: "50",
+        GROK_WEB_TUNNEL_START_TIMEOUT_MS: "100",
+        GROK_WEB_TUNNEL_CLEANUP_TIMEOUT_MS: "3000",
+      },
+    });
+    parsed = parseStdout(result);
+
+    assert.equal(result.status, 0);
+    assert.equal(parsed.ready, false);
+    assert.equal(parsed.error_code, "grok2api_start_timeout");
+    assert.equal(parsed.tunnel_start.status, "started_unreachable");
+    assert.equal(parsed.tunnel_start.error_code, "grok2api_start_timeout");
+    assert.equal(parsed.tunnel_start.last_probe_error_code, "tunnel_unavailable");
+    assert.equal(parsed.readiness_layers.process_start.status, "timeout");
+    assert.equal(parsed.readiness_layers.listener.status, "unreachable");
+    assert.match(parsed.next_action, /startup.*slow|GROK_WEB_TUNNEL_START_TIMEOUT_MS/i);
+  } finally {
+    if (parsed?.tunnel_start?.pid) {
+      try { process.kill(parsed.tunnel_start.pid, "SIGTERM"); } catch { /* already exited */ }
+    }
+    rmTree(home);
+    rmTree(binDir);
+  }
+});
+
 test("doctor is not review-ready when models work but chat returns upstream 400", async () => {
   await withServer(async (req, res) => {
     res.setHeader("content-type", "application/json");
@@ -965,6 +1144,123 @@ test("doctor is not review-ready when models work but chat returns upstream 400"
     assert.match(parsed.summary, /models.*chat/i);
     assert.match(parsed.next_action, /session|tunnel|rate-limit/i);
   });
+});
+
+test("doctor classifies empty grok2api model and account pools as missing session tokens", async () => {
+  await withServer(async (req, res) => {
+    res.setHeader("content-type", "application/json");
+    if (req.url === "/api/models") {
+      res.end(JSON.stringify({ object: "list", data: [] }));
+      return;
+    }
+    if (req.url === "/api/chat/completions") {
+      await readJsonRequest(req);
+      res.writeHead(429);
+      res.end(JSON.stringify({
+        error: {
+          message: "No available accounts for this model tier",
+          type: "rate_limit_exceeded",
+          code: "rate_limit_exceeded",
+        },
+      }));
+      return;
+    }
+    if (req.url === "/admin/api/tokens") {
+      res.end(JSON.stringify({
+        tokens: [],
+        account_count: 0,
+        pool_count: 0,
+      }));
+      return;
+    }
+    if (req.url === "/status") {
+      res.end(JSON.stringify({
+        status: "ok",
+        size: 0,
+        account_count: 0,
+        pool_count: 0,
+      }));
+      return;
+    }
+    res.writeHead(404);
+    res.end(JSON.stringify({ error: { message: "not found" } }));
+  }, async (baseUrl) => {
+    const adminBaseUrl = baseUrl.replace(/\/api$/, "");
+    const result = await runAsync(["doctor"], {
+      env: {
+        GROK_WEB_BASE_URL: baseUrl,
+        GROK2API_BASE_URL: adminBaseUrl,
+      },
+    });
+    const parsed = parseStdout(result);
+
+    assert.equal(result.status, 0);
+    assert.equal(parsed.ready, false);
+    assert.equal(parsed.reachable, true);
+    assert.equal(parsed.models_ready, false);
+    assert.equal(parsed.model_count, 0);
+    assert.equal(parsed.error_code, "grok_session_no_runtime_tokens");
+    assert.equal(parsed.chat_http_status, 429);
+    assert.equal(parsed.session_diagnostics.status, "checked");
+    assert.equal(parsed.session_diagnostics.account_count, 0);
+    assert.equal(parsed.session_diagnostics.pool_count, 0);
+    assert.equal(parsed.session_diagnostics.runtime_size, 0);
+    assert.equal(parsed.cost_quota_readiness.status, "unknown_not_probed");
+    assert.equal(parsed.readiness_layers.listener.status, "reachable");
+    assert.equal(parsed.readiness_layers.models.status, "empty");
+    assert.equal(parsed.readiness_layers.session_pool.status, "empty");
+    assert.equal(parsed.readiness_layers.chat_probe.status, "session_tokens_missing");
+    assert.match(parsed.next_action, /GROK2API_HOME/i);
+    assert.match(parsed.next_action, /explicit.*approval|operator.*approval/i);
+    assert.doesNotMatch(JSON.stringify(parsed), /api\.x\.ai|XAI_API_KEY|xAI API key/i);
+  }, { autoPreflight: false });
+});
+
+test("doctor treats no-available-account chat 429 as session tokens missing, not quota", async () => {
+  await withServer(async (req, res) => {
+    res.setHeader("content-type", "application/json");
+    if (req.url === "/api/models") {
+      res.end(JSON.stringify({ data: [{ id: "grok-4.20-fast" }] }));
+      return;
+    }
+    if (req.url === "/api/chat/completions") {
+      await readJsonRequest(req);
+      res.writeHead(429);
+      res.end(JSON.stringify({
+        error: {
+          message: "No available accounts for this model tier",
+          type: "rate_limit_exceeded",
+          code: "rate_limit_exceeded",
+        },
+      }));
+      return;
+    }
+    if (req.url === "/admin/api/tokens") {
+      res.writeHead(503);
+      res.end(JSON.stringify({ error: { message: "admin not ready" } }));
+      return;
+    }
+    res.writeHead(404);
+    res.end(JSON.stringify({ error: { message: "not found" } }));
+  }, async (baseUrl) => {
+    const adminBaseUrl = baseUrl.replace(/\/api$/, "");
+    const result = await runAsync(["doctor"], {
+      env: {
+        GROK_WEB_BASE_URL: baseUrl,
+        GROK2API_BASE_URL: adminBaseUrl,
+      },
+    });
+    const parsed = parseStdout(result);
+
+    assert.equal(result.status, 0);
+    assert.equal(parsed.ready, false);
+    assert.equal(parsed.error_code, "grok_session_no_runtime_tokens");
+    assert.equal(parsed.chat_probe.error_code, "grok_session_no_runtime_tokens");
+    assert.equal(parsed.readiness_layers.chat_probe.status, "session_tokens_missing");
+    assert.equal(parsed.cost_quota_readiness.status, "unknown_not_probed");
+    assert.notEqual(parsed.error_cause, "cost_quota_usage_limit");
+    assert.doesNotMatch(parsed.next_action, /billing|credit|subscription usage/i);
+  }, { autoPreflight: false });
 });
 
 test("doctor identifies malformed active Grok session tokens instead of generic chat 400", async () => {
