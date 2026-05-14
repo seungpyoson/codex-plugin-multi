@@ -105,7 +105,7 @@ function readJobRecord(dataDir, jobId) {
       return JSON.parse(readFileSync(metaPath, "utf8"));
     }
   }
-  assert.fail(`meta.json for job ${jobId} not found under ${stateRoot}`);
+  assert.fail(`${jobId}.json not found under ${stateRoot}`);
 }
 
 function jobSidecarDir(dataDir, jobId) {
