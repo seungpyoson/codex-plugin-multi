@@ -15,3 +15,19 @@ With writable `UV_CACHE_DIR`, default grok2api starts but has zero runtime token
 ## Decision: Live smoke uses synthetic source only
 
 Real project source is not needed to prove wiring. Use git-backed `/private/tmp` fixture and record hashes, source-send state, quality gate, mutations, prompt-persistence checks.
+
+## Decision: Claude continuation must preserve provider project/cwd context
+
+The installed post-merge smoke proved that Claude initial review can pass while `continue --job` fails with `No conversation found with session ID: <parent-job-id>`. The parent JobRecord and continue JobRecord used the same stored session id, and the initial run did not include `--no-session-persistence`; however, the parent session JSONL was stored under the initial Claude project/cwd in `~/.claude/projects/...`, while the continue run used a different neutral cwd. Claude session lookup is therefore not session-id-only in practice. The plugin must persist and reuse provider session lookup context across continuation jobs.
+
+## Decision: Semantic replay must separate classifier-only probes from full audit gates
+
+Short replay prose such as "PASS ... without permission blocks" is useful to prove that `permission_blocked` is not falsely emitted. It is not a full reviewer answer and should not be expected to pass verdict/substance gates. Smoke reports must classify that as a classifier probe result, not as a failed full review.
+
+## Decision: Workflow mutations require explicit current approval
+
+The readiness workflow includes non-code process gates. Merge, issue closure, destructive cleanup, push, or remote mutation must not run from inferred approval or stale context. The approval state must be explicit in the current operator workflow.
+
+## Decision: Spec-kit agent context must point at the real active spec
+
+`.specify/feature.json` points at `specs/140-no-mistakes-provider-readiness`, but AGENTS.md referenced nonexistent `specs/001-no-mistakes-wiring-readiness`. Agent context must be aligned with the active feature directory before planning or checklist work is trusted.

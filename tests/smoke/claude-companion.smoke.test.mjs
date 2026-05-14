@@ -97,6 +97,42 @@ function readOnlyJobRecord(dataDir) {
   return records[0];
 }
 
+function readJobRecord(dataDir, jobId) {
+  const stateRoot = path.join(dataDir, "state");
+  for (const workspaceDir of readdirSync(stateRoot)) {
+    const metaPath = path.join(stateRoot, workspaceDir, "jobs", `${jobId}.json`);
+    if (existsSync(metaPath)) {
+      return JSON.parse(readFileSync(metaPath, "utf8"));
+    }
+  }
+  assert.fail(`${jobId}.json not found under ${stateRoot}`);
+}
+
+function jobSidecarDir(dataDir, jobId) {
+  const stateRoot = path.join(dataDir, "state");
+  for (const workspaceDir of readdirSync(stateRoot)) {
+    const sidecarDir = path.join(stateRoot, workspaceDir, "jobs", jobId);
+    if (existsSync(sidecarDir)) return sidecarDir;
+  }
+  assert.fail(`sidecar dir for job ${jobId} not found under ${stateRoot}`);
+}
+
+async function waitForJobRecord(dataDir, jobId, predicate, label, timeoutMs = CLAUDE_SMOKE_POLL_TIMEOUT_MS) {
+  const deadline = Date.now() + timeoutMs;
+  let lastRecord = null;
+  while (Date.now() < deadline) {
+    try {
+      const record = readJobRecord(dataDir, jobId);
+      lastRecord = record;
+      if (predicate(record)) return record;
+    } catch {
+      // The worker may not have written the first record yet.
+    }
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  assert.fail(`${label}; last record=${JSON.stringify(lastRecord)}`);
+}
+
 async function waitForOnlyJobRecord(dataDir, predicate, label, timeoutMs = CLAUDE_SMOKE_POLL_TIMEOUT_MS) {
   const deadline = Date.now() + timeoutMs;
   let lastRecord = null;
@@ -1314,7 +1350,16 @@ test("continue --job: resumes a prior session via --resume", () => {
   const cwd = mkdtempSync(path.join(tmpdir(), "smoke-continue-"));
   writeFileSync(path.join(cwd, "seed.txt"), "continue timeout seed\n");
   const dataDir = mkdtempSync(path.join(tmpdir(), "continue-data-"));
+  const sessionStore = path.join(dataDir, "mock-project-sessions");
   const priorTimeoutMs = 777777;
+  const env = {
+    ...process.env,
+    CLAUDE_BINARY: MOCK,
+    CLAUDE_PLUGIN_DATA: dataDir,
+    CLAUDE_REVIEW_TIMEOUT_MS: "",
+    CLAUDE_MOCK_ENFORCE_PROJECT_SESSIONS: "1",
+    CLAUDE_MOCK_PROJECT_SESSION_STORE: sessionStore,
+  };
   try {
     const runRes = spawnSync("node", [
       path.join(REPO_ROOT, "plugins/claude/scripts/claude-companion.mjs"),
@@ -1324,14 +1369,26 @@ test("continue --job: resumes a prior session via --resume", () => {
       "--timeout-ms", String(priorTimeoutMs),
       "--cwd", cwd, "--", "seed",
     ], { cwd, encoding: "utf8",
-        env: { ...process.env, CLAUDE_BINARY: MOCK, CLAUDE_PLUGIN_DATA: dataDir, CLAUDE_REVIEW_TIMEOUT_MS: "" } });
+        env });
+    assert.equal(runRes.status, 0, runRes.stderr);
     const { job_id } = JSON.parse(runRes.stdout);
+    const prior = readJobRecord(dataDir, job_id);
+    assert.equal(
+      existsSync(prior.runtime_diagnostics.child_cwd),
+      true,
+      "Claude project cwd must remain on disk so provider project-scoped continuation has a stable home"
+    );
+    assert.equal(
+      existsSync(path.join(jobSidecarDir(dataDir, job_id), "runtime-options.json")),
+      false,
+      "foreground parent has no runtime-options sidecar; continue must fall back to JobRecord child_cwd"
+    );
     const contRes = spawnSync("node", [
       path.join(REPO_ROOT, "plugins/claude/scripts/claude-companion.mjs"),
       "continue", "--job", job_id, "--foreground", "--lifecycle-events", "jsonl",
       "--cwd", cwd, "--", "follow-up",
     ], { cwd, encoding: "utf8",
-        env: { ...process.env, CLAUDE_BINARY: MOCK, CLAUDE_PLUGIN_DATA: dataDir, CLAUDE_REVIEW_TIMEOUT_MS: "" } });
+        env });
     assert.equal(contRes.status, 0, contRes.stderr);
     const lines = contRes.stdout.trim().split("\n").map((line) => JSON.parse(line));
     assert.equal(lines.length, 2);
@@ -1343,6 +1400,138 @@ test("continue --job: resumes a prior session via --resume", () => {
     assert.equal(out.status, "completed");
     assert.equal(out.parent_job_id, job_id, "resume carries parent_job_id");
     assert.equal(out.review_metadata.audit_manifest.request.timeout_ms, priorTimeoutMs);
+    assert.equal(
+      out.runtime_diagnostics.child_cwd,
+      prior.runtime_diagnostics.child_cwd,
+      "continue must run Claude from the same project cwd so --resume can find the persisted session"
+    );
+  } finally {
+    rmSync(dataDir, { recursive: true, force: true });
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("continue --job: continues a continued Claude session in the same project cwd", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "smoke-continue-chain-"));
+  writeFileSync(path.join(cwd, "seed.txt"), "continue chain seed\n");
+  const dataDir = mkdtempSync(path.join(tmpdir(), "continue-chain-data-"));
+  const sessionStore = path.join(dataDir, "mock-project-sessions");
+  const env = {
+    CLAUDE_MOCK_ENFORCE_PROJECT_SESSIONS: "1",
+    CLAUDE_MOCK_PROJECT_SESSION_STORE: sessionStore,
+  };
+  try {
+    const runRes = runCompanion(
+      ["run", "--mode=custom-review", "--foreground",
+       "--model", "claude-haiku-4-5-20251001",
+       "--scope-paths", "seed.txt",
+       "--cwd", cwd, "--", "seed"],
+      { cwd, dataDir, env },
+    );
+    assert.equal(runRes.status, 0, runRes.stderr);
+    const parent = JSON.parse(runRes.stdout);
+    const firstRes = runCompanion(
+      ["continue", "--job", parent.job_id, "--foreground",
+       "--cwd", cwd, "--", "first follow-up"],
+      { cwd, dataDir, env },
+    );
+    assert.equal(firstRes.status, 0, firstRes.stderr);
+    const first = JSON.parse(firstRes.stdout);
+    const secondRes = runCompanion(
+      ["continue", "--job", first.job_id, "--foreground",
+       "--cwd", cwd, "--", "second follow-up"],
+      { cwd, dataDir, env },
+    );
+    assert.equal(secondRes.status, 0, secondRes.stderr);
+    const second = JSON.parse(secondRes.stdout);
+    const parentRecord = readJobRecord(dataDir, parent.job_id);
+    assert.equal(first.parent_job_id, parent.job_id);
+    assert.equal(second.parent_job_id, first.job_id);
+    assert.equal(first.runtime_diagnostics.child_cwd, parentRecord.runtime_diagnostics.child_cwd);
+    assert.equal(second.runtime_diagnostics.child_cwd, parentRecord.runtime_diagnostics.child_cwd);
+  } finally {
+    rmSync(dataDir, { recursive: true, force: true });
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("continue --job --background reuses the parent Claude project cwd", async () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "smoke-continue-bg-"));
+  writeFileSync(path.join(cwd, "seed.txt"), "continue background seed\n");
+  const dataDir = mkdtempSync(path.join(tmpdir(), "continue-bg-data-"));
+  const sessionStore = path.join(dataDir, "mock-project-sessions");
+  const env = {
+    CLAUDE_MOCK_ENFORCE_PROJECT_SESSIONS: "1",
+    CLAUDE_MOCK_PROJECT_SESSION_STORE: sessionStore,
+  };
+  try {
+    const runRes = runCompanion(
+      ["run", "--mode=custom-review", "--foreground",
+       "--model", "claude-haiku-4-5-20251001",
+       "--scope-paths", "seed.txt",
+       "--cwd", cwd, "--", "seed"],
+      { cwd, dataDir, env },
+    );
+    assert.equal(runRes.status, 0, runRes.stderr);
+    const parent = JSON.parse(runRes.stdout);
+    const parentRecord = readJobRecord(dataDir, parent.job_id);
+    const contRes = runCompanion(
+      ["continue", "--job", parent.job_id, "--background",
+       "--cwd", cwd, "--", "follow-up"],
+      { cwd, dataDir, env },
+    );
+    assert.equal(contRes.status, 0, contRes.stderr);
+    const launched = JSON.parse(contRes.stdout);
+    const continued = await waitForJobRecord(
+      dataDir,
+      launched.job_id,
+      (record) => record.status === "completed" || record.status === "failed",
+      "background continue did not reach terminal status",
+    );
+    assert.equal(continued.status, "completed");
+    assert.equal(continued.parent_job_id, parent.job_id);
+    assert.equal(continued.runtime_diagnostics.child_cwd, parentRecord.runtime_diagnostics.child_cwd);
+    await new Promise((resolve) => setTimeout(resolve, 250));
+  } finally {
+    rmSync(dataDir, { recursive: true, force: true });
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("continue --job: project-cwd setup failure falls back to neutral cwd, not source add-dir", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "smoke-continue-cwd-conflict-"));
+  writeFileSync(path.join(cwd, "seed.txt"), "continue cwd conflict seed\n");
+  const dataDir = mkdtempSync(path.join(tmpdir(), "continue-cwd-conflict-data-"));
+  try {
+    const runRes = runCompanion(
+      ["run", "--mode=custom-review", "--foreground",
+       "--model", "claude-haiku-4-5-20251001",
+       "--scope-paths", "seed.txt",
+       "--cwd", cwd, "--", "seed"],
+      { cwd, dataDir },
+    );
+    assert.equal(runRes.status, 0, runRes.stderr);
+    const parent = JSON.parse(runRes.stdout);
+    const parentProjectCwd = parent.runtime_diagnostics.child_cwd;
+    rmSync(parentProjectCwd, { recursive: true, force: true });
+    writeFileSync(parentProjectCwd, "blocks project cwd recreation\n", "utf8");
+
+    const contRes = runCompanion(
+      ["continue", "--job", parent.job_id, "--foreground",
+       "--cwd", cwd, "--", "follow-up"],
+      { cwd, dataDir, env: { CLAUDE_MOCK_LIST_ADDDIR: "1" } },
+    );
+    assert.equal(contRes.status, 0, contRes.stderr);
+    const continued = JSON.parse(contRes.stdout);
+    assert.ok(
+      continued.mutations.some((mutation) => mutation.startsWith("mutation_detection_failed:")),
+      `project cwd setup failure must be surfaced in mutations; got ${JSON.stringify(continued.mutations)}`
+    );
+    assert.notEqual(
+      continued.runtime_diagnostics.child_cwd,
+      continued.runtime_diagnostics.add_dir,
+      "project-cwd setup failure must not make Claude run from the selected-source add-dir"
+    );
   } finally {
     rmSync(dataDir, { recursive: true, force: true });
     rmSync(cwd, { recursive: true, force: true });
@@ -1797,8 +1986,8 @@ test("custom-review scope=custom: reviews explicit bundle files from a non-git d
       assert.equal(fx.t7_saw_file, true, "custom-review should include PR23.diff in --add-dir");
       assert.deepEqual(fx.t7_add_dir_files.sort(), ["PR23.diff", "notes.md"]);
       assert.equal(fx.t7_add_dir, result.runtime_diagnostics.add_dir);
-      assert.equal(existsSync(result.runtime_diagnostics.child_cwd), false,
-        `neutral Claude cwd should be disposed after custom review: ${result.runtime_diagnostics.child_cwd}`);
+      assert.equal(existsSync(result.runtime_diagnostics.child_cwd), true,
+        `Claude project cwd should remain under job state for continuation: ${result.runtime_diagnostics.child_cwd}`);
     } finally {
       cleanup(dataDir);
     }
@@ -1957,8 +2146,8 @@ test("review worktree disposed by profile default (dispose_default=true)", () =>
     assert.ok(fx.t7_cwd, "mock didn't record cwd");
     assert.notEqual(fx.t7_cwd, fx.t7_add_dir, "Claude review must run from a neutral cwd, not the scoped add-dir");
     assert.notEqual(fx.t7_cwd_real, fx.t7_add_dir_real, "Claude review cwd must resolve outside the scoped add-dir");
-    assert.equal(existsSync(fx.t7_cwd), false,
-      `neutral Claude cwd should be disposed after review: ${fx.t7_cwd}`);
+    assert.equal(existsSync(fx.t7_cwd), true,
+      `Claude project cwd should remain under job state for continuation: ${fx.t7_cwd}`);
     assert.equal(existsSync(fx.t7_add_dir), false,
       `review worktree ${fx.t7_add_dir} should be disposed (dispose_default=true)`);
   } finally {

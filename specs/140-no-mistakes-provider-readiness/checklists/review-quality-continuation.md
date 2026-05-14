@@ -8,39 +8,52 @@
 
 ## Requirement Completeness
 
-- [ ] CHK001 Are continuable reviewer session requirements defined for providers that support follow-up or resume flows? [Gap, Spec §User Story 1]
-- [ ] CHK002 Are requirements documented for how session identifiers differ from plugin job identifiers? [Gap, Spec §FR-002]
-- [ ] CHK003 Are stdout, stderr, and lifecycle diagnostic requirements defined for failed reviewer invocations? [Gap, Spec §FR-002]
-- [ ] CHK004 Are semantic-audit requirements complete for reviewer prose that uses non-numeric checklist labels? [Gap, Spec §FR-008]
-- [ ] CHK005 Are requirements present for negated failure language such as "without permission blocks" versus actual permission denials? [Gap, Spec §FR-008]
+- [x] CHK001 Are continuable reviewer session requirements defined for providers that support follow-up or resume flows? [Gap, Spec §User Story 4]
+- [x] CHK002 Are requirements documented for how session identifiers differ from plugin job identifiers? [Gap, Spec §FR-010]
+- [x] CHK003 Are stdout, stderr, and lifecycle diagnostic requirements defined for failed reviewer invocations? [Gap, Spec §FR-013]
+- [x] CHK004 Are semantic-audit requirements complete for reviewer prose that uses non-numeric checklist labels? [Gap, Spec §FR-017]
+- [x] CHK005 Are requirements present for negated failure language such as "without permission blocks" versus actual permission denials? [Gap, Spec §FR-018]
 
 ## Requirement Clarity
 
-- [ ] CHK006 Is "prompt-persistence status" clarified with provider-specific fields and allowed values? [Clarity, Spec §FR-002]
-- [ ] CHK007 Is "review-quality result" defined with objective audit fields rather than inferred prose confidence? [Clarity, Spec §FR-008]
-- [ ] CHK008 Is "missing_evidence" differentiated from parser, transport, provider, and semantic-audit failures? [Clarity, Spec §SC-005]
-- [ ] CHK009 Are source-transmission states specified distinctly for source-free setup, approval-gated no-send, and approved fixture-source send? [Clarity, Spec §FR-002, Spec §FR-006]
+- [x] CHK006 Is "prompt-persistence status" clarified with provider-specific fields and allowed values? [Clarity, Spec §FR-002, Data Model §Provider Row]
+- [x] CHK007 Is "review-quality result" defined with objective audit fields rather than inferred prose confidence? [Clarity, Spec §FR-008]
+- [x] CHK008 Is "missing_evidence" differentiated from parser, transport, provider, and semantic-audit failures? [Clarity, Spec §SC-005]
+- [x] CHK009 Are source-transmission states specified distinctly for source-free setup, approval-gated no-send, and approved fixture-source send? [Clarity, Spec §FR-002, Spec §FR-006]
 
 ## Requirement Consistency
 
-- [ ] CHK010 Do continuation requirements align with the no-full-prompt-persistence requirement? [Consistency, Spec §FR-009]
-- [ ] CHK011 Do failure classes in measurable outcomes align with the provider row fields required by the manifest? [Consistency, Spec §FR-002, Spec §SC-005]
-- [ ] CHK012 Are direct API approval-gate requirements consistent with synthetic-fixture assumptions? [Consistency, Spec §FR-006, Spec §Assumptions]
+- [x] CHK010 Do continuation requirements align with the no-full-prompt-persistence requirement? [Consistency, Spec §FR-009, Spec §FR-011]
+- [x] CHK011 Do failure classes in measurable outcomes align with the provider row fields required by the manifest? [Consistency, Spec §FR-002, Spec §SC-005]
+- [x] CHK012 Are direct API approval-gate requirements consistent with synthetic-fixture assumptions? [Consistency, Spec §FR-006, Spec §Assumptions]
 
 ## Acceptance Criteria Quality
 
-- [ ] CHK013 Can a continuation failure be objectively classified from required JobRecord fields without consulting provider prose alone? [Acceptance Criteria, Spec §FR-002]
-- [ ] CHK014 Can semantic-audit false positives be objectively identified from required audit metadata? [Acceptance Criteria, Spec §FR-008]
-- [ ] CHK015 Are criteria measurable for proving no full prompt is persisted while prompt identity remains auditable? [Measurability, Spec §FR-009]
+- [x] CHK013 Can a continuation failure be objectively classified from required JobRecord fields without consulting provider prose alone? [Acceptance Criteria, Spec §User Story 4]
+- [x] CHK014 Can semantic-audit false positives be objectively identified from required audit metadata? [Acceptance Criteria, Spec §FR-014, Spec §FR-018]
+- [x] CHK015 Are criteria measurable for proving no full prompt is persisted while prompt identity remains auditable? [Measurability, Spec §FR-009]
 
 ## Scenario Coverage
 
-- [ ] CHK016 Are primary and follow-up reviewer flows both covered in user scenarios? [Coverage, Spec §User Story 1]
-- [ ] CHK017 Are exception-flow requirements defined for empty stdout with actionable stderr? [Gap, Spec §Edge Cases]
-- [ ] CHK018 Are exception-flow requirements defined for provider prose that mentions a failure term in a passing or negated sentence? [Gap, Spec §Edge Cases]
-- [ ] CHK019 Are recovery or next-action requirements defined for non-resumable provider sessions? [Coverage, Spec §FR-002]
+- [x] CHK016 Are primary and follow-up reviewer flows both covered in user scenarios? [Coverage, Spec §User Story 1, Spec §User Story 4]
+- [x] CHK017 Are exception-flow requirements defined for empty stdout with actionable stderr? [Gap, Spec §FR-013]
+- [x] CHK018 Are exception-flow requirements defined for provider prose that mentions a failure term in a passing or negated sentence? [Gap, Spec §FR-018]
+- [x] CHK019 Are recovery or next-action requirements defined for non-resumable provider sessions? [Coverage, Spec §User Story 4]
 
 ## Dependencies & Assumptions
 
-- [ ] CHK020 Are provider-specific CLI/session persistence assumptions documented where continuation depends on external runtime behavior? [Assumption, Spec §Technical Context]
-- [ ] CHK021 Are live-provider nondeterminism assumptions documented for semantic-audit replay versus fresh provider output? [Assumption, Spec §User Story 3]
+- [x] CHK020 Are provider-specific CLI/session persistence assumptions documented where continuation depends on external runtime behavior? [Assumption, Spec §Assumptions]
+- [x] CHK021 Are live-provider nondeterminism assumptions documented for semantic-audit replay versus fresh provider output? [Assumption, Spec §Assumptions]
+
+## Post-Smoke Root Cause Coverage
+
+- [x] CHK022 Does the spec require provider session lookup context, not only provider session id, for continuation-capable providers? [Gap, Spec §FR-011]
+- [x] CHK023 Does the spec distinguish plugin job ids, parent job ids, and provider conversation/session ids with testable fields? [Clarity, Spec §FR-010]
+- [x] CHK024 Are continuation acceptance criteria measurable from parent/continue JobRecords without relying on provider prose? [Acceptance Criteria, Spec §User Story 4]
+- [x] CHK025 Does the spec define how to classify `No conversation found with session ID` when stdout is empty but stderr is actionable? [Edge Case, Spec §FR-013]
+- [x] CHK026 Are requirements clear that source-safety neutral cwd/worktree behavior must not break provider session lookup? [Consistency, Spec §FR-011, Spec §FR-012]
+- [x] CHK027 Does the spec separate classifier-only semantic probes from full review-audit probes? [Clarity, Spec §FR-014]
+- [x] CHK028 Are success criteria explicit that tiny passing prose snippets are not required to satisfy verdict/substance audit gates? [Acceptance Criteria, Spec §SC-007]
+- [x] CHK029 Are workflow mutation approval requirements stated as a hard requirement, not a retrospective hygiene note? [Gap, Spec §FR-016]
+- [x] CHK030 Does the plan require a regression seam that fails when a provider session id is resumed from the wrong provider project/cwd? [Coverage, Plan §Phase 1]
+- [x] CHK031 Does the plan require installed-cache/live validation after cache sync, rather than trusting source-only tests? [Coverage, Plan §Phase 3]
