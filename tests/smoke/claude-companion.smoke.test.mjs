@@ -1498,6 +1498,46 @@ test("continue --job --background reuses the parent Claude project cwd", async (
   }
 });
 
+test("continue --job: project-cwd setup failure falls back to neutral cwd, not source add-dir", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "smoke-continue-cwd-conflict-"));
+  writeFileSync(path.join(cwd, "seed.txt"), "continue cwd conflict seed\n");
+  const dataDir = mkdtempSync(path.join(tmpdir(), "continue-cwd-conflict-data-"));
+  try {
+    const runRes = runCompanion(
+      ["run", "--mode=custom-review", "--foreground",
+       "--model", "claude-haiku-4-5-20251001",
+       "--scope-paths", "seed.txt",
+       "--cwd", cwd, "--", "seed"],
+      { cwd, dataDir },
+    );
+    assert.equal(runRes.status, 0, runRes.stderr);
+    const parent = JSON.parse(runRes.stdout);
+    const parentProjectCwd = parent.runtime_diagnostics.child_cwd;
+    rmSync(parentProjectCwd, { recursive: true, force: true });
+    writeFileSync(parentProjectCwd, "blocks project cwd recreation\n", "utf8");
+
+    const contRes = runCompanion(
+      ["continue", "--job", parent.job_id, "--foreground",
+       "--cwd", cwd, "--", "follow-up"],
+      { cwd, dataDir, env: { CLAUDE_MOCK_LIST_ADDDIR: "1" } },
+    );
+    assert.equal(contRes.status, 0, contRes.stderr);
+    const continued = JSON.parse(contRes.stdout);
+    assert.ok(
+      continued.mutations.some((mutation) => mutation.startsWith("mutation_detection_failed:")),
+      `project cwd setup failure must be surfaced in mutations; got ${JSON.stringify(continued.mutations)}`
+    );
+    assert.notEqual(
+      continued.runtime_diagnostics.child_cwd,
+      continued.runtime_diagnostics.add_dir,
+      "project-cwd setup failure must not make Claude run from the selected-source add-dir"
+    );
+  } finally {
+    rmSync(dataDir, { recursive: true, force: true });
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
 test("continue --job: --timeout-ms overrides prior timeout and env", () => {
   const cwd = mkdtempSync(path.join(tmpdir(), "smoke-continue-timeout-override-"));
   writeFileSync(path.join(cwd, "seed.txt"), "continue timeout override seed\n");

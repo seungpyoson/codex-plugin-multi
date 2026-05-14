@@ -495,6 +495,9 @@ function claudeProjectCwdFromRecord(record) {
 
 function ensureClaudeProjectCwd(dir) {
   if (!dir) return null;
+  // This path may be recreated after state pruning removes the job sidecar
+  // directory. Claude stores session data under ~/.claude/projects keyed by
+  // project path, not inside this directory.
   mkdirSync(dir, { recursive: true, mode: 0o700 });
   try { chmodSync(dir, 0o700); } catch { /* best-effort on non-POSIX */ }
   return dir;
@@ -995,10 +998,16 @@ function prepareMutationContext(invocation, profile) {
   const context = { checkMutations, gitStatusBefore: null, neutralCwd: null, cleanupNeutralCwd: false, mutations: [] };
   if (!checkMutations) return context;
   try {
-    const projectCwd = ensureClaudeProjectCwd(invocation.claude_project_cwd);
+    let projectCwd = null;
+    try {
+      projectCwd = ensureClaudeProjectCwd(invocation.claude_project_cwd);
+    } catch (e) {
+      context.mutations.push(mutationDetectionFailure(e));
+    }
     if (projectCwd) {
       // Retain this per-job project cwd: Claude resolves persisted sessions by
-      // project path, and the directory lives under the job sidecar state.
+      // project path for continue --job, and the directory lives under the
+      // job sidecar state.
       context.neutralCwd = projectCwd;
     } else {
       context.neutralCwd = mkdtempSync(joinPath(tmpdir(), "claude-neutral-cwd-"));
