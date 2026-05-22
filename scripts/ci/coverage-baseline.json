@@ -469,6 +469,36 @@
       "lines": 100.0,
       "branches": 100.0,
       "functions": 100.0
+    },
+    "scripts/lib/diff-source.mjs": {
+      "lines": 100.0,
+      "branches": 100.0,
+      "functions": 100.0
+    },
+    "plugins/claude/scripts/lib/diff-source.mjs": {
+      "lines": 100.0,
+      "branches": 100.0,
+      "functions": 100.0
+    },
+    "plugins/gemini/scripts/lib/diff-source.mjs": {
+      "lines": 100.0,
+      "branches": 100.0,
+      "functions": 100.0
+    },
+    "plugins/grok/scripts/lib/diff-source.mjs": {
+      "lines": 100.0,
+      "branches": 100.0,
+      "functions": 100.0
+    },
+    "plugins/kimi/scripts/lib/diff-source.mjs": {
+      "lines": 100.0,
+      "branches": 100.0,
+      "functions": 100.0
+    },
+    "plugins/api-reviewers/scripts/lib/diff-source.mjs": {
+      "lines": 100.0,
+      "branches": 100.0,
+      "functions": 100.0
     }
   }
 }
