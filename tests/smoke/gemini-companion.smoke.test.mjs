@@ -2960,6 +2960,7 @@ test("gemini approval-request token unlocks matching background api_key source-b
 
     const deadline = Date.now() + GEMINI_SMOKE_POLL_TIMEOUT_MS;
     let terminal = null;
+    let lastStale = null;
     while (Date.now() < deadline && !terminal) {
       const statusRes = spawnSync("node", [COMPANION, "status", "--all", "--cwd", cwd], {
         cwd,
@@ -2968,14 +2969,16 @@ test("gemini approval-request token unlocks matching background api_key source-b
       });
       assert.equal(statusRes.status, 0, statusRes.stderr);
       const status = JSON.parse(statusRes.stdout);
-      terminal = status.jobs.find((job) => (
-        job.job_id === launchEvent.job_id
-        && ["completed", "failed", "cancelled", "stale"].includes(job.status)
-      ));
+      const job = status.jobs.find((candidate) => candidate.job_id === launchEvent.job_id);
+      if (job?.status === "stale") {
+        lastStale = job;
+      } else if (job && ["completed", "failed", "cancelled"].includes(job.status)) {
+        terminal = job;
+      }
       if (!terminal) await new Promise((resolve) => setTimeout(resolve, 100));
     }
 
-    assert.ok(terminal, "background approved API-key review did not reach terminal state");
+    assert.ok(terminal, `background approved API-key review did not reach terminal state; last stale=${JSON.stringify(lastStale)}`);
     assert.equal(terminal.status, "completed");
     assert.equal(terminal.external_review.source_content_transmission, "sent");
     assert.equal(terminal.review_metadata.audit_manifest.source_send_approval_required, true);
