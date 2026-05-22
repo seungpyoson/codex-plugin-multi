@@ -577,6 +577,42 @@ test("kimi ping rejects unsupported auth-mode instead of ignoring it", () => {
   }
 });
 
+test("kimi continue rejects unsupported auth-mode instead of folding it into the prompt", () => withRepo((cwd) => {
+  const runRes = runCompanion([
+    "run",
+    "--mode",
+    "custom-review",
+    "--cwd",
+    cwd,
+    "--scope-paths",
+    "seed.txt",
+    "--foreground",
+    "--",
+    "Review this scope.",
+  ], { cwd });
+  try {
+    assert.equal(runRes.status, 0, runRes.stderr);
+    const parent = parseJson(runRes.stdout);
+    const result = runCompanion([
+      "continue",
+      "--job",
+      parent.job_id,
+      "--auth-mode",
+      "api_key",
+      "--cwd",
+      cwd,
+      "--",
+      "Follow up.",
+    ], { cwd, dataDir: runRes.dataDir });
+    assert.equal(result.status, 1);
+    const parsed = parseJson(result.stdout);
+    assert.equal(parsed.error, "bad_args");
+    assert.match(parsed.message, /Kimi supports subscription auth only/);
+  } finally {
+    rmSync(runRes.dataDir, { recursive: true, force: true });
+  }
+}));
+
 test("kimi custom-review prompt includes selected source content", () => {
   const cwd = mkdtempSync(path.join(tmpdir(), "kimi-inline-source-cwd-"));
   try {

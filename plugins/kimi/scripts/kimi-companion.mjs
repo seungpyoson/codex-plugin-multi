@@ -1333,9 +1333,10 @@ async function cmdRunWorker(rest) {
 
 async function cmdContinue(rest) {
   const { options, positionals } = parseArgs(rest, {
-    valueOptions: ["job", "cwd", "model", "binary", "timeout-ms", "max-steps-per-turn", "lifecycle-events"],
+    valueOptions: ["job", "cwd", "model", "binary", "timeout-ms", "max-steps-per-turn", "lifecycle-events", "auth-mode"],
     booleanOptions: ["background", "foreground"],
   });
+  rejectUnsupportedAuthMode(options);
   if (!options.job) fail("bad_args", "--job <id> is required");
   if (options.background && options.foreground) {
     fail("bad_args", "--background and --foreground are mutually exclusive");

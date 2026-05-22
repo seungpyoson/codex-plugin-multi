@@ -4481,7 +4481,7 @@ test("direct API reviewers approval-request describes external source transmissi
       cwd,
       env: {
         API_REVIEWERS_PLUGIN_DATA: dataDir,
-        GLM_API_KEY: "secret-test-value",
+        ZAI_API_KEY: "secret-test-value",
       },
     });
 
@@ -4743,7 +4743,7 @@ for (const scenario of [
     provider: "glm",
     displayName: "GLM",
     model: "glm-5.1",
-    envKey: "GLM_API_KEY",
+    envKey: "ZAI_API_KEY",
   },
 ]) {
   test(`direct API ${scenario.provider} run ignores stale doctor success and re-probes before source send`, async () => {
@@ -5281,7 +5281,7 @@ test("direct API reviewers approval-request reports structured config errors", a
     "--prompt", "Review this branch.",
   ], {
     companion,
-    env: { GLM_API_KEY: "secret-test-value" },
+    env: { ZAI_API_KEY: "secret-test-value" },
   });
 
   assert.equal(result.status, 1);
@@ -5301,7 +5301,7 @@ test("direct API reviewers approval-request reports structured bad args", async 
     "--mode", "rescue",
     "--prompt", "Review this branch.",
   ], {
-    env: { GLM_API_KEY: "secret-test-value" },
+    env: { ZAI_API_KEY: "secret-test-value" },
   });
 
   assert.equal(result.status, 1);
@@ -5326,7 +5326,7 @@ test("direct API reviewers approval-request validates prompt before collecting s
       "--scope-paths", "missing.txt",
     ], {
       cwd,
-      env: { GLM_API_KEY: "secret-test-value" },
+      env: { ZAI_API_KEY: "secret-test-value" },
     });
 
     assert.equal(result.status, 1);

@@ -1906,7 +1906,7 @@ async function cmdContinue(rest) {
     prior.review_metadata?.audit_manifest?.request?.timeout_ms ??
     DEFAULT_CLAUDE_REVIEW_TIMEOUT_MS;
   const timeoutMs = parseReviewTimeoutMs(options["timeout-ms"], process.env, priorTimeoutMs);
-  const authSelection = resolveAuthSelection(options["auth-mode"], {
+  let authSelection = resolveAuthSelection(options["auth-mode"], {
     sourceBearing: modeSendsSelectedSource(priorModeName),
   });
   const approvalScope = authSelection.source_send_approval_required === true
@@ -1927,7 +1927,7 @@ async function cmdContinue(rest) {
   // executeRun passes to spawnClaude via --resume (see the resumeId
   // derivation in executeRun). Do NOT persist a separate `resume_id` field
   // on the invocation — the chain is the source of truth.
-  const invocation = Object.freeze({
+  let invocation = Object.freeze({
     job_id: newJobId_,
     target: "claude",
     parent_job_id: options.job,
@@ -1969,6 +1969,35 @@ async function cmdContinue(rest) {
   const targetPrompt = scopedTargetPromptForOrExit(invocation, priorProfile, prompt, lifecycleEvents);
 
   if (options.background) {
+    invocation = invocationWithAuthSelection(invocation, authSelection);
+    const approvalCheck = sourceSendApprovalPreflight(authSelection, invocation, targetPrompt, null);
+    authSelection = approvalCheck.authSelection;
+    invocation = invocationWithAuthSelection(invocation, authSelection);
+    const approvalPreflight = approvalCheck.execution;
+    if (approvalPreflight) {
+      approvalPreflight.reviewAuditManifest = reviewAuditManifest(invocation, targetPrompt, null, approvalPreflight);
+      const sourceFilesForRedaction = selectedSourceFilesForRedaction(targetPrompt);
+      const redactionFields = sourceFilesForRedaction.length > 0
+        ? {
+          sourceRedactionRequired: sourceFilesHaveBodies(sourceFilesForRedaction),
+          sourceFilesForRedaction,
+        }
+        : {};
+      const errorRecord = buildJobRecord(invocation, {
+        exitCode: approvalPreflight.exitCode,
+        endedAt: approvalPreflight.endedAt,
+        parsed: approvalPreflight.parsed,
+        pidInfo: null,
+        claudeSessionId: null,
+        errorMessage: approvalPreflight.errorMessage,
+        reviewAuditManifest: approvalPreflight.reviewAuditManifest,
+        ...redactionFields,
+      }, []);
+      writeJobFile(workspaceRoot, newJobId_, errorRecord);
+      upsertJob(workspaceRoot, errorRecord);
+      printLifecycleJson(errorRecord, lifecycleEvents);
+      process.exit(2);
+    }
     try {
       writePromptSidecar(resolveJobsDir(workspaceRoot), newJobId_, targetPrompt);
       writeRuntimeOptionsSidecar(workspaceRoot, newJobId_, {

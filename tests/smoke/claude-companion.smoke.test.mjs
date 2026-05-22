@@ -2044,6 +2044,69 @@ process.exit(0);
   }
 });
 
+test("continue --job --background: api_key source-bearing review without approval fails before prompt sidecar write", async () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "smoke-continue-bg-api-no-approval-cwd-"));
+  fixtureSeedRepo(cwd, {
+    fileName: "seed.txt",
+    fileContents: "CLAUDE_CONTINUE_UNAPPROVED_BACKGROUND_API_SOURCE_SENTINEL\n",
+  });
+  const dataDir = mkdtempSync(path.join(tmpdir(), "continue-bg-api-no-approval-data-"));
+  const tmp = mkdtempSync(path.join(tmpdir(), "continue-bg-api-no-approval-bin-"));
+  const binary = writeExecutable(tmp, "claude-continue-bg-api-no-approval", `#!/usr/bin/env node
+process.stdout.write(JSON.stringify({
+  type: "result",
+  is_error: false,
+  result: "Verdict: APPROVE\\nBlocking findings\\n- None.\\nNon-blocking concerns\\n- None.\\nInspection status\\n- I inspected seed.txt.",
+  session_id: "55555555-5555-4555-8555-555555555555",
+  usage: { input_tokens: 1, output_tokens: 1 }
+}) + "\\n");
+process.exit(0);
+`);
+  const env = { ANTHROPIC_API_KEY: "secret-test-value", CLAUDE_API_KEY: "" };
+  try {
+    const parent = runCompanion([
+      "run", "--mode=custom-review", "--foreground",
+      "--binary", binary, "--model", "claude-haiku-4-5-20251001",
+      "--cwd", cwd, "--scope-paths", "seed.txt",
+      "--", "seed",
+    ], { cwd, dataDir, env });
+    assert.equal(parent.status, 0, parent.stderr || parent.stdout);
+    const parentRecord = JSON.parse(parent.stdout);
+
+    const unapproved = runCompanion([
+      "continue", "--job", parentRecord.job_id, "--background", "--lifecycle-events", "jsonl",
+      "--auth-mode", claudeApiKeyAuthMode(), "--binary", binary, "--cwd", cwd,
+      "--", "follow-up",
+    ], { cwd, dataDir, env });
+    if (unapproved.status === 0 && unapproved.stdout.trim()) {
+      const launched = JSON.parse(unapproved.stdout);
+      await waitForJobRecord(
+        dataDir,
+        launched.job_id,
+        (candidate) => candidate.status === "completed" || candidate.status === "failed",
+        "background unapproved API continuation did not finalize",
+      );
+    }
+    assert.equal(unapproved.status, 2, unapproved.stderr || unapproved.stdout);
+    const record = JSON.parse(unapproved.stdout);
+    assert.equal(record.status, "failed");
+    assert.equal(record.error_code, "approval_required");
+    assert.equal(record.external_review.source_content_transmission, "not_sent");
+    const stateRoot = path.join(dataDir, "state");
+    let promptSidecarExists = false;
+    for (const workspaceDir of readdirSync(stateRoot)) {
+      const promptPath = path.join(stateRoot, workspaceDir, "jobs", record.job_id, "prompt.txt");
+      promptSidecarExists ||= existsSync(promptPath);
+    }
+    assert.equal(promptSidecarExists, false, "unapproved background API continuation must not persist selected source prompt sidecar");
+    assert.doesNotMatch(unapproved.stdout, /secret-test-value|CLAUDE_CONTINUE_UNAPPROVED_BACKGROUND_API_SOURCE_SENTINEL/);
+  } finally {
+    cleanup(dataDir);
+    rmSync(cwd, { recursive: true, force: true });
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
 test("continue --job: refuses to resume a running job", () => {
   const cwd = mkdtempSync(path.join(tmpdir(), "smoke-continue-running-"));
   const dataDir = mkdtempSync(path.join(tmpdir(), "continue-running-data-"));
