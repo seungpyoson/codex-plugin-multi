@@ -283,13 +283,12 @@ describe("invalidateProviderKeys", () => {
   });
 
   it("returns an overlay with EVERY canonical key sentineled (glm)", () => {
-    // The whole point of round-12: a multi-key provider must have all
-    // its accepted keys invalidated. A typo or omission here is the
-    // class of bug greptile P1 #3199 caught.
+    // GLM intentionally exposes a single canonical env key. This keeps
+    // smoke-rerecord aligned with providers.json instead of teaching
+    // operators a second credential path.
     const out = invalidateProviderKeys("glm");
     assert.deepEqual(out, {
       ZAI_API_KEY: INVALID_PROVIDER_KEY_SENTINEL,
-      ZAI_GLM_API_KEY: INVALID_PROVIDER_KEY_SENTINEL,
     });
   });
 

@@ -1,6 +1,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, readFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { existsSync, readFileSync, statSync } from "node:fs";
+import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -12,6 +14,10 @@ const GROK_WORKFLOWS = ["review", "adversarial-review", "custom-review", "setup"
 
 function readJson(relPath) {
   return JSON.parse(readFileSync(path.join(REPO_ROOT, relPath), "utf8"));
+}
+
+function escapeRegExp(text) {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 function assertPickerDescription(skill, rel) {
@@ -158,15 +164,16 @@ function assertApiReviewerCommandDoc(command, workflow, rel) {
 function assertGrokWorkflowInvocation(skill, workflow, rel) {
   assertNoBracketedCliFlagsInShellFences(skill, rel);
   assertNoShellVariablePlaceholdersInShellFences(skill, rel);
-  assert.match(skill, /grok-web-reviewer\.mjs\s+(setup|doctor|run)\b/, `${rel} missing grok-web-reviewer invocation`);
+  assert.match(skill, /grok-companion\.mjs\s+(setup|doctor|run)\b/, `${rel} missing grok-companion invocation`);
+  assert.doesNotMatch(skill, /grok-web-reviewer\.mjs/, `${rel} must expose the generic Grok companion entrypoint`);
   assert.doesNotMatch(skill, /api\.x\.ai/i, `${rel} must not recommend direct xAI API fallback`);
   if (workflow === "setup") {
-    assert.match(skill, /grok-web-reviewer\.mjs\s+doctor\b/, `${rel} missing doctor subcommand`);
+    assert.match(skill, /grok-companion\.mjs\s+doctor\b/, `${rel} missing doctor subcommand`);
     assert.match(skill, /credential key names only|key names only/i, `${rel} missing credential-name-only guidance`);
     return;
   }
 
-  assert.match(skill, /grok-web-reviewer\.mjs\s+run\b/, `${rel} missing run subcommand`);
+  assert.match(skill, /grok-companion\.mjs\s+run\b/, `${rel} missing run subcommand`);
   assert.match(skill, new RegExp(`--mode\\s+${workflow}\\b`), `${rel} missing --mode ${workflow}`);
   assert.match(skill, /--foreground\b/, `${rel} missing --foreground`);
   assert.match(skill, /--lifecycle-events\s+markdown\b/, `${rel} missing lifecycle markdown option`);
@@ -195,7 +202,8 @@ function assertGrokWorkflowInvocation(skill, workflow, rel) {
 function assertGrokCommandDoc(command, workflow, rel) {
   assertNoBracketedCliFlagsInShellFences(command, rel);
   assertNoShellVariablePlaceholdersInShellFences(command, rel);
-  assert.match(command, /grok-web-reviewer\.mjs\s+(doctor|run)\b/, `${rel} missing grok-web-reviewer command`);
+  assert.match(command, /grok-companion\.mjs\s+(doctor|run)\b/, `${rel} missing grok-companion command`);
+  assert.doesNotMatch(command, /grok-web-reviewer\.mjs/, `${rel} must expose the generic Grok companion entrypoint`);
   assert.match(command, /session cookies|tunnel API keys|bearer token/i, `${rel} missing secret handling guidance`);
   assert.doesNotMatch(command, /api\.x\.ai/i, `${rel} must not recommend direct xAI API fallback`);
   if (workflow === "setup") return;
@@ -288,6 +296,32 @@ test("api-reviewers plugin.json: valid schema", () => {
   assert.equal(m.skills, "./skills");
 });
 
+test("api-reviewers package exposes api-reviewer bin shim", () => {
+  const pkg = readJson("plugins/api-reviewers/package.json");
+  assert.deepEqual(pkg.bin, { "api-reviewer": "./bin/api-reviewer" });
+
+  const shimRel = "plugins/api-reviewers/bin/api-reviewer";
+  const shimPath = path.join(REPO_ROOT, shimRel);
+  assert.equal(existsSync(shimPath), true, `${shimRel} missing`);
+  assert.ok((statSync(shimPath).mode & 0o111) !== 0, `${shimRel} must be executable`);
+  const shim = readFileSync(shimPath, "utf8");
+  assert.match(shim, /^#!\/usr\/bin\/env node/);
+  assert.match(shim, /\.\.\/scripts\/api-reviewer\.mjs/);
+});
+
+test("api-reviewers bin shim resolves from non-repo cwd", () => {
+  const shimPath = path.join(REPO_ROOT, "plugins/api-reviewers/bin/api-reviewer");
+  const result = spawnSync(process.execPath, [shimPath, "--help"], {
+    cwd: tmpdir(),
+    encoding: "utf8",
+  });
+
+  assert.equal(result.status, 0, result.stderr);
+  const parsed = JSON.parse(result.stdout);
+  assert.deepEqual(parsed.commands, ["doctor", "ping", "approval-request", "run", "result"]);
+  assert.deepEqual(parsed.providers, ["deepseek", "glm"]);
+});
+
 test("both plugins declared in marketplace match filesystem layout", () => {
   const m = readJson(".agents/plugins/marketplace.json");
   for (const p of m.plugins) {
@@ -345,8 +379,9 @@ test("grok exposes a user-invocable skill fallback", () => {
 
   assert.match(skill, /^name:\s*grok-delegation$/m);
   assert.match(skill, /^user-invocable:\s*true$/m);
-  assert.match(skill, /grok-web-reviewer\.mjs/);
-  assert.match(skill, /grok-web-reviewer\.mjs\s+doctor\b/);
+  assert.match(skill, /grok-companion\.mjs/);
+  assert.match(skill, /grok-companion\.mjs\s+doctor\b/);
+  assert.doesNotMatch(skill, /grok-web-reviewer\.mjs/);
   assert.match(skill, /--mode\s+review\b/);
   assert.match(skill, /--mode\s+adversarial-review\b/);
   assert.match(skill, /--mode\s+custom-review\b/);
@@ -454,7 +489,7 @@ test("provider workflow skills are user-invocable and command-backed", () => {
       assert.equal(existsSync(path.join(REPO_ROOT, commandRel)), true, `${commandRel} missing`);
       const command = readFileSync(path.join(REPO_ROOT, commandRel), "utf8");
       assertApiReviewerCommandDoc(command, workflow, commandRel);
-      assert.match(skill, new RegExp(commandRel.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+      assert.match(skill, new RegExp(escapeRegExp(`../../commands/${skillName}.md`)));
     }
   }
 
@@ -468,7 +503,8 @@ test("provider workflow skills are user-invocable and command-backed", () => {
     assert.match(skill, new RegExp(`^name:\\s*${skillName}$`, "m"));
     assert.match(skill, /^user-invocable:\s*true$/m);
     assertPickerDescription(skill, rel);
-    assert.match(skill, /grok-web-reviewer\.mjs/);
+    assert.match(skill, /grok-companion\.mjs/);
+    assert.doesNotMatch(skill, /grok-web-reviewer\.mjs/);
     assert.match(skill, new RegExp(`grok:${skillName}`));
     assertGrokWorkflowInvocation(skill, workflow, rel);
     const commandRel = `plugins/grok/commands/${skillName}.md`;

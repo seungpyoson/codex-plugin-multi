@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { spawnSync } from "node:child_process";
 import { lstat, mkdir, open, readFile, readdir, realpath, rename, rm, unlink, writeFile } from "node:fs/promises";
-import { constants as fsConstants } from "node:fs";
+import { constants as fsConstants, lstatSync, readFileSync } from "node:fs";
 import { basename, dirname, isAbsolute, resolve, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createHash, randomUUID } from "node:crypto";
@@ -13,6 +13,9 @@ import { isCodexSandbox } from "./lib/codex-env.mjs";
 import { REVIEW_PROMPT_CONTRACT_VERSION, buildReviewAuditManifest, buildReviewPrompt, scopeResolutionReason } from "./lib/review-prompt.mjs";
 import { USAGE_LIMIT_SAFE_MESSAGE, isUsageLimitDetail } from "./lib/usage-limit.mjs";
 import { elapsedMs } from "./lib/time.mjs";
+import { buildExternalModelFailureDiagnostic } from "./lib/external-model-failure-core.mjs";
+import { hasSubstantiveInvalidVerdictReason, reviewQualityFailureState } from "./lib/external-model-review-quality.mjs";
+import { normalizeApprovalScope, selectProviderRoute } from "./lib/provider-route-policy.mjs";
 import {
   EXTERNAL_REVIEW_KEYS,
   SOURCE_CONTENT_TRANSMISSION,
@@ -22,7 +25,7 @@ const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 const PLUGIN_ROOT = resolve(SCRIPT_DIR, "..");
 const PROVIDERS_PATH = resolve(PLUGIN_ROOT, "config/providers.json");
 const VALID_MODES = new Set(["review", "adversarial-review", "custom-review"]);
-const VALID_AUTH_MODES = new Set(["api_key", "auto"]);
+const VALID_AUTH_MODES = new Set(["api_key"]);
 const SCHEMA_VERSION = 10;
 const API_REVIEWER_STATE_VERSION = 1;
 const MAX_RETAINED_API_REVIEWER_JOBS = 50;
@@ -114,12 +117,24 @@ function lifecycleScope(externalReview) {
   return [scope, base, paths].filter(Boolean).join(" ") || "unknown";
 }
 
+function lifecycleJobId(obj, externalReview) {
+  return externalReview?.job_id ?? obj?.job_id ?? obj?.id ?? null;
+}
+
+function lifecycleWorkspace(obj) {
+  return obj?.workspace_root ?? obj?.cwd ?? "<workspace>";
+}
+
 function renderLifecycleMarkdown(obj) {
-  const externalReview = obj?.external_review && typeof obj.external_review === "object" ? obj.external_review : null;
+  const externalReview = obj?.external_review && typeof obj.external_review === "object"
+    ? obj.external_review
+    : externalReviewFromProgress(obj);
   if (!externalReview) return null;
+  const jobId = lifecycleJobId(obj, externalReview);
+  const workspace = lifecycleWorkspace(obj);
   const rows = [
     ["Provider", externalReview.provider ?? obj.provider ?? obj.target ?? "unknown"],
-    ["Job", externalReview.job_id ?? obj.job_id ?? "unknown"],
+    ["Job", jobId ?? "unknown"],
     ["Session", externalReview.session_id ?? "pending"],
     ["Run", externalReview.run_kind ?? "unknown"],
     ["Mode", externalReview.mode ?? obj.mode ?? "unknown"],
@@ -127,6 +142,8 @@ function renderLifecycleMarkdown(obj) {
     ["Source", externalReview.source_content_transmission ?? "unknown"],
     ["Status", obj.status ?? "unknown"],
   ];
+  if (jobId) rows.push(["Retrieve", `result --job ${jobId} --cwd ${workspace}`]);
+  rows.push(["Panel", `review-panel --workspace ${workspace}`]);
   if (obj.error_code) rows.push(["Error", obj.error_code]);
   if (obj.error_message) rows.push(["Message", obj.error_message]);
   if (obj.error_summary) rows.push(["Summary", obj.error_summary]);
@@ -143,12 +160,103 @@ function renderLifecycleMarkdown(obj) {
   ].join("\n");
 }
 
+function externalReviewFromProgress(obj) {
+  if (obj?.event !== "external_review_progress") return null;
+  const provider = obj?.provider ?? obj?.target ?? "unknown";
+  return {
+    marker: "EXTERNAL REVIEW",
+    provider,
+    run_kind: obj?.run_kind ?? "foreground",
+    job_id: obj?.job_id ?? null,
+    session_id: null,
+    parent_job_id: obj?.parent_job_id ?? null,
+    mode: obj?.mode ?? null,
+    scope: obj?.scope ?? null,
+    scope_base: obj?.scope_base ?? null,
+    scope_paths: obj?.scope_paths ?? null,
+    source_content_transmission: obj?.source_content_transmission ?? "may_be_sent",
+    disclosure: `Selected source content may be sent to ${provider} for external review.`,
+  };
+}
+
 function printJsonLine(obj, output = process.stdout) {
   writableOutput(output).write(`${JSON.stringify(obj)}\n`);
 }
 
+const TERMINAL_EXTERNAL_REVIEW_STATUSES = new Set(["completed", "failed", "cancelled", "stale"]);
+
+function isTerminalExternalReviewRecord(obj) {
+  if (!obj?.external_review || typeof obj.external_review !== "object") return false;
+  if (obj.event === "external_review_launched" || obj.event === "external_review_progress" || obj.event === "launched") {
+    return false;
+  }
+  return TERMINAL_EXTERNAL_REVIEW_STATUSES.has(obj.status) || obj.result != null || obj.error_code != null;
+}
+
+function reviewMetadataProjection(obj) {
+  const manifest = obj?.review_metadata?.audit_manifest;
+  if (!manifest || typeof manifest !== "object") {
+    return obj?.review_metadata && typeof obj.review_metadata === "object" ? { audit_manifest: null } : null;
+  }
+  const projection = {};
+  for (const key of [
+    "rendered_prompt_hash",
+    "selected_source",
+    "scope_resolution",
+    "selected_route",
+    "fallback_reason",
+    "approval_scope",
+  ]) {
+    if (manifest[key] !== undefined) projection[key] = manifest[key];
+  }
+  return Object.keys(projection).length > 0 ? { audit_manifest: projection } : null;
+}
+
+function terminalLifecycleProjection(obj) {
+  const projection = {
+    event: "external_review_terminal",
+    id: obj.id ?? obj.job_id ?? null,
+    job_id: obj.job_id ?? obj.id ?? null,
+    target: obj.target ?? null,
+    provider: obj.provider ?? obj.external_review?.provider ?? null,
+    mode: obj.mode ?? obj.external_review?.mode ?? null,
+    cwd: obj.cwd ?? null,
+    workspace_root: obj.workspace_root ?? obj.cwd ?? null,
+    prompt_head: obj.prompt_head ?? null,
+    status: obj.status ?? "unknown",
+    started_at: obj.started_at ?? null,
+    ended_at: obj.ended_at ?? null,
+    exit_code: obj.exit_code ?? null,
+    error_code: obj.error_code ?? null,
+    error_message: obj.error_message ?? null,
+    error_summary: obj.error_summary ?? null,
+    suggested_action: obj.suggested_action ?? null,
+    http_status: obj.http_status ?? null,
+    external_review: obj.external_review,
+  };
+  if (obj.disclosure_note != null) projection.disclosure_note = obj.disclosure_note;
+  if (obj.review_quality && typeof obj.review_quality === "object") {
+    projection.review_quality = {
+      failed_review_slot: obj.review_quality.failed_review_slot ?? null,
+      reason: obj.review_quality.reason ?? null,
+    };
+  } else if (obj.review_metadata?.audit_manifest?.review_quality) {
+    projection.review_quality = {
+      failed_review_slot: obj.review_metadata.audit_manifest.review_quality.failed_review_slot ?? null,
+      reason: null,
+    };
+  }
+  const reviewMetadata = reviewMetadataProjection(obj);
+  if (reviewMetadata) projection.review_metadata = reviewMetadata;
+  return projection;
+}
+
+function lifecycleJsonlObject(obj) {
+  return isTerminalExternalReviewRecord(obj) ? terminalLifecycleProjection(obj) : obj;
+}
+
 function printLifecycleJson(obj, lifecycleEvents, output = process.stdout) {
-  if (lifecycleEvents === "jsonl") printJsonLine(obj, output);
+  if (lifecycleEvents === "jsonl") printJsonLine(lifecycleJsonlObject(obj), output);
   else if (lifecycleEvents === "markdown") {
     const markdown = renderLifecycleMarkdown(obj);
     if (markdown) writableOutput(output).write(markdown);
@@ -170,6 +278,34 @@ function externalReviewProgressEvent(invocation, { sequence, elapsedMs }) {
   };
 }
 
+function externalReviewProgressMarkdownEvent(invocation, progress) {
+  const base = invocation.external_review && typeof invocation.external_review === "object" ? invocation.external_review : {};
+  const provider = base.provider ?? invocation.provider ?? invocation.target ?? progress.target ?? "unknown";
+  return {
+    ...progress,
+    cwd: invocation.cwd ?? null,
+    workspace_root: invocation.workspace_root ?? null,
+    scope: base.scope ?? invocation.scope ?? null,
+    scope_base: base.scope_base ?? invocation.scope_base ?? null,
+    scope_paths: base.scope_paths ?? invocation.scope_paths ?? null,
+    source_content_transmission: "may_be_sent",
+    external_review: {
+      marker: "EXTERNAL REVIEW",
+      provider,
+      run_kind: base.run_kind ?? invocation.run_kind ?? "foreground",
+      job_id: base.job_id ?? invocation.job_id ?? progress.job_id ?? null,
+      session_id: null,
+      parent_job_id: base.parent_job_id ?? invocation.parent_job_id ?? null,
+      mode: base.mode ?? invocation.mode ?? progress.mode ?? null,
+      scope: base.scope ?? invocation.scope ?? null,
+      scope_base: base.scope_base ?? invocation.scope_base ?? null,
+      scope_paths: base.scope_paths ?? invocation.scope_paths ?? null,
+      source_content_transmission: "may_be_sent",
+      disclosure: base.disclosure ?? `Selected source content may be sent to ${provider} for external review.`,
+    },
+  };
+}
+
 function lifecycleHeartbeatIntervalMs(env = process.env) {
   const raw = env.CODEX_PLUGIN_EXTERNAL_REVIEW_HEARTBEAT_MS;
   if (raw === undefined || raw === null || raw === "") return 30000;
@@ -188,11 +324,12 @@ function startLifecycleHeartbeat(
   let sequence = 0;
   const timer = setInterval(() => {
     sequence += 1;
+    const progress = externalReviewProgressEvent(invocation, {
+      sequence,
+      elapsedMs: now() - started,
+    });
     printLifecycleJson(
-      externalReviewProgressEvent(invocation, {
-        sequence,
-        elapsedMs: now() - started,
-      }),
+      lifecycleEvents === "markdown" ? externalReviewProgressMarkdownEvent(invocation, progress) : progress,
       lifecycleEvents,
       output,
     );
@@ -371,8 +508,8 @@ async function writeApiReviewerState(root, state) {
   }
 }
 
-async function verifyApiReviewerDataRootWritable(env = process.env) {
-  const root = apiReviewerDataRoot(env);
+async function verifyApiReviewerDataRootWritable(env = process.env, cwd = process.cwd()) {
+  const root = apiReviewerDataRoot(env, cwd);
   const probeFile = resolve(root, `.write-preflight-${process.pid}-${Date.now()}-${randomUUID()}.tmp`);
   try {
     await mkdir(root, { recursive: true });
@@ -736,12 +873,84 @@ function providersConfigErrorFields(error, provider = null) {
 }
 
 function selectedCredential(cfg, env = process.env) {
+  const effectiveEnv = credentialEnvWithCache(cfg, env);
   for (const keyName of cfg.env_keys ?? []) {
-    if (typeof env[keyName] === "string" && env[keyName].length > 0) {
-      return { keyName, value: env[keyName] };
+    if (typeof effectiveEnv[keyName] === "string" && effectiveEnv[keyName].length > 0) {
+      return { keyName, value: effectiveEnv[keyName] };
     }
   }
   return { keyName: null, value: null };
+}
+
+function credentialEnvKeys(cfg) {
+  return (cfg.env_keys ?? []).filter((keyName) => typeof keyName === "string" && keyName.length > 0);
+}
+
+function presentCredentialEnvKeys(cfg, env = process.env) {
+  const effectiveEnv = credentialEnvWithCache(cfg, env);
+  return credentialEnvKeys(cfg).filter((keyName) => (
+    typeof effectiveEnv[keyName] === "string" && effectiveEnv[keyName].length > 0
+  ));
+}
+
+function missingCredentialAction(cfg) {
+  const names = credentialEnvKeys(cfg).join(", ");
+  return `This Codex process cannot see a non-empty credential env var or owner-only ~/.cache/op/env.sh credential cache entry. Restart or launch the session with one of these env vars exported: ${names}, or refresh the 1Password env cache. Then rerun api-reviewer doctor. Do not run source-bearing review until doctor returns ready:true.`;
+}
+
+function envCacheDisabled(env = process.env) {
+  return /^(?:1|true|yes)$/i.test(String(env.API_REVIEWERS_DISABLE_ENV_CACHE ?? ""));
+}
+
+function credentialEnvCachePath(env = process.env) {
+  if (envCacheDisabled(env)) return null;
+  if (typeof env.API_REVIEWERS_ENV_CACHE === "string" && env.API_REVIEWERS_ENV_CACHE.length > 0) {
+    return resolve(env.API_REVIEWERS_ENV_CACHE);
+  }
+  if (typeof env.HOME !== "string" || env.HOME.length === 0) return null;
+  return resolve(env.HOME, ".cache", "op", "env.sh");
+}
+
+function unquoteEnvCacheValue(raw) {
+  const value = String(raw ?? "").trim();
+  if (value.length === 0) return "";
+  if (value.startsWith("'") && value.endsWith("'")) return value.slice(1, -1);
+  if (value.startsWith('"') && value.endsWith('"')) {
+    return value.slice(1, -1).replace(/\\"/g, '"').replace(/\\\\/g, "\\");
+  }
+  return value.split(/\s+#/u)[0].trim();
+}
+
+function credentialEnvCacheEntries(env, names) {
+  const wanted = new Set(names);
+  if (wanted.size === 0) return {};
+  const cachePath = credentialEnvCachePath(env);
+  if (!cachePath) return {};
+  try {
+    const stat = lstatSync(cachePath);
+    if (!stat.isFile()) return {};
+    if (process.platform !== "win32" && (stat.mode & 0o077) !== 0) return {};
+    const entries = {};
+    const text = readFileSync(cachePath, "utf8");
+    for (const line of text.split(/\r?\n/u)) {
+      const match = line.match(/^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)=(.*)\s*$/u);
+      if (!match || !wanted.has(match[1])) continue;
+      const value = unquoteEnvCacheValue(match[2]);
+      if (value.length > 0) entries[match[1]] = value;
+    }
+    return entries;
+  } catch {
+    return {};
+  }
+}
+
+function credentialEnvWithCache(cfgOrNames, env = process.env) {
+  const names = Array.isArray(cfgOrNames) ? cfgOrNames : credentialEnvKeys(cfgOrNames);
+  const missingNames = names.filter((name) => !(typeof env[name] === "string" && env[name].length > 0));
+  if (missingNames.length === 0) return env;
+  const entries = credentialEnvCacheEntries(env, missingNames);
+  if (Object.keys(entries).length === 0) return env;
+  return { ...env, ...entries };
 }
 
 function parsePositiveIntegerEnv(env, name, label) {
@@ -784,11 +993,11 @@ function applyRequestDefaults(requestBody, requestDefaults = {}) {
 }
 
 function validateDirectApiRunPreflight(cfg, provider, env = process.env) {
-  if (cfg.auth_mode !== "api_key" && cfg.auth_mode !== "auto") {
+  if (cfg.auth_mode !== "api_key") {
     return {
       ok: false,
       reason: "bad_args",
-      error: `${provider} auth_mode must be api_key or auto`,
+      error: `${provider} auth_mode must be api_key`,
     };
   }
   const maxTokensOverride = parseMaxTokensOverride(env);
@@ -848,7 +1057,7 @@ function validateRenderedPromptBudget(prompt, cfg, env = process.env) {
   if (prompt.length > maxPromptChars.value) {
     return {
       ok: false,
-      reason: "scope_failed",
+      reason: "prompt_too_large",
       error: `prompt_too_large:${prompt.length} chars exceeds ${cfg.display_name} max_prompt_chars=${maxPromptChars.value}`,
     };
   }
@@ -857,7 +1066,8 @@ function validateRenderedPromptBudget(prompt, cfg, env = process.env) {
 
 function redactor(env = process.env, configuredSecretNames = []) {
   const configured = new Set(configuredSecretNames);
-  const secrets = Object.entries(env)
+  const effectiveEnv = credentialEnvWithCache(configuredSecretNames, env);
+  const secrets = Object.entries(effectiveEnv)
     .filter(([name, value]) => (
       typeof value === "string" &&
       (
@@ -944,6 +1154,85 @@ function redactRecord(record, env = process.env, configuredSecretNames = []) {
   return redactValue(record, redactor(env, configuredSecretNames));
 }
 
+const SOURCE_BODY_REDACTION = "[redacted_source_excerpt]";
+const SOURCE_QUOTE_CONTIGUOUS_LIMIT = 200;
+const SOURCE_QUOTE_AGGREGATE_LIMIT = 800;
+const SOURCE_QUOTE_AGGREGATE_MIN_MATCH = 40;
+
+function sourceMatchLength(text, cursor, source, minLength) {
+  if (cursor + minLength > text.length || source.length < minLength) return 0;
+  const seed = text.slice(cursor, cursor + minLength);
+  let sourceIndex = source.indexOf(seed);
+  if (sourceIndex === -1) return 0;
+  let best = minLength;
+  while (sourceIndex !== -1) {
+    let length = minLength;
+    while (
+      cursor + length < text.length &&
+      sourceIndex + length < source.length &&
+      text[cursor + length] === source[sourceIndex + length]
+    ) {
+      length += 1;
+    }
+    best = Math.max(best, length);
+    sourceIndex = source.indexOf(seed, sourceIndex + 1);
+  }
+  return best;
+}
+
+function redactSourceQuotes(text, source, aggregateState) {
+  let out = "";
+  let cursor = 0;
+  while (cursor < text.length) {
+    const length = sourceMatchLength(text, cursor, source, SOURCE_QUOTE_AGGREGATE_MIN_MATCH);
+    if (length > SOURCE_QUOTE_CONTIGUOUS_LIMIT) {
+      out += SOURCE_BODY_REDACTION;
+      cursor += length;
+    } else if (length > 0) {
+      const quote = text.slice(cursor, cursor + length);
+      if (aggregateState.copiedChars + length > SOURCE_QUOTE_AGGREGATE_LIMIT) {
+        out += SOURCE_BODY_REDACTION;
+      } else {
+        out += quote;
+        aggregateState.copiedChars += length;
+      }
+      cursor += length;
+    } else {
+      out += text[cursor];
+      cursor += 1;
+    }
+  }
+  return out;
+}
+
+function selectedSourceBodyRedactor(sourceFiles = []) {
+  const variants = new Set();
+  const quoteSources = [];
+  const seenQuoteSources = new Set();
+  for (const file of sourceFiles) {
+    if (typeof file?.text !== "string" || file.text.length === 0) continue;
+    const normalized = file.text.replace(/\r\n/g, "\n");
+    for (const candidate of [file.text, normalized, file.text.trimEnd(), normalized.trimEnd()]) {
+      if (candidate) variants.add(candidate);
+    }
+    const quoteSource = normalized.trimEnd() || normalized;
+    if (quoteSource && !seenQuoteSources.has(quoteSource)) {
+      seenQuoteSources.add(quoteSource);
+      quoteSources.push(quoteSource);
+    }
+  }
+  const ordered = [...variants].sort((a, b) => b.length - a.length);
+  return (text) => {
+    let out = String(text ?? "");
+    for (const source of ordered) {
+      out = out.split(source).join(SOURCE_BODY_REDACTION);
+    }
+    const aggregateState = { copiedChars: 0 };
+    for (const source of quoteSources) out = redactSourceQuotes(out, source, aggregateState);
+    return out;
+  };
+}
+
 function configuredSecretNamesFromProviders(providers) {
   return Object.values(providers ?? {}).flatMap((cfg) => (
     Array.isArray(cfg?.env_keys) ? cfg.env_keys.filter((name) => typeof name === "string" && name.length > 0) : []
@@ -962,6 +1251,7 @@ async function configuredSecretNamesForResult() {
 }
 
 function baseUrlFor(cfg) {
+  if (cfg.base_url === undefined || cfg.base_url === null || cfg.base_url === "") return null;
   let url = String(cfg.base_url);
   while (url.endsWith("/")) url = url.slice(0, -1);
   return url;
@@ -982,6 +1272,47 @@ function sourceFreeProviderProbeFields(execution, cfg) {
   };
 }
 
+function sourceFreePreSendFailureExecution(execution, cfg, env = process.env) {
+  const effectiveEnv = credentialEnvWithCache(cfg, env);
+  const providerProbe = sourceFreeProviderProbeFields(execution, cfg);
+  const errorMessage = redactor(effectiveEnv, cfg.env_keys)(
+    execution.parsed?.error ?? providerProbe.status,
+  );
+  const credential = selectedCredential(cfg, effectiveEnv);
+  return {
+    ...providerFailureWithDiagnostics(
+      providerProbe.status,
+      errorMessage,
+      execution.http_status ?? null,
+      execution.parsed?.raw ?? null,
+      false,
+      {
+        ...(execution.diagnostics ?? {}),
+        source_free_preflight: {
+          ...providerProbe,
+          error_message: errorMessage,
+        },
+      },
+    ),
+    credential_ref: execution.credential_ref ?? credential.keyName ?? null,
+    endpoint: execution.endpoint ?? baseUrlFor(cfg),
+  };
+}
+
+function sourceFreePreSendProbeEnv(env = process.env) {
+  const next = { ...env };
+  delete next.API_REVIEWERS_MOCK_ASSERT_PROMPT_INCLUDES;
+  delete next.API_REVIEWERS_MOCK_ASSERT_PROMPT_EXCLUDES;
+  delete next.API_REVIEWERS_MOCK_ASSERT_REQUEST_BODY;
+  return next;
+}
+
+async function sourceFreePreSendFailure(provider, cfg, env = process.env) {
+  const execution = await callProvider(provider, cfg, DOCTOR_PROBE_PROMPT, sourceFreePreSendProbeEnv(env));
+  if (execution.exitCode === 0 && execution.parsed?.ok === true) return null;
+  return sourceFreePreSendFailureExecution(execution, cfg, env);
+}
+
 async function doctorFields(provider, cfg, env = process.env) {
   const credential = selectedCredential(cfg, env);
   const endpoint = baseUrlFor(cfg);
@@ -996,7 +1327,7 @@ async function doctorFields(provider, cfg, env = process.env) {
       status: "config_error",
       ready: false,
       summary: `${cfg.display_name} direct API auth mode is unsupported.`,
-      next_action: `Set ${provider} auth_mode to api_key or auto.`,
+      next_action: `Set ${provider} auth_mode to api_key.`,
       auth_mode: cfg.auth_mode,
       endpoint,
       cost_quota_readiness: costQuotaReadiness,
@@ -1008,9 +1339,10 @@ async function doctorFields(provider, cfg, env = process.env) {
       status: "missing_key",
       ready: false,
       summary: `${cfg.display_name} direct API key is not available.`,
-      next_action: `Expose one of these key names to Codex: ${(cfg.env_keys ?? []).join(", ")}.`,
+      next_action: missingCredentialAction(cfg),
       auth_mode: cfg.auth_mode,
-      credential_candidates: cfg.env_keys ?? [],
+      credential_candidates: credentialEnvKeys(cfg),
+      present_credential_env_keys: presentCredentialEnvKeys(cfg, env),
       endpoint,
       cost_quota_readiness: costQuotaReadiness,
     };
@@ -1476,7 +1808,8 @@ function mockProviderExecution(cfg, prompt, credential, env, requestBody) {
 }
 
 async function callProvider(provider, cfg, prompt, env = process.env) {
-  const preflight = validateDirectApiRunPreflight(cfg, provider, env);
+  const effectiveEnv = credentialEnvWithCache(cfg, env);
+  const preflight = validateDirectApiRunPreflight(cfg, provider, effectiveEnv);
   if (!preflight.ok) return providerFailure(preflight.reason, preflight.error, null, null, false);
   const { credential, maxTokensOverride, timeoutMs } = preflight;
   const endpoint = `${baseUrlFor(cfg)}/chat/completions`;
@@ -1507,12 +1840,12 @@ async function callProvider(provider, cfg, prompt, env = process.env) {
     max_tokens: requestBody.max_tokens ?? null,
     temperature: requestBody.temperature ?? null,
   });
-  if (env.API_REVIEWERS_MOCK_RESPONSE) {
-    return mockProviderExecution(cfg, prompt, credential, env, requestBody);
+  if (effectiveEnv.API_REVIEWERS_MOCK_RESPONSE) {
+    return mockProviderExecution(cfg, prompt, credential, effectiveEnv, requestBody);
   }
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs.value);
-  const redact = redactor(env, cfg.env_keys);
+  const redact = redactor(effectiveEnv, cfg.env_keys);
   const started = Date.now();
   try {
     const response = await fetch(endpoint, {
@@ -1718,28 +2051,56 @@ function scopeFailedSuggestedAction(errorMessage = "") {
   if (/scope_base_invalid:/i.test(errorMessage)) {
     return "Use a concrete branch, tag, remote ref, or commit SHA for --scope-base; option-shaped values beginning with '-' are rejected before git branch-diff runs.";
   }
-  if (/prompt_too_large:/i.test(errorMessage)) {
-    return "Rendered prompt exceeds the direct API provider prompt budget before launch. Use a narrower scope, split the review into explicit custom-review shards, or raise API_REVIEWERS_MAX_PROMPT_CHARS only after confirming the selected provider accepts larger prompts.";
-  }
   return "Adjust --scope, --scope-base, or --scope-paths and retry.";
 }
 
+function promptTooLargeSuggestedAction() {
+  return "Rendered prompt exceeds the direct API provider prompt budget before launch. Use a narrower scope, split the review into explicit custom-review shards, or raise API_REVIEWERS_MAX_PROMPT_CHARS only after confirming the selected provider accepts larger prompts.";
+}
+
+function reviewQualityReasons(errorMessage) {
+  const prefix = "review_quality_failed:";
+  const text = String(errorMessage ?? "");
+  if (!text.startsWith(prefix)) return [];
+  return text.slice(prefix.length).split(",").map((reason) => reason.trim()).filter(Boolean);
+}
+
 function suggestedAction(errorCode, provider, cfg, errorMessage = "", httpStatus = null, env = process.env) {
+  const sharedDiagnostic = buildExternalModelFailureDiagnostic(errorCode, cfg.display_name ?? provider);
   if (errorCode === "bad_args") return "Correct the api-reviewer command arguments and retry.";
   if (errorCode === "approval_required") return "Run approval-request, render the approval summary to the user, and pass the returned approval_token.value with --approval-token only after explicit approval.";
+  if (errorCode === "prompt_too_large") return promptTooLargeSuggestedAction();
   if (errorCode === "config_error") return "Reinstall or repair plugins/api-reviewers/config/providers.json and retry.";
-  if (errorCode === "missing_key") return `Expose one of these key names to Codex: ${(cfg.env_keys ?? []).join(", ")}.`;
+  if (errorCode === "missing_key") return missingCredentialAction(cfg);
   if (errorCode === "auth_rejected") return `Check the ${cfg.display_name} API key and billing/plan for ${cfg.model}.`;
-  if (errorCode === "usage_limited") return `${cfg.display_name} reported a quota, usage-tier, billing, or credit limit. This plugin does not purchase credits or upgrade tiers automatically; inspect the provider account and perform any billing transaction only after explicit user approval.`;
+  if (errorCode === "usage_limited") {
+    return `Treat this ${cfg.display_name} slot as failed. Do not automatically resend selected source. ` +
+      `${cfg.display_name} reported a quota, usage-tier, billing, or credit limit. This plugin does not purchase credits or upgrade tiers automatically; inspect the provider account and perform any billing transaction only after explicit user approval. ` +
+      "Require a fresh matching approval token whenever provider, mode, source packet, prompt hash, scope resolution, request settings, auth path, billing path, selected route, or fallback reason changes.";
+  }
   // Kept for backward compatibility with older persisted records and future non-HTTP callers.
   if (errorCode === "rate_limited") return `Wait and retry, or lower concurrency for ${provider}.`;
-  if (errorCode === "timeout") return `The provider did not respond within the timeout window. Retry later, increase API_REVIEWERS_TIMEOUT_MS, or switch reviewer provider.`;
+  if (errorCode === "timeout") {
+    return `${sharedDiagnostic?.suggested_action ?? "Treat this reviewer slot as failed. Do not automatically resend selected source."} ` +
+      "The provider did not respond within the timeout window; retry later, increase API_REVIEWERS_TIMEOUT_MS, " +
+      "or narrow the source packet.";
+  }
   if (errorCode === "provider_unavailable") return providerUnavailableSuggestedAction(errorMessage, httpStatus, env);
-  if (errorCode === "review_not_completed") return "Treat this reviewer slot as failed, inspect the raw result and review_quality reasons, then retry with a source packet the reviewer can inspect.";
+  if (errorCode === "review_not_completed") {
+    const displayName = cfg.display_name ?? provider;
+    const reasons = reviewQualityReasons(errorMessage);
+    if (hasSubstantiveInvalidVerdictReason(reasons)) {
+      return `Treat this ${displayName} slot as failed. Do not automatically resend selected source. ` +
+        "Retry by narrowing the scope, sharding the source packet, or relaying the prompt to another ready reviewer. " +
+        "Require a fresh matching approval token whenever provider, mode, source packet, prompt hash, scope resolution, " +
+        "request settings, auth path, or billing path changes.";
+    }
+    return "Treat this reviewer slot as failed, inspect the raw result and review_quality reasons, then retry with a source packet the reviewer can inspect.";
+  }
   if (errorCode === "scope_failed") return scopeFailedSuggestedAction(errorMessage);
   if (errorCode === "sandbox_blocked") return "Set API_REVIEWERS_PLUGIN_DATA to a writable path inside the Codex workspace or another approved writable root, start a fresh Codex session if sandbox roots changed, then retry.";
-  if (errorCode === "git_binary_rejected") return `Set ${GIT_BINARY_ENV} to a trusted Git executable outside the workspace, or unset it to use the default Git binary.`;
-  return "Inspect error_message and retry after correcting the provider or request configuration.";
+  if (errorCode === "git_binary_rejected") return sharedDiagnostic?.suggested_action ?? `Set ${GIT_BINARY_ENV} to a trusted Git executable outside the workspace, or unset it to use the default Git binary.`;
+  return sharedDiagnostic?.suggested_action ?? "Inspect error_message and retry after correcting the provider or request configuration.";
 }
 
 function directApiDisclosure(displayName, completed, payloadSent) {
@@ -1828,7 +2189,57 @@ function requestSettingsForApproval(cfg, env = process.env) {
   };
 }
 
-function approvalTokenFor({ provider, mode, auditManifest }) {
+function approvalAuthPathFor(cfg, env = process.env) {
+  const credential = selectedCredential(cfg, env);
+  return Object.freeze({
+    auth_mode: cfg.auth_mode ?? null,
+    credential_ref: credential.keyName ?? null,
+  });
+}
+
+function approvalBillingPathFor(cfg) {
+  return Object.freeze({
+    endpoint: cfg.base_url ? baseUrlFor(cfg) : null,
+    model: cfg.model ?? null,
+  });
+}
+
+function routeStateForApproval(cfg, env = process.env, { sourceSendApproved = false } = {}) {
+  const credentialNames = Array.isArray(cfg.env_keys) ? cfg.env_keys : [];
+  const effectiveEnv = credentialEnvWithCache(credentialNames, env);
+  return selectProviderRoute({
+    requestedRoute: "subscription",
+    fallbackReason: env.API_REVIEWERS_ROUTE_FALLBACK_REASON || null,
+    providerCapabilities: {
+      api: {
+        kind: "direct_api",
+        auth_path: "api_key_env",
+        credential_env_names: credentialNames,
+        billing_path: approvalBillingPathFor(cfg),
+      },
+    },
+    env: effectiveEnv,
+    sourceBearing: true,
+    sourceSendApproved,
+  });
+}
+
+function approvalRouteFields(routeState) {
+  return Object.freeze({
+    selected_route: routeState?.selected_route ?? null,
+    fallback_reason: routeState?.fallback_reason ?? null,
+    auth_path: routeState?.auth_path ?? null,
+    billing_path: routeState?.billing_path ?? null,
+    source_send_approval_required: routeState?.source_send_approval_required ?? null,
+    source_send_approval_state: routeState?.source_send_approval_state ?? null,
+  });
+}
+
+function approvalScopeForOptions(options = {}) {
+  return normalizeApprovalScope(options["approval-scope"] ?? "session");
+}
+
+function approvalTokenFor({ provider, mode, auditManifest, authPath = null, billingPath = null, routeFields = null, approvalScope = "session" }) {
   const payload = JSON.stringify({
     provider,
     mode,
@@ -1836,6 +2247,11 @@ function approvalTokenFor({ provider, mode, auditManifest }) {
     rendered_prompt_hash: auditManifest.rendered_prompt_hash,
     request: auditManifest.request,
     scope_resolution: auditManifest.scope_resolution,
+    auth_path: authPath,
+    billing_path: billingPath,
+    selected_route: routeFields?.selected_route ?? null,
+    fallback_reason: routeFields?.fallback_reason ?? null,
+    approval_scope: approvalScope,
   });
   return Object.freeze({
     algorithm: "sha256",
@@ -1843,7 +2259,7 @@ function approvalTokenFor({ provider, mode, auditManifest }) {
   });
 }
 
-function buildApprovalAuditManifest({ cfg, renderedPrompt, request, scopeInfo }) {
+function buildApprovalAuditManifest({ cfg, renderedPrompt, request, scopeInfo, routeFields = null, approvalScope = "session" }) {
   return buildReviewAuditManifest({
     prompt: renderedPrompt,
     sourceFiles: scopeInfo.files,
@@ -1880,18 +2296,32 @@ function buildApprovalAuditManifest({ cfg, renderedPrompt, request, scopeInfo })
       paths: scopeInfo.scope_paths ?? null,
       reason: scopeResolutionReason(scopeInfo),
     },
+    route: {
+      selectedRoute: routeFields?.selected_route ?? null,
+      fallbackReason: routeFields?.fallback_reason ?? null,
+      approvalScope,
+      authPath: approvalAuthPathFor(cfg, process.env),
+      billingPath: routeFields?.billing_path ?? null,
+      sourceSendApprovalRequired: routeFields?.source_send_approval_required ?? null,
+      sourceSendApprovalState: routeFields?.source_send_approval_state ?? null,
+    },
     status: "approval_request",
     errorCode: null,
   });
 }
 
-function approvalDiagnostics(cfg, request, renderedPrompt) {
+function approvalDiagnostics(cfg, request, renderedPrompt, authPath = null, billingPath = null, routeFields = null, approvalScope = "session") {
   return {
     configured_timeout_ms: request.timeout_ms,
     prompt_chars: renderedPrompt.length,
     request_defaults: summarizeRequestDefaults(cfg.request_defaults),
     max_tokens: request.max_tokens ?? null,
     temperature: request.temperature ?? null,
+    selected_route: routeFields?.selected_route ?? null,
+    fallback_reason: routeFields?.fallback_reason ?? null,
+    approval_scope: approvalScope,
+    auth_path: authPath,
+    billing_path: billingPath,
   };
 }
 
@@ -1904,13 +2334,48 @@ function validateApprovalToken(options, expectedToken) {
   return provided.length > 0 && provided === expectedToken.value;
 }
 
+function oneTimeApprovalUseFile(root, token) {
+  const digest = createHash("sha256").update(String(token ?? "")).digest("hex");
+  return resolve(root, "approval-tokens", "once", `${digest}.json`);
+}
+
+async function oneTimeApprovalAlreadyUsed(root, token) {
+  try {
+    await lstat(oneTimeApprovalUseFile(root, token));
+    return true;
+  } catch (e) {
+    if (e?.code === "ENOENT") return false;
+    throw e;
+  }
+}
+
+async function consumeOneTimeApproval(root, token, payload) {
+  const file = oneTimeApprovalUseFile(root, token);
+  await mkdir(dirname(file), { recursive: true });
+  let handle = null;
+  try {
+    handle = await open(file, "wx", 0o600);
+    await handle.writeFile(`${JSON.stringify(payload, null, 2)}\n`, "utf8");
+    return true;
+  } catch (e) {
+    if (e?.code === "EEXIST") return false;
+    throw e;
+  } finally {
+    if (handle) await handle.close();
+  }
+}
+
 function buildApprovalRequest({ provider, cfg, mode, options, scopeInfo }) {
   const renderedPrompt = promptFor(mode, options.prompt ?? "", scopeInfo, cfg.display_name);
   const promptBudget = validateRenderedPromptBudget(renderedPrompt, cfg);
   if (!promptBudget.ok) throw runProviderFailure(promptBudget.reason, promptBudget.error);
   const request = requestSettingsForApproval(cfg);
-  const auditManifest = buildApprovalAuditManifest({ cfg, renderedPrompt, request, scopeInfo });
-  const approvalToken = approvalTokenFor({ provider, mode, auditManifest });
+  const authPath = approvalAuthPathFor(cfg, process.env);
+  const billingPath = approvalBillingPathFor(cfg);
+  const routeFields = approvalRouteFields(routeStateForApproval(cfg, process.env));
+  const approvalScope = approvalScopeForOptions(options);
+  const auditManifest = buildApprovalAuditManifest({ cfg, renderedPrompt, request, scopeInfo, routeFields, approvalScope });
+  const approvalToken = approvalTokenFor({ provider, mode, auditManifest, authPath, billingPath, routeFields, approvalScope });
   const totals = auditManifest.selected_source.totals;
   const approvalQuestion = `Allow sending ${totals.files} selected ${plural(totals.files, "file")} (${totals.bytes} ${plural(totals.bytes, "byte")}, ${totals.lines} ${plural(totals.lines, "line")}) to ${cfg.display_name} for external review?`;
   const disclosure = `Selected source content has not been sent to ${cfg.display_name}. Running the review will send the selected source content to ${cfg.display_name} through direct API auth.`;
@@ -1938,6 +2403,11 @@ function buildApprovalRequest({ provider, cfg, mode, options, scopeInfo }) {
       temperature: request.temperature,
       stream: request.stream,
     }),
+    selected_route: routeFields.selected_route,
+    fallback_reason: routeFields.fallback_reason,
+    approval_scope: approvalScope,
+    auth_path: authPath,
+    billing_path: billingPath,
     scope_resolution: auditManifest.scope_resolution,
     denial_action: Object.freeze({
       action: "generate_relay_prompt",
@@ -1995,6 +2465,7 @@ function diagnosticErrorSummary(errorCode, errorMessage, scopeInfo, execution, s
 }
 
 function buildReviewMetadata(cfg, scopeInfo, execution = null, startedAt = null, endedAt = null) {
+  const routeFields = approvalRouteFields(routeStateForApproval(cfg, process.env, { sourceSendApproved: !!execution?.approval_scope }));
   const auditManifest = execution?.prompt ? buildReviewAuditManifest({
     prompt: execution.prompt,
     sourceFiles: scopeInfo.files,
@@ -2033,6 +2504,15 @@ function buildReviewMetadata(cfg, scopeInfo, execution = null, startedAt = null,
       paths: scopeInfo.scope_paths ?? null,
       reason: scopeResolutionReason(scopeInfo),
     },
+    route: {
+      selectedRoute: routeFields.selected_route,
+      fallbackReason: routeFields.fallback_reason,
+      approvalScope: execution?.approval_scope ?? null,
+      authPath: approvalAuthPathFor(cfg, process.env),
+      billingPath: routeFields.billing_path,
+      sourceSendApprovalRequired: routeFields.source_send_approval_required,
+      sourceSendApprovalState: routeFields.source_send_approval_state,
+    },
     result: execution.parsed?.result ?? "",
     status: execution.exitCode === 0 && execution.parsed?.ok === true ? "completed" : "failed",
     errorCode: execution.parsed?.reason ?? null,
@@ -2057,16 +2537,19 @@ function buildReviewMetadata(cfg, scopeInfo, execution = null, startedAt = null,
 function buildRecord({ provider, cfg, mode, options, scopeInfo, execution, startedAt, endedAt }) {
   const reviewMetadata = buildReviewMetadata(cfg, scopeInfo, execution, startedAt, endedAt);
   const processCompleted = execution.exitCode === 0 && execution.parsed?.ok === true;
-  const reviewQualityFailed = processCompleted && reviewMetadata?.audit_manifest?.review_quality?.failed_review_slot === true;
-  const completed = processCompleted && !reviewQualityFailed;
+  const reviewQualityState = processCompleted
+    ? reviewQualityFailureState(reviewMetadata?.audit_manifest?.review_quality, {
+      missingReasonsMessage: "review_quality_failed",
+      emptyReasonsMessage: "review_quality_failed",
+    })
+    : null;
+  const completed = processCompleted && !reviewQualityState;
   const redact = redactor(process.env, cfg.env_keys);
-  const result = processCompleted ? redact(execution.parsed.result) : null;
-  const semanticReasons = reviewMetadata?.audit_manifest?.review_quality?.semantic_failure_reasons;
-  const semanticMessage = Array.isArray(semanticReasons) && semanticReasons.length > 0
-    ? `review_quality_failed:${semanticReasons.join(",")}`
-    : "review_quality_failed";
-  const errorMessage = completed ? null : (reviewQualityFailed ? semanticMessage : redact(execution.parsed?.error ?? ""));
-  const errorCode = completed ? null : (reviewQualityFailed ? "review_not_completed" : (execution.parsed?.reason ?? "provider_error"));
+  const redactSourceBody = selectedSourceBodyRedactor(scopeInfo.files);
+  const result = processCompleted ? redactSourceBody(redact(execution.parsed.result)) : null;
+  const semanticReasons = reviewMetadata?.audit_manifest?.review_quality?.semantic_failure_reasons ?? null;
+  const errorMessage = completed ? null : redactSourceBody(reviewQualityState ? reviewQualityState.error_message : redact(execution.parsed?.error ?? ""));
+  const errorCode = completed ? null : (reviewQualityState ? reviewQualityState.error_code : (execution.parsed?.reason ?? "provider_error"));
   const target = provider;
   const payloadSent = execution.payload_sent ?? (processCompleted ? true : null);
   const sourceContentTransmission = directApiTransmission(completed, payloadSent);
@@ -2117,7 +2600,9 @@ function buildRecord({ provider, cfg, mode, options, scopeInfo, execution, start
     dispose_effective: false,
     scope_base: scopeInfo.scope_base ?? null,
     scope_paths: scopeInfo.scope_paths ?? null,
-    prompt_head: promptHead(options.prompt),
+    prompt_head: hasPromptText(options.prompt)
+      ? promptHead(redactSourceBody(redact(options.prompt)))
+      : "",
     review_metadata: reviewMetadata,
     schema_spec: null,
     binary: null,
@@ -2148,8 +2633,8 @@ function buildRecord({ provider, cfg, mode, options, scopeInfo, execution, start
   });
 }
 
-async function persistRecord(record, env = process.env) {
-  const root = apiReviewerDataRoot(env);
+async function persistRecord(record, env = process.env, cwd = record.workspace_root ?? record.cwd ?? process.cwd()) {
+  const root = apiReviewerDataRoot(env, cwd);
   await writeApiReviewerMetaRecord(root, record);
   await withApiReviewerStateLock(root, async () => {
     await writeApiReviewerMetaRecord(root, record);
@@ -2157,9 +2642,9 @@ async function persistRecord(record, env = process.env) {
   });
 }
 
-async function persistRecordBestEffort(record, env = process.env, configuredSecretNames = []) {
+async function persistRecordBestEffort(record, env = process.env, configuredSecretNames = [], cwd = record.workspace_root ?? record.cwd ?? process.cwd()) {
   try {
-    await persistRecord(record, env);
+    await persistRecord(record, env, cwd);
     return record;
   } catch (e) {
     const detail = redactor(env, configuredSecretNames)(`JobRecord persistence failed: ${e?.message ?? String(e)}`);
@@ -2171,13 +2656,18 @@ async function persistRecordBestEffort(record, env = process.env, configuredSecr
 }
 
 async function cmdResult(options) {
-  if (!options.job) {
+  const jobId = options.job ?? options["job-id"];
+  if (!jobId) {
     printJson({ ok: false, error_code: "bad_args", error: "--job <id> is required" });
     process.exit(1);
   }
-  const root = apiReviewerDataRoot(process.env, options.cwd ? resolve(options.cwd) : process.cwd());
+  const lookupCwd = options.cwd ? resolve(options.cwd) : process.cwd();
+  const root = apiReviewerDataRoot(process.env, bestEffortWorkspaceRoot(lookupCwd));
+  const suggestedAction =
+    `Run result with --job ${jobId} --cwd <workspace used when the job was launched>, ` +
+    "and reuse the same API_REVIEWERS_PLUGIN_DATA value if one was set.";
   try {
-    const record = await readApiReviewerMetaRecord(root, options.job);
+    const record = await readApiReviewerMetaRecord(root, jobId);
     const configuredSecretNames = await configuredSecretNamesForResult();
     printJson(redactRecord(record, process.env, configuredSecretNames));
   } catch (e) {
@@ -2186,18 +2676,18 @@ async function cmdResult(options) {
       process.exit(1);
     }
     if (e?.code === "ENOENT") {
-      printJson({ ok: false, error_code: "not_found", job_id: options.job });
+      printJson({ ok: false, error_code: "not_found", job_id: jobId, data_root: root, suggested_action: suggestedAction });
       process.exit(1);
     }
     if (e instanceof SyntaxError) {
-      printJson({ ok: false, error_code: "malformed_record", job_id: options.job });
+      printJson({ ok: false, error_code: "malformed_record", job_id: jobId });
       process.exit(1);
     }
     if (e?.apiReviewersReason === "config_error") {
-      printJson({ ok: false, error_code: "config_error", job_id: options.job, error: "provider_config_unavailable" });
+      printJson({ ok: false, error_code: "config_error", job_id: jobId, error: "provider_config_unavailable" });
       process.exit(1);
     }
-    printJson({ ok: false, error_code: "read_failed", job_id: options.job, error: "read_failed" });
+    printJson({ ok: false, error_code: "read_failed", job_id: jobId, error: "read_failed" });
     process.exit(1);
   }
 }
@@ -2265,6 +2755,7 @@ async function cmdApprovalRequest(options) {
 async function cmdRun(options) {
   const provider = options.provider ?? null;
   const mode = options.mode ?? "review";
+  let approvalScope = "session";
   let lifecycleEvents = null;
   const startedAt = new Date().toISOString();
   const jobId = `job_${randomUUID()}`;
@@ -2277,6 +2768,7 @@ async function cmdRun(options) {
     lifecycleEvents = parseLifecycleEventsMode(options["lifecycle-events"]);
     if (!provider) throw runBadArgs("bad_args: --provider is required");
     if (!VALID_MODES.has(mode)) throw runBadArgs(`bad_args: unsupported --mode ${mode}`);
+    approvalScope = approvalScopeForOptions(options);
     try {
       providers = await loadProviders();
     } catch (e) {
@@ -2291,7 +2783,10 @@ async function cmdRun(options) {
     if (!preflight.ok && preflight.reason === "bad_args") throw runBadArgs(preflight.error);
     if (!preflight.ok) throw runProviderFailure(preflight.reason, preflight.error);
     if (!hasPromptText(options.prompt)) throw runBadArgs("bad_args: prompt is required (pass --prompt <focus>)");
-    const statePreflight = await verifyApiReviewerDataRootWritable(process.env);
+    const statePreflight = await verifyApiReviewerDataRootWritable(
+      process.env,
+      options.cwd ? resolve(options.cwd) : process.cwd(),
+    );
     if (!statePreflight.ok) throw runProviderFailure("sandbox_blocked", statePreflight.error);
     scopeInfo = await collectScope({ ...runOptions, mode });
   } catch (e) {
@@ -2324,8 +2819,11 @@ async function cmdRun(options) {
       }
       if (!execution && shouldRequireApprovalToken(process.env)) {
         const request = requestSettingsForApproval(cfg);
-        const auditManifest = buildApprovalAuditManifest({ cfg, renderedPrompt, request, scopeInfo });
-        const expectedToken = approvalTokenFor({ provider, mode, auditManifest });
+        const authPath = approvalAuthPathFor(cfg, process.env);
+        const billingPath = approvalBillingPathFor(cfg);
+        const routeFields = approvalRouteFields(routeStateForApproval(cfg, process.env));
+        const auditManifest = buildApprovalAuditManifest({ cfg, renderedPrompt, request, scopeInfo, routeFields, approvalScope });
+        const expectedToken = approvalTokenFor({ provider, mode, auditManifest, authPath, billingPath, routeFields, approvalScope });
         if (!validateApprovalToken(options, expectedToken)) {
           execution = providerFailureWithDiagnostics(
             "approval_required",
@@ -2333,13 +2831,62 @@ async function cmdRun(options) {
             null,
             null,
             false,
-            approvalDiagnostics(cfg, request, renderedPrompt),
+            approvalDiagnostics(cfg, request, renderedPrompt, authPath, billingPath, routeFields, approvalScope),
+          );
+          execution.prompt = renderedPrompt;
+        } else if (
+          approvalScope === "once" &&
+          await oneTimeApprovalAlreadyUsed(
+            apiReviewerDataRoot(process.env, scopeInfo.workspaceRoot ?? scopeInfo.cwd),
+            options["approval-token"],
+          )
+        ) {
+          execution = providerFailureWithDiagnostics(
+            "approval_required",
+            "approval_required: one-time approval token has already been used; run approval-request again before source is sent",
+            null,
+            null,
+            false,
+            approvalDiagnostics(cfg, request, renderedPrompt, authPath, billingPath, routeFields, approvalScope),
           );
           execution.prompt = renderedPrompt;
         }
       }
     } catch (e) {
       execution = providerFailure("scope_failed", redactor(process.env)(e?.message ?? String(e)), null, null, false);
+    }
+    if (execution) {
+      // handled below by the terminal JobRecord path without a launch event
+    } else {
+      execution = await sourceFreePreSendFailure(provider, cfg, process.env);
+    }
+    if (execution) {
+      execution.prompt = renderedPrompt;
+      // handled below by the terminal JobRecord path without a launch event
+    } else {
+      if (approvalScope === "once" && shouldRequireApprovalToken(process.env)) {
+        const consumed = await consumeOneTimeApproval(
+          apiReviewerDataRoot(process.env, scopeInfo.workspaceRoot ?? scopeInfo.cwd),
+          options["approval-token"],
+          {
+            provider,
+            mode,
+            job_id: jobId,
+            consumed_at: new Date().toISOString(),
+          },
+        );
+        if (!consumed) {
+          execution = providerFailureWithDiagnostics(
+            "approval_required",
+            "approval_required: one-time approval token has already been used; run approval-request again before source is sent",
+            null,
+            null,
+            false,
+            { approval_scope: approvalScope },
+          );
+          execution.prompt = renderedPrompt;
+        }
+      }
     }
     if (execution) {
       // handled below by the terminal JobRecord path without a launch event
@@ -2353,7 +2900,14 @@ async function cmdRun(options) {
           external_review: buildLaunchExternalReview({ cfg, mode, options: runOptions, scopeInfo }),
         }, lifecycleEvents);
       }
-      const stopHeartbeat = startLifecycleHeartbeat({ job_id: jobId, target: provider, mode }, lifecycleEvents);
+      const stopHeartbeat = startLifecycleHeartbeat({
+        job_id: jobId,
+        target: provider,
+        mode,
+        cwd: scopeInfo.cwd,
+        workspace_root: scopeInfo.workspaceRoot,
+        external_review: buildLaunchExternalReview({ cfg, mode, options: runOptions, scopeInfo }),
+      }, lifecycleEvents);
       try {
         execution = await callProvider(provider, cfg, renderedPrompt);
         execution.prompt = renderedPrompt;
@@ -2365,6 +2919,7 @@ async function cmdRun(options) {
       }
     }
   }
+  if (execution) execution.approval_scope = approvalScope;
   const record = redactRecord(buildRecord({
     provider: provider ?? "api-reviewers",
     cfg,
@@ -2377,7 +2932,7 @@ async function cmdRun(options) {
   }), process.env, cfg.env_keys);
   const printableRecord = record.error_code === "sandbox_blocked"
     ? record
-    : await persistRecordBestEffort(record, process.env, cfg.env_keys);
+    : await persistRecordBestEffort(record, process.env, cfg.env_keys, record.workspace_root ?? record.cwd);
   printLifecycleJson(printableRecord, lifecycleEvents);
   process.exit(record.status === "completed" ? 0 : 1);
 }

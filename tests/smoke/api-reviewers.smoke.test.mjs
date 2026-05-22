@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { execFile, execFileSync } from "node:child_process";
+import { execFile, execFileSync, spawn } from "node:child_process";
+import { createHash } from "node:crypto";
 import { chmodSync, cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { hostname, tmpdir } from "node:os";
@@ -8,7 +9,7 @@ import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { externalReviewLaunchedEvent } from "../../scripts/lib/companion-common.mjs";
 import { assertJobRecordShape } from "../helpers/job-record-shape.mjs";
-import { substantiveReviewFixture } from "../helpers/review-fixtures.mjs";
+import { badVerdictReviewFixture, substantiveReviewFixture } from "../helpers/review-fixtures.mjs";
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const COMPANION = path.join(REPO_ROOT, "plugins/api-reviewers/scripts/api-reviewer.mjs");
@@ -100,7 +101,7 @@ async function run(args, { cwd = REPO_ROOT, env = {}, companion = COMPANION } = 
   return new Promise((resolve) => {
     execFile(process.execPath, [companion, ...finalArgs], {
       cwd,
-      env: { ...process.env, ...env },
+      env: { ...process.env, API_REVIEWERS_DISABLE_ENV_CACHE: "1", ...env },
       timeout: 10000,
     }, (error, stdout, stderr) => {
       resolve({ error, stdout, stderr, status: error?.code ?? 0 });
@@ -196,6 +197,13 @@ function apiReviewerMetaPath(dataDir, jobId) {
   return candidate;
 }
 
+function defaultApiReviewerDataRoot(cwd) {
+  const workspace = path.resolve(cwd);
+  const slug = path.basename(workspace).replace(/[^A-Za-z0-9._-]/g, "_").slice(0, 48) || "workspace";
+  const hash = createHash("sha256").update(workspace).digest("hex").slice(0, 16);
+  return path.resolve(tmpdir(), "codex-plugin-multi", "api-reviewers", `${slug}-${hash}`);
+}
+
 function makeInstalledApiReviewersRoot() {
   const root = mkdtempSync(path.join(tmpdir(), "api-reviewers-installed-"));
   const pluginRoot = path.join(root, "api-reviewers", "0.1.0");
@@ -216,11 +224,34 @@ function writeDeepSeekProviderConfig(pluginRoot, baseUrl) {
   }, null, 2));
 }
 
+function makeOpEnvCacheHome(values) {
+  const home = mkdtempSync(path.join(tmpdir(), "api-reviewers-op-home-"));
+  const cacheDir = path.join(home, ".cache", "op");
+  mkdirSync(cacheDir, { recursive: true });
+  const envFile = path.join(cacheDir, "env.sh");
+  const lines = Object.entries(values).map(([name, value]) => `export ${name}='${value}'`);
+  writeFileSync(envFile, `${lines.join("\n")}\n`, "utf8");
+  chmodSync(envFile, 0o600);
+  return home;
+}
+
 function writeSingleProviderConfig(pluginRoot, provider, cfg) {
   writeFileSync(path.join(pluginRoot, "config", "providers.json"), JSON.stringify({
     [provider]: cfg,
   }, null, 2));
 }
+
+test("packaged direct API providers expose one canonical credential env key each", () => {
+  const providers = JSON.parse(readFileSync(
+    path.join(REPO_ROOT, "plugins", "api-reviewers", "config", "providers.json"),
+    "utf8",
+  ));
+  assert.deepEqual(providers.deepseek.env_keys, ["DEEPSEEK_API_KEY"]);
+  assert.deepEqual(providers.glm.env_keys, ["ZAI_API_KEY"]);
+  for (const [provider, cfg] of Object.entries(providers)) {
+    assert.equal(cfg.env_keys.length, 1, `${provider} must expose exactly one credential env key`);
+  }
+});
 
 test("direct API reviewers default plugin state outside the reviewed workspace", async () => {
   const cwd = makeWorkspace();
@@ -264,9 +295,25 @@ function startChatServer(handler) {
 }
 
 function startHangingChatServer() {
-  return startChatServer((req) => {
-    req.resume();
+  return startChatServer(async (req, res) => {
+    const body = await readChatRequest(req);
+    if (respondSourceFreePreflight(body, res)) return;
   });
+}
+
+async function readChatRequest(req) {
+  let raw = "";
+  req.setEncoding("utf8");
+  for await (const chunk of req) raw += chunk;
+  return JSON.parse(raw);
+}
+
+function respondSourceFreePreflight(body, res, model = "deepseek-v4-pro") {
+  const prompt = body.messages?.[0]?.content ?? "";
+  if (prompt !== "Return exactly: ok") return false;
+  res.writeHead(200, { "content-type": "application/json" });
+  res.end(mockResponse(model, "chatcmpl-pre-send-preflight", "ok"));
+  return true;
 }
 
 function git(cwd, args) {
@@ -336,6 +383,63 @@ test("doctor reports DeepSeek API-key readiness by key name only", async () => {
   }
 });
 
+test("doctor missing key diagnoses current process env, not provider readiness", async () => {
+  const pluginRoot = makeInstalledApiReviewersRoot();
+  const result = await run(["doctor", "--provider", "glm"], {
+    companion: path.join(pluginRoot, "scripts", "api-reviewer.mjs"),
+    env: { ZAI_API_KEY: "", ZAI_GLM_API_KEY: "" },
+  });
+  assert.equal(result.status, 1);
+  const parsed = parseJson(result.stdout);
+  assert.equal(parsed.provider, "glm");
+  assert.equal(parsed.status, "missing_key");
+  assert.equal(parsed.ready, false);
+  assert.deepEqual(parsed.credential_candidates, ["ZAI_API_KEY"]);
+  assert.deepEqual(parsed.present_credential_env_keys, []);
+  assert.match(parsed.next_action, /this Codex process cannot see a non-empty credential env var/i);
+  assert.match(parsed.next_action, /restart or launch the session/i);
+  assert.match(parsed.next_action, /ZAI_API_KEY/);
+  assert.doesNotMatch(parsed.next_action, /ZAI_GLM_API_KEY/);
+});
+
+test("doctor loads direct API credential from owner-only op env cache when process env is missing", async () => {
+  const pluginRoot = makeInstalledApiReviewersRoot();
+  const home = makeOpEnvCacheHome({
+    DEEPSEEK_API_KEY: "cached-deepseek-test-value",
+    _OP_KEYS_LOADED: "true",
+  });
+  let authorizationHeader = null;
+  const server = await startChatServer((req, res) => {
+    authorizationHeader = req.headers.authorization ?? null;
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end(mockResponse("deepseek-v4-flash", "chatcmpl-doctor", "ok"));
+  });
+  try {
+    const { port } = server.address();
+    writeDeepSeekProviderConfig(pluginRoot, `http://127.0.0.1:${port}`);
+    const result = await run(["doctor", "--provider", "deepseek"], {
+      companion: path.join(pluginRoot, "scripts", "api-reviewer.mjs"),
+      env: {
+        API_REVIEWERS_DISABLE_ENV_CACHE: "0",
+        HOME: home,
+        _OP_KEYS_LOADED: "",
+        DEEPSEEK_API_KEY: "",
+      },
+    });
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    const parsed = parseJson(result.stdout);
+    assert.equal(parsed.provider, "deepseek");
+    assert.equal(parsed.ready, true);
+    assert.equal(parsed.credential_ref, "DEEPSEEK_API_KEY");
+    assert.equal(parsed.provider_probe.status, "ok");
+    assert.equal(authorizationHeader, "Bearer cached-deepseek-test-value");
+    assert.doesNotMatch(result.stdout, /cached-deepseek-test-value/);
+  } finally {
+    server.close();
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
 test("rejects prototype-shaped option keys", async () => {
   const result = await run(["doctor", "--__proto__", "polluted"], {
     env: { DEEPSEEK_API_KEY: "secret-test-value" },
@@ -348,7 +452,7 @@ test("rejects prototype-shaped option keys", async () => {
   assert.doesNotMatch(result.stdout, /secret-test-value/);
 });
 
-test("doctor reports GLM compatibility alias without leaking value", async () => {
+test("doctor ignores GLM legacy alias without leaking value", async () => {
   const pluginRoot = makeInstalledApiReviewersRoot();
   const server = await startChatServer((req, res) => {
     req.resume();
@@ -360,7 +464,7 @@ test("doctor reports GLM compatibility alias without leaking value", async () =>
     writeSingleProviderConfig(pluginRoot, "glm", {
       display_name: "GLM",
       auth_mode: "api_key",
-      env_keys: ["ZAI_API_KEY", "ZAI_GLM_API_KEY"],
+      env_keys: ["ZAI_API_KEY"],
       base_url: `http://127.0.0.1:${port}`,
       model: "glm-5.1",
     });
@@ -368,14 +472,14 @@ test("doctor reports GLM compatibility alias without leaking value", async () =>
       companion: path.join(pluginRoot, "scripts", "api-reviewer.mjs"),
       env: { ZAI_API_KEY: "", ZAI_GLM_API_KEY: "secret-test-value" },
     });
-    assert.equal(result.status, 0, result.stderr || result.stdout);
+    assert.equal(result.status, 1, result.stderr || result.stdout);
     const parsed = parseJson(result.stdout);
     assert.equal(parsed.provider, "glm");
-    assert.equal(parsed.ready, true);
-    assert.equal(parsed.credential_ref, "ZAI_GLM_API_KEY");
-    assert.equal(parsed.endpoint, `http://127.0.0.1:${port}`);
-    assert.equal(parsed.provider_probe.status, "ok");
-    assert.equal(parsed.provider_probe.source_content_transmission, "not_sent");
+    assert.equal(parsed.ready, false);
+    assert.equal(parsed.status, "missing_key");
+    assert.deepEqual(parsed.credential_candidates, ["ZAI_API_KEY"]);
+    assert.deepEqual(parsed.present_credential_env_keys, []);
+    assert.doesNotMatch(parsed.next_action, /ZAI_GLM_API_KEY/);
     assert.doesNotMatch(result.stdout, /secret-test-value/);
   } finally {
     server.close();
@@ -1389,8 +1493,8 @@ for (const scenario of [
   {
     provider: "glm",
     displayName: "GLM",
-    env: { ZAI_API_KEY: "secret-test-value", ZAI_GLM_API_KEY: "" },
-    envKeys: ["ZAI_API_KEY", "ZAI_GLM_API_KEY"],
+    env: { ZAI_API_KEY: "secret-test-value" },
+    envKeys: ["ZAI_API_KEY"],
     credentialRef: "ZAI_API_KEY",
     model: "glm-5.1",
   },
@@ -1509,12 +1613,16 @@ test("DeepSeek direct API custom-review completes and persists JobRecord", async
   assert.equal(record.review_metadata.audit_manifest.request.model, "deepseek-v4-pro");
   assert.equal(record.review_metadata.audit_manifest.request.timeout_ms, 123456);
   assert.equal(record.review_metadata.audit_manifest.request.max_tokens, 65536);
-  assert.equal(record.review_metadata.audit_manifest.request.temperature, 0);
-  assert.equal(record.review_metadata.audit_manifest.request.stream, false);
-  assert.match(record.review_metadata.audit_manifest.prompt_builder.plugin_commit, /^[a-f0-9]{40}$/);
-  assert.notEqual(
-    record.review_metadata.audit_manifest.prompt_builder.plugin_commit,
-    record.review_metadata.audit_manifest.git_identity.head_sha,
+    assert.equal(record.review_metadata.audit_manifest.request.temperature, 0);
+    assert.equal(record.review_metadata.audit_manifest.request.stream, false);
+    assert.match(record.review_metadata.audit_manifest.prompt_builder.plugin_commit, /^[a-f0-9]{40}$/);
+    assert.deepEqual(record.review_metadata.audit_manifest.auth_path, { auth_mode: "api_key", credential_ref: "DEEPSEEK_API_KEY" });
+    assert.deepEqual(record.review_metadata.audit_manifest.billing_path, { endpoint: "https://api.deepseek.com", model: "deepseek-v4-pro" });
+    assert.equal(record.review_metadata.audit_manifest.source_send_approval_required, true);
+    assert.equal(record.review_metadata.audit_manifest.source_send_approval_state, "approved");
+    assert.notEqual(
+      record.review_metadata.audit_manifest.prompt_builder.plugin_commit,
+      record.review_metadata.audit_manifest.git_identity.head_sha,
     "plugin_commit must identify the plugin source, not the reviewed repository head"
   );
   assert.equal(record.review_metadata.audit_manifest.provider_ids.session_id, "chatcmpl-test");
@@ -1538,6 +1646,89 @@ test("DeepSeek direct API custom-review completes and persists JobRecord", async
   assert.equal(record.result.includes("Verdict: APPROVE"), true);
   assert.deepEqual(record.usage, { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 });
   assert.doesNotMatch(result.stdout, /secret-test-value/);
+});
+
+test("DeepSeek direct API persisted result redacts selected source body sentinel", async () => {
+  const cwd = makeWorkspace();
+  const dataDir = mkdtempSync(path.join(tmpdir(), "api-reviewers-data-"));
+  const sourceText = "SOURCE_BODY_SENTINEL_DO_NOT_PERSIST\n";
+  writeFileSync(path.join(cwd, "seed.txt"), sourceText);
+  const result = await run([
+    "run",
+    "--provider", "deepseek",
+    "--mode", "custom-review",
+    "--scope", "custom",
+    "--scope-paths", "seed.txt",
+    "--foreground",
+    "--prompt", "Check this file.",
+  ], {
+    cwd,
+    env: {
+      API_REVIEWERS_PLUGIN_DATA: dataDir,
+      API_REVIEWERS_MOCK_RESPONSE: mockResponse(
+        "deepseek-v4-pro",
+        "chatcmpl-source-sentinel",
+        substantiveReviewFixture("SOURCE_BODY_SENTINEL_DO_NOT_PERSIST"),
+      ),
+      DEEPSEEK_API_KEY: "secret-test-value",
+    },
+  });
+  try {
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    const record = parseJson(result.stdout);
+    const persisted = JSON.parse(readFileSync(apiReviewerMetaPath(dataDir, record.job_id), "utf8"));
+    assert.equal(record.result.includes("Verdict: APPROVE"), true);
+    assert.doesNotMatch(result.stdout, /SOURCE_BODY_SENTINEL_DO_NOT_PERSIST/);
+    assert.doesNotMatch(JSON.stringify(persisted), /SOURCE_BODY_SENTINEL_DO_NOT_PERSIST/);
+    assert.match(record.result, /\[redacted_source_excerpt\]/);
+    assert.match(persisted.result, /\[redacted_source_excerpt\]/);
+  } finally {
+    rmSync(dataDir, { recursive: true, force: true });
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("run launch gate uses direct API credential from owner-only op env cache before source send", async () => {
+  const pluginRoot = makeInstalledApiReviewersRoot();
+  const cwd = makeWorkspace();
+  const dataDir = mkdtempSync(path.join(tmpdir(), "api-reviewers-env-cache-run-"));
+  const home = makeOpEnvCacheHome({
+    DEEPSEEK_API_KEY: "cached-deepseek-test-value",
+    _OP_KEYS_LOADED: "true",
+  });
+  try {
+    const result = await run([
+      "run",
+      "--provider", "deepseek",
+      "--mode", "custom-review",
+      "--scope", "custom",
+      "--scope-paths", "seed.txt",
+      "--foreground",
+      "--prompt", "Check this file.",
+    ], {
+      cwd,
+      companion: path.join(pluginRoot, "scripts", "api-reviewer.mjs"),
+      env: {
+        API_REVIEWERS_DISABLE_ENV_CACHE: "0",
+        API_REVIEWERS_PLUGIN_DATA: dataDir,
+        API_REVIEWERS_MOCK_RESPONSE: mockResponse("deepseek-v4-pro"),
+        HOME: home,
+        _OP_KEYS_LOADED: "",
+        DEEPSEEK_API_KEY: "",
+      },
+    });
+
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    const parsed = parseJson(result.stdout);
+    assert.equal(parsed.status, "completed");
+    assert.equal(parsed.credential_ref, "DEEPSEEK_API_KEY");
+    assert.equal(parsed.external_review.source_content_transmission, "sent");
+    assert.doesNotMatch(result.stdout, /cached-deepseek-test-value/);
+  } finally {
+    rmSync(cwd, { recursive: true, force: true });
+    rmSync(dataDir, { recursive: true, force: true });
+    rmSync(home, { recursive: true, force: true });
+  }
 });
 
 test("api reviewer result --job requires a job id", async () => {
@@ -1564,6 +1755,49 @@ test("api reviewer result --job reports missing records as not_found", async () 
   assert.equal(parsed.ok, false);
   assert.equal(parsed.error_code, "not_found");
   assert.equal(parsed.job_id, "missing-job-123");
+  assert.match(parsed.suggested_action, /--cwd <workspace used when the job was launched>/);
+});
+
+test("api reviewer result normalizes default data root to git workspace from subdirectories", async () => {
+  const repo = makeWorkspace();
+  const nested = path.join(repo, "nested");
+  mkdirSync(nested);
+  execFileSync("git", ["init"], { cwd: repo, stdio: "ignore" });
+  const repoDataRoot = defaultApiReviewerDataRoot(repo);
+  const nestedDataRoot = defaultApiReviewerDataRoot(nested);
+  rmSync(repoDataRoot, { recursive: true, force: true });
+  rmSync(nestedDataRoot, { recursive: true, force: true });
+
+  try {
+    const review = await run([
+      "run",
+      "--provider", "deepseek",
+      "--mode", "custom-review",
+      "--scope", "custom",
+      "--scope-paths", "seed.txt",
+      "--foreground",
+      "--prompt", "Check this file.",
+    ], {
+      cwd: nested,
+      env: {
+        API_REVIEWERS_MOCK_RESPONSE: mockResponse("deepseek-v4-pro"),
+        DEEPSEEK_API_KEY: "secret-test-value",
+      },
+    });
+    assert.equal(review.status, 0, review.stderr || review.stdout);
+    const record = parseJson(review.stdout);
+
+    const result = await run(["result", "--job", record.job_id, "--cwd", nested], {
+      cwd: nested,
+      env: { DEEPSEEK_API_KEY: "secret-test-value" },
+    });
+    assert.equal(result.status, 0, result.stdout);
+    assert.equal(parseJson(result.stdout).job_id, record.job_id);
+  } finally {
+    rmSync(repoDataRoot, { recursive: true, force: true });
+    rmSync(nestedDataRoot, { recursive: true, force: true });
+    rmSync(repo, { recursive: true, force: true });
+  }
 });
 
 test("api reviewer result --job reports malformed records without echoing file contents", async () => {
@@ -1822,7 +2056,99 @@ for (const { provider, model, key } of [
     assert.equal(parsed.result, record.result);
     assert.doesNotMatch(retrieved.stdout, /secret-test-value/);
   });
+
+  test(`${provider} result --job-id aliases --job for completed direct API JobRecords`, async () => {
+    const cwd = makeWorkspace();
+    const dataDir = mkdtempSync(path.join(tmpdir(), "api-reviewers-data-"));
+    const result = await run([
+      "run",
+      "--provider", provider,
+      "--mode", "custom-review",
+      "--scope", "custom",
+      "--scope-paths", "seed.txt",
+      "--foreground",
+      "--prompt", "Check this file.",
+    ], {
+      cwd,
+      env: {
+        API_REVIEWERS_PLUGIN_DATA: dataDir,
+        API_REVIEWERS_MOCK_RESPONSE: mockResponse(model),
+        [key]: "secret-test-value",
+      },
+    });
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    const record = parseJson(result.stdout);
+
+    const retrieved = await run([
+      "result",
+      "--job-id", record.job_id,
+      "--cwd", cwd,
+    ], {
+      cwd,
+      env: {
+        API_REVIEWERS_PLUGIN_DATA: dataDir,
+        [key]: "secret-test-value",
+      },
+    });
+
+    assert.equal(retrieved.status, 0, retrieved.stderr || retrieved.stdout);
+    const parsed = parseJson(retrieved.stdout);
+    assert.equal(parsed.job_id, record.job_id);
+    assert.equal(parsed.status, "completed");
+    assert.equal(parsed.provider, provider);
+    assert.equal(parsed.result, record.result);
+    assert.doesNotMatch(retrieved.stdout, /secret-test-value/);
+  });
 }
+
+test("direct API reviewer result resolves JobRecord from launched --cwd without plugin data", async () => {
+  const callerCwd = makeWorkspace();
+  const reviewCwd = makeWorkspace();
+  try {
+    const result = await run([
+      "run",
+      "--provider", "deepseek",
+      "--mode", "custom-review",
+      "--scope", "custom",
+      "--scope-paths", "seed.txt",
+      "--foreground",
+      "--cwd", reviewCwd,
+      "--prompt", "Check this file.",
+    ], {
+      cwd: callerCwd,
+      env: {
+        API_REVIEWERS_MOCK_RESPONSE: mockResponse("deepseek-v4-pro"),
+        DEEPSEEK_API_KEY: "secret-test-value",
+      },
+    });
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    const record = parseJson(result.stdout);
+    assert.equal(record.cwd, reviewCwd);
+    assert.equal(record.workspace_root, reviewCwd);
+
+    const retrieved = await run([
+      "result",
+      "--job", record.job_id,
+      "--cwd", reviewCwd,
+    ], {
+      cwd: callerCwd,
+      env: {
+        DEEPSEEK_API_KEY: "secret-test-value",
+      },
+    });
+
+    assert.equal(retrieved.status, 0, retrieved.stderr || retrieved.stdout);
+    const parsed = parseJson(retrieved.stdout);
+    assert.equal(parsed.job_id, record.job_id);
+    assert.equal(parsed.status, "completed");
+    assert.equal(parsed.workspace_root, reviewCwd);
+  } finally {
+    rmSync(defaultApiReviewerDataRoot(callerCwd), { recursive: true, force: true });
+    rmSync(defaultApiReviewerDataRoot(reviewCwd), { recursive: true, force: true });
+    rmSync(callerCwd, { recursive: true, force: true });
+    rmSync(reviewCwd, { recursive: true, force: true });
+  }
+});
 
 test("direct API reviewers fail closed on shallow HTTP 200 review output", async () => {
   const cwd = makeWorkspace();
@@ -1858,6 +2184,63 @@ test("direct API reviewers fail closed on shallow HTTP 200 review output", async
   assert.ok(record.review_metadata.raw_output.elapsed_ms >= 0);
   assert.equal(record.review_metadata.audit_manifest.review_quality.failed_review_slot, true);
   assert.deepEqual(record.review_metadata.audit_manifest.review_quality.semantic_failure_reasons, ["shallow_output"]);
+});
+
+test("direct API reviewers guide substantive missing-verdict retry without automatic resend", async () => {
+  const cases = [
+    { provider: "deepseek", model: "deepseek-v4-pro", env: { DEEPSEEK_API_KEY: "secret-test-value" } },
+    { provider: "glm", model: "glm-5.1", env: { ZAI_API_KEY: "secret-test-value" } },
+  ];
+
+  for (const c of cases) {
+    const cwd = makeWorkspace();
+    const dataDir = mkdtempSync(path.join(tmpdir(), `api-reviewers-${c.provider}-bad-verdict-data-`));
+    const badResult = badVerdictReviewFixture(`Provider marker: ${c.provider}.`);
+    writeFileSync(path.join(cwd, "seed.txt"), "export const value = 1;\n");
+
+    try {
+      const result = await run([
+        "run",
+        "--provider", c.provider,
+        "--mode", "custom-review",
+        "--scope", "custom",
+        "--scope-paths", "seed.txt",
+        "--foreground",
+        "--prompt", "Review this file.",
+      ], {
+        cwd,
+        env: {
+          API_REVIEWERS_PLUGIN_DATA: dataDir,
+          API_REVIEWERS_MOCK_RESPONSE: mockResponse(c.model, `chatcmpl-${c.provider}-bad-verdict`, badResult),
+          ...c.env,
+        },
+      });
+
+      assert.equal(result.status, 1, `${c.provider}: ${result.stderr || result.stdout}`);
+      const record = parseJson(result.stdout);
+      assert.equal(record.status, "failed", c.provider);
+      assert.equal(record.error_code, "review_not_completed", c.provider);
+      assert.equal(record.error_message, "review_quality_failed:missing_verdict", c.provider);
+      assert.match(record.error_summary, /missing_verdict/, c.provider);
+      assert.equal(record.result, badResult, c.provider);
+      assert.equal(record.external_review.source_content_transmission, "sent", c.provider);
+      assert.equal(record.review_metadata.audit_manifest.review_quality.failed_review_slot, true, c.provider);
+      assert.deepEqual(
+        record.review_metadata.audit_manifest.review_quality.semantic_failure_reasons,
+        ["missing_verdict"],
+        c.provider,
+      );
+      assert.match(record.suggested_action, /Treat this .* slot as failed/i, c.provider);
+      assert.match(record.suggested_action, /Do not automatically resend selected source/i, c.provider);
+      assert.match(record.suggested_action, /fresh matching approval token/i, c.provider);
+      assert.match(record.suggested_action, /narrowing the scope/i, c.provider);
+      assert.match(record.suggested_action, /sharding/i, c.provider);
+      assert.match(record.suggested_action, /relaying/i, c.provider);
+    } finally {
+      rmSync(dataDir, { recursive: true, force: true });
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  }
 });
 
 test("direct API JobRecord construction does not mutate execution input", async () => {
@@ -2222,7 +2605,7 @@ test("direct API timeout marks selected content as sent", async () => {
       companion: path.join(pluginRoot, "scripts", "api-reviewer.mjs"),
       env: {
         API_REVIEWERS_PLUGIN_DATA: dataDir,
-        API_REVIEWERS_TIMEOUT_MS: "20",
+        API_REVIEWERS_TIMEOUT_MS: "200",
         DEEPSEEK_API_KEY: "secret-test-value",
       },
     });
@@ -2231,7 +2614,7 @@ test("direct API timeout marks selected content as sent", async () => {
     const record = parseJson(result.stdout);
     assert.equal(record.error_code, "timeout");
     assert.match(record.error_summary, /timeout after \d+ms/i);
-    assert.match(record.error_summary, /configured_timeout_ms=20/);
+    assert.match(record.error_summary, /configured_timeout_ms=200/);
     assert.match(record.error_summary, /selected_files=1/);
     assert.match(record.error_summary, /selected_bytes=\d+/);
     assert.match(record.error_summary, /prompt_chars=\d+/);
@@ -2242,6 +2625,9 @@ test("direct API timeout marks selected content as sent", async () => {
     assert.match(record.error_message, /This operation was aborted|aborted/i);
     assert.match(record.suggested_action, /timeout/i);
     assert.match(record.suggested_action, /API_REVIEWERS_TIMEOUT_MS/);
+    assert.match(record.suggested_action, /Do not automatically resend selected source/i);
+    assert.match(record.suggested_action, /fresh matching approval token/i);
+    assert.equal((record.suggested_action.match(/fresh matching approval token/gi) ?? []).length, 1);
     assert.equal(record.external_review.source_content_transmission, "sent");
     assert.equal(record.external_review.disclosure,
       "Selected source content was sent to DeepSeek through direct API auth, but the provider did not return a clean result.");
@@ -2254,8 +2640,9 @@ test("direct API generic 429 rate limits stay rate_limited and mark selected con
   const cwd = makeWorkspace();
   const dataDir = mkdtempSync(path.join(tmpdir(), "api-reviewers-data-"));
   const pluginRoot = makeInstalledApiReviewersRoot();
-  const server = await startChatServer((req, res) => {
-    req.resume();
+  const server = await startChatServer(async (req, res) => {
+    const body = await readChatRequest(req);
+    if (respondSourceFreePreflight(body, res)) return;
     res.writeHead(429, { "content-type": "application/json" });
     res.end(JSON.stringify({ error: { message: "rate limited" } }));
   });
@@ -2333,6 +2720,8 @@ test("direct API 429 quota status outranks unavailable wording and preserves num
     assert.equal(record.runtime_diagnostics.cost_quota.http_status, 429);
     assert.equal(record.runtime_diagnostics.cost_quota.provider_error_code, "429");
     assert.equal(record.runtime_diagnostics.cost_quota.provider_error_type, "rate_limit");
+    assert.match(record.suggested_action, /Do not automatically resend selected source/i);
+    assert.match(record.suggested_action, /fresh matching approval token/i);
     assert.doesNotMatch(result.stdout, /secret-test-value/);
   } finally {
     server.close();
@@ -2571,8 +2960,9 @@ test("direct API auth failures outrank billing-looking error text", async () => 
   const cwd = makeWorkspace();
   const dataDir = mkdtempSync(path.join(tmpdir(), "api-reviewers-data-"));
   const pluginRoot = makeInstalledApiReviewersRoot();
-  const server = await startChatServer((req, res) => {
-    req.resume();
+  const server = await startChatServer(async (req, res) => {
+    const body = await readChatRequest(req);
+    if (respondSourceFreePreflight(body, res)) return;
     res.writeHead(401, { "content-type": "application/json" });
     res.end(JSON.stringify({
       error: {
@@ -2659,8 +3049,9 @@ test("direct API non-quota rate wording on provider errors is not cost-quota usa
   const cwd = makeWorkspace();
   const dataDir = mkdtempSync(path.join(tmpdir(), "api-reviewers-data-"));
   const pluginRoot = makeInstalledApiReviewersRoot();
-  const server = await startChatServer((req, res) => {
-    req.resume();
+  const server = await startChatServer(async (req, res) => {
+    const body = await readChatRequest(req);
+    if (respondSourceFreePreflight(body, res)) return;
     res.writeHead(500, { "content-type": "application/json" });
     res.end(JSON.stringify({
       error: {
@@ -2703,8 +3094,9 @@ test("direct API provider-unavailable wording keeps quota diagnostics aligned on
   const cwd = makeWorkspace();
   const dataDir = mkdtempSync(path.join(tmpdir(), "api-reviewers-data-"));
   const pluginRoot = makeInstalledApiReviewersRoot();
-  const server = await startChatServer((req, res) => {
-    req.resume();
+  const server = await startChatServer(async (req, res) => {
+    const body = await readChatRequest(req);
+    if (respondSourceFreePreflight(body, res)) return;
     res.writeHead(400, { "content-type": "application/json" });
     res.end(JSON.stringify({
       error: {
@@ -2794,8 +3186,9 @@ test("direct API flat quota response keeps diagnostics aligned with error code",
   const cwd = makeWorkspace();
   const dataDir = mkdtempSync(path.join(tmpdir(), "api-reviewers-data-"));
   const pluginRoot = makeInstalledApiReviewersRoot();
-  const server = await startChatServer((req, res) => {
-    req.resume();
+  const server = await startChatServer(async (req, res) => {
+    const body = await readChatRequest(req);
+    if (respondSourceFreePreflight(body, res)) return;
     res.writeHead(400, { "content-type": "application/json" });
     res.end(JSON.stringify({
       message: "quota exceeded for this billing account",
@@ -2839,8 +3232,9 @@ test("direct API billing-provider outages are provider unavailable, not cost-quo
   const cwd = makeWorkspace();
   const dataDir = mkdtempSync(path.join(tmpdir(), "api-reviewers-data-"));
   const pluginRoot = makeInstalledApiReviewersRoot();
-  const server = await startChatServer((req, res) => {
-    req.resume();
+  const server = await startChatServer(async (req, res) => {
+    const body = await readChatRequest(req);
+    if (respondSourceFreePreflight(body, res)) return;
     res.writeHead(500, { "content-type": "application/json" });
     res.end(JSON.stringify({
       error: {
@@ -3042,8 +3436,9 @@ test("direct API HTTP provider_unavailable under Codex does not recommend sandbo
   const cwd = makeWorkspace();
   const dataDir = mkdtempSync(path.join(tmpdir(), "api-reviewers-data-"));
   const pluginRoot = makeInstalledApiReviewersRoot();
-  const server = await startChatServer((req, res) => {
-    req.resume();
+  const server = await startChatServer(async (req, res) => {
+    const body = await readChatRequest(req);
+    if (respondSourceFreePreflight(body, res)) return;
     res.writeHead(503, { "content-type": "application/json" });
     res.end(JSON.stringify({ error: { message: "provider temporarily unavailable" } }));
   });
@@ -3086,8 +3481,9 @@ test("direct API HTTP provider_unavailable with transport-looking wording still 
   const cwd = makeWorkspace();
   const dataDir = mkdtempSync(path.join(tmpdir(), "api-reviewers-data-"));
   const pluginRoot = makeInstalledApiReviewersRoot();
-  const server = await startChatServer((req, res) => {
-    req.resume();
+  const server = await startChatServer(async (req, res) => {
+    const body = await readChatRequest(req);
+    if (respondSourceFreePreflight(body, res)) return;
     res.writeHead(503, { "content-type": "application/json" });
     res.end(JSON.stringify({ error: { message: "upstream fetch failed at provider" } }));
   });
@@ -3128,8 +3524,9 @@ test("direct API live malformed responses mark selected content as sent", async 
   const cwd = makeWorkspace();
   const dataDir = mkdtempSync(path.join(tmpdir(), "api-reviewers-data-"));
   const pluginRoot = makeInstalledApiReviewersRoot();
-  const server = await startChatServer((req, res) => {
-    req.resume();
+  const server = await startChatServer(async (req, res) => {
+    const body = await readChatRequest(req);
+    if (respondSourceFreePreflight(body, res)) return;
     res.writeHead(200, { "content-type": "application/json" });
     res.end("{not json");
   });
@@ -3454,8 +3851,7 @@ test("GLM direct API custom-review uses coding endpoint and request defaults", a
       API_REVIEWERS_PLUGIN_DATA: dataDir,
       API_REVIEWERS_MOCK_RESPONSE: mockResponse("glm-5.1"),
       API_REVIEWERS_MOCK_ASSERT_PROMPT_INCLUDES: "Live verification context",
-      ZAI_API_KEY: "",
-      ZAI_GLM_API_KEY: "secret-test-value",
+      ZAI_API_KEY: "secret-test-value",
     },
   });
   assert.equal(result.status, 0, result.stderr || result.stdout);
@@ -3463,7 +3859,7 @@ test("GLM direct API custom-review uses coding endpoint and request defaults", a
   assert.equal(record.status, "completed");
   assert.equal(record.provider, "glm");
   assert.equal(record.model, "glm-5.1");
-  assert.equal(record.credential_ref, "ZAI_GLM_API_KEY");
+  assert.equal(record.credential_ref, "ZAI_API_KEY");
   assert.equal(record.endpoint, "https://api.z.ai/api/coding/paas/v4");
   assert.doesNotMatch(result.stdout, /secret-test-value/);
 });
@@ -3496,14 +3892,16 @@ test("branch-diff rejects oversized committed scope files before provider delive
   assert.equal(record.external_review.source_content_transmission, "not_sent");
 });
 
-test("direct API reviewers lifecycle jsonl emits launch before terminal record", async () => {
+test("direct API reviewers lifecycle jsonl emits launch before terminal projection", async () => {
   const cwd = makeWorkspace();
+  writeFileSync(path.join(cwd, "seed.txt"), "SOURCE_BODY_SENTINEL_DO_NOT_PERSIST\n");
   const pluginRoot = makeInstalledApiReviewersRoot();
+  const reviewText = substantiveReviewFixture("SOURCE_BODY_SENTINEL_DO_NOT_PERSIST");
   const server = await startChatServer(async (req, res) => {
     req.resume();
     await sleep(100);
     res.writeHead(200, { "content-type": "application/json" });
-    res.end(mockResponse("deepseek-v4-pro"));
+    res.end(mockResponse("deepseek-v4-pro", "chatcmpl-test", reviewText));
   });
   try {
     const { port } = server.address();
@@ -3541,8 +3939,12 @@ test("direct API reviewers lifecycle jsonl emits launch before terminal record",
     assert.equal(progress.heartbeat, 1);
     assert.equal(launch.external_review.provider, "DeepSeek");
     assert.equal(launch.external_review.source_content_transmission, "may_be_sent");
+    assert.equal(record.event, "external_review_terminal");
     assert.equal(record.status, "completed");
     assert.equal(record.external_review.source_content_transmission, "sent");
+    assert.equal(Object.hasOwn(record, "result"), false);
+    assert.equal(Object.hasOwn(record, "runtime_diagnostics"), false);
+    assert.doesNotMatch(result.stdout, /SOURCE_BODY_SENTINEL_DO_NOT_PERSIST/);
     assert.doesNotMatch(result.stdout, /secret-test-value/);
   } finally {
     server.close();
@@ -3599,6 +4001,8 @@ test("direct API reviewers render lifecycle markdown cards before source transmi
   assert.match(result.stdout, /\| Provider \| DeepSeek \|/);
   assert.match(result.stdout, /\| Source \| not_sent \|/);
   assert.match(result.stdout, /\| Status \| failed \|/);
+  assert.match(result.stdout, /\| Retrieve \| result --job job_[0-9a-f-]+ --cwd [^|]+ \|/);
+  assert.match(result.stdout, /\| Panel \| review-panel --workspace [^|]+ \|/);
   assert.match(result.stdout, /\| Error \| bad_args \|/);
   assert.match(result.stdout, /\| Message \| [^|]*prompt is required[^|]*--prompt <focus>[^|]* \|/);
   assert.match(result.stdout, /\| Summary \| [^|]+ \|/);
@@ -3638,19 +4042,99 @@ test("direct API reviewers lifecycle markdown emits launch and terminal cards on
     });
 
     assert.equal(result.status, 0, result.stderr || result.stdout);
-    assert.equal((result.stdout.match(/^### EXTERNAL REVIEW/gm) ?? []).length, 2);
+    assert.ok((result.stdout.match(/^### EXTERNAL REVIEW/gm) ?? []).length >= 3, result.stdout);
     assert.match(result.stdout, /\| Provider \| DeepSeek \|/);
     assert.match(result.stdout, /\| Source \| may_be_sent \|/);
     assert.match(result.stdout, /\| Status \| launched \|/);
+    assert.match(result.stdout, /\| Status \| running \|/);
     assert.match(result.stdout, /\| Source \| sent \|/);
     assert.match(result.stdout, /\| Status \| completed \|/);
-    const progress = parseCompactJsonLines(result.stdout).find((line) => line.event === "external_review_progress");
-    assert.equal(progress?.target, "deepseek");
-    assert.equal(progress?.status, "running");
-    assert.equal(progress?.heartbeat, 1);
+    assert.equal(parseCompactJsonLines(result.stdout).some((line) => line.event === "external_review_progress"), false);
     assert.doesNotMatch(result.stdout, /secret-test-value/);
     assert.doesNotMatch(result.stdout, /^\{\n/m);
   } finally {
+    server.close();
+    rmSync(pluginRoot, { recursive: true, force: true });
+  }
+});
+
+test("direct API reviewers lifecycle markdown streams running card before provider exit", async () => {
+  const cwd = makeWorkspace();
+  const pluginRoot = makeInstalledApiReviewersRoot();
+  let releaseProvider;
+  const providerReleased = new Promise((resolve) => {
+    releaseProvider = resolve;
+  });
+  const server = await startChatServer(async (req, res) => {
+    const body = await readChatRequest(req);
+    if (respondSourceFreePreflight(body, res)) return;
+    await providerReleased;
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end(mockResponse("deepseek-v4-pro"));
+  });
+  let child = null;
+  try {
+    const { port } = server.address();
+    writeDeepSeekProviderConfig(pluginRoot, `http://127.0.0.1:${port}`);
+    const companion = path.join(pluginRoot, "scripts", "api-reviewer.mjs");
+    const approval = await run([
+      "approval-request",
+      "--provider", "deepseek",
+      "--mode", "custom-review",
+      "--scope", "custom",
+      "--scope-paths", "seed.txt",
+      "--prompt", "Check this file.",
+    ], {
+      companion,
+      cwd,
+      env: { DEEPSEEK_API_KEY: "secret-test-value" },
+    });
+    assert.equal(approval.status, 0, approval.stderr || approval.stdout);
+    const approvalToken = parseJson(approval.stdout).approval_token.value;
+    let stdout = "";
+    let stderr = "";
+    child = spawn(process.execPath, [
+      companion,
+      "run",
+      "--provider", "deepseek",
+      "--mode", "custom-review",
+      "--scope", "custom",
+      "--scope-paths", "seed.txt",
+      "--foreground",
+      "--lifecycle-events", "markdown",
+      "--prompt", "Check this file.",
+      "--approval-token", approvalToken,
+    ], {
+      cwd,
+      env: {
+        ...process.env,
+        CODEX_PLUGIN_EXTERNAL_REVIEW_HEARTBEAT_MS: "5",
+        DEEPSEEK_API_KEY: "secret-test-value",
+      },
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    child.stdout.setEncoding("utf8");
+    child.stderr.setEncoding("utf8");
+    child.stdout.on("data", (chunk) => { stdout += chunk; });
+    child.stderr.on("data", (chunk) => { stderr += chunk; });
+
+    const streamed = await waitForValue(() => (
+      child.exitCode === null && /\| Status \| running \|/.test(stdout) ? stdout : null
+    ), { timeoutMs: 2000, intervalMs: 10 });
+    assert.match(streamed, /^### EXTERNAL REVIEW/m);
+    assert.match(streamed, /\| Source \| may_be_sent \|/);
+    assert.equal(child.exitCode, null, "running lifecycle card must arrive before the process exits");
+
+    releaseProvider();
+    const exitCode = await new Promise((resolve) => child.once("exit", (code) => resolve(code)));
+    assert.equal(exitCode, 0, stderr || stdout);
+    assert.match(stdout, /\| Source \| sent \|/);
+    assert.match(stdout, /\| Status \| completed \|/);
+    assert.doesNotMatch(stdout, /secret-test-value/);
+    assert.doesNotMatch(stdout, /^\{\n/m);
+  } finally {
+    releaseProvider?.();
+    if (child && child.exitCode === null) child.kill("SIGTERM");
     server.close();
     rmSync(pluginRoot, { recursive: true, force: true });
   }
@@ -3829,7 +4313,7 @@ test("direct API reviewers reject rendered prompt over provider budget before la
   assert.equal(lines.length, 1);
   const [record] = lines;
   assert.equal(record.status, "failed");
-  assert.equal(record.error_code, "scope_failed");
+  assert.equal(record.error_code, "prompt_too_large");
   assert.match(record.error_message, /prompt_too_large:/);
   assert.match(record.suggested_action, /narrower scope|split/i);
   assert.match(record.review_metadata.audit_manifest.rendered_prompt_hash.value, /^[a-f0-9]{64}$/);
@@ -4047,6 +4531,11 @@ test("direct API reviewers approval-request matches run prompt hash and request 
       "selected_source",
       "rendered_prompt_hash",
       "request",
+      "selected_route",
+      "fallback_reason",
+      "approval_scope",
+      "auth_path",
+      "billing_path",
       "scope_resolution",
       "denial_action",
       "denial_fallback",
@@ -4069,17 +4558,94 @@ test("direct API reviewers approval-request matches run prompt hash and request 
     assert.deepEqual(approval.selected_source, auditManifest.selected_source);
     assert.deepEqual(approval.scope_resolution, auditManifest.scope_resolution);
     assert.equal(approval.rendered_prompt_hash.value, auditManifest.rendered_prompt_hash.value);
+    assert.equal(auditManifest.selected_route, "direct_api");
+    assert.equal(auditManifest.fallback_reason, "subscription_not_supported");
+    assert.equal(auditManifest.approval_scope, "session");
+    assert.deepEqual(auditManifest.auth_path, approval.auth_path);
+    assert.deepEqual(auditManifest.billing_path, approval.billing_path);
+    assert.equal(auditManifest.source_send_approval_required, true);
+    assert.equal(auditManifest.source_send_approval_state, "approved");
     assert.equal(approval.request.timeout_ms, 234567);
     assert.equal(approval.request.max_tokens, 7777);
     assert.equal(approval.request.max_steps_per_turn, null);
     assert.equal(approval.request.temperature, 0);
     assert.equal(approval.request.stream, false);
+    assert.equal(approval.selected_route, "direct_api");
+    assert.equal(approval.fallback_reason, "subscription_not_supported");
+    assert.equal(approval.approval_scope, "session");
+    assert.deepEqual(approval.auth_path, { auth_mode: "api_key", credential_ref: "CUSTOM_API_KEY" });
+    assert.deepEqual(approval.billing_path, { endpoint: "https://custom.example.invalid", model: "custom-review-model" });
     assert.equal(JSON.stringify(approval).includes(sourceText.trim()), false);
     assert.equal(JSON.stringify(approval).includes("secret-test-value"), false);
+
+    const replayResult = await run(["run", ...commonArgs, "--foreground", "--approval-token", approval.approval_token.value], {
+      cwd,
+      companion,
+      env: {
+        ...commonEnv,
+        API_REVIEWERS_REQUIRE_APPROVAL_TOKEN_IN_MOCKS: "1",
+        API_REVIEWERS_MOCK_RESPONSE: mockResponse("custom-review-model", "session-replay"),
+      },
+    });
+    assert.equal(replayResult.status, 0, replayResult.stderr || replayResult.stdout);
   } finally {
     rmSync(dataDir, { recursive: true, force: true });
     rmSync(cwd, { recursive: true, force: true });
     rmSync(path.dirname(path.dirname(pluginRoot)), { recursive: true, force: true });
+  }
+});
+
+test("direct API reviewers one-time approval token cannot be replayed", async () => {
+  const cwd = makeWorkspace();
+  const dataDir = mkdtempSync(path.join(tmpdir(), "api-reviewers-once-approval-"));
+  try {
+    const commonArgs = [
+      "--provider", "deepseek",
+      "--mode", "custom-review",
+      "--scope", "custom",
+      "--scope-paths", "seed.txt",
+      "--approval-scope", "once",
+      "--prompt", "Review seed file only.",
+    ];
+    const commonEnv = {
+      API_REVIEWERS_PLUGIN_DATA: dataDir,
+      DEEPSEEK_API_KEY: "secret-test-value",
+      API_REVIEWERS_REQUIRE_APPROVAL_TOKEN_IN_MOCKS: "1",
+      API_REVIEWERS_MOCK_RESPONSE: mockResponse("deepseek-v4-pro"),
+    };
+
+    const approvalResult = await run(["approval-request", ...commonArgs], {
+      cwd,
+      env: commonEnv,
+    });
+    assert.equal(approvalResult.status, 0, approvalResult.stderr || approvalResult.stdout);
+    const approval = parseJson(approvalResult.stdout);
+    assert.equal(approval.approval_scope, "once");
+
+    const firstRun = await run([
+      "run",
+      ...commonArgs,
+      "--foreground",
+      "--approval-token", approval.approval_token.value,
+    ], { cwd, env: commonEnv });
+    assert.equal(firstRun.status, 0, firstRun.stderr || firstRun.stdout);
+    const firstRecord = parseJson(firstRun.stdout);
+    assert.equal(firstRecord.external_review.source_content_transmission, "sent");
+    assert.equal(firstRecord.review_metadata.audit_manifest.approval_scope, "once");
+
+    const replay = await run([
+      "run",
+      ...commonArgs,
+      "--foreground",
+      "--approval-token", approval.approval_token.value,
+    ], { cwd, env: commonEnv });
+    assert.equal(replay.status, 1, replay.stderr || replay.stdout);
+    const replayRecord = parseJson(replay.stdout);
+    assert.equal(replayRecord.error_code, "approval_required");
+    assertDirectApiNotSent(replayRecord, "DeepSeek");
+  } finally {
+    rmSync(dataDir, { recursive: true, force: true });
+    rmSync(cwd, { recursive: true, force: true });
   }
 });
 
@@ -4117,6 +4683,117 @@ test("direct API reviewers run requires approval token before provider execution
     rmSync(cwd, { recursive: true, force: true });
   }
 });
+
+for (const scenario of [
+  {
+    provider: "deepseek",
+    displayName: "DeepSeek",
+    model: "deepseek-v4-flash",
+    envKey: "DEEPSEEK_API_KEY",
+  },
+  {
+    provider: "glm",
+    displayName: "GLM",
+    model: "glm-5.1",
+    envKey: "GLM_API_KEY",
+  },
+]) {
+  test(`direct API ${scenario.provider} run ignores stale doctor success and re-probes before source send`, async () => {
+    const pluginRoot = makeInstalledApiReviewersRoot();
+    const companion = path.join(pluginRoot, "scripts", "api-reviewer.mjs");
+    const cwd = makeWorkspace();
+    const dataDir = mkdtempSync(path.join(tmpdir(), "api-reviewers-data-"));
+    let mode = "doctor-ok";
+    let sourceBearingRequests = 0;
+    const requestPrompts = [];
+    const server = await startChatServer((req, res) => {
+      let body = "";
+      req.setEncoding("utf8");
+      req.on("data", (chunk) => { body += chunk; });
+      req.on("end", () => {
+        const parsed = JSON.parse(body);
+        const prompt = parsed.messages?.[0]?.content ?? "";
+        requestPrompts.push(prompt);
+        if (prompt === "Return exactly: ok") {
+          if (mode === "doctor-ok") {
+            res.writeHead(200, { "content-type": "application/json" });
+            res.end(mockResponse(scenario.model, "chatcmpl-doctor", "ok"));
+            return;
+          }
+          res.writeHead(503, { "content-type": "application/json" });
+          res.end(JSON.stringify({ error: { message: "source-free pre-send probe failed" } }));
+          return;
+        }
+        sourceBearingRequests += 1;
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(mockResponse(scenario.model, "chatcmpl-source"));
+      });
+    });
+    try {
+      const { port } = server.address();
+      writeSingleProviderConfig(pluginRoot, scenario.provider, {
+        display_name: scenario.displayName,
+        auth_mode: "api_key",
+        env_keys: [scenario.envKey],
+        base_url: `http://127.0.0.1:${port}`,
+        model: scenario.model,
+      });
+
+      const env = {
+        API_REVIEWERS_PLUGIN_DATA: dataDir,
+        [scenario.envKey]: "secret-test-value",
+      };
+      const doctor = await run(["doctor", "--provider", scenario.provider], {
+        cwd,
+        companion,
+        env,
+      });
+      assert.equal(doctor.status, 0, doctor.stderr || doctor.stdout);
+      assert.equal(parseJson(doctor.stdout).ready, true);
+
+      const commonArgs = [
+        "--provider", scenario.provider,
+        "--mode", "custom-review",
+        "--scope", "custom",
+        "--scope-paths", "seed.txt",
+        "--prompt", "Review selected file.",
+      ];
+      const approval = await run(["approval-request", ...commonArgs], {
+        cwd,
+        companion,
+        env,
+      });
+      assert.equal(approval.status, 0, approval.stderr || approval.stdout);
+      mode = "preflight-fail";
+
+      const result = await run([
+        "run",
+        ...commonArgs,
+        "--foreground",
+        "--approval-token", parseJson(approval.stdout).approval_token.value,
+      ], {
+        cwd,
+        companion,
+        env,
+      });
+
+      assert.equal(result.status, 1);
+      assert.equal(sourceBearingRequests, 0, "stale doctor success must not authorize selected-source send");
+      assert.deepEqual(requestPrompts, ["Return exactly: ok", "Return exactly: ok"]);
+      const record = parseJson(result.stdout);
+      assert.equal(record.status, "failed");
+      assert.equal(record.error_code, "provider_unavailable");
+      assertDirectApiNotSent(record, scenario.displayName);
+      assert.doesNotMatch(result.stdout, /hello from selected scope/);
+      assert.doesNotMatch(result.stdout, /secret-test-value/);
+    } finally {
+      server.close();
+      rmSync(dataDir, { recursive: true, force: true });
+      rmSync(cwd, { recursive: true, force: true });
+      rmSync(path.dirname(path.dirname(pluginRoot)), { recursive: true, force: true });
+    }
+  });
+}
 
 test("direct API reviewers run rejects approval token when prompt changes", async () => {
   const cwd = makeWorkspace();
@@ -4171,6 +4848,250 @@ test("direct API reviewers run rejects approval token when prompt changes", asyn
   }
 });
 
+test("direct API reviewers approval token is bound to provider, source packet, and request settings", async () => {
+  const cases = [
+    {
+      name: "provider",
+      mutateBeforeRun(cwd) {
+        return {
+          providerArgs: ["--provider", "glm"],
+          env: { GLM_API_KEY: "secret-test-value", API_REVIEWERS_MOCK_RESPONSE: mockResponse("glm-5.1") },
+          displayName: "GLM",
+        };
+      },
+    },
+    {
+      name: "scope-path",
+      mutateBeforeRun(cwd) {
+        writeFileSync(path.join(cwd, "other.txt"), "other selected scope\n");
+        return {
+          providerArgs: ["--provider", "deepseek"],
+          sourceArgs: ["--scope-paths", "other.txt"],
+          env: { API_REVIEWERS_MOCK_RESPONSE: mockResponse("deepseek-reasoner") },
+          displayName: "DeepSeek",
+        };
+      },
+    },
+    {
+      name: "source-bytes",
+      mutateBeforeRun(cwd) {
+        writeFileSync(path.join(cwd, "seed.txt"), "changed selected scope\n");
+        return {
+          providerArgs: ["--provider", "deepseek"],
+          env: { API_REVIEWERS_MOCK_RESPONSE: mockResponse("deepseek-reasoner") },
+          displayName: "DeepSeek",
+        };
+      },
+    },
+    {
+      name: "request-timeout",
+      mutateBeforeRun() {
+        return {
+          providerArgs: ["--provider", "deepseek"],
+          env: {
+            API_REVIEWERS_TIMEOUT_MS: "123456",
+            API_REVIEWERS_MOCK_RESPONSE: mockResponse("deepseek-reasoner"),
+          },
+          displayName: "DeepSeek",
+        };
+      },
+    },
+    {
+      name: "mode",
+      mutateBeforeRun() {
+        return {
+          providerArgs: ["--provider", "deepseek"],
+          mode: "adversarial-review",
+          env: { API_REVIEWERS_MOCK_RESPONSE: mockResponse("deepseek-reasoner") },
+          displayName: "DeepSeek",
+        };
+      },
+    },
+  ];
+
+  for (const item of cases) {
+    const cwd = makeWorkspace();
+    const dataDir = mkdtempSync(path.join(tmpdir(), `api-reviewers-approval-${item.name}-`));
+    try {
+      const approvalArgs = [
+        "approval-request",
+        "--provider", "deepseek",
+        "--mode", "custom-review",
+        "--scope", "custom",
+        "--scope-paths", "seed.txt",
+        "--prompt", "Check this file.",
+      ];
+      const baseEnv = {
+        API_REVIEWERS_PLUGIN_DATA: dataDir,
+        API_REVIEWERS_TEST_AUTO_APPROVAL: "0",
+        DEEPSEEK_API_KEY: "secret-test-value",
+      };
+      const approvalResult = await run(approvalArgs, { cwd, env: baseEnv });
+      assert.equal(approvalResult.status, 0, approvalResult.stderr || approvalResult.stdout);
+      const approval = parseJson(approvalResult.stdout);
+
+      const mutation = item.mutateBeforeRun(cwd);
+      const runArgs = [
+        "run",
+        ...(mutation.providerArgs ?? ["--provider", "deepseek"]),
+        "--mode", mutation.mode ?? "custom-review",
+        "--scope", "custom",
+        ...(mutation.sourceArgs ?? ["--scope-paths", "seed.txt"]),
+        "--foreground",
+        "--lifecycle-events", "jsonl",
+        "--prompt", "Check this file.",
+        "--approval-token", approval.approval_token.value,
+      ];
+      const result = await run(runArgs, {
+        cwd,
+        env: {
+          ...baseEnv,
+          API_REVIEWERS_REQUIRE_APPROVAL_TOKEN_IN_MOCKS: "1",
+          ...(mutation.env ?? {}),
+        },
+      });
+
+      assert.equal(result.status, 1, item.name);
+      const lines = parseJsonLines(result.stdout);
+      assert.equal(lines.length, 1, item.name);
+      const [record] = lines;
+      assert.equal(record.status, "failed", item.name);
+      assert.equal(record.error_code, "approval_required", item.name);
+      assertDirectApiNotSent(record, mutation.displayName);
+      assert.doesNotMatch(result.stdout, /external_review_launched/);
+      assert.doesNotMatch(result.stdout, /hello from selected scope|changed selected scope|other selected scope/);
+      assert.doesNotMatch(result.stdout, /secret-test-value/);
+    } finally {
+      rmSync(dataDir, { recursive: true, force: true });
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  }
+});
+
+test("direct API reviewers approval token is bound to auth and billing paths", async () => {
+  const cases = [
+    {
+      name: "auth-path",
+      approvalConfig: {
+        display_name: "Custom Reviewer",
+        auth_mode: "api_key",
+        env_keys: ["PRIMARY_API_KEY", "SECONDARY_API_KEY"],
+        base_url: "https://billing-a.example.invalid",
+        model: "custom-review-model",
+      },
+      approvalEnv: { PRIMARY_API_KEY: "primary-secret-value", SECONDARY_API_KEY: "" },
+      runEnv: { PRIMARY_API_KEY: "", SECONDARY_API_KEY: "secondary-secret-value" },
+      mutateConfig: null,
+      expectedApprovalAuthPath: { auth_mode: "api_key", credential_ref: "PRIMARY_API_KEY" },
+      expectedApprovalBillingPath: { endpoint: "https://billing-a.example.invalid", model: "custom-review-model" },
+    },
+    {
+      name: "billing-path",
+      approvalConfig: {
+        display_name: "Custom Reviewer",
+        auth_mode: "api_key",
+        env_keys: ["CUSTOM_API_KEY"],
+        base_url: "https://billing-a.example.invalid",
+        model: "custom-review-model",
+      },
+      approvalEnv: { CUSTOM_API_KEY: "secret-test-value" },
+      runEnv: { CUSTOM_API_KEY: "secret-test-value" },
+      mutateConfig: {
+        display_name: "Custom Reviewer",
+        auth_mode: "api_key",
+        env_keys: ["CUSTOM_API_KEY"],
+        base_url: "https://billing-b.example.invalid",
+        model: "custom-review-model",
+      },
+      expectedApprovalAuthPath: { auth_mode: "api_key", credential_ref: "CUSTOM_API_KEY" },
+      expectedApprovalBillingPath: { endpoint: "https://billing-a.example.invalid", model: "custom-review-model" },
+    },
+    {
+      name: "fallback-reason",
+      approvalConfig: {
+        display_name: "Custom Reviewer",
+        auth_mode: "api_key",
+        env_keys: ["CUSTOM_API_KEY"],
+        base_url: "https://billing-a.example.invalid",
+        model: "custom-review-model",
+      },
+      approvalEnv: { CUSTOM_API_KEY: "secret-test-value" },
+      runEnv: { CUSTOM_API_KEY: "secret-test-value", API_REVIEWERS_ROUTE_FALLBACK_REASON: "usage_limited" },
+      mutateConfig: null,
+      expectedApprovalAuthPath: { auth_mode: "api_key", credential_ref: "CUSTOM_API_KEY" },
+      expectedApprovalBillingPath: { endpoint: "https://billing-a.example.invalid", model: "custom-review-model" },
+    },
+  ];
+
+  for (const item of cases) {
+    const cwd = makeWorkspace();
+    const dataDir = mkdtempSync(path.join(tmpdir(), `api-reviewers-approval-${item.name}-`));
+    const pluginRoot = makeInstalledApiReviewersRoot();
+    const companion = path.join(pluginRoot, "scripts", "api-reviewer.mjs");
+    try {
+      writeSingleProviderConfig(pluginRoot, "custom", item.approvalConfig);
+      const commonArgs = [
+        "--provider", "custom",
+        "--mode", "custom-review",
+        "--scope", "custom",
+        "--scope-paths", "seed.txt",
+        "--prompt", "Check this file.",
+      ];
+      const approvalResult = await run(["approval-request", ...commonArgs], {
+        cwd,
+        companion,
+        env: {
+          API_REVIEWERS_PLUGIN_DATA: dataDir,
+          API_REVIEWERS_TEST_AUTO_APPROVAL: "0",
+          ...item.approvalEnv,
+        },
+      });
+      assert.equal(approvalResult.status, 0, approvalResult.stderr || approvalResult.stdout);
+      const approval = parseJson(approvalResult.stdout);
+      assert.deepEqual(approval.auth_path, item.expectedApprovalAuthPath, item.name);
+      assert.deepEqual(approval.billing_path, item.expectedApprovalBillingPath, item.name);
+      assert.equal(approval.selected_route, "direct_api", item.name);
+      assert.equal(approval.fallback_reason, "subscription_not_supported", item.name);
+
+      if (item.mutateConfig) {
+        writeSingleProviderConfig(pluginRoot, "custom", item.mutateConfig);
+      }
+
+      const result = await run([
+        "run",
+        ...commonArgs,
+        "--foreground",
+        "--lifecycle-events", "jsonl",
+        "--approval-token", approval.approval_token.value,
+      ], {
+        cwd,
+        companion,
+        env: {
+          API_REVIEWERS_PLUGIN_DATA: dataDir,
+          API_REVIEWERS_REQUIRE_APPROVAL_TOKEN_IN_MOCKS: "1",
+          API_REVIEWERS_MOCK_RESPONSE: mockResponse("custom-review-model"),
+          ...item.runEnv,
+        },
+      });
+
+      assert.equal(result.status, 1, item.name);
+      const lines = parseJsonLines(result.stdout);
+      assert.equal(lines.length, 1, item.name);
+      const [record] = lines;
+      assert.equal(record.status, "failed", item.name);
+      assert.equal(record.error_code, "approval_required", item.name);
+      assertDirectApiNotSent(record, "Custom Reviewer");
+      assert.doesNotMatch(result.stdout, /external_review_launched/);
+      assert.doesNotMatch(result.stdout, /hello from selected scope/);
+      assert.doesNotMatch(result.stdout, /primary-secret-value|secondary-secret-value|secret-test-value/);
+    } finally {
+      rmSync(dataDir, { recursive: true, force: true });
+      rmSync(cwd, { recursive: true, force: true });
+      rmSync(path.dirname(path.dirname(pluginRoot)), { recursive: true, force: true });
+    }
+  }
+});
+
 test("direct API reviewers approval-request rejects rendered prompt over provider budget", async () => {
   const cwd = makeWorkspace();
   const result = await run([
@@ -4192,8 +5113,8 @@ test("direct API reviewers approval-request rejects rendered prompt over provide
   const parsed = parseJson(result.stdout);
   assert.equal(parsed.ok, false);
   assert.equal(parsed.provider, "deepseek");
-  assert.equal(parsed.status, "scope_failed");
-  assert.equal(parsed.error_code, "scope_failed");
+  assert.equal(parsed.status, "prompt_too_large");
+  assert.equal(parsed.error_code, "prompt_too_large");
   assert.match(parsed.error_message, /prompt_too_large:/);
   assert.doesNotMatch(result.stdout, /external_review_approval_request/);
   assert.doesNotMatch(result.stdout, /hello from selected scope/);
@@ -4506,13 +5427,16 @@ for (const scenarioCase of [
     // bytes regardless.
     const captured = { url: null, method: null, authorization: null, body: null };
     const server = await startChatServer(async (req, res) => {
-      captured.url = req.url;
-      captured.method = req.method;
-      captured.authorization = req.headers.authorization ?? null;
       let raw = "";
       req.setEncoding("utf8");
       for await (const chunk of req) raw += chunk;
-      try { captured.body = JSON.parse(raw); } catch { captured.body = raw; }
+      let body = null;
+      try { body = JSON.parse(raw); } catch { body = raw; }
+      if (body && typeof body === "object" && respondSourceFreePreflight(body, res, "deepseek-v4-flash")) return;
+      captured.url = req.url;
+      captured.method = req.method;
+      captured.authorization = req.headers.authorization ?? null;
+      captured.body = body;
       res.writeHead(httpResp.statusCode, { "content-type": "application/json" });
       res.end(httpResp.body);
     });
