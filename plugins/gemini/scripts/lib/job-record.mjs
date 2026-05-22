@@ -394,8 +394,6 @@ function buildErrorDiagnostic(invocation, status, error_code, error_message) {
       "Check the raw error_message, fix the scope input, and retry. For committed branch changes, prefer branch-diff with an explicit --scope-base <ref>.",
     disclosure_note: disclosure,
   };
-
-  return empty;
 }
 
 /**

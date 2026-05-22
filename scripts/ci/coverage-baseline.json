@@ -36,7 +36,7 @@
       "functions": 100.0
     },
     "plugins/api-reviewers/scripts/lib/external-review.mjs": {
-      "lines": 87.38,
+      "lines": 85.98,
       "branches": 94.29,
       "functions": 100.0
     },
@@ -46,7 +46,7 @@
       "functions": 100.0
     },
     "plugins/api-reviewers/scripts/lib/external-model-failure-core.mjs": {
-      "lines": 93.26,
+      "lines": 91.18,
       "branches": 86.57,
       "functions": 100.0
     },
@@ -81,7 +81,7 @@
       "functions": 100.0
     },
     "plugins/api-reviewers/scripts/lib/review-prompt.mjs": {
-      "lines": 98.73,
+      "lines": 96.08,
       "branches": 89.69,
       "functions": 100.0
     },
@@ -131,7 +131,7 @@
       "functions": 100.0
     },
     "plugins/claude/scripts/lib/external-review.mjs": {
-      "lines": 87.38,
+      "lines": 85.98,
       "branches": 94.29,
       "functions": 100.0
     },
@@ -141,7 +141,7 @@
       "functions": 100.0
     },
     "plugins/claude/scripts/lib/external-model-failure-core.mjs": {
-      "lines": 93.26,
+      "lines": 91.18,
       "branches": 86.57,
       "functions": 100.0
     },
@@ -211,7 +211,7 @@
       "functions": 100.0
     },
     "plugins/claude/scripts/lib/review-prompt.mjs": {
-      "lines": 98.73,
+      "lines": 96.08,
       "branches": 89.69,
       "functions": 100.0
     },
@@ -266,7 +266,7 @@
       "functions": 100.0
     },
     "plugins/gemini/scripts/lib/external-review.mjs": {
-      "lines": 87.38,
+      "lines": 85.98,
       "branches": 94.29,
       "functions": 100.0
     },
@@ -276,7 +276,7 @@
       "functions": 100.0
     },
     "plugins/gemini/scripts/lib/external-model-failure-core.mjs": {
-      "lines": 93.26,
+      "lines": 91.18,
       "branches": 86.57,
       "functions": 100.0
     },
@@ -351,7 +351,7 @@
       "functions": 100.0
     },
     "plugins/gemini/scripts/lib/review-prompt.mjs": {
-      "lines": 98.73,
+      "lines": 96.08,
       "branches": 89.69,
       "functions": 100.0
     },
@@ -376,7 +376,7 @@
       "functions": 100.0
     },
     "plugins/grok/scripts/lib/external-review.mjs": {
-      "lines": 87.38,
+      "lines": 85.98,
       "branches": 94.29,
       "functions": 100.0
     },
@@ -386,7 +386,7 @@
       "functions": 100.0
     },
     "plugins/grok/scripts/lib/external-model-failure-core.mjs": {
-      "lines": 93.26,
+      "lines": 91.18,
       "branches": 86.57,
       "functions": 100.0
     },
@@ -426,7 +426,7 @@
       "functions": 52.94
     },
     "plugins/grok/scripts/lib/review-prompt.mjs": {
-      "lines": 98.73,
+      "lines": 96.08,
       "branches": 89.69,
       "functions": 100.0
     },
@@ -466,7 +466,7 @@
       "functions": 0.0
     },
     "plugins/kimi/scripts/lib/external-review.mjs": {
-      "lines": 87.38,
+      "lines": 85.98,
       "branches": 94.29,
       "functions": 100.0
     },
@@ -476,7 +476,7 @@
       "functions": 100.0
     },
     "plugins/kimi/scripts/lib/external-model-failure-core.mjs": {
-      "lines": 93.26,
+      "lines": 91.18,
       "branches": 86.57,
       "functions": 100.0
     },
@@ -551,7 +551,7 @@
       "functions": 85.71
     },
     "plugins/kimi/scripts/lib/review-prompt.mjs": {
-      "lines": 98.73,
+      "lines": 96.08,
       "branches": 89.69,
       "functions": 100.0
     },

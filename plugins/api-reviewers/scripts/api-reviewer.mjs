@@ -916,9 +916,79 @@ function unquoteEnvCacheValue(raw) {
   if (value.length === 0) return "";
   if (value.startsWith("'") && value.endsWith("'")) return value.slice(1, -1);
   if (value.startsWith('"') && value.endsWith('"')) {
-    return value.slice(1, -1).replace(/\\"/g, '"').replace(/\\\\/g, "\\");
+    return unescapeDoubleQuotedEnvCacheValue(value.slice(1, -1));
   }
-  return value.split(/\s+#/u)[0].trim();
+  return stripEnvCacheInlineComment(value);
+}
+
+function unescapeDoubleQuotedEnvCacheValue(value) {
+  let out = "";
+  for (let index = 0; index < value.length; index += 1) {
+    if (value[index] === "\\" && index + 1 < value.length && (value[index + 1] === '"' || value[index + 1] === "\\")) {
+      out += value[index + 1];
+      index += 1;
+      continue;
+    }
+    out += value[index];
+  }
+  return out;
+}
+
+function isEnvWhitespace(char) {
+  return char === " " || char === "\t";
+}
+
+function skipEnvWhitespace(value, index) {
+  let cursor = index;
+  while (cursor < value.length && isEnvWhitespace(value[cursor])) cursor += 1;
+  return cursor;
+}
+
+function stripEnvCacheInlineComment(value) {
+  for (let index = 1; index < value.length; index += 1) {
+    if (value[index] !== "#" || !isEnvWhitespace(value[index - 1])) continue;
+    let end = index - 1;
+    while (end > 0 && isEnvWhitespace(value[end - 1])) end -= 1;
+    return value.slice(0, end).trim();
+  }
+  return value.trim();
+}
+
+function isEnvNameStart(char) {
+  const code = char?.charCodeAt(0) ?? 0;
+  return char === "_" || (code >= 65 && code <= 90) || (code >= 97 && code <= 122);
+}
+
+function isEnvNameChar(char) {
+  const code = char?.charCodeAt(0) ?? 0;
+  return isEnvNameStart(char) || (code >= 48 && code <= 57);
+}
+
+function parseEnvCacheLine(raw) {
+  const line = String(raw ?? "");
+  let index = skipEnvWhitespace(line, 0);
+  if (line.startsWith("export", index) && isEnvWhitespace(line[index + "export".length])) {
+    index = skipEnvWhitespace(line, index + "export".length);
+  }
+  const nameStart = index;
+  if (!isEnvNameStart(line[index])) return null;
+  index += 1;
+  while (index < line.length && isEnvNameChar(line[index])) index += 1;
+  if (line[index] !== "=") return null;
+  return [line.slice(nameStart, index), line.slice(index + 1)];
+}
+
+function splitEnvCacheLines(text) {
+  const lines = [];
+  let start = 0;
+  for (let index = 0; index < text.length; index += 1) {
+    if (text[index] !== "\n") continue;
+    const end = index > start && text[index - 1] === "\r" ? index - 1 : index;
+    lines.push(text.slice(start, end));
+    start = index + 1;
+  }
+  if (start <= text.length) lines.push(text.slice(start));
+  return lines;
 }
 
 function credentialEnvCacheEntries(env, names) {
@@ -932,11 +1002,11 @@ function credentialEnvCacheEntries(env, names) {
     if (process.platform !== "win32" && (stat.mode & 0o077) !== 0) return {};
     const entries = {};
     const text = readFileSync(cachePath, "utf8");
-    for (const line of text.split(/\r?\n/u)) {
-      const match = line.match(/^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)=(.*)\s*$/u);
-      if (!match || !wanted.has(match[1])) continue;
-      const value = unquoteEnvCacheValue(match[2]);
-      if (value.length > 0) entries[match[1]] = value;
+    for (const line of splitEnvCacheLines(text)) {
+      const parsed = parseEnvCacheLine(line);
+      if (!parsed || !wanted.has(parsed[0])) continue;
+      const value = unquoteEnvCacheValue(parsed[1]);
+      if (value.length > 0) entries[parsed[0]] = value;
     }
     return entries;
   } catch {

@@ -1,5 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 
 import {
   buildExternalModelFailureDiagnostic,
@@ -7,6 +9,7 @@ import {
   classifyCompanionExecution,
   classifyCompanionLifecycleState,
 } from "../../scripts/lib/external-model-failure-core.mjs";
+import { REVIEW_PROMPT_PLUGIN_TARGETS } from "../../scripts/lib/plugin-targets.mjs";
 
 test("classifyCompanionLifecycleState preserves companion lifecycle states", () => {
   assert.deepEqual(classifyCompanionLifecycleState(null), {
@@ -266,4 +269,89 @@ test("classifyCompanionExecution preserves provider parsed failures and catchall
     classifyCompanionExecution({ exitCode: 1 }, { catchallCode: "claude_error" }),
     { status: "failed", error_code: "claude_error", error_message: null },
   );
+});
+
+test("external-model failure core plugin copies cover shared classifier branches", async () => {
+  const modules = await Promise.all(
+    REVIEW_PROMPT_PLUGIN_TARGETS.map((plugin) =>
+      import(pathToFileURL(resolve(`plugins/${plugin}/scripts/lib/external-model-failure-core.mjs`)).href)
+    )
+  );
+
+  for (const mod of modules) {
+    assert.deepEqual(mod.classifyCompanionErrorMessage("approval_required: token missing"), {
+      status: "failed",
+      error_code: "approval_required",
+      error_message: "token missing",
+    });
+    assert.deepEqual(mod.classifyCompanionErrorMessage("CODEX_PLUGIN_MULTI_GIT_BINARY rejected"), {
+      status: "failed",
+      error_code: "git_binary_rejected",
+      error_message: "CODEX_PLUGIN_MULTI_GIT_BINARY rejected",
+    });
+    assert.deepEqual(mod.classifyCompanionErrorMessage("scope_empty:no selected files"), {
+      status: "failed",
+      error_code: "scope_failed",
+      error_message: "scope_empty:no selected files",
+    });
+    assert.deepEqual(mod.classifyCompanionErrorMessage("plain pre-spawn failure"), {
+      status: "failed",
+      error_code: "spawn_failed",
+      error_message: "plain pre-spawn failure",
+    });
+    assert.deepEqual(mod.classifyCommonParsedFailure({ reason: "usage_limited" }), {
+      status: "failed",
+      error_code: "usage_limited",
+      error_message: "usage_limited",
+    });
+    assert.deepEqual(mod.classifyCommonParsedFailure({ reason: "json_parse_error" }), {
+      status: "failed",
+      error_code: "parse_error",
+      error_message: "json_parse_error",
+    });
+    assert.equal(mod.classifyCommonParsedFailure({ reason: "provider_specific" }), null);
+    assert.equal(mod.classifySignalLikeExit(null), null);
+    assert.equal(mod.classifySignalLikeExit({ timedOut: true, exitCode: 143 }), null);
+    assert.equal(mod.classifySignalLikeExit({ exitCode: 1, started: true }), null);
+    assert.equal(mod.classifySignalLikeExit({ exitCode: 143, parsed: null }), null);
+    assert.deepEqual(mod.classifySignalLikeExit({
+      exitCode: 143,
+      started: true,
+      parsed: { ok: true, structured: { verdict: "APPROVE" } },
+    }), { status: "completed", error_code: null, error_message: null });
+    assert.deepEqual(mod.classifySignalLikeExit({
+      exitCode: 143,
+      phase: "post_spawn",
+      parsed: { ok: false, reason: "", result: null, structured: null },
+    }), {
+      status: "failed",
+      error_code: "interrupted",
+      error_message: "",
+    });
+    assert.equal(mod.classifySignalLikeExit({
+      exitCode: 143,
+      started: true,
+      parsed: { ok: false, reason: "provider_error", error: "provider failed" },
+    }), null);
+    assert.deepEqual(mod.classifyCompanionExecution({
+      exitCode: 1,
+      parsed: { ok: false, reason: "provider_specific", error: "provider rejected" },
+    }, {
+      catchallCode: "provider_error",
+      invocation: { target: "test" },
+      classifyProviderParsedFailure({ invocation, parsed }) {
+        assert.equal(invocation.target, "test");
+        return {
+          status: "failed",
+          error_code: "provider_unavailable",
+          error_message: parsed.error,
+        };
+      },
+    }), {
+      status: "failed",
+      error_code: "provider_unavailable",
+      error_message: "provider rejected",
+    });
+    assert.equal(mod.buildExternalModelFailureDiagnostic("unknown_failure_code", "Provider"), null);
+  }
 });

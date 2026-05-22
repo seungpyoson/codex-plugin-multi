@@ -776,7 +776,7 @@ test("external-review plugin copies keep stale no-pid transmission unknown", asy
 
 test("external-review shared helper covers disclosure and transmission branches", async () => {
   const modules = await Promise.all(
-    COMPANION_PLUGIN_TARGETS.map((plugin) =>
+    [...COMPANION_PLUGIN_TARGETS, "api-reviewers", "grok"].map((plugin) =>
       import(`../../plugins/${plugin}/scripts/lib/external-review.mjs`)
     )
   );
@@ -813,6 +813,10 @@ test("external-review shared helper covers disclosure and transmission branches"
       "Selected source content was sent to Provider for external review; the operator cancelled the run before it completed.",
     );
     assert.equal(
+      mod.externalReviewDisclosure("Provider", "stale", T.SENT),
+      "Selected source content was sent to Provider for external review; the run became stale before completion.",
+    );
+    assert.equal(
       mod.externalReviewDisclosure("Provider", "failed", T.SENT),
       "Selected source content was sent to Provider for external review, but the run ended before a clean result was produced.",
     );
@@ -823,6 +827,22 @@ test("external-review shared helper covers disclosure and transmission branches"
     assert.equal(
       mod.externalReviewDisclosure("Provider", "failed", T.NOT_SENT, "scope_failed"),
       "Selected source content was not sent to Provider; the review scope was rejected before the target process was started.",
+    );
+    assert.equal(
+      mod.externalReviewDisclosure("Provider", "failed", T.NOT_SENT, "approval_scope_changed"),
+      "Selected source content was not sent to Provider; approval scope changed before the review target was started.",
+    );
+    assert.equal(
+      mod.externalReviewDisclosure("Provider", "failed", T.NOT_SENT, "cache_install"),
+      "Selected source content was not sent to Provider; installed cache repair is required before the review target starts.",
+    );
+    assert.equal(
+      mod.externalReviewDisclosure("Provider", "failed", T.NOT_SENT, "preflight_stale"),
+      "Selected source content was not sent to Provider; immediate pre-send readiness proof was stale or missing.",
+    );
+    assert.equal(
+      mod.externalReviewDisclosure("Provider", "failed", T.NOT_SENT, "prompt_too_large"),
+      "Selected source content was not sent to Provider; the rendered prompt exceeded the provider budget before the review target was started.",
     );
     assert.equal(
       mod.externalReviewDisclosure("Provider", "failed", T.NOT_SENT, "spawn_failed"),
@@ -880,6 +900,16 @@ test("external-review shared helper covers disclosure and transmission branches"
     }), T.NOT_SENT);
     assert.equal(mod.sourceContentTransmissionForExecution({
       status: "failed",
+      errorCode: "approval_required",
+      pidInfo: null,
+    }), T.NOT_SENT);
+    assert.equal(mod.sourceContentTransmissionForExecution({
+      status: "failed",
+      errorCode: "git_binary_rejected",
+      pidInfo: null,
+    }), T.NOT_SENT);
+    assert.equal(mod.sourceContentTransmissionForExecution({
+      status: "failed",
       errorCode: "spawn_failed",
       pidInfo: null,
     }), T.NOT_SENT);
@@ -915,6 +945,11 @@ test("external-review shared helper covers disclosure and transmission branches"
       errorCode: "oauth_inference_rejected",
       pidInfo: { pid: 1 },
     }), T.SENT);
+    assert.equal(mod.sourceContentTransmissionForExecution({
+      status: "failed",
+      errorCode: "interrupted",
+      pidInfo: null,
+    }), T.MAY_BE_SENT);
     assert.equal(mod.sourceContentTransmissionForExecution({
       status: "cancelled",
       errorCode: null,
@@ -988,5 +1023,15 @@ test("external-review shared helper covers disclosure and transmission branches"
     assert.throws(() => {
       review.marker = "mutated";
     }, TypeError);
+    assert.throws(() => mod.buildExternalReview({
+      invocation: {
+        target: "kimi",
+        job_id: "job-invalid",
+        mode: "review",
+        scope: "head",
+      },
+      status: "failed",
+      sourceContentTransmission: "senttt",
+    }), /invalid sourceContentTransmission/);
   }
 });

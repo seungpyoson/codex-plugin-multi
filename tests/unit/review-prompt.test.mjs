@@ -152,6 +152,36 @@ for (const [name, file] of REVIEW_PROMPT_MODULES) {
 }
 
 for (const [name, file] of REVIEW_PROMPT_MODULES) {
+  test(`selected source prompt parser ignores malformed blocks and supports custom delimiters (${name})`, async () => {
+    const {
+      buildSelectedSourcePromptBlock: targetBuildSelectedSourcePromptBlock,
+      selectedSourceFilesFromPrompt: targetSelectedSourceFilesFromPrompt,
+    } = file === "scripts/lib/review-prompt.mjs"
+      ? { buildSelectedSourcePromptBlock, selectedSourceFilesFromPrompt }
+      : await import(pathToFileURL(resolve(file)).href);
+
+    assert.equal(targetSelectedSourceFilesFromPrompt(null), null);
+    assert.equal(targetSelectedSourceFilesFromPrompt("BEGIN REVIEW FILE invalid\nbody\nEND REVIEW FILE invalid"), null);
+    assert.equal(targetSelectedSourceFilesFromPrompt("BEGIN REVIEW FILE 1: missing-end.js\nbody"), null);
+
+    const delimiterPrefix = "REVIEW.FILE+[x]";
+    const block = targetBuildSelectedSourcePromptBlock([{
+      path: "typed-array.js",
+      content: new Uint8Array(Buffer.from("export const typed = true;\n")),
+    }], {
+      title: "Custom selected files",
+      delimiterPrefix,
+    });
+
+    assert.deepEqual(targetSelectedSourceFilesFromPrompt(block, { delimiterPrefix }), [{
+      path: "typed-array.js",
+      text: "export const typed = true;\n",
+    }]);
+    assert.equal(targetSelectedSourceFilesFromPrompt(block), null);
+  });
+}
+
+for (const [name, file] of REVIEW_PROMPT_MODULES) {
   test(`semantic failure helper has no unused lowerText parameter (${name})`, () => {
     const source = readFileSync(resolve(file), "utf8");
     assert.doesNotMatch(source, /function semanticFailureReasons\(text,\s*lowerText,/);
