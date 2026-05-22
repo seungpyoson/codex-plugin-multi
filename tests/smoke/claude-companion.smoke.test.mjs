@@ -4277,6 +4277,65 @@ process.exit(0);
   }
 });
 
+test("approval-request: explicit api_key source-bearing review rejects tampered token before launch", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "claude-approval-tampered-api-cwd-"));
+  fixtureSeedRepo(cwd, {
+    fileName: "seed.txt",
+    fileContents: "CLAUDE_TAMPERED_API_SOURCE_SENTINEL\n",
+  });
+  const tmp = mkdtempSync(path.join(tmpdir(), "claude-approval-tampered-api-bin-"));
+  const leakMarker = path.join(tmp, "source-leaked");
+  const binary = writeExecutable(tmp, "claude-tampered-api-source", `#!/usr/bin/env node
+import { readFileSync, writeFileSync } from "node:fs";
+
+const prompt = readFileSync(0, "utf8");
+if (prompt.includes("CLAUDE_TAMPERED_API_SOURCE_SENTINEL")) {
+  writeFileSync(${JSON.stringify(leakMarker)}, "leaked");
+}
+process.stdout.write(JSON.stringify({
+  type: "result",
+  is_error: false,
+  result: "Verdict: APPROVE\\nBlocking findings\\n- None.\\nNon-blocking concerns\\n- None.\\nInspection status\\n- I inspected seed.txt.",
+  session_id: "55555555-5555-4555-8555-555555555555",
+  usage: { input_tokens: 1, output_tokens: 1 }
+}) + "\\n");
+process.exit(0);
+`);
+  const commonOptions = [
+    "--mode=custom-review", ...claudeAuthModeArgs(claudeApiKeyAuthMode()),
+    "--binary", binary, "--model", "claude-haiku-4-5-20251001",
+    "--cwd", cwd, "--scope-paths", "seed.txt",
+  ];
+  const approval = runCompanion(
+    ["approval-request", ...commonOptions, "--", "review selected source"],
+    { cwd, env: { ANTHROPIC_API_KEY: "secret-test-value", CLAUDE_API_KEY: "" } },
+  );
+  try {
+    assert.equal(approval.status, 0, approval.stderr || approval.stdout);
+    const request = JSON.parse(approval.stdout);
+    const last = request.approval_token.value.at(-1);
+    const tamperedToken = `${request.approval_token.value.slice(0, -1)}${last === "0" ? "1" : "0"}`;
+    const run = runCompanion(
+      ["run", "--foreground", "--lifecycle-events", "jsonl", ...commonOptions, "--approval-token", tamperedToken, "--", "review selected source"],
+      { cwd, env: { ANTHROPIC_API_KEY: "secret-test-value", CLAUDE_API_KEY: "" } },
+    );
+    assert.equal(run.status, 2, run.stderr || run.stdout);
+    const lines = run.stdout.trim().split("\n").map((line) => JSON.parse(line));
+    assert.equal(lines.length, 1, "tampered approval token must fail before external_review_launched");
+    const [record] = lines;
+    assert.equal(record.status, "failed");
+    assert.equal(record.error_code, "approval_required");
+    assert.equal(record.external_review.source_content_transmission, "not_sent");
+    assert.equal(record.review_metadata.audit_manifest.source_send_approval_state, "required");
+    assert.equal(existsSync(leakMarker), false, "tampered approval token must not launch Claude");
+    assert.doesNotMatch(approval.stdout + run.stdout, /secret-test-value|CLAUDE_TAMPERED_API_SOURCE_SENTINEL/);
+  } finally {
+    cleanup(approval.dataDir);
+    rmSync(cwd, { recursive: true, force: true });
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
 test("approval-request: explicit api_key background review token reaches worker", async () => {
   const cwd = mkdtempSync(path.join(tmpdir(), "claude-approval-bg-api-cwd-"));
   fixtureSeedRepo(cwd, {
@@ -4348,6 +4407,47 @@ process.exit(0);
     cleanup(dataDir);
     rmSync(cwd, { recursive: true, force: true });
     rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("background api_key source-bearing review without approval fails before prompt sidecar write", async () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "claude-bg-api-no-approval-cwd-"));
+  fixtureSeedRepo(cwd, {
+    fileName: "seed.txt",
+    fileContents: "CLAUDE_UNAPPROVED_BACKGROUND_API_SOURCE_SENTINEL\n",
+  });
+  const dataDir = mkdtempSync(path.join(tmpdir(), "claude-bg-api-no-approval-data-"));
+  const commonOptions = [
+    "--mode=custom-review", ...claudeAuthModeArgs(claudeApiKeyAuthMode()),
+    "--model", "claude-haiku-4-5-20251001",
+    "--cwd", cwd, "--scope-paths", "seed.txt",
+  ];
+  const run = runCompanion(
+    ["run", "--background", "--lifecycle-events", "jsonl", ...commonOptions, "--", "review selected source"],
+    { cwd, dataDir, env: { ANTHROPIC_API_KEY: "secret-test-value", CLAUDE_API_KEY: "" } },
+  );
+  try {
+    if (run.status === 0 && run.stdout.trim()) {
+      const launched = JSON.parse(run.stdout);
+      await waitForJobRecord(
+        dataDir,
+        launched.job_id,
+        (candidate) => candidate.status === "completed" || candidate.status === "failed",
+        "background unapproved API run did not finalize",
+      );
+    }
+    assert.equal(run.status, 2, run.stderr || run.stdout);
+    const record = JSON.parse(run.stdout);
+    assert.equal(record.status, "failed");
+    assert.equal(record.error_code, "approval_required");
+    assert.equal(record.external_review.source_content_transmission, "not_sent");
+    const { metaPath } = readOnlyJobRecord(dataDir);
+    const promptPath = path.join(path.dirname(metaPath), record.job_id, "prompt.txt");
+    assert.equal(existsSync(promptPath), false, "unapproved background API run must not persist selected source prompt sidecar");
+    assert.doesNotMatch(run.stdout, /secret-test-value|CLAUDE_UNAPPROVED_BACKGROUND_API_SOURCE_SENTINEL/);
+  } finally {
+    cleanup(dataDir);
+    rmSync(cwd, { recursive: true, force: true });
   }
 });
 

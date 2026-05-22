@@ -1083,7 +1083,7 @@ async function cmdRun(rest) {
   if (!prompt) {
     fail("bad_args", "prompt is required (pass after -- separator)");
   }
-  const authSelection = resolveAuthSelection(options["auth-mode"], {
+  let authSelection = resolveAuthSelection(options["auth-mode"], {
     sourceBearing: modeSendsSelectedSource(mode),
   });
   const approvalScope = authSelection.source_send_approval_required === true
@@ -1106,7 +1106,7 @@ async function cmdRun(rest) {
   // The single invocation object — frozen, passed unchanged through the
   // pre-run and post-run buildJobRecord calls. No downstream code mutates
   // invocation; adding new invocation fields is a one-place change.
-  const invocation = Object.freeze({
+  let invocation = Object.freeze({
     job_id: jobId,
     target: "claude",
     parent_job_id: null,
@@ -1145,6 +1145,35 @@ async function cmdRun(rest) {
   const targetPrompt = scopedTargetPromptForOrExit(invocation, profile, prompt, lifecycleEvents);
 
   if (options.background) {
+    invocation = invocationWithAuthSelection(invocation, authSelection);
+    const approvalCheck = sourceSendApprovalPreflight(authSelection, invocation, targetPrompt, null);
+    authSelection = approvalCheck.authSelection;
+    invocation = invocationWithAuthSelection(invocation, authSelection);
+    const approvalPreflight = approvalCheck.execution;
+    if (approvalPreflight) {
+      approvalPreflight.reviewAuditManifest = reviewAuditManifest(invocation, targetPrompt, null, approvalPreflight);
+      const sourceFilesForRedaction = selectedSourceFilesForRedaction(targetPrompt);
+      const redactionFields = sourceFilesForRedaction.length > 0
+        ? {
+          sourceRedactionRequired: sourceFilesHaveBodies(sourceFilesForRedaction),
+          sourceFilesForRedaction,
+        }
+        : {};
+      const errorRecord = buildJobRecord(invocation, {
+        exitCode: approvalPreflight.exitCode,
+        endedAt: approvalPreflight.endedAt,
+        parsed: approvalPreflight.parsed,
+        pidInfo: null,
+        claudeSessionId: null,
+        errorMessage: approvalPreflight.errorMessage,
+        reviewAuditManifest: approvalPreflight.reviewAuditManifest,
+        ...redactionFields,
+      }, []);
+      writeJobFile(workspaceRoot, jobId, errorRecord);
+      upsertJob(workspaceRoot, errorRecord);
+      printLifecycleJson(errorRecord, lifecycleEvents);
+      process.exit(2);
+    }
     // Write prompt to private sidecar (§21.3.1 handoff buffer). Worker reads
     // and deletes — prompt text does NOT live on the JobRecord.
     try {

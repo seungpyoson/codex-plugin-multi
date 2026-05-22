@@ -30,6 +30,10 @@ const apiOnly = Object.freeze({
   },
 });
 
+const subscriptionOnly = Object.freeze({
+  subscription: { kind: "oauth", auth_path: "subscription_oauth" },
+});
+
 test("provider route policy defaults subscription-capable providers to subscription and ignores API keys", () => {
   const route = selectProviderRoute({
     requestedRoute: undefined,
@@ -46,6 +50,27 @@ test("provider route policy defaults subscription-capable providers to subscript
     fallback_reason: null,
     allowed_env_credentials: [],
     ignored_env_credentials: ["PROVIDER_API_KEY"],
+    source_send_approval_required: false,
+    source_send_approval_state: "not_required",
+  });
+});
+
+test("provider route policy handles subscription-only providers without API credential state", () => {
+  const route = selectProviderRoute({
+    requestedRoute: undefined,
+    providerCapabilities: subscriptionOnly,
+    env: { PROVIDER_API_KEY: "secret" },
+    sourceBearing: true,
+  });
+
+  assert.deepEqual(route, {
+    route_mode: "subscription",
+    selected_route: "subscription_oauth",
+    auth_path: "subscription_oauth",
+    billing_path: null,
+    fallback_reason: null,
+    allowed_env_credentials: [],
+    ignored_env_credentials: [],
     source_send_approval_required: false,
     source_send_approval_state: "not_required",
   });

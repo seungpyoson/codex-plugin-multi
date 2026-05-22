@@ -1696,7 +1696,7 @@ test("gemini custom-review prompt includes selected source content", () => {
   }
 });
 
-test("gemini review prompt includes mode-specific self-contained live context", () => {
+test("gemini review prompt omits provider-specific live verification context", () => {
   const cwd = mkdtempSync(path.join(tmpdir(), "gemini-review-context-cwd-"));
   const binDir = mkdtempSync(path.join(tmpdir(), "gemini-review-context-bin-"));
   seedMinimalRepo(cwd);
@@ -1715,12 +1715,15 @@ if (prompt.includes("reply with exactly: pong.")) {
 for (const expected of [
   "You are performing a code review. Prioritize bugs, behavioral regressions, and missing tests.",
   "Your final answer must be self-contained",
-  "Live verification context:",
 ]) {
   if (!prompt.includes(expected)) {
     process.stderr.write("missing prompt text: " + expected + "\\n");
     process.exit(1);
   }
+}
+if (prompt.includes("Live verification context:")) {
+  process.stderr.write("unexpected provider-specific live verification context\\n");
+  process.exit(1);
 }
 process.stdout.write(JSON.stringify({
   session_id: "${GEMINI_SESSION_ID}",

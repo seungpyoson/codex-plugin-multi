@@ -543,11 +543,11 @@ for (const mode of ["review", "adversarial-review", "custom-review"]) {
     assert.equal(result.status, 0, result.stderr);
   }));
 
-  test(`kimi ${mode} prompt includes provider live-verification context`, () => withRepo((cwd) => {
+  test(`kimi ${mode} prompt omits provider live-verification context`, () => withRepo((cwd) => {
     const result = runCompanion(kimiPromptAssertionArgs(cwd, mode), {
       cwd,
       env: {
-        KIMI_MOCK_ASSERT_PROMPT_INCLUDES: "Live verification context",
+        KIMI_MOCK_ASSERT_PROMPT_EXCLUDES: "Live verification context",
       },
     });
     assert.equal(result.status, 0, result.stderr);
@@ -563,6 +563,19 @@ for (const mode of ["review", "adversarial-review", "custom-review"]) {
     assert.equal(result.status, 0, result.stderr);
   }));
 }
+
+test("kimi ping rejects unsupported auth-mode instead of ignoring it", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "kimi-ping-auth-mode-"));
+  try {
+    const result = runCompanion(["ping", "--auth-mode", "api_key"], { cwd });
+    assert.equal(result.status, 1);
+    const parsed = parseJson(result.stdout);
+    assert.equal(parsed.error, "bad_args");
+    assert.match(parsed.message, /Kimi supports subscription auth only/);
+  } finally {
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
 
 test("kimi custom-review prompt includes selected source content", () => {
   const cwd = mkdtempSync(path.join(tmpdir(), "kimi-inline-source-cwd-"));

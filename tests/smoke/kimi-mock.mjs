@@ -80,6 +80,12 @@ if (expectedPromptText && !isCompanionPreflight && !prompt.includes(expectedProm
   process.exit(1);
 }
 
+const excludedPromptText = process.env.KIMI_MOCK_ASSERT_PROMPT_EXCLUDES;
+if (excludedPromptText && !isCompanionPreflight && prompt.includes(excludedPromptText)) {
+  process.stderr.write(`kimi-mock: prompt included excluded text: ${excludedPromptText}\n`);
+  process.exit(1);
+}
+
 const expectedMaxSteps = process.env.KIMI_MOCK_ASSERT_MAX_STEPS_PER_TURN;
 if (expectedMaxSteps && String(parsed.flags["--max-steps-per-turn"] ?? "") !== expectedMaxSteps) {
   process.stderr.write(
