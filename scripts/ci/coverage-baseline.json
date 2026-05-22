@@ -1,6 +1,6 @@
 {
   "target_percent": 85,
-  "note": "Current non-regression baseline for T10.1. The target remains 85%; raise these values as unit coverage expands.",
+  "note": "Current non-regression baseline for T10.1. The target remains 85%; raise these values as unit coverage expands. Some shared-helper entries use the lower CI Node 20 V8 coverage value when local Node 24 reports higher coverage.",
   "target_enforced_files": [
     "plugins/claude/scripts/lib/args.mjs",
     "plugins/claude/scripts/lib/claude.mjs",
@@ -76,14 +76,14 @@
       "functions": 100.0
     },
     "plugins/api-reviewers/scripts/lib/provider-route-policy.mjs": {
-      "lines": 83.84,
+      "lines": 78.79,
       "branches": 46.67,
-      "functions": 100.0
+      "functions": 88.89
     },
     "plugins/api-reviewers/scripts/lib/review-prompt.mjs": {
-      "lines": 96.08,
-      "branches": 89.69,
-      "functions": 100.0
+      "lines": 95.73,
+      "branches": 88.79,
+      "functions": 98.61
     },
     "plugins/api-reviewers/scripts/lib/review-panel.mjs": {
       "lines": 44.95,
@@ -121,9 +121,9 @@
       "functions": 100.0
     },
     "plugins/claude/scripts/lib/companion-common.mjs": {
-      "lines": 85.29,
+      "lines": 73.89,
       "branches": 73.68,
-      "functions": 100.0
+      "functions": 92.86
     },
     "plugins/claude/scripts/lib/containment.mjs": {
       "lines": 96.55,
@@ -201,9 +201,9 @@
       "functions": 100.0
     },
     "plugins/claude/scripts/lib/provider-route-policy.mjs": {
-      "lines": 83.84,
+      "lines": 78.79,
       "branches": 46.67,
-      "functions": 100.0
+      "functions": 88.89
     },
     "plugins/claude/scripts/lib/reconcile.mjs": {
       "lines": 95.79,
@@ -211,9 +211,9 @@
       "functions": 100.0
     },
     "plugins/claude/scripts/lib/review-prompt.mjs": {
-      "lines": 96.08,
-      "branches": 89.69,
-      "functions": 100.0
+      "lines": 95.73,
+      "branches": 88.79,
+      "functions": 98.61
     },
     "plugins/claude/scripts/lib/review-panel.mjs": {
       "lines": 44.95,
@@ -256,9 +256,9 @@
       "functions": 100.0
     },
     "plugins/gemini/scripts/lib/companion-common.mjs": {
-      "lines": 85.29,
+      "lines": 73.89,
       "branches": 73.68,
-      "functions": 100.0
+      "functions": 92.86
     },
     "plugins/gemini/scripts/lib/containment.mjs": {
       "lines": 55.17,
@@ -341,9 +341,9 @@
       "functions": 100.0
     },
     "plugins/gemini/scripts/lib/provider-route-policy.mjs": {
-      "lines": 83.84,
+      "lines": 78.79,
       "branches": 46.67,
-      "functions": 100.0
+      "functions": 88.89
     },
     "plugins/gemini/scripts/lib/reconcile.mjs": {
       "lines": 95.79,
@@ -351,9 +351,9 @@
       "functions": 100.0
     },
     "plugins/gemini/scripts/lib/review-prompt.mjs": {
-      "lines": 96.08,
-      "branches": 89.69,
-      "functions": 100.0
+      "lines": 95.73,
+      "branches": 88.79,
+      "functions": 98.61
     },
     "plugins/gemini/scripts/lib/review-panel.mjs": {
       "lines": 44.95,
@@ -416,9 +416,9 @@
       "functions": 100.0
     },
     "plugins/grok/scripts/lib/provider-route-policy.mjs": {
-      "lines": 83.84,
+      "lines": 78.79,
       "branches": 46.67,
-      "functions": 100.0
+      "functions": 88.89
     },
     "plugins/grok/scripts/lib/review-panel.mjs": {
       "lines": 44.95,
@@ -426,9 +426,9 @@
       "functions": 52.94
     },
     "plugins/grok/scripts/lib/review-prompt.mjs": {
-      "lines": 96.08,
-      "branches": 89.69,
-      "functions": 100.0
+      "lines": 95.73,
+      "branches": 88.79,
+      "functions": 98.61
     },
     "plugins/grok/scripts/lib/time.mjs": {
       "lines": 100.0,
@@ -456,9 +456,9 @@
       "functions": 100.0
     },
     "plugins/kimi/scripts/lib/companion-common.mjs": {
-      "lines": 85.29,
+      "lines": 73.89,
       "branches": 73.68,
-      "functions": 100.0
+      "functions": 92.86
     },
     "plugins/kimi/scripts/lib/containment.mjs": {
       "lines": 0.0,
@@ -541,9 +541,9 @@
       "functions": 100.0
     },
     "plugins/kimi/scripts/lib/provider-route-policy.mjs": {
-      "lines": 83.84,
+      "lines": 78.79,
       "branches": 46.67,
-      "functions": 100.0
+      "functions": 88.89
     },
     "plugins/kimi/scripts/lib/reconcile.mjs": {
       "lines": 86.79,
@@ -551,9 +551,9 @@
       "functions": 85.71
     },
     "plugins/kimi/scripts/lib/review-prompt.mjs": {
-      "lines": 96.08,
-      "branches": 89.69,
-      "functions": 100.0
+      "lines": 95.73,
+      "branches": 88.79,
+      "functions": 98.61
     },
     "plugins/kimi/scripts/lib/review-panel.mjs": {
       "lines": 44.95,
