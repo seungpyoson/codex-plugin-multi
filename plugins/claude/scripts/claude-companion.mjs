@@ -80,7 +80,6 @@ import {
   writePromptSidecar,
 } from "./lib/companion-common.mjs";
 import { REVIEW_PROMPT_CONTRACT_VERSION, buildReviewAuditManifest, buildReviewPrompt, buildSelectedSourcePromptBlock, selectedSourceFilesFromPrompt } from "./lib/review-prompt.mjs";
-import { diffSourceFiles } from "./lib/diff-source.mjs";
 
 // ——— plugin-root self-resolution (upstream pattern, spec §4.14) ———
 const PLUGIN_ROOT = resolvePath(dirname(fileURLToPath(import.meta.url)), "..");
@@ -531,7 +530,7 @@ function scopedTargetPromptForOrExit(invocation, profile, userPrompt, lifecycleE
     lifecycleEvents,
   });
   try {
-    return targetPromptFor(invocation, userPrompt, diffSourceFiles(invocation.cwd, invocation.scope_base, { workspaceRoot: invocation.workspace_root, scopePaths: invocation.scope_paths }));
+    return targetPromptFor(invocation, userPrompt, auditSourceFiles(executionScope.addDir));
   } finally {
     cleanupScopedPromptExecutionScope(executionScope);
   }
@@ -994,7 +993,7 @@ async function cmdApprovalRequest(rest) {
       scopePaths,
       workspaceRoot,
     }, containment);
-    const targetPrompt = targetPromptFor(invocation, prompt, diffSourceFiles(cwd, scopeBase, { workspaceRoot, scopePaths }));
+    const targetPrompt = targetPromptFor(invocation, prompt, auditSourceFiles(containment.path));
     const auditManifest = approvalAuditManifest(invocation, targetPrompt, containment.path);
     const token = approvalTokenFor(invocation, auditManifest);
     const totals = auditManifest.selected_source.totals;
