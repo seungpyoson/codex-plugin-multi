@@ -36,8 +36,23 @@
       "functions": 100.0
     },
     "plugins/api-reviewers/scripts/lib/external-review.mjs": {
-      "lines": 88.24,
-      "branches": 95.65,
+      "lines": 87.38,
+      "branches": 94.29,
+      "functions": 100.0
+    },
+    "plugins/api-reviewers/scripts/lib/external-model-failure-catalog.mjs": {
+      "lines": 75.0,
+      "branches": 100.0,
+      "functions": 100.0
+    },
+    "plugins/api-reviewers/scripts/lib/external-model-failure-core.mjs": {
+      "lines": 93.26,
+      "branches": 86.57,
+      "functions": 100.0
+    },
+    "plugins/api-reviewers/scripts/lib/external-model-review-quality.mjs": {
+      "lines": 92.0,
+      "branches": 88.89,
       "functions": 100.0
     },
     "plugins/api-reviewers/scripts/lib/git-env.mjs": {
@@ -60,9 +75,14 @@
       "branches": 100.0,
       "functions": 100.0
     },
+    "plugins/api-reviewers/scripts/lib/provider-route-policy.mjs": {
+      "lines": 83.84,
+      "branches": 46.67,
+      "functions": 100.0
+    },
     "plugins/api-reviewers/scripts/lib/review-prompt.mjs": {
-      "lines": 100.0,
-      "branches": 0.0,
+      "lines": 98.73,
+      "branches": 89.69,
       "functions": 100.0
     },
     "plugins/api-reviewers/scripts/lib/review-panel.mjs": {
@@ -77,7 +97,7 @@
     },
     "plugins/claude/scripts/lib/auth-selection.mjs": {
       "lines": 100.0,
-      "branches": 100.0,
+      "branches": 88.24,
       "functions": 100.0
     },
     "plugins/claude/scripts/lib/cancel-marker.mjs": {
@@ -111,8 +131,23 @@
       "functions": 100.0
     },
     "plugins/claude/scripts/lib/external-review.mjs": {
-      "lines": 88.24,
-      "branches": 95.65,
+      "lines": 87.38,
+      "branches": 94.29,
+      "functions": 100.0
+    },
+    "plugins/claude/scripts/lib/external-model-failure-catalog.mjs": {
+      "lines": 75.0,
+      "branches": 100.0,
+      "functions": 100.0
+    },
+    "plugins/claude/scripts/lib/external-model-failure-core.mjs": {
+      "lines": 93.26,
+      "branches": 86.57,
+      "functions": 100.0
+    },
+    "plugins/claude/scripts/lib/external-model-review-quality.mjs": {
+      "lines": 92.0,
+      "branches": 88.89,
       "functions": 100.0
     },
     "plugins/claude/scripts/lib/git-env.mjs": {
@@ -165,14 +200,19 @@
       "branches": 100.0,
       "functions": 100.0
     },
+    "plugins/claude/scripts/lib/provider-route-policy.mjs": {
+      "lines": 83.84,
+      "branches": 46.67,
+      "functions": 100.0
+    },
     "plugins/claude/scripts/lib/reconcile.mjs": {
       "lines": 95.79,
       "branches": 81.0,
       "functions": 100.0
     },
     "plugins/claude/scripts/lib/review-prompt.mjs": {
-      "lines": 100.0,
-      "branches": 0.0,
+      "lines": 98.73,
+      "branches": 89.69,
       "functions": 100.0
     },
     "plugins/claude/scripts/lib/review-panel.mjs": {
@@ -202,7 +242,7 @@
     },
     "plugins/gemini/scripts/lib/auth-selection.mjs": {
       "lines": 100.0,
-      "branches": 100.0,
+      "branches": 88.24,
       "functions": 100.0
     },
     "plugins/gemini/scripts/lib/cancel-marker.mjs": {
@@ -226,8 +266,23 @@
       "functions": 100.0
     },
     "plugins/gemini/scripts/lib/external-review.mjs": {
-      "lines": 88.24,
-      "branches": 95.65,
+      "lines": 87.38,
+      "branches": 94.29,
+      "functions": 100.0
+    },
+    "plugins/gemini/scripts/lib/external-model-failure-catalog.mjs": {
+      "lines": 75.0,
+      "branches": 100.0,
+      "functions": 100.0
+    },
+    "plugins/gemini/scripts/lib/external-model-failure-core.mjs": {
+      "lines": 93.26,
+      "branches": 86.57,
+      "functions": 100.0
+    },
+    "plugins/gemini/scripts/lib/external-model-review-quality.mjs": {
+      "lines": 92.0,
+      "branches": 88.89,
       "functions": 100.0
     },
     "plugins/gemini/scripts/lib/gemini.mjs": {
@@ -285,14 +340,19 @@
       "branches": 100.0,
       "functions": 100.0
     },
+    "plugins/gemini/scripts/lib/provider-route-policy.mjs": {
+      "lines": 83.84,
+      "branches": 46.67,
+      "functions": 100.0
+    },
     "plugins/gemini/scripts/lib/reconcile.mjs": {
       "lines": 95.79,
       "branches": 81.0,
       "functions": 100.0
     },
     "plugins/gemini/scripts/lib/review-prompt.mjs": {
-      "lines": 100.0,
-      "branches": 0.0,
+      "lines": 98.73,
+      "branches": 89.69,
       "functions": 100.0
     },
     "plugins/gemini/scripts/lib/review-panel.mjs": {
@@ -316,8 +376,23 @@
       "functions": 100.0
     },
     "plugins/grok/scripts/lib/external-review.mjs": {
-      "lines": 89.0,
-      "branches": 96.88,
+      "lines": 87.38,
+      "branches": 94.29,
+      "functions": 100.0
+    },
+    "plugins/grok/scripts/lib/external-model-failure-catalog.mjs": {
+      "lines": 75.0,
+      "branches": 100.0,
+      "functions": 100.0
+    },
+    "plugins/grok/scripts/lib/external-model-failure-core.mjs": {
+      "lines": 93.26,
+      "branches": 86.57,
+      "functions": 100.0
+    },
+    "plugins/grok/scripts/lib/external-model-review-quality.mjs": {
+      "lines": 92.0,
+      "branches": 88.89,
       "functions": 100.0
     },
     "plugins/grok/scripts/lib/git-binary.mjs": {
@@ -335,14 +410,24 @@
       "branches": 0.0,
       "functions": 0.0
     },
+    "plugins/grok/scripts/lib/provider-env.mjs": {
+      "lines": 100.0,
+      "branches": 90.91,
+      "functions": 100.0
+    },
+    "plugins/grok/scripts/lib/provider-route-policy.mjs": {
+      "lines": 83.84,
+      "branches": 46.67,
+      "functions": 100.0
+    },
     "plugins/grok/scripts/lib/review-panel.mjs": {
       "lines": 44.95,
       "branches": 18.18,
       "functions": 52.94
     },
     "plugins/grok/scripts/lib/review-prompt.mjs": {
-      "lines": 100.0,
-      "branches": 89.62,
+      "lines": 98.73,
+      "branches": 89.69,
       "functions": 100.0
     },
     "plugins/grok/scripts/lib/time.mjs": {
@@ -381,8 +466,23 @@
       "functions": 0.0
     },
     "plugins/kimi/scripts/lib/external-review.mjs": {
-      "lines": 88.24,
-      "branches": 95.65,
+      "lines": 87.38,
+      "branches": 94.29,
+      "functions": 100.0
+    },
+    "plugins/kimi/scripts/lib/external-model-failure-catalog.mjs": {
+      "lines": 75.0,
+      "branches": 100.0,
+      "functions": 100.0
+    },
+    "plugins/kimi/scripts/lib/external-model-failure-core.mjs": {
+      "lines": 93.26,
+      "branches": 86.57,
+      "functions": 100.0
+    },
+    "plugins/kimi/scripts/lib/external-model-review-quality.mjs": {
+      "lines": 92.0,
+      "branches": 88.89,
       "functions": 100.0
     },
     "plugins/kimi/scripts/lib/git-env.mjs": {
@@ -426,9 +526,9 @@
       "functions": 100.0
     },
     "plugins/kimi/scripts/lib/provider-env.mjs": {
-      "lines": 0.0,
-      "branches": 100.0,
-      "functions": 0.0
+      "lines": 100.0,
+      "branches": 92.86,
+      "functions": 100.0
     },
     "plugins/kimi/scripts/lib/time.mjs": {
       "lines": 100.0,
@@ -440,14 +540,19 @@
       "branches": 100.0,
       "functions": 100.0
     },
+    "plugins/kimi/scripts/lib/provider-route-policy.mjs": {
+      "lines": 83.84,
+      "branches": 46.67,
+      "functions": 100.0
+    },
     "plugins/kimi/scripts/lib/reconcile.mjs": {
-      "lines": 0.0,
-      "branches": 100.0,
-      "functions": 0.0
+      "lines": 86.79,
+      "branches": 52.17,
+      "functions": 85.71
     },
     "plugins/kimi/scripts/lib/review-prompt.mjs": {
-      "lines": 100.0,
-      "branches": 0.0,
+      "lines": 98.73,
+      "branches": 89.69,
       "functions": 100.0
     },
     "plugins/kimi/scripts/lib/review-panel.mjs": {

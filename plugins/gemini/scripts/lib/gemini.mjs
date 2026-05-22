@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { realpathSync } from "node:fs";
 
 import { attachPidCapture } from "./identity.mjs";
 import { sanitizeTargetEnv } from "./provider-env.mjs";
@@ -120,6 +121,14 @@ function lastNonEmptyLine(text) {
   return "";
 }
 
+function childPwdForCwd(cwd) {
+  try {
+    return realpathSync.native(cwd);
+  } catch {
+    return cwd;
+  }
+}
+
 export async function spawnGemini(profile, runtimeInputs = {}) {
   const {
     model,
@@ -131,8 +140,8 @@ export async function spawnGemini(profile, runtimeInputs = {}) {
     env = process.env,
     timeoutMs = 0,
     binary = "gemini",
-    allowedApiKeyEnv = [],
     onSpawn = null,
+    authSelection = null,
   } = runtimeInputs;
 
   if (typeof promptText !== "string" || promptText.length === 0) {
@@ -140,7 +149,12 @@ export async function spawnGemini(profile, runtimeInputs = {}) {
   }
 
   const args = buildGeminiArgs(profile, { model, policyPath, includeDirPath, resumeId, env });
-  const targetEnv = sanitizeTargetEnv(env, { allowedApiKeyEnv });
+  const targetEnv = sanitizeTargetEnv(env, {
+    allowedApiKeyEnv: authSelection?.selected_auth_path === "api_key_env"
+      ? authSelection.allowed_env_credentials
+      : [],
+  });
+  targetEnv.PWD = childPwdForCwd(cwd);
   targetEnv.GEMINI_CLI_NO_RELAUNCH = "true";
 
   return new Promise((resolve, reject) => {

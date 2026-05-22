@@ -260,6 +260,618 @@ test("buildJobRecord: terminal companion review metadata records elapsed_ms", ()
   }
 });
 
+test("buildJobRecord: companion records redact exact selected source bodies from persisted results", () => {
+  const sourceText = "SOURCE_BODY_SENTINEL_DO_NOT_PERSIST\n";
+  const providers = [
+    [buildJobRecord, makeInvocation()],
+    [buildGeminiJobRecord, makeInvocation({ target: "gemini", binary: "gemini", model: "gemini-3.1-pro-preview" })],
+    [buildKimiJobRecord, makeInvocation({ target: "kimi", binary: "kimi", model: "kimi-k2-0905" })],
+  ];
+
+  for (const [providerBuildJobRecord, invocation] of providers) {
+    const rec = providerBuildJobRecord(invocation, {
+      exitCode: 0,
+      parsed: {
+        ok: true,
+        result: `Verdict: APPROVE\nBlocking findings\n- None.\n${sourceText}`,
+        structured: null,
+        denials: [],
+      },
+      pidInfo: makePidInfo(),
+      sourceFilesForRedaction: [{ path: "seed.txt", content: sourceText }],
+      stdout: "",
+      stderr: "",
+    }, []);
+
+    assert.doesNotMatch(JSON.stringify(rec), /SOURCE_BODY_SENTINEL_DO_NOT_PERSIST/);
+    assert.match(rec.result, /\[redacted_source_excerpt\]/);
+  }
+});
+
+test("buildJobRecord: companion records redact selected source bodies supplied as buffers", () => {
+  const sourceText = "SOURCE_BODY_SENTINEL_DO_NOT_PERSIST\n";
+  const providers = [
+    [buildJobRecord, makeInvocation()],
+    [buildGeminiJobRecord, makeInvocation({ target: "gemini", binary: "gemini", model: "gemini-3.1-pro-preview" })],
+    [buildKimiJobRecord, makeInvocation({ target: "kimi", binary: "kimi", model: "kimi-k2-0905" })],
+  ];
+
+  for (const [providerBuildJobRecord, invocation] of providers) {
+    const rec = providerBuildJobRecord(invocation, {
+      exitCode: 0,
+      parsed: {
+        ok: true,
+        result: `Verdict: APPROVE\nBlocking findings\n- None.\n${sourceText}`,
+        structured: null,
+        denials: [],
+      },
+      pidInfo: makePidInfo(),
+      sourceRedactionRequired: true,
+      sourceFilesForRedaction: [{ path: "seed.txt", content: Buffer.from(sourceText, "utf8") }],
+      stdout: "",
+      stderr: "",
+    }, []);
+
+    assert.doesNotMatch(JSON.stringify(rec), /SOURCE_BODY_SENTINEL_DO_NOT_PERSIST/);
+    assert.match(rec.result, /\[redacted_source_excerpt\]/);
+  }
+});
+
+test("buildJobRecord: companion records redact selected source bodies from structured output", () => {
+  const sourceText = "SOURCE_BODY_SENTINEL_DO_NOT_PERSIST\n";
+  const providers = [
+    [buildJobRecord, makeInvocation()],
+    [buildGeminiJobRecord, makeInvocation({ target: "gemini", binary: "gemini", model: "gemini-3.1-pro-preview" })],
+    [buildKimiJobRecord, makeInvocation({ target: "kimi", binary: "kimi", model: "kimi-k2-0905" })],
+  ];
+
+  for (const [providerBuildJobRecord, invocation] of providers) {
+    const rec = providerBuildJobRecord(invocation, {
+      exitCode: 0,
+      parsed: {
+        ok: true,
+        result: "Verdict: APPROVE\nBlocking findings\n- None.",
+        structured: {
+          summary: "clean",
+          nested: { copied_source: sourceText },
+          items: [`prefix ${sourceText} suffix`],
+        },
+        denials: [],
+      },
+      pidInfo: makePidInfo(),
+      sourceFilesForRedaction: [{ path: "seed.txt", content: sourceText }],
+      stdout: "",
+      stderr: "",
+    }, []);
+
+    assert.doesNotMatch(JSON.stringify(rec.structured_output), /SOURCE_BODY_SENTINEL_DO_NOT_PERSIST/);
+    assert.match(JSON.stringify(rec.structured_output), /\[redacted_source_excerpt\]/);
+  }
+});
+
+test("buildJobRecord: companion records redact source and secret text from structured output keys", () => {
+  const secretName = "CODEX_PLUGIN_MULTI_TEST_API_KEY";
+  const oldSecret = process.env[secretName];
+  const sourceText = "SOURCE_BODY_SENTINEL_DO_NOT_PERSIST\n";
+  process.env[secretName] = "secret-test-value";
+  const providers = [
+    [buildJobRecord, makeInvocation()],
+    [buildGeminiJobRecord, makeInvocation({ target: "gemini", binary: "gemini", model: "gemini-3.1-pro-preview" })],
+    [buildKimiJobRecord, makeInvocation({ target: "kimi", binary: "kimi", model: "kimi-k2-0905" })],
+  ];
+
+  try {
+    for (const [providerBuildJobRecord, invocation] of providers) {
+      const rec = providerBuildJobRecord(invocation, {
+        exitCode: 0,
+        parsed: {
+          ok: true,
+          result: "Verdict: APPROVE\nBlocking findings\n- None.",
+          structured: {
+            [sourceText]: "source key",
+            "secret-test-value": "secret key",
+          },
+          denials: [],
+        },
+        pidInfo: makePidInfo(),
+        sourceFilesForRedaction: [{ path: "seed.txt", content: sourceText }],
+        stdout: "",
+        stderr: "",
+      }, []);
+
+      const persisted = JSON.stringify(rec.structured_output);
+      assert.doesNotMatch(persisted, /SOURCE_BODY_SENTINEL_DO_NOT_PERSIST/);
+      assert.doesNotMatch(persisted, /secret-test-value/);
+      assert.match(persisted, /\[redacted_source_excerpt\]/);
+      assert.match(persisted, /\[REDACTED\]/);
+    }
+  } finally {
+    if (oldSecret == null) delete process.env[secretName];
+    else process.env[secretName] = oldSecret;
+  }
+});
+
+test("buildJobRecord: companion records redact source and secret text from permission denials", () => {
+  const secretName = "CODEX_PLUGIN_MULTI_TEST_API_KEY";
+  const oldSecret = process.env[secretName];
+  const sourceText = "SOURCE_BODY_SENTINEL_DO_NOT_PERSIST\n";
+  process.env[secretName] = "secret-test-value";
+  const providers = [
+    [buildJobRecord, makeInvocation()],
+    [buildGeminiJobRecord, makeInvocation({ target: "gemini", binary: "gemini", model: "gemini-3.1-pro-preview" })],
+    [buildKimiJobRecord, makeInvocation({ target: "kimi", binary: "kimi", model: "kimi-k2-0905" })],
+  ];
+
+  try {
+    for (const [providerBuildJobRecord, invocation] of providers) {
+      const rec = providerBuildJobRecord(invocation, {
+        exitCode: 0,
+        parsed: {
+          ok: true,
+          result: "Verdict: APPROVE\nBlocking findings\n- None.",
+          structured: null,
+          denials: [
+            {
+              tool: "Write",
+              command: `printf ${JSON.stringify(sourceText)} secret-test-value`,
+              tool_input: {
+                content: sourceText,
+                "secret-test-value": "secret key",
+              },
+            },
+            `plain denial ${sourceText} secret-test-value`,
+          ],
+        },
+        pidInfo: makePidInfo(),
+        runtimeDiagnostics: {
+          add_dir: "/tmp/source-bundle",
+          child_cwd: "/tmp/source-bundle",
+        },
+        sourceFilesForRedaction: [{ path: "seed.txt", content: sourceText }],
+        stdout: "",
+        stderr: "",
+      }, []);
+
+      const persisted = JSON.stringify(rec.permission_denials);
+      assert.doesNotMatch(persisted, /SOURCE_BODY_SENTINEL_DO_NOT_PERSIST/);
+      assert.doesNotMatch(persisted, /secret-test-value/);
+      assert.match(persisted, /\[redacted_source_excerpt\]/);
+      assert.match(persisted, /\[REDACTED\]/);
+
+      const runtimePersisted = JSON.stringify(rec.runtime_diagnostics.permission_denials);
+      assert.doesNotMatch(runtimePersisted, /SOURCE_BODY_SENTINEL_DO_NOT_PERSIST/);
+      assert.doesNotMatch(runtimePersisted, /secret-test-value/);
+      assert.match(runtimePersisted, /\[redacted_source_excerpt\]/);
+      assert.match(runtimePersisted, /\[REDACTED\]/);
+    }
+  } finally {
+    if (oldSecret == null) delete process.env[secretName];
+    else process.env[secretName] = oldSecret;
+  }
+});
+
+test("buildJobRecord: companion records redact over-limit selected source quotes", () => {
+  const sourceText = `${"a".repeat(120)}SOURCE_BODY_SENTINEL_DO_NOT_PERSIST${"b".repeat(220)}\n`;
+  const copiedQuote = sourceText.slice(80, 330);
+  assert.ok(copiedQuote.length > 200);
+  const providers = [
+    [buildJobRecord, makeInvocation()],
+    [buildGeminiJobRecord, makeInvocation({ target: "gemini", binary: "gemini", model: "gemini-3.1-pro-preview" })],
+    [buildKimiJobRecord, makeInvocation({ target: "kimi", binary: "kimi", model: "kimi-k2-0905" })],
+  ];
+
+  for (const [providerBuildJobRecord, invocation] of providers) {
+    const rec = providerBuildJobRecord(invocation, {
+      exitCode: 0,
+      parsed: {
+        ok: true,
+        result: `Verdict: APPROVE\nBlocking findings\n- None.\n${copiedQuote}`,
+        structured: null,
+        denials: [],
+      },
+      pidInfo: makePidInfo(),
+      sourceFilesForRedaction: [{ path: "seed.txt", content: sourceText }],
+      stdout: "",
+      stderr: "",
+    }, []);
+
+    assert.doesNotMatch(JSON.stringify(rec), /SOURCE_BODY_SENTINEL_DO_NOT_PERSIST/);
+    assert.match(rec.result, /\[redacted_source_excerpt\]/);
+  }
+});
+
+test("buildJobRecord: companion records redact over-limit CRLF source quotes", () => {
+  const lines = Array.from({ length: 5 }, (_, index) => (
+    `CRLF_SOURCE_MARKER_${index + 1}_${String(index + 1).repeat(50)}`
+  ));
+  const sourceText = lines.join("\r\n");
+  const copiedQuote = sourceText.slice(8, 250);
+  assert.ok(copiedQuote.length > 200);
+  assert.ok(Math.max(...lines.map((line) => line.length)) < 200);
+  const providers = [
+    [buildJobRecord, makeInvocation()],
+    [buildGeminiJobRecord, makeInvocation({ target: "gemini", binary: "gemini", model: "gemini-3.1-pro-preview" })],
+    [buildKimiJobRecord, makeInvocation({ target: "kimi", binary: "kimi", model: "kimi-k2-0905" })],
+  ];
+
+  for (const [providerBuildJobRecord, invocation] of providers) {
+    const rec = providerBuildJobRecord(invocation, {
+      exitCode: 0,
+      parsed: {
+        ok: true,
+        result: `Verdict: APPROVE\nBlocking findings\n- None.\n${copiedQuote}`,
+        structured: null,
+        denials: [],
+      },
+      pidInfo: makePidInfo(),
+      sourceFilesForRedaction: [{ path: "seed.txt", content: sourceText }],
+      stdout: "",
+      stderr: "",
+    }, []);
+
+    assert.doesNotMatch(rec.result, /CRLF_SOURCE_MARKER/);
+    assert.match(rec.result, /\[redacted_source_excerpt\]/);
+  }
+});
+
+test("buildJobRecord: companion records redact aggregate selected source quotes over policy limit", () => {
+  const snippets = Array.from({ length: 5 }, (_, index) => {
+    const marker = `AGGREGATE_SOURCE_MARKER_${index + 1}`;
+    return `${marker}_${String(index + 1).repeat(180 - marker.length - 1)}`;
+  });
+  const sourceText = snippets.map((snippet, index) => `// source section ${index + 1}\n${snippet}\n`).join("\n");
+  const result = `Verdict: APPROVE\nBlocking findings\n- None.\n${snippets.join("\n")}`;
+  const providers = [
+    [buildJobRecord, makeInvocation()],
+    [buildGeminiJobRecord, makeInvocation({ target: "gemini", binary: "gemini", model: "gemini-3.1-pro-preview" })],
+    [buildKimiJobRecord, makeInvocation({ target: "kimi", binary: "kimi", model: "kimi-k2-0905" })],
+  ];
+
+  for (const [providerBuildJobRecord, invocation] of providers) {
+    const rec = providerBuildJobRecord(invocation, {
+      exitCode: 0,
+      parsed: { ok: true, result, structured: null, denials: [] },
+      pidInfo: makePidInfo(),
+      sourceFilesForRedaction: [{ path: "seed.txt", content: sourceText }],
+      stdout: "",
+      stderr: "",
+    }, []);
+
+    assert.match(rec.result, /AGGREGATE_SOURCE_MARKER_1/);
+    assert.doesNotMatch(rec.result, /AGGREGATE_SOURCE_MARKER_5/);
+    assert.match(rec.result, /\[redacted_source_excerpt\]/);
+  }
+});
+
+test("buildJobRecord: companion aggregate source quote cap counts duplicate source matches once", () => {
+  const snippets = Array.from({ length: 4 }, (_, index) => {
+    const marker = `DUPLICATE_SOURCE_MARKER_${index + 1}`;
+    return `${marker}_${String(index + 1).repeat(180 - marker.length - 1)}`;
+  });
+  const sharedSourceBlock = snippets.join("\n");
+  const result = `Verdict: APPROVE\nBlocking findings\n- None.\n${snippets.join("\n\n")}`;
+  const providers = [
+    [buildJobRecord, makeInvocation()],
+    [buildGeminiJobRecord, makeInvocation({ target: "gemini", binary: "gemini", model: "gemini-3.1-pro-preview" })],
+    [buildKimiJobRecord, makeInvocation({ target: "kimi", binary: "kimi", model: "kimi-k2-0905" })],
+  ];
+
+  for (const [providerBuildJobRecord, invocation] of providers) {
+    const rec = providerBuildJobRecord(invocation, {
+      exitCode: 0,
+      parsed: { ok: true, result, structured: null, denials: [] },
+      pidInfo: makePidInfo(),
+      sourceFilesForRedaction: [
+        { path: "seed-a.txt", content: `alpha\n${sharedSourceBlock}\n` },
+        { path: "seed-b.txt", content: `beta\n${sharedSourceBlock}\n` },
+      ],
+      stdout: "",
+      stderr: "",
+    }, []);
+
+    assert.match(rec.result, /DUPLICATE_SOURCE_MARKER_1/);
+    assert.match(rec.result, /DUPLICATE_SOURCE_MARKER_4/);
+    assert.doesNotMatch(rec.result, /\[redacted_source_excerpt\]/);
+  }
+});
+
+test("buildJobRecord: companion aggregate source quote cap includes short copied snippets", () => {
+  const snippets = Array.from({ length: 30 }, (_, index) => {
+    const marker = `SHORT_SOURCE_MARKER_${String(index + 1).padStart(2, "0")}`;
+    return `${marker}_${String(index % 10).repeat(34 - marker.length - 1)}`;
+  });
+  const sourceText = snippets.map((snippet, index) => `// short section ${index + 1}\n${snippet}\n`).join("\n");
+  const result = `Verdict: APPROVE\nBlocking findings\n- None.\n${snippets.join("\n")}`;
+  const providers = [
+    [buildJobRecord, makeInvocation()],
+    [buildGeminiJobRecord, makeInvocation({ target: "gemini", binary: "gemini", model: "gemini-3.1-pro-preview" })],
+    [buildKimiJobRecord, makeInvocation({ target: "kimi", binary: "kimi", model: "kimi-k2-0905" })],
+  ];
+
+  for (const [providerBuildJobRecord, invocation] of providers) {
+    const rec = providerBuildJobRecord(invocation, {
+      exitCode: 0,
+      parsed: { ok: true, result, structured: null, denials: [] },
+      pidInfo: makePidInfo(),
+      sourceFilesForRedaction: [{ path: "seed.txt", content: sourceText }],
+      stdout: "",
+      stderr: "",
+    }, []);
+
+    assert.match(rec.result, /SHORT_SOURCE_MARKER_01/);
+    assert.doesNotMatch(rec.result, /SHORT_SOURCE_MARKER_30/);
+    assert.match(rec.result, /\[redacted_source_excerpt\]/);
+  }
+});
+
+test("buildJobRecord: companion aggregate source quote cap spans persisted fields", () => {
+  const snippets = Array.from({ length: 6 }, (_, index) => {
+    const marker = `CROSS_FIELD_SOURCE_MARKER_${index + 1}`;
+    return `${marker}_${String(index + 1).repeat(180 - marker.length - 1)}`;
+  });
+  const sourceText = snippets.map((snippet, index) => `// source section ${index + 1}\n${snippet}\n`).join("\n");
+  const providers = [
+    [buildJobRecord, makeInvocation()],
+    [buildGeminiJobRecord, makeInvocation({ target: "gemini", binary: "gemini", model: "gemini-3.1-pro-preview" })],
+    [buildKimiJobRecord, makeInvocation({ target: "kimi", binary: "kimi", model: "kimi-k2-0905" })],
+  ];
+
+  for (const [providerBuildJobRecord, invocation] of providers) {
+    const rec = providerBuildJobRecord(invocation, {
+      exitCode: 0,
+      parsed: {
+        ok: true,
+        result: `Verdict: APPROVE\nBlocking findings\n- None.\n${snippets.slice(0, 4).join("\n")}`,
+        structured: { copied_source: snippets.slice(4).join("\n") },
+        denials: [],
+      },
+      pidInfo: makePidInfo(),
+      sourceFilesForRedaction: [{ path: "seed.txt", content: sourceText }],
+      stdout: "",
+      stderr: "",
+    }, []);
+
+    const persisted = JSON.stringify(rec);
+    assert.match(persisted, /CROSS_FIELD_SOURCE_MARKER_1/);
+    assert.doesNotMatch(persisted, /CROSS_FIELD_SOURCE_MARKER_5/);
+    assert.match(persisted, /\[redacted_source_excerpt\]/);
+  }
+});
+
+test("buildJobRecord: companion records redact env-named secret values", () => {
+  const secretName = "CODEX_PLUGIN_MULTI_TEST_API_KEY";
+  const oldSecret = process.env[secretName];
+  process.env[secretName] = "secret-test-value";
+  const providers = [
+    [buildJobRecord, makeInvocation()],
+    [buildGeminiJobRecord, makeInvocation({ target: "gemini", binary: "gemini", model: "gemini-3.1-pro-preview" })],
+    [buildKimiJobRecord, makeInvocation({ target: "kimi", binary: "kimi", model: "kimi-k2-0905" })],
+  ];
+
+  try {
+    for (const [providerBuildJobRecord, invocation] of providers) {
+      const rec = providerBuildJobRecord(invocation, {
+        exitCode: 0,
+        parsed: {
+          ok: true,
+          result: "Verdict: APPROVE\nBlocking findings\n- None.\nsecret-test-value",
+          structured: { echoed_secret: "secret-test-value" },
+          denials: [],
+        },
+        pidInfo: makePidInfo(),
+        sourceFilesForRedaction: [{ path: "seed.txt", content: "safe source\n" }],
+        stdout: "",
+        stderr: "",
+      }, []);
+
+      assert.doesNotMatch(JSON.stringify(rec), /secret-test-value/);
+      assert.match(rec.result, /\[REDACTED\]/);
+      assert.match(JSON.stringify(rec.structured_output), /\[REDACTED\]/);
+    }
+  } finally {
+    if (oldSecret == null) delete process.env[secretName];
+    else process.env[secretName] = oldSecret;
+  }
+});
+
+test("buildJobRecord: companion records redact source and secret text from error messages", () => {
+  const secretName = "CODEX_PLUGIN_MULTI_TEST_API_KEY";
+  const oldSecret = process.env[secretName];
+  const sourceText = "SOURCE_BODY_SENTINEL_DO_NOT_PERSIST\n";
+  process.env[secretName] = "secret-test-value";
+  const providers = [
+    [buildJobRecord, makeInvocation()],
+    [buildGeminiJobRecord, makeInvocation({ target: "gemini", binary: "gemini", model: "gemini-3.1-pro-preview" })],
+    [buildKimiJobRecord, makeInvocation({ target: "kimi", binary: "kimi", model: "kimi-k2-0905" })],
+  ];
+
+  try {
+    for (const [providerBuildJobRecord, invocation] of providers) {
+      const rec = providerBuildJobRecord(invocation, {
+        exitCode: 1,
+        parsed: null,
+        pidInfo: makePidInfo(),
+        errorMessage: `target failed with ${sourceText} and secret-test-value`,
+        sourceFilesForRedaction: [{ path: "seed.txt", content: sourceText }],
+        stdout: "",
+        stderr: "",
+      }, []);
+
+      assert.doesNotMatch(rec.error_message, /SOURCE_BODY_SENTINEL_DO_NOT_PERSIST/);
+      assert.doesNotMatch(rec.error_message, /secret-test-value/);
+      assert.match(rec.error_message, /\[redacted_source_excerpt\]/);
+      assert.match(rec.error_message, /\[REDACTED\]/);
+      assert.doesNotMatch(JSON.stringify(rec), /SOURCE_BODY_SENTINEL_DO_NOT_PERSIST/);
+      assert.doesNotMatch(JSON.stringify(rec), /secret-test-value/);
+    }
+  } finally {
+    if (oldSecret == null) delete process.env[secretName];
+    else process.env[secretName] = oldSecret;
+  }
+});
+
+test("buildJobRecord: companion records redact and bound prompt_head", () => {
+  const secretName = "CODEX_PLUGIN_MULTI_TEST_API_KEY";
+  const oldSecret = process.env[secretName];
+  const sourceText = "SOURCE_BODY_SENTINEL_DO_NOT_PERSIST\n";
+  process.env[secretName] = "secret-test-value";
+  const promptHead = `please inspect ${sourceText} and secret-test-value ${"x".repeat(260)}`;
+  const providers = [
+    [buildJobRecord, makeInvocation({ prompt_head: promptHead })],
+    [buildGeminiJobRecord, makeInvocation({
+      target: "gemini",
+      binary: "gemini",
+      model: "gemini-3.1-pro-preview",
+      prompt_head: promptHead,
+    })],
+    [buildKimiJobRecord, makeInvocation({
+      target: "kimi",
+      binary: "kimi",
+      model: "kimi-k2-0905",
+      prompt_head: promptHead,
+    })],
+  ];
+
+  try {
+    for (const [providerBuildJobRecord, invocation] of providers) {
+      const rec = providerBuildJobRecord(invocation, {
+        exitCode: 0,
+        parsed: {
+          ok: true,
+          result: "Verdict: APPROVE\nBlocking findings\n- None.",
+          structured: null,
+          denials: [],
+        },
+        pidInfo: makePidInfo(),
+        sourceFilesForRedaction: [{ path: "seed.txt", content: sourceText }],
+        stdout: "",
+        stderr: "",
+      }, []);
+
+      assert.equal(rec.prompt_head.length <= 200, true);
+      assert.doesNotMatch(rec.prompt_head, /SOURCE_BODY_SENTINEL_DO_NOT_PERSIST/);
+      assert.doesNotMatch(rec.prompt_head, /secret-test-value/);
+      assert.match(rec.prompt_head, /\[redacted_source_excerpt\]/);
+      assert.match(rec.prompt_head, /\[REDACTED\]/);
+    }
+  } finally {
+    if (oldSecret == null) delete process.env[secretName];
+    else process.env[secretName] = oldSecret;
+  }
+});
+
+test("buildJobRecord: required source redaction fails closed when source bodies are unavailable", () => {
+  const providers = [
+    [buildJobRecord, makeInvocation()],
+    [buildGeminiJobRecord, makeInvocation({ target: "gemini", binary: "gemini", model: "gemini-3.1-pro-preview" })],
+    [buildKimiJobRecord, makeInvocation({ target: "kimi", binary: "kimi", model: "kimi-k2-0905" })],
+  ];
+
+  for (const [providerBuildJobRecord, invocation] of providers) {
+    assert.throws(
+      () => providerBuildJobRecord(invocation, {
+        exitCode: 0,
+        parsed: {
+          ok: true,
+          result: "Verdict: APPROVE\nBlocking findings\n- None.\nsource echo",
+          structured: null,
+          denials: [],
+        },
+        pidInfo: makePidInfo(),
+        sourceRedactionRequired: true,
+        sourceFilesForRedaction: [],
+        stdout: "",
+        stderr: "",
+      }, []),
+      /source redaction unavailable/i,
+    );
+  }
+});
+
+test("buildJobRecord: empty source redaction set fails closed without caller flag", () => {
+  const providers = [
+    [buildJobRecord, makeInvocation()],
+    [buildGeminiJobRecord, makeInvocation({ target: "gemini", binary: "gemini", model: "gemini-3.1-pro-preview" })],
+    [buildKimiJobRecord, makeInvocation({ target: "kimi", binary: "kimi", model: "kimi-k2-0905" })],
+  ];
+
+  for (const [providerBuildJobRecord, invocation] of providers) {
+    assert.throws(
+      () => providerBuildJobRecord(invocation, {
+        exitCode: 0,
+        parsed: {
+          ok: true,
+          result: "Verdict: APPROVE\nBlocking findings\n- None.\nSOURCE_BODY_SENTINEL_DO_NOT_PERSIST",
+          structured: null,
+          denials: [],
+        },
+        pidInfo: makePidInfo(),
+        sourceFilesForRedaction: [],
+        stdout: "",
+        stderr: "",
+      }, []),
+      /source redaction unavailable/i,
+    );
+  }
+});
+
+test("buildJobRecord: all-empty selected source files are valid redaction input", () => {
+  const providers = [
+    [buildJobRecord, makeInvocation()],
+    [buildGeminiJobRecord, makeInvocation({ target: "gemini", binary: "gemini", model: "gemini-3.1-pro-preview" })],
+    [buildKimiJobRecord, makeInvocation({ target: "kimi", binary: "kimi", model: "kimi-k2-0905" })],
+  ];
+
+  for (const [providerBuildJobRecord, invocation] of providers) {
+    const rec = providerBuildJobRecord(invocation, {
+      exitCode: 0,
+      parsed: {
+        ok: true,
+        result: "Verdict: APPROVE\nBlocking findings\n- None.",
+        structured: null,
+        denials: [],
+      },
+      pidInfo: makePidInfo(),
+      sourceFilesForRedaction: [{ path: ".gitkeep", content: "" }],
+      stdout: "",
+      stderr: "",
+    }, []);
+
+    assert.equal(rec.status, "completed");
+    assert.equal(rec.error_code, null);
+  }
+});
+
+test("buildJobRecord: partial missing selected source bodies fail closed", () => {
+  const providers = [
+    [buildJobRecord, makeInvocation()],
+    [buildGeminiJobRecord, makeInvocation({ target: "gemini", binary: "gemini", model: "gemini-3.1-pro-preview" })],
+    [buildKimiJobRecord, makeInvocation({ target: "kimi", binary: "kimi", model: "kimi-k2-0905" })],
+  ];
+
+  for (const [providerBuildJobRecord, invocation] of providers) {
+    assert.throws(
+      () => providerBuildJobRecord(invocation, {
+        exitCode: 0,
+        parsed: {
+          ok: true,
+          result: "Verdict: APPROVE\nBlocking findings\n- None.",
+          structured: null,
+          denials: [],
+        },
+        pidInfo: makePidInfo(),
+        sourceFilesForRedaction: [
+          { path: "present.txt", content: "present source body\n" },
+          { path: "missing.txt" },
+        ],
+        stdout: "",
+        stderr: "",
+      }, []),
+      /source redaction unavailable/i,
+    );
+  }
+});
+
 test("buildJobRecord: terminal companion elapsed_ms uses execution endedAt", () => {
   const startedAt = "2026-05-09T10:00:00.000Z";
   const endedAt = "2026-05-09T10:00:02.500Z";
@@ -355,6 +967,8 @@ test("buildJobRecord: semantic review-quality failures override successful proce
     assert.equal(rec.status, "failed");
     assert.equal(rec.error_code, "review_not_completed");
     assert.match(rec.error_summary, /review did not complete/i);
+    assert.equal(rec.external_review.source_content_transmission, "sent");
+    assert.match(rec.external_review.disclosure, /sent .*before a clean result was produced/i);
     assert.equal(rec.review_metadata.audit_manifest, auditManifest);
   }
 });
@@ -386,6 +1000,75 @@ test("buildJobRecord: Kimi missing-verdict diagnostic requires non-shallow outpu
   assert.equal(rec.status, "failed");
   assert.equal(rec.error_code, "review_not_completed");
   assert.match(rec.error_summary, /omitted the required verdict marker/i);
+});
+
+test("buildJobRecord providers guide substantive invalid-verdict retry without automatic resend", () => {
+  const parsed = {
+    ok: true,
+    result: [
+      "I inspected sample.js and found no blocking issue.",
+      "I would approve this change if this were an approval workflow, but this line is not the required verdict marker.",
+      "Blocking findings",
+      "- None. sample.js was inspectable.",
+      "Non-blocking concerns",
+      "- None.",
+      "Test gaps",
+      "- Existing tests cover this replay path.",
+      "Inspection status",
+      "- Source was inspected; this response is substantive but lacks the required verdict marker.",
+    ].join("\n"),
+    structured: null,
+    denials: [],
+  };
+  const providers = [
+    [
+      "Claude",
+      buildJobRecord,
+      makeInvocation(),
+      { exitCode: 0, parsed, pidInfo: makePidInfo(), claudeSessionId: CLAUDE_UUID, stdout: "ok", stderr: "" },
+    ],
+    [
+      "Gemini",
+      buildGeminiJobRecord,
+      makeInvocation({ target: "gemini", binary: "gemini", review_prompt_provider: "Gemini CLI" }),
+      { exitCode: 0, parsed, pidInfo: makePidInfo(), geminiSessionId: GEMINI_UUID, stdout: "ok", stderr: "" },
+    ],
+    [
+      "Kimi",
+      buildKimiJobRecord,
+      makeInvocation({ target: "kimi", binary: "kimi", review_prompt_provider: "Kimi Code CLI" }),
+      { exitCode: 0, parsed, pidInfo: makePidInfo(), kimiSessionId: "kimi-session-123", stdout: "ok", stderr: "" },
+    ],
+  ];
+
+  for (const reason of ["missing_verdict", "bad_verdict"]) {
+    const auditManifest = Object.freeze({
+      schema_version: 1,
+      rendered_prompt_hash: { algorithm: "sha256", value: "a".repeat(64) },
+      selected_source: { files: [{ path: "sample.js" }], totals: { files: 1, bytes: 20, lines: 1 } },
+      review_quality: {
+        failed_review_slot: true,
+        semantic_failure_reasons: [reason],
+      },
+    });
+    for (const [provider, providerBuildJobRecord, invocation, execution] of providers) {
+      const label = `${provider}:${reason}`;
+      const rec = providerBuildJobRecord(invocation, { ...execution, reviewAuditManifest: auditManifest }, []);
+      assert.equal(rec.status, "failed", label);
+      assert.equal(rec.error_code, "review_not_completed", label);
+      assert.equal(rec.error_message, `review_quality_failed:${reason}`, label);
+      assert.equal(rec.external_review.source_content_transmission, "sent", label);
+      assert.match(rec.error_summary, /omitted the required verdict marker/i, label);
+      assert.match(rec.error_cause, /substantive review prose/i, label);
+      assert.match(rec.suggested_action, /Treat this .* slot as failed/i, label);
+      assert.match(rec.suggested_action, /Do not automatically resend selected source/i, label);
+      assert.match(rec.suggested_action, /fresh matching approval token/i, label);
+      assert.match(rec.suggested_action, /narrowing the scope/i, label);
+      assert.match(rec.suggested_action, /sharding/i, label);
+      assert.match(rec.suggested_action, /relaying/i, label);
+      assert.match(rec.suggested_action, /interactive/i, label);
+    }
+  }
 });
 
 test("buildJobRecord providers gate review_not_completed diagnostics to failed records", () => {
@@ -477,6 +1160,124 @@ test("buildJobRecord: status=cancelled short-circuit forces lifecycle override (
   assert.equal(rec.result, "partial output before SIGTERM trap exit");
   assert.equal(rec.external_review.source_content_transmission, "sent");
   assert.equal(rec.external_review.disclosure, sentButCancelled("Claude Code"));
+});
+
+test("buildJobRecord: cancelled source-sent reviews do not preserve successful audit slot", () => {
+  const staleSuccessfulAuditManifest = Object.freeze({
+    schema_version: 1,
+    rendered_prompt_hash: { algorithm: "sha256", value: "a".repeat(64) },
+    selected_source: { files: [{ path: "sample.js" }], totals: { files: 1, bytes: 20, lines: 1 } },
+    review_quality: {
+      has_verdict: true,
+      has_blocking_section: true,
+      has_non_blocking_section: true,
+      checklist_items_seen: 3,
+      looks_shallow: false,
+      semantic_failure_reasons: [],
+      failed_review_slot: false,
+    },
+  });
+  const parsed = {
+    ok: true,
+    result: [
+      "Verdict: APPROVE",
+      "Blocking findings",
+      "- None.",
+      "Non-blocking concerns",
+      "- None.",
+    ].join("\n"),
+    structured: null,
+    denials: [],
+  };
+  const providers = [
+    [
+      buildJobRecord,
+      makeInvocation(),
+      { claudeSessionId: CLAUDE_UUID },
+    ],
+    [
+      buildGeminiJobRecord,
+      makeInvocation({ target: "gemini", binary: "gemini", review_prompt_provider: "Gemini CLI" }),
+      { geminiSessionId: GEMINI_UUID },
+    ],
+    [
+      buildKimiJobRecord,
+      makeInvocation({ target: "kimi", binary: "kimi", review_prompt_provider: "Kimi Code" }),
+      { kimiSessionId: "kimi-session-123" },
+    ],
+  ];
+
+  for (const [providerBuildJobRecord, invocation, providerFields] of providers) {
+    const rec = providerBuildJobRecord(invocation, {
+      status: "cancelled",
+      exitCode: 0,
+      parsed,
+      pidInfo: makePidInfo(),
+      stdout: "ok",
+      stderr: "",
+      reviewAuditManifest: staleSuccessfulAuditManifest,
+      ...providerFields,
+    }, []);
+    assert.equal(rec.status, "cancelled");
+    assert.equal(rec.external_review.source_content_transmission, "sent");
+    assert.equal(
+      rec.review_metadata.audit_manifest.review_quality.failed_review_slot,
+      true,
+      `${invocation.target} cancelled review slot must not remain successful`,
+    );
+  }
+});
+
+test("buildJobRecord: pre-launch failures do not count as failed review slots across providers", () => {
+  const preLaunchAuditManifest = Object.freeze({
+    schema_version: 1,
+    rendered_prompt_hash: { algorithm: "sha256", value: "a".repeat(64) },
+    selected_source: { files: [{ path: "sample.js" }], totals: { files: 1, bytes: 20, lines: 1 } },
+    review_quality: {
+      has_verdict: false,
+      has_blocking_section: false,
+      has_non_blocking_section: false,
+      checklist_items_seen: 0,
+      looks_shallow: false,
+      semantic_failure_reasons: [],
+      failed_review_slot: false,
+    },
+  });
+  const providers = [
+    [buildJobRecord, makeInvocation(), { claudeSessionId: null }],
+    [
+      buildGeminiJobRecord,
+      makeInvocation({ target: "gemini", binary: "gemini", review_prompt_provider: "Gemini CLI" }),
+      { geminiSessionId: null },
+    ],
+    [
+      buildKimiJobRecord,
+      makeInvocation({ target: "kimi", binary: "kimi", review_prompt_provider: "Kimi Code" }),
+      { kimiSessionId: null },
+    ],
+  ];
+
+  for (const [providerBuildJobRecord, invocation, providerFields] of providers) {
+    const rec = providerBuildJobRecord(invocation, {
+      exitCode: 1,
+      parsed: null,
+      pidInfo: null,
+      errorMessage: "sandbox_blocked: Operation not permitted before provider launch",
+      stdout: "",
+      stderr: "PermissionError",
+      reviewAuditManifest: preLaunchAuditManifest,
+      ...providerFields,
+    }, []);
+
+    assert.equal(rec.status, "failed");
+    assert.equal(rec.error_code, "sandbox_blocked");
+    assert.equal(rec.external_review.source_content_transmission, "not_sent");
+    assert.equal(
+      rec.review_metadata.audit_manifest.review_quality.failed_review_slot,
+      false,
+      `${invocation.target} pre-launch failure must not count as a failed review slot`,
+    );
+  }
 });
 
 test("buildJobRecord: pre-spawn cancelled records mark source content not sent", () => {
@@ -764,6 +1565,40 @@ test("buildJobRecord: malformed runtime diagnostics normalize to privacy-safe em
   }
 });
 
+test("buildJobRecord: runtime-options cleanup warning is diagnostic only across companion providers", () => {
+  const providers = [
+    [buildJobRecord, makeInvocation(), { claudeSessionId: CLAUDE_UUID }],
+    [
+      buildGeminiJobRecord,
+      makeInvocation({ target: "gemini", binary: "gemini" }),
+      { geminiSessionId: GEMINI_UUID },
+    ],
+    [
+      buildKimiJobRecord,
+      makeInvocation({ target: "kimi", binary: "kimi" }),
+      { kimiSessionId: "kimi-session-123" },
+    ],
+  ];
+
+  for (const [providerBuildJobRecord, invocation, sessionFields] of providers) {
+    const rec = providerBuildJobRecord({
+      ...invocation,
+      runtime_options_cleanup_warning: "runtime_options_persisted",
+      runtime_options_cleanup_path: "/tmp/job/runtime-options.json",
+    }, {
+      exitCode: 0,
+      parsed: { ok: true, result: "done", structured: null, denials: [] },
+      pidInfo: makePidInfo(),
+      ...sessionFields,
+    }, []);
+
+    assert.equal(rec.status, "completed");
+    assert.equal(rec.error_code, null);
+    assert.equal(rec.runtime_diagnostics.cleanup_warning, "runtime_options_persisted");
+    assert.equal(rec.runtime_diagnostics.cleanup_warning_path, "/tmp/job/runtime-options.json");
+  }
+});
+
 test("buildJobRecord: gemini success path stores gemini_session_id, not claude_session_id", () => {
   const rec = buildJobRecord(makeInvocation({
     target: "gemini",
@@ -805,7 +1640,7 @@ test("buildJobRecord: failure path — claude exited non-zero", () => {
 
 test("buildJobRecord: OAuth inference 401 is distinct from generic claude_error", () => {
   const rec = buildJobRecord(makeInvocation({
-    auth_mode: "auto",
+    auth_mode: "subscription",
     selected_auth_path: "subscription_oauth",
   }), {
     exitCode: 1,
@@ -1373,6 +2208,81 @@ test("buildJobRecord: signal-driven exit classifies as cancelled (#16 follow-up 
   }
 });
 
+test("buildJobRecord providers classify signal-like exitCode with empty stdout as interrupted", () => {
+  for (const [name, build, invocation, sessionField] of [
+    ["claude", buildJobRecord, makeInvocation(), "claudeSessionId"],
+    ["gemini", buildGeminiJobRecord, makeInvocation({
+      target: "gemini",
+      binary: "gemini",
+      review_prompt_provider: "Gemini CLI",
+    }), "geminiSessionId"],
+    ["kimi", buildKimiJobRecord, makeInvocation({
+      target: "kimi",
+      binary: "kimi",
+      review_prompt_provider: "Kimi Code CLI",
+    }), "kimiSessionId"],
+  ]) {
+    const rec = build(invocation, {
+      exitCode: 143,
+      signal: null,
+      timedOut: false,
+      parsed: {
+        ok: false,
+        reason: "empty_stdout",
+        error: "no output",
+        result: null,
+        structured: null,
+        denials: [],
+      },
+      pidInfo: makePidInfo(),
+      [sessionField]: null,
+    }, []);
+
+    assert.equal(rec.status, "failed", `${name} must fail terminal interrupted runs`);
+    assert.equal(rec.error_code, "interrupted",
+      `${name} must classify exitCode=143/signal=null/empty_stdout as interrupted`);
+    assert.equal(rec.external_review.source_content_transmission, "may_be_sent",
+      `${name} interrupted failures may have started upload but lack a clean delivery boundary`);
+    assert.notEqual(rec.suggested_action, null,
+      `${name} interrupted failures must carry an operator action`);
+  }
+});
+
+test("buildJobRecord providers do not reclassify valid parsed output with signal-like exitCode", () => {
+  for (const [name, build, invocation, sessionField, sessionValue] of [
+    ["claude", buildJobRecord, makeInvocation(), "claudeSessionId", CLAUDE_UUID],
+    ["gemini", buildGeminiJobRecord, makeInvocation({
+      target: "gemini",
+      binary: "gemini",
+      review_prompt_provider: "Gemini CLI",
+    }), "geminiSessionId", GEMINI_UUID],
+    ["kimi", buildKimiJobRecord, makeInvocation({
+      target: "kimi",
+      binary: "kimi",
+      review_prompt_provider: "Kimi Code CLI",
+    }), "kimiSessionId", "kimi-session-123"],
+  ]) {
+    const rec = build(invocation, {
+      exitCode: 143,
+      signal: null,
+      timedOut: false,
+      parsed: {
+        ok: true,
+        result: "Verdict: APPROVE\n\nNo findings.",
+        structured: null,
+        denials: [],
+      },
+      pidInfo: makePidInfo(),
+      [sessionField]: sessionValue,
+    }, []);
+
+    assert.equal(rec.status, "completed",
+      `${name} valid parsed review output must win over signal-like exitCode`);
+    assert.equal(rec.error_code, null);
+    assert.equal(rec.result, "Verdict: APPROVE\n\nNo findings.");
+  }
+});
+
 test("buildJobRecord: timedOut wins over signal (timeout, not cancelled)", () => {
   const rec = buildJobRecord(makeInvocation(), {
     exitCode: null,
@@ -1402,10 +2312,50 @@ test("kimi buildJobRecord: timeout diagnostics use Kimi target display name", ()
   assert.equal(rec.status, "failed");
   assert.equal(rec.error_code, "timeout");
   assert.match(rec.error_summary, /^Kimi Code CLI timed out/);
-  assert.match(rec.error_cause, /foreground Kimi process/);
-  assert.match(rec.suggested_action, /check Kimi service status/);
-  assert.match(rec.suggested_action, /run `kimi` interactively/);
+  assert.equal(rec.error_cause, "wall_clock_timeout");
+  assert.match(rec.suggested_action, /provider service health/);
+  assert.match(rec.suggested_action, /narrowing the scope/);
   assert.equal(rec.external_review.disclosure, sentButNoCleanResult("Kimi Code CLI"));
+});
+
+test("buildJobRecord providers guide timeout retry without automatic resend", () => {
+  const providers = [
+    {
+      name: "Claude",
+      build: buildJobRecord,
+      invocation: makeInvocation(),
+      sessionKey: "claudeSessionId",
+    },
+    {
+      name: "Gemini",
+      build: buildGeminiJobRecord,
+      invocation: makeInvocation({ target: "gemini", binary: "gemini" }),
+      sessionKey: "geminiSessionId",
+    },
+    {
+      name: "Kimi",
+      build: buildKimiJobRecord,
+      invocation: makeInvocation({ target: "kimi", binary: "kimi" }),
+      sessionKey: "kimiSessionId",
+    },
+  ];
+
+  for (const provider of providers) {
+    const rec = provider.build(provider.invocation, {
+      exitCode: null,
+      signal: "SIGTERM",
+      timedOut: true,
+      parsed: { ok: false, reason: "empty_stdout", result: null, structured: null, denials: [] },
+      pidInfo: makePidInfo(),
+      [provider.sessionKey]: null,
+    }, []);
+
+    assert.equal(rec.status, "failed", provider.name);
+    assert.equal(rec.error_code, "timeout", provider.name);
+    assert.equal(rec.external_review.source_content_transmission, "sent", provider.name);
+    assert.match(rec.suggested_action, /Do not automatically resend selected source/i, provider.name);
+    assert.match(rec.suggested_action, /fresh matching approval token/i, provider.name);
+  }
 });
 
 test("kimi buildJobRecord: step-limit exhaustion is actionable, not parse_error", () => {
@@ -1428,6 +2378,101 @@ test("kimi buildJobRecord: step-limit exhaustion is actionable, not parse_error"
   assert.match(rec.error_summary, /step limit/i);
   assert.match(rec.suggested_action, /higher step budget/i);
   assert.match(rec.suggested_action, /narrower scope/i);
+});
+
+test("buildJobRecord providers classify step-limit exhaustion with shared diagnostics", () => {
+  const providers = [
+    {
+      name: "Claude",
+      build: buildJobRecord,
+      invocation: makeInvocation(),
+      sessionKey: "claudeSessionId",
+    },
+    {
+      name: "Gemini",
+      build: buildGeminiJobRecord,
+      invocation: makeInvocation({ target: "gemini", binary: "gemini" }),
+      sessionKey: "geminiSessionId",
+    },
+    {
+      name: "Kimi",
+      build: buildKimiJobRecord,
+      invocation: makeInvocation({ target: "kimi", binary: "kimi" }),
+      sessionKey: "kimiSessionId",
+    },
+  ];
+
+  for (const provider of providers) {
+    const rec = provider.build(provider.invocation, {
+      exitCode: 1,
+      parsed: {
+        ok: false,
+        reason: "step_limit_exceeded",
+        error: "Max number of steps reached: 1",
+        result: null,
+        structured: null,
+        denials: [],
+      },
+      pidInfo: makePidInfo(),
+      [provider.sessionKey]: null,
+    }, []);
+
+    assert.equal(rec.status, "failed", provider.name);
+    assert.equal(rec.error_code, "step_limit_exceeded", provider.name);
+    assert.equal(rec.error_message, "Max number of steps reached: 1", provider.name);
+    assert.match(rec.error_summary, /step limit/i, provider.name);
+    assert.equal(rec.external_review.source_content_transmission, "sent", provider.name);
+    assert.match(rec.suggested_action, /narrower scope/i, provider.name);
+    assert.match(rec.suggested_action, /Do not automatically resend selected source/i, provider.name);
+    assert.match(rec.suggested_action, /fresh matching approval token/i, provider.name);
+  }
+});
+
+test("buildJobRecord providers keep specific resource failures on signal-like exit", () => {
+  const providers = [
+    {
+      name: "Claude",
+      build: buildJobRecord,
+      invocation: makeInvocation(),
+      sessionKey: "claudeSessionId",
+    },
+    {
+      name: "Gemini",
+      build: buildGeminiJobRecord,
+      invocation: makeInvocation({ target: "gemini", binary: "gemini" }),
+      sessionKey: "geminiSessionId",
+    },
+    {
+      name: "Kimi",
+      build: buildKimiJobRecord,
+      invocation: makeInvocation({ target: "kimi", binary: "kimi" }),
+      sessionKey: "kimiSessionId",
+    },
+  ];
+
+  for (const provider of providers) {
+    for (const reason of ["step_limit_exceeded", "usage_limited"]) {
+      const rec = provider.build(provider.invocation, {
+        exitCode: 143,
+        signal: null,
+        timedOut: false,
+        parsed: {
+          ok: false,
+          reason,
+          error: `${reason} sentinel`,
+          result: null,
+          structured: null,
+          denials: [],
+        },
+        pidInfo: makePidInfo(),
+        [provider.sessionKey]: null,
+      }, []);
+
+      assert.equal(rec.status, "failed", `${provider.name}:${reason}`);
+      assert.equal(rec.error_code, reason, `${provider.name}:${reason}`);
+      assert.notEqual(rec.error_code, "interrupted", `${provider.name}:${reason}`);
+    }
+  }
 });
 
 test("kimi buildJobRecord: usage limits are actionable and documented", () => {
@@ -1504,9 +2549,9 @@ test("kimi buildJobRecord: timeout diagnostics use Claude target display name", 
   assert.equal(rec.status, "failed");
   assert.equal(rec.error_code, "timeout");
   assert.match(rec.error_summary, /^Claude Code CLI timed out/);
-  assert.match(rec.error_cause, /foreground Claude process/);
-  assert.match(rec.suggested_action, /check Claude service status/);
-  assert.match(rec.suggested_action, /run `claude` interactively/);
+  assert.equal(rec.error_cause, "wall_clock_timeout");
+  assert.match(rec.suggested_action, /provider service health/);
+  assert.match(rec.suggested_action, /Do not automatically resend selected source/);
 });
 
 test("gemini buildJobRecord: signal-driven exit classifies as cancelled", () => {

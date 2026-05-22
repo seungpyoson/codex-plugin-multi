@@ -5,5 +5,11 @@
   "next_action": "Set ANTHROPIC_API_KEY or CLAUDE_API_KEY, or rerun with --auth-mode subscription after completing Claude OAuth.",
   "auth_mode": "api_key",
   "selected_auth_path": "api_key_env_missing",
+  "auth_path": "api_key_env_missing",
+  "billing_path": null,
+  "selected_route": "direct_api",
+  "fallback_reason": "explicit_api",
+  "source_send_approval_required": false,
+  "source_send_approval_state": "not_required",
   "auth_policy": "api_key_env_required"
 }

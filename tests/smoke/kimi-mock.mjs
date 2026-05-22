@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { existsSync, readFileSync } from "node:fs";
+import { writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { PING_PROMPT } from "../../plugins/kimi/scripts/lib/companion-common.mjs";
 
@@ -12,6 +13,7 @@ function parseCli(argv) {
   const valueFlags = new Set([
     "-p", "--prompt", "-m", "--model", "--output-format",
     "--input-format", "--session", "--resume", "--add-dir", "--max-steps-per-turn",
+    "--agent-file", "--mcp-config-file", "--skills-dir",
   ]);
   const boolFlags = new Set(["--print", "--final-message-only", "--thinking", "--plan", "-y", "--yolo"]);
   const out = { flags: {}, positional: [] };
@@ -43,6 +45,14 @@ const includeDirs = String(parsed.flags["--add-dir"] ?? "")
   .split(",")
   .map((s) => s.trim())
   .filter(Boolean);
+const expectedAllowedTools = [
+  "kimi_cli.tools.file:ReadFile",
+  "kimi_cli.tools.file:Glob",
+  "kimi_cli.tools.file:Grep",
+];
+const agentFileText = parsed.flags["--agent-file"]
+  ? readFileSync(parsed.flags["--agent-file"], "utf8")
+  : "";
 const sessionId = (parsed.flags["--session"] ?? parsed.flags["--resume"])
   ? "77777777-8888-4999-aaaa-bbbbbbbbbbbb"
   : "22222222-3333-4444-9555-666666666666";
@@ -102,6 +112,10 @@ if (process.env.KIMI_MOCK_CAPACITY_MODEL === model) {
   process.exit(1);
 }
 
+if (!isCompanionPreflight && process.env.KIMI_MOCK_MUTATE_FILE) {
+  writeFileSync(process.env.KIMI_MOCK_MUTATE_FILE, "kimi mock mutation\n", "utf8");
+}
+
 if (!isCompanionPreflight && process.env.KIMI_MOCK_STEP_LIMIT) {
   const limit = process.env.KIMI_MOCK_STEP_LIMIT;
   if (process.env.KIMI_MOCK_STEP_LIMIT_PREFIX_JSON === "1") {
@@ -134,6 +148,18 @@ const fixture = {
   t7_prompt_from_stdin: promptArg === "" && stdin.length > 0 && prompt.length > 0,
   t7_resume_id: parsed.flags["--session"] ?? parsed.flags["--resume"] ?? null,
   t7_include_dirs: includeDirs,
+  t7_agent_file: parsed.flags["--agent-file"] ?? null,
+  t7_mcp_config_file: parsed.flags["--mcp-config-file"] ?? null,
+  t7_skills_dir: parsed.flags["--skills-dir"] ?? null,
+  t7_agent_allowed_tools: expectedAllowedTools.filter((tool) => agentFileText.includes(tool)),
+  t7_agent_forbidden_tool_mentions: [
+    "kimi_cli.tools.file:WriteFile",
+    "kimi_cli.tools.file:StrReplaceFile",
+    "kimi_cli.tools.shell:Shell",
+    "kimi_cli.tools.agent:Agent",
+    "kimi_cli.tools.plan:ExitPlanMode",
+    "kimi_cli.tools.plan.enter:EnterPlanMode",
+  ].filter((tool) => agentFileText.includes(tool)),
 };
 
 const assertCwdAbs = process.env.KIMI_MOCK_ASSERT_CWD;
@@ -210,6 +236,23 @@ if (process.env.KIMI_MOCK_META_CONFLICT === "1") {
     const target = resolve(found.jobsDir, `${found.jobId}.json`);
     try { unlinkSync(target); } catch { /* nothing to remove yet */ }
     mkdirSync(target, { recursive: true });
+  }
+}
+
+if (process.env.KIMI_MOCK_STATE_LOCK_CONFLICT === "1" && !isCompanionPreflight) {
+  const { mkdirSync, writeFileSync } = await import("node:fs");
+  const { dirname, join } = await import("node:path");
+  const { hostname } = await import("node:os");
+  const found = await findActiveJobIdFromState();
+  if (found) {
+    const lockDir = join(dirname(found.jobsDir), ".state.lock");
+    mkdirSync(lockDir, { recursive: true });
+    writeFileSync(join(lockDir, "owner.json"), `${JSON.stringify({
+      pid: process.ppid,
+      hostname: hostname(),
+      startedAt: new Date().toISOString(),
+      token: "kimi-mock-state-lock-conflict",
+    })}\n`, "utf8");
   }
 }
 

@@ -23,16 +23,21 @@ import {
 import { reconcileActiveJobs } from "../../plugins/claude/scripts/lib/reconcile.mjs";
 import * as GeminiState from "../../plugins/gemini/scripts/lib/state.mjs";
 import { reconcileActiveJobs as reconcileGemini } from "../../plugins/gemini/scripts/lib/reconcile.mjs";
+import * as KimiState from "../../plugins/kimi/scripts/lib/state.mjs";
+import { reconcileActiveJobs as reconcileKimi } from "../../plugins/kimi/scripts/lib/reconcile.mjs";
 
 let INITIAL_CONFIG;
 let INITIAL_GEMINI_CONFIG;
+let INITIAL_KIMI_CONFIG;
 before(() => {
   INITIAL_CONFIG = { ...getStateConfig() };
   INITIAL_GEMINI_CONFIG = { ...GeminiState.getStateConfig() };
+  INITIAL_KIMI_CONFIG = { ...KimiState.getStateConfig() };
 });
 afterEach(() => {
   configureState(INITIAL_CONFIG);
   GeminiState.configureState(INITIAL_GEMINI_CONFIG);
+  KimiState.configureState(INITIAL_KIMI_CONFIG);
 });
 
 const SEED_INVOCATION_FIELDS = {
@@ -67,6 +72,16 @@ function freshGeminiDir() {
   process.env["RECONCILE_GEMINI_DATA"] = dir;
   GeminiState.configureState({
     pluginDataEnv: "RECONCILE_GEMINI_DATA",
+    fallbackStateRootDir: path.join(dir, "fallback"),
+  });
+  return dir;
+}
+
+function freshKimiDir() {
+  const dir = mkdtempSync(path.join(tmpdir(), "reconcile-kimi-"));
+  process.env["RECONCILE_KIMI_DATA"] = dir;
+  KimiState.configureState({
+    pluginDataEnv: "RECONCILE_KIMI_DATA",
     fallbackStateRootDir: path.join(dir, "fallback"),
   });
   return dir;
@@ -433,6 +448,33 @@ test("reconcileActiveJobs: pid_info with capture_error is treated as missing pid
   }
 });
 
+test("reconcileActiveJobs: capture_error reclaims after recorded review timeout before generic orphan window", () => {
+  const dir = freshDir();
+  try {
+    const id = "capture-error-timeout-budget";
+    seedActive(dir, id, {
+      pid_info: { pid: 1, starttime: null, argv0: null, capture_error: "EPERM" },
+      started_at: new Date(Date.now() - 20 * 60 * 1000).toISOString(),
+      review_metadata: {
+        audit_manifest: {
+          request: {
+            timeout_ms: 15 * 60 * 1000,
+          },
+        },
+      },
+    });
+    const reclaimed = reconcileActiveJobs(dir);
+    assert.equal(reclaimed.length, 1, `expected timeout-budget reclaim; got ${JSON.stringify(reclaimed)}`);
+    assert.equal(reclaimed[0].job_id, id);
+    assert.match(reclaimed[0].reason, /timeout budget/i);
+    const after = readJobFileById(dir, id);
+    assert.equal(after.status, "stale");
+    assert.equal(after.error_code, "stale_active_job");
+  } finally {
+    cleanup(dir);
+  }
+});
+
 test("reconcileActiveJobs: configurable orphan window controls when missing pid_info reclaims", () => {
   const dir = freshDir();
   try {
@@ -597,5 +639,92 @@ test("gemini reconcileActiveJobs: missing pid_info reclaimed only after orphan w
     assert.equal(GeminiState.readJobFileById(dir, "g-old").status, "stale");
   } finally {
     cleanup(dir, "RECONCILE_GEMINI_DATA");
+  }
+});
+
+test("kimi reconcileActiveJobs: dead pid promotes to stale", () => {
+  const dir = freshKimiDir();
+  try {
+    const id = "kimi-dead-pid-job";
+    KimiState.writeJobFile(dir, id, {
+      id, job_id: id,
+      target: "kimi",
+      parent_job_id: null,
+      resume_chain: [],
+      mode_profile_name: "rescue",
+      mode: "rescue",
+      model: "kimi-code/kimi-for-coding",
+      cwd: dir, workspace_root: dir,
+      containment: "none", scope: "working-tree",
+      dispose_effective: false,
+      scope_base: null, scope_paths: null,
+      prompt_head: "rescue test", schema_spec: null,
+      binary: "kimi",
+      status: "running",
+      started_at: new Date(Date.now() - 10_000).toISOString(),
+      pid_info: TEST_PID_INFO,
+      external_review: {
+        marker: "EXTERNAL REVIEW",
+        provider: "Kimi Code CLI",
+        run_kind: "background",
+      },
+      claude_session_id: null,
+      gemini_session_id: null,
+      kimi_session_id: null,
+      schema_version: 6,
+    });
+    KimiState.upsertJob(dir, { id, status: "running" });
+
+    const reclaimed = reconcileKimi(dir, {
+      verifyPidInfoFn: verifier("process_gone"),
+    });
+    assert.equal(reclaimed.length, 1);
+    const after = KimiState.readJobFileById(dir, id);
+    assert.equal(after.status, "stale");
+    assert.equal(after.external_review.run_kind, "background");
+  } finally {
+    cleanup(dir, "RECONCILE_KIMI_DATA");
+  }
+});
+
+test("kimi reconcileActiveJobs: missing pid_info reclaimed only after orphan window", () => {
+  const dir = freshKimiDir();
+  try {
+    const baseRecord = (id, startedAt) => ({
+      id, job_id: id,
+      target: "kimi",
+      parent_job_id: null,
+      resume_chain: [],
+      mode_profile_name: "rescue",
+      mode: "rescue",
+      model: "kimi-code/kimi-for-coding",
+      cwd: dir, workspace_root: dir,
+      containment: "none", scope: "working-tree",
+      dispose_effective: false,
+      scope_base: null, scope_paths: null,
+      prompt_head: "rescue test", schema_spec: null,
+      binary: "kimi",
+      status: "queued",
+      started_at: startedAt,
+      pid_info: null,
+      claude_session_id: null,
+      gemini_session_id: null,
+      kimi_session_id: null,
+      schema_version: 6,
+    });
+    const young = baseRecord("k-young", new Date(Date.now() - 60_000).toISOString());
+    const old = baseRecord("k-old", new Date(Date.now() - 4 * 60 * 60 * 1000).toISOString());
+    KimiState.writeJobFile(dir, young.id, young);
+    KimiState.writeJobFile(dir, old.id, old);
+    KimiState.upsertJob(dir, { id: young.id, status: "queued" });
+    KimiState.upsertJob(dir, { id: old.id, status: "queued" });
+
+    const reclaimed = reconcileKimi(dir);
+    assert.equal(reclaimed.length, 1, `expected 1 reclaim; got ${JSON.stringify(reclaimed)}`);
+    assert.equal(reclaimed[0].job_id, "k-old");
+    assert.equal(KimiState.readJobFileById(dir, "k-young").status, "queued");
+    assert.equal(KimiState.readJobFileById(dir, "k-old").status, "stale");
+  } finally {
+    cleanup(dir, "RECONCILE_KIMI_DATA");
   }
 });

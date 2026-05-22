@@ -6,6 +6,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 // spawnSync is reused for git init in the mutation-detection smoke.
 import { mkdtempSync, mkdirSync, rmSync, existsSync, readFileSync, readdirSync, realpathSync, writeFileSync, chmodSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -14,7 +15,12 @@ import { fileURLToPath } from "node:url";
 
 import { fixtureBranchDiffRepo, fixtureGitEnv, fixtureSeedRepo } from "../helpers/fixture-git.mjs";
 import { assertJobRecordShape } from "../helpers/job-record-shape.mjs";
+import { badVerdictReviewFixture } from "../helpers/review-fixtures.mjs";
 import { CLAUDE_PROVIDER_API_KEY_ENV } from "../../plugins/claude/scripts/lib/claude-provider-keys.mjs";
+import {
+  apiKeyAuthMode as claudeApiKeyAuthMode,
+  subscriptionAuthMode as claudeSubscriptionAuthMode,
+} from "../../plugins/claude/scripts/lib/auth-selection.mjs";
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const COMPANION = path.join(REPO_ROOT, "plugins/claude/scripts/claude-companion.mjs");
@@ -53,6 +59,10 @@ function runCompanionWithPathBinary(args, { cwd, binDir, env = {}, dataDir = mkd
   return { ...res, dataDir };
 }
 
+function claudeAuthModeArgs(mode) {
+  return ["--auth-mode", mode];
+}
+
 function cleanup(dataDir) {
   rmSync(dataDir, { recursive: true, force: true, maxRetries: 3, retryDelay: 50 });
 }
@@ -79,6 +89,10 @@ function writeExecutable(dir, name, source) {
   writeFileSync(bin, source, "utf8");
   chmodSync(bin, 0o755);
   return bin;
+}
+
+function sha256(value) {
+  return createHash("sha256").update(value).digest("hex");
 }
 
 function readOnlyJobRecord(dataDir) {
@@ -232,6 +246,13 @@ test("run --mode=review --foreground: emits JobRecord with status=completed", ()
     assert.equal(result.review_metadata.audit_manifest.request.model, "claude-haiku-4-5-20251001");
     assert.equal(result.review_metadata.audit_manifest.request.timeout_ms, 900000);
     assert.match(result.review_metadata.audit_manifest.prompt_builder.plugin_commit, /^[a-f0-9]{40}$/);
+    assert.equal(result.review_metadata.audit_manifest.selected_route, "subscription_oauth");
+    assert.equal(result.review_metadata.audit_manifest.fallback_reason, null);
+    assert.equal(result.review_metadata.audit_manifest.auth_path, "subscription_oauth");
+    assert.equal(result.review_metadata.audit_manifest.billing_path, null);
+    assert.equal(result.review_metadata.audit_manifest.source_send_approval_required, false);
+    assert.equal(result.review_metadata.audit_manifest.source_send_approval_state, "not_required");
+    assert.equal(result.review_metadata.audit_manifest.approval_scope, null);
     assert.notEqual(
       result.review_metadata.audit_manifest.prompt_builder.plugin_commit,
       result.review_metadata.audit_manifest.git_identity.head_sha,
@@ -274,6 +295,54 @@ test("custom-review prompt includes selected source content", () => {
   }
 });
 
+test("custom-review guides substantive missing-verdict retry without automatic resend", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "claude-bad-verdict-cwd-"));
+  const fixturePath = path.join(cwd, "claude-bad-verdict-fixture.json");
+  seedMinimalRepo(cwd);
+  const badResult = badVerdictReviewFixture("Claude missing verdict replay marker.");
+  writeFileSync(fixturePath, JSON.stringify({
+    type: "result",
+    subtype: "success",
+    is_error: false,
+    result: badResult,
+    num_turns: 1,
+    duration_ms: 100,
+    duration_api_ms: 80,
+    total_cost_usd: 0.001,
+    usage: { input_tokens: 10, output_tokens: 5, service_tier: "standard" },
+    permission_denials: [],
+    apiKeySource: "None",
+  }) + "\n");
+
+  const { stdout, stderr, status, dataDir } = runCompanion(
+    ["run", "--mode=custom-review", "--foreground", "--model", "claude-haiku-4-5-20251001",
+     "--cwd", cwd, "--scope-paths", "seed.txt", "--", "review selected source"],
+    { cwd, env: { CLAUDE_MOCK_FIXTURE_PATH: fixturePath } },
+  );
+  try {
+    assert.equal(status, 2, `exit ${status}: stderr=${stderr}; stdout=${stdout}`);
+    const record = JSON.parse(stdout);
+    assert.equal(record.status, "failed");
+    assert.equal(record.error_code, "review_not_completed");
+    assert.equal(record.error_message, "review_quality_failed:missing_verdict");
+    assert.equal(record.result, badResult);
+    assert.equal(record.external_review.source_content_transmission, "sent");
+    assert.deepEqual(
+      record.review_metadata.audit_manifest.review_quality.semantic_failure_reasons,
+      ["missing_verdict"],
+    );
+    assert.match(record.suggested_action, /Do not automatically resend selected source/i);
+    assert.match(record.suggested_action, /fresh matching approval token/i);
+    assert.match(record.suggested_action, /narrowing the scope/i);
+    assert.match(record.suggested_action, /sharding/i);
+    assert.match(record.suggested_action, /relaying/i);
+    assert.match(record.suggested_action, /interactive Claude/i);
+  } finally {
+    cleanup(dataDir);
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
 test("custom-review permission-mode ladder does not retry an unusable Claude review slot", () => {
   const cwd = mkdtempSync(path.join(tmpdir(), "claude-permission-ladder-cwd-"));
   fixtureSeedRepo(cwd, {
@@ -283,9 +352,20 @@ test("custom-review permission-mode ladder does not retry an unusable Claude rev
   const tmp = mkdtempSync(path.join(tmpdir(), "claude-permission-ladder-bin-"));
   const attemptsPath = path.join(tmp, "attempts.jsonl");
   const binary = writeExecutable(tmp, "claude-ladder", `#!/usr/bin/env node
-import { appendFileSync } from "node:fs";
+import { appendFileSync, readFileSync } from "node:fs";
 
 const argv = process.argv.slice(2);
+const prompt = argv.includes("--input-format") ? readFileSync(0, "utf8") : argv.join(" ");
+if (!argv.includes("--permission-mode") || prompt.includes("reply with exactly: pong")) {
+  process.stdout.write(JSON.stringify({
+    type: "result",
+    is_error: false,
+    result: "pong",
+    session_id: "11111111-1111-4111-8111-111111111111",
+    usage: { input_tokens: 1, output_tokens: 1 }
+  }) + "\\n");
+  process.exit(0);
+}
 const modeIndex = argv.indexOf("--permission-mode");
 const mode = modeIndex >= 0 ? argv[modeIndex + 1] : null;
 const sessionIndex = argv.indexOf("--session-id");
@@ -308,13 +388,13 @@ process.stderr.write("unexpected retry through permission mode " + mode + "\\n")
 process.exit(9);
 `);
   const { stdout, stderr, status, dataDir } = runCompanion(
-    ["run", "--mode=custom-review", "--foreground", "--auth-mode", "api_key",
+    ["run", "--mode=custom-review", "--foreground", ...claudeAuthModeArgs(claudeSubscriptionAuthMode()),
      "--binary", binary, "--model", "claude-haiku-4-5-20251001",
      "--cwd", cwd, "--scope-paths", "seed.txt", "--", "review selected source"],
     {
       cwd,
       env: {
-        ANTHROPIC_API_KEY: "test-key",
+        ANTHROPIC_API_KEY: "",
         CLAUDE_API_KEY: "",
         CLAUDE_REVIEW_PERMISSION_MODES: "dontAsk,auto,acceptEdits",
       },
@@ -348,9 +428,20 @@ test("custom-review permission-mode ladder retries parse errors in the next mode
   const tmp = mkdtempSync(path.join(tmpdir(), "claude-permission-parse-retry-bin-"));
   const attemptsPath = path.join(tmp, "attempts.jsonl");
   const binary = writeExecutable(tmp, "claude-parse-retry", `#!/usr/bin/env node
-import { appendFileSync } from "node:fs";
+import { appendFileSync, readFileSync } from "node:fs";
 
 const argv = process.argv.slice(2);
+const prompt = argv.includes("--input-format") ? readFileSync(0, "utf8") : argv.join(" ");
+if (!argv.includes("--permission-mode") || prompt.includes("reply with exactly: pong")) {
+  process.stdout.write(JSON.stringify({
+    type: "result",
+    is_error: false,
+    result: "pong",
+    session_id: "11111111-1111-4111-8111-111111111111",
+    usage: { input_tokens: 1, output_tokens: 1 }
+  }) + "\\n");
+  process.exit(0);
+}
 const modeIndex = argv.indexOf("--permission-mode");
 const mode = modeIndex >= 0 ? argv[modeIndex + 1] : null;
 const sessionIndex = argv.indexOf("--session-id");
@@ -392,13 +483,13 @@ process.stderr.write("unexpected retry through permission mode " + mode + "\\n")
 process.exit(9);
 `);
   const { stdout, stderr, status, dataDir } = runCompanion(
-    ["run", "--mode=custom-review", "--foreground", "--auth-mode", "api_key",
+    ["run", "--mode=custom-review", "--foreground", ...claudeAuthModeArgs(claudeSubscriptionAuthMode()),
      "--binary", binary, "--model", "claude-haiku-4-5-20251001",
      "--cwd", cwd, "--scope-paths", "seed.txt", "--", "review selected source"],
     {
       cwd,
       env: {
-        ANTHROPIC_API_KEY: "test-key",
+        ANTHROPIC_API_KEY: "",
         CLAUDE_API_KEY: "",
         CLAUDE_REVIEW_PERMISSION_MODES: "dontAsk,auto,acceptEdits",
       },
@@ -431,9 +522,20 @@ test("custom-review permission-mode ladder retries claude_error in the next mode
   const tmp = mkdtempSync(path.join(tmpdir(), "claude-permission-error-retry-bin-"));
   const attemptsPath = path.join(tmp, "attempts.jsonl");
   const binary = writeExecutable(tmp, "claude-error-retry", `#!/usr/bin/env node
-import { appendFileSync } from "node:fs";
+import { appendFileSync, readFileSync } from "node:fs";
 
 const argv = process.argv.slice(2);
+const prompt = argv.includes("--input-format") ? readFileSync(0, "utf8") : argv.join(" ");
+if (!argv.includes("--permission-mode") || prompt.includes("reply with exactly: pong")) {
+  process.stdout.write(JSON.stringify({
+    type: "result",
+    is_error: false,
+    result: "pong",
+    session_id: "11111111-1111-4111-8111-111111111111",
+    usage: { input_tokens: 1, output_tokens: 1 }
+  }) + "\\n");
+  process.exit(0);
+}
 const modeIndex = argv.indexOf("--permission-mode");
 const mode = modeIndex >= 0 ? argv[modeIndex + 1] : null;
 const sessionIndex = argv.indexOf("--session-id");
@@ -482,13 +584,13 @@ process.stderr.write("unexpected retry through permission mode " + mode + "\\n")
 process.exit(9);
 `);
   const { stdout, stderr, status, dataDir } = runCompanion(
-    ["run", "--mode=custom-review", "--foreground", "--auth-mode", "api_key",
+    ["run", "--mode=custom-review", "--foreground", ...claudeAuthModeArgs(claudeSubscriptionAuthMode()),
      "--binary", binary, "--model", "claude-haiku-4-5-20251001",
      "--cwd", cwd, "--scope-paths", "seed.txt", "--", "review selected source"],
     {
       cwd,
       env: {
-        ANTHROPIC_API_KEY: "test-key",
+        ANTHROPIC_API_KEY: "",
         CLAUDE_API_KEY: "",
         CLAUDE_REVIEW_PERMISSION_MODES: "dontAsk,auto,acceptEdits",
       },
@@ -512,6 +614,119 @@ process.exit(9);
   }
 });
 
+test("custom-review permission-mode ladder starts retry attempts with fresh Claude session IDs", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "claude-permission-fresh-session-cwd-"));
+  fixtureSeedRepo(cwd, {
+    fileName: "seed.txt",
+    fileContents: "claude permission fresh session retry sentinel\n",
+  });
+  const tmp = mkdtempSync(path.join(tmpdir(), "claude-permission-fresh-session-bin-"));
+  const attemptsPath = path.join(tmp, "attempts.jsonl");
+  const seenSessionsPath = path.join(tmp, "seen-sessions.json");
+  const binary = writeExecutable(tmp, "claude-fresh-session-retry", `#!/usr/bin/env node
+import { appendFileSync, existsSync, readFileSync, writeFileSync } from "node:fs";
+
+const argv = process.argv.slice(2);
+const prompt = argv.includes("--input-format") ? readFileSync(0, "utf8") : argv.join(" ");
+if (!argv.includes("--permission-mode") || prompt.includes("reply with exactly: pong")) {
+  process.stdout.write(JSON.stringify({
+    type: "result",
+    is_error: false,
+    result: "pong",
+    session_id: "11111111-1111-4111-8111-111111111111",
+    usage: { input_tokens: 1, output_tokens: 1 }
+  }) + "\\n");
+  process.exit(0);
+}
+const modeIndex = argv.indexOf("--permission-mode");
+const mode = modeIndex >= 0 ? argv[modeIndex + 1] : null;
+const sessionIndex = argv.indexOf("--session-id");
+const sessionId = sessionIndex >= 0 ? argv[sessionIndex + 1] : "11111111-1111-4111-8111-111111111111";
+appendFileSync(${JSON.stringify(attemptsPath)}, JSON.stringify({ mode, sessionId }) + "\\n");
+
+const seen = existsSync(${JSON.stringify(seenSessionsPath)})
+  ? JSON.parse(readFileSync(${JSON.stringify(seenSessionsPath)}, "utf8"))
+  : [];
+if (seen.includes(sessionId)) {
+  process.stderr.write("Error: Session ID " + sessionId + " is already in use.\\n");
+  process.exit(1);
+}
+seen.push(sessionId);
+writeFileSync(${JSON.stringify(seenSessionsPath)}, JSON.stringify(seen));
+
+if (mode === "dontAsk") {
+  process.stdout.write(JSON.stringify({
+    type: "result",
+    is_error: true,
+    result: "tool denied in dontAsk after session allocation",
+    session_id: sessionId,
+    usage: { input_tokens: 1, output_tokens: 1 },
+    permission_denials: []
+  }) + "\\n");
+  process.exit(1);
+}
+
+if (mode === "auto") {
+  process.stdout.write(JSON.stringify({
+    type: "result",
+    is_error: false,
+    result: [
+      "Verdict: APPROVE",
+      "Blocking findings",
+      "- None. I inspected the selected source provided to this Claude smoke fixture and found no blocking issue.",
+      "Non-blocking concerns",
+      "- None for this fixture.",
+      "Test gaps",
+      "- Existing smoke fixture coverage is sufficient for this wrapper path.",
+      "Inspection status",
+      "- The selected source was available and the mock returned a complete review, not a placeholder.",
+      "Checklist:",
+      "- PASS selected scope was available.",
+      "- PASS selected source was inspected before verdict.",
+      "- PASS no blocker was invented."
+    ].join("\\n"),
+    session_id: sessionId,
+    usage: { input_tokens: 1, output_tokens: 1 },
+    permission_denials: []
+  }) + "\\n");
+  process.exit(0);
+}
+
+process.stderr.write("unexpected retry through permission mode " + mode + "\\n");
+process.exit(9);
+`);
+  const { stdout, stderr, status, dataDir } = runCompanion(
+    ["run", "--mode=custom-review", "--foreground", ...claudeAuthModeArgs(claudeSubscriptionAuthMode()),
+     "--binary", binary, "--model", "claude-haiku-4-5-20251001",
+     "--cwd", cwd, "--scope-paths", "seed.txt", "--", "review selected source"],
+    {
+      cwd,
+      env: {
+        ANTHROPIC_API_KEY: "",
+        CLAUDE_API_KEY: "",
+        CLAUDE_REVIEW_PERMISSION_MODES: "dontAsk,auto,acceptEdits",
+      },
+    },
+  );
+  try {
+    assert.equal(status, 0, `exit ${status}: stderr=${stderr}; stdout=${stdout}`);
+    const record = JSON.parse(stdout);
+    assert.equal(record.status, "completed");
+    assert.equal(record.review_metadata.permission_mode_effective, "auto");
+    const attempts = readFileSync(attemptsPath, "utf8").trim().split("\n")
+      .map((line) => JSON.parse(line));
+    assert.deepEqual(attempts.map((attempt) => attempt.mode), ["dontAsk", "auto"]);
+    assert.notEqual(attempts[0].sessionId, attempts[1].sessionId);
+    assert.match(attempts[0].sessionId, /^[0-9a-f-]{36}$/i);
+    assert.match(attempts[1].sessionId, /^[0-9a-f-]{36}$/i);
+    assert.equal(record.claude_session_id, attempts[1].sessionId);
+  } finally {
+    cleanup(dataDir);
+    rmSync(cwd, { recursive: true, force: true });
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
 test("custom-review permission-mode ladder does not retry after timeout", () => {
   const cwd = mkdtempSync(path.join(tmpdir(), "claude-permission-timeout-cwd-"));
   fixtureSeedRepo(cwd, {
@@ -521,22 +736,33 @@ test("custom-review permission-mode ladder does not retry after timeout", () => 
   const tmp = mkdtempSync(path.join(tmpdir(), "claude-permission-timeout-bin-"));
   const attemptsPath = path.join(tmp, "attempts.jsonl");
   const binary = writeExecutable(tmp, "claude-timeout", `#!/usr/bin/env node
-import { appendFileSync } from "node:fs";
+import { appendFileSync, readFileSync } from "node:fs";
 
 const argv = process.argv.slice(2);
+const prompt = argv.includes("--input-format") ? readFileSync(0, "utf8") : argv.join(" ");
+if (!argv.includes("--permission-mode") || prompt.includes("reply with exactly: pong")) {
+  process.stdout.write(JSON.stringify({
+    type: "result",
+    is_error: false,
+    result: "pong",
+    session_id: "11111111-1111-4111-8111-111111111111",
+    usage: { input_tokens: 1, output_tokens: 1 }
+  }) + "\\n");
+  process.exit(0);
+}
 const modeIndex = argv.indexOf("--permission-mode");
 const mode = modeIndex >= 0 ? argv[modeIndex + 1] : null;
 appendFileSync(${JSON.stringify(attemptsPath)}, JSON.stringify({ mode }) + "\\n");
 setInterval(() => {}, 1000);
 `);
   const { stdout, stderr, status, dataDir } = runCompanion(
-    ["run", "--mode=custom-review", "--foreground", "--auth-mode", "api_key",
+    ["run", "--mode=custom-review", "--foreground", ...claudeAuthModeArgs(claudeSubscriptionAuthMode()),
      "--binary", binary, "--model", "claude-haiku-4-5-20251001",
      "--cwd", cwd, "--timeout-ms", "1000", "--scope-paths", "seed.txt", "--", "review selected source"],
     {
       cwd,
       env: {
-        ANTHROPIC_API_KEY: "test-key",
+        ANTHROPIC_API_KEY: "",
         CLAUDE_API_KEY: "",
         CLAUDE_REVIEW_PERMISSION_MODES: "dontAsk,auto,acceptEdits",
       },
@@ -569,7 +795,7 @@ test("custom-review permission-mode ladder refuses bypassPermissions without exp
     fileContents: "claude bypass gate sentinel\n",
   });
   const { stdout, stderr, status, dataDir } = runCompanion(
-    ["run", "--mode=custom-review", "--foreground", "--auth-mode", "api_key",
+    ["run", "--mode=custom-review", "--foreground", ...claudeAuthModeArgs(claudeApiKeyAuthMode()),
      "--model", "claude-haiku-4-5-20251001",
      "--cwd", cwd, "--scope-paths", "seed.txt", "--", "review selected source"],
     {
@@ -913,6 +1139,30 @@ test("run --mode=rescue: uses default model from config/models.json", () => {
   }
 });
 
+test("run --mode=rescue does not scan cwd files for selected-source redaction", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "smoke-rescue-redaction-cwd-"));
+  const locked = path.join(cwd, "locked-source.txt");
+  writeFileSync(locked, "RESCUE_SOURCE_BODY_SHOULD_NOT_BE_SCANNED\n");
+  chmodSync(locked, 0o000);
+  const { stdout, status, stderr, dataDir } = runCompanion(
+    ["run", "--mode=rescue", "--foreground",
+     "--model", "claude-haiku-4-5-20251001",
+     "--cwd", cwd, "--", "investigate without selected source"],
+    { cwd }
+  );
+  try {
+    assert.equal(status, 0, `exit ${status}: stderr=${stderr}; stdout=${stdout}`);
+    const result = JSON.parse(stdout);
+    assert.equal(result.mode, "rescue");
+    assert.equal(result.review_metadata, null);
+    assert.doesNotMatch(stdout, /RESCUE_SOURCE_BODY_SHOULD_NOT_BE_SCANNED/);
+  } finally {
+    chmodSync(locked, 0o600);
+    cleanup(dataDir);
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
 test("run: meta.json persisted to workspace state", () => {
   const cwd = mkdtempSync(path.join(tmpdir(), "smoke-cwd-"));
   seedMinimalRepo(cwd);
@@ -1072,6 +1322,51 @@ test("run --background: worker spawn failure writes failed JobRecord instead of 
       false,
       "prompt sidecar must be removed when the worker never launches",
     );
+    assert.equal(
+      existsSync(path.join(path.dirname(metaPath), record.job_id, "runtime-options.json")),
+      false,
+      "runtime-options sidecar must be removed when the worker never launches",
+    );
+  } finally {
+    cleanup(dataDir);
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("run --background: runtime-options write failure removes prompt sidecar", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "smoke-bg-runtime-sidecar-fail-"));
+  fixtureSeedRepo(cwd, {
+    fileName: "seed.txt",
+    fileContents: "runtime options failure source sentinel\n",
+  });
+  const dataDir = mkdtempSync(path.join(tmpdir(), "runtime-sidecar-fail-data-"));
+  const preload = path.join(REPO_ROOT, "tests/helpers/fail-runtime-options-rename.mjs");
+  const result = runCompanion(
+    ["run", "--mode=custom-review", "--background", "--model", "claude-haiku-4-5-20251001",
+     "--cwd", cwd, "--scope-paths", "seed.txt", "--", "review selected source"],
+    {
+      cwd,
+      dataDir,
+      env: {
+        NODE_OPTIONS: `--import ${preload}`,
+        CLAUDE_TEST_FAIL_RENAME_BASENAME: "runtime-options.json",
+      },
+    },
+  );
+  try {
+    assert.notEqual(result.status, 0, "launcher must fail before emitting a launched event");
+    const error = JSON.parse(result.stdout);
+    assert.equal(error.error, "sidecar_failed");
+    assert.match(error.message, /runtime-options\.json|rename failure|sidecar write failed/);
+
+    const { metaPath, record } = readOnlyJobRecord(dataDir);
+    assert.equal(record.status, "failed");
+    assert.match(record.error_message, /background prompt sidecar write failed/);
+    const sidecarDir = path.join(path.dirname(metaPath), record.job_id);
+    assert.equal(existsSync(path.join(sidecarDir, "prompt.txt")), false,
+      "prompt sidecar must be removed when runtime-options write fails after prompt write");
+    assert.equal(existsSync(path.join(sidecarDir, "runtime-options.json")), false,
+      "runtime-options sidecar must not persist after failed atomic rename");
   } finally {
     cleanup(dataDir);
     rmSync(cwd, { recursive: true, force: true });
@@ -1398,16 +1693,60 @@ test("continue --job: resumes a prior session via --resume", () => {
     assert.notEqual(out.job_id, job_id, "continue must mint a new job_id");
     // T7.4 (§21.3): foreground stdout is a JobRecord, not an ok-envelope.
     assert.equal(out.status, "completed");
-    assert.equal(out.parent_job_id, job_id, "resume carries parent_job_id");
-    assert.equal(out.review_metadata.audit_manifest.request.timeout_ms, priorTimeoutMs);
+    assert.equal(out.external_review.parent_job_id, job_id, "resume carries parent_job_id");
+    const continued = readJobRecord(dataDir, out.job_id);
+    assert.equal(continued.parent_job_id, job_id, "persisted resume carries parent_job_id");
+    assert.equal(continued.review_metadata.audit_manifest.request.timeout_ms, priorTimeoutMs);
     assert.equal(
-      out.runtime_diagnostics.child_cwd,
+      continued.runtime_diagnostics.child_cwd,
       prior.runtime_diagnostics.child_cwd,
       "continue must run Claude from the same project cwd so --resume can find the persisted session"
     );
   } finally {
     rmSync(dataDir, { recursive: true, force: true });
     rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("continue --job from wrong cwd returns workspace retrieval guidance", () => {
+  const cwd = realpathSync(mkdtempSync(path.join(tmpdir(), "smoke-continue-right-cwd-")));
+  const wrongCwd = realpathSync(mkdtempSync(path.join(tmpdir(), "smoke-continue-wrong-cwd-")));
+  writeFileSync(path.join(cwd, "seed.txt"), "continue wrong cwd seed\n");
+  const dataDir = mkdtempSync(path.join(tmpdir(), "continue-wrong-cwd-data-"));
+  const env = {
+    ...process.env,
+    CLAUDE_BINARY: MOCK,
+    CLAUDE_PLUGIN_DATA: dataDir,
+  };
+  try {
+    const runRes = spawnSync("node", [
+      path.join(REPO_ROOT, "plugins/claude/scripts/claude-companion.mjs"),
+      "run", "--mode=custom-review", "--foreground",
+      "--model", "claude-haiku-4-5-20251001",
+      "--scope-paths", "seed.txt",
+      "--cwd", cwd, "--", "seed",
+    ], { cwd, encoding: "utf8", env });
+    assert.equal(runRes.status, 0, runRes.stderr);
+    const { job_id } = JSON.parse(runRes.stdout);
+
+    const contRes = spawnSync("node", [
+      path.join(REPO_ROOT, "plugins/claude/scripts/claude-companion.mjs"),
+      "continue", "--job", job_id, "--foreground", "--", "follow-up",
+    ], { cwd: wrongCwd, encoding: "utf8", env });
+    assert.equal(contRes.status, 1);
+    const parsed = JSON.parse(contRes.stdout);
+    assert.equal(parsed.error, "not_found");
+    assert.equal(parsed.job_id, job_id);
+    assert.equal(parsed.matched_workspace, true);
+    assert.equal("matched_workspace_root" in parsed, false);
+    assert.doesNotMatch(JSON.stringify(parsed), new RegExp(cwd.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+    assert.match(parsed.suggested_action, /different workspace/);
+    assert.match(parsed.suggested_action, /continue --job/);
+    assert.match(parsed.suggested_action, /--cwd <workspace used when the job was launched>/);
+  } finally {
+    rmSync(dataDir, { recursive: true, force: true });
+    rmSync(cwd, { recursive: true, force: true });
+    rmSync(wrongCwd, { recursive: true, force: true });
   }
 });
 
@@ -1603,6 +1942,108 @@ test("continue --job: api_key auth failure includes structured diagnostics befor
   }
 });
 
+test("continue --job: explicit api_key source-bearing continuation requires and accepts approval token", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "smoke-continue-api-approval-cwd-"));
+  fixtureSeedRepo(cwd, {
+    fileName: "seed.txt",
+    fileContents: "CLAUDE_CONTINUE_APPROVED_API_SOURCE_SENTINEL\n",
+  });
+  const dataDir = mkdtempSync(path.join(tmpdir(), "continue-api-approval-data-"));
+  const tmp = mkdtempSync(path.join(tmpdir(), "continue-api-approval-bin-"));
+  const leakMarker = path.join(tmp, "source-leaked");
+  const binary = writeExecutable(tmp, "claude-continue-approved-api-source", `#!/usr/bin/env node
+import { readFileSync, writeFileSync } from "node:fs";
+
+const argv = process.argv.slice(2);
+const prompt = argv.includes("--input-format") ? readFileSync(0, "utf8") : (argv[argv.indexOf("-p") + 1] ?? "");
+if (prompt.includes("CLAUDE_CONTINUE_APPROVED_API_SOURCE_SENTINEL")) {
+  writeFileSync(${JSON.stringify(leakMarker)}, "leaked");
+}
+process.stdout.write(JSON.stringify({
+  type: "result",
+  is_error: false,
+  result: "Verdict: APPROVE\\nBlocking findings\\n- None.\\nNon-blocking concerns\\n- None.\\nInspection status\\n- I inspected seed.txt.",
+  session_id: "55555555-5555-4555-8555-555555555555",
+  usage: { input_tokens: 1, output_tokens: 1 }
+}) + "\\n");
+process.exit(0);
+`);
+  const commonOptions = [
+    "--mode=custom-review", "--binary", binary, "--model", "claude-haiku-4-5-20251001",
+    "--cwd", cwd, "--scope-paths", "seed.txt",
+  ];
+  const env = { ANTHROPIC_API_KEY: "secret-test-value", CLAUDE_API_KEY: "" };
+  try {
+    const parent = runCompanion(
+      ["run", "--foreground", ...commonOptions, "--", "seed"],
+      { cwd, dataDir, env },
+    );
+    assert.equal(parent.status, 0, parent.stderr || parent.stdout);
+    const parentRecord = JSON.parse(parent.stdout);
+    rmSync(leakMarker, { force: true });
+
+    const unapproved = runCompanion(
+      ["continue", "--job", parentRecord.job_id, "--foreground", "--lifecycle-events", "jsonl",
+       "--auth-mode", claudeApiKeyAuthMode(), "--binary", binary, "--cwd", cwd, "--", "follow-up"],
+      { cwd, dataDir, env },
+    );
+    assert.equal(unapproved.status, 2);
+    const unapprovedRecord = JSON.parse(unapproved.stdout);
+    assert.equal(unapprovedRecord.status, "failed");
+    assert.equal(unapprovedRecord.error_code, "approval_required");
+    assert.equal(unapprovedRecord.external_review.source_content_transmission, "not_sent");
+    assert.equal(existsSync(leakMarker), false, "unapproved API-key continuation must not send selected source");
+
+    const approval = runCompanion(
+      ["approval-request", ...claudeAuthModeArgs(claudeApiKeyAuthMode()), ...commonOptions, "--", "follow-up"],
+      { cwd, dataDir, env },
+    );
+    assert.equal(approval.status, 0, approval.stderr || approval.stdout);
+    const request = JSON.parse(approval.stdout);
+    assert.equal(request.source_content_transmission, "not_sent");
+    assert.match(request.approval_token.value, /^[a-f0-9]{64}$/);
+    assert.equal(existsSync(leakMarker), false, "approval-request must not launch Claude or send selected source");
+
+    const mismatched = runCompanion(
+      ["continue", "--job", parentRecord.job_id, "--foreground", "--lifecycle-events", "jsonl",
+       "--auth-mode", claudeApiKeyAuthMode(), "--binary", binary, "--cwd", cwd,
+       "--approval-token", request.approval_token.value, "--", "different follow-up"],
+      { cwd, dataDir, env },
+    );
+    assert.equal(mismatched.status, 2);
+    const mismatchedRecord = JSON.parse(mismatched.stdout);
+    assert.equal(mismatchedRecord.status, "failed");
+    assert.equal(mismatchedRecord.error_code, "approval_required");
+    assert.equal(mismatchedRecord.external_review.source_content_transmission, "not_sent");
+    assert.equal(existsSync(leakMarker), false, "approval token must bind to the rendered prompt hash");
+
+    const approved = runCompanion(
+      ["continue", "--job", parentRecord.job_id, "--foreground", "--lifecycle-events", "jsonl",
+       "--auth-mode", claudeApiKeyAuthMode(), "--binary", binary, "--cwd", cwd,
+       "--approval-token", request.approval_token.value, "--", "follow-up"],
+      { cwd, dataDir, env },
+    );
+    assert.equal(approved.status, 0, approved.stderr || approved.stdout);
+    const lines = approved.stdout.trim().split("\n").map((line) => JSON.parse(line));
+    const record = lines.at(-1);
+    assert.equal(record.status, "completed");
+    assert.equal(record.external_review.source_content_transmission, "sent");
+    assert.equal(record.review_metadata.audit_manifest.selected_route, "direct_api");
+    assert.equal(record.review_metadata.audit_manifest.fallback_reason, "explicit_api");
+    assert.equal(record.review_metadata.audit_manifest.source_send_approval_required, true);
+    assert.equal(record.review_metadata.audit_manifest.source_send_approval_state, "approved");
+    assert.equal(existsSync(leakMarker), true, "matching approval token should allow source-bearing Claude continuation");
+    assert.equal(Object.hasOwn(record, "approval_token"), false);
+    assert.equal(Object.hasOwn(record.review_metadata.audit_manifest, "approval_token"), false);
+    assert.doesNotMatch(approval.stdout + approved.stdout + JSON.stringify(record), /secret-test-value/);
+    assert.doesNotMatch(JSON.stringify(record), new RegExp(request.approval_token.value));
+  } finally {
+    cleanup(dataDir);
+    rmSync(cwd, { recursive: true, force: true });
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
 test("continue --job: refuses to resume a running job", () => {
   const cwd = mkdtempSync(path.join(tmpdir(), "smoke-continue-running-"));
   const dataDir = mkdtempSync(path.join(tmpdir(), "continue-running-data-"));
@@ -1773,6 +2214,46 @@ test("run --foreground: meta-write conflict produces fallback failed record, no 
       "fallback failed-record must overwrite the running entry; got " +
       JSON.stringify(stateJobs.map((j) => ({ id: j.id, status: j.status })))
     );
+  } finally {
+    rmSync(dataDir, { recursive: true, force: true });
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("run --foreground: state lock timeout preserves finalization_failed meta", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "smoke-state-lock-timeout-"));
+  const dataDir = mkdtempSync(path.join(tmpdir(), "state-lock-timeout-data-"));
+  const preload = path.join(cwd, "short-lock-timeout.mjs");
+  writeFileSync(preload, `
+import { configureState } from ${JSON.stringify(path.join(REPO_ROOT, "plugins/claude/scripts/lib/state.mjs"))};
+configureState({ lockTimeoutMs: 150 });
+`, "utf8");
+  try {
+    seedMinimalRepo(cwd);
+    const res = runCompanion(
+      ["run", "--mode=rescue", "--foreground",
+       "--model", "claude-haiku-4-5-20251001",
+       "--cwd", cwd, "--", "seed"],
+      {
+        cwd,
+        dataDir,
+        env: {
+          CLAUDE_MOCK_STATE_LOCK_CONFLICT: "1",
+          NODE_OPTIONS: `--import=${preload}`,
+        },
+      },
+    );
+    assert.notEqual(res.status, 0, "state lock timeout must fail finalization");
+    assert.doesNotMatch(res.stderr, /unhandled/i);
+    const err = JSON.parse(res.stdout);
+    assert.equal(err.error, "finalization_failed");
+    assert.match(err.message, /state_lock_timeout/);
+
+    const { record } = readOnlyJobRecord(dataDir);
+    assert.equal(record.status, "failed");
+    assert.equal(record.error_code, "finalization_failed");
+    assert.match(record.error_message, /state_lock_timeout/);
+    assert.equal(record.external_review.source_content_transmission, "sent");
   } finally {
     rmSync(dataDir, { recursive: true, force: true });
     rmSync(cwd, { recursive: true, force: true });
@@ -2393,11 +2874,11 @@ process.stdout.write(JSON.stringify({
   }
 });
 
-test("ping: auto auth prefers Claude subscription when API key is present", () => {
-  const tmp = mkdtempSync(path.join(tmpdir(), "claude-ping-auto-subscription-"));
-  const binary = writeExecutable(tmp, "claude-auto-subscription", `#!/usr/bin/env node
+test("ping: default subscription auth ignores Claude API key when present", () => {
+  const tmp = mkdtempSync(path.join(tmpdir(), "claude-ping-subscription-default-"));
+  const binary = writeExecutable(tmp, "claude-subscription-default", `#!/usr/bin/env node
 if (process.env.ANTHROPIC_API_KEY) {
-  process.stderr.write("ANTHROPIC_API_KEY should be ignored for initial auto subscription probe\\n");
+  process.stderr.write("ANTHROPIC_API_KEY should be ignored for subscription probe\\n");
   process.exit(9);
 }
 process.stdout.write(JSON.stringify({
@@ -2408,17 +2889,17 @@ process.stdout.write(JSON.stringify({
 }) + "\\n");
 `);
   const { stdout, status, dataDir } = runCompanion(
-    ["ping", "--auth-mode", "auto", "--binary", binary, "--model", "claude-haiku-4-5-20251001"],
+    ["ping", "--binary", binary, "--model", "claude-haiku-4-5-20251001"],
     { cwd: tmpdir(), env: { ANTHROPIC_API_KEY: "secret-test-value" } },
   );
   try {
     assert.equal(status, 0);
     const result = JSON.parse(stdout);
-    assert.equal(result.auth_mode, "auto");
+    assert.equal(result.auth_mode, "subscription");
     assert.equal(result.selected_auth_path, "subscription_oauth");
     assert.match(result.summary, /first-party CLI auth/);
     assert.deepEqual(result.ignored_env_credentials, ["ANTHROPIC_API_KEY"]);
-    assert.equal(result.auth_policy, "subscription_oauth_with_api_key_fallback");
+    assert.equal(result.auth_policy, "api_key_env_ignored");
     assert.doesNotMatch(stdout, /secret-test-value/);
   } finally {
     cleanup(dataDir);
@@ -2426,9 +2907,9 @@ process.stdout.write(JSON.stringify({
   }
 });
 
-test("ping: auto auth falls back to Claude API key when subscription is unavailable", () => {
-  const tmp = mkdtempSync(path.join(tmpdir(), "claude-ping-auto-api-fallback-"));
-  const binary = writeExecutable(tmp, "claude-auto-api-fallback", `#!/usr/bin/env node
+test("ping: subscription auth does not fall back to Claude API key when subscription is unavailable", () => {
+  const tmp = mkdtempSync(path.join(tmpdir(), "claude-ping-subscription-no-api-fallback-"));
+  const binary = writeExecutable(tmp, "claude-subscription-no-api-fallback", `#!/usr/bin/env node
 if (process.env.ANTHROPIC_API_KEY === "secret-test-value") {
   process.stdout.write(JSON.stringify({
     type: "result",
@@ -2442,22 +2923,19 @@ process.stderr.write("not authenticated\\n");
 process.exit(1);
 `);
   const { stdout, status, dataDir } = runCompanion(
-    ["ping", "--auth-mode", "auto", "--binary", binary, "--model", "claude-haiku-4-5-20251001"],
+    ["ping", "--binary", binary, "--model", "claude-haiku-4-5-20251001"],
     { cwd: tmpdir(), env: { ANTHROPIC_API_KEY: "secret-test-value" } },
   );
   try {
-    assert.equal(status, 0);
+    assert.equal(status, 2);
     const result = JSON.parse(stdout);
-    assert.equal(result.auth_mode, "auto");
-    assert.equal(result.selected_auth_path, "api_key_env");
-    assert.match(result.summary, /API-key auth/);
-    assert.deepEqual(result.allowed_env_credentials, ["ANTHROPIC_API_KEY"]);
-    assert.equal(result.auth_policy, "api_key_env_fallback");
-    assert.deepEqual(result.auth_fallback, {
-      from: "subscription_oauth",
-      to: "api_key_env",
-      reason: "not_authed",
-    });
+    assert.equal(result.status, "not_authed");
+    assert.equal(result.auth_mode, "subscription");
+    assert.equal(result.selected_auth_path, "subscription_oauth");
+    assert.deepEqual(result.ignored_env_credentials, ["ANTHROPIC_API_KEY"]);
+    assert.equal(result.auth_policy, "api_key_env_ignored");
+    assert.equal(result.allowed_env_credentials, undefined);
+    assert.equal(result.auth_fallback, undefined);
     assert.doesNotMatch(stdout, /secret-test-value/);
   } finally {
     cleanup(dataDir);
@@ -2633,7 +3111,7 @@ process.exit(1);
 `);
   const { stdout, status, dataDir } = runCompanion(
     ["doctor", "--binary", binary, "--model", "claude-haiku-4-5-20251001", "--auth-mode", "subscription"],
-    { cwd, env: { ANTHROPIC_API_KEY: "", CLAUDE_API_KEY: "" } },
+    { cwd, env: { ANTHROPIC_API_KEY: "secret-test-value", CLAUDE_API_KEY: "" } },
   );
   try {
     assert.equal(status, 2);
@@ -2642,12 +3120,17 @@ process.exit(1);
     assert.equal(result.ready, false);
     assert.equal(result.auth_mode, "subscription");
     assert.equal(result.selected_auth_path, "subscription_oauth");
+    assert.deepEqual(result.ignored_env_credentials, ["ANTHROPIC_API_KEY"]);
+    assert.equal(result.auth_policy, "api_key_env_ignored");
+    assert.equal(result.allowed_env_credentials, undefined);
+    assert.equal(result.auth_fallback, undefined);
     assert.equal(result.oauth_status?.logged_in, true);
     assert.equal(result.oauth_status?.auth_method, "claude.ai");
     assert.equal(result.oauth_status?.subscription_type, "max");
     assert.equal(result.detail, "Failed to authenticate. API Error: 401 Invalid authentication credentials");
     assert.match(result.summary, /OAuth.*non-interactive/i);
     assert.match(result.next_action, /claude auth login|OAuth/i);
+    assert.doesNotMatch(stdout, /secret-test-value/);
     assert.doesNotMatch(stdout, /user@example.com/);
     assert.notEqual(readFileSync(probeCwdPath, "utf8"), cwd);
   } finally {
@@ -2961,15 +3444,95 @@ process.exit(1);
     assert.match(record.error_summary, /OAuth non-interactive inference was rejected/);
     assert.match(record.suggested_action, /claude-setup|claude -p/);
     assert.doesNotMatch(record.suggested_action, /API[- ]?key|ANTHROPIC_API_KEY|CLAUDE_API_KEY/i);
-    assert.match(record.result, /Invalid authentication credentials/);
-    assert.equal(record.usage.input_tokens, 0);
-    assert.equal(record.usage.output_tokens, 0);
+    assert.match(record.error_message, /Invalid authentication credentials/);
+    const persisted = readJobRecord(dataDir, record.job_id);
+    assert.equal(persisted.usage.input_tokens, 0);
+    assert.equal(persisted.usage.output_tokens, 0);
     assert.equal(record.external_review.source_content_transmission, "not_sent");
     assert.match(record.external_review.disclosure, /not sent/);
-    assert.equal(record.pid_info, null);
-    assert.equal(record.review_metadata.audit_manifest.error_code, "oauth_inference_rejected");
-    assert.equal(record.review_metadata.audit_manifest.review_quality.failed_review_slot, false);
+    assert.equal(record.pid_info ?? null, null);
+    assert.equal(record.error_code, "oauth_inference_rejected");
+    assert.equal(record.review_quality.failed_review_slot, false);
     assert.doesNotMatch(stdout, /user@example.com/);
+  } finally {
+    cleanup(dataDir);
+    rmSync(cwd, { recursive: true, force: true });
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("run: stale successful doctor does not authorize later Claude source send", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "claude-run-stale-doctor-cwd-"));
+  fixtureSeedRepo(cwd, {
+    fileName: "seed.txt",
+    fileContents: "CLAUDE_STALE_DOCTOR_SOURCE_SENTINEL\n",
+  });
+  const tmp = mkdtempSync(path.join(tmpdir(), "claude-run-stale-doctor-bin-"));
+  const dataDir = mkdtempSync(path.join(tmpdir(), "claude-run-stale-doctor-data-"));
+  const phasePath = path.join(tmp, "phase.txt");
+  const leakPath = path.join(tmp, "source-leaked.txt");
+  writeFileSync(phasePath, "doctor", "utf8");
+  const binary = writeExecutable(tmp, "claude-stale-doctor", `#!/usr/bin/env node
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
+const args = process.argv.slice(2);
+if (args.join(" ") === "auth status --json") {
+  process.stdout.write(JSON.stringify({
+    loggedIn: true,
+    authMethod: "claude.ai",
+    apiProvider: "firstParty",
+    subscriptionType: "max"
+  }) + "\\n");
+  process.exit(0);
+}
+const promptIndex = args.indexOf("-p");
+const prompt = promptIndex >= 0 ? String(args[promptIndex + 1] ?? "") : readFileSync(0, "utf8");
+if (prompt.includes("CLAUDE_STALE_DOCTOR_SOURCE_SENTINEL")) {
+  writeFileSync(${JSON.stringify(leakPath)}, prompt, "utf8");
+}
+const phase = readFileSync(${JSON.stringify(phasePath)}, "utf8").trim();
+if (phase === "doctor") {
+  process.stdout.write(JSON.stringify({
+    type: "result",
+    result: "pong",
+    session_id: "33333333-3333-4333-8333-333333333333",
+    usage: { input_tokens: 1, output_tokens: 1 }
+  }) + "\\n");
+  process.exit(0);
+}
+process.stdout.write(JSON.stringify({
+  type: "result",
+  is_error: true,
+  api_error_status: 401,
+  result: "Failed to authenticate. API Error: 401 Invalid authentication credentials",
+  session_id: "33333333-3333-4333-8333-333333333333",
+  usage: { input_tokens: 0, output_tokens: 0 }
+}) + "\\n");
+process.exit(1);
+`);
+
+  const doctor = runCompanion(
+    ["doctor", "--binary", binary, "--model", "claude-haiku-4-5-20251001"],
+    { cwd, dataDir, env: { ANTHROPIC_API_KEY: "", CLAUDE_API_KEY: "" } },
+  );
+  writeFileSync(phasePath, "run", "utf8");
+  const result = runCompanion(
+    ["run", "--mode=custom-review", "--foreground", "--lifecycle-events", "jsonl",
+     "--binary", binary, "--model", "claude-haiku-4-5-20251001", "--cwd", cwd,
+     "--scope-paths", "seed.txt", "--", "review this scope"],
+    { cwd, dataDir, env: { ANTHROPIC_API_KEY: "", CLAUDE_API_KEY: "" } },
+  );
+  try {
+    assert.equal(doctor.dataDir, result.dataDir, "stale doctor proof must reuse the same plugin data dir");
+    assert.equal(doctor.status, 0, doctor.stderr || doctor.stdout);
+    assert.equal(JSON.parse(doctor.stdout).ready, true);
+    assert.equal(result.status, 2);
+    const lines = result.stdout.trim().split("\n").map((line) => JSON.parse(line));
+    assert.equal(lines.length, 1, "stale doctor success must not emit launch before fresh preflight");
+    const [record] = lines;
+    assert.equal(record.error_code, "oauth_inference_rejected");
+    assert.equal(record.external_review.source_content_transmission, "not_sent");
+    assert.equal(existsSync(leakPath), false, "selected source must not reach stale-doctor retry");
+    assert.doesNotMatch(result.stdout, /CLAUDE_STALE_DOCTOR_SOURCE_SENTINEL/);
   } finally {
     cleanup(dataDir);
     rmSync(cwd, { recursive: true, force: true });
@@ -3008,11 +3571,11 @@ process.exit(1);
     assert.equal(record.error_code, "sandbox_blocked");
     assert.match(record.error_summary, /sandbox/i);
     assert.match(record.suggested_action, /~\/\.claude|writable_roots/);
-    assert.equal(record.pid_info, null);
+    assert.equal(record.pid_info ?? null, null);
     assert.equal(record.external_review.source_content_transmission, "not_sent");
     assert.match(record.external_review.disclosure, /not sent/);
-    assert.equal(record.review_metadata.audit_manifest.error_code, "sandbox_blocked");
-    assert.equal(record.review_metadata.audit_manifest.review_quality.failed_review_slot, false);
+    assert.equal(record.error_code, "sandbox_blocked");
+    assert.equal(record.review_quality.failed_review_slot, false);
   } finally {
     cleanup(dataDir);
     rmSync(cwd, { recursive: true, force: true });
@@ -3052,11 +3615,11 @@ process.exit(1);
     assert.equal(record.error_code, "not_authed");
     assert.match(record.error_summary, /Claude Code is not logged in/);
     assert.match(record.suggested_action, /claude auth login|claude-setup/);
-    assert.equal(record.pid_info, null);
+    assert.equal(record.pid_info ?? null, null);
     assert.equal(record.external_review.source_content_transmission, "not_sent");
     assert.match(record.external_review.disclosure, /not sent/);
-    assert.equal(record.review_metadata.audit_manifest.error_code, "not_authed");
-    assert.equal(record.review_metadata.audit_manifest.review_quality.failed_review_slot, false);
+    assert.equal(record.error_code, "not_authed");
+    assert.equal(record.review_quality.failed_review_slot, false);
     assert.doesNotMatch(stdout, /user@example.com/);
   } finally {
     cleanup(dataDir);
@@ -3102,8 +3665,8 @@ process.exit(1);
     const [record] = lines;
     assert.equal(record.error_code, "oauth_inference_rejected");
     assert.equal(record.external_review.source_content_transmission, "not_sent");
-    assert.equal(record.pid_info, null);
-    assert.equal(record.review_metadata.audit_manifest.review_quality.failed_review_slot, false);
+    assert.equal(record.pid_info ?? null, null);
+    assert.equal(record.review_quality.failed_review_slot, false);
     assert.doesNotMatch(stdout, /user@example.com/);
   } finally {
     cleanup(dataDir);
@@ -3150,8 +3713,8 @@ process.exit(1);
     const [record] = lines;
     assert.equal(record.error_code, "oauth_inference_rejected");
     assert.equal(record.external_review.source_content_transmission, "not_sent");
-    assert.equal(record.pid_info, null);
-    assert.equal(record.review_metadata.audit_manifest.review_quality.failed_review_slot, false);
+    assert.equal(record.pid_info ?? null, null);
+    assert.equal(record.review_quality.failed_review_slot, false);
     assert.doesNotMatch(stdout, /user@example.com/);
   } finally {
     cleanup(dataDir);
@@ -3175,10 +3738,10 @@ test("run: OAuth preflight spawn failure fails before review launch", () => {
     const [record] = lines;
     assert.equal(record.status, "failed");
     assert.equal(record.error_code, "spawn_failed");
-    assert.equal(record.pid_info, null);
+    assert.equal(record.pid_info ?? null, null);
     assert.equal(record.external_review.source_content_transmission, "not_sent");
-    assert.equal(record.review_metadata.audit_manifest.error_code, "spawn_failed");
-    assert.equal(record.review_metadata.audit_manifest.review_quality.failed_review_slot, false);
+    assert.equal(record.error_code, "spawn_failed");
+    assert.equal(record.review_quality.failed_review_slot, false);
   } finally {
     cleanup(dataDir);
     rmSync(cwd, { recursive: true, force: true });
@@ -3230,7 +3793,7 @@ process.exit(1);
       "background OAuth preflight rejection did not finalize",
     );
     assert.equal(record.error_code, "oauth_inference_rejected");
-    assert.equal(record.pid_info, null);
+    assert.equal(record.pid_info ?? null, null);
     assert.equal(record.external_review.source_content_transmission, "not_sent");
     assert.equal(record.review_metadata.audit_manifest.error_code, "oauth_inference_rejected");
     assert.equal(record.review_metadata.audit_manifest.review_quality.failed_review_slot, false);
@@ -3295,7 +3858,7 @@ process.exit(0);
       "background job cancelled during OAuth preflight did not finalize as cancelled",
     );
     assert.equal(record.error_code, null);
-    assert.equal(record.pid_info, null);
+    assert.equal(record.pid_info ?? null, null);
     assert.equal(record.external_review.source_content_transmission, "not_sent");
     assert.equal(existsSync(targetLaunchedPath), false);
   } finally {
@@ -3410,7 +3973,7 @@ process.exit(1);
     const [record] = lines;
     assert.equal(record.error_code, "oauth_inference_rejected");
     assert.equal(record.external_review.source_content_transmission, "not_sent");
-    assert.equal(record.pid_info, null);
+    assert.equal(record.pid_info ?? null, null);
     assert.notEqual(readFileSync(probeCwdPath, "utf8"), cwd);
   } finally {
     cleanup(dataDir);
@@ -3471,11 +4034,11 @@ process.exit(1);
   }
 });
 
-test("run: auto auth without API keys classifies OAuth inference 401 distinctly", () => {
-  const cwd = mkdtempSync(path.join(tmpdir(), "claude-run-auto-oauth-print-401-cwd-"));
+test("run: subscription auth without API keys classifies OAuth inference 401 distinctly", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "claude-run-subscription-oauth-print-401-cwd-"));
   seedMinimalRepo(cwd);
-  const tmp = mkdtempSync(path.join(tmpdir(), "claude-run-auto-oauth-print-401-bin-"));
-  const binary = writeExecutable(tmp, "claude-auto-oauth-print-401", `#!/usr/bin/env node
+  const tmp = mkdtempSync(path.join(tmpdir(), "claude-run-subscription-oauth-print-401-bin-"));
+  const binary = writeExecutable(tmp, "claude-subscription-oauth-print-401", `#!/usr/bin/env node
 if (process.argv.slice(2).join(" ") === "auth status --json") {
   process.stdout.write(JSON.stringify({
     loggedIn: true,
@@ -3497,7 +4060,7 @@ process.stdout.write(JSON.stringify({
 process.exit(1);
 `);
   const { stdout, status, dataDir } = runCompanion(
-    ["run", "--mode=review", "--foreground", "--auth-mode", "auto", "--binary", binary,
+    ["run", "--mode=review", "--foreground", "--auth-mode", "subscription", "--binary", binary,
      "--model", "claude-haiku-4-5-20251001", "--cwd", cwd, "--", "review this change"],
     { cwd, env: { ANTHROPIC_API_KEY: "", CLAUDE_API_KEY: "" } },
   );
@@ -3517,15 +4080,15 @@ process.exit(1);
   }
 });
 
-test("run: auto auth re-preflights API-key fallback before review launch", () => {
-  const cwd = mkdtempSync(path.join(tmpdir(), "claude-run-auto-api-fallback-preflight-cwd-"));
+test("run: subscription auth does not source-send through API fallback without approval", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "claude-run-subscription-api-fallback-blocked-cwd-"));
   fixtureSeedRepo(cwd, {
     fileName: "seed.txt",
     fileContents: "CLAUDE_AUTO_FALLBACK_SOURCE_SENTINEL\n",
   });
-  const tmp = mkdtempSync(path.join(tmpdir(), "claude-run-auto-api-fallback-preflight-bin-"));
+  const tmp = mkdtempSync(path.join(tmpdir(), "claude-run-subscription-api-fallback-blocked-bin-"));
   const leakMarker = path.join(tmp, "source-leaked");
-  const binary = writeExecutable(tmp, "claude-auto-api-fallback-preflight", `#!/usr/bin/env node
+  const binary = writeExecutable(tmp, "claude-subscription-api-fallback-blocked", `#!/usr/bin/env node
 import { readFileSync, writeFileSync } from "node:fs";
 
 const argv = process.argv.slice(2);
@@ -3571,7 +4134,7 @@ process.exit(0);
 `);
   const { stdout, status, dataDir } = runCompanion(
     ["run", "--mode=custom-review", "--foreground", "--lifecycle-events", "jsonl",
-     "--auth-mode", "auto", "--binary", binary, "--model", "claude-haiku-4-5-20251001",
+     ...claudeAuthModeArgs(claudeSubscriptionAuthMode()), "--binary", binary, "--model", "claude-haiku-4-5-20251001",
      "--cwd", cwd, "--scope-paths", "seed.txt", "--", "review selected source"],
     { cwd, env: { ANTHROPIC_API_KEY: "secret-test-value", CLAUDE_API_KEY: "" } },
   );
@@ -3581,9 +4144,9 @@ process.exit(0);
     assert.equal(lines.length, 1, "fallback preflight failure must not emit external_review_launched");
     const [record] = lines;
     assert.equal(record.status, "failed");
-    assert.equal(record.error_code, "not_authed");
+    assert.equal(record.error_code, "oauth_inference_rejected");
     assert.equal(record.external_review.source_content_transmission, "not_sent");
-    assert.equal(existsSync(leakMarker), false, "selected source reached fallback review spawn");
+    assert.equal(existsSync(leakMarker), false, "selected source reached API-key fallback review spawn");
     assert.doesNotMatch(stdout, /secret-test-value/);
   } finally {
     cleanup(dataDir);
@@ -3592,7 +4155,203 @@ process.exit(0);
   }
 });
 
-test("ping: not_authed reports ignored parent API-key auth without exposing values", () => {
+test("run: explicit api_key source-bearing review requires approval before Claude spawn", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "claude-run-explicit-api-source-approval-cwd-"));
+  fixtureSeedRepo(cwd, {
+    fileName: "seed.txt",
+    fileContents: "CLAUDE_EXPLICIT_API_SOURCE_SENTINEL\n",
+  });
+  const tmp = mkdtempSync(path.join(tmpdir(), "claude-run-explicit-api-source-approval-bin-"));
+  const leakMarker = path.join(tmp, "source-leaked");
+  const binary = writeExecutable(tmp, "claude-explicit-api-source-approval", `#!/usr/bin/env node
+import { readFileSync, writeFileSync } from "node:fs";
+
+const argv = process.argv.slice(2);
+const prompt = argv.includes("--input-format") ? readFileSync(0, "utf8") : (argv[argv.indexOf("-p") + 1] ?? "");
+if (prompt.includes("CLAUDE_EXPLICIT_API_SOURCE_SENTINEL")) {
+  writeFileSync(${JSON.stringify(leakMarker)}, "leaked");
+}
+process.stdout.write(JSON.stringify({
+  type: "result",
+  is_error: false,
+  result: "Verdict: APPROVE\\nBlocking findings\\n- None.\\nNon-blocking concerns\\n- None.\\nInspection status\\n- I inspected seed.txt.",
+  session_id: "33333333-3333-4333-8333-333333333333",
+  usage: { input_tokens: 1, output_tokens: 1 }
+}) + "\\n");
+process.exit(0);
+`);
+  const { stdout, status, dataDir } = runCompanion(
+    ["run", "--mode=custom-review", "--foreground", "--lifecycle-events", "jsonl",
+     ...claudeAuthModeArgs(claudeApiKeyAuthMode()), "--binary", binary, "--model", "claude-haiku-4-5-20251001",
+     "--cwd", cwd, "--scope-paths", "seed.txt", "--", "review selected source"],
+    { cwd, env: { ANTHROPIC_API_KEY: "secret-test-value", CLAUDE_API_KEY: "" } },
+  );
+  try {
+    assert.equal(status, 2);
+    const lines = stdout.trim().split("\n").map((line) => JSON.parse(line));
+    assert.equal(lines.length, 1, "unapproved API source send must not emit external_review_launched");
+    const [record] = lines;
+    assert.equal(record.status, "failed");
+    assert.equal(record.error_code, "approval_required");
+    assert.equal(record.external_review.source_content_transmission, "not_sent");
+    assert.equal(record.review_metadata.audit_manifest.selected_route, "direct_api");
+    assert.equal(record.review_metadata.audit_manifest.fallback_reason, "explicit_api");
+    assert.equal(record.review_metadata.audit_manifest.source_send_approval_required, true);
+    assert.equal(record.review_metadata.audit_manifest.source_send_approval_state, "required");
+    assert.equal(existsSync(leakMarker), false, "selected source reached unapproved Claude API-key review spawn");
+    assert.doesNotMatch(stdout, /secret-test-value/);
+  } finally {
+    cleanup(dataDir);
+    rmSync(cwd, { recursive: true, force: true });
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("approval-request: explicit api_key source-bearing review token unlocks matching Claude run", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "claude-approval-request-api-cwd-"));
+  fixtureSeedRepo(cwd, {
+    fileName: "seed.txt",
+    fileContents: "CLAUDE_APPROVED_API_SOURCE_SENTINEL\n",
+  });
+  const tmp = mkdtempSync(path.join(tmpdir(), "claude-approval-request-api-bin-"));
+  const leakMarker = path.join(tmp, "source-leaked");
+  const binary = writeExecutable(tmp, "claude-approved-api-source", `#!/usr/bin/env node
+import { readFileSync, writeFileSync } from "node:fs";
+
+const argv = process.argv.slice(2);
+const prompt = argv.includes("--input-format") ? readFileSync(0, "utf8") : (argv[argv.indexOf("-p") + 1] ?? "");
+if (prompt.includes("CLAUDE_APPROVED_API_SOURCE_SENTINEL")) {
+  writeFileSync(${JSON.stringify(leakMarker)}, "leaked");
+}
+process.stdout.write(JSON.stringify({
+  type: "result",
+  is_error: false,
+  result: "Verdict: APPROVE\\nBlocking findings\\n- None.\\nNon-blocking concerns\\n- None.\\nInspection status\\n- I inspected seed.txt.",
+  session_id: "33333333-3333-4333-8333-333333333333",
+  usage: { input_tokens: 1, output_tokens: 1 }
+}) + "\\n");
+process.exit(0);
+`);
+  const commonOptions = [
+    "--mode=custom-review", ...claudeAuthModeArgs(claudeApiKeyAuthMode()),
+    "--binary", binary, "--model", "claude-haiku-4-5-20251001",
+    "--cwd", cwd, "--scope-paths", "seed.txt",
+  ];
+  const approval = runCompanion(
+    ["approval-request", ...commonOptions, "--", "review selected source"],
+    { cwd, env: { ANTHROPIC_API_KEY: "secret-test-value", CLAUDE_API_KEY: "" } },
+  );
+  try {
+    assert.equal(approval.status, 0, approval.stderr || approval.stdout);
+    const request = JSON.parse(approval.stdout);
+    assert.equal(request.event, "external_review_approval_request");
+    assert.equal(request.provider, "claude");
+    assert.equal(request.source_content_transmission, "not_sent");
+    assert.equal(request.selected_route, "direct_api");
+    assert.equal(request.fallback_reason, "explicit_api");
+    assert.equal(request.approval_scope, "session");
+    assert.equal(request.source_send_approval_required, true);
+    assert.equal(request.source_send_approval_state, "required");
+    assert.match(request.approval_token.value, /^[a-f0-9]{64}$/);
+    assert.equal(existsSync(leakMarker), false, "approval-request must not launch Claude or send selected source");
+
+    const run = runCompanion(
+      ["run", "--foreground", "--lifecycle-events", "jsonl", ...commonOptions, "--approval-token", request.approval_token.value, "--", "review selected source"],
+      { cwd, env: { ANTHROPIC_API_KEY: "secret-test-value", CLAUDE_API_KEY: "" } },
+    );
+    assert.equal(run.status, 0, run.stderr || run.stdout);
+    const lines = run.stdout.trim().split("\n").map((line) => JSON.parse(line));
+    const record = lines.at(-1);
+    assert.equal(record.status, "completed");
+    assert.equal(record.external_review.source_content_transmission, "sent");
+    assert.equal(record.review_metadata.audit_manifest.selected_route, "direct_api");
+    assert.equal(record.review_metadata.audit_manifest.fallback_reason, "explicit_api");
+    assert.equal(record.review_metadata.audit_manifest.source_send_approval_required, true);
+    assert.equal(record.review_metadata.audit_manifest.source_send_approval_state, "approved");
+    assert.equal(existsSync(leakMarker), true, "matching approval token should allow source-bearing Claude launch");
+    assert.doesNotMatch(approval.stdout + run.stdout, /secret-test-value/);
+  } finally {
+    cleanup(approval.dataDir);
+    rmSync(cwd, { recursive: true, force: true });
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("approval-request: explicit api_key background review token reaches worker", async () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "claude-approval-bg-api-cwd-"));
+  fixtureSeedRepo(cwd, {
+    fileName: "seed.txt",
+    fileContents: "CLAUDE_APPROVED_BACKGROUND_API_SOURCE_SENTINEL\n",
+  });
+  const dataDir = mkdtempSync(path.join(tmpdir(), "claude-approval-bg-api-data-"));
+  const tmp = mkdtempSync(path.join(tmpdir(), "claude-approval-bg-api-bin-"));
+  const leakMarker = path.join(tmp, "source-leaked");
+  const binary = writeExecutable(tmp, "claude-approved-bg-api-source", `#!/usr/bin/env node
+import { readFileSync, writeFileSync } from "node:fs";
+
+const argv = process.argv.slice(2);
+const prompt = argv.includes("--input-format") ? readFileSync(0, "utf8") : (argv[argv.indexOf("-p") + 1] ?? "");
+if (prompt.includes("CLAUDE_APPROVED_BACKGROUND_API_SOURCE_SENTINEL")) {
+  writeFileSync(${JSON.stringify(leakMarker)}, "leaked");
+}
+process.stdout.write(JSON.stringify({
+  type: "result",
+  is_error: false,
+  result: "Verdict: APPROVE\\nBlocking findings\\n- None.\\nNon-blocking concerns\\n- None.\\nInspection status\\n- I inspected seed.txt.",
+  session_id: "44444444-4444-4444-8444-444444444444",
+  usage: { input_tokens: 1, output_tokens: 1 }
+}) + "\\n");
+process.exit(0);
+`);
+  const commonOptions = [
+    "--mode=custom-review", ...claudeAuthModeArgs(claudeApiKeyAuthMode()),
+    "--binary", binary, "--model", "claude-haiku-4-5-20251001",
+    "--cwd", cwd, "--scope-paths", "seed.txt",
+  ];
+  const env = { ANTHROPIC_API_KEY: "secret-test-value", CLAUDE_API_KEY: "" };
+  const approval = runCompanion(
+    ["approval-request", ...commonOptions, "--", "review selected source"],
+    { cwd, dataDir, env },
+  );
+  try {
+    assert.equal(approval.status, 0, approval.stderr || approval.stdout);
+    const request = JSON.parse(approval.stdout);
+    assert.equal(request.source_content_transmission, "not_sent");
+    assert.match(request.approval_token.value, /^[a-f0-9]{64}$/);
+    assert.equal(existsSync(leakMarker), false, "approval-request must not launch Claude or send selected source");
+
+    const run = runCompanion(
+      ["run", "--background", "--lifecycle-events", "jsonl", ...commonOptions, "--approval-token", request.approval_token.value, "--", "review selected source"],
+      { cwd, dataDir, env },
+    );
+    assert.equal(run.status, 0, run.stderr || run.stdout);
+    const launched = JSON.parse(run.stdout);
+    const record = await waitForJobRecord(
+      dataDir,
+      launched.job_id,
+      (candidate) => candidate.status === "completed" || candidate.status === "failed",
+      "background approved API run did not finalize",
+    );
+    assert.equal(record.status, "completed");
+    assert.equal(record.external_review.source_content_transmission, "sent");
+    assert.equal(record.review_metadata.audit_manifest.selected_route, "direct_api");
+    assert.equal(record.review_metadata.audit_manifest.fallback_reason, "explicit_api");
+    assert.equal(record.review_metadata.audit_manifest.source_send_approval_required, true);
+    assert.equal(record.review_metadata.audit_manifest.source_send_approval_state, "approved");
+    assert.equal(existsSync(leakMarker), true, "matching approval token should reach background worker");
+    assert.doesNotMatch(approval.stdout + run.stdout + JSON.stringify(record), /secret-test-value/);
+    assert.equal(Object.hasOwn(record, "approval_token"), false);
+    assert.equal(Object.hasOwn(record.review_metadata.audit_manifest, "approval_token"), false);
+    assert.doesNotMatch(JSON.stringify(record), new RegExp(request.approval_token.value),
+      "approved JobRecord must not persist the approval token");
+  } finally {
+    cleanup(dataDir);
+    rmSync(cwd, { recursive: true, force: true });
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("ping: not_authed keeps subscription auth and ignores API-key values", () => {
   const tmp = mkdtempSync(path.join(tmpdir(), "claude-ping-api-key-auth-"));
   const binary = writeExecutable(tmp, "claude-api-key-auth-error", `#!/usr/bin/env node
 process.stdout.write(JSON.stringify({
@@ -3611,8 +4370,11 @@ process.exit(1);
     assert.equal(status, 2);
     const result = JSON.parse(stdout);
     assert.equal(result.status, "not_authed");
+    assert.equal(result.selected_auth_path, "subscription_oauth");
     assert.deepEqual(result.ignored_env_credentials, ["ANTHROPIC_API_KEY"]);
     assert.equal(result.auth_policy, "api_key_env_ignored");
+    assert.equal(result.allowed_env_credentials, undefined);
+    assert.equal(result.auth_fallback, undefined);
     assert.doesNotMatch(stdout, /secret-test-value/);
   } finally {
     cleanup(dataDir);
@@ -3737,6 +4499,119 @@ test("result --job: returns meta for a finished job", () => {
   }
 });
 
+test("result --job-id: aliases --job for a finished job", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "smoke-result-job-id-"));
+  seedMinimalRepo(cwd);
+  const dataDir = mkdtempSync(path.join(tmpdir(), "result-job-id-data-"));
+  try {
+    const runRes = spawnSync("node", [
+      path.join(REPO_ROOT, "plugins/claude/scripts/claude-companion.mjs"),
+      "run", "--mode=review", "--foreground",
+      "--model", "claude-haiku-4-5-20251001",
+      "--cwd", cwd, "--", "seed",
+    ], {
+      cwd, encoding: "utf8",
+      env: { ...process.env, CLAUDE_BINARY: MOCK, CLAUDE_PLUGIN_DATA: dataDir },
+    });
+    const { job_id } = JSON.parse(runRes.stdout);
+    const resultRes = spawnSync("node", [
+      path.join(REPO_ROOT, "plugins/claude/scripts/claude-companion.mjs"),
+      "result", "--job-id", job_id, "--cwd", cwd,
+    ], {
+      cwd, encoding: "utf8",
+      env: { ...process.env, CLAUDE_PLUGIN_DATA: dataDir },
+    });
+    assert.equal(resultRes.status, 0, resultRes.stderr);
+    const meta = JSON.parse(resultRes.stdout);
+    assert.equal(meta.id, job_id);
+    assert.equal(meta.status, "completed");
+    assert.equal(meta.external_review.provider, "Claude Code");
+  } finally {
+    rmSync(dataDir, { recursive: true, force: true });
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("result from wrong cwd returns retrieval guidance", () => {
+  const cwd = realpathSync(mkdtempSync(path.join(tmpdir(), "smoke-result-right-cwd-")));
+  const wrongCwd = realpathSync(mkdtempSync(path.join(tmpdir(), "smoke-result-wrong-cwd-")));
+  seedMinimalRepo(cwd);
+  const dataDir = mkdtempSync(path.join(tmpdir(), "result-wrong-cwd-data-"));
+  const corruptJobsDir = path.join(dataDir, "state", "000-corrupt", "jobs");
+  try {
+    mkdirSync(corruptJobsDir, { recursive: true });
+    const runRes = spawnSync("node", [
+      path.join(REPO_ROOT, "plugins/claude/scripts/claude-companion.mjs"),
+      "run", "--mode=review", "--foreground",
+      "--model", "claude-haiku-4-5-20251001",
+      "--cwd", cwd, "--", "seed",
+    ], {
+      cwd, encoding: "utf8",
+      env: { ...process.env, CLAUDE_BINARY: MOCK, CLAUDE_PLUGIN_DATA: dataDir },
+    });
+    assert.equal(runRes.status, 0, runRes.stderr);
+    const { job_id } = JSON.parse(runRes.stdout);
+    writeFileSync(path.join(corruptJobsDir, `${job_id}.json`), "{ malformed");
+    const resultRes = spawnSync("node", [
+      path.join(REPO_ROOT, "plugins/claude/scripts/claude-companion.mjs"),
+      "result", "--job", job_id,
+    ], {
+      cwd: wrongCwd,
+      encoding: "utf8",
+      env: { ...process.env, CLAUDE_PLUGIN_DATA: dataDir },
+    });
+    assert.equal(resultRes.status, 1);
+    const parsed = JSON.parse(resultRes.stdout);
+    assert.equal(parsed.error, "not_found");
+    assert.equal(parsed.job_id, job_id);
+    assert.equal(parsed.matched_workspace, true);
+    assert.equal("matched_workspace_root" in parsed, false);
+    assert.doesNotMatch(JSON.stringify(parsed), new RegExp(cwd.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+    assert.match(parsed.suggested_action, /different workspace/);
+    assert.match(parsed.suggested_action, /--cwd <workspace used when the job was launched>/);
+  } finally {
+    rmSync(dataDir, { recursive: true, force: true });
+    rmSync(cwd, { recursive: true, force: true });
+    rmSync(wrongCwd, { recursive: true, force: true });
+  }
+});
+
+test("result with duplicate job id across workspaces reports state collision", () => {
+  const cwd = realpathSync(mkdtempSync(path.join(tmpdir(), "smoke-result-collision-cwd-")));
+  const dataDir = mkdtempSync(path.join(tmpdir(), "result-collision-data-"));
+  const jobId = "00000000-0000-4000-8000-00000000c011";
+  try {
+    for (const entry of ["collision-a", "collision-b"]) {
+      const jobsDir = path.join(dataDir, "state", entry, "jobs");
+      mkdirSync(jobsDir, { recursive: true });
+      writeFileSync(path.join(jobsDir, `${jobId}.json`), `${JSON.stringify({
+        id: jobId,
+        job_id: jobId,
+        status: "completed",
+        workspace_root: path.join(dataDir, entry),
+      })}\n`, "utf8");
+    }
+    const resultRes = spawnSync("node", [
+      path.join(REPO_ROOT, "plugins/claude/scripts/claude-companion.mjs"),
+      "result", "--job", jobId, "--cwd", cwd,
+    ], {
+      cwd,
+      encoding: "utf8",
+      env: { ...process.env, CLAUDE_PLUGIN_DATA: dataDir },
+    });
+    assert.equal(resultRes.status, 1);
+    const parsed = JSON.parse(resultRes.stdout);
+    assert.equal(parsed.error, "not_found");
+    assert.equal(parsed.error_code, "state_collision");
+    assert.equal(parsed.matched_workspace_count, 2);
+    assert.match(parsed.suggested_action, /state collision/i);
+    assert.equal("matched_workspace_root" in parsed, false);
+  } finally {
+    rmSync(dataDir, { recursive: true, force: true });
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
 test("result --job with unknown id: returns not_found", () => {
   const cwd = mkdtempSync(path.join(tmpdir(), "smoke-result404-"));
   const { stderr, status, dataDir } = runCompanion(
@@ -3843,6 +4718,12 @@ test("_run-worker: cancel marker prevents target spawn, sets status=cancelled", 
     spawnSync("mkdir", ["-p", markerDir]);
     const promptPath = path.join(markerDir, "prompt.txt");
     writeFileSync(promptPath, "queued prompt with selected source\n", { mode: 0o600 });
+    const runtimeOptionsPath = path.join(markerDir, "runtime-options.json");
+    const queuedApprovalToken = "queued-cancel-approval-token-must-not-persist";
+    writeFileSync(runtimeOptionsPath, `${JSON.stringify({
+      approval_token: queuedApprovalToken,
+      approval_scope: "session",
+    })}\n`, { mode: 0o600 });
     const markerPath = path.join(markerDir, "cancel-requested.flag");
     writeFileSync(markerPath, new Date().toISOString() + "\n");
 
@@ -3867,6 +4748,58 @@ test("_run-worker: cancel marker prevents target spawn, sets status=cancelled", 
       "worker must consume (unlink) the marker on pickup");
     assert.equal(existsSync(promptPath), false,
       "worker must remove prompt sidecar when queued cancel prevents target spawn");
+    assert.equal(existsSync(runtimeOptionsPath), false,
+      "worker must remove runtime-options sidecar when queued cancel prevents target spawn");
+    assert.doesNotMatch(JSON.stringify(finalMeta), new RegExp(queuedApprovalToken),
+      "cancelled JobRecord must not persist the approval token");
+  } finally {
+    rmSync(dataDir, { recursive: true, force: true });
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("_run-worker removes runtime-options sidecar when prompt sidecar is missing", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "smoke-worker-missing-prompt-"));
+  seedMinimalRepo(cwd);
+  const dataDir = mkdtempSync(path.join(tmpdir(), "worker-missing-prompt-data-"));
+  const runtimeApprovalToken = "missing-prompt-approval-token-must-not-persist";
+  try {
+    const runRes = runCompanion(
+      ["run", "--mode=rescue", "--foreground",
+       "--model", "claude-haiku-4-5-20251001",
+       "--cwd", cwd, "--", "seed"],
+      { cwd, dataDir },
+    );
+    assert.equal(runRes.status, 0, runRes.stderr);
+    const { metaPath, record } = readOnlyJobRecord(dataDir);
+    writeFileSync(metaPath,
+      `${JSON.stringify({ ...record, status: "queued", pid_info: null }, null, 2)}\n`, "utf8");
+
+    const wsDir = path.dirname(metaPath);
+    const sidecarDir = path.join(wsDir, record.job_id);
+    spawnSync("mkdir", ["-p", sidecarDir]);
+    const runtimeOptionsPath = path.join(sidecarDir, "runtime-options.json");
+    writeFileSync(runtimeOptionsPath, `${JSON.stringify({
+      approval_token: runtimeApprovalToken,
+      approval_scope: "session",
+    })}\n`, { mode: 0o600 });
+
+    const workerRes = spawnSync("node", [
+      path.join(REPO_ROOT, "plugins/claude/scripts/claude-companion.mjs"),
+      "_run-worker", "--cwd", cwd, "--job", record.job_id,
+    ], {
+      cwd, encoding: "utf8",
+      env: { ...process.env, CLAUDE_BINARY: MOCK, CLAUDE_PLUGIN_DATA: dataDir },
+    });
+    assert.notEqual(workerRes.status, 0, "worker must fail when prompt sidecar is missing");
+
+    const finalMeta = JSON.parse(readFileSync(metaPath, "utf8"));
+    assert.equal(finalMeta.status, "failed");
+    assert.match(finalMeta.error_message, /prompt sidecar missing|prompt sidecar consume failed/);
+    assert.equal(existsSync(runtimeOptionsPath), false,
+      "worker must remove runtime-options sidecar when prompt sidecar is missing");
+    assert.doesNotMatch(JSON.stringify(finalMeta), new RegExp(runtimeApprovalToken),
+      "failed JobRecord must not persist the approval token");
   } finally {
     rmSync(dataDir, { recursive: true, force: true });
     rmSync(cwd, { recursive: true, force: true });
@@ -3882,8 +4815,19 @@ test("_run-worker rejects sidecar bypassPermissions without explicit opt-in", ()
   const dataDir = mkdtempSync(path.join(tmpdir(), "claude-worker-bypass-sidecar-data-"));
   const markerPath = path.join(dataDir, "spawned-mode.txt");
   const binary = writeExecutable(dataDir, "claude-worker-bypass-marker", `#!/usr/bin/env node
-import { writeFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 const argv = process.argv.slice(2);
+const prompt = argv.includes("--input-format") ? readFileSync(0, "utf8") : argv.join(" ");
+if (!argv.includes("--permission-mode") || prompt.includes("reply with exactly: pong")) {
+  process.stdout.write(JSON.stringify({
+    type: "result",
+    is_error: false,
+    result: "pong",
+    session_id: "11111111-1111-4111-8111-111111111111",
+    usage: { input_tokens: 1, output_tokens: 1 }
+  }) + "\\n");
+  process.exit(0);
+}
 const modeIndex = argv.indexOf("--permission-mode");
 const mode = modeIndex >= 0 ? argv[modeIndex + 1] : null;
 writeFileSync(${JSON.stringify(markerPath)}, String(mode ?? "missing"));
@@ -3913,14 +4857,14 @@ process.exit(0);
 `);
   try {
     const runRes = runCompanion(
-      ["run", "--mode=custom-review", "--foreground", "--auth-mode", "api_key",
+      ["run", "--mode=custom-review", "--foreground", ...claudeAuthModeArgs(claudeSubscriptionAuthMode()),
        "--binary", binary, "--model", "claude-haiku-4-5-20251001",
        "--cwd", cwd, "--scope-paths", "seed.txt", "--", "review selected source"],
       {
         cwd,
         dataDir,
         env: {
-          ANTHROPIC_API_KEY: "test-key",
+          ANTHROPIC_API_KEY: "",
           CLAUDE_API_KEY: "",
           CLAUDE_REVIEW_PERMISSION_MODES: "dontAsk",
         },
@@ -3942,13 +4886,13 @@ process.exit(0);
     rmSync(markerPath, { force: true });
     const workerRes = spawnSync("node", [
       path.join(REPO_ROOT, "plugins/claude/scripts/claude-companion.mjs"),
-      "_run-worker", "--cwd", cwd, "--job", record.job_id, "--auth-mode", "api_key",
+      "_run-worker", "--cwd", cwd, "--job", record.job_id, ...claudeAuthModeArgs(claudeSubscriptionAuthMode()),
     ], {
       cwd,
       encoding: "utf8",
       env: {
         ...process.env,
-        ANTHROPIC_API_KEY: "test-key",
+        ANTHROPIC_API_KEY: "",
         CLAUDE_API_KEY: "",
         CLAUDE_PLUGIN_DATA: dataDir,
       },
@@ -3960,6 +4904,99 @@ process.exit(0);
     assert.equal(finalMeta.status, "failed");
     assert.match(finalMeta.error_message, /bypassPermissions/);
   } finally {
+    rmSync(dataDir, { recursive: true, force: true });
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("_run-worker audit manifest matches prompt sidecar source snapshot after source changes", async () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "claude-worker-scope-race-cwd-"));
+  fixtureSeedRepo(cwd, {
+    fileName: "seed.txt",
+    fileContents: "old worker source sentinel\n",
+  });
+  const dataDir = mkdtempSync(path.join(tmpdir(), "claude-worker-scope-race-data-"));
+  const previous = process.env.CLAUDE_PLUGIN_DATA;
+  process.env.CLAUDE_PLUGIN_DATA = dataDir;
+  try {
+    const state = await import("../../plugins/claude/scripts/lib/state.mjs");
+    const { newJobId } = await import("../../plugins/claude/scripts/lib/identity.mjs");
+    const { buildJobRecord } = await import("../../plugins/claude/scripts/lib/job-record.mjs");
+    const { resolveProfile } = await import("../../plugins/claude/scripts/lib/mode-profiles.mjs");
+    state.configureState({
+      pluginDataEnv: "CLAUDE_PLUGIN_DATA",
+      sessionIdEnv: "CLAUDE_COMPANION_SESSION_ID",
+    });
+    const profile = resolveProfile("custom-review");
+    const jobId = newJobId();
+    const invocation = Object.freeze({
+      job_id: jobId,
+      target: "claude",
+      parent_job_id: null,
+      resume_chain: [],
+      mode_profile_name: profile.name,
+      mode: "custom-review",
+      model: "claude-haiku-4-5-20251001",
+      cwd,
+      workspace_root: cwd,
+      containment: profile.containment,
+      scope: profile.scope,
+      dispose_effective: profile.dispose_default,
+      scope_base: null,
+      scope_paths: ["seed.txt"],
+      prompt_head: "review selected source",
+      review_prompt_contract_version: 1,
+      review_prompt_provider: "Claude Code",
+      timeout_ms: 900000,
+      schema_spec: null,
+      binary: MOCK,
+      run_kind: "background",
+      auth_mode: claudeSubscriptionAuthMode(),
+      started_at: new Date().toISOString(),
+    });
+    const queued = buildJobRecord(invocation, null, []);
+    state.writeJobFile(cwd, jobId, queued);
+    state.upsertJob(cwd, queued);
+    const promptPath = path.join(state.resolveJobsDir(cwd), jobId, "prompt.txt");
+    mkdirSync(path.dirname(promptPath), { recursive: true });
+	    writeFileSync(promptPath, [
+	      "Provider: Claude Code",
+	      "BEGIN CLAUDE FILE 1: seed.txt",
+	      "old worker source sentinel",
+	      "",
+	      "END CLAUDE FILE 1: seed.txt",
+	      "review selected source",
+	      "",
+	    ].join("\n"), { mode: 0o600 });
+    writeFileSync(path.join(cwd, "seed.txt"), "new worker source sentinel\n", "utf8");
+
+    const worker = spawnSync("node", [
+      COMPANION, "_run-worker", "--cwd", cwd, "--job", jobId, ...claudeAuthModeArgs(claudeSubscriptionAuthMode()),
+    ], {
+      cwd,
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        CLAUDE_BINARY: MOCK,
+        CLAUDE_PLUGIN_DATA: dataDir,
+        ANTHROPIC_API_KEY: "",
+        CLAUDE_API_KEY: "",
+        CLAUDE_MOCK_ASSERT_PROMPT_INCLUDES: "old worker source sentinel",
+      },
+    });
+    assert.equal(worker.status, 0, `worker stderr=${worker.stderr}; stdout=${worker.stdout}`);
+    const finalRecord = JSON.parse(readFileSync(state.resolveJobFile(cwd, jobId), "utf8"));
+    assert.equal(finalRecord.status, "completed");
+    const [selectedFile] = finalRecord.review_metadata.audit_manifest.selected_source.files;
+    assert.equal(selectedFile.path, "seed.txt");
+    assert.equal(
+      selectedFile.content_hash.value,
+      sha256("old worker source sentinel\n"),
+      "audit manifest must describe the source snapshot embedded in the sent prompt sidecar",
+    );
+  } finally {
+    if (previous === undefined) delete process.env.CLAUDE_PLUGIN_DATA;
+    else process.env.CLAUDE_PLUGIN_DATA = previous;
     rmSync(dataDir, { recursive: true, force: true });
     rmSync(cwd, { recursive: true, force: true });
   }

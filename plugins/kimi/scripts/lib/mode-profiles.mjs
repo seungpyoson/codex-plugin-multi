@@ -9,15 +9,13 @@
 // deep-frozen. The table is read by value identity, not by deep-copy — if a
 // downstream caller needs a scratch copy, it should clone explicitly.
 
-// Tools Kimi should never invoke in review/ping mode (hard blocklist,
-// spec §4.5 / §10). `mcp__*` wildcard blocks every MCP tool. Kept as a frozen
-// constant so the three profiles that need it share the same array identity.
-const REVIEW_DISALLOWED = Object.freeze([
-  "Write", "Edit", "MultiEdit", "NotebookEdit",
-  "Bash", "WebFetch", "Agent", "Task", "mcp__*",
+// Kimi-native tool ids permitted by the reviewed source-bearing modes.
+// This positive allowlist is the sole review-mode tool authority.
+const REVIEW_ALLOWED_TOOLS = Object.freeze([
+  "kimi_cli.tools.file:ReadFile",
+  "kimi_cli.tools.file:Glob",
+  "kimi_cli.tools.file:Grep",
 ]);
-
-const EMPTY_TOOLS = Object.freeze([]);
 
 /**
  * MODE_PROFILES — verbatim copy of the spec §21.2 canonical table.
@@ -27,8 +25,7 @@ const EMPTY_TOOLS = Object.freeze([]);
  *   model_tier       — "review_quality" | "rescue" | "native" (§8)
  *   permission_mode  — "plan" | "acceptEdits" (§4.5)
  *   strip_context    — emit `--setting-sources ""`? (§4.6)
- *   disallowed_tools — hard blocklist (§4.5). Empty array means don't pass
- *                      `--disallowedTools` at all.
+ *   allowed_tools    — Kimi-native positive allowlist for review modes.
  *   containment      — "none" | "worktree" (§21.4) — OWNED BY T7.2; this task
  *                      fixes the field's presence, not its use in companion.
  *   scope            — "working-tree" | "staged" | "branch-diff" | "head" |
@@ -46,7 +43,7 @@ export const MODE_PROFILES = Object.freeze({
     model_tier: "review_quality",
     permission_mode: "plan",
     strip_context: true,
-    disallowed_tools: REVIEW_DISALLOWED,
+    allowed_tools: REVIEW_ALLOWED_TOOLS,
     containment: "worktree",
     scope: "working-tree",
     dispose_default: true,
@@ -59,7 +56,7 @@ export const MODE_PROFILES = Object.freeze({
     model_tier: "review_quality",
     permission_mode: "plan",
     strip_context: true,
-    disallowed_tools: REVIEW_DISALLOWED,
+    allowed_tools: REVIEW_ALLOWED_TOOLS,
     containment: "worktree",
     scope: "branch-diff",
     dispose_default: true,
@@ -72,7 +69,7 @@ export const MODE_PROFILES = Object.freeze({
     model_tier: "review_quality",
     permission_mode: "plan",
     strip_context: true,
-    disallowed_tools: REVIEW_DISALLOWED,
+    allowed_tools: REVIEW_ALLOWED_TOOLS,
     containment: "worktree",
     scope: "custom",
     dispose_default: true,
@@ -85,7 +82,6 @@ export const MODE_PROFILES = Object.freeze({
     model_tier: "rescue",
     permission_mode: "acceptEdits",
     strip_context: false, // §9: rescue keeps project context on purpose
-    disallowed_tools: EMPTY_TOOLS,
     containment: "none",
     scope: "working-tree",
     dispose_default: false,
@@ -98,7 +94,7 @@ export const MODE_PROFILES = Object.freeze({
     model_tier: "native",
     permission_mode: "plan",
     strip_context: true,
-    disallowed_tools: REVIEW_DISALLOWED,
+    allowed_tools: REVIEW_ALLOWED_TOOLS,
     containment: "none",
     scope: "head",
     dispose_default: false,

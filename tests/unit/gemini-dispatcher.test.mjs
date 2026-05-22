@@ -402,6 +402,10 @@ if (process.env.PATH !== ${JSON.stringify(process.env.PATH ?? "")} || process.en
   process.stderr.write("PATH/HOME must pass through unchanged\\n");
   process.exit(44);
 }
+if (process.env.PWD !== process.cwd()) {
+  process.stderr.write("PWD must match child cwd; got " + process.env.PWD + " for " + process.cwd() + "\\n");
+  process.exit(47);
+}
 if (process.env.GEMINI_CLI_NO_RELAUNCH !== "true") {
   process.stderr.write("Gemini relaunch guard must be forced for supervised companion runs\\n");
   process.exit(46);
@@ -421,6 +425,7 @@ process.stdout.write(JSON.stringify({
         // Pass-through environment (must remain visible).
         PATH: process.env.PATH,
         HOME: process.env.HOME,
+        PWD: "/tmp/stale-parent-workspace",
         GEMINI_CONFIG_DIR: "kept-config",
         // *_API_KEY suffix.
         GEMINI_API_KEY: "must-not-leak",

@@ -22,6 +22,9 @@ export function buildKimiArgs(profile, runtimeInputs = {}) {
     includeDirPath = null,
     resumeId = null,
     maxStepsPerTurn = profile.max_steps_per_turn ?? 8,
+    agentFilePath = null,
+    mcpConfigFile = null,
+    skillsDir = null,
   } = runtimeInputs;
 
   if ((typeof model !== "string" || !model) && profile.name !== "ping") {
@@ -29,6 +32,17 @@ export function buildKimiArgs(profile, runtimeInputs = {}) {
   }
   if (!Number.isInteger(maxStepsPerTurn) || maxStepsPerTurn <= 0) {
     throw new Error("buildKimiArgs: maxStepsPerTurn must be a positive integer");
+  }
+  const requiresReadOnlyFiles = Array.isArray(profile.allowed_tools);
+  if (requiresReadOnlyFiles) {
+    const missing = [
+      typeof agentFilePath === "string" && agentFilePath ? null : "agentFilePath",
+      typeof mcpConfigFile === "string" && mcpConfigFile ? null : "mcpConfigFile",
+      typeof skillsDir === "string" && skillsDir ? null : "skillsDir",
+    ].filter(Boolean);
+    if (missing.length > 0) {
+      throw new Error(`buildKimiArgs: missing Kimi read-only launch file inputs: ${missing.join(", ")}`);
+    }
   }
 
   const args = [
@@ -44,6 +58,11 @@ export function buildKimiArgs(profile, runtimeInputs = {}) {
   if (typeof model === "string" && model) args.push("-m", model);
   args.push("--thinking");
   if (resumeId) args.push("--session", resumeId);
+  if (requiresReadOnlyFiles) {
+    args.push("--agent-file", agentFilePath);
+    args.push("--mcp-config-file", mcpConfigFile);
+    args.push("--skills-dir", skillsDir);
+  }
 
   if (profile.permission_mode === "acceptEdits") {
     args.push("--yolo");
@@ -193,13 +212,24 @@ export async function spawnKimi(profile, runtimeInputs = {}) {
     binary = "kimi",
     onSpawn = null,
     maxStepsPerTurn,
+    agentFilePath,
+    mcpConfigFile,
+    skillsDir,
   } = runtimeInputs;
 
   if (typeof promptText !== "string" || promptText.length === 0) {
     throw new Error("spawnKimi: promptText is required");
   }
 
-  const args = buildKimiArgs(profile, { model, includeDirPath, resumeId, maxStepsPerTurn });
+  const args = buildKimiArgs(profile, {
+    model,
+    includeDirPath,
+    resumeId,
+    maxStepsPerTurn,
+    agentFilePath,
+    mcpConfigFile,
+    skillsDir,
+  });
   const targetEnv = sanitizeTargetEnv(env);
 
   return new Promise((resolve, reject) => {

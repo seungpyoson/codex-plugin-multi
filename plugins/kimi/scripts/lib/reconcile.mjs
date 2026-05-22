@@ -37,6 +37,7 @@ const ACTIVE_STATUSES = new Set(["queued", "running"]);
 // completed, signaled, or was evidently killed with no chance of
 // resuming. Tunable via reconcileActiveJobs(workspaceRoot, { orphanAgeMs }).
 const DEFAULT_ORPHAN_AGE_MS = 60 * 60 * 1000;
+const DEFAULT_TIMEOUT_ORPHAN_GRACE_MS = 30 * 1000;
 
 function parseStartedAt(record) {
   if (!record?.started_at) return null;
@@ -47,6 +48,17 @@ function parseStartedAt(record) {
 function runKindFromMeta(meta) {
   if (meta.external_review?.run_kind) return meta.external_review.run_kind;
   return "unknown";
+}
+
+function recordedTimeoutMs(meta) {
+  const timeoutMs = meta.review_metadata?.audit_manifest?.request?.timeout_ms;
+  return Number.isSafeInteger(timeoutMs) && timeoutMs > 0 ? timeoutMs : null;
+}
+
+function unusablePidInfoReason(pidInfo) {
+  if (pidInfo?.capture_error) return `pid_info capture failed (${pidInfo.capture_error})`;
+  if (pidInfo && Number.isInteger(pidInfo.pid)) return `pid_info incomplete for pid ${pidInfo.pid}`;
+  return "missing pid_info";
 }
 
 function invocationFromMeta(meta) {
@@ -70,13 +82,15 @@ function invocationFromMeta(meta) {
     scope_base: meta.scope_base ?? null,
     scope_paths: meta.scope_paths ?? null,
     prompt_head: meta.prompt_head ?? "",
+    review_prompt_contract_version: meta.review_metadata?.prompt_contract_version ?? null,
+    review_prompt_provider: meta.review_metadata?.prompt_provider ?? meta.target,
     schema_spec: meta.schema_spec ?? null,
     binary: meta.binary,
     started_at: meta.started_at,
   };
 }
 
-function classifyOrphan(meta, now, orphanAgeMs, verifyPidInfoFn) {
+function classifyOrphan(meta, now, orphanAgeMs, verifyPidInfoFn, timeoutOrphanGraceMs) {
   const pidInfo = meta.pid_info ?? null;
   if (pidInfo && Number.isInteger(pidInfo.pid)
       && pidInfo.starttime && pidInfo.argv0
@@ -95,7 +109,17 @@ function classifyOrphan(meta, now, orphanAgeMs, verifyPidInfoFn) {
   // orphan window (gives a real worker time to write its onSpawn record).
   const startedAtMs = parseStartedAt(meta);
   if (startedAtMs == null) return null;
-  if (now - startedAtMs <= orphanAgeMs) return null;
+  const timeoutMs = recordedTimeoutMs(meta);
+  const timeoutOrphanAgeMs = timeoutMs == null
+    ? null
+    : timeoutMs + timeoutOrphanGraceMs;
+  const effectiveOrphanAgeMs = timeoutOrphanAgeMs == null
+    ? orphanAgeMs
+    : Math.min(orphanAgeMs, timeoutOrphanAgeMs);
+  if (now - startedAtMs <= effectiveOrphanAgeMs) return null;
+  if (timeoutOrphanAgeMs != null && effectiveOrphanAgeMs === timeoutOrphanAgeMs) {
+    return `worker exceeded recorded timeout budget (${timeoutMs}ms + ${timeoutOrphanGraceMs}ms grace) with ${unusablePidInfoReason(pidInfo)}`;
+  }
   return `worker queued at ${meta.started_at} never produced pid_info ` +
     `(>${Math.round(orphanAgeMs / 1000)}s ago)`;
 }
@@ -118,6 +142,7 @@ function classifyOrphan(meta, now, orphanAgeMs, verifyPidInfoFn) {
 export function reconcileActiveJobs(workspaceRoot, {
   now = Date.now(),
   orphanAgeMs = DEFAULT_ORPHAN_AGE_MS,
+  timeoutOrphanGraceMs = DEFAULT_TIMEOUT_ORPHAN_GRACE_MS,
   verifyPidInfoFn = verifyPidInfo,
 } = {}) {
   const activeJobIds = listJobs(workspaceRoot)
@@ -127,7 +152,7 @@ export function reconcileActiveJobs(workspaceRoot, {
   const committed = commitJobRecordsIfActive(workspaceRoot, activeJobIds, (meta) => {
     // Inside the state lock. CAS already passed — meta.status is in
     // ACTIVE_JOB_STATUSES. Decide whether to promote.
-    const reason = classifyOrphan(meta, now, orphanAgeMs, verifyPidInfoFn);
+    const reason = classifyOrphan(meta, now, orphanAgeMs, verifyPidInfoFn, timeoutOrphanGraceMs);
     if (!reason) return null;
     let invocation;
     try { invocation = invocationFromMeta(meta); }
@@ -143,6 +168,7 @@ export function reconcileActiveJobs(workspaceRoot, {
         claudeSessionId: meta.claude_session_id ?? null,
         geminiSessionId: meta.gemini_session_id ?? null,
         kimiSessionId: meta.kimi_session_id ?? null,
+        reviewAuditManifest: meta.review_metadata?.audit_manifest ?? null,
         errorMessage: `stale_active_job: ${reason}`,
       }, Array.isArray(meta.mutations) ? meta.mutations : []);
       reasons.set(next.id, reason);

@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import {
   mkdtempSync, rmSync, readFileSync, existsSync, readdirSync, realpathSync,
   writeFileSync, chmodSync, mkdirSync, symlinkSync,
@@ -10,6 +11,11 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { fixtureBranchDiffRepo, fixtureSeedRepo } from "../helpers/fixture-git.mjs";
+import { badVerdictReviewFixture } from "../helpers/review-fixtures.mjs";
+import {
+  apiKeyAuthMode as geminiApiKeyAuthMode,
+  subscriptionAuthMode as geminiSubscriptionAuthMode,
+} from "../../plugins/gemini/scripts/lib/auth-selection.mjs";
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const COMPANION = path.join(REPO_ROOT, "plugins/gemini/scripts/gemini-companion.mjs");
@@ -25,6 +31,10 @@ function seedMinimalRepo(cwd) {
   fixtureSeedRepo(cwd);
 }
 
+function sha256(value) {
+  return createHash("sha256").update(value).digest("hex");
+}
+
 function runCompanion(args, { cwd, env = {}, dataDir = mkdtempSync(path.join(tmpdir(), "gemini-smoke-data-")) } = {}) {
   const res = spawnSync("node", [COMPANION, ...args], {
     cwd,
@@ -37,6 +47,10 @@ function runCompanion(args, { cwd, env = {}, dataDir = mkdtempSync(path.join(tmp
     },
   });
   return { ...res, dataDir };
+}
+
+function geminiAuthModeArgs(mode) {
+  return ["--auth-mode", mode];
 }
 
 function sleepSync(ms) {
@@ -204,6 +218,133 @@ test("gemini custom-review background: launched event and terminal JobRecord", a
       disclosure: "Selected source content was sent to Gemini CLI for external review.",
     });
     assert.equal("prompt" in meta, false, "full prompt must not appear on JobRecord");
+  } finally {
+    rmTree(dataDir);
+    rmTree(cwd);
+  }
+});
+
+test("gemini result --job-id aliases --job for a finished job", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "gemini-result-job-id-cwd-"));
+  seedMinimalRepo(cwd);
+  const { stdout, stderr, status, dataDir } = runCompanion(
+    ["run", "--mode=review", "--foreground", "--model", "gemini-3-flash-preview",
+     "--cwd", cwd, "--", "seed"],
+    { cwd },
+  );
+  try {
+    assert.equal(status, 0, stderr);
+    const record = JSON.parse(stdout);
+    const result = runCompanion(
+      ["result", "--job-id", record.job_id, "--cwd", cwd],
+      { cwd, dataDir },
+    );
+    assert.equal(result.status, 0, result.stderr);
+    const meta = JSON.parse(result.stdout);
+    assert.equal(meta.id, record.job_id);
+    assert.equal(meta.status, "completed");
+    assert.equal(meta.external_review.provider, "Gemini CLI");
+  } finally {
+    rmTree(dataDir);
+    rmTree(cwd);
+  }
+});
+
+test("gemini custom-review guides substantive missing-verdict retry without automatic resend", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "gemini-bad-verdict-cwd-"));
+  seedMinimalRepo(cwd);
+  const badResult = badVerdictReviewFixture("Gemini missing verdict replay marker.");
+  const { stdout, stderr, status, dataDir } = runCompanion(
+    ["run", "--mode=custom-review", "--foreground", "--model", "gemini-3-flash-preview",
+     "--cwd", cwd, "--scope-paths", "seed.txt", "--", "review selected source"],
+    { cwd, env: { GEMINI_MOCK_RESPONSE: badResult } },
+  );
+  try {
+    assert.equal(status, 2, `exit ${status}: stderr=${stderr}; stdout=${stdout}`);
+    const record = JSON.parse(stdout);
+    assert.equal(record.status, "failed");
+    assert.equal(record.error_code, "review_not_completed");
+    assert.equal(record.error_message, "review_quality_failed:missing_verdict");
+    assert.equal(record.result, badResult);
+    assert.equal(record.external_review.source_content_transmission, "sent");
+    assert.deepEqual(
+      record.review_metadata.audit_manifest.review_quality.semantic_failure_reasons,
+      ["missing_verdict"],
+    );
+    assert.match(record.suggested_action, /Do not automatically resend selected source/i);
+    assert.match(record.suggested_action, /fresh matching approval token/i);
+    assert.match(record.suggested_action, /narrowing the scope/i);
+    assert.match(record.suggested_action, /sharding/i);
+    assert.match(record.suggested_action, /relaying/i);
+    assert.match(record.suggested_action, /interactive Gemini/i);
+  } finally {
+    rmTree(dataDir);
+    rmTree(cwd);
+  }
+});
+
+test("gemini result from wrong cwd returns retrieval guidance", () => {
+  const cwd = realpathSync(mkdtempSync(path.join(tmpdir(), "gemini-result-right-cwd-")));
+  const wrongCwd = realpathSync(mkdtempSync(path.join(tmpdir(), "gemini-result-wrong-cwd-")));
+  seedMinimalRepo(cwd);
+  const dataDir = mkdtempSync(path.join(tmpdir(), "gemini-result-wrong-cwd-data-"));
+  const corruptJobsDir = path.join(dataDir, "state", "000-corrupt", "jobs");
+  mkdirSync(corruptJobsDir, { recursive: true });
+  const { stdout, stderr, status } = runCompanion(
+    ["run", "--mode=review", "--foreground", "--model", "gemini-3-flash-preview",
+     "--cwd", cwd, "--", "seed"],
+    { cwd, dataDir },
+  );
+  try {
+    assert.equal(status, 0, stderr);
+    const record = JSON.parse(stdout);
+    writeFileSync(path.join(corruptJobsDir, `${record.job_id}.json`), "{ malformed");
+    const result = runCompanion(
+      ["result", "--job", record.job_id],
+      { cwd: wrongCwd, dataDir },
+    );
+    assert.equal(result.status, 1);
+    const parsed = JSON.parse(result.stdout);
+    assert.equal(parsed.error, "not_found");
+    assert.equal(parsed.job_id, record.job_id);
+    assert.equal(parsed.matched_workspace, true);
+    assert.equal("matched_workspace_root" in parsed, false);
+    assert.doesNotMatch(JSON.stringify(parsed), new RegExp(cwd.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+    assert.match(parsed.suggested_action, /different workspace/);
+    assert.match(parsed.suggested_action, /--cwd <workspace used when the job was launched>/);
+  } finally {
+    rmTree(dataDir);
+    rmTree(cwd);
+    rmTree(wrongCwd);
+  }
+});
+
+test("gemini result with duplicate job id across workspaces reports state collision", () => {
+  const cwd = realpathSync(mkdtempSync(path.join(tmpdir(), "gemini-result-collision-cwd-")));
+  const dataDir = mkdtempSync(path.join(tmpdir(), "gemini-result-collision-data-"));
+  const jobId = "00000000-0000-4000-8000-00000000c012";
+  try {
+    for (const entry of ["collision-a", "collision-b"]) {
+      const jobsDir = path.join(dataDir, "state", entry, "jobs");
+      mkdirSync(jobsDir, { recursive: true });
+      writeFileSync(path.join(jobsDir, `${jobId}.json`), `${JSON.stringify({
+        id: jobId,
+        job_id: jobId,
+        status: "completed",
+        workspace_root: path.join(dataDir, entry),
+      })}\n`, "utf8");
+    }
+    const result = runCompanion(
+      ["result", "--job", jobId, "--cwd", cwd],
+      { cwd, dataDir },
+    );
+    assert.equal(result.status, 1);
+    const parsed = JSON.parse(result.stdout);
+    assert.equal(parsed.error, "not_found");
+    assert.equal(parsed.error_code, "state_collision");
+    assert.equal(parsed.matched_workspace_count, 2);
+    assert.match(parsed.suggested_action, /state collision/i);
+    assert.equal("matched_workspace_root" in parsed, false);
   } finally {
     rmTree(dataDir);
     rmTree(cwd);
@@ -856,6 +997,41 @@ test("gemini continue foreground: resumes prior job session", () => {
   }
 });
 
+test("gemini continue from wrong cwd returns workspace retrieval guidance", () => {
+  const cwd = realpathSync(mkdtempSync(path.join(tmpdir(), "gemini-continue-right-cwd-")));
+  const wrongCwd = realpathSync(mkdtempSync(path.join(tmpdir(), "gemini-continue-wrong-cwd-")));
+  seedMinimalRepo(cwd);
+  writeFileSync(path.join(cwd, "seed.txt"), "gemini wrong cwd continue seed\n");
+  const first = runCompanion(
+    ["run", "--mode=custom-review", "--foreground", "--model", "gemini-3-flash-preview",
+     "--scope-paths", "seed.txt", "--cwd", cwd, "--", "initial task"],
+    { cwd },
+  );
+  try {
+    assert.equal(first.status, 0, `exit ${first.status}: ${first.stderr}`);
+    const prior = JSON.parse(first.stdout);
+
+    const continued = runCompanion(
+      ["continue", "--job", prior.job_id, "--foreground", "--", "continue task"],
+      { cwd: wrongCwd, dataDir: first.dataDir },
+    );
+    assert.equal(continued.status, 1);
+    const parsed = JSON.parse(continued.stdout);
+    assert.equal(parsed.error, "not_found");
+    assert.equal(parsed.job_id, prior.job_id);
+    assert.equal(parsed.matched_workspace, true);
+    assert.equal("matched_workspace_root" in parsed, false);
+    assert.doesNotMatch(JSON.stringify(parsed), new RegExp(cwd.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+    assert.match(parsed.suggested_action, /different workspace/);
+    assert.match(parsed.suggested_action, /continue --job/);
+    assert.match(parsed.suggested_action, /--cwd <workspace used when the job was launched>/);
+  } finally {
+    rmTree(first.dataDir);
+    rmTree(cwd);
+    rmTree(wrongCwd);
+  }
+});
+
 test("gemini continue foreground: --timeout-ms overrides prior timeout and env", () => {
   const cwd = mkdtempSync(path.join(tmpdir(), "gemini-continue-timeout-override-cwd-"));
   seedMinimalRepo(cwd);
@@ -1163,6 +1339,93 @@ test("gemini _run-worker writes failed JobRecord when queued prompt sidecar is m
   }
 });
 
+test("gemini _run-worker audit manifest matches prompt sidecar source snapshot after source changes", async () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "gemini-worker-scope-race-cwd-"));
+  fixtureSeedRepo(cwd, {
+    fileName: "seed.txt",
+    fileContents: "old worker source sentinel\n",
+  });
+  const dataDir = mkdtempSync(path.join(tmpdir(), "gemini-worker-scope-race-data-"));
+  const previous = process.env.GEMINI_PLUGIN_DATA;
+  process.env.GEMINI_PLUGIN_DATA = dataDir;
+  try {
+    const state = await import("../../plugins/gemini/scripts/lib/state.mjs");
+    const { newJobId } = await import("../../plugins/gemini/scripts/lib/identity.mjs");
+    const { buildJobRecord } = await import("../../plugins/gemini/scripts/lib/job-record.mjs");
+    const { resolveProfile } = await import("../../plugins/gemini/scripts/lib/mode-profiles.mjs");
+    state.configureState({
+      pluginDataEnv: "GEMINI_PLUGIN_DATA",
+      sessionIdEnv: "GEMINI_COMPANION_SESSION_ID",
+    });
+    const profile = resolveProfile("custom-review");
+    const jobId = newJobId();
+    const invocation = Object.freeze({
+      job_id: jobId,
+      target: "gemini",
+      parent_job_id: null,
+      resume_chain: [],
+      mode_profile_name: profile.name,
+      mode: "custom-review",
+      model: "gemini-3-flash-preview",
+      cwd,
+      workspace_root: cwd,
+      containment: profile.containment,
+      scope: profile.scope,
+      dispose_effective: profile.dispose_default,
+      scope_base: null,
+      scope_paths: ["seed.txt"],
+      prompt_head: "review selected source",
+      review_prompt_contract_version: 1,
+      review_prompt_provider: "Gemini CLI",
+      timeout_ms: 900000,
+      schema_spec: null,
+      binary: MOCK,
+      run_kind: "background",
+      auth_mode: "subscription",
+      started_at: new Date().toISOString(),
+    });
+    const queued = buildJobRecord(invocation, null, []);
+    state.writeJobFile(cwd, jobId, queued);
+    state.upsertJob(cwd, queued);
+    const promptPath = path.join(state.resolveJobsDir(cwd), jobId, "prompt.txt");
+    mkdirSync(path.dirname(promptPath), { recursive: true });
+    writeFileSync(promptPath, [
+      "Provider: Gemini CLI",
+      "BEGIN GEMINI FILE 1: seed.txt",
+      "old worker source sentinel",
+      "",
+      "END GEMINI FILE 1: seed.txt",
+      "review selected source",
+      "",
+    ].join("\n"), { mode: 0o600 });
+    writeFileSync(path.join(cwd, "seed.txt"), "new worker source sentinel\n", "utf8");
+
+    const worker = spawnSync("node", [
+      COMPANION, "_run-worker", "--cwd", cwd, "--job", jobId,
+    ], {
+      cwd,
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        GEMINI_BINARY: MOCK,
+        GEMINI_PLUGIN_DATA: dataDir,
+        GEMINI_MOCK_ASSERT_PROMPT_INCLUDES: "old worker source sentinel",
+      },
+    });
+    assert.equal(worker.status, 0, `worker stderr=${worker.stderr}; stdout=${worker.stdout}`);
+    const finalRecord = JSON.parse(readFileSync(state.resolveJobFile(cwd, jobId), "utf8"));
+    assert.equal(finalRecord.status, "completed");
+    const [selectedFile] = finalRecord.review_metadata.audit_manifest.selected_source.files;
+    assert.equal(selectedFile.path, "seed.txt");
+    assert.equal(selectedFile.content_hash.value, sha256("old worker source sentinel\n"));
+  } finally {
+    if (previous === undefined) delete process.env.GEMINI_PLUGIN_DATA;
+    else process.env.GEMINI_PLUGIN_DATA = previous;
+    rmTree(dataDir);
+    rmTree(cwd);
+  }
+});
+
 test("gemini review foreground: policy-first, stdin transport, /tmp cwd, scoped include dir", () => {
   const cwd = mkdtempSync(path.join(tmpdir(), "gemini-review-cwd-"));
   seedMinimalRepo(cwd);
@@ -1247,7 +1510,7 @@ test("gemini continue preserves prior review branch-diff scope through target ex
   }
 });
 
-test("gemini review foreground lifecycle jsonl emits launch event before terminal JobRecord", () => {
+test("gemini review foreground lifecycle jsonl emits launch event before terminal projection", () => {
   const cwd = mkdtempSync(path.join(tmpdir(), "gemini-review-lifecycle-cwd-"));
   seedMinimalRepo(cwd);
   const { stdout, stderr, status, dataDir } = runCompanion(
@@ -1280,7 +1543,9 @@ test("gemini review foreground lifecycle jsonl emits launch event before termina
     });
     assert.equal(record.status, "completed");
     assert.equal(record.external_review.source_content_transmission, "sent");
-    assert.match(record.result, /Mock Gemini response\./);
+    assert.equal(record.event, "external_review_terminal");
+    assert.equal(Object.hasOwn(record, "result"), false);
+    assert.equal(Object.hasOwn(record, "runtime_diagnostics"), false);
   } finally {
     rmTree(dataDir);
     rmTree(cwd);
@@ -1379,6 +1644,13 @@ test("gemini review foreground: omits native Gemini sandbox inside Codex sandbox
     assert.equal(record.review_metadata.audit_manifest.request.model, record.model);
     assert.equal(record.review_metadata.audit_manifest.request.timeout_ms, 900000);
     assert.match(record.review_metadata.audit_manifest.prompt_builder.plugin_commit, /^[a-f0-9]{40}$/);
+    assert.equal(record.review_metadata.audit_manifest.selected_route, "subscription_oauth");
+    assert.equal(record.review_metadata.audit_manifest.fallback_reason, null);
+    assert.equal(record.review_metadata.audit_manifest.auth_path, "subscription_oauth");
+    assert.equal(record.review_metadata.audit_manifest.billing_path, null);
+    assert.equal(record.review_metadata.audit_manifest.source_send_approval_required, false);
+    assert.equal(record.review_metadata.audit_manifest.source_send_approval_state, "not_required");
+    assert.equal(record.review_metadata.audit_manifest.approval_scope, null);
     assert.notEqual(
       record.review_metadata.audit_manifest.prompt_builder.plugin_commit,
       record.review_metadata.audit_manifest.git_identity.head_sha,
@@ -1421,6 +1693,55 @@ test("gemini custom-review prompt includes selected source content", () => {
   } finally {
     rmTree(dataDir);
     rmTree(cwd);
+  }
+});
+
+test("gemini review prompt includes mode-specific self-contained live context", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "gemini-review-context-cwd-"));
+  const binDir = mkdtempSync(path.join(tmpdir(), "gemini-review-context-bin-"));
+  seedMinimalRepo(cwd);
+  try {
+    const binary = path.join(binDir, "gemini-review-context");
+    writeFileSync(binary, `#!/usr/bin/env node
+import { readFileSync } from "node:fs";
+const prompt = readFileSync(0, "utf8");
+if (prompt.includes("reply with exactly: pong.")) {
+  process.stdout.write(JSON.stringify({
+    session_id: "${GEMINI_SESSION_ID}",
+    response: "pong"
+  }) + "\\n");
+  process.exit(0);
+}
+for (const expected of [
+  "You are performing a code review. Prioritize bugs, behavioral regressions, and missing tests.",
+  "Your final answer must be self-contained",
+  "Live verification context:",
+]) {
+  if (!prompt.includes(expected)) {
+    process.stderr.write("missing prompt text: " + expected + "\\n");
+    process.exit(1);
+  }
+}
+process.stdout.write(JSON.stringify({
+  session_id: "${GEMINI_SESSION_ID}",
+  response: "Verdict: APPROVE\\nBlocking findings\\n- None. I inspected seed.txt.\\nNon-blocking concerns\\n- None.\\nInspection status\\n- I inspected seed.txt."
+}) + "\\n");
+`, "utf8");
+    chmodSync(binary, 0o755);
+    const { stdout, stderr, status, dataDir } = runCompanion(
+      ["run", "--mode=review", "--foreground", "--binary", binary, "--cwd", cwd, "--", "review prompt contract"],
+      { cwd },
+    );
+    try {
+      assert.equal(status, 0, `exit ${status}: ${stderr}; stdout=${stdout}`);
+      const record = JSON.parse(stdout);
+      assert.equal(record.status, "completed");
+    } finally {
+      rmTree(dataDir);
+    }
+  } finally {
+    rmTree(cwd);
+    rmTree(binDir);
   }
 });
 
@@ -1728,6 +2049,59 @@ test("gemini review preserves result when post-run mutation detection is unavail
   }
 });
 
+test("gemini custom-review hard-fails a valid review when source mutates", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "gemini-mutation-hardfail-cwd-"));
+  const dataDir = mkdtempSync(path.join(tmpdir(), "gemini-mutation-hardfail-data-"));
+  const binDir = mkdtempSync(path.join(tmpdir(), "gemini-mutation-hardfail-bin-"));
+  try {
+    fixtureSeedRepo(cwd, {
+      fileName: "seed.txt",
+      fileContents: "gemini mutation hardfail sentinel\n",
+    });
+    const binary = path.join(binDir, "gemini-mutating-review");
+    writeFileSync(binary, `#!/usr/bin/env node
+import { appendFileSync } from "node:fs";
+appendFileSync(${JSON.stringify(path.join(cwd, "seed.txt"))}, "mutated by gemini mock\\n");
+process.stdout.write(JSON.stringify({
+  session_id: "${GEMINI_SESSION_ID}",
+  response: "Verdict: APPROVE\\nBlocking findings\\n- None. The selected source was inspected before mutation.\\nNon-blocking concerns\\n- None.\\nInspection status\\n- I inspected seed.txt."
+}) + "\\n");
+`, "utf8");
+    chmodSync(binary, 0o755);
+    const { stdout, status } = runCompanion([
+      "run",
+      "--mode",
+      "custom-review",
+      "--cwd",
+      cwd,
+      "--binary",
+      binary,
+      "--scope-paths",
+      "seed.txt",
+      "--foreground",
+      "--",
+      "Review this scope.",
+    ], { cwd, dataDir });
+    assert.equal(status, 2, stdout);
+    const record = JSON.parse(stdout);
+    assert.equal(record.status, "failed");
+    assert.equal(record.error_code, "review_not_completed");
+    assert.match(record.result, /selected source was inspected/i);
+    assert.ok(record.mutations.includes(" M seed.txt"), JSON.stringify(record.mutations));
+    assert.equal(record.external_review.source_content_transmission, "sent");
+    assert.equal(record.review_metadata.audit_manifest.status, "failed");
+    assert.equal(record.review_metadata.audit_manifest.review_quality.failed_review_slot, true);
+    assert.ok(
+      record.review_metadata.audit_manifest.review_quality.semantic_failure_reasons.includes("source_mutation_detected"),
+      JSON.stringify(record.review_metadata.audit_manifest.review_quality.semantic_failure_reasons),
+    );
+  } finally {
+    rmTree(dataDir);
+    rmTree(cwd);
+    rmTree(binDir);
+  }
+});
+
 test("gemini run rejects Git binary policy errors distinctly before target spawn", () => {
   const cwd = mkdtempSync(path.join(tmpdir(), "gemini-git-policy-cwd-"));
   const dataDir = mkdtempSync(path.join(tmpdir(), "gemini-git-policy-data-"));
@@ -1907,6 +2281,43 @@ test("gemini run --foreground: meta-write conflict produces fallback failed reco
   }
 });
 
+test("gemini run --foreground: state lock timeout preserves finalization_failed meta", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "gemini-state-lock-timeout-"));
+  seedMinimalRepo(cwd);
+  const preload = path.join(cwd, "short-lock-timeout.mjs");
+  writeFileSync(preload, `
+import { configureState } from ${JSON.stringify(path.join(REPO_ROOT, "plugins/gemini/scripts/lib/state.mjs"))};
+configureState({ lockTimeoutMs: 150 });
+`, "utf8");
+  const { stdout, stderr, status, dataDir } = runCompanion(
+    ["run", "--mode=rescue", "--foreground", "--model", "gemini-3-flash-preview",
+     "--cwd", cwd, "--", "state lock timeout"],
+    {
+      cwd,
+      env: {
+        GEMINI_MOCK_STATE_LOCK_CONFLICT: "1",
+        NODE_OPTIONS: `--import=${preload}`,
+      },
+    },
+  );
+  try {
+    assert.notEqual(status, 0, "state lock timeout must fail finalization");
+    assert.doesNotMatch(stderr, /unhandled/i);
+    const err = JSON.parse(stdout);
+    assert.equal(err.error, "finalization_failed");
+    assert.match(err.message, /state_lock_timeout/);
+
+    const { record } = readOnlyJobRecord(dataDir);
+    assert.equal(record.status, "failed");
+    assert.equal(record.error_code, "finalization_failed");
+    assert.match(record.error_message, /state_lock_timeout/);
+    assert.equal(record.external_review.source_content_transmission, "sent");
+  } finally {
+    rmTree(dataDir);
+    rmTree(cwd);
+  }
+});
+
 test("gemini ping returns ok with the mock gemini binary using default subscription auth", () => {
   const cwd = mkdtempSync(path.join(tmpdir(), "gemini-ping-cwd-"));
   const tempRoot = realpathSync(tmpdir());
@@ -2018,13 +2429,13 @@ process.stdout.write(JSON.stringify({
   }
 });
 
-test("gemini ping auto auth prefers subscription when API key is present", () => {
-  const cwd = mkdtempSync(path.join(tmpdir(), "gemini-ping-auto-subscription-cwd-"));
-  const binDir = mkdtempSync(path.join(tmpdir(), "gemini-ping-auto-subscription-bin-"));
-  const binary = path.join(binDir, "gemini-auto-subscription");
+test("gemini ping default subscription auth ignores API key when present", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "gemini-ping-subscription-default-cwd-"));
+  const binDir = mkdtempSync(path.join(tmpdir(), "gemini-ping-subscription-default-bin-"));
+  const binary = path.join(binDir, "gemini-subscription-default");
   writeFileSync(binary, `#!/usr/bin/env node
 if (process.env.GEMINI_API_KEY) {
-  process.stderr.write("GEMINI_API_KEY should be ignored for initial auto subscription probe\\n");
+  process.stderr.write("GEMINI_API_KEY should be ignored for subscription probe\\n");
   process.exit(9);
 }
 process.stdout.write(JSON.stringify({
@@ -2034,16 +2445,16 @@ process.stdout.write(JSON.stringify({
 `, "utf8");
   chmodSync(binary, 0o755);
   const { stdout, status, dataDir } = runCompanion(
-    ["ping", "--auth-mode", "auto", "--binary", binary, "--model", "gemini-3-flash-preview"],
+    ["ping", "--binary", binary, "--model", "gemini-3-flash-preview"],
     { cwd, env: { GEMINI_API_KEY: "secret-test-value" } },
   );
   try {
     assert.equal(status, 0);
     const parsed = JSON.parse(stdout);
-    assert.equal(parsed.auth_mode, "auto");
+    assert.equal(parsed.auth_mode, "subscription");
     assert.equal(parsed.selected_auth_path, "subscription_oauth");
     assert.deepEqual(parsed.ignored_env_credentials, ["GEMINI_API_KEY"]);
-    assert.equal(parsed.auth_policy, "subscription_oauth_with_api_key_fallback");
+    assert.equal(parsed.auth_policy, "api_key_env_ignored");
     assert.doesNotMatch(stdout, /secret-test-value/);
   } finally {
     rmTree(dataDir);
@@ -2052,10 +2463,10 @@ process.stdout.write(JSON.stringify({
   }
 });
 
-test("gemini ping auto auth falls back to API key when subscription is unavailable", () => {
-  const cwd = mkdtempSync(path.join(tmpdir(), "gemini-ping-auto-api-fallback-cwd-"));
-  const binDir = mkdtempSync(path.join(tmpdir(), "gemini-ping-auto-api-fallback-bin-"));
-  const binary = path.join(binDir, "gemini-auto-api-fallback");
+test("gemini ping subscription auth falls back to API key when subscription is unavailable", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "gemini-ping-subscription-api-fallback-cwd-"));
+  const binDir = mkdtempSync(path.join(tmpdir(), "gemini-ping-subscription-api-fallback-bin-"));
+  const binary = path.join(binDir, "gemini-subscription-api-fallback");
   writeFileSync(binary, `#!/usr/bin/env node
 if (process.env.GEMINI_API_KEY === "secret-test-value") {
   process.stdout.write(JSON.stringify({
@@ -2069,13 +2480,13 @@ process.exit(1);
 `, "utf8");
   chmodSync(binary, 0o755);
   const { stdout, status, dataDir } = runCompanion(
-    ["ping", "--auth-mode", "auto", "--binary", binary, "--model", "gemini-3-flash-preview"],
+    ["ping", "--binary", binary, "--model", "gemini-3-flash-preview"],
     { cwd, env: { GEMINI_API_KEY: "secret-test-value" } },
   );
   try {
     assert.equal(status, 0);
     const parsed = JSON.parse(stdout);
-    assert.equal(parsed.auth_mode, "auto");
+    assert.equal(parsed.auth_mode, "subscription");
     assert.equal(parsed.selected_auth_path, "api_key_env");
     assert.deepEqual(parsed.allowed_env_credentials, ["GEMINI_API_KEY"]);
     assert.equal(parsed.auth_policy, "api_key_env_fallback");
@@ -2234,11 +2645,11 @@ process.exit(1);
     assert.equal(record.error_code, "sandbox_blocked");
     assert.match(record.error_summary, /sandbox/i);
     assert.match(record.suggested_action, /~\/\.gemini|writable_roots/);
-    assert.equal(record.pid_info, null);
+    assert.equal(record.pid_info ?? null, null);
     assert.equal(record.external_review.source_content_transmission, "not_sent");
     assert.match(record.external_review.disclosure, /not sent/);
-    assert.equal(record.review_metadata.audit_manifest.error_code, "sandbox_blocked");
-    assert.equal(record.review_metadata.audit_manifest.review_quality.failed_review_slot, false);
+    assert.equal(record.error_code, "sandbox_blocked");
+    assert.equal(record.review_quality.failed_review_slot, false);
   } finally {
     rmTree(dataDir);
     rmTree(cwd);
@@ -2246,15 +2657,94 @@ process.exit(1);
   }
 });
 
-test("gemini run auto auth re-preflights API-key fallback before review launch", () => {
-  const cwd = mkdtempSync(path.join(tmpdir(), "gemini-run-auto-api-fallback-preflight-cwd-"));
+test("gemini source-bearing preflight failures redact selected source from error messages", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "gemini-preflight-redact-cwd-"));
+  const dataDir = mkdtempSync(path.join(tmpdir(), "gemini-preflight-redact-data-"));
+  const binDir = mkdtempSync(path.join(tmpdir(), "gemini-preflight-redact-bin-"));
+  try {
+    const missingBinary = path.join(binDir, "missing-gemini-binary");
+    fixtureSeedRepo(cwd, {
+      fileName: "seed.txt",
+      fileContents: missingBinary,
+    });
+    const result = runCompanion([
+      "run",
+      "--mode",
+      "custom-review",
+      "--foreground",
+      "--binary",
+      missingBinary,
+      "--cwd",
+      cwd,
+      "--scope-paths",
+      "seed.txt",
+      "--",
+      "review selected source",
+    ], { cwd, dataDir });
+    assert.equal(result.status, 2, result.stderr || result.stdout);
+    const record = JSON.parse(result.stdout);
+    assert.equal(record.status, "failed");
+    assert.equal(record.external_review.source_content_transmission, "not_sent");
+    assert.equal(record.error_message.includes(missingBinary), false, record.error_message);
+    assert.match(record.error_message, /\[redacted_source_excerpt\]/);
+  } finally {
+    rmTree(dataDir);
+    rmTree(cwd);
+    rmTree(binDir);
+  }
+});
+
+test("gemini run ignores stale successful doctor and re-preflights before source send", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "gemini-run-stale-doctor-cwd-"));
+  const dataDir = mkdtempSync(path.join(tmpdir(), "gemini-run-stale-doctor-data-"));
+  fixtureSeedRepo(cwd, {
+    fileName: "seed.txt",
+    fileContents: "GEMINI_STALE_DOCTOR_SOURCE_SENTINEL\n",
+  });
+  const doctor = runCompanion(
+    ["doctor", "--model", "gemini-3-flash-preview"],
+    { cwd, dataDir, env: { GEMINI_API_KEY: "", GOOGLE_API_KEY: "" } },
+  );
+  const result = runCompanion(
+    ["run", "--mode=custom-review", "--foreground", "--lifecycle-events", "jsonl",
+     "--model", "gemini-3-flash-preview", "--cwd", cwd,
+     "--scope-paths", "seed.txt", "--", "review this scope"],
+    {
+      cwd,
+      dataDir,
+      env: {
+        GEMINI_API_KEY: "",
+        GOOGLE_API_KEY: "",
+        GEMINI_MOCK_CAPACITY_MODEL: "gemini-3-flash-preview",
+      },
+    },
+  );
+  try {
+    assert.equal(doctor.dataDir, result.dataDir, "stale doctor proof must reuse the same plugin data dir");
+    assert.equal(doctor.status, 0, doctor.stderr || doctor.stdout);
+    assert.equal(JSON.parse(doctor.stdout).ready, true);
+    assert.equal(result.status, 2);
+    const lines = result.stdout.trim().split("\n").map((line) => JSON.parse(line));
+    assert.equal(lines.length, 1, "stale doctor success must not emit launch before fresh preflight");
+    const [record] = lines;
+    assert.equal(record.error_code, "spawn_failed");
+    assert.equal(record.external_review.source_content_transmission, "not_sent");
+    assert.doesNotMatch(result.stdout, /GEMINI_STALE_DOCTOR_SOURCE_SENTINEL/);
+  } finally {
+    rmTree(dataDir);
+    rmTree(cwd);
+  }
+});
+
+test("gemini run subscription auth does not source-send through API fallback without approval", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "gemini-run-subscription-api-fallback-blocked-cwd-"));
   fixtureSeedRepo(cwd, {
     fileName: "seed.txt",
     fileContents: "GEMINI_AUTO_FALLBACK_SOURCE_SENTINEL\n",
   });
-  const binDir = mkdtempSync(path.join(tmpdir(), "gemini-run-auto-api-fallback-preflight-bin-"));
+  const binDir = mkdtempSync(path.join(tmpdir(), "gemini-run-subscription-api-fallback-blocked-bin-"));
   const leakMarker = path.join(binDir, "source-leaked");
-  const binary = path.join(binDir, "gemini-auto-api-fallback-preflight");
+  const binary = path.join(binDir, "gemini-subscription-api-fallback-blocked");
   writeFileSync(binary, `#!/usr/bin/env node
 import { writeFileSync } from "node:fs";
 
@@ -2283,7 +2773,7 @@ process.stdin.on("end", () => {
   chmodSync(binary, 0o755);
   const { stdout, status, dataDir } = runCompanion(
     ["run", "--mode=custom-review", "--foreground", "--lifecycle-events", "jsonl",
-     "--auth-mode", "auto", "--binary", binary, "--model", "gemini-3-flash-preview",
+     ...geminiAuthModeArgs(geminiSubscriptionAuthMode()), "--binary", binary, "--model", "gemini-3-flash-preview",
      "--cwd", cwd, "--scope-paths", "seed.txt", "--", "review selected source"],
     { cwd, env: { GEMINI_API_KEY: "secret-test-value", GOOGLE_API_KEY: "" } },
   );
@@ -2295,10 +2785,383 @@ process.stdin.on("end", () => {
     assert.equal(record.status, "failed");
     assert.equal(record.error_code, "not_authed");
     assert.equal(record.external_review.source_content_transmission, "not_sent");
-    assert.equal(existsSync(leakMarker), false, "selected source reached fallback review spawn");
+    assert.equal(existsSync(leakMarker), false, "selected source reached API-key fallback review spawn");
     assert.doesNotMatch(stdout, /secret-test-value/);
   } finally {
     rmTree(dataDir);
+    rmTree(cwd);
+    rmTree(binDir);
+  }
+});
+
+test("gemini run explicit api_key source-bearing review requires approval before spawn", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "gemini-run-explicit-api-source-approval-cwd-"));
+  fixtureSeedRepo(cwd, {
+    fileName: "seed.txt",
+    fileContents: "GEMINI_EXPLICIT_API_SOURCE_SENTINEL\n",
+  });
+  const binDir = mkdtempSync(path.join(tmpdir(), "gemini-run-explicit-api-source-approval-bin-"));
+  const leakMarker = path.join(binDir, "source-leaked");
+  const binary = path.join(binDir, "gemini-explicit-api-source-approval");
+  writeFileSync(binary, `#!/usr/bin/env node
+import { writeFileSync } from "node:fs";
+
+let prompt = "";
+process.stdin.setEncoding("utf8");
+process.stdin.on("data", (chunk) => { prompt += chunk; });
+process.stdin.on("end", () => {
+  if (prompt.includes("GEMINI_EXPLICIT_API_SOURCE_SENTINEL")) {
+    writeFileSync(${JSON.stringify(leakMarker)}, "leaked");
+  }
+  process.stdout.write(JSON.stringify({
+    session_id: "${GEMINI_SESSION_ID}",
+    response: "Verdict: APPROVE\\nBlocking findings\\n- None.\\nNon-blocking concerns\\n- None.\\nInspection status\\n- I inspected seed.txt."
+  }) + "\\n");
+  process.exit(0);
+});
+`, "utf8");
+  chmodSync(binary, 0o755);
+  const { stdout, status, dataDir } = runCompanion(
+    ["run", "--mode=custom-review", "--foreground", "--lifecycle-events", "jsonl",
+     ...geminiAuthModeArgs(geminiApiKeyAuthMode()), "--binary", binary, "--model", "gemini-3-flash-preview",
+     "--cwd", cwd, "--scope-paths", "seed.txt", "--", "review selected source"],
+    { cwd, env: { GEMINI_API_KEY: "secret-test-value", GOOGLE_API_KEY: "" } },
+  );
+  try {
+    assert.equal(status, 2);
+    const lines = stdout.trim().split("\n").map((line) => JSON.parse(line));
+    assert.equal(lines.length, 1, "unapproved API source send must not emit external_review_launched");
+    const [record] = lines;
+    assert.equal(record.status, "failed");
+    assert.equal(record.error_code, "approval_required");
+    assert.equal(record.external_review.source_content_transmission, "not_sent");
+    assert.equal(record.review_metadata.audit_manifest.selected_route, "direct_api");
+    assert.equal(record.review_metadata.audit_manifest.fallback_reason, "explicit_api");
+    assert.equal(record.review_metadata.audit_manifest.source_send_approval_required, true);
+    assert.equal(record.review_metadata.audit_manifest.source_send_approval_state, "required");
+    assert.equal(existsSync(leakMarker), false, "selected source reached unapproved Gemini API-key review spawn");
+    assert.doesNotMatch(stdout, /secret-test-value/);
+  } finally {
+    rmTree(dataDir);
+    rmTree(cwd);
+    rmTree(binDir);
+  }
+});
+
+test("gemini approval-request explicit api_key source-bearing review token unlocks matching run", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "gemini-approval-request-api-cwd-"));
+  fixtureSeedRepo(cwd, {
+    fileName: "seed.txt",
+    fileContents: "GEMINI_APPROVAL_REQUEST_API_SOURCE_SENTINEL\n",
+  });
+  const binDir = mkdtempSync(path.join(tmpdir(), "gemini-approval-request-api-bin-"));
+  const leakMarker = path.join(binDir, "source-leaked");
+  const binary = path.join(binDir, "gemini-approval-request-api");
+  writeFileSync(binary, `#!/usr/bin/env node
+import { readFileSync, writeFileSync } from "node:fs";
+const prompt = readFileSync(0, "utf8");
+if (prompt.includes("GEMINI_APPROVAL_REQUEST_API_SOURCE_SENTINEL")) {
+  writeFileSync(${JSON.stringify(leakMarker)}, "leaked");
+}
+process.stdout.write(JSON.stringify({
+  session_id: "${GEMINI_SESSION_ID}",
+  response: "Verdict: APPROVE\\nBlocking findings\\n- None.\\nNon-blocking concerns\\n- None.\\nInspection status\\n- I inspected seed.txt."
+}) + "\\n");
+`, "utf8");
+  chmodSync(binary, 0o755);
+  const commonOptions = [
+    "--mode=custom-review",
+    ...geminiAuthModeArgs(geminiApiKeyAuthMode()),
+    "--binary", binary,
+    "--model", "gemini-3-flash-preview",
+    "--cwd", cwd,
+    "--scope-paths", "seed.txt",
+  ];
+  const approval = runCompanion(
+    ["approval-request", ...commonOptions, "--", "review selected source"],
+    { cwd, env: { GEMINI_API_KEY: "secret-test-value", GOOGLE_API_KEY: "" } },
+  );
+  try {
+    assert.equal(approval.status, 0, approval.stderr || approval.stdout);
+    const request = JSON.parse(approval.stdout);
+    assert.equal(request.event, "external_review_approval_request");
+    assert.equal(request.provider, "gemini");
+    assert.equal(request.source_content_transmission, "not_sent");
+    assert.equal(request.selected_route, "direct_api");
+    assert.equal(request.fallback_reason, "explicit_api");
+    assert.equal(request.source_send_approval_required, true);
+    assert.equal(request.source_send_approval_state, "required");
+    assert.equal(request.approval_scope, "session");
+    assert.match(request.approval_token.value, /^[a-f0-9]{64}$/);
+    assert.equal(existsSync(leakMarker), false, "approval-request must not launch Gemini or send selected source");
+
+    const run = runCompanion(
+      ["run", "--foreground", "--lifecycle-events", "jsonl",
+       ...commonOptions, "--approval-token", request.approval_token.value, "--", "review selected source"],
+      { cwd, dataDir: approval.dataDir, env: { GEMINI_API_KEY: "secret-test-value", GOOGLE_API_KEY: "" } },
+    );
+    assert.equal(run.status, 0, run.stderr || run.stdout);
+    const lines = run.stdout.trim().split("\n").map((line) => JSON.parse(line));
+    const record = lines.at(-1);
+    assert.equal(record.status, "completed");
+    assert.equal(record.external_review.source_content_transmission, "sent");
+    assert.equal(record.review_metadata.audit_manifest.source_send_approval_required, true);
+    assert.equal(record.review_metadata.audit_manifest.source_send_approval_state, "approved");
+    assert.equal(existsSync(leakMarker), true, "matching approval token should allow source-bearing Gemini launch");
+    assert.doesNotMatch(approval.stdout + run.stdout, /secret-test-value/);
+  } finally {
+    rmTree(approval.dataDir);
+    rmTree(cwd);
+    rmTree(binDir);
+  }
+});
+
+test("gemini approval-request token unlocks matching background api_key source-bearing review", async () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "gemini-bg-approval-token-api-cwd-"));
+  fixtureSeedRepo(cwd, {
+    fileName: "seed.txt",
+    fileContents: "GEMINI_BACKGROUND_APPROVED_API_SOURCE_SENTINEL\n",
+  });
+  const commonOptions = [
+    "--mode=custom-review",
+    ...geminiAuthModeArgs(geminiApiKeyAuthMode()),
+    "--binary", MOCK,
+    "--model", "gemini-3-flash-preview",
+    "--cwd", cwd,
+    "--scope-paths", "seed.txt",
+  ];
+  const approval = runCompanion(
+    ["approval-request", ...commonOptions, "--", "review selected source"],
+    { cwd, env: { GEMINI_API_KEY: "secret-test-value", GOOGLE_API_KEY: "" } },
+  );
+  try {
+    assert.equal(approval.status, 0, approval.stderr || approval.stdout);
+    const request = JSON.parse(approval.stdout);
+    assert.equal(request.source_content_transmission, "not_sent");
+    assert.equal(request.source_send_approval_required, true);
+    assert.equal(request.source_send_approval_state, "required");
+
+    const launched = runCompanion(
+      ["run", "--background", "--lifecycle-events", "jsonl",
+       ...commonOptions, "--approval-token", request.approval_token.value, "--", "review selected source"],
+      {
+        cwd,
+        dataDir: approval.dataDir,
+        env: {
+          GEMINI_API_KEY: "secret-test-value",
+          GOOGLE_API_KEY: "",
+          GEMINI_MOCK_ASSERT_PROMPT_INCLUDES: "GEMINI_BACKGROUND_APPROVED_API_SOURCE_SENTINEL",
+        },
+      },
+    );
+    assert.equal(launched.status, 0, launched.stderr || launched.stdout);
+    const launchEvent = JSON.parse(launched.stdout);
+    assert.equal(launchEvent.external_review.source_content_transmission, "may_be_sent");
+
+    const deadline = Date.now() + GEMINI_SMOKE_POLL_TIMEOUT_MS;
+    let terminal = null;
+    while (Date.now() < deadline && !terminal) {
+      const statusRes = spawnSync("node", [COMPANION, "status", "--all", "--cwd", cwd], {
+        cwd,
+        encoding: "utf8",
+        env: { ...process.env, GEMINI_PLUGIN_DATA: approval.dataDir },
+      });
+      assert.equal(statusRes.status, 0, statusRes.stderr);
+      const status = JSON.parse(statusRes.stdout);
+      terminal = status.jobs.find((job) => (
+        job.job_id === launchEvent.job_id
+        && ["completed", "failed", "cancelled", "stale"].includes(job.status)
+      ));
+      if (!terminal) await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+
+    assert.ok(terminal, "background approved API-key review did not reach terminal state");
+    assert.equal(terminal.status, "completed");
+    assert.equal(terminal.external_review.source_content_transmission, "sent");
+    assert.equal(terminal.review_metadata.audit_manifest.source_send_approval_required, true);
+    assert.equal(terminal.review_metadata.audit_manifest.source_send_approval_state, "approved");
+    assert.doesNotMatch(approval.stdout + launched.stdout + JSON.stringify(terminal), /secret-test-value/);
+  } finally {
+    rmTree(approval.dataDir);
+    rmTree(cwd);
+  }
+});
+
+test("gemini background explicit api_key source-bearing review requires approval before launch", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "gemini-bg-explicit-api-source-approval-cwd-"));
+  fixtureSeedRepo(cwd, {
+    fileName: "seed.txt",
+    fileContents: "GEMINI_BACKGROUND_API_SOURCE_SENTINEL\n",
+  });
+  const binDir = mkdtempSync(path.join(tmpdir(), "gemini-bg-explicit-api-source-approval-bin-"));
+  const leakMarker = path.join(binDir, "source-leaked");
+  const binary = path.join(binDir, "gemini-bg-explicit-api-source-approval");
+  writeFileSync(binary, `#!/usr/bin/env node
+import { readFileSync, writeFileSync } from "node:fs";
+const prompt = readFileSync(0, "utf8");
+if (prompt.includes("GEMINI_BACKGROUND_API_SOURCE_SENTINEL")) {
+  writeFileSync(${JSON.stringify(leakMarker)}, "leaked");
+}
+process.stdout.write(JSON.stringify({
+  session_id: "${GEMINI_SESSION_ID}",
+  response: "Verdict: APPROVE\\nBlocking findings\\n- None.\\nNon-blocking concerns\\n- None.\\nInspection status\\n- I inspected seed.txt."
+}) + "\\n");
+`, "utf8");
+  chmodSync(binary, 0o755);
+  const { stdout, status, dataDir } = runCompanion(
+    ["run", "--mode=custom-review", "--background", "--lifecycle-events", "jsonl",
+     ...geminiAuthModeArgs(geminiApiKeyAuthMode()), "--binary", binary, "--model", "gemini-3-flash-preview",
+     "--cwd", cwd, "--scope-paths", "seed.txt", "--", "review selected source"],
+    { cwd, env: { GEMINI_API_KEY: "secret-test-value", GOOGLE_API_KEY: "" } },
+  );
+  try {
+    assert.equal(status, 2, stdout);
+    const record = JSON.parse(stdout);
+    assert.equal(record.status, "failed");
+    assert.equal(record.error_code, "approval_required");
+    assert.equal(record.external_review.source_content_transmission, "not_sent");
+    assert.equal(record.review_metadata.audit_manifest.source_send_approval_required, true);
+    assert.equal(record.review_metadata.audit_manifest.source_send_approval_state, "required");
+    assert.equal(existsSync(leakMarker), false, "selected source reached unapproved Gemini API-key background spawn");
+    const { metaPath } = readOnlyJobRecord(dataDir);
+    const promptPath = path.join(path.dirname(metaPath), record.job_id, "prompt.txt");
+    assert.equal(existsSync(promptPath), false, "unapproved Gemini API-key background run must not persist selected source prompt sidecar");
+    assert.doesNotMatch(stdout, /secret-test-value/);
+  } finally {
+    rmTree(dataDir);
+    rmTree(cwd);
+    rmTree(binDir);
+  }
+});
+
+test("gemini background explicit api_key source-bearing continue requires approval before launch", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "gemini-bg-continue-api-source-approval-cwd-"));
+  fixtureSeedRepo(cwd, {
+    fileName: "seed.txt",
+    fileContents: "GEMINI_BACKGROUND_CONTINUE_API_SOURCE_SENTINEL\n",
+  });
+  const binDir = mkdtempSync(path.join(tmpdir(), "gemini-bg-continue-api-source-approval-bin-"));
+  const leakMarker = path.join(binDir, "source-leaked");
+  const binary = path.join(binDir, "gemini-bg-continue-api-source-approval");
+  writeFileSync(binary, `#!/usr/bin/env node
+import { readFileSync, writeFileSync } from "node:fs";
+const prompt = readFileSync(0, "utf8");
+if (prompt.includes("GEMINI_BACKGROUND_CONTINUE_API_SOURCE_SENTINEL")) {
+  writeFileSync(${JSON.stringify(leakMarker)}, "leaked");
+}
+process.stdout.write(JSON.stringify({
+  session_id: "${RESUMED_GEMINI_SESSION_ID}",
+  response: "Verdict: APPROVE\\nBlocking findings\\n- None.\\nNon-blocking concerns\\n- None.\\nInspection status\\n- I inspected seed.txt."
+}) + "\\n");
+`, "utf8");
+  chmodSync(binary, 0o755);
+  const first = runCompanion(
+    ["run", "--mode=custom-review", "--foreground", "--model", "gemini-3-flash-preview",
+     "--cwd", cwd, "--scope-paths", "seed.txt", "--", "initial review"],
+    { cwd },
+  );
+  try {
+    assert.equal(first.status, 0, first.stderr || first.stdout);
+    const prior = JSON.parse(first.stdout);
+    const continued = runCompanion(
+      ["continue", "--job", prior.job_id, "--background", "--lifecycle-events", "jsonl",
+       ...geminiAuthModeArgs(geminiApiKeyAuthMode()), "--binary", binary, "--model", "gemini-3-flash-preview",
+       "--cwd", cwd, "--", "continue selected-source review"],
+      { cwd, dataDir: first.dataDir, env: { GEMINI_API_KEY: "secret-test-value", GOOGLE_API_KEY: "" } },
+    );
+
+    assert.equal(continued.status, 2, continued.stdout);
+    const record = JSON.parse(continued.stdout);
+    assert.equal(record.status, "failed");
+    assert.equal(record.error_code, "approval_required");
+    assert.equal(record.external_review.source_content_transmission, "not_sent");
+    assert.equal(record.review_metadata.audit_manifest.source_send_approval_required, true);
+    assert.equal(record.review_metadata.audit_manifest.source_send_approval_state, "required");
+    assert.equal(existsSync(leakMarker), false, "selected source reached unapproved Gemini API-key background continue");
+    const stateRoot = path.join(first.dataDir, "state");
+    let metaPath = null;
+    for (const workspaceDir of readdirSync(stateRoot)) {
+      const candidate = path.join(stateRoot, workspaceDir, "jobs", `${record.job_id}.json`);
+      if (existsSync(candidate)) {
+        metaPath = candidate;
+        break;
+      }
+    }
+    assert.ok(metaPath, "failed continue JobRecord was not persisted");
+    const promptPath = path.join(path.dirname(metaPath), record.job_id, "prompt.txt");
+    assert.equal(existsSync(promptPath), false, "unapproved Gemini API-key background continue must not persist selected source prompt sidecar");
+    assert.doesNotMatch(continued.stdout, /secret-test-value/);
+  } finally {
+    rmTree(first.dataDir);
+    rmTree(cwd);
+    rmTree(binDir);
+  }
+});
+
+test("gemini continue inherits prior api_key route before source-bearing preflight", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "gemini-continue-inherit-api-route-cwd-"));
+  fixtureSeedRepo(cwd, {
+    fileName: "seed.txt",
+    fileContents: "GEMINI_CONTINUE_INHERIT_API_ROUTE_SENTINEL\n",
+  });
+  const binDir = mkdtempSync(path.join(tmpdir(), "gemini-continue-inherit-api-route-bin-"));
+  const leakMarker = path.join(binDir, "continue-source-leaked");
+  const binary = path.join(binDir, "gemini-continue-inherit-api-route");
+  writeFileSync(binary, `#!/usr/bin/env node
+import { readFileSync, writeFileSync } from "node:fs";
+const prompt = readFileSync(0, "utf8");
+if (prompt.includes("GEMINI_CONTINUE_INHERIT_API_ROUTE_SENTINEL")) {
+  writeFileSync(${JSON.stringify(leakMarker)}, "leaked");
+}
+process.stdout.write(JSON.stringify({
+  session_id: "${RESUMED_GEMINI_SESSION_ID}",
+  response: "Verdict: APPROVE\\nBlocking findings\\n- None.\\nNon-blocking concerns\\n- None.\\nInspection status\\n- I inspected seed.txt."
+}) + "\\n");
+`, "utf8");
+  chmodSync(binary, 0o755);
+
+  const commonOptions = [
+    "--mode=custom-review",
+    ...geminiAuthModeArgs(geminiApiKeyAuthMode()),
+    "--binary", binary,
+    "--model", "gemini-3-flash-preview",
+    "--cwd", cwd,
+    "--scope-paths", "seed.txt",
+  ];
+  const approval = runCompanion(
+    ["approval-request", ...commonOptions, "--", "initial source review"],
+    { cwd, env: { GEMINI_API_KEY: "secret-test-value", GOOGLE_API_KEY: "" } },
+  );
+  try {
+    assert.equal(approval.status, 0, approval.stderr || approval.stdout);
+    const request = JSON.parse(approval.stdout);
+    const first = runCompanion(
+      ["run", "--foreground", ...commonOptions, "--approval-token", request.approval_token.value, "--", "initial source review"],
+      { cwd, dataDir: approval.dataDir, env: { GEMINI_API_KEY: "secret-test-value", GOOGLE_API_KEY: "" } },
+    );
+    assert.equal(first.status, 0, first.stderr || first.stdout);
+    const prior = JSON.parse(first.stdout);
+    rmSync(leakMarker, { force: true });
+
+    const continued = runCompanion(
+      ["continue", "--job", prior.job_id, "--foreground", "--lifecycle-events", "jsonl",
+       "--binary", binary, "--model", "gemini-3-flash-preview", "--cwd", cwd, "--", "continue selected-source review"],
+      { cwd, dataDir: approval.dataDir, env: { GEMINI_API_KEY: "secret-test-value", GOOGLE_API_KEY: "" } },
+    );
+
+    assert.equal(continued.status, 2, continued.stdout);
+    const lines = continued.stdout.trim().split("\n").map((line) => JSON.parse(line));
+    const record = lines.at(-1);
+    assert.equal(record.status, "failed");
+    assert.equal(record.error_code, "approval_required");
+    assert.equal(record.external_review.source_content_transmission, "not_sent");
+    assert.equal(record.review_metadata.audit_manifest.selected_route, "direct_api");
+    assert.equal(record.review_metadata.audit_manifest.source_send_approval_required, true);
+    assert.equal(record.review_metadata.audit_manifest.source_send_approval_state, "required");
+    assert.equal(existsSync(leakMarker), false, "continue silently changed auth route and sent source without matching API approval");
+    assert.doesNotMatch(approval.stdout + first.stdout + continued.stdout, /secret-test-value/);
+  } finally {
+    rmTree(approval.dataDir);
     rmTree(cwd);
     rmTree(binDir);
   }
@@ -2442,7 +3305,7 @@ process.exit(7);
   }
 });
 
-test("gemini ping not_authed reports ignored parent API-key auth without exposing values", () => {
+test("gemini ping not_authed reports API-key fallback metadata without exposing values", () => {
   const cwd = mkdtempSync(path.join(tmpdir(), "gemini-ping-api-key-auth-cwd-"));
   const binDir = mkdtempSync(path.join(tmpdir(), "gemini-ping-api-key-auth-bin-"));
   const binary = path.join(binDir, "gemini-api-key-auth-error");
@@ -2459,8 +3322,13 @@ process.exit(7);
     assert.equal(status, 2);
     const parsed = JSON.parse(stdout);
     assert.equal(parsed.status, "not_authed");
-    assert.deepEqual(parsed.ignored_env_credentials, ["GEMINI_API_KEY"]);
-    assert.equal(parsed.auth_policy, "api_key_env_ignored");
+    assert.deepEqual(parsed.allowed_env_credentials, ["GEMINI_API_KEY"]);
+    assert.equal(parsed.auth_policy, "api_key_env_fallback");
+    assert.deepEqual(parsed.auth_fallback, {
+      from: "subscription_oauth",
+      to: "api_key_env",
+      reason: "not_authed",
+    });
     assert.doesNotMatch(stdout, /secret-test-value/);
   } finally {
     rmTree(dataDir);
