@@ -20,6 +20,44 @@ export function printJsonLine(obj, output = process.stdout) {
   writableOutput(output).write(`${JSON.stringify(obj)}\n`);
 }
 
+export function consumeJsonSettingsSidecar(file, { unlink = unlinkSync } = {}) {
+  if (!existsSync(file)) {
+    return {
+      value: null,
+      cleanup_warning: null,
+      cleanup_warning_path: null,
+    };
+  }
+  let value;
+  try {
+    const parsed = JSON.parse(readFileSync(file, "utf8"));
+    value = parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : null;
+  } catch {
+    value = null;
+  }
+  if (value !== null) {
+    try {
+      unlink(file);
+      return {
+        value,
+        cleanup_warning: null,
+        cleanup_warning_path: null,
+      };
+    } catch {
+      return {
+        value,
+        cleanup_warning: "runtime_options_persisted",
+        cleanup_warning_path: file,
+      };
+    }
+  }
+  return {
+    value: null,
+    cleanup_warning: null,
+    cleanup_warning_path: null,
+  };
+}
+
 export function parseLifecycleEventsMode(value) {
   if (value == null || value === false) return null;
   if (value === "jsonl") return "jsonl";
@@ -32,7 +70,23 @@ function markdownCell(value) {
 }
 
 function externalReviewFromLifecycle(obj) {
-  return obj?.external_review && typeof obj.external_review === "object" ? obj.external_review : null;
+  if (obj?.external_review && typeof obj.external_review === "object") return obj.external_review;
+  if (obj?.event !== "external_review_progress") return null;
+  const provider = obj?.provider ?? obj?.target ?? "unknown";
+  return {
+    marker: "EXTERNAL REVIEW",
+    provider,
+    run_kind: obj?.run_kind ?? "foreground",
+    job_id: obj?.job_id ?? null,
+    session_id: null,
+    parent_job_id: obj?.parent_job_id ?? null,
+    mode: obj?.mode ?? null,
+    scope: obj?.scope ?? null,
+    scope_base: obj?.scope_base ?? null,
+    scope_paths: obj?.scope_paths ?? null,
+    source_content_transmission: obj?.source_content_transmission ?? "may_be_sent",
+    disclosure: `Selected source content may be sent to ${provider} for external review.`,
+  };
 }
 
 function lifecycleScope(externalReview) {
@@ -42,12 +96,22 @@ function lifecycleScope(externalReview) {
   return [scope, base, paths].filter(Boolean).join(" ") || "unknown";
 }
 
+function lifecycleJobId(obj, externalReview) {
+  return externalReview?.job_id ?? obj?.job_id ?? obj?.id ?? null;
+}
+
+function lifecycleWorkspace(obj) {
+  return obj?.workspace_root ?? obj?.cwd ?? "<workspace>";
+}
+
 export function renderLifecycleMarkdown(obj) {
   const externalReview = externalReviewFromLifecycle(obj);
   if (!externalReview) return null;
+  const jobId = lifecycleJobId(obj, externalReview);
+  const workspace = lifecycleWorkspace(obj);
   const rows = [
     ["Provider", externalReview.provider ?? obj.target ?? "unknown"],
-    ["Job", externalReview.job_id ?? obj.job_id ?? "unknown"],
+    ["Job", jobId ?? "unknown"],
     ["Session", externalReview.session_id ?? "pending"],
     ["Run", externalReview.run_kind ?? "unknown"],
     ["Mode", externalReview.mode ?? obj.mode ?? "unknown"],
@@ -55,6 +119,8 @@ export function renderLifecycleMarkdown(obj) {
     ["Source", externalReview.source_content_transmission ?? "unknown"],
     ["Status", obj.status ?? "unknown"],
   ];
+  if (jobId) rows.push(["Retrieve", `result --job ${jobId} --cwd ${workspace}`]);
+  rows.push(["Panel", `review-panel --workspace ${workspace}`]);
   if (obj.error_code) rows.push(["Error", obj.error_code]);
   if (obj.error_message) rows.push(["Message", obj.error_message]);
   if (obj.error_summary) rows.push(["Summary", obj.error_summary]);
@@ -94,6 +160,33 @@ export function externalReviewProgressEvent(invocation, { sequence, elapsedMs })
   };
 }
 
+function externalReviewProgressMarkdownEvent(invocation, progress) {
+  const provider = invocation.review_prompt_provider ?? invocation.provider ?? invocation.target ?? progress.target ?? "unknown";
+  return {
+    ...progress,
+    cwd: invocation.cwd ?? null,
+    workspace_root: invocation.workspace_root ?? null,
+    scope: invocation.scope ?? null,
+    scope_base: invocation.scope_base ?? null,
+    scope_paths: invocation.scope_paths ?? null,
+    source_content_transmission: "may_be_sent",
+    external_review: {
+      marker: "EXTERNAL REVIEW",
+      provider,
+      run_kind: invocation.run_kind ?? "foreground",
+      job_id: invocation.job_id ?? progress.job_id ?? null,
+      session_id: null,
+      parent_job_id: invocation.parent_job_id ?? null,
+      mode: invocation.mode ?? progress.mode ?? null,
+      scope: invocation.scope ?? null,
+      scope_base: invocation.scope_base ?? null,
+      scope_paths: invocation.scope_paths ?? null,
+      source_content_transmission: "may_be_sent",
+      disclosure: `Selected source content may be sent to ${provider} for external review.`,
+    },
+  };
+}
+
 export function externalReviewBackgroundLaunchedEvent(invocation, pid, externalReview) {
   return {
     event: "launched",
@@ -108,8 +201,82 @@ export function externalReviewBackgroundLaunchedEvent(invocation, pid, externalR
   };
 }
 
+const TERMINAL_EXTERNAL_REVIEW_STATUSES = new Set(["completed", "failed", "cancelled", "stale"]);
+
+function isTerminalExternalReviewRecord(obj) {
+  if (!obj?.external_review || typeof obj.external_review !== "object") return false;
+  if (obj.event === "external_review_launched" || obj.event === "external_review_progress" || obj.event === "launched") {
+    return false;
+  }
+  return TERMINAL_EXTERNAL_REVIEW_STATUSES.has(obj.status) || obj.result != null || obj.error_code != null;
+}
+
+function reviewMetadataProjection(obj) {
+  const manifest = obj?.review_metadata?.audit_manifest;
+  if (!manifest || typeof manifest !== "object") {
+    return obj?.review_metadata && typeof obj.review_metadata === "object" ? { audit_manifest: null } : null;
+  }
+  const projection = {};
+  for (const key of [
+    "rendered_prompt_hash",
+    "selected_source",
+    "scope_resolution",
+    "selected_route",
+    "fallback_reason",
+    "approval_scope",
+    "source_send_approval_required",
+    "source_send_approval_state",
+  ]) {
+    if (manifest[key] !== undefined) projection[key] = manifest[key];
+  }
+  return Object.keys(projection).length > 0 ? { audit_manifest: projection } : null;
+}
+
+function terminalLifecycleProjection(obj) {
+  const projection = {
+    event: "external_review_terminal",
+    id: obj.id ?? obj.job_id ?? null,
+    job_id: obj.job_id ?? obj.id ?? null,
+    target: obj.target ?? null,
+    provider: obj.provider ?? obj.external_review?.provider ?? null,
+    mode: obj.mode ?? obj.external_review?.mode ?? null,
+    cwd: obj.cwd ?? null,
+    workspace_root: obj.workspace_root ?? obj.cwd ?? null,
+    prompt_head: obj.prompt_head ?? null,
+    status: obj.status ?? "unknown",
+    started_at: obj.started_at ?? null,
+    ended_at: obj.ended_at ?? null,
+    exit_code: obj.exit_code ?? null,
+    error_code: obj.error_code ?? null,
+    error_message: obj.error_message ?? null,
+    error_summary: obj.error_summary ?? null,
+    suggested_action: obj.suggested_action ?? null,
+    http_status: obj.http_status ?? null,
+    external_review: obj.external_review,
+  };
+  if (obj.disclosure_note != null) projection.disclosure_note = obj.disclosure_note;
+  if (obj.review_quality && typeof obj.review_quality === "object") {
+    projection.review_quality = {
+      failed_review_slot: obj.review_quality.failed_review_slot ?? null,
+      reason: obj.review_quality.reason ?? null,
+    };
+  } else if (obj.review_metadata?.audit_manifest?.review_quality) {
+    projection.review_quality = {
+      failed_review_slot: obj.review_metadata.audit_manifest.review_quality.failed_review_slot ?? null,
+      reason: null,
+    };
+  }
+  const reviewMetadata = reviewMetadataProjection(obj);
+  if (reviewMetadata) projection.review_metadata = reviewMetadata;
+  return projection;
+}
+
+function lifecycleJsonlObject(obj) {
+  return isTerminalExternalReviewRecord(obj) ? terminalLifecycleProjection(obj) : obj;
+}
+
 export function printLifecycleJson(obj, lifecycleEvents, output = process.stdout) {
-  if (lifecycleEvents === "jsonl") printJsonLine(obj, output);
+  if (lifecycleEvents === "jsonl") printJsonLine(lifecycleJsonlObject(obj), output);
   else if (lifecycleEvents === "markdown") {
     const markdown = renderLifecycleMarkdown(obj);
     if (markdown) output.write(markdown);
@@ -136,11 +303,12 @@ export function startExternalReviewHeartbeat(
   let sequence = 0;
   const timer = setInterval(() => {
     sequence += 1;
+    const progress = externalReviewProgressEvent(invocation, {
+      sequence,
+      elapsedMs: now() - started,
+    });
     printLifecycleJson(
-      externalReviewProgressEvent(invocation, {
-        sequence,
-        elapsedMs: now() - started,
-      }),
+      lifecycleEvents === "markdown" ? externalReviewProgressMarkdownEvent(invocation, progress) : progress,
       lifecycleEvents,
       output,
     );
@@ -306,7 +474,9 @@ export function consumePromptSidecar(jobsDir, jobId) {
   }
   try {
     unlinkSync(p);
-  } catch { /* best-effort cleanup after the prompt has been read */ }
+  } catch (err) {
+    throw new Error(`prompt sidecar cleanup failed: ${err?.message ?? String(err)}`);
+  }
   return prompt;
 }
 

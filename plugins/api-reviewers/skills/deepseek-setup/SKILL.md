@@ -9,8 +9,8 @@ user-invocable: true
 
 EXTERNAL_MODEL_CONTRACT_VERSION=1
 
-Use skill `api-reviewers:deepseek-setup`. Command doc: `plugins/api-reviewers/commands/deepseek-setup.md`.
-Run `node plugins/api-reviewers/scripts/api-reviewer.mjs doctor --provider deepseek`.
+Use skill `api-reviewers:deepseek-setup`. Command doc: `../../commands/deepseek-setup.md`.
+Run `node ../../scripts/api-reviewer.mjs doctor --provider deepseek`.
 Report readiness without printing API-key values.
 ## Secret Safety
 Do not print raw OAuth tokens, API-key values, session cookies, tunnel API keys, bearer tokens, or raw secret values.

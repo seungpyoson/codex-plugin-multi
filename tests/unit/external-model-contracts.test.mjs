@@ -48,6 +48,21 @@ function countOccurrences(text, needle) {
   return text.split(needle).length - 1;
 }
 
+test("Claude/Gemini/Kimi docs route explicit file scopes to custom-review before branch-diff", () => {
+  const required = /If concrete files or --scope-paths are already known, do not run branch-diff first; use custom-review with those paths and the original prompt/i;
+  for (const target of EXTERNAL_MODEL_CONTRACT_DOC_TARGETS.filter((item) =>
+    item.family === "companion" || item.family === "companion-delegation"
+  )) {
+    if (!["claude", "gemini", "kimi"].includes(target.provider?.plugin)) continue;
+    if (!["review", "adversarial-review", "delegation"].includes(target.workflow)) continue;
+
+    const rendered = renderExternalModelContractDoc(target);
+    assert.match(rendered, required, target.path);
+    assert.match(rendered, /custom-review/i, target.path);
+    assert.match(rendered, /--scope-paths/i, target.path);
+  }
+});
+
 test("external model contract docs are generated from one shared source", () => {
   assert.equal(EXTERNAL_MODEL_CONTRACT_DOC_TARGETS.length, 75);
 
@@ -73,6 +88,25 @@ test("external model contract docs are generated from one shared source", () => 
     const rendered = renderExternalModelContractDoc(target);
     assert.match(rendered, /disable-model-invocation:\s*true/, `${target.path} must disable direct model invocation`);
     assert.match(rendered, /allowed-tools:/, `${target.path} must constrain tools`);
+  }
+
+  for (const target of EXTERNAL_MODEL_CONTRACT_DOC_TARGETS.filter((item) =>
+    item.family === "api-reviewers" || item.family === "api-reviewers-delegation"
+  )) {
+    const rendered = renderExternalModelContractDoc(target);
+    assert.doesNotMatch(
+      rendered,
+      /node plugins\/api-reviewers\/scripts\/api-reviewer\.mjs/,
+      `${target.path} must not require caller cwd to be the codex-plugin-multi repo root`,
+    );
+    const expectedEntrypoint = target.kind === "command"
+      ? "node ../scripts/api-reviewer.mjs"
+      : "node ../../scripts/api-reviewer.mjs";
+    assert.match(
+      rendered,
+      new RegExp(escapeRegExp(expectedEntrypoint)),
+      `${target.path} must use an entrypoint path relative to the generated doc location`,
+    );
   }
 });
 
@@ -137,6 +171,11 @@ test("provider-specific external model contracts keep mechanical safety clauses"
   );
 
   assert.match(docs, /approval-request[\s\S]*recommended_tool_justification[\s\S]*approval_token\.value/);
+  assert.match(
+    docs,
+    /If the user has already given explicit current-turn approval for the same provider, mode, source packet, prompt hash, scope resolution, request settings, auth path, billing path, selected route, fallback reason, and approval scope/,
+  );
+  assert.match(docs, /Any change to that tuple requires fresh human approval before source is sent/);
   assert.match(docs, /source_content_transmission:\s*"not_sent"/);
   assert.match(docs, /If approval is denied, follow `denial_action` and generate a relay prompt instead/);
   assert.match(docs, /API_REVIEWERS_MAX_PROMPT_CHARS/);
@@ -241,4 +280,25 @@ test("shared lifecycle and result handling contracts are provider-neutral", () =
   }
 
   assert.doesNotMatch(docs, /Claude-only result handling/i);
+});
+
+test("route approval contracts expose approval scope semantics and audit fields", () => {
+  const docs = EXTERNAL_MODEL_CONTRACT_DOC_TARGETS
+    .map((target) => renderExternalModelContractDoc(target))
+    .join("\n");
+
+  for (const required of [
+    "`session` approval can be reused only while the full approval tuple is unchanged in the current session.",
+    "`once` approval authorizes exactly one matching source send and cannot be replayed.",
+    "review_metadata.audit_manifest.selected_route",
+    "review_metadata.audit_manifest.fallback_reason",
+    "review_metadata.audit_manifest.auth_path",
+    "review_metadata.audit_manifest.billing_path",
+    "review_metadata.audit_manifest.source_send_approval_required",
+    "review_metadata.audit_manifest.source_send_approval_state",
+    "review_metadata.audit_manifest.approval_scope",
+    "Lifecycle cards should include provider, job, session, run kind, mode, scope, source transmission, selected route, fallback reason, auth path, billing path, source-send approval state, approval scope, status, error code, error message, HTTP status, and suggested action when those fields are present.",
+  ]) {
+    assert.match(docs, new RegExp(escapeRegExp(required)));
+  }
 });

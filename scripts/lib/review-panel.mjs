@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { isAbsolute, join, parse, relative, resolve } from "node:path";
 
 const PROVIDER_ORDER = ["claude", "gemini", "kimi", "grok", "grok-web", "deepseek", "glm"];
-const VERDICT_RE = /\bVerdict:\s*(APPROVE|REQUEST CHANGES|FAIL|REJECT)\b/i;
+const VERDICT_RE = /\bVerdict:\s*(APPROVE|REQUEST[ _]CHANGES|FAIL|REJECT)\b/i;
 const PROVIDER_UNAVAILABLE_CODES = new Set(["provider_unavailable", "spawn_failed", "claude_error", "gemini_error", "kimi_error", "tunnel_unavailable"]);
 const AUTH_FAILURE_CODES = new Set(["not_authed", "oauth_inference_rejected", "auth_not_configured", "session_expired"]);
 const COMPANION_PROVIDERS = [
@@ -114,13 +114,20 @@ function failedState(sent, code) {
   return "failed";
 }
 
+function verdictSummary(record) {
+  const verdict = VERDICT_RE.exec(String(record.result ?? ""));
+  if (!verdict) return "";
+  return verdict[1].toLowerCase().replace(/\s+/g, "_");
+}
+
 /**
  * Classifies a job record into a priority-ordered operational state.
  *
  * The state machine checks conditions in load-bearing order: approval_required
  * is only surfaced when status is strictly "failed" (never for running/queued
  * jobs, even with a stale approval_required error code). Returns one of:
- * approval_required, completed_failed_review_slot, completed,
+ * approval_required, completed_failed_review_slot, completed_approved,
+ * completed_request_changes, completed_fail, completed_reject, completed,
  * source_sent_waiting, running, source_sent_timeout,
  * failed_before_source_send, provider_unavailable, auth_session_failure,
  * rate_limited, usage_limited, or the raw status as a fallback.
@@ -131,7 +138,14 @@ function operatorState(record) {
   const code = String(record.error_code ?? "");
   if (status === "failed") return failedState(sent, code);
   if (status === "completed" && quality(record).failed_review_slot === true) return "completed_failed_review_slot";
-  if (status === "completed") return "completed";
+  if (status === "completed") {
+    const verdict = verdictSummary(record);
+    if (verdict === "approve") return "completed_approved";
+    if (verdict === "request_changes") return "completed_request_changes";
+    if (verdict === "fail") return "completed_fail";
+    if (verdict === "reject") return "completed_reject";
+    return "completed";
+  }
   if ((status === "running" || status === "queued") && sent === "sent") return "source_sent_waiting";
   if (status === "running" || status === "queued") return "running";
   return status || "unknown";
@@ -149,9 +163,7 @@ function resultSummary(record) {
   if (isActiveStatus(record.status)) return "-";
   if (record.status === "failed" && record.error_code) return record.error_code;
   if (quality(record).failed_review_slot === true) return "failed_review_slot";
-  const verdict = VERDICT_RE.exec(String(record.result ?? ""));
-  if (!verdict) return "";
-  return verdict[1].toLowerCase().replace(/\s+/g, "_");
+  return verdictSummary(record);
 }
 
 function cell(value) {

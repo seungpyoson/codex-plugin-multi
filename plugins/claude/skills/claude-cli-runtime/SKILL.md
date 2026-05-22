@@ -10,7 +10,8 @@ EXTERNAL_MODEL_CONTRACT_VERSION=1
 
 Compatibility note: this packaged skill keeps the `claude-cli-runtime` name, but the runtime contract is shared across external-model companion commands.
 The rescue subagent is a thin forwarder: make exactly one task invocation, preserve task text after stripping routing flags, and do not inspect the repo, poll, summarize, result, or cancel from the subagent.
-Supported subcommands: `run`, `continue`, `doctor`, `status`, `result`, and `cancel`.
+Supported subcommands: `approval-request`, `run`, `continue`, `doctor`, `status`, `result`, and `cancel`.
+`approval-request` is required before source-bearing explicit API/OpenRouter routes; it must emit `source_content_transmission: "not_sent"`, `recommended_tool_justification`, and `approval_token.value` before any provider launch.
 Review modes are review-only. Rescue modes may be write-capable when the user asks for implementation work.
 custom-review uses concrete relative paths and preflight. Keep `--scope-base REF`, `--scope-paths`, and `<focus>` separated from prompt text according to command docs.
 A git worktree can filter ignored files; a non-git directory cannot rely on gitignore privacy filtering.
@@ -22,7 +23,7 @@ If a legacy JSON lifecycle envelope appears, render `external_review_launched` i
 `external_review_progress` is a heartbeat for long foreground runs; keep the existing launch card visible and do not render it as a terminal result.
 If a background launch envelope has `event: "launched"` with an `external_review` field, render the same launch card immediately with session pending.
 If a legacy JSON `external_review` field appears, render it before normal prose.
-Lifecycle cards should include provider, job, session, run kind, mode, scope, source transmission, status, error code, error message, HTTP status, and suggested action when those fields are present.
+Lifecycle cards should include provider, job, session, run kind, mode, scope, source transmission, selected route, fallback reason, auth path, billing path, source-send approval state, approval scope, status, error code, error message, HTTP status, and suggested action when those fields are present.
 
 ```md
 ### EXTERNAL REVIEW
@@ -36,6 +37,11 @@ Lifecycle cards should include provider, job, session, run kind, mode, scope, so
 | Mode | <mode> |
 | Scope | <scope and scope_base/scope_paths> |
 | Source | <source_content_transmission> |
+| Route | <selected_route> |
+| Fallback | <fallback_reason> |
+| Auth | <auth_path> |
+| Billing | <billing_path> |
+| Approval | <source_send_approval_state / approval_scope> |
 | Status | <status> |
 | Error | <error_code> |
 | Message | <error_message> |

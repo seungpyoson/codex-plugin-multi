@@ -255,11 +255,13 @@ function checklistStatus(line) {
   if (startsWithToken(lower, "pass")) return "pass";
   if (startsWithToken(lower, "fail")) return "fail";
   if (startsWithToken(lower, "not reviewed")) return "not_reviewed";
-  const statusMatch = lower.match(/(?:^|[\u2013\u2014|]|(?:^|\s)-)\s*(pass|fail|not reviewed)\b/)
+  if (startsWithToken(lower, "n/a")) return "n_a";
+  if (startsWithToken(lower, "not applicable")) return "n_a";
+  const statusMatch = lower.match(/(?:^|[\u2013\u2014|]|(?:^|\s)-)\s*(pass|fail|not reviewed|n\/a|not applicable)\b/)
     ?? lower.match(/:\s*(not reviewed)\b/)
-    ?? lower.match(/:\s*(pass|fail)\b(?=\s*(?:$|[().;,\u2013\u2014]))/);
+    ?? lower.match(/:\s*(pass|fail|n\/a|not applicable)\b(?=\s*(?:$|[().;,\u2013\u2014]))/);
   if (!statusMatch) return null;
-  return statusMatch[1].replace(" ", "_");
+  return normalizeChecklistStatus(statusMatch[1]);
 }
 
 function markdownTableChecklistStatus(line) {
@@ -274,8 +276,15 @@ function markdownTableChecklistStatus(line) {
     if (startsWithToken(cell, "pass")) return "pass";
     if (startsWithToken(cell, "fail")) return "fail";
     if (startsWithToken(cell, "not reviewed")) return "not_reviewed";
+    if (startsWithToken(cell, "n/a")) return "n_a";
+    if (startsWithToken(cell, "not applicable")) return "n_a";
   }
   return null;
+}
+
+function normalizeChecklistStatus(status) {
+  const normalized = String(status ?? "").toLowerCase().replace(/\s+/g, "_").replace("/", "_");
+  return normalized === "not_applicable" ? "n_a" : normalized;
 }
 
 function isChecklistVerdict(line) {
@@ -283,21 +292,57 @@ function isChecklistVerdict(line) {
 }
 
 function isPassingChecklistLine(line) {
-  return checklistStatus(line) === "pass";
+  return ["pass", "n_a"].includes(checklistStatus(line));
 }
 
 function includesAny(text, phrases) {
   return phrases.some((phrase) => text.includes(phrase));
 }
 
-function lineHasConcretePermissionFailure(line) {
-  const lower = unmarkReviewText(line).toLowerCase();
-  if (includesAny(lower, [
+function includesAnyToken(text, tokens) {
+  return tokens.some((token) => includesToken(text, token));
+}
+
+function includesToken(text, token) {
+  const value = String(text ?? "");
+  const needle = String(token ?? "");
+  if (!needle) return false;
+  let index = value.indexOf(needle);
+  while (index !== -1) {
+    if (isWordBoundary(value[index - 1]) && isWordBoundary(value[index + needle.length])) {
+      return true;
+    }
+    index = value.indexOf(needle, index + 1);
+  }
+  return false;
+}
+
+function includesPermissionFailureLiteral(lower) {
+  return includesAny(lower, [
     "permission denied",
     "permission-denied",
     "read denied",
     "read-denied",
-  ])) {
+    "operation not permitted",
+  ]) || includesAnyToken(lower, [
+    "permissionerror",
+    "eacces",
+    "eperm",
+  ]);
+}
+
+function permissionFailureCodeTokenCount(lower) {
+  return [
+    "permissionerror",
+    "eacces",
+    "eperm",
+  ].filter((token) => includesToken(lower, token)).length;
+}
+
+function lineHasConcretePermissionFailure(line) {
+  const lower = unmarkReviewText(line).toLowerCase();
+  if (isPermissionFailureExampleLine(lower)) return false;
+  if (includesPermissionFailureLiteral(lower)) {
     return true;
   }
   return lower.includes("permission block") && (
@@ -318,6 +363,330 @@ function lineHasConcretePermissionFailure(line) {
       "permission blocks prevented",
     ])
   );
+}
+
+function isPermissionFailureExampleLine(lower) {
+  if (isMockedPermissionLiteralLine(lower)) return true;
+  if (isInjectedPermissionTestProofLine(lower)) return true;
+  if (isPermissionExceptionExampleLine(lower)) return true;
+  if (isOutOfScopePermissionNoteLine(lower)) return true;
+  if (isPermissionLiteralListLine(lower)) return true;
+  if (isPermissionBoundaryExampleLine(lower)) return true;
+  if (isPermissionLiteralDiscussionLine(lower)) return true;
+  if (isPermissionMechanicsDiscussionLine(lower)) return true;
+  if (includesAny(lower, [
+    "linehasconcretepermissionfailure",
+    "permission detection requires",
+    "test suite",
+    "still flags",
+    "correctly flagged",
+    "still detected",
+    "are still detected",
+    "real failures",
+  ]) && (includesPermissionFailureLiteral(lower) || includesAny(lower, [
+    "permission block",
+    "permission_blocked",
+  ])) && !hasConcretePermissionActionPhrase(lower)) {
+    return true;
+  }
+  if (includesAny(lower, [
+    "classifier should flag",
+    "should flag",
+    "meta-discussion",
+  ]) && includesAny(lower, [
+    "permission denied",
+    "read denied",
+    "permission block",
+    "permission_blocked",
+  ]) && !hasConcretePermissionActionPhrase(lower)) {
+    return true;
+  }
+  return includesAny(lower, [
+    "phrases such as",
+    "patterns such as",
+    "terms such as",
+    "examples such as",
+  ]) && includesAny(lower, [
+    "permission denied",
+    "read denied",
+    "permission block",
+    "operation not permitted",
+    "permissionerror",
+    "eacces",
+    "eperm",
+    "could not inspect",
+    "unable to inspect",
+  ]);
+}
+
+function isPermissionExceptionExampleLine(lower) {
+  return includesPermissionFailureLiteral(lower)
+    && !hasConcretePermissionActionPhrase(lower)
+    && includesAny(lower, [
+      "e.g.",
+      "for example",
+      "such as",
+    ])
+    && includesAny(lower, [
+      "exception",
+      "throws",
+      "thrown",
+      "spawn",
+      "retry",
+      "fallback",
+    ]);
+}
+
+function isInjectedPermissionTestProofLine(lower) {
+  return includesPermissionFailureLiteral(lower)
+    && !hasConcretePermissionActionPhrase(lower)
+    && includesAny(lower, [
+      "test",
+      "fixture",
+      "helper",
+    ])
+    && includesAny(lower, [
+      "injects",
+      "injected",
+      "injecting",
+      "simulates",
+      "simulated",
+      "forces",
+      "forced",
+    ])
+    && includesAny(lower, [
+      "cleanup",
+      "failure path",
+      "coverage",
+      "rename",
+      "mock",
+      "proof",
+    ]);
+}
+
+function isPermissionLiteralListLine(lower) {
+  return (permissionFailureCodeTokenCount(lower) >= 2 || isQuotedPermissionLiteralListLine(lower))
+    && !hasConcretePermissionActionPhrase(lower)
+    && includesAny(lower, [
+      "\"",
+      "'",
+      ",",
+      "token-bound",
+      "token bound",
+      "literal",
+    ]);
+}
+
+function isQuotedPermissionLiteralListLine(lower) {
+  return includesPermissionFailureLiteral(lower)
+    && (lower.startsWith("\"") || lower.startsWith("'"))
+    && (lower.includes("\",") || lower.includes("',"));
+}
+
+function isPermissionBoundaryExampleLine(lower) {
+  return includesPermissionFailureLiteral(lower)
+    && !hasConcretePermissionActionPhrase(lower)
+    && includesAny(lower, [
+      "correctly does not match",
+      "not a boundary",
+      "space before and after",
+      "boundary at both ends",
+      "standalone word",
+      "lowered ",
+    ]);
+}
+
+function isMockedPermissionLiteralLine(lower) {
+  return includesAny(lower, [
+    "mocked eacces",
+    "mock eacces",
+    "mocked eperm",
+    "mock eperm",
+    "mocked permissionerror",
+    "mock permissionerror",
+    "mocked permission denied",
+    "mock permission denied",
+  ]) && includesAny(lower, [
+    "test",
+    "failure path",
+    "fixture",
+    "warning recorded",
+  ]);
+}
+
+function isOutOfScopePermissionNoteLine(lower) {
+  if (!lower.includes("out-of-scope")) return false;
+  if (!(includesPermissionFailureLiteral(lower) || lower.includes("permission block"))) {
+    return false;
+  }
+  return includesAny(lower, [
+    "authoritative file contents were fully supplied and reviewed",
+    "authoritative file contents were fully supplied",
+    "supplied file contents were fully reviewed",
+    "supplied source was fully reviewed",
+    "declared scope was fully reviewed",
+    "declared scope fully reviewed",
+  ]);
+}
+
+function isPermissionLiteralDiscussionLine(lower) {
+  if (!includesPermissionFailureLiteral(lower)) {
+    return false;
+  }
+  if (!includesAny(lower, [
+    "regex breadth",
+    "regex literal",
+    "regex/pattern",
+    "regular expression",
+    "pattern term",
+    "pattern discussion",
+    "sandbox detection uses",
+    "detection uses",
+    "token-bound",
+    "token bound",
+    "tokenize",
+    "matched via",
+    "includespermissionfailureliteral",
+    "includesanytoken",
+    "includestoken",
+    "iswordboundary",
+    "uses /",
+    "`/",
+    "/operation not permitted",
+    "/permission denied",
+    "/permissionerror",
+    "/eacces",
+    "/eperm",
+  ])) {
+    return false;
+  }
+  return !hasConcretePermissionActionPhrase(lower);
+}
+
+function hasConcretePermissionActionPhrase(lower) {
+  return includesAny(lower, [
+    "prevented file access",
+    "prevented access",
+    "while reading",
+    "while inspecting",
+    "could not inspect",
+    "cannot inspect",
+    "can't inspect",
+    "unable to inspect",
+    "could not read",
+    "cannot read",
+    "can't read",
+    "unable to read",
+  ]);
+}
+
+function isPermissionMechanicsDiscussionLine(lower) {
+  if (!(includesPermissionFailureLiteral(lower) || includesAny(lower, [
+    "permission block",
+    "could not inspect",
+    "unable to inspect",
+  ]))) {
+    return false;
+  }
+  if (lower.includes("|") && includesAny(lower, [
+    "flagged",
+    "not flagged",
+    "input text",
+  ])) {
+    return true;
+  }
+  if (!(includesAny(lower, [
+    "linehasconcretepermissionfailure",
+    "ispermissionliteraldiscussionline",
+    "ispermissionfailureexampleline",
+    "semanticfailurereasons",
+    "semantic-reason extraction",
+    "predicate",
+    "branch ordering",
+    "control-flow",
+    "exclusion phrase",
+    "exclusion list",
+    "line contains",
+    "counterexample",
+    "test case",
+    "test suite",
+    "test coverage",
+    "test verifies",
+    "test assertion",
+    "test asserts",
+    "test confirms",
+    "line is flagged",
+    "is flagged",
+    "permission detection",
+    "review-quality audit",
+    "mechanics-discussion",
+    "token-bound",
+    "token bound",
+    "tokenize",
+    "false positive",
+    "inside words",
+    "standalone word",
+    "boundary",
+    "includespermissionfailureliteral",
+    "includesanytoken",
+    "includestoken",
+    "iswordboundary",
+    "concrete action phrase",
+    "reviewer prose incidentally contains",
+    "required shape",
+    "real-failure shape",
+    "real selected-source/read-denial failures",
+    "fail-closed verification",
+  ]) && includesAny(lower, [
+    "guard",
+    "function",
+    "predicate",
+    "branch",
+    "filter",
+    "binding",
+    "checklist row",
+    "surfaced",
+    "test",
+    "flagged",
+    "not flagged",
+    "suppress",
+    "literal",
+    "exclusion",
+    "match",
+    "matches",
+    "matching",
+    "token",
+    "boundary",
+    "detect",
+    "detection",
+    "parser",
+    "fixture",
+    "example",
+    "counterexample",
+  ]))) {
+    return false;
+  }
+  if (!hasConcretePermissionActionPhrase(lower)) return true;
+  return includesAny(lower, [
+    "e.g.",
+    "example",
+    "examples such as",
+    "counterexample",
+    "fixture",
+    "input text",
+    "such as",
+    "line does not contain",
+    "does not contain a concrete-action",
+    "requires both",
+    "fail-closed verification",
+    "control-flow verification",
+    "preserves real permission failures",
+    "passing checklist row",
+    "still flags",
+    "correctly flagged",
+    "still detected",
+    "are still detected",
+  ]);
 }
 
 function isPathTokenBoundary(char) {
@@ -368,8 +737,30 @@ function mentionsSelectedSourcePath(lowerLine, selectedSource) {
   });
 }
 
+function isLocalFileScopeBoundaryLine(lower) {
+  if (!includesAny(lower, [
+    "did not inspect local files",
+    "did not inspect the local files",
+    "did not inspect repository files",
+    "did not inspect any other repository files",
+    "did not inspect out-of-scope files",
+  ])) return false;
+  return includesAny(lower, [
+    "scope inspected",
+    "supplied packet",
+    "supplied source packet",
+    "fully reviewed",
+    "selected file was evaluated",
+    "selected source was evaluated",
+  ]);
+}
+
 function lineDeniesSelectedSourceInspection(line, selectedSource) {
   const lower = stripLeadingReviewMarkup(line).toLowerCase();
+  if (isPermissionMechanicsDiscussionLine(lower)) return false;
+  if (isSelectedSourceInspectionMechanicsDiscussionLine(lower)) return false;
+  if (isLocalFileScopeBoundaryLine(lower)) return false;
+  if (isOutOfScopeInspectionGapLine(lower) && !mentionsSelectedSourceGeneric(lower)) return false;
   if (!includesAny(lower, ["did not inspect", "not inspected", "could not inspect", "unable to inspect"])) {
     return false;
   }
@@ -385,23 +776,96 @@ function lineDeniesSelectedSourceInspection(line, selectedSource) {
   ]);
 }
 
+function mentionsSelectedSourceGeneric(lower) {
+  return includesAny(lower, [
+    "selected file",
+    "selected files",
+    "selected source",
+    "supplied file",
+    "supplied files",
+    "supplied source",
+    "source file",
+    "source files",
+    "target file",
+    "target files",
+  ]);
+}
+
+function isSelectedSourceInspectionMechanicsDiscussionLine(lower) {
+  return includesAny(lower, [
+    "linedeniesselectedsourceinspection",
+    "selected source inspection predicate",
+  ]) && includesAny(lower, [
+    "did not inspect",
+    "selected files",
+    "selected source",
+    "would be flagged",
+    "could be flagged",
+  ]);
+}
+
+function isOutOfScopeInspectionGapLine(lower) {
+  if (!includesAny(lower, ["could not inspect", "unable to inspect", "not inspected", "not reviewed"])) return false;
+  return includesAny(lower, [
+    "out of scope",
+    "outside the review packet",
+    "outside this packet",
+    "outside the supplied packet",
+    "outside the supplied source packet",
+    "not part of this packet",
+    "not supplied",
+    "not included in the prompt",
+  ]);
+}
+
+function isNegatedTruncationLine(lower) {
+  if (lower.includes("did not encounter") && includesAny(lower, ["truncated", "truncation"])) return true;
+  return includesAny(lower, [
+    "no truncation",
+    "without truncation",
+    "untruncated",
+    "not truncated",
+    "full file contents supplied",
+    "source was complete",
+  ]);
+}
+
+function lineClaimsSelectedSourceTruncation(line, selectedSource) {
+  const lower = stripLeadingReviewMarkup(line).toLowerCase();
+  if (isPromptPolicyEchoLine(line)) return false;
+  if (!includesAny(lower, ["truncated", "truncation", "unsupplied remainder"])) return false;
+  if (isNegatedTruncationLine(lower)) return false;
+  if (mentionsSelectedSourcePath(lower, selectedSource)) return true;
+  return includesAny(lower, [
+    "supplied file",
+    "supplied source",
+    "selected file",
+    "selected source",
+    "unsupplied remainder",
+  ]);
+}
+
 function semanticFailureReasons(text, looksShallow, selectedSource = null) {
   const reasons = [];
   const hasNotReviewedVerdict = reviewLines(text).some((rawLine) => {
-    const line = unmarkReviewText(rawLine).toLowerCase();
+    const line = stripLeadingReviewMarkup(rawLine).replace(/[*`]/g, "").replace(/_/g, " ").toLowerCase();
     return startsWithLabel(line, "verdict") && line.includes("not reviewed");
   });
   const semanticLines = reviewLines(text).filter((line) => {
     const hasPermissionFailure = lineHasConcretePermissionFailure(line);
+    const unmarkedLower = unmarkReviewText(line).toLowerCase();
     return (
       !(isPassingChecklistLine(line) && !hasPermissionFailure)
         && !isPromptPolicyEchoLine(line)
         && !isNegatedPermissionBlockLine(line)
+        && !isPermissionFailureExampleLine(unmarkedLower)
     );
   });
-  const semanticText = semanticLines.join("\n").toLowerCase();
-  if (hasNotReviewedVerdict || includesAny(semanticText, [
-    "failed review slot",
+  const semanticText = semanticLines
+    .filter((line) => !isOutOfScopeInspectionGapLine(unmarkReviewText(line).toLowerCase()))
+    .join("\n")
+    .toLowerCase();
+  if (hasNotReviewedVerdict || semanticLines.some((line) => lineClaimsFailedReviewSlot(line)) || includesAny(semanticText, [
     "this is not an approval",
     "no file content examined",
     "no files examined",
@@ -415,7 +879,8 @@ function semanticFailureReasons(text, looksShallow, selectedSource = null) {
     "scope is unreachable",
     "target file not present",
     "target file was not present",
-  ]) || semanticLines.some((line) => lineDeniesSelectedSourceInspection(line, selectedSource))) {
+  ]) || semanticLines.some((line) => lineDeniesSelectedSourceInspection(line, selectedSource))
+    || semanticLines.some((line) => lineClaimsSelectedSourceTruncation(line, selectedSource))) {
     reasons.push("not_reviewed");
   }
   if (semanticLines.some((line) => lineHasConcretePermissionFailure(line))) {
@@ -425,6 +890,43 @@ function semanticFailureReasons(text, looksShallow, selectedSource = null) {
     reasons.push("shallow_output");
   }
   return Object.freeze([...new Set(reasons)]);
+}
+
+function lineClaimsFailedReviewSlot(line) {
+  const lower = unmarkReviewText(line).toLowerCase();
+  if (!lower.includes("failed review slot")) return false;
+  if (isPromptPolicyEchoLine(line) || isReviewQualityMechanicsExplanationLine(line)) return false;
+  return includesAny(lower, [
+    "this is a failed review slot",
+    "this slot is a failed review slot",
+    "review is a failed review slot",
+    "treat this as a failed review slot",
+    "treat this slot as a failed review slot",
+    "should be treated as a failed review slot",
+    "must be treated as a failed review slot",
+    "failed review slot because",
+    "failed review slot:",
+  ]);
+}
+
+function isReviewQualityMechanicsExplanationLine(line) {
+  const lower = unmarkReviewText(line).toLowerCase();
+  return lower.includes("failed review slot") && includesAny(lower, [
+    "echo",
+    "future prose",
+    "not a defect",
+    "policy text",
+    "failure trigger",
+    "review-quality",
+    "review quality",
+    "semanticfailure",
+    "qualityflags",
+    "ispassingchecklistline",
+    "lineclaimsfailedreviewslot",
+    "must fail closed",
+    "still do so",
+    "requiring explicit phrases",
+  ]);
 }
 
 function isPromptPolicyEchoLine(line) {
@@ -512,7 +1014,7 @@ function qualityFlags({
   const looksShallow = text.trim().length > 0
     && text.trim().length < 500
     && !conciseTinyReview;
-  const isFinalReviewAttempt = !["approval_request", "preflight_failed"].includes(status);
+  const isFinalReviewAttempt = !["approval_request", "preflight_failed", "queued", "running"].includes(status);
   const failureReasons = [...semanticFailureReasons(text, looksShallow, selectedSource)];
   if (isFinalReviewAttempt && status === "completed" && !hasVerdictFlag) {
     failureReasons.push("missing_verdict");
@@ -553,6 +1055,7 @@ export function buildReviewAuditManifest({
   truncation = {},
   providerIds = {},
   scope = {},
+  route = {},
   result = "",
   status = null,
   errorCode = null,
@@ -603,6 +1106,14 @@ export function buildReviewAuditManifest({
       scope_paths: Array.isArray(scope.paths) ? Object.freeze([...scope.paths]) : null,
       reason: scope.reason ?? null,
     }),
+    selected_route: route.selectedRoute ?? null,
+    fallback_reason: route.fallbackReason ?? null,
+    approval_scope: route.approvalScope ?? null,
+    auth_path: route.authPath ?? null,
+    billing_path: route.billingPath ?? null,
+    source_bearing: route.sourceBearing ?? null,
+    source_send_approval_required: route.sourceSendApprovalRequired ?? null,
+    source_send_approval_state: route.sourceSendApprovalState ?? null,
     error_code: errorCode,
     review_quality: qualityFlags({ result, status, errorCode, selectedSource }),
   });
@@ -626,6 +1137,15 @@ function sourceBlockDelimiter(file, index, delimiterPrefix, delimiterCorpus) {
     delimiter = `${delimiter} #`;
   }
   throw new Error(`scope_delimiter_collision:${file.path}`);
+}
+
+function escapeRegExp(value) {
+  return String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function sourcePathFromDelimiter(delimiter, delimiterPrefix) {
+  const match = new RegExp(`^${escapeRegExp(delimiterPrefix)}\\s+\\d+:\\s+(.+?)(?: #)*$`, "u").exec(delimiter);
+  return match?.[1] ?? null;
 }
 
 /**
@@ -657,6 +1177,32 @@ export function buildSelectedSourcePromptBlock(sourceFiles = [], {
     ].join("\n");
   });
   return [title, ...blocks].join("\n");
+}
+
+export function selectedSourceFilesFromPrompt(prompt = "", {
+  delimiterPrefix = "REVIEW FILE",
+} = {}) {
+  const lines = String(prompt ?? "").split(/\r?\n/u);
+  const files = [];
+  for (let index = 0; index < lines.length; index += 1) {
+    const lineText = lines[index];
+    const beginPrefix = `BEGIN ${delimiterPrefix} `;
+    if (!lineText.startsWith(beginPrefix)) continue;
+    const delimiter = lineText.slice("BEGIN ".length);
+    const path = sourcePathFromDelimiter(delimiter, delimiterPrefix);
+    if (!path) continue;
+    const endLine = `END ${delimiter}`;
+    const body = [];
+    let cursor = index + 1;
+    for (; cursor < lines.length; cursor += 1) {
+      if (lines[cursor] === endLine) break;
+      body.push(lines[cursor]);
+    }
+    if (cursor >= lines.length) continue;
+    files.push({ path, text: body.join("\n") });
+    index = cursor;
+  }
+  return files.length > 0 ? files : null;
 }
 
 export function buildReviewPrompt({

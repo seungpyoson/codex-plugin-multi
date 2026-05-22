@@ -1,5 +1,5 @@
 ---
-description: Ask Grok Web to review explicit files.
+description: Ask Grok CLI to review explicit files.
 argument-hint: "--scope-paths <files> [review prompt]"
 disable-model-invocation: true
 allowed-tools: Read, Glob, Grep, Bash(node:*), Bash(git:*), AskUserQuestion
@@ -14,7 +14,7 @@ EXTERNAL_MODEL_CONTRACT_VERSION=1
 Route `--scope-paths <files>` before `--prompt` and pass the remaining prompt text to `--prompt`.
 Replace `<file1>,<file2>` with comma- or newline-separated concrete relative paths.
 Expand globs before running; do not pass glob characters as `--scope-paths`.
-Run `node plugins/grok/scripts/grok-web-reviewer.mjs run --mode custom-review --scope custom --scope-paths "<file1>,<file2>" --foreground --lifecycle-events markdown --prompt "<prompt text>"`.
+Run `node plugins/grok/scripts/grok-companion.mjs run --mode custom-review --scope custom --scope-paths "<file1>,<file2>" --foreground --lifecycle-events markdown --prompt "<prompt text>"`.
 ## Review Contract
 This is a review-only contract.
 Do not fix findings, apply patches, edit files, or start rescue work from a review result.
@@ -31,8 +31,9 @@ Render the returned JobRecord.
 Render `external_review_launched` as soon as it appears.
 If `external_review` is present, render it before the review result.
 If the JobRecord failed, report `error_code`, `error_message`, `http_status` when present, and `suggested_action`.
-Review timeout defaults to 900000 ms. Use `GROK_WEB_TIMEOUT_MS=<ms>` to override it; the effective value is persisted in `review_metadata.audit_manifest.request.timeout_ms`.
-Rendered prompts above `GROK_WEB_MAX_PROMPT_CHARS` fail before tunnel launch with `source_content_transmission: "not_sent"`; split or narrow the scope instead of relying on truncation.
+Review timeout defaults to 900000 ms. Use `GROK_CLI_TIMEOUT_MS=<ms>` for the default CLI path or `GROK_WEB_TIMEOUT_MS=<ms>` for explicit `--transport web`; the effective value is persisted in `review_metadata.audit_manifest.request.timeout_ms`.
+Rendered prompts above `GROK_CLI_MAX_PROMPT_CHARS` fail before CLI launch with `source_content_transmission: "not_sent"`; split or narrow the scope instead of relying on truncation.
+For explicit web tunnel runs, `GROK_WEB_MAX_PROMPT_CHARS` applies before tunnel launch.
 
 ## Rendering Contract
 Request `--lifecycle-events markdown` for foreground and background review flows.
@@ -41,7 +42,7 @@ If a legacy JSON lifecycle envelope appears, render `external_review_launched` i
 `external_review_progress` is a heartbeat for long foreground runs; keep the existing launch card visible and do not render it as a terminal result.
 If a background launch envelope has `event: "launched"` with an `external_review` field, render the same launch card immediately with session pending.
 If a legacy JSON `external_review` field appears, render it before normal prose.
-Lifecycle cards should include provider, job, session, run kind, mode, scope, source transmission, status, error code, error message, HTTP status, and suggested action when those fields are present.
+Lifecycle cards should include provider, job, session, run kind, mode, scope, source transmission, selected route, fallback reason, auth path, billing path, source-send approval state, approval scope, status, error code, error message, HTTP status, and suggested action when those fields are present.
 
 ```md
 ### EXTERNAL REVIEW
@@ -55,6 +56,11 @@ Lifecycle cards should include provider, job, session, run kind, mode, scope, so
 | Mode | <mode> |
 | Scope | <scope and scope_base/scope_paths> |
 | Source | <source_content_transmission> |
+| Route | <selected_route> |
+| Fallback | <fallback_reason> |
+| Auth | <auth_path> |
+| Billing | <billing_path> |
+| Approval | <source_send_approval_state / approval_scope> |
 | Status | <status> |
 | Error | <error_code> |
 | Message | <error_message> |
@@ -62,9 +68,10 @@ Lifecycle cards should include provider, job, session, run kind, mode, scope, so
 | Action | <suggested_action> |
 ```
 
-## Grok Tunnel Contract
-Grok Web is subscription-backed through a local tunnel and must not silently fall back to paid xAI API billing.
-Do not recommend direct paid API fallback. Use the subscription-backed tunnel only.
+## Grok Transport Contract
+Grok defaults to the subscription-backed Grok CLI and must not silently fall back to paid xAI API billing.
+Use the legacy local web tunnel only when the operator explicitly selects `--transport web` or `GROK_TRANSPORT=web`.
+Do not recommend direct paid API fallback.
 Do not print session cookies, tunnel API keys, bearer token values, or raw secret values.
 
 ## Scope Safety

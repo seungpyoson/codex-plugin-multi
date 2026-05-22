@@ -15,6 +15,7 @@ const architectureRecord = readFileSync(resolve("docs/architecture-record.md"), 
 const sonarConfig = readFileSync(resolve(".sonarcloud.properties"), "utf8");
 const noMistakesConfig = readFileSync(resolve(".no-mistakes.yaml"), "utf8");
 const claudeProjectNotes = readFileSync(resolve("CLAUDE.md"), "utf8");
+const runTests = readFileSync(resolve("scripts/ci/run-tests.mjs"), "utf8");
 
 test("package scripts expose per-target smoke commands", () => {
   assert.match(pkg.scripts["smoke:claude"] ?? "", /claude-companion\.smoke\.test\.mjs/);
@@ -23,6 +24,20 @@ test("package scripts expose per-target smoke commands", () => {
   assert.match(pkg.scripts["smoke:kimi"] ?? "", /kimi-companion\.smoke\.test\.mjs/);
   assert.match(pkg.scripts["smoke:grok"] ?? "", /grok-web\.smoke\.test\.mjs/);
   assert.match(pkg.scripts["smoke:api-reviewers"] ?? "", /api-reviewers\.smoke\.test\.mjs/);
+});
+
+test("Grok browser-session repair scripts pin the explicit legacy web transport", () => {
+  const grokPkg = JSON.parse(readFileSync(resolve("plugins/grok/package.json"), "utf8"));
+
+  assert.match(pkg.scripts["grok:repair-session"] ?? "", /grok-companion\.mjs repair --transport web/);
+  assert.match(grokPkg.scripts["repair-session"] ?? "", /grok-companion\.mjs repair --transport web/);
+});
+
+test("live Grok web E2E pins explicit legacy web transport", () => {
+  const source = readFileSync(resolve("tests/e2e/grok.e2e.test.mjs"), "utf8");
+
+  assert.match(source, /runGrok\(\["doctor",\s*"--transport",\s*"web"\]/);
+  assert.match(source, /runGrok\(\[\s*"run",\s*"--transport",\s*"web"/);
 });
 
 test("pull-request CI runs unit tests and per-target smoke matrix separately", () => {
@@ -45,10 +60,20 @@ test("pull-request CI runs shared-copy sync checks", () => {
   assert.match(pkg.scripts["lint:sync"] ?? "", /sync-time\.mjs --check/);
   assert.match(pkg.scripts["lint:sync"] ?? "", /sync-review-prompt\.mjs --check/);
   assert.match(pkg.scripts["lint:sync"] ?? "", /sync-external-model-contracts\.mjs --check/);
+  assert.match(pkg.scripts["lint:sync"] ?? "", /check-default-auth-policy\.mjs --check/);
   assert.match(pkg.scripts["lint:sync"] ?? "", /sync-auth-selection\.mjs --check/);
   assert.match(pkg.scripts["lint:sync"] ?? "", /sync-provider-env\.mjs --check/);
   assert.match(pkg.scripts["lint:sync"] ?? "", /sync-usage-limit\.mjs --check/);
   assert.match(workflow, /npm run lint:sync/);
+});
+
+test("full test runner has an explicit opt-in privacy matrix lane", () => {
+  assert.match(runTests, /CODEX_PLUGIN_PRIVACY_TESTS/);
+  assert.match(runTests, /tests\/privacy/);
+  assert.match(runTests, /CODEX_PLUGIN_FULL_TESTS/);
+  assert.match(pkg.scripts["test:privacy"] ?? "", /CODEX_PLUGIN_FULL_TESTS=1/);
+  assert.match(pkg.scripts["test:privacy"] ?? "", /CODEX_PLUGIN_PRIVACY_TESTS=1/);
+  assert.match(pkg.scripts["test:privacy"] ?? "", /run-tests\.mjs/);
 });
 
 test("manual external review relays are not merge gates", () => {
@@ -452,8 +477,10 @@ test("direct API reviewer launch gating and execution share preflight validation
   const callProviderStart = source.indexOf("async function callProvider");
   assert.notEqual(callProviderStart, -1, "callProvider must exist");
   const callProviderBlock = source.slice(callProviderStart, source.indexOf("\nfunction ", callProviderStart + 1));
-  assert.match(callProviderBlock, /validateDirectApiRunPreflight\(cfg, provider, env\)/,
+  assert.match(callProviderBlock, /credentialEnvWithCache\(cfg, env\)[\s\S]*validateDirectApiRunPreflight\(cfg, provider, effectiveEnv\)/,
     "callProvider must use the same preflight helper as launch gating");
+  assert.match(source, /function selectedCredential\(cfg, env = process\.env\) \{[\s\S]*credentialEnvWithCache\(cfg, env\)/,
+    "shared preflight credential selection must include the owner-only env cache fallback");
 });
 
 test("companion continue commands accept lifecycle events", () => {

@@ -10,7 +10,7 @@ allowed-tools: Bash(node:*)
 
 EXTERNAL_MODEL_CONTRACT_VERSION=1
 
-Run `node plugins/api-reviewers/scripts/api-reviewer.mjs doctor --provider deepseek`.
+Run `node ../scripts/api-reviewer.mjs doctor --provider deepseek`.
 Report readiness without printing API-key values.
 ## Secret Safety
 Do not print raw OAuth tokens, API-key values, session cookies, tunnel API keys, bearer tokens, or raw secret values.

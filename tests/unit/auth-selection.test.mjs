@@ -17,6 +17,8 @@ const AUTH_MODULES = [
 for (const { plugin, providerName, keys } of AUTH_MODULES) {
   test(`${plugin} auth-selection resolves modes and diagnostic fields`, async () => {
     const mod = await import(`../../plugins/${plugin}/scripts/lib/auth-selection.mjs`);
+    const subscriptionMode = mod.subscriptionAuthMode();
+    const apiKeyMode = mod.apiKeyAuthMode();
     const fail = (code, message) => {
       throw Object.assign(new Error(message), { code });
     };
@@ -27,61 +29,109 @@ for (const { plugin, providerName, keys } of AUTH_MODULES) {
     );
 
     const subscription = mod.resolveAuthSelection({
-      requestedMode: "subscription",
+      requestedMode: subscriptionMode,
       providerApiKeyEnvNames: keys,
       fail,
       env: { [keys[0]]: "secret-value" },
     });
     assert.deepEqual(subscription, {
-      auth_mode: "subscription",
+      auth_mode: subscriptionMode,
       selected_auth_path: "subscription_oauth",
+      auth_path: "subscription_oauth",
+      billing_path: null,
+      selected_route: "subscription_oauth",
+      fallback_reason: null,
+      source_send_approval_required: false,
+      source_send_approval_state: "not_required",
       allowed_env_credentials: [],
       ignored_env_credentials: [keys[0]],
       auth_policy: "api_key_env_ignored",
     });
     assert.deepEqual(mod.authDiagnosticFields(subscription), {
-      auth_mode: "subscription",
+      auth_mode: subscriptionMode,
       selected_auth_path: "subscription_oauth",
+      auth_path: "subscription_oauth",
+      billing_path: null,
+      selected_route: "subscription_oauth",
+      fallback_reason: null,
+      source_send_approval_required: false,
+      source_send_approval_state: "not_required",
       ignored_env_credentials: [keys[0]],
       auth_policy: "api_key_env_ignored",
     });
 
     const apiKey = mod.resolveAuthSelection({
-      requestedMode: "api_key",
+      requestedMode: apiKeyMode,
       providerApiKeyEnvNames: keys,
       fail,
       env: { [keys[1]]: "secret-value" },
     });
     assert.deepEqual(apiKey, {
-      auth_mode: "api_key",
+      auth_mode: apiKeyMode,
       selected_auth_path: "api_key_env",
+      auth_path: "api_key_env",
+      billing_path: null,
+      selected_route: "direct_api",
+      fallback_reason: "explicit_api",
+      source_send_approval_required: false,
+      source_send_approval_state: "not_required",
       allowed_env_credentials: [keys[1]],
       ignored_env_credentials: [],
       auth_policy: "api_key_env_allowed",
     });
     assert.deepEqual(mod.authDiagnosticFields(apiKey), {
-      auth_mode: "api_key",
+      auth_mode: apiKeyMode,
       selected_auth_path: "api_key_env",
+      auth_path: "api_key_env",
+      billing_path: null,
+      selected_route: "direct_api",
+      fallback_reason: "explicit_api",
+      source_send_approval_required: false,
+      source_send_approval_state: "not_required",
       allowed_env_credentials: [keys[1]],
       auth_policy: "api_key_env_allowed",
     });
 
+    const sourceBearingApiKey = mod.resolveAuthSelection({
+      requestedMode: apiKeyMode,
+      providerApiKeyEnvNames: keys,
+      fail,
+      env: { [keys[1]]: "secret-value" },
+      sourceBearing: true,
+    });
+    assert.equal(sourceBearingApiKey.selected_route, "direct_api");
+    assert.equal(sourceBearingApiKey.fallback_reason, "explicit_api");
+    assert.equal(sourceBearingApiKey.source_send_approval_required, true);
+    assert.equal(sourceBearingApiKey.source_send_approval_state, "required");
+
     const apiKeyMissing = mod.resolveAuthSelection({
-      requestedMode: "api_key",
+      requestedMode: apiKeyMode,
       providerApiKeyEnvNames: keys,
       fail,
       env: {},
     });
     assert.deepEqual(apiKeyMissing, {
-      auth_mode: "api_key",
+      auth_mode: apiKeyMode,
       selected_auth_path: "api_key_env_missing",
+      auth_path: "api_key_env_missing",
+      billing_path: null,
+      selected_route: "direct_api",
+      fallback_reason: "explicit_api",
+      source_send_approval_required: false,
+      source_send_approval_state: "not_required",
       allowed_env_credentials: [],
       ignored_env_credentials: [],
       auth_policy: "api_key_env_required",
     });
     assert.deepEqual(mod.authDiagnosticFields(apiKeyMissing), {
-      auth_mode: "api_key",
+      auth_mode: apiKeyMode,
       selected_auth_path: "api_key_env_missing",
+      auth_path: "api_key_env_missing",
+      billing_path: null,
+      selected_route: "direct_api",
+      fallback_reason: "explicit_api",
+      source_send_approval_required: false,
+      source_send_approval_state: "not_required",
       auth_policy: "api_key_env_required",
     });
     assert.equal(
@@ -97,39 +147,49 @@ for (const { plugin, providerName, keys } of AUTH_MODULES) {
       }),
       {
         target_spawned: false,
-        auth_mode: "api_key",
+        auth_mode: apiKeyMode,
         selected_auth_path: "api_key_env_missing",
+        auth_path: "api_key_env_missing",
+        billing_path: null,
+        selected_route: "direct_api",
+        fallback_reason: "explicit_api",
+        source_send_approval_required: false,
+        source_send_approval_state: "not_required",
         auth_policy: "api_key_env_required",
         summary: `${providerName} API-key auth was requested, but no ${providerName} provider API key is available.`,
         next_action: `Set ${keys.join(" or ")}, or rerun with --auth-mode subscription after completing ${providerName} OAuth.`,
       },
     );
 
-    assert.deepEqual(
-      mod.resolveAuthSelection({
+    assert.throws(
+      () => mod.resolveAuthSelection({
         requestedMode: "auto",
         providerApiKeyEnvNames: keys,
         fail,
         env: { [keys[0]]: "secret-value" },
       }),
-      {
-        auth_mode: "auto",
-        selected_auth_path: "subscription_oauth",
-        allowed_env_credentials: [],
-        ignored_env_credentials: [keys[0]],
-        auth_policy: "subscription_oauth_with_api_key_fallback",
-      },
+      /--auth-mode must be one of subscription\|api_key; got "auto"/,
     );
-    const autoWithKey = mod.resolveAuthSelection({
-      requestedMode: "auto",
+    const subscriptionWithKey = mod.resolveAuthSelection({
+      requestedMode: subscriptionMode,
       providerApiKeyEnvNames: keys,
       fail,
       env: { [keys[0]]: "secret-value" },
     });
-    const fallback = mod.apiKeyFallbackSelection(autoWithKey, "not_authed");
+    assert.throws(
+      () => mod.apiKeyFallbackSelection(subscriptionWithKey, "not_authed"),
+      /requires explicit sourceBearing/,
+    );
+    const fallback = mod.apiKeyFallbackSelection(subscriptionWithKey, "not_authed", { sourceBearing: false });
     assert.deepEqual(fallback, {
-      auth_mode: "auto",
+      auth_mode: subscriptionMode,
       selected_auth_path: "api_key_env",
+      auth_path: "api_key_env",
+      billing_path: null,
+      selected_route: "direct_api",
+      fallback_reason: "not_authed",
+      source_send_approval_required: false,
+      source_send_approval_state: "not_required",
       allowed_env_credentials: [keys[0]],
       ignored_env_credentials: [],
       auth_policy: "api_key_env_fallback",
@@ -140,8 +200,14 @@ for (const { plugin, providerName, keys } of AUTH_MODULES) {
       },
     });
     assert.deepEqual(mod.authDiagnosticFields(fallback), {
-      auth_mode: "auto",
+      auth_mode: subscriptionMode,
       selected_auth_path: "api_key_env",
+      auth_path: "api_key_env",
+      billing_path: null,
+      selected_route: "direct_api",
+      fallback_reason: "not_authed",
+      source_send_approval_required: false,
+      source_send_approval_state: "not_required",
       allowed_env_credentials: [keys[0]],
       auth_policy: "api_key_env_fallback",
       auth_fallback: {
@@ -150,23 +216,34 @@ for (const { plugin, providerName, keys } of AUTH_MODULES) {
         reason: "not_authed",
       },
     });
-    const autoWithoutKey = mod.resolveAuthSelection({
-      requestedMode: "auto",
+    const sourceBearingFallback = mod.apiKeyFallbackSelection(subscriptionWithKey, "not_authed", {
+      sourceBearing: true,
+      sourceSendApproved: false,
+    });
+    assert.equal(sourceBearingFallback.source_send_approval_required, true);
+    assert.equal(sourceBearingFallback.source_send_approval_state, "required");
+    const approvedSourceBearingFallback = mod.apiKeyFallbackSelection(subscriptionWithKey, "not_authed", {
+      sourceBearing: true,
+      sourceSendApproved: true,
+    });
+    assert.equal(approvedSourceBearingFallback.source_send_approval_required, true);
+    assert.equal(approvedSourceBearingFallback.source_send_approval_state, "approved");
+    const subscriptionWithoutKeyForFallback = mod.resolveAuthSelection({
+      requestedMode: subscriptionMode,
       providerApiKeyEnvNames: keys,
       fail,
       env: {},
     });
-    assert.deepEqual(autoWithoutKey, {
-      auth_mode: "auto",
-      selected_auth_path: "subscription_oauth",
-      allowed_env_credentials: [],
-      ignored_env_credentials: [],
-      auth_policy: "subscription_oauth",
-    });
-    assert.equal(mod.apiKeyFallbackSelection(autoWithoutKey, "not_authed"), null);
-    assert.equal(mod.apiKeyFallbackSelection(subscription, "not_authed"), null);
     assert.equal(
-      mod.apiKeyFallbackSelection({ auth_mode: "auto", ignored_env_credentials: null }, "not_authed"),
+      mod.apiKeyFallbackSelection(subscriptionWithoutKeyForFallback, "not_authed", { sourceBearing: false }),
+      null,
+    );
+    assert.equal(
+      mod.apiKeyFallbackSelection(
+        { auth_mode: subscriptionMode, ignored_env_credentials: null },
+        "not_authed",
+        { sourceBearing: false },
+      ),
       null,
     );
     assert.deepEqual(
@@ -177,8 +254,14 @@ for (const { plugin, providerName, keys } of AUTH_MODULES) {
         env: {},
       }),
       {
-        auth_mode: "subscription",
+        auth_mode: subscriptionMode,
         selected_auth_path: "subscription_oauth",
+        auth_path: "subscription_oauth",
+        billing_path: null,
+        selected_route: "subscription_oauth",
+        fallback_reason: null,
+        source_send_approval_required: false,
+        source_send_approval_state: "not_required",
         allowed_env_credentials: [],
         ignored_env_credentials: [],
         auth_policy: "subscription_oauth",
@@ -192,8 +275,14 @@ for (const { plugin, providerName, keys } of AUTH_MODULES) {
         env: { [keys[0]]: "secret-value" },
       }),
       {
-        auth_mode: "subscription",
+        auth_mode: subscriptionMode,
         selected_auth_path: "subscription_oauth",
+        auth_path: "subscription_oauth",
+        billing_path: null,
+        selected_route: "subscription_oauth",
+        fallback_reason: null,
+        source_send_approval_required: false,
+        source_send_approval_state: "not_required",
         allowed_env_credentials: [],
         ignored_env_credentials: [keys[0]],
         auth_policy: "api_key_env_ignored",
@@ -207,7 +296,7 @@ for (const { plugin, providerName, keys } of AUTH_MODULES) {
         fail,
         env: {},
       }),
-      /--auth-mode must be one of subscription\|api_key\|auto/,
+      /--auth-mode must be one of subscription\|api_key/,
     );
 
     const failures = [];
@@ -222,7 +311,7 @@ for (const { plugin, providerName, keys } of AUTH_MODULES) {
     );
     assert.deepEqual(failures, [{
       code: "bad_args",
-      message: "--auth-mode must be one of subscription|api_key|auto; got \"bogus\"",
+      message: "--auth-mode must be one of subscription|api_key; got \"bogus\"",
     }]);
   });
 }

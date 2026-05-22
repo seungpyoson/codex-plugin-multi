@@ -3,11 +3,11 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { CLAUDE_GEMINI_PLUGIN_TARGETS } from "../lib/plugin-targets.mjs";
+import { PROVIDER_ENV_PLUGIN_TARGETS } from "../lib/plugin-targets.mjs";
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const SOURCE = path.join(REPO_ROOT, "scripts/lib/provider-env.mjs");
-const COPIES = CLAUDE_GEMINI_PLUGIN_TARGETS.map((plugin) =>
+const COPIES = PROVIDER_ENV_PLUGIN_TARGETS.map((plugin) =>
   path.join(REPO_ROOT, `plugins/${plugin}/scripts/lib/provider-env.mjs`)
 );
 

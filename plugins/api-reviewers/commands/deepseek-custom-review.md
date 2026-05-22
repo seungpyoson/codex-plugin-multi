@@ -15,8 +15,8 @@ Scope: `custom`. Preserve raw `$ARGUMENTS` except for documented routing.
 Route `--scope-paths <files>` before `--prompt` and pass the remaining prompt text to `--prompt`.
 Replace `<file1>,<file2>` with comma- or newline-separated concrete relative paths.
 Expand globs before running; do not pass glob characters as `--scope-paths`.
-Run `node plugins/api-reviewers/scripts/api-reviewer.mjs approval-request --provider deepseek --mode custom-review --scope custom --scope-paths "<file1>,<file2>" --prompt "<prompt text>"`.
-Run `node plugins/api-reviewers/scripts/api-reviewer.mjs run --provider deepseek --mode custom-review --scope custom --scope-paths "<file1>,<file2>" --approval-token "<approval_token.value>" --lifecycle-events markdown --prompt "<prompt text>"`.
+Run `node ../scripts/api-reviewer.mjs approval-request --provider deepseek --mode custom-review --scope custom --scope-paths "<file1>,<file2>" --prompt "<prompt text>"`.
+Run `node ../scripts/api-reviewer.mjs run --provider deepseek --mode custom-review --scope custom --scope-paths "<file1>,<file2>" --approval-token "<approval_token.value>" --lifecycle-events markdown --prompt "<prompt text>"`.
 ## Review Contract
 This is a review-only contract.
 Do not fix findings, apply patches, edit files, or start rescue work from a review result.
@@ -31,6 +31,10 @@ Surface `mutations` prominently and do not auto-revert them.
 ## Approval Contract
 Direct API reviews send selected source content to an external provider.
 Before launching or retrying, render the `approval-request` output and request explicit approval with `recommended_tool_justification`.
+If the user has already given explicit current-turn approval for the same provider, mode, source packet, prompt hash, scope resolution, request settings, auth path, billing path, selected route, fallback reason, and approval scope, do not ask again; run `approval-request`, pass its matching `approval_token.value` to `run`, and continue.
+`session` approval can be reused only while the full approval tuple is unchanged in the current session.
+`once` approval authorizes exactly one matching source send and cannot be replayed.
+Any change to that tuple requires fresh human approval before source is sent.
 Pass `approval_token.value` to `run` with `--approval-token` only after approval.
 If approval is denied, follow `denial_action` and generate a relay prompt instead of running the external API command.
 Before approval, the runtime should report `source_content_transmission: "not_sent"`.
@@ -51,7 +55,7 @@ If a legacy JSON lifecycle envelope appears, render `external_review_launched` i
 `external_review_progress` is a heartbeat for long foreground runs; keep the existing launch card visible and do not render it as a terminal result.
 If a background launch envelope has `event: "launched"` with an `external_review` field, render the same launch card immediately with session pending.
 If a legacy JSON `external_review` field appears, render it before normal prose.
-Lifecycle cards should include provider, job, session, run kind, mode, scope, source transmission, status, error code, error message, HTTP status, and suggested action when those fields are present.
+Lifecycle cards should include provider, job, session, run kind, mode, scope, source transmission, selected route, fallback reason, auth path, billing path, source-send approval state, approval scope, status, error code, error message, HTTP status, and suggested action when those fields are present.
 
 ```md
 ### EXTERNAL REVIEW
@@ -65,6 +69,11 @@ Lifecycle cards should include provider, job, session, run kind, mode, scope, so
 | Mode | <mode> |
 | Scope | <scope and scope_base/scope_paths> |
 | Source | <source_content_transmission> |
+| Route | <selected_route> |
+| Fallback | <fallback_reason> |
+| Auth | <auth_path> |
+| Billing | <billing_path> |
+| Approval | <source_send_approval_state / approval_scope> |
 | Status | <status> |
 | Error | <error_code> |
 | Message | <error_message> |
@@ -81,4 +90,4 @@ Preflight scope failures such as `scope_base_missing`, `scope_base_invalid`, `sc
 Do not print raw OAuth tokens, API-key values, session cookies, tunnel API keys, bearer tokens, or raw secret values.
 Credential diagnostics may show key names only.
 
-This command backs `plugins/api-reviewers/skills/deepseek-custom-review/SKILL.md`.
+This command backs `../skills/deepseek-custom-review/SKILL.md`.

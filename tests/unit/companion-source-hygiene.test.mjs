@@ -59,3 +59,17 @@ test("companion scoped prompt refactor leaves no dead background scope validator
     assert.doesNotMatch(source, /function validateBackgroundExecutionScopeOrExit\b/, rel);
   }
 });
+
+test("gemini background approval preflight audits prompt source without walking cwd", () => {
+  const source = readFileSync(resolvePath("plugins/gemini/scripts/gemini-companion.mjs"), "utf8");
+  const matches = [...source.matchAll(/sourceSendApprovalPreflight\(authSelection, invocation, targetPrompt, ([^)]+)\)/g)];
+  assert.equal(matches.length, 2, "expected run and continue background approval preflights");
+  for (const match of matches) {
+    assert.notEqual(match[1].trim(), "cwd", "background source-send preflight must not use cwd as containment fallback");
+  }
+  assert.doesNotMatch(
+    source,
+    /reviewAuditManifest\(invocation, targetPrompt, cwd, approvalPreflight\)/,
+    "background approval-required audit manifest must not use cwd as containment fallback",
+  );
+});

@@ -149,7 +149,7 @@ const REVIEWER_WORKFLOWS = ["review", "adversarial-review", "custom-review", "se
 
 const GROK_PROVIDER = {
   plugin: "grok",
-  display: "Grok Web",
+  display: "Grok",
 };
 
 function lines(...items) {
@@ -249,7 +249,7 @@ function lifecycleRenderingContract() {
     "`external_review_progress` is a heartbeat for long foreground runs; keep the existing launch card visible and do not render it as a terminal result.",
     "If a background launch envelope has `event: \"launched\"` with an `external_review` field, render the same launch card immediately with session pending.",
     "If a legacy JSON `external_review` field appears, render it before normal prose.",
-    "Lifecycle cards should include provider, job, session, run kind, mode, scope, source transmission, status, error code, error message, HTTP status, and suggested action when those fields are present.",
+    "Lifecycle cards should include provider, job, session, run kind, mode, scope, source transmission, selected route, fallback reason, auth path, billing path, source-send approval state, approval scope, status, error code, error message, HTTP status, and suggested action when those fields are present.",
     "",
     "```md",
     "### EXTERNAL REVIEW",
@@ -263,6 +263,11 @@ function lifecycleRenderingContract() {
     "| Mode | <mode> |",
     "| Scope | <scope and scope_base/scope_paths> |",
     "| Source | <source_content_transmission> |",
+    "| Route | <selected_route> |",
+    "| Fallback | <fallback_reason> |",
+    "| Auth | <auth_path> |",
+    "| Billing | <billing_path> |",
+    "| Approval | <source_send_approval_state / approval_scope> |",
     "| Status | <status> |",
     "| Error | <error_code> |",
     "| Message | <error_message> |",
@@ -287,6 +292,10 @@ function scopeSafetyContract() {
     "A non-git directory cannot rely on gitignore filtering; distinguish non-git source directories from paths inside a git worktree.",
     "Preflight scope failures such as `scope_base_missing`, `scope_base_invalid`, `scope_requires_git`, `scope_requires_head`, `scope_paths_required`, and `scope_empty` happen before external source transmission and should report `source_content_transmission: \"not_sent\"`.",
   );
+}
+
+function explicitScopeRoutingContract() {
+  return "If concrete files or --scope-paths are already known, do not run branch-diff first; use custom-review with those paths and the original prompt.";
 }
 
 function costQuotaContract() {
@@ -362,6 +371,7 @@ function renderCompanionCommandBody(provider, workflow, commandName) {
       "",
       reviewOnlyContract(),
       "Use custom-review for explicit file bundles. Scope validation must complete before selected source is sent.",
+      explicitScopeRoutingContract(),
       "",
       lifecycleRenderingContract(),
       scopeSafetyContract(),
@@ -485,6 +495,7 @@ function renderCompanionSkillBody(provider, workflow, skillName) {
       maxSteps,
       reviewOnlyContract(),
       "custom-review uses explicit relative paths. Scope validation must complete before selected source is transmitted.",
+      explicitScopeRoutingContract(),
       "",
       lifecycleRenderingContract(),
       scopeSafetyContract(),
@@ -588,6 +599,7 @@ function companionDelegationSkillDoc(target) {
     "",
     "Run custom-review:",
     `- \`${companionRunCommand(provider, "custom-review", "--foreground --lifecycle-events markdown --cwd \"<bundle-or-workspace>\" --scope-paths \"PR.diff,docs/*.md\" -- \"<review focus using relative paths>\"")}\``,
+    explicitScopeRoutingContract(),
     "",
     "Run rescue:",
     `- \`${companionRunCommand(provider, "rescue", "--foreground --lifecycle-events markdown --cwd \"<workspace>\" -- \"<task>\"")}\``,
@@ -646,6 +658,20 @@ function resultHandlingSkillDoc() {
     "## Failure Output",
     "Show `error_code`, `error_message`, `http_status` when present, `suggested_action`, and `runtime_diagnostics`.",
     "Preserve `review_metadata`, `failed_review_slot`, `semantic_failure_reasons`, `looks_shallow`, and selected-source audit fields.",
+    "",
+    "## Route And Approval Audit Fields",
+    "Preserve and render route/audit fields when present:",
+    "- `review_metadata.audit_manifest.selected_route`",
+    "- `review_metadata.audit_manifest.fallback_reason`",
+    "- `review_metadata.audit_manifest.auth_path`",
+    "- `review_metadata.audit_manifest.billing_path`",
+    "- `review_metadata.audit_manifest.source_send_approval_required`",
+    "- `review_metadata.audit_manifest.source_send_approval_state`",
+    "- `review_metadata.audit_manifest.approval_scope`",
+    "For direct API or OpenRouter source-bearing runs, `approval_scope` is part of the approval tuple.",
+    "`session` approval can be reused only while the full approval tuple is unchanged in the current session.",
+    "`once` approval authorizes exactly one matching source send and cannot be replayed.",
+    "",
     "For `source_content_transmission: \"not_sent\"`, say source was not sent.",
     "For `source_content_transmission: \"sent\"`, disclose that selected source content was sent to the external provider.",
     "For `source_content_transmission: \"may_be_sent\"`, say the runtime could not prove whether source was transmitted.",
@@ -666,7 +692,8 @@ function cliRuntimeSkillDoc() {
     sharedHeader("External Model CLI Runtime"),
     "Compatibility note: this packaged skill keeps the `claude-cli-runtime` name, but the runtime contract is shared across external-model companion commands.",
     "The rescue subagent is a thin forwarder: make exactly one task invocation, preserve task text after stripping routing flags, and do not inspect the repo, poll, summarize, result, or cancel from the subagent.",
-    "Supported subcommands: `run`, `continue`, `doctor`, `status`, `result`, and `cancel`.",
+    "Supported subcommands: `approval-request`, `run`, `continue`, `doctor`, `status`, `result`, and `cancel`.",
+    "`approval-request` is required before source-bearing explicit API/OpenRouter routes; it must emit `source_content_transmission: \"not_sent\"`, `recommended_tool_justification`, and `approval_token.value` before any provider launch.",
     "Review modes are review-only. Rescue modes may be write-capable when the user asks for implementation work.",
     "custom-review uses concrete relative paths and preflight. Keep `--scope-base REF`, `--scope-paths`, and `<focus>` separated from prompt text according to command docs.",
     "A git worktree can filter ignored files; a non-git directory cannot rely on gitignore privacy filtering.",
@@ -737,11 +764,18 @@ function apiArgumentHint(workflow) {
   throw new Error(`unknown api workflow: ${workflow}`);
 }
 
+const API_COMMAND_ENTRYPOINT = "../scripts/api-reviewer.mjs";
+const API_SKILL_ENTRYPOINT = "../../scripts/api-reviewer.mjs";
+
 function apiApprovalContract() {
   return lines(
     "## Approval Contract",
     "Direct API reviews send selected source content to an external provider.",
     "Before launching or retrying, render the `approval-request` output and request explicit approval with `recommended_tool_justification`.",
+    "If the user has already given explicit current-turn approval for the same provider, mode, source packet, prompt hash, scope resolution, request settings, auth path, billing path, selected route, fallback reason, and approval scope, do not ask again; run `approval-request`, pass its matching `approval_token.value` to `run`, and continue.",
+    "`session` approval can be reused only while the full approval tuple is unchanged in the current session.",
+    "`once` approval authorizes exactly one matching source send and cannot be replayed.",
+    "Any change to that tuple requires fresh human approval before source is sent.",
     "Pass `approval_token.value` to `run` with `--approval-token` only after approval.",
     "If approval is denied, follow `denial_action` and generate a relay prompt instead of running the external API command.",
     "Before approval, the runtime should report `source_content_transmission: \"not_sent\"`.",
@@ -775,7 +809,7 @@ function apiCommandDoc(target) {
   if (setup) {
     return fm + lines(
       sharedHeader(title),
-      `Run \`node plugins/api-reviewers/scripts/api-reviewer.mjs doctor --provider ${provider.provider}\`.`,
+      `Run \`node ${API_COMMAND_ENTRYPOINT} doctor --provider ${provider.provider}\`.`,
       "Report readiness without printing API-key values.",
       secretSafetyContract(),
     );
@@ -789,14 +823,14 @@ function apiCommandDoc(target) {
       "Route `--scope-paths <files>` before `--prompt` and pass the remaining prompt text to `--prompt`.",
       "Replace `<file1>,<file2>` with comma- or newline-separated concrete relative paths.",
       "Expand globs before running; do not pass glob characters as `--scope-paths`.",
-      `Run \`node plugins/api-reviewers/scripts/api-reviewer.mjs approval-request --provider ${provider.provider} --mode ${mode} --scope custom --scope-paths "<file1>,<file2>" --prompt "<prompt text>"\`.`,
-      `Run \`node plugins/api-reviewers/scripts/api-reviewer.mjs run --provider ${provider.provider} --mode ${mode} --scope custom --scope-paths "<file1>,<file2>" --approval-token "<approval_token.value>" --lifecycle-events markdown --prompt "<prompt text>"\`.`,
+      `Run \`node ${API_COMMAND_ENTRYPOINT} approval-request --provider ${provider.provider} --mode ${mode} --scope custom --scope-paths "<file1>,<file2>" --prompt "<prompt text>"\`.`,
+      `Run \`node ${API_COMMAND_ENTRYPOINT} run --provider ${provider.provider} --mode ${mode} --scope custom --scope-paths "<file1>,<file2>" --approval-token "<approval_token.value>" --lifecycle-events markdown --prompt "<prompt text>"\`.`,
     ]
     : [
       "`$ARGUMENTS` is optional `--scope-base REF` followed by review prompt text.",
       "Route `--scope-base REF` before `--prompt` and pass the remaining prompt text to `--prompt`.",
-      `Run \`node plugins/api-reviewers/scripts/api-reviewer.mjs approval-request --provider ${provider.provider} --mode ${mode} --scope branch-diff --scope-base REF --prompt "<prompt text>"\`.`,
-      `Run \`node plugins/api-reviewers/scripts/api-reviewer.mjs run --provider ${provider.provider} --mode ${mode} --scope branch-diff --scope-base REF --approval-token "<approval_token.value>" --lifecycle-events markdown --prompt "<prompt text>"\`.`,
+      `Run \`node ${API_COMMAND_ENTRYPOINT} approval-request --provider ${provider.provider} --mode ${mode} --scope branch-diff --scope-base REF --prompt "<prompt text>"\`.`,
+      `Run \`node ${API_COMMAND_ENTRYPOINT} run --provider ${provider.provider} --mode ${mode} --scope branch-diff --scope-base REF --approval-token "<approval_token.value>" --lifecycle-events markdown --prompt "<prompt text>"\`.`,
     ];
   return fm + lines(
     sharedHeader(title),
@@ -808,7 +842,7 @@ function apiCommandDoc(target) {
     lifecycleRenderingContract(),
     scopeSafetyContract(),
     secretSafetyContract(),
-    `This command backs \`plugins/api-reviewers/skills/${skillName}/SKILL.md\`.`,
+    `This command backs \`../skills/${skillName}/SKILL.md\`.`,
   );
 }
 
@@ -824,8 +858,8 @@ function apiSkillDoc(target) {
   if (workflow === "setup") {
     return fm + lines(
       sharedHeader(title),
-      `Use skill \`api-reviewers:${skillName}\`. Command doc: \`plugins/api-reviewers/commands/${skillName}.md\`.`,
-      `Run \`node plugins/api-reviewers/scripts/api-reviewer.mjs doctor --provider ${provider.provider}\`.`,
+      `Use skill \`api-reviewers:${skillName}\`. Command doc: \`../../commands/${skillName}.md\`.`,
+      `Run \`node ${API_SKILL_ENTRYPOINT} doctor --provider ${provider.provider}\`.`,
       "Report readiness without printing API-key values.",
       secretSafetyContract(),
     );
@@ -834,16 +868,16 @@ function apiSkillDoc(target) {
   const scope = workflow === "custom-review" ? "custom" : "branch-diff";
   const scopeLines = workflow === "custom-review"
     ? [
-      `Run \`node plugins/api-reviewers/scripts/api-reviewer.mjs run --provider ${provider.provider} --mode ${workflow} --scope custom --scope-paths "<file1>,<file2>" --approval-token "<approval_token.value>" --lifecycle-events markdown --prompt "<focus>"\`.`,
+      `Run \`node ${API_SKILL_ENTRYPOINT} run --provider ${provider.provider} --mode ${workflow} --scope custom --scope-paths "<file1>,<file2>" --approval-token "<approval_token.value>" --lifecycle-events markdown --prompt "<focus>"\`.`,
       "Replace `<file1>,<file2>` with comma- or newline-separated concrete relative `--scope-paths`.",
       "Expand globs before running; do not pass glob characters or space-separated paths.",
     ]
     : [
-      `Run \`node plugins/api-reviewers/scripts/api-reviewer.mjs run --provider ${provider.provider} --mode ${workflow} --scope branch-diff --scope-base REF --approval-token "<approval_token.value>" --lifecycle-events markdown --prompt "<focus>"\`.`,
+      `Run \`node ${API_SKILL_ENTRYPOINT} run --provider ${provider.provider} --mode ${workflow} --scope branch-diff --scope-base REF --approval-token "<approval_token.value>" --lifecycle-events markdown --prompt "<focus>"\`.`,
     ];
   return fm + lines(
     sharedHeader(title),
-    `Use skill \`api-reviewers:${skillName}\`. Command doc: \`plugins/api-reviewers/commands/${skillName}.md\`.`,
+    `Use skill \`api-reviewers:${skillName}\`. Command doc: \`../../commands/${skillName}.md\`.`,
     `Scope: \`${scope}\`.`,
     "`<focus>` is the user's review prompt or focus area.",
     scopeLines,
@@ -868,16 +902,16 @@ function apiDelegationSkillDoc() {
     sharedHeader("API Reviewers Delegation"),
     "Use skill `api-reviewers:api-reviewers-delegation`.",
     "Run setup:",
-    providerLines((provider) => `- \`node plugins/api-reviewers/scripts/api-reviewer.mjs doctor --provider ${provider.provider}\``),
+    providerLines((provider) => `- \`node ${API_SKILL_ENTRYPOINT} doctor --provider ${provider.provider}\``),
     "",
     "Run review:",
-    providerLines((provider) => `- \`node plugins/api-reviewers/scripts/api-reviewer.mjs run --provider ${provider.provider} --mode review --scope branch-diff --scope-base REF --approval-token "<approval_token.value>" --lifecycle-events markdown --prompt "<focus>"\``),
+    providerLines((provider) => `- \`node ${API_SKILL_ENTRYPOINT} run --provider ${provider.provider} --mode review --scope branch-diff --scope-base REF --approval-token "<approval_token.value>" --lifecycle-events markdown --prompt "<focus>"\``),
     "",
     "Run adversarial review:",
-    providerLines((provider) => `- \`node plugins/api-reviewers/scripts/api-reviewer.mjs run --provider ${provider.provider} --mode adversarial-review --scope branch-diff --scope-base REF --approval-token "<approval_token.value>" --lifecycle-events markdown --prompt "<focus>"\``),
+    providerLines((provider) => `- \`node ${API_SKILL_ENTRYPOINT} run --provider ${provider.provider} --mode adversarial-review --scope branch-diff --scope-base REF --approval-token "<approval_token.value>" --lifecycle-events markdown --prompt "<focus>"\``),
     "",
     "Run custom-review:",
-    providerLines((provider) => `- \`node plugins/api-reviewers/scripts/api-reviewer.mjs run --provider ${provider.provider} --mode custom-review --scope custom --scope-paths "<file1>,<file2>" --approval-token "<approval_token.value>" --lifecycle-events markdown --prompt "<focus>"\``),
+    providerLines((provider) => `- \`node ${API_SKILL_ENTRYPOINT} run --provider ${provider.provider} --mode custom-review --scope custom --scope-paths "<file1>,<file2>" --approval-token "<approval_token.value>" --lifecycle-events markdown --prompt "<focus>"\``),
     "",
     "`<focus>` is the user's review prompt or focus area.",
     "Replace `<file1>,<file2>` with comma- or newline-separated concrete relative paths. Use comma- or newline-separated concrete relative `--scope-paths`; expand globs before running.",
@@ -891,18 +925,18 @@ function apiDelegationSkillDoc() {
 }
 
 function grokWorkflowDescription(workflow) {
-  if (workflow === "review") return "Use when asking Grok Web to review the current branch diff.";
-  if (workflow === "adversarial-review") return "Use when asking Grok Web for a forced-dissent branch review.";
-  if (workflow === "custom-review") return "Use when asking Grok Web to review explicit files.";
-  if (workflow === "setup") return "Use when checking Grok subscription-backed local tunnel configuration.";
+  if (workflow === "review") return "Use when asking Grok CLI to review the current branch diff.";
+  if (workflow === "adversarial-review") return "Use when asking Grok CLI for a forced-dissent branch review.";
+  if (workflow === "custom-review") return "Use when asking Grok CLI to review explicit files.";
+  if (workflow === "setup") return "Use when checking Grok subscription-backed CLI readiness.";
   throw new Error(`unknown grok workflow: ${workflow}`);
 }
 
 function grokCommandDescription(workflow) {
-  if (workflow === "review") return "Ask Grok Web to review the current branch diff.";
-  if (workflow === "adversarial-review") return "Ask Grok Web to challenge the current branch diff adversarially.";
-  if (workflow === "custom-review") return "Ask Grok Web to review explicit files.";
-  if (workflow === "setup") return "Check Grok subscription-backed local tunnel configuration.";
+  if (workflow === "review") return "Ask Grok CLI to review the current branch diff.";
+  if (workflow === "adversarial-review") return "Ask Grok CLI to challenge the current branch diff adversarially.";
+  if (workflow === "custom-review") return "Ask Grok CLI to review explicit files.";
+  if (workflow === "setup") return "Check Grok subscription-backed CLI readiness.";
   throw new Error(`unknown grok workflow: ${workflow}`);
 }
 
@@ -913,11 +947,12 @@ function grokArgumentHint(workflow) {
   throw new Error(`unknown grok workflow: ${workflow}`);
 }
 
-function grokTunnelContract() {
+function grokTransportContract() {
   return lines(
-    "## Grok Tunnel Contract",
-    "Grok Web is subscription-backed through a local tunnel and must not silently fall back to paid xAI API billing.",
-    "Do not recommend direct paid API fallback. Use the subscription-backed tunnel only.",
+    "## Grok Transport Contract",
+    "Grok defaults to the subscription-backed Grok CLI and must not silently fall back to paid xAI API billing.",
+    "Use the legacy local web tunnel only when the operator explicitly selects `--transport web` or `GROK_TRANSPORT=web`.",
+    "Do not recommend direct paid API fallback.",
     "Do not print session cookies, tunnel API keys, bearer token values, or raw secret values.",
   );
 }
@@ -929,8 +964,9 @@ function grokFailureRenderingContract() {
     "Render `external_review_launched` as soon as it appears.",
     "If `external_review` is present, render it before the review result.",
     "If the JobRecord failed, report `error_code`, `error_message`, `http_status` when present, and `suggested_action`.",
-    "Review timeout defaults to 900000 ms. Use `GROK_WEB_TIMEOUT_MS=<ms>` to override it; the effective value is persisted in `review_metadata.audit_manifest.request.timeout_ms`.",
-    "Rendered prompts above `GROK_WEB_MAX_PROMPT_CHARS` fail before tunnel launch with `source_content_transmission: \"not_sent\"`; split or narrow the scope instead of relying on truncation.",
+    "Review timeout defaults to 900000 ms. Use `GROK_CLI_TIMEOUT_MS=<ms>` for the default CLI path or `GROK_WEB_TIMEOUT_MS=<ms>` for explicit `--transport web`; the effective value is persisted in `review_metadata.audit_manifest.request.timeout_ms`.",
+    "Rendered prompts above `GROK_CLI_MAX_PROMPT_CHARS` fail before CLI launch with `source_content_transmission: \"not_sent\"`; split or narrow the scope instead of relying on truncation.",
+    "For explicit web tunnel runs, `GROK_WEB_MAX_PROMPT_CHARS` applies before tunnel launch.",
   );
 }
 
@@ -947,21 +983,23 @@ function grokCommandDoc(target) {
   if (workflow === "setup") {
     return fm + lines(
       sharedHeader(title),
-      "Run `node plugins/grok/scripts/grok-web-reviewer.mjs doctor`.",
+      "Run `node plugins/grok/scripts/grok-companion.mjs doctor`.",
       "Render the returned JSON. Show key names only. Do not print session cookies, tunnel API keys, or bearer token values.",
-      "This command performs live `/models`, chat readiness, and redacted session-pool probes against the configured local tunnel.",
-      "Treat `ready: true`, `reachable: true`, `models_ready: true`, and `chat_ready: true` as evidence that the subscription-backed tunnel is usable.",
-      "If a loopback grok2api `/v1` endpoint is unavailable, doctor tries to use an existing checkout or bootstrap `https://github.com/chenyme/grok2api.git` into the durable managed runtime directory.",
+      "Default doctor checks `grok --version`, `grok models`, and a source-free Grok CLI prompt for `grok-build` readiness.",
+      "Treat `ready: true`, `transport: \"cli\"`, `grok_version`, `default_model`, `model_ready: true`, and `readiness_layers.source_free_prompt.status: \"ready\"` as evidence that the subscription-backed CLI is usable.",
+      "To diagnose the legacy local web tunnel, run `node plugins/grok/scripts/grok-companion.mjs doctor --transport web`.",
+      "With explicit `--transport web`, doctor performs live `/models`, chat readiness, and redacted session-pool probes against the configured local tunnel.",
+      "With explicit `--transport web`, if a loopback grok2api `/v1` endpoint is unavailable, doctor tries to use an existing checkout or bootstrap `https://github.com/chenyme/grok2api.git` into the durable managed runtime directory.",
       "The bootstrap start command is `uv run granian --interface asgi --host 127.0.0.1 --port 8000 --workers 1 app.main:app`; Docker is not required.",
       "If bootstrap/start cannot run, surface `tunnel_start.error_code` and do not suggest direct xAI API keys.",
       "When `UV_CACHE_DIR` is unset, the plugin provides `uv` a sandbox-writable default; `UV_CACHE_DIR=\"\"` is treated as unset, and an explicit non-empty `UV_CACHE_DIR` is preserved.",
       "Explicit `GROK2API_HOME` and `GROK2API_BOOTSTRAP_DIR` are authoritative; stale explicit paths should be fixed rather than silently ignored.",
       "If `durability_warnings` reports `grok2api_ephemeral_bootstrap_home`, configure a durable `GROK2API_HOME` or `CODEX_PLUGIN_MULTI_RUNTIME_DIR` before syncing browser session state, even when the temporary path came from explicit `GROK2API_HOME`.",
-      "If `session_diagnostics.error_code` is `grok_session_no_runtime_tokens` or `grok_session_malformed_active_token`, the tunnel process is up but its account/session pool needs browser-backed session repair; use `npm run grok:repair-session` and run browser-session sync only after explicit operator approval.",
+      "If `session_diagnostics.error_code` is `grok_session_no_runtime_tokens` or `grok_session_malformed_active_token`, the tunnel process is up but its account/session pool needs browser-backed session repair; use `npm run grok:repair-session`, which pins explicit `--transport web`, and run browser-session sync only after explicit operator approval.",
       "Do not import browser cookies unless the user explicitly requests that session sync step.",
       "When the user approves session repair, run `npm run grok:repair-session -- --approve-browser-session-sync`; the command reruns doctor after sync and prints redacted readiness fields.",
       "",
-      grokTunnelContract(),
+      grokTransportContract(),
     );
   }
 
@@ -971,12 +1009,12 @@ function grokCommandDoc(target) {
       "Route `--scope-paths <files>` before `--prompt` and pass the remaining prompt text to `--prompt`.",
       "Replace `<file1>,<file2>` with comma- or newline-separated concrete relative paths.",
       "Expand globs before running; do not pass glob characters as `--scope-paths`.",
-      `Run \`node plugins/grok/scripts/grok-web-reviewer.mjs run --mode ${workflow} --scope custom --scope-paths "<file1>,<file2>" --foreground --lifecycle-events markdown --prompt "<prompt text>"\`.`,
+      `Run \`node plugins/grok/scripts/grok-companion.mjs run --mode ${workflow} --scope custom --scope-paths "<file1>,<file2>" --foreground --lifecycle-events markdown --prompt "<prompt text>"\`.`,
     ]
     : [
       "`$ARGUMENTS` is optional `--scope-base REF` followed by review prompt text.",
       "Route `--scope-base REF` before `--prompt` and pass the remaining prompt text to `--prompt`.",
-      `Run \`node plugins/grok/scripts/grok-web-reviewer.mjs run --mode ${workflow} --scope branch-diff --scope-base REF --foreground --lifecycle-events markdown --prompt "<prompt text>"\`.`,
+      `Run \`node plugins/grok/scripts/grok-companion.mjs run --mode ${workflow} --scope branch-diff --scope-base REF --foreground --lifecycle-events markdown --prompt "<prompt text>"\`.`,
     ];
   return fm + lines(
     sharedHeader(title),
@@ -984,7 +1022,7 @@ function grokCommandDoc(target) {
     reviewOnlyContract(),
     grokFailureRenderingContract(),
     lifecycleRenderingContract(),
-    grokTunnelContract(),
+    grokTransportContract(),
     scopeSafetyContract(),
     `This command backs \`plugins/grok/skills/${skillName}/SKILL.md\`.`,
   );
@@ -1003,31 +1041,34 @@ function grokSkillDoc(target) {
     return fm + lines(
       sharedHeader(title),
       `Use skill \`grok:${skillName}\`. Command doc: \`plugins/grok/commands/${skillName}.md\`.`,
-      "Run `node plugins/grok/scripts/grok-web-reviewer.mjs doctor`.",
-      "Show `summary`, `ready`, `next_action`, `tunnel_start`, `session_diagnostics.error_code`, redacted account counters, and whether `durability_warnings` is present.",
+      "Run `node plugins/grok/scripts/grok-companion.mjs doctor`.",
+      "Show `summary`, `ready`, `transport`, `next_action`, `grok_version`, `default_model`, and `model_ready`.",
+      "Use `node plugins/grok/scripts/grok-companion.mjs doctor --transport web` only for explicit legacy tunnel diagnosis.",
+      "For explicit web tunnel diagnosis, show `tunnel_start`, `session_diagnostics.error_code`, redacted account counters, and whether `durability_warnings` is present.",
       "Show credential key names only. Never print session cookies, tunnel API-key values, or bearer token values.",
-      "If a loopback grok2api `/v1` endpoint is unavailable, the doctor tries to use an existing checkout or bootstrap `https://github.com/chenyme/grok2api.git` into the durable managed runtime directory.",
+      "Default doctor checks `grok --version`, `grok models`, and a source-free Grok CLI prompt for `grok-build` readiness.",
+      "If an explicit web tunnel run finds loopback grok2api `/v1` unavailable, the doctor tries to use an existing checkout or bootstrap `https://github.com/chenyme/grok2api.git` into the durable managed runtime directory.",
       "The bootstrap start command is `uv run granian --interface asgi --host 127.0.0.1 --port 8000 --workers 1 app.main:app`; Docker is not required.",
       "When `UV_CACHE_DIR` is unset, the plugin provides `uv` a sandbox-writable default; `UV_CACHE_DIR=\"\"` is treated as unset, and an explicit non-empty `UV_CACHE_DIR` is preserved.",
       "Explicit `GROK2API_HOME` and `GROK2API_BOOTSTRAP_DIR` are authoritative; stale explicit paths should be fixed rather than silently ignored.",
       "If `durability_warnings` reports `grok2api_ephemeral_bootstrap_home`, configure a durable `GROK2API_HOME` or `CODEX_PLUGIN_MULTI_RUNTIME_DIR` before syncing browser session state, even when the temporary path came from explicit `GROK2API_HOME`.",
-      "If `session_diagnostics.error_code` is `grok_session_no_runtime_tokens` or `grok_session_malformed_active_token`, the tunnel process is up but its account/session pool needs browser-backed session repair; use `npm run grok:repair-session` and run browser-session sync only after explicit operator approval.",
+      "If `session_diagnostics.error_code` is `grok_session_no_runtime_tokens` or `grok_session_malformed_active_token`, the tunnel process is up but its account/session pool needs browser-backed session repair; use `npm run grok:repair-session`, which pins explicit `--transport web`, and run browser-session sync only after explicit operator approval.",
       "If bootstrap/start cannot run, report the specific `tunnel_start.error_code` and do not suggest direct xAI API keys.",
       "Do not import browser cookies unless the user explicitly requests that session sync step.",
       "When the user approves session repair, run `npm run grok:repair-session -- --approve-browser-session-sync`; the command reruns doctor after sync and prints redacted readiness fields.",
       "",
-      grokTunnelContract(),
+      grokTransportContract(),
     );
   }
 
   const scopeLines = workflow === "custom-review"
     ? [
-      `Run \`node plugins/grok/scripts/grok-web-reviewer.mjs run --mode ${workflow} --scope custom --scope-paths "<file1>,<file2>" --foreground --lifecycle-events markdown --prompt "<focus>"\`.`,
+      `Run \`node plugins/grok/scripts/grok-companion.mjs run --mode ${workflow} --scope custom --scope-paths "<file1>,<file2>" --foreground --lifecycle-events markdown --prompt "<focus>"\`.`,
       "Replace `<file1>,<file2>` with comma- or newline-separated concrete relative `--scope-paths`.",
       "Expand globs before running; do not pass glob characters.",
     ]
     : [
-      `Run \`node plugins/grok/scripts/grok-web-reviewer.mjs run --mode ${workflow} --scope branch-diff --scope-base REF --foreground --lifecycle-events markdown --prompt "<focus>"\`.`,
+      `Run \`node plugins/grok/scripts/grok-companion.mjs run --mode ${workflow} --scope branch-diff --scope-base REF --foreground --lifecycle-events markdown --prompt "<focus>"\`.`,
     ];
   return fm + lines(
     sharedHeader(title),
@@ -1037,7 +1078,7 @@ function grokSkillDoc(target) {
     reviewOnlyContract(),
     grokFailureRenderingContract(),
     lifecycleRenderingContract(),
-    grokTunnelContract(),
+    grokTransportContract(),
     scopeSafetyContract(),
   );
 }
@@ -1045,23 +1086,23 @@ function grokSkillDoc(target) {
 function grokDelegationSkillDoc() {
   const fm = frontmatter({
     name: "grok-delegation",
-    description: "Use when delegating review, adversarial review, custom review, and setup to Grok Web.",
+    description: "Use when delegating review, adversarial review, custom review, and setup to Grok CLI.",
     "user-invocable": "true",
   });
   return fm + lines(
     sharedHeader("Grok Delegation"),
     "Use skill `grok:grok-delegation`.",
     "Run setup:",
-    "- `node plugins/grok/scripts/grok-web-reviewer.mjs doctor`",
+    "- `node plugins/grok/scripts/grok-companion.mjs doctor`",
     "",
     "Run review:",
-    "- `node plugins/grok/scripts/grok-web-reviewer.mjs run --mode review --scope branch-diff --scope-base REF --foreground --lifecycle-events markdown --prompt \"<focus>\"`",
+    "- `node plugins/grok/scripts/grok-companion.mjs run --mode review --scope branch-diff --scope-base REF --foreground --lifecycle-events markdown --prompt \"<focus>\"`",
     "",
     "Run adversarial review:",
-    "- `node plugins/grok/scripts/grok-web-reviewer.mjs run --mode adversarial-review --scope branch-diff --scope-base REF --foreground --lifecycle-events markdown --prompt \"<focus>\"`",
+    "- `node plugins/grok/scripts/grok-companion.mjs run --mode adversarial-review --scope branch-diff --scope-base REF --foreground --lifecycle-events markdown --prompt \"<focus>\"`",
     "",
     "Run custom-review:",
-    "- `node plugins/grok/scripts/grok-web-reviewer.mjs run --mode custom-review --scope custom --scope-paths \"<file1>,<file2>\" --foreground --lifecycle-events markdown --prompt \"<focus>\"`",
+    "- `node plugins/grok/scripts/grok-companion.mjs run --mode custom-review --scope custom --scope-paths \"<file1>,<file2>\" --foreground --lifecycle-events markdown --prompt \"<focus>\"`",
     "",
     "`<focus>` is the user's review prompt or focus area.",
     "Replace `<file1>,<file2>` with comma- or newline-separated concrete relative paths. Use comma- or newline-separated concrete relative `--scope-paths`; expand globs before running.",
@@ -1069,7 +1110,7 @@ function grokDelegationSkillDoc() {
     reviewOnlyContract(),
     grokFailureRenderingContract(),
     lifecycleRenderingContract(),
-    grokTunnelContract(),
+    grokTransportContract(),
     scopeSafetyContract(),
   );
 }

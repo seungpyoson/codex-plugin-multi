@@ -66,6 +66,20 @@ Critical review findings are a STOP signal; do not start implementation from a r
 ## Failure Output
 Show `error_code`, `error_message`, `http_status` when present, `suggested_action`, and `runtime_diagnostics`.
 Preserve `review_metadata`, `failed_review_slot`, `semantic_failure_reasons`, `looks_shallow`, and selected-source audit fields.
+
+## Route And Approval Audit Fields
+Preserve and render route/audit fields when present:
+- `review_metadata.audit_manifest.selected_route`
+- `review_metadata.audit_manifest.fallback_reason`
+- `review_metadata.audit_manifest.auth_path`
+- `review_metadata.audit_manifest.billing_path`
+- `review_metadata.audit_manifest.source_send_approval_required`
+- `review_metadata.audit_manifest.source_send_approval_state`
+- `review_metadata.audit_manifest.approval_scope`
+For direct API or OpenRouter source-bearing runs, `approval_scope` is part of the approval tuple.
+`session` approval can be reused only while the full approval tuple is unchanged in the current session.
+`once` approval authorizes exactly one matching source send and cannot be replayed.
+
 For `source_content_transmission: "not_sent"`, say source was not sent.
 For `source_content_transmission: "sent"`, disclose that selected source content was sent to the external provider.
 For `source_content_transmission: "may_be_sent"`, say the runtime could not prove whether source was transmitted.
@@ -77,7 +91,7 @@ If a legacy JSON lifecycle envelope appears, render `external_review_launched` i
 `external_review_progress` is a heartbeat for long foreground runs; keep the existing launch card visible and do not render it as a terminal result.
 If a background launch envelope has `event: "launched"` with an `external_review` field, render the same launch card immediately with session pending.
 If a legacy JSON `external_review` field appears, render it before normal prose.
-Lifecycle cards should include provider, job, session, run kind, mode, scope, source transmission, status, error code, error message, HTTP status, and suggested action when those fields are present.
+Lifecycle cards should include provider, job, session, run kind, mode, scope, source transmission, selected route, fallback reason, auth path, billing path, source-send approval state, approval scope, status, error code, error message, HTTP status, and suggested action when those fields are present.
 
 ```md
 ### EXTERNAL REVIEW
@@ -91,6 +105,11 @@ Lifecycle cards should include provider, job, session, run kind, mode, scope, so
 | Mode | <mode> |
 | Scope | <scope and scope_base/scope_paths> |
 | Source | <source_content_transmission> |
+| Route | <selected_route> |
+| Fallback | <fallback_reason> |
+| Auth | <auth_path> |
+| Billing | <billing_path> |
+| Approval | <source_send_approval_state / approval_scope> |
 | Status | <status> |
 | Error | <error_code> |
 | Message | <error_message> |

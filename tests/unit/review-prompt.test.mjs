@@ -709,6 +709,8 @@ for (const [name, file] of REVIEW_PROMPT_MODULES) {
       "The review completed without timeout and no permission block.",
       "Review completed without a permission block.",
       "Without a permission block and with no truncation.",
+      "No timeout and permission block completed without impact.",
+      "No truncation and permission block without impact.",
     ]) {
       const manifest = targetBuildReviewAuditManifest({
         prompt: "rendered prompt",
@@ -753,6 +755,73 @@ test("review audit manifest accepts out-of-scope NOT REVIEWED prose after select
   assert.equal(manifest.review_quality.looks_shallow, false);
   assert.deepEqual(manifest.review_quality.semantic_failure_reasons, []);
   assert.equal(manifest.review_quality.failed_review_slot, false);
+});
+
+test("review audit manifest accepts selected path plus local-file non-inspection scope boundary", () => {
+  const manifest = buildReviewAuditManifest({
+    prompt: "rendered prompt",
+    sourceFiles: [{ path: "tests/smoke/grok-web.smoke.test.mjs", text: "test('ok', () => {});\n" }],
+    result: [
+      "Verdict: APPROVE",
+      "Blocking findings: none.",
+      "Non-blocking concerns: none.",
+      "Scope inspected: `tests/smoke/grok-web.smoke.test.mjs` was fully reviewed from the supplied packet; I did not inspect local files or the implementation it exercises.",
+      "Checklist",
+      "1. PASS selected packet metadata was sufficient for this source-only review.",
+      "2. PASS declared scope was inspected; out-of-scope local files are not part of this packet.",
+      "3. PASS no timeout, truncation, interruption, permission block, or shallow output occurred.",
+    ].join("\n"),
+    status: "completed",
+    errorCode: null,
+  });
+
+  assert.deepEqual(manifest.review_quality.semantic_failure_reasons, []);
+  assert.equal(manifest.review_quality.failed_review_slot, false);
+});
+
+test("review audit manifest accepts out-of-scope could-not-inspect prose after selected source inspection", () => {
+  const manifest = buildReviewAuditManifest({
+    prompt: "rendered prompt",
+    sourceFiles: [{ path: "plugins/grok/scripts/grok-web-reviewer.mjs", text: "export function run() {}\n" }],
+    result: [
+      "Verdict: APPROVE",
+      "Blocking findings: none.",
+      "Non-blocking concerns: direct unit coverage for helper functions is outside this packet.",
+      "Inspection status: `plugins/grok/scripts/grok-web-reviewer.mjs` was inspected from the supplied packet.",
+      "Test-gap note: I could not inspect the test suite because it was out of scope.",
+      "Checklist",
+      "1. PASS selected source was inspected.",
+      "2. PASS out-of-scope test files were not part of the packet.",
+      "3. PASS no timeout, truncation, interruption, permission block, or shallow output occurred.",
+    ].join("\n"),
+    status: "completed",
+    errorCode: null,
+  });
+
+  assert.deepEqual(manifest.review_quality.semantic_failure_reasons, []);
+  assert.equal(manifest.review_quality.failed_review_slot, false);
+});
+
+test("review audit manifest fails reviewer-declared selected source truncation", () => {
+  const manifest = buildReviewAuditManifest({
+    prompt: "rendered prompt",
+    sourceFiles: [{ path: "plugins/grok/scripts/grok-web-reviewer.mjs", text: "export function run() {}\n" }],
+    result: [
+      "Verdict: APPROVE",
+      "Blocking findings: none.",
+      "Non-blocking concerns: none.",
+      "Inspection status: I reviewed the supplied content of `plugins/grok/scripts/grok-web-reviewer.mjs`, but the supplied file was truncated near line 1448 and the unsupplied remainder is NOT REVIEWED.",
+      "Checklist",
+      "1. PASS selected packet metadata was considered.",
+      "2. PASS declared scope was partially inspected.",
+      "3. PASS blocking and non-blocking sections are present.",
+    ].join("\n"),
+    status: "completed",
+    errorCode: null,
+  });
+
+  assert.equal(manifest.review_quality.semantic_failure_reasons.includes("not_reviewed"), true);
+  assert.equal(manifest.review_quality.failed_review_slot, true);
 });
 
 test("review audit manifest ignores markdown PASS checklist lines with failure terms", () => {
@@ -817,6 +886,325 @@ test("review audit manifest ignores en-dash PASS checklist lines with failure te
   assert.equal(manifest.review_quality.failed_review_slot, false);
 });
 
+test("review audit manifest treats N/A checklist rows as non-failure checklist rows", () => {
+  const manifest = buildReviewAuditManifest({
+    prompt: "rendered prompt",
+    sourceFiles: [{ path: "sample.js", text: "export const value = 1;\n" }],
+    result: [
+      "**Verdict: APPROVE**",
+      "",
+      "**Blocking findings:** None.",
+      "",
+      "**Non-blocking concerns:** None.",
+      "",
+      "**Checklist**",
+      "",
+      "1. **Verify exact base/head refs and commits** — NOT REVIEWED (supplied evidence is the selected source packet; git/fs access not required).",
+      "2. **Review only declared scope and list scope gaps** — PASS. `sample.js` was inspected. No scope gaps.",
+      "3. **Evaluate correctness bugs, security risks, regressions, and missing tests** — PASS.",
+      "4. **Check known review comments or residual threads** — PASS.",
+      "5. **Separate blocking findings from non-blocking concerns** — PASS.",
+      "6. **Treat timeout/truncation/interruption as failed review slot** — N/A.",
+    ].join("\n"),
+    status: "completed",
+    errorCode: null,
+  });
+
+  assert.equal(manifest.review_quality.checklist_items_seen, 6);
+  assert.deepEqual(manifest.review_quality.semantic_failure_reasons, []);
+  assert.equal(manifest.review_quality.failed_review_slot, false);
+});
+
+test("review audit manifest treats source-free NOT REVIEWED checklist rows as non-failure scope gaps", () => {
+  const manifest = buildReviewAuditManifest({
+    prompt: "rendered prompt",
+    sourceFiles: [{ path: "sample.js", text: "export const value = 1;\n" }],
+    result: [
+      "Verdict: APPROVE",
+      "",
+      "## Blocking findings",
+      "None.",
+      "",
+      "## Non-blocking concerns",
+      "None.",
+      "",
+      "## Checklist",
+      "",
+      "1. Verify exact base/head refs and commits before judging the diff. — NOT REVIEWED. The inspection environment has no .git; only the provided file contents for `sample.js` were used.",
+      "2. Review only the declared scope and list any scope gaps as NOT REVIEWED. — PASS. `sample.js` was inspected.",
+      "3. Treat timeout, truncation, interruption, permission block, or shallow output as a failed review slot. — N/A.",
+    ].join("\n"),
+    status: "completed",
+    errorCode: null,
+  });
+
+  assert.equal(manifest.review_quality.checklist_items_seen, 3);
+  assert.deepEqual(manifest.review_quality.semantic_failure_reasons, []);
+  assert.equal(manifest.review_quality.failed_review_slot, false);
+});
+
+test("review audit manifest still fails NOT REVIEWED checklist rows that deny selected-source inspection", () => {
+  const manifest = buildReviewAuditManifest({
+    prompt: "rendered prompt",
+    sourceFiles: [{ path: "sample.js", text: "export const value = 1;\n" }],
+    result: [
+      "Verdict: APPROVE",
+      "",
+      "## Blocking findings",
+      "None.",
+      "",
+      "## Non-blocking concerns",
+      "None.",
+      "",
+      "## Checklist",
+      "",
+      "1. Review only the declared scope and list any scope gaps as NOT REVIEWED. — NOT REVIEWED. The selected source file `sample.js` could not inspect due to missing access.",
+    ].join("\n"),
+    status: "completed",
+    errorCode: null,
+  });
+
+  assert.equal(manifest.review_quality.checklist_items_seen, 1);
+  assert.equal(manifest.review_quality.semantic_failure_reasons.includes("not_reviewed"), true);
+  assert.equal(manifest.review_quality.failed_review_slot, true);
+});
+
+test("review audit manifest ignores passing checklist rows with quoted failure-trigger examples", () => {
+  const manifest = buildReviewAuditManifest({
+    prompt: "rendered prompt",
+    sourceFiles: [{ path: "sample.js", text: "export const value = 1;\n" }],
+    result: [
+      "Verdict: APPROVE",
+      "",
+      "## Blocking findings",
+      "None.",
+      "",
+      "## Non-blocking concerns",
+      "- Parser notes: future prose that mimics a \"failed review slot\" echo may need a test addition. Not a defect in current code.",
+      "",
+      "## Checklist",
+      "",
+      "1. Evaluate correctness bugs, security risks, regressions, and missing tests. — PASS. The parser still catches concrete phrases such as \"permission denied\", \"read denied\", and \"permission block\" + \"could not inspect\".",
+      "2. Treat timeout, truncation, interruption, permission block, or shallow output as a failed review slot. — PASS.",
+    ].join("\n"),
+    status: "completed",
+    errorCode: null,
+  });
+
+  assert.equal(manifest.review_quality.checklist_items_seen, 2);
+  assert.deepEqual(manifest.review_quality.semantic_failure_reasons, []);
+  assert.equal(manifest.review_quality.failed_review_slot, false);
+});
+
+test("review audit manifest ignores failure-mechanics prose with quoted failed-slot trigger", () => {
+  const manifest = buildReviewAuditManifest({
+    prompt: "rendered prompt",
+    sourceFiles: [{ path: "sample.js", text: "export const value = 1;\n" }],
+    result: [
+      "Verdict: APPROVE",
+      "",
+      "## Blocking findings",
+      "None.",
+      "",
+      "## Non-blocking concerns",
+      "- All paths that must fail closed on real permission/read denial, shallow output, missing verdict, or explicit \"failed review slot because...\" still do so.",
+      "- Review-quality parser false negatives are bounded by lineClaimsFailedReviewSlot requiring explicit phrases like \"this is a failed review slot because ...\".",
+      "",
+      "## Checklist",
+      "1. Scope: PASS. sample.js was inspected.",
+      "Inspection statement: I inspected sample.js.",
+    ].join("\n"),
+    status: "completed",
+    errorCode: null,
+  });
+
+  assert.deepEqual(manifest.review_quality.semantic_failure_reasons, []);
+  assert.equal(manifest.review_quality.failed_review_slot, false);
+});
+
+test("review audit manifest ignores permission-failure parser mechanics prose", () => {
+  const manifest = buildReviewAuditManifest({
+    prompt: "rendered prompt",
+    sourceFiles: [{ path: "sample.js", text: "export const value = 1;\n" }],
+    result: [
+      "Verdict: APPROVE",
+      "Blocking findings: none.",
+      "Non-blocking concerns: none.",
+      "Checklist:",
+      "1. Scope: PASS. sample.js was inspected.",
+      "2. Treat timeout, truncation, interruption, permission block, or shallow output as a failed review slot. — PASS. No such condition applies to this review.",
+      "- concrete permission denial: `lineHasConcretePermissionFailure` matches \"permission denied\", \"read denied\", or \"permission block\" + an inspection-failure verb;",
+      "- Permission detection requires both a denial verb (\"permission denied\", \"read denied\", \"permission block\" + \"could not inspect\"/\"unable to inspect\") and either path mention or selected-source context.",
+      "- The test suite still flags \"Permission denied while reading sample.js without permission blocks being removed.\" as a real permission_blocked.",
+      "- Real failures (explicit failed-slot claims, concrete \"permission denied\" phrases, inspection denial with selected-file path references) are still detected.",
+      "Inspection statement: I inspected sample.js.",
+    ].join("\n"),
+    status: "completed",
+    errorCode: null,
+  });
+
+  assert.deepEqual(manifest.review_quality.semantic_failure_reasons, []);
+  assert.equal(manifest.review_quality.failed_review_slot, false);
+});
+
+test("review audit manifest accepts Grok-style out-of-scope NOT REVIEWED and parser mechanics prose", () => {
+  const manifest = buildReviewAuditManifest({
+    prompt: "rendered prompt",
+    sourceFiles: [{ path: "sample.js", text: "export const value = 1;\n" }],
+    result: [
+      "Verdict: APPROVE",
+      "Scope adherence: Reviewed only the declared packet. Every other file in dirty tree is explicitly NOT REVIEWED. No scope gaps inside declared packet.",
+      "Blocking findings: none.",
+      "Non-blocking concerns:",
+      "- Permission detection still flags concrete selected-source failures like \"permission block\" plus \"could not inspect\" or \"unable to inspect\".",
+      "- The parser mechanics do not classify that explanatory sentence as a permission-blocked run.",
+      "All other files/changes outside the 18 paths remain NOT REVIEWED.",
+      "Inspection statement: I inspected sample.js.",
+    ].join("\n"),
+    status: "completed",
+    errorCode: null,
+  });
+
+  assert.deepEqual(manifest.review_quality.semantic_failure_reasons, []);
+  assert.equal(manifest.review_quality.failed_review_slot, false);
+});
+
+for (const [name, file] of REVIEW_PROMPT_MODULES) {
+  test(`review audit manifest ignores permission-detection mechanics prose across packaged copies (${name})`, async () => {
+    const { buildReviewAuditManifest: targetBuildReviewAuditManifest } = file === "scripts/lib/review-prompt.mjs"
+      ? { buildReviewAuditManifest }
+      : await import(pathToFileURL(resolve(file)).href);
+    const manifest = targetBuildReviewAuditManifest({
+      prompt: "rendered prompt",
+      sourceFiles: [{ path: "sample.js", text: "export const value = 1;\n" }],
+      result: [
+        "Verdict: APPROVE",
+        "Blocking findings: none.",
+        "Non-blocking concerns:",
+        "- The test suite permission detection requires both a denial verb like \"permission denied\" and selected-source context such as \"could not inspect sample.js\".",
+        "Inspection statement: I inspected sample.js.",
+      ].join("\n"),
+      status: "completed",
+      errorCode: null,
+    });
+
+    assert.deepEqual(manifest.review_quality.semantic_failure_reasons, []);
+    assert.equal(manifest.review_quality.failed_review_slot, false);
+  });
+}
+
+for (const [name, file] of REVIEW_PROMPT_MODULES) {
+  test(`review audit manifest ignores parser meta predicates across packaged copies (${name})`, async () => {
+    const { buildReviewAuditManifest: targetBuildReviewAuditManifest } = file === "scripts/lib/review-prompt.mjs"
+      ? { buildReviewAuditManifest }
+      : await import(pathToFileURL(resolve(file)).href);
+    const manifest = targetBuildReviewAuditManifest({
+      prompt: "rendered prompt",
+      sourceFiles: [{ path: "sample.js", text: "export const value = 1;\n" }],
+      result: [
+        "Verdict: APPROVE",
+        "Blocking findings: none.",
+        "Non-blocking concerns:",
+        "- Real failures include permission denied and permissionerror literals.",
+        "- The test suite still flags permission denied as permission_blocked.",
+        "- Classifier should flag permission denied as permission_blocked in fixtures.",
+        "- The lineDeniesSelectedSourceInspection predicate would be flagged for selected files that did not inspect content.",
+        "Inspection statement: I inspected sample.js.",
+      ].join("\n"),
+      status: "completed",
+      errorCode: null,
+    });
+
+    assert.deepEqual(manifest.review_quality.semantic_failure_reasons, []);
+    assert.equal(manifest.review_quality.failed_review_slot, false);
+  });
+}
+
+for (const [name, file] of REVIEW_PROMPT_MODULES) {
+  test(`review audit manifest accepts benign review-quality wording across packaged copies (${name})`, async () => {
+    const { buildReviewAuditManifest: targetBuildReviewAuditManifest } = file === "scripts/lib/review-prompt.mjs"
+      ? { buildReviewAuditManifest }
+      : await import(pathToFileURL(resolve(file)).href);
+    const manifest = targetBuildReviewAuditManifest({
+      prompt: "rendered prompt",
+      sourceFiles: [{ path: "sample.js", text: "export const value = 1;\n" }],
+      result: [
+        "Verdict: APPROVE",
+        "",
+        "Blocking findings: none for sample.js.",
+        "Non-blocking concerns:",
+        "- Parser note: future prose that mimics a failed review slot echo is a review-quality failure trigger example, not a defect.",
+        "",
+        "Checklist:",
+        "1. Git refs: NOT REVIEWED. Git metadata was unavailable; selected source `sample.js` was inspected.",
+        "2. Source terms: PASS. The audit text may cite examples such as \"permission denied\", \"read denied\", \"permission block\", and \"could not inspect\" without reporting a real failure.",
+        "| Item | Check | Status | Notes |",
+        "| --- | --- | --- | --- |",
+        "| 3 | Timeout/truncation/interruption | N/A | Not applicable for this completed source-only run. |",
+        "| 4 | Supplied comment threads | not applicable | No comments supplied. |",
+        "Inspection statement: I inspected sample.js.",
+      ].join("\n"),
+      status: "completed",
+      errorCode: null,
+    });
+
+    assert.equal(manifest.review_quality.checklist_items_seen, 4);
+    assert.deepEqual(manifest.review_quality.semantic_failure_reasons, []);
+    assert.equal(manifest.review_quality.failed_review_slot, false);
+  });
+}
+
+for (const [name, file] of REVIEW_PROMPT_MODULES) {
+  test(`review audit manifest covers not-applicable status forms across packaged copies (${name})`, async () => {
+    const { buildReviewAuditManifest: targetBuildReviewAuditManifest } = file === "scripts/lib/review-prompt.mjs"
+      ? { buildReviewAuditManifest }
+      : await import(pathToFileURL(resolve(file)).href);
+    const manifest = targetBuildReviewAuditManifest({
+      prompt: "rendered prompt",
+      sourceFiles: [{ path: "sample.js", text: "export const value = 1;\n" }],
+      result: [
+        "Verdict: APPROVE",
+        "Blocking findings: none for sample.js.",
+        "Non-blocking concerns: none for sample.js.",
+        "Checklist:",
+        "1. Not applicable because no residual threads were supplied.",
+        "2. Timeout path: not applicable.",
+        "3. Scope: PASS. sample.js was inspected.",
+        "Inspection statement: I inspected sample.js.",
+      ].join("\n"),
+      status: "completed",
+      errorCode: null,
+    });
+
+    assert.equal(manifest.review_quality.checklist_items_seen, 3);
+    assert.deepEqual(manifest.review_quality.semantic_failure_reasons, []);
+    assert.equal(manifest.review_quality.failed_review_slot, false);
+  });
+}
+
+for (const [name, file] of REVIEW_PROMPT_MODULES) {
+  test(`review audit manifest still fails explicit failed-slot claims across packaged copies (${name})`, async () => {
+    const { buildReviewAuditManifest: targetBuildReviewAuditManifest } = file === "scripts/lib/review-prompt.mjs"
+      ? { buildReviewAuditManifest }
+      : await import(pathToFileURL(resolve(file)).href);
+    const manifest = targetBuildReviewAuditManifest({
+      prompt: "rendered prompt",
+      sourceFiles: [{ path: "sample.js", text: "export const value = 1;\n" }],
+      result: [
+        "Verdict: APPROVE",
+        "Blocking findings: none.",
+        "Non-blocking concerns: none.",
+        "This is a failed review slot because sample.js was not inspected.",
+      ].join("\n"),
+      status: "completed",
+      errorCode: null,
+    });
+
+    assert.equal(manifest.review_quality.semantic_failure_reasons.includes("not_reviewed"), true);
+    assert.equal(manifest.review_quality.failed_review_slot, true);
+  });
+}
+
 test("review audit manifest counts bold checklist-item PASS prose as successful checklist", () => {
   const manifest = buildReviewAuditManifest({
     prompt: "rendered prompt",
@@ -865,6 +1253,225 @@ test("review audit manifest still flags real permission denial prose", () => {
 
   assert.equal(manifest.review_quality.semantic_failure_reasons.includes("permission_blocked"), true);
   assert.equal(manifest.review_quality.failed_review_slot, true);
+});
+
+test("review audit manifest treats NOT_REVIEWED verdict marker as failed slot", () => {
+  const manifest = buildReviewAuditManifest({
+    prompt: "rendered prompt",
+    sourceFiles: [{ path: "sample.js", text: "export const value = 1;\n" }],
+    result: [
+      "Verdict: NOT_REVIEWED",
+      "Blocking findings: none.",
+      "Non-blocking concerns: none.",
+      "Inspection status: see the explicit verdict marker.",
+      "Checklist",
+      "1. PASS exact base/head metadata was not relevant to this unit fixture.",
+      "2. PASS sample.js source was present in this fixture.",
+      "3. PASS this fixture isolates the verdict marker.",
+    ].join("\n"),
+    status: "completed",
+    errorCode: null,
+  });
+
+  assert.equal(manifest.review_quality.has_verdict, true);
+  assert.equal(manifest.review_quality.semantic_failure_reasons.includes("not_reviewed"), true);
+  assert.equal(manifest.review_quality.failed_review_slot, true);
+});
+
+test("review audit manifest still flags real permission denial even when prose names classifier internals", () => {
+  const manifest = buildReviewAuditManifest({
+    prompt: "rendered prompt",
+    sourceFiles: [{ path: "sample.js", text: "export const value = 1;\n" }],
+    result: [
+      "Verdict: NOT REVIEWED",
+      "Blocking findings: sample.js could not be inspected.",
+      "Non-blocking concerns: none.",
+      "Inspection statement: Permission denied while reading sample.js (lineHasConcretePermissionFailure handled this).",
+    ].join("\n"),
+    status: "completed",
+    errorCode: null,
+  });
+
+  assert.equal(manifest.review_quality.semantic_failure_reasons.includes("permission_blocked"), true);
+  assert.equal(manifest.review_quality.failed_review_slot, true);
+});
+
+test("review audit manifest still flags bare permission denied match prose", () => {
+  const manifest = buildReviewAuditManifest({
+    prompt: "rendered prompt",
+    sourceFiles: [{ path: "sample.js", text: "export const value = 1;\n" }],
+    result: [
+      "Verdict: NOT REVIEWED",
+      "Blocking findings: sample.js could not be inspected.",
+      "Non-blocking concerns: none.",
+      "Inspection statement: Permission denied matches the policy failure.",
+    ].join("\n"),
+    status: "completed",
+    errorCode: null,
+  });
+
+  assert.equal(manifest.review_quality.semantic_failure_reasons.includes("permission_blocked"), true);
+  assert.equal(manifest.review_quality.failed_review_slot, true);
+});
+
+test("review audit manifest still flags permission denial in a result table row", () => {
+  const manifest = buildReviewAuditManifest({
+    prompt: "rendered prompt",
+    sourceFiles: [{ path: "sample.js", text: "export const value = 1;\n" }],
+    result: [
+      "Verdict: NOT REVIEWED",
+      "Blocking findings:",
+      "| File | Result |",
+      "| --- | --- |",
+      "| sample.js | Result: Permission denied |",
+      "Non-blocking concerns: none.",
+    ].join("\n"),
+    status: "completed",
+    errorCode: null,
+  });
+
+  assert.equal(manifest.review_quality.semantic_failure_reasons.includes("permission_blocked"), true);
+  assert.equal(manifest.review_quality.failed_review_slot, true);
+});
+
+test("review audit manifest still flags real permission denial with generic test-case prose", () => {
+  const manifest = buildReviewAuditManifest({
+    prompt: "rendered prompt",
+    sourceFiles: [{ path: "sample.js", text: "export const value = 1;\n" }],
+    result: [
+      "Verdict: NOT REVIEWED",
+      "Blocking findings: sample.js could not be inspected.",
+      "Non-blocking concerns: none.",
+      "Inspection statement: Permission denied while reading sample.js; the test case failed.",
+    ].join("\n"),
+    status: "completed",
+    errorCode: null,
+  });
+
+  assert.equal(manifest.review_quality.semantic_failure_reasons.includes("permission_blocked"), true);
+  assert.equal(manifest.review_quality.failed_review_slot, true);
+});
+
+test("review audit manifest still flags real permission denial with function-name prose", () => {
+  const manifest = buildReviewAuditManifest({
+    prompt: "rendered prompt",
+    sourceFiles: [{ path: "sample.js", text: "export const value = 1;\n" }],
+    result: [
+      "Verdict: NOT REVIEWED",
+      "Blocking findings: sample.js could not be inspected.",
+      "Non-blocking concerns: none.",
+      "Inspection statement: Permission denied while reading sample.js inside function lineHasConcretePermissionFailure.",
+    ].join("\n"),
+    status: "completed",
+    errorCode: null,
+  });
+
+  assert.equal(manifest.review_quality.semantic_failure_reasons.includes("permission_blocked"), true);
+  assert.equal(manifest.review_quality.failed_review_slot, true);
+});
+
+test("review audit manifest still flags real permission denial with predicate prose", () => {
+  const manifest = buildReviewAuditManifest({
+    prompt: "rendered prompt",
+    sourceFiles: [{ path: "sample.js", text: "export const value = 1;\n" }],
+    result: [
+      "Verdict: NOT REVIEWED",
+      "Blocking findings: sample.js could not be inspected.",
+      "Non-blocking concerns: none.",
+      "Inspection statement: Permission denied while inspecting the auth predicate.",
+    ].join("\n"),
+    status: "completed",
+    errorCode: null,
+  });
+
+  assert.equal(manifest.review_quality.semantic_failure_reasons.includes("permission_blocked"), true);
+  assert.equal(manifest.review_quality.failed_review_slot, true);
+});
+
+test("review audit manifest flags OS-level permission denial codes", () => {
+  const manifest = buildReviewAuditManifest({
+    prompt: "rendered prompt",
+    sourceFiles: [{ path: "sample.js", text: "export const value = 1;\n" }],
+    result: [
+      "Verdict: NOT REVIEWED",
+      "Blocking findings: sample.js could not be inspected.",
+      "Non-blocking concerns: none.",
+      "Inspection statement: EACCES on sample.js.",
+    ].join("\n"),
+    status: "completed",
+    errorCode: null,
+  });
+
+  assert.equal(manifest.review_quality.semantic_failure_reasons.includes("permission_blocked"), true);
+  assert.equal(manifest.review_quality.failed_review_slot, true);
+});
+
+test("review audit manifest still flags real permission denial with regex prose", () => {
+  const manifest = buildReviewAuditManifest({
+    prompt: "rendered prompt",
+    sourceFiles: [{ path: "sample.js", text: "export const value = 1;\n" }],
+    result: [
+      "Verdict: NOT REVIEWED",
+      "Blocking findings: sample.js could not be inspected.",
+      "Non-blocking concerns: none.",
+      "Inspection statement: Permission denied because the regex matched the path.",
+    ].join("\n"),
+    status: "completed",
+    errorCode: null,
+  });
+
+  assert.equal(manifest.review_quality.semantic_failure_reasons.includes("permission_blocked"), true);
+  assert.equal(manifest.review_quality.failed_review_slot, true);
+});
+
+test("review audit manifest does not flag selected-source inspection predicate discussion", () => {
+  const manifest = buildReviewAuditManifest({
+    prompt: "rendered prompt",
+    sourceFiles: [{ path: "scripts/lib/review-prompt.mjs", text: "export function marker() {}\n" }],
+    result: [
+      "Verdict: APPROVE",
+      "Blocking findings: none.",
+      "Non-blocking concerns:",
+      "- `lineDeniesSelectedSourceInspection` fires on `\"did not inspect\"` plus generic phrases like `\"selected files\"`. A reviewer who writes `\"I did not inspect the selected files outside that subset\"` could be flagged by that predicate.",
+      "Checklist",
+      "1. PASS exact metadata was supplied.",
+      "2. PASS selected source scripts/lib/review-prompt.mjs was inspected.",
+      "3. PASS no blockers.",
+      "4. PASS no review comments supplied.",
+      "5. PASS blocking and non-blocking sections are separated.",
+      "6. PASS review completed without timeout, truncation, interruption, permission block, or shallow output.",
+    ].join("\n"),
+    status: "completed",
+    errorCode: null,
+  });
+
+  assert.deepEqual(manifest.review_quality.semantic_failure_reasons, []);
+  assert.equal(manifest.review_quality.failed_review_slot, false);
+});
+
+test("review audit manifest does not flag classifier should-flag permission meta discussion", () => {
+  const manifest = buildReviewAuditManifest({
+    prompt: "rendered prompt",
+    sourceFiles: [{ path: "scripts/lib/review-prompt.mjs", text: "export function marker() {}\n" }],
+    result: [
+      "Verdict: APPROVE",
+      "Blocking findings: none.",
+      "Non-blocking concerns:",
+      "- The live-reviewer fixtures do not include a casual meta-discussion shape such as `\"the classifier should flag 'permission denied' here\"`; that prose would currently flag as a real failure under the third-branch logic.",
+      "Checklist",
+      "1. PASS exact metadata was supplied.",
+      "2. PASS selected source scripts/lib/review-prompt.mjs was inspected.",
+      "3. PASS no blockers.",
+      "4. PASS no review comments supplied.",
+      "5. PASS blocking and non-blocking sections are separated.",
+      "6. PASS review completed without timeout, truncation, interruption, permission block, or shallow output.",
+    ].join("\n"),
+    status: "completed",
+    errorCode: null,
+  });
+
+  assert.deepEqual(manifest.review_quality.semantic_failure_reasons, []);
+  assert.equal(manifest.review_quality.failed_review_slot, false);
 });
 
 test("review audit manifest still flags permission denial co-located with negated permission-block prose", () => {
@@ -994,6 +1601,171 @@ test("review audit manifest does not flag passing permission-block removal prose
   assert.deepEqual(manifest.review_quality.semantic_failure_reasons, []);
   assert.equal(manifest.review_quality.failed_review_slot, false);
 });
+
+for (const [name, file] of REVIEW_PROMPT_MODULES) {
+  test(`review audit manifest does not flag quoted permission regex concern as permission blocked (${name})`, async () => {
+    const { buildReviewAuditManifest: targetBuildReviewAuditManifest } = file === "scripts/lib/review-prompt.mjs"
+      ? { buildReviewAuditManifest }
+      : await import(pathToFileURL(resolve(file)).href);
+    const manifest = targetBuildReviewAuditManifest({
+      prompt: "rendered prompt",
+      sourceFiles: [{ path: "sample.js", text: "export const value = 1;\n" }],
+      result: [
+        "Verdict: APPROVE with non-blocking concerns.",
+        "Blocking findings",
+        "- None. I inspected sample.js.",
+        "Non-blocking concerns",
+        "- `isKimiCodexSandboxBlocked` regex breadth: the sandbox detection uses `/Operation not permitted|Permission denied|PermissionError|EACCES|EPERM/i` combined with a Kimi path regex. This could theoretically match unrelated permission errors if the next line happens to mention `.kimi`. The existing false-positive test confirms line-pairing prevents that.",
+        "Checklist",
+        "1. PASS exact metadata was supplied.",
+        "2. PASS selected source sample.js was inspected.",
+        "3. PASS no blockers.",
+        "4. PASS no comments supplied.",
+        "5. PASS blocking and non-blocking sections are separated.",
+        "6. PASS full file contents supplied; no timeout, truncation, interruption, permission block, or shallow output occurred.",
+      ].join("\n"),
+      status: "completed",
+      errorCode: null,
+    });
+
+    assert.deepEqual(manifest.review_quality.semantic_failure_reasons, []);
+    assert.equal(manifest.review_quality.failed_review_slot, false);
+  });
+}
+
+for (const [name, file] of REVIEW_PROMPT_MODULES) {
+  test(`review audit manifest does not flag permission counterexample analysis as failed review (${name})`, async () => {
+    const { buildReviewAuditManifest: targetBuildReviewAuditManifest } = file === "scripts/lib/review-prompt.mjs"
+      ? { buildReviewAuditManifest }
+      : await import(pathToFileURL(resolve(file)).href);
+    const manifest = targetBuildReviewAuditManifest({
+      prompt: "rendered prompt",
+      sourceFiles: [{ path: "scripts/lib/review-prompt.mjs", text: "export function marker() {}\n" }],
+      result: [
+        "Verdict: APPROVE",
+        "Blocking findings",
+        "- None. I inspected scripts/lib/review-prompt.mjs.",
+        "Non-blocking concerns",
+        "- The `isPermissionLiteralDiscussionLine` predicate requires `Permission denied`, a regex/pattern term, and no concrete exclusion phrase such as `could not inspect`; branch ordering keeps real failures flagged.",
+        "Fail-closed verification table",
+        "1. The line contains a permission-denied literal (`\"permission denied\"`, `\"permission-denied\"`, `\"read denied\"`, `\"read-denied\"`).",
+        "2. The line contains a regex/pattern discussion term (`\"regex\"`, `\"regular expression\"`, `\"pattern\"`, `\"matches\"`, `\"match\"`).",
+        "3. The line does not contain a concrete-action exclusion phrase (`\"prevented file access\"`, `\"while reading\"`, `\"could not inspect\"`, etc.).",
+        "| Input text | Result |",
+        "|---|---|",
+        "| `Permission denied while reading sample.js` | flagged as a real permission failure |",
+        "| `Could not inspect sample.js without permission blocks being removed` | flagged as not_reviewed plus permission_blocked |",
+        "| `Permission block prevented file access to sample.js` | flagged as permission_blocked |",
+        "Checklist",
+        "1. PASS exact metadata was supplied.",
+        "2. PASS selected source scripts/lib/review-prompt.mjs was inspected.",
+        "3. PASS no blockers.",
+        "4. PASS no review comments supplied.",
+        "5. PASS blocking and non-blocking sections are separated.",
+        "6. PASS review completed without timeout, truncation, interruption, permission block, or shallow output.",
+      ].join("\n"),
+      status: "completed",
+      errorCode: null,
+    });
+
+    assert.deepEqual(manifest.review_quality.semantic_failure_reasons, []);
+    assert.equal(manifest.review_quality.failed_review_slot, false);
+  });
+}
+
+for (const [name, file] of REVIEW_PROMPT_MODULES) {
+  test(`review audit manifest does not flag permission control-flow explanation as permission blocked (${name})`, async () => {
+    const { buildReviewAuditManifest: targetBuildReviewAuditManifest } = file === "scripts/lib/review-prompt.mjs"
+      ? { buildReviewAuditManifest }
+      : await import(pathToFileURL(resolve(file)).href);
+    const manifest = targetBuildReviewAuditManifest({
+      prompt: "rendered prompt",
+      sourceFiles: [{ path: "scripts/lib/review-prompt.mjs", text: "export function marker() {}\n" }],
+      result: [
+        "Verdict: APPROVE",
+        "Blocking findings",
+        "- None. I inspected scripts/lib/review-prompt.mjs.",
+        "Non-blocking concerns",
+        "- In `semanticFailureReasons`, the filter `!(isPassingChecklistLine(line) && !hasPermissionFailure)` preserves real permission failures even when they appear inside a passing checklist row (e.g., *\"Checklist item 6: PASS ... permission denied while reading sample.js\"*). The `hasPermissionFailure` binding is evaluated before the line is excluded, so the failure is still surfaced.",
+        "Checklist",
+        "1. PASS exact metadata was supplied.",
+        "2. PASS selected source scripts/lib/review-prompt.mjs was inspected.",
+        "3. PASS no blockers.",
+        "4. PASS no review comments supplied.",
+        "5. PASS blocking and non-blocking sections are separated.",
+        "6. PASS review completed without timeout, truncation, interruption, permission block, or shallow output.",
+      ].join("\n"),
+      status: "completed",
+      errorCode: null,
+    });
+
+    assert.deepEqual(manifest.review_quality.semantic_failure_reasons, []);
+    assert.equal(manifest.review_quality.failed_review_slot, false);
+  });
+}
+
+for (const [name, file] of REVIEW_PROMPT_MODULES) {
+  test(`review audit manifest does not flag live Grok review-quality scope explanation as permission blocked (${name})`, async () => {
+    const { buildReviewAuditManifest: targetBuildReviewAuditManifest } = file === "scripts/lib/review-prompt.mjs"
+      ? { buildReviewAuditManifest }
+      : await import(pathToFileURL(resolve(file)).href);
+    const manifest = targetBuildReviewAuditManifest({
+      prompt: "rendered prompt",
+      sourceFiles: [{ path: "scripts/lib/external-model-failure-core.mjs", text: "export const ok = true;\n" }],
+      result: [
+        "Verdict: APPROVE",
+        "Checklist",
+        "1. Verify exact base/head refs and commits before judging the diff. NOT REVIEWED - no git state was supplied, but selected source files were inspected.",
+        "2. Review only the declared scope and list any scope gaps as NOT REVIEWED. PASS.",
+        "3. Evaluate correctness bugs, security risks, regressions, and missing tests. PASS.",
+        "4. Check known review comments or residual threads when the prompt includes them. NOT REVIEWED.",
+        "5. Separate blocking findings from non-blocking concerns. PASS.",
+        "6. Treat timeout, truncation, interruption, permission block, or shallow output as a failed review slot. PASS.",
+        "Blocking Findings",
+        "None.",
+        "Non-Blocking Concerns",
+        "- The root cause of symptom 5 (false `failed_review_slot` when reviewer prose incidentally contains \"permission-denied\", \"NOT_REVIEWED\", parser examples, or out-of-scope wording) and the correct detection of real \"not_reviewed\"/permission-denied/shallow cases (symptom 6) live in the review-quality audit and semantic-reason extraction logic. That code is absent from the declared paths; only the consumer is present and correct. The detector itself is therefore NOT REVIEWED.",
+      ].join("\n"),
+      status: "completed",
+      errorCode: null,
+    });
+
+    assert.deepEqual(manifest.review_quality.semantic_failure_reasons, []);
+    assert.equal(manifest.review_quality.failed_review_slot, false);
+  });
+}
+
+for (const [name, file] of REVIEW_PROMPT_MODULES) {
+  test(`review audit manifest does not flag out-of-scope fixture caveats as selected-source denial (${name})`, async () => {
+    const { buildReviewAuditManifest: targetBuildReviewAuditManifest } = file === "scripts/lib/review-prompt.mjs"
+      ? { buildReviewAuditManifest }
+      : await import(pathToFileURL(resolve(file)).href);
+    const manifest = targetBuildReviewAuditManifest({
+      prompt: "rendered prompt",
+      sourceFiles: [{ path: "tests/smoke/grok-web.smoke.test.mjs", text: "export const ok = true;\n" }],
+      result: [
+        "Verdict: APPROVE",
+        "Blocking findings",
+        "- None. I inspected tests/smoke/grok-web.smoke.test.mjs.",
+        "Non-blocking concerns",
+        "- The smoke test file (`tests/smoke/grok-web.smoke.test.mjs`) references fixture files (`tests/smoke/fixtures/grok/...`) outside the review packet; those fixtures are not inspected here and could become outdated.",
+        "Checklist",
+        "1. Verify exact base/head refs and commits before judging the diff. - N/A (no diff access).",
+        "2. Review only the declared scope and list any scope gaps as NOT REVIEWED. - PASS: the declared file was inspected; no scope gaps.",
+        "3. Evaluate correctness bugs, security risks, regressions, and missing tests. - PASS: no blockers found.",
+        "4. Check known review comments or residual threads when the prompt includes them. - N/A (none supplied).",
+        "5. Separate blocking findings from non-blocking concerns. - PASS.",
+        "6. Treat timeout, truncation, interruption, permission block, or shallow output as a failed review slot. - PASS: no such conditions occurred.",
+      ].join("\n"),
+      status: "completed",
+      errorCode: null,
+    });
+
+    assert.equal(manifest.review_quality.checklist_items_seen, 6);
+    assert.deepEqual(manifest.review_quality.semantic_failure_reasons, []);
+    assert.equal(manifest.review_quality.failed_review_slot, false);
+  });
+}
 
 test("review audit manifest does not count status-looking prose as checklist items", () => {
   const manifest = buildReviewAuditManifest({
@@ -1366,6 +2138,235 @@ test("review audit manifest does not drop hyphenated failure prose as a PASS che
   assert.equal(manifest.review_quality.checklist_items_seen, 0);
   assert.equal(manifest.review_quality.semantic_failure_reasons.includes("permission_blocked"), true);
   assert.equal(manifest.review_quality.failed_review_slot, true);
+});
+
+test("review audit manifest does not flag mocked cleanup permission literals as reviewer permission blocks", () => {
+  const manifest = buildReviewAuditManifest({
+    prompt: "rendered prompt",
+    sourceFiles: [{ path: "sample.js", text: "export const value = 1;\n" }],
+    result: [
+      "Verdict: APPROVE",
+      "## Blocking Findings",
+      "None.",
+      "## Non-Blocking Concerns",
+      "None.",
+      "## Checklist Results",
+      "1. Verify exact base/head refs and commits: NOT REVIEWED.",
+      "2. Review only declared scope: PASS.",
+      "3. Evaluate correctness bugs, security risks, regressions, missing tests: PASS.",
+      "4. Known comments: NOT REVIEWED.",
+      "5. Separate blocking from non-blocking: PASS.",
+      "6. Timeout/truncation/interruption/shallow output check: PASS.",
+      "Cleanup uncertainty: the test verifies both the success path and the failure path (mocked EACCES, warning recorded, file persists).",
+      "Inspection statement: I inspected sample.js.",
+    ].join("\n"),
+    status: "completed",
+    errorCode: null,
+  });
+
+  assert.deepEqual(manifest.review_quality.semantic_failure_reasons, []);
+  assert.equal(manifest.review_quality.failed_review_slot, false);
+});
+
+test("review audit manifest does not fail completed supplied-source review for out-of-scope permission notes", () => {
+  const manifest = buildReviewAuditManifest({
+    prompt: "rendered prompt",
+    sourceFiles: [{ path: "sample.js", text: "export const value = 1;\n" }],
+    result: [
+      "Verdict: APPROVE",
+      "## Blocking Findings",
+      "None.",
+      "## Non-Blocking Concerns",
+      "None.",
+      "## Checklist Results",
+      "1. Verify exact base/head refs and commits: NOT REVIEWED.",
+      "2. Review only declared scope: PASS.",
+      "3. Evaluate correctness bugs, security risks, regressions, missing tests: PASS.",
+      "4. Known comments: NOT REVIEWED.",
+      "5. Separate blocking from non-blocking: PASS.",
+      "6. Timeout/truncation/interruption/permission-block/shallow: PASS (slot is valid).",
+      "A filesystem permission block prevented reading out-of-scope modules, but the authoritative file contents were fully supplied and reviewed.",
+      "Inspection statement: I inspected sample.js.",
+    ].join("\n"),
+    status: "completed",
+    errorCode: null,
+  });
+
+  assert.deepEqual(manifest.review_quality.semantic_failure_reasons, []);
+  assert.equal(manifest.review_quality.failed_review_slot, false);
+});
+
+test("review audit manifest does not flag permission-failure examples described as still correctly flagged", () => {
+  const manifest = buildReviewAuditManifest({
+    prompt: "rendered prompt",
+    sourceFiles: [{ path: "sample.js", text: "export const value = 1;\n" }],
+    result: [
+      "Verdict: APPROVE",
+      "## Blocking Findings",
+      "None.",
+      "## Non-Blocking Concerns",
+      "None.",
+      "## Checklist Results",
+      "1. Verify exact base/head refs and commits: NOT REVIEWED.",
+      "2. Review only declared scope: PASS.",
+      "3. Evaluate correctness bugs, security risks, regressions, missing tests: PASS.",
+      "4. Known comments: NOT REVIEWED.",
+      "5. Separate blocking from non-blocking: PASS.",
+      "6. Timeout/truncation/interruption/shallow output check: PASS.",
+      "Real selected-source/read-denial failures, such as permission denied while reading sample.js, are still correctly flagged as permission_blocked.",
+      "Inspection statement: I inspected sample.js.",
+    ].join("\n"),
+    status: "completed",
+    errorCode: null,
+  });
+
+  assert.deepEqual(manifest.review_quality.semantic_failure_reasons, []);
+  assert.equal(manifest.review_quality.failed_review_slot, false);
+});
+
+test("review audit manifest does not flag camelcase out-of-scope permission helper names as OS Eperm", () => {
+  const manifest = buildReviewAuditManifest({
+    prompt: "rendered prompt",
+    sourceFiles: [{ path: "sample.js", text: "export const value = 1;\n" }],
+    result: [
+      "Verdict: APPROVE",
+      "## Blocking Findings",
+      "None.",
+      "## Non-Blocking Concerns",
+      "None.",
+      "## Checklist Results",
+      "1. Verify exact base/head refs and commits: NOT REVIEWED.",
+      "2. Review only declared scope: PASS.",
+      "3. Evaluate correctness bugs, security risks, regressions, missing tests: PASS.",
+      "4. Known comments: NOT REVIEWED.",
+      "5. Separate blocking from non-blocking: PASS.",
+      "6. Timeout/truncation/interruption/shallow output check: PASS.",
+      "- **Out-of-scope permission notes don't fail usable reviews** \u2014 PASS. `isOutOfScopePermissionNoteLine` (411-432) requires the out-of-scope marker plus an affirmation that the declared/supplied scope was fully reviewed; covered at line 2049.",
+      "Inspection statement: I inspected sample.js.",
+    ].join("\n"),
+    status: "completed",
+    errorCode: null,
+  });
+
+  assert.deepEqual(manifest.review_quality.semantic_failure_reasons, []);
+  assert.equal(manifest.review_quality.failed_review_slot, false);
+});
+
+test("review audit manifest does not flag token-bound OS-code mechanics prose as permission blocked", () => {
+  const manifest = buildReviewAuditManifest({
+    prompt: "rendered prompt",
+    sourceFiles: [{ path: "sample.js", text: "export const value = 1;\n" }],
+    result: [
+      "Verdict: APPROVE",
+      "## Blocking Findings",
+      "None.",
+      "## Non-Blocking Concerns",
+      "None.",
+      "## Checklist Results",
+      "1. Verify exact base/head refs and commits: NOT REVIEWED.",
+      "2. Review only declared scope: PASS.",
+      "3. Evaluate correctness bugs, security risks, regressions, and missing tests: PASS. The `includesAnyToken` and `isWordBoundary` functions accurately tokenize matching to fix the false positive where \"eperm\" was detected inside words like \"scopepermission\", while preserving legitimate permission failure cases.",
+      "4. Known comments: NOT REVIEWED.",
+      "5. Separate blocking from non-blocking: PASS.",
+      "6. Timeout/truncation/interruption/shallow output check: PASS.",
+      "## Analysis: Token-bound EACCES / EPERM / PermissionError matching",
+      "    \"permission denied\", \"permission-denied\",",
+      "    \"read denied\", \"read-denied\",",
+      "    \"operation not permitted\",",
+      "    \"permissionerror\", \"eacces\", \"eperm\",",
+      "- \"someEaccesHandler\" -> lowered \"someeacceshandler\" -> e before \"eacces\" is alphanumeric -> not a boundary -> correctly does not match.",
+      "- \"throwPermissionError\" -> lowered \"throwpermissionerror\" -> n before \"permissionerror\" is alphanumeric -> correctly does not match.",
+      "- \"checkEpermFlag\" -> lowered \"checkepermflag\" -> k before \"eperm\" is alphanumeric -> correctly does not match.",
+      "- \"EACCES on sample.js\" -> space before and after -> matches.",
+      "- \"EPERM\" at line start/end -> boundary at both ends -> matches.",
+      "- \"PermissionError\" as a standalone word -> boundaries at both ends -> matches.",
+      "The test verifies \"EACCES on sample.js\" produces permission_blocked, while another test still flags because the concrete action phrase \"while reading\" prevents the mechanics-discussion exclusion.",
+      "Inspection statement: I inspected sample.js.",
+    ].join("\n"),
+    status: "completed",
+    errorCode: null,
+  });
+
+  assert.deepEqual(manifest.review_quality.semantic_failure_reasons, []);
+  assert.equal(manifest.review_quality.failed_review_slot, false);
+});
+
+for (const [name, file] of REVIEW_PROMPT_MODULES) {
+  test(`review audit manifest does not flag injected EACCES cleanup-test proof as permission blocked (${name})`, async () => {
+    const { buildReviewAuditManifest: targetBuildReviewAuditManifest } = file === "scripts/lib/review-prompt.mjs"
+      ? { buildReviewAuditManifest }
+      : await import(pathToFileURL(resolve(file)).href);
+    const manifest = targetBuildReviewAuditManifest({
+      prompt: "rendered prompt",
+      sourceFiles: [{ path: "sample.js", text: "export const value = 1;\n" }],
+      result: [
+        "Verdict: APPROVE",
+        "Blocking findings: no blocking finding applies to sample.js.",
+        "Non-blocking concerns:",
+        "- The test (`fail-runtime-options-rename.mjs`) injects EACCES only on renames ending in `/runtime-options.json`; this verifies cleanup failure path coverage and not a reviewer access block.",
+        "Inspection statement: I inspected sample.js.",
+        "Checklist:",
+        "6. PASS review completed without timeout, truncation, interruption, permission block, or shallow output.",
+      ].join("\n"),
+      status: "completed",
+      errorCode: null,
+    });
+
+    assert.deepEqual(manifest.review_quality.semantic_failure_reasons, []);
+    assert.equal(manifest.review_quality.failed_review_slot, false);
+  });
+}
+
+for (const [name, file] of REVIEW_PROMPT_MODULES) {
+  test(`review audit manifest does not flag permission guardrail test-assertion prose as permission blocked (${name})`, async () => {
+    const { buildReviewAuditManifest: targetBuildReviewAuditManifest } = file === "scripts/lib/review-prompt.mjs"
+      ? { buildReviewAuditManifest }
+      : await import(pathToFileURL(resolve(file)).href);
+    const manifest = targetBuildReviewAuditManifest({
+      prompt: "rendered prompt",
+      sourceFiles: [{ path: "sample.js", text: "export const value = 1;\n" }],
+      result: [
+        "Verdict: APPROVE",
+        "Blocking findings: no blocking finding applies to sample.js.",
+        "Non-blocking concerns:",
+        "- Edge case - OS-level codes (`EACCES on sample.js`): the line is flagged. Test assertion confirms `permission_blocked`.",
+        "Inspection statement: I inspected sample.js.",
+        "Checklist:",
+        "6. PASS review completed without timeout, truncation, interruption, permission block, or shallow output.",
+      ].join("\n"),
+      status: "completed",
+      errorCode: null,
+    });
+
+    assert.deepEqual(manifest.review_quality.semantic_failure_reasons, []);
+    assert.equal(manifest.review_quality.failed_review_slot, false);
+  });
+}
+
+test("review audit manifest does not flag Kimi fallback EACCES concern as permission blocked", () => {
+  const manifest = buildReviewAuditManifest({
+    prompt: "rendered prompt",
+    sourceFiles: [
+      { path: "plugins/kimi/scripts/kimi-companion.mjs", text: "export async function executeRun() {}\n" },
+      { path: "plugins/gemini/scripts/gemini-companion.mjs", text: "export async function cmdRun() {}\n" },
+    ],
+    result: [
+      "Verdict: REQUEST_CHANGES",
+      "### Blocking Findings",
+      "1. Gemini Background Run Approval Token Mismatch on Empty Scope",
+      "   The background preflight should use the same containment scope as foreground runs.",
+      "### Non-blocking Concerns",
+      "1. Kimi Catch Block Model Attribution for Throwing Retries",
+      "   In plugins/kimi/scripts/kimi-companion.mjs executeRun, if spawnKimi throws an exception (e.g. EACCES) on a capacity-fallback retry attempt, executedInvocation is not updated before the throw.",
+      "   Setting executedInvocation before await spawnKimi would ensure correct model attribution for exceptions on fallback candidates.",
+      "Inspection statement: I inspected plugins/kimi/scripts/kimi-companion.mjs and plugins/gemini/scripts/gemini-companion.mjs.",
+    ].join("\n"),
+    status: "completed",
+    errorCode: null,
+  });
+
+  assert.deepEqual(manifest.review_quality.semantic_failure_reasons, []);
+  assert.equal(manifest.review_quality.failed_review_slot, false);
 });
 
 test("review audit manifest ignores pathologically long numbered checklist prefixes", () => {
