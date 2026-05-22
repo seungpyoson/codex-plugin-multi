@@ -99,14 +99,20 @@ test("external model contract docs are generated from one shared source", () => 
       /node plugins\/api-reviewers\/scripts\/api-reviewer\.mjs/,
       `${target.path} must not require caller cwd to be the codex-plugin-multi repo root`,
     );
-    const expectedEntrypoint = target.kind === "command"
-      ? "node ../scripts/api-reviewer.mjs"
-      : "node ../../scripts/api-reviewer.mjs";
+    assert.doesNotMatch(
+      rendered,
+      /api-reviewer\.mjs/,
+      `${target.path} must not expose internal api-reviewer script paths`,
+    );
     assert.match(
       rendered,
-      new RegExp(escapeRegExp(expectedEntrypoint)),
-      `${target.path} must use an entrypoint path relative to the generated doc location`,
+      /\bapi-reviewer\s+(doctor|approval-request|run)\b/,
+      `${target.path} must use the installed api-reviewer executable`,
     );
+    if (target.kind === "command") {
+      assert.match(rendered, /Bash\(api-reviewer:\*\)/, `${target.path} must allow the api-reviewer executable`);
+      assert.doesNotMatch(rendered, /Bash\(node:\*\)/, `${target.path} must not require node access for api-reviewer docs`);
+    }
   }
 });
 

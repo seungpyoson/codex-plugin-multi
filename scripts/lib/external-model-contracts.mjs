@@ -764,8 +764,7 @@ function apiArgumentHint(workflow) {
   throw new Error(`unknown api workflow: ${workflow}`);
 }
 
-const API_COMMAND_ENTRYPOINT = "../scripts/api-reviewer.mjs";
-const API_SKILL_ENTRYPOINT = "../../scripts/api-reviewer.mjs";
+const API_REVIEWER_ENTRYPOINT = "api-reviewer";
 
 function apiApprovalContract() {
   return lines(
@@ -802,14 +801,14 @@ function apiCommandDoc(target) {
     description: apiCommandDescription(provider, workflow),
     "argument-hint": apiArgumentHint(workflow),
     "disable-model-invocation": "true",
-    "allowed-tools": workflow === "setup" ? "Bash(node:*)" : "Read, Glob, Grep, Bash(node:*), Bash(git:*), AskUserQuestion",
+    "allowed-tools": workflow === "setup" ? "Bash(api-reviewer:*)" : "Read, Glob, Grep, Bash(api-reviewer:*), Bash(git:*), AskUserQuestion",
   });
   const setup = workflow === "setup";
   const title = `${provider.display} ${titleForWorkflow(workflow)}`;
   if (setup) {
     return fm + lines(
       sharedHeader(title),
-      `Run \`node ${API_COMMAND_ENTRYPOINT} doctor --provider ${provider.provider}\`.`,
+      `Run \`${API_REVIEWER_ENTRYPOINT} doctor --provider ${provider.provider}\`.`,
       "Report readiness without printing API-key values.",
       secretSafetyContract(),
     );
@@ -823,14 +822,14 @@ function apiCommandDoc(target) {
       "Route `--scope-paths <files>` before `--prompt` and pass the remaining prompt text to `--prompt`.",
       "Replace `<file1>,<file2>` with comma- or newline-separated concrete relative paths.",
       "Expand globs before running; do not pass glob characters as `--scope-paths`.",
-      `Run \`node ${API_COMMAND_ENTRYPOINT} approval-request --provider ${provider.provider} --mode ${mode} --scope custom --scope-paths "<file1>,<file2>" --prompt "<prompt text>"\`.`,
-      `Run \`node ${API_COMMAND_ENTRYPOINT} run --provider ${provider.provider} --mode ${mode} --scope custom --scope-paths "<file1>,<file2>" --approval-token "<approval_token.value>" --lifecycle-events markdown --prompt "<prompt text>"\`.`,
+      `Run \`${API_REVIEWER_ENTRYPOINT} approval-request --provider ${provider.provider} --mode ${mode} --scope custom --scope-paths "<file1>,<file2>" --prompt "<prompt text>"\`.`,
+      `Run \`${API_REVIEWER_ENTRYPOINT} run --provider ${provider.provider} --mode ${mode} --scope custom --scope-paths "<file1>,<file2>" --approval-token "<approval_token.value>" --lifecycle-events markdown --prompt "<prompt text>"\`.`,
     ]
     : [
       "`$ARGUMENTS` is optional `--scope-base REF` followed by review prompt text.",
       "Route `--scope-base REF` before `--prompt` and pass the remaining prompt text to `--prompt`.",
-      `Run \`node ${API_COMMAND_ENTRYPOINT} approval-request --provider ${provider.provider} --mode ${mode} --scope branch-diff --scope-base REF --prompt "<prompt text>"\`.`,
-      `Run \`node ${API_COMMAND_ENTRYPOINT} run --provider ${provider.provider} --mode ${mode} --scope branch-diff --scope-base REF --approval-token "<approval_token.value>" --lifecycle-events markdown --prompt "<prompt text>"\`.`,
+      `Run \`${API_REVIEWER_ENTRYPOINT} approval-request --provider ${provider.provider} --mode ${mode} --scope branch-diff --scope-base REF --prompt "<prompt text>"\`.`,
+      `Run \`${API_REVIEWER_ENTRYPOINT} run --provider ${provider.provider} --mode ${mode} --scope branch-diff --scope-base REF --approval-token "<approval_token.value>" --lifecycle-events markdown --prompt "<prompt text>"\`.`,
     ];
   return fm + lines(
     sharedHeader(title),
@@ -859,7 +858,7 @@ function apiSkillDoc(target) {
     return fm + lines(
       sharedHeader(title),
       `Use skill \`api-reviewers:${skillName}\`. Command doc: \`../../commands/${skillName}.md\`.`,
-      `Run \`node ${API_SKILL_ENTRYPOINT} doctor --provider ${provider.provider}\`.`,
+      `Run \`${API_REVIEWER_ENTRYPOINT} doctor --provider ${provider.provider}\`.`,
       "Report readiness without printing API-key values.",
       secretSafetyContract(),
     );
@@ -868,12 +867,12 @@ function apiSkillDoc(target) {
   const scope = workflow === "custom-review" ? "custom" : "branch-diff";
   const scopeLines = workflow === "custom-review"
     ? [
-      `Run \`node ${API_SKILL_ENTRYPOINT} run --provider ${provider.provider} --mode ${workflow} --scope custom --scope-paths "<file1>,<file2>" --approval-token "<approval_token.value>" --lifecycle-events markdown --prompt "<focus>"\`.`,
+      `Run \`${API_REVIEWER_ENTRYPOINT} run --provider ${provider.provider} --mode ${workflow} --scope custom --scope-paths "<file1>,<file2>" --approval-token "<approval_token.value>" --lifecycle-events markdown --prompt "<focus>"\`.`,
       "Replace `<file1>,<file2>` with comma- or newline-separated concrete relative `--scope-paths`.",
       "Expand globs before running; do not pass glob characters or space-separated paths.",
     ]
     : [
-      `Run \`node ${API_SKILL_ENTRYPOINT} run --provider ${provider.provider} --mode ${workflow} --scope branch-diff --scope-base REF --approval-token "<approval_token.value>" --lifecycle-events markdown --prompt "<focus>"\`.`,
+      `Run \`${API_REVIEWER_ENTRYPOINT} run --provider ${provider.provider} --mode ${workflow} --scope branch-diff --scope-base REF --approval-token "<approval_token.value>" --lifecycle-events markdown --prompt "<focus>"\`.`,
     ];
   return fm + lines(
     sharedHeader(title),
@@ -902,16 +901,16 @@ function apiDelegationSkillDoc() {
     sharedHeader("API Reviewers Delegation"),
     "Use skill `api-reviewers:api-reviewers-delegation`.",
     "Run setup:",
-    providerLines((provider) => `- \`node ${API_SKILL_ENTRYPOINT} doctor --provider ${provider.provider}\``),
+    providerLines((provider) => `- \`${API_REVIEWER_ENTRYPOINT} doctor --provider ${provider.provider}\``),
     "",
     "Run review:",
-    providerLines((provider) => `- \`node ${API_SKILL_ENTRYPOINT} run --provider ${provider.provider} --mode review --scope branch-diff --scope-base REF --approval-token "<approval_token.value>" --lifecycle-events markdown --prompt "<focus>"\``),
+    providerLines((provider) => `- \`${API_REVIEWER_ENTRYPOINT} run --provider ${provider.provider} --mode review --scope branch-diff --scope-base REF --approval-token "<approval_token.value>" --lifecycle-events markdown --prompt "<focus>"\``),
     "",
     "Run adversarial review:",
-    providerLines((provider) => `- \`node ${API_SKILL_ENTRYPOINT} run --provider ${provider.provider} --mode adversarial-review --scope branch-diff --scope-base REF --approval-token "<approval_token.value>" --lifecycle-events markdown --prompt "<focus>"\``),
+    providerLines((provider) => `- \`${API_REVIEWER_ENTRYPOINT} run --provider ${provider.provider} --mode adversarial-review --scope branch-diff --scope-base REF --approval-token "<approval_token.value>" --lifecycle-events markdown --prompt "<focus>"\``),
     "",
     "Run custom-review:",
-    providerLines((provider) => `- \`node ${API_SKILL_ENTRYPOINT} run --provider ${provider.provider} --mode custom-review --scope custom --scope-paths "<file1>,<file2>" --approval-token "<approval_token.value>" --lifecycle-events markdown --prompt "<focus>"\``),
+    providerLines((provider) => `- \`${API_REVIEWER_ENTRYPOINT} run --provider ${provider.provider} --mode custom-review --scope custom --scope-paths "<file1>,<file2>" --approval-token "<approval_token.value>" --lifecycle-events markdown --prompt "<focus>"\``),
     "",
     "`<focus>` is the user's review prompt or focus area.",
     "Replace `<file1>,<file2>` with comma- or newline-separated concrete relative paths. Use comma- or newline-separated concrete relative `--scope-paths`; expand globs before running.",

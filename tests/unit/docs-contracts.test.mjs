@@ -665,6 +665,16 @@ test("cost and quota docs require safe diagnostics and explicit billing action",
   assert.match(docs, /full prompts|source bundles|raw provider payloads/i);
 });
 
+test("direct API e2e docs use installed api-reviewer and the canonical GLM key", () => {
+  const doc = readRepoFile("docs/e2e.md");
+
+  assert.match(doc, /api-reviewer doctor --provider deepseek/);
+  assert.match(doc, /api-reviewer doctor --provider glm/);
+  assert.doesNotMatch(doc, /node plugins\/api-reviewers\/scripts\/api-reviewer\.mjs/);
+  assert.doesNotMatch(doc, /ZAI_GLM_API_KEY/);
+  assert.match(doc, /ZAI_API_KEY/);
+});
+
 test("Grok setup docs describe a live local tunnel probe", () => {
   const docs = [
     readRepoFile("README.md"),

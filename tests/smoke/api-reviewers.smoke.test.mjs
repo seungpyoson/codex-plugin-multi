@@ -109,6 +109,18 @@ async function run(args, { cwd = REPO_ROOT, env = {}, companion = COMPANION } = 
   });
 }
 
+async function runExecutable(args, { cwd = REPO_ROOT, env = {}, executable } = {}) {
+  return new Promise((resolve) => {
+    execFile(executable, args, {
+      cwd,
+      env: { ...process.env, API_REVIEWERS_DISABLE_ENV_CACHE: "1", ...env },
+      timeout: 10000,
+    }, (error, stdout, stderr) => {
+      resolve({ error, stdout, stderr, status: error?.code ?? 0 });
+    });
+  });
+}
+
 function parseJson(stdout) {
   return JSON.parse(stdout);
 }
@@ -1534,6 +1546,42 @@ for (const scenario of [
     }
   });
 }
+
+test("installed api-reviewers bin executable runs doctor without internal script path", async () => {
+  const pluginRoot = makeInstalledApiReviewersRoot();
+  const executable = path.join(pluginRoot, "bin", "api-reviewer");
+  const server = await startChatServer((req, res) => {
+    req.resume();
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end(mockResponse("glm-5.1", "chatcmpl-doctor", "ok"));
+  });
+  try {
+    const { port } = server.address();
+    const endpoint = `http://127.0.0.1:${port}`;
+    writeSingleProviderConfig(pluginRoot, "glm", {
+      display_name: "GLM",
+      auth_mode: "api_key",
+      env_keys: ["ZAI_API_KEY"],
+      base_url: endpoint,
+      model: "glm-5.1",
+    });
+    const result = await runExecutable(["doctor", "--provider", "glm"], {
+      executable,
+      env: { ZAI_API_KEY: "secret-test-value" },
+    });
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    const parsed = parseJson(result.stdout);
+    assert.equal(parsed.provider, "glm");
+    assert.equal(parsed.ready, true);
+    assert.equal(parsed.credential_ref, "ZAI_API_KEY");
+    assert.equal(parsed.endpoint, endpoint);
+    assert.equal(parsed.provider_probe.status, "ok");
+    assert.doesNotMatch(result.stdout, /secret-test-value/);
+  } finally {
+    server.close();
+    rmSync(path.dirname(path.dirname(pluginRoot)), { recursive: true, force: true });
+  }
+});
 
 test("installed api-reviewers package layout is self-contained for branch-diff run", async () => {
   const pluginRoot = makeInstalledApiReviewersRoot();
@@ -5089,6 +5137,70 @@ test("direct API reviewers approval token is bound to auth and billing paths", a
       rmSync(cwd, { recursive: true, force: true });
       rmSync(path.dirname(path.dirname(pluginRoot)), { recursive: true, force: true });
     }
+  }
+});
+
+test("direct API reviewers reject invalid route fallback reason as bad args before source send", async () => {
+  const cwd = makeWorkspace();
+  const dataDir = mkdtempSync(path.join(tmpdir(), "api-reviewers-invalid-route-"));
+  const pluginRoot = makeInstalledApiReviewersRoot();
+  const companion = path.join(pluginRoot, "scripts", "api-reviewer.mjs");
+  try {
+    writeSingleProviderConfig(pluginRoot, "custom", {
+      display_name: "Custom Reviewer",
+      auth_mode: "api_key",
+      env_keys: ["CUSTOM_API_KEY"],
+      base_url: "https://billing-a.example.invalid",
+      model: "custom-review-model",
+    });
+    const commonArgs = [
+      "--provider", "custom",
+      "--mode", "custom-review",
+      "--scope", "custom",
+      "--scope-paths", "seed.txt",
+      "--prompt", "Check this file.",
+    ];
+    const approvalResult = await run(["approval-request", ...commonArgs], {
+      cwd,
+      companion,
+      env: {
+        API_REVIEWERS_PLUGIN_DATA: dataDir,
+        API_REVIEWERS_TEST_AUTO_APPROVAL: "0",
+        CUSTOM_API_KEY: "secret-test-value",
+      },
+    });
+    assert.equal(approvalResult.status, 0, approvalResult.stderr || approvalResult.stdout);
+    const approval = parseJson(approvalResult.stdout);
+
+    const result = await run([
+      "run",
+      ...commonArgs,
+      "--foreground",
+      "--approval-token", approval.approval_token.value,
+    ], {
+      cwd,
+      companion,
+      env: {
+        API_REVIEWERS_PLUGIN_DATA: dataDir,
+        API_REVIEWERS_REQUIRE_APPROVAL_TOKEN_IN_MOCKS: "1",
+        API_REVIEWERS_MOCK_RESPONSE: mockResponse("custom-review-model"),
+        API_REVIEWERS_ROUTE_FALLBACK_REASON: "invalid-test-reason",
+        CUSTOM_API_KEY: "secret-test-value",
+      },
+    });
+
+    assert.equal(result.status, 1);
+    const record = parseJson(result.stdout);
+    assert.equal(record.status, "failed");
+    assert.equal(record.error_code, "bad_args");
+    assert.match(record.error_message, /unsupported API fallback reason/);
+    assertDirectApiNotSent(record, "Custom Reviewer");
+    assert.doesNotMatch(result.stdout, /external_review_launched|hello from selected scope|secret-test-value/);
+    assert.doesNotMatch(result.stderr, /Error:|at /);
+  } finally {
+    rmSync(dataDir, { recursive: true, force: true });
+    rmSync(cwd, { recursive: true, force: true });
+    rmSync(path.dirname(path.dirname(pluginRoot)), { recursive: true, force: true });
   }
 });
 

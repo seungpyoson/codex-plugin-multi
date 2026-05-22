@@ -2207,21 +2207,28 @@ function approvalBillingPathFor(cfg) {
 function routeStateForApproval(cfg, env = process.env, { sourceSendApproved = false } = {}) {
   const credentialNames = Array.isArray(cfg.env_keys) ? cfg.env_keys : [];
   const effectiveEnv = credentialEnvWithCache(credentialNames, env);
-  return selectProviderRoute({
-    requestedRoute: "subscription",
-    fallbackReason: env.API_REVIEWERS_ROUTE_FALLBACK_REASON || null,
-    providerCapabilities: {
-      api: {
-        kind: "direct_api",
-        auth_path: "api_key_env",
-        credential_env_names: credentialNames,
-        billing_path: approvalBillingPathFor(cfg),
+  try {
+    return selectProviderRoute({
+      requestedRoute: "subscription",
+      fallbackReason: env.API_REVIEWERS_ROUTE_FALLBACK_REASON || null,
+      providerCapabilities: {
+        api: {
+          kind: "direct_api",
+          auth_path: "api_key_env",
+          credential_env_names: credentialNames,
+          billing_path: approvalBillingPathFor(cfg),
+        },
       },
-    },
-    env: effectiveEnv,
-    sourceBearing: true,
-    sourceSendApproved,
-  });
+      env: effectiveEnv,
+      sourceBearing: true,
+      sourceSendApproved,
+    });
+  } catch (e) {
+    if (/unsupported API fallback reason/.test(e?.message ?? "")) {
+      throw runBadArgs(`bad_args: ${e.message}`);
+    }
+    throw e;
+  }
 }
 
 function approvalRouteFields(routeState) {
@@ -2465,7 +2472,13 @@ function diagnosticErrorSummary(errorCode, errorMessage, scopeInfo, execution, s
 }
 
 function buildReviewMetadata(cfg, scopeInfo, execution = null, startedAt = null, endedAt = null) {
-  const routeFields = approvalRouteFields(routeStateForApproval(cfg, process.env, { sourceSendApproved: !!execution?.approval_scope }));
+  let routeFields;
+  try {
+    routeFields = approvalRouteFields(routeStateForApproval(cfg, process.env, { sourceSendApproved: !!execution?.approval_scope }));
+  } catch (e) {
+    if (e?.apiReviewersReason !== "bad_args") throw e;
+    routeFields = approvalRouteFields(null);
+  }
   const auditManifest = execution?.prompt ? buildReviewAuditManifest({
     prompt: execution.prompt,
     sourceFiles: scopeInfo.files,
@@ -2853,7 +2866,8 @@ async function cmdRun(options) {
         }
       }
     } catch (e) {
-      execution = providerFailure("scope_failed", redactor(process.env)(e?.message ?? String(e)), null, null, false);
+      const reason = e?.apiReviewersReason ?? "scope_failed";
+      execution = providerFailure(reason, redactor(process.env)(e?.message ?? String(e)), null, null, false);
     }
     if (execution) {
       // handled below by the terminal JobRecord path without a launch event

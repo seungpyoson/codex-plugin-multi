@@ -11,20 +11,20 @@ EXTERNAL_MODEL_CONTRACT_VERSION=1
 
 Use skill `api-reviewers:api-reviewers-delegation`.
 Run setup:
-- `node ../../scripts/api-reviewer.mjs doctor --provider deepseek`
-- `node ../../scripts/api-reviewer.mjs doctor --provider glm`
+- `api-reviewer doctor --provider deepseek`
+- `api-reviewer doctor --provider glm`
 
 Run review:
-- `node ../../scripts/api-reviewer.mjs run --provider deepseek --mode review --scope branch-diff --scope-base REF --approval-token "<approval_token.value>" --lifecycle-events markdown --prompt "<focus>"`
-- `node ../../scripts/api-reviewer.mjs run --provider glm --mode review --scope branch-diff --scope-base REF --approval-token "<approval_token.value>" --lifecycle-events markdown --prompt "<focus>"`
+- `api-reviewer run --provider deepseek --mode review --scope branch-diff --scope-base REF --approval-token "<approval_token.value>" --lifecycle-events markdown --prompt "<focus>"`
+- `api-reviewer run --provider glm --mode review --scope branch-diff --scope-base REF --approval-token "<approval_token.value>" --lifecycle-events markdown --prompt "<focus>"`
 
 Run adversarial review:
-- `node ../../scripts/api-reviewer.mjs run --provider deepseek --mode adversarial-review --scope branch-diff --scope-base REF --approval-token "<approval_token.value>" --lifecycle-events markdown --prompt "<focus>"`
-- `node ../../scripts/api-reviewer.mjs run --provider glm --mode adversarial-review --scope branch-diff --scope-base REF --approval-token "<approval_token.value>" --lifecycle-events markdown --prompt "<focus>"`
+- `api-reviewer run --provider deepseek --mode adversarial-review --scope branch-diff --scope-base REF --approval-token "<approval_token.value>" --lifecycle-events markdown --prompt "<focus>"`
+- `api-reviewer run --provider glm --mode adversarial-review --scope branch-diff --scope-base REF --approval-token "<approval_token.value>" --lifecycle-events markdown --prompt "<focus>"`
 
 Run custom-review:
-- `node ../../scripts/api-reviewer.mjs run --provider deepseek --mode custom-review --scope custom --scope-paths "<file1>,<file2>" --approval-token "<approval_token.value>" --lifecycle-events markdown --prompt "<focus>"`
-- `node ../../scripts/api-reviewer.mjs run --provider glm --mode custom-review --scope custom --scope-paths "<file1>,<file2>" --approval-token "<approval_token.value>" --lifecycle-events markdown --prompt "<focus>"`
+- `api-reviewer run --provider deepseek --mode custom-review --scope custom --scope-paths "<file1>,<file2>" --approval-token "<approval_token.value>" --lifecycle-events markdown --prompt "<focus>"`
+- `api-reviewer run --provider glm --mode custom-review --scope custom --scope-paths "<file1>,<file2>" --approval-token "<approval_token.value>" --lifecycle-events markdown --prompt "<focus>"`
 
 `<focus>` is the user's review prompt or focus area.
 Replace `<file1>,<file2>` with comma- or newline-separated concrete relative paths. Use comma- or newline-separated concrete relative `--scope-paths`; expand globs before running.

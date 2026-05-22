@@ -10,7 +10,7 @@ user-invocable: true
 EXTERNAL_MODEL_CONTRACT_VERSION=1
 
 Use skill `api-reviewers:glm-setup`. Command doc: `../../commands/glm-setup.md`.
-Run `node ../../scripts/api-reviewer.mjs doctor --provider glm`.
+Run `api-reviewer doctor --provider glm`.
 Report readiness without printing API-key values.
 ## Secret Safety
 Do not print raw OAuth tokens, API-key values, session cookies, tunnel API keys, bearer tokens, or raw secret values.

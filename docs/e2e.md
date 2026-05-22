@@ -135,8 +135,8 @@ path.
 Prerequisites:
 
 - DeepSeek: `DEEPSEEK_API_KEY` is available in the Codex process.
-- GLM: `ZAI_API_KEY` is available in the Codex process. `ZAI_GLM_API_KEY` is
-  accepted as a compatibility alias.
+- GLM: `ZAI_API_KEY` is available in the Codex process. Legacy GLM aliases are
+  ignored.
 - GLM Coding Plan calls use `https://api.z.ai/api/coding/paas/v4`.
 
 Mock CI command:
@@ -148,17 +148,17 @@ npm run smoke:api-reviewers
 Manual live readiness checks:
 
 ```sh
-node plugins/api-reviewers/scripts/api-reviewer.mjs doctor --provider deepseek
-node plugins/api-reviewers/scripts/api-reviewer.mjs doctor --provider glm
+api-reviewer doctor --provider deepseek
+api-reviewer doctor --provider glm
 ```
 
 Manual live custom review:
 
 ```sh
-node plugins/api-reviewers/scripts/api-reviewer.mjs approval-request --provider deepseek --mode custom-review --scope custom --scope-paths README.md --prompt "Review README.md and return: 1. Verdict. 2. Blocking findings. 3. Non-blocking concerns. 4. Test gaps. 5. Inspection status."
-node plugins/api-reviewers/scripts/api-reviewer.mjs run --provider deepseek --mode custom-review --scope custom --scope-paths README.md --approval-token "<approval_token.value>" --foreground --prompt "Review README.md and return: 1. Verdict. 2. Blocking findings. 3. Non-blocking concerns. 4. Test gaps. 5. Inspection status."
-node plugins/api-reviewers/scripts/api-reviewer.mjs approval-request --provider glm --mode custom-review --scope custom --scope-paths README.md --prompt "Review README.md and return: 1. Verdict. 2. Blocking findings. 3. Non-blocking concerns. 4. Test gaps. 5. Inspection status."
-node plugins/api-reviewers/scripts/api-reviewer.mjs run --provider glm --mode custom-review --scope custom --scope-paths README.md --approval-token "<approval_token.value>" --foreground --prompt "Review README.md and return: 1. Verdict. 2. Blocking findings. 3. Non-blocking concerns. 4. Test gaps. 5. Inspection status."
+api-reviewer approval-request --provider deepseek --mode custom-review --scope custom --scope-paths README.md --prompt "Review README.md and return: 1. Verdict. 2. Blocking findings. 3. Non-blocking concerns. 4. Test gaps. 5. Inspection status."
+api-reviewer run --provider deepseek --mode custom-review --scope custom --scope-paths README.md --approval-token "<approval_token.value>" --foreground --prompt "Review README.md and return: 1. Verdict. 2. Blocking findings. 3. Non-blocking concerns. 4. Test gaps. 5. Inspection status."
+api-reviewer approval-request --provider glm --mode custom-review --scope custom --scope-paths README.md --prompt "Review README.md and return: 1. Verdict. 2. Blocking findings. 3. Non-blocking concerns. 4. Test gaps. 5. Inspection status."
+api-reviewer run --provider glm --mode custom-review --scope custom --scope-paths README.md --approval-token "<approval_token.value>" --foreground --prompt "Review README.md and return: 1. Verdict. 2. Blocking findings. 3. Non-blocking concerns. 4. Test gaps. 5. Inspection status."
 ```
 
 Custom review scope sends the exact `--scope-paths` file contents to the direct
@@ -190,7 +190,7 @@ Latest live verification:
   - `KIMI_LIVE_E2E=1 npm run e2e:kimi` passed.
   - Direct API companion live checks passed for the then-current DeepSeek default
     (`DEEPSEEK_API_KEY`, `deepseek-v4-flash`, HTTP 200) and GLM
-    (`ZAI_GLM_API_KEY`, `glm-5.1`, `https://api.z.ai/api/coding/paas/v4`,
+    (`ZAI_API_KEY`, `glm-5.1`, `https://api.z.ai/api/coding/paas/v4`,
     HTTP 200). Secret values were not printed.
 
 - Current Grok branch:
@@ -210,11 +210,11 @@ Latest live verification:
   - `node plugins/kimi/scripts/kimi-companion.mjs ping` passed with Kimi CLI
     `1.41.0`; this verifies `--thinking` on the ping profile without an
     explicit model.
-  - `node plugins/api-reviewers/scripts/api-reviewer.mjs doctor --provider deepseek`
+  - `api-reviewer doctor --provider deepseek`
     reported `ready: true`, `credential_ref: DEEPSEEK_API_KEY`,
     `endpoint: https://api.deepseek.com`, and `model: deepseek-v4-pro`.
-  - `node plugins/api-reviewers/scripts/api-reviewer.mjs doctor --provider glm`
-    reported `ready: true`, `credential_ref: ZAI_GLM_API_KEY`,
+  - `api-reviewer doctor --provider glm`
+    reported `ready: true`, `credential_ref: ZAI_API_KEY`,
     `endpoint: https://api.z.ai/api/coding/paas/v4`, and `model: glm-5.1`.
   - A live DeepSeek `custom-review` scoped to `README.md` completed with
     `raw_model: deepseek-v4-pro`, `http_status: 200`,
@@ -224,7 +224,7 @@ Latest live verification:
   - A live GLM `custom-review` scoped to `README.md` completed with
     `raw_model: glm-5.1`, `http_status: 200`,
     `endpoint: https://api.z.ai/api/coding/paas/v4`, and
-    `credential_ref: ZAI_GLM_API_KEY`, verifying `thinking.type=enabled` and
+    `credential_ref: ZAI_API_KEY`, verifying `thinking.type=enabled` and
     `max_tokens=131072`.
   - The direct API verification printed only redacted `JobRecord` metadata;
     secret values were not printed.
