@@ -74,7 +74,7 @@ function matchGlob(rel, pattern) {
     const c = pattern[i];
     if (c === "*") {
       if (pattern[i + 1] === "*") {
-        if (pattern[i + 2] === "/") { re += "(?:.*\\/)?"; i += 2; }
+        if (pattern[i + 2] === "/") { re += "(?:.*/)?"; i += 2; }
         else { re += ".*"; i += 1; }
       } else {
         re += "[^/]*";
