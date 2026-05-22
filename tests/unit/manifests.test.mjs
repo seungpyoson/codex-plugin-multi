@@ -97,7 +97,7 @@ function assertCompanionWorkflowInvocation(skill, plugin, workflow, rel) {
 
 function assertApiReviewerWorkflowInvocation(skill, provider, workflow, rel) {
   assertNoBracketedCliFlagsInShellFences(skill, rel);
-  assert.match(skill, new RegExp(`api-reviewer\\.mjs\\s+${workflow === "setup" ? "doctor" : "run"}\\b`), `${rel} missing api-reviewer subcommand`);
+  assert.match(skill, new RegExp(`api-reviewer\\s+${workflow === "setup" ? "doctor" : "run"}\\b`), `${rel} missing api-reviewer subcommand`);
   assert.match(skill, new RegExp(`--provider\\s+${provider}\\b`), `${rel} missing --provider ${provider}`);
   if (workflow === "setup") return;
 
@@ -407,14 +407,14 @@ test("api-reviewers exposes a user-invocable skill fallback", () => {
 
   assert.match(skill, /^name:\s*api-reviewers-delegation$/m);
   assert.match(skill, /^user-invocable:\s*true$/m);
-  assert.match(skill, /api-reviewer\.mjs/);
+  assert.match(skill, /api-reviewer/);
   assert.match(skill, /--provider\s+deepseek\b/);
   assert.match(skill, /--provider\s+glm\b/);
   assert.match(skill.match(/^description:\s*(.+)$/m)?.[1] ?? "", /adversarial review/);
   assertNoBracketedCliFlagsInShellFences(skill, rel);
   assert.doesNotMatch(skill, /--foreground\b/, `${rel} must not document ignored --foreground flag`);
-  assert.match(skill, /api-reviewer\.mjs\s+doctor\b/);
-  assert.match(skill, /api-reviewer\.mjs\s+run\b/);
+  assert.match(skill, /api-reviewer\s+doctor\b/);
+  assert.match(skill, /api-reviewer\s+run\b/);
   assert.match(skill, /--mode\s+review\b/);
   assert.match(skill, /--mode\s+adversarial-review\b/);
   assert.match(skill, /--mode\s+custom-review\b/);
@@ -482,7 +482,7 @@ test("provider workflow skills are user-invocable and command-backed", () => {
       assert.match(skill, new RegExp(`^name:\\s*${skillName}$`, "m"));
       assert.match(skill, /^user-invocable:\s*true$/m);
       assertPickerDescription(skill, rel);
-      assert.match(skill, /api-reviewer\.mjs/);
+      assert.match(skill, /api-reviewer/);
       assert.match(skill, new RegExp(`api-reviewers:${skillName}`));
       assertApiReviewerWorkflowInvocation(skill, provider, workflow, rel);
       const commandRel = `plugins/api-reviewers/commands/${skillName}.md`;

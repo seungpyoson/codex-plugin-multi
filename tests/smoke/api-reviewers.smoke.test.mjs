@@ -4903,7 +4903,7 @@ test("direct API reviewers approval token is bound to provider, source packet, a
       mutateBeforeRun(cwd) {
         return {
           providerArgs: ["--provider", "glm"],
-          env: { GLM_API_KEY: "secret-test-value", API_REVIEWERS_MOCK_RESPONSE: mockResponse("glm-5.1") },
+          env: { ZAI_API_KEY: "secret-test-value", API_REVIEWERS_MOCK_RESPONSE: mockResponse("glm-5.1") },
           displayName: "GLM",
         };
       },
