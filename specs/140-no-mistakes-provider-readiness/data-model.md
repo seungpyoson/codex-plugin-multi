@@ -7,7 +7,7 @@
 - `review_status`: `completed`, `failed`, provider-specific status string, `not_run`
 - `approval_status`: `not_required`, `not_sent`, `missing`, `invalid`
 - `error_code`: normalized top-level or nested diagnostic error code, or null
-- `failure_class`: `none`, `sandbox`, `auth`, `provider`, `tunnel`, `session_tokens`, `review_quality`, `approval_gate`, `cache_install`, `parser`, `transport`, `continuation`, `workflow_gate`, `missing_evidence`
+- `failure_class`: `none`, `sandbox`, `auth`, `oauth_rejected`, `quota_or_rate_limit`, `provider`, `content_policy_refusal`, `prompt_too_large`, `tunnel`, `session_tokens`, `review_quality`, `approval_gate`, `approval_scope_changed`, `cache_install`, `parser`, `transport`, `cli_runtime`, `source_selection`, `preflight_stale`, `privacy_persistence`, `continuation`, `state_collision`, `interrupted_source_transmission`, `cancelled`, `workspace_identity`, `visual_status`, `workflow_gate`, `missing_evidence`
 - `next_action`: operator guidance derived from the failure class and evidence
 - `source_content_transmission`: `not_sent`, `may_be_sent`, `sent`
 - `failed_review_slot`: boolean or null
@@ -15,6 +15,21 @@
 - `prompt_persistence_status`: `hash_only`, `full_prompt_found`, `not_checked`
 - `elapsed_ms`: number or null
 - `evidence_path`: local path to record or manifest artifact
+
+Validation rules:
+
+- `approval_scope_changed` means approval token or current-turn approval no longer matches provider, mode, source packet, prompt hash, scope resolution, request settings, auth path, or billing path. Source must remain `not_sent`.
+- `prompt_too_large` means provider prompt budget rejected request before source send. Operator must split or narrow packet before retry.
+- `preflight_stale` means prior doctor/setup evidence exists but immediate pre-send readiness proof is missing or expired.
+- `privacy_persistence` means prompt sidecar, selected source, JobRecord, lifecycle, or panel output may persist or display source beyond declared policy.
+- `transport` means the selected transport could not carry a request/response reliably after scope and auth were accepted; use `tunnel` for Grok tunnel startup/readiness, `cli_runtime` for local CLI process failures, and `provider` for a reachable provider service returning API/provider errors.
+- `cli_runtime` covers missing binary, CLI auth failure, sandbox FS denial, max-turn/accounting failure, nonzero exit, timeout, malformed JSON/plain output, and missing parseable result.
+- `source_selection` means the requested scope resolves to zero files, wrong files, a broken symlink, or a path outside the declared source packet before provider send.
+- `interrupted_source_transmission` means the provider call may have started carrying selected source but no trustworthy completion/error boundary exists; `source_content_transmission` must be `may_be_sent`.
+- `cancelled` means the operator or runtime intentionally stopped a job and the JobRecord must distinguish it from provider failure.
+- `workspace_identity` means result lookup, continuation, or provider session lookup used the wrong workspace/root/cwd.
+- `content_policy_refusal` means the provider returns a successful transport response but refuses to review the selected packet.
+- `visual_status` means lifecycle, panel, or manifest output hid launch/running/terminal state behind raw JSON/prose, buffering, or missing retrieve/panel guidance.
 
 ## Readiness Manifest
 
@@ -89,3 +104,4 @@ Evidence that a workflow mutation was explicitly approved.
 - `approval_source`: current operator instruction or generated approval token
 - `approved_at`: timestamp or null
 - `status`: `approved`, `blocked`, or `not_required`
+- `scope_hash`: hash of approved provider, mode, source packet, prompt hash, scope resolution, request settings, auth path, and billing path when operation is `source_send`

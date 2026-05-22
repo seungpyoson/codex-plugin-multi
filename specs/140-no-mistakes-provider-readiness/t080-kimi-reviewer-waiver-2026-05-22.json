@@ -1,0 +1,67 @@
+{
+  "schema_version": 1,
+  "symptom_id": "S13",
+  "task_id": "T080",
+  "evidence_reviewed": [
+    {
+      "kind": "test",
+      "path_or_id": "T080 local revalidation: one-path/env-cache API smoke tests; smoke-rerecord/external-model-contracts/manifests/plugin-cache-doctor unit set; npm run smoke:api-reviewers; npm run lint:sync; api-reviewers bin shim cwd guard",
+      "summary": "Local T080 revalidation passed before source-bearing reviews, and the bin shim now has a regression guard proving it resolves from a non-repo cwd."
+    },
+    {
+      "kind": "command_output",
+      "path_or_id": "T080 source-free current pre-send matrix: Claude session 5538dec6-158a-4420-b513-fc587205ac0d; Gemini ready; Kimi ready; Grok web ready; DeepSeek DEEPSEEK_API_KEY; GLM ZAI_API_KEY",
+      "summary": "All current source-free doctors passed before the T080 current shard source send. DeepSeek and GLM returned ready:true, HTTP 200, source_content_transmission:not_sent, and GLM credential_ref:ZAI_API_KEY."
+    },
+    {
+      "kind": "review",
+      "path_or_id": "T080 current Shard A: Claude 36860b1c-d351-4c03-932c-a8c14a193e58; Gemini 5120fb1d-03d5-4fd0-af34-2bd83ec2a28c; Grok job_dc78d6ff-c02c-4ddb-855c-e5907657d5bc; DeepSeek job_040b2d18-6e87-470c-8517-e4838022ec59; GLM job_74305b5b-227e-4b6a-8a6d-2dd78a4458e0",
+      "summary": "Current Shard A covered 10 files / 348356 bytes / 9031 lines. DeepSeek and GLM approval-request artifacts were generated before source send with source_content_transmission:not_sent. The listed source-bearing reviews returned usable APPROVE verdicts with failed_review_slot:false."
+    },
+    {
+      "kind": "review",
+      "path_or_id": "T080 shard B: Gemini 94360093-26c4-41c6-8469-85724ebb6440; Grok job_c49c4791-1962-4415-9281-d75ae2ae9cac; DeepSeek job_b5c0c53f-cb22-4f29-a83d-86b8910e801c; GLM job_2c9f9eae-9052-49db-901b-f6c67f1c1446",
+      "summary": "Shard B source-bearing reviews returned usable APPROVE verdicts with failed_review_slot:false."
+    },
+    {
+      "kind": "review",
+      "path_or_id": "T080 shard C: Gemini 9c2d4fad-06e4-4130-b4e8-e560b0bd3277; Grok job_5234ad94-6f0b-4f86-9f87-c1bc226d9b54; DeepSeek job_fa4b3682-003f-4b6e-ad2e-2a0af878b8c5; GLM job_aafca793-e72f-4cec-b73e-1d46ebc485b9",
+      "summary": "Shard C source-bearing reviews returned usable APPROVE verdicts with failed_review_slot:false."
+    },
+    {
+      "kind": "job_record",
+      "path_or_id": "Kimi b205524e-99e9-4bb4-9396-536c7473ac94",
+      "summary": "Kimi current Shard A sent source but failed closed as step_limit_exceeded with review_quality.failed_review_slot:true; it is not counted as approval evidence."
+    },
+    {
+      "kind": "job_record",
+      "path_or_id": "Kimi b5086c7f-8d9f-4b11-9757-ce2f95647759",
+      "summary": "Kimi 96-step current retry sent source but failed closed as timeout and produced no usable review result; it is not counted as approval evidence."
+    },
+    {
+      "kind": "test",
+      "path_or_id": "node --test --test-name-pattern \"api-reviewers bin shim\" tests/unit/manifests.test.mjs",
+      "summary": "DeepSeek non-blocking review feedback about packaged shim coverage was closed with a local regression proving the absolute bin shim works from tmpdir."
+    }
+  ],
+  "operator_approval_text": "Operator said: if Kimi does not work, skip it. But the Kimi symptom must still be fixed separately.",
+  "expires_at": "2026-06-22T00:00:00Z",
+  "residual_risk": {
+    "source_send": {
+      "remains": true,
+      "notes": "Kimi T080 source was sent in failed current Shard A and 96-step retry attempts, but no usable Kimi review was produced or counted."
+    },
+    "api": {
+      "remains": false,
+      "notes": "DeepSeek and GLM source-free probes and source-bearing reviews completed successfully with canonical GLM credential_ref:ZAI_API_KEY."
+    },
+    "auth": {
+      "remains": false,
+      "notes": "No auth fallback, login, token refresh, or credential handling is authorized by this waiver."
+    },
+    "local_state": {
+      "remains": true,
+      "notes": "The failed Kimi reviewer slots remain evidence of reviewer runtime/quality risk and are skipped only for T080 review quorum; related Kimi runtime symptoms stay tracked by T086/T088."
+    }
+  }
+}

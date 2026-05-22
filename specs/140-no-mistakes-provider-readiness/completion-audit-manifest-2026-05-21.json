@@ -1,0 +1,341 @@
+{
+  "schema_version": 1,
+  "task_id": "T084",
+  "generated_at": "2026-05-21T00:00:00Z",
+  "updated_at": "2026-05-23T00:35:00+09:00",
+  "overall_status": "complete",
+  "basis": "Canonical tasks.md plus current repo-local verification, installed-cache proof, and recorded source-bearing review evidence. This manifest is an audit surface only; task closure is controlled by tasks.md.",
+  "symptoms": [
+    {
+      "symptom_id": "S01",
+      "task_id": "T081/T090",
+      "status": "done",
+      "summary": "Default-auth auto fallback is guarded locally, arg-array evasion is closed, and provider-neutral route policy is externally reviewed.",
+      "evidence": [
+        "T081 local RED/GREEN default-auth guard and lint:sync wiring",
+        "T090 shared provider-route-policy RED/GREEN slices and final all-provider D2 review",
+        "T081 closure follow-up records RED/GREEN arg-array evasion fix for args.push(\"--auth-mode\", \"auto\") with focused default-auth tests, combined CI workflow tests, lint:sync, and git diff --check",
+        "session-readiness-2026-05-22.md records recovered Claude source-free proof d818e993-7453-4150-a120-9f4a0c547d0c before source send and usable source-bearing APPROVE reviews from Claude 8dbc3ae3-4123-4eb6-97d7-95892dc118f2, Gemini b6b5c0de-35ad-4fb9-8556-47123852f9cd, Grok job_d82e06ac-eb7f-428d-acb1-580c9c39df2b, DeepSeek job_cf6dc2a1-2a1a-4cdb-bdb4-082ba4e93bc9, and GLM job_02c21027-cc14-4b54-9a8d-1be712d22487",
+        "session-readiness-2026-05-22.md records Kimi transient_timeout source-free with no selected source sent and operator skip"
+      ],
+      "residual_gates": []
+    },
+    {
+      "symptom_id": "S02",
+      "task_id": "T073",
+      "status": "done",
+      "summary": "Direct API approval tuple reuse and changed-tuple rejection are locally verified and externally reviewed.",
+      "evidence": [
+        "T073 approval-token RED/GREEN tests",
+        "T073 final Claude, Gemini, DeepSeek, GLM, Grok, and operator-relayed Kimi approvals"
+      ],
+      "residual_gates": []
+    },
+    {
+      "symptom_id": "S03",
+      "task_id": "T069",
+      "status": "done",
+      "summary": "Provider cap sharding/narrowing behavior is implemented and externally reviewed.",
+      "evidence": [
+        "T069 prompt-cap RED/GREEN tests",
+        "T069 final sharded approvals from Claude, Gemini, Kimi, DeepSeek, GLM, and Grok"
+      ],
+      "residual_gates": []
+    },
+    {
+      "symptom_id": "S04",
+      "task_id": "T084",
+      "status": "done",
+      "summary": "Result lookup aliases, workspace guidance, state-collision handling, and active-job reconciliation are confirmed on current source.",
+      "evidence": [
+        "Claude/Gemini/Kimi/API/Grok result --job and wrong-cwd smoke evidence in tasks.md",
+        "Current result-surface focused gate passed 28/28: node --test --test-name-pattern \"result --job|result --job-id|result from wrong cwd|duplicate job id|reconciles orphaned active jobs\" tests/smoke/claude-companion.smoke.test.mjs tests/smoke/gemini-companion.smoke.test.mjs tests/smoke/kimi-companion.smoke.test.mjs tests/smoke/api-reviewers.smoke.test.mjs tests/smoke/grok-web.smoke.test.mjs tests/smoke/result-reconcile.smoke.test.mjs",
+        "Grok result retrieval was directly rechecked against R4 persisted JobRecord job_a476718e-a139-4ca2-bb74-730cec65845d using the exact temporary GROK_PLUGIN_DATA state root"
+      ],
+      "residual_gates": []
+    },
+    {
+      "symptom_id": "S05",
+      "task_id": "T072",
+      "status": "done",
+      "summary": "Substantive invalid verdicts stay failed slots with deterministic no-auto-resend retry guidance.",
+      "evidence": [
+        "T072 invalid-verdict and missing-verdict RED/GREEN tests",
+        "T072 final source-bearing approvals"
+      ],
+      "residual_gates": []
+    },
+    {
+      "symptom_id": "S06",
+      "task_id": "T084",
+      "status": "done",
+      "summary": "Grok route state is classified: default CLI login-required and explicit web-ready; no silent API or web fallback is used.",
+      "evidence": [
+        "T070 Grok web/tunnel reliability evidence",
+        "T085 Grok CLI auth/session readiness proof",
+        "Current Grok default doctor returned ready:false, auth_mode:subscription_cli, error_code:grok_cli_login_required, ignored_env_credentials:[\"XAI_API_KEY\"], and source not sent",
+        "Current Grok explicit web doctor returned ready:true, auth_mode:subscription_web, HTTP 200, chat HTTP 200, and source not sent",
+        "R4 Grok web review job_a476718e-a139-4ca2-bb74-730cec65845d used selected_route:subscription_web with source sent and failed_review_slot:false"
+      ],
+      "residual_gates": []
+    },
+    {
+      "symptom_id": "S07",
+      "task_id": "T070",
+      "status": "done",
+      "summary": "Explicit Grok web/tunnel reliability path is fixed without becoming the default route.",
+      "evidence": [
+        "T070 explicit --transport web success-path evidence",
+        "T070 six-provider approval evidence"
+      ],
+      "residual_gates": []
+    },
+    {
+      "symptom_id": "S08",
+      "task_id": "T075",
+      "status": "done",
+      "summary": "Stale-doctor pre-send checks are implemented, externally reviewed, and bounded Kimi A1 runtime risk is waived under later runtime-quality tasks.",
+      "evidence": [
+        "T075 focused stale-doctor tests for Claude, Gemini, Kimi, Grok, DeepSeek, and GLM",
+        "T075 B1/B2/B3/A1/A2/C2 source-bearing review evidence",
+        "t075-kimi-a1-waiver-2026-05-21.json"
+      ],
+      "residual_gates": []
+    },
+    {
+      "symptom_id": "S09",
+      "task_id": "T073/T082",
+      "status": "done",
+      "summary": "Approval tuple behavior is fixed, and the waiver format is defined, tested, and externally reviewed.",
+      "evidence": [
+        "T073 approval-token tuple proof",
+        "T082 waiver.schema.json and waiver.example.json",
+        "T082 local docs-contract proof for waiver artifact contract",
+        "T082 source-bearing reviews approved by Gemini dacd2d39-cb53-4e02-905a-6c287a8bbeed, Kimi be371fa4-56c2-4d5e-800e-017bbcd533c8, Grok web job_c70c156e-b8f0-4621-99cb-582eb2b1cec2, DeepSeek job_5f8c3456-2005-46a6-b38f-86e40a72874d, GLM job_a4831f07-f9f7-4f86-b986-49c184660498, and Claude c9153ae8-6e6a-4c90-a2cc-c14abf07f654",
+        "Claude pre-send doctor 517412e2-5b6c-4d55-9014-c9ab38f936ff was ready with source not sent before the T082 source-bearing review"
+      ],
+      "residual_gates": []
+    },
+    {
+      "symptom_id": "S10",
+      "task_id": "T078",
+      "status": "done",
+      "summary": "Prompt/source privacy tests, policy decisions, opt-in provider matrix redaction proof, and all-provider C2 review are complete.",
+      "evidence": [
+        "T078 privacy map and runtime RED/GREEN tests",
+        "API/Grok/companion redaction and runtime-options cleanup tests",
+        "tests/privacy/provider-privacy-matrix.test.mjs covers Claude, Gemini, Kimi, DeepSeek, GLM, and Grok web selected-source redaction",
+        "T078 C2 source-bearing approvals from Claude job 98c59d7b-60fe-4cc9-ad09-cbb67fff2ea1, Gemini, Grok web shards, DeepSeek, GLM, and Kimi",
+        "Final local verification: npm run test:coverage, npm test, npm run lint:sync, git diff --check"
+      ],
+      "residual_gates": []
+    },
+    {
+      "symptom_id": "S11",
+      "task_id": "T084",
+      "status": "done",
+      "summary": "Cache doctor coverage exists and the current installed marketplace/cache is synchronized with this repo worktree for all five plugins.",
+      "evidence": [
+        "T080 plugin-cache-doctor local tests, including bin shim drift and --help usage",
+        "RED full npm run doctor:cache reproduced stale installed-cache drift before refresh: ok:false with repo_cache_in_sync:false for api-reviewers, Claude, Gemini, Grok, and Kimi",
+        "After explicit cache-sync approval, npm run doctor:cache returned ok:true; all five plugins reported cache_in_sync:true and repo_cache_in_sync:true with no missing, extra, or changed repo-cache files",
+        "Installed-cache source-free probes from /private/tmp verified bin/api-reviewer --help, DeepSeek doctor HTTP 200, and GLM doctor HTTP 200 with source_content_transmission:not_sent and GLM credential_ref:ZAI_API_KEY"
+      ],
+      "residual_gates": []
+    },
+    {
+      "symptom_id": "S12",
+      "task_id": "T079",
+      "status": "done",
+      "summary": "Claude OAuth/API routing is proven: subscription mode uses OAuth only and does not silently fall back to API key; explicit API route remains available behind approval-request. Runtime-options cleanup blockers and review-quality false positives found during T079 re-review are fixed.",
+      "evidence": [
+        "session-readiness-2026-05-21.md records Claude ready via subscription_oauth",
+        "Claude OAuth inference rejection smoke paths exist",
+        "session-readiness-2026-05-22.md records current subscription_oauth session-limit block with ANTHROPIC_API_KEY ignored and no source provided",
+        "session-readiness-2026-05-22.md records 2026-05-22 06:23 KST oauth_inference_rejected / HTTP 401 with source-free doctor, subscription_oauth route, and ANTHROPIC_API_KEY ignored",
+        "session-readiness-2026-05-22.md records 2026-05-22 06:27 KST oauth_inference_rejected / HTTP 401 with source-free doctor, subscription_oauth route, and ANTHROPIC_API_KEY ignored",
+        "session-readiness-2026-05-22.md records 2026-05-22 06:27 KST explicit Claude api_key doctor ready:true through selected_route direct_api with allowed_env_credentials ANTHROPIC_API_KEY and source not sent",
+        "session-readiness-2026-05-22.md records 2026-05-22 06:45 KST local RED/GREEN proof that Claude explicit api_key source-bearing runs require approval-request before launch, emit source_content_transmission not_sent plus approval_token.value, and unlock only with matching --approval-token",
+        "session-readiness-2026-05-22.md records 2026-05-22 06:46 KST source-free Claude subscription doctor still blocked as oauth_inference_rejected / HTTP 401 with ANTHROPIC_API_KEY ignored",
+        "session-readiness-2026-05-22.md records 2026-05-22 11:30 KST A2 RED/GREEN proof that Claude runtime-options sidecars are consumed on queued cancel, worker spawn failure, and prompt-missing worker failure, and approval_token.value is not persisted in JobRecords",
+        "session-readiness-2026-05-22.md records 2026-05-22 11:48 KST A3 review/fix proof: Claude/Gemini/Kimi found launcher-side prompt.txt orphaning after runtime-options write failure, RED reproduced it, GREEN cleans prompt and runtime-options sidecars, focused cleanup/approval group passed 5/5, and npm run smoke:claude passed 121/121",
+        "session-readiness-2026-05-22.md records A4 post-fix all-provider review: Claude retry 523e784c-1ce5-429f-a4f9-271de5ed00a2, Gemini 73b1039e-1cbd-48b0-8471-5d7a55a8f6d8, Kimi c3138aac-05f1-41c8-be3f-71c8a9daa2c6, DeepSeek job_dbbaf04b-9649-4bc3-a2f9-6003566b7bdc, GLM job_2f9075ad-b975-426b-9942-2365c41b42cc, and Grok shards job_a3ec1700-eee1-4a10-a06f-715611dcbed2/job_cd44177c-7da6-4cb3-a13d-9911908e414c all source sent with failed_review_slot false and usable APPROVE",
+        "session-readiness-2026-05-22.md records A6 classifier-fix all-provider review: Claude 7c9eee50-147b-4d5f-baf6-ea6bfff170b9, Gemini 3a1aef45-cd98-44c8-8d48-cb861e407c3f, Kimi e6080d31-0543-4cc3-bde2-17b541b5e5c6, DeepSeek job_fcf1055d-2be6-4e6c-aa88-e82b7faa88b5, GLM job_4457ac2a-b5a0-48ef-a69a-4e6cf0603646, and Grok Web job_9896666d-0413-4291-bb9f-6eb56655a4b2 all source sent with failed_review_slot false and usable APPROVE"
+      ],
+      "residual_gates": []
+    },
+    {
+      "symptom_id": "S13",
+      "task_id": "T080",
+      "status": "done",
+      "summary": "DeepSeek/GLM one-path keys, env-cache fallback, live source-free probes, current source-bearing approvals, and the Kimi failed-slot waiver are closed for T080.",
+      "evidence": [
+        "deepseek-glm-readiness-2026-05-21.md records source-free HTTP 200 probes",
+        "session-readiness-2026-05-21.md records DeepSeek and GLM source-free ready",
+        "T080 env-cache fallback RED/GREEN tests for doctor and source-bearing run launch gate",
+        "T080 current Shard A approvals from Claude 36860b1c-d351-4c03-932c-a8c14a193e58, Gemini 5120fb1d-03d5-4fd0-af34-2bd83ec2a28c, Grok web job_dc78d6ff-c02c-4ddb-855c-e5907657d5bc, DeepSeek job_040b2d18-6e87-470c-8517-e4838022ec59, and GLM job_74305b5b-227e-4b6a-8a6d-2dd78a4458e0",
+        "T080 DeepSeek/GLM current approval-request artifacts were generated before source send with source_content_transmission:not_sent",
+        "t080-kimi-reviewer-waiver-2026-05-22.json records current failed Kimi slots b205524e-99e9-4bb4-9396-536c7473ac94 and b5086c7f-8d9f-4b11-9757-ce2f95647759 as skipped, not approved",
+        "tests/unit/manifests.test.mjs includes api-reviewers bin shim cwd regression from DeepSeek non-blocking feedback"
+      ],
+      "residual_gates": []
+    },
+    {
+      "symptom_id": "S14",
+      "task_id": "T071",
+      "status": "done",
+      "summary": "Visual lifecycle streaming and Grok CLI timeout cleanup are fixed.",
+      "evidence": [
+        "T071 streaming RED/GREEN test",
+        "T071 timeout SIGTERM/SIGKILL escalation test",
+        "T071 final external approvals"
+      ],
+      "residual_gates": []
+    },
+    {
+      "symptom_id": "S15",
+      "task_id": "T084",
+      "status": "done",
+      "summary": "Cancel, stuck-running, finalization, and state-collision behavior is covered by current local gates and task evidence.",
+      "evidence": [
+        "Claude/Gemini/Kimi cancel and finalization tests in tasks.md",
+        "T076 lock-timeout and state-collision evidence",
+        "Current npm test passed 2032 tests with 2026 pass, 6 skipped, and 0 failures, including companion cancel/finalization/state tests"
+      ],
+      "residual_gates": []
+    },
+    {
+      "symptom_id": "S16",
+      "task_id": "T074",
+      "status": "done",
+      "summary": "Current-head review evidence is closed by historical full-shard coverage plus current R3/R4 follow-up reviews, with Kimi skipped only after source-free timeout per operator instruction.",
+      "evidence": [
+        "t074-review-summary-2026-05-20.md historical run plus 2026-05-22 current re-anchor",
+        "R3 current follow-up: Gemini 953a8f29-70d6-41e4-b1d9-d72aefb28ab0 and GLM job_cd68826c-f8ac-4cb5-bea6-9af1a63b5283 returned APPROVE with failed_review_slot:false; DeepSeek job_458fe967-eab4-4520-86ae-d8993524bcc4 exposed a review-quality false positive that was fixed by RED/GREEN tests",
+        "R4 review-quality follow-up: Gemini 3b86fa40-23d3-435b-ae2e-70cde04c4e8b, Grok web job_a476718e-a139-4ca2-bb74-730cec65845d, DeepSeek job_e7f193c5-4dd1-4f1f-9f99-3a7365bbd4a0, GLM job_225ff36e-a2e9-4b62-a69c-b754dc8b737b, and Claude API debc5d27-93b4-4288-aaff-72229d10b09b returned APPROVE with failed_review_slot:false",
+        "R5 closure-doc follow-up: Claude API 7b4b4f01-5066-4f30-aa51-a6895ec22eb9, Gemini 8668a51a-8ae2-41e6-96f1-039f7a26e2c5, Grok web job_6e66339a-3ec3-42d1-a09b-db0b9f65a97c, DeepSeek recheck job_65d9a0c5-886d-419d-b8b2-fa228ee2f16e, and GLM job_114b05d7-a6f2-497b-bfec-b8e0ea7e6fbc returned APPROVE with failed_review_slot:false",
+        "Current full npm test passed 2032 tests with 2026 pass, 6 skipped, and 0 failures"
+      ],
+      "residual_gates": []
+    },
+    {
+      "symptom_id": "S17",
+      "task_id": "T070",
+      "status": "done",
+      "summary": "Grok web session/tunnel repair path is approval-bound and externally reviewed.",
+      "evidence": [
+        "T070 explicit web transport tests",
+        "T070 six-provider approval evidence"
+      ],
+      "residual_gates": []
+    },
+    {
+      "symptom_id": "S18",
+      "task_id": "T076",
+      "status": "done",
+      "summary": "Interrupted/concurrent job-state risks have RED/GREEN coverage, prompt-sidecar source snapshot truth, final review evidence, and bounded reviewer transport risk tracked outside the runtime proof.",
+      "evidence": [
+        "T076 interrupted source transmission RED/GREEN",
+        "T076 wrong-cwd continue, lock-timeout, state-collision, and concurrent-scope evidence",
+        "T076 final closure evidence in tasks.md"
+      ],
+      "residual_gates": []
+    },
+    {
+      "symptom_id": "S19",
+      "task_id": "T077",
+      "status": "done",
+      "summary": "Lifecycle-vs-verdict panel semantics have RED/GREEN coverage and final source-bearing reviews across Claude, Gemini, Kimi, DeepSeek, GLM, and Grok.",
+      "evidence": [
+        "T077 review-panel completed_approved/completed_request_changes RED/GREEN tests",
+        "T077 Claude/Gemini/Kimi/DeepSeek/GLM approval evidence",
+        "T077 final Grok source-bearing review job_4519f115-9a33-487b-abf1-31ff23446c8a"
+      ],
+      "residual_gates": []
+    },
+    {
+      "symptom_id": "S20",
+      "task_id": "T085",
+      "status": "done",
+      "summary": "Grok CLI auth/session readiness proof was completed and externally reviewed, though current live Grok login can still drift.",
+      "evidence": [
+        "T085 live Grok doctor with logged_in:true and source-free prompt ready",
+        "T085 Grok source-bearing self-review approval"
+      ],
+      "residual_gates": []
+    },
+    {
+      "symptom_id": "S21",
+      "task_id": "T086",
+      "status": "done",
+      "summary": "Budget exhaustion closure tests exist for step-limit, timeout, API timeout, and usage-limit guidance; Kimi reviewer slot is bounded by an operator-approved waiver.",
+      "evidence": [
+        "T086 step_limit_exceeded and timeout RED/GREEN tests",
+        "T086 API timeout/usage focused smokes",
+        "t086-kimi-reviewer-waiver-2026-05-21.json"
+      ],
+      "residual_gates": []
+    },
+    {
+      "symptom_id": "S22",
+      "task_id": "T087",
+      "status": "done",
+      "summary": "Kimi review-only mutation prevention is implemented with native allowed tools, isolated config, live proof, and final reviews.",
+      "evidence": [
+        "T087 live isolated Kimi proof session c5fd9a13-287c-4dea-a8d4-2d12085d1dcf",
+        "T087 final local verification and external review evidence"
+      ],
+      "residual_gates": []
+    },
+    {
+      "symptom_id": "S23",
+      "task_id": "T076/T077/T079",
+      "status": "done",
+      "summary": "Claude OAuth 401, permission-blocked prose, and stuck-review failure classes are classified with current JobRecord source-send truth and no API fallback in subscription mode.",
+      "evidence": [
+        "tasks.md S23 operator evidence",
+        "T076/T077 failed-slot and lifecycle-vs-verdict local evidence",
+        "T079 A4/A6 all-provider review evidence closed Claude OAuth/API route behavior",
+        "Current focused post-spawn OAuth inference 401 tests passed and source_content_transmission is sent only when pidInfo proves target launch; pre-spawn OAuth rejection remains not_sent"
+      ],
+      "residual_gates": []
+    },
+    {
+      "symptom_id": "S24",
+      "task_id": "T088",
+      "status": "done",
+      "summary": "Shared failure catalog/core and API/Grok diagnostic consumption are locally implemented, Gemini-remediated, GLM-reviewed, and bounded Kimi/Grok reviewer slots are waived.",
+      "evidence": [
+        "T088 RED/GREEN shared failure catalog and plugin-copy tests",
+        "T088 Gemini REQUEST_CHANGES remediation and Gemini re-review APPROVE",
+        "T088 Claude and DeepSeek approvals",
+        "T088 GLM re-review job_8c6365bf-3dc9-4654-b906-7200e3c60415",
+        "t088-kimi-grok-reviewer-waiver-2026-05-21.json"
+      ],
+      "residual_gates": []
+    },
+    {
+      "symptom_id": "S25",
+      "task_id": "T089",
+      "status": "done",
+      "summary": "Explicit-scope no-diff branches route directly to custom-review in generated docs and tests.",
+      "evidence": [
+        "T089 explicit-scope routing RED/GREEN tests",
+        "T089 final current-source approvals"
+      ],
+      "residual_gates": []
+    },
+    {
+      "symptom_id": "S26",
+      "task_id": "T090",
+      "status": "done",
+      "summary": "Provider-neutral route policy slices are locally implemented, generated contracts were remediated, and final D2 all-provider review closed the routing gap.",
+      "evidence": [
+        "T090 provider-route-policy/auth-selection RED/GREEN tests",
+        "T090 direct API approval, audit manifest, approval-scope, and Kimi doctor route-field slices",
+        "T090 final D2 approvals from Claude, Gemini, Kimi, Grok web, DeepSeek, and GLM"
+      ],
+      "residual_gates": []
+    }
+  ]
+}

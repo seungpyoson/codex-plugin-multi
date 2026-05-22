@@ -1,0 +1,114 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/seungpyoson/codex-plugin-multi/specs/140-no-mistakes-provider-readiness/contracts/waiver.schema.json",
+  "title": "Provider Readiness Waiver",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "symptom_id",
+    "task_id",
+    "evidence_reviewed",
+    "operator_approval_text",
+    "expires_at",
+    "residual_risk"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "integer",
+      "const": 1
+    },
+    "symptom_id": {
+      "type": "string",
+      "pattern": "^S[0-9]{2,}$"
+    },
+    "task_id": {
+      "type": "string",
+      "pattern": "^T[0-9]{3}$"
+    },
+    "evidence_reviewed": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "kind",
+          "path_or_id",
+          "summary"
+        ],
+        "properties": {
+          "kind": {
+            "type": "string",
+            "enum": [
+              "command_output",
+              "job_record",
+              "manifest",
+              "review",
+              "test",
+              "doc"
+            ]
+          },
+          "path_or_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "summary": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    },
+    "operator_approval_text": {
+      "type": "string",
+      "minLength": 1
+    },
+    "expires_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "residual_risk": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "source_send",
+        "api",
+        "auth",
+        "local_state"
+      ],
+      "properties": {
+        "source_send": {
+          "$ref": "#/$defs/risk_state"
+        },
+        "api": {
+          "$ref": "#/$defs/risk_state"
+        },
+        "auth": {
+          "$ref": "#/$defs/risk_state"
+        },
+        "local_state": {
+          "$ref": "#/$defs/risk_state"
+        }
+      }
+    }
+  },
+  "$defs": {
+    "risk_state": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "remains",
+        "notes"
+      ],
+      "properties": {
+        "remains": {
+          "type": "boolean"
+        },
+        "notes": {
+          "type": "string"
+        }
+      }
+    }
+  }
+}

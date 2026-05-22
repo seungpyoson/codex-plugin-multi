@@ -72,14 +72,20 @@ An operator runs a source-bearing review and then asks the same provider to cont
 ## Edge Cases
 
 - Fresh Codex session cannot run `codex debug prompt-input` inside sandbox.
-- Direct API providers require approval before source-bearing runs.
+- Direct API providers require approval before source-bearing runs. One explicit current-turn approval may name providers such as DeepSeek and GLM and cover repeated runs in that turn; every run still needs approval-request proof and a matching token before source is sent.
+- Current-turn source-send approval does not cover changed provider, mode, source packet, prompt hash, scope resolution, request settings, auth path, or billing path.
+- Provider prompt-size caps can reject a request before source send; this is a pre-send packet-planning failure, not an external review verdict.
+- A stale doctor or setup check does not authorize later source send without immediate pre-send readiness proof.
 - Grok has reachable `/models` but no runtime session tokens.
+- Grok web/tunnel readiness is not evidence that Grok CLI is ready, and Grok CLI source-free success is not evidence that source-bearing CLI review is safe.
 - Provider prose says approve but audit fields fail.
 - Review record contains no full rendered prompt even when source was sent.
 - Provider conversation ids equal plugin job ids but are only resolvable inside the original provider project/cwd.
 - Continuation uses a new neutral cwd and the external CLI cannot find a persisted conversation.
 - Tiny semantic replay prose proves a classifier branch but is too short to satisfy full review-quality gates.
 - A merge, cleanup, issue closure, or remote mutation is requested without explicit current-turn approval.
+- `--lifecycle-events markdown` is requested, but progress heartbeats render as raw JSONL because they do not carry an `external_review` payload.
+- Wrapper commands that call a child reviewer through synchronous buffering can hide launch/progress lifecycle cards until the child exits.
 
 ## Requirements
 
@@ -103,6 +109,18 @@ An operator runs a source-bearing review and then asks the same provider to cont
 - **FR-016**: Merge, issue closure, destructive cleanup, and remote mutation steps MUST require explicit operator approval in the current workflow before execution.
 - **FR-017**: Review-quality audit MUST recognize provider checklist formats used by live reviewers, including bold `Checklist item N` labels, without counting ordinary item-prefixed prose as checklist evidence.
 - **FR-018**: Review-quality audit MUST distinguish negated passing language such as `without permission blocks` from concrete permission denial or source-inspection failure language on the same line.
+- **FR-019**: Default commands, docs, and skills MUST NOT default to or accept ambiguous operator-facing `--auth-mode auto`; API fallback MAY be selected only by shared route policy when subscription is unavailable, nonexistent, usage-limited, or an explicit supported API route is selected with required source-send approval.
+- **FR-020**: Direct API approval reuse MUST be bounded to unchanged provider, mode, source packet, prompt hash, scope resolution, request settings, auth path, billing path, and a fresh matching approval token.
+- **FR-021**: Provider prompt-size overflows MUST fail before source send with provider, cap, attempted size, and sharding/narrowing next action.
+- **FR-022**: Source-bearing provider paths MUST perform immediate source-free readiness proof or report stale/missing preflight before sending source.
+- **FR-023**: Grok CLI MUST be the default Grok transport after T034 source-bearing wrapper proof; Grok web/tunnel MUST be explicit legacy fallback only.
+- **FR-024**: Same-path repair MUST be classified as automatic, approval-required, or forbidden before any source-bearing retry.
+- **FR-025**: Prompt sidecars, selected source, JobRecords, lifecycle cards, and review panels MUST have explicit redaction, cleanup, and disclosure rules.
+- **FR-026**: CLI provider failures MUST distinguish missing binary, unauthenticated/OAuth rejected, quota/rate limit, sandbox filesystem denial, max-turns/accounting failure, nonzero exit, timeout, and parse failure.
+- **FR-027**: Background job failures MUST distinguish interrupted source transmission, cross-conversation resume failure, state-root collision, lock timeout, and concurrent scope modification.
+- **FR-028**: Grok CLI default transport MUST implement the accepted wrapper contract: neutral cwd, private temp `GROK_HOME`, prompt-file lifecycle, no accidental repo tool access, source-send audit fields, JSON/plain result parse, timeout behavior, log/cache/auth privacy, cleanup proof, and explicit legacy tunnel fallback.
+- **FR-029**: Markdown lifecycle mode MUST be visually explicit for launch, running/progress, blocked-before-source, completed, and failed states; raw JSONL heartbeats MUST NOT be the only visible running signal when markdown mode is selected.
+- **FR-030**: Reviewer wrapper commands MUST stream lifecycle launch/progress/terminal output as it is emitted, or explicitly classify buffered lifecycle output as a visual-status defect before treating the run as operator-visible.
 
 ### Key Entities
 
@@ -121,11 +139,13 @@ An operator runs a source-bearing review and then asks the same provider to cont
 - **SC-002**: Grok default auto-start smoke proves no inherited sandbox-blocked uv cache path is required.
 - **SC-003**: Direct API approval-request rows show `source_content_transmission: "not_sent"` before approved runs.
 - **SC-004**: Every completed source-bearing row has `failed_review_slot=false`, no tracked fixture mutation, and no persisted full prompt key.
-- **SC-005**: Failure classes are explicit: `sandbox`, `auth`, `provider`, `tunnel`, `session_tokens`, `review_quality`, `approval_gate`, `cache_install`, `parser`, `transport`, `continuation`, `workflow_gate`, or `missing_evidence`.
+- **SC-005**: Failure classes are explicit: `sandbox`, `auth`, `oauth_rejected`, `quota_or_rate_limit`, `provider`, `content_policy_refusal`, `prompt_too_large`, `tunnel`, `session_tokens`, `review_quality`, `approval_gate`, `approval_scope_changed`, `cache_install`, `parser`, `transport`, `cli_runtime`, `source_selection`, `preflight_stale`, `privacy_persistence`, `continuation`, `state_collision`, `interrupted_source_transmission`, `cancelled`, `workspace_identity`, `visual_status`, `workflow_gate`, or `missing_evidence`.
 - **SC-006**: Claude initial review plus `continue --job` passes on a git-backed synthetic fixture without `No conversation found with session ID`, with stable provider session lookup cwd across parent and continue records.
 - **SC-007**: Semantic permission-block probes prove no `permission_blocked` false positive for passing or negated prose, while full-audit pass expectations are limited to review-shaped outputs with verdict and sufficient substance.
 - **SC-008**: Regression tests fail if continuation only asserts `--resume` argv but does not model provider session lookup context.
 - **SC-009**: Workflow evidence distinguishes approved merges/remote mutations from unapproved operations; unapproved operations are blocked, not normalized after the fact.
+- **SC-010**: Grok CLI default readiness is proven by a synthetic source-bearing wrapper smoke that records neutral cwd, prompt sidecar cleanup, `source_content_transmission`, parse result, timeout behavior, no unexpected repo mutation, and explicit tunnel fallback behavior.
+- **SC-011**: Markdown lifecycle smoke output contains visually explicit launch, running/progress, and terminal cards or rows for every provider family; raw JSONL progress alone fails this criterion.
 
 ## Assumptions
 
@@ -134,5 +154,7 @@ An operator runs a source-bearing review and then asks the same provider to cont
 - External reviewer CLIs may scope conversation persistence by provider project/cwd, not only by session id.
 - Plugin job ids may look identical to provider session ids in some providers; correctness still depends on where and how that id is resolved.
 - Semantic replay of short snippets is valid for classifier branch testing, not for proving full reviewer output quality.
+- Grok CLI default support assumes a pinned observed CLI version or compatible version gate, subscription-backed grok.com CLI auth, available default model `grok-build`, headless prompt input, and parseable JSON/plain text output. Current raw evidence is `grok 0.1.211`, `grok models` reports logged in with grok.com and default model `grok-build`, and the CLI does not expose an explicit subscription-tier field. The wrapper MUST record version/model/auth evidence and fail closed when the observed version/model is unavailable or incompatible.
+- Installed plugin cache evidence can drift after generated docs, skills, copied libraries, or runtime scripts change; cache sync must be rechecked after those changes.
 - `.no-mistakes.yaml` remains configured with `npm ci && npm run lint && npm run test:full`, but no-mistakes is not authoritative merge evidence until `seungpyoson/claude-config#780` is fixed.
 - Direct local verification and GitHub CI are authoritative for this slice while no-mistakes has the review/fix-loop defect.
