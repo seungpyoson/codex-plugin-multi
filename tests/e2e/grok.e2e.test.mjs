@@ -7,7 +7,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
-const COMPANION = path.join(REPO_ROOT, "plugins/grok/scripts/grok-web-reviewer.mjs");
+const COMPANION = path.join(REPO_ROOT, "plugins/grok/scripts/grok-companion.mjs");
 const LIVE_REVIEW_PROMPT = `Live E2E smoke: review README.md as a selected source file.
 Return:
 
@@ -33,7 +33,7 @@ function parseJson(result) {
   return JSON.parse(result.stdout);
 }
 
-test("live Grok subscription-backed local tunnel custom review completes", {
+test("live Grok explicit legacy web tunnel custom review completes", {
   skip: process.env.GROK_LIVE_E2E === "1"
     ? false
     : "Set GROK_LIVE_E2E=1 after starting a subscription-backed Grok web tunnel to run live E2E.",
@@ -41,9 +41,9 @@ test("live Grok subscription-backed local tunnel custom review completes", {
   const cwd = mkdtempSync(path.join(tmpdir(), "grok-e2e-cwd-"));
   const dataDir = mkdtempSync(path.join(tmpdir(), "grok-e2e-data-"));
   try {
-    writeFileSync(path.join(cwd, "README.md"), "# Grok E2E\n\nSubscription-backed tunnel smoke.\n");
+    writeFileSync(path.join(cwd, "README.md"), "# Grok E2E\n\nExplicit web tunnel smoke.\n");
 
-    const doctor = runGrok(["doctor"], {
+    const doctor = runGrok(["doctor", "--transport", "web"], {
       cwd,
       env: { GROK_PLUGIN_DATA: dataDir },
     });
@@ -57,6 +57,7 @@ test("live Grok subscription-backed local tunnel custom review completes", {
 
     const review = runGrok([
       "run",
+      "--transport", "web",
       "--mode", "custom-review",
       "--scope", "custom",
       "--scope-paths", "README.md",

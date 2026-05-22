@@ -1,6 +1,7 @@
 import { once } from "node:events";
 import { execFileSync, spawn, spawnSync } from "node:child_process";
-import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { chmodSync, cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import http from "node:http";
 import { hostname, tmpdir } from "node:os";
 import path from "node:path";
@@ -9,10 +10,11 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { externalReviewLaunchedEvent } from "../../scripts/lib/companion-common.mjs";
 import { assertJobRecordShape } from "../helpers/job-record-shape.mjs";
-import { substantiveReviewFixture } from "../helpers/review-fixtures.mjs";
+import { badVerdictReviewFixture, substantiveReviewFixture } from "../helpers/review-fixtures.mjs";
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
-const COMPANION = path.join(REPO_ROOT, "plugins/grok/scripts/grok-web-reviewer.mjs");
+const COMPANION = path.join(REPO_ROOT, "plugins/grok/scripts/grok-companion.mjs");
+const COMPANION_RUNTIME = path.join(REPO_ROOT, "plugins/grok/scripts/grok-web-reviewer.mjs");
 const VALID_SESSION_TOKEN = "eyJhbGciOiJub25lIn0.eyJzdWIiOiJ0ZXN0In0.signature";
 const GROK_EXPECTED_KEYS = Object.freeze([
   "id",
@@ -66,10 +68,12 @@ const GROK_EXPECTED_KEYS = Object.freeze([
 ]);
 
 function run(args, options = {}) {
+  const defaultTransportEnv = options.defaultTransport === false ? {} : { GROK_TRANSPORT: "web" };
   return spawnSync(process.execPath, [COMPANION, ...args], {
     cwd: options.cwd ?? REPO_ROOT,
     env: {
       ...process.env,
+      ...defaultTransportEnv,
       ...options.env,
     },
     encoding: "utf8",
@@ -77,11 +81,13 @@ function run(args, options = {}) {
 }
 
 function runAsync(args, options = {}) {
+  const defaultTransportEnv = options.defaultTransport === false ? {} : { GROK_TRANSPORT: "web" };
   return new Promise((resolve) => {
     const child = spawn(process.execPath, [COMPANION, ...args], {
       cwd: options.cwd ?? REPO_ROOT,
       env: {
         ...process.env,
+        ...defaultTransportEnv,
         ...options.env,
       },
       stdio: ["ignore", "pipe", "pipe"],
@@ -113,12 +119,39 @@ function parseCompactJsonLines(result) {
   return result.stdout.split(/\n/).filter((line) => line.startsWith("{")).map((line) => JSON.parse(line));
 }
 
+function defaultDataRootFor(pluginName, cwd) {
+  const workspace = path.resolve(cwd);
+  const slug = path.basename(workspace).replace(/[^A-Za-z0-9._-]/g, "_").slice(0, 48) || "workspace";
+  const hash = createHash("sha256").update(workspace).digest("hex").slice(0, 16);
+  return path.resolve(tmpdir(), "codex-plugin-multi", pluginName, `${slug}-${hash}`);
+}
+
+function initGitRepo(cwd) {
+  execFileSync("git", ["init"], { cwd, stdio: "ignore" });
+}
+
 function rmTree(dir) {
   rmSync(dir, { recursive: true, force: true });
 }
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function waitForValue(fn, { timeoutMs = 2000, intervalMs = 20 } = {}) {
+  const deadline = Date.now() + timeoutMs;
+  let lastError = null;
+  while (Date.now() < deadline) {
+    try {
+      const value = fn();
+      if (value) return value;
+    } catch (error) {
+      lastError = error;
+    }
+    await sleep(intervalMs);
+  }
+  if (lastError) throw lastError;
+  throw new Error(`timed out after ${timeoutMs}ms waiting for value`);
 }
 
 function makeEmptyBranchDiffWorkspace() {
@@ -313,12 +346,1356 @@ fs.writeFileSync(path.join(dest, "pyproject.toml"), "[project]\\nname = \\"fake-
   return { binDir, gitPath };
 }
 
+function makeFakeGrokCli({
+  modelsOutput = null,
+  modelsExitStatus = 0,
+  modelsStderr = "grok models failed\n",
+  sourceFreeAuthStderr = null,
+  failSourceBearing = false,
+  failSourceBearingHomeCleanup = false,
+  failSourceBearingPromptCleanup = false,
+  failNeutralCwdCleanup = false,
+  failSourceFreeHomeCleanup = false,
+  sourceBearingDelayMs = 0,
+  ignoreSourceBearingSigterm = false,
+} = {}) {
+  const binDir = mkdtempSync(path.join(tmpdir(), "fake-grok-cli-bin-"));
+  const logPath = path.join(binDir, "grok-log.jsonl");
+  const grokPath = path.join(binDir, "grok");
+  writeFileSync(grokPath, `#!${process.execPath}
+const fs = require("node:fs");
+const logPath = ${JSON.stringify(logPath)};
+const failSourceBearing = ${JSON.stringify(failSourceBearing)};
+const failSourceBearingHomeCleanup = ${JSON.stringify(failSourceBearingHomeCleanup)};
+const failSourceBearingPromptCleanup = ${JSON.stringify(failSourceBearingPromptCleanup)};
+const failNeutralCwdCleanup = ${JSON.stringify(failNeutralCwdCleanup)};
+const failSourceFreeHomeCleanup = ${JSON.stringify(failSourceFreeHomeCleanup)};
+const sourceBearingDelayMs = ${JSON.stringify(sourceBearingDelayMs)};
+const ignoreSourceBearingSigterm = ${JSON.stringify(ignoreSourceBearingSigterm)};
+const modelsExitStatus = ${JSON.stringify(modelsExitStatus)};
+const modelsStderr = ${JSON.stringify(modelsStderr)};
+const sourceFreeAuthStderr = ${JSON.stringify(sourceFreeAuthStderr)};
+const args = process.argv.slice(2);
+const apiEnvKeys = ["GROK_API_KEY", "XAI_API_KEY", "XAI_KEY"].filter((key) => Object.prototype.hasOwnProperty.call(process.env, key));
+const sensitiveEnvKeys = ["OPENAI_API_KEY", "ANTHROPIC_API_KEY", "AWS_ACCESS_KEY_ID", "GITHUB_TOKEN", "GH_TOKEN"].filter((key) => Object.prototype.hasOwnProperty.call(process.env, key));
+fs.appendFileSync(logPath, JSON.stringify({ args, cwd: process.cwd(), apiEnvKeys, sensitiveEnvKeys }) + "\\n");
+if (args.includes("--version") || args[0] === "version") {
+  process.stdout.write("grok 0.1.211 (mock)\\n");
+  process.exit(0);
+}
+if (args[0] === "models") {
+  if (modelsExitStatus !== 0) {
+    process.stderr.write(modelsStderr);
+    process.exit(modelsExitStatus);
+  }
+  process.stdout.write(${JSON.stringify(modelsOutput ?? ["You are logged in with grok.com.", "", "Default model: grok-build", "", "Available models:", "  * grok-build (default)", ""].join("\n"))});
+  process.exit(0);
+}
+const promptFileIndex = args.indexOf("--prompt-file");
+if (promptFileIndex < 0 || !args[promptFileIndex + 1]) {
+  process.stderr.write("missing --prompt-file\\n");
+  process.exit(2);
+}
+const promptPath = args[promptFileIndex + 1];
+const prompt = fs.readFileSync(promptPath, "utf8");
+if (failSourceBearingPromptCleanup && prompt.includes("CLI_SOURCE_SECRET")) {
+  fs.writeFileSync(require("node:path").join(require("node:path").dirname(promptPath), "source-copy.txt"), prompt.slice(0, 128));
+}
+if (failNeutralCwdCleanup && prompt.includes("CLI_SOURCE_SECRET")) {
+  fs.writeFileSync(require("node:path").join(process.cwd(), "source-copy.txt"), prompt.slice(0, 128));
+}
+const grokHome = process.env.GROK_HOME || null;
+if (grokHome) {
+  fs.mkdirSync(require("node:path").join(grokHome, "sessions"), { recursive: true });
+  fs.writeFileSync(require("node:path").join(grokHome, "sessions", "session.jsonl"), prompt.slice(0, 128));
+  if (process.env.GROK_CLI_MUTATE_AUTH_ON_SOURCE === "1" && prompt.includes("CLI_SOURCE_SECRET")) {
+    fs.writeFileSync(require("node:path").join(grokHome, "auth.json"), "{\\"token\\":\\"mutated\\"}\\n");
+  }
+  if (failSourceBearingHomeCleanup && prompt.includes("CLI_SOURCE_SECRET")) {
+    const blocked = require("node:path").join(grokHome, "blocked-cleanup");
+    fs.mkdirSync(blocked, { recursive: true });
+    fs.writeFileSync(require("node:path").join(blocked, "source.txt"), prompt.slice(0, 128));
+    fs.chmodSync(blocked, 0o000);
+  }
+  if (failSourceFreeHomeCleanup && !prompt.includes("CLI_SOURCE_SECRET")) {
+    const blocked = require("node:path").join(grokHome, "blocked-cleanup");
+    fs.mkdirSync(blocked, { recursive: true });
+    fs.writeFileSync(require("node:path").join(blocked, "preflight.txt"), prompt.slice(0, 128));
+    fs.chmodSync(blocked, 0o000);
+  }
+}
+fs.appendFileSync(logPath, JSON.stringify({
+  pid: process.pid,
+  promptPath,
+  existsDuring: fs.existsSync(promptPath),
+  promptHasSource: prompt.includes("CLI_SOURCE_SECRET"),
+  promptHasDelimiter: prompt.includes("BEGIN GROK FILE 1: review.js"),
+  grokHome,
+  envPath: process.env.PATH || "",
+  grokHomeExistsDuring: grokHome ? fs.existsSync(grokHome) : false,
+  grokHomeHasAuthLink: grokHome ? fs.lstatSync(require("node:path").join(grokHome, "auth.json")).isSymbolicLink() : false,
+  grokHomeHasMcpCredentials: grokHome ? fs.existsSync(require("node:path").join(grokHome, "mcp_credentials.json")) : false,
+  apiEnvKeys,
+  sensitiveEnvKeys,
+  cwd: process.cwd(),
+}) + "\\n");
+if (failSourceBearing && prompt.includes("CLI_SOURCE_SECRET")) {
+  process.stderr.write("unknown option --no-memory\\n");
+  process.exit(2);
+}
+if (sourceFreeAuthStderr && !prompt.includes("CLI_SOURCE_SECRET")) {
+  process.stderr.write(sourceFreeAuthStderr);
+  process.exit(1);
+}
+if (ignoreSourceBearingSigterm && prompt.includes("CLI_SOURCE_SECRET")) {
+  process.on("SIGTERM", () => {});
+  setTimeout(() => process.exit(0), 5000);
+  setInterval(() => {}, 1000);
+}
+if (sourceBearingDelayMs > 0 && prompt.includes("CLI_SOURCE_SECRET")) {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, sourceBearingDelayMs);
+}
+process.stdout.write(JSON.stringify({
+  text: "Verdict: APPROVE\\n\\nBlocking findings\\n- None.\\n\\nNon-blocking concerns\\n- None.\\n\\nInspection status\\n- I inspected review.js from the selected source packet.\\n\\nChecklist item 1: Source packet was present and reviewed.\\nChecklist item 2: No behavioral regression found.\\nChecklist item 3: No missing test blocker found.\\nChecklist item 4: No unsafe fallback behavior found.\\nChecklist item 5: Result is ready for merge-readiness aggregation.",
+  model: "grok-build",
+  usage: { input_tokens: 1, output_tokens: 1 }
+}));
+`);
+  chmodSync(grokPath, 0o700);
+  return { binDir, grokPath, logPath };
+}
+
+function writeGrokCliAuthFixture(cwd, authHome) {
+  writeFileSync(path.join(cwd, "review.js"), "export const marker = 'CLI_SOURCE_SECRET';\n");
+  writeFileSync(path.join(authHome, "auth.json"), "{\"token\":\"fake\"}\n");
+  writeFileSync(path.join(authHome, "config.toml"), "[models]\ndefault = \"grok-build\"\n");
+  writeFileSync(path.join(authHome, "mcp_credentials.json"), "{\"token\":\"mcp-must-not-copy\"}\n");
+}
+
+function readGrokCliLog(logPath) {
+  if (!existsSync(logPath)) return [];
+  const text = readFileSync(logPath, "utf8").trim();
+  if (!text) return [];
+  return text.split(/\n/).map((line) => JSON.parse(line));
+}
+
+const GROK_MODELS_READY_LOGGED_OUT = [
+  "Default model: grok-build",
+  "",
+  "Available models:",
+  "  * grok-build (default)",
+  "",
+].join("\n");
+
+const GROK_SOURCE_FREE_AUTH_TIMEOUT_STDERR = [
+  "Signing in with Grok...",
+  "ERROR failed to get default browser: The operation could not be completed. (OSStatus error -10661.)",
+  "Open this URL to sign in:",
+  "  https://auth.x.ai/oauth2/authorize?state=fake-state",
+  "ERROR auth: timed out after 10 minutes waiting for auth code",
+  "Error: Login timed out after 10 minutes. Please try again.",
+  "",
+].join("\n");
+
 async function readJsonRequest(req) {
   let body = "";
   req.setEncoding("utf8");
   for await (const chunk of req) body += chunk;
   return JSON.parse(body);
 }
+
+test("custom-review defaults to Grok CLI without contacting legacy tunnel", () => {
+  const cwd = realpathSync(mkdtempSync(path.join(tmpdir(), "grok-cli-workspace-")));
+  const dataDir = mkdtempSync(path.join(tmpdir(), "grok-cli-data-"));
+  const authHome = mkdtempSync(path.join(tmpdir(), "grok-cli-auth-home-"));
+  const { binDir, grokPath, logPath } = makeFakeGrokCli();
+  const workspaceToolBin = path.join(cwd, "node_modules", ".bin");
+  mkdirSync(workspaceToolBin, { recursive: true });
+  writeFileSync(path.join(cwd, "review.js"), "export const marker = 'CLI_SOURCE_SECRET';\n");
+  writeFileSync(path.join(authHome, "auth.json"), "{\"token\":\"fake\"}\n");
+  writeFileSync(path.join(authHome, "config.toml"), "[models]\ndefault = \"grok-build\"\n");
+
+  try {
+    const result = run([
+      "run",
+      "--mode", "custom-review",
+      "--scope", "custom",
+      "--scope-paths", "review.js",
+      "--foreground",
+      "--prompt", "Review selected source.",
+    ], {
+      cwd,
+      defaultTransport: false,
+      env: {
+        PATH: `${binDir}${path.delimiter}${workspaceToolBin}${path.delimiter}${process.env.PATH ?? ""}`,
+        GROK_CLI_BINARY: grokPath,
+        GROK_CLI_AUTH_HOME: authHome,
+        GROK_PLUGIN_DATA: dataDir,
+        GROK_WEB_BASE_URL: "http://127.0.0.1:9/v1",
+        GROK_API_KEY: "direct-api-key-must-not-reach-grok-cli",
+        XAI_API_KEY: "xai-api-key-must-not-reach-grok-cli",
+        XAI_KEY: "xai-key-must-not-reach-grok-cli",
+        OPENAI_API_KEY: "openai-api-key-must-not-reach-grok-cli",
+        ANTHROPIC_API_KEY: "anthropic-api-key-must-not-reach-grok-cli",
+        AWS_ACCESS_KEY_ID: "aws-access-key-must-not-reach-grok-cli",
+        GITHUB_TOKEN: "github-token-must-not-reach-grok-cli",
+      },
+    });
+
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    const record = parseStdout(result);
+    assert.equal(record.provider, "grok");
+    assert.equal(record.target, "grok");
+    assert.equal(record.auth_mode, "subscription_cli");
+    assert.equal(record.external_review.provider, "Grok CLI");
+    assert.equal(record.external_review.source_content_transmission, "sent");
+    assert.equal(record.model, "grok-build");
+    assert.equal(record.raw_model, "grok-build");
+    assert.equal(record.review_metadata.audit_manifest.selected_route, "subscription_cli");
+    assert.equal(record.review_metadata.audit_manifest.fallback_reason, null);
+    assert.equal(record.review_metadata.audit_manifest.auth_path, "subscription_cli");
+    assert.equal(record.review_metadata.audit_manifest.billing_path, null);
+    assert.equal(record.review_metadata.audit_manifest.source_bearing, true);
+    assert.equal(record.review_metadata.audit_manifest.source_send_approval_required, false);
+    assert.equal(record.review_metadata.audit_manifest.source_send_approval_state, "not_required");
+    assert.equal(record.review_metadata.audit_manifest.approval_scope, null);
+    assert.equal(record.runtime_diagnostics.cli_request.grok_version, "grok 0.1.211 (mock)");
+    assert.equal(record.runtime_diagnostics.cli_request.default_model, "grok-build");
+    assert.equal(record.runtime_diagnostics.cli_request.model_ready, true);
+    assert.equal(record.runtime_diagnostics.cli_request.prompt_cleanup, "deleted");
+    assert.equal(record.runtime_diagnostics.cli_request.source_free_prompt_cleanup, "deleted");
+    assert.equal(record.runtime_diagnostics.cli_request.source_free_grok_home_cleanup, "deleted");
+    assert.equal(record.runtime_diagnostics.cli_request.grok_home_cleanup, "deleted");
+    assert.match(record.runtime_diagnostics.cli_request.grok_home_source, /grok-cli-auth-home-/);
+    assert.match(record.result, /Verdict: APPROVE/);
+    assert.doesNotMatch(JSON.stringify(record), /CLI_SOURCE_SECRET/);
+
+    const logLines = readFileSync(logPath, "utf8").trim().split(/\n/).map((line) => JSON.parse(line));
+    const promptInvocations = logLines.filter((line) => line.promptPath);
+    assert.deepEqual(logLines.flatMap((line) => line.apiEnvKeys ?? []), []);
+    assert.deepEqual(logLines.flatMap((line) => line.sensitiveEnvKeys ?? []), []);
+    assert.equal(promptInvocations.length, 2);
+    assert.equal(promptInvocations[0].promptHasSource, false);
+    const reviewInvocation = promptInvocations.find((line) => line.promptHasSource);
+    assert.ok(reviewInvocation, "mock Grok CLI should receive a source-bearing prompt file");
+    assert.equal(reviewInvocation.promptHasSource, true);
+    assert.equal(reviewInvocation.promptHasDelimiter, true);
+    assert.equal(reviewInvocation.grokHomeExistsDuring, true);
+    assert.equal(reviewInvocation.grokHomeHasAuthLink, false);
+    assert.equal(reviewInvocation.grokHomeHasMcpCredentials, false);
+    assert.doesNotMatch(reviewInvocation.envPath, new RegExp(workspaceToolBin.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+    assert.doesNotMatch(reviewInvocation.envPath, /node_modules[\\/]\.bin/);
+    assert.notEqual(reviewInvocation.cwd, cwd);
+    assert.equal(existsSync(reviewInvocation.promptPath), false);
+    assert.equal(existsSync(reviewInvocation.grokHome), false);
+  } finally {
+    rmTree(authHome);
+    rmTree(cwd);
+    rmTree(dataDir);
+  }
+});
+
+test("custom-review ignores stale successful Grok doctor and re-probes before source send", () => {
+  const cwd = realpathSync(mkdtempSync(path.join(tmpdir(), "grok-cli-stale-doctor-workspace-")));
+  const dataDir = mkdtempSync(path.join(tmpdir(), "grok-cli-stale-doctor-data-"));
+  const authHome = mkdtempSync(path.join(tmpdir(), "grok-cli-stale-doctor-auth-home-"));
+  const readyCli = makeFakeGrokCli();
+  const failingCli = makeFakeGrokCli({ sourceFreeAuthStderr: "grok auth expired before source send\n" });
+  writeGrokCliAuthFixture(cwd, authHome);
+  try {
+    const doctor = run(["doctor"], {
+      cwd,
+      defaultTransport: false,
+      env: {
+        PATH: `${readyCli.binDir}${path.delimiter}${process.env.PATH ?? ""}`,
+        GROK_CLI_BINARY: readyCli.grokPath,
+        GROK_CLI_AUTH_HOME: authHome,
+        GROK_PLUGIN_DATA: dataDir,
+      },
+    });
+    assert.equal(doctor.status, 0, doctor.stderr || doctor.stdout);
+    assert.equal(parseStdout(doctor).ready, true);
+
+    const result = run([
+      "run",
+      "--mode", "custom-review",
+      "--scope", "custom",
+      "--scope-paths", "review.js",
+      "--foreground",
+      "--lifecycle-events", "jsonl",
+      "--prompt", "Review selected source.",
+    ], {
+      cwd,
+      defaultTransport: false,
+      env: {
+        PATH: `${failingCli.binDir}${path.delimiter}${process.env.PATH ?? ""}`,
+        GROK_CLI_BINARY: failingCli.grokPath,
+        GROK_CLI_AUTH_HOME: authHome,
+        GROK_PLUGIN_DATA: dataDir,
+      },
+    });
+
+    assert.equal(result.status, 1);
+    const lines = parseJsonLines(result);
+    assert.equal(lines.length, 1, "stale doctor success must not emit launch before fresh preflight");
+    const [record] = lines;
+    assert.equal(record.error_code, "grok_cli_failed");
+    assert.equal(record.external_review.source_content_transmission, "not_sent");
+    assert.equal(record.review_metadata.audit_manifest, null);
+    assert.doesNotMatch(result.stdout, /CLI_SOURCE_SECRET|external_review_launched/);
+    const failingPromptInvocations = readGrokCliLog(failingCli.logPath).filter((line) => line.promptPath);
+    assert.equal(failingPromptInvocations.length, 1, "fresh preflight must invoke the current Grok CLI once before launch");
+    assert.equal(failingPromptInvocations[0].promptHasSource, false, "fresh preflight must be source-free");
+  } finally {
+    rmTree(authHome);
+    rmTree(cwd);
+    rmTree(dataDir);
+    rmTree(readyCli.binDir);
+    rmTree(failingCli.binDir);
+  }
+});
+
+test("Grok CLI lifecycle markdown streams running card before source-bearing CLI exits", async () => {
+  const cwd = realpathSync(mkdtempSync(path.join(tmpdir(), "grok-cli-lifecycle-workspace-")));
+  const dataDir = mkdtempSync(path.join(tmpdir(), "grok-cli-lifecycle-data-"));
+  const authHome = mkdtempSync(path.join(tmpdir(), "grok-cli-lifecycle-auth-home-"));
+  const { binDir, grokPath, logPath } = makeFakeGrokCli({ sourceBearingDelayMs: 1000 });
+  writeGrokCliAuthFixture(cwd, authHome);
+  let child = null;
+  try {
+    child = spawn(process.execPath, [
+      COMPANION,
+      "run",
+      "--mode", "custom-review",
+      "--scope", "custom",
+      "--scope-paths", "review.js",
+      "--foreground",
+      "--lifecycle-events", "markdown",
+      "--prompt", "Review selected source.",
+    ], {
+      cwd,
+      env: {
+        ...process.env,
+        PATH: `${binDir}${path.delimiter}${process.env.PATH ?? ""}`,
+        GROK_CLI_BINARY: grokPath,
+        GROK_CLI_AUTH_HOME: authHome,
+        GROK_PLUGIN_DATA: dataDir,
+        GROK_WEB_BASE_URL: "http://127.0.0.1:9/v1",
+        CODEX_PLUGIN_EXTERNAL_REVIEW_HEARTBEAT_MS: "25",
+      },
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    let stdout = "";
+    let stderr = "";
+    child.stdout.setEncoding("utf8");
+    child.stderr.setEncoding("utf8");
+    child.stdout.on("data", (chunk) => { stdout += chunk; });
+    child.stderr.on("data", (chunk) => { stderr += chunk; });
+
+    await waitForValue(() => readGrokCliLog(logPath).some((line) => line.promptHasSource), {
+      timeoutMs: 2000,
+      intervalMs: 10,
+    });
+    assert.equal(child.exitCode, null, "companion must still be running while fake Grok CLI is delayed");
+    const streamed = await waitForValue(() => (
+      /\| Status \| running \|/.test(stdout) ? stdout : null
+    ), {
+      timeoutMs: 400,
+      intervalMs: 10,
+    });
+    assert.match(streamed, /^### EXTERNAL REVIEW/m);
+    assert.match(streamed, /\| Provider \| Grok CLI \|/);
+    assert.match(streamed, /\| Source \| may_be_sent \|/);
+
+    const [status, signal] = await once(child, "close");
+    assert.equal(signal, null);
+    assert.equal(status, 0, stderr || stdout);
+  } finally {
+    if (child && child.exitCode === null) child.kill("SIGTERM");
+    rmTree(authHome);
+    rmTree(cwd);
+    rmTree(dataDir);
+  }
+});
+
+test("Grok CLI timeout escalates when source-bearing process ignores SIGTERM", {
+  skip: process.env.CODEX_PLUGIN_COVERAGE === "1" && process.platform === "darwin"
+    ? "NODE_V8_COVERAGE can make source-bearing timeout races exceed the synthetic budget; regular smoke covers SIGTERM escalation"
+    : false,
+}, async () => {
+  const cwd = realpathSync(mkdtempSync(path.join(tmpdir(), "grok-cli-timeout-workspace-")));
+  const dataDir = mkdtempSync(path.join(tmpdir(), "grok-cli-timeout-data-"));
+  const authHome = mkdtempSync(path.join(tmpdir(), "grok-cli-timeout-auth-home-"));
+  const { binDir, grokPath, logPath } = makeFakeGrokCli({ ignoreSourceBearingSigterm: true });
+  writeGrokCliAuthFixture(cwd, authHome);
+  let child = null;
+  try {
+    child = spawn(process.execPath, [
+      COMPANION,
+      "run",
+      "--mode", "custom-review",
+      "--scope", "custom",
+      "--scope-paths", "review.js",
+      "--foreground",
+      "--prompt", "Review selected source.",
+    ], {
+      cwd,
+      env: {
+        ...process.env,
+        PATH: `${binDir}${path.delimiter}${process.env.PATH ?? ""}`,
+        GROK_CLI_BINARY: grokPath,
+        GROK_CLI_AUTH_HOME: authHome,
+        GROK_PLUGIN_DATA: dataDir,
+        GROK_WEB_BASE_URL: "http://127.0.0.1:9/v1",
+        GROK_CLI_TIMEOUT_MS: "3000",
+      },
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    let stdout = "";
+    let stderr = "";
+    child.stdout.setEncoding("utf8");
+    child.stderr.setEncoding("utf8");
+    child.stdout.on("data", (chunk) => { stdout += chunk; });
+    child.stderr.on("data", (chunk) => { stderr += chunk; });
+
+    const result = await Promise.race([
+      once(child, "close").then(([status, signal]) => ({ status, signal })),
+      sleep(6000).then(() => null),
+    ]);
+    assert.ok(result, "companion must exit after escalating ignored Grok CLI SIGTERM");
+    assert.equal(result.signal, null);
+    assert.equal(result.status, 1, stderr || stdout);
+    const record = JSON.parse(stdout);
+    assert.equal(record.error_code, "grok_cli_timeout");
+    assert.equal(record.external_review.source_content_transmission, "may_be_sent");
+    assert.equal(record.runtime_diagnostics.cli_request.prompt_cleanup, "deleted");
+    assert.equal(record.runtime_diagnostics.cli_request.grok_home_cleanup, "deleted");
+    assert.equal(record.runtime_diagnostics.cli_request.neutral_cwd_cleanup, "deleted");
+  } finally {
+    if (child && child.exitCode === null) child.kill("SIGKILL");
+    for (const line of readGrokCliLog(logPath)) {
+      if (line.promptHasSource && Number.isInteger(line.pid)) {
+        try { process.kill(line.pid, "SIGKILL"); } catch { /* already gone */ }
+      }
+    }
+    rmTree(authHome);
+    rmTree(cwd);
+    rmTree(dataDir);
+  }
+});
+
+test("custom-review rejects workspace PATH Grok CLI binaries before source transmission", () => {
+  const cwd = realpathSync(mkdtempSync(path.join(tmpdir(), "grok-cli-untrusted-path-workspace-")));
+  const dataDir = mkdtempSync(path.join(tmpdir(), "grok-cli-untrusted-path-data-"));
+  const authHome = mkdtempSync(path.join(tmpdir(), "grok-cli-untrusted-path-auth-home-"));
+  const workspaceBin = path.join(cwd, "node_modules", ".bin");
+  const { grokPath, logPath } = makeFakeGrokCli();
+  mkdirSync(workspaceBin, { recursive: true });
+  cpSync(grokPath, path.join(workspaceBin, "grok"));
+  chmodSync(path.join(workspaceBin, "grok"), 0o700);
+  writeGrokCliAuthFixture(cwd, authHome);
+
+  try {
+    const result = run([
+      "run",
+      "--mode", "custom-review",
+      "--scope", "custom",
+      "--scope-paths", "review.js",
+      "--foreground",
+      "--prompt", "Review selected source.",
+    ], {
+      cwd,
+      defaultTransport: false,
+      env: {
+        PATH: `${workspaceBin}${path.delimiter}${process.env.PATH ?? ""}`,
+        GROK_CLI_AUTH_HOME: authHome,
+        GROK_PLUGIN_DATA: dataDir,
+      },
+    });
+
+    assert.equal(result.status, 1, result.stdout);
+    const record = parseStdout(result);
+    assert.equal(record.status, "failed");
+    assert.equal(record.error_code, "grok_cli_untrusted_binary");
+    assert.equal(record.error_cause, "grok_cli");
+    assert.equal(record.external_review.source_content_transmission, "not_sent");
+    assert.deepEqual(readGrokCliLog(logPath), []);
+  } finally {
+    rmTree(authHome);
+    rmTree(cwd);
+    rmTree(dataDir);
+  }
+});
+
+test("custom-review isolates Grok CLI auth files from source auth home mutations", () => {
+  const cwd = realpathSync(mkdtempSync(path.join(tmpdir(), "grok-cli-auth-isolation-workspace-")));
+  const dataDir = mkdtempSync(path.join(tmpdir(), "grok-cli-auth-isolation-data-"));
+  const authHome = mkdtempSync(path.join(tmpdir(), "grok-cli-auth-isolation-auth-home-"));
+  const { binDir, grokPath } = makeFakeGrokCli();
+  writeGrokCliAuthFixture(cwd, authHome);
+
+  try {
+    const result = run([
+      "run",
+      "--mode", "custom-review",
+      "--scope", "custom",
+      "--scope-paths", "review.js",
+      "--foreground",
+      "--prompt", "Review selected source.",
+    ], {
+      cwd,
+      defaultTransport: false,
+      env: {
+        PATH: `${binDir}${path.delimiter}${process.env.PATH ?? ""}`,
+        GROK_CLI_BINARY: grokPath,
+        GROK_CLI_AUTH_HOME: authHome,
+        GROK_CLI_MUTATE_AUTH_ON_SOURCE: "1",
+        GROK_PLUGIN_DATA: dataDir,
+      },
+    });
+
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    assert.equal(readFileSync(path.join(authHome, "auth.json"), "utf8"), "{\"token\":\"fake\"}\n");
+  } finally {
+    rmTree(authHome);
+    rmTree(cwd);
+    rmTree(dataDir);
+  }
+});
+
+test("custom-review fails closed when Grok CLI model is ready but login is false", async () => {
+  const cwd = realpathSync(mkdtempSync(path.join(tmpdir(), "grok-cli-login-required-workspace-")));
+  const dataDir = mkdtempSync(path.join(tmpdir(), "grok-cli-login-required-data-"));
+  const authHome = mkdtempSync(path.join(tmpdir(), "grok-cli-login-required-auth-home-"));
+  const { binDir, grokPath, logPath } = makeFakeGrokCli({ modelsOutput: GROK_MODELS_READY_LOGGED_OUT });
+  writeGrokCliAuthFixture(cwd, authHome);
+  const webRequests = [];
+
+  try {
+    await withServer(async (req, res) => {
+      webRequests.push(`${req.method} ${req.url}`);
+      res.statusCode = 500;
+      res.end(JSON.stringify({ error: { message: "web fallback must not be contacted" } }));
+    }, async (baseUrl) => {
+      const result = run([
+        "run",
+        "--mode", "custom-review",
+        "--scope", "custom",
+        "--scope-paths", "review.js",
+        "--foreground",
+        "--prompt", "Review selected source.",
+      ], {
+        cwd,
+        defaultTransport: false,
+        env: {
+          PATH: `${binDir}${path.delimiter}${process.env.PATH ?? ""}`,
+          GROK_CLI_BINARY: grokPath,
+          GROK_CLI_AUTH_HOME: authHome,
+          GROK_PLUGIN_DATA: dataDir,
+          GROK_WEB_BASE_URL: baseUrl,
+          GROK_API_KEY: "direct-api-key-must-not-reach-grok-cli",
+          XAI_API_KEY: "xai-api-key-must-not-reach-grok-cli",
+          XAI_KEY: "xai-key-must-not-reach-grok-cli",
+        },
+      });
+
+      assert.equal(result.status, 1, result.stdout);
+      const record = parseStdout(result);
+      assert.equal(record.status, "failed");
+      assert.equal(record.error_code, "grok_cli_login_required");
+      assert.equal(record.error_cause, "grok_cli");
+      assert.equal(record.auth_mode, "subscription_cli");
+      assert.equal(record.external_review.provider, "Grok CLI");
+      assert.equal(record.external_review.source_content_transmission, "not_sent");
+      assert.match(record.suggested_action, /grok login/i);
+      assert.doesNotMatch(record.suggested_action, /--transport web|grok2api/i);
+      assert.equal(record.runtime_diagnostics.cli_request.transport, "cli");
+      assert.equal(record.runtime_diagnostics.cli_request.grok_version, "grok 0.1.211 (mock)");
+      assert.equal(record.runtime_diagnostics.cli_request.default_model, "grok-build");
+      assert.equal(record.runtime_diagnostics.cli_request.logged_in, false);
+      assert.equal(record.runtime_diagnostics.cli_request.model_ready, true);
+      assert.equal(record.runtime_diagnostics.cli_request.prompt_cleanup, null);
+      assert.equal(record.runtime_diagnostics.cli_request.grok_home_cleanup, null);
+      assert.doesNotMatch(JSON.stringify(record), /CLI_SOURCE_SECRET/);
+      assert.deepEqual(webRequests, []);
+
+      const logLines = readGrokCliLog(logPath);
+      assert.deepEqual(logLines.flatMap((line) => line.apiEnvKeys ?? []), []);
+      assert.deepEqual(logLines.map((line) => line.args[0]), ["--version", "models"]);
+      assert.equal(logLines.some((line) => line.promptPath), false);
+    }, { autoPreflight: false });
+  } finally {
+    rmTree(authHome);
+    rmTree(cwd);
+    rmTree(dataDir);
+  }
+});
+
+test("custom-review cleans partial Grok CLI runtime home when auth copy fails", () => {
+  const cwd = realpathSync(mkdtempSync(path.join(tmpdir(), "grok-cli-copy-fail-workspace-")));
+  const dataDir = mkdtempSync(path.join(tmpdir(), "grok-cli-copy-fail-data-"));
+  const authHome = mkdtempSync(path.join(tmpdir(), "grok-cli-copy-fail-auth-home-"));
+  const { binDir, grokPath } = makeFakeGrokCli();
+  writeFileSync(path.join(cwd, "review.js"), "export const marker = 'CLI_SOURCE_SECRET';\n");
+  writeFileSync(path.join(authHome, "auth.json"), "{\"token\":\"fake\"}\n");
+  symlinkSync("missing-config.toml", path.join(authHome, "config.toml"));
+  const before = new Set(readdirSync(tmpdir()).filter((name) => name.startsWith("grok-cli-home-")));
+  let leaked = [];
+
+  try {
+    const result = run([
+      "run",
+      "--mode", "custom-review",
+      "--scope", "custom",
+      "--scope-paths", "review.js",
+      "--foreground",
+      "--prompt", "Review selected source.",
+    ], {
+      cwd,
+      defaultTransport: false,
+      env: {
+        PATH: `${binDir}${path.delimiter}${process.env.PATH ?? ""}`,
+        GROK_CLI_BINARY: grokPath,
+        GROK_CLI_AUTH_HOME: authHome,
+        GROK_PLUGIN_DATA: dataDir,
+      },
+    });
+
+    assert.equal(result.status, 1, result.stdout);
+    const record = parseStdout(result);
+    assert.equal(record.error_code, "grok_cli_setup_failed");
+    const after = readdirSync(tmpdir()).filter((name) => name.startsWith("grok-cli-home-"));
+    leaked = after.filter((name) => !before.has(name));
+    assert.deepEqual(leaked, [], "partial runtime homes must be cleaned after copy failure");
+  } finally {
+    for (const name of leaked) rmTree(path.join(tmpdir(), name));
+    rmTree(authHome);
+    rmTree(cwd);
+    rmTree(dataDir);
+  }
+});
+
+test("doctor reports Grok CLI unauthenticated when model is ready but login is false", () => {
+  const dataDir = mkdtempSync(path.join(tmpdir(), "grok-cli-login-required-doctor-data-"));
+  const authHome = mkdtempSync(path.join(tmpdir(), "grok-cli-login-required-doctor-auth-home-"));
+  const { binDir, grokPath, logPath } = makeFakeGrokCli({ modelsOutput: GROK_MODELS_READY_LOGGED_OUT });
+  writeFileSync(path.join(authHome, "auth.json"), "{\"token\":\"fake\"}\n");
+  writeFileSync(path.join(authHome, "config.toml"), "[models]\ndefault = \"grok-build\"\n");
+
+  try {
+    const result = run(["doctor"], {
+      defaultTransport: false,
+      env: {
+        PATH: `${binDir}${path.delimiter}${process.env.PATH ?? ""}`,
+        GROK_CLI_BINARY: grokPath,
+        GROK_CLI_AUTH_HOME: authHome,
+        GROK_PLUGIN_DATA: dataDir,
+      },
+    });
+
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    const parsed = parseStdout(result);
+    assert.equal(parsed.ready, false);
+    assert.equal(parsed.transport, "cli");
+    assert.equal(parsed.auth_mode, "subscription_cli");
+    assert.equal(parsed.error_code, "grok_cli_login_required");
+    assert.equal(parsed.grok_version, "grok 0.1.211 (mock)");
+    assert.equal(parsed.default_model, "grok-build");
+    assert.equal(parsed.model_ready, true);
+    assert.equal(parsed.logged_in, false);
+    assert.equal(parsed.readiness_layers.cli_binary.status, "ready");
+    assert.equal(parsed.readiness_layers.models.status, "available");
+    assert.equal(parsed.readiness_layers.cli_login.status, "failed");
+    assert.equal(parsed.readiness_layers.source_free_prompt.status, "skipped");
+    assert.match(parsed.next_action, /grok login/i);
+    assert.doesNotMatch(JSON.stringify(parsed), /CLI_SOURCE_SECRET/);
+
+    const logLines = readGrokCliLog(logPath);
+    assert.deepEqual(logLines.map((line) => line.args[0]), ["--version", "models"]);
+  } finally {
+    rmTree(authHome);
+    rmTree(dataDir);
+  }
+});
+
+test("doctor reports only canonical XAI_API_KEY as ignored, not Grok CLI login", () => {
+  const dataDir = mkdtempSync(path.join(tmpdir(), "grok-cli-login-api-env-doctor-data-"));
+  const authHome = mkdtempSync(path.join(tmpdir(), "grok-cli-login-api-env-doctor-auth-home-"));
+  const { binDir, grokPath, logPath } = makeFakeGrokCli({
+    modelsOutput: [
+      "You are not authenticated.",
+      "",
+      "Default model: grok-build",
+      "",
+      "Available models:",
+      "  * grok-build (default)",
+      "",
+    ].join("\n"),
+  });
+  writeFileSync(path.join(authHome, "config.toml"), "[models]\ndefault = \"grok-build\"\n");
+
+  try {
+    const result = run(["doctor"], {
+      defaultTransport: false,
+      env: {
+        PATH: `${binDir}${path.delimiter}${process.env.PATH ?? ""}`,
+        GROK_CLI_BINARY: grokPath,
+        GROK_CLI_AUTH_HOME: authHome,
+        GROK_PLUGIN_DATA: dataDir,
+        GROK_API_KEY: "same-direct-api-key-must-not-leak",
+        XAI_API_KEY: "same-direct-api-key-must-not-leak",
+      },
+    });
+
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    const parsed = parseStdout(result);
+    assert.equal(parsed.error_code, "grok_cli_login_required");
+    assert.deepEqual(parsed.ignored_env_credentials, ["XAI_API_KEY"]);
+    assert.equal(parsed.auth_policy, "api_key_env_ignored");
+    assert.match(parsed.error_message, /Direct API env variables are present and ignored by subscription_cli mode/i);
+    assert.doesNotMatch(parsed.error_message, /GROK_API_KEY|same redacted/i);
+    assert.match(parsed.next_action, /subscription CLI login/i);
+    assert.doesNotMatch(result.stdout, /same-direct-api-key-must-not-leak/);
+
+    const logLines = readGrokCliLog(logPath);
+    assert.deepEqual(logLines.map((line) => line.apiEnvKeys), [[], []]);
+  } finally {
+    rmTree(authHome);
+    rmTree(dataDir);
+  }
+});
+
+test("Grok runtime reads direct API credential names from provider metadata", () => {
+  const entrypointSource = readFileSync(COMPANION, "utf8");
+  const runtimeSource = readFileSync(COMPANION_RUNTIME, "utf8");
+  assert.match(runtimeSource, /providerApiCapability\("grok"\)/);
+  for (const source of [entrypointSource, runtimeSource]) {
+    assert.doesNotMatch(source, /\b(?:GROK_API_KEY|XAI_API_KEY|XAI_KEY)\b/);
+  }
+});
+
+test("custom-review classifies source-free Grok CLI auth timeout as not sent", () => {
+  const cwd = realpathSync(mkdtempSync(path.join(tmpdir(), "grok-cli-auth-timeout-workspace-")));
+  const dataDir = mkdtempSync(path.join(tmpdir(), "grok-cli-auth-timeout-data-"));
+  const authHome = mkdtempSync(path.join(tmpdir(), "grok-cli-auth-timeout-auth-home-"));
+  const { binDir, grokPath, logPath } = makeFakeGrokCli({
+    sourceFreeAuthStderr: GROK_SOURCE_FREE_AUTH_TIMEOUT_STDERR,
+  });
+  writeGrokCliAuthFixture(cwd, authHome);
+
+  try {
+    const result = run([
+      "run",
+      "--mode", "custom-review",
+      "--scope", "custom",
+      "--scope-paths", "review.js",
+      "--foreground",
+      "--prompt", "Review selected source.",
+    ], {
+      cwd,
+      defaultTransport: false,
+      env: {
+        PATH: `${binDir}${path.delimiter}${process.env.PATH ?? ""}`,
+        GROK_CLI_BINARY: grokPath,
+        GROK_CLI_AUTH_HOME: authHome,
+        GROK_PLUGIN_DATA: dataDir,
+      },
+    });
+
+    assert.equal(result.status, 1, result.stdout);
+    const record = parseStdout(result);
+    assert.equal(record.status, "failed");
+    assert.equal(record.error_code, "grok_cli_auth_timeout");
+    assert.equal(record.error_cause, "grok_cli");
+    assert.equal(record.auth_mode, "subscription_cli");
+    assert.equal(record.external_review.source_content_transmission, "not_sent");
+    assert.equal(record.runtime_diagnostics.cli_request.logged_in, true);
+    assert.equal(record.runtime_diagnostics.cli_request.model_ready, true);
+    assert.equal(record.runtime_diagnostics.cli_request.exit_status, 1);
+    assert.match(record.runtime_diagnostics.cli_request.stderr_head, /OSStatus error -10661/);
+    assert.match(record.runtime_diagnostics.cli_request.stderr_head, /Login timed out after 10 minutes/);
+    assert.equal(record.runtime_diagnostics.cli_request.source_free_prompt_cleanup, "deleted");
+    assert.equal(record.runtime_diagnostics.cli_request.source_free_grok_home_cleanup, "deleted");
+    assert.equal(record.runtime_diagnostics.cli_request.prompt_cleanup, null);
+    assert.equal(record.runtime_diagnostics.cli_request.grok_home_cleanup, null);
+    assert.match(record.suggested_action, /grok login|auth/i);
+    assert.doesNotMatch(record.suggested_action, /temporary Grok CLI runtime\/prompt artifacts/);
+    assert.doesNotMatch(JSON.stringify(record), /CLI_SOURCE_SECRET/);
+
+    const logLines = readGrokCliLog(logPath);
+    const promptInvocations = logLines.filter((line) => line.promptPath);
+    assert.equal(promptInvocations.length, 1);
+    assert.equal(promptInvocations[0].promptHasSource, false);
+  } finally {
+    rmTree(authHome);
+    rmTree(cwd);
+    rmTree(dataDir);
+  }
+});
+
+test("doctor classifies source-free Grok CLI auth timeout as not ready", () => {
+  const dataDir = mkdtempSync(path.join(tmpdir(), "grok-cli-auth-timeout-doctor-data-"));
+  const authHome = mkdtempSync(path.join(tmpdir(), "grok-cli-auth-timeout-doctor-auth-home-"));
+  const { binDir, grokPath, logPath } = makeFakeGrokCli({
+    sourceFreeAuthStderr: GROK_SOURCE_FREE_AUTH_TIMEOUT_STDERR,
+  });
+  writeFileSync(path.join(authHome, "auth.json"), "{\"token\":\"fake\"}\n");
+  writeFileSync(path.join(authHome, "config.toml"), "[models]\ndefault = \"grok-build\"\n");
+
+  try {
+    const result = run(["doctor"], {
+      defaultTransport: false,
+      env: {
+        PATH: `${binDir}${path.delimiter}${process.env.PATH ?? ""}`,
+        GROK_CLI_BINARY: grokPath,
+        GROK_CLI_AUTH_HOME: authHome,
+        GROK_PLUGIN_DATA: dataDir,
+      },
+    });
+
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    const parsed = parseStdout(result);
+    assert.equal(parsed.ready, false);
+    assert.equal(parsed.transport, "cli");
+    assert.equal(parsed.auth_mode, "subscription_cli");
+    assert.equal(parsed.error_code, "grok_cli_auth_timeout");
+    assert.equal(parsed.logged_in, true);
+    assert.equal(parsed.model_ready, true);
+    assert.equal(parsed.readiness_layers.cli_login.status, "ready");
+    assert.equal(parsed.readiness_layers.source_free_prompt.status, "failed");
+    assert.match(parsed.next_action, /grok login|auth/i);
+    assert.doesNotMatch(JSON.stringify(parsed), /CLI_SOURCE_SECRET/);
+
+    const logLines = readGrokCliLog(logPath);
+    const promptInvocations = logLines.filter((line) => line.promptPath);
+    assert.equal(promptInvocations.length, 1);
+    assert.equal(promptInvocations[0].promptHasSource, false);
+  } finally {
+    rmTree(authHome);
+    rmTree(dataDir);
+  }
+});
+
+test("custom-review explicit web transport ignores unauthenticated Grok CLI state", async () => {
+  const cwd = realpathSync(mkdtempSync(path.join(tmpdir(), "grok-web-explicit-cli-logged-out-workspace-")));
+  const dataDir = mkdtempSync(path.join(tmpdir(), "grok-web-explicit-cli-logged-out-data-"));
+  const authHome = mkdtempSync(path.join(tmpdir(), "grok-web-explicit-cli-logged-out-auth-home-"));
+  const { binDir, grokPath, logPath } = makeFakeGrokCli({ modelsOutput: GROK_MODELS_READY_LOGGED_OUT });
+  writeGrokCliAuthFixture(cwd, authHome);
+
+  try {
+    await withServer(async (req, res) => {
+      assert.equal(req.url, "/api/chat/completions");
+      const body = await readJsonRequest(req);
+      assert.match(body.messages[0].content, /BEGIN GROK FILE 1: review\.js/);
+      res.setHeader("content-type", "application/json");
+      res.end(JSON.stringify({
+        id: "grok-web-explicit-cli-logged-out",
+        model: "grok-4.20-fast",
+        choices: [{ message: { content: substantiveReviewFixture("Explicit web transport remains isolated.") } }],
+      }));
+    }, async (baseUrl) => {
+      const result = await runAsync([
+        "run",
+        "--transport", "web",
+        "--mode", "custom-review",
+        "--scope", "custom",
+        "--scope-paths", "review.js",
+        "--foreground",
+        "--prompt", "Review selected source.",
+      ], {
+        cwd,
+        defaultTransport: false,
+        env: {
+          PATH: `${binDir}${path.delimiter}${process.env.PATH ?? ""}`,
+          GROK_CLI_BINARY: grokPath,
+          GROK_CLI_AUTH_HOME: authHome,
+          GROK_PLUGIN_DATA: dataDir,
+          GROK_WEB_BASE_URL: baseUrl,
+        },
+      });
+
+      assert.equal(result.status, 0, result.stderr || result.stdout);
+      const record = parseStdout(result);
+      assert.equal(record.provider, "grok-web");
+      assert.equal(record.auth_mode, "subscription_web");
+      assert.equal(record.external_review.provider, "Grok Web");
+      assert.equal(record.external_review.source_content_transmission, "sent");
+      assert.deepEqual(readGrokCliLog(logPath), []);
+    });
+  } finally {
+    rmTree(authHome);
+    rmTree(cwd);
+    rmTree(dataDir);
+  }
+});
+
+test("repair reports Grok CLI login-required as actionable CLI auth repair", () => {
+  const dataDir = mkdtempSync(path.join(tmpdir(), "grok-cli-login-required-repair-data-"));
+  const authHome = mkdtempSync(path.join(tmpdir(), "grok-cli-login-required-repair-auth-home-"));
+  const { binDir, grokPath, logPath } = makeFakeGrokCli({ modelsOutput: GROK_MODELS_READY_LOGGED_OUT });
+  writeFileSync(path.join(authHome, "auth.json"), "{\"token\":\"fake\"}\n");
+  writeFileSync(path.join(authHome, "config.toml"), "[models]\ndefault = \"grok-build\"\n");
+
+  try {
+    const result = run(["repair"], {
+      defaultTransport: false,
+      env: {
+        PATH: `${binDir}${path.delimiter}${process.env.PATH ?? ""}`,
+        GROK_CLI_BINARY: grokPath,
+        GROK_CLI_AUTH_HOME: authHome,
+        GROK_PLUGIN_DATA: dataDir,
+      },
+    });
+
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    const parsed = parseStdout(result);
+    assert.equal(parsed.ok, false);
+    assert.equal(parsed.status, "cli_auth_required");
+    assert.equal(parsed.provider, "grok");
+    assert.equal(parsed.error_code, "grok_cli_login_required");
+    assert.equal(parsed.initial_doctor.error_code, "grok_cli_login_required");
+    assert.equal(parsed.sync_session.status, "not_attempted");
+    assert.equal(parsed.sync_session.source_content_transmission, "not_sent");
+    assert.match(parsed.next_action, /grok login/i);
+    assert.doesNotMatch(parsed.next_action, /--approve-browser-session-sync|grok2api/i);
+    assert.deepEqual(readGrokCliLog(logPath).map((line) => line.args[0]), ["--version", "models"]);
+  } finally {
+    rmTree(authHome);
+    rmTree(dataDir);
+  }
+});
+
+test("repair reports ready Grok CLI state without web/tunnel labels", () => {
+  const dataDir = mkdtempSync(path.join(tmpdir(), "grok-cli-ready-repair-data-"));
+  const authHome = mkdtempSync(path.join(tmpdir(), "grok-cli-ready-repair-auth-home-"));
+  const { binDir, grokPath } = makeFakeGrokCli();
+  writeFileSync(path.join(authHome, "auth.json"), "{\"token\":\"fake\"}\n");
+  writeFileSync(path.join(authHome, "config.toml"), "[models]\ndefault = \"grok-build\"\n");
+
+  try {
+    const result = run(["repair"], {
+      defaultTransport: false,
+      env: {
+        PATH: `${binDir}${path.delimiter}${process.env.PATH ?? ""}`,
+        GROK_CLI_BINARY: grokPath,
+        GROK_CLI_AUTH_HOME: authHome,
+        GROK_PLUGIN_DATA: dataDir,
+      },
+    });
+
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    const parsed = parseStdout(result);
+    assert.equal(parsed.ok, true);
+    assert.equal(parsed.status, "ready");
+    assert.equal(parsed.provider, "grok");
+    assert.match(parsed.next_action, /Grok CLI review/i);
+    assert.doesNotMatch(JSON.stringify(parsed), /Grok web review|grok2api/i);
+  } finally {
+    rmTree(authHome);
+    rmTree(dataDir);
+  }
+});
+
+test("repair reports non-auth Grok CLI failures without web/tunnel labels", () => {
+  const dataDir = mkdtempSync(path.join(tmpdir(), "grok-cli-nonauth-repair-data-"));
+  const missingGrok = path.join(dataDir, "missing-grok");
+
+  try {
+    const result = run(["repair"], {
+      defaultTransport: false,
+      env: {
+        PATH: process.env.PATH ?? "",
+        GROK_CLI_BINARY: missingGrok,
+        GROK_PLUGIN_DATA: dataDir,
+      },
+    });
+
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    const parsed = parseStdout(result);
+    assert.equal(parsed.ok, false);
+    assert.equal(parsed.status, "not_repairable");
+    assert.equal(parsed.provider, "grok");
+    assert.equal(parsed.error_code, "grok_cli_unavailable");
+    assert.equal(parsed.sync_session.status, "not_attempted");
+    assert.equal(parsed.sync_session.source_content_transmission, "not_sent");
+    assert.match(parsed.next_action, /Grok CLI/i);
+    assert.doesNotMatch(JSON.stringify(parsed), /Grok web review|grok2api|browser session sync/i);
+  } finally {
+    rmTree(dataDir);
+  }
+});
+
+test("doctor distinguishes Grok CLI login-required from models command failure and preserves layer shape", () => {
+  const loginDataDir = mkdtempSync(path.join(tmpdir(), "grok-cli-login-precedence-data-"));
+  const loginAuthHome = mkdtempSync(path.join(tmpdir(), "grok-cli-login-precedence-auth-home-"));
+  const loginCli = makeFakeGrokCli({ modelsOutput: "Available models:\n" });
+  const modelsDataDir = mkdtempSync(path.join(tmpdir(), "grok-cli-models-failed-data-"));
+  const modelsAuthHome = mkdtempSync(path.join(tmpdir(), "grok-cli-models-failed-auth-home-"));
+  const modelsCli = makeFakeGrokCli({ modelsExitStatus: 1, modelsStderr: "auth store unavailable\n" });
+
+  try {
+    for (const authHome of [loginAuthHome, modelsAuthHome]) {
+      writeFileSync(path.join(authHome, "auth.json"), "{\"token\":\"fake\"}\n");
+      writeFileSync(path.join(authHome, "config.toml"), "[models]\ndefault = \"grok-build\"\n");
+    }
+
+    const loginResult = run(["doctor"], {
+      defaultTransport: false,
+      env: {
+        PATH: `${loginCli.binDir}${path.delimiter}${process.env.PATH ?? ""}`,
+        GROK_CLI_BINARY: loginCli.grokPath,
+        GROK_CLI_AUTH_HOME: loginAuthHome,
+        GROK_PLUGIN_DATA: loginDataDir,
+      },
+    });
+    assert.equal(loginResult.status, 0, loginResult.stderr || loginResult.stdout);
+    const loginParsed = parseStdout(loginResult);
+    assert.equal(loginParsed.ready, false);
+    assert.equal(loginParsed.error_code, "grok_cli_login_required");
+    assert.equal(loginParsed.logged_in, false);
+    assert.equal(loginParsed.model_ready, false);
+    assert.ok(Object.hasOwn(loginParsed.readiness_layers, "cli_binary"));
+    assert.ok(Object.hasOwn(loginParsed.readiness_layers, "models"));
+    assert.ok(Object.hasOwn(loginParsed.readiness_layers, "cli_login"));
+    assert.ok(Object.hasOwn(loginParsed.readiness_layers, "source_free_prompt"));
+    assert.equal(loginParsed.readiness_layers.cli_login.status, "failed");
+    assert.equal(loginParsed.readiness_layers.source_free_prompt.status, "skipped");
+
+    const modelsResult = run(["doctor"], {
+      defaultTransport: false,
+      env: {
+        PATH: `${modelsCli.binDir}${path.delimiter}${process.env.PATH ?? ""}`,
+        GROK_CLI_BINARY: modelsCli.grokPath,
+        GROK_CLI_AUTH_HOME: modelsAuthHome,
+        GROK_PLUGIN_DATA: modelsDataDir,
+      },
+    });
+    assert.equal(modelsResult.status, 0, modelsResult.stderr || modelsResult.stdout);
+    const modelsParsed = parseStdout(modelsResult);
+    assert.equal(modelsParsed.ready, false);
+    assert.equal(modelsParsed.error_code, "grok_cli_auth_unavailable");
+    assert.equal(modelsParsed.logged_in, null);
+    assert.equal(modelsParsed.model_ready, null);
+  } finally {
+    rmTree(loginAuthHome);
+    rmTree(loginDataDir);
+    rmTree(modelsAuthHome);
+    rmTree(modelsDataDir);
+  }
+});
+
+test("custom-review marks failed source-bearing Grok CLI launches as may-be-sent", () => {
+  const cwd = realpathSync(mkdtempSync(path.join(tmpdir(), "grok-cli-failed-source-workspace-")));
+  const dataDir = mkdtempSync(path.join(tmpdir(), "grok-cli-failed-source-data-"));
+  const authHome = mkdtempSync(path.join(tmpdir(), "grok-cli-failed-source-auth-home-"));
+  const { binDir, grokPath, logPath } = makeFakeGrokCli({ failSourceBearing: true });
+  writeFileSync(path.join(cwd, "review.js"), "export const marker = 'CLI_SOURCE_SECRET';\n");
+  writeFileSync(path.join(authHome, "auth.json"), "{\"token\":\"fake\"}\n");
+  writeFileSync(path.join(authHome, "config.toml"), "[models]\ndefault = \"grok-build\"\n");
+
+  try {
+    const result = run([
+      "run",
+      "--mode", "custom-review",
+      "--scope", "custom",
+      "--scope-paths", "review.js",
+      "--foreground",
+      "--prompt", "Review selected source.",
+    ], {
+      cwd,
+      defaultTransport: false,
+      env: {
+        PATH: `${binDir}${path.delimiter}${process.env.PATH ?? ""}`,
+        GROK_CLI_BINARY: grokPath,
+        GROK_CLI_AUTH_HOME: authHome,
+        GROK_PLUGIN_DATA: dataDir,
+        GROK_WEB_BASE_URL: "http://127.0.0.1:9/v1",
+      },
+    });
+
+    assert.equal(result.status, 1, result.stdout);
+    const record = parseStdout(result);
+    assert.equal(record.status, "failed");
+    assert.equal(record.error_code, "grok_cli_failed");
+    assert.equal(record.external_review.provider, "Grok CLI");
+    assert.equal(record.external_review.source_content_transmission, "may_be_sent");
+    assert.match(record.external_review.disclosure, /may have been sent/i);
+    assert.equal(record.runtime_diagnostics.cli_request.prompt_cleanup, "deleted");
+    assert.equal(record.runtime_diagnostics.cli_request.grok_home_cleanup, "deleted");
+    assert.doesNotMatch(JSON.stringify(record), /CLI_SOURCE_SECRET/);
+
+    const logLines = readFileSync(logPath, "utf8").trim().split(/\n/).map((line) => JSON.parse(line));
+    const sourceInvocation = logLines.find((line) => line.promptHasSource);
+    assert.ok(sourceInvocation, "mock Grok CLI should launch with a source-bearing prompt file");
+    assert.equal(existsSync(sourceInvocation.promptPath), false);
+    assert.equal(existsSync(sourceInvocation.grokHome), false);
+  } finally {
+    rmTree(authHome);
+    rmTree(cwd);
+    rmTree(dataDir);
+  }
+});
+
+test("custom-review keeps failed source-bearing Grok CLI cleanup errors as may-be-sent", () => {
+  const cwd = realpathSync(mkdtempSync(path.join(tmpdir(), "grok-cli-failed-cleanup-workspace-")));
+  const dataDir = mkdtempSync(path.join(tmpdir(), "grok-cli-failed-cleanup-data-"));
+  const authHome = mkdtempSync(path.join(tmpdir(), "grok-cli-failed-cleanup-auth-home-"));
+  const { binDir, grokPath, logPath } = makeFakeGrokCli({
+    failSourceBearing: true,
+    failSourceBearingHomeCleanup: true,
+  });
+  writeFileSync(path.join(cwd, "review.js"), "export const marker = 'CLI_SOURCE_SECRET';\n");
+  writeFileSync(path.join(authHome, "auth.json"), "{\"token\":\"fake\"}\n");
+  writeFileSync(path.join(authHome, "config.toml"), "[models]\ndefault = \"grok-build\"\n");
+  let runtimeHome = null;
+
+  try {
+    const result = run([
+      "run",
+      "--mode", "custom-review",
+      "--scope", "custom",
+      "--scope-paths", "review.js",
+      "--foreground",
+      "--prompt", "Review selected source.",
+    ], {
+      cwd,
+      defaultTransport: false,
+      env: {
+        PATH: `${binDir}${path.delimiter}${process.env.PATH ?? ""}`,
+        GROK_CLI_BINARY: grokPath,
+        GROK_CLI_AUTH_HOME: authHome,
+        GROK_PLUGIN_DATA: dataDir,
+        GROK_WEB_BASE_URL: "http://127.0.0.1:9/v1",
+      },
+    });
+
+    assert.equal(result.status, 1, result.stdout);
+    const record = parseStdout(result);
+    assert.equal(record.status, "failed");
+    assert.equal(record.error_code, "privacy_persistence");
+    assert.equal(record.error_cause, "privacy_persistence");
+    assert.match(record.suggested_action, /temporary Grok CLI runtime\/prompt artifacts/);
+    assert.equal(record.external_review.source_content_transmission, "may_be_sent");
+    assert.equal(record.runtime_diagnostics.cli_request.grok_home_cleanup, "unverified");
+    assert.equal(record.runtime_diagnostics.cli_request.exit_status, 2);
+    assert.match(record.runtime_diagnostics.cli_request.stderr_head, /unknown option --no-memory/);
+    assert.doesNotMatch(JSON.stringify(record), /CLI_SOURCE_SECRET/);
+
+    const logLines = readFileSync(logPath, "utf8").trim().split(/\n/).map((line) => JSON.parse(line));
+    const sourceInvocation = logLines.find((line) => line.promptHasSource);
+    runtimeHome = sourceInvocation?.grokHome ?? null;
+    assert.ok(runtimeHome, "mock Grok CLI should expose the temp home it made uncleanable");
+  } finally {
+    if (runtimeHome && existsSync(runtimeHome)) {
+      const blocked = path.join(runtimeHome, "blocked-cleanup");
+      if (existsSync(blocked)) chmodSync(blocked, 0o700);
+      rmTree(runtimeHome);
+    }
+    rmTree(authHome);
+    rmTree(cwd);
+    rmTree(dataDir);
+  }
+});
+
+test("custom-review labels failed source-free Grok CLI preflight cleanup separately", () => {
+  const cwd = realpathSync(mkdtempSync(path.join(tmpdir(), "grok-cli-preflight-cleanup-workspace-")));
+  const dataDir = mkdtempSync(path.join(tmpdir(), "grok-cli-preflight-cleanup-data-"));
+  const authHome = mkdtempSync(path.join(tmpdir(), "grok-cli-preflight-cleanup-auth-home-"));
+  const { binDir, grokPath, logPath } = makeFakeGrokCli({
+    failSourceFreeHomeCleanup: true,
+  });
+  writeFileSync(path.join(cwd, "review.js"), "export const marker = 'CLI_SOURCE_SECRET';\n");
+  writeFileSync(path.join(authHome, "auth.json"), "{\"token\":\"fake\"}\n");
+  writeFileSync(path.join(authHome, "config.toml"), "[models]\ndefault = \"grok-build\"\n");
+  let runtimeHome = null;
+
+  try {
+    const result = run([
+      "run",
+      "--mode", "custom-review",
+      "--scope", "custom",
+      "--scope-paths", "review.js",
+      "--foreground",
+      "--prompt", "Review selected source.",
+    ], {
+      cwd,
+      defaultTransport: false,
+      env: {
+        PATH: `${binDir}${path.delimiter}${process.env.PATH ?? ""}`,
+        GROK_CLI_BINARY: grokPath,
+        GROK_CLI_AUTH_HOME: authHome,
+        GROK_PLUGIN_DATA: dataDir,
+        GROK_WEB_BASE_URL: "http://127.0.0.1:9/v1",
+      },
+    });
+
+    assert.equal(result.status, 1, result.stdout);
+    const record = parseStdout(result);
+    assert.equal(record.status, "failed");
+    assert.equal(record.error_code, "privacy_persistence");
+    assert.equal(record.error_cause, "privacy_persistence");
+    assert.equal(record.external_review.source_content_transmission, "not_sent");
+    assert.equal(record.runtime_diagnostics.cli_request.source_free_grok_home_cleanup, "unverified");
+    assert.equal(record.runtime_diagnostics.cli_request.grok_home_cleanup, null);
+    assert.doesNotMatch(JSON.stringify(record), /CLI_SOURCE_SECRET/);
+
+    const logLines = readFileSync(logPath, "utf8").trim().split(/\n/).map((line) => JSON.parse(line));
+    const sourceFreeInvocation = logLines.find((line) => line.promptPath && !line.promptHasSource);
+    runtimeHome = sourceFreeInvocation?.grokHome ?? null;
+    assert.ok(runtimeHome, "mock Grok CLI should expose the source-free temp home it made uncleanable");
+    assert.equal(logLines.some((line) => line.promptHasSource), false);
+  } finally {
+    if (runtimeHome && existsSync(runtimeHome)) {
+      const blocked = path.join(runtimeHome, "blocked-cleanup");
+      if (existsSync(blocked)) chmodSync(blocked, 0o700);
+      rmTree(runtimeHome);
+    }
+    rmTree(authHome);
+    rmTree(cwd);
+    rmTree(dataDir);
+  }
+});
+
+test("custom-review fails closed when source-bearing Grok CLI prompt cleanup is not verified", () => {
+  const cwd = realpathSync(mkdtempSync(path.join(tmpdir(), "grok-cli-prompt-cleanup-workspace-")));
+  const dataDir = mkdtempSync(path.join(tmpdir(), "grok-cli-prompt-cleanup-data-"));
+  const authHome = mkdtempSync(path.join(tmpdir(), "grok-cli-prompt-cleanup-auth-home-"));
+  const { binDir, grokPath, logPath } = makeFakeGrokCli({
+    failSourceBearingPromptCleanup: true,
+  });
+  writeFileSync(path.join(cwd, "review.js"), "export const marker = 'CLI_SOURCE_SECRET';\n");
+  writeFileSync(path.join(authHome, "auth.json"), "{\"token\":\"fake\"}\n");
+  writeFileSync(path.join(authHome, "config.toml"), "[models]\ndefault = \"grok-build\"\n");
+  let promptDir = null;
+
+  try {
+    const result = run([
+      "run",
+      "--mode", "custom-review",
+      "--scope", "custom",
+      "--scope-paths", "review.js",
+      "--foreground",
+      "--prompt", "Review selected source.",
+    ], {
+      cwd,
+      defaultTransport: false,
+      env: {
+        PATH: `${binDir}${path.delimiter}${process.env.PATH ?? ""}`,
+        GROK_CLI_BINARY: grokPath,
+        GROK_CLI_AUTH_HOME: authHome,
+        GROK_PLUGIN_DATA: dataDir,
+        GROK_WEB_BASE_URL: "http://127.0.0.1:9/v1",
+      },
+    });
+
+    assert.equal(result.status, 1, result.stdout);
+    const record = parseStdout(result);
+    assert.equal(record.status, "failed");
+    assert.equal(record.error_code, "privacy_persistence");
+    assert.equal(record.error_cause, "privacy_persistence");
+    assert.equal(record.external_review.source_content_transmission, "sent");
+    assert.match(record.suggested_action, /temporary Grok CLI runtime\/prompt artifacts/);
+    assert.equal(record.runtime_diagnostics.cli_request.prompt_cleanup, "file_deleted");
+    assert.equal(record.runtime_diagnostics.cli_request.grok_home_cleanup, "deleted");
+    assert.doesNotMatch(JSON.stringify(record), /CLI_SOURCE_SECRET/);
+
+    const logLines = readFileSync(logPath, "utf8").trim().split(/\n/).map((line) => JSON.parse(line));
+    const sourceInvocation = logLines.find((line) => line.promptHasSource);
+    promptDir = sourceInvocation?.promptPath ? path.dirname(sourceInvocation.promptPath) : null;
+    assert.ok(promptDir, "mock Grok CLI should expose the prompt dir it made uncleanable");
+  } finally {
+    if (promptDir && existsSync(promptDir)) rmTree(promptDir);
+    rmTree(authHome);
+    rmTree(cwd);
+    rmTree(dataDir);
+  }
+});
+
+test("custom-review fails closed when Grok CLI neutral cwd cleanup is not verified", () => {
+  const cwd = realpathSync(mkdtempSync(path.join(tmpdir(), "grok-cli-neutral-cleanup-workspace-")));
+  const dataDir = mkdtempSync(path.join(tmpdir(), "grok-cli-neutral-cleanup-data-"));
+  const authHome = mkdtempSync(path.join(tmpdir(), "grok-cli-neutral-cleanup-auth-home-"));
+  const { binDir, grokPath } = makeFakeGrokCli({
+    failNeutralCwdCleanup: true,
+  });
+  writeFileSync(path.join(cwd, "review.js"), "export const marker = 'CLI_SOURCE_SECRET';\n");
+  writeFileSync(path.join(authHome, "auth.json"), "{\"token\":\"fake\"}\n");
+  writeFileSync(path.join(authHome, "config.toml"), "[models]\ndefault = \"grok-build\"\n");
+  let neutralCwd = null;
+
+  try {
+    const result = run([
+      "run",
+      "--mode", "custom-review",
+      "--scope", "custom",
+      "--scope-paths", "review.js",
+      "--foreground",
+      "--prompt", "Review selected source.",
+    ], {
+      cwd,
+      defaultTransport: false,
+      env: {
+        PATH: `${binDir}${path.delimiter}${process.env.PATH ?? ""}`,
+        GROK_CLI_BINARY: grokPath,
+        GROK_CLI_AUTH_HOME: authHome,
+        GROK_PLUGIN_DATA: dataDir,
+        GROK_WEB_BASE_URL: "http://127.0.0.1:9/v1",
+      },
+    });
+
+    assert.equal(result.status, 1, result.stdout);
+    const record = parseStdout(result);
+    neutralCwd = record.runtime_diagnostics.cli_request.neutral_cwd;
+    assert.equal(record.status, "failed");
+    assert.equal(record.error_code, "privacy_persistence");
+    assert.equal(record.error_cause, "privacy_persistence");
+    assert.equal(record.runtime_diagnostics.cli_request.neutral_cwd_cleanup, "unverified");
+    assert.equal(record.external_review.source_content_transmission, "sent");
+    assert.doesNotMatch(JSON.stringify(record), /CLI_SOURCE_SECRET/);
+  } finally {
+    if (neutralCwd) rmTree(neutralCwd);
+    rmTree(authHome);
+    rmTree(cwd);
+    rmTree(dataDir);
+  }
+});
+
+test("custom-review reports missing Grok CLI binary as not sent", () => {
+  const cwd = realpathSync(mkdtempSync(path.join(tmpdir(), "grok-cli-missing-workspace-")));
+  const dataDir = mkdtempSync(path.join(tmpdir(), "grok-cli-missing-data-"));
+  writeFileSync(path.join(cwd, "review.js"), "export const marker = 'CLI_SOURCE_SECRET';\n");
+
+  try {
+    const result = run([
+      "run",
+      "--mode", "custom-review",
+      "--scope", "custom",
+      "--scope-paths", "review.js",
+      "--foreground",
+      "--prompt", "Review selected source.",
+    ], {
+      cwd,
+      defaultTransport: false,
+      env: {
+        GROK_CLI_BINARY: path.join(cwd, "missing-grok"),
+        GROK_PLUGIN_DATA: dataDir,
+        GROK_WEB_BASE_URL: "http://127.0.0.1:9/v1",
+      },
+    });
+
+    assert.equal(result.status, 1, result.stdout);
+    const record = parseStdout(result);
+    assert.equal(record.status, "failed");
+    assert.equal(record.error_code, "grok_cli_unavailable");
+    assert.equal(record.error_cause, "grok_cli");
+    assert.equal(record.external_review.source_content_transmission, "not_sent");
+    assert.doesNotMatch(JSON.stringify(record), /CLI_SOURCE_SECRET/);
+  } finally {
+    rmTree(cwd);
+    rmTree(dataDir);
+  }
+});
 
 test("run defaults plugin state outside the reviewed workspace", async () => {
   const cwd = realpathSync(mkdtempSync(path.join(tmpdir(), "grok-web-clean-workspace-")));
@@ -1945,11 +3322,13 @@ test("doctor reports tunnel_unavailable when the local Grok tunnel is not reacha
   assert.doesNotMatch(result.stdout, /api\.x\.ai/i);
 });
 
-test("doctor explains direct Grok API keys are ignored for subscription web mode", () => {
+test("doctor does not expose legacy GROK_API_KEY as a Grok auth path", () => {
   const result = run(["doctor"], {
     env: {
       GROK_WEB_BASE_URL: "http://127.0.0.1:9/v1",
       GROK_API_KEY: "xai-direct-api-key",
+      XAI_API_KEY: "",
+      XAI_KEY: "",
     },
   });
   const parsed = parseStdout(result);
@@ -1959,8 +3338,7 @@ test("doctor explains direct Grok API keys are ignored for subscription web mode
   assert.equal(parsed.ready, false);
   assert.equal(parsed.reachable, false);
   assert.equal(parsed.error_code, "tunnel_unavailable");
-  assert.match(parsed.error_message, /GROK_API_KEY is ignored/i);
-  assert.match(parsed.error_message, /GROK_WEB_TUNNEL_API_KEY/i);
+  assert.doesNotMatch(parsed.error_message, /GROK_API_KEY|XAI_API_KEY|XAI_KEY/i);
   assert.match(parsed.next_action, /GROK2API_HOME|local Grok web tunnel/i);
   assert.doesNotMatch(result.stdout, /xai-direct-api-key/);
 });
@@ -1980,18 +3358,20 @@ test("doctor explains XAI_API_KEY is ignored for subscription web mode", () => {
   assert.doesNotMatch(result.stdout, /xai-direct-api-key/);
 });
 
-test("doctor explains XAI_KEY is ignored for subscription web mode", () => {
+test("doctor does not expose legacy XAI_KEY as a Grok auth path", () => {
   const result = run(["doctor"], {
     env: {
       GROK_WEB_BASE_URL: "http://127.0.0.1:9/v1",
+      GROK_API_KEY: "",
       XAI_KEY: "xai-direct-api-key",
+      XAI_API_KEY: "",
     },
   });
   const parsed = parseStdout(result);
 
   assert.equal(result.status, 0);
   assert.equal(parsed.error_code, "tunnel_unavailable");
-  assert.match(parsed.error_message, /XAI_KEY is ignored/i);
+  assert.doesNotMatch(parsed.error_message, /GROK_API_KEY|XAI_API_KEY|XAI_KEY/i);
   assert.doesNotMatch(result.stdout, /xai-direct-api-key/);
 });
 
@@ -2070,6 +3450,14 @@ test("custom-review sends selected source to a local Grok web tunnel and persist
     assert.equal(record.review_metadata.audit_manifest.request.timeout_ms, 123456);
     assert.equal(record.review_metadata.audit_manifest.request.temperature, 0);
     assert.match(record.review_metadata.audit_manifest.prompt_builder.plugin_commit, /^[a-f0-9]{40}$/);
+    assert.equal(record.review_metadata.audit_manifest.selected_route, "subscription_web");
+    assert.equal(record.review_metadata.audit_manifest.fallback_reason, null);
+    assert.equal(record.review_metadata.audit_manifest.auth_path, "subscription_web");
+    assert.equal(record.review_metadata.audit_manifest.billing_path, null);
+    assert.equal(record.review_metadata.audit_manifest.source_bearing, true);
+    assert.equal(record.review_metadata.audit_manifest.source_send_approval_required, false);
+    assert.equal(record.review_metadata.audit_manifest.source_send_approval_state, "not_required");
+    assert.equal(record.review_metadata.audit_manifest.approval_scope, null);
     assert.notEqual(
       record.review_metadata.audit_manifest.prompt_builder.plugin_commit,
       record.review_metadata.audit_manifest.git_identity.head_sha,
@@ -2208,10 +3596,73 @@ test("custom-review fails closed when Grok tunnel returns shallow HTTP 200 outpu
   });
 });
 
-test("custom-review lifecycle jsonl emits launch before terminal record", async () => {
-  const cwd = mkdtempSync(path.join(tmpdir(), "grok-web-workspace-"));
-  const reviewText = substantiveReviewFixture("Lifecycle marker: no findings.");
+test("custom-review guides substantive missing-verdict retry without automatic resend", async () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "grok-web-bad-verdict-workspace-"));
+  const dataDir = mkdtempSync(path.join(tmpdir(), "grok-web-bad-verdict-data-"));
+  const badResult = badVerdictReviewFixture("Grok missing verdict replay marker.");
   writeFileSync(path.join(cwd, "review.js"), "export const value = 42;\n");
+
+  try {
+    await withServer(async (req, res) => {
+      assert.equal(req.method, "POST");
+      assert.equal(req.url, "/api/chat/completions");
+      const body = await readJsonRequest(req);
+      assert.match(body.messages[0].content, /review\.js/);
+      assert.match(body.messages[0].content, /export const value = 42/);
+      res.setHeader("content-type", "application/json");
+      res.end(JSON.stringify({
+        id: "grok-web-bad-verdict-session",
+        model: "grok-4.20-fast",
+        choices: [{ message: { content: badResult } }],
+        usage: { prompt_tokens: 12, completion_tokens: 40, total_tokens: 52 },
+      }));
+    }, async (baseUrl) => {
+      const result = await runAsync([
+        "run",
+        "--mode", "custom-review",
+        "--scope", "custom",
+        "--scope-paths", "review.js",
+        "--foreground",
+        "--prompt", "Check this file.",
+      ], {
+        cwd,
+        env: {
+          GROK_WEB_BASE_URL: baseUrl,
+          GROK_PLUGIN_DATA: dataDir,
+        },
+      });
+      const record = parseStdout(result);
+
+      assert.equal(result.status, 1);
+      assert.equal(record.status, "failed");
+      assert.equal(record.error_code, "review_not_completed");
+      assert.equal(record.error_cause, "review_quality");
+      assert.equal(record.error_message, "review_quality_failed:missing_verdict");
+      assert.equal(record.result, badResult);
+      assert.equal(record.external_review.source_content_transmission, "sent");
+      assert.equal(record.review_metadata.audit_manifest.review_quality.failed_review_slot, true);
+      assert.deepEqual(
+        record.review_metadata.audit_manifest.review_quality.semantic_failure_reasons,
+        ["missing_verdict"],
+      );
+      assert.match(record.suggested_action, /Treat this .* slot as failed/i);
+      assert.match(record.suggested_action, /Do not automatically resend selected source/i);
+      assert.doesNotMatch(record.suggested_action, /direct API|fresh matching approval token/i);
+      assert.match(record.suggested_action, /same Grok reviewer/i);
+      assert.match(record.suggested_action, /narrowing the scope/i);
+      assert.match(record.suggested_action, /sharding/i);
+      assert.match(record.suggested_action, /relaying/i);
+    });
+  } finally {
+    rmTree(cwd);
+    rmTree(dataDir);
+  }
+});
+
+test("custom-review lifecycle jsonl emits launch before terminal projection", async () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "grok-web-workspace-"));
+  const reviewText = substantiveReviewFixture("SOURCE_BODY_SENTINEL_DO_NOT_PERSIST");
+  writeFileSync(path.join(cwd, "review.js"), "SOURCE_BODY_SENTINEL_DO_NOT_PERSIST\n");
 
   await withServer(async (_req, res) => {
     await sleep(100);
@@ -2255,10 +3706,72 @@ test("custom-review lifecycle jsonl emits launch before terminal record", async 
     assert.equal(progress.heartbeat, 1);
     assert.equal(launch.external_review.provider, "Grok Web");
     assert.equal(launch.external_review.source_content_transmission, "may_be_sent");
+    assert.equal(record.event, "external_review_terminal");
     assert.equal(record.status, "completed");
     assert.equal(record.external_review.source_content_transmission, "sent");
+    assert.equal(Object.hasOwn(record, "result"), false);
+    assert.equal(Object.hasOwn(record, "runtime_diagnostics"), false);
+    assert.doesNotMatch(result.stdout, /SOURCE_BODY_SENTINEL_DO_NOT_PERSIST/);
     assert.doesNotMatch(result.stdout, /secret-cookie-like-token/);
   });
+});
+
+test("custom-review persisted result redacts selected source body sentinel", async () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "grok-web-workspace-"));
+  const dataDir = mkdtempSync(path.join(tmpdir(), "grok-web-data-"));
+  const sourceText = "SOURCE_BODY_SENTINEL_DO_NOT_PERSIST\n";
+  const reviewText = substantiveReviewFixture("SOURCE_BODY_SENTINEL_DO_NOT_PERSIST");
+  writeFileSync(path.join(cwd, "review.js"), sourceText);
+
+  try {
+    await withServer(async (_req, res) => {
+      res.setHeader("content-type", "application/json");
+      res.end(JSON.stringify({
+        id: "grok-web-source-redaction",
+        model: "grok-4.20-fast",
+        choices: [{ message: { content: reviewText } }],
+        usage: { prompt_tokens: 12, completion_tokens: 5, total_tokens: 17 },
+      }));
+    }, async (baseUrl) => {
+      const result = await runAsync([
+        "run",
+        "--mode", "custom-review",
+        "--scope", "custom",
+        "--scope-paths", "review.js",
+        "--foreground",
+        "--prompt", "Check this file.",
+      ], {
+        cwd,
+        env: {
+          GROK_WEB_BASE_URL: baseUrl,
+          GROK_WEB_TUNNEL_API_KEY: "secret-cookie-like-token",
+          GROK_PLUGIN_DATA: dataDir,
+        },
+      });
+      assert.equal(result.status, 0, result.stderr || result.stdout);
+      assert.doesNotMatch(result.stdout, /SOURCE_BODY_SENTINEL_DO_NOT_PERSIST/);
+      const record = parseStdout(result);
+      assert.match(record.result, /\[redacted_source_excerpt\]/);
+
+      const persisted = JSON.parse(readFileSync(path.join(dataDir, "jobs", record.job_id, "meta.json"), "utf8"));
+      assert.doesNotMatch(JSON.stringify(persisted), /SOURCE_BODY_SENTINEL_DO_NOT_PERSIST/);
+      assert.match(persisted.result, /\[redacted_source_excerpt\]/);
+
+      const lookup = run(["result", "--job-id", record.job_id], {
+        cwd,
+        env: {
+          GROK_PLUGIN_DATA: dataDir,
+          GROK_WEB_TUNNEL_API_KEY: "secret-cookie-like-token",
+        },
+      });
+      assert.equal(lookup.status, 0, lookup.stderr || lookup.stdout);
+      assert.doesNotMatch(lookup.stdout, /SOURCE_BODY_SENTINEL_DO_NOT_PERSIST/);
+      assert.match(parseStdout(lookup).result, /\[redacted_source_excerpt\]/);
+    });
+  } finally {
+    rmTree(cwd);
+    rmTree(dataDir);
+  }
 });
 
 test("custom-review lifecycle markdown emits launch and terminal cards on success", async () => {
@@ -2294,16 +3807,16 @@ test("custom-review lifecycle markdown emits launch and terminal cards on succes
     });
 
     assert.equal(result.status, 0, result.stderr || result.stdout);
-    assert.equal((result.stdout.match(/^### EXTERNAL REVIEW/gm) ?? []).length, 2);
+    assert.ok((result.stdout.match(/^### EXTERNAL REVIEW/gm) ?? []).length >= 3, result.stdout);
     assert.match(result.stdout, /\| Provider \| Grok Web \|/);
     assert.match(result.stdout, /\| Source \| may_be_sent \|/);
     assert.match(result.stdout, /\| Status \| launched \|/);
+    assert.match(result.stdout, /\| Retrieve \| result --job job_[0-9a-f-]+ --cwd [^|]+ \|/);
+    assert.match(result.stdout, /\| Panel \| review-panel --workspace [^|]+ \|/);
+    assert.match(result.stdout, /\| Status \| running \|/);
     assert.match(result.stdout, /\| Source \| sent \|/);
     assert.match(result.stdout, /\| Status \| completed \|/);
-    const progress = parseCompactJsonLines(result).find((line) => line.event === "external_review_progress");
-    assert.equal(progress?.target, "grok-web");
-    assert.equal(progress?.status, "running");
-    assert.equal(progress?.heartbeat, 1);
+    assert.equal(parseCompactJsonLines(result).some((line) => line.event === "external_review_progress"), false);
     assert.doesNotMatch(result.stdout, /secret-cookie-like-token/);
     assert.doesNotMatch(result.stdout, /^\{\n/m);
   });
@@ -2691,7 +4204,7 @@ test("rendered prompt over Grok budget fails before contacting the tunnel", () =
   assert.equal(lines.length, 1);
   const [record] = lines;
   assert.equal(record.status, "failed");
-  assert.equal(record.error_code, "scope_failed");
+  assert.equal(record.error_code, "prompt_too_large");
   assert.match(record.error_message, /prompt_too_large:/);
   assert.match(record.suggested_action, /narrower scope|split/i);
   assert.match(record.review_metadata.audit_manifest.rendered_prompt_hash.value, /^[a-f0-9]{64}$/);
@@ -2700,6 +4213,42 @@ test("rendered prompt over Grok budget fails before contacting the tunnel", () =
   assert.equal(JSON.stringify(record.review_metadata.audit_manifest).includes("export const value"), false);
   assert.equal(record.external_review.source_content_transmission, "not_sent");
   assert.doesNotMatch(result.stdout, /external_review_launched/);
+});
+
+test("rendered prompt over Grok CLI budget names CLI cap, not web tunnel cap", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "grok-cli-prompt-budget-workspace-"));
+  writeFileSync(path.join(cwd, "review.js"), "export const value = 42;\n");
+
+  try {
+    const result = run([
+      "run",
+      "--mode", "custom-review",
+      "--scope", "custom",
+      "--scope-paths", "review.js",
+      "--foreground",
+      "--lifecycle-events", "jsonl",
+      "--prompt", "Check this file.",
+    ], {
+      cwd,
+      defaultTransport: false,
+      env: {
+        GROK_CLI_MAX_PROMPT_CHARS: "100",
+      },
+    });
+    const lines = parseJsonLines(result);
+    assert.equal(result.status, 1);
+    assert.equal(lines.length, 1);
+    const [record] = lines;
+    assert.equal(record.status, "failed");
+    assert.equal(record.error_code, "prompt_too_large");
+    assert.match(record.error_message, /GROK_CLI_MAX_PROMPT_CHARS=100/);
+    assert.match(record.suggested_action, /GROK_CLI_MAX_PROMPT_CHARS/);
+    assert.doesNotMatch(record.suggested_action, /GROK_WEB_MAX_PROMPT_CHARS|tunnel/i);
+    assert.equal(record.external_review.source_content_transmission, "not_sent");
+    assert.doesNotMatch(result.stdout, /external_review_launched/);
+  } finally {
+    rmTree(cwd);
+  }
 });
 
 test("concurrent Grok runs preserve every completed job in the state index", async () => {
@@ -3115,6 +4664,54 @@ test("list returns an empty job list on a fresh data root", () => {
   assert.deepEqual(parsed, { ok: true, jobs: [] });
 });
 
+test("result and list normalize default data root to git workspace from subdirectories", () => {
+  const repo = realpathSync(mkdtempSync(path.join(tmpdir(), "grok-cli-subdir-workspace-")));
+  const nested = path.join(repo, "nested");
+  const authHome = mkdtempSync(path.join(tmpdir(), "grok-cli-subdir-auth-home-"));
+  const { binDir, grokPath } = makeFakeGrokCli();
+  mkdirSync(nested);
+  initGitRepo(repo);
+  writeGrokCliAuthFixture(repo, authHome);
+  const repoDataRoot = defaultDataRootFor("grok", repo);
+  const nestedDataRoot = defaultDataRootFor("grok", nested);
+
+  try {
+    const review = run([
+      "run",
+      "--mode", "custom-review",
+      "--scope", "custom",
+      "--scope-paths", "review.js",
+      "--foreground",
+      "--prompt", "Review selected source.",
+    ], {
+      cwd: nested,
+      defaultTransport: false,
+      env: {
+        PATH: `${binDir}${path.delimiter}${process.env.PATH ?? ""}`,
+        GROK_CLI_BINARY: grokPath,
+        GROK_CLI_AUTH_HOME: authHome,
+      },
+    });
+    assert.equal(review.status, 0, review.stderr || review.stdout);
+    const record = parseStdout(review);
+
+    const result = run(["result", "--job-id", record.job_id, "--cwd", nested], { cwd: nested });
+    assert.equal(result.status, 0, result.stdout);
+    assert.equal(parseStdout(result).job_id, record.job_id);
+
+    const listResult = run(["list"], { cwd: nested });
+    assert.equal(listResult.status, 0, listResult.stdout);
+    const listed = parseStdout(listResult);
+    assert.equal(listed.ok, true);
+    assert.equal(listed.jobs[0].job_id, record.job_id);
+  } finally {
+    rmTree(repoDataRoot);
+    rmTree(nestedDataRoot);
+    rmTree(authHome);
+    rmTree(repo);
+  }
+});
+
 test("list repairs malformed state from persisted JobRecords without echoing raw content", () => {
   const cwd = mkdtempSync(path.join(tmpdir(), "grok-web-workspace-"));
   const dataDir = mkdtempSync(path.join(tmpdir(), "grok-web-data-"));
@@ -3203,6 +4800,46 @@ test("result reports malformed persisted records without echoing raw content", (
   assert.equal(parsed.ok, false);
   assert.equal(parsed.error_code, "malformed_record");
   assert.doesNotMatch(result.stdout, /proprietary review text/);
+});
+
+test("result not_found includes retrieval guidance", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "grok-web-workspace-"));
+  const dataDir = mkdtempSync(path.join(tmpdir(), "grok-web-data-"));
+  const jobId = "job_12345678-1234-4234-9234-123456789abc";
+
+  const result = run(["result", "--job-id", jobId], {
+    cwd,
+    env: { GROK_PLUGIN_DATA: dataDir },
+  });
+  const parsed = parseStdout(result);
+  assert.equal(result.status, 1);
+  assert.equal(parsed.ok, false);
+  assert.equal(parsed.error_code, "not_found");
+  assert.equal(parsed.job_id, jobId);
+  assert.match(parsed.suggested_action, /--cwd <workspace used when the job was launched>/);
+});
+
+test("result --cwd resolves workspace-scoped Grok data root", () => {
+  const cwd = realpathSync(mkdtempSync(path.join(tmpdir(), "grok-web-workspace-")));
+  const callerCwd = realpathSync(mkdtempSync(path.join(tmpdir(), "grok-web-caller-")));
+  const jobId = "job_12345678-1234-4234-9234-123456789abc";
+  const slug = path.basename(cwd).replace(/[^A-Za-z0-9._-]/g, "_").slice(0, 48) || "workspace";
+  const hash = createHash("sha256").update(cwd).digest("hex").slice(0, 16);
+  const jobDir = path.join(tmpdir(), "codex-plugin-multi", "grok", `${slug}-${hash}`, "jobs", jobId);
+  mkdirSync(jobDir, { recursive: true });
+  writeFileSync(path.join(jobDir, "meta.json"), JSON.stringify({
+    job_id: jobId,
+    status: "completed",
+    result: "Verdict: APPROVE\nBlocking findings\n- None.",
+  }, null, 2));
+
+  const result = run(["result", "--job-id", jobId, "--cwd", cwd], {
+    cwd: callerCwd,
+  });
+  const parsed = parseStdout(result);
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  assert.equal(parsed.job_id, jobId);
+  assert.equal(parsed.status, "completed");
 });
 
 test("custom-review marks stalled uploaded tunnel requests as unknown transmission", async () => {
@@ -3489,21 +5126,6 @@ test("custom-review keeps prompt delimiter exceptions as scope failures before t
   assert.equal(record.external_review.source_content_transmission, "not_sent");
 });
 
-test("scope file reads use canonical real paths after symlink boundary check", () => {
-  // Structural guard for the reviewed TOCTOU fix: later I/O must keep using the verified path
-  // and must read through the bounded file-handle helper instead of unbounded readFile().
-  const source = readFileSync(COMPANION, "utf8");
-  assert.match(source, /const SCOPE_FILE_OPEN_FLAGS = fsConstants\.O_RDONLY \| \(fsConstants\.O_NOFOLLOW \?\? 0\);/);
-  assert.match(source, /handle = await open\(filePath, SCOPE_FILE_OPEN_FLAGS\);/);
-  assert.match(source, /const info = await handle\.stat\(\);/);
-  assert.match(source, /if \(!sameFileIdentity\(beforeOpen, info\)\)/);
-  assert.match(source, /beforeOpen = await lstat\(abs\);/);
-  assert.match(source, /if \(beforeOpen\.isSymbolicLink\(\)\)/);
-  assert.match(source, /const \{ bytesRead \} = await handle\.read\(buffer, 0, buffer\.length, null\);/);
-  assert.match(source, /const text = await readUtf8ScopeFileWithinLimit\(realAbs, normalizedRel, beforeOpen\);/);
-  assert.doesNotMatch(source, /const text = await readFile\(realAbs, "utf8"\);/);
-});
-
 test("scope file reads reject stale file identity after secure open", async () => {
   const cwd = realpathSync(mkdtempSync(path.join(tmpdir(), "grok-web-workspace-")));
   const first = path.join(cwd, "first.txt");
@@ -3517,16 +5139,6 @@ test("scope file reads reject stale file identity after secure open", async () =
     () => readUtf8ScopeFileWithinLimit(second, "first.txt", beforeOpen),
     /unsafe_scope_path:first\.txt: file changed before secure open/,
   );
-});
-
-test("tunnel invocation catch is separated from prompt construction catch", () => {
-  // Structural guard so prompt/scope failures and unexpected tunnel throws cannot share one catch.
-  const source = readFileSync(COMPANION, "utf8");
-  assert.match(source, /prompt = promptFor\(/);
-  assert.match(source, /providerFailure\(e\.message\.startsWith\("bad_args:"\) \? "bad_args" : "scope_failed"/);
-  assert.match(source, /execution = await callGrokTunnel\(cfg, prompt\)/);
-  assert.match(source, /"tunnel_error"/);
-  assert.match(source, /payloadSentForFetchError\(e\)/);
 });
 
 test("audit manifest timeout falls back to configured Grok timeout", async () => {
@@ -4207,9 +5819,32 @@ test("help exposes only subscription-backed Grok commands", () => {
 
   assert.equal(parsed.ok, true);
   assert.deepEqual(parsed.commands, ["doctor", "ping", "repair", "run", "result", "list"]);
-  assert.equal(parsed.provider, "grok-web");
-  assert.equal(parsed.default_auth_mode, "subscription_web");
+  assert.equal(parsed.provider, "grok");
+  assert.equal(parsed.default_auth_mode, "subscription_cli");
+  assert.equal(parsed.default_transport, "cli");
+  assert.equal(parsed.legacy_transport, "web");
   assert.doesNotMatch(JSON.stringify(parsed), /api\.x\.ai/i);
+
+  const legacyParsed = JSON.parse(execFileSync(process.execPath, [COMPANION, "help", "--transport", "web"], {
+    cwd: REPO_ROOT,
+    encoding: "utf8",
+  }));
+  assert.equal(legacyParsed.provider, "grok-web");
+  assert.equal(legacyParsed.default_auth_mode, "subscription_web");
+  assert.equal(legacyParsed.selected_transport, "web");
+});
+
+test("generic Grok companion entrypoint defaults to CLI transport", () => {
+  const parsed = JSON.parse(execFileSync(process.execPath, [COMPANION, "help"], {
+    cwd: REPO_ROOT,
+    encoding: "utf8",
+  }));
+
+  assert.equal(parsed.ok, true);
+  assert.equal(parsed.provider, "grok");
+  assert.equal(parsed.default_auth_mode, "subscription_cli");
+  assert.equal(parsed.default_transport, "cli");
+  assert.equal(parsed.legacy_transport, "web");
 });
 
 // AC7-AC8 (#106): smoke replay against recorded grok fixtures.

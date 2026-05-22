@@ -390,7 +390,7 @@ test("sync-browser-session preserves grok2api_timeout during mid-import hangs", 
       "--cookie-source-json", cookieSource,
       "--grok2api-base-url", baseUrl,
       "--pool", "super",
-      "--admin-timeout-ms", "300",
+      "--admin-timeout-ms", "1000",
     ]);
     const parsed = JSON.parse(result.stdout);
     assert.equal(result.status, 1);
