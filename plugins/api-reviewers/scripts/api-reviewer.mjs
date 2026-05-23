@@ -233,6 +233,9 @@ function terminalLifecycleProjection(obj) {
     external_review: obj.external_review,
   };
   if (obj.disclosure_note != null) projection.disclosure_note = obj.disclosure_note;
+  if (obj.runtime_diagnostics?.sharding_plan != null) {
+    projection.runtime_diagnostics = { sharding_plan: obj.runtime_diagnostics.sharding_plan };
+  }
   if (obj.review_quality && typeof obj.review_quality === "object") {
     projection.review_quality = {
       failed_review_slot: obj.review_quality.failed_review_slot ?? null,
@@ -849,9 +852,10 @@ function runConfigError(message) {
   return error;
 }
 
-function runProviderFailure(reason, message) {
+function runProviderFailure(reason, message, diagnostics = null) {
   const error = new Error(message);
   error.apiReviewersReason = reason;
+  if (diagnostics) error.apiReviewersDiagnostics = diagnostics;
   return error;
 }
 
@@ -1149,6 +1153,167 @@ function validateRenderedPromptBudget(prompt, cfg, env = process.env) {
     };
   }
   return { ok: true, maxPromptChars };
+}
+
+function shardScopeInfoFor(scopeInfo, files) {
+  return Object.freeze({
+    ...scopeInfo,
+    scope_paths: Object.freeze(files.map((file) => file.path)),
+    files: Object.freeze([...files]),
+  });
+}
+
+function shardApprovalTuple({
+  cfg,
+  mode,
+  provider,
+  scopeInfo,
+  request,
+  renderedPrompt,
+  env = process.env,
+  approvalScope = "session",
+}) {
+  const routeFields = approvalRouteFields(routeStateForApproval(cfg, env));
+  const authPath = approvalAuthPathFor(cfg, env);
+  const billingPath = approvalBillingPathFor(cfg);
+  const auditManifest = buildApprovalAuditManifest({
+    cfg,
+    renderedPrompt,
+    request,
+    scopeInfo,
+    routeFields,
+    approvalScope,
+  });
+  return Object.freeze({
+    provider,
+    mode,
+    rendered_prompt_hash: auditManifest.rendered_prompt_hash.value,
+    source_packet: auditManifest.selected_source,
+    scope_resolution: auditManifest.scope_resolution,
+    scope_paths: Object.freeze([...(scopeInfo.scope_paths ?? [])]),
+    request_settings: Object.freeze({
+      timeout_ms: request.timeout_ms,
+      max_tokens: request.max_tokens,
+      max_steps_per_turn: request.max_steps_per_turn,
+      temperature: request.temperature,
+      stream: request.stream,
+      request_defaults: Object.freeze(summarizeRequestDefaults(cfg.request_defaults)),
+    }),
+    auth_path: authPath,
+    billing_path: billingPath,
+    selected_route: routeFields.selected_route,
+    fallback_reason: routeFields.fallback_reason,
+    approval_scope: approvalScope,
+  });
+}
+
+function promptTooLargeNarrowing(cap, renderedPromptChars, reason, extra = {}) {
+  return Object.freeze({
+    reason: "prompt_too_large",
+    source_content_transmission: SOURCE_CONTENT_TRANSMISSION.NOT_SENT,
+    cap,
+    rendered_prompt_chars: renderedPromptChars,
+    shards: null,
+    narrowing: Object.freeze({
+      strategy: "operator_required",
+      reason,
+      ...extra,
+    }),
+  });
+}
+
+function buildShardingPlan({
+  cfg,
+  mode,
+  provider,
+  scopeInfo,
+  userPrompt = "",
+  env = process.env,
+  renderedPromptChars,
+  approvalScope = "session",
+}) {
+  const maxPromptChars = maxPromptCharsFor(cfg, env);
+  if (!maxPromptChars.ok) return null;
+  const cap = maxPromptChars.value;
+  const files = Array.isArray(scopeInfo.files) ? scopeInfo.files : [];
+  if (files.length === 0) {
+    return promptTooLargeNarrowing(cap, renderedPromptChars, "no_scope_files_available");
+  }
+  let request;
+  try {
+    request = requestSettingsForApproval(cfg, env);
+  } catch {
+    return promptTooLargeNarrowing(cap, renderedPromptChars, "request_settings_unavailable");
+  }
+
+  const shards = [];
+  let pending = [];
+  let pendingPrompt = null;
+  for (const file of files) {
+    const candidate = [...pending, file];
+    const candidateScope = shardScopeInfoFor(scopeInfo, candidate);
+    let candidatePrompt;
+    try {
+      candidatePrompt = promptFor(mode, userPrompt, candidateScope, cfg.display_name);
+    } catch {
+      return promptTooLargeNarrowing(cap, renderedPromptChars, "shard_render_failed");
+    }
+    if (candidatePrompt.length <= cap) {
+      pending = candidate;
+      pendingPrompt = candidatePrompt;
+      continue;
+    }
+    if (pending.length === 0) {
+      return promptTooLargeNarrowing(cap, renderedPromptChars, "single_file_exceeds_cap", {
+        file: String(file.path ?? "unknown"),
+      });
+    }
+    shards.push({ files: pending, prompt: pendingPrompt });
+    pending = [file];
+    try {
+      pendingPrompt = promptFor(mode, userPrompt, shardScopeInfoFor(scopeInfo, pending), cfg.display_name);
+    } catch {
+      return promptTooLargeNarrowing(cap, renderedPromptChars, "shard_render_failed");
+    }
+    if (pendingPrompt.length > cap) {
+      return promptTooLargeNarrowing(cap, renderedPromptChars, "single_file_exceeds_cap", {
+        file: String(file.path ?? "unknown"),
+      });
+    }
+  }
+  if (pending.length > 0 && pendingPrompt !== null) {
+    shards.push({ files: pending, prompt: pendingPrompt });
+  }
+
+  const total = shards.length;
+  const builtShards = shards.map((shard, idx) => {
+    const shardScope = shardScopeInfoFor(scopeInfo, shard.files);
+    const tuple = shardApprovalTuple({
+      cfg,
+      mode,
+      provider,
+      scopeInfo: shardScope,
+      request,
+      renderedPrompt: shard.prompt,
+      env,
+      approvalScope,
+    });
+    return Object.freeze({
+      index: idx + 1,
+      total,
+      scope_paths: Object.freeze(shard.files.map((file) => file.path)),
+      rendered_prompt_chars: shard.prompt.length,
+      approval_tuple: tuple,
+    });
+  });
+  return Object.freeze({
+    reason: "prompt_too_large",
+    source_content_transmission: SOURCE_CONTENT_TRANSMISSION.NOT_SENT,
+    cap,
+    rendered_prompt_chars: renderedPromptChars,
+    shards: Object.freeze(builtShards),
+    narrowing: null,
+  });
 }
 
 function redactor(env = process.env, configuredSecretNames = []) {
@@ -2314,7 +2479,23 @@ async function consumeOneTimeApproval(root, token, payload) {
 function buildApprovalRequest({ provider, cfg, mode, options, scopeInfo }) {
   const renderedPrompt = promptFor(mode, options.prompt ?? "", scopeInfo, cfg.display_name);
   const promptBudget = validateRenderedPromptBudget(renderedPrompt, cfg);
-  if (!promptBudget.ok) throw runProviderFailure(promptBudget.reason, promptBudget.error);
+  if (!promptBudget.ok) {
+    const approvalScope = approvalScopeForOptions(options);
+    const diagnostics = promptBudget.reason === "prompt_too_large"
+      ? {
+          sharding_plan: buildShardingPlan({
+            cfg,
+            mode,
+            provider,
+            scopeInfo,
+            userPrompt: options.prompt ?? "",
+            renderedPromptChars: renderedPrompt.length,
+            approvalScope,
+          }),
+        }
+      : null;
+    throw runProviderFailure(promptBudget.reason, promptBudget.error, diagnostics);
+  }
   const request = requestSettingsForApproval(cfg);
   const authPath = approvalAuthPathFor(cfg, process.env);
   const billingPath = approvalBillingPathFor(cfg);
@@ -2486,6 +2667,36 @@ function buildReviewMetadata(cfg, scopeInfo, execution = null, startedAt = null,
   };
 }
 
+function buildRuntimeDiagnostics(diagnostics) {
+  if (!diagnostics) return null;
+  const hasProviderRequest = (
+    Object.hasOwn(diagnostics, "configured_timeout_ms") ||
+    Object.hasOwn(diagnostics, "elapsed_ms") ||
+    Object.hasOwn(diagnostics, "prompt_chars") ||
+    Object.hasOwn(diagnostics, "request_defaults") ||
+    Object.hasOwn(diagnostics, "max_tokens") ||
+    Object.hasOwn(diagnostics, "temperature")
+  );
+  const out = {};
+  if (hasProviderRequest) {
+    out.provider_request = {
+      configured_timeout_ms: diagnostics.configured_timeout_ms ?? null,
+      elapsed_ms: diagnostics.elapsed_ms ?? null,
+      prompt_chars: diagnostics.prompt_chars ?? null,
+      request_defaults: diagnostics.request_defaults ?? null,
+      max_tokens: diagnostics.max_tokens ?? null,
+      temperature: diagnostics.temperature ?? null,
+    };
+    out.cost_quota = diagnostics.cost_quota ?? null;
+  } else if (Object.hasOwn(diagnostics, "cost_quota")) {
+    out.cost_quota = diagnostics.cost_quota ?? null;
+  }
+  if (diagnostics.sharding_plan) {
+    out.sharding_plan = diagnostics.sharding_plan;
+  }
+  return Object.keys(out).length === 0 ? null : out;
+}
+
 function buildRecord({ provider, cfg, mode, options, scopeInfo, execution, startedAt, endedAt }) {
   const reviewMetadata = buildReviewMetadata(cfg, scopeInfo, execution, startedAt, endedAt);
   const processCompleted = execution.exitCode === 0 && execution.parsed?.ok === true;
@@ -2523,17 +2734,7 @@ function buildRecord({ provider, cfg, mode, options, scopeInfo, execution, start
     source_content_transmission: sourceContentTransmission,
     disclosure,
   });
-  const runtimeDiagnostics = execution.diagnostics ? {
-    provider_request: {
-      configured_timeout_ms: execution.diagnostics.configured_timeout_ms ?? null,
-      elapsed_ms: execution.diagnostics.elapsed_ms ?? null,
-      prompt_chars: execution.diagnostics.prompt_chars ?? null,
-      request_defaults: execution.diagnostics.request_defaults ?? null,
-      max_tokens: execution.diagnostics.max_tokens ?? null,
-      temperature: execution.diagnostics.temperature ?? null,
-    },
-    cost_quota: execution.diagnostics.cost_quota ?? null,
-  } : null;
+  const runtimeDiagnostics = buildRuntimeDiagnostics(execution.diagnostics);
   return freezeRecord({
     id: options.jobId,
     job_id: options.jobId,
@@ -2667,6 +2868,7 @@ async function cmdApprovalRequest(options) {
   const provider = options.provider ?? null;
   const mode = options.mode ?? "review";
   let configuredSecretNames = [];
+  let scopeInfo = null;
   try {
     if (!provider) throw runBadArgs("bad_args: --provider is required");
     if (!VALID_MODES.has(mode)) throw runBadArgs(`bad_args: unsupported --mode ${mode}`);
@@ -2684,7 +2886,7 @@ async function cmdApprovalRequest(options) {
       throw runBadArgs(e.message);
     }
     if (!hasPromptText(options.prompt)) throw runBadArgs("bad_args: prompt is required (pass --prompt <focus>)");
-    const scopeInfo = await collectScope({ ...options, mode });
+    scopeInfo = await collectScope({ ...options, mode });
     let approvalRequest;
     try {
       approvalRequest = buildApprovalRequest({ provider, cfg, mode, options, scopeInfo });
@@ -2696,13 +2898,16 @@ async function cmdApprovalRequest(options) {
   } catch (e) {
     const reason = isGitBinaryPolicyError(e) ? "git_binary_rejected" : (e.apiReviewersReason ?? "scope_failed");
     const redact = redactor(process.env, configuredSecretNames);
-    printJson({
+    const response = {
       ok: false,
       provider,
       status: reason,
       error_code: reason,
       error_message: redact(e?.message ?? String(e)),
-    });
+    };
+    const runtimeDiagnostics = buildRuntimeDiagnostics(e?.apiReviewersDiagnostics);
+    if (runtimeDiagnostics) response.runtime_diagnostics = runtimeDiagnostics;
+    printJson(redactRecord(response, process.env, configuredSecretNames, scopeInfo?.files ?? []));
     process.exit(1);
   }
 }
@@ -2769,7 +2974,28 @@ async function cmdRun(options) {
       renderedPrompt = promptFor(mode, options.prompt ?? "", scopeInfo, cfg.display_name);
       const promptBudget = validateRenderedPromptBudget(renderedPrompt, cfg, process.env);
       if (!promptBudget.ok) {
-        execution = providerFailure(promptBudget.reason, redactor(process.env)(promptBudget.error), null, null, false);
+        const diagnostics = promptBudget.reason === "prompt_too_large"
+          ? {
+              sharding_plan: buildShardingPlan({
+                cfg,
+                mode,
+                provider,
+                scopeInfo,
+                userPrompt: options.prompt ?? "",
+                env: process.env,
+                renderedPromptChars: renderedPrompt.length,
+                approvalScope,
+              }),
+            }
+          : null;
+        execution = providerFailureWithDiagnostics(
+          promptBudget.reason,
+          redactor(process.env)(promptBudget.error),
+          null,
+          null,
+          false,
+          diagnostics,
+        );
         execution.prompt = renderedPrompt;
       }
       if (!execution && shouldRequireApprovalToken(process.env)) {

@@ -203,6 +203,16 @@ function makeWorkspace() {
   return cwd;
 }
 
+function makeMultiFileScopeWorkspace() {
+  const cwd = mkdtempSync(path.join(tmpdir(), "api-reviewers-multifile-"));
+  for (let i = 1; i <= 5; i += 1) {
+    const filler = `file ${i} content line ${"x".repeat(40)}\n`.repeat(30);
+    writeFileSync(path.join(cwd, `f${i}.txt`), filler);
+  }
+  writeFileSync(path.join(cwd, "seed.txt"), "hello from selected scope\n");
+  return cwd;
+}
+
 function apiReviewerMetaPath(dataDir, jobId) {
   const candidate = path.join(dataDir, "jobs", jobId, "meta.json");
   assert.equal(existsSync(candidate), true, `expected meta.json for ${jobId}`);
@@ -4408,6 +4418,94 @@ test("direct API reviewers reject rendered prompt over provider budget before la
   assert.doesNotMatch(result.stdout, /secret-test-value/);
 });
 
+for (const promptCapProvider of [
+  { provider: "deepseek", displayName: "DeepSeek", model: "deepseek-v4-pro", env: { DEEPSEEK_API_KEY: "secret-test-value" } },
+  { provider: "glm", displayName: "GLM", model: "glm-5.1", env: { ZAI_API_KEY: "secret-test-value" } },
+]) {
+  test(`direct API ${promptCapProvider.provider} reviewer emits sharding plan with per-shard approval tuple when rendered prompt exceeds cap`, async () => {
+    const cwd = makeMultiFileScopeWorkspace();
+    const result = await run([
+      "run",
+      "--provider", promptCapProvider.provider,
+      "--mode", "custom-review",
+      "--scope", "custom",
+      "--scope-paths", "f1.txt,f2.txt,f3.txt,f4.txt,f5.txt",
+      "--foreground",
+      "--lifecycle-events", "jsonl",
+      "--prompt", "Check changed files.",
+    ], {
+      cwd,
+      env: {
+        API_REVIEWERS_MAX_PROMPT_CHARS: "5000",
+        API_REVIEWERS_MOCK_RESPONSE: mockResponse(promptCapProvider.model),
+        ...promptCapProvider.env,
+      },
+    });
+    assert.equal(result.status, 1);
+    const lines = parseJsonLines(result.stdout);
+    assert.equal(lines.length, 1);
+    const [record] = lines;
+    assert.equal(record.status, "failed");
+    assert.equal(record.error_code, "prompt_too_large");
+    assert.match(record.error_message, /prompt_too_large:/);
+    assertDirectApiNotSent(record, promptCapProvider.displayName);
+    assert.doesNotMatch(result.stdout, /external_review_launched/);
+
+    const plan = record.runtime_diagnostics?.sharding_plan;
+    assert.ok(plan, "sharding_plan must be present when prompt exceeds cap");
+    assert.equal(plan.reason, "prompt_too_large");
+    assert.equal(plan.source_content_transmission, "not_sent");
+    assert.equal(plan.cap, 5000);
+    assert.equal(typeof plan.rendered_prompt_chars, "number");
+    assert.ok(plan.rendered_prompt_chars > plan.cap);
+    assert.ok(Array.isArray(plan.shards) && plan.shards.length >= 2, "fixture must split into >=2 bounded shards");
+
+    const hashes = new Set();
+    for (const [i, shard] of plan.shards.entries()) {
+      assert.equal(shard.index, i + 1);
+      assert.equal(shard.total, plan.shards.length);
+      assert.ok(Array.isArray(shard.scope_paths) && shard.scope_paths.length > 0);
+      assert.equal(typeof shard.rendered_prompt_chars, "number");
+      assert.ok(shard.rendered_prompt_chars > 0);
+      assert.ok(shard.rendered_prompt_chars <= plan.cap, `shard ${i + 1} size ${shard.rendered_prompt_chars} must fit cap ${plan.cap}`);
+      const tuple = shard.approval_tuple;
+      assert.ok(tuple);
+      assert.equal(tuple.provider, promptCapProvider.provider);
+      assert.equal(tuple.mode, "custom-review");
+      assert.equal(tuple.selected_route, "direct_api");
+      assert.equal(tuple.fallback_reason, "subscription_not_supported");
+      assert.equal(tuple.approval_scope, "session");
+      assert.match(tuple.rendered_prompt_hash, /^[a-f0-9]{64}$/);
+      hashes.add(tuple.rendered_prompt_hash);
+      assert.deepEqual([...tuple.scope_paths].sort(), [...shard.scope_paths].sort());
+      assert.ok(tuple.source_packet);
+      assert.equal(tuple.source_packet.totals.files, shard.scope_paths.length);
+      assert.deepEqual(
+        tuple.source_packet.files.map((file) => file.path).sort(),
+        [...shard.scope_paths].sort(),
+      );
+      for (const file of tuple.source_packet.files) {
+        assert.match(file.content_hash.value, /^[a-f0-9]{64}$/);
+        assert.equal(typeof file.bytes, "number");
+        assert.equal(typeof file.lines, "number");
+      }
+      assert.equal(tuple.auth_path?.auth_mode, "api_key");
+      assert.equal(typeof tuple.auth_path?.credential_ref, "string");
+      assert.equal(typeof tuple.billing_path?.endpoint, "string");
+      assert.equal(typeof tuple.billing_path?.model, "string");
+      assert.ok(tuple.request_settings && typeof tuple.request_settings === "object");
+      assert.ok(tuple.scope_resolution);
+    }
+    assert.equal(hashes.size, plan.shards.length, "each shard must have a unique rendered_prompt_hash");
+
+    const planJson = JSON.stringify(plan);
+    assert.equal(planJson.includes("hello from selected scope"), false);
+    assert.equal(planJson.includes("secret-test-value"), false);
+    assert.equal(planJson.includes("Check changed files."), false);
+    assert.equal(planJson.includes("file 1 content"), false);
+  });
+}
+
 test("direct API reviewers reject blank or valueless prompt flags before launch", async () => {
   for (const promptArgs of [
     ["--prompt", ""],
@@ -5267,6 +5365,79 @@ test("direct API reviewers approval-request rejects rendered prompt over provide
   assert.doesNotMatch(result.stdout, /hello from selected scope/);
   assert.doesNotMatch(result.stdout, /secret-test-value/);
 });
+
+for (const promptCapProvider of [
+  { provider: "deepseek", env: { DEEPSEEK_API_KEY: "secret-test-value" } },
+  { provider: "glm", env: { ZAI_API_KEY: "secret-test-value" } },
+]) {
+  test(`direct API ${promptCapProvider.provider} approval-request emits sharding plan when rendered prompt exceeds cap`, async () => {
+    const cwd = makeMultiFileScopeWorkspace();
+    const result = await run([
+      "approval-request",
+      "--provider", promptCapProvider.provider,
+      "--mode", "custom-review",
+      "--scope", "custom",
+      "--scope-paths", "f1.txt,f2.txt,f3.txt,f4.txt,f5.txt",
+      "--prompt", "Check changed files.",
+    ], {
+      cwd,
+      env: {
+        API_REVIEWERS_MAX_PROMPT_CHARS: "5000",
+        ...promptCapProvider.env,
+      },
+    });
+
+    assert.equal(result.status, 1);
+    const parsed = parseJson(result.stdout);
+    assert.equal(parsed.ok, false);
+    assert.equal(parsed.provider, promptCapProvider.provider);
+    assert.equal(parsed.status, "prompt_too_large");
+    assert.equal(parsed.error_code, "prompt_too_large");
+    assert.match(parsed.error_message, /prompt_too_large:/);
+    assert.doesNotMatch(result.stdout, /external_review_approval_request/);
+
+    const plan = parsed.runtime_diagnostics?.sharding_plan;
+    assert.ok(plan, "approval-request prompt-cap failures must include sharding_plan");
+    assert.equal(plan.reason, "prompt_too_large");
+    assert.equal(plan.source_content_transmission, "not_sent");
+    assert.equal(plan.cap, 5000);
+    assert.equal(typeof plan.rendered_prompt_chars, "number");
+    assert.ok(plan.rendered_prompt_chars > plan.cap);
+    assert.ok(Array.isArray(plan.shards) && plan.shards.length >= 2, "fixture must split into >=2 bounded shards");
+
+    const hashes = new Set();
+    for (const [i, shard] of plan.shards.entries()) {
+      assert.equal(shard.index, i + 1);
+      assert.equal(shard.total, plan.shards.length);
+      assert.ok(Array.isArray(shard.scope_paths) && shard.scope_paths.length > 0);
+      assert.equal(typeof shard.rendered_prompt_chars, "number");
+      assert.ok(shard.rendered_prompt_chars <= plan.cap);
+      const tuple = shard.approval_tuple;
+      assert.ok(tuple);
+      assert.equal(tuple.provider, promptCapProvider.provider);
+      assert.equal(tuple.mode, "custom-review");
+      assert.equal(tuple.selected_route, "direct_api");
+      assert.equal(tuple.fallback_reason, "subscription_not_supported");
+      assert.equal(tuple.approval_scope, "session");
+      assert.match(tuple.rendered_prompt_hash, /^[a-f0-9]{64}$/);
+      hashes.add(tuple.rendered_prompt_hash);
+      assert.deepEqual([...tuple.scope_paths].sort(), [...shard.scope_paths].sort());
+      assert.ok(tuple.source_packet);
+      assert.deepEqual(
+        tuple.source_packet.files.map((file) => file.path).sort(),
+        [...shard.scope_paths].sort(),
+      );
+    }
+    assert.equal(hashes.size, plan.shards.length, "each shard must have a unique rendered_prompt_hash");
+
+    const planJson = JSON.stringify(plan);
+    assert.equal(planJson.includes("hello from selected scope"), false);
+    assert.equal(planJson.includes("secret-test-value"), false);
+    assert.equal(planJson.includes("Check changed files."), false);
+    assert.doesNotMatch(result.stdout, /hello from selected scope/);
+    assert.doesNotMatch(result.stdout, /secret-test-value/);
+  });
+}
 
 test("direct API reviewers approval-request redacts configured non-generic credential names", async () => {
   const cwd = makeBranchDiffWorkspace();
