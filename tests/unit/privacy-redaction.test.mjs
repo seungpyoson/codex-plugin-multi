@@ -79,3 +79,16 @@ test("privacy redactor applies generic credential and account-token patterns", (
   assert.doesNotMatch(out, /reflected-token-value|alternate-token-value|eyJhbGci|cus_NXLKj1H|stripe-sub|user@example\.com|env-secret-value/);
   assert.match(out, /\[REDACTED\]/);
 });
+
+test("privacy redactor preserves non-payment provider tokens while redacting payment-shaped ids", () => {
+  const redact = buildPrivacyRedactor();
+  const out = redact.text([
+    "provider id sub_livealias should remain visible for diagnostics",
+    "payment id sub_12345abc should be hidden",
+    "authorization fallback Authorization: opaque-token, next",
+  ].join("\n"));
+
+  assert.match(out, /sub_livealias/);
+  assert.doesNotMatch(out, /sub_12345abc|opaque-token/);
+  assert.match(out, /Authorization: \[REDACTED\], next/);
+});

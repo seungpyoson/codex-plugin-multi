@@ -178,6 +178,7 @@ test("smoke-rerecord workflow plugin choices match live RECIPES plugins", () => 
 
 test("Sonar CPD excludes intentional packaging and entrypoint copies", () => {
   for (const path of [
+    "scripts/ci/sync-*.mjs",
     "scripts/lib/external-review.mjs",
     "plugins/claude/scripts/lib/external-review.mjs",
     "plugins/gemini/scripts/lib/external-review.mjs",
@@ -204,6 +205,12 @@ test("Sonar CPD excludes intentional packaging and entrypoint copies", () => {
     "plugins/gemini/scripts/lib/review-prompt.mjs",
     "plugins/grok/scripts/lib/review-prompt.mjs",
     "plugins/kimi/scripts/lib/review-prompt.mjs",
+    "scripts/lib/privacy-redaction.mjs",
+    "plugins/api-reviewers/scripts/lib/privacy-redaction.mjs",
+    "plugins/claude/scripts/lib/privacy-redaction.mjs",
+    "plugins/gemini/scripts/lib/privacy-redaction.mjs",
+    "plugins/grok/scripts/lib/privacy-redaction.mjs",
+    "plugins/kimi/scripts/lib/privacy-redaction.mjs",
     "scripts/ci/sync-review-panel.mjs",
     "scripts/review-panel.mjs",
     "scripts/lib/review-panel.mjs",
@@ -220,6 +227,8 @@ test("Sonar CPD excludes intentional packaging and entrypoint copies", () => {
     "plugins/claude/scripts/lib/mode-profiles.mjs",
     "plugins/gemini/scripts/lib/mode-profiles.mjs",
     "plugins/kimi/scripts/lib/mode-profiles.mjs",
+    "scripts/lib/provider-env.mjs",
+    "plugins/grok/scripts/lib/provider-env.mjs",
   ]) {
     assert.match(sonarConfig, new RegExp(path.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
   }
