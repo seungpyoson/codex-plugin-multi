@@ -45,6 +45,44 @@ describe("scrubGitEnv", () => {
   });
 });
 
+describe("diffSourceFiles git execution policy", () => {
+  test("does not resolve git through caller PATH", async () => {
+    const { chmodSync, mkdtempSync, mkdirSync, writeFileSync } = await import("node:fs");
+    const { join } = await import("node:path");
+    const { execFileSync } = await import("node:child_process");
+
+    const tmpdir = mkdtempSync("/tmp/diff-source-safe-git-");
+    const fakeBin = join(tmpdir, "bin");
+    mkdirSync(fakeBin);
+    const fakeGit = join(fakeBin, "git");
+    writeFileSync(fakeGit, "#!/bin/sh\necho fake git should not run >&2\nexit 99\n");
+    chmodSync(fakeGit, 0o755);
+
+    const git = (args) => execFileSync("git", args, { cwd: tmpdir, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+    git(["init"]);
+    git(["config", "user.email", "test@test.com"]);
+    git(["config", "user.name", "Test"]);
+    writeFileSync(join(tmpdir, "review.js"), "const value = 1;\n");
+    git(["add", "review.js"]);
+    git(["commit", "-m", "base"]);
+    writeFileSync(join(tmpdir, "review.js"), "const value = 2;\n");
+    git(["add", "review.js"]);
+    git(["commit", "-m", "feature"]);
+
+    const previousPath = process.env.PATH;
+    try {
+      process.env.PATH = fakeBin;
+      const files = diffSourceFiles(tmpdir, "HEAD~1");
+      assert.equal(files.length, 1);
+      assert.equal(files[0].path, "review.js");
+      assert.match(files[0].content.toString("utf8"), /const value = 2/);
+    } finally {
+      if (previousPath === undefined) delete process.env.PATH;
+      else process.env.PATH = previousPath;
+    }
+  });
+});
+
 // ─── Finding #1 (A8): matchGlob ** must respect directory boundaries ───
 
 describe("matchGlob", () => {

@@ -437,6 +437,20 @@ test("direct reviewer branch-diff git calls use safe git resolver", () => {
   }
 });
 
+test("diff-source git calls use the shared safe git resolver", () => {
+  const source = readFileSync(resolve("scripts/lib/diff-source.mjs"), "utf8");
+  assert.match(source, /import \{ gitEnv, resolveGitBinary \} from "\.\/git-binary\.mjs";/,
+    "diff-source must use the shared safe Git binary resolver");
+  assert.match(source, /import \{ cleanGitEnv \} from "\.\/git-env\.mjs";/,
+    "diff-source must use the shared Git environment scrubber");
+  assert.match(source, /execFileSync\(resolveGitBinary\(\{ cwd: sourceCwd, workspaceRoot: sourceCwd \}\),/,
+    "diff-source must not resolve git through caller PATH");
+  assert.match(source, /env:\s*scrubGitEnv\(process\.env\)/,
+    "diff-source git calls must use its scrubbed fixed-PATH environment");
+  assert.doesNotMatch(source, /execFileSync\("git"/,
+    "diff-source must not call git by PATH-resolved name");
+});
+
 test("direct API reviewer launch gating and execution share preflight validation", () => {
   const source = readFileSync(resolve("plugins/api-reviewers/scripts/api-reviewer.mjs"), "utf8");
   assert.match(source, /function validateDirectApiRunPreflight/, "api reviewer must centralize preflight validation");

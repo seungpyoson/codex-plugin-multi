@@ -1,21 +1,21 @@
 import { execFileSync } from "node:child_process";
 
+import { gitEnv, resolveGitBinary } from "./git-binary.mjs";
+import { cleanGitEnv } from "./git-env.mjs";
+
 const DEFAULT_BASE_REF = "main";
 const DEFAULT_CONTEXT_LINES = 5;
 const MAX_DIFF_BYTES = 512 * 1024;
 
-const ALLOWED_ENV_KEYS = new Set(["HOME", "PATH"]);
-
 function scrubGitEnv(env) {
+  const scrubbed = cleanGitEnv(env);
   const clean = {};
-  for (const key of ALLOWED_ENV_KEYS) {
-    if (env[key] !== undefined) clean[key] = env[key];
-  }
-  return clean;
+  if (scrubbed.HOME !== undefined) clean.HOME = scrubbed.HOME;
+  return gitEnv(clean);
 }
 
 function git(sourceCwd, args) {
-  return execFileSync("git", ["-C", sourceCwd, ...args], {
+  return execFileSync(resolveGitBinary({ cwd: sourceCwd, workspaceRoot: sourceCwd }), ["-C", sourceCwd, ...args], {
     encoding: "utf8",
     stdio: ["ignore", "pipe", "pipe"],
     maxBuffer: 1024 * 1024 * 64,
