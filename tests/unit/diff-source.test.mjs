@@ -1,6 +1,7 @@
 import { describe, test } from "node:test";
 import assert from "node:assert/strict";
 import { scrubGitEnv, matchGlob, diffSourceFiles } from "../../scripts/lib/diff-source.mjs";
+import { GIT_SAFE_PATH } from "../../scripts/lib/git-binary.mjs";
 
 // ─── Finding #6 (A9): scrubGitEnv must be an allowlist (HOME, PATH only) ───
 
@@ -12,11 +13,11 @@ describe("scrubGitEnv", () => {
     assert.equal(clean.GIT_CONFIG, undefined);
   });
 
-  test("preserves HOME and PATH", () => {
-    const env = { HOME: "/home/test", PATH: "/usr/bin:/bin", GIT_DIR: "/x" };
+  test("preserves HOME and replaces caller PATH with the safe Git PATH", () => {
+    const env = { HOME: "/home/test", PATH: "/tmp/fake-git-bin", GIT_DIR: "/x" };
     const clean = scrubGitEnv(env);
     assert.equal(clean.HOME, "/home/test");
-    assert.equal(clean.PATH, "/usr/bin:/bin");
+    assert.equal(clean.PATH, GIT_SAFE_PATH);
   });
 
   test("strips non-GIT secrets (AWS_*, OPENAI_*, etc.)", () => {
