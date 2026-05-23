@@ -15,6 +15,21 @@ const architectureRecord = readFileSync(resolve("docs/architecture-record.md"), 
 const sonarConfig = readFileSync(resolve(".sonarcloud.properties"), "utf8");
 const noMistakesConfig = readFileSync(resolve(".no-mistakes.yaml"), "utf8");
 const claudeProjectNotes = readFileSync(resolve("CLAUDE.md"), "utf8");
+const coverageBaseline = JSON.parse(readFileSync(resolve("scripts/ci/coverage-baseline.json"), "utf8"));
+
+const DIFF_SOURCE_PACKAGE_COPY_PATHS = [
+  "plugins/api-reviewers/scripts/lib/diff-source.mjs",
+  "plugins/claude/scripts/lib/diff-source.mjs",
+  "plugins/gemini/scripts/lib/diff-source.mjs",
+  "plugins/grok/scripts/lib/diff-source.mjs",
+  "plugins/kimi/scripts/lib/diff-source.mjs",
+];
+
+const DIFF_SOURCE_CPD_PATHS = [
+  "scripts/lib/diff-source.mjs",
+  ...DIFF_SOURCE_PACKAGE_COPY_PATHS,
+  "scripts/ci/sync-diff-source.mjs",
+];
 
 test("package scripts expose per-target smoke commands", () => {
   assert.match(pkg.scripts["smoke:claude"] ?? "", /claude-companion\.smoke\.test\.mjs/);
@@ -39,6 +54,7 @@ test("pull-request CI runs unit tests and per-target smoke matrix separately", (
 test("pull-request CI runs shared-copy sync checks", () => {
   assert.match(pkg.scripts["lint"] ?? "", /check-manifests\.mjs/);
   assert.match(pkg.scripts["lint"] ?? "", /npm run lint:sync/);
+  assert.match(pkg.scripts["lint:sync"] ?? "", /sync-diff-source\.mjs --check/);
   assert.match(pkg.scripts["lint:sync"] ?? "", /sync-codex-env\.mjs --check/);
   assert.match(pkg.scripts["lint:sync"] ?? "", /sync-companion-common\.mjs --check/);
   assert.match(pkg.scripts["lint:sync"] ?? "", /sync-external-review\.mjs --check/);
@@ -195,8 +211,23 @@ test("Sonar CPD excludes intentional packaging and entrypoint copies", () => {
     "plugins/claude/scripts/lib/mode-profiles.mjs",
     "plugins/gemini/scripts/lib/mode-profiles.mjs",
     "plugins/kimi/scripts/lib/mode-profiles.mjs",
+    ...DIFF_SOURCE_CPD_PATHS,
   ]) {
     assert.match(sonarConfig, new RegExp(path.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+  }
+});
+
+test("coverage baseline records generated diff-source package copies", () => {
+  for (const path of DIFF_SOURCE_PACKAGE_COPY_PATHS) {
+    assert.deepEqual(
+      coverageBaseline.files[path],
+      {
+        lines: 0.0,
+        branches: 100.0,
+        functions: 0.0,
+      },
+      `${path} must keep the generated-copy coverage baseline`,
+    );
   }
 });
 
