@@ -7,6 +7,8 @@ const USAGE_LIMIT_DETAIL_RES = [
   /\bbilling[_ -]?(?:cycle|account|limit|hard[_ -]?limit|quota)\b/i,
   /\bcredit limit\b/i,
   /\binsufficient credits\b/i,
+  /\bavailable credits\b/i,
+  /\bspending limit\b/i,
 ];
 
 export function isUsageLimitDetail(detail) {

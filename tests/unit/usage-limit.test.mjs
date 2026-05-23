@@ -13,6 +13,7 @@ test("usage-limit helper detects durable quota and billing markers", () => {
     "usage limit reached for this billing cycle",
     "billing_account hard limit exceeded",
     "credit limit exceeded",
+    "Your team has either used all available credits or reached its monthly spending limit.",
     "insufficient credits",
     "Error code: 403\nYou've reached your usage limit.",
   ]) {
