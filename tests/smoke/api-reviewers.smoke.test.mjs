@@ -2866,6 +2866,9 @@ test("direct API exhausted credits response points at usage limits instead of re
     assert.doesNotMatch(result.stdout, /secret-test-value|monthly spending limit|available credits/i);
   } finally {
     server.close();
+    rmSync(cwd, { recursive: true, force: true });
+    rmSync(dataDir, { recursive: true, force: true });
+    rmSync(path.dirname(path.dirname(pluginRoot)), { recursive: true, force: true });
   }
 });
 
