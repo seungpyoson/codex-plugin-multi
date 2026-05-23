@@ -2400,7 +2400,7 @@ test("review --scope-base preserves branch-diff scope through target execution",
     ["run", "--mode=review", "--foreground",
      "--model", "claude-haiku-4-5-20251001",
      "--cwd", cwd, "--scope-base", base, "--", "focus"],
-    { cwd, env: { CLAUDE_MOCK_LIST_ADDDIR: "1" } }
+    { cwd, env: { CLAUDE_MOCK_LIST_ADDDIR: "1", CLAUDE_MOCK_ASSERT_PROMPT_INCLUDES: "diff --git a/foo.md b/foo.md" } }
   );
   try {
     assert.equal(status, 0, `exit ${status}: ${stderr}`);
@@ -2427,14 +2427,14 @@ test("continue preserves prior review branch-diff scope through target execution
       ["run", "--mode=review", "--foreground",
        "--model", "claude-haiku-4-5-20251001",
        "--cwd", cwd, "--scope-base", base, "--", "focus"],
-      { cwd, dataDir, env: { CLAUDE_MOCK_LIST_ADDDIR: "1" } }
+      { cwd, dataDir, env: { CLAUDE_MOCK_LIST_ADDDIR: "1", CLAUDE_MOCK_ASSERT_PROMPT_INCLUDES: "diff --git a/foo.md b/foo.md" } }
     );
     assert.equal(runRes.status, 0, runRes.stderr);
     const prior = JSON.parse(runRes.stdout);
     const contRes = runCompanion(
       ["continue", "--job", prior.job_id, "--foreground",
        "--cwd", cwd, "--", "follow-up"],
-      { cwd, dataDir, env: { CLAUDE_MOCK_LIST_ADDDIR: "1" } }
+      { cwd, dataDir, env: { CLAUDE_MOCK_LIST_ADDDIR: "1", CLAUDE_MOCK_ASSERT_PROMPT_INCLUDES: "diff --git a/foo.md b/foo.md" } }
     );
     assert.equal(contRes.status, 0, contRes.stderr);
     const continued = JSON.parse(contRes.stdout);

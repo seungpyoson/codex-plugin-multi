@@ -2821,6 +2821,57 @@ test("direct API 429 quota status outranks unavailable wording and preserves num
   }
 });
 
+test("direct API exhausted credits response points at usage limits instead of retry", async () => {
+  const cwd = makeWorkspace();
+  const dataDir = mkdtempSync(path.join(tmpdir(), "api-reviewers-data-"));
+  const pluginRoot = makeInstalledApiReviewersRoot();
+  const server = await startChatServer((req, res) => {
+    req.resume();
+    res.writeHead(429, { "content-type": "application/json", server: "cloudflare" });
+    res.end(JSON.stringify({
+      code: "Some resource has been exhausted",
+      error: "Your team has either used all available credits or reached its monthly spending limit.",
+    }));
+  });
+  try {
+    const { port } = server.address();
+    writeDeepSeekProviderConfig(pluginRoot, `http://127.0.0.1:${port}`);
+    const result = await run([
+      "run",
+      "--provider", "deepseek",
+      "--mode", "custom-review",
+      "--scope", "custom",
+      "--scope-paths", "seed.txt",
+      "--foreground",
+      "--prompt", "Check this file.",
+    ], {
+      cwd,
+      companion: path.join(pluginRoot, "scripts", "api-reviewer.mjs"),
+      env: {
+        API_REVIEWERS_PLUGIN_DATA: dataDir,
+        DEEPSEEK_API_KEY: "secret-test-value",
+      },
+    });
+    assert.equal(result.status, 1);
+    const record = parseJson(result.stdout);
+    assert.equal(record.provider, "deepseek");
+    assert.equal(record.error_code, "usage_limited");
+    assert.equal(record.error_cause, "cost_quota_usage_limit");
+    assert.equal(record.http_status, 429);
+    assert.equal(record.runtime_diagnostics.cost_quota.classification, "usage_limited");
+    assert.equal(record.runtime_diagnostics.provider_request.prompt_chars, "Return exactly: ok".length);
+    assert.match(record.suggested_action, /quota|usage-tier|billing|credit/i);
+    assert.match(record.suggested_action, /fresh matching approval token/i);
+    assertDirectApiNotSent(record, "DeepSeek");
+    assert.doesNotMatch(result.stdout, /secret-test-value|monthly spending limit|available credits/i);
+  } finally {
+    server.close();
+    rmSync(cwd, { recursive: true, force: true });
+    rmSync(dataDir, { recursive: true, force: true });
+    rmSync(path.dirname(path.dirname(pluginRoot)), { recursive: true, force: true });
+  }
+});
+
 test("direct API 403 quota payloads are usage_limited, not auth_rejected", async () => {
   const cwd = makeWorkspace();
   const dataDir = mkdtempSync(path.join(tmpdir(), "api-reviewers-data-"));
