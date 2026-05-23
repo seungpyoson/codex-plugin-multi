@@ -49,7 +49,9 @@ test("prompt sidecar cleanup fails closed after a successful read", () => {
   const match = /export function consumePromptSidecar[\s\S]*?\n}/.exec(source);
   assert.ok(match, "scripts/lib/companion-common.mjs: missing consumePromptSidecar helper");
   assert.match(match[0], /readFileSync\(p,\s*"utf8"\)/, "consumePromptSidecar must read before cleanup");
-  assert.match(match[0], /catch\s*\(err\)\s*\{\s*throw new Error\(`prompt sidecar cleanup failed:/,
+  assert.match(match[0], /cleanup_uncertain: prompt sidecar cleanup failed/,
+    "consumePromptSidecar cleanup uncertainty must be classified");
+  assert.match(match[0], /error\.code\s*=\s*"cleanup_uncertain"/,
     "consumePromptSidecar cleanup uncertainty must fail closed after a successful read");
 });
 

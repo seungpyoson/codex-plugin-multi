@@ -455,6 +455,34 @@ test("writePromptSidecar rejects symlinked job directories", { skip: process.pla
   assert.equal(existsSync(path.join(escapeDir, "prompt.txt")), false);
 });
 
+test("writePromptSidecar reports cleanup_uncertain when failed writes leave a temp file", {
+  skip: !POSIX_MODE_ASSERTIONS || process.getuid?.() === 0,
+}, () => {
+  const jobsDir = mkdtempSync(path.join(tmpdir(), "companion-common-write-cleanup-"));
+  const jobId = "job-write-cleanup";
+  const jobDir = path.join(jobsDir, jobId);
+  mkdirSync(jobDir, { recursive: true, mode: 0o700 });
+  const originalNow = Date.now;
+  Date.now = () => 1234567890;
+  const tmpFile = path.join(jobDir, `prompt.txt.${process.pid}.1234567890.tmp`);
+  mkdirSync(tmpFile, { mode: 0o700 });
+  try {
+    assert.throws(
+      () => writePromptSidecar(jobsDir, jobId, "secret prompt"),
+      (err) => err?.code === "cleanup_uncertain"
+        && /prompt sidecar write cleanup failed/.test(err.message)
+        && err.cause?.code === "EISDIR"
+        && typeof err.cleanup_error === "string"
+        && err.cleanup_error.length > 0,
+    );
+    assert.equal(existsSync(tmpFile), true, "tmp prompt remains when cleanup is uncertain");
+  } finally {
+    Date.now = originalNow;
+    chmodSync(jobDir, 0o700);
+    rmSync(jobDir, { recursive: true, force: true });
+  }
+});
+
 test("consumePromptSidecar rejects symlinked job directories", { skip: process.platform === "win32" }, () => {
   const jobsDir = mkdtempSync(path.join(tmpdir(), "companion-common-consume-symlink-jobs-"));
   const escapeDir = mkdtempSync(path.join(tmpdir(), "companion-common-consume-symlink-escape-"));

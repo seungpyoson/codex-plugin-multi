@@ -448,6 +448,14 @@ export function promptSidecarPath(jobsDir, jobId) {
   return resolvePath(jobsDir, jobId, "prompt.txt");
 }
 
+function promptSidecarCleanupUncertain(jobId, originalError, cleanupError) {
+  const error = new Error(`cleanup_uncertain: prompt sidecar write cleanup failed for ${jobId}`);
+  error.code = "cleanup_uncertain";
+  error.cause = originalError;
+  error.cleanup_error = cleanupError?.message ?? String(cleanupError);
+  return error;
+}
+
 export function writePromptSidecar(jobsDir, jobId, prompt) {
   assertSafeSidecarJobId(jobId);
   const dir = resolvePath(jobsDir, jobId);
@@ -464,7 +472,13 @@ export function writePromptSidecar(jobsDir, jobId, prompt) {
     renamed = true;
     enforcePrivateMode(p, 0o600);
   } catch (err) {
-    try { unlinkSync(renamed ? p : tmpFile); } catch { /* already gone */ }
+    try {
+      unlinkSync(renamed ? p : tmpFile);
+    } catch (cleanupErr) {
+      if (cleanupErr?.code !== "ENOENT") {
+        throw promptSidecarCleanupUncertain(jobId, err, cleanupErr);
+      }
+    }
     throw err;
   }
 }
@@ -488,7 +502,10 @@ export function consumePromptSidecar(jobsDir, jobId) {
   try {
     unlinkSync(p);
   } catch (err) {
-    throw new Error(`prompt sidecar cleanup failed: ${err?.message ?? String(err)}`);
+    const error = new Error(`cleanup_uncertain: prompt sidecar cleanup failed for ${jobId}`);
+    error.code = "cleanup_uncertain";
+    error.cause = err;
+    throw error;
   }
   return prompt;
 }
