@@ -248,6 +248,9 @@ function terminalLifecycleProjection(obj) {
     external_review: obj.external_review,
   };
   if (obj.disclosure_note != null) projection.disclosure_note = obj.disclosure_note;
+  if (obj.status !== "completed" && obj.runtime_diagnostics !== undefined) {
+    projection.runtime_diagnostics = obj.runtime_diagnostics;
+  }
   if (obj.review_quality && typeof obj.review_quality === "object") {
     projection.review_quality = {
       failed_review_slot: obj.review_quality.failed_review_slot ?? null,
@@ -2733,45 +2736,121 @@ async function probeGrokChat(cfg, env = process.env, options = {}) {
   }
 }
 
+function tunnelFailureMode(chatProbe) {
+  if (!chatProbe || chatProbe.chat_ready === true) return null;
+  const code = chatProbe.error_code ?? null;
+  if (code === "tunnel_unavailable") return "connect_refused";
+  if (code === "tunnel_timeout" || code === "grok_chat_timeout") return "connect_timeout";
+  if (code === "session_expired") return "session_expired";
+  if (code === "usage_limited") return "usage_limited";
+  if (code === "grok_chat_model_rejected") return "chat_model_rejected";
+  if (code === "models_ok_chat_400") return "chat_unavailable";
+  if (code && code.startsWith("grok_session_")) return "session_state_invalid";
+  if (code) return code;
+  return chatProbe.http_status != null ? `http_${chatProbe.http_status}` : "unknown";
+}
+
+function sessionTokensStatusForRuntime(sessionDiagnostics, chatProbe) {
+  if (!sessionDiagnostics) return "not_checked";
+  if (sessionDiagnostics.status === "unknown") {
+    if (chatProbe?.chat_ready === false && chatProbe.error_code === "tunnel_unavailable") {
+      return "unknown_tunnel_unreachable";
+    }
+    return "unknown";
+  }
+  const errorCode = sessionDiagnostics.error_code ?? null;
+  if (errorCode === "grok_session_no_runtime_tokens") return "empty";
+  if (errorCode === "grok_session_malformed_active_token") return "malformed";
+  if (errorCode === "grok_session_runtime_admin_divergence") return "runtime_admin_divergence";
+  if (errorCode === "grok_runtime_status_unavailable") return "runtime_status_unavailable";
+  if (errorCode === "grok_runtime_status_timeout") return "runtime_status_timeout";
+  if (errorCode) return errorCode;
+  if ((sessionDiagnostics.active_token_count ?? 0) > 0) return "active";
+  return "unknown";
+}
+
+function webTunnelStateDiagnostics(cfg, chatProbe, tunnelStart = null) {
+  const reachable = chatProbe?.chat_ready === true
+    || (typeof chatProbe?.http_status === "number" && chatProbe.http_status > 0);
+  return {
+    transport: cfg.transport,
+    reachable,
+    chat_ready: chatProbe?.chat_ready === true,
+    failure_mode: chatProbe?.chat_ready === true ? null : tunnelFailureMode(chatProbe),
+    error_code: chatProbe?.error_code ?? null,
+    http_status: chatProbe?.http_status ?? null,
+    probe_endpoint: chatProbe?.probe_endpoint ?? null,
+    auto_start_attempted: tunnelStart?.attempted === true,
+  };
+}
+
+function webSessionTokensDiagnostics(sessionDiagnostics, chatProbe) {
+  return {
+    status: sessionTokensStatusForRuntime(sessionDiagnostics, chatProbe),
+    total_token_count: sessionDiagnostics?.total_token_count ?? null,
+    active_token_count: sessionDiagnostics?.active_token_count ?? null,
+    malformed_active_token_count: sessionDiagnostics?.malformed_active_token_count ?? null,
+    deleted_token_count: sessionDiagnostics?.deleted_token_count ?? null,
+    account_count: sessionDiagnostics?.account_count ?? null,
+    pool_count: sessionDiagnostics?.pool_count ?? null,
+    runtime_size: sessionDiagnostics?.runtime_size ?? null,
+    runtime_revision: sessionDiagnostics?.runtime_revision ?? null,
+    diagnostics_status: sessionDiagnostics?.status ?? null,
+    diagnostics_error_code: sessionDiagnostics?.error_code ?? null,
+    probe_endpoint: sessionDiagnostics?.probe_endpoint ?? null,
+    repair_attempted: false,
+  };
+}
+
+function webReadinessDiagnostics(cfg, chatProbe, sessionDiagnostics = null) {
+  return {
+    preflight: true,
+    configured_timeout_ms: cfg.chat_doctor_timeout_ms,
+    endpoint_class: "chat_completions_preflight",
+    model: cfg.model,
+    stream: false,
+    message_count: 1,
+    prompt_chars: REVIEW_READINESS_PREFLIGHT_PROMPT.length,
+    max_tokens: null,
+    temperature: 0,
+    cost_quota: {
+      classification: chatProbe?.error_code === "usage_limited" ? "usage_limited" : "not_reported",
+      http_status: chatProbe?.http_status ?? null,
+      provider_error_code: null,
+      provider_error_type: null,
+      billing_mutation: "not_attempted",
+    },
+    session_diagnostics: sessionDiagnostics,
+    tunnel_state: webTunnelStateDiagnostics(cfg, chatProbe),
+    session_tokens: webSessionTokensDiagnostics(sessionDiagnostics, chatProbe),
+  };
+}
+
 async function grokReviewReadinessPreflight(cfg, env = process.env) {
   const chatProbe = await probeGrokChat(cfg, env, {
     headers: { [REVIEW_READINESS_PREFLIGHT_HEADER]: "1" },
   });
-  if (chatProbe.chat_ready === true) return null;
+  if (chatProbe.chat_ready === true) {
+    return { ok: true, diagnostics: webReadinessDiagnostics(cfg, chatProbe) };
+  }
 
   const sessionDiagnostics = await probeGrokSessionDiagnostics(cfg, env);
   const sessionErrorCode = sessionDiagnostics.status === "checked" ? sessionDiagnostics.error_code : null;
   const sessionErrorMessage = sessionDiagnostics.status === "checked" ? sessionDiagnostics.error_message : null;
   const errorCode = sessionErrorCode ?? chatProbe.error_code ?? "tunnel_error";
+  const diagnostics = webReadinessDiagnostics(cfg, chatProbe, sessionDiagnostics);
+  diagnostics.cost_quota.classification = errorCode === "usage_limited" ? "usage_limited" : "not_reported";
   const execution = providerFailureWithDiagnostic(
     errorCode,
     sessionErrorMessage ?? chatProbe.error_message ?? errorCode,
     chatProbe.http_status,
     null,
     false,
-    {
-      preflight: true,
-      configured_timeout_ms: cfg.chat_doctor_timeout_ms,
-      endpoint_class: "chat_completions_preflight",
-      model: cfg.model,
-      stream: false,
-      message_count: 1,
-      prompt_chars: REVIEW_READINESS_PREFLIGHT_PROMPT.length,
-      max_tokens: null,
-      temperature: 0,
-      cost_quota: {
-        classification: errorCode === "usage_limited" ? "usage_limited" : "not_reported",
-        http_status: chatProbe.http_status ?? null,
-        provider_error_code: null,
-        provider_error_type: null,
-        billing_mutation: "not_attempted",
-      },
-      session_diagnostics: sessionDiagnostics,
-    },
+    diagnostics,
   );
   execution.credential_ref = cfg.credential_ref;
   execution.endpoint = cfg.base_url;
-  return execution;
+  return { ok: false, execution };
 }
 
 function isTunnelTransportExecution(execution) {
@@ -3124,6 +3203,11 @@ function buildRecord({ cfg, mode, options, scopeInfo, execution, startedAt, ende
     },
     tunnel_start: safeDiagnostics.tunnel_start ?? null,
     cost_quota: safeDiagnostics.cost_quota ?? null,
+    tunnel_state: safeDiagnostics.tunnel_state ? {
+      ...safeDiagnostics.tunnel_state,
+      auto_start_attempted: safeDiagnostics.tunnel_start?.attempted ?? safeDiagnostics.tunnel_state.auto_start_attempted ?? false,
+    } : null,
+    session_tokens: safeDiagnostics.session_tokens ?? null,
   }) : null;
   return freezeRecord({
     id: options.jobId,
@@ -4084,6 +4168,7 @@ async function cmdRun(options) {
     let prompt;
     let tunnelStart = null;
     let promptSentToTunnel = false;
+    let webReadiness = null;
     try {
       prompt = promptFor(cfg, mode, options.prompt ?? "", scopeInfo);
       if (prompt.length > cfg.max_prompt_chars) {
@@ -4140,11 +4225,13 @@ async function cmdRun(options) {
           }
         }
       } else {
-        execution = await grokReviewReadinessPreflight(cfg);
+        webReadiness = await grokReviewReadinessPreflight(cfg);
+        execution = webReadiness?.ok === true ? null : webReadiness?.execution;
         if (execution && isTunnelTransportExecution(execution)) {
           ({ tunnel_start: tunnelStart } = await ensureGrokTunnelReachable(cfg));
           if (tunnelStart?.status === "started") {
-            execution = await grokReviewReadinessPreflight(cfg);
+            webReadiness = await grokReviewReadinessPreflight(cfg);
+            execution = webReadiness?.ok === true ? null : webReadiness?.execution;
           }
         }
         if (!execution && lifecycleEvents) {
@@ -4173,6 +4260,7 @@ async function cmdRun(options) {
           }
         }
         execution.diagnostics = {
+          ...(webReadiness?.ok === true ? webReadiness.diagnostics : {}),
           ...(execution.diagnostics ?? {}),
           tunnel_start: tunnelStart,
         };

@@ -1221,10 +1221,151 @@ test("custom-review explicit web transport ignores unauthenticated Grok CLI stat
       assert.equal(record.auth_mode, "subscription_web");
       assert.equal(record.external_review.provider, "Grok Web");
       assert.equal(record.external_review.source_content_transmission, "sent");
+      assert.equal(record.runtime_diagnostics.tunnel_state.transport, "web");
+      assert.equal(record.runtime_diagnostics.tunnel_state.reachable, true);
+      assert.equal(record.runtime_diagnostics.tunnel_state.chat_ready, true);
+      assert.equal(record.runtime_diagnostics.tunnel_state.auto_start_attempted, false);
+      assert.equal(record.runtime_diagnostics.session_tokens.repair_attempted, false);
       assert.deepEqual(readGrokCliLog(logPath), []);
     });
   } finally {
     rmTree(authHome);
+    rmTree(cwd);
+    rmTree(dataDir);
+  }
+});
+
+test("explicit --transport web fails with tunnel readiness diagnostics and no silent repair when tunnel is unavailable", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "grok-web-transport-tunnel-"));
+  const dataDir = mkdtempSync(path.join(tmpdir(), "grok-web-transport-data-"));
+  try {
+    writeFileSync(path.join(cwd, "review.js"), "export const value = 42;\n");
+
+    const result = run([
+      "run",
+      "--mode", "custom-review",
+      "--scope", "custom",
+      "--scope-paths", "review.js",
+      "--foreground",
+      "--transport", "web",
+      "--lifecycle-events", "jsonl",
+      "--prompt", "Check this file.",
+    ], {
+      cwd,
+      env: {
+        GROK_PLUGIN_DATA: dataDir,
+        GROK_WEB_BASE_URL: "http://127.0.0.1:9/api",
+        GROK_WEB_TUNNEL_API_KEY: "secret-cookie-like-token",
+        GROK_WEB_TIMEOUT_MS: "500",
+        GROK_WEB_CHAT_DOCTOR_TIMEOUT_MS: "500",
+        GROK_WEB_DOCTOR_TIMEOUT_MS: "500",
+        GROK_WEB_TUNNEL_START_TIMEOUT_MS: "500",
+        GROK_WEB_TUNNEL_AUTO_START: "0",
+        GROK_WEB_TUNNEL_AUTO_BOOTSTRAP: "0",
+      },
+    });
+    const lines = parseJsonLines(result);
+    assert.equal(result.status, 1);
+    assert.equal(lines.length, 1, `expected only the terminal record; lifecycle events leaked launch: ${result.stdout}`);
+    const [record] = lines;
+
+    assert.doesNotMatch(result.stdout, /external_review_launched/);
+    assert.equal(record.external_review.source_content_transmission, "not_sent");
+    assert.equal(record.status, "failed");
+    assert.match(record.error_code, /^tunnel_(unavailable|timeout|error)$/);
+    assert.ok(record.runtime_diagnostics, "runtime_diagnostics must be present");
+    assert.ok(record.runtime_diagnostics.tunnel_state, "runtime_diagnostics.tunnel_state must be populated for --transport web failure");
+    assert.equal(record.runtime_diagnostics.tunnel_state.transport, "web");
+    assert.equal(record.runtime_diagnostics.tunnel_state.reachable, false);
+    assert.ok(typeof record.runtime_diagnostics.tunnel_state.failure_mode === "string"
+      && record.runtime_diagnostics.tunnel_state.failure_mode.length > 0,
+      "tunnel_state.failure_mode must name a specific failure mode");
+    assert.ok(record.runtime_diagnostics.session_tokens, "runtime_diagnostics.session_tokens must be populated for --transport web failure");
+    assert.ok(typeof record.runtime_diagnostics.session_tokens.status === "string"
+      && record.runtime_diagnostics.session_tokens.status.length > 0,
+      "session_tokens.status must be populated even when the tunnel is unavailable");
+    assert.equal(record.runtime_diagnostics.tunnel_state.auto_start_attempted ?? false, false,
+      "--transport web must never auto-start the tunnel");
+    assert.equal(record.runtime_diagnostics.session_tokens.repair_attempted ?? false, false,
+      "--transport web must never auto-run browser/session repair");
+    assert.match(record.suggested_action, /grok:repair-session|grok:sync-browser-session|local Grok web tunnel/i);
+  } finally {
+    rmTree(cwd);
+    rmTree(dataDir);
+  }
+});
+
+test("explicit --transport web surfaces stale session tokens and suggests repair commands without running them", async () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "grok-web-transport-session-"));
+  const dataDir = mkdtempSync(path.join(tmpdir(), "grok-web-transport-session-data-"));
+  try {
+    writeFileSync(path.join(cwd, "review.js"), "export const value = 42;\n");
+
+    const requests = [];
+    await withServer(async (req, res) => {
+      res.setHeader("content-type", "application/json");
+      if (req.url === "/api/chat/completions") {
+        const body = await readJsonRequest(req);
+        requests.push({
+          method: req.method,
+          url: req.url,
+          preflight: req.headers["x-codex-grok-readiness-preflight"] === "1",
+          prompt: body.messages?.[0]?.content ?? "",
+        });
+        res.statusCode = 429;
+        res.end(JSON.stringify({ error: { message: "No active runtime tokens." } }));
+        return;
+      }
+      if (req.url === "/admin/api/tokens") {
+        requests.push({ method: req.method, url: req.url, preflight: false, prompt: null });
+        res.end(JSON.stringify({ tokens: [] }));
+        return;
+      }
+      res.statusCode = 404;
+      res.end(JSON.stringify({ error: { message: "unexpected endpoint" } }));
+    }, async (baseUrl) => {
+      const result = await runAsync([
+        "run",
+        "--mode", "custom-review",
+        "--scope", "custom",
+        "--scope-paths", "review.js",
+        "--foreground",
+        "--transport", "web",
+        "--lifecycle-events", "jsonl",
+        "--prompt", "Check this file.",
+      ], {
+        cwd,
+        env: {
+          GROK_PLUGIN_DATA: dataDir,
+          GROK_WEB_BASE_URL: baseUrl,
+          GROK_WEB_TUNNEL_API_KEY: "secret-cookie-like-token",
+        },
+      });
+      const lines = parseJsonLines(result);
+      assert.equal(result.status, 1);
+      assert.equal(lines.length, 1, `expected only the terminal record; lifecycle events leaked launch: ${result.stdout}`);
+      const [record] = lines;
+
+      assert.doesNotMatch(result.stdout, /external_review_launched/);
+      assert.equal(record.external_review.source_content_transmission, "not_sent");
+      assert.equal(record.status, "failed");
+      assert.equal(record.error_code, "grok_session_no_runtime_tokens");
+      assert.ok(record.runtime_diagnostics.tunnel_state, "runtime_diagnostics.tunnel_state must be populated");
+      assert.equal(record.runtime_diagnostics.tunnel_state.transport, "web");
+      assert.equal(record.runtime_diagnostics.tunnel_state.reachable, true);
+      assert.ok(record.runtime_diagnostics.session_tokens, "runtime_diagnostics.session_tokens must be populated");
+      assert.equal(record.runtime_diagnostics.session_tokens.status, "empty");
+      assert.equal(record.runtime_diagnostics.session_tokens.repair_attempted ?? false, false);
+      assert.match(record.suggested_action, /grok:repair-session|grok:sync-browser-session/);
+      assert.match(record.suggested_action, /approval|approve/i);
+      assert.deepEqual(requests.map((r) => [r.method, r.url, r.preflight]), [
+        ["POST", "/api/chat/completions", true],
+        ["GET", "/admin/api/tokens", false],
+      ]);
+      assert.equal(requests[0].prompt, "Return exactly: ok");
+      assert.doesNotMatch(requests[0].prompt, /review\.js|BEGIN GROK FILE|export const value/);
+    }, { autoPreflight: false });
+  } finally {
     rmTree(cwd);
     rmTree(dataDir);
   }
