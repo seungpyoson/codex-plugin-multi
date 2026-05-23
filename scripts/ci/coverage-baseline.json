@@ -55,6 +55,11 @@
       "branches": 88.89,
       "functions": 100.0
     },
+    "plugins/api-reviewers/scripts/lib/privacy-redaction.mjs": {
+      "lines": 0.0,
+      "branches": 0.0,
+      "functions": 0.0
+    },
     "plugins/api-reviewers/scripts/lib/git-env.mjs": {
       "lines": 100.0,
       "branches": 100.0,
@@ -189,6 +194,11 @@
       "lines": 100.0,
       "branches": 90.91,
       "functions": 100.0
+    },
+    "plugins/claude/scripts/lib/privacy-redaction.mjs": {
+      "lines": 0.0,
+      "branches": 0.0,
+      "functions": 0.0
     },
     "plugins/claude/scripts/lib/time.mjs": {
       "lines": 100.0,
@@ -330,6 +340,11 @@
       "branches": 90.91,
       "functions": 100.0
     },
+    "plugins/gemini/scripts/lib/privacy-redaction.mjs": {
+      "lines": 0.0,
+      "branches": 0.0,
+      "functions": 0.0
+    },
     "plugins/gemini/scripts/lib/time.mjs": {
       "lines": 100.0,
       "branches": 100.0,
@@ -406,6 +421,11 @@
       "functions": 100.0
     },
     "plugins/grok/scripts/lib/jwt.mjs": {
+      "lines": 0.0,
+      "branches": 0.0,
+      "functions": 0.0
+    },
+    "plugins/grok/scripts/lib/privacy-redaction.mjs": {
       "lines": 0.0,
       "branches": 0.0,
       "functions": 0.0
@@ -529,6 +549,11 @@
       "lines": 100.0,
       "branches": 92.86,
       "functions": 100.0
+    },
+    "plugins/kimi/scripts/lib/privacy-redaction.mjs": {
+      "lines": 0.0,
+      "branches": 0.0,
+      "functions": 0.0
     },
     "plugins/kimi/scripts/lib/time.mjs": {
       "lines": 100.0,
