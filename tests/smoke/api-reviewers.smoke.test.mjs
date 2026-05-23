@@ -452,6 +452,41 @@ test("doctor loads direct API credential from owner-only op env cache when proce
   }
 });
 
+test("doctor unquotes env cache credentials before trailing comments", async () => {
+  const pluginRoot = makeInstalledApiReviewersRoot();
+  const home = mkdtempSync(path.join(tmpdir(), "api-reviewers-op-home-"));
+  const cacheDir = path.join(home, ".cache", "op");
+  mkdirSync(cacheDir, { recursive: true });
+  const envFile = path.join(cacheDir, "env.sh");
+  writeFileSync(envFile, 'export DEEPSEEK_API_KEY="cached-deepseek-test-value" # loaded by op\n', "utf8");
+  chmodSync(envFile, 0o600);
+  let authorizationHeader = null;
+  const server = await startChatServer((req, res) => {
+    authorizationHeader = req.headers.authorization ?? null;
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end(mockResponse("deepseek-v4-flash", "chatcmpl-doctor", "ok"));
+  });
+  try {
+    const { port } = server.address();
+    writeDeepSeekProviderConfig(pluginRoot, `http://127.0.0.1:${port}`);
+    const result = await run(["doctor", "--provider", "deepseek"], {
+      companion: path.join(pluginRoot, "scripts", "api-reviewer.mjs"),
+      env: {
+        API_REVIEWERS_DISABLE_ENV_CACHE: "0",
+        HOME: home,
+        _OP_KEYS_LOADED: "",
+        DEEPSEEK_API_KEY: "",
+      },
+    });
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    assert.equal(authorizationHeader, "Bearer cached-deepseek-test-value");
+    assert.doesNotMatch(result.stdout, /cached-deepseek-test-value/);
+  } finally {
+    server.close();
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
 test("rejects prototype-shaped option keys", async () => {
   const result = await run(["doctor", "--__proto__", "polluted"], {
     env: { DEEPSEEK_API_KEY: "secret-test-value" },

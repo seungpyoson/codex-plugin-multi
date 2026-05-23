@@ -912,13 +912,13 @@ function credentialEnvCachePath(env = process.env) {
 }
 
 function unquoteEnvCacheValue(raw) {
-  const value = String(raw ?? "").trim();
+  const value = stripEnvCacheInlineComment(String(raw ?? "").trim());
   if (value.length === 0) return "";
   if (value.startsWith("'") && value.endsWith("'")) return value.slice(1, -1);
   if (value.startsWith('"') && value.endsWith('"')) {
     return unescapeDoubleQuotedEnvCacheValue(value.slice(1, -1));
   }
-  return stripEnvCacheInlineComment(value);
+  return value;
 }
 
 function unescapeDoubleQuotedEnvCacheValue(value) {
@@ -945,8 +945,27 @@ function skipEnvWhitespace(value, index) {
 }
 
 function stripEnvCacheInlineComment(value) {
-  for (let index = 1; index < value.length; index += 1) {
-    if (value[index] !== "#" || !isEnvWhitespace(value[index - 1])) continue;
+  let quote = null;
+  for (let index = 0; index < value.length; index += 1) {
+    const char = value[index];
+    if (quote === '"') {
+      if (char === "\\" && index + 1 < value.length) {
+        index += 1;
+        continue;
+      }
+      if (char === '"') quote = null;
+      continue;
+    }
+    if (quote === "'") {
+      if (char === "'") quote = null;
+      continue;
+    }
+    if (char === '"' || char === "'") {
+      quote = char;
+      continue;
+    }
+    if (index === 0) continue;
+    if (char !== "#" || !isEnvWhitespace(value[index - 1])) continue;
     let end = index - 1;
     while (end > 0 && isEnvWhitespace(value[end - 1])) end -= 1;
     return value.slice(0, end).trim();
