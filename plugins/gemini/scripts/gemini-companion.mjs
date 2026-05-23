@@ -58,6 +58,7 @@ import {
   writePromptSidecar,
 } from "./lib/companion-common.mjs";
 import { REVIEW_PROMPT_CONTRACT_VERSION, buildReviewAuditManifest, buildReviewPrompt, buildSelectedSourcePromptBlock, selectedSourceFilesFromPrompt } from "./lib/review-prompt.mjs";
+import { diffSourceFiles } from "./lib/diff-source.mjs";
 
 const PLUGIN_ROOT = resolvePath(dirname(fileURLToPath(import.meta.url)), "..");
 const MODELS_CONFIG_PATH = resolvePath(PLUGIN_ROOT, "config/models.json");
@@ -449,7 +450,25 @@ function scopedTargetPromptForOrExit(invocation, profile, userPrompt, lifecycleE
     lifecycleEvents,
   });
   try {
-    return targetPromptFor(invocation, userPrompt, auditSourceFiles(executionScope.containment.path));
+    const diffFiles = diffSourceFiles(invocation.cwd, invocation.scope_base, {
+      scopePaths: invocation.scope_paths,
+      workspaceRoot: invocation.workspace_root,
+    });
+    const sourceFiles = diffFiles.length > 0 ? diffFiles : auditSourceFiles(executionScope.containment.path);
+    return targetPromptFor(invocation, userPrompt, sourceFiles);
+  } catch (error) {
+    const errorRecord = buildJobRecord(invocation, {
+      exitCode: null,
+      parsed: null,
+      pidInfo: null,
+      geminiSessionId: null,
+      errorMessage: error?.message ?? String(error),
+    }, []);
+    writeJobFile(invocation.workspace_root, invocation.job_id, errorRecord);
+    upsertJob(invocation.workspace_root, errorRecord);
+    printLifecycleJson(errorRecord, lifecycleEvents);
+    cleanupScopedPromptExecutionScope(executionScope);
+    process.exit(2);
   } finally {
     cleanupScopedPromptExecutionScope(executionScope);
   }
