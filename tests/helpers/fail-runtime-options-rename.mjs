@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import { syncBuiltinESMExports } from "node:module";
 
-const marker = process.env.CLAUDE_TEST_FAIL_RENAME_BASENAME;
+const marker = process.env.CODEX_TEST_FAIL_RENAME_BASENAME ?? process.env.CLAUDE_TEST_FAIL_RENAME_BASENAME;
 if (marker) {
   const originalRenameSync = fs.renameSync;
   fs.renameSync = function renameSyncWithRuntimeOptionsFault(from, to) {

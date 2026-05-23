@@ -38,6 +38,7 @@ import {
   PING_PROMPT,
   cancelNoPidInfoSuggestedAction,
   cancelUnverifiableSuggestedAction,
+  cleanupRuntimeOptionsSidecar,
   consumeJsonSettingsSidecar,
   consumePromptSidecar,
   effectiveProfileForOptions,
@@ -703,6 +704,7 @@ async function spawnDetachedWorker(cwd, jobId, authMode) {
 
 function failBackgroundWorkerSpawn(workspaceRoot, invocation, error) {
   try { consumePromptSidecar(resolveJobsDir(workspaceRoot), invocation.job_id); } catch { /* best-effort prompt sidecar cleanup */ }
+  cleanupRuntimeOptionsSidecar(resolveJobsDir(workspaceRoot), invocation.job_id);
   const message = `background worker spawn failed: ${error?.code ? `${error.code}: ` : ""}${error?.message ?? String(error)}`;
   const errorRecord = buildJobRecord(invocation, {
     exitCode: null,
@@ -717,6 +719,8 @@ function failBackgroundWorkerSpawn(workspaceRoot, invocation, error) {
 }
 
 function failBackgroundPromptSidecarWrite(workspaceRoot, invocation, error) {
+  try { consumePromptSidecar(resolveJobsDir(workspaceRoot), invocation.job_id); } catch { /* best-effort prompt sidecar cleanup */ }
+  cleanupRuntimeOptionsSidecar(resolveJobsDir(workspaceRoot), invocation.job_id);
   const message = `background prompt sidecar write failed: ${error?.code ? `${error.code}: ` : ""}${error?.message ?? String(error)}`;
   const errorRecord = buildJobRecord(invocation, {
     exitCode: null,

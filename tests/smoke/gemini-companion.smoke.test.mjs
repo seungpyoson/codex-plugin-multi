@@ -931,7 +931,7 @@ test("gemini background worker spawn failure writes failed JobRecord instead of 
   const missingCwd = path.join(cwd, "missing-cwd");
   const { stdout, stderr, status, dataDir } = runCompanion(
     ["run", "--mode=rescue", "--background", "--model", "gemini-3-flash-preview",
-     "--cwd", missingCwd, "--", "background rescue task"],
+     "--cwd", missingCwd, "--approval-token", "spawn-failure-approval-token", "--", "background rescue task"],
     { cwd },
   );
   try {
@@ -951,6 +951,51 @@ test("gemini background worker spawn failure writes failed JobRecord instead of 
       false,
       "prompt sidecar must be removed when the worker never launches",
     );
+    assert.equal(
+      existsSync(path.join(path.dirname(metaPath), record.job_id, "runtime-options.json")),
+      false,
+      "runtime-options sidecar must be removed when the worker never launches",
+    );
+  } finally {
+    rmTree(dataDir);
+    rmTree(cwd);
+  }
+});
+
+test("gemini run --background: runtime-options write failure removes prompt sidecar", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "gemini-bg-runtime-sidecar-fail-"));
+  fixtureSeedRepo(cwd, {
+    fileName: "seed.txt",
+    fileContents: "gemini runtime options failure source sentinel\n",
+  });
+  const dataDir = mkdtempSync(path.join(tmpdir(), "gemini-runtime-sidecar-fail-data-"));
+  const preload = path.join(REPO_ROOT, "tests/helpers/fail-runtime-options-rename.mjs");
+  const result = runCompanion(
+    ["run", "--mode=custom-review", "--background", "--model", "gemini-3-flash-preview",
+     "--cwd", cwd, "--scope-paths", "seed.txt", "--", "review selected source"],
+    {
+      cwd,
+      dataDir,
+      env: {
+        NODE_OPTIONS: `--import ${preload}`,
+        CODEX_TEST_FAIL_RENAME_BASENAME: "runtime-options.json",
+      },
+    },
+  );
+  try {
+    assert.notEqual(result.status, 0, "launcher must fail before emitting a launched event");
+    const error = JSON.parse(result.stdout);
+    assert.equal(error.error, "sidecar_failed");
+    assert.match(error.message, /runtime-options\.json|rename failure|sidecar write failed/);
+
+    const { metaPath, record } = readOnlyJobRecord(dataDir);
+    assert.equal(record.status, "failed");
+    assert.match(record.error_message, /background prompt sidecar write failed/);
+    const sidecarDir = path.join(path.dirname(metaPath), record.job_id);
+    assert.equal(existsSync(path.join(sidecarDir, "prompt.txt")), false,
+      "prompt sidecar must be removed when runtime-options write fails after prompt write");
+    assert.equal(existsSync(path.join(sidecarDir, "runtime-options.json")), false,
+      "runtime-options sidecar must not persist after failed atomic rename");
   } finally {
     rmTree(dataDir);
     rmTree(cwd);

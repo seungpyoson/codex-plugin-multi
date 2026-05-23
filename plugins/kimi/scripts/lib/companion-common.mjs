@@ -58,6 +58,19 @@ export function consumeJsonSettingsSidecar(file, { unlink = unlinkSync } = {}) {
   };
 }
 
+export function runtimeOptionsSidecarPath(jobsDir, jobId) {
+  assertSafeSidecarJobId(jobId);
+  return resolvePath(jobsDir, jobId, "runtime-options.json");
+}
+
+export function cleanupRuntimeOptionsSidecar(jobsDir, jobId) {
+  try {
+    consumeJsonSettingsSidecar(runtimeOptionsSidecarPath(jobsDir, jobId));
+  } catch {
+    // Best-effort cleanup for launcher failure paths where the child process never owns the sidecar.
+  }
+}
+
 export function parseLifecycleEventsMode(value) {
   if (value == null || value === false) return null;
   if (value === "jsonl") return "jsonl";
