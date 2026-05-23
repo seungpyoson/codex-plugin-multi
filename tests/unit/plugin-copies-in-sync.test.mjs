@@ -98,6 +98,23 @@ test("lib/external-model-review-quality.mjs: all reviewer packaging copies match
   }
 });
 
+test("lib/privacy-redaction.mjs: all reviewer packaging copies match the canonical shared source", () => {
+  const canonical = readFileSync(path.join(REPO_ROOT, "scripts/lib/privacy-redaction.mjs"), "utf8");
+  for (const plugin of REVIEW_PROMPT_PLUGIN_TARGETS) {
+    const copy = readFileSync(
+      path.join(REPO_ROOT, `plugins/${plugin}/scripts/lib/privacy-redaction.mjs`),
+      "utf8"
+    );
+    assert.equal(copy, canonical, `privacy-redaction.mjs packaging copy drifted in ${plugin}`);
+  }
+});
+
+test("lint:sync includes a fixer for the privacy redaction shared file", () => {
+  const packageJson = JSON.parse(readFileSync(path.join(REPO_ROOT, "package.json"), "utf8"));
+  const lintSync = packageJson.scripts?.["lint:sync"] ?? "";
+  assert.match(lintSync, /sync-privacy-redaction\.mjs --check/);
+});
+
 test("lib/provider-route-policy.mjs: all reviewer packaging copies match the canonical shared source", () => {
   const canonical = readFileSync(path.join(REPO_ROOT, "scripts/lib/provider-route-policy.mjs"), "utf8");
   for (const plugin of REVIEW_PROMPT_PLUGIN_TARGETS) {
@@ -228,6 +245,26 @@ test("Grok and API reviewer runtimes use the shared failure diagnostic builder",
       /buildExternalModelFailureDiagnostic\s*\(/,
       `${runtimePath} does not call buildExternalModelFailureDiagnostic`
     );
+  }
+});
+
+test("reviewer runtimes use the shared privacy redactor", () => {
+  const runtimePaths = [
+    ["plugins/api-reviewers/scripts/api-reviewer.mjs", "./lib/privacy-redaction.mjs"],
+    ["plugins/claude/scripts/lib/job-record.mjs", "./privacy-redaction.mjs"],
+    ["plugins/gemini/scripts/lib/job-record.mjs", "./privacy-redaction.mjs"],
+    ["plugins/grok/scripts/grok-web-reviewer.mjs", "./lib/privacy-redaction.mjs"],
+    ["plugins/kimi/scripts/lib/job-record.mjs", "./privacy-redaction.mjs"],
+  ];
+  for (const [runtimePath, importPath] of runtimePaths) {
+    const text = readFileSync(path.join(REPO_ROOT, runtimePath), "utf8");
+    assert.match(
+      text,
+      new RegExp(`import\\s+\\{[^}]*\\bbuildPrivacyRedactor\\b[^}]*\\}\\s+from\\s+["']${importPath.replaceAll(".", "\\.").replaceAll("/", "\\/")}["']`, "s"),
+      `${runtimePath} does not import buildPrivacyRedactor`
+    );
+    assert.doesNotMatch(text, /\nfunction\s+secretValueRedactor\s*\(/, `${runtimePath} defines secretValueRedactor locally`);
+    assert.doesNotMatch(text, /\nfunction\s+selectedSourceBodyRedactor\s*\(/, `${runtimePath} defines selectedSourceBodyRedactor locally`);
   }
 });
 

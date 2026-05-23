@@ -15,6 +15,7 @@ import { USAGE_LIMIT_SAFE_MESSAGE, isUsageLimitDetail } from "./lib/usage-limit.
 import { elapsedMs } from "./lib/time.mjs";
 import { buildExternalModelFailureDiagnostic } from "./lib/external-model-failure-core.mjs";
 import { hasSubstantiveInvalidVerdictReason, reviewQualityFailureState } from "./lib/external-model-review-quality.mjs";
+import { buildPrivacyRedactor } from "./lib/privacy-redaction.mjs";
 import { normalizeApprovalScope, selectProviderRoute } from "./lib/provider-route-policy.mjs";
 import {
   EXTERNAL_REVIEW_KEYS,
@@ -93,9 +94,6 @@ const API_REVIEWER_EXPECTED_KEYS = Object.freeze([
   "schema_version",
 ]);
 const ALLOWED_REQUEST_DEFAULT_KEYS = new Set(["thinking", "reasoning_effort", "max_tokens", "top_p", "stop"]);
-// Avoid corrupting structured fields when a broken local env has a tiny API-key placeholder.
-const MIN_SECRET_REDACTION_LENGTH = 8;
-const ACCOUNT_PAYMENT_TOKEN_RE = /\b(?:stripe-[^\s,;:)]+|cus_[A-Za-z0-9]{6,}|acct_(?:test_)?[A-Za-z0-9]{5,}|cs_(?:test|live)_[A-Za-z0-9]{6,}|(?:pi|sub|in|ii|ch|seti|setp|price|prod|iv)_(?=[A-Za-z0-9]*\d)[A-Za-z0-9]{5,})/gi;
 const ACCOUNT_PAYMENT_DIAGNOSTIC_RE = /^(?:stripe-.+|cus_[A-Za-z0-9]{6,}|acct_(?:test_)?[A-Za-z0-9]{5,}|cs_(?:test|live)_[A-Za-z0-9]{6,}|(?:pi|sub|in|ii|ch|seti|setp|price|prod|iv)_(?=[A-Za-z0-9]*\d)[A-Za-z0-9]{5,})$/i;
 
 function writableOutput(output) {
@@ -1154,78 +1152,8 @@ function validateRenderedPromptBudget(prompt, cfg, env = process.env) {
 }
 
 function redactor(env = process.env, configuredSecretNames = []) {
-  const configured = new Set(configuredSecretNames);
   const effectiveEnv = credentialEnvWithCache(configuredSecretNames, env);
-  const secrets = Object.entries(effectiveEnv)
-    .filter(([name, value]) => (
-      typeof value === "string" &&
-      (
-        (configured.has(name) && value.length >= 4) ||
-        (/(?:^|_)(?:API_KEY|TOKEN|ACCESS_KEY|SECRET|ADMIN_KEY)$/.test(name) && value.length >= MIN_SECRET_REDACTION_LENGTH)
-      )
-    ))
-    .map(([, value]) => value);
-  return (text) => {
-    let out = String(text ?? "");
-    for (const secret of secrets) out = out.split(secret).join("[REDACTED]");
-    out = out.replace(/Authorization:\s*\S.*$/gim, "Authorization: [REDACTED]");
-    out = out.replace(/Bearer\s+\S+/gi, "Bearer [REDACTED]");
-    out = redactEmailTokens(out);
-    out = out.replaceAll(/\bplan[_-]?id=[^\s,;:)]+/gi, "[REDACTED]");
-    out = out.replaceAll(ACCOUNT_PAYMENT_TOKEN_RE, "[REDACTED]");
-    return out;
-  };
-}
-
-function redactEmailTokens(text) {
-  let out = "";
-  let token = "";
-  const flush = () => {
-    out += redactEmailToken(token);
-    token = "";
-  };
-  for (const ch of String(text ?? "")) {
-    if (isEmailTokenChar(ch)) {
-      token += ch;
-    } else {
-      flush();
-      out += ch;
-    }
-  }
-  flush();
-  return out;
-}
-
-function isEmailTokenChar(ch) {
-  const code = ch.charCodeAt(0);
-  return (
-    (code >= 48 && code <= 57) ||
-    (code >= 65 && code <= 90) ||
-    (code >= 97 && code <= 122) ||
-    ch === "." || ch === "_" || ch === "%" || ch === "+" || ch === "-" || ch === "@"
-  );
-}
-
-function redactEmailToken(token) {
-  if (!token) return "";
-  let end = token.length;
-  while (end > 0 && token[end - 1] === ".") end -= 1;
-  const core = token.slice(0, end);
-  const suffix = token.slice(end);
-  return isEmailLikeToken(core) ? `[REDACTED]${suffix}` : token;
-}
-
-function isEmailLikeToken(token) {
-  const at = token.indexOf("@");
-  if (at <= 0 || at !== token.lastIndexOf("@") || at === token.length - 1) return false;
-  const domain = token.slice(at + 1);
-  const dot = domain.lastIndexOf(".");
-  if (dot <= 0 || dot >= domain.length - 2) return false;
-  for (let i = dot + 1; i < domain.length; i += 1) {
-    const code = domain.charCodeAt(i);
-    if (!((code >= 65 && code <= 90) || (code >= 97 && code <= 122))) return false;
-  }
-  return true;
+  return buildPrivacyRedactor({ env: effectiveEnv, configuredSecretNames }).text;
 }
 
 function redactValue(value, redact) {
@@ -1239,87 +1167,9 @@ function redactValue(value, redact) {
   return value;
 }
 
-function redactRecord(record, env = process.env, configuredSecretNames = []) {
-  return redactValue(record, redactor(env, configuredSecretNames));
-}
-
-const SOURCE_BODY_REDACTION = "[redacted_source_excerpt]";
-const SOURCE_QUOTE_CONTIGUOUS_LIMIT = 200;
-const SOURCE_QUOTE_AGGREGATE_LIMIT = 800;
-const SOURCE_QUOTE_AGGREGATE_MIN_MATCH = 40;
-
-function sourceMatchLength(text, cursor, source, minLength) {
-  if (cursor + minLength > text.length || source.length < minLength) return 0;
-  const seed = text.slice(cursor, cursor + minLength);
-  let sourceIndex = source.indexOf(seed);
-  if (sourceIndex === -1) return 0;
-  let best = minLength;
-  while (sourceIndex !== -1) {
-    let length = minLength;
-    while (
-      cursor + length < text.length &&
-      sourceIndex + length < source.length &&
-      text[cursor + length] === source[sourceIndex + length]
-    ) {
-      length += 1;
-    }
-    best = Math.max(best, length);
-    sourceIndex = source.indexOf(seed, sourceIndex + 1);
-  }
-  return best;
-}
-
-function redactSourceQuotes(text, source, aggregateState) {
-  let out = "";
-  let cursor = 0;
-  while (cursor < text.length) {
-    const length = sourceMatchLength(text, cursor, source, SOURCE_QUOTE_AGGREGATE_MIN_MATCH);
-    if (length > SOURCE_QUOTE_CONTIGUOUS_LIMIT) {
-      out += SOURCE_BODY_REDACTION;
-      cursor += length;
-    } else if (length > 0) {
-      const quote = text.slice(cursor, cursor + length);
-      if (aggregateState.copiedChars + length > SOURCE_QUOTE_AGGREGATE_LIMIT) {
-        out += SOURCE_BODY_REDACTION;
-      } else {
-        out += quote;
-        aggregateState.copiedChars += length;
-      }
-      cursor += length;
-    } else {
-      out += text[cursor];
-      cursor += 1;
-    }
-  }
-  return out;
-}
-
-function selectedSourceBodyRedactor(sourceFiles = []) {
-  const variants = new Set();
-  const quoteSources = [];
-  const seenQuoteSources = new Set();
-  for (const file of sourceFiles) {
-    if (typeof file?.text !== "string" || file.text.length === 0) continue;
-    const normalized = file.text.replace(/\r\n/g, "\n");
-    for (const candidate of [file.text, normalized, file.text.trimEnd(), normalized.trimEnd()]) {
-      if (candidate) variants.add(candidate);
-    }
-    const quoteSource = normalized.trimEnd() || normalized;
-    if (quoteSource && !seenQuoteSources.has(quoteSource)) {
-      seenQuoteSources.add(quoteSource);
-      quoteSources.push(quoteSource);
-    }
-  }
-  const ordered = [...variants].sort((a, b) => b.length - a.length);
-  return (text) => {
-    let out = String(text ?? "");
-    for (const source of ordered) {
-      out = out.split(source).join(SOURCE_BODY_REDACTION);
-    }
-    const aggregateState = { copiedChars: 0 };
-    for (const source of quoteSources) out = redactSourceQuotes(out, source, aggregateState);
-    return out;
-  };
+function redactRecord(record, env = process.env, configuredSecretNames = [], sourceFiles = []) {
+  const effectiveEnv = credentialEnvWithCache(configuredSecretNames, env);
+  return buildPrivacyRedactor({ env: effectiveEnv, configuredSecretNames, sourceFiles }).value(record);
 }
 
 function configuredSecretNamesFromProviders(providers) {
@@ -2646,11 +2496,14 @@ function buildRecord({ provider, cfg, mode, options, scopeInfo, execution, start
     })
     : null;
   const completed = processCompleted && !reviewQualityState;
-  const redact = redactor(process.env, cfg.env_keys);
-  const redactSourceBody = selectedSourceBodyRedactor(scopeInfo.files);
-  const result = processCompleted ? redactSourceBody(redact(execution.parsed.result)) : null;
+  const redactSensitiveText = buildPrivacyRedactor({
+    env: credentialEnvWithCache(cfg.env_keys, process.env),
+    configuredSecretNames: cfg.env_keys,
+    sourceFiles: scopeInfo.files,
+  }).text;
+  const result = processCompleted ? redactSensitiveText(execution.parsed.result) : null;
   const semanticReasons = reviewMetadata?.audit_manifest?.review_quality?.semantic_failure_reasons ?? null;
-  const errorMessage = completed ? null : redactSourceBody(reviewQualityState ? reviewQualityState.error_message : redact(execution.parsed?.error ?? ""));
+  const errorMessage = completed ? null : redactSensitiveText(reviewQualityState ? reviewQualityState.error_message : (execution.parsed?.error ?? ""));
   const errorCode = completed ? null : (reviewQualityState ? reviewQualityState.error_code : (execution.parsed?.reason ?? "provider_error"));
   const target = provider;
   const payloadSent = execution.payload_sent ?? (processCompleted ? true : null);
@@ -2703,7 +2556,7 @@ function buildRecord({ provider, cfg, mode, options, scopeInfo, execution, start
     scope_base: scopeInfo.scope_base ?? null,
     scope_paths: scopeInfo.scope_paths ?? null,
     prompt_head: hasPromptText(options.prompt)
-      ? promptHead(redactSourceBody(redact(options.prompt)))
+      ? promptHead(redactSensitiveText(options.prompt))
       : "",
     review_metadata: reviewMetadata,
     schema_spec: null,
@@ -3032,7 +2885,7 @@ async function cmdRun(options) {
     execution,
     startedAt,
     endedAt: new Date().toISOString(),
-  }), process.env, cfg.env_keys);
+  }), process.env, cfg.env_keys, scopeInfo.files);
   const printableRecord = record.error_code === "sandbox_blocked"
     ? record
     : await persistRecordBestEffort(record, process.env, cfg.env_keys, record.workspace_root ?? record.cwd);

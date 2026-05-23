@@ -1,0 +1,81 @@
+import { test } from "node:test";
+import assert from "node:assert/strict";
+
+import {
+  REDACTED_SOURCE_EXCERPT,
+  buildPrivacyRedactor,
+} from "../../scripts/lib/privacy-redaction.mjs";
+
+test("privacy redactor replaces over-threshold selected-source excerpts and preserves bounded evidence", () => {
+  const longExcerpt = `SOURCE_BODY_SENTINEL_${"A".repeat(220)}`;
+  const boundedEvidence = `bounded evidence ${"B".repeat(90)}`;
+  const sourceText = [
+    "header",
+    longExcerpt,
+    boundedEvidence,
+    "footer",
+  ].join("\n");
+  const redact = buildPrivacyRedactor({
+    sourceFiles: [{ path: "seed.txt", text: sourceText }],
+  });
+
+  const out = redact.text([
+    "Verdict: REQUEST_CHANGES",
+    `Blocking finding copied too much source: ${longExcerpt}`,
+    `Short quote should survive: ${boundedEvidence}`,
+  ].join("\n"));
+
+  assert.match(out, new RegExp(REDACTED_SOURCE_EXCERPT.replaceAll("[", "\\[").replaceAll("]", "\\]")));
+  assert.doesNotMatch(out, new RegExp(longExcerpt));
+  assert.match(out, new RegExp(boundedEvidence));
+});
+
+test("privacy redactor enforces aggregate selected-source quote budget", () => {
+  const snippets = Array.from({ length: 9 }, (_, index) =>
+    `quote-${index}-${String.fromCharCode(65 + index).repeat(94)}`
+  );
+  const sourceText = snippets.map((snippet, index) => `${snippet}\nsource-gap-${index}`).join("\n");
+  const redact = buildPrivacyRedactor({
+    sourceFiles: [{ path: "seed.txt", text: sourceText }],
+  });
+  const out = redact.text(snippets.join("\nreview gap\n"));
+
+  assert.match(out, new RegExp(REDACTED_SOURCE_EXCERPT.replaceAll("[", "\\[").replaceAll("]", "\\]")));
+  assert.match(out, new RegExp(snippets[0]));
+  assert.doesNotMatch(out, new RegExp(snippets.at(-1)));
+});
+
+test("privacy redactor enforces aggregate source budget across object fields", () => {
+  const snippets = Array.from({ length: 9 }, (_, index) =>
+    `field-${index}-${String.fromCharCode(65 + index).repeat(94)}`
+  );
+  const sourceText = snippets.map((snippet, index) => `${snippet}\nsource-gap-${index}`).join("\n");
+  const redact = buildPrivacyRedactor({
+    sourceFiles: [{ path: "seed.txt", text: sourceText }],
+  });
+  const out = redact.value(Object.fromEntries(
+    snippets.map((snippet, index) => [`field_${index}`, `Reviewer quote: ${snippet}`])
+  ));
+  const serialized = JSON.stringify(out);
+
+  assert.match(serialized, new RegExp(REDACTED_SOURCE_EXCERPT.replaceAll("[", "\\[").replaceAll("]", "\\]")));
+  assert.match(serialized, new RegExp(snippets[0]));
+  assert.doesNotMatch(serialized, new RegExp(snippets.at(-1)));
+});
+
+test("privacy redactor applies generic credential and account-token patterns", () => {
+  const redact = buildPrivacyRedactor({
+    env: { CODEX_PLUGIN_PRIVACY_TOKEN: "env-secret-value-12345" },
+  });
+
+  const out = redact.text([
+    "Authorization: Bearer reflected-token-value",
+    "Bearer alternate-token-value",
+    "JWT eyJhbGciOiJub25lIn0.eyJzdWIiOiJ0ZXN0In0.signature",
+    "customer cus_NXLKj1H plan_id=pro+stripe-sub-abc/123 user user@example.com",
+    "provider echoed env-secret-value-12345",
+  ].join("\n"));
+
+  assert.doesNotMatch(out, /reflected-token-value|alternate-token-value|eyJhbGci|cus_NXLKj1H|stripe-sub|user@example\.com|env-secret-value/);
+  assert.match(out, /\[REDACTED\]/);
+});

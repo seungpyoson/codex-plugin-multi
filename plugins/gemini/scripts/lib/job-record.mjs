@@ -30,6 +30,7 @@ import {
   classifyCompanionExecution,
 } from "./external-model-failure-core.mjs";
 import { hasSubstantiveInvalidVerdictReason } from "./external-model-review-quality.mjs";
+import { buildPrivacyRedactor } from "./privacy-redaction.mjs";
 import { elapsedMs } from "./time.mjs";
 import path from "node:path";
 
@@ -503,82 +504,6 @@ function normalizeRuntimeDiagnostics(input, denials, redactText = (value) => val
   return out;
 }
 
-const SOURCE_BODY_REDACTION = "[redacted_source_excerpt]";
-const SOURCE_QUOTE_CONTIGUOUS_LIMIT = 200;
-const SOURCE_QUOTE_AGGREGATE_LIMIT = 800;
-const SOURCE_QUOTE_AGGREGATE_MIN_MATCH = 16;
-const MIN_SECRET_REDACTION_LENGTH = 4;
-
-function secretValueRedactor(env = process.env) {
-  const secrets = Object.entries(env)
-    .filter(([name, value]) => (
-      typeof value === "string" &&
-      value.length >= MIN_SECRET_REDACTION_LENGTH &&
-      /(?:^|_)(?:API_KEY|TOKEN|ACCESS_KEY|SECRET|ADMIN_KEY)$/.test(name)
-    ))
-    .map(([, value]) => value);
-  const ordered = [...new Set(secrets)].sort((a, b) => b.length - a.length);
-  return (text) => {
-    let out = String(text ?? "");
-    for (const secret of ordered) out = out.split(secret).join("[REDACTED]");
-    return out;
-  };
-}
-
-function sourceMatchLength(text, cursor, source, minLength) {
-  if (cursor + minLength > text.length || source.length < minLength) return 0;
-  const seed = text.slice(cursor, cursor + minLength);
-  let sourceIndex = source.indexOf(seed);
-  if (sourceIndex === -1) return 0;
-  let best = minLength;
-  while (sourceIndex !== -1) {
-    let length = minLength;
-    while (
-      cursor + length < text.length &&
-      sourceIndex + length < source.length &&
-      text[cursor + length] === source[sourceIndex + length]
-    ) {
-      length += 1;
-    }
-    best = Math.max(best, length);
-    sourceIndex = source.indexOf(seed, sourceIndex + 1);
-  }
-  return best;
-}
-
-function sourceMatchLengthAcrossSources(text, cursor, sources, minLength) {
-  let best = 0;
-  for (const source of sources) {
-    best = Math.max(best, sourceMatchLength(text, cursor, source, minLength));
-  }
-  return best;
-}
-
-function redactSourceQuotes(text, sources, aggregateState) {
-  let out = "";
-  let cursor = 0;
-  while (cursor < text.length) {
-    const length = sourceMatchLengthAcrossSources(text, cursor, sources, SOURCE_QUOTE_AGGREGATE_MIN_MATCH);
-    if (length > SOURCE_QUOTE_CONTIGUOUS_LIMIT) {
-      out += SOURCE_BODY_REDACTION;
-      cursor += length;
-    } else if (length > 0) {
-      const quote = text.slice(cursor, cursor + length);
-      if (aggregateState.copiedChars + length > SOURCE_QUOTE_AGGREGATE_LIMIT) {
-        out += SOURCE_BODY_REDACTION;
-      } else {
-        out += quote;
-        aggregateState.copiedChars += length;
-      }
-      cursor += length;
-    } else {
-      out += text[cursor];
-      cursor += 1;
-    }
-  }
-  return out;
-}
-
 function sourceFileText(file) {
   const value = typeof file?.text === "string" || file?.text instanceof Uint8Array
     ? file.text
@@ -586,37 +511,6 @@ function sourceFileText(file) {
   if (typeof value === "string") return value;
   if (value instanceof Uint8Array) return Buffer.from(value).toString("utf8");
   return null;
-}
-
-function selectedSourceBodyRedactor(sourceFiles = []) {
-  const exactVariants = new Set();
-  const quoteSources = [];
-  const seenQuoteSources = new Set();
-  for (const file of sourceFiles) {
-    const text = sourceFileText(file);
-    if (!text) continue;
-    const normalized = text.replace(/\r\n/g, "\n");
-    const addQuoteSource = (candidate) => {
-      if (!candidate || seenQuoteSources.has(candidate)) return;
-      seenQuoteSources.add(candidate);
-      quoteSources.push(candidate);
-    };
-    for (const candidate of [text, normalized, text.trimEnd(), normalized.trimEnd()]) {
-      if (candidate) exactVariants.add(candidate);
-    }
-    addQuoteSource(text);
-    addQuoteSource(normalized);
-  }
-  const ordered = [...exactVariants].sort((a, b) => b.length - a.length);
-  const aggregateState = { copiedChars: 0 };
-  return (text) => {
-    let out = String(text ?? "");
-    for (const source of ordered) {
-      out = out.split(source).join(SOURCE_BODY_REDACTION);
-    }
-    out = redactSourceQuotes(out, quoteSources, aggregateState);
-    return out;
-  };
 }
 
 function hasSourceFileBodies(sourceFiles) {
@@ -677,9 +571,9 @@ export function buildJobRecord(invocation, execution, mutations) {
   const { status, error_code, error_message } = classifyExecution(execution);
   const parsed = execution?.parsed ?? null;
   assertRequiredSourceRedaction(execution);
-  const redactSourceBody = selectedSourceBodyRedactor(execution?.sourceFilesForRedaction ?? []);
-  const redactSecretValue = secretValueRedactor();
-  const redactSensitiveText = (value) => redactSourceBody(redactSecretValue(value));
+  const redactSensitiveText = buildPrivacyRedactor({
+    sourceFiles: execution?.sourceFilesForRedaction ?? [],
+  }).text;
   const redactedErrorMessage = error_message == null ? null : redactSensitiveText(error_message);
   const diagnostic = buildErrorDiagnostic(invocation, status, error_code, redactedErrorMessage);
   const endedAt = execution && status !== "running"

@@ -15,6 +15,7 @@ import { providerApiCapability, sanitizeTargetEnv } from "./lib/provider-env.mjs
 import { selectProviderRoute } from "./lib/provider-route-policy.mjs";
 import { buildExternalModelFailureDiagnostic } from "./lib/external-model-failure-core.mjs";
 import { hasSubstantiveInvalidVerdictReason, reviewQualityFailureState } from "./lib/external-model-review-quality.mjs";
+import { buildPrivacyRedactor } from "./lib/privacy-redaction.mjs";
 import {
   EXTERNAL_REVIEW_KEYS,
   SOURCE_CONTENT_TRANSMISSION,
@@ -54,10 +55,7 @@ const GIT_SHOW_MAX_BUFFER_BYTES = 16 * 1024 * 1024;
 const MAX_STATE_JOBS = 50;
 const STATE_LOCK_STALE_MS = 60 * 1000;
 const SCHEMA_VERSION = 10;
-const MIN_SECRET_REDACTION_LENGTH = 8;
-const ACCOUNT_PAYMENT_TOKEN_RE = /\b(?:stripe-[^\s,;:)]+|cus_[A-Za-z0-9]{6,}|acct_(?:test_)?[A-Za-z0-9]{5,}|cs_(?:test|live)_[A-Za-z0-9]{6,}|(?:pi|sub|in|ii|ch|seti|setp|price|prod|iv)_(?=[A-Za-z0-9]*\d)[A-Za-z0-9]{5,})/gi;
 const ACCOUNT_PAYMENT_DIAGNOSTIC_RE = /^(?:stripe-.+|cus_[A-Za-z0-9]{6,}|acct_(?:test_)?[A-Za-z0-9]{5,}|cs_(?:test|live)_[A-Za-z0-9]{6,}|(?:pi|sub|in|ii|ch|seti|setp|price|prod|iv)_(?=[A-Za-z0-9]*\d)[A-Za-z0-9]{5,})$/i;
-const JWT_SHAPED_TOKEN_RE = /\b[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{3,}\b/g;
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 const PLUGIN_ROOT = resolve(SCRIPT_DIR, "..");
 const GROK_SESSION_SYNC_SCRIPT = resolve(SCRIPT_DIR, "grok-sync-browser-session.mjs");
@@ -944,80 +942,7 @@ function tunnelStartCommand(target, uvBinary) {
 }
 
 function redactor(env = process.env) {
-  const secrets = [];
-  for (const [name, value] of Object.entries(env)) {
-    if (!/(?:API_KEY|TOKEN|COOKIE|SESSION|SSO)/i.test(name) || typeof value !== "string") continue;
-    const candidates = [value];
-    if (value.includes(";")) {
-      candidates.push(...value.split(";").map((part) => part.trim()).filter(Boolean));
-      candidates.push(...value.split(";").map((part) => part.split("=").slice(1).join("=").trim()).filter(Boolean));
-    }
-    for (const candidate of candidates) {
-      if (candidate.length >= MIN_SECRET_REDACTION_LENGTH) secrets.push(candidate);
-    }
-  }
-  return (text) => {
-    let out = String(text ?? "");
-    for (const secret of secrets) out = out.split(secret).join("[REDACTED]");
-    out = out.replace(/Authorization:\s*\S+(?:\s+\S{8,})?/gi, "Authorization: [REDACTED]");
-    out = out.replace(/Bearer\s+\S{8,}/gi, "Bearer [REDACTED]");
-    out = out.replace(JWT_SHAPED_TOKEN_RE, (token) => isJwtShapedToken(token) ? "[REDACTED]" : token);
-    out = redactEmailTokens(out);
-    out = out.replaceAll(/\bplan[_-]?id=[^\s,;:)]+/gi, "[REDACTED]");
-    out = out.replaceAll(ACCOUNT_PAYMENT_TOKEN_RE, "[REDACTED]");
-    return out;
-  };
-}
-
-function redactEmailTokens(text) {
-  let out = "";
-  let token = "";
-  const flush = () => {
-    out += redactEmailToken(token);
-    token = "";
-  };
-  for (const ch of String(text ?? "")) {
-    if (isEmailTokenChar(ch)) {
-      token += ch;
-    } else {
-      flush();
-      out += ch;
-    }
-  }
-  flush();
-  return out;
-}
-
-function isEmailTokenChar(ch) {
-  const code = ch.charCodeAt(0);
-  return (
-    (code >= 48 && code <= 57) ||
-    (code >= 65 && code <= 90) ||
-    (code >= 97 && code <= 122) ||
-    ch === "." || ch === "_" || ch === "%" || ch === "+" || ch === "-" || ch === "@"
-  );
-}
-
-function redactEmailToken(token) {
-  if (!token) return "";
-  let end = token.length;
-  while (end > 0 && token[end - 1] === ".") end -= 1;
-  const core = token.slice(0, end);
-  const suffix = token.slice(end);
-  return isEmailLikeToken(core) ? `[REDACTED]${suffix}` : token;
-}
-
-function isEmailLikeToken(token) {
-  const at = token.indexOf("@");
-  if (at <= 0 || at !== token.lastIndexOf("@") || at === token.length - 1) return false;
-  const domain = token.slice(at + 1);
-  const dot = domain.lastIndexOf(".");
-  if (dot <= 0 || dot >= domain.length - 2) return false;
-  for (let i = dot + 1; i < domain.length; i += 1) {
-    const code = domain.charCodeAt(i);
-    if (!((code >= 65 && code <= 90) || (code >= 97 && code <= 122))) return false;
-  }
-  return true;
+  return buildPrivacyRedactor({ env }).text;
 }
 
 function cleanGitEnv(baseEnv = process.env) {
@@ -1040,83 +965,6 @@ function redactValue(value, redact) {
     return Object.fromEntries(Object.entries(value).map(([key, entryValue]) => [key, redactValue(entryValue, redact)]));
   }
   return value;
-}
-
-const SOURCE_BODY_REDACTION = "[redacted_source_excerpt]";
-const SOURCE_QUOTE_CONTIGUOUS_LIMIT = 200;
-const SOURCE_QUOTE_AGGREGATE_LIMIT = 800;
-const SOURCE_QUOTE_AGGREGATE_MIN_MATCH = 40;
-
-function sourceMatchLength(text, cursor, source, minLength) {
-  if (cursor + minLength > text.length || source.length < minLength) return 0;
-  const seed = text.slice(cursor, cursor + minLength);
-  let sourceIndex = source.indexOf(seed);
-  if (sourceIndex === -1) return 0;
-  let best = minLength;
-  while (sourceIndex !== -1) {
-    let length = minLength;
-    while (
-      cursor + length < text.length &&
-      sourceIndex + length < source.length &&
-      text[cursor + length] === source[sourceIndex + length]
-    ) {
-      length += 1;
-    }
-    best = Math.max(best, length);
-    sourceIndex = source.indexOf(seed, sourceIndex + 1);
-  }
-  return best;
-}
-
-function redactSourceQuotes(text, source, aggregateState) {
-  let out = "";
-  let cursor = 0;
-  while (cursor < text.length) {
-    const length = sourceMatchLength(text, cursor, source, SOURCE_QUOTE_AGGREGATE_MIN_MATCH);
-    if (length > SOURCE_QUOTE_CONTIGUOUS_LIMIT) {
-      out += SOURCE_BODY_REDACTION;
-      cursor += length;
-    } else if (length > 0) {
-      const quote = text.slice(cursor, cursor + length);
-      if (aggregateState.copiedChars + length > SOURCE_QUOTE_AGGREGATE_LIMIT) {
-        out += SOURCE_BODY_REDACTION;
-      } else {
-        out += quote;
-        aggregateState.copiedChars += length;
-      }
-      cursor += length;
-    } else {
-      out += text[cursor];
-      cursor += 1;
-    }
-  }
-  return out;
-}
-
-function selectedSourceBodyRedactor(sourceFiles = []) {
-  const variants = new Set();
-  const quoteSources = [];
-  const seenQuoteSources = new Set();
-  for (const file of sourceFiles) {
-    if (typeof file?.text !== "string" || file.text.length === 0) continue;
-    const normalized = file.text.replace(/\r\n/g, "\n");
-    for (const candidate of [file.text, normalized, file.text.trimEnd(), normalized.trimEnd()]) {
-      if (candidate) variants.add(candidate);
-    }
-    const quoteSource = normalized.trimEnd() || normalized;
-    if (quoteSource && !seenQuoteSources.has(quoteSource)) {
-      seenQuoteSources.add(quoteSource);
-      quoteSources.push(quoteSource);
-    }
-  }
-  const ordered = [...variants].sort((a, b) => b.length - a.length);
-  return (text) => {
-    let out = String(text ?? "");
-    for (const source of ordered) out = out.split(source).join(SOURCE_BODY_REDACTION);
-    const aggregateState = { copiedChars: 0 };
-    for (const source of quoteSources) out = redactSourceQuotes(out, source, aggregateState);
-    return out;
-  };
 }
 
 function runCommand(command, args = [], options = {}) {
@@ -3204,9 +3052,10 @@ function buildReviewMetadata(cfg, scopeInfo, execution = null, startedAt = null,
 function buildRecord({ cfg, mode, options, scopeInfo, execution, startedAt, endedAt }) {
   const reviewMetadata = buildReviewMetadata(cfg, scopeInfo, execution, startedAt, endedAt);
   const processCompleted = execution.exitCode === 0 && execution.parsed?.ok === true;
-  const redactSourceBody = selectedSourceBodyRedactor(scopeInfo.files);
-  const redactSecrets = redactor();
-  const redactSensitiveText = (value) => redactSourceBody(redactSecrets(value));
+  const redactSensitiveText = buildPrivacyRedactor({
+    env: process.env,
+    sourceFiles: scopeInfo.files,
+  }).text;
   const safeDiagnostics = execution.diagnostics
     ? redactValue(execution.diagnostics, redactSensitiveText)
     : null;
@@ -3315,7 +3164,7 @@ function buildRecord({ cfg, mode, options, scopeInfo, execution, startedAt, ende
     external_review: buildTerminalExternalReview({ cfg, mode, options, scopeInfo, execution, transmission, reviewDisclosure }),
     disclosure_note: reviewDisclosure,
     runtime_diagnostics: runtimeDiagnostics,
-    result: processCompleted ? redactSourceBody(execution.parsed.result) : null,
+    result: processCompleted ? redactSensitiveText(execution.parsed.result) : null,
     structured_output: null,
     permission_denials: [],
     mutations: [],
