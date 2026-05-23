@@ -351,7 +351,7 @@ function scopedTargetPromptForOrExit(invocation, profile, userPrompt, lifecycleE
     lifecycleEvents,
   });
   try {
-    return targetPromptFor(invocation, userPrompt, (() => { const d = diffSourceFiles(invocation.cwd, invocation.scope_base, { scopePaths: invocation.scope_paths }); return d.length > 0 ? d : auditSourceFiles(executionScope.addDir); })());
+    return targetPromptFor(invocation, userPrompt, (() => { const d = diffSourceFiles(invocation.cwd, invocation.scope_base, { scopePaths: invocation.scope_paths, workspaceRoot: invocation.workspace_root }); return d.length > 0 ? d : auditSourceFiles(executionScope.addDir); })());
   } finally {
     cleanupScopedPromptExecutionScope(executionScope);
   }

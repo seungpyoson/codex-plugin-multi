@@ -14,8 +14,8 @@ function scrubGitEnv(env) {
   return gitEnv(clean);
 }
 
-function git(sourceCwd, args) {
-  return execFileSync(resolveGitBinary({ cwd: sourceCwd, workspaceRoot: sourceCwd }), ["-C", sourceCwd, ...args], {
+function git(sourceCwd, args, workspaceRoot = sourceCwd) {
+  return execFileSync(resolveGitBinary({ cwd: sourceCwd, workspaceRoot }), ["-C", sourceCwd, ...args], {
     encoding: "utf8",
     stdio: ["ignore", "pipe", "pipe"],
     maxBuffer: 1024 * 1024 * 64,
@@ -23,34 +23,34 @@ function git(sourceCwd, args) {
   });
 }
 
-function resolveMergeBase(sourceCwd, baseRef) {
+function resolveMergeBase(sourceCwd, baseRef, workspaceRoot = sourceCwd) {
   try {
-    git(sourceCwd, ["rev-parse", "--verify", "--quiet", baseRef]);
-    const mergeBase = git(sourceCwd, ["merge-base", baseRef, "HEAD"]).trim();
+    git(sourceCwd, ["rev-parse", "--verify", "--quiet", baseRef], workspaceRoot);
+    const mergeBase = git(sourceCwd, ["merge-base", baseRef, "HEAD"], workspaceRoot).trim();
     return mergeBase || null;
   } catch {
     return null;
   }
 }
 
-function listChangedFiles(sourceCwd, mergeBase) {
+function listChangedFiles(sourceCwd, mergeBase, workspaceRoot = sourceCwd) {
   try {
-    const raw = git(sourceCwd, ["diff", "--name-only", "-z", `${mergeBase}...HEAD`]);
+    const raw = git(sourceCwd, ["diff", "--name-only", "-z", `${mergeBase}...HEAD`], workspaceRoot);
     return raw.split("\0").filter(Boolean);
   } catch {
     return [];
   }
 }
 
-function diffForFile(sourceCwd, mergeBase, filePath, contextLines) {
+function diffForFile(sourceCwd, mergeBase, filePath, contextLines, workspaceRoot = sourceCwd) {
   try {
     try {
-      const numstat = git(sourceCwd, ["diff", "--numstat", `${mergeBase}...HEAD`, "--", filePath]).trim();
+      const numstat = git(sourceCwd, ["diff", "--numstat", `${mergeBase}...HEAD`, "--", filePath], workspaceRoot).trim();
       if (numstat.startsWith("-\t-\t")) {
         return `Binary file ${filePath} differs (not shown)`;
       }
     } catch {}
-    const diff = git(sourceCwd, ["diff", `-U${contextLines}`, `${mergeBase}...HEAD`, "--", filePath]);
+    const diff = git(sourceCwd, ["diff", `-U${contextLines}`, `${mergeBase}...HEAD`, "--", filePath], workspaceRoot);
     if (!diff || diff.trim().length === 0) return null;
     return diff;
   } catch {
@@ -58,9 +58,9 @@ function diffForFile(sourceCwd, mergeBase, filePath, contextLines) {
   }
 }
 
-function statForFile(sourceCwd, mergeBase, filePath) {
+function statForFile(sourceCwd, mergeBase, filePath, workspaceRoot = sourceCwd) {
   try {
-    const stat = git(sourceCwd, ["diff", "--stat", `${mergeBase}...HEAD`, "--", filePath]).trim();
+    const stat = git(sourceCwd, ["diff", "--stat", `${mergeBase}...HEAD`, "--", filePath], workspaceRoot).trim();
     const lines = stat.split("\n");
     return lines[0] || null;
   } catch {
@@ -90,19 +90,19 @@ function matchGlob(rel, pattern) {
 export { scrubGitEnv, matchGlob };
 
 export function diffSourceFiles(sourceCwd, baseRef = DEFAULT_BASE_REF, opts = {}) {
-  const { contextLines = DEFAULT_CONTEXT_LINES, scopePaths = null } = opts;
-  const mergeBase = resolveMergeBase(sourceCwd, baseRef);
+  const { contextLines = DEFAULT_CONTEXT_LINES, scopePaths = null, workspaceRoot = sourceCwd } = opts;
+  const mergeBase = resolveMergeBase(sourceCwd, baseRef, workspaceRoot);
   if (!mergeBase) return [];
-  let changedFiles = listChangedFiles(sourceCwd, mergeBase);
+  let changedFiles = listChangedFiles(sourceCwd, mergeBase, workspaceRoot);
   if (changedFiles.length === 0) return [];
   if (Array.isArray(scopePaths) && scopePaths.length > 0) {
     changedFiles = changedFiles.filter((rel) => scopePaths.some((g) => matchGlob(rel, g)));
   }
   const files = [];
   for (const filePath of changedFiles) {
-    const diff = diffForFile(sourceCwd, mergeBase, filePath, contextLines);
+    const diff = diffForFile(sourceCwd, mergeBase, filePath, contextLines, workspaceRoot);
     if (!diff) continue;
-    const stat = statForFile(sourceCwd, mergeBase, filePath);
+    const stat = statForFile(sourceCwd, mergeBase, filePath, workspaceRoot);
     const header = stat ? `${stat}\n\n` : "";
     const content = Buffer.from(header + diff, "utf8");
     const TRUNCATION_KEEP_BYTES = 256 * 1024;

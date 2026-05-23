@@ -443,12 +443,24 @@ test("diff-source git calls use the shared safe git resolver", () => {
     "diff-source must use the shared safe Git binary resolver");
   assert.match(source, /import \{ cleanGitEnv \} from "\.\/git-env\.mjs";/,
     "diff-source must use the shared Git environment scrubber");
-  assert.match(source, /execFileSync\(resolveGitBinary\(\{ cwd: sourceCwd, workspaceRoot: sourceCwd \}\),/,
+  assert.match(source, /workspaceRoot = sourceCwd/,
+    "diff-source must accept the caller's authoritative workspace root");
+  assert.match(source, /execFileSync\(resolveGitBinary\(\{ cwd: sourceCwd, workspaceRoot \}\),/,
     "diff-source must not resolve git through caller PATH");
   assert.match(source, /env:\s*scrubGitEnv\(process\.env\)/,
     "diff-source git calls must use its scrubbed fixed-PATH environment");
   assert.doesNotMatch(source, /execFileSync\("git"/,
     "diff-source must not call git by PATH-resolved name");
+
+  const claudeSource = readFileSync(resolve("plugins/claude/scripts/claude-companion.mjs"), "utf8");
+  assert.match(claudeSource, /diffSourceFiles\(invocation\.cwd, invocation\.scope_base, \{ scopePaths: invocation\.scope_paths, workspaceRoot: invocation\.workspace_root \}\)/,
+    "Claude companion must pass the authoritative workspace root into diff-source");
+  const geminiSource = readFileSync(resolve("plugins/gemini/scripts/gemini-companion.mjs"), "utf8");
+  assert.match(geminiSource, /diffSourceFiles\(invocation\.cwd, invocation\.scope_base, \{ scopePaths: invocation\.scope_paths, workspaceRoot: invocation\.workspace_root \}\)/,
+    "Gemini companion must pass the authoritative workspace root into diff-source");
+  const kimiSource = readFileSync(resolve("plugins/kimi/scripts/kimi-companion.mjs"), "utf8");
+  assert.match(kimiSource, /diffSourceFiles\(cwd, invocation\.scope_base, \{ scopePaths: invocation\.scope_paths, workspaceRoot \}\)/,
+    "Kimi companion must pass the authoritative workspace root into diff-source");
 });
 
 test("direct API reviewer launch gating and execution share preflight validation", () => {

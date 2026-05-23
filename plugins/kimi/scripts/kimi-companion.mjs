@@ -254,7 +254,7 @@ function scopedTargetPromptForOrExit(invocation, profile, userPrompt, lifecycleE
       scopePaths: invocation.scope_paths,
       workspaceRoot,
     }, containment);
-    return targetPromptFor(profile, userPrompt, invocation, (() => { const d = diffSourceFiles(cwd, invocation.scope_base, { scopePaths: invocation.scope_paths }); return d.length > 0 ? d : auditSourceFiles(containment.path); })());
+    return targetPromptFor(profile, userPrompt, invocation, (() => { const d = diffSourceFiles(cwd, invocation.scope_base, { scopePaths: invocation.scope_paths, workspaceRoot }); return d.length > 0 ? d : auditSourceFiles(containment.path); })());
   } catch (e) {
     const errorRecord = buildJobRecord(invocation, {
       exitCode: null, parsed: null, pidInfo: null, kimiSessionId: null,
