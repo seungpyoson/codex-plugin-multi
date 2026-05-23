@@ -102,6 +102,30 @@ test("codex plugin cache doctor reports stale runtime files even when skill name
   assert.deepEqual(profile.changed_files, ["scripts/grok-web-reviewer.mjs"]);
 });
 
+test("codex plugin cache doctor reports stale packaged bin shims", () => {
+  const repo = mkdtempSync(path.join(tmpdir(), "plugin-cache-doctor-bin-repo-"));
+  const primary = mkdtempSync(path.join(tmpdir(), "plugin-cache-doctor-bin-home-"));
+
+  writeSkill(path.join(repo, "plugins"), "api-reviewers", "deepseek-setup");
+  writeCachedSkill(primary, "api-reviewers", "deepseek-setup");
+  writePluginFile(path.join(repo, "plugins"), "api-reviewers", "bin/api-reviewer", "source shim\n");
+  writeCachedPluginFile(primary, "api-reviewers", "bin/api-reviewer", "stale shim\n");
+  writeConfig(primary, "api-reviewers", true);
+
+  const stdout = execFileSync(process.execPath, [
+    DOCTOR,
+    "--repo", repo,
+    "--codex-home", primary,
+    "--plugin", "api-reviewers",
+  ], { encoding: "utf8" });
+  const report = JSON.parse(stdout);
+  const profile = report.profiles.primary;
+
+  assert.equal(report.ok, false);
+  assert.equal(profile.repo_cache_in_sync, false);
+  assert.deepEqual(profile.repo_changed_files, ["bin/api-reviewer"]);
+});
+
 test("codex plugin cache doctor flags repo changes even when marketplace cache is in sync", () => {
   const repo = mkdtempSync(path.join(tmpdir(), "plugin-cache-doctor-dirty-repo-"));
   const primary = mkdtempSync(path.join(tmpdir(), "plugin-cache-doctor-dirty-home-"));
@@ -162,6 +186,16 @@ test("codex plugin cache doctor sorts file lists with explicit comparators", () 
   const source = readFileSync(DOCTOR, "utf8");
 
   assert.doesNotMatch(source, /\[\.\.\.(?:expected|cached)\.keys\(\)\]\.sort\(\)/);
+});
+
+test("codex plugin cache doctor prints help without requiring an option value", () => {
+  for (const args of [["--help"], ["-h"]]) {
+    const result = spawnSync(process.execPath, [DOCTOR, ...args], { encoding: "utf8" });
+    assert.equal(result.status, 0, `${args.join(" ")} must succeed`);
+    assert.match(result.stdout, /Usage: codex-plugin-cache-doctor/);
+    assert.match(result.stdout, /--plugin <name>/);
+    assert.equal(result.stderr, "");
+  }
 });
 
 test("codex plugin cache doctor rejects unsafe or missing option values", () => {

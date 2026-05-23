@@ -120,8 +120,8 @@
   "ended_at": "2026-05-06T14:37:49.403Z",
   "exit_code": 1,
   "error_code": "tunnel_unavailable",
-  "error_message": "fetch failed. GROK_API_KEY is ignored; XAI_API_KEY is ignored by grok-web subscription_web mode; start the local Grok web tunnel and set GROK_WEB_TUNNEL_API_KEY only if that tunnel requires Bearer [REDACTED]",
-  "error_summary": "fetch failed. GROK_API_KEY is ignored; XAI_API_KEY is ignored by grok-web subscription_web mode; start the local Grok web tunnel and set GROK_WEB_TUNNEL_API_KEY only if that tunnel requires Bearer [REDACTED] (configured_timeout_ms=900000 prompt_chars=1950 max_tokens=null temperature=0 stream=false)",
+  "error_message": "fetch failed. XAI_API_KEY is ignored by grok-web subscription_web mode; start the local Grok web tunnel and set GROK_WEB_TUNNEL_API_KEY only if that tunnel requires Bearer [REDACTED]",
+  "error_summary": "fetch failed. XAI_API_KEY is ignored by grok-web subscription_web mode; start the local Grok web tunnel and set GROK_WEB_TUNNEL_API_KEY only if that tunnel requires Bearer [REDACTED] (configured_timeout_ms=900000 prompt_chars=1950 max_tokens=null temperature=0 stream=false)",
   "error_cause": "grok_web_tunnel",
   "suggested_action": "Start the local Grok web tunnel, verify GROK_WEB_BASE_URL, then retry.",
   "external_review": {

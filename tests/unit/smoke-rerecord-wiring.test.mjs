@@ -249,7 +249,7 @@ describe("derivePromptForHash — explicit-anchor-only detection", () => {
   });
 
   it("joins every arg after the -- separator (claude/run-style)", () => {
-    const args = ["run", "--auth-mode", "auto", "--", "Hello,", "claude."];
+    const args = ["run", "--auth-mode", "subscription", "--", "Hello,", "claude."];
     assert.equal(derivePromptForHash(args), "Hello, claude.");
   });
 

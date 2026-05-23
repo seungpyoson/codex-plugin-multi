@@ -127,7 +127,7 @@ test("review panel rows expose operational and semantic review state", () => {
     {
       provider: "glm",
       job_id: "",
-      state: "completed",
+      state: "completed_request_changes",
       status: "completed",
       readiness: "review-ready",
       sent: "sent",
@@ -142,6 +142,122 @@ test("review panel rows expose operational and semantic review state", () => {
       reasons: "",
     },
   ]);
+});
+
+test("review panel normalizes underscore request-changes verdicts", () => {
+  const [row] = buildReviewPanelRows([
+    {
+      provider: "claude",
+      job_id: "job_request_changes",
+      status: "completed",
+      external_review: {
+        source_content_transmission: "sent",
+      },
+      review_metadata: {
+        audit_manifest: {
+          review_quality: {
+            failed_review_slot: false,
+            semantic_failure_reasons: [],
+          },
+        },
+      },
+      result: "Verdict: REQUEST_CHANGES\nMODEL: claude-opus-4-7\nFINDINGS:",
+    },
+  ]);
+
+  assert.equal(row.readiness, "review-ready");
+  assert.equal(row.result, "request_changes");
+});
+
+test("review panel splits completed audit state by review verdict", () => {
+  const rows = buildReviewPanelRows([
+    {
+      provider: "claude",
+      job_id: "job_approve",
+      status: "completed",
+      external_review: { source_content_transmission: "sent" },
+      review_metadata: {
+        audit_manifest: {
+          review_quality: {
+            failed_review_slot: false,
+            semantic_failure_reasons: [],
+          },
+        },
+      },
+      result: "Verdict: APPROVE\nBlocking Findings:\n- None.",
+    },
+    {
+      provider: "gemini",
+      job_id: "job_request_changes",
+      status: "completed",
+      external_review: { source_content_transmission: "sent" },
+      review_metadata: {
+        audit_manifest: {
+          review_quality: {
+            failed_review_slot: false,
+            semantic_failure_reasons: [],
+          },
+        },
+      },
+      result: "Verdict: REQUEST CHANGES\nBlocking Findings:\n- Unsafe behavior.",
+    },
+    {
+      provider: "kimi",
+      job_id: "job_failed_slot_with_approve_text",
+      status: "completed",
+      external_review: { source_content_transmission: "sent" },
+      review_metadata: {
+        audit_manifest: {
+          review_quality: {
+            failed_review_slot: true,
+            semantic_failure_reasons: ["permission_blocked"],
+          },
+        },
+      },
+      result: "Verdict: APPROVE\nBlocking Findings:\n- None.",
+    },
+    {
+      provider: "deepseek",
+      job_id: "job_fail",
+      status: "completed",
+      external_review: { source_content_transmission: "sent" },
+      review_metadata: {
+        audit_manifest: {
+          review_quality: {
+            failed_review_slot: false,
+            semantic_failure_reasons: [],
+          },
+        },
+      },
+      result: "Verdict: FAIL\nBlocking Findings:\n- Broken invariant.",
+    },
+    {
+      provider: "glm",
+      job_id: "job_reject",
+      status: "completed",
+      external_review: { source_content_transmission: "sent" },
+      review_metadata: {
+        audit_manifest: {
+          review_quality: {
+            failed_review_slot: false,
+            semantic_failure_reasons: [],
+          },
+        },
+      },
+      result: "Verdict: REJECT\nBlocking Findings:\n- Unsafe behavior.",
+    },
+  ]);
+
+  assert.equal(rows[0].state, "completed_approved");
+  assert.equal(rows[0].result, "approve");
+  assert.equal(rows[1].state, "completed_request_changes");
+  assert.equal(rows[1].result, "request_changes");
+  assert.equal(rows[2].state, "completed_failed_review_slot");
+  assert.equal(rows[2].result, "failed_review_slot");
+  assert.equal(rows[3].state, "completed_fail");
+  assert.equal(rows[3].result, "fail");
+  assert.equal(rows[4].state, "completed_reject");
+  assert.equal(rows[4].result, "reject");
 });
 
 test("review panel markdown renders one visibly explicit provider row per record", () => {
@@ -200,6 +316,23 @@ test("review panel CLI renders markdown from a JSON array file", () => {
   writeFileSync(file, JSON.stringify([
     {
       target: "deepseek",
+      job_id: "job_approve",
+      status: "completed",
+      http_status: 200,
+      external_review: { source_content_transmission: "sent" },
+      review_metadata: {
+        raw_output: { elapsed_ms: 33110 },
+        audit_manifest: {
+          review_quality: {
+            failed_review_slot: false,
+            semantic_failure_reasons: [],
+          },
+        },
+      },
+      result: "Verdict: APPROVE\nBlocking Findings:\n- None.",
+    },
+    {
+      target: "deepseek",
       status: "completed",
       http_status: 200,
       external_review: { source_content_transmission: "sent" },
@@ -221,13 +354,31 @@ test("review panel CLI renders markdown from a JSON array file", () => {
     encoding: "utf8",
   });
 
-  assert.match(output, /deepseek \|  \| completed \| sent \| 44211/);
+  assert.match(output, /deepseek \| job_approve \| completed_approved \| sent \| 33110/);
+  assert.match(output, /deepseek \|  \| completed_request_changes \| sent \| 44211/);
 });
 
 test("review panel CLI is packaged with each reviewer plugin", () => {
   const dir = mkdtempSync(join(tmpdir(), "review-panel-"));
   const file = join(dir, "records.json");
   writeFileSync(file, JSON.stringify([
+    {
+      target: "deepseek",
+      job_id: "job_approve",
+      status: "completed",
+      http_status: 200,
+      external_review: { source_content_transmission: "sent" },
+      review_metadata: {
+        raw_output: { elapsed_ms: 33110 },
+        audit_manifest: {
+          review_quality: {
+            failed_review_slot: false,
+            semantic_failure_reasons: [],
+          },
+        },
+      },
+      result: "Verdict: APPROVE\nBlocking Findings:\n- None.",
+    },
     {
       target: "deepseek",
       status: "completed",
@@ -256,7 +407,8 @@ test("review panel CLI is packaged with each reviewer plugin", () => {
     });
 
     assert.equal(res.status, 0, `${plugin} review-panel exited with stderr: ${res.stderr}`);
-    assert.match(res.stdout, /deepseek \|  \| completed \| sent \| 44211/);
+    assert.match(res.stdout, /deepseek \| job_approve \| completed_approved \| sent \| 33110/);
+    assert.match(res.stdout, /deepseek \|  \| completed_request_changes \| sent \| 44211/);
   }
 });
 
@@ -548,7 +700,7 @@ test("review panel CLI aggregates live and recent jobs across provider state roo
   assert.match(output, /kimi \| job_66666666-6666-4666-8666-666666666666 \| provider_unavailable \| sent \| 99 \|  \| provider_unavailable/);
   assert.match(output, /grok \| job_33333333-3333-4333-8333-333333333333 \| provider_unavailable \| not_sent \| 8000 \|  \| tunnel_unavailable/);
   assert.match(output, /deepseek \| job_44444444-4444-4444-8444-444444444444 \| approval_required \| not_sent \| 34 \|  \| approval_required/);
-  assert.match(output, /glm \| job_55555555-5555-4555-8555-555555555555 \| completed \| sent \| 45422 \|  \| approve/);
+  assert.match(output, /glm \| job_55555555-5555-4555-8555-555555555555 \| completed_approved \| sent \| 45422 \|  \| approve/);
   assert.match(output, /glm \| job_77777777-7777-4777-8777-777777777777 \| completed_failed_review_slot \| sent \| 91 \|  \| failed_review_slot/);
 });
 
@@ -976,8 +1128,8 @@ test("review panel rendering skips non-object records from JSON arrays", () => {
     },
   ]);
 
-  assert.match(output, /job_valid-array-0000-4000-8000-000000000000 \| completed .* reject/);
-  assert.match(output, /job_fail-array-0000-4000-8000-000000000000 \| completed .* fail/);
+  assert.match(output, /job_valid-array-0000-4000-8000-000000000000 \| completed_reject .* reject/);
+  assert.match(output, /job_fail-array-0000-4000-8000-000000000000 \| completed_fail .* fail/);
 });
 
 test("review panel workspace collection sorts unknown providers after known providers", () => {

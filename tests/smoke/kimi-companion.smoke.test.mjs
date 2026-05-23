@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -15,6 +16,10 @@ const MODELS_CONFIG = path.join(REPO_ROOT, "plugins/kimi/config/models.json");
 const KIMI_SESSION_ID = "22222222-3333-4444-9555-666666666666";
 const KIMI_RESUMED_SESSION_ID = "77777777-8888-4999-aaaa-bbbbbbbbbbbb";
 
+function sha256(value) {
+  return createHash("sha256").update(value).digest("hex");
+}
+
 function runCompanion(args, { cwd, env = {}, dataDir = mkdtempSync(path.join(tmpdir(), "kimi-smoke-data-")) } = {}) {
   const res = spawnSync("node", [COMPANION, ...args], {
     cwd,
@@ -27,6 +32,19 @@ function runCompanion(args, { cwd, env = {}, dataDir = mkdtempSync(path.join(tmp
     },
   });
   return { ...res, dataDir };
+}
+
+function writeIndexCorruptingBinary(dir, repoPath) {
+  const binary = path.join(dir, "corrupt-index-kimi");
+  writeFileSync(binary, [
+    "#!/bin/sh",
+    `printf corrupt > ${JSON.stringify(path.join(repoPath, ".git", "index"))}`,
+    "printf '{\"session_id\":\"22222222-3333-4444-9555-666666666666\",\"response\":\"Verdict: APPROVE\\\\nBlocking findings\\\\n- None. The selected source was inspected before mutation detection failed.\\\\nNon-blocking concerns\\\\n- None for this fixture.\\\\nTest gaps\\\\n- Existing smoke coverage exercises this post-run mutation failure path, including preserving the completed result when the later mutation scan fails.\\\\nInspection status\\\\n- Source inspection completed; the later mutation scan failed independently and is surfaced as metadata rather than a review failure.\\\\nChecklist:\\\\n- PASS selected source was inspected.\\\\n- PASS no blocker was invented.\\\\n- PASS mutation failure was surfaced.\"}\\n'",
+    "exit 0",
+    "",
+  ].join("\n"));
+  chmodSync(binary, 0o755);
+  return binary;
 }
 
 function withRepo(fn) {
@@ -105,6 +123,15 @@ function findJobPaths(dataDir, jobId) {
     }
   }
   assert.fail(`job ${jobId} not found under ${stateRoot}`);
+}
+
+function findWorkspaceStatePath(dataDir) {
+  const stateRoot = path.join(dataDir, "state");
+  for (const workspaceDir of readdirSync(stateRoot)) {
+    const statePath = path.join(stateRoot, workspaceDir, "state.json");
+    if (existsSync(statePath)) return statePath;
+  }
+  assert.fail(`no workspace state.json under ${stateRoot}`);
 }
 
 function readStdoutLog(dataDir, jobId) {
@@ -205,6 +232,10 @@ test("kimi ping reports OAuth readiness and ignored API-key diagnostics", () => 
     assert.equal(parsed.ready, true);
     assert.equal(parsed.model, null);
     assert.equal(parsed.session_id, KIMI_SESSION_ID);
+    assert.equal(parsed.auth_mode, "subscription");
+    assert.equal(parsed.selected_auth_path, "subscription_oauth");
+    assert.equal(parsed.selected_route, "subscription_oauth");
+    assert.equal(parsed.fallback_reason, null);
     assert.deepEqual(parsed.ignored_env_credentials, ["KIMI_CODE_API_KEY", "MOONSHOT_API_KEY"]);
     assert.equal(parsed.auth_policy, "api_key_env_ignored");
   } finally {
@@ -223,6 +254,10 @@ test("kimi doctor probes configured review model, not only native auth", () => {
     const parsed = parseJson(result.stdout);
     assert.equal(parsed.status, "rate_limited");
     assert.equal(parsed.ready, false);
+    assert.equal(parsed.auth_mode, "subscription");
+    assert.equal(parsed.selected_auth_path, "subscription_oauth");
+    assert.equal(parsed.selected_route, "subscription_oauth");
+    assert.equal(parsed.fallback_reason, null);
     assert.match(parsed.summary, /capacity-limited/i);
     assert.match(parsed.detail, /kimi-code\/kimi-for-coding/);
   } finally {
@@ -241,6 +276,10 @@ test("kimi doctor default timeout allows slow review-model startup", { timeout: 
     const parsed = parseJson(result.stdout);
     assert.equal(parsed.status, "ok");
     assert.equal(parsed.ready, true);
+    assert.equal(parsed.auth_mode, "subscription");
+    assert.equal(parsed.selected_auth_path, "subscription_oauth");
+    assert.equal(parsed.selected_route, "subscription_oauth");
+    assert.equal(parsed.fallback_reason, null);
     assert.equal(parsed.model, "kimi-code/kimi-for-coding");
   } finally {
     rmSync(cwd, { recursive: true, force: true });
@@ -504,11 +543,11 @@ for (const mode of ["review", "adversarial-review", "custom-review"]) {
     assert.equal(result.status, 0, result.stderr);
   }));
 
-  test(`kimi ${mode} prompt includes provider live-verification context`, () => withRepo((cwd) => {
+  test(`kimi ${mode} prompt omits provider live-verification context`, () => withRepo((cwd) => {
     const result = runCompanion(kimiPromptAssertionArgs(cwd, mode), {
       cwd,
       env: {
-        KIMI_MOCK_ASSERT_PROMPT_INCLUDES: "Live verification context",
+        KIMI_MOCK_ASSERT_PROMPT_EXCLUDES: "Live verification context",
       },
     });
     assert.equal(result.status, 0, result.stderr);
@@ -524,6 +563,55 @@ for (const mode of ["review", "adversarial-review", "custom-review"]) {
     assert.equal(result.status, 0, result.stderr);
   }));
 }
+
+test("kimi ping rejects unsupported auth-mode instead of ignoring it", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "kimi-ping-auth-mode-"));
+  try {
+    const result = runCompanion(["ping", "--auth-mode", "api_key"], { cwd });
+    assert.equal(result.status, 1);
+    const parsed = parseJson(result.stdout);
+    assert.equal(parsed.error, "bad_args");
+    assert.match(parsed.message, /Kimi supports subscription auth only/);
+  } finally {
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("kimi continue rejects unsupported auth-mode instead of folding it into the prompt", () => withRepo((cwd) => {
+  const runRes = runCompanion([
+    "run",
+    "--mode",
+    "custom-review",
+    "--cwd",
+    cwd,
+    "--scope-paths",
+    "seed.txt",
+    "--foreground",
+    "--",
+    "Review this scope.",
+  ], { cwd });
+  try {
+    assert.equal(runRes.status, 0, runRes.stderr);
+    const parent = parseJson(runRes.stdout);
+    const result = runCompanion([
+      "continue",
+      "--job",
+      parent.job_id,
+      "--auth-mode",
+      "api_key",
+      "--cwd",
+      cwd,
+      "--",
+      "Follow up.",
+    ], { cwd, dataDir: runRes.dataDir });
+    assert.equal(result.status, 1);
+    const parsed = parseJson(result.stdout);
+    assert.equal(parsed.error, "bad_args");
+    assert.match(parsed.message, /Kimi supports subscription auth only/);
+  } finally {
+    rmSync(runRes.dataDir, { recursive: true, force: true });
+  }
+}));
 
 test("kimi custom-review prompt includes selected source content", () => {
   const cwd = mkdtempSync(path.join(tmpdir(), "kimi-inline-source-cwd-"));
@@ -556,6 +644,117 @@ test("kimi custom-review prompt includes selected source content", () => {
     assert.equal(record.review_metadata.audit_manifest.review_quality.failed_review_slot, false);
     assert.deepEqual(record.review_metadata.audit_manifest.review_quality.semantic_failure_reasons, []);
   } finally {
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("kimi result --job-id aliases --job for a finished job", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "kimi-result-job-id-cwd-"));
+  fixtureSeedRepo(cwd);
+  const result = runCompanion([
+    "run",
+    "--mode",
+    "review",
+    "--cwd",
+    cwd,
+    "--foreground",
+    "--",
+    "seed",
+  ], { cwd });
+  try {
+    assert.equal(result.status, 0, result.stderr);
+    const record = parseJson(result.stdout);
+    const retrieved = runCompanion([
+      "result",
+      "--job-id",
+      record.job_id,
+      "--cwd",
+      cwd,
+    ], { cwd, dataDir: result.dataDir });
+    assert.equal(retrieved.status, 0, retrieved.stderr);
+    const meta = parseJson(retrieved.stdout);
+    assert.equal(meta.id, record.job_id);
+    assert.equal(meta.status, "completed");
+    assert.equal(meta.external_review.provider, "Kimi Code CLI");
+  } finally {
+    rmSync(result.dataDir, { recursive: true, force: true });
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("kimi result from wrong cwd returns retrieval guidance", () => {
+  const cwd = realpathSync(mkdtempSync(path.join(tmpdir(), "kimi-result-right-cwd-")));
+  const wrongCwd = realpathSync(mkdtempSync(path.join(tmpdir(), "kimi-result-wrong-cwd-")));
+  fixtureSeedRepo(cwd);
+  const dataDir = mkdtempSync(path.join(tmpdir(), "kimi-result-wrong-cwd-data-"));
+  const corruptJobsDir = path.join(dataDir, "state", "000-corrupt", "jobs");
+  mkdirSync(corruptJobsDir, { recursive: true });
+  const result = runCompanion([
+    "run",
+    "--mode",
+    "review",
+    "--cwd",
+    cwd,
+    "--foreground",
+    "--",
+    "seed",
+  ], { cwd, dataDir });
+  try {
+    assert.equal(result.status, 0, result.stderr);
+    const record = parseJson(result.stdout);
+    writeFileSync(path.join(corruptJobsDir, `${record.job_id}.json`), "{ malformed");
+    const retrieved = runCompanion([
+      "result",
+      "--job",
+      record.job_id,
+    ], { cwd: wrongCwd, dataDir });
+    assert.equal(retrieved.status, 1);
+    const parsed = parseJson(retrieved.stdout);
+    assert.equal(parsed.error, "not_found");
+    assert.equal(parsed.job_id, record.job_id);
+    assert.equal(parsed.matched_workspace, true);
+    assert.equal("matched_workspace_root" in parsed, false);
+    assert.doesNotMatch(JSON.stringify(parsed), new RegExp(cwd.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+    assert.match(parsed.suggested_action, /different workspace/);
+    assert.match(parsed.suggested_action, /--cwd <workspace used when the job was launched>/);
+  } finally {
+    rmSync(dataDir, { recursive: true, force: true });
+    rmSync(cwd, { recursive: true, force: true });
+    rmSync(wrongCwd, { recursive: true, force: true });
+  }
+});
+
+test("kimi result with duplicate job id across workspaces reports state collision", () => {
+  const cwd = realpathSync(mkdtempSync(path.join(tmpdir(), "kimi-result-collision-cwd-")));
+  const dataDir = mkdtempSync(path.join(tmpdir(), "kimi-result-collision-data-"));
+  const jobId = "00000000-0000-4000-8000-00000000c013";
+  try {
+    for (const entry of ["collision-a", "collision-b"]) {
+      const jobsDir = path.join(dataDir, "state", entry, "jobs");
+      mkdirSync(jobsDir, { recursive: true });
+      writeFileSync(path.join(jobsDir, `${jobId}.json`), `${JSON.stringify({
+        id: jobId,
+        job_id: jobId,
+        status: "completed",
+        workspace_root: path.join(dataDir, entry),
+      })}\n`, "utf8");
+    }
+    const result = runCompanion([
+      "result",
+      "--job",
+      jobId,
+      "--cwd",
+      cwd,
+    ], { cwd, dataDir });
+    assert.equal(result.status, 1);
+    const parsed = parseJson(result.stdout);
+    assert.equal(parsed.error, "not_found");
+    assert.equal(parsed.error_code, "state_collision");
+    assert.equal(parsed.matched_workspace_count, 2);
+    assert.match(parsed.suggested_action, /state collision/i);
+    assert.equal("matched_workspace_root" in parsed, false);
+  } finally {
+    rmSync(dataDir, { recursive: true, force: true });
     rmSync(cwd, { recursive: true, force: true });
   }
 });
@@ -593,6 +792,85 @@ test("kimi custom-review fails shallow missing-verdict output as review_not_comp
     assert.deepEqual(
       record.review_metadata.audit_manifest.review_quality.semantic_failure_reasons,
       ["shallow_output", "missing_verdict"],
+    );
+  } finally {
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("kimi review preserves result when post-run mutation detection is unavailable", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "kimi-mut-post-cwd-"));
+  const dataDir = mkdtempSync(path.join(tmpdir(), "kimi-mut-post-data-"));
+  const binDir = mkdtempSync(path.join(tmpdir(), "kimi-mut-post-bin-"));
+  try {
+    fixtureSeedRepo(cwd);
+    const binary = writeIndexCorruptingBinary(binDir, cwd);
+    const result = runCompanion([
+      "run",
+      "--mode",
+      "review",
+      "--cwd",
+      cwd,
+      "--binary",
+      binary,
+      "--foreground",
+      "--",
+      "review",
+    ], { cwd, dataDir });
+    assert.equal(result.status, 0, result.stderr);
+    const record = parseJson(result.stdout);
+    assert.equal(record.status, "completed");
+    assert.match(record.result, /mutation detection failed/);
+    assert.ok(record.mutations.some((m) => m.startsWith("mutation_detection_failed:")),
+      `mutation detection failure must be surfaced, got ${JSON.stringify(record.mutations)}`);
+    assert.equal(record.review_metadata.audit_manifest.review_quality.failed_review_slot, false);
+    assert.ok(
+      !record.review_metadata.audit_manifest.review_quality.semantic_failure_reasons.includes("source_mutation_detected"),
+      JSON.stringify(record.review_metadata.audit_manifest.review_quality.semantic_failure_reasons),
+    );
+  } finally {
+    rmSync(cwd, { recursive: true, force: true });
+    rmSync(dataDir, { recursive: true, force: true });
+    rmSync(binDir, { recursive: true, force: true });
+  }
+});
+
+test("kimi custom-review hard-fails a valid review when source mutates", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "kimi-mutation-hardfail-cwd-"));
+  try {
+    fixtureSeedRepo(cwd, {
+      fileName: "seed.txt",
+      fileContents: "kimi mutation hardfail sentinel\n",
+    });
+    const result = runCompanion([
+      "run",
+      "--mode",
+      "custom-review",
+      "--cwd",
+      cwd,
+      "--scope-paths",
+      "seed.txt",
+      "--foreground",
+      "--",
+      "Review this scope.",
+    ], {
+      cwd,
+      env: {
+        KIMI_MOCK_MUTATE_FILE: path.join(cwd, "seed.txt"),
+      },
+    });
+    assert.equal(result.status, 2, result.stderr);
+    const record = parseJson(result.stdout);
+    assert.equal(record.status, "failed");
+    assert.equal(record.error_code, "review_not_completed");
+    assert.match(record.result, /Mock Kimi response/);
+    assert.ok(record.mutations.includes(" M seed.txt"), JSON.stringify(record.mutations));
+    assert.equal(record.external_review.source_content_transmission, "sent");
+    assert.equal(record.review_metadata.audit_manifest.status, "failed");
+    assert.equal(record.review_metadata.audit_manifest.review_quality.failed_review_slot, true);
+    assert.ok(
+      record.review_metadata.audit_manifest.review_quality.semantic_failure_reasons.includes("source_mutation_detected"),
+      JSON.stringify(record.review_metadata.audit_manifest.review_quality.semantic_failure_reasons),
     );
   } finally {
     rmSync(cwd, { recursive: true, force: true });
@@ -691,7 +969,8 @@ test("kimi foreground review timeout returns actionable JobRecord", () => withRe
   assert.equal(record.error_code, "timeout");
   assert.match(record.error_summary, /^Kimi Code CLI timed out/);
   assert.match(record.suggested_action, /retry/i);
-  assert.match(record.suggested_action, /run `kimi` interactively/);
+  assert.match(record.suggested_action, /Do not automatically resend selected source/);
+  assert.match(record.suggested_action, /fresh matching approval token/);
   const { record: persisted } = readOnlyJobRecord(result.dataDir);
   assert.equal(persisted.job_id, record.job_id);
   assert.equal(persisted.error_code, "timeout");
@@ -728,12 +1007,93 @@ process.exit(1);
   assert.equal(record.error_code, "sandbox_blocked");
   assert.match(record.error_summary, /Codex sandbox/);
   assert.match(record.suggested_action, /writable_roots|~\/\.kimi/);
-  assert.equal(record.pid_info, null);
+  assert.equal(record.pid_info ?? null, null);
   assert.equal(record.external_review.source_content_transmission, "not_sent");
   assert.match(record.external_review.disclosure, /not sent/);
-  assert.equal(record.review_metadata.audit_manifest.error_code, "sandbox_blocked");
-  assert.equal(record.review_metadata.audit_manifest.review_quality.failed_review_slot, false);
+  assert.equal(record.error_code, "sandbox_blocked");
+  assert.equal(record.review_quality.failed_review_slot, false);
 }));
+
+test("kimi source-bearing preflight failures redact selected source from error messages", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "kimi-preflight-redact-cwd-"));
+  const dataDir = mkdtempSync(path.join(tmpdir(), "kimi-preflight-redact-data-"));
+  const binDir = mkdtempSync(path.join(tmpdir(), "kimi-preflight-redact-bin-"));
+  try {
+    const missingBinary = path.join(binDir, "missing-kimi-binary");
+    fixtureSeedRepo(cwd, {
+      fileName: "seed.txt",
+      fileContents: missingBinary,
+    });
+    const result = runCompanion([
+      "run",
+      "--mode",
+      "custom-review",
+      "--cwd",
+      cwd,
+      "--scope-paths",
+      "seed.txt",
+      "--foreground",
+      "--binary",
+      missingBinary,
+      "--",
+      "Review this scope.",
+    ], { cwd, dataDir });
+    assert.equal(result.status, 2, result.stderr || result.stdout);
+    const record = parseJson(result.stdout);
+    assert.equal(record.status, "failed");
+    assert.equal(record.external_review.source_content_transmission, "not_sent");
+    assert.equal(record.error_message.includes(missingBinary), false, record.error_message);
+    assert.match(record.error_message, /\[redacted_source_excerpt\]/);
+  } finally {
+    rmSync(dataDir, { recursive: true, force: true });
+    rmSync(cwd, { recursive: true, force: true });
+    rmSync(binDir, { recursive: true, force: true });
+  }
+});
+
+test("kimi run ignores stale successful doctor and re-preflights before source send", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "kimi-run-stale-doctor-cwd-"));
+  const dataDir = mkdtempSync(path.join(tmpdir(), "kimi-run-stale-doctor-data-"));
+  try {
+    fixtureSeedRepo(cwd, {
+      fileName: "seed.txt",
+      fileContents: "KIMI_STALE_DOCTOR_SOURCE_SENTINEL\n",
+    });
+    const doctor = runCompanion(["doctor"], { cwd, dataDir });
+    const result = runCompanion([
+      "run",
+      "--mode",
+      "custom-review",
+      "--cwd",
+      cwd,
+      "--scope-paths",
+      "seed.txt",
+      "--foreground",
+      "--lifecycle-events",
+      "jsonl",
+      "--",
+      "Review this scope.",
+    ], {
+      cwd,
+      dataDir,
+      env: { KIMI_MOCK_CAPACITY_MODEL: "kimi-code/kimi-for-coding" },
+    });
+
+    assert.equal(doctor.dataDir, result.dataDir, "stale doctor proof must reuse the same plugin data dir");
+    assert.equal(doctor.status, 0, doctor.stderr || doctor.stdout);
+    assert.equal(parseJson(doctor.stdout).ready, true);
+    assert.equal(result.status, 2);
+    const lines = result.stdout.trim().split("\n").map((line) => JSON.parse(line));
+    assert.equal(lines.length, 1, "stale doctor success must not emit launch before fresh preflight");
+    const [record] = lines;
+    assert.equal(record.error_code, "spawn_failed");
+    assert.equal(record.external_review.source_content_transmission, "not_sent");
+    assert.doesNotMatch(result.stdout, /KIMI_STALE_DOCTOR_SOURCE_SENTINEL/);
+  } finally {
+    rmSync(dataDir, { recursive: true, force: true });
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
 
 test("kimi foreground review --timeout-ms overrides review timeout audit metadata", () => withRepo((cwd) => {
   const result = runCompanion([
@@ -757,6 +1117,70 @@ test("kimi foreground review --timeout-ms overrides review timeout audit metadat
   const { record: persisted } = readOnlyJobRecord(result.dataDir);
   assert.equal(persisted.review_metadata.audit_manifest.request.timeout_ms, 123456);
 }));
+
+test("kimi background running review record preserves timeout audit metadata", async () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "kimi-running-timeout-audit-cwd-"));
+  fixtureSeedRepo(cwd);
+  let dataDir = null;
+  let launchedPid = null;
+  let targetPid = null;
+  try {
+    const result = runCompanion([
+      "run",
+      "--mode",
+      "custom-review",
+      "--cwd",
+      cwd,
+      "--scope-paths",
+      "seed.txt",
+      "--background",
+      "--timeout-ms",
+      "345678",
+      "--",
+      "Review this scope.",
+    ], { cwd, env: { KIMI_MOCK_DELAY_MS: "30000" } });
+    dataDir = result.dataDir;
+    assert.equal(result.status, 0, result.stderr);
+    const launched = parseJson(result.stdout);
+    launchedPid = launched.pid;
+
+    const deadline = Date.now() + 5000;
+    let running = null;
+    while (Date.now() < deadline && !running) {
+      const statusRes = spawnSync("node", [COMPANION, "status", "--cwd", cwd], {
+        cwd,
+        encoding: "utf8",
+        env: { ...process.env, KIMI_PLUGIN_DATA: dataDir },
+      });
+      assert.equal(statusRes.status, 0, statusRes.stderr);
+      const status = parseJson(statusRes.stdout);
+      running = status.jobs.find((job) => job.id === launched.job_id && job.status === "running");
+      if (!running) await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    assert.ok(running, "background kimi job never became visible as running");
+    targetPid = running.pid_info?.pid ?? null;
+    assert.equal(
+      running.review_metadata?.audit_manifest?.request?.timeout_ms,
+      345678,
+      "running records need timeout metadata so stale reconciliation can honor the wrapper budget",
+    );
+    assert.equal(
+      running.review_metadata?.audit_manifest?.review_quality?.failed_review_slot,
+      false,
+      "running lifecycle records must not be marked as failed review slots before terminal audit",
+    );
+  } finally {
+    if (Number.isInteger(targetPid)) {
+      try { process.kill(targetPid, "SIGKILL"); } catch { /* process already gone */ }
+    }
+    if (Number.isInteger(launchedPid)) {
+      try { process.kill(launchedPid, "SIGTERM"); } catch { /* process already gone */ }
+      await waitForProcessExit(launchedPid).catch(() => {});
+    }
+    if (dataDir) rmSync(dataDir, { recursive: true, force: true });
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
 
 test("kimi foreground review retries a capacity-limited primary model with configured fallback", () => withRepo((cwd) => withKimiModelsConfig({
   review_quality: "kimi-code/primary-capacity-limited",
@@ -919,6 +1343,60 @@ test("kimi background run: launched event and terminal JobRecord carry external_
   }
 });
 
+test("kimi cancel: queued job writes cancel marker and exits 0", () => withRepo((cwd) => {
+  const runRes = runCompanion([
+    "run",
+    "--mode",
+    "custom-review",
+    "--cwd",
+    cwd,
+    "--scope-paths",
+    "seed.txt",
+    "--foreground",
+    "--",
+    "Review this scope.",
+  ], { cwd });
+  try {
+    assert.equal(runRes.status, 0, runRes.stderr);
+    const { metaPath, record } = readOnlyJobRecord(runRes.dataDir);
+    writeFileSync(metaPath,
+      `${JSON.stringify({ ...record, status: "queued", pid_info: null }, null, 2)}\n`, "utf8");
+
+    const statePath = findWorkspaceStatePath(runRes.dataDir);
+    const state = JSON.parse(readFileSync(statePath, "utf8"));
+    const idx = state.jobs.findIndex((job) => job.id === record.job_id);
+    assert.notEqual(idx, -1, "queued job must exist in state.json");
+    state.jobs[idx] = { ...state.jobs[idx], status: "queued", pid_info: null };
+    writeFileSync(statePath, `${JSON.stringify(state, null, 2)}\n`, "utf8");
+
+    const cancelRes = spawnSync("node", [
+      COMPANION,
+      "cancel",
+      "--job",
+      record.job_id,
+      "--cwd",
+      cwd,
+    ], {
+      cwd,
+      encoding: "utf8",
+      env: { ...process.env, KIMI_PLUGIN_DATA: runRes.dataDir },
+    });
+    assert.equal(cancelRes.status, 0, cancelRes.stderr);
+    const cancel = parseJson(cancelRes.stdout);
+    assert.deepEqual(cancel, {
+      ok: true,
+      status: "cancel_pending",
+      job_status: "queued",
+      job_id: record.job_id,
+    });
+
+    const markerPath = path.join(path.dirname(metaPath), record.job_id, "cancel-requested.flag");
+    assert.equal(existsSync(markerPath), true, `cancel marker missing at ${markerPath}`);
+  } finally {
+    rmSync(runRes.dataDir, { recursive: true, force: true });
+  }
+}));
+
 test("kimi _run-worker: cancel marker removes prompt sidecar before target spawn", () => withRepo((cwd) => {
   const dataDir = mkdtempSync(path.join(tmpdir(), "kimi-worker-cancel-data-"));
   try {
@@ -973,6 +1451,146 @@ test("kimi _run-worker: cancel marker removes prompt sidecar before target spawn
   }
 }));
 
+test("kimi cancel: SIGTERM-trapping target finalizes as cancelled, not completed", {
+  skip: process.env.CODEX_PLUGIN_COVERAGE === "1" && process.platform === "darwin"
+    ? "NODE_V8_COVERAGE can make macOS sandbox deny ps; regular smoke covers SIGTERM-trap cancel"
+    : false,
+}, async () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "kimi-trap-cancel-cwd-"));
+  fixtureSeedRepo(cwd);
+  let launchedPid = null;
+  let targetPid = null;
+  const result = runCompanion([
+    "run",
+    "--mode",
+    "custom-review",
+    "--cwd",
+    cwd,
+    "--scope-paths",
+    "seed.txt",
+    "--background",
+    "--",
+    "Review this scope.",
+  ], { cwd, env: { KIMI_MOCK_DELAY_MS: "30000", KIMI_MOCK_TRAP_SIGTERM: "1" } });
+  try {
+    assert.equal(result.status, 0, result.stderr);
+    const launched = parseJson(result.stdout);
+    launchedPid = launched.pid;
+
+    const deadline = Date.now() + 5000;
+    let running = null;
+    while (Date.now() < deadline && !running) {
+      const statusRes = spawnSync("node", [COMPANION, "status", "--cwd", cwd], {
+        cwd,
+        encoding: "utf8",
+        env: { ...process.env, KIMI_PLUGIN_DATA: result.dataDir },
+      });
+      const status = parseJson(statusRes.stdout);
+      running = status.jobs.find((job) => job.id === launched.job_id && job.status === "running");
+      if (!running) await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    assert.ok(running, "background kimi job never became visible as running");
+    assert.ok(running.pid_info?.pid, "running kimi job must carry pid_info for safe cancel");
+    targetPid = running.pid_info.pid;
+
+    const cancelRes = spawnSync("node", [
+      COMPANION,
+      "cancel",
+      "--job",
+      launched.job_id,
+      "--cwd",
+      cwd,
+    ], {
+      cwd,
+      encoding: "utf8",
+      env: { ...process.env, KIMI_PLUGIN_DATA: result.dataDir },
+    });
+    const cancel = parseJson(cancelRes.stdout);
+    const acceptedOutcome =
+      (cancel.status === "signaled" && cancelRes.status === 0) ||
+      (cancel.status === "already_dead" && cancelRes.status === 0) ||
+      (cancel.status === "no_pid_info" && cancelRes.status === 2) ||
+      (cancel.status === "unverifiable" && cancelRes.status === 2);
+    assert.ok(
+      acceptedOutcome,
+      `unexpected cancel outcome ${JSON.stringify(cancel)} exit=${cancelRes.status} stderr=${cancelRes.stderr}`,
+    );
+    if (cancelRes.status !== 0) return;
+
+    const terminal = waitForTerminalRecord(result.dataDir, launched.job_id, { timeoutMs: 10000 });
+    assert.equal(terminal.status, "cancelled",
+      `cancel marker must force status=cancelled even when target traps SIGTERM; got ${JSON.stringify(terminal)}`);
+    assert.equal(
+      terminal.review_metadata?.audit_manifest?.review_quality?.failed_review_slot,
+      true,
+      "cancelled source-sent review must not count as a successful review slot",
+    );
+  } finally {
+    if (Number.isInteger(targetPid)) {
+      try { process.kill(targetPid, "SIGKILL"); } catch { /* process already gone */ }
+    }
+    await waitForProcessExit(launchedPid).catch(() => {});
+    rmSync(result.dataDir, { recursive: true, force: true });
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("kimi cancel: blocked process inspection is unverifiable and does not signal", () => withRepo((cwd) => {
+  const runRes = runCompanion([
+    "run",
+    "--mode",
+    "custom-review",
+    "--cwd",
+    cwd,
+    "--scope-paths",
+    "seed.txt",
+    "--foreground",
+    "--",
+    "Review this scope.",
+  ], { cwd });
+  try {
+    assert.equal(runRes.status, 0, runRes.stderr);
+    const { metaPath, record } = readOnlyJobRecord(runRes.dataDir);
+    const pidInfo = {
+      pid: 12345,
+      starttime: "12345",
+      argv0: "node",
+      capture_error: "process inspection denied by sandbox",
+    };
+    writeFileSync(metaPath,
+      `${JSON.stringify({ ...record, status: "running", pid_info: pidInfo }, null, 2)}\n`, "utf8");
+
+    const statePath = findWorkspaceStatePath(runRes.dataDir);
+    const state = JSON.parse(readFileSync(statePath, "utf8"));
+    const idx = state.jobs.findIndex((job) => job.id === record.job_id);
+    assert.notEqual(idx, -1, "running job must exist in state.json");
+    state.jobs[idx] = { ...state.jobs[idx], status: "running", pid_info: pidInfo };
+    writeFileSync(statePath, `${JSON.stringify(state, null, 2)}\n`, "utf8");
+
+    const cancelRes = spawnSync("node", [
+      COMPANION,
+      "cancel",
+      "--job",
+      record.job_id,
+      "--cwd",
+      cwd,
+    ], {
+      cwd,
+      encoding: "utf8",
+      env: { ...process.env, KIMI_PLUGIN_DATA: runRes.dataDir },
+    });
+    assert.equal(cancelRes.status, 2, cancelRes.stderr);
+    const cancel = parseJson(cancelRes.stdout);
+    assert.equal(cancel.ok, false);
+    assert.equal(cancel.status, "unverifiable");
+    assert.equal(cancel.pid, 12345);
+    assert.match(cancel.detail, /process inspection/i);
+    assert.match(cancel.suggested_action, /process inspection|ownership/i);
+  } finally {
+    rmSync(runRes.dataDir, { recursive: true, force: true });
+  }
+}));
+
 test("kimi background worker spawn failure writes failed JobRecord instead of launched", () => {
   const cwd = mkdtempSync(path.join(tmpdir(), "kimi-bg-spawn-fail-runner-"));
   const missingCwd = path.join(cwd, "missing-cwd");
@@ -999,6 +1617,134 @@ test("kimi background worker spawn failure writes failed JobRecord instead of la
       "prompt sidecar must be removed when the worker never launches",
     );
   } finally {
+    rmSync(dataDir, { recursive: true, force: true });
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("kimi run --foreground: state lock timeout preserves finalization_failed meta", () => withRepo((cwd) => {
+  const dataDir = mkdtempSync(path.join(tmpdir(), "kimi-state-lock-timeout-data-"));
+  const preload = path.join(cwd, "short-lock-timeout.mjs");
+  writeFileSync(preload, `
+import { configureState } from ${JSON.stringify(path.join(REPO_ROOT, "plugins/kimi/scripts/lib/state.mjs"))};
+configureState({ lockTimeoutMs: 150 });
+`, "utf8");
+  try {
+    const result = runCompanion([
+      "run",
+      "--mode",
+      "rescue",
+      "--cwd",
+      cwd,
+      "--foreground",
+      "--",
+      "State lock timeout.",
+    ], {
+      cwd,
+      dataDir,
+      env: {
+        KIMI_MOCK_STATE_LOCK_CONFLICT: "1",
+        NODE_OPTIONS: `--import=${preload}`,
+      },
+    });
+    assert.notEqual(result.status, 0, "state lock timeout must fail finalization");
+    assert.doesNotMatch(result.stderr, /unhandled/i);
+    const err = parseJson(result.stdout);
+    assert.equal(err.error, "finalization_failed");
+    assert.match(err.message, /state_lock_timeout/);
+
+    const { record } = readOnlyJobRecord(dataDir);
+    assert.equal(record.status, "failed");
+    assert.equal(record.error_code, "finalization_failed");
+    assert.match(record.error_message, /state_lock_timeout/);
+    assert.equal(record.external_review.source_content_transmission, "sent");
+  } finally {
+    rmSync(dataDir, { recursive: true, force: true });
+  }
+}));
+
+test("kimi _run-worker audit manifest matches prompt sidecar source snapshot after source changes", async () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "kimi-worker-scope-race-cwd-"));
+  fixtureSeedRepo(cwd, {
+    fileName: "seed.txt",
+    fileContents: "old worker source sentinel\n",
+  });
+  const dataDir = mkdtempSync(path.join(tmpdir(), "kimi-worker-scope-race-data-"));
+  const previous = process.env.KIMI_PLUGIN_DATA;
+  process.env.KIMI_PLUGIN_DATA = dataDir;
+  try {
+    const state = await import("../../plugins/kimi/scripts/lib/state.mjs");
+    const { newJobId } = await import("../../plugins/kimi/scripts/lib/identity.mjs");
+    const { buildJobRecord } = await import("../../plugins/kimi/scripts/lib/job-record.mjs");
+    const { resolveProfile } = await import("../../plugins/kimi/scripts/lib/mode-profiles.mjs");
+    state.configureState({
+      pluginDataEnv: "KIMI_PLUGIN_DATA",
+      sessionIdEnv: "KIMI_COMPANION_SESSION_ID",
+    });
+    const profile = resolveProfile("custom-review");
+    const jobId = newJobId();
+    const invocation = Object.freeze({
+      job_id: jobId,
+      target: "kimi",
+      parent_job_id: null,
+      resume_chain: [],
+      mode_profile_name: profile.name,
+      mode: "custom-review",
+      model: "kimi-k2-0711-preview",
+      cwd,
+      workspace_root: cwd,
+      containment: profile.containment,
+      scope: profile.scope,
+      dispose_effective: profile.dispose_default,
+      scope_base: null,
+      scope_paths: ["seed.txt"],
+      prompt_head: "review selected source",
+      review_prompt_contract_version: 1,
+      review_prompt_provider: "Kimi",
+      timeout_ms: 900000,
+      max_steps_per_turn: profile.max_steps_per_turn,
+      schema_spec: null,
+      binary: MOCK,
+      run_kind: "background",
+      started_at: new Date().toISOString(),
+    });
+    const queued = buildJobRecord(invocation, null, []);
+    state.writeJobFile(cwd, jobId, queued);
+    state.upsertJob(cwd, queued);
+    const promptPath = path.join(state.resolveJobsDir(cwd), jobId, "prompt.txt");
+    mkdirSync(path.dirname(promptPath), { recursive: true });
+    writeFileSync(promptPath, [
+      "Provider: Kimi",
+      "BEGIN KIMI FILE 1: seed.txt",
+      "old worker source sentinel",
+      "",
+      "END KIMI FILE 1: seed.txt",
+      "review selected source",
+      "",
+    ].join("\n"), { mode: 0o600 });
+    writeFileSync(path.join(cwd, "seed.txt"), "new worker source sentinel\n", "utf8");
+
+    const worker = spawnSync("node", [
+      COMPANION, "_run-worker", "--cwd", cwd, "--job", jobId,
+    ], {
+      cwd,
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        KIMI_BINARY: MOCK,
+        KIMI_PLUGIN_DATA: dataDir,
+        KIMI_MOCK_ASSERT_PROMPT_INCLUDES: "old worker source sentinel",
+      },
+    });
+    assert.equal(worker.status, 0, `worker stderr=${worker.stderr}; stdout=${worker.stdout}`);
+    const finalRecord = JSON.parse(readFileSync(state.resolveJobFile(cwd, jobId), "utf8"));
+    assert.equal(finalRecord.status, "completed");
+    const [selectedFile] = finalRecord.review_metadata.audit_manifest.selected_source.files;
+    assert.equal(selectedFile.path, "seed.txt");
+    assert.equal(selectedFile.content_hash.value, sha256("old worker source sentinel\n"));
+  } finally {
+    if (previous === undefined) delete process.env.KIMI_PLUGIN_DATA;
+    else process.env.KIMI_PLUGIN_DATA = previous;
     rmSync(dataDir, { recursive: true, force: true });
     rmSync(cwd, { recursive: true, force: true });
   }
@@ -1041,7 +1787,7 @@ test("kimi foreground review step-limit exhaustion returns actionable JobRecord"
   assert.equal(persisted.error_code, "step_limit_exceeded");
 }));
 
-test("kimi continue background: launched event and terminal JobRecord keep parent metadata", async () => {
+test("kimi continue background: launched event and terminal JobRecord preserve timeout metadata", async () => {
   const cwd = mkdtempSync(path.join(tmpdir(), "kimi-continue-bg-cwd-"));
   fixtureSeedRepo(cwd);
   let launchedPid = null;
@@ -1178,7 +1924,7 @@ test("kimi background review preserves configured max-step budget outside public
   assert.equal("max_steps_per_turn" in record, false);
   const paths = findJobPaths(dataDir, payload.job_id);
   assert.equal(existsSync(paths.legacyRuntimeOptionsPath), false);
-  assert.equal(existsSync(paths.runtimeOptionsPath), true);
+  assert.equal(existsSync(paths.runtimeOptionsPath), false);
 }));
 
 test("kimi background review step-limit exhaustion preserves private max-step budget", () => withRepo((cwd) => {
@@ -1265,6 +2011,47 @@ test("kimi continue reuses prior private max-step budget without JobRecord drift
   assert.equal(continuedRecord.parent_job_id, firstRecord.job_id);
   assert.equal("max_steps_per_turn" in continuedRecord, false);
   assert.equal(continuedRecord.review_metadata.audit_manifest.request.timeout_ms, priorTimeoutMs);
+}));
+
+test("kimi continue from wrong cwd returns workspace retrieval guidance", () => withRepo((cwd) => {
+  const wrongCwd = realpathSync(mkdtempSync(path.join(tmpdir(), "kimi-continue-wrong-cwd-")));
+  const dataDir = mkdtempSync(path.join(tmpdir(), "kimi-continue-wrong-cwd-data-"));
+  try {
+    const first = runCompanion([
+      "run",
+      "--mode",
+      "review",
+      "--cwd",
+      cwd,
+      "--foreground",
+      "--",
+      "Seed review.",
+    ], { cwd, dataDir });
+    assert.equal(first.status, 0, first.stderr);
+    const prior = parseJson(first.stdout);
+
+    const continued = runCompanion([
+      "continue",
+      "--job",
+      prior.job_id,
+      "--foreground",
+      "--",
+      "Continue review.",
+    ], { cwd: wrongCwd, dataDir });
+    assert.equal(continued.status, 1);
+    const parsed = parseJson(continued.stdout);
+    assert.equal(parsed.error, "not_found");
+    assert.equal(parsed.job_id, prior.job_id);
+    assert.equal(parsed.matched_workspace, true);
+    assert.equal("matched_workspace_root" in parsed, false);
+    assert.doesNotMatch(JSON.stringify(parsed), new RegExp(cwd.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+    assert.match(parsed.suggested_action, /different workspace/);
+    assert.match(parsed.suggested_action, /continue --job/);
+    assert.match(parsed.suggested_action, /--cwd <workspace used when the job was launched>/);
+  } finally {
+    rmSync(dataDir, { recursive: true, force: true });
+    rmSync(wrongCwd, { recursive: true, force: true });
+  }
 }));
 
 test("kimi continue reuses audit timeout when runtime sidecar is missing", () => withRepo((cwd) => {
@@ -1820,6 +2607,18 @@ for (const mode of ["review", "adversarial-review", "custom-review"]) {
       `Kimi review must run from a neutral temp cwd under ${tmpRoot}; got ${fx.t7_cwd}`);
     assert.equal(fx.t7_include_dirs.includes(fx.t7_cwd), false, "neutral cwd must not be the scoped include directory");
     assert.equal(existsSync(fx.t7_cwd), false, `neutral Kimi cwd must be cleaned after the run: ${fx.t7_cwd}`);
+    assert.match(fx.t7_agent_file, /kimi-policy-.*agent\.yaml$/);
+    assert.match(fx.t7_mcp_config_file, /kimi-policy-.*empty-mcp\.json$/);
+    assert.match(fx.t7_skills_dir, /kimi-policy-.*skills$/);
+    assert.deepEqual(fx.t7_agent_allowed_tools, [
+      "kimi_cli.tools.file:ReadFile",
+      "kimi_cli.tools.file:Glob",
+      "kimi_cli.tools.file:Grep",
+    ]);
+    assert.deepEqual(fx.t7_agent_forbidden_tool_mentions, []);
+    assert.equal(existsSync(fx.t7_agent_file), false, `Kimi agent file must be cleaned after run: ${fx.t7_agent_file}`);
+    assert.equal(existsSync(fx.t7_mcp_config_file), false, `Kimi MCP config must be cleaned after run: ${fx.t7_mcp_config_file}`);
+    assert.equal(existsSync(fx.t7_skills_dir), false, `Kimi skills dir must be cleaned after run: ${fx.t7_skills_dir}`);
     assert.equal(persisted.review_metadata.prompt_contract_version, 1);
     assert.equal(persisted.review_metadata.prompt_provider, "Kimi");
     assert.equal(persisted.review_metadata.raw_output.parsed_ok, true);
@@ -1827,6 +2626,13 @@ for (const mode of ["review", "adversarial-review", "custom-review"]) {
     assert.equal(persisted.review_metadata.audit_manifest.request.model, persisted.model);
     assert.equal(persisted.review_metadata.audit_manifest.request.timeout_ms, 900000);
     assert.match(persisted.review_metadata.audit_manifest.prompt_builder.plugin_commit, /^[a-f0-9]{40}$/);
+    assert.equal(persisted.review_metadata.audit_manifest.selected_route, "subscription_oauth");
+    assert.equal(persisted.review_metadata.audit_manifest.fallback_reason, null);
+    assert.equal(persisted.review_metadata.audit_manifest.auth_path, "subscription_oauth");
+    assert.equal(persisted.review_metadata.audit_manifest.billing_path, null);
+    assert.equal(persisted.review_metadata.audit_manifest.source_send_approval_required, false);
+    assert.equal(persisted.review_metadata.audit_manifest.source_send_approval_state, "not_required");
+    assert.equal(persisted.review_metadata.audit_manifest.approval_scope, null);
     assert.notEqual(
       persisted.review_metadata.audit_manifest.prompt_builder.plugin_commit,
       persisted.review_metadata.audit_manifest.git_identity.head_sha,

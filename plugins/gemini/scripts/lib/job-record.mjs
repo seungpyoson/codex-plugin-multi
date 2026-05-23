@@ -25,7 +25,12 @@ import {
   buildExternalReview,
   sourceContentTransmissionForExecution,
 } from "./external-review.mjs";
-import { isGitBinaryPolicyError } from "./git-binary.mjs";
+import {
+  buildExternalModelFailureDiagnostic,
+  classifyCompanionExecution,
+} from "./external-model-failure-core.mjs";
+import { hasSubstantiveInvalidVerdictReason } from "./external-model-review-quality.mjs";
+import { buildPrivacyRedactor } from "./privacy-redaction.mjs";
 import { elapsedMs } from "./time.mjs";
 import path from "node:path";
 
@@ -96,7 +101,22 @@ function stringBytes(value) {
   return Buffer.byteLength(String(value ?? ""), "utf8");
 }
 
-function buildReviewMetadata(invocation, execution = null, parsed = null, endedAt = null) {
+function auditManifestForRecordStatus(manifest, { status, errorCode, pidInfo } = {}) {
+  if (!manifest?.review_quality || typeof status !== "string") return manifest ?? null;
+  const sourceContentTransmission = sourceContentTransmissionForExecution({ status, errorCode, pidInfo });
+  const failedReviewSlot = sourceContentTransmission === "sent"
+    && !["completed", "queued", "running"].includes(status);
+  if (manifest.review_quality.failed_review_slot === failedReviewSlot) return manifest;
+  return Object.freeze({
+    ...manifest,
+    review_quality: Object.freeze({
+      ...manifest.review_quality,
+      failed_review_slot: failedReviewSlot,
+    }),
+  });
+}
+
+function buildReviewMetadata(invocation, execution = null, parsed = null, endedAt = null, status = null, errorCode = null) {
   if (!invocation.review_prompt_contract_version) return null;
   return Object.freeze({
     prompt_contract_version: invocation.review_prompt_contract_version,
@@ -111,7 +131,11 @@ function buildReviewMetadata(invocation, execution = null, parsed = null, endedA
       result_chars: typeof parsed?.result === "string" ? parsed.result.length : null,
       elapsed_ms: elapsedMs(invocation.started_at, endedAt),
     }) : null,
-    audit_manifest: execution?.reviewAuditManifest ?? null,
+    audit_manifest: auditManifestForRecordStatus(execution?.reviewAuditManifest ?? null, {
+      status,
+      errorCode,
+      pidInfo: execution?.pidInfo ?? null,
+    }),
   });
 }
 
@@ -164,159 +188,15 @@ export function externalReviewForInvocation(invocation, execution = null) {
  *   gemini_error    — catch-all target failure; should be rare when no
  *                     parsed diagnostic is available.
  */
-const CANCEL_SIGNALS = new Set(["SIGTERM", "SIGKILL", "SIGINT", "SIGHUP"]);
-const FINALIZATION_FAILED_PREFIX = "finalization_failed:";
-const NOT_AUTHED_PREFIX = "not_authed:";
-const SANDBOX_BLOCKED_PREFIX = "sandbox_blocked:";
-
 export function classifyExecution(execution) {
-  if (!execution) {
-    return {
-      status: "queued",
-      error_code: null,
-      error_message: null,
-    };
-  }
-  if (execution.status === "running") {
-    return {
-      status: "running",
-      error_code: null,
-      error_message: null,
-    };
-  }
-  if (execution.status === "cancelled") {
-    // Issue #22 sub-task 2: see claude-side counterpart for rationale.
-    return {
-      status: "cancelled",
-      error_code: null,
-      error_message: null,
-    };
-  }
-  if (execution.status === "stale") {
-    // #16 follow-up 3: orphan reconciliation produces a terminal stale
-    // record so an operator can `continue --job` it instead of having
-    // active history grow forever. errorMessage is the reason text.
-    return {
-      status: "stale",
-      error_code: "stale_active_job",
-      error_message: execution.errorMessage ?? "stale_active_job",
-    };
-  }
-  if (execution.errorMessage) {
-    const messageText = String(execution.errorMessage);
-    if (messageText.startsWith(NOT_AUTHED_PREFIX)) {
-      return {
-        status: "failed",
-        error_code: "not_authed",
-        error_message: messageText.slice(NOT_AUTHED_PREFIX.length).trim(),
-      };
-    }
-    if (messageText.startsWith(SANDBOX_BLOCKED_PREFIX)) {
-      return {
-        status: "failed",
-        error_code: "sandbox_blocked",
-        error_message: messageText.slice(SANDBOX_BLOCKED_PREFIX.length).trim(),
-      };
-    }
-    if (isGitBinaryPolicyError(new Error(execution.errorMessage))) {
-      return {
-        status: "failed",
-        error_code: "git_binary_rejected",
-        error_message: execution.errorMessage,
-      };
-    }
-    if (isScopeFailure(execution.errorMessage)) {
-      return {
-        status: "failed",
-        error_code: "scope_failed",
-        error_message: execution.errorMessage,
-      };
-    }
-    // Distinguish finalization_failed (post-target persistence failure) from
-    // spawn_failed (target never ran). The companion's executeRun fallback
-    // synthesizes the former with a fixed prefix; everything else is a true
-    // pre-spawn failure. PR #21 review HIGH 1.
-    const isFinalization = messageText.startsWith(FINALIZATION_FAILED_PREFIX);
-    return {
-      status: "failed",
-      error_code: isFinalization ? "finalization_failed" : "spawn_failed",
-      error_message: execution.errorMessage,
-    };
-  }
-  // #16 follow-up 1 / 2: a wall-clock timeout fires SIGTERM too, so check
-  // timedOut FIRST. Only signal-driven exits without timedOut are cancels.
-  if (execution.timedOut === true) {
-    return {
-      status: "failed",
-      error_code: "timeout",
-      error_message: "target CLI exceeded the configured timeoutMs",
-    };
-  }
-  if (CANCEL_SIGNALS.has(execution.signal ?? "")) {
-    return {
-      status: "cancelled",
-      error_code: null,
-      error_message: null,
-    };
-  }
-  const parsed = execution.parsed ?? null;
-  if (execution.exitCode === 0 && parsed && parsed.ok === true) {
-    if (execution.reviewAuditManifest?.review_quality?.failed_review_slot === true) {
-      const reasons = Array.isArray(execution.reviewAuditManifest.review_quality.semantic_failure_reasons)
-        ? execution.reviewAuditManifest.review_quality.semantic_failure_reasons.join(",")
-        : "review_quality_failed";
-      return {
-        status: "failed",
-        error_code: "review_not_completed",
-        error_message: `review_quality_failed:${reasons}`,
-      };
-    }
-    return { status: "completed", error_code: null, error_message: null };
-  }
-  if (parsed && parsed.ok === false) {
-    const reason = parsed.reason ?? null;
-    if (reason === "usage_limited") {
-      return {
-        status: "failed",
-        error_code: "usage_limited",
-        error_message: parsed.error ?? reason,
-      };
-    }
-    if (reason === "json_parse_error" || reason === "empty_stdout") {
-      return {
-        status: "failed",
-        error_code: "parse_error",
-        error_message: parsed.error ?? reason,
-      };
-    }
-    return {
-      status: "failed",
-      error_code: "gemini_error",
-      error_message: parsed.error ?? null,
-    };
-  }
-  // Non-zero exit with no parsed JSON diagnostic — treat as gemini_error.
-  return {
-    status: "failed",
-    error_code: "gemini_error",
-    error_message: null,
-  };
+  return classifyCompanionExecution(execution, { catchallCode: "gemini_error" });
 }
 
-const SCOPE_FAILURE_PREFIXES = [
-  "unsafe_symlink:",
-  "scope_population_failed:",
-  "scope_base_invalid:",
-  "scope_base_missing:",
-  "scope_requires_git:",
-  "scope_requires_head:",
-  "scope_paths_required:",
-  "scope_empty:",
-  "invalid_profile:",
-];
-
-function isScopeFailure(message) {
-  return SCOPE_FAILURE_PREFIXES.some((prefix) => String(message ?? "").startsWith(prefix));
+function reviewQualityReasons(errorMessage) {
+  const prefix = "review_quality_failed:";
+  const text = String(errorMessage ?? "");
+  if (!text.startsWith(prefix)) return [];
+  return text.slice(prefix.length).split(",").map((reason) => reason.trim()).filter(Boolean);
 }
 
 function buildErrorDiagnostic(invocation, status, error_code, error_message) {
@@ -341,6 +221,23 @@ function buildErrorDiagnostic(invocation, status, error_code, error_message) {
   }
   if (status === "failed" && error_code === "review_not_completed") {
     const target = "Gemini";
+    const reasons = reviewQualityReasons(error_message);
+    if (hasSubstantiveInvalidVerdictReason(reasons)) {
+      return {
+        error_summary: `${target} CLI returned review prose but omitted the required verdict marker.`,
+        error_cause:
+          `${target} returned substantive review prose after source was sent, but the review-quality audit requires ` +
+          "an explicit verdict marker before the slot can count as completed.",
+        suggested_action:
+          `Treat this ${target} slot as failed. Do not automatically resend selected source. ` +
+          `Retry by narrowing the scope, sharding the source packet, relaying the prompt to another ready reviewer, ` +
+          `or running interactive ${target} and ensuring the first line is \`Verdict: APPROVE\`, ` +
+          "`Verdict: REQUEST_CHANGES`, or `Verdict: NOT_REVIEWED`. " +
+          "For direct API retries, require a fresh matching approval token whenever provider, mode, source packet, " +
+          "prompt hash, scope resolution, request settings, auth path, or billing path changes.",
+        disclosure_note: null,
+      };
+    }
     return {
       error_summary: `${target} review did not complete as a usable external review.`,
       error_cause:
@@ -372,6 +269,10 @@ function buildErrorDiagnostic(invocation, status, error_code, error_message) {
     };
   }
   if (status !== "failed" || error_code !== "scope_failed" || !error_message) {
+    const sharedDiagnostic = status === "failed"
+      ? buildExternalModelFailureDiagnostic(error_code, "Gemini CLI")
+      : null;
+    if (sharedDiagnostic) return sharedDiagnostic;
     return empty;
   }
 
@@ -557,11 +458,18 @@ function pathInside(base, target) {
   };
 }
 
-function normalizeRuntimeDiagnostics(input, denials) {
+function normalizeRuntimeDiagnostics(input, denials, redactText = (value) => value) {
   if (!input || typeof input !== "object") return null;
+  const redactNullableText = (value) => value == null ? null : redactText(value);
 
   const addDir = typeof input.add_dir === "string" ? input.add_dir : null;
   const childCwd = typeof input.child_cwd === "string" ? input.child_cwd : null;
+  const cleanupWarning = input.cleanup_warning === "runtime_options_persisted"
+    ? input.cleanup_warning
+    : null;
+  const cleanupWarningPath = typeof input.cleanup_warning_path === "string"
+    ? input.cleanup_warning_path
+    : null;
   const scopePathMappings = Array.isArray(input.scope_path_mappings)
     ? input.scope_path_mappings.map((mapping) => ({
       original: typeof mapping?.original === "string" ? mapping.original : null,
@@ -575,20 +483,60 @@ function normalizeRuntimeDiagnostics(input, denials) {
       const target = targetFromDenial(denial);
       const { inside, relative } = pathInside(addDir, target);
       return {
-        tool: toolFromDenial(denial),
-        target,
+        tool: redactNullableText(toolFromDenial(denial)),
+        target: redactNullableText(target),
         inside_add_dir: inside,
         relative_to_add_dir: relative,
       };
     })
     : [];
 
-  return {
+  const out = {
     add_dir: addDir,
     child_cwd: childCwd,
     scope_path_mappings: scopePathMappings,
     permission_denials: permissionDenials,
   };
+  if (cleanupWarning) {
+    out.cleanup_warning = cleanupWarning;
+    out.cleanup_warning_path = cleanupWarningPath;
+  }
+  return out;
+}
+
+function sourceFileText(file) {
+  const value = typeof file?.text === "string" || file?.text instanceof Uint8Array
+    ? file.text
+    : file?.content;
+  if (typeof value === "string") return value;
+  if (value instanceof Uint8Array) return Buffer.from(value).toString("utf8");
+  return null;
+}
+
+function hasSourceFileBodies(sourceFiles) {
+  return Array.isArray(sourceFiles) && sourceFiles.length > 0 && sourceFiles.every((file) => {
+    const text = sourceFileText(file);
+    return typeof text === "string";
+  });
+}
+
+function assertRequiredSourceRedaction(execution) {
+  const redactionRequested = execution?.sourceRedactionRequired === true
+    || Object.hasOwn(execution ?? {}, "sourceFilesForRedaction");
+  if (redactionRequested && !hasSourceFileBodies(execution.sourceFilesForRedaction)) {
+    throw new Error("source redaction unavailable: selected source bodies missing for required scan");
+  }
+}
+
+function redactStructuredOutput(value, redactText) {
+  if (typeof value === "string") return redactText(value);
+  if (Array.isArray(value)) return value.map((item) => redactStructuredOutput(item, redactText));
+  if (value && typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value).map(([key, item]) => [redactText(key), redactStructuredOutput(item, redactText)]),
+    );
+  }
+  return value ?? null;
 }
 
 /**
@@ -621,17 +569,28 @@ export function buildJobRecord(invocation, execution, mutations) {
     throw new Error("buildJobRecord: mutations must be an array (empty ok)");
   }
   const { status, error_code, error_message } = classifyExecution(execution);
-  const diagnostic = buildErrorDiagnostic(invocation, status, error_code, error_message);
-
   const parsed = execution?.parsed ?? null;
+  assertRequiredSourceRedaction(execution);
+  const redactSensitiveText = buildPrivacyRedactor({
+    sourceFiles: execution?.sourceFilesForRedaction ?? [],
+  }).text;
+  const redactedErrorMessage = error_message == null ? null : redactSensitiveText(error_message);
+  const diagnostic = buildErrorDiagnostic(invocation, status, error_code, redactedErrorMessage);
   const endedAt = execution && status !== "running"
     ? (execution.endedAt ?? new Date().toISOString())
     : null;
   const permissionDenials = Array.isArray(parsed?.denials) ? parsed.denials : [];
-  const runtimeDiagnostics = normalizeRuntimeDiagnostics(
-    execution?.runtimeDiagnostics ?? null,
-    permissionDenials,
-  );
+  const redactedPermissionDenials = redactStructuredOutput(permissionDenials, redactSensitiveText);
+  const cleanupDiagnostics = invocation.runtime_options_cleanup_warning
+    ? {
+      cleanup_warning: invocation.runtime_options_cleanup_warning,
+      cleanup_warning_path: invocation.runtime_options_cleanup_path ?? null,
+    }
+    : null;
+  const runtimeDiagnosticsInput = cleanupDiagnostics
+    ? { ...(execution?.runtimeDiagnostics ?? {}), ...cleanupDiagnostics }
+    : (execution?.runtimeDiagnostics ?? null);
+  const runtimeDiagnostics = normalizeRuntimeDiagnostics(runtimeDiagnosticsInput, permissionDenials, redactSensitiveText);
   const record = {
     // Identity
     id: invocation.job_id,
@@ -657,8 +616,10 @@ export function buildJobRecord(invocation, execution, mutations) {
     dispose_effective: invocation.dispose_effective ?? false,
     scope_base: invocation.scope_base ?? null,
     scope_paths: invocation.scope_paths ?? null,
-    prompt_head: invocation.prompt_head,
-    review_metadata: buildReviewMetadata(invocation, execution, parsed, endedAt),
+    prompt_head: invocation.prompt_head == null
+      ? null
+      : redactSensitiveText(invocation.prompt_head).slice(0, 200),
+    review_metadata: buildReviewMetadata(invocation, execution, parsed, endedAt, status, error_code),
     schema_spec: invocation.schema_spec ?? null,
     binary: invocation.binary,
 
@@ -668,7 +629,7 @@ export function buildJobRecord(invocation, execution, mutations) {
     ended_at: endedAt,
     exit_code: execution?.exitCode ?? null,
     error_code,
-    error_message,
+    error_message: redactedErrorMessage,
     error_summary: diagnostic.error_summary,
     error_cause: diagnostic.error_cause,
     suggested_action: diagnostic.suggested_action,
@@ -677,9 +638,9 @@ export function buildJobRecord(invocation, execution, mutations) {
     runtime_diagnostics: runtimeDiagnostics,
 
     // Result
-    result: parsed?.result ?? null,
-    structured_output: parsed?.structured ?? null,
-    permission_denials: permissionDenials,
+    result: parsed?.result == null ? null : redactSensitiveText(parsed.result),
+    structured_output: parsed?.structured == null ? null : redactStructuredOutput(parsed.structured, redactSensitiveText),
+    permission_denials: redactedPermissionDenials,
     mutations: [...mutations],
     cost_usd: parsed?.costUsd ?? null,
     usage: parsed?.usage ?? null,

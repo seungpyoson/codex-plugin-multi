@@ -44,13 +44,15 @@ test("prompt sidecar write cleanup removes final path after rename failures", ()
     "writePromptSidecar must remove prompt.txt, not only the tmp file, if post-rename hardening fails");
 });
 
-test("prompt sidecar cleanup is best-effort after a successful read", () => {
+test("prompt sidecar cleanup fails closed after a successful read", () => {
   const source = readRepoFile("scripts/lib/companion-common.mjs");
   const match = /export function consumePromptSidecar[\s\S]*?\n}/.exec(source);
   assert.ok(match, "scripts/lib/companion-common.mjs: missing consumePromptSidecar helper");
   assert.match(match[0], /readFileSync\(p,\s*"utf8"\)/, "consumePromptSidecar must read before cleanup");
-  assert.match(match[0], /catch\s*\{\s*\/\* best-effort cleanup after the prompt has been read \*\/\s*}/,
-    "consumePromptSidecar cleanup must not prevent worker terminalization after a successful read");
+  assert.match(match[0], /cleanup_uncertain: prompt sidecar cleanup failed/,
+    "consumePromptSidecar cleanup uncertainty must be classified");
+  assert.match(match[0], /error\.code\s*=\s*"cleanup_uncertain"/,
+    "consumePromptSidecar cleanup uncertainty must fail closed after a successful read");
 });
 
 test("Kimi runtime-options sidecar writes use private directories", () => {

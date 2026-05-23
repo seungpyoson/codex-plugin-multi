@@ -19,6 +19,7 @@ Run adversarial review:
 
 Run custom-review:
 - `node "<plugin-root>/scripts/gemini-companion.mjs" run --mode=custom-review --foreground --lifecycle-events markdown --cwd "<bundle-or-workspace>" --scope-paths "PR.diff,docs/*.md" -- "<review focus using relative paths>"`
+If concrete files or --scope-paths are already known, do not run branch-diff first; use custom-review with those paths and the original prompt.
 
 Run rescue:
 - `node "<plugin-root>/scripts/gemini-companion.mjs" run --mode=rescue --foreground --lifecycle-events markdown --cwd "<workspace>" -- "<task>"`
@@ -61,7 +62,7 @@ If a legacy JSON lifecycle envelope appears, render `external_review_launched` i
 `external_review_progress` is a heartbeat for long foreground runs; keep the existing launch card visible and do not render it as a terminal result.
 If a background launch envelope has `event: "launched"` with an `external_review` field, render the same launch card immediately with session pending.
 If a legacy JSON `external_review` field appears, render it before normal prose.
-Lifecycle cards should include provider, job, session, run kind, mode, scope, source transmission, status, error code, error message, HTTP status, and suggested action when those fields are present.
+Lifecycle cards should include provider, job, session, run kind, mode, scope, source transmission, selected route, fallback reason, auth path, billing path, source-send approval state, approval scope, status, error code, error message, HTTP status, and suggested action when those fields are present.
 
 ```md
 ### EXTERNAL REVIEW
@@ -75,6 +76,11 @@ Lifecycle cards should include provider, job, session, run kind, mode, scope, so
 | Mode | <mode> |
 | Scope | <scope and scope_base/scope_paths> |
 | Source | <source_content_transmission> |
+| Route | <selected_route> |
+| Fallback | <fallback_reason> |
+| Auth | <auth_path> |
+| Billing | <billing_path> |
+| Approval | <source_send_approval_state / approval_scope> |
 | Status | <status> |
 | Error | <error_code> |
 | Message | <error_message> |

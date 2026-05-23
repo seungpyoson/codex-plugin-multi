@@ -6,14 +6,24 @@ import path from "node:path";
 
 import { buildKimiArgs, parseKimiResult, spawnKimi } from "../../plugins/kimi/scripts/lib/kimi.mjs";
 import { MODE_PROFILES, resolveProfile } from "../../plugins/kimi/scripts/lib/mode-profiles.mjs";
-import { sanitizeTargetEnv } from "../../plugins/kimi/scripts/lib/provider-env.mjs";
+import { providerApiCapability, sanitizeTargetEnv } from "../../plugins/kimi/scripts/lib/provider-env.mjs";
 
 const KIMI_SESSION_ID = "22222222-3333-4444-9555-666666666666";
+const READONLY_RUNTIME = Object.freeze({
+  agentFilePath: "/tmp/kimi-agent.yaml",
+  mcpConfigFile: "/tmp/empty-mcp.json",
+  skillsDir: "/tmp/empty-skills",
+});
+
+function readonlyRuntime(extra = {}) {
+  return { ...READONLY_RUNTIME, ...extra };
+}
 
 test("buildKimiArgs: every Kimi profile enables thinking mode intentionally", () => {
   for (const profile of Object.values(MODE_PROFILES)) {
     const args = buildKimiArgs(profile, {
       model: profile.name === "ping" ? null : "kimi-code/kimi-for-coding",
+      ...(profile.allowed_tools ? readonlyRuntime() : {}),
     });
 
     assert.ok(args.includes("--thinking"), `${profile.name} must pass --thinking`);
@@ -31,10 +41,31 @@ test("MODE_PROFILES: every Kimi profile declares a positive max-step budget", ()
   }
 });
 
+test("MODE_PROFILES: Kimi review profiles use positive native allowed-tools only", () => {
+  const expectedAllowedTools = Object.freeze([
+    "kimi_cli.tools.file:ReadFile",
+    "kimi_cli.tools.file:Glob",
+    "kimi_cli.tools.file:Grep",
+  ]);
+
+  for (const [name, profile] of Object.entries(MODE_PROFILES)) {
+    assert.equal(Object.hasOwn(profile, "disallowed_tools"), false, `${name} must not keep dead deny-list authority`);
+    assert.equal(Object.hasOwn(profile, "exclude_tools"), false, `${name} must not keep legacy exclude-tools authority`);
+  }
+
+  for (const name of ["review", "adversarial-review", "custom-review", "ping"]) {
+    const profile = MODE_PROFILES[name];
+    assert.deepEqual(profile.allowed_tools, expectedAllowedTools, `${name} must use Kimi-native positive allowlist`);
+    assert.ok(Object.isFrozen(profile.allowed_tools), `${name}.allowed_tools not frozen`);
+  }
+
+  assert.equal(Object.hasOwn(MODE_PROFILES.rescue, "allowed_tools"), false, "rescue remains write-capable by request");
+});
+
 test("buildKimiArgs: review keeps model and plan mode with thinking", () => {
-  const args = buildKimiArgs(resolveProfile("review"), {
+  const args = buildKimiArgs(resolveProfile("review"), readonlyRuntime({
     model: "kimi-code/kimi-for-coding",
-  });
+  }));
 
   assert.ok(args.includes("--thinking"));
   assert.equal(args[args.indexOf("-m") + 1], "kimi-code/kimi-for-coding");
@@ -42,7 +73,7 @@ test("buildKimiArgs: review keeps model and plan mode with thinking", () => {
 });
 
 test("buildKimiArgs: ping may use native model while still probing thinking support", () => {
-  const args = buildKimiArgs(resolveProfile("ping"));
+  const args = buildKimiArgs(resolveProfile("ping"), readonlyRuntime());
 
   assert.ok(args.includes("--thinking"));
   assert.equal(args.includes("-m"), false);
@@ -50,13 +81,36 @@ test("buildKimiArgs: ping may use native model while still probing thinking supp
 });
 
 test("buildKimiArgs: resume keeps session id with thinking enabled", () => {
-  const args = buildKimiArgs(resolveProfile("custom-review"), {
+  const args = buildKimiArgs(resolveProfile("custom-review"), readonlyRuntime({
     model: "kimi-code/kimi-for-coding",
     resumeId: "00000000-0000-4000-8000-000000000000",
-  });
+  }));
 
   assert.ok(args.includes("--thinking"));
   assert.equal(args[args.indexOf("--session") + 1], "00000000-0000-4000-8000-000000000000");
+});
+
+test("buildKimiArgs: Kimi review modes require isolated read-only launch files", () => {
+  const args = buildKimiArgs(resolveProfile("custom-review"), readonlyRuntime({
+    model: "kimi-code/kimi-for-coding",
+    includeDirPath: "/tmp/scoped-worktree",
+  }));
+
+  assert.equal(args[args.indexOf("--agent-file") + 1], "/tmp/kimi-agent.yaml");
+  assert.equal(args[args.indexOf("--mcp-config-file") + 1], "/tmp/empty-mcp.json");
+  assert.equal(args[args.indexOf("--skills-dir") + 1], "/tmp/empty-skills");
+
+  assert.throws(
+    () => buildKimiArgs(resolveProfile("review"), { model: "kimi-code/kimi-for-coding" }),
+    /agentFilePath|mcpConfigFile|skillsDir/,
+  );
+
+  const rescueArgs = buildKimiArgs(resolveProfile("rescue"), readonlyRuntime({
+    model: "kimi-code/kimi-for-coding",
+  }));
+  assert.equal(rescueArgs.includes("--agent-file"), false);
+  assert.equal(rescueArgs.includes("--mcp-config-file"), false);
+  assert.equal(rescueArgs.includes("--skills-dir"), false);
 });
 
 test("parseKimiResult: classifies raw max-step exhaustion before JSON parsing", () => {
@@ -125,11 +179,11 @@ process.kill(process.pid, "SIGABRT");
 `);
   chmodSync(binary, 0o755);
   try {
-    const result = await spawnKimi(resolveProfile("custom-review"), {
+    const result = await spawnKimi(resolveProfile("custom-review"), readonlyRuntime({
       binary,
       model: "kimi-code/kimi-for-coding",
       promptText: "Review this scope.",
-    });
+    }));
 
     assert.equal(result.exitCode, null);
     assert.equal(result.signal, "SIGABRT");
@@ -185,6 +239,16 @@ test("sanitizeTargetEnv: strips proxy variables only when requested", () => {
 
 test("sanitizeTargetEnv: accepts nullish env as empty", () => {
   assert.deepEqual(sanitizeTargetEnv(null), {});
+});
+
+test("providerApiCapability: exposes one canonical Grok direct API env name", () => {
+  const capability = providerApiCapability("grok");
+  assert.deepEqual(capability, {
+    kind: "direct_api",
+    auth_path: "api_key_env",
+    credential_env_names: ["XAI_API_KEY"],
+  });
+  assert.deepEqual(providerApiCapability("unknown"), null);
 });
 
 test("parseKimiResult: keeps scanning stream-json lines for session id on step limit", () => {
@@ -334,12 +398,14 @@ test("buildKimiArgs: review modes use safer max-step defaults and allow override
   const reviewArgs = buildKimiArgs(resolveProfile("review"), {
     model: "kimi-k2-turbo-preview",
     includeDirPath: "/tmp/scoped-worktree",
+    ...readonlyRuntime(),
   });
   assert.equal(reviewArgs[reviewArgs.indexOf("--max-steps-per-turn") + 1], "16");
 
   const adversarialArgs = buildKimiArgs(resolveProfile("adversarial-review"), {
     model: "kimi-k2-turbo-preview",
     includeDirPath: "/tmp/scoped-worktree",
+    ...readonlyRuntime(),
   });
   assert.equal(adversarialArgs[adversarialArgs.indexOf("--max-steps-per-turn") + 1], "32");
 
@@ -347,6 +413,7 @@ test("buildKimiArgs: review modes use safer max-step defaults and allow override
     model: "kimi-k2-turbo-preview",
     includeDirPath: "/tmp/scoped-worktree",
     maxStepsPerTurn: 48,
+    ...readonlyRuntime(),
   });
   assert.equal(customOverrideArgs[customOverrideArgs.indexOf("--max-steps-per-turn") + 1], "48");
 });
@@ -357,6 +424,7 @@ test("buildKimiArgs: rejects invalid max-step budgets", () => {
       () => buildKimiArgs(resolveProfile("review"), {
         model: "kimi-k2-turbo-preview",
         maxStepsPerTurn,
+        ...readonlyRuntime(),
       }),
       /maxStepsPerTurn must be a positive integer/,
     );

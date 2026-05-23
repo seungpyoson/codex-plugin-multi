@@ -154,6 +154,25 @@ if (process.env.CLAUDE_MOCK_META_CONFLICT === "1") {
   mkdirSync(conflictDir, { recursive: true });
 }
 
+if (process.env.CLAUDE_MOCK_STATE_LOCK_CONFLICT === "1" && !readinessPrompt) {
+  // T076 oracle: create a live-looking state lock after target spawn so
+  // finalization times out while persisting the terminal JobRecord.
+  const wait = new Int32Array(new SharedArrayBuffer(4));
+  Atomics.wait(wait, 0, 0, 100);
+  const { resolveStateDir } = await import("../../plugins/claude/scripts/lib/state.mjs");
+  const { mkdirSync: mk, writeFileSync: wf } = await import("node:fs");
+  const { hostname } = await import("node:os");
+  const stateDir = resolveStateDir(process.cwd());
+  const lockDir = resolve(stateDir, ".state.lock");
+  mk(lockDir, { recursive: true });
+  wf(resolve(lockDir, "owner.json"), `${JSON.stringify({
+    pid: process.ppid,
+    hostname: hostname(),
+    startedAt: new Date().toISOString(),
+    token: "claude-mock-state-lock-conflict",
+  })}\n`, "utf8");
+}
+
 // T7.3 test oracle: when CLAUDE_MOCK_RECORD_RESUME=1, record the `--resume`
 // (or `--session-id` fallback) UUID to a sink path. Smoke tests read it back
 // to assert the companion passed the *correct* UUID (§21.1 identity contract,

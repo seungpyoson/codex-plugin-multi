@@ -1,33 +1,84 @@
 # Research: No-Mistakes Provider Readiness
 
-## Decision: Keep no-mistakes configured, but do not rely on it until the fix loop is deterministic
+## Decision: Evidence is per failure class, not per reviewer prose
 
-This repo already configures `.no-mistakes.yaml` with `test: "npm ci && npm run lint && npm run test:full"`. Keep that configuration, but do not treat no-mistakes as authoritative PR readiness evidence while `seungpyoson/claude-config#780` is open. That issue documents a review/fix-loop defect where selected findings can remain unresolved without reaching a deterministic terminal state. Until fixed, use direct local verification and GitHub CI as the merge-readiness evidence.
+Root cause work must classify the failing slot before repair. Official review
+success requires source-send truth, exact verdict quality, result retrieval, and
+visible lifecycle/panel state. Substantive raw prose from a failed quality gate
+can inform diagnosis, but cannot count as a successful reviewer slot.
 
-## Decision: Fix Grok uv cache at spawn env boundary
+## Decision: Default auth mode must not be `auto`
 
-Root cause: Grok auto-start spawns `uv` with fixed `PATH` only. In Codex sandbox, `uv` tries the user's default uv cache directory (for example `$HOME/.cache/uv`) and fails `Operation not permitted`. The spawn env boundary is the correct fix seam because both `uv --version` and `uv run granian` use `uvExecutionEnv`.
+Claude and Gemini default to subscription/OAuth CLI. DeepSeek and GLM are direct
+API providers. Grok defaults to subscription-backed Grok CLI. Operator-facing
+`--auth-mode auto` is rejected. API fallback remains available only through the
+shared route policy when subscription is unavailable, nonexistent, usage-limited,
+or an explicit supported API route is selected with the required source-send
+approval.
 
-## Decision: Treat session tokens separately from tunnel startup
+## Decision: Direct API approval is source-packet scoped
 
-With writable `UV_CACHE_DIR`, default grok2api starts but has zero runtime tokens. This is not same failure as uv startup. Doctor must continue reporting `grok_session_no_runtime_tokens` with sync/import guidance.
+DeepSeek/GLM approval requests are source-free. A granted token is valid only
+for the same provider, mode, source packet, prompt hash, scope resolution,
+request settings, auth path, and billing path. Changed provider, changed path,
+or changed source bytes require a fresh token and must keep source
+`not_sent`.
+
+## Decision: Prompt-size overflow is a pre-send failure
+
+DeepSeek/GLM and capped providers must classify oversized payloads as
+`prompt_too_large` before sending source. The recovery is sharding or narrowing,
+not retrying the same oversized source packet.
+
+## Decision: Grok CLI is the default; tunnel is explicit legacy fallback
+
+Dogfood showed Grok web/tunnel failure before source send. Source-free Grok CLI
+proved viable only after the wrapper isolated `GROK_HOME`, linked auth/config
+from the real home, disabled memory, used bounded turns, and cleaned prompt/temp
+state. Default Grok review now uses CLI. The old grok2api tunnel remains only
+for explicit `--transport web` or `GROK_TRANSPORT=web`.
+
+## Decision: Grok uv/session-token failures remain distinct
+
+For explicit legacy web transport, `uv` cache startup, tunnel readiness, and
+runtime session tokens are separate failure classes. A writable uv cache does
+not prove valid Grok web tokens, and web-token repair needs explicit operator
+approval.
+
+## Decision: Visual lifecycle is a runtime contract
+
+The observed infrequent visual expression had a code cause:
+`external_review_progress` lacked `external_review`, while markdown rendering
+only drew cards from `external_review`. Markdown lifecycle now renders launch,
+running/progress, blocked, failed, and completed cards. JSONL remains stable for
+machine consumers. One-off `spawnSync` wrappers still buffer child output and
+must not be used when live streaming matters.
+
+## Decision: Result lookup must preserve launch workspace
+
+Dogfood showed result fetch failed when the stored job was read from the wrong
+workspace or when a user used `--job-id`. The runtime accepts `--job` and
+`--job-id`, preserves bounded wrong-workspace diagnostics, and does not silently
+switch to unrelated workspaces.
+
+## Decision: Same-path repair is narrower than fallback
+
+Allowed automatic repair is source-free and same-path: validation, prompt budget
+checks, result lookup guidance, and same provider/auth/scope/source retry when
+no source was sent. CLI login, browser/session sync, grok2api bootstrap, cache
+install/upgrade, billing, mutation, and destructive cleanup require explicit
+operator approval. Cross-provider fallback is forbidden.
+
+## Decision: Installed cache is part of evidence
+
+Repo tests are insufficient if installed plugin cache differs. After changing
+runtime scripts, generated docs/skills, shared libraries, or renderer behavior,
+`npm run doctor:cache` must prove marketplace and installed cache match the
+source tree used for tests.
 
 ## Decision: Live smoke uses synthetic source only
 
-Real project source is not needed to prove wiring. Use git-backed `/private/tmp` fixture and record hashes, source-send state, quality gate, mutations, prompt-persistence checks.
-
-## Decision: Claude continuation must preserve provider project/cwd context
-
-The installed post-merge smoke proved that Claude initial review can pass while `continue --job` fails with `No conversation found with session ID: <parent-job-id>`. The parent JobRecord and continue JobRecord used the same stored session id, and the initial run did not include `--no-session-persistence`; however, the parent session JSONL was stored under the initial Claude project/cwd in `~/.claude/projects/...`, while the continue run used a different neutral cwd. Claude session lookup is therefore not session-id-only in practice. The plugin must persist and reuse provider session lookup context across continuation jobs.
-
-## Decision: Semantic replay must separate classifier-only probes from full audit gates
-
-Short replay prose such as "PASS ... without permission blocks" is useful to prove that `permission_blocked` is not falsely emitted. It is not a full reviewer answer and should not be expected to pass verdict/substance gates. Smoke reports must classify that as a classifier probe result, not as a failed full review.
-
-## Decision: Workflow mutations require explicit current approval
-
-The readiness workflow includes non-code process gates. Merge, issue closure, destructive cleanup, push, or remote mutation must not run from inferred approval or stale context. The approval state must be explicit in the current operator workflow.
-
-## Decision: Spec-kit agent context must point at the real active spec
-
-`.specify/feature.json` points at `specs/140-no-mistakes-provider-readiness`, but AGENTS.md referenced nonexistent `specs/001-no-mistakes-wiring-readiness`. Agent context must be aligned with the active feature directory before planning or checklist work is trusted.
+Real project source is not needed to prove wiring. Use git-backed
+`/private/tmp` fixtures for source-bearing smoke when needed, and record hashes,
+source-send state, quality gate, mutations, prompt-persistence checks, and
+cleanup state.

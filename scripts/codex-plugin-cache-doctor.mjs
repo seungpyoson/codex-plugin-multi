@@ -7,6 +7,18 @@ import { homedir } from "node:os";
 const MARKETPLACE = "codex-plugin-multi";
 const DEFAULT_PLUGINS = ["api-reviewers", "claude", "gemini", "grok", "kimi"];
 
+function usage() {
+  return `Usage: codex-plugin-cache-doctor [options]
+
+Options:
+  --repo <path>                Repository root to compare against
+  --codex-home <path>          Primary Codex home, defaults to CODEX_HOME or ~/.codex
+  --second-codex-home <path>   Optional second Codex home to inspect
+  --plugin <name>              Plugin to inspect; repeatable
+  -h, --help                   Print this help text
+`;
+}
+
 function comparePathStrings(a, b) {
   return a.localeCompare(b);
 }
@@ -16,7 +28,9 @@ function parseArgs(argv) {
   out.plugins = [];
   for (let i = 0; i < argv.length; i += 1) {
     const token = argv[i];
-    if (token === "--plugin") {
+    if (token === "--help" || token === "-h") {
+      out.help = true;
+    } else if (token === "--plugin") {
       const value = argv[++i];
       if (!value || value.startsWith("--")) throw new Error("--plugin requires a value");
       out.plugins.push(value);
@@ -44,7 +58,8 @@ function listSkills(root, plugin) {
 
 function comparablePluginFile(rel) {
   if (rel === "package.json" || rel === ".codex-plugin/plugin.json") return true;
-  return rel.startsWith("commands/")
+  return rel.startsWith("bin/")
+    || rel.startsWith("commands/")
     || rel.startsWith("skills/")
     || rel.startsWith("scripts/")
     || rel.startsWith("config/");
@@ -158,6 +173,10 @@ function profileReport(name, home, plugins, sourceRoot, repoPlugins) {
 
 function main() {
   const args = parseArgs(process.argv.slice(2));
+  if (args.help) {
+    process.stdout.write(usage());
+    return;
+  }
   const repo = resolve(args.repo ?? process.cwd());
   const primaryHome = resolve(args["codex-home"] ?? process.env.CODEX_HOME ?? join(homedir(), ".codex"));
   const secondHome = args["second-codex-home"] ? resolve(args["second-codex-home"]) : null;

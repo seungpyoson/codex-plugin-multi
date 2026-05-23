@@ -22,7 +22,7 @@
 
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, realpathSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
@@ -54,14 +54,23 @@ const HAPPY_PATH_PROMPT =
 const NEGATIVE_PROMPT =
   "This prompt should not be sent because credentials are missing.";
 
-// Provider-key env names declared by api-reviewers recipes. Source of
-// truth lives here (no plugin-side counterpart yet); validateRecipes
-// asserts every api-reviewers/* recipe declares envAny matching the
-// per-provider list below.
-const API_REVIEWER_PROVIDER_KEYS = Object.freeze({
-  deepseek: Object.freeze(["DEEPSEEK_API_KEY"]),
-  glm: Object.freeze(["ZAI_API_KEY", "ZAI_GLM_API_KEY"]),
-});
+// Provider-key env names declared by api-reviewers providers.json.
+// Recipes consume this table so provider config remains the only
+// canonical credential-key source.
+function loadApiReviewerProviderKeys() {
+  const providersPath = path.join(REPO_ROOT, "plugins/api-reviewers/config/providers.json");
+  const providers = JSON.parse(readFileSync(providersPath, "utf8"));
+  const out = {};
+  for (const [provider, cfg] of Object.entries(providers)) {
+    out[provider] = Object.freeze(
+      (Array.isArray(cfg?.env_keys) ? cfg.env_keys : [])
+        .filter((key) => typeof key === "string" && key.length > 0),
+    );
+  }
+  return Object.freeze(out);
+}
+
+const API_REVIEWER_PROVIDER_KEYS = loadApiReviewerProviderKeys();
 
 // Auth-rejected recipes inject this sentinel into every accepted
 // provider key so the upstream provider returns 401/403 deterministically.
@@ -72,10 +81,8 @@ export const INVALID_PROVIDER_KEY_SENTINEL =
 
 // Build an env-overlay that invalidates every accepted key for `provider`.
 // Closing the C1-class drift one more step: the recipe-side override
-// previously knew about one key while the plugin accepted multiple
-// (#3199-class P1 — glm wiring with ZAI_GLM_API_KEY left intact would
-// fall through to happy-path in a negative fixture). Iterating the
-// canonical list means adding a new accepted key automatically
+// previously knew about one key while the plugin accepted multiple.
+// Iterating the canonical list means adding a new accepted key automatically
 // invalidates it in every negative recipe; nothing else needs to change.
 //
 // Exported so tests/unit/smoke-rerecord-validator.test.mjs can pin the
@@ -165,7 +172,7 @@ export const RECIPES = Object.freeze({
     architecture: ARCHITECTURE_GROK,
     plugin: "grok",
     spawnArgs: () => ({
-      script: "plugins/grok/scripts/grok-web-reviewer.mjs",
+      script: "plugins/grok/scripts/grok-companion.mjs",
       args: [
         "run",
         "--mode=custom-review",
@@ -183,7 +190,7 @@ export const RECIPES = Object.freeze({
     architecture: ARCHITECTURE_GROK,
     plugin: "grok",
     spawnArgs: () => ({
-      script: "plugins/grok/scripts/grok-web-reviewer.mjs",
+      script: "plugins/grok/scripts/grok-companion.mjs",
       args: [
         "run",
         "--mode=custom-review",

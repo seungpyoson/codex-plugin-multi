@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, statSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
@@ -24,6 +24,7 @@ import {
   printJson,
   printJsonLine,
   printLifecycleJson,
+  consumeJsonSettingsSidecar,
   promptSidecarPath,
   runKindFromRecord,
   scopeBaseForOptions,
@@ -84,13 +85,27 @@ test("shared companion helpers cover small provider-agnostic behavior", () => {
   let lifecycleMarkdownProgress = "";
   printLifecycleJson(
     externalReviewProgressEvent(
-      { job_id: "job-1", target: "claude", mode: "review", run_kind: "foreground" },
+      {
+        job_id: "job-1",
+        target: "claude",
+        mode: "review",
+        run_kind: "foreground",
+        review_prompt_provider: "Claude Code",
+        cwd: "/tmp/review-workspace",
+        scope: "branch-diff",
+        scope_base: "origin/main",
+      },
       { sequence: 1, elapsedMs: 123 },
     ),
     "markdown",
     { write: (chunk) => { lifecycleMarkdownProgress += chunk; } },
   );
-  assert.match(lifecycleMarkdownProgress, /^\{"event":"external_review_progress"/);
+  assert.match(lifecycleMarkdownProgress, /^### EXTERNAL REVIEW/m);
+  assert.match(lifecycleMarkdownProgress, /\| Provider \| claude \|/);
+  assert.match(lifecycleMarkdownProgress, /\| Scope \| unknown \|/);
+  assert.match(lifecycleMarkdownProgress, /\| Source \| may_be_sent \|/);
+  assert.match(lifecycleMarkdownProgress, /\| Status \| running \|/);
+  assert.match(lifecycleMarkdownProgress, /\| Retrieve \| result --job job-1 --cwd <workspace> \|/);
   assert.doesNotMatch(lifecycleMarkdownProgress, /^\{\n/);
   let lifecycleMarkdown = "";
   printLifecycleJson({
@@ -98,6 +113,7 @@ test("shared companion helpers cover small provider-agnostic behavior", () => {
     job_id: "job-1",
     target: "claude",
     status: "launched",
+    cwd: "/tmp/review-workspace",
     error_code: "scope_empty",
     error_message: "scope failed | no files selected",
     error_summary: "No files matched the selected scope.",
@@ -124,6 +140,8 @@ test("shared companion helpers cover small provider-agnostic behavior", () => {
   assert.match(lifecycleMarkdown, /\| Run \| foreground \|/);
   assert.match(lifecycleMarkdown, /\| Scope \| branch-diff origin\/main \|/);
   assert.match(lifecycleMarkdown, /\| Source \| may_be_sent \|/);
+  assert.match(lifecycleMarkdown, /\| Retrieve \| result --job job-1 --cwd \/tmp\/review-workspace \|/);
+  assert.match(lifecycleMarkdown, /\| Panel \| review-panel --workspace \/tmp\/review-workspace \|/);
   assert.match(lifecycleMarkdown, /\| Error \| scope_empty \|/);
   assert.match(lifecycleMarkdown, /\| Message \| scope failed \\| no files selected \|/);
   assert.match(lifecycleMarkdown, /\| Summary \| No files matched the selected scope\. \|/);
@@ -215,6 +233,105 @@ test("shared companion helpers cover small provider-agnostic behavior", () => {
   assert.match(cancelNoPidInfoSuggestedAction(), /verify process ownership/);
 });
 
+test("shared companion lifecycle jsonl terminal output is redacted projection", () => {
+  let out = "";
+  printLifecycleJson({
+    id: "job-privacy",
+    job_id: "job-privacy",
+    target: "claude",
+    provider: "Claude Code",
+    mode: "review",
+    cwd: "/tmp/privacy-workspace",
+    workspace_root: "/tmp/privacy-workspace",
+    status: "completed",
+    result: "Verdict: APPROVE\nSOURCE_BODY_SENTINEL_DO_NOT_PERSIST",
+    runtime_diagnostics: {
+      stdout_log: "raw stdout must not project",
+      stderr_log: "raw stderr must not project",
+    },
+    structured_output: {
+      verdict: "APPROVE",
+      raw_result: "SOURCE_BODY_SENTINEL_DO_NOT_PERSIST",
+    },
+    review_quality: {
+      failed_review_slot: false,
+      reason: null,
+    },
+    review_metadata: {
+      audit_manifest: {
+        rendered_prompt_hash: "prompt-hash",
+        selected_source: {
+          total_files: 1,
+          total_bytes: 64,
+        },
+      },
+    },
+    external_review: {
+      marker: "EXTERNAL REVIEW",
+      provider: "Claude Code",
+      run_kind: "foreground",
+      job_id: "job-privacy",
+      session_id: "session-privacy",
+      parent_job_id: null,
+      mode: "review",
+      scope: "custom",
+      scope_base: "/tmp/privacy-workspace",
+      scope_paths: ["seed.txt"],
+      source_content_transmission: "sent",
+      disclosure: "Selected source content was sent to Claude Code for external review.",
+    },
+  }, "jsonl", { write: (chunk) => { out += chunk; } });
+
+  assert.doesNotMatch(out, /SOURCE_BODY_SENTINEL_DO_NOT_PERSIST/);
+  assert.doesNotMatch(out, /raw stdout|raw stderr/);
+  const projected = JSON.parse(out);
+  assert.equal(projected.event, "external_review_terminal");
+  assert.equal(projected.job_id, "job-privacy");
+  assert.equal(projected.status, "completed");
+  assert.equal(projected.external_review.source_content_transmission, "sent");
+  assert.equal(projected.review_quality.failed_review_slot, false);
+  assert.equal(projected.review_metadata.audit_manifest.rendered_prompt_hash, "prompt-hash");
+  assert.deepEqual(projected.review_metadata.audit_manifest.selected_source, {
+    total_files: 1,
+    total_bytes: 64,
+  });
+  assert.equal(Object.hasOwn(projected, "result"), false);
+  assert.equal(Object.hasOwn(projected, "runtime_diagnostics"), false);
+  assert.equal(Object.hasOwn(projected, "structured_output"), false);
+});
+
+test("consumeJsonSettingsSidecar deletes settings-only sidecars and records cleanup warning on delete failure", () => {
+  const dir = mkdtempSync(path.join(tmpdir(), "runtime-options-consume-"));
+  try {
+    const file = path.join(dir, "runtime-options.json");
+    writeFileSync(file, "{\"timeout_ms\":777}\n", { mode: 0o600 });
+    const consumed = consumeJsonSettingsSidecar(file);
+    assert.deepEqual(consumed, {
+      value: { timeout_ms: 777 },
+      cleanup_warning: null,
+      cleanup_warning_path: null,
+    });
+    assert.equal(existsSync(file), false);
+
+    writeFileSync(file, "{\"timeout_ms\":888}\n", { mode: 0o600 });
+    const blocked = consumeJsonSettingsSidecar(file, {
+      unlink: () => {
+        const error = new Error("delete denied");
+        error.code = "EACCES";
+        throw error;
+      },
+    });
+    assert.deepEqual(blocked, {
+      value: { timeout_ms: 888 },
+      cleanup_warning: "runtime_options_persisted",
+      cleanup_warning_path: file,
+    });
+    assert.equal(existsSync(file), true);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("startExternalReviewHeartbeat emits jsonl progress until stopped", async () => {
   const chunks = [];
   const stop = startExternalReviewHeartbeat(
@@ -239,10 +356,19 @@ test("startExternalReviewHeartbeat emits jsonl progress until stopped", async ()
   assert.equal(Number.isInteger(event.elapsed_ms), true);
 });
 
-test("startExternalReviewHeartbeat emits markdown progress as compact jsonl until stopped", async () => {
+test("startExternalReviewHeartbeat emits markdown progress card until stopped", async () => {
   const chunks = [];
   const stop = startExternalReviewHeartbeat(
-    { job_id: "job-heartbeat-markdown", target: "gemini", mode: "review", run_kind: "foreground" },
+    {
+      job_id: "job-heartbeat-markdown",
+      target: "gemini",
+      mode: "review",
+      run_kind: "foreground",
+      review_prompt_provider: "Gemini CLI",
+      workspace_root: "/tmp/gemini-heartbeat-workspace",
+      scope: "custom",
+      scope_paths: ["review.js"],
+    },
     "markdown",
     { intervalMs: 5, output: { write: (chunk) => chunks.push(chunk) } },
   );
@@ -255,12 +381,13 @@ test("startExternalReviewHeartbeat emits markdown progress as compact jsonl unti
   assert.ok(countAfterStop >= 1, "markdown heartbeat must emit at least one progress event");
   assert.equal(chunks.length, countAfterStop, "stop must cancel future markdown heartbeats");
   assert.doesNotMatch(chunks[0], /^\{\n/);
-  const event = JSON.parse(chunks[0]);
-  assert.equal(event.event, "external_review_progress");
-  assert.equal(event.job_id, "job-heartbeat-markdown");
-  assert.equal(event.target, "gemini");
-  assert.equal(event.status, "running");
-  assert.equal(event.heartbeat, 1);
+  assert.match(chunks[0], /^### EXTERNAL REVIEW/m);
+  assert.match(chunks[0], /\| Provider \| Gemini CLI \|/);
+  assert.match(chunks[0], /\| Job \| job-heartbeat-markdown \|/);
+  assert.match(chunks[0], /\| Scope \| custom review\.js \|/);
+  assert.match(chunks[0], /\| Source \| may_be_sent \|/);
+  assert.match(chunks[0], /\| Status \| running \|/);
+  assert.match(chunks[0], /\| Retrieve \| result --job job-heartbeat-markdown --cwd \/tmp\/gemini-heartbeat-workspace \|/);
 });
 
 test("summarizeScopeDirectory returns sorted files and byte totals", () => {
@@ -328,6 +455,34 @@ test("writePromptSidecar rejects symlinked job directories", { skip: process.pla
   assert.equal(existsSync(path.join(escapeDir, "prompt.txt")), false);
 });
 
+test("writePromptSidecar reports cleanup_uncertain when failed writes leave a temp file", {
+  skip: !POSIX_MODE_ASSERTIONS || process.getuid?.() === 0,
+}, () => {
+  const jobsDir = mkdtempSync(path.join(tmpdir(), "companion-common-write-cleanup-"));
+  const jobId = "job-write-cleanup";
+  const jobDir = path.join(jobsDir, jobId);
+  mkdirSync(jobDir, { recursive: true, mode: 0o700 });
+  const originalNow = Date.now;
+  Date.now = () => 1234567890;
+  const tmpFile = path.join(jobDir, `prompt.txt.${process.pid}.1234567890.tmp`);
+  mkdirSync(tmpFile, { mode: 0o700 });
+  try {
+    assert.throws(
+      () => writePromptSidecar(jobsDir, jobId, "secret prompt"),
+      (err) => err?.code === "cleanup_uncertain"
+        && /prompt sidecar write cleanup failed/.test(err.message)
+        && err.cause?.code === "EISDIR"
+        && typeof err.cleanup_error === "string"
+        && err.cleanup_error.length > 0,
+    );
+    assert.equal(existsSync(tmpFile), true, "tmp prompt remains when cleanup is uncertain");
+  } finally {
+    Date.now = originalNow;
+    chmodSync(jobDir, 0o700);
+    rmSync(jobDir, { recursive: true, force: true });
+  }
+});
+
 test("consumePromptSidecar rejects symlinked job directories", { skip: process.platform === "win32" }, () => {
   const jobsDir = mkdtempSync(path.join(tmpdir(), "companion-common-consume-symlink-jobs-"));
   const escapeDir = mkdtempSync(path.join(tmpdir(), "companion-common-consume-symlink-escape-"));
@@ -341,7 +496,7 @@ test("consumePromptSidecar rejects symlinked job directories", { skip: process.p
   assert.equal(readFileSync(path.join(escapeDir, "prompt.txt"), "utf8"), "attacker prompt");
 });
 
-test("consumePromptSidecar returns the prompt when cleanup unlink fails", {
+test("consumePromptSidecar fails closed when cleanup unlink fails", {
   skip: !POSIX_MODE_ASSERTIONS || process.getuid?.() === 0,
 }, () => {
   const jobsDir = mkdtempSync(path.join(tmpdir(), "companion-common-unlink-fails-"));
@@ -351,7 +506,10 @@ test("consumePromptSidecar returns the prompt when cleanup unlink fails", {
 
   chmodSync(dir, 0o500);
   try {
-    assert.equal(consumePromptSidecar(jobsDir, "job-1"), "secret prompt");
+    assert.throws(
+      () => consumePromptSidecar(jobsDir, "job-1"),
+      /prompt sidecar cleanup failed/i,
+    );
     assert.equal(readFileSync(p, "utf8"), "secret prompt");
   } finally {
     chmodSync(dir, 0o700);
@@ -401,13 +559,25 @@ async function assertCopyHelperBranches(mod, plugin) {
   let lifecycleMarkdownProgress = "";
   mod.printLifecycleJson(
     mod.externalReviewProgressEvent(
-      { job_id: `copy-job-${plugin}`, target: plugin, mode: "review", run_kind: "foreground" },
+      {
+        job_id: `copy-job-${plugin}`,
+        target: plugin,
+        mode: "review",
+        run_kind: "foreground",
+        review_prompt_provider: plugin,
+        cwd: `/tmp/${plugin}-copy-workspace`,
+        scope: "branch-diff",
+        scope_base: "origin/main",
+      },
       { sequence: 1, elapsedMs: 123 },
     ),
     "markdown",
     { write: (chunk) => { lifecycleMarkdownProgress += chunk; } },
   );
-  assert.match(lifecycleMarkdownProgress, /^\{"event":"external_review_progress"/);
+  assert.match(lifecycleMarkdownProgress, /^### EXTERNAL REVIEW/m);
+  assert.match(lifecycleMarkdownProgress, new RegExp(`\\| Provider \\| ${plugin} \\|`));
+  assert.match(lifecycleMarkdownProgress, /\| Status \| running \|/);
+  assert.match(lifecycleMarkdownProgress, /\| Source \| may_be_sent \|/);
   assert.doesNotMatch(lifecycleMarkdownProgress, /^\{\n/);
   let lifecycleMarkdown = "";
   mod.printLifecycleJson({
@@ -541,7 +711,16 @@ async function assertCopyHelperBranches(mod, plugin) {
 
   const markdownChunks = [];
   const stopMarkdown = mod.startExternalReviewHeartbeat(
-    { job_id: `copy-heartbeat-markdown-${plugin}`, target: plugin, mode: "review", run_kind: "foreground" },
+    {
+      job_id: `copy-heartbeat-markdown-${plugin}`,
+      target: plugin,
+      mode: "review",
+      run_kind: "foreground",
+      review_prompt_provider: plugin,
+      workspace_root: `/tmp/${plugin}-copy-heartbeat-workspace`,
+      scope: "custom",
+      scope_paths: ["review.js"],
+    },
     "markdown",
     { intervalMs: 5, output: { write: (chunk) => markdownChunks.push(chunk) } },
   );
@@ -549,9 +728,10 @@ async function assertCopyHelperBranches(mod, plugin) {
   stopMarkdown();
   assert.ok(markdownChunks.length >= 1, `${plugin}: copied markdown heartbeat helper must emit progress`);
   assert.doesNotMatch(markdownChunks[0], /^\{\n/);
-  const markdownHeartbeat = JSON.parse(markdownChunks[0]);
-  assert.equal(markdownHeartbeat.event, "external_review_progress");
-  assert.equal(markdownHeartbeat.target, plugin);
+  assert.match(markdownChunks[0], /^### EXTERNAL REVIEW/m);
+  assert.match(markdownChunks[0], new RegExp(`\\| Provider \\| ${plugin} \\|`));
+  assert.match(markdownChunks[0], /\| Status \| running \|/);
+  assert.match(markdownChunks[0], /\| Source \| may_be_sent \|/);
 
   const jobsDir = mkdtempSync(path.join(tmpdir(), `companion-common-copy-jobs-${plugin}-`));
   assert.equal(mod.consumePromptSidecar(jobsDir, "job-1"), null);
@@ -565,6 +745,20 @@ async function assertCopyHelperBranches(mod, plugin) {
   assert.equal(mod.consumePromptSidecar(jobsDir, "job-1"), "copy prompt");
   assert.equal(existsSync(sidecar), false);
   assert.equal(mod.consumePromptSidecar(jobsDir, "job-1"), null);
+
+  const runtimeJobsDir = mkdtempSync(path.join(tmpdir(), `companion-common-copy-runtime-options-${plugin}-`));
+  const runtimePath = mod.runtimeOptionsSidecarPath(runtimeJobsDir, "job-runtime");
+  mkdirSync(path.dirname(runtimePath), { recursive: true });
+  writeFileSync(runtimePath, "{\"copy\":true}", "utf8");
+  assert.deepEqual(mod.consumeJsonSettingsSidecar(runtimePath), {
+    value: { copy: true },
+    cleanup_warning: null,
+    cleanup_warning_path: null,
+  });
+  assert.equal(existsSync(runtimePath), false);
+  writeFileSync(runtimePath, "{\"cleanup\":true}", "utf8");
+  mod.cleanupRuntimeOptionsSidecar(runtimeJobsDir, "job-runtime");
+  assert.equal(existsSync(runtimePath), false);
 
   const enotdirJobsDir = mkdtempSync(path.join(tmpdir(), `companion-common-copy-enotdir-${plugin}-`));
   writeFileSync(path.join(enotdirJobsDir, "job-file"), "not a directory", "utf8");
@@ -589,6 +783,48 @@ async function assertCopyHelperBranches(mod, plugin) {
       /not a real directory inside jobsDir|symlink/i,
     );
     assert.equal(readFileSync(path.join(consumeEscapeDir, "prompt.txt"), "utf8"), "attacker prompt");
+  }
+
+  if (POSIX_MODE_ASSERTIONS && process.getuid?.() !== 0) {
+    const writeCleanupJobsDir = mkdtempSync(path.join(tmpdir(), `companion-common-copy-write-cleanup-${plugin}-`));
+    const writeCleanupJobId = "job-write-cleanup";
+    const writeCleanupJobDir = path.join(writeCleanupJobsDir, writeCleanupJobId);
+    mkdirSync(writeCleanupJobDir, { recursive: true, mode: 0o700 });
+    const originalNow = Date.now;
+    Date.now = () => 1234567890;
+    const tmpFile = path.join(writeCleanupJobDir, `prompt.txt.${process.pid}.1234567890.tmp`);
+    mkdirSync(tmpFile, { mode: 0o700 });
+    try {
+      assert.throws(
+        () => mod.writePromptSidecar(writeCleanupJobsDir, writeCleanupJobId, "copy secret prompt"),
+        (err) => err?.code === "cleanup_uncertain"
+          && /prompt sidecar write cleanup failed/.test(err.message)
+          && err.cause?.code === "EISDIR"
+          && typeof err.cleanup_error === "string"
+          && err.cleanup_error.length > 0,
+      );
+      assert.equal(existsSync(tmpFile), true, `${plugin}: tmp prompt remains when cleanup is uncertain`);
+    } finally {
+      Date.now = originalNow;
+      chmodSync(writeCleanupJobDir, 0o700);
+      rmSync(writeCleanupJobDir, { recursive: true, force: true });
+    }
+
+    const unlinkJobsDir = mkdtempSync(path.join(tmpdir(), `companion-common-copy-unlink-fails-${plugin}-`));
+    const unlinkPath = mod.promptSidecarPath(unlinkJobsDir, "job-unlink");
+    mod.writePromptSidecar(unlinkJobsDir, "job-unlink", "copy secret prompt");
+    const unlinkDir = path.dirname(unlinkPath);
+    chmodSync(unlinkDir, 0o500);
+    try {
+      assert.throws(
+        () => mod.consumePromptSidecar(unlinkJobsDir, "job-unlink"),
+        (err) => err?.code === "cleanup_uncertain" && /prompt sidecar cleanup failed/i.test(err.message),
+      );
+      assert.equal(readFileSync(unlinkPath, "utf8"), "copy secret prompt");
+    } finally {
+      chmodSync(unlinkDir, 0o700);
+      try { unlinkSync(unlinkPath); } catch { /* best-effort test cleanup */ }
+    }
   }
 
   assert.deepEqual(mod.credentialNameDiagnostics(["KEY"], {}), {});
@@ -624,7 +860,7 @@ test("external-review plugin copies keep stale no-pid transmission unknown", asy
 
 test("external-review shared helper covers disclosure and transmission branches", async () => {
   const modules = await Promise.all(
-    COMPANION_PLUGIN_TARGETS.map((plugin) =>
+    [...COMPANION_PLUGIN_TARGETS, "api-reviewers", "grok"].map((plugin) =>
       import(`../../plugins/${plugin}/scripts/lib/external-review.mjs`)
     )
   );
@@ -632,8 +868,16 @@ test("external-review shared helper covers disclosure and transmission branches"
   for (const mod of modules) {
     const T = mod.SOURCE_CONTENT_TRANSMISSION;
     assert.equal(mod.providerDisplayName("claude"), "Claude Code");
+    assert.equal(mod.providerDisplayName("deepseek"), "DeepSeek");
+    assert.equal(mod.providerDisplayName("glm"), "GLM");
+    assert.equal(mod.providerDisplayName("grok"), "Grok");
     assert.equal(mod.providerDisplayName("unknown-target"), "unknown-target");
     assert.equal(mod.targetProcessReceivedContent("timeout"), true);
+    assert.equal(mod.targetProcessReceivedContent("provider_error"), true);
+    assert.equal(mod.targetProcessReceivedContent("grok_error"), true);
+    assert.equal(mod.targetProcessReceivedContent("deepseek_error"), true);
+    assert.equal(mod.targetProcessReceivedContent("glm_error"), true);
+    assert.equal(mod.targetProcessReceivedContent("oauth_inference_rejected"), false);
     assert.equal(mod.targetProcessReceivedContent("scope_failed"), false);
 
     assert.equal(
@@ -653,6 +897,10 @@ test("external-review shared helper covers disclosure and transmission branches"
       "Selected source content was sent to Provider for external review; the operator cancelled the run before it completed.",
     );
     assert.equal(
+      mod.externalReviewDisclosure("Provider", "stale", T.SENT),
+      "Selected source content was sent to Provider for external review; the run became stale before completion.",
+    );
+    assert.equal(
       mod.externalReviewDisclosure("Provider", "failed", T.SENT),
       "Selected source content was sent to Provider for external review, but the run ended before a clean result was produced.",
     );
@@ -663,6 +911,22 @@ test("external-review shared helper covers disclosure and transmission branches"
     assert.equal(
       mod.externalReviewDisclosure("Provider", "failed", T.NOT_SENT, "scope_failed"),
       "Selected source content was not sent to Provider; the review scope was rejected before the target process was started.",
+    );
+    assert.equal(
+      mod.externalReviewDisclosure("Provider", "failed", T.NOT_SENT, "approval_scope_changed"),
+      "Selected source content was not sent to Provider; approval scope changed before the review target was started.",
+    );
+    assert.equal(
+      mod.externalReviewDisclosure("Provider", "failed", T.NOT_SENT, "cache_install"),
+      "Selected source content was not sent to Provider; installed cache repair is required before the review target starts.",
+    );
+    assert.equal(
+      mod.externalReviewDisclosure("Provider", "failed", T.NOT_SENT, "preflight_stale"),
+      "Selected source content was not sent to Provider; immediate pre-send readiness proof was stale or missing.",
+    );
+    assert.equal(
+      mod.externalReviewDisclosure("Provider", "failed", T.NOT_SENT, "prompt_too_large"),
+      "Selected source content was not sent to Provider; the rendered prompt exceeded the provider budget before the review target was started.",
     );
     assert.equal(
       mod.externalReviewDisclosure("Provider", "failed", T.NOT_SENT, "spawn_failed"),
@@ -720,6 +984,16 @@ test("external-review shared helper covers disclosure and transmission branches"
     }), T.NOT_SENT);
     assert.equal(mod.sourceContentTransmissionForExecution({
       status: "failed",
+      errorCode: "approval_required",
+      pidInfo: null,
+    }), T.NOT_SENT);
+    assert.equal(mod.sourceContentTransmissionForExecution({
+      status: "failed",
+      errorCode: "git_binary_rejected",
+      pidInfo: null,
+    }), T.NOT_SENT);
+    assert.equal(mod.sourceContentTransmissionForExecution({
+      status: "failed",
       errorCode: "spawn_failed",
       pidInfo: null,
     }), T.NOT_SENT);
@@ -738,11 +1012,28 @@ test("external-review shared helper covers disclosure and transmission branches"
       errorCode: "oauth_inference_rejected",
       pidInfo: null,
     }), T.NOT_SENT);
+    for (const preTargetCode of [
+      "prompt_too_large",
+      "approval_scope_changed",
+      "preflight_stale",
+      "cache_install",
+    ]) {
+      assert.equal(mod.sourceContentTransmissionForExecution({
+        status: "failed",
+        errorCode: preTargetCode,
+        pidInfo: null,
+      }), T.NOT_SENT, `${preTargetCode} must be pre-target not_sent`);
+    }
     assert.equal(mod.sourceContentTransmissionForExecution({
       status: "failed",
       errorCode: "oauth_inference_rejected",
       pidInfo: { pid: 1 },
     }), T.SENT);
+    assert.equal(mod.sourceContentTransmissionForExecution({
+      status: "failed",
+      errorCode: "interrupted",
+      pidInfo: null,
+    }), T.MAY_BE_SENT);
     assert.equal(mod.sourceContentTransmissionForExecution({
       status: "cancelled",
       errorCode: null,
@@ -767,6 +1058,26 @@ test("external-review shared helper covers disclosure and transmission branches"
       status: "failed",
       errorCode: "review_not_completed",
       pidInfo: null,
+    }), T.SENT);
+    assert.equal(mod.sourceContentTransmissionForExecution({
+      status: "failed",
+      errorCode: "provider_error",
+      pidInfo: { pid: 1 },
+    }), T.SENT);
+    assert.equal(mod.sourceContentTransmissionForExecution({
+      status: "failed",
+      errorCode: "grok_error",
+      pidInfo: { pid: 1 },
+    }), T.SENT);
+    assert.equal(mod.sourceContentTransmissionForExecution({
+      status: "failed",
+      errorCode: "deepseek_error",
+      pidInfo: { pid: 1 },
+    }), T.SENT);
+    assert.equal(mod.sourceContentTransmissionForExecution({
+      status: "failed",
+      errorCode: "glm_error",
+      pidInfo: { pid: 1 },
     }), T.SENT);
     assert.equal(mod.sourceContentTransmissionForExecution({
       status: "failed",
@@ -796,5 +1107,15 @@ test("external-review shared helper covers disclosure and transmission branches"
     assert.throws(() => {
       review.marker = "mutated";
     }, TypeError);
+    assert.throws(() => mod.buildExternalReview({
+      invocation: {
+        target: "kimi",
+        job_id: "job-invalid",
+        mode: "review",
+        scope: "head",
+      },
+      status: "failed",
+      sourceContentTransmission: "senttt",
+    }), /invalid sourceContentTransmission/);
   }
 });

@@ -2,60 +2,129 @@
 // Edit scripts/lib/auth-selection.mjs, then run
 // `node scripts/ci/sync-auth-selection.mjs` to update plugin packaging copies.
 
-const AUTH_MODES = new Set(["subscription", "api_key", "auto"]);
+import { selectProviderRoute } from "./provider-route-policy.mjs";
+
+export const AUTH_MODE = Object.freeze({
+  subscription: "subscription",
+  apiKey: "api_key",
+});
+
+const AUTH_MODE_VALUES = new Set(Object.values(AUTH_MODE));
+
+export function subscriptionAuthMode() {
+  return AUTH_MODE.subscription;
+}
+
+export function apiKeyAuthMode() {
+  return AUTH_MODE.apiKey;
+}
+
+export function defaultAuthMode() {
+  return subscriptionAuthMode();
+}
 
 export function providerApiKeyEnv(providerApiKeyEnvNames, env = process.env) {
   return providerApiKeyEnvNames.filter((key) => env[key]);
 }
 
 export function resolveAuthSelection({
-  requestedMode = "subscription",
+  requestedMode = defaultAuthMode(),
   providerApiKeyEnvNames,
   fail,
   env = process.env,
+  sourceBearing = false,
+  sourceSendApproved = false,
 }) {
-  const authMode = requestedMode ?? "subscription";
-  if (!AUTH_MODES.has(authMode)) {
-    fail("bad_args", `--auth-mode must be one of subscription|api_key|auto; got ${JSON.stringify(authMode)}`);
+  const authMode = requestedMode ?? defaultAuthMode();
+  if (!AUTH_MODE_VALUES.has(authMode)) {
+    fail("bad_args", `--auth-mode must be one of subscription|api_key; got ${JSON.stringify(authMode)}`);
     return null;
   }
-  const providerKeys = providerApiKeyEnv(providerApiKeyEnvNames, env);
-  if (authMode === "api_key") {
+  const apiKeyEnvNames = Array.isArray(providerApiKeyEnvNames) ? providerApiKeyEnvNames : [];
+  const route = selectProviderRoute({
+    requestedRoute: authMode === apiKeyAuthMode() ? "api" : "subscription",
+    fallbackReason: authMode === apiKeyAuthMode() ? "explicit_api" : null,
+    providerCapabilities: {
+      subscription: { kind: "oauth", auth_path: "subscription_oauth" },
+      api: {
+        kind: "direct_api",
+        auth_path: "api_key_env",
+        credential_env_names: apiKeyEnvNames,
+      },
+    },
+    env,
+    sourceBearing,
+    sourceSendApproved,
+    fail,
+  });
+  if (!route) return null;
+  if (route.route_mode === "api") {
     return {
       auth_mode: authMode,
-      selected_auth_path: providerKeys.length > 0 ? "api_key_env" : "api_key_env_missing",
-      allowed_env_credentials: providerKeys,
+      selected_auth_path: route.auth_path,
+      auth_path: route.auth_path,
+      billing_path: route.billing_path,
+      selected_route: route.selected_route,
+      fallback_reason: route.fallback_reason,
+      source_send_approval_required: route.source_send_approval_required,
+      source_send_approval_state: route.source_send_approval_state,
+      allowed_env_credentials: route.allowed_env_credentials,
       ignored_env_credentials: [],
-      auth_policy: providerKeys.length > 0 ? "api_key_env_allowed" : "api_key_env_required",
-    };
-  }
-  if (authMode === "auto") {
-    return {
-      auth_mode: authMode,
-      selected_auth_path: "subscription_oauth",
-      allowed_env_credentials: [],
-      ignored_env_credentials: providerKeys,
-      auth_policy: providerKeys.length > 0 ? "subscription_oauth_with_api_key_fallback" : "subscription_oauth",
+      auth_policy: route.allowed_env_credentials.length > 0 ? "api_key_env_allowed" : "api_key_env_required",
     };
   }
   return {
     auth_mode: authMode,
-    selected_auth_path: "subscription_oauth",
+    selected_auth_path: route.auth_path,
+    auth_path: route.auth_path,
+    billing_path: route.billing_path,
+    selected_route: route.selected_route,
+    fallback_reason: route.fallback_reason,
+    source_send_approval_required: route.source_send_approval_required,
+    source_send_approval_state: route.source_send_approval_state,
     allowed_env_credentials: [],
-    ignored_env_credentials: providerKeys,
-    auth_policy: providerKeys.length > 0 ? "api_key_env_ignored" : "subscription_oauth",
+    ignored_env_credentials: route.ignored_env_credentials,
+    auth_policy: route.ignored_env_credentials.length > 0 ? "api_key_env_ignored" : "subscription_oauth",
   };
 }
 
-export function apiKeyFallbackSelection(selection, reason = "subscription_unavailable") {
+function presentEnvForCredentialNames(names) {
+  return Object.fromEntries(names.map((name) => [name, "present"]));
+}
+
+export function apiKeyFallbackSelection(selection, reason = "subscription_unavailable", options = null) {
+  if (!options || typeof options.sourceBearing !== "boolean") {
+    throw new Error("apiKeyFallbackSelection requires explicit sourceBearing");
+  }
   const fallbackKeys = Array.isArray(selection?.ignored_env_credentials)
     ? selection.ignored_env_credentials
     : [];
-  if (selection?.auth_mode !== "auto" || fallbackKeys.length === 0) return null;
+  if (selection?.selected_auth_path !== "subscription_oauth" || fallbackKeys.length === 0) return null;
+  const route = selectProviderRoute({
+    requestedRoute: "api",
+    fallbackReason: reason,
+    providerCapabilities: {
+      subscription: { kind: "oauth", auth_path: "subscription_oauth" },
+      api: {
+        kind: "direct_api",
+        auth_path: "api_key_env",
+        credential_env_names: fallbackKeys,
+      },
+    },
+    env: presentEnvForCredentialNames(fallbackKeys),
+    sourceBearing: options.sourceBearing,
+    sourceSendApproved: options.sourceSendApproved === true,
+  });
   return {
-    auth_mode: "auto",
-    selected_auth_path: "api_key_env",
-    allowed_env_credentials: fallbackKeys,
+    auth_mode: selection.auth_mode ?? defaultAuthMode(),
+    selected_auth_path: route.auth_path,
+    auth_path: route.auth_path,
+    billing_path: route.billing_path,
+    selected_route: route.selected_route,
+    fallback_reason: route.fallback_reason,
+    source_send_approval_required: route.source_send_approval_required,
+    source_send_approval_state: route.source_send_approval_state,
+    allowed_env_credentials: route.allowed_env_credentials,
     ignored_env_credentials: [],
     auth_policy: "api_key_env_fallback",
     auth_fallback: {
@@ -70,6 +139,12 @@ export function authDiagnosticFields(selection) {
   return {
     auth_mode: selection.auth_mode,
     selected_auth_path: selection.selected_auth_path,
+    auth_path: selection.auth_path ?? selection.selected_auth_path ?? null,
+    billing_path: selection.billing_path ?? null,
+    selected_route: selection.selected_route ?? null,
+    fallback_reason: selection.fallback_reason ?? null,
+    source_send_approval_required: selection.source_send_approval_required ?? null,
+    source_send_approval_state: selection.source_send_approval_state ?? null,
     ...(selection.allowed_env_credentials.length > 0 ? { allowed_env_credentials: selection.allowed_env_credentials } : {}),
     ...(selection.ignored_env_credentials.length > 0 ? { ignored_env_credentials: selection.ignored_env_credentials } : {}),
     auth_policy: selection.auth_policy,

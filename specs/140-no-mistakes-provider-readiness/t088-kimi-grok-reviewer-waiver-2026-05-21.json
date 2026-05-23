@@ -1,0 +1,67 @@
+{
+  "schema_version": 1,
+  "symptom_id": "S24",
+  "task_id": "T088",
+  "evidence_reviewed": [
+    {
+      "kind": "test",
+      "path_or_id": "node --test --test-name-pattern \"T088 cross-provider|shared failure diagnostic builder|reviewer packaging copies match\" tests/unit/external-model-failure-core.test.mjs tests/unit/plugin-copies-in-sync.test.mjs",
+      "summary": "Focused T088 shared failure diagnostics and packaged-copy tests passed 6/6."
+    },
+    {
+      "kind": "test",
+      "path_or_id": "node --test tests/unit/external-model-failure-core.test.mjs tests/unit/plugin-copies-in-sync.test.mjs",
+      "summary": "Full shared failure-core and plugin-copy sync tests passed 54/54."
+    },
+    {
+      "kind": "review",
+      "path_or_id": "Claude 11af9cbc-7c38-4eaf-92b9-cf3ebd223c4d; DeepSeek job_0cecd969-dd70-4bf2-a4cc-b8fce7b8b586",
+      "summary": "Earlier T088 source-bearing reviews returned usable APPROVE verdicts."
+    },
+    {
+      "kind": "review",
+      "path_or_id": "Gemini 7aa86314-e513-46c0-9d79-4a72d8884c9a",
+      "summary": "Gemini re-review after remediation returned usable APPROVE."
+    },
+    {
+      "kind": "review",
+      "path_or_id": "GLM job_8c6365bf-3dc9-4654-b906-7200e3c60415",
+      "summary": "Current GLM source-bearing review completed with usable APPROVE, source sent, and failed_review_slot:false."
+    },
+    {
+      "kind": "job_record",
+      "path_or_id": "Kimi T088 initial review attempt",
+      "summary": "Kimi produced no usable JobRecord and was terminated after prolonged no-output; this slot is not counted as approval."
+    },
+    {
+      "kind": "command_output",
+      "path_or_id": "node plugins/grok/scripts/grok-web-reviewer.mjs doctor --transport cli",
+      "summary": "Grok CLI was blocked before source as grok_cli_login_required with logged_in:false; no T088 source was sent to Grok."
+    },
+    {
+      "kind": "command_output",
+      "path_or_id": "rg -n \"const target = invocation.target|Claude|Gemini\" plugins/kimi/scripts/lib/job-record.mjs",
+      "summary": "Current Kimi job-record source does not contain the stale hardcoded Gemini fallback noted in a non-blocking T086 review."
+    }
+  ],
+  "operator_approval_text": "Operator said: if Kimi does not work, skip it. But the Kimi symptom must still be fixed separately.",
+  "expires_at": "2026-06-21T00:00:00Z",
+  "residual_risk": {
+    "source_send": {
+      "remains": true,
+      "notes": "A prior Kimi T088 source-bearing slot did not produce a usable review and is not counted."
+    },
+    "api": {
+      "remains": false,
+      "notes": "Current GLM direct API review completed successfully; DeepSeek had already returned usable approval for this T088 remediation."
+    },
+    "auth": {
+      "remains": true,
+      "notes": "Grok CLI auth is currently logged_out and blocked before source as grok_cli_login_required."
+    },
+    "local_state": {
+      "remains": true,
+      "notes": "Kimi reviewer-runtime and stale/no-terminal job-state cleanup remains tracked by the open interrupted/concurrent job-state work."
+    }
+  }
+}

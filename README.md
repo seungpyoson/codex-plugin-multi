@@ -33,53 +33,54 @@ lets Claude Code delegate to Codex.
   can report logged-in while print-mode inference returns HTTP 401.
 - Gemini CLI installed and authenticated if you enable the Gemini plugin.
 - Kimi Code CLI installed and authenticated if you enable the Kimi plugin.
-- A local Grok web tunnel if you enable the Grok plugin. The default endpoint
-  targets grok2api at `GROK_WEB_BASE_URL=http://127.0.0.1:8000/v1`; the plugin
-  can bootstrap a local grok2api checkout into its durable managed runtime
-  directory, defaulting to `~/.codex-plugin-multi/runtime/grok2api`, and
-  auto-start the non-Docker
-  `uv run granian ... app.main:app` tunnel when it is down. Successfully
-  auto-started tunnels are left running for reuse; failed starts are cleaned up
-  with SIGTERM/verify/SIGKILL diagnostics. Set
-  `GROK2API_HOME`, `GROK2API_BOOTSTRAP_DIR`, or
-  `CODEX_PLUGIN_MULTI_RUNTIME_DIR` only when you want a specific checkout or
-  runtime directory. `GROK2API_HOME` and `GROK2API_BOOTSTRAP_DIR` are
-  authoritative: if either points at a stale or invalid location, doctor reports
-  that path instead of silently falling back. Any grok2api home under `$TMPDIR`,
-  including an explicit `GROK2API_HOME`, produces a durability warning before
-  browser/session sync. Set `UV_CACHE_DIR` only when you want `uv` to
-  use a caller-managed cache instead of the plugin's sandbox-writable default;
-  an empty `UV_CACHE_DIR=""` is treated as unset. Set `GROK_WEB_TUNNEL_API_KEY`
-  only if your local tunnel requires a bearer value.
+- Grok CLI installed and authenticated if you enable the Grok plugin's default
+  path. The optional legacy web/tunnel path is explicit via `--transport web`.
+  That path targets grok2api at
+  `GROK_WEB_BASE_URL=http://127.0.0.1:8000/v1`; the plugin can bootstrap a
+  local grok2api checkout into its durable managed runtime directory,
+  defaulting to `~/.codex-plugin-multi/runtime/grok2api`, and auto-start the
+  non-Docker `uv run granian ... app.main:app` tunnel when it is down.
+  Successfully auto-started tunnels are left running for reuse; failed starts
+  are cleaned up with SIGTERM/verify/SIGKILL diagnostics. Set `GROK2API_HOME`,
+  `GROK2API_BOOTSTRAP_DIR`, or `CODEX_PLUGIN_MULTI_RUNTIME_DIR` only when you
+  want a specific checkout or runtime directory. `GROK2API_HOME` and
+  `GROK2API_BOOTSTRAP_DIR` are authoritative: if either points at a stale or
+  invalid location, doctor reports that path instead of silently falling back.
+  Any grok2api home under `$TMPDIR`, including an explicit `GROK2API_HOME`,
+  produces a durability warning before browser/session sync. Set `UV_CACHE_DIR`
+  only when you want `uv` to use a caller-managed cache instead of the plugin's
+  sandbox-writable default; an empty `UV_CACHE_DIR=""` is treated as unset. Set
+  `GROK_WEB_TUNNEL_API_KEY` only if your local tunnel requires a bearer value.
 - `DEEPSEEK_API_KEY` if you enable the DeepSeek direct API reviewer.
-- `ZAI_API_KEY` if you enable the GLM direct API reviewer. `ZAI_GLM_API_KEY`
-  is accepted as a compatibility alias. GLM Coding Plan calls use
+- `ZAI_API_KEY` if you enable the GLM direct API reviewer. GLM Coding Plan calls use
   `https://api.z.ai/api/coding/paas/v4`, not the general Z.ai endpoint.
 
 Claude and Gemini default to `--auth-mode subscription`: provider API-key env
 vars are stripped and the target CLI's native OAuth/subscription path must pass
-the live readiness probe. They also support explicit
-`--auth-mode subscription|api_key|auto` for `setup`/`doctor`, `run`, and
-`continue`: `api_key` requires a matching provider key, and `auto` is a
-compatibility mode that tries OAuth/subscription first and falls back to a
-provider key only when subscription readiness is unavailable. The selected path
-is reported as `selected_auth_path`; secret values are never printed. Kimi remains subscription/OAuth-only. Direct API
-reviewers are separate and only use API keys through explicit
-`auth_mode: "api_key"` provider config.
+the live readiness probe. They also support explicit `--auth-mode api_key` for
+providers that have an API route; source-bearing API runs require the approval
+token flow before source is sent. The ambiguous automatic auth selector is
+rejected on operator-facing paths, because the selected route must be explicit. The selected path is
+reported as `selected_auth_path`; secret values are never printed. Kimi remains
+subscription/OAuth-only. Direct API reviewers are separate and only use API keys
+through explicit `auth_mode: "api_key"` provider config.
 
-The Grok plugin defaults to Grok subscription usage through a local tunnel that
-is backed by a subscription-backed web session. It is not an `api.x.ai`
-integration and does not silently fall back to paid xAI API billing. If the
-local tunnel is unavailable or the web session expires, the Grok JobRecord
-reports that failure instead of switching billing paths. Subscription usage
-limits are reported as `usage_limited`; the plugin does not purchase credits,
-upgrade tiers, or switch to a paid fallback automatically.
-`/grok-setup` and the `doctor` command make a live `GET /models` probe against
-the configured tunnel endpoint plus chat/session readiness probes. `ready:
-true` means the local tunnel listener, model list, session pool, and chat probe
-are usable. If a loopback grok2api `/v1` endpoint is unavailable, the doctor/run
-path tries to use an existing `GROK2API_HOME`, `GROK2API_BOOTSTRAP_DIR`, the
-durable managed runtime checkout, or common local checkout paths. Explicit
+The Grok plugin defaults to subscription-backed Grok CLI transport
+(`subscription_cli`). It is not an `api.x.ai` integration and does not silently
+fall back to paid xAI API billing or to the legacy web tunnel. If the CLI is
+unavailable or the subscription session expires, the Grok JobRecord reports that
+failure instead of switching billing paths. Subscription usage limits are
+reported as `usage_limited`; the plugin does not purchase credits, upgrade
+tiers, or switch to a paid fallback automatically.
+`/grok-setup` and the default `doctor` command check `grok --version`,
+`grok models`, and a source-free Grok CLI prompt for `grok-build` readiness. To
+diagnose the legacy local web tunnel, run
+`node plugins/grok/scripts/grok-companion.mjs doctor --transport web`; with that
+explicit transport, doctor makes a live `GET /models` probe against the
+configured tunnel endpoint plus chat/session readiness probes. If a loopback
+grok2api `/v1` endpoint is unavailable, the explicit web doctor/run path tries
+to use an existing `GROK2API_HOME`, `GROK2API_BOOTSTRAP_DIR`, the durable
+managed runtime checkout, or common local checkout paths. Explicit
 `GROK2API_HOME` and `GROK2API_BOOTSTRAP_DIR` take precedence over fallback
 locations, so stale explicit paths are reported directly. Legacy temp runtime
 checkouts are not reused for new starts, but doctor warns if one is present
@@ -90,12 +91,13 @@ app.main:app`; no Docker path is required. `tunnel_unavailable` after that
 means no usable clone/start path was available or the started process did not
 become reachable.
 Grok run records can be inspected with
-`node plugins/grok/scripts/grok-web-reviewer.mjs list` and
-`node plugins/grok/scripts/grok-web-reviewer.mjs result --job-id <job_id>`.
-`npm run grok:repair-session` automates doctor, durable checkout/bootstrap,
-tunnel start, approval-gated browser/session sync, and a final doctor rerun. It
-pauses with `browser_session_sync_approval_required` before reading browser
-session material; rerun it with `-- --approve-browser-session-sync` only after
+`node plugins/grok/scripts/grok-companion.mjs list` and
+`node plugins/grok/scripts/grok-companion.mjs result --job-id <job_id>`.
+`npm run grok:repair-session` pins the explicit legacy web transport and
+automates doctor, durable checkout/bootstrap, tunnel start, approval-gated
+browser/session sync, and a final doctor rerun. It pauses with
+`browser_session_sync_approval_required` before reading browser session
+material; rerun it with `-- --approve-browser-session-sync` only after
 approving that secret-read step for the current invocation.
 For grok2api session setup on macOS, `npm run grok:sync-browser-session`
 performs a loud local Chrome-family cookie import into `grok2api`; it announces
@@ -408,14 +410,14 @@ command docs:
 |---|---|---|
 | `/claude-setup` / `/gemini-setup` / `/kimi-setup` | Packaged | Target CLI availability and OAuth readiness check. Claude setup includes an OAuth-only non-interactive inference probe, not just `claude auth status`. |
 | `/deepseek-setup` / `/glm-setup` | Packaged | Direct API-key readiness check plus source-free live provider probe; reports key names and probe status only. |
-| `/grok-setup` | Packaged | Grok subscription-backed local tunnel readiness check; probes `/v1/models` by default and reports key names only. |
+| `/grok-setup` | Packaged | Default Grok CLI readiness check; explicit `--transport web` probes the legacy local tunnel and reports key names only. |
 | `/claude-review [focus]` / `/gemini-review [focus]` / `/kimi-review [focus]` | Packaged | Read-only review profile over the selected scope. |
-| `/grok-review [focus]` | Packaged | Subscription-backed Grok web review over the selected scope. |
+| `/grok-review [focus]` | Packaged | Subscription-backed Grok CLI review over the selected scope. |
 | `/deepseek-review [focus]` / `/glm-review [focus]` | Packaged | Direct API-backed review over the selected scope. |
 | `/claude-adversarial-review [focus]` / `/gemini-adversarial-review [focus]` / `/kimi-adversarial-review [focus]` | Packaged | Read-only forced-dissent review profile. |
-| `/grok-adversarial-review [focus]` | Packaged | Subscription-backed Grok web forced-dissent review. |
+| `/grok-adversarial-review [focus]` | Packaged | Subscription-backed Grok CLI forced-dissent review. |
 | `/deepseek-adversarial-review [focus]` / `/glm-adversarial-review [focus]` | Packaged | Direct API-backed forced-dissent review. |
-| `/grok-custom-review --scope-paths <files>` | Packaged | Subscription-backed Grok web review of explicit files. |
+| `/grok-custom-review --scope-paths <files>` | Packaged | Subscription-backed Grok CLI review of explicit files. |
 | `/deepseek-custom-review --scope-paths <files>` / `/glm-custom-review --scope-paths <files>` | Packaged | Direct API-backed review of explicit files. |
 | `/claude-rescue <task>` / `/gemini-rescue <task>` / `/kimi-rescue <task>` | Packaged | Background investigation or fix by the target CLI. |
 | `/claude-status` / `/gemini-status` / `/kimi-status` | Packaged | List active and recent jobs for the current workspace. |
@@ -447,16 +449,17 @@ inspect the terminal record.
 - **Claude/Gemini auth is explicit and reported.** Claude and Gemini default to
   `--auth-mode subscription`: provider API-key env vars are ignored and the
   target CLI's OAuth/subscription inference path must work. `--auth-mode
-  api_key` requires a matching provider key, and `--auth-mode auto` is an
-  explicit compatibility mode that tries OAuth/subscription first and falls
-  back to API-key auth only when subscription readiness is unavailable.
+  api_key` requires a matching provider key. The legacy ambiguous automatic
+  auth selector is rejected on operator-facing paths; choose subscription or
+  api_key explicitly.
   DeepSeek and GLM direct API reviewers use
   `auth_mode: "api_key"` in `plugins/api-reviewers/config/providers.json`.
   Diagnostics report key names only and never print secret values.
 - **Grok subscription is the default Grok path.** Grok uses
-  `auth_mode: "subscription_web"` through a local tunnel and does not silently
-  fall back to paid xAI API billing. Tunnel bearer values and session cookies
-  must stay in user-managed env or tunnel state and must not be printed.
+  `auth_mode: "subscription_cli"` through Grok CLI and does not silently fall
+  back to paid xAI API billing or the legacy web tunnel. Tunnel bearer values
+  and session cookies for explicit `--transport web` must stay in user-managed
+  env or tunnel state and must not be printed.
 - **Cost/quota diagnostics are safe metadata only.** Reviewer records may include
   bounded `runtime_diagnostics.provider_request` metadata such as timeout,
   prompt-character count, and request-default summaries. Failed reviewer records

@@ -41,6 +41,22 @@ const sessionId = parsed.flags["--resume"]
   ? "77777777-8888-4999-aaaa-bbbbbbbbbbbb"
   : "22222222-3333-4444-9555-666666666666";
 const model = parsed.flags["-m"] ?? parsed.flags["--model"] ?? "unknown";
+const mockResponse = process.env.GEMINI_MOCK_RESPONSE ?? [
+  "Verdict: APPROVE",
+  "Blocking findings",
+  "- None. I inspected the selected source made available to the Gemini smoke fixture and found no blocking issue.",
+  "Non-blocking concerns",
+  "- None for this fixture.",
+  "Test gaps",
+  "- Existing smoke fixture coverage is sufficient for this wrapper path.",
+  "Inspection status",
+  "- The selected source was available and the mock returned a complete review, not a placeholder.",
+  "Checklist:",
+  "- PASS selected scope was available.",
+  "- PASS selected source was inspected before verdict.",
+  "- PASS no blocker was invented.",
+  "Mock Gemini response.",
+].join("\n");
 
 const expectedPromptText = process.env.GEMINI_MOCK_ASSERT_PROMPT_INCLUDES;
 const readinessPrompt = prompt.includes("reply with exactly: pong.") && prompt.includes("Do not use any tools");
@@ -78,22 +94,7 @@ if (process.env.GEMINI_MOCK_CAPACITY_MODEL === model) {
 
 const fixture = {
   session_id: sessionId,
-  response: [
-    "Verdict: APPROVE",
-    "Blocking findings",
-    "- None. I inspected the selected source made available to the Gemini smoke fixture and found no blocking issue.",
-    "Non-blocking concerns",
-    "- None for this fixture.",
-    "Test gaps",
-    "- Existing smoke fixture coverage is sufficient for this wrapper path.",
-    "Inspection status",
-    "- The selected source was available and the mock returned a complete review, not a placeholder.",
-    "Checklist:",
-    "- PASS selected scope was available.",
-    "- PASS selected source was inspected before verdict.",
-    "- PASS no blocker was invented.",
-    "Mock Gemini response.",
-  ].join("\n"),
+  response: mockResponse,
   stats: {
     models: {
       [model]: {
@@ -169,6 +170,25 @@ if (process.env.GEMINI_MOCK_META_CONFLICT === "1") {
     const target = resolve(found.jobsDir, `${found.jobId}.json`);
     try { unlinkSync(target); } catch { /* nothing to remove yet */ }
     mkdirSync(target, { recursive: true });
+  }
+}
+
+if (process.env.GEMINI_MOCK_STATE_LOCK_CONFLICT === "1" && !readinessPrompt) {
+  const wait = new Int32Array(new SharedArrayBuffer(4));
+  Atomics.wait(wait, 0, 0, 100);
+  const { mkdirSync, writeFileSync } = await import("node:fs");
+  const { dirname, join } = await import("node:path");
+  const { hostname } = await import("node:os");
+  const found = await findActiveJobIdFromState();
+  if (found) {
+    const lockDir = join(dirname(found.jobsDir), ".state.lock");
+    mkdirSync(lockDir, { recursive: true });
+    writeFileSync(join(lockDir, "owner.json"), `${JSON.stringify({
+      pid: process.ppid,
+      hostname: hostname(),
+      startedAt: new Date().toISOString(),
+      token: "gemini-mock-state-lock-conflict",
+    })}\n`, "utf8");
   }
 }
 

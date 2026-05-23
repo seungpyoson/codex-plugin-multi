@@ -9,7 +9,7 @@ import { execFileSync, spawn } from "node:child_process";
 import { tmpdir } from "node:os";
 
 import { parseArgs } from "./lib/args.mjs";
-import { configureState, resolveJobsDir, resolveJobFile, writeJobFile, upsertJob, listJobs, commitJobRecord } from "./lib/state.mjs";
+import { configureState, resolveJobsDir, resolveJobFile, resolveStateDir, writeJobFile, upsertJob, listJobs, commitJobRecord } from "./lib/state.mjs";
 import { resolveWorkspaceRoot } from "./lib/workspace.mjs";
 import { resolveProfile, resolveModelForProfile, resolveModelCandidatesForProfile } from "./lib/mode-profiles.mjs";
 import { setupContainment } from "./lib/containment.mjs";
@@ -20,12 +20,14 @@ import { reconcileActiveJobs } from "./lib/reconcile.mjs";
 import { cleanGitEnv } from "./lib/git-env.mjs";
 import { gitEnv, isGitBinaryPolicyError, resolveGitBinary } from "./lib/git-binary.mjs";
 import { spawnKimi } from "./lib/kimi.mjs";
+import { selectProviderRoute } from "./lib/provider-route-policy.mjs";
 import { writeCancelMarker, consumeCancelMarker } from "./lib/cancel-marker.mjs";
 import { isCodexSandbox } from "./lib/codex-env.mjs";
 import {
   PING_PROMPT,
   cancelNoPidInfoSuggestedAction,
   cancelUnverifiableSuggestedAction,
+  consumeJsonSettingsSidecar,
   consumePromptSidecar,
   credentialNameDiagnostics,
   effectiveProfileForOptions,
@@ -44,7 +46,7 @@ import {
   summarizeScopeDirectory,
   writePromptSidecar,
 } from "./lib/companion-common.mjs";
-import { REVIEW_PROMPT_CONTRACT_VERSION, buildReviewAuditManifest, buildReviewPrompt, buildSelectedSourcePromptBlock } from "./lib/review-prompt.mjs";
+import { REVIEW_PROMPT_CONTRACT_VERSION, buildReviewAuditManifest, buildReviewPrompt, buildSelectedSourcePromptBlock, selectedSourceFilesFromPrompt } from "./lib/review-prompt.mjs";
 import { diffSourceFiles } from "./lib/diff-source.mjs";
 
 const PLUGIN_ROOT = resolvePath(dirname(fileURLToPath(import.meta.url)), "..");
@@ -55,6 +57,10 @@ const PREFLIGHT_MODES = Object.freeze(["review", "adversarial-review", "custom-r
 const DEFAULT_KIMI_REVIEW_TIMEOUT_MS = 900000;
 const DEFAULT_KIMI_PING_TIMEOUT_MS = 900000;
 const KIMI_READINESS_PREFLIGHT_TIMEOUT_MS = 900000;
+const REVIEW_PROMPT_SOURCE_DELIMITER_PREFIX = "KIMI FILE";
+const ROUTE_CAPABILITIES = Object.freeze({
+  subscription: Object.freeze({ kind: "oauth", auth_path: "subscription_oauth" }),
+});
 
 configureState({
   pluginDataEnv: "KIMI_PLUGIN_DATA",
@@ -72,20 +78,76 @@ function fail(code, message, details = {}) {
   process.exit(1);
 }
 
+function findResultJobWorkspaceMatches(workspaceRoot, jobId) {
+  let stateRoot;
+  try {
+    stateRoot = dirname(resolveStateDir(workspaceRoot));
+  } catch {
+    return [];
+  }
+  let entries;
+  try {
+    entries = readdirSync(stateRoot);
+  } catch {
+    return [];
+  }
+  const matches = [];
+  for (const entry of entries) {
+    const candidate = joinPath(stateRoot, entry, "jobs", `${jobId}.json`);
+    if (!existsSync(candidate)) continue;
+    try {
+      const record = JSON.parse(readFileSync(candidate, "utf8"));
+      matches.push(record.workspace_root ?? record.cwd ?? null);
+    } catch {
+      continue;
+    }
+  }
+  return matches;
+}
+
+function jobNotFoundDetails(jobId, cwd, workspaceRoot, commandName) {
+  const matchedWorkspaceRoots = findResultJobWorkspaceMatches(workspaceRoot, jobId);
+  const matchedWorkspaceRoot = matchedWorkspaceRoots[0] ?? null;
+  const matchedWorkspace = matchedWorkspaceRoot !== null;
+  const command = commandName === "continue" ? "continue --job" : "result with --job";
+  if (matchedWorkspaceRoots.length > 1) {
+    return {
+      job_id: jobId,
+      cwd,
+      workspace_root: workspaceRoot,
+      error_code: "state_collision",
+      matched_workspace_count: matchedWorkspaceRoots.length,
+      suggested_action: `State collision: job ${jobId} exists under multiple workspace state roots. Do not trust an arbitrary match; inspect plugin state, remove or repair duplicate state entries, then run ${command} ${jobId} --cwd <workspace used when the job was launched>.`,
+    };
+  }
+  const suggested_action = matchedWorkspaceRoot
+    ? `Job exists under a different workspace. Run ${command} ${jobId} --cwd <workspace used when the job was launched>.`
+    : `Run ${command} ${jobId} --cwd <workspace used when the job was launched>.`;
+  return {
+    job_id: jobId,
+    cwd,
+    workspace_root: workspaceRoot,
+    suggested_action,
+    ...(matchedWorkspace ? { matched_workspace: true } : {}),
+  };
+}
+
+function resultNotFoundDetails(jobId, cwd, workspaceRoot) {
+  return jobNotFoundDetails(jobId, cwd, workspaceRoot, "result");
+}
+
+function continueNotFoundDetails(jobId, cwd, workspaceRoot) {
+  return jobNotFoundDetails(jobId, cwd, workspaceRoot, "continue");
+}
+
 function targetPromptFor(profile, userPrompt, invocation = {}, sourceFiles = []) {
   if (profile.permission_mode !== "plan") return userPrompt;
   const selectedSource = buildSelectedSourcePromptBlock(sourceFiles, {
-    delimiterPrefix: "KIMI FILE",
+    delimiterPrefix: REVIEW_PROMPT_SOURCE_DELIMITER_PREFIX,
   });
   const modeLine = profile.name === "adversarial-review"
     ? "You are performing an adversarial code review. Prioritize correctness bugs, security risks, regressions, and missing tests."
     : "You are performing a code review. Prioritize bugs, behavioral regressions, and missing tests.";
-  const liveContext = [
-    "Live verification context:",
-    "- This repository has verified the configured DeepSeek and GLM direct API endpoints/models from Codex-managed runs.",
-    "- Do not reject model IDs or endpoint hosts solely because they differ from general public documentation; require current run failure evidence or repo-local contradictory evidence.",
-    "- API reviewer JobRecords include the actual endpoint, HTTP status, raw model, credential key name, and usage metadata when the provider returns them.",
-  ].join("\n");
   return buildReviewPrompt({
     provider: "Kimi",
     mode: profile.name,
@@ -100,7 +162,6 @@ function targetPromptFor(profile, userPrompt, invocation = {}, sourceFiles = [])
     extraInstructions: [
       modeLine,
       "Your final answer must be self-contained and must not refer to prior, previous, above, or already-provided answers.",
-      liveContext,
       ...(selectedSource ? [selectedSource] : []),
     ],
   });
@@ -177,6 +238,40 @@ function auditSourceFiles(containmentPath) {
   }));
 }
 
+function auditSourceFilesForPrompt(prompt, containmentPath) {
+  return selectedSourceFilesFromPrompt(prompt, {
+    delimiterPrefix: REVIEW_PROMPT_SOURCE_DELIMITER_PREFIX,
+  }) ?? auditSourceFiles(containmentPath);
+}
+
+function selectedSourceFilesForRedaction(prompt) {
+  return selectedSourceFilesFromPrompt(prompt, {
+    delimiterPrefix: REVIEW_PROMPT_SOURCE_DELIMITER_PREFIX,
+  }) ?? [];
+}
+
+function sourceFilesHaveBodies(sourceFiles) {
+  return Array.isArray(sourceFiles) && sourceFiles.some((file) => (
+    typeof file?.text === "string" && file.text.length > 0
+  ) || (
+    file?.text instanceof Uint8Array && file.text.length > 0
+  ) || (
+    typeof file?.content === "string" && file.content.length > 0
+  ) || (
+    file?.content instanceof Uint8Array && file.content.length > 0
+  ));
+}
+
+function redactionFieldsForPrompt(prompt) {
+  const sourceFilesForRedaction = selectedSourceFilesForRedaction(prompt);
+  return sourceFilesForRedaction.length > 0
+    ? {
+      sourceRedactionRequired: sourceFilesHaveBodies(sourceFilesForRedaction),
+      sourceFilesForRedaction,
+    }
+    : {};
+}
+
 function scopeResolutionReason(invocation) {
   const paths = invocation.scope_paths;
   if (invocation.scope === "branch-diff") {
@@ -189,13 +284,20 @@ function scopeResolutionReason(invocation) {
   return invocation.scope ?? null;
 }
 
+function executionForAuditClassification(execution) {
+  if (!execution || !("reviewAuditManifest" in execution)) return execution;
+  const { reviewAuditManifest: _ignored, ...rest } = execution;
+  return rest;
+}
+
 function reviewAuditManifest(invocation, prompt, containmentPath, execution) {
   if (!invocation.review_prompt_contract_version || invocation.mode_profile_name === "rescue") return null;
   const meta = promptMetadata(invocation);
-  const { error_code: errorCode } = classifyExecution(execution);
+  const auditExecution = executionForAuditClassification(execution);
+  const { status: executionStatus, error_code: errorCode } = classifyExecution(auditExecution);
   return buildReviewAuditManifest({
     prompt,
-    sourceFiles: auditSourceFiles(containmentPath),
+    sourceFiles: auditSourceFilesForPrompt(prompt, containmentPath),
     git: {
       remote: meta.repository,
       branch: meta.headRef,
@@ -218,19 +320,67 @@ function reviewAuditManifest(invocation, prompt, containmentPath, execution) {
       temperature: null,
     },
     truncation: { prompt: false, source: false, output: false },
-    providerIds: { sessionId: execution?.kimiSessionId ?? null },
+    providerIds: { sessionId: auditExecution?.kimiSessionId ?? null },
     scope: {
       name: invocation.scope,
       base: invocation.scope_base ?? null,
       paths: invocation.scope_paths ?? null,
       reason: scopeResolutionReason(invocation),
     },
+    route: {
+      selectedRoute: invocation.selected_route ?? null,
+      fallbackReason: invocation.fallback_reason ?? null,
+      approvalScope: null,
+      authPath: invocation.selected_auth_path ?? null,
+      billingPath: invocation.billing_path ?? null,
+      sourceSendApprovalRequired: invocation.source_send_approval_required ?? null,
+      sourceSendApprovalState: invocation.source_send_approval_state ?? null,
+    },
     result: execution?.parsed?.result ?? "",
-    status: execution?.preflight === true
-      ? "preflight_failed"
-      : (execution?.exitCode === 0 && execution?.parsed?.ok === true ? "completed" : "failed"),
+    status: execution?.preflight === true ? "preflight_failed" : executionStatus,
     errorCode,
   });
+}
+
+function subscriptionRouteFacts({ sourceBearing = false } = {}) {
+  const route = selectProviderRoute({
+    requestedRoute: "subscription",
+    providerCapabilities: ROUTE_CAPABILITIES,
+    sourceBearing,
+  });
+  return {
+    selected_route: route.selected_route,
+    fallback_reason: route.fallback_reason,
+    selected_auth_path: route.auth_path,
+    billing_path: route.billing_path,
+    source_send_approval_required: route.source_send_approval_required,
+    source_send_approval_state: route.source_send_approval_state,
+  };
+}
+
+function withMutationReviewFailure(manifest, mutations) {
+  const sourceMutations = Array.isArray(mutations)
+    ? mutations.filter((mutation) => !String(mutation).startsWith("mutation_detection_failed:"))
+    : [];
+  if (!manifest || sourceMutations.length === 0) return manifest;
+  const reviewQuality = manifest.review_quality ?? {};
+  const reasons = new Set(Array.isArray(reviewQuality.semantic_failure_reasons)
+    ? reviewQuality.semantic_failure_reasons
+    : []);
+  reasons.add("source_mutation_detected");
+  return {
+    ...manifest,
+    status: "failed",
+    review_quality: {
+      ...reviewQuality,
+      failed_review_slot: true,
+      semantic_failure_reasons: [...reasons],
+    },
+  };
+}
+
+function modeSendsSelectedSource(mode) {
+  return mode === "review" || mode === "adversarial-review" || mode === "custom-review";
 }
 
 function scopedTargetPromptForOrExit(invocation, profile, userPrompt, lifecycleEvents) {
@@ -320,11 +470,52 @@ function makeKimiPingCwd() {
   return dir;
 }
 
+function createKimiReadOnlyLaunchFiles(profile) {
+  if (!Array.isArray(profile.allowed_tools)) return null;
+  const dir = mkdtempSync(joinPath(tmpdir(), "kimi-policy-"));
+  const skillsDir = joinPath(dir, "skills");
+  const mcpConfigFile = joinPath(dir, "empty-mcp.json");
+  const agentFilePath = joinPath(dir, "agent.yaml");
+  mkdirSync(skillsDir, { recursive: true, mode: 0o700 });
+  writeFileSync(mcpConfigFile, "{}\n", "utf8");
+  writeFileSync(agentFilePath, [
+    "version: 1",
+    "agent:",
+    "  extend: default",
+    "  name: codex-readonly-reviewer",
+    "  tools:",
+    ...profile.allowed_tools.map((tool) => `    - ${JSON.stringify(tool)}`),
+    "  allowed_tools:",
+    ...profile.allowed_tools.map((tool) => `    - ${JSON.stringify(tool)}`),
+    "  exclude_tools: []",
+    "  subagents: {}",
+    "",
+  ].join("\n"), "utf8");
+  let cleaned = false;
+  const cleanup = () => {
+    if (cleaned) return;
+    cleaned = true;
+    try { rmSync(dir, { recursive: true, force: true }); } catch { /* best-effort */ }
+  };
+  try { process.once("exit", cleanup); } catch { /* best-effort */ }
+  return Object.freeze({ dir, agentFilePath, mcpConfigFile, skillsDir, cleanup });
+}
+
+function readOnlyLaunchInputs(launchFiles) {
+  if (!launchFiles) return {};
+  return {
+    agentFilePath: launchFiles.agentFilePath,
+    mcpConfigFile: launchFiles.mcpConfigFile,
+    skillsDir: launchFiles.skillsDir,
+  };
+}
+
 async function kimiReadinessPreflight(invocation, profile) {
   const readinessProfile = resolveProfile("ping");
   const candidates = modelCandidatesForInvocation(profile, invocation);
   let execution = null;
   const pingCwd = makeKimiPingCwd();
+  const launchFiles = createKimiReadOnlyLaunchFiles(readinessProfile);
   try {
     for (let i = 0; i < candidates.length; i++) {
       execution = await spawnKimi(readinessProfile, {
@@ -335,6 +526,7 @@ async function kimiReadinessPreflight(invocation, profile) {
         env: { ...process.env, KIMI_COMPANION_PREFLIGHT: "1" },
         timeoutMs: KIMI_READINESS_PREFLIGHT_TIMEOUT_MS,
         maxStepsPerTurn: invocation.max_steps_per_turn,
+        ...readOnlyLaunchInputs(launchFiles),
       });
       if (execution.parsed?.ok === true) return null;
       if (
@@ -358,6 +550,8 @@ async function kimiReadinessPreflight(invocation, profile) {
       stderr: "",
       errorMessage: isKimiCodexSandboxBlocked(detail) ? `sandbox_blocked: ${detail}` : detail,
     };
+  } finally {
+    if (launchFiles) launchFiles.cleanup();
   }
 
   const failureText = pingFailureText(execution);
@@ -421,19 +615,19 @@ function writeRuntimeOptionsSidecar(workspaceRoot, jobId, options) {
 
 function readRuntimeOptionsSidecar(workspaceRoot, jobId) {
   const file = runtimeOptionsSidecarPath(workspaceRoot, jobId);
-  if (!existsSync(file)) return {};
-  try {
-    const parsed = JSON.parse(readFileSync(file, "utf8"));
-    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
-    const timeoutMs = parsed.timeout_ms;
-    const maxSteps = parsed.max_steps_per_turn;
-    const options = {};
-    if (Number.isSafeInteger(timeoutMs) && timeoutMs > 0) options.timeout_ms = timeoutMs;
-    if (Number.isSafeInteger(maxSteps) && maxSteps > 0) options.max_steps_per_turn = maxSteps;
-    return options;
-  } catch {
-    return {};
+  const consumed = consumeJsonSettingsSidecar(file);
+  const parsed = consumed.value;
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+  const timeoutMs = parsed.timeout_ms;
+  const maxSteps = parsed.max_steps_per_turn;
+  const options = {};
+  if (Number.isSafeInteger(timeoutMs) && timeoutMs > 0) options.timeout_ms = timeoutMs;
+  if (Number.isSafeInteger(maxSteps) && maxSteps > 0) options.max_steps_per_turn = maxSteps;
+  if (consumed.cleanup_warning) {
+    options.cleanup_warning = consumed.cleanup_warning;
+    options.cleanup_warning_path = consumed.cleanup_warning_path;
   }
+  return options;
 }
 
 function invocationFromRecord(record, runtimeOptions = {}) {
@@ -461,6 +655,9 @@ function invocationFromRecord(record, runtimeOptions = {}) {
     timeout_ms: resolvedRuntimeOptions.timeout_ms,
     run_kind: runKindFromRecord(record),
     max_steps_per_turn: resolvedRuntimeOptions.max_steps_per_turn,
+    ...subscriptionRouteFacts({ sourceBearing: modeSendsSelectedSource(record.mode) }),
+    runtime_options_cleanup_warning: runtimeOptions.cleanup_warning ?? null,
+    runtime_options_cleanup_path: runtimeOptions.cleanup_warning_path ?? null,
     started_at: record.started_at,
   };
 }
@@ -480,6 +677,12 @@ function parsePositiveTimeoutMs(value, fallback, { envName = null } = {}) {
     fail("bad_args", `${source} must be a positive integer number of milliseconds; got ${JSON.stringify(raw)}`);
   }
   return parsed;
+}
+
+function rejectUnsupportedAuthMode(options = {}) {
+  if (options["auth-mode"] !== undefined) {
+    fail("bad_args", "Kimi supports subscription auth only; --auth-mode is not supported.");
+  }
 }
 
 function parsePositiveMaxStepsPerTurn(value, fallback) {
@@ -558,9 +761,10 @@ function failBackgroundPromptSidecarWrite(workspaceRoot, invocation, error) {
 
 function cmdPreflight(rest) {
   const { options } = parseArgs(rest, {
-    valueOptions: ["mode", "cwd", "scope-base", "scope-paths", "binary"],
+    valueOptions: ["mode", "cwd", "scope-base", "scope-paths", "binary", "auth-mode"],
     booleanOptions: [],
   });
+  rejectUnsupportedAuthMode(options);
   const mode = options.mode;
   const cwd = options.cwd ?? process.cwd();
   if (!mode || !PREFLIGHT_MODES.includes(mode)) {
@@ -631,9 +835,10 @@ function cmdPreflight(rest) {
 
 async function cmdRun(rest) {
   const { options, positionals } = parseArgs(rest, {
-    valueOptions: ["mode", "model", "cwd", "binary", "scope-base", "scope-paths", "override-dispose", "timeout-ms", "max-steps-per-turn", "lifecycle-events"],
+    valueOptions: ["mode", "model", "cwd", "binary", "scope-base", "scope-paths", "override-dispose", "timeout-ms", "max-steps-per-turn", "lifecycle-events", "auth-mode"],
     booleanOptions: ["background", "foreground"],
   });
+  rejectUnsupportedAuthMode(options);
   const mode = options.mode;
   if (!mode || !RUN_MODES.includes(mode)) {
     fail("bad_args", `--mode must be one of ${RUN_MODES.join("|")}; got ${JSON.stringify(mode)}`);
@@ -697,6 +902,7 @@ async function cmdRun(rest) {
     run_kind: options.background ? "background" : "foreground",
     timeout_ms: timeoutMs,
     max_steps_per_turn: maxStepsPerTurn,
+    ...subscriptionRouteFacts({ sourceBearing: modeSendsSelectedSource(mode) }),
     started_at: new Date().toISOString(),
   });
 
@@ -773,6 +979,7 @@ async function executeRun(invocation, prompt, { foreground, lifecycleEvents = nu
   const resumeId = invocation.resume_chain && invocation.resume_chain.length > 0
     ? invocation.resume_chain[invocation.resume_chain.length - 1]
     : null;
+  const launchFiles = createKimiReadOnlyLaunchFiles(profile);
 
   // Pre-spawn cancel-marker check (Class 1 + Finding A, race window α).
   // cmdRunWorker has its own check at the top of the worker body, but a
@@ -788,6 +995,7 @@ async function executeRun(invocation, prompt, { foreground, lifecycleEvents = nu
     if (neutralCwd) {
       try { rmSync(neutralCwd, { recursive: true, force: true }); } catch { /* best-effort */ }
     }
+    if (launchFiles) launchFiles.cleanup();
     if (disposeEffective) {
       try { containment.cleanup(); } catch { /* best-effort */ }
     }
@@ -814,6 +1022,7 @@ async function executeRun(invocation, prompt, { foreground, lifecycleEvents = nu
       signal: preflightExecution.signal ?? null,
       timedOut: preflightExecution.timedOut === true,
       reviewAuditManifest: preflightExecution.reviewAuditManifest,
+      ...redactionFieldsForPrompt(prompt),
     }, mutations);
     writeJobFile(workspaceRoot, jobId, errorRecord);
     upsertJob(workspaceRoot, errorRecord);
@@ -827,6 +1036,7 @@ async function executeRun(invocation, prompt, { foreground, lifecycleEvents = nu
       }
     }
     if (neutralCwd) rmSync(neutralCwd, { recursive: true, force: true });
+    if (launchFiles) launchFiles.cleanup();
     if (disposeEffective) containment.cleanup();
     if (foreground) printLifecycleJson(errorRecord, lifecycleEvents);
     process.exit(2);
@@ -856,14 +1066,22 @@ async function executeRun(invocation, prompt, { foreground, lifecycleEvents = nu
         resumeId,
         timeoutMs: invocation.timeout_ms,
         maxStepsPerTurn: invocation.max_steps_per_turn,
+        ...readOnlyLaunchInputs(launchFiles),
         onSpawn: (pidInfo) => {
-          const runningRecord = buildJobRecord(attemptInvocation, {
+          const runningExecution = {
             status: "running",
             exitCode: null,
             parsed: null,
             pidInfo,
             kimiSessionId: null,
-          }, mutations);
+          };
+          runningExecution.reviewAuditManifest = reviewAuditManifest(
+            attemptInvocation,
+            prompt,
+            containment.path,
+            runningExecution,
+          );
+          const runningRecord = buildJobRecord(attemptInvocation, runningExecution, mutations);
           writeJobFile(workspaceRoot, jobId, runningRecord);
           upsertJob(workspaceRoot, runningRecord);
         },
@@ -886,10 +1104,12 @@ async function executeRun(invocation, prompt, { foreground, lifecycleEvents = nu
     const errorRecord = buildJobRecord(executedInvocation, {
       exitCode: null, parsed: null, pidInfo: null, kimiSessionId: null,
       errorMessage: e.message,
+      ...redactionFieldsForPrompt(prompt),
     }, mutations);
     writeJobFile(workspaceRoot, jobId, errorRecord);
     upsertJob(workspaceRoot, errorRecord);
     if (neutralCwd) rmSync(neutralCwd, { recursive: true, force: true });
+    if (launchFiles) launchFiles.cleanup();
     if (disposeEffective) containment.cleanup();
     stopHeartbeat();
     if (foreground) printLifecycleJson(errorRecord, lifecycleEvents);
@@ -926,7 +1146,10 @@ async function executeRun(invocation, prompt, { foreground, lifecycleEvents = nu
   // marker BEFORE signaling so finalization can force status=cancelled
   // even when the target traps SIGTERM and exits 0 with valid output.
   const cancelMarker = consumeCancelMarker(workspaceRoot, jobId);
-  execution.reviewAuditManifest = reviewAuditManifest(executedInvocation, prompt, containment.path, execution);
+  execution.reviewAuditManifest = withMutationReviewFailure(
+    reviewAuditManifest(executedInvocation, prompt, containment.path, execution),
+    mutations,
+  );
 
   // signal + timedOut feed classifyExecution: a SIGTERM/SIGKILL exit without
   // timedOut is an operator cancel → status="cancelled" (#16 follow-up 2);
@@ -941,6 +1164,7 @@ async function executeRun(invocation, prompt, { foreground, lifecycleEvents = nu
     signal: execution.signal ?? null,
     timedOut: execution.timedOut === true,
     reviewAuditManifest: execution.reviewAuditManifest,
+    ...redactionFieldsForPrompt(prompt),
   }, mutations);
 
   // BLOCKER 2 fix: atomic-under-lock meta + state commit. See
@@ -974,6 +1198,7 @@ async function executeRun(invocation, prompt, { foreground, lifecycleEvents = nu
         pidInfo: execution.pidInfo,
         kimiSessionId: execution.kimiSessionId ?? null,
         errorMessage: `finalization_failed: ${detail}`,
+        ...redactionFieldsForPrompt(prompt),
       }, mutations);
     } catch { /* defense in depth */ }
     if (fallbackRecord) {
@@ -983,9 +1208,10 @@ async function executeRun(invocation, prompt, { foreground, lifecycleEvents = nu
         try { writeJobFile(workspaceRoot, jobId, fallbackRecord); } catch { /* exhausted */ }
         try { upsertJob(workspaceRoot, fallbackRecord); } catch { /* exhausted */ }
       } else if (stateError) {
-        // meta is the good terminal record. Don't touch it (BLOCKER 1).
-        // Retry the state upsert with the GOOD record; fall back to the
-        // failed-record only if that retry also fails.
+        // If lock acquisition timed out before meta write, the last durable
+        // meta can still be running. Preserve terminal failure evidence
+        // without clobbering an already-written terminal meta.
+        maybeWriteFinalizationFallbackMeta(workspaceRoot, jobId, fallbackRecord);
         try { upsertJob(workspaceRoot, finalRecord); }
         catch {
           try { upsertJob(workspaceRoot, fallbackRecord); } catch { /* exhausted */ }
@@ -993,6 +1219,7 @@ async function executeRun(invocation, prompt, { foreground, lifecycleEvents = nu
       }
     }
     if (neutralCwd) rmSync(neutralCwd, { recursive: true, force: true });
+    if (launchFiles) launchFiles.cleanup();
     if (containment.disposed && disposeEffective) {
       try { containment.cleanup(); } catch { /* best-effort */ }
     }
@@ -1002,9 +1229,21 @@ async function executeRun(invocation, prompt, { foreground, lifecycleEvents = nu
   }
 
   if (neutralCwd) rmSync(neutralCwd, { recursive: true, force: true });
+  if (launchFiles) launchFiles.cleanup();
   if (containment.disposed && disposeEffective) containment.cleanup();
   if (foreground) printLifecycleJson(finalRecord, lifecycleEvents);
   process.exit(finalRecord.status === "completed" || finalRecord.status === "cancelled" ? 0 : 2);
+}
+
+function maybeWriteFinalizationFallbackMeta(workspaceRoot, jobId, fallbackRecord) {
+  let current = null;
+  try {
+    current = JSON.parse(readFileSync(resolveJobFile(workspaceRoot, jobId), "utf8"));
+  } catch {
+    current = null;
+  }
+  if (current && current.status !== "queued" && current.status !== "running") return;
+  try { writeJobFile(workspaceRoot, jobId, fallbackRecord); } catch { /* exhausted */ }
 }
 
 function writeSidecar(workspaceRoot, jobId, name, contents) {
@@ -1095,9 +1334,10 @@ async function cmdRunWorker(rest) {
 
 async function cmdContinue(rest) {
   const { options, positionals } = parseArgs(rest, {
-    valueOptions: ["job", "cwd", "model", "binary", "timeout-ms", "max-steps-per-turn", "lifecycle-events"],
+    valueOptions: ["job", "cwd", "model", "binary", "timeout-ms", "max-steps-per-turn", "lifecycle-events", "auth-mode"],
     booleanOptions: ["background", "foreground"],
   });
+  rejectUnsupportedAuthMode(options);
   if (!options.job) fail("bad_args", "--job <id> is required");
   if (options.background && options.foreground) {
     fail("bad_args", "--background and --foreground are mutually exclusive");
@@ -1112,9 +1352,11 @@ async function cmdContinue(rest) {
   const cwd = options.cwd ?? process.cwd();
   const workspaceRoot = resolveWorkspaceRoot(cwd);
   let prior;
+  const jobFile = resolveJobFile(workspaceRoot, options.job);
+  if (!existsSync(jobFile)) {
+    fail("not_found", `no meta.json for job ${options.job}`, continueNotFoundDetails(options.job, cwd, workspaceRoot));
+  }
   try {
-    const jobFile = resolveJobFile(workspaceRoot, options.job);
-    if (!existsSync(jobFile)) fail("not_found", `no meta.json for job ${options.job}`);
     prior = JSON.parse(readFileSync(jobFile, "utf8"));
   } catch (e) {
     fail("bad_args", e.message);
@@ -1182,6 +1424,7 @@ async function cmdContinue(rest) {
     run_kind: options.background ? "background" : "foreground",
     timeout_ms: timeoutMs,
     max_steps_per_turn: maxStepsPerTurn,
+    ...subscriptionRouteFacts({ sourceBearing: modeSendsSelectedSource(priorModeName) }),
     started_at: new Date().toISOString(),
   });
 
@@ -1236,14 +1479,18 @@ async function cmdStatus(rest) {
 }
 
 async function cmdResult(rest) {
-  const { options } = parseArgs(rest, { valueOptions: ["job", "cwd"], booleanOptions: [] });
-  if (!options.job) fail("bad_args", "--job <id> is required");
+  const { options } = parseArgs(rest, { valueOptions: ["job", "job-id", "cwd"], booleanOptions: [] });
+  const jobId = options.job ?? options["job-id"];
+  if (!jobId) fail("bad_args", "--job <id> is required");
   const cwd = options.cwd ?? process.cwd();
   const workspaceRoot = resolveWorkspaceRoot(cwd);
+  reconcileActiveJobs(workspaceRoot);
   let jobFile;
-  try { jobFile = resolveJobFile(workspaceRoot, options.job); }
+  try { jobFile = resolveJobFile(workspaceRoot, jobId); }
   catch (e) { fail("bad_args", e.message); }
-  if (!existsSync(jobFile)) fail("not_found", `no meta.json for job ${options.job}`);
+  if (!existsSync(jobFile)) {
+    fail("not_found", `no meta.json for job ${jobId}`, resultNotFoundDetails(jobId, cwd, workspaceRoot));
+  }
   // PR #21 review MED 1: wrap the read so a directory-at-meta-path
   // (KIMI_MOCK_META_CONFLICT, or a half-finalized job) produces a
   // friendly error instead of an unhandled EISDIR stacktrace.
@@ -1252,7 +1499,7 @@ async function cmdResult(rest) {
     meta = JSON.parse(readFileSync(jobFile, "utf8"));
   } catch (e) {
     fail("read_failed",
-      `cannot read meta.json for job ${options.job}: ${e.message}`,
+      `cannot read meta.json for job ${jobId}: ${e.message}`,
       { error_code: e.code ?? null });
   }
   printJson(meta);
@@ -1263,6 +1510,25 @@ const PING_PROVIDER_API_KEY_ENV = ["KIMI_CODE_API_KEY", "KIMI_API_KEY", "MOONSHO
 
 function ignoredApiKeyAuthFields() {
   return credentialNameDiagnostics(PING_PROVIDER_API_KEY_ENV);
+}
+
+function pingRouteAuthFields() {
+  const route = selectProviderRoute({
+    requestedRoute: "subscription",
+    providerCapabilities: ROUTE_CAPABILITIES,
+    sourceBearing: false,
+  });
+  return {
+    auth_mode: "subscription",
+    selected_auth_path: route.auth_path,
+    auth_path: route.auth_path,
+    billing_path: route.billing_path,
+    selected_route: route.selected_route,
+    fallback_reason: route.fallback_reason,
+    source_send_approval_required: route.source_send_approval_required,
+    source_send_approval_state: route.source_send_approval_state,
+    ...ignoredApiKeyAuthFields(),
+  };
 }
 
 function pingOkFields(modelFallback = null) {
@@ -1369,7 +1635,8 @@ function isKimiCodexSandboxBlocked(detail) {
 }
 
 async function cmdPing(rest, { readinessProfileName = "ping" } = {}) {
-  const { options } = parseArgs(rest, { valueOptions: ["model", "binary", "timeout-ms"], booleanOptions: [] });
+  const { options } = parseArgs(rest, { valueOptions: ["model", "binary", "timeout-ms", "auth-mode"], booleanOptions: [] });
+  rejectUnsupportedAuthMode(options);
   const profile = resolveProfile(readinessProfileName);
   const modelsConfig = loadModels();
   const model = options.model ?? resolveModelForProfile(profile, modelsConfig);
@@ -1379,6 +1646,7 @@ async function cmdPing(rest, { readinessProfileName = "ping" } = {}) {
   const candidates = modelCandidates.length > 0 ? modelCandidates : [model];
   const timeoutMs = parsePositiveTimeoutMs(options["timeout-ms"], DEFAULT_KIMI_PING_TIMEOUT_MS);
   const pingCwd = makeKimiPingCwd();
+  const launchFiles = createKimiReadOnlyLaunchFiles(profile);
   try {
     let execution = null;
     let selectedModel = model;
@@ -1392,6 +1660,7 @@ async function cmdPing(rest, { readinessProfileName = "ping" } = {}) {
         cwd: pingCwd,
         binary: options.binary ?? process.env.KIMI_BINARY ?? "kimi",
         timeoutMs,
+        ...readOnlyLaunchInputs(launchFiles),
       });
       if (
         execution.exitCode !== 0 &&
@@ -1417,7 +1686,7 @@ async function cmdPing(rest, { readinessProfileName = "ping" } = {}) {
       break;
     }
     if (execution.parsed.ok) {
-      const payload = { status: "ok", ...pingOkFields(modelFallback), ...ignoredApiKeyAuthFields(), model: selectedModel ?? null,
+      const payload = { status: "ok", ...pingOkFields(modelFallback), ...pingRouteAuthFields(), model: selectedModel ?? null,
         session_id: execution.kimiSessionId, usage: execution.parsed.usage };
       printJson(payload);
       process.exit(0);
@@ -1425,40 +1694,42 @@ async function cmdPing(rest, { readinessProfileName = "ping" } = {}) {
     const failureText = pingFailureText(execution);
     const detail = pingFailureDetail(execution);
     if (execution?.timedOut === true) {
-      printJson({ status: "transient_timeout", ...pingTimeoutFields(timeoutMs), ...ignoredApiKeyAuthFields(), detail });
+      printJson({ status: "transient_timeout", ...pingTimeoutFields(timeoutMs), ...pingRouteAuthFields(), detail });
       process.exit(2);
     }
     if (isKimiCodexSandboxBlocked(failureText)) {
-      printJson({ status: "sandbox_blocked", ...pingSandboxBlockedFields(), ...ignoredApiKeyAuthFields(), exit_code: execution.exitCode, detail });
+      printJson({ status: "sandbox_blocked", ...pingSandboxBlockedFields(), ...pingRouteAuthFields(), exit_code: execution.exitCode, detail });
       process.exit(2);
     }
     if (/rate limit|429|overloaded/i.test(detail)) {
-      printJson({ status: "rate_limited", ...pingRateLimitedFields(), ...ignoredApiKeyAuthFields(), detail });
+      printJson({ status: "rate_limited", ...pingRateLimitedFields(), ...pingRouteAuthFields(), detail });
       process.exit(2);
     }
     if (PING_AUTH_RE.test(detail)) {
       printJson({ status: "not_authed", ...pingNotAuthedFields(), detail,
-        ...ignoredApiKeyAuthFields(),
+        ...pingRouteAuthFields(),
         hint: "Run `kimi` interactively to complete OAuth. API-key env vars are ignored by plugin policy." });
       process.exit(2);
     }
-    printJson({ status: "error", ...pingErrorFields(), ...ignoredApiKeyAuthFields(), exit_code: execution.exitCode, detail });
+    printJson({ status: "error", ...pingErrorFields(), ...pingRouteAuthFields(), exit_code: execution.exitCode, detail });
     process.exit(2);
   } catch (e) {
     if (e.code === "ENOENT") {
       printJson({ status: "not_found", ...pingNotFoundFields(),
-        ...ignoredApiKeyAuthFields(),
+        ...pingRouteAuthFields(),
         detail: "kimi binary not found on PATH (or KIMI_BINARY override)",
         install_url: "https://moonshotai.github.io/kimi-cli/" });
       process.exit(2);
     }
     const detail = e.message;
     if (isKimiCodexSandboxBlocked(detail)) {
-      printJson({ status: "sandbox_blocked", ...pingSandboxBlockedFields(), ...ignoredApiKeyAuthFields(), detail });
+      printJson({ status: "sandbox_blocked", ...pingSandboxBlockedFields(), ...pingRouteAuthFields(), detail });
       process.exit(2);
     }
-    printJson({ status: "error", ...pingErrorFields(), ...ignoredApiKeyAuthFields(), detail });
+    printJson({ status: "error", ...pingErrorFields(), ...pingRouteAuthFields(), detail });
     process.exit(2);
+  } finally {
+    if (launchFiles) launchFiles.cleanup();
   }
 }
 

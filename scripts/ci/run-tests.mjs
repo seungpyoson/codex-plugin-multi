@@ -12,14 +12,20 @@ import { fileURLToPath } from "node:url";
 import { cleanGitEnv } from "../../plugins/claude/scripts/lib/git-env.mjs";
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
+const RUN_FULL = process.env.CODEX_PLUGIN_FULL_TESTS === "1";
+const RUN_PRIVACY = RUN_FULL && process.env.CODEX_PLUGIN_PRIVACY_TESTS === "1";
+
 // Walks tests/unit, tests/property, and tests/smoke. Smoke tests can be
 // skipped by setting CODEX_PLUGIN_SKIP_SMOKE=1 (CI sets this when a fixture
 // is missing). Property tests are the merge gate for the sanitization
 // contract — fast subset uses 1000 runs (~300ms), full subset uses 10000.
+// T078 provider privacy-matrix tests are opt-in through test:full plus
+// CODEX_PLUGIN_PRIVACY_TESTS=1 because they may spawn provider fixtures.
 const TEST_DIRS = [
   resolve(REPO_ROOT, "tests/unit"),
   resolve(REPO_ROOT, "tests/property"),
   ...(process.env.CODEX_PLUGIN_SKIP_SMOKE ? [] : [resolve(REPO_ROOT, "tests/smoke")]),
+  ...(RUN_PRIVACY ? [resolve(REPO_ROOT, "tests/privacy")] : []),
 ];
 
 // Directories never walked — avoid picking up fixture deps or generated trees.
@@ -34,7 +40,6 @@ const SKIP_DIRS = new Set(["node_modules", "fixtures", ".git", "coverage"]);
 const SLOW_TEST_BASENAMES = new Set([
   "scope.test.mjs",
 ]);
-const RUN_FULL = process.env.CODEX_PLUGIN_FULL_TESTS === "1";
 
 async function walk(dir) {
   const out = [];

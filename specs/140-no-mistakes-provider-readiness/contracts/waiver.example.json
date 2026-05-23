@@ -1,0 +1,37 @@
+{
+  "schema_version": 1,
+  "symptom_id": "S09",
+  "task_id": "T082",
+  "evidence_reviewed": [
+    {
+      "kind": "doc",
+      "path_or_id": "specs/140-no-mistakes-provider-readiness/tasks.md:S09",
+      "summary": "Same-path repair ambiguity remains tracked by the symptom matrix."
+    },
+    {
+      "kind": "test",
+      "path_or_id": "tests/unit/docs-contracts.test.mjs",
+      "summary": "Contract test verifies waiver artifacts name approval and residual-risk fields."
+    }
+  ],
+  "operator_approval_text": "Operator explicitly accepts this bounded waiver for T082 after reviewing the listed evidence.",
+  "expires_at": "2026-06-19T00:00:00Z",
+  "residual_risk": {
+    "source_send": {
+      "remains": false,
+      "notes": "No provider source send is authorized by this waiver artifact."
+    },
+    "api": {
+      "remains": false,
+      "notes": "No direct API call is authorized by this waiver artifact."
+    },
+    "auth": {
+      "remains": false,
+      "notes": "No auth repair, login, token refresh, or credential handling is authorized."
+    },
+    "local_state": {
+      "remains": true,
+      "notes": "Local evidence files may remain for operator review until the waiver expires."
+    }
+  }
+}

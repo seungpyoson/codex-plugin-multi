@@ -1,0 +1,72 @@
+{
+  "schema_version": 1,
+  "symptom_id": "S21",
+  "task_id": "T086",
+  "evidence_reviewed": [
+    {
+      "kind": "test",
+      "path_or_id": "node --test --test-name-pattern \"classify step-limit exhaustion|guide timeout retry\" tests/unit/job-record.test.mjs",
+      "summary": "Focused companion runtime-budget tests passed for timeout and step-limit no-auto-resend guidance."
+    },
+    {
+      "kind": "test",
+      "path_or_id": "node --test tests/unit/external-model-failure-core.test.mjs",
+      "summary": "Shared failure-classification tests passed for runtime budget, review-quality, and common parsed failures."
+    },
+    {
+      "kind": "test",
+      "path_or_id": "node --test --test-name-pattern \"timeout|usage limit|usage_limited\" tests/smoke/api-reviewers.smoke.test.mjs",
+      "summary": "Direct API timeout and usage-limit smoke coverage passed with safe diagnostics and no automatic selected-source resend guidance."
+    },
+    {
+      "kind": "test",
+      "path_or_id": "node --test tests/unit/job-record.test.mjs",
+      "summary": "Full JobRecord unit suite passed 86/86."
+    },
+    {
+      "kind": "review",
+      "path_or_id": "T086 shard A: Claude 37804968-13e1-4c59-86d4-934674edb1a0; Gemini 33ab6d51-31a0-4931-99d1-7cae7e7f05ec; DeepSeek job_eb1e8c79-9ad7-457d-aee9-bafe70f05dc6; GLM job_f1059d46-d15e-441e-8223-c2500a5f92f7",
+      "summary": "Shard A source-bearing reviews completed with usable APPROVE verdicts and failed_review_slot:false."
+    },
+    {
+      "kind": "review",
+      "path_or_id": "T086 shard B: Claude b6c3c4ba-8040-4d7b-b755-53280f5ed5a3; Gemini df6a85ab-4f73-4379-91f7-a6181829be71; DeepSeek job_77ce7337-d6d6-4768-8111-ee2892136f0f; GLM job_a72b1bd2-dc46-4937-9d83-32fe07ecce68",
+      "summary": "Shard B source-bearing reviews completed with usable APPROVE verdicts and failed_review_slot:false."
+    },
+    {
+      "kind": "job_record",
+      "path_or_id": "Kimi 86cc473c-a382-4441-8c54-08fb1df2d698",
+      "summary": "Kimi shard A sent source but produced no usable terminal audit after prolonged running; operator-approved skip applies and this slot is not counted as approval."
+    },
+    {
+      "kind": "command_output",
+      "path_or_id": "ps -axo pid,ppid,stat,command | rg \"^ *(95613|96207) \"",
+      "summary": "After verified termination of companion PID 95613, no matching Kimi companion or child PID remained."
+    },
+    {
+      "kind": "command_output",
+      "path_or_id": "node plugins/grok/scripts/grok-web-reviewer.mjs doctor --transport cli",
+      "summary": "Grok CLI review was blocked before source with grok_cli_login_required; T086 is not Grok-specific, so this preferred reviewer slot was not counted."
+    }
+  ],
+  "operator_approval_text": "Operator said: if Kimi does not work, skip it. But the Kimi symptom must still be fixed separately.",
+  "expires_at": "2026-06-21T00:00:00Z",
+  "residual_risk": {
+    "source_send": {
+      "remains": true,
+      "notes": "Kimi T086 shard A selected source was sent, but no usable Kimi review was produced or counted."
+    },
+    "api": {
+      "remains": false,
+      "notes": "DeepSeek and GLM direct API shards completed with usable APPROVE verdicts; direct API prompt-size preflight split happened before source send."
+    },
+    "auth": {
+      "remains": false,
+      "notes": "Kimi source-free doctor reported subscription OAuth readiness before the review attempt."
+    },
+    "local_state": {
+      "remains": true,
+      "notes": "The Kimi process was verified gone, but its persisted JobRecord remained running because sandboxed cancel/reconcile could not finalize it; track under interrupted/concurrent job-state and shared failure diagnostics follow-up."
+    }
+  }
+}

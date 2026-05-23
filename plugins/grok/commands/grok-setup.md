@@ -1,5 +1,5 @@
 ---
-description: Check Grok subscription-backed local tunnel configuration.
+description: Check Grok subscription-backed CLI readiness.
 argument-hint: ""
 disable-model-invocation: true
 allowed-tools: Bash(node:*)
@@ -10,21 +10,24 @@ allowed-tools: Bash(node:*)
 
 EXTERNAL_MODEL_CONTRACT_VERSION=1
 
-Run `node plugins/grok/scripts/grok-web-reviewer.mjs doctor`.
+Run `node plugins/grok/scripts/grok-companion.mjs doctor`.
 Render the returned JSON. Show key names only. Do not print session cookies, tunnel API keys, or bearer token values.
-This command performs live `/models`, chat readiness, and redacted session-pool probes against the configured local tunnel.
-Treat `ready: true`, `reachable: true`, `models_ready: true`, and `chat_ready: true` as evidence that the subscription-backed tunnel is usable.
-If a loopback grok2api `/v1` endpoint is unavailable, doctor tries to use an existing checkout or bootstrap `https://github.com/chenyme/grok2api.git` into the durable managed runtime directory.
+Default doctor checks `grok --version`, `grok models`, and a source-free Grok CLI prompt for `grok-build` readiness.
+Treat `ready: true`, `transport: "cli"`, `grok_version`, `default_model`, `model_ready: true`, and `readiness_layers.source_free_prompt.status: "ready"` as evidence that the subscription-backed CLI is usable.
+To diagnose the legacy local web tunnel, run `node plugins/grok/scripts/grok-companion.mjs doctor --transport web`.
+With explicit `--transport web`, doctor performs live `/models`, chat readiness, and redacted session-pool probes against the configured local tunnel.
+With explicit `--transport web`, if a loopback grok2api `/v1` endpoint is unavailable, doctor tries to use an existing checkout or bootstrap `https://github.com/chenyme/grok2api.git` into the durable managed runtime directory.
 The bootstrap start command is `uv run granian --interface asgi --host 127.0.0.1 --port 8000 --workers 1 app.main:app`; Docker is not required.
 If bootstrap/start cannot run, surface `tunnel_start.error_code` and do not suggest direct xAI API keys.
 When `UV_CACHE_DIR` is unset, the plugin provides `uv` a sandbox-writable default; `UV_CACHE_DIR=""` is treated as unset, and an explicit non-empty `UV_CACHE_DIR` is preserved.
 Explicit `GROK2API_HOME` and `GROK2API_BOOTSTRAP_DIR` are authoritative; stale explicit paths should be fixed rather than silently ignored.
 If `durability_warnings` reports `grok2api_ephemeral_bootstrap_home`, configure a durable `GROK2API_HOME` or `CODEX_PLUGIN_MULTI_RUNTIME_DIR` before syncing browser session state, even when the temporary path came from explicit `GROK2API_HOME`.
-If `session_diagnostics.error_code` is `grok_session_no_runtime_tokens` or `grok_session_malformed_active_token`, the tunnel process is up but its account/session pool needs browser-backed session repair; use `npm run grok:repair-session` and run browser-session sync only after explicit operator approval.
+If `session_diagnostics.error_code` is `grok_session_no_runtime_tokens` or `grok_session_malformed_active_token`, the tunnel process is up but its account/session pool needs browser-backed session repair; use `npm run grok:repair-session`, which pins explicit `--transport web`, and run browser-session sync only after explicit operator approval.
 Do not import browser cookies unless the user explicitly requests that session sync step.
 When the user approves session repair, run `npm run grok:repair-session -- --approve-browser-session-sync`; the command reruns doctor after sync and prints redacted readiness fields.
 
-## Grok Tunnel Contract
-Grok Web is subscription-backed through a local tunnel and must not silently fall back to paid xAI API billing.
-Do not recommend direct paid API fallback. Use the subscription-backed tunnel only.
+## Grok Transport Contract
+Grok defaults to the subscription-backed Grok CLI and must not silently fall back to paid xAI API billing.
+Use the legacy local web tunnel only when the operator explicitly selects `--transport web` or `GROK_TRANSPORT=web`.
+Do not recommend direct paid API fallback.
 Do not print session cookies, tunnel API keys, bearer token values, or raw secret values.

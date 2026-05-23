@@ -19,6 +19,7 @@ import {
   CLAUDE_GEMINI_PLUGIN_TARGETS,
   CODEX_ENV_PLUGIN_TARGETS,
   COMPANION_PLUGIN_TARGETS,
+  PROVIDER_ENV_PLUGIN_TARGETS,
   REVIEW_PROMPT_PLUGIN_TARGETS,
 } from "../../scripts/lib/plugin-targets.mjs";
 import { STRIPPED_GIT_ENV_KEYS as CLAUDE_STRIPPED_GIT_ENV_KEYS } from "../../plugins/claude/scripts/lib/git-env.mjs";
@@ -37,6 +38,8 @@ const VERBATIM_FILES = [
   "scope.mjs",
   "cancel-marker.mjs",
   "companion-common.mjs",
+  "external-model-failure-catalog.mjs",
+  "external-model-failure-core.mjs",
   "external-review.mjs",
   "time.mjs",
   "usage-limit.mjs",
@@ -69,6 +72,77 @@ test("lib/external-review.mjs: plugin packaging copies match the canonical share
     );
     assert.equal(copy, canonical, `external-review.mjs packaging copy drifted in ${plugin}`);
   }
+});
+
+for (const sharedFile of ["external-model-failure-catalog.mjs", "external-model-failure-core.mjs"]) {
+  test(`lib/${sharedFile}: reviewer packaging copies match the canonical shared source`, () => {
+    const canonical = readFileSync(path.join(REPO_ROOT, "scripts/lib", sharedFile), "utf8");
+    for (const plugin of REVIEW_PROMPT_PLUGIN_TARGETS) {
+      const copy = readFileSync(
+        path.join(REPO_ROOT, `plugins/${plugin}/scripts/lib/${sharedFile}`),
+        "utf8"
+      );
+      assert.equal(copy, canonical, `${sharedFile} packaging copy drifted in ${plugin}`);
+    }
+  });
+}
+
+test("lib/external-model-review-quality.mjs: all reviewer packaging copies match the canonical shared source", () => {
+  const canonical = readFileSync(path.join(REPO_ROOT, "scripts/lib/external-model-review-quality.mjs"), "utf8");
+  for (const plugin of REVIEW_PROMPT_PLUGIN_TARGETS) {
+    const copy = readFileSync(
+      path.join(REPO_ROOT, `plugins/${plugin}/scripts/lib/external-model-review-quality.mjs`),
+      "utf8"
+    );
+    assert.equal(copy, canonical, `external-model-review-quality.mjs packaging copy drifted in ${plugin}`);
+  }
+});
+
+test("lib/privacy-redaction.mjs: all reviewer packaging copies match the canonical shared source", () => {
+  const canonical = readFileSync(path.join(REPO_ROOT, "scripts/lib/privacy-redaction.mjs"), "utf8");
+  for (const plugin of REVIEW_PROMPT_PLUGIN_TARGETS) {
+    const copy = readFileSync(
+      path.join(REPO_ROOT, `plugins/${plugin}/scripts/lib/privacy-redaction.mjs`),
+      "utf8"
+    );
+    assert.equal(copy, canonical, `privacy-redaction.mjs packaging copy drifted in ${plugin}`);
+  }
+});
+
+test("lint:sync includes a fixer for the privacy redaction shared file", () => {
+  const packageJson = JSON.parse(readFileSync(path.join(REPO_ROOT, "package.json"), "utf8"));
+  const lintSync = packageJson.scripts?.["lint:sync"] ?? "";
+  assert.match(lintSync, /sync-privacy-redaction\.mjs --check/);
+});
+
+test("lib/provider-route-policy.mjs: all reviewer packaging copies match the canonical shared source", () => {
+  const canonical = readFileSync(path.join(REPO_ROOT, "scripts/lib/provider-route-policy.mjs"), "utf8");
+  for (const plugin of REVIEW_PROMPT_PLUGIN_TARGETS) {
+    const copy = readFileSync(
+      path.join(REPO_ROOT, `plugins/${plugin}/scripts/lib/provider-route-policy.mjs`),
+      "utf8"
+    );
+    assert.equal(copy, canonical, `provider-route-policy.mjs packaging copy drifted in ${plugin}`);
+  }
+});
+
+test("lint:sync includes a fixer for provider route policy shared file", () => {
+  const packageJson = JSON.parse(readFileSync(path.join(REPO_ROOT, "package.json"), "utf8"));
+  const lintSync = packageJson.scripts?.["lint:sync"] ?? "";
+  assert.match(lintSync, /sync-provider-route-policy\.mjs --check/);
+});
+
+test("lint:sync includes a fixer for companion failure classification shared files", () => {
+  const packageJson = JSON.parse(readFileSync(path.join(REPO_ROOT, "package.json"), "utf8"));
+  const lintSync = packageJson.scripts?.["lint:sync"] ?? "";
+  assert.match(lintSync, /sync-external-model-failure-classification\.mjs --check/);
+
+  const script = readFileSync(
+    path.join(REPO_ROOT, "scripts/ci/sync-external-model-failure-classification.mjs"),
+    "utf8"
+  );
+  assert.match(script, /external-model-failure-core\.mjs/);
+  assert.match(script, /external-model-failure-catalog\.mjs/);
 });
 
 test("lib/time.mjs: plugin packaging copies match the canonical shared source", () => {
@@ -113,6 +187,87 @@ test("reviewer runtimes use the shared elapsedMs helper", () => {
   }
 });
 
+test("companion job-record runtimes delegate execution classification to the shared companion classifier", () => {
+  const runtimePaths = [
+    "plugins/claude/scripts/lib/job-record.mjs",
+    "plugins/gemini/scripts/lib/job-record.mjs",
+    "plugins/kimi/scripts/lib/job-record.mjs",
+  ];
+  for (const runtimePath of runtimePaths) {
+    const text = readFileSync(path.join(REPO_ROOT, runtimePath), "utf8");
+    assert.match(
+      text,
+      /import\s+\{[^}]*classifyCompanionExecution[^}]*\}\s+from\s+["']\.\/external-model-failure-core\.mjs["']/s,
+      `${runtimePath} does not import classifyCompanionExecution`
+    );
+    assert.match(
+      text,
+      /export\s+function\s+classifyExecution\s*\([^)]*\)\s*\{[\s\S]{0,400}classifyCompanionExecution\s*\(/,
+      `${runtimePath} classifyExecution does not delegate to classifyCompanionExecution`
+    );
+  }
+});
+
+test("Grok and API reviewer runtimes use the shared review-quality failure helper", () => {
+  const runtimePaths = [
+    "plugins/api-reviewers/scripts/api-reviewer.mjs",
+    "plugins/grok/scripts/grok-web-reviewer.mjs",
+  ];
+  for (const runtimePath of runtimePaths) {
+    const text = readFileSync(path.join(REPO_ROOT, runtimePath), "utf8");
+    assert.match(
+      text,
+      /import\s+\{[^}]*\breviewQualityFailureState\b[^}]*\}\s+from\s+["']\.\/lib\/external-model-review-quality\.mjs["']/,
+      `${runtimePath} does not import reviewQualityFailureState`
+    );
+    assert.match(
+      text,
+      /reviewQualityFailureState\s*\(/,
+      `${runtimePath} does not call reviewQualityFailureState`
+    );
+  }
+});
+
+test("Grok and API reviewer runtimes use the shared failure diagnostic builder", () => {
+  const runtimePaths = [
+    "plugins/api-reviewers/scripts/api-reviewer.mjs",
+    "plugins/grok/scripts/grok-web-reviewer.mjs",
+  ];
+  for (const runtimePath of runtimePaths) {
+    const text = readFileSync(path.join(REPO_ROOT, runtimePath), "utf8");
+    assert.match(
+      text,
+      /import\s+\{[^}]*\bbuildExternalModelFailureDiagnostic\b[^}]*\}\s+from\s+["']\.\/lib\/external-model-failure-core\.mjs["']/,
+      `${runtimePath} does not import buildExternalModelFailureDiagnostic`
+    );
+    assert.match(
+      text,
+      /buildExternalModelFailureDiagnostic\s*\(/,
+      `${runtimePath} does not call buildExternalModelFailureDiagnostic`
+    );
+  }
+});
+
+test("reviewer runtimes use the shared privacy redactor", () => {
+  const runtimePaths = [
+    ["plugins/api-reviewers/scripts/api-reviewer.mjs", "./lib/privacy-redaction.mjs"],
+    ["plugins/claude/scripts/lib/job-record.mjs", "./privacy-redaction.mjs"],
+    ["plugins/gemini/scripts/lib/job-record.mjs", "./privacy-redaction.mjs"],
+    ["plugins/grok/scripts/grok-web-reviewer.mjs", "./lib/privacy-redaction.mjs"],
+    ["plugins/kimi/scripts/lib/job-record.mjs", "./privacy-redaction.mjs"],
+  ];
+  for (const [runtimePath, importPath] of runtimePaths) {
+    const text = readFileSync(path.join(REPO_ROOT, runtimePath), "utf8");
+    assert.match(
+      text,
+      new RegExp(`import\\s+\\{[^}]*\\bbuildPrivacyRedactor\\b[^}]*\\}\\s+from\\s+["']${importPath.replaceAll(".", "\\.").replaceAll("/", "\\/")}["']`, "s"),
+      `${runtimePath} does not import buildPrivacyRedactor`
+    );
+    assert.doesNotMatch(text, /\nfunction\s+secretValueRedactor\s*\(/, `${runtimePath} defines secretValueRedactor locally`);
+    assert.doesNotMatch(text, /\nfunction\s+selectedSourceBodyRedactor\s*\(/, `${runtimePath} defines selectedSourceBodyRedactor locally`);
+  }
+});
+
 test("lib/auth-selection.mjs: plugin packaging copies match the canonical shared source", () => {
   const canonical = readFileSync(path.join(REPO_ROOT, "scripts/lib/auth-selection.mjs"), "utf8");
   for (const plugin of CLAUDE_GEMINI_PLUGIN_TARGETS) {
@@ -126,7 +281,7 @@ test("lib/auth-selection.mjs: plugin packaging copies match the canonical shared
 
 test("lib/provider-env.mjs: plugin packaging copies match the canonical shared source", () => {
   const canonical = readFileSync(path.join(REPO_ROOT, "scripts/lib/provider-env.mjs"), "utf8");
-  for (const plugin of CLAUDE_GEMINI_PLUGIN_TARGETS) {
+  for (const plugin of PROVIDER_ENV_PLUGIN_TARGETS) {
     const copy = readFileSync(
       path.join(REPO_ROOT, `plugins/${plugin}/scripts/lib/provider-env.mjs`),
       "utf8"

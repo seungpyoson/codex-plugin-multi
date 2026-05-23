@@ -30,9 +30,10 @@ import { dirname, isAbsolute, join as joinPath, relative as relativePath, resolv
 import { tmpdir } from "node:os";
 import { writeFileSync, mkdirSync, mkdtempSync, existsSync, chmodSync, renameSync, unlinkSync, readdirSync, rmSync, statSync, lstatSync, readFileSync as _readFileSync } from "node:fs";
 import { execFileSync, spawn } from "node:child_process";
+import { createHash } from "node:crypto";
 
 import { parseArgs } from "./lib/args.mjs";
-import { configureState, getStateConfig, resolveJobsDir, resolveJobFile, writeJobFile, upsertJob, listJobs, commitJobRecord } from "./lib/state.mjs";
+import { configureState, getStateConfig, resolveJobsDir, resolveJobFile, resolveStateDir, writeJobFile, upsertJob, listJobs, commitJobRecord } from "./lib/state.mjs";
 import { resolveWorkspaceRoot } from "./lib/workspace.mjs";
 import { spawnClaude } from "./lib/claude.mjs";
 import { writeCancelMarker, consumeCancelMarker } from "./lib/cancel-marker.mjs";
@@ -49,16 +50,18 @@ import { sanitizeTargetEnv } from "./lib/provider-env.mjs";
 import { runCommand } from "./lib/process.mjs";
 import {
   authDiagnosticFields,
-  apiKeyFallbackSelection,
   apiKeyMissingFields as buildApiKeyMissingFields,
   apiKeyMissingMessage as buildApiKeyMissingMessage,
+  defaultAuthMode,
   resolveAuthSelection as resolveAuthSelectionForProvider,
 } from "./lib/auth-selection.mjs";
+import { normalizeApprovalScope } from "./lib/provider-route-policy.mjs";
 import { CLAUDE_PROVIDER_API_KEY_ENV } from "./lib/claude-provider-keys.mjs";
 import {
   PING_PROMPT,
   cancelNoPidInfoSuggestedAction,
   cancelUnverifiableSuggestedAction,
+  consumeJsonSettingsSidecar,
   consumePromptSidecar,
   effectiveProfileForOptions,
   externalReviewBackgroundLaunchedEvent,
@@ -76,7 +79,7 @@ import {
   summarizeScopeDirectory,
   writePromptSidecar,
 } from "./lib/companion-common.mjs";
-import { REVIEW_PROMPT_CONTRACT_VERSION, buildReviewAuditManifest, buildReviewPrompt, buildSelectedSourcePromptBlock } from "./lib/review-prompt.mjs";
+import { REVIEW_PROMPT_CONTRACT_VERSION, buildReviewAuditManifest, buildReviewPrompt, buildSelectedSourcePromptBlock, selectedSourceFilesFromPrompt } from "./lib/review-prompt.mjs";
 import { diffSourceFiles } from "./lib/diff-source.mjs";
 
 // ——— plugin-root self-resolution (upstream pattern, spec §4.14) ———
@@ -99,6 +102,7 @@ const REVIEW_MODE_SET = new Set(PREFLIGHT_MODES);
 const DEFAULT_REVIEW_PERMISSION_MODE_LADDER = Object.freeze(["dontAsk", "auto", "acceptEdits"]);
 const ALLOWED_REVIEW_PERMISSION_MODES = new Set(["default", "plan", "acceptEdits", "dontAsk", "auto", "bypassPermissions"]);
 const PERMISSION_MODE_RETRYABLE_ERROR_CODES = new Set(["parse_error", "claude_error"]);
+const REVIEW_PROMPT_SOURCE_DELIMITER_PREFIX = "CLAUDE FILE";
 
 function isExplicitRelativeBinary(binary) {
   return binary === "." ||
@@ -131,6 +135,68 @@ function fail(code, message, details = {}) {
   process.stderr.write(`claude-companion: ${message}\n`);
   printJson({ ok: false, error: code, message, ...details });
   process.exit(1);
+}
+
+function findResultJobWorkspaceMatches(workspaceRoot, jobId) {
+  let stateRoot;
+  try {
+    stateRoot = dirname(resolveStateDir(workspaceRoot));
+  } catch {
+    return [];
+  }
+  let entries;
+  try {
+    entries = readdirSync(stateRoot);
+  } catch {
+    return [];
+  }
+  const matches = [];
+  for (const entry of entries) {
+    const candidate = joinPath(stateRoot, entry, "jobs", `${jobId}.json`);
+    if (!existsSync(candidate)) continue;
+    try {
+      const record = JSON.parse(_readFileSync(candidate, "utf8"));
+      matches.push(record.workspace_root ?? record.cwd ?? null);
+    } catch {
+      continue;
+    }
+  }
+  return matches;
+}
+
+function jobNotFoundDetails(jobId, cwd, workspaceRoot, commandName) {
+  const matchedWorkspaceRoots = findResultJobWorkspaceMatches(workspaceRoot, jobId);
+  const matchedWorkspaceRoot = matchedWorkspaceRoots[0] ?? null;
+  const matchedWorkspace = matchedWorkspaceRoot !== null;
+  const command = commandName === "continue" ? "continue --job" : "result with --job";
+  if (matchedWorkspaceRoots.length > 1) {
+    return {
+      job_id: jobId,
+      cwd,
+      workspace_root: workspaceRoot,
+      error_code: "state_collision",
+      matched_workspace_count: matchedWorkspaceRoots.length,
+      suggested_action: `State collision: job ${jobId} exists under multiple workspace state roots. Do not trust an arbitrary match; inspect plugin state, remove or repair duplicate state entries, then run ${command} ${jobId} --cwd <workspace used when the job was launched>.`,
+    };
+  }
+  const suggested_action = matchedWorkspaceRoot
+    ? `Job exists under a different workspace. Run ${command} ${jobId} --cwd <workspace used when the job was launched>.`
+    : `Run ${command} ${jobId} --cwd <workspace used when the job was launched>.`;
+  return {
+    job_id: jobId,
+    cwd,
+    workspace_root: workspaceRoot,
+    suggested_action,
+    ...(matchedWorkspace ? { matched_workspace: true } : {}),
+  };
+}
+
+function resultNotFoundDetails(jobId, cwd, workspaceRoot) {
+  return jobNotFoundDetails(jobId, cwd, workspaceRoot, "result");
+}
+
+function continueNotFoundDetails(jobId, cwd, workspaceRoot) {
+  return jobNotFoundDetails(jobId, cwd, workspaceRoot, "continue");
 }
 
 function parseReviewTimeoutMs(cliValue, env = process.env, fallback = DEFAULT_CLAUDE_REVIEW_TIMEOUT_MS) {
@@ -194,7 +260,7 @@ function resolveReviewPermissionModeLadder(profile, { env = process.env, allowBy
 function targetPromptFor(invocation, userPrompt, sourceFiles = []) {
   if (invocation.mode_profile_name === "rescue") return userPrompt;
   const selectedSource = buildSelectedSourcePromptBlock(sourceFiles, {
-    delimiterPrefix: "CLAUDE FILE",
+    delimiterPrefix: REVIEW_PROMPT_SOURCE_DELIMITER_PREFIX,
   });
   return buildReviewPrompt({
     provider: "Claude Code",
@@ -282,6 +348,30 @@ function auditSourceFiles(containmentPath) {
   }));
 }
 
+function auditSourceFilesForPrompt(prompt, containmentPath) {
+  return selectedSourceFilesFromPrompt(prompt, {
+    delimiterPrefix: REVIEW_PROMPT_SOURCE_DELIMITER_PREFIX,
+  }) ?? auditSourceFiles(containmentPath);
+}
+
+function selectedSourceFilesForRedaction(prompt) {
+  return selectedSourceFilesFromPrompt(prompt, {
+    delimiterPrefix: REVIEW_PROMPT_SOURCE_DELIMITER_PREFIX,
+  }) ?? [];
+}
+
+function sourceFilesHaveBodies(sourceFiles) {
+  return Array.isArray(sourceFiles) && sourceFiles.some((file) => (
+    typeof file?.text === "string" && file.text.length > 0
+  ) || (
+    file?.text instanceof Uint8Array && file.text.length > 0
+  ) || (
+    typeof file?.content === "string" && file.content.length > 0
+  ) || (
+    file?.content instanceof Uint8Array && file.content.length > 0
+  ));
+}
+
 function scopeResolutionReason(invocation) {
   const paths = invocation.scope_paths;
   if (invocation.scope === "branch-diff") {
@@ -294,19 +384,25 @@ function scopeResolutionReason(invocation) {
   return invocation.scope ?? null;
 }
 
-function reviewAuditStatus(execution) {
+function reviewAuditStatus(execution, invocation) {
   if (execution?.preflight === true) return "preflight_failed";
-  if (execution?.exitCode === 0 && execution?.parsed?.ok === true) return "completed";
-  return "failed";
+  return classifyExecution(executionForAuditClassification(execution), invocation).status;
+}
+
+function executionForAuditClassification(execution) {
+  if (!execution || !("reviewAuditManifest" in execution)) return execution;
+  const { reviewAuditManifest: _ignored, ...rest } = execution;
+  return rest;
 }
 
 function reviewAuditManifest(invocation, prompt, containmentPath, execution) {
   if (!invocation.review_prompt_contract_version || invocation.mode_profile_name === "rescue") return null;
   const meta = promptMetadata(invocation);
-  const { error_code: errorCode } = classifyExecution(execution, invocation);
+  const auditExecution = executionForAuditClassification(execution);
+  const { error_code: errorCode } = classifyExecution(auditExecution, invocation);
   return buildReviewAuditManifest({
     prompt,
-    sourceFiles: auditSourceFiles(containmentPath),
+    sourceFiles: auditSourceFilesForPrompt(prompt, containmentPath),
     git: {
       remote: meta.repository,
       branch: meta.headRef,
@@ -336,9 +432,93 @@ function reviewAuditManifest(invocation, prompt, containmentPath, execution) {
       paths: invocation.scope_paths ?? null,
       reason: scopeResolutionReason(invocation),
     },
+    route: {
+      selectedRoute: invocation.selected_route ?? null,
+      fallbackReason: invocation.fallback_reason ?? null,
+      approvalScope: invocation.approval_scope ?? null,
+      authPath: invocation.selected_auth_path ?? null,
+      billingPath: invocation.billing_path ?? null,
+      sourceSendApprovalRequired: invocation.source_send_approval_required ?? null,
+      sourceSendApprovalState: invocation.source_send_approval_state ?? null,
+    },
     result: execution?.parsed?.result ?? "",
-    status: reviewAuditStatus(execution),
+    status: reviewAuditStatus(auditExecution, invocation),
     errorCode,
+  });
+}
+
+function approvalScopeForOptions(options = {}) {
+  return normalizeApprovalScope(options["approval-scope"] ?? "session", fail);
+}
+
+function approvalAuditManifest(invocation, prompt, containmentPath) {
+  if (!invocation.review_prompt_contract_version || invocation.mode_profile_name === "rescue") return null;
+  const meta = promptMetadata(invocation);
+  return buildReviewAuditManifest({
+    prompt,
+    sourceFiles: auditSourceFilesForPrompt(prompt, containmentPath),
+    git: {
+      remote: meta.repository,
+      branch: meta.headRef,
+      baseRef: meta.baseRef,
+      baseCommit: meta.baseCommit,
+      headRef: meta.headRef,
+      headCommit: meta.headCommit,
+    },
+    promptBuilder: {
+      contractVersion: invocation.review_prompt_contract_version,
+      pluginVersion: "0.1.0",
+      pluginCommit: pluginSourceCommit(),
+    },
+    request: {
+      provider: invocation.review_prompt_provider ?? "Claude Code",
+      model: invocation.model,
+      timeoutMs: invocation.timeout_ms ?? null,
+      maxTokens: null,
+      maxStepsPerTurn: null,
+      temperature: null,
+      stream: false,
+    },
+    truncation: { prompt: false, source: false, output: false },
+    providerIds: { sessionId: null },
+    scope: {
+      name: invocation.scope,
+      base: invocation.scope_base ?? null,
+      paths: invocation.scope_paths ?? null,
+      reason: scopeResolutionReason(invocation),
+    },
+    route: {
+      selectedRoute: invocation.selected_route ?? null,
+      fallbackReason: invocation.fallback_reason ?? null,
+      approvalScope: invocation.approval_scope ?? "session",
+      authPath: invocation.selected_auth_path ?? null,
+      billingPath: invocation.billing_path ?? null,
+      sourceSendApprovalRequired: invocation.source_send_approval_required ?? null,
+      sourceSendApprovalState: invocation.source_send_approval_state ?? null,
+    },
+    result: "",
+    status: "approval_request",
+    errorCode: null,
+  });
+}
+
+function approvalTokenFor(invocation, auditManifest) {
+  const payload = JSON.stringify({
+    provider: invocation.target,
+    mode: invocation.mode,
+    selected_source: auditManifest.selected_source,
+    rendered_prompt_hash: auditManifest.rendered_prompt_hash,
+    request: auditManifest.request,
+    scope_resolution: auditManifest.scope_resolution,
+    auth_path: auditManifest.auth_path,
+    billing_path: auditManifest.billing_path,
+    selected_route: auditManifest.selected_route,
+    fallback_reason: auditManifest.fallback_reason,
+    approval_scope: invocation.approval_scope ?? "session",
+  });
+  return Object.freeze({
+    algorithm: "sha256",
+    value: createHash("sha256").update(payload).digest("hex"),
   });
 }
 
@@ -469,6 +649,12 @@ function writeRuntimeOptionsSidecar(workspaceRoot, jobId, options) {
     if (typeof options.claude_project_cwd === "string" && options.claude_project_cwd.length > 0) {
       payload.claude_project_cwd = options.claude_project_cwd;
     }
+    if (typeof options.approval_token === "string" && options.approval_token.trim().length > 0) {
+      payload.approval_token = options.approval_token.trim();
+    }
+    if (options.approval_scope === "session" || options.approval_scope === "once") {
+      payload.approval_scope = options.approval_scope;
+    }
     writeFileSync(tmpFile, `${JSON.stringify(payload, null, 2)}\n`, { mode: 0o600, encoding: "utf8" });
     try { chmodSync(tmpFile, 0o600); } catch { /* best-effort on non-POSIX */ }
     renameSync(tmpFile, file);
@@ -480,27 +666,37 @@ function writeRuntimeOptionsSidecar(workspaceRoot, jobId, options) {
 
 function readRuntimeOptionsSidecar(workspaceRoot, jobId) {
   const file = runtimeOptionsSidecarPath(workspaceRoot, jobId);
-  if (!existsSync(file)) return {};
-  try {
-    const parsed = JSON.parse(_readFileSync(file, "utf8"));
-    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
-    const out = {};
-    const timeoutMs = parsed.timeout_ms;
-    if (Number.isSafeInteger(timeoutMs) && timeoutMs > 0) out.timeout_ms = timeoutMs;
-    if (Array.isArray(parsed.permission_mode_ladder)) {
-      const modes = parsed.permission_mode_ladder.filter((mode) => typeof mode === "string");
-      if (modes.length > 0) out.permission_mode_ladder = Object.freeze(modes);
-    }
-    if (typeof parsed.allow_bypass_permissions === "boolean") {
-      out.allow_bypass_permissions = parsed.allow_bypass_permissions;
-    }
-    if (typeof parsed.claude_project_cwd === "string" && parsed.claude_project_cwd.length > 0) {
-      out.claude_project_cwd = parsed.claude_project_cwd;
-    }
-    return out;
-  } catch {
-    return {};
+  const consumed = consumeJsonSettingsSidecar(file);
+  const parsed = consumed.value;
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+  const out = {};
+  const timeoutMs = parsed.timeout_ms;
+  if (Number.isSafeInteger(timeoutMs) && timeoutMs > 0) out.timeout_ms = timeoutMs;
+  if (Array.isArray(parsed.permission_mode_ladder)) {
+    const modes = parsed.permission_mode_ladder.filter((mode) => typeof mode === "string");
+    if (modes.length > 0) out.permission_mode_ladder = Object.freeze(modes);
   }
+  if (typeof parsed.allow_bypass_permissions === "boolean") {
+    out.allow_bypass_permissions = parsed.allow_bypass_permissions;
+  }
+  if (typeof parsed.claude_project_cwd === "string" && parsed.claude_project_cwd.length > 0) {
+    out.claude_project_cwd = parsed.claude_project_cwd;
+  }
+  if (typeof parsed.approval_token === "string" && parsed.approval_token.trim().length > 0) {
+    out.approval_token = parsed.approval_token.trim();
+  }
+  if (parsed.approval_scope === "session" || parsed.approval_scope === "once") {
+    out.approval_scope = parsed.approval_scope;
+  }
+  if (consumed.cleanup_warning) {
+    out.cleanup_warning = consumed.cleanup_warning;
+    out.cleanup_warning_path = consumed.cleanup_warning_path;
+  }
+  return out;
+}
+
+function cleanupRuntimeOptionsSidecar(workspaceRoot, jobId) {
+  try { consumeJsonSettingsSidecar(runtimeOptionsSidecarPath(workspaceRoot, jobId)); } catch { /* best-effort runtime-options cleanup */ }
 }
 
 function claudeProjectCwdForJob(workspaceRoot, jobId) {
@@ -522,7 +718,7 @@ function ensureClaudeProjectCwd(dir) {
   return dir;
 }
 
-function invocationFromRecord(record, fallbackAuthMode = "subscription", runtimeOptions = {}) {
+function invocationFromRecord(record, fallbackAuthMode = defaultAuthMode(), runtimeOptions = {}) {
   return Object.freeze({
     job_id: record.job_id,
     target: record.target,
@@ -543,7 +739,7 @@ function invocationFromRecord(record, fallbackAuthMode = "subscription", runtime
     review_prompt_provider: record.review_metadata?.prompt_provider ?? null,
     schema_spec: record.schema_spec ?? null,
     run_kind: runKindFromRecord(record),
-    auth_mode: record.auth_mode ?? fallbackAuthMode ?? "subscription",
+    auth_mode: record.auth_mode ?? fallbackAuthMode ?? defaultAuthMode(),
     binary: record.binary,
     timeout_ms:
       runtimeOptions.timeout_ms ??
@@ -557,7 +753,11 @@ function invocationFromRecord(record, fallbackAuthMode = "subscription", runtime
       ? Object.freeze([...runtimeOptions.permission_mode_ladder])
       : null,
     allow_bypass_permissions: runtimeOptions.allow_bypass_permissions === true || envAllowsBypassPermissions(),
+    runtime_options_cleanup_warning: runtimeOptions.cleanup_warning ?? null,
+    runtime_options_cleanup_path: runtimeOptions.cleanup_warning_path ?? null,
     started_at: record.started_at,
+    approval_scope: runtimeOptions.approval_scope ?? record.review_metadata?.audit_manifest?.approval_scope ?? null,
+    approval_token: runtimeOptions.approval_token ?? null,
   });
 }
 
@@ -617,6 +817,7 @@ async function spawnDetachedWorker(cwd, jobId, authMode) {
 
 function failBackgroundWorkerSpawn(workspaceRoot, invocation, error) {
   try { consumePromptSidecar(resolveJobsDir(workspaceRoot), invocation.job_id); } catch { /* best-effort prompt sidecar cleanup */ }
+  cleanupRuntimeOptionsSidecar(workspaceRoot, invocation.job_id);
   const message = `background worker spawn failed: ${error?.code ? `${error.code}: ` : ""}${error?.message ?? String(error)}`;
   const errorRecord = buildJobRecord(invocation, {
     exitCode: null,
@@ -631,6 +832,8 @@ function failBackgroundWorkerSpawn(workspaceRoot, invocation, error) {
 }
 
 function failBackgroundPromptSidecarWrite(workspaceRoot, invocation, error) {
+  try { consumePromptSidecar(resolveJobsDir(workspaceRoot), invocation.job_id); } catch { /* best-effort prompt sidecar cleanup */ }
+  cleanupRuntimeOptionsSidecar(workspaceRoot, invocation.job_id);
   const message = `background prompt sidecar write failed: ${error?.code ? `${error.code}: ` : ""}${error?.message ?? String(error)}`;
   const errorRecord = buildJobRecord(invocation, {
     exitCode: null,
@@ -721,12 +924,137 @@ function cmdPreflight(rest) {
 }
 
 // ——— subcommand: run ———
-async function cmdRun(rest) {
-  const { options, positionals } = parseArgs(rest, {
-    valueOptions: ["mode", "model", "cwd", "schema", "binary", "scope-base", "scope-paths", "override-dispose", "auth-mode", "timeout-ms", "lifecycle-events"],
+function commonRunOptions(rest, { includeApproval = false } = {}) {
+  const valueOptions = ["mode", "model", "cwd", "schema", "binary", "scope-base", "scope-paths", "override-dispose", "auth-mode", "timeout-ms", "lifecycle-events"];
+  if (includeApproval) valueOptions.push("approval-token", "approval-scope");
+  return parseArgs(rest, {
+    valueOptions,
     booleanOptions: ["background", "foreground", "allow-bypass-permissions"],
     aliasMap: {},
   });
+}
+
+async function cmdApprovalRequest(rest) {
+  const { options, positionals } = commonRunOptions(rest, { includeApproval: true });
+  const mode = options.mode;
+  if (!mode || !PREFLIGHT_MODES.includes(mode)) {
+    fail("bad_args", `--mode must be one of ${PREFLIGHT_MODES.join("|")}; got ${JSON.stringify(mode)}`);
+  }
+  const profile = effectiveProfileForOptions(resolveProfile(mode), options);
+  const scopeBase = scopeBaseForOptions(options);
+  const model = options.model ?? resolveModelForProfile(profile, loadModels()) ?? null;
+  if (!model) {
+    fail("no_model", "no model resolved; pass --model or populate config/models.json");
+  }
+  const cwd = options.cwd ?? process.cwd();
+  const workspaceRoot = resolveWorkspaceRoot(cwd);
+  const disposeEffective = profile.dispose_default;
+  const scopePaths = parseScopePathsOption(options["scope-paths"]);
+  const timeoutMs = parseReviewTimeoutMs(options["timeout-ms"]);
+  const prompt = positionals.join(" ").trim();
+  if (!prompt) {
+    fail("bad_args", "prompt is required (pass after -- separator)");
+  }
+  const approvalScope = approvalScopeForOptions(options);
+  let authSelection = resolveAuthSelection(options["auth-mode"], {
+    sourceBearing: true,
+  });
+  if (authSelection.selected_auth_path === "api_key_env_missing") {
+    fail("not_authed", apiKeyMissingMessage(), apiKeyMissingFields(authSelection));
+  }
+  if (authSelection.source_send_approval_required !== true) {
+    fail("approval_not_required", "selected route does not require source-send approval");
+  }
+
+  let permissionModeLadder;
+  try {
+    permissionModeLadder = resolveReviewPermissionModeLadder(profile, { allowBypassPermissions: false });
+  } catch (error) {
+    fail("bad_args", error.message);
+  }
+  const approvalJobId = newJobId();
+  let invocation = Object.freeze({
+    job_id: approvalJobId,
+    target: "claude",
+    parent_job_id: null,
+    resume_chain: [],
+    mode_profile_name: profile.name,
+    mode,
+    model,
+    cwd,
+    workspace_root: workspaceRoot,
+    containment: profile.containment,
+    scope: profile.scope,
+    dispose_effective: disposeEffective,
+    scope_base: scopeBase,
+    scope_paths: scopePaths,
+    prompt_head: prompt.slice(0, 200),
+    review_prompt_contract_version: REVIEW_PROMPT_CONTRACT_VERSION,
+    review_prompt_provider: "Claude Code",
+    timeout_ms: timeoutMs,
+    schema_spec: options.schema ?? null,
+    binary: options.binary ?? process.env.CLAUDE_BINARY ?? "claude",
+    run_kind: "approval_request",
+    auth_mode: authSelection.auth_mode,
+    permission_mode_ladder: permissionModeLadder,
+    allow_bypass_permissions: false,
+    claude_project_cwd: claudeProjectCwdForJob(workspaceRoot, approvalJobId),
+    started_at: new Date().toISOString(),
+    approval_scope: approvalScope,
+    approval_token: null,
+  });
+  invocation = invocationWithAuthSelection(invocation, authSelection);
+  let containment = null;
+  try {
+    containment = setupContainment(profile, cwd);
+    populateScope(profile, cwd, containment.path, {
+      scopeBase,
+      scopePaths,
+      workspaceRoot,
+    }, containment);
+    const targetPrompt = targetPromptFor(invocation, prompt, auditSourceFiles(containment.path));
+    const auditManifest = approvalAuditManifest(invocation, targetPrompt, containment.path);
+    const token = approvalTokenFor(invocation, auditManifest);
+    const totals = auditManifest.selected_source.totals;
+    printJson({
+      event: "external_review_approval_request",
+      provider: "claude",
+      display_name: "Claude Code",
+      mode,
+      scope: invocation.scope,
+      scope_base: invocation.scope_base ?? null,
+      scope_paths: invocation.scope_paths ?? null,
+      source_content_transmission: "not_sent",
+      disclosure: "Selected source content has not been sent to Claude Code. Running the review with this explicit API route will send selected source content through Claude API-key auth.",
+      approval_question: `Allow sending ${totals.files} selected ${totals.files === 1 ? "file" : "files"} (${totals.bytes} ${totals.bytes === 1 ? "byte" : "bytes"}, ${totals.lines} ${totals.lines === 1 ? "line" : "lines"}) to Claude Code through explicit API-key auth for external review?`,
+      recommended_tool_justification: "Selected source content has not been sent to Claude Code. If approved, pass approval_token.value with --approval-token before running the source-bearing explicit API command.",
+      approval_token: token,
+      selected_source: auditManifest.selected_source,
+      rendered_prompt_hash: auditManifest.rendered_prompt_hash,
+      request: {
+        provider: "Claude Code",
+        model,
+        timeout_ms: timeoutMs,
+        scope_base: scopeBase,
+        scope_paths: scopePaths,
+      },
+      selected_route: invocation.selected_route,
+      fallback_reason: invocation.fallback_reason,
+      auth_path: invocation.selected_auth_path,
+      billing_path: invocation.billing_path,
+      source_send_approval_required: invocation.source_send_approval_required,
+      source_send_approval_state: invocation.source_send_approval_state,
+      approval_scope: approvalScope,
+    });
+  } catch (error) {
+    fail("scope_failed", error?.message ?? String(error));
+  } finally {
+    if (containment) { try { containment.cleanup(); } catch { /* best-effort */ } }
+  }
+}
+
+async function cmdRun(rest) {
+  const { options, positionals } = commonRunOptions(rest, { includeApproval: true });
 
   const mode = options.mode;
   if (!mode || !RUN_MODES.includes(mode)) {
@@ -774,7 +1102,12 @@ async function cmdRun(rest) {
   if (!prompt) {
     fail("bad_args", "prompt is required (pass after -- separator)");
   }
-  const authSelection = resolveAuthSelection(options["auth-mode"]);
+  let authSelection = resolveAuthSelection(options["auth-mode"], {
+    sourceBearing: modeSendsSelectedSource(mode),
+  });
+  const approvalScope = authSelection.source_send_approval_required === true
+    ? approvalScopeForOptions(options)
+    : null;
   if (authSelection.selected_auth_path === "api_key_env_missing") {
     fail("not_authed", apiKeyMissingMessage(), apiKeyMissingFields(authSelection));
   }
@@ -792,7 +1125,7 @@ async function cmdRun(rest) {
   // The single invocation object — frozen, passed unchanged through the
   // pre-run and post-run buildJobRecord calls. No downstream code mutates
   // invocation; adding new invocation fields is a one-place change.
-  const invocation = Object.freeze({
+  let invocation = Object.freeze({
     job_id: jobId,
     target: "claude",
     parent_job_id: null,
@@ -819,6 +1152,8 @@ async function cmdRun(rest) {
     allow_bypass_permissions: allowBypassPermissions,
     claude_project_cwd: claudeProjectCwdForJob(workspaceRoot, jobId),
     started_at: startedAt,
+    approval_scope: approvalScope,
+    approval_token: options["approval-token"] ?? null,
   });
 
   // Pre-run record: status=queued. Goes to disk + state before any child
@@ -829,6 +1164,35 @@ async function cmdRun(rest) {
   const targetPrompt = scopedTargetPromptForOrExit(invocation, profile, prompt, lifecycleEvents);
 
   if (options.background) {
+    invocation = invocationWithAuthSelection(invocation, authSelection);
+    const approvalCheck = sourceSendApprovalPreflight(authSelection, invocation, targetPrompt, null);
+    authSelection = approvalCheck.authSelection;
+    invocation = invocationWithAuthSelection(invocation, authSelection);
+    const approvalPreflight = approvalCheck.execution;
+    if (approvalPreflight) {
+      approvalPreflight.reviewAuditManifest = reviewAuditManifest(invocation, targetPrompt, null, approvalPreflight);
+      const sourceFilesForRedaction = selectedSourceFilesForRedaction(targetPrompt);
+      const redactionFields = sourceFilesForRedaction.length > 0
+        ? {
+          sourceRedactionRequired: sourceFilesHaveBodies(sourceFilesForRedaction),
+          sourceFilesForRedaction,
+        }
+        : {};
+      const errorRecord = buildJobRecord(invocation, {
+        exitCode: approvalPreflight.exitCode,
+        endedAt: approvalPreflight.endedAt,
+        parsed: approvalPreflight.parsed,
+        pidInfo: null,
+        claudeSessionId: null,
+        errorMessage: approvalPreflight.errorMessage,
+        reviewAuditManifest: approvalPreflight.reviewAuditManifest,
+        ...redactionFields,
+      }, []);
+      writeJobFile(workspaceRoot, jobId, errorRecord);
+      upsertJob(workspaceRoot, errorRecord);
+      printLifecycleJson(errorRecord, lifecycleEvents);
+      process.exit(2);
+    }
     // Write prompt to private sidecar (§21.3.1 handoff buffer). Worker reads
     // and deletes — prompt text does NOT live on the JobRecord.
     try {
@@ -838,6 +1202,8 @@ async function cmdRun(rest) {
         permission_mode_ladder: permissionModeLadder,
         allow_bypass_permissions: allowBypassPermissions,
         claude_project_cwd: invocation.claude_project_cwd,
+        approval_scope: invocation.approval_scope,
+        approval_token: invocation.approval_token,
       });
     } catch (error) {
       failBackgroundPromptSidecarWrite(workspaceRoot, invocation, error);
@@ -863,7 +1229,9 @@ async function cmdRun(rest) {
 // prompt; background worker calls it after reading the prompt sidecar.
 // EXACTLY ONE buildJobRecord call per terminal state — §21.3.2 convergence.
 async function executeRun(invocation, prompt, { foreground, lifecycleEvents = null }) {
-  let authSelection = resolveAuthSelection(invocation.auth_mode);
+  let authSelection = resolveAuthSelection(invocation.auth_mode, {
+    sourceBearing: modeSendsSelectedSource(invocation.mode),
+  });
   invocation = invocationWithAuthSelection(invocation, authSelection);
   const { job_id: jobId, workspace_root: workspaceRoot } = invocation;
   const profile = effectiveProfileForOptions(resolveProfile(invocation.mode_profile_name), {
@@ -879,31 +1247,45 @@ async function executeRun(invocation, prompt, { foreground, lifecycleEvents = nu
   );
   const resumeId = latestResumeId(invocation);
 
-  let preflightExecution = await claudeOAuthInferencePreflight(invocation, authSelection);
+  const approvalCheck = sourceSendApprovalPreflight(authSelection, invocation, prompt, executionScope.addDir);
+  authSelection = approvalCheck.authSelection;
+  invocation = invocationWithAuthSelection(invocation, authSelection);
+  const approvalPreflight = approvalCheck.execution;
+  if (approvalPreflight) {
+    const finalRecord = buildClaudeFinalRecord(
+      invocation,
+      approvalPreflight,
+      null,
+      mutationContext.mutations,
+      prompt,
+      executionScope.addDir,
+      runtimeDiagnostics,
+    );
+    const { metaError, stateError } = commitJobRecord(workspaceRoot, jobId, finalRecord);
+    writeExecutionSidecars(workspaceRoot, jobId, approvalPreflight);
+    exitIfFinalizationFailed(invocation, approvalPreflight, finalRecord, mutationContext, executionScope, { metaError, stateError });
+    cleanupExecutionResources(executionScope, mutationContext);
+    if (foreground) printLifecycleJson(finalRecord, lifecycleEvents);
+    process.exit(2);
+  }
+
+  const preflightExecution = await claudeOAuthInferencePreflight(invocation, authSelection);
   if (preflightExecution) {
-    const fallbackSelection = autoApiKeyFallbackSelectionForClaudeFailure(authSelection, preflightExecution);
-    if (fallbackSelection) {
-      authSelection = fallbackSelection;
-      invocation = invocationWithAuthSelection(invocation, authSelection);
-      preflightExecution = await claudeOAuthInferencePreflight(invocation, authSelection, { allowApiKey: true });
-    }
-    if (preflightExecution) {
-      const finalRecord = buildClaudeFinalRecord(
-        invocation,
-        preflightExecution,
-        null,
-        mutationContext.mutations,
-        prompt,
-        executionScope.addDir,
-        runtimeDiagnostics,
-      );
-      const { metaError, stateError } = commitJobRecord(workspaceRoot, jobId, finalRecord);
-      writeExecutionSidecars(workspaceRoot, jobId, preflightExecution);
-      exitIfFinalizationFailed(invocation, preflightExecution, finalRecord, mutationContext, executionScope, { metaError, stateError });
-      cleanupExecutionResources(executionScope, mutationContext);
-      if (foreground) printLifecycleJson(finalRecord, lifecycleEvents);
-      process.exit(2);
-    }
+    const finalRecord = buildClaudeFinalRecord(
+      invocation,
+      preflightExecution,
+      null,
+      mutationContext.mutations,
+      prompt,
+      executionScope.addDir,
+      runtimeDiagnostics,
+    );
+    const { metaError, stateError } = commitJobRecord(workspaceRoot, jobId, finalRecord);
+    writeExecutionSidecars(workspaceRoot, jobId, preflightExecution);
+    exitIfFinalizationFailed(invocation, preflightExecution, finalRecord, mutationContext, executionScope, { metaError, stateError });
+    cleanupExecutionResources(executionScope, mutationContext);
+    if (foreground) printLifecycleJson(finalRecord, lifecycleEvents);
+    process.exit(2);
   }
 
   exitIfCancelledBeforeSpawn(invocation, executionScope, mutationContext, {
@@ -961,27 +1343,13 @@ function invocationWithAuthSelection(invocation, authSelection) {
   return Object.freeze({
     ...invocation,
     selected_auth_path: authSelection.selected_auth_path,
+    billing_path: authSelection.billing_path ?? null,
+    selected_route: authSelection.selected_route ?? null,
+    fallback_reason: authSelection.fallback_reason ?? null,
+    source_send_approval_required: authSelection.source_send_approval_required ?? null,
+    source_send_approval_state: authSelection.source_send_approval_state ?? null,
     ...(authSelection.auth_fallback ? { auth_fallback: authSelection.auth_fallback } : {}),
   });
-}
-
-function autoApiKeyFallbackSelectionForClaudeFailure(authSelection, execution) {
-  const reason = claudeAuthFallbackReason(authSelection, execution);
-  return reason ? apiKeyFallbackSelection(authSelection, reason) : null;
-}
-
-function claudeAuthFallbackReason(authSelection, execution) {
-  if (authSelection?.auth_mode !== "auto" || authSelection.selected_auth_path !== "subscription_oauth") return null;
-  const message = String(execution?.errorMessage ?? "");
-  if (message.startsWith("not_authed:")) return "not_authed";
-  if (message.startsWith("oauth_inference_rejected:")) return "oauth_inference_rejected";
-  if (message.startsWith("sandbox_blocked:")) return "sandbox_blocked";
-  const failureText = pingFailureText(execution);
-  const detail = pingFailureDetail(execution);
-  if (isClaudeCodexSandboxBlocked(failureText)) return "sandbox_blocked";
-  if (isOAuthInferenceRejected(execution, authSelectionClassifierContext(authSelection))) return "oauth_inference_rejected";
-  if (PING_AUTH_RE.test(detail)) return "not_authed";
-  return null;
 }
 
 function setupExecutionScopeOrExit(invocation, profile, { foreground, lifecycleEvents }) {
@@ -1118,20 +1486,25 @@ async function spawnClaudeOrExit(invocation, profile, prompt, executionScope, mu
     let lastExecution = null;
     for (let i = 0; i < permissionModes.length; i += 1) {
       const permissionMode = permissionModes[i];
+      const attemptSessionId = i === 0 ? invocation.job_id : newJobId();
       const startedAtMs = Date.now();
       const execution = await spawnClaude(profile, {
         model: invocation.model,
         promptText: prompt,
-        sessionId: invocation.job_id,
+        sessionId: attemptSessionId,
         addDirPath: executionScope.addDir,
         cwd: mutationContext.neutralCwd ?? executionScope.childCwd,
         binary: invocation.binary,
         jsonSchema: invocation.schema_spec,
         resumeId: options.resumeId,
         timeoutMs: invocation.timeout_ms,
-        allowedApiKeyEnv: authSelection.allowed_env_credentials,
         permissionMode,
-        onSpawn: (pidInfo) => writeRunningRecord(invocation, pidInfo, mutationContext.mutations, options.runtimeDiagnostics),
+        onSpawn: (pidInfo) => writeRunningRecord(invocation, pidInfo, mutationContext.mutations, {
+          runtimeDiagnostics: options.runtimeDiagnostics,
+          prompt,
+          containmentPath: executionScope.addDir,
+        }),
+        authSelection,
       });
       const elapsedMs = Math.max(0, Date.now() - startedAtMs);
       execution.reviewAuditManifest = reviewAuditManifest(invocation, prompt, executionScope.addDir, execution);
@@ -1191,8 +1564,8 @@ async function claudeOAuthInferencePreflight(invocation, authSelection, { allowA
       cwd: tmpdir(),
       binary: resolveCliBinary(invocation.cwd, invocation.binary),
       timeoutMs: Math.min(Number(invocation.timeout_ms ?? DEFAULT_CLAUDE_PING_TIMEOUT_MS), DEFAULT_CLAUDE_PING_TIMEOUT_MS),
-      allowedApiKeyEnv: authSelection.allowed_env_credentials,
       sessionPersistence: false,
+      authSelection,
     });
   } catch (e) {
     const message = e instanceof Error ? e.message : String(e);
@@ -1219,7 +1592,7 @@ async function claudeOAuthInferencePreflight(invocation, authSelection, { allowA
       errorMessage: `sandbox_blocked: ${detail}`,
     };
   }
-  if (isOAuthInferenceRejected(execution, invocation) && oauthStatus?.logged_in === true) {
+  if (authSelection.selected_auth_path === "subscription_oauth" && isOAuthInferenceRejected(execution, invocation) && oauthStatus?.logged_in === true) {
     return {
       ...execution,
       pidInfo: null,
@@ -1240,15 +1613,24 @@ async function claudeOAuthInferencePreflight(invocation, authSelection, { allowA
   return null;
 }
 
-function writeRunningRecord(invocation, pidInfo, mutations, runtimeDiagnostics = null) {
-  const runningRecord = buildJobRecord(invocation, {
+function writeRunningRecord(invocation, pidInfo, mutations, options = {}) {
+  const runningExecution = {
     status: "running",
     exitCode: null,
     parsed: null,
     pidInfo,
     claudeSessionId: null,
-    runtimeDiagnostics,
-  }, mutations);
+    runtimeDiagnostics: options.runtimeDiagnostics ?? null,
+  };
+  if (options.prompt && options.containmentPath) {
+    runningExecution.reviewAuditManifest = reviewAuditManifest(
+      invocation,
+      options.prompt,
+      options.containmentPath,
+      runningExecution,
+    );
+  }
+  const runningRecord = buildJobRecord(invocation, runningExecution, mutations);
   writeJobFile(invocation.workspace_root, invocation.job_id, runningRecord);
   upsertJob(invocation.workspace_root, runningRecord);
 }
@@ -1273,6 +1655,13 @@ function recordPostRunMutations(invocation, mutationContext) {
 function buildClaudeFinalRecord(invocation, execution, cancelMarker, mutations, prompt, containmentPath, runtimeDiagnostics) {
   execution.reviewAuditManifest = reviewAuditManifest(invocation, prompt, containmentPath, execution);
   execution.runtimeDiagnostics = runtimeDiagnostics;
+  const sourceFilesForRedaction = selectedSourceFilesForRedaction(prompt);
+  const redactionFields = sourceFilesForRedaction.length > 0
+    ? {
+      sourceRedactionRequired: sourceFilesHaveBodies(sourceFilesForRedaction),
+      sourceFilesForRedaction,
+    }
+    : {};
   return buildJobRecord(invocation, {
     exitCode: execution.exitCode,
     endedAt: execution.endedAt,
@@ -1286,6 +1675,7 @@ function buildClaudeFinalRecord(invocation, execution, cancelMarker, mutations, 
     signal: execution.signal ?? null,
     timedOut: execution.timedOut === true,
     reviewAuditManifest: execution.reviewAuditManifest,
+    ...redactionFields,
     permissionModeEffective: execution.permissionModeEffective ?? null,
     permissionModeAttempts: Array.isArray(execution.permissionModeAttempts)
       ? execution.permissionModeAttempts
@@ -1334,11 +1724,23 @@ function persistFinalizationFallback(invocation, execution, finalRecord, mutatio
     try { writeJobFile(invocation.workspace_root, invocation.job_id, fallbackRecord); } catch { /* exhausted */ }
     try { upsertJob(invocation.workspace_root, fallbackRecord); } catch { /* exhausted */ }
   } else if (errors.stateError) {
+    maybeWriteFinalizationFallbackMeta(invocation.workspace_root, invocation.job_id, fallbackRecord);
     try { upsertJob(invocation.workspace_root, finalRecord); }
     catch {
       try { upsertJob(invocation.workspace_root, fallbackRecord); } catch { /* exhausted */ }
     }
   }
+}
+
+function maybeWriteFinalizationFallbackMeta(workspaceRoot, jobId, fallbackRecord) {
+  let current = null;
+  try {
+    current = JSON.parse(_readFileSync(resolveJobFile(workspaceRoot, jobId), "utf8"));
+  } catch {
+    current = null;
+  }
+  if (current && current.status !== "queued" && current.status !== "running") return;
+  try { writeJobFile(workspaceRoot, jobId, fallbackRecord); } catch { /* exhausted */ }
 }
 
 function cleanupExecutionResources(executionScope, mutationContext) {
@@ -1385,6 +1787,7 @@ async function cmdRunWorker(rest) {
   // convert "completed" → "cancelled".
   if (consumeCancelMarker(workspaceRoot, options.job)) {
     try { consumePromptSidecar(resolveJobsDir(workspaceRoot), options.job); } catch { /* best-effort privacy cleanup */ }
+    cleanupRuntimeOptionsSidecar(workspaceRoot, options.job);
     const cancelledRecord = buildJobRecord(invocationFromRecord(meta), {
       status: "cancelled",
       exitCode: null, parsed: null, pidInfo: null, claudeSessionId: null,
@@ -1401,6 +1804,7 @@ async function cmdRunWorker(rest) {
   try {
     prompt = consumePromptSidecar(resolveJobsDir(workspaceRoot), options.job);
   } catch (error) {
+    cleanupRuntimeOptionsSidecar(workspaceRoot, options.job);
     const errorMessage = `worker: prompt sidecar consume failed: ${error?.message ?? String(error)}`;
     const errorRecord = buildJobRecord(invocationFromRecord(meta), {
       exitCode: null, parsed: null, pidInfo: null, claudeSessionId: null,
@@ -1411,6 +1815,7 @@ async function cmdRunWorker(rest) {
     fail("bad_state", errorMessage);
   }
   if (prompt == null) {
+    cleanupRuntimeOptionsSidecar(workspaceRoot, options.job);
     const errorRecord = buildJobRecord(invocationFromRecord(meta), {
       exitCode: null, parsed: null, pidInfo: null, claudeSessionId: null,
       errorMessage: "worker: prompt sidecar missing; job cannot resume",
@@ -1422,6 +1827,26 @@ async function cmdRunWorker(rest) {
 
   const runtimeOptions = readRuntimeOptionsSidecar(workspaceRoot, options.job);
   const invocation = invocationFromRecord(meta, options["auth-mode"], runtimeOptions);
+  try {
+    const profile = effectiveProfileForOptions(resolveProfile(invocation.mode_profile_name), {
+      "scope-base": invocation.scope_base,
+    });
+    permissionModeLadderForInvocation(invocation, profile);
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    const errorRecord = buildJobRecord(invocation, {
+      exitCode: null,
+      parsed: null,
+      pidInfo: null,
+      claudeSessionId: null,
+      errorMessage,
+    }, []);
+    writeJobFile(workspaceRoot, options.job, errorRecord);
+    upsertJob(workspaceRoot, errorRecord);
+    process.stderr.write(`claude-companion: ${errorMessage}\n`);
+    printJson({ ok: false, error: "bad_args", message: errorMessage });
+    process.exit(2);
+  }
   const authSelection = resolveAuthSelection(invocation.auth_mode);
   if (authSelection.selected_auth_path === "api_key_env_missing") {
     // The prompt sidecar was already consumed above, so auth refusal cannot leave it on disk.
@@ -1439,7 +1864,7 @@ async function cmdRunWorker(rest) {
 // ——— subcommand: continue (resume a prior session with --resume) ———
 async function cmdContinue(rest) {
   const { options, positionals } = parseArgs(rest, {
-    valueOptions: ["job", "cwd", "model", "binary", "auth-mode", "timeout-ms", "lifecycle-events"],
+    valueOptions: ["job", "cwd", "model", "binary", "auth-mode", "timeout-ms", "lifecycle-events", "approval-token", "approval-scope"],
     booleanOptions: ["background", "foreground", "allow-bypass-permissions"],
   });
   if (!options.job) fail("bad_args", "--job <id> is required");
@@ -1455,9 +1880,11 @@ async function cmdContinue(rest) {
   const cwd = options.cwd ?? process.cwd();
   const workspaceRoot = resolveWorkspaceRoot(cwd);
   let prior;
+  const jobFile = resolveJobFile(workspaceRoot, options.job);
+  if (!existsSync(jobFile)) {
+    fail("not_found", `no meta.json for job ${options.job}`, continueNotFoundDetails(options.job, cwd, workspaceRoot));
+  }
   try {
-    const jobFile = resolveJobFile(workspaceRoot, options.job);
-    if (!existsSync(jobFile)) fail("not_found", `no meta.json for job ${options.job}`);
     prior = JSON.parse(_readFileSync(jobFile, "utf8"));
   } catch (e) {
     fail("bad_args", e.message);
@@ -1498,7 +1925,12 @@ async function cmdContinue(rest) {
     prior.review_metadata?.audit_manifest?.request?.timeout_ms ??
     DEFAULT_CLAUDE_REVIEW_TIMEOUT_MS;
   const timeoutMs = parseReviewTimeoutMs(options["timeout-ms"], process.env, priorTimeoutMs);
-  const authSelection = resolveAuthSelection(options["auth-mode"]);
+  let authSelection = resolveAuthSelection(options["auth-mode"], {
+    sourceBearing: modeSendsSelectedSource(priorModeName),
+  });
+  const approvalScope = authSelection.source_send_approval_required === true
+    ? approvalScopeForOptions(options)
+    : null;
   if (authSelection.selected_auth_path === "api_key_env_missing") {
     fail("not_authed", apiKeyMissingMessage(), apiKeyMissingFields(authSelection));
   }
@@ -1514,7 +1946,7 @@ async function cmdContinue(rest) {
   // executeRun passes to spawnClaude via --resume (see the resumeId
   // derivation in executeRun). Do NOT persist a separate `resume_id` field
   // on the invocation — the chain is the source of truth.
-  const invocation = Object.freeze({
+  let invocation = Object.freeze({
     job_id: newJobId_,
     target: "claude",
     parent_job_id: options.job,
@@ -1545,6 +1977,8 @@ async function cmdContinue(rest) {
       priorRuntimeOptions.claude_project_cwd ??
       claudeProjectCwdFromRecord(prior) ??
       null,
+    approval_scope: approvalScope,
+    approval_token: options["approval-token"] ?? null,
     started_at: new Date().toISOString(),
   });
 
@@ -1554,6 +1988,35 @@ async function cmdContinue(rest) {
   const targetPrompt = scopedTargetPromptForOrExit(invocation, priorProfile, prompt, lifecycleEvents);
 
   if (options.background) {
+    invocation = invocationWithAuthSelection(invocation, authSelection);
+    const approvalCheck = sourceSendApprovalPreflight(authSelection, invocation, targetPrompt, null);
+    authSelection = approvalCheck.authSelection;
+    invocation = invocationWithAuthSelection(invocation, authSelection);
+    const approvalPreflight = approvalCheck.execution;
+    if (approvalPreflight) {
+      approvalPreflight.reviewAuditManifest = reviewAuditManifest(invocation, targetPrompt, null, approvalPreflight);
+      const sourceFilesForRedaction = selectedSourceFilesForRedaction(targetPrompt);
+      const redactionFields = sourceFilesForRedaction.length > 0
+        ? {
+          sourceRedactionRequired: sourceFilesHaveBodies(sourceFilesForRedaction),
+          sourceFilesForRedaction,
+        }
+        : {};
+      const errorRecord = buildJobRecord(invocation, {
+        exitCode: approvalPreflight.exitCode,
+        endedAt: approvalPreflight.endedAt,
+        parsed: approvalPreflight.parsed,
+        pidInfo: null,
+        claudeSessionId: null,
+        errorMessage: approvalPreflight.errorMessage,
+        reviewAuditManifest: approvalPreflight.reviewAuditManifest,
+        ...redactionFields,
+      }, []);
+      writeJobFile(workspaceRoot, newJobId_, errorRecord);
+      upsertJob(workspaceRoot, errorRecord);
+      printLifecycleJson(errorRecord, lifecycleEvents);
+      process.exit(2);
+    }
     try {
       writePromptSidecar(resolveJobsDir(workspaceRoot), newJobId_, targetPrompt);
       writeRuntimeOptionsSidecar(workspaceRoot, newJobId_, {
@@ -1561,6 +2024,8 @@ async function cmdContinue(rest) {
         permission_mode_ladder: permissionModeLadder,
         allow_bypass_permissions: allowBypassPermissions,
         claude_project_cwd: invocation.claude_project_cwd,
+        approval_scope: invocation.approval_scope,
+        approval_token: invocation.approval_token,
       });
     } catch (error) {
       failBackgroundPromptSidecarWrite(workspaceRoot, invocation, error);
@@ -1603,14 +2068,53 @@ async function cmdNotImplemented(name) {
 }
 
 const PING_AUTH_RE = /\b(auth(?:enticat\w*)?|login|credential\w*|oauth2?|unauthenticated|signin|sign-in)\b/i;
-// Source of truth: ./lib/claude-provider-keys.mjs (also imported by
-// scripts/smoke-rerecord.mjs for explicit API-key scenarios).
+// Source of truth: ./lib/claude-provider-keys.mjs. These names are only
+// reported as ignored credentials under subscription-first policy.
 const PING_PROVIDER_API_KEY_ENV = CLAUDE_PROVIDER_API_KEY_ENV;
 
-function resolveAuthSelection(requestedMode = "subscription") {
+function modeSendsSelectedSource(mode) {
+  return mode === "review" || mode === "adversarial-review" || mode === "custom-review";
+}
+
+function sourceSendApprovalPreflight(authSelection, invocation, prompt, containmentPath) {
+  if (
+    authSelection.source_send_approval_required !== true ||
+    authSelection.source_send_approval_state === "approved"
+  ) return { authSelection, execution: null };
+  const auditManifest = approvalAuditManifest(invocation, prompt, containmentPath);
+  const expectedToken = auditManifest ? approvalTokenFor(invocation, auditManifest) : null;
+  const providedToken = typeof invocation.approval_token === "string" ? invocation.approval_token.trim() : "";
+  if (expectedToken && providedToken && providedToken === expectedToken.value) {
+    return {
+      authSelection: Object.freeze({
+        ...authSelection,
+        source_send_approval_state: "approved",
+      }),
+      execution: null,
+    };
+  }
+  return {
+    authSelection,
+    execution: {
+      preflight: true,
+      exitCode: null,
+      parsed: null,
+      pidInfo: null,
+      claudeSessionId: null,
+      stdout: "",
+      stderr: "",
+      errorMessage:
+        "approval_required: source-bearing direct API route requires explicit approval before selected source can be sent.",
+    },
+  };
+}
+
+function resolveAuthSelection(requestedMode = defaultAuthMode(), options = {}) {
   return resolveAuthSelectionForProvider({
     requestedMode,
     providerApiKeyEnvNames: PING_PROVIDER_API_KEY_ENV,
+    sourceBearing: options.sourceBearing === true,
+    sourceSendApproved: options.sourceSendApproved === true,
     fail,
   });
 }
@@ -1629,12 +2133,11 @@ function apiKeyMissingFields(selection, notAuthedFields = {}) {
 }
 
 function pingOkFields(authSelection = null) {
-  const summary = authSelection?.selected_auth_path === "api_key_env"
-    ? "Claude Code is ready using API-key auth."
-    : "Claude Code is ready using first-party CLI auth.";
   return {
     ready: true,
-    summary,
+    summary: authSelection?.selected_auth_path === "api_key_env"
+      ? "Claude Code is ready using API-key auth."
+      : "Claude Code is ready using first-party CLI auth.",
     next_action: "Run a Claude review command.",
   };
 }
@@ -1689,7 +2192,7 @@ function oauthInferenceRejectedFields() {
 
 function safeClaudeOAuthStatus(binary, authSelection, cwd = process.cwd()) {
   if (authSelection.selected_auth_path !== "subscription_oauth") return null;
-  const env = sanitizeTargetEnv(process.env, { allowedApiKeyEnv: authSelection.allowed_env_credentials });
+  const env = sanitizeTargetEnv(process.env);
   // Keep cwd tied to the invocation so explicit relative binaries resolve the
   // same way as the review run; this metadata query does not receive source.
   const result = runCommand(binary, ["auth", "status", "--json"], {
@@ -1898,9 +2401,7 @@ function printPingNotAuthed(detail, authSelection, authStatus) {
   printJson({ status: "not_authed", ...pingNotAuthedFields(), detail,
     ...authDiagnosticFields(authSelection),
     ...(authStatus ? { oauth_status: authStatus } : {}),
-    hint: authSelection.selected_auth_path === "api_key_env"
-      ? "Claude was launched with explicit API-key auth. Check the provider key and CLI support."
-      : "Run `claude` interactively to complete OAuth. API-key env vars are ignored by subscription-mode policy." });
+    hint: "Run `claude` interactively to complete OAuth. API-key env vars are ignored by subscription-mode policy." });
   process.exit(2);
 }
 
@@ -1956,29 +2457,11 @@ async function cmdPing(rest, { readinessProfileName = "ping" } = {}) {
       cwd: tmpdir(),
       binary,
       timeoutMs,
-      allowedApiKeyEnv: authSelection.allowed_env_credentials,
       sessionPersistence: false,
+      authSelection,
     });
   } catch (e) {
     printPingSpawnError(e, authSelection);
-  }
-  const fallbackSelection = autoApiKeyFallbackSelectionForClaudeFailure(authSelection, execution);
-  if (fallbackSelection) {
-    authSelection = fallbackSelection;
-    try {
-      execution = await spawnClaude(profile, {
-        model,
-        promptText: PING_PROMPT,
-        sessionId: newJobId(),
-        cwd: tmpdir(),
-        binary,
-        timeoutMs,
-        allowedApiKeyEnv: authSelection.allowed_env_credentials,
-        sessionPersistence: false,
-      });
-    } catch (e) {
-      printPingSpawnError(e, authSelection);
-    }
   }
   // Classify. Real Claude error texts change per version; match on signals only.
   if (execution.parsed?.ok === true) {
@@ -2027,21 +2510,25 @@ async function cmdStatus(rest) {
 // ——— subcommand: result (render result of a finished job) ———
 async function cmdResult(rest) {
   const { options } = parseArgs(rest, {
-    valueOptions: ["job", "cwd"],
+    valueOptions: ["job", "job-id", "cwd"],
     booleanOptions: [],
   });
-  if (!options.job) fail("bad_args", "--job <id> is required");
+  const jobId = options.job ?? options["job-id"];
+  if (!jobId) fail("bad_args", "--job <id> is required");
   const cwd = options.cwd ?? process.cwd();
   const workspaceRoot = resolveWorkspaceRoot(cwd);
+  reconcileActiveJobs(workspaceRoot);
   // Validate jobId before resolving to file path (belt + suspenders;
   // resolveJobFile asserts too).
   let jobFile;
   try {
-    jobFile = resolveJobFile(workspaceRoot, options.job);
+    jobFile = resolveJobFile(workspaceRoot, jobId);
   } catch (e) {
     fail("bad_args", e.message);
   }
-  if (!existsSync(jobFile)) fail("not_found", `no meta.json for job ${options.job}`);
+  if (!existsSync(jobFile)) {
+    fail("not_found", `no meta.json for job ${jobId}`, resultNotFoundDetails(jobId, cwd, workspaceRoot));
+  }
   // PR #21 review MED 1: wrap the read so a directory-at-meta-path
   // (CLAUDE_MOCK_META_CONFLICT, or a half-finalized job) produces a
   // friendly error instead of an unhandled EISDIR stacktrace.
@@ -2050,7 +2537,7 @@ async function cmdResult(rest) {
     meta = JSON.parse(_readFileSync(jobFile, "utf8"));
   } catch (e) {
     fail("read_failed",
-      `cannot read meta.json for job ${options.job}: ${e.message}`,
+      `cannot read meta.json for job ${jobId}: ${e.message}`,
       { error_code: e.code ?? null });
   }
   printJson(meta);
@@ -2216,6 +2703,7 @@ async function main() {
   const rest = argv.slice(1);
   switch (sub) {
     case "preflight": return cmdPreflight(rest);
+    case "approval-request": return cmdApprovalRequest(rest);
     case "run":     return cmdRun(rest);
     case "ping":    return cmdPing(rest);
     case "status":  return cmdStatus(rest);

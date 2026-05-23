@@ -1,6 +1,9 @@
 export const PROVIDER_NAMES = Object.freeze({
   claude: "Claude Code",
+  deepseek: "DeepSeek",
   gemini: "Gemini CLI",
+  glm: "GLM",
+  grok: "Grok",
   kimi: "Kimi Code CLI",
 });
 
@@ -36,8 +39,11 @@ const CONTENT_RECEIVED_ERROR_CODES = Object.freeze(new Set([
   "claude_error",
   "gemini_error",
   "kimi_error",
+  "grok_error",
+  "deepseek_error",
+  "glm_error",
+  "provider_error",
   "parse_error",
-  "oauth_inference_rejected",
   "step_limit_exceeded",
   "usage_limited",
   "finalization_failed",
@@ -46,11 +52,20 @@ const CONTENT_RECEIVED_ERROR_CODES = Object.freeze(new Set([
 ]));
 
 const PRE_TARGET_NOT_SENT_ERROR_CODES = Object.freeze(new Set([
+  "approval_required",
+  "approval_scope_changed",
+  "cache_install",
   "git_binary_rejected",
+  "preflight_stale",
+  "prompt_too_large",
   "scope_failed",
   "spawn_failed",
   "not_authed",
   "sandbox_blocked",
+]));
+
+const CONTENT_MAY_HAVE_STARTED_ERROR_CODES = Object.freeze(new Set([
+  "interrupted",
 ]));
 
 const SENT_DISCLOSURE_BY_STATUS = Object.freeze({
@@ -65,6 +80,10 @@ const NOT_SENT_DISCLOSURE_BY_STATUS = Object.freeze({
 });
 
 const NOT_SENT_DISCLOSURE_BY_ERROR = Object.freeze({
+  approval_scope_changed: (provider) => `Selected source content was not sent to ${provider}; approval scope changed before the review target was started.`,
+  cache_install: (provider) => `Selected source content was not sent to ${provider}; installed cache repair is required before the review target starts.`,
+  preflight_stale: (provider) => `Selected source content was not sent to ${provider}; immediate pre-send readiness proof was stale or missing.`,
+  prompt_too_large: (provider) => `Selected source content was not sent to ${provider}; the rendered prompt exceeded the provider budget before the review target was started.`,
   scope_failed: (provider) => `Selected source content was not sent to ${provider}; the review scope was rejected before the target process was started.`,
   spawn_failed: (provider) => `Selected source content was not sent to ${provider}; the target process was not spawned.`,
   oauth_inference_rejected: (provider) => `Selected source content was not sent to ${provider}; OAuth inference readiness was rejected before the review target was started.`,
@@ -132,8 +151,11 @@ export function sourceContentTransmissionForExecution({ status, errorCode, pidIn
   if (PRE_TARGET_NOT_SENT_ERROR_CODES.has(errorCode)) {
     return SOURCE_CONTENT_TRANSMISSION.NOT_SENT;
   }
-  if (errorCode === "oauth_inference_rejected" && !pidInfo) {
-    return SOURCE_CONTENT_TRANSMISSION.NOT_SENT;
+  if (errorCode === "oauth_inference_rejected") {
+    return pidInfo ? SOURCE_CONTENT_TRANSMISSION.SENT : SOURCE_CONTENT_TRANSMISSION.NOT_SENT;
+  }
+  if (CONTENT_MAY_HAVE_STARTED_ERROR_CODES.has(errorCode)) {
+    return SOURCE_CONTENT_TRANSMISSION.MAY_BE_SENT;
   }
   if (status === "cancelled") {
     return pidInfo ? SOURCE_CONTENT_TRANSMISSION.SENT : SOURCE_CONTENT_TRANSMISSION.NOT_SENT;

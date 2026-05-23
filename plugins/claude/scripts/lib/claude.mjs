@@ -242,16 +242,20 @@ export async function spawnClaude(profile, runtimeInputs = {}) {
     env = process.env,
     timeoutMs = 0,
     binary = "claude",
-    allowedApiKeyEnv = [],
     onSpawn = null,
     permissionMode = null,
     sessionPersistence = true,
+    authSelection = null,
   } = runtimeInputs;
 
   const args = buildClaudeArgs(profile, {
     model, promptText, sessionId, resumeId, addDirPath, jsonSchema, permissionMode, sessionPersistence,
   });
-  const targetEnv = sanitizeTargetEnv(env, { allowedApiKeyEnv });
+  const targetEnv = sanitizeTargetEnv(env, {
+    allowedApiKeyEnv: authSelection?.selected_auth_path === "api_key_env"
+      ? authSelection.allowed_env_credentials
+      : [],
+  });
 
   return new Promise((resolve, reject) => {
     const child = spawn(binary, args, { cwd, env: targetEnv, stdio: ["pipe", "pipe", "pipe"] });
