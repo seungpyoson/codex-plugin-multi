@@ -99,6 +99,24 @@ test("background prompt sidecar write failures terminalize queued jobs", () => {
   }
 });
 
+test("scoped prompt construction failures terminalize queued jobs", () => {
+  for (const [name, rel, marker] of [
+    ["claude", "plugins/claude/scripts/claude-companion.mjs", "function isInsidePath"],
+    ["gemini", "plugins/gemini/scripts/gemini-companion.mjs", "// Mutation-detection"],
+  ]) {
+    const source = readRepoFile(rel);
+    const match = new RegExp(
+      `function scopedTargetPromptForOrExit[\\s\\S]*?\\n}\\n\\n${marker.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`,
+    ).exec(source);
+    assert.ok(match, `${rel}: missing scopedTargetPromptForOrExit`);
+    assert.match(
+      match[0],
+      /catch\s*\(error\)[\s\S]*?buildJobRecord\(invocation,[\s\S]*?writeJobFile\(invocation\.workspace_root,\s*invocation\.job_id,\s*errorRecord\)[\s\S]*?upsertJob\(invocation\.workspace_root,\s*errorRecord\)[\s\S]*?printLifecycleJson\(errorRecord,\s*lifecycleEvents\)[\s\S]*?cleanupScopedPromptExecutionScope\(executionScope\)[\s\S]*?process\.exit\(2\)/,
+      `${name}: scoped prompt failures after queuing must produce a terminal failed JobRecord`,
+    );
+  }
+});
+
 test("background worker spawn cleanup cannot prevent terminalization", () => {
   for (const rel of [
     "plugins/claude/scripts/claude-companion.mjs",

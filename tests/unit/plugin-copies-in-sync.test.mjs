@@ -275,3 +275,14 @@ for (const file of CLAUDE_GEMINI_VERBATIM_FILES) {
 
 // The previous render.mjs guard ("no surviving Codex refs") was removed
 // together with render.mjs itself in T7.5 — see header comment above.
+
+test("lib/diff-source.mjs: plugin packaging copies match the canonical shared source", () => {
+  const canonical = readFileSync(path.join(REPO_ROOT, "scripts/lib/diff-source.mjs"), "utf8");
+  for (const plugin of [...COMPANION_PLUGIN_TARGETS, "api-reviewers", "grok"]) {
+    const copy = readFileSync(
+      path.join(REPO_ROOT, `plugins/${plugin}/scripts/lib/diff-source.mjs`),
+      "utf8"
+    );
+    assert.equal(copy, canonical, `diff-source.mjs packaging copy drifted in ${plugin}`);
+  }
+});

@@ -15,6 +15,21 @@ const architectureRecord = readFileSync(resolve("docs/architecture-record.md"), 
 const sonarConfig = readFileSync(resolve(".sonarcloud.properties"), "utf8");
 const noMistakesConfig = readFileSync(resolve(".no-mistakes.yaml"), "utf8");
 const claudeProjectNotes = readFileSync(resolve("CLAUDE.md"), "utf8");
+const coverageBaseline = JSON.parse(readFileSync(resolve("scripts/ci/coverage-baseline.json"), "utf8"));
+
+const DIFF_SOURCE_PACKAGE_COPY_PATHS = [
+  "plugins/api-reviewers/scripts/lib/diff-source.mjs",
+  "plugins/claude/scripts/lib/diff-source.mjs",
+  "plugins/gemini/scripts/lib/diff-source.mjs",
+  "plugins/grok/scripts/lib/diff-source.mjs",
+  "plugins/kimi/scripts/lib/diff-source.mjs",
+];
+
+const DIFF_SOURCE_CPD_PATHS = [
+  "scripts/lib/diff-source.mjs",
+  ...DIFF_SOURCE_PACKAGE_COPY_PATHS,
+  "scripts/ci/sync-diff-source.mjs",
+];
 
 test("package scripts expose per-target smoke commands", () => {
   assert.match(pkg.scripts["smoke:claude"] ?? "", /claude-companion\.smoke\.test\.mjs/);
@@ -39,6 +54,7 @@ test("pull-request CI runs unit tests and per-target smoke matrix separately", (
 test("pull-request CI runs shared-copy sync checks", () => {
   assert.match(pkg.scripts["lint"] ?? "", /check-manifests\.mjs/);
   assert.match(pkg.scripts["lint"] ?? "", /npm run lint:sync/);
+  assert.match(pkg.scripts["lint:sync"] ?? "", /sync-diff-source\.mjs --check/);
   assert.match(pkg.scripts["lint:sync"] ?? "", /sync-codex-env\.mjs --check/);
   assert.match(pkg.scripts["lint:sync"] ?? "", /sync-companion-common\.mjs --check/);
   assert.match(pkg.scripts["lint:sync"] ?? "", /sync-external-review\.mjs --check/);
@@ -195,8 +211,23 @@ test("Sonar CPD excludes intentional packaging and entrypoint copies", () => {
     "plugins/claude/scripts/lib/mode-profiles.mjs",
     "plugins/gemini/scripts/lib/mode-profiles.mjs",
     "plugins/kimi/scripts/lib/mode-profiles.mjs",
+    ...DIFF_SOURCE_CPD_PATHS,
   ]) {
     assert.match(sonarConfig, new RegExp(path.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+  }
+});
+
+test("coverage baseline records generated diff-source package copies", () => {
+  for (const path of DIFF_SOURCE_PACKAGE_COPY_PATHS) {
+    assert.deepEqual(
+      coverageBaseline.files[path],
+      {
+        lines: 0.0,
+        branches: 100.0,
+        functions: 0.0,
+      },
+      `${path} must keep the generated-copy coverage baseline`,
+    );
   }
 });
 
@@ -435,6 +466,32 @@ test("direct reviewer branch-diff git calls use safe git resolver", () => {
     assert.match(source, /runCommand\(resolveGitBinary\(\{ cwd, workspaceRoot: options\.workspaceRoot \}\),[\s\S]*env:\s*gitEnv\(cleanGitEnv\(\)\)/s,
       `${rel} branch-diff git calls must use the safe resolver and not inherit caller PATH`);
   }
+});
+
+test("diff-source git calls use the shared safe git resolver", () => {
+  const source = readFileSync(resolve("scripts/lib/diff-source.mjs"), "utf8");
+  assert.match(source, /import \{ gitEnv, resolveGitBinary \} from "\.\/git-binary\.mjs";/,
+    "diff-source must use the shared safe Git binary resolver");
+  assert.match(source, /import \{ cleanGitEnv \} from "\.\/git-env\.mjs";/,
+    "diff-source must use the shared Git environment scrubber");
+  assert.match(source, /workspaceRoot = sourceCwd/,
+    "diff-source must accept the caller's authoritative workspace root");
+  assert.match(source, /execFileSync\(resolveGitBinary\(\{ cwd: sourceCwd, workspaceRoot \}\),/,
+    "diff-source must not resolve git through caller PATH");
+  assert.match(source, /env:\s*scrubGitEnv\(process\.env\)/,
+    "diff-source git calls must use its scrubbed fixed-PATH environment");
+  assert.doesNotMatch(source, /execFileSync\("git"/,
+    "diff-source must not call git by PATH-resolved name");
+
+  const claudeSource = readFileSync(resolve("plugins/claude/scripts/claude-companion.mjs"), "utf8");
+  assert.match(claudeSource, /diffSourceFiles\(invocation\.cwd,\s*invocation\.scope_base,\s*\{[\s\S]*?scopePaths:\s*invocation\.scope_paths,[\s\S]*?workspaceRoot:\s*invocation\.workspace_root,[\s\S]*?\}\)/,
+    "Claude companion must pass the authoritative workspace root into diff-source");
+  const geminiSource = readFileSync(resolve("plugins/gemini/scripts/gemini-companion.mjs"), "utf8");
+  assert.match(geminiSource, /diffSourceFiles\(invocation\.cwd,\s*invocation\.scope_base,\s*\{[\s\S]*?scopePaths:\s*invocation\.scope_paths,[\s\S]*?workspaceRoot:\s*invocation\.workspace_root,[\s\S]*?\}\)/,
+    "Gemini companion must pass the authoritative workspace root into diff-source");
+  const kimiSource = readFileSync(resolve("plugins/kimi/scripts/kimi-companion.mjs"), "utf8");
+  assert.match(kimiSource, /diffSourceFiles\(cwd, invocation\.scope_base, \{ scopePaths: invocation\.scope_paths, workspaceRoot \}\)/,
+    "Kimi companion must pass the authoritative workspace root into diff-source");
 });
 
 test("direct API reviewer launch gating and execution share preflight validation", () => {

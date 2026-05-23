@@ -45,6 +45,7 @@ import {
   writePromptSidecar,
 } from "./lib/companion-common.mjs";
 import { REVIEW_PROMPT_CONTRACT_VERSION, buildReviewAuditManifest, buildReviewPrompt, buildSelectedSourcePromptBlock } from "./lib/review-prompt.mjs";
+import { diffSourceFiles } from "./lib/diff-source.mjs";
 
 const PLUGIN_ROOT = resolvePath(dirname(fileURLToPath(import.meta.url)), "..");
 const MODELS_CONFIG_PATH = resolvePath(PLUGIN_ROOT, "config/models.json");
@@ -253,7 +254,7 @@ function scopedTargetPromptForOrExit(invocation, profile, userPrompt, lifecycleE
       scopePaths: invocation.scope_paths,
       workspaceRoot,
     }, containment);
-    return targetPromptFor(profile, userPrompt, invocation, auditSourceFiles(containment.path));
+    return targetPromptFor(profile, userPrompt, invocation, (() => { const d = diffSourceFiles(cwd, invocation.scope_base, { scopePaths: invocation.scope_paths, workspaceRoot }); return d.length > 0 ? d : auditSourceFiles(containment.path); })());
   } catch (e) {
     const errorRecord = buildJobRecord(invocation, {
       exitCode: null, parsed: null, pidInfo: null, kimiSessionId: null,
