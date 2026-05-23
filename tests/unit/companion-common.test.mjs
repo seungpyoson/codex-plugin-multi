@@ -746,6 +746,20 @@ async function assertCopyHelperBranches(mod, plugin) {
   assert.equal(existsSync(sidecar), false);
   assert.equal(mod.consumePromptSidecar(jobsDir, "job-1"), null);
 
+  const runtimeJobsDir = mkdtempSync(path.join(tmpdir(), `companion-common-copy-runtime-options-${plugin}-`));
+  const runtimePath = mod.runtimeOptionsSidecarPath(runtimeJobsDir, "job-runtime");
+  mkdirSync(path.dirname(runtimePath), { recursive: true });
+  writeFileSync(runtimePath, "{\"copy\":true}", "utf8");
+  assert.deepEqual(mod.consumeJsonSettingsSidecar(runtimePath), {
+    value: { copy: true },
+    cleanup_warning: null,
+    cleanup_warning_path: null,
+  });
+  assert.equal(existsSync(runtimePath), false);
+  writeFileSync(runtimePath, "{\"cleanup\":true}", "utf8");
+  mod.cleanupRuntimeOptionsSidecar(runtimeJobsDir, "job-runtime");
+  assert.equal(existsSync(runtimePath), false);
+
   const enotdirJobsDir = mkdtempSync(path.join(tmpdir(), `companion-common-copy-enotdir-${plugin}-`));
   writeFileSync(path.join(enotdirJobsDir, "job-file"), "not a directory", "utf8");
   assert.equal(mod.consumePromptSidecar(enotdirJobsDir, "job-file"), null);
@@ -769,6 +783,48 @@ async function assertCopyHelperBranches(mod, plugin) {
       /not a real directory inside jobsDir|symlink/i,
     );
     assert.equal(readFileSync(path.join(consumeEscapeDir, "prompt.txt"), "utf8"), "attacker prompt");
+  }
+
+  if (POSIX_MODE_ASSERTIONS && process.getuid?.() !== 0) {
+    const writeCleanupJobsDir = mkdtempSync(path.join(tmpdir(), `companion-common-copy-write-cleanup-${plugin}-`));
+    const writeCleanupJobId = "job-write-cleanup";
+    const writeCleanupJobDir = path.join(writeCleanupJobsDir, writeCleanupJobId);
+    mkdirSync(writeCleanupJobDir, { recursive: true, mode: 0o700 });
+    const originalNow = Date.now;
+    Date.now = () => 1234567890;
+    const tmpFile = path.join(writeCleanupJobDir, `prompt.txt.${process.pid}.1234567890.tmp`);
+    mkdirSync(tmpFile, { mode: 0o700 });
+    try {
+      assert.throws(
+        () => mod.writePromptSidecar(writeCleanupJobsDir, writeCleanupJobId, "copy secret prompt"),
+        (err) => err?.code === "cleanup_uncertain"
+          && /prompt sidecar write cleanup failed/.test(err.message)
+          && err.cause?.code === "EISDIR"
+          && typeof err.cleanup_error === "string"
+          && err.cleanup_error.length > 0,
+      );
+      assert.equal(existsSync(tmpFile), true, `${plugin}: tmp prompt remains when cleanup is uncertain`);
+    } finally {
+      Date.now = originalNow;
+      chmodSync(writeCleanupJobDir, 0o700);
+      rmSync(writeCleanupJobDir, { recursive: true, force: true });
+    }
+
+    const unlinkJobsDir = mkdtempSync(path.join(tmpdir(), `companion-common-copy-unlink-fails-${plugin}-`));
+    const unlinkPath = mod.promptSidecarPath(unlinkJobsDir, "job-unlink");
+    mod.writePromptSidecar(unlinkJobsDir, "job-unlink", "copy secret prompt");
+    const unlinkDir = path.dirname(unlinkPath);
+    chmodSync(unlinkDir, 0o500);
+    try {
+      assert.throws(
+        () => mod.consumePromptSidecar(unlinkJobsDir, "job-unlink"),
+        (err) => err?.code === "cleanup_uncertain" && /prompt sidecar cleanup failed/i.test(err.message),
+      );
+      assert.equal(readFileSync(unlinkPath, "utf8"), "copy secret prompt");
+    } finally {
+      chmodSync(unlinkDir, 0o700);
+      try { unlinkSync(unlinkPath); } catch { /* best-effort test cleanup */ }
+    }
   }
 
   assert.deepEqual(mod.credentialNameDiagnostics(["KEY"], {}), {});
