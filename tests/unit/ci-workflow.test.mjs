@@ -453,10 +453,10 @@ test("diff-source git calls use the shared safe git resolver", () => {
     "diff-source must not call git by PATH-resolved name");
 
   const claudeSource = readFileSync(resolve("plugins/claude/scripts/claude-companion.mjs"), "utf8");
-  assert.match(claudeSource, /diffSourceFiles\(invocation\.cwd, invocation\.scope_base, \{ scopePaths: invocation\.scope_paths, workspaceRoot: invocation\.workspace_root \}\)/,
+  assert.match(claudeSource, /diffSourceFiles\(invocation\.cwd,\s*invocation\.scope_base,\s*\{[\s\S]*?scopePaths:\s*invocation\.scope_paths,[\s\S]*?workspaceRoot:\s*invocation\.workspace_root,[\s\S]*?\}\)/,
     "Claude companion must pass the authoritative workspace root into diff-source");
   const geminiSource = readFileSync(resolve("plugins/gemini/scripts/gemini-companion.mjs"), "utf8");
-  assert.match(geminiSource, /diffSourceFiles\(invocation\.cwd, invocation\.scope_base, \{ scopePaths: invocation\.scope_paths, workspaceRoot: invocation\.workspace_root \}\)/,
+  assert.match(geminiSource, /diffSourceFiles\(invocation\.cwd,\s*invocation\.scope_base,\s*\{[\s\S]*?scopePaths:\s*invocation\.scope_paths,[\s\S]*?workspaceRoot:\s*invocation\.workspace_root,[\s\S]*?\}\)/,
     "Gemini companion must pass the authoritative workspace root into diff-source");
   const kimiSource = readFileSync(resolve("plugins/kimi/scripts/kimi-companion.mjs"), "utf8");
   assert.match(kimiSource, /diffSourceFiles\(cwd, invocation\.scope_base, \{ scopePaths: invocation\.scope_paths, workspaceRoot \}\)/,
