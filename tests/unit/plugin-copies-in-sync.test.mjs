@@ -58,6 +58,43 @@ function readRepoJson(relPath) {
   return JSON.parse(readRepoFile(relPath));
 }
 
+const PROVIDER_RUNTIME_POLICY_ENTRYPOINTS = Object.freeze([
+  Object.freeze({
+    provider: "claude",
+    runtimePath: "plugins/claude/scripts/claude-companion.mjs",
+    routeSelector: /\bresolveAuthSelectionForProvider\b/,
+  }),
+  Object.freeze({
+    provider: "gemini",
+    runtimePath: "plugins/gemini/scripts/gemini-companion.mjs",
+    routeSelector: /\bresolveAuthSelectionForProvider\b/,
+  }),
+  Object.freeze({
+    provider: "kimi",
+    runtimePath: "plugins/kimi/scripts/kimi-companion.mjs",
+    routeSelector: /\bselectProviderRoute\s*\(/,
+  }),
+  Object.freeze({
+    provider: "grok",
+    runtimePath: "plugins/grok/scripts/grok-web-reviewer.mjs",
+    routeSelector: /\bselectProviderRoute\s*\(/,
+  }),
+  Object.freeze({
+    provider: "deepseek",
+    runtimePath: "plugins/api-reviewers/scripts/api-reviewer.mjs",
+    routeSelector: /\bselectProviderRoute\s*\(/,
+  }),
+  Object.freeze({
+    provider: "glm",
+    runtimePath: "plugins/api-reviewers/scripts/api-reviewer.mjs",
+    routeSelector: /\bselectProviderRoute\s*\(/,
+  }),
+]);
+
+function providerRuntimeEntryPointId(entry) {
+  return `${entry.provider}:${entry.runtimePath}`;
+}
+
 const VERBATIM_FILES = [
   "workspace.mjs",
   "process.mjs",
@@ -321,6 +358,38 @@ test("provider-facing policy interfaces are inventoried and wired through shared
 
   for (const iface of requiredInterfaces) {
     assert.match(combined, new RegExp(`\\b${iface}\\b`), `${iface} is not wired through provider-facing source`);
+  }
+});
+
+test("provider runtime policy wiring is checked per adapter", () => {
+  const table = readRepoJson("specs/171-provider-architecture-parity/provider-parity-table.json");
+  const guardrail = table.guardrail_tests.find((entry) => entry.name === "provider runtime policy wiring");
+  assert.ok(guardrail, "provider parity table must define provider runtime policy wiring guardrail");
+  assert.deepEqual(
+    [...guardrail.required_entrypoints].sort(),
+    PROVIDER_RUNTIME_POLICY_ENTRYPOINTS.map(providerRuntimeEntryPointId).sort(),
+  );
+
+  const providers = new Set(table.providers);
+  for (const entry of PROVIDER_RUNTIME_POLICY_ENTRYPOINTS) {
+    assert.ok(providers.has(entry.provider), `${entry.provider} must be listed in provider parity table`);
+    const source = readRepoFile(entry.runtimePath);
+    assert.match(source, entry.routeSelector, `${entry.provider} runtime must use shared route selection policy`);
+    assert.match(
+      source,
+      /buildReviewAuditManifest\s*\(/,
+      `${entry.provider} runtime must build the shared review audit manifest`,
+    );
+    assert.match(
+      source,
+      /source_packet_policy/,
+      `${entry.provider} runtime must inspect shared source packet policy`,
+    );
+    assert.match(
+      source,
+      /source_send_allowed\s*!==\s*false/,
+      `${entry.provider} runtime must gate provider launch on source_send_allowed`,
+    );
   }
 });
 

@@ -603,6 +603,22 @@
       ]
     },
     {
+      "name": "provider runtime policy wiring",
+      "file": "tests/unit/plugin-copies-in-sync.test.mjs",
+      "purpose": "Fail when provider-neutral policy usage is proven only by a combined source scan instead of by every provider runtime.",
+      "red_condition": "A provider runtime is missing shared route selection, audit manifest construction, or source-packet pre-send enforcement, or the provider entrypoint matrix is not inventoried in the parity table.",
+      "green_condition": "Claude, Gemini, Kimi, Grok, DeepSeek, and GLM entrypoints are explicitly inventoried and each runtime is wired to shared route, audit, and source-packet policy; intentional transport differences remain classified Adapter capability facts.",
+      "verification_command": "node --test tests/unit/plugin-copies-in-sync.test.mjs",
+      "required_entrypoints": [
+        "claude:plugins/claude/scripts/claude-companion.mjs",
+        "gemini:plugins/gemini/scripts/gemini-companion.mjs",
+        "kimi:plugins/kimi/scripts/kimi-companion.mjs",
+        "grok:plugins/grok/scripts/grok-web-reviewer.mjs",
+        "deepseek:plugins/api-reviewers/scripts/api-reviewer.mjs",
+        "glm:plugins/api-reviewers/scripts/api-reviewer.mjs"
+      ]
+    },
+    {
       "name": "source packet pre-send enforcement",
       "file": "tests/unit/plugin-copies-in-sync.test.mjs",
       "purpose": "Fail when a source-bearing launch path records source packet policy without enforcing it before provider launch.",

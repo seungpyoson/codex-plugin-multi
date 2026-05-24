@@ -174,7 +174,8 @@
         "green_condition": { "type": "string", "minLength": 1 },
         "verification_command": { "type": "string", "minLength": 1 },
         "required_fields": { "type": "array", "items": { "type": "string", "minLength": 1 } },
-        "required_interfaces": { "type": "array", "items": { "type": "string", "minLength": 1 } }
+        "required_interfaces": { "type": "array", "items": { "type": "string", "minLength": 1 } },
+        "required_entrypoints": { "type": "array", "items": { "type": "string", "minLength": 1 } }
       }
     }
   }
