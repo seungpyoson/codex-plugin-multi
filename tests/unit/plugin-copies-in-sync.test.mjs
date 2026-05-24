@@ -290,12 +290,16 @@ test("provider-facing policy interfaces are inventoried and wired through shared
     "PROVIDER_ROUTE_STEPS",
     "selectProviderRoute",
     "sourcePacketCanResumeWithoutResendFromJobRecord",
+    "sourcePacketCanResumeWithoutResendFromPreviousAttempt",
     "sourcePacketPreviousAttemptFromJobRecord",
+    "sourcePacketPreviousAttemptForContinuation",
     "buildReviewAuditManifest",
     "SOURCE_CONTENT_TRANSMISSION",
     "sourceContentTransmissionForExecution",
     "buildExternalModelFailureDiagnostic",
     "reviewQualityFailureState",
+    "hasSubstantiveInvalidVerdictReason",
+    "diffSourceFiles",
   ];
   assert.deepEqual([...guardrail.required_interfaces].sort(), [...requiredInterfaces].sort());
 
@@ -304,6 +308,7 @@ test("provider-facing policy interfaces are inventoried and wired through shared
     "scripts/lib/provider-route-policy.mjs",
     "scripts/lib/review-prompt.mjs",
     "scripts/lib/external-review.mjs",
+    "scripts/lib/diff-source.mjs",
     "scripts/lib/external-model-failure-core.mjs",
     "scripts/lib/external-model-review-quality.mjs",
     "plugins/api-reviewers/scripts/api-reviewer.mjs",
@@ -447,6 +452,20 @@ test("source-packet no-resend failures stay explicitly resend-gated in every pac
       );
     }
   }
+});
+
+test("direct API branch-diff uses shared diff packets instead of full file bodies", () => {
+  const source = readRepoFile("plugins/api-reviewers/scripts/api-reviewer.mjs");
+  assert.match(
+    source,
+    /import \{ diffSourceFiles \} from "\.\/lib\/diff-source\.mjs";/,
+    "api-reviewer branch-diff must share the diff-packet collector used by companion reviewers",
+  );
+  assert.match(
+    source,
+    /scope === "branch-diff"\s*\?\s*await readGitDiffScopeFiles\(cwd,\s*workspaceRoot,\s*scopeBase,\s*relPaths\)/,
+    "api-reviewer branch-diff must render git diff packets instead of HEAD file bodies",
+  );
 });
 
 test("companion continue paths carry original source attempts through no-source repairs", () => {

@@ -3842,7 +3842,8 @@ test("branch-diff default reviews committed changes against main with scrubbed g
     env: {
       API_REVIEWERS_PLUGIN_DATA: dataDir,
       API_REVIEWERS_MOCK_RESPONSE: mockResponse("deepseek-v4-pro"),
-      API_REVIEWERS_MOCK_ASSERT_PROMPT_INCLUDES: "committed feature change",
+      API_REVIEWERS_MOCK_ASSERT_PROMPT_INCLUDES: "diff --git a/feature.txt b/feature.txt",
+      API_REVIEWERS_MOCK_ASSERT_PROMPT_EXCLUDES: "DIRTY_SELECTED_SECRET",
       DEEPSEEK_API_KEY: "secret-test-value",
       GIT_DIR: path.join(cwd, "not-a-repo"),
       GIT_CONFIG_GLOBAL: path.join(cwd, "malicious-gitconfig"),

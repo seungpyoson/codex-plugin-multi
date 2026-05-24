@@ -13,6 +13,7 @@ import { isCodexSandbox } from "./lib/codex-env.mjs";
 import { REVIEW_PROMPT_CONTRACT_VERSION, buildReviewAuditManifest, buildReviewPrompt, scopeResolutionReason } from "./lib/review-prompt.mjs";
 import { USAGE_LIMIT_SAFE_MESSAGE, isUsageLimitDetail } from "./lib/usage-limit.mjs";
 import { elapsedMs } from "./lib/time.mjs";
+import { diffSourceFiles } from "./lib/diff-source.mjs";
 import { buildExternalModelFailureDiagnostic } from "./lib/external-model-failure-core.mjs";
 import { hasSubstantiveInvalidVerdictReason, reviewQualityFailureState } from "./lib/external-model-review-quality.mjs";
 import { buildPrivacyRedactor } from "./lib/privacy-redaction.mjs";
@@ -1710,6 +1711,21 @@ async function readGitScopeFiles(gitCwd, workspaceRoot, relPaths) {
   return files;
 }
 
+async function readGitDiffScopeFiles(gitCwd, workspaceRoot, scopeBase, relPaths) {
+  for (const relPath of relPaths) validateScopePath(workspaceRoot, relPath);
+  const files = [];
+  const totalBytes = { value: 0 };
+  const diffFiles = diffSourceFiles(gitCwd, scopeBase, { scopePaths: relPaths, workspaceRoot });
+  for (const file of diffFiles) {
+    const text = Buffer.isBuffer(file.content)
+      ? file.content.toString("utf8")
+      : String(file.content ?? "");
+    addScopeFile(files, file.path, text, totalBytes);
+  }
+  if (files.length === 0) throw new Error("scope_empty: selected diff files are missing or empty");
+  return files;
+}
+
 async function readFilesystemScopeFiles(workspaceRoot, relPaths) {
   const files = [];
   const totalBytes = { value: 0 };
@@ -1746,7 +1762,7 @@ async function collectScope(options) {
   const scopeBase = scope === "branch-diff" ? options["scope-base"] ?? "main" : null;
   const relPaths = selectedScopePaths(scope, options, cwd, workspaceRoot);
   const files = scope === "branch-diff"
-    ? await readGitScopeFiles(cwd, workspaceRoot, relPaths)
+    ? await readGitDiffScopeFiles(cwd, workspaceRoot, scopeBase, relPaths)
     : await readFilesystemScopeFiles(workspaceRoot, relPaths);
   return {
     cwd,

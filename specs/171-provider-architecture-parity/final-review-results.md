@@ -32,6 +32,7 @@ Status: blocked on latest-head review refresh and Claude local OAuth readiness
 - Kimi noted the no-resend failure set should be proven a subset of resend-gated failures. Added a parsed set-subset guard in `tests/unit/plugin-copies-in-sync.test.mjs`.
 - Kimi noted Grok source-bearing behavior was hardcoded. Changed Grok to derive source-bearing semantics from mode and added a guardrail that rejects hardcoded policy semantics.
 - Live latest-delta Kimi testing exposed a second no-resend gap: after a no-source repair failed for `review_not_completed:missing_verdict`, the next continue could lose the original source-bearing attempt and resend source. The shared provider route policy now treats substantive invalid-verdict prose as no-source-repair eligible and carries the original source attempt through failed no-source repair chains. This applies through the shared policy used by Claude, Gemini, and Kimi continue paths.
+- Latest-head direct API approval preflight exposed that DeepSeek/GLM branch-diff still rendered full HEAD file bodies. Direct API branch-diff now uses the shared `diffSourceFiles` diff-packet collector, with a static guardrail and smoke coverage proving the prompt contains `diff --git` instead of relying on full selected files.
 
 ## Latest-Delta Refresh Before Kimi Repair Fix
 

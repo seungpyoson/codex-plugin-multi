@@ -16,7 +16,7 @@ Implementation is locally complete for the focused #171 parity hardening slice, 
 | Use #171 as the umbrella and #170 as topology input. | `spec.md`, `plan.md`, `root-problems.md`, `provider-parity-table.json`. | Complete |
 | Define root problems before implementation. | `root-problems.md` and `evidence-map.md`. | Complete |
 | Same route ladder for all six providers unless an Adapter capability fact explains the difference. | `scripts/lib/provider-route-policy.mjs`, plugin copies, `tests/unit/provider-route-policy.test.mjs`, `provider-parity-table.json`. | Complete for implemented slice |
-| Same source packet budget/resend policy for all six providers and source-bearing modes. | Shared policy plus provider launch preflight in Claude, Gemini, Kimi, Grok, DeepSeek, and GLM paths. Substantive invalid-verdict repairs now continue without resending source, including after an intermediate no-source repair failure. | Complete for implemented slice |
+| Same source packet budget/resend policy for all six providers and source-bearing modes. | Shared policy plus provider launch preflight in Claude, Gemini, Kimi, Grok, DeepSeek, and GLM paths. Direct API branch-diff now uses shared git diff packets instead of full HEAD file bodies. Substantive invalid-verdict repairs now continue without resending source, including after an intermediate no-source repair failure. | Complete for implemented slice |
 | No fake parity: allowed differences require clear capability facts. | Provider parity table requires `intentional=true` and `capability_fact` for adapter differences; unresolved gaps require follow-up issues. | Complete |
 | Grok `--transport auto` is an Adapter transport capability, not alternate provider policy. | Grok CLI-first/web-fallback smoke tests and mode-derived source-bearing guardrail. | Complete |
 | Kimi step-limit and missing-verdict symptoms are handled through shared policy, not a Kimi-only special case. | Kimi initial review hit `step_limit_exceeded`; continue produced APPROVE with `resume_without_source_resend`, zero selected-source bytes, and `source_content_transmission=not_sent`. A later latest-delta Kimi run returned substantive prose without the required verdict marker; the second repair attempt exposed a shared bug where failed no-source repairs could lose the original source attempt and resend the packet. Shared policy now carries the original source-bearing attempt through no-source repair chains. | Complete for shared retry behavior |
@@ -32,9 +32,10 @@ Implementation is locally complete for the focused #171 parity hardening slice, 
 | `node --test tests/unit/docs-contracts.test.mjs tests/unit/provider-route-policy.test.mjs tests/unit/external-model-contracts.test.mjs` | Passed, 63 tests. |
 | `node --test tests/unit/plugin-copies-in-sync.test.mjs tests/smoke/grok-web.smoke.test.mjs tests/unit/provider-route-policy.test.mjs` | Passed, 220 tests. |
 | `node --test tests/unit/provider-route-policy.test.mjs tests/unit/plugin-copies-in-sync.test.mjs tests/unit/docs-contracts.test.mjs tests/smoke/claude-companion.smoke.test.mjs tests/smoke/gemini-companion.smoke.test.mjs` | Passed, 331 tests, after the Kimi missing-verdict repair fix. |
+| `node --test tests/unit/plugin-copies-in-sync.test.mjs tests/smoke/api-reviewers.smoke.test.mjs` | Passed, 212 tests, after the direct API branch-diff diff-packet parity fix. |
 | `git diff --check` | Passed. |
 | `npm run lint:sync` | Passed after the final guardrail edits. |
-| `npm test` | Passed; 2152 tests, 2140 passed, 12 skipped, 0 failed. |
+| `npm test` | Passed; 2153 tests, 2141 passed, 12 skipped, 0 failed. |
 | `COVERAGE_ENFORCE_TARGET=1 npm run test:coverage` on local Node `v24.13.0` | Tests passed; 2278 tests, 2258 passed, 20 skipped, 0 failed. Coverage baseline comparison failed for untouched copied helpers (`companion-common.mjs`, `diff-source.mjs`) under local Node 24 V8 coverage. The PR workflow pins Node 20. |
 | Prior `npm run test:full` | 2307 tests; 2295 passed, 12 skipped, 0 failed. |
 
