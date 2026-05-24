@@ -10,6 +10,15 @@ function readRepoFile(rel) {
   return readFileSync(path.join(REPO_ROOT, rel), "utf8");
 }
 
+function readRepoJson(rel) {
+  return JSON.parse(readRepoFile(rel));
+}
+
+function assertOnlyKeys(value, allowed, label) {
+  const extra = Object.keys(value).filter((key) => !allowed.includes(key));
+  assert.deepEqual(extra, [], `${label} has unsupported keys`);
+}
+
 const CANCEL_STATUSES = [
   "signaled",
   "already_terminal",
@@ -643,6 +652,8 @@ test("README documents Grok subscription-backed default and no paid API fallback
   assert.match(readme, /GROK_WEB_BASE_URL/);
   assert.match(readme, /subscription-backed Grok CLI transport/i);
   assert.match(readme, /legacy local web tunnel/i);
+  assert.match(readme, /--transport auto[\s\S]*GROK_TRANSPORT=auto[\s\S]*CLI-primary fallback/i);
+  assert.match(readme, /pre-source CLI readiness, login, auth-timeout, or\s+model-unavailable failure/i);
   assert.match(readme, /not.*api\.x\.ai/i);
   assert.match(readme, /does not silently\s+fall back/i);
 });
@@ -700,6 +711,9 @@ test("Grok subscription tunnel runbook documents compatible setup without exposi
   assert.match(runbook, /swift-grok/i);
   assert.match(runbook, /http:\/\/127\.0\.0\.1:11435\/api/);
   assert.match(runbook, /GROK_WEB_TUNNEL_API_KEY/);
+  assert.match(runbook, /grok-companion\.mjs doctor --transport web/);
+  assert.match(runbook, /grok-companion\.mjs list/);
+  assert.match(runbook, /grok-companion\.mjs result --job-id <job_id>/);
   assert.match(runbook, /sso/);
   assert.match(runbook, /sso-rw/);
   assert.match(runbook, /Do not paste/i);
@@ -802,4 +816,69 @@ test("T084 completion audit manifest maps every symptom to evidence and residual
   assert.match(byId.S11.evidence.join(" "), /repo_cache_in_sync:true/);
   assert.match(byId.S11.evidence.join(" "), /installed-cache source-free probes/i);
   assert.deepEqual(byId.S11.residual_gates, []);
+});
+
+test("provider architecture parity table is machine-validatable and complete", () => {
+  const schema = readRepoJson("specs/171-provider-architecture-parity/contracts/provider-parity-table.schema.json");
+  const table = readRepoJson("specs/171-provider-architecture-parity/provider-parity-table.json");
+
+  assertOnlyKeys(table, Object.keys(schema.properties), "provider parity table");
+  for (const required of schema.required) {
+    assert.ok(Object.hasOwn(table, required), `missing required top-level field ${required}`);
+  }
+
+  assert.equal(Number.isInteger(table.schema_version), true);
+  assert.equal(table.schema_version >= 1, true);
+  assert.equal(table.feature, "provider-architecture-parity");
+  assert.deepEqual([...table.providers].sort(), ["claude", "deepseek", "gemini", "glm", "grok", "kimi"]);
+
+  const requiredPolicyAreas = [
+    "route/auth/source-send approval",
+    "packet budgets",
+    "fallback semantics",
+    "failure taxonomy",
+    "suggested actions",
+    "audit fields",
+    "review-quality gates",
+    "status/UX normalization",
+    "generated contracts",
+    "docs",
+    "packaged copies",
+    "sync rules",
+  ];
+  const policyNames = new Set(table.policy_areas.map((area) => area.name));
+  for (const name of requiredPolicyAreas) {
+    assert.equal(policyNames.has(name), true, `missing policy area ${name}`);
+  }
+
+  const policyAllowedKeys = Object.keys(schema.$defs.policy_area.properties);
+  for (const area of table.policy_areas) {
+    assertOnlyKeys(area, policyAllowedKeys, `policy area ${area.name}`);
+    for (const required of schema.$defs.policy_area.required) {
+      assert.ok(Object.hasOwn(area, required), `policy area ${area.name} missing ${required}`);
+    }
+    assert.equal(Array.isArray(area.tests), true, `policy area ${area.name} tests must be an array`);
+    assert.equal(area.tests.length > 0, true, `policy area ${area.name} must name at least one test`);
+  }
+
+  assert.deepEqual(
+    {
+      primary_issue: table.issue_fit.primary_issue,
+      evidence_issue: table.issue_fit.evidence_issue,
+      new_issue_required: table.issue_fit.new_issue_required,
+    },
+    { primary_issue: 171, evidence_issue: 170, new_issue_required: true },
+  );
+  for (const related of [144, 146, 147, 159, 160, 162, 167, 172, 173]) {
+    assert.ok(table.issue_fit.related_issues.includes(related), `missing related issue ${related}`);
+  }
+
+  for (const exception of table.exceptions ?? []) {
+    assert.equal(Array.isArray(exception.evidence), true, `exception ${exception.policy_area} must include evidence`);
+    assert.equal(exception.evidence.length > 0, true, `exception ${exception.policy_area} evidence must not be empty`);
+    assert.ok(
+      exception.follow_up_issue === null || Number.isInteger(exception.follow_up_issue),
+      `exception ${exception.policy_area} must make follow-up issue state explicit`,
+    );
+  }
 });

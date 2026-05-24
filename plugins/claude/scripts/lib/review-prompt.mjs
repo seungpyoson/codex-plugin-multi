@@ -1112,6 +1112,7 @@ export function buildReviewAuditManifest({
     auth_path: route.authPath ?? null,
     billing_path: route.billingPath ?? null,
     source_bearing: route.sourceBearing ?? null,
+    source_content_transmission: route.sourceContentTransmission ?? null,
     source_send_approval_required: route.sourceSendApprovalRequired ?? null,
     source_send_approval_state: route.sourceSendApprovalState ?? null,
     error_code: errorCode,

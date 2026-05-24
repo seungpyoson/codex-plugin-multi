@@ -1,15 +1,16 @@
 # codex-plugin-multi — Claude Code project notes
 
 <!-- SPECKIT START -->
-Active spec-kit feature: **no-mistakes provider readiness** (spec 140).
+Active spec-kit feature: **provider architecture parity** (spec 171).
 
-For technical context, structure, gates, and the readiness manifest schema, read:
-- `specs/140-no-mistakes-provider-readiness/spec.md` — problem specification
-- `specs/140-no-mistakes-provider-readiness/plan.md` — current implementation plan
-- `specs/140-no-mistakes-provider-readiness/research.md` — Phase 0 research decisions
-- `specs/140-no-mistakes-provider-readiness/data-model.md` — entities and invariants
-- `specs/140-no-mistakes-provider-readiness/contracts/` — JSON schemas
-- `specs/140-no-mistakes-provider-readiness/quickstart.md` — operator runbook
+For technical context, structure, gates, and the provider parity schema, read:
+- `specs/171-provider-architecture-parity/evidence-map.md` — source-backed investigation record
+- `specs/171-provider-architecture-parity/spec.md` — problem specification
+- `specs/171-provider-architecture-parity/plan.md` — current implementation plan
+- `specs/171-provider-architecture-parity/research.md` — Phase 0 research decisions
+- `specs/171-provider-architecture-parity/data-model.md` — entities and invariants
+- `specs/171-provider-architecture-parity/contracts/` — JSON schemas
+- `specs/171-provider-architecture-parity/quickstart.md` — operator runbook
 <!-- SPECKIT END -->
 
 ## Test

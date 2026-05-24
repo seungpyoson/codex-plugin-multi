@@ -21,6 +21,8 @@ const GROK_EXPECTED_KEYS = Object.freeze([
   "job_id",
   "target",
   "provider",
+  "fallback_from",
+  "transport",
   "parent_job_id",
   "claude_session_id",
   "gemini_session_id",
@@ -969,6 +971,196 @@ test("custom-review cleans partial Grok CLI runtime home when auth copy fails", 
     assert.deepEqual(leaked, [], "partial runtime homes must be cleaned after copy failure");
   } finally {
     for (const name of leaked) rmTree(path.join(tmpdir(), name));
+    rmTree(authHome);
+    rmTree(cwd);
+    rmTree(dataDir);
+  }
+});
+
+test("custom-review explicit CLI transport remains terminal when login is false", async () => {
+  const cwd = realpathSync(mkdtempSync(path.join(tmpdir(), "grok-cli-explicit-login-required-workspace-")));
+  const dataDir = mkdtempSync(path.join(tmpdir(), "grok-cli-explicit-login-required-data-"));
+  const authHome = mkdtempSync(path.join(tmpdir(), "grok-cli-explicit-login-required-auth-home-"));
+  const { binDir, grokPath, logPath } = makeFakeGrokCli({ modelsOutput: GROK_MODELS_READY_LOGGED_OUT });
+  writeGrokCliAuthFixture(cwd, authHome);
+  const webRequests = [];
+
+  try {
+    await withServer(async (req, res) => {
+      webRequests.push(`${req.method} ${req.url}`);
+      res.statusCode = 500;
+      res.end(JSON.stringify({ error: { message: "explicit cli must not contact web fallback" } }));
+    }, async (baseUrl) => {
+      const result = run([
+        "run",
+        "--transport", "cli",
+        "--mode", "custom-review",
+        "--scope", "custom",
+        "--scope-paths", "review.js",
+        "--foreground",
+        "--prompt", "Review selected source.",
+      ], {
+        cwd,
+        defaultTransport: false,
+        env: {
+          PATH: `${binDir}${path.delimiter}${process.env.PATH ?? ""}`,
+          GROK_CLI_BINARY: grokPath,
+          GROK_CLI_AUTH_HOME: authHome,
+          GROK_PLUGIN_DATA: dataDir,
+          GROK_WEB_BASE_URL: baseUrl,
+        },
+      });
+
+      assert.equal(result.status, 1, result.stdout);
+      const record = parseStdout(result);
+      assert.equal(record.error_code, "grok_cli_login_required");
+      assert.equal(record.transport, "cli");
+      assert.equal(record.auth_mode, "subscription_cli");
+      assert.equal(record.runtime_diagnostics.cli_request.transport, "cli");
+      assert.equal(record.fallback_from, null);
+      assert.deepEqual(webRequests, []);
+
+      const logLines = readGrokCliLog(logPath);
+      assert.deepEqual(logLines.map((line) => line.args[0]), ["--version", "models"]);
+    }, { autoPreflight: false });
+  } finally {
+    rmTree(authHome);
+    rmTree(cwd);
+    rmTree(dataDir);
+  }
+});
+
+test("custom-review auto transport uses Grok CLI happy path without contacting web", async () => {
+  const cwd = realpathSync(mkdtempSync(path.join(tmpdir(), "grok-auto-cli-workspace-")));
+  const dataDir = mkdtempSync(path.join(tmpdir(), "grok-auto-cli-data-"));
+  const authHome = mkdtempSync(path.join(tmpdir(), "grok-auto-cli-auth-home-"));
+  const { binDir, grokPath, logPath } = makeFakeGrokCli();
+  writeGrokCliAuthFixture(cwd, authHome);
+  const webRequests = [];
+
+  try {
+    await withServer(async (req, res) => {
+      webRequests.push(`${req.method} ${req.url}`);
+      res.statusCode = 500;
+      res.end(JSON.stringify({ error: { message: "auto cli success must not contact web" } }));
+    }, async (baseUrl) => {
+      const result = run([
+        "run",
+        "--mode", "custom-review",
+        "--scope", "custom",
+        "--scope-paths", "review.js",
+        "--foreground",
+        "--prompt", "Review selected source.",
+      ], {
+        cwd,
+        defaultTransport: false,
+        env: {
+          PATH: `${binDir}${path.delimiter}${process.env.PATH ?? ""}`,
+          GROK_CLI_BINARY: grokPath,
+          GROK_CLI_AUTH_HOME: authHome,
+          GROK_PLUGIN_DATA: dataDir,
+          GROK_TRANSPORT: "auto",
+          GROK_WEB_BASE_URL: baseUrl,
+        },
+      });
+
+      assert.equal(result.status, 0, result.stderr || result.stdout);
+      const record = parseStdout(result);
+      assert.equal(record.provider, "grok");
+      assert.equal(record.transport, "cli");
+      assert.equal(record.auth_mode, "subscription_cli");
+      assert.equal(record.external_review.provider, "Grok CLI");
+      assert.equal(record.external_review.source_content_transmission, "sent");
+      assert.equal(record.review_metadata.audit_manifest.selected_route, "subscription_cli");
+      assert.equal(record.review_metadata.audit_manifest.fallback_reason, null);
+      assert.equal(record.review_metadata.audit_manifest.auth_path, "subscription_cli");
+      assert.equal(record.runtime_diagnostics.cli_request.transport, "cli");
+      assert.equal(record.fallback_from, null);
+      assert.deepEqual(webRequests, []);
+
+      const logLines = readGrokCliLog(logPath);
+      assert.deepEqual(logLines.flatMap((line) => line.apiEnvKeys ?? []), []);
+      assert.equal(logLines.some((line) => line.promptPath), true);
+    }, { autoPreflight: false });
+  } finally {
+    rmTree(authHome);
+    rmTree(cwd);
+    rmTree(dataDir);
+  }
+});
+
+test("custom-review auto transport falls back from Grok CLI login failure to local web tunnel", async () => {
+  const cwd = realpathSync(mkdtempSync(path.join(tmpdir(), "grok-auto-web-fallback-workspace-")));
+  const dataDir = mkdtempSync(path.join(tmpdir(), "grok-auto-web-fallback-data-"));
+  const authHome = mkdtempSync(path.join(tmpdir(), "grok-auto-web-fallback-auth-home-"));
+  const { binDir, grokPath, logPath } = makeFakeGrokCli({ modelsOutput: GROK_MODELS_READY_LOGGED_OUT });
+  writeGrokCliAuthFixture(cwd, authHome);
+  const webRequests = [];
+
+  try {
+    await withServer(async (req, res) => {
+      webRequests.push(`${req.method} ${req.url}`);
+      assert.equal(req.url, "/api/chat/completions");
+      const body = await readJsonRequest(req);
+      assert.match(body.messages[0].content, /BEGIN GROK FILE 1: review\.js/);
+      assert.match(body.messages[0].content, /CLI_SOURCE_SECRET/);
+      res.setHeader("content-type", "application/json");
+      res.end(JSON.stringify({
+        id: "grok-auto-web-fallback",
+        model: "grok-4.20-fast",
+        choices: [{ message: { content: substantiveReviewFixture("Auto fallback inspected selected source.") } }],
+      }));
+    }, async (baseUrl) => {
+      const result = await runAsync([
+        "run",
+        "--transport", "auto",
+        "--mode", "custom-review",
+        "--scope", "custom",
+        "--scope-paths", "review.js",
+        "--foreground",
+        "--prompt", "Review selected source.",
+      ], {
+        cwd,
+        defaultTransport: false,
+        env: {
+          PATH: `${binDir}${path.delimiter}${process.env.PATH ?? ""}`,
+          GROK_CLI_BINARY: grokPath,
+          GROK_CLI_AUTH_HOME: authHome,
+          GROK_PLUGIN_DATA: dataDir,
+          GROK_WEB_BASE_URL: baseUrl,
+          GROK_API_KEY: "direct-api-key-must-not-be-used-by-auto-fallback",
+          XAI_API_KEY: "xai-api-key-must-not-be-used-by-auto-fallback",
+          XAI_KEY: "xai-key-must-not-be-used-by-auto-fallback",
+        },
+      });
+
+      assert.equal(result.status, 0, result.stderr || result.stdout);
+      assert.doesNotMatch(result.stdout, /direct-api-key-must-not-be-used|xai-api-key-must-not-be-used|xai-key-must-not-be-used/);
+      const record = parseStdout(result);
+      assert.equal(record.provider, "grok-web");
+      assert.equal(record.transport, "web");
+      assert.equal(record.auth_mode, "subscription_web");
+      assert.equal(record.external_review.provider, "Grok Web");
+      assert.equal(record.external_review.source_content_transmission, "sent");
+      assert.equal(record.fallback_from, "cli");
+      assert.equal(record.review_metadata.audit_manifest.selected_route, "subscription_web");
+      assert.equal(record.review_metadata.audit_manifest.fallback_reason, "grok_cli_login_required");
+      assert.equal(record.review_metadata.audit_manifest.auth_path, "subscription_web");
+      assert.equal(record.review_metadata.audit_manifest.billing_path, null);
+      assert.equal(record.review_metadata.audit_manifest.source_bearing, true);
+      assert.equal(record.review_metadata.audit_manifest.source_send_approval_required, false);
+      assert.equal(record.review_metadata.audit_manifest.source_send_approval_state, "not_required");
+      assert.equal(record.review_metadata.audit_manifest.source_content_transmission, "sent");
+      assert.equal(record.runtime_diagnostics.cli_request.transport, "cli");
+      assert.equal(record.runtime_diagnostics.cli_request.logged_in, false);
+      assert.equal(record.runtime_diagnostics.tunnel_state.transport, "web");
+      assert.deepEqual(webRequests, ["POST /api/chat/completions"]);
+
+      const logLines = readGrokCliLog(logPath);
+      assert.deepEqual(logLines.flatMap((line) => line.apiEnvKeys ?? []), []);
+      assert.deepEqual(logLines.map((line) => line.args[0]), ["--version", "models"]);
+    });
+  } finally {
     rmTree(authHome);
     rmTree(cwd);
     rmTree(dataDir);
@@ -5973,6 +6165,16 @@ test("help exposes only subscription-backed Grok commands", () => {
   assert.equal(legacyParsed.provider, "grok-web");
   assert.equal(legacyParsed.default_auth_mode, "subscription_web");
   assert.equal(legacyParsed.selected_transport, "web");
+
+  const autoParsed = JSON.parse(execFileSync(process.execPath, [COMPANION, "help", "--transport", "auto"], {
+    cwd: REPO_ROOT,
+    encoding: "utf8",
+  }));
+  assert.equal(autoParsed.provider, "grok");
+  assert.equal(autoParsed.default_auth_mode, "subscription_cli");
+  assert.equal(autoParsed.selected_transport, "auto");
+  assert.equal(autoParsed.default_transport, "cli");
+  assert.doesNotMatch(JSON.stringify(autoParsed), /api\.x\.ai/i);
 });
 
 test("generic Grok companion entrypoint defaults to CLI transport", () => {

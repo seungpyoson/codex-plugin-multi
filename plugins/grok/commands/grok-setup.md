@@ -28,6 +28,8 @@ When the user approves session repair, run `npm run grok:repair-session -- --app
 
 ## Grok Transport Contract
 Grok defaults to the subscription-backed Grok CLI and must not silently fall back to paid xAI API billing.
-Use the legacy local web tunnel only when the operator explicitly selects `--transport web` or `GROK_TRANSPORT=web`.
+`--transport auto` / `GROK_TRANSPORT=auto` is explicit CLI-primary fallback mode: it tries the subscription CLI first, and may use the legacy local web tunnel only after a pre-source CLI readiness, login, auth-timeout, or model-unavailable failure.
+Explicit `--transport web` / `GROK_TRANSPORT=web` selects the legacy local web tunnel directly.
+Default CLI and explicit auto mode must not fall back to paid xAI API billing or direct API credentials.
 Do not recommend direct paid API fallback.
 Do not print session cookies, tunnel API keys, bearer token values, or raw secret values.

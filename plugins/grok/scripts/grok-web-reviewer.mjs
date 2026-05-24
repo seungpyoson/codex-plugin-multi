@@ -46,7 +46,7 @@ const GROK2API_UV_BINARY_CANDIDATES = Object.freeze([
   "uv",
 ]);
 const DEFAULT_MAX_PROMPT_CHARS = 400000;
-const VALID_TRANSPORTS = new Set(["cli", "web"]);
+const VALID_TRANSPORTS = new Set(["cli", "web", "auto"]);
 const REVIEW_READINESS_PREFLIGHT_HEADER = "x-codex-grok-readiness-preflight";
 const REVIEW_READINESS_PREFLIGHT_PROMPT = "Return exactly: ok";
 const MAX_SCOPE_FILE_BYTES = 256 * 1024;
@@ -65,6 +65,8 @@ const GROK_EXPECTED_KEYS = Object.freeze([
   "job_id",
   "target",
   "provider",
+  "fallback_from",
+  "transport",
   "parent_job_id",
   "claude_session_id",
   "gemini_session_id",
@@ -412,12 +414,12 @@ function transportMode(options = {}, env = process.env) {
   const raw = String(options.transport ?? env.GROK_TRANSPORT ?? "cli").trim().toLowerCase();
   const normalized = raw === "legacy" || raw === "tunnel" || raw === "grok-web" ? "web" : raw;
   if (!VALID_TRANSPORTS.has(normalized)) {
-    throw new Error(`bad_args: unsupported Grok transport ${JSON.stringify(raw)}; use cli or web`);
+    throw new Error(`bad_args: unsupported Grok transport ${JSON.stringify(raw)}; use cli, web, or auto`);
   }
   return normalized;
 }
 
-function cliConfig(env = process.env) {
+function cliConfig(env = process.env, options = {}) {
   const timeoutMs = parsePositiveIntegerEnv(env, "GROK_CLI_TIMEOUT_MS", DEFAULT_TIMEOUT_MS);
   const maxPromptChars = parsePositiveIntegerEnv(env, "GROK_CLI_MAX_PROMPT_CHARS", DEFAULT_MAX_PROMPT_CHARS, "character count");
   const maxTurns = parsePositiveIntegerEnv(env, "GROK_CLI_MAX_TURNS", DEFAULT_CLI_MAX_TURNS, "turn count");
@@ -426,6 +428,9 @@ function cliConfig(env = process.env) {
     display_name: "Grok CLI",
     auth_mode: "subscription_cli",
     transport: "cli",
+    requested_transport: options.requestedTransport ?? "cli",
+    fallback_from: options.fallbackFrom ?? null,
+    fallback_reason: options.fallbackReason ?? null,
     binary: env.GROK_CLI_BINARY || "grok",
     base_url: null,
     model: env.GROK_CLI_MODEL || DEFAULT_CLI_MODEL,
@@ -510,8 +515,7 @@ function resolveTrustedGrokCliConfig(cfg, { cwd = process.cwd(), workspaceRoot =
   };
 }
 
-function config(env = process.env, options = {}) {
-  if (transportMode(options, env) === "cli") return cliConfig(env);
+function webConfig(env = process.env, options = {}) {
   const timeoutMs = parsePositiveIntegerEnv(env, "GROK_WEB_TIMEOUT_MS", DEFAULT_TIMEOUT_MS);
   const doctorTimeoutMs = parsePositiveIntegerEnv(env, "GROK_WEB_DOCTOR_TIMEOUT_MS", DEFAULT_DOCTOR_TIMEOUT_MS);
   const chatDoctorTimeoutMs = parsePositiveIntegerEnv(env, "GROK_WEB_CHAT_DOCTOR_TIMEOUT_MS", DEFAULT_CHAT_DOCTOR_TIMEOUT_MS);
@@ -523,6 +527,9 @@ function config(env = process.env, options = {}) {
     display_name: "Grok Web",
     auth_mode: "subscription_web",
     transport: "web",
+    requested_transport: options.requestedTransport ?? "web",
+    fallback_from: options.fallbackFrom ?? null,
+    fallback_reason: options.fallbackReason ?? null,
     base_url: normalizeBaseUrl(env.GROK_WEB_BASE_URL),
     model: env.GROK_WEB_MODEL || DEFAULT_MODEL,
     timeout_ms: timeoutMs,
@@ -539,13 +546,24 @@ function config(env = process.env, options = {}) {
   };
 }
 
+function config(env = process.env, options = {}) {
+  const transport = transportMode(options, env);
+  if (transport === "cli") return cliConfig(env, { requestedTransport: "cli" });
+  if (transport === "auto") return cliConfig(env, { requestedTransport: "auto" });
+  return webConfig(env, { requestedTransport: "web" });
+}
+
 function fallbackConfig(env = process.env, options = {}) {
-  if (transportMode(options, env) === "cli") return cliConfig(env);
+  const transport = transportMode(options, env);
+  if (transport === "cli" || transport === "auto") return cliConfig(env, { requestedTransport: transport });
   return {
     provider: "grok-web",
     display_name: "Grok Web",
     auth_mode: "subscription_web",
     transport: "web",
+    requested_transport: "web",
+    fallback_from: null,
+    fallback_reason: null,
     base_url: normalizeBaseUrl(env.GROK_WEB_BASE_URL),
     model: env.GROK_WEB_MODEL || DEFAULT_MODEL,
     timeout_ms: DEFAULT_TIMEOUT_MS,
@@ -558,6 +576,14 @@ function fallbackConfig(env = process.env, options = {}) {
     credential_value: env.GROK_WEB_TUNNEL_API_KEY || null,
     api_capability: providerApiCapability("grok"),
   };
+}
+
+function webAutoFallbackConfig(env = process.env, reason = null) {
+  return webConfig(env, {
+    requestedTransport: "auto",
+    fallbackFrom: "cli",
+    fallbackReason: reason,
+  });
 }
 
 function parsePositiveIntegerEnv(env, name, fallback, unit = "number of milliseconds") {
@@ -3054,6 +3080,8 @@ function buildTerminalExternalReview({ cfg, mode, options, scopeInfo, execution,
 
 function buildReviewMetadata(cfg, scopeInfo, execution = null, startedAt = null, endedAt = null) {
   const sourceBearing = execution?.payload_sent ?? (execution?.exitCode === 0 && execution?.parsed?.ok === true);
+  const processCompleted = execution?.exitCode === 0 && execution?.parsed?.ok === true;
+  const sourceContentTransmission = sourceTransmission(processCompleted, execution?.payload_sent ?? (processCompleted ? true : null));
   const route = selectProviderRoute({
     requestedRoute: "subscription",
     providerCapabilities: providerCapabilitiesForConfig(cfg),
@@ -3099,11 +3127,12 @@ function buildReviewMetadata(cfg, scopeInfo, execution = null, startedAt = null,
     },
     route: {
       selectedRoute: route.selected_route,
-      fallbackReason: route.fallback_reason,
+      fallbackReason: cfg.fallback_reason ?? route.fallback_reason,
       approvalScope: null,
       authPath: route.auth_path,
       billingPath: route.billing_path,
       sourceBearing,
+      sourceContentTransmission,
       sourceSendApprovalRequired: route.source_send_approval_required,
       sourceSendApprovalState: route.source_send_approval_state,
     },
@@ -3191,6 +3220,7 @@ function buildRecord({ cfg, mode, options, scopeInfo, execution, startedAt, ende
     },
     cost_quota: null,
   } : {
+    ...(safeDiagnostics.cli_request ? { cli_request: safeDiagnostics.cli_request } : {}),
     tunnel_request: {
       endpoint_class: safeDiagnostics.endpoint_class ?? null,
       model: safeDiagnostics.model ?? cfg.model,
@@ -3214,6 +3244,8 @@ function buildRecord({ cfg, mode, options, scopeInfo, execution, startedAt, ende
     job_id: options.jobId,
     target: cfg.provider,
     provider: cfg.provider,
+    fallback_from: cfg.fallback_from ?? null,
+    transport: cfg.transport,
     parent_job_id: null,
     claude_session_id: null,
     gemini_session_id: null,
@@ -3300,6 +3332,7 @@ function summaryFromRecord(record) {
     target: record.target,
     provider: record.provider,
     status: record.status,
+    transport: record.transport,
     mode: record.mode,
     scope: record.scope,
     scope_base: record.scope_base,
@@ -4132,6 +4165,96 @@ async function repairFields(options = {}, env = process.env) {
   };
 }
 
+const GROK_CLI_AUTO_FALLBACK_CODES = new Set([
+  "grok_cli_unavailable",
+  "grok_cli_auth_unavailable",
+  "grok_cli_login_required",
+  "grok_cli_auth_timeout",
+  "grok_cli_model_unavailable",
+]);
+
+function canAutoFallbackFromCliExecution(cfg, execution) {
+  if (cfg?.requested_transport !== "auto" || cfg?.transport !== "cli") return false;
+  if (!execution || execution.exitCode === 0 || execution.payload_sent !== false) return false;
+  return GROK_CLI_AUTO_FALLBACK_CODES.has(execution.parsed?.reason);
+}
+
+function cliRequestDiagnosticsForFallback(execution) {
+  const diagnostics = execution?.diagnostics ?? {};
+  return {
+    transport: "cli",
+    error_code: execution?.parsed?.reason ?? null,
+    model: diagnostics.model ?? null,
+    grok_version: diagnostics.grok_version ?? null,
+    default_model: diagnostics.default_model ?? null,
+    logged_in: diagnostics.logged_in ?? null,
+    model_ready: diagnostics.model_ready ?? null,
+    exit_status: diagnostics.exit_status ?? null,
+    exit_signal: diagnostics.exit_signal ?? null,
+    stderr_head: diagnostics.stderr_head ?? null,
+    parse_mode: diagnostics.parse_mode ?? null,
+    source_free_parse_mode: diagnostics.source_free_parse_mode ?? null,
+    source_free_prompt_cleanup: diagnostics.source_free_prompt_cleanup ?? null,
+    source_free_grok_home_cleanup: diagnostics.source_free_grok_home_cleanup ?? null,
+    prompt_chars: diagnostics.prompt_chars ?? null,
+    configured_timeout_ms: diagnostics.configured_timeout_ms ?? null,
+    max_turns: diagnostics.max_turns ?? null,
+    prompt_cleanup: diagnostics.prompt_cleanup ?? null,
+    neutral_cwd: diagnostics.neutral_cwd ?? null,
+    neutral_cwd_cleanup: diagnostics.neutral_cwd_cleanup ?? null,
+    grok_home_source: diagnostics.grok_home_source ?? null,
+    grok_home_copied_files: diagnostics.grok_home_copied_files ?? [],
+    grok_home_linked_files: diagnostics.grok_home_linked_files ?? [],
+    grok_home_cleanup: diagnostics.grok_home_cleanup ?? null,
+  };
+}
+
+async function executeWebReview({ cfg, mode, options, scopeInfo, prompt, lifecycleEvents }) {
+  let tunnelStart = null;
+  let promptSentToTunnel = false;
+  let webReadiness = await grokReviewReadinessPreflight(cfg);
+  let execution = webReadiness?.ok === true ? null : webReadiness?.execution;
+  if (execution && isTunnelTransportExecution(execution)) {
+    ({ tunnel_start: tunnelStart } = await ensureGrokTunnelReachable(cfg));
+    if (tunnelStart?.status === "started") {
+      webReadiness = await grokReviewReadinessPreflight(cfg);
+      execution = webReadiness?.ok === true ? null : webReadiness?.execution;
+    }
+  }
+  if (!execution && lifecycleEvents) {
+    printLifecycleJson({
+      event: "external_review_launched",
+      job_id: options.jobId,
+      target: cfg.provider,
+      status: "launched",
+      external_review: buildLaunchExternalReview({ cfg, mode, options, scopeInfo }),
+    }, lifecycleEvents);
+  }
+  if (!execution) {
+    const stopHeartbeat = startLifecycleHeartbeat({
+      job_id: options.jobId,
+      target: cfg.provider,
+      mode,
+      cwd: scopeInfo.cwd,
+      workspace_root: scopeInfo.workspaceRoot,
+      external_review: buildLaunchExternalReview({ cfg, mode, options, scopeInfo }),
+    }, lifecycleEvents);
+    try {
+      promptSentToTunnel = true;
+      execution = await callGrokTunnel(cfg, prompt);
+    } finally {
+      stopHeartbeat();
+    }
+  }
+  execution.diagnostics = {
+    ...(webReadiness?.ok === true ? webReadiness.diagnostics : {}),
+    ...(execution.diagnostics ?? {}),
+    tunnel_start: tunnelStart,
+  };
+  if (promptSentToTunnel) execution.prompt = prompt;
+  return { execution, promptSentToTunnel, webReadiness, tunnelStart };
+}
+
 async function cmdRun(options) {
   const mode = options.mode ?? "review";
   let lifecycleEvents = null;
@@ -4224,46 +4347,41 @@ async function cmdRun(options) {
             stopHeartbeat();
           }
         }
+        if (canAutoFallbackFromCliExecution(cfg, execution)) {
+          const cliFailure = execution;
+          cfg = webAutoFallbackConfig(process.env, cliFailure.parsed?.reason ?? "grok_cli_unavailable");
+          prompt = promptFor(cfg, mode, options.prompt ?? "", scopeInfo);
+          if (prompt.length > cfg.max_prompt_chars) {
+            execution = providerFailure("prompt_too_large", redactor()(`prompt_too_large:${prompt.length} chars exceeds GROK_WEB_MAX_PROMPT_CHARS=${cfg.max_prompt_chars}`), null, null, false);
+            execution.prompt = prompt;
+          } else {
+            const webExecution = await executeWebReview({
+              cfg,
+              mode,
+              options: runOptions,
+              scopeInfo,
+              prompt,
+              lifecycleEvents,
+            });
+            execution = webExecution.execution;
+            execution.diagnostics = {
+              cli_request: cliRequestDiagnosticsForFallback(cliFailure),
+              ...(execution.diagnostics ?? {}),
+            };
+            promptSentToTunnel = webExecution.promptSentToTunnel;
+          }
+        }
       } else {
-        webReadiness = await grokReviewReadinessPreflight(cfg);
-        execution = webReadiness?.ok === true ? null : webReadiness?.execution;
-        if (execution && isTunnelTransportExecution(execution)) {
-          ({ tunnel_start: tunnelStart } = await ensureGrokTunnelReachable(cfg));
-          if (tunnelStart?.status === "started") {
-            webReadiness = await grokReviewReadinessPreflight(cfg);
-            execution = webReadiness?.ok === true ? null : webReadiness?.execution;
-          }
-        }
-        if (!execution && lifecycleEvents) {
-          printLifecycleJson({
-            event: "external_review_launched",
-            job_id: jobId,
-            target: cfg.provider,
-            status: "launched",
-            external_review: buildLaunchExternalReview({ cfg, mode, options: runOptions, scopeInfo }),
-          }, lifecycleEvents);
-        }
-        if (!execution) {
-          const stopHeartbeat = startLifecycleHeartbeat({
-            job_id: jobId,
-            target: cfg.provider,
-            mode,
-            cwd: scopeInfo.cwd,
-            workspace_root: scopeInfo.workspaceRoot,
-            external_review: buildLaunchExternalReview({ cfg, mode, options: runOptions, scopeInfo }),
-          }, lifecycleEvents);
-          try {
-            promptSentToTunnel = true;
-            execution = await callGrokTunnel(cfg, prompt);
-          } finally {
-            stopHeartbeat();
-          }
-        }
-        execution.diagnostics = {
-          ...(webReadiness?.ok === true ? webReadiness.diagnostics : {}),
-          ...(execution.diagnostics ?? {}),
-          tunnel_start: tunnelStart,
-        };
+        const webExecution = await executeWebReview({
+          cfg,
+          mode,
+          options: runOptions,
+          scopeInfo,
+          prompt,
+          lifecycleEvents,
+        });
+        execution = webExecution.execution;
+        promptSentToTunnel = webExecution.promptSentToTunnel;
       }
       if (promptSentToTunnel) execution.prompt = prompt;
     } catch (e) {
@@ -4314,7 +4432,7 @@ async function main() {
       provider: cfg.provider,
       default_auth_mode: cfg.auth_mode,
       default_transport: "cli",
-      selected_transport: cfg.transport,
+      selected_transport: cfg.requested_transport ?? cfg.transport,
       legacy_transport: "web",
       default_endpoint: cfg.base_url,
     });

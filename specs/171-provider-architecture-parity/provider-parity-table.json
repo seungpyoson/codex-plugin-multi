@@ -1,0 +1,478 @@
+{
+  "schema_version": 1,
+  "feature": "provider-architecture-parity",
+  "generated_at": "2026-05-24",
+  "providers": [
+    "claude",
+    "gemini",
+    "kimi",
+    "grok",
+    "deepseek",
+    "glm"
+  ],
+  "policy_areas": [
+    {
+      "name": "route/auth/source-send approval",
+      "module": "scripts/lib/provider-route-policy.mjs",
+      "interface": "selectProviderRoute, normalizeApprovalScope, resolveAuthSelection",
+      "implementation": "Shared route policy selects subscription or API paths and records approval scope semantics for source-bearing sends.",
+      "adapters": [
+        "claude",
+        "gemini",
+        "kimi",
+        "grok",
+        "deepseek",
+        "glm"
+      ],
+      "packaged_copies": [
+        "plugins/*/scripts/lib/provider-route-policy.mjs",
+        "plugins/claude/scripts/lib/auth-selection.mjs",
+        "plugins/gemini/scripts/lib/auth-selection.mjs"
+      ],
+      "sync_guard": "npm run lint:sync runs sync-provider-route-policy.mjs --check and sync-auth-selection.mjs --check",
+      "tests": [
+        "tests/unit/provider-route-policy.test.mjs",
+        "tests/unit/plugin-copies-in-sync.test.mjs",
+        "tests/unit/external-model-contracts.test.mjs"
+      ],
+      "verdict": "compliant_shared_policy",
+      "drift_risk": "low",
+      "missing_guardrail": null
+    },
+    {
+      "name": "packet budgets",
+      "module": "scripts/lib/review-prompt.mjs",
+      "interface": "buildReviewPrompt, prompt budget env caps",
+      "implementation": "Direct API reviewers and Grok enforce prompt caps before launch. Claude subscription custom-review has a reproduced full-source packet budget gap tracked by #173; #172 remains the broader large-packet routing and chunking follow-up.",
+      "adapters": [
+        "claude",
+        "gemini",
+        "kimi",
+        "grok",
+        "deepseek",
+        "glm"
+      ],
+      "packaged_copies": [
+        "plugins/*/scripts/lib/review-prompt.mjs"
+      ],
+      "sync_guard": "npm run lint:sync runs sync-review-prompt.mjs --check",
+      "tests": [
+        "tests/unit/review-prompt.test.mjs",
+        "tests/smoke/grok-web.smoke.test.mjs"
+      ],
+      "verdict": "unknown_needs_research",
+      "drift_risk": "medium",
+      "missing_guardrail": "#173 tracks the reproduced Claude subscription custom-review budget gate; #172 tracks broader large review packet failures and provider-specific capacity policy."
+    },
+    {
+      "name": "fallback semantics",
+      "module": "plugins/grok/scripts/grok-companion.mjs -> plugins/grok/scripts/grok-web-reviewer.mjs",
+      "interface": "GROK_TRANSPORT=cli|web|auto and --transport cli|web|auto",
+      "implementation": "Grok defaults to CLI, explicit web remains explicit, and auto may fall back only from approved CLI readiness/login/model failures to the local web tunnel.",
+      "adapters": [
+        "grok"
+      ],
+      "packaged_copies": null,
+      "sync_guard": null,
+      "tests": [
+        "tests/smoke/grok-web.smoke.test.mjs"
+      ],
+      "verdict": "intentional_adapter_exception",
+      "drift_risk": "medium",
+      "missing_guardrail": null
+    },
+    {
+      "name": "failure taxonomy",
+      "module": "scripts/lib/external-model-failure-core.mjs",
+      "interface": "classifyCompanionExecution, classifyDirectApiExecution, buildExternalModelFailureDiagnostic",
+      "implementation": "Shared classification maps runtime/provider failures to normalized external-model failure classes and suggested diagnostics.",
+      "adapters": [
+        "claude",
+        "gemini",
+        "kimi",
+        "grok",
+        "deepseek",
+        "glm"
+      ],
+      "packaged_copies": [
+        "plugins/*/scripts/lib/external-model-failure-core.mjs"
+      ],
+      "sync_guard": "npm run lint:sync runs sync-external-model-failure-classification.mjs --check",
+      "tests": [
+        "tests/unit/external-model-failure-core.test.mjs",
+        "tests/unit/plugin-copies-in-sync.test.mjs"
+      ],
+      "verdict": "compliant_shared_policy",
+      "drift_risk": "low",
+      "missing_guardrail": null
+    },
+    {
+      "name": "suggested actions",
+      "module": "scripts/lib/external-model-failure-core.mjs",
+      "interface": "buildExternalModelFailureDiagnostic",
+      "implementation": "Shared failure diagnostics provide provider-neutral suggested_action text, with Grok-specific text preserving no paid API fallback.",
+      "adapters": [
+        "claude",
+        "gemini",
+        "kimi",
+        "grok",
+        "deepseek",
+        "glm"
+      ],
+      "packaged_copies": [
+        "plugins/*/scripts/lib/external-model-failure-core.mjs"
+      ],
+      "sync_guard": "npm run lint:sync runs sync-external-model-failure-classification.mjs --check",
+      "tests": [
+        "tests/unit/external-model-contracts.test.mjs",
+        "tests/smoke/grok-web.smoke.test.mjs"
+      ],
+      "verdict": "compliant_shared_policy",
+      "drift_risk": "low",
+      "missing_guardrail": null
+    },
+    {
+      "name": "audit fields",
+      "module": "scripts/lib/review-prompt.mjs",
+      "interface": "buildReviewAuditManifest",
+      "implementation": "Review audit manifests record selected route, fallback reason, auth path, billing path, source approval state, source bearing, source transmission, and review-quality fields.",
+      "adapters": [
+        "claude",
+        "gemini",
+        "kimi",
+        "grok",
+        "deepseek",
+        "glm"
+      ],
+      "packaged_copies": [
+        "plugins/*/scripts/lib/review-prompt.mjs"
+      ],
+      "sync_guard": "npm run lint:sync runs sync-review-prompt.mjs --check",
+      "tests": [
+        "tests/unit/review-prompt.test.mjs",
+        "tests/unit/external-model-contracts.test.mjs"
+      ],
+      "verdict": "compliant_shared_policy",
+      "drift_risk": "low",
+      "missing_guardrail": null
+    },
+    {
+      "name": "review-quality gates",
+      "module": "scripts/lib/external-model-review-quality.mjs",
+      "interface": "reviewQualityFailureState, hasSubstantiveInvalidVerdictReason",
+      "implementation": "Shared helper reports failed review slots and semantic failure reasons across direct API and Grok outputs.",
+      "adapters": [
+        "grok",
+        "deepseek",
+        "glm"
+      ],
+      "packaged_copies": [
+        "plugins/*/scripts/lib/external-model-review-quality.mjs"
+      ],
+      "sync_guard": "npm run lint:sync runs sync-external-model-review-quality.mjs --check",
+      "tests": [
+        "tests/unit/external-model-review-quality.test.mjs",
+        "tests/unit/plugin-copies-in-sync.test.mjs"
+      ],
+      "verdict": "compliant_shared_policy",
+      "drift_risk": "low",
+      "missing_guardrail": null
+    },
+    {
+      "name": "status/UX normalization",
+      "module": "scripts/lib/companion-common.mjs and scripts/lib/review-panel.mjs",
+      "interface": "lifecycle markdown cards, review panel records, error envelope fields",
+      "implementation": "Shared lifecycle and panel rendering contracts normalize provider, job, route, auth, billing, source, status, error, and suggested action fields.",
+      "adapters": [
+        "claude",
+        "gemini",
+        "kimi",
+        "grok",
+        "deepseek",
+        "glm"
+      ],
+      "packaged_copies": [
+        "plugins/*/scripts/lib/companion-common.mjs",
+        "plugins/*/scripts/lib/review-panel.mjs"
+      ],
+      "sync_guard": "npm run lint:sync runs sync-companion-common.mjs --check and sync-review-panel.mjs --check",
+      "tests": [
+        "tests/unit/external-model-contracts.test.mjs",
+        "tests/unit/plugin-copies-in-sync.test.mjs"
+      ],
+      "verdict": "compliant_shared_policy",
+      "drift_risk": "low",
+      "missing_guardrail": null
+    },
+    {
+      "name": "generated contracts",
+      "module": "scripts/lib/external-model-contracts.mjs",
+      "interface": "renderExternalModelContractDoc",
+      "implementation": "Provider command and skill docs are generated from one shared source and checked for staleness.",
+      "adapters": [
+        "claude",
+        "gemini",
+        "kimi",
+        "grok",
+        "deepseek",
+        "glm"
+      ],
+      "packaged_copies": null,
+      "sync_guard": "npm run lint:sync runs sync-external-model-contracts.mjs --check",
+      "tests": [
+        "tests/unit/external-model-contracts.test.mjs"
+      ],
+      "verdict": "compliant_shared_policy",
+      "drift_risk": "low",
+      "missing_guardrail": null
+    },
+    {
+      "name": "docs",
+      "module": "README.md, docs/*.md, specs/171-provider-architecture-parity/*.md",
+      "interface": "operator runbooks and issue-fit evidence",
+      "implementation": "Docs define #171 scope, use #170 as evidence only, and preserve no paid Grok API fallback language.",
+      "adapters": [
+        "claude",
+        "gemini",
+        "kimi",
+        "grok",
+        "deepseek",
+        "glm"
+      ],
+      "packaged_copies": null,
+      "sync_guard": null,
+      "tests": [
+        "tests/unit/docs-contracts.test.mjs"
+      ],
+      "verdict": "compliant_shared_policy",
+      "drift_risk": "medium",
+      "missing_guardrail": null
+    },
+    {
+      "name": "packaged copies",
+      "module": "plugins/*/scripts/lib/*.mjs",
+      "interface": "copy-verbatim shared libraries",
+      "implementation": "Packaged plugin copies remain byte-identical to canonical shared sources for libraries used by providers.",
+      "adapters": [
+        "claude",
+        "gemini",
+        "kimi",
+        "grok",
+        "deepseek",
+        "glm"
+      ],
+      "packaged_copies": [
+        "plugins/*/scripts/lib/*.mjs"
+      ],
+      "sync_guard": "npm run lint:sync",
+      "tests": [
+        "tests/unit/plugin-copies-in-sync.test.mjs"
+      ],
+      "verdict": "packaging_copy_with_sync_guard",
+      "drift_risk": "low",
+      "missing_guardrail": null
+    },
+    {
+      "name": "sync rules",
+      "module": "scripts/ci/sync-*.mjs",
+      "interface": "lint:sync",
+      "implementation": "Sync check scripts fail CI when generated docs or packaged shared library copies drift.",
+      "adapters": [
+        "claude",
+        "gemini",
+        "kimi",
+        "grok",
+        "deepseek",
+        "glm"
+      ],
+      "packaged_copies": null,
+      "sync_guard": "package.json lint:sync script",
+      "tests": [
+        "tests/unit/plugin-copies-in-sync.test.mjs",
+        "tests/unit/external-model-contracts.test.mjs"
+      ],
+      "verdict": "compliant_shared_policy",
+      "drift_risk": "low",
+      "missing_guardrail": null
+    }
+  ],
+  "exceptions": [
+    {
+      "provider": "grok",
+      "policy_area": "fallback semantics",
+      "current_behavior": "Grok has two subscription transports. Default CLI remains terminal; explicit auto is the only mode allowed to fall back from approved CLI readiness/login/model failures to the local web tunnel.",
+      "reason": "Grok lacks a direct shared companion API route and #159 established CLI-primary with audited local web fallback, never paid xAI API fallback.",
+      "evidence": [
+        "plugins/grok/scripts/grok-companion.mjs",
+        "plugins/grok/scripts/grok-web-reviewer.mjs",
+        "tests/smoke/grok-web.smoke.test.mjs",
+        "https://github.com/seungpyoson/codex-plugin-multi/issues/159"
+      ],
+      "tests": [
+        "tests/smoke/grok-web.smoke.test.mjs"
+      ],
+      "verdict": "intentional",
+      "follow_up_issue": 159
+    },
+    {
+      "provider": "claude",
+      "policy_area": "packet budgets",
+      "current_behavior": "Claude subscription custom-review can send full selected-source packets after diff fallback without a pre-launch budget or resend-confirmation gate.",
+      "reason": "#173 is the dedicated follow-up for the reproduced Claude custom-review full-source packet budget gap. It was opened after non-Claude adversarial review approved the narrowed root cause.",
+      "evidence": [
+        "https://github.com/seungpyoson/codex-plugin-multi/issues/173",
+        "Grok job job_36627cf7-dfe5-40e8-8a5f-2567bdd318a2",
+        "/private/tmp/cpm-claude-usage-root-cause/problem-definition.md"
+      ],
+      "tests": [
+        "tests/smoke/claude-companion.smoke.test.mjs"
+      ],
+      "verdict": "unknown",
+      "follow_up_issue": 173
+    },
+    {
+      "provider": "deepseek",
+      "policy_area": "packet budgets",
+      "current_behavior": "Direct API packet-size policy is guarded by prompt caps but broader packet splitting and reviewer capacity behavior remains tracked outside #171.",
+      "reason": "#172 is the dedicated large review packet failure follow-up and is not resolved by this parity table.",
+      "evidence": [
+        "https://github.com/seungpyoson/codex-plugin-multi/issues/172",
+        "specs/171-provider-architecture-parity/review-results.md"
+      ],
+      "tests": [
+        "tests/unit/review-prompt.test.mjs"
+      ],
+      "verdict": "unknown",
+      "follow_up_issue": 172
+    },
+    {
+      "provider": "glm",
+      "policy_area": "packet budgets",
+      "current_behavior": "Direct API packet-size policy is guarded by prompt caps but broader packet splitting and reviewer capacity behavior remains tracked outside #171.",
+      "reason": "#172 is the dedicated large review packet failure follow-up and is not resolved by this parity table.",
+      "evidence": [
+        "https://github.com/seungpyoson/codex-plugin-multi/issues/172",
+        "specs/171-provider-architecture-parity/review-results.md"
+      ],
+      "tests": [
+        "tests/unit/review-prompt.test.mjs"
+      ],
+      "verdict": "unknown",
+      "follow_up_issue": 172
+    }
+  ],
+  "issue_fit": {
+    "primary_issue": 171,
+    "evidence_issue": 170,
+    "related_issues": [
+      144,
+      146,
+      147,
+      159,
+      160,
+      162,
+      167,
+      172,
+      173
+    ],
+    "new_issue_required": true,
+    "split_recommendation": "No new issue is needed for the #171 parity audit itself, but the later Claude usage investigation proved a separate Claude custom-review packet-budget root cause now tracked by #173. #172 remains the broader large-packet routing follow-up."
+  },
+  "verification": [
+    {
+      "command": "node --test tests/unit/docs-contracts.test.mjs",
+      "status": "passed",
+      "evidence": "2026-05-24 post-#173 metadata rerun: 38 tests passed, 0 failed."
+    },
+    {
+      "command": "node --test tests/unit/external-model-contracts.test.mjs tests/unit/plugin-copies-in-sync.test.mjs",
+      "status": "passed",
+      "evidence": "2026-05-24 focused #171 suite: included in 492-test focused run, 0 failed."
+    },
+    {
+      "command": "node --test tests/smoke/grok-web.smoke.test.mjs",
+      "status": "passed",
+      "evidence": "2026-05-24 focused #171 suite: included in 492-test focused run, 0 failed."
+    },
+    {
+      "command": "npm test",
+      "status": "passed",
+      "evidence": "2026-05-24 broad suite: 2112 passed, 0 failed, 12 skipped."
+    },
+    {
+      "command": "npm run test:full",
+      "status": "passed",
+      "evidence": "2026-05-24 full suite: 2273 passed, 0 failed, 12 skipped."
+    }
+  ],
+  "guardrail_tests": [
+    {
+      "name": "provider parity table contract",
+      "file": "tests/unit/docs-contracts.test.mjs",
+      "purpose": "Fail when the canonical provider parity table is missing required providers, policy areas, issue fit, evidence, or schema shape.",
+      "red_condition": "provider-parity-table.json is missing or omits a required FR-002 policy area.",
+      "green_condition": "provider-parity-table.json parses and satisfies the checked schema/policy inventory.",
+      "verification_command": "node --test tests/unit/docs-contracts.test.mjs",
+      "required_fields": [
+        "schema_version",
+        "feature",
+        "providers",
+        "policy_areas",
+        "issue_fit"
+      ]
+    },
+    {
+      "name": "shared audit/status field inventory",
+      "file": "tests/unit/external-model-contracts.test.mjs",
+      "purpose": "Fail when generated provider-neutral contracts stop naming shared audit/status fields.",
+      "red_condition": "renderExternalModelContractDoc omits a shared audit/status field.",
+      "green_condition": "Generated contract docs contain the complete shared field inventory.",
+      "verification_command": "node --test tests/unit/external-model-contracts.test.mjs",
+      "required_fields": [
+        "selected_route",
+        "fallback_reason",
+        "approval_scope",
+        "auth_path",
+        "billing_path",
+        "source_bearing",
+        "source_send_approval_required",
+        "source_send_approval_state",
+        "source_content_transmission",
+        "review_quality.failed_review_slot",
+        "review_quality.semantic_failure_reasons",
+        "error_code",
+        "suggested_action"
+      ]
+    },
+    {
+      "name": "shared policy interface usage",
+      "file": "tests/unit/plugin-copies-in-sync.test.mjs",
+      "purpose": "Fail when provider-facing entrypoints or synced libs stop consuming required shared policy interfaces.",
+      "red_condition": "A required shared interface is absent from provider-facing source or the parity table.",
+      "green_condition": "The interface inventory is explicit and each required interface is present in provider-facing source.",
+      "verification_command": "node --test tests/unit/plugin-copies-in-sync.test.mjs",
+      "required_interfaces": [
+        "selectProviderRoute",
+        "buildReviewAuditManifest",
+        "SOURCE_CONTENT_TRANSMISSION",
+        "buildExternalModelFailureDiagnostic",
+        "reviewQualityFailureState"
+      ]
+    },
+    {
+      "name": "grok auto transport fallback",
+      "file": "tests/smoke/grok-web.smoke.test.mjs",
+      "purpose": "Fail when Grok auto transport stops preserving CLI default, audited local web fallback, or no-paid-API guarantees.",
+      "red_condition": "GROK_TRANSPORT=auto is rejected, falls back to paid API credentials, or fails to record CLI-to-web fallback metadata.",
+      "green_condition": "Auto mode records CLI success as CLI and approved CLI failure fallback as local web with source disclosure.",
+      "verification_command": "node --test tests/smoke/grok-web.smoke.test.mjs",
+      "required_fields": [
+        "transport",
+        "fallback_from",
+        "selected_route",
+        "auth_path",
+        "source_content_transmission"
+      ]
+    }
+  ]
+}

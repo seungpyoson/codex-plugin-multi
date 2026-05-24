@@ -1,9 +1,12 @@
 # Grok Subscription Tunnel Runbook
 
-The Grok plugin uses a local subscription-backed web tunnel by default. The
-plugin talks to a local OpenAI-compatible endpoint and the tunnel talks to Grok
-with the user's browser/session state. This avoids paid API fallback and keeps
-the Grok path tied to the user's subscription.
+The Grok plugin defaults to the subscription-backed Grok CLI. The local
+subscription-backed web tunnel is available through explicit `--transport web`
+or `GROK_TRANSPORT=web`, and through explicit `--transport auto` /
+`GROK_TRANSPORT=auto` only as audited CLI-primary fallback after a pre-source
+CLI readiness, login, auth-timeout, or model-unavailable failure. The tunnel
+talks to Grok with the user's browser/session state. This avoids paid API
+fallback and keeps the Grok path tied to the user's subscription.
 
 ## Compatible Tunnels
 
@@ -175,7 +178,7 @@ present.
 Readiness:
 
 ```sh
-node plugins/grok/scripts/grok-web-reviewer.mjs doctor
+node plugins/grok/scripts/grok-companion.mjs doctor --transport web
 ```
 
 Expected readiness:
@@ -276,8 +279,8 @@ local index, with the newest job first; `result` reads a specific per-job
 record:
 
 ```sh
-node plugins/grok/scripts/grok-web-reviewer.mjs list
-node plugins/grok/scripts/grok-web-reviewer.mjs result --job-id <job_id>
+node plugins/grok/scripts/grok-companion.mjs list
+node plugins/grok/scripts/grok-companion.mjs result --job-id <job_id>
 ```
 
 Custom and branch-diff scope reads reject unsafe paths, files larger than

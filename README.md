@@ -34,8 +34,9 @@ lets Claude Code delegate to Codex.
 - Gemini CLI installed and authenticated if you enable the Gemini plugin.
 - Kimi Code CLI installed and authenticated if you enable the Kimi plugin.
 - Grok CLI installed and authenticated if you enable the Grok plugin's default
-  path. The optional legacy web/tunnel path is explicit via `--transport web`.
-  That path targets grok2api at
+  path. The optional legacy web/tunnel path is explicit via `--transport web`,
+  and audited CLI-first fallback is explicit via `--transport auto` or
+  `GROK_TRANSPORT=auto`. The web path targets grok2api at
   `GROK_WEB_BASE_URL=http://127.0.0.1:8000/v1`; the plugin can bootstrap a
   local grok2api checkout into its durable managed runtime directory,
   defaulting to `~/.codex-plugin-multi/runtime/grok2api`, and auto-start the
@@ -67,11 +68,15 @@ through explicit `auth_mode: "api_key"` provider config.
 
 The Grok plugin defaults to subscription-backed Grok CLI transport
 (`subscription_cli`). It is not an `api.x.ai` integration and does not silently
-fall back to paid xAI API billing or to the legacy web tunnel. If the CLI is
-unavailable or the subscription session expires, the Grok JobRecord reports that
-failure instead of switching billing paths. Subscription usage limits are
-reported as `usage_limited`; the plugin does not purchase credits, upgrade
-tiers, or switch to a paid fallback automatically.
+fall back to paid xAI API billing or to the legacy web tunnel. If the default
+CLI path is unavailable or the subscription session expires, the Grok JobRecord
+reports that failure instead of switching billing paths. Operators can
+explicitly choose `--transport auto` or `GROK_TRANSPORT=auto` for audited
+CLI-primary fallback: the CLI is tried first, and the local web tunnel may be
+used only after a pre-source CLI readiness, login, auth-timeout, or
+model-unavailable failure. Subscription usage limits are reported as
+`usage_limited`; the plugin does not purchase credits, upgrade tiers, or switch
+to a paid fallback automatically.
 `/grok-setup` and the default `doctor` command check `grok --version`,
 `grok models`, and a source-free Grok CLI prompt for `grok-build` readiness. To
 diagnose the legacy local web tunnel, run
@@ -457,9 +462,11 @@ inspect the terminal record.
   Diagnostics report key names only and never print secret values.
 - **Grok subscription is the default Grok path.** Grok uses
   `auth_mode: "subscription_cli"` through Grok CLI and does not silently fall
-  back to paid xAI API billing or the legacy web tunnel. Tunnel bearer values
-  and session cookies for explicit `--transport web` must stay in user-managed
-  env or tunnel state and must not be printed.
+  back to paid xAI API billing or the legacy web tunnel. `--transport auto` /
+  `GROK_TRANSPORT=auto` is an explicit CLI-primary local-web fallback and still
+  must not use paid xAI API credentials. Tunnel bearer values and session
+  cookies for explicit `--transport web` or auto web fallback must stay in
+  user-managed env or tunnel state and must not be printed.
 - **Cost/quota diagnostics are safe metadata only.** Reviewer records may include
   bounded `runtime_diagnostics.provider_request` metadata such as timeout,
   prompt-character count, and request-default summaries. Failed reviewer records

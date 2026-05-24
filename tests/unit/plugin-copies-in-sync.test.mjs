@@ -28,6 +28,14 @@ import { STRIPPED_GIT_ENV_KEYS as KIMI_STRIPPED_GIT_ENV_KEYS } from "../../plugi
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 
+function readRepoFile(relPath) {
+  return readFileSync(path.join(REPO_ROOT, relPath), "utf8");
+}
+
+function readRepoJson(relPath) {
+  return JSON.parse(readRepoFile(relPath));
+}
+
 const VERBATIM_FILES = [
   "workspace.mjs",
   "process.mjs",
@@ -245,6 +253,40 @@ test("Grok and API reviewer runtimes use the shared failure diagnostic builder",
       /buildExternalModelFailureDiagnostic\s*\(/,
       `${runtimePath} does not call buildExternalModelFailureDiagnostic`
     );
+  }
+});
+
+test("provider-facing policy interfaces are inventoried and wired through shared sources", () => {
+  const table = readRepoJson("specs/171-provider-architecture-parity/provider-parity-table.json");
+  const guardrail = table.guardrail_tests.find((entry) => entry.name === "shared policy interface usage");
+  assert.ok(guardrail, "provider parity table must define shared policy interface usage guardrail");
+
+  const requiredInterfaces = [
+    "selectProviderRoute",
+    "buildReviewAuditManifest",
+    "SOURCE_CONTENT_TRANSMISSION",
+    "buildExternalModelFailureDiagnostic",
+    "reviewQualityFailureState",
+  ];
+  assert.deepEqual([...guardrail.required_interfaces].sort(), [...requiredInterfaces].sort());
+
+  const sourceFiles = [
+    "scripts/lib/auth-selection.mjs",
+    "scripts/lib/provider-route-policy.mjs",
+    "scripts/lib/review-prompt.mjs",
+    "scripts/lib/external-review.mjs",
+    "scripts/lib/external-model-failure-core.mjs",
+    "scripts/lib/external-model-review-quality.mjs",
+    "plugins/api-reviewers/scripts/api-reviewer.mjs",
+    "plugins/grok/scripts/grok-web-reviewer.mjs",
+    "plugins/claude/scripts/lib/job-record.mjs",
+    "plugins/gemini/scripts/lib/job-record.mjs",
+    "plugins/kimi/scripts/lib/job-record.mjs",
+  ];
+  const combined = sourceFiles.map((relPath) => readRepoFile(relPath)).join("\n");
+
+  for (const iface of requiredInterfaces) {
+    assert.match(combined, new RegExp(`\\b${iface}\\b`), `${iface} is not wired through provider-facing source`);
   }
 });
 

@@ -1,0 +1,128 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.invalid/codex-plugin-multi/provider-parity-table.schema.json",
+  "title": "Provider Architecture Parity Table",
+  "type": "object",
+  "required": ["schema_version", "feature", "providers", "policy_areas", "issue_fit"],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": { "type": "integer", "minimum": 1 },
+    "feature": { "type": "string", "minLength": 1 },
+    "generated_at": { "type": "string" },
+    "providers": {
+      "type": "array",
+      "uniqueItems": true,
+      "allOf": [
+        { "contains": { "const": "claude" } },
+        { "contains": { "const": "gemini" } },
+        { "contains": { "const": "kimi" } },
+        { "contains": { "const": "grok" } },
+        { "contains": { "const": "deepseek" } },
+        { "contains": { "const": "glm" } }
+      ],
+      "items": {
+        "enum": ["claude", "gemini", "kimi", "grok", "deepseek", "glm"]
+      },
+      "minItems": 6
+    },
+    "policy_areas": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/policy_area" }
+    },
+    "exceptions": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/adapter_exception" }
+    },
+    "issue_fit": { "$ref": "#/$defs/issue_fit" },
+    "verification": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/verification" }
+    },
+    "guardrail_tests": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/guardrail_test" }
+    }
+  },
+  "$defs": {
+    "policy_area": {
+      "type": "object",
+      "required": ["name", "module", "interface", "implementation", "adapters", "tests", "verdict"],
+      "additionalProperties": false,
+      "properties": {
+        "name": { "type": "string", "minLength": 1 },
+        "module": { "type": "string", "minLength": 1 },
+        "interface": { "type": "string", "minLength": 1 },
+        "implementation": { "type": "string", "minLength": 1 },
+        "adapters": { "type": "array", "items": { "type": "string" } },
+        "packaged_copies": { "type": ["array", "null"], "items": { "type": "string" } },
+        "sync_guard": { "type": ["string", "null"] },
+        "tests": { "type": "array", "items": { "type": "string" }, "minItems": 1 },
+        "verdict": {
+          "enum": [
+            "compliant_shared_policy",
+            "intentional_adapter_exception",
+            "accidental_provider_specific_policy",
+            "packaging_copy_with_sync_guard",
+            "packaging_copy_without_sufficient_sync_guard",
+            "unknown_needs_research"
+          ]
+        },
+        "drift_risk": { "enum": ["low", "medium", "high"] },
+        "missing_guardrail": { "type": ["string", "null"] }
+      }
+    },
+    "adapter_exception": {
+      "type": "object",
+      "required": ["provider", "policy_area", "current_behavior", "evidence", "verdict"],
+      "additionalProperties": false,
+      "properties": {
+        "provider": { "enum": ["claude", "gemini", "kimi", "grok", "deepseek", "glm"] },
+        "policy_area": { "type": "string" },
+        "current_behavior": { "type": "string" },
+        "reason": { "type": ["string", "null"] },
+        "evidence": { "type": "array", "items": { "type": "string" }, "minItems": 1 },
+        "tests": { "type": ["array", "string", "null"], "items": { "type": "string" } },
+        "verdict": { "enum": ["intentional", "accidental", "unknown"] },
+        "follow_up_issue": { "type": ["integer", "null"] }
+      }
+    },
+    "issue_fit": {
+      "type": "object",
+      "required": ["primary_issue", "evidence_issue", "new_issue_required"],
+      "additionalProperties": false,
+      "properties": {
+        "primary_issue": { "const": 171 },
+        "evidence_issue": { "const": 170 },
+        "related_issues": { "type": "array", "items": { "type": "integer" } },
+        "new_issue_required": { "type": "boolean" },
+        "split_recommendation": { "type": ["string", "null"] }
+      }
+    },
+    "verification": {
+      "type": "object",
+      "required": ["command", "status"],
+      "additionalProperties": false,
+      "properties": {
+        "command": { "type": "string" },
+        "status": { "enum": ["passed", "failed", "not_run"] },
+        "evidence": { "type": ["string", "null"] }
+      }
+    },
+    "guardrail_test": {
+      "type": "object",
+      "required": ["name", "file", "purpose", "red_condition", "green_condition", "verification_command"],
+      "additionalProperties": false,
+      "properties": {
+        "name": { "type": "string", "minLength": 1 },
+        "file": { "type": "string", "minLength": 1 },
+        "purpose": { "type": "string", "minLength": 1 },
+        "red_condition": { "type": "string", "minLength": 1 },
+        "green_condition": { "type": "string", "minLength": 1 },
+        "verification_command": { "type": "string", "minLength": 1 },
+        "required_fields": { "type": "array", "items": { "type": "string", "minLength": 1 } },
+        "required_interfaces": { "type": "array", "items": { "type": "string", "minLength": 1 } }
+      }
+    }
+  }
+}
