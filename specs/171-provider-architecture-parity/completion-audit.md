@@ -7,7 +7,7 @@ Branch: `goal/provider-architecture-parity-171`
 
 ## Current Status
 
-Implementation is locally complete for the focused #171 parity hardening slice, but merge readiness is not complete because the latest PR head needs external review refresh and Claude local OAuth inference is failing before source delivery.
+Implementation is locally complete for the focused #171 parity hardening slice, but merge readiness is not complete because Claude local OAuth inference is failing before source delivery. Current head `38d4c59` has five usable external approvals.
 
 ## Requirement Coverage
 
@@ -21,7 +21,7 @@ Implementation is locally complete for the focused #171 parity hardening slice, 
 | Grok `--transport auto` is an Adapter transport capability, not alternate provider policy. | Grok CLI-first/web-fallback smoke tests and mode-derived source-bearing guardrail. | Complete |
 | Kimi step-limit and missing-verdict symptoms are handled through shared policy, not a Kimi-only special case. | Kimi initial review hit `step_limit_exceeded`; continue produced APPROVE with `resume_without_source_resend`, zero selected-source bytes, and `source_content_transmission=not_sent`. A later latest-delta Kimi run returned substantive prose without the required verdict marker; the second repair attempt exposed a shared bug where failed no-source repairs could lose the original source attempt and resend the packet. Shared policy now carries the original source-bearing attempt through no-source repair chains. | Complete for shared retry behavior |
 | Full guardrail against provider-neutral drift. | `plugin-copies-in-sync.test.mjs`, `docs-contracts.test.mjs`, `external-model-contracts.test.mjs`, and parity-table schema coverage. | Complete for current policy surface |
-| Final six-provider latest-head approval. | Gemini, Grok, GLM, and DeepSeek approved the latest delta before the Kimi missing-verdict repair fix; Grok used documented CLI-first `--transport auto` web fallback after `grok_cli_login_required`; Kimi remained unusable for the latest delta because of missing-verdict repair behavior that this patch fixes; Claude failed with OAuth HTTP 401 before source send. | Blocked |
+| Final six-provider latest-head approval. | Current head `38d4c59` has usable approvals from Gemini, Grok, GLM, DeepSeek, and Kimi. Grok used documented CLI-first `--transport auto` web fallback after `grok_cli_login_required`; Kimi approved via no-source continuation after `step_limit_exceeded`, with zero selected-source bytes and `source_content_transmission=not_sent`. Claude failed with OAuth HTTP 401 before source send. | Blocked on Claude OAuth or operator waiver |
 
 ## Verification Evidence
 
@@ -42,11 +42,25 @@ Implementation is locally complete for the focused #171 parity hardening slice, 
 
 ## Review Evidence
 
-The focused current-delta review packet stayed under the shared source-packet budget instead of bypassing it:
+The focused current-delta review packets stayed under the shared source-packet budget instead of bypassing it:
 
 - `provider-architecture-parity-171-focused-current.diff`: current hardening delta.
 - `provider-architecture-parity-171-focused-evidence.md`: scope, root problem, verification, and review focus.
+- Latest current-head focused packet for direct API/Grok/Kimi refresh: 22914 bytes across eight diff files, not full file bodies.
 - Full `git diff origin/main`: 597224 bytes, intentionally not sent as one source packet because it exceeded the 512 KiB shared budget.
+
+Current-head approvals for `38d4c59`:
+
+- Gemini: APPROVE, job `c8515a3d-1338-411e-a675-8093967a94f5`.
+- Grok: APPROVE, job `job_69fb63bd-363b-40d7-a963-6d3d79df5d1b`; `--transport auto` recorded `fallback_reason=grok_cli_login_required`, `selected_route=subscription_web`, and no paid API fallback.
+- GLM: APPROVE, job `job_25e493d7-93b9-4851-abee-dba13358ecfc`.
+- DeepSeek: APPROVE, job `job_14c3e957-3395-4b0c-9035-b17cd155a04e`.
+- Kimi: APPROVE, continue job `987ecc31-66af-49e4-8cfb-146ccd341827`; parent `4d7f6ddf-130a-46dd-850b-e70de3bbba98` hit `step_limit_exceeded`, continue used `resume_without_source_resend`, selected zero files, and returned APPROVE.
+
+Gemini Code Assist comments:
+
+- Resolved stale `sourceTransmission` typo thread; current Grok code uses `sourceContentTransmissionForExecution`.
+- Resolved stale Grok auto-fallback diagnostics thread; current prompt-size fallback preserves `diagnostics.cli_request`.
 
 Usable approvals before the Kimi repair follow-up:
 
@@ -66,10 +80,9 @@ Latest-delta refresh before the Kimi missing-verdict repair fix:
 
 Unusable slot:
 
-- Claude: `oauth_inference_rejected`, HTTP 401 before source delivery, `source_content_transmission=not_sent`, zero token usage.
+- Claude: current-head job `850deefe-bf2f-4f11-a65c-d024a47f629c`, `oauth_inference_rejected`, HTTP 401 before source delivery, `source_content_transmission=not_sent`, zero token usage.
 
 ## Remaining Gate
 
-1. Re-run latest-head external review after the Kimi missing-verdict repair fix.
-2. Refresh/fix Claude OAuth non-interactive inference or obtain an explicit operator waiver.
-3. Re-run `npm run lint:sync` and a final test command after any further code changes.
+1. Refresh/fix Claude OAuth non-interactive inference or obtain an explicit operator waiver.
+2. Re-run `npm run lint:sync` and a final test command after any further code changes.

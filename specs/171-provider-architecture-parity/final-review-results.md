@@ -1,30 +1,30 @@
 # Final External Review Results
 
-Stage: focused current-delta review before Kimi missing-verdict repair follow-up
-Status: blocked on latest-head review refresh and Claude local OAuth readiness
+Stage: current-head review refresh for PR head `38d4c59`
+Status: five provider approvals recorded; final six-provider gate blocked on Claude local OAuth readiness or explicit operator waiver
 
 ## Review Packet
 
-- Scope: `/private/tmp/cpm-171-review/provider-architecture-parity-171-focused-current.diff`
-- Evidence: `/private/tmp/cpm-171-review/provider-architecture-parity-171-focused-evidence.md`
-- Packet size before the Kimi missing-verdict repair follow-up: 165844 bytes across two files
+- Current-head focused source packet: branch-diff from `4ac2b89` to `38d4c59`.
+- Latest focused packet for direct API/Grok/Kimi refresh: 22914 bytes across eight diff files, not full file bodies.
+- Earlier packet before the Kimi missing-verdict repair follow-up: `/private/tmp/cpm-171-review/provider-architecture-parity-171-focused-current.diff` plus `/private/tmp/cpm-171-review/provider-architecture-parity-171-focused-evidence.md`, 165844 bytes across two files.
 - Reason for focused packet: full `git diff origin/main` packet was 597224 bytes, above the shared 512 KiB source-packet budget; reviewers were therefore scoped to the current hardening delta instead of bypassing the new policy.
 
-## Usable Results Before Kimi Repair Follow-Up
+## Current-Head Review Results
 
 | Provider | Result | Job | Source State | Notes |
 | --- | --- | --- | --- | --- |
-| Gemini | APPROVE | `6b46794f-dfb3-40a4-b225-78c64a34bb6d` | sent | No blocking findings. |
-| Grok | APPROVE | `job_70418f8e-008c-4785-b7f0-82e3908fb824` | sent | CLI transport, no web/API fallback used. |
-| GLM | APPROVE | `job_17545183-a3b1-4852-8743-268587756869` | sent | No blocking findings. |
-| DeepSeek | APPROVE | `job_84086e26-b4e5-489e-b99b-56e0336966fb` | sent | Raised non-blocking foreground/static guardrail concerns; addressed with stronger tests. |
-| Kimi | APPROVE | `f82a94c5-5b7e-46dc-aca1-458371e47d52` | not_sent on continue | Initial job `5b2b6fca-7f0e-4918-80c8-9d264572ff9b` hit `step_limit_exceeded` after source send. Continue used `resume_without_source_resend` with zero selected-source bytes and returned APPROVE. |
+| Gemini | APPROVE | `c8515a3d-1338-411e-a675-8093967a94f5` | sent | No blocking findings. Non-blocking binary-diff concern acknowledged; shared `diffSourceFiles` owns diff rendering. |
+| Grok | APPROVE | `job_69fb63bd-363b-40d7-a963-6d3d79df5d1b` | sent | `--transport auto` fell back from `grok_cli_login_required` to local web, selected `subscription_web`, no paid API fallback. |
+| GLM | APPROVE | `job_25e493d7-93b9-4851-abee-dba13358ecfc` | sent | No blockers. Non-blocking cleanup notes only. |
+| DeepSeek | APPROVE | `job_14c3e957-3395-4b0c-9035-b17cd155a04e` | sent | No blockers. Non-blocking cleanup notes only. |
+| Kimi | APPROVE | `987ecc31-66af-49e4-8cfb-146ccd341827` | not_sent on continue | Initial current-head job `4d7f6ddf-130a-46dd-850b-e70de3bbba98` hit `step_limit_exceeded` after source send. Continue used `resume_without_source_resend`, selected zero files, and returned APPROVE. |
 
 ## Unusable Slot
 
 | Provider | Result | Job | Source State | Blocker |
 | --- | --- | --- | --- | --- |
-| Claude | FAILED | `4ab5a239-43e5-430e-bc33-596ccc7b0853` | not_sent | `oauth_inference_rejected`: Claude Code non-interactive OAuth returned HTTP 401 before source delivery. |
+| Claude | FAILED | `850deefe-bf2f-4f11-a65c-d024a47f629c` | not_sent | `oauth_inference_rejected`: Claude Code non-interactive OAuth returned HTTP 401 before source delivery. |
 
 ## Review Follow-Ups Addressed
 
@@ -34,6 +34,7 @@ Status: blocked on latest-head review refresh and Claude local OAuth readiness
 - Live latest-delta Kimi testing exposed a second no-resend gap: after a no-source repair failed for `review_not_completed:missing_verdict`, the next continue could lose the original source-bearing attempt and resend source. The shared provider route policy now treats substantive invalid-verdict prose as no-source-repair eligible and carries the original source attempt through failed no-source repair chains. This applies through the shared policy used by Claude, Gemini, and Kimi continue paths.
 - Latest-head direct API approval preflight exposed that DeepSeek/GLM branch-diff still rendered full HEAD file bodies. Direct API branch-diff now uses the shared `diffSourceFiles` diff-packet collector, with a static guardrail and smoke coverage proving the prompt contains `diff --git` instead of relying on full selected files.
 - Latest-head Grok review refresh then exposed the same class of bug in Grok branch-diff: prompt preflight failed at 423,967 characters before source send because Grok still read full `HEAD:<path>` bodies. Grok branch-diff now uses the same shared `diffSourceFiles` collector and smoke coverage asserts the prompt contains `diff --git`.
+- Gemini Code Assist reported an earlier `sourceTransmission` typo and missing `cli_request` diagnostics in Grok auto fallback prompt-size failures. Both threads are resolved on the current head: Grok now calls the shared `sourceContentTransmissionForExecution` path and preserves `diagnostics.cli_request` in the fallback `prompt_too_large` path.
 
 ## Latest-Delta Refresh Before Kimi Repair Fix
 
@@ -48,4 +49,4 @@ Status: blocked on latest-head review refresh and Claude local OAuth readiness
 
 ## Remaining Gate
 
-Final six-provider latest-head approval is not complete until the latest PR head is reviewed after the Kimi repair fix and Claude is usable or explicitly waived by the operator. The earlier usable reviewers approved prior deltas after source-packet budget constraints were honored, but those approvals are not final merge evidence for the current head.
+Final six-provider latest-head approval is not complete because Claude failed before source send with local OAuth HTTP 401. The current head has five usable approvals; Claude requires OAuth repair or an explicit operator waiver before the six-provider merge gate is satisfied.
