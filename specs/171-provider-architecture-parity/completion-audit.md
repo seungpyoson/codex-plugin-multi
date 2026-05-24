@@ -7,7 +7,7 @@ Branch: `goal/provider-architecture-parity-171`
 
 ## Current Status
 
-Implementation is locally complete for the focused #171 parity hardening slice, but merge readiness is not complete because Claude local OAuth inference is failing before source delivery.
+Implementation is locally complete for the focused #171 parity hardening slice, but merge readiness is not complete because the latest PR head needs external review refresh and Claude local OAuth inference is failing before source delivery.
 
 ## Requirement Coverage
 
@@ -21,7 +21,7 @@ Implementation is locally complete for the focused #171 parity hardening slice, 
 | Grok `--transport auto` is an Adapter transport capability, not alternate provider policy. | Grok CLI-first/web-fallback smoke tests and mode-derived source-bearing guardrail. | Complete |
 | Kimi step-limit symptom is handled through shared policy, not a Kimi-only special case. | Kimi initial review hit `step_limit_exceeded`; continue produced APPROVE with `resume_without_source_resend`, zero selected-source bytes, and `source_content_transmission=not_sent`. | Complete for shared retry behavior |
 | Full guardrail against provider-neutral drift. | `plugin-copies-in-sync.test.mjs`, `docs-contracts.test.mjs`, `external-model-contracts.test.mjs`, and parity-table schema coverage. | Complete for current policy surface |
-| Final six-provider latest-head approval. | Gemini, Grok, GLM, DeepSeek, and Kimi approved the focused current delta; Claude failed with OAuth HTTP 401 before source send. | Blocked |
+| Final six-provider latest-head approval. | Gemini, Grok, GLM, DeepSeek, and Kimi approved the focused current delta before the final coverage guardrail follow-up; Claude failed with OAuth HTTP 401 before source send. | Blocked |
 
 ## Verification Evidence
 
@@ -45,7 +45,7 @@ The focused current-delta review packet stayed under the shared source-packet bu
 - `provider-architecture-parity-171-focused-evidence.md`: scope, root problem, verification, and review focus.
 - Full `git diff origin/main`: 597224 bytes, intentionally not sent as one source packet because it exceeded the 512 KiB shared budget.
 
-Usable approvals:
+Usable approvals before the final coverage guardrail follow-up:
 
 - Gemini: APPROVE.
 - Grok: APPROVE.
@@ -59,6 +59,6 @@ Unusable slot:
 
 ## Remaining Gate
 
-1. Refresh/fix Claude OAuth non-interactive inference or obtain an explicit operator waiver.
-2. Re-run any required final latest-head review after the Claude gate is resolved.
+1. Re-run latest-head external review after this coverage guardrail commit.
+2. Refresh/fix Claude OAuth non-interactive inference or obtain an explicit operator waiver.
 3. Re-run `npm run lint:sync` and a final test command after any further code changes.

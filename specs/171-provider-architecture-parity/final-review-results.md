@@ -1,16 +1,16 @@
 # Final External Review Results
 
-Stage: latest focused current-delta review
-Status: blocked only on Claude local OAuth readiness
+Stage: focused current-delta review before final coverage guardrail follow-up
+Status: blocked on latest-head review refresh and Claude local OAuth readiness
 
 ## Review Packet
 
 - Scope: `/private/tmp/cpm-171-review/provider-architecture-parity-171-focused-current.diff`
 - Evidence: `/private/tmp/cpm-171-review/provider-architecture-parity-171-focused-evidence.md`
-- Packet size after final guardrail hardening: 165844 bytes across two files
+- Packet size before the final coverage guardrail follow-up: 165844 bytes across two files
 - Reason for focused packet: full `git diff origin/main` packet was 597224 bytes, above the shared 512 KiB source-packet budget; reviewers were therefore scoped to the current hardening delta instead of bypassing the new policy.
 
-## Usable Results
+## Usable Results Before Coverage Follow-Up
 
 | Provider | Result | Job | Source State | Notes |
 | --- | --- | --- | --- | --- |
@@ -34,4 +34,4 @@ Status: blocked only on Claude local OAuth readiness
 
 ## Remaining Gate
 
-Final six-provider latest-head approval is not complete until Claude is usable or explicitly waived by the operator. The five usable reviewers approved the focused current delta after source-packet budget constraints were honored.
+Final six-provider latest-head approval is not complete until the latest PR head is reviewed and Claude is usable or explicitly waived by the operator. The five usable reviewers approved the focused current delta before the final coverage guardrail follow-up, after source-packet budget constraints were honored.
