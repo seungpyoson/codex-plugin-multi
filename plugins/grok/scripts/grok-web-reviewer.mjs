@@ -19,6 +19,7 @@ import { buildPrivacyRedactor } from "./lib/privacy-redaction.mjs";
 import {
   EXTERNAL_REVIEW_KEYS,
   SOURCE_CONTENT_TRANSMISSION,
+  sourceContentTransmissionForExecution,
 } from "./lib/external-review.mjs";
 import { isJwtShapedToken } from "./lib/jwt.mjs";
 
@@ -2884,17 +2885,21 @@ function isTunnelTransportExecution(execution) {
   return reason === "tunnel_unavailable" || reason === "tunnel_timeout";
 }
 
-function sourceTransmission(completed, payloadSent) {
+function sourceContentTransmissionForPayload({ completed, payloadSent, errorCode = null, pidInfo = null }) {
   if (payloadSent === SOURCE_CONTENT_TRANSMISSION.MAY_BE_SENT) return SOURCE_CONTENT_TRANSMISSION.MAY_BE_SENT;
   if (payloadSent === SOURCE_CONTENT_TRANSMISSION.SENT) return SOURCE_CONTENT_TRANSMISSION.SENT;
   if (payloadSent === SOURCE_CONTENT_TRANSMISSION.NOT_SENT) return SOURCE_CONTENT_TRANSMISSION.NOT_SENT;
   if (completed || payloadSent === true) return SOURCE_CONTENT_TRANSMISSION.SENT;
   if (payloadSent === false) return SOURCE_CONTENT_TRANSMISSION.NOT_SENT;
-  return SOURCE_CONTENT_TRANSMISSION.UNKNOWN;
+  return sourceContentTransmissionForExecution({
+    status: completed ? "completed" : "failed",
+    errorCode,
+    pidInfo,
+  });
 }
 
-function disclosure(cfg, completed, payloadSent) {
-  const transmission = sourceTransmission(completed, payloadSent);
+function disclosure(cfg, completed, payloadSent, errorCode = null, pidInfo = null) {
+  const transmission = sourceContentTransmissionForPayload({ completed, payloadSent, errorCode, pidInfo });
   const route = cfg.transport === "cli"
     ? "through the subscription-backed Grok CLI"
     : "through a subscription-backed web session";
@@ -3081,7 +3086,12 @@ function buildTerminalExternalReview({ cfg, mode, options, scopeInfo, execution,
 function buildReviewMetadata(cfg, scopeInfo, execution = null, startedAt = null, endedAt = null) {
   const sourceBearing = execution?.payload_sent ?? (execution?.exitCode === 0 && execution?.parsed?.ok === true);
   const processCompleted = execution?.exitCode === 0 && execution?.parsed?.ok === true;
-  const sourceContentTransmission = sourceTransmission(processCompleted, execution?.payload_sent ?? (processCompleted ? true : null));
+  const sourceContentTransmission = sourceContentTransmissionForPayload({
+    completed: processCompleted,
+    payloadSent: execution?.payload_sent ?? (processCompleted ? true : null),
+    errorCode: execution?.parsed?.reason ?? null,
+    pidInfo: execution?.pidInfo ?? null,
+  });
   const route = selectProviderRoute({
     requestedRoute: "subscription",
     providerCapabilities: providerCapabilitiesForConfig(cfg),
@@ -3127,6 +3137,8 @@ function buildReviewMetadata(cfg, scopeInfo, execution = null, startedAt = null,
     },
     route: {
       selectedRoute: route.selected_route,
+      routeStep: route.route_step,
+      routeSteps: route.route_steps,
       fallbackReason: cfg.fallback_reason ?? route.fallback_reason,
       approvalScope: null,
       authPath: route.auth_path,
@@ -3189,8 +3201,13 @@ function buildRecord({ cfg, mode, options, scopeInfo, execution, startedAt, ende
       ? `${errorMessage || errorCode} (${formatDiagnosticPairs(safeDiagnostics)})`
       : (errorMessage || errorCode));
   const payloadSent = execution.payload_sent ?? (processCompleted ? true : null);
-  const reviewDisclosure = disclosure(cfg, completed, payloadSent);
-  const transmission = sourceTransmission(completed, payloadSent);
+  const reviewDisclosure = disclosure(cfg, completed, payloadSent, errorCode, execution.pidInfo ?? null);
+  const transmission = sourceContentTransmissionForPayload({
+    completed,
+    payloadSent,
+    errorCode,
+    pidInfo: execution.pidInfo ?? null,
+  });
   const runtimeDiagnostics = safeDiagnostics ? (cfg.transport === "cli" ? {
     cli_request: {
       transport: "cli",
@@ -4353,6 +4370,10 @@ async function cmdRun(options) {
           prompt = promptFor(cfg, mode, options.prompt ?? "", scopeInfo);
           if (prompt.length > cfg.max_prompt_chars) {
             execution = providerFailure("prompt_too_large", redactor()(`prompt_too_large:${prompt.length} chars exceeds GROK_WEB_MAX_PROMPT_CHARS=${cfg.max_prompt_chars}`), null, null, false);
+            execution.diagnostics = {
+              cli_request: cliRequestDiagnosticsForFallback(cliFailure),
+              ...(execution.diagnostics ?? {}),
+            };
             execution.prompt = prompt;
           } else {
             const webExecution = await executeWebReview({

@@ -329,6 +329,8 @@ function reviewAuditManifest(invocation, prompt, containmentPath, execution) {
     },
     route: {
       selectedRoute: invocation.selected_route ?? null,
+      routeStep: invocation.route_step ?? null,
+      routeSteps: invocation.route_steps ?? null,
       fallbackReason: invocation.fallback_reason ?? null,
       approvalScope: null,
       authPath: invocation.selected_auth_path ?? null,
@@ -342,6 +344,29 @@ function reviewAuditManifest(invocation, prompt, containmentPath, execution) {
   });
 }
 
+function sourcePacketPolicyPreflight(invocation, prompt, containmentPath) {
+  const preflightExecution = {
+    preflight: true,
+    exitCode: null,
+    parsed: null,
+    pidInfo: null,
+    kimiSessionId: null,
+    stdout: "",
+    stderr: "",
+    errorMessage: "source_packet_too_large: source packet policy preflight pending",
+  };
+  const manifest = reviewAuditManifest(invocation, prompt, containmentPath, preflightExecution);
+  const policy = manifest?.source_packet_policy ?? null;
+  if (!policy || policy.source_send_allowed !== false) return null;
+  const errorCode = policy.source_packet_policy_error_code ?? "source_packet_policy_blocked";
+  const execution = {
+    ...preflightExecution,
+    errorMessage: `${errorCode}: ${policy.suggested_action ?? "source packet policy blocked selected source send"}`,
+  };
+  execution.reviewAuditManifest = reviewAuditManifest(invocation, prompt, containmentPath, execution);
+  return execution;
+}
+
 function subscriptionRouteFacts({ sourceBearing = false } = {}) {
   const route = selectProviderRoute({
     requestedRoute: "subscription",
@@ -350,6 +375,8 @@ function subscriptionRouteFacts({ sourceBearing = false } = {}) {
   });
   return {
     selected_route: route.selected_route,
+    route_step: route.route_step,
+    route_steps: route.route_steps,
     fallback_reason: route.fallback_reason,
     selected_auth_path: route.auth_path,
     billing_path: route.billing_path,
@@ -1007,6 +1034,31 @@ async function executeRun(invocation, prompt, { foreground, lifecycleEvents = nu
     upsertJob(workspaceRoot, cancelledRecord);
     if (foreground) printLifecycleJson(cancelledRecord, lifecycleEvents);
     process.exit(0);
+  }
+
+  const sourcePacketPreflight = sourcePacketPolicyPreflight(invocation, prompt, containment.path);
+  if (sourcePacketPreflight) {
+    if (neutralCwd) {
+      try { rmSync(neutralCwd, { recursive: true, force: true }); } catch { /* best-effort */ }
+    }
+    if (launchFiles) launchFiles.cleanup();
+    if (disposeEffective) {
+      try { containment.cleanup(); } catch { /* best-effort */ }
+    }
+    const errorRecord = buildJobRecord(invocation, {
+      exitCode: sourcePacketPreflight.exitCode,
+      endedAt: sourcePacketPreflight.endedAt,
+      parsed: sourcePacketPreflight.parsed,
+      pidInfo: null,
+      kimiSessionId: null,
+      errorMessage: sourcePacketPreflight.errorMessage,
+      reviewAuditManifest: sourcePacketPreflight.reviewAuditManifest,
+      ...redactionFieldsForPrompt(prompt),
+    }, mutations);
+    writeJobFile(workspaceRoot, jobId, errorRecord);
+    upsertJob(workspaceRoot, errorRecord);
+    if (foreground) printLifecycleJson(errorRecord, lifecycleEvents);
+    process.exit(2);
   }
 
   const preflightExecution = await kimiReadinessPreflight(invocation, profile);

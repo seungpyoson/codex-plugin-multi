@@ -7,6 +7,7 @@
 - `generated_at`: ISO-8601 date or timestamp
 - `providers`: array of provider ids
 - `policy_areas`: array of Policy Area records
+- `semantic_drift_policy`: Semantic Drift Policy record
 - `exceptions`: array of Adapter Exception records
 - `issue_fit`: Issue Fit record
 - `verification`: array of Verification Evidence records
@@ -18,8 +19,28 @@ Validation rules:
   `glm`.
 - Every policy area must include at least one canonical Module and one
   verification command or test.
-- Every provider-specific exception must have a verdict and either a follow-up
-  issue link or an explicit null reason when no follow-up issue is needed.
+- Every provider-specific exception must have a `difference_type`,
+  `shared_policy_boundary`, `clear_reason`, evidence, tests, verdict, and
+  explicit follow-up issue state.
+
+## Semantic Drift Policy
+
+- `standard`: clear reason rule. Provider differences are allowed only when
+  they are Adapter capability facts, documented policy exceptions, known
+  accidental drift, or research gaps.
+- `allowed_intentional_difference_types`: `adapter_capability_fact` and
+  `documented_policy_exception`.
+- `tracked_noncompliance_types`: `known_accidental_drift` and `research_gap`.
+- `required_exception_fields`: exact Adapter Exception fields enforced by docs
+  contract tests.
+
+Validation rules:
+
+- Provider parity must not require fake parity or fake flags.
+- Intentional differences must use an allowed intentional difference type and
+  include tests.
+- Non-intentional differences must remain explicitly classified as drift or
+  research gaps until fixed or proven intentional.
 
 ## Policy Area
 
@@ -44,18 +65,109 @@ Validation rules:
 
 - `provider`: provider id
 - `policy_area`: policy area name
+- `difference_type`: `adapter_capability_fact`,
+  `documented_policy_exception`, `known_accidental_drift`, or `research_gap`
 - `current_behavior`: current evidence-backed behavior
-- `reason`: provider limitation, product decision, packaging constraint, or
-  unknown
+- `capability_fact`: provider capability that justifies an intentional
+  difference, or null
+- `shared_policy_boundary`: exact shared-policy field or route where the
+  provider-specific behavior is contained
+- `clear_reason`: provider limitation, product decision, packaging constraint,
+  or research gap
 - `evidence`: source path, issue URL, test path, or command result
-- `tests`: guard tests or `missing`
+- `tests`: guard tests, or explicit `missing: ...` entries for research gaps
 - `verdict`: intentional, accidental, or unknown
 - `follow_up_issue`: GitHub issue number or null
 
 Validation rules:
 
-- Exceptions cannot be provider-name product policy without a reason.
+- Exceptions cannot be provider-name product policy without a clear reason and
+  shared policy boundary.
 - Unknown exceptions must become research/tasks before implementation.
+- Intentional exceptions must not use `missing: ...` tests.
+
+## Provider Policy Interface
+
+- `provider`: provider id
+- `route_ladder`: ordered array of Route Step records
+- `packet_policy`: Source Packet Policy record
+- `readiness_policy`: shared readiness/auth state contract
+- `failure_policy`: shared failure taxonomy and suggested action contract
+- `status_policy`: shared lifecycle/status/review-panel field contract
+- `review_quality_policy`: shared verdict/failed-slot contract
+
+Validation rules:
+
+- Every provider must expose the same policy Interface.
+- Provider-specific behavior must be represented as Adapter capability facts.
+- Unsupported route steps are capability facts, not policy exceptions.
+
+## Route Step
+
+- `route`: `subscription`, `direct_api`, or `openrouter`
+- `capability_status`: `available`, `unsupported`, `not_configured`,
+  `not_authenticated`, `usage_limited`, `unavailable`, or `unknown`
+- `attempted`: boolean
+- `selected`: boolean
+- `skipped_reason`: string or null
+- `fallback_reason`: string or null
+- `auth_path`: string or null
+- `billing_path`: string or null
+- `source_send_approval_required`: boolean
+- `source_send_approval_state`: `not_required`, `required`, `approved`, or
+  `blocked`
+- `source_content_transmission`: `not_sent`, `may_be_sent`, `sent`, or
+  `unknown`
+- `error_code`: string or null
+- `suggested_action`: string or null
+
+Validation rules:
+
+- Route order is always subscription -> direct API -> OpenRouter.
+- The policy must record unsupported steps before evaluating later steps.
+- Billing-path changes require approval tuple changes before source send.
+- Fallback after source send is blocked unless the shared resend policy permits
+  it.
+
+## Adapter Capability Fact
+
+- `provider`: provider id
+- `route`: route step the fact applies to
+- `capability`: subscription Adapter, direct API Adapter, OpenRouter Adapter,
+  prompt budget, byte budget, step budget, model availability, auth probe, or
+  transport
+- `status`: available, unsupported, not configured, unavailable, unknown
+- `evidence`: source path, config path, issue URL, or command result
+- `tests`: proving tests or missing-test task
+
+Validation rules:
+
+- Capability facts may explain different treatment only when evidence and tests
+  are present.
+- Capability facts must not duplicate product policy in provider entrypoints.
+
+## Source Packet Policy
+
+- `mode`: `review`, `adversarial-review`, `custom-review`, or `rescue`
+- `source_surface`: branch diff, selected source, diff packet, shard, or rescue
+  packet
+- `file_bytes`: selected file total
+- `rendered_prompt_bytes`: rendered prompt total
+- `provider_budget`: Adapter-provided limit record
+- `decision`: `within_budget`, `over_budget`, `requires_split`,
+  `requires_override`, or `unknown`
+- `source_send_allowed`: boolean
+- `retry_allowed`: boolean
+- `resend_requires_confirmation`: boolean
+- `surface_changed`: boolean
+
+Validation rules:
+
+- One packet policy must cover all six providers and all review modes.
+- Provider limits are Adapter capability facts.
+- Over-budget predictable failures should happen before source send.
+- Full-source to diff/shard changes must be audited and cannot count as the
+  original review surface approval.
 
 ## Guardrail Test
 

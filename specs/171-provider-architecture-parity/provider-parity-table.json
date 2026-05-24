@@ -14,8 +14,8 @@
     {
       "name": "route/auth/source-send approval",
       "module": "scripts/lib/provider-route-policy.mjs",
-      "interface": "selectProviderRoute, normalizeApprovalScope, resolveAuthSelection",
-      "implementation": "Shared route policy selects subscription or API paths and records approval scope semantics for source-bearing sends.",
+      "interface": "buildProviderPolicyContract, selectProviderRoute, normalizeApprovalScope, resolveAuthSelection",
+      "implementation": "Shared route policy models the subscription -> direct_api -> openrouter ladder for all providers through Adapter capability facts and records route_step, route_steps, auth, billing, fallback, and source-send approval fields.",
       "adapters": [
         "claude",
         "gemini",
@@ -42,8 +42,8 @@
     {
       "name": "packet budgets",
       "module": "scripts/lib/review-prompt.mjs",
-      "interface": "buildReviewPrompt, prompt budget env caps",
-      "implementation": "Direct API reviewers and Grok enforce prompt caps before launch. Claude subscription custom-review has a reproduced full-source packet budget gap tracked by #173; #172 remains the broader large-packet routing and chunking follow-up.",
+      "interface": "buildReviewPrompt, buildReviewAuditManifest, evaluateSourcePacketPolicy",
+      "implementation": "Shared source packet policy records source_packet_budget_bytes, selected_source_bytes, source_packet_within_budget, source_packet_action, resend_confirmation_required, review_surface_changed, and source_content_transmission. It blocks over-budget source-bearing packets before source send and blocks automatic resend after source-sent failures unless explicitly confirmed or narrowed.",
       "adapters": [
         "claude",
         "gemini",
@@ -57,28 +57,36 @@
       ],
       "sync_guard": "npm run lint:sync runs sync-review-prompt.mjs --check",
       "tests": [
+        "tests/unit/provider-route-policy.test.mjs",
         "tests/unit/review-prompt.test.mjs",
         "tests/smoke/grok-web.smoke.test.mjs"
       ],
-      "verdict": "unknown_needs_research",
-      "drift_risk": "medium",
-      "missing_guardrail": "#173 tracks the reproduced Claude subscription custom-review budget gate; #172 tracks broader large review packet failures and provider-specific capacity policy."
+      "verdict": "compliant_shared_policy",
+      "drift_risk": "low",
+      "missing_guardrail": null
     },
     {
       "name": "fallback semantics",
-      "module": "plugins/grok/scripts/grok-companion.mjs -> plugins/grok/scripts/grok-web-reviewer.mjs",
-      "interface": "GROK_TRANSPORT=cli|web|auto and --transport cli|web|auto",
-      "implementation": "Grok defaults to CLI, explicit web remains explicit, and auto may fall back only from approved CLI readiness/login/model failures to the local web tunnel.",
+      "module": "scripts/lib/provider-route-policy.mjs plus provider Adapters",
+      "interface": "shared route ladder fallback ledger: subscription -> direct_api -> openrouter",
+      "implementation": "Shared route ladder records attempted, selected, skipped_reason, and fallback_reason for subscription, direct_api, and openrouter. Adapter-specific transport choices, such as Grok CLI/web auto, are documented capability facts inside the selected shared route rather than alternate provider policy.",
       "adapters": [
-        "grok"
+        "claude",
+        "gemini",
+        "kimi",
+        "grok",
+        "deepseek",
+        "glm"
       ],
       "packaged_copies": null,
       "sync_guard": null,
       "tests": [
-        "tests/smoke/grok-web.smoke.test.mjs"
+        "tests/unit/provider-route-policy.test.mjs",
+        "tests/smoke/grok-web.smoke.test.mjs",
+        "tests/smoke/api-reviewers.smoke.test.mjs"
       ],
-      "verdict": "intentional_adapter_exception",
-      "drift_risk": "medium",
+      "verdict": "compliant_shared_policy",
+      "drift_risk": "low",
       "missing_guardrail": null
     },
     {
@@ -296,29 +304,121 @@
       "missing_guardrail": null
     }
   ],
+  "semantic_drift_policy": {
+    "standard": "Provider parity does not require fake parity or fake sameness. Every provider difference must have a clear reason: either an Adapter capability fact consumed by shared policy fields, a documented policy exception with evidence and tests, or an explicitly tracked noncompliance/research gap. Unclassified provider-specific semantics are drift.",
+    "allowed_intentional_difference_types": [
+      "adapter_capability_fact",
+      "documented_policy_exception"
+    ],
+    "tracked_noncompliance_types": [
+      "known_accidental_drift",
+      "research_gap"
+    ],
+    "required_exception_fields": [
+      "provider",
+      "policy_area",
+      "difference_type",
+      "current_behavior",
+      "capability_fact",
+      "shared_policy_boundary",
+      "clear_reason",
+      "evidence",
+      "tests",
+      "verdict",
+      "follow_up_issue"
+    ]
+  },
   "exceptions": [
     {
       "provider": "grok",
       "policy_area": "fallback semantics",
-      "current_behavior": "Grok has two subscription transports. Default CLI remains terminal; explicit auto is the only mode allowed to fall back from approved CLI readiness/login/model failures to the local web tunnel.",
-      "reason": "Grok lacks a direct shared companion API route and #159 established CLI-primary with audited local web fallback, never paid xAI API fallback.",
+      "difference_type": "adapter_capability_fact",
+      "current_behavior": "Grok has CLI/web subscription transports and local web fallback mechanics. The user-facing --transport auto flag is Grok-only because no other current provider Adapter has two subscription-backed transports to arbitrate between.",
+      "capability_fact": "Grok is the only current Adapter with two subscription-backed transports: CLI and local web tunnel.",
+      "shared_policy_boundary": "Shared policy records route_step=subscription, route_steps, selected_route, fallback_reason, auth_path, source_content_transmission, and runtime diagnostics; Grok transport auto only chooses between subscription transports and never changes the shared provider route ladder.",
+      "clear_reason": "This is an Adapter capability fact, not a provider-policy exception: shared route policy still treats Grok CLI and local web as subscription-route candidates, records route/fallback/source metadata, and forbids silent paid xAI API fallback. Providers with one subscription transport do not need a fake --transport auto flag; DeepSeek/GLM without subscription still enter the same subscription -> direct API -> OpenRouter ladder through capability facts.",
       "evidence": [
         "plugins/grok/scripts/grok-companion.mjs",
         "plugins/grok/scripts/grok-web-reviewer.mjs",
         "tests/smoke/grok-web.smoke.test.mjs",
+        "tests/unit/plugin-copies-in-sync.test.mjs",
+        "specs/171-provider-architecture-parity/evidence-map.md",
         "https://github.com/seungpyoson/codex-plugin-multi/issues/159"
       ],
       "tests": [
-        "tests/smoke/grok-web.smoke.test.mjs"
+        "tests/smoke/grok-web.smoke.test.mjs",
+        "tests/unit/plugin-copies-in-sync.test.mjs",
+        "tests/unit/docs-contracts.test.mjs"
       ],
       "verdict": "intentional",
       "follow_up_issue": 159
     },
     {
+      "provider": "kimi",
+      "policy_area": "route/auth/source-send approval",
+      "difference_type": "research_gap",
+      "current_behavior": "Kimi declares subscription capability only, rejects --auth-mode, and reports Kimi/Moonshot API env names as ignored. Local review artifacts show Kimi custom-review can fail after source send with step_limit_exceeded.",
+      "capability_fact": null,
+      "shared_policy_boundary": "Kimi must still flow through shared route_step and route_steps fields; unsupported direct API/OpenRouter states must be Adapter capability facts, not separate Kimi policy.",
+      "clear_reason": "No evidence yet proves Kimi cannot participate in the same subscription -> direct API -> OpenRouter policy ladder; provider step budget is a capacity fact for shared packet policy.",
+      "evidence": [
+        "plugins/kimi/scripts/kimi-companion.mjs",
+        "README.md",
+        "specs/171-provider-architecture-parity/evidence-map.md",
+        "https://github.com/seungpyoson/codex-plugin-multi/issues/171"
+      ],
+      "tests": [
+        "missing: all-provider route ladder matrix for Kimi direct API/OpenRouter capability facts"
+      ],
+      "verdict": "unknown",
+      "follow_up_issue": null
+    },
+    {
+      "provider": "deepseek",
+      "policy_area": "route/auth/source-send approval",
+      "difference_type": "research_gap",
+      "current_behavior": "DeepSeek uses the API reviewer path with API capability only. It records subscription_not_supported, but no shared OpenRouter step is modeled.",
+      "capability_fact": null,
+      "shared_policy_boundary": "DeepSeek may select direct_api today, but the same shared subscription -> direct_api -> openrouter route_steps ledger must explain subscription_not_supported and any OpenRouter skip/fallback state.",
+      "clear_reason": "DeepSeek may be API-only today, but that must be a capability fact in the shared route ladder, not a separate policy path.",
+      "evidence": [
+        "plugins/api-reviewers/scripts/api-reviewer.mjs",
+        "plugins/api-reviewers/config/providers.json",
+        "https://github.com/seungpyoson/codex-plugin-multi/issues/171"
+      ],
+      "tests": [
+        "missing: all-provider route ladder matrix for DeepSeek direct API/OpenRouter capability facts"
+      ],
+      "verdict": "unknown",
+      "follow_up_issue": null
+    },
+    {
+      "provider": "glm",
+      "policy_area": "route/auth/source-send approval",
+      "difference_type": "research_gap",
+      "current_behavior": "GLM uses the API reviewer path with API capability only. It records subscription_not_supported, but no shared OpenRouter step is modeled.",
+      "capability_fact": null,
+      "shared_policy_boundary": "GLM may select direct_api today, but the same shared subscription -> direct_api -> openrouter route_steps ledger must explain subscription_not_supported and any OpenRouter skip/fallback state.",
+      "clear_reason": "GLM may be API-only today, but that must be a capability fact in the shared route ladder, not a separate policy path.",
+      "evidence": [
+        "plugins/api-reviewers/scripts/api-reviewer.mjs",
+        "plugins/api-reviewers/config/providers.json",
+        "https://github.com/seungpyoson/codex-plugin-multi/issues/171"
+      ],
+      "tests": [
+        "missing: all-provider route ladder matrix for GLM direct API/OpenRouter capability facts"
+      ],
+      "verdict": "unknown",
+      "follow_up_issue": null
+    },
+    {
       "provider": "claude",
       "policy_area": "packet budgets",
+      "difference_type": "research_gap",
       "current_behavior": "Claude subscription custom-review can send full selected-source packets after diff fallback without a pre-launch budget or resend-confirmation gate.",
-      "reason": "#173 is the dedicated follow-up for the reproduced Claude custom-review full-source packet budget gap. It was opened after non-Claude adversarial review approved the narrowed root cause.",
+      "capability_fact": null,
+      "shared_policy_boundary": "Claude subscription custom-review must consume evaluateSourcePacketPolicy and report the same source_packet_* fields as other providers before source send or resend.",
+      "clear_reason": "Claude is the reproduced symptom, but the corrected root problem is a provider-neutral source packet budget/resend policy for all six.",
       "evidence": [
         "https://github.com/seungpyoson/codex-plugin-multi/issues/173",
         "Grok job job_36627cf7-dfe5-40e8-8a5f-2567bdd318a2",
@@ -331,33 +431,42 @@
       "follow_up_issue": 173
     },
     {
-      "provider": "deepseek",
+      "provider": "kimi",
       "policy_area": "packet budgets",
-      "current_behavior": "Direct API packet-size policy is guarded by prompt caps but broader packet splitting and reviewer capacity behavior remains tracked outside #171.",
-      "reason": "#172 is the dedicated large review packet failure follow-up and is not resolved by this parity table.",
+      "difference_type": "research_gap",
+      "current_behavior": "Kimi can fail after source send with step_limit_exceeded on large custom-review packets.",
+      "capability_fact": null,
+      "shared_policy_boundary": "Kimi step capacity must be represented as Adapter capacity facts consumed by evaluateSourcePacketPolicy, not as Kimi-only retry or source-send policy.",
+      "clear_reason": "This is evidence for shared packet budget/capacity policy, not a Kimi-only patch until proven otherwise.",
       "evidence": [
         "https://github.com/seungpyoson/codex-plugin-multi/issues/172",
-        "specs/171-provider-architecture-parity/review-results.md"
+        "/private/tmp/cpm-171-plan-review/kimi-result.json",
+        "/private/tmp/cpm-171-final-review/kimi-final2.json",
+        "/private/tmp/cpm-171-final-review/kimi-final4.json",
+        "specs/171-provider-architecture-parity/root-problems.md"
       ],
       "tests": [
-        "tests/unit/review-prompt.test.mjs"
+        "missing: all-provider packet budget/resend matrix for Kimi step_limit_exceeded after source send"
       ],
       "verdict": "unknown",
       "follow_up_issue": 172
     },
     {
-      "provider": "glm",
+      "provider": "deepseek",
       "policy_area": "packet budgets",
-      "current_behavior": "Direct API packet-size policy is guarded by prompt caps but broader packet splitting and reviewer capacity behavior remains tracked outside #171.",
-      "reason": "#172 is the dedicated large review packet failure follow-up and is not resolved by this parity table.",
+      "difference_type": "adapter_capability_fact",
+      "current_behavior": "DeepSeek preflights some large packets before source send, unlike Gemini/Kimi source-sent failures.",
+      "capability_fact": "DeepSeek direct API exposes different prompt and payload limits than subscription CLIs.",
+      "shared_policy_boundary": "Provider-specific limits may differ, but evaluateSourcePacketPolicy owns the budget decision, source_packet_action, and source_content_transmission fields for every provider.",
+      "clear_reason": "Different provider limits are capability facts, but the budget decision policy must be shared.",
       "evidence": [
         "https://github.com/seungpyoson/codex-plugin-multi/issues/172",
-        "specs/171-provider-architecture-parity/review-results.md"
+        "plugins/api-reviewers/scripts/api-reviewer.mjs"
       ],
       "tests": [
         "tests/unit/review-prompt.test.mjs"
       ],
-      "verdict": "unknown",
+      "verdict": "intentional",
       "follow_up_issue": 172
     }
   ],
@@ -376,33 +485,33 @@
       173
     ],
     "new_issue_required": true,
-    "split_recommendation": "No new issue is needed for the #171 parity audit itself, but the later Claude usage investigation proved a separate Claude custom-review packet-budget root cause now tracked by #173. #172 remains the broader large-packet routing follow-up."
+    "split_recommendation": "New issue investigation is required for Grok login persistence and Kimi step-limit symptoms, but do not file until root-cause evidence proves distinct scope outside #171/#159/#172/#173 and the operator approves issue creation."
   },
   "verification": [
     {
       "command": "node --test tests/unit/docs-contracts.test.mjs",
-      "status": "passed",
-      "evidence": "2026-05-24 post-#173 metadata rerun: 38 tests passed, 0 failed."
+      "status": "not_run",
+      "evidence": "Prior pass targeted stale #175 scope. Revised route ladder and packet policy matrix not yet implemented."
     },
     {
       "command": "node --test tests/unit/external-model-contracts.test.mjs tests/unit/plugin-copies-in-sync.test.mjs",
-      "status": "passed",
-      "evidence": "2026-05-24 focused #171 suite: included in 492-test focused run, 0 failed."
+      "status": "not_run",
+      "evidence": "Prior pass targeted stale #175 scope. Exact all-provider policy parity not yet covered."
     },
     {
       "command": "node --test tests/smoke/grok-web.smoke.test.mjs",
-      "status": "passed",
-      "evidence": "2026-05-24 focused #171 suite: included in 492-test focused run, 0 failed."
+      "status": "not_run",
+      "evidence": "Prior pass targeted Grok auto fallback only, not shared route ladder parity."
     },
     {
       "command": "npm test",
-      "status": "passed",
-      "evidence": "2026-05-24 broad suite: 2112 passed, 0 failed, 12 skipped."
+      "status": "not_run",
+      "evidence": "Must be rerun after revised design/implementation."
     },
     {
       "command": "npm run test:full",
-      "status": "passed",
-      "evidence": "2026-05-24 full suite: 2273 passed, 0 failed, 12 skipped."
+      "status": "not_run",
+      "evidence": "Must be rerun after revised design/implementation."
     }
   ],
   "guardrail_tests": [
@@ -422,6 +531,47 @@
       ]
     },
     {
+      "name": "provider semantic drift classification",
+      "file": "tests/unit/docs-contracts.test.mjs",
+      "purpose": "Fail when a provider-specific difference is not classified as an Adapter capability fact, documented policy exception, known accidental drift, or research gap with a clear reason and shared-policy boundary.",
+      "red_condition": "A provider exception lacks difference_type, capability_fact, shared_policy_boundary, clear_reason, evidence, tests, or verdict; an intentional difference is not an allowed capability/policy exception.",
+      "green_condition": "Every provider difference is explicitly classified, evidence-backed, test-backed, and tied to the shared policy boundary so fake parity is not required and unclassified drift is blocked.",
+      "verification_command": "node --test tests/unit/docs-contracts.test.mjs",
+      "required_fields": [
+        "provider",
+        "policy_area",
+        "difference_type",
+        "current_behavior",
+        "capability_fact",
+        "shared_policy_boundary",
+        "clear_reason",
+        "evidence",
+        "tests",
+        "verdict",
+        "follow_up_issue"
+      ]
+    },
+    {
+      "name": "full provider policy surface",
+      "file": "tests/unit/provider-route-policy.test.mjs",
+      "purpose": "Fail when the shared Provider Policy Interface stops covering one of the required cross-provider policy domains.",
+      "red_condition": "buildProviderPolicyContract omits a provider, route step, or policy domain, or the parity table's guardrail inventory no longer matches the generated contract.",
+      "green_condition": "The generated Provider Policy Interface and parity table both enumerate the same provider-neutral policy domains for all six providers.",
+      "verification_command": "node --test tests/unit/provider-route-policy.test.mjs tests/unit/docs-contracts.test.mjs",
+      "required_fields": [
+        "route",
+        "packet",
+        "readiness_auth",
+        "status_lifecycle",
+        "failure_taxonomy",
+        "suggested_action",
+        "review_quality",
+        "audit",
+        "docs",
+        "sync"
+      ]
+    },
+    {
       "name": "shared audit/status field inventory",
       "file": "tests/unit/external-model-contracts.test.mjs",
       "purpose": "Fail when generated provider-neutral contracts stop naming shared audit/status fields.",
@@ -429,6 +579,8 @@
       "green_condition": "Generated contract docs contain the complete shared field inventory.",
       "verification_command": "node --test tests/unit/external-model-contracts.test.mjs",
       "required_fields": [
+        "attempted_route",
+        "skipped_reason",
         "selected_route",
         "fallback_reason",
         "approval_scope",
@@ -452,9 +604,14 @@
       "green_condition": "The interface inventory is explicit and each required interface is present in provider-facing source.",
       "verification_command": "node --test tests/unit/plugin-copies-in-sync.test.mjs",
       "required_interfaces": [
+        "buildProviderPolicyContract",
+        "evaluateSourcePacketPolicy",
+        "PROVIDER_POLICY_DOMAINS",
+        "PROVIDER_ROUTE_STEPS",
         "selectProviderRoute",
         "buildReviewAuditManifest",
         "SOURCE_CONTENT_TRANSMISSION",
+        "sourceContentTransmissionForExecution",
         "buildExternalModelFailureDiagnostic",
         "reviewQualityFailureState"
       ]
@@ -463,15 +620,18 @@
       "name": "grok auto transport fallback",
       "file": "tests/smoke/grok-web.smoke.test.mjs",
       "purpose": "Fail when Grok auto transport stops preserving CLI default, audited local web fallback, or no-paid-API guarantees.",
-      "red_condition": "GROK_TRANSPORT=auto is rejected, falls back to paid API credentials, or fails to record CLI-to-web fallback metadata.",
-      "green_condition": "Auto mode records CLI success as CLI and approved CLI failure fallback as local web with source disclosure.",
-      "verification_command": "node --test tests/smoke/grok-web.smoke.test.mjs",
+      "red_condition": "GROK_TRANSPORT=auto is rejected, falls back to paid API credentials, fails to record CLI-to-web fallback metadata, or reintroduces a Grok-local source-transmission policy helper.",
+      "green_condition": "Auto mode records CLI success as CLI, approved CLI failure fallback as local web with source disclosure, prompt-budget failures preserve CLI diagnostics, and Grok uses shared sourceContentTransmissionForExecution.",
+      "verification_command": "node --test tests/smoke/grok-web.smoke.test.mjs tests/unit/plugin-copies-in-sync.test.mjs",
       "required_fields": [
         "transport",
         "fallback_from",
         "selected_route",
+        "route_step",
+        "route_steps",
         "auth_path",
-        "source_content_transmission"
+        "source_content_transmission",
+        "runtime_diagnostics.cli_request"
       ]
     }
   ]

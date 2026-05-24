@@ -1167,6 +1167,60 @@ test("custom-review auto transport falls back from Grok CLI login failure to loc
   }
 });
 
+test("custom-review auto transport preserves CLI diagnostics when web fallback prompt is too large", async () => {
+  const cwd = realpathSync(mkdtempSync(path.join(tmpdir(), "grok-auto-web-budget-workspace-")));
+  const dataDir = mkdtempSync(path.join(tmpdir(), "grok-auto-web-budget-data-"));
+  const authHome = mkdtempSync(path.join(tmpdir(), "grok-auto-web-budget-auth-home-"));
+  const { binDir, grokPath } = makeFakeGrokCli({ modelsOutput: GROK_MODELS_READY_LOGGED_OUT });
+  writeGrokCliAuthFixture(cwd, authHome);
+  const webRequests = [];
+
+  try {
+    await withServer(async (req, res) => {
+      webRequests.push(`${req.method} ${req.url}`);
+      res.statusCode = 500;
+      res.end(JSON.stringify({ error: { message: "prompt budget should stop before web call" } }));
+    }, async (baseUrl) => {
+      const result = await runAsync([
+        "run",
+        "--transport", "auto",
+        "--mode", "custom-review",
+        "--scope", "custom",
+        "--scope-paths", "review.js",
+        "--foreground",
+        "--prompt", "Review selected source.",
+      ], {
+        cwd,
+        defaultTransport: false,
+        env: {
+          PATH: `${binDir}${path.delimiter}${process.env.PATH ?? ""}`,
+          GROK_CLI_BINARY: grokPath,
+          GROK_CLI_AUTH_HOME: authHome,
+          GROK_PLUGIN_DATA: dataDir,
+          GROK_WEB_BASE_URL: baseUrl,
+          GROK_WEB_MAX_PROMPT_CHARS: "100",
+        },
+      });
+
+      assert.equal(result.status, 1, result.stderr || result.stdout);
+      const record = parseStdout(result);
+      assert.equal(record.provider, "grok-web");
+      assert.equal(record.transport, "web");
+      assert.equal(record.error_code, "prompt_too_large");
+      assert.equal(record.fallback_from, "cli");
+      assert.equal(record.runtime_diagnostics.cli_request.transport, "cli");
+      assert.equal(record.runtime_diagnostics.cli_request.logged_in, false);
+      assert.equal(record.runtime_diagnostics.cli_request.model_ready, true);
+      assert.equal(record.external_review.source_content_transmission, "not_sent");
+      assert.deepEqual(webRequests, []);
+    });
+  } finally {
+    rmTree(authHome);
+    rmTree(cwd);
+    rmTree(dataDir);
+  }
+});
+
 test("doctor reports Grok CLI unauthenticated when model is ready but login is false", () => {
   const dataDir = mkdtempSync(path.join(tmpdir(), "grok-cli-login-required-doctor-data-"));
   const authHome = mkdtempSync(path.join(tmpdir(), "grok-cli-login-required-doctor-auth-home-"));

@@ -31,6 +31,14 @@ export const EXTERNAL_MODEL_FAILURE_CLASSES = Object.freeze([
       "selected route, or fallback reason changes.",
   }),
   Object.freeze({
+    error_code: "source_packet_too_large",
+    category: "source_packet_policy",
+    error_cause: "pre_send_source_packet_budget",
+    error_summary: "The external model review was blocked before launch because the selected source packet exceeded the shared source packet budget.",
+    suggested_action:
+      "Treat this review slot as not launched. Narrow or shard the source packet, or record an explicit capability fact that raises the source packet budget before retrying.",
+  }),
+  Object.freeze({
     error_code: "git_binary_rejected",
     category: "scope_preflight",
     error_cause: "untrusted_git_binary",

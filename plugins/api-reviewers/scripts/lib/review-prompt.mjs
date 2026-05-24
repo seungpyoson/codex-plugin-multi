@@ -1,5 +1,7 @@
 import { createHash } from "node:crypto";
 
+import { evaluateSourcePacketPolicy } from "./provider-route-policy.mjs";
+
 export const REVIEW_PROMPT_CHECKLIST = Object.freeze([
   "Verify exact base/head refs and commits before judging the diff.",
   "Review only the declared scope and list any scope gaps as NOT REVIEWED.",
@@ -1061,6 +1063,23 @@ export function buildReviewAuditManifest({
   errorCode = null,
 } = {}) {
   const selectedSource = sourceManifest(sourceFiles);
+  const routeStep = route.routeStep ?? null;
+  const routeSteps = Array.isArray(route.routeSteps)
+    ? Object.freeze(route.routeSteps.map((step) => Object.freeze({ ...step })))
+    : null;
+  const sourceBearing = route.sourceBearing ?? (
+    selectedSource.totals.files > 0 || selectedSource.totals.bytes > 0
+  );
+  const sourcePacketPolicy = route.sourcePacketPolicy ?? evaluateSourcePacketPolicy({
+    provider: request.provider ?? null,
+    mode: route.mode ?? null,
+    routeStep,
+    providerCapabilities: route.providerCapabilities ?? {},
+    selectedSource,
+    sourceBearing,
+    previousAttempt: route.previousAttempt ?? null,
+    resendConfirmationApproved: route.resendConfirmationApproved === true,
+  });
   return Object.freeze({
     schema_version: REVIEW_AUDIT_MANIFEST_VERSION,
     rendered_prompt_hash: hashObject(prompt),
@@ -1107,14 +1126,17 @@ export function buildReviewAuditManifest({
       reason: scope.reason ?? null,
     }),
     selected_route: route.selectedRoute ?? null,
+    route_step: routeStep,
+    route_steps: routeSteps,
     fallback_reason: route.fallbackReason ?? null,
     approval_scope: route.approvalScope ?? null,
     auth_path: route.authPath ?? null,
     billing_path: route.billingPath ?? null,
-    source_bearing: route.sourceBearing ?? null,
-    source_content_transmission: route.sourceContentTransmission ?? null,
+    source_bearing: sourceBearing,
+    source_content_transmission: route.sourceContentTransmission ?? sourcePacketPolicy.source_content_transmission ?? null,
     source_send_approval_required: route.sourceSendApprovalRequired ?? null,
     source_send_approval_state: route.sourceSendApprovalState ?? null,
+    source_packet_policy: Object.freeze({ ...sourcePacketPolicy }),
     error_code: errorCode,
     review_quality: qualityFlags({ result, status, errorCode, selectedSource }),
   });

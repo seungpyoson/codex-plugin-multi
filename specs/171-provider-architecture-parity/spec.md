@@ -1,181 +1,238 @@
 # Feature Specification: Provider Architecture Parity Audit
 
-**Feature Branch**: `goal/provider-architecture-parity-171`  
-**Created**: 2026-05-24  
-**Status**: Draft  
+**Feature Branch**: `goal/provider-architecture-parity-171`
+**Created**: 2026-05-24
+**Status**: Revised after operator correction
 **Input**: `/Users/spson/Downloads/prompts/1-provider-neutral-shared-policy-audit-goal.md`
+**Root Problems**: `specs/171-provider-architecture-parity/root-problems.md`
+
+## Clarified Requirement
+
+#171 must solve provider policy parity for Claude, Gemini, Kimi, Grok,
+DeepSeek, and GLM. Same policy means same shared Module/Interface, same route
+ladder, same packet budget policy, same resend/retry semantics, same
+auth/readiness taxonomy, same audit fields, same review-quality gate, same
+status/UX contract, and same mode coverage.
+
+Provider-specific behavior is allowed only as an Adapter capability fact with a
+clear evidence-backed reason. Capability facts include unavailable subscription
+Adapter, missing API key, missing OpenRouter config, different prompt/step
+limits, or different launch mechanics. Capability facts do not justify separate
+policy paths.
+
+The required route ladder for every provider is:
+
+1. Subscription.
+2. Direct API.
+3. OpenRouter.
+
+Unsupported route steps must be recorded by the same Interface and then the
+policy must evaluate the next route. Do not launch fake subscription commands
+for providers that have no subscription Adapter.
+
+The current #175 implementation and prior external reviews are stale for this
+clarified requirement. They are evidence only, not completion proof.
 
 ## User Scenarios & Testing
 
-### User Story 1 - Provider Parity Is Inspectable (Priority: P1)
+### User Story 1 - Shared Route Ladder Covers All Six Providers (Priority: P1)
 
-A maintainer can open one provider parity artifact and see whether Claude,
-Gemini, Kimi, Grok, DeepSeek, and GLM use shared provider-neutral policy or a
-documented/tested adapter exception for every provider-facing policy area.
+A maintainer can run or inspect one provider-neutral route policy and see the
+same subscription -> direct API -> OpenRouter decision ladder for Claude,
+Gemini, Kimi, Grok, DeepSeek, and GLM.
 
-**Why this priority**: #171 asks for an architecture-level answer, not a narrow
-route fix. Without a table, future work can add provider-specific policy by
-accident.
+**Why this priority**: Route/fallback asymmetry is the clearest operator-visible
+symptom. Without one route Interface, every other policy area drifts.
 
-**Independent Test**: Inspect the parity artifact and verify every required
-provider and policy area is present with evidence paths, verdicts, sync guards,
-and residual issue links.
+**Independent Test**: A route-state matrix test exercises all six providers for
+subscription available, subscription unsupported, subscription failed before
+source send, direct API available, direct API unavailable, OpenRouter available,
+OpenRouter unavailable, and source-bearing approval required.
 
 **Acceptance Scenarios**:
 
-1. **Given** a reader starts from #171, **When** they open the parity artifact,
-   **Then** they can identify each shared Module, Interface, Implementation,
-   Adapter, packaged copy, sync guard, and test for each policy area.
-2. **Given** a provider differs, **When** the row is inspected, **Then** the row
-   states whether this is an intentional adapter exception, accidental
-   provider-specific policy, or unknown requiring research.
-3. **Given** #170 is related, **When** topology evidence is needed, **Then** the
-   artifact links only the topology evidence that informs #171 and does not
-   expand implementation scope without proof.
+1. **Given** DeepSeek or GLM has no subscription Adapter today, **When** route
+   policy runs, **Then** it records subscription as unsupported through the same
+   Interface, evaluates direct API, and can evaluate OpenRouter if configured.
+2. **Given** Kimi subscription fails before source send and a direct API or
+   OpenRouter capability is configured, **When** route policy runs, **Then** it
+   evaluates the next route with the same approval and billing metadata used by
+   every other provider.
+3. **Given** Grok CLI fails before source send, **When** route policy runs,
+   **Then** any web-tunnel or API/OpenRouter decision is represented by the same
+   route/fallback/audit contract and never silently switches to paid billing.
+4. **Given** any provider changes route, **When** source-bearing review is
+   requested, **Then** approval tuple fields change and source cannot be sent
+   until the new tuple is approved.
 
 ---
 
-### User Story 2 - Shared Policy Guardrails Prevent Drift (Priority: P1)
+### User Story 2 - Shared Source Packet Policy Covers All Modes And Providers (Priority: P1)
 
-A maintainer changing provider runtime, docs, generated contracts, or packaged
-copies gets a failing check when shared provider-neutral policy drifts.
+A maintainer can rely on one packet budget, retry, and resend policy for all
+six providers across `review`, `adversarial-review`, `custom-review`, and
+`rescue`.
 
-**Why this priority**: Existing shared modules are only safe if tests and sync
-guards prove providers consume them instead of recreating policy branches.
+**Why this priority**: Claude usage burn, Kimi `step_limit_exceeded`, and
+Gemini/Kimi source-sent failures are not separate problems. They show missing
+source packet policy parity.
 
-**Independent Test**: Run focused tests and sync lint after intentionally
-breaking one shared-policy copy or omitting a provider from the parity contract.
+**Independent Test**: One over-budget selected-source fixture produces
+provider-neutral pre-send budget decisions for every provider, with
+provider-specific limits supplied only by Adapter capabilities.
 
 **Acceptance Scenarios**:
 
-1. **Given** a provider copy of shared policy drifts, **When** `npm run
-   lint:sync` or copy tests run, **Then** the drift is detected.
-2. **Given** a provider-facing contract omits `selected_route`,
-   `fallback_reason`, `auth_path`, `billing_path`, source-send approval state,
-   or review-quality state, **When** contract tests run, **Then** they fail.
-3. **Given** a new provider adapter is added, **When** parity tests run, **Then**
-   missing capability facts or missing parity-table coverage fail before merge.
+1. **Given** a selected-source packet exceeds a known provider limit, **When**
+   any provider review mode runs, **Then** the shared packet policy fails before
+   source send with `source_content_transmission: "not_sent"`.
+2. **Given** a packet changes from full source to diff/shard, **When** review
+   continues, **Then** the audit manifest records the changed review surface and
+   the result cannot count as approval for the original surface.
+3. **Given** source was sent and a provider fails, **When** retry is requested,
+   **Then** the tool does not auto-resend source without an explicit policy
+   decision and matching approval.
 
 ---
 
-### User Story 3 - Grok Audited Fallback Is Implemented (Priority: P1)
+### User Story 3 - Shared Readiness, Failure, Status, And Review Quality Are Exact (Priority: P1)
 
-A maintainer can run Grok in explicit auto transport mode and get CLI-primary
-behavior with audited web-tunnel fallback for approved CLI readiness/login/model
-failure classes.
+A maintainer sees the same fields and meanings for readiness, auth, billing,
+source transmission, failure class, suggested action, status panel, and review
+quality across all six providers.
 
-**Why this priority**: #159 now says Grok should have audited CLI-to-web fallback,
-while current code/docs/tests intentionally keep the web tunnel explicit-only. A
-first external review rejected a docs-only classification as substituting
-documentation for required runtime behavior.
+**Why this priority**: If the operator cannot compare states across providers,
+provider parity is not real even if individual paths work.
 
-**Independent Test**: Grok smoke tests prove `--transport auto` /
-`GROK_TRANSPORT=auto` accepts auto mode, keeps CLI happy path unchanged, falls
-back to the existing local web tunnel only for approved CLI failure classes,
-records fallback metadata, and never falls back to paid xAI API credentials.
+**Independent Test**: Contract tests fail when any provider omits required
+fields or uses different meanings for the same state.
 
 **Acceptance Scenarios**:
 
-1. **Given** Grok CLI succeeds in auto mode, **When** review runs, **Then** the
-   JobRecord records `transport: "cli"`, `auth_mode: "subscription_cli"`, and
-   no web/tunnel contact.
-2. **Given** Grok CLI fails with an approved fallback class and the web tunnel
-   is ready, **When** auto mode runs, **Then** the JobRecord records
-   `transport: "web"`, `fallback_from: "cli"`, `selected_route:
-   "subscription_web"`, `auth_path: "subscription_web"`, and source-send
-   disclosure for the actual web transport.
-3. **Given** xAI direct API env vars exist, **When** Grok subscription paths run,
-   **Then** docs/tests continue to prohibit silent paid API fallback.
+1. **Given** a provider is not authenticated, **When** readiness or review fails,
+   **Then** the same failure taxonomy and suggested-action contract is used.
+2. **Given** Kimi returns `step_limit_exceeded`, **When** the JobRecord is built,
+   **Then** it is a failed review slot with capacity/budget semantics shared by
+   the other providers.
+3. **Given** Grok repeatedly requires login, **When** readiness runs, **Then**
+   the result identifies which shared auth/readiness layer failed and whether a
+   separate Grok persistence issue is proven.
+
+---
+
+### User Story 4 - Root Problems Are Reviewed Before Implementation (Priority: P1)
+
+A maintainer can inspect `root-problems.md`, `spec.md`, `plan.md`, and
+`tasks.md` and see six usable external approvals before implementation resumes.
+
+**Why this priority**: The previous PR implemented against the wrong problem
+shape. More code before root-problem agreement is patch churn.
+
+**Independent Test**: Gate records show implementation remains blocked until
+Claude, Gemini, Grok, GLM, DeepSeek, and Kimi all approve the revised problem
+definition and plan/tasks packet with usable verdicts.
+
+**Acceptance Scenarios**:
+
+1. **Given** any reviewer requests changes or fails without a usable verdict,
+   **When** the gate is evaluated, **Then** implementation remains blocked.
+2. **Given** all six approve, **When** implementation starts, **Then** work is
+   scoped to one approved issue at a time.
 
 ## Edge Cases
 
-- `.specify/` scripts are absent, so Speckit artifacts are generated manually
-  using the installed skill workflow and the existing `specs/*` shape.
-- A provider can be API-only without becoming second-class; the shared route
-  policy should record `subscription_not_supported`.
-- A packaged copy can be required for distribution and still safe when canonical
-  source, sync script, and drift tests exist.
-- A route/fallback issue can be real without implying a repo-wide topology split.
-- External adversarial review must not count missing, timed-out, shallow, or
-  failed slots as approval.
-- Direct API approval for DeepSeek/GLM is standing-approved for this goal, but
-  approval-request artifacts and audit metadata remain required.
+- A provider can lack a subscription Adapter today. That is a capability fact,
+  not different policy treatment.
+- A provider can lack direct API or OpenRouter config. That is a capability
+  fact, not different policy treatment.
+- OpenRouter must be modeled as a first-class route step if it is a supported
+  fallback target. Documentation-only mention is not parity.
+- No fallback may silently switch billing path.
+- No fallback may happen after source was sent unless the shared resend policy
+  explicitly permits it and the approval tuple still matches.
+- Failed review slots, source-sent runtime failures, missing verdicts, and
+  timeouts are not approvals.
+- `.specify/` scripts are absent in this worktree, so Speckit artifacts are
+  maintained manually in the existing `specs/*` shape.
 - No GitHub issue creation/closure, push, merge, deploy, destructive cleanup,
-  browser/session repair, or billing/tier action is allowed without separate
-  explicit operator approval.
-- A post-review issue-link metadata update is allowed only after separate
-  operator approval and hard evidence proves a distinct follow-up. The
-  2026-05-24 Claude custom-review packet-budget investigation meets this bar
-  and is tracked as #173.
+  browser/session repair, or billing/tier action is allowed without explicit
+  operator approval.
 
 ## Requirements
 
 ### Functional Requirements
 
-- **FR-001**: The audit MUST produce a provider parity table for Claude, Gemini,
-  Kimi, Grok, DeepSeek, and GLM.
-- **FR-002**: The parity table MUST cover route/auth/source-send approval,
-  packet budgets, fallback semantics, failure taxonomy, suggested actions, audit
-  fields, review-quality gates, status/UX normalization, generated contracts,
-  docs, packaged copies, and sync rules.
-- **FR-003**: Every policy area MUST name its canonical Module, Interface,
-  Implementation, provider Adapters, packaged copies, sync guard, tests, verdict,
-  and residual risk.
-- **FR-004**: Every provider-specific exception MUST include hard evidence,
-  issue linkage, tests or missing-test task, and a verdict of intentional
-  adapter exception, accidental provider-specific policy, or unknown.
-- **FR-005**: The audit MUST use #171 as the primary issue and #170 only as
-  topology evidence unless current evidence proves repo-wide topology must split.
-- **FR-006**: The audit MUST NOT create a new GitHub issue unless the operator
-  separately approves it after hard evidence proves a distinct concern that
-  should not be buried inside #171/#170. The post-review #173 split is the
-  current approved exception.
-- **FR-007**: Speckit plan/tasks artifacts MUST exist before implementation.
-- **FR-008**: External adversarial review of plan/tasks MUST be unanimous across
-  Claude, Gemini, Grok, GLM, DeepSeek, and Kimi before implementation.
-- **FR-009**: Implementation MUST include the Grok audited CLI-to-web fallback
-  runtime slice if the revised plan/tasks review approves it, because the first
-  review identified docs-only handling as insufficient.
-- **FR-010**: If implementation proceeds, it MUST use TDD vertical slices: RED
-  characterization/guard test, GREEN minimal change, repeat.
-- **FR-011**: Final review MUST cover the whole completed audit/implementation,
-  not fragments, and again require unanimous approval before any PR/merge-ready
-  claim.
+- **FR-001**: #171 MUST define and enforce one provider policy Interface for
+  Claude, Gemini, Kimi, Grok, DeepSeek, and GLM.
+- **FR-002**: The route policy MUST evaluate the same ladder for every provider:
+  subscription, direct API, OpenRouter.
+- **FR-003**: Each route step MUST emit same field meanings: `attempted` and
+  `selected` booleans, attempted route name, selected route name, skipped
+  reason, fallback reason, auth path, billing path, source-send approval
+  required/state, source transmission truth, error code, and suggested action.
+- **FR-004**: Unsupported route steps MUST be represented as Adapter capability
+  facts and MUST not bypass the shared route Interface.
+- **FR-005**: Source packet budget, retry, resend, and review-surface-change
+  policy MUST be shared across all six providers and all review modes.
+- **FR-006**: Provider-specific prompt, byte, step, timeout, model, transport, or
+  auth limits MUST live behind Adapter capability facts.
+- **FR-007**: Status, lifecycle, JobRecord, review panel, review-quality, failure
+  taxonomy, suggested action, generated contract, docs, and sync rules MUST use
+  same names and meanings across all six providers.
+- **FR-008**: Grok login persistence plus Kimi `step_limit_exceeded` and
+  minimal-packet timeout symptoms MUST be investigated as evidence under #171
+  before creating separate issues.
+- **FR-009**: New issues MAY be created only after root cause is defined and the
+  issue is proven not to duplicate #171/#159/#172/#173.
+- **FR-010**: Speckit plan/tasks artifacts MUST be updated before any further
+  implementation.
+- **FR-011**: External adversarial review of revised `root-problems.md`,
+  `spec.md`, `plan.md`, and `tasks.md` MUST be unanimous across Claude, Gemini,
+  Grok, GLM, DeepSeek, and Kimi before implementation resumes.
+- **FR-012**: Implementation MUST proceed one issue at a time, using TDD
+  vertical slices and no provider-specific patches unless backed by clear
+  capability evidence.
+- **FR-013**: Final review MUST cover the latest head for the implemented issue
+  and require all six approvals before merge-readiness is claimed.
 
 ### Key Entities
 
-- **Provider Parity Table**: The durable architecture map for #171.
-- **Policy Area**: One shared behavior surface, such as route policy or review
-  panel state normalization.
-- **Adapter Exception**: A provider-specific difference backed by provider
-  limitation evidence and tests.
-- **Guardrail Test**: Unit/smoke/sync check proving shared-policy parity.
-- **External Review Gate**: Six-provider adversarial approval state for plan/tasks
-  and final implementation.
+- **Provider Policy Interface**: Shared contract owning route ladder, source
+  packet policy, failure/status/review-quality semantics, audit fields, docs,
+  and sync rules.
+- **Provider Adapter**: Provider-specific implementation exposing capability
+  facts and launch mechanics only.
+- **Route Ladder**: Ordered route decision: subscription, direct API,
+  OpenRouter.
+- **Capability Fact**: Evidence-backed provider fact such as unsupported
+  subscription Adapter, missing API key, prompt limit, model limit, or transport
+  availability.
+- **Source Packet Policy**: Shared pre-send budget, retry, resend, and review
+  surface contract.
+- **External Review Gate**: Six-reviewer approval state for root problems,
+  plan/tasks, and final implementation.
 
 ## Success Criteria
 
-### Measurable Outcomes
-
-- **SC-001**: The parity table covers all six providers and all required policy
-  areas.
-- **SC-002**: `npm test`, `npm run test:full`, and `npm run lint:sync` pass
-  before any PR/merge-readiness claim.
-- **SC-003**: A focused guard test fails if any provider disappears from the
-  parity table or any required shared audit field disappears from generated
-  contracts.
-- **SC-004**: Grok `auto` transport behavior is TDD-covered and records
-  CLI-primary/web-fallback metadata without paid direct API fallback.
-- **SC-005**: External plan/tasks review returns usable approval from all six
-  required reviewers before implementation starts.
-- **SC-006**: If code/docs/tests change, final external review returns usable
-  approval from all six required reviewers and all local verification gates pass.
+- **SC-001**: Route ladder tests cover all six providers and all three route
+  steps.
+- **SC-002**: Packet budget/resend tests cover all six providers and all review
+  modes.
+- **SC-003**: Contract tests fail if required audit/status/failure/review-quality
+  fields disappear or diverge for any provider.
+- **SC-004**: OpenRouter is either implemented as the third route step or
+  explicitly recorded as unsupported by capability for each provider.
+- **SC-005**: Grok login and Kimi step-limit root causes are either covered by
+  #171 shared policy work or split into separate issues with evidence.
+- **SC-006**: All six external reviewers approve revised root problems and
+  plan/tasks before implementation.
+- **SC-007**: Final latest-head review receives all six approvals before
+  merge-readiness is claimed.
 
 ## Assumptions
 
-- Existing shared modules are the intended canonical policy seams unless current
-  source evidence proves otherwise.
-- Issue bodies/comments fetched on 2026-05-24 are authoritative for issue scope.
-- Current local worktree and `origin/main` at `89b3336` are the audit baseline.
-- `npm test` default subset is acceptable as baseline; broader gates are required
-  only if implementation touches shared/runtime surfaces.
+- Issue #171 is the umbrella for policy parity unless evidence proves a symptom
+  needs a separate, non-duplicative issue.
+- Issue #170 remains topology evidence input, not the implementation target.
+- The existing #175 implementation is available as evidence but is not accepted
+  as complete under this revised spec.

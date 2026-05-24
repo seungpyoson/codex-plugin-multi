@@ -6,8 +6,13 @@ import { fileURLToPath } from "node:url";
 
 import {
   normalizeApprovalScope,
+  buildProviderPolicyContract,
+  evaluateSourcePacketPolicy,
+  PROVIDER_POLICY_DOMAINS,
+  PROVIDER_ROUTE_STEPS,
   selectProviderRoute,
 } from "../../scripts/lib/provider-route-policy.mjs";
+import { buildReviewAuditManifest } from "../../scripts/lib/review-prompt.mjs";
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 
@@ -34,6 +39,200 @@ const subscriptionOnly = Object.freeze({
   subscription: { kind: "oauth", auth_path: "subscription_oauth" },
 });
 
+const openRouterOnly = Object.freeze({
+  openrouter: {
+    kind: "openrouter",
+    auth_path: "openrouter_api_key_env",
+    billing_path: { endpoint: "https://openrouter.ai/api/v1", model: "provider/review-model" },
+    credential_env_names: ["OPENROUTER_API_KEY"],
+  },
+});
+
+const allCapabilities = Object.freeze({
+  ...subscriptionAndApi,
+  openrouter: openRouterOnly.openrouter,
+});
+
+const requiredPolicyDomains = [
+  "route",
+  "packet",
+  "readiness_auth",
+  "status_lifecycle",
+  "failure_taxonomy",
+  "suggested_action",
+  "review_quality",
+  "audit",
+  "docs",
+  "sync",
+];
+
+const REVIEW_MODES = ["review", "adversarial-review", "custom-review", "rescue"];
+
+function selectedSourceFixture(bytes) {
+  return Object.freeze({
+    files: Object.freeze([
+      Object.freeze({
+        path: "src/example.js",
+        bytes,
+        lines: 1,
+        content_hash: Object.freeze({ algorithm: "sha256", value: `fixture-${bytes}` }),
+      }),
+    ]),
+    totals: Object.freeze({ files: 1, bytes, lines: 1 }),
+  });
+}
+
+function assertRouteStepLedger(route) {
+  assert.deepEqual(route.route_steps.map((step) => step.route), PROVIDER_ROUTE_STEPS);
+  for (const step of route.route_steps) {
+    assert.deepEqual(Object.keys(step).sort(), [
+      "attempted",
+      "fallback_reason",
+      "route",
+      "selected",
+      "skipped_reason",
+      "supported",
+    ]);
+    assert.equal(typeof step.attempted, "boolean");
+    assert.equal(typeof step.selected, "boolean");
+    assert.equal(typeof step.supported, "boolean");
+    assert.equal(step.skipped_reason === null || typeof step.skipped_reason === "string", true);
+    assert.equal(step.fallback_reason === null || typeof step.fallback_reason === "string", true);
+  }
+}
+
+test("provider policy contract exposes the full cross-cutting policy surface", () => {
+  assert.deepEqual(PROVIDER_ROUTE_STEPS, ["subscription", "direct_api", "openrouter"]);
+  assert.deepEqual(
+    PROVIDER_POLICY_DOMAINS.map((domain) => domain.name),
+    requiredPolicyDomains,
+  );
+
+  const contract = buildProviderPolicyContract();
+  assert.deepEqual(contract.providers, ["claude", "gemini", "kimi", "grok", "deepseek", "glm"]);
+  assert.deepEqual(
+    contract.domains.map((domain) => domain.name),
+    requiredPolicyDomains,
+  );
+  for (const domain of contract.domains) {
+    assert.equal(domain.shared_policy, true, `${domain.name} must be shared policy`);
+    assert.equal(Array.isArray(domain.required_fields), true, `${domain.name} must define fields`);
+    assert.equal(domain.required_fields.length > 0, true, `${domain.name} must not be empty`);
+  }
+});
+
+test("source packet policy blocks over-budget packets for every provider and review mode before source send", () => {
+  const contract = buildProviderPolicyContract();
+
+  for (const provider of contract.providers) {
+    for (const mode of REVIEW_MODES) {
+      const policy = evaluateSourcePacketPolicy({
+        provider,
+        mode,
+        routeStep: "subscription",
+        providerCapabilities: {
+          subscription: { source_packet: { max_bytes: 10 } },
+        },
+        selectedSource: selectedSourceFixture(11),
+        sourceBearing: true,
+      });
+
+      assert.equal(policy.provider, provider);
+      assert.equal(policy.mode, mode);
+      assert.equal(policy.source_send_allowed, false);
+      assert.equal(policy.source_packet_action, "narrow_source_packet");
+      assert.equal(policy.source_packet_policy_error_code, "source_packet_too_large");
+      assert.equal(policy.source_content_transmission, "not_sent");
+      assert.equal(policy.source_packet_budget_bytes, 10);
+      assert.equal(policy.selected_source_bytes, 11);
+      assert.equal(policy.source_packet_within_budget, false);
+      assert.equal(policy.resend_confirmation_required, false);
+    }
+  }
+});
+
+test("source packet policy prevents automatic resend after source-bearing failure unless confirmed or narrowed", () => {
+  const previousAttempt = {
+    status: "failed",
+    error_code: "timeout",
+    source_content_transmission: "sent",
+    selected_source: selectedSourceFixture(8),
+  };
+  const baseInput = {
+    provider: "kimi",
+    mode: "custom-review",
+    routeStep: "subscription",
+    providerCapabilities: {
+      subscription: { source_packet: { max_bytes: 20 } },
+    },
+    selectedSource: selectedSourceFixture(8),
+    sourceBearing: true,
+    previousAttempt,
+  };
+
+  const blocked = evaluateSourcePacketPolicy(baseInput);
+  assert.equal(blocked.source_send_allowed, false);
+  assert.equal(blocked.source_packet_action, "resend_confirmation_required");
+  assert.equal(blocked.source_packet_policy_error_code, "resend_confirmation_required");
+  assert.equal(blocked.resend_confirmation_required, true);
+  assert.equal(blocked.review_surface_changed, false);
+  assert.equal(blocked.source_content_transmission, "not_sent");
+
+  const confirmed = evaluateSourcePacketPolicy({
+    ...baseInput,
+    resendConfirmationApproved: true,
+  });
+  assert.equal(confirmed.source_send_allowed, true);
+  assert.equal(confirmed.source_packet_action, "send_after_resend_confirmation");
+  assert.equal(confirmed.resend_confirmation_required, false);
+
+  const narrowed = evaluateSourcePacketPolicy({
+    ...baseInput,
+    selectedSource: selectedSourceFixture(4),
+  });
+  assert.equal(narrowed.source_send_allowed, true);
+  assert.equal(narrowed.source_packet_action, "send_narrowed_source_packet");
+  assert.equal(narrowed.resend_confirmation_required, false);
+  assert.equal(narrowed.review_surface_changed, true);
+});
+
+test("review audit manifest records shared route and source packet policy fields", () => {
+  const route = selectProviderRoute({
+    requestedRoute: undefined,
+    providerCapabilities: subscriptionAndApi,
+    env: { PROVIDER_API_KEY: "secret" },
+    sourceBearing: true,
+  });
+  const manifest = buildReviewAuditManifest({
+    prompt: "Review selected source.",
+    sourceFiles: [{ path: "src/example.js", text: "console.log(1);\n" }],
+    request: { provider: "Claude Code", model: "opus" },
+    route: {
+      selectedRoute: route.selected_route,
+      routeStep: route.route_step,
+      routeSteps: route.route_steps,
+      fallbackReason: route.fallback_reason,
+      sourceBearing: true,
+      sourcePacketPolicy: evaluateSourcePacketPolicy({
+        provider: "claude",
+        mode: "custom-review",
+        routeStep: route.route_step,
+        providerCapabilities: {
+          subscription: { source_packet: { max_bytes: 100 } },
+        },
+        selectedSource: selectedSourceFixture(16),
+        sourceBearing: true,
+      }),
+    },
+  });
+
+  assert.equal(manifest.route_step, "subscription");
+  assertRouteStepLedger({ route_steps: manifest.route_steps });
+  assert.equal(manifest.source_packet_policy.source_send_allowed, true);
+  assert.equal(manifest.source_packet_policy.source_packet_action, "send");
+  assert.equal(manifest.source_packet_policy.selected_source_bytes, 16);
+});
+
 test("provider route policy defaults subscription-capable providers to subscription and ignores API keys", () => {
   const route = selectProviderRoute({
     requestedRoute: undefined,
@@ -45,6 +244,7 @@ test("provider route policy defaults subscription-capable providers to subscript
   assert.deepEqual(route, {
     route_mode: "subscription",
     selected_route: "subscription_oauth",
+    route_step: "subscription",
     auth_path: "subscription_oauth",
     billing_path: null,
     fallback_reason: null,
@@ -52,7 +252,70 @@ test("provider route policy defaults subscription-capable providers to subscript
     ignored_env_credentials: ["PROVIDER_API_KEY"],
     source_send_approval_required: false,
     source_send_approval_state: "not_required",
+    route_steps: [
+      {
+        route: "subscription",
+        supported: true,
+        attempted: true,
+        selected: true,
+        skipped_reason: null,
+        fallback_reason: null,
+      },
+      {
+        route: "direct_api",
+        supported: true,
+        attempted: true,
+        selected: false,
+        skipped_reason: "not_needed",
+        fallback_reason: null,
+      },
+      {
+        route: "openrouter",
+        supported: false,
+        attempted: true,
+        selected: false,
+        skipped_reason: "unsupported",
+        fallback_reason: null,
+      },
+    ],
   });
+  assertRouteStepLedger(route);
+});
+
+test("provider route policy applies one ladder shape to every named provider", () => {
+  const contract = buildProviderPolicyContract();
+  const providerCapabilities = {
+    claude: subscriptionAndApi,
+    gemini: subscriptionAndApi,
+    kimi: subscriptionOnly,
+    grok: subscriptionOnly,
+    deepseek: apiOnly,
+    glm: apiOnly,
+  };
+  const env = {
+    PROVIDER_API_KEY: "secret",
+    API_ONLY_KEY: "secret",
+  };
+
+  assert.deepEqual(Object.keys(providerCapabilities).sort(), [...contract.providers].sort());
+  for (const provider of contract.providers) {
+    const route = selectProviderRoute({
+      requestedRoute: undefined,
+      providerCapabilities: providerCapabilities[provider],
+      env,
+      sourceBearing: true,
+    });
+
+    assertRouteStepLedger(route);
+    assert.deepEqual(route.route_steps.map((step) => step.route), PROVIDER_ROUTE_STEPS);
+    if (provider === "deepseek" || provider === "glm") {
+      assert.equal(route.route_step, "direct_api", `${provider} should select direct_api through capability facts`);
+      assert.equal(route.fallback_reason, "subscription_not_supported");
+    } else {
+      assert.equal(route.route_step, "subscription", `${provider} should select subscription through capability facts`);
+      assert.equal(route.fallback_reason, null);
+    }
+  }
 });
 
 test("provider route policy handles subscription-only providers without API credential state", () => {
@@ -66,6 +329,7 @@ test("provider route policy handles subscription-only providers without API cred
   assert.deepEqual(route, {
     route_mode: "subscription",
     selected_route: "subscription_oauth",
+    route_step: "subscription",
     auth_path: "subscription_oauth",
     billing_path: null,
     fallback_reason: null,
@@ -73,7 +337,34 @@ test("provider route policy handles subscription-only providers without API cred
     ignored_env_credentials: [],
     source_send_approval_required: false,
     source_send_approval_state: "not_required",
+    route_steps: [
+      {
+        route: "subscription",
+        supported: true,
+        attempted: true,
+        selected: true,
+        skipped_reason: null,
+        fallback_reason: null,
+      },
+      {
+        route: "direct_api",
+        supported: false,
+        attempted: true,
+        selected: false,
+        skipped_reason: "unsupported",
+        fallback_reason: null,
+      },
+      {
+        route: "openrouter",
+        supported: false,
+        attempted: true,
+        selected: false,
+        skipped_reason: "unsupported",
+        fallback_reason: null,
+      },
+    ],
   });
+  assertRouteStepLedger(route);
 });
 
 test("provider route policy uses the same API fallback state for providers without subscription transport", () => {
@@ -86,6 +377,7 @@ test("provider route policy uses the same API fallback state for providers witho
 
   assert.deepEqual(route, {
     route_mode: "api",
+    route_step: "direct_api",
     selected_route: "direct_api",
     auth_path: "api_key_env",
     billing_path: { endpoint: "https://api-only.example.invalid", model: "review-model" },
@@ -94,7 +386,34 @@ test("provider route policy uses the same API fallback state for providers witho
     ignored_env_credentials: [],
     source_send_approval_required: true,
     source_send_approval_state: "required",
+    route_steps: [
+      {
+        route: "subscription",
+        supported: false,
+        attempted: true,
+        selected: false,
+        skipped_reason: "unsupported",
+        fallback_reason: "subscription_not_supported",
+      },
+      {
+        route: "direct_api",
+        supported: true,
+        attempted: true,
+        selected: true,
+        skipped_reason: null,
+        fallback_reason: "subscription_not_supported",
+      },
+      {
+        route: "openrouter",
+        supported: false,
+        attempted: true,
+        selected: false,
+        skipped_reason: "unsupported",
+        fallback_reason: null,
+      },
+    ],
   });
+  assertRouteStepLedger(route);
 });
 
 test("provider route policy allows API fallback only with explicit shared fallback reason", () => {
@@ -109,6 +428,7 @@ test("provider route policy allows API fallback only with explicit shared fallba
 
   assert.deepEqual(route, {
     route_mode: "api",
+    route_step: "direct_api",
     selected_route: "direct_api",
     auth_path: "api_key_env",
     billing_path: { endpoint: "https://api.example.invalid", model: "review-model" },
@@ -117,6 +437,102 @@ test("provider route policy allows API fallback only with explicit shared fallba
     ignored_env_credentials: [],
     source_send_approval_required: true,
     source_send_approval_state: "approved",
+    route_steps: [
+      {
+        route: "subscription",
+        supported: true,
+        attempted: true,
+        selected: false,
+        skipped_reason: "not_requested",
+        fallback_reason: "usage_limited",
+      },
+      {
+        route: "direct_api",
+        supported: true,
+        attempted: true,
+        selected: true,
+        skipped_reason: null,
+        fallback_reason: "usage_limited",
+      },
+      {
+        route: "openrouter",
+        supported: false,
+        attempted: true,
+        selected: false,
+        skipped_reason: "unsupported",
+        fallback_reason: null,
+      },
+    ],
+  });
+  assertRouteStepLedger(route);
+});
+
+test("provider route policy falls through the same ladder to OpenRouter", () => {
+  const route = selectProviderRoute({
+    requestedRoute: undefined,
+    providerCapabilities: openRouterOnly,
+    env: { OPENROUTER_API_KEY: "secret" },
+    sourceBearing: true,
+  });
+
+  assert.equal(route.route_mode, "openrouter");
+  assert.equal(route.route_step, "openrouter");
+  assert.equal(route.selected_route, "openrouter");
+  assert.equal(route.auth_path, "openrouter_api_key_env");
+  assert.deepEqual(route.billing_path, { endpoint: "https://openrouter.ai/api/v1", model: "provider/review-model" });
+  assert.equal(route.fallback_reason, "direct_api_not_supported");
+  assert.deepEqual(route.allowed_env_credentials, ["OPENROUTER_API_KEY"]);
+  assert.equal(route.source_send_approval_required, true);
+  assert.equal(route.source_send_approval_state, "required");
+  assertRouteStepLedger(route);
+  assert.deepEqual(route.route_steps, [
+    {
+      route: "subscription",
+      supported: false,
+      attempted: true,
+      selected: false,
+      skipped_reason: "unsupported",
+      fallback_reason: "subscription_not_supported",
+    },
+    {
+      route: "direct_api",
+      supported: false,
+      attempted: true,
+      selected: false,
+      skipped_reason: "unsupported",
+      fallback_reason: "direct_api_not_supported",
+    },
+    {
+      route: "openrouter",
+      supported: true,
+      attempted: true,
+      selected: true,
+      skipped_reason: null,
+      fallback_reason: "direct_api_not_supported",
+    },
+  ]);
+});
+
+test("provider route policy records skipped OpenRouter route when direct API is selected", () => {
+  const route = selectProviderRoute({
+    requestedRoute: "api",
+    providerCapabilities: allCapabilities,
+    env: {
+      PROVIDER_API_KEY: "secret",
+      OPENROUTER_API_KEY: "openrouter-secret",
+    },
+    sourceBearing: true,
+  });
+
+  assert.equal(route.route_step, "direct_api");
+  assert.deepEqual(route.ignored_env_credentials, ["OPENROUTER_API_KEY"]);
+  assert.deepEqual(route.route_steps.at(-1), {
+    route: "openrouter",
+    supported: true,
+    attempted: true,
+    selected: false,
+    skipped_reason: "not_needed",
+    fallback_reason: null,
   });
 });
 
@@ -128,7 +544,7 @@ test("provider route policy rejects ambiguous operator-facing auto route", () =>
       env: { PROVIDER_API_KEY: "secret" },
       sourceBearing: true,
     }),
-    /route mode must be subscription or api; got "auto"/,
+    /route mode must be subscription, api, direct_api, or openrouter; got "auto"/,
   );
 });
 

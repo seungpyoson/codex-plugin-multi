@@ -1,81 +1,91 @@
 # Tasks: Provider Architecture Parity Audit
 
-**Input**: `specs/171-provider-architecture-parity/`  
-**Prerequisites**: `evidence-map.md`, `spec.md`, `plan.md`, `research.md`, `data-model.md`, `contracts/provider-parity-table.schema.json`, `quickstart.md`  
-**Hard gate**: Do not implement docs/test/runtime guardrails until the plan/tasks packet receives usable APPROVE verdicts from Claude, Gemini, Grok, GLM, DeepSeek, and Kimi.
+**Input**: `specs/171-provider-architecture-parity/`
+**Hard gate**: no runtime implementation until `root-problems.md`, `spec.md`,
+`plan.md`, and this task list have usable APPROVE verdicts from Claude, Gemini,
+Grok, GLM, DeepSeek, and Kimi.
 
-## Phase 1: Setup
+Current rule: all six providers use the same policy. A difference is allowed
+only when an Adapter declares a capability fact and the shared policy consumes
+that fact through the same field names and meanings.
 
-- [X] T001 Verify `specs/171-provider-architecture-parity/evidence-map.md` against current source and issue evidence.
-- [X] T002 Verify the worktree is `goal/provider-architecture-parity-171` and clean before review packet creation.
-- [X] T003 Run `git diff --check`, `npm run lint:sync`, and `npm test` before external plan/tasks review.
+## Phase 1: Freeze Scope
 
-## Phase 2: Foundational Review Gate
+- [x] T001 Confirm #171 is the implementation issue and #170 is evidence input.
+- [x] T002 Mark PR #175 completion/review claims as stale for corrected #171 scope.
+- [x] T003 Record that no runtime implementation resumes before six approvals.
 
-- [X] T004 Build the plan/tasks review packet from all files under `specs/171-provider-architecture-parity/`.
-- [X] T005 Run Claude adversarial review for the plan/tasks packet and record job/artifact evidence in `specs/171-provider-architecture-parity/review-results.md`.
-- [X] T006 Run Gemini adversarial review for the plan/tasks packet and record job/artifact evidence in `specs/171-provider-architecture-parity/review-results.md`.
-- [X] T007 Run Grok adversarial review for the plan/tasks packet and record job/artifact evidence in `specs/171-provider-architecture-parity/review-results.md`.
-- [X] T008 Run GLM adversarial review for the plan/tasks packet and record job/artifact evidence in `specs/171-provider-architecture-parity/review-results.md`.
-- [X] T009 Run DeepSeek adversarial review for the plan/tasks packet and record job/artifact evidence in `specs/171-provider-architecture-parity/review-results.md`.
-- [X] T010 Run Kimi adversarial review for the plan/tasks packet and record job/artifact evidence in `specs/171-provider-architecture-parity/review-results.md`.
-- [X] T011 Record review packet file list, byte counts, and SHA-256 hashes in `specs/171-provider-architecture-parity/review-results.md`.
-- [X] T012 Stop before implementation unless every reviewer in `specs/171-provider-architecture-parity/review-results.md` has a usable APPROVE verdict.
+## Phase 2: Define The Root Problem
 
-## Phase 3: User Story 1 - Provider Parity Is Inspectable (P1)
+- [x] T004 Define the root problem in `root-problems.md`: missing shared Provider Policy Interface, not Claude-only usage, Kimi-only step limits, Grok-only login, or API-only DeepSeek/GLM.
+- [x] T005 Define the Clear Reason Standard for allowed provider differences.
+- [x] T006 Record why Grok login is not a separate issue yet: current doctor passes and exact failed-job context is missing.
+- [x] T007 Record why Kimi step-limit/timeout is #171 evidence: source-bearing review lacks shared packet, capacity, timeout, and fallback policy.
 
-**Independent Test**: A reader can inspect one parity table and find all six providers, required policy areas, evidence paths, verdicts, sync guards, and residual issue links.
+## Phase 3: Shared Route Ladder
 
-- [X] T013 [P] [US1] Add RED provider parity table contract test in `tests/unit/docs-contracts.test.mjs`.
-- [X] T014 [US1] Add canonical machine-validatable parity table artifact in `specs/171-provider-architecture-parity/provider-parity-table.json`.
-- [X] T015 [US1] GREEN the provider parity contract test by validating `provider-parity-table.json` against `contracts/provider-parity-table.schema.json`.
-- [X] T016 [US1] Ensure the JSON table covers all six providers and all required policy areas from FR-002: route/auth/source-send approval, packet budgets, fallback semantics, failure taxonomy, suggested actions, audit fields, review-quality gates, status/UX normalization, generated contracts, docs, packaged copies, and sync rules. Packet budgets may be represented as `unknown_needs_research`, follow-up #172, or the later Claude-specific follow-up #173 only if evidence supports deferral.
-- [X] T017 [US1] Run focused docs contract verification with `node --test tests/unit/docs-contracts.test.mjs`.
+**Independent test**: one matrix covers Claude, Gemini, Kimi, Grok, DeepSeek,
+and GLM through `subscription -> direct_api -> openrouter`.
 
-## Phase 4: User Story 2 - Shared Policy Guardrails Prevent Drift (P1)
+- [x] T008 Record current route facts for Claude, Gemini, Kimi, Grok, DeepSeek, and GLM in `evidence-map.md`.
+- [x] T009 Update `provider-parity-table.json` so API-only or subscription-only behavior is not marked complete.
+- [x] T010 Define shared route fields in `data-model.md`: attempted, selected, skipped reason, fallback reason, auth path, billing path, error code, and suggested action.
+- [x] T011 Add route-order and unsupported-route test plan in `quickstart.md`.
 
-**Independent Test**: Focused tests fail if a provider-facing shared policy field or packaged-copy guardrail disappears.
+## Phase 4: Shared Source Packet Policy
 
-- [X] T018 [P] [US2] Add RED guard coverage in `tests/unit/external-model-contracts.test.mjs` for exact shared audit/status field inventory: `selected_route`, `fallback_reason`, `approval_scope`, `auth_path`, `billing_path`, `source_bearing`, `source_send_approval_required`, `source_send_approval_state`, `source_content_transmission`, `review_quality.failed_review_slot`, `review_quality.semantic_failure_reasons`, `error_code`, and `suggested_action`.
-- [X] T019 [P] [US2] Add RED guard coverage in `tests/unit/plugin-copies-in-sync.test.mjs` that provider-facing entrypoints or synced libs consume the shared policy interfaces: `selectProviderRoute`, `buildReviewAuditManifest`, `SOURCE_CONTENT_TRANSMISSION`, `buildExternalModelFailureDiagnostic`, and `reviewQualityFailureState`.
-- [X] T020 [US2] GREEN the guard tests through canonical docs/generator/test fixtures only; do not hand-edit generated provider docs.
-- [X] T021 [US2] Run focused verification with `node --test tests/unit/external-model-contracts.test.mjs tests/unit/plugin-copies-in-sync.test.mjs`.
+**Independent test**: one over-budget source fixture produces same pre-send,
+retry, resend, and review-surface semantics for every provider and mode.
 
-## Phase 5: User Story 3 - Grok Audited Fallback Is Implemented (P1)
+- [x] T012 Record current packet behavior for all six providers in `evidence-map.md`.
+- [x] T013 Include Kimi `step_limit_exceeded`, minimal-packet timeout, and stale task-review timeout as shared packet/capacity evidence.
+- [x] T014 Define shared packet budget, retry, resend, and review-surface fields in `data-model.md`.
+- [x] T015 Require provider prompt/byte/step/timeout/model/transport/auth limits to be Adapter capability facts.
 
-**Independent Test**: In `GROK_TRANSPORT=auto` or `--transport auto`, a tested Grok CLI readiness/login/model failure attempts the local web tunnel fallback, records primary and fallback transport metadata, and never falls back to paid xAI API billing.
+## Phase 5: Issue Ownership
 
-- [X] T022 [P] [US3] Add RED Grok smoke coverage that `GROK_TRANSPORT=auto` / `--transport auto` is accepted while default `cli` remains unchanged.
-- [X] T023 [P] [US3] Add RED Grok smoke coverage that CLI happy path in auto mode records `transport: "cli"`, `auth_mode: "subscription_cli"`, `selected_route: "subscription_cli"`, and never contacts web/tunnel state.
-- [X] T024 [P] [US3] Add RED Grok smoke coverage that an approved CLI readiness/login/model failure in auto mode attempts the existing local web tunnel and records `transport: "web"`, `fallback_from: "cli"`, `selected_route: "subscription_web"`, `auth_path: "subscription_web"`, and source-send disclosure for the web transport.
-- [X] T025 [P] [US3] Add RED Grok smoke coverage that plain `--transport cli` remains terminal on CLI failure and does not fallback.
-- [X] T026 [P] [US3] Add RED Grok smoke coverage that auto mode never falls back to paid xAI/direct API env credentials and redacts direct API env values.
-- [X] T027 [US3] GREEN the minimal Grok runtime changes in `plugins/grok/scripts/grok-web-reviewer.mjs`, keeping web-tunnel bootstrap/repair explicit and preserving existing `--transport web` diagnostics.
-- [X] T028 [US3] Update provider parity table JSON and generated/operator docs only through canonical source or sync path required by the existing tests.
-- [X] T029 [US3] Run focused Grok verification with `node --test tests/smoke/grok-web.smoke.test.mjs`.
+- [x] T016 Draft issue ownership in `issue-drafts.md` without creating GitHub issues.
+- [x] T017 Keep Grok login under #171/#159 until exact failed-job evidence proves separate scope.
+- [x] T018 Keep Kimi timeout/step-limit under #171/#172/#173 until post-policy evidence proves a Kimi-specific transport bug.
+- [x] T019 Record that new issue creation requires root cause, duplicate check, and explicit operator approval.
 
-## Phase 6: Verification And Final Review
+## Phase 6: External Review Before Implementation
 
-- [X] T030 Run `git diff --check`.
-- [X] T031 Run `npm run lint:sync`.
-- [X] T032 Run all focused tests touched by T013-T029.
-- [X] T033 Run `npm test`.
-- [X] T034 Run `npm run test:full` before any PR/merge-readiness claim, per `CLAUDE.md` slow-path guidance.
-- [X] T035 Run `npm run doctor:cache` if generated docs/skills, shared synced libs, runtime scripts, or packaged plugin copies changed.
-- [X] T036 Run final Claude, Gemini, Grok, GLM, DeepSeek, and Kimi review on the completed audit/implementation and record evidence in `specs/171-provider-architecture-parity/final-review-results.md`.
-- [X] T037 Produce final completion audit mapping every requirement, task, changed file, command, and reviewer verdict before any PR/merge-readiness claim.
-- [X] T038 Record the post-final-review Claude custom-review packet-budget root cause as issue #173 after non-Claude adversarial approval, and update parity artifacts/tests so #171 distinguishes #172 broad packet work from #173's reproduced Claude subscription CLI gap.
+**Independent test**: all six reviewers approve current root-problem/spec/plan/tasks.
+
+- [x] T020 Record prior five approvals as directional, not final-current approval.
+- [x] T021 Record Kimi usable approvals for `root-problems.md`, `spec.md`, and compact `plan.md`.
+- [x] T022 Record Kimi failures/timeouts: full packet, provider table packet, old plan packet, and task packet.
+- [x] T023 Obtain a usable Kimi verdict for this compact task list.
+- [x] T024 Re-run final current-packet review across Claude, Gemini, Grok, GLM, DeepSeek, and Kimi.
+- [x] T025 Stop implementation unless all six current reviewers approve.
+
+## Phase 7: Implementation After Approval Only
+
+- [x] T026 Add RED full-policy contract tests proving all six providers share the same field names and meanings for route, packet, readiness/auth, status/lifecycle, failure taxonomy, suggested action, review quality, audit, docs, and sync rules.
+- [x] T027 Implement one shared Provider Policy Interface/facade that owns the full cross-cutting policy contract, not just route and packet helpers.
+- [x] T028 Add RED route-ladder matrix tests for all six providers in `tests/unit/provider-route-policy.test.mjs`.
+- [x] T029 Implement one shared route ladder Module through the Provider Policy Interface.
+- [ ] T030 Add Adapter capability facts for subscription, direct API, and OpenRouter.
+- [x] T031 Add RED packet budget/resend tests for all six providers and all modes.
+- [x] T032 Implement one shared source packet policy through the Provider Policy Interface.
+- [ ] T033 Wire shared route, packet, readiness/auth, failure/status, review-quality, audit, docs, and sync policy into provider launch paths.
+- [x] T034 Update `provider-parity-table.json` and `data-model.md` to match the implemented full-policy slice.
+- [x] T035 Sync packaged copies and generated docs through canonical scripts.
+- [ ] T036 Address Grok login persistence only if Phase 5 proves separate scope.
+- [ ] T037 Address Kimi transport/capacity only if Phase 5 proves separate scope.
+- [ ] T038 Run focused tests, `git diff --check`, `npm run lint:sync`, `npm test`, and any changed generated-doc checks.
+- [ ] T039 Run latest-head reviews from all six providers before merge-readiness.
 
 ## Dependencies
 
-- Phase 2 blocks all implementation phases.
-- US1 and US2 may run in parallel after T012 approval if they touch different test/docs files.
-- US3 depends on US1 because the provider parity table must exist before Grok classification can be guarded.
-- Final review depends on all implemented guardrails and local verification.
+1. Phases 1-5 define the problem and issue ownership.
+2. Phase 6 blocks all implementation.
+3. Phase 7 proceeds one issue at a time after six approvals.
 
 ## MVP
 
-MVP after the first external review is US1 plus the Grok audited fallback slice
-in US3. Gemini and DeepSeek reviewers rejected a docs-only treatment of #159, so
-runtime fallback work is now planned but still blocked until the revised
-plan/tasks packet receives unanimous approval.
+MVP is the shared Provider Policy Interface plus route-ladder and packet-policy
+tests proving exact policy parity across all six providers. Grok and Kimi
+symptom fixes are separate only after evidence satisfies the Clear Reason
+Standard.

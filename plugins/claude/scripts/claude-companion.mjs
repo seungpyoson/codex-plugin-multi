@@ -434,6 +434,8 @@ function reviewAuditManifest(invocation, prompt, containmentPath, execution) {
     },
     route: {
       selectedRoute: invocation.selected_route ?? null,
+      routeStep: invocation.route_step ?? null,
+      routeSteps: invocation.route_steps ?? null,
       fallbackReason: invocation.fallback_reason ?? null,
       approvalScope: invocation.approval_scope ?? null,
       authPath: invocation.selected_auth_path ?? null,
@@ -489,6 +491,8 @@ function approvalAuditManifest(invocation, prompt, containmentPath) {
     },
     route: {
       selectedRoute: invocation.selected_route ?? null,
+      routeStep: invocation.route_step ?? null,
+      routeSteps: invocation.route_steps ?? null,
       fallbackReason: invocation.fallback_reason ?? null,
       approvalScope: invocation.approval_scope ?? "session",
       authPath: invocation.selected_auth_path ?? null,
@@ -1269,6 +1273,25 @@ async function executeRun(invocation, prompt, { foreground, lifecycleEvents = nu
     process.exit(2);
   }
 
+  const sourcePacketPreflight = sourcePacketPolicyPreflight(invocation, prompt, executionScope.addDir);
+  if (sourcePacketPreflight) {
+    const finalRecord = buildClaudeFinalRecord(
+      invocation,
+      sourcePacketPreflight,
+      null,
+      mutationContext.mutations,
+      prompt,
+      executionScope.addDir,
+      runtimeDiagnostics,
+    );
+    const { metaError, stateError } = commitJobRecord(workspaceRoot, jobId, finalRecord);
+    writeExecutionSidecars(workspaceRoot, jobId, sourcePacketPreflight);
+    exitIfFinalizationFailed(invocation, sourcePacketPreflight, finalRecord, mutationContext, executionScope, { metaError, stateError });
+    cleanupExecutionResources(executionScope, mutationContext);
+    if (foreground) printLifecycleJson(finalRecord, lifecycleEvents);
+    process.exit(2);
+  }
+
   const preflightExecution = await claudeOAuthInferencePreflight(invocation, authSelection);
   if (preflightExecution) {
     const finalRecord = buildClaudeFinalRecord(
@@ -1345,6 +1368,8 @@ function invocationWithAuthSelection(invocation, authSelection) {
     selected_auth_path: authSelection.selected_auth_path,
     billing_path: authSelection.billing_path ?? null,
     selected_route: authSelection.selected_route ?? null,
+    route_step: authSelection.route_step ?? null,
+    route_steps: authSelection.route_steps ?? null,
     fallback_reason: authSelection.fallback_reason ?? null,
     source_send_approval_required: authSelection.source_send_approval_required ?? null,
     source_send_approval_state: authSelection.source_send_approval_state ?? null,
@@ -2107,6 +2132,29 @@ function sourceSendApprovalPreflight(authSelection, invocation, prompt, containm
         "approval_required: source-bearing direct API route requires explicit approval before selected source can be sent.",
     },
   };
+}
+
+function sourcePacketPolicyPreflight(invocation, prompt, containmentPath) {
+  const preflightExecution = {
+    preflight: true,
+    exitCode: null,
+    parsed: null,
+    pidInfo: null,
+    claudeSessionId: null,
+    stdout: "",
+    stderr: "",
+    errorMessage: "source_packet_too_large: source packet policy preflight pending",
+  };
+  const manifest = reviewAuditManifest(invocation, prompt, containmentPath, preflightExecution);
+  const policy = manifest?.source_packet_policy ?? null;
+  if (!policy || policy.source_send_allowed !== false) return null;
+  const errorCode = policy.source_packet_policy_error_code ?? "source_packet_policy_blocked";
+  const execution = {
+    ...preflightExecution,
+    errorMessage: `${errorCode}: ${policy.suggested_action ?? "source packet policy blocked selected source send"}`,
+  };
+  execution.reviewAuditManifest = reviewAuditManifest(invocation, prompt, containmentPath, execution);
+  return execution;
 }
 
 function resolveAuthSelection(requestedMode = defaultAuthMode(), options = {}) {

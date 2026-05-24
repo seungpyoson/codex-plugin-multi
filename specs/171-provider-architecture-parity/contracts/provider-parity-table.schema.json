@@ -3,7 +3,7 @@
   "$id": "https://example.invalid/codex-plugin-multi/provider-parity-table.schema.json",
   "title": "Provider Architecture Parity Table",
   "type": "object",
-  "required": ["schema_version", "feature", "providers", "policy_areas", "issue_fit"],
+  "required": ["schema_version", "feature", "providers", "policy_areas", "semantic_drift_policy", "issue_fit", "guardrail_tests"],
   "additionalProperties": false,
   "properties": {
     "schema_version": { "type": "integer", "minimum": 1 },
@@ -34,6 +34,7 @@
       "type": "array",
       "items": { "$ref": "#/$defs/adapter_exception" }
     },
+    "semantic_drift_policy": { "$ref": "#/$defs/semantic_drift_policy" },
     "issue_fit": { "$ref": "#/$defs/issue_fit" },
     "verification": {
       "type": "array",
@@ -74,17 +75,69 @@
     },
     "adapter_exception": {
       "type": "object",
-      "required": ["provider", "policy_area", "current_behavior", "evidence", "verdict"],
+      "required": [
+        "provider",
+        "policy_area",
+        "difference_type",
+        "current_behavior",
+        "shared_policy_boundary",
+        "clear_reason",
+        "evidence",
+        "tests",
+        "verdict",
+        "follow_up_issue"
+      ],
       "additionalProperties": false,
       "properties": {
         "provider": { "enum": ["claude", "gemini", "kimi", "grok", "deepseek", "glm"] },
         "policy_area": { "type": "string" },
+        "difference_type": {
+          "enum": [
+            "adapter_capability_fact",
+            "documented_policy_exception",
+            "known_accidental_drift",
+            "research_gap"
+          ]
+        },
         "current_behavior": { "type": "string" },
-        "reason": { "type": ["string", "null"] },
+        "capability_fact": { "type": ["string", "null"] },
+        "shared_policy_boundary": { "type": "string", "minLength": 1 },
+        "clear_reason": { "type": "string", "minLength": 1 },
         "evidence": { "type": "array", "items": { "type": "string" }, "minItems": 1 },
-        "tests": { "type": ["array", "string", "null"], "items": { "type": "string" } },
+        "tests": { "type": "array", "items": { "type": "string" }, "minItems": 1 },
         "verdict": { "enum": ["intentional", "accidental", "unknown"] },
         "follow_up_issue": { "type": ["integer", "null"] }
+      }
+    },
+    "semantic_drift_policy": {
+      "type": "object",
+      "required": [
+        "standard",
+        "allowed_intentional_difference_types",
+        "tracked_noncompliance_types",
+        "required_exception_fields"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "standard": { "type": "string", "minLength": 1 },
+        "allowed_intentional_difference_types": {
+          "type": "array",
+          "items": { "enum": ["adapter_capability_fact", "documented_policy_exception"] },
+          "minItems": 2,
+          "uniqueItems": true
+        },
+        "tracked_noncompliance_types": {
+          "type": "array",
+          "items": { "enum": ["known_accidental_drift", "research_gap"] },
+          "minItems": 2,
+          "uniqueItems": true
+        },
+        "required_exception_fields": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 },
+          "minItems": 1,
+          "uniqueItems": true
+        }
       }
     },
     "issue_fit": {

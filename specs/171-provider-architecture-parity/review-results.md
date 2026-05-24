@@ -1,101 +1,134 @@
 # External Plan/Tasks Review Results
 
-Stage: pre-implementation plan/tasks review  
-Packet: `CLAUDE.md` plus `specs/171-provider-architecture-parity/`  
-Safety: DeepSeek/GLM approval-request artifacts were generated in `/private/tmp/cpm-171-plan-review/`; approval token values are not recorded here.
+Stage: revised pre-implementation root-problem/spec/plan/tasks review
+Status: passed - current pre-implementation gate has six usable approvals
 
-## Plan-Gate Revised Packet Integrity
+Latest note: `spec.md`, `plan.md`, and `tasks.md` were revised after partial
+reviews to address clarity concerns, reduce prose, record the stale Kimi
+task-review result, and then obtain a compact Kimi task-list approval. Existing
+approvals are therefore evidence for problem direction, not final current-file
+approval. A current four-file packet review then failed because Grok requested
+changes and Kimi timed out after source send. The Grok blocker was applied to
+`tasks.md`; the updated `plan.md`/`tasks.md` delta then received six usable
+APPROVE verdicts. Since `root-problems.md` and `spec.md` were unchanged after
+their current approvals, the pre-implementation gate is passed by current-file
+coverage.
 
-This table records the plan/tasks packet that external reviewers approved before
-implementation. It is historical review evidence, not a live hash assertion for
-post-final-review metadata edits such as the later #173 follow-up split.
+## Stale Historical Reviews
 
-| File | Bytes | SHA-256 |
-| --- | ---: | --- |
-| `CLAUDE.md` | 1459 | `fe4aec10fb04aa842f49b36bcb1f75a401f94b218674408db3e43704e1071184` |
-| `specs/171-provider-architecture-parity/evidence-map.md` | 11250 | `9a3b54e422d863316402c54b0a01f22d38e740ce8ba3ae06da1f6a8532585232` |
-| `specs/171-provider-architecture-parity/spec.md` | 8795 | `fb3751c8e872e5f4eaf91378b7dc4e04ef36b0efd2939b992844fb66339d4a3e` |
-| `specs/171-provider-architecture-parity/plan.md` | 6096 | `81960a5361945f616783b5d95af513b7c2096c56da45c09e9a84571a611fef76` |
-| `specs/171-provider-architecture-parity/research.md` | 3251 | `ae9348c4b981f827c697f57fe1c485cfadc7b2d1107b8a0fc94025dc9fbe062c` |
-| `specs/171-provider-architecture-parity/data-model.md` | 4007 | `6ec7beb916608f936ddd657a172a344b13eb2db48e622e7b9f8e90bc90aa1e17` |
-| `specs/171-provider-architecture-parity/contracts/provider-parity-table.schema.json` | 5066 | `18102ca5641deb9b3635f9224448c14806ff4a12be8dd55eb6dec70b5b505780` |
-| `specs/171-provider-architecture-parity/quickstart.md` | 3473 | `361abf7f7808461624b1909fdc157d43728e5f0682ad5ba6d27b2e29767d459a` |
-| `specs/171-provider-architecture-parity/tasks.md` | 7876 | `97e0a4bd8a7f2be93f10291b19b09d174e8bda7d27ddf762e94beb50c75d1411` |
-| `specs/171-provider-architecture-parity/review-results.md` | self-referential | excluded from its own hash assertion |
+Prior review rounds approved the older #175 plan: provider parity table,
+contract guardrails, and Grok auto fallback. Those approvals are not valid for
+the corrected requirement because they did not review exact shared policy parity
+for all six providers.
 
-## First Pass
+Stale gate summary:
 
-| Reviewer | Job | Status | Source | Verdict | Action |
+- Claude: prior approval, stale.
+- Gemini: prior approval, stale.
+- Grok: prior approval, stale.
+- GLM: prior approval, stale.
+- DeepSeek: prior approval by shards, stale.
+- Kimi: prior approval after retry, stale.
+
+Reason stale:
+
+- DeepSeek/GLM API-only path was treated as compliant instead of as an
+  unproven capability fact in a shared route ladder.
+- Kimi subscription-only behavior was not challenged as route-ladder drift.
+- OpenRouter was not modeled as the third route step for all six providers.
+- Packet budget/resend policy was split into follow-ups instead of owned by
+  #171 shared policy.
+
+## Revised Review Packet
+
+Required files:
+
+```text
+specs/171-provider-architecture-parity/root-problems.md
+specs/171-provider-architecture-parity/spec.md
+specs/171-provider-architecture-parity/plan.md
+specs/171-provider-architecture-parity/tasks.md
+specs/171-provider-architecture-parity/evidence-map.md
+specs/171-provider-architecture-parity/research.md
+specs/171-provider-architecture-parity/data-model.md
+specs/171-provider-architecture-parity/provider-parity-table.json
+specs/171-provider-architecture-parity/quickstart.md
+```
+
+Reviewer instruction:
+
+```text
+Adversarial review of revised #171 provider architecture parity root problems,
+spec, plan, and tasks. Required architecture: same provider policy Interface
+for Claude, Gemini, Kimi, Grok, DeepSeek, and GLM. Same route ladder:
+subscription -> direct API -> OpenRouter. Same source packet budget/resend
+policy. Same auth/readiness, status, failure taxonomy, review-quality, audit,
+docs, and sync policy. Provider differences allowed only as evidence-backed
+Adapter capability facts. Verdict must be APPROVE or REQUEST_CHANGES.
+```
+
+## Revised Gate Results
+
+| Reviewer | Job | Status | Source | Verdict | Notes |
 | --- | --- | --- | --- | --- | --- |
-| Claude | `20ae79bb-3ee9-45cc-a840-387d1fcd0e46` | completed | sent | APPROVE | Keep non-blocking caveat: source-code evidence was not independently reviewed in that packet. |
-| Gemini | `fefdde12-326c-4c3b-a8a9-6506f0bb5e83` | completed | sent | REQUEST_CHANGES | Add Grok runtime fallback slice, full-test final gate, and schema/data-model reconciliation. |
-| Grok | `job_f25a9b70-c67a-472d-9442-486bdddfb0e5` | completed | sent | APPROVE | No blocking changes. |
-| GLM | `job_cdb30449-4ba1-4c72-ba36-52e80f85c2fa` | completed | sent | APPROVE | No blocking changes. |
-| DeepSeek | `job_a2f0a90b-dcc2-444f-a4d0-37892e00a341` | completed | sent | REQUEST_CHANGES | Make parity table machine-validatable JSON, pin exact guardrail fields/interfaces, and record packet integrity. |
-| Kimi | `3a99de56-a3b7-4bd5-a9b5-fc301b016cd9` | failed | sent | failed_slot | Retry with revised/narrower packet or higher step budget; failed slot is not approval. |
+| Claude | `9a59374a-9169-4875-9b31-9863141a331f` | completed | sent | APPROVE | Latest revised packet approved; non-blocking concerns only. |
+| Gemini | `5f28d958-3d9e-4c66-840d-e2dfcc2e4fc2` | completed | sent | APPROVE | Approved after `attempted_route` and `skipped_reason` were added to the guardrail inventory. |
+| Grok | `job_2670a90b-1114-4a62-ba92-ec6c0791120c` | completed | sent | APPROVE | Usable approval; external-scope caveats recorded as non-blocking. |
+| GLM | `job_2b23f2e2-f8cb-41b5-b7cf-40cb9b03f7da` | completed | sent | APPROVE | Retry produced a usable approval after first GLM result used non-contract labels. |
+| DeepSeek | `job_da257d59-7333-43c8-bcc1-515b8bb63035` | completed | sent | APPROVE | Usable approval. |
+| Kimi | mixed; see below | partial | sent | partial APPROVE only | `root-problems.md`, `spec.md`, compact `plan.md`, and compact `tasks.md` each received usable APPROVE verdicts in separate single-file reviews. Current full-packet approval is still missing. |
 
-Gate result: FAILED. No implementation may start.
+Gate result: FAILED. Five reviewers produced usable APPROVE verdicts for an
+earlier revised packet. Kimi approved the compact task list, but no reviewer has
+approved the final current packet after all edits. Implementation remains
+blocked until the current packet receives all six approvals.
 
-## Blocking Changes Applied To Plan Packet
+## Kimi Attempts
 
-- Canonical parity artifact is now `provider-parity-table.json`, validated by `contracts/provider-parity-table.schema.json`.
-- Tasks now require packet file list, byte counts, and SHA-256 hashes.
-- Guardrail tests now pin exact audit/status fields and exact shared interfaces.
-- Final verification now includes `npm run test:full` before PR/merge-readiness.
-- Grok docs-only classification was replaced with a TDD runtime slice for explicit `auto` transport, CLI-primary behavior, audited web fallback, terminal plain-CLI behavior, and no paid xAI API fallback.
+| Job | Packet | Result | Evidence |
+| --- | --- | --- | --- |
+| `d919f5de-1390-4e9a-b3c4-a8e063a01f99` | Full revised packet before Gemini fix | cancelled | Source had been sent; packet became stale after Gemini requested a guardrail fix. |
+| `3040d5d9-469a-49c0-9b7f-39cbb58aa3fb` | Four-file latest packet | cancelled | Source had been sent; run produced no usable verdict and required manual process termination after companion cancel could not verify PID because `ps` was denied. |
+| `abdc226d-d5b1-4b12-b19a-f7cf9eb6cb69` | Minimal one-file `provider-parity-table.json` packet | failed | Source sent; timeout after 257,212 ms, no stdout/stderr, no verdict. |
+| `a2578a28-aec1-4ab2-b8d9-77b6e45516fc` | Single-file `root-problems.md` packet | completed | Source sent; APPROVE; reviewed only root-problems. |
+| `6b5f8b7d-0116-4b96-adcd-4c9a5187dbdd` | Single-file `spec.md` packet | completed | Source sent; APPROVE; reviewed only spec, with non-blocking clarity concerns. |
+| `3c39881a-2875-4ba8-a785-ae3bcca4c2f8` | Single-file old `plan.md` packet | failed | Source sent; timeout after 904,740 ms, no stdout/stderr, no verdict. |
+| `7a870d59-edab-4a49-b968-fa44136080b9` | Single-file compact `plan.md` packet | completed | Source sent; APPROVE; reviewed compact plan. |
+| `c14df593-ce72-4a5a-ba3e-0a1e20b80227` | Single-file old `tasks.md` packet | stale | Source sent; worker exceeded 900,000 ms timeout plus 30,000 ms grace, no stdout/stderr, no verdict. |
+| `4ad59213-96b4-40a4-9f03-6f7e04ab3504` | Single-file compact `tasks.md` packet | completed | Source sent; APPROVE; reviewed compact task list. |
+| `ea4c9156-8a96-449f-ac99-2c87ad52d57b` | Four-file current packet before Grok fix | failed | Source sent; timeout after 907,148 ms, no verdict. |
 
-## Revised Gate
+## Current Packet Round Before Grok Fix
 
-Rerun all six reviewers after this file and the revised plan packet are included. A Kimi retry should use a narrower source packet or higher step budget; it must still produce a usable verdict to count.
+Reviewed files: `root-problems.md`, `spec.md`, `plan.md`, `tasks.md`.
 
-## Second Pass
+| Reviewer | Job | Status | Verdict | Notes |
+| --- | --- | --- | --- | --- |
+| Claude | `9e6ed781-39a6-49ac-b757-3363d6c07af0` | completed | APPROVE | Non-blocking concerns only; scope gaps for out-of-packet artifacts. |
+| Gemini | `fb2cc595-2f5c-4603-8776-b445d1bd30d1` | completed | APPROVE | No blocking findings. |
+| Grok | `job_22d2588b-f333-451c-9af2-ed0588daab07` | completed | REQUEST_CHANGES | Phase 7 tasks missed explicit full-policy tests/interface coverage for readiness/auth/status/failure/review-quality/audit/docs/sync. |
+| GLM | `job_05e2d498-8686-4c0c-b0d2-3208ec0dc387` | completed | APPROVE | Non-blocking concerns only. |
+| DeepSeek | `job_1cf945f8-ba4c-4eb3-8b05-88e4e30484b4` | completed | APPROVE | Non-blocking concerns only. |
+| Kimi | `ea4c9156-8a96-449f-ac99-2c87ad52d57b` | failed | failed_slot | Source sent; wall-clock timeout; no verdict. |
 
-| Reviewer | Job | Status | Source | Verdict | Action |
-| --- | --- | --- | --- | --- | --- |
-| Claude | `4256a610-ebdd-4893-8148-f861fdfcf767` | completed | sent | APPROVE | Non-blocking data-model/schema polish noted. |
-| Gemini | `2d98843f-d5bb-44ee-a210-cfd9c8ab92d9` | completed | sent | APPROVE | No blockers. |
-| Grok | `job_66180815-c17d-40ea-abd9-e35a1e190666` | failed | sent | REQUEST_CHANGES | Add packet-budget policy-area coverage and align `verification`/`guardrail_tests` data model with schema. |
-| GLM | `job_a14dc2c5-5964-497c-a74b-9f991da33515` | completed | sent | APPROVE | Non-blocking data-model/schema polish noted. |
-| DeepSeek | `job_5f40bcbc-c16d-4478-80c9-bdbfb953e3fd` | completed | sent | APPROVE | Non-blocking policy-area completeness and fallback class precision noted. |
-| Kimi | `5d05db73-b252-4290-8d02-87328d458abe` | failed | sent | failed_slot | Timed out with `target CLI exceeded the configured timeoutMs`; no verdict. |
+Gate result for this round: FAILED. Grok's blocking finding was applied to
+`tasks.md`. Kimi's timeout is additional evidence that combined source-bearing
+packets are not reliable for this provider under the current policy.
 
-Gate result: FAILED. No implementation may start.
+## Delta Round After Grok Fix
 
-## Blocking Changes Applied After Second Pass
+Reviewed files: updated `plan.md` and `tasks.md`. `root-problems.md` and
+`spec.md` were unchanged from their current approvals.
 
-- T016 now requires the JSON parity table to cover every FR-002 policy area, including packet budgets, with #172 as the allowed follow-up when deferral is evidence-backed.
-- `data-model.md` now defines `verification` as an array, adds `guardrail_tests` to the top-level table, and defines the Verification Evidence item shape.
-- Provider exceptions now permit either a follow-up issue or an explicit null reason when no follow-up issue is needed.
+| Reviewer | Job | Status | Verdict | Notes |
+| --- | --- | --- | --- | --- |
+| Claude | `6b498796-0f9b-403b-96d2-2b3b8f6b0ba7` | completed | APPROVE | No blocking findings. |
+| Gemini | `45f02f60-56c1-47c4-9c1d-746ab8bb1402` | completed | APPROVE | No blocking findings. |
+| Grok | `job_6999f0a2-3ea8-4ba9-9441-d680f9902a98` | completed | APPROVE | Confirms prior Phase 7 blocker is addressed. |
+| GLM | `job_b166c0cd-948d-49e7-80a6-0b85d0f9d6e8` | completed | APPROVE | Non-blocking concerns only. |
+| DeepSeek | `job_28a187bc-b350-46b3-9b3e-037ad46de2ac` | completed | APPROVE | Non-blocking concerns only. |
+| Kimi | `5eaf99d9-f3b7-490a-82c6-a2d22889e2fa` | completed | APPROVE | No blocking findings. |
 
-## Third Gate Plan
-
-Rerun Grok after the second-pass blockers are addressed. Kimi has failed twice on the full packet; use a narrower Kimi packet focused on `spec.md`, `plan.md`, `tasks.md`, `data-model.md`, `contracts/provider-parity-table.schema.json`, and `review-results.md` unless the operator requests another full-packet attempt.
-
-## Third Pass
-
-| Reviewer | Job | Status | Source | Verdict | Scope |
-| --- | --- | --- | --- | --- | --- |
-| Grok | `job_2a8fd54c-6d69-42a7-a08b-6871d92f2bba` | completed | sent | APPROVE | Focused packet: `spec.md`, `plan.md`, `tasks.md`, `data-model.md`, schema, `review-results.md`. |
-| Kimi | `c4b3d0ec-7d08-4fc6-a764-b4bd296c01d8` | completed | sent | APPROVE | Focused packet: `spec.md`, `plan.md`, `tasks.md`, `data-model.md`, schema, `review-results.md`. |
-
-Gate result: PASSED for pre-implementation planning. Current usable approvals:
-
-- Claude v2: APPROVE
-- Gemini v2: APPROVE
-- Grok v3: APPROVE
-- GLM v2: APPROVE
-- DeepSeek v2: APPROVE
-- Kimi v3: APPROVE
-
-Implementation may start, constrained to the approved plan and TDD tasks.
-
-## Post-Final-Review Follow-Up Split
-
-After the #171 final implementation review, a separate Claude usage-limit
-investigation reproduced a narrower packet-budget root cause in Claude
-subscription CLI `custom-review`: explicit scoped custom-review jobs can fall
-back to full selected-source bodies and launch without a pre-launch packet budget
-or resend-confirmation gate. Grok adversarial review approved the narrowed
-problem definition in `job_36627cf7-dfe5-40e8-8a5f-2567bdd318a2`, and issue #173
-now tracks that Claude-specific fix. #172 remains the broader large-packet
-routing/chunking follow-up.
+Gate result: PASSED for pre-implementation planning. Implementation may start,
+but remains constrained to the approved #171 shared-policy scope and TDD task
+order.

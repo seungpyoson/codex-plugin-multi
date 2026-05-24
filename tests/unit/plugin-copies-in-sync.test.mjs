@@ -262,9 +262,14 @@ test("provider-facing policy interfaces are inventoried and wired through shared
   assert.ok(guardrail, "provider parity table must define shared policy interface usage guardrail");
 
   const requiredInterfaces = [
+    "buildProviderPolicyContract",
+    "evaluateSourcePacketPolicy",
+    "PROVIDER_POLICY_DOMAINS",
+    "PROVIDER_ROUTE_STEPS",
     "selectProviderRoute",
     "buildReviewAuditManifest",
     "SOURCE_CONTENT_TRANSMISSION",
+    "sourceContentTransmissionForExecution",
     "buildExternalModelFailureDiagnostic",
     "reviewQualityFailureState",
   ];
@@ -288,6 +293,23 @@ test("provider-facing policy interfaces are inventoried and wired through shared
   for (const iface of requiredInterfaces) {
     assert.match(combined, new RegExp(`\\b${iface}\\b`), `${iface} is not wired through provider-facing source`);
   }
+});
+
+test("Grok auto transport stays an adapter capability and uses shared source-transmission policy", () => {
+  const source = readRepoFile("plugins/grok/scripts/grok-web-reviewer.mjs");
+  assert.match(
+    source,
+    /sourceContentTransmissionForExecution\s*,?\s*\}\s+from\s+["']\.\/lib\/external-review\.mjs["']/,
+    "Grok runtime must consume shared sourceContentTransmissionForExecution",
+  );
+  assert.doesNotMatch(
+    source,
+    /function\s+sourceTransmission\s*\(/,
+    "Grok must not keep a separate sourceTransmission policy helper",
+  );
+  assert.match(source, /requested_transport/);
+  assert.match(source, /canAutoFallbackFromCliExecution/);
+  assert.match(source, /cliRequestDiagnosticsForFallback/);
 });
 
 test("reviewer runtimes use the shared privacy redactor", () => {

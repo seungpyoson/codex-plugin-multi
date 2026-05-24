@@ -4,6 +4,8 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { buildProviderPolicyContract } from "../../scripts/lib/provider-route-policy.mjs";
+
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 
 function readRepoFile(rel) {
@@ -832,6 +834,25 @@ test("provider architecture parity table is machine-validatable and complete", (
   assert.equal(table.feature, "provider-architecture-parity");
   assert.deepEqual([...table.providers].sort(), ["claude", "deepseek", "gemini", "glm", "grok", "kimi"]);
 
+  const providerPolicyContract = buildProviderPolicyContract();
+  assert.deepEqual(table.providers, providerPolicyContract.providers);
+
+  const semanticPolicy = table.semantic_drift_policy;
+  assert.ok(semanticPolicy, "provider parity table must define semantic drift policy");
+  assert.match(semanticPolicy.standard, /clear reason/i);
+  assert.match(semanticPolicy.standard, /fake parity/i);
+  assert.deepEqual(
+    [...semanticPolicy.allowed_intentional_difference_types].sort(),
+    ["adapter_capability_fact", "documented_policy_exception"],
+  );
+  assert.deepEqual(
+    [...semanticPolicy.tracked_noncompliance_types].sort(),
+    ["known_accidental_drift", "research_gap"],
+  );
+  for (const required of schema.$defs.semantic_drift_policy.required) {
+    assert.ok(Object.hasOwn(semanticPolicy, required), `semantic drift policy missing ${required}`);
+  }
+
   const requiredPolicyAreas = [
     "route/auth/source-send approval",
     "packet budgets",
@@ -850,6 +871,13 @@ test("provider architecture parity table is machine-validatable and complete", (
   for (const name of requiredPolicyAreas) {
     assert.equal(policyNames.has(name), true, `missing policy area ${name}`);
   }
+
+  const policySurfaceGuardrail = table.guardrail_tests.find((entry) => entry.name === "full provider policy surface");
+  assert.ok(policySurfaceGuardrail, "provider parity table must define full provider policy surface guardrail");
+  assert.deepEqual(
+    [...policySurfaceGuardrail.required_fields].sort(),
+    [...providerPolicyContract.domains.map((domain) => domain.name)].sort(),
+  );
 
   const policyAllowedKeys = Object.keys(schema.$defs.policy_area.properties);
   for (const area of table.policy_areas) {
@@ -873,12 +901,65 @@ test("provider architecture parity table is machine-validatable and complete", (
     assert.ok(table.issue_fit.related_issues.includes(related), `missing related issue ${related}`);
   }
 
+  const exceptionAllowedKeys = Object.keys(schema.$defs.adapter_exception.properties);
+  const exceptionRequiredKeys = schema.$defs.adapter_exception.required;
+  const allowedIntentionalTypes = new Set(semanticPolicy.allowed_intentional_difference_types);
+  const trackedNoncomplianceTypes = new Set(semanticPolicy.tracked_noncompliance_types);
+  const providers = new Set(table.providers);
+  for (const field of exceptionRequiredKeys) {
+    assert.ok(
+      semanticPolicy.required_exception_fields.includes(field),
+      `semantic drift policy must require exception field ${field}`,
+    );
+  }
+
   for (const exception of table.exceptions ?? []) {
+    assertOnlyKeys(exception, exceptionAllowedKeys, `exception ${exception.provider}/${exception.policy_area}`);
+    for (const required of exceptionRequiredKeys) {
+      assert.ok(
+        Object.hasOwn(exception, required),
+        `exception ${exception.provider}/${exception.policy_area} missing ${required}`,
+      );
+    }
+    assert.ok(providers.has(exception.provider), `exception provider ${exception.provider} must be in provider list`);
+    assert.ok(policyNames.has(exception.policy_area), `exception policy area ${exception.policy_area} must be in policy areas`);
+    assert.equal(typeof exception.clear_reason, "string", `exception ${exception.policy_area} must include clear_reason`);
+    assert.match(exception.shared_policy_boundary, /shared|adapter|route|policy|capability/i);
     assert.equal(Array.isArray(exception.evidence), true, `exception ${exception.policy_area} must include evidence`);
     assert.equal(exception.evidence.length > 0, true, `exception ${exception.policy_area} evidence must not be empty`);
+    assert.equal(Array.isArray(exception.tests), true, `exception ${exception.policy_area} tests must be an array`);
+    assert.equal(exception.tests.length > 0, true, `exception ${exception.policy_area} tests must not be empty`);
     assert.ok(
       exception.follow_up_issue === null || Number.isInteger(exception.follow_up_issue),
       `exception ${exception.policy_area} must make follow-up issue state explicit`,
     );
+    if (exception.verdict === "intentional") {
+      assert.ok(
+        allowedIntentionalTypes.has(exception.difference_type),
+        `intentional exception ${exception.provider}/${exception.policy_area} must use an allowed difference type`,
+      );
+      assert.equal(typeof exception.capability_fact === "string" || exception.capability_fact === null, true);
+      assert.doesNotMatch(exception.tests.join("\n"), /^missing\b/i);
+    } else {
+      assert.ok(
+        trackedNoncomplianceTypes.has(exception.difference_type),
+        `non-intentional exception ${exception.provider}/${exception.policy_area} must be tracked as drift or research gap`,
+      );
+    }
   }
+
+  const semanticGuardrail = table.guardrail_tests.find((entry) => entry.name === "provider semantic drift classification");
+  assert.ok(semanticGuardrail, "provider parity table must define semantic drift classification guardrail");
+  assert.deepEqual(
+    [...semanticGuardrail.required_fields].sort(),
+    [...semanticPolicy.required_exception_fields].sort(),
+  );
+  const grokAuto = table.exceptions.find(
+    (entry) => entry.provider === "grok" && entry.policy_area === "fallback semantics",
+  );
+  assert.ok(grokAuto, "Grok auto transport capability must be documented as an exception");
+  assert.equal(grokAuto.verdict, "intentional");
+  assert.equal(grokAuto.difference_type, "adapter_capability_fact");
+  assert.match(grokAuto.capability_fact, /two subscription-backed transports/i);
+  assert.match(grokAuto.shared_policy_boundary, /subscription/i);
 });

@@ -1,93 +1,80 @@
 # Research: Provider Architecture Parity Audit
 
-## Decision: #171 Is The Primary Scope
+## Decision: #171 Is The Umbrella
 
-#171 directly names provider architecture parity across Claude, Gemini, Kimi,
-Grok, DeepSeek, and GLM. #170 is broader repo topology and duplicated paths.
-Current evidence shows shared policy and synced packaged copies, so #170 remains
-input instead of becoming the implementation target.
+#171 remains the primary scope because it explicitly asks for provider
+architecture parity across Claude, Gemini, Kimi, Grok, DeepSeek, and GLM. #170
+is topology evidence input only.
 
-Alternatives considered:
-
-- Use #170 as the target: rejected because current evidence is provider-facing
-  and does not prove repo-wide topology must split.
-- Create a new issue during the initial #171 audit: rejected because #171/#170
-  covered the known provider-parity concerns at that point. Later, after a
-  separate operator request to investigate Claude usage-limit burn, a narrower
-  Claude subscription CLI `custom-review` packet-budget root cause was proven
-  and filed as #173 after non-Claude adversarial approval. #173 is recorded as
-  a follow-up split, not as part of the initial #171 implementation scope.
-
-## Decision: #173 Is A Post-Review Claude Packet-Budget Follow-Up
-
-The initial #171 audit treated packet-budget parity as broad follow-up #172.
-The later Claude usage-limit investigation found a more specific root cause:
-Claude subscription CLI `custom-review` can fall back to full selected-source
-bodies and launch without a pre-launch budget or resend-confirmation gate.
-Grok adversarial review approved this narrowed problem definition in
-`job_36627cf7-dfe5-40e8-8a5f-2567bdd318a2`, and issue #173 now tracks it.
+Rationale: the observed symptoms are provider-facing policy drift: route
+fallback, auth/readiness, source packet handling, status, failure taxonomy, and
+review-quality semantics.
 
 Alternatives considered:
 
-- Fold #173 into #171: rejected because #171's reviewed implementation is the
-  provider parity audit/Grok fallback slice, while #173 is a focused Claude
-  runtime budget gate.
-- Leave #173 under #172 only: rejected because #172 is broader routing/chunking
-  work and the reproduced Claude path is narrower, high-impact, and actionable.
+- Use #170 as target: rejected because current evidence is provider-facing, not
+  repo-wide topology proof.
+- Split Claude, Kimi, Grok, DeepSeek, and GLM immediately: rejected because
+  provider-specific issues before shared policy analysis create patch churn.
 
-## Decision: Current Shared Policy Is Mostly Compliant
+## Decision: Exact Policy Parity Is Required
 
-Route/auth/source-send behavior is centralized in `provider-route-policy.mjs`
-and `auth-selection.mjs`. Prompt/audit state is centralized in
-`review-prompt.mjs`. Source-send disclosure is centralized in
-`external-review.mjs`. Failure taxonomy and review-quality state are centralized
-in `external-model-failure-core.mjs` and
-`external-model-review-quality.mjs`. Review-panel normalization is centralized
-in `review-panel.mjs`.
+Every provider must use the same policy Interface. Differences are allowed only
+as Adapter capability facts with evidence and tests.
+
+Rationale: separate treatment is the likely source of the current failure
+pattern. Kimi failing after source send, DeepSeek/GLM being API-only, and Grok
+login/fallback oddities should not become one-off patches.
 
 Alternatives considered:
 
-- Treat provider entrypoints as duplicated policy: rejected for now because the
-  current evidence shows provider entrypoints consume shared policy for core
-  route/audit/status fields, while retaining adapter launch mechanics.
+- Keep DeepSeek/GLM as separate direct API reviewers: rejected as a policy model.
+  Direct API can remain their current Adapter capability, but route selection
+  must still go through the same ladder.
+- Keep Kimi subscription-only because current code says so: rejected unless
+  evidence proves no direct API/OpenRouter capability is possible or intended.
 
-## Decision: Packaged Copies Are Distribution Artifacts
+## Decision: Route Ladder Is Subscription -> Direct API -> OpenRouter
 
-Package copies under `plugins/*/scripts/lib/` are guarded by sync scripts,
-`tests/unit/plugin-copies-in-sync.test.mjs`, and `npm run lint:sync`. The current
-sync gate passed. This supports the verdict "packaging copy with sync guard".
+The shared route policy must evaluate the same three route steps for every
+provider. Unsupported steps are recorded and skipped, not implemented as fake
+launches.
 
-Alternatives considered:
-
-- Delete packaged copies: rejected because plugin distribution requires
-  self-contained package copies.
-- Treat copies as independent implementation: rejected because canonical sources
-  and sync guards own shared behavior.
-
-## Decision: Grok Fallback Is Required Runtime Work After Review
-
-Current code/docs/tests intentionally make Grok CLI the default and web tunnel
-explicit-only. #159 comments now say Grok should offer audited CLI-to-web
-fallback for approved CLI failure classes. First-pass Gemini and DeepSeek plan
-review rejected docs-only handling as a substitution for required runtime
-behavior. The revised plan therefore makes Grok auto fallback a TDD runtime
-slice, still blocked by unanimous review before implementation.
+Rationale: this satisfies the operator requirement while staying efficient.
+DeepSeek/GLM do not need fake subscription subprocesses. They need a shared
+route decision showing subscription unsupported, direct API evaluated, and
+OpenRouter evaluated if configured.
 
 Alternatives considered:
 
-- Implement `--transport auto` immediately: rejected because the goal forbids
-  implementation before revised plan/tasks and unanimous external review.
-- Ignore #159: rejected because #171 explicitly asks for provider architecture
-  parity and route/fallback is a visible symptom.
+- Literal subscription launch for API-only providers: rejected as wasteful and
+  misleading.
+- Two-step subscription/API policy: rejected because OpenRouter is already part
+  of the expected route/fallback contract but is not consistently modeled.
 
-## Decision: MVP Is Parity JSON Plus Grok Auto Fallback
+## Decision: Packet Budget Work Belongs Under #171
 
-Evidence does not prove broad runtime shared-policy drift outside the Grok
-fallback decision. The revised MVP is a canonical `provider-parity-table.json`,
-tests that fail when provider coverage or required audit fields drift, and the
-Grok `auto` fallback TDD slice required by review feedback.
+#172 and #173 are evidence, but #171 must own the shared source packet policy
+Interface. Claude usage burn, Kimi `step_limit_exceeded`, Gemini source-sent
+failure, and DeepSeek/Grok preflight rejection are all manifestations of
+inconsistent packet policy.
 
 Alternatives considered:
 
-- Broad runtime refactor first: rejected; only Grok auto fallback is planned.
-- No code/doc changes: rejected because #171 asks for a durable parity answer.
+- Treat #173 as Claude-only: rejected after operator correction.
+- Treat #172 as separate from #171: rejected for policy design. #172 may remain
+  a bug/evidence issue, but #171 owns architecture parity.
+
+## Decision: Prior #175 Reviews Are Stale
+
+The prior plan/final reviews approved a narrower packet: parity table, guard
+tests, and Grok auto fallback. That does not prove exact shared policy parity.
+
+Rationale: review approval is tied to reviewed scope. The operator clarified a
+broader/harder requirement after those reviews.
+
+Alternatives considered:
+
+- Reuse previous approvals: rejected because they reviewed the wrong problem.
+- Continue patching current implementation: rejected until revised
+  root-problem/spec/plan/tasks packet gets all six approvals.

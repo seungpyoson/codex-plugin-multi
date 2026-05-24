@@ -1202,6 +1202,8 @@ function shardApprovalTuple({
     auth_path: authPath,
     billing_path: billingPath,
     selected_route: routeFields.selected_route,
+    route_step: routeFields.route_step,
+    route_steps: routeFields.route_steps,
     fallback_reason: routeFields.fallback_reason,
     approval_scope: approvalScope,
   });
@@ -2328,7 +2330,7 @@ function routeStateForApproval(cfg, env = process.env, { sourceSendApproved = fa
       sourceSendApproved,
     });
   } catch (e) {
-    if (/unsupported API fallback reason/.test(e?.message ?? "")) {
+    if (/unsupported (?:API|route) fallback reason/.test(e?.message ?? "")) {
       throw runBadArgs(`bad_args: ${e.message}`);
     }
     throw e;
@@ -2338,6 +2340,8 @@ function routeStateForApproval(cfg, env = process.env, { sourceSendApproved = fa
 function approvalRouteFields(routeState) {
   return Object.freeze({
     selected_route: routeState?.selected_route ?? null,
+    route_step: routeState?.route_step ?? null,
+    route_steps: routeState?.route_steps ?? null,
     fallback_reason: routeState?.fallback_reason ?? null,
     auth_path: routeState?.auth_path ?? null,
     billing_path: routeState?.billing_path ?? null,
@@ -2361,6 +2365,8 @@ function approvalTokenFor({ provider, mode, auditManifest, authPath = null, bill
     auth_path: authPath,
     billing_path: billingPath,
     selected_route: routeFields?.selected_route ?? null,
+    route_step: routeFields?.route_step ?? null,
+    route_steps: routeFields?.route_steps ?? null,
     fallback_reason: routeFields?.fallback_reason ?? null,
     approval_scope: approvalScope,
   });
@@ -2409,6 +2415,8 @@ function buildApprovalAuditManifest({ cfg, renderedPrompt, request, scopeInfo, r
     },
     route: {
       selectedRoute: routeFields?.selected_route ?? null,
+      routeStep: routeFields?.route_step ?? null,
+      routeSteps: routeFields?.route_steps ?? null,
       fallbackReason: routeFields?.fallback_reason ?? null,
       approvalScope,
       authPath: approvalAuthPathFor(cfg, process.env),
@@ -2531,6 +2539,8 @@ function buildApprovalRequest({ provider, cfg, mode, options, scopeInfo }) {
       stream: request.stream,
     }),
     selected_route: routeFields.selected_route,
+    route_step: routeFields.route_step,
+    route_steps: routeFields.route_steps,
     fallback_reason: routeFields.fallback_reason,
     approval_scope: approvalScope,
     auth_path: authPath,
@@ -2639,6 +2649,8 @@ function buildReviewMetadata(cfg, scopeInfo, execution = null, startedAt = null,
     },
     route: {
       selectedRoute: routeFields.selected_route,
+      routeStep: routeFields.route_step,
+      routeSteps: routeFields.route_steps,
       fallbackReason: routeFields.fallback_reason,
       approvalScope: execution?.approval_scope ?? null,
       authPath: approvalAuthPathFor(cfg, process.env),

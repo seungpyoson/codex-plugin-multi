@@ -1202,7 +1202,7 @@ for (const value of ["abc", "Infinity", "1.5", "0", "-1", "9007199254740992"]) {
 
     assert.equal(result.status, 1);
     const record = parseJson(result.stdout);
-    assert.equal(record.status, "failed");
+    assert.equal(record.status, "failed", result.stdout || result.stderr);
     assert.equal(record.provider, "glm");
     assert.equal(record.error_code, "bad_args");
     assert.match(record.error_message, /API_REVIEWERS_MAX_TOKENS must be a positive integer number of tokens/);
@@ -4764,6 +4764,8 @@ test("direct API reviewers approval-request matches run prompt hash and request 
       "rendered_prompt_hash",
       "request",
       "selected_route",
+      "route_step",
+      "route_steps",
       "fallback_reason",
       "approval_scope",
       "auth_path",
@@ -4904,7 +4906,7 @@ test("direct API reviewers run requires approval token before provider execution
 
     assert.equal(result.status, 1);
     const record = parseJson(result.stdout);
-    assert.equal(record.status, "failed");
+    assert.equal(record.status, "failed", result.stdout || result.stderr);
     assert.equal(record.error_code, "approval_required");
     assert.match(record.error_message, /approval-request/);
     assertDirectApiNotSent(record, "DeepSeek");
@@ -5375,9 +5377,9 @@ test("direct API reviewers reject invalid route fallback reason as bad args befo
 
     assert.equal(result.status, 1);
     const record = parseJson(result.stdout);
-    assert.equal(record.status, "failed");
+    assert.equal(record.status, "failed", result.stdout || result.stderr);
     assert.equal(record.error_code, "bad_args");
-    assert.match(record.error_message, /unsupported API fallback reason/);
+    assert.match(record.error_message, /unsupported route fallback reason/);
     assertDirectApiNotSent(record, "Custom Reviewer");
     assert.doesNotMatch(result.stdout, /external_review_launched|hello from selected scope|secret-test-value/);
     assert.doesNotMatch(result.stderr, /Error:|at /);

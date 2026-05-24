@@ -10,59 +10,36 @@ git status --short --branch
 Expected branch:
 
 ```text
-## goal/provider-architecture-parity-171...origin/main
+## goal/provider-architecture-parity-171...origin/goal/provider-architecture-parity-171
 ```
 
-## Evidence Baseline
+## Current Gate
 
-```sh
-npm test
-npm run lint:sync
-npm run test:full # final gate before PR/merge-readiness
-```
+Implementation is blocked.
 
-Current baseline from 2026-05-24:
-
-- `npm test`: 2118 tests, 2106 pass, 0 fail, 12 skipped.
-- `npm run lint:sync`: passed, `default auth policy OK`.
-- `npm run test:full`: required before PR/merge-readiness; not required for
-  plan-only review.
-
-## Required Source Inputs
-
-- `specs/171-provider-architecture-parity/evidence-map.md`
-- GitHub issue #171 body/comments
-- GitHub issue #170 body/comments
-- Related issue evidence from #159, #162, #172, #173, #167, #146, #147, #160, #144
-- Shared modules under `scripts/lib/`
-- Provider entrypoints under `plugins/*/scripts/`
-- Sync scripts under `scripts/ci/`
-- Tests under `tests/unit/` and `tests/smoke/`
-
-## Plan/Tasks Review Packet
-
-Before implementation, send reviewers a source packet containing at least:
+Before code changes resume, all six reviewers must approve the revised packet:
 
 ```text
-specs/171-provider-architecture-parity/evidence-map.md
+specs/171-provider-architecture-parity/root-problems.md
 specs/171-provider-architecture-parity/spec.md
 specs/171-provider-architecture-parity/plan.md
+specs/171-provider-architecture-parity/tasks.md
+specs/171-provider-architecture-parity/evidence-map.md
 specs/171-provider-architecture-parity/research.md
 specs/171-provider-architecture-parity/data-model.md
-specs/171-provider-architecture-parity/contracts/provider-parity-table.schema.json
-specs/171-provider-architecture-parity/quickstart.md
-specs/171-provider-architecture-parity/tasks.md
-specs/171-provider-architecture-parity/review-results.md
+specs/171-provider-architecture-parity/provider-parity-table.json
 ```
 
-Ask every reviewer:
+Reviewer prompt:
 
 ```text
-Adversarial review of the #171 provider architecture parity audit plan/tasks.
-Find scope drift, missing evidence, weak guardrails, unsafe provider-specific
-policy, incorrect issue fit, schema/task mismatches, or any place the plan
-substitutes docs for required runtime behavior. Verdict must be APPROVE or
-REQUEST_CHANGES.
+Adversarial review of revised #171 provider architecture parity root-problem
+definition and plan/tasks. The operator requires exact same policy treatment
+for Claude, Gemini, Kimi, Grok, DeepSeek, and GLM. Differences are allowed only
+as evidence-backed Adapter capability facts. Find any missing route ladder,
+OpenRouter fallback, packet budget/resend policy, auth/readiness, status,
+review-quality, issue-scope, task-order, or external-review gate problem.
+Verdict must be APPROVE or REQUEST_CHANGES.
 ```
 
 Required reviewers:
@@ -77,32 +54,88 @@ Required reviewers:
 Do not count missing, timed-out, source-send failed, shallow, no-verdict, or
 failed review slots as approval.
 
-## Direct API Approval Handling
+## Route Ladder Test Plan
 
-DeepSeek/GLM source sends are standing-approved for this goal, but the run must
-still generate approval-request artifacts and preserve provider, mode, source
-packet, prompt hash, request settings, auth path, billing path, selected route,
-fallback reason, approval scope, and source-send state.
+Future RED tests should cover the same matrix for every provider:
 
-Fail closed if the tuple changes or source-send state cannot be proven.
+- subscription available
+- subscription unsupported
+- subscription not authenticated
+- subscription usage limited
+- direct API available
+- direct API missing credential
+- direct API rejected
+- OpenRouter available
+- OpenRouter missing credential
+- OpenRouter rejected
+- source-bearing route requires approval
+- billing path changes invalidate approval tuple
 
-## Implementation Rules After Approval
+Expected fields:
 
-Implementation after unanimous revised plan approval:
+```text
+provider
+attempted_route
+selected_route
+skipped_reason
+fallback_reason
+auth_path
+billing_path
+source_send_approval_required
+source_send_approval_state
+source_content_transmission
+error_code
+suggested_action
+```
 
-1. Add a provider parity JSON artifact.
-2. Add a focused RED guard test for provider coverage and required shared fields.
-3. Add the minimal GREEN docs/test/generator change.
-4. Add the Grok `auto` transport TDD slice if the revised review gate approves it.
-5. Run focused tests.
-6. Repeat only for the next guardrail.
+## Packet Policy Test Plan
 
-Do not change runtime behavior before all six revised plan/tasks reviewers
-approve.
+Future RED tests should cover all providers and modes:
 
-## Completion Verification
+```text
+review
+adversarial-review
+custom-review
+rescue
+```
 
-For implemented changes:
+Required behaviors:
+
+- predictable over-budget packets fail before source send
+- source surface changes are recorded
+- full-source approval is not reused for diff/shard review
+- failed source-bearing run is not retried automatically
+- provider-specific prompt/step limits come from Adapter capability facts
+
+## Direct API / OpenRouter Approval Handling
+
+Source-bearing direct API and OpenRouter routes require approval tuple metadata:
+
+```text
+provider
+mode
+source packet
+prompt hash
+request settings
+auth path
+billing path
+selected route
+fallback reason
+approval scope
+```
+
+Fail closed if tuple changes or source-send truth cannot be proven.
+
+## Planning Verification
+
+```sh
+git diff --check
+node -e "JSON.parse(require('fs').readFileSync('specs/171-provider-architecture-parity/provider-parity-table.json','utf8'))"
+```
+
+## Implementation Verification After Approval
+
+For each approved issue:
 
 ```sh
 git diff --check
@@ -112,17 +145,5 @@ npm test
 npm run test:full
 ```
 
-If generated docs/skills, shared synced libs, runtime scripts, or packaged
-plugin copies change:
-
-```sh
-npm run doctor:cache
-```
-
-Final external review must cover the whole completed audit/implementation.
-
-Post-review metadata updates may record newly confirmed follow-up issue links
-only when the root cause is independently evidenced and the local contract tests
-cover the changed artifact. The 2026-05-24 Claude custom-review packet-budget
-investigation is tracked as #173 after Grok adversarial approval of the narrowed
-root-cause statement.
+Run `npm run doctor:cache` if runtime scripts, generated docs/skills, shared
+synced libs, or packaged plugin copies change.

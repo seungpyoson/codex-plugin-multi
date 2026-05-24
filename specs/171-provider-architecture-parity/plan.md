@@ -1,100 +1,117 @@
 # Implementation Plan: Provider Architecture Parity Audit
 
-**Branch**: `goal/provider-architecture-parity-171` | **Date**: 2026-05-24 | **Spec**: `specs/171-provider-architecture-parity/spec.md`  
-**Input**: Evidence-first execution of #171 using #170 as topology evidence input.
+**Branch**: `goal/provider-architecture-parity-171`
+**Date**: 2026-05-24
+**Spec**: `specs/171-provider-architecture-parity/spec.md`
 
 ## Summary
 
-Produce an evidence-backed provider architecture parity audit, add the minimum
-machine-validated parity contract, and implement the one runtime slice the first
-external review identified as required: Grok CLI-primary audited web fallback in
-explicit auto transport mode. No implementation may start until the revised
-plan/tasks review receives usable APPROVE verdicts from all six reviewers.
+#171 is not complete. Prior work solved a narrower Grok/autofallback and parity
+table slice. Correct scope is exact provider policy parity for Claude, Gemini,
+Kimi, Grok, DeepSeek, and GLM.
 
-The current investigation found broad shared-policy compliance in route/auth,
-source-send disclosure, prompt/audit manifests, failure taxonomy, review-quality
-gates, status normalization, generated contracts, and packaged-copy sync. The
-main unresolved runtime gap is Grok CLI/web fallback: current code intentionally
-keeps web explicit-only, while #159 asks for audited fallback. Gemini and
-DeepSeek plan review rejected a docs-only treatment, so the revised plan includes
-a TDD runtime slice.
+No implementation may start until `root-problems.md`, `spec.md`, `plan.md`, and
+`tasks.md` have usable APPROVE verdicts from all six reviewers.
 
-## Speckit Execution Note
+## Speckit Note
 
-The installed `speckit-plan` workflow expects `.specify/scripts/bash/setup-plan.sh`,
-but this repo/worktree does not contain `.specify/`. This plan applies the
-Speckit workflow manually using the existing `specs/*` artifact structure:
-`spec.md`, `plan.md`, `research.md`, `data-model.md`, `contracts/`,
-`quickstart.md`, and `tasks.md`.
+This repo has no `.specify/` scripts in the active worktree. Speckit artifacts
+are maintained manually under `specs/171-provider-architecture-parity/`:
+`root-problems.md`, `spec.md`, `plan.md`, `research.md`, `data-model.md`,
+`contracts/`, `quickstart.md`, `tasks.md`, and `issue-drafts.md`.
+
+## Architecture Answer
+
+Shared `subscription -> direct API -> OpenRouter` ladder is the right
+architecture. It is efficient if implemented as shared policy over Adapter
+capability facts:
+
+- API-only providers do not run fake subscription commands.
+- Each missing route step is recorded as unsupported with same field meanings.
+- Source-bearing fallback requires same approval tuple and resend policy.
+- No provider silently changes billing path.
+
+Different treatment is allowed only when:
+
+1. Adapter exposes a concrete capability fact.
+2. Shared policy consumes that fact.
+3. Same status/audit field names and meanings are emitted.
+4. Reason is documented and tested.
+5. Difference does not create provider-specific policy branches.
 
 ## Technical Context
 
-**Language/Version**: Node.js 20+  
-**Primary Dependencies**: Node built-ins, provider CLIs, direct API providers,
-local plugin scripts, GitHub issue metadata  
-**Storage**: Markdown specs, JSON contracts, local JobRecord JSON, generated
-plugin package copies  
-**Testing**: `node:test`, sync lint, focused unit tests, provider smoke tests as
-needed, external adversarial review gates  
-**Target Platform**: macOS/Linux Codex local sessions  
-**Project Type**: CLI/plugin bundle  
-**Constraints**: No source-send ambiguity; no secret printing; no new issue,
-push, merge, destructive cleanup, deploy, browser repair, or billing action
-without separate explicit approval; no implementation before unanimous
-plan/tasks approval. The later #173 issue was separately operator-approved after
-the Claude custom-review packet-budget root cause was proven and adversarially
-reviewed.  
-**Scope**: Claude, Gemini, Kimi, Grok, DeepSeek, GLM, shared libs under
-`scripts/lib/`, package copies under `plugins/*/scripts/lib/`, provider
-entrypoints, generated commands/skills/docs, sync scripts, and tests
+- Runtime: Node.js 20+, provider CLIs, direct API reviewers, Git metadata.
+- Artifacts: Markdown specs, JSON parity table/schema, JobRecord JSON,
+  generated commands/skills/docs, packaged copies.
+- Verification: `node:test`, sync checks, smoke tests, external reviews.
+- Safety: no secret printing, no silent paid billing, no automatic source
+  resend after source-bearing failure, no issue creation/push/merge/deploy/cache
+  sync/browser repair/billing action without explicit operator approval.
 
-## Constitution Check
+## Deep Module Direction
 
-- Evidence before assertions: `evidence-map.md`, issue fetches, source searches,
-  `npm test`, and `npm run lint:sync` ground the plan.
-- Provider-neutral shared policy: shared Modules own policy; Adapters expose
-  launch/capability facts only.
-- TDD: any guardrail implementation after external approval starts with RED
-  tests and then minimal GREEN changes.
-- Privacy/source safety: direct API source sends require approval-request
-  artifacts and audit metadata even under standing approval.
-- Workflow safety: no remote mutation or destructive side effect without
-  explicit approval.
+Create one deep policy Module. Provider Adapters stay thin.
 
-No constitution violations are justified for planning. Implementation remains
-blocked until external plan/tasks review is unanimous.
+Shared policy owns:
 
-## Phase 0: Research
+- route ladder and route attempt ledger
+- source packet budget, review surface, retry, resend
+- readiness/auth state and next action
+- failure taxonomy, JobRecord/status/review-panel fields, review quality
+- generated contracts, docs, packaged-copy sync invariants
 
-1. Resolve issue-scope fit between #171, #170, #159, #162, #172, #167, #146,
-   #147, #160, and #144. After the later Claude usage investigation, record
-   #173 as a distinct Claude packet-budget follow-up rather than a #171 scope
-   expansion.
-2. Map shared policy Modules, Interfaces, Implementations, Adapters, sync guards,
-   tests, exceptions, and drift risk.
-3. Record why first-pass review escalated Grok fallback from docs-only
-   classification to a TDD runtime slice.
+Adapters expose:
 
-Output: `research.md`, `evidence-map.md`.
+- subscription capability/probe, if present
+- direct API capability/probe, if present
+- OpenRouter capability/probe, if present
+- prompt/byte/step/time/model limits
+- CLI/API/web launch mechanics
+- provider parser facts
 
-## Phase 1: Design & Contracts
+## Phase 0: Root Cause
 
-1. Define Provider Parity Table entities in `data-model.md`.
-2. Define a JSON contract for provider parity table shape in
-   `contracts/provider-parity-table.schema.json`.
-3. Define operator quickstart and verification path in `quickstart.md`.
-4. Update Speckit context in `CLAUDE.md` to this feature.
+Inputs:
+
+- #171: umbrella provider architecture parity.
+- #170: topology evidence only.
+- #159: Grok CLI/web architecture evidence.
+- #172/#173: packet budget/source-send evidence.
+- Current code: route policy supports only `subscription` and `api`; Kimi
+  declares subscription only; OpenRouter is not first-class route policy.
+
+Outputs:
+
+- `root-problems.md`: root cause and 5 Whys.
+- `evidence-map.md`: source/job/issue evidence.
+- `issue-drafts.md`: task-to-issue output with duplicate checks.
+
+## Phase 1: Design
+
+Update artifacts so current truth is explicit:
+
+- `data-model.md`: shared policy Interface, route steps, capability facts,
+  packet policy, review gate.
+- `provider-parity-table.json`: incomplete route and packet parity are marked
+  honestly.
+- `quickstart.md`: operator verification scenarios.
+- `contracts/`: JSON/schema guardrails.
 
 ## Phase 2: Tasks
 
-1. Generate dependency-ordered tasks in `tasks.md`.
-2. Include explicit external plan/tasks review tasks before implementation.
-3. Include exact field inventories for guardrail tests.
-4. Include Grok auto fallback TDD tasks only after the review gate.
+`tasks.md` must stay dependency-ordered, issue-oriented, and one-issue-at-a-time.
+It must block all implementation until six-reviewer plan/spec/tasks approval.
+
+Grok/Kimi issue creation remains gated:
+
+- prove distinct root cause outside existing issues
+- duplicate check
+- explicit operator approval
 
 ## Phase 3: External Review Gate
 
-Run adversarial review of the plan/tasks/evidence packet with:
+Required reviewers:
 
 - Claude
 - Gemini
@@ -103,49 +120,70 @@ Run adversarial review of the plan/tasks/evidence packet with:
 - DeepSeek
 - Kimi
 
-Missing, timed-out, shallow, source-send failure, no-verdict, or failed slots do
-not count as approval.
+Required reviewed artifacts:
 
-## Phase 4: Implementation If Approved
+- `root-problems.md`
+- `spec.md`
+- `plan.md`
+- `tasks.md`
 
-Implementation targets after unanimous plan approval:
+Evidence artifacts may be included or sharded:
 
-1. Add canonical `provider-parity-table.json` and schema validation.
-2. Add focused guard tests for provider coverage and required shared audit
-   fields.
-3. Add or update generated contract docs only through canonical generator if
-   generated docs are touched.
-4. Implement Grok `auto` transport by TDD only:
-   - RED: auto mode accepted while default remains CLI.
-   - RED: CLI happy path never touches web.
-   - RED: approved CLI readiness/login/model failure falls back to web tunnel.
-   - RED: plain CLI mode remains terminal.
-   - RED: xAI/direct API env never becomes fallback billing.
-   - GREEN: minimal `plugins/grok/scripts/grok-web-reviewer.mjs` changes.
+- `evidence-map.md`
+- `provider-parity-table.json`
+- source snippets
+- JobRecord snippets
+
+Missing, timed-out, source-sent failure, shallow output, no-verdict, or failed
+slot is not approval.
+
+## Phase 4: Implementation After Approval
+
+Only after six usable approvals:
+
+1. Add full-policy contract tests for all shared field names and meanings.
+2. Implement #171 shared Provider Policy Interface/facade.
+3. Implement provider-neutral route ladder and packet budget/resend policy for
+   all six through that Interface.
+4. Wire readiness/auth, status/lifecycle, failure taxonomy, suggested action,
+   review quality, audit, docs, and sync policy through the same Interface.
+5. Address Grok login only if proven separate from #171/#159.
+6. Address Kimi transport/capacity only if proven separate from #171/#172/#173.
+
+Each implementation slice:
+
+- RED characterization/contract tests first.
+- Minimal GREEN shared-policy code.
+- Adapter edits only for capability facts and launch mechanics.
+- Sync generated/package copies via canonical scripts.
+- Verify locally.
+- Get final six latest-head reviews.
 
 ## Verification Gates
 
-Minimum after plan/tasks artifact creation:
+Planning gate:
 
-1. `git diff --check`
-2. `npm run lint:sync`
-3. `npm test`
+- `git diff --check`
+- JSON/schema validation when JSON changes
+- focused docs contract tests
+- six external approvals
 
-If docs/tests/code guardrails are implemented:
+Implementation gate:
 
-1. Focused RED/GREEN test evidence for each slice.
-2. `git diff --check`
-3. `npm run lint:sync`
-4. Targeted `node --test ...`
-5. `npm test`
-6. `npm run test:full` before PR/merge-readiness
-7. `npm run doctor:cache` if runtime scripts, generated docs/skills, shared
-   synced libs, or packaged plugin copies change.
-8. Final six-reviewer external review.
+- focused RED/GREEN tests
+- `git diff --check`
+- `npm run lint:sync`
+- targeted `node --test ...`
+- `npm test`
+- `npm run test:full` for broad shared/runtime changes
+- `npm run doctor:cache` if generated docs/skills, synced libs, runtime scripts,
+  or packaged plugin copies change
+- final six latest-head reviews
 
-## Complexity Tracking
+## Current State
 
-Current complexity is justified by #171's broad provider-facing scope. The
-implementation should remain shallow outside the Grok auto-fallback slice:
-parity JSON, guard tests, and minimal runtime changes needed to satisfy #159's
-audited fallback requirement.
+Pre-implementation gate passed. The first current-packet round found one Grok
+blocker and one Kimi combined-packet timeout. The Grok blocker was applied to
+`tasks.md`, and the updated `plan.md`/`tasks.md` delta received six usable
+APPROVE verdicts. Runtime implementation may start, constrained to the approved
+#171 shared-policy scope and TDD task order.
