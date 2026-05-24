@@ -35,8 +35,9 @@ import {
 } from "./lib/auth-selection.mjs";
 import {
   normalizeApprovalScope,
+  sourcePacketCanResumeWithoutResendFromPreviousAttempt,
   sourcePacketCanResumeWithoutResendFromJobRecord,
-  sourcePacketPreviousAttemptFromJobRecord,
+  sourcePacketPreviousAttemptForContinuation,
 } from "./lib/provider-route-policy.mjs";
 import {
   PING_PROMPT,
@@ -1733,9 +1734,12 @@ async function cmdContinue(rest) {
   if (authSelection.selected_auth_path === "api_key_env_missing") {
     fail("not_authed", apiKeyMissingMessage(), apiKeyMissingFields(authSelection));
   }
-  const previousSourceAttempt = sourcePacketPreviousAttemptFromJobRecord(prior);
+  const previousSourceAttempt = sourcePacketPreviousAttemptForContinuation(prior, priorRuntimeOptions);
   const resumeWithoutSourceResend =
-    sourcePacketCanResumeWithoutResendFromJobRecord(prior) && Boolean(priorGeminiSessionId);
+    (
+      sourcePacketCanResumeWithoutResendFromJobRecord(prior) ||
+      sourcePacketCanResumeWithoutResendFromPreviousAttempt(previousSourceAttempt)
+    ) && Boolean(priorGeminiSessionId);
   let invocation = Object.freeze({
     job_id: newJobId_,
     target: "gemini",

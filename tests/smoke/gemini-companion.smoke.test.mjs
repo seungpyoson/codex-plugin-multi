@@ -282,14 +282,17 @@ test("gemini custom-review guides substantive missing-verdict retry without auto
       ["continue", "--job", record.job_id, "--foreground", "--cwd", cwd, "--", "retry selected source"],
       { cwd, dataDir },
     );
-    assert.equal(retry.status, 2, `exit ${retry.status}: stderr=${retry.stderr}; stdout=${retry.stdout}`);
+    assert.equal(retry.status, 0, `exit ${retry.status}: stderr=${retry.stderr}; stdout=${retry.stdout}`);
     const retryRecord = JSON.parse(retry.stdout);
-    assert.equal(retryRecord.error_code, "resend_confirmation_required");
+    assert.equal(retryRecord.status, "completed");
+    assert.equal(retryRecord.error_code, null);
     assert.equal(retryRecord.external_review.source_content_transmission, "not_sent");
     assert.equal(
       retryRecord.review_metadata.audit_manifest.source_packet_policy.source_packet_action,
-      "resend_confirmation_required",
+      "resume_without_source_resend",
     );
+    assert.equal(retryRecord.review_metadata.audit_manifest.source_packet_policy.selected_source_bytes, 0);
+    assert.equal(retryRecord.review_metadata.audit_manifest.source_packet_policy.resume_without_source_resend, true);
   } finally {
     rmTree(dataDir);
     rmTree(cwd);

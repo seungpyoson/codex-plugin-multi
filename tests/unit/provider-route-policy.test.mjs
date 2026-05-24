@@ -12,6 +12,8 @@ import {
   PROVIDER_ROUTE_STEPS,
   selectProviderRoute,
   sourcePacketCanResumeWithoutResendFromJobRecord,
+  sourcePacketCanResumeWithoutResendFromPreviousAttempt,
+  sourcePacketPreviousAttemptForContinuation,
   sourcePacketPreviousAttemptFromJobRecord,
 } from "../../scripts/lib/provider-route-policy.mjs";
 import { REVIEW_PROMPT_PLUGIN_TARGETS } from "../../scripts/lib/plugin-targets.mjs";
@@ -266,6 +268,150 @@ test("source packet retry policy allows same-session resume without source resen
   assert.equal(policy.resend_confirmation_required, false);
 });
 
+test("source packet retry policy allows no-source repair after substantive invalid verdict prose", () => {
+  const previousRecord = {
+    status: "failed",
+    error_code: "review_not_completed",
+    error_message: "review_quality_failed:missing_verdict",
+    external_review: { source_content_transmission: "sent" },
+    review_metadata: {
+      audit_manifest: {
+        selected_source: selectedSourceFixture(8),
+        review_quality: {
+          failed_review_slot: true,
+          semantic_failure_reasons: ["missing_verdict"],
+        },
+      },
+    },
+  };
+  const previousAttempt = sourcePacketPreviousAttemptFromJobRecord(previousRecord);
+
+  assert.equal(sourcePacketCanResumeWithoutResendFromJobRecord(previousRecord), true);
+  assert.deepEqual(previousAttempt.review_quality.semantic_failure_reasons, ["missing_verdict"]);
+
+  const policy = evaluateSourcePacketPolicy({
+    provider: "kimi",
+    mode: "custom-review",
+    routeStep: "subscription",
+    providerCapabilities: {
+      subscription: { source_packet: { max_bytes: 20 } },
+    },
+    selectedSource: Object.freeze({
+      files: Object.freeze([]),
+      totals: Object.freeze({ files: 0, bytes: 0, lines: 0 }),
+    }),
+    sourceBearing: true,
+    previousAttempt,
+    resumeWithoutSourceResend: true,
+  });
+
+  assert.equal(policy.source_send_allowed, true);
+  assert.equal(policy.source_packet_action, "resume_without_source_resend");
+  assert.equal(policy.source_content_transmission, "not_sent");
+  assert.equal(policy.selected_source_bytes, 0);
+});
+
+test("source packet retry policy carries original source attempt through failed no-source repairs", () => {
+  const originalRecord = {
+    status: "failed",
+    error_code: "review_not_completed",
+    error_message: "review_quality_failed:missing_verdict",
+    external_review: { source_content_transmission: "sent" },
+    review_metadata: {
+      audit_manifest: {
+        selected_source: selectedSourceFixture(8),
+        review_quality: {
+          failed_review_slot: true,
+          semantic_failure_reasons: ["missing_verdict"],
+        },
+      },
+    },
+  };
+  const originalAttempt = sourcePacketPreviousAttemptFromJobRecord(originalRecord);
+  const failedNoSourceRepair = {
+    status: "failed",
+    error_code: "review_not_completed",
+    error_message: "review_quality_failed:missing_verdict",
+    external_review: { source_content_transmission: "not_sent" },
+    review_metadata: {
+      audit_manifest: {
+        selected_source: Object.freeze({
+          files: Object.freeze([]),
+          totals: Object.freeze({ files: 0, bytes: 0, lines: 0 }),
+        }),
+        review_quality: {
+          failed_review_slot: true,
+          semantic_failure_reasons: ["missing_verdict"],
+        },
+      },
+    },
+  };
+
+  const continuationAttempt = sourcePacketPreviousAttemptForContinuation(
+    failedNoSourceRepair,
+    { previous_source_attempt: originalAttempt },
+  );
+
+  assert.equal(sourcePacketCanResumeWithoutResendFromPreviousAttempt(continuationAttempt), true);
+  assert.equal(continuationAttempt.selected_source.totals.bytes, 8);
+
+  const policy = evaluateSourcePacketPolicy({
+    provider: "kimi",
+    mode: "custom-review",
+    routeStep: "subscription",
+    providerCapabilities: {
+      subscription: { source_packet: { max_bytes: 20 } },
+    },
+    selectedSource: Object.freeze({
+      files: Object.freeze([]),
+      totals: Object.freeze({ files: 0, bytes: 0, lines: 0 }),
+    }),
+    sourceBearing: true,
+    previousAttempt: continuationAttempt,
+    resumeWithoutSourceResend: true,
+  });
+
+  assert.equal(policy.source_packet_action, "resume_without_source_resend");
+  assert.equal(policy.source_content_transmission, "not_sent");
+});
+
+test("source packet retry policy blocks source resend after shallow missing verdict output", () => {
+  const previousRecord = {
+    status: "failed",
+    error_code: "review_not_completed",
+    error_message: "review_quality_failed:shallow_output,missing_verdict",
+    external_review: { source_content_transmission: "sent" },
+    review_metadata: {
+      audit_manifest: {
+        selected_source: selectedSourceFixture(8),
+        review_quality: {
+          failed_review_slot: true,
+          semantic_failure_reasons: ["shallow_output", "missing_verdict"],
+        },
+      },
+    },
+  };
+
+  assert.equal(sourcePacketCanResumeWithoutResendFromJobRecord(previousRecord), false);
+
+  const policy = evaluateSourcePacketPolicy({
+    provider: "kimi",
+    mode: "custom-review",
+    routeStep: "subscription",
+    providerCapabilities: {
+      subscription: { source_packet: { max_bytes: 20 } },
+    },
+    selectedSource: selectedSourceFixture(8),
+    sourceBearing: true,
+    previousAttempt: sourcePacketPreviousAttemptFromJobRecord(previousRecord),
+    resumeWithoutSourceResend: true,
+  });
+
+  assert.equal(policy.source_send_allowed, false);
+  assert.equal(policy.source_packet_action, "resend_confirmation_required");
+  assert.equal(policy.source_content_transmission, "not_sent");
+});
+
 test("packaged provider route policy copies cover shared source-packet and route branches", async () => {
   const modules = await Promise.all(
     REVIEW_PROMPT_PLUGIN_TARGETS.map(async (plugin) => [
@@ -312,6 +458,63 @@ test("packaged provider route policy copies cover shared source-packet and route
         },
       },
     }), false, plugin);
+
+    const previousInvalidVerdictRecord = {
+      status: "failed",
+      error_code: "review_not_completed",
+      error_message: "review_quality_failed:bad_verdict",
+      external_review: { source_content_transmission: "sent" },
+      review_metadata: {
+        audit_manifest: {
+          selected_source: selectedSourceFixture(12),
+          review_quality: {
+            failed_review_slot: true,
+            semantic_failure_reasons: ["bad_verdict"],
+          },
+        },
+      },
+    };
+    const previousInvalidVerdict = mod.sourcePacketPreviousAttemptFromJobRecord(previousInvalidVerdictRecord);
+    assert.equal(mod.sourcePacketCanResumeWithoutResendFromJobRecord(previousInvalidVerdictRecord), true, plugin);
+
+    const failedNoSourceRepair = {
+      status: "failed",
+      error_code: "review_not_completed",
+      error_message: "review_quality_failed:bad_verdict",
+      external_review: { source_content_transmission: "not_sent" },
+      review_metadata: {
+        audit_manifest: {
+          selected_source: { files: [], totals: { files: 0, bytes: 0, lines: 0 } },
+          review_quality: {
+            failed_review_slot: true,
+            semantic_failure_reasons: ["bad_verdict"],
+          },
+        },
+      },
+    };
+    const carriedInvalidVerdict = mod.sourcePacketPreviousAttemptForContinuation(
+      failedNoSourceRepair,
+      { previous_source_attempt: previousInvalidVerdict },
+    );
+    assert.equal(mod.sourcePacketCanResumeWithoutResendFromPreviousAttempt(carriedInvalidVerdict), true, plugin);
+    assert.equal(carriedInvalidVerdict.selected_source.totals.bytes, 12, plugin);
+
+    const previousShallowVerdictRecord = {
+      status: "failed",
+      error_code: "review_not_completed",
+      error_message: "review_quality_failed:shallow_output,missing_verdict",
+      external_review: { source_content_transmission: "sent" },
+      review_metadata: {
+        audit_manifest: {
+          selected_source: selectedSourceFixture(12),
+          review_quality: {
+            failed_review_slot: true,
+            semantic_failure_reasons: ["shallow_output", "missing_verdict"],
+          },
+        },
+      },
+    };
+    assert.equal(mod.sourcePacketCanResumeWithoutResendFromJobRecord(previousShallowVerdictRecord), false, plugin);
 
     assert.deepEqual(mod.evaluateSourcePacketPolicy({
       provider: plugin,
@@ -397,6 +600,21 @@ test("packaged provider route policy copies cover shared source-packet and route
     });
     assert.equal(resumed.source_packet_action, "resume_without_source_resend", plugin);
     assert.equal(resumed.source_content_transmission, "not_sent", plugin);
+
+    const invalidVerdictRepair = mod.evaluateSourcePacketPolicy({
+      provider: plugin,
+      mode: "custom-review",
+      routeStep: "subscription",
+      providerCapabilities: {
+        subscription: { source_packet: { max_bytes: 32 } },
+      },
+      selectedSource: { files: [], totals: { files: 0, bytes: 0, lines: 0 } },
+      sourceBearing: true,
+      previousAttempt: previousInvalidVerdict,
+      resumeWithoutSourceResend: true,
+    });
+    assert.equal(invalidVerdictRepair.source_packet_action, "resume_without_source_resend", plugin);
+    assert.equal(invalidVerdictRepair.source_content_transmission, "not_sent", plugin);
 
     const narrowed = mod.evaluateSourcePacketPolicy({
       provider: plugin,

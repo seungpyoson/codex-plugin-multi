@@ -43,7 +43,7 @@
       "name": "packet budgets",
       "module": "scripts/lib/review-prompt.mjs",
       "interface": "buildReviewPrompt, buildReviewAuditManifest, evaluateSourcePacketPolicy",
-      "implementation": "Shared source packet policy records source_packet_budget_bytes, selected_source_bytes, source_packet_within_budget, source_packet_action, resend_confirmation_required, review_surface_changed, and source_content_transmission. It blocks over-budget source-bearing packets before source send and blocks automatic resend after source-sent failures unless explicitly confirmed or narrowed.",
+      "implementation": "Shared source packet policy records source_packet_budget_bytes, selected_source_bytes, source_packet_within_budget, source_packet_action, resend_confirmation_required, review_surface_changed, and source_content_transmission. It blocks over-budget source-bearing packets before source send, blocks automatic resend after source-sent failures unless explicitly confirmed or narrowed, and permits same-session no-source repair for substantive invalid-verdict prose without losing the original source attempt across failed no-source repair chains.",
       "adapters": [
         "claude",
         "gemini",
@@ -426,10 +426,10 @@
       "provider": "kimi",
       "policy_area": "packet budgets",
       "difference_type": "research_gap",
-      "current_behavior": "Kimi has historical step_limit_exceeded failures after source-bearing custom-review. Shared source packet policy now gates over-budget and automatic resend before source send; any remaining within-budget Kimi step exhaustion is capacity evidence, not a Kimi-only policy path.",
+      "current_behavior": "Kimi has historical step_limit_exceeded and missing-verdict failures after source-bearing custom-review. Shared source packet policy now gates over-budget and automatic resend before source send, allows same-session no-source repair for substantive invalid-verdict prose, and carries the original source attempt through failed no-source repair chains. Any remaining within-budget Kimi step exhaustion is capacity evidence, not a Kimi-only policy path.",
       "capability_fact": null,
-      "shared_policy_boundary": "Kimi step capacity must be represented as Adapter capacity facts consumed by evaluateSourcePacketPolicy, not as Kimi-only retry or source-send policy.",
-      "clear_reason": "This remains tracked because capacity limits may require future capability facts, but the source-send decision and resend policy are now shared with every provider.",
+      "shared_policy_boundary": "Kimi step capacity must be represented as Adapter capacity facts consumed by evaluateSourcePacketPolicy, not as Kimi-only retry or source-send policy. Invalid-verdict repair is a shared retry-policy state for every session-capable companion, not a Kimi-only exception.",
+      "clear_reason": "This remains tracked because capacity limits may require future capability facts, but the source-send decision, resend gate, and no-source repair policy are now shared with every provider.",
       "evidence": [
         "https://github.com/seungpyoson/codex-plugin-multi/issues/172",
         "/private/tmp/cpm-171-plan-review/kimi-result.json",
@@ -612,6 +612,8 @@
         "source_content_transmission",
         "resume_without_source_resend",
         "resume_without_source_resend_subset_of_resend_gated_failures",
+        "invalid_verdict_no_source_repair",
+        "failed_no_source_repair_carries_original_attempt",
         "external_review_not_sent_on_resume_without_resend",
         "prompt_sidecar_preflight",
         "foreground_provider_launch_preflight"

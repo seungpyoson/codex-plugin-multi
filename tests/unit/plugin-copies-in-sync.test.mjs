@@ -429,6 +429,16 @@ test("source-packet no-resend failures stay explicitly resend-gated in every pac
       true,
       `${runtimePath} must document step_limit_exceeded as an explicit no-resend resume exception`,
     );
+    assert.match(
+      source,
+      /hasSubstantiveInvalidVerdictReason/,
+      `${runtimePath} must route substantive invalid-verdict repairs through shared review-quality classification`,
+    );
+    assert.match(
+      source,
+      /sourcePacketPreviousAttemptForContinuation/,
+      `${runtimePath} must expose a continuation helper that can carry the original source attempt through no-source repair chains`,
+    );
     for (const failure of resumeWithoutResendFailures) {
       assert.equal(
         blockingFailures.has(failure),
@@ -436,6 +446,26 @@ test("source-packet no-resend failures stay explicitly resend-gated in every pac
         `${runtimePath} must keep no-resend failure ${failure} in SOURCE_SEND_BLOCKING_FAILURES`,
       );
     }
+  }
+});
+
+test("companion continue paths carry original source attempts through no-source repairs", () => {
+  for (const runtimePath of [
+    "plugins/claude/scripts/claude-companion.mjs",
+    "plugins/gemini/scripts/gemini-companion.mjs",
+    "plugins/kimi/scripts/kimi-companion.mjs",
+  ]) {
+    const source = readRepoFile(runtimePath);
+    assert.match(
+      source,
+      /sourcePacketPreviousAttemptForContinuation\(prior,\s*priorRuntimeOptions\)/,
+      `${runtimePath} must consider the previous runtime sidecar when continuing a failed no-source repair`,
+    );
+    assert.match(
+      source,
+      /sourcePacketCanResumeWithoutResendFromPreviousAttempt\(previousSourceAttempt\)/,
+      `${runtimePath} must allow resume-without-resend from the carried original source attempt`,
+    );
   }
 });
 

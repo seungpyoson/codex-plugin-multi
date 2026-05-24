@@ -1,5 +1,7 @@
 import { createHash } from "node:crypto";
 
+import { hasSubstantiveInvalidVerdictReason } from "./external-model-review-quality.mjs";
+
 export const PROVIDER_POLICY_PROVIDERS = Object.freeze([
   "claude",
   "gemini",
@@ -195,6 +197,8 @@ export function sourcePacketPreviousAttemptFromJobRecord(record = null) {
   return Object.freeze({
     status: record?.status ?? null,
     error_code: record?.error_code ?? manifest?.error_code ?? null,
+    error_message: record?.error_message ?? null,
+    review_quality: manifest?.review_quality ?? null,
     source_content_transmission:
       record?.external_review?.source_content_transmission ??
       manifest?.source_content_transmission ??
@@ -204,9 +208,26 @@ export function sourcePacketPreviousAttemptFromJobRecord(record = null) {
 }
 
 export function sourcePacketCanResumeWithoutResendFromJobRecord(record = null) {
-  const previousAttempt = sourcePacketPreviousAttemptFromJobRecord(record);
+  return sourcePacketCanResumeWithoutResendFromPreviousAttempt(
+    sourcePacketPreviousAttemptFromJobRecord(record),
+  );
+}
+
+export function sourcePacketCanResumeWithoutResendFromPreviousAttempt(previousAttempt = null) {
   return previousSourceWasSent(previousAttempt)
     && previousFailureAllowsResumeWithoutResend(previousAttempt);
+}
+
+export function sourcePacketPreviousAttemptForContinuation(record = null, runtimeOptions = null) {
+  const recordAttempt = sourcePacketPreviousAttemptFromJobRecord(record);
+  if (sourcePacketCanResumeWithoutResendFromPreviousAttempt(recordAttempt)) return recordAttempt;
+
+  const runtimeAttempt = runtimeOptions?.previous_source_attempt;
+  if (runtimeAttempt && typeof runtimeAttempt === "object" && !Array.isArray(runtimeAttempt)) {
+    return runtimeAttempt;
+  }
+
+  return recordAttempt;
 }
 
 function apiCapability(providerCapabilities) {
@@ -285,7 +306,24 @@ function previousFailureRequiresResendGate(previousAttempt = null) {
 
 function previousFailureAllowsResumeWithoutResend(previousAttempt = null) {
   const errorCode = previousAttempt?.error_code ?? previousAttempt?.reason ?? null;
-  return SOURCE_RESUME_WITHOUT_RESEND_FAILURES.has(errorCode);
+  if (SOURCE_RESUME_WITHOUT_RESEND_FAILURES.has(errorCode)) return true;
+  if (errorCode !== "review_not_completed") return false;
+  return hasSubstantiveInvalidVerdictReason(previousReviewQualityReasons(previousAttempt));
+}
+
+function previousReviewQualityReasons(previousAttempt = null) {
+  const directReasons =
+    previousAttempt?.review_quality?.semantic_failure_reasons ??
+    previousAttempt?.semantic_failure_reasons;
+  if (Array.isArray(directReasons)) return directReasons;
+
+  const message = previousAttempt?.error_message;
+  if (typeof message !== "string") return [];
+  const prefix = "review_quality_failed:";
+  if (!message.startsWith(prefix)) return [];
+  const reasonText = message.slice(prefix.length).trim();
+  if (!reasonText) return [];
+  return reasonText.split(",").map((reason) => reason.trim()).filter(Boolean);
 }
 
 function sourcePacketSuggestedAction(action, provider = null) {

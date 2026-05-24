@@ -22,8 +22,9 @@ import { gitEnv, isGitBinaryPolicyError, resolveGitBinary } from "./lib/git-bina
 import { spawnKimi } from "./lib/kimi.mjs";
 import {
   selectProviderRoute,
+  sourcePacketCanResumeWithoutResendFromPreviousAttempt,
   sourcePacketCanResumeWithoutResendFromJobRecord,
-  sourcePacketPreviousAttemptFromJobRecord,
+  sourcePacketPreviousAttemptForContinuation,
 } from "./lib/provider-route-policy.mjs";
 import { writeCancelMarker, consumeCancelMarker } from "./lib/cancel-marker.mjs";
 import { isCodexSandbox } from "./lib/codex-env.mjs";
@@ -1505,9 +1506,12 @@ async function cmdContinue(rest) {
     options["max-steps-per-turn"],
     priorRuntimeOptions.max_steps_per_turn ?? priorProfile.max_steps_per_turn ?? 8,
   );
-  const previousSourceAttempt = sourcePacketPreviousAttemptFromJobRecord(prior);
+  const previousSourceAttempt = sourcePacketPreviousAttemptForContinuation(prior, priorRuntimeOptions);
   const resumeWithoutSourceResend =
-    sourcePacketCanResumeWithoutResendFromJobRecord(prior) && Boolean(priorKimiSessionId);
+    (
+      sourcePacketCanResumeWithoutResendFromJobRecord(prior) ||
+      sourcePacketCanResumeWithoutResendFromPreviousAttempt(previousSourceAttempt)
+    ) && Boolean(priorKimiSessionId);
   const invocation = Object.freeze({
     job_id: newJobId_,
     target: "kimi",

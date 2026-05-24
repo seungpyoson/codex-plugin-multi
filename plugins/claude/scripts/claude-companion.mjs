@@ -57,8 +57,9 @@ import {
 } from "./lib/auth-selection.mjs";
 import {
   normalizeApprovalScope,
+  sourcePacketCanResumeWithoutResendFromPreviousAttempt,
   sourcePacketCanResumeWithoutResendFromJobRecord,
-  sourcePacketPreviousAttemptFromJobRecord,
+  sourcePacketPreviousAttemptForContinuation,
 } from "./lib/provider-route-policy.mjs";
 import { CLAUDE_PROVIDER_API_KEY_ENV } from "./lib/claude-provider-keys.mjs";
 import {
@@ -2031,9 +2032,12 @@ async function cmdContinue(rest) {
   // executeRun passes to spawnClaude via --resume (see the resumeId
   // derivation in executeRun). Do NOT persist a separate `resume_id` field
   // on the invocation — the chain is the source of truth.
-  const previousSourceAttempt = sourcePacketPreviousAttemptFromJobRecord(prior);
+  const previousSourceAttempt = sourcePacketPreviousAttemptForContinuation(prior, priorRuntimeOptions);
   const resumeWithoutSourceResend =
-    sourcePacketCanResumeWithoutResendFromJobRecord(prior) && Boolean(priorClaudeSessionId);
+    (
+      sourcePacketCanResumeWithoutResendFromJobRecord(prior) ||
+      sourcePacketCanResumeWithoutResendFromPreviousAttempt(previousSourceAttempt)
+    ) && Boolean(priorClaudeSessionId);
   let invocation = Object.freeze({
     job_id: newJobId_,
     target: "claude",
