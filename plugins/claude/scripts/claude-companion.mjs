@@ -49,6 +49,7 @@ import { isCodexSandbox } from "./lib/codex-env.mjs";
 import { sanitizeTargetEnv } from "./lib/provider-env.mjs";
 import { runCommand } from "./lib/process.mjs";
 import {
+  apiKeyFallbackSelection,
   authDiagnosticFields,
   apiKeyMissingFields as buildApiKeyMissingFields,
   apiKeyMissingMessage as buildApiKeyMissingMessage,
@@ -2586,6 +2587,27 @@ function printPingExecutionFailure(execution, authSelection, binary) {
   process.exit(2);
 }
 
+function pingApiFallbackReason(execution, authSelection) {
+  const detail = pingFailureDetail(execution);
+  if (isOAuthInferenceRejected(execution, authSelectionClassifierContext(authSelection))) {
+    return "oauth_inference_rejected";
+  }
+  return PING_AUTH_RE.test(detail) ? "not_authed" : null;
+}
+
+async function runClaudePingAttempt({ profile, model, binary, timeoutMs, authSelection }) {
+  return spawnClaude(profile, {
+    model,
+    promptText: PING_PROMPT,
+    sessionId: newJobId(),
+    cwd: tmpdir(),
+    binary,
+    timeoutMs,
+    sessionPersistence: false,
+    authSelection,
+  });
+}
+
 // ——— subcommand: ping (OAuth health probe per spec §7.5) ———
 async function cmdPing(rest, { readinessProfileName = "ping" } = {}) {
   const { options } = parseArgs(rest, {
@@ -2602,20 +2624,27 @@ async function cmdPing(rest, { readinessProfileName = "ping" } = {}) {
     printJson({ status: "not_authed", ...apiKeyMissingFields(authSelection, pingNotAuthedFields()) });
     process.exit(2);
   }
-  // Ping is ephemeral (no durable record), so reuse newJobId() purely for its
-  // UUIDv4 guarantee — Claude rejects a non-v4 --session-id. Nothing persists.
+  // Ping is ephemeral (no durable record), so each attempt uses newJobId()
+  // purely for its UUIDv4 guarantee. Nothing persists.
   let execution;
   try {
-    execution = await spawnClaude(profile, {
+    const pingInputs = {
+      profile,
       model,
-      promptText: PING_PROMPT,
-      sessionId: newJobId(),
-      cwd: tmpdir(),
       binary,
       timeoutMs,
-      sessionPersistence: false,
-      authSelection,
-    });
+    };
+    execution = await runClaudePingAttempt({ ...pingInputs, authSelection });
+    if (execution.exitCode !== 0) {
+      const fallbackReason = pingApiFallbackReason(execution, authSelection);
+      const fallbackSelection = fallbackReason
+        ? apiKeyFallbackSelection(authSelection, fallbackReason, { sourceBearing: false })
+        : null;
+      if (fallbackSelection) {
+        authSelection = fallbackSelection;
+        execution = await runClaudePingAttempt({ ...pingInputs, authSelection });
+      }
+    }
   } catch (e) {
     printPingSpawnError(e, authSelection);
   }

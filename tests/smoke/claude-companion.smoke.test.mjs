@@ -3050,9 +3050,9 @@ process.stdout.write(JSON.stringify({
   }
 });
 
-test("ping: subscription auth does not fall back to Claude API key when subscription is unavailable", () => {
-  const tmp = mkdtempSync(path.join(tmpdir(), "claude-ping-subscription-no-api-fallback-"));
-  const binary = writeExecutable(tmp, "claude-subscription-no-api-fallback", `#!/usr/bin/env node
+test("ping: subscription auth falls back to Claude API key when subscription is unavailable", () => {
+  const tmp = mkdtempSync(path.join(tmpdir(), "claude-ping-subscription-api-fallback-"));
+  const binary = writeExecutable(tmp, "claude-subscription-api-fallback", `#!/usr/bin/env node
 if (process.env.ANTHROPIC_API_KEY === "secret-test-value") {
   process.stdout.write(JSON.stringify({
     type: "result",
@@ -3070,15 +3070,18 @@ process.exit(1);
     { cwd: tmpdir(), env: { ANTHROPIC_API_KEY: "secret-test-value" } },
   );
   try {
-    assert.equal(status, 2);
+    assert.equal(status, 0);
     const result = JSON.parse(stdout);
-    assert.equal(result.status, "not_authed");
+    assert.equal(result.status, "ok");
     assert.equal(result.auth_mode, "subscription");
-    assert.equal(result.selected_auth_path, "subscription_oauth");
-    assert.deepEqual(result.ignored_env_credentials, ["ANTHROPIC_API_KEY"]);
-    assert.equal(result.auth_policy, "api_key_env_ignored");
-    assert.equal(result.allowed_env_credentials, undefined);
-    assert.equal(result.auth_fallback, undefined);
+    assert.equal(result.selected_auth_path, "api_key_env");
+    assert.deepEqual(result.allowed_env_credentials, ["ANTHROPIC_API_KEY"]);
+    assert.equal(result.auth_policy, "api_key_env_fallback");
+    assert.deepEqual(result.auth_fallback, {
+      from: "subscription_oauth",
+      to: "api_key_env",
+      reason: "not_authed",
+    });
     assert.doesNotMatch(stdout, /secret-test-value/);
   } finally {
     cleanup(dataDir);
@@ -3254,7 +3257,7 @@ process.exit(1);
 `);
   const { stdout, status, dataDir } = runCompanion(
     ["doctor", "--binary", binary, "--model", "claude-haiku-4-5-20251001", "--auth-mode", "subscription"],
-    { cwd, env: { ANTHROPIC_API_KEY: "secret-test-value", CLAUDE_API_KEY: "" } },
+    { cwd, env: { ANTHROPIC_API_KEY: "", CLAUDE_API_KEY: "" } },
   );
   try {
     assert.equal(status, 2);
@@ -3263,8 +3266,8 @@ process.exit(1);
     assert.equal(result.ready, false);
     assert.equal(result.auth_mode, "subscription");
     assert.equal(result.selected_auth_path, "subscription_oauth");
-    assert.deepEqual(result.ignored_env_credentials, ["ANTHROPIC_API_KEY"]);
-    assert.equal(result.auth_policy, "api_key_env_ignored");
+    assert.equal(result.ignored_env_credentials, undefined);
+    assert.equal(result.auth_policy, "subscription_oauth");
     assert.equal(result.allowed_env_credentials, undefined);
     assert.equal(result.auth_fallback, undefined);
     assert.equal(result.oauth_status?.logged_in, true);
@@ -3279,6 +3282,62 @@ process.exit(1);
   } finally {
     cleanup(dataDir);
     rmSync(cwd, { recursive: true, force: true });
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("doctor: OAuth inference rejection falls back to API key for source-free readiness", () => {
+  const tmp = mkdtempSync(path.join(tmpdir(), "claude-doctor-oauth-api-fallback-"));
+  const binary = writeExecutable(tmp, "claude-oauth-api-fallback", `#!/usr/bin/env node
+const args = process.argv.slice(2);
+if (args[0] === "auth" && args[1] === "status") {
+  process.stdout.write(JSON.stringify({
+    loggedIn: true,
+    authMethod: "claude.ai",
+    apiProvider: "firstParty",
+    subscriptionType: "max"
+  }) + "\\n");
+  process.exit(0);
+}
+if (process.env.ANTHROPIC_API_KEY === "secret-test-value") {
+  process.stdout.write(JSON.stringify({
+    type: "result",
+    is_error: false,
+    result: "pong",
+    session_id: "33333333-3333-4333-8333-333333333333",
+    usage: { input_tokens: 1, output_tokens: 1 }
+  }) + "\\n");
+  process.exit(0);
+}
+process.stdout.write(JSON.stringify({
+  type: "result",
+  is_error: true,
+  api_error_status: 401,
+  result: "Failed to authenticate. API Error: 401 Invalid authentication credentials",
+  session_id: "33333333-3333-4333-8333-333333333333",
+  usage: { input_tokens: 0, output_tokens: 0 }
+}) + "\\n");
+process.exit(1);
+`);
+  const { stdout, status, dataDir } = runCompanion(
+    ["doctor", "--binary", binary, "--model", "claude-haiku-4-5-20251001", "--auth-mode", "subscription"],
+    { cwd: tmpdir(), env: { ANTHROPIC_API_KEY: "secret-test-value", CLAUDE_API_KEY: "" } },
+  );
+  try {
+    assert.equal(status, 0);
+    const result = JSON.parse(stdout);
+    assert.equal(result.status, "ok");
+    assert.equal(result.selected_auth_path, "api_key_env");
+    assert.deepEqual(result.allowed_env_credentials, ["ANTHROPIC_API_KEY"]);
+    assert.equal(result.auth_policy, "api_key_env_fallback");
+    assert.deepEqual(result.auth_fallback, {
+      from: "subscription_oauth",
+      to: "api_key_env",
+      reason: "oauth_inference_rejected",
+    });
+    assert.doesNotMatch(stdout, /secret-test-value/);
+  } finally {
+    cleanup(dataDir);
     rmSync(tmp, { recursive: true, force: true });
   }
 });
@@ -4594,9 +4653,19 @@ test("background api_key source-bearing review without approval fails before pro
   }
 });
 
-test("ping: not_authed keeps subscription auth and ignores API-key values", () => {
+test("ping: not_authed falls back to API key for source-free readiness", () => {
   const tmp = mkdtempSync(path.join(tmpdir(), "claude-ping-api-key-auth-"));
   const binary = writeExecutable(tmp, "claude-api-key-auth-error", `#!/usr/bin/env node
+if (process.env.ANTHROPIC_API_KEY === "secret-test-value") {
+  process.stdout.write(JSON.stringify({
+    type: "result",
+    is_error: false,
+    result: "pong",
+    session_id: "33333333-3333-4333-8333-333333333333",
+    usage: { input_tokens: 1, output_tokens: 1 }
+  }) + "\\n");
+  process.exit(0);
+}
 process.stdout.write(JSON.stringify({
   type: "result",
   is_error: true,
@@ -4610,14 +4679,17 @@ process.exit(1);
     { cwd: tmpdir(), env: { CLAUDE_BINARY: binary, ANTHROPIC_API_KEY: "secret-test-value" } },
   );
   try {
-    assert.equal(status, 2);
+    assert.equal(status, 0);
     const result = JSON.parse(stdout);
-    assert.equal(result.status, "not_authed");
-    assert.equal(result.selected_auth_path, "subscription_oauth");
-    assert.deepEqual(result.ignored_env_credentials, ["ANTHROPIC_API_KEY"]);
-    assert.equal(result.auth_policy, "api_key_env_ignored");
-    assert.equal(result.allowed_env_credentials, undefined);
-    assert.equal(result.auth_fallback, undefined);
+    assert.equal(result.status, "ok");
+    assert.equal(result.selected_auth_path, "api_key_env");
+    assert.deepEqual(result.allowed_env_credentials, ["ANTHROPIC_API_KEY"]);
+    assert.equal(result.auth_policy, "api_key_env_fallback");
+    assert.deepEqual(result.auth_fallback, {
+      from: "subscription_oauth",
+      to: "api_key_env",
+      reason: "not_authed",
+    });
     assert.doesNotMatch(stdout, /secret-test-value/);
   } finally {
     cleanup(dataDir);
