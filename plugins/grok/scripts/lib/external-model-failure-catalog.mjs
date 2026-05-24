@@ -39,6 +39,14 @@ export const EXTERNAL_MODEL_FAILURE_CLASSES = Object.freeze([
       "Treat this review slot as not launched. Narrow or shard the source packet, or record an explicit capability fact that raises the source packet budget before retrying.",
   }),
   Object.freeze({
+    error_code: "resend_confirmation_required",
+    category: "source_packet_policy",
+    error_cause: "pre_send_resend_gate",
+    error_summary: "The external model review was blocked before launch because it would resend a previously sent source packet after a failed reviewer slot.",
+    suggested_action:
+      "Treat the previous reviewer slot as failed. Do not automatically resend selected source without explicit resend confirmation or a narrowed source packet.",
+  }),
+  Object.freeze({
     error_code: "git_binary_rejected",
     category: "scope_preflight",
     error_cause: "untrusted_git_binary",

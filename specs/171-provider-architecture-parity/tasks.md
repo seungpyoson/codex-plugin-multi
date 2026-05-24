@@ -66,15 +66,15 @@ retry, resend, and review-surface semantics for every provider and mode.
 - [x] T027 Implement one shared Provider Policy Interface/facade that owns the full cross-cutting policy contract, not just route and packet helpers.
 - [x] T028 Add RED route-ladder matrix tests for all six providers in `tests/unit/provider-route-policy.test.mjs`.
 - [x] T029 Implement one shared route ladder Module through the Provider Policy Interface.
-- [ ] T030 Add Adapter capability facts for subscription, direct API, and OpenRouter.
+- [x] T030 Add Adapter capability facts for subscription, direct API, and OpenRouter.
 - [x] T031 Add RED packet budget/resend tests for all six providers and all modes.
 - [x] T032 Implement one shared source packet policy through the Provider Policy Interface.
-- [ ] T033 Wire shared route, packet, readiness/auth, failure/status, review-quality, audit, docs, and sync policy into provider launch paths.
+- [x] T033 Wire shared route, packet, readiness/auth, failure/status, review-quality, audit, docs, and sync policy into provider launch paths.
 - [x] T034 Update `provider-parity-table.json` and `data-model.md` to match the implemented full-policy slice.
 - [x] T035 Sync packaged copies and generated docs through canonical scripts.
 - [ ] T036 Address Grok login persistence only if Phase 5 proves separate scope.
 - [ ] T037 Address Kimi transport/capacity only if Phase 5 proves separate scope.
-- [ ] T038 Run focused tests, `git diff --check`, `npm run lint:sync`, `npm test`, and any changed generated-doc checks.
+- [x] T038 Run focused tests, `git diff --check`, `npm run lint:sync`, `npm test`, and any changed generated-doc checks.
 - [ ] T039 Run latest-head reviews from all six providers before merge-readiness.
 
 ## Dependencies

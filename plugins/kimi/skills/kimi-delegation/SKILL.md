@@ -27,6 +27,7 @@ Run rescue:
 
 Continue a job:
 - `node "<plugin-root>/scripts/kimi-companion.mjs" continue --job "<job-id>" --foreground --lifecycle-events markdown --cwd "<workspace>" -- "<follow-up>"`
+- If a continue attempt returns `resend_confirmation_required`, do not retry automatically. Rerun with `--resend-confirmation-approved` only after explicit operator confirmation, or narrow the source packet.
 
 Cancel a background job:
 - `node "<plugin-root>/scripts/kimi-companion.mjs" cancel --job "<job-id>" --cwd "<workspace>"`

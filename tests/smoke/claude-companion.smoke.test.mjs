@@ -295,6 +295,70 @@ test("custom-review prompt includes selected source content", () => {
   }
 });
 
+test("custom-review rejects over-budget source packets before Claude launch", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "claude-source-packet-cwd-"));
+  fixtureSeedRepo(cwd);
+  const files = [];
+  for (let index = 0; index < 3; index += 1) {
+    const file = `packet-${index}.txt`;
+    files.push(file);
+    writeFileSync(path.join(cwd, file), "x".repeat(180 * 1024));
+  }
+
+  const { stdout, status, dataDir } = runCompanion(
+    ["run", "--mode=custom-review", "--foreground", "--model", "claude-haiku-4-5-20251001",
+     "--cwd", cwd, "--scope-paths", files.join(","), "--", "review selected source"],
+    { cwd, env: { CLAUDE_MOCK_ASSERT_PROMPT_INCLUDES: "MUST_NOT_REACH_CLAUDE" } },
+  );
+  try {
+    assert.equal(status, 2);
+    const record = JSON.parse(stdout);
+    assert.equal(record.status, "failed");
+    assert.equal(record.error_code, "source_packet_too_large");
+    assert.match(record.error_message, /Narrow or shard the Claude Code source packet/);
+    assert.equal(record.error_cause, "pre_send_source_packet_budget");
+    assert.equal(record.external_review.source_content_transmission, "not_sent");
+    assert.equal(record.review_metadata.audit_manifest.source_packet_policy.source_send_allowed, false);
+    assert.equal(record.review_metadata.audit_manifest.source_packet_policy.source_packet_action, "narrow_source_packet");
+    assert.doesNotMatch(stdout, /external_review_launched|MUST_NOT_REACH_CLAUDE/);
+  } finally {
+    cleanup(dataDir);
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("background custom-review rejects over-budget source packets before prompt sidecar write", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "claude-bg-source-packet-cwd-"));
+  fixtureSeedRepo(cwd);
+  const files = [];
+  for (let index = 0; index < 3; index += 1) {
+    const file = `packet-${index}.txt`;
+    files.push(file);
+    writeFileSync(path.join(cwd, file), "x".repeat(180 * 1024));
+  }
+
+  const { stdout, status, dataDir } = runCompanion(
+    ["run", "--mode=custom-review", "--background", "--model", "claude-haiku-4-5-20251001",
+     "--cwd", cwd, "--scope-paths", files.join(","), "--", "review selected source"],
+    { cwd, env: { CLAUDE_MOCK_ASSERT_PROMPT_INCLUDES: "MUST_NOT_REACH_CLAUDE" } },
+  );
+  try {
+    assert.equal(status, 2);
+    const record = JSON.parse(stdout);
+    assert.equal(record.status, "failed");
+    assert.equal(record.error_code, "source_packet_too_large");
+    assert.equal(record.external_review.source_content_transmission, "not_sent");
+    assert.equal(record.review_metadata.audit_manifest.source_packet_policy.source_send_allowed, false);
+    const { metaPath } = readOnlyJobRecord(dataDir);
+    const promptPath = path.join(path.dirname(metaPath), record.job_id, "prompt.txt");
+    assert.equal(existsSync(promptPath), false, "blocked background source packet must not persist prompt sidecar");
+    assert.doesNotMatch(stdout, /external_review_launched|MUST_NOT_REACH_CLAUDE/);
+  } finally {
+    cleanup(dataDir);
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
 test("custom-review guides substantive missing-verdict retry without automatic resend", () => {
   const cwd = mkdtempSync(path.join(tmpdir(), "claude-bad-verdict-cwd-"));
   const fixturePath = path.join(cwd, "claude-bad-verdict-fixture.json");
@@ -337,6 +401,19 @@ test("custom-review guides substantive missing-verdict retry without automatic r
     assert.match(record.suggested_action, /sharding/i);
     assert.match(record.suggested_action, /relaying/i);
     assert.match(record.suggested_action, /interactive Claude/i);
+
+    const retry = runCompanion(
+      ["continue", "--job", record.job_id, "--foreground", "--cwd", cwd, "--", "retry selected source"],
+      { cwd, dataDir },
+    );
+    assert.equal(retry.status, 2, `exit ${retry.status}: stderr=${retry.stderr}; stdout=${retry.stdout}`);
+    const retryRecord = JSON.parse(retry.stdout);
+    assert.equal(retryRecord.error_code, "resend_confirmation_required");
+    assert.equal(retryRecord.external_review.source_content_transmission, "not_sent");
+    assert.equal(
+      retryRecord.review_metadata.audit_manifest.source_packet_policy.source_packet_action,
+      "resend_confirmation_required",
+    );
   } finally {
     cleanup(dataDir);
     rmSync(cwd, { recursive: true, force: true });

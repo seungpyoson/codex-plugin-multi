@@ -648,6 +648,96 @@ test("kimi custom-review prompt includes selected source content", () => {
   }
 });
 
+test("kimi custom-review rejects over-budget source packets before Kimi launch", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "kimi-source-packet-cwd-"));
+  const files = [];
+  let dataDir = null;
+  try {
+    fixtureSeedRepo(cwd);
+    for (let index = 0; index < 3; index += 1) {
+      const file = `packet-${index}.txt`;
+      files.push(file);
+      writeFileSync(path.join(cwd, file), "x".repeat(180 * 1024));
+    }
+    const result = runCompanion([
+      "run",
+      "--mode",
+      "custom-review",
+      "--cwd",
+      cwd,
+      "--scope-paths",
+      files.join(","),
+      "--foreground",
+      "--",
+      "Review this scope.",
+    ], {
+      cwd,
+      env: {
+        KIMI_MOCK_ASSERT_PROMPT_INCLUDES: "MUST_NOT_REACH_KIMI",
+      },
+    });
+    dataDir = result.dataDir;
+    assert.equal(result.status, 2);
+    const record = parseJson(result.stdout);
+    assert.equal(record.status, "failed");
+    assert.equal(record.error_code, "source_packet_too_large");
+    assert.match(record.error_message, /Narrow or shard the Kimi source packet/);
+    assert.equal(record.error_cause, "pre_send_source_packet_budget");
+    assert.equal(record.external_review.source_content_transmission, "not_sent");
+    assert.equal(record.review_metadata.audit_manifest.source_packet_policy.source_send_allowed, false);
+    assert.equal(record.review_metadata.audit_manifest.source_packet_policy.source_packet_action, "narrow_source_packet");
+    assert.doesNotMatch(result.stdout, /external_review_launched|MUST_NOT_REACH_KIMI/);
+  } finally {
+    if (dataDir) rmSync(dataDir, { recursive: true, force: true });
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("kimi background custom-review rejects over-budget source packets before prompt sidecar write", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "kimi-bg-source-packet-cwd-"));
+  const files = [];
+  let dataDir = null;
+  try {
+    fixtureSeedRepo(cwd);
+    for (let index = 0; index < 3; index += 1) {
+      const file = `packet-${index}.txt`;
+      files.push(file);
+      writeFileSync(path.join(cwd, file), "x".repeat(180 * 1024));
+    }
+    const result = runCompanion([
+      "run",
+      "--mode",
+      "custom-review",
+      "--cwd",
+      cwd,
+      "--scope-paths",
+      files.join(","),
+      "--background",
+      "--",
+      "Review this scope.",
+    ], {
+      cwd,
+      env: {
+        KIMI_MOCK_ASSERT_PROMPT_INCLUDES: "MUST_NOT_REACH_KIMI",
+      },
+    });
+    dataDir = result.dataDir;
+    assert.equal(result.status, 2);
+    const record = parseJson(result.stdout);
+    assert.equal(record.status, "failed");
+    assert.equal(record.error_code, "source_packet_too_large");
+    assert.equal(record.external_review.source_content_transmission, "not_sent");
+    assert.equal(record.review_metadata.audit_manifest.source_packet_policy.source_send_allowed, false);
+    const { metaPath } = readOnlyJobRecord(dataDir);
+    const promptPath = path.join(path.dirname(metaPath), record.job_id, "prompt.txt");
+    assert.equal(existsSync(promptPath), false, "blocked background source packet must not persist prompt sidecar");
+    assert.doesNotMatch(result.stdout, /external_review_launched|MUST_NOT_REACH_KIMI/);
+  } finally {
+    if (dataDir) rmSync(dataDir, { recursive: true, force: true });
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
 test("kimi result --job-id aliases --job for a finished job", () => {
   const cwd = mkdtempSync(path.join(tmpdir(), "kimi-result-job-id-cwd-"));
   fixtureSeedRepo(cwd);
@@ -761,6 +851,7 @@ test("kimi result with duplicate job id across workspaces reports state collisio
 
 test("kimi custom-review fails shallow missing-verdict output as review_not_completed", () => {
   const cwd = mkdtempSync(path.join(tmpdir(), "kimi-shallow-review-cwd-"));
+  let dataDir = null;
   try {
     fixtureSeedRepo(cwd, {
       fileName: "seed.txt",
@@ -783,6 +874,7 @@ test("kimi custom-review fails shallow missing-verdict output as review_not_comp
         KIMI_MOCK_RESPONSE: "Looks fine.",
       },
     });
+    dataDir = result.dataDir;
     assert.equal(result.status, 2, result.stderr);
     const record = parseJson(result.stdout);
     assert.equal(record.status, "failed");
@@ -793,7 +885,30 @@ test("kimi custom-review fails shallow missing-verdict output as review_not_comp
       record.review_metadata.audit_manifest.review_quality.semantic_failure_reasons,
       ["shallow_output", "missing_verdict"],
     );
+
+    const retry = runCompanion([
+      "continue",
+      "--job",
+      record.job_id,
+      "--foreground",
+      "--cwd",
+      cwd,
+      "--",
+      "retry selected source",
+    ], {
+      cwd,
+      dataDir,
+    });
+    assert.equal(retry.status, 2, retry.stderr);
+    const retryRecord = parseJson(retry.stdout);
+    assert.equal(retryRecord.error_code, "resend_confirmation_required");
+    assert.equal(retryRecord.external_review.source_content_transmission, "not_sent");
+    assert.equal(
+      retryRecord.review_metadata.audit_manifest.source_packet_policy.source_packet_action,
+      "resend_confirmation_required",
+    );
   } finally {
+    if (dataDir) rmSync(dataDir, { recursive: true, force: true });
     rmSync(cwd, { recursive: true, force: true });
   }
 });
@@ -2261,6 +2376,12 @@ test("kimi continue resumes from step-limit failure and reuses private max-step 
   assert.equal(continuedRecord.parent_job_id, firstRecord.job_id);
   assert.equal(continuedRecord.resume_chain[0], KIMI_SESSION_ID);
   assert.equal(continuedRecord.kimi_session_id, KIMI_RESUMED_SESSION_ID);
+  assert.equal(
+    continuedRecord.review_metadata.audit_manifest.source_packet_policy.source_packet_action,
+    "resume_without_source_resend",
+  );
+  assert.equal(continuedRecord.external_review.source_content_transmission, "not_sent");
+  assert.equal(continuedRecord.review_metadata.audit_manifest.selected_source.totals.files, 0);
   assert.equal("max_steps_per_turn" in continuedRecord, false);
 }));
 
@@ -2319,6 +2440,12 @@ test("kimi background continue resumes from step-limit failure", () => withRepo(
   assert.equal(continuedRecord.parent_job_id, firstRecord.job_id);
   assert.equal(continuedRecord.resume_chain[0], KIMI_SESSION_ID);
   assert.equal(continuedRecord.kimi_session_id, KIMI_RESUMED_SESSION_ID);
+  assert.equal(
+    continuedRecord.review_metadata.audit_manifest.source_packet_policy.source_packet_action,
+    "resume_without_source_resend",
+  );
+  assert.equal(continuedRecord.external_review.source_content_transmission, "not_sent");
+  assert.equal(continuedRecord.review_metadata.audit_manifest.selected_source.totals.files, 0);
   assert.equal("max_steps_per_turn" in continuedRecord, false);
 }));
 

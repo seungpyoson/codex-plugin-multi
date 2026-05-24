@@ -1,53 +1,63 @@
 # Completion Audit
 
-Date: 2026-05-24  
+Date: 2026-05-25
 Repo: `/Users/spson/Projects/Claude/codex-plugin-multi`  
 Worktree: `/Users/spson/Projects/Claude/codex-plugin-multi/.worktrees/provider-architecture-parity-171`  
 Branch: `goal/provider-architecture-parity-171`
 
 ## Current Status
 
-Not complete.
-
-The previous completion claim for PR #175 is stale. It was based on a narrower
-interpretation of #171. The corrected requirement is exact shared policy parity
-for Claude, Gemini, Kimi, Grok, DeepSeek, and GLM, with provider differences
-allowed only as evidence-backed Adapter capability facts.
+Implementation is locally complete for the focused #171 parity hardening slice, but merge readiness is not complete because Claude local OAuth inference is failing before source delivery.
 
 ## Requirement Coverage
 
 | Requirement | Current Evidence | Status |
 | --- | --- | --- |
-| Use #171 as umbrella and #170 as topology input. | `spec.md`, `plan.md`, `root-problems.md`. | In progress |
-| Define root problems before implementation. | `root-problems.md` created and revised. | In progress |
-| Same route ladder for all six: subscription -> direct API -> OpenRouter. | Current evidence shows only subscription/API helper and no full OpenRouter ladder. | Missing |
-| Same source packet budget/resend policy for all six and all modes. | #172/#173 evidence shows inconsistent behavior. | Missing |
-| Same readiness/auth/failure/status/review-quality policy. | Shared libs exist, but matrix proof for corrected states is missing. | Incomplete |
-| Grok login root cause defined before issue creation. | Current local source-free Grok readiness passes; historical login-required evidence lacks exact failed-job context, so no separate issue is ready. | In progress |
-| Kimi step-limit root cause defined before issue creation. | Kimi failed large packets with `step_limit_exceeded` and a minimal one-file packet with `timeout` after source send; treat as shared packet/capacity/fallback policy until proven separate. | In progress |
-| Speckit plan/tasks updated. | Revised `spec.md`, `plan.md`, `tasks.md`, `data-model.md`, `quickstart.md`. | In progress |
-| Six external reviewers approve revised problem/plan/tasks before implementation. | `review-results.md` records current-file coverage: six approvals for root/spec plus six approvals for updated plan/tasks delta after Grok's blocker was fixed. | Passed |
-| Implementation proceeds one issue at a time after approval. | Ready to start Phase 7 under TDD; no runtime implementation has started yet. | Not started |
-| Final six-reviewer latest-head approval. | `final-review-results.md` says blocked because the pre-implementation review gate failed. | Missing |
+| Use #171 as the umbrella and #170 as topology input. | `spec.md`, `plan.md`, `root-problems.md`, `provider-parity-table.json`. | Complete |
+| Define root problems before implementation. | `root-problems.md` and `evidence-map.md`. | Complete |
+| Same route ladder for all six providers unless an Adapter capability fact explains the difference. | `scripts/lib/provider-route-policy.mjs`, plugin copies, `tests/unit/provider-route-policy.test.mjs`, `provider-parity-table.json`. | Complete for implemented slice |
+| Same source packet budget/resend policy for all six providers and source-bearing modes. | Shared policy plus provider launch preflight in Claude, Gemini, Kimi, Grok, DeepSeek, and GLM paths. | Complete for implemented slice |
+| No fake parity: allowed differences require clear capability facts. | Provider parity table requires `intentional=true` and `capability_fact` for adapter differences; unresolved gaps require follow-up issues. | Complete |
+| Grok `--transport auto` is an Adapter transport capability, not alternate provider policy. | Grok CLI-first/web-fallback smoke tests and mode-derived source-bearing guardrail. | Complete |
+| Kimi step-limit symptom is handled through shared policy, not a Kimi-only special case. | Kimi initial review hit `step_limit_exceeded`; continue produced APPROVE with `resume_without_source_resend`, zero selected-source bytes, and `source_content_transmission=not_sent`. | Complete for shared retry behavior |
+| Full guardrail against provider-neutral drift. | `plugin-copies-in-sync.test.mjs`, `docs-contracts.test.mjs`, `external-model-contracts.test.mjs`, and parity-table schema coverage. | Complete for current policy surface |
+| Final six-provider latest-head approval. | Gemini, Grok, GLM, DeepSeek, and Kimi approved the focused current delta; Claude failed with OAuth HTTP 401 before source send. | Blocked |
 
 ## Verification Evidence
 
 | Command | Result |
 | --- | --- |
-| JSON parse for `provider-parity-table.json` | Passed after revision. |
-| `git diff --check` | Passed after revised docs. |
-| `node --test tests/unit/docs-contracts.test.mjs` | Passed, 38 tests. |
-| `node --test tests/unit/external-model-contracts.test.mjs` | Passed, 8 tests. |
-| Local test suite | Not run for revised implementation because implementation is blocked. |
+| `node --check plugins/grok/scripts/grok-web-reviewer.mjs` | Passed after mode-derived Grok source-bearing change. |
+| `node --test tests/unit/plugin-copies-in-sync.test.mjs` | Passed, 55 tests. |
+| `node --test tests/unit/docs-contracts.test.mjs tests/unit/provider-route-policy.test.mjs tests/unit/external-model-contracts.test.mjs` | Passed, 63 tests. |
+| `node --test tests/unit/plugin-copies-in-sync.test.mjs tests/smoke/grok-web.smoke.test.mjs tests/unit/provider-route-policy.test.mjs` | Passed, 220 tests. |
+| `git diff --check` | Passed. |
+| `npm run lint:sync` | Passed after the final guardrail edits. |
+| `npm test` | 2147 tests; 2135 passed, 12 skipped, 0 failed. |
+| Prior `npm run test:full` | 2307 tests; 2295 passed, 12 skipped, 0 failed. |
 
-## Stale Evidence
+## Review Evidence
 
-Prior local test passes, prior plan reviews, prior final reviews, and prior
-PR-body completion claims are historical evidence only. They do not prove the
-corrected #171 scope.
+The focused current-delta review packet stayed under the shared source-packet budget instead of bypassing it:
 
-## Next Gate
+- `provider-architecture-parity-171-focused-current.diff`: current hardening delta.
+- `provider-architecture-parity-171-focused-evidence.md`: scope, root problem, verification, and review focus.
+- Full `git diff origin/main`: 597224 bytes, intentionally not sent as one source packet because it exceeded the 512 KiB shared budget.
 
-1. Start Phase 7 with RED full-policy contract tests.
-2. Do not file Grok/Kimi follow-up issues until duplicate checks and explicit
-   operator approval are recorded.
+Usable approvals:
+
+- Gemini: APPROVE.
+- Grok: APPROVE.
+- GLM: APPROVE.
+- DeepSeek: APPROVE.
+- Kimi: APPROVE after no-source resend continuation from `step_limit_exceeded`.
+
+Unusable slot:
+
+- Claude: `oauth_inference_rejected`, HTTP 401 before source delivery, `source_content_transmission=not_sent`.
+
+## Remaining Gate
+
+1. Refresh/fix Claude OAuth non-interactive inference or obtain an explicit operator waiver.
+2. Re-run any required final latest-head review after the Claude gate is resolved.
+3. Re-run `npm run lint:sync` and a final test command after any further code changes.

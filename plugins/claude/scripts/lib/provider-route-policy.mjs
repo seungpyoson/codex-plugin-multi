@@ -125,6 +125,9 @@ const SOURCE_SEND_BLOCKING_FAILURES = new Set([
   "invalid_verdict",
   "model_capacity",
 ]);
+const SOURCE_RESUME_WITHOUT_RESEND_FAILURES = new Set([
+  "step_limit_exceeded",
+]);
 const API_FALLBACK_REASONS = new Set([
   "explicit_api",
   "explicit_openrouter",
@@ -183,6 +186,27 @@ export function normalizeApprovalScope(approvalScope = "session", fail = null) {
     throw new Error(message);
   }
   return scope;
+}
+
+export function sourcePacketPreviousAttemptFromJobRecord(record = null) {
+  const manifest = record?.review_metadata?.audit_manifest ?? null;
+  const selectedSource = manifest?.selected_source ?? null;
+  if (!selectedSource) return null;
+  return Object.freeze({
+    status: record?.status ?? null,
+    error_code: record?.error_code ?? manifest?.error_code ?? null,
+    source_content_transmission:
+      record?.external_review?.source_content_transmission ??
+      manifest?.source_content_transmission ??
+      null,
+    selected_source: selectedSource,
+  });
+}
+
+export function sourcePacketCanResumeWithoutResendFromJobRecord(record = null) {
+  const previousAttempt = sourcePacketPreviousAttemptFromJobRecord(record);
+  return previousSourceWasSent(previousAttempt)
+    && previousFailureAllowsResumeWithoutResend(previousAttempt);
 }
 
 function apiCapability(providerCapabilities) {
@@ -259,6 +283,11 @@ function previousFailureRequiresResendGate(previousAttempt = null) {
   return SOURCE_SEND_BLOCKING_FAILURES.has(errorCode);
 }
 
+function previousFailureAllowsResumeWithoutResend(previousAttempt = null) {
+  const errorCode = previousAttempt?.error_code ?? previousAttempt?.reason ?? null;
+  return SOURCE_RESUME_WITHOUT_RESEND_FAILURES.has(errorCode);
+}
+
 function sourcePacketSuggestedAction(action, provider = null) {
   const target = provider ? `${provider} ` : "";
   if (action === "narrow_source_packet") {
@@ -266,6 +295,9 @@ function sourcePacketSuggestedAction(action, provider = null) {
   }
   if (action === "resend_confirmation_required") {
     return `Treat the previous ${target}slot as failed. Do not automatically resend selected source without explicit resend confirmation or a narrowed source packet.`;
+  }
+  if (action === "resume_without_source_resend") {
+    return `Resume the previous ${target}session without resending selected source.`;
   }
   if (action === "send_narrowed_source_packet") {
     return "Proceed with the narrowed source packet and record the review-surface change.";
@@ -285,6 +317,7 @@ export function evaluateSourcePacketPolicy({
   sourceBearing = false,
   previousAttempt = null,
   resendConfirmationApproved = false,
+  resumeWithoutSourceResend = false,
 } = {}) {
   const totals = selectedSourceTotals(selectedSource);
   const packetBudgetBytes = sourcePacketBudgetBytes(providerCapabilities, routeStep);
@@ -306,6 +339,7 @@ export function evaluateSourcePacketPolicy({
     selected_source_bytes: totals.bytes,
     source_packet_within_budget: sourcePacketWithinBudget,
     resend_confirmation_required: false,
+    resume_without_source_resend: resumeWithoutSourceResend === true,
     review_surface_changed: reviewSurfaceChanged,
     source_packet_policy_error_code: null,
     suggested_action: null,
@@ -328,6 +362,24 @@ export function evaluateSourcePacketPolicy({
       source_packet_action: action,
       source_content_transmission: "not_sent",
       source_packet_policy_error_code: "source_packet_too_large",
+      suggested_action: sourcePacketSuggestedAction(action, provider),
+    });
+  }
+
+  if (
+    previousSourceWasSent(previousAttempt)
+    && previousFailureRequiresResendGate(previousAttempt)
+    && previousFailureAllowsResumeWithoutResend(previousAttempt)
+    && resumeWithoutSourceResend
+    && totals.bytes === 0
+    && totals.files === 0
+  ) {
+    const action = "resume_without_source_resend";
+    return Object.freeze({
+      ...base,
+      source_send_allowed: true,
+      source_packet_action: action,
+      source_content_transmission: "not_sent",
       suggested_action: sourcePacketSuggestedAction(action, provider),
     });
   }

@@ -22,6 +22,7 @@
 //   on claude-result-handling/SKILL.md mentioning each field).
 
 import {
+  SOURCE_CONTENT_TRANSMISSION,
   buildExternalReview,
   sourceContentTransmissionForExecution,
 } from "./external-review.mjs";
@@ -146,11 +147,13 @@ function buildReviewMetadata(invocation, execution = null, parsed = null, endedA
 
 export function externalReviewForInvocation(invocation, execution = null) {
   const { status, error_code } = classifyExecution(execution, invocation);
-  const sourceContentTransmission = sourceContentTransmissionForExecution({
-    status,
-    errorCode: error_code,
-    pidInfo: execution?.pidInfo ?? null,
-  });
+  const sourceContentTransmission = invocation.resume_without_source_resend === true
+    ? SOURCE_CONTENT_TRANSMISSION.NOT_SENT
+    : sourceContentTransmissionForExecution({
+      status,
+      errorCode: error_code,
+      pidInfo: execution?.pidInfo ?? null,
+    });
   return buildExternalReview({
     invocation,
     sessionId: execution?.claudeSessionId ?? null,

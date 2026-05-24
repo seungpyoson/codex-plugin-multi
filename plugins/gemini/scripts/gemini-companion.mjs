@@ -33,7 +33,11 @@ import {
   resolveAuthSelection as resolveAuthSelectionForProvider,
   subscriptionAuthMode,
 } from "./lib/auth-selection.mjs";
-import { normalizeApprovalScope } from "./lib/provider-route-policy.mjs";
+import {
+  normalizeApprovalScope,
+  sourcePacketCanResumeWithoutResendFromJobRecord,
+  sourcePacketPreviousAttemptFromJobRecord,
+} from "./lib/provider-route-policy.mjs";
 import {
   PING_PROMPT,
   cancelNoPidInfoSuggestedAction,
@@ -321,7 +325,9 @@ function reviewAuditManifest(invocation, prompt, containmentPath, execution) {
   const { status: executionStatus, error_code: errorCode } = classifyExecution(auditExecution);
   return buildReviewAuditManifest({
     prompt,
-    sourceFiles: auditSourceFilesForPrompt(prompt, containmentPath),
+    sourceFiles: invocation.resume_without_source_resend === true
+      ? []
+      : auditSourceFilesForPrompt(prompt, containmentPath),
     git: {
       remote: meta.repository,
       branch: meta.headRef,
@@ -359,8 +365,13 @@ function reviewAuditManifest(invocation, prompt, containmentPath, execution) {
       approvalScope: invocation.approval_scope ?? null,
       authPath: invocation.selected_auth_path ?? null,
       billingPath: invocation.billing_path ?? null,
+      sourceBearing: modeSendsSelectedSource(invocation.mode),
       sourceSendApprovalRequired: invocation.source_send_approval_required ?? null,
       sourceSendApprovalState: invocation.source_send_approval_state ?? null,
+      providerCapabilities: providerCapabilitiesForReviewAudit(),
+      previousAttempt: invocation.previous_source_attempt ?? null,
+      resendConfirmationApproved: invocation.resend_confirmation_approved === true,
+      resumeWithoutSourceResend: invocation.resume_without_source_resend === true,
     },
     result: execution?.parsed?.result ?? "",
     status: execution?.preflight === true ? "preflight_failed" : executionStatus,
@@ -418,6 +429,7 @@ function approvalAuditManifest(invocation, prompt, containmentPath) {
       billingPath: invocation.billing_path ?? null,
       sourceSendApprovalRequired: invocation.source_send_approval_required ?? null,
       sourceSendApprovalState: invocation.source_send_approval_state ?? null,
+      providerCapabilities: providerCapabilitiesForReviewAudit(),
     },
     result: "",
     status: "approval_request",
@@ -447,6 +459,9 @@ function approvalTokenFor(invocation, auditManifest) {
 
 function scopedTargetPromptForOrExit(invocation, profile, userPrompt, lifecycleEvents) {
   if (!invocation.review_prompt_contract_version || invocation.mode_profile_name === "rescue") {
+    return targetPromptFor(invocation, userPrompt);
+  }
+  if (invocation.resume_without_source_resend === true) {
     return targetPromptFor(invocation, userPrompt);
   }
   const executionScope = setupExecutionScopeOrExit(invocation, profile, {
@@ -608,6 +623,15 @@ function writeRuntimeOptionsSidecar(workspaceRoot, jobId, options) {
     if (options.approval_scope === "session" || options.approval_scope === "once") {
       payload.approval_scope = options.approval_scope;
     }
+    if (options.previous_source_attempt && typeof options.previous_source_attempt === "object") {
+      payload.previous_source_attempt = options.previous_source_attempt;
+    }
+    if (typeof options.resend_confirmation_approved === "boolean") {
+      payload.resend_confirmation_approved = options.resend_confirmation_approved;
+    }
+    if (typeof options.resume_without_source_resend === "boolean") {
+      payload.resume_without_source_resend = options.resume_without_source_resend;
+    }
     writeFileSync(tmpFile, `${JSON.stringify(payload, null, 2)}\n`, { mode: 0o600, encoding: "utf8" });
     try { chmodSync(tmpFile, 0o600); } catch { /* best-effort on non-POSIX */ }
     renameSync(tmpFile, file);
@@ -629,6 +653,15 @@ function readRuntimeOptionsSidecar(workspaceRoot, jobId) {
   }
   if (parsed.approval_scope === "session" || parsed.approval_scope === "once") {
     options.approval_scope = parsed.approval_scope;
+  }
+  if (parsed.previous_source_attempt && typeof parsed.previous_source_attempt === "object" && !Array.isArray(parsed.previous_source_attempt)) {
+    options.previous_source_attempt = parsed.previous_source_attempt;
+  }
+  if (typeof parsed.resend_confirmation_approved === "boolean") {
+    options.resend_confirmation_approved = parsed.resend_confirmation_approved;
+  }
+  if (typeof parsed.resume_without_source_resend === "boolean") {
+    options.resume_without_source_resend = parsed.resume_without_source_resend;
   }
   if (consumed.cleanup_warning) {
     options.cleanup_warning = consumed.cleanup_warning;
@@ -685,6 +718,9 @@ function invocationFromRecord(record, fallbackAuthMode = defaultAuthMode(), runt
     started_at: record.started_at,
     approval_scope: runtimeOptions.approval_scope ?? record.review_metadata?.audit_manifest?.approval_scope ?? null,
     approval_token: runtimeOptions.approval_token ?? null,
+    previous_source_attempt: runtimeOptions.previous_source_attempt ?? null,
+    resend_confirmation_approved: runtimeOptions.resend_confirmation_approved === true,
+    resume_without_source_resend: runtimeOptions.resume_without_source_resend === true,
   });
 }
 
@@ -1038,6 +1074,23 @@ async function cmdRun(rest) {
         geminiSessionId: null,
         errorMessage: approvalPreflight.errorMessage,
         reviewAuditManifest: approvalPreflight.reviewAuditManifest,
+        ...redactionFieldsForPrompt(targetPrompt),
+      }, []);
+      writeJobFile(workspaceRoot, jobId, errorRecord);
+      upsertJob(workspaceRoot, errorRecord);
+      printLifecycleJson(errorRecord, lifecycleEvents);
+      process.exit(2);
+    }
+    const sourcePacketPreflight = sourcePacketPolicyPreflight(invocation, targetPrompt, null);
+    if (sourcePacketPreflight) {
+      const errorRecord = buildJobRecord(invocation, {
+        exitCode: sourcePacketPreflight.exitCode,
+        endedAt: sourcePacketPreflight.endedAt,
+        parsed: sourcePacketPreflight.parsed,
+        pidInfo: null,
+        geminiSessionId: null,
+        errorMessage: sourcePacketPreflight.errorMessage,
+        reviewAuditManifest: sourcePacketPreflight.reviewAuditManifest,
         ...redactionFieldsForPrompt(targetPrompt),
       }, []);
       writeJobFile(workspaceRoot, jobId, errorRecord);
@@ -1609,7 +1662,7 @@ async function cmdRunWorker(rest) {
 async function cmdContinue(rest) {
   const { options, positionals } = parseArgs(rest, {
     valueOptions: ["job", "cwd", "model", "binary", "auth-mode", "timeout-ms", "lifecycle-events", "approval-token", "approval-scope"],
-    booleanOptions: ["background", "foreground"],
+    booleanOptions: ["background", "foreground", "resend-confirmation-approved"],
   });
   if (!options.job) fail("bad_args", "--job <id> is required");
   if (options.background && options.foreground) {
@@ -1680,6 +1733,9 @@ async function cmdContinue(rest) {
   if (authSelection.selected_auth_path === "api_key_env_missing") {
     fail("not_authed", apiKeyMissingMessage(), apiKeyMissingFields(authSelection));
   }
+  const previousSourceAttempt = sourcePacketPreviousAttemptFromJobRecord(prior);
+  const resumeWithoutSourceResend =
+    sourcePacketCanResumeWithoutResendFromJobRecord(prior) && Boolean(priorGeminiSessionId);
   let invocation = Object.freeze({
     job_id: newJobId_,
     target: "gemini",
@@ -1705,6 +1761,9 @@ async function cmdContinue(rest) {
     auth_mode: continueAuthMode,
     approval_scope: approvalScope,
     approval_token: options["approval-token"] ?? null,
+    previous_source_attempt: previousSourceAttempt,
+    resend_confirmation_approved: options["resend-confirmation-approved"] === true,
+    resume_without_source_resend: resumeWithoutSourceResend,
     started_at: new Date().toISOString(),
   });
   invocation = invocationWithAuthSelection(invocation, authSelection);
@@ -1736,12 +1795,32 @@ async function cmdContinue(rest) {
       printLifecycleJson(errorRecord, lifecycleEvents);
       process.exit(2);
     }
+    const sourcePacketPreflight = sourcePacketPolicyPreflight(invocation, targetPrompt, null);
+    if (sourcePacketPreflight) {
+      const errorRecord = buildJobRecord(invocation, {
+        exitCode: sourcePacketPreflight.exitCode,
+        endedAt: sourcePacketPreflight.endedAt,
+        parsed: sourcePacketPreflight.parsed,
+        pidInfo: null,
+        geminiSessionId: null,
+        errorMessage: sourcePacketPreflight.errorMessage,
+        reviewAuditManifest: sourcePacketPreflight.reviewAuditManifest,
+        ...redactionFieldsForPrompt(targetPrompt),
+      }, []);
+      writeJobFile(workspaceRoot, newJobId_, errorRecord);
+      upsertJob(workspaceRoot, errorRecord);
+      printLifecycleJson(errorRecord, lifecycleEvents);
+      process.exit(2);
+    }
     try {
       writePromptSidecar(resolveJobsDir(workspaceRoot), newJobId_, targetPrompt);
       writeRuntimeOptionsSidecar(workspaceRoot, newJobId_, {
         timeout_ms: timeoutMs,
         approval_scope: invocation.approval_scope,
         approval_token: invocation.approval_token,
+        previous_source_attempt: previousSourceAttempt,
+        resend_confirmation_approved: options["resend-confirmation-approved"] === true,
+        resume_without_source_resend: resumeWithoutSourceResend,
       });
     } catch (error) {
       failBackgroundPromptSidecarWrite(workspaceRoot, invocation, error);
@@ -1813,6 +1892,17 @@ async function cmdResult(rest) {
 
 const PING_AUTH_RE = /\b(auth(?:enticat\w*)?|login|credential\w*|oauth2?|unauthenticated|signin|sign-in)\b/i;
 const PING_PROVIDER_API_KEY_ENV = ["GEMINI_API_KEY", "GOOGLE_API_KEY"];
+
+function providerCapabilitiesForReviewAudit() {
+  return Object.freeze({
+    subscription: Object.freeze({ kind: "oauth", auth_path: "subscription_oauth" }),
+    api: Object.freeze({
+      kind: "direct_api",
+      auth_path: "api_key_env",
+      credential_env_names: PING_PROVIDER_API_KEY_ENV,
+    }),
+  });
+}
 
 function modeSendsSelectedSource(mode) {
   return mode === "review" || mode === "adversarial-review" || mode === "custom-review";

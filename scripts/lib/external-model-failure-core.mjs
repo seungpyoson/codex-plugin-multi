@@ -5,6 +5,7 @@ const CANCEL_SIGNALS = new Set(["SIGTERM", "SIGKILL", "SIGINT", "SIGHUP"]);
 const FINALIZATION_FAILED_PREFIX = "finalization_failed:";
 const APPROVAL_REQUIRED_PREFIX = "approval_required:";
 const SOURCE_PACKET_TOO_LARGE_PREFIX = "source_packet_too_large:";
+const RESEND_CONFIRMATION_REQUIRED_PREFIX = "resend_confirmation_required:";
 const GIT_BINARY_POLICY_PREFIX = "CODEX_PLUGIN_MULTI_GIT_BINARY ";
 const NOT_AUTHED_PREFIX = "not_authed:";
 const SANDBOX_BLOCKED_PREFIX = "sandbox_blocked:";
@@ -116,6 +117,13 @@ export function classifyCompanionErrorMessage(message, options = {}) {
       status: "failed",
       error_code: "source_packet_too_large",
       error_message: text.slice(SOURCE_PACKET_TOO_LARGE_PREFIX.length).trim(),
+    };
+  }
+  if (text.startsWith(RESEND_CONFIRMATION_REQUIRED_PREFIX)) {
+    return {
+      status: "failed",
+      error_code: "resend_confirmation_required",
+      error_message: text.slice(RESEND_CONFIRMATION_REQUIRED_PREFIX.length).trim(),
     };
   }
   if (text.startsWith(GIT_BINARY_POLICY_PREFIX)) {

@@ -284,6 +284,11 @@ test("external-model failure core plugin copies cover shared classifier branches
       error_code: "approval_required",
       error_message: "token missing",
     });
+    assert.deepEqual(mod.classifyCompanionErrorMessage("resend_confirmation_required: retry needs approval"), {
+      status: "failed",
+      error_code: "resend_confirmation_required",
+      error_message: "retry needs approval",
+    });
     assert.deepEqual(mod.classifyCompanionErrorMessage("CODEX_PLUGIN_MULTI_GIT_BINARY rejected"), {
       status: "failed",
       error_code: "git_binary_rejected",

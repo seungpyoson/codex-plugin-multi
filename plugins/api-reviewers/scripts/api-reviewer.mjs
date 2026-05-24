@@ -2310,6 +2310,18 @@ function approvalBillingPathFor(cfg) {
   });
 }
 
+function providerCapabilitiesForConfig(cfg) {
+  const credentialNames = Array.isArray(cfg.env_keys) ? cfg.env_keys : [];
+  return Object.freeze({
+    api: Object.freeze({
+      kind: "direct_api",
+      auth_path: "api_key_env",
+      credential_env_names: credentialNames,
+      billing_path: approvalBillingPathFor(cfg),
+    }),
+  });
+}
+
 function routeStateForApproval(cfg, env = process.env, { sourceSendApproved = false } = {}) {
   const credentialNames = Array.isArray(cfg.env_keys) ? cfg.env_keys : [];
   const effectiveEnv = credentialEnvWithCache(credentialNames, env);
@@ -2317,14 +2329,7 @@ function routeStateForApproval(cfg, env = process.env, { sourceSendApproved = fa
     return selectProviderRoute({
       requestedRoute: "subscription",
       fallbackReason: env.API_REVIEWERS_ROUTE_FALLBACK_REASON || null,
-      providerCapabilities: {
-        api: {
-          kind: "direct_api",
-          auth_path: "api_key_env",
-          credential_env_names: credentialNames,
-          billing_path: approvalBillingPathFor(cfg),
-        },
-      },
+      providerCapabilities: providerCapabilitiesForConfig(cfg),
       env: effectiveEnv,
       sourceBearing: true,
       sourceSendApproved,
@@ -2423,10 +2428,25 @@ function buildApprovalAuditManifest({ cfg, renderedPrompt, request, scopeInfo, r
       billingPath: routeFields?.billing_path ?? null,
       sourceSendApprovalRequired: routeFields?.source_send_approval_required ?? null,
       sourceSendApprovalState: routeFields?.source_send_approval_state ?? null,
+      providerCapabilities: providerCapabilitiesForConfig(cfg),
     },
     status: "approval_request",
     errorCode: null,
   });
+}
+
+function sourcePacketPolicyFailureFromManifest(auditManifest) {
+  const policy = auditManifest?.source_packet_policy ?? null;
+  if (!policy || policy.source_send_allowed !== false) return null;
+  const errorCode = policy.source_packet_policy_error_code ?? "source_packet_policy_blocked";
+  return providerFailureWithDiagnostics(
+    errorCode,
+    `${errorCode}: ${policy.suggested_action ?? "source packet policy blocked selected source send"}`,
+    null,
+    null,
+    false,
+    { source_packet_policy: policy },
+  );
 }
 
 function approvalDiagnostics(cfg, request, renderedPrompt, authPath = null, billingPath = null, routeFields = null, approvalScope = "session") {
@@ -2510,6 +2530,14 @@ function buildApprovalRequest({ provider, cfg, mode, options, scopeInfo }) {
   const routeFields = approvalRouteFields(routeStateForApproval(cfg, process.env));
   const approvalScope = approvalScopeForOptions(options);
   const auditManifest = buildApprovalAuditManifest({ cfg, renderedPrompt, request, scopeInfo, routeFields, approvalScope });
+  const sourcePacketFailure = sourcePacketPolicyFailureFromManifest(auditManifest);
+  if (sourcePacketFailure) {
+    throw runProviderFailure(
+      sourcePacketFailure.parsed.reason,
+      sourcePacketFailure.parsed.error,
+      sourcePacketFailure.diagnostics,
+    );
+  }
   const approvalToken = approvalTokenFor({ provider, mode, auditManifest, authPath, billingPath, routeFields, approvalScope });
   const totals = auditManifest.selected_source.totals;
   const approvalQuestion = `Allow sending ${totals.files} selected ${plural(totals.files, "file")} (${totals.bytes} ${plural(totals.bytes, "byte")}, ${totals.lines} ${plural(totals.lines, "line")}) to ${cfg.display_name} for external review?`;
@@ -2559,6 +2587,9 @@ function errorCauseFor(errorCode) {
   if (errorCode === "approval_required") return "approval_gate";
   if (errorCode === "config_error") return "provider_config";
   if (errorCode === "scope_failed") return "scope_resolution";
+  if (errorCode === "source_packet_too_large" || errorCode === "resend_confirmation_required") {
+    return buildExternalModelFailureDiagnostic(errorCode, "external model")?.error_cause ?? "source_packet_policy";
+  }
   if (errorCode === "git_binary_rejected") return "git_binary_policy";
   if (errorCode === "sandbox_blocked") return "sandbox_access";
   if (errorCode === "usage_limited") return "cost_quota_usage_limit";
@@ -2657,6 +2688,7 @@ function buildReviewMetadata(cfg, scopeInfo, execution = null, startedAt = null,
       billingPath: routeFields.billing_path,
       sourceSendApprovalRequired: routeFields.source_send_approval_required,
       sourceSendApprovalState: routeFields.source_send_approval_state,
+      providerCapabilities: providerCapabilitiesForConfig(cfg),
     },
     result: execution.parsed?.result ?? "",
     status: execution.exitCode === 0 && execution.parsed?.ok === true ? "completed" : "failed",
@@ -2705,6 +2737,9 @@ function buildRuntimeDiagnostics(diagnostics) {
   }
   if (diagnostics.sharding_plan) {
     out.sharding_plan = diagnostics.sharding_plan;
+  }
+  if (diagnostics.source_packet_policy) {
+    out.source_packet_policy = diagnostics.source_packet_policy;
   }
   return Object.keys(out).length === 0 ? null : out;
 }
@@ -3010,12 +3045,21 @@ async function cmdRun(options) {
         );
         execution.prompt = renderedPrompt;
       }
+      let request = null;
+      let authPath = null;
+      let billingPath = null;
+      let routeFields = null;
+      let auditManifest = null;
+      if (!execution) {
+        request = requestSettingsForApproval(cfg);
+        authPath = approvalAuthPathFor(cfg, process.env);
+        billingPath = approvalBillingPathFor(cfg);
+        routeFields = approvalRouteFields(routeStateForApproval(cfg, process.env));
+        auditManifest = buildApprovalAuditManifest({ cfg, renderedPrompt, request, scopeInfo, routeFields, approvalScope });
+        execution = sourcePacketPolicyFailureFromManifest(auditManifest);
+        if (execution) execution.prompt = renderedPrompt;
+      }
       if (!execution && shouldRequireApprovalToken(process.env)) {
-        const request = requestSettingsForApproval(cfg);
-        const authPath = approvalAuthPathFor(cfg, process.env);
-        const billingPath = approvalBillingPathFor(cfg);
-        const routeFields = approvalRouteFields(routeStateForApproval(cfg, process.env));
-        const auditManifest = buildApprovalAuditManifest({ cfg, renderedPrompt, request, scopeInfo, routeFields, approvalScope });
         const expectedToken = approvalTokenFor({ provider, mode, auditManifest, authPath, billingPath, routeFields, approvalScope });
         if (!validateApprovalToken(options, expectedToken)) {
           execution = providerFailureWithDiagnostics(

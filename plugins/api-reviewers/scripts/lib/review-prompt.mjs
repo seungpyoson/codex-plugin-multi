@@ -1079,6 +1079,7 @@ export function buildReviewAuditManifest({
     sourceBearing,
     previousAttempt: route.previousAttempt ?? null,
     resendConfirmationApproved: route.resendConfirmationApproved === true,
+    resumeWithoutSourceResend: route.resumeWithoutSourceResend === true,
   });
   return Object.freeze({
     schema_version: REVIEW_AUDIT_MANIFEST_VERSION,

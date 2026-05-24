@@ -32,6 +32,28 @@ function readRepoFile(relPath) {
   return readFileSync(path.join(REPO_ROOT, relPath), "utf8");
 }
 
+function indexOfRequired(source, needle, label) {
+  const index = source.indexOf(needle);
+  assert.notEqual(index, -1, `${label} missing ${needle}`);
+  return index;
+}
+
+function allIndicesOf(source, needle) {
+  const indices = [];
+  let index = source.indexOf(needle);
+  while (index !== -1) {
+    indices.push(index);
+    index = source.indexOf(needle, index + needle.length);
+  }
+  return indices;
+}
+
+function parseStringSetLiteral(source, name, label) {
+  const match = source.match(new RegExp(`const ${name} = new Set\\(\\[([\\s\\S]*?)\\]\\);`));
+  assert.ok(match, `${label} missing ${name}`);
+  return new Set([...match[1].matchAll(/"([^"]+)"/g)].map((entry) => entry[1]));
+}
+
 function readRepoJson(relPath) {
   return JSON.parse(readRepoFile(relPath));
 }
@@ -267,6 +289,8 @@ test("provider-facing policy interfaces are inventoried and wired through shared
     "PROVIDER_POLICY_DOMAINS",
     "PROVIDER_ROUTE_STEPS",
     "selectProviderRoute",
+    "sourcePacketCanResumeWithoutResendFromJobRecord",
+    "sourcePacketPreviousAttemptFromJobRecord",
     "buildReviewAuditManifest",
     "SOURCE_CONTENT_TRANSMISSION",
     "sourceContentTransmissionForExecution",
@@ -295,8 +319,151 @@ test("provider-facing policy interfaces are inventoried and wired through shared
   }
 });
 
+test("source-bearing launch paths enforce shared source packet policy before provider launch", () => {
+  const runtimePaths = [
+    "plugins/claude/scripts/claude-companion.mjs",
+    "plugins/gemini/scripts/gemini-companion.mjs",
+    "plugins/kimi/scripts/kimi-companion.mjs",
+    "plugins/grok/scripts/grok-web-reviewer.mjs",
+    "plugins/api-reviewers/scripts/api-reviewer.mjs",
+  ];
+
+  for (const runtimePath of runtimePaths) {
+    const source = readRepoFile(runtimePath);
+    assert.match(source, /buildReviewAuditManifest\s*\(/, `${runtimePath} must build the shared audit manifest`);
+    assert.match(source, /source_packet_policy/, `${runtimePath} must inspect the shared source packet policy`);
+    assert.match(source, /source_send_allowed\s*!==\s*false/, `${runtimePath} must branch on source_send_allowed`);
+    assert.match(source, /source_packet_policy_error_code/, `${runtimePath} must preserve the shared packet-policy error code`);
+  }
+
+  for (const runtimePath of [
+    "plugins/claude/scripts/claude-companion.mjs",
+    "plugins/gemini/scripts/gemini-companion.mjs",
+    "plugins/kimi/scripts/kimi-companion.mjs",
+  ]) {
+    const source = readRepoFile(runtimePath);
+    const backgroundPreflights = source.match(/sourcePacketPolicyPreflight\s*\(\s*invocation\s*,\s*targetPrompt\s*,\s*null\s*\)/g) ?? [];
+    const backgroundPreflightIndices = allIndicesOf(
+      source,
+      "sourcePacketPolicyPreflight(invocation, targetPrompt, null)",
+    );
+    const sidecarWriteIndices = allIndicesOf(
+      source,
+      "writePromptSidecar(resolveJobsDir(workspaceRoot)",
+    );
+    assert.equal(
+      backgroundPreflights.length >= 2,
+      true,
+      `${runtimePath} must preflight source packets before background run and continue prompt sidecars`,
+    );
+    assert.equal(
+      backgroundPreflightIndices.length,
+      sidecarWriteIndices.length,
+      `${runtimePath} must have one background source packet preflight for each prompt sidecar write`,
+    );
+    for (let i = 0; i < sidecarWriteIndices.length; i += 1) {
+      assert.equal(
+        backgroundPreflightIndices[i] < sidecarWriteIndices[i],
+        true,
+        `${runtimePath} must run source packet preflight before background prompt sidecar write ${i + 1}`,
+      );
+    }
+  }
+
+  const foregroundLaunchChecks = [
+    {
+      runtimePath: "plugins/claude/scripts/claude-companion.mjs",
+      preflight: "const sourcePacketPreflight = sourcePacketPolicyPreflight(invocation, prompt, executionScope.addDir);",
+      launch: "execution = await spawnClaudeOrExit(",
+    },
+    {
+      runtimePath: "plugins/gemini/scripts/gemini-companion.mjs",
+      preflight: "const sourcePacketPreflight = sourcePacketPolicyPreflight(invocation, prompt, executionScope.containment.path);",
+      launch: "({ execution, executedInvocation } = await spawnGeminiOrExit(",
+    },
+    {
+      runtimePath: "plugins/kimi/scripts/kimi-companion.mjs",
+      preflight: "const sourcePacketPreflight = sourcePacketPolicyPreflight(invocation, prompt, containment.path);",
+      launch: "const preflightExecution = await kimiReadinessPreflight(invocation, profile);",
+    },
+    {
+      runtimePath: "plugins/api-reviewers/scripts/api-reviewer.mjs",
+      preflight: "execution = sourcePacketPolicyFailureFromManifest(auditManifest);",
+      launch: "execution = await callProvider(provider, cfg, renderedPrompt);",
+    },
+    {
+      runtimePath: "plugins/grok/scripts/grok-web-reviewer.mjs",
+      preflight: "execution = sourcePacketPolicyPreflight({ cfg, mode, prompt, scopeInfo });",
+      launch: "execution = await callGrokCli(cfg, prompt, {",
+    },
+  ];
+
+  for (const { runtimePath, preflight, launch } of foregroundLaunchChecks) {
+    const source = readRepoFile(runtimePath);
+    assert.equal(
+      indexOfRequired(source, preflight, runtimePath) < indexOfRequired(source, launch, runtimePath),
+      true,
+      `${runtimePath} must run source packet preflight before foreground provider launch`,
+    );
+  }
+});
+
+test("source-packet no-resend failures stay explicitly resend-gated in every packaged policy copy", () => {
+  for (const runtimePath of [
+    "scripts/lib/provider-route-policy.mjs",
+    "plugins/claude/scripts/lib/provider-route-policy.mjs",
+    "plugins/gemini/scripts/lib/provider-route-policy.mjs",
+    "plugins/kimi/scripts/lib/provider-route-policy.mjs",
+    "plugins/grok/scripts/lib/provider-route-policy.mjs",
+    "plugins/api-reviewers/scripts/lib/provider-route-policy.mjs",
+  ]) {
+    const source = readRepoFile(runtimePath);
+    const blockingFailures = parseStringSetLiteral(source, "SOURCE_SEND_BLOCKING_FAILURES", runtimePath);
+    const resumeWithoutResendFailures = parseStringSetLiteral(
+      source,
+      "SOURCE_RESUME_WITHOUT_RESEND_FAILURES",
+      runtimePath,
+    );
+    assert.equal(
+      resumeWithoutResendFailures.has("step_limit_exceeded"),
+      true,
+      `${runtimePath} must document step_limit_exceeded as an explicit no-resend resume exception`,
+    );
+    for (const failure of resumeWithoutResendFailures) {
+      assert.equal(
+        blockingFailures.has(failure),
+        true,
+        `${runtimePath} must keep no-resend failure ${failure} in SOURCE_SEND_BLOCKING_FAILURES`,
+      );
+    }
+  }
+});
+
+test("companion JobRecord metadata preserves resume-without-source-resend as not sent", () => {
+  for (const runtimePath of [
+    "plugins/claude/scripts/lib/job-record.mjs",
+    "plugins/gemini/scripts/lib/job-record.mjs",
+    "plugins/kimi/scripts/lib/job-record.mjs",
+  ]) {
+    const source = readRepoFile(runtimePath);
+    assert.match(source, /SOURCE_CONTENT_TRANSMISSION/);
+    assert.match(source, /invocation\.resume_without_source_resend === true/);
+    assert.match(source, /SOURCE_CONTENT_TRANSMISSION\.NOT_SENT/);
+  }
+});
+
 test("Grok auto transport stays an adapter capability and uses shared source-transmission policy", () => {
   const source = readRepoFile("plugins/grok/scripts/grok-web-reviewer.mjs");
+  assert.match(
+    source,
+    /function\s+modeSendsSelectedSource\s*\(/,
+    "Grok runtime must make source-bearing semantics mode-derived, not hardcoded",
+  );
+  assert.match(
+    source,
+    /sourceBearing:\s*modeSendsSelectedSource\(mode\)/,
+    "Grok source packet policy must use mode-derived source-bearing semantics",
+  );
   assert.match(
     source,
     /sourceContentTransmissionForExecution\s*,?\s*\}\s+from\s+["']\.\/lib\/external-review\.mjs["']/,

@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -14,6 +14,11 @@ function readRepoFile(rel) {
 
 function readRepoJson(rel) {
   return JSON.parse(readRepoFile(rel));
+}
+
+function assertRepoPathExists(rel, label) {
+  if (/^https?:\/\//.test(rel) || rel.startsWith("/private/") || /^missing:/i.test(rel)) return;
+  assert.equal(existsSync(path.join(REPO_ROOT, rel)), true, `${label} points at missing repo path ${rel}`);
 }
 
 function assertOnlyKeys(value, allowed, label) {
@@ -868,6 +873,7 @@ test("provider architecture parity table is machine-validatable and complete", (
     "sync rules",
   ];
   const policyNames = new Set(table.policy_areas.map((area) => area.name));
+  const expectedProviders = [...table.providers].sort();
   for (const name of requiredPolicyAreas) {
     assert.equal(policyNames.has(name), true, `missing policy area ${name}`);
   }
@@ -887,6 +893,14 @@ test("provider architecture parity table is machine-validatable and complete", (
     }
     assert.equal(Array.isArray(area.tests), true, `policy area ${area.name} tests must be an array`);
     assert.equal(area.tests.length > 0, true, `policy area ${area.name} must name at least one test`);
+    assert.deepEqual(
+      [...area.adapters].sort(),
+      expectedProviders,
+      `policy area ${area.name} must inventory all providers; narrower behavior belongs in classified exceptions`,
+    );
+    for (const testPath of area.tests) {
+      assertRepoPathExists(testPath, `policy area ${area.name} test`);
+    }
   }
 
   assert.deepEqual(
@@ -929,6 +943,9 @@ test("provider architecture parity table is machine-validatable and complete", (
     assert.equal(exception.evidence.length > 0, true, `exception ${exception.policy_area} evidence must not be empty`);
     assert.equal(Array.isArray(exception.tests), true, `exception ${exception.policy_area} tests must be an array`);
     assert.equal(exception.tests.length > 0, true, `exception ${exception.policy_area} tests must not be empty`);
+    for (const testPath of exception.tests) {
+      assertRepoPathExists(testPath, `exception ${exception.provider}/${exception.policy_area} test`);
+    }
     assert.ok(
       exception.follow_up_issue === null || Number.isInteger(exception.follow_up_issue),
       `exception ${exception.policy_area} must make follow-up issue state explicit`,
@@ -938,12 +955,19 @@ test("provider architecture parity table is machine-validatable and complete", (
         allowedIntentionalTypes.has(exception.difference_type),
         `intentional exception ${exception.provider}/${exception.policy_area} must use an allowed difference type`,
       );
-      assert.equal(typeof exception.capability_fact === "string" || exception.capability_fact === null, true);
+      if (exception.difference_type === "adapter_capability_fact") {
+        assert.equal(typeof exception.capability_fact, "string");
+        assert.notEqual(exception.capability_fact.trim(), "");
+      }
       assert.doesNotMatch(exception.tests.join("\n"), /^missing\b/i);
     } else {
       assert.ok(
         trackedNoncomplianceTypes.has(exception.difference_type),
         `non-intentional exception ${exception.provider}/${exception.policy_area} must be tracked as drift or research gap`,
+      );
+      assert.ok(
+        Number.isInteger(exception.follow_up_issue),
+        `non-intentional exception ${exception.provider}/${exception.policy_area} must name a follow-up issue`,
       );
     }
   }

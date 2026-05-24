@@ -20,7 +20,11 @@ import { reconcileActiveJobs } from "./lib/reconcile.mjs";
 import { cleanGitEnv } from "./lib/git-env.mjs";
 import { gitEnv, isGitBinaryPolicyError, resolveGitBinary } from "./lib/git-binary.mjs";
 import { spawnKimi } from "./lib/kimi.mjs";
-import { selectProviderRoute } from "./lib/provider-route-policy.mjs";
+import {
+  selectProviderRoute,
+  sourcePacketCanResumeWithoutResendFromJobRecord,
+  sourcePacketPreviousAttemptFromJobRecord,
+} from "./lib/provider-route-policy.mjs";
 import { writeCancelMarker, consumeCancelMarker } from "./lib/cancel-marker.mjs";
 import { isCodexSandbox } from "./lib/codex-env.mjs";
 import {
@@ -297,7 +301,9 @@ function reviewAuditManifest(invocation, prompt, containmentPath, execution) {
   const { status: executionStatus, error_code: errorCode } = classifyExecution(auditExecution);
   return buildReviewAuditManifest({
     prompt,
-    sourceFiles: auditSourceFilesForPrompt(prompt, containmentPath),
+    sourceFiles: invocation.resume_without_source_resend === true
+      ? []
+      : auditSourceFilesForPrompt(prompt, containmentPath),
     git: {
       remote: meta.repository,
       branch: meta.headRef,
@@ -335,8 +341,13 @@ function reviewAuditManifest(invocation, prompt, containmentPath, execution) {
       approvalScope: null,
       authPath: invocation.selected_auth_path ?? null,
       billingPath: invocation.billing_path ?? null,
+      sourceBearing: modeSendsSelectedSource(invocation.mode),
       sourceSendApprovalRequired: invocation.source_send_approval_required ?? null,
       sourceSendApprovalState: invocation.source_send_approval_state ?? null,
+      providerCapabilities: ROUTE_CAPABILITIES,
+      previousAttempt: invocation.previous_source_attempt ?? null,
+      resendConfirmationApproved: invocation.resend_confirmation_approved === true,
+      resumeWithoutSourceResend: invocation.resume_without_source_resend === true,
     },
     result: execution?.parsed?.result ?? "",
     status: execution?.preflight === true ? "preflight_failed" : executionStatus,
@@ -412,6 +423,9 @@ function modeSendsSelectedSource(mode) {
 
 function scopedTargetPromptForOrExit(invocation, profile, userPrompt, lifecycleEvents) {
   if (!invocation.review_prompt_contract_version || invocation.mode_profile_name === "rescue") {
+    return targetPromptFor(profile, userPrompt, invocation);
+  }
+  if (invocation.resume_without_source_resend === true) {
     return targetPromptFor(profile, userPrompt, invocation);
   }
   const { job_id: jobId, cwd, workspace_root: workspaceRoot } = invocation;
@@ -630,6 +644,15 @@ function writeRuntimeOptionsSidecar(workspaceRoot, jobId, options) {
     timeout_ms: options.timeout_ms,
     max_steps_per_turn: options.max_steps_per_turn,
   };
+  if (options.previous_source_attempt && typeof options.previous_source_attempt === "object") {
+    payload.previous_source_attempt = options.previous_source_attempt;
+  }
+  if (typeof options.resend_confirmation_approved === "boolean") {
+    payload.resend_confirmation_approved = options.resend_confirmation_approved;
+  }
+  if (typeof options.resume_without_source_resend === "boolean") {
+    payload.resume_without_source_resend = options.resume_without_source_resend;
+  }
   try {
     writeFileSync(tmpFile, `${JSON.stringify(payload, null, 2)}\n`, { mode: 0o600, encoding: "utf8" });
     try { chmodSync(tmpFile, 0o600); } catch { /* best-effort on non-POSIX */ }
@@ -650,6 +673,15 @@ function readRuntimeOptionsSidecar(workspaceRoot, jobId) {
   const options = {};
   if (Number.isSafeInteger(timeoutMs) && timeoutMs > 0) options.timeout_ms = timeoutMs;
   if (Number.isSafeInteger(maxSteps) && maxSteps > 0) options.max_steps_per_turn = maxSteps;
+  if (parsed.previous_source_attempt && typeof parsed.previous_source_attempt === "object" && !Array.isArray(parsed.previous_source_attempt)) {
+    options.previous_source_attempt = parsed.previous_source_attempt;
+  }
+  if (typeof parsed.resend_confirmation_approved === "boolean") {
+    options.resend_confirmation_approved = parsed.resend_confirmation_approved;
+  }
+  if (typeof parsed.resume_without_source_resend === "boolean") {
+    options.resume_without_source_resend = parsed.resume_without_source_resend;
+  }
   if (consumed.cleanup_warning) {
     options.cleanup_warning = consumed.cleanup_warning;
     options.cleanup_warning_path = consumed.cleanup_warning_path;
@@ -683,6 +715,9 @@ function invocationFromRecord(record, runtimeOptions = {}) {
     run_kind: runKindFromRecord(record),
     max_steps_per_turn: resolvedRuntimeOptions.max_steps_per_turn,
     ...subscriptionRouteFacts({ sourceBearing: modeSendsSelectedSource(record.mode) }),
+    previous_source_attempt: runtimeOptions.previous_source_attempt ?? null,
+    resend_confirmation_approved: runtimeOptions.resend_confirmation_approved === true,
+    resume_without_source_resend: runtimeOptions.resume_without_source_resend === true,
     runtime_options_cleanup_warning: runtimeOptions.cleanup_warning ?? null,
     runtime_options_cleanup_path: runtimeOptions.cleanup_warning_path ?? null,
     started_at: record.started_at,
@@ -940,6 +975,23 @@ async function cmdRun(rest) {
   const targetPrompt = scopedTargetPromptForOrExit(invocation, profile, prompt, lifecycleEvents);
 
   if (options.background) {
+    const sourcePacketPreflight = sourcePacketPolicyPreflight(invocation, targetPrompt, null);
+    if (sourcePacketPreflight) {
+      const errorRecord = buildJobRecord(invocation, {
+        exitCode: sourcePacketPreflight.exitCode,
+        endedAt: sourcePacketPreflight.endedAt,
+        parsed: sourcePacketPreflight.parsed,
+        pidInfo: null,
+        kimiSessionId: null,
+        errorMessage: sourcePacketPreflight.errorMessage,
+        reviewAuditManifest: sourcePacketPreflight.reviewAuditManifest,
+        ...redactionFieldsForPrompt(targetPrompt),
+      }, []);
+      writeJobFile(workspaceRoot, jobId, errorRecord);
+      upsertJob(workspaceRoot, errorRecord);
+      printLifecycleJson(errorRecord, lifecycleEvents);
+      process.exit(2);
+    }
     try {
       writePromptSidecar(resolveJobsDir(workspaceRoot), jobId, targetPrompt);
     } catch (error) {
@@ -1387,7 +1439,7 @@ async function cmdRunWorker(rest) {
 async function cmdContinue(rest) {
   const { options, positionals } = parseArgs(rest, {
     valueOptions: ["job", "cwd", "model", "binary", "timeout-ms", "max-steps-per-turn", "lifecycle-events", "auth-mode"],
-    booleanOptions: ["background", "foreground"],
+    booleanOptions: ["background", "foreground", "resend-confirmation-approved"],
   });
   rejectUnsupportedAuthMode(options);
   if (!options.job) fail("bad_args", "--job <id> is required");
@@ -1453,6 +1505,9 @@ async function cmdContinue(rest) {
     options["max-steps-per-turn"],
     priorRuntimeOptions.max_steps_per_turn ?? priorProfile.max_steps_per_turn ?? 8,
   );
+  const previousSourceAttempt = sourcePacketPreviousAttemptFromJobRecord(prior);
+  const resumeWithoutSourceResend =
+    sourcePacketCanResumeWithoutResendFromJobRecord(prior) && Boolean(priorKimiSessionId);
   const invocation = Object.freeze({
     job_id: newJobId_,
     target: "kimi",
@@ -1477,16 +1532,42 @@ async function cmdContinue(rest) {
     timeout_ms: timeoutMs,
     max_steps_per_turn: maxStepsPerTurn,
     ...subscriptionRouteFacts({ sourceBearing: modeSendsSelectedSource(priorModeName) }),
+    previous_source_attempt: previousSourceAttempt,
+    resend_confirmation_approved: options["resend-confirmation-approved"] === true,
+    resume_without_source_resend: resumeWithoutSourceResend,
     started_at: new Date().toISOString(),
   });
 
   const queuedRecord = buildJobRecord(invocation, null, []);
-  writeRuntimeOptionsSidecar(workspaceRoot, newJobId_, { timeout_ms: timeoutMs, max_steps_per_turn: maxStepsPerTurn });
+  writeRuntimeOptionsSidecar(workspaceRoot, newJobId_, {
+    timeout_ms: timeoutMs,
+    max_steps_per_turn: maxStepsPerTurn,
+    previous_source_attempt: previousSourceAttempt,
+    resend_confirmation_approved: options["resend-confirmation-approved"] === true,
+    resume_without_source_resend: resumeWithoutSourceResend,
+  });
   writeJobFile(workspaceRoot, newJobId_, queuedRecord);
   upsertJob(workspaceRoot, queuedRecord);
   const targetPrompt = scopedTargetPromptForOrExit(invocation, priorProfile, prompt, lifecycleEvents);
 
   if (options.background) {
+    const sourcePacketPreflight = sourcePacketPolicyPreflight(invocation, targetPrompt, null);
+    if (sourcePacketPreflight) {
+      const errorRecord = buildJobRecord(invocation, {
+        exitCode: sourcePacketPreflight.exitCode,
+        endedAt: sourcePacketPreflight.endedAt,
+        parsed: sourcePacketPreflight.parsed,
+        pidInfo: null,
+        kimiSessionId: null,
+        errorMessage: sourcePacketPreflight.errorMessage,
+        reviewAuditManifest: sourcePacketPreflight.reviewAuditManifest,
+        ...redactionFieldsForPrompt(targetPrompt),
+      }, []);
+      writeJobFile(workspaceRoot, newJobId_, errorRecord);
+      upsertJob(workspaceRoot, errorRecord);
+      printLifecycleJson(errorRecord, lifecycleEvents);
+      process.exit(2);
+    }
     try {
       writePromptSidecar(resolveJobsDir(workspaceRoot), newJobId_, targetPrompt);
     } catch (error) {

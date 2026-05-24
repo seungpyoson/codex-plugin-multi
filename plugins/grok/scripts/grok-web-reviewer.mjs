@@ -1567,6 +1567,85 @@ function providerCapabilitiesForConfig(cfg) {
   return capabilities;
 }
 
+function modeSendsSelectedSource(mode) {
+  return VALID_MODES.has(mode);
+}
+
+function sourcePacketPolicyPreflight({ cfg, mode, prompt, scopeInfo }) {
+  const providerCapabilities = providerCapabilitiesForConfig(cfg);
+  const sourceBearing = modeSendsSelectedSource(mode);
+  const route = selectProviderRoute({
+    requestedRoute: "subscription",
+    providerCapabilities,
+    sourceBearing,
+  });
+  const auditManifest = buildReviewAuditManifest({
+    prompt,
+    sourceFiles: scopeInfo.files ?? [],
+    git: {
+      remote: scopeInfo.repository ?? null,
+      branch: scopeInfo.head_ref ?? null,
+      baseRef: scopeInfo.scope_base ?? null,
+      baseCommit: scopeInfo.base_commit ?? null,
+      headRef: scopeInfo.head_ref ?? null,
+      headCommit: scopeInfo.head_commit ?? null,
+    },
+    promptBuilder: {
+      contractVersion: REVIEW_PROMPT_CONTRACT_VERSION,
+      pluginVersion: "0.1.0",
+      pluginCommit: gitCommitForPrompt(PLUGIN_ROOT, "HEAD"),
+    },
+    request: {
+      provider: cfg.display_name,
+      model: cfg.model,
+      timeoutMs: cfg.timeout_ms ?? null,
+      maxTokens: null,
+      temperature: null,
+      stream: false,
+    },
+    truncation: {
+      prompt: false,
+      source: false,
+      output: false,
+    },
+    scope: {
+      name: scopeInfo.scope,
+      base: scopeInfo.scope_base ?? null,
+      paths: scopeInfo.scope_paths ?? null,
+      reason: scopeResolutionReason(scopeInfo),
+    },
+    route: {
+      selectedRoute: route.selected_route,
+      routeStep: route.route_step,
+      routeSteps: route.route_steps,
+      fallbackReason: cfg.fallback_reason ?? route.fallback_reason,
+      approvalScope: null,
+      authPath: route.auth_path,
+      billingPath: route.billing_path,
+      sourceBearing,
+      sourceContentTransmission: SOURCE_CONTENT_TRANSMISSION.NOT_SENT,
+      sourceSendApprovalRequired: route.source_send_approval_required,
+      sourceSendApprovalState: route.source_send_approval_state,
+      providerCapabilities,
+    },
+    status: "preflight_failed",
+    errorCode: "source_packet_policy_preflight",
+  });
+  const policy = auditManifest.source_packet_policy ?? null;
+  if (!policy || policy.source_send_allowed !== false) return null;
+  const errorCode = policy.source_packet_policy_error_code ?? "source_packet_policy_blocked";
+  const execution = providerFailureWithDiagnostic(
+    errorCode,
+    `${errorCode}: ${policy.suggested_action ?? "source packet policy blocked selected source send"}`,
+    null,
+    null,
+    false,
+    { source_packet_policy: policy },
+  );
+  execution.prompt = prompt;
+  return execution;
+}
+
 function subscriptionRouteForConfig(cfg, env = process.env, sourceBearing = false) {
   return selectProviderRoute({
     requestedRoute: "subscription",
@@ -3021,6 +3100,9 @@ function suggestedAction(errorCode, errorMessage = "", tunnelStart = null) {
 function errorCauseFor(errorCode) {
   if (errorCode === "bad_args") return "caller";
   if (errorCode === "scope_failed") return "scope_resolution";
+  if (errorCode === "source_packet_too_large" || errorCode === "resend_confirmation_required") {
+    return buildExternalModelFailureDiagnostic(errorCode, "Grok")?.error_cause ?? "source_packet_policy";
+  }
   if (errorCode === "git_binary_rejected") return "git_binary_policy";
   if (errorCode === "usage_limited") return "cost_quota_usage_limit";
   if (String(errorCode ?? "").startsWith("grok_session_")) return "session_tokens";
@@ -3147,6 +3229,7 @@ function buildReviewMetadata(cfg, scopeInfo, execution = null, startedAt = null,
       sourceContentTransmission,
       sourceSendApprovalRequired: route.source_send_approval_required,
       sourceSendApprovalState: route.source_send_approval_state,
+      providerCapabilities: providerCapabilitiesForConfig(cfg),
     },
     result: execution.parsed?.result ?? "",
     status: execution.exitCode === 0 && execution.parsed?.ok === true ? "completed" : "failed",
@@ -4311,7 +4394,8 @@ async function cmdRun(options) {
     let webReadiness = null;
     try {
       prompt = promptFor(cfg, mode, options.prompt ?? "", scopeInfo);
-      if (prompt.length > cfg.max_prompt_chars) {
+      execution = sourcePacketPolicyPreflight({ cfg, mode, prompt, scopeInfo });
+      if (!execution && prompt.length > cfg.max_prompt_chars) {
         const capName = cfg.transport === "cli" ? "GROK_CLI_MAX_PROMPT_CHARS" : "GROK_WEB_MAX_PROMPT_CHARS";
         execution = providerFailure("prompt_too_large", redactor()(`prompt_too_large:${prompt.length} chars exceeds ${capName}=${cfg.max_prompt_chars}`), null, null, false);
         execution.prompt = prompt;
@@ -4357,7 +4441,7 @@ async function cmdRun(options) {
           try {
             promptSentToTunnel = true;
             execution = await callGrokCli(cfg, prompt, {
-              sourceBearing: true,
+              sourceBearing: modeSendsSelectedSource(mode),
               baseDiagnostics: cliPreflight.diagnostics,
             });
           } finally {
@@ -4368,7 +4452,14 @@ async function cmdRun(options) {
           const cliFailure = execution;
           cfg = webAutoFallbackConfig(process.env, cliFailure.parsed?.reason ?? "grok_cli_unavailable");
           prompt = promptFor(cfg, mode, options.prompt ?? "", scopeInfo);
-          if (prompt.length > cfg.max_prompt_chars) {
+          const fallbackSourcePacketPreflight = sourcePacketPolicyPreflight({ cfg, mode, prompt, scopeInfo });
+          if (fallbackSourcePacketPreflight) {
+            execution = fallbackSourcePacketPreflight;
+            execution.diagnostics = {
+              cli_request: cliRequestDiagnosticsForFallback(cliFailure),
+              ...(execution.diagnostics ?? {}),
+            };
+          } else if (prompt.length > cfg.max_prompt_chars) {
             execution = providerFailure("prompt_too_large", redactor()(`prompt_too_large:${prompt.length} chars exceeds GROK_WEB_MAX_PROMPT_CHARS=${cfg.max_prompt_chars}`), null, null, false);
             execution.diagnostics = {
               cli_request: cliRequestDiagnosticsForFallback(cliFailure),

@@ -6007,6 +6007,42 @@ test("custom-review rejects oversized selected files before contacting the tunne
   assert.equal(record.external_review.source_content_transmission, "not_sent");
 });
 
+test("custom-review rejects over-budget source packets before Grok transport launch", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "grok-web-workspace-"));
+  const files = [];
+  for (let index = 0; index < 3; index += 1) {
+    const file = `packet-${index}.js`;
+    files.push(file);
+    writeFileSync(path.join(cwd, file), `export const value${index} = "${"x".repeat(180 * 1024)}";\n`);
+  }
+
+  const result = run([
+    "run",
+    "--mode", "custom-review",
+    "--scope", "custom",
+    "--scope-paths", files.join(","),
+    "--foreground",
+    "--prompt", "Check these files.",
+  ], {
+    cwd,
+    env: {
+      GROK_WEB_BASE_URL: "http://127.0.0.1:9/api",
+      GROK_WEB_MAX_PROMPT_CHARS: "2000000",
+    },
+  });
+  const record = parseStdout(result);
+
+  assert.equal(result.status, 1);
+  assert.equal(record.status, "failed");
+  assert.equal(record.error_code, "source_packet_too_large");
+  assert.match(record.error_message, /source_packet_too_large:/);
+  assert.equal(record.error_cause, "pre_send_source_packet_budget");
+  assert.equal(record.external_review.source_content_transmission, "not_sent");
+  assert.equal(record.review_metadata.audit_manifest.source_packet_policy.source_send_allowed, false);
+  assert.equal(record.review_metadata.audit_manifest.source_packet_policy.source_packet_action, "narrow_source_packet");
+  assert.doesNotMatch(result.stdout, /external_review_launched/);
+});
+
 test("branch-diff rejects oversized committed files before contacting the tunnel", () => {
   const cwd = mkdtempSync(path.join(tmpdir(), "grok-web-branch-large-"));
   execFileSync("git", ["init", "-b", "main"], { cwd, stdio: "ignore" });

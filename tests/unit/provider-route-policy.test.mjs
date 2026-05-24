@@ -11,6 +11,8 @@ import {
   PROVIDER_POLICY_DOMAINS,
   PROVIDER_ROUTE_STEPS,
   selectProviderRoute,
+  sourcePacketCanResumeWithoutResendFromJobRecord,
+  sourcePacketPreviousAttemptFromJobRecord,
 } from "../../scripts/lib/provider-route-policy.mjs";
 import { buildReviewAuditManifest } from "../../scripts/lib/review-prompt.mjs";
 
@@ -196,6 +198,73 @@ test("source packet policy prevents automatic resend after source-bearing failur
   assert.equal(narrowed.review_surface_changed, true);
 });
 
+test("source packet retry policy derives previous attempts from JobRecords", () => {
+  const previousAttempt = sourcePacketPreviousAttemptFromJobRecord({
+    status: "failed",
+    error_code: "review_not_completed",
+    external_review: { source_content_transmission: "sent" },
+    review_metadata: {
+      audit_manifest: {
+        selected_source: selectedSourceFixture(8),
+      },
+    },
+  });
+
+  const policy = evaluateSourcePacketPolicy({
+    provider: "claude",
+    mode: "custom-review",
+    routeStep: "subscription",
+    providerCapabilities: {
+      subscription: { source_packet: { max_bytes: 20 } },
+    },
+    selectedSource: selectedSourceFixture(8),
+    sourceBearing: true,
+    previousAttempt,
+  });
+
+  assert.equal(policy.source_send_allowed, false);
+  assert.equal(policy.source_packet_action, "resend_confirmation_required");
+  assert.equal(policy.source_packet_policy_error_code, "resend_confirmation_required");
+});
+
+test("source packet retry policy allows same-session resume without source resend after step limits", () => {
+  const previousRecord = {
+    status: "failed",
+    error_code: "step_limit_exceeded",
+    external_review: { source_content_transmission: "sent" },
+    review_metadata: {
+      audit_manifest: {
+        selected_source: selectedSourceFixture(8),
+      },
+    },
+  };
+  const previousAttempt = sourcePacketPreviousAttemptFromJobRecord(previousRecord);
+
+  assert.equal(sourcePacketCanResumeWithoutResendFromJobRecord(previousRecord), true);
+
+  const policy = evaluateSourcePacketPolicy({
+    provider: "kimi",
+    mode: "custom-review",
+    routeStep: "subscription",
+    providerCapabilities: {
+      subscription: { source_packet: { max_bytes: 20 } },
+    },
+    selectedSource: Object.freeze({
+      files: Object.freeze([]),
+      totals: Object.freeze({ files: 0, bytes: 0, lines: 0 }),
+    }),
+    sourceBearing: true,
+    previousAttempt,
+    resumeWithoutSourceResend: true,
+  });
+
+  assert.equal(policy.source_send_allowed, true);
+  assert.equal(policy.source_packet_action, "resume_without_source_resend");
+  assert.equal(policy.source_content_transmission, "not_sent");
+  assert.equal(policy.resume_without_source_resend, true);
+  assert.equal(policy.resend_confirmation_required, false);
+});
+
 test("review audit manifest records shared route and source packet policy fields", () => {
   const route = selectProviderRoute({
     requestedRoute: undefined,
@@ -231,6 +300,29 @@ test("review audit manifest records shared route and source packet policy fields
   assert.equal(manifest.source_packet_policy.source_send_allowed, true);
   assert.equal(manifest.source_packet_policy.source_packet_action, "send");
   assert.equal(manifest.source_packet_policy.selected_source_bytes, 16);
+});
+
+test("review audit manifest enforces route provider source packet capabilities", () => {
+  const manifest = buildReviewAuditManifest({
+    prompt: "Review selected source.",
+    sourceFiles: [{ path: "src/large.js", text: "x".repeat(11) }],
+    request: { provider: "grok", model: "reviewer" },
+    route: {
+      selectedRoute: "subscription_cli",
+      routeStep: "subscription",
+      routeSteps: [],
+      sourceBearing: true,
+      providerCapabilities: {
+        subscription: { source_packet: { max_bytes: 10 } },
+      },
+    },
+  });
+
+  assert.equal(manifest.source_packet_policy.source_send_allowed, false);
+  assert.equal(manifest.source_packet_policy.source_packet_action, "narrow_source_packet");
+  assert.equal(manifest.source_packet_policy.source_packet_policy_error_code, "source_packet_too_large");
+  assert.equal(manifest.source_packet_policy.source_packet_budget_bytes, 10);
+  assert.equal(manifest.source_packet_policy.selected_source_bytes, 11);
 });
 
 test("provider route policy defaults subscription-capable providers to subscription and ignores API keys", () => {

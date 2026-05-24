@@ -1,44 +1,37 @@
 # Final External Review Results
 
-Stage: final latest-head review
-Status: blocked for revised #171 scope
+Stage: latest focused current-delta review
+Status: blocked only on Claude local OAuth readiness
 
-## Stale Historical Final Review
+## Review Packet
 
-The prior final review approved the older #175 implementation scope: parity
-table, contract guardrails, generated docs, and Grok auto fallback. That review
-does not prove completion of the corrected requirement.
+- Scope: `/private/tmp/cpm-171-review/provider-architecture-parity-171-focused-current.diff`
+- Evidence: `/private/tmp/cpm-171-review/provider-architecture-parity-171-focused-evidence.md`
+- Packet size after final guardrail hardening: 165844 bytes across two files
+- Reason for focused packet: full `git diff origin/main` packet was 597224 bytes, above the shared 512 KiB source-packet budget; reviewers were therefore scoped to the current hardening delta instead of bypassing the new policy.
 
-Why stale:
+## Usable Results
 
-- It did not review one shared subscription -> direct API -> OpenRouter route
-  ladder for all six providers.
-- It did not review one source packet budget/resend policy for all six providers
-  and all modes.
-- It accepted DeepSeek shard review because of packet limitations, which is not
-  itself wrong, but the reviewed content had the wrong #171 problem framing.
-- It occurred before operator correction that exact policy parity is required
-  and provider-specific treatment needs clear capability evidence.
+| Provider | Result | Job | Source State | Notes |
+| --- | --- | --- | --- | --- |
+| Gemini | APPROVE | `6b46794f-dfb3-40a4-b225-78c64a34bb6d` | sent | No blocking findings. |
+| Grok | APPROVE | `job_70418f8e-008c-4785-b7f0-82e3908fb824` | sent | CLI transport, no web/API fallback used. |
+| GLM | APPROVE | `job_17545183-a3b1-4852-8743-268587756869` | sent | No blocking findings. |
+| DeepSeek | APPROVE | `job_84086e26-b4e5-489e-b99b-56e0336966fb` | sent | Raised non-blocking foreground/static guardrail concerns; addressed with stronger tests. |
+| Kimi | APPROVE | `f82a94c5-5b7e-46dc-aca1-458371e47d52` | not_sent on continue | Initial job `5b2b6fca-7f0e-4918-80c8-9d264572ff9b` hit `step_limit_exceeded` after source send. Continue used `resume_without_source_resend` with zero selected-source bytes and returned APPROVE. |
 
-## Revised Final Gate
+## Unusable Slot
 
-Final review can run only after:
+| Provider | Result | Job | Source State | Blocker |
+| --- | --- | --- | --- | --- |
+| Claude | FAILED | `4ab5a239-43e5-430e-bc33-596ccc7b0853` | not_sent | `oauth_inference_rejected`: Claude Code non-interactive OAuth returned HTTP 401 before source delivery. |
 
-1. Revised root-problems/spec/plan/tasks review gets six approvals.
-2. One approved issue is implemented by TDD.
-3. Local verification passes.
-4. Latest head is stable.
+## Review Follow-Ups Addressed
 
-Required reviewers:
+- DeepSeek noted the static launch guard was stronger for background sidecars than foreground provider launch. Added foreground ordering checks and one-background-preflight-per-sidecar checks in `tests/unit/plugin-copies-in-sync.test.mjs`.
+- Kimi noted the no-resend failure set should be proven a subset of resend-gated failures. Added a parsed set-subset guard in `tests/unit/plugin-copies-in-sync.test.mjs`.
+- Kimi noted Grok source-bearing behavior was hardcoded. Changed Grok to derive source-bearing semantics from mode and added a guardrail that rejects hardcoded policy semantics.
 
-- Claude
-- Gemini
-- Grok
-- GLM
-- DeepSeek
-- Kimi
+## Remaining Gate
 
-Gate result: BLOCKED for final latest-head review only. The pre-implementation
-planning gate has passed after six reviewers approved the updated plan/tasks
-delta. Implementation has not started, so final latest-head review is still not
-available.
+Final six-provider latest-head approval is not complete until Claude is usable or explicitly waived by the operator. The five usable reviewers approved the focused current delta after source-packet budget constraints were honored.
