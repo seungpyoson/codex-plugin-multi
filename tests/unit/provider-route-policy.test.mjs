@@ -14,6 +14,7 @@ import {
   sourcePacketCanResumeWithoutResendFromJobRecord,
   sourcePacketPreviousAttemptFromJobRecord,
 } from "../../scripts/lib/provider-route-policy.mjs";
+import { REVIEW_PROMPT_PLUGIN_TARGETS } from "../../scripts/lib/plugin-targets.mjs";
 import { buildReviewAuditManifest } from "../../scripts/lib/review-prompt.mjs";
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
@@ -263,6 +264,218 @@ test("source packet retry policy allows same-session resume without source resen
   assert.equal(policy.source_content_transmission, "not_sent");
   assert.equal(policy.resume_without_source_resend, true);
   assert.equal(policy.resend_confirmation_required, false);
+});
+
+test("packaged provider route policy copies cover shared source-packet and route branches", async () => {
+  const modules = await Promise.all(
+    REVIEW_PROMPT_PLUGIN_TARGETS.map(async (plugin) => [
+      plugin,
+      await import(`../../plugins/${plugin}/scripts/lib/provider-route-policy.mjs`),
+    ]),
+  );
+
+  for (const [plugin, mod] of modules) {
+    assert.deepEqual(mod.PROVIDER_ROUTE_STEPS, PROVIDER_ROUTE_STEPS, plugin);
+    assert.deepEqual(mod.buildProviderPolicyContract().providers, buildProviderPolicyContract().providers, plugin);
+    assert.equal(mod.sourcePacketPreviousAttemptFromJobRecord(null), null, plugin);
+    assert.equal(mod.sourcePacketPreviousAttemptFromJobRecord({ review_metadata: { audit_manifest: {} } }), null, plugin);
+    assert.equal(mod.sourcePacketCanResumeWithoutResendFromJobRecord(null), false, plugin);
+
+    const previousStepLimitRecord = {
+      status: "failed",
+      review_metadata: {
+        audit_manifest: {
+          error_code: "step_limit_exceeded",
+          source_content_transmission: "sent_after_explicit_approval",
+          selected_source: selectedSourceFixture(12),
+        },
+      },
+    };
+    const previousStepLimit = mod.sourcePacketPreviousAttemptFromJobRecord(previousStepLimitRecord);
+    assert.equal(previousStepLimit.error_code, "step_limit_exceeded", plugin);
+    assert.equal(previousStepLimit.source_content_transmission, "sent_after_explicit_approval", plugin);
+    assert.equal(mod.sourcePacketCanResumeWithoutResendFromJobRecord(previousStepLimitRecord), true, plugin);
+
+    const previousTimeout = {
+      status: "failed",
+      reason: "timeout",
+      source_sent: true,
+      source_packet: selectedSourceFixture(12),
+    };
+    assert.equal(mod.sourcePacketCanResumeWithoutResendFromJobRecord({
+      status: "failed",
+      error_code: "timeout",
+      external_review: { source_content_transmission: "sent" },
+      review_metadata: {
+        audit_manifest: {
+          selected_source: selectedSourceFixture(12),
+        },
+      },
+    }), false, plugin);
+
+    assert.deepEqual(mod.evaluateSourcePacketPolicy({
+      provider: plugin,
+      mode: "setup",
+      routeStep: "subscription",
+      providerCapabilities: {
+        source_packet: { max_bytes: 64 },
+      },
+      selectedSource: null,
+      sourceBearing: false,
+    }), {
+      provider: plugin,
+      mode: "setup",
+      route_step: "subscription",
+      source_bearing: false,
+      source_packet_budget_bytes: 64,
+      selected_source_bytes: 0,
+      source_packet_within_budget: true,
+      resend_confirmation_required: false,
+      resume_without_source_resend: false,
+      review_surface_changed: false,
+      source_packet_policy_error_code: null,
+      suggested_action: null,
+      source_send_allowed: true,
+      source_packet_action: "not_source_bearing",
+      source_content_transmission: "not_sent",
+    }, plugin);
+
+    assert.throws(
+      () => mod.evaluateSourcePacketPolicy({
+        provider: plugin,
+        routeStep: "subscription",
+        providerCapabilities: {
+          subscription: { source_packet: { max_bytes: 0 } },
+        },
+        selectedSource: selectedSourceFixture(1),
+        sourceBearing: true,
+      }),
+      /source packet max_bytes must be a positive integer/,
+      plugin,
+    );
+
+    const tooLarge = mod.evaluateSourcePacketPolicy({
+      provider: plugin,
+      mode: "custom-review",
+      routeStep: "subscription",
+      providerCapabilities: {
+        subscription: { source_packet: { max_bytes: 10 } },
+      },
+      selectedSource: selectedSourceFixture(11),
+      sourceBearing: true,
+    });
+    assert.equal(tooLarge.source_send_allowed, false, plugin);
+    assert.equal(tooLarge.source_packet_action, "narrow_source_packet", plugin);
+    assert.match(tooLarge.suggested_action, /Narrow or shard/, plugin);
+
+    const blocked = mod.evaluateSourcePacketPolicy({
+      provider: plugin,
+      mode: "custom-review",
+      routeStep: "subscription",
+      providerCapabilities: {
+        subscription: { source_packet: { max_bytes: 32 } },
+      },
+      selectedSource: selectedSourceFixture(12),
+      sourceBearing: true,
+      previousAttempt: previousTimeout,
+      resumeWithoutSourceResend: true,
+    });
+    assert.equal(blocked.source_packet_action, "resend_confirmation_required", plugin);
+    assert.equal(blocked.resend_confirmation_required, true, plugin);
+
+    const resumed = mod.evaluateSourcePacketPolicy({
+      provider: plugin,
+      mode: "custom-review",
+      routeStep: "subscription",
+      providerCapabilities: {
+        subscription: { source_packet: { max_bytes: 32 } },
+      },
+      selectedSource: { files: [], totals: { files: 0, bytes: 0, lines: 0 } },
+      sourceBearing: true,
+      previousAttempt: previousStepLimit,
+      resumeWithoutSourceResend: true,
+    });
+    assert.equal(resumed.source_packet_action, "resume_without_source_resend", plugin);
+    assert.equal(resumed.source_content_transmission, "not_sent", plugin);
+
+    const narrowed = mod.evaluateSourcePacketPolicy({
+      provider: plugin,
+      mode: "custom-review",
+      routeStep: "subscription",
+      providerCapabilities: {
+        subscription: { source_packet: { max_bytes: 32 } },
+      },
+      selectedSource: selectedSourceFixture(4),
+      sourceBearing: true,
+      previousAttempt: previousTimeout,
+    });
+    assert.equal(narrowed.source_packet_action, "send_narrowed_source_packet", plugin);
+    assert.equal(narrowed.review_surface_changed, true, plugin);
+
+    const confirmed = mod.evaluateSourcePacketPolicy({
+      provider: plugin,
+      mode: "custom-review",
+      routeStep: "subscription",
+      providerCapabilities: {
+        subscription: { source_packet: { max_bytes: 32 } },
+      },
+      selectedSource: selectedSourceFixture(12),
+      sourceBearing: true,
+      previousAttempt: previousTimeout,
+      resendConfirmationApproved: true,
+    });
+    assert.equal(confirmed.source_packet_action, "send_after_resend_confirmation", plugin);
+
+    const sent = mod.evaluateSourcePacketPolicy({
+      provider: plugin,
+      mode: "custom-review",
+      routeStep: "direct_api",
+      providerCapabilities: {
+        api: { source_packet: { max_bytes: 32 } },
+      },
+      selectedSource: selectedSourceFixture(12),
+      sourceBearing: true,
+    });
+    assert.equal(sent.source_packet_action, "send", plugin);
+
+    assert.equal(mod.normalizeApprovalScope("once"), "once", plugin);
+    const badApproval = [];
+    assert.equal(mod.normalizeApprovalScope("auto", (code, message) => badApproval.push({ code, message })), null, plugin);
+    assert.deepEqual(badApproval.map((failure) => failure.code), ["bad_args"], plugin);
+
+    const badRoute = [];
+    assert.equal(mod.selectProviderRoute({
+      requestedRoute: "auto",
+      providerCapabilities: subscriptionAndApi,
+      env: {},
+      fail: (code, message) => badRoute.push({ code, message }),
+    }), null, plugin);
+    assert.deepEqual(badRoute.map((failure) => failure.code), ["bad_args"], plugin);
+
+    assert.deepEqual(mod.selectProviderRoute({
+      requestedRoute: "openrouter",
+      fallbackReason: "explicit_openrouter",
+      providerCapabilities: allCapabilities,
+      env: { OPENROUTER_API_KEY: "openrouter-secret" },
+      sourceBearing: false,
+    }).route_steps.map((step) => step.route), PROVIDER_ROUTE_STEPS, plugin);
+
+    assert.throws(
+      () => mod.selectProviderRoute({ requestedRoute: "openrouter", providerCapabilities: subscriptionOnly, env: {} }),
+      /provider has no supported capability/,
+      plugin,
+    );
+    assert.throws(
+      () => mod.selectProviderRoute({
+        requestedRoute: "api",
+        fallbackReason: "bogus",
+        providerCapabilities: allCapabilities,
+        env: { PROVIDER_API_KEY: "secret" },
+      }),
+      /unsupported route fallback reason/,
+      plugin,
+    );
+  }
 });
 
 test("review audit manifest records shared route and source packet policy fields", () => {

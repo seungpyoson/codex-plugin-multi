@@ -45,6 +45,16 @@ test("classifyCompanionErrorMessage centralizes shared pre-spawn failures", () =
     error_code: "sandbox_blocked",
     error_message: "state unreadable",
   });
+  assert.deepEqual(classifyCompanionErrorMessage("source_packet_too_large: 524289 > 524288"), {
+    status: "failed",
+    error_code: "source_packet_too_large",
+    error_message: "524289 > 524288",
+  });
+  assert.deepEqual(classifyCompanionErrorMessage("resend_confirmation_required: retry needs approval"), {
+    status: "failed",
+    error_code: "resend_confirmation_required",
+    error_message: "retry needs approval",
+  });
   assert.deepEqual(classifyCompanionErrorMessage("unsafe_symlink:/tmp/source"), {
     status: "failed",
     error_code: "scope_failed",
@@ -92,6 +102,8 @@ test("buildExternalModelFailureDiagnostic covers shared emitted failure codes", 
     "claude_error",
     "gemini_error",
     "kimi_error",
+    "source_packet_too_large",
+    "resend_confirmation_required",
   ]) {
     const diagnostic = buildExternalModelFailureDiagnostic(code, "Claude Code CLI");
     assert.equal(typeof diagnostic?.error_summary, "string", code);
@@ -124,6 +136,8 @@ test("shared failure diagnostics cover the T088 cross-provider fixture table", (
     "session_expired",
     "privacy_persistence",
     "review_not_completed",
+    "source_packet_too_large",
+    "resend_confirmation_required",
   ];
 
   for (const provider of providers) {
@@ -279,10 +293,117 @@ test("external-model failure core plugin copies cover shared classifier branches
   );
 
   for (const mod of modules) {
+    assert.deepEqual(mod.classifyCompanionLifecycleState(null), {
+      status: "queued",
+      error_code: null,
+      error_message: null,
+    });
+    assert.deepEqual(mod.classifyCompanionLifecycleState({ status: "running" }), {
+      status: "running",
+      error_code: null,
+      error_message: null,
+    });
+    assert.deepEqual(mod.classifyCompanionLifecycleState({ status: "cancelled" }), {
+      status: "cancelled",
+      error_code: null,
+      error_message: null,
+    });
+    assert.deepEqual(mod.classifyCompanionLifecycleState({ status: "stale" }), {
+      status: "stale",
+      error_code: "stale_active_job",
+      error_message: "stale_active_job",
+    });
+    assert.equal(mod.classifyCompanionLifecycleState({ status: "completed" }), null);
+
+    assert.deepEqual(mod.classifyCompanionExecution(null, { catchallCode: "provider_error" }), {
+      status: "queued",
+      error_code: null,
+      error_message: null,
+    });
+    assert.deepEqual(mod.classifyCompanionExecution({ status: "running" }, { catchallCode: "provider_error" }), {
+      status: "running",
+      error_code: null,
+      error_message: null,
+    });
+    assert.deepEqual(mod.classifyCompanionExecution({ timedOut: true }, { catchallCode: "provider_error" }), {
+      status: "failed",
+      error_code: "timeout",
+      error_message: "target CLI exceeded the configured timeoutMs",
+    });
+    assert.deepEqual(mod.classifyCompanionExecution({ signal: "SIGINT" }, { catchallCode: "provider_error" }), {
+      status: "cancelled",
+      error_code: null,
+      error_message: null,
+    });
+    assert.deepEqual(mod.classifySignalLikeExit({
+      exitCode: 143,
+      started: true,
+      parsed: null,
+    }), {
+      status: "failed",
+      error_code: "interrupted",
+      error_message: "exit_code:143",
+    });
+    assert.deepEqual(mod.classifySignalLikeExit({
+      exitCode: 143,
+      started: true,
+      parsed: { ok: true, result: "Verdict: APPROVE" },
+      reviewAuditManifest: {
+        review_quality: {
+          failed_review_slot: true,
+          semantic_failure_reasons: ["missing_verdict"],
+        },
+      },
+    }), {
+      status: "failed",
+      error_code: "review_not_completed",
+      error_message: "review_quality_failed:missing_verdict",
+    });
+    assert.deepEqual(mod.classifyCompanionExecution({
+      exitCode: 143,
+      started: true,
+      parsed: { ok: false, reason: "empty_stdout", error: "interrupted stdout" },
+    }, { catchallCode: "provider_error" }), {
+      status: "failed",
+      error_code: "interrupted",
+      error_message: "interrupted stdout",
+    });
+    assert.deepEqual(mod.classifyCompanionExecution({
+      exitCode: 0,
+      parsed: { ok: true, structured: { verdict: "APPROVE" } },
+    }, { catchallCode: "provider_error" }), {
+      status: "completed",
+      error_code: null,
+      error_message: null,
+    });
+    assert.deepEqual(mod.classifyCompanionExecution({
+      exitCode: 1,
+      errorMessage: "not_authed: login required",
+      parsed: null,
+    }, { catchallCode: "provider_error" }), {
+      status: "failed",
+      error_code: "not_authed",
+      error_message: "login required",
+    });
+    assert.deepEqual(mod.classifyCompanionExecution({
+      exitCode: 1,
+      errorMessage: "sandbox_blocked: state unreadable",
+      parsed: null,
+    }, { catchallCode: "provider_error" }), {
+      status: "failed",
+      error_code: "sandbox_blocked",
+      error_message: "state unreadable",
+    });
+
     assert.deepEqual(mod.classifyCompanionErrorMessage("approval_required: token missing"), {
       status: "failed",
       error_code: "approval_required",
       error_message: "token missing",
+    });
+    assert.deepEqual(mod.classifyCompanionErrorMessage("source_packet_too_large: 524289 > 524288"), {
+      status: "failed",
+      error_code: "source_packet_too_large",
+      error_message: "524289 > 524288",
     });
     assert.deepEqual(mod.classifyCompanionErrorMessage("resend_confirmation_required: retry needs approval"), {
       status: "failed",
@@ -293,6 +414,20 @@ test("external-model failure core plugin copies cover shared classifier branches
       status: "failed",
       error_code: "git_binary_rejected",
       error_message: "CODEX_PLUGIN_MULTI_GIT_BINARY rejected",
+    });
+    assert.deepEqual(mod.classifyCompanionErrorMessage("provider override", {
+      classifyProviderErrorMessage(message) {
+        assert.equal(message, "provider override");
+        return {
+          status: "failed",
+          error_code: "provider_unavailable",
+          error_message: "provider override",
+        };
+      },
+    }), {
+      status: "failed",
+      error_code: "provider_unavailable",
+      error_message: "provider override",
     });
     assert.deepEqual(mod.classifyCompanionErrorMessage("scope_empty:no selected files"), {
       status: "failed",
@@ -309,10 +444,20 @@ test("external-model failure core plugin copies cover shared classifier branches
       error_code: "usage_limited",
       error_message: "usage_limited",
     });
+    assert.deepEqual(mod.classifyCommonParsedFailure({ reason: "step_limit_exceeded", error: "max steps" }), {
+      status: "failed",
+      error_code: "step_limit_exceeded",
+      error_message: "max steps",
+    });
     assert.deepEqual(mod.classifyCommonParsedFailure({ reason: "json_parse_error" }), {
       status: "failed",
       error_code: "parse_error",
       error_message: "json_parse_error",
+    });
+    assert.deepEqual(mod.classifyCommonParsedFailure({ reason: "empty_stdout", error: "no output" }), {
+      status: "failed",
+      error_code: "parse_error",
+      error_message: "no output",
     });
     assert.equal(mod.classifyCommonParsedFailure({ reason: "provider_specific" }), null);
     assert.equal(mod.classifySignalLikeExit(null), null);
@@ -338,6 +483,14 @@ test("external-model failure core plugin copies cover shared classifier branches
       started: true,
       parsed: { ok: false, reason: "provider_error", error: "provider failed" },
     }), null);
+    assert.deepEqual(mod.classifyCompanionExecution({
+      exitCode: 1,
+      parsed: { ok: false, reason: "usage_limited" },
+    }, { catchallCode: "provider_error" }), {
+      status: "failed",
+      error_code: "usage_limited",
+      error_message: "usage_limited",
+    });
     assert.deepEqual(mod.classifyCompanionExecution({
       exitCode: 1,
       parsed: { ok: false, reason: "provider_specific", error: "provider rejected" },

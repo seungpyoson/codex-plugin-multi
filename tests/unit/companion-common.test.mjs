@@ -929,6 +929,14 @@ test("external-review shared helper covers disclosure and transmission branches"
       "Selected source content was not sent to Provider; the rendered prompt exceeded the provider budget before the review target was started.",
     );
     assert.equal(
+      mod.externalReviewDisclosure("Provider", "failed", T.NOT_SENT, "source_packet_too_large"),
+      "Selected source content was not sent to Provider; the selected source packet exceeded the shared source packet budget before the review target was started.",
+    );
+    assert.equal(
+      mod.externalReviewDisclosure("Provider", "failed", T.NOT_SENT, "resend_confirmation_required"),
+      "Selected source content was not sent to Provider; retrying this source packet requires explicit resend confirmation or a narrowed packet.",
+    );
+    assert.equal(
       mod.externalReviewDisclosure("Provider", "failed", T.NOT_SENT, "spawn_failed"),
       "Selected source content was not sent to Provider; the target process was not spawned.",
     );
@@ -1017,6 +1025,8 @@ test("external-review shared helper covers disclosure and transmission branches"
       "approval_scope_changed",
       "preflight_stale",
       "cache_install",
+      "source_packet_too_large",
+      "resend_confirmation_required",
     ]) {
       assert.equal(mod.sourceContentTransmissionForExecution({
         status: "failed",

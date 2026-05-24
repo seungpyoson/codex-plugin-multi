@@ -86,8 +86,6 @@ const NOT_SENT_DISCLOSURE_BY_ERROR = Object.freeze({
   cache_install: (provider) => `Selected source content was not sent to ${provider}; installed cache repair is required before the review target starts.`,
   preflight_stale: (provider) => `Selected source content was not sent to ${provider}; immediate pre-send readiness proof was stale or missing.`,
   prompt_too_large: (provider) => `Selected source content was not sent to ${provider}; the rendered prompt exceeded the provider budget before the review target was started.`,
-  source_packet_too_large: (provider) => `Selected source content was not sent to ${provider}; the selected source packet exceeded the shared source packet budget before the review target was started.`,
-  resend_confirmation_required: (provider) => `Selected source content was not sent to ${provider}; retrying this source packet requires explicit resend confirmation or a narrowed packet.`,
   scope_failed: (provider) => `Selected source content was not sent to ${provider}; the review scope was rejected before the target process was started.`,
   spawn_failed: (provider) => `Selected source content was not sent to ${provider}; the target process was not spawned.`,
   oauth_inference_rejected: (provider) => `Selected source content was not sent to ${provider}; OAuth inference readiness was rejected before the review target was started.`,
@@ -113,6 +111,12 @@ export function externalReviewDisclosure(provider, status, sourceContentTransmis
 function notSentDisclosure(provider, status, errorCode) {
   const statusDisclosure = NOT_SENT_DISCLOSURE_BY_STATUS[status];
   if (statusDisclosure) return statusDisclosure(provider);
+  if (errorCode === "source_packet_too_large") {
+    return `Selected source content was not sent to ${provider}; the selected source packet exceeded the shared source packet budget before the review target was started.`;
+  }
+  if (errorCode === "resend_confirmation_required") {
+    return `Selected source content was not sent to ${provider}; retrying this source packet requires explicit resend confirmation or a narrowed packet.`;
+  }
   const errorDisclosure = NOT_SENT_DISCLOSURE_BY_ERROR[errorCode];
   if (errorDisclosure) return errorDisclosure(provider);
   if (errorCode === "not_authed") {

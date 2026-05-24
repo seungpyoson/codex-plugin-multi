@@ -479,9 +479,14 @@
       "evidence": "Included in focused source-packet and full test runs; Grok over-budget pre-send, CLI auto fallback, and adapter-capability guardrails passed."
     },
     {
+      "command": "COVERAGE_ENFORCE_TARGET=1 npm run test:coverage",
+      "status": "passed",
+      "evidence": "1638 tests; 1625 passed, 13 skipped, 0 failed; coverage target met after adding plugin-copy policy branch coverage."
+    },
+    {
       "command": "npm test",
       "status": "passed",
-      "evidence": "2147 tests; 2135 passed, 12 skipped, 0 failed."
+      "evidence": "2148 tests; 2136 passed, 12 skipped, 0 failed."
     },
     {
       "command": "npm run test:full",

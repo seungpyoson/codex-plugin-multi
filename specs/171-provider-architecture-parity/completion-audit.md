@@ -33,7 +33,8 @@ Implementation is locally complete for the focused #171 parity hardening slice, 
 | `node --test tests/unit/plugin-copies-in-sync.test.mjs tests/smoke/grok-web.smoke.test.mjs tests/unit/provider-route-policy.test.mjs` | Passed, 220 tests. |
 | `git diff --check` | Passed. |
 | `npm run lint:sync` | Passed after the final guardrail edits. |
-| `npm test` | 2147 tests; 2135 passed, 12 skipped, 0 failed. |
+| `COVERAGE_ENFORCE_TARGET=1 npm run test:coverage` | Passed; 1638 tests, 1625 passed, 13 skipped, 0 failed, coverage target met. |
+| `npm test` | 2148 tests; 2136 passed, 12 skipped, 0 failed. |
 | Prior `npm run test:full` | 2307 tests; 2295 passed, 12 skipped, 0 failed. |
 
 ## Review Evidence
