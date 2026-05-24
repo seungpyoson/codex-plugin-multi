@@ -13,6 +13,7 @@ import { USAGE_LIMIT_SAFE_MESSAGE, isUsageLimitDetail } from "./lib/usage-limit.
 import { elapsedMs } from "./lib/time.mjs";
 import { providerApiCapability, sanitizeTargetEnv } from "./lib/provider-env.mjs";
 import { selectProviderRoute } from "./lib/provider-route-policy.mjs";
+import { diffSourceFiles } from "./lib/diff-source.mjs";
 import { buildExternalModelFailureDiagnostic } from "./lib/external-model-failure-core.mjs";
 import { hasSubstantiveInvalidVerdictReason, reviewQualityFailureState } from "./lib/external-model-review-quality.mjs";
 import { buildPrivacyRedactor } from "./lib/privacy-redaction.mjs";
@@ -1195,30 +1196,18 @@ async function readUtf8ScopeFileWithinLimit(filePath, normalizedRel, beforeOpen 
   }
 }
 
-async function readGitScopeFiles(gitCwd, workspaceRoot, relPaths) {
+async function readGitDiffScopeFiles(gitCwd, workspaceRoot, scopeBase, relPaths) {
+  for (const relPath of relPaths) validateScopePath(workspaceRoot, relPath);
   const files = [];
   const totalBytes = { value: 0 };
-  for (const relPath of relPaths) {
-    const { normalizedRel } = validateScopePath(workspaceRoot, relPath);
-    const blobSpec = `HEAD:${relPath}`;
-    const sizeText = gitRaw(["cat-file", "-s", blobSpec], gitCwd, { allowFailure: true, workspaceRoot });
-    if (sizeText === null) continue;
-    const blobBytes = Number.parseInt(sizeText.trim(), 10);
-    if (!Number.isSafeInteger(blobBytes) || blobBytes < 0) {
-      throw new Error(`scope_invalid_git_blob_size:${normalizedRel}`);
-    }
-    if (blobBytes > MAX_SCOPE_FILE_BYTES) {
-      throw new Error(`scope_file_too_large:${normalizedRel}:${blobBytes}`);
-    }
-    const text = gitRaw(["show", blobSpec], gitCwd, {
-      allowFailure: true,
-      maxBuffer: GIT_SHOW_MAX_BUFFER_BYTES,
-      workspaceRoot,
-    });
-    if (text === null) continue;
-    addScopeFile(files, normalizedRel, text, totalBytes);
+  const diffFiles = diffSourceFiles(gitCwd, scopeBase, { scopePaths: relPaths, workspaceRoot });
+  for (const file of diffFiles) {
+    const text = Buffer.isBuffer(file.content)
+      ? file.content.toString("utf8")
+      : String(file.content ?? "");
+    addScopeFile(files, file.path, text, totalBytes);
   }
-  if (files.length === 0) throw new Error("scope_empty: selected files are missing or empty");
+  if (files.length === 0) throw new Error("scope_empty: selected diff files are missing or empty");
   return files;
 }
 
@@ -1278,7 +1267,7 @@ async function collectScope(options) {
   const scopeBase = scope === "branch-diff" ? options["scope-base"] ?? "main" : null;
   const relPaths = selectedScopePaths(scope, options, cwd, workspaceRoot);
   const files = scope === "branch-diff"
-    ? await readGitScopeFiles(cwd, workspaceRoot, relPaths)
+    ? await readGitDiffScopeFiles(cwd, workspaceRoot, scopeBase, relPaths)
     : await readFilesystemScopeFiles(workspaceRoot, relPaths);
   return {
     cwd,

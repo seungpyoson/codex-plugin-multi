@@ -454,17 +454,28 @@ test("source-packet no-resend failures stay explicitly resend-gated in every pac
   }
 });
 
-test("direct API branch-diff uses shared diff packets instead of full file bodies", () => {
-  const source = readRepoFile("plugins/api-reviewers/scripts/api-reviewer.mjs");
+test("Grok and direct API branch-diff use shared diff packets instead of full file bodies", () => {
+  const apiSource = readRepoFile("plugins/api-reviewers/scripts/api-reviewer.mjs");
+  const grokSource = readRepoFile("plugins/grok/scripts/grok-web-reviewer.mjs");
   assert.match(
-    source,
+    apiSource,
     /import \{ diffSourceFiles \} from "\.\/lib\/diff-source\.mjs";/,
     "api-reviewer branch-diff must share the diff-packet collector used by companion reviewers",
   );
   assert.match(
-    source,
+    apiSource,
     /scope === "branch-diff"\s*\?\s*await readGitDiffScopeFiles\(cwd,\s*workspaceRoot,\s*scopeBase,\s*relPaths\)/,
     "api-reviewer branch-diff must render git diff packets instead of HEAD file bodies",
+  );
+  assert.match(
+    grokSource,
+    /import \{ diffSourceFiles \} from "\.\/lib\/diff-source\.mjs";/,
+    "Grok branch-diff must share the diff-packet collector used by companion reviewers",
+  );
+  assert.match(
+    grokSource,
+    /scope === "branch-diff"\s*\?\s*await readGitDiffScopeFiles\(cwd,\s*workspaceRoot,\s*scopeBase,\s*relPaths\)/,
+    "Grok branch-diff must render git diff packets instead of HEAD file bodies",
   );
 });
 

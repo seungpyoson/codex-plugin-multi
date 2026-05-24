@@ -5375,6 +5375,7 @@ test("review mode uses branch-diff scope with scrubbed git environment", async (
     assert.doesNotMatch(body.messages[0].content, /export const extra/);
     assert.match(body.messages[0].content, new RegExp(`Base commit: ${mainCommit}`));
     assert.doesNotMatch(body.messages[0].content, new RegExp(`Base commit: ${tagObject}`));
+    assert.match(body.messages[0].content, /diff --git a\/review\.js b\/review\.js/);
     assert.match(body.messages[0].content, /export const value = 2/);
     assert.doesNotMatch(body.messages[0].content, /GROK_DIRTY_SELECTED_SECRET/);
     assert.doesNotMatch(body.messages[0].content, /local-config\.txt/);
