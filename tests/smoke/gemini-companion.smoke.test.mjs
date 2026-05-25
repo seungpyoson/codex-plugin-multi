@@ -185,6 +185,7 @@ test("gemini custom-review background: launched event and terminal JobRecord", a
       scope_base: null,
       scope_paths: ["seed.txt"],
       source_content_transmission: "may_be_sent",
+      review_slot: null,
       disclosure: "Selected source content may be sent to Gemini CLI for external review.",
     });
 
@@ -211,10 +212,13 @@ test("gemini custom-review background: launched event and terminal JobRecord", a
     assert.equal(meta.review_metadata.audit_manifest.request.timeout_ms, 345678);
     assert.match(meta.result, /Mock Gemini response\./);
     assert.equal(meta.gemini_session_id, GEMINI_SESSION_ID);
+    assert.equal(meta.external_review.review_slot?.verdict, "approved");
+    assert.equal(meta.external_review.review_slot?.source_state, "sent");
     assert.deepEqual(meta.external_review, {
       ...launched.external_review,
       session_id: GEMINI_SESSION_ID,
       source_content_transmission: "sent",
+      review_slot: meta.external_review.review_slot,
       disclosure: "Selected source content was sent to Gemini CLI for external review.",
     });
     assert.equal("prompt" in meta, false, "full prompt must not appear on JobRecord");
@@ -1600,6 +1604,7 @@ test("gemini review foreground lifecycle jsonl emits launch event before termina
       scope_base: null,
       scope_paths: null,
       source_content_transmission: "may_be_sent",
+      review_slot: null,
       disclosure: "Selected source content may be sent to Gemini CLI for external review.",
     });
     assert.equal(record.status, "completed");

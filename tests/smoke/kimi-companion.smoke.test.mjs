@@ -1524,6 +1524,8 @@ test("kimi background run: launched event and terminal JobRecord carry external_
     assert.equal(meta.review_metadata.audit_manifest.request.timeout_ms, 345678);
     assert.match(meta.result, /Mock Kimi response\./);
     assert.equal(meta.kimi_session_id, KIMI_SESSION_ID);
+    assert.equal(meta.external_review.review_slot?.verdict, "approved");
+    assert.equal(meta.external_review.review_slot?.source_state, "sent");
     assert.deepEqual(meta.external_review, {
       marker: "EXTERNAL REVIEW",
       provider: "Kimi Code CLI",
@@ -1536,6 +1538,7 @@ test("kimi background run: launched event and terminal JobRecord carry external_
       scope_base: null,
       scope_paths: ["seed.txt"],
       source_content_transmission: "sent",
+      review_slot: meta.external_review.review_slot,
       disclosure: "Selected source content was sent to Kimi Code CLI for external review.",
     });
   } finally {
@@ -2597,6 +2600,7 @@ test("kimi review foreground lifecycle jsonl emits launch event before terminal 
     scope_base: null,
     scope_paths: null,
     source_content_transmission: "may_be_sent",
+    review_slot: null,
     disclosure: "Selected source content may be sent to Kimi Code CLI for external review.",
   });
   assert.equal(record.status, "completed");
@@ -2779,6 +2783,8 @@ for (const mode of ["review", "adversarial-review", "custom-review"]) {
     assert.match(record.result, /Mock Kimi response\./);
     assert.equal(record.kimi_session_id, KIMI_SESSION_ID);
     assert.equal(record.claude_session_id, null);
+    assert.equal(record.external_review.review_slot?.verdict, "approved");
+    assert.equal(record.external_review.review_slot?.source_state, "sent");
     assert.deepEqual(record.external_review, {
       marker: "EXTERNAL REVIEW",
       provider: "Kimi Code CLI",
@@ -2791,6 +2797,7 @@ for (const mode of ["review", "adversarial-review", "custom-review"]) {
       scope_base: mode === "adversarial-review" ? "HEAD~1" : null,
       scope_paths: mode === "custom-review" ? ["seed.txt"] : null,
       source_content_transmission: "sent",
+      review_slot: record.external_review.review_slot,
       disclosure: "Selected source content was sent to Kimi Code CLI for external review.",
     });
     const { record: persisted } = readOnlyJobRecord(result.dataDir);

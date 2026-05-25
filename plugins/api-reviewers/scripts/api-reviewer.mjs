@@ -303,6 +303,7 @@ function externalReviewProgressMarkdownEvent(invocation, progress) {
       scope_base: base.scope_base ?? invocation.scope_base ?? null,
       scope_paths: base.scope_paths ?? invocation.scope_paths ?? null,
       source_content_transmission: "may_be_sent",
+      review_slot: base.review_slot ?? null,
       disclosure: base.disclosure ?? `Selected source content may be sent to ${provider} for external review.`,
     },
   };
@@ -2277,6 +2278,7 @@ function buildLaunchExternalReview({ cfg, mode, options, scopeInfo }) {
     scope_base: scopeInfo?.scope_base ?? null,
     scope_paths: scopeInfo?.scope_paths ?? null,
     source_content_transmission: SOURCE_CONTENT_TRANSMISSION.MAY_BE_SENT,
+    review_slot: null,
     disclosure: `Selected source content may be sent to ${provider} for external review.`,
   });
 }
@@ -2667,6 +2669,11 @@ function buildReviewMetadata(cfg, scopeInfo, execution = null, startedAt = null,
     if (e?.apiReviewersReason !== "bad_args") throw e;
     routeFields = approvalRouteFields(null);
   }
+  const processCompleted = execution?.exitCode === 0 && execution?.parsed?.ok === true;
+  const sourceContentTransmission = directApiTransmission(
+    processCompleted,
+    execution?.payload_sent ?? (processCompleted ? true : null),
+  );
   const auditManifest = execution?.prompt ? buildReviewAuditManifest({
     prompt: execution.prompt,
     sourceFiles: scopeInfo.files,
@@ -2713,6 +2720,7 @@ function buildReviewMetadata(cfg, scopeInfo, execution = null, startedAt = null,
       approvalScope: execution?.approval_scope ?? null,
       authPath: approvalAuthPathFor(cfg, process.env),
       billingPath: routeFields.billing_path,
+      sourceContentTransmission,
       sourceSendApprovalRequired: routeFields.source_send_approval_required,
       sourceSendApprovalState: routeFields.source_send_approval_state,
       providerCapabilities: providerCapabilitiesForConfig(cfg),
@@ -2795,6 +2803,12 @@ function buildRecord({ provider, cfg, mode, options, scopeInfo, execution, start
   const payloadSent = execution.payload_sent ?? (processCompleted ? true : null);
   const sourceContentTransmission = directApiTransmission(completed, payloadSent);
   const disclosure = directApiDisclosure(cfg.display_name, completed, payloadSent);
+  const reviewSlot = reviewMetadata?.audit_manifest?.review_slot
+    ? Object.freeze({
+      ...reviewMetadata.audit_manifest.review_slot,
+      source_state: sourceContentTransmission,
+    })
+    : null;
   const externalReview = freezeExternalReview({
     marker: "EXTERNAL REVIEW",
     provider: cfg.display_name,
@@ -2807,6 +2821,7 @@ function buildRecord({ provider, cfg, mode, options, scopeInfo, execution, start
     scope_base: scopeInfo.scope_base ?? null,
     scope_paths: scopeInfo.scope_paths ?? null,
     source_content_transmission: sourceContentTransmission,
+    review_slot: reviewSlot,
     disclosure,
   });
   const runtimeDiagnostics = buildRuntimeDiagnostics(execution.diagnostics);

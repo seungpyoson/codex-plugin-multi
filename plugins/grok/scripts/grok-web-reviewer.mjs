@@ -321,6 +321,7 @@ function externalReviewProgressMarkdownEvent(invocation, progress) {
       scope_base: base.scope_base ?? invocation.scope_base ?? null,
       scope_paths: base.scope_paths ?? invocation.scope_paths ?? null,
       source_content_transmission: "may_be_sent",
+      review_slot: base.review_slot ?? null,
       disclosure: base.disclosure ?? `Selected source content may be sent to ${provider} for external review.`,
     },
   };
@@ -3144,11 +3145,12 @@ function buildLaunchExternalReview({ cfg, mode, options, scopeInfo }) {
     scope_base: scopeInfo?.scope_base ?? null,
     scope_paths: scopeInfo?.scope_paths ?? null,
     source_content_transmission: SOURCE_CONTENT_TRANSMISSION.MAY_BE_SENT,
+    review_slot: null,
     disclosure: `Selected source content may be sent to ${cfg.display_name} for external review.`,
   });
 }
 
-function buildTerminalExternalReview({ cfg, mode, options, scopeInfo, execution, transmission, reviewDisclosure }) {
+function buildTerminalExternalReview({ cfg, mode, options, scopeInfo, execution, transmission, reviewDisclosure, reviewSlot = null }) {
   return freezeExternalReview({
     marker: "EXTERNAL REVIEW",
     provider: cfg.display_name,
@@ -3161,6 +3163,7 @@ function buildTerminalExternalReview({ cfg, mode, options, scopeInfo, execution,
     scope_base: scopeInfo?.scope_base ?? null,
     scope_paths: scopeInfo?.scope_paths ?? null,
     source_content_transmission: transmission,
+    review_slot: reviewSlot,
     disclosure: reviewDisclosure,
   });
 }
@@ -3378,7 +3381,16 @@ function buildRecord({ cfg, mode, options, scopeInfo, execution, startedAt, ende
     error_summary: completed ? null : diagnostic,
     error_cause: completed ? null : errorCauseFor(errorCode),
     suggested_action: completed ? null : suggestedAction(errorCode, errorMessage, execution.diagnostics?.tunnel_start),
-    external_review: buildTerminalExternalReview({ cfg, mode, options, scopeInfo, execution, transmission, reviewDisclosure }),
+    external_review: buildTerminalExternalReview({
+      cfg,
+      mode,
+      options,
+      scopeInfo,
+      execution,
+      transmission,
+      reviewDisclosure,
+      reviewSlot: reviewMetadata?.audit_manifest?.review_slot ?? null,
+    }),
     disclosure_note: reviewDisclosure,
     runtime_diagnostics: runtimeDiagnostics,
     result: processCompleted ? redactSensitiveText(execution.parsed.result) : null,

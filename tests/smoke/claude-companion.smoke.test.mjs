@@ -1015,6 +1015,7 @@ test("run --mode=review --foreground lifecycle jsonl emits launch event before t
       scope_base: null,
       scope_paths: null,
       source_content_transmission: "may_be_sent",
+      review_slot: null,
       disclosure: "Selected source content may be sent to Claude Code for external review.",
     });
     assert.equal(record.status, "completed");

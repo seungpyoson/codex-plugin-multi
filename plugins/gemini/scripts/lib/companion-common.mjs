@@ -99,6 +99,7 @@ function externalReviewFromLifecycle(obj) {
     scope_base: obj?.scope_base ?? null,
     scope_paths: obj?.scope_paths ?? null,
     source_content_transmission: sourceContentTransmission,
+    review_slot: null,
     disclosure: progressDisclosure(provider, sourceContentTransmission),
   };
 }
@@ -213,6 +214,7 @@ function externalReviewProgressMarkdownEvent(invocation, progress) {
       scope_base: invocation.scope_base ?? null,
       scope_paths: invocation.scope_paths ?? null,
       source_content_transmission: sourceContentTransmission,
+      review_slot: null,
       disclosure: progressDisclosure(provider, sourceContentTransmission),
     },
   };

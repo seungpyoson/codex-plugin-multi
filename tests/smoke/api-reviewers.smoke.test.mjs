@@ -1722,6 +1722,8 @@ test("DeepSeek direct API custom-review completes and persists JobRecord", async
   assert.equal(JSON.stringify(record.review_metadata.audit_manifest).includes("Check this file"), false);
   assert.equal(JSON.stringify(record.review_metadata.audit_manifest).includes("hello from selected scope"), false);
   assert.equal(record.kimi_session_id, null);
+  assert.equal(record.external_review.review_slot?.verdict, "approved");
+  assert.equal(record.external_review.review_slot?.source_state, "sent");
   assert.deepEqual(record.external_review, {
     marker: "EXTERNAL REVIEW",
     provider: "DeepSeek",
@@ -1734,6 +1736,7 @@ test("DeepSeek direct API custom-review completes and persists JobRecord", async
     scope_base: null,
     scope_paths: ["seed.txt"],
     source_content_transmission: "sent",
+    review_slot: record.external_review.review_slot,
     disclosure: "Selected source content was sent to DeepSeek through direct API auth.",
   });
   assert.equal(record.result.includes("Verdict: APPROVE"), true);

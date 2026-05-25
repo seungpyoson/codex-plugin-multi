@@ -13,6 +13,17 @@ import {
 } from "../../scripts/lib/review-panel.mjs";
 import { REVIEW_PROMPT_PLUGIN_TARGETS } from "../../scripts/lib/plugin-targets.mjs";
 
+const emptyReviewSlotRow = Object.freeze({
+  slot_id: "",
+  retry_count: "",
+  retry_required: false,
+  slot_verdict: "",
+  not_counted_reason: "",
+  disposition: "",
+  waiver_artifact: "",
+  override_artifact: "",
+});
+
 test("review panel slug trimming avoids Sonar-flagged boundary alternation regex", () => {
   const source = readFileSync(new URL("../../scripts/lib/review-panel.mjs", import.meta.url), "utf8");
   assert.doesNotMatch(source, /value\.replace\(\s*\/\^-\+\|-\+\$\/g/);
@@ -106,6 +117,7 @@ test("review panel rows expose operational and semantic review state", () => {
       error_code: "review_not_completed",
       http_status: "",
       reasons: "permission_blocked,not_reviewed",
+      ...emptyReviewSlotRow,
     },
     {
       provider: "grok",
@@ -123,6 +135,7 @@ test("review panel rows expose operational and semantic review state", () => {
       error_code: "models_ok_chat_400",
       http_status: 400,
       reasons: "provider_unavailable",
+      ...emptyReviewSlotRow,
     },
     {
       provider: "glm",
@@ -140,8 +153,64 @@ test("review panel rows expose operational and semantic review state", () => {
       error_code: "",
       http_status: 200,
       reasons: "",
+      ...emptyReviewSlotRow,
     },
   ]);
+});
+
+test("review panel rows expose review slot disposition state", () => {
+  const rows = buildReviewPanelRows([
+    {
+      target: "kimi",
+      job_id: "job-slot",
+      status: "failed",
+      error_code: "review_not_completed",
+      external_review: { source_content_transmission: "sent" },
+      review_metadata: {
+        audit_manifest: {
+          review_quality: {
+            failed_review_slot: true,
+            semantic_failure_reasons: ["missing_verdict"],
+          },
+          review_slot: {
+            slot_id: "slot-abc",
+            retry_fingerprint: "f".repeat(64),
+            retry_count: 2,
+            retry_disposition_required: true,
+            source_state: "sent",
+            verdict: "failed_slot",
+            not_counted_reason: "source_sent_unusable",
+            disposition: "waive",
+            waiver_artifact: "reviews/waiver-180.md",
+            override_artifact: null,
+          },
+        },
+      },
+      result: "No usable verdict.",
+    },
+  ]);
+
+  assert.equal(rows[0].slot_id, "slot-abc");
+  assert.equal(rows[0].retry_count, 2);
+  assert.equal(rows[0].retry_required, true);
+  assert.equal(rows[0].slot_verdict, "failed_slot");
+  assert.equal(rows[0].not_counted_reason, "source_sent_unusable");
+  assert.equal(rows[0].disposition, "waive");
+  assert.equal(rows[0].waiver_artifact, "reviews/waiver-180.md");
+
+  const markdown = renderReviewPanelMarkdown([
+    {
+      target: "kimi",
+      job_id: "job-slot",
+      status: "failed",
+      error_code: "review_not_completed",
+      external_review: { source_content_transmission: "sent" },
+      review_metadata: { audit_manifest: { review_slot: rows[0], review_quality: { failed_review_slot: true, semantic_failure_reasons: [] } } },
+    },
+  ]);
+  assert.match(markdown, /Retry Count/);
+  assert.match(markdown, /source_sent_unusable/);
+  assert.match(markdown, /reviews\/waiver-180\.md/);
 });
 
 test("review panel normalizes underscore request-changes verdicts", () => {

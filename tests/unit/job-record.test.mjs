@@ -124,6 +124,7 @@ test("external_review sub-fields have a canonical list and validated transmissio
     sourceContentTransmission: SOURCE_CONTENT_TRANSMISSION.SENT,
   });
   assert.deepEqual(Object.keys(review), [...EXTERNAL_REVIEW_KEYS]);
+  assert.equal(review.review_slot, null);
   assert.throws(() => buildExternalReview({
     invocation: makeInvocation(),
     status: "completed",
@@ -233,6 +234,7 @@ test("buildJobRecord: foreground success path has EXACTLY the expected keys", ()
     scope_base: null,
     scope_paths: null,
     source_content_transmission: "sent",
+    review_slot: null,
     disclosure: "Selected source content was sent to Claude Code for external review.",
   });
   assert.equal(rec.schema_version, SCHEMA_VERSION);
@@ -926,6 +928,48 @@ test("buildJobRecord: review_metadata persists privacy-safe audit manifests for 
     assert.equal(rec.review_metadata.audit_manifest, auditManifest);
     assert.equal(JSON.stringify(rec).includes("full prompt text"), false);
   }
+});
+
+test("buildJobRecord: projects redacted review slot disposition into external_review", () => {
+  const reviewSlot = Object.freeze({
+    slot_id: "slot-1",
+    attempt_id: UUID,
+    parent_attempt_id: null,
+    reviewed_head_sha: "head",
+    retry_fingerprint: "f".repeat(64),
+    retry_count: 0,
+    retry_disposition_required: false,
+    request_settings_hash: "r".repeat(64),
+    source_state: "sent",
+    verdict: "approved",
+    failed_slot_reason: null,
+    disposition: "none",
+    not_counted_reason: "none",
+    waiver_artifact: null,
+    override_artifact: null,
+  });
+  const auditManifest = Object.freeze({
+    schema_version: 1,
+    rendered_prompt_hash: { algorithm: "sha256", value: "a".repeat(64) },
+    selected_source: { files: [], totals: { files: 0, bytes: 0, lines: 0 } },
+    review_quality: { failed_review_slot: false, semantic_failure_reasons: [] },
+    review_slot: reviewSlot,
+  });
+  const parsed = { ok: true, result: "Verdict: APPROVE", structured: null, denials: [] };
+
+  const rec = buildJobRecord(makeInvocation(), {
+    exitCode: 0,
+    parsed,
+    pidInfo: makePidInfo(),
+    claudeSessionId: CLAUDE_UUID,
+    stdout: "ok",
+    stderr: "",
+    reviewAuditManifest: auditManifest,
+    sourceFilesForRedaction: [{ path: "src/secret.js", text: "secret source" }],
+  }, []);
+
+  assert.deepEqual(rec.external_review.review_slot, reviewSlot);
+  assert.equal(JSON.stringify(rec.external_review.review_slot).includes("secret source"), false);
 });
 
 test("buildJobRecord: semantic review-quality failures override successful process exits", () => {

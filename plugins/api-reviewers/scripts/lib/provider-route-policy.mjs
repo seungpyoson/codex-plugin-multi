@@ -91,6 +91,23 @@ export const PROVIDER_POLICY_DOMAINS = Object.freeze([
     shared_policy: true,
   }),
   Object.freeze({
+    name: "review_slot",
+    required_fields: Object.freeze([
+      "review_slot.slot_id",
+      "review_slot.attempt_id",
+      "review_slot.reviewed_head_sha",
+      "review_slot.retry_fingerprint",
+      "review_slot.retry_count",
+      "review_slot.retry_disposition_required",
+      "review_slot.source_state",
+      "review_slot.verdict",
+      "review_slot.failed_slot_reason",
+      "review_slot.disposition",
+      "review_slot.not_counted_reason",
+    ]),
+    shared_policy: true,
+  }),
+  Object.freeze({
     name: "audit",
     required_fields: Object.freeze([
       "rendered_prompt_hash",
@@ -131,6 +148,37 @@ const SOURCE_SEND_BLOCKING_FAILURES = new Set([
 ]);
 const SOURCE_RESUME_WITHOUT_RESEND_FAILURES = new Set([
   "step_limit_exceeded",
+]);
+const REVIEW_SLOT_DISPOSITIONS = new Set([
+  "none",
+  "retry",
+  "split",
+  "switch_provider",
+  "waive",
+  "override",
+]);
+const REVIEW_SLOT_ESCAPE_DISPOSITIONS = new Set([
+  "split",
+  "switch_provider",
+  "waive",
+  "override",
+]);
+const REVIEW_SLOT_ALLOWED_FIELDS = Object.freeze([
+  "slot_id",
+  "attempt_id",
+  "parent_attempt_id",
+  "reviewed_head_sha",
+  "retry_fingerprint",
+  "retry_count",
+  "retry_disposition_required",
+  "request_settings_hash",
+  "source_state",
+  "verdict",
+  "failed_slot_reason",
+  "disposition",
+  "not_counted_reason",
+  "waiver_artifact",
+  "override_artifact",
 ]);
 const API_FALLBACK_REASONS = new Set([
   "explicit_api",
@@ -197,10 +245,12 @@ export function sourcePacketPreviousAttemptFromJobRecord(record = null) {
   const selectedSource = manifest?.selected_source ?? null;
   if (!selectedSource) return null;
   return Object.freeze({
+    attempt_id: record?.job_id ?? record?.id ?? null,
     status: record?.status ?? null,
     error_code: record?.error_code ?? manifest?.error_code ?? null,
     error_message: record?.error_message ?? null,
     review_quality: manifest?.review_quality ?? null,
+    review_slot: manifest?.review_slot ?? record?.external_review?.review_slot ?? null,
     source_content_transmission:
       record?.external_review?.source_content_transmission ??
       manifest?.source_content_transmission ??
@@ -293,6 +343,259 @@ function sourcePacketHash(selectedSource = null) {
     totals: selectedSourceTotals(selectedSource),
   };
   return createHash("sha256").update(JSON.stringify(normalized)).digest("hex");
+}
+
+function hashJson(value) {
+  return createHash("sha256").update(JSON.stringify(value)).digest("hex");
+}
+
+function hashEnvelope(value) {
+  return Object.freeze({
+    algorithm: "sha256",
+    value: hashJson(value),
+  });
+}
+
+function hashValue(value) {
+  if (typeof value === "string" && value.length > 0) return value;
+  if (value && typeof value === "object" && typeof value.value === "string") return value.value;
+  return null;
+}
+
+function canonicalScopePaths(paths = null) {
+  if (!Array.isArray(paths)) return null;
+  return Object.freeze(paths.map((entry) => String(entry)).sort());
+}
+
+function normalizedDisposition(value) {
+  const disposition = String(value ?? "none");
+  return REVIEW_SLOT_DISPOSITIONS.has(disposition) ? disposition : "none";
+}
+
+function artifactRef(value) {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  if (!trimmed || trimmed.startsWith("/") || trimmed.includes("\0")) return null;
+  if (trimmed.split(/[\\/]+/).includes("..")) return null;
+  return trimmed;
+}
+
+export function reviewSlotRequestSettingsHash(request = {}) {
+  return hashEnvelope({
+    model: request.model ?? null,
+    timeout_ms: request.timeoutMs ?? request.timeout_ms ?? null,
+    max_tokens: request.maxTokens ?? request.max_tokens ?? null,
+    max_steps_per_turn: request.maxStepsPerTurn ?? request.max_steps_per_turn ?? null,
+    temperature: request.temperature ?? null,
+    stream: request.stream ?? null,
+  });
+}
+
+export function reviewSlotRetryFingerprint({
+  provider = null,
+  mode = null,
+  renderedPromptHash = null,
+  promptHash = null,
+  selectedSource = null,
+  reviewedHeadSha = null,
+  routeStep = null,
+  scope = {},
+} = {}) {
+  const ingredients = Object.freeze({
+    provider: provider ?? null,
+    mode: mode ?? null,
+    rendered_prompt_hash: hashValue(renderedPromptHash ?? promptHash),
+    selected_source_hash: sourcePacketHash(selectedSource),
+    selected_source_totals: selectedSourceTotals(selectedSource),
+    reviewed_head_sha: reviewedHeadSha ?? null,
+    route_step: routeStep ?? null,
+    scope_name: scope.name ?? scope.scope ?? null,
+    scope_base: scope.base ?? scope.scope_base ?? null,
+    scope_paths: canonicalScopePaths(scope.paths ?? scope.scope_paths ?? null),
+  });
+  return Object.freeze({
+    algorithm: "sha256",
+    value: hashJson(ingredients),
+    ingredients,
+  });
+}
+
+function retryFingerprintForAttempt(attempt = null) {
+  return hashValue(attempt?.retry_fingerprint)
+    ?? hashValue(attempt?.review_slot?.retry_fingerprint)
+    ?? hashValue(attempt?.review_metadata?.audit_manifest?.review_slot?.retry_fingerprint)
+    ?? null;
+}
+
+function retryCountContribution(attempt = null, fingerprint = null) {
+  if (!fingerprint || retryFingerprintForAttempt(attempt) !== fingerprint) return 0;
+  const nestedSlot =
+    attempt?.review_slot ??
+    attempt?.review_metadata?.audit_manifest?.review_slot ??
+    attempt;
+  const priorCount = nestedSlot?.retry_count;
+  return Number.isSafeInteger(priorCount) && priorCount >= 0 ? priorCount + 1 : 1;
+}
+
+export function evaluateReviewSlotRetryPolicy({
+  retryFingerprint = null,
+  priorAttempts = [],
+  disposition = "none",
+  waiverArtifact = null,
+  overrideArtifact = null,
+} = {}) {
+  const fingerprint = hashValue(retryFingerprint);
+  const attempts = Array.isArray(priorAttempts) ? priorAttempts : [];
+  const retryCount = fingerprint
+    ? attempts.reduce((count, attempt) => count + retryCountContribution(attempt, fingerprint), 0)
+    : 0;
+  const normalized = normalizedDisposition(disposition);
+  const hasWaiverArtifact = artifactRef(waiverArtifact) !== null;
+  const hasOverrideArtifact = artifactRef(overrideArtifact) !== null;
+  const hasEscapeDisposition = REVIEW_SLOT_ESCAPE_DISPOSITIONS.has(normalized)
+    && (normalized !== "waive" || hasWaiverArtifact)
+    && (normalized !== "override" || hasOverrideArtifact);
+  const retryDispositionRequired = retryCount >= 1;
+  let allowed = true;
+  let reason = null;
+  if (retryCount >= 2 && !hasEscapeDisposition) {
+    allowed = false;
+    reason = "third_same_packet_retry_requires_disposition";
+  } else if (retryCount >= 1 && normalized === "none") {
+    allowed = false;
+    reason = "review_slot_disposition_required";
+  } else if (retryCount >= 2 && normalized === "retry") {
+    allowed = false;
+    reason = "retry_disposition_not_valid_for_third_attempt";
+  }
+  return Object.freeze({
+    retry_fingerprint: fingerprint,
+    retry_count: retryCount,
+    retry_disposition_required: retryDispositionRequired,
+    disposition: normalized,
+    slot_retry_allowed: allowed,
+    source_send_allowed: allowed,
+    fail_closed_reason: reason,
+  });
+}
+
+function resultVerdict(result = "") {
+  const match = /\bVerdict:\s*(APPROVE|REQUEST[ _]CHANGES|FAIL|REJECT)\b/i.exec(String(result ?? ""));
+  if (!match) return null;
+  const normalized = match[1].toLowerCase().replace(/\s+/g, "_");
+  if (normalized === "approve") return "approved";
+  if (normalized === "request_changes") return "request_changes";
+  return "failed_slot";
+}
+
+function failedSlotReason({ verdict, status, errorCode, reviewQuality }) {
+  if (verdict === "timeout") return "timeout";
+  if (verdict === "missing") return "missing_verdict";
+  if (verdict !== "failed_slot") return null;
+  if (errorCode) return String(errorCode);
+  const reasons = reviewQuality?.semantic_failure_reasons;
+  if (Array.isArray(reasons) && reasons.length > 0) return String(reasons[0]);
+  if (status && status !== "completed") return String(status);
+  return "unknown";
+}
+
+function notCountedReason({ verdict, sourceState, reviewedHeadSha, currentHeadSha, errorCode, reason }) {
+  if (currentHeadSha && reviewedHeadSha && currentHeadSha !== reviewedHeadSha) return "stale_head";
+  if (verdict === "approved" || verdict === "request_changes") return "none";
+  if (verdict === "timeout" || errorCode === "timeout") return "timeout";
+  if (sourceState === "not_sent") return "source_not_sent";
+  if (verdict === "missing") return "missing_verdict";
+  if (reason === "usage_limited") return "usage_limited";
+  if (reason === "sandbox_rejected" || reason === "sandbox_blocked") return "sandbox_rejected";
+  if (sourceState === "sent" || sourceState === "may_be_sent" || sourceState === "sent_after_explicit_approval") {
+    return "source_sent_unusable";
+  }
+  return "unknown";
+}
+
+function normalizeSourceState(value) {
+  const normalized = String(value ?? "unknown");
+  if (normalized === "not_sent" || normalized === "sent" || normalized === "unknown") return normalized;
+  if (normalized === "may_be_sent" || normalized === "sent_after_explicit_approval") return normalized;
+  return "unknown";
+}
+
+export function redactReviewSlotDisposition(input = {}) {
+  const out = {};
+  for (const field of REVIEW_SLOT_ALLOWED_FIELDS) {
+    const value = input[field];
+    if (field === "waiver_artifact" || field === "override_artifact") out[field] = artifactRef(value);
+    else out[field] = value ?? null;
+  }
+  return Object.freeze(out);
+}
+
+export function buildReviewSlotDisposition({
+  provider = null,
+  mode = null,
+  stage = "final",
+  slotId = null,
+  attemptId = null,
+  parentAttemptId = null,
+  reviewedHeadSha = null,
+  currentHeadSha = null,
+  retryFingerprint = null,
+  retryCount = 0,
+  retryDispositionRequired = false,
+  requestSettingsHash = null,
+  sourceState = "unknown",
+  status = null,
+  errorCode = null,
+  result = "",
+  reviewQuality = null,
+  disposition = "none",
+  waiverArtifact = null,
+  overrideArtifact = null,
+} = {}) {
+  const source_state = normalizeSourceState(sourceState);
+  const parsedVerdict = resultVerdict(result);
+  let verdict = parsedVerdict ?? "missing";
+  if (status === "failed" && errorCode === "timeout") verdict = "timeout";
+  else if (status && status !== "completed" && verdict === "missing") verdict = "failed_slot";
+  if (reviewQuality?.failed_review_slot === true && (verdict === "approved" || verdict === "request_changes")) {
+    verdict = "failed_slot";
+  }
+  const retry_fingerprint = hashValue(retryFingerprint);
+  const request_settings_hash = hashValue(requestSettingsHash);
+  const normalized = normalizedDisposition(disposition);
+  const reason = failedSlotReason({ verdict, status, errorCode, reviewQuality });
+  const retry_count = Number.isSafeInteger(retryCount) && retryCount >= 0 ? retryCount : 0;
+  const payload = {
+    slot_id: slotId ?? hashJson({
+      provider,
+      mode,
+      stage,
+      reviewed_head_sha: reviewedHeadSha ?? null,
+      retry_fingerprint,
+    }),
+    attempt_id: attemptId ?? null,
+    parent_attempt_id: parentAttemptId ?? null,
+    reviewed_head_sha: reviewedHeadSha ?? null,
+    retry_fingerprint,
+    retry_count,
+    retry_disposition_required: retryDispositionRequired === true,
+    request_settings_hash,
+    source_state,
+    verdict,
+    failed_slot_reason: reason,
+    disposition: normalized,
+    not_counted_reason: notCountedReason({
+      verdict,
+      sourceState: source_state,
+      reviewedHeadSha,
+      currentHeadSha,
+      errorCode,
+      reason,
+    }),
+    waiver_artifact: artifactRef(waiverArtifact),
+    override_artifact: artifactRef(overrideArtifact),
+  };
+  return redactReviewSlotDisposition(payload);
 }
 
 function previousSelectedSource(previousAttempt = null) {

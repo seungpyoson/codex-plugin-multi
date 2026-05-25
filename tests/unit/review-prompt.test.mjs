@@ -30,6 +30,116 @@ test("review prompt packaging copies match the shared source byte-for-byte", () 
   }
 });
 
+test("buildReviewAuditManifest projects provider-neutral review slot disposition", () => {
+  const manifest = buildReviewAuditManifest({
+    prompt: "review these files",
+    sourceFiles: [{ path: "src/example.js", text: "export const token = 'secret';\n" }],
+    git: {
+      remote: "owner/repo",
+      branch: "issue-180",
+      baseRef: "origin/main",
+      baseCommit: "base",
+      headRef: "issue-180",
+      headCommit: "head",
+    },
+    promptBuilder: { contractVersion: 1, pluginVersion: "0.1.0", pluginCommit: "head" },
+    request: {
+      provider: "Kimi",
+      model: "kimi-code",
+      timeoutMs: 900000,
+      maxStepsPerTurn: 128,
+    },
+    providerIds: { sessionId: "session-1" },
+    scope: { name: "branch-diff", base: "origin/main", paths: ["src/example.js"] },
+    route: {
+      selectedRoute: "subscription_oauth",
+      routeStep: "subscription",
+      routeSteps: [{ route: "subscription", supported: true, attempted: true, selected: true, skipped_reason: null, fallback_reason: null }],
+      sourceBearing: true,
+      sourceContentTransmission: "sent",
+      providerCapabilities: { subscription: { source_packet: { max_bytes: 32768 } } },
+      reviewSlot: {
+        priorAttempts: [{ retry_fingerprint: "different" }],
+        currentHeadSha: "head",
+      },
+    },
+    result: "Verdict: APPROVE\nBlocking findings: none\nNon-blocking concerns: none\nInspection status: I inspected src/example.js.",
+    status: "completed",
+    errorCode: null,
+  });
+
+  assert.equal(manifest.review_slot.reviewed_head_sha, "head");
+  assert.equal(manifest.review_slot.source_state, "sent");
+  assert.equal(manifest.review_slot.verdict, "approved");
+  assert.equal(manifest.review_slot.retry_count, 0);
+  assert.match(manifest.review_slot.retry_fingerprint, /^[a-f0-9]{64}$/);
+  assert.match(manifest.review_slot.request_settings_hash, /^[a-f0-9]{64}$/);
+  assert.equal(JSON.stringify(manifest.review_slot).includes("secret"), false);
+});
+
+test("buildReviewAuditManifest fail-closes third same-packet retry before source send", () => {
+  const base = {
+    prompt: "review these files",
+    sourceFiles: [{ path: "src/example.js", text: "export const value = 1;\n" }],
+    git: {
+      remote: "owner/repo",
+      branch: "issue-180",
+      baseRef: "origin/main",
+      baseCommit: "base",
+      headRef: "issue-180",
+      headCommit: "head",
+    },
+    promptBuilder: { contractVersion: 1, pluginVersion: "0.1.0", pluginCommit: "head" },
+    request: {
+      provider: "Kimi",
+      model: "kimi-code",
+      timeoutMs: 900000,
+      maxStepsPerTurn: 128,
+    },
+    providerIds: { sessionId: "session-1" },
+    scope: { name: "branch-diff", base: "origin/main", paths: ["src/example.js"] },
+    route: {
+      selectedRoute: "subscription_oauth",
+      routeStep: "subscription",
+      routeSteps: [{ route: "subscription", supported: true, attempted: true, selected: true, skipped_reason: null, fallback_reason: null }],
+      sourceBearing: true,
+      providerCapabilities: { subscription: { source_packet: { max_bytes: 32768 } } },
+    },
+    result: "",
+    status: "preflight_failed",
+    errorCode: "source_packet_policy_preflight",
+  };
+  const first = buildReviewAuditManifest(base);
+
+  const manifest = buildReviewAuditManifest({
+    ...base,
+    providerIds: { sessionId: "session-3" },
+    route: {
+      ...base.route,
+      reviewSlot: {
+        priorAttempts: [
+          { review_slot: first.review_slot },
+          { retry_fingerprint: first.review_slot.retry_fingerprint, attempt_id: "session-2" },
+        ],
+        disposition: "retry",
+      },
+    },
+  });
+
+  assert.equal(manifest.review_slot.retry_count, 2);
+  assert.equal(manifest.review_slot.retry_disposition_required, true);
+  assert.equal(manifest.review_slot.disposition, "retry");
+  assert.equal(manifest.review_slot.source_state, "not_sent");
+  assert.equal(manifest.review_slot_retry_policy.source_send_allowed, false);
+  assert.equal(manifest.source_packet_policy.source_send_allowed, false);
+  assert.equal(manifest.source_packet_policy.source_packet_action, "review_slot_retry_blocked");
+  assert.equal(
+    manifest.source_packet_policy.source_packet_policy_error_code,
+    "third_same_packet_retry_requires_disposition",
+  );
+  assert.equal(manifest.source_content_transmission, "not_sent");
+});
+
 function assertSelectedSourcePromptBlock(targetBuildSelectedSourcePromptBlock = buildSelectedSourcePromptBlock) {
   assert.equal(targetBuildSelectedSourcePromptBlock([]), null);
   assert.equal(targetBuildSelectedSourcePromptBlock(null), null);
