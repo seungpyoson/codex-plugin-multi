@@ -482,10 +482,37 @@ for (const [name, file] of REVIEW_PROMPT_MODULES) {
     assert.equal(first.review_slot.source_state, "sent");
     assert.equal(first.review_slot.verdict, "approved");
     assert.equal(first.review_slot.retry_count, 0);
+    assert.equal(first.review_slot.retry_disposition_required, false);
+    assert.equal(first.review_slot.disposition, "none");
     assert.equal(first.review_slot.reviewed_head_sha, "head");
+    assert.equal(first.review_slot.waiver_artifact, null);
+    assert.equal(first.review_slot.override_artifact, null);
+    assert.equal(first.source_content_transmission, "sent");
     assert.match(first.review_slot.retry_fingerprint, /^[a-f0-9]{64}$/);
     assert.match(first.review_slot.request_settings_hash, /^[a-f0-9]{64}$/);
     assert.equal(JSON.stringify(first.review_slot).includes("secret"), false);
+
+    const retried = targetBuildReviewAuditManifest({
+      ...base,
+      providerIds: { requestId: "request-retry" },
+      route: {
+        ...base.route,
+        sourceContentTransmission: null,
+        reviewSlot: {
+          priorAttempts: [{ review_slot: first.review_slot }],
+          disposition: "retry",
+        },
+      },
+    });
+
+    assert.equal(retried.review_slot.retry_count, 1);
+    assert.equal(retried.review_slot.retry_disposition_required, true);
+    assert.equal(retried.review_slot.disposition, "retry");
+    assert.equal(retried.review_slot.waiver_artifact, null);
+    assert.equal(retried.review_slot.override_artifact, null);
+    assert.equal(retried.review_slot_retry_policy.source_send_allowed, true);
+    assert.equal(retried.review_slot.source_state, "may_be_sent");
+    assert.equal(retried.source_content_transmission, "may_be_sent");
 
     const waived = targetBuildReviewAuditManifest({
       ...base,
@@ -505,6 +532,7 @@ for (const [name, file] of REVIEW_PROMPT_MODULES) {
     assert.equal(waived.review_slot.retry_disposition_required, true);
     assert.equal(waived.review_slot.disposition, "waive");
     assert.equal(waived.review_slot.waiver_artifact, "reviews/waiver-180.md");
+    assert.equal(waived.review_slot.override_artifact, null);
     assert.equal(waived.review_slot_retry_policy.source_send_allowed, true);
     assert.equal(waived.review_slot.source_state, "may_be_sent");
     assert.equal(waived.source_content_transmission, "may_be_sent");
@@ -531,6 +559,8 @@ for (const [name, file] of REVIEW_PROMPT_MODULES) {
     assert.equal(blocked.review_slot.retry_count, 2);
     assert.equal(blocked.review_slot.retry_disposition_required, true);
     assert.equal(blocked.review_slot.disposition, "retry");
+    assert.equal(blocked.review_slot.waiver_artifact, null);
+    assert.equal(blocked.review_slot.override_artifact, null);
     assert.equal(blocked.review_slot.source_state, "not_sent");
     assert.equal(blocked.review_slot_retry_policy.source_send_allowed, false);
     assert.equal(blocked.source_packet_policy.source_send_allowed, false);
@@ -613,6 +643,7 @@ for (const [name, file] of REVIEW_PROMPT_MODULES) {
     assert.equal(manifest.review_slot.retry_disposition_required, true);
     assert.equal(manifest.review_slot.disposition, "override");
     assert.equal(manifest.review_slot.override_artifact, "reviews/override-180.md");
+    assert.equal(manifest.review_slot.waiver_artifact, null);
     assert.equal(manifest.review_slot.attempt_id, "session-next");
     assert.equal(manifest.review_slot.parent_attempt_id, "session-previous");
     assert.equal(manifest.review_slot.source_state, "sent_after_explicit_approval");
