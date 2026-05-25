@@ -1,11 +1,12 @@
 # Final External Review Results
 
-Stage: latest-head review refresh for PR code head `249f80bf0b73c9b29db4b5f5e72d0e39c2715248`
-Status: four latest-delta provider approvals recorded; final six-provider gate is blocked on Kimi and Grok, not Claude
+Stage: latest-head review refresh for PR head `d13ffdf44918ff12bcd54b6caa94e0b4375b1778`
+Status: four code-delta provider approvals recorded for `29832ae..249f80b`; final six-provider gate is blocked on exact-head refresh, Kimi, and Grok
 
 ## Review Packet
 
-- Current-head focused source packet: branch-diff from `29832ae86c1f883dcdcb5e2732f4fb7a8b58aae7` to `249f80bf0b73c9b29db4b5f5e72d0e39c2715248`.
+- Current code-delta focused source packet: branch-diff from `29832ae86c1f883dcdcb5e2732f4fb7a8b58aae7` to `249f80bf0b73c9b29db4b5f5e72d0e39c2715248`.
+- Current audit-only delta awaiting review refresh: `249f80bf0b73c9b29db4b5f5e72d0e39c2715248..d13ffdf44918ff12bcd54b6caa94e0b4375b1778`.
 - Latest-delta refresh used branch-diff source packets from `29832ae86c1f883dcdcb5e2732f4fb7a8b58aae7` to `249f80bf0b73c9b29db4b5f5e72d0e39c2715248`; direct API approval preflights selected 18 files / 68,196 bytes / 1,324 lines, while the Kimi narrowed shard selected 4 files / 13,062 bytes / 309 lines.
 - Earlier packet before the Kimi missing-verdict repair follow-up: `/private/tmp/cpm-171-review/provider-architecture-parity-171-focused-current.diff` plus `/private/tmp/cpm-171-review/provider-architecture-parity-171-focused-evidence.md`, 165844 bytes across two files.
 - Reason for focused packet: full `git diff origin/main` packet was 597224 bytes, above the shared 512 KiB source-packet budget; reviewers were therefore scoped to the current hardening delta instead of bypassing the new policy.
@@ -53,4 +54,4 @@ Earlier head `38d4c59` had five recorded approvals, including a Kimi no-source c
 
 ## Remaining Gate
 
-Final six-provider approval is not complete. Claude, Gemini, GLM, and DeepSeek approved the latest `29832ae..249f80b` delta. Kimi requires a usable narrowed-shard verdict or explicit waiver. Grok requires an explicit risk-approved latest-head run or explicit waiver. PR #175 remains draft and not merge-ready.
+Final six-provider approval is not complete. Claude, Gemini, GLM, and DeepSeek approved the code delta `29832ae..249f80b`; that approval set is stale for audit-only head `d13ffdf` until refreshed or waived. Kimi requires a usable narrowed-shard verdict or explicit waiver. Grok requires an explicit risk-approved latest-head run or explicit waiver. PR #175 remains draft and not merge-ready.

@@ -1,13 +1,21 @@
 # Issue Drafts
 
-Status: no issues ready to file.
+Status: converted into two scoped GitHub issues after root-cause evidence,
+duplicate checks, and operator approval.
 
 This is the manual `speckit-taskstoissues` conversion result for the current
-#171 root-problem pass. The stock Speckit command would create GitHub issues,
-but issue creation is blocked by the operator rule below until root cause,
-duplicate check, and explicit approval are all present.
+#171 root-problem pass. The stock Speckit command would create one issue per
+task, which would violate the operator's one-issue-at-a-time rule for this
+workstream. This manual conversion keeps #171 as the active implementation
+issue and files only proven residual provider symptoms.
 
-Do not create GitHub issues from this file until:
+Created issues:
+
+- #176: Grok CLI login readiness repeatedly fails and forces web fallback.
+- #177: Kimi CLI fails to produce review verdict on tiny packets and no-source
+  continuations.
+
+Do not create more GitHub issues from this file until:
 
 1. Root cause is proven with source/job evidence.
 2. Duplicate check against #171, #159, #172, and #173 is recorded.
@@ -15,9 +23,10 @@ Do not create GitHub issues from this file until:
 
 ## Grok Login Persistence
 
-Draft status: blocked on evidence. Do not file.
+Draft status: filed as #176 after later evidence showed repeated
+`grok_cli_login_required` in review-gate context.
 
-Current evidence:
+Original evidence:
 
 - Current local source-free checks pass. `grok models` reports a grok.com login
   and `grok-build`; plugin `doctor` reports `ready:true`, `logged_in:true`, and
@@ -36,7 +45,8 @@ Current hypothesis list:
   valid login.
 - The job was stale and no longer reflects current CLI state.
 
-Current classification: #171/#159 evidence, not separate issue yet.
+Current classification: #176 is a separate follow-up issue. #171 still owns the
+shared policy and audit fields; #176 owns Grok CLI login persistence/root cause.
 
 Duplicate check:
 
@@ -48,10 +58,11 @@ Duplicate check:
 - Current local `grok-web-reviewer.mjs doctor` returns `ready:true`,
   `logged_in:true`, `model_ready:true`, and source-free prompt readiness.
 
-Task-to-issue decision: no GitHub issue. The symptom is not reproducible in
-current state and the exact failed JobRecord/environment is missing.
+Task-to-issue decision: GitHub issue #176 created. Do not implement it in the
+#171 PR; use it after #171 merge/readiness because the operator asked for one
+issue at a time.
 
-Required before filing:
+Required before implementing #176:
 
 - Exact failed JobRecord or command output.
 - Failed job environment facts: selected binary, `GROK_CLI_AUTH_HOME`,
@@ -60,8 +71,8 @@ Required before filing:
 
 ## Kimi Step Limit
 
-Draft status: candidate evidence recorded; GitHub issue still blocked pending
-operator approval and final duplicate decision.
+Draft status: filed as #177 after post-policy evidence proved Kimi residual
+runtime/source-retention failures beyond the shared #171 packet gate.
 
 Current hypothesis list:
 
@@ -69,7 +80,9 @@ Current hypothesis list:
 - Shared packet budget policy fails to preflight Kimi capacity before launch.
 - Kimi lacks direct API/OpenRouter route capability in the shared ladder.
 
-Current classification: #171/#172 evidence, not separate issue yet.
+Current classification: #177 is a separate follow-up issue. #171 still owns the
+shared route/source-packet/resend policy; #177 owns residual Kimi CLI review
+execution reliability.
 
 Current evidence:
 
@@ -109,14 +122,13 @@ Duplicate check:
 - #173 covers provider-neutral subscription CLI source-packet budget gates for
   Claude, Gemini, and Kimi.
 
-Task-to-issue decision: do not file automatically. The minimal-packet timeout is
-new evidence that Kimi has a source-sent runtime capacity/transport failure, but
-#171/#172/#173 already own the shared-policy fix. File a separate Kimi issue only
-if the same timeout remains after shared route, packet, timeout, and resend
-policy is accepted or if the operator explicitly wants a tracking issue for this
-Kimi-specific transport symptom.
+Task-to-issue decision: GitHub issue #177 created. The shared #171 fix blocks
+over-cap packets before source send and disables unsupported Kimi no-source
+repair. #177 remains needed because under-cap Kimi shard
+`6cecf19f-2145-48d2-84b5-cd77bc09c835` still became `stale_active_job` after
+source send with no verdict.
 
-Required before filing:
+Required before implementing #177:
 
 - Proof that the timeout/step-limit symptom remains after the shared packet
   budget, timeout budget, and route ladder design is accepted.

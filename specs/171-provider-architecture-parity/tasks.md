@@ -48,6 +48,8 @@ retry, resend, and review-surface semantics for every provider and mode.
 - [x] T017 Keep Grok login under #171/#159 until exact failed-job evidence proves separate scope.
 - [x] T018 Keep Kimi timeout/step-limit under #171/#172/#173 until post-policy evidence proves a Kimi-specific transport bug.
 - [x] T019 Record that new issue creation requires root cause, duplicate check, and explicit operator approval.
+- [x] T040 Convert proven Grok residual symptom into #176 in `issue-drafts.md`.
+- [x] T041 Convert proven Kimi residual symptom into #177 in `issue-drafts.md`.
 
 ## Phase 6: External Review Before Implementation
 
@@ -76,6 +78,7 @@ retry, resend, and review-surface semantics for every provider and mode.
 - [ ] T037 Address Kimi transport/capacity only if Phase 5 proves separate scope.
 - [x] T038 Run focused tests, `git diff --check`, `npm run lint:sync`, `npm test`, and any changed generated-doc checks.
 - [ ] T039 Run latest-head reviews from all six providers before merge-readiness.
+- [ ] T042 Refresh exact-head review state after audit-only commits.
 
 ## Dependencies
 
