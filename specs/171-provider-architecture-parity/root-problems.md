@@ -204,12 +204,20 @@ Evidence:
   packet before launch.
 - Kimi currently has subscription-only route behavior and ignored API env
   diagnostics, so fallback parity is not proven.
+- Kimi no-source repair is not reliable: a raw continuation of session
+  `73ab07c5-7c8a-4661-a271-632e13a5143d` after source-bearing step exhaustion
+  returned `Verdict: NOT_REVIEWED` because the prior selected source was absent.
+  Granting file tools during that repair would make `source_content_transmission:
+  "not_sent"` misleading if Kimi reads files through tool calls.
 
 Additional current evidence:
 
 - Kimi job `abdc226d-d5b1-4b12-b19a-f7cf9eb6cb69` sent a one-file
   `provider-parity-table.json` packet of 21,565 bytes and failed with
   `timeout` after 257,212 ms, with no stdout, stderr, or verdict.
+- Kimi job `0ef067c5-d9be-4820-a7d4-034b337c54b6` used the compact prompt
+  contract on 63,197 bytes and failed with `step_limit_exceeded` at
+  `--max-steps-per-turn 128`.
 - `scripts/lib/provider-route-policy.mjs` accepts only `subscription` and `api`
   route modes; OpenRouter is not modeled as a first-class route.
 - `plugins/kimi/scripts/kimi-companion.mjs` declares only
@@ -224,9 +232,10 @@ Additional current evidence:
 
 1. Why does Kimi fail the review gate?
    Because Kimi can receive selected source and then return no usable verdict:
-   `step_limit_exceeded` for larger packets and `timeout` for the latest minimal
-   packet. Evidence: #172 JobRecords and
-   `abdc226d-d5b1-4b12-b19a-f7cf9eb6cb69`.
+   `step_limit_exceeded` for larger packets and `timeout` for some smaller
+   packets. Evidence: #172 JobRecords,
+   `abdc226d-d5b1-4b12-b19a-f7cf9eb6cb69`, and
+   `0ef067c5-d9be-4820-a7d4-034b337c54b6`.
 2. Why is source sent before this failure?
    Because the current policy records failure after launch, but does not use
    provider capacity, mode, rendered packet size, timeout budget, and route
@@ -243,9 +252,10 @@ Additional current evidence:
    provider outcomes.
 5. Root cause:
    Shared policy lacks a provider-neutral pre-send packet/capacity/timeout
-   decision and route ladder for source-bearing review. Kimi supplies the
-   strongest failure evidence, but the fix belongs in #171/#172/#173 unless a
-   post-policy Kimi-only transport bug remains.
+   decision and route ladder for source-bearing review, plus capability-aware
+   no-source repair. Kimi supplies the strongest failure evidence and now has a
+   measured adapter capacity fact: lower source-packet capacity and unsupported
+   no-source repair.
 
 Required fix:
 
@@ -253,6 +263,8 @@ Required fix:
   packet budget and retry policy.
 - Prevent predictable over-budget sends before source transmission where
   possible.
+- Block Kimi no-source repair until the adapter can prove resumed sessions retain
+  prior source without hidden file-tool transmission.
 - Offer the same sharding/narrowing/route-ladder next actions as other
   providers.
 - Create a dedicated Kimi issue only if evidence proves Kimi-specific behavior

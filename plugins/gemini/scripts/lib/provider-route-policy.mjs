@@ -261,6 +261,14 @@ function sourcePacketBudgetBytes(providerCapabilities = {}, routeStep = null) {
   return parsed;
 }
 
+function sourcePacketResumeWithoutResendSupported(providerCapabilities = {}, routeStep = null) {
+  const routeCapability = capabilityForRouteStep(providerCapabilities, routeStep);
+  const configured = routeCapability?.source_packet?.resume_without_resend_supported
+    ?? providerCapabilities?.source_packet?.resume_without_resend_supported
+    ?? true;
+  return configured !== false;
+}
+
 function selectedSourceTotals(selectedSource = null) {
   const totals = selectedSource?.totals;
   return {
@@ -359,6 +367,7 @@ export function evaluateSourcePacketPolicy({
 } = {}) {
   const totals = selectedSourceTotals(selectedSource);
   const packetBudgetBytes = sourcePacketBudgetBytes(providerCapabilities, routeStep);
+  const resumeWithoutResendSupported = sourcePacketResumeWithoutResendSupported(providerCapabilities, routeStep);
   const effectiveSourceBearing = sourceBearing === true || totals.bytes > 0 || totals.files > 0;
   const sourcePacketWithinBudget = totals.bytes <= packetBudgetBytes;
   const previousSource = previousSelectedSource(previousAttempt);
@@ -366,7 +375,9 @@ export function evaluateSourcePacketPolicy({
   const previousHash = sourcePacketHash(previousSource);
   const currentHash = sourcePacketHash(selectedSource);
   const reviewSurfaceChanged = previousHash !== null && currentHash !== null && previousHash !== currentHash;
-  const narrowedSourcePacket = previousSource !== null && totals.bytes < previousTotals.bytes;
+  const narrowedSourcePacket = previousSource !== null
+    && (totals.bytes > 0 || totals.files > 0)
+    && totals.bytes < previousTotals.bytes;
 
   const base = {
     provider,
@@ -408,6 +419,7 @@ export function evaluateSourcePacketPolicy({
     previousSourceWasSent(previousAttempt)
     && previousFailureRequiresResendGate(previousAttempt)
     && previousFailureAllowsResumeWithoutResend(previousAttempt)
+    && resumeWithoutResendSupported
     && resumeWithoutSourceResend
     && totals.bytes === 0
     && totals.files === 0

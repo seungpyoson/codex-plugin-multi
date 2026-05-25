@@ -390,6 +390,32 @@ test("startExternalReviewHeartbeat emits markdown progress card until stopped", 
   assert.match(chunks[0], /\| Retrieve \| result --job job-heartbeat-markdown --cwd \/tmp\/gemini-heartbeat-workspace \|/);
 });
 
+test("startExternalReviewHeartbeat reports no-source resume progress as not_sent", async () => {
+  const chunks = [];
+  const stop = startExternalReviewHeartbeat(
+    {
+      job_id: "job-heartbeat-no-source",
+      target: "kimi",
+      mode: "review",
+      run_kind: "foreground",
+      review_prompt_provider: "Kimi Code CLI",
+      workspace_root: "/tmp/kimi-heartbeat-workspace",
+      scope: "branch-diff",
+      scope_base: "HEAD~1",
+      resume_without_source_resend: true,
+    },
+    "markdown",
+    { intervalMs: 5, output: { write: (chunk) => chunks.push(chunk) } },
+  );
+
+  await new Promise((resolve) => setTimeout(resolve, 18));
+  stop();
+
+  assert.ok(chunks.length >= 1, "markdown heartbeat must emit at least one progress event");
+  assert.match(chunks[0], /\| Source \| not_sent \|/);
+  assert.match(chunks[0], /Selected source content was not sent to Kimi Code CLI/);
+});
+
 test("summarizeScopeDirectory returns sorted files and byte totals", () => {
   const root = mkdtempSync(path.join(tmpdir(), "companion-common-scope-"));
   const nested = path.join(root, "nested");

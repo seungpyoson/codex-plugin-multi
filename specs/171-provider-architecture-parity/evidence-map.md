@@ -83,6 +83,21 @@ Topology input issue: #170
 - Kimi job `ea4c9156-8a96-449f-ac99-2c87ad52d57b` sent the four-file current
   planning packet (35,495 bytes) and failed with wall-clock `timeout` after
   907,148 ms without a verdict.
+- Kimi job `0ef067c5-d9be-4820-a7d4-034b337c54b6` used the compact prompt
+  contract on current PR #175 delta `50c954c..29832ae`, sent 21 files / 63,197
+  bytes / 1,304 lines, and failed with `step_limit_exceeded` at
+  `--max-steps-per-turn 128`.
+- Raw no-tool continuation of Kimi session
+  `73ab07c5-7c8a-4661-a271-632e13a5143d` sent no source and returned
+  `Verdict: NOT_REVIEWED` because the prior selected source was not present in
+  the resumed context. Companion no-source continuation with file tools would
+  have made `source_content_transmission:not_sent` misleading if Kimi read files
+  through tool calls, so Kimi no-source repair is now an unsupported adapter
+  capability.
+- Kimi job `08d2f957-bb06-4222-a15c-651691be8655` re-ran the same broad packet
+  after the adapter capacity fact and failed before launch as
+  `source_packet_too_large`, with `source_packet_budget_bytes:32768`,
+  `selected_source_bytes:63197`, and `source_content_transmission:not_sent`.
 - `plugins/kimi/scripts/lib/kimi.mjs` parses `Max number of steps reached: N`
   as `step_limit_exceeded`.
 - `tests/unit/job-record.test.mjs` asserts this failure is not a parse error and
@@ -90,10 +105,10 @@ Topology input issue: #170
   source was sent.
 
 Diagnosis: Kimi is showing the shared capacity/budget gap. The provider has a
-step budget capability, but the shared policy does not preflight rendered packet
-size, provider capacity, timeout budget, and fallback route before source send.
-The minimal-packet and plan-packet timeouts show the current Kimi symptom is not
-explained only by oversized source packets.
+step budget capability, lower practical source-packet capacity, and unreliable
+session source retention. Shared policy now preflights Kimi's adapter source
+capacity before source send and blocks Kimi no-source repair; retries must use
+an explicitly narrowed source packet or an explicit resend confirmation.
 
 ### Grok `grok_cli_login_required`
 

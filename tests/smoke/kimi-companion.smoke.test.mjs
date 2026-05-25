@@ -649,6 +649,45 @@ test("kimi custom-review prompt includes selected source content", () => {
   }
 });
 
+test("kimi custom-review applies adapter source-packet capacity before Kimi launch", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "kimi-adapter-source-cap-cwd-"));
+  let dataDir = null;
+  try {
+    fixtureSeedRepo(cwd);
+    writeFileSync(path.join(cwd, "large.txt"), "k".repeat(40 * 1024));
+    const result = runCompanion([
+      "run",
+      "--mode",
+      "custom-review",
+      "--cwd",
+      cwd,
+      "--scope-paths",
+      "large.txt",
+      "--foreground",
+      "--",
+      "Review this scope.",
+    ], {
+      cwd,
+      env: {
+        KIMI_MOCK_ASSERT_PROMPT_INCLUDES: "MUST_NOT_REACH_KIMI",
+      },
+    });
+    dataDir = result.dataDir;
+    assert.equal(result.status, 2);
+    const record = parseJson(result.stdout);
+    assert.equal(record.status, "failed");
+    assert.equal(record.error_code, "source_packet_too_large");
+    assert.equal(record.external_review.source_content_transmission, "not_sent");
+    assert.equal(record.review_metadata.audit_manifest.source_packet_policy.source_send_allowed, false);
+    assert.equal(record.review_metadata.audit_manifest.source_packet_policy.source_packet_budget_bytes, 32 * 1024);
+    assert.equal(record.review_metadata.audit_manifest.source_packet_policy.source_packet_action, "narrow_source_packet");
+    assert.doesNotMatch(result.stdout, /external_review_launched|MUST_NOT_REACH_KIMI/);
+  } finally {
+    if (dataDir) rmSync(dataDir, { recursive: true, force: true });
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
 test("kimi custom-review rejects over-budget source packets before Kimi launch", () => {
   const cwd = mkdtempSync(path.join(tmpdir(), "kimi-source-packet-cwd-"));
   const files = [];
@@ -2322,7 +2361,7 @@ test("kimi continue background: launched event and terminal JobRecord keep paren
   }
 });
 
-test("kimi continue resumes from step-limit failure and reuses private max-step budget", () => withRepo((cwd) => {
+test("kimi continue blocks no-source repair after step-limit failure", () => withRepo((cwd) => {
   const dataDir = mkdtempSync(path.join(tmpdir(), "kimi-continue-step-limit-data-"));
   const first = runCompanion([
     "run",
@@ -2363,30 +2402,24 @@ test("kimi continue resumes from step-limit failure and reuses private max-step 
     "--foreground",
     "--",
     "Continue this review.",
-  ], {
-    cwd,
-    dataDir,
-    env: {
-      KIMI_MOCK_ASSERT_MAX_STEPS_PER_TURN: "48",
-      KIMI_MOCK_ASSERT_RESUME_ID: KIMI_SESSION_ID,
-    },
-  });
-  assert.equal(continued.status, 0, continued.stderr);
+  ], { cwd, dataDir });
+  assert.equal(continued.status, 2, continued.stderr);
   const continuedRecord = parseJson(continued.stdout);
-  assert.equal(continuedRecord.status, "completed");
+  assert.equal(continuedRecord.status, "failed");
+  assert.equal(continuedRecord.error_code, "resend_confirmation_required");
   assert.equal(continuedRecord.parent_job_id, firstRecord.job_id);
   assert.equal(continuedRecord.resume_chain[0], KIMI_SESSION_ID);
-  assert.equal(continuedRecord.kimi_session_id, KIMI_RESUMED_SESSION_ID);
+  assert.equal(continuedRecord.kimi_session_id, null);
   assert.equal(
     continuedRecord.review_metadata.audit_manifest.source_packet_policy.source_packet_action,
-    "resume_without_source_resend",
+    "resend_confirmation_required",
   );
   assert.equal(continuedRecord.external_review.source_content_transmission, "not_sent");
   assert.equal(continuedRecord.review_metadata.audit_manifest.selected_source.totals.files, 0);
   assert.equal("max_steps_per_turn" in continuedRecord, false);
 }));
 
-test("kimi background continue resumes from step-limit failure", () => withRepo((cwd) => {
+test("kimi background continue blocks no-source repair after step-limit failure", () => withRepo((cwd) => {
   const dataDir = mkdtempSync(path.join(tmpdir(), "kimi-background-continue-step-limit-data-"));
   const first = runCompanion([
     "run",
@@ -2415,7 +2448,7 @@ test("kimi background continue resumes from step-limit failure", () => withRepo(
   assert.equal(firstRecord.error_code, "step_limit_exceeded");
   assert.equal(firstRecord.kimi_session_id, KIMI_SESSION_ID);
 
-  const launched = runCompanion([
+  const blocked = runCompanion([
     "continue",
     "--job",
     firstRecord.job_id,
@@ -2424,26 +2457,17 @@ test("kimi background continue resumes from step-limit failure", () => withRepo(
     "--background",
     "--",
     "Continue this review.",
-  ], {
-    cwd,
-    dataDir,
-    env: {
-      KIMI_MOCK_ASSERT_MAX_STEPS_PER_TURN: "48",
-      KIMI_MOCK_ASSERT_RESUME_ID: KIMI_SESSION_ID,
-    },
-  });
-  assert.equal(launched.status, 0, launched.stderr);
-  const payload = parseJson(launched.stdout);
-  assert.equal(payload.event, "launched");
-
-  const continuedRecord = waitForTerminalRecord(dataDir, payload.job_id);
-  assert.equal(continuedRecord.status, "completed");
+  ], { cwd, dataDir });
+  assert.equal(blocked.status, 2, blocked.stderr);
+  const continuedRecord = parseJson(blocked.stdout);
+  assert.equal(continuedRecord.status, "failed");
+  assert.equal(continuedRecord.error_code, "resend_confirmation_required");
   assert.equal(continuedRecord.parent_job_id, firstRecord.job_id);
   assert.equal(continuedRecord.resume_chain[0], KIMI_SESSION_ID);
-  assert.equal(continuedRecord.kimi_session_id, KIMI_RESUMED_SESSION_ID);
+  assert.equal(continuedRecord.kimi_session_id, null);
   assert.equal(
     continuedRecord.review_metadata.audit_manifest.source_packet_policy.source_packet_action,
-    "resume_without_source_resend",
+    "resend_confirmation_required",
   );
   assert.equal(continuedRecord.external_review.source_content_transmission, "not_sent");
   assert.equal(continuedRecord.review_metadata.audit_manifest.selected_source.totals.files, 0);

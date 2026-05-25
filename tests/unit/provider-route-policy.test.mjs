@@ -268,6 +268,50 @@ test("source packet retry policy allows same-session resume without source resen
   assert.equal(policy.resend_confirmation_required, false);
 });
 
+test("source packet retry policy blocks no-source repair when adapter cannot retain prior source", () => {
+  const previousRecord = {
+    status: "failed",
+    error_code: "step_limit_exceeded",
+    external_review: { source_content_transmission: "sent" },
+    review_metadata: {
+      audit_manifest: {
+        selected_source: selectedSourceFixture(8),
+      },
+    },
+  };
+  const previousAttempt = sourcePacketPreviousAttemptFromJobRecord(previousRecord);
+
+  assert.equal(sourcePacketCanResumeWithoutResendFromJobRecord(previousRecord), true);
+
+  const policy = evaluateSourcePacketPolicy({
+    provider: "kimi",
+    mode: "custom-review",
+    routeStep: "subscription",
+    providerCapabilities: {
+      subscription: {
+        source_packet: {
+          max_bytes: 20,
+          resume_without_resend_supported: false,
+        },
+      },
+    },
+    selectedSource: Object.freeze({
+      files: Object.freeze([]),
+      totals: Object.freeze({ files: 0, bytes: 0, lines: 0 }),
+    }),
+    sourceBearing: true,
+    previousAttempt,
+    resumeWithoutSourceResend: true,
+  });
+
+  assert.equal(policy.source_send_allowed, false);
+  assert.equal(policy.source_packet_action, "resend_confirmation_required");
+  assert.equal(policy.source_packet_policy_error_code, "resend_confirmation_required");
+  assert.equal(policy.source_content_transmission, "not_sent");
+  assert.equal(policy.resume_without_source_resend, true);
+  assert.equal(policy.resend_confirmation_required, true);
+});
+
 test("source packet retry policy allows no-source repair after substantive invalid verdict prose", () => {
   const previousRecord = {
     status: "failed",

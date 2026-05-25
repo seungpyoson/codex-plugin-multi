@@ -501,14 +501,17 @@
     {
       "provider": "kimi",
       "policy_area": "packet budgets",
-      "difference_type": "research_gap",
-      "current_behavior": "Kimi has historical step_limit_exceeded and missing-verdict failures after source-bearing custom-review. One reproduced within-budget timeout was root-caused to standard generated review prompt compatibility and is now classified under review prompt contracts. Shared source packet policy still gates over-budget and automatic resend before source send, allows same-session no-source repair for substantive invalid-verdict prose, and carries the original source attempt through failed no-source repair chains. Any future within-budget Kimi step exhaustion after compact-contract routing remains capacity evidence, not a Kimi-only source-send policy path.",
-      "capability_fact": null,
-      "shared_policy_boundary": "Kimi step capacity must be represented as Adapter capacity facts consumed by shared prompt and source-packet policy, not as Kimi-only retry or source-send policy. Invalid-verdict repair is a shared retry-policy state for every session-capable companion, not a Kimi-only exception.",
-      "clear_reason": "This remains tracked because capacity limits may still require future capability facts, but the reproduced prompt-shape failure now has a separate Adapter capability classification and the source-send decision, resend gate, and no-source repair policy are shared with every provider.",
+      "difference_type": "adapter_capability_fact",
+      "current_behavior": "Kimi subscription review declares a 32768-byte source-packet capacity and disables no-source repair after source-bearing step-limit failures. The shared policy still evaluates the same source_packet fields for every provider; Kimi's route capability makes over-capacity packets fail before launch with source_content_transmission:not_sent, and Kimi step-limit continuations fail before relaunch unless the retry sends an explicitly narrowed packet or has explicit resend confirmation.",
+      "capability_fact": "Kimi Code CLI 1.43 did not produce a verdict for a compact 63197-byte source-bearing review at --max-steps-per-turn 128, and a raw no-tool continuation of that session returned NOT_REVIEWED because prior selected source was not retained in the current context. Kimi therefore cannot currently prove reliable same-session no-source source retention for review approvals.",
+      "shared_policy_boundary": "Kimi capacity is represented only as Adapter capability data consumed by the shared source-packet policy. The policy shape, resend gate, narrow-packet path, source_content_transmission audit fields, and pre-send enforcement remain shared across Claude, Gemini, Kimi, Grok, DeepSeek, and GLM.",
+      "clear_reason": "This is not fake parity: Kimi has a measured lower source-bearing review capacity and unreliable no-source session repair, so treating it like providers that can retain source would create false not_sent audit claims and repeated step-limit burns.",
       "evidence": [
         "https://github.com/seungpyoson/codex-plugin-multi/issues/177",
         "https://github.com/seungpyoson/codex-plugin-multi/issues/172",
+        "Kimi job 0ef067c5-d9be-4820-a7d4-034b337c54b6: compact 63197-byte source packet failed with step_limit_exceeded at 128 steps",
+        "Raw Kimi session 73ab07c5-7c8a-4661-a271-632e13a5143d no-tool continuation returned Verdict: NOT_REVIEWED because prior source was absent",
+        "Kimi job 08d2f957-bb06-4222-a15c-651691be8655: same 63197-byte packet blocked before launch with source_packet_too_large and source_content_transmission:not_sent after the adapter capacity fact",
         "/private/tmp/cpm-171-plan-review/kimi-result.json",
         "/private/tmp/cpm-171-final-review/kimi-final2.json",
         "/private/tmp/cpm-171-final-review/kimi-final4.json",
@@ -516,10 +519,11 @@
       ],
       "tests": [
         "tests/unit/provider-route-policy.test.mjs",
-        "missing: within-budget Kimi step-capacity regression fixture if #172 reproduces after shared packet policy"
+        "tests/smoke/kimi-companion.smoke.test.mjs",
+        "tests/unit/companion-common.test.mjs"
       ],
-      "verdict": "unknown",
-      "follow_up_issue": 172
+      "verdict": "intentional",
+      "follow_up_issue": 177
     }
   ],
   "issue_fit": {

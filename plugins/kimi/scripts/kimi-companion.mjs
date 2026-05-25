@@ -63,8 +63,17 @@ const DEFAULT_KIMI_REVIEW_TIMEOUT_MS = 900000;
 const DEFAULT_KIMI_PING_TIMEOUT_MS = 900000;
 const KIMI_READINESS_PREFLIGHT_TIMEOUT_MS = 900000;
 const REVIEW_PROMPT_SOURCE_DELIMITER_PREFIX = "KIMI FILE";
+const KIMI_SOURCE_PACKET_MAX_BYTES = 32 * 1024;
+
 const ROUTE_CAPABILITIES = Object.freeze({
-  subscription: Object.freeze({ kind: "oauth", auth_path: "subscription_oauth" }),
+  subscription: Object.freeze({
+    kind: "oauth",
+    auth_path: "subscription_oauth",
+    source_packet: Object.freeze({
+      max_bytes: KIMI_SOURCE_PACKET_MAX_BYTES,
+      resume_without_resend_supported: false,
+    }),
+  }),
 });
 
 configureState({
