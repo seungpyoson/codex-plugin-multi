@@ -3453,12 +3453,12 @@ function reviewSlotFromRecord(record) {
   return slot && typeof slot === "object" && !Array.isArray(slot) ? slot : null;
 }
 
-function priorSlotRequiresRetryDisposition(slot) {
+function priorSlotCountsTowardRetry(slot) {
   if (!slot?.retry_fingerprint) return false;
   if (slot.source_state === SOURCE_CONTENT_TRANSMISSION.NOT_SENT) return false;
-  if (slot.verdict === "approved" || slot.verdict === "request_changes") return false;
+  if (slot.verdict === "approved") return false;
   const reason = String(slot.not_counted_reason ?? "unknown");
-  if (reason === "none" || reason === "stale_head" || reason === "source_not_sent") return false;
+  if (reason === "stale_head" || reason === "source_not_sent") return false;
   return true;
 }
 
@@ -3479,7 +3479,7 @@ async function collectPriorReviewSlotAttempts(root, currentJobId = null) {
       const record = JSON.parse(await readFile(resolve(jobsDir, entry.name, "meta.json"), "utf8"));
       if (record?.job_id !== entry.name) continue;
       const slot = reviewSlotFromRecord(record);
-      if (priorSlotRequiresRetryDisposition(slot)) attempts.push({ review_slot: slot });
+      if (priorSlotCountsTowardRetry(slot)) attempts.push({ review_slot: slot });
     } catch {
       // Malformed legacy artifacts are not trusted as retry-policy evidence.
     }

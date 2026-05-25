@@ -519,12 +519,12 @@ function reviewSlotFromRecord(record) {
   return slot && typeof slot === "object" && !Array.isArray(slot) ? slot : null;
 }
 
-function priorSlotRequiresRetryDisposition(slot) {
+function priorSlotCountsTowardRetry(slot) {
   if (!slot?.retry_fingerprint) return false;
   if (slot.source_state === "not_sent") return false;
-  if (slot.verdict === "approved" || slot.verdict === "request_changes") return false;
+  if (slot.verdict === "approved") return false;
   const reason = String(slot.not_counted_reason ?? "unknown");
-  if (reason === "none" || reason === "stale_head" || reason === "source_not_sent") return false;
+  if (reason === "stale_head" || reason === "source_not_sent") return false;
   return true;
 }
 
@@ -545,7 +545,7 @@ function collectPriorReviewSlotAttempts(workspaceRoot, currentJobId = null) {
       const record = JSON.parse(_readFileSync(joinPath(resolveJobsDir(workspaceRoot), entry.name), "utf8"));
       if (record?.job_id !== jobId) continue;
       const slot = reviewSlotFromRecord(record);
-      if (priorSlotRequiresRetryDisposition(slot)) attempts.push({ review_slot: slot });
+      if (priorSlotCountsTowardRetry(slot)) attempts.push({ review_slot: slot });
     } catch {
       // Malformed legacy records are not trusted as retry-policy evidence.
     }
@@ -1154,6 +1154,7 @@ async function cmdApprovalRequest(rest) {
     fail("bad_args", error.message);
   }
   const approvalJobId = newJobId();
+  const reviewSlotPriorAttempts = collectPriorReviewSlotAttempts(workspaceRoot, approvalJobId);
   let invocation = Object.freeze({
     job_id: approvalJobId,
     target: "claude",
@@ -1183,6 +1184,7 @@ async function cmdApprovalRequest(rest) {
     started_at: new Date().toISOString(),
     approval_scope: approvalScope,
     approval_token: null,
+    review_slot_prior_attempts: reviewSlotPriorAttempts,
     ...reviewSlotInvocationFields(options),
     ...sourcePacketOverrideInvocationFields(options),
   });
@@ -1197,6 +1199,15 @@ async function cmdApprovalRequest(rest) {
     }, containment);
     const targetPrompt = targetPromptFor(invocation, prompt, auditSourceFiles(containment.path));
     const auditManifest = approvalAuditManifest(invocation, targetPrompt, containment.path);
+    const policy = auditManifest?.source_packet_policy ?? null;
+    if (policy?.source_send_allowed === false) {
+      const errorCode = policy.source_packet_policy_error_code ?? "source_packet_policy_blocked";
+      fail(errorCode, `${errorCode}: ${policy.suggested_action ?? "source packet policy blocked selected source send"}`, {
+        source_packet_policy: policy,
+        review_slot_retry_policy: auditManifest?.review_slot_retry_policy ?? null,
+        review_slot: auditManifest?.review_slot ?? null,
+      });
+    }
     const token = approvalTokenFor(invocation, auditManifest);
     const totals = auditManifest.selected_source.totals;
     printJson({
@@ -1214,6 +1225,9 @@ async function cmdApprovalRequest(rest) {
       approval_token: token,
       selected_source: auditManifest.selected_source,
       rendered_prompt_hash: auditManifest.rendered_prompt_hash,
+      source_packet_policy: auditManifest.source_packet_policy,
+      review_slot_retry_policy: auditManifest.review_slot_retry_policy,
+      review_slot: auditManifest.review_slot,
       request: {
         provider: "Claude Code",
         model,

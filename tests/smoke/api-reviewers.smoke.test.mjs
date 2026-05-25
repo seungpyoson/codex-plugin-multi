@@ -9,7 +9,7 @@ import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { externalReviewLaunchedEvent } from "../../scripts/lib/companion-common.mjs";
 import { assertJobRecordShape } from "../helpers/job-record-shape.mjs";
-import { badVerdictReviewFixture, substantiveReviewFixture } from "../helpers/review-fixtures.mjs";
+import { badVerdictReviewFixture, requestChangesReviewFixture, substantiveReviewFixture } from "../helpers/review-fixtures.mjs";
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const COMPANION = path.join(REPO_ROOT, "plugins/api-reviewers/scripts/api-reviewer.mjs");
@@ -2380,6 +2380,95 @@ test("direct API reviewers block same-packet resend after a failed source-sent s
       secondRecord.review_metadata.audit_manifest.source_packet_policy.source_packet_action,
       "review_slot_retry_blocked",
     );
+  } finally {
+    rmSync(dataDir, { recursive: true, force: true });
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("direct API reviewers block same-packet resend after a request-changes slot", async () => {
+  const cwd = makeWorkspace();
+  const dataDir = mkdtempSync(path.join(tmpdir(), "api-reviewers-request-changes-guard-data-"));
+  const requestChangesResult = requestChangesReviewFixture("Provider marker: deepseek request changes guard.");
+  const commonArgs = [
+    "run",
+    "--provider", "deepseek",
+    "--mode", "custom-review",
+    "--scope", "custom",
+    "--scope-paths", "seed.txt",
+    "--foreground",
+    "--prompt", "Review this file.",
+  ];
+  const commonEnv = {
+    API_REVIEWERS_PLUGIN_DATA: dataDir,
+    API_REVIEWERS_MOCK_RESPONSE: mockResponse("deepseek-v4-pro", "chatcmpl-request-changes-guard", requestChangesResult),
+    DEEPSEEK_API_KEY: "secret-test-value",
+  };
+
+  try {
+    writeFileSync(path.join(cwd, "seed.txt"), "export const value = 1;\n");
+
+    const first = await run(commonArgs, { cwd, env: commonEnv });
+    assert.equal(first.status, 0, first.stderr || first.stdout);
+    const firstRecord = parseJson(first.stdout);
+    assert.equal(firstRecord.status, "completed");
+    assert.equal(firstRecord.external_review.review_slot?.verdict, "request_changes");
+    assert.equal(firstRecord.external_review.source_content_transmission, "sent");
+
+    const second = await run(commonArgs, { cwd, env: commonEnv });
+    assert.equal(second.status, 1, second.stderr || second.stdout);
+    const secondRecord = parseJson(second.stdout);
+    assert.equal(secondRecord.status, "failed");
+    assert.equal(secondRecord.error_code, "review_slot_disposition_required");
+    assert.equal(secondRecord.external_review.source_content_transmission, "not_sent");
+    assert.equal(secondRecord.review_metadata.audit_manifest.review_slot.retry_count, 1);
+    assert.equal(
+      secondRecord.review_metadata.audit_manifest.source_packet_policy.source_packet_action,
+      "review_slot_retry_blocked",
+    );
+  } finally {
+    rmSync(dataDir, { recursive: true, force: true });
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("direct API reviewers approval-request blocks same-packet request-changes retry without disposition", async () => {
+  const cwd = makeWorkspace();
+  const dataDir = mkdtempSync(path.join(tmpdir(), "api-reviewers-approval-request-changes-"));
+  const requestChangesResult = requestChangesReviewFixture("Provider marker: deepseek approval retry guard.");
+  const commonArgs = [
+    "--provider", "deepseek",
+    "--mode", "custom-review",
+    "--scope", "custom",
+    "--scope-paths", "seed.txt",
+    "--prompt", "Review this file.",
+  ];
+  const commonEnv = {
+    API_REVIEWERS_PLUGIN_DATA: dataDir,
+    API_REVIEWERS_MOCK_RESPONSE: mockResponse("deepseek-v4-pro", "chatcmpl-approval-request-changes", requestChangesResult),
+    DEEPSEEK_API_KEY: "secret-test-value",
+  };
+
+  try {
+    writeFileSync(path.join(cwd, "seed.txt"), "export const value = 1;\n");
+
+    const first = await run(["run", ...commonArgs, "--foreground"], { cwd, env: commonEnv });
+    assert.equal(first.status, 0, first.stderr || first.stdout);
+    const firstRecord = parseJson(first.stdout);
+    assert.equal(firstRecord.external_review.review_slot?.verdict, "request_changes");
+    assert.equal(firstRecord.external_review.source_content_transmission, "sent");
+
+    const secondApproval = await run(["approval-request", ...commonArgs], {
+      cwd,
+      env: { ...commonEnv, API_REVIEWERS_TEST_AUTO_APPROVAL: "0" },
+    });
+    assert.equal(secondApproval.status, 1, secondApproval.stderr || secondApproval.stdout);
+    const blocked = parseJson(secondApproval.stdout);
+    assert.equal(blocked.error_code, "review_slot_disposition_required");
+    assert.equal(blocked.runtime_diagnostics.review_slot.retry_count, 1);
+    assert.equal(blocked.runtime_diagnostics.review_slot.verdict, "failed_slot");
+    assert.equal(blocked.runtime_diagnostics.source_packet_policy.source_packet_action, "review_slot_retry_blocked");
+    assert.equal(Object.hasOwn(blocked, "approval_token"), false);
   } finally {
     rmSync(dataDir, { recursive: true, force: true });
     rmSync(cwd, { recursive: true, force: true });
@@ -4951,6 +5040,9 @@ test("direct API reviewers approval-request matches run prompt hash and request 
       "approval_token",
       "selected_source",
       "rendered_prompt_hash",
+      "source_packet_policy",
+      "review_slot_retry_policy",
+      "review_slot",
       "request",
       "selected_route",
       "route_step",
@@ -4980,6 +5072,11 @@ test("direct API reviewers approval-request matches run prompt hash and request 
     assert.deepEqual(approval.request, auditManifest.request);
     assert.deepEqual(approval.selected_source, auditManifest.selected_source);
     assert.deepEqual(approval.scope_resolution, auditManifest.scope_resolution);
+    assert.deepEqual(approval.source_packet_policy, auditManifest.source_packet_policy);
+    assert.deepEqual(approval.review_slot_retry_policy, auditManifest.review_slot_retry_policy);
+    assert.equal(approval.review_slot.retry_fingerprint, auditManifest.review_slot.retry_fingerprint);
+    assert.equal(approval.review_slot.retry_count, 0);
+    assert.equal(approval.review_slot.retry_disposition_required, false);
     assert.equal(approval.rendered_prompt_hash.value, auditManifest.rendered_prompt_hash.value);
     assert.equal(auditManifest.selected_route, "direct_api");
     assert.equal(auditManifest.fallback_reason, "subscription_not_supported");

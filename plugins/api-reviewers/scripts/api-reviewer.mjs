@@ -556,12 +556,12 @@ function reviewSlotFromRecord(record) {
   return slot && typeof slot === "object" && !Array.isArray(slot) ? slot : null;
 }
 
-function priorSlotRequiresRetryDisposition(slot) {
+function priorSlotCountsTowardRetry(slot) {
   if (!slot?.retry_fingerprint) return false;
   if (slot.source_state === SOURCE_CONTENT_TRANSMISSION.NOT_SENT) return false;
-  if (slot.verdict === "approved" || slot.verdict === "request_changes") return false;
+  if (slot.verdict === "approved") return false;
   const reason = String(slot.not_counted_reason ?? "unknown");
-  if (reason === "none" || reason === "stale_head" || reason === "source_not_sent") return false;
+  if (reason === "stale_head" || reason === "source_not_sent") return false;
   return true;
 }
 
@@ -582,7 +582,7 @@ async function collectPriorReviewSlotAttempts(root, currentJobId = null) {
       assertSafeJobId(jobId);
       const parsed = JSON.parse(await readFile(resolve(apiReviewerJobsDir(root), jobId, "meta.json"), "utf8"));
       const slot = reviewSlotFromRecord(parsed);
-      if (priorSlotRequiresRetryDisposition(slot)) attempts.push({ review_slot: slot });
+      if (priorSlotCountsTowardRetry(slot)) attempts.push({ review_slot: slot });
     } catch {
       // Ignore malformed legacy artifacts; retry guards should be driven by
       // validated review-slot records, not by corrupt state.
@@ -2533,7 +2533,11 @@ function sourcePacketPolicyFailureFromManifest(auditManifest) {
     null,
     null,
     false,
-    { source_packet_policy: policy },
+    {
+      source_packet_policy: policy,
+      review_slot_retry_policy: auditManifest?.review_slot_retry_policy ?? null,
+      review_slot: auditManifest?.review_slot ?? null,
+    },
   );
 }
 
@@ -2645,6 +2649,9 @@ function buildApprovalRequest({ provider, cfg, mode, options, scopeInfo }) {
     approval_token: approvalToken,
     selected_source: auditManifest.selected_source,
     rendered_prompt_hash: auditManifest.rendered_prompt_hash,
+    source_packet_policy: auditManifest.source_packet_policy,
+    review_slot_retry_policy: auditManifest.review_slot_retry_policy,
+    review_slot: auditManifest.review_slot,
     request: Object.freeze({
       provider: cfg.display_name,
       model: cfg.model,
@@ -2838,6 +2845,12 @@ function buildRuntimeDiagnostics(diagnostics) {
   }
   if (diagnostics.source_packet_policy) {
     out.source_packet_policy = diagnostics.source_packet_policy;
+  }
+  if (diagnostics.review_slot_retry_policy) {
+    out.review_slot_retry_policy = diagnostics.review_slot_retry_policy;
+  }
+  if (diagnostics.review_slot) {
+    out.review_slot = diagnostics.review_slot;
   }
   return Object.keys(out).length === 0 ? null : out;
 }

@@ -8,7 +8,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { fixtureBranchDiffRepo, fixtureGit, fixtureSeedRepo } from "../helpers/fixture-git.mjs";
-import { badVerdictReviewFixture } from "../helpers/review-fixtures.mjs";
+import { badVerdictReviewFixture, requestChangesReviewFixture } from "../helpers/review-fixtures.mjs";
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const COMPANION = path.join(REPO_ROOT, "plugins/kimi/scripts/kimi-companion.mjs");
@@ -1005,6 +1005,53 @@ test("kimi custom-review blocks fresh same-packet resend after a failed source-s
     assert.equal(first.status, 2, first.stderr);
     const firstRecord = parseJson(first.stdout);
     assert.equal(firstRecord.error_code, "review_not_completed");
+    assert.equal(firstRecord.external_review.source_content_transmission, "sent");
+
+    const second = runCompanion(commonArgs, commonOptions);
+    assert.equal(second.status, 2, second.stderr);
+    const secondRecord = parseJson(second.stdout);
+    assert.equal(secondRecord.error_code, "review_slot_disposition_required");
+    assert.equal(secondRecord.external_review.source_content_transmission, "not_sent");
+    assert.equal(secondRecord.review_metadata.audit_manifest.review_slot.retry_count, 1);
+    assert.equal(
+      secondRecord.review_metadata.audit_manifest.source_packet_policy.source_packet_action,
+      "review_slot_retry_blocked",
+    );
+  } finally {
+    rmSync(dataDir, { recursive: true, force: true });
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("kimi custom-review blocks fresh same-packet resend after a request-changes slot", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "kimi-review-slot-request-changes-cwd-"));
+  const dataDir = mkdtempSync(path.join(tmpdir(), "kimi-review-slot-request-changes-data-"));
+  const requestChangesResult = requestChangesReviewFixture("Kimi request-changes retry guard marker.");
+  try {
+    fixtureSeedRepo(cwd);
+    const commonArgs = [
+      "run",
+      "--mode",
+      "custom-review",
+      "--cwd",
+      cwd,
+      "--scope-paths",
+      "seed.txt",
+      "--foreground",
+      "--",
+      "Review this scope.",
+    ];
+    const commonOptions = {
+      cwd,
+      dataDir,
+      env: { KIMI_MOCK_RESPONSE: requestChangesResult },
+    };
+
+    const first = runCompanion(commonArgs, commonOptions);
+    assert.equal(first.status, 0, first.stderr);
+    const firstRecord = parseJson(first.stdout);
+    assert.equal(firstRecord.status, "completed");
+    assert.equal(firstRecord.external_review.review_slot?.verdict, "request_changes");
     assert.equal(firstRecord.external_review.source_content_transmission, "sent");
 
     const second = runCompanion(commonArgs, commonOptions);

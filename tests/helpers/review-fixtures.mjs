@@ -36,3 +36,22 @@ export function badVerdictReviewFixture(extra = "") {
     extra,
   ].filter(Boolean).join("\n");
 }
+
+export function requestChangesReviewFixture(extra = "") {
+  return [
+    "1. Verdict: REQUEST_CHANGES",
+    "2. Blocking findings",
+    "- Fixture blocker: the selected file was inspected and this review intentionally requests changes.",
+    "3. Non-blocking concerns",
+    "- None for this fixture.",
+    "4. Test gaps",
+    "- Existing smoke coverage is sufficient for the fixture path being exercised here.",
+    "5. Inspection status",
+    "- I inspected the selected files and did not encounter a read denial, permission denial, timeout, truncated output, or placeholder response.",
+    "Checklist:",
+    "- PASS selected source was inspectable.",
+    "- PASS the response is not a shallow placeholder.",
+    "- PASS the request-changes verdict is intentional.",
+    extra,
+  ].filter(Boolean).join("\n");
+}

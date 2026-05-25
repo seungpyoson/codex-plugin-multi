@@ -11,7 +11,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { fixtureBranchDiffRepo, fixtureSeedRepo } from "../helpers/fixture-git.mjs";
-import { badVerdictReviewFixture } from "../helpers/review-fixtures.mjs";
+import { badVerdictReviewFixture, requestChangesReviewFixture } from "../helpers/review-fixtures.mjs";
 import {
   apiKeyAuthMode as geminiApiKeyAuthMode,
   subscriptionAuthMode as geminiSubscriptionAuthMode,
@@ -1918,6 +1918,45 @@ test("gemini custom-review blocks fresh same-packet resend after a failed source
   }
 });
 
+test("gemini custom-review blocks fresh same-packet resend after a request-changes slot", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "gemini-review-slot-request-changes-cwd-"));
+  const dataDir = mkdtempSync(path.join(tmpdir(), "gemini-review-slot-request-changes-data-"));
+  seedMinimalRepo(cwd);
+  const requestChangesResult = requestChangesReviewFixture("Gemini request-changes retry guard marker.");
+  const commonArgs = [
+    "run", "--mode=custom-review", "--foreground", "--model", "gemini-3-flash-preview",
+    "--cwd", cwd, "--scope-paths", "seed.txt", "--", "review selected source",
+  ];
+  const commonOptions = {
+    cwd,
+    dataDir,
+    env: { GEMINI_MOCK_RESPONSE: requestChangesResult },
+  };
+
+  try {
+    const first = runCompanion(commonArgs, commonOptions);
+    assert.equal(first.status, 0, `exit ${first.status}: stderr=${first.stderr}; stdout=${first.stdout}`);
+    const firstRecord = JSON.parse(first.stdout);
+    assert.equal(firstRecord.status, "completed");
+    assert.equal(firstRecord.external_review.review_slot?.verdict, "request_changes");
+    assert.equal(firstRecord.external_review.source_content_transmission, "sent");
+
+    const second = runCompanion(commonArgs, commonOptions);
+    assert.equal(second.status, 2, `exit ${second.status}: stderr=${second.stderr}; stdout=${second.stdout}`);
+    const secondRecord = JSON.parse(second.stdout);
+    assert.equal(secondRecord.error_code, "review_slot_disposition_required");
+    assert.equal(secondRecord.external_review.source_content_transmission, "not_sent");
+    assert.equal(secondRecord.review_metadata.audit_manifest.review_slot.retry_count, 1);
+    assert.equal(
+      secondRecord.review_metadata.audit_manifest.source_packet_policy.source_packet_action,
+      "review_slot_retry_blocked",
+    );
+  } finally {
+    rmTree(dataDir);
+    rmTree(cwd);
+  }
+});
+
 test("gemini review prompt omits provider-specific live verification context", () => {
   const cwd = mkdtempSync(path.join(tmpdir(), "gemini-review-context-cwd-"));
   const binDir = mkdtempSync(path.join(tmpdir(), "gemini-review-context-bin-"));
@@ -3136,6 +3175,68 @@ process.stdout.write(JSON.stringify({
     assert.doesNotMatch(approval.stdout + run.stdout, /secret-test-value/);
   } finally {
     rmTree(approval.dataDir);
+    rmTree(cwd);
+    rmTree(binDir);
+  }
+});
+
+test("gemini approval-request blocks same-packet request-changes retry without disposition", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "gemini-approval-request-retry-cwd-"));
+  const dataDir = mkdtempSync(path.join(tmpdir(), "gemini-approval-request-retry-data-"));
+  fixtureSeedRepo(cwd, {
+    fileName: "seed.txt",
+    fileContents: "GEMINI_APPROVAL_RETRY_SOURCE_SENTINEL\n",
+  });
+  const binDir = mkdtempSync(path.join(tmpdir(), "gemini-approval-request-retry-bin-"));
+  const binary = path.join(binDir, "gemini-approval-request-retry");
+  const reviewText = requestChangesReviewFixture("Gemini API-key approval retry guard marker.");
+  writeFileSync(binary, `#!/usr/bin/env node
+process.stdout.write(JSON.stringify({
+  session_id: "${GEMINI_SESSION_ID}",
+  response: ${JSON.stringify(reviewText)}
+}) + "\\n");
+`, "utf8");
+  chmodSync(binary, 0o755);
+  const commonOptions = [
+    "--mode=custom-review",
+    ...geminiAuthModeArgs(geminiApiKeyAuthMode()),
+    "--binary", binary,
+    "--model", "gemini-3-flash-preview",
+    "--cwd", cwd,
+    "--scope-paths", "seed.txt",
+  ];
+  const env = { GEMINI_API_KEY: "secret-test-value", GOOGLE_API_KEY: "" };
+
+  try {
+    const approval = runCompanion(
+      ["approval-request", ...commonOptions, "--", "review selected source"],
+      { cwd, dataDir, env },
+    );
+    assert.equal(approval.status, 0, approval.stderr || approval.stdout);
+    const request = JSON.parse(approval.stdout);
+
+    const run = runCompanion(
+      ["run", "--foreground", "--lifecycle-events", "jsonl", ...commonOptions, "--approval-token", request.approval_token.value, "--", "review selected source"],
+      { cwd, dataDir, env },
+    );
+    assert.equal(run.status, 0, run.stderr || run.stdout);
+    const record = run.stdout.trim().split("\n").map((line) => JSON.parse(line)).at(-1);
+    assert.equal(record.external_review.review_slot?.verdict, "request_changes");
+    assert.equal(record.external_review.source_content_transmission, "sent");
+
+    const blockedApproval = runCompanion(
+      ["approval-request", ...commonOptions, "--", "review selected source"],
+      { cwd, dataDir, env },
+    );
+    assert.equal(blockedApproval.status, 1, blockedApproval.stderr || blockedApproval.stdout);
+    const blocked = JSON.parse(blockedApproval.stdout);
+    assert.equal(blocked.error, "review_slot_disposition_required");
+    assert.equal(blocked.review_slot.retry_count, 1);
+    assert.equal(blocked.review_slot.verdict, "failed_slot");
+    assert.equal(blocked.source_packet_policy.source_packet_action, "review_slot_retry_blocked");
+    assert.equal(Object.hasOwn(blocked, "approval_token"), false);
+  } finally {
+    rmTree(dataDir);
     rmTree(cwd);
     rmTree(binDir);
   }
