@@ -128,6 +128,23 @@ test("review slot retry fingerprint ignores request settings and failure codes",
     ...base,
     reviewedHeadSha: "def456",
   }).value, fingerprint.value);
+
+  const pathHmacFingerprint = reviewSlotRetryFingerprint({
+    ...base,
+    scope: {
+      ...base.scope,
+      path_hmacs: ["hmac-b", "hmac-a"],
+    },
+  });
+  assert.deepEqual(pathHmacFingerprint.ingredients.scope_path_hmacs, ["hmac-a", "hmac-b"]);
+  assert.notEqual(pathHmacFingerprint.value, fingerprint.value);
+  assert.notEqual(reviewSlotRetryFingerprint({
+    ...base,
+    scope: {
+      ...base.scope,
+      path_hmacs: ["hmac-c"],
+    },
+  }).value, pathHmacFingerprint.value);
 });
 
 test("review slot retry policy fail-closes third same-packet attempt", () => {
@@ -323,6 +340,31 @@ test("review slot disposition requires disposition for finalized failed or missi
     assert.equal(disposition.retry_count, 0);
     assert.equal(disposition.retry_disposition_required, true);
     assert.notEqual(disposition.verdict, "approved");
+  }
+});
+
+test("review slot disposition never counts failed process output as approval", () => {
+  for (const result of ["Verdict: APPROVE", "Verdict: REQUEST_CHANGES"]) {
+    const disposition = buildReviewSlotDisposition({
+      provider: "claude",
+      mode: "review",
+      stage: "final",
+      attemptId: "job-failed",
+      reviewedHeadSha: "head",
+      currentHeadSha: "head",
+      retryFingerprint: "f".repeat(64),
+      retryCount: 0,
+      sourceState: "sent",
+      status: "failed",
+      errorCode: "auth_failed",
+      result,
+      reviewQuality: null,
+    });
+
+    assert.equal(disposition.verdict, "failed_slot");
+    assert.equal(disposition.failed_slot_reason, "auth_failed");
+    assert.equal(disposition.not_counted_reason, "source_sent_unusable");
+    assert.equal(disposition.retry_disposition_required, true);
   }
 });
 

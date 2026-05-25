@@ -365,6 +365,11 @@ function canonicalScopePaths(paths = null) {
   return Object.freeze(paths.map(String).sort((left, right) => left.localeCompare(right)));
 }
 
+function canonicalScopePathHmacs(hmacs = null) {
+  if (!Array.isArray(hmacs)) return null;
+  return Object.freeze(hmacs.map(String).sort((left, right) => left.localeCompare(right)));
+}
+
 function normalizedDisposition(value) {
   const disposition = String(value ?? "none");
   return REVIEW_SLOT_DISPOSITIONS.has(disposition) ? disposition : "none";
@@ -400,7 +405,7 @@ export function reviewSlotRetryFingerprint({
   routeStep = null,
   scope = {},
 } = {}) {
-  const ingredients = Object.freeze({
+  const ingredientsInput = {
     provider: provider ?? null,
     mode: mode ?? null,
     rendered_prompt_hash: hashValue(renderedPromptHash ?? promptHash),
@@ -411,7 +416,12 @@ export function reviewSlotRetryFingerprint({
     scope_name: scope.name ?? scope.scope ?? null,
     scope_base: scope.base ?? scope.scope_base ?? null,
     scope_paths: canonicalScopePaths(scope.paths ?? scope.scope_paths ?? null),
-  });
+  };
+  const scopePathHmacs = canonicalScopePathHmacs(
+    scope.path_hmacs ?? scope.scope_path_hmacs ?? scope.hmacs ?? null,
+  );
+  if (scopePathHmacs !== null) ingredientsInput.scope_path_hmacs = scopePathHmacs;
+  const ingredients = Object.freeze(ingredientsInput);
   return Object.freeze({
     algorithm: "sha256",
     value: hashJson(ingredients),
@@ -590,7 +600,7 @@ export function buildReviewSlotDisposition({
   const parsedVerdict = resultVerdict(result);
   let verdict = parsedVerdict ?? "missing";
   if (status === "failed" && errorCode === "timeout") verdict = "timeout";
-  else if (status && status !== "completed" && verdict === "missing") verdict = "failed_slot";
+  else if (status && status !== "completed") verdict = "failed_slot";
   if (reviewQuality?.failed_review_slot === true && (verdict === "approved" || verdict === "request_changes")) {
     verdict = "failed_slot";
   }

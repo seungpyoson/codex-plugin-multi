@@ -1103,6 +1103,7 @@ export function buildReviewAuditManifest({
       name: scope.name ?? null,
       base: scope.base ?? null,
       paths: scope.paths ?? null,
+      path_hmacs: scope.path_hmacs ?? scope.scope_path_hmacs ?? scope.hmacs ?? null,
     },
   });
   const priorAttempts = Array.isArray(route.reviewSlot?.priorAttempts)
