@@ -196,7 +196,8 @@ that every provider Adapter consumes it.
 Date: 2026-05-25
 Branch: `issue-180-review-slot-disposition-guard`
 Worktree: `.worktrees/issue-180-review-slot-disposition-guard`
-Current head inspected: `6fc72297cee3518264540fd318fe78f517f08098`
+Base code inspected: `6fc72297cee3518264540fd318fe78f517f08098`
+Initial planning-review head: `84a5f782258f1ba4a5ad2e94e3a7276f0c31b416`
 Primary follow-up issue: #180
 
 Baseline verification before code changes:
@@ -313,3 +314,15 @@ how many same-packet attempts already occurred, why a slot is not counted as
 approval, and what disposition ended the slot. That ownership belongs in shared
 policy/audit/status surfaces, with adapters limited to capability facts and
 launch mechanics.
+
+### First #180 Planning Review Feedback
+
+Initial planning-review head `84a5f782258f1ba4a5ad2e94e3a7276f0c31b416`
+received usable APPROVE verdicts from Claude, Gemini, Kimi, DeepSeek, and GLM.
+Grok requested changes before runtime work, citing missing specificity around
+the shared pre-launch enforcement contract and redaction across projected
+surfaces. GLM/Kimi/Claude also raised non-blocking wording risks around
+retry-count semantics, `retry`/`accept` disposition meaning, stale-head tests,
+historical pre-#180 records, and traceability between base head and branch head.
+The follow-up planning doc change addresses those concerns before the runtime
+TDD slice begins.

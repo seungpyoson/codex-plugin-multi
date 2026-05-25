@@ -192,13 +192,18 @@ definition and plan/tasks packet with usable verdicts.
   implementation.
 - **FR-011**: External review slots MUST have provider-neutral disposition
   fields for current head, packet identity, retry count, verdict, source-send
-  state, failed-slot reason, waiver state, and not-counted reason.
+  state, failed-slot reason, waiver state, and not-counted reason. The fields
+  MUST be produced through shared interfaces, not provider adapter branches.
 - **FR-012**: Same-packet retry identity MUST be derived from provider, mode,
   rendered prompt hash, selected source packet hash/counts, reviewed head SHA,
   route, and scope. Failure code and request settings MUST be reported, but
-  they MUST NOT reset the same-packet retry count. A third same-packet attempt
-  MUST fail closed unless the packet is split/narrowed, the provider is
-  switched, the slot is waived, or an explicit override is recorded.
+  they MUST NOT reset the same-packet retry count. Retry count is the number of
+  prior attempts with the same fingerprint: 0 for the initial attempt, 1 for
+  the first retry/second total attempt, and 2 or more for a third-or-later
+  attempt. A third same-packet attempt MUST fail closed before provider launch
+  unless the packet is split/narrowed, the provider is switched, the slot is
+  waived, or an explicit override is recorded. A `retry` disposition cannot
+  satisfy that escape hatch.
 - **FR-013**: External adversarial review of revised #180 planning artifacts
   MUST be unanimous across Claude, Gemini, Grok, GLM, DeepSeek, and Kimi before
   implementation resumes. For this follow-up slice, the current review packet
@@ -210,6 +215,10 @@ definition and plan/tasks packet with usable verdicts.
   capability evidence.
 - **FR-015**: Final review MUST cover the latest head for the implemented issue
   and require all six approvals before merge-readiness is claimed.
+- **FR-016**: Review-slot disposition fields MUST be redacted consistently in
+  audit manifests, JobRecord metadata, external review summaries,
+  lifecycle/status events, review-panel rows, and direct API/OpenRouter
+  approval, waiver, or override artifacts.
 
 ### Key Entities
 

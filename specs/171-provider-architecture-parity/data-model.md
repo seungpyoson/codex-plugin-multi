@@ -182,8 +182,34 @@ Validation rules:
   scope base, and canonicalized relative scope paths or path HMACs.
 - Failure code and request settings are reported fields. They must not reset
   the same-packet retry count; changing them requires explicit disposition.
-- After one same-packet retry, another retry must fail closed until disposition
-  is split/narrow, switch provider, waiver, or explicit override.
+  `request_settings_hash` also remains part of the source-send tuple so request
+  changes can block a send while still preserving the same retry fingerprint.
+- `retry_count` counts prior attempts for the same fingerprint: 0 means initial
+  attempt, 1 means first same-packet retry/second total attempt, and 2 or more
+  means a third-or-later same-packet attempt.
+- `retry_disposition_required` is true when `retry_count >= 1` for a same-packet
+  attempt or when a failed/missing slot is being finalized.
+- A third-or-later same-packet attempt (`retry_count >= 2`) must fail closed
+  before provider launch/continue until disposition is split/narrow, switch
+  provider, waiver, or explicit override. `retry` is valid only for the first
+  retry/second total attempt and cannot unblock a third attempt.
+
+Required shared interfaces:
+
+- `reviewSlotRetryFingerprint(input)`: builds the provider-neutral fingerprint
+  from provider, mode, rendered prompt hash, selected source hash/counts,
+  reviewed head SHA, route step, scope, base, and canonical relative scope paths
+  or path HMACs.
+- `evaluateReviewSlotRetryPolicy(input)`: runs before every source-bearing
+  launch or continuation, consumes prior attempts for the fingerprint and any
+  operator disposition artifacts, and returns `retry_allowed`, `retry_count`,
+  `retry_disposition_required`, and fail-closed reason.
+- `buildReviewSlotDisposition(input)`: normalizes the final slot ledger for
+  audit metadata, JobRecords, external review summaries, lifecycle/status
+  events, and review-panel rows.
+- `redactReviewSlotDisposition(input)`: strips raw source, prompts, provider
+  output, raw command args, and raw filesystem paths from every projected slot
+  surface.
 
 ## Guardrail Test
 
@@ -209,9 +235,11 @@ Validation rules:
   `buildReviewAuditManifest`, `SOURCE_CONTENT_TRANSMISSION`,
   `buildExternalModelFailureDiagnostic`, and `reviewQualityFailureState` where
   the provider path exposes the related policy surface.
-- Review-slot guardrails must enforce the shared retry/disposition interfaces,
-  including `reviewSlotRetryFingerprint` and `buildReviewSlotDisposition`, once
-  the #180 implementation slice begins.
+- Review-slot guardrails must enforce the shared retry/disposition interfaces
+  before any provider launch or continuation, including
+  `reviewSlotRetryFingerprint`, `evaluateReviewSlotRetryPolicy`,
+  `buildReviewSlotDisposition`, and `redactReviewSlotDisposition`, once the
+  #180 implementation slice begins.
 
 ## Issue Fit
 
@@ -236,9 +264,12 @@ Validation rules:
 - `source_state`: `not_sent`, `sent`, or `unknown`
 - `verdict`: `approved`, `request_changes`, `failed_slot`, `missing`, or
   `timeout`
-- `failed_slot_reason`: provider-neutral enum, or null
-- `disposition`: `none`, `retry`, `split`, `switch_provider`, `waive`,
-  `accept`, or `override`
+- `failed_slot_reason`: provider-neutral enum, or null. Seed values include
+  `none`, `step_limit_exceeded`, `timeout`, `login_required`,
+  `source_not_sent`, `missing_verdict`, `semantic_failure`, `usage_limited`,
+  `sandbox_rejected`, `transport_error`, and `unknown`.
+- `disposition`: `none`, `retry`, `split`, `switch_provider`, `waive`, or
+  `override`
 - `not_counted_reason`: `none`, `stale_head`, `source_not_sent`,
   `source_sent_unusable`, `missing_verdict`, `timeout`, `usage_limited`,
   `sandbox_rejected`, `operator_waived`, or `unknown`
@@ -261,8 +292,18 @@ Validation rules:
   current head.
 - Any failed or missing slot must end with explicit disposition before
   completion can be claimed.
+- `none` is valid only for pending records or usable current-head approvals.
+- `retry` is valid only when `retry_count === 1`; it records the first
+  same-packet retry and cannot satisfy the third-attempt escape hatch.
+- `split` means the operator narrowed or split the packet, producing a new
+  retry fingerprint before another provider launch.
+- `switch_provider` means the operator moved the slot to a different provider;
+  the old failed slot remains not counted.
 - `waive` and `override` dispositions require an artifact reference. Artifact
   references must be relative project paths or stable ids, not absolute
   filesystem paths.
 - Disposition fields must not store raw source, prompts, provider output, raw
-  command args, or raw filesystem paths.
+  command args, or raw filesystem paths. This redaction rule applies to audit
+  manifests, JobRecord `review_metadata`, `external_review`, lifecycle/status
+  events, review-panel normalized rows, and direct API/OpenRouter approval,
+  waiver, and override artifacts.

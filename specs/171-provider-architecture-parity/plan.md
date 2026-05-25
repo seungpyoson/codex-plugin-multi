@@ -212,9 +212,23 @@ persist single-attempt slots with `parent_job_id:null` and `resume_chain:[]`.
 The shared model must cover both shapes.
 
 No runtime implementation for this slice starts until the updated spec/tasks
-and source-backed evidence are reviewed. Implementation order after approval:
+and source-backed evidence are reviewed. The shared enforcement contract is:
 
-1. RED tests for retry fingerprint and disposition fields.
+- `reviewSlotRetryFingerprint(input)` builds the same-packet retry fingerprint.
+- `evaluateReviewSlotRetryPolicy(input)` runs before every provider launch or
+  continuation and blocks any third-or-later same-packet attempt
+  (`retry_count >= 2`) unless the operator split/narrowed the packet, switched
+  provider, waived the slot, or recorded an explicit override.
+- `buildReviewSlotDisposition(input)` emits one provider-neutral slot ledger
+  for continuation-capable and single-attempt providers.
+- `redactReviewSlotDisposition(input)` removes raw source, prompts, provider
+  output, raw command args, and raw paths before audit, JobRecord,
+  `external_review`, lifecycle/status, panel, or approval artifact projection.
+
+Implementation order after approval:
+
+1. RED tests for the shared retry/disposition interfaces and fail-closed
+   behavior.
 2. Shared policy/data helpers.
 3. Companion/direct/Grok wiring with thin adapter facts only.
 4. Review panel/status projection.
