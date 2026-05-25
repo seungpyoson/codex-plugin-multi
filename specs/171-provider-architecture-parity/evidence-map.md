@@ -98,17 +98,31 @@ Topology input issue: #170
   after the adapter capacity fact and failed before launch as
   `source_packet_too_large`, with `source_packet_budget_bytes:32768`,
   `selected_source_bytes:63197`, and `source_content_transmission:not_sent`.
+- Cross-repo bolt-v2 PR #479 job `b465418e-913a-42c2-9c84-6befb9c789bb`
+  used the cached installed Kimi plugin, sent two docs files / 44,870 bytes /
+  218 lines at `--max-steps-per-turn 128`, and failed with
+  `step_limit_exceeded` with no verdict. This strengthens the source-bearing
+  capacity evidence but is not evidence against the PR #175 compact prompt
+  branch because it used the cached plugin.
+- Current PR #175 narrowed shard job `6cecf19f-2145-48d2-84b5-cd77bc09c835`
+  stayed under the Kimi adapter cap, sent four files / 13,062 bytes / 309
+  lines, and became `stale_active_job` after 586,979 ms with zero stdout/stderr,
+  no session id, no verdict, and no findings sections. This is failed-slot
+  evidence for residual Kimi runtime/job-lifecycle reliability under #177.
 - `plugins/kimi/scripts/lib/kimi.mjs` parses `Max number of steps reached: N`
   as `step_limit_exceeded`.
 - `tests/unit/job-record.test.mjs` asserts this failure is not a parse error and
   produces retry guidance for a higher step budget or narrower scope after
   source was sent.
 
-Diagnosis: Kimi is showing the shared capacity/budget gap. The provider has a
-step budget capability, lower practical source-packet capacity, and unreliable
-session source retention. Shared policy now preflights Kimi's adapter source
-capacity before source send and blocks Kimi no-source repair; retries must use
-an explicitly narrowed source packet or an explicit resend confirmation.
+Diagnosis: Kimi is showing both the shared capacity/budget gap and a residual
+adapter runtime reliability gap. The provider has a step budget capability,
+lower practical source-packet capacity, unreliable session source retention, and
+can still fail under the 32 KiB cap with stale/empty output. Shared policy now
+preflights Kimi's adapter source capacity before source send and blocks Kimi
+no-source repair; retries must use an explicitly narrowed source packet or an
+explicit resend confirmation. Under-cap execution reliability remains tracked in
+#177 and must not be counted as #171 approval.
 
 ### Grok `grok_cli_login_required`
 

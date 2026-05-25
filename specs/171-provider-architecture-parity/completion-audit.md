@@ -7,7 +7,7 @@ Branch: `goal/provider-architecture-parity-171`
 
 ## Current Status
 
-Implementation is locally complete for the focused #171 parity hardening slice, but merge readiness is not complete because Claude local OAuth inference is failing before source delivery. Code-bearing head `38d4c59` has five usable external approvals; later PR-head changes in this audit section are documentation-only evidence updates.
+Implementation is locally complete for the focused #171 parity hardening slice, but merge readiness is not complete. Current head `249f80bf0b73c9b29db4b5f5e72d0e39c2715248` has green local verification and green GitHub CI. Latest-delta external approvals exist from Claude, Gemini, DeepSeek, and GLM. Kimi has failed both over-cap and under-cap review attempts, and Grok latest-head review was not sent because the sandbox blocked a source-bearing external review for this private/not-verified-public repository.
 
 ## Requirement Coverage
 
@@ -21,12 +21,16 @@ Implementation is locally complete for the focused #171 parity hardening slice, 
 | Grok `--transport auto` is an Adapter transport capability, not alternate provider policy. | Grok CLI-first/web-fallback smoke tests and mode-derived source-bearing guardrail. | Complete |
 | Kimi step-limit and missing-verdict symptoms are handled through shared policy, not a Kimi-only special case. | Kimi compact latest-delta review `0ef067c5-d9be-4820-a7d4-034b337c54b6` sent 63,197 bytes and failed with `step_limit_exceeded` at 128 steps. Raw no-tool continuation of session `73ab07c5-7c8a-4661-a271-632e13a5143d` returned `Verdict: NOT_REVIEWED` because prior source was not retained. Shared policy now blocks Kimi no-source repair by adapter capability and pre-blocks packets above Kimi's 32 KiB source capacity before launch; job `08d2f957-bb06-4222-a15c-651691be8655` proves the same broad packet is now blocked before source send. | Complete for implemented slice; Kimi latest-head approval remains blocked until narrowed review succeeds or is waived |
 | Full guardrail against provider-neutral drift. | `plugin-copies-in-sync.test.mjs`, `docs-contracts.test.mjs`, `external-model-contracts.test.mjs`, and parity-table schema coverage. | Complete for current policy surface |
-| Final six-provider approval. | Current head `29832ae` had usable latest-delta approvals from Claude, Gemini, Grok, DeepSeek, and GLM. Kimi compact latest-delta review failed with `step_limit_exceeded`, and no-source repair is now explicitly disallowed for Kimi because the CLI did not retain source context. | Blocked on Kimi narrowed approval or operator waiver |
+| Final six-provider approval. | Current head `249f80bf0b73c9b29db4b5f5e72d0e39c2715248` has usable latest-delta approvals from Claude, Gemini, DeepSeek, and GLM. Kimi narrowed shard `6cecf19f-2145-48d2-84b5-cd77bc09c835` sent 13,062 bytes and became `stale_active_job` with no verdict. Grok latest-head source-bearing review was blocked before send by sandbox policy. | Blocked on Kimi usable verdict or waiver, plus Grok usable verdict or waiver |
 
 ## Verification Evidence
 
 | Command | Result |
 | --- | --- |
+| `node --test --test-name-pattern "explicit sent source transmission|source packet policy transmission|no-source resume progress" tests/unit/companion-common.test.mjs` | Passed after lifecycle source-state coverage. |
+| `node --test --test-name-pattern "plugin packaging copies expose|explicit sent source transmission|source packet policy transmission" tests/unit/companion-common.test.mjs` | Passed after plugin-copy lifecycle coverage. |
+| `CODEX_PLUGIN_SKIP_SMOKE=1 CODEX_PLUGIN_FULL_TESTS=1 npm run test:coverage` | Passed; copied `companion-common` branch coverage rose above baseline. |
+| `gh pr checks 175 --repo seungpyoson/codex-plugin-multi` | Passed on head `249f80bf0b73c9b29db4b5f5e72d0e39c2715248`: SonarCloud, lint, smoke api-reviewers, smoke claude, smoke gemini, smoke grok, smoke kimi, and test. |
 | `node --check plugins/grok/scripts/grok-web-reviewer.mjs` | Passed after mode-derived Grok source-bearing change. |
 | `node --test tests/unit/plugin-copies-in-sync.test.mjs` | Passed, 55 tests. |
 | `node --test tests/unit/docs-contracts.test.mjs tests/unit/provider-route-policy.test.mjs tests/unit/external-model-contracts.test.mjs` | Passed, 63 tests. |
@@ -46,29 +50,41 @@ The focused current-delta review packets stayed under the shared source-packet b
 
 - `provider-architecture-parity-171-focused-current.diff`: current hardening delta.
 - `provider-architecture-parity-171-focused-evidence.md`: scope, root problem, verification, and review focus.
-- Latest code-bearing focused packet for direct API/Grok/Kimi refresh: 22914 bytes across eight diff files, not full file bodies.
+- Latest-delta refresh used branch-diff source packets from `29832ae86c1f883dcdcb5e2732f4fb7a8b58aae7` to `249f80bf0b73c9b29db4b5f5e72d0e39c2715248`; direct API approval preflights selected 18 files / 68,196 bytes / 1,324 lines, while the Kimi narrowed shard selected 4 files / 13,062 bytes / 309 lines.
 - Full `git diff origin/main`: 597224 bytes, intentionally not sent as one source packet because it exceeded the 512 KiB shared budget.
 
-Code-bearing approvals for `38d4c59`:
+Latest-delta approvals for `29832ae86c1f883dcdcb5e2732f4fb7a8b58aae7..249f80bf0b73c9b29db4b5f5e72d0e39c2715248`:
+
+- Claude: APPROVE, job `ba6a2dad-4ca3-402b-a1f7-b0ddf7e8d099`.
+- Gemini: APPROVE, job `19017086-9290-43ad-a9fc-ba22190a430d`.
+- GLM: APPROVE, job `job_6975cf07-9a83-4408-b53f-15377dd2377e`.
+- DeepSeek: APPROVE, job `job_697a7d54-a3dd-4d7f-a020-fba3fe8399e4`.
+
+Current failed or missing latest-head slots:
+
+- Kimi: FAILED. Broad job `08d2f957-bb06-4222-a15c-651691be8655` was blocked before source send as `source_packet_too_large`. Narrowed shard `6cecf19f-2145-48d2-84b5-cd77bc09c835` sent 4 files / 13,062 bytes / 309 lines, then became `stale_active_job` after 586,979 ms with zero stdout/stderr, no session id, no verdict, and no findings sections.
+- Grok: NOT SENT. The attempted latest-head `--transport auto` review was rejected by sandbox policy before source send.
+
+Historical code-bearing approvals for `38d4c59` are stale for the current head:
 
 - Gemini: APPROVE, job `c8515a3d-1338-411e-a675-8093967a94f5`.
 - Grok: APPROVE, job `job_69fb63bd-363b-40d7-a963-6d3d79df5d1b`; `--transport auto` recorded `fallback_reason=grok_cli_login_required`, `selected_route=subscription_web`, and no paid API fallback.
 - GLM: APPROVE, job `job_25e493d7-93b9-4851-abee-dba13358ecfc`.
 - DeepSeek: APPROVE, job `job_14c3e957-3395-4b0c-9035-b17cd155a04e`.
-- Kimi: APPROVE, continue job `987ecc31-66af-49e4-8cfb-146ccd341827`; parent `4d7f6ddf-130a-46dd-850b-e70de3bbba98` hit `step_limit_exceeded`, continue used `resume_without_source_resend`, selected zero files, and returned APPROVE.
+- Kimi: at the time was recorded as APPROVE via continue job `987ecc31-66af-49e4-8cfb-146ccd341827`; later raw no-tool continuation evidence showed Kimi did not retain selected source reliably, so current policy no longer treats Kimi no-source repair as supported.
 
 Gemini Code Assist comments:
 
 - Resolved stale `sourceTransmission` typo thread; current Grok code uses `sourceContentTransmissionForExecution`.
 - Resolved stale Grok auto-fallback diagnostics thread; current prompt-size fallback preserves `diagnostics.cli_request`.
 
-Usable approvals before the Kimi repair follow-up:
+Historical usable approvals before the Kimi repair follow-up:
 
 - Gemini: APPROVE.
 - Grok: APPROVE.
 - GLM: APPROVE.
 - DeepSeek: APPROVE.
-- Kimi: APPROVE after no-source resend continuation from `step_limit_exceeded`.
+- Kimi: was recorded as APPROVE after no-source continuation from `step_limit_exceeded`; later evidence invalidated that as a current Kimi policy assumption.
 
 Latest-delta refresh before the Kimi missing-verdict repair fix:
 
@@ -78,11 +94,12 @@ Latest-delta refresh before the Kimi missing-verdict repair fix:
 - DeepSeek: APPROVE on head `4960b04`.
 - Kimi: unusable. The first latest-delta attempt hit `step_limit_exceeded`; a no-source continue returned substantive APPROVE-like prose but omitted the required verdict marker; a second repair attempt exposed that failed no-source repairs did not carry the original source attempt and therefore resent source. This is fixed in the shared retry policy and must be re-reviewed.
 
-Unusable slot:
+Historical unusable slot:
 
 - Claude: code-bearing review job `850deefe-bf2f-4f11-a65c-d024a47f629c`, `oauth_inference_rejected`, HTTP 401 before source delivery, `source_content_transmission=not_sent`, zero token usage.
 
 ## Remaining Gate
 
-1. Refresh/fix Claude OAuth non-interactive inference or obtain an explicit operator waiver.
-2. Re-run `npm run lint:sync` and a final test command after any further code changes.
+1. Get a usable Kimi latest-head verdict on narrowed shards or an explicit operator waiver.
+2. Get a usable Grok latest-head verdict after explicit risk approval or an explicit operator waiver.
+3. Re-run `npm run lint:sync` and a final test command after any further code changes.

@@ -1,30 +1,34 @@
 # Final External Review Results
 
-Stage: code-bearing review refresh for PR code head `38d4c59`
-Status: five provider approvals recorded for the code-bearing changes; final six-provider gate blocked on Claude local OAuth readiness or explicit operator waiver
+Stage: latest-head review refresh for PR code head `249f80bf0b73c9b29db4b5f5e72d0e39c2715248`
+Status: four latest-delta provider approvals recorded; final six-provider gate is blocked on Kimi and Grok, not Claude
 
 ## Review Packet
 
-- Current-head focused source packet: branch-diff from `4ac2b89` to `38d4c59`.
-- Latest focused packet for direct API/Grok/Kimi refresh: 22914 bytes across eight diff files, not full file bodies.
+- Current-head focused source packet: branch-diff from `29832ae86c1f883dcdcb5e2732f4fb7a8b58aae7` to `249f80bf0b73c9b29db4b5f5e72d0e39c2715248`.
+- Latest-delta refresh used branch-diff source packets from `29832ae86c1f883dcdcb5e2732f4fb7a8b58aae7` to `249f80bf0b73c9b29db4b5f5e72d0e39c2715248`; direct API approval preflights selected 18 files / 68,196 bytes / 1,324 lines, while the Kimi narrowed shard selected 4 files / 13,062 bytes / 309 lines.
 - Earlier packet before the Kimi missing-verdict repair follow-up: `/private/tmp/cpm-171-review/provider-architecture-parity-171-focused-current.diff` plus `/private/tmp/cpm-171-review/provider-architecture-parity-171-focused-evidence.md`, 165844 bytes across two files.
 - Reason for focused packet: full `git diff origin/main` packet was 597224 bytes, above the shared 512 KiB source-packet budget; reviewers were therefore scoped to the current hardening delta instead of bypassing the new policy.
 
-## Code-Bearing Review Results
+## Latest-Delta Review Results
 
 | Provider | Result | Job | Source State | Notes |
 | --- | --- | --- | --- | --- |
-| Gemini | APPROVE | `c8515a3d-1338-411e-a675-8093967a94f5` | sent | No blocking findings. Non-blocking binary-diff concern acknowledged; shared `diffSourceFiles` owns diff rendering. |
-| Grok | APPROVE | `job_69fb63bd-363b-40d7-a963-6d3d79df5d1b` | sent | `--transport auto` fell back from `grok_cli_login_required` to local web, selected `subscription_web`, no paid API fallback. |
-| GLM | APPROVE | `job_25e493d7-93b9-4851-abee-dba13358ecfc` | sent | No blockers. Non-blocking cleanup notes only. |
-| DeepSeek | APPROVE | `job_14c3e957-3395-4b0c-9035-b17cd155a04e` | sent | No blockers. Non-blocking cleanup notes only. |
-| Kimi | APPROVE | `987ecc31-66af-49e4-8cfb-146ccd341827` | not_sent on continue | Initial code-bearing review job `4d7f6ddf-130a-46dd-850b-e70de3bbba98` hit `step_limit_exceeded` after source send. Continue used `resume_without_source_resend`, selected zero files, and returned APPROVE. |
+| Claude | APPROVE | `ba6a2dad-4ca3-402b-a1f7-b0ddf7e8d099` | sent | No blocking findings on `29832ae..249f80b`. |
+| Gemini | APPROVE | `19017086-9290-43ad-a9fc-ba22190a430d` | sent | No blocking findings on `29832ae..249f80b`. |
+| GLM | APPROVE | `job_6975cf07-9a83-4408-b53f-15377dd2377e` | sent | No blockers on `29832ae..249f80b`. |
+| DeepSeek | APPROVE | `job_697a7d54-a3dd-4d7f-a020-fba3fe8399e4` | sent | No blockers on `29832ae..249f80b`. |
 
-## Unusable Slot
+## Blocked Or Missing Slots
 
 | Provider | Result | Job | Source State | Blocker |
 | --- | --- | --- | --- | --- |
-| Claude | FAILED | `850deefe-bf2f-4f11-a65c-d024a47f629c` | not_sent | `oauth_inference_rejected`: Claude Code non-interactive OAuth returned HTTP 401 before source delivery. |
+| Kimi | FAILED | `08d2f957-bb06-4222-a15c-651691be8655`, `6cecf19f-2145-48d2-84b5-cd77bc09c835` | not_sent, then sent | Broad packet was blocked pre-source as `source_packet_too_large`; under-cap shard sent 13,062 bytes and became `stale_active_job` after 586,979 ms with no verdict. |
+| Grok | NOT_SENT | n/a | not_sent | Sandbox rejected the source-bearing `--transport auto` latest-head review before source send for this private/not-verified-public repository. |
+
+## Historical Code-Bearing Review Results
+
+Earlier head `38d4c59` had five recorded approvals, including a Kimi no-source continuation. That Kimi approval is now historical only: later raw no-tool continuation evidence showed Kimi does not retain selected source reliably, so PR #175 now models Kimi no-source repair as unsupported and requires a fresh Kimi verdict or waiver.
 
 ## Review Follow-Ups Addressed
 
@@ -49,4 +53,4 @@ Status: five provider approvals recorded for the code-bearing changes; final six
 
 ## Remaining Gate
 
-Final six-provider approval is not complete because Claude failed before source send with local OAuth HTTP 401. The code-bearing changes have five usable approvals; subsequent PR-head changes are audit-evidence documentation only. Claude requires OAuth repair or an explicit operator waiver before the six-provider merge gate is satisfied.
+Final six-provider approval is not complete. Claude, Gemini, GLM, and DeepSeek approved the latest `29832ae..249f80b` delta. Kimi requires a usable narrowed-shard verdict or explicit waiver. Grok requires an explicit risk-approved latest-head run or explicit waiver. PR #175 remains draft and not merge-ready.

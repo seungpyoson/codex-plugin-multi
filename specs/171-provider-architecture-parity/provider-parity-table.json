@@ -512,6 +512,8 @@
         "Kimi job 0ef067c5-d9be-4820-a7d4-034b337c54b6: compact 63197-byte source packet failed with step_limit_exceeded at 128 steps",
         "Raw Kimi session 73ab07c5-7c8a-4661-a271-632e13a5143d no-tool continuation returned Verdict: NOT_REVIEWED because prior source was absent",
         "Kimi job 08d2f957-bb06-4222-a15c-651691be8655: same 63197-byte packet blocked before launch with source_packet_too_large and source_content_transmission:not_sent after the adapter capacity fact",
+        "bolt-v2 PR #479 Kimi job b465418e-913a-42c2-9c84-6befb9c789bb: cached installed plugin sent 44870 bytes and failed with step_limit_exceeded at 128 steps",
+        "PR #175 Kimi shard 6cecf19f-2145-48d2-84b5-cd77bc09c835: under-cap 13062-byte source packet became stale_active_job with no verdict",
         "/private/tmp/cpm-171-plan-review/kimi-result.json",
         "/private/tmp/cpm-171-final-review/kimi-final2.json",
         "/private/tmp/cpm-171-final-review/kimi-final4.json",
