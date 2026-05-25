@@ -135,7 +135,7 @@ test("buildReviewAuditManifest fail-closes third same-packet retry before source
   assert.equal(manifest.source_packet_policy.source_packet_action, "review_slot_retry_blocked");
   assert.equal(
     manifest.source_packet_policy.source_packet_policy_error_code,
-    "third_same_packet_retry_requires_disposition",
+    "retry_disposition_not_valid_for_third_attempt",
   );
   assert.equal(manifest.source_content_transmission, "not_sent");
 });

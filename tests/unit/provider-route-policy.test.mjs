@@ -156,7 +156,20 @@ test("review slot retry policy fail-closes third same-packet attempt", () => {
   assert.equal(blocked.retry_disposition_required, true);
   assert.equal(blocked.slot_retry_allowed, false);
   assert.equal(blocked.source_send_allowed, false);
-  assert.equal(blocked.fail_closed_reason, "third_same_packet_retry_requires_disposition");
+  assert.equal(blocked.fail_closed_reason, "retry_disposition_not_valid_for_third_attempt");
+
+  const accumulated = evaluateReviewSlotRetryPolicy({
+    retryFingerprint,
+    priorAttempts: [
+      { review_slot: { retry_fingerprint: retryFingerprint, retry_count: 0, attempt_id: "attempt-1" } },
+      { review_slot: { retry_fingerprint: retryFingerprint, retry_count: 1, attempt_id: "attempt-2" } },
+    ],
+    disposition: "override",
+    overrideArtifact: "reviews/override-180.md",
+  });
+
+  assert.equal(accumulated.retry_count, 2);
+  assert.equal(accumulated.slot_retry_allowed, true);
 
   assert.equal(evaluateReviewSlotRetryPolicy({
     retryFingerprint,

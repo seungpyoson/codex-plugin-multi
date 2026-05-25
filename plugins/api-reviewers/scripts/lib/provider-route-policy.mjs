@@ -428,13 +428,29 @@ function retryFingerprintForAttempt(attempt = null) {
 }
 
 function retryCountContribution(attempt = null, fingerprint = null) {
-  if (!fingerprint || retryFingerprintForAttempt(attempt) !== fingerprint) return 0;
+  if (!fingerprint || retryFingerprintForAttempt(attempt) !== fingerprint) {
+    return { flat: 0, accumulated: 0 };
+  }
   const nestedSlot =
     attempt?.review_slot ??
     attempt?.review_metadata?.audit_manifest?.review_slot ??
     attempt;
   const priorCount = nestedSlot?.retry_count;
-  return Number.isSafeInteger(priorCount) && priorCount >= 0 ? priorCount + 1 : 1;
+  if (Number.isSafeInteger(priorCount) && priorCount > 0) {
+    return { flat: 0, accumulated: priorCount + 1 };
+  }
+  return { flat: 1, accumulated: 0 };
+}
+
+function retryCountForAttempts(attempts = [], fingerprint = null) {
+  let flatCount = 0;
+  let accumulatedCount = 0;
+  for (const attempt of attempts) {
+    const contribution = retryCountContribution(attempt, fingerprint);
+    flatCount += contribution.flat;
+    accumulatedCount = Math.max(accumulatedCount, contribution.accumulated);
+  }
+  return Math.max(flatCount, accumulatedCount);
 }
 
 export function evaluateReviewSlotRetryPolicy({
@@ -446,9 +462,7 @@ export function evaluateReviewSlotRetryPolicy({
 } = {}) {
   const fingerprint = hashValue(retryFingerprint);
   const attempts = Array.isArray(priorAttempts) ? priorAttempts : [];
-  const retryCount = fingerprint
-    ? attempts.reduce((count, attempt) => count + retryCountContribution(attempt, fingerprint), 0)
-    : 0;
+  const retryCount = fingerprint ? retryCountForAttempts(attempts, fingerprint) : 0;
   const normalized = normalizedDisposition(disposition);
   const hasWaiverArtifact = artifactRef(waiverArtifact) !== null;
   const hasOverrideArtifact = artifactRef(overrideArtifact) !== null;
@@ -458,15 +472,15 @@ export function evaluateReviewSlotRetryPolicy({
   const retryDispositionRequired = retryCount >= 1;
   let allowed = true;
   let reason = null;
-  if (retryCount >= 2 && !hasEscapeDisposition) {
+  if (retryCount >= 2 && normalized === "retry") {
+    allowed = false;
+    reason = "retry_disposition_not_valid_for_third_attempt";
+  } else if (retryCount >= 2 && !hasEscapeDisposition) {
     allowed = false;
     reason = "third_same_packet_retry_requires_disposition";
   } else if (retryCount >= 1 && normalized === "none") {
     allowed = false;
     reason = "review_slot_disposition_required";
-  } else if (retryCount >= 2 && normalized === "retry") {
-    allowed = false;
-    reason = "retry_disposition_not_valid_for_third_attempt";
   }
   return Object.freeze({
     retry_fingerprint: fingerprint,
