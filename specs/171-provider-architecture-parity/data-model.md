@@ -158,8 +158,17 @@ Validation rules:
   `requires_override`, or `unknown`
 - `source_send_allowed`: boolean
 - `retry_allowed`: boolean
+- `retry_fingerprint`: stable identity for same-packet retry comparison
+- `retry_count`: integer count of prior attempts with the same fingerprint
+- `retry_disposition_required`: boolean
+- `request_settings_hash`: hash of model, timeout, step, token, temperature,
+  and stream settings; stored for audit, not for resetting retry identity
 - `resend_requires_confirmation`: boolean
 - `surface_changed`: boolean
+- `previous_attempt_id`: job id or artifact id for the previous attempt, or
+  null
+- `previous_attempt_error_code`: failure code from the previous attempt, or
+  null
 
 Validation rules:
 
@@ -168,6 +177,13 @@ Validation rules:
 - Over-budget predictable failures should happen before source send.
 - Full-source to diff/shard changes must be audited and cannot count as the
   original review surface approval.
+- Same-packet retry identity must include provider, mode, rendered prompt hash,
+  selected source hash/counts, reviewed head SHA, route step, scope name,
+  scope base, and canonicalized relative scope paths or path HMACs.
+- Failure code and request settings are reported fields. They must not reset
+  the same-packet retry count; changing them requires explicit disposition.
+- After one same-packet retry, another retry must fail closed until disposition
+  is split/narrow, switch provider, waiver, or explicit override.
 
 ## Guardrail Test
 
@@ -193,6 +209,9 @@ Validation rules:
   `buildReviewAuditManifest`, `SOURCE_CONTENT_TRANSMISSION`,
   `buildExternalModelFailureDiagnostic`, and `reviewQualityFailureState` where
   the provider path exposes the related policy surface.
+- Review-slot guardrails must enforce the shared retry/disposition interfaces,
+  including `reviewSlotRetryFingerprint` and `buildReviewSlotDisposition`, once
+  the #180 implementation slice begins.
 
 ## Issue Fit
 
@@ -207,8 +226,24 @@ Validation rules:
 - `stage`: `plan_tasks` or `final`
 - `reviewers`: Claude, Gemini, Grok, GLM, DeepSeek, Kimi
 - `source_packet`: source files/counts/hash summary
+- `reviewed_head_sha`: exact head SHA reviewed
+- `slot_id`: stable provider/mode/head/packet slot id
+- `attempt_id`: job id or artifact id for this attempt
+- `parent_attempt_id`: prior attempt id for retry/continue, or null
+- `retry_fingerprint`: same-packet retry identity
+- `retry_count`: integer
+- `request_settings_hash`: request settings hash for audit, or null
+- `source_state`: `not_sent`, `sent`, or `unknown`
 - `verdict`: `approved`, `request_changes`, `failed_slot`, `missing`, or
   `timeout`
+- `failed_slot_reason`: provider-neutral enum, or null
+- `disposition`: `none`, `retry`, `split`, `switch_provider`, `waive`,
+  `accept`, or `override`
+- `not_counted_reason`: `none`, `stale_head`, `source_not_sent`,
+  `source_sent_unusable`, `missing_verdict`, `timeout`, `usage_limited`,
+  `sandbox_rejected`, `operator_waived`, or `unknown`
+- `waiver_artifact`: path/id when disposition is `waive`, else null
+- `override_artifact`: path/id when disposition is `override`, else null
 - `job_or_artifact`: job id, URL, or file path
 
 ## Verification Evidence
@@ -222,3 +257,12 @@ Validation rules:
 - Unanimity requires every reviewer to return usable `approved`.
 - Failed slots, missing verdicts, source-send failures, and timeouts are not
   approvals.
+- Historical approvals cannot count when `reviewed_head_sha` differs from the
+  current head.
+- Any failed or missing slot must end with explicit disposition before
+  completion can be claimed.
+- `waive` and `override` dispositions require an artifact reference. Artifact
+  references must be relative project paths or stable ids, not absolute
+  filesystem paths.
+- Disposition fields must not store raw source, prompts, provider output, raw
+  command args, or raw filesystem paths.

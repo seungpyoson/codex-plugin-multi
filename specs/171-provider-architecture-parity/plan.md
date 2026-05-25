@@ -120,12 +120,21 @@ Required reviewers:
 - DeepSeek
 - Kimi
 
-Required reviewed artifacts:
+Initial #171 gate reviewed artifacts:
 
 - `root-problems.md`
 - `spec.md`
 - `plan.md`
 - `tasks.md`
+
+#180 review-slot disposition reviewed artifacts:
+
+- `spec.md`
+- `data-model.md`
+- `plan.md`
+- `tasks.md`
+- `quickstart.md`
+- `evidence-map.md`
 
 Evidence artifacts may be included or sharded:
 
@@ -188,3 +197,31 @@ blocker and one Kimi combined-packet timeout. The Grok blocker was applied to
 `tasks.md`, and the updated `plan.md`/`tasks.md` delta received six usable
 APPROVE verdicts. Runtime implementation may start, constrained to the approved
 #171 shared-policy scope and TDD task order.
+
+## #180 Follow-Up Slice
+
+#180 reopens the planning gate only for review-slot disposition and
+same-packet retry control. Existing source-packet policy already blocks unsafe
+resend after a source-bearing failure, but hard evidence shows no
+provider-neutral retry fingerprint, retry count, or final disposition ledger.
+
+This slice must stay provider-neutral. Kimi is the largest evidence sample, not
+the special-case root. Claude/Gemini/Kimi continuation paths already carry
+`parent_job_id` and `resume_chain`; DeepSeek/GLM direct API and Grok currently
+persist single-attempt slots with `parent_job_id:null` and `resume_chain:[]`.
+The shared model must cover both shapes.
+
+No runtime implementation for this slice starts until the updated spec/tasks
+and source-backed evidence are reviewed. Implementation order after approval:
+
+1. RED tests for retry fingerprint and disposition fields.
+2. Shared policy/data helpers.
+3. Companion/direct/Grok wiring with thin adapter facts only.
+4. Review panel/status projection.
+5. Sync generated/package copies.
+6. Focused tests, full shared verification, then latest-head external reviews.
+
+Existing JobRecords and historical review artifacts do not gain these fields.
+They must project null/unknown disposition values and cannot satisfy the new
+same-packet retry guard unless the implementation can derive the fingerprint
+from existing audit metadata.

@@ -92,6 +92,10 @@ provider-specific limits supplied only by Adapter capabilities.
 3. **Given** source was sent and a provider fails, **When** retry is requested,
    **Then** the tool does not auto-resend source without an explicit policy
    decision and matching approval.
+4. **Given** the same provider, head, mode, prompt, route, scope, and source
+   packet already had one failed same-packet retry, **When** another retry is
+   requested, **Then** shared policy blocks the retry until the operator records
+   a disposition: split/narrow, switch provider, waive, or explicit override.
 
 ---
 
@@ -186,13 +190,25 @@ definition and plan/tasks packet with usable verdicts.
   issue is proven not to duplicate #171/#159/#172/#173.
 - **FR-010**: Speckit plan/tasks artifacts MUST be updated before any further
   implementation.
-- **FR-011**: External adversarial review of revised `root-problems.md`,
-  `spec.md`, `plan.md`, and `tasks.md` MUST be unanimous across Claude, Gemini,
-  Grok, GLM, DeepSeek, and Kimi before implementation resumes.
-- **FR-012**: Implementation MUST proceed one issue at a time, using TDD
+- **FR-011**: External review slots MUST have provider-neutral disposition
+  fields for current head, packet identity, retry count, verdict, source-send
+  state, failed-slot reason, waiver state, and not-counted reason.
+- **FR-012**: Same-packet retry identity MUST be derived from provider, mode,
+  rendered prompt hash, selected source packet hash/counts, reviewed head SHA,
+  route, and scope. Failure code and request settings MUST be reported, but
+  they MUST NOT reset the same-packet retry count. A third same-packet attempt
+  MUST fail closed unless the packet is split/narrowed, the provider is
+  switched, the slot is waived, or an explicit override is recorded.
+- **FR-013**: External adversarial review of revised #180 planning artifacts
+  MUST be unanimous across Claude, Gemini, Grok, GLM, DeepSeek, and Kimi before
+  implementation resumes. For this follow-up slice, the current review packet
+  is `spec.md`, `data-model.md`, `plan.md`, `tasks.md`, `quickstart.md`, and
+  `evidence-map.md`; failed or unavailable reviewer slots require explicit
+  operator waiver artifacts.
+- **FR-014**: Implementation MUST proceed one issue at a time, using TDD
   vertical slices and no provider-specific patches unless backed by clear
   capability evidence.
-- **FR-013**: Final review MUST cover the latest head for the implemented issue
+- **FR-015**: Final review MUST cover the latest head for the implemented issue
   and require all six approvals before merge-readiness is claimed.
 
 ### Key Entities

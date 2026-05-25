@@ -190,3 +190,126 @@ that every provider Adapter consumes it.
   occurrence.
 - Kimi route capability facts for direct API/OpenRouter, if any.
 - Six-reviewer approval of revised root problems/spec/plan/tasks.
+
+## #180 Follow-Up Evidence: Review Slot Disposition
+
+Date: 2026-05-25
+Branch: `issue-180-review-slot-disposition-guard`
+Worktree: `.worktrees/issue-180-review-slot-disposition-guard`
+Current head inspected: `6fc72297cee3518264540fd318fe78f517f08098`
+Primary follow-up issue: #180
+
+Baseline verification before code changes:
+
+- Duplicate issue search found no existing issue for "review-slot disposition"
+  or "same-packet retry guard".
+- #180 was opened with labels `P1`, `architecture`, and `follow-up`.
+- `npm ci` completed with 0 vulnerabilities.
+- `npm test` passed before implementation: 2162 pass, 0 fail, 12 skipped.
+
+### Current Shared Source-Packet Policy
+
+- `scripts/lib/provider-route-policy.mjs` already exposes shared policy domains
+  for route, packet, readiness/auth, status/lifecycle, failure taxonomy,
+  suggested action, review quality, audit, docs, and sync.
+- `evaluateSourcePacketPolicy` records `source_packet_budget_bytes`,
+  `selected_source_bytes`, `source_packet_within_budget`,
+  `source_packet_override_approved`, `source_packet_override_source`,
+  `source_packet_action`, `source_content_transmission`,
+  `resend_confirmation_required`, and `review_surface_changed`.
+- `evaluateSourcePacketPolicy` blocks automatic source resend after a failed
+  source-bearing attempt unless there is explicit resend confirmation or a
+  narrowed packet. It also permits no-source continuation for selected failure
+  classes when the provider capability supports source retention.
+- Gap: `sourcePacketHash` is private and covers only selected-source files and
+  totals. The shared policy has no exported retry fingerprint that includes
+  provider, mode, reviewed head, rendered prompt hash, route, scope base, or
+  scope paths/path HMACs.
+- Gap: current policy has no `retry_count`, `slot_id`, `attempt_id`,
+  `parent_attempt_id`, `disposition`, `not_counted_reason`,
+  `waiver_artifact`, or `override_artifact`. A second resend can be explicitly
+  confirmed, but a third same-packet attempt is not fail-closed by shared
+  retry-count/disposition state.
+
+### Current Audit And JobRecord Surfaces
+
+- `scripts/lib/review-prompt.mjs` `buildReviewAuditManifest` already records
+  ingredients needed for a future retry fingerprint: `rendered_prompt_hash`,
+  `selected_source`, `git_identity.head_sha`, `request`, `scope_resolution`,
+  `selected_route`, `route_step`, `fallback_reason`, auth/billing path,
+  `source_packet_policy`, `error_code`, and `review_quality`.
+- Gap: the audit manifest does not expose a normalized review-slot disposition
+  object or top-level fields for `reviewed_head_sha`, `slot_id`, `attempt_id`,
+  `parent_attempt_id`, `retry_fingerprint`, `retry_count`,
+  `request_settings_hash`, `source_state`, `verdict`, `failed_slot_reason`,
+  `disposition`, `not_counted_reason`, `waiver_artifact`, or
+  `override_artifact`.
+- `plugins/claude/scripts/lib/job-record.mjs`,
+  `plugins/gemini/scripts/lib/job-record.mjs`, and
+  `plugins/kimi/scripts/lib/job-record.mjs` converge foreground, background,
+  queued, and terminal states through one `buildJobRecord` shape. They forbid a
+  full `prompt` field and persist only `prompt_head`, redacted `result`,
+  `review_metadata`, and `external_review`.
+- Gap: companion JobRecords include `parent_job_id` and `resume_chain`, but the
+  expected key set has no slot/disposition ledger. Historical records can only
+  project null/unknown values for #180 fields.
+
+### Current Provider Launch/Continuation Surfaces
+
+- Claude, Gemini, and Kimi `reviewAuditManifest` calls pass
+  `previousAttempt`, `resendConfirmationApproved`,
+  `resumeWithoutSourceResend`, and source-packet override state into the shared
+  audit manifest.
+- Claude, Gemini, and Kimi `continue --job` paths compute
+  `previous_source_attempt` with `sourcePacketPreviousAttemptForContinuation`,
+  store `parent_job_id`, and append the provider session id to `resume_chain`.
+- Kimi differs only in local helper shape: it inlines
+  `sourcePacketOverrideApproved`/`sourcePacketOverrideSource` into the route
+  object while Claude/Gemini use `sourcePacketOverrideRouteFields(invocation)`.
+  This is seed evidence from the #174 review that copy drift still matters.
+- Grok and direct API reviewers build shared audit manifests and JobRecords for
+  single-attempt slots, but they persist `parent_job_id:null` and
+  `resume_chain:[]`. #180 must cover both continuation chains and
+  single-attempt providers.
+- Gap: none of the five runtime entrypoints records final slot disposition or
+  a third-attempt same-packet fail-closed decision before launch.
+
+### Current Status / Review Panel Surface
+
+- `scripts/lib/review-panel.mjs` normalizes heterogeneous provider JobRecords
+  into rows with provider, job id, state, status, readiness, source
+  transmission, elapsed/timeout, result, semantic failure, inspection, error
+  code, HTTP status, and semantic reasons.
+- It treats completed records with `review_quality.failed_review_slot !== true`
+  as `review-ready` / `completed_approved` when the result says
+  `Verdict: APPROVE`, and completed records with `failed_review_slot:true` as
+  `completed_failed_review_slot`.
+- Gap: the panel has no column or state for retry fingerprint, retry count,
+  not-counted reason, final disposition, waiver artifact, or override artifact.
+  A failed slot can be visible as failed, but there is no operator-visible proof
+  that it was split, switched, waived, overridden, or excluded from approval.
+
+### Current Test Coverage
+
+- `tests/unit/provider-route-policy.test.mjs` proves over-budget pre-send
+  blocking, explicit large-packet override, automatic resend prevention after a
+  failed source-bearing attempt, no-source continuation for supported failure
+  classes, and packaged policy-copy behavior.
+- `tests/unit/plugin-copies-in-sync.test.mjs` proves provider runtimes call the
+  shared source-packet policy before provider launch and that companion
+  continuation paths carry original source attempts through no-source repairs.
+- `tests/unit/review-panel.test.mjs`, `tests/unit/job-record.test.mjs`, and
+  smoke suites cover existing JobRecord/review-panel/review-quality behavior.
+- Gap: no RED test currently proves stable retry fingerprint construction, a
+  second retry count, third same-packet fail-closed behavior, disposition field
+  redaction, or review-panel projection of not-counted/waived/overridden slots.
+
+### #180 Root Cause
+
+The missing behavior is not a Kimi-only, Grok-only, Claude-only, or direct-API
+bug. The shared policy can stop unsafe automatic resend, but it cannot yet
+answer: which exact head and packet was reviewed, which slot/attempt this was,
+how many same-packet attempts already occurred, why a slot is not counted as
+approval, and what disposition ended the slot. That ownership belongs in shared
+policy/audit/status surfaces, with adapters limited to capability facts and
+launch mechanics.

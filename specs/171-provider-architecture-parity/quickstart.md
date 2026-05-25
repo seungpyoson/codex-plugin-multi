@@ -106,6 +106,37 @@ Required behaviors:
 - full-source approval is not reused for diff/shard review
 - failed source-bearing run is not retried automatically
 - provider-specific prompt/step limits come from Adapter capability facts
+- same-packet retry identity is stable across provider, mode, reviewed head,
+  prompt, source packet, route, and scope
+- third same-packet retry fails closed unless disposition is split/narrow,
+  switch provider, waiver, or explicit override
+
+## Review Slot Disposition Test Plan
+
+For each provider family, verify one completed slot, one failed/no-result slot,
+and one retry/disposition case.
+
+Required fields:
+
+```text
+slot_id
+attempt_id
+parent_attempt_id
+reviewed_head_sha
+retry_fingerprint
+retry_count
+request_settings_hash
+source_state
+verdict
+failed_slot_reason
+disposition
+not_counted_reason
+waiver_artifact
+override_artifact
+```
+
+No raw source, prompt, provider output, raw command args, or raw paths may be
+stored in the disposition fields.
 
 ## Direct API / OpenRouter Approval Handling
 
@@ -122,6 +153,9 @@ billing path
 selected route
 fallback reason
 approval scope
+retry_fingerprint
+retry_count
+request_settings_hash
 ```
 
 Fail closed if tuple changes or source-send truth cannot be proven.
