@@ -553,11 +553,12 @@ for (const mode of ["review", "adversarial-review", "custom-review"]) {
     assert.equal(result.status, 0, result.stderr);
   }));
 
-  test(`kimi ${mode} prompt includes delegated review contract fields`, () => withRepo((cwd) => {
+  test(`kimi ${mode} prompt uses shared compact delegated review contract`, () => withRepo((cwd) => {
     const result = runCompanion(kimiPromptAssertionArgs(cwd, mode), {
       cwd,
       env: {
-        KIMI_MOCK_ASSERT_PROMPT_INCLUDES: "Delegated review quality contract",
+        KIMI_MOCK_ASSERT_PROMPT_INCLUDES: "Delegated compact review contract",
+        KIMI_MOCK_ASSERT_PROMPT_EXCLUDES: "Delegated review quality contract",
       },
     });
     assert.equal(result.status, 0, result.stderr);

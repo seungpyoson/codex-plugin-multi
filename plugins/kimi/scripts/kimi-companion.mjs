@@ -164,6 +164,9 @@ function targetPromptFor(profile, userPrompt, invocation = {}, sourceFiles = [])
     scope: invocation.scope ?? profile.scope,
     scopePaths: invocation.scope_paths ?? null,
     userPrompt,
+    // Kimi Code 1.43 stalls on the standard generated contract shape even with
+    // a 32-byte selected source packet; compact keeps the shared semantics.
+    contractStyle: "compact",
     extraInstructions: [
       modeLine,
       "Your final answer must be self-contained and must not refer to prior, previous, above, or already-provided answers.",

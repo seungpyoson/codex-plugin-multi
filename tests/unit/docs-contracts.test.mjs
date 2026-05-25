@@ -861,6 +861,7 @@ test("provider architecture parity table is machine-validatable and complete", (
   const requiredPolicyAreas = [
     "route/auth/source-send approval",
     "packet budgets",
+    "review prompt contracts",
     "fallback semantics",
     "failure taxonomy",
     "suggested actions",

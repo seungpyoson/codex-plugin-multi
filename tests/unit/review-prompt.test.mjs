@@ -267,6 +267,42 @@ function assertReviewPromptContract(targetBuildReviewPrompt = buildReviewPrompt,
   assert.match(prompt, /User prompt:\nFocus on control-flow bugs\./);
 }
 
+function assertCompactReviewPromptContract(targetBuildReviewPrompt = buildReviewPrompt) {
+  const prompt = targetBuildReviewPrompt({
+    provider: "Kimi",
+    mode: "custom-review",
+    repository: "seungpyoson/codex-plugin-multi",
+    baseRef: "origin/main",
+    baseCommit: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    headRef: "feature/kimi-compact-contract",
+    headCommit: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    scope: "custom",
+    scopePaths: ["plugins/kimi/scripts/kimi-companion.mjs"],
+    userPrompt: "Focus on prompt compatibility.",
+    contractStyle: "compact",
+    extraInstructions: ["Keep review source-scoped."],
+  });
+
+  assert.match(prompt, /Delegated compact review contract/);
+  assert.doesNotMatch(prompt, /Delegated review quality contract/);
+  assert.match(prompt, /Provider: Kimi/);
+  assert.match(prompt, /Mode: custom-review/);
+  assert.match(prompt, /Scope paths\n- plugins\/kimi\/scripts\/kimi-companion\.mjs/);
+  assert.match(prompt, /First line exactly one verdict marker/);
+  assert.match(prompt, /Verdict: APPROVE/);
+  assert.match(prompt, /Verdict: REQUEST_CHANGES/);
+  assert.match(prompt, /Verdict: NOT_REVIEWED/);
+  assert.match(prompt, /Review only supplied selected source/);
+  assert.match(prompt, /Name inspected selected file path/);
+  assert.match(prompt, /Blocking findings/);
+  assert.match(prompt, /Non-blocking concerns/);
+  assert.match(prompt, /Checklist: include PASS\/FAIL\/NOT REVIEWED/);
+  assert.match(prompt, /Timed out, truncated, interrupted, blocked, or shallow output is NOT approval/);
+  assert.match(prompt, /Do not edit files/);
+  assert.match(prompt, /Provider-specific instructions\n- Keep review source-scoped\./);
+  assert.match(prompt, /User prompt:\nFocus on prompt compatibility\./);
+}
+
 for (const [name, file] of REVIEW_PROMPT_MODULES) {
   test(`review audit manifest stores hashes and counts without prompt or source text (${name})`, async () => {
     const {
@@ -274,6 +310,15 @@ for (const [name, file] of REVIEW_PROMPT_MODULES) {
       buildReviewAuditManifest: targetBuildReviewAuditManifest,
     } = await import(pathToFileURL(resolve(file)).href);
     assertReviewAuditManifest(targetBuildReviewAuditManifest, targetManifestVersion);
+  });
+
+  test(`compact review prompt contract keeps mandatory review semantics (${name})`, async () => {
+    const {
+      buildReviewPrompt: targetBuildReviewPrompt,
+    } = file === "scripts/lib/review-prompt.mjs"
+      ? { buildReviewPrompt }
+      : await import(pathToFileURL(resolve(file)).href);
+    assertCompactReviewPromptContract(targetBuildReviewPrompt);
   });
 
   test(`review audit manifest source hashes are byte-accurate for buffers (${name})`, async () => {
