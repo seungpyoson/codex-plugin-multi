@@ -116,6 +116,7 @@ test("buildReviewAuditManifest fail-closes third same-packet retry before source
     providerIds: { sessionId: "session-3" },
     route: {
       ...base.route,
+      sourceContentTransmission: "may_be_sent",
       reviewSlot: {
         priorAttempts: [
           { review_slot: first.review_slot },

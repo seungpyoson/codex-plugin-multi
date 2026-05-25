@@ -117,16 +117,16 @@ fingerprint, retry count, not-counted reason, or final slot disposition model.
   JobRecord `review_metadata`, `external_review`, lifecycle/status events,
   review-panel rows, and direct API/OpenRouter approval/waiver/override
   artifacts.
-- [ ] T049 Implement shared retry/disposition helpers:
+- [x] T049 Implement shared retry/disposition helpers:
   `reviewSlotRetryFingerprint`, `evaluateReviewSlotRetryPolicy`,
   `buildReviewSlotDisposition`, and `redactReviewSlotDisposition`. Adapters may
   provide only capability facts and launch mechanics.
 - [x] T050 Wire Claude/Gemini/Kimi continuation, DeepSeek/GLM direct API
   single-attempt slots, and Grok single-attempt slots through the same
   review-slot disposition model.
-- [ ] T051 Project disposition and retry state through review panel/status so a
+- [x] T051 Project disposition and retry state through review panel/status so a
   failed slot cannot remain silently pending or be counted as approval.
-- [ ] T052 Verify with focused tests, `npm run lint:sync`, `npm test`, and
+- [x] T052 Verify with focused tests, `npm run lint:sync`, `npm test`, and
   `npm run test:full` if shared runtime or packaged copies changed.
 - [ ] T053 Run latest-head external reviews or record explicit operator waivers
   for failed review slots before claiming merge-readiness.

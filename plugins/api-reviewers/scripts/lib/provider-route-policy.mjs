@@ -376,6 +376,7 @@ function artifactRef(value) {
   if (typeof value !== "string") return null;
   const trimmed = value.trim();
   if (!trimmed || trimmed.startsWith("/") || trimmed.includes("\0")) return null;
+  if (/^[A-Za-z]:/.test(trimmed)) return null;
   if (trimmed.split(/[\\/]+/).includes("..")) return null;
   return trimmed;
 }
@@ -485,7 +486,13 @@ export function evaluateReviewSlotRetryPolicy({
   const retryDispositionRequired = retryCount >= 1;
   let allowed = true;
   let reason = null;
-  if (retryCount >= 2 && normalized === "retry") {
+  if (normalized === "waive" && !hasWaiverArtifact) {
+    allowed = false;
+    reason = "review_slot_waiver_artifact_required";
+  } else if (normalized === "override" && !hasOverrideArtifact) {
+    allowed = false;
+    reason = "review_slot_override_artifact_required";
+  } else if (retryCount >= 2 && normalized === "retry") {
     allowed = false;
     reason = "retry_disposition_not_valid_for_third_attempt";
   } else if (retryCount >= 2 && !hasEscapeDisposition) {

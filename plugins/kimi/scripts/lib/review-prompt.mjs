@@ -1133,7 +1133,9 @@ export function buildReviewAuditManifest({
     : sourcePacketPolicy;
   const reviewQuality = qualityFlags({ result, status, errorCode, selectedSource });
   const sourceContentTransmission =
-    route.sourceContentTransmission ?? effectiveSourcePacketPolicy.source_content_transmission ?? null;
+    effectiveSourcePacketPolicy.source_send_allowed === false
+      ? (effectiveSourcePacketPolicy.source_content_transmission ?? "not_sent")
+      : (route.sourceContentTransmission ?? effectiveSourcePacketPolicy.source_content_transmission ?? null);
   const reviewSlot = buildReviewSlotDisposition({
     provider: request.provider ?? null,
     mode: route.mode ?? scope.name ?? null,

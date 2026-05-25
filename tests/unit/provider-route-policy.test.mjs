@@ -177,6 +177,24 @@ test("review slot retry policy fail-closes third same-packet attempt", () => {
     disposition: "retry",
   }).slot_retry_allowed, true);
 
+  const waiverWithoutArtifact = evaluateReviewSlotRetryPolicy({
+    retryFingerprint,
+    priorAttempts: priorAttempts.slice(0, 1),
+    disposition: "waive",
+  });
+  assert.equal(waiverWithoutArtifact.slot_retry_allowed, false);
+  assert.equal(waiverWithoutArtifact.source_send_allowed, false);
+  assert.equal(waiverWithoutArtifact.fail_closed_reason, "review_slot_waiver_artifact_required");
+
+  const overrideWithWindowsAbsolutePath = evaluateReviewSlotRetryPolicy({
+    retryFingerprint,
+    priorAttempts,
+    disposition: "override",
+    overrideArtifact: "C:\\temp\\override-180.md",
+  });
+  assert.equal(overrideWithWindowsAbsolutePath.slot_retry_allowed, false);
+  assert.equal(overrideWithWindowsAbsolutePath.source_send_allowed, false);
+
   assert.equal(evaluateReviewSlotRetryPolicy({
     retryFingerprint,
     priorAttempts,
