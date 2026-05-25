@@ -1819,6 +1819,37 @@ test("gemini background custom-review rejects over-budget source packets before 
   }
 });
 
+test("gemini custom-review explicit large source override records policy and sends source", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "gemini-source-packet-override-cwd-"));
+  seedMinimalRepo(cwd);
+  const files = [];
+  for (let index = 0; index < 3; index += 1) {
+    const file = `packet-${index}.txt`;
+    files.push(file);
+    writeFileSync(path.join(cwd, file), "x".repeat(180 * 1024));
+  }
+
+  const { stdout, status, dataDir } = runCompanion(
+    ["run", "--mode=custom-review", "--foreground", "--cwd", cwd, "--scope-paths", files.join(","),
+     "--allow-large-source-packet", "--", "review selected source"],
+    { cwd, env: { GEMINI_MOCK_ASSERT_PROMPT_INCLUDES: "GEMINI FILE 1: packet-0.txt" } },
+  );
+  try {
+    assert.equal(status, 0, stdout);
+    const record = JSON.parse(stdout);
+    assert.equal(record.status, "completed");
+    assert.equal(record.external_review.source_content_transmission, "sent");
+    const policy = record.review_metadata.audit_manifest.source_packet_policy;
+    assert.equal(policy.source_send_allowed, true);
+    assert.equal(policy.source_packet_action, "send_after_source_packet_override");
+    assert.equal(policy.source_packet_override_approved, true);
+    assert.equal(policy.source_packet_override_source, "--allow-large-source-packet");
+  } finally {
+    rmTree(dataDir);
+    rmTree(cwd);
+  }
+});
+
 test("gemini review prompt omits provider-specific live verification context", () => {
   const cwd = mkdtempSync(path.join(tmpdir(), "gemini-review-context-cwd-"));
   const binDir = mkdtempSync(path.join(tmpdir(), "gemini-review-context-bin-"));

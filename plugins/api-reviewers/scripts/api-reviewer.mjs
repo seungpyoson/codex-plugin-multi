@@ -2371,6 +2371,16 @@ function approvalRouteFields(routeState) {
   });
 }
 
+const LARGE_SOURCE_PACKET_FLAG = "--allow-large-source-packet";
+
+function sourcePacketOverrideRouteFields(options = {}) {
+  const approved = options["allow-large-source-packet"] === true;
+  return {
+    sourcePacketOverrideApproved: approved,
+    sourcePacketOverrideSource: approved ? LARGE_SOURCE_PACKET_FLAG : null,
+  };
+}
+
 function approvalScopeForOptions(options = {}) {
   return normalizeApprovalScope(options["approval-scope"] ?? "session");
 }
@@ -2397,7 +2407,7 @@ function approvalTokenFor({ provider, mode, auditManifest, authPath = null, bill
   });
 }
 
-function buildApprovalAuditManifest({ cfg, renderedPrompt, request, scopeInfo, routeFields = null, approvalScope = "session" }) {
+function buildApprovalAuditManifest({ cfg, renderedPrompt, request, scopeInfo, routeFields = null, approvalScope = "session", options = {} }) {
   return buildReviewAuditManifest({
     prompt: renderedPrompt,
     sourceFiles: scopeInfo.files,
@@ -2445,6 +2455,7 @@ function buildApprovalAuditManifest({ cfg, renderedPrompt, request, scopeInfo, r
       sourceSendApprovalRequired: routeFields?.source_send_approval_required ?? null,
       sourceSendApprovalState: routeFields?.source_send_approval_state ?? null,
       providerCapabilities: providerCapabilitiesForConfig(cfg),
+      ...sourcePacketOverrideRouteFields(options),
     },
     status: "approval_request",
     errorCode: null,
@@ -2545,7 +2556,7 @@ function buildApprovalRequest({ provider, cfg, mode, options, scopeInfo }) {
   const billingPath = approvalBillingPathFor(cfg);
   const routeFields = approvalRouteFields(routeStateForApproval(cfg, process.env));
   const approvalScope = approvalScopeForOptions(options);
-  const auditManifest = buildApprovalAuditManifest({ cfg, renderedPrompt, request, scopeInfo, routeFields, approvalScope });
+  const auditManifest = buildApprovalAuditManifest({ cfg, renderedPrompt, request, scopeInfo, routeFields, approvalScope, options });
   const sourcePacketFailure = sourcePacketPolicyFailureFromManifest(auditManifest);
   if (sourcePacketFailure) {
     throw runProviderFailure(
@@ -2648,7 +2659,7 @@ function diagnosticErrorSummary(errorCode, errorMessage, scopeInfo, execution, s
   ].join(" ");
 }
 
-function buildReviewMetadata(cfg, scopeInfo, execution = null, startedAt = null, endedAt = null) {
+function buildReviewMetadata(cfg, scopeInfo, execution = null, startedAt = null, endedAt = null, options = {}) {
   let routeFields;
   try {
     routeFields = approvalRouteFields(routeStateForApproval(cfg, process.env, { sourceSendApproved: !!execution?.approval_scope }));
@@ -2705,6 +2716,7 @@ function buildReviewMetadata(cfg, scopeInfo, execution = null, startedAt = null,
       sourceSendApprovalRequired: routeFields.source_send_approval_required,
       sourceSendApprovalState: routeFields.source_send_approval_state,
       providerCapabilities: providerCapabilitiesForConfig(cfg),
+      ...sourcePacketOverrideRouteFields(options),
     },
     result: execution.parsed?.result ?? "",
     status: execution.exitCode === 0 && execution.parsed?.ok === true ? "completed" : "failed",
@@ -2761,7 +2773,7 @@ function buildRuntimeDiagnostics(diagnostics) {
 }
 
 function buildRecord({ provider, cfg, mode, options, scopeInfo, execution, startedAt, endedAt }) {
-  const reviewMetadata = buildReviewMetadata(cfg, scopeInfo, execution, startedAt, endedAt);
+  const reviewMetadata = buildReviewMetadata(cfg, scopeInfo, execution, startedAt, endedAt, options);
   const processCompleted = execution.exitCode === 0 && execution.parsed?.ok === true;
   const reviewQualityState = processCompleted
     ? reviewQualityFailureState(reviewMetadata?.audit_manifest?.review_quality, {
@@ -3071,7 +3083,7 @@ async function cmdRun(options) {
         authPath = approvalAuthPathFor(cfg, process.env);
         billingPath = approvalBillingPathFor(cfg);
         routeFields = approvalRouteFields(routeStateForApproval(cfg, process.env));
-        auditManifest = buildApprovalAuditManifest({ cfg, renderedPrompt, request, scopeInfo, routeFields, approvalScope });
+        auditManifest = buildApprovalAuditManifest({ cfg, renderedPrompt, request, scopeInfo, routeFields, approvalScope, options });
         execution = sourcePacketPolicyFailureFromManifest(auditManifest);
         if (execution) execution.prompt = renderedPrompt;
       }

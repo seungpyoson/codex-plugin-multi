@@ -408,6 +408,8 @@ test("source-bearing launch paths enforce shared source packet policy before pro
     assert.match(source, /source_packet_policy/, `${runtimePath} must inspect the shared source packet policy`);
     assert.match(source, /source_send_allowed\s*!==\s*false/, `${runtimePath} must branch on source_send_allowed`);
     assert.match(source, /source_packet_policy_error_code/, `${runtimePath} must preserve the shared packet-policy error code`);
+    assert.match(source, /allow-large-source-packet/, `${runtimePath} must expose the shared large source-packet override`);
+    assert.match(source, /sourcePacketOverrideApproved/, `${runtimePath} must pass override state into the shared source packet policy`);
   }
 
   for (const runtimePath of [
@@ -467,7 +469,7 @@ test("source-bearing launch paths enforce shared source packet policy before pro
     },
     {
       runtimePath: "plugins/grok/scripts/grok-web-reviewer.mjs",
-      preflight: "execution = sourcePacketPolicyPreflight({ cfg, mode, prompt, scopeInfo });",
+      preflight: "execution = sourcePacketPolicyPreflight({ cfg, mode, prompt, scopeInfo, options });",
       launch: "execution = await callGrokCli(cfg, prompt, {",
     },
   ];
@@ -606,6 +608,26 @@ test("Grok auto transport stays an adapter capability and uses shared source-tra
   assert.match(source, /requested_transport/);
   assert.match(source, /canAutoFallbackFromCliExecution/);
   assert.match(source, /cliRequestDiagnosticsForFallback/);
+});
+
+test("subscription rescue modes are source-bearing even though they are not review slots", () => {
+  for (const runtimePath of [
+    "plugins/claude/scripts/claude-companion.mjs",
+    "plugins/gemini/scripts/gemini-companion.mjs",
+    "plugins/kimi/scripts/kimi-companion.mjs",
+  ]) {
+    const source = readRepoFile(runtimePath);
+    assert.match(
+      source,
+      /modeSendsSelectedSource\(mode\)\s*\{[\s\S]*mode\s*===\s*"rescue"/,
+      `${runtimePath} must classify rescue as source-bearing for shared source-send policy`,
+    );
+    assert.match(
+      source,
+      /mode_profile_name\s*===\s*"rescue"[\s\S]*return null/,
+      `${runtimePath} must keep rescue out of review-quality audit semantics`,
+    );
+  }
 });
 
 test("reviewer runtimes use the shared privacy redactor", () => {

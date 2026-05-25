@@ -43,7 +43,7 @@
       "name": "packet budgets",
       "module": "scripts/lib/review-prompt.mjs",
       "interface": "buildReviewPrompt, buildReviewAuditManifest, evaluateSourcePacketPolicy",
-      "implementation": "Shared source packet policy records source_packet_budget_bytes, selected_source_bytes, source_packet_within_budget, source_packet_action, resend_confirmation_required, review_surface_changed, and source_content_transmission. It blocks over-budget source-bearing packets before source send, blocks automatic resend after source-sent failures unless explicitly confirmed or narrowed, uses shared git diff packets for branch-diff review across subscription and direct API paths, and permits same-session no-source repair for substantive invalid-verdict prose without losing the original source attempt across failed no-source repair chains.",
+      "implementation": "Shared source packet policy records source_packet_budget_bytes, selected_source_bytes, source_packet_within_budget, source_packet_action, source_packet_override_approved, source_packet_override_source, resend_confirmation_required, review_surface_changed, and source_content_transmission. It blocks over-budget source-bearing packets before source send unless the operator explicitly passes the shared large-packet override, blocks automatic resend after source-sent failures unless explicitly confirmed or narrowed, uses shared git diff packets for branch-diff review across subscription and direct API paths, and permits same-session no-source repair for substantive invalid-verdict prose without losing the original source attempt across failed no-source repair chains.",
       "adapters": [
         "claude",
         "gemini",
@@ -714,6 +714,8 @@
         "source_packet_policy",
         "source_send_allowed",
         "source_packet_policy_error_code",
+        "source_packet_override_approved",
+        "source_packet_override_source",
         "source_content_transmission",
         "resume_without_source_resend",
         "resume_without_source_resend_subset_of_resend_gated_failures",

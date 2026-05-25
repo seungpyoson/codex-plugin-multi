@@ -458,7 +458,7 @@ if (sourceBearingDelayMs > 0 && prompt.includes("CLI_SOURCE_SECRET")) {
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, sourceBearingDelayMs);
 }
 process.stdout.write(JSON.stringify({
-  text: "Verdict: APPROVE\\n\\nBlocking findings\\n- None.\\n\\nNon-blocking concerns\\n- None.\\n\\nInspection status\\n- I inspected review.js from the selected source packet.\\n\\nChecklist item 1: Source packet was present and reviewed.\\nChecklist item 2: No behavioral regression found.\\nChecklist item 3: No missing test blocker found.\\nChecklist item 4: No unsafe fallback behavior found.\\nChecklist item 5: Result is ready for merge-readiness aggregation.",
+  text: "Verdict: APPROVE\\n\\nBlocking findings\\n- None. I inspected review.js, packet-1.js, and packet-2.js from the selected source packet and found no blocking issue.\\n\\nNon-blocking concerns\\n- None. The large-packet override only changes the source packet budget gate and does not alter route selection, CLI authentication, or fallback behavior.\\n\\nInspection status\\n- Source inspection completed for the explicitly scoped custom-review files. The prompt included the CLI source marker and the extra packet files, and this mock response confirms the selected source was reviewed before producing the approval.\\n\\nChecklist item 1: PASS source packet was present and reviewed.\\nChecklist item 2: PASS no behavioral regression found.\\nChecklist item 3: PASS no missing test blocker found.\\nChecklist item 4: PASS no unsafe fallback behavior found.\\nChecklist item 5: PASS result is ready for merge-readiness aggregation.",
   model: "grok-build",
   usage: { input_tokens: 1, output_tokens: 1 }
 }));
@@ -594,6 +594,54 @@ test("custom-review defaults to Grok CLI without contacting legacy tunnel", () =
     rmTree(authHome);
     rmTree(cwd);
     rmTree(dataDir);
+  }
+});
+
+test("custom-review explicit large source override reaches Grok CLI", () => {
+  const cwd = realpathSync(mkdtempSync(path.join(tmpdir(), "grok-cli-large-source-")));
+  const dataDir = mkdtempSync(path.join(tmpdir(), "grok-cli-large-data-"));
+  const authHome = mkdtempSync(path.join(tmpdir(), "grok-cli-large-auth-home-"));
+  const { binDir, grokPath } = makeFakeGrokCli();
+  writeGrokCliAuthFixture(cwd, authHome);
+  writeFileSync(path.join(cwd, "review.js"), `export const marker = 'CLI_SOURCE_SECRET';\n${"x".repeat(180 * 1024)}\n`);
+  writeFileSync(path.join(cwd, "packet-1.js"), `${"y".repeat(180 * 1024)}\n`);
+  writeFileSync(path.join(cwd, "packet-2.js"), `${"z".repeat(180 * 1024)}\n`);
+
+  try {
+    const result = run([
+      "run",
+      "--mode", "custom-review",
+      "--scope", "custom",
+      "--scope-paths", "review.js,packet-1.js,packet-2.js",
+      "--foreground",
+      "--allow-large-source-packet",
+      "--prompt", "Review selected source.",
+    ], {
+      cwd,
+      defaultTransport: false,
+      env: {
+        PATH: `${binDir}${path.delimiter}${process.env.PATH ?? ""}`,
+        GROK_CLI_BINARY: grokPath,
+        GROK_CLI_AUTH_HOME: authHome,
+        GROK_PLUGIN_DATA: dataDir,
+        GROK_CLI_MAX_PROMPT_CHARS: "2000000",
+      },
+    });
+
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    const record = parseStdout(result);
+    assert.equal(record.status, "completed");
+    assert.equal(record.external_review.source_content_transmission, "sent");
+    const policy = record.review_metadata.audit_manifest.source_packet_policy;
+    assert.equal(policy.source_send_allowed, true);
+    assert.equal(policy.source_packet_action, "send_after_source_packet_override", JSON.stringify(policy));
+    assert.equal(policy.source_packet_override_approved, true);
+    assert.equal(policy.source_packet_override_source, "--allow-large-source-packet");
+  } finally {
+    rmTree(authHome);
+    rmTree(cwd);
+    rmTree(dataDir);
+    rmTree(binDir);
   }
 });
 

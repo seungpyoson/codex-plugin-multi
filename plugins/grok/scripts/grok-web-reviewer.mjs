@@ -1560,7 +1560,17 @@ function modeSendsSelectedSource(mode) {
   return VALID_MODES.has(mode);
 }
 
-function sourcePacketPolicyPreflight({ cfg, mode, prompt, scopeInfo }) {
+const LARGE_SOURCE_PACKET_FLAG = "--allow-large-source-packet";
+
+function sourcePacketOverrideRouteFields(options = {}) {
+  const approved = options["allow-large-source-packet"] === true;
+  return {
+    sourcePacketOverrideApproved: approved,
+    sourcePacketOverrideSource: approved ? LARGE_SOURCE_PACKET_FLAG : null,
+  };
+}
+
+function sourcePacketPolicyPreflight({ cfg, mode, prompt, scopeInfo, options = {} }) {
   const providerCapabilities = providerCapabilitiesForConfig(cfg);
   const sourceBearing = modeSendsSelectedSource(mode);
   const route = selectProviderRoute({
@@ -1616,6 +1626,7 @@ function sourcePacketPolicyPreflight({ cfg, mode, prompt, scopeInfo }) {
       sourceSendApprovalRequired: route.source_send_approval_required,
       sourceSendApprovalState: route.source_send_approval_state,
       providerCapabilities,
+      ...sourcePacketOverrideRouteFields(options),
     },
     status: "preflight_failed",
     errorCode: "source_packet_policy_preflight",
@@ -3154,7 +3165,7 @@ function buildTerminalExternalReview({ cfg, mode, options, scopeInfo, execution,
   });
 }
 
-function buildReviewMetadata(cfg, scopeInfo, execution = null, startedAt = null, endedAt = null) {
+function buildReviewMetadata(cfg, scopeInfo, execution = null, startedAt = null, endedAt = null, options = {}) {
   const sourceBearing = execution?.payload_sent ?? (execution?.exitCode === 0 && execution?.parsed?.ok === true);
   const processCompleted = execution?.exitCode === 0 && execution?.parsed?.ok === true;
   const sourceContentTransmission = sourceContentTransmissionForPayload({
@@ -3219,6 +3230,7 @@ function buildReviewMetadata(cfg, scopeInfo, execution = null, startedAt = null,
       sourceSendApprovalRequired: route.source_send_approval_required,
       sourceSendApprovalState: route.source_send_approval_state,
       providerCapabilities: providerCapabilitiesForConfig(cfg),
+      ...sourcePacketOverrideRouteFields(options),
     },
     result: execution.parsed?.result ?? "",
     status: execution.exitCode === 0 && execution.parsed?.ok === true ? "completed" : "failed",
@@ -3242,7 +3254,7 @@ function buildReviewMetadata(cfg, scopeInfo, execution = null, startedAt = null,
 }
 
 function buildRecord({ cfg, mode, options, scopeInfo, execution, startedAt, endedAt }) {
-  const reviewMetadata = buildReviewMetadata(cfg, scopeInfo, execution, startedAt, endedAt);
+  const reviewMetadata = buildReviewMetadata(cfg, scopeInfo, execution, startedAt, endedAt, options);
   const processCompleted = execution.exitCode === 0 && execution.parsed?.ok === true;
   const redactSensitiveText = buildPrivacyRedactor({
     env: process.env,
@@ -4383,7 +4395,7 @@ async function cmdRun(options) {
     let webReadiness = null;
     try {
       prompt = promptFor(cfg, mode, options.prompt ?? "", scopeInfo);
-      execution = sourcePacketPolicyPreflight({ cfg, mode, prompt, scopeInfo });
+      execution = sourcePacketPolicyPreflight({ cfg, mode, prompt, scopeInfo, options });
       if (!execution && prompt.length > cfg.max_prompt_chars) {
         const capName = cfg.transport === "cli" ? "GROK_CLI_MAX_PROMPT_CHARS" : "GROK_WEB_MAX_PROMPT_CHARS";
         execution = providerFailure("prompt_too_large", redactor()(`prompt_too_large:${prompt.length} chars exceeds ${capName}=${cfg.max_prompt_chars}`), null, null, false);
@@ -4441,7 +4453,7 @@ async function cmdRun(options) {
           const cliFailure = execution;
           cfg = webAutoFallbackConfig(process.env, cliFailure.parsed?.reason ?? "grok_cli_unavailable");
           prompt = promptFor(cfg, mode, options.prompt ?? "", scopeInfo);
-          const fallbackSourcePacketPreflight = sourcePacketPolicyPreflight({ cfg, mode, prompt, scopeInfo });
+          const fallbackSourcePacketPreflight = sourcePacketPolicyPreflight({ cfg, mode, prompt, scopeInfo, options });
           if (fallbackSourcePacketPreflight) {
             execution = fallbackSourcePacketPreflight;
             execution.diagnostics = {

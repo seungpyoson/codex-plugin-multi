@@ -373,6 +373,7 @@ function reviewAuditManifest(invocation, prompt, containmentPath, execution) {
       previousAttempt: invocation.previous_source_attempt ?? null,
       resendConfirmationApproved: invocation.resend_confirmation_approved === true,
       resumeWithoutSourceResend: invocation.resume_without_source_resend === true,
+      ...sourcePacketOverrideRouteFields(invocation),
     },
     result: execution?.parsed?.result ?? "",
     status: execution?.preflight === true ? "preflight_failed" : executionStatus,
@@ -382,6 +383,23 @@ function reviewAuditManifest(invocation, prompt, containmentPath, execution) {
 
 function approvalScopeForOptions(options = {}) {
   return normalizeApprovalScope(options["approval-scope"] ?? "session", fail);
+}
+
+const LARGE_SOURCE_PACKET_FLAG = "--allow-large-source-packet";
+
+function sourcePacketOverrideInvocationFields(options = {}) {
+  const approved = options["allow-large-source-packet"] === true;
+  return Object.freeze({
+    source_packet_override_approved: approved,
+    source_packet_override_source: approved ? LARGE_SOURCE_PACKET_FLAG : null,
+  });
+}
+
+function sourcePacketOverrideRouteFields(invocation = {}) {
+  return {
+    sourcePacketOverrideApproved: invocation.source_packet_override_approved === true,
+    sourcePacketOverrideSource: invocation.source_packet_override_source ?? null,
+  };
 }
 
 function approvalAuditManifest(invocation, prompt, containmentPath) {
@@ -431,6 +449,7 @@ function approvalAuditManifest(invocation, prompt, containmentPath) {
       sourceSendApprovalRequired: invocation.source_send_approval_required ?? null,
       sourceSendApprovalState: invocation.source_send_approval_state ?? null,
       providerCapabilities: providerCapabilitiesForReviewAudit(),
+      ...sourcePacketOverrideRouteFields(invocation),
     },
     result: "",
     status: "approval_request",
@@ -633,6 +652,12 @@ function writeRuntimeOptionsSidecar(workspaceRoot, jobId, options) {
     if (typeof options.resume_without_source_resend === "boolean") {
       payload.resume_without_source_resend = options.resume_without_source_resend;
     }
+    if (typeof options.source_packet_override_approved === "boolean") {
+      payload.source_packet_override_approved = options.source_packet_override_approved;
+    }
+    if (typeof options.source_packet_override_source === "string" && options.source_packet_override_source.length > 0) {
+      payload.source_packet_override_source = options.source_packet_override_source;
+    }
     writeFileSync(tmpFile, `${JSON.stringify(payload, null, 2)}\n`, { mode: 0o600, encoding: "utf8" });
     try { chmodSync(tmpFile, 0o600); } catch { /* best-effort on non-POSIX */ }
     renameSync(tmpFile, file);
@@ -663,6 +688,12 @@ function readRuntimeOptionsSidecar(workspaceRoot, jobId) {
   }
   if (typeof parsed.resume_without_source_resend === "boolean") {
     options.resume_without_source_resend = parsed.resume_without_source_resend;
+  }
+  if (typeof parsed.source_packet_override_approved === "boolean") {
+    options.source_packet_override_approved = parsed.source_packet_override_approved;
+  }
+  if (typeof parsed.source_packet_override_source === "string" && parsed.source_packet_override_source.length > 0) {
+    options.source_packet_override_source = parsed.source_packet_override_source;
   }
   if (consumed.cleanup_warning) {
     options.cleanup_warning = consumed.cleanup_warning;
@@ -722,6 +753,8 @@ function invocationFromRecord(record, fallbackAuthMode = defaultAuthMode(), runt
     previous_source_attempt: runtimeOptions.previous_source_attempt ?? null,
     resend_confirmation_approved: runtimeOptions.resend_confirmation_approved === true,
     resume_without_source_resend: runtimeOptions.resume_without_source_resend === true,
+    source_packet_override_approved: runtimeOptions.source_packet_override_approved === true,
+    source_packet_override_source: runtimeOptions.source_packet_override_source ?? null,
   });
 }
 
@@ -870,7 +903,7 @@ function cmdPreflight(rest) {
 async function cmdApprovalRequest(rest) {
   const { options, positionals } = parseArgs(rest, {
     valueOptions: ["mode", "model", "cwd", "binary", "scope-base", "scope-paths", "override-dispose", "auth-mode", "timeout-ms", "approval-scope"],
-    booleanOptions: [],
+    booleanOptions: ["allow-large-source-packet"],
   });
   const mode = options.mode;
   if (!mode || !PREFLIGHT_MODES.includes(mode)) {
@@ -926,6 +959,7 @@ async function cmdApprovalRequest(rest) {
     started_at: new Date().toISOString(),
     approval_scope: approvalScope,
     approval_token: null,
+    ...sourcePacketOverrideInvocationFields(options),
   });
   invocation = invocationWithAuthSelection(invocation, authSelection);
 
@@ -981,7 +1015,7 @@ async function cmdApprovalRequest(rest) {
 async function cmdRun(rest) {
   const { options, positionals } = parseArgs(rest, {
     valueOptions: ["mode", "model", "cwd", "binary", "scope-base", "scope-paths", "override-dispose", "auth-mode", "timeout-ms", "lifecycle-events", "approval-token", "approval-scope"],
-    booleanOptions: ["background", "foreground"],
+    booleanOptions: ["background", "foreground", "allow-large-source-packet"],
   });
   const mode = options.mode;
   if (!mode || !RUN_MODES.includes(mode)) {
@@ -1052,6 +1086,7 @@ async function cmdRun(rest) {
     approval_scope: approvalScope,
     approval_token: options["approval-token"] ?? null,
     started_at: new Date().toISOString(),
+    ...sourcePacketOverrideInvocationFields(options),
   });
   invocation = invocationWithAuthSelection(invocation, authSelection);
 
@@ -1105,6 +1140,8 @@ async function cmdRun(rest) {
         timeout_ms: timeoutMs,
         approval_scope: invocation.approval_scope,
         approval_token: invocation.approval_token,
+        source_packet_override_approved: invocation.source_packet_override_approved,
+        source_packet_override_source: invocation.source_packet_override_source,
       });
     } catch (error) {
       failBackgroundPromptSidecarWrite(workspaceRoot, invocation, error);
@@ -1663,7 +1700,7 @@ async function cmdRunWorker(rest) {
 async function cmdContinue(rest) {
   const { options, positionals } = parseArgs(rest, {
     valueOptions: ["job", "cwd", "model", "binary", "auth-mode", "timeout-ms", "lifecycle-events", "approval-token", "approval-scope"],
-    booleanOptions: ["background", "foreground", "resend-confirmation-approved"],
+    booleanOptions: ["background", "foreground", "resend-confirmation-approved", "allow-large-source-packet"],
   });
   if (!options.job) fail("bad_args", "--job <id> is required");
   if (options.background && options.foreground) {
@@ -1768,6 +1805,7 @@ async function cmdContinue(rest) {
     previous_source_attempt: previousSourceAttempt,
     resend_confirmation_approved: options["resend-confirmation-approved"] === true,
     resume_without_source_resend: resumeWithoutSourceResend,
+    ...sourcePacketOverrideInvocationFields(options),
     started_at: new Date().toISOString(),
   });
   invocation = invocationWithAuthSelection(invocation, authSelection);
@@ -1825,6 +1863,8 @@ async function cmdContinue(rest) {
         previous_source_attempt: previousSourceAttempt,
         resend_confirmation_approved: options["resend-confirmation-approved"] === true,
         resume_without_source_resend: resumeWithoutSourceResend,
+        source_packet_override_approved: invocation.source_packet_override_approved,
+        source_packet_override_source: invocation.source_packet_override_source,
       });
     } catch (error) {
       failBackgroundPromptSidecarWrite(workspaceRoot, invocation, error);
@@ -1909,7 +1949,7 @@ function providerCapabilitiesForReviewAudit() {
 }
 
 function modeSendsSelectedSource(mode) {
-  return mode === "review" || mode === "adversarial-review" || mode === "custom-review";
+  return mode === "review" || mode === "adversarial-review" || mode === "custom-review" || mode === "rescue";
 }
 
 function sourceSendApprovalPreflight(authSelection, invocation, prompt, containmentPath) {

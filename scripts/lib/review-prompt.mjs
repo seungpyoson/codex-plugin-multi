@@ -1081,6 +1081,8 @@ export function buildReviewAuditManifest({
     previousAttempt: route.previousAttempt ?? null,
     resendConfirmationApproved: route.resendConfirmationApproved === true,
     resumeWithoutSourceResend: route.resumeWithoutSourceResend === true,
+    sourcePacketOverrideApproved: route.sourcePacketOverrideApproved === true,
+    sourcePacketOverrideSource: route.sourcePacketOverrideSource ?? null,
   });
   return Object.freeze({
     schema_version: REVIEW_AUDIT_MANIFEST_VERSION,
