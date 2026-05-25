@@ -987,4 +987,12 @@ test("provider architecture parity table is machine-validatable and complete", (
   assert.equal(grokAuto.difference_type, "adapter_capability_fact");
   assert.match(grokAuto.capability_fact, /two subscription-backed transports/i);
   assert.match(grokAuto.shared_policy_boundary, /subscription/i);
+  const claudeAuth = table.exceptions.find(
+    (entry) => entry.provider === "claude" && entry.policy_area === "route/auth/source-send approval",
+  );
+  assert.ok(claudeAuth, "Claude auth command capability must be documented as an exception");
+  assert.equal(claudeAuth.verdict, "intentional");
+  assert.equal(claudeAuth.difference_type, "adapter_capability_fact");
+  assert.match(claudeAuth.capability_fact, /claude auth login/i);
+  assert.match(claudeAuth.current_behavior, /oauth_inference_rejected/i);
 });

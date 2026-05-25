@@ -233,9 +233,19 @@ export function buildExternalModelFailureDiagnostic(errorCode, targetName) {
   return {
     error_summary: failureClass.error_summary.replace("The external model", targetName),
     error_cause: failureClass.error_cause,
-    suggested_action: failureClass.suggested_action,
+    suggested_action: suggestedActionForFailure(failureClass, targetName),
     disclosure_note: null,
   };
+}
+
+function suggestedActionForFailure(failureClass, targetName) {
+  if (
+    failureClass.error_code === "oauth_inference_rejected" &&
+    /\bClaude Code\b/i.test(String(targetName ?? ""))
+  ) {
+    return "Treat this review slot as failed before usable review output. Run `claude auth login` in a normal terminal, rerun setup, then verify OAuth-only `claude -p` inference works before retrying.";
+  }
+  return failureClass.suggested_action;
 }
 
 function hasSpawnedProcessEvidence(execution) {

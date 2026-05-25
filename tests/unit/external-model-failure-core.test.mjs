@@ -114,6 +114,13 @@ test("buildExternalModelFailureDiagnostic covers shared emitted failure codes", 
   }
 });
 
+test("Claude OAuth inference rejection diagnostic names the supported auth command", () => {
+  const diagnostic = buildExternalModelFailureDiagnostic("oauth_inference_rejected", "Claude Code");
+  assert.match(diagnostic.suggested_action, /claude auth login/);
+  assert.doesNotMatch(diagnostic.suggested_action, /claude login\b/);
+  assert.doesNotMatch(diagnostic.suggested_action, /device-auth/);
+});
+
 test("shared failure diagnostics cover the T088 cross-provider fixture table", () => {
   const providers = [
     "Claude Code",

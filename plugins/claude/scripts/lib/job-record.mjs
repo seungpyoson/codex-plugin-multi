@@ -268,7 +268,7 @@ function buildErrorDiagnostic(invocation, status, error_code, error_message) {
         "Claude Code reported HTTP 401 while the companion was using subscription/OAuth mode. " +
         "`claude auth status` can still report logged in; non-interactive inference was rejected.",
       suggested_action:
-        "Run `/claude-setup`, refresh Claude OAuth in a normal terminal if needed, and verify OAuth-only `claude -p` inference works before retrying the review.",
+        "Run `claude auth login` in a normal terminal, rerun `/claude-setup`, and verify OAuth-only `claude -p` inference works before retrying the review.",
       disclosure_note: null,
     };
   }

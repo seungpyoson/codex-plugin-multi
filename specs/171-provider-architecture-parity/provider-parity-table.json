@@ -389,6 +389,31 @@
       "follow_up_issue": 159
     },
     {
+      "provider": "claude",
+      "policy_area": "route/auth/source-send approval",
+      "difference_type": "adapter_capability_fact",
+      "current_behavior": "Claude subscription readiness requires both `claude auth status --json` metadata and a non-interactive inference probe. When OAuth status reports loggedIn=true but inference returns HTTP 401, the companion fails before source send with oauth_inference_rejected and tells the operator to run `claude auth login`.",
+      "capability_fact": "Claude Code 2.1.150 exposes authentication under `claude auth login`; `claude --help` lists `auth` as the auth command and not a top-level `login` command. Its auth status can remain logged-in while non-interactive inference is rejected until OAuth is refreshed.",
+      "shared_policy_boundary": "Claude still uses the shared subscription -> direct_api -> openrouter route ledger, auth_path, route_step, source_content_transmission, and pre-source failure fields. The login command and inference-vs-status check are Claude Adapter readiness facts.",
+      "clear_reason": "This is not fake parity: other providers should not inherit a Claude-specific command, but every provider must still prove route readiness before source send and surface exact Adapter remediation when auth readiness fails.",
+      "evidence": [
+        "plugins/claude/scripts/claude-companion.mjs",
+        "plugins/claude/scripts/lib/job-record.mjs",
+        "scripts/lib/external-model-failure-core.mjs",
+        "tests/unit/external-model-failure-core.test.mjs",
+        "tests/unit/job-record.test.mjs",
+        "https://github.com/seungpyoson/codex-plugin-multi/issues/171"
+      ],
+      "tests": [
+        "tests/smoke/claude-companion.smoke.test.mjs",
+        "tests/unit/external-model-failure-core.test.mjs",
+        "tests/unit/job-record.test.mjs",
+        "tests/unit/docs-contracts.test.mjs"
+      ],
+      "verdict": "intentional",
+      "follow_up_issue": null
+    },
+    {
       "provider": "kimi",
       "policy_area": "route/auth/source-send approval",
       "difference_type": "adapter_capability_fact",

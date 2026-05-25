@@ -1663,8 +1663,11 @@ test("buildJobRecord: OAuth inference 401 is distinct from generic claude_error"
   assert.match(rec.error_summary, /OAuth non-interactive inference was rejected/i);
   assert.match(rec.error_cause, /HTTP 401/i);
   assert.doesNotMatch(rec.error_cause, /not sent/i);
+  assert.match(rec.suggested_action, /claude auth login/);
   assert.match(rec.suggested_action, /\/claude-setup/);
   assert.match(rec.suggested_action, /OAuth-only `claude -p` inference/i);
+  assert.doesNotMatch(rec.suggested_action, /claude login\b/);
+  assert.doesNotMatch(rec.suggested_action, /device-auth/);
   assert.equal(rec.external_review.source_content_transmission, "sent");
   assert.equal(rec.external_review.disclosure, sentButNoCleanResult("Claude Code"));
 });
