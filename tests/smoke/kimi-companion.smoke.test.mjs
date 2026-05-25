@@ -980,6 +980,7 @@ test("kimi result with duplicate job id across workspaces reports state collisio
 test("kimi custom-review blocks fresh same-packet resend after a failed source-sent slot", () => {
   const cwd = mkdtempSync(path.join(tmpdir(), "kimi-review-slot-fresh-retry-cwd-"));
   const dataDir = mkdtempSync(path.join(tmpdir(), "kimi-review-slot-fresh-retry-data-"));
+  const invocationCountPath = path.join(dataDir, "target-invocations.txt");
   const badResult = badVerdictReviewFixture("Kimi fresh retry guard marker.");
   try {
     fixtureSeedRepo(cwd);
@@ -998,8 +999,12 @@ test("kimi custom-review blocks fresh same-packet resend after a failed source-s
     const commonOptions = {
       cwd,
       dataDir,
-      env: { KIMI_MOCK_RESPONSE: badResult },
-    };
+    env: {
+      KIMI_MOCK_RESPONSE: badResult,
+      KIMI_MOCK_INVOCATION_COUNT_PATH: invocationCountPath,
+      KIMI_MOCK_INVOCATION_COUNT_PROMPT_INCLUDES: "KIMI FILE 1: seed.txt",
+    },
+  };
 
     const first = runCompanion(commonArgs, commonOptions);
     assert.equal(first.status, 2, first.stderr);
@@ -1017,6 +1022,7 @@ test("kimi custom-review blocks fresh same-packet resend after a failed source-s
       secondRecord.review_metadata.audit_manifest.source_packet_policy.source_packet_action,
       "review_slot_retry_blocked",
     );
+    assert.equal(readFileSync(invocationCountPath, "utf8"), "1");
   } finally {
     rmSync(dataDir, { recursive: true, force: true });
     rmSync(cwd, { recursive: true, force: true });

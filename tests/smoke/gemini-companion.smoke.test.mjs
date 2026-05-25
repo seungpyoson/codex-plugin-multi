@@ -1883,6 +1883,7 @@ test("gemini custom-review records explicit review-slot waiver disposition", () 
 test("gemini custom-review blocks fresh same-packet resend after a failed source-sent slot", () => {
   const cwd = mkdtempSync(path.join(tmpdir(), "gemini-review-slot-fresh-retry-cwd-"));
   const dataDir = mkdtempSync(path.join(tmpdir(), "gemini-review-slot-fresh-retry-data-"));
+  const invocationCountPath = path.join(dataDir, "target-invocations.txt");
   seedMinimalRepo(cwd);
   const badResult = badVerdictReviewFixture("Gemini fresh retry guard marker.");
   const commonArgs = [
@@ -1892,7 +1893,11 @@ test("gemini custom-review blocks fresh same-packet resend after a failed source
   const commonOptions = {
     cwd,
     dataDir,
-    env: { GEMINI_MOCK_RESPONSE: badResult },
+    env: {
+      GEMINI_MOCK_RESPONSE: badResult,
+      GEMINI_MOCK_INVOCATION_COUNT_PATH: invocationCountPath,
+      GEMINI_MOCK_INVOCATION_COUNT_PROMPT_INCLUDES: "GEMINI FILE 1: seed.txt",
+    },
   };
 
   try {
@@ -1912,6 +1917,7 @@ test("gemini custom-review blocks fresh same-packet resend after a failed source
       secondRecord.review_metadata.audit_manifest.source_packet_policy.source_packet_action,
       "review_slot_retry_blocked",
     );
+    assert.equal(readFileSync(invocationCountPath, "utf8"), "1");
   } finally {
     rmTree(dataDir);
     rmTree(cwd);

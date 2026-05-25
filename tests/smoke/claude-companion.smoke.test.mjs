@@ -419,6 +419,7 @@ test("custom-review records explicit review-slot waiver disposition", () => {
 test("custom-review blocks fresh same-packet resend after a failed source-sent slot", () => {
   const cwd = mkdtempSync(path.join(tmpdir(), "claude-review-slot-fresh-retry-cwd-"));
   const dataDir = mkdtempSync(path.join(tmpdir(), "claude-review-slot-fresh-retry-data-"));
+  const invocationCountPath = path.join(dataDir, "target-invocations.txt");
   const fixturePath = path.join(cwd, "claude-failed-slot-fixture.json");
   fixtureSeedRepo(cwd);
   const badResult = badVerdictReviewFixture("Claude fresh retry guard marker.");
@@ -442,7 +443,11 @@ test("custom-review blocks fresh same-packet resend after a failed source-sent s
   const commonOptions = {
     cwd,
     dataDir,
-    env: { CLAUDE_MOCK_FIXTURE_PATH: fixturePath },
+    env: {
+      CLAUDE_MOCK_FIXTURE_PATH: fixturePath,
+      CLAUDE_MOCK_INVOCATION_COUNT_PATH: invocationCountPath,
+      CLAUDE_MOCK_INVOCATION_COUNT_PROMPT_INCLUDES: "CLAUDE FILE 1: seed.txt",
+    },
   };
 
   try {
@@ -462,6 +467,7 @@ test("custom-review blocks fresh same-packet resend after a failed source-sent s
       secondRecord.review_metadata.audit_manifest.source_packet_policy.source_packet_action,
       "review_slot_retry_blocked",
     );
+    assert.equal(readFileSync(invocationCountPath, "utf8"), "1");
   } finally {
     cleanup(dataDir);
     rmSync(cwd, { recursive: true, force: true });

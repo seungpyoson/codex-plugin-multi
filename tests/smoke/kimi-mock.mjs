@@ -75,6 +75,16 @@ const mockResponse = process.env.KIMI_MOCK_RESPONSE ?? [
 ].join("\n");
 
 const expectedPromptText = process.env.KIMI_MOCK_ASSERT_PROMPT_INCLUDES;
+const invocationCountPath = process.env.KIMI_MOCK_INVOCATION_COUNT_PATH;
+const invocationCountPromptIncludes = process.env.KIMI_MOCK_INVOCATION_COUNT_PROMPT_INCLUDES;
+if (
+  invocationCountPath &&
+  !isCompanionPreflight &&
+  (!invocationCountPromptIncludes || prompt.includes(invocationCountPromptIncludes))
+) {
+  const previous = existsSync(invocationCountPath) ? Number(readFileSync(invocationCountPath, "utf8")) : 0;
+  writeFileSync(invocationCountPath, String((Number.isFinite(previous) ? previous : 0) + 1), "utf8");
+}
 if (expectedPromptText && !isCompanionPreflight && !prompt.includes(expectedPromptText)) {
   process.stderr.write(`kimi-mock: prompt missing expected text: ${expectedPromptText}\n`);
   process.exit(1);

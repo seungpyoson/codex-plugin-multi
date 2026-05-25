@@ -104,6 +104,16 @@ const promptSha = createHash("sha256").update(prompt).digest("hex").slice(0, 16)
 
 const expectedPromptText = process.env.CLAUDE_MOCK_ASSERT_PROMPT_INCLUDES;
 const readinessPrompt = prompt.includes("reply with exactly: pong.") && prompt.includes("Do not use any tools");
+const invocationCountPath = process.env.CLAUDE_MOCK_INVOCATION_COUNT_PATH;
+const invocationCountPromptIncludes = process.env.CLAUDE_MOCK_INVOCATION_COUNT_PROMPT_INCLUDES;
+if (
+  invocationCountPath &&
+  !readinessPrompt &&
+  (!invocationCountPromptIncludes || prompt.includes(invocationCountPromptIncludes))
+) {
+  const previous = existsSync(invocationCountPath) ? Number(readFileSync(invocationCountPath, "utf8")) : 0;
+  writeFileSync(invocationCountPath, String((Number.isFinite(previous) ? previous : 0) + 1), "utf8");
+}
 if (expectedPromptText && !readinessPrompt && !prompt.includes(expectedPromptText)) {
   process.stderr.write(`claude-mock: prompt missing expected text: ${expectedPromptText}\n`);
   process.exit(1);
