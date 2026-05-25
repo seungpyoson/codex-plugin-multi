@@ -362,7 +362,7 @@ function hashValue(value) {
 
 function canonicalScopePaths(paths = null) {
   if (!Array.isArray(paths)) return null;
-  return Object.freeze(paths.map((entry) => String(entry)).sort());
+  return Object.freeze(paths.map(String).sort((left, right) => left.localeCompare(right)));
 }
 
 function normalizedDisposition(value) {
@@ -597,6 +597,8 @@ export function buildReviewSlotDisposition({
   const normalized = normalizedDisposition(disposition);
   const reason = failedSlotReason({ verdict, status, errorCode, reviewQuality });
   const retry_count = Number.isSafeInteger(retryCount) && retryCount >= 0 ? retryCount : 0;
+  const failedOrMissingFinalSlot = stage === "final" && status !== "approval_request"
+    && (verdict === "failed_slot" || verdict === "missing" || verdict === "timeout");
   const payload = {
     slot_id: slotId ?? hashJson({
       provider,
@@ -610,7 +612,7 @@ export function buildReviewSlotDisposition({
     reviewed_head_sha: reviewedHeadSha ?? null,
     retry_fingerprint,
     retry_count,
-    retry_disposition_required: retryDispositionRequired === true,
+    retry_disposition_required: retryDispositionRequired === true || failedOrMissingFinalSlot,
     request_settings_hash,
     source_state,
     verdict,

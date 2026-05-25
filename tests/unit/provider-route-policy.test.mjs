@@ -294,6 +294,31 @@ test("review slot disposition redacts raw fields and excludes stale-head approva
   assert.equal(JSON.stringify(redacted).includes("/tmp/source/private.js"), false);
 });
 
+test("review slot disposition requires disposition for finalized failed or missing slots", () => {
+  for (const result of ["", "Verdict: NOT_REVIEWED"]) {
+    const disposition = buildReviewSlotDisposition({
+      provider: "gemini",
+      mode: "adversarial-review",
+      stage: "final",
+      attemptId: "job-failed",
+      reviewedHeadSha: "head",
+      currentHeadSha: "head",
+      retryFingerprint: "f".repeat(64),
+      retryCount: 0,
+      sourceState: "sent",
+      status: "completed",
+      result,
+      reviewQuality: result
+        ? { failed_review_slot: true, semantic_failure_reasons: ["not_reviewed"] }
+        : { failed_review_slot: false, semantic_failure_reasons: [] },
+    });
+
+    assert.equal(disposition.retry_count, 0);
+    assert.equal(disposition.retry_disposition_required, true);
+    assert.notEqual(disposition.verdict, "approved");
+  }
+});
+
 function assertRouteStepLedger(route) {
   assert.deepEqual(route.route_steps.map((step) => step.route), PROVIDER_ROUTE_STEPS);
   for (const step of route.route_steps) {

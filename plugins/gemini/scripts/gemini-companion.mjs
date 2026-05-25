@@ -751,6 +751,40 @@ function writeRuntimeOptionsSidecar(workspaceRoot, jobId, options) {
   }
 }
 
+const BOOLEAN_RUNTIME_OPTION_KEYS = Object.freeze([
+  "resend_confirmation_approved",
+  "resume_without_source_resend",
+  "source_packet_override_approved",
+]);
+
+const STRING_RUNTIME_OPTION_KEYS = Object.freeze([
+  "review_slot_disposition",
+  "review_slot_waiver_artifact",
+  "review_slot_override_artifact",
+  "source_packet_override_source",
+]);
+
+function sidecarObject(value) {
+  return value && typeof value === "object" && !Array.isArray(value) ? value : null;
+}
+
+function sidecarReviewSlotPriorAttempts(value) {
+  if (!Array.isArray(value)) return null;
+  return value.filter((attempt) => sidecarObject(attempt));
+}
+
+function copyBooleanRuntimeOptions(options, parsed) {
+  for (const key of BOOLEAN_RUNTIME_OPTION_KEYS) {
+    if (typeof parsed[key] === "boolean") options[key] = parsed[key];
+  }
+}
+
+function copyStringRuntimeOptions(options, parsed) {
+  for (const key of STRING_RUNTIME_OPTION_KEYS) {
+    if (typeof parsed[key] === "string" && parsed[key].length > 0) options[key] = parsed[key];
+  }
+}
+
 function readRuntimeOptionsSidecar(workspaceRoot, jobId) {
   const file = runtimeOptionsSidecarPath(workspaceRoot, jobId);
   const consumed = consumeJsonSettingsSidecar(file);
@@ -758,41 +792,17 @@ function readRuntimeOptionsSidecar(workspaceRoot, jobId) {
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
   const timeoutMs = parsed.timeout_ms;
   const options = Number.isSafeInteger(timeoutMs) && timeoutMs > 0 ? { timeout_ms: timeoutMs } : {};
-  if (typeof parsed.approval_token === "string" && parsed.approval_token.trim().length > 0) {
-    options.approval_token = parsed.approval_token.trim();
-  }
+  const approvalToken = typeof parsed.approval_token === "string" ? parsed.approval_token.trim() : "";
+  if (approvalToken.length > 0) options.approval_token = approvalToken;
   if (parsed.approval_scope === "session" || parsed.approval_scope === "once") {
     options.approval_scope = parsed.approval_scope;
   }
-  if (parsed.previous_source_attempt && typeof parsed.previous_source_attempt === "object" && !Array.isArray(parsed.previous_source_attempt)) {
-    options.previous_source_attempt = parsed.previous_source_attempt;
-  }
-  if (Array.isArray(parsed.review_slot_prior_attempts)) {
-    options.review_slot_prior_attempts = parsed.review_slot_prior_attempts.filter(
-      (attempt) => attempt && typeof attempt === "object" && !Array.isArray(attempt),
-    );
-  }
-  if (typeof parsed.resend_confirmation_approved === "boolean") {
-    options.resend_confirmation_approved = parsed.resend_confirmation_approved;
-  }
-  if (typeof parsed.resume_without_source_resend === "boolean") {
-    options.resume_without_source_resend = parsed.resume_without_source_resend;
-  }
-  if (typeof parsed.review_slot_disposition === "string" && parsed.review_slot_disposition.length > 0) {
-    options.review_slot_disposition = parsed.review_slot_disposition;
-  }
-  if (typeof parsed.review_slot_waiver_artifact === "string" && parsed.review_slot_waiver_artifact.length > 0) {
-    options.review_slot_waiver_artifact = parsed.review_slot_waiver_artifact;
-  }
-  if (typeof parsed.review_slot_override_artifact === "string" && parsed.review_slot_override_artifact.length > 0) {
-    options.review_slot_override_artifact = parsed.review_slot_override_artifact;
-  }
-  if (typeof parsed.source_packet_override_approved === "boolean") {
-    options.source_packet_override_approved = parsed.source_packet_override_approved;
-  }
-  if (typeof parsed.source_packet_override_source === "string" && parsed.source_packet_override_source.length > 0) {
-    options.source_packet_override_source = parsed.source_packet_override_source;
-  }
+  const previousSourceAttempt = sidecarObject(parsed.previous_source_attempt);
+  if (previousSourceAttempt) options.previous_source_attempt = previousSourceAttempt;
+  const reviewSlotPriorAttempts = sidecarReviewSlotPriorAttempts(parsed.review_slot_prior_attempts);
+  if (reviewSlotPriorAttempts) options.review_slot_prior_attempts = reviewSlotPriorAttempts;
+  copyBooleanRuntimeOptions(options, parsed);
+  copyStringRuntimeOptions(options, parsed);
   if (consumed.cleanup_warning) {
     options.cleanup_warning = consumed.cleanup_warning;
     options.cleanup_warning_path = consumed.cleanup_warning_path;
