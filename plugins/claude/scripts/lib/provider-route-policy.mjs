@@ -427,6 +427,16 @@ function retryFingerprintForAttempt(attempt = null) {
     ?? null;
 }
 
+function retryCountableAttempt(attempt = null) {
+  const nestedSlot =
+    attempt?.review_slot ??
+    attempt?.review_metadata?.audit_manifest?.review_slot ??
+    attempt;
+  if (nestedSlot?.source_state === "not_sent") return false;
+  const reason = nestedSlot?.not_counted_reason;
+  return reason !== "source_not_sent" && reason !== "stale_head";
+}
+
 function retryCountContribution(attempt = null, fingerprint = null) {
   if (!fingerprint || retryFingerprintForAttempt(attempt) !== fingerprint) {
     return { flat: 0, accumulated: 0 };
@@ -435,6 +445,9 @@ function retryCountContribution(attempt = null, fingerprint = null) {
     attempt?.review_slot ??
     attempt?.review_metadata?.audit_manifest?.review_slot ??
     attempt;
+  if (!retryCountableAttempt(nestedSlot)) {
+    return { flat: 0, accumulated: 0 };
+  }
   const priorCount = nestedSlot?.retry_count;
   if (Number.isSafeInteger(priorCount) && priorCount > 0) {
     return { flat: 0, accumulated: priorCount + 1 };

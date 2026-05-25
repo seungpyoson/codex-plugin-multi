@@ -121,7 +121,7 @@ fingerprint, retry count, not-counted reason, or final slot disposition model.
   `reviewSlotRetryFingerprint`, `evaluateReviewSlotRetryPolicy`,
   `buildReviewSlotDisposition`, and `redactReviewSlotDisposition`. Adapters may
   provide only capability facts and launch mechanics.
-- [ ] T050 Wire Claude/Gemini/Kimi continuation, DeepSeek/GLM direct API
+- [x] T050 Wire Claude/Gemini/Kimi continuation, DeepSeek/GLM direct API
   single-attempt slots, and Grok single-attempt slots through the same
   review-slot disposition model.
 - [ ] T051 Project disposition and retry state through review panel/status so a

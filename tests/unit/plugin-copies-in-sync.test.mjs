@@ -469,7 +469,7 @@ test("source-bearing launch paths enforce shared source packet policy before pro
     },
     {
       runtimePath: "plugins/grok/scripts/grok-web-reviewer.mjs",
-      preflight: "execution = sourcePacketPolicyPreflight({ cfg, mode, prompt, scopeInfo, options });",
+      preflight: "execution = sourcePacketPolicyPreflight({ cfg, mode, prompt, scopeInfo, options: runOptions });",
       launch: "execution = await callGrokCli(cfg, prompt, {",
     },
   ];

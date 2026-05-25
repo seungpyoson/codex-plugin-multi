@@ -549,6 +549,48 @@ async function readApiReviewerMetaRecord(root, jobId) {
   return JSON.parse(await readFile(resolve(apiReviewerJobsDir(root), jobId, "meta.json"), "utf8"));
 }
 
+function reviewSlotFromRecord(record) {
+  const slot = record?.review_metadata?.audit_manifest?.review_slot
+    ?? record?.external_review?.review_slot
+    ?? null;
+  return slot && typeof slot === "object" && !Array.isArray(slot) ? slot : null;
+}
+
+function priorSlotRequiresRetryDisposition(slot) {
+  if (!slot?.retry_fingerprint) return false;
+  if (slot.source_state === SOURCE_CONTENT_TRANSMISSION.NOT_SENT) return false;
+  if (slot.verdict === "approved" || slot.verdict === "request_changes") return false;
+  const reason = String(slot.not_counted_reason ?? "unknown");
+  if (reason === "none" || reason === "stale_head" || reason === "source_not_sent") return false;
+  return true;
+}
+
+async function collectPriorReviewSlotAttempts(root, currentJobId = null) {
+  let entries;
+  try {
+    entries = await readdir(apiReviewerJobsDir(root), { withFileTypes: true });
+  } catch (e) {
+    if (e.code === "ENOENT") return [];
+    throw e;
+  }
+  const attempts = [];
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue;
+    const jobId = entry.name;
+    if (currentJobId !== null && jobId === currentJobId) continue;
+    try {
+      assertSafeJobId(jobId);
+      const parsed = JSON.parse(await readFile(resolve(apiReviewerJobsDir(root), jobId, "meta.json"), "utf8"));
+      const slot = reviewSlotFromRecord(parsed);
+      if (priorSlotRequiresRetryDisposition(slot)) attempts.push({ review_slot: slot });
+    } catch {
+      // Ignore malformed legacy artifacts; retry guards should be driven by
+      // validated review-slot records, not by corrupt state.
+    }
+  }
+  return attempts;
+}
+
 async function readApiReviewerLockOwnerRaw(lockOwnerFile) {
   try {
     return await readFile(lockOwnerFile, "utf8");
@@ -2457,6 +2499,9 @@ function buildApprovalAuditManifest({ cfg, renderedPrompt, request, scopeInfo, r
       sourceSendApprovalRequired: routeFields?.source_send_approval_required ?? null,
       sourceSendApprovalState: routeFields?.source_send_approval_state ?? null,
       providerCapabilities: providerCapabilitiesForConfig(cfg),
+      reviewSlot: {
+        priorAttempts: options.reviewSlotPriorAttempts ?? [],
+      },
       ...sourcePacketOverrideRouteFields(options),
     },
     status: "approval_request",
@@ -2724,6 +2769,9 @@ function buildReviewMetadata(cfg, scopeInfo, execution = null, startedAt = null,
       sourceSendApprovalRequired: routeFields.source_send_approval_required,
       sourceSendApprovalState: routeFields.source_send_approval_state,
       providerCapabilities: providerCapabilitiesForConfig(cfg),
+      reviewSlot: {
+        priorAttempts: options.reviewSlotPriorAttempts ?? [],
+      },
       ...sourcePacketOverrideRouteFields(options),
     },
     result: execution.parsed?.result ?? "",
@@ -2977,6 +3025,9 @@ async function cmdApprovalRequest(options) {
     }
     if (!hasPromptText(options.prompt)) throw runBadArgs("bad_args: prompt is required (pass --prompt <focus>)");
     scopeInfo = await collectScope({ ...options, mode });
+    options.reviewSlotPriorAttempts = await collectPriorReviewSlotAttempts(
+      apiReviewerDataRoot(process.env, scopeInfo.workspaceRoot ?? scopeInfo.cwd),
+    );
     let approvalRequest;
     try {
       approvalRequest = buildApprovalRequest({ provider, cfg, mode, options, scopeInfo });
@@ -3039,6 +3090,10 @@ async function cmdRun(options) {
     );
     if (!statePreflight.ok) throw runProviderFailure("sandbox_blocked", statePreflight.error);
     scopeInfo = await collectScope({ ...runOptions, mode });
+    runOptions.reviewSlotPriorAttempts = await collectPriorReviewSlotAttempts(
+      apiReviewerDataRoot(process.env, scopeInfo.workspaceRoot ?? scopeInfo.cwd),
+      jobId,
+    );
   } catch (e) {
     const redact = redactor();
     const policyError = isGitBinaryPolicyError(e);
@@ -3098,7 +3153,7 @@ async function cmdRun(options) {
         authPath = approvalAuthPathFor(cfg, process.env);
         billingPath = approvalBillingPathFor(cfg);
         routeFields = approvalRouteFields(routeStateForApproval(cfg, process.env));
-        auditManifest = buildApprovalAuditManifest({ cfg, renderedPrompt, request, scopeInfo, routeFields, approvalScope, options });
+        auditManifest = buildApprovalAuditManifest({ cfg, renderedPrompt, request, scopeInfo, routeFields, approvalScope, options: runOptions });
         execution = sourcePacketPolicyFailureFromManifest(auditManifest);
         if (execution) execution.prompt = renderedPrompt;
       }

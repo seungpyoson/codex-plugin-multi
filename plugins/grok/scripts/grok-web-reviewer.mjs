@@ -1627,6 +1627,9 @@ function sourcePacketPolicyPreflight({ cfg, mode, prompt, scopeInfo, options = {
       sourceSendApprovalRequired: route.source_send_approval_required,
       sourceSendApprovalState: route.source_send_approval_state,
       providerCapabilities,
+      reviewSlot: {
+        priorAttempts: options.reviewSlotPriorAttempts ?? [],
+      },
       ...sourcePacketOverrideRouteFields(options),
     },
     status: "preflight_failed",
@@ -3233,6 +3236,9 @@ function buildReviewMetadata(cfg, scopeInfo, execution = null, startedAt = null,
       sourceSendApprovalRequired: route.source_send_approval_required,
       sourceSendApprovalState: route.source_send_approval_state,
       providerCapabilities: providerCapabilitiesForConfig(cfg),
+      reviewSlot: {
+        priorAttempts: options.reviewSlotPriorAttempts ?? [],
+      },
       ...sourcePacketOverrideRouteFields(options),
     },
     result: execution.parsed?.result ?? "",
@@ -3424,6 +3430,47 @@ function defaultDataRoot(pluginName, cwd = process.cwd()) {
 
 function dataRoot(env = process.env, cwd = process.cwd()) {
   return resolve(env.GROK_PLUGIN_DATA ?? defaultDataRoot("grok", cwd));
+}
+
+function reviewSlotFromRecord(record) {
+  const slot = record?.review_metadata?.audit_manifest?.review_slot
+    ?? record?.external_review?.review_slot
+    ?? null;
+  return slot && typeof slot === "object" && !Array.isArray(slot) ? slot : null;
+}
+
+function priorSlotRequiresRetryDisposition(slot) {
+  if (!slot?.retry_fingerprint) return false;
+  if (slot.source_state === SOURCE_CONTENT_TRANSMISSION.NOT_SENT) return false;
+  if (slot.verdict === "approved" || slot.verdict === "request_changes") return false;
+  const reason = String(slot.not_counted_reason ?? "unknown");
+  if (reason === "none" || reason === "stale_head" || reason === "source_not_sent") return false;
+  return true;
+}
+
+async function collectPriorReviewSlotAttempts(root, currentJobId = null) {
+  const jobsDir = resolve(root, "jobs");
+  let entries = [];
+  try {
+    entries = await readdir(jobsDir, { withFileTypes: true });
+  } catch (error) {
+    if (error?.code === "ENOENT") return [];
+    throw error;
+  }
+  const attempts = [];
+  for (const entry of entries) {
+    if (!entry.isDirectory() || !/^job_[0-9a-f-]{36}$/iu.test(entry.name)) continue;
+    if (currentJobId !== null && entry.name === currentJobId) continue;
+    try {
+      const record = JSON.parse(await readFile(resolve(jobsDir, entry.name, "meta.json"), "utf8"));
+      if (record?.job_id !== entry.name) continue;
+      const slot = reviewSlotFromRecord(record);
+      if (priorSlotRequiresRetryDisposition(slot)) attempts.push({ review_slot: slot });
+    } catch {
+      // Malformed legacy artifacts are not trusted as retry-policy evidence.
+    }
+  }
+  return attempts;
 }
 
 async function writeJsonFile(file, value) {
@@ -4382,6 +4429,10 @@ async function cmdRun(options) {
     cfg = config(process.env, options);
     if (!VALID_MODES.has(mode)) throw new Error(`bad_args: unsupported --mode ${mode}`);
     scopeInfo = await collectScope({ ...runOptions, mode });
+    runOptions.reviewSlotPriorAttempts = await collectPriorReviewSlotAttempts(
+      dataRoot(process.env, scopeInfo.workspaceRoot ?? scopeInfo.cwd),
+      jobId,
+    );
   } catch (e) {
     cfg ??= fallbackConfig(process.env, options);
     const cwd = resolve(process.cwd());
@@ -4407,7 +4458,7 @@ async function cmdRun(options) {
     let webReadiness = null;
     try {
       prompt = promptFor(cfg, mode, options.prompt ?? "", scopeInfo);
-      execution = sourcePacketPolicyPreflight({ cfg, mode, prompt, scopeInfo, options });
+      execution = sourcePacketPolicyPreflight({ cfg, mode, prompt, scopeInfo, options: runOptions });
       if (!execution && prompt.length > cfg.max_prompt_chars) {
         const capName = cfg.transport === "cli" ? "GROK_CLI_MAX_PROMPT_CHARS" : "GROK_WEB_MAX_PROMPT_CHARS";
         execution = providerFailure("prompt_too_large", redactor()(`prompt_too_large:${prompt.length} chars exceeds ${capName}=${cfg.max_prompt_chars}`), null, null, false);
@@ -4465,7 +4516,7 @@ async function cmdRun(options) {
           const cliFailure = execution;
           cfg = webAutoFallbackConfig(process.env, cliFailure.parsed?.reason ?? "grok_cli_unavailable");
           prompt = promptFor(cfg, mode, options.prompt ?? "", scopeInfo);
-          const fallbackSourcePacketPreflight = sourcePacketPolicyPreflight({ cfg, mode, prompt, scopeInfo, options });
+          const fallbackSourcePacketPreflight = sourcePacketPolicyPreflight({ cfg, mode, prompt, scopeInfo, options: runOptions });
           if (fallbackSourcePacketPreflight) {
             execution = fallbackSourcePacketPreflight;
             execution.diagnostics = {

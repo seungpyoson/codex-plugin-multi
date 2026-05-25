@@ -4094,6 +4094,69 @@ test("custom-review guides substantive missing-verdict retry without automatic r
   }
 });
 
+test("custom-review blocks same-packet Grok resend after a failed source-sent slot", async () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "grok-web-retry-guard-workspace-"));
+  const dataDir = mkdtempSync(path.join(tmpdir(), "grok-web-retry-guard-data-"));
+  const badResult = badVerdictReviewFixture("Grok retry guard marker.");
+  writeFileSync(path.join(cwd, "review.js"), "export const value = 42;\n");
+
+  try {
+    let requestCount = 0;
+    await withServer(async (req, res) => {
+      requestCount += 1;
+      assert.equal(req.method, "POST");
+      assert.equal(req.url, "/api/chat/completions");
+      const body = await readJsonRequest(req);
+      assert.match(body.messages[0].content, /review\.js/);
+      assert.match(body.messages[0].content, /export const value = 42/);
+      res.setHeader("content-type", "application/json");
+      res.end(JSON.stringify({
+        id: `grok-web-retry-guard-session-${requestCount}`,
+        model: "grok-4.20-fast",
+        choices: [{ message: { content: badResult } }],
+        usage: { prompt_tokens: 12, completion_tokens: 40, total_tokens: 52 },
+      }));
+    }, async (baseUrl) => {
+      const commonArgs = [
+        "run",
+        "--mode", "custom-review",
+        "--scope", "custom",
+        "--scope-paths", "review.js",
+        "--foreground",
+        "--prompt", "Check this file.",
+      ];
+      const commonOptions = {
+        cwd,
+        env: {
+          GROK_WEB_BASE_URL: baseUrl,
+          GROK_PLUGIN_DATA: dataDir,
+        },
+      };
+
+      const first = await runAsync(commonArgs, commonOptions);
+      assert.equal(first.status, 1, first.stderr || first.stdout);
+      const firstRecord = parseStdout(first);
+      assert.equal(firstRecord.error_code, "review_not_completed");
+      assert.equal(firstRecord.external_review.source_content_transmission, "sent");
+
+      const second = await runAsync(commonArgs, commonOptions);
+      assert.equal(second.status, 1, second.stderr || second.stdout);
+      const secondRecord = parseStdout(second);
+      assert.equal(secondRecord.error_code, "review_slot_disposition_required");
+      assert.equal(secondRecord.external_review.source_content_transmission, "not_sent");
+      assert.equal(secondRecord.review_metadata.audit_manifest.review_slot.retry_count, 1);
+      assert.equal(
+        secondRecord.review_metadata.audit_manifest.source_packet_policy.source_packet_action,
+        "review_slot_retry_blocked",
+      );
+      assert.equal(requestCount, 1);
+    });
+  } finally {
+    rmTree(cwd);
+    rmTree(dataDir);
+  }
+});
+
 test("custom-review lifecycle jsonl emits launch before terminal projection", async () => {
   const cwd = mkdtempSync(path.join(tmpdir(), "grok-web-workspace-"));
   const reviewText = substantiveReviewFixture("SOURCE_BODY_SENTINEL_DO_NOT_PERSIST");

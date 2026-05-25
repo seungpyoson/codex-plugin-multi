@@ -185,6 +185,49 @@ test("review slot retry policy fail-closes third same-packet attempt", () => {
   }).slot_retry_allowed, true);
 });
 
+test("review slot retry policy ignores not-sent and stale prior slots", () => {
+  const retryFingerprint = reviewSlotRetryFingerprint({
+    provider: "deepseek",
+    mode: "custom-review",
+    renderedPromptHash: { algorithm: "sha256", value: "prompt-hash" },
+    selectedSource: selectedSourceFixture(12),
+    reviewedHeadSha: "abc123",
+    routeStep: "direct_api",
+    scope: { name: "custom", base: null, paths: ["src/example.js"] },
+  });
+
+  const policy = evaluateReviewSlotRetryPolicy({
+    retryFingerprint,
+    priorAttempts: [
+      {
+        review_slot: {
+          retry_fingerprint: retryFingerprint,
+          source_state: "not_sent",
+          not_counted_reason: "source_not_sent",
+        },
+      },
+      {
+        review_slot: {
+          retry_fingerprint: retryFingerprint,
+          source_state: "sent",
+          not_counted_reason: "stale_head",
+        },
+      },
+      {
+        review_slot: {
+          retry_fingerprint: retryFingerprint,
+          source_state: "sent",
+          not_counted_reason: "missing_verdict",
+        },
+      },
+    ],
+    disposition: "retry",
+  });
+
+  assert.equal(policy.retry_count, 1);
+  assert.equal(policy.slot_retry_allowed, true);
+});
+
 test("review slot disposition redacts raw fields and excludes stale-head approvals", () => {
   const disposition = buildReviewSlotDisposition({
     provider: "claude",

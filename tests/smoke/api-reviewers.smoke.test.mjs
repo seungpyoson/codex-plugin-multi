@@ -2339,6 +2339,53 @@ test("direct API reviewers guide substantive missing-verdict retry without autom
   }
 });
 
+test("direct API reviewers block same-packet resend after a failed source-sent slot", async () => {
+  const cwd = makeWorkspace();
+  const dataDir = mkdtempSync(path.join(tmpdir(), "api-reviewers-retry-guard-data-"));
+  const badResult = badVerdictReviewFixture("Provider marker: deepseek retry guard.");
+  const commonArgs = [
+    "run",
+    "--provider", "deepseek",
+    "--mode", "custom-review",
+    "--scope", "custom",
+    "--scope-paths", "seed.txt",
+    "--foreground",
+    "--prompt", "Review this file.",
+  ];
+  const commonEnv = {
+    API_REVIEWERS_PLUGIN_DATA: dataDir,
+    API_REVIEWERS_MOCK_RESPONSE: mockResponse("deepseek-v4-pro", "chatcmpl-retry-guard", badResult),
+    DEEPSEEK_API_KEY: "secret-test-value",
+  };
+
+  try {
+    writeFileSync(path.join(cwd, "seed.txt"), "export const value = 1;\n");
+
+    const first = await run(commonArgs, { cwd, env: commonEnv });
+    assert.equal(first.status, 1, first.stderr || first.stdout);
+    const firstRecord = parseJson(first.stdout);
+    assert.equal(firstRecord.error_code, "review_not_completed");
+    assert.equal(firstRecord.external_review.source_content_transmission, "sent");
+    assert.equal(firstRecord.review_metadata.audit_manifest.review_quality.failed_review_slot, true);
+
+    const second = await run(commonArgs, { cwd, env: commonEnv });
+    assert.equal(second.status, 1, second.stderr || second.stdout);
+    const secondRecord = parseJson(second.stdout);
+    assert.equal(secondRecord.status, "failed");
+    assert.equal(secondRecord.error_code, "review_slot_disposition_required");
+    assert.equal(secondRecord.external_review.source_content_transmission, "not_sent");
+    assert.equal(secondRecord.review_metadata.audit_manifest.review_slot.retry_count, 1);
+    assert.equal(secondRecord.review_metadata.audit_manifest.review_slot.retry_disposition_required, true);
+    assert.equal(
+      secondRecord.review_metadata.audit_manifest.source_packet_policy.source_packet_action,
+      "review_slot_retry_blocked",
+    );
+  } finally {
+    rmSync(dataDir, { recursive: true, force: true });
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
 test("direct API JobRecord construction does not mutate execution input", async () => {
   const { buildRecord } = await importApiReviewerInternalsForTest();
   const startedAt = "2026-01-01T00:00:00.000Z";
