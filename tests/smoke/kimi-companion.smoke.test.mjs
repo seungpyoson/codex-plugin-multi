@@ -780,10 +780,15 @@ test("kimi background custom-review rejects over-budget source packets before pr
 
 test("kimi custom-review explicit large source override records policy and sends source", () => {
   const cwd = mkdtempSync(path.join(tmpdir(), "kimi-source-packet-override-cwd-"));
+  const files = [];
   let dataDir = null;
   try {
     fixtureSeedRepo(cwd);
-    writeFileSync(path.join(cwd, "large.txt"), "k".repeat(40 * 1024));
+    for (let index = 0; index < 3; index += 1) {
+      const file = `packet-${index}.txt`;
+      files.push(file);
+      writeFileSync(path.join(cwd, file), "k".repeat(180 * 1024));
+    }
     const result = runCompanion([
       "run",
       "--mode",
@@ -791,7 +796,7 @@ test("kimi custom-review explicit large source override records policy and sends
       "--cwd",
       cwd,
       "--scope-paths",
-      "large.txt",
+      files.join(","),
       "--foreground",
       "--allow-large-source-packet",
       "--",
@@ -799,7 +804,7 @@ test("kimi custom-review explicit large source override records policy and sends
     ], {
       cwd,
       env: {
-        KIMI_MOCK_ASSERT_PROMPT_INCLUDES: "KIMI FILE 1: large.txt",
+        KIMI_MOCK_ASSERT_PROMPT_INCLUDES: "KIMI FILE 1: packet-0.txt",
       },
     });
     dataDir = result.dataDir;
@@ -810,6 +815,8 @@ test("kimi custom-review explicit large source override records policy and sends
     const policy = record.review_metadata.audit_manifest.source_packet_policy;
     assert.equal(policy.source_send_allowed, true);
     assert.equal(policy.source_packet_action, "send_after_source_packet_override");
+    assert.equal(policy.source_packet_within_budget, false);
+    assert.ok(policy.selected_source_bytes > policy.source_packet_budget_bytes);
     assert.equal(policy.source_packet_override_approved, true);
     assert.equal(policy.source_packet_override_source, "--allow-large-source-packet");
   } finally {

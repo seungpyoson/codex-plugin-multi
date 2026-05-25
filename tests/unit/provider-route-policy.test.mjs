@@ -221,6 +221,23 @@ test("source packet policy prevents automatic resend after source-bearing failur
   assert.equal(blocked.review_surface_changed, false);
   assert.equal(blocked.source_content_transmission, "not_sent");
 
+  const overrideStillBlocked = evaluateSourcePacketPolicy({
+    ...baseInput,
+    providerCapabilities: {
+      subscription: { source_packet: { max_bytes: 7 } },
+    },
+    sourcePacketOverrideApproved: true,
+    sourcePacketOverrideSource: "--allow-large-source-packet",
+  });
+  assert.equal(overrideStillBlocked.source_send_allowed, false);
+  assert.equal(overrideStillBlocked.source_packet_action, "resend_confirmation_required");
+  assert.equal(overrideStillBlocked.source_packet_policy_error_code, "resend_confirmation_required");
+  assert.equal(overrideStillBlocked.source_packet_within_budget, false);
+  assert.equal(overrideStillBlocked.source_packet_override_approved, true);
+  assert.equal(overrideStillBlocked.source_packet_override_source, "--allow-large-source-packet");
+  assert.equal(overrideStillBlocked.resend_confirmation_required, true);
+  assert.equal(overrideStillBlocked.source_content_transmission, "not_sent");
+
   const confirmed = evaluateSourcePacketPolicy({
     ...baseInput,
     resendConfirmationApproved: true,
