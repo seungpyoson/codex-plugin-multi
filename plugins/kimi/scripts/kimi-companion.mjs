@@ -530,18 +530,24 @@ function createKimiReadOnlyLaunchFiles(profile) {
   const skillsDir = joinPath(dir, "skills");
   const mcpConfigFile = joinPath(dir, "empty-mcp.json");
   const agentFilePath = joinPath(dir, "agent.yaml");
+  const systemPromptPath = joinPath(dir, "system.md");
   mkdirSync(skillsDir, { recursive: true, mode: 0o700 });
   writeFileSync(mcpConfigFile, "{}\n", "utf8");
+  writeFileSync(systemPromptPath, [
+    "You are a read-only external reviewer.",
+    "Use only the prompt text supplied by the caller.",
+    "Do not use tools, inspect the workspace, edit files, or fetch external content.",
+    "Return the requested review verdict and findings directly.",
+    "",
+  ].join("\n"), "utf8");
   writeFileSync(agentFilePath, [
     "version: 1",
     "agent:",
-    "  extend: default",
     "  name: codex-readonly-reviewer",
-    "  tools:",
-    ...profile.allowed_tools.map((tool) => `    - ${JSON.stringify(tool)}`),
-    "  allowed_tools:",
-    ...profile.allowed_tools.map((tool) => `    - ${JSON.stringify(tool)}`),
-    "  exclude_tools: []",
+    "  system_prompt_path: ./system.md",
+    ...(profile.allowed_tools.length === 0
+      ? ["  tools: []"]
+      : ["  tools:", ...profile.allowed_tools.map((tool) => `    - ${JSON.stringify(tool)}`)]),
     "  subagents: {}",
     "",
   ].join("\n"), "utf8");

@@ -101,9 +101,20 @@ Topology input issue: #170
 - Cross-repo bolt-v2 PR #479 job `b465418e-913a-42c2-9c84-6befb9c789bb`
   used the cached installed Kimi plugin, sent two docs files / 44,870 bytes /
   218 lines at `--max-steps-per-turn 128`, and failed with
-  `step_limit_exceeded` with no verdict. This strengthens the source-bearing
-  capacity evidence but is not evidence against the PR #175 compact prompt
-  branch because it used the cached plugin.
+  `step_limit_exceeded` with no verdict.
+- PR #175 Kimi compatibility probes isolated packet size from launch shape:
+  raw no-source Kimi with the same print/plan/thinking flags returned
+  `Verdict: APPROVE`; raw compact selected-source prompt plus `--add-dir`
+  returned `Verdict: APPROVE`; exact companion custom-review on disposable
+  `seed.txt` (11 bytes) timed out after 90,000 ms with source sent and no
+  verdict (`6451a3fe-2c16-4bcd-9658-08ec60acdcb1`). This identifies the
+  companion source-bearing review launch shape, not source bytes alone, as a
+  Kimi adapter compatibility fault.
+- PR #175 exact-head Kimi review job `db42549b-2bae-4430-8e1a-b5538c56b547`
+  sent 30,422 bytes / 398 lines at `--max-steps-per-turn 128` and failed as
+  `usage_limited` after 668,215 ms. The slot is not an approval, and it shows
+  the prior Kimi launch shape can burn subscription quota without producing a
+  verdict.
 - Current PR #175 narrowed shard job `6cecf19f-2145-48d2-84b5-cd77bc09c835`
   stayed under the Kimi adapter cap, sent four files / 13,062 bytes / 309
   lines, and became `stale_active_job` after 586,979 ms with zero stdout/stderr,

@@ -75,10 +75,11 @@ retry, resend, and review-surface semantics for every provider and mode.
 - [x] T034 Update `provider-parity-table.json` and `data-model.md` to match the implemented full-policy slice.
 - [x] T035 Sync packaged copies and generated docs through canonical scripts.
 - [ ] T036 Address Grok login persistence only if Phase 5 proves separate scope.
-- [ ] T037 Address Kimi transport/capacity only if Phase 5 proves separate scope.
+- [x] T037 Address proven Kimi adapter compatibility: prompt-contained launch, no workspace tools, no `--add-dir`.
 - [x] T038 Run focused tests, `git diff --check`, `npm run lint:sync`, `npm test`, and any changed generated-doc checks.
 - [ ] T039 Run latest-head reviews from all six providers before merge-readiness.
 - [ ] T042 Refresh exact-head review state after audit-only commits.
+- [ ] T043 Refresh exact-head review state after Kimi prompt-only compatibility commit.
 
 ## Dependencies
 

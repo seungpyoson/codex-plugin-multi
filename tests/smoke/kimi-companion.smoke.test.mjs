@@ -2720,7 +2720,6 @@ for (const mode of ["review", "adversarial-review", "custom-review"]) {
     ], {
       cwd,
       env: {
-        KIMI_MOCK_ASSERT_FILE: mode === "adversarial-review" ? "changed.txt" : "seed.txt",
         KIMI_MOCK_ASSERT_CWD_NOT: realpathSync(tmpdir()),
         KIMI_MOCK_ASSERT_CWD_PREFIX: realpathSync(tmpdir()),
       },
@@ -2758,15 +2757,12 @@ for (const mode of ["review", "adversarial-review", "custom-review"]) {
     assert.equal(fx.t7_cwd.startsWith(tmpRoot), true,
       `Kimi review must run from a neutral temp cwd under ${tmpRoot}; got ${fx.t7_cwd}`);
     assert.equal(fx.t7_include_dirs.includes(fx.t7_cwd), false, "neutral cwd must not be the scoped include directory");
+    assert.deepEqual(fx.t7_include_dirs, [], "Kimi source-bearing review must use prompt-contained source, not workspace tools");
     assert.equal(existsSync(fx.t7_cwd), false, `neutral Kimi cwd must be cleaned after the run: ${fx.t7_cwd}`);
     assert.match(fx.t7_agent_file, /kimi-policy-.*agent\.yaml$/);
     assert.match(fx.t7_mcp_config_file, /kimi-policy-.*empty-mcp\.json$/);
     assert.match(fx.t7_skills_dir, /kimi-policy-.*skills$/);
-    assert.deepEqual(fx.t7_agent_allowed_tools, [
-      "kimi_cli.tools.file:ReadFile",
-      "kimi_cli.tools.file:Glob",
-      "kimi_cli.tools.file:Grep",
-    ]);
+    assert.deepEqual(fx.t7_agent_allowed_tools, []);
     assert.deepEqual(fx.t7_agent_forbidden_tool_mentions, []);
     assert.equal(existsSync(fx.t7_agent_file), false, `Kimi agent file must be cleaned after run: ${fx.t7_agent_file}`);
     assert.equal(existsSync(fx.t7_mcp_config_file), false, `Kimi MCP config must be cleaned after run: ${fx.t7_mcp_config_file}`);

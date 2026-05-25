@@ -78,11 +78,14 @@ Current hypothesis list:
 
 - Large source-bearing packets exceed Kimi step budget after source send.
 - Shared packet budget policy fails to preflight Kimi capacity before launch.
+- Kimi source-bearing review launch grants workspace/file-tool affordances even
+  though selected source is already embedded in the prompt.
 - Kimi lacks direct API/OpenRouter route capability in the shared ladder.
 
-Current classification: #177 is a separate follow-up issue. #171 still owns the
-shared route/source-packet/resend policy; #177 owns residual Kimi CLI review
-execution reliability.
+Current classification: #171 owns the shared route/source-packet/resend policy
+and the proven Kimi prompt-only launch compatibility fix. #177 remains only for
+residual Kimi CLI review execution reliability if failures continue after the
+prompt-contained launch path is verified.
 
 Current evidence:
 
@@ -106,6 +109,13 @@ Current evidence:
 - Kimi job `ea4c9156-8a96-449f-ac99-2c87ad52d57b` sent the four-file current
   planning packet of 35,495 bytes and failed with wall-clock `timeout` after
   907,148 ms with no verdict.
+- PR #175 compatibility probes showed raw Kimi prompt/plan/thinking and raw
+  compact selected-source prompt plus `--add-dir` can complete, while exact
+  companion custom-review on disposable 11-byte `seed.txt` timed out after
+  source send with no verdict (`6451a3fe-2c16-4bcd-9658-08ec60acdcb1`).
+- PR #175 exact-head Kimi review job
+  `db42549b-2bae-4430-8e1a-b5538c56b547` sent 30,422 bytes and failed as
+  `usage_limited` after 668,215 ms with no verdict.
 - Kimi companion and JobRecord tests intentionally classify the sentinel as a
   runtime budget failure after source transmission.
 
@@ -122,15 +132,17 @@ Duplicate check:
 - #173 covers provider-neutral subscription CLI source-packet budget gates for
   Claude, Gemini, and Kimi.
 
-Task-to-issue decision: GitHub issue #177 created. The shared #171 fix blocks
-over-cap packets before source send and disables unsupported Kimi no-source
-repair. #177 remains needed because under-cap Kimi shard
-`6cecf19f-2145-48d2-84b5-cd77bc09c835` still became `stale_active_job` after
-source send with no verdict.
+Task-to-issue decision: GitHub issue #177 created. The shared #171 fix now
+blocks over-cap packets before source send, disables unsupported Kimi no-source
+repair, and makes Kimi review launch prompt-contained with `tools: []`, no
+default-agent inheritance, and no `--add-dir`. #177 remains only as a residual
+tracker if Kimi still cannot produce verdicts after that launch shape is in the
+installed plugin.
 
 Required before implementing #177:
 
 - Proof that the timeout/step-limit symptom remains after the shared packet
-  budget, timeout budget, and route ladder design is accepted.
+  budget, timeout budget, route ladder, and Kimi prompt-contained launch design
+  are accepted.
 - Duplicate check against #172 and #171.
 - Explicit operator approval to create the issue.

@@ -218,6 +218,16 @@ Additional current evidence:
 - Kimi job `0ef067c5-d9be-4820-a7d4-034b337c54b6` used the compact prompt
   contract on 63,197 bytes and failed with `step_limit_exceeded` at
   `--max-steps-per-turn 128`.
+- Kimi prompt-compatibility probes separated byte size from adapter launch
+  shape: raw Kimi print/plan/thinking prompts completed, and a raw compact
+  selected-source prompt plus `--add-dir` completed, but the exact companion
+  custom-review path timed out on disposable `seed.txt` (11 bytes) after source
+  send with no verdict (`6451a3fe-2c16-4bcd-9658-08ec60acdcb1`).
+- Kimi official docs document default-agent Shell/write/web/plan tools and
+  custom-agent `tools` / `exclude_tools`; the adapter's previous `allowed_tools`
+  field was not the documented tool boundary. Source-bearing review now uses a
+  prompt-contained custom agent with `tools: []`, no default-agent inheritance,
+  and no `--add-dir` workspace grant.
 - `scripts/lib/provider-route-policy.mjs` accepts only `subscription` and `api`
   route modes; OpenRouter is not modeled as a first-class route.
 - `plugins/kimi/scripts/kimi-companion.mjs` declares only
@@ -253,9 +263,9 @@ Additional current evidence:
 5. Root cause:
    Shared policy lacks a provider-neutral pre-send packet/capacity/timeout
    decision and route ladder for source-bearing review, plus capability-aware
-   no-source repair. Kimi supplies the strongest failure evidence and now has a
-   measured adapter capacity fact: lower source-packet capacity and unsupported
-   no-source repair.
+   no-source repair. Kimi also supplies a measured adapter launch-shape fact:
+   prompt-contained source review must not grant Kimi workspace tools or
+   workspace scope until that tool-enabled path can produce reliable verdicts.
 
 Required fix:
 
@@ -265,6 +275,9 @@ Required fix:
   possible.
 - Block Kimi no-source repair until the adapter can prove resumed sessions retain
   prior source without hidden file-tool transmission.
+- Launch Kimi source-bearing review as prompt-contained review: no workspace
+  tools, no default-agent inherited tool set, and no `--add-dir` workspace
+  grant while selected source is already embedded in the shared prompt.
 - Offer the same sharding/narrowing/route-ladder next actions as other
   providers.
 - Create a dedicated Kimi issue only if evidence proves Kimi-specific behavior

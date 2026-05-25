@@ -7,7 +7,7 @@ Branch: `goal/provider-architecture-parity-171`
 
 ## Current Status
 
-Implementation is locally complete for the focused #171 parity hardening slice, but merge readiness is not complete. Current head `d13ffdf44918ff12bcd54b6caa94e0b4375b1778` has green local verification and green GitHub CI. Latest code-delta external approvals exist from Claude, Gemini, DeepSeek, and GLM for `29832ae..249f80b`, but those approvals are stale for the audit-only `249f80b..d13ffdf` delta if strict exact-head review is required. Kimi has failed both over-cap and under-cap review attempts, and Grok latest-head review was not sent because the sandbox blocked a source-bearing external review for this private/not-verified-public repository.
+Implementation has an additional Kimi prompt-only adapter compatibility change and is not merge-ready. The previous pushed audit head `cff8af84c54935b7f15ad3b88b29755240efae09` received refreshed approvals from Gemini, Claude, DeepSeek, and a blocking stale-head finding from GLM/Grok because this audit still named an older head. Kimi job `db42549b-2bae-4430-8e1a-b5538c56b547` sent source and failed as `usage_limited`, so it is not an approval. All six-provider reviews and CI must refresh after the latest Kimi compatibility commit; PR #175 remains draft.
 
 ## Requirement Coverage
 
@@ -19,9 +19,9 @@ Implementation is locally complete for the focused #171 parity hardening slice, 
 | Same source packet budget/resend policy for all six providers and source-bearing modes. | Shared policy plus provider launch preflight in Claude, Gemini, Kimi, Grok, DeepSeek, and GLM paths. Grok and direct API branch-diff now use shared git diff packets instead of full HEAD file bodies. Kimi now uses adapter capacity facts for its lower source-bearing packet budget and unsupported no-source repair, while still flowing through the same shared policy fields and gates. | Complete for implemented slice |
 | No fake parity: allowed differences require clear capability facts. | Provider parity table requires `intentional=true` and `capability_fact` for adapter differences; unresolved gaps require follow-up issues. | Complete |
 | Grok `--transport auto` is an Adapter transport capability, not alternate provider policy. | Grok CLI-first/web-fallback smoke tests and mode-derived source-bearing guardrail. | Complete |
-| Kimi step-limit and missing-verdict symptoms are handled through shared policy, not a Kimi-only special case. | Kimi compact latest-delta review `0ef067c5-d9be-4820-a7d4-034b337c54b6` sent 63,197 bytes and failed with `step_limit_exceeded` at 128 steps. Raw no-tool continuation of session `73ab07c5-7c8a-4661-a271-632e13a5143d` returned `Verdict: NOT_REVIEWED` because prior source was not retained. Shared policy now blocks Kimi no-source repair by adapter capability and pre-blocks packets above Kimi's 32 KiB source capacity before launch; job `08d2f957-bb06-4222-a15c-651691be8655` proves the same broad packet is now blocked before source send. | Complete for implemented slice; Kimi latest-head approval remains blocked until narrowed review succeeds or is waived |
+| Kimi step-limit and missing-verdict symptoms are handled through shared policy, not a Kimi-only special case. | Kimi compact latest-delta review `0ef067c5-d9be-4820-a7d4-034b337c54b6` sent 63,197 bytes and failed with `step_limit_exceeded` at 128 steps. Raw no-tool continuation of session `73ab07c5-7c8a-4661-a271-632e13a5143d` returned `Verdict: NOT_REVIEWED` because prior source was not retained. Shared policy now blocks Kimi no-source repair by adapter capability and pre-blocks packets above Kimi's 32 KiB source capacity before launch. Kimi adapter launch now uses prompt-contained source review with `tools: []`, no inherited default agent, and no `--add-dir`, based on a disposable 11-byte exact companion timeout and raw prompt probes. | Complete for implemented slice; Kimi latest-head approval remains blocked until quota recovers and a usable verdict is obtained or waived |
 | Full guardrail against provider-neutral drift. | `plugin-copies-in-sync.test.mjs`, `docs-contracts.test.mjs`, `external-model-contracts.test.mjs`, and parity-table schema coverage. | Complete for current policy surface |
-| Final six-provider approval. | Current head `d13ffdf44918ff12bcd54b6caa94e0b4375b1778` has green CI but no exact-head six-provider approval. Code-delta approvals from Claude, Gemini, DeepSeek, and GLM covered `29832ae..249f80b`; Kimi narrowed shard `6cecf19f-2145-48d2-84b5-cd77bc09c835` sent 13,062 bytes and became `stale_active_job` with no verdict; Grok latest-head source-bearing review was blocked before send by sandbox policy. | Blocked on exact-head review refresh, Kimi usable verdict or waiver, and Grok usable verdict or waiver |
+| Final six-provider approval. | No current exact-head six-provider approval exists after the Kimi prompt-only compatibility change. The last audit refresh targeted `249f80bf0b73c9b29db4b5f5e72d0e39c2715248..cff8af84c54935b7f15ad3b88b29755240efae09`; Kimi failed as `usage_limited`, and GLM/Grok requested changes for stale head references. | Blocked on CI, exact-head review refresh, Kimi usable verdict or waiver, and Grok/GLM stale-head re-review |
 
 ## Verification Evidence
 
@@ -31,6 +31,8 @@ Implementation is locally complete for the focused #171 parity hardening slice, 
 | `node --test --test-name-pattern "plugin packaging copies expose|explicit sent source transmission|source packet policy transmission" tests/unit/companion-common.test.mjs` | Passed after plugin-copy lifecycle coverage. |
 | `CODEX_PLUGIN_SKIP_SMOKE=1 CODEX_PLUGIN_FULL_TESTS=1 npm run test:coverage` | Passed; copied `companion-common` branch coverage rose above baseline. |
 | `gh pr checks 175 --repo seungpyoson/codex-plugin-multi` | Passed on head `d13ffdf44918ff12bcd54b6caa94e0b4375b1778`: SonarCloud, lint, smoke api-reviewers, smoke claude, smoke gemini, smoke grok, smoke kimi, and test. |
+| `node --test tests/unit/kimi-dispatcher.test.mjs` | Passed after Kimi prompt-only launch change, 29 tests. |
+| `node --test tests/smoke/kimi-companion.smoke.test.mjs` | Passed after Kimi prompt-only launch change, 81 tests. |
 | `node --check plugins/grok/scripts/grok-web-reviewer.mjs` | Passed after mode-derived Grok source-bearing change. |
 | `node --test tests/unit/plugin-copies-in-sync.test.mjs` | Passed, 55 tests. |
 | `node --test tests/unit/docs-contracts.test.mjs tests/unit/provider-route-policy.test.mjs tests/unit/external-model-contracts.test.mjs` | Passed, 63 tests. |
@@ -100,6 +102,7 @@ Historical unusable slot:
 
 ## Remaining Gate
 
-1. Get a usable Kimi latest-head verdict on narrowed shards or an explicit operator waiver.
-2. Get a usable Grok latest-head verdict after explicit risk approval or an explicit operator waiver.
-3. Re-run `npm run lint:sync` and a final test command after any further code changes.
+1. Re-run local verification and GitHub CI on the Kimi prompt-only compatibility commit.
+2. Refresh exact-head reviews from all six providers; prior approvals are stale after this code change.
+3. Get a usable Kimi verdict after quota recovers or an explicit operator waiver.
+4. Get usable Grok/GLM stale-head re-review approvals or explicit waivers.

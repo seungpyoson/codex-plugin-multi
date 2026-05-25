@@ -148,7 +148,8 @@ Only after six usable approvals:
 4. Wire readiness/auth, status/lifecycle, failure taxonomy, suggested action,
    review quality, audit, docs, and sync policy through the same Interface.
 5. Address Grok login only if proven separate from #171/#159.
-6. Address Kimi transport/capacity only if proven separate from #171/#172/#173.
+6. Address Kimi transport/capacity and prompt-contained launch only when hard
+   evidence proves an Adapter capability fact, not for fake parity.
 
 Each implementation slice:
 

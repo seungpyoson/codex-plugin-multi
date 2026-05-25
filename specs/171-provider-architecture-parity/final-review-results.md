@@ -1,12 +1,12 @@
 # Final External Review Results
 
-Stage: latest-head review refresh for PR head `d13ffdf44918ff12bcd54b6caa94e0b4375b1778`
-Status: four code-delta provider approvals recorded for `29832ae..249f80b`; final six-provider gate is blocked on exact-head refresh, Kimi, and Grok
+Stage: exact-head review ledger for PR #175
+Status: final six-provider gate is blocked after the Kimi prompt-only compatibility change; all prior approvals must refresh on the next pushed head
 
 ## Review Packet
 
 - Current code-delta focused source packet: branch-diff from `29832ae86c1f883dcdcb5e2732f4fb7a8b58aae7` to `249f80bf0b73c9b29db4b5f5e72d0e39c2715248`.
-- Current audit-only delta awaiting review refresh: `249f80bf0b73c9b29db4b5f5e72d0e39c2715248..d13ffdf44918ff12bcd54b6caa94e0b4375b1778`.
+- Most recent audit-only refresh target before this Kimi follow-up: `249f80bf0b73c9b29db4b5f5e72d0e39c2715248..cff8af84c54935b7f15ad3b88b29755240efae09`.
 - Latest-delta refresh used branch-diff source packets from `29832ae86c1f883dcdcb5e2732f4fb7a8b58aae7` to `249f80bf0b73c9b29db4b5f5e72d0e39c2715248`; direct API approval preflights selected 18 files / 68,196 bytes / 1,324 lines, while the Kimi narrowed shard selected 4 files / 13,062 bytes / 309 lines.
 - Earlier packet before the Kimi missing-verdict repair follow-up: `/private/tmp/cpm-171-review/provider-architecture-parity-171-focused-current.diff` plus `/private/tmp/cpm-171-review/provider-architecture-parity-171-focused-evidence.md`, 165844 bytes across two files.
 - Reason for focused packet: full `git diff origin/main` packet was 597224 bytes, above the shared 512 KiB source-packet budget; reviewers were therefore scoped to the current hardening delta instead of bypassing the new policy.
@@ -26,6 +26,17 @@ Status: four code-delta provider approvals recorded for `29832ae..249f80b`; fina
 | --- | --- | --- | --- | --- |
 | Kimi | FAILED | `08d2f957-bb06-4222-a15c-651691be8655`, `6cecf19f-2145-48d2-84b5-cd77bc09c835` | not_sent, then sent | Broad packet was blocked pre-source as `source_packet_too_large`; under-cap shard sent 13,062 bytes and became `stale_active_job` after 586,979 ms with no verdict. |
 | Grok | NOT_SENT | n/a | not_sent | Sandbox rejected the source-bearing `--transport auto` latest-head review before source send for this private/not-verified-public repository. |
+
+## Latest Audit-Only Refresh Attempt
+
+| Provider | Result | Job | Source State | Notes |
+| --- | --- | --- | --- | --- |
+| Gemini | APPROVE | `34a2cb4c-b8f8-4404-89d8-53bf4e99572c` | sent | Approved `249f80b..cff8af8`; noted stale `d13ffdf` references as non-blocking because T042 tracked refresh. |
+| Claude | APPROVE | `1741d272-6bb5-49d9-91ee-7d715270a848` | sent | Approved `249f80b..cff8af8`; flagged stale head wording and issue wording as non-blocking. |
+| DeepSeek | APPROVE | `job_585f40d0-dea9-477f-8fb0-664a08b790ec` | sent | Approved `249f80b..cff8af8`; noted stale `d13ffdf` references. |
+| GLM | REQUEST_CHANGES | `job_bea36418-91b1-4774-9cf2-f96e5a53f8eb` | sent | Blocking stale-head finding: audit docs called `d13ffdf` current while review head was `cff8af8`. |
+| Grok | REQUEST_CHANGES | `job_262966a1-5c2d-4719-b82b-0f67d1dee268` | sent | Blocking stale-head finding matching GLM; Grok CLI was logged in and used `subscription_cli`, no fallback. |
+| Kimi | FAILED | `db42549b-2bae-4430-8e1a-b5538c56b547` | sent | Failed as `usage_limited` after 668,215 ms; no verdict and no findings. |
 
 ## Historical Code-Bearing Review Results
 
@@ -54,4 +65,4 @@ Earlier head `38d4c59` had five recorded approvals, including a Kimi no-source c
 
 ## Remaining Gate
 
-Final six-provider approval is not complete. Claude, Gemini, GLM, and DeepSeek approved the code delta `29832ae..249f80b`; that approval set is stale for audit-only head `d13ffdf` until refreshed or waived. Kimi requires a usable narrowed-shard verdict or explicit waiver. Grok requires an explicit risk-approved latest-head run or explicit waiver. PR #175 remains draft and not merge-ready.
+Final six-provider approval is not complete. The Kimi prompt-only compatibility change is a new code delta, so the next pushed head needs fresh CI and all six external reviews. Kimi also requires quota recovery plus a usable verdict or explicit waiver. PR #175 remains draft and not merge-ready.
