@@ -390,6 +390,32 @@ test("custom-review explicit large source override records policy and sends sour
   }
 });
 
+test("custom-review records explicit review-slot waiver disposition", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "claude-review-slot-waiver-cwd-"));
+  fixtureSeedRepo(cwd);
+
+  const { stdout, status, dataDir } = runCompanion(
+    ["run", "--mode=custom-review", "--foreground", "--model", "claude-haiku-4-5-20251001",
+     "--cwd", cwd, "--scope-paths", "seed.txt",
+     "--review-slot-disposition", "waive",
+     "--review-slot-waiver-artifact", "reviews/waiver-180.md",
+     "--", "review selected source"],
+    { cwd, env: { CLAUDE_MOCK_ASSERT_PROMPT_INCLUDES: "CLAUDE FILE 1: seed.txt" } },
+  );
+  try {
+    assert.equal(status, 0, stdout);
+    const record = JSON.parse(stdout);
+    assert.equal(record.status, "completed");
+    assert.equal(record.review_metadata.audit_manifest.review_slot.disposition, "waive");
+    assert.equal(record.review_metadata.audit_manifest.review_slot.waiver_artifact, "reviews/waiver-180.md");
+    assert.equal(record.review_metadata.audit_manifest.review_slot.override_artifact, null);
+    assert.equal(record.external_review.review_slot.disposition, "waive");
+  } finally {
+    cleanup(dataDir);
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
 test("custom-review guides substantive missing-verdict retry without automatic resend", () => {
   const cwd = mkdtempSync(path.join(tmpdir(), "claude-bad-verdict-cwd-"));
   const fixturePath = path.join(cwd, "claude-bad-verdict-fixture.json");

@@ -455,6 +455,7 @@ function reviewAuditManifest(invocation, prompt, containmentPath, execution) {
       previousAttempt: invocation.previous_source_attempt ?? null,
       resendConfirmationApproved: invocation.resend_confirmation_approved === true,
       resumeWithoutSourceResend: invocation.resume_without_source_resend === true,
+      ...reviewSlotRouteFields(invocation),
       ...sourcePacketOverrideRouteFields(invocation),
     },
     result: execution?.parsed?.result ?? "",
@@ -481,6 +482,30 @@ function sourcePacketOverrideRouteFields(invocation = {}) {
   return {
     sourcePacketOverrideApproved: invocation.source_packet_override_approved === true,
     sourcePacketOverrideSource: invocation.source_packet_override_source ?? null,
+  };
+}
+
+function reviewSlotInvocationFields(options = {}) {
+  return Object.freeze({
+    review_slot_disposition: typeof options["review-slot-disposition"] === "string"
+      ? options["review-slot-disposition"]
+      : null,
+    review_slot_waiver_artifact: typeof options["review-slot-waiver-artifact"] === "string"
+      ? options["review-slot-waiver-artifact"]
+      : null,
+    review_slot_override_artifact: typeof options["review-slot-override-artifact"] === "string"
+      ? options["review-slot-override-artifact"]
+      : null,
+  });
+}
+
+function reviewSlotRouteFields(invocation = {}) {
+  return {
+    reviewSlot: {
+      disposition: invocation.review_slot_disposition ?? "none",
+      waiverArtifact: invocation.review_slot_waiver_artifact ?? null,
+      overrideArtifact: invocation.review_slot_override_artifact ?? null,
+    },
   };
 }
 
@@ -531,6 +556,7 @@ function approvalAuditManifest(invocation, prompt, containmentPath) {
       sourceSendApprovalRequired: invocation.source_send_approval_required ?? null,
       sourceSendApprovalState: invocation.source_send_approval_state ?? null,
       providerCapabilities: providerCapabilitiesForReviewAudit(),
+      ...reviewSlotRouteFields(invocation),
       ...sourcePacketOverrideRouteFields(invocation),
     },
     result: "",
@@ -704,6 +730,15 @@ function writeRuntimeOptionsSidecar(workspaceRoot, jobId, options) {
     if (typeof options.resume_without_source_resend === "boolean") {
       payload.resume_without_source_resend = options.resume_without_source_resend;
     }
+    if (typeof options.review_slot_disposition === "string" && options.review_slot_disposition.length > 0) {
+      payload.review_slot_disposition = options.review_slot_disposition;
+    }
+    if (typeof options.review_slot_waiver_artifact === "string" && options.review_slot_waiver_artifact.length > 0) {
+      payload.review_slot_waiver_artifact = options.review_slot_waiver_artifact;
+    }
+    if (typeof options.review_slot_override_artifact === "string" && options.review_slot_override_artifact.length > 0) {
+      payload.review_slot_override_artifact = options.review_slot_override_artifact;
+    }
     if (typeof options.source_packet_override_approved === "boolean") {
       payload.source_packet_override_approved = options.source_packet_override_approved;
     }
@@ -751,6 +786,15 @@ function readRuntimeOptionsSidecar(workspaceRoot, jobId) {
   }
   if (typeof parsed.resume_without_source_resend === "boolean") {
     out.resume_without_source_resend = parsed.resume_without_source_resend;
+  }
+  if (typeof parsed.review_slot_disposition === "string" && parsed.review_slot_disposition.length > 0) {
+    out.review_slot_disposition = parsed.review_slot_disposition;
+  }
+  if (typeof parsed.review_slot_waiver_artifact === "string" && parsed.review_slot_waiver_artifact.length > 0) {
+    out.review_slot_waiver_artifact = parsed.review_slot_waiver_artifact;
+  }
+  if (typeof parsed.review_slot_override_artifact === "string" && parsed.review_slot_override_artifact.length > 0) {
+    out.review_slot_override_artifact = parsed.review_slot_override_artifact;
   }
   if (typeof parsed.source_packet_override_approved === "boolean") {
     out.source_packet_override_approved = parsed.source_packet_override_approved;
@@ -831,6 +875,9 @@ function invocationFromRecord(record, fallbackAuthMode = defaultAuthMode(), runt
     previous_source_attempt: runtimeOptions.previous_source_attempt ?? null,
     resend_confirmation_approved: runtimeOptions.resend_confirmation_approved === true,
     resume_without_source_resend: runtimeOptions.resume_without_source_resend === true,
+    review_slot_disposition: runtimeOptions.review_slot_disposition ?? null,
+    review_slot_waiver_artifact: runtimeOptions.review_slot_waiver_artifact ?? null,
+    review_slot_override_artifact: runtimeOptions.review_slot_override_artifact ?? null,
     source_packet_override_approved: runtimeOptions.source_packet_override_approved === true,
     source_packet_override_source: runtimeOptions.source_packet_override_source ?? null,
   });
@@ -1000,7 +1047,11 @@ function cmdPreflight(rest) {
 
 // ——— subcommand: run ———
 function commonRunOptions(rest, { includeApproval = false } = {}) {
-  const valueOptions = ["mode", "model", "cwd", "schema", "binary", "scope-base", "scope-paths", "override-dispose", "auth-mode", "timeout-ms", "lifecycle-events"];
+  const valueOptions = [
+    "mode", "model", "cwd", "schema", "binary", "scope-base", "scope-paths",
+    "override-dispose", "auth-mode", "timeout-ms", "lifecycle-events",
+    "review-slot-disposition", "review-slot-waiver-artifact", "review-slot-override-artifact",
+  ];
   if (includeApproval) valueOptions.push("approval-token", "approval-scope");
   return parseArgs(rest, {
     valueOptions,
@@ -1077,6 +1128,7 @@ async function cmdApprovalRequest(rest) {
     started_at: new Date().toISOString(),
     approval_scope: approvalScope,
     approval_token: null,
+    ...reviewSlotInvocationFields(options),
     ...sourcePacketOverrideInvocationFields(options),
   });
   invocation = invocationWithAuthSelection(invocation, authSelection);
@@ -1230,6 +1282,7 @@ async function cmdRun(rest) {
     started_at: startedAt,
     approval_scope: approvalScope,
     approval_token: options["approval-token"] ?? null,
+    ...reviewSlotInvocationFields(options),
     ...sourcePacketOverrideInvocationFields(options),
   });
 
@@ -1305,6 +1358,9 @@ async function cmdRun(rest) {
         claude_project_cwd: invocation.claude_project_cwd,
         approval_scope: invocation.approval_scope,
         approval_token: invocation.approval_token,
+        review_slot_disposition: invocation.review_slot_disposition,
+        review_slot_waiver_artifact: invocation.review_slot_waiver_artifact,
+        review_slot_override_artifact: invocation.review_slot_override_artifact,
         source_packet_override_approved: invocation.source_packet_override_approved,
         source_packet_override_source: invocation.source_packet_override_source,
       });
@@ -1988,7 +2044,11 @@ async function cmdRunWorker(rest) {
 // ——— subcommand: continue (resume a prior session with --resume) ———
 async function cmdContinue(rest) {
   const { options, positionals } = parseArgs(rest, {
-    valueOptions: ["job", "cwd", "model", "binary", "auth-mode", "timeout-ms", "lifecycle-events", "approval-token", "approval-scope"],
+    valueOptions: [
+      "job", "cwd", "model", "binary", "auth-mode", "timeout-ms", "lifecycle-events",
+      "approval-token", "approval-scope",
+      "review-slot-disposition", "review-slot-waiver-artifact", "review-slot-override-artifact",
+    ],
     booleanOptions: ["background", "foreground", "allow-bypass-permissions", "resend-confirmation-approved", "allow-large-source-packet"],
   });
   if (!options.job) fail("bad_args", "--job <id> is required");
@@ -2112,6 +2172,7 @@ async function cmdContinue(rest) {
     previous_source_attempt: previousSourceAttempt,
     resend_confirmation_approved: options["resend-confirmation-approved"] === true,
     resume_without_source_resend: resumeWithoutSourceResend,
+    ...reviewSlotInvocationFields(options),
     ...sourcePacketOverrideInvocationFields(options),
     started_at: new Date().toISOString(),
   });
@@ -2187,6 +2248,9 @@ async function cmdContinue(rest) {
         previous_source_attempt: previousSourceAttempt,
         resend_confirmation_approved: options["resend-confirmation-approved"] === true,
         resume_without_source_resend: resumeWithoutSourceResend,
+        review_slot_disposition: invocation.review_slot_disposition,
+        review_slot_waiver_artifact: invocation.review_slot_waiver_artifact,
+        review_slot_override_artifact: invocation.review_slot_override_artifact,
         source_packet_override_approved: invocation.source_packet_override_approved,
         source_packet_override_source: invocation.source_packet_override_source,
       });

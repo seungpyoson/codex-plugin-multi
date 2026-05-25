@@ -2386,6 +2386,58 @@ test("direct API reviewers block same-packet resend after a failed source-sent s
   }
 });
 
+test("direct API reviewers allow an explicit same-packet retry disposition", async () => {
+  const cwd = makeWorkspace();
+  const dataDir = mkdtempSync(path.join(tmpdir(), "api-reviewers-retry-disposition-data-"));
+  const badResult = badVerdictReviewFixture("Provider marker: deepseek retry disposition.");
+  const commonArgs = [
+    "run",
+    "--provider", "deepseek",
+    "--mode", "custom-review",
+    "--scope", "custom",
+    "--scope-paths", "seed.txt",
+    "--foreground",
+    "--prompt", "Review this file.",
+  ];
+  const commonEnv = {
+    API_REVIEWERS_PLUGIN_DATA: dataDir,
+    API_REVIEWERS_MOCK_RESPONSE: mockResponse("deepseek-v4-pro", "chatcmpl-retry-disposition", badResult),
+    DEEPSEEK_API_KEY: "secret-test-value",
+  };
+
+  try {
+    writeFileSync(path.join(cwd, "seed.txt"), "export const value = 1;\n");
+
+    const first = await run(commonArgs, { cwd, env: commonEnv });
+    assert.equal(first.status, 1, first.stderr || first.stdout);
+    const firstRecord = parseJson(first.stdout);
+    assert.equal(firstRecord.error_code, "review_not_completed");
+    assert.equal(firstRecord.external_review.source_content_transmission, "sent");
+
+    const retried = await run(
+      [...commonArgs, "--review-slot-disposition", "retry"],
+      {
+        cwd,
+        env: {
+          ...commonEnv,
+          API_REVIEWERS_MOCK_RESPONSE: mockResponse("deepseek-v4-pro", "chatcmpl-retry-disposition-ok"),
+        },
+      },
+    );
+    assert.equal(retried.status, 0, retried.stderr || retried.stdout);
+    const retriedRecord = parseJson(retried.stdout);
+    assert.equal(retriedRecord.external_review.source_content_transmission, "sent");
+    assert.equal(retriedRecord.review_metadata.audit_manifest.review_slot.retry_count, 1);
+    assert.equal(retriedRecord.review_metadata.audit_manifest.review_slot.retry_disposition_required, true);
+    assert.equal(retriedRecord.review_metadata.audit_manifest.review_slot.disposition, "retry");
+    assert.equal(retriedRecord.review_metadata.audit_manifest.review_slot.waiver_artifact, null);
+    assert.equal(retriedRecord.review_metadata.audit_manifest.review_slot.override_artifact, null);
+  } finally {
+    rmSync(dataDir, { recursive: true, force: true });
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
 test("direct API JobRecord construction does not mutate execution input", async () => {
   const { buildRecord } = await importApiReviewerInternalsForTest();
   const startedAt = "2026-01-01T00:00:00.000Z";

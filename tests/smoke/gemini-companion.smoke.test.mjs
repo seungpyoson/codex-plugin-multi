@@ -1855,6 +1855,31 @@ test("gemini custom-review explicit large source override records policy and sen
   }
 });
 
+test("gemini custom-review records explicit review-slot waiver disposition", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "gemini-review-slot-waiver-cwd-"));
+  seedMinimalRepo(cwd);
+
+  const { stdout, status, dataDir } = runCompanion(
+    ["run", "--mode=custom-review", "--foreground", "--cwd", cwd, "--scope-paths", "seed.txt",
+     "--review-slot-disposition", "waive",
+     "--review-slot-waiver-artifact", "reviews/waiver-180.md",
+     "--", "review selected source"],
+    { cwd, env: { GEMINI_MOCK_ASSERT_PROMPT_INCLUDES: "GEMINI FILE 1: seed.txt" } },
+  );
+  try {
+    assert.equal(status, 0, stdout);
+    const record = JSON.parse(stdout);
+    assert.equal(record.status, "completed");
+    assert.equal(record.review_metadata.audit_manifest.review_slot.disposition, "waive");
+    assert.equal(record.review_metadata.audit_manifest.review_slot.waiver_artifact, "reviews/waiver-180.md");
+    assert.equal(record.review_metadata.audit_manifest.review_slot.override_artifact, null);
+    assert.equal(record.external_review.review_slot.disposition, "waive");
+  } finally {
+    rmTree(dataDir);
+    rmTree(cwd);
+  }
+});
+
 test("gemini review prompt omits provider-specific live verification context", () => {
   const cwd = mkdtempSync(path.join(tmpdir(), "gemini-review-context-cwd-"));
   const binDir = mkdtempSync(path.join(tmpdir(), "gemini-review-context-bin-"));

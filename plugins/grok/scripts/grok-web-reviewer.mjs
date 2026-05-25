@@ -1571,6 +1571,20 @@ function sourcePacketOverrideRouteFields(options = {}) {
   };
 }
 
+function reviewSlotRouteFields(options = {}, base = {}) {
+  const reviewSlot = { ...base };
+  if (typeof options["review-slot-disposition"] === "string") {
+    reviewSlot.disposition = options["review-slot-disposition"];
+  }
+  if (typeof options["review-slot-waiver-artifact"] === "string") {
+    reviewSlot.waiverArtifact = options["review-slot-waiver-artifact"];
+  }
+  if (typeof options["review-slot-override-artifact"] === "string") {
+    reviewSlot.overrideArtifact = options["review-slot-override-artifact"];
+  }
+  return reviewSlot;
+}
+
 function sourcePacketPolicyPreflight({ cfg, mode, prompt, scopeInfo, options = {} }) {
   const providerCapabilities = providerCapabilitiesForConfig(cfg);
   const sourceBearing = modeSendsSelectedSource(mode);
@@ -1627,9 +1641,9 @@ function sourcePacketPolicyPreflight({ cfg, mode, prompt, scopeInfo, options = {
       sourceSendApprovalRequired: route.source_send_approval_required,
       sourceSendApprovalState: route.source_send_approval_state,
       providerCapabilities,
-      reviewSlot: {
+      reviewSlot: reviewSlotRouteFields(options, {
         priorAttempts: options.reviewSlotPriorAttempts ?? [],
-      },
+      }),
       ...sourcePacketOverrideRouteFields(options),
     },
     status: "preflight_failed",
@@ -3236,9 +3250,9 @@ function buildReviewMetadata(cfg, scopeInfo, execution = null, startedAt = null,
       sourceSendApprovalRequired: route.source_send_approval_required,
       sourceSendApprovalState: route.source_send_approval_state,
       providerCapabilities: providerCapabilitiesForConfig(cfg),
-      reviewSlot: {
+      reviewSlot: reviewSlotRouteFields(options, {
         priorAttempts: options.reviewSlotPriorAttempts ?? [],
-      },
+      }),
       ...sourcePacketOverrideRouteFields(options),
     },
     result: execution.parsed?.result ?? "",

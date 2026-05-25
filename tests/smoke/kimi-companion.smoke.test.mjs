@@ -825,6 +825,46 @@ test("kimi custom-review explicit large source override records policy and sends
   }
 });
 
+test("kimi custom-review records explicit review-slot waiver disposition", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "kimi-review-slot-waiver-cwd-"));
+  let dataDir = null;
+  try {
+    fixtureSeedRepo(cwd);
+    const result = runCompanion([
+      "run",
+      "--mode",
+      "custom-review",
+      "--cwd",
+      cwd,
+      "--scope-paths",
+      "seed.txt",
+      "--foreground",
+      "--review-slot-disposition",
+      "waive",
+      "--review-slot-waiver-artifact",
+      "reviews/waiver-180.md",
+      "--",
+      "Review this scope.",
+    ], {
+      cwd,
+      env: {
+        KIMI_MOCK_ASSERT_PROMPT_INCLUDES: "KIMI FILE 1: seed.txt",
+      },
+    });
+    dataDir = result.dataDir;
+    assert.equal(result.status, 0, result.stdout);
+    const record = parseJson(result.stdout);
+    assert.equal(record.status, "completed");
+    assert.equal(record.review_metadata.audit_manifest.review_slot.disposition, "waive");
+    assert.equal(record.review_metadata.audit_manifest.review_slot.waiver_artifact, "reviews/waiver-180.md");
+    assert.equal(record.review_metadata.audit_manifest.review_slot.override_artifact, null);
+    assert.equal(record.external_review.review_slot.disposition, "waive");
+  } finally {
+    if (dataDir) rmSync(dataDir, { recursive: true, force: true });
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
 test("kimi result --job-id aliases --job for a finished job", () => {
   const cwd = mkdtempSync(path.join(tmpdir(), "kimi-result-job-id-cwd-"));
   fixtureSeedRepo(cwd);
