@@ -422,6 +422,206 @@ for (const [name, file] of REVIEW_PROMPT_MODULES) {
     assertReviewAuditManifest(targetBuildReviewAuditManifest, targetManifestVersion);
   });
 
+  test(`review audit manifest projects review-slot retry disposition (${name})`, async () => {
+    const {
+      buildReviewAuditManifest: targetBuildReviewAuditManifest,
+    } = file === "scripts/lib/review-prompt.mjs"
+      ? { buildReviewAuditManifest }
+      : await import(pathToFileURL(resolve(file)).href);
+    const base = {
+      prompt: "review these files",
+      sourceFiles: [{ path: "src/example.js", text: "export const value = 1;\n" }],
+      git: {
+        remote: "owner/repo",
+        branch: "issue-180",
+        baseRef: "origin/main",
+        baseCommit: "base",
+        headRef: "issue-180",
+        headCommit: "head",
+      },
+      promptBuilder: { contractVersion: 1, pluginVersion: "0.1.0", pluginCommit: "head" },
+      request: {
+        provider: "Kimi",
+        model: "kimi-code",
+        timeoutMs: 900000,
+        maxStepsPerTurn: 128,
+      },
+      providerIds: { requestId: "request-1", sessionId: "session-1" },
+      scope: { name: "branch-diff", base: "origin/main", paths: ["src/example.js"] },
+      route: {
+        selectedRoute: "subscription_oauth",
+        routeStep: "subscription",
+        routeSteps: [{ route: "subscription", supported: true, attempted: true, selected: true, skipped_reason: null, fallback_reason: null }],
+        sourceBearing: true,
+        sourceContentTransmission: "sent",
+        providerCapabilities: { subscription: { source_packet: { max_bytes: 32768 } } },
+        reviewSlot: {
+          stage: "planning",
+          slotId: "slot-1",
+          attemptId: "attempt-1",
+          parentAttemptId: "attempt-0",
+          currentHeadSha: "head",
+          priorAttempts: [{ retry_fingerprint: "different" }],
+        },
+      },
+      result: [
+        "Verdict: APPROVE",
+        "Blocking findings: none",
+        "Non-blocking concerns: none",
+        "Inspection status: I inspected src/example.js.",
+      ].join("\n"),
+      status: "completed",
+      errorCode: null,
+    };
+
+    const first = targetBuildReviewAuditManifest(base);
+
+    assert.equal(first.review_slot.slot_id, "slot-1");
+    assert.equal(first.review_slot.attempt_id, "attempt-1");
+    assert.equal(first.review_slot.parent_attempt_id, "attempt-0");
+    assert.equal(first.review_slot.source_state, "sent");
+    assert.equal(first.review_slot.verdict, "approved");
+    assert.equal(first.review_slot.retry_count, 0);
+    assert.equal(first.review_slot.reviewed_head_sha, "head");
+    assert.match(first.review_slot.retry_fingerprint, /^[a-f0-9]{64}$/);
+    assert.match(first.review_slot.request_settings_hash, /^[a-f0-9]{64}$/);
+    assert.equal(JSON.stringify(first.review_slot).includes("secret"), false);
+
+    const waived = targetBuildReviewAuditManifest({
+      ...base,
+      providerIds: { requestId: "request-2" },
+      route: {
+        ...base.route,
+        sourceContentTransmission: null,
+        reviewSlot: {
+          priorAttempts: [{ review_slot: first.review_slot }],
+          disposition: "waive",
+          waiverArtifact: "reviews/waiver-180.md",
+        },
+      },
+    });
+
+    assert.equal(waived.review_slot.retry_count, 1);
+    assert.equal(waived.review_slot.retry_disposition_required, true);
+    assert.equal(waived.review_slot.disposition, "waive");
+    assert.equal(waived.review_slot.waiver_artifact, "reviews/waiver-180.md");
+    assert.equal(waived.review_slot_retry_policy.source_send_allowed, true);
+    assert.equal(waived.review_slot.source_state, "may_be_sent");
+    assert.equal(waived.source_content_transmission, "may_be_sent");
+
+    const blocked = targetBuildReviewAuditManifest({
+      ...base,
+      providerIds: { requestId: "request-3" },
+      route: {
+        ...base.route,
+        sourceContentTransmission: null,
+        reviewSlot: {
+          priorAttempts: [
+            { review_slot: first.review_slot },
+            { review_slot: { ...first.review_slot, retry_count: 1, attempt_id: "attempt-2" } },
+          ],
+          disposition: "retry",
+        },
+      },
+      result: "",
+      status: "preflight_failed",
+      errorCode: "source_packet_policy_preflight",
+    });
+
+    assert.equal(blocked.review_slot.retry_count, 2);
+    assert.equal(blocked.review_slot.retry_disposition_required, true);
+    assert.equal(blocked.review_slot.disposition, "retry");
+    assert.equal(blocked.review_slot.source_state, "not_sent");
+    assert.equal(blocked.review_slot_retry_policy.source_send_allowed, false);
+    assert.equal(blocked.source_packet_policy.source_send_allowed, false);
+    assert.equal(blocked.source_packet_policy.source_packet_action, "review_slot_retry_blocked");
+    assert.equal(
+      blocked.source_packet_policy.source_packet_policy_error_code,
+      "retry_disposition_not_valid_for_third_attempt",
+    );
+    assert.equal(blocked.source_content_transmission, "not_sent");
+  });
+
+  test(`review audit manifest derives retry state from previous attempt metadata (${name})`, async () => {
+    const {
+      buildReviewAuditManifest: targetBuildReviewAuditManifest,
+    } = file === "scripts/lib/review-prompt.mjs"
+      ? { buildReviewAuditManifest }
+      : await import(pathToFileURL(resolve(file)).href);
+    const previous = targetBuildReviewAuditManifest({
+      prompt: "review these files",
+      sourceFiles: [{ path: "src/example.js", text: "export const value = 1;\n" }],
+      git: { headCommit: "head" },
+      request: { provider: "Kimi", model: "kimi-code" },
+      providerIds: { sessionId: "session-previous" },
+      scope: { name: "branch-diff", base: "origin/main", paths: ["src/example.js"] },
+      route: {
+        selectedRoute: "subscription_oauth",
+        routeStep: "subscription",
+        sourceContentTransmission: "sent",
+        providerCapabilities: { subscription: { source_packet: { max_bytes: 32768 } } },
+      },
+      result: [
+        "Verdict: REQUEST_CHANGES",
+        "Blocking findings: covered by the next retry.",
+        "Non-blocking concerns: none.",
+        "Inspection status: I inspected src/example.js.",
+      ].join("\n"),
+      status: "completed",
+    });
+
+    const manifest = targetBuildReviewAuditManifest({
+      prompt: "review these files",
+      sourceFiles: [{ path: "src/example.js", text: "export const value = 1;\n" }],
+      git: { headCommit: "head" },
+      request: { provider: "Kimi", model: "kimi-code" },
+      providerIds: { sessionId: "session-next" },
+      scope: { name: "branch-diff", base: "origin/main", paths: ["src/example.js"] },
+      route: {
+        selectedRoute: "subscription_oauth",
+        routeStep: "subscription",
+        sourcePacketPolicy: {
+          source_send_allowed: true,
+          source_packet_action: "send_after_resend_confirmation",
+          source_content_transmission: "sent_after_explicit_approval",
+          source_packet_policy_error_code: null,
+          suggested_action: "Proceed after explicit resend confirmation and record the approval tuple.",
+        },
+        previousAttempt: {
+          attempt_id: "session-previous",
+          review_metadata: {
+            audit_manifest: {
+              review_slot: previous.review_slot,
+            },
+          },
+        },
+        reviewSlot: {
+          disposition: "override",
+          overrideArtifact: "reviews/override-180.md",
+        },
+      },
+      result: [
+        "Verdict: APPROVE",
+        "Blocking findings: none.",
+        "Non-blocking concerns: none.",
+        "Inspection status: I inspected src/example.js.",
+      ].join("\n"),
+      status: "completed",
+    });
+
+    assert.equal(manifest.review_slot.retry_count, 1);
+    assert.equal(manifest.review_slot.retry_disposition_required, true);
+    assert.equal(manifest.review_slot.disposition, "override");
+    assert.equal(manifest.review_slot.override_artifact, "reviews/override-180.md");
+    assert.equal(manifest.review_slot.attempt_id, "session-next");
+    assert.equal(manifest.review_slot.parent_attempt_id, "session-previous");
+    assert.equal(manifest.review_slot.source_state, "sent_after_explicit_approval");
+    assert.equal(manifest.review_slot.verdict, "approved");
+    assert.equal(manifest.review_slot_retry_policy.source_send_allowed, true);
+    assert.equal(manifest.source_packet_policy.source_packet_action, "send_after_resend_confirmation");
+    assert.equal(manifest.source_content_transmission, "sent_after_explicit_approval");
+  });
+
   test(`compact review prompt contract keeps mandatory review semantics (${name})`, async () => {
     const {
       buildReviewPrompt: targetBuildReviewPrompt,
