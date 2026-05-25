@@ -1949,7 +1949,7 @@ function providerCapabilitiesForReviewAudit() {
 }
 
 function modeSendsSelectedSource(mode) {
-  return mode === "review" || mode === "adversarial-review" || mode === "custom-review";
+  return mode === "review" || mode === "adversarial-review" || mode === "custom-review" || mode === "rescue";
 }
 
 function sourceSendApprovalPreflight(authSelection, invocation, prompt, containmentPath) {

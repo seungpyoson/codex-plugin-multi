@@ -443,7 +443,7 @@ function withMutationReviewFailure(manifest, mutations) {
 }
 
 function modeSendsSelectedSource(mode) {
-  return mode === "review" || mode === "adversarial-review" || mode === "custom-review";
+  return mode === "review" || mode === "adversarial-review" || mode === "custom-review" || mode === "rescue";
 }
 
 function scopedTargetPromptForOrExit(invocation, profile, userPrompt, lifecycleEvents) {

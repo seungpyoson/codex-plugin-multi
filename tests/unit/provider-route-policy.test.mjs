@@ -126,7 +126,7 @@ test("provider policy contract exposes the full cross-cutting policy surface", (
   }
 });
 
-test("source packet policy blocks over-budget packets for every provider and review mode before source send", () => {
+test("source packet policy blocks over-budget packets for every provider and source-bearing mode before source send", () => {
   const contract = buildProviderPolicyContract();
 
   for (const provider of contract.providers) {
@@ -1182,7 +1182,7 @@ test("provider route policy normalizes provider-neutral approval scopes", () => 
   );
 });
 
-test("kimi source-bearing route facts are derived from review mode", () => {
+test("kimi source-bearing route facts are derived from mode classification", () => {
   const source = readFileSync(path.join(REPO_ROOT, "plugins/kimi/scripts/kimi-companion.mjs"), "utf8");
 
   assert.match(

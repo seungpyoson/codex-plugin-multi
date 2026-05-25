@@ -610,6 +610,26 @@ test("Grok auto transport stays an adapter capability and uses shared source-tra
   assert.match(source, /cliRequestDiagnosticsForFallback/);
 });
 
+test("subscription rescue modes are source-bearing even though they are not review slots", () => {
+  for (const runtimePath of [
+    "plugins/claude/scripts/claude-companion.mjs",
+    "plugins/gemini/scripts/gemini-companion.mjs",
+    "plugins/kimi/scripts/kimi-companion.mjs",
+  ]) {
+    const source = readRepoFile(runtimePath);
+    assert.match(
+      source,
+      /modeSendsSelectedSource\(mode\)\s*\{[\s\S]*mode\s*===\s*"rescue"/,
+      `${runtimePath} must classify rescue as source-bearing for shared source-send policy`,
+    );
+    assert.match(
+      source,
+      /mode_profile_name\s*===\s*"rescue"[\s\S]*return null/,
+      `${runtimePath} must keep rescue out of review-quality audit semantics`,
+    );
+  }
+});
+
 test("reviewer runtimes use the shared privacy redactor", () => {
   const runtimePaths = [
     ["plugins/api-reviewers/scripts/api-reviewer.mjs", "./lib/privacy-redaction.mjs"],
