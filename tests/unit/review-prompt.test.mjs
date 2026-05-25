@@ -466,8 +466,8 @@ for (const [name, file] of REVIEW_PROMPT_MODULES) {
         },
       },
       result: [
-        "Verdict: APPROVE",
-        "Blocking findings: none",
+        "Verdict: REQUEST_CHANGES",
+        "Blocking findings: retry disposition required",
         "Non-blocking concerns: none",
         "Inspection status: I inspected src/example.js.",
       ].join("\n"),
@@ -481,7 +481,7 @@ for (const [name, file] of REVIEW_PROMPT_MODULES) {
     assert.equal(first.review_slot.attempt_id, "attempt-1");
     assert.equal(first.review_slot.parent_attempt_id, "attempt-0");
     assert.equal(first.review_slot.source_state, "sent");
-    assert.equal(first.review_slot.verdict, "approved");
+    assert.equal(first.review_slot.verdict, "request_changes");
     assert.equal(first.review_slot.retry_count, 0);
     assert.equal(first.review_slot.retry_disposition_required, false);
     assert.equal(first.review_slot.disposition, "none");

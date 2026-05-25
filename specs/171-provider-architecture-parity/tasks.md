@@ -102,7 +102,7 @@ fingerprint, retry count, not-counted reason, or final slot disposition model.
   and `evidence-map.md` before any RED runtime test or implementation begins.
   If planning docs change after a reviewer request-changes verdict, repeat the
   planning-review gate on the new exact head or record explicit waiver.
-- [ ] T047 Add RED provider-neutral tests for retry fingerprint construction and
+- [x] T047 Add RED provider-neutral tests for retry fingerprint construction and
   third same-packet retry blocking across all providers/modes. Required cases:
   `retry_count` 0 initial attempt, 1 first retry/second total attempt with
   `disposition: retry`, 2 third attempt blocked before launch, packet split or
@@ -110,7 +110,7 @@ fingerprint, retry count, not-counted reason, or final slot disposition model.
   failure-code/request-setting changes not resetting retry count, stale-head
   approvals excluded with `not_counted_reason: stale_head`, and pre-#180 parent
   records projecting null/unknown values without satisfying the new guard.
-- [ ] T048 Add RED contract/status tests proving JobRecord/external_review or
+- [x] T048 Add RED contract/status tests proving JobRecord/external_review or
   audit metadata exposes slot id, parent attempt, source state, retry count,
   verdict, not-counted reason, and disposition without raw source/prompt/output,
   raw command args, or raw paths. Coverage must include audit manifest,

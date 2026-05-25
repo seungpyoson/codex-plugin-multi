@@ -431,6 +431,8 @@ function retryCountableAttempt(attempt = null) {
     attempt?.review_slot ??
     attempt?.review_metadata?.audit_manifest?.review_slot ??
     attempt;
+  const verdict = String(nestedSlot?.verdict ?? "").toLowerCase();
+  if (verdict === "approved" || verdict === "approve") return false;
   if (nestedSlot?.source_state === "not_sent") return false;
   const reason = nestedSlot?.not_counted_reason;
   return reason !== "source_not_sent" && reason !== "stale_head";

@@ -247,6 +247,13 @@ test("review slot retry policy ignores not-sent and stale prior slots", () => {
         review_slot: {
           retry_fingerprint: retryFingerprint,
           source_state: "sent",
+          verdict: "approved",
+        },
+      },
+      {
+        review_slot: {
+          retry_fingerprint: retryFingerprint,
+          source_state: "sent",
           not_counted_reason: "missing_verdict",
         },
       },
