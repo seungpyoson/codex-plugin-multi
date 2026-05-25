@@ -420,11 +420,55 @@ function reviewSlotInvocationFields(options = {}) {
 function reviewSlotRouteFields(invocation = {}) {
   return {
     reviewSlot: {
+      priorAttempts: Array.isArray(invocation.review_slot_prior_attempts)
+        ? invocation.review_slot_prior_attempts
+        : [],
       disposition: invocation.review_slot_disposition ?? "none",
       waiverArtifact: invocation.review_slot_waiver_artifact ?? null,
       overrideArtifact: invocation.review_slot_override_artifact ?? null,
     },
   };
+}
+
+function reviewSlotFromRecord(record) {
+  const slot = record?.review_metadata?.audit_manifest?.review_slot
+    ?? record?.external_review?.review_slot
+    ?? null;
+  return slot && typeof slot === "object" && !Array.isArray(slot) ? slot : null;
+}
+
+function priorSlotRequiresRetryDisposition(slot) {
+  if (!slot?.retry_fingerprint) return false;
+  if (slot.source_state === "not_sent") return false;
+  if (slot.verdict === "approved" || slot.verdict === "request_changes") return false;
+  const reason = String(slot.not_counted_reason ?? "unknown");
+  if (reason === "none" || reason === "stale_head" || reason === "source_not_sent") return false;
+  return true;
+}
+
+function collectPriorReviewSlotAttempts(workspaceRoot, currentJobId = null) {
+  let entries;
+  try {
+    entries = readdirSync(resolveJobsDir(workspaceRoot), { withFileTypes: true });
+  } catch (error) {
+    if (error?.code === "ENOENT") return [];
+    throw error;
+  }
+  const attempts = [];
+  for (const entry of entries) {
+    if (!entry.isFile() || !entry.name.endsWith(".json")) continue;
+    const jobId = entry.name.slice(0, -".json".length);
+    if (currentJobId !== null && jobId === currentJobId) continue;
+    try {
+      const record = JSON.parse(readFileSync(joinPath(resolveJobsDir(workspaceRoot), entry.name), "utf8"));
+      if (record?.job_id !== jobId) continue;
+      const slot = reviewSlotFromRecord(record);
+      if (priorSlotRequiresRetryDisposition(slot)) attempts.push({ review_slot: slot });
+    } catch {
+      // Malformed legacy records are not trusted as retry-policy evidence.
+    }
+  }
+  return attempts;
 }
 
 function approvalAuditManifest(invocation, prompt, containmentPath) {
@@ -672,6 +716,11 @@ function writeRuntimeOptionsSidecar(workspaceRoot, jobId, options) {
     if (options.previous_source_attempt && typeof options.previous_source_attempt === "object") {
       payload.previous_source_attempt = options.previous_source_attempt;
     }
+    if (Array.isArray(options.review_slot_prior_attempts)) {
+      payload.review_slot_prior_attempts = options.review_slot_prior_attempts.filter(
+        (attempt) => attempt && typeof attempt === "object" && !Array.isArray(attempt),
+      );
+    }
     if (typeof options.resend_confirmation_approved === "boolean") {
       payload.resend_confirmation_approved = options.resend_confirmation_approved;
     }
@@ -717,6 +766,11 @@ function readRuntimeOptionsSidecar(workspaceRoot, jobId) {
   }
   if (parsed.previous_source_attempt && typeof parsed.previous_source_attempt === "object" && !Array.isArray(parsed.previous_source_attempt)) {
     options.previous_source_attempt = parsed.previous_source_attempt;
+  }
+  if (Array.isArray(parsed.review_slot_prior_attempts)) {
+    options.review_slot_prior_attempts = parsed.review_slot_prior_attempts.filter(
+      (attempt) => attempt && typeof attempt === "object" && !Array.isArray(attempt),
+    );
   }
   if (typeof parsed.resend_confirmation_approved === "boolean") {
     options.resend_confirmation_approved = parsed.resend_confirmation_approved;
@@ -795,6 +849,7 @@ function invocationFromRecord(record, fallbackAuthMode = defaultAuthMode(), runt
     approval_scope: runtimeOptions.approval_scope ?? record.review_metadata?.audit_manifest?.approval_scope ?? null,
     approval_token: runtimeOptions.approval_token ?? null,
     previous_source_attempt: runtimeOptions.previous_source_attempt ?? null,
+    review_slot_prior_attempts: runtimeOptions.review_slot_prior_attempts ?? [],
     resend_confirmation_approved: runtimeOptions.resend_confirmation_approved === true,
     resume_without_source_resend: runtimeOptions.resume_without_source_resend === true,
     review_slot_disposition: runtimeOptions.review_slot_disposition ?? null,
@@ -1117,6 +1172,7 @@ async function cmdRun(rest) {
   }
 
   const jobId = newJobId();
+  const reviewSlotPriorAttempts = collectPriorReviewSlotAttempts(workspaceRoot, jobId);
   let invocation = Object.freeze({
     job_id: jobId,
     target: "gemini",
@@ -1142,6 +1198,7 @@ async function cmdRun(rest) {
     auth_mode: authSelection.auth_mode,
     approval_scope: approvalScope,
     approval_token: options["approval-token"] ?? null,
+    review_slot_prior_attempts: reviewSlotPriorAttempts,
     started_at: new Date().toISOString(),
     ...reviewSlotInvocationFields(options),
     ...sourcePacketOverrideInvocationFields(options),
@@ -1198,6 +1255,7 @@ async function cmdRun(rest) {
         timeout_ms: timeoutMs,
         approval_scope: invocation.approval_scope,
         approval_token: invocation.approval_token,
+        review_slot_prior_attempts: invocation.review_slot_prior_attempts,
         review_slot_disposition: invocation.review_slot_disposition,
         review_slot_waiver_artifact: invocation.review_slot_waiver_artifact,
         review_slot_override_artifact: invocation.review_slot_override_artifact,
@@ -1842,6 +1900,7 @@ async function cmdContinue(rest) {
       sourcePacketCanResumeWithoutResendFromJobRecord(prior) ||
       sourcePacketCanResumeWithoutResendFromPreviousAttempt(previousSourceAttempt)
     ) && Boolean(priorGeminiSessionId);
+  const reviewSlotPriorAttempts = collectPriorReviewSlotAttempts(workspaceRoot, newJobId_);
   let invocation = Object.freeze({
     job_id: newJobId_,
     target: "gemini",
@@ -1868,6 +1927,7 @@ async function cmdContinue(rest) {
     approval_scope: approvalScope,
     approval_token: options["approval-token"] ?? null,
     previous_source_attempt: previousSourceAttempt,
+    review_slot_prior_attempts: reviewSlotPriorAttempts,
     resend_confirmation_approved: options["resend-confirmation-approved"] === true,
     resume_without_source_resend: resumeWithoutSourceResend,
     ...reviewSlotInvocationFields(options),
@@ -1927,6 +1987,7 @@ async function cmdContinue(rest) {
         approval_scope: invocation.approval_scope,
         approval_token: invocation.approval_token,
         previous_source_attempt: previousSourceAttempt,
+        review_slot_prior_attempts: invocation.review_slot_prior_attempts,
         resend_confirmation_approved: options["resend-confirmation-approved"] === true,
         resume_without_source_resend: resumeWithoutSourceResend,
         review_slot_disposition: invocation.review_slot_disposition,

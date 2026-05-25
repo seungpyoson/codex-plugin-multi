@@ -1880,6 +1880,44 @@ test("gemini custom-review records explicit review-slot waiver disposition", () 
   }
 });
 
+test("gemini custom-review blocks fresh same-packet resend after a failed source-sent slot", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "gemini-review-slot-fresh-retry-cwd-"));
+  const dataDir = mkdtempSync(path.join(tmpdir(), "gemini-review-slot-fresh-retry-data-"));
+  seedMinimalRepo(cwd);
+  const badResult = badVerdictReviewFixture("Gemini fresh retry guard marker.");
+  const commonArgs = [
+    "run", "--mode=custom-review", "--foreground", "--model", "gemini-3-flash-preview",
+    "--cwd", cwd, "--scope-paths", "seed.txt", "--", "review selected source",
+  ];
+  const commonOptions = {
+    cwd,
+    dataDir,
+    env: { GEMINI_MOCK_RESPONSE: badResult },
+  };
+
+  try {
+    const first = runCompanion(commonArgs, commonOptions);
+    assert.equal(first.status, 2, `exit ${first.status}: stderr=${first.stderr}; stdout=${first.stdout}`);
+    const firstRecord = JSON.parse(first.stdout);
+    assert.equal(firstRecord.error_code, "review_not_completed");
+    assert.equal(firstRecord.external_review.source_content_transmission, "sent");
+
+    const second = runCompanion(commonArgs, commonOptions);
+    assert.equal(second.status, 2, `exit ${second.status}: stderr=${second.stderr}; stdout=${second.stdout}`);
+    const secondRecord = JSON.parse(second.stdout);
+    assert.equal(secondRecord.error_code, "review_slot_disposition_required");
+    assert.equal(secondRecord.external_review.source_content_transmission, "not_sent");
+    assert.equal(secondRecord.review_metadata.audit_manifest.review_slot.retry_count, 1);
+    assert.equal(
+      secondRecord.review_metadata.audit_manifest.source_packet_policy.source_packet_action,
+      "review_slot_retry_blocked",
+    );
+  } finally {
+    rmTree(dataDir);
+    rmTree(cwd);
+  }
+});
+
 test("gemini review prompt omits provider-specific live verification context", () => {
   const cwd = mkdtempSync(path.join(tmpdir(), "gemini-review-context-cwd-"));
   const binDir = mkdtempSync(path.join(tmpdir(), "gemini-review-context-bin-"));

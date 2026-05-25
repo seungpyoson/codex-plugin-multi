@@ -158,8 +158,6 @@ const REVIEW_SLOT_DISPOSITIONS = new Set([
   "override",
 ]);
 const REVIEW_SLOT_ESCAPE_DISPOSITIONS = new Set([
-  "split",
-  "switch_provider",
   "waive",
   "override",
 ]);

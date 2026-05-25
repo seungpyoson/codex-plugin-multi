@@ -158,6 +158,18 @@ test("review slot retry policy fail-closes third same-packet attempt", () => {
   assert.equal(blocked.source_send_allowed, false);
   assert.equal(blocked.fail_closed_reason, "retry_disposition_not_valid_for_third_attempt");
 
+  for (const disposition of ["split", "switch_provider"]) {
+    const samePacket = evaluateReviewSlotRetryPolicy({
+      retryFingerprint,
+      priorAttempts,
+      disposition,
+    });
+    assert.equal(samePacket.retry_count, 2, disposition);
+    assert.equal(samePacket.slot_retry_allowed, false, disposition);
+    assert.equal(samePacket.source_send_allowed, false, disposition);
+    assert.equal(samePacket.fail_closed_reason, "third_same_packet_retry_requires_disposition", disposition);
+  }
+
   const accumulated = evaluateReviewSlotRetryPolicy({
     retryFingerprint,
     priorAttempts: [
