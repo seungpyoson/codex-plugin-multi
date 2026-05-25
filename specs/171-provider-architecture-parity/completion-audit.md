@@ -1,8 +1,8 @@
 # Completion Audit
 
 Date: 2026-05-25
-Repo: `/Users/spson/Projects/Claude/codex-plugin-multi`  
-Worktree: `/Users/spson/Projects/Claude/codex-plugin-multi/.worktrees/provider-architecture-parity-171`  
+Repo: `/Users/spson/Projects/Claude/codex-plugin-multi`
+Worktree: `/Users/spson/Projects/Claude/codex-plugin-multi/.worktrees/provider-architecture-parity-171`
 Branch: `goal/provider-architecture-parity-171`
 
 ## Current Status
