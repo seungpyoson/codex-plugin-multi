@@ -1,11 +1,12 @@
 # Final External Review Results
 
 Stage: exact-head review ledger for PR #175
-Status: final six-provider gate is blocked after the Kimi prompt-only compatibility change; all prior approvals must refresh on the next pushed head
+Status: final six-provider gate is blocked after the Kimi prompt-only compatibility change; all prior approvals must refresh on the current PR head recorded in the PR body
 
 ## Review Packet
 
 - Current code-delta focused source packet: branch-diff from `29832ae86c1f883dcdcb5e2732f4fb7a8b58aae7` to `249f80bf0b73c9b29db4b5f5e72d0e39c2715248`.
+- Current Kimi compatibility follow-up delta starts at `cff8af84c54935b7f15ad3b88b29755240efae09` and ends at the current PR head recorded in the PR body.
 - Most recent audit-only refresh target before this Kimi follow-up: `249f80bf0b73c9b29db4b5f5e72d0e39c2715248..cff8af84c54935b7f15ad3b88b29755240efae09`.
 - Latest-delta refresh used branch-diff source packets from `29832ae86c1f883dcdcb5e2732f4fb7a8b58aae7` to `249f80bf0b73c9b29db4b5f5e72d0e39c2715248`; direct API approval preflights selected 18 files / 68,196 bytes / 1,324 lines, while the Kimi narrowed shard selected 4 files / 13,062 bytes / 309 lines.
 - Earlier packet before the Kimi missing-verdict repair follow-up: `/private/tmp/cpm-171-review/provider-architecture-parity-171-focused-current.diff` plus `/private/tmp/cpm-171-review/provider-architecture-parity-171-focused-evidence.md`, 165844 bytes across two files.
@@ -65,4 +66,4 @@ Earlier head `38d4c59` had five recorded approvals, including a Kimi no-source c
 
 ## Remaining Gate
 
-Final six-provider approval is not complete. The Kimi prompt-only compatibility change is a new code delta, so the next pushed head needs fresh CI and all six external reviews. Kimi also requires quota recovery plus a usable verdict or explicit waiver. PR #175 remains draft and not merge-ready.
+Final six-provider approval is not complete. The Kimi prompt-only compatibility change is a new code delta, so the current PR head recorded in the PR body needs fresh CI and all six external reviews. Kimi also requires quota recovery plus a usable verdict or explicit waiver. PR #175 remains draft and not merge-ready.

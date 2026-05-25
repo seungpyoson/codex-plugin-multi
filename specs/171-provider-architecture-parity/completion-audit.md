@@ -7,7 +7,7 @@ Branch: `goal/provider-architecture-parity-171`
 
 ## Current Status
 
-Implementation has an additional Kimi prompt-only adapter compatibility change and is not merge-ready. The previous pushed audit head `cff8af84c54935b7f15ad3b88b29755240efae09` received refreshed approvals from Gemini, Claude, DeepSeek, and a blocking stale-head finding from GLM/Grok because this audit still named an older head. Kimi job `db42549b-2bae-4430-8e1a-b5538c56b547` sent source and failed as `usage_limited`, so it is not an approval. All six-provider reviews and CI must refresh after the latest Kimi compatibility commit; PR #175 remains draft.
+Implementation has an additional Kimi prompt-only adapter compatibility change and is not merge-ready. The previous pushed audit head `cff8af84c54935b7f15ad3b88b29755240efae09` received refreshed approvals from Gemini, Claude, DeepSeek, and a blocking stale-head finding from GLM/Grok because this audit still named an older head. Kimi job `db42549b-2bae-4430-8e1a-b5538c56b547` sent source and failed as `usage_limited`, so it is not an approval. All six-provider reviews and CI must refresh on the current PR head recorded in the PR body; PR #175 remains draft.
 
 ## Requirement Coverage
 
@@ -30,7 +30,7 @@ Implementation has an additional Kimi prompt-only adapter compatibility change a
 | `node --test --test-name-pattern "explicit sent source transmission|source packet policy transmission|no-source resume progress" tests/unit/companion-common.test.mjs` | Passed after lifecycle source-state coverage. |
 | `node --test --test-name-pattern "plugin packaging copies expose|explicit sent source transmission|source packet policy transmission" tests/unit/companion-common.test.mjs` | Passed after plugin-copy lifecycle coverage. |
 | `CODEX_PLUGIN_SKIP_SMOKE=1 CODEX_PLUGIN_FULL_TESTS=1 npm run test:coverage` | Passed; copied `companion-common` branch coverage rose above baseline. |
-| `gh pr checks 175 --repo seungpyoson/codex-plugin-multi` | Passed on head `d13ffdf44918ff12bcd54b6caa94e0b4375b1778`: SonarCloud, lint, smoke api-reviewers, smoke claude, smoke gemini, smoke grok, smoke kimi, and test. |
+| `gh pr checks 175 --repo seungpyoson/codex-plugin-multi` | Pending on the current PR head. Historical head `d13ffdf44918ff12bcd54b6caa94e0b4375b1778` had passed SonarCloud, lint, smoke api-reviewers, smoke claude, smoke gemini, smoke grok, smoke kimi, and test. |
 | `node --test tests/unit/kimi-dispatcher.test.mjs` | Passed after Kimi prompt-only launch change, 29 tests. |
 | `node --test tests/smoke/kimi-companion.smoke.test.mjs` | Passed after Kimi prompt-only launch change, 81 tests. |
 | `node --check plugins/grok/scripts/grok-web-reviewer.mjs` | Passed after mode-derived Grok source-bearing change. |
