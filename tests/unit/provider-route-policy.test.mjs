@@ -151,6 +151,44 @@ test("source packet policy blocks over-budget packets for every provider and rev
       assert.equal(policy.source_packet_budget_bytes, 10);
       assert.equal(policy.selected_source_bytes, 11);
       assert.equal(policy.source_packet_within_budget, false);
+      assert.equal(policy.source_packet_override_approved, false);
+      assert.equal(policy.source_packet_override_source, null);
+      assert.equal(policy.resend_confirmation_required, false);
+    }
+  }
+});
+
+test("source packet policy permits explicit large packet override for every provider and route step", () => {
+  const contract = buildProviderPolicyContract();
+
+  for (const provider of contract.providers) {
+    for (const routeStep of PROVIDER_ROUTE_STEPS) {
+      const policy = evaluateSourcePacketPolicy({
+        provider,
+        mode: "custom-review",
+        routeStep,
+        providerCapabilities: {
+          subscription: { source_packet: { max_bytes: 10 } },
+          api: { source_packet: { max_bytes: 10 } },
+          openrouter: { source_packet: { max_bytes: 10 } },
+        },
+        selectedSource: selectedSourceFixture(11),
+        sourceBearing: true,
+        sourcePacketOverrideApproved: true,
+        sourcePacketOverrideSource: "--allow-large-source-packet",
+      });
+
+      assert.equal(policy.provider, provider);
+      assert.equal(policy.route_step, routeStep);
+      assert.equal(policy.source_send_allowed, true);
+      assert.equal(policy.source_packet_action, "send_after_source_packet_override");
+      assert.equal(policy.source_packet_policy_error_code, null);
+      assert.equal(policy.source_content_transmission, "may_be_sent");
+      assert.equal(policy.source_packet_budget_bytes, 10);
+      assert.equal(policy.selected_source_bytes, 11);
+      assert.equal(policy.source_packet_within_budget, false);
+      assert.equal(policy.source_packet_override_approved, true);
+      assert.equal(policy.source_packet_override_source, "--allow-large-source-packet");
       assert.equal(policy.resend_confirmation_required, false);
     }
   }
@@ -577,6 +615,8 @@ test("packaged provider route policy copies cover shared source-packet and route
       source_packet_budget_bytes: 64,
       selected_source_bytes: 0,
       source_packet_within_budget: true,
+      source_packet_override_approved: false,
+      source_packet_override_source: null,
       resend_confirmation_required: false,
       resume_without_source_resend: false,
       review_surface_changed: false,
@@ -614,6 +654,23 @@ test("packaged provider route policy copies cover shared source-packet and route
     assert.equal(tooLarge.source_send_allowed, false, plugin);
     assert.equal(tooLarge.source_packet_action, "narrow_source_packet", plugin);
     assert.match(tooLarge.suggested_action, /Narrow or shard/, plugin);
+
+    const override = mod.evaluateSourcePacketPolicy({
+      provider: plugin,
+      mode: "custom-review",
+      routeStep: "subscription",
+      providerCapabilities: {
+        subscription: { source_packet: { max_bytes: 10 } },
+      },
+      selectedSource: selectedSourceFixture(11),
+      sourceBearing: true,
+      sourcePacketOverrideApproved: true,
+      sourcePacketOverrideSource: "--allow-large-source-packet",
+    });
+    assert.equal(override.source_send_allowed, true, plugin);
+    assert.equal(override.source_packet_action, "send_after_source_packet_override", plugin);
+    assert.equal(override.source_packet_override_approved, true, plugin);
+    assert.equal(override.source_packet_override_source, "--allow-large-source-packet", plugin);
 
     const blocked = mod.evaluateSourcePacketPolicy({
       provider: plugin,

@@ -3827,6 +3827,52 @@ test("custom-review rejects over-budget source packets before direct API approva
   assert.doesNotMatch(result.stdout, /external_review_launched|secret-test-value/);
 });
 
+test("custom-review explicit large source override reaches direct API reviewers", async () => {
+  for (const { provider, model, envKey } of [
+    { provider: "deepseek", model: "deepseek-v4-pro", envKey: "DEEPSEEK_API_KEY" },
+    { provider: "glm", model: "glm-5.1", envKey: "ZAI_API_KEY" },
+  ]) {
+    const cwd = makeWorkspace();
+    const dataDir = mkdtempSync(path.join(tmpdir(), "api-reviewers-data-"));
+    const files = [];
+    for (let index = 0; index < 3; index += 1) {
+      const file = `packet-${index}.txt`;
+      files.push(file);
+      writeFileSync(path.join(cwd, file), "x".repeat(180 * 1024));
+    }
+
+    const result = await run([
+      "run",
+      "--provider", provider,
+      "--mode", "custom-review",
+      "--scope", "custom",
+      "--scope-paths", files.join(","),
+      "--foreground",
+      "--allow-large-source-packet",
+      "--prompt", "Check these files.",
+    ], {
+      cwd,
+      env: {
+        API_REVIEWERS_PLUGIN_DATA: dataDir,
+        API_REVIEWERS_MAX_PROMPT_CHARS: "2000000",
+        API_REVIEWERS_MOCK_RESPONSE: mockResponse(model),
+        [envKey]: "secret-test-value",
+      },
+    });
+
+    assert.equal(result.status, 0, `${provider}: ${result.stderr || result.stdout}`);
+    const record = parseJson(result.stdout);
+    assert.equal(record.status, "completed", provider);
+    assert.equal(record.external_review.source_content_transmission, "sent", provider);
+    const policy = record.review_metadata.audit_manifest.source_packet_policy;
+    assert.equal(policy.source_send_allowed, true, provider);
+    assert.equal(policy.source_packet_action, "send_after_source_packet_override", provider);
+    assert.equal(policy.source_packet_override_approved, true, provider);
+    assert.equal(policy.source_packet_override_source, "--allow-large-source-packet", provider);
+    assert.doesNotMatch(result.stdout, /secret-test-value/);
+  }
+});
+
 test("branch-diff default reviews committed changes against main with scrubbed git env", async () => {
   const cwd = makeBranchDiffWorkspace();
   const dataDir = mkdtempSync(path.join(tmpdir(), "api-reviewers-data-"));

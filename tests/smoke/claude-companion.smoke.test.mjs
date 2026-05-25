@@ -359,6 +359,37 @@ test("background custom-review rejects over-budget source packets before prompt 
   }
 });
 
+test("custom-review explicit large source override records policy and sends source to Claude", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "claude-source-packet-override-cwd-"));
+  fixtureSeedRepo(cwd);
+  const files = [];
+  for (let index = 0; index < 3; index += 1) {
+    const file = `packet-${index}.txt`;
+    files.push(file);
+    writeFileSync(path.join(cwd, file), "x".repeat(180 * 1024));
+  }
+
+  const { stdout, status, dataDir } = runCompanion(
+    ["run", "--mode=custom-review", "--foreground", "--model", "claude-haiku-4-5-20251001",
+     "--cwd", cwd, "--scope-paths", files.join(","), "--allow-large-source-packet", "--", "review selected source"],
+    { cwd, env: { CLAUDE_MOCK_ASSERT_PROMPT_INCLUDES: "CLAUDE FILE 1: packet-0.txt" } },
+  );
+  try {
+    assert.equal(status, 0, stdout);
+    const record = JSON.parse(stdout);
+    assert.equal(record.status, "completed");
+    assert.equal(record.external_review.source_content_transmission, "sent");
+    const policy = record.review_metadata.audit_manifest.source_packet_policy;
+    assert.equal(policy.source_send_allowed, true);
+    assert.equal(policy.source_packet_action, "send_after_source_packet_override");
+    assert.equal(policy.source_packet_override_approved, true);
+    assert.equal(policy.source_packet_override_source, "--allow-large-source-packet");
+  } finally {
+    cleanup(dataDir);
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
 test("custom-review guides substantive missing-verdict retry without automatic resend", () => {
   const cwd = mkdtempSync(path.join(tmpdir(), "claude-bad-verdict-cwd-"));
   const fixturePath = path.join(cwd, "claude-bad-verdict-fixture.json");

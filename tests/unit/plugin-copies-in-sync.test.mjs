@@ -408,6 +408,8 @@ test("source-bearing launch paths enforce shared source packet policy before pro
     assert.match(source, /source_packet_policy/, `${runtimePath} must inspect the shared source packet policy`);
     assert.match(source, /source_send_allowed\s*!==\s*false/, `${runtimePath} must branch on source_send_allowed`);
     assert.match(source, /source_packet_policy_error_code/, `${runtimePath} must preserve the shared packet-policy error code`);
+    assert.match(source, /allow-large-source-packet/, `${runtimePath} must expose the shared large source-packet override`);
+    assert.match(source, /sourcePacketOverrideApproved/, `${runtimePath} must pass override state into the shared source packet policy`);
   }
 
   for (const runtimePath of [
@@ -467,7 +469,7 @@ test("source-bearing launch paths enforce shared source packet policy before pro
     },
     {
       runtimePath: "plugins/grok/scripts/grok-web-reviewer.mjs",
-      preflight: "execution = sourcePacketPolicyPreflight({ cfg, mode, prompt, scopeInfo });",
+      preflight: "execution = sourcePacketPolicyPreflight({ cfg, mode, prompt, scopeInfo, options });",
       launch: "execution = await callGrokCli(cfg, prompt, {",
     },
   ];

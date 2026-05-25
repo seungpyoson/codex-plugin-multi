@@ -38,6 +38,8 @@ export const PROVIDER_POLICY_DOMAINS = Object.freeze([
       "selected_source_bytes",
       "source_packet_within_budget",
       "source_packet_action",
+      "source_packet_override_approved",
+      "source_packet_override_source",
       "source_send_approval_required",
       "source_send_approval_state",
       "source_content_transmission",
@@ -337,7 +339,7 @@ function previousReviewQualityReasons(previousAttempt = null) {
 function sourcePacketSuggestedAction(action, provider = null) {
   const target = provider ? `${provider} ` : "";
   if (action === "narrow_source_packet") {
-    return `Do not send selected source. Narrow or shard the ${target}source packet before retrying.`;
+    return `Do not send selected source. Narrow or shard the ${target}source packet before retrying, or use --allow-large-source-packet only after explicitly confirming the larger packet is intentional.`;
   }
   if (action === "resend_confirmation_required") {
     return `Treat the previous ${target}slot as failed. Do not automatically resend selected source without explicit resend confirmation or a narrowed source packet.`;
@@ -350,6 +352,9 @@ function sourcePacketSuggestedAction(action, provider = null) {
   }
   if (action === "send_after_resend_confirmation") {
     return "Proceed after explicit resend confirmation and record the approval tuple.";
+  }
+  if (action === "send_after_source_packet_override") {
+    return "Proceed with the explicitly approved large source packet and record the override tuple.";
   }
   return null;
 }
@@ -364,12 +369,15 @@ export function evaluateSourcePacketPolicy({
   previousAttempt = null,
   resendConfirmationApproved = false,
   resumeWithoutSourceResend = false,
+  sourcePacketOverrideApproved = false,
+  sourcePacketOverrideSource = null,
 } = {}) {
   const totals = selectedSourceTotals(selectedSource);
   const packetBudgetBytes = sourcePacketBudgetBytes(providerCapabilities, routeStep);
   const resumeWithoutResendSupported = sourcePacketResumeWithoutResendSupported(providerCapabilities, routeStep);
   const effectiveSourceBearing = sourceBearing === true || totals.bytes > 0 || totals.files > 0;
   const sourcePacketWithinBudget = totals.bytes <= packetBudgetBytes;
+  const sourcePacketOverride = sourcePacketOverrideApproved === true;
   const previousSource = previousSelectedSource(previousAttempt);
   const previousTotals = selectedSourceTotals(previousSource);
   const previousHash = sourcePacketHash(previousSource);
@@ -387,6 +395,10 @@ export function evaluateSourcePacketPolicy({
     source_packet_budget_bytes: packetBudgetBytes,
     selected_source_bytes: totals.bytes,
     source_packet_within_budget: sourcePacketWithinBudget,
+    source_packet_override_approved: sourcePacketOverride,
+    source_packet_override_source: sourcePacketOverride
+      ? (sourcePacketOverrideSource ?? "unknown")
+      : null,
     resend_confirmation_required: false,
     resume_without_source_resend: resumeWithoutSourceResend === true,
     review_surface_changed: reviewSurfaceChanged,
@@ -403,7 +415,7 @@ export function evaluateSourcePacketPolicy({
     });
   }
 
-  if (!sourcePacketWithinBudget) {
+  if (!sourcePacketWithinBudget && !sourcePacketOverride) {
     const action = "narrow_source_packet";
     return Object.freeze({
       ...base,
@@ -474,11 +486,13 @@ export function evaluateSourcePacketPolicy({
     });
   }
 
+  const action = sourcePacketWithinBudget ? "send" : "send_after_source_packet_override";
   return Object.freeze({
     ...base,
     source_send_allowed: true,
-    source_packet_action: "send",
+    source_packet_action: action,
     source_content_transmission: "may_be_sent",
+    suggested_action: sourcePacketSuggestedAction(action, provider),
   });
 }
 

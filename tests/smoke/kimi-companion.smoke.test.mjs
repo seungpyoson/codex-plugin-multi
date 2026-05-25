@@ -778,6 +778,46 @@ test("kimi background custom-review rejects over-budget source packets before pr
   }
 });
 
+test("kimi custom-review explicit large source override records policy and sends source", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "kimi-source-packet-override-cwd-"));
+  let dataDir = null;
+  try {
+    fixtureSeedRepo(cwd);
+    writeFileSync(path.join(cwd, "large.txt"), "k".repeat(40 * 1024));
+    const result = runCompanion([
+      "run",
+      "--mode",
+      "custom-review",
+      "--cwd",
+      cwd,
+      "--scope-paths",
+      "large.txt",
+      "--foreground",
+      "--allow-large-source-packet",
+      "--",
+      "Review this scope.",
+    ], {
+      cwd,
+      env: {
+        KIMI_MOCK_ASSERT_PROMPT_INCLUDES: "KIMI FILE 1: large.txt",
+      },
+    });
+    dataDir = result.dataDir;
+    assert.equal(result.status, 0, result.stdout);
+    const record = parseJson(result.stdout);
+    assert.equal(record.status, "completed");
+    assert.equal(record.external_review.source_content_transmission, "sent");
+    const policy = record.review_metadata.audit_manifest.source_packet_policy;
+    assert.equal(policy.source_send_allowed, true);
+    assert.equal(policy.source_packet_action, "send_after_source_packet_override");
+    assert.equal(policy.source_packet_override_approved, true);
+    assert.equal(policy.source_packet_override_source, "--allow-large-source-packet");
+  } finally {
+    if (dataDir) rmSync(dataDir, { recursive: true, force: true });
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
 test("kimi result --job-id aliases --job for a finished job", () => {
   const cwd = mkdtempSync(path.join(tmpdir(), "kimi-result-job-id-cwd-"));
   fixtureSeedRepo(cwd);
