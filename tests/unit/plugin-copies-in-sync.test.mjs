@@ -28,6 +28,73 @@ import { STRIPPED_GIT_ENV_KEYS as KIMI_STRIPPED_GIT_ENV_KEYS } from "../../plugi
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 
+function readRepoFile(relPath) {
+  return readFileSync(path.join(REPO_ROOT, relPath), "utf8");
+}
+
+function indexOfRequired(source, needle, label) {
+  const index = source.indexOf(needle);
+  assert.notEqual(index, -1, `${label} missing ${needle}`);
+  return index;
+}
+
+function allIndicesOf(source, needle) {
+  const indices = [];
+  let index = source.indexOf(needle);
+  while (index !== -1) {
+    indices.push(index);
+    index = source.indexOf(needle, index + needle.length);
+  }
+  return indices;
+}
+
+function parseStringSetLiteral(source, name, label) {
+  const match = source.match(new RegExp(`const ${name} = new Set\\(\\[([\\s\\S]*?)\\]\\);`));
+  assert.ok(match, `${label} missing ${name}`);
+  return new Set([...match[1].matchAll(/"([^"]+)"/g)].map((entry) => entry[1]));
+}
+
+function readRepoJson(relPath) {
+  return JSON.parse(readRepoFile(relPath));
+}
+
+const PROVIDER_RUNTIME_POLICY_ENTRYPOINTS = Object.freeze([
+  Object.freeze({
+    provider: "claude",
+    runtimePath: "plugins/claude/scripts/claude-companion.mjs",
+    routeSelector: /\bresolveAuthSelectionForProvider\b/,
+  }),
+  Object.freeze({
+    provider: "gemini",
+    runtimePath: "plugins/gemini/scripts/gemini-companion.mjs",
+    routeSelector: /\bresolveAuthSelectionForProvider\b/,
+  }),
+  Object.freeze({
+    provider: "kimi",
+    runtimePath: "plugins/kimi/scripts/kimi-companion.mjs",
+    routeSelector: /\bselectProviderRoute\s*\(/,
+  }),
+  Object.freeze({
+    provider: "grok",
+    runtimePath: "plugins/grok/scripts/grok-web-reviewer.mjs",
+    routeSelector: /\bselectProviderRoute\s*\(/,
+  }),
+  Object.freeze({
+    provider: "deepseek",
+    runtimePath: "plugins/api-reviewers/scripts/api-reviewer.mjs",
+    routeSelector: /\bselectProviderRoute\s*\(/,
+  }),
+  Object.freeze({
+    provider: "glm",
+    runtimePath: "plugins/api-reviewers/scripts/api-reviewer.mjs",
+    routeSelector: /\bselectProviderRoute\s*\(/,
+  }),
+]);
+
+function providerRuntimeEntryPointId(entry) {
+  return `${entry.provider}:${entry.runtimePath}`;
+}
+
 const VERBATIM_FILES = [
   "workspace.mjs",
   "process.mjs",
@@ -246,6 +313,299 @@ test("Grok and API reviewer runtimes use the shared failure diagnostic builder",
       `${runtimePath} does not call buildExternalModelFailureDiagnostic`
     );
   }
+});
+
+test("provider-facing policy interfaces are inventoried and wired through shared sources", () => {
+  const table = readRepoJson("specs/171-provider-architecture-parity/provider-parity-table.json");
+  const guardrail = table.guardrail_tests.find((entry) => entry.name === "shared policy interface usage");
+  assert.ok(guardrail, "provider parity table must define shared policy interface usage guardrail");
+
+  const requiredInterfaces = [
+    "buildProviderPolicyContract",
+    "evaluateSourcePacketPolicy",
+    "PROVIDER_POLICY_DOMAINS",
+    "PROVIDER_ROUTE_STEPS",
+    "selectProviderRoute",
+    "sourcePacketCanResumeWithoutResendFromJobRecord",
+    "sourcePacketCanResumeWithoutResendFromPreviousAttempt",
+    "sourcePacketPreviousAttemptFromJobRecord",
+    "sourcePacketPreviousAttemptForContinuation",
+    "buildReviewAuditManifest",
+    "SOURCE_CONTENT_TRANSMISSION",
+    "sourceContentTransmissionForExecution",
+    "buildExternalModelFailureDiagnostic",
+    "reviewQualityFailureState",
+    "hasSubstantiveInvalidVerdictReason",
+    "diffSourceFiles",
+  ];
+  assert.deepEqual([...guardrail.required_interfaces].sort(), [...requiredInterfaces].sort());
+
+  const sourceFiles = [
+    "scripts/lib/auth-selection.mjs",
+    "scripts/lib/provider-route-policy.mjs",
+    "scripts/lib/review-prompt.mjs",
+    "scripts/lib/external-review.mjs",
+    "scripts/lib/diff-source.mjs",
+    "scripts/lib/external-model-failure-core.mjs",
+    "scripts/lib/external-model-review-quality.mjs",
+    "plugins/api-reviewers/scripts/api-reviewer.mjs",
+    "plugins/grok/scripts/grok-web-reviewer.mjs",
+    "plugins/claude/scripts/lib/job-record.mjs",
+    "plugins/gemini/scripts/lib/job-record.mjs",
+    "plugins/kimi/scripts/lib/job-record.mjs",
+  ];
+  const combined = sourceFiles.map((relPath) => readRepoFile(relPath)).join("\n");
+
+  for (const iface of requiredInterfaces) {
+    assert.match(combined, new RegExp(`\\b${iface}\\b`), `${iface} is not wired through provider-facing source`);
+  }
+});
+
+test("provider runtime policy wiring is checked per adapter", () => {
+  const table = readRepoJson("specs/171-provider-architecture-parity/provider-parity-table.json");
+  const guardrail = table.guardrail_tests.find((entry) => entry.name === "provider runtime policy wiring");
+  assert.ok(guardrail, "provider parity table must define provider runtime policy wiring guardrail");
+  assert.deepEqual(
+    [...guardrail.required_entrypoints].sort(),
+    PROVIDER_RUNTIME_POLICY_ENTRYPOINTS.map(providerRuntimeEntryPointId).sort(),
+  );
+
+  const providers = new Set(table.providers);
+  for (const entry of PROVIDER_RUNTIME_POLICY_ENTRYPOINTS) {
+    assert.ok(providers.has(entry.provider), `${entry.provider} must be listed in provider parity table`);
+    const source = readRepoFile(entry.runtimePath);
+    assert.match(source, entry.routeSelector, `${entry.provider} runtime must use shared route selection policy`);
+    assert.match(
+      source,
+      /buildReviewAuditManifest\s*\(/,
+      `${entry.provider} runtime must build the shared review audit manifest`,
+    );
+    assert.match(
+      source,
+      /source_packet_policy/,
+      `${entry.provider} runtime must inspect shared source packet policy`,
+    );
+    assert.match(
+      source,
+      /source_send_allowed\s*!==\s*false/,
+      `${entry.provider} runtime must gate provider launch on source_send_allowed`,
+    );
+  }
+});
+
+test("source-bearing launch paths enforce shared source packet policy before provider launch", () => {
+  const runtimePaths = [
+    "plugins/claude/scripts/claude-companion.mjs",
+    "plugins/gemini/scripts/gemini-companion.mjs",
+    "plugins/kimi/scripts/kimi-companion.mjs",
+    "plugins/grok/scripts/grok-web-reviewer.mjs",
+    "plugins/api-reviewers/scripts/api-reviewer.mjs",
+  ];
+
+  for (const runtimePath of runtimePaths) {
+    const source = readRepoFile(runtimePath);
+    assert.match(source, /buildReviewAuditManifest\s*\(/, `${runtimePath} must build the shared audit manifest`);
+    assert.match(source, /source_packet_policy/, `${runtimePath} must inspect the shared source packet policy`);
+    assert.match(source, /source_send_allowed\s*!==\s*false/, `${runtimePath} must branch on source_send_allowed`);
+    assert.match(source, /source_packet_policy_error_code/, `${runtimePath} must preserve the shared packet-policy error code`);
+  }
+
+  for (const runtimePath of [
+    "plugins/claude/scripts/claude-companion.mjs",
+    "plugins/gemini/scripts/gemini-companion.mjs",
+    "plugins/kimi/scripts/kimi-companion.mjs",
+  ]) {
+    const source = readRepoFile(runtimePath);
+    const backgroundPreflights = source.match(/sourcePacketPolicyPreflight\s*\(\s*invocation\s*,\s*targetPrompt\s*,\s*null\s*\)/g) ?? [];
+    const backgroundPreflightIndices = allIndicesOf(
+      source,
+      "sourcePacketPolicyPreflight(invocation, targetPrompt, null)",
+    );
+    const sidecarWriteIndices = allIndicesOf(
+      source,
+      "writePromptSidecar(resolveJobsDir(workspaceRoot)",
+    );
+    assert.equal(
+      backgroundPreflights.length >= 2,
+      true,
+      `${runtimePath} must preflight source packets before background run and continue prompt sidecars`,
+    );
+    assert.equal(
+      backgroundPreflightIndices.length,
+      sidecarWriteIndices.length,
+      `${runtimePath} must have one background source packet preflight for each prompt sidecar write`,
+    );
+    for (let i = 0; i < sidecarWriteIndices.length; i += 1) {
+      assert.equal(
+        backgroundPreflightIndices[i] < sidecarWriteIndices[i],
+        true,
+        `${runtimePath} must run source packet preflight before background prompt sidecar write ${i + 1}`,
+      );
+    }
+  }
+
+  const foregroundLaunchChecks = [
+    {
+      runtimePath: "plugins/claude/scripts/claude-companion.mjs",
+      preflight: "const sourcePacketPreflight = sourcePacketPolicyPreflight(invocation, prompt, executionScope.addDir);",
+      launch: "execution = await spawnClaudeOrExit(",
+    },
+    {
+      runtimePath: "plugins/gemini/scripts/gemini-companion.mjs",
+      preflight: "const sourcePacketPreflight = sourcePacketPolicyPreflight(invocation, prompt, executionScope.containment.path);",
+      launch: "({ execution, executedInvocation } = await spawnGeminiOrExit(",
+    },
+    {
+      runtimePath: "plugins/kimi/scripts/kimi-companion.mjs",
+      preflight: "const sourcePacketPreflight = sourcePacketPolicyPreflight(invocation, prompt, containment.path);",
+      launch: "const preflightExecution = await kimiReadinessPreflight(invocation, profile);",
+    },
+    {
+      runtimePath: "plugins/api-reviewers/scripts/api-reviewer.mjs",
+      preflight: "execution = sourcePacketPolicyFailureFromManifest(auditManifest);",
+      launch: "execution = await callProvider(provider, cfg, renderedPrompt);",
+    },
+    {
+      runtimePath: "plugins/grok/scripts/grok-web-reviewer.mjs",
+      preflight: "execution = sourcePacketPolicyPreflight({ cfg, mode, prompt, scopeInfo });",
+      launch: "execution = await callGrokCli(cfg, prompt, {",
+    },
+  ];
+
+  for (const { runtimePath, preflight, launch } of foregroundLaunchChecks) {
+    const source = readRepoFile(runtimePath);
+    assert.equal(
+      indexOfRequired(source, preflight, runtimePath) < indexOfRequired(source, launch, runtimePath),
+      true,
+      `${runtimePath} must run source packet preflight before foreground provider launch`,
+    );
+  }
+});
+
+test("source-packet no-resend failures stay explicitly resend-gated in every packaged policy copy", () => {
+  for (const runtimePath of [
+    "scripts/lib/provider-route-policy.mjs",
+    "plugins/claude/scripts/lib/provider-route-policy.mjs",
+    "plugins/gemini/scripts/lib/provider-route-policy.mjs",
+    "plugins/kimi/scripts/lib/provider-route-policy.mjs",
+    "plugins/grok/scripts/lib/provider-route-policy.mjs",
+    "plugins/api-reviewers/scripts/lib/provider-route-policy.mjs",
+  ]) {
+    const source = readRepoFile(runtimePath);
+    const blockingFailures = parseStringSetLiteral(source, "SOURCE_SEND_BLOCKING_FAILURES", runtimePath);
+    const resumeWithoutResendFailures = parseStringSetLiteral(
+      source,
+      "SOURCE_RESUME_WITHOUT_RESEND_FAILURES",
+      runtimePath,
+    );
+    assert.equal(
+      resumeWithoutResendFailures.has("step_limit_exceeded"),
+      true,
+      `${runtimePath} must document step_limit_exceeded as an explicit no-resend resume exception`,
+    );
+    assert.match(
+      source,
+      /hasSubstantiveInvalidVerdictReason/,
+      `${runtimePath} must route substantive invalid-verdict repairs through shared review-quality classification`,
+    );
+    assert.match(
+      source,
+      /sourcePacketPreviousAttemptForContinuation/,
+      `${runtimePath} must expose a continuation helper that can carry the original source attempt through no-source repair chains`,
+    );
+    for (const failure of resumeWithoutResendFailures) {
+      assert.equal(
+        blockingFailures.has(failure),
+        true,
+        `${runtimePath} must keep no-resend failure ${failure} in SOURCE_SEND_BLOCKING_FAILURES`,
+      );
+    }
+  }
+});
+
+test("Grok and direct API branch-diff use shared diff packets instead of full file bodies", () => {
+  const apiSource = readRepoFile("plugins/api-reviewers/scripts/api-reviewer.mjs");
+  const grokSource = readRepoFile("plugins/grok/scripts/grok-web-reviewer.mjs");
+  assert.match(
+    apiSource,
+    /import \{ diffSourceFiles \} from "\.\/lib\/diff-source\.mjs";/,
+    "api-reviewer branch-diff must share the diff-packet collector used by companion reviewers",
+  );
+  assert.match(
+    apiSource,
+    /scope === "branch-diff"\s*\?\s*await readGitDiffScopeFiles\(cwd,\s*workspaceRoot,\s*scopeBase,\s*relPaths\)/,
+    "api-reviewer branch-diff must render git diff packets instead of HEAD file bodies",
+  );
+  assert.match(
+    grokSource,
+    /import \{ diffSourceFiles \} from "\.\/lib\/diff-source\.mjs";/,
+    "Grok branch-diff must share the diff-packet collector used by companion reviewers",
+  );
+  assert.match(
+    grokSource,
+    /scope === "branch-diff"\s*\?\s*await readGitDiffScopeFiles\(cwd,\s*workspaceRoot,\s*scopeBase,\s*relPaths\)/,
+    "Grok branch-diff must render git diff packets instead of HEAD file bodies",
+  );
+});
+
+test("companion continue paths carry original source attempts through no-source repairs", () => {
+  for (const runtimePath of [
+    "plugins/claude/scripts/claude-companion.mjs",
+    "plugins/gemini/scripts/gemini-companion.mjs",
+    "plugins/kimi/scripts/kimi-companion.mjs",
+  ]) {
+    const source = readRepoFile(runtimePath);
+    assert.match(
+      source,
+      /sourcePacketPreviousAttemptForContinuation\(prior,\s*priorRuntimeOptions\)/,
+      `${runtimePath} must consider the previous runtime sidecar when continuing a failed no-source repair`,
+    );
+    assert.match(
+      source,
+      /sourcePacketCanResumeWithoutResendFromPreviousAttempt\(previousSourceAttempt\)/,
+      `${runtimePath} must allow resume-without-resend from the carried original source attempt`,
+    );
+  }
+});
+
+test("companion JobRecord metadata preserves resume-without-source-resend as not sent", () => {
+  for (const runtimePath of [
+    "plugins/claude/scripts/lib/job-record.mjs",
+    "plugins/gemini/scripts/lib/job-record.mjs",
+    "plugins/kimi/scripts/lib/job-record.mjs",
+  ]) {
+    const source = readRepoFile(runtimePath);
+    assert.match(source, /SOURCE_CONTENT_TRANSMISSION/);
+    assert.match(source, /invocation\.resume_without_source_resend === true/);
+    assert.match(source, /SOURCE_CONTENT_TRANSMISSION\.NOT_SENT/);
+  }
+});
+
+test("Grok auto transport stays an adapter capability and uses shared source-transmission policy", () => {
+  const source = readRepoFile("plugins/grok/scripts/grok-web-reviewer.mjs");
+  assert.match(
+    source,
+    /function\s+modeSendsSelectedSource\s*\(/,
+    "Grok runtime must make source-bearing semantics mode-derived, not hardcoded",
+  );
+  assert.match(
+    source,
+    /sourceBearing:\s*modeSendsSelectedSource\(mode\)/,
+    "Grok source packet policy must use mode-derived source-bearing semantics",
+  );
+  assert.match(
+    source,
+    /sourceContentTransmissionForExecution\s*,?\s*\}\s+from\s+["']\.\/lib\/external-review\.mjs["']/,
+    "Grok runtime must consume shared sourceContentTransmissionForExecution",
+  );
+  assert.doesNotMatch(
+    source,
+    /function\s+sourceTransmission\s*\(/,
+    "Grok must not keep a separate sourceTransmission policy helper",
+  );
+  assert.match(source, /requested_transport/);
+  assert.match(source, /canAutoFallbackFromCliExecution/);
+  assert.match(source, /cliRequestDiagnosticsForFallback/);
 });
 
 test("reviewer runtimes use the shared privacy redactor", () => {

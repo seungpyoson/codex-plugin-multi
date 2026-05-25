@@ -3,6 +3,8 @@
   "job_id": "job_e6c50bdb-644d-47ba-bb6b-cd851fe4be98",
   "target": "grok-web",
   "provider": "grok-web",
+  "fallback_from": null,
+  "transport": "web",
   "parent_job_id": null,
   "claude_session_id": null,
   "gemini_session_id": null,

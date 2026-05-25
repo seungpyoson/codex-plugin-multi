@@ -1,0 +1,747 @@
+{
+  "schema_version": 1,
+  "feature": "provider-architecture-parity",
+  "generated_at": "2026-05-24",
+  "providers": [
+    "claude",
+    "gemini",
+    "kimi",
+    "grok",
+    "deepseek",
+    "glm"
+  ],
+  "policy_areas": [
+    {
+      "name": "route/auth/source-send approval",
+      "module": "scripts/lib/provider-route-policy.mjs",
+      "interface": "buildProviderPolicyContract, selectProviderRoute, normalizeApprovalScope, resolveAuthSelection",
+      "implementation": "Shared route policy models the subscription -> direct_api -> openrouter ladder for all providers through Adapter capability facts and records route_step, route_steps, auth, billing, fallback, and source-send approval fields.",
+      "adapters": [
+        "claude",
+        "gemini",
+        "kimi",
+        "grok",
+        "deepseek",
+        "glm"
+      ],
+      "packaged_copies": [
+        "plugins/*/scripts/lib/provider-route-policy.mjs",
+        "plugins/claude/scripts/lib/auth-selection.mjs",
+        "plugins/gemini/scripts/lib/auth-selection.mjs"
+      ],
+      "sync_guard": "npm run lint:sync runs sync-provider-route-policy.mjs --check and sync-auth-selection.mjs --check",
+      "tests": [
+        "tests/unit/provider-route-policy.test.mjs",
+        "tests/unit/plugin-copies-in-sync.test.mjs",
+        "tests/unit/external-model-contracts.test.mjs"
+      ],
+      "verdict": "compliant_shared_policy",
+      "drift_risk": "low",
+      "missing_guardrail": null
+    },
+    {
+      "name": "packet budgets",
+      "module": "scripts/lib/review-prompt.mjs",
+      "interface": "buildReviewPrompt, buildReviewAuditManifest, evaluateSourcePacketPolicy",
+      "implementation": "Shared source packet policy records source_packet_budget_bytes, selected_source_bytes, source_packet_within_budget, source_packet_action, resend_confirmation_required, review_surface_changed, and source_content_transmission. It blocks over-budget source-bearing packets before source send, blocks automatic resend after source-sent failures unless explicitly confirmed or narrowed, uses shared git diff packets for branch-diff review across subscription and direct API paths, and permits same-session no-source repair for substantive invalid-verdict prose without losing the original source attempt across failed no-source repair chains.",
+      "adapters": [
+        "claude",
+        "gemini",
+        "kimi",
+        "grok",
+        "deepseek",
+        "glm"
+      ],
+      "packaged_copies": [
+        "plugins/*/scripts/lib/review-prompt.mjs"
+      ],
+      "sync_guard": "npm run lint:sync runs sync-review-prompt.mjs --check",
+      "tests": [
+        "tests/unit/provider-route-policy.test.mjs",
+        "tests/unit/review-prompt.test.mjs",
+        "tests/smoke/claude-companion.smoke.test.mjs",
+        "tests/smoke/gemini-companion.smoke.test.mjs",
+        "tests/smoke/kimi-companion.smoke.test.mjs",
+        "tests/smoke/grok-web.smoke.test.mjs",
+        "tests/smoke/api-reviewers.smoke.test.mjs",
+        "tests/unit/plugin-copies-in-sync.test.mjs"
+      ],
+      "verdict": "compliant_shared_policy",
+      "drift_risk": "low",
+      "missing_guardrail": null
+    },
+    {
+      "name": "review prompt contracts",
+      "module": "scripts/lib/review-prompt.mjs",
+      "interface": "buildReviewPrompt contractStyle=standard|compact, buildReviewAuditManifest",
+      "implementation": "Shared review prompt construction owns both standard and compact delegated-review contracts. Adapters may select a contract style only as a documented Adapter capability fact; both styles preserve the same verdict, selected-source inspection, finding separation, runtime completeness, no-edit, and audit-quality semantics.",
+      "adapters": [
+        "claude",
+        "gemini",
+        "kimi",
+        "grok",
+        "deepseek",
+        "glm"
+      ],
+      "packaged_copies": [
+        "plugins/*/scripts/lib/review-prompt.mjs"
+      ],
+      "sync_guard": "npm run lint:sync runs sync-review-prompt.mjs --check",
+      "tests": [
+        "tests/unit/review-prompt.test.mjs",
+        "tests/smoke/kimi-companion.smoke.test.mjs",
+        "tests/unit/plugin-copies-in-sync.test.mjs",
+        "tests/unit/docs-contracts.test.mjs"
+      ],
+      "verdict": "compliant_shared_policy",
+      "drift_risk": "low",
+      "missing_guardrail": null
+    },
+    {
+      "name": "fallback semantics",
+      "module": "scripts/lib/provider-route-policy.mjs plus provider Adapters",
+      "interface": "shared route ladder fallback ledger: subscription -> direct_api -> openrouter",
+      "implementation": "Shared route ladder records attempted, selected, skipped_reason, and fallback_reason for subscription, direct_api, and openrouter. Adapter-specific transport choices, such as Grok CLI/web auto, are documented capability facts inside the selected shared route rather than alternate provider policy.",
+      "adapters": [
+        "claude",
+        "gemini",
+        "kimi",
+        "grok",
+        "deepseek",
+        "glm"
+      ],
+      "packaged_copies": null,
+      "sync_guard": null,
+      "tests": [
+        "tests/unit/provider-route-policy.test.mjs",
+        "tests/smoke/grok-web.smoke.test.mjs",
+        "tests/smoke/api-reviewers.smoke.test.mjs"
+      ],
+      "verdict": "compliant_shared_policy",
+      "drift_risk": "low",
+      "missing_guardrail": null
+    },
+    {
+      "name": "failure taxonomy",
+      "module": "scripts/lib/external-model-failure-core.mjs",
+      "interface": "classifyCompanionExecution, classifyDirectApiExecution, buildExternalModelFailureDiagnostic",
+      "implementation": "Shared classification maps runtime/provider failures to normalized external-model failure classes and suggested diagnostics.",
+      "adapters": [
+        "claude",
+        "gemini",
+        "kimi",
+        "grok",
+        "deepseek",
+        "glm"
+      ],
+      "packaged_copies": [
+        "plugins/*/scripts/lib/external-model-failure-core.mjs"
+      ],
+      "sync_guard": "npm run lint:sync runs sync-external-model-failure-classification.mjs --check",
+      "tests": [
+        "tests/unit/external-model-failure-core.test.mjs",
+        "tests/unit/plugin-copies-in-sync.test.mjs"
+      ],
+      "verdict": "compliant_shared_policy",
+      "drift_risk": "low",
+      "missing_guardrail": null
+    },
+    {
+      "name": "suggested actions",
+      "module": "scripts/lib/external-model-failure-core.mjs",
+      "interface": "buildExternalModelFailureDiagnostic",
+      "implementation": "Shared failure diagnostics provide provider-neutral suggested_action text, with Grok-specific text preserving no paid API fallback.",
+      "adapters": [
+        "claude",
+        "gemini",
+        "kimi",
+        "grok",
+        "deepseek",
+        "glm"
+      ],
+      "packaged_copies": [
+        "plugins/*/scripts/lib/external-model-failure-core.mjs"
+      ],
+      "sync_guard": "npm run lint:sync runs sync-external-model-failure-classification.mjs --check",
+      "tests": [
+        "tests/unit/external-model-contracts.test.mjs",
+        "tests/smoke/grok-web.smoke.test.mjs"
+      ],
+      "verdict": "compliant_shared_policy",
+      "drift_risk": "low",
+      "missing_guardrail": null
+    },
+    {
+      "name": "audit fields",
+      "module": "scripts/lib/review-prompt.mjs",
+      "interface": "buildReviewAuditManifest",
+      "implementation": "Review audit manifests record selected route, fallback reason, auth path, billing path, source approval state, source bearing, source transmission, and review-quality fields.",
+      "adapters": [
+        "claude",
+        "gemini",
+        "kimi",
+        "grok",
+        "deepseek",
+        "glm"
+      ],
+      "packaged_copies": [
+        "plugins/*/scripts/lib/review-prompt.mjs"
+      ],
+      "sync_guard": "npm run lint:sync runs sync-review-prompt.mjs --check",
+      "tests": [
+        "tests/unit/review-prompt.test.mjs",
+        "tests/unit/external-model-contracts.test.mjs"
+      ],
+      "verdict": "compliant_shared_policy",
+      "drift_risk": "low",
+      "missing_guardrail": null
+    },
+    {
+      "name": "review-quality gates",
+      "module": "scripts/lib/external-model-review-quality.mjs",
+      "interface": "reviewQualityFailureState, hasSubstantiveInvalidVerdictReason",
+      "implementation": "Shared helper reports failed review slots and semantic failure reasons across companion, direct API, and Grok outputs.",
+      "adapters": [
+        "claude",
+        "gemini",
+        "kimi",
+        "grok",
+        "deepseek",
+        "glm"
+      ],
+      "packaged_copies": [
+        "plugins/*/scripts/lib/external-model-review-quality.mjs"
+      ],
+      "sync_guard": "npm run lint:sync runs sync-external-model-review-quality.mjs --check",
+      "tests": [
+        "tests/unit/external-model-review-quality.test.mjs",
+        "tests/unit/plugin-copies-in-sync.test.mjs"
+      ],
+      "verdict": "compliant_shared_policy",
+      "drift_risk": "low",
+      "missing_guardrail": null
+    },
+    {
+      "name": "status/UX normalization",
+      "module": "scripts/lib/companion-common.mjs and scripts/lib/review-panel.mjs",
+      "interface": "lifecycle markdown cards, review panel records, error envelope fields",
+      "implementation": "Shared lifecycle and panel rendering contracts normalize provider, job, route, auth, billing, source, status, error, and suggested action fields.",
+      "adapters": [
+        "claude",
+        "gemini",
+        "kimi",
+        "grok",
+        "deepseek",
+        "glm"
+      ],
+      "packaged_copies": [
+        "plugins/*/scripts/lib/companion-common.mjs",
+        "plugins/*/scripts/lib/review-panel.mjs"
+      ],
+      "sync_guard": "npm run lint:sync runs sync-companion-common.mjs --check and sync-review-panel.mjs --check",
+      "tests": [
+        "tests/unit/external-model-contracts.test.mjs",
+        "tests/unit/plugin-copies-in-sync.test.mjs"
+      ],
+      "verdict": "compliant_shared_policy",
+      "drift_risk": "low",
+      "missing_guardrail": null
+    },
+    {
+      "name": "generated contracts",
+      "module": "scripts/lib/external-model-contracts.mjs",
+      "interface": "renderExternalModelContractDoc",
+      "implementation": "Provider command and skill docs are generated from one shared source and checked for staleness.",
+      "adapters": [
+        "claude",
+        "gemini",
+        "kimi",
+        "grok",
+        "deepseek",
+        "glm"
+      ],
+      "packaged_copies": null,
+      "sync_guard": "npm run lint:sync runs sync-external-model-contracts.mjs --check",
+      "tests": [
+        "tests/unit/external-model-contracts.test.mjs"
+      ],
+      "verdict": "compliant_shared_policy",
+      "drift_risk": "low",
+      "missing_guardrail": null
+    },
+    {
+      "name": "docs",
+      "module": "README.md, docs/*.md, specs/171-provider-architecture-parity/*.md",
+      "interface": "operator runbooks and issue-fit evidence",
+      "implementation": "Docs define #171 scope, use #170 as evidence only, and preserve no paid Grok API fallback language.",
+      "adapters": [
+        "claude",
+        "gemini",
+        "kimi",
+        "grok",
+        "deepseek",
+        "glm"
+      ],
+      "packaged_copies": null,
+      "sync_guard": null,
+      "tests": [
+        "tests/unit/docs-contracts.test.mjs"
+      ],
+      "verdict": "compliant_shared_policy",
+      "drift_risk": "medium",
+      "missing_guardrail": null
+    },
+    {
+      "name": "packaged copies",
+      "module": "plugins/*/scripts/lib/*.mjs",
+      "interface": "copy-verbatim shared libraries",
+      "implementation": "Packaged plugin copies remain byte-identical to canonical shared sources for libraries used by providers.",
+      "adapters": [
+        "claude",
+        "gemini",
+        "kimi",
+        "grok",
+        "deepseek",
+        "glm"
+      ],
+      "packaged_copies": [
+        "plugins/*/scripts/lib/*.mjs"
+      ],
+      "sync_guard": "npm run lint:sync",
+      "tests": [
+        "tests/unit/plugin-copies-in-sync.test.mjs"
+      ],
+      "verdict": "packaging_copy_with_sync_guard",
+      "drift_risk": "low",
+      "missing_guardrail": null
+    },
+    {
+      "name": "sync rules",
+      "module": "scripts/ci/sync-*.mjs",
+      "interface": "lint:sync",
+      "implementation": "Sync check scripts fail CI when generated docs or packaged shared library copies drift.",
+      "adapters": [
+        "claude",
+        "gemini",
+        "kimi",
+        "grok",
+        "deepseek",
+        "glm"
+      ],
+      "packaged_copies": null,
+      "sync_guard": "package.json lint:sync script",
+      "tests": [
+        "tests/unit/plugin-copies-in-sync.test.mjs",
+        "tests/unit/external-model-contracts.test.mjs"
+      ],
+      "verdict": "compliant_shared_policy",
+      "drift_risk": "low",
+      "missing_guardrail": null
+    }
+  ],
+  "semantic_drift_policy": {
+    "standard": "Provider parity does not require fake parity or fake sameness. Every provider difference must have a clear reason: either an Adapter capability fact consumed by shared policy fields, a documented policy exception with evidence and tests, or an explicitly tracked noncompliance/research gap. Unclassified provider-specific semantics are drift.",
+    "allowed_intentional_difference_types": [
+      "adapter_capability_fact",
+      "documented_policy_exception"
+    ],
+    "tracked_noncompliance_types": [
+      "known_accidental_drift",
+      "research_gap"
+    ],
+    "required_exception_fields": [
+      "provider",
+      "policy_area",
+      "difference_type",
+      "current_behavior",
+      "capability_fact",
+      "shared_policy_boundary",
+      "clear_reason",
+      "evidence",
+      "tests",
+      "verdict",
+      "follow_up_issue"
+    ]
+  },
+  "exceptions": [
+    {
+      "provider": "grok",
+      "policy_area": "fallback semantics",
+      "difference_type": "adapter_capability_fact",
+      "current_behavior": "Grok has CLI/web subscription transports and local web fallback mechanics. The user-facing --transport auto flag is Grok-only because no other current provider Adapter has two subscription-backed transports to arbitrate between.",
+      "capability_fact": "Grok is the only current Adapter with two subscription-backed transports: CLI and local web tunnel.",
+      "shared_policy_boundary": "Shared policy records route_step=subscription, route_steps, selected_route, fallback_reason, auth_path, source_content_transmission, and runtime diagnostics; Grok transport auto only chooses between subscription transports and never changes the shared provider route ladder.",
+      "clear_reason": "This is an Adapter capability fact, not a provider-policy exception: shared route policy still treats Grok CLI and local web as subscription-route candidates, records route/fallback/source metadata, and forbids silent paid xAI API fallback. Providers with one subscription transport do not need a fake --transport auto flag; DeepSeek/GLM without subscription still enter the same subscription -> direct API -> OpenRouter ladder through capability facts.",
+      "evidence": [
+        "plugins/grok/scripts/grok-companion.mjs",
+        "plugins/grok/scripts/grok-web-reviewer.mjs",
+        "tests/smoke/grok-web.smoke.test.mjs",
+        "tests/unit/plugin-copies-in-sync.test.mjs",
+        "specs/171-provider-architecture-parity/evidence-map.md",
+        "https://github.com/seungpyoson/codex-plugin-multi/issues/159"
+      ],
+      "tests": [
+        "tests/smoke/grok-web.smoke.test.mjs",
+        "tests/unit/plugin-copies-in-sync.test.mjs",
+        "tests/unit/docs-contracts.test.mjs"
+      ],
+      "verdict": "intentional",
+      "follow_up_issue": 159
+    },
+    {
+      "provider": "claude",
+      "policy_area": "route/auth/source-send approval",
+      "difference_type": "adapter_capability_fact",
+      "current_behavior": "Claude subscription readiness requires both `claude auth status --json` metadata and a non-interactive inference probe. When OAuth status reports loggedIn=true but inference returns HTTP 401, the companion fails before source send with oauth_inference_rejected and tells the operator to run `claude auth login`.",
+      "capability_fact": "Claude Code 2.1.150 exposes authentication under `claude auth login`; `claude --help` lists `auth` as the auth command and not a top-level `login` command. Its auth status can remain logged-in while non-interactive inference is rejected until OAuth is refreshed.",
+      "shared_policy_boundary": "Claude still uses the shared subscription -> direct_api -> openrouter route ledger, auth_path, route_step, source_content_transmission, and pre-source failure fields. The login command and inference-vs-status check are Claude Adapter readiness facts.",
+      "clear_reason": "This is not fake parity: other providers should not inherit a Claude-specific command, but every provider must still prove route readiness before source send and surface exact Adapter remediation when auth readiness fails.",
+      "evidence": [
+        "plugins/claude/scripts/claude-companion.mjs",
+        "plugins/claude/scripts/lib/job-record.mjs",
+        "scripts/lib/external-model-failure-core.mjs",
+        "tests/unit/external-model-failure-core.test.mjs",
+        "tests/unit/job-record.test.mjs",
+        "https://github.com/seungpyoson/codex-plugin-multi/issues/171"
+      ],
+      "tests": [
+        "tests/smoke/claude-companion.smoke.test.mjs",
+        "tests/unit/external-model-failure-core.test.mjs",
+        "tests/unit/job-record.test.mjs",
+        "tests/unit/docs-contracts.test.mjs"
+      ],
+      "verdict": "intentional",
+      "follow_up_issue": null
+    },
+    {
+      "provider": "kimi",
+      "policy_area": "route/auth/source-send approval",
+      "difference_type": "adapter_capability_fact",
+      "current_behavior": "Kimi declares subscription capability only, rejects --auth-mode, and reports Kimi/Moonshot API env names as ignored. The shared route ledger still records subscription, direct_api, and openrouter steps with unsupported lower-route capability facts.",
+      "capability_fact": "The current Kimi Adapter implements a subscription-backed CLI transport and does not implement direct API or OpenRouter routes.",
+      "shared_policy_boundary": "Kimi flows through shared route_step and route_steps fields; unsupported direct API/OpenRouter states are Adapter capability facts, not separate Kimi policy.",
+      "clear_reason": "This is not fake parity: Kimi should not expose direct API or OpenRouter routes until an Adapter exists, but the shared route ladder already models those steps and will consume capability facts when they are added.",
+      "evidence": [
+        "plugins/kimi/scripts/kimi-companion.mjs",
+        "README.md",
+        "specs/171-provider-architecture-parity/evidence-map.md",
+        "https://github.com/seungpyoson/codex-plugin-multi/issues/171"
+      ],
+      "tests": [
+        "tests/unit/provider-route-policy.test.mjs",
+        "tests/unit/plugin-copies-in-sync.test.mjs"
+      ],
+      "verdict": "intentional",
+      "follow_up_issue": null
+    },
+    {
+      "provider": "kimi",
+      "policy_area": "review prompt contracts",
+      "difference_type": "adapter_capability_fact",
+      "current_behavior": "Kimi selects buildReviewPrompt contractStyle=compact through the shared review prompt interface and launches review/ping with a prompt-only custom agent: tools: [], no default-agent inheritance, and no --add-dir workspace grant. The compact contract preserves the same verdict, selected-source inspection, finding separation, runtime completeness, no-edit, and audit-quality semantics as the standard contract while avoiding Kimi CLI prompt and tool-launch shapes that stall before a usable verdict.",
+      "capability_fact": "Kimi Code CLI 1.43 completed raw no-source print/plan/thinking prompts and raw compact selected-source prompts with --add-dir, but the exact companion source-bearing custom-review path timed out on a disposable 11-byte seed.txt packet with source sent and no verdict. Earlier standard generated delegated-review prompts also timed out with tiny selected source and zero stdout/stderr.",
+      "shared_policy_boundary": "The compact contract is owned by scripts/lib/review-prompt.mjs, copied through plugin sync, and audited by the same buildReviewAuditManifest review-quality fields. Kimi prompt-only launch is an Adapter launch capability fact; it does not change the shared source packet policy, verdict contract, review-quality gates, or failed-slot semantics.",
+      "clear_reason": "This is not fake parity: Kimi should not be forced through a prompt or tool-enabled launch shape proven to deadlock or burn quota in its current CLI, but it also must not bypass shared verdict, selected-source, finding-separation, runtime, or no-edit requirements.",
+      "evidence": [
+        "plugins/kimi/scripts/kimi-companion.mjs",
+        "plugins/kimi/scripts/lib/mode-profiles.mjs",
+        "scripts/lib/review-prompt.mjs",
+        "tests/unit/review-prompt.test.mjs",
+        "tests/unit/kimi-dispatcher.test.mjs",
+        "tests/smoke/kimi-companion.smoke.test.mjs",
+        "https://github.com/seungpyoson/codex-plugin-multi/issues/177"
+      ],
+      "tests": [
+        "tests/unit/review-prompt.test.mjs",
+        "tests/smoke/kimi-companion.smoke.test.mjs",
+        "tests/unit/plugin-copies-in-sync.test.mjs",
+        "tests/unit/docs-contracts.test.mjs"
+      ],
+      "verdict": "intentional",
+      "follow_up_issue": 177
+    },
+    {
+      "provider": "deepseek",
+      "policy_area": "route/auth/source-send approval",
+      "difference_type": "adapter_capability_fact",
+      "current_behavior": "DeepSeek uses the API reviewer path with direct API capability only. Shared route_steps records subscription_not_supported, direct_api selected, and openrouter unsupported/not_needed state.",
+      "capability_fact": "The current DeepSeek Adapter implements direct API auth and does not implement subscription CLI or OpenRouter routes.",
+      "shared_policy_boundary": "DeepSeek selects direct_api today through the same shared subscription -> direct_api -> openrouter route_steps ledger that explains subscription_not_supported and OpenRouter skip/fallback state.",
+      "clear_reason": "This is not fake parity: DeepSeek should not pretend to have a subscription CLI, but it must still enter the same shared route ladder and fall through by capability facts.",
+      "evidence": [
+        "plugins/api-reviewers/scripts/api-reviewer.mjs",
+        "plugins/api-reviewers/config/providers.json",
+        "https://github.com/seungpyoson/codex-plugin-multi/issues/171"
+      ],
+      "tests": [
+        "tests/unit/provider-route-policy.test.mjs",
+        "tests/smoke/api-reviewers.smoke.test.mjs"
+      ],
+      "verdict": "intentional",
+      "follow_up_issue": null
+    },
+    {
+      "provider": "glm",
+      "policy_area": "route/auth/source-send approval",
+      "difference_type": "adapter_capability_fact",
+      "current_behavior": "GLM uses the API reviewer path with direct API capability only. Shared route_steps records subscription_not_supported, direct_api selected, and openrouter unsupported/not_needed state.",
+      "capability_fact": "The current GLM Adapter implements direct API auth and does not implement subscription CLI or OpenRouter routes.",
+      "shared_policy_boundary": "GLM selects direct_api today through the same shared subscription -> direct_api -> openrouter route_steps ledger that explains subscription_not_supported and OpenRouter skip/fallback state.",
+      "clear_reason": "This is not fake parity: GLM should not pretend to have a subscription CLI, but it must still enter the same shared route ladder and fall through by capability facts.",
+      "evidence": [
+        "plugins/api-reviewers/scripts/api-reviewer.mjs",
+        "plugins/api-reviewers/config/providers.json",
+        "https://github.com/seungpyoson/codex-plugin-multi/issues/171"
+      ],
+      "tests": [
+        "tests/unit/provider-route-policy.test.mjs",
+        "tests/smoke/api-reviewers.smoke.test.mjs"
+      ],
+      "verdict": "intentional",
+      "follow_up_issue": null
+    },
+    {
+      "provider": "kimi",
+      "policy_area": "packet budgets",
+      "difference_type": "adapter_capability_fact",
+      "current_behavior": "Kimi subscription review declares a 32768-byte source-packet capacity and disables no-source repair after source-bearing step-limit failures. The shared policy still evaluates the same source_packet fields for every provider; Kimi's route capability makes over-capacity packets fail before launch with source_content_transmission:not_sent, and Kimi step-limit continuations fail before relaunch unless the retry sends an explicitly narrowed packet or has explicit resend confirmation.",
+      "capability_fact": "Kimi Code CLI 1.43 did not produce a verdict for a compact 63197-byte source-bearing review at --max-steps-per-turn 128, and a raw no-tool continuation of that session returned NOT_REVIEWED because prior selected source was not retained in the current context. Kimi therefore cannot currently prove reliable same-session no-source source retention for review approvals.",
+      "shared_policy_boundary": "Kimi capacity is represented only as Adapter capability data consumed by the shared source-packet policy. The policy shape, resend gate, narrow-packet path, source_content_transmission audit fields, and pre-send enforcement remain shared across Claude, Gemini, Kimi, Grok, DeepSeek, and GLM.",
+      "clear_reason": "This is not fake parity: Kimi has a measured lower source-bearing review capacity and unreliable no-source session repair, so treating it like providers that can retain source would create false not_sent audit claims and repeated step-limit burns.",
+      "evidence": [
+        "https://github.com/seungpyoson/codex-plugin-multi/issues/177",
+        "https://github.com/seungpyoson/codex-plugin-multi/issues/172",
+        "Kimi job 0ef067c5-d9be-4820-a7d4-034b337c54b6: compact 63197-byte source packet failed with step_limit_exceeded at 128 steps",
+        "Raw Kimi session 73ab07c5-7c8a-4661-a271-632e13a5143d no-tool continuation returned Verdict: NOT_REVIEWED because prior source was absent",
+        "Kimi job 08d2f957-bb06-4222-a15c-651691be8655: same 63197-byte packet blocked before launch with source_packet_too_large and source_content_transmission:not_sent after the adapter capacity fact",
+        "bolt-v2 PR #479 Kimi job b465418e-913a-42c2-9c84-6befb9c789bb: cached installed plugin sent 44870 bytes and failed with step_limit_exceeded at 128 steps",
+        "PR #175 Kimi shard 6cecf19f-2145-48d2-84b5-cd77bc09c835: under-cap 13062-byte source packet became stale_active_job with no verdict",
+        "/private/tmp/cpm-171-plan-review/kimi-result.json",
+        "/private/tmp/cpm-171-final-review/kimi-final2.json",
+        "/private/tmp/cpm-171-final-review/kimi-final4.json",
+        "specs/171-provider-architecture-parity/root-problems.md"
+      ],
+      "tests": [
+        "tests/unit/provider-route-policy.test.mjs",
+        "tests/smoke/kimi-companion.smoke.test.mjs",
+        "tests/unit/companion-common.test.mjs"
+      ],
+      "verdict": "intentional",
+      "follow_up_issue": 177
+    }
+  ],
+  "issue_fit": {
+    "primary_issue": 171,
+    "evidence_issue": 170,
+    "related_issues": [
+      144,
+      146,
+      147,
+      159,
+      160,
+      162,
+      167,
+      172,
+      173
+    ],
+    "new_issue_required": true,
+    "split_recommendation": "New issue investigation is required for Grok login persistence and Kimi step-limit symptoms, but do not file until root-cause evidence proves distinct scope outside #171/#159/#172/#173 and the operator approves issue creation."
+  },
+  "verification": [
+    {
+      "command": "node --test tests/unit/docs-contracts.test.mjs",
+      "status": "passed",
+      "evidence": "Included in `node --test tests/unit/plugin-copies-in-sync.test.mjs tests/unit/docs-contracts.test.mjs tests/unit/provider-route-policy.test.mjs tests/unit/external-model-contracts.test.mjs`; 117 tests passed."
+    },
+    {
+      "command": "node --test tests/unit/external-model-contracts.test.mjs tests/unit/plugin-copies-in-sync.test.mjs",
+      "status": "passed",
+      "evidence": "Included in the focused 220-test Grok/policy/plugin-copy suite after strengthening foreground launch ordering, sidecar/preflight cardinality, no-resend subset, and Grok mode-derived source-bearing guardrails."
+    },
+    {
+      "command": "node --test tests/smoke/grok-web.smoke.test.mjs",
+      "status": "passed",
+      "evidence": "Included in focused source-packet and full test runs; Grok over-budget pre-send, CLI auto fallback, and adapter-capability guardrails passed."
+    },
+    {
+      "command": "COVERAGE_ENFORCE_TARGET=1 npm run test:coverage",
+      "status": "passed",
+      "evidence": "1638 tests; 1625 passed, 13 skipped, 0 failed; coverage target met after adding plugin-copy policy branch coverage."
+    },
+    {
+      "command": "npm test",
+      "status": "passed",
+      "evidence": "2148 tests; 2136 passed, 12 skipped, 0 failed."
+    },
+    {
+      "command": "npm run test:full",
+      "status": "passed",
+      "evidence": "2307 tests; 2295 passed, 12 skipped, 0 failed."
+    }
+  ],
+  "guardrail_tests": [
+    {
+      "name": "provider parity table contract",
+      "file": "tests/unit/docs-contracts.test.mjs",
+      "purpose": "Fail when the canonical provider parity table is missing required providers, policy areas, issue fit, evidence, or schema shape.",
+      "red_condition": "provider-parity-table.json is missing or omits a required FR-002 policy area.",
+      "green_condition": "provider-parity-table.json parses and satisfies the checked schema/policy inventory.",
+      "verification_command": "node --test tests/unit/docs-contracts.test.mjs",
+      "required_fields": [
+        "schema_version",
+        "feature",
+        "providers",
+        "policy_areas",
+        "issue_fit"
+      ]
+    },
+    {
+      "name": "provider semantic drift classification",
+      "file": "tests/unit/docs-contracts.test.mjs",
+      "purpose": "Fail when a provider-specific difference is not classified as an Adapter capability fact, documented policy exception, known accidental drift, or research gap with a clear reason and shared-policy boundary.",
+      "red_condition": "A provider exception lacks difference_type, capability_fact, shared_policy_boundary, clear_reason, evidence, tests, or verdict; an intentional difference is not an allowed capability/policy exception.",
+      "green_condition": "Every provider difference is explicitly classified, evidence-backed, test-backed, and tied to the shared policy boundary so fake parity is not required and unclassified drift is blocked.",
+      "verification_command": "node --test tests/unit/docs-contracts.test.mjs",
+      "required_fields": [
+        "provider",
+        "policy_area",
+        "difference_type",
+        "current_behavior",
+        "capability_fact",
+        "shared_policy_boundary",
+        "clear_reason",
+        "evidence",
+        "tests",
+        "verdict",
+        "follow_up_issue"
+      ]
+    },
+    {
+      "name": "full provider policy surface",
+      "file": "tests/unit/provider-route-policy.test.mjs",
+      "purpose": "Fail when the shared Provider Policy Interface stops covering one of the required cross-provider policy domains.",
+      "red_condition": "buildProviderPolicyContract omits a provider, route step, or policy domain, or the parity table's guardrail inventory no longer matches the generated contract.",
+      "green_condition": "The generated Provider Policy Interface and parity table both enumerate the same provider-neutral policy domains for all six providers.",
+      "verification_command": "node --test tests/unit/provider-route-policy.test.mjs tests/unit/docs-contracts.test.mjs",
+      "required_fields": [
+        "route",
+        "packet",
+        "readiness_auth",
+        "status_lifecycle",
+        "failure_taxonomy",
+        "suggested_action",
+        "review_quality",
+        "audit",
+        "docs",
+        "sync"
+      ]
+    },
+    {
+      "name": "shared audit/status field inventory",
+      "file": "tests/unit/external-model-contracts.test.mjs",
+      "purpose": "Fail when generated provider-neutral contracts stop naming shared audit/status fields.",
+      "red_condition": "renderExternalModelContractDoc omits a shared audit/status field.",
+      "green_condition": "Generated contract docs contain the complete shared field inventory.",
+      "verification_command": "node --test tests/unit/external-model-contracts.test.mjs",
+      "required_fields": [
+        "attempted_route",
+        "skipped_reason",
+        "selected_route",
+        "fallback_reason",
+        "approval_scope",
+        "auth_path",
+        "billing_path",
+        "source_bearing",
+        "source_send_approval_required",
+        "source_send_approval_state",
+        "source_content_transmission",
+        "review_quality.failed_review_slot",
+        "review_quality.semantic_failure_reasons",
+        "error_code",
+        "suggested_action"
+      ]
+    },
+    {
+      "name": "shared policy interface usage",
+      "file": "tests/unit/plugin-copies-in-sync.test.mjs",
+      "purpose": "Fail when provider-facing entrypoints or synced libs stop consuming required shared policy interfaces.",
+      "red_condition": "A required shared interface is absent from provider-facing source or the parity table.",
+      "green_condition": "The interface inventory is explicit and each required interface is present in provider-facing source.",
+      "verification_command": "node --test tests/unit/plugin-copies-in-sync.test.mjs",
+      "required_interfaces": [
+        "buildProviderPolicyContract",
+        "evaluateSourcePacketPolicy",
+        "PROVIDER_POLICY_DOMAINS",
+        "PROVIDER_ROUTE_STEPS",
+        "selectProviderRoute",
+        "sourcePacketCanResumeWithoutResendFromJobRecord",
+        "sourcePacketCanResumeWithoutResendFromPreviousAttempt",
+        "sourcePacketPreviousAttemptFromJobRecord",
+        "sourcePacketPreviousAttemptForContinuation",
+        "buildReviewAuditManifest",
+        "SOURCE_CONTENT_TRANSMISSION",
+        "sourceContentTransmissionForExecution",
+        "buildExternalModelFailureDiagnostic",
+        "reviewQualityFailureState",
+        "hasSubstantiveInvalidVerdictReason",
+        "diffSourceFiles"
+      ]
+    },
+    {
+      "name": "provider runtime policy wiring",
+      "file": "tests/unit/plugin-copies-in-sync.test.mjs",
+      "purpose": "Fail when provider-neutral policy usage is proven only by a combined source scan instead of by every provider runtime.",
+      "red_condition": "A provider runtime is missing shared route selection, audit manifest construction, or source-packet pre-send enforcement, or the provider entrypoint matrix is not inventoried in the parity table.",
+      "green_condition": "Claude, Gemini, Kimi, Grok, DeepSeek, and GLM entrypoints are explicitly inventoried and each runtime is wired to shared route, audit, and source-packet policy; intentional transport differences remain classified Adapter capability facts.",
+      "verification_command": "node --test tests/unit/plugin-copies-in-sync.test.mjs",
+      "required_entrypoints": [
+        "claude:plugins/claude/scripts/claude-companion.mjs",
+        "gemini:plugins/gemini/scripts/gemini-companion.mjs",
+        "kimi:plugins/kimi/scripts/kimi-companion.mjs",
+        "grok:plugins/grok/scripts/grok-web-reviewer.mjs",
+        "deepseek:plugins/api-reviewers/scripts/api-reviewer.mjs",
+        "glm:plugins/api-reviewers/scripts/api-reviewer.mjs"
+      ]
+    },
+    {
+      "name": "source packet pre-send enforcement",
+      "file": "tests/unit/plugin-copies-in-sync.test.mjs",
+      "purpose": "Fail when a source-bearing launch path records source packet policy without enforcing it before provider launch.",
+      "red_condition": "A provider runtime can build a review audit manifest but does not inspect source_packet_policy.source_send_allowed before launching the provider transport.",
+      "green_condition": "Claude, Gemini, Kimi, Grok, DeepSeek, and GLM launch paths all stop over-budget source packets before source send through the shared source packet policy.",
+      "verification_command": "node --test tests/unit/plugin-copies-in-sync.test.mjs tests/smoke/claude-companion.smoke.test.mjs tests/smoke/gemini-companion.smoke.test.mjs tests/smoke/kimi-companion.smoke.test.mjs tests/smoke/api-reviewers.smoke.test.mjs tests/smoke/grok-web.smoke.test.mjs",
+      "required_fields": [
+        "source_packet_policy",
+        "source_send_allowed",
+        "source_packet_policy_error_code",
+        "source_content_transmission",
+        "resume_without_source_resend",
+        "resume_without_source_resend_subset_of_resend_gated_failures",
+        "invalid_verdict_no_source_repair",
+        "failed_no_source_repair_carries_original_attempt",
+        "external_review_not_sent_on_resume_without_resend",
+        "prompt_sidecar_preflight",
+        "foreground_provider_launch_preflight"
+      ]
+    },
+    {
+      "name": "grok auto transport fallback",
+      "file": "tests/smoke/grok-web.smoke.test.mjs",
+      "purpose": "Fail when Grok auto transport stops preserving CLI default, audited local web fallback, or no-paid-API guarantees.",
+      "red_condition": "GROK_TRANSPORT=auto is rejected, falls back to paid API credentials, fails to record CLI-to-web fallback metadata, or reintroduces a Grok-local source-transmission policy helper.",
+      "green_condition": "Auto mode records CLI success as CLI, approved CLI failure fallback as local web with source disclosure, prompt-budget failures preserve CLI diagnostics, and Grok uses shared sourceContentTransmissionForExecution.",
+      "verification_command": "node --test tests/smoke/grok-web.smoke.test.mjs tests/unit/plugin-copies-in-sync.test.mjs",
+      "required_fields": [
+        "transport",
+        "fallback_from",
+        "selected_route",
+        "route_step",
+        "route_steps",
+        "auth_path",
+        "source_content_transmission",
+        "mode_derived_source_bearing",
+        "runtime_diagnostics.cli_request"
+      ]
+    }
+  ]
+}

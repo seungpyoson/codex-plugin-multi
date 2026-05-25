@@ -390,6 +390,83 @@ test("startExternalReviewHeartbeat emits markdown progress card until stopped", 
   assert.match(chunks[0], /\| Retrieve \| result --job job-heartbeat-markdown --cwd \/tmp\/gemini-heartbeat-workspace \|/);
 });
 
+test("startExternalReviewHeartbeat reports no-source resume progress as not_sent", async () => {
+  const chunks = [];
+  const stop = startExternalReviewHeartbeat(
+    {
+      job_id: "job-heartbeat-no-source",
+      target: "kimi",
+      mode: "review",
+      run_kind: "foreground",
+      review_prompt_provider: "Kimi Code CLI",
+      workspace_root: "/tmp/kimi-heartbeat-workspace",
+      scope: "branch-diff",
+      scope_base: "HEAD~1",
+      resume_without_source_resend: true,
+    },
+    "markdown",
+    { intervalMs: 5, output: { write: (chunk) => chunks.push(chunk) } },
+  );
+
+  await new Promise((resolve) => setTimeout(resolve, 18));
+  stop();
+
+  assert.ok(chunks.length >= 1, "markdown heartbeat must emit at least one progress event");
+  assert.match(chunks[0], /\| Source \| not_sent \|/);
+  assert.match(chunks[0], /Selected source content was not sent to Kimi Code CLI/);
+});
+
+test("raw lifecycle progress preserves explicit sent source transmission", () => {
+  let out = "";
+  printLifecycleJson({
+    event: "external_review_progress",
+    job_id: "job-progress-sent",
+    target: "claude",
+    provider: "Claude Code",
+    status: "running",
+    mode: "review",
+    run_kind: "foreground",
+    cwd: "/tmp/claude-progress-workspace",
+    scope: "custom",
+    scope_paths: ["review.js"],
+    source_content_transmission: "sent",
+  }, "markdown", { write: (chunk) => { out += chunk; } });
+
+  assert.match(out, /^### EXTERNAL REVIEW/m);
+  assert.match(out, /\| Provider \| Claude Code \|/);
+  assert.match(out, /\| Scope \| custom review\.js \|/);
+  assert.match(out, /\| Source \| sent \|/);
+  assert.match(out, /Selected source content was sent to Claude Code for external review; the run is in progress\./);
+});
+
+test("heartbeat progress preserves source packet policy transmission", async () => {
+  const chunks = [];
+  const stop = startExternalReviewHeartbeat(
+    {
+      job_id: "job-heartbeat-policy-source",
+      target: "gemini",
+      mode: "review",
+      run_kind: "foreground",
+      review_prompt_provider: "Gemini CLI",
+      workspace_root: "/tmp/gemini-policy-heartbeat-workspace",
+      scope: "custom",
+      scope_paths: ["review.js"],
+      source_packet_policy: {
+        source_content_transmission: "not_sent",
+      },
+    },
+    "markdown",
+    { intervalMs: 5, output: { write: (chunk) => chunks.push(chunk) } },
+  );
+
+  await new Promise((resolve) => setTimeout(resolve, 18));
+  stop();
+
+  assert.ok(chunks.length >= 1, "markdown heartbeat must emit at least one progress event");
+  assert.match(chunks[0], /\| Source \| not_sent \|/);
+  assert.match(chunks[0], /Selected source content was not sent to Gemini CLI/);
+});
+
 test("summarizeScopeDirectory returns sorted files and byte totals", () => {
   const root = mkdtempSync(path.join(tmpdir(), "companion-common-scope-"));
   const nested = path.join(root, "nested");
@@ -579,6 +656,32 @@ async function assertCopyHelperBranches(mod, plugin) {
   assert.match(lifecycleMarkdownProgress, /\| Status \| running \|/);
   assert.match(lifecycleMarkdownProgress, /\| Source \| may_be_sent \|/);
   assert.doesNotMatch(lifecycleMarkdownProgress, /^\{\n/);
+  let lifecycleMarkdownSentProgress = "";
+  mod.printLifecycleJson(
+    {
+      event: "external_review_progress",
+      job_id: `copy-job-sent-${plugin}`,
+      target: plugin,
+      provider: plugin,
+      status: "running",
+      mode: "review",
+      run_kind: "foreground",
+      cwd: `/tmp/${plugin}-copy-workspace`,
+      scope: "custom",
+      scope_paths: ["review.js"],
+      source_content_transmission: "sent",
+    },
+    "markdown",
+    { write: (chunk) => { lifecycleMarkdownSentProgress += chunk; } },
+  );
+  assert.match(lifecycleMarkdownSentProgress, /^### EXTERNAL REVIEW/m);
+  assert.match(lifecycleMarkdownSentProgress, new RegExp(`\\| Provider \\| ${plugin} \\|`));
+  assert.match(lifecycleMarkdownSentProgress, /\| Scope \| custom review\.js \|/);
+  assert.match(lifecycleMarkdownSentProgress, /\| Source \| sent \|/);
+  assert.match(
+    lifecycleMarkdownSentProgress,
+    new RegExp(`Selected source content was sent to ${plugin} for external review; the run is in progress\\.`),
+  );
   let lifecycleMarkdown = "";
   mod.printLifecycleJson({
     event: "external_review_launched",
@@ -732,6 +835,30 @@ async function assertCopyHelperBranches(mod, plugin) {
   assert.match(markdownChunks[0], new RegExp(`\\| Provider \\| ${plugin} \\|`));
   assert.match(markdownChunks[0], /\| Status \| running \|/);
   assert.match(markdownChunks[0], /\| Source \| may_be_sent \|/);
+
+  const policyMarkdownChunks = [];
+  const stopPolicyMarkdown = mod.startExternalReviewHeartbeat(
+    {
+      job_id: `copy-heartbeat-policy-${plugin}`,
+      target: plugin,
+      mode: "review",
+      run_kind: "foreground",
+      review_prompt_provider: plugin,
+      workspace_root: `/tmp/${plugin}-copy-heartbeat-workspace`,
+      scope: "custom",
+      scope_paths: ["review.js"],
+      source_packet_policy: {
+        source_content_transmission: "not_sent",
+      },
+    },
+    "markdown",
+    { intervalMs: 5, output: { write: (chunk) => policyMarkdownChunks.push(chunk) } },
+  );
+  await new Promise((resolve) => setTimeout(resolve, 12));
+  stopPolicyMarkdown();
+  assert.ok(policyMarkdownChunks.length >= 1, `${plugin}: copied policy markdown heartbeat helper must emit progress`);
+  assert.match(policyMarkdownChunks[0], new RegExp(`\\| Provider \\| ${plugin} \\|`));
+  assert.match(policyMarkdownChunks[0], /\| Source \| not_sent \|/);
 
   const jobsDir = mkdtempSync(path.join(tmpdir(), `companion-common-copy-jobs-${plugin}-`));
   assert.equal(mod.consumePromptSidecar(jobsDir, "job-1"), null);
@@ -929,6 +1056,14 @@ test("external-review shared helper covers disclosure and transmission branches"
       "Selected source content was not sent to Provider; the rendered prompt exceeded the provider budget before the review target was started.",
     );
     assert.equal(
+      mod.externalReviewDisclosure("Provider", "failed", T.NOT_SENT, "source_packet_too_large"),
+      "Selected source content was not sent to Provider; the selected source packet exceeded the shared source packet budget before the review target was started.",
+    );
+    assert.equal(
+      mod.externalReviewDisclosure("Provider", "failed", T.NOT_SENT, "resend_confirmation_required"),
+      "Selected source content was not sent to Provider; retrying this source packet requires explicit resend confirmation or a narrowed packet.",
+    );
+    assert.equal(
       mod.externalReviewDisclosure("Provider", "failed", T.NOT_SENT, "spawn_failed"),
       "Selected source content was not sent to Provider; the target process was not spawned.",
     );
@@ -1017,6 +1152,8 @@ test("external-review shared helper covers disclosure and transmission branches"
       "approval_scope_changed",
       "preflight_stale",
       "cache_install",
+      "source_packet_too_large",
+      "resend_confirmation_required",
     ]) {
       assert.equal(mod.sourceContentTransmissionForExecution({
         status: "failed",

@@ -51,7 +51,7 @@ If a legacy JSON lifecycle envelope appears, render `external_review_launched` i
 `external_review_progress` is a heartbeat for long foreground runs; keep the existing launch card visible and do not render it as a terminal result.
 If a background launch envelope has `event: "launched"` with an `external_review` field, render the same launch card immediately with session pending.
 If a legacy JSON `external_review` field appears, render it before normal prose.
-Lifecycle cards should include provider, job, session, run kind, mode, scope, source transmission, selected route, fallback reason, auth path, billing path, source-send approval state, approval scope, status, error code, error message, HTTP status, and suggested action when those fields are present.
+Lifecycle cards should include provider, job, session, run kind, mode, scope, source transmission, source bearing, selected route, fallback reason, auth path, billing path, source-send approval state, approval scope, review quality, status, error code, error message, HTTP status, and suggested action when those fields are present.
 
 ```md
 ### EXTERNAL REVIEW
@@ -65,11 +65,13 @@ Lifecycle cards should include provider, job, session, run kind, mode, scope, so
 | Mode | <mode> |
 | Scope | <scope and scope_base/scope_paths> |
 | Source | <source_content_transmission> |
+| Source Bearing | <source_bearing> |
 | Route | <selected_route> |
 | Fallback | <fallback_reason> |
 | Auth | <auth_path> |
 | Billing | <billing_path> |
 | Approval | <source_send_approval_state / approval_scope> |
+| Review Quality | <review_quality.failed_review_slot / review_quality.semantic_failure_reasons> |
 | Status | <status> |
 | Error | <error_code> |
 | Message | <error_message> |

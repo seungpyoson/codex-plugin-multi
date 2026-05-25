@@ -20,7 +20,12 @@ import { reconcileActiveJobs } from "./lib/reconcile.mjs";
 import { cleanGitEnv } from "./lib/git-env.mjs";
 import { gitEnv, isGitBinaryPolicyError, resolveGitBinary } from "./lib/git-binary.mjs";
 import { spawnKimi } from "./lib/kimi.mjs";
-import { selectProviderRoute } from "./lib/provider-route-policy.mjs";
+import {
+  selectProviderRoute,
+  sourcePacketCanResumeWithoutResendFromPreviousAttempt,
+  sourcePacketCanResumeWithoutResendFromJobRecord,
+  sourcePacketPreviousAttemptForContinuation,
+} from "./lib/provider-route-policy.mjs";
 import { writeCancelMarker, consumeCancelMarker } from "./lib/cancel-marker.mjs";
 import { isCodexSandbox } from "./lib/codex-env.mjs";
 import {
@@ -58,8 +63,17 @@ const DEFAULT_KIMI_REVIEW_TIMEOUT_MS = 900000;
 const DEFAULT_KIMI_PING_TIMEOUT_MS = 900000;
 const KIMI_READINESS_PREFLIGHT_TIMEOUT_MS = 900000;
 const REVIEW_PROMPT_SOURCE_DELIMITER_PREFIX = "KIMI FILE";
+const KIMI_SOURCE_PACKET_MAX_BYTES = 32 * 1024;
+
 const ROUTE_CAPABILITIES = Object.freeze({
-  subscription: Object.freeze({ kind: "oauth", auth_path: "subscription_oauth" }),
+  subscription: Object.freeze({
+    kind: "oauth",
+    auth_path: "subscription_oauth",
+    source_packet: Object.freeze({
+      max_bytes: KIMI_SOURCE_PACKET_MAX_BYTES,
+      resume_without_resend_supported: false,
+    }),
+  }),
 });
 
 configureState({
@@ -159,6 +173,9 @@ function targetPromptFor(profile, userPrompt, invocation = {}, sourceFiles = [])
     scope: invocation.scope ?? profile.scope,
     scopePaths: invocation.scope_paths ?? null,
     userPrompt,
+    // Kimi Code 1.43 stalls on the standard generated contract shape even with
+    // a 32-byte selected source packet; compact keeps the shared semantics.
+    contractStyle: "compact",
     extraInstructions: [
       modeLine,
       "Your final answer must be self-contained and must not refer to prior, previous, above, or already-provided answers.",
@@ -297,7 +314,9 @@ function reviewAuditManifest(invocation, prompt, containmentPath, execution) {
   const { status: executionStatus, error_code: errorCode } = classifyExecution(auditExecution);
   return buildReviewAuditManifest({
     prompt,
-    sourceFiles: auditSourceFilesForPrompt(prompt, containmentPath),
+    sourceFiles: invocation.resume_without_source_resend === true
+      ? []
+      : auditSourceFilesForPrompt(prompt, containmentPath),
     git: {
       remote: meta.repository,
       branch: meta.headRef,
@@ -329,17 +348,47 @@ function reviewAuditManifest(invocation, prompt, containmentPath, execution) {
     },
     route: {
       selectedRoute: invocation.selected_route ?? null,
+      routeStep: invocation.route_step ?? null,
+      routeSteps: invocation.route_steps ?? null,
       fallbackReason: invocation.fallback_reason ?? null,
       approvalScope: null,
       authPath: invocation.selected_auth_path ?? null,
       billingPath: invocation.billing_path ?? null,
+      sourceBearing: modeSendsSelectedSource(invocation.mode),
       sourceSendApprovalRequired: invocation.source_send_approval_required ?? null,
       sourceSendApprovalState: invocation.source_send_approval_state ?? null,
+      providerCapabilities: ROUTE_CAPABILITIES,
+      previousAttempt: invocation.previous_source_attempt ?? null,
+      resendConfirmationApproved: invocation.resend_confirmation_approved === true,
+      resumeWithoutSourceResend: invocation.resume_without_source_resend === true,
     },
     result: execution?.parsed?.result ?? "",
     status: execution?.preflight === true ? "preflight_failed" : executionStatus,
     errorCode,
   });
+}
+
+function sourcePacketPolicyPreflight(invocation, prompt, containmentPath) {
+  const preflightExecution = {
+    preflight: true,
+    exitCode: null,
+    parsed: null,
+    pidInfo: null,
+    kimiSessionId: null,
+    stdout: "",
+    stderr: "",
+    errorMessage: "source_packet_too_large: source packet policy preflight pending",
+  };
+  const manifest = reviewAuditManifest(invocation, prompt, containmentPath, preflightExecution);
+  const policy = manifest?.source_packet_policy ?? null;
+  if (!policy || policy.source_send_allowed !== false) return null;
+  const errorCode = policy.source_packet_policy_error_code ?? "source_packet_policy_blocked";
+  const execution = {
+    ...preflightExecution,
+    errorMessage: `${errorCode}: ${policy.suggested_action ?? "source packet policy blocked selected source send"}`,
+  };
+  execution.reviewAuditManifest = reviewAuditManifest(invocation, prompt, containmentPath, execution);
+  return execution;
 }
 
 function subscriptionRouteFacts({ sourceBearing = false } = {}) {
@@ -350,6 +399,8 @@ function subscriptionRouteFacts({ sourceBearing = false } = {}) {
   });
   return {
     selected_route: route.selected_route,
+    route_step: route.route_step,
+    route_steps: route.route_steps,
     fallback_reason: route.fallback_reason,
     selected_auth_path: route.auth_path,
     billing_path: route.billing_path,
@@ -385,6 +436,9 @@ function modeSendsSelectedSource(mode) {
 
 function scopedTargetPromptForOrExit(invocation, profile, userPrompt, lifecycleEvents) {
   if (!invocation.review_prompt_contract_version || invocation.mode_profile_name === "rescue") {
+    return targetPromptFor(profile, userPrompt, invocation);
+  }
+  if (invocation.resume_without_source_resend === true) {
     return targetPromptFor(profile, userPrompt, invocation);
   }
   const { job_id: jobId, cwd, workspace_root: workspaceRoot } = invocation;
@@ -476,18 +530,24 @@ function createKimiReadOnlyLaunchFiles(profile) {
   const skillsDir = joinPath(dir, "skills");
   const mcpConfigFile = joinPath(dir, "empty-mcp.json");
   const agentFilePath = joinPath(dir, "agent.yaml");
+  const systemPromptPath = joinPath(dir, "system.md");
   mkdirSync(skillsDir, { recursive: true, mode: 0o700 });
   writeFileSync(mcpConfigFile, "{}\n", "utf8");
+  writeFileSync(systemPromptPath, [
+    "You are a read-only external reviewer.",
+    "Use only the prompt text supplied by the caller.",
+    "Do not use tools, inspect the workspace, edit files, or fetch external content.",
+    "Return the requested review verdict and findings directly.",
+    "",
+  ].join("\n"), "utf8");
   writeFileSync(agentFilePath, [
     "version: 1",
     "agent:",
-    "  extend: default",
     "  name: codex-readonly-reviewer",
-    "  tools:",
-    ...profile.allowed_tools.map((tool) => `    - ${JSON.stringify(tool)}`),
-    "  allowed_tools:",
-    ...profile.allowed_tools.map((tool) => `    - ${JSON.stringify(tool)}`),
-    "  exclude_tools: []",
+    "  system_prompt_path: ./system.md",
+    ...(profile.allowed_tools.length === 0
+      ? ["  tools: []"]
+      : ["  tools:", ...profile.allowed_tools.map((tool) => `    - ${JSON.stringify(tool)}`)]),
     "  subagents: {}",
     "",
   ].join("\n"), "utf8");
@@ -603,6 +663,15 @@ function writeRuntimeOptionsSidecar(workspaceRoot, jobId, options) {
     timeout_ms: options.timeout_ms,
     max_steps_per_turn: options.max_steps_per_turn,
   };
+  if (options.previous_source_attempt && typeof options.previous_source_attempt === "object") {
+    payload.previous_source_attempt = options.previous_source_attempt;
+  }
+  if (typeof options.resend_confirmation_approved === "boolean") {
+    payload.resend_confirmation_approved = options.resend_confirmation_approved;
+  }
+  if (typeof options.resume_without_source_resend === "boolean") {
+    payload.resume_without_source_resend = options.resume_without_source_resend;
+  }
   try {
     writeFileSync(tmpFile, `${JSON.stringify(payload, null, 2)}\n`, { mode: 0o600, encoding: "utf8" });
     try { chmodSync(tmpFile, 0o600); } catch { /* best-effort on non-POSIX */ }
@@ -623,6 +692,15 @@ function readRuntimeOptionsSidecar(workspaceRoot, jobId) {
   const options = {};
   if (Number.isSafeInteger(timeoutMs) && timeoutMs > 0) options.timeout_ms = timeoutMs;
   if (Number.isSafeInteger(maxSteps) && maxSteps > 0) options.max_steps_per_turn = maxSteps;
+  if (parsed.previous_source_attempt && typeof parsed.previous_source_attempt === "object" && !Array.isArray(parsed.previous_source_attempt)) {
+    options.previous_source_attempt = parsed.previous_source_attempt;
+  }
+  if (typeof parsed.resend_confirmation_approved === "boolean") {
+    options.resend_confirmation_approved = parsed.resend_confirmation_approved;
+  }
+  if (typeof parsed.resume_without_source_resend === "boolean") {
+    options.resume_without_source_resend = parsed.resume_without_source_resend;
+  }
   if (consumed.cleanup_warning) {
     options.cleanup_warning = consumed.cleanup_warning;
     options.cleanup_warning_path = consumed.cleanup_warning_path;
@@ -656,6 +734,9 @@ function invocationFromRecord(record, runtimeOptions = {}) {
     run_kind: runKindFromRecord(record),
     max_steps_per_turn: resolvedRuntimeOptions.max_steps_per_turn,
     ...subscriptionRouteFacts({ sourceBearing: modeSendsSelectedSource(record.mode) }),
+    previous_source_attempt: runtimeOptions.previous_source_attempt ?? null,
+    resend_confirmation_approved: runtimeOptions.resend_confirmation_approved === true,
+    resume_without_source_resend: runtimeOptions.resume_without_source_resend === true,
     runtime_options_cleanup_warning: runtimeOptions.cleanup_warning ?? null,
     runtime_options_cleanup_path: runtimeOptions.cleanup_warning_path ?? null,
     started_at: record.started_at,
@@ -913,6 +994,23 @@ async function cmdRun(rest) {
   const targetPrompt = scopedTargetPromptForOrExit(invocation, profile, prompt, lifecycleEvents);
 
   if (options.background) {
+    const sourcePacketPreflight = sourcePacketPolicyPreflight(invocation, targetPrompt, null);
+    if (sourcePacketPreflight) {
+      const errorRecord = buildJobRecord(invocation, {
+        exitCode: sourcePacketPreflight.exitCode,
+        endedAt: sourcePacketPreflight.endedAt,
+        parsed: sourcePacketPreflight.parsed,
+        pidInfo: null,
+        kimiSessionId: null,
+        errorMessage: sourcePacketPreflight.errorMessage,
+        reviewAuditManifest: sourcePacketPreflight.reviewAuditManifest,
+        ...redactionFieldsForPrompt(targetPrompt),
+      }, []);
+      writeJobFile(workspaceRoot, jobId, errorRecord);
+      upsertJob(workspaceRoot, errorRecord);
+      printLifecycleJson(errorRecord, lifecycleEvents);
+      process.exit(2);
+    }
     try {
       writePromptSidecar(resolveJobsDir(workspaceRoot), jobId, targetPrompt);
     } catch (error) {
@@ -1007,6 +1105,31 @@ async function executeRun(invocation, prompt, { foreground, lifecycleEvents = nu
     upsertJob(workspaceRoot, cancelledRecord);
     if (foreground) printLifecycleJson(cancelledRecord, lifecycleEvents);
     process.exit(0);
+  }
+
+  const sourcePacketPreflight = sourcePacketPolicyPreflight(invocation, prompt, containment.path);
+  if (sourcePacketPreflight) {
+    if (neutralCwd) {
+      try { rmSync(neutralCwd, { recursive: true, force: true }); } catch { /* best-effort */ }
+    }
+    if (launchFiles) launchFiles.cleanup();
+    if (disposeEffective) {
+      try { containment.cleanup(); } catch { /* best-effort */ }
+    }
+    const errorRecord = buildJobRecord(invocation, {
+      exitCode: sourcePacketPreflight.exitCode,
+      endedAt: sourcePacketPreflight.endedAt,
+      parsed: sourcePacketPreflight.parsed,
+      pidInfo: null,
+      kimiSessionId: null,
+      errorMessage: sourcePacketPreflight.errorMessage,
+      reviewAuditManifest: sourcePacketPreflight.reviewAuditManifest,
+      ...redactionFieldsForPrompt(prompt),
+    }, mutations);
+    writeJobFile(workspaceRoot, jobId, errorRecord);
+    upsertJob(workspaceRoot, errorRecord);
+    if (foreground) printLifecycleJson(errorRecord, lifecycleEvents);
+    process.exit(2);
   }
 
   const preflightExecution = await kimiReadinessPreflight(invocation, profile);
@@ -1335,7 +1458,7 @@ async function cmdRunWorker(rest) {
 async function cmdContinue(rest) {
   const { options, positionals } = parseArgs(rest, {
     valueOptions: ["job", "cwd", "model", "binary", "timeout-ms", "max-steps-per-turn", "lifecycle-events", "auth-mode"],
-    booleanOptions: ["background", "foreground"],
+    booleanOptions: ["background", "foreground", "resend-confirmation-approved"],
   });
   rejectUnsupportedAuthMode(options);
   if (!options.job) fail("bad_args", "--job <id> is required");
@@ -1401,6 +1524,12 @@ async function cmdContinue(rest) {
     options["max-steps-per-turn"],
     priorRuntimeOptions.max_steps_per_turn ?? priorProfile.max_steps_per_turn ?? 8,
   );
+  const previousSourceAttempt = sourcePacketPreviousAttemptForContinuation(prior, priorRuntimeOptions);
+  const resumeWithoutSourceResend =
+    (
+      sourcePacketCanResumeWithoutResendFromJobRecord(prior) ||
+      sourcePacketCanResumeWithoutResendFromPreviousAttempt(previousSourceAttempt)
+    ) && Boolean(priorKimiSessionId);
   const invocation = Object.freeze({
     job_id: newJobId_,
     target: "kimi",
@@ -1425,16 +1554,42 @@ async function cmdContinue(rest) {
     timeout_ms: timeoutMs,
     max_steps_per_turn: maxStepsPerTurn,
     ...subscriptionRouteFacts({ sourceBearing: modeSendsSelectedSource(priorModeName) }),
+    previous_source_attempt: previousSourceAttempt,
+    resend_confirmation_approved: options["resend-confirmation-approved"] === true,
+    resume_without_source_resend: resumeWithoutSourceResend,
     started_at: new Date().toISOString(),
   });
 
   const queuedRecord = buildJobRecord(invocation, null, []);
-  writeRuntimeOptionsSidecar(workspaceRoot, newJobId_, { timeout_ms: timeoutMs, max_steps_per_turn: maxStepsPerTurn });
+  writeRuntimeOptionsSidecar(workspaceRoot, newJobId_, {
+    timeout_ms: timeoutMs,
+    max_steps_per_turn: maxStepsPerTurn,
+    previous_source_attempt: previousSourceAttempt,
+    resend_confirmation_approved: options["resend-confirmation-approved"] === true,
+    resume_without_source_resend: resumeWithoutSourceResend,
+  });
   writeJobFile(workspaceRoot, newJobId_, queuedRecord);
   upsertJob(workspaceRoot, queuedRecord);
   const targetPrompt = scopedTargetPromptForOrExit(invocation, priorProfile, prompt, lifecycleEvents);
 
   if (options.background) {
+    const sourcePacketPreflight = sourcePacketPolicyPreflight(invocation, targetPrompt, null);
+    if (sourcePacketPreflight) {
+      const errorRecord = buildJobRecord(invocation, {
+        exitCode: sourcePacketPreflight.exitCode,
+        endedAt: sourcePacketPreflight.endedAt,
+        parsed: sourcePacketPreflight.parsed,
+        pidInfo: null,
+        kimiSessionId: null,
+        errorMessage: sourcePacketPreflight.errorMessage,
+        reviewAuditManifest: sourcePacketPreflight.reviewAuditManifest,
+        ...redactionFieldsForPrompt(targetPrompt),
+      }, []);
+      writeJobFile(workspaceRoot, newJobId_, errorRecord);
+      upsertJob(workspaceRoot, errorRecord);
+      printLifecycleJson(errorRecord, lifecycleEvents);
+      process.exit(2);
+    }
     try {
       writePromptSidecar(resolveJobsDir(workspaceRoot), newJobId_, targetPrompt);
     } catch (error) {

@@ -1202,7 +1202,7 @@ for (const value of ["abc", "Infinity", "1.5", "0", "-1", "9007199254740992"]) {
 
     assert.equal(result.status, 1);
     const record = parseJson(result.stdout);
-    assert.equal(record.status, "failed");
+    assert.equal(record.status, "failed", result.stdout || result.stderr);
     assert.equal(record.provider, "glm");
     assert.equal(record.error_code, "bad_args");
     assert.match(record.error_message, /API_REVIEWERS_MAX_TOKENS must be a positive integer number of tokens/);
@@ -3787,6 +3787,46 @@ test("custom-review rejects oversized scope files before provider delivery", asy
   assert.equal(record.external_review.source_content_transmission, "not_sent");
 });
 
+test("custom-review rejects over-budget source packets before direct API approval or delivery", async () => {
+  const cwd = makeWorkspace();
+  const dataDir = mkdtempSync(path.join(tmpdir(), "api-reviewers-data-"));
+  const files = [];
+  for (let index = 0; index < 3; index += 1) {
+    const file = `packet-${index}.txt`;
+    files.push(file);
+    writeFileSync(path.join(cwd, file), "x".repeat(180 * 1024));
+  }
+
+  const result = await run([
+    "run",
+    "--provider", "deepseek",
+    "--mode", "custom-review",
+    "--scope", "custom",
+    "--scope-paths", files.join(","),
+    "--foreground",
+    "--prompt", "Check these files.",
+  ], {
+    cwd,
+    env: {
+      API_REVIEWERS_PLUGIN_DATA: dataDir,
+      API_REVIEWERS_MAX_PROMPT_CHARS: "2000000",
+      API_REVIEWERS_MOCK_RESPONSE: mockResponse("deepseek-v4-pro"),
+      DEEPSEEK_API_KEY: "secret-test-value",
+    },
+  });
+
+  assert.equal(result.status, 1);
+  const record = parseJson(result.stdout);
+  assert.equal(record.status, "failed");
+  assert.equal(record.error_code, "source_packet_too_large");
+  assert.match(record.error_message, /source_packet_too_large:/);
+  assert.equal(record.error_cause, "pre_send_source_packet_budget");
+  assert.equal(record.external_review.source_content_transmission, "not_sent");
+  assert.equal(record.review_metadata.audit_manifest.source_packet_policy.source_send_allowed, false);
+  assert.equal(record.review_metadata.audit_manifest.source_packet_policy.source_packet_action, "narrow_source_packet");
+  assert.doesNotMatch(result.stdout, /external_review_launched|secret-test-value/);
+});
+
 test("branch-diff default reviews committed changes against main with scrubbed git env", async () => {
   const cwd = makeBranchDiffWorkspace();
   const dataDir = mkdtempSync(path.join(tmpdir(), "api-reviewers-data-"));
@@ -3802,7 +3842,8 @@ test("branch-diff default reviews committed changes against main with scrubbed g
     env: {
       API_REVIEWERS_PLUGIN_DATA: dataDir,
       API_REVIEWERS_MOCK_RESPONSE: mockResponse("deepseek-v4-pro"),
-      API_REVIEWERS_MOCK_ASSERT_PROMPT_INCLUDES: "committed feature change",
+      API_REVIEWERS_MOCK_ASSERT_PROMPT_INCLUDES: "diff --git a/feature.txt b/feature.txt",
+      API_REVIEWERS_MOCK_ASSERT_PROMPT_EXCLUDES: "DIRTY_SELECTED_SECRET",
       DEEPSEEK_API_KEY: "secret-test-value",
       GIT_DIR: path.join(cwd, "not-a-repo"),
       GIT_CONFIG_GLOBAL: path.join(cwd, "malicious-gitconfig"),
@@ -4764,6 +4805,8 @@ test("direct API reviewers approval-request matches run prompt hash and request 
       "rendered_prompt_hash",
       "request",
       "selected_route",
+      "route_step",
+      "route_steps",
       "fallback_reason",
       "approval_scope",
       "auth_path",
@@ -4904,7 +4947,7 @@ test("direct API reviewers run requires approval token before provider execution
 
     assert.equal(result.status, 1);
     const record = parseJson(result.stdout);
-    assert.equal(record.status, "failed");
+    assert.equal(record.status, "failed", result.stdout || result.stderr);
     assert.equal(record.error_code, "approval_required");
     assert.match(record.error_message, /approval-request/);
     assertDirectApiNotSent(record, "DeepSeek");
@@ -5375,9 +5418,9 @@ test("direct API reviewers reject invalid route fallback reason as bad args befo
 
     assert.equal(result.status, 1);
     const record = parseJson(result.stdout);
-    assert.equal(record.status, "failed");
+    assert.equal(record.status, "failed", result.stdout || result.stderr);
     assert.equal(record.error_code, "bad_args");
-    assert.match(record.error_message, /unsupported API fallback reason/);
+    assert.match(record.error_message, /unsupported route fallback reason/);
     assertDirectApiNotSent(record, "Custom Reviewer");
     assert.doesNotMatch(result.stdout, /external_review_launched|hello from selected scope|secret-test-value/);
     assert.doesNotMatch(result.stderr, /Error:|at /);

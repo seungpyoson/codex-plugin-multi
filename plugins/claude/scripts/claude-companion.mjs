@@ -49,13 +49,19 @@ import { isCodexSandbox } from "./lib/codex-env.mjs";
 import { sanitizeTargetEnv } from "./lib/provider-env.mjs";
 import { runCommand } from "./lib/process.mjs";
 import {
+  apiKeyFallbackSelection,
   authDiagnosticFields,
   apiKeyMissingFields as buildApiKeyMissingFields,
   apiKeyMissingMessage as buildApiKeyMissingMessage,
   defaultAuthMode,
   resolveAuthSelection as resolveAuthSelectionForProvider,
 } from "./lib/auth-selection.mjs";
-import { normalizeApprovalScope } from "./lib/provider-route-policy.mjs";
+import {
+  normalizeApprovalScope,
+  sourcePacketCanResumeWithoutResendFromPreviousAttempt,
+  sourcePacketCanResumeWithoutResendFromJobRecord,
+  sourcePacketPreviousAttemptForContinuation,
+} from "./lib/provider-route-policy.mjs";
 import { CLAUDE_PROVIDER_API_KEY_ENV } from "./lib/claude-provider-keys.mjs";
 import {
   PING_PROMPT,
@@ -402,7 +408,9 @@ function reviewAuditManifest(invocation, prompt, containmentPath, execution) {
   const { error_code: errorCode } = classifyExecution(auditExecution, invocation);
   return buildReviewAuditManifest({
     prompt,
-    sourceFiles: auditSourceFilesForPrompt(prompt, containmentPath),
+    sourceFiles: invocation.resume_without_source_resend === true
+      ? []
+      : auditSourceFilesForPrompt(prompt, containmentPath),
     git: {
       remote: meta.repository,
       branch: meta.headRef,
@@ -434,12 +442,19 @@ function reviewAuditManifest(invocation, prompt, containmentPath, execution) {
     },
     route: {
       selectedRoute: invocation.selected_route ?? null,
+      routeStep: invocation.route_step ?? null,
+      routeSteps: invocation.route_steps ?? null,
       fallbackReason: invocation.fallback_reason ?? null,
       approvalScope: invocation.approval_scope ?? null,
       authPath: invocation.selected_auth_path ?? null,
       billingPath: invocation.billing_path ?? null,
+      sourceBearing: modeSendsSelectedSource(invocation.mode),
       sourceSendApprovalRequired: invocation.source_send_approval_required ?? null,
       sourceSendApprovalState: invocation.source_send_approval_state ?? null,
+      providerCapabilities: providerCapabilitiesForReviewAudit(),
+      previousAttempt: invocation.previous_source_attempt ?? null,
+      resendConfirmationApproved: invocation.resend_confirmation_approved === true,
+      resumeWithoutSourceResend: invocation.resume_without_source_resend === true,
     },
     result: execution?.parsed?.result ?? "",
     status: reviewAuditStatus(auditExecution, invocation),
@@ -489,12 +504,15 @@ function approvalAuditManifest(invocation, prompt, containmentPath) {
     },
     route: {
       selectedRoute: invocation.selected_route ?? null,
+      routeStep: invocation.route_step ?? null,
+      routeSteps: invocation.route_steps ?? null,
       fallbackReason: invocation.fallback_reason ?? null,
       approvalScope: invocation.approval_scope ?? "session",
       authPath: invocation.selected_auth_path ?? null,
       billingPath: invocation.billing_path ?? null,
       sourceSendApprovalRequired: invocation.source_send_approval_required ?? null,
       sourceSendApprovalState: invocation.source_send_approval_state ?? null,
+      providerCapabilities: providerCapabilitiesForReviewAudit(),
     },
     result: "",
     status: "approval_request",
@@ -524,6 +542,9 @@ function approvalTokenFor(invocation, auditManifest) {
 
 function scopedTargetPromptForOrExit(invocation, profile, userPrompt, lifecycleEvents) {
   if (!invocation.review_prompt_contract_version || invocation.mode_profile_name === "rescue") {
+    return targetPromptFor(invocation, userPrompt);
+  }
+  if (invocation.resume_without_source_resend === true) {
     return targetPromptFor(invocation, userPrompt);
   }
   const executionScope = setupExecutionScopeOrExit(invocation, profile, {
@@ -655,6 +676,15 @@ function writeRuntimeOptionsSidecar(workspaceRoot, jobId, options) {
     if (options.approval_scope === "session" || options.approval_scope === "once") {
       payload.approval_scope = options.approval_scope;
     }
+    if (options.previous_source_attempt && typeof options.previous_source_attempt === "object") {
+      payload.previous_source_attempt = options.previous_source_attempt;
+    }
+    if (typeof options.resend_confirmation_approved === "boolean") {
+      payload.resend_confirmation_approved = options.resend_confirmation_approved;
+    }
+    if (typeof options.resume_without_source_resend === "boolean") {
+      payload.resume_without_source_resend = options.resume_without_source_resend;
+    }
     writeFileSync(tmpFile, `${JSON.stringify(payload, null, 2)}\n`, { mode: 0o600, encoding: "utf8" });
     try { chmodSync(tmpFile, 0o600); } catch { /* best-effort on non-POSIX */ }
     renameSync(tmpFile, file);
@@ -687,6 +717,15 @@ function readRuntimeOptionsSidecar(workspaceRoot, jobId) {
   }
   if (parsed.approval_scope === "session" || parsed.approval_scope === "once") {
     out.approval_scope = parsed.approval_scope;
+  }
+  if (parsed.previous_source_attempt && typeof parsed.previous_source_attempt === "object" && !Array.isArray(parsed.previous_source_attempt)) {
+    out.previous_source_attempt = parsed.previous_source_attempt;
+  }
+  if (typeof parsed.resend_confirmation_approved === "boolean") {
+    out.resend_confirmation_approved = parsed.resend_confirmation_approved;
+  }
+  if (typeof parsed.resume_without_source_resend === "boolean") {
+    out.resume_without_source_resend = parsed.resume_without_source_resend;
   }
   if (consumed.cleanup_warning) {
     out.cleanup_warning = consumed.cleanup_warning;
@@ -758,6 +797,9 @@ function invocationFromRecord(record, fallbackAuthMode = defaultAuthMode(), runt
     started_at: record.started_at,
     approval_scope: runtimeOptions.approval_scope ?? record.review_metadata?.audit_manifest?.approval_scope ?? null,
     approval_token: runtimeOptions.approval_token ?? null,
+    previous_source_attempt: runtimeOptions.previous_source_attempt ?? null,
+    resend_confirmation_approved: runtimeOptions.resend_confirmation_approved === true,
+    resume_without_source_resend: runtimeOptions.resume_without_source_resend === true,
   });
 }
 
@@ -1193,6 +1235,30 @@ async function cmdRun(rest) {
       printLifecycleJson(errorRecord, lifecycleEvents);
       process.exit(2);
     }
+    const sourcePacketPreflight = sourcePacketPolicyPreflight(invocation, targetPrompt, null);
+    if (sourcePacketPreflight) {
+      const sourceFilesForRedaction = selectedSourceFilesForRedaction(targetPrompt);
+      const redactionFields = sourceFilesForRedaction.length > 0
+        ? {
+          sourceRedactionRequired: sourceFilesHaveBodies(sourceFilesForRedaction),
+          sourceFilesForRedaction,
+        }
+        : {};
+      const errorRecord = buildJobRecord(invocation, {
+        exitCode: sourcePacketPreflight.exitCode,
+        endedAt: sourcePacketPreflight.endedAt,
+        parsed: sourcePacketPreflight.parsed,
+        pidInfo: null,
+        claudeSessionId: null,
+        errorMessage: sourcePacketPreflight.errorMessage,
+        reviewAuditManifest: sourcePacketPreflight.reviewAuditManifest,
+        ...redactionFields,
+      }, []);
+      writeJobFile(workspaceRoot, jobId, errorRecord);
+      upsertJob(workspaceRoot, errorRecord);
+      printLifecycleJson(errorRecord, lifecycleEvents);
+      process.exit(2);
+    }
     // Write prompt to private sidecar (§21.3.1 handoff buffer). Worker reads
     // and deletes — prompt text does NOT live on the JobRecord.
     try {
@@ -1264,6 +1330,25 @@ async function executeRun(invocation, prompt, { foreground, lifecycleEvents = nu
     const { metaError, stateError } = commitJobRecord(workspaceRoot, jobId, finalRecord);
     writeExecutionSidecars(workspaceRoot, jobId, approvalPreflight);
     exitIfFinalizationFailed(invocation, approvalPreflight, finalRecord, mutationContext, executionScope, { metaError, stateError });
+    cleanupExecutionResources(executionScope, mutationContext);
+    if (foreground) printLifecycleJson(finalRecord, lifecycleEvents);
+    process.exit(2);
+  }
+
+  const sourcePacketPreflight = sourcePacketPolicyPreflight(invocation, prompt, executionScope.addDir);
+  if (sourcePacketPreflight) {
+    const finalRecord = buildClaudeFinalRecord(
+      invocation,
+      sourcePacketPreflight,
+      null,
+      mutationContext.mutations,
+      prompt,
+      executionScope.addDir,
+      runtimeDiagnostics,
+    );
+    const { metaError, stateError } = commitJobRecord(workspaceRoot, jobId, finalRecord);
+    writeExecutionSidecars(workspaceRoot, jobId, sourcePacketPreflight);
+    exitIfFinalizationFailed(invocation, sourcePacketPreflight, finalRecord, mutationContext, executionScope, { metaError, stateError });
     cleanupExecutionResources(executionScope, mutationContext);
     if (foreground) printLifecycleJson(finalRecord, lifecycleEvents);
     process.exit(2);
@@ -1345,6 +1430,8 @@ function invocationWithAuthSelection(invocation, authSelection) {
     selected_auth_path: authSelection.selected_auth_path,
     billing_path: authSelection.billing_path ?? null,
     selected_route: authSelection.selected_route ?? null,
+    route_step: authSelection.route_step ?? null,
+    route_steps: authSelection.route_steps ?? null,
     fallback_reason: authSelection.fallback_reason ?? null,
     source_send_approval_required: authSelection.source_send_approval_required ?? null,
     source_send_approval_state: authSelection.source_send_approval_state ?? null,
@@ -1865,7 +1952,7 @@ async function cmdRunWorker(rest) {
 async function cmdContinue(rest) {
   const { options, positionals } = parseArgs(rest, {
     valueOptions: ["job", "cwd", "model", "binary", "auth-mode", "timeout-ms", "lifecycle-events", "approval-token", "approval-scope"],
-    booleanOptions: ["background", "foreground", "allow-bypass-permissions"],
+    booleanOptions: ["background", "foreground", "allow-bypass-permissions", "resend-confirmation-approved"],
   });
   if (!options.job) fail("bad_args", "--job <id> is required");
   if (options.background && options.foreground) {
@@ -1946,6 +2033,12 @@ async function cmdContinue(rest) {
   // executeRun passes to spawnClaude via --resume (see the resumeId
   // derivation in executeRun). Do NOT persist a separate `resume_id` field
   // on the invocation — the chain is the source of truth.
+  const previousSourceAttempt = sourcePacketPreviousAttemptForContinuation(prior, priorRuntimeOptions);
+  const resumeWithoutSourceResend =
+    (
+      sourcePacketCanResumeWithoutResendFromJobRecord(prior) ||
+      sourcePacketCanResumeWithoutResendFromPreviousAttempt(previousSourceAttempt)
+    ) && Boolean(priorClaudeSessionId);
   let invocation = Object.freeze({
     job_id: newJobId_,
     target: "claude",
@@ -1979,6 +2072,9 @@ async function cmdContinue(rest) {
       null,
     approval_scope: approvalScope,
     approval_token: options["approval-token"] ?? null,
+    previous_source_attempt: previousSourceAttempt,
+    resend_confirmation_approved: options["resend-confirmation-approved"] === true,
+    resume_without_source_resend: resumeWithoutSourceResend,
     started_at: new Date().toISOString(),
   });
 
@@ -2017,6 +2113,30 @@ async function cmdContinue(rest) {
       printLifecycleJson(errorRecord, lifecycleEvents);
       process.exit(2);
     }
+    const sourcePacketPreflight = sourcePacketPolicyPreflight(invocation, targetPrompt, null);
+    if (sourcePacketPreflight) {
+      const sourceFilesForRedaction = selectedSourceFilesForRedaction(targetPrompt);
+      const redactionFields = sourceFilesForRedaction.length > 0
+        ? {
+          sourceRedactionRequired: sourceFilesHaveBodies(sourceFilesForRedaction),
+          sourceFilesForRedaction,
+        }
+        : {};
+      const errorRecord = buildJobRecord(invocation, {
+        exitCode: sourcePacketPreflight.exitCode,
+        endedAt: sourcePacketPreflight.endedAt,
+        parsed: sourcePacketPreflight.parsed,
+        pidInfo: null,
+        claudeSessionId: null,
+        errorMessage: sourcePacketPreflight.errorMessage,
+        reviewAuditManifest: sourcePacketPreflight.reviewAuditManifest,
+        ...redactionFields,
+      }, []);
+      writeJobFile(workspaceRoot, newJobId_, errorRecord);
+      upsertJob(workspaceRoot, errorRecord);
+      printLifecycleJson(errorRecord, lifecycleEvents);
+      process.exit(2);
+    }
     try {
       writePromptSidecar(resolveJobsDir(workspaceRoot), newJobId_, targetPrompt);
       writeRuntimeOptionsSidecar(workspaceRoot, newJobId_, {
@@ -2026,6 +2146,9 @@ async function cmdContinue(rest) {
         claude_project_cwd: invocation.claude_project_cwd,
         approval_scope: invocation.approval_scope,
         approval_token: invocation.approval_token,
+        previous_source_attempt: previousSourceAttempt,
+        resend_confirmation_approved: options["resend-confirmation-approved"] === true,
+        resume_without_source_resend: resumeWithoutSourceResend,
       });
     } catch (error) {
       failBackgroundPromptSidecarWrite(workspaceRoot, invocation, error);
@@ -2072,6 +2195,17 @@ const PING_AUTH_RE = /\b(auth(?:enticat\w*)?|login|credential\w*|oauth2?|unauthe
 // reported as ignored credentials under subscription-first policy.
 const PING_PROVIDER_API_KEY_ENV = CLAUDE_PROVIDER_API_KEY_ENV;
 
+function providerCapabilitiesForReviewAudit() {
+  return Object.freeze({
+    subscription: Object.freeze({ kind: "oauth", auth_path: "subscription_oauth" }),
+    api: Object.freeze({
+      kind: "direct_api",
+      auth_path: "api_key_env",
+      credential_env_names: PING_PROVIDER_API_KEY_ENV,
+    }),
+  });
+}
+
 function modeSendsSelectedSource(mode) {
   return mode === "review" || mode === "adversarial-review" || mode === "custom-review";
 }
@@ -2107,6 +2241,29 @@ function sourceSendApprovalPreflight(authSelection, invocation, prompt, containm
         "approval_required: source-bearing direct API route requires explicit approval before selected source can be sent.",
     },
   };
+}
+
+function sourcePacketPolicyPreflight(invocation, prompt, containmentPath) {
+  const preflightExecution = {
+    preflight: true,
+    exitCode: null,
+    parsed: null,
+    pidInfo: null,
+    claudeSessionId: null,
+    stdout: "",
+    stderr: "",
+    errorMessage: "source_packet_too_large: source packet policy preflight pending",
+  };
+  const manifest = reviewAuditManifest(invocation, prompt, containmentPath, preflightExecution);
+  const policy = manifest?.source_packet_policy ?? null;
+  if (!policy || policy.source_send_allowed !== false) return null;
+  const errorCode = policy.source_packet_policy_error_code ?? "source_packet_policy_blocked";
+  const execution = {
+    ...preflightExecution,
+    errorMessage: `${errorCode}: ${policy.suggested_action ?? "source packet policy blocked selected source send"}`,
+  };
+  execution.reviewAuditManifest = reviewAuditManifest(invocation, prompt, containmentPath, execution);
+  return execution;
 }
 
 function resolveAuthSelection(requestedMode = defaultAuthMode(), options = {}) {
@@ -2430,6 +2587,27 @@ function printPingExecutionFailure(execution, authSelection, binary) {
   process.exit(2);
 }
 
+function pingApiFallbackReason(execution, authSelection) {
+  const detail = pingFailureDetail(execution);
+  if (isOAuthInferenceRejected(execution, authSelectionClassifierContext(authSelection))) {
+    return "oauth_inference_rejected";
+  }
+  return PING_AUTH_RE.test(detail) ? "not_authed" : null;
+}
+
+async function runClaudePingAttempt({ profile, model, binary, timeoutMs, authSelection }) {
+  return spawnClaude(profile, {
+    model,
+    promptText: PING_PROMPT,
+    sessionId: newJobId(),
+    cwd: tmpdir(),
+    binary,
+    timeoutMs,
+    sessionPersistence: false,
+    authSelection,
+  });
+}
+
 // ——— subcommand: ping (OAuth health probe per spec §7.5) ———
 async function cmdPing(rest, { readinessProfileName = "ping" } = {}) {
   const { options } = parseArgs(rest, {
@@ -2446,20 +2624,27 @@ async function cmdPing(rest, { readinessProfileName = "ping" } = {}) {
     printJson({ status: "not_authed", ...apiKeyMissingFields(authSelection, pingNotAuthedFields()) });
     process.exit(2);
   }
-  // Ping is ephemeral (no durable record), so reuse newJobId() purely for its
-  // UUIDv4 guarantee — Claude rejects a non-v4 --session-id. Nothing persists.
+  // Ping is ephemeral (no durable record), so each attempt uses newJobId()
+  // purely for its UUIDv4 guarantee. Nothing persists.
   let execution;
   try {
-    execution = await spawnClaude(profile, {
+    const pingInputs = {
+      profile,
       model,
-      promptText: PING_PROMPT,
-      sessionId: newJobId(),
-      cwd: tmpdir(),
       binary,
       timeoutMs,
-      sessionPersistence: false,
-      authSelection,
-    });
+    };
+    execution = await runClaudePingAttempt({ ...pingInputs, authSelection });
+    if (execution.exitCode !== 0) {
+      const fallbackReason = pingApiFallbackReason(execution, authSelection);
+      const fallbackSelection = fallbackReason
+        ? apiKeyFallbackSelection(authSelection, fallbackReason, { sourceBearing: false })
+        : null;
+      if (fallbackSelection) {
+        authSelection = fallbackSelection;
+        execution = await runClaudePingAttempt({ ...pingInputs, authSelection });
+      }
+    }
   } catch (e) {
     printPingSpawnError(e, authSelection);
   }

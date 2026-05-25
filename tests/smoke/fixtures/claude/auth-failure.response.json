@@ -8,6 +8,33 @@
   "auth_path": "api_key_env_missing",
   "billing_path": null,
   "selected_route": "direct_api",
+  "route_step": "direct_api",
+  "route_steps": [
+    {
+      "route": "subscription",
+      "supported": true,
+      "attempted": true,
+      "selected": false,
+      "skipped_reason": "not_requested",
+      "fallback_reason": "explicit_api"
+    },
+    {
+      "route": "direct_api",
+      "supported": true,
+      "attempted": true,
+      "selected": true,
+      "skipped_reason": null,
+      "fallback_reason": "explicit_api"
+    },
+    {
+      "route": "openrouter",
+      "supported": false,
+      "attempted": true,
+      "selected": false,
+      "skipped_reason": "unsupported",
+      "fallback_reason": null
+    }
+  ],
   "fallback_reason": "explicit_api",
   "source_send_approval_required": false,
   "source_send_approval_state": "not_required",

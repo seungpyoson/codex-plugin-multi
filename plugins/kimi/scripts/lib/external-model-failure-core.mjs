@@ -4,6 +4,8 @@ import { reviewQualityFailureState } from "./external-model-review-quality.mjs";
 const CANCEL_SIGNALS = new Set(["SIGTERM", "SIGKILL", "SIGINT", "SIGHUP"]);
 const FINALIZATION_FAILED_PREFIX = "finalization_failed:";
 const APPROVAL_REQUIRED_PREFIX = "approval_required:";
+const SOURCE_PACKET_TOO_LARGE_PREFIX = "source_packet_too_large:";
+const RESEND_CONFIRMATION_REQUIRED_PREFIX = "resend_confirmation_required:";
 const GIT_BINARY_POLICY_PREFIX = "CODEX_PLUGIN_MULTI_GIT_BINARY ";
 const NOT_AUTHED_PREFIX = "not_authed:";
 const SANDBOX_BLOCKED_PREFIX = "sandbox_blocked:";
@@ -108,6 +110,20 @@ export function classifyCompanionErrorMessage(message, options = {}) {
       status: "failed",
       error_code: "approval_required",
       error_message: text.slice(APPROVAL_REQUIRED_PREFIX.length).trim(),
+    };
+  }
+  if (text.startsWith(SOURCE_PACKET_TOO_LARGE_PREFIX)) {
+    return {
+      status: "failed",
+      error_code: "source_packet_too_large",
+      error_message: text.slice(SOURCE_PACKET_TOO_LARGE_PREFIX.length).trim(),
+    };
+  }
+  if (text.startsWith(RESEND_CONFIRMATION_REQUIRED_PREFIX)) {
+    return {
+      status: "failed",
+      error_code: "resend_confirmation_required",
+      error_message: text.slice(RESEND_CONFIRMATION_REQUIRED_PREFIX.length).trim(),
     };
   }
   if (text.startsWith(GIT_BINARY_POLICY_PREFIX)) {
@@ -217,9 +233,19 @@ export function buildExternalModelFailureDiagnostic(errorCode, targetName) {
   return {
     error_summary: failureClass.error_summary.replace("The external model", targetName),
     error_cause: failureClass.error_cause,
-    suggested_action: failureClass.suggested_action,
+    suggested_action: suggestedActionForFailure(failureClass, targetName),
     disclosure_note: null,
   };
+}
+
+function suggestedActionForFailure(failureClass, targetName) {
+  if (
+    failureClass.error_code === "oauth_inference_rejected" &&
+    /\bClaude Code\b/i.test(String(targetName ?? ""))
+  ) {
+    return "Treat this review slot as failed before usable review output. Run `claude auth login` in a normal terminal, rerun setup, then verify OAuth-only `claude -p` inference works before retrying.";
+  }
+  return failureClass.suggested_action;
 }
 
 function hasSpawnedProcessEvidence(execution) {

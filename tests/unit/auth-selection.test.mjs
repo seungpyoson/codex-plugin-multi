@@ -14,6 +14,62 @@ const AUTH_MODULES = [
   },
 ];
 
+const SUBSCRIPTION_ROUTE_STEPS = [
+  {
+    route: "subscription",
+    supported: true,
+    attempted: true,
+    selected: true,
+    skipped_reason: null,
+    fallback_reason: null,
+  },
+  {
+    route: "direct_api",
+    supported: true,
+    attempted: true,
+    selected: false,
+    skipped_reason: "not_needed",
+    fallback_reason: null,
+  },
+  {
+    route: "openrouter",
+    supported: false,
+    attempted: true,
+    selected: false,
+    skipped_reason: "unsupported",
+    fallback_reason: null,
+  },
+];
+
+function directApiRouteSteps(fallbackReason) {
+  return [
+    {
+      route: "subscription",
+      supported: true,
+      attempted: true,
+      selected: false,
+      skipped_reason: "not_requested",
+      fallback_reason: fallbackReason,
+    },
+    {
+      route: "direct_api",
+      supported: true,
+      attempted: true,
+      selected: true,
+      skipped_reason: null,
+      fallback_reason: fallbackReason,
+    },
+    {
+      route: "openrouter",
+      supported: false,
+      attempted: true,
+      selected: false,
+      skipped_reason: "unsupported",
+      fallback_reason: null,
+    },
+  ];
+}
+
 for (const { plugin, providerName, keys } of AUTH_MODULES) {
   test(`${plugin} auth-selection resolves modes and diagnostic fields`, async () => {
     const mod = await import(`../../plugins/${plugin}/scripts/lib/auth-selection.mjs`);
@@ -26,6 +82,10 @@ for (const { plugin, providerName, keys } of AUTH_MODULES) {
     assert.deepEqual(
       mod.providerApiKeyEnv(keys, { [keys[0]]: "secret-value", [keys[1]]: "" }),
       [keys[0]],
+    );
+    assert.deepEqual(
+      mod.providerApiKeyEnv([], {}),
+      [],
     );
 
     const subscription = mod.resolveAuthSelection({
@@ -40,6 +100,8 @@ for (const { plugin, providerName, keys } of AUTH_MODULES) {
       auth_path: "subscription_oauth",
       billing_path: null,
       selected_route: "subscription_oauth",
+      route_step: "subscription",
+      route_steps: SUBSCRIPTION_ROUTE_STEPS,
       fallback_reason: null,
       source_send_approval_required: false,
       source_send_approval_state: "not_required",
@@ -53,12 +115,23 @@ for (const { plugin, providerName, keys } of AUTH_MODULES) {
       auth_path: "subscription_oauth",
       billing_path: null,
       selected_route: "subscription_oauth",
+      route_step: "subscription",
+      route_steps: SUBSCRIPTION_ROUTE_STEPS,
       fallback_reason: null,
       source_send_approval_required: false,
       source_send_approval_state: "not_required",
       ignored_env_credentials: [keys[0]],
       auth_policy: "api_key_env_ignored",
     });
+
+    const subscriptionWithNonArrayKeys = mod.resolveAuthSelection({
+      requestedMode: subscriptionMode,
+      providerApiKeyEnvNames: null,
+      fail,
+      env: { [keys[0]]: "secret-value" },
+    });
+    assert.deepEqual(subscriptionWithNonArrayKeys.ignored_env_credentials, []);
+    assert.equal(subscriptionWithNonArrayKeys.auth_policy, "subscription_oauth");
 
     const apiKey = mod.resolveAuthSelection({
       requestedMode: apiKeyMode,
@@ -72,6 +145,8 @@ for (const { plugin, providerName, keys } of AUTH_MODULES) {
       auth_path: "api_key_env",
       billing_path: null,
       selected_route: "direct_api",
+      route_step: "direct_api",
+      route_steps: directApiRouteSteps("explicit_api"),
       fallback_reason: "explicit_api",
       source_send_approval_required: false,
       source_send_approval_state: "not_required",
@@ -85,6 +160,8 @@ for (const { plugin, providerName, keys } of AUTH_MODULES) {
       auth_path: "api_key_env",
       billing_path: null,
       selected_route: "direct_api",
+      route_step: "direct_api",
+      route_steps: directApiRouteSteps("explicit_api"),
       fallback_reason: "explicit_api",
       source_send_approval_required: false,
       source_send_approval_state: "not_required",
@@ -104,6 +181,18 @@ for (const { plugin, providerName, keys } of AUTH_MODULES) {
     assert.equal(sourceBearingApiKey.source_send_approval_required, true);
     assert.equal(sourceBearingApiKey.source_send_approval_state, "required");
 
+    const approvedSourceBearingApiKey = mod.resolveAuthSelection({
+      requestedMode: apiKeyMode,
+      providerApiKeyEnvNames: keys,
+      fail,
+      env: { [keys[1]]: "secret-value" },
+      sourceBearing: true,
+      sourceSendApproved: true,
+    });
+    assert.equal(approvedSourceBearingApiKey.selected_route, "direct_api");
+    assert.equal(approvedSourceBearingApiKey.source_send_approval_required, true);
+    assert.equal(approvedSourceBearingApiKey.source_send_approval_state, "approved");
+
     const apiKeyMissing = mod.resolveAuthSelection({
       requestedMode: apiKeyMode,
       providerApiKeyEnvNames: keys,
@@ -116,6 +205,8 @@ for (const { plugin, providerName, keys } of AUTH_MODULES) {
       auth_path: "api_key_env_missing",
       billing_path: null,
       selected_route: "direct_api",
+      route_step: "direct_api",
+      route_steps: directApiRouteSteps("explicit_api"),
       fallback_reason: "explicit_api",
       source_send_approval_required: false,
       source_send_approval_state: "not_required",
@@ -129,6 +220,8 @@ for (const { plugin, providerName, keys } of AUTH_MODULES) {
       auth_path: "api_key_env_missing",
       billing_path: null,
       selected_route: "direct_api",
+      route_step: "direct_api",
+      route_steps: directApiRouteSteps("explicit_api"),
       fallback_reason: "explicit_api",
       source_send_approval_required: false,
       source_send_approval_state: "not_required",
@@ -152,6 +245,8 @@ for (const { plugin, providerName, keys } of AUTH_MODULES) {
         auth_path: "api_key_env_missing",
         billing_path: null,
         selected_route: "direct_api",
+        route_step: "direct_api",
+        route_steps: directApiRouteSteps("explicit_api"),
         fallback_reason: "explicit_api",
         source_send_approval_required: false,
         source_send_approval_state: "not_required",
@@ -180,6 +275,25 @@ for (const { plugin, providerName, keys } of AUTH_MODULES) {
       () => mod.apiKeyFallbackSelection(subscriptionWithKey, "not_authed"),
       /requires explicit sourceBearing/,
     );
+    assert.deepEqual(mod.authDiagnosticFields({
+      auth_mode: subscriptionMode,
+      selected_auth_path: "subscription_oauth",
+      allowed_env_credentials: [],
+      ignored_env_credentials: [],
+      auth_policy: "subscription_oauth",
+    }), {
+      auth_mode: subscriptionMode,
+      selected_auth_path: "subscription_oauth",
+      auth_path: "subscription_oauth",
+      billing_path: null,
+      selected_route: null,
+      route_step: null,
+      route_steps: null,
+      fallback_reason: null,
+      source_send_approval_required: null,
+      source_send_approval_state: null,
+      auth_policy: "subscription_oauth",
+    });
     const fallback = mod.apiKeyFallbackSelection(subscriptionWithKey, "not_authed", { sourceBearing: false });
     assert.deepEqual(fallback, {
       auth_mode: subscriptionMode,
@@ -187,6 +301,8 @@ for (const { plugin, providerName, keys } of AUTH_MODULES) {
       auth_path: "api_key_env",
       billing_path: null,
       selected_route: "direct_api",
+      route_step: "direct_api",
+      route_steps: directApiRouteSteps("not_authed"),
       fallback_reason: "not_authed",
       source_send_approval_required: false,
       source_send_approval_state: "not_required",
@@ -205,6 +321,8 @@ for (const { plugin, providerName, keys } of AUTH_MODULES) {
       auth_path: "api_key_env",
       billing_path: null,
       selected_route: "direct_api",
+      route_step: "direct_api",
+      route_steps: directApiRouteSteps("not_authed"),
       fallback_reason: "not_authed",
       source_send_approval_required: false,
       source_send_approval_state: "not_required",
@@ -259,6 +377,8 @@ for (const { plugin, providerName, keys } of AUTH_MODULES) {
         auth_path: "subscription_oauth",
         billing_path: null,
         selected_route: "subscription_oauth",
+        route_step: "subscription",
+        route_steps: SUBSCRIPTION_ROUTE_STEPS,
         fallback_reason: null,
         source_send_approval_required: false,
         source_send_approval_state: "not_required",
@@ -280,6 +400,8 @@ for (const { plugin, providerName, keys } of AUTH_MODULES) {
         auth_path: "subscription_oauth",
         billing_path: null,
         selected_route: "subscription_oauth",
+        route_step: "subscription",
+        route_steps: SUBSCRIPTION_ROUTE_STEPS,
         fallback_reason: null,
         source_send_approval_required: false,
         source_send_approval_state: "not_required",

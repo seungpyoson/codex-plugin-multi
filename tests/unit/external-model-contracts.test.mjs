@@ -186,7 +186,9 @@ test("provider-specific external model contracts keep mechanical safety clauses"
   assert.match(docs, /If approval is denied, follow `denial_action` and generate a relay prompt instead/);
   assert.match(docs, /API_REVIEWERS_MAX_PROMPT_CHARS/);
   assert.match(docs, /GROK_WEB_MAX_PROMPT_CHARS/);
-  assert.match(docs, /subscription-backed[\s\S]*tunnel[\s\S]*not silently fall back to paid xAI API billing/i);
+  assert.match(docs, /subscription-backed Grok CLI[\s\S]*not silently fall back to paid xAI API billing/i);
+  assert.match(docs, /--transport auto[\s\S]*CLI-primary fallback mode[\s\S]*pre-source CLI readiness, login, auth-timeout, or model-unavailable failure/i);
+  assert.match(docs, /Default CLI and explicit auto mode must not fall back to paid xAI API billing or direct API credentials/i);
   assert.match(docs, /grok2api/);
   assert.match(docs, /UV_CACHE_DIR/);
   assert.match(docs, /tunnel_start\.error_code/);
@@ -237,6 +239,9 @@ test("provider-specific external model contracts keep mechanical safety clauses"
       1,
       `${target.path} should not duplicate lifecycle rendering prose`,
     );
+    assert.match(rendered, /resend_confirmation_required/);
+    assert.match(rendered, /--resend-confirmation-approved/);
+    assert.match(rendered, /narrow the source packet/);
   }
 
   for (const target of EXTERNAL_MODEL_CONTRACT_DOC_TARGETS.filter((item) =>
@@ -303,8 +308,32 @@ test("route approval contracts expose approval scope semantics and audit fields"
     "review_metadata.audit_manifest.source_send_approval_required",
     "review_metadata.audit_manifest.source_send_approval_state",
     "review_metadata.audit_manifest.approval_scope",
-    "Lifecycle cards should include provider, job, session, run kind, mode, scope, source transmission, selected route, fallback reason, auth path, billing path, source-send approval state, approval scope, status, error code, error message, HTTP status, and suggested action when those fields are present.",
+    "Lifecycle cards should include provider, job, session, run kind, mode, scope, source transmission, source bearing, selected route, fallback reason, auth path, billing path, source-send approval state, approval scope, review quality, status, error code, error message, HTTP status, and suggested action when those fields are present.",
   ]) {
     assert.match(docs, new RegExp(escapeRegExp(required)));
+  }
+});
+
+test("provider-neutral contracts expose the shared audit and status field inventory", () => {
+  const docs = EXTERNAL_MODEL_CONTRACT_DOC_TARGETS
+    .map((target) => renderExternalModelContractDoc(target))
+    .join("\n");
+
+  for (const field of [
+    "selected_route",
+    "fallback_reason",
+    "approval_scope",
+    "auth_path",
+    "billing_path",
+    "source_bearing",
+    "source_send_approval_required",
+    "source_send_approval_state",
+    "source_content_transmission",
+    "review_quality.failed_review_slot",
+    "review_quality.semantic_failure_reasons",
+    "error_code",
+    "suggested_action",
+  ]) {
+    assert.match(docs, new RegExp(escapeRegExp(field)), `missing shared field ${field}`);
   }
 });

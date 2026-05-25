@@ -1,5 +1,7 @@
 import { createHash } from "node:crypto";
 
+import { evaluateSourcePacketPolicy } from "./provider-route-policy.mjs";
+
 export const REVIEW_PROMPT_CHECKLIST = Object.freeze([
   "Verify exact base/head refs and commits before judging the diff.",
   "Review only the declared scope and list any scope gaps as NOT REVIEWED.",
@@ -10,6 +12,7 @@ export const REVIEW_PROMPT_CHECKLIST = Object.freeze([
 ]);
 
 export const REVIEW_PROMPT_CONTRACT_VERSION = 1;
+export const REVIEW_PROMPT_CONTRACT_STYLES = Object.freeze(["standard", "compact"]);
 export const REVIEW_AUDIT_MANIFEST_VERSION = 1;
 const MAX_REVIEW_MARKUP_STRIPS = 10;
 const MAX_CHECKLIST_NUMBER_DIGITS = 10;
@@ -1061,6 +1064,24 @@ export function buildReviewAuditManifest({
   errorCode = null,
 } = {}) {
   const selectedSource = sourceManifest(sourceFiles);
+  const routeStep = route.routeStep ?? null;
+  const routeSteps = Array.isArray(route.routeSteps)
+    ? Object.freeze(route.routeSteps.map((step) => Object.freeze({ ...step })))
+    : null;
+  const sourceBearing = route.sourceBearing ?? (
+    selectedSource.totals.files > 0 || selectedSource.totals.bytes > 0
+  );
+  const sourcePacketPolicy = route.sourcePacketPolicy ?? evaluateSourcePacketPolicy({
+    provider: request.provider ?? null,
+    mode: route.mode ?? null,
+    routeStep,
+    providerCapabilities: route.providerCapabilities ?? {},
+    selectedSource,
+    sourceBearing,
+    previousAttempt: route.previousAttempt ?? null,
+    resendConfirmationApproved: route.resendConfirmationApproved === true,
+    resumeWithoutSourceResend: route.resumeWithoutSourceResend === true,
+  });
   return Object.freeze({
     schema_version: REVIEW_AUDIT_MANIFEST_VERSION,
     rendered_prompt_hash: hashObject(prompt),
@@ -1107,13 +1128,17 @@ export function buildReviewAuditManifest({
       reason: scope.reason ?? null,
     }),
     selected_route: route.selectedRoute ?? null,
+    route_step: routeStep,
+    route_steps: routeSteps,
     fallback_reason: route.fallbackReason ?? null,
     approval_scope: route.approvalScope ?? null,
     auth_path: route.authPath ?? null,
     billing_path: route.billingPath ?? null,
-    source_bearing: route.sourceBearing ?? null,
+    source_bearing: sourceBearing,
+    source_content_transmission: route.sourceContentTransmission ?? sourcePacketPolicy.source_content_transmission ?? null,
     source_send_approval_required: route.sourceSendApprovalRequired ?? null,
     source_send_approval_state: route.sourceSendApprovalState ?? null,
+    source_packet_policy: Object.freeze({ ...sourcePacketPolicy }),
     error_code: errorCode,
     review_quality: qualityFlags({ result, status, errorCode, selectedSource }),
   });
@@ -1126,6 +1151,58 @@ function line(name, value) {
 function listBlock(title, values) {
   const entries = Array.isArray(values) && values.length > 0 ? values : ["unknown"];
   return [title, ...entries.map((value) => `- ${value}`)].join("\n");
+}
+
+function normalizeReviewPromptContractStyle(contractStyle) {
+  const style = contractStyle ?? "standard";
+  if (REVIEW_PROMPT_CONTRACT_STYLES.includes(style)) return style;
+  throw new Error(`unsupported_review_prompt_contract_style:${String(style)}`);
+}
+
+function providerInstructionsBlock(instructions) {
+  return instructions.length
+    ? ["Provider-specific instructions", ...instructions.map((value) => `- ${value}`)].join("\n")
+    : null;
+}
+
+function buildCompactReviewPrompt({
+  provider,
+  mode,
+  repository,
+  baseRef,
+  baseCommit,
+  headRef,
+  headCommit,
+  scope,
+  scopePaths,
+  userPrompt,
+  instructions,
+}) {
+  return [
+    "Delegated compact review contract",
+    line("Provider", provider),
+    line("Mode", mode),
+    line("Repository", repository),
+    line("Base ref", baseRef),
+    line("Base commit", baseCommit),
+    line("Head ref", headRef),
+    line("Head commit", headCommit),
+    line("Scope", scope),
+    listBlock("Scope paths", scopePaths),
+    "",
+    "Output requirements",
+    "- First line exactly one verdict marker: \"Verdict: APPROVE\", \"Verdict: REQUEST_CHANGES\", or \"Verdict: NOT_REVIEWED\".",
+    "- Review only supplied selected source, refs, commits, scope paths, and audit metadata. Missing outside tools are NOT REVIEWED, not code blockers.",
+    "- Name inspected selected file path(s). Bare numbered answers or only 'None' are invalid.",
+    "- Blocking findings first with concrete file/function/control-flow evidence.",
+    "- Non-blocking concerns separately.",
+    "- Checklist: include PASS/FAIL/NOT REVIEWED for refs, scope, correctness, review comments, finding separation, and runtime completeness.",
+    "- If a section has no findings, write a complete sentence naming the relevant selected file or scope.",
+    "- Timed out, truncated, interrupted, blocked, or shallow output is NOT approval.",
+    "- Do not edit files.",
+    providerInstructionsBlock(instructions),
+    userPrompt ? `User prompt:\n${userPrompt}` : null,
+  ].filter((value) => value !== null).join("\n");
 }
 
 function sourceBlockDelimiter(file, index, delimiterPrefix, delimiterCorpus) {
@@ -1217,9 +1294,26 @@ export function buildReviewPrompt({
   scopePaths = [],
   userPrompt = "",
   extraInstructions = [],
+  contractStyle = "standard",
 } = {}) {
   const checklist = REVIEW_PROMPT_CHECKLIST.map((item, index) => `${index + 1}. ${item}`).join("\n");
   const instructions = Array.isArray(extraInstructions) ? extraInstructions.filter(Boolean) : [];
+  const normalizedContractStyle = normalizeReviewPromptContractStyle(contractStyle);
+  if (normalizedContractStyle === "compact") {
+    return buildCompactReviewPrompt({
+      provider,
+      mode,
+      repository,
+      baseRef,
+      baseCommit,
+      headRef,
+      headCommit,
+      scope,
+      scopePaths,
+      userPrompt,
+      instructions,
+    });
+  }
   return [
     "Delegated review quality contract",
     line("Provider", provider),
@@ -1251,7 +1345,7 @@ export function buildReviewPrompt({
     "- Non-blocking concerns separately.",
     "- Timed out, truncated, interrupted, blocked, or shallow output is NOT an approval.",
     "- Do not edit files.",
-    instructions.length ? ["Provider-specific instructions", ...instructions.map((value) => `- ${value}`)].join("\n") : null,
+    providerInstructionsBlock(instructions),
     userPrompt ? `User prompt:\n${userPrompt}` : null,
   ].filter((value) => value !== null).join("\n");
 }

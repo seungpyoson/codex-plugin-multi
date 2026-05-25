@@ -41,13 +41,7 @@ test("MODE_PROFILES: every Kimi profile declares a positive max-step budget", ()
   }
 });
 
-test("MODE_PROFILES: Kimi review profiles use positive native allowed-tools only", () => {
-  const expectedAllowedTools = Object.freeze([
-    "kimi_cli.tools.file:ReadFile",
-    "kimi_cli.tools.file:Glob",
-    "kimi_cli.tools.file:Grep",
-  ]);
-
+test("MODE_PROFILES: Kimi review profiles use prompt-only native tool policy", () => {
   for (const [name, profile] of Object.entries(MODE_PROFILES)) {
     assert.equal(Object.hasOwn(profile, "disallowed_tools"), false, `${name} must not keep dead deny-list authority`);
     assert.equal(Object.hasOwn(profile, "exclude_tools"), false, `${name} must not keep legacy exclude-tools authority`);
@@ -55,8 +49,9 @@ test("MODE_PROFILES: Kimi review profiles use positive native allowed-tools only
 
   for (const name of ["review", "adversarial-review", "custom-review", "ping"]) {
     const profile = MODE_PROFILES[name];
-    assert.deepEqual(profile.allowed_tools, expectedAllowedTools, `${name} must use Kimi-native positive allowlist`);
+    assert.deepEqual(profile.allowed_tools, [], `${name} must not grant tools for prompt-contained source review`);
     assert.ok(Object.isFrozen(profile.allowed_tools), `${name}.allowed_tools not frozen`);
+    assert.equal(profile.add_dir, false, `${name} must not grant workspace scope for prompt-contained source review`);
   }
 
   assert.equal(Object.hasOwn(MODE_PROFILES.rescue, "allowed_tools"), false, "rescue remains write-capable by request");
@@ -90,7 +85,7 @@ test("buildKimiArgs: resume keeps session id with thinking enabled", () => {
   assert.equal(args[args.indexOf("--session") + 1], "00000000-0000-4000-8000-000000000000");
 });
 
-test("buildKimiArgs: Kimi review modes require isolated read-only launch files", () => {
+test("buildKimiArgs: Kimi review modes use isolated prompt-only launch files", () => {
   const args = buildKimiArgs(resolveProfile("custom-review"), readonlyRuntime({
     model: "kimi-code/kimi-for-coding",
     includeDirPath: "/tmp/scoped-worktree",
@@ -99,6 +94,7 @@ test("buildKimiArgs: Kimi review modes require isolated read-only launch files",
   assert.equal(args[args.indexOf("--agent-file") + 1], "/tmp/kimi-agent.yaml");
   assert.equal(args[args.indexOf("--mcp-config-file") + 1], "/tmp/empty-mcp.json");
   assert.equal(args[args.indexOf("--skills-dir") + 1], "/tmp/empty-skills");
+  assert.equal(args.includes("--add-dir"), false);
 
   assert.throws(
     () => buildKimiArgs(resolveProfile("review"), { model: "kimi-code/kimi-for-coding" }),

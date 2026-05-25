@@ -59,6 +59,8 @@ const PRE_TARGET_NOT_SENT_ERROR_CODES = Object.freeze(new Set([
   "preflight_stale",
   "prompt_too_large",
   "scope_failed",
+  "source_packet_too_large",
+  "resend_confirmation_required",
   "spawn_failed",
   "not_authed",
   "sandbox_blocked",
@@ -109,6 +111,12 @@ export function externalReviewDisclosure(provider, status, sourceContentTransmis
 function notSentDisclosure(provider, status, errorCode) {
   const statusDisclosure = NOT_SENT_DISCLOSURE_BY_STATUS[status];
   if (statusDisclosure) return statusDisclosure(provider);
+  if (errorCode === "source_packet_too_large") {
+    return `Selected source content was not sent to ${provider}; the selected source packet exceeded the shared source packet budget before the review target was started.`;
+  }
+  if (errorCode === "resend_confirmation_required") {
+    return `Selected source content was not sent to ${provider}; retrying this source packet requires explicit resend confirmation or a narrowed packet.`;
+  }
   const errorDisclosure = NOT_SENT_DISCLOSURE_BY_ERROR[errorCode];
   if (errorDisclosure) return errorDisclosure(provider);
   if (errorCode === "not_authed") {

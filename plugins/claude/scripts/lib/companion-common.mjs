@@ -86,6 +86,7 @@ function externalReviewFromLifecycle(obj) {
   if (obj?.external_review && typeof obj.external_review === "object") return obj.external_review;
   if (obj?.event !== "external_review_progress") return null;
   const provider = obj?.provider ?? obj?.target ?? "unknown";
+  const sourceContentTransmission = sourceContentTransmissionForProgress(obj);
   return {
     marker: "EXTERNAL REVIEW",
     provider,
@@ -97,9 +98,25 @@ function externalReviewFromLifecycle(obj) {
     scope: obj?.scope ?? null,
     scope_base: obj?.scope_base ?? null,
     scope_paths: obj?.scope_paths ?? null,
-    source_content_transmission: obj?.source_content_transmission ?? "may_be_sent",
-    disclosure: `Selected source content may be sent to ${provider} for external review.`,
+    source_content_transmission: sourceContentTransmission,
+    disclosure: progressDisclosure(provider, sourceContentTransmission),
   };
+}
+
+function sourceContentTransmissionForProgress(invocation = {}) {
+  return invocation?.source_content_transmission
+    ?? invocation?.source_packet_policy?.source_content_transmission
+    ?? (invocation?.resume_without_source_resend === true ? "not_sent" : "may_be_sent");
+}
+
+function progressDisclosure(provider, sourceContentTransmission) {
+  if (sourceContentTransmission === "not_sent") {
+    return `Selected source content was not sent to ${provider} for this review step.`;
+  }
+  if (sourceContentTransmission === "sent") {
+    return `Selected source content was sent to ${provider} for external review; the run is in progress.`;
+  }
+  return `Selected source content may be sent to ${provider} for external review.`;
 }
 
 function lifecycleScope(externalReview) {
@@ -175,6 +192,7 @@ export function externalReviewProgressEvent(invocation, { sequence, elapsedMs })
 
 function externalReviewProgressMarkdownEvent(invocation, progress) {
   const provider = invocation.review_prompt_provider ?? invocation.provider ?? invocation.target ?? progress.target ?? "unknown";
+  const sourceContentTransmission = sourceContentTransmissionForProgress(invocation);
   return {
     ...progress,
     cwd: invocation.cwd ?? null,
@@ -182,7 +200,7 @@ function externalReviewProgressMarkdownEvent(invocation, progress) {
     scope: invocation.scope ?? null,
     scope_base: invocation.scope_base ?? null,
     scope_paths: invocation.scope_paths ?? null,
-    source_content_transmission: "may_be_sent",
+    source_content_transmission: sourceContentTransmission,
     external_review: {
       marker: "EXTERNAL REVIEW",
       provider,
@@ -194,8 +212,8 @@ function externalReviewProgressMarkdownEvent(invocation, progress) {
       scope: invocation.scope ?? null,
       scope_base: invocation.scope_base ?? null,
       scope_paths: invocation.scope_paths ?? null,
-      source_content_transmission: "may_be_sent",
-      disclosure: `Selected source content may be sent to ${provider} for external review.`,
+      source_content_transmission: sourceContentTransmission,
+      disclosure: progressDisclosure(provider, sourceContentTransmission),
     },
   };
 }

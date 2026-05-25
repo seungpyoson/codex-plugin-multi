@@ -277,6 +277,22 @@ test("gemini custom-review guides substantive missing-verdict retry without auto
     assert.match(record.suggested_action, /sharding/i);
     assert.match(record.suggested_action, /relaying/i);
     assert.match(record.suggested_action, /interactive Gemini/i);
+
+    const retry = runCompanion(
+      ["continue", "--job", record.job_id, "--foreground", "--cwd", cwd, "--", "retry selected source"],
+      { cwd, dataDir },
+    );
+    assert.equal(retry.status, 0, `exit ${retry.status}: stderr=${retry.stderr}; stdout=${retry.stdout}`);
+    const retryRecord = JSON.parse(retry.stdout);
+    assert.equal(retryRecord.status, "completed");
+    assert.equal(retryRecord.error_code, null);
+    assert.equal(retryRecord.external_review.source_content_transmission, "not_sent");
+    assert.equal(
+      retryRecord.review_metadata.audit_manifest.source_packet_policy.source_packet_action,
+      "resume_without_source_resend",
+    );
+    assert.equal(retryRecord.review_metadata.audit_manifest.source_packet_policy.selected_source_bytes, 0);
+    assert.equal(retryRecord.review_metadata.audit_manifest.source_packet_policy.resume_without_source_resend, true);
   } finally {
     rmTree(dataDir);
     rmTree(cwd);
@@ -1735,6 +1751,68 @@ test("gemini custom-review prompt includes selected source content", () => {
     const record = JSON.parse(stdout);
     assert.equal(record.status, "completed");
     assert.equal(record.external_review.source_content_transmission, "sent");
+  } finally {
+    rmTree(dataDir);
+    rmTree(cwd);
+  }
+});
+
+test("gemini custom-review rejects over-budget source packets before Gemini launch", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "gemini-source-packet-cwd-"));
+  seedMinimalRepo(cwd);
+  const files = [];
+  for (let index = 0; index < 3; index += 1) {
+    const file = `packet-${index}.txt`;
+    files.push(file);
+    writeFileSync(path.join(cwd, file), "x".repeat(180 * 1024));
+  }
+
+  const { stdout, status, dataDir } = runCompanion(
+    ["run", "--mode=custom-review", "--foreground", "--cwd", cwd, "--scope-paths", files.join(","), "--", "review selected source"],
+    { cwd, env: { GEMINI_MOCK_ASSERT_PROMPT_INCLUDES: "MUST_NOT_REACH_GEMINI" } },
+  );
+  try {
+    assert.equal(status, 2);
+    const record = JSON.parse(stdout);
+    assert.equal(record.status, "failed");
+    assert.equal(record.error_code, "source_packet_too_large");
+    assert.match(record.error_message, /Narrow or shard the Gemini CLI source packet/);
+    assert.equal(record.error_cause, "pre_send_source_packet_budget");
+    assert.equal(record.external_review.source_content_transmission, "not_sent");
+    assert.equal(record.review_metadata.audit_manifest.source_packet_policy.source_send_allowed, false);
+    assert.equal(record.review_metadata.audit_manifest.source_packet_policy.source_packet_action, "narrow_source_packet");
+    assert.doesNotMatch(stdout, /external_review_launched|MUST_NOT_REACH_GEMINI/);
+  } finally {
+    rmTree(dataDir);
+    rmTree(cwd);
+  }
+});
+
+test("gemini background custom-review rejects over-budget source packets before prompt sidecar write", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "gemini-bg-source-packet-cwd-"));
+  seedMinimalRepo(cwd);
+  const files = [];
+  for (let index = 0; index < 3; index += 1) {
+    const file = `packet-${index}.txt`;
+    files.push(file);
+    writeFileSync(path.join(cwd, file), "x".repeat(180 * 1024));
+  }
+
+  const { stdout, status, dataDir } = runCompanion(
+    ["run", "--mode=custom-review", "--background", "--cwd", cwd, "--scope-paths", files.join(","), "--", "review selected source"],
+    { cwd, env: { GEMINI_MOCK_ASSERT_PROMPT_INCLUDES: "MUST_NOT_REACH_GEMINI" } },
+  );
+  try {
+    assert.equal(status, 2);
+    const record = JSON.parse(stdout);
+    assert.equal(record.status, "failed");
+    assert.equal(record.error_code, "source_packet_too_large");
+    assert.equal(record.external_review.source_content_transmission, "not_sent");
+    assert.equal(record.review_metadata.audit_manifest.source_packet_policy.source_send_allowed, false);
+    const { metaPath } = readOnlyJobRecord(dataDir);
+    const promptPath = path.join(path.dirname(metaPath), record.job_id, "prompt.txt");
+    assert.equal(existsSync(promptPath), false, "blocked background source packet must not persist prompt sidecar");
+    assert.doesNotMatch(stdout, /external_review_launched|MUST_NOT_REACH_GEMINI/);
   } finally {
     rmTree(dataDir);
     rmTree(cwd);
