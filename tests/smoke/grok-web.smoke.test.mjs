@@ -1263,11 +1263,13 @@ test("doctor auto transport reports CLI login failure and ready web fallback", a
       assert.equal(parsed.fallback_from, "cli");
       assert.equal(parsed.fallback_reason, "grok_cli_login_required");
       assert.equal(parsed.auto_transport.primary.auth_mode, "subscription_cli");
+      assert.equal(parsed.auto_transport.primary.selected_route, "subscription_cli");
       assert.equal(parsed.auto_transport.primary.ready, false);
       assert.equal(parsed.auto_transport.primary.error_code, "grok_cli_login_required");
       assert.equal(parsed.auto_transport.primary.logged_in, false);
       assert.equal(parsed.auto_transport.fallback.auth_mode, "subscription_web");
       assert.equal(parsed.auto_transport.fallback.transport, "web");
+      assert.equal(parsed.auto_transport.fallback.selected_route, "subscription_web");
       assert.equal(parsed.auto_transport.fallback.ready, true);
       assert.equal(parsed.auto_transport.fallback.error_code, null);
       assert.match(parsed.next_action, /grok login/i);
@@ -1279,6 +1281,7 @@ test("doctor auto transport reports CLI login failure and ready web fallback", a
   } finally {
     rmTree(authHome);
     rmTree(dataDir);
+    rmTree(binDir);
   }
 });
 
@@ -1348,6 +1351,7 @@ test("custom-review auto transport falls back from source-free Grok CLI auth rej
     rmTree(authHome);
     rmTree(cwd);
     rmTree(dataDir);
+    rmTree(binDir);
   }
 });
 

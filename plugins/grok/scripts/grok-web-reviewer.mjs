@@ -3967,6 +3967,7 @@ async function cliDoctorFields(cfg, env = process.env) {
       ? "Run a Grok CLI review."
       : suggestedAction(errorCode, preflight?.parsed?.error ?? ""),
     auth_mode: cfg.auth_mode,
+    selected_route: cfg.auth_mode,
     credential_ref: null,
     endpoint: null,
     probe_endpoint: null,
@@ -4017,7 +4018,7 @@ function doctorRouteSummary(doctor) {
     auth_mode: doctor.auth_mode ?? null,
     transport: doctor.transport ?? null,
     selected_transport: doctor.selected_transport ?? doctor.transport ?? null,
-    selected_route: doctor.selected_route ?? (doctor.auth_mode ?? null),
+    selected_route: doctor.selected_route ?? null,
     fallback_from: doctor.fallback_from ?? null,
     fallback_reason: doctor.fallback_reason ?? null,
     error_code: doctor.error_code ?? null,
@@ -4042,6 +4043,7 @@ function trustedCliDoctorFailure(cfg, errorMessage) {
     summary: "Grok subscription-backed CLI reviewer binary is not trusted.",
     next_action: suggestedAction("grok_cli_untrusted_binary", errorMessage),
     auth_mode: cfg.auth_mode,
+    selected_route: cfg.auth_mode,
     credential_ref: null,
     endpoint: null,
     probe_endpoint: null,
@@ -4217,6 +4219,7 @@ async function doctorFields(env = process.env, options = {}) {
       ? "Run a Grok web review."
       : suggestedAction(errorCode, "", tunnelStart),
     auth_mode: cfg.auth_mode,
+    selected_route: cfg.auth_mode,
     credential_ref: cfg.credential_ref,
     endpoint: cfg.base_url,
     probe_endpoint: probe.probe_endpoint,
