@@ -1260,6 +1260,15 @@ test("doctor auto transport reports CLI login failure and ready web fallback", a
       assert.equal(parsed.transport, "auto");
       assert.equal(parsed.selected_transport, "web");
       assert.equal(parsed.selected_route, "subscription_web");
+      assert.equal(parsed.chat_ready, true);
+      assert.deepEqual(parsed.durability_warnings, []);
+      assert.equal(parsed.readiness_layers.listener.status, "reachable");
+      assert.equal(parsed.readiness_layers.chat_probe.status, "ready");
+      assert.equal(parsed.chat_probe.status, "ready");
+      assert.equal(parsed.session_diagnostics.status, "not_checked");
+      assert.equal(parsed.cost_quota_readiness.status, "unknown_not_probed");
+      assert.ok(Number.isInteger(parsed.doctor_timeout_ms));
+      assert.ok(Number.isInteger(parsed.chat_doctor_timeout_ms));
       assert.equal(parsed.fallback_from, "cli");
       assert.equal(parsed.fallback_reason, "grok_cli_login_required");
       assert.equal(parsed.auto_transport.primary.auth_mode, "subscription_cli");
@@ -1280,6 +1289,44 @@ test("doctor auto transport reports CLI login failure and ready web fallback", a
     });
   } finally {
     rmTree(authHome);
+    rmTree(dataDir);
+    rmTree(binDir);
+  }
+});
+
+test("doctor auto transport reports untrusted CLI auth policy fields", () => {
+  const cwd = realpathSync(mkdtempSync(path.join(tmpdir(), "grok-auto-doctor-untrusted-workspace-")));
+  const dataDir = mkdtempSync(path.join(tmpdir(), "grok-auto-doctor-untrusted-data-"));
+  const workspaceBin = path.join(cwd, "node_modules", ".bin");
+  const { binDir, grokPath, logPath } = makeFakeGrokCli();
+  mkdirSync(workspaceBin, { recursive: true });
+  cpSync(grokPath, path.join(workspaceBin, "grok"));
+  chmodSync(path.join(workspaceBin, "grok"), 0o700);
+
+  try {
+    const result = run(["doctor", "--transport", "auto"], {
+      cwd,
+      defaultTransport: false,
+      env: {
+        PATH: `${workspaceBin}${path.delimiter}${process.env.PATH ?? ""}`,
+        GROK_PLUGIN_DATA: dataDir,
+        XAI_API_KEY: "direct-api-key-must-not-leak",
+      },
+    });
+
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    const parsed = parseStdout(result);
+    assert.equal(parsed.ready, false);
+    assert.equal(parsed.transport, "auto");
+    assert.equal(parsed.selected_transport, "cli");
+    assert.equal(parsed.selected_route, "subscription_cli");
+    assert.equal(parsed.error_code, "grok_cli_untrusted_binary");
+    assert.deepEqual(parsed.ignored_env_credentials, ["XAI_API_KEY"]);
+    assert.equal(parsed.auth_policy, "api_key_env_ignored");
+    assert.deepEqual(readGrokCliLog(logPath), []);
+    assert.doesNotMatch(result.stdout, /direct-api-key-must-not-leak/);
+  } finally {
+    rmTree(cwd);
     rmTree(dataDir);
     rmTree(binDir);
   }

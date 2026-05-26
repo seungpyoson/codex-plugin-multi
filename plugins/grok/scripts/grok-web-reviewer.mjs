@@ -4031,7 +4031,8 @@ function doctorRouteSummary(doctor) {
   };
 }
 
-function trustedCliDoctorFailure(cfg, errorMessage) {
+function trustedCliDoctorFailure(cfg, errorMessage, env = process.env) {
+  const ignoredEnvCredentials = ignoredGrokDirectApiEnvKeys(cfg, env);
   return {
     provider: cfg.provider,
     status: "ok",
@@ -4054,6 +4055,8 @@ function trustedCliDoctorFailure(cfg, errorMessage) {
     default_model: null,
     logged_in: null,
     model_ready: null,
+    ignored_env_credentials: ignoredEnvCredentials,
+    auth_policy: ignoredEnvCredentials.length > 0 ? "api_key_env_ignored" : null,
     timeout_ms: cfg.timeout_ms,
     max_turns: cfg.max_turns,
     transport: cfg.transport,
@@ -4095,7 +4098,7 @@ async function autoDoctorFields(cfg, env = process.env) {
     });
     primary = await cliDoctorFields(trustedCfg, env);
   } catch (error) {
-    primary = trustedCliDoctorFailure(cfg, redactor(env)(error?.message ?? String(error)));
+    primary = trustedCliDoctorFailure(cfg, redactor(env)(error?.message ?? String(error)), env);
   }
 
   if (primary.ready === true || !GROK_CLI_AUTO_FALLBACK_CODES.has(primary.error_code)) {
@@ -4118,6 +4121,7 @@ async function autoDoctorFields(cfg, env = process.env) {
   const fallbackReady = fallback.ready === true;
   const fallbackReason = primary.error_code ?? "grok_cli_unavailable";
   return {
+    ...fallback,
     provider: "grok",
     status: fallbackReady ? "fallback_ready" : "fallback_not_ready",
     ready: fallbackReady,
@@ -4167,7 +4171,7 @@ async function doctorFields(env = process.env, options = {}) {
       });
     } catch (error) {
       const errorMessage = redactor(env)(error?.message ?? String(error));
-      return trustedCliDoctorFailure(cfg, errorMessage);
+      return trustedCliDoctorFailure(cfg, errorMessage, env);
     }
     return cliDoctorFields(cfg, env);
   }
