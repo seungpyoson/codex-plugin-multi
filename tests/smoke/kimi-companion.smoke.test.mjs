@@ -2786,6 +2786,7 @@ test("kimi review --scope-base preserves branch-diff scope through target execut
 
 test("kimi custom-review with scope-base uses branch-diff packet instead of full file body", () => {
   const cwd = mkdtempSync(path.join(tmpdir(), "kimi-custom-review-scope-base-"));
+  let dataDir = null;
   try {
     const lines = Array.from({ length: 3000 }, (_, index) => `unchanged line ${index}`);
     lines[0] = "FULL_FILE_ONLY_SENTINEL";
@@ -2821,6 +2822,7 @@ test("kimi custom-review with scope-base uses branch-diff packet instead of full
         KIMI_MOCK_ASSERT_PROMPT_EXCLUDES: "FULL_FILE_ONLY_SENTINEL",
       },
     });
+    dataDir = result.dataDir;
     assert.equal(result.status, 0, result.stderr);
     const record = parseJson(result.stdout);
     assert.equal(record.scope, "branch-diff");
@@ -2835,6 +2837,7 @@ test("kimi custom-review with scope-base uses branch-diff packet instead of full
     assert.equal(manifest.source_packet_policy.source_send_allowed, true);
     assert.equal(manifest.source_packet_policy.selected_source_bytes < 32 * 1024, true);
   } finally {
+    if (dataDir) rmSync(dataDir, { recursive: true, force: true });
     rmSync(cwd, { recursive: true, force: true });
   }
 });
