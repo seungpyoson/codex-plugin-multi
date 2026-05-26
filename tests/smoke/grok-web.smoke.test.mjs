@@ -1294,6 +1294,79 @@ test("doctor auto transport reports CLI login failure and ready web fallback", a
   }
 });
 
+test("doctor auto transport reports source-free CLI auth rejection and ready web fallback", async () => {
+  const dataDir = mkdtempSync(path.join(tmpdir(), "grok-auto-doctor-source-free-auth-data-"));
+  const authHome = mkdtempSync(path.join(tmpdir(), "grok-auto-doctor-source-free-auth-home-"));
+  const { binDir, grokPath, logPath } = makeFakeGrokCli({
+    sourceFreeAuthStderr: [
+      "ERROR responses API error status=403 Forbidden error_message=error code: 1000",
+      "Request URL: https://cli-chat-proxy.grok.com/v1/responses",
+      "model_id=grok-build",
+      "",
+    ].join("\n"),
+  });
+  writeFileSync(path.join(authHome, "auth.json"), "{\"token\":\"fake\"}\n");
+  writeFileSync(path.join(authHome, "config.toml"), "[models]\ndefault = \"grok-build\"\n");
+  const webRequests = [];
+
+  try {
+    await withServer(async (req, res) => {
+      webRequests.push(`${req.method} ${req.url}`);
+      res.setHeader("content-type", "application/json");
+      if (req.url === "/api/models") {
+        res.end(JSON.stringify({ data: [{ id: "grok-4.20-fast" }] }));
+        return;
+      }
+      if (req.url === "/api/chat/completions") {
+        res.end(JSON.stringify({
+          id: "chatcmpl-auto-doctor-source-free-auth",
+          model: "grok-4.20-fast",
+          choices: [{ message: { content: "ok" } }],
+        }));
+        return;
+      }
+      res.writeHead(404);
+      res.end(JSON.stringify({ error: { message: "not found" } }));
+    }, async (baseUrl) => {
+      const result = await runAsync(["doctor", "--transport", "auto"], {
+        defaultTransport: false,
+        env: {
+          PATH: `${binDir}${path.delimiter}${process.env.PATH ?? ""}`,
+          GROK_CLI_BINARY: grokPath,
+          GROK_CLI_AUTH_HOME: authHome,
+          GROK_PLUGIN_DATA: dataDir,
+          GROK_WEB_BASE_URL: baseUrl,
+        },
+      });
+
+      assert.equal(result.status, 0, result.stderr || result.stdout);
+      const parsed = parseStdout(result);
+      assert.equal(parsed.status, "fallback_ready");
+      assert.equal(parsed.ready, true);
+      assert.equal(parsed.transport, "auto");
+      assert.equal(parsed.selected_transport, "web");
+      assert.equal(parsed.selected_route, "subscription_web");
+      assert.equal(parsed.fallback_from, "cli");
+      assert.equal(parsed.fallback_reason, "grok_cli_auth_unavailable");
+      assert.equal(parsed.auto_transport.primary.auth_mode, "subscription_cli");
+      assert.equal(parsed.auto_transport.primary.ready, false);
+      assert.equal(parsed.auto_transport.primary.error_code, "grok_cli_auth_unavailable");
+      assert.equal(parsed.auto_transport.primary.logged_in, true);
+      assert.equal(parsed.auto_transport.primary.model_ready, true);
+      assert.equal(parsed.auto_transport.fallback.auth_mode, "subscription_web");
+      assert.equal(parsed.auto_transport.fallback.ready, true);
+      const cliInvocations = readGrokCliLog(logPath);
+      assert.equal(cliInvocations.at(-1).promptHasSource, false);
+      assert.deepEqual(webRequests, ["GET /api/models", "POST /api/chat/completions"]);
+      assert.doesNotMatch(result.stdout, /CLI_SOURCE_SECRET/);
+    });
+  } finally {
+    rmTree(authHome);
+    rmTree(dataDir);
+    rmTree(binDir);
+  }
+});
+
 test("doctor auto transport reports untrusted CLI auth policy fields", () => {
   const cwd = realpathSync(mkdtempSync(path.join(tmpdir(), "grok-auto-doctor-untrusted-workspace-")));
   const dataDir = mkdtempSync(path.join(tmpdir(), "grok-auto-doctor-untrusted-data-"));
