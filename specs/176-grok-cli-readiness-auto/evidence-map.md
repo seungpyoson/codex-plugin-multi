@@ -14,6 +14,12 @@
   - `doctor --transport auto`: `ready:true`, `requested_transport:"auto"`,
     `selected_transport:"cli"`, `selected_route:"subscription_cli"`,
     `fallback_reason:null`, and `auto_transport.primary.logged_in:true`.
+- A live Grok self-review on the first PR #184 head found a second pre-source
+  readiness edge: `doctor --transport auto` selected CLI as ready, but the immediate
+  source-free run preflight returned CLI 403 from
+  `https://cli-chat-proxy.grok.com/v1/responses`. The selected source was not sent,
+  but the failure was classified as generic `grok_cli_failed`, so `--transport auto`
+  did not try the ready web fallback.
 
 ## Root Cause
 
@@ -25,6 +31,10 @@ route, and pre-source CLI failures can fall back to subscription web with
 The missing piece was `doctor --transport auto`. It reused the CLI doctor output and
 stopped after CLI failure, so operators could not see whether auto routing would have
 a ready subscription web fallback before launching a review.
+
+The live review also showed that a source-free CLI prompt can fail with 401/403 after
+`grok models` reports logged-in/model-ready. That is still a pre-source auth
+readiness failure, but it was not mapped to an auto-fallback-eligible reason.
 
 ## Fix
 
@@ -38,13 +48,18 @@ a ready subscription web fallback before launching a review.
     `fallback_reason`, and `auto_transport.fallback`.
   - The next action preserves the deterministic CLI repair path while making the
     `--transport auto` fallback behavior explicit.
+- Classify source-free CLI prompt 401/403 failures as `grok_cli_auth_unavailable`.
+  This keeps the failed CLI readiness visible, keeps source transmission as not sent
+  for the CLI attempt, and lets explicit auto mode try subscription web with
+  `fallback_reason:"grok_cli_auth_unavailable"`.
 
 ## Verification Map
 
 - Regression test: `doctor auto transport reports CLI login failure and ready web fallback`.
+- Regression test: `custom-review auto transport falls back from source-free Grok CLI
+  auth rejection`.
 - Existing route test retained: `custom-review auto transport falls back from Grok CLI
   login failure to local web tunnel`.
 - Existing budget test retained: `custom-review auto transport preserves CLI diagnostics
   when web fallback prompt is too large`.
 - Existing readiness tests retained for explicit CLI-login and explicit web doctor paths.
-

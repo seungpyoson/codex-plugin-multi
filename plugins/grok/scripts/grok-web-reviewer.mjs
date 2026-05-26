@@ -1545,8 +1545,18 @@ function isGrokCliAuthPromptFailure(stderr) {
   return /failed to get default browser|open this url to sign in|login timed out|auth:\s*timed out|OSStatus error -10661/i.test(text);
 }
 
+function grokCliAuthHttpStatus(stderr) {
+  const text = String(stderr ?? "");
+  if (/\b401\s+Unauthorized\b/i.test(text)) return 401;
+  if (/\b403\s+Forbidden\b/i.test(text)) return 403;
+  const match = text.match(/(?:http_status["'\s:=]+|status["'\s:=]+)(401|403)\b/i);
+  return match ? Number(match[1]) : null;
+}
+
 function isGrokCliAuthRepairCode(errorCode) {
-  return errorCode === "grok_cli_login_required" || errorCode === "grok_cli_auth_timeout";
+  return errorCode === "grok_cli_login_required"
+    || errorCode === "grok_cli_auth_timeout"
+    || errorCode === "grok_cli_auth_unavailable";
 }
 
 function providerCapabilitiesForConfig(cfg) {
@@ -2013,11 +2023,15 @@ async function callGrokCli(cfg, prompt, { sourceBearing = true, baseDiagnostics 
   if (result.error || result.status !== 0) {
     const timedOut = result.error?.code === "ETIMEDOUT" || result.signal === "SIGTERM";
     const authPromptFailed = !sourceBearing && isGrokCliAuthPromptFailure(result.stderr);
-    const reason = authPromptFailed ? "grok_cli_auth_timeout" : (timedOut ? "grok_cli_timeout" : "grok_cli_failed");
+    const authHttpStatus = !sourceBearing ? grokCliAuthHttpStatus(result.stderr) : null;
+    const authRejected = authHttpStatus === 401 || authHttpStatus === 403;
+    const reason = authPromptFailed
+      ? "grok_cli_auth_timeout"
+      : (authRejected ? "grok_cli_auth_unavailable" : (timedOut ? "grok_cli_timeout" : "grok_cli_failed"));
     return providerFailureWithDiagnostic(
       reason,
       grokCliCommandError("grok --prompt-file", result),
-      null,
+      authHttpStatus,
       trimText(result.stdout).slice(0, 2000) || null,
       grokCliSourceTransmissionForResult(sourceBearing, result),
       diagnostics,
@@ -3110,6 +3124,9 @@ function suggestedAction(errorCode, errorMessage = "", tunnelStart = null) {
   }
   if (errorCode === "grok_cli_auth_timeout") {
     return "Complete `grok login` in a normal terminal or fix default-browser auth handling, ensure `grok models` reports a logged-in account and lists grok-build, then retry the Grok CLI reviewer. Do not switch provider or transport in default CLI mode.";
+  }
+  if (errorCode === "grok_cli_auth_unavailable") {
+    return "Refresh Grok CLI auth with `grok login --device-auth` or `grok login --oauth`, ensure a source-free `grok --prompt-file` request can complete, then retry the Grok CLI reviewer. Do not switch provider or transport in default CLI mode.";
   }
   if (String(errorCode ?? "").startsWith("grok_cli_")) return "Treat this Grok CLI slot as failed. Inspect runtime diagnostics, repair the local Grok CLI auth/binary/runtime issue, and retry without falling back to another provider or transport.";
   return sharedDiagnostic?.suggested_action ?? "Inspect error_message and repair the local Grok web tunnel before retrying.";

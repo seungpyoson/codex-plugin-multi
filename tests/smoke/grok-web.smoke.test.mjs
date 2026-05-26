@@ -1282,6 +1282,75 @@ test("doctor auto transport reports CLI login failure and ready web fallback", a
   }
 });
 
+test("custom-review auto transport falls back from source-free Grok CLI auth rejection", async () => {
+  const cwd = realpathSync(mkdtempSync(path.join(tmpdir(), "grok-auto-source-free-auth-workspace-")));
+  const dataDir = mkdtempSync(path.join(tmpdir(), "grok-auto-source-free-auth-data-"));
+  const authHome = mkdtempSync(path.join(tmpdir(), "grok-auto-source-free-auth-home-"));
+  const { binDir, grokPath } = makeFakeGrokCli({
+    sourceFreeAuthStderr: [
+      "ERROR responses API error status=403 Forbidden error_message=error code: 1000",
+      "Request URL: https://cli-chat-proxy.grok.com/v1/responses",
+      "model_id=grok-build",
+      "",
+    ].join("\n"),
+  });
+  writeGrokCliAuthFixture(cwd, authHome);
+  const webRequests = [];
+
+  try {
+    await withServer(async (req, res) => {
+      webRequests.push(`${req.method} ${req.url}`);
+      assert.equal(req.url, "/api/chat/completions");
+      const body = await readJsonRequest(req);
+      assert.match(body.messages[0].content, /BEGIN GROK FILE 1: review\.js/);
+      assert.match(body.messages[0].content, /CLI_SOURCE_SECRET/);
+      res.setHeader("content-type", "application/json");
+      res.end(JSON.stringify({
+        id: "grok-auto-source-free-auth-fallback",
+        model: "grok-4.20-fast",
+        choices: [{ message: { content: substantiveReviewFixture("Auto fallback handled source-free auth rejection.") } }],
+      }));
+    }, async (baseUrl) => {
+      const result = await runAsync([
+        "run",
+        "--transport", "auto",
+        "--mode", "custom-review",
+        "--scope", "custom",
+        "--scope-paths", "review.js",
+        "--foreground",
+        "--prompt", "Review selected source.",
+      ], {
+        cwd,
+        defaultTransport: false,
+        env: {
+          PATH: `${binDir}${path.delimiter}${process.env.PATH ?? ""}`,
+          GROK_CLI_BINARY: grokPath,
+          GROK_CLI_AUTH_HOME: authHome,
+          GROK_PLUGIN_DATA: dataDir,
+          GROK_WEB_BASE_URL: baseUrl,
+        },
+      });
+
+      assert.equal(result.status, 0, result.stderr || result.stdout);
+      const record = parseStdout(result);
+      assert.equal(record.provider, "grok-web");
+      assert.equal(record.transport, "web");
+      assert.equal(record.fallback_from, "cli");
+      assert.equal(record.review_metadata.audit_manifest.selected_route, "subscription_web");
+      assert.equal(record.review_metadata.audit_manifest.fallback_reason, "grok_cli_auth_unavailable");
+      assert.equal(record.external_review.source_content_transmission, "sent");
+      assert.equal(record.runtime_diagnostics.cli_request.error_code, "grok_cli_auth_unavailable");
+      assert.equal(record.runtime_diagnostics.cli_request.logged_in, true);
+      assert.equal(record.runtime_diagnostics.cli_request.model_ready, true);
+      assert.deepEqual(webRequests, ["POST /api/chat/completions"]);
+    });
+  } finally {
+    rmTree(authHome);
+    rmTree(cwd);
+    rmTree(dataDir);
+  }
+});
+
 test("custom-review auto transport preserves CLI diagnostics when web fallback prompt is too large", async () => {
   const cwd = realpathSync(mkdtempSync(path.join(tmpdir(), "grok-auto-web-budget-workspace-")));
   const dataDir = mkdtempSync(path.join(tmpdir(), "grok-auto-web-budget-data-"));
