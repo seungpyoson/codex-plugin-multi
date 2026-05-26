@@ -15,6 +15,8 @@ coverage/
 .pi/
 .claude/
 .gemini/
+.antigravitycli/
+.agent-doctor/
 .worktrees/
 .codex/prompts/speckit-*
 .agents/
