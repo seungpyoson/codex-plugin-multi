@@ -1545,8 +1545,18 @@ function isGrokCliAuthPromptFailure(stderr) {
   return /failed to get default browser|open this url to sign in|login timed out|auth:\s*timed out|OSStatus error -10661/i.test(text);
 }
 
+function grokCliAuthHttpStatus(stderr) {
+  const text = String(stderr ?? "");
+  if (/\b401\s+Unauthorized\b/i.test(text)) return 401;
+  if (/\b403\s+Forbidden\b/i.test(text)) return 403;
+  const match = text.match(/(?:http_status["'\s:=]+|status["'\s:=]+)(401|403)\b/i);
+  return match ? Number(match[1]) : null;
+}
+
 function isGrokCliAuthRepairCode(errorCode) {
-  return errorCode === "grok_cli_login_required" || errorCode === "grok_cli_auth_timeout";
+  return errorCode === "grok_cli_login_required"
+    || errorCode === "grok_cli_auth_timeout"
+    || errorCode === "grok_cli_auth_unavailable";
 }
 
 function providerCapabilitiesForConfig(cfg) {
@@ -2013,11 +2023,15 @@ async function callGrokCli(cfg, prompt, { sourceBearing = true, baseDiagnostics 
   if (result.error || result.status !== 0) {
     const timedOut = result.error?.code === "ETIMEDOUT" || result.signal === "SIGTERM";
     const authPromptFailed = !sourceBearing && isGrokCliAuthPromptFailure(result.stderr);
-    const reason = authPromptFailed ? "grok_cli_auth_timeout" : (timedOut ? "grok_cli_timeout" : "grok_cli_failed");
+    const authHttpStatus = !sourceBearing ? grokCliAuthHttpStatus(result.stderr) : null;
+    const authRejected = authHttpStatus === 401 || authHttpStatus === 403;
+    const reason = authPromptFailed
+      ? "grok_cli_auth_timeout"
+      : (authRejected ? "grok_cli_auth_unavailable" : (timedOut ? "grok_cli_timeout" : "grok_cli_failed"));
     return providerFailureWithDiagnostic(
       reason,
       grokCliCommandError("grok --prompt-file", result),
-      null,
+      authHttpStatus,
       trimText(result.stdout).slice(0, 2000) || null,
       grokCliSourceTransmissionForResult(sourceBearing, result),
       diagnostics,
@@ -3111,6 +3125,9 @@ function suggestedAction(errorCode, errorMessage = "", tunnelStart = null) {
   if (errorCode === "grok_cli_auth_timeout") {
     return "Complete `grok login` in a normal terminal or fix default-browser auth handling, ensure `grok models` reports a logged-in account and lists grok-build, then retry the Grok CLI reviewer. Do not switch provider or transport in default CLI mode.";
   }
+  if (errorCode === "grok_cli_auth_unavailable") {
+    return "Refresh Grok CLI auth with `grok login --device-auth` or `grok login --oauth`, ensure a source-free `grok --prompt-file` request can complete, then retry the Grok CLI reviewer. Do not switch provider or transport in default CLI mode.";
+  }
   if (String(errorCode ?? "").startsWith("grok_cli_")) return "Treat this Grok CLI slot as failed. Inspect runtime diagnostics, repair the local Grok CLI auth/binary/runtime issue, and retry without falling back to another provider or transport.";
   return sharedDiagnostic?.suggested_action ?? "Inspect error_message and repair the local Grok web tunnel before retrying.";
 }
@@ -3950,6 +3967,7 @@ async function cliDoctorFields(cfg, env = process.env) {
       ? "Run a Grok CLI review."
       : suggestedAction(errorCode, preflight?.parsed?.error ?? ""),
     auth_mode: cfg.auth_mode,
+    selected_route: cfg.auth_mode,
     credential_ref: null,
     endpoint: null,
     probe_endpoint: null,
@@ -3993,8 +4011,157 @@ async function cliDoctorFields(cfg, env = process.env) {
   };
 }
 
+function doctorRouteSummary(doctor) {
+  return {
+    provider: doctor.provider ?? null,
+    ready: doctor.ready === true,
+    auth_mode: doctor.auth_mode ?? null,
+    transport: doctor.transport ?? null,
+    selected_transport: doctor.selected_transport ?? doctor.transport ?? null,
+    selected_route: doctor.selected_route ?? null,
+    fallback_from: doctor.fallback_from ?? null,
+    fallback_reason: doctor.fallback_reason ?? null,
+    error_code: doctor.error_code ?? null,
+    logged_in: doctor.logged_in ?? null,
+    model_ready: doctor.model_ready ?? null,
+    models_ready: doctor.models_ready ?? null,
+    chat_ready: doctor.chat_ready ?? null,
+    readiness_layers: doctor.readiness_layers ?? null,
+    next_action: doctor.next_action ?? null,
+  };
+}
+
+function trustedCliDoctorFailure(cfg, errorMessage, env = process.env) {
+  const ignoredEnvCredentials = ignoredGrokDirectApiEnvKeys(cfg, env);
+  return {
+    provider: cfg.provider,
+    status: "ok",
+    ready: false,
+    reachable: false,
+    models_ready: null,
+    model_count: null,
+    chat_ready: false,
+    summary: "Grok subscription-backed CLI reviewer binary is not trusted.",
+    next_action: suggestedAction("grok_cli_untrusted_binary", errorMessage),
+    auth_mode: cfg.auth_mode,
+    selected_route: cfg.auth_mode,
+    credential_ref: null,
+    endpoint: null,
+    probe_endpoint: null,
+    chat_probe_endpoint: null,
+    model: cfg.model,
+    binary: cfg.binary,
+    grok_version: null,
+    default_model: null,
+    logged_in: null,
+    model_ready: null,
+    ignored_env_credentials: ignoredEnvCredentials,
+    auth_policy: ignoredEnvCredentials.length > 0 ? "api_key_env_ignored" : null,
+    timeout_ms: cfg.timeout_ms,
+    max_turns: cfg.max_turns,
+    transport: cfg.transport,
+    readiness_layers: {
+      cli_binary: {
+        status: "failed",
+        error_code: "grok_cli_untrusted_binary",
+      },
+      models: {
+        status: "not_checked",
+        model: cfg.model,
+        default_model: null,
+      },
+      cli_login: {
+        status: "not_checked",
+        logged_in: null,
+      },
+      source_free_prompt: {
+        status: "skipped",
+        parse_mode: null,
+        prompt_cleanup: null,
+        grok_home_cleanup: null,
+      },
+    },
+    error_code: "grok_cli_untrusted_binary",
+    error_message: errorMessage,
+    http_status: null,
+    chat_http_status: null,
+  };
+}
+
+async function autoDoctorFields(cfg, env = process.env) {
+  let primary;
+  try {
+    const trustedCfg = resolveTrustedGrokCliConfig(cfg, {
+      cwd: process.cwd(),
+      workspaceRoot: bestEffortWorkspaceRoot(process.cwd()),
+      env,
+    });
+    primary = await cliDoctorFields(trustedCfg, env);
+  } catch (error) {
+    primary = trustedCliDoctorFailure(cfg, redactor(env)(error?.message ?? String(error)), env);
+  }
+
+  if (primary.ready === true || !GROK_CLI_AUTO_FALLBACK_CODES.has(primary.error_code)) {
+    return {
+      ...primary,
+      requested_transport: "auto",
+      transport: "auto",
+      selected_transport: "cli",
+      selected_route: "subscription_cli",
+      fallback_from: null,
+      fallback_reason: null,
+      auto_transport: {
+        primary: doctorRouteSummary(primary),
+        fallback: null,
+      },
+    };
+  }
+
+  const fallback = await doctorFields(env, { transport: "web" });
+  const fallbackReady = fallback.ready === true;
+  const fallbackReason = primary.error_code ?? "grok_cli_unavailable";
+  return {
+    ...fallback,
+    provider: "grok",
+    status: fallbackReady ? "fallback_ready" : "fallback_not_ready",
+    ready: fallbackReady,
+    reachable: fallback.reachable ?? false,
+    models_ready: fallback.models_ready ?? null,
+    model_count: fallback.model_count ?? null,
+    chat_ready: fallback.chat_ready ?? false,
+    summary: fallbackReady
+      ? "Grok auto transport CLI primary is not ready, but the local web fallback is ready."
+      : "Grok auto transport CLI primary and local web fallback are not ready.",
+    next_action: fallbackReady
+      ? `${primary.next_action} Until CLI auth is repaired, rerun with --transport auto to use the ready local web fallback while preserving the CLI failure metadata.`
+      : `${primary.next_action} Local web fallback is also not ready: ${fallback.next_action}`,
+    auth_mode: fallback.auth_mode ?? primary.auth_mode,
+    credential_ref: fallback.credential_ref ?? primary.credential_ref,
+    endpoint: fallback.endpoint ?? primary.endpoint,
+    probe_endpoint: fallback.probe_endpoint ?? primary.probe_endpoint,
+    chat_probe_endpoint: fallback.chat_probe_endpoint ?? primary.chat_probe_endpoint,
+    model: fallback.model ?? primary.model,
+    timeout_ms: fallback.timeout_ms ?? primary.timeout_ms,
+    transport: "auto",
+    requested_transport: "auto",
+    selected_transport: "web",
+    selected_route: "subscription_web",
+    fallback_from: "cli",
+    fallback_reason: fallbackReason,
+    auto_transport: {
+      primary: doctorRouteSummary(primary),
+      fallback: doctorRouteSummary(fallback),
+    },
+    error_code: fallbackReady ? null : (fallback.error_code ?? fallbackReason),
+    error_message: fallbackReady ? null : (fallback.error_message ?? primary.error_message ?? null),
+    http_status: fallback.http_status ?? primary.http_status ?? null,
+    chat_http_status: fallback.chat_http_status ?? primary.chat_http_status ?? null,
+  };
+}
+
 async function doctorFields(env = process.env, options = {}) {
   let cfg = config(env, options);
+  if (cfg.transport === "cli" && cfg.requested_transport === "auto") return autoDoctorFields(cfg, env);
   if (cfg.transport === "cli") {
     try {
       cfg = resolveTrustedGrokCliConfig(cfg, {
@@ -4004,56 +4171,7 @@ async function doctorFields(env = process.env, options = {}) {
       });
     } catch (error) {
       const errorMessage = redactor(env)(error?.message ?? String(error));
-      return {
-        provider: cfg.provider,
-        status: "ok",
-        ready: false,
-        reachable: false,
-        models_ready: null,
-        model_count: null,
-        chat_ready: false,
-        summary: "Grok subscription-backed CLI reviewer binary is not trusted.",
-        next_action: suggestedAction("grok_cli_untrusted_binary", errorMessage),
-        auth_mode: cfg.auth_mode,
-        credential_ref: null,
-        endpoint: null,
-        probe_endpoint: null,
-        chat_probe_endpoint: null,
-        model: cfg.model,
-        binary: cfg.binary,
-        grok_version: null,
-        default_model: null,
-        logged_in: null,
-        model_ready: null,
-        timeout_ms: cfg.timeout_ms,
-        max_turns: cfg.max_turns,
-        transport: cfg.transport,
-        readiness_layers: {
-          cli_binary: {
-            status: "failed",
-            error_code: "grok_cli_untrusted_binary",
-          },
-          models: {
-            status: "not_checked",
-            model: cfg.model,
-            default_model: null,
-          },
-          cli_login: {
-            status: "not_checked",
-            logged_in: null,
-          },
-          source_free_prompt: {
-            status: "skipped",
-            parse_mode: null,
-            prompt_cleanup: null,
-            grok_home_cleanup: null,
-          },
-        },
-        error_code: "grok_cli_untrusted_binary",
-        error_message: errorMessage,
-        http_status: null,
-        chat_http_status: null,
-      };
+      return trustedCliDoctorFailure(cfg, errorMessage, env);
     }
     return cliDoctorFields(cfg, env);
   }
@@ -4105,6 +4223,7 @@ async function doctorFields(env = process.env, options = {}) {
       ? "Run a Grok web review."
       : suggestedAction(errorCode, "", tunnelStart),
     auth_mode: cfg.auth_mode,
+    selected_route: cfg.auth_mode,
     credential_ref: cfg.credential_ref,
     endpoint: cfg.base_url,
     probe_endpoint: probe.probe_endpoint,
@@ -4113,6 +4232,7 @@ async function doctorFields(env = process.env, options = {}) {
     timeout_ms: cfg.timeout_ms,
     doctor_timeout_ms: cfg.doctor_timeout_ms,
     chat_doctor_timeout_ms: cfg.chat_doctor_timeout_ms,
+    transport: cfg.transport,
     tunnel_start_timeout_ms: cfg.tunnel_start_timeout_ms,
     tunnel_cleanup_timeout_ms: cfg.tunnel_cleanup_timeout_ms,
     tunnel_start: tunnelStart,
