@@ -106,6 +106,52 @@ Required behaviors:
 - full-source approval is not reused for diff/shard review
 - failed source-bearing run is not retried automatically
 - provider-specific prompt/step limits come from Adapter capability facts
+- same-packet retry identity is stable across provider, mode, reviewed head,
+  prompt, source packet, route, and scope
+- `retry_count` means prior attempts with the same fingerprint: 0 initial,
+  1 first retry/second total attempt, and 2 third-or-later attempt
+- third same-packet retry (`retry_count >= 2`) fails closed before provider
+  launch unless disposition is split/narrow, switch provider, waiver, or
+  explicit override; `retry` cannot unblock that case
+
+## Review Slot Disposition Test Plan
+
+For each provider family, verify one completed slot, one failed/no-result slot,
+and one retry/disposition case.
+
+Required fields:
+
+```text
+slot_id
+attempt_id
+parent_attempt_id
+reviewed_head_sha
+retry_fingerprint
+retry_count
+request_settings_hash
+source_state
+verdict
+failed_slot_reason
+disposition
+not_counted_reason
+waiver_artifact
+override_artifact
+```
+
+Disposition values are constrained as follows:
+
+- `none`: pending record or usable current-head approval only
+- `retry`: first retry/second total attempt only
+- `split`: narrowed or sharded packet that produces a new fingerprint
+- `switch_provider`: moved to a different provider slot
+- `waive`: operator waiver with artifact reference
+- `override`: explicit operator override with artifact reference
+
+No raw source, prompt, provider output, raw command args, or raw paths may be
+stored in the disposition fields. Assert this across audit manifest,
+JobRecord `review_metadata`, `external_review`, lifecycle/status events,
+review-panel rows, and direct API/OpenRouter approval/waiver/override
+artifacts.
 
 ## Direct API / OpenRouter Approval Handling
 
@@ -122,6 +168,9 @@ billing path
 selected route
 fallback reason
 approval scope
+retry_fingerprint
+retry_count
+request_settings_hash
 ```
 
 Fail closed if tuple changes or source-send truth cannot be proven.

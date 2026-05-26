@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 
 if (process.argv.includes("--version") || process.argv.includes("-v")) {
@@ -60,6 +60,16 @@ const mockResponse = process.env.GEMINI_MOCK_RESPONSE ?? [
 
 const expectedPromptText = process.env.GEMINI_MOCK_ASSERT_PROMPT_INCLUDES;
 const readinessPrompt = prompt.includes("reply with exactly: pong.") && prompt.includes("Do not use any tools");
+const invocationCountPath = process.env.GEMINI_MOCK_INVOCATION_COUNT_PATH;
+const invocationCountPromptIncludes = process.env.GEMINI_MOCK_INVOCATION_COUNT_PROMPT_INCLUDES;
+if (
+  invocationCountPath &&
+  !readinessPrompt &&
+  (!invocationCountPromptIncludes || prompt.includes(invocationCountPromptIncludes))
+) {
+  const previous = existsSync(invocationCountPath) ? Number(readFileSync(invocationCountPath, "utf8")) : 0;
+  writeFileSync(invocationCountPath, String((Number.isFinite(previous) ? previous : 0) + 1), "utf8");
+}
 if (expectedPromptText && !readinessPrompt && !prompt.includes(expectedPromptText)) {
   process.stderr.write(`gemini-mock: prompt missing expected text: ${expectedPromptText}\n`);
   process.exit(1);

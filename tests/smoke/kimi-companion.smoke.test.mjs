@@ -8,6 +8,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { fixtureBranchDiffRepo, fixtureGit, fixtureSeedRepo } from "../helpers/fixture-git.mjs";
+import { badVerdictReviewFixture, requestChangesReviewFixture } from "../helpers/review-fixtures.mjs";
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const COMPANION = path.join(REPO_ROOT, "plugins/kimi/scripts/kimi-companion.mjs");
@@ -825,6 +826,46 @@ test("kimi custom-review explicit large source override records policy and sends
   }
 });
 
+test("kimi custom-review records explicit review-slot waiver disposition", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "kimi-review-slot-waiver-cwd-"));
+  let dataDir = null;
+  try {
+    fixtureSeedRepo(cwd);
+    const result = runCompanion([
+      "run",
+      "--mode",
+      "custom-review",
+      "--cwd",
+      cwd,
+      "--scope-paths",
+      "seed.txt",
+      "--foreground",
+      "--review-slot-disposition",
+      "waive",
+      "--review-slot-waiver-artifact",
+      "reviews/waiver-180.md",
+      "--",
+      "Review this scope.",
+    ], {
+      cwd,
+      env: {
+        KIMI_MOCK_ASSERT_PROMPT_INCLUDES: "KIMI FILE 1: seed.txt",
+      },
+    });
+    dataDir = result.dataDir;
+    assert.equal(result.status, 0, result.stdout);
+    const record = parseJson(result.stdout);
+    assert.equal(record.status, "completed");
+    assert.equal(record.review_metadata.audit_manifest.review_slot.disposition, "waive");
+    assert.equal(record.review_metadata.audit_manifest.review_slot.waiver_artifact, "reviews/waiver-180.md");
+    assert.equal(record.review_metadata.audit_manifest.review_slot.override_artifact, null);
+    assert.equal(record.external_review.review_slot.disposition, "waive");
+  } finally {
+    if (dataDir) rmSync(dataDir, { recursive: true, force: true });
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
 test("kimi result --job-id aliases --job for a finished job", () => {
   const cwd = mkdtempSync(path.join(tmpdir(), "kimi-result-job-id-cwd-"));
   fixtureSeedRepo(cwd);
@@ -930,6 +971,105 @@ test("kimi result with duplicate job id across workspaces reports state collisio
     assert.equal(parsed.matched_workspace_count, 2);
     assert.match(parsed.suggested_action, /state collision/i);
     assert.equal("matched_workspace_root" in parsed, false);
+  } finally {
+    rmSync(dataDir, { recursive: true, force: true });
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("kimi custom-review blocks fresh same-packet resend after a failed source-sent slot", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "kimi-review-slot-fresh-retry-cwd-"));
+  const dataDir = mkdtempSync(path.join(tmpdir(), "kimi-review-slot-fresh-retry-data-"));
+  const invocationCountPath = path.join(dataDir, "target-invocations.txt");
+  const badResult = badVerdictReviewFixture("Kimi fresh retry guard marker.");
+  try {
+    fixtureSeedRepo(cwd);
+    const commonArgs = [
+      "run",
+      "--mode",
+      "custom-review",
+      "--cwd",
+      cwd,
+      "--scope-paths",
+      "seed.txt",
+      "--foreground",
+      "--",
+      "Review this scope.",
+    ];
+    const commonOptions = {
+      cwd,
+      dataDir,
+    env: {
+      KIMI_MOCK_RESPONSE: badResult,
+      KIMI_MOCK_INVOCATION_COUNT_PATH: invocationCountPath,
+      KIMI_MOCK_INVOCATION_COUNT_PROMPT_INCLUDES: "KIMI FILE 1: seed.txt",
+    },
+  };
+
+    const first = runCompanion(commonArgs, commonOptions);
+    assert.equal(first.status, 2, first.stderr);
+    const firstRecord = parseJson(first.stdout);
+    assert.equal(firstRecord.error_code, "review_not_completed");
+    assert.equal(firstRecord.external_review.source_content_transmission, "sent");
+
+    const second = runCompanion(commonArgs, commonOptions);
+    assert.equal(second.status, 2, second.stderr);
+    const secondRecord = parseJson(second.stdout);
+    assert.equal(secondRecord.error_code, "review_slot_disposition_required");
+    assert.equal(secondRecord.external_review.source_content_transmission, "not_sent");
+    assert.equal(secondRecord.review_metadata.audit_manifest.review_slot.retry_count, 1);
+    assert.equal(
+      secondRecord.review_metadata.audit_manifest.source_packet_policy.source_packet_action,
+      "review_slot_retry_blocked",
+    );
+    assert.equal(readFileSync(invocationCountPath, "utf8"), "1");
+  } finally {
+    rmSync(dataDir, { recursive: true, force: true });
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("kimi custom-review blocks fresh same-packet resend after a request-changes slot", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "kimi-review-slot-request-changes-cwd-"));
+  const dataDir = mkdtempSync(path.join(tmpdir(), "kimi-review-slot-request-changes-data-"));
+  const requestChangesResult = requestChangesReviewFixture("Kimi request-changes retry guard marker.");
+  try {
+    fixtureSeedRepo(cwd);
+    const commonArgs = [
+      "run",
+      "--mode",
+      "custom-review",
+      "--cwd",
+      cwd,
+      "--scope-paths",
+      "seed.txt",
+      "--foreground",
+      "--",
+      "Review this scope.",
+    ];
+    const commonOptions = {
+      cwd,
+      dataDir,
+      env: { KIMI_MOCK_RESPONSE: requestChangesResult },
+    };
+
+    const first = runCompanion(commonArgs, commonOptions);
+    assert.equal(first.status, 0, first.stderr);
+    const firstRecord = parseJson(first.stdout);
+    assert.equal(firstRecord.status, "completed");
+    assert.equal(firstRecord.external_review.review_slot?.verdict, "request_changes");
+    assert.equal(firstRecord.external_review.source_content_transmission, "sent");
+
+    const second = runCompanion(commonArgs, commonOptions);
+    assert.equal(second.status, 2, second.stderr);
+    const secondRecord = parseJson(second.stdout);
+    assert.equal(secondRecord.error_code, "review_slot_disposition_required");
+    assert.equal(secondRecord.external_review.source_content_transmission, "not_sent");
+    assert.equal(secondRecord.review_metadata.audit_manifest.review_slot.retry_count, 1);
+    assert.equal(
+      secondRecord.review_metadata.audit_manifest.source_packet_policy.source_packet_action,
+      "review_slot_retry_blocked",
+    );
   } finally {
     rmSync(dataDir, { recursive: true, force: true });
     rmSync(cwd, { recursive: true, force: true });
@@ -1524,6 +1664,8 @@ test("kimi background run: launched event and terminal JobRecord carry external_
     assert.equal(meta.review_metadata.audit_manifest.request.timeout_ms, 345678);
     assert.match(meta.result, /Mock Kimi response\./);
     assert.equal(meta.kimi_session_id, KIMI_SESSION_ID);
+    assert.equal(meta.external_review.review_slot?.verdict, "approved");
+    assert.equal(meta.external_review.review_slot?.source_state, "sent");
     assert.deepEqual(meta.external_review, {
       marker: "EXTERNAL REVIEW",
       provider: "Kimi Code CLI",
@@ -1536,6 +1678,7 @@ test("kimi background run: launched event and terminal JobRecord carry external_
       scope_base: null,
       scope_paths: ["seed.txt"],
       source_content_transmission: "sent",
+      review_slot: meta.external_review.review_slot,
       disclosure: "Selected source content was sent to Kimi Code CLI for external review.",
     });
   } finally {
@@ -2597,6 +2740,7 @@ test("kimi review foreground lifecycle jsonl emits launch event before terminal 
     scope_base: null,
     scope_paths: null,
     source_content_transmission: "may_be_sent",
+    review_slot: null,
     disclosure: "Selected source content may be sent to Kimi Code CLI for external review.",
   });
   assert.equal(record.status, "completed");
@@ -2779,6 +2923,8 @@ for (const mode of ["review", "adversarial-review", "custom-review"]) {
     assert.match(record.result, /Mock Kimi response\./);
     assert.equal(record.kimi_session_id, KIMI_SESSION_ID);
     assert.equal(record.claude_session_id, null);
+    assert.equal(record.external_review.review_slot?.verdict, "approved");
+    assert.equal(record.external_review.review_slot?.source_state, "sent");
     assert.deepEqual(record.external_review, {
       marker: "EXTERNAL REVIEW",
       provider: "Kimi Code CLI",
@@ -2791,6 +2937,7 @@ for (const mode of ["review", "adversarial-review", "custom-review"]) {
       scope_base: mode === "adversarial-review" ? "HEAD~1" : null,
       scope_paths: mode === "custom-review" ? ["seed.txt"] : null,
       source_content_transmission: "sent",
+      review_slot: record.external_review.review_slot,
       disclosure: "Selected source content was sent to Kimi Code CLI for external review.",
     });
     const { record: persisted } = readOnlyJobRecord(result.dataDir);

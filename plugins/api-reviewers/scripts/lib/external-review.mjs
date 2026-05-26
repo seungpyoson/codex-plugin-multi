@@ -32,6 +32,7 @@ export const EXTERNAL_REVIEW_KEYS = Object.freeze([
   "scope_base",
   "scope_paths",
   "source_content_transmission",
+  "review_slot",
   "disclosure",
 ]);
 
@@ -61,6 +62,11 @@ const PRE_TARGET_NOT_SENT_ERROR_CODES = Object.freeze(new Set([
   "scope_failed",
   "source_packet_too_large",
   "resend_confirmation_required",
+  "review_slot_disposition_required",
+  "review_slot_override_artifact_required",
+  "review_slot_waiver_artifact_required",
+  "retry_disposition_not_valid_for_third_attempt",
+  "third_same_packet_retry_requires_disposition",
   "spawn_failed",
   "not_authed",
   "sandbox_blocked",
@@ -178,7 +184,14 @@ export function targetProcessReceivedContent(errorCode) {
   return CONTENT_RECEIVED_ERROR_CODES.has(errorCode);
 }
 
-export function buildExternalReview({ invocation, sessionId = null, status, errorCode = null, sourceContentTransmission }) {
+export function buildExternalReview({
+  invocation,
+  sessionId = null,
+  status,
+  errorCode = null,
+  sourceContentTransmission,
+  reviewSlot = null,
+}) {
   if (!SOURCE_CONTENT_TRANSMISSION_VALUES.has(sourceContentTransmission)) {
     throw new Error(`invalid sourceContentTransmission: ${String(sourceContentTransmission)}`);
   }
@@ -195,6 +208,7 @@ export function buildExternalReview({ invocation, sessionId = null, status, erro
     scope_base: invocation.scope_base ?? null,
     scope_paths: invocation.scope_paths ?? null,
     source_content_transmission: sourceContentTransmission,
+    review_slot: reviewSlot ?? null,
     disclosure: externalReviewDisclosure(provider, status, sourceContentTransmission, errorCode),
   };
   const keys = Object.keys(review);

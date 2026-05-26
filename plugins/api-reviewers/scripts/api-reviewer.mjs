@@ -303,6 +303,7 @@ function externalReviewProgressMarkdownEvent(invocation, progress) {
       scope_base: base.scope_base ?? invocation.scope_base ?? null,
       scope_paths: base.scope_paths ?? invocation.scope_paths ?? null,
       source_content_transmission: "may_be_sent",
+      review_slot: base.review_slot ?? null,
       disclosure: base.disclosure ?? `Selected source content may be sent to ${provider} for external review.`,
     },
   };
@@ -546,6 +547,48 @@ async function writeApiReviewerMetaRecord(root, record) {
 async function readApiReviewerMetaRecord(root, jobId) {
   assertSafeJobId(jobId);
   return JSON.parse(await readFile(resolve(apiReviewerJobsDir(root), jobId, "meta.json"), "utf8"));
+}
+
+function reviewSlotFromRecord(record) {
+  const slot = record?.review_metadata?.audit_manifest?.review_slot
+    ?? record?.external_review?.review_slot
+    ?? null;
+  return slot && typeof slot === "object" && !Array.isArray(slot) ? slot : null;
+}
+
+function priorSlotCountsTowardRetry(slot) {
+  if (!slot?.retry_fingerprint) return false;
+  if (slot.source_state === SOURCE_CONTENT_TRANSMISSION.NOT_SENT) return false;
+  if (slot.verdict === "approved") return false;
+  const reason = String(slot.not_counted_reason ?? "unknown");
+  if (reason === "stale_head" || reason === "source_not_sent") return false;
+  return true;
+}
+
+async function collectPriorReviewSlotAttempts(root, currentJobId = null) {
+  let entries;
+  try {
+    entries = await readdir(apiReviewerJobsDir(root), { withFileTypes: true });
+  } catch (e) {
+    if (e.code === "ENOENT") return [];
+    throw e;
+  }
+  const attempts = [];
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue;
+    const jobId = entry.name;
+    if (currentJobId !== null && jobId === currentJobId) continue;
+    try {
+      assertSafeJobId(jobId);
+      const parsed = JSON.parse(await readFile(resolve(apiReviewerJobsDir(root), jobId, "meta.json"), "utf8"));
+      const slot = reviewSlotFromRecord(parsed);
+      if (priorSlotCountsTowardRetry(slot)) attempts.push({ review_slot: slot });
+    } catch {
+      // Ignore malformed legacy artifacts; retry guards should be driven by
+      // validated review-slot records, not by corrupt state.
+    }
+  }
+  return attempts;
 }
 
 async function readApiReviewerLockOwnerRaw(lockOwnerFile) {
@@ -2277,6 +2320,7 @@ function buildLaunchExternalReview({ cfg, mode, options, scopeInfo }) {
     scope_base: scopeInfo?.scope_base ?? null,
     scope_paths: scopeInfo?.scope_paths ?? null,
     source_content_transmission: SOURCE_CONTENT_TRANSMISSION.MAY_BE_SENT,
+    review_slot: null,
     disclosure: `Selected source content may be sent to ${provider} for external review.`,
   });
 }
@@ -2381,6 +2425,20 @@ function sourcePacketOverrideRouteFields(options = {}) {
   };
 }
 
+function reviewSlotRouteFields(options = {}, base = {}) {
+  const reviewSlot = { ...base };
+  if (typeof options["review-slot-disposition"] === "string") {
+    reviewSlot.disposition = options["review-slot-disposition"];
+  }
+  if (typeof options["review-slot-waiver-artifact"] === "string") {
+    reviewSlot.waiverArtifact = options["review-slot-waiver-artifact"];
+  }
+  if (typeof options["review-slot-override-artifact"] === "string") {
+    reviewSlot.overrideArtifact = options["review-slot-override-artifact"];
+  }
+  return reviewSlot;
+}
+
 function approvalScopeForOptions(options = {}) {
   return normalizeApprovalScope(options["approval-scope"] ?? "session");
 }
@@ -2455,6 +2513,9 @@ function buildApprovalAuditManifest({ cfg, renderedPrompt, request, scopeInfo, r
       sourceSendApprovalRequired: routeFields?.source_send_approval_required ?? null,
       sourceSendApprovalState: routeFields?.source_send_approval_state ?? null,
       providerCapabilities: providerCapabilitiesForConfig(cfg),
+      reviewSlot: reviewSlotRouteFields(options, {
+        priorAttempts: options.reviewSlotPriorAttempts ?? [],
+      }),
       ...sourcePacketOverrideRouteFields(options),
     },
     status: "approval_request",
@@ -2472,7 +2533,11 @@ function sourcePacketPolicyFailureFromManifest(auditManifest) {
     null,
     null,
     false,
-    { source_packet_policy: policy },
+    {
+      source_packet_policy: policy,
+      review_slot_retry_policy: auditManifest?.review_slot_retry_policy ?? null,
+      review_slot: auditManifest?.review_slot ?? null,
+    },
   );
 }
 
@@ -2584,6 +2649,9 @@ function buildApprovalRequest({ provider, cfg, mode, options, scopeInfo }) {
     approval_token: approvalToken,
     selected_source: auditManifest.selected_source,
     rendered_prompt_hash: auditManifest.rendered_prompt_hash,
+    source_packet_policy: auditManifest.source_packet_policy,
+    review_slot_retry_policy: auditManifest.review_slot_retry_policy,
+    review_slot: auditManifest.review_slot,
     request: Object.freeze({
       provider: cfg.display_name,
       model: cfg.model,
@@ -2667,6 +2735,11 @@ function buildReviewMetadata(cfg, scopeInfo, execution = null, startedAt = null,
     if (e?.apiReviewersReason !== "bad_args") throw e;
     routeFields = approvalRouteFields(null);
   }
+  const processCompleted = execution?.exitCode === 0 && execution?.parsed?.ok === true;
+  const sourceContentTransmission = directApiTransmission(
+    processCompleted,
+    execution?.payload_sent ?? (processCompleted ? true : null),
+  );
   const auditManifest = execution?.prompt ? buildReviewAuditManifest({
     prompt: execution.prompt,
     sourceFiles: scopeInfo.files,
@@ -2713,9 +2786,13 @@ function buildReviewMetadata(cfg, scopeInfo, execution = null, startedAt = null,
       approvalScope: execution?.approval_scope ?? null,
       authPath: approvalAuthPathFor(cfg, process.env),
       billingPath: routeFields.billing_path,
+      sourceContentTransmission,
       sourceSendApprovalRequired: routeFields.source_send_approval_required,
       sourceSendApprovalState: routeFields.source_send_approval_state,
       providerCapabilities: providerCapabilitiesForConfig(cfg),
+      reviewSlot: reviewSlotRouteFields(options, {
+        priorAttempts: options.reviewSlotPriorAttempts ?? [],
+      }),
       ...sourcePacketOverrideRouteFields(options),
     },
     result: execution.parsed?.result ?? "",
@@ -2769,6 +2846,12 @@ function buildRuntimeDiagnostics(diagnostics) {
   if (diagnostics.source_packet_policy) {
     out.source_packet_policy = diagnostics.source_packet_policy;
   }
+  if (diagnostics.review_slot_retry_policy) {
+    out.review_slot_retry_policy = diagnostics.review_slot_retry_policy;
+  }
+  if (diagnostics.review_slot) {
+    out.review_slot = diagnostics.review_slot;
+  }
   return Object.keys(out).length === 0 ? null : out;
 }
 
@@ -2795,6 +2878,12 @@ function buildRecord({ provider, cfg, mode, options, scopeInfo, execution, start
   const payloadSent = execution.payload_sent ?? (processCompleted ? true : null);
   const sourceContentTransmission = directApiTransmission(completed, payloadSent);
   const disclosure = directApiDisclosure(cfg.display_name, completed, payloadSent);
+  const reviewSlot = reviewMetadata?.audit_manifest?.review_slot
+    ? Object.freeze({
+      ...reviewMetadata.audit_manifest.review_slot,
+      source_state: sourceContentTransmission,
+    })
+    : null;
   const externalReview = freezeExternalReview({
     marker: "EXTERNAL REVIEW",
     provider: cfg.display_name,
@@ -2807,6 +2896,7 @@ function buildRecord({ provider, cfg, mode, options, scopeInfo, execution, start
     scope_base: scopeInfo.scope_base ?? null,
     scope_paths: scopeInfo.scope_paths ?? null,
     source_content_transmission: sourceContentTransmission,
+    review_slot: reviewSlot,
     disclosure,
   });
   const runtimeDiagnostics = buildRuntimeDiagnostics(execution.diagnostics);
@@ -2962,6 +3052,9 @@ async function cmdApprovalRequest(options) {
     }
     if (!hasPromptText(options.prompt)) throw runBadArgs("bad_args: prompt is required (pass --prompt <focus>)");
     scopeInfo = await collectScope({ ...options, mode });
+    options.reviewSlotPriorAttempts = await collectPriorReviewSlotAttempts(
+      apiReviewerDataRoot(process.env, scopeInfo.workspaceRoot ?? scopeInfo.cwd),
+    );
     let approvalRequest;
     try {
       approvalRequest = buildApprovalRequest({ provider, cfg, mode, options, scopeInfo });
@@ -3024,6 +3117,10 @@ async function cmdRun(options) {
     );
     if (!statePreflight.ok) throw runProviderFailure("sandbox_blocked", statePreflight.error);
     scopeInfo = await collectScope({ ...runOptions, mode });
+    runOptions.reviewSlotPriorAttempts = await collectPriorReviewSlotAttempts(
+      apiReviewerDataRoot(process.env, scopeInfo.workspaceRoot ?? scopeInfo.cwd),
+      jobId,
+    );
   } catch (e) {
     const redact = redactor();
     const policyError = isGitBinaryPolicyError(e);
@@ -3083,7 +3180,7 @@ async function cmdRun(options) {
         authPath = approvalAuthPathFor(cfg, process.env);
         billingPath = approvalBillingPathFor(cfg);
         routeFields = approvalRouteFields(routeStateForApproval(cfg, process.env));
-        auditManifest = buildApprovalAuditManifest({ cfg, renderedPrompt, request, scopeInfo, routeFields, approvalScope, options });
+        auditManifest = buildApprovalAuditManifest({ cfg, renderedPrompt, request, scopeInfo, routeFields, approvalScope, options: runOptions });
         execution = sourcePacketPolicyFailureFromManifest(auditManifest);
         if (execution) execution.prompt = renderedPrompt;
       }

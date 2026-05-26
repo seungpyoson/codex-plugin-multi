@@ -46,6 +46,12 @@ function quality(record) {
   return valueAt(record, ["review_metadata", "audit_manifest", "review_quality"], {});
 }
 
+function reviewSlot(record) {
+  return valueAt(record, ["review_metadata", "audit_manifest", "review_slot"], null)
+    ?? valueAt(record, ["external_review", "review_slot"], null)
+    ?? {};
+}
+
 function reasons(record) {
   const raw = quality(record).semantic_failure_reasons;
   return Array.isArray(raw) ? raw.join(",") : "";
@@ -182,6 +188,7 @@ export function buildReviewPanelRows(records = []) {
   return records.filter(isRecordObject).map((record) => {
     const showReviewQuality = !isActiveStatus(record.status);
     const semanticFailed = showReviewQuality && quality(record).failed_review_slot === true;
+    const slot = reviewSlot(record);
     return Object.freeze({
       provider: providerName(record),
       job_id: jobId(record),
@@ -199,6 +206,14 @@ export function buildReviewPanelRows(records = []) {
       error_code: record.status === "failed" ? (record.error_code ?? "") : "",
       http_status: record.http_status ?? "",
       reasons: showReviewQuality ? reasons(record) : "",
+      slot_id: slot.slot_id ?? "",
+      retry_count: Number.isSafeInteger(slot.retry_count) ? slot.retry_count : "",
+      retry_required: slot.retry_disposition_required === true,
+      slot_verdict: slot.verdict ?? "",
+      not_counted_reason: slot.not_counted_reason ?? "",
+      disposition: slot.disposition ?? "",
+      waiver_artifact: slot.waiver_artifact ?? "",
+      override_artifact: slot.override_artifact ?? "",
     });
   });
 }
@@ -392,6 +407,14 @@ export function renderReviewPanelMarkdown(records = []) {
     "Error Code",
     "HTTP",
     "Reasons",
+    "Slot",
+    "Retry Count",
+    "Retry Required",
+    "Slot Verdict",
+    "Not Counted",
+    "Disposition",
+    "Waiver",
+    "Override",
   ];
   return [
     `| ${header.join(" | ")} |`,
@@ -411,6 +434,14 @@ export function renderReviewPanelMarkdown(records = []) {
       row.error_code,
       row.http_status,
       row.reasons,
+      row.slot_id,
+      row.retry_count,
+      row.retry_required,
+      row.slot_verdict,
+      row.not_counted_reason,
+      row.disposition,
+      row.waiver_artifact,
+      row.override_artifact,
     ].map(cell).join(" | ")).map((line) => `| ${line} |`),
   ].join("\n");
 }

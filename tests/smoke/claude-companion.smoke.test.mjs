@@ -15,7 +15,7 @@ import { fileURLToPath } from "node:url";
 
 import { fixtureBranchDiffRepo, fixtureGitEnv, fixtureSeedRepo } from "../helpers/fixture-git.mjs";
 import { assertJobRecordShape } from "../helpers/job-record-shape.mjs";
-import { badVerdictReviewFixture } from "../helpers/review-fixtures.mjs";
+import { badVerdictReviewFixture, requestChangesReviewFixture } from "../helpers/review-fixtures.mjs";
 import { CLAUDE_PROVIDER_API_KEY_ENV } from "../../plugins/claude/scripts/lib/claude-provider-keys.mjs";
 import {
   apiKeyAuthMode as claudeApiKeyAuthMode,
@@ -384,6 +384,143 @@ test("custom-review explicit large source override records policy and sends sour
     assert.equal(policy.source_packet_action, "send_after_source_packet_override");
     assert.equal(policy.source_packet_override_approved, true);
     assert.equal(policy.source_packet_override_source, "--allow-large-source-packet");
+  } finally {
+    cleanup(dataDir);
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("custom-review records explicit review-slot waiver disposition", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "claude-review-slot-waiver-cwd-"));
+  fixtureSeedRepo(cwd);
+
+  const { stdout, status, dataDir } = runCompanion(
+    ["run", "--mode=custom-review", "--foreground", "--model", "claude-haiku-4-5-20251001",
+     "--cwd", cwd, "--scope-paths", "seed.txt",
+     "--review-slot-disposition", "waive",
+     "--review-slot-waiver-artifact", "reviews/waiver-180.md",
+     "--", "review selected source"],
+    { cwd, env: { CLAUDE_MOCK_ASSERT_PROMPT_INCLUDES: "CLAUDE FILE 1: seed.txt" } },
+  );
+  try {
+    assert.equal(status, 0, stdout);
+    const record = JSON.parse(stdout);
+    assert.equal(record.status, "completed");
+    assert.equal(record.review_metadata.audit_manifest.review_slot.disposition, "waive");
+    assert.equal(record.review_metadata.audit_manifest.review_slot.waiver_artifact, "reviews/waiver-180.md");
+    assert.equal(record.review_metadata.audit_manifest.review_slot.override_artifact, null);
+    assert.equal(record.external_review.review_slot.disposition, "waive");
+  } finally {
+    cleanup(dataDir);
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("custom-review blocks fresh same-packet resend after a failed source-sent slot", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "claude-review-slot-fresh-retry-cwd-"));
+  const dataDir = mkdtempSync(path.join(tmpdir(), "claude-review-slot-fresh-retry-data-"));
+  const invocationCountPath = path.join(dataDir, "target-invocations.txt");
+  const fixturePath = path.join(cwd, "claude-failed-slot-fixture.json");
+  fixtureSeedRepo(cwd);
+  const badResult = badVerdictReviewFixture("Claude fresh retry guard marker.");
+  writeFileSync(fixturePath, JSON.stringify({
+    type: "result",
+    subtype: "success",
+    is_error: false,
+    result: badResult,
+    num_turns: 1,
+    duration_ms: 100,
+    duration_api_ms: 80,
+    total_cost_usd: 0.001,
+    usage: { input_tokens: 10, output_tokens: 5, service_tier: "standard" },
+    permission_denials: [],
+    apiKeySource: "None",
+  }) + "\n");
+  const commonArgs = [
+    "run", "--mode=custom-review", "--foreground", "--model", "claude-haiku-4-5-20251001",
+    "--cwd", cwd, "--scope-paths", "seed.txt", "--", "review selected source",
+  ];
+  const commonOptions = {
+    cwd,
+    dataDir,
+    env: {
+      CLAUDE_MOCK_FIXTURE_PATH: fixturePath,
+      CLAUDE_MOCK_INVOCATION_COUNT_PATH: invocationCountPath,
+      CLAUDE_MOCK_INVOCATION_COUNT_PROMPT_INCLUDES: "CLAUDE FILE 1: seed.txt",
+    },
+  };
+
+  try {
+    const first = runCompanion(commonArgs, commonOptions);
+    assert.equal(first.status, 2, `exit ${first.status}: stderr=${first.stderr}; stdout=${first.stdout}`);
+    const firstRecord = JSON.parse(first.stdout);
+    assert.equal(firstRecord.error_code, "review_not_completed");
+    assert.equal(firstRecord.external_review.source_content_transmission, "sent");
+
+    const second = runCompanion(commonArgs, commonOptions);
+    assert.equal(second.status, 2, `exit ${second.status}: stderr=${second.stderr}; stdout=${second.stdout}`);
+    const secondRecord = JSON.parse(second.stdout);
+    assert.equal(secondRecord.error_code, "review_slot_disposition_required");
+    assert.equal(secondRecord.external_review.source_content_transmission, "not_sent");
+    assert.equal(secondRecord.review_metadata.audit_manifest.review_slot.retry_count, 1);
+    assert.equal(
+      secondRecord.review_metadata.audit_manifest.source_packet_policy.source_packet_action,
+      "review_slot_retry_blocked",
+    );
+    assert.equal(readFileSync(invocationCountPath, "utf8"), "1");
+  } finally {
+    cleanup(dataDir);
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("custom-review blocks fresh same-packet resend after a request-changes slot", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "claude-review-slot-request-changes-cwd-"));
+  const dataDir = mkdtempSync(path.join(tmpdir(), "claude-review-slot-request-changes-data-"));
+  const fixturePath = path.join(cwd, "claude-request-changes-fixture.json");
+  fixtureSeedRepo(cwd);
+  const requestChangesResult = requestChangesReviewFixture("Claude request-changes retry guard marker.");
+  writeFileSync(fixturePath, JSON.stringify({
+    type: "result",
+    subtype: "success",
+    is_error: false,
+    result: requestChangesResult,
+    num_turns: 1,
+    duration_ms: 100,
+    duration_api_ms: 80,
+    total_cost_usd: 0.001,
+    usage: { input_tokens: 10, output_tokens: 5, service_tier: "standard" },
+    permission_denials: [],
+    apiKeySource: "None",
+  }) + "\n");
+  const commonArgs = [
+    "run", "--mode=custom-review", "--foreground", "--model", "claude-haiku-4-5-20251001",
+    "--cwd", cwd, "--scope-paths", "seed.txt", "--", "review selected source",
+  ];
+  const commonOptions = {
+    cwd,
+    dataDir,
+    env: { CLAUDE_MOCK_FIXTURE_PATH: fixturePath },
+  };
+
+  try {
+    const first = runCompanion(commonArgs, commonOptions);
+    assert.equal(first.status, 0, `exit ${first.status}: stderr=${first.stderr}; stdout=${first.stdout}`);
+    const firstRecord = JSON.parse(first.stdout);
+    assert.equal(firstRecord.status, "completed");
+    assert.equal(firstRecord.external_review.review_slot?.verdict, "request_changes");
+    assert.equal(firstRecord.external_review.source_content_transmission, "sent");
+
+    const second = runCompanion(commonArgs, commonOptions);
+    assert.equal(second.status, 2, `exit ${second.status}: stderr=${second.stderr}; stdout=${second.stdout}`);
+    const secondRecord = JSON.parse(second.stdout);
+    assert.equal(secondRecord.error_code, "review_slot_disposition_required");
+    assert.equal(secondRecord.external_review.source_content_transmission, "not_sent");
+    assert.equal(secondRecord.review_metadata.audit_manifest.review_slot.retry_count, 1);
+    assert.equal(
+      secondRecord.review_metadata.audit_manifest.source_packet_policy.source_packet_action,
+      "review_slot_retry_blocked",
+    );
   } finally {
     cleanup(dataDir);
     rmSync(cwd, { recursive: true, force: true });
@@ -1015,6 +1152,7 @@ test("run --mode=review --foreground lifecycle jsonl emits launch event before t
       scope_base: null,
       scope_paths: null,
       source_content_transmission: "may_be_sent",
+      review_slot: null,
       disclosure: "Selected source content may be sent to Claude Code for external review.",
     });
     assert.equal(record.status, "completed");
@@ -4505,6 +4643,67 @@ process.exit(0);
     assert.doesNotMatch(approval.stdout + run.stdout, /secret-test-value/);
   } finally {
     cleanup(approval.dataDir);
+    rmSync(cwd, { recursive: true, force: true });
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("approval-request: explicit api_key blocks same-packet request-changes retry without disposition", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "claude-approval-request-retry-cwd-"));
+  const dataDir = mkdtempSync(path.join(tmpdir(), "claude-approval-request-retry-data-"));
+  fixtureSeedRepo(cwd, {
+    fileName: "seed.txt",
+    fileContents: "CLAUDE_APPROVAL_RETRY_SOURCE_SENTINEL\n",
+  });
+  const tmp = mkdtempSync(path.join(tmpdir(), "claude-approval-request-retry-bin-"));
+  const reviewText = requestChangesReviewFixture("Claude API-key approval retry guard marker.");
+  const binary = writeExecutable(tmp, "claude-approval-request-retry", `#!/usr/bin/env node
+process.stdout.write(JSON.stringify({
+  type: "result",
+  is_error: false,
+  result: ${JSON.stringify(reviewText)},
+  session_id: "44444444-4444-4444-8444-444444444444",
+  usage: { input_tokens: 1, output_tokens: 1 }
+}) + "\\n");
+process.exit(0);
+`);
+  const commonOptions = [
+    "--mode=custom-review", ...claudeAuthModeArgs(claudeApiKeyAuthMode()),
+    "--binary", binary, "--model", "claude-haiku-4-5-20251001",
+    "--cwd", cwd, "--scope-paths", "seed.txt",
+  ];
+  const env = { ANTHROPIC_API_KEY: "secret-test-value", CLAUDE_API_KEY: "" };
+
+  try {
+    const approval = runCompanion(
+      ["approval-request", ...commonOptions, "--", "review selected source"],
+      { cwd, dataDir, env },
+    );
+    assert.equal(approval.status, 0, approval.stderr || approval.stdout);
+    const request = JSON.parse(approval.stdout);
+
+    const run = runCompanion(
+      ["run", "--foreground", "--lifecycle-events", "jsonl", ...commonOptions, "--approval-token", request.approval_token.value, "--", "review selected source"],
+      { cwd, dataDir, env },
+    );
+    assert.equal(run.status, 0, run.stderr || run.stdout);
+    const record = run.stdout.trim().split("\n").map((line) => JSON.parse(line)).at(-1);
+    assert.equal(record.external_review.review_slot?.verdict, "request_changes");
+    assert.equal(record.external_review.source_content_transmission, "sent");
+
+    const blockedApproval = runCompanion(
+      ["approval-request", ...commonOptions, "--", "review selected source"],
+      { cwd, dataDir, env },
+    );
+    assert.equal(blockedApproval.status, 1, blockedApproval.stderr || blockedApproval.stdout);
+    const blocked = JSON.parse(blockedApproval.stdout);
+    assert.equal(blocked.error, "review_slot_disposition_required");
+    assert.equal(blocked.review_slot.retry_count, 1);
+    assert.equal(blocked.review_slot.verdict, "failed_slot");
+    assert.equal(blocked.source_packet_policy.source_packet_action, "review_slot_retry_blocked");
+    assert.equal(Object.hasOwn(blocked, "approval_token"), false);
+  } finally {
+    cleanup(dataDir);
     rmSync(cwd, { recursive: true, force: true });
     rmSync(tmp, { recursive: true, force: true });
   }

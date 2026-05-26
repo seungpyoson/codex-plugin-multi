@@ -1,6 +1,12 @@
 import { createHash } from "node:crypto";
 
-import { evaluateSourcePacketPolicy } from "./provider-route-policy.mjs";
+import {
+  buildReviewSlotDisposition,
+  evaluateReviewSlotRetryPolicy,
+  evaluateSourcePacketPolicy,
+  reviewSlotRequestSettingsHash,
+  reviewSlotRetryFingerprint,
+} from "./provider-route-policy.mjs";
 
 export const REVIEW_PROMPT_CHECKLIST = Object.freeze([
   "Verify exact base/head refs and commits before judging the diff.",
@@ -1064,6 +1070,7 @@ export function buildReviewAuditManifest({
   errorCode = null,
 } = {}) {
   const selectedSource = sourceManifest(sourceFiles);
+  const renderedPromptHash = hashObject(prompt);
   const routeStep = route.routeStep ?? null;
   const routeSteps = Array.isArray(route.routeSteps)
     ? Object.freeze(route.routeSteps.map((step) => Object.freeze({ ...step })))
@@ -1084,9 +1091,77 @@ export function buildReviewAuditManifest({
     sourcePacketOverrideApproved: route.sourcePacketOverrideApproved === true,
     sourcePacketOverrideSource: route.sourcePacketOverrideSource ?? null,
   });
+  const requestSettingsHash = reviewSlotRequestSettingsHash(request);
+  const retryFingerprint = reviewSlotRetryFingerprint({
+    provider: request.provider ?? null,
+    mode: route.mode ?? scope.name ?? null,
+    renderedPromptHash,
+    selectedSource,
+    reviewedHeadSha: git.headCommit ?? null,
+    routeStep,
+    scope: {
+      name: scope.name ?? null,
+      base: scope.base ?? null,
+      paths: scope.paths ?? null,
+      path_hmacs: scope.path_hmacs ?? scope.scope_path_hmacs ?? scope.hmacs ?? null,
+    },
+  });
+  const priorAttempts = Array.isArray(route.reviewSlot?.priorAttempts)
+    ? route.reviewSlot.priorAttempts
+    : [
+      route.previousAttempt?.review_slot ??
+      route.previousAttempt?.review_metadata?.audit_manifest?.review_slot ??
+      null,
+    ].filter(Boolean);
+  const retryPolicy = evaluateReviewSlotRetryPolicy({
+    retryFingerprint,
+    priorAttempts,
+    disposition: route.reviewSlot?.disposition ?? "none",
+    waiverArtifact: route.reviewSlot?.waiverArtifact ?? null,
+    overrideArtifact: route.reviewSlot?.overrideArtifact ?? null,
+  });
+  const effectiveSourcePacketPolicy = retryPolicy.source_send_allowed === false
+    ? Object.freeze({
+      ...sourcePacketPolicy,
+      source_send_allowed: false,
+      source_packet_action: "review_slot_retry_blocked",
+      source_content_transmission: "not_sent",
+      source_packet_policy_error_code:
+        retryPolicy.fail_closed_reason ?? "review_slot_retry_blocked",
+      suggested_action:
+        "Do not launch another same-packet review until the packet is split, the provider is switched, the slot is waived, or an explicit override artifact is recorded.",
+    })
+    : sourcePacketPolicy;
+  const reviewQuality = qualityFlags({ result, status, errorCode, selectedSource });
+  const sourceContentTransmission =
+    effectiveSourcePacketPolicy.source_send_allowed === false
+      ? (effectiveSourcePacketPolicy.source_content_transmission ?? "not_sent")
+      : (route.sourceContentTransmission ?? effectiveSourcePacketPolicy.source_content_transmission ?? null);
+  const reviewSlot = buildReviewSlotDisposition({
+    provider: request.provider ?? null,
+    mode: route.mode ?? scope.name ?? null,
+    stage: route.reviewSlot?.stage ?? "final",
+    slotId: route.reviewSlot?.slotId ?? null,
+    attemptId: route.reviewSlot?.attemptId ?? providerIds.requestId ?? providerIds.sessionId ?? null,
+    parentAttemptId: route.reviewSlot?.parentAttemptId ?? route.previousAttempt?.attempt_id ?? null,
+    reviewedHeadSha: git.headCommit ?? null,
+    currentHeadSha: route.reviewSlot?.currentHeadSha ?? git.headCommit ?? null,
+    retryFingerprint,
+    retryCount: retryPolicy.retry_count,
+    retryDispositionRequired: retryPolicy.retry_disposition_required,
+    requestSettingsHash,
+    sourceState: sourceContentTransmission,
+    status,
+    errorCode,
+    result,
+    reviewQuality,
+    disposition: route.reviewSlot?.disposition ?? retryPolicy.disposition,
+    waiverArtifact: route.reviewSlot?.waiverArtifact ?? null,
+    overrideArtifact: route.reviewSlot?.overrideArtifact ?? null,
+  });
   return Object.freeze({
     schema_version: REVIEW_AUDIT_MANIFEST_VERSION,
-    rendered_prompt_hash: hashObject(prompt),
+    rendered_prompt_hash: renderedPromptHash,
     selected_source: selectedSource,
     git_identity: Object.freeze({
       remote: git.remote ?? null,
@@ -1137,12 +1212,14 @@ export function buildReviewAuditManifest({
     auth_path: route.authPath ?? null,
     billing_path: route.billingPath ?? null,
     source_bearing: sourceBearing,
-    source_content_transmission: route.sourceContentTransmission ?? sourcePacketPolicy.source_content_transmission ?? null,
+    source_content_transmission: sourceContentTransmission,
     source_send_approval_required: route.sourceSendApprovalRequired ?? null,
     source_send_approval_state: route.sourceSendApprovalState ?? null,
-    source_packet_policy: Object.freeze({ ...sourcePacketPolicy }),
+    source_packet_policy: Object.freeze({ ...effectiveSourcePacketPolicy }),
+    review_slot_retry_policy: Object.freeze({ ...retryPolicy }),
+    review_slot: reviewSlot,
     error_code: errorCode,
-    review_quality: qualityFlags({ result, status, errorCode, selectedSource }),
+    review_quality: reviewQuality,
   });
 }
 

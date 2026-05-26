@@ -867,6 +867,7 @@ test("provider architecture parity table is machine-validatable and complete", (
     "suggested actions",
     "audit fields",
     "review-quality gates",
+    "review-slot disposition",
     "status/UX normalization",
     "generated contracts",
     "docs",

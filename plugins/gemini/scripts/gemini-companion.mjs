@@ -373,6 +373,7 @@ function reviewAuditManifest(invocation, prompt, containmentPath, execution) {
       previousAttempt: invocation.previous_source_attempt ?? null,
       resendConfirmationApproved: invocation.resend_confirmation_approved === true,
       resumeWithoutSourceResend: invocation.resume_without_source_resend === true,
+      ...reviewSlotRouteFields(invocation),
       ...sourcePacketOverrideRouteFields(invocation),
     },
     result: execution?.parsed?.result ?? "",
@@ -400,6 +401,74 @@ function sourcePacketOverrideRouteFields(invocation = {}) {
     sourcePacketOverrideApproved: invocation.source_packet_override_approved === true,
     sourcePacketOverrideSource: invocation.source_packet_override_source ?? null,
   };
+}
+
+function reviewSlotInvocationFields(options = {}) {
+  return Object.freeze({
+    review_slot_disposition: typeof options["review-slot-disposition"] === "string"
+      ? options["review-slot-disposition"]
+      : null,
+    review_slot_waiver_artifact: typeof options["review-slot-waiver-artifact"] === "string"
+      ? options["review-slot-waiver-artifact"]
+      : null,
+    review_slot_override_artifact: typeof options["review-slot-override-artifact"] === "string"
+      ? options["review-slot-override-artifact"]
+      : null,
+  });
+}
+
+function reviewSlotRouteFields(invocation = {}) {
+  return {
+    reviewSlot: {
+      priorAttempts: Array.isArray(invocation.review_slot_prior_attempts)
+        ? invocation.review_slot_prior_attempts
+        : [],
+      disposition: invocation.review_slot_disposition ?? "none",
+      waiverArtifact: invocation.review_slot_waiver_artifact ?? null,
+      overrideArtifact: invocation.review_slot_override_artifact ?? null,
+    },
+  };
+}
+
+function reviewSlotFromRecord(record) {
+  const slot = record?.review_metadata?.audit_manifest?.review_slot
+    ?? record?.external_review?.review_slot
+    ?? null;
+  return slot && typeof slot === "object" && !Array.isArray(slot) ? slot : null;
+}
+
+function priorSlotCountsTowardRetry(slot) {
+  if (!slot?.retry_fingerprint) return false;
+  if (slot.source_state === "not_sent") return false;
+  if (slot.verdict === "approved") return false;
+  const reason = String(slot.not_counted_reason ?? "unknown");
+  if (reason === "stale_head" || reason === "source_not_sent") return false;
+  return true;
+}
+
+function collectPriorReviewSlotAttempts(workspaceRoot, currentJobId = null) {
+  let entries;
+  try {
+    entries = readdirSync(resolveJobsDir(workspaceRoot), { withFileTypes: true });
+  } catch (error) {
+    if (error?.code === "ENOENT") return [];
+    throw error;
+  }
+  const attempts = [];
+  for (const entry of entries) {
+    if (!entry.isFile() || !entry.name.endsWith(".json")) continue;
+    const jobId = entry.name.slice(0, -".json".length);
+    if (currentJobId !== null && jobId === currentJobId) continue;
+    try {
+      const record = JSON.parse(readFileSync(joinPath(resolveJobsDir(workspaceRoot), entry.name), "utf8"));
+      if (record?.job_id !== jobId) continue;
+      const slot = reviewSlotFromRecord(record);
+      if (priorSlotCountsTowardRetry(slot)) attempts.push({ review_slot: slot });
+    } catch {
+      // Malformed legacy records are not trusted as retry-policy evidence.
+    }
+  }
+  return attempts;
 }
 
 function approvalAuditManifest(invocation, prompt, containmentPath) {
@@ -449,6 +518,7 @@ function approvalAuditManifest(invocation, prompt, containmentPath) {
       sourceSendApprovalRequired: invocation.source_send_approval_required ?? null,
       sourceSendApprovalState: invocation.source_send_approval_state ?? null,
       providerCapabilities: providerCapabilitiesForReviewAudit(),
+      ...reviewSlotRouteFields(invocation),
       ...sourcePacketOverrideRouteFields(invocation),
     },
     result: "",
@@ -646,11 +716,25 @@ function writeRuntimeOptionsSidecar(workspaceRoot, jobId, options) {
     if (options.previous_source_attempt && typeof options.previous_source_attempt === "object") {
       payload.previous_source_attempt = options.previous_source_attempt;
     }
+    if (Array.isArray(options.review_slot_prior_attempts)) {
+      payload.review_slot_prior_attempts = options.review_slot_prior_attempts.filter(
+        (attempt) => attempt && typeof attempt === "object" && !Array.isArray(attempt),
+      );
+    }
     if (typeof options.resend_confirmation_approved === "boolean") {
       payload.resend_confirmation_approved = options.resend_confirmation_approved;
     }
     if (typeof options.resume_without_source_resend === "boolean") {
       payload.resume_without_source_resend = options.resume_without_source_resend;
+    }
+    if (typeof options.review_slot_disposition === "string" && options.review_slot_disposition.length > 0) {
+      payload.review_slot_disposition = options.review_slot_disposition;
+    }
+    if (typeof options.review_slot_waiver_artifact === "string" && options.review_slot_waiver_artifact.length > 0) {
+      payload.review_slot_waiver_artifact = options.review_slot_waiver_artifact;
+    }
+    if (typeof options.review_slot_override_artifact === "string" && options.review_slot_override_artifact.length > 0) {
+      payload.review_slot_override_artifact = options.review_slot_override_artifact;
     }
     if (typeof options.source_packet_override_approved === "boolean") {
       payload.source_packet_override_approved = options.source_packet_override_approved;
@@ -667,6 +751,40 @@ function writeRuntimeOptionsSidecar(workspaceRoot, jobId, options) {
   }
 }
 
+const BOOLEAN_RUNTIME_OPTION_KEYS = Object.freeze([
+  "resend_confirmation_approved",
+  "resume_without_source_resend",
+  "source_packet_override_approved",
+]);
+
+const STRING_RUNTIME_OPTION_KEYS = Object.freeze([
+  "review_slot_disposition",
+  "review_slot_waiver_artifact",
+  "review_slot_override_artifact",
+  "source_packet_override_source",
+]);
+
+function sidecarObject(value) {
+  return value && typeof value === "object" && !Array.isArray(value) ? value : null;
+}
+
+function sidecarReviewSlotPriorAttempts(value) {
+  if (!Array.isArray(value)) return null;
+  return value.filter((attempt) => sidecarObject(attempt));
+}
+
+function copyBooleanRuntimeOptions(options, parsed) {
+  for (const key of BOOLEAN_RUNTIME_OPTION_KEYS) {
+    if (typeof parsed[key] === "boolean") options[key] = parsed[key];
+  }
+}
+
+function copyStringRuntimeOptions(options, parsed) {
+  for (const key of STRING_RUNTIME_OPTION_KEYS) {
+    if (typeof parsed[key] === "string" && parsed[key].length > 0) options[key] = parsed[key];
+  }
+}
+
 function readRuntimeOptionsSidecar(workspaceRoot, jobId) {
   const file = runtimeOptionsSidecarPath(workspaceRoot, jobId);
   const consumed = consumeJsonSettingsSidecar(file);
@@ -674,27 +792,17 @@ function readRuntimeOptionsSidecar(workspaceRoot, jobId) {
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
   const timeoutMs = parsed.timeout_ms;
   const options = Number.isSafeInteger(timeoutMs) && timeoutMs > 0 ? { timeout_ms: timeoutMs } : {};
-  if (typeof parsed.approval_token === "string" && parsed.approval_token.trim().length > 0) {
-    options.approval_token = parsed.approval_token.trim();
-  }
+  const approvalToken = typeof parsed.approval_token === "string" ? parsed.approval_token.trim() : "";
+  if (approvalToken.length > 0) options.approval_token = approvalToken;
   if (parsed.approval_scope === "session" || parsed.approval_scope === "once") {
     options.approval_scope = parsed.approval_scope;
   }
-  if (parsed.previous_source_attempt && typeof parsed.previous_source_attempt === "object" && !Array.isArray(parsed.previous_source_attempt)) {
-    options.previous_source_attempt = parsed.previous_source_attempt;
-  }
-  if (typeof parsed.resend_confirmation_approved === "boolean") {
-    options.resend_confirmation_approved = parsed.resend_confirmation_approved;
-  }
-  if (typeof parsed.resume_without_source_resend === "boolean") {
-    options.resume_without_source_resend = parsed.resume_without_source_resend;
-  }
-  if (typeof parsed.source_packet_override_approved === "boolean") {
-    options.source_packet_override_approved = parsed.source_packet_override_approved;
-  }
-  if (typeof parsed.source_packet_override_source === "string" && parsed.source_packet_override_source.length > 0) {
-    options.source_packet_override_source = parsed.source_packet_override_source;
-  }
+  const previousSourceAttempt = sidecarObject(parsed.previous_source_attempt);
+  if (previousSourceAttempt) options.previous_source_attempt = previousSourceAttempt;
+  const reviewSlotPriorAttempts = sidecarReviewSlotPriorAttempts(parsed.review_slot_prior_attempts);
+  if (reviewSlotPriorAttempts) options.review_slot_prior_attempts = reviewSlotPriorAttempts;
+  copyBooleanRuntimeOptions(options, parsed);
+  copyStringRuntimeOptions(options, parsed);
   if (consumed.cleanup_warning) {
     options.cleanup_warning = consumed.cleanup_warning;
     options.cleanup_warning_path = consumed.cleanup_warning_path;
@@ -751,8 +859,12 @@ function invocationFromRecord(record, fallbackAuthMode = defaultAuthMode(), runt
     approval_scope: runtimeOptions.approval_scope ?? record.review_metadata?.audit_manifest?.approval_scope ?? null,
     approval_token: runtimeOptions.approval_token ?? null,
     previous_source_attempt: runtimeOptions.previous_source_attempt ?? null,
+    review_slot_prior_attempts: runtimeOptions.review_slot_prior_attempts ?? [],
     resend_confirmation_approved: runtimeOptions.resend_confirmation_approved === true,
     resume_without_source_resend: runtimeOptions.resume_without_source_resend === true,
+    review_slot_disposition: runtimeOptions.review_slot_disposition ?? null,
+    review_slot_waiver_artifact: runtimeOptions.review_slot_waiver_artifact ?? null,
+    review_slot_override_artifact: runtimeOptions.review_slot_override_artifact ?? null,
     source_packet_override_approved: runtimeOptions.source_packet_override_approved === true,
     source_packet_override_source: runtimeOptions.source_packet_override_source ?? null,
   });
@@ -902,7 +1014,11 @@ function cmdPreflight(rest) {
 
 async function cmdApprovalRequest(rest) {
   const { options, positionals } = parseArgs(rest, {
-    valueOptions: ["mode", "model", "cwd", "binary", "scope-base", "scope-paths", "override-dispose", "auth-mode", "timeout-ms", "approval-scope"],
+    valueOptions: [
+      "mode", "model", "cwd", "binary", "scope-base", "scope-paths",
+      "override-dispose", "auth-mode", "timeout-ms", "approval-scope",
+      "review-slot-disposition", "review-slot-waiver-artifact", "review-slot-override-artifact",
+    ],
     booleanOptions: ["allow-large-source-packet"],
   });
   const mode = options.mode;
@@ -933,6 +1049,7 @@ async function cmdApprovalRequest(rest) {
   }
 
   const approvalJobId = newJobId();
+  const reviewSlotPriorAttempts = collectPriorReviewSlotAttempts(workspaceRoot, approvalJobId);
   let invocation = Object.freeze({
     job_id: approvalJobId,
     target: "gemini",
@@ -959,6 +1076,8 @@ async function cmdApprovalRequest(rest) {
     started_at: new Date().toISOString(),
     approval_scope: approvalScope,
     approval_token: null,
+    review_slot_prior_attempts: reviewSlotPriorAttempts,
+    ...reviewSlotInvocationFields(options),
     ...sourcePacketOverrideInvocationFields(options),
   });
   invocation = invocationWithAuthSelection(invocation, authSelection);
@@ -973,6 +1092,15 @@ async function cmdApprovalRequest(rest) {
     }, containment);
     const targetPrompt = targetPromptFor(invocation, prompt, auditSourceFiles(containment.path));
     const auditManifest = approvalAuditManifest(invocation, targetPrompt, containment.path);
+    const policy = auditManifest?.source_packet_policy ?? null;
+    if (policy?.source_send_allowed === false) {
+      const errorCode = policy.source_packet_policy_error_code ?? "source_packet_policy_blocked";
+      fail(errorCode, `${errorCode}: ${policy.suggested_action ?? "source packet policy blocked selected source send"}`, {
+        source_packet_policy: policy,
+        review_slot_retry_policy: auditManifest?.review_slot_retry_policy ?? null,
+        review_slot: auditManifest?.review_slot ?? null,
+      });
+    }
     const token = approvalTokenFor(invocation, auditManifest);
     const totals = auditManifest.selected_source.totals;
     printJson({
@@ -990,6 +1118,9 @@ async function cmdApprovalRequest(rest) {
       approval_token: token,
       selected_source: auditManifest.selected_source,
       rendered_prompt_hash: auditManifest.rendered_prompt_hash,
+      source_packet_policy: auditManifest.source_packet_policy,
+      review_slot_retry_policy: auditManifest.review_slot_retry_policy,
+      review_slot: auditManifest.review_slot,
       request: {
         provider: "Gemini CLI",
         model,
@@ -1014,7 +1145,12 @@ async function cmdApprovalRequest(rest) {
 
 async function cmdRun(rest) {
   const { options, positionals } = parseArgs(rest, {
-    valueOptions: ["mode", "model", "cwd", "binary", "scope-base", "scope-paths", "override-dispose", "auth-mode", "timeout-ms", "lifecycle-events", "approval-token", "approval-scope"],
+    valueOptions: [
+      "mode", "model", "cwd", "binary", "scope-base", "scope-paths",
+      "override-dispose", "auth-mode", "timeout-ms", "lifecycle-events",
+      "approval-token", "approval-scope",
+      "review-slot-disposition", "review-slot-waiver-artifact", "review-slot-override-artifact",
+    ],
     booleanOptions: ["background", "foreground", "allow-large-source-packet"],
   });
   const mode = options.mode;
@@ -1060,6 +1196,7 @@ async function cmdRun(rest) {
   }
 
   const jobId = newJobId();
+  const reviewSlotPriorAttempts = collectPriorReviewSlotAttempts(workspaceRoot, jobId);
   let invocation = Object.freeze({
     job_id: jobId,
     target: "gemini",
@@ -1085,7 +1222,9 @@ async function cmdRun(rest) {
     auth_mode: authSelection.auth_mode,
     approval_scope: approvalScope,
     approval_token: options["approval-token"] ?? null,
+    review_slot_prior_attempts: reviewSlotPriorAttempts,
     started_at: new Date().toISOString(),
+    ...reviewSlotInvocationFields(options),
     ...sourcePacketOverrideInvocationFields(options),
   });
   invocation = invocationWithAuthSelection(invocation, authSelection);
@@ -1140,6 +1279,10 @@ async function cmdRun(rest) {
         timeout_ms: timeoutMs,
         approval_scope: invocation.approval_scope,
         approval_token: invocation.approval_token,
+        review_slot_prior_attempts: invocation.review_slot_prior_attempts,
+        review_slot_disposition: invocation.review_slot_disposition,
+        review_slot_waiver_artifact: invocation.review_slot_waiver_artifact,
+        review_slot_override_artifact: invocation.review_slot_override_artifact,
         source_packet_override_approved: invocation.source_packet_override_approved,
         source_packet_override_source: invocation.source_packet_override_source,
       });
@@ -1699,7 +1842,11 @@ async function cmdRunWorker(rest) {
 
 async function cmdContinue(rest) {
   const { options, positionals } = parseArgs(rest, {
-    valueOptions: ["job", "cwd", "model", "binary", "auth-mode", "timeout-ms", "lifecycle-events", "approval-token", "approval-scope"],
+    valueOptions: [
+      "job", "cwd", "model", "binary", "auth-mode", "timeout-ms", "lifecycle-events",
+      "approval-token", "approval-scope",
+      "review-slot-disposition", "review-slot-waiver-artifact", "review-slot-override-artifact",
+    ],
     booleanOptions: ["background", "foreground", "resend-confirmation-approved", "allow-large-source-packet"],
   });
   if (!options.job) fail("bad_args", "--job <id> is required");
@@ -1777,6 +1924,7 @@ async function cmdContinue(rest) {
       sourcePacketCanResumeWithoutResendFromJobRecord(prior) ||
       sourcePacketCanResumeWithoutResendFromPreviousAttempt(previousSourceAttempt)
     ) && Boolean(priorGeminiSessionId);
+  const reviewSlotPriorAttempts = collectPriorReviewSlotAttempts(workspaceRoot, newJobId_);
   let invocation = Object.freeze({
     job_id: newJobId_,
     target: "gemini",
@@ -1803,8 +1951,10 @@ async function cmdContinue(rest) {
     approval_scope: approvalScope,
     approval_token: options["approval-token"] ?? null,
     previous_source_attempt: previousSourceAttempt,
+    review_slot_prior_attempts: reviewSlotPriorAttempts,
     resend_confirmation_approved: options["resend-confirmation-approved"] === true,
     resume_without_source_resend: resumeWithoutSourceResend,
+    ...reviewSlotInvocationFields(options),
     ...sourcePacketOverrideInvocationFields(options),
     started_at: new Date().toISOString(),
   });
@@ -1861,8 +2011,12 @@ async function cmdContinue(rest) {
         approval_scope: invocation.approval_scope,
         approval_token: invocation.approval_token,
         previous_source_attempt: previousSourceAttempt,
+        review_slot_prior_attempts: invocation.review_slot_prior_attempts,
         resend_confirmation_approved: options["resend-confirmation-approved"] === true,
         resume_without_source_resend: resumeWithoutSourceResend,
+        review_slot_disposition: invocation.review_slot_disposition,
+        review_slot_waiver_artifact: invocation.review_slot_waiver_artifact,
+        review_slot_override_artifact: invocation.review_slot_override_artifact,
         source_packet_override_approved: invocation.source_packet_override_approved,
         source_packet_override_source: invocation.source_packet_override_source,
       });

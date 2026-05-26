@@ -107,13 +107,23 @@ function auditManifestForRecordStatus(manifest, { status, errorCode, pidInfo } =
   const sourceContentTransmission = sourceContentTransmissionForExecution({ status, errorCode, pidInfo });
   const failedReviewSlot = sourceContentTransmission === "sent"
     && !["completed", "queued", "running"].includes(status);
-  if (manifest.review_quality.failed_review_slot === failedReviewSlot) return manifest;
+  const reviewSlot = manifest.review_slot && manifest.review_slot.source_state !== sourceContentTransmission
+    ? Object.freeze({ ...manifest.review_slot, source_state: sourceContentTransmission })
+    : manifest.review_slot;
+  if (
+    manifest.review_quality.failed_review_slot === failedReviewSlot
+    && manifest.review_slot === reviewSlot
+  ) {
+    return manifest;
+  }
   return Object.freeze({
     ...manifest,
+    source_content_transmission: sourceContentTransmission,
     review_quality: Object.freeze({
       ...manifest.review_quality,
       failed_review_slot: failedReviewSlot,
     }),
+    review_slot: reviewSlot,
   });
 }
 
@@ -142,6 +152,11 @@ function buildReviewMetadata(invocation, execution = null, parsed = null, endedA
 
 export function externalReviewForInvocation(invocation, execution = null) {
   const { status, error_code } = classifyExecution(execution);
+  const auditManifest = auditManifestForRecordStatus(execution?.reviewAuditManifest ?? null, {
+    status,
+    errorCode: error_code,
+    pidInfo: execution?.pidInfo ?? null,
+  });
   const sourceContentTransmission = invocation.resume_without_source_resend === true
     ? SOURCE_CONTENT_TRANSMISSION.NOT_SENT
     : sourceContentTransmissionForExecution({
@@ -155,6 +170,7 @@ export function externalReviewForInvocation(invocation, execution = null) {
     status,
     errorCode: error_code,
     sourceContentTransmission,
+    reviewSlot: auditManifest?.review_slot ?? null,
   });
 }
 

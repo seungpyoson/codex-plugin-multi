@@ -81,11 +81,63 @@ retry, resend, and review-surface semantics for every provider and mode.
 - [ ] T042 Refresh exact-head review state after audit-only commits.
 - [ ] T043 Refresh exact-head review state after Kimi prompt-only compatibility commit.
 
+## Phase 8: #180 Follow-Up - Review Slot Disposition And Same-Packet Retry Guard
+
+**Evidence**: #180 was opened after #171/#174/#175 left a shared-policy gap:
+the repo has source-packet resend gates, but no provider-neutral retry
+fingerprint, retry count, not-counted reason, or final slot disposition model.
+
+- [x] T044 Record source-backed evidence in `evidence-map.md` for current
+  launch/tracking surfaces: Claude/Gemini/Kimi `cmdRun`/`cmdContinue`, direct
+  API reviewer, Grok web reviewer, `buildJobRecord`, `buildExternalReview`,
+  `review-panel`, and `evaluateSourcePacketPolicy`.
+- [x] T045 Update `data-model.md`, `spec.md`, `plan.md`, `tasks.md`, and
+  `quickstart.md` with review-slot disposition, retry fingerprint, retry count,
+  not-counted reason, waiver artifact, exact reviewed-head binding, and
+  same-packet third-attempt fail-closed rule, including the shared interfaces
+  `reviewSlotRetryFingerprint`, `evaluateReviewSlotRetryPolicy`,
+  `buildReviewSlotDisposition`, and `redactReviewSlotDisposition`.
+- [ ] T046 Obtain six-reviewer approval or explicit operator waivers for updated
+  Phase 8 `spec.md`, `data-model.md`, `plan.md`, `tasks.md`, `quickstart.md`,
+  and `evidence-map.md` before any RED runtime test or implementation begins.
+  If planning docs change after a reviewer request-changes verdict, repeat the
+  planning-review gate on the new exact head or record explicit waiver.
+- [x] T047 Add RED provider-neutral tests for retry fingerprint construction and
+  third same-packet retry blocking across all providers/modes. Required cases:
+  `retry_count` 0 initial attempt, 1 first retry/second total attempt with
+  `disposition: retry`, 2 third attempt blocked before launch, packet split or
+  provider switch producing a new fingerprint, waiver/override artifact escape,
+  failure-code/request-setting changes not resetting retry count, stale-head
+  approvals excluded with `not_counted_reason: stale_head`, and pre-#180 parent
+  records projecting null/unknown values without satisfying the new guard.
+- [x] T048 Add RED contract/status tests proving JobRecord/external_review or
+  audit metadata exposes slot id, parent attempt, source state, retry count,
+  verdict, not-counted reason, and disposition without raw source/prompt/output,
+  raw command args, or raw paths. Coverage must include audit manifest,
+  JobRecord `review_metadata`, `external_review`, lifecycle/status events,
+  review-panel rows, and direct API/OpenRouter approval/waiver/override
+  artifacts.
+- [x] T049 Implement shared retry/disposition helpers:
+  `reviewSlotRetryFingerprint`, `evaluateReviewSlotRetryPolicy`,
+  `buildReviewSlotDisposition`, and `redactReviewSlotDisposition`. Adapters may
+  provide only capability facts and launch mechanics.
+- [x] T050 Wire Claude/Gemini/Kimi continuation, DeepSeek/GLM direct API
+  single-attempt slots, and Grok single-attempt slots through the same
+  review-slot disposition model.
+- [x] T051 Project disposition and retry state through review panel/status so a
+  failed slot cannot remain silently pending or be counted as approval.
+- [x] T052 Verify with focused tests, `npm run lint:sync`, `npm test`, and
+  `npm run test:full` if shared runtime or packaged copies changed.
+- [ ] T053 Run latest-head external reviews or record explicit operator waivers
+  for failed review slots before claiming merge-readiness.
+
 ## Dependencies
 
 1. Phases 1-5 define the problem and issue ownership.
 2. Phase 6 blocks all implementation.
 3. Phase 7 proceeds one issue at a time after six approvals.
+4. Phase 8 is #180 follow-up work and must repeat the planning review gate
+   before runtime implementation.
 
 ## MVP
 

@@ -9,6 +9,13 @@ const RESEND_CONFIRMATION_REQUIRED_PREFIX = "resend_confirmation_required:";
 const GIT_BINARY_POLICY_PREFIX = "CODEX_PLUGIN_MULTI_GIT_BINARY ";
 const NOT_AUTHED_PREFIX = "not_authed:";
 const SANDBOX_BLOCKED_PREFIX = "sandbox_blocked:";
+const REVIEW_SLOT_POLICY_ERROR_CODES = new Set([
+  "review_slot_disposition_required",
+  "review_slot_override_artifact_required",
+  "review_slot_waiver_artifact_required",
+  "retry_disposition_not_valid_for_third_attempt",
+  "third_same_packet_retry_requires_disposition",
+]);
 const SCOPE_FAILURE_PREFIXES = [
   "unsafe_symlink:",
   "scope_population_failed:",
@@ -125,6 +132,16 @@ export function classifyCompanionErrorMessage(message, options = {}) {
       error_code: "resend_confirmation_required",
       error_message: text.slice(RESEND_CONFIRMATION_REQUIRED_PREFIX.length).trim(),
     };
+  }
+  for (const errorCode of REVIEW_SLOT_POLICY_ERROR_CODES) {
+    const prefix = `${errorCode}:`;
+    if (text.startsWith(prefix)) {
+      return {
+        status: "failed",
+        error_code: errorCode,
+        error_message: text.slice(prefix.length).trim(),
+      };
+    }
   }
   if (text.startsWith(GIT_BINARY_POLICY_PREFIX)) {
     return {

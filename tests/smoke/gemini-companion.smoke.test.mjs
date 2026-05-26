@@ -11,7 +11,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { fixtureBranchDiffRepo, fixtureSeedRepo } from "../helpers/fixture-git.mjs";
-import { badVerdictReviewFixture } from "../helpers/review-fixtures.mjs";
+import { badVerdictReviewFixture, requestChangesReviewFixture } from "../helpers/review-fixtures.mjs";
 import {
   apiKeyAuthMode as geminiApiKeyAuthMode,
   subscriptionAuthMode as geminiSubscriptionAuthMode,
@@ -185,6 +185,7 @@ test("gemini custom-review background: launched event and terminal JobRecord", a
       scope_base: null,
       scope_paths: ["seed.txt"],
       source_content_transmission: "may_be_sent",
+      review_slot: null,
       disclosure: "Selected source content may be sent to Gemini CLI for external review.",
     });
 
@@ -211,10 +212,13 @@ test("gemini custom-review background: launched event and terminal JobRecord", a
     assert.equal(meta.review_metadata.audit_manifest.request.timeout_ms, 345678);
     assert.match(meta.result, /Mock Gemini response\./);
     assert.equal(meta.gemini_session_id, GEMINI_SESSION_ID);
+    assert.equal(meta.external_review.review_slot?.verdict, "approved");
+    assert.equal(meta.external_review.review_slot?.source_state, "sent");
     assert.deepEqual(meta.external_review, {
       ...launched.external_review,
       session_id: GEMINI_SESSION_ID,
       source_content_transmission: "sent",
+      review_slot: meta.external_review.review_slot,
       disclosure: "Selected source content was sent to Gemini CLI for external review.",
     });
     assert.equal("prompt" in meta, false, "full prompt must not appear on JobRecord");
@@ -1600,6 +1604,7 @@ test("gemini review foreground lifecycle jsonl emits launch event before termina
       scope_base: null,
       scope_paths: null,
       source_content_transmission: "may_be_sent",
+      review_slot: null,
       disclosure: "Selected source content may be sent to Gemini CLI for external review.",
     });
     assert.equal(record.status, "completed");
@@ -1844,6 +1849,114 @@ test("gemini custom-review explicit large source override records policy and sen
     assert.equal(policy.source_packet_action, "send_after_source_packet_override");
     assert.equal(policy.source_packet_override_approved, true);
     assert.equal(policy.source_packet_override_source, "--allow-large-source-packet");
+  } finally {
+    rmTree(dataDir);
+    rmTree(cwd);
+  }
+});
+
+test("gemini custom-review records explicit review-slot waiver disposition", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "gemini-review-slot-waiver-cwd-"));
+  seedMinimalRepo(cwd);
+
+  const { stdout, status, dataDir } = runCompanion(
+    ["run", "--mode=custom-review", "--foreground", "--cwd", cwd, "--scope-paths", "seed.txt",
+     "--review-slot-disposition", "waive",
+     "--review-slot-waiver-artifact", "reviews/waiver-180.md",
+     "--", "review selected source"],
+    { cwd, env: { GEMINI_MOCK_ASSERT_PROMPT_INCLUDES: "GEMINI FILE 1: seed.txt" } },
+  );
+  try {
+    assert.equal(status, 0, stdout);
+    const record = JSON.parse(stdout);
+    assert.equal(record.status, "completed");
+    assert.equal(record.review_metadata.audit_manifest.review_slot.disposition, "waive");
+    assert.equal(record.review_metadata.audit_manifest.review_slot.waiver_artifact, "reviews/waiver-180.md");
+    assert.equal(record.review_metadata.audit_manifest.review_slot.override_artifact, null);
+    assert.equal(record.external_review.review_slot.disposition, "waive");
+  } finally {
+    rmTree(dataDir);
+    rmTree(cwd);
+  }
+});
+
+test("gemini custom-review blocks fresh same-packet resend after a failed source-sent slot", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "gemini-review-slot-fresh-retry-cwd-"));
+  const dataDir = mkdtempSync(path.join(tmpdir(), "gemini-review-slot-fresh-retry-data-"));
+  const invocationCountPath = path.join(dataDir, "target-invocations.txt");
+  seedMinimalRepo(cwd);
+  const badResult = badVerdictReviewFixture("Gemini fresh retry guard marker.");
+  const commonArgs = [
+    "run", "--mode=custom-review", "--foreground", "--model", "gemini-3-flash-preview",
+    "--cwd", cwd, "--scope-paths", "seed.txt", "--", "review selected source",
+  ];
+  const commonOptions = {
+    cwd,
+    dataDir,
+    env: {
+      GEMINI_MOCK_RESPONSE: badResult,
+      GEMINI_MOCK_INVOCATION_COUNT_PATH: invocationCountPath,
+      GEMINI_MOCK_INVOCATION_COUNT_PROMPT_INCLUDES: "GEMINI FILE 1: seed.txt",
+    },
+  };
+
+  try {
+    const first = runCompanion(commonArgs, commonOptions);
+    assert.equal(first.status, 2, `exit ${first.status}: stderr=${first.stderr}; stdout=${first.stdout}`);
+    const firstRecord = JSON.parse(first.stdout);
+    assert.equal(firstRecord.error_code, "review_not_completed");
+    assert.equal(firstRecord.external_review.source_content_transmission, "sent");
+
+    const second = runCompanion(commonArgs, commonOptions);
+    assert.equal(second.status, 2, `exit ${second.status}: stderr=${second.stderr}; stdout=${second.stdout}`);
+    const secondRecord = JSON.parse(second.stdout);
+    assert.equal(secondRecord.error_code, "review_slot_disposition_required");
+    assert.equal(secondRecord.external_review.source_content_transmission, "not_sent");
+    assert.equal(secondRecord.review_metadata.audit_manifest.review_slot.retry_count, 1);
+    assert.equal(
+      secondRecord.review_metadata.audit_manifest.source_packet_policy.source_packet_action,
+      "review_slot_retry_blocked",
+    );
+    assert.equal(readFileSync(invocationCountPath, "utf8"), "1");
+  } finally {
+    rmTree(dataDir);
+    rmTree(cwd);
+  }
+});
+
+test("gemini custom-review blocks fresh same-packet resend after a request-changes slot", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "gemini-review-slot-request-changes-cwd-"));
+  const dataDir = mkdtempSync(path.join(tmpdir(), "gemini-review-slot-request-changes-data-"));
+  seedMinimalRepo(cwd);
+  const requestChangesResult = requestChangesReviewFixture("Gemini request-changes retry guard marker.");
+  const commonArgs = [
+    "run", "--mode=custom-review", "--foreground", "--model", "gemini-3-flash-preview",
+    "--cwd", cwd, "--scope-paths", "seed.txt", "--", "review selected source",
+  ];
+  const commonOptions = {
+    cwd,
+    dataDir,
+    env: { GEMINI_MOCK_RESPONSE: requestChangesResult },
+  };
+
+  try {
+    const first = runCompanion(commonArgs, commonOptions);
+    assert.equal(first.status, 0, `exit ${first.status}: stderr=${first.stderr}; stdout=${first.stdout}`);
+    const firstRecord = JSON.parse(first.stdout);
+    assert.equal(firstRecord.status, "completed");
+    assert.equal(firstRecord.external_review.review_slot?.verdict, "request_changes");
+    assert.equal(firstRecord.external_review.source_content_transmission, "sent");
+
+    const second = runCompanion(commonArgs, commonOptions);
+    assert.equal(second.status, 2, `exit ${second.status}: stderr=${second.stderr}; stdout=${second.stdout}`);
+    const secondRecord = JSON.parse(second.stdout);
+    assert.equal(secondRecord.error_code, "review_slot_disposition_required");
+    assert.equal(secondRecord.external_review.source_content_transmission, "not_sent");
+    assert.equal(secondRecord.review_metadata.audit_manifest.review_slot.retry_count, 1);
+    assert.equal(
+      secondRecord.review_metadata.audit_manifest.source_packet_policy.source_packet_action,
+      "review_slot_retry_blocked",
+    );
   } finally {
     rmTree(dataDir);
     rmTree(cwd);
@@ -3068,6 +3181,68 @@ process.stdout.write(JSON.stringify({
     assert.doesNotMatch(approval.stdout + run.stdout, /secret-test-value/);
   } finally {
     rmTree(approval.dataDir);
+    rmTree(cwd);
+    rmTree(binDir);
+  }
+});
+
+test("gemini approval-request blocks same-packet request-changes retry without disposition", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "gemini-approval-request-retry-cwd-"));
+  const dataDir = mkdtempSync(path.join(tmpdir(), "gemini-approval-request-retry-data-"));
+  fixtureSeedRepo(cwd, {
+    fileName: "seed.txt",
+    fileContents: "GEMINI_APPROVAL_RETRY_SOURCE_SENTINEL\n",
+  });
+  const binDir = mkdtempSync(path.join(tmpdir(), "gemini-approval-request-retry-bin-"));
+  const binary = path.join(binDir, "gemini-approval-request-retry");
+  const reviewText = requestChangesReviewFixture("Gemini API-key approval retry guard marker.");
+  writeFileSync(binary, `#!/usr/bin/env node
+process.stdout.write(JSON.stringify({
+  session_id: "${GEMINI_SESSION_ID}",
+  response: ${JSON.stringify(reviewText)}
+}) + "\\n");
+`, "utf8");
+  chmodSync(binary, 0o755);
+  const commonOptions = [
+    "--mode=custom-review",
+    ...geminiAuthModeArgs(geminiApiKeyAuthMode()),
+    "--binary", binary,
+    "--model", "gemini-3-flash-preview",
+    "--cwd", cwd,
+    "--scope-paths", "seed.txt",
+  ];
+  const env = { GEMINI_API_KEY: "secret-test-value", GOOGLE_API_KEY: "" };
+
+  try {
+    const approval = runCompanion(
+      ["approval-request", ...commonOptions, "--", "review selected source"],
+      { cwd, dataDir, env },
+    );
+    assert.equal(approval.status, 0, approval.stderr || approval.stdout);
+    const request = JSON.parse(approval.stdout);
+
+    const run = runCompanion(
+      ["run", "--foreground", "--lifecycle-events", "jsonl", ...commonOptions, "--approval-token", request.approval_token.value, "--", "review selected source"],
+      { cwd, dataDir, env },
+    );
+    assert.equal(run.status, 0, run.stderr || run.stdout);
+    const record = run.stdout.trim().split("\n").map((line) => JSON.parse(line)).at(-1);
+    assert.equal(record.external_review.review_slot?.verdict, "request_changes");
+    assert.equal(record.external_review.source_content_transmission, "sent");
+
+    const blockedApproval = runCompanion(
+      ["approval-request", ...commonOptions, "--", "review selected source"],
+      { cwd, dataDir, env },
+    );
+    assert.equal(blockedApproval.status, 1, blockedApproval.stderr || blockedApproval.stdout);
+    const blocked = JSON.parse(blockedApproval.stdout);
+    assert.equal(blocked.error, "review_slot_disposition_required");
+    assert.equal(blocked.review_slot.retry_count, 1);
+    assert.equal(blocked.review_slot.verdict, "failed_slot");
+    assert.equal(blocked.source_packet_policy.source_packet_action, "review_slot_retry_blocked");
+    assert.equal(Object.hasOwn(blocked, "approval_token"), false);
+  } finally {
+    rmTree(dataDir);
     rmTree(cwd);
     rmTree(binDir);
   }

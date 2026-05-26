@@ -7,9 +7,13 @@ import { fileURLToPath } from "node:url";
 import {
   normalizeApprovalScope,
   buildProviderPolicyContract,
+  buildReviewSlotDisposition,
   evaluateSourcePacketPolicy,
+  evaluateReviewSlotRetryPolicy,
   PROVIDER_POLICY_DOMAINS,
   PROVIDER_ROUTE_STEPS,
+  redactReviewSlotDisposition,
+  reviewSlotRetryFingerprint,
   selectProviderRoute,
   sourcePacketCanResumeWithoutResendFromJobRecord,
   sourcePacketCanResumeWithoutResendFromPreviousAttempt,
@@ -66,6 +70,7 @@ const requiredPolicyDomains = [
   "failure_taxonomy",
   "suggested_action",
   "review_quality",
+  "review_slot",
   "audit",
   "docs",
   "sync",
@@ -86,6 +91,282 @@ function selectedSourceFixture(bytes) {
     totals: Object.freeze({ files: 1, bytes, lines: 1 }),
   });
 }
+
+test("review slot retry fingerprint ignores request settings and failure codes", () => {
+  const base = {
+    provider: "kimi",
+    mode: "review",
+    renderedPromptHash: { algorithm: "sha256", value: "prompt-hash" },
+    selectedSource: selectedSourceFixture(12),
+    reviewedHeadSha: "abc123",
+    routeStep: "subscription",
+    scope: {
+      name: "branch-diff",
+      base: "origin/main",
+      paths: ["src/example.js"],
+    },
+    request: {
+      model: "kimi-code",
+      timeoutMs: 900000,
+      maxStepsPerTurn: 32,
+    },
+    failureCode: "timeout",
+  };
+
+  const fingerprint = reviewSlotRetryFingerprint(base);
+  assert.equal(fingerprint.algorithm, "sha256");
+  assert.match(fingerprint.value, /^[a-f0-9]{64}$/);
+  assert.deepEqual(fingerprint.ingredients.scope_paths, ["src/example.js"]);
+
+  assert.equal(reviewSlotRetryFingerprint({
+    ...base,
+    request: { model: "kimi-code", timeoutMs: 1, maxStepsPerTurn: 999 },
+    failureCode: "step_limit_exceeded",
+  }).value, fingerprint.value);
+
+  assert.notEqual(reviewSlotRetryFingerprint({
+    ...base,
+    reviewedHeadSha: "def456",
+  }).value, fingerprint.value);
+
+  const pathHmacFingerprint = reviewSlotRetryFingerprint({
+    ...base,
+    scope: {
+      ...base.scope,
+      path_hmacs: ["hmac-b", "hmac-a"],
+    },
+  });
+  assert.deepEqual(pathHmacFingerprint.ingredients.scope_path_hmacs, ["hmac-a", "hmac-b"]);
+  assert.notEqual(pathHmacFingerprint.value, fingerprint.value);
+  assert.notEqual(reviewSlotRetryFingerprint({
+    ...base,
+    scope: {
+      ...base.scope,
+      path_hmacs: ["hmac-c"],
+    },
+  }).value, pathHmacFingerprint.value);
+});
+
+test("review slot retry policy fail-closes third same-packet attempt", () => {
+  const retryFingerprint = reviewSlotRetryFingerprint({
+    provider: "kimi",
+    mode: "review",
+    renderedPromptHash: { algorithm: "sha256", value: "prompt-hash" },
+    selectedSource: selectedSourceFixture(12),
+    reviewedHeadSha: "abc123",
+    routeStep: "subscription",
+    scope: { name: "branch-diff", base: "origin/main", paths: ["src/example.js"] },
+  });
+  const priorAttempts = [
+    { retry_fingerprint: retryFingerprint.value, attempt_id: "attempt-1" },
+    { retry_fingerprint: retryFingerprint.value, attempt_id: "attempt-2" },
+    { retry_fingerprint: "different", attempt_id: "attempt-other" },
+  ];
+
+  const blocked = evaluateReviewSlotRetryPolicy({
+    retryFingerprint,
+    priorAttempts,
+    disposition: "retry",
+  });
+
+  assert.equal(blocked.retry_count, 2);
+  assert.equal(blocked.retry_disposition_required, true);
+  assert.equal(blocked.slot_retry_allowed, false);
+  assert.equal(blocked.source_send_allowed, false);
+  assert.equal(blocked.fail_closed_reason, "retry_disposition_not_valid_for_third_attempt");
+
+  for (const disposition of ["split", "switch_provider"]) {
+    const samePacket = evaluateReviewSlotRetryPolicy({
+      retryFingerprint,
+      priorAttempts,
+      disposition,
+    });
+    assert.equal(samePacket.retry_count, 2, disposition);
+    assert.equal(samePacket.slot_retry_allowed, false, disposition);
+    assert.equal(samePacket.source_send_allowed, false, disposition);
+    assert.equal(samePacket.fail_closed_reason, "third_same_packet_retry_requires_disposition", disposition);
+  }
+
+  const accumulated = evaluateReviewSlotRetryPolicy({
+    retryFingerprint,
+    priorAttempts: [
+      { review_slot: { retry_fingerprint: retryFingerprint, retry_count: 0, attempt_id: "attempt-1" } },
+      { review_slot: { retry_fingerprint: retryFingerprint, retry_count: 1, attempt_id: "attempt-2" } },
+    ],
+    disposition: "override",
+    overrideArtifact: "reviews/override-180.md",
+  });
+
+  assert.equal(accumulated.retry_count, 2);
+  assert.equal(accumulated.slot_retry_allowed, true);
+
+  assert.equal(evaluateReviewSlotRetryPolicy({
+    retryFingerprint,
+    priorAttempts: priorAttempts.slice(0, 1),
+    disposition: "retry",
+  }).slot_retry_allowed, true);
+
+  const waiverWithoutArtifact = evaluateReviewSlotRetryPolicy({
+    retryFingerprint,
+    priorAttempts: priorAttempts.slice(0, 1),
+    disposition: "waive",
+  });
+  assert.equal(waiverWithoutArtifact.slot_retry_allowed, false);
+  assert.equal(waiverWithoutArtifact.source_send_allowed, false);
+  assert.equal(waiverWithoutArtifact.fail_closed_reason, "review_slot_waiver_artifact_required");
+
+  const overrideWithWindowsAbsolutePath = evaluateReviewSlotRetryPolicy({
+    retryFingerprint,
+    priorAttempts,
+    disposition: "override",
+    overrideArtifact: "C:\\temp\\override-180.md",
+  });
+  assert.equal(overrideWithWindowsAbsolutePath.slot_retry_allowed, false);
+  assert.equal(overrideWithWindowsAbsolutePath.source_send_allowed, false);
+
+  assert.equal(evaluateReviewSlotRetryPolicy({
+    retryFingerprint,
+    priorAttempts,
+    disposition: "override",
+    overrideArtifact: "reviews/override-180.md",
+  }).slot_retry_allowed, true);
+});
+
+test("review slot retry policy ignores not-sent and stale prior slots", () => {
+  const retryFingerprint = reviewSlotRetryFingerprint({
+    provider: "deepseek",
+    mode: "custom-review",
+    renderedPromptHash: { algorithm: "sha256", value: "prompt-hash" },
+    selectedSource: selectedSourceFixture(12),
+    reviewedHeadSha: "abc123",
+    routeStep: "direct_api",
+    scope: { name: "custom", base: null, paths: ["src/example.js"] },
+  });
+
+  const policy = evaluateReviewSlotRetryPolicy({
+    retryFingerprint,
+    priorAttempts: [
+      {
+        review_slot: {
+          retry_fingerprint: retryFingerprint,
+          source_state: "not_sent",
+          not_counted_reason: "source_not_sent",
+        },
+      },
+      {
+        review_slot: {
+          retry_fingerprint: retryFingerprint,
+          source_state: "sent",
+          not_counted_reason: "stale_head",
+        },
+      },
+      {
+        review_slot: {
+          retry_fingerprint: retryFingerprint,
+          source_state: "sent",
+          verdict: "approved",
+        },
+      },
+      {
+        review_slot: {
+          retry_fingerprint: retryFingerprint,
+          source_state: "sent",
+          not_counted_reason: "missing_verdict",
+        },
+      },
+    ],
+    disposition: "retry",
+  });
+
+  assert.equal(policy.retry_count, 1);
+  assert.equal(policy.slot_retry_allowed, true);
+});
+
+test("review slot disposition redacts raw fields and excludes stale-head approvals", () => {
+  const disposition = buildReviewSlotDisposition({
+    provider: "claude",
+    mode: "review",
+    stage: "final",
+    attemptId: "job-1",
+    parentAttemptId: null,
+    reviewedHeadSha: "old-head",
+    currentHeadSha: "new-head",
+    retryFingerprint: { algorithm: "sha256", value: "f".repeat(64) },
+    retryCount: 0,
+    requestSettingsHash: { algorithm: "sha256", value: "r".repeat(64) },
+    sourceState: "sent",
+    status: "completed",
+    result: "Verdict: APPROVE\nBlocking findings: none",
+    reviewQuality: { failed_review_slot: false, semantic_failure_reasons: [] },
+    raw_source: "secret source",
+    prompt: "secret prompt",
+    provider_output: "secret output",
+    command_args: ["--token", "secret"],
+  });
+
+  assert.equal(disposition.verdict, "approved");
+  assert.equal(disposition.not_counted_reason, "stale_head");
+  assert.equal(disposition.disposition, "none");
+  assert.equal(JSON.stringify(disposition).includes("secret"), false);
+
+  const redacted = redactReviewSlotDisposition({
+    ...disposition,
+    raw_path: "/tmp/source/private.js",
+    provider_output: "secret output",
+  });
+  assert.equal(JSON.stringify(redacted).includes("secret"), false);
+  assert.equal(JSON.stringify(redacted).includes("/tmp/source/private.js"), false);
+});
+
+test("review slot disposition requires disposition for finalized failed or missing slots", () => {
+  for (const result of ["", "Verdict: NOT_REVIEWED"]) {
+    const disposition = buildReviewSlotDisposition({
+      provider: "gemini",
+      mode: "adversarial-review",
+      stage: "final",
+      attemptId: "job-failed",
+      reviewedHeadSha: "head",
+      currentHeadSha: "head",
+      retryFingerprint: "f".repeat(64),
+      retryCount: 0,
+      sourceState: "sent",
+      status: "completed",
+      result,
+      reviewQuality: result
+        ? { failed_review_slot: true, semantic_failure_reasons: ["not_reviewed"] }
+        : { failed_review_slot: false, semantic_failure_reasons: [] },
+    });
+
+    assert.equal(disposition.retry_count, 0);
+    assert.equal(disposition.retry_disposition_required, true);
+    assert.notEqual(disposition.verdict, "approved");
+  }
+});
+
+test("review slot disposition never counts failed process output as approval", () => {
+  for (const result of ["Verdict: APPROVE", "Verdict: REQUEST_CHANGES"]) {
+    const disposition = buildReviewSlotDisposition({
+      provider: "claude",
+      mode: "review",
+      stage: "final",
+      attemptId: "job-failed",
+      reviewedHeadSha: "head",
+      currentHeadSha: "head",
+      retryFingerprint: "f".repeat(64),
+      retryCount: 0,
+      sourceState: "sent",
+      status: "failed",
+      errorCode: "auth_failed",
+      result,
+      reviewQuality: null,
+    });
+
+    assert.equal(disposition.verdict, "failed_slot");
+    assert.equal(disposition.failed_slot_reason, "auth_failed");
+    assert.equal(disposition.not_counted_reason, "source_sent_unusable");
+    assert.equal(disposition.retry_disposition_required, true);
+  }
+});
 
 function assertRouteStepLedger(route) {
   assert.deepEqual(route.route_steps.map((step) => step.route), PROVIDER_ROUTE_STEPS);

@@ -222,6 +222,36 @@
       "missing_guardrail": null
     },
     {
+      "name": "review-slot disposition",
+      "module": "scripts/lib/provider-route-policy.mjs, scripts/lib/review-prompt.mjs, scripts/lib/external-review.mjs, scripts/lib/review-panel.mjs",
+      "interface": "reviewSlotRetryFingerprint, evaluateReviewSlotRetryPolicy, buildReviewSlotDisposition, redactReviewSlotDisposition",
+      "implementation": "Shared review-slot policy records retry fingerprint, retry count, final disposition, not-counted reason, source state, and waiver/override artifacts; same-packet retry guards fail closed through the shared source packet preflight before provider launch.",
+      "adapters": [
+        "claude",
+        "gemini",
+        "kimi",
+        "grok",
+        "deepseek",
+        "glm"
+      ],
+      "packaged_copies": [
+        "plugins/*/scripts/lib/provider-route-policy.mjs",
+        "plugins/*/scripts/lib/review-prompt.mjs",
+        "plugins/*/scripts/lib/external-review.mjs",
+        "plugins/*/scripts/lib/review-panel.mjs"
+      ],
+      "sync_guard": "npm run lint:sync runs sync-provider-route-policy.mjs --check, sync-review-prompt.mjs --check, sync-external-review.mjs --check, and sync-review-panel.mjs --check",
+      "tests": [
+        "tests/unit/provider-route-policy.test.mjs",
+        "tests/unit/review-prompt.test.mjs",
+        "tests/unit/job-record.test.mjs",
+        "tests/unit/review-panel.test.mjs"
+      ],
+      "verdict": "compliant_shared_policy",
+      "drift_risk": "low",
+      "missing_guardrail": null
+    },
+    {
       "name": "status/UX normalization",
       "module": "scripts/lib/companion-common.mjs and scripts/lib/review-panel.mjs",
       "interface": "lifecycle markdown cards, review panel records, error envelope fields",
@@ -631,6 +661,7 @@
         "failure_taxonomy",
         "suggested_action",
         "review_quality",
+        "review_slot",
         "audit",
         "docs",
         "sync"
