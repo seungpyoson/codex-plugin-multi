@@ -227,7 +227,11 @@ test("shared companion helpers cover small provider-agnostic behavior", () => {
   assert.equal(effectiveProfileForOptions(reviewProfile, { "scope-base": "" }), reviewProfile);
   assert.equal(effectiveProfileForOptions(reviewProfile, { "scope-base": "   " }), reviewProfile);
   const customProfile = Object.freeze({ name: "custom-review", scope: "custom" });
-  assert.equal(effectiveProfileForOptions(customProfile, { "scope-base": "origin/main" }), customProfile);
+  assert.deepEqual(effectiveProfileForOptions(customProfile, { "scope-base": "origin/main" }), {
+    name: "custom-review",
+    scope: "branch-diff",
+  });
+  assert.equal(effectiveProfileForOptions(customProfile, { "scope-base": "" }), customProfile);
   assert.match(cancelUnverifiableSuggestedAction(1234), /pid 1234/);
   assert.match(cancelUnverifiableSuggestedAction(1234), /ownership/);
   assert.match(cancelNoPidInfoSuggestedAction(), /verify process ownership/);
@@ -794,7 +798,11 @@ async function assertCopyHelperBranches(mod, plugin) {
   assert.equal(mod.effectiveProfileForOptions(reviewProfile, { "scope-base": "" }), reviewProfile);
   assert.equal(mod.effectiveProfileForOptions(reviewProfile, { "scope-base": "   " }), reviewProfile);
   const customProfile = Object.freeze({ name: "custom-review", scope: "custom" });
-  assert.equal(mod.effectiveProfileForOptions(customProfile, { "scope-base": "origin/main" }), customProfile);
+  assert.deepEqual(mod.effectiveProfileForOptions(customProfile, { "scope-base": "origin/main" }), {
+    name: "custom-review",
+    scope: "branch-diff",
+  });
+  assert.equal(mod.effectiveProfileForOptions(customProfile, { "scope-base": "" }), customProfile);
   assert.match(mod.cancelUnverifiableSuggestedAction(1234), /pid 1234/);
   assert.match(mod.cancelUnverifiableSuggestedAction(1234), /ownership/);
   assert.match(mod.cancelNoPidInfoSuggestedAction(), /verify process ownership/);
