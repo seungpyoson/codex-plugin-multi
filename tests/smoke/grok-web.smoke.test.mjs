@@ -1215,6 +1215,73 @@ test("custom-review auto transport falls back from Grok CLI login failure to loc
   }
 });
 
+test("doctor auto transport reports CLI login failure and ready web fallback", async () => {
+  const dataDir = mkdtempSync(path.join(tmpdir(), "grok-auto-doctor-fallback-data-"));
+  const authHome = mkdtempSync(path.join(tmpdir(), "grok-auto-doctor-fallback-auth-home-"));
+  const { binDir, grokPath, logPath } = makeFakeGrokCli({ modelsOutput: GROK_MODELS_READY_LOGGED_OUT });
+  writeFileSync(path.join(authHome, "auth.json"), "{\"token\":\"fake\"}\n");
+  writeFileSync(path.join(authHome, "config.toml"), "[models]\ndefault = \"grok-build\"\n");
+  const webRequests = [];
+
+  try {
+    await withServer(async (req, res) => {
+      webRequests.push(`${req.method} ${req.url}`);
+      res.setHeader("content-type", "application/json");
+      if (req.url === "/api/models") {
+        res.end(JSON.stringify({ data: [{ id: "grok-4.20-fast" }] }));
+        return;
+      }
+      if (req.url === "/api/chat/completions") {
+        res.end(JSON.stringify({
+          id: "chatcmpl-auto-doctor",
+          model: "grok-4.20-fast",
+          choices: [{ message: { content: "ok" } }],
+        }));
+        return;
+      }
+      res.writeHead(404);
+      res.end(JSON.stringify({ error: { message: "not found" } }));
+    }, async (baseUrl) => {
+      const result = await runAsync(["doctor", "--transport", "auto"], {
+        defaultTransport: false,
+        env: {
+          PATH: `${binDir}${path.delimiter}${process.env.PATH ?? ""}`,
+          GROK_CLI_BINARY: grokPath,
+          GROK_CLI_AUTH_HOME: authHome,
+          GROK_PLUGIN_DATA: dataDir,
+          GROK_WEB_BASE_URL: baseUrl,
+        },
+      });
+
+      assert.equal(result.status, 0, result.stderr || result.stdout);
+      const parsed = parseStdout(result);
+      assert.equal(parsed.status, "fallback_ready");
+      assert.equal(parsed.ready, true);
+      assert.equal(parsed.transport, "auto");
+      assert.equal(parsed.selected_transport, "web");
+      assert.equal(parsed.selected_route, "subscription_web");
+      assert.equal(parsed.fallback_from, "cli");
+      assert.equal(parsed.fallback_reason, "grok_cli_login_required");
+      assert.equal(parsed.auto_transport.primary.auth_mode, "subscription_cli");
+      assert.equal(parsed.auto_transport.primary.ready, false);
+      assert.equal(parsed.auto_transport.primary.error_code, "grok_cli_login_required");
+      assert.equal(parsed.auto_transport.primary.logged_in, false);
+      assert.equal(parsed.auto_transport.fallback.auth_mode, "subscription_web");
+      assert.equal(parsed.auto_transport.fallback.transport, "web");
+      assert.equal(parsed.auto_transport.fallback.ready, true);
+      assert.equal(parsed.auto_transport.fallback.error_code, null);
+      assert.match(parsed.next_action, /grok login/i);
+      assert.match(parsed.next_action, /--transport auto/i);
+      assert.deepEqual(readGrokCliLog(logPath).map((line) => line.args[0]), ["--version", "models"]);
+      assert.deepEqual(webRequests, ["GET /api/models", "POST /api/chat/completions"]);
+      assert.doesNotMatch(result.stdout, /fake|CLI_SOURCE_SECRET/);
+    });
+  } finally {
+    rmTree(authHome);
+    rmTree(dataDir);
+  }
+});
+
 test("custom-review auto transport preserves CLI diagnostics when web fallback prompt is too large", async () => {
   const cwd = realpathSync(mkdtempSync(path.join(tmpdir(), "grok-auto-web-budget-workspace-")));
   const dataDir = mkdtempSync(path.join(tmpdir(), "grok-auto-web-budget-data-"));
