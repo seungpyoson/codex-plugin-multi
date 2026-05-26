@@ -351,7 +351,7 @@ export function startExternalReviewHeartbeat(
 }
 
 export function effectiveProfileForOptions(profile, options) {
-  if (profile.name === "review" && scopeBaseForOptions(options) !== null) {
+  if ((profile.name === "review" || profile.name === "custom-review") && scopeBaseForOptions(options) !== null) {
     return Object.freeze({ ...profile, scope: "branch-diff" });
   }
   return profile;

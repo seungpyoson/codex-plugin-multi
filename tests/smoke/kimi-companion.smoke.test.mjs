@@ -2784,6 +2784,61 @@ test("kimi review --scope-base preserves branch-diff scope through target execut
   }
 });
 
+test("kimi custom-review with scope-base uses branch-diff packet instead of full file body", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "kimi-custom-review-scope-base-"));
+  try {
+    const lines = Array.from({ length: 3000 }, (_, index) => `unchanged line ${index}`);
+    lines[0] = "FULL_FILE_ONLY_SENTINEL";
+    lines[200] = "original target line";
+    fixtureSeedRepo(cwd, {
+      fileName: "doc.md",
+      fileContents: `${lines.join("\n")}\n`,
+      message: "base",
+    });
+    const base = fixtureGit(cwd, ["rev-parse", "HEAD"]).stdout.trim();
+    lines[200] = "changed target line";
+    writeFileSync(path.join(cwd, "doc.md"), `${lines.join("\n")}\n`);
+    assert.equal(fixtureGit(cwd, ["add", "doc.md"]).status, 0);
+    assert.equal(fixtureGit(cwd, ["commit", "-q", "-m", "feature"]).status, 0);
+
+    const result = runCompanion([
+      "run",
+      "--mode",
+      "custom-review",
+      "--cwd",
+      cwd,
+      "--scope-base",
+      base,
+      "--scope-paths",
+      "doc.md",
+      "--foreground",
+      "--",
+      "Review this committed shard.",
+    ], {
+      cwd,
+      env: {
+        KIMI_MOCK_ASSERT_PROMPT_INCLUDES: "changed target line",
+        KIMI_MOCK_ASSERT_PROMPT_EXCLUDES: "FULL_FILE_ONLY_SENTINEL",
+      },
+    });
+    assert.equal(result.status, 0, result.stderr);
+    const record = parseJson(result.stdout);
+    assert.equal(record.scope, "branch-diff");
+    assert.equal(record.scope_base, base);
+    assert.deepEqual(record.scope_paths, ["doc.md"]);
+    assert.equal(record.external_review.source_content_transmission, "sent");
+    const manifest = record.review_metadata.audit_manifest;
+    assert.equal(manifest.scope_resolution.scope, "branch-diff");
+    assert.deepEqual(manifest.scope_resolution.scope_paths, ["doc.md"]);
+    assert.deepEqual(manifest.selected_source.files.map((file) => file.path), ["doc.md"]);
+    assert.equal(manifest.source_packet_policy.source_packet_action, "send");
+    assert.equal(manifest.source_packet_policy.source_send_allowed, true);
+    assert.equal(manifest.source_packet_policy.selected_source_bytes < 32 * 1024, true);
+  } finally {
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
 test("kimi continue preserves prior review branch-diff scope through target execution", () => {
   const cwd = mkdtempSync(path.join(tmpdir(), "kimi-continue-scope-base-"));
   try {
