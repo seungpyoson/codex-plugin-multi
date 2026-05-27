@@ -30,12 +30,15 @@ const CLAUDE_SMOKE_POLL_TIMEOUT_MS = Number(process.env.CLAUDE_SMOKE_POLL_TIMEOU
 function runCompanion(args, { cwd, env = {}, dataDir = mkdtempSync(path.join(tmpdir(), "companion-smoke-")) } = {}) {
   // Point the companion at a fresh PLUGIN_DATA dir so tests don't step on
   // each other's state or on the user's real ~/.cache.
+  const workloadLockDir = env.CODEX_PLUGIN_MULTI_PROVIDER_WORKLOAD_LOCK_DIR
+    ?? path.join(dataDir, "provider-workload");
   const res = spawnSync("node", [COMPANION, ...args], {
     cwd,
     env: {
       ...process.env,
       CLAUDE_BINARY: MOCK,
       CLAUDE_PLUGIN_DATA: dataDir,
+      CODEX_PLUGIN_MULTI_PROVIDER_WORKLOAD_LOCK_DIR: workloadLockDir,
       ...env,
     },
     encoding: "utf8",
@@ -44,9 +47,12 @@ function runCompanion(args, { cwd, env = {}, dataDir = mkdtempSync(path.join(tmp
 }
 
 function runCompanionWithPathBinary(args, { cwd, binDir, env = {}, dataDir = mkdtempSync(path.join(tmpdir(), "companion-smoke-")) } = {}) {
+  const workloadLockDir = env.CODEX_PLUGIN_MULTI_PROVIDER_WORKLOAD_LOCK_DIR
+    ?? path.join(dataDir, "provider-workload");
   const childEnv = {
     ...process.env,
     CLAUDE_PLUGIN_DATA: dataDir,
+    CODEX_PLUGIN_MULTI_PROVIDER_WORKLOAD_LOCK_DIR: workloadLockDir,
     PATH: `${binDir}${path.delimiter}${process.env.PATH ?? ""}`,
     ...env,
   };
@@ -855,6 +861,82 @@ process.exit(9);
     const modesSeen = readFileSync(attemptsPath, "utf8").trim().split("\n")
       .map((line) => JSON.parse(line).mode);
     assert.deepEqual(modesSeen, ["dontAsk", "auto"]);
+  } finally {
+    cleanup(dataDir);
+    rmSync(cwd, { recursive: true, force: true });
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("custom-review permission-mode ladder does not retry Claude session limits", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "claude-session-limit-cwd-"));
+  fixtureSeedRepo(cwd, {
+    fileName: "seed.txt",
+    fileContents: "claude session limit sentinel\n",
+  });
+  const tmp = mkdtempSync(path.join(tmpdir(), "claude-session-limit-bin-"));
+  const attemptsPath = path.join(tmp, "attempts.jsonl");
+  const binary = writeExecutable(tmp, "claude-session-limit", `#!/usr/bin/env node
+import { appendFileSync, readFileSync } from "node:fs";
+
+const argv = process.argv.slice(2);
+const prompt = argv.includes("--input-format") ? readFileSync(0, "utf8") : argv.join(" ");
+if (!argv.includes("--permission-mode") || prompt.includes("reply with exactly: pong")) {
+  process.stdout.write(JSON.stringify({
+    type: "result",
+    is_error: false,
+    result: "pong",
+    session_id: "11111111-1111-4111-8111-111111111111",
+    usage: { input_tokens: 1, output_tokens: 1 }
+  }) + "\\n");
+  process.exit(0);
+}
+const modeIndex = argv.indexOf("--permission-mode");
+const mode = modeIndex >= 0 ? argv[modeIndex + 1] : null;
+const sessionIndex = argv.indexOf("--session-id");
+const sessionId = sessionIndex >= 0 ? argv[sessionIndex + 1] : "11111111-1111-4111-8111-111111111111";
+appendFileSync(${JSON.stringify(attemptsPath)}, JSON.stringify({ mode }) + "\\n");
+
+if (mode === "dontAsk") {
+  process.stdout.write(JSON.stringify({
+    type: "result",
+    is_error: true,
+    result: "You've hit your session limit · resets 2:50am (Asia/Seoul)",
+    session_id: sessionId,
+    usage: { input_tokens: 1, output_tokens: 1 },
+    permission_denials: []
+  }) + "\\n");
+  process.exit(1);
+}
+
+process.stderr.write("unexpected retry through permission mode " + mode + "\\n");
+process.exit(9);
+`);
+  const { stdout, stderr, status, dataDir } = runCompanion(
+    ["run", "--mode=custom-review", "--foreground", ...claudeAuthModeArgs(claudeSubscriptionAuthMode()),
+     "--binary", binary, "--model", "claude-haiku-4-5-20251001",
+     "--cwd", cwd, "--scope-paths", "seed.txt", "--", "review selected source"],
+    {
+      cwd,
+      env: {
+        ANTHROPIC_API_KEY: "",
+        CLAUDE_API_KEY: "",
+        CLAUDE_REVIEW_PERMISSION_MODES: "dontAsk,auto,acceptEdits",
+      },
+    },
+  );
+  try {
+    assert.equal(status, 2, `exit ${status}: stderr=${stderr}; stdout=${stdout}`);
+    const record = JSON.parse(stdout);
+    assert.equal(record.status, "failed");
+    assert.equal(record.error_code, "usage_limited");
+    assert.match(record.error_summary, /usage|quota|billing/i);
+    assert.equal(record.review_metadata.permission_mode_effective, "dontAsk");
+    assert.deepEqual(record.review_metadata.permission_mode_attempts.map((attempt) => attempt.mode), ["dontAsk"]);
+    assert.equal(record.review_metadata.permission_mode_attempts[0].error_code, "usage_limited");
+    const modesSeen = readFileSync(attemptsPath, "utf8").trim().split("\n")
+      .map((line) => JSON.parse(line).mode);
+    assert.deepEqual(modesSeen, ["dontAsk"]);
   } finally {
     cleanup(dataDir);
     rmSync(cwd, { recursive: true, force: true });
@@ -3442,6 +3524,9 @@ process.exit(1);
     assert.equal(result.oauth_status?.logged_in, true);
     assert.equal(result.oauth_status?.auth_method, "claude.ai");
     assert.equal(result.oauth_status?.subscription_type, "max");
+    assert.equal(result.oauth_status?.account_identity?.provider, "claude");
+    assert.deepEqual(result.oauth_status?.account_identity?.identity_fields, ["email"]);
+    assert.match(result.oauth_status?.account_identity?.account_fingerprint?.value, /^[a-f0-9]{64}$/);
     assert.equal(result.detail, "Failed to authenticate. API Error: 401 Invalid authentication credentials");
     assert.match(result.summary, /OAuth.*non-interactive/i);
     assert.match(result.next_action, /claude auth login|OAuth/i);
@@ -3904,6 +3989,93 @@ process.exit(1);
     assert.equal(record.external_review.source_content_transmission, "not_sent");
     assert.equal(existsSync(leakPath), false, "selected source must not reach stale-doctor retry");
     assert.doesNotMatch(result.stdout, /CLAUDE_STALE_DOCTOR_SOURCE_SENTINEL/);
+  } finally {
+    cleanup(dataDir);
+    rmSync(cwd, { recursive: true, force: true });
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("run: records privacy-safe Claude OAuth account identity in JobRecord diagnostics", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "claude-run-account-identity-cwd-"));
+  fixtureSeedRepo(cwd, {
+    fileName: "seed.txt",
+    fileContents: "claude account identity sentinel\n",
+  });
+  const tmp = mkdtempSync(path.join(tmpdir(), "claude-run-account-identity-bin-"));
+  const binary = writeExecutable(tmp, "claude-account-identity", `#!/usr/bin/env node
+import { readFileSync } from "node:fs";
+const args = process.argv.slice(2);
+if (args.join(" ") === "auth status --json") {
+  process.stdout.write(JSON.stringify({
+    loggedIn: true,
+    authMethod: "claude.ai",
+    apiProvider: "firstParty",
+    email: "user@example.com",
+    orgId: "org-secret-123",
+    subscriptionType: "max"
+  }) + "\\n");
+  process.exit(0);
+}
+const prompt = args.includes("--input-format") ? readFileSync(0, "utf8") : args.join(" ");
+if (!args.includes("--permission-mode") || prompt.includes("reply with exactly: pong")) {
+  process.stdout.write(JSON.stringify({
+    type: "result",
+    is_error: false,
+    result: "pong",
+    session_id: "11111111-1111-4111-8111-111111111111",
+    usage: { input_tokens: 1, output_tokens: 1 }
+  }) + "\\n");
+  process.exit(0);
+}
+process.stdout.write(JSON.stringify({
+  type: "result",
+  is_error: false,
+  result: [
+    "Verdict: APPROVE",
+    "Blocking findings",
+    "- None. I inspected the selected source provided to this Claude smoke fixture and found no blocking issue.",
+    "Non-blocking concerns",
+    "- None for this fixture.",
+    "Test gaps",
+    "- Existing smoke fixture coverage is sufficient for this wrapper path.",
+    "Inspection status",
+    "- The selected source was available and the mock returned a complete review, not a placeholder.",
+    "Checklist:",
+    "- PASS selected scope was available.",
+    "- PASS selected source was inspected before verdict.",
+    "- PASS no blocker was invented."
+  ].join("\\n"),
+  session_id: "22222222-2222-4222-8222-222222222222",
+  usage: { input_tokens: 1, output_tokens: 1 },
+  permission_denials: []
+}) + "\\n");
+process.exit(0);
+`);
+  const { stdout, stderr, status, dataDir } = runCompanion(
+    ["run", "--mode=custom-review", "--foreground", ...claudeAuthModeArgs(claudeSubscriptionAuthMode()),
+     "--binary", binary, "--model", "claude-haiku-4-5-20251001",
+     "--cwd", cwd, "--scope-paths", "seed.txt", "--", "review selected source"],
+    { cwd, env: { ANTHROPIC_API_KEY: "", CLAUDE_API_KEY: "" } },
+  );
+  try {
+    assert.equal(status, 0, `exit ${status}: stderr=${stderr}; stdout=${stdout}`);
+    const record = JSON.parse(stdout);
+    assert.equal(record.status, "completed");
+    assert.deepEqual(record.runtime_diagnostics.provider_account_identity, {
+      provider: "claude",
+      identity_source: "provider_auth_status",
+      identity_fields: ["email", "org_id"],
+      account_fingerprint: {
+        algorithm: "sha256",
+        value: record.runtime_diagnostics.provider_account_identity.account_fingerprint.value,
+      },
+    });
+    assert.match(record.runtime_diagnostics.provider_account_identity.account_fingerprint.value, /^[a-f0-9]{64}$/);
+    const persisted = readJobRecord(dataDir, record.job_id);
+    assert.deepEqual(persisted.runtime_diagnostics.provider_account_identity, record.runtime_diagnostics.provider_account_identity);
+    assert.doesNotMatch(stdout, /user@example\.com|org-secret-123/);
+    assert.doesNotMatch(JSON.stringify(persisted), /user@example\.com|org-secret-123/);
   } finally {
     cleanup(dataDir);
     rmSync(cwd, { recursive: true, force: true });

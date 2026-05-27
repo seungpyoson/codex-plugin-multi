@@ -2,7 +2,7 @@
 import { spawn, spawnSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { accessSync, constants as fsConstants, realpathSync } from "node:fs";
-import { copyFile, lstat, mkdir, open, readFile, readdir, realpath, rename, rm, rmdir, stat, unlink, writeFile } from "node:fs/promises";
+import { chmod, copyFile, lstat, mkdir, open, readFile, readdir, realpath, rename, rm, rmdir, stat, unlink, writeFile } from "node:fs/promises";
 import { homedir, hostname, tmpdir } from "node:os";
 import { basename, delimiter, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -23,6 +23,11 @@ import {
   sourceContentTransmissionForExecution,
 } from "./lib/external-review.mjs";
 import { isJwtShapedToken } from "./lib/jwt.mjs";
+import {
+  acquireProviderWorkloadLease,
+  providerWorkloadBlockedExecution,
+  releaseProviderWorkloadLease,
+} from "./lib/review-workload.mjs";
 
 const VALID_MODES = new Set(["review", "adversarial-review", "custom-review"]);
 const DEFAULT_BASE_URL = "http://127.0.0.1:8000/v1";
@@ -1752,6 +1757,61 @@ async function cleanupGrokCliRuntimeHome(runtimeHome) {
   return await pathExists(runtimeHome.dir) ? "unverified" : "deleted";
 }
 
+async function fileSha256OrNull(file) {
+  try {
+    return createHash("sha256").update(await readFile(file)).digest("hex");
+  } catch (error) {
+    if (error?.code === "ENOENT") return null;
+    throw error;
+  }
+}
+
+async function syncGrokCliRuntimeAuthFile(runtimeHome) {
+  if (!runtimeHome?.dir || !runtimeHome?.source_home) return "not_created";
+  const sourceAuth = resolve(runtimeHome.source_home, "auth.json");
+  const runtimeAuth = resolve(runtimeHome.dir, "auth.json");
+  let sourceStat;
+  let runtimeStat;
+  try {
+    sourceStat = await lstat(sourceAuth);
+  } catch (error) {
+    if (error?.code === "ENOENT") return "source_missing";
+    return "unverified";
+  }
+  try {
+    runtimeStat = await lstat(runtimeAuth);
+  } catch (error) {
+    if (error?.code === "ENOENT") return "runtime_missing";
+    return "unverified";
+  }
+  if (!sourceStat.isFile() || sourceStat.isSymbolicLink()) return "source_not_regular";
+  if (!runtimeStat.isFile() || runtimeStat.isSymbolicLink()) return "runtime_not_regular";
+  let sourceHash;
+  let runtimeHash;
+  try {
+    sourceHash = await fileSha256OrNull(sourceAuth);
+    runtimeHash = await fileSha256OrNull(runtimeAuth);
+  } catch {
+    return "unverified";
+  }
+  if (!runtimeHash) return "runtime_missing";
+  if (sourceHash === runtimeHash) return "unchanged";
+  const tmpAuth = resolve(runtimeHome.source_home, `.auth.json.codex-sync-${randomUUID()}.tmp`);
+  try {
+    await copyFile(runtimeAuth, tmpAuth);
+    await chmod(tmpAuth, 0o600);
+    await rename(tmpAuth, sourceAuth);
+    return "updated";
+  } catch {
+    try {
+      await rm(tmpAuth, { force: true });
+    } catch {
+      // Preserve the sync failure status.
+    }
+    return "unverified";
+  }
+}
+
 async function writePrivatePromptFile(contents) {
   const dir = resolve(tmpdir(), `grok-cli-prompt-${randomUUID()}`);
   await mkdir(dir, { mode: 0o700 });
@@ -1902,6 +1962,7 @@ async function grokCliReadinessPreflight(cfg, env = process.env) {
         ...sourceFree.diagnostics,
         source_free_parse_mode: sourceFree.parsed?.parse_mode ?? null,
         source_free_prompt_cleanup: sourceFree.diagnostics?.prompt_cleanup ?? null,
+        source_free_grok_home_auth_sync: sourceFree.diagnostics?.grok_home_auth_sync ?? null,
         source_free_grok_home_cleanup: sourceFree.diagnostics?.grok_home_cleanup ?? null,
         prompt_cleanup: null,
         grok_home_cleanup: null,
@@ -1922,10 +1983,12 @@ async function grokCliReadinessPreflight(cfg, env = process.env) {
       model_ready: true,
       source_free_parse_mode: sourceFree.parsed?.parse_mode ?? null,
       source_free_prompt_cleanup: sourceFree.diagnostics?.prompt_cleanup ?? null,
+      source_free_grok_home_auth_sync: sourceFree.diagnostics?.grok_home_auth_sync ?? null,
       source_free_grok_home_cleanup: sourceFree.diagnostics?.grok_home_cleanup ?? null,
       grok_home_source: sourceFree.diagnostics?.grok_home_source ?? null,
       grok_home_copied_files: sourceFree.diagnostics?.grok_home_copied_files ?? [],
       grok_home_linked_files: sourceFree.diagnostics?.grok_home_linked_files ?? [],
+      grok_home_auth_sync: sourceFree.diagnostics?.grok_home_auth_sync ?? null,
       grok_home_cleanup: sourceFree.diagnostics?.grok_home_cleanup ?? null,
     },
   };
@@ -1940,6 +2003,7 @@ async function callGrokCli(cfg, prompt, { sourceBearing = true, baseDiagnostics 
   let setupError = null;
   let promptCleanup = "not_created";
   let grokHomeCleanup = "not_created";
+  let grokHomeAuthSync = "not_created";
   let neutralCwdCleanup = "not_created";
   try {
     await mkdir(neutralCwd, { mode: 0o700 });
@@ -1970,6 +2034,7 @@ async function callGrokCli(cfg, prompt, { sourceBearing = true, baseDiagnostics 
     setupError = error;
   } finally {
     if (promptFile && promptDir) promptCleanup = await cleanupPromptFile(promptFile, promptDir);
+    grokHomeAuthSync = await syncGrokCliRuntimeAuthFile(runtimeHome);
     grokHomeCleanup = await cleanupGrokCliRuntimeHome(runtimeHome);
     try {
       await rmdir(neutralCwd);
@@ -1995,6 +2060,7 @@ async function callGrokCli(cfg, prompt, { sourceBearing = true, baseDiagnostics 
     grok_home_source: runtimeHome?.source_home ?? grokCliAuthHome(env),
     grok_home_copied_files: runtimeHome?.copied_files ?? [],
     grok_home_linked_files: runtimeHome?.linked_files ?? [],
+    grok_home_auth_sync: grokHomeAuthSync,
     grok_home_cleanup: grokHomeCleanup,
   };
 
@@ -3138,6 +3204,9 @@ function errorCauseFor(errorCode) {
   if (errorCode === "source_packet_too_large" || errorCode === "resend_confirmation_required") {
     return buildExternalModelFailureDiagnostic(errorCode, "Grok")?.error_cause ?? "source_packet_policy";
   }
+  if (errorCode === "provider_workload_blocked") {
+    return buildExternalModelFailureDiagnostic(errorCode, "Grok")?.error_cause ?? "workload_admission";
+  }
   if (errorCode === "git_binary_rejected") return "git_binary_policy";
   if (errorCode === "usage_limited") return "cost_quota_usage_limit";
   if (String(errorCode ?? "").startsWith("grok_session_")) return "session_tokens";
@@ -3347,6 +3416,7 @@ function buildRecord({ cfg, mode, options, scopeInfo, execution, startedAt, ende
       parse_mode: safeDiagnostics.parse_mode ?? null,
       source_free_parse_mode: safeDiagnostics.source_free_parse_mode ?? null,
       source_free_prompt_cleanup: safeDiagnostics.source_free_prompt_cleanup ?? null,
+      source_free_grok_home_auth_sync: safeDiagnostics.source_free_grok_home_auth_sync ?? null,
       source_free_grok_home_cleanup: safeDiagnostics.source_free_grok_home_cleanup ?? null,
       prompt_chars: safeDiagnostics.prompt_chars ?? null,
       configured_timeout_ms: safeDiagnostics.configured_timeout_ms ?? null,
@@ -3357,10 +3427,12 @@ function buildRecord({ cfg, mode, options, scopeInfo, execution, startedAt, ende
       grok_home_source: safeDiagnostics.grok_home_source ?? null,
       grok_home_copied_files: safeDiagnostics.grok_home_copied_files ?? [],
       grok_home_linked_files: safeDiagnostics.grok_home_linked_files ?? [],
+      grok_home_auth_sync: safeDiagnostics.grok_home_auth_sync ?? null,
       grok_home_cleanup: safeDiagnostics.grok_home_cleanup ?? null,
-    },
-    cost_quota: null,
-  } : {
+	    },
+	    cost_quota: null,
+	    ...(safeDiagnostics.provider_workload ? { provider_workload: safeDiagnostics.provider_workload } : {}),
+	  } : {
     ...(safeDiagnostics.cli_request ? { cli_request: safeDiagnostics.cli_request } : {}),
     tunnel_request: {
       endpoint_class: safeDiagnostics.endpoint_class ?? null,
@@ -3377,9 +3449,10 @@ function buildRecord({ cfg, mode, options, scopeInfo, execution, startedAt, ende
     tunnel_state: safeDiagnostics.tunnel_state ? {
       ...safeDiagnostics.tunnel_state,
       auto_start_attempted: safeDiagnostics.tunnel_start?.attempted ?? safeDiagnostics.tunnel_state.auto_start_attempted ?? false,
-    } : null,
-    session_tokens: safeDiagnostics.session_tokens ?? null,
-  }) : null;
+	    } : null,
+	    session_tokens: safeDiagnostics.session_tokens ?? null,
+	    ...(safeDiagnostics.provider_workload ? { provider_workload: safeDiagnostics.provider_workload } : {}),
+	  }) : null;
   return freezeRecord({
     id: options.jobId,
     job_id: options.jobId,
@@ -4001,6 +4074,7 @@ async function cliDoctorFields(cfg, env = process.env) {
         status: sourceFreeStatus,
         parse_mode: diagnostics.source_free_parse_mode ?? null,
         prompt_cleanup: diagnostics.source_free_prompt_cleanup ?? null,
+        grok_home_auth_sync: diagnostics.source_free_grok_home_auth_sync ?? diagnostics.grok_home_auth_sync ?? null,
         grok_home_cleanup: diagnostics.grok_home_cleanup ?? null,
       },
     },
@@ -4489,6 +4563,7 @@ function cliRequestDiagnosticsForFallback(execution) {
     parse_mode: diagnostics.parse_mode ?? null,
     source_free_parse_mode: diagnostics.source_free_parse_mode ?? null,
     source_free_prompt_cleanup: diagnostics.source_free_prompt_cleanup ?? null,
+    source_free_grok_home_auth_sync: diagnostics.source_free_grok_home_auth_sync ?? null,
     source_free_grok_home_cleanup: diagnostics.source_free_grok_home_cleanup ?? null,
     prompt_chars: diagnostics.prompt_chars ?? null,
     configured_timeout_ms: diagnostics.configured_timeout_ms ?? null,
@@ -4499,6 +4574,7 @@ function cliRequestDiagnosticsForFallback(execution) {
     grok_home_source: diagnostics.grok_home_source ?? null,
     grok_home_copied_files: diagnostics.grok_home_copied_files ?? [],
     grok_home_linked_files: diagnostics.grok_home_linked_files ?? [],
+    grok_home_auth_sync: diagnostics.grok_home_auth_sync ?? null,
     grok_home_cleanup: diagnostics.grok_home_cleanup ?? null,
   };
 }
@@ -4558,6 +4634,7 @@ async function cmdRun(options) {
   const runOptions = { ...options, jobId };
   let scopeInfo;
   let execution;
+  let workloadLease = null;
   try {
     lifecycleEvents = parseLifecycleEventsMode(options["lifecycle-events"]);
     cfg = config(process.env, options);
@@ -4597,6 +4674,20 @@ async function cmdRun(options) {
         const capName = cfg.transport === "cli" ? "GROK_CLI_MAX_PROMPT_CHARS" : "GROK_WEB_MAX_PROMPT_CHARS";
         execution = providerFailure("prompt_too_large", redactor()(`prompt_too_large:${prompt.length} chars exceeds ${capName}=${cfg.max_prompt_chars}`), null, null, false);
         execution.prompt = prompt;
+      }
+      if (!execution) {
+        const workloadAdmission = acquireProviderWorkloadLease({
+          provider: cfg.provider,
+          jobId,
+          cwd: scopeInfo.cwd,
+          sourceBearing: modeSendsSelectedSource(mode),
+        });
+        if (!workloadAdmission.ok) {
+          execution = providerWorkloadBlockedExecution(workloadAdmission);
+          execution.prompt = prompt;
+        } else {
+          workloadLease = workloadAdmission.lease;
+        }
       }
     } catch (e) {
       execution = providerFailure(e.message.startsWith("bad_args:") ? "bad_args" : "scope_failed", redactor()(e.message), null, null, false);
@@ -4706,6 +4797,8 @@ async function cmdRun(options) {
       if (promptSentToTunnel && prompt) execution.prompt = prompt;
     }
   }
+  releaseProviderWorkloadLease(workloadLease);
+  workloadLease = null;
   const record = redactValue(buildRecord({
     cfg,
     mode,

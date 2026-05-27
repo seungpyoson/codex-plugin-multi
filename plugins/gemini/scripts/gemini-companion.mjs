@@ -64,6 +64,11 @@ import {
 } from "./lib/companion-common.mjs";
 import { REVIEW_PROMPT_CONTRACT_VERSION, buildReviewAuditManifest, buildReviewPrompt, buildSelectedSourcePromptBlock, selectedSourceFilesFromPrompt } from "./lib/review-prompt.mjs";
 import { diffSourceFiles } from "./lib/diff-source.mjs";
+import {
+  acquireProviderWorkloadLease,
+  providerWorkloadBlockedExecution,
+  releaseProviderWorkloadLease,
+} from "./lib/review-workload.mjs";
 
 const PLUGIN_ROOT = resolvePath(dirname(fileURLToPath(import.meta.url)), "..");
 const MODELS_CONFIG_PATH = resolvePath(PLUGIN_ROOT, "config/models.json");
@@ -1360,6 +1365,35 @@ async function executeRun(invocation, prompt, { foreground, lifecycleEvents = nu
     process.exit(2);
   }
 
+  const workloadAdmission = acquireProviderWorkloadLease({
+    provider: invocation.target,
+    jobId,
+    cwd: invocation.cwd,
+    sourceBearing: modeSendsSelectedSource(invocation.mode),
+  });
+  let workloadLease = null;
+  if (!workloadAdmission.ok) {
+    const workloadPreflight = providerWorkloadBlockedExecution(workloadAdmission);
+    workloadPreflight.reviewAuditManifest = reviewAuditManifest(invocation, prompt, executionScope.containment.path, workloadPreflight);
+    const errorRecord = buildJobRecord(invocation, {
+      exitCode: workloadPreflight.exitCode,
+      endedAt: workloadPreflight.endedAt,
+      parsed: workloadPreflight.parsed,
+      pidInfo: null,
+      geminiSessionId: null,
+      errorMessage: workloadPreflight.errorMessage,
+      reviewAuditManifest: workloadPreflight.reviewAuditManifest,
+      runtimeDiagnostics: workloadPreflight.runtimeDiagnostics,
+      ...redactionFieldsForPrompt(prompt),
+    }, mutationContext.mutations);
+    writeJobFile(workspaceRoot, jobId, errorRecord);
+    upsertJob(workspaceRoot, errorRecord);
+    cleanupExecutionResources(executionScope, mutationContext);
+    if (foreground) printLifecycleJson(errorRecord, lifecycleEvents);
+    process.exit(2);
+  }
+  workloadLease = workloadAdmission.lease;
+
   const preflightExecution = await geminiReadinessPreflight(invocation, profile, authSelection);
   if (preflightExecution) {
     preflightExecution.reviewAuditManifest = reviewAuditManifest(invocation, prompt, executionScope.containment.path, preflightExecution);
@@ -1386,6 +1420,8 @@ async function executeRun(invocation, prompt, { foreground, lifecycleEvents = nu
         process.stderr.write(`gemini-companion: warning: sidecar ${name} write failed: ${e.message}\n`);
       }
     }
+    releaseProviderWorkloadLease(workloadLease);
+    workloadLease = null;
     cleanupExecutionResources(executionScope, mutationContext);
     if (foreground) printLifecycleJson(errorRecord, lifecycleEvents);
     process.exit(2);
@@ -1412,6 +1448,8 @@ async function executeRun(invocation, prompt, { foreground, lifecycleEvents = nu
     ));
   } finally {
     stopHeartbeat();
+    releaseProviderWorkloadLease(workloadLease);
+    workloadLease = null;
   }
 
   recordPostRunMutations(invocation, mutationContext);
@@ -1668,6 +1706,8 @@ function buildGeminiFinalRecord(invocation, execution, cancelMarker, mutations, 
     signal: execution.signal ?? null,
     timedOut: execution.timedOut === true,
     reviewAuditManifest: execution.reviewAuditManifest,
+    errorMessage: execution.errorMessage,
+    runtimeDiagnostics: execution.runtimeDiagnostics ?? null,
     ...redactionFieldsForPrompt(prompt),
   }, mutations);
 }

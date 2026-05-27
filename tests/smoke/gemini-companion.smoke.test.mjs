@@ -36,6 +36,8 @@ function sha256(value) {
 }
 
 function runCompanion(args, { cwd, env = {}, dataDir = mkdtempSync(path.join(tmpdir(), "gemini-smoke-data-")) } = {}) {
+  const workloadLockDir = env.CODEX_PLUGIN_MULTI_PROVIDER_WORKLOAD_LOCK_DIR
+    ?? path.join(dataDir, "provider-workload");
   const res = spawnSync("node", [COMPANION, ...args], {
     cwd,
     encoding: "utf8",
@@ -43,6 +45,7 @@ function runCompanion(args, { cwd, env = {}, dataDir = mkdtempSync(path.join(tmp
       ...process.env,
       GEMINI_BINARY: MOCK,
       GEMINI_PLUGIN_DATA: dataDir,
+      CODEX_PLUGIN_MULTI_PROVIDER_WORKLOAD_LOCK_DIR: workloadLockDir,
       ...env,
     },
   });

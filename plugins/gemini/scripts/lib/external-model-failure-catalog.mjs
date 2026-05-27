@@ -103,6 +103,14 @@ export const EXTERNAL_MODEL_FAILURE_CLASSES = Object.freeze([
       "Treat this review slot as failed. Do not automatically resend selected source. Wait for usage to recover, reduce concurrency, or inspect the provider account manually. Any billing or tier change requires explicit user approval.",
   }),
   Object.freeze({
+    error_code: "provider_workload_blocked",
+    category: "workload_admission",
+    error_cause: "same_provider_source_bearing_job_active",
+    error_summary: "The external model review was blocked before launch because another source-bearing job for the same provider is already active.",
+    suggested_action:
+      "Treat this review slot as not launched. Wait for the active same-provider source-bearing job to finish, then retry the same source packet.",
+  }),
+  Object.freeze({
     error_code: "provider_unavailable",
     category: "provider_availability",
     error_cause: "provider_unavailable",

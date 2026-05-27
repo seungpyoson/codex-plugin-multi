@@ -1573,6 +1573,132 @@ for (const [name, file] of REVIEW_PROMPT_MODULES) {
 }
 
 for (const [name, file] of REVIEW_PROMPT_MODULES) {
+  test(`review audit manifest ignores benign EPERM implementation discussion across packaged copies (${name})`, async () => {
+    const { buildReviewAuditManifest: targetBuildReviewAuditManifest } = file === "scripts/lib/review-prompt.mjs"
+      ? { buildReviewAuditManifest }
+      : await import(pathToFileURL(resolve(file)).href);
+    const manifest = targetBuildReviewAuditManifest({
+      prompt: "rendered prompt",
+      sourceFiles: [{ path: "sample.js", text: "export const value = 1;\n" }],
+      result: [
+        "Verdict: APPROVE",
+        "Blocking findings: none for sample.js.",
+        "Non-blocking concerns:",
+        "- In `scripts/lib/review-workload.mjs`, the `pidAlive` check relies on `process.kill(pid, 0)` checking for `EPERM`. While standard, PIDs can theoretically wrap on long-lived hosts.",
+        "Checklist:",
+        "1. Scope: PASS. sample.js was inspected.",
+        "2. Review-quality: PASS. No timeout, truncation, interruption, permission block, or shallow output occurred.",
+        "Inspection statement: I inspected sample.js.",
+      ].join("\n"),
+      status: "completed",
+      errorCode: null,
+    });
+
+    assert.deepEqual(manifest.review_quality.semantic_failure_reasons, []);
+    assert.equal(manifest.review_quality.failed_review_slot, false);
+  });
+}
+
+for (const [name, file] of REVIEW_PROMPT_MODULES) {
+  test(`review audit manifest ignores benign process-liveness EPERM wording (${name})`, async () => {
+    const { buildReviewAuditManifest: targetBuildReviewAuditManifest } = file === "scripts/lib/review-prompt.mjs"
+      ? { buildReviewAuditManifest }
+      : await import(pathToFileURL(resolve(file)).href);
+    const manifest = targetBuildReviewAuditManifest({
+      prompt: "rendered prompt",
+      sourceFiles: [{ path: "scripts/lib/review-workload.mjs", text: "export const value = 1;\n" }],
+      result: [
+        "Verdict: APPROVE",
+        "Blocking findings: none.",
+        "Non-blocking concerns:",
+        "- The `wx` lock file handling, process signal (`EPERM`) handling for process liveness checks, and credential redaction logic are appropriately defensive.",
+        "Inspection statement: I inspected scripts/lib/review-workload.mjs.",
+      ].join("\n"),
+      status: "completed",
+      errorCode: null,
+    });
+
+    assert.deepEqual(manifest.review_quality.semantic_failure_reasons, []);
+    assert.equal(manifest.review_quality.failed_review_slot, false);
+  });
+}
+
+for (const [name, file] of REVIEW_PROMPT_MODULES) {
+  test(`review audit manifest ignores live approved EPERM false-positive review wording (${name})`, async () => {
+    const { buildReviewAuditManifest: targetBuildReviewAuditManifest } = file === "scripts/lib/review-prompt.mjs"
+      ? { buildReviewAuditManifest }
+      : await import(pathToFileURL(resolve(file)).href);
+    const manifest = targetBuildReviewAuditManifest({
+      prompt: "rendered prompt",
+      sourceFiles: [{ path: "scripts/lib/review-prompt.mjs", text: "export const value = 1;\n" }],
+      result: [
+        "Verdict: APPROVE",
+        "Checklist:",
+        "1. Verify exact base/head refs and commits before judging the diff: PASS.",
+        "2. Review only the declared scope and list any scope gaps as NOT REVIEWED: PASS. All declared scope items (stale credential env cache, Grok auth persistence, Claude usage-limit logic, workload lease, account identity, and review-quality EPERM false positive) were inspected.",
+        "3. Evaluate correctness bugs, security risks, regressions, and missing tests: PASS.",
+        "Blocking findings: none.",
+        "Non-blocking concerns: none.",
+        "Inspection statement: I inspected scripts/lib/review-prompt.mjs.",
+      ].join("\n"),
+      status: "completed",
+      errorCode: null,
+    });
+
+    assert.deepEqual(manifest.review_quality.semantic_failure_reasons, []);
+    assert.equal(manifest.review_quality.failed_review_slot, false);
+  });
+}
+
+for (const [name, file] of REVIEW_PROMPT_MODULES) {
+  test(`review audit manifest ignores live approved permission hardening summary (${name})`, async () => {
+    const { buildReviewAuditManifest: targetBuildReviewAuditManifest } = file === "scripts/lib/review-prompt.mjs"
+      ? { buildReviewAuditManifest }
+      : await import(pathToFileURL(resolve(file)).href);
+    const manifest = targetBuildReviewAuditManifest({
+      prompt: "rendered prompt",
+      sourceFiles: [{ path: "scripts/lib/review-workload.mjs", text: "export const value = 1;\n" }],
+      result: [
+        "Verdict: APPROVE",
+        "Blocking findings:",
+        "None. The supplied diffs contain no concrete correctness bug, security risk (lease file TOCTOU/symlink/permission handled via \"wx\"+token+lstat+0700/0600+process exit hook), behavioral regression, or missing test that would justify stopping the PR. The exact regression cases from the RCA (#160 stale env, auth persistence, and EPERM false-positive in review quality) have targeted smoke and unit coverage.",
+        "Non-blocking concerns: none.",
+        "Inspection statement: I inspected scripts/lib/review-workload.mjs.",
+      ].join("\n"),
+      status: "completed",
+      errorCode: null,
+    });
+
+    assert.deepEqual(manifest.review_quality.semantic_failure_reasons, []);
+    assert.equal(manifest.review_quality.failed_review_slot, false);
+  });
+}
+
+for (const [name, file] of REVIEW_PROMPT_MODULES) {
+  test(`review audit manifest ignores benign EPERM discussion allowlist wording (${name})`, async () => {
+    const { buildReviewAuditManifest: targetBuildReviewAuditManifest } = file === "scripts/lib/review-prompt.mjs"
+      ? { buildReviewAuditManifest }
+      : await import(pathToFileURL(resolve(file)).href);
+    const manifest = targetBuildReviewAuditManifest({
+      prompt: "rendered prompt",
+      sourceFiles: [{ path: "tests/unit/review-prompt.test.mjs", text: "export const value = 1;\n" }],
+      result: [
+        "Verdict: APPROVE",
+        "Blocking findings: none.",
+        "Non-blocking concerns:",
+        "- `tests/unit/review-prompt.test.mjs`: EPERM discussion allowlist, allowlist.",
+        "Inspection statement: I inspected tests/unit/review-prompt.test.mjs.",
+      ].join("\n"),
+      status: "completed",
+      errorCode: null,
+    });
+
+    assert.deepEqual(manifest.review_quality.semantic_failure_reasons, []);
+    assert.equal(manifest.review_quality.failed_review_slot, false);
+  });
+}
+
+for (const [name, file] of REVIEW_PROMPT_MODULES) {
   test(`review audit manifest accepts benign review-quality wording across packaged copies (${name})`, async () => {
     const { buildReviewAuditManifest: targetBuildReviewAuditManifest } = file === "scripts/lib/review-prompt.mjs"
       ? { buildReviewAuditManifest }

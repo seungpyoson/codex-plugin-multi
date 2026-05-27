@@ -238,6 +238,20 @@ test("parseClaudeResult: classifies subscription usage limit errors", () => {
   assert.match(r.error, /quota|usage-tier|billing|credit/i);
 });
 
+test("parseClaudeResult: classifies subscription session limit errors", () => {
+  const r = parseClaudeResult(JSON.stringify({
+    type: "result",
+    is_error: true,
+    result: "You've hit your session limit · resets 2:50am (Asia/Seoul)",
+    session_id: UUID,
+    permission_denials: [],
+  }));
+
+  assert.equal(r.ok, false);
+  assert.equal(r.reason, "usage_limited");
+  assert.match(r.error, /quota|usage-tier|billing|credit/i);
+});
+
 test("parseClaudeResult: usage limits omit account and payment artifacts", () => {
   const r = parseClaudeResult(JSON.stringify({
     type: "result",

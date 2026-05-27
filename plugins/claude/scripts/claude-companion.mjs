@@ -87,6 +87,12 @@ import {
 } from "./lib/companion-common.mjs";
 import { REVIEW_PROMPT_CONTRACT_VERSION, buildReviewAuditManifest, buildReviewPrompt, buildSelectedSourcePromptBlock, selectedSourceFilesFromPrompt } from "./lib/review-prompt.mjs";
 import { diffSourceFiles } from "./lib/diff-source.mjs";
+import { buildProviderAccountIdentity } from "./lib/provider-identity.mjs";
+import {
+  acquireProviderWorkloadLease,
+  providerWorkloadBlockedExecution,
+  releaseProviderWorkloadLease,
+} from "./lib/review-workload.mjs";
 
 // ——— plugin-root self-resolution (upstream pattern, spec §4.14) ———
 const PLUGIN_ROOT = resolvePath(dirname(fileURLToPath(import.meta.url)), "..");
@@ -1519,7 +1525,41 @@ async function executeRun(invocation, prompt, { foreground, lifecycleEvents = nu
     process.exit(2);
   }
 
-  const preflightExecution = await claudeOAuthInferencePreflight(invocation, authSelection);
+  const workloadAdmission = acquireProviderWorkloadLease({
+    provider: invocation.target,
+    jobId,
+    cwd: invocation.cwd,
+    sourceBearing: modeSendsSelectedSource(invocation.mode),
+  });
+  let workloadLease = null;
+  if (!workloadAdmission.ok) {
+    const workloadPreflight = providerWorkloadBlockedExecution(workloadAdmission);
+    const finalRecord = buildClaudeFinalRecord(
+      invocation,
+      workloadPreflight,
+      null,
+      mutationContext.mutations,
+      prompt,
+      executionScope.addDir,
+      runtimeDiagnostics,
+    );
+    const { metaError, stateError } = commitJobRecord(workspaceRoot, jobId, finalRecord);
+    writeExecutionSidecars(workspaceRoot, jobId, workloadPreflight);
+    exitIfFinalizationFailed(invocation, workloadPreflight, finalRecord, mutationContext, executionScope, { metaError, stateError });
+    cleanupExecutionResources(executionScope, mutationContext);
+    if (foreground) printLifecycleJson(finalRecord, lifecycleEvents);
+    process.exit(2);
+  }
+  workloadLease = workloadAdmission.lease;
+
+  const oauthStatus = authSelection.selected_auth_path === "subscription_oauth"
+    ? safeClaudeOAuthStatus(invocation.binary, authSelection, invocation.cwd)
+    : null;
+  if (oauthStatus?.account_identity) {
+    runtimeDiagnostics.provider_account_identity = oauthStatus.account_identity;
+  }
+
+  const preflightExecution = await claudeOAuthInferencePreflight(invocation, authSelection, { oauthStatus });
   if (preflightExecution) {
     const finalRecord = buildClaudeFinalRecord(
       invocation,
@@ -1533,6 +1573,8 @@ async function executeRun(invocation, prompt, { foreground, lifecycleEvents = nu
     const { metaError, stateError } = commitJobRecord(workspaceRoot, jobId, finalRecord);
     writeExecutionSidecars(workspaceRoot, jobId, preflightExecution);
     exitIfFinalizationFailed(invocation, preflightExecution, finalRecord, mutationContext, executionScope, { metaError, stateError });
+    releaseProviderWorkloadLease(workloadLease);
+    workloadLease = null;
     cleanupExecutionResources(executionScope, mutationContext);
     if (foreground) printLifecycleJson(finalRecord, lifecycleEvents);
     process.exit(2);
@@ -1564,6 +1606,8 @@ async function executeRun(invocation, prompt, { foreground, lifecycleEvents = nu
     });
   } finally {
     stopHeartbeat();
+    releaseProviderWorkloadLease(workloadLease);
+    workloadLease = null;
   }
 
   recordPostRunMutations(invocation, mutationContext);
@@ -1786,13 +1830,13 @@ async function spawnClaudeOrExit(invocation, profile, prompt, executionScope, mu
   }
 }
 
-async function claudeOAuthInferencePreflight(invocation, authSelection, { allowApiKey = false } = {}) {
+async function claudeOAuthInferencePreflight(invocation, authSelection, { allowApiKey = false, oauthStatus: providedOAuthStatus = undefined } = {}) {
   if (
     authSelection.selected_auth_path !== "subscription_oauth" &&
     (!allowApiKey || authSelection.selected_auth_path !== "api_key_env")
   ) return null;
   const oauthStatus = authSelection.selected_auth_path === "subscription_oauth"
-    ? safeClaudeOAuthStatus(invocation.binary, authSelection, invocation.cwd)
+    ? (providedOAuthStatus ?? safeClaudeOAuthStatus(invocation.binary, authSelection, invocation.cwd))
     : null;
   if (authSelection.selected_auth_path === "subscription_oauth" && oauthStatus?.available === true && oauthStatus.logged_in === false) {
     return {
@@ -1906,7 +1950,9 @@ function recordPostRunMutations(invocation, mutationContext) {
 
 function buildClaudeFinalRecord(invocation, execution, cancelMarker, mutations, prompt, containmentPath, runtimeDiagnostics) {
   execution.reviewAuditManifest = reviewAuditManifest(invocation, prompt, containmentPath, execution);
-  execution.runtimeDiagnostics = runtimeDiagnostics;
+  execution.runtimeDiagnostics = execution.runtimeDiagnostics
+    ? { ...runtimeDiagnostics, ...execution.runtimeDiagnostics }
+    : runtimeDiagnostics;
   const sourceFilesForRedaction = selectedSourceFilesForRedaction(prompt);
   const redactionFields = sourceFilesForRedaction.length > 0
     ? {
@@ -2546,7 +2592,9 @@ function safeClaudeOAuthStatus(binary, authSelection, cwd = process.cwd()) {
   }
   try {
     const parsed = parseJsonObjectOutput(result.stdout, isClaudeAuthStatusObject);
-    // Explicit allowlist: do not add user, email, org, or account fields here.
+    // Explicit allowlist: keep raw user/email/org/account fields out of records.
+    // account_identity is a provider-neutral one-way fingerprint only.
+    const accountIdentity = buildProviderAccountIdentity("claude", parsed);
     return {
       checked: true,
       available: true,
@@ -2554,6 +2602,7 @@ function safeClaudeOAuthStatus(binary, authSelection, cwd = process.cwd()) {
       auth_method: typeof parsed.authMethod === "string" ? parsed.authMethod : null,
       api_provider: typeof parsed.apiProvider === "string" ? parsed.apiProvider : null,
       subscription_type: typeof parsed.subscriptionType === "string" ? parsed.subscriptionType : null,
+      ...(accountIdentity ? { account_identity: accountIdentity } : {}),
     };
   } catch {
     return { checked: true, available: false, detail: "status_parse_failed" };

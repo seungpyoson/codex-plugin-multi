@@ -1609,6 +1609,57 @@ test("buildJobRecord: malformed runtime diagnostics normalize to privacy-safe em
   }
 });
 
+test("buildJobRecord: preserves privacy-safe provider account identity diagnostics", () => {
+  const providers = [
+    [buildJobRecord, makeInvocation(), { claudeSessionId: CLAUDE_UUID }],
+    [
+      buildGeminiJobRecord,
+      makeInvocation({ target: "gemini", binary: "gemini" }),
+      { geminiSessionId: GEMINI_UUID },
+    ],
+    [
+      buildKimiJobRecord,
+      makeInvocation({ target: "kimi", binary: "kimi" }),
+      { kimiSessionId: "kimi-session-123" },
+    ],
+  ];
+
+  for (const [providerBuildJobRecord, invocation, sessionFields] of providers) {
+    const rec = providerBuildJobRecord(invocation, {
+      exitCode: 0,
+      parsed: { ok: true, result: "done", structured: null, denials: [] },
+      pidInfo: makePidInfo(),
+      runtimeDiagnostics: {
+        add_dir: "/tmp/worktree",
+        child_cwd: "/tmp/worktree",
+        provider_account_identity: {
+          provider: invocation.target,
+          identity_source: "provider_auth_status",
+          identity_fields: ["email", "org_id"],
+          account_fingerprint: {
+            algorithm: "sha256",
+            value: "a".repeat(64),
+          },
+          email: "user@example.com",
+          org_id: "org-secret-123",
+        },
+      },
+      ...sessionFields,
+    }, []);
+
+    assert.deepEqual(rec.runtime_diagnostics.provider_account_identity, {
+      provider: invocation.target,
+      identity_source: "provider_auth_status",
+      identity_fields: ["email", "org_id"],
+      account_fingerprint: {
+        algorithm: "sha256",
+        value: "a".repeat(64),
+      },
+    });
+    assert.doesNotMatch(JSON.stringify(rec), /user@example\.com|org-secret-123/);
+  }
+});
+
 test("buildJobRecord: runtime-options cleanup warning is diagnostic only across companion providers", () => {
   const providers = [
     [buildJobRecord, makeInvocation(), { claudeSessionId: CLAUDE_UUID }],

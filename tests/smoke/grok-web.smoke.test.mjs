@@ -71,11 +71,15 @@ const GROK_EXPECTED_KEYS = Object.freeze([
 
 function run(args, options = {}) {
   const defaultTransportEnv = options.defaultTransport === false ? {} : { GROK_TRANSPORT: "web" };
+  const cwd = options.cwd ?? REPO_ROOT;
+  const workloadLockDir = options.env?.CODEX_PLUGIN_MULTI_PROVIDER_WORKLOAD_LOCK_DIR
+    ?? path.join(options.env?.GROK_PLUGIN_DATA ?? cwd, ".provider-workload");
   return spawnSync(process.execPath, [COMPANION, ...args], {
-    cwd: options.cwd ?? REPO_ROOT,
+    cwd,
     env: {
       ...process.env,
       ...defaultTransportEnv,
+      CODEX_PLUGIN_MULTI_PROVIDER_WORKLOAD_LOCK_DIR: workloadLockDir,
       ...options.env,
     },
     encoding: "utf8",
@@ -84,12 +88,16 @@ function run(args, options = {}) {
 
 function runAsync(args, options = {}) {
   const defaultTransportEnv = options.defaultTransport === false ? {} : { GROK_TRANSPORT: "web" };
+  const cwd = options.cwd ?? REPO_ROOT;
+  const workloadLockDir = options.env?.CODEX_PLUGIN_MULTI_PROVIDER_WORKLOAD_LOCK_DIR
+    ?? path.join(options.env?.GROK_PLUGIN_DATA ?? cwd, ".provider-workload");
   return new Promise((resolve) => {
     const child = spawn(process.execPath, [COMPANION, ...args], {
-      cwd: options.cwd ?? REPO_ROOT,
+      cwd,
       env: {
         ...process.env,
         ...defaultTransportEnv,
+        CODEX_PLUGIN_MULTI_PROVIDER_WORKLOAD_LOCK_DIR: workloadLockDir,
         ...options.env,
       },
       stdio: ["ignore", "pipe", "pipe"],
@@ -360,6 +368,8 @@ function makeFakeGrokCli({
   failSourceFreeHomeCleanup = false,
   sourceBearingDelayMs = 0,
   ignoreSourceBearingSigterm = false,
+  mutateAuthOnSource = false,
+  mutateAuthOnSourceFree = false,
 } = {}) {
   const binDir = mkdtempSync(path.join(tmpdir(), "fake-grok-cli-bin-"));
   const logPath = path.join(binDir, "grok-log.jsonl");
@@ -377,6 +387,8 @@ const ignoreSourceBearingSigterm = ${JSON.stringify(ignoreSourceBearingSigterm)}
 const modelsExitStatus = ${JSON.stringify(modelsExitStatus)};
 const modelsStderr = ${JSON.stringify(modelsStderr)};
 const sourceFreeAuthStderr = ${JSON.stringify(sourceFreeAuthStderr)};
+const mutateAuthOnSource = ${JSON.stringify(mutateAuthOnSource)};
+const mutateAuthOnSourceFree = ${JSON.stringify(mutateAuthOnSourceFree)};
 const args = process.argv.slice(2);
 const apiEnvKeys = ["GROK_API_KEY", "XAI_API_KEY", "XAI_KEY"].filter((key) => Object.prototype.hasOwnProperty.call(process.env, key));
 const sensitiveEnvKeys = ["OPENAI_API_KEY", "ANTHROPIC_API_KEY", "AWS_ACCESS_KEY_ID", "GITHUB_TOKEN", "GH_TOKEN"].filter((key) => Object.prototype.hasOwnProperty.call(process.env, key));
@@ -410,7 +422,10 @@ const grokHome = process.env.GROK_HOME || null;
 if (grokHome) {
   fs.mkdirSync(require("node:path").join(grokHome, "sessions"), { recursive: true });
   fs.writeFileSync(require("node:path").join(grokHome, "sessions", "session.jsonl"), prompt.slice(0, 128));
-  if (process.env.GROK_CLI_MUTATE_AUTH_ON_SOURCE === "1" && prompt.includes("CLI_SOURCE_SECRET")) {
+  if (
+    (mutateAuthOnSource && prompt.includes("CLI_SOURCE_SECRET"))
+    || (mutateAuthOnSourceFree && !prompt.includes("CLI_SOURCE_SECRET"))
+  ) {
     fs.writeFileSync(require("node:path").join(grokHome, "auth.json"), "{\\"token\\":\\"mutated\\"}\\n");
   }
   if (failSourceBearingHomeCleanup && prompt.includes("CLI_SOURCE_SECRET")) {
@@ -877,11 +892,11 @@ test("custom-review rejects workspace PATH Grok CLI binaries before source trans
   }
 });
 
-test("custom-review isolates Grok CLI auth files from source auth home mutations", () => {
+test("custom-review syncs refreshed Grok CLI auth file without copying source artifacts", () => {
   const cwd = realpathSync(mkdtempSync(path.join(tmpdir(), "grok-cli-auth-isolation-workspace-")));
   const dataDir = mkdtempSync(path.join(tmpdir(), "grok-cli-auth-isolation-data-"));
   const authHome = mkdtempSync(path.join(tmpdir(), "grok-cli-auth-isolation-auth-home-"));
-  const { binDir, grokPath } = makeFakeGrokCli();
+  const { binDir, grokPath, logPath } = makeFakeGrokCli({ mutateAuthOnSource: true });
   writeGrokCliAuthFixture(cwd, authHome);
 
   try {
@@ -899,16 +914,58 @@ test("custom-review isolates Grok CLI auth files from source auth home mutations
         PATH: `${binDir}${path.delimiter}${process.env.PATH ?? ""}`,
         GROK_CLI_BINARY: grokPath,
         GROK_CLI_AUTH_HOME: authHome,
-        GROK_CLI_MUTATE_AUTH_ON_SOURCE: "1",
         GROK_PLUGIN_DATA: dataDir,
       },
     });
 
     assert.equal(result.status, 0, result.stderr || result.stdout);
-    assert.equal(readFileSync(path.join(authHome, "auth.json"), "utf8"), "{\"token\":\"fake\"}\n");
+    const record = parseStdout(result);
+    assert.equal(record.runtime_diagnostics.cli_request.grok_home_auth_sync, "updated");
+    assert.equal(readFileSync(path.join(authHome, "auth.json"), "utf8"), "{\"token\":\"mutated\"}\n");
+    assert.equal(existsSync(path.join(authHome, "sessions")), false);
+    assert.equal(readFileSync(path.join(authHome, "mcp_credentials.json"), "utf8"), "{\"token\":\"mcp-must-not-copy\"}\n");
+    const sourceInvocation = readGrokCliLog(logPath).find((line) => line.promptHasSource);
+    assert.ok(sourceInvocation, "mock Grok CLI should run source-bearing prompt");
+    assert.equal(existsSync(sourceInvocation.grokHome), false);
   } finally {
     rmTree(authHome);
     rmTree(cwd);
+    rmTree(dataDir);
+  }
+});
+
+test("doctor syncs source-free refreshed Grok CLI auth file back to source auth home", () => {
+  const dataDir = mkdtempSync(path.join(tmpdir(), "grok-cli-source-free-auth-sync-data-"));
+  const authHome = mkdtempSync(path.join(tmpdir(), "grok-cli-source-free-auth-sync-auth-home-"));
+  const { binDir, grokPath, logPath } = makeFakeGrokCli({ mutateAuthOnSourceFree: true });
+  writeFileSync(path.join(authHome, "auth.json"), "{\"token\":\"fake\"}\n");
+  writeFileSync(path.join(authHome, "config.toml"), "[models]\ndefault = \"grok-build\"\n");
+
+  try {
+    const result = run(["doctor"], {
+      defaultTransport: false,
+      env: {
+        PATH: `${binDir}${path.delimiter}${process.env.PATH ?? ""}`,
+        GROK_CLI_BINARY: grokPath,
+        GROK_CLI_AUTH_HOME: authHome,
+        GROK_PLUGIN_DATA: dataDir,
+      },
+    });
+
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    const parsed = parseStdout(result);
+    assert.equal(parsed.ready, true);
+    assert.equal(parsed.readiness_layers.source_free_prompt.status, "ready");
+    assert.equal(parsed.readiness_layers.source_free_prompt.grok_home_auth_sync, "updated");
+    assert.equal(readFileSync(path.join(authHome, "auth.json"), "utf8"), "{\"token\":\"mutated\"}\n");
+    assert.equal(existsSync(path.join(authHome, "sessions")), false);
+
+    const promptInvocations = readGrokCliLog(logPath).filter((line) => line.promptPath);
+    assert.equal(promptInvocations.length, 1);
+    assert.equal(promptInvocations[0].promptHasSource, false);
+    assert.equal(existsSync(promptInvocations[0].grokHome), false);
+  } finally {
+    rmTree(authHome);
     rmTree(dataDir);
   }
 });
@@ -1209,6 +1266,89 @@ test("custom-review auto transport falls back from Grok CLI login failure to loc
       assert.deepEqual(logLines.map((line) => line.args[0]), ["--version", "models"]);
     });
   } finally {
+    rmTree(authHome);
+    rmTree(cwd);
+    rmTree(dataDir);
+  }
+});
+
+test("custom-review auto transport holds provider workload lease through CLI to web fallback", async () => {
+  const cwd = realpathSync(mkdtempSync(path.join(tmpdir(), "grok-auto-web-fallback-lease-workspace-")));
+  const dataDir = mkdtempSync(path.join(tmpdir(), "grok-auto-web-fallback-lease-data-"));
+  const authHome = mkdtempSync(path.join(tmpdir(), "grok-auto-web-fallback-lease-auth-home-"));
+  const { binDir, grokPath } = makeFakeGrokCli({ modelsOutput: GROK_MODELS_READY_LOGGED_OUT });
+  writeFileSync(path.join(cwd, "review.js"), "export const value = 1;\n");
+  writeGrokCliAuthFixture(cwd, authHome);
+
+  let releaseFirstResponse = () => {};
+  const firstResponseReleased = new Promise((resolve) => { releaseFirstResponse = resolve; });
+  let markFirstWebRequest = () => {};
+  const firstWebRequest = new Promise((resolve) => { markFirstWebRequest = resolve; });
+  let webRequests = 0;
+
+  try {
+    await withServer(async (req, res) => {
+      webRequests += 1;
+      await readJsonRequest(req);
+      if (webRequests === 1) {
+        markFirstWebRequest();
+        await firstResponseReleased;
+      }
+      res.setHeader("content-type", "application/json");
+      res.end(JSON.stringify({
+        id: `grok-auto-web-fallback-lease-${webRequests}`,
+        model: "grok-4.20-fast",
+        choices: [{ message: { content: substantiveReviewFixture(`Fallback lease marker: ${webRequests}.`) } }],
+      }));
+    }, async (baseUrl) => {
+      const sharedEnv = {
+        PATH: `${binDir}${path.delimiter}${process.env.PATH ?? ""}`,
+        GROK_CLI_BINARY: grokPath,
+        GROK_CLI_AUTH_HOME: authHome,
+        GROK_PLUGIN_DATA: dataDir,
+        GROK_WEB_BASE_URL: baseUrl,
+      };
+      const argsFor = (prompt) => [
+        "run",
+        "--transport", "auto",
+        "--mode", "custom-review",
+        "--scope", "custom",
+        "--scope-paths", "review.js",
+        "--foreground",
+        "--prompt", prompt,
+      ];
+
+      const firstResultPromise = runAsync(argsFor("First fallback review."), {
+        cwd,
+        defaultTransport: false,
+        env: sharedEnv,
+      });
+      await firstWebRequest;
+
+      const secondResult = await runAsync(argsFor("Second overlapping fallback review."), {
+        cwd,
+        defaultTransport: false,
+        env: sharedEnv,
+      });
+      releaseFirstResponse();
+      const firstResult = await firstResultPromise;
+
+      assert.equal(firstResult.status, 0, firstResult.stderr || firstResult.stdout);
+      const firstRecord = parseStdout(firstResult);
+      assert.equal(firstRecord.status, "completed");
+      assert.equal(firstRecord.transport, "web");
+      assert.equal(firstRecord.fallback_from, "cli");
+
+      assert.equal(secondResult.status, 1, secondResult.stderr || secondResult.stdout);
+      const secondRecord = parseStdout(secondResult);
+      assert.equal(secondRecord.status, "failed");
+      assert.equal(secondRecord.error_code, "provider_workload_blocked");
+      assert.equal(secondRecord.external_review.source_content_transmission, "not_sent");
+      assert.equal(secondRecord.runtime_diagnostics?.provider_workload?.reason, "active_same_provider_job");
+      assert.equal(webRequests, 1);
+    });
+  } finally {
+    releaseFirstResponse();
     rmTree(authHome);
     rmTree(cwd);
     rmTree(dataDir);
@@ -5078,22 +5218,17 @@ test("rendered prompt over Grok CLI budget names CLI cap, not web tunnel cap", (
   }
 });
 
-test("concurrent Grok runs preserve every completed job in the state index", async () => {
+test("concurrent same-provider Grok runs block overlapping source-bearing jobs and retain state", async () => {
   const cwd = mkdtempSync(path.join(tmpdir(), "grok-web-workspace-"));
   const dataDir = mkdtempSync(path.join(tmpdir(), "grok-web-data-"));
   writeFileSync(path.join(cwd, "review.js"), "export const value = 1;\n");
   const runCount = 8;
   let received = 0;
-  const releaseAfterAll = [];
 
   await withServer(async (req, res) => {
     await readJsonRequest(req);
     received += 1;
-    if (received === runCount) {
-      for (const release of releaseAfterAll) release();
-    } else {
-      await new Promise((resolve) => releaseAfterAll.push(resolve));
-    }
+    await new Promise((resolve) => setTimeout(resolve, 750));
     res.setHeader("content-type", "application/json");
     res.end(JSON.stringify({
       id: `grok-web-concurrent-${received}`,
@@ -5116,10 +5251,18 @@ test("concurrent Grok runs preserve every completed job in the state index", asy
     })));
     const records = results.map((result) => {
       const record = parseStdout(result);
-      assert.equal(result.status, 0);
-      assert.equal(record.status, "completed");
+      assert.equal(result.status, record.status === "completed" ? 0 : 1);
       return record;
     });
+    const completed = records.filter((record) => record.status === "completed");
+    const blocked = records.filter((record) => record.error_code === "provider_workload_blocked");
+    assert.equal(completed.length, 1);
+    assert.equal(blocked.length, runCount - 1);
+    assert.equal(received, 1);
+    for (const record of blocked) {
+      assert.equal(record.external_review.source_content_transmission, "not_sent");
+      assert.equal(record.runtime_diagnostics?.provider_workload?.reason, "active_same_provider_job");
+    }
 
     const listResult = run(["list"], {
       cwd,

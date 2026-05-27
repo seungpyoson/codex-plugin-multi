@@ -380,6 +380,8 @@ function isPermissionFailureExampleLine(lower) {
   if (isPermissionExceptionExampleLine(lower)) return true;
   if (isOutOfScopePermissionNoteLine(lower)) return true;
   if (isPermissionLiteralListLine(lower)) return true;
+  if (isPermissionAllowlistDiscussionLine(lower)) return true;
+  if (isProcessLivenessPermissionDiscussionLine(lower)) return true;
   if (isPermissionBoundaryExampleLine(lower)) return true;
   if (isPermissionLiteralDiscussionLine(lower)) return true;
   if (isPermissionMechanicsDiscussionLine(lower)) return true;
@@ -426,6 +428,49 @@ function isPermissionFailureExampleLine(lower) {
     "could not inspect",
     "unable to inspect",
   ]);
+}
+
+function isProcessLivenessPermissionDiscussionLine(lower) {
+  return includesPermissionFailureLiteral(lower)
+    && !hasConcretePermissionActionPhrase(lower)
+    && includesAny(lower, [
+      "process",
+      "pid",
+      "signal",
+      "kill",
+      "holderactive",
+      "pidalive",
+    ])
+    && includesAny(lower, [
+      "liveness",
+      "alive",
+      "exists",
+      "unsignalable",
+      "process signal",
+      "process.kill",
+      "kill(pid",
+    ]);
+}
+
+function isPermissionAllowlistDiscussionLine(lower) {
+  return includesPermissionFailureLiteral(lower)
+    && !hasConcretePermissionActionPhrase(lower)
+    && includesAny(lower, [
+      "allowlist",
+      "allow-list",
+      "allow list",
+    ])
+    && includesAny(lower, [
+      "discussion",
+      "literal",
+      "parser",
+      "review-quality",
+      "false positive",
+      "false-positive",
+      "test",
+      "coverage",
+      "fixture",
+    ]);
 }
 
 function isPermissionExceptionExampleLine(lower) {
@@ -551,6 +596,12 @@ function isPermissionLiteralDiscussionLine(lower) {
     "pattern discussion",
     "sandbox detection uses",
     "detection uses",
+    "process.kill",
+    "kill(pid",
+    "pidalive",
+    "checking for eperm",
+    "alive-process",
+    "alive process",
     "token-bound",
     "token bound",
     "tokenize",
@@ -628,11 +679,13 @@ function isPermissionMechanicsDiscussionLine(lower) {
     "is flagged",
     "permission detection",
     "review-quality audit",
+    "review-quality",
     "mechanics-discussion",
     "token-bound",
     "token bound",
     "tokenize",
     "false positive",
+    "false-positive",
     "inside words",
     "standalone word",
     "boundary",
@@ -669,6 +722,7 @@ function isPermissionMechanicsDiscussionLine(lower) {
     "detect",
     "detection",
     "parser",
+    "review-quality",
     "fixture",
     "example",
     "counterexample",
