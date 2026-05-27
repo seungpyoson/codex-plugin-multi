@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 
 import {
+  buildPacketRecovery,
   buildReviewSlotDisposition,
   evaluateReviewSlotRetryPolicy,
   evaluateSourcePacketPolicy,
@@ -89,6 +90,48 @@ function sourceManifest(sourceFiles = []) {
       bytes: entries.reduce((sum, file) => sum + file.bytes, 0),
       lines: entries.reduce((sum, file) => sum + file.lines, 0),
     }),
+  });
+}
+
+function sourceTotalsForReviewSurface(source = null) {
+  const totals = source?.totals ?? {};
+  return {
+    files: Number.isSafeInteger(totals.files) ? totals.files : null,
+    bytes: Number.isSafeInteger(totals.bytes) ? totals.bytes : null,
+  };
+}
+
+function sourceHashForReviewSurface(source = null) {
+  if (!source || typeof source !== "object") return null;
+  const totals = sourceTotalsForReviewSurface(source);
+  if ((totals.files ?? 0) === 0 && (totals.bytes ?? 0) === 0) return null;
+  return hashObject(source).value;
+}
+
+function previousSourceForReviewSurface(previousAttempt = null) {
+  return previousAttempt?.selected_source
+    ?? previousAttempt?.source_packet
+    ?? previousAttempt?.review_metadata?.audit_manifest?.selected_source
+    ?? null;
+}
+
+function packetRecoveryReviewSurface({ selectedSource, previousAttempt = null, sourcePacketPolicy = null } = {}) {
+  const previousSource = previousSourceForReviewSurface(previousAttempt);
+  const originalSource = previousSource ?? selectedSource;
+  const originalTotals = sourceTotalsForReviewSurface(originalSource);
+  const currentTotals = sourceTotalsForReviewSurface(selectedSource);
+  const changed = sourcePacketPolicy?.review_surface_changed === true;
+  return Object.freeze({
+    original_packet_hash: sourceHashForReviewSurface(originalSource),
+    current_packet_hash: sourceHashForReviewSurface(selectedSource),
+    original_files: originalTotals.files,
+    current_files: currentTotals.files,
+    original_bytes: originalTotals.bytes,
+    current_bytes: currentTotals.bytes,
+    changed,
+    change_reason: changed ? "narrowed_scope" : "none",
+    approval_credit: changed ? "changed_surface_only" : "none",
+    coverage_proof: null,
   });
 }
 
@@ -1079,7 +1122,7 @@ export function buildReviewAuditManifest({
     selectedSource.totals.files > 0 || selectedSource.totals.bytes > 0
   );
   const sourcePacketPolicy = route.sourcePacketPolicy ?? evaluateSourcePacketPolicy({
-    provider: request.provider ?? null,
+    provider: route.sourcePacketPolicyProvider ?? request.provider ?? route.providerId ?? null,
     mode: route.mode ?? null,
     routeStep,
     providerCapabilities: route.providerCapabilities ?? {},
@@ -1159,6 +1202,22 @@ export function buildReviewAuditManifest({
     waiverArtifact: route.reviewSlot?.waiverArtifact ?? null,
     overrideArtifact: route.reviewSlot?.overrideArtifact ?? null,
   });
+  const packetRecovery = route.packetRecovery ?? (effectiveSourcePacketPolicy.source_send_allowed === false
+    ? buildPacketRecovery({
+      reason: effectiveSourcePacketPolicy.source_packet_policy_error_code ?? errorCode,
+      sourcePacketPolicy: effectiveSourcePacketPolicy,
+      providerCapabilities: route.providerCapabilities ?? {},
+      provider: route.providerId ?? effectiveSourcePacketPolicy.provider ?? request.provider ?? null,
+      mode: route.mode ?? scope.name ?? null,
+      routeStep,
+      reviewSurface: route.packetRecoveryReviewSurface ?? packetRecoveryReviewSurface({
+        selectedSource,
+        previousAttempt: route.previousAttempt ?? null,
+        sourcePacketPolicy: effectiveSourcePacketPolicy,
+      }),
+      requiresSourceSendApproval: route.sourceSendApprovalRequired === true,
+    })
+    : null);
   return Object.freeze({
     schema_version: REVIEW_AUDIT_MANIFEST_VERSION,
     rendered_prompt_hash: renderedPromptHash,
@@ -1216,6 +1275,7 @@ export function buildReviewAuditManifest({
     source_send_approval_required: route.sourceSendApprovalRequired ?? null,
     source_send_approval_state: route.sourceSendApprovalState ?? null,
     source_packet_policy: Object.freeze({ ...effectiveSourcePacketPolicy }),
+    packet_recovery: packetRecovery,
     review_slot_retry_policy: Object.freeze({ ...retryPolicy }),
     review_slot: reviewSlot,
     error_code: errorCode,

@@ -102,8 +102,16 @@ function stringBytes(value) {
   return Buffer.byteLength(String(value ?? ""), "utf8");
 }
 
-function auditManifestForRecordStatus(manifest, { status, errorCode, pidInfo } = {}) {
-  if (!manifest?.review_quality || typeof status !== "string") return manifest ?? null;
+function auditManifestForRecordStatus(manifest, { status, errorCode, pidInfo, packetRecovery } = {}) {
+  if (!manifest) return null;
+  const shouldBackfillPacketRecovery = packetRecovery
+    && typeof packetRecovery === "object"
+    && !manifest.packet_recovery;
+  if (!manifest.review_quality || typeof status !== "string") {
+    return shouldBackfillPacketRecovery
+      ? Object.freeze({ ...manifest, packet_recovery: packetRecovery })
+      : manifest;
+  }
   const sourceContentTransmission = sourceContentTransmissionForExecution({ status, errorCode, pidInfo });
   const failedReviewSlot = sourceContentTransmission === "sent"
     && !["completed", "queued", "running"].includes(status);
@@ -113,11 +121,13 @@ function auditManifestForRecordStatus(manifest, { status, errorCode, pidInfo } =
   if (
     manifest.review_quality.failed_review_slot === failedReviewSlot
     && manifest.review_slot === reviewSlot
+    && !shouldBackfillPacketRecovery
   ) {
     return manifest;
   }
   return Object.freeze({
     ...manifest,
+    ...(shouldBackfillPacketRecovery ? { packet_recovery: packetRecovery } : {}),
     source_content_transmission: sourceContentTransmission,
     review_quality: Object.freeze({
       ...manifest.review_quality,
@@ -146,6 +156,7 @@ function buildReviewMetadata(invocation, execution = null, parsed = null, endedA
       status,
       errorCode,
       pidInfo: execution?.pidInfo ?? null,
+      packetRecovery: execution?.runtimeDiagnostics?.packet_recovery ?? null,
     }),
   };
   if (Array.isArray(execution?.permissionModeAttempts)) {
@@ -161,6 +172,7 @@ export function externalReviewForInvocation(invocation, execution = null) {
     status,
     errorCode: error_code,
     pidInfo: execution?.pidInfo ?? null,
+    packetRecovery: execution?.runtimeDiagnostics?.packet_recovery ?? null,
   });
   const sourceContentTransmission = invocation.resume_without_source_resend === true
     ? SOURCE_CONTENT_TRANSMISSION.NOT_SENT
@@ -580,6 +592,12 @@ function normalizeRuntimeDiagnostics(input, denials, redactText = (value) => val
   if (cleanupWarning) {
     out.cleanup_warning = cleanupWarning;
     out.cleanup_warning_path = cleanupWarningPath;
+  }
+  if (input.source_packet_policy && typeof input.source_packet_policy === "object") {
+    out.source_packet_policy = input.source_packet_policy;
+  }
+  if (input.packet_recovery && typeof input.packet_recovery === "object") {
+    out.packet_recovery = input.packet_recovery;
   }
   return out;
 }

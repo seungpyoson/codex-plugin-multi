@@ -347,6 +347,8 @@ function reviewAuditManifest(invocation, prompt, containmentPath, execution) {
       reason: scopeResolutionReason(invocation),
     },
     route: {
+      mode: invocation.mode,
+      providerId: "kimi",
       selectedRoute: invocation.selected_route ?? null,
       routeStep: invocation.route_step ?? null,
       routeSteps: invocation.route_steps ?? null,
@@ -389,6 +391,10 @@ function sourcePacketPolicyPreflight(invocation, prompt, containmentPath) {
   const execution = {
     ...preflightExecution,
     errorMessage: `${errorCode}: ${policy.suggested_action ?? "source packet policy blocked selected source send"}`,
+    runtimeDiagnostics: {
+      source_packet_policy: policy,
+      packet_recovery: manifest.packet_recovery ?? null,
+    },
   };
   execution.reviewAuditManifest = reviewAuditManifest(invocation, prompt, containmentPath, execution);
   return execution;
@@ -1148,6 +1154,7 @@ async function cmdRun(rest) {
         kimiSessionId: null,
         errorMessage: sourcePacketPreflight.errorMessage,
         reviewAuditManifest: sourcePacketPreflight.reviewAuditManifest,
+        runtimeDiagnostics: sourcePacketPreflight.runtimeDiagnostics,
         ...redactionFieldsForPrompt(targetPrompt),
       }, []);
       writeJobFile(workspaceRoot, jobId, errorRecord);
@@ -1268,6 +1275,7 @@ async function executeRun(invocation, prompt, { foreground, lifecycleEvents = nu
       kimiSessionId: null,
       errorMessage: sourcePacketPreflight.errorMessage,
       reviewAuditManifest: sourcePacketPreflight.reviewAuditManifest,
+      runtimeDiagnostics: sourcePacketPreflight.runtimeDiagnostics,
       ...redactionFieldsForPrompt(prompt),
     }, mutations);
     writeJobFile(workspaceRoot, jobId, errorRecord);
@@ -1740,6 +1748,7 @@ async function cmdContinue(rest) {
         kimiSessionId: null,
         errorMessage: sourcePacketPreflight.errorMessage,
         reviewAuditManifest: sourcePacketPreflight.reviewAuditManifest,
+        runtimeDiagnostics: sourcePacketPreflight.runtimeDiagnostics,
         ...redactionFieldsForPrompt(targetPrompt),
       }, []);
       writeJobFile(workspaceRoot, newJobId_, errorRecord);

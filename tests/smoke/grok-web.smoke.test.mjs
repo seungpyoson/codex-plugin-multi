@@ -4347,6 +4347,19 @@ test("custom-review guides substantive missing-verdict retry without automatic r
       assert.match(record.suggested_action, /narrowing the scope/i);
       assert.match(record.suggested_action, /sharding/i);
       assert.match(record.suggested_action, /relaying/i);
+      const recovery = record.runtime_diagnostics?.packet_recovery;
+      assert.ok(recovery, "Grok no-verdict source-sent failures must include packet_recovery");
+      assert.equal(recovery.provider, "grok");
+      assert.equal(recovery.mode, "custom-review");
+      assert.equal(recovery.reason, "review_not_completed");
+      assert.equal(recovery.source_content_transmission, "sent");
+      assert.equal(record.error_code, recovery.reason);
+      assert.equal(recovery.provider_capabilities.supports_no_source_resume, false);
+      assert.deepEqual(
+        recovery.actions.map((action) => action.type),
+        ["resend_with_confirmation", "switch_provider", "waive_slot"],
+      );
+      assert.deepEqual(record.review_metadata.audit_manifest.packet_recovery, recovery);
     });
   } finally {
     rmTree(cwd);
@@ -5038,6 +5051,15 @@ test("rendered prompt over Grok budget fails before contacting the tunnel", () =
   assert.equal(record.review_metadata.audit_manifest.selected_source.files.length, 1);
   assert.equal(JSON.stringify(record.review_metadata.audit_manifest).includes("Check this file"), false);
   assert.equal(JSON.stringify(record.review_metadata.audit_manifest).includes("export const value"), false);
+  const recovery = record.runtime_diagnostics?.packet_recovery;
+  assert.ok(recovery, "Grok prompt cap failures must include packet_recovery");
+  assert.equal(recovery.provider, "grok");
+  assert.equal(recovery.mode, "custom-review");
+  assert.equal(recovery.reason, "prompt_too_large");
+  assert.equal(recovery.source_content_transmission, "not_sent");
+  assert.equal(recovery.provider_capabilities.rendered_prompt_budget_chars, 100);
+  assert.ok(recovery.actions.some((action) => action.type === "diff_packet"));
+  assert.deepEqual(record.review_metadata.audit_manifest.packet_recovery, recovery);
   assert.equal(record.external_review.source_content_transmission, "not_sent");
   assert.doesNotMatch(result.stdout, /external_review_launched/);
 });
@@ -6481,6 +6503,21 @@ test("custom-review rejects over-budget source packets before Grok transport lau
   assert.equal(record.external_review.source_content_transmission, "not_sent");
   assert.equal(record.review_metadata.audit_manifest.source_packet_policy.source_send_allowed, false);
   assert.equal(record.review_metadata.audit_manifest.source_packet_policy.source_packet_action, "narrow_source_packet");
+  const recovery = record.runtime_diagnostics?.packet_recovery;
+  assert.ok(recovery, "source packet budget failures must include packet_recovery diagnostics");
+  assert.equal(recovery.provider, "grok");
+  assert.equal(recovery.mode, "custom-review");
+  assert.equal(recovery.reason, "source_packet_too_large");
+  assert.equal(recovery.source_content_transmission, "not_sent");
+  assert.equal(record.error_code, recovery.reason);
+  assert.equal(recovery.provider_capabilities.provider, "grok");
+  assert.equal(recovery.provider_capabilities.route_step, "subscription");
+  assert.equal(recovery.provider_capabilities.source_packet_budget_bytes, 512 * 1024);
+  assert.deepEqual(
+    recovery.actions.map((action) => action.type),
+    ["diff_packet", "allow_large_source_packet", "switch_provider", "waive_slot"],
+  );
+  assert.deepEqual(record.review_metadata.audit_manifest.packet_recovery, recovery);
   assert.doesNotMatch(result.stdout, /external_review_launched/);
 });
 

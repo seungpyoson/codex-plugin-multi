@@ -15,11 +15,14 @@ import {
   redactReviewSlotDisposition,
   reviewSlotRetryFingerprint,
   selectProviderRoute,
+  sourceSendApprovalProofMatches,
+  sourceSendApprovalTupleFingerprint,
   sourcePacketCanResumeWithoutResendFromJobRecord,
   sourcePacketCanResumeWithoutResendFromPreviousAttempt,
   sourcePacketPreviousAttemptForContinuation,
   sourcePacketPreviousAttemptFromJobRecord,
 } from "../../scripts/lib/provider-route-policy.mjs";
+import * as providerRoutePolicy from "../../scripts/lib/provider-route-policy.mjs";
 import { REVIEW_PROMPT_PLUGIN_TARGETS } from "../../scripts/lib/plugin-targets.mjs";
 import { buildReviewAuditManifest } from "../../scripts/lib/review-prompt.mjs";
 
@@ -145,6 +148,68 @@ test("review slot retry fingerprint ignores request settings and failure codes",
       path_hmacs: ["hmac-c"],
     },
   }).value, pathHmacFingerprint.value);
+});
+
+test("source-send approval proof is reusable only for an unchanged approval tuple", () => {
+  const base = {
+    provider: "deepseek",
+    mode: "custom-review",
+    selectedSource: selectedSourceFixture(12),
+    renderedPromptHash: { algorithm: "sha256", value: "prompt-hash" },
+    scopeResolution: {
+      scope: "custom",
+      scope_base: "origin/main",
+      scope_paths: ["src/example.js"],
+      reason: "explicit_paths",
+    },
+    requestSettings: {
+      provider: "DeepSeek",
+      model: "deepseek-chat",
+      timeout_ms: 900000,
+      max_tokens: 16000,
+      max_steps_per_turn: null,
+      temperature: 0.2,
+      stream: false,
+    },
+    authPath: "api_key_env",
+    billingPath: { endpoint: "https://api.deepseek.example/v1", model: "deepseek-chat" },
+    selectedRoute: "direct_api",
+    routeStep: "direct_api",
+    routeSteps: [{ route: "direct_api", supported: true, attempted: true, selected: true, skipped_reason: null, fallback_reason: null }],
+    fallbackReason: "explicit_api",
+    approvalScope: "session",
+  };
+
+  const proof = sourceSendApprovalTupleFingerprint(base);
+  assert.equal(proof.algorithm, "sha256");
+  assert.match(proof.value, /^[a-f0-9]{64}$/);
+  assert.equal(sourceSendApprovalProofMatches({
+    approved: proof,
+    current: sourceSendApprovalTupleFingerprint({
+      ...base,
+      scopeResolution: { ...base.scopeResolution, scope_paths: ["src/example.js"] },
+    }),
+  }), true);
+
+  const variants = [
+    ["provider", { provider: "glm" }],
+    ["mode", { mode: "adversarial-review" }],
+    ["source packet", { selectedSource: selectedSourceFixture(13) }],
+    ["prompt hash", { renderedPromptHash: { algorithm: "sha256", value: "different-prompt" } }],
+    ["scope resolution", { scopeResolution: { ...base.scopeResolution, scope_paths: ["src/other.js"] } }],
+    ["request settings", { requestSettings: { ...base.requestSettings, max_tokens: 8000 } }],
+    ["auth path", { authPath: "oauth" }],
+    ["billing path", { billingPath: { endpoint: "https://api.deepseek.example/v1", model: "deepseek-reasoner" } }],
+    ["selected route", { selectedRoute: "openrouter" }],
+    ["fallback reason", { fallbackReason: "usage_limited" }],
+    ["approval scope", { approvalScope: "once" }],
+  ];
+
+  for (const [label, patch] of variants) {
+    const changed = sourceSendApprovalTupleFingerprint({ ...base, ...patch });
+    assert.equal(sourceSendApprovalProofMatches({ approved: proof, current: changed }), false, label);
+    assert.notEqual(changed.value, proof.value, label);
+  }
 });
 
 test("review slot retry policy fail-closes third same-packet attempt", () => {
@@ -437,6 +502,156 @@ test("source packet policy blocks over-budget packets for every provider and sou
       assert.equal(policy.resend_confirmation_required, false);
     }
   }
+});
+
+test("packet recovery omits no-source resume when provider capabilities do not support it", () => {
+  assert.equal(typeof providerRoutePolicy.buildPacketRecovery, "function");
+
+  const sourcePacketPolicy = evaluateSourcePacketPolicy({
+    provider: "kimi",
+    mode: "custom-review",
+    routeStep: "subscription",
+    providerCapabilities: {
+      subscription: {
+        source_packet: {
+          max_bytes: 20,
+          resume_without_resend_supported: false,
+        },
+      },
+    },
+    selectedSource: Object.freeze({
+      files: Object.freeze([]),
+      totals: Object.freeze({ files: 0, bytes: 0, lines: 0 }),
+    }),
+    sourceBearing: true,
+    previousAttempt: {
+      status: "failed",
+      error_code: "step_limit_exceeded",
+      source_content_transmission: "sent",
+      selected_source: selectedSourceFixture(8),
+    },
+    resumeWithoutSourceResend: true,
+  });
+
+  const recovery = providerRoutePolicy.buildPacketRecovery({
+    reason: "step_limit_exceeded",
+    sourcePacketPolicy,
+    providerCapabilities: {
+      subscription: {
+        source_packet: {
+          max_bytes: 20,
+          resume_without_resend_supported: false,
+        },
+      },
+    },
+    reviewSurface: {
+      original_packet_hash: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      current_packet_hash: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      original_files: 1,
+      current_files: 1,
+      original_bytes: 8,
+      current_bytes: 8,
+      changed: false,
+      change_reason: null,
+      approval_credit: "full_source",
+      coverage_proof: null,
+    },
+  });
+
+  assert.equal(recovery.schema_version, 1);
+  assert.equal(recovery.provider, "kimi");
+  assert.equal(recovery.mode, "custom-review");
+  assert.equal(recovery.source_content_transmission, "not_sent");
+  assert.equal(recovery.provider_capabilities.supports_no_source_resume, false);
+  assert.ok(!recovery.actions.some((action) => action.type === "resume_without_source_resend"));
+  assert.deepEqual(
+    recovery.actions.map((action) => action.type),
+    ["resend_with_confirmation", "switch_provider", "waive_slot"],
+  );
+});
+
+test("packet recovery omits shard action when no concrete shard plan exists", () => {
+  const sourcePacketPolicy = evaluateSourcePacketPolicy({
+    provider: "deepseek",
+    mode: "custom-review",
+    routeStep: "direct_api",
+    providerCapabilities: {
+      api: { source_packet: { max_bytes: 10 } },
+    },
+    selectedSource: selectedSourceFixture(11),
+    sourceBearing: true,
+  });
+
+  const recovery = providerRoutePolicy.buildPacketRecovery({
+    sourcePacketPolicy,
+    providerCapabilities: {
+      api: { source_packet: { max_bytes: 10 } },
+    },
+    reviewSurface: {
+      original_packet_hash: null,
+      current_packet_hash: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      original_files: null,
+      current_files: 1,
+      original_bytes: null,
+      current_bytes: 11,
+      changed: true,
+      change_reason: "narrowed_scope",
+      approval_credit: "changed_surface_only",
+      coverage_proof: null,
+    },
+  });
+
+  assert.equal(recovery.reason, "source_packet_too_large");
+  assert.equal(recovery.source_content_transmission, "not_sent");
+  assert.deepEqual(
+    recovery.actions.map((action) => action.type),
+    ["diff_packet", "allow_large_source_packet", "switch_provider", "waive_slot"],
+  );
+  for (const action of recovery.actions) {
+    assert.notEqual(action.type, "shard");
+    assert.notEqual(action.shards, []);
+  }
+});
+
+test("packet recovery dispatches source packet reasons from the normalized reason", () => {
+  const recovery = providerRoutePolicy.buildPacketRecovery({
+    reason: "source_packet_too_large",
+    provider: "deepseek",
+    mode: "custom-review",
+    routeStep: "direct_api",
+    providerCapabilities: {
+      api: { source_packet: { max_bytes: 10 } },
+    },
+    selectedSource: selectedSourceFixture(11),
+    sourceContentTransmission: "not_sent",
+  });
+
+  assert.equal(recovery.reason, "source_packet_too_large");
+  assert.deepEqual(
+    recovery.actions.map((action) => action.type),
+    ["diff_packet", "allow_large_source_packet", "switch_provider", "waive_slot"],
+  );
+});
+
+test("packet recovery marks changed review surfaces as changed-surface approval only", () => {
+  const recovery = providerRoutePolicy.buildPacketRecovery({
+    reason: "prompt_too_large",
+    provider: "deepseek",
+    mode: "custom-review",
+    routeStep: "direct_api",
+    sourceContentTransmission: "not_sent",
+    providerCapabilities: {
+      api: { source_packet: { max_bytes: 512 * 1024 } },
+    },
+    previousSelectedSource: selectedSourceFixture(20),
+    selectedSource: selectedSourceFixture(10),
+  });
+
+  assert.equal(recovery.review_surface.changed, true);
+  assert.equal(recovery.review_surface.change_reason, "narrowed_scope");
+  assert.equal(recovery.review_surface.approval_credit, "changed_surface_only");
+  assert.equal(recovery.review_surface.coverage_proof, null);
+  assert.notEqual(recovery.review_surface.original_packet_hash, recovery.review_surface.current_packet_hash);
 });
 
 test("source packet policy permits explicit large packet override for every provider and route step", () => {

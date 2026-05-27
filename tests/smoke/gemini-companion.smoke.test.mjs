@@ -1786,6 +1786,12 @@ test("gemini custom-review rejects over-budget source packets before Gemini laun
     assert.equal(record.external_review.source_content_transmission, "not_sent");
     assert.equal(record.review_metadata.audit_manifest.source_packet_policy.source_send_allowed, false);
     assert.equal(record.review_metadata.audit_manifest.source_packet_policy.source_packet_action, "narrow_source_packet");
+    const recovery = record.review_metadata.audit_manifest.packet_recovery;
+    assert.ok(recovery, "Gemini source-packet failures must include packet_recovery");
+    assert.equal(recovery.provider, "gemini");
+    assert.equal(recovery.mode, "custom-review");
+    assert.equal(recovery.reason, "source_packet_too_large");
+    assert.equal(recovery.source_content_transmission, "not_sent");
     assert.doesNotMatch(stdout, /external_review_launched|MUST_NOT_REACH_GEMINI/);
   } finally {
     rmTree(dataDir);

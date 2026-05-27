@@ -52,6 +52,23 @@ function reviewSlot(record) {
     ?? {};
 }
 
+function packetRecovery(record) {
+  return valueAt(record, ["runtime_diagnostics", "packet_recovery"], null)
+    ?? valueAt(record, ["review_metadata", "audit_manifest", "packet_recovery"], null)
+    ?? {};
+}
+
+function recoveryReason(record) {
+  return packetRecovery(record).reason ?? "";
+}
+
+function recoveryActions(record) {
+  const actions = packetRecovery(record).actions;
+  return Array.isArray(actions)
+    ? actions.map((action) => action?.type).filter(Boolean).join(",")
+    : "";
+}
+
 function reasons(record) {
   const raw = quality(record).semantic_failure_reasons;
   return Array.isArray(raw) ? raw.join(",") : "";
@@ -214,6 +231,8 @@ export function buildReviewPanelRows(records = []) {
       disposition: slot.disposition ?? "",
       waiver_artifact: slot.waiver_artifact ?? "",
       override_artifact: slot.override_artifact ?? "",
+      recovery: recoveryReason(record),
+      recovery_actions: recoveryActions(record),
     });
   });
 }
@@ -415,6 +434,8 @@ export function renderReviewPanelMarkdown(records = []) {
     "Disposition",
     "Waiver",
     "Override",
+    "Recovery",
+    "Recovery Actions",
   ];
   return [
     `| ${header.join(" | ")} |`,
@@ -442,6 +463,8 @@ export function renderReviewPanelMarkdown(records = []) {
       row.disposition,
       row.waiver_artifact,
       row.override_artifact,
+      row.recovery,
+      row.recovery_actions,
     ].map(cell).join(" | ")).map((line) => `| ${line} |`),
   ].join("\n");
 }

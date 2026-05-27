@@ -141,6 +141,60 @@ test("buildReviewAuditManifest fail-closes third same-packet retry before source
   assert.equal(manifest.source_content_transmission, "not_sent");
 });
 
+test("buildReviewAuditManifest records failed-slot packet recovery as source of truth", () => {
+  const packetRecovery = Object.freeze({
+    schema_version: 1,
+    provider: "Kimi",
+    mode: "review",
+    reason: "step_limit_exceeded",
+    source_content_transmission: "sent",
+    failed_review_slot: true,
+    provider_capabilities: Object.freeze({ provider: "Kimi" }),
+    review_surface: Object.freeze({ selected_files: Object.freeze(["src/large.js"]) }),
+    actions: Object.freeze([
+      Object.freeze({ type: "shard", approval_required: true }),
+    ]),
+  });
+
+  const manifest = buildReviewAuditManifest({
+    prompt: "review these files",
+    sourceFiles: [{ path: "src/large.js", text: "x".repeat(4096) }],
+    git: {
+      remote: "owner/repo",
+      branch: "issue-180",
+      baseRef: "origin/main",
+      baseCommit: "base",
+      headRef: "issue-180",
+      headCommit: "head",
+    },
+    promptBuilder: { contractVersion: 1, pluginVersion: "0.1.0", pluginCommit: "head" },
+    request: {
+      provider: "Kimi",
+      model: "kimi-code",
+      timeoutMs: 900000,
+      maxStepsPerTurn: 128,
+    },
+    providerIds: { sessionId: "session-1" },
+    scope: { name: "review", base: "origin/main", paths: ["src/large.js"] },
+    route: {
+      selectedRoute: "subscription_oauth",
+      routeStep: "subscription",
+      routeSteps: [{ route: "subscription", supported: true, attempted: true, selected: true, skipped_reason: null, fallback_reason: null }],
+      sourceBearing: true,
+      sourceContentTransmission: "sent",
+      packetRecovery,
+      providerCapabilities: { subscription: { source_packet: { max_bytes: 8192 } } },
+    },
+    result: "ran out of steps before a verdict",
+    status: "failed",
+    errorCode: "step_limit_exceeded",
+  });
+
+  assert.equal(manifest.review_quality.failed_review_slot, true);
+  assert.equal(manifest.review_slot.source_state, "sent");
+  assert.equal(manifest.packet_recovery, packetRecovery);
+});
+
 function assertSelectedSourcePromptBlock(targetBuildSelectedSourcePromptBlock = buildSelectedSourcePromptBlock) {
   assert.equal(targetBuildSelectedSourcePromptBlock([]), null);
   assert.equal(targetBuildSelectedSourcePromptBlock(null), null);

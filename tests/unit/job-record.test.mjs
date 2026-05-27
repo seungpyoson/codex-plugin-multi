@@ -930,6 +930,98 @@ test("buildJobRecord: review_metadata persists privacy-safe audit manifests for 
   }
 });
 
+test("buildJobRecord: packet recovery from failed slots is persisted into audit manifest", () => {
+  const packetRecovery = Object.freeze({
+    schema_version: 1,
+    provider: "Kimi",
+    mode: "review",
+    reason: "source_packet_too_large",
+    source_content_transmission: "not_sent",
+    failed_review_slot: true,
+    provider_capabilities: Object.freeze({ provider: "Kimi" }),
+    review_surface: Object.freeze({ selected_files: Object.freeze(["src/large.js"]) }),
+    actions: Object.freeze([
+      Object.freeze({ type: "shard", approval_required: true }),
+    ]),
+  });
+  const auditManifest = Object.freeze({
+    schema_version: 1,
+    rendered_prompt_hash: { algorithm: "sha256", value: "a".repeat(64) },
+    selected_source: { files: [{ path: "src/large.js" }], totals: { files: 1, bytes: 4096, lines: 1 } },
+    source_content_transmission: "not_sent",
+    review_quality: {
+      failed_review_slot: true,
+      semantic_failure_reasons: ["source_packet_too_large"],
+    },
+    review_slot: Object.freeze({
+      slot_id: "slot-1",
+      attempt_id: UUID,
+      parent_attempt_id: null,
+      reviewed_head_sha: "head",
+      retry_fingerprint: "f".repeat(64),
+      retry_count: 0,
+      retry_disposition_required: false,
+      request_settings_hash: "r".repeat(64),
+      source_state: "not_sent",
+      verdict: "not_reviewed",
+      failed_slot_reason: "source_packet_too_large",
+      disposition: "none",
+      not_counted_reason: "source_not_sent",
+      waiver_artifact: null,
+      override_artifact: null,
+    }),
+  });
+  const parsed = { ok: false, reason: "source_packet_too_large", error: "source packet too large", denials: [] };
+  const providers = [
+    [
+      buildJobRecord,
+      makeInvocation(),
+      {
+        exitCode: 1,
+        parsed,
+        pidInfo: null,
+        stdout: "",
+        stderr: "",
+        errorMessage: "source_packet_too_large: source packet too large",
+        runtimeDiagnostics: { packet_recovery: packetRecovery },
+      },
+    ],
+    [
+      buildGeminiJobRecord,
+      makeInvocation({ target: "gemini", binary: "gemini", review_prompt_provider: "Gemini CLI" }),
+      {
+        exitCode: 1,
+        parsed,
+        pidInfo: null,
+        stdout: "",
+        stderr: "",
+        errorMessage: "source_packet_too_large: source packet too large",
+        runtimeDiagnostics: { packet_recovery: packetRecovery },
+      },
+    ],
+    [
+      buildKimiJobRecord,
+      makeInvocation({ target: "kimi", binary: "kimi", review_prompt_provider: "Kimi Code" }),
+      {
+        exitCode: 1,
+        parsed,
+        pidInfo: null,
+        stdout: "",
+        stderr: "",
+        errorMessage: "source_packet_too_large: source packet too large",
+        runtimeDiagnostics: { packet_recovery: packetRecovery },
+      },
+    ],
+  ];
+
+  for (const [providerBuildJobRecord, invocation, execution] of providers) {
+    const rec = providerBuildJobRecord(invocation, { ...execution, reviewAuditManifest: auditManifest }, []);
+    assert.equal(rec.review_metadata.audit_manifest.packet_recovery, packetRecovery);
+    assert.equal(rec.runtime_diagnostics.packet_recovery, packetRecovery);
+    assert.equal(rec.error_code, "source_packet_too_large");
+  }
+});
+
 test("buildJobRecord: projects redacted review slot disposition into external_review", () => {
   const reviewSlot = Object.freeze({
     slot_id: "slot-1",

@@ -2332,6 +2332,15 @@ test("direct API reviewers guide substantive missing-verdict retry without autom
       assert.match(record.suggested_action, /narrowing the scope/i, c.provider);
       assert.match(record.suggested_action, /sharding/i, c.provider);
       assert.match(record.suggested_action, /relaying/i, c.provider);
+      const recovery = record.runtime_diagnostics?.packet_recovery;
+      assert.ok(recovery, `${c.provider}: source-sent no-verdict failures must include packet_recovery`);
+      assert.equal(record.error_code, recovery.reason, c.provider);
+      assert.equal(recovery.provider_capabilities.supports_no_source_resume, false, c.provider);
+      assert.deepEqual(
+        recovery.actions.map((action) => action.type),
+        ["resend_with_confirmation", "switch_provider", "waive_slot"],
+        c.provider,
+      );
     } finally {
       rmSync(dataDir, { recursive: true, force: true });
       rmSync(cwd, { recursive: true, force: true });
@@ -2380,6 +2389,78 @@ test("direct API reviewers block same-packet resend after a failed source-sent s
       secondRecord.review_metadata.audit_manifest.source_packet_policy.source_packet_action,
       "review_slot_retry_blocked",
     );
+  } finally {
+    rmSync(dataDir, { recursive: true, force: true });
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("direct API reviewers require resend confirmation even when large source packet override is approved", async () => {
+  const cwd = makeWorkspace();
+  const dataDir = mkdtempSync(path.join(tmpdir(), "api-reviewers-large-resend-confirmation-"));
+  const files = [];
+  for (let index = 0; index < 3; index += 1) {
+    const file = `large-${index}.txt`;
+    files.push(file);
+    writeFileSync(path.join(cwd, file), "x".repeat(180 * 1024));
+  }
+  const badResult = badVerdictReviewFixture("Provider marker: deepseek large resend guard.");
+  const commonArgs = [
+    "run",
+    "--provider", "deepseek",
+    "--mode", "custom-review",
+    "--scope", "custom",
+    "--scope-paths", files.join(","),
+    "--foreground",
+    "--allow-large-source-packet",
+    "--prompt", "Review these files.",
+  ];
+  const commonEnv = {
+    API_REVIEWERS_PLUGIN_DATA: dataDir,
+    API_REVIEWERS_MAX_PROMPT_CHARS: "2000000",
+    API_REVIEWERS_MOCK_RESPONSE: mockResponse("deepseek-v4-pro", "chatcmpl-large-resend-guard", badResult),
+    DEEPSEEK_API_KEY: "secret-test-value",
+  };
+
+  try {
+    const first = await run(commonArgs, { cwd, env: commonEnv });
+    assert.equal(first.status, 1, first.stderr || first.stdout);
+    const firstRecord = parseJson(first.stdout);
+    assert.equal(firstRecord.error_code, "review_not_completed");
+    assert.equal(firstRecord.external_review.source_content_transmission, "sent");
+    assert.equal(firstRecord.review_metadata.audit_manifest.source_packet_policy.source_packet_action, "send_after_source_packet_override");
+
+    const blocked = await run(
+      [...commonArgs, "--review-slot-disposition", "retry"],
+      { cwd, env: commonEnv },
+    );
+    assert.equal(blocked.status, 1, blocked.stderr || blocked.stdout);
+    const blockedRecord = parseJson(blocked.stdout);
+    assert.equal(blockedRecord.error_code, "resend_confirmation_required");
+    assert.equal(blockedRecord.external_review.source_content_transmission, "not_sent");
+    const blockedPolicy = blockedRecord.review_metadata.audit_manifest.source_packet_policy;
+    assert.equal(blockedPolicy.source_packet_action, "resend_confirmation_required");
+    assert.equal(blockedPolicy.source_packet_override_approved, true);
+    assert.equal(blockedPolicy.source_packet_override_source, "--allow-large-source-packet");
+    assert.doesNotMatch(blocked.stdout, /external_review_launched/);
+
+    const confirmed = await run(
+      [...commonArgs, "--review-slot-disposition", "retry", "--resend-confirmation-approved"],
+      {
+        cwd,
+        env: {
+          ...commonEnv,
+          API_REVIEWERS_MOCK_RESPONSE: mockResponse("deepseek-v4-pro", "chatcmpl-large-resend-confirmed"),
+        },
+      },
+    );
+    assert.equal(confirmed.status, 0, confirmed.stderr || confirmed.stdout);
+    const confirmedRecord = parseJson(confirmed.stdout);
+    assert.equal(confirmedRecord.external_review.source_content_transmission, "sent");
+    const confirmedPolicy = confirmedRecord.review_metadata.audit_manifest.source_packet_policy;
+    assert.equal(confirmedPolicy.source_packet_action, "send_after_resend_confirmation");
+    assert.equal(confirmedPolicy.source_packet_override_approved, true);
+    assert.equal(confirmedPolicy.source_packet_override_source, "--allow-large-source-packet");
   } finally {
     rmSync(dataDir, { recursive: true, force: true });
     rmSync(cwd, { recursive: true, force: true });
@@ -2504,7 +2585,7 @@ test("direct API reviewers allow an explicit same-packet retry disposition", asy
     assert.equal(firstRecord.external_review.source_content_transmission, "sent");
 
     const retried = await run(
-      [...commonArgs, "--review-slot-disposition", "retry"],
+      [...commonArgs, "--review-slot-disposition", "retry", "--resend-confirmation-approved"],
       {
         cwd,
         env: {
@@ -2521,6 +2602,10 @@ test("direct API reviewers allow an explicit same-packet retry disposition", asy
     assert.equal(retriedRecord.review_metadata.audit_manifest.review_slot.disposition, "retry");
     assert.equal(retriedRecord.review_metadata.audit_manifest.review_slot.waiver_artifact, null);
     assert.equal(retriedRecord.review_metadata.audit_manifest.review_slot.override_artifact, null);
+    assert.equal(
+      retriedRecord.review_metadata.audit_manifest.source_packet_policy.source_packet_action,
+      "send_after_resend_confirmation",
+    );
   } finally {
     rmSync(dataDir, { recursive: true, force: true });
     rmSync(cwd, { recursive: true, force: true });
@@ -4015,6 +4100,23 @@ test("custom-review rejects over-budget source packets before direct API approva
   assert.equal(record.external_review.source_content_transmission, "not_sent");
   assert.equal(record.review_metadata.audit_manifest.source_packet_policy.source_send_allowed, false);
   assert.equal(record.review_metadata.audit_manifest.source_packet_policy.source_packet_action, "narrow_source_packet");
+  const recovery = record.runtime_diagnostics?.packet_recovery;
+  assert.ok(recovery, "source packet budget failures must include packet_recovery diagnostics");
+  assert.equal(recovery.schema_version, 1);
+  assert.equal(recovery.provider, "deepseek");
+  assert.equal(recovery.mode, "custom-review");
+  assert.equal(recovery.reason, "source_packet_too_large");
+  assert.equal(recovery.source_content_transmission, "not_sent");
+  assert.equal(record.error_code, recovery.reason);
+  assert.equal(recovery.provider_capabilities.provider, "deepseek");
+  assert.equal(recovery.provider_capabilities.route_step, "direct_api");
+  assert.equal(recovery.provider_capabilities.source_packet_budget_bytes, 512 * 1024);
+  assert.deepEqual(
+    recovery.actions.map((action) => action.type),
+    ["diff_packet", "allow_large_source_packet", "switch_provider", "waive_slot"],
+  );
+  assert.deepEqual(record.review_metadata.audit_manifest.packet_recovery, recovery);
+  assert.doesNotMatch(JSON.stringify(recovery), /secret-test-value|approval_token|approval-token/i);
   assert.doesNotMatch(result.stdout, /external_review_launched|secret-test-value/);
 });
 
@@ -4790,6 +4892,7 @@ for (const promptCapProvider of [
     assert.ok(Array.isArray(plan.shards) && plan.shards.length >= 2, "fixture must split into >=2 bounded shards");
 
     const hashes = new Set();
+    const tupleFingerprints = new Set();
     for (const [i, shard] of plan.shards.entries()) {
       assert.equal(shard.index, i + 1);
       assert.equal(shard.total, plan.shards.length);
@@ -4806,6 +4909,10 @@ for (const promptCapProvider of [
       assert.equal(tuple.approval_scope, "session");
       assert.match(tuple.rendered_prompt_hash, /^[a-f0-9]{64}$/);
       hashes.add(tuple.rendered_prompt_hash);
+      assert.ok(tuple.approval_tuple_fingerprint, "recovery shard approval tuple must carry a non-token fingerprint");
+      assert.equal(tuple.approval_tuple_fingerprint.algorithm, "sha256");
+      assert.match(tuple.approval_tuple_fingerprint.value, /^[a-f0-9]{64}$/);
+      tupleFingerprints.add(tuple.approval_tuple_fingerprint.value);
       assert.deepEqual([...tuple.scope_paths].sort(), [...shard.scope_paths].sort());
       assert.ok(tuple.source_packet);
       assert.equal(tuple.source_packet.totals.files, shard.scope_paths.length);
@@ -4826,14 +4933,105 @@ for (const promptCapProvider of [
       assert.ok(tuple.scope_resolution);
     }
     assert.equal(hashes.size, plan.shards.length, "each shard must have a unique rendered_prompt_hash");
+    assert.equal(tupleFingerprints.size, plan.shards.length, "each recovery shard must have a unique approval tuple fingerprint");
+
+    const recovery = record.runtime_diagnostics?.packet_recovery;
+    assert.ok(recovery, "prompt cap failures must include packet_recovery");
+    assert.equal(recovery.reason, "prompt_too_large");
+    assert.equal(recovery.source_content_transmission, "not_sent");
+    assert.equal(recovery.provider, promptCapProvider.provider);
+    assert.equal(recovery.mode, "custom-review");
+    assert.equal(recovery.provider_capabilities.rendered_prompt_budget_chars, 5000);
+    const shardAction = recovery.actions.find((action) => action.type === "shard");
+    assert.ok(shardAction, "prompt cap recovery must expose the existing sharding plan");
+    assert.equal(shardAction.shards.length, plan.shards.length);
+    assert.deepEqual(shardAction.shards, plan.shards);
+    assert.deepEqual(record.review_metadata.audit_manifest.packet_recovery, recovery);
+    assert.doesNotMatch(JSON.stringify(recovery), /secret-test-value|approval_token|approval-token/i);
 
     const planJson = JSON.stringify(plan);
     assert.equal(planJson.includes("hello from selected scope"), false);
     assert.equal(planJson.includes("secret-test-value"), false);
     assert.equal(planJson.includes("Check changed files."), false);
+    assert.doesNotMatch(planJson, /approval_token|approval-token/i);
     assert.equal(planJson.includes("file 1 content"), false);
   });
 }
+
+test("direct API recovery shard requires fresh approval when approval tuple changes", async () => {
+  const cwd = makeMultiFileScopeWorkspace();
+  const dataDir = mkdtempSync(path.join(tmpdir(), "api-reviewers-recovery-shard-approval-"));
+  try {
+    const fullScope = await run([
+      "approval-request",
+      "--provider", "deepseek",
+      "--mode", "custom-review",
+      "--scope", "custom",
+      "--scope-paths", "f1.txt,f2.txt,f3.txt,f4.txt,f5.txt",
+      "--prompt", "Check changed files.",
+    ], {
+      cwd,
+      env: {
+        API_REVIEWERS_PLUGIN_DATA: dataDir,
+        API_REVIEWERS_MAX_PROMPT_CHARS: "5000",
+        DEEPSEEK_API_KEY: "secret-test-value",
+      },
+    });
+    assert.equal(fullScope.status, 1, fullScope.stderr || fullScope.stdout);
+    const plan = parseJson(fullScope.stdout).runtime_diagnostics?.sharding_plan;
+    assert.ok(Array.isArray(plan?.shards) && plan.shards.length >= 2, "fixture must produce at least two recovery shards");
+    const [firstShard, secondShard] = plan.shards;
+
+    const firstApproval = await run([
+      "approval-request",
+      "--provider", "deepseek",
+      "--mode", "custom-review",
+      "--scope", "custom",
+      "--scope-paths", firstShard.scope_paths.join(","),
+      "--prompt", "Check changed files.",
+    ], {
+      cwd,
+      env: {
+        API_REVIEWERS_PLUGIN_DATA: dataDir,
+        API_REVIEWERS_MAX_PROMPT_CHARS: "5000",
+        DEEPSEEK_API_KEY: "secret-test-value",
+      },
+    });
+    assert.equal(firstApproval.status, 0, firstApproval.stderr || firstApproval.stdout);
+    const firstApprovalToken = parseJson(firstApproval.stdout).approval_token.value;
+
+    const secondShardRun = await run([
+      "run",
+      "--provider", "deepseek",
+      "--mode", "custom-review",
+      "--scope", "custom",
+      "--scope-paths", secondShard.scope_paths.join(","),
+      "--foreground",
+      "--lifecycle-events", "jsonl",
+      "--prompt", "Check changed files.",
+      "--approval-token", firstApprovalToken,
+    ], {
+      cwd,
+      env: {
+        API_REVIEWERS_PLUGIN_DATA: dataDir,
+        API_REVIEWERS_MAX_PROMPT_CHARS: "5000",
+        API_REVIEWERS_REQUIRE_APPROVAL_TOKEN_IN_MOCKS: "1",
+        API_REVIEWERS_MOCK_RESPONSE: mockResponse("deepseek-v4-pro"),
+        DEEPSEEK_API_KEY: "secret-test-value",
+      },
+    });
+
+    assert.equal(secondShardRun.status, 1, secondShardRun.stderr || secondShardRun.stdout);
+    const [record] = parseJsonLines(secondShardRun.stdout);
+    assert.equal(record.error_code, "approval_required");
+    assertDirectApiNotSent(record, "DeepSeek");
+    assert.doesNotMatch(secondShardRun.stdout, /external_review_launched/);
+    assert.doesNotMatch(secondShardRun.stdout, /file 1 content|file 2 content|secret-test-value/);
+  } finally {
+    rmSync(dataDir, { recursive: true, force: true });
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
 
 test("direct API reviewers reject blank or valueless prompt flags before launch", async () => {
   for (const promptArgs of [
@@ -5745,6 +5943,7 @@ for (const promptCapProvider of [
     assert.ok(Array.isArray(plan.shards) && plan.shards.length >= 2, "fixture must split into >=2 bounded shards");
 
     const hashes = new Set();
+    const tupleFingerprints = new Set();
     for (const [i, shard] of plan.shards.entries()) {
       assert.equal(shard.index, i + 1);
       assert.equal(shard.total, plan.shards.length);
@@ -5760,6 +5959,10 @@ for (const promptCapProvider of [
       assert.equal(tuple.approval_scope, "session");
       assert.match(tuple.rendered_prompt_hash, /^[a-f0-9]{64}$/);
       hashes.add(tuple.rendered_prompt_hash);
+      assert.ok(tuple.approval_tuple_fingerprint);
+      assert.equal(tuple.approval_tuple_fingerprint.algorithm, "sha256");
+      assert.match(tuple.approval_tuple_fingerprint.value, /^[a-f0-9]{64}$/);
+      tupleFingerprints.add(tuple.approval_tuple_fingerprint.value);
       assert.deepEqual([...tuple.scope_paths].sort(), [...shard.scope_paths].sort());
       assert.ok(tuple.source_packet);
       assert.deepEqual(
@@ -5768,11 +5971,24 @@ for (const promptCapProvider of [
       );
     }
     assert.equal(hashes.size, plan.shards.length, "each shard must have a unique rendered_prompt_hash");
+    assert.equal(tupleFingerprints.size, plan.shards.length, "each shard must have a unique approval tuple fingerprint");
+
+    const recovery = parsed.runtime_diagnostics?.packet_recovery;
+    assert.ok(recovery, "approval-request prompt-cap failures must include packet_recovery before any approval token exists");
+    assert.equal(recovery.reason, "prompt_too_large");
+    assert.equal(recovery.source_content_transmission, "not_sent");
+    assert.equal(recovery.provider, promptCapProvider.provider);
+    assert.equal(recovery.mode, "custom-review");
+    const shardAction = recovery.actions.find((action) => action.type === "shard");
+    assert.ok(shardAction, "approval-request recovery must expose shard action");
+    assert.deepEqual(shardAction.shards, plan.shards);
+    assert.equal("approval_token" in parsed, false);
 
     const planJson = JSON.stringify(plan);
     assert.equal(planJson.includes("hello from selected scope"), false);
     assert.equal(planJson.includes("secret-test-value"), false);
     assert.equal(planJson.includes("Check changed files."), false);
+    assert.doesNotMatch(JSON.stringify(recovery), /approval_token|approval-token|secret-test-value/i);
     assert.doesNotMatch(result.stdout, /hello from selected scope/);
     assert.doesNotMatch(result.stdout, /secret-test-value/);
   });

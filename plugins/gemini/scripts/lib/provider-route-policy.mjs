@@ -429,6 +429,73 @@ export function reviewSlotRetryFingerprint({
   });
 }
 
+function canonicalScopeResolution(scopeResolution = {}) {
+  const input = scopeResolution ?? {};
+  const payload = {
+    scope: input.scope ?? input.name ?? null,
+    scope_base: input.scope_base ?? input.base ?? null,
+    scope_paths: canonicalScopePaths(input.scope_paths ?? input.paths ?? null),
+    reason: input.reason ?? null,
+  };
+  const scopePathHmacs = canonicalScopePathHmacs(
+    input.scope_path_hmacs ?? input.path_hmacs ?? input.hmacs ?? null,
+  );
+  if (scopePathHmacs !== null) payload.scope_path_hmacs = scopePathHmacs;
+  return Object.freeze(payload);
+}
+
+export function sourceSendApprovalTupleFingerprint({
+  provider = null,
+  mode = null,
+  selectedSource = null,
+  sourcePacket = null,
+  renderedPromptHash = null,
+  promptHash = null,
+  scopeResolution = null,
+  requestSettings = null,
+  request = null,
+  requestSettingsHash = null,
+  authPath = null,
+  billingPath = null,
+  selectedRoute = null,
+  routeStep = null,
+  routeSteps = null,
+  fallbackReason = null,
+  approvalScope = "session",
+} = {}) {
+  const source = selectedSource ?? sourcePacket;
+  const normalizedScopeResolution = canonicalScopeResolution(scopeResolution ?? {});
+  const requestHash = hashValue(requestSettingsHash)
+    ?? reviewSlotRequestSettingsHash(requestSettings ?? request ?? {}).value;
+  const ingredients = Object.freeze({
+    provider: provider ?? null,
+    mode: mode ?? null,
+    selected_source_hash: sourcePacketHash(source),
+    selected_source_totals: selectedSourceTotals(source),
+    rendered_prompt_hash: hashValue(renderedPromptHash ?? promptHash),
+    scope_resolution_hash: hashJson(normalizedScopeResolution),
+    request_settings_hash: requestHash,
+    auth_path: authPath ?? null,
+    billing_path_hash: billingPath == null ? null : hashJson(billingPath),
+    selected_route: selectedRoute ?? null,
+    route_step: routeStep ?? null,
+    route_steps_hash: routeSteps == null ? null : hashJson(routeSteps),
+    fallback_reason: fallbackReason ?? null,
+    approval_scope: normalizeApprovalScope(approvalScope),
+  });
+  return Object.freeze({
+    algorithm: "sha256",
+    value: hashJson(ingredients),
+    ingredients,
+  });
+}
+
+export function sourceSendApprovalProofMatches({ approved = null, current = null } = {}) {
+  const approvedHash = hashValue(approved);
+  const currentHash = hashValue(current);
+  return approvedHash !== null && currentHash !== null && approvedHash === currentHash;
+}
+
 function retryFingerprintForAttempt(attempt = null) {
   return hashValue(attempt?.retry_fingerprint)
     ?? hashValue(attempt?.review_slot?.retry_fingerprint)
@@ -706,6 +773,253 @@ function sourcePacketSuggestedAction(action, provider = null) {
     return "Proceed with the explicitly approved large source packet and record the override tuple.";
   }
   return null;
+}
+
+function packetRecoveryAction(type, {
+  description,
+  command = null,
+  sourceContentTransmission = "not_sent",
+  reviewSurfaceChange = false,
+  approvalRequired = false,
+  approvalTuple = null,
+  shards = null,
+} = {}) {
+  return Object.freeze({
+    type,
+    description,
+    command,
+    source_content_transmission: sourceContentTransmission,
+    review_surface_change: reviewSurfaceChange,
+    approval_required: approvalRequired,
+    approval_tuple: approvalTuple,
+    shards,
+  });
+}
+
+function sourceTotalsForPacketRecovery(source = null) {
+  const totals = source?.totals ?? {};
+  return {
+    files: Number.isSafeInteger(totals.files) ? totals.files : null,
+    bytes: Number.isSafeInteger(totals.bytes) ? totals.bytes : null,
+  };
+}
+
+function packetRecoveryReviewSurface({
+  selectedSource = null,
+  previousSelectedSource = null,
+  changed = null,
+  changeReason = null,
+  approvalCredit = null,
+} = {}) {
+  const originalSource = previousSelectedSource ?? selectedSource;
+  const originalTotals = sourceTotalsForPacketRecovery(originalSource);
+  const currentTotals = sourceTotalsForPacketRecovery(selectedSource);
+  const originalHash = sourcePacketHash(originalSource);
+  const currentHash = sourcePacketHash(selectedSource);
+  const surfaceChanged = changed ?? (
+    originalHash !== null && currentHash !== null && originalHash !== currentHash
+  );
+  return Object.freeze({
+    original_packet_hash: originalHash,
+    current_packet_hash: currentHash,
+    original_files: originalTotals.files,
+    current_files: currentTotals.files,
+    original_bytes: originalTotals.bytes,
+    current_bytes: currentTotals.bytes,
+    changed: surfaceChanged,
+    change_reason: changeReason ?? (surfaceChanged ? "narrowed_scope" : "none"),
+    approval_credit: approvalCredit ?? (surfaceChanged ? "changed_surface_only" : "none"),
+    coverage_proof: null,
+  });
+}
+
+function providerRecoveryCapabilitiesSnapshot({
+  provider = null,
+  routeStep = null,
+  providerCapabilities = {},
+  sourcePacketPolicy = null,
+  renderedPromptBudgetChars = null,
+  perFileSecureReadCapBytes = null,
+  supportsDiffPacket = true,
+  supportsShardPlan = true,
+  requiresSourceSendApproval = false,
+  requiresResendConfirmationAfterSourceSentFailure = true,
+  transportFallbacks = [],
+} = {}) {
+  const selectedRouteStep = routeStep ?? sourcePacketPolicy?.route_step ?? null;
+  const selectedProvider = provider ?? sourcePacketPolicy?.provider ?? null;
+  return Object.freeze({
+    provider: selectedProvider,
+    route_step: selectedRouteStep,
+    source_packet_budget_bytes: Number.isSafeInteger(sourcePacketPolicy?.source_packet_budget_bytes)
+      ? sourcePacketPolicy.source_packet_budget_bytes
+      : null,
+    rendered_prompt_budget_chars: Number.isSafeInteger(renderedPromptBudgetChars)
+      ? renderedPromptBudgetChars
+      : null,
+    per_file_secure_read_cap_bytes: Number.isSafeInteger(perFileSecureReadCapBytes)
+      ? perFileSecureReadCapBytes
+      : null,
+    supports_diff_packet: supportsDiffPacket === true,
+    supports_shard_plan: supportsShardPlan === true,
+    supports_no_source_resume: sourcePacketResumeWithoutResendSupported(providerCapabilities, selectedRouteStep),
+    requires_source_send_approval: requiresSourceSendApproval === true,
+    requires_resend_confirmation_after_source_sent_failure:
+      requiresResendConfirmationAfterSourceSentFailure !== false,
+    transport_fallbacks: Object.freeze(Array.isArray(transportFallbacks) ? [...transportFallbacks] : []),
+  });
+}
+
+function sourcePacketRecoveryActions({ reason = null, sourcePacketPolicy = null, capabilities, shardPlans = null }) {
+  if (reason === "prompt_too_large") {
+    const actions = [];
+    if (capabilities.supports_shard_plan && Array.isArray(shardPlans) && shardPlans.length > 0) {
+      actions.push(packetRecoveryAction("shard", {
+        description: "Retry as bounded prompt shards.",
+        reviewSurfaceChange: true,
+        approvalRequired: capabilities.requires_source_send_approval,
+        shards: Object.freeze([...shardPlans]),
+      }));
+    }
+    actions.push(
+      packetRecoveryAction("diff_packet", {
+        description: "Retry with a narrower prompt and source packet.",
+        reviewSurfaceChange: true,
+        approvalRequired: capabilities.requires_source_send_approval,
+      }),
+      packetRecoveryAction("switch_provider", {
+        description: "Retry with another provider that has a larger rendered prompt budget.",
+      }),
+      packetRecoveryAction("waive_slot", {
+        description: "Waive this failed review slot with an explicit operator artifact.",
+        approvalRequired: true,
+      }),
+    );
+    return Object.freeze(actions);
+  }
+
+  if (reason === "source_packet_too_large" || sourcePacketPolicy?.source_packet_policy_error_code === "source_packet_too_large") {
+    const actions = [];
+    if (capabilities.supports_shard_plan && Array.isArray(shardPlans) && shardPlans.length > 0) {
+      actions.push(packetRecoveryAction("shard", {
+        description: "Split the selected source into smaller review shards.",
+        reviewSurfaceChange: true,
+        approvalRequired: capabilities.requires_source_send_approval,
+        shards: Object.freeze([...shardPlans]),
+      }));
+    }
+    actions.push(
+      packetRecoveryAction("diff_packet", {
+        description: "Send a narrower diff-only packet for the same review.",
+        reviewSurfaceChange: true,
+        approvalRequired: capabilities.requires_source_send_approval,
+      }),
+      packetRecoveryAction("allow_large_source_packet", {
+        description: "Retry with an explicit large source packet override.",
+        approvalRequired: true,
+      }),
+      packetRecoveryAction("switch_provider", {
+        description: "Retry with another provider that has a larger packet budget.",
+      }),
+      packetRecoveryAction("waive_slot", {
+        description: "Waive this failed review slot with an explicit operator artifact.",
+        approvalRequired: true,
+      }),
+    );
+    return Object.freeze(actions);
+  }
+
+  if (reason === "resend_confirmation_required" || sourcePacketPolicy?.source_packet_policy_error_code === "resend_confirmation_required") {
+    const actions = [
+      packetRecoveryAction("resend_with_confirmation", {
+        description: "Retry only after explicit source resend confirmation.",
+        approvalRequired: true,
+      }),
+    ];
+    if (capabilities.supports_no_source_resume) {
+      actions.push(packetRecoveryAction("resume_without_source_resend", {
+        description: "Resume the retained provider session without resending selected source.",
+      }));
+    }
+    actions.push(
+      packetRecoveryAction("switch_provider", {
+        description: "Retry with another provider.",
+      }),
+      packetRecoveryAction("waive_slot", {
+        description: "Waive this failed review slot with an explicit operator artifact.",
+        approvalRequired: true,
+      }),
+    );
+    return Object.freeze(actions);
+  }
+
+  return Object.freeze([
+    packetRecoveryAction("switch_provider", {
+      description: "Retry with another provider.",
+    }),
+    packetRecoveryAction("waive_slot", {
+      description: "Waive this failed review slot with an explicit operator artifact.",
+      approvalRequired: true,
+    }),
+  ]);
+}
+
+export function buildPacketRecovery({
+  reason,
+  sourcePacketPolicy = null,
+  providerCapabilities = {},
+  provider = null,
+  mode = null,
+  routeStep = null,
+  reviewSurface = null,
+  selectedSource = null,
+  previousSelectedSource = null,
+  sourceContentTransmission = null,
+  renderedPromptBudgetChars = null,
+  perFileSecureReadCapBytes = null,
+  supportsDiffPacket = true,
+  supportsShardPlan = true,
+  requiresSourceSendApproval = false,
+  requiresResendConfirmationAfterSourceSentFailure = true,
+  transportFallbacks = [],
+  shardPlans = null,
+} = {}) {
+  const capabilities = providerRecoveryCapabilitiesSnapshot({
+    provider,
+    routeStep,
+    providerCapabilities,
+    sourcePacketPolicy,
+    renderedPromptBudgetChars,
+    perFileSecureReadCapBytes,
+    supportsDiffPacket,
+    supportsShardPlan,
+    requiresSourceSendApproval,
+    requiresResendConfirmationAfterSourceSentFailure,
+    transportFallbacks,
+  });
+  const recoveryReason = reason ?? sourcePacketPolicy?.source_packet_policy_error_code ?? null;
+  const actions = sourcePacketRecoveryActions({
+    reason: recoveryReason,
+    sourcePacketPolicy,
+    capabilities,
+    shardPlans,
+  });
+  return Object.freeze({
+    schema_version: 1,
+    provider: capabilities.provider,
+    mode: mode ?? sourcePacketPolicy?.mode ?? null,
+    reason: recoveryReason,
+    source_content_transmission:
+      sourceContentTransmission ?? sourcePacketPolicy?.source_content_transmission ?? "not_sent",
+    failed_review_slot: true,
+    provider_capabilities: capabilities,
+    review_surface: reviewSurface ?? packetRecoveryReviewSurface({
+      selectedSource,
+      previousSelectedSource,
+      changed: sourcePacketPolicy?.review_surface_changed ?? null,
+    }),
+    actions,
+  });
 }
 
 export function evaluateSourcePacketPolicy({

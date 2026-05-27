@@ -682,6 +682,15 @@ test("kimi custom-review applies adapter source-packet capacity before Kimi laun
     assert.equal(record.review_metadata.audit_manifest.source_packet_policy.source_send_allowed, false);
     assert.equal(record.review_metadata.audit_manifest.source_packet_policy.source_packet_budget_bytes, 32 * 1024);
     assert.equal(record.review_metadata.audit_manifest.source_packet_policy.source_packet_action, "narrow_source_packet");
+    const recovery = record.runtime_diagnostics?.packet_recovery;
+    assert.ok(recovery, "Kimi packet-cap failures must include packet_recovery");
+    assert.equal(recovery.provider, "kimi");
+    assert.equal(recovery.mode, "custom-review");
+    assert.equal(recovery.reason, "source_packet_too_large");
+    assert.equal(recovery.source_content_transmission, "not_sent");
+    assert.equal(recovery.provider_capabilities.source_packet_budget_bytes, 32 * 1024);
+    assert.equal(recovery.provider_capabilities.supports_no_source_resume, false);
+    assert.deepEqual(record.review_metadata.audit_manifest.packet_recovery, recovery);
     assert.doesNotMatch(result.stdout, /external_review_launched|MUST_NOT_REACH_KIMI/);
   } finally {
     if (dataDir) rmSync(dataDir, { recursive: true, force: true });
@@ -1134,6 +1143,18 @@ test("kimi custom-review fails shallow missing-verdict output as review_not_comp
       retryRecord.review_metadata.audit_manifest.source_packet_policy.source_packet_action,
       "resend_confirmation_required",
     );
+    const recovery = retryRecord.runtime_diagnostics?.packet_recovery;
+    assert.ok(recovery, "Kimi source-sent retry failures must include packet_recovery");
+    assert.equal(recovery.provider, "kimi");
+    assert.equal(recovery.reason, "resend_confirmation_required");
+    assert.equal(retryRecord.error_code, recovery.reason);
+    assert.equal(recovery.provider_capabilities.supports_no_source_resume, false);
+    assert.ok(!recovery.actions.some((action) => action.type === "resume_without_source_resend"));
+    assert.deepEqual(
+      recovery.actions.map((action) => action.type),
+      ["resend_with_confirmation", "switch_provider", "waive_slot"],
+    );
+    assert.deepEqual(retryRecord.review_metadata.audit_manifest.packet_recovery, recovery);
   } finally {
     if (dataDir) rmSync(dataDir, { recursive: true, force: true });
     rmSync(cwd, { recursive: true, force: true });

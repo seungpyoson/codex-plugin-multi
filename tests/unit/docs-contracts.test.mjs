@@ -997,3 +997,45 @@ test("provider architecture parity table is machine-validatable and complete", (
   assert.match(claudeAuth.capability_fact, /claude auth login/i);
   assert.match(claudeAuth.current_behavior, /oauth_inference_rejected/i);
 });
+
+test("packet recovery schema keeps the no-source resume capability guard", () => {
+  const schema = readRepoJson("specs/172-large-custom-review-packet-recovery/contracts/packet-recovery.schema.json");
+
+  assert.equal(schema.title, "PacketRecovery");
+  assert.ok(schema.required.includes("provider_capabilities"));
+  assert.ok(schema.required.includes("review_surface"));
+  assert.ok(schema.required.includes("actions"));
+  assert.deepEqual(
+    schema.$defs.providerRecoveryCapabilities.required,
+    [
+      "provider",
+      "route_step",
+      "source_packet_budget_bytes",
+      "rendered_prompt_budget_chars",
+      "per_file_secure_read_cap_bytes",
+      "supports_diff_packet",
+      "supports_shard_plan",
+      "supports_no_source_resume",
+      "requires_source_send_approval",
+      "requires_resend_confirmation_after_source_sent_failure",
+      "transport_fallbacks",
+    ],
+  );
+
+  const noSourceResumeGuard = schema.allOf.find((entry) => (
+    entry?.if?.properties?.provider_capabilities?.properties?.supports_no_source_resume?.const === false
+  ));
+  assert.ok(noSourceResumeGuard, "schema must guard supports_no_source_resume:false");
+  assert.equal(
+    noSourceResumeGuard.then.properties.actions.not.contains.properties.type.const,
+    "resume_without_source_resend",
+  );
+  assert.ok(
+    schema.$defs.recoveryAction.properties.type.enum.includes("resume_without_source_resend"),
+    "resume_without_source_resend remains valid only when provider capabilities allow it",
+  );
+  assert.ok(
+    schema.properties.reason.enum.includes("resend_confirmation_required"),
+    "schema must allow resend-confirmation recovery reasons emitted by runtime policy",
+  );
+});

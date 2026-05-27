@@ -441,6 +441,8 @@ function reviewAuditManifest(invocation, prompt, containmentPath, execution) {
       reason: scopeResolutionReason(invocation),
     },
     route: {
+      mode: invocation.mode,
+      providerId: "claude",
       selectedRoute: invocation.selected_route ?? null,
       routeStep: invocation.route_step ?? null,
       routeSteps: invocation.route_steps ?? null,
@@ -590,6 +592,8 @@ function approvalAuditManifest(invocation, prompt, containmentPath) {
       reason: scopeResolutionReason(invocation),
     },
     route: {
+      mode: invocation.mode,
+      providerId: "claude",
       selectedRoute: invocation.selected_route ?? null,
       routeStep: invocation.route_step ?? null,
       routeSteps: invocation.route_steps ?? null,

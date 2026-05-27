@@ -12,7 +12,7 @@ import { REVIEW_PROMPT_CONTRACT_VERSION, buildReviewAuditManifest, buildReviewPr
 import { USAGE_LIMIT_SAFE_MESSAGE, isUsageLimitDetail } from "./lib/usage-limit.mjs";
 import { elapsedMs } from "./lib/time.mjs";
 import { providerApiCapability, sanitizeTargetEnv } from "./lib/provider-env.mjs";
-import { selectProviderRoute } from "./lib/provider-route-policy.mjs";
+import { buildPacketRecovery, selectProviderRoute } from "./lib/provider-route-policy.mjs";
 import { diffSourceFiles } from "./lib/diff-source.mjs";
 import { buildExternalModelFailureDiagnostic } from "./lib/external-model-failure-core.mjs";
 import { hasSubstantiveInvalidVerdictReason, reviewQualityFailureState } from "./lib/external-model-review-quality.mjs";
@@ -223,6 +223,7 @@ function reviewMetadataProjection(obj) {
     "selected_route",
     "fallback_reason",
     "approval_scope",
+    "packet_recovery",
   ]) {
     if (manifest[key] !== undefined) projection[key] = manifest[key];
   }
@@ -1561,10 +1562,20 @@ function isGrokCliAuthRepairCode(errorCode) {
 
 function providerCapabilitiesForConfig(cfg) {
   const capabilities = {
-    subscription: { kind: cfg.transport, auth_path: cfg.auth_mode },
+    subscription: {
+      kind: cfg.transport,
+      auth_path: cfg.auth_mode,
+      source_packet: {
+        resume_without_resend_supported: false,
+      },
+    },
   };
   if (cfg.api_capability) capabilities.api = cfg.api_capability;
   return capabilities;
+}
+
+function recoveryProviderId(cfg) {
+  return cfg.provider === "grok-web" ? "grok" : (cfg.provider ?? "grok");
 }
 
 function modeSendsSelectedSource(mode) {
@@ -1639,6 +1650,8 @@ function sourcePacketPolicyPreflight({ cfg, mode, prompt, scopeInfo, options = {
       reason: scopeResolutionReason(scopeInfo),
     },
     route: {
+      mode,
+      providerId: recoveryProviderId(cfg),
       selectedRoute: route.selected_route,
       routeStep: route.route_step,
       routeSteps: route.route_steps,
@@ -1668,10 +1681,89 @@ function sourcePacketPolicyPreflight({ cfg, mode, prompt, scopeInfo, options = {
     null,
     null,
     false,
-    { source_packet_policy: policy },
+    {
+      source_packet_policy: policy,
+      packet_recovery: auditManifest.packet_recovery ?? null,
+    },
   );
   execution.prompt = prompt;
   return execution;
+}
+
+function promptCapPacketRecovery({ cfg, mode, prompt, scopeInfo, options = {} } = {}) {
+  const providerCapabilities = providerCapabilitiesForConfig(cfg);
+  const sourceBearing = modeSendsSelectedSource(mode);
+  const route = selectProviderRoute({
+    requestedRoute: "subscription",
+    providerCapabilities,
+    sourceBearing,
+  });
+  const auditManifest = buildReviewAuditManifest({
+    prompt,
+    sourceFiles: scopeInfo.files ?? [],
+    git: {
+      remote: scopeInfo.repository ?? null,
+      branch: scopeInfo.head_ref ?? null,
+      baseRef: scopeInfo.scope_base ?? null,
+      baseCommit: scopeInfo.base_commit ?? null,
+      headRef: scopeInfo.head_ref ?? null,
+      headCommit: scopeInfo.head_commit ?? null,
+    },
+    promptBuilder: {
+      contractVersion: REVIEW_PROMPT_CONTRACT_VERSION,
+      pluginVersion: "0.1.0",
+      pluginCommit: gitCommitForPrompt(PLUGIN_ROOT, "HEAD"),
+    },
+    request: {
+      provider: cfg.display_name,
+      model: cfg.model,
+      timeoutMs: cfg.timeout_ms ?? null,
+      maxTokens: null,
+      temperature: null,
+      stream: false,
+    },
+    truncation: { prompt: false, source: false, output: false },
+    scope: {
+      name: scopeInfo.scope,
+      base: scopeInfo.scope_base ?? null,
+      paths: scopeInfo.scope_paths ?? null,
+      reason: scopeResolutionReason(scopeInfo),
+    },
+    route: {
+      mode,
+      providerId: recoveryProviderId(cfg),
+      selectedRoute: route.selected_route,
+      routeStep: route.route_step,
+      routeSteps: route.route_steps,
+      fallbackReason: cfg.fallback_reason ?? route.fallback_reason,
+      approvalScope: null,
+      authPath: route.auth_path,
+      billingPath: route.billing_path,
+      sourceBearing,
+      sourceContentTransmission: SOURCE_CONTENT_TRANSMISSION.NOT_SENT,
+      sourceSendApprovalRequired: route.source_send_approval_required,
+      sourceSendApprovalState: route.source_send_approval_state,
+      providerCapabilities,
+      reviewSlot: reviewSlotRouteFields(options, {
+        priorAttempts: options.reviewSlotPriorAttempts ?? [],
+      }),
+      ...sourcePacketOverrideRouteFields(options),
+    },
+    status: "preflight_failed",
+    errorCode: "prompt_too_large",
+  });
+  return buildPacketRecovery({
+    reason: "prompt_too_large",
+    sourcePacketPolicy: auditManifest.source_packet_policy,
+    providerCapabilities,
+    provider: recoveryProviderId(cfg),
+    mode,
+    routeStep: route.route_step,
+    selectedSource: auditManifest.selected_source,
+    sourceContentTransmission: SOURCE_CONTENT_TRANSMISSION.NOT_SENT,
+    renderedPromptBudgetChars: cfg.max_prompt_chars,
+    requiresSourceSendApproval: route.source_send_approval_required === true,
+  });
 }
 
 function subscriptionRouteForConfig(cfg, env = process.env, sourceBearing = false) {
@@ -3203,6 +3295,7 @@ function buildTerminalExternalReview({ cfg, mode, options, scopeInfo, execution,
 }
 
 function buildReviewMetadata(cfg, scopeInfo, execution = null, startedAt = null, endedAt = null, options = {}) {
+  const mode = options.mode ?? execution?.mode ?? null;
   const sourceBearing = execution?.payload_sent ?? (execution?.exitCode === 0 && execution?.parsed?.ok === true);
   const processCompleted = execution?.exitCode === 0 && execution?.parsed?.ok === true;
   const sourceContentTransmission = sourceContentTransmissionForPayload({
@@ -3255,6 +3348,8 @@ function buildReviewMetadata(cfg, scopeInfo, execution = null, startedAt = null,
       reason: scopeResolutionReason(scopeInfo),
     },
     route: {
+      mode,
+      providerId: recoveryProviderId(cfg),
       selectedRoute: route.selected_route,
       routeStep: route.route_step,
       routeSteps: route.route_steps,
@@ -3267,6 +3362,7 @@ function buildReviewMetadata(cfg, scopeInfo, execution = null, startedAt = null,
       sourceSendApprovalRequired: route.source_send_approval_required,
       sourceSendApprovalState: route.source_send_approval_state,
       providerCapabilities: providerCapabilitiesForConfig(cfg),
+      packetRecovery: execution.diagnostics?.packet_recovery ?? null,
       reviewSlot: reviewSlotRouteFields(options, {
         priorAttempts: options.reviewSlotPriorAttempts ?? [],
       }),
@@ -3293,8 +3389,39 @@ function buildReviewMetadata(cfg, scopeInfo, execution = null, startedAt = null,
   };
 }
 
+function sourceSentFailurePacketRecovery({ cfg, mode, reviewMetadata, errorCode, transmission }) {
+  if (errorCode !== "review_not_completed") return null;
+  if (transmission !== SOURCE_CONTENT_TRANSMISSION.SENT) return null;
+  const auditManifest = reviewMetadata?.audit_manifest;
+  if (!auditManifest || auditManifest.packet_recovery) return null;
+  const sourcePacketPolicy = Object.freeze({
+    ...(auditManifest.source_packet_policy ?? {}),
+    provider: recoveryProviderId(cfg),
+    mode,
+    route_step: auditManifest.source_packet_policy?.route_step ?? auditManifest.route_step ?? null,
+    source_send_allowed: false,
+    source_content_transmission: transmission,
+    source_packet_action: "resend_confirmation_required",
+    source_packet_policy_error_code: "resend_confirmation_required",
+    suggested_action: "Do not automatically resend selected source after a failed source-sent review slot.",
+  });
+  return buildPacketRecovery({
+    reason: "review_not_completed",
+    sourcePacketPolicy,
+    providerCapabilities: providerCapabilitiesForConfig(cfg),
+    provider: recoveryProviderId(cfg),
+    mode,
+    routeStep: sourcePacketPolicy.route_step ?? null,
+    selectedSource: auditManifest.selected_source ?? null,
+    sourceContentTransmission: transmission,
+  });
+}
+
 function buildRecord({ cfg, mode, options, scopeInfo, execution, startedAt, endedAt }) {
-  const reviewMetadata = buildReviewMetadata(cfg, scopeInfo, execution, startedAt, endedAt, options);
+  let reviewMetadata = buildReviewMetadata(cfg, scopeInfo, execution, startedAt, endedAt, {
+    ...options,
+    mode,
+  });
   const processCompleted = execution.exitCode === 0 && execution.parsed?.ok === true;
   const redactSensitiveText = buildPrivacyRedactor({
     env: process.env,
@@ -3332,7 +3459,19 @@ function buildRecord({ cfg, mode, options, scopeInfo, execution, startedAt, ende
     errorCode,
     pidInfo: execution.pidInfo ?? null,
   });
-  const runtimeDiagnostics = safeDiagnostics ? (cfg.transport === "cli" ? {
+  let packetRecovery = safeDiagnostics?.packet_recovery
+    ?? reviewMetadata?.audit_manifest?.packet_recovery
+    ?? sourceSentFailurePacketRecovery({ cfg, mode, reviewMetadata, errorCode, transmission });
+  if (packetRecovery && reviewMetadata?.audit_manifest && !reviewMetadata.audit_manifest.packet_recovery) {
+    reviewMetadata = Object.freeze({
+      ...reviewMetadata,
+      audit_manifest: Object.freeze({
+        ...reviewMetadata.audit_manifest,
+        packet_recovery: packetRecovery,
+      }),
+    });
+  }
+  let runtimeDiagnostics = safeDiagnostics ? (cfg.transport === "cli" ? {
     cli_request: {
       transport: "cli",
       binary: cfg.binary,
@@ -3380,6 +3519,13 @@ function buildRecord({ cfg, mode, options, scopeInfo, execution, startedAt, ende
     } : null,
     session_tokens: safeDiagnostics.session_tokens ?? null,
   }) : null;
+  if (runtimeDiagnostics && safeDiagnostics?.source_packet_policy) {
+    runtimeDiagnostics.source_packet_policy = safeDiagnostics.source_packet_policy;
+  }
+  if (packetRecovery) {
+    runtimeDiagnostics ??= {};
+    runtimeDiagnostics.packet_recovery = packetRecovery;
+  }
   return freezeRecord({
     id: options.jobId,
     job_id: options.jobId,
@@ -4596,6 +4742,9 @@ async function cmdRun(options) {
       if (!execution && prompt.length > cfg.max_prompt_chars) {
         const capName = cfg.transport === "cli" ? "GROK_CLI_MAX_PROMPT_CHARS" : "GROK_WEB_MAX_PROMPT_CHARS";
         execution = providerFailure("prompt_too_large", redactor()(`prompt_too_large:${prompt.length} chars exceeds ${capName}=${cfg.max_prompt_chars}`), null, null, false);
+        execution.diagnostics = {
+          packet_recovery: promptCapPacketRecovery({ cfg, mode, prompt, scopeInfo, options: runOptions }),
+        };
         execution.prompt = prompt;
       }
     } catch (e) {
@@ -4661,6 +4810,7 @@ async function cmdRun(options) {
             execution = providerFailure("prompt_too_large", redactor()(`prompt_too_large:${prompt.length} chars exceeds GROK_WEB_MAX_PROMPT_CHARS=${cfg.max_prompt_chars}`), null, null, false);
             execution.diagnostics = {
               cli_request: cliRequestDiagnosticsForFallback(cliFailure),
+              packet_recovery: promptCapPacketRecovery({ cfg, mode, prompt, scopeInfo, options: runOptions }),
               ...(execution.diagnostics ?? {}),
             };
             execution.prompt = prompt;

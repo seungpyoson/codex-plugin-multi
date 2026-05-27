@@ -1,0 +1,440 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/seungpyoson/codex-plugin-multi/specs/172-large-custom-review-packet-recovery/contracts/packet-recovery.schema.json",
+  "title": "PacketRecovery",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "provider",
+    "mode",
+    "reason",
+    "source_content_transmission",
+    "failed_review_slot",
+    "provider_capabilities",
+    "review_surface",
+    "actions"
+  ],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "provider": {
+      "enum": ["claude", "gemini", "grok", "kimi", "deepseek", "glm", null]
+    },
+    "mode": { "$ref": "#/$defs/safeTextOrNull" },
+    "reason": {
+      "enum": [
+        "source_packet_too_large",
+        "resend_confirmation_required",
+        "prompt_too_large",
+        "scope_file_too_large",
+        "review_not_completed",
+        "step_limit_exceeded",
+        "timeout",
+        "transport_error",
+        "provider_error"
+      ]
+    },
+    "source_content_transmission": {
+      "enum": ["not_sent", "may_be_sent", "sent"]
+    },
+    "failed_review_slot": { "type": ["boolean", "null"] },
+    "provider_capabilities": { "$ref": "#/$defs/providerRecoveryCapabilities" },
+    "review_surface": { "$ref": "#/$defs/reviewSurface" },
+    "actions": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/recoveryAction" }
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "source_content_transmission": { "enum": ["may_be_sent", "sent"] }
+        },
+        "required": ["source_content_transmission"]
+      },
+      "then": {
+        "properties": {
+          "provider": {
+            "enum": ["claude", "gemini", "grok", "kimi", "deepseek", "glm"]
+          }
+        },
+        "required": ["provider"]
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "provider_capabilities": {
+            "properties": {
+              "supports_no_source_resume": { "const": false }
+            },
+            "required": ["supports_no_source_resume"]
+          }
+        },
+        "required": ["provider_capabilities"]
+      },
+      "then": {
+        "properties": {
+          "actions": {
+            "not": {
+              "contains": {
+                "type": "object",
+                "properties": {
+                  "type": { "const": "resume_without_source_resend" }
+                },
+                "required": ["type"]
+              }
+            }
+          }
+        }
+      }
+    }
+  ],
+  "additionalProperties": false,
+  "$defs": {
+    "safeText": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 2048
+    },
+    "safeTextOrNull": {
+      "type": ["string", "null"],
+      "minLength": 1,
+      "maxLength": 2048
+    },
+    "sha256": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "sha256OrNull": {
+      "anyOf": [
+        { "$ref": "#/$defs/sha256" },
+        { "type": "null" }
+      ]
+    },
+    "reviewSurface": {
+      "type": "object",
+      "required": [
+        "original_packet_hash",
+        "current_packet_hash",
+        "original_files",
+        "current_files",
+        "original_bytes",
+        "current_bytes",
+        "changed",
+        "change_reason",
+        "approval_credit",
+        "coverage_proof"
+      ],
+      "properties": {
+        "original_packet_hash": { "$ref": "#/$defs/sha256OrNull" },
+        "current_packet_hash": { "$ref": "#/$defs/sha256OrNull" },
+        "original_files": { "type": ["integer", "null"], "minimum": 0 },
+        "current_files": { "type": ["integer", "null"], "minimum": 0 },
+        "original_bytes": { "type": ["integer", "null"], "minimum": 0 },
+        "current_bytes": { "type": ["integer", "null"], "minimum": 0 },
+        "changed": { "type": "boolean" },
+        "change_reason": {
+          "enum": [
+            "shard",
+            "diff_packet",
+            "narrowed_scope",
+            "provider_switch",
+            "same_packet",
+            "none",
+            null
+          ]
+        },
+        "approval_credit": {
+          "enum": [
+            "full_source",
+            "changed_surface_only",
+            "none",
+            "requires_coverage_proof"
+          ]
+        },
+        "coverage_proof": {
+          "anyOf": [
+            { "$ref": "#/$defs/coverageProof" },
+            { "type": "null" }
+          ]
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": { "changed": { "const": true } },
+            "required": ["changed"]
+          },
+          "then": {
+            "anyOf": [
+              {
+                "properties": {
+                  "approval_credit": {
+                    "enum": [
+                      "changed_surface_only",
+                      "none",
+                      "requires_coverage_proof"
+                    ]
+                  }
+                },
+                "required": ["approval_credit"]
+              },
+              {
+                "properties": {
+                  "coverage_proof": { "$ref": "#/$defs/coverageProof" }
+                },
+                "required": ["coverage_proof"]
+              }
+            ]
+          }
+        }
+      ],
+      "additionalProperties": false
+    },
+    "coverageProof": {
+      "type": "object",
+      "required": [
+        "proof_type",
+        "covered_packet_hash",
+        "covered_files",
+        "covered_bytes",
+        "shard_hashes"
+      ],
+      "properties": {
+        "proof_type": { "enum": ["complete_shard_set"] },
+        "covered_packet_hash": { "$ref": "#/$defs/sha256" },
+        "covered_files": { "type": "integer", "minimum": 0 },
+        "covered_bytes": { "type": "integer", "minimum": 0 },
+        "shard_hashes": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/sha256" }
+        }
+      },
+      "additionalProperties": false
+    },
+    "providerRecoveryCapabilities": {
+      "type": "object",
+      "required": [
+        "provider",
+        "route_step",
+        "source_packet_budget_bytes",
+        "rendered_prompt_budget_chars",
+        "per_file_secure_read_cap_bytes",
+        "supports_diff_packet",
+        "supports_shard_plan",
+        "supports_no_source_resume",
+        "requires_source_send_approval",
+        "requires_resend_confirmation_after_source_sent_failure",
+        "transport_fallbacks"
+      ],
+      "properties": {
+        "provider": {
+          "enum": ["claude", "gemini", "grok", "kimi", "deepseek", "glm", null]
+        },
+        "route_step": { "$ref": "#/$defs/safeTextOrNull" },
+        "source_packet_budget_bytes": { "type": ["integer", "null"], "minimum": 0 },
+        "rendered_prompt_budget_chars": { "type": ["integer", "null"], "minimum": 0 },
+        "per_file_secure_read_cap_bytes": { "type": ["integer", "null"], "minimum": 0 },
+        "supports_diff_packet": { "type": "boolean" },
+        "supports_shard_plan": { "type": "boolean" },
+        "supports_no_source_resume": { "type": "boolean" },
+        "requires_source_send_approval": { "type": "boolean" },
+        "requires_resend_confirmation_after_source_sent_failure": { "type": "boolean" },
+        "transport_fallbacks": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/safeText" }
+        }
+      },
+      "additionalProperties": false
+    },
+    "recoveryAction": {
+      "type": "object",
+      "required": [
+        "type",
+        "description",
+        "command",
+        "source_content_transmission",
+        "review_surface_change",
+        "approval_required",
+        "approval_tuple",
+        "shards"
+      ],
+      "properties": {
+        "type": {
+          "enum": [
+            "shard",
+            "diff_packet",
+            "allow_large_source_packet",
+            "resend_with_confirmation",
+            "resume_without_source_resend",
+            "waive_slot",
+            "switch_provider"
+          ]
+        },
+        "description": { "$ref": "#/$defs/safeText" },
+        "command": { "$ref": "#/$defs/safeTextOrNull" },
+        "source_content_transmission": {
+          "enum": ["not_sent", "may_be_sent", "sent"]
+        },
+        "review_surface_change": { "type": "boolean" },
+        "approval_required": { "type": "boolean" },
+        "approval_tuple": {
+          "anyOf": [
+            { "$ref": "#/$defs/approvalTuple" },
+            { "type": "null" }
+          ]
+        },
+        "shards": {
+          "anyOf": [
+            {
+              "type": "array",
+              "minItems": 1,
+              "items": { "$ref": "#/$defs/shardPlan" }
+            },
+            { "type": "null" }
+          ]
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": { "type": { "enum": ["shard", "diff_packet"] } },
+            "required": ["type"]
+          },
+          "then": { "properties": { "review_surface_change": { "const": true } } }
+        },
+        {
+          "if": {
+            "properties": { "type": { "const": "shard" } },
+            "required": ["type"]
+          },
+          "then": {
+            "properties": {
+              "shards": {
+                "type": "array",
+                "minItems": 1,
+                "items": { "$ref": "#/$defs/shardPlan" }
+              }
+            }
+          }
+        }
+      ],
+      "additionalProperties": false
+    },
+    "shardPlan": {
+      "type": "object",
+      "required": [
+        "index",
+        "total",
+        "scope_paths",
+        "rendered_prompt_chars",
+        "source_packet",
+        "approval_tuple"
+      ],
+      "properties": {
+        "index": { "type": "integer", "minimum": 1 },
+        "total": { "type": "integer", "minimum": 1 },
+        "scope_paths": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/safeText" }
+        },
+        "rendered_prompt_chars": { "type": ["integer", "null"], "minimum": 0 },
+        "source_packet": { "$ref": "#/$defs/sourcePacketSummary" },
+        "approval_tuple": {
+          "anyOf": [
+            { "$ref": "#/$defs/approvalTuple" },
+            { "type": "null" }
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "sourcePacketSummary": {
+      "type": "object",
+      "required": ["packet_hash", "files", "totals"],
+      "properties": {
+        "packet_hash": { "$ref": "#/$defs/sha256" },
+        "files": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/sourceFileSummary" }
+        },
+        "totals": {
+          "type": "object",
+          "required": ["files", "bytes", "lines"],
+          "properties": {
+            "files": { "type": "integer", "minimum": 0 },
+            "bytes": { "type": "integer", "minimum": 0 },
+            "lines": { "type": "integer", "minimum": 0 }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "sourceFileSummary": {
+      "type": "object",
+      "required": ["path", "bytes", "lines", "content_hash"],
+      "properties": {
+        "path": { "$ref": "#/$defs/safeText" },
+        "bytes": { "type": "integer", "minimum": 0 },
+        "lines": { "type": "integer", "minimum": 0 },
+        "content_hash": { "$ref": "#/$defs/sha256" }
+      },
+      "additionalProperties": false
+    },
+    "approvalTuple": {
+      "type": "object",
+      "required": [
+        "provider",
+        "mode",
+        "rendered_prompt_hash",
+        "source_packet_hash",
+        "scope_resolution_hash",
+        "request_settings_hash",
+        "auth_path",
+        "billing_path",
+        "selected_route",
+        "fallback_reason",
+        "approval_scope"
+      ],
+      "properties": {
+        "provider": { "enum": ["deepseek", "glm"] },
+        "mode": { "$ref": "#/$defs/safeText" },
+        "rendered_prompt_hash": { "$ref": "#/$defs/sha256" },
+        "source_packet_hash": { "$ref": "#/$defs/sha256" },
+        "scope_resolution_hash": { "$ref": "#/$defs/sha256" },
+        "request_settings_hash": { "$ref": "#/$defs/sha256" },
+        "auth_path": {
+          "type": "object",
+          "required": ["auth_mode", "credential_ref"],
+          "properties": {
+            "auth_mode": { "$ref": "#/$defs/safeText" },
+            "credential_ref": {
+              "type": "string",
+              "pattern": "^[A-Z0-9_]+$",
+              "maxLength": 128
+            }
+          },
+          "additionalProperties": false
+        },
+        "billing_path": {
+          "type": "object",
+          "required": ["endpoint", "model"],
+          "properties": {
+            "endpoint": { "$ref": "#/$defs/safeText" },
+            "model": { "$ref": "#/$defs/safeText" }
+          },
+          "additionalProperties": false
+        },
+        "selected_route": { "$ref": "#/$defs/safeText" },
+        "fallback_reason": { "$ref": "#/$defs/safeTextOrNull" },
+        "approval_scope": { "enum": ["session", "one_time"] }
+      },
+      "additionalProperties": false
+    }
+  }
+}
