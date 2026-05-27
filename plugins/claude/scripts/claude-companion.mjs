@@ -42,6 +42,7 @@ import { setupContainment } from "./lib/containment.mjs";
 import { populateScope } from "./lib/scope.mjs";
 import { newJobId, verifyPidInfo } from "./lib/identity.mjs";
 import { buildJobRecord, classifyExecution, externalReviewForInvocation, isOAuthInferenceRejected } from "./lib/job-record.mjs";
+import { sourceContentTransmissionForExecution } from "./lib/external-review.mjs";
 import { reconcileActiveJobs } from "./lib/reconcile.mjs";
 import { cleanGitEnv } from "./lib/git-env.mjs";
 import { gitEnv, isGitBinaryPolicyError, resolveGitBinary } from "./lib/git-binary.mjs";
@@ -406,6 +407,12 @@ function reviewAuditManifest(invocation, prompt, containmentPath, execution) {
   const meta = promptMetadata(invocation);
   const auditExecution = executionForAuditClassification(execution);
   const { error_code: errorCode } = classifyExecution(auditExecution, invocation);
+  const executionStatus = reviewAuditStatus(auditExecution, invocation);
+  const sourceContentTransmission = sourceContentTransmissionForExecution({
+    status: executionStatus,
+    errorCode,
+    pidInfo: auditExecution?.pidInfo ?? null,
+  });
   return buildReviewAuditManifest({
     prompt,
     sourceFiles: invocation.resume_without_source_resend === true
@@ -451,6 +458,7 @@ function reviewAuditManifest(invocation, prompt, containmentPath, execution) {
       authPath: invocation.selected_auth_path ?? null,
       billingPath: invocation.billing_path ?? null,
       sourceBearing: modeSendsSelectedSource(invocation.mode),
+      sourceContentTransmission,
       sourceSendApprovalRequired: invocation.source_send_approval_required ?? null,
       sourceSendApprovalState: invocation.source_send_approval_state ?? null,
       providerCapabilities: providerCapabilitiesForReviewAudit(),
@@ -461,7 +469,7 @@ function reviewAuditManifest(invocation, prompt, containmentPath, execution) {
       ...sourcePacketOverrideRouteFields(invocation),
     },
     result: execution?.parsed?.result ?? "",
-    status: reviewAuditStatus(auditExecution, invocation),
+    status: executionStatus,
     errorCode,
   });
 }

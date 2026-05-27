@@ -27,6 +27,7 @@
         "prompt_too_large",
         "scope_file_too_large",
         "review_not_completed",
+        "stale_active_job",
         "step_limit_exceeded",
         "timeout",
         "transport_error",
@@ -34,7 +35,7 @@
       ]
     },
     "source_content_transmission": {
-      "enum": ["not_sent", "may_be_sent", "sent"]
+      "enum": ["not_sent", "may_be_sent", "sent", "unknown"]
     },
     "failed_review_slot": { "type": ["boolean", "null"] },
     "provider_capabilities": { "$ref": "#/$defs/providerRecoveryCapabilities" },
@@ -49,7 +50,7 @@
     {
       "if": {
         "properties": {
-          "source_content_transmission": { "enum": ["may_be_sent", "sent"] }
+          "source_content_transmission": { "enum": ["may_be_sent", "sent", "unknown"] }
         },
         "required": ["source_content_transmission"]
       },

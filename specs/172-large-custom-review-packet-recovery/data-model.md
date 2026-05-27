@@ -8,8 +8,9 @@
 - `mode`: review mode
 - `reason`: normalized reason, for example `source_packet_too_large`,
   `prompt_too_large`, `scope_file_too_large`, `review_not_completed`,
-  `step_limit_exceeded`, or `timeout`
-- `source_content_transmission`: `not_sent`, `may_be_sent`, or `sent`
+  `stale_active_job`, `step_limit_exceeded`, or `timeout`
+- `source_content_transmission`: `not_sent`, `may_be_sent`, `sent`, or
+  conservative `unknown`
 - `failed_review_slot`: boolean or null
 - `provider_capabilities`: `ProviderRecoveryCapabilities` snapshot used to
   construct recovery actions
@@ -18,8 +19,8 @@
 
 Validation rules:
 
-- If `source_content_transmission` is `sent` or `may_be_sent`, no recovery
-  action may imply the failed slot is approval.
+- If `source_content_transmission` is `sent`, `may_be_sent`, or `unknown`, no
+  recovery action may imply the failed slot is approval.
 - If an action changes selected source, rendered prompt hash, mode, route,
   provider, auth path, billing path, request settings, or fallback reason, it
   must mark `approval_required:true` for direct API source sends.

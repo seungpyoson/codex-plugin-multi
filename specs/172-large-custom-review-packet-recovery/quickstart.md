@@ -90,15 +90,15 @@ Expected:
 ## Target Behavior: Companion Provider Projection
 
 When Claude, Gemini, or Kimi surface packet-cap, step-limit, timeout, no-verdict,
-or runtime failure metadata:
+stale, or runtime failure metadata:
 
 - `packet_recovery` uses the same field names and schema as Direct API/Grok
 - `failed_review_slot:true` is preserved for source-sent missing-verdict,
-  timeout, crash, or step-limit failures
+  timeout, crash, stale, or step-limit failures
 - Kimi lower packet-cap recovery either narrows/shards before send or records
   `packet_recovery.provider_capabilities.supports_no_source_resume:false` after
   a source-bearing step-limit failure
-- Kimi source-bearing step-limit recovery omits
+- Kimi source-bearing step-limit and stale recovery omit
   `resume_without_source_resend` and offers resend-confirmation, provider
   switch, or waiver paths instead
 

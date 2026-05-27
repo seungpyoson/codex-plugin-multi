@@ -72,9 +72,9 @@ slots into approval.
 - [x] T040 [US3] Add RED source-sent same-packet resend-confirmation test covering `--allow-large-source-packet` interaction in `tests/smoke/api-reviewers.smoke.test.mjs`
 - [x] T041 [US3] Implement Direct API failure-before-token recovery projection and source-sent resend-confirmation/large-packet interaction in `plugins/api-reviewers/scripts/api-reviewer.mjs`
 - [x] T042 [US3] Add RED Grok runtime failure recovery smoke for CLI auto-fallback/no-verdict behavior in `tests/smoke/grok-web.smoke.test.mjs`
-- [x] T043 [US3] Add RED Kimi packet-cap and source-sent step-limit recovery projection tests in `tests/smoke/kimi-companion.smoke.test.mjs`
+- [x] T043 [US3] Add RED Kimi packet-cap, source-sent missing-verdict/timeout/step-limit, and stale-job recovery projection tests in `tests/smoke/kimi-companion.smoke.test.mjs` and `tests/smoke/result-reconcile.smoke.test.mjs`
 - [x] T044 [US3] Implement Grok runtime failure and CLI auto-fallback no-verdict `packet_recovery` projection in `plugins/grok/scripts/grok-web-reviewer.mjs`
-- [x] T045 [US3] Implement Kimi packet-cap and source-sent step-limit `packet_recovery` projection, including `provider_capabilities.supports_no_source_resume:false`, in `plugins/kimi/scripts/kimi-companion.mjs` and shared companion helpers
+- [x] T045 [US3] Implement Kimi packet-cap, source-sent terminal failure, and stale-job `packet_recovery` projection, including `provider_capabilities.supports_no_source_resume:false`, in `plugins/kimi/scripts/kimi-companion.mjs` and shared companion helpers
 
 ## Phase 6: Sync, Docs, And Verification
 

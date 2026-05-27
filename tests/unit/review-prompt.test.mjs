@@ -340,6 +340,89 @@ test("buildReviewAuditManifest packet recovery falls back through request provid
   }
 });
 
+test("buildReviewAuditManifest packet recovery covers source-sent companion failures", async () => {
+  const cases = [
+    {
+      caseName: "kimi_step_limit",
+      providerId: "kimi",
+      requestProvider: "Kimi",
+      reason: "step_limit_exceeded",
+      capability: { subscription: { source_packet: { max_bytes: 32768, resume_without_resend_supported: false } } },
+      expectedActions: ["resend_with_confirmation", "switch_provider", "waive_slot"],
+    },
+    {
+      caseName: "claude_missing_verdict",
+      providerId: "claude",
+      requestProvider: "Claude",
+      reason: "review_not_completed",
+      capability: { subscription: { source_packet: { max_bytes: 524288, resume_without_resend_supported: true } } },
+      expectedActions: ["resend_with_confirmation", "resume_without_source_resend", "switch_provider", "waive_slot"],
+    },
+    {
+      caseName: "gemini_timeout",
+      providerId: "gemini",
+      requestProvider: "Gemini",
+      reason: "timeout",
+      capability: { subscription: { source_packet: { max_bytes: 524288, resume_without_resend_supported: true } } },
+      expectedActions: ["resend_with_confirmation", "switch_provider", "waive_slot"],
+    },
+  ];
+
+  for (const [name, file] of REVIEW_PROMPT_MODULES) {
+    const { buildReviewAuditManifest: targetBuildReviewAuditManifest } = await loadReviewPromptModule(file);
+    for (const c of cases) {
+      const manifest = targetBuildReviewAuditManifest({
+        prompt: "review these files",
+        sourceFiles: [{ path: "src/runtime.js", text: "export const value = 1;\n" }],
+        git: { headCommit: "head" },
+        request: {
+          provider: c.requestProvider,
+          model: "review-model",
+          timeoutMs: 900000,
+          maxStepsPerTurn: 128,
+        },
+        providerIds: { sessionId: "session-1" },
+        scope: { name: "custom-review", paths: ["src/runtime.js"] },
+        route: {
+          mode: "custom-review",
+          providerId: c.providerId,
+          selectedRoute: "subscription_oauth",
+          routeStep: "subscription",
+          sourceBearing: true,
+          sourceContentTransmission: "sent",
+          sourcePacketPolicy: {
+            provider: c.providerId,
+            mode: "custom-review",
+            route_step: "subscription",
+            source_bearing: true,
+            source_send_allowed: true,
+            source_packet_action: "send",
+            source_content_transmission: "sent",
+            selected_source_bytes: 24,
+            source_packet_budget_bytes: 524288,
+          },
+          providerCapabilities: c.capability,
+        },
+        result: "",
+        status: "failed",
+        errorCode: c.reason,
+      });
+
+      assert.ok(manifest.packet_recovery, `${name}:${c.caseName}`);
+      assert.equal(manifest.packet_recovery.reason, c.reason, `${name}:${c.caseName}`);
+      assert.equal(manifest.packet_recovery.source_content_transmission, "sent", `${name}:${c.caseName}`);
+      assert.equal(manifest.packet_recovery.provider_capabilities.supports_no_source_resume,
+        c.capability.subscription.source_packet.resume_without_resend_supported,
+        `${name}:${c.caseName}`);
+      assert.deepEqual(
+        manifest.packet_recovery.actions.map((action) => action.type),
+        c.expectedActions,
+        `${name}:${c.caseName}`,
+      );
+    }
+  }
+});
+
 test("buildReviewAuditManifest packet recovery derives review surface from previous-attempt shapes", async () => {
   const validPreviousSource = Object.freeze({
     files: Object.freeze([
@@ -399,6 +482,39 @@ test("buildReviewAuditManifest packet recovery derives review surface from previ
         `${name}:${caseName}`,
       );
       assert.equal(manifest.packet_recovery.review_surface.current_bytes, 20, `${name}:${caseName}`);
+
+      const implicitChangeManifest = targetBuildReviewAuditManifest({
+        prompt: "review the narrowed packet",
+        sourceFiles: [{ path: "src/current.js", text: "x".repeat(20) }],
+        request: { provider: "GLM", model: "glm-coding" },
+        route: {
+          mode: "custom-review",
+          providerId: "glm",
+          routeStep: "direct_api",
+          sourceBearing: true,
+          previousAttempt,
+          sourcePacketPolicy: {
+            provider: "glm",
+            mode: "custom-review",
+            route_step: "direct_api",
+            source_bearing: true,
+            source_send_allowed: false,
+            source_packet_action: "narrow_source_packet",
+            source_content_transmission: "not_sent",
+            source_packet_policy_error_code: "source_packet_too_large",
+            selected_source_bytes: 20,
+            source_packet_budget_bytes: 10,
+          },
+        },
+        result: "",
+        status: "preflight_failed",
+        errorCode: "source_packet_too_large",
+      });
+      assert.equal(
+        implicitChangeManifest.packet_recovery.review_surface.changed,
+        expectedOriginalBytes !== null,
+        `${name}:${caseName}:implicit`,
+      );
     }
   }
 });

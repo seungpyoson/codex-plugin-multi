@@ -281,6 +281,17 @@ test("gemini custom-review guides substantive missing-verdict retry without auto
     assert.match(record.suggested_action, /sharding/i);
     assert.match(record.suggested_action, /relaying/i);
     assert.match(record.suggested_action, /interactive Gemini/i);
+    const recovery = record.runtime_diagnostics?.packet_recovery;
+    assert.ok(recovery, "Gemini source-sent missing-verdict failures must include packet_recovery");
+    assert.equal(recovery.provider, "gemini");
+    assert.equal(recovery.reason, "review_not_completed");
+    assert.equal(recovery.source_content_transmission, "sent");
+    assert.equal(recovery.provider_capabilities.supports_no_source_resume, true);
+    assert.deepEqual(
+      recovery.actions.map((action) => action.type),
+      ["resend_with_confirmation", "resume_without_source_resend", "switch_provider", "waive_slot"],
+    );
+    assert.deepEqual(record.review_metadata.audit_manifest.packet_recovery, recovery);
 
     const retry = runCompanion(
       ["continue", "--job", record.job_id, "--foreground", "--cwd", cwd, "--", "retry selected source"],

@@ -146,3 +146,35 @@ git diff --check
 ```
 
 Results: 18 tests passed, 0 failed; `git diff --check` passed.
+
+## End-to-End Gap Audit Delta
+
+Additional gap audit scope:
+
+- Claude, Gemini, and Kimi source-sent initial failures now project
+  `packet_recovery` for missing-verdict, timeout, and step-limit outcomes.
+- Reconciled Claude, Gemini, and Kimi stale active jobs now project conservative
+  `stale_active_job` packet recovery with source state `unknown`.
+- Review-surface recovery now infers changed source packets from normalized
+  source hashes when older records do not contain `review_surface_changed:true`.
+
+Local verification:
+
+```sh
+npm run lint
+git diff --check
+node --test tests/smoke/result-reconcile.smoke.test.mjs
+npm test
+npm run doctor:cache
+```
+
+Results:
+
+- `npm run lint`: passed.
+- `git diff --check`: passed.
+- `node --test tests/smoke/result-reconcile.smoke.test.mjs`: 3 tests passed,
+  0 failed.
+- `npm test`: 2237 tests, 2225 passed, 0 failed, 12 skipped.
+- `npm run doctor:cache`: exited 0 with `"ok": false` because the installed
+  plugin cache is still in sync with the marketplace cache, not with this dirty
+  feature worktree.

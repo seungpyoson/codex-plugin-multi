@@ -23,6 +23,11 @@ export const REVIEW_PROMPT_CONTRACT_STYLES = Object.freeze(["standard", "compact
 export const REVIEW_AUDIT_MANIFEST_VERSION = 1;
 const MAX_REVIEW_MARKUP_STRIPS = 10;
 const MAX_CHECKLIST_NUMBER_DIGITS = 10;
+const SOURCE_SENT_PACKET_RECOVERY_REASONS = new Set([
+  "review_not_completed",
+  "step_limit_exceeded",
+  "timeout",
+]);
 const SELECTED_SOURCE_INSPECTION_VERBS = Object.freeze([
   "analyzed",
   "checked",
@@ -105,7 +110,17 @@ function sourceHashForReviewSurface(source = null) {
   if (!source || typeof source !== "object") return null;
   const totals = sourceTotalsForReviewSurface(source);
   if ((totals.files ?? 0) === 0 && (totals.bytes ?? 0) === 0) return null;
-  return hashObject(source).value;
+  const files = Array.isArray(source.files) ? source.files : [];
+  const normalized = {
+    files: files.map((file) => ({
+      path: file?.path ?? null,
+      bytes: file?.bytes ?? null,
+      lines: file?.lines ?? null,
+      content_hash: file?.content_hash?.value ?? file?.content_hash ?? null,
+    })),
+    totals,
+  };
+  return hashObject(JSON.stringify(normalized)).value;
 }
 
 function previousSourceForReviewSurface(previousAttempt = null) {
@@ -120,10 +135,14 @@ function packetRecoveryReviewSurface({ selectedSource, previousAttempt = null, s
   const originalSource = previousSource ?? selectedSource;
   const originalTotals = sourceTotalsForReviewSurface(originalSource);
   const currentTotals = sourceTotalsForReviewSurface(selectedSource);
-  const changed = sourcePacketPolicy?.review_surface_changed === true;
+  const originalHash = sourceHashForReviewSurface(originalSource);
+  const currentHash = sourceHashForReviewSurface(selectedSource);
+  const changed = sourcePacketPolicy?.review_surface_changed ?? (
+    originalHash !== null && currentHash !== null && originalHash !== currentHash
+  );
   return Object.freeze({
-    original_packet_hash: sourceHashForReviewSurface(originalSource),
-    current_packet_hash: sourceHashForReviewSurface(selectedSource),
+    original_packet_hash: originalHash,
+    current_packet_hash: currentHash,
     original_files: originalTotals.files,
     current_files: currentTotals.files,
     original_bytes: originalTotals.bytes,
@@ -133,6 +152,35 @@ function packetRecoveryReviewSurface({ selectedSource, previousAttempt = null, s
     approval_credit: changed ? "changed_surface_only" : "none",
     coverage_proof: null,
   });
+}
+
+function sourceSentPacketRecoveryReason({
+  status = null,
+  errorCode = null,
+  sourceContentTransmission = null,
+  reviewQuality = null,
+} = {}) {
+  const sourceWasSent = sourceContentTransmission === "sent"
+    || sourceContentTransmission === "may_be_sent"
+    || sourceContentTransmission === "sent_after_explicit_approval";
+  if (!sourceWasSent) return null;
+  if (status === "failed" && SOURCE_SENT_PACKET_RECOVERY_REASONS.has(errorCode)) return errorCode;
+  const semanticReasons = Array.isArray(reviewQuality?.semantic_failure_reasons)
+    ? reviewQuality.semantic_failure_reasons
+    : [];
+  if (reviewQuality?.failed_review_slot === true && semanticReasons.length > 0) {
+    return "review_not_completed";
+  }
+  return null;
+}
+
+function reviewQualityErrorCode(reviewQuality = null) {
+  const semanticReasons = Array.isArray(reviewQuality?.semantic_failure_reasons)
+    ? reviewQuality.semantic_failure_reasons
+    : [];
+  return reviewQuality?.failed_review_slot === true && semanticReasons.length > 0
+    ? "review_not_completed"
+    : null;
 }
 
 function isWordBoundary(char) {
@@ -1175,9 +1223,10 @@ export function buildReviewAuditManifest({
     })
     : sourcePacketPolicy;
   const reviewQuality = qualityFlags({ result, status, errorCode, selectedSource });
+  const effectiveErrorCode = errorCode ?? reviewQualityErrorCode(reviewQuality);
   const sourceContentTransmission =
     effectiveSourcePacketPolicy.source_send_allowed === false
-      ? effectiveSourcePacketPolicy.source_content_transmission
+      ? (effectiveSourcePacketPolicy.source_content_transmission ?? "not_sent")
       : (route.sourceContentTransmission ?? effectiveSourcePacketPolicy.source_content_transmission ?? null);
   const reviewSlot = buildReviewSlotDisposition({
     provider: request.provider ?? null,
@@ -1194,16 +1243,24 @@ export function buildReviewAuditManifest({
     requestSettingsHash,
     sourceState: sourceContentTransmission,
     status,
-    errorCode,
+    errorCode: effectiveErrorCode,
     result,
     reviewQuality,
     disposition: route.reviewSlot?.disposition ?? retryPolicy.disposition,
     waiverArtifact: route.reviewSlot?.waiverArtifact ?? null,
     overrideArtifact: route.reviewSlot?.overrideArtifact ?? null,
   });
-  const packetRecovery = route.packetRecovery ?? (effectiveSourcePacketPolicy.source_send_allowed === false
+  const packetRecoveryReason = effectiveSourcePacketPolicy.source_send_allowed === false
+    ? (effectiveSourcePacketPolicy.source_packet_policy_error_code ?? effectiveErrorCode)
+    : sourceSentPacketRecoveryReason({
+      status,
+      errorCode: effectiveErrorCode,
+      sourceContentTransmission,
+      reviewQuality,
+    });
+  const packetRecovery = route.packetRecovery ?? (packetRecoveryReason
     ? buildPacketRecovery({
-      reason: effectiveSourcePacketPolicy.source_packet_policy_error_code ?? errorCode,
+      reason: packetRecoveryReason,
       sourcePacketPolicy: effectiveSourcePacketPolicy,
       providerCapabilities: route.providerCapabilities ?? {},
       provider: route.providerId ?? effectiveSourcePacketPolicy.provider ?? request.provider ?? null,
@@ -1214,6 +1271,7 @@ export function buildReviewAuditManifest({
         previousAttempt: route.previousAttempt ?? null,
         sourcePacketPolicy: effectiveSourcePacketPolicy,
       }),
+      sourceContentTransmission,
       requiresSourceSendApproval: route.sourceSendApprovalRequired === true,
     })
     : null);
@@ -1277,7 +1335,7 @@ export function buildReviewAuditManifest({
     packet_recovery: packetRecovery,
     review_slot_retry_policy: Object.freeze({ ...retryPolicy }),
     review_slot: reviewSlot,
-    error_code: errorCode,
+    error_code: effectiveErrorCode,
     review_quality: reviewQuality,
   });
 }

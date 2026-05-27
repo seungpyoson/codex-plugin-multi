@@ -121,6 +121,11 @@ object is emitted for:
   source-sent no-verdict failures.
 - Claude, Gemini, and Kimi source-packet policy failures through shared
   `review-prompt` audit-manifest generation.
+- Claude, Gemini, and Kimi initial source-sent review failures where the
+  provider received or may have received selected source but returned no valid
+  review because of missing verdict, timeout, or step-limit exhaustion.
+- Reconciled Claude, Gemini, and Kimi stale active jobs when the retained
+  process/session cannot prove whether selected source was already sent.
 - Kimi packet-cap and source-sent retry failures, including
   `supports_no_source_resume:false`.
 - Review-panel failed rows without changing failed-slot classification.
@@ -144,6 +149,9 @@ Post-review fix evidence:
   metadata so source-packet policy can enforce resend confirmation after a
   failed source-bearing slot, while review-slot retry counting still uses the
   same validated prior review-slot records.
+- Review-surface comparison now hashes normalized selected-source metadata, so
+  packet recovery still detects a changed review surface when a legacy or
+  sparse prior record lacks an explicit `review_surface_changed:true` flag.
 
 Verification on 2026-05-26:
 
@@ -194,6 +202,25 @@ git diff --check
 ```
 
 Results: 18 tests passed, 0 failed; `git diff --check` passed.
+
+End-to-end gap-audit verification on 2026-05-27:
+
+```sh
+npm run lint
+git diff --check
+node --test tests/smoke/result-reconcile.smoke.test.mjs
+npm test
+```
+
+Results:
+
+- `npm run lint`: passed.
+- `git diff --check`: passed.
+- `node --test tests/smoke/result-reconcile.smoke.test.mjs`: 3 tests passed,
+  0 failed. This covers Claude, Gemini, and Kimi stale active source-bearing
+  jobs projecting conservative `stale_active_job` `packet_recovery` with
+  `source_content_transmission:"unknown"` and no no-source resume action.
+- `npm test`: 2237 tests, 2225 passed, 0 failed, 12 skipped.
 
 ```sh
 npm run doctor:cache

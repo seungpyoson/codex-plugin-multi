@@ -98,6 +98,8 @@ tests assert `failed_review_slot:true` or source not sent as appropriate.
 - Grok auto transport falls back from CLI to web before source send.
 - Kimi has a lower packet cap and unsupported no-source repair after
   source-bearing step-limit failure.
+- A source-bearing background job is reconciled as `stale_active_job` after the
+  target process stalls or the worker disappears.
 - Direct API approval request fails before approval token is created.
 - `--allow-large-source-packet` is explicitly provided but resend confirmation
   is still required by #180.
@@ -123,8 +125,9 @@ tests assert `failed_review_slot:true` or source not sent as appropriate.
   fallback reason, and approval scope. The runtime may require a matching
   current-session approval token, but persisted recovery output MUST NOT store
   the approval token value.
-- **FR-006**: Failed review slots, missing verdicts, timeouts, runtime crashes,
-  prompt-limit failures, and source-packet failures MUST NOT count as approval.
+- **FR-006**: Failed review slots, missing verdicts, timeouts, stale active
+  jobs, runtime crashes, prompt-limit failures, and source-packet failures MUST
+  NOT count as approval.
 - **FR-007**: Provider-specific caps MUST enter through Adapter capability facts
   and shared policy helpers, not copied product-policy branches.
 - **FR-008**: Output MUST NOT persist full prompt, selected source bodies,

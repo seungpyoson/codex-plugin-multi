@@ -149,6 +149,16 @@ const SOURCE_SEND_BLOCKING_FAILURES = new Set([
 const SOURCE_RESUME_WITHOUT_RESEND_FAILURES = new Set([
   "step_limit_exceeded",
 ]);
+const SOURCE_SENT_PACKET_RECOVERY_FAILURES = new Set([
+  "review_not_completed",
+  "stale_active_job",
+  "step_limit_exceeded",
+  "timeout",
+]);
+const SOURCE_SENT_PACKET_RESUME_FAILURES = new Set([
+  "review_not_completed",
+  "step_limit_exceeded",
+]);
 const REVIEW_SLOT_DISPOSITIONS = new Set([
   "none",
   "retry",
@@ -937,6 +947,30 @@ function sourcePacketRecoveryActions({ reason = null, sourcePacketPolicy = null,
       }),
     ];
     if (capabilities.supports_no_source_resume) {
+      actions.push(packetRecoveryAction("resume_without_source_resend", {
+        description: "Resume the retained provider session without resending selected source.",
+      }));
+    }
+    actions.push(
+      packetRecoveryAction("switch_provider", {
+        description: "Retry with another provider.",
+      }),
+      packetRecoveryAction("waive_slot", {
+        description: "Waive this failed review slot with an explicit operator artifact.",
+        approvalRequired: true,
+      }),
+    );
+    return Object.freeze(actions);
+  }
+
+  if (SOURCE_SENT_PACKET_RECOVERY_FAILURES.has(reason)) {
+    const actions = [
+      packetRecoveryAction("resend_with_confirmation", {
+        description: "Retry only after explicit source resend confirmation.",
+        approvalRequired: true,
+      }),
+    ];
+    if (capabilities.supports_no_source_resume && SOURCE_SENT_PACKET_RESUME_FAILURES.has(reason)) {
       actions.push(packetRecoveryAction("resume_without_source_resend", {
         description: "Resume the retained provider session without resending selected source.",
       }));

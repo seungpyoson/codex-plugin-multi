@@ -1121,6 +1121,17 @@ test("kimi custom-review fails shallow missing-verdict output as review_not_comp
       record.review_metadata.audit_manifest.review_quality.semantic_failure_reasons,
       ["shallow_output", "missing_verdict"],
     );
+    const firstRecovery = record.runtime_diagnostics?.packet_recovery;
+    assert.ok(firstRecovery, "Kimi source-sent missing-verdict failures must include packet_recovery");
+    assert.equal(firstRecovery.provider, "kimi");
+    assert.equal(firstRecovery.reason, "review_not_completed");
+    assert.equal(firstRecovery.source_content_transmission, "sent");
+    assert.equal(firstRecovery.provider_capabilities.supports_no_source_resume, false);
+    assert.deepEqual(
+      firstRecovery.actions.map((action) => action.type),
+      ["resend_with_confirmation", "switch_provider", "waive_slot"],
+    );
+    assert.deepEqual(record.review_metadata.audit_manifest.packet_recovery, firstRecovery);
 
     const retry = runCompanion([
       "continue",
@@ -1334,6 +1345,16 @@ test("kimi foreground review timeout returns actionable JobRecord", () => withRe
   assert.match(record.suggested_action, /retry/i);
   assert.match(record.suggested_action, /Do not automatically resend selected source/);
   assert.match(record.suggested_action, /fresh matching approval token/);
+  const recovery = record.runtime_diagnostics?.packet_recovery;
+  assert.ok(recovery, "Kimi source-sent timeout failures must include packet_recovery");
+  assert.equal(recovery.reason, "timeout");
+  assert.equal(recovery.source_content_transmission, "sent");
+  assert.equal(recovery.provider_capabilities.supports_no_source_resume, false);
+  assert.deepEqual(
+    recovery.actions.map((action) => action.type),
+    ["resend_with_confirmation", "switch_provider", "waive_slot"],
+  );
+  assert.deepEqual(record.review_metadata.audit_manifest.packet_recovery, recovery);
   const { record: persisted } = readOnlyJobRecord(result.dataDir);
   assert.equal(persisted.job_id, record.job_id);
   assert.equal(persisted.error_code, "timeout");
@@ -2148,6 +2169,16 @@ test("kimi foreground review step-limit exhaustion returns actionable JobRecord"
   assert.match(record.error_message, /Max number of steps reached: 1/);
   assert.match(record.suggested_action, /higher step budget/i);
   assert.match(record.suggested_action, /narrower scope/i);
+  const recovery = record.runtime_diagnostics?.packet_recovery;
+  assert.ok(recovery, "Kimi source-sent step-limit failures must include packet_recovery");
+  assert.equal(recovery.reason, "step_limit_exceeded");
+  assert.equal(recovery.source_content_transmission, "sent");
+  assert.equal(recovery.provider_capabilities.supports_no_source_resume, false);
+  assert.deepEqual(
+    recovery.actions.map((action) => action.type),
+    ["resend_with_confirmation", "switch_provider", "waive_slot"],
+  );
+  assert.deepEqual(record.review_metadata.audit_manifest.packet_recovery, recovery);
   const { record: persisted } = readOnlyJobRecord(result.dataDir);
   assert.equal(persisted.job_id, record.job_id);
   assert.equal(persisted.error_code, "step_limit_exceeded");

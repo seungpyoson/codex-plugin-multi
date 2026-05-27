@@ -1038,4 +1038,12 @@ test("packet recovery schema keeps the no-source resume capability guard", () =>
     schema.properties.reason.enum.includes("resend_confirmation_required"),
     "schema must allow resend-confirmation recovery reasons emitted by runtime policy",
   );
+  assert.ok(
+    schema.properties.reason.enum.includes("stale_active_job"),
+    "schema must allow reconciled stale-job recovery reasons emitted by runtime policy",
+  );
+  assert.ok(
+    schema.properties.source_content_transmission.enum.includes("unknown"),
+    "schema must allow stale-job recovery when source transmission is conservative unknown",
+  );
 });
