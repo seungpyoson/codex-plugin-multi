@@ -356,7 +356,7 @@
     },
     "sourcePacketSummary": {
       "type": "object",
-      "required": ["packet_hash", "files", "totals"],
+      "required": ["files", "totals"],
       "properties": {
         "packet_hash": { "$ref": "#/$defs/sha256" },
         "files": {
@@ -387,28 +387,97 @@
       },
       "additionalProperties": false
     },
+    "hexSha256": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "scopeResolution": {
+      "type": "object",
+      "required": ["scope", "scope_base", "scope_paths", "reason"],
+      "properties": {
+        "scope": { "$ref": "#/$defs/safeText" },
+        "scope_base": { "$ref": "#/$defs/safeTextOrNull" },
+        "scope_paths": {
+          "type": ["array", "null"],
+          "items": { "$ref": "#/$defs/safeText" }
+        },
+        "reason": { "$ref": "#/$defs/safeText" }
+      },
+      "additionalProperties": false
+    },
+    "requestSettings": {
+      "type": "object",
+      "required": [
+        "timeout_ms",
+        "max_tokens",
+        "max_steps_per_turn",
+        "temperature",
+        "stream",
+        "request_defaults"
+      ],
+      "properties": {
+        "timeout_ms": { "type": ["integer", "null"], "minimum": 0 },
+        "max_tokens": { "type": ["integer", "null"], "minimum": 0 },
+        "max_steps_per_turn": { "type": ["integer", "null"], "minimum": 0 },
+        "temperature": { "type": ["number", "null"] },
+        "stream": { "type": ["boolean", "null"] },
+        "request_defaults": {
+          "type": ["object", "null"],
+          "additionalProperties": true
+        }
+      },
+      "additionalProperties": false
+    },
+    "routeStepAudit": {
+      "type": "object",
+      "required": [
+        "route",
+        "supported",
+        "attempted",
+        "selected",
+        "skipped_reason",
+        "fallback_reason"
+      ],
+      "properties": {
+        "route": { "$ref": "#/$defs/safeText" },
+        "supported": { "type": "boolean" },
+        "attempted": { "type": "boolean" },
+        "selected": { "type": "boolean" },
+        "skipped_reason": { "$ref": "#/$defs/safeTextOrNull" },
+        "fallback_reason": { "$ref": "#/$defs/safeTextOrNull" }
+      },
+      "additionalProperties": false
+    },
     "approvalTuple": {
       "type": "object",
       "required": [
         "provider",
         "mode",
         "rendered_prompt_hash",
-        "source_packet_hash",
-        "scope_resolution_hash",
-        "request_settings_hash",
+        "source_packet",
+        "scope_resolution",
+        "scope_paths",
+        "request_settings",
         "auth_path",
         "billing_path",
         "selected_route",
+        "route_step",
+        "route_steps",
         "fallback_reason",
-        "approval_scope"
+        "approval_scope",
+        "approval_tuple_fingerprint"
       ],
       "properties": {
         "provider": { "enum": ["deepseek", "glm"] },
         "mode": { "$ref": "#/$defs/safeText" },
-        "rendered_prompt_hash": { "$ref": "#/$defs/sha256" },
-        "source_packet_hash": { "$ref": "#/$defs/sha256" },
-        "scope_resolution_hash": { "$ref": "#/$defs/sha256" },
-        "request_settings_hash": { "$ref": "#/$defs/sha256" },
+        "rendered_prompt_hash": { "$ref": "#/$defs/hexSha256" },
+        "source_packet": { "$ref": "#/$defs/sourcePacketSummary" },
+        "scope_resolution": { "$ref": "#/$defs/scopeResolution" },
+        "scope_paths": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/safeText" }
+        },
+        "request_settings": { "$ref": "#/$defs/requestSettings" },
         "auth_path": {
           "type": "object",
           "required": ["auth_mode", "credential_ref"],
@@ -432,8 +501,14 @@
           "additionalProperties": false
         },
         "selected_route": { "$ref": "#/$defs/safeText" },
+        "route_step": { "$ref": "#/$defs/safeTextOrNull" },
+        "route_steps": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/routeStepAudit" }
+        },
         "fallback_reason": { "$ref": "#/$defs/safeTextOrNull" },
-        "approval_scope": { "enum": ["session", "one_time"] }
+        "approval_scope": { "enum": ["session", "one_time"] },
+        "approval_tuple_fingerprint": { "$ref": "#/$defs/sha256" }
       },
       "additionalProperties": false
     }

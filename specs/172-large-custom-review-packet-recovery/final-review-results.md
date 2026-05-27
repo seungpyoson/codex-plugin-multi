@@ -174,7 +174,63 @@ Results:
 - `git diff --check`: passed.
 - `node --test tests/smoke/result-reconcile.smoke.test.mjs`: 3 tests passed,
   0 failed.
-- `npm test`: 2237 tests, 2225 passed, 0 failed, 12 skipped.
+- `npm test`: 2238 tests, 2226 passed, 0 failed, 12 skipped after the
+  post-review schema-contract fix.
 - `npm run doctor:cache`: exited 0 with `"ok": false` because the installed
   plugin cache is still in sync with the marketplace cache, not with this dirty
   feature worktree.
+
+External review:
+
+| Reviewer | Job | Source sent | Verdict | Blocking findings |
+| --- | --- | --- | --- | --- |
+| Claude | `6f6b165a-76d2-4467-9b11-8655015f0ad1` | yes | APPROVE | none |
+| Grok | `job_ca38d864-e37a-4a96-a117-ac842e71d157` | yes | APPROVE | none |
+
+Grok pre-send attempts:
+
+- `job_ae5ce107-10b8-4884-b6b6-dfb87aa67527` failed before source send with
+  `prompt_too_large` on the full branch-diff packet.
+- `job_700c1b51-2abb-4e6a-be23-1c62b046a57b` failed before source send with
+  `scope_total_too_large` on the first broad custom packet.
+
+Accepted Claude non-blocking finding:
+
+- The `approvalTuple` JSON schema lagged the runtime shard approval tuple
+  shape. The schema now models runtime fields (`source_packet`,
+  `scope_resolution`, `scope_paths`, `request_settings`, `route_step`,
+  `route_steps`, and `approval_tuple_fingerprint`) and keeps
+  `rendered_prompt_hash` as the emitted hex string. A docs-contract test covers
+  this exact shape.
+
+Residual non-blocking notes:
+
+- Claude noted a future-proofing concern if `fail_closed:true` were ever
+  produced without a `fail_closed_reason`; current policy paths set the reason.
+- Claude repeated the existing Grok CLI-to-web diagnostics spread-order concern;
+  current diagnostics do not carry a colliding `packet_recovery` key.
+- Claude noted approval-token fingerprint changes invalidate in-flight
+  pre-branch tokens; tokens are session-scoped and this is acceptable here.
+- Grok noted duplicated job-record projection across Claude/Gemini/Kimi and
+  suggested additional boundary/property tests for review-quality exclusions.
+
+Post-review contract verification:
+
+```sh
+node --test --test-name-pattern "packet recovery schema matches runtime shard approval tuple shape" tests/unit/docs-contracts.test.mjs
+node --test tests/unit/docs-contracts.test.mjs
+npm run lint
+git diff --check
+npm test
+```
+
+Results:
+
+- RED contract test failed before the schema update because the schema still
+  required `source_packet_hash`, `scope_resolution_hash`, and
+  `request_settings_hash`.
+- Focused contract test passed after the schema update.
+- `node --test tests/unit/docs-contracts.test.mjs`: 40 tests passed, 0 failed.
+- `npm run lint`: passed.
+- `git diff --check`: passed.
+- `npm test`: 2238 tests, 2226 passed, 0 failed, 12 skipped.

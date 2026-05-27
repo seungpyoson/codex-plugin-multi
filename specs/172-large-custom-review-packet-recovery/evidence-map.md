@@ -220,7 +220,8 @@ Results:
   0 failed. This covers Claude, Gemini, and Kimi stale active source-bearing
   jobs projecting conservative `stale_active_job` `packet_recovery` with
   `source_content_transmission:"unknown"` and no no-source resume action.
-- `npm test`: 2237 tests, 2225 passed, 0 failed, 12 skipped.
+- `npm test`: 2238 tests, 2226 passed, 0 failed, 12 skipped after the
+  post-review schema-contract fix.
 
 ```sh
 npm run doctor:cache
@@ -262,3 +263,18 @@ US3 follow-up review:
   findings. First Grok attempt
   `job_8e686c30-a7bc-4a59-8e7e-27c648bf9824` failed before source send with
   `prompt_too_large`, so the successful review used a narrower code/doc packet.
+
+End-to-end gap audit review:
+
+- Claude `6f6b165a-76d2-4467-9b11-8655015f0ad1`: APPROVE, no blocking
+  findings on the full branch diff.
+- Grok `job_ca38d864-e37a-4a96-a117-ac842e71d157`: APPROVE, no blocking
+  findings on a narrowed source-bearing packet covering shared recovery logic,
+  companion job-record projection, schema, and stale-job tests.
+- Grok pre-send attempts
+  `job_ae5ce107-10b8-4884-b6b6-dfb87aa67527` and
+  `job_700c1b51-2abb-4e6a-be23-1c62b046a57b` failed before source send with
+  `prompt_too_large` and `scope_total_too_large`; neither counted as review.
+- Accepted Claude's non-blocking schema finding: the `approvalTuple` JSON
+  schema now matches the runtime shard tuple shape and has a docs-contract
+  regression test.

@@ -1047,3 +1047,44 @@ test("packet recovery schema keeps the no-source resume capability guard", () =>
     "schema must allow stale-job recovery when source transmission is conservative unknown",
   );
 });
+
+test("packet recovery schema matches runtime shard approval tuple shape", () => {
+  const schema = readRepoJson("specs/172-large-custom-review-packet-recovery/contracts/packet-recovery.schema.json");
+  const tuple = schema.$defs.approvalTuple;
+
+  assert.deepEqual(
+    tuple.required,
+    [
+      "provider",
+      "mode",
+      "rendered_prompt_hash",
+      "source_packet",
+      "scope_resolution",
+      "scope_paths",
+      "request_settings",
+      "auth_path",
+      "billing_path",
+      "selected_route",
+      "route_step",
+      "route_steps",
+      "fallback_reason",
+      "approval_scope",
+      "approval_tuple_fingerprint",
+    ],
+  );
+  assert.equal(tuple.properties.rendered_prompt_hash.$ref, "#/$defs/hexSha256");
+  assert.equal(schema.$defs.hexSha256.type, "string");
+  assert.equal(schema.$defs.hexSha256.pattern, "^[a-f0-9]{64}$");
+  assert.ok(tuple.properties.source_packet, "runtime shard tuples carry the selected source packet summary");
+  assert.ok(tuple.properties.scope_resolution, "runtime shard tuples carry scope resolution details");
+  assert.ok(tuple.properties.scope_paths, "runtime shard tuples carry explicit scope paths");
+  assert.ok(tuple.properties.request_settings, "runtime shard tuples carry request settings");
+  assert.ok(tuple.properties.route_step, "runtime shard tuples carry the selected route step");
+  assert.ok(tuple.properties.route_steps, "runtime shard tuples carry route-step audit details");
+  assert.ok(tuple.properties.approval_tuple_fingerprint, "runtime shard tuples carry a non-token fingerprint");
+  assert.equal(
+    schema.$defs.sourcePacketSummary.required.includes("packet_hash"),
+    false,
+    "runtime selected_source summaries do not include a packet_hash field",
+  );
+});
