@@ -66,6 +66,11 @@ test("provider workload lease blocks concurrent source-bearing launches for the 
   }
 });
 
+test("provider workload slugging avoids Sonar-flagged boundary alternation regex", () => {
+  const source = readFileSync(new URL("../../scripts/lib/review-workload.mjs", import.meta.url), "utf8");
+  assert.doesNotMatch(source, /replace\(\s*\/\^-\+\|-\+\$\/g/);
+});
+
 test("provider workload lease is provider-neutral and ignores source-free probes", () => {
   const { root, env } = tempEnv();
   try {

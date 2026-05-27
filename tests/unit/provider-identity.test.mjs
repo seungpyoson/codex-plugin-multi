@@ -1,7 +1,13 @@
+import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
 import { buildProviderAccountIdentity } from "../../scripts/lib/provider-identity.mjs";
+
+test("provider identity slugging avoids Sonar-flagged boundary alternation regex", () => {
+  const source = readFileSync(new URL("../../scripts/lib/provider-identity.mjs", import.meta.url), "utf8");
+  assert.doesNotMatch(source, /replace\(\s*\/\^-\+\|-\+\$\/g/);
+});
 
 test("provider identity helper emits stable pseudonymous account fingerprints", () => {
   const identity = buildProviderAccountIdentity("Claude Code", {

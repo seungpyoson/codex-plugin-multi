@@ -8,11 +8,19 @@ const FIELD_ORDER = Object.freeze([
   Object.freeze({ name: "user_id", keys: ["user_id", "userId"] }),
 ]);
 
+function trimEdgeHyphens(value) {
+  let start = 0;
+  let end = value.length;
+  while (start < end && value[start] === "-") start += 1;
+  while (end > start && value[end - 1] === "-") end -= 1;
+  return value.slice(start, end);
+}
+
 function providerSlug(provider) {
-  const slug = String(provider ?? "unknown")
+  const dashed = String(provider ?? "unknown")
     .toLowerCase()
-    .replace(/[^a-z0-9._-]+/g, "-")
-    .replace(/^-+|-+$/g, "");
+    .replace(/[^a-z0-9._-]+/g, "-");
+  const slug = trimEdgeHyphens(dashed);
   return slug || "unknown";
 }
 
