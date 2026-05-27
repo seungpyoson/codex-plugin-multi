@@ -264,6 +264,56 @@ test("T080 Kimi waiver artifact records failed slots and residual risk", () => {
   assert.equal(waiver.residual_risk.local_state.remains, true);
 });
 
+test("bounded session approval grant schema is strict and token-free", () => {
+  const schema = readRepoJson("specs/147-bounded-session-approval/contracts/session-approval-grant.schema.json");
+  const policy = readRepoJson("plugins/api-reviewers/config/session-approval.json");
+
+  assert.deepEqual(Object.keys(policy), ["schema_version", "max_ttl_ms"]);
+  assert.equal(policy.schema_version, 1);
+  assert.equal(Number.isSafeInteger(policy.max_ttl_ms), true);
+  assert.equal(policy.max_ttl_ms > 0, true);
+  assert.equal(schema.additionalProperties, false);
+  assert.deepEqual(schema.required, [
+    "schema_version",
+    "grant_id",
+    "created_at",
+    "expires_at",
+    "grant_session_id",
+    "provider_allowlist",
+    "mode_allowlist",
+    "workspace_root_hash",
+    "path_constraints",
+    "max_files",
+    "max_bytes",
+    "max_ttl_ms",
+    "approval_fingerprint",
+    "approval_tuple",
+    "activation",
+  ]);
+  assert.equal(schema.properties.approval_token, undefined);
+  assert.equal(schema.properties.grant_approval_token, undefined);
+  assert.equal(schema.properties.approval_tuple.additionalProperties, false);
+  assert.equal(schema.$defs.grant_bounds.additionalProperties, false);
+  assert.equal(schema.properties.max_ttl_ms.maximum, undefined);
+  assert.equal(schema.$defs.grant_bounds.properties.max_ttl_ms.maximum, undefined);
+  assert.match(schema.properties.approval_fingerprint.description, /canonicalJson/);
+});
+
+test("direct API docs describe bounded session grants without blanket bypass", () => {
+  const readme = readRepoFile("README.md");
+  const contracts = readRepoFile("scripts/lib/external-model-contracts.mjs");
+
+  for (const doc of [readme, contracts]) {
+    assert.match(doc, /approval-grant request/);
+    assert.match(doc, /approval-grant activate/);
+    assert.match(doc, /grant_bounds\.expires_at|expiry/);
+    assert.match(doc, /source-free|do not send selected source|without sending selected source/i);
+    assert.match(doc, /provider, mode, workspace/);
+    assert.match(doc, /approval_required/);
+    assert.doesNotMatch(doc, /always allow DeepSeek|always allow GLM|blanket/i);
+  }
+});
+
 test("T074 review summary records current closure and cache proof", () => {
   const summary = readRepoFile("specs/140-no-mistakes-provider-readiness/t074-review-summary-2026-05-20.md");
 
