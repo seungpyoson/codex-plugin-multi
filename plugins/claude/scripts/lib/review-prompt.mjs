@@ -1169,8 +1169,7 @@ export function buildReviewAuditManifest({
       source_send_allowed: false,
       source_packet_action: "review_slot_retry_blocked",
       source_content_transmission: "not_sent",
-      source_packet_policy_error_code:
-        retryPolicy.fail_closed_reason ?? "review_slot_retry_blocked",
+      source_packet_policy_error_code: retryPolicy.fail_closed_reason,
       suggested_action:
         "Do not launch another same-packet review until the packet is split, the provider is switched, the slot is waived, or an explicit override artifact is recorded.",
     })
@@ -1178,7 +1177,7 @@ export function buildReviewAuditManifest({
   const reviewQuality = qualityFlags({ result, status, errorCode, selectedSource });
   const sourceContentTransmission =
     effectiveSourcePacketPolicy.source_send_allowed === false
-      ? (effectiveSourcePacketPolicy.source_content_transmission ?? "not_sent")
+      ? effectiveSourcePacketPolicy.source_content_transmission
       : (route.sourceContentTransmission ?? effectiveSourcePacketPolicy.source_content_transmission ?? null);
   const reviewSlot = buildReviewSlotDisposition({
     provider: request.provider ?? null,

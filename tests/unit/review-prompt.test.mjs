@@ -23,6 +23,12 @@ const REVIEW_PROMPT_MODULES = Object.freeze([
   ["kimi", "plugins/kimi/scripts/lib/review-prompt.mjs"],
 ]);
 
+async function loadReviewPromptModule(file) {
+  return file === "scripts/lib/review-prompt.mjs"
+    ? { buildReviewAuditManifest }
+    : await import(pathToFileURL(resolve(file)).href);
+}
+
 test("review prompt packaging copies match the shared source byte-for-byte", () => {
   const shared = readFileSync(resolve("scripts/lib/review-prompt.mjs"), "utf8");
   for (const [name, file] of REVIEW_PROMPT_MODULES.slice(1)) {
@@ -193,6 +199,208 @@ test("buildReviewAuditManifest records failed-slot packet recovery as source of 
   assert.equal(manifest.review_quality.failed_review_slot, true);
   assert.equal(manifest.review_slot.source_state, "sent");
   assert.equal(manifest.packet_recovery, packetRecovery);
+});
+
+test("buildReviewAuditManifest builds packet recovery with explicit review-surface evidence", async () => {
+  const reviewSurface = Object.freeze({
+    original_packet_hash: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    current_packet_hash: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    original_files: 2,
+    current_files: 1,
+    original_bytes: 200,
+    current_bytes: 80,
+    changed: true,
+    change_reason: "narrowed_scope",
+    approval_credit: "changed_surface_only",
+    coverage_proof: null,
+  });
+
+  for (const [name, file] of REVIEW_PROMPT_MODULES) {
+    const { buildReviewAuditManifest: targetBuildReviewAuditManifest } = await loadReviewPromptModule(file);
+    const manifest = targetBuildReviewAuditManifest({
+      prompt: "review these files",
+      sourceFiles: [{ path: "src/large.js", text: "x".repeat(80) }],
+      git: {
+        remote: "owner/repo",
+        branch: "issue-172",
+        baseRef: "origin/main",
+        baseCommit: "base",
+        headRef: "issue-172",
+        headCommit: "head",
+      },
+      promptBuilder: { contractVersion: 1, pluginVersion: "0.1.0", pluginCommit: "head" },
+      request: {
+        provider: "GLM",
+        model: "glm-coding",
+        timeoutMs: 900000,
+        maxTokens: 4096,
+      },
+      providerIds: { requestId: "request-1" },
+      scope: { name: "branch-diff", base: "origin/main", paths: ["src/large.js"] },
+      route: {
+        mode: "custom-review",
+        providerId: "glm",
+        selectedRoute: "direct_api",
+        routeStep: "direct_api",
+        routeSteps: [{ route: "direct_api", supported: true, attempted: true, selected: true, skipped_reason: null, fallback_reason: null }],
+        sourceBearing: true,
+        sourceSendApprovalRequired: true,
+        packetRecoveryReviewSurface: reviewSurface,
+        sourcePacketPolicy: {
+          provider: "glm",
+          mode: "custom-review",
+          route_step: "direct_api",
+          source_bearing: true,
+          source_packet_budget_bytes: 64,
+          selected_source_bytes: 80,
+          source_packet_within_budget: false,
+          source_packet_override_approved: false,
+          source_packet_override_source: null,
+          resend_confirmation_required: false,
+          resume_without_source_resend: false,
+          review_surface_changed: true,
+          source_send_allowed: false,
+          source_packet_action: "narrow_source_packet",
+          source_content_transmission: "not_sent",
+          source_packet_policy_error_code: null,
+          suggested_action: "Narrow the packet before retrying.",
+        },
+        providerCapabilities: { api: { source_packet: { max_bytes: 64 } } },
+      },
+      result: "",
+      status: "preflight_failed",
+      errorCode: "source_packet_too_large",
+    });
+
+    assert.equal(manifest.packet_recovery.provider, "glm", name);
+    assert.equal(manifest.packet_recovery.mode, "custom-review", name);
+    assert.equal(manifest.packet_recovery.reason, "source_packet_too_large", name);
+    assert.equal(manifest.packet_recovery.review_surface, reviewSurface, name);
+    assert.equal(manifest.packet_recovery.provider_capabilities.requires_source_send_approval, true, name);
+    assert.deepEqual(
+      manifest.packet_recovery.actions.map((action) => action.type),
+      ["diff_packet", "allow_large_source_packet", "switch_provider", "waive_slot"],
+      name,
+    );
+  }
+});
+
+test("buildReviewAuditManifest packet recovery falls back through request provider and nullable route facts", async () => {
+  for (const [name, file] of REVIEW_PROMPT_MODULES) {
+    const { buildReviewAuditManifest: targetBuildReviewAuditManifest } = await loadReviewPromptModule(file);
+    const manifest = targetBuildReviewAuditManifest({
+      prompt: "review these files",
+      sourceFiles: [{ path: "src/large.js", text: "x".repeat(80) }],
+      git: { headCommit: "head" },
+      request: {
+        provider: "DeepSeek",
+        model: "deepseek-reasoner",
+      },
+      providerIds: { requestId: "request-2" },
+      route: {
+        sourceBearing: true,
+        sourcePacketPolicy: {
+          source_send_allowed: false,
+          source_packet_action: "narrow_source_packet",
+          source_content_transmission: "not_sent",
+          source_packet_policy_error_code: "source_packet_too_large",
+          selected_source_bytes: 80,
+          source_packet_budget_bytes: 64,
+          review_surface_changed: false,
+        },
+      },
+      result: "",
+      status: "preflight_failed",
+      errorCode: "source_packet_too_large",
+    });
+
+    assert.equal(manifest.packet_recovery.provider, "DeepSeek", name);
+    assert.equal(manifest.packet_recovery.mode, null, name);
+    assert.equal(manifest.packet_recovery.provider_capabilities.source_packet_budget_bytes, 64, name);
+    assert.equal(manifest.packet_recovery.review_surface.changed, false, name);
+    assert.equal(manifest.source_content_transmission, "not_sent", name);
+
+    const allowedWithoutTransmission = targetBuildReviewAuditManifest({
+      prompt: "source-free approval request",
+      sourceFiles: [],
+      request: { provider: "DeepSeek", model: "deepseek-reasoner" },
+      route: {
+        sourceBearing: false,
+        sourcePacketPolicy: {
+          source_send_allowed: true,
+          source_packet_action: "not_source_bearing",
+        },
+      },
+      result: "Verdict: APPROVE\nBlocking findings: none\nNon-blocking concerns: none.",
+      status: "completed",
+    });
+
+    assert.equal(allowedWithoutTransmission.source_content_transmission, null, name);
+    assert.equal(allowedWithoutTransmission.packet_recovery, null, name);
+  }
+});
+
+test("buildReviewAuditManifest packet recovery derives review surface from previous-attempt shapes", async () => {
+  const validPreviousSource = Object.freeze({
+    files: Object.freeze([
+      Object.freeze({
+        path: "src/original.js",
+        bytes: 120,
+        lines: 1,
+        content_hash: Object.freeze({ algorithm: "sha256", value: "previous" }),
+      }),
+    ]),
+    totals: Object.freeze({ files: 1, bytes: 120, lines: 1 }),
+  });
+  const cases = [
+    ["selected_source_without_totals", { selected_source: Object.freeze({ files: Object.freeze([]) }) }, null],
+    ["source_packet", { source_packet: validPreviousSource }, 120],
+    ["audit_manifest_selected_source", {
+      review_metadata: { audit_manifest: { selected_source: validPreviousSource } },
+    }, 120],
+  ];
+
+  for (const [name, file] of REVIEW_PROMPT_MODULES) {
+    const { buildReviewAuditManifest: targetBuildReviewAuditManifest } = await loadReviewPromptModule(file);
+    for (const [caseName, previousAttempt, expectedOriginalBytes] of cases) {
+      const manifest = targetBuildReviewAuditManifest({
+        prompt: "review the narrowed packet",
+        sourceFiles: [{ path: "src/current.js", text: "x".repeat(20) }],
+        request: { provider: "GLM", model: "glm-coding" },
+        route: {
+          mode: "custom-review",
+          providerId: "glm",
+          routeStep: "direct_api",
+          sourceBearing: true,
+          previousAttempt,
+          sourcePacketPolicy: {
+            provider: "glm",
+            mode: "custom-review",
+            route_step: "direct_api",
+            source_bearing: true,
+            source_send_allowed: false,
+            source_packet_action: "narrow_source_packet",
+            source_content_transmission: "not_sent",
+            source_packet_policy_error_code: "source_packet_too_large",
+            selected_source_bytes: 20,
+            source_packet_budget_bytes: 10,
+            review_surface_changed: true,
+          },
+        },
+        result: "",
+        status: "preflight_failed",
+        errorCode: "source_packet_too_large",
+      });
+
+      assert.equal(manifest.packet_recovery.review_surface.changed, true, `${name}:${caseName}`);
+      assert.equal(
+        manifest.packet_recovery.review_surface.original_bytes,
+        expectedOriginalBytes,
+        `${name}:${caseName}`,
+      );
+      assert.equal(manifest.packet_recovery.review_surface.current_bytes, 20, `${name}:${caseName}`);
+    }
+  }
 });
 
 function assertSelectedSourcePromptBlock(targetBuildSelectedSourcePromptBlock = buildSelectedSourcePromptBlock) {

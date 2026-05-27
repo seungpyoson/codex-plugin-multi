@@ -81,6 +81,16 @@ const requiredPolicyDomains = [
 
 const REVIEW_MODES = ["review", "adversarial-review", "custom-review", "rescue"];
 
+async function providerRoutePolicyModules() {
+  const packaged = await Promise.all(
+    REVIEW_PROMPT_PLUGIN_TARGETS.map(async (plugin) => [
+      plugin,
+      await import(`../../plugins/${plugin}/scripts/lib/provider-route-policy.mjs`),
+    ]),
+  );
+  return [["shared", providerRoutePolicy], ...packaged];
+}
+
 function selectedSourceFixture(bytes) {
   return Object.freeze({
     files: Object.freeze([
@@ -654,6 +664,146 @@ test("packet recovery marks changed review surfaces as changed-surface approval 
   assert.notEqual(recovery.review_surface.original_packet_hash, recovery.review_surface.current_packet_hash);
 });
 
+test("packet recovery records prompt budget shards and capability metadata", async () => {
+  for (const [name, target] of await providerRoutePolicyModules()) {
+    const recovery = target.buildPacketRecovery({
+      reason: "prompt_too_large",
+      provider: "grok",
+      mode: "custom-review",
+      routeStep: "subscription",
+      sourceContentTransmission: "not_sent",
+      providerCapabilities: {
+        subscription: {
+          source_packet: {
+            max_bytes: 512,
+            resume_without_resend_supported: true,
+          },
+        },
+      },
+      renderedPromptBudgetChars: 1000,
+      perFileSecureReadCapBytes: 256,
+      supportsDiffPacket: false,
+      requiresSourceSendApproval: true,
+      transportFallbacks: ["web"],
+      shardPlans: [
+        Object.freeze({ index: 1, files: ["src/a.js"], prompt_bytes: 400 }),
+        Object.freeze({ index: 2, files: ["src/b.js"], prompt_bytes: 350 }),
+      ],
+      previousSelectedSource: selectedSourceFixture(20),
+      selectedSource: selectedSourceFixture(20),
+    });
+
+    assert.equal(recovery.reason, "prompt_too_large", name);
+    assert.equal(recovery.provider_capabilities.rendered_prompt_budget_chars, 1000, name);
+    assert.equal(recovery.provider_capabilities.per_file_secure_read_cap_bytes, 256, name);
+    assert.equal(recovery.provider_capabilities.supports_diff_packet, false, name);
+    assert.equal(recovery.provider_capabilities.supports_shard_plan, true, name);
+    assert.equal(recovery.provider_capabilities.supports_no_source_resume, true, name);
+    assert.equal(recovery.provider_capabilities.requires_source_send_approval, true, name);
+    assert.deepEqual(recovery.provider_capabilities.transport_fallbacks, ["web"], name);
+    assert.deepEqual(
+      recovery.actions.map((action) => action.type),
+      ["shard", "diff_packet", "switch_provider", "waive_slot"],
+      name,
+    );
+    assert.equal(recovery.actions[0].approval_required, true, name);
+    assert.equal(recovery.actions[0].review_surface_change, true, name);
+    assert.equal(recovery.actions[0].shards.length, 2, name);
+  }
+});
+
+test("packet recovery includes source-packet shards and no-source resume when supported", async () => {
+  for (const [name, target] of await providerRoutePolicyModules()) {
+    const sourcePacketPolicy = target.evaluateSourcePacketPolicy({
+      provider: "claude",
+      mode: "custom-review",
+      routeStep: "subscription",
+      providerCapabilities: {
+        subscription: {
+          source_packet: {
+            max_bytes: 10,
+            resume_without_resend_supported: true,
+          },
+        },
+      },
+      selectedSource: selectedSourceFixture(11),
+      sourceBearing: true,
+    });
+    const tooLarge = target.buildPacketRecovery({
+      sourcePacketPolicy,
+      providerCapabilities: {
+        subscription: {
+          source_packet: {
+            max_bytes: 10,
+            resume_without_resend_supported: true,
+          },
+        },
+      },
+      requiresSourceSendApproval: true,
+      shardPlans: [
+        Object.freeze({ index: 1, files: ["src/one.js"], source_bytes: 5 }),
+      ],
+    });
+
+    assert.deepEqual(
+      tooLarge.actions.map((action) => action.type),
+      ["shard", "diff_packet", "allow_large_source_packet", "switch_provider", "waive_slot"],
+      name,
+    );
+    assert.equal(tooLarge.actions[0].approval_required, true, name);
+    assert.equal(tooLarge.actions[0].shards[0].source_bytes, 5, name);
+
+    const resend = target.buildPacketRecovery({
+      reason: "resend_confirmation_required",
+      provider: "claude",
+      mode: "custom-review",
+      routeStep: "subscription",
+      providerCapabilities: {
+        subscription: {
+          source_packet: {
+            max_bytes: 20,
+            resume_without_resend_supported: true,
+          },
+        },
+      },
+    });
+
+    assert.deepEqual(
+      resend.actions.map((action) => action.type),
+      ["resend_with_confirmation", "resume_without_source_resend", "switch_provider", "waive_slot"],
+      name,
+    );
+  }
+});
+
+test("packet recovery falls back to switch or waiver for unknown packet failures", async () => {
+  for (const [name, target] of await providerRoutePolicyModules()) {
+    const recovery = target.buildPacketRecovery({
+      reason: "provider_crashed_after_source_send",
+      provider: "glm",
+      mode: "custom-review",
+      routeStep: "direct_api",
+      sourceContentTransmission: "may_be_sent",
+      providerCapabilities: {
+        api: { source_packet: { max_bytes: 1024 } },
+      },
+      supportsShardPlan: false,
+      requiresResendConfirmationAfterSourceSentFailure: false,
+    });
+
+    assert.equal(recovery.reason, "provider_crashed_after_source_send", name);
+    assert.equal(recovery.source_content_transmission, "may_be_sent", name);
+    assert.equal(recovery.provider_capabilities.supports_shard_plan, false, name);
+    assert.equal(recovery.provider_capabilities.requires_resend_confirmation_after_source_sent_failure, false, name);
+    assert.deepEqual(
+      recovery.actions.map((action) => action.type),
+      ["switch_provider", "waive_slot"],
+      name,
+    );
+    assert.equal(recovery.actions[1].approval_required, true, name);
+  }
+});
+
 test("source packet policy permits explicit large packet override for every provider and route step", () => {
   const contract = buildProviderPolicyContract();
 
@@ -687,6 +837,27 @@ test("source packet policy permits explicit large packet override for every prov
       assert.equal(policy.source_packet_override_source, "--allow-large-source-packet");
       assert.equal(policy.resend_confirmation_required, false);
     }
+  }
+});
+
+test("source packet policy records unknown override source when approval source is absent", async () => {
+  for (const [name, target] of await providerRoutePolicyModules()) {
+    const policy = target.evaluateSourcePacketPolicy({
+      provider: "glm",
+      mode: "custom-review",
+      routeStep: "direct_api",
+      providerCapabilities: {
+        api: { source_packet: { max_bytes: 10 } },
+      },
+      selectedSource: selectedSourceFixture(11),
+      sourceBearing: true,
+      sourcePacketOverrideApproved: true,
+    });
+
+    assert.equal(policy.source_send_allowed, true, name);
+    assert.equal(policy.source_packet_action, "send_after_source_packet_override", name);
+    assert.equal(policy.source_packet_override_source, "unknown", name);
+    assert.match(policy.suggested_action, /approved large source packet/, name);
   }
 });
 
