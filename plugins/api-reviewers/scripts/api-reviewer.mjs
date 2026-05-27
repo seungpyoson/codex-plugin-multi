@@ -3313,11 +3313,11 @@ async function cmdRun(options) {
         cwd: scopeInfo.cwd,
         sourceBearing: true,
       });
-      if (!workloadAdmission.ok) {
+      if (workloadAdmission.ok) {
+        workloadLease = workloadAdmission.lease;
+      } else {
         execution = providerWorkloadBlockedExecution(workloadAdmission);
         execution.prompt = renderedPrompt;
-      } else {
-        workloadLease = workloadAdmission.lease;
       }
     }
     if (execution) {

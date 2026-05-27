@@ -1288,7 +1288,9 @@ async function executeRun(invocation, prompt, { foreground, lifecycleEvents = nu
     sourceBearing: modeSendsSelectedSource(invocation.mode),
   });
   let workloadLease = null;
-  if (!workloadAdmission.ok) {
+  if (workloadAdmission.ok) {
+    workloadLease = workloadAdmission.lease;
+  } else {
     const workloadPreflight = providerWorkloadBlockedExecution(workloadAdmission);
     workloadPreflight.reviewAuditManifest = reviewAuditManifest(invocation, prompt, containment.path, workloadPreflight);
     if (neutralCwd) {
@@ -1314,7 +1316,6 @@ async function executeRun(invocation, prompt, { foreground, lifecycleEvents = nu
     if (foreground) printLifecycleJson(errorRecord, lifecycleEvents);
     process.exit(2);
   }
-  workloadLease = workloadAdmission.lease;
 
   const preflightExecution = await kimiReadinessPreflight(invocation, profile);
   if (preflightExecution) {

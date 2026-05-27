@@ -1532,7 +1532,9 @@ async function executeRun(invocation, prompt, { foreground, lifecycleEvents = nu
     sourceBearing: modeSendsSelectedSource(invocation.mode),
   });
   let workloadLease = null;
-  if (!workloadAdmission.ok) {
+  if (workloadAdmission.ok) {
+    workloadLease = workloadAdmission.lease;
+  } else {
     const workloadPreflight = providerWorkloadBlockedExecution(workloadAdmission);
     const finalRecord = buildClaudeFinalRecord(
       invocation,
@@ -1550,7 +1552,6 @@ async function executeRun(invocation, prompt, { foreground, lifecycleEvents = nu
     if (foreground) printLifecycleJson(finalRecord, lifecycleEvents);
     process.exit(2);
   }
-  workloadLease = workloadAdmission.lease;
 
   const oauthStatus = authSelection.selected_auth_path === "subscription_oauth"
     ? safeClaudeOAuthStatus(invocation.binary, authSelection, invocation.cwd)

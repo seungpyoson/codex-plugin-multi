@@ -4682,11 +4682,11 @@ async function cmdRun(options) {
           cwd: scopeInfo.cwd,
           sourceBearing: modeSendsSelectedSource(mode),
         });
-        if (!workloadAdmission.ok) {
+        if (workloadAdmission.ok) {
+          workloadLease = workloadAdmission.lease;
+        } else {
           execution = providerWorkloadBlockedExecution(workloadAdmission);
           execution.prompt = prompt;
-        } else {
-          workloadLease = workloadAdmission.lease;
         }
       }
     } catch (e) {

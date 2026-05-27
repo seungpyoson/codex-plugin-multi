@@ -63,9 +63,8 @@ function safeHolder(holder, file) {
 
 function blockResult(provider, file, holder) {
   const visible = safeHolder(holder, file);
-  const message =
-    `${providerSlug(provider)} source-bearing review is already active` +
-    `${visible.job_id ? ` in job ${visible.job_id}` : ""}`;
+  const jobSuffix = visible.job_id ? ` in job ${visible.job_id}` : "";
+  const message = `${providerSlug(provider)} source-bearing review is already active${jobSuffix}`;
   return Object.freeze({
     ok: false,
     error_code: PROVIDER_WORKLOAD_BLOCKED_CODE,
@@ -73,6 +72,41 @@ function blockResult(provider, file, holder) {
     message,
     holder: visible,
   });
+}
+
+function closeOpenHandle(handle) {
+  if (handle === null) return;
+  try { closeSync(handle); } catch { /* best effort */ }
+}
+
+function tryCreateLeaseFile(file, payload) {
+  let handle = null;
+  try {
+    handle = openSync(file, "wx", 0o600);
+    writeFileSync(handle, `${JSON.stringify(payload, null, 2)}\n`, "utf8");
+    closeSync(handle);
+    return true;
+  } catch (error) {
+    closeOpenHandle(handle);
+    if (error?.code !== "EEXIST") throw error;
+    return false;
+  }
+}
+
+function removeInactiveHolder(file) {
+  try {
+    unlinkSync(file);
+    return true;
+  } catch (error) {
+    if (error?.code === "ENOENT") return true;
+    throw error;
+  }
+}
+
+function acquiredResult(file, payload) {
+  const lease = Object.freeze({ file, token: payload.token });
+  process.once("exit", () => releaseProviderWorkloadLease(lease));
+  return Object.freeze({ ok: true, lease });
 }
 
 export function acquireProviderWorkloadLease({
@@ -101,31 +135,11 @@ export function acquireProviderWorkloadLease({
   });
 
   for (;;) {
-    let handle = null;
-    try {
-      handle = openSync(file, "wx", 0o600);
-      writeFileSync(handle, `${JSON.stringify(payload, null, 2)}\n`, "utf8");
-      closeSync(handle);
-      const lease = Object.freeze({ file, token: payload.token });
-      process.once("exit", () => releaseProviderWorkloadLease(lease));
-      return Object.freeze({ ok: true, lease });
-    } catch (error) {
-      if (handle !== null) {
-        try { closeSync(handle); } catch { /* best effort */ }
-      }
-      if (error?.code !== "EEXIST") throw error;
-      const holder = readHolder(file);
-      if (!holderActive(holder)) {
-        try {
-          unlinkSync(file);
-          continue;
-        } catch (unlinkError) {
-          if (unlinkError?.code === "ENOENT") continue;
-          throw unlinkError;
-        }
-      }
-      return blockResult(provider, file, holder);
-    }
+    if (tryCreateLeaseFile(file, payload)) return acquiredResult(file, payload);
+
+    const holder = readHolder(file);
+    if (holderActive(holder)) return blockResult(provider, file, holder);
+    if (removeInactiveHolder(file)) continue;
   }
 }
 

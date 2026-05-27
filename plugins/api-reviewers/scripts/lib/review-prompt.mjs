@@ -374,18 +374,28 @@ function lineHasConcretePermissionFailure(line) {
   );
 }
 
+const PERMISSION_FAILURE_EXAMPLE_DETECTORS = Object.freeze([
+  isMockedPermissionLiteralLine,
+  isInjectedPermissionTestProofLine,
+  isPermissionExceptionExampleLine,
+  isOutOfScopePermissionNoteLine,
+  isPermissionLiteralListLine,
+  isPermissionAllowlistDiscussionLine,
+  isProcessLivenessPermissionDiscussionLine,
+  isPermissionBoundaryExampleLine,
+  isPermissionLiteralDiscussionLine,
+  isPermissionMechanicsDiscussionLine,
+  isPermissionParserProofLine,
+  isPermissionClassifierFixtureLine,
+  isPermissionTermExampleLine,
+]);
+
 function isPermissionFailureExampleLine(lower) {
-  if (isMockedPermissionLiteralLine(lower)) return true;
-  if (isInjectedPermissionTestProofLine(lower)) return true;
-  if (isPermissionExceptionExampleLine(lower)) return true;
-  if (isOutOfScopePermissionNoteLine(lower)) return true;
-  if (isPermissionLiteralListLine(lower)) return true;
-  if (isPermissionAllowlistDiscussionLine(lower)) return true;
-  if (isProcessLivenessPermissionDiscussionLine(lower)) return true;
-  if (isPermissionBoundaryExampleLine(lower)) return true;
-  if (isPermissionLiteralDiscussionLine(lower)) return true;
-  if (isPermissionMechanicsDiscussionLine(lower)) return true;
-  if (includesAny(lower, [
+  return PERMISSION_FAILURE_EXAMPLE_DETECTORS.some((isExampleLine) => isExampleLine(lower));
+}
+
+function isPermissionParserProofLine(lower) {
+  return includesAny(lower, [
     "linehasconcretepermissionfailure",
     "permission detection requires",
     "test suite",
@@ -397,10 +407,11 @@ function isPermissionFailureExampleLine(lower) {
   ]) && (includesPermissionFailureLiteral(lower) || includesAny(lower, [
     "permission block",
     "permission_blocked",
-  ])) && !hasConcretePermissionActionPhrase(lower)) {
-    return true;
-  }
-  if (includesAny(lower, [
+  ])) && !hasConcretePermissionActionPhrase(lower);
+}
+
+function isPermissionClassifierFixtureLine(lower) {
+  return includesAny(lower, [
     "classifier should flag",
     "should flag",
     "meta-discussion",
@@ -409,9 +420,10 @@ function isPermissionFailureExampleLine(lower) {
     "read denied",
     "permission block",
     "permission_blocked",
-  ]) && !hasConcretePermissionActionPhrase(lower)) {
-    return true;
-  }
+  ]) && !hasConcretePermissionActionPhrase(lower);
+}
+
+function isPermissionTermExampleLine(lower) {
   return includesAny(lower, [
     "phrases such as",
     "patterns such as",
