@@ -908,10 +908,15 @@ function isOutOfScopeInspectionGapLine(lower) {
   if (!includesAny(lower, ["could not inspect", "unable to inspect", "not inspected", "not reviewed"])) return false;
   return includesAny(lower, [
     "out of scope",
+    "outside the packet",
+    "outside of the packet",
+    "outside packet",
     "outside the review packet",
     "outside this packet",
     "outside the supplied packet",
     "outside the supplied source packet",
+    "not in packet",
+    "not in the packet",
     "not part of this packet",
     "not supplied",
     "not included in the prompt",

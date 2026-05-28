@@ -2597,6 +2597,38 @@ for (const [name, file] of REVIEW_PROMPT_MODULES) {
   });
 }
 
+for (const [name, file] of REVIEW_PROMPT_MODULES) {
+  test(`review audit manifest accepts packet-only helper caveats as scope gaps (${name})`, async () => {
+    const { buildReviewAuditManifest: targetBuildReviewAuditManifest } = file === "scripts/lib/review-prompt.mjs"
+      ? { buildReviewAuditManifest }
+      : await import(pathToFileURL(resolve(file)).href);
+    const manifest = targetBuildReviewAuditManifest({
+      prompt: "rendered prompt",
+      sourceFiles: [{ path: "plugins/api-reviewers/scripts/api-reviewer.mjs", text: "export const ok = true;\n" }],
+      result: [
+        "Verdict: APPROVE",
+        "Blocking findings",
+        "- None. I inspected plugins/api-reviewers/scripts/api-reviewer.mjs from the supplied packet.",
+        "Non-blocking concerns",
+        "- Helper internals not in packet (NOT REVIEWED). The action list is produced by a helper outside the packet, so I could not inspect it directly.",
+        "Checklist",
+        "1. PASS supplied refs and packet metadata are accepted as authoritative.",
+        "2. PASS declared scope was inspected; helper internals outside the packet are listed as scope gaps.",
+        "3. PASS no blocking correctness issue found.",
+        "4. PASS no prior comments were supplied.",
+        "5. PASS blocking and non-blocking findings are separated.",
+        "6. PASS no timeout, truncation, interruption, permission block, or shallow output occurred.",
+      ].join("\n"),
+      status: "completed",
+      errorCode: null,
+    });
+
+    assert.equal(manifest.review_quality.checklist_items_seen, 6);
+    assert.deepEqual(manifest.review_quality.semantic_failure_reasons, []);
+    assert.equal(manifest.review_quality.failed_review_slot, false);
+  });
+}
+
 test("review audit manifest does not count status-looking prose as checklist items", () => {
   const manifest = buildReviewAuditManifest({
     prompt: "rendered prompt",

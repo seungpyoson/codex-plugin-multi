@@ -177,6 +177,20 @@ Post-#159 GLM failure follow-up on 2026-05-28:
   HTTP 503 source-sent failure and for a dropped connection after the test
   server received selected source.
 
+Post-review quality follow-up on 2026-05-28:
+
+- Claude review job `95c3b411-c0cd-4fa7-8a3d-d52f9712b960` returned an
+  approving packet-only review but the slot failed as `review_not_completed` /
+  `not_reviewed` because the review-quality parser treated a helper caveat
+  phrased as "not in packet" / "outside the packet" as if selected source was
+  not inspected.
+- The failed Claude record still correctly preserved `packet_recovery` and did
+  not count as approval, but the user experience was not no-mistakes because a
+  valid packet-only scope gap became a failed slot.
+- Fix: shared review-quality parsing now treats "not in packet" / "outside the
+  packet" caveats as out-of-scope inspection gaps when selected source was
+  inspected. The test covers the shared module and every packaged provider copy.
+
 Verification on 2026-05-26:
 
 ```sh

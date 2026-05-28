@@ -342,3 +342,33 @@ Results:
   timeout escalation smoke test. The failing test passed when rerun in
   isolation, so this is recorded as a full-suite residual rather than evidence
   against the Direct API recovery delta.
+
+External review follow-up:
+
+- Grok CLI job `job_36de4da7-e5cb-47a5-ada0-d058b0f020cd` approved the
+  Direct API provider-unavailable delta with non-blocking coverage suggestions.
+- Claude job `95c3b411-c0cd-4fa7-8a3d-d52f9712b960` returned an approving raw
+  review but was correctly recorded as a failed slot because the review-quality
+  parser classified a packet-only helper caveat as `not_reviewed`.
+- That Claude failure exposed an additional no-mistakes gap: provider packet
+  reviewers can phrase a valid out-of-scope helper limitation as "not in packet"
+  or "outside the packet". The shared review-quality parser now accepts that
+  wording when the declared selected source was inspected.
+
+Additional verification after the review-quality fix:
+
+```sh
+node --test --test-name-pattern "packet-only helper caveats" tests/unit/review-prompt.test.mjs
+node --test tests/unit/review-prompt.test.mjs
+node --test --test-name-pattern "direct API (HTTP provider_unavailable under Codex|fetch failure after source receipt)|packet recovery schema keeps" tests/smoke/api-reviewers.smoke.test.mjs tests/unit/docs-contracts.test.mjs
+npm run lint:sync
+```
+
+Results:
+
+- Packet-only helper caveat RED: failed before the parser fix across all six
+  review-prompt modules.
+- Packet-only helper caveat GREEN: 6 passed, 0 failed.
+- Full review-prompt unit suite: 280 passed, 0 failed.
+- Focused Direct API/schema regression suite: 3 passed, 0 failed.
+- `npm run lint:sync`: passed.
