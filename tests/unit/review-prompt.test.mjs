@@ -1651,6 +1651,38 @@ for (const [name, file] of REVIEW_PROMPT_MODULES) {
 }
 
 for (const [name, file] of REVIEW_PROMPT_MODULES) {
+  test(`review audit manifest ignores approving EPERM inspection summaries (${name})`, async () => {
+    const { buildReviewAuditManifest: targetBuildReviewAuditManifest } = file === "scripts/lib/review-prompt.mjs"
+      ? { buildReviewAuditManifest }
+      : await import(pathToFileURL(resolve(file)).href);
+    const manifest = targetBuildReviewAuditManifest({
+      prompt: "rendered prompt",
+      sourceFiles: [{ path: "sample.js", text: "export const value = 1;\n" }],
+      result: [
+        "Verdict: APPROVE",
+        "## Blocking findings",
+        "None. I inspected the credential resolution, redaction, workload lease, lease release ordering across all five companion launch paths, Grok auth sync, usage-limit catalog, EPERM parser refactor, and provider identity hashing in the files listed above. Control flow for each `acquireProviderWorkloadLease` -> preflight -> spawn -> release sequence checks out.",
+        "## Non-blocking concerns",
+        "None.",
+        "## Checklist Results",
+        "1. Verify exact base/head refs and commits: PASS.",
+        "2. Review only declared scope: PASS.",
+        "3. Evaluate correctness bugs, security risks, regressions, and missing tests: PASS.",
+        "4. Known comments: NOT REVIEWED.",
+        "5. Separate blocking from non-blocking: PASS.",
+        "6. Timeout/truncation/interruption/shallow output check: PASS.",
+        "Inspection statement: I inspected sample.js.",
+      ].join("\n"),
+      status: "completed",
+      errorCode: null,
+    });
+
+    assert.deepEqual(manifest.review_quality.semantic_failure_reasons, []);
+    assert.equal(manifest.review_quality.failed_review_slot, false);
+  });
+}
+
+for (const [name, file] of REVIEW_PROMPT_MODULES) {
   test(`review audit manifest ignores benign process-liveness EPERM wording (${name})`, async () => {
     const { buildReviewAuditManifest: targetBuildReviewAuditManifest } = file === "scripts/lib/review-prompt.mjs"
       ? { buildReviewAuditManifest }

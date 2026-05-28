@@ -381,6 +381,7 @@ const PERMISSION_FAILURE_EXAMPLE_DETECTORS = Object.freeze([
   isOutOfScopePermissionNoteLine,
   isPermissionLiteralListLine,
   isPermissionAllowlistDiscussionLine,
+  isPermissionInspectionSummaryLine,
   isProcessLivenessPermissionDiscussionLine,
   isBenignPermissionDiscussionSummaryLine,
   isPermissionParserFixSummaryLine,
@@ -497,6 +498,30 @@ function isPermissionParserFixSummaryLine(lower) {
       "implementation",
       "robust",
       "covered",
+    ]);
+}
+
+function isPermissionInspectionSummaryLine(lower) {
+  return includesPermissionFailureLiteral(lower)
+    && !hasConcretePermissionActionPhrase(lower)
+    && includesAny(lower, [
+      "i inspected",
+      "inspected the",
+      "reviewed the",
+      "verified the",
+      "checked the",
+      "no blocking findings",
+    ])
+    && includesAny(lower, [
+      "checks out",
+      "control flow",
+      "files listed above",
+      "implementation",
+      "parser",
+      "refactor",
+      "catalog",
+      "workload",
+      "launch paths",
     ]);
 }
 
