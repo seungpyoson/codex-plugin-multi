@@ -509,6 +509,25 @@ function normalizeProviderAccountIdentity(input) {
   };
 }
 
+function normalizeProviderWorkloadDiagnostic(input, redactText = (value) => value) {
+  if (!input || typeof input !== "object") return null;
+  const holderInput = input.holder && typeof input.holder === "object" ? input.holder : null;
+  const holder = holderInput ? {
+    provider: typeof holderInput.provider === "string" ? redactText(holderInput.provider) : null,
+    job_id: typeof holderInput.job_id === "string" ? redactText(holderInput.job_id) : null,
+    pid: Number.isSafeInteger(holderInput.pid) ? holderInput.pid : null,
+    hostname: typeof holderInput.hostname === "string" ? redactText(holderInput.hostname) : null,
+    cwd: typeof holderInput.cwd === "string" ? redactText(holderInput.cwd) : null,
+    started_at: typeof holderInput.started_at === "string" ? holderInput.started_at : null,
+    lock_file: typeof holderInput.lock_file === "string" ? redactText(holderInput.lock_file) : null,
+  } : null;
+
+  return {
+    reason: typeof input.reason === "string" ? input.reason : null,
+    holder,
+  };
+}
+
 function normalizeRuntimeDiagnostics(input, denials, redactText = (value) => value) {
   if (!input || typeof input !== "object") return null;
   const redactNullableText = (value) => value == null ? null : redactText(value);
@@ -554,6 +573,8 @@ function normalizeRuntimeDiagnostics(input, denials, redactText = (value) => val
   }
   const providerAccountIdentity = normalizeProviderAccountIdentity(input);
   if (providerAccountIdentity) out.provider_account_identity = providerAccountIdentity;
+  const providerWorkload = normalizeProviderWorkloadDiagnostic(input.provider_workload, redactText);
+  if (providerWorkload) out.provider_workload = providerWorkload;
   return out;
 }
 

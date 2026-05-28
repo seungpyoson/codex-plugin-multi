@@ -1660,6 +1660,67 @@ test("buildJobRecord: preserves privacy-safe provider account identity diagnosti
   }
 });
 
+test("buildJobRecord: preserves provider workload blocked diagnostics across companion providers", () => {
+  const providers = [
+    [buildJobRecord, makeInvocation(), { claudeSessionId: CLAUDE_UUID }],
+    [
+      buildGeminiJobRecord,
+      makeInvocation({ target: "gemini", binary: "gemini" }),
+      { geminiSessionId: GEMINI_UUID },
+    ],
+    [
+      buildKimiJobRecord,
+      makeInvocation({ target: "kimi", binary: "kimi" }),
+      { kimiSessionId: "kimi-session-123" },
+    ],
+  ];
+
+  for (const [providerBuildJobRecord, invocation, sessionFields] of providers) {
+    const rec = providerBuildJobRecord(invocation, {
+      exitCode: null,
+      parsed: {
+        ok: false,
+        reason: "provider_workload_blocked",
+        error: `${invocation.target} source-bearing review is already active`,
+        structured: null,
+        denials: [],
+      },
+      pidInfo: null,
+      runtimeDiagnostics: {
+        provider_workload: {
+          reason: "active_same_provider_job",
+          holder: {
+            provider: invocation.target,
+            job_id: "job-active",
+            pid: 12345,
+            hostname: "dev-host",
+            cwd: "/tmp/src",
+            started_at: "2026-05-28T02:45:52.446Z",
+            lock_file: "/tmp/codex-plugin-multi/provider-workload/provider.json",
+            token: "must-not-persist",
+          },
+        },
+      },
+      errorMessage: "provider_workload_blocked: source-bearing review is already active",
+      ...sessionFields,
+    }, []);
+
+    assert.deepEqual(rec.runtime_diagnostics.provider_workload, {
+      reason: "active_same_provider_job",
+      holder: {
+        provider: invocation.target,
+        job_id: "job-active",
+        pid: 12345,
+        hostname: "dev-host",
+        cwd: "/tmp/src",
+        started_at: "2026-05-28T02:45:52.446Z",
+        lock_file: "/tmp/codex-plugin-multi/provider-workload/provider.json",
+      },
+    });
+    assert.doesNotMatch(JSON.stringify(rec), /must-not-persist/);
+  }
+});
+
 test("buildJobRecord: runtime-options cleanup warning is diagnostic only across companion providers", () => {
   const providers = [
     [buildJobRecord, makeInvocation(), { claudeSessionId: CLAUDE_UUID }],

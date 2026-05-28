@@ -489,6 +489,8 @@ function isPermissionParserFixSummaryLine(lower) {
     && includesAny(lower, [
       "parser fix",
       "parser fixes",
+      "parser refactor",
+      "parser refactors",
       "parser regression",
       "parser regressions",
     ])

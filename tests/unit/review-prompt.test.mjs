@@ -3004,6 +3004,63 @@ for (const [name, file] of REVIEW_PROMPT_MODULES) {
   });
 }
 
+for (const [name, file] of REVIEW_PROMPT_MODULES) {
+  test(`review audit manifest does not flag concrete permission fixture test-gap prose (${name})`, async () => {
+    const { buildReviewAuditManifest: targetBuildReviewAuditManifest } = file === "scripts/lib/review-prompt.mjs"
+      ? { buildReviewAuditManifest }
+      : await import(pathToFileURL(resolve(file)).href);
+    const manifest = targetBuildReviewAuditManifest({
+      prompt: "rendered prompt",
+      sourceFiles: [{ path: "scripts/lib/review-prompt.mjs", text: "export function marker() {}\n" }],
+      result: [
+        "Verdict: APPROVE",
+        "Blocking findings",
+        "None. I inspected scripts/lib/review-prompt.mjs.",
+        "Non-blocking concerns",
+        "- `tests/unit/review-prompt.test.mjs` adds positive EPERM-suppression cases but does not add an explicit negative regression test asserting that lines with a concrete permission action phrase (e.g. \"could not read sample.js\" alongside \"I inspected the parser\") still fail the permission_blocked gate.",
+        "Checklist:",
+        "6. PASS review completed without timeout, truncation, interruption, permission block, or shallow output.",
+      ].join("\n"),
+      status: "completed",
+      errorCode: null,
+    });
+
+    assert.deepEqual(manifest.review_quality.semantic_failure_reasons, []);
+    assert.equal(manifest.review_quality.failed_review_slot, false);
+  });
+}
+
+for (const [name, file] of REVIEW_PROMPT_MODULES) {
+  test(`review audit manifest does not flag EPERM parser-refactor PASS checklist prose (${name})`, async () => {
+    const { buildReviewAuditManifest: targetBuildReviewAuditManifest } = file === "scripts/lib/review-prompt.mjs"
+      ? { buildReviewAuditManifest }
+      : await import(pathToFileURL(resolve(file)).href);
+    const manifest = targetBuildReviewAuditManifest({
+      prompt: "rendered prompt",
+      sourceFiles: [{ path: "scripts/lib/review-prompt.mjs", text: "export function marker() {}\n" }],
+      result: [
+        "Verdict: APPROVE",
+        "Checklist",
+        "1. Verify exact base/head refs and commits before judging the diff: PASS.",
+        "2. Review only the declared scope and list any scope gaps as NOT REVIEWED: PASS.",
+        "3. Evaluate correctness bugs, security risks, regressions, and missing tests: PASS. Stale-env credential refresh, redaction snapshot, provider workload lease, account identity fingerprint, Grok auth sync, session-limit classifier, and EPERM parser refactor are all covered by added unit/smoke tests; no concrete blocker found.",
+        "4. Check known review comments or residual threads when the prompt includes them: NOT REVIEWED.",
+        "5. Separate blocking findings from non-blocking concerns: PASS.",
+        "6. Treat timeout, truncation, interruption, permission block, or shallow output as a failed review slot: PASS. The selected source packet was complete and inspected without truncation, timeout, or permission block.",
+        "Blocking findings",
+        "None. I inspected scripts/lib/review-prompt.mjs.",
+        "Non-blocking concerns",
+        "None.",
+      ].join("\n"),
+      status: "completed",
+      errorCode: null,
+    });
+
+    assert.deepEqual(manifest.review_quality.semantic_failure_reasons, []);
+    assert.equal(manifest.review_quality.failed_review_slot, false);
+  });
+}
+
 test("review audit manifest does not flag Kimi fallback EACCES concern as permission blocked", () => {
   const manifest = buildReviewAuditManifest({
     prompt: "rendered prompt",
