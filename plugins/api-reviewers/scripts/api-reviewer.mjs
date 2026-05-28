@@ -2555,7 +2555,7 @@ function canonicalJson(value) {
     return JSON.stringify(value);
   }
   if (type === "object") {
-    const keys = Object.keys(value).sort();
+    const keys = Object.keys(value).sort((left, right) => left.localeCompare(right));
     const fields = keys.map((key) => `${JSON.stringify(key)}:${canonicalJson(value[key])}`);
     return `{${fields.join(",")}}`;
   }
@@ -2568,7 +2568,7 @@ function sha256Hex(value) {
 
 function sortedStringArrayOrNull(value) {
   if (value == null) return null;
-  return Object.freeze([...value].map((item) => String(item)).sort());
+  return Object.freeze([...value].map(String).sort((left, right) => left.localeCompare(right)));
 }
 
 function sortedSelectedSource(selectedSource) {
@@ -2599,7 +2599,7 @@ function sortedScopeResolution(scopeResolution) {
   });
 }
 
-function parseGrantTtlMs(options = {}, grantPolicy) {
+function parseGrantTtlMs(grantPolicy, options = {}) {
   const raw = options["grant-ttl-ms"];
   if (raw === undefined || raw === null || raw === "") {
     throw runBadArgs("bad_args: --grant-ttl-ms is required");
@@ -2614,7 +2614,7 @@ function parseGrantTtlMs(options = {}, grantPolicy) {
   return parsed;
 }
 
-function parseGrantExpiresAt(options = {}, grantPolicy) {
+function parseGrantExpiresAt(grantPolicy, options = {}) {
   const raw = options["grant-expires-at"];
   if (typeof raw !== "string" || raw.trim() === "") {
     throw runBadArgs("bad_args: --grant-expires-at is required");
@@ -3108,7 +3108,7 @@ function buildApprovalRequest({ provider, cfg, mode, options, scopeInfo }) {
 }
 
 function buildApprovalGrantRequest({ provider, cfg, mode, options, scopeInfo, grantPolicy, grantExpiresAt = null }) {
-  const grantTtlMs = grantExpiresAt ? null : parseGrantTtlMs(options, grantPolicy);
+  const grantTtlMs = grantExpiresAt ? null : parseGrantTtlMs(grantPolicy, options);
   const renderedPrompt = promptFor(mode, options.prompt ?? "", scopeInfo, cfg.display_name);
   const promptBudget = validateRenderedPromptBudget(renderedPrompt, cfg);
   if (!promptBudget.ok) {
@@ -3690,7 +3690,7 @@ async function cmdApprovalGrantActivate(options) {
     } catch (e) {
       throw runConfigError(`config_error: session approval policy unreadable: ${e.message}`);
     }
-    const grantExpiresAt = parseGrantExpiresAt(options, grantPolicy);
+    const grantExpiresAt = parseGrantExpiresAt(grantPolicy, options);
     let providers;
     try {
       providers = await loadProviders();
