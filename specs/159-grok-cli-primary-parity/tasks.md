@@ -66,8 +66,8 @@ Grok, GLM, DeepSeek, and Kimi, or explicit operator waivers.
 - [x] T025 Run `npm test` and compare pass/fail/skip counts against the #159 baseline recorded in `specs/159-grok-cli-primary-parity/evidence-map.md`.
 - [x] T026 Run `git diff --check`.
 - [x] T027 Record local verification and implementation notes in `specs/159-grok-cli-primary-parity/review-results.md`.
-- [x] T028 Run final latest-head implementation review across Claude, Gemini, Grok, GLM, DeepSeek, and Kimi, or record explicit operator waivers for unavailable slots.
-- [x] T029 Stop before push, PR, issue closure, merge, browser/session repair, cache sync, or billing/tier action unless separately approved.
+- [x] T028 Run final implementation review across Claude, Gemini, Grok, GLM, DeepSeek, and Kimi, or record explicit operator waivers for unavailable slots.
+- [x] T029 Record that the current branch head after the review only updates evidence/task files, then stop before push, PR, issue closure, merge, browser/session repair, cache sync, or billing/tier action unless separately approved.
 
 ## Dependencies
 

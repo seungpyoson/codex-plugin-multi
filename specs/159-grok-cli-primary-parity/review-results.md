@@ -179,12 +179,13 @@ not introduce an API-vs-subscription approval split in the review evidence.
 - `npm test`: PASS, 2225 tests; 2213 pass, 0 fail, 12 skipped.
 - `git diff --check`: PASS.
 
-## Final Latest-Head Implementation Review Gate
+## Final Implementation Review Gate
 
-Head SHA reviewed:
+Implementation head SHA reviewed:
 `43b4828a3a1265e6534536dd09b0c6c5c31d650d`
 
-Scope: full selected #159 branch diff from `main` to `HEAD`.
+Scope: full selected #159 implementation diff from `main` to
+`43b4828a3a1265e6534536dd09b0c6c5c31d650d`.
 
 - Claude: job `77da8326-bf19-460d-9bc1-b68010b5541f`; source sent;
   subscription route; verdict APPROVE; no blocking findings.
@@ -216,5 +217,9 @@ issue closure, merge, browser/session repair, cache sync, billing/tier action,
 or any same-packet GLM retry override.
 
 Final gate status: Claude, Gemini, Grok, DeepSeek, and Kimi approved the exact
-latest-head implementation. GLM is waived as unavailable with the failed-slot
-evidence above.
+implementation head. GLM is waived as unavailable with the failed-slot evidence
+above.
+
+Post-review commits on this branch only record or clarify review-gate evidence
+in this file and task status in `tasks.md`; they do not change runtime, tests,
+contracts, or user-facing behavior beyond the evidence ledger.
