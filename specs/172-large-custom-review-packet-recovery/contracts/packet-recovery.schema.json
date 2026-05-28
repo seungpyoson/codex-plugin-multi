@@ -27,6 +27,7 @@
         "prompt_too_large",
         "scope_file_too_large",
         "review_not_completed",
+        "provider_unavailable",
         "stale_active_job",
         "step_limit_exceeded",
         "timeout",

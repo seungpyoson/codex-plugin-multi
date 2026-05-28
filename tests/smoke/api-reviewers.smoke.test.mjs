@@ -3890,8 +3890,72 @@ test("direct API HTTP provider_unavailable under Codex does not recommend sandbo
     assert.equal(record.http_status, 503);
     assert.equal(record.review_metadata.audit_manifest.request.timeout_ms, 345678);
     assert.equal(record.external_review.source_content_transmission, "sent");
+    const recovery = record.runtime_diagnostics?.packet_recovery;
+    assert.ok(recovery, "source-sent provider_unavailable failures must include packet_recovery");
+    assert.equal(recovery.provider, "deepseek");
+    assert.equal(recovery.reason, "provider_unavailable");
+    assert.equal(record.error_code, recovery.reason);
+    assert.equal(recovery.source_content_transmission, "sent");
+    assert.deepEqual(
+      recovery.actions.map((action) => action.type),
+      ["resend_with_confirmation", "switch_provider", "waive_slot"],
+    );
+    assert.deepEqual(record.review_metadata.audit_manifest.packet_recovery, recovery);
     assert.doesNotMatch(record.suggested_action, /network_access = true/);
     assert.doesNotMatch(record.suggested_action, /outside sandbox/);
+  } finally {
+    server.close();
+  }
+});
+
+test("direct API fetch failure after source receipt emits conservative packet recovery", async () => {
+  const cwd = makeWorkspace();
+  const dataDir = mkdtempSync(path.join(tmpdir(), "api-reviewers-data-"));
+  const pluginRoot = makeInstalledApiReviewersRoot();
+  let sourceBearingRequests = 0;
+  const server = await startChatServer(async (req, res) => {
+    const body = await readChatRequest(req);
+    if (respondSourceFreePreflight(body, res)) return;
+    sourceBearingRequests += 1;
+    assert.match(body.messages?.[0]?.content ?? "", /hello from selected scope/);
+    res.destroy();
+  });
+  try {
+    const { port } = server.address();
+    writeDeepSeekProviderConfig(pluginRoot, `http://127.0.0.1:${port}`);
+
+    const result = await run([
+      "run",
+      "--provider", "deepseek",
+      "--mode", "custom-review",
+      "--scope", "custom",
+      "--scope-paths", "seed.txt",
+      "--foreground",
+      "--prompt", "Check this file.",
+    ], {
+      cwd,
+      companion: path.join(pluginRoot, "scripts", "api-reviewer.mjs"),
+      env: {
+        API_REVIEWERS_PLUGIN_DATA: dataDir,
+        DEEPSEEK_API_KEY: "secret-test-value",
+      },
+    });
+    assert.equal(result.status, 1);
+    assert.equal(sourceBearingRequests, 1);
+    const record = parseJson(result.stdout);
+    assert.equal(record.error_code, "provider_unavailable");
+    assert.equal(record.http_status, null);
+    assert.equal(record.external_review.source_content_transmission, "unknown");
+    const recovery = record.runtime_diagnostics?.packet_recovery;
+    assert.ok(recovery, "unknown source-state provider_unavailable failures must include packet_recovery");
+    assert.equal(recovery.reason, "provider_unavailable");
+    assert.equal(recovery.source_content_transmission, "unknown");
+    assert.deepEqual(
+      recovery.actions.map((action) => action.type),
+      ["resend_with_confirmation", "switch_provider", "waive_slot"],
+    );
+    assert.deepEqual(record.review_metadata.audit_manifest.packet_recovery, recovery);
+    assert.doesNotMatch(result.stdout, /secret-test-value/);
   } finally {
     server.close();
   }

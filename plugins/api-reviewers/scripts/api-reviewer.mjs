@@ -49,6 +49,11 @@ const DEFAULT_MAX_PROMPT_CHARS = 600000;
 const DEFAULT_PROVIDER_TIMEOUT_MS = 900000;
 const DOCTOR_PROBE_PROMPT = "Return exactly: ok";
 const GIT_SHOW_MAX_BUFFER_BYTES = MAX_SCOPE_FILE_BYTES + 1;
+const DIRECT_API_SOURCE_BEARING_PACKET_RECOVERY_FAILURES = new Set([
+  "review_not_completed",
+  "provider_unavailable",
+  "timeout",
+]);
 const API_REVIEWER_EXPECTED_KEYS = Object.freeze([
   "id",
   "job_id",
@@ -2992,9 +2997,13 @@ function buildRuntimeDiagnostics(diagnostics) {
   return Object.keys(out).length === 0 ? null : out;
 }
 
-function sourceSentFailurePacketRecovery({ provider, cfg, mode, reviewMetadata, errorCode, transmission }) {
-  if (errorCode !== "review_not_completed") return null;
-  if (transmission !== SOURCE_CONTENT_TRANSMISSION.SENT) return null;
+function sourceBearingFailurePacketRecovery({ provider, cfg, mode, reviewMetadata, errorCode, transmission }) {
+  if (!DIRECT_API_SOURCE_BEARING_PACKET_RECOVERY_FAILURES.has(errorCode)) return null;
+  if (
+    transmission !== SOURCE_CONTENT_TRANSMISSION.SENT &&
+    transmission !== SOURCE_CONTENT_TRANSMISSION.MAY_BE_SENT &&
+    transmission !== SOURCE_CONTENT_TRANSMISSION.UNKNOWN
+  ) return null;
   const auditManifest = reviewMetadata?.audit_manifest;
   if (!auditManifest || auditManifest.packet_recovery) return null;
   const sourcePacketPolicy = Object.freeze({
@@ -3009,7 +3018,7 @@ function sourceSentFailurePacketRecovery({ provider, cfg, mode, reviewMetadata, 
     suggested_action: "Do not automatically resend selected source after a failed source-sent review slot.",
   });
   return buildPacketRecovery({
-    reason: "review_not_completed",
+    reason: errorCode,
     sourcePacketPolicy,
     providerCapabilities: providerCapabilitiesForConfig(cfg),
     provider,
@@ -3046,7 +3055,7 @@ function buildRecord({ provider, cfg, mode, options, scopeInfo, execution, start
   const disclosure = directApiDisclosure(cfg.display_name, completed, payloadSent);
   const packetRecovery = execution.diagnostics?.packet_recovery
     ?? reviewMetadata?.audit_manifest?.packet_recovery
-    ?? sourceSentFailurePacketRecovery({
+    ?? sourceBearingFailurePacketRecovery({
       provider,
       cfg,
       mode,

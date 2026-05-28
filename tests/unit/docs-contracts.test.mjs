@@ -1044,6 +1044,10 @@ test("packet recovery schema keeps the no-source resume capability guard", () =>
     "schema must allow reconciled stale-job recovery reasons emitted by runtime policy",
   );
   assert.ok(
+    schema.properties.reason.enum.includes("provider_unavailable"),
+    "schema must allow source-bearing provider-unavailable recovery reasons emitted by direct API runtime policy",
+  );
+  assert.ok(
     schema.properties.source_content_transmission.enum.includes("unknown"),
     "schema must allow stale-job recovery when source transmission is conservative unknown",
   );

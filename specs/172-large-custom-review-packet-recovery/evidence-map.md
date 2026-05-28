@@ -153,6 +153,30 @@ Post-review fix evidence:
   packet recovery still detects a changed review surface when a legacy or
   sparse prior record lacks an explicit `review_surface_changed:true` flag.
 
+Post-#159 GLM failure follow-up on 2026-05-28:
+
+- #159 final GLM review job `job_32e52d7f-8a2f-4f74-b41e-25ec617887c7`
+  failed after a source-bearing Direct API request with `provider_unavailable`,
+  `fetch failed`, no HTTP status, `source_content_transmission:"unknown"`,
+  prompt size about 97k characters, and no usable verdict.
+- A GLM source-free `ping` succeeded afterward, so the failure was not basic
+  credential or endpoint readiness.
+- Small GLM source-bearing diagnostic job
+  `job_f047fded-8c0e-48e9-8f6c-a32c4e561ce6` returned HTTP 200 but failed
+  review quality as `missing_verdict` when capped at 512 output tokens.
+- Small GLM source-bearing diagnostic job
+  `job_61087aa7-1eea-456c-973a-121f118e5a09` completed and approved with
+  `max_tokens:4096`, proving source-bearing GLM can work for smaller packets.
+- Gap found: the #172 branch projected `packet_recovery` for Direct API
+  source-sent `review_not_completed`, but not for source-bearing
+  `provider_unavailable` failures with `sent` or conservative `unknown` source
+  state.
+- Fix: Direct API source-bearing `provider_unavailable` now emits
+  `packet_recovery.reason:"provider_unavailable"` with resend-confirmation,
+  provider-switch, and explicit-waiver actions. The same behavior is covered for
+  HTTP 503 source-sent failure and for a dropped connection after the test
+  server received selected source.
+
 Verification on 2026-05-26:
 
 ```sh

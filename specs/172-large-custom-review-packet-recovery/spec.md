@@ -125,9 +125,9 @@ tests assert `failed_review_slot:true` or source not sent as appropriate.
   fallback reason, and approval scope. The runtime may require a matching
   current-session approval token, but persisted recovery output MUST NOT store
   the approval token value.
-- **FR-006**: Failed review slots, missing verdicts, timeouts, stale active
-  jobs, runtime crashes, prompt-limit failures, and source-packet failures MUST
-  NOT count as approval.
+- **FR-006**: Failed review slots, missing verdicts, provider-unavailable
+  failures, timeouts, stale active jobs, runtime crashes, prompt-limit failures,
+  and source-packet failures MUST NOT count as approval.
 - **FR-007**: Provider-specific caps MUST enter through Adapter capability facts
   and shared policy helpers, not copied product-policy branches.
 - **FR-008**: Output MUST NOT persist full prompt, selected source bodies,

@@ -294,3 +294,51 @@ Review packet note:
 - Both final reviewers noted the narrow packet scope limitation: they reviewed
   the supplied delta packet rather than the whole live source tree. Local
   verification above was run against the live worktree.
+
+## Post-#159 GLM Provider-Unavailable Follow-up
+
+New evidence from the #159 final review gate showed that GLM can fail a
+source-bearing Direct API review as `provider_unavailable` / `fetch failed` with
+no HTTP status and conservative `source_content_transmission:"unknown"`. The
+small source-free GLM probe passed, a small source-bearing request approved with
+`max_tokens:4096`, and a small source-bearing request failed as
+`missing_verdict` with `max_tokens:512`. This made the root problem a recovery
+coverage gap, not a provider-auth outage.
+
+Gap fixed in this branch:
+
+- Direct API source-bearing `provider_unavailable` failures now project
+  `packet_recovery.reason:"provider_unavailable"` into runtime diagnostics and
+  the audit manifest.
+- The recovery source state is `sent` for HTTP provider failures and
+  conservative `unknown` when the request reached the server but the connection
+  was dropped before a response.
+- Recovery actions are resend with explicit confirmation, switch provider, or
+  explicit waiver. The failed slot still does not count as approval.
+- The `PacketRecovery` schema now allows `provider_unavailable` as an emitted
+  recovery reason.
+
+Local verification:
+
+```sh
+node --test --test-name-pattern "direct API (HTTP provider_unavailable under Codex|fetch failure after source receipt)" tests/smoke/api-reviewers.smoke.test.mjs
+node --test --test-name-pattern "packet recovery schema keeps|direct API (HTTP provider_unavailable under Codex|fetch failure after source receipt)" tests/unit/docs-contracts.test.mjs tests/smoke/api-reviewers.smoke.test.mjs
+node --test --test-name-pattern "provider_unavailable|packet recovery|source-sent|source sent|fetch failure after source receipt|review_not_completed" tests/smoke/api-reviewers.smoke.test.mjs tests/unit/docs-contracts.test.mjs tests/unit/provider-route-policy.test.mjs tests/unit/review-panel.test.mjs
+npm run lint:sync
+git diff --check
+npm test
+node --test --test-name-pattern "Grok CLI timeout escalates when source-bearing process ignores SIGTERM" tests/smoke/grok-web.smoke.test.mjs
+```
+
+Results:
+
+- Focused Direct API provider-unavailable tests: 2 passed, 0 failed.
+- Focused schema plus Direct API tests: 3 passed, 0 failed.
+- Broader packet recovery/provider-unavailable targeted tests: 16 passed,
+  0 failed.
+- `npm run lint:sync`: passed.
+- `git diff --check`: passed.
+- `npm test`: 2226 passed, 12 skipped, 1 failed in the existing Grok CLI
+  timeout escalation smoke test. The failing test passed when rerun in
+  isolation, so this is recorded as a full-suite residual rather than evidence
+  against the Direct API recovery delta.
