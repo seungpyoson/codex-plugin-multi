@@ -1560,6 +1560,7 @@ function grokCliAuthHttpStatus(stderr) {
 
 function isGrokCliAuthRepairCode(errorCode) {
   return errorCode === "grok_cli_login_required"
+    || errorCode === "grok_cli_auth_expired"
     || errorCode === "grok_cli_auth_timeout"
     || errorCode === "grok_cli_auth_unavailable";
 }
@@ -4444,6 +4445,7 @@ function safeDoctorForRepair(doctor) {
     summary: doctor.summary ?? null,
     next_action: doctor.next_action ?? null,
     error_code: doctor.error_code ?? null,
+    auth_freshness: doctor.auth_freshness ?? null,
     tunnel_start: {
       error_code: doctor.tunnel_start?.error_code ?? null,
     },

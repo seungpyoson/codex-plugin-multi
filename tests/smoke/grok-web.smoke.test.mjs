@@ -522,6 +522,19 @@ function writeExpiredGrokCliAuthFixture(authHome) {
   writeFileSync(path.join(authHome, "config.toml"), "[models]\ndefault = \"grok-build\"\n");
 }
 
+function testJwt(payload) {
+  const encode = (value) => Buffer.from(JSON.stringify(value)).toString("base64url");
+  return `${encode({ alg: "none", typ: "JWT" })}.${encode(payload)}.signature`;
+}
+
+function writeExpiredGrokCliJwtAuthFixture(authHome) {
+  writeFileSync(path.join(authHome, "auth.json"), JSON.stringify({
+    auth_mode: "Oidc",
+    access_token: testJwt({ exp: 946684800 }),
+  }) + "\n");
+  writeFileSync(path.join(authHome, "config.toml"), "[models]\ndefault = \"grok-build\"\n");
+}
+
 async function readJsonRequest(req) {
   let body = "";
   req.setEncoding("utf8");
@@ -1763,6 +1776,36 @@ test("doctor reports expired Grok CLI subscription auth distinctly from API-key 
   }
 });
 
+test("doctor derives expired Grok CLI auth freshness from JWT exp metadata", () => {
+  const dataDir = mkdtempSync(path.join(tmpdir(), "grok-cli-expired-jwt-auth-doctor-data-"));
+  const authHome = mkdtempSync(path.join(tmpdir(), "grok-cli-expired-jwt-auth-doctor-auth-home-"));
+  const { binDir, grokPath } = makeFakeGrokCli({ modelsOutput: GROK_MODELS_READY_LOGGED_OUT });
+  writeExpiredGrokCliJwtAuthFixture(authHome);
+
+  try {
+    const result = run(["doctor"], {
+      defaultTransport: false,
+      env: {
+        PATH: `${binDir}${path.delimiter}${process.env.PATH ?? ""}`,
+        GROK_CLI_BINARY: grokPath,
+        GROK_CLI_AUTH_HOME: authHome,
+        GROK_PLUGIN_DATA: dataDir,
+      },
+    });
+
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    const parsed = parseStdout(result);
+    assert.equal(parsed.error_code, "grok_cli_auth_expired");
+    assert.equal(parsed.auth_freshness.status, "expired");
+    assert.equal(parsed.auth_freshness.expiry_known, true);
+    assert.equal(parsed.readiness_layers.cli_auth_file.status, "expired");
+    assert.doesNotMatch(result.stdout, /946684800|access_token|signature/);
+  } finally {
+    rmTree(authHome);
+    rmTree(dataDir);
+  }
+});
+
 test("doctor reports only canonical XAI_API_KEY as ignored, not Grok CLI login", () => {
   const dataDir = mkdtempSync(path.join(tmpdir(), "grok-cli-login-api-env-doctor-data-"));
   const authHome = mkdtempSync(path.join(tmpdir(), "grok-cli-login-api-env-doctor-auth-home-"));
@@ -2141,6 +2184,42 @@ test("repair reports Grok CLI login-required as actionable CLI auth repair", () 
     assert.equal(parsed.provider, "grok");
     assert.equal(parsed.error_code, "grok_cli_login_required");
     assert.equal(parsed.initial_doctor.error_code, "grok_cli_login_required");
+    assert.equal(parsed.sync_session.status, "not_attempted");
+    assert.equal(parsed.sync_session.source_content_transmission, "not_sent");
+    assert.match(parsed.next_action, /grok login/i);
+    assert.doesNotMatch(parsed.next_action, /--approve-browser-session-sync|grok2api/i);
+    assert.deepEqual(readGrokCliLog(logPath).map((line) => line.args[0]), ["--version", "models"]);
+  } finally {
+    rmTree(authHome);
+    rmTree(dataDir);
+  }
+});
+
+test("repair reports expired Grok CLI auth as actionable CLI auth repair", () => {
+  const dataDir = mkdtempSync(path.join(tmpdir(), "grok-cli-expired-auth-repair-data-"));
+  const authHome = mkdtempSync(path.join(tmpdir(), "grok-cli-expired-auth-repair-auth-home-"));
+  const { binDir, grokPath, logPath } = makeFakeGrokCli({ modelsOutput: GROK_MODELS_READY_LOGGED_OUT });
+  writeExpiredGrokCliAuthFixture(authHome);
+
+  try {
+    const result = run(["repair"], {
+      defaultTransport: false,
+      env: {
+        PATH: `${binDir}${path.delimiter}${process.env.PATH ?? ""}`,
+        GROK_CLI_BINARY: grokPath,
+        GROK_CLI_AUTH_HOME: authHome,
+        GROK_PLUGIN_DATA: dataDir,
+      },
+    });
+
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    const parsed = parseStdout(result);
+    assert.equal(parsed.ok, false);
+    assert.equal(parsed.status, "cli_auth_required");
+    assert.equal(parsed.provider, "grok");
+    assert.equal(parsed.error_code, "grok_cli_auth_expired");
+    assert.equal(parsed.initial_doctor.error_code, "grok_cli_auth_expired");
+    assert.equal(parsed.initial_doctor.auth_freshness.status, "expired");
     assert.equal(parsed.sync_session.status, "not_attempted");
     assert.equal(parsed.sync_session.source_content_transmission, "not_sent");
     assert.match(parsed.next_action, /grok login/i);
