@@ -31,6 +31,10 @@ const SELECTED_SOURCE_INSPECTION_VERBS = Object.freeze([
   "reviewed",
 ]);
 
+function normalizeReviewSearchText(value) {
+  return String(value ?? "").replace(/[\u2010-\u2015\u2212]/g, "-");
+}
+
 function contentBuffer(file) {
   const content = file?.content;
   if (Buffer.isBuffer(content)) return content;
@@ -385,12 +389,14 @@ const PERMISSION_FAILURE_EXAMPLE_DETECTORS = Object.freeze([
   isProcessLivenessPermissionDiscussionLine,
   isBenignPermissionDiscussionSummaryLine,
   isPermissionParserFixSummaryLine,
+  isCodeUnderReviewPermissionConcernLine,
   isPermissionBoundaryExampleLine,
   isPermissionLiteralDiscussionLine,
   isPermissionMechanicsDiscussionLine,
   isPermissionParserProofLine,
   isPermissionClassifierFixtureLine,
   isPermissionTermExampleLine,
+  isCodePermissionConcernLine,
 ]);
 
 function isPermissionFailureExampleLine(lower) {
@@ -407,6 +413,9 @@ function isPermissionParserProofLine(lower) {
     "still detected",
     "are still detected",
     "real failures",
+    "detector additions",
+    "concrete-action-phrase",
+    "fails the gate",
   ]) && (includesPermissionFailureLiteral(lower) || includesAny(lower, [
     "permission block",
     "permission_blocked",
@@ -493,6 +502,12 @@ function isPermissionParserFixSummaryLine(lower) {
       "parser refactors",
       "parser regression",
       "parser regressions",
+      "parser change",
+      "parser changes",
+      "parser adjustment",
+      "parser adjustments",
+      "false-positive parser",
+      "false positive parser",
     ])
     && includesAny(lower, [
       "review-prompt",
@@ -500,6 +515,41 @@ function isPermissionParserFixSummaryLine(lower) {
       "implementation",
       "robust",
       "covered",
+      "guarded",
+      "targeted test",
+      "targeted tests",
+      "handle",
+      "handles",
+    ]);
+}
+
+function isCodeUnderReviewPermissionConcernLine(lower) {
+  return includesPermissionFailureLiteral(lower)
+    && !hasConcretePermissionActionPhrase(lower)
+    && includesAny(lower, [
+      "code-under-review",
+      "code under review",
+      "fs-error",
+      "fs error",
+      "opensync",
+      "mkdirsync",
+      "lock dir",
+      "lock-dir",
+      "lock file",
+      "lock-file",
+    ])
+    && includesAny(lower, [
+      "propagates as a throw",
+      "propagates",
+      "fail-open",
+      "failing open",
+      "fail open",
+      "implementation",
+      "behavior",
+      "exception",
+      "fallback",
+      "handled",
+      "hardening",
     ]);
 }
 
@@ -590,6 +640,33 @@ function isInjectedPermissionTestProofLine(lower) {
       "rename",
       "mock",
       "proof",
+    ]);
+}
+
+function isCodePermissionConcernLine(lower) {
+  return includesPermissionFailureLiteral(lower)
+    && !hasConcretePermissionActionPhrase(lower)
+    && includesAny(lower, [
+      "fs-error",
+      "fs error",
+      "opensync",
+      "mkdirsync",
+      "lock fs",
+      "lock-dir",
+      "lock dir",
+      "fail-open",
+      "failing open",
+      "propagates as a throw",
+    ])
+    && includesAny(lower, [
+      "behavior",
+      "concern",
+      "risk",
+      "implementation",
+      "code",
+      "helper",
+      "runtime",
+      "lock",
     ]);
 }
 
@@ -1127,7 +1204,7 @@ function qualityFlags({
   selectedSource = null,
 } = {}) {
   const text = String(result ?? "");
-  const lowerText = text.toLowerCase();
+  const lowerText = normalizeReviewSearchText(text).toLowerCase();
   const checklistItemsSeen = reviewLines(text).filter((line) => isChecklistVerdict(line)).length;
   const hasVerdictFlag = hasVerdict(text);
   const hasBlockingSection = includesAny(lowerText, [

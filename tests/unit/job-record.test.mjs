@@ -1721,6 +1721,144 @@ test("buildJobRecord: preserves provider workload blocked diagnostics across com
   }
 });
 
+test("buildJobRecord: malformed provider workload diagnostics stay bounded and redacted", () => {
+  const secretName = "CODEX_PLUGIN_MULTI_TEST_API_KEY";
+  const oldSecret = process.env[secretName];
+  process.env[secretName] = "secret-test-value";
+
+  try {
+    const rec = buildJobRecord(makeInvocation(), {
+      exitCode: null,
+      parsed: {
+        ok: false,
+        reason: "provider_workload_blocked",
+        error: "provider workload blocked by malformed holder",
+        structured: null,
+        denials: [],
+      },
+      pidInfo: null,
+      runtimeDiagnostics: {
+        provider_workload: {
+          holder: {
+            provider: 123,
+            job_id: null,
+            pid: Number.MAX_SAFE_INTEGER + 1,
+            hostname: "host-secret-test-value",
+            cwd: "/tmp/secret-test-value/src",
+            started_at: 42,
+            lock_file: "/tmp/secret-test-value/provider.json",
+            token: "must-not-persist",
+          },
+        },
+      },
+      errorMessage: "provider_workload_blocked: source-bearing review is already active",
+      claudeSessionId: CLAUDE_UUID,
+    }, []);
+
+    assert.deepEqual(rec.runtime_diagnostics.provider_workload, {
+      reason: null,
+      holder: {
+        provider: null,
+        job_id: null,
+        pid: null,
+        hostname: "host-[REDACTED]",
+        cwd: "/tmp/[REDACTED]/src",
+        started_at: null,
+        lock_file: "/tmp/[REDACTED]/provider.json",
+      },
+    });
+    assert.doesNotMatch(JSON.stringify(rec), /secret-test-value|must-not-persist/);
+  } finally {
+    if (oldSecret == null) delete process.env[secretName];
+    else process.env[secretName] = oldSecret;
+  }
+});
+
+test("buildJobRecord: malformed provider workload holder fields are nulled across companion providers", () => {
+  const providers = [
+    [buildJobRecord, makeInvocation(), { claudeSessionId: CLAUDE_UUID }],
+    [
+      buildGeminiJobRecord,
+      makeInvocation({ target: "gemini", binary: "gemini", review_prompt_provider: "Gemini CLI" }),
+      { geminiSessionId: GEMINI_UUID },
+    ],
+    [
+      buildKimiJobRecord,
+      makeInvocation({ target: "kimi", binary: "kimi", review_prompt_provider: "Kimi Code" }),
+      { kimiSessionId: "kimi-session-123" },
+    ],
+  ];
+
+  for (const [providerBuildJobRecord, invocation, sessionFields] of providers) {
+    const rec = providerBuildJobRecord(invocation, {
+      exitCode: null,
+      parsed: {
+        ok: false,
+        reason: "provider_workload_blocked",
+        error: "provider workload blocked by malformed holder text fields",
+        structured: null,
+        denials: [],
+      },
+      pidInfo: null,
+      runtimeDiagnostics: {
+        provider_workload: {
+          reason: 42,
+          holder: {
+            provider: false,
+            job_id: 99,
+            pid: "12345",
+            hostname: false,
+            cwd: 123,
+            started_at: 42,
+            lock_file: ["not", "a", "path"],
+          },
+        },
+      },
+      errorMessage: "provider_workload_blocked: source-bearing review is already active",
+      ...sessionFields,
+    }, []);
+
+    assert.deepEqual(rec.runtime_diagnostics.provider_workload, {
+      reason: null,
+      holder: {
+        provider: null,
+        job_id: null,
+        pid: null,
+        hostname: null,
+        cwd: null,
+        started_at: null,
+        lock_file: null,
+      },
+    });
+  }
+});
+
+test("buildJobRecord: provider workload diagnostics without holder preserve the reason only", () => {
+  const rec = buildJobRecord(makeInvocation(), {
+    exitCode: null,
+    parsed: {
+      ok: false,
+      reason: "provider_workload_blocked",
+      error: "provider workload blocked without holder",
+      structured: null,
+      denials: [],
+    },
+    pidInfo: null,
+    runtimeDiagnostics: {
+      provider_workload: {
+        reason: "lock_file_unreadable",
+      },
+    },
+    errorMessage: "provider_workload_blocked: source-bearing review is already active",
+    claudeSessionId: CLAUDE_UUID,
+  }, []);
+
+  assert.deepEqual(rec.runtime_diagnostics.provider_workload, {
+    reason: "lock_file_unreadable",
+    holder: null,
+  });
+});
+
 test("buildJobRecord: runtime-options cleanup warning is diagnostic only across companion providers", () => {
   const providers = [
     [buildJobRecord, makeInvocation(), { claudeSessionId: CLAUDE_UUID }],
