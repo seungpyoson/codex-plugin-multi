@@ -263,6 +263,19 @@ async function createGlmSessionGrant({ cwd, dataDir, prompt = "Review seed file 
   };
 }
 
+function expireGlmSessionGrantRecord(dataDir, activation, expiresAt = new Date(Date.now() - 1000).toISOString()) {
+  const file = path.join(dataDir, "approval-grants", `${activation.grant_id}.json`);
+  const record = parseJson(readFileSync(file, "utf8"));
+  record.expires_at = expiresAt;
+  record.approval_tuple.grant_bounds.expires_at = expiresAt;
+  const fingerprint = approvalFingerprintForTest(record.approval_tuple);
+  record.approval_fingerprint = fingerprint;
+  record.grant_id = `grant_${fingerprint}`;
+  record.grant_session_id = `session_${fingerprint.slice(0, 32)}`;
+  writeFileSync(file, `${JSON.stringify(record, null, 2)}\n`);
+  return file;
+}
+
 function makeMultiFileScopeWorkspace() {
   const cwd = mkdtempSync(path.join(tmpdir(), "api-reviewers-multifile-"));
   for (let i = 1; i <= 5; i += 1) {
@@ -5136,6 +5149,17 @@ test("direct API reviewers approval-grant request requires explicit TTL", async 
   }
 });
 
+test("direct API reviewers approval-grant without subcommand shows command help", async () => {
+  const result = await run(["approval-grant"]);
+
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  const parsed = parseJson(result.stdout);
+  assert.equal(parsed.ok, true);
+  assert.equal(parsed.command, "approval-grant");
+  assert.deepEqual(parsed.subcommands, ["request", "activate"]);
+  assert.equal(parsed.source_content_transmission, "not_sent");
+});
+
 test("direct API reviewers approval-grant activate requires exact request expiry", async () => {
   const dataDir = mkdtempSync(path.join(tmpdir(), "api-reviewers-grant-expiry-"));
   const cwd = makeWorkspace();
@@ -5178,6 +5202,15 @@ test("direct API reviewers approval-grant activate requires exact request expiry
     rmSync(dataDir, { recursive: true, force: true });
     rmSync(cwd, { recursive: true, force: true });
   }
+});
+
+test("direct API reviewers activation uses the canonical grant tuple from the request builder", () => {
+  const source = readFileSync(COMPANION, "utf8");
+
+  assert.doesNotMatch(source, /function\s+grantApprovalTupleFromRequest\s*\(/);
+  assert.doesNotMatch(source, /grantApprovalTupleFromRequest\s*\(\s*approvalRequest\s*\)/);
+  assert.match(source, /\(\{\s*approvalRequest,\s*approvalTuple\s*\}\s*=\s*buildApprovalGrantRequest/);
+  assert.match(source, /approvalFingerprintFor\s*\(\s*approvalTuple\s*\)/);
 });
 
 test("direct API reviewers approval-grant activate rejects session and once approval tokens", async () => {
@@ -5371,6 +5404,35 @@ test("direct API reviewers run uses matching session grant without per-run appro
   }
 });
 
+test("direct API reviewers session grants clean clearly expired grant files during lookup", async () => {
+  const dataDir = mkdtempSync(path.join(tmpdir(), "api-reviewers-grant-expired-cleanup-"));
+  const cwd = makeWorkspace();
+  try {
+    const grant = await createGlmSessionGrant({ cwd, dataDir });
+    const grantFile = expireGlmSessionGrantRecord(dataDir, grant.activation);
+    assert.equal(existsSync(grantFile), true);
+
+    const result = await run(["run", ...grant.commonArgs, "--foreground"], {
+      cwd,
+      env: {
+        ...grant.env,
+        API_REVIEWERS_TEST_AUTO_APPROVAL: "0",
+        API_REVIEWERS_REQUIRE_APPROVAL_TOKEN_IN_MOCKS: "1",
+        API_REVIEWERS_MOCK_RESPONSE: mockResponse("glm-5.1", "grant-expired-cleanup"),
+      },
+    });
+
+    assert.equal(result.status, 1, result.stderr || result.stdout);
+    const record = parseJson(result.stdout);
+    assert.equal(record.error_code, "approval_required");
+    assertDirectApiNotSent(record, "GLM");
+    assert.equal(existsSync(grantFile), false);
+  } finally {
+    rmSync(dataDir, { recursive: true, force: true });
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
 test("direct API reviewers session grants fail closed on provider, mode, source, prompt, request, expiry, and tamper mismatches", async () => {
   const cases = [
     {
@@ -5444,8 +5506,9 @@ test("direct API reviewers session grants fail closed on provider, mode, source,
     },
     {
       name: "expired",
-      ttlMs: "100",
-      mutateBeforeRun: async () => { await sleep(150); },
+      mutateBeforeRun: (cwd, dataDir, activation) => {
+        expireGlmSessionGrantRecord(dataDir, activation);
+      },
     },
     {
       name: "tampered-fingerprint",

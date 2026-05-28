@@ -2810,25 +2810,6 @@ async function oneTimeApprovalAlreadyUsed(root, token) {
   }
 }
 
-function grantApprovalTupleFromRequest(request) {
-  return Object.freeze({
-    provider: request.provider,
-    mode: request.mode,
-    selected_source: request.selected_source,
-    rendered_prompt_hash: request.rendered_prompt_hash,
-    request: request.request,
-    scope_resolution: request.scope_resolution,
-    auth_path: request.auth_path,
-    billing_path: request.billing_path,
-    selected_route: request.selected_route,
-    route_step: request.route_step,
-    route_steps: request.route_steps,
-    fallback_reason: request.fallback_reason,
-    approval_scope: "grant",
-    grant_bounds: request.grant_bounds,
-  });
-}
-
 function buildApprovalGrantRecord({ approvalTuple, approvalFingerprint, activatedAt }) {
   const bounds = approvalTuple.grant_bounds;
   return Object.freeze({
@@ -2927,6 +2908,21 @@ function approvalGrantMatchesRun(record, { provider, mode, scopeInfo, auditManif
   return requestFieldMatches(currentTuple, record.approval_tuple);
 }
 
+function isClearlyExpiredApprovalGrant(record, now = Date.now()) {
+  const millis = Date.parse(record?.expires_at);
+  return Number.isFinite(millis) && millis <= now;
+}
+
+async function cleanupExpiredApprovalGrantFile(file, record, now = Date.now()) {
+  if (!isClearlyExpiredApprovalGrant(record, now)) return false;
+  try {
+    await unlink(file);
+  } catch {
+    // Opportunistic cleanup must not turn a source-send approval check into an I/O failure.
+  }
+  return true;
+}
+
 function approvalGrantAuditFields(record) {
   return Object.freeze({
     grant_id: record.grant_id,
@@ -2948,6 +2944,7 @@ async function findMatchingApprovalGrant(root, context) {
     throw runProviderFailure("approval_required", "approval_required: approval grant store is unreadable");
   }
   const matches = [];
+  const now = context.now ?? Date.now();
   for (const name of names) {
     if (!name.endsWith(".json")) continue;
     const file = resolve(approvalGrantsDir(root), name);
@@ -2957,6 +2954,7 @@ async function findMatchingApprovalGrant(root, context) {
     } catch {
       continue;
     }
+    if (await cleanupExpiredApprovalGrantFile(file, record, now)) continue;
     if (approvalGrantMatchesRun(record, context)) matches.push(record);
   }
   if (matches.length === 0) return null;
@@ -3166,7 +3164,7 @@ function buildApprovalGrantRequest({ provider, cfg, mode, options, scopeInfo, gr
   const totals = selectedSource.totals;
   const approvalQuestion = `Allow a bounded session grant for sending ${totals.files} selected ${plural(totals.files, "file")} (${totals.bytes} ${plural(totals.bytes, "byte")}, ${totals.lines} ${plural(totals.lines, "line")}) to ${cfg.display_name} until ${expiresAt}?`;
   const disclosure = `Selected source content has not been sent to ${cfg.display_name}. Activating this grant will not send selected source; later matching runs may send selected source to ${cfg.display_name} through direct API auth.`;
-  return Object.freeze({
+  const approvalRequest = Object.freeze({
     event: "external_review_session_approval_request",
     provider,
     display_name: cfg.display_name,
@@ -3208,6 +3206,7 @@ function buildApprovalGrantRequest({ provider, cfg, mode, options, scopeInfo, gr
     }),
     denial_fallback: "If approval is denied, do not activate a session grant. Use the existing approval-request flow for any later source send.",
   });
+  return Object.freeze({ approvalRequest, approvalTuple });
 }
 
 function errorCauseFor(errorCode) {
@@ -3654,7 +3653,7 @@ async function cmdApprovalGrantRequest(options) {
     );
     let approvalRequest;
     try {
-      approvalRequest = buildApprovalGrantRequest({ provider, cfg, mode, options, scopeInfo, grantPolicy });
+      ({ approvalRequest } = buildApprovalGrantRequest({ provider, cfg, mode, options, scopeInfo, grantPolicy }));
     } catch (e) {
       if (e?.apiReviewersReason) throw e;
       throw runProviderFailure("approval_grant_request_failed", e?.message ?? String(e));
@@ -3711,8 +3710,17 @@ async function cmdApprovalGrantActivate(options) {
       apiReviewerDataRoot(process.env, scopeInfo.workspaceRoot ?? scopeInfo.cwd),
     );
     let approvalRequest;
+    let approvalTuple;
     try {
-      approvalRequest = buildApprovalGrantRequest({ provider, cfg, mode, options, scopeInfo, grantPolicy, grantExpiresAt });
+      ({ approvalRequest, approvalTuple } = buildApprovalGrantRequest({
+        provider,
+        cfg,
+        mode,
+        options,
+        scopeInfo,
+        grantPolicy,
+        grantExpiresAt,
+      }));
     } catch (e) {
       if (e?.apiReviewersReason) throw e;
       throw runProviderFailure("approval_grant_activation_failed", e?.message ?? String(e));
@@ -3723,7 +3731,6 @@ async function cmdApprovalGrantActivate(options) {
         "approval_required: run approval-grant request, show the source-free grant summary to the user, and pass the matching grant_approval_token.value with --approval-token and grant_bounds.expires_at",
       );
     }
-    const approvalTuple = grantApprovalTupleFromRequest(approvalRequest);
     const approvalFingerprint = approvalFingerprintFor(approvalTuple);
     const grantRecord = await persistApprovalGrant(
       apiReviewerDataRoot(process.env, scopeInfo.workspaceRoot ?? scopeInfo.cwd),
@@ -3751,6 +3758,15 @@ async function cmdApprovalGrantActivate(options) {
 async function cmdApprovalGrant(argv) {
   const [subcommand = "help", ...rest] = argv;
   const options = parseArgs(rest);
+  if (subcommand === "help" || subcommand === "--help" || subcommand === "-h") {
+    printJson({
+      ok: true,
+      command: "approval-grant",
+      subcommands: ["request", "activate"],
+      source_content_transmission: SOURCE_CONTENT_TRANSMISSION.NOT_SENT,
+    });
+    return;
+  }
   if (subcommand === "request") return cmdApprovalGrantRequest(options);
   if (subcommand === "activate") return cmdApprovalGrantActivate(options);
   throw new Error(`unknown_approval_grant_command:${subcommand}`);
