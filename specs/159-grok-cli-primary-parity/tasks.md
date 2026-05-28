@@ -33,8 +33,8 @@ Grok, GLM, DeepSeek, and Kimi, or explicit operator waivers.
 
 **Independent test**: module-level tests prove default CLI, explicit web, legacy alias normalization, auto starts as CLI, prompt-budget cap names, and invalid transport failure.
 
-- [ ] T012 [US1] Add RED focused tests for Grok transport normalization and config in `tests/unit/grok-transport-adapters.test.mjs`.
-- [ ] T013 [US1] Add RED focused tests for auto fallback eligibility, source-sent fallback ineligibility, and CLI diagnostics projection in `tests/unit/grok-transport-adapters.test.mjs`.
+- [ ] T012 [US1] Add RED focused tests for Grok transport normalization, config, prompt budget env, default model env, timeout env, and legacy alias facts in `tests/unit/grok-transport-adapters.test.mjs`.
+- [ ] T013 [US1] Add RED focused tests for auto fallback eligibility, `source_sent` and `payload_sent` fallback ineligibility, early-error fallback record construction, and CLI diagnostics projection in `tests/unit/grok-transport-adapters.test.mjs`.
 - [ ] T014 [US1] Add RED focused tests proving direct API credential values do not influence default CLI, explicit web, or auto fallback config in `tests/unit/grok-transport-adapters.test.mjs`.
 - [ ] T015 [US1] Implement the Grok transport Adapter Module in `plugins/grok/scripts/lib/grok-transport-adapters.mjs`.
 - [ ] T016 [US1] Export only the Module Interface needed by the Grok runtime from `plugins/grok/scripts/lib/grok-transport-adapters.mjs`.
@@ -45,7 +45,7 @@ Grok, GLM, DeepSeek, and Kimi, or explicit operator waivers.
 
 **Independent test**: existing Grok smoke tests pass without loosening assertions.
 
-- [ ] T017 [US2] Wire `plugins/grok/scripts/grok-web-reviewer.mjs` to use the transport Module for config selection and fallback config.
+- [ ] T017 [US2] Wire `plugins/grok/scripts/grok-web-reviewer.mjs` to use the transport Module for config selection and fallback config, deleting the redundant inlined transport normalization/config/fallback decision logic it replaces.
 - [ ] T018 [US2] Wire prompt-budget error cap names in `plugins/grok/scripts/grok-web-reviewer.mjs` through the transport Module.
 - [ ] T019 [US2] Wire auto fallback eligibility and CLI diagnostics projection in `plugins/grok/scripts/grok-web-reviewer.mjs` through the transport Module.
 - [ ] T020 [US2] Preserve existing `grok-companion.mjs` entrypoint behavior and generated skill/command references.

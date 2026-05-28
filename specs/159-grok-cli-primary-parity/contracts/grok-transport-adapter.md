@@ -12,9 +12,9 @@ The Module must expose behavior equivalent to:
 
 ```text
 resolveGrokTransportMode(options, env) -> "cli" | "web" | "auto" | throws bad_args
-resolveGrokConfig(env, options) -> GrokTransportConfig
-resolveGrokFallbackConfig(env, options) -> GrokTransportConfig
-webAutoFallbackConfig(env, reason) -> GrokTransportConfig
+resolveGrokConfig(options, env) -> GrokTransportConfig
+resolveGrokFallbackConfig(options, env) -> GrokTransportConfig
+webAutoFallbackConfig(options, env, reason) -> GrokTransportConfig
 promptBudgetEnvName(config) -> string
 canAutoFallbackFromCliExecution(config, execution: GrokCliExecutionSummary) -> boolean
 cliRequestDiagnosticsForFallback(execution) -> redacted object
@@ -38,6 +38,9 @@ CLI Adapter:
 - `auth_mode: "subscription_cli"`
 - `selected_route: "subscription_cli"`
 - `prompt_budget_env: "GROK_CLI_MAX_PROMPT_CHARS"`
+- `default_model_env: "GROK_CLI_MODEL"`
+- `timeout_env: "GROK_CLI_TIMEOUT_MS"`
+- `legacy: false`
 
 Web Adapter:
 
@@ -47,6 +50,10 @@ Web Adapter:
 - `auth_mode: "subscription_web"`
 - `selected_route: "subscription_web"`
 - `prompt_budget_env: "GROK_WEB_MAX_PROMPT_CHARS"`
+- `default_model_env: "GROK_WEB_MODEL"`
+- `timeout_env: "GROK_WEB_TIMEOUT_MS"`
+- `legacy: true` only when the request used a legacy web alias such as
+  `legacy`, `tunnel`, or `grok-web`; otherwise false.
 
 ## Fallback Rules
 
@@ -57,8 +64,9 @@ Web Adapter:
   failures.
 - Fallback config must record `fallback_from:"cli"` and the exact
   `fallback_reason`.
-- Auto fallback must return false when the CLI execution summary says source was
-  sent or may have been sent.
+- Auto fallback must return false when either `source_sent` or legacy
+  `payload_sent` in the CLI execution summary is true, `sent`, or
+  `may_be_sent`.
 
 ## Safety Rules
 
