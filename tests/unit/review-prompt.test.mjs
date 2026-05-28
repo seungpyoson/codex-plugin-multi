@@ -3245,6 +3245,37 @@ for (const [name, file] of REVIEW_PROMPT_MODULES) {
   });
 }
 
+for (const [name, file] of REVIEW_PROMPT_MODULES) {
+  test(`review audit manifest does not flag EPERM classifier test-gap prose as reviewer permission blocked (${name})`, async () => {
+    const { buildReviewAuditManifest: targetBuildReviewAuditManifest } = file === "scripts/lib/review-prompt.mjs"
+      ? { buildReviewAuditManifest }
+      : await import(pathToFileURL(resolve(file)).href);
+    const manifest = targetBuildReviewAuditManifest({
+      prompt: "rendered prompt",
+      sourceFiles: [{ path: "tests/unit/review-prompt.test.mjs", text: "export function marker() {}\n" }],
+      result: [
+        "Verdict: APPROVE",
+        "## Blocking findings",
+        "None. I inspected tests/unit/review-prompt.test.mjs.",
+        "## Non-blocking concerns",
+        "- **Negative tests for permission classifiers**: The new EPERM-related permission classifiers are tested through positive cases (approve-reviews that contain permission wording are not flagged). There is no unit-level negative regression proving a concrete permission action phrase still fails the gate.",
+        "Checklist",
+        "1. PASS base/head refs checked.",
+        "2. PASS scope reviewed.",
+        "3. PASS correctness/security/tests reviewed.",
+        "4. NOT REVIEWED no residual threads supplied.",
+        "5. PASS blocking and non-blocking sections are separated.",
+        "6. PASS no timeout, truncation, interruption, permission block, or shallow output.",
+      ].join("\n"),
+      status: "completed",
+      errorCode: null,
+    });
+
+    assert.deepEqual(manifest.review_quality.semantic_failure_reasons, []);
+    assert.equal(manifest.review_quality.failed_review_slot, false);
+  });
+}
+
 test("review audit manifest ignores pathologically long numbered checklist prefixes", () => {
   const manifest = buildReviewAuditManifest({
     prompt: "rendered prompt",

@@ -63,6 +63,35 @@ test("privacy redactor enforces aggregate source budget across object fields", (
   assert.doesNotMatch(serialized, new RegExp(snippets.at(-1)));
 });
 
+test("privacy redactor preserves object schema keys even when source contains matching identifiers", () => {
+  const snippets = Array.from({ length: 9 }, (_, index) =>
+    `schema-budget-${index}-${String.fromCharCode(65 + index).repeat(94)}`
+  );
+  const redact = buildPrivacyRedactor({
+    sourceFiles: [{
+      path: "schema.js",
+      text: [
+        "export const REVIEW_FIELDS = ['failed_review_slot', 'suggested_action', 'has_non_blocking_section'];",
+        snippets.map((snippet, index) => `${snippet}\nsource-gap-${index}`).join("\n"),
+        "export const LONG_SOURCE = 'SOURCE_BODY_SENTINEL_DO_NOT_PERSIST_XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX';",
+      ].join("\n"),
+    }],
+  });
+
+  const out = redact.value({
+    budget_burn: snippets.join("\nreview gap\n"),
+    failed_review_slot: false,
+    suggested_action: "Quoted source: SOURCE_BODY_SENTINEL_DO_NOT_PERSIST_XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX",
+    review_quality: {
+      has_non_blocking_section: true,
+    },
+  });
+
+  assert.deepEqual(Object.keys(out), ["budget_burn", "failed_review_slot", "suggested_action", "review_quality"]);
+  assert.deepEqual(Object.keys(out.review_quality), ["has_non_blocking_section"]);
+  assert.match(out.suggested_action, new RegExp(REDACTED_SOURCE_EXCERPT.replaceAll("[", "\\[").replaceAll("]", "\\]")));
+});
+
 test("privacy redactor applies generic credential and account-token patterns", () => {
   const redact = buildPrivacyRedactor({
     env: { CODEX_PLUGIN_PRIVACY_TOKEN: "env-secret-value-12345" },
