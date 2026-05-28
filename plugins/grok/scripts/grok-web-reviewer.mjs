@@ -1703,8 +1703,98 @@ function grokCliLoginRequiredMessage(cfg, env = process.env) {
   return `Grok CLI model list is reachable, but the CLI is not logged in.${ignored} Run \`grok login --device-auth\` or \`grok login --oauth\` in a normal terminal, ensure \`grok models\` reports a logged-in account and lists the configured model, then retry.`;
 }
 
+function grokCliAuthExpiredMessage(cfg, env = process.env) {
+  const ignoredKeys = ignoredGrokDirectApiEnvKeys(cfg, env);
+  const ignored = ignoredGrokDirectApiEnvMessage(cfg, env, ignoredKeys);
+  return `Grok subscription CLI auth is expired.${ignored} Refresh Grok CLI auth with \`grok login --device-auth\` or \`grok login --oauth\`, ensure \`grok models\` reports a logged-in account and lists the configured model, then retry.`;
+}
+
 function grokCliAuthHome(env = process.env) {
   return resolve(env.GROK_CLI_AUTH_HOME || env.GROK_HOME || join(homedir(), ".grok"));
+}
+
+function parseBase64UrlJson(value) {
+  try {
+    const normalized = String(value).replace(/-/g, "+").replace(/_/g, "/");
+    const padded = normalized.padEnd(Math.ceil(normalized.length / 4) * 4, "=");
+    return JSON.parse(Buffer.from(padded, "base64").toString("utf8"));
+  } catch {
+    return null;
+  }
+}
+
+function epochLikeToMs(value) {
+  if (!Number.isFinite(value) || value <= 0) return null;
+  return value > 100000000000 ? Math.trunc(value) : Math.trunc(value * 1000);
+}
+
+function expiryValueToMs(value) {
+  if (typeof value === "number") return epochLikeToMs(value);
+  if (typeof value !== "string" || !value.trim()) return null;
+  const numeric = Number(value);
+  if (Number.isFinite(numeric)) return epochLikeToMs(numeric);
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function jwtExpiryToMs(token) {
+  if (!isJwtShapedToken(token)) return null;
+  const payload = parseBase64UrlJson(String(token).split(".")[1]);
+  return expiryValueToMs(payload?.exp);
+}
+
+function isExpiryKey(key) {
+  return /^(?:exp|expires|expires_at|expiresAt|expires_on|expiresOn|expiry|expiry_at|expiryAt|expiration|expiration_time|expirationTime)$/u.test(String(key ?? ""));
+}
+
+function collectAuthExpiryCandidates(value, candidates = [], key = null) {
+  if (isExpiryKey(key)) {
+    const explicit = expiryValueToMs(value);
+    if (explicit !== null) candidates.push(explicit);
+  }
+  if (typeof value === "string") {
+    const jwt = jwtExpiryToMs(value);
+    if (jwt !== null) candidates.push(jwt);
+    return candidates;
+  }
+  if (Array.isArray(value)) {
+    for (const item of value) collectAuthExpiryCandidates(item, candidates);
+    return candidates;
+  }
+  if (value && typeof value === "object") {
+    for (const [childKey, childValue] of Object.entries(value)) {
+      collectAuthExpiryCandidates(childValue, candidates, childKey);
+    }
+  }
+  return candidates;
+}
+
+async function grokCliAuthFreshness(env = process.env, nowMs = Date.now()) {
+  const authFile = resolve(grokCliAuthHome(env), "auth.json");
+  let text;
+  try {
+    text = await readFile(authFile, "utf8");
+  } catch (error) {
+    if (error?.code === "ENOENT") {
+      return { status: "missing", expiry_known: false };
+    }
+    return { status: "unreadable", expiry_known: false };
+  }
+  let parsed;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    return { status: "malformed", expiry_known: false };
+  }
+  const expiries = collectAuthExpiryCandidates(parsed);
+  if (expiries.length === 0) {
+    return { status: "present_unknown", expiry_known: false };
+  }
+  const hasFreshCandidate = expiries.some((expiryMs) => expiryMs > nowMs);
+  return {
+    status: hasFreshCandidate ? "fresh" : "expired",
+    expiry_known: true,
+  };
 }
 
 async function copyGrokCliHomeFile(sourceHome, runtimeHome, relPath, copiedFiles) {
@@ -1887,6 +1977,7 @@ async function grokCliReadinessPreflight(cfg, env = process.env) {
     );
   }
   const versionText = firstLine(version.stdout);
+  const authFreshness = await grokCliAuthFreshness(env);
 
   const models = runGrokCliCommand(cfg, ["models"], { timeoutMs: Math.min(cfg.timeout_ms, 15000) });
   if (models.error || models.status !== 0) {
@@ -1901,15 +1992,17 @@ async function grokCliReadinessPreflight(cfg, env = process.env) {
         grok_version: versionText,
         model: cfg.model,
         configured_timeout_ms: cfg.timeout_ms,
+        auth_freshness: authFreshness,
       },
     );
   }
   const modelsInfo = parseGrokCliModels(models.stdout, cfg);
   if (isGrokCliLoginRequired(modelsInfo)) {
     const ignoredEnvCredentials = ignoredGrokDirectApiEnvKeys(cfg, env);
+    const expiredAuth = authFreshness.status === "expired";
     return providerFailureWithDiagnostic(
-      "grok_cli_login_required",
-      grokCliLoginRequiredMessage(cfg, env),
+      expiredAuth ? "grok_cli_auth_expired" : "grok_cli_login_required",
+      expiredAuth ? grokCliAuthExpiredMessage(cfg, env) : grokCliLoginRequiredMessage(cfg, env),
       null,
       null,
       false,
@@ -1923,6 +2016,7 @@ async function grokCliReadinessPreflight(cfg, env = process.env) {
         configured_timeout_ms: cfg.timeout_ms,
         ignored_env_credentials: ignoredEnvCredentials,
         auth_policy: ignoredEnvCredentials.length > 0 ? "api_key_env_ignored" : null,
+        auth_freshness: authFreshness,
       },
     );
   }
@@ -1941,6 +2035,7 @@ async function grokCliReadinessPreflight(cfg, env = process.env) {
         logged_in: modelsInfo.logged_in,
         model_ready: false,
         configured_timeout_ms: cfg.timeout_ms,
+        auth_freshness: authFreshness,
       },
     );
   }
@@ -1953,6 +2048,7 @@ async function grokCliReadinessPreflight(cfg, env = process.env) {
       default_model: modelsInfo.default_model,
       logged_in: modelsInfo.logged_in,
       model_ready: true,
+      auth_freshness: authFreshness,
     },
   });
   if (sourceFree.exitCode !== 0 || sourceFree.parsed?.ok !== true) {
@@ -1966,6 +2062,7 @@ async function grokCliReadinessPreflight(cfg, env = process.env) {
         source_free_grok_home_cleanup: sourceFree.diagnostics?.grok_home_cleanup ?? null,
         prompt_cleanup: null,
         grok_home_cleanup: null,
+        auth_freshness: authFreshness,
       },
       parsed: {
         ...sourceFree.parsed,
@@ -1990,6 +2087,7 @@ async function grokCliReadinessPreflight(cfg, env = process.env) {
       grok_home_linked_files: sourceFree.diagnostics?.grok_home_linked_files ?? [],
       grok_home_auth_sync: sourceFree.diagnostics?.grok_home_auth_sync ?? null,
       grok_home_cleanup: sourceFree.diagnostics?.grok_home_cleanup ?? null,
+      auth_freshness: authFreshness,
     },
   };
 }
@@ -3188,6 +3286,12 @@ function suggestedAction(errorCode, errorMessage = "", tunnelStart = null) {
       : "";
     return `${apiKeyHint}Run \`grok login --device-auth\` or \`grok login --oauth\` in a normal terminal, ensure \`grok models\` reports a logged-in account and lists grok-build, then retry the Grok CLI reviewer. Do not switch provider or transport in default CLI mode.`;
   }
+  if (errorCode === "grok_cli_auth_expired") {
+    const apiKeyHint = /Direct API env variables are present and ignored/i.test(errorMessage)
+      ? "Direct API env vars may make plain `grok models` look usable, but they do not refresh subscription CLI auth. "
+      : "";
+    return `${apiKeyHint}Refresh Grok CLI auth with \`grok login --device-auth\` or \`grok login --oauth\`, ensure \`grok models\` reports a logged-in account and lists grok-build, then retry the Grok CLI reviewer. Do not switch provider or transport in default CLI mode.`;
+  }
   if (errorCode === "grok_cli_auth_timeout") {
     return "Complete `grok login` in a normal terminal or fix default-browser auth handling, ensure `grok models` reports a logged-in account and lists grok-build, then retry the Grok CLI reviewer. Do not switch provider or transport in default CLI mode.";
   }
@@ -3410,6 +3514,7 @@ function buildRecord({ cfg, mode, options, scopeInfo, execution, startedAt, ende
       default_model: safeDiagnostics.default_model ?? null,
       logged_in: safeDiagnostics.logged_in ?? null,
       model_ready: safeDiagnostics.model_ready ?? null,
+      auth_freshness: safeDiagnostics.auth_freshness ?? null,
       exit_status: safeDiagnostics.exit_status ?? null,
       exit_signal: safeDiagnostics.exit_signal ?? null,
       stderr_head: safeDiagnostics.stderr_head ?? null,
@@ -4024,7 +4129,7 @@ async function cliDoctorFields(cfg, env = process.env) {
     : (errorCode === "grok_cli_auth_unavailable" ? "unknown" : "failed");
   const sourceFreeStatus = ready
     ? "ready"
-    : (errorCode === "grok_cli_login_required" ? "skipped" : "failed");
+    : (errorCode === "grok_cli_login_required" || errorCode === "grok_cli_auth_expired" ? "skipped" : "failed");
   return {
     provider: cfg.provider,
     status: "ok",
@@ -4051,6 +4156,7 @@ async function cliDoctorFields(cfg, env = process.env) {
     default_model: diagnostics.default_model ?? null,
     logged_in: diagnostics.logged_in ?? null,
     model_ready: diagnostics.model_ready ?? null,
+    auth_freshness: diagnostics.auth_freshness ?? { status: "unknown", expiry_known: false },
     ignored_env_credentials: diagnostics.ignored_env_credentials ?? [],
     auth_policy: diagnostics.auth_policy ?? null,
     timeout_ms: cfg.timeout_ms,
@@ -4069,6 +4175,10 @@ async function cliDoctorFields(cfg, env = process.env) {
       cli_login: {
         status: loginStatus,
         logged_in: diagnostics.logged_in ?? null,
+      },
+      cli_auth_file: {
+        status: diagnostics.auth_freshness?.status ?? "unknown",
+        expiry_known: diagnostics.auth_freshness?.expiry_known ?? false,
       },
       source_free_prompt: {
         status: sourceFreeStatus,
@@ -4536,6 +4646,7 @@ async function repairFields(options = {}, env = process.env) {
 const GROK_CLI_AUTO_FALLBACK_CODES = new Set([
   "grok_cli_unavailable",
   "grok_cli_auth_unavailable",
+  "grok_cli_auth_expired",
   "grok_cli_login_required",
   "grok_cli_auth_timeout",
   "grok_cli_model_unavailable",
@@ -4557,6 +4668,7 @@ function cliRequestDiagnosticsForFallback(execution) {
     default_model: diagnostics.default_model ?? null,
     logged_in: diagnostics.logged_in ?? null,
     model_ready: diagnostics.model_ready ?? null,
+    auth_freshness: diagnostics.auth_freshness ?? null,
     exit_status: diagnostics.exit_status ?? null,
     exit_signal: diagnostics.exit_signal ?? null,
     stderr_head: diagnostics.stderr_head ?? null,

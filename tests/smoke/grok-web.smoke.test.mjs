@@ -514,6 +514,14 @@ const GROK_SOURCE_FREE_AUTH_TIMEOUT_STDERR = [
   "",
 ].join("\n");
 
+function writeExpiredGrokCliAuthFixture(authHome) {
+  writeFileSync(path.join(authHome, "auth.json"), JSON.stringify({
+    auth_mode: "Oidc",
+    expires_at: "2000-01-01T00:00:00.000Z",
+  }) + "\n");
+  writeFileSync(path.join(authHome, "config.toml"), "[models]\ndefault = \"grok-build\"\n");
+}
+
 async function readJsonRequest(req) {
   let body = "";
   req.setEncoding("utf8");
@@ -1703,6 +1711,49 @@ test("doctor reports Grok CLI unauthenticated when model is ready but login is f
     assert.equal(parsed.readiness_layers.source_free_prompt.status, "skipped");
     assert.match(parsed.next_action, /grok login/i);
     assert.doesNotMatch(JSON.stringify(parsed), /CLI_SOURCE_SECRET/);
+
+    const logLines = readGrokCliLog(logPath);
+    assert.deepEqual(logLines.map((line) => line.args[0]), ["--version", "models"]);
+  } finally {
+    rmTree(authHome);
+    rmTree(dataDir);
+  }
+});
+
+test("doctor reports expired Grok CLI subscription auth distinctly from API-key masked model access", () => {
+  const dataDir = mkdtempSync(path.join(tmpdir(), "grok-cli-expired-auth-doctor-data-"));
+  const authHome = mkdtempSync(path.join(tmpdir(), "grok-cli-expired-auth-doctor-auth-home-"));
+  const { binDir, grokPath, logPath } = makeFakeGrokCli({ modelsOutput: GROK_MODELS_READY_LOGGED_OUT });
+  writeExpiredGrokCliAuthFixture(authHome);
+
+  try {
+    const result = run(["doctor"], {
+      defaultTransport: false,
+      env: {
+        PATH: `${binDir}${path.delimiter}${process.env.PATH ?? ""}`,
+        GROK_CLI_BINARY: grokPath,
+        GROK_CLI_AUTH_HOME: authHome,
+        GROK_PLUGIN_DATA: dataDir,
+        XAI_API_KEY: "xai-direct-api-key-must-not-leak",
+      },
+    });
+
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    const parsed = parseStdout(result);
+    assert.equal(parsed.ready, false);
+    assert.equal(parsed.transport, "cli");
+    assert.equal(parsed.auth_mode, "subscription_cli");
+    assert.equal(parsed.error_code, "grok_cli_auth_expired");
+    assert.equal(parsed.logged_in, false);
+    assert.equal(parsed.model_ready, true);
+    assert.equal(parsed.auth_freshness.status, "expired");
+    assert.equal(parsed.readiness_layers.cli_auth_file.status, "expired");
+    assert.deepEqual(parsed.ignored_env_credentials, ["XAI_API_KEY"]);
+    assert.equal(parsed.auth_policy, "api_key_env_ignored");
+    assert.match(parsed.error_message, /subscription CLI auth is expired/i);
+    assert.match(parsed.error_message, /Direct API env variables are present and ignored/i);
+    assert.match(parsed.next_action, /grok login/i);
+    assert.doesNotMatch(result.stdout, /xai-direct-api-key-must-not-leak|2000-01-01/);
 
     const logLines = readGrokCliLog(logPath);
     assert.deepEqual(logLines.map((line) => line.args[0]), ["--version", "models"]);
