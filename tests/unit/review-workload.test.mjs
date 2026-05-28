@@ -81,6 +81,18 @@ test("provider workload lease publishes a complete payload atomically", () => {
   assert.match(source, /linkSync\(/, "lease publication should atomically link a complete candidate file");
 });
 
+test("provider workload lease serializes stale reclaim before removing inactive holders", () => {
+  const source = readFileSync(new URL("../../scripts/lib/review-workload.mjs", import.meta.url), "utf8");
+  assert.match(source, /function acquireProviderWorkloadGate\(/,
+    "stale reclaim must be protected by a provider-local gate");
+  assert.match(source, /const gate = acquireProviderWorkloadGate\(file, env\);/,
+    "lease acquisition must hold the gate before inspecting or removing an inactive holder");
+  assert.match(source, /removeInactiveHolder\(file, holder\)/,
+    "inactive-holder removal must be bound to the holder inspected while the gate is held");
+  assert.doesNotMatch(source, /removeInactiveHolder\(file\)\) continue/,
+    "stale reclaim must not unlink the lock path outside a serialized compare-and-retry section");
+});
+
 test("provider workload lease release unregisters exit cleanup listener", () => {
   const { root, env } = tempEnv();
   const before = process.listenerCount("exit");
