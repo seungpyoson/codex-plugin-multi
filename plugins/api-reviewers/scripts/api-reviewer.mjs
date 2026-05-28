@@ -2142,7 +2142,7 @@ async function callProvider(provider, cfg, prompt, env = process.env) {
       diagnostics: diagnostics(),
     };
   } catch (e) {
-    const reason = e?.name === "AbortError" ? "timeout" : "provider_unavailable";
+    const reason = isProviderTimeoutException(e) ? "timeout" : "provider_unavailable";
     return {
       ...providerFailureWithDiagnostics(
         reason,
@@ -2153,6 +2153,7 @@ async function callProvider(provider, cfg, prompt, env = process.env) {
         {
           ...diagnostics(),
           elapsed_ms: Date.now() - started,
+          fetch_error: fetchExceptionDiagnostics(e, redact),
         },
       ),
       ...credentialFields,
@@ -2175,9 +2176,26 @@ function safeProviderSessionId(value) {
   return /^[A-Za-z0-9._:/=+@-]{1,200}$/.test(value) ? value : null;
 }
 
+function providerExceptionCode(error) {
+  return error?.code ?? error?.cause?.code ?? null;
+}
+
+function isProviderTimeoutException(error) {
+  if (error?.name === "AbortError") return true;
+  const code = providerExceptionCode(error);
+  if (code === "UND_ERR_HEADERS_TIMEOUT" || code === "UND_ERR_BODY_TIMEOUT" || code === "UND_ERR_CONNECT_TIMEOUT") {
+    return true;
+  }
+  const causeName = String(error?.cause?.name ?? "");
+  const causeMessage = String(error?.cause?.message ?? "");
+  return /TimeoutError$/u.test(causeName) || /timeout error/i.test(causeMessage);
+}
+
 function payloadSentForProviderException(error) {
   if (error?.name === "AbortError") return true;
-  const code = error?.code ?? error?.cause?.code ?? null;
+  const code = providerExceptionCode(error);
+  if (code === "UND_ERR_HEADERS_TIMEOUT" || code === "UND_ERR_BODY_TIMEOUT") return true;
+  if (code === "UND_ERR_CONNECT_TIMEOUT") return false;
   if (code === "ENOTFOUND" || code === "EAI_AGAIN" || code === "ECONNREFUSED" ||
       code === "EHOSTUNREACH" || code === "ENETUNREACH") {
     return false;
@@ -2273,6 +2291,41 @@ function providerFailureWithDiagnostics(reason, message, httpStatus, raw = null,
     ...providerFailure(reason, message, httpStatus, raw, payloadSent),
     diagnostics,
   };
+}
+
+function boundedDiagnosticString(value, redact) {
+  if (value == null) return null;
+  const text = redact(String(value));
+  return text.length > 500 ? `${text.slice(0, 500)}...` : text;
+}
+
+function errorDiagnosticFields(error, redact) {
+  if (!error || typeof error !== "object") return null;
+  const fields = {
+    name: boundedDiagnosticString(error.name, redact),
+    code: boundedDiagnosticString(error.code, redact),
+    message: boundedDiagnosticString(error.message, redact),
+  };
+  return Object.fromEntries(Object.entries(fields).filter(([, value]) => value != null && value !== ""));
+}
+
+function fetchExceptionDiagnostics(error, redact) {
+  const diagnostics = errorDiagnosticFields(error, redact) ?? {
+    message: boundedDiagnosticString(error, redact),
+  };
+  const causeFields = errorDiagnosticFields(error?.cause, redact);
+  if (causeFields && Object.keys(causeFields).length > 0) {
+    diagnostics.cause = causeFields;
+  }
+  if (Array.isArray(error?.cause?.errors)) {
+    const errors = error.cause.errors
+      .slice(0, 3)
+      .map((entry) => errorDiagnosticFields(entry, redact))
+      .filter((entry) => entry && Object.keys(entry).length > 0);
+    if (errors.length > 0) diagnostics.cause_errors = errors;
+    if (error.cause.errors.length > errors.length) diagnostics.cause_errors_truncated = true;
+  }
+  return diagnostics;
 }
 
 function providerUnavailableSuggestedAction(errorMessage = "", httpStatus = null, env = process.env) {
@@ -2905,7 +2958,8 @@ function buildRuntimeDiagnostics(diagnostics) {
     Object.hasOwn(diagnostics, "prompt_chars") ||
     Object.hasOwn(diagnostics, "request_defaults") ||
     Object.hasOwn(diagnostics, "max_tokens") ||
-    Object.hasOwn(diagnostics, "temperature")
+    Object.hasOwn(diagnostics, "temperature") ||
+    Object.hasOwn(diagnostics, "fetch_error")
   );
   const out = {};
   if (hasProviderRequest) {
@@ -2916,6 +2970,7 @@ function buildRuntimeDiagnostics(diagnostics) {
       request_defaults: diagnostics.request_defaults ?? null,
       max_tokens: diagnostics.max_tokens ?? null,
       temperature: diagnostics.temperature ?? null,
+      fetch_error: diagnostics.fetch_error ?? null,
     };
     out.cost_quota = diagnostics.cost_quota ?? null;
   } else if (Object.hasOwn(diagnostics, "cost_quota")) {
