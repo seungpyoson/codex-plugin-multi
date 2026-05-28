@@ -234,3 +234,63 @@ Results:
 - `npm run lint`: passed.
 - `git diff --check`: passed.
 - `npm test`: 2238 tests, 2226 passed, 0 failed, 12 skipped.
+
+## Post-PR Provider Alias Follow-up
+
+Accepted Greptile finding:
+
+- Grok packet recovery still contained a transport-specific alias conditional:
+  `grok-web` was hardcoded back to `grok` inside the runtime instead of being
+  represented as provider metadata. The fix adds provider-neutral
+  `canonical_provider` recovery metadata, sets Grok CLI and Grok Web to the
+  shared canonical provider `grok`, and projects that value through the shared
+  provider recovery capability snapshot and schema.
+
+Verification:
+
+```sh
+node --test --test-name-pattern "Grok auto transport stays" tests/unit/plugin-copies-in-sync.test.mjs
+node --test --test-name-pattern "Grok runtime reads direct API credential names|custom-review guides substantive missing-verdict retry" tests/smoke/grok-web.smoke.test.mjs
+node --test --test-name-pattern "Grok CLI lifecycle markdown streams running card" tests/smoke/grok-web.smoke.test.mjs
+npm run smoke:grok
+npm test
+npm run lint
+npm run lint:sync
+git diff --check
+```
+
+Results:
+
+- RED static unit test failed before the runtime metadata update because
+  `canonical_provider` was absent.
+- RED Grok source-sent recovery smoke test failed before the runtime metadata
+  update because `provider_capabilities.canonical_provider` was absent.
+- Focused Grok metadata/recovery smoke assertions passed after adding direct
+  coverage for Grok CLI, Web, and fallback config `canonical_provider`.
+- Focused Grok lifecycle smoke test passed after hardening its fake CLI delay
+  and wait budgets for full-suite load.
+- `npm run smoke:grok`: 173 tests passed, 0 failed.
+- `npm test`: 2238 tests, 2226 passed, 0 failed, 12 skipped.
+- `npm run lint`: passed.
+- `npm run lint:sync`: passed.
+- `git diff --check`: passed.
+
+External delta review:
+
+| Reviewer | Job | Source sent | Verdict | Blocking findings |
+| --- | --- | --- | --- | --- |
+| Claude | `7d9cd7a9-16fc-4e4a-81af-9c8f776e560c` | yes | APPROVE | none |
+| Grok | `job_c64902b2-07e3-4041-8a92-6268d3b293f1` | yes | APPROVE | none |
+
+Review packet note:
+
+- The first Claude whole-file attempt
+  `267a379e-da20-4bde-919a-07727d038429` failed before launch with
+  `source_packet_too_large`; selected source was not sent. The retry used a
+  narrow source packet containing the delta diff and verification evidence.
+- Claude's low non-blocking test-gap suggestion was addressed before the Grok
+  review by adding direct assertions that Grok CLI, Web, and fallback configs
+  all carry `canonical_provider`.
+- Both final reviewers noted the narrow packet scope limitation: they reviewed
+  the supplied delta packet rather than the whole live source tree. Local
+  verification above was run against the live worktree.

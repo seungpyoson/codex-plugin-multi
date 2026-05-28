@@ -709,7 +709,7 @@ test("Grok CLI lifecycle markdown streams running card before source-bearing CLI
   const cwd = realpathSync(mkdtempSync(path.join(tmpdir(), "grok-cli-lifecycle-workspace-")));
   const dataDir = mkdtempSync(path.join(tmpdir(), "grok-cli-lifecycle-data-"));
   const authHome = mkdtempSync(path.join(tmpdir(), "grok-cli-lifecycle-auth-home-"));
-  const { binDir, grokPath, logPath } = makeFakeGrokCli({ sourceBearingDelayMs: 1000 });
+  const { binDir, grokPath, logPath } = makeFakeGrokCli({ sourceBearingDelayMs: 3000 });
   writeGrokCliAuthFixture(cwd, authHome);
   let child = null;
   try {
@@ -743,14 +743,14 @@ test("Grok CLI lifecycle markdown streams running card before source-bearing CLI
     child.stderr.on("data", (chunk) => { stderr += chunk; });
 
     await waitForValue(() => readGrokCliLog(logPath).some((line) => line.promptHasSource), {
-      timeoutMs: 2000,
+      timeoutMs: 10000,
       intervalMs: 10,
     });
     assert.equal(child.exitCode, null, "companion must still be running while fake Grok CLI is delayed");
     const streamed = await waitForValue(() => (
       /\| Status \| running \|/.test(stdout) ? stdout : null
     ), {
-      timeoutMs: 400,
+      timeoutMs: 2000,
       intervalMs: 10,
     });
     assert.match(streamed, /^### EXTERNAL REVIEW/m);
@@ -1622,7 +1622,20 @@ test("doctor reports only canonical XAI_API_KEY as ignored, not Grok CLI login",
 test("Grok runtime reads direct API credential names from provider metadata", () => {
   const entrypointSource = readFileSync(COMPANION, "utf8");
   const runtimeSource = readFileSync(COMPANION_RUNTIME, "utf8");
-  assert.match(runtimeSource, /providerApiCapability\("grok"\)/);
+  assert.match(
+    runtimeSource,
+    /function cliConfig[\s\S]{0,1200}provider:\s*GROK_CANONICAL_PROVIDER,\s*canonical_provider:\s*GROK_CANONICAL_PROVIDER/,
+  );
+  assert.match(
+    runtimeSource,
+    /function webConfig[\s\S]{0,1800}provider:\s*["']grok-web["'],\s*canonical_provider:\s*GROK_CANONICAL_PROVIDER/,
+  );
+  assert.match(
+    runtimeSource,
+    /function fallbackConfig[\s\S]{0,1800}provider:\s*["']grok-web["'],\s*canonical_provider:\s*GROK_CANONICAL_PROVIDER/,
+  );
+  assert.match(runtimeSource, /providerApiCapability\(GROK_CANONICAL_PROVIDER\)/);
+  assert.doesNotMatch(runtimeSource, /providerApiCapability\(["']grok["']\)/);
   for (const source of [entrypointSource, runtimeSource]) {
     assert.doesNotMatch(source, /\b(?:GROK_API_KEY|XAI_API_KEY|XAI_KEY)\b/);
   }
@@ -4350,6 +4363,9 @@ test("custom-review guides substantive missing-verdict retry without automatic r
       const recovery = record.runtime_diagnostics?.packet_recovery;
       assert.ok(recovery, "Grok no-verdict source-sent failures must include packet_recovery");
       assert.equal(recovery.provider, "grok");
+      assert.equal(recovery.provider_capabilities.provider, "grok");
+      assert.equal(recovery.provider_capabilities.canonical_provider, "grok");
+      assert.equal(recovery.provider, recovery.provider_capabilities.canonical_provider);
       assert.equal(recovery.mode, "custom-review");
       assert.equal(recovery.reason, "review_not_completed");
       assert.equal(recovery.source_content_transmission, "sent");

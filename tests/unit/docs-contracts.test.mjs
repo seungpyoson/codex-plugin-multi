@@ -1009,6 +1009,7 @@ test("packet recovery schema keeps the no-source resume capability guard", () =>
     schema.$defs.providerRecoveryCapabilities.required,
     [
       "provider",
+      "canonical_provider",
       "route_step",
       "source_packet_budget_bytes",
       "rendered_prompt_budget_chars",

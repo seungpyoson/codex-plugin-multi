@@ -133,6 +133,8 @@ Validation rules:
 ## ProviderRecoveryCapabilities
 
 - `provider`: provider id
+- `canonical_provider`: provider id used for shared recovery/audit semantics
+  when a transport-specific runtime provider id differs
 - `route_step`: selected route step
 - `source_packet_budget_bytes`: known source packet cap or null
 - `rendered_prompt_budget_chars`: known rendered prompt cap or null

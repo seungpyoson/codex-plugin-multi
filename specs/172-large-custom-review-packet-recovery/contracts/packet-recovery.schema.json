@@ -220,6 +220,7 @@
       "type": "object",
       "required": [
         "provider",
+        "canonical_provider",
         "route_step",
         "source_packet_budget_bytes",
         "rendered_prompt_budget_chars",
@@ -233,6 +234,9 @@
       ],
       "properties": {
         "provider": {
+          "enum": ["claude", "gemini", "grok", "kimi", "deepseek", "glm", null]
+        },
+        "canonical_provider": {
           "enum": ["claude", "gemini", "grok", "kimi", "deepseek", "glm", null]
         },
         "route_step": { "$ref": "#/$defs/safeTextOrNull" },

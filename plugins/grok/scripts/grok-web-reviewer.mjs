@@ -35,6 +35,7 @@ const DEFAULT_CHAT_DOCTOR_TIMEOUT_MS = 10000;
 const DEFAULT_TUNNEL_START_TIMEOUT_MS = 8000;
 const DEFAULT_TUNNEL_CLEANUP_TIMEOUT_MS = 2000;
 const DEFAULT_GROK2API_REPO_URL = "https://github.com/chenyme/grok2api.git";
+const GROK_CANONICAL_PROVIDER = "grok";
 const DEFAULT_CLI_MODEL = "grok-build";
 const DEFAULT_CLI_MAX_TURNS = 8;
 const GROK_CLI_TIMEOUT_KILL_GRACE_MS = 250;
@@ -428,7 +429,8 @@ function cliConfig(env = process.env, options = {}) {
   const maxPromptChars = parsePositiveIntegerEnv(env, "GROK_CLI_MAX_PROMPT_CHARS", DEFAULT_MAX_PROMPT_CHARS, "character count");
   const maxTurns = parsePositiveIntegerEnv(env, "GROK_CLI_MAX_TURNS", DEFAULT_CLI_MAX_TURNS, "turn count");
   return {
-    provider: "grok",
+    provider: GROK_CANONICAL_PROVIDER,
+    canonical_provider: GROK_CANONICAL_PROVIDER,
     display_name: "Grok CLI",
     auth_mode: "subscription_cli",
     transport: "cli",
@@ -443,7 +445,7 @@ function cliConfig(env = process.env, options = {}) {
     max_turns: maxTurns,
     credential_ref: null,
     credential_value: null,
-    api_capability: providerApiCapability("grok"),
+    api_capability: providerApiCapability(GROK_CANONICAL_PROVIDER),
   };
 }
 
@@ -528,6 +530,7 @@ function webConfig(env = process.env, options = {}) {
   const maxPromptChars = parsePositiveIntegerEnv(env, "GROK_WEB_MAX_PROMPT_CHARS", DEFAULT_MAX_PROMPT_CHARS, "character count");
   return {
     provider: "grok-web",
+    canonical_provider: GROK_CANONICAL_PROVIDER,
     display_name: "Grok Web",
     auth_mode: "subscription_web",
     transport: "web",
@@ -546,7 +549,7 @@ function webConfig(env = process.env, options = {}) {
     credential_value: env.GROK_WEB_TUNNEL_API_KEY || null,
     grok2api_base_url: normalizeGrok2ApiBaseUrl(env.GROK2API_BASE_URL, env.GROK_WEB_BASE_URL),
     grok2api_admin_key: env.GROK2API_ADMIN_KEY || DEFAULT_GROK2API_ADMIN_KEY,
-    api_capability: providerApiCapability("grok"),
+    api_capability: providerApiCapability(GROK_CANONICAL_PROVIDER),
   };
 }
 
@@ -562,6 +565,7 @@ function fallbackConfig(env = process.env, options = {}) {
   if (transport === "cli" || transport === "auto") return cliConfig(env, { requestedTransport: transport });
   return {
     provider: "grok-web",
+    canonical_provider: GROK_CANONICAL_PROVIDER,
     display_name: "Grok Web",
     auth_mode: "subscription_web",
     transport: "web",
@@ -578,7 +582,7 @@ function fallbackConfig(env = process.env, options = {}) {
     max_prompt_chars: DEFAULT_MAX_PROMPT_CHARS,
     credential_ref: env.GROK_WEB_TUNNEL_API_KEY ? "GROK_WEB_TUNNEL_API_KEY" : null,
     credential_value: env.GROK_WEB_TUNNEL_API_KEY || null,
-    api_capability: providerApiCapability("grok"),
+    api_capability: providerApiCapability(GROK_CANONICAL_PROVIDER),
   };
 }
 
@@ -1562,6 +1566,7 @@ function isGrokCliAuthRepairCode(errorCode) {
 
 function providerCapabilitiesForConfig(cfg) {
   const capabilities = {
+    canonical_provider: cfg.canonical_provider ?? cfg.provider ?? null,
     subscription: {
       kind: cfg.transport,
       auth_path: cfg.auth_mode,
@@ -1575,7 +1580,7 @@ function providerCapabilitiesForConfig(cfg) {
 }
 
 function recoveryProviderId(cfg) {
-  return cfg.provider === "grok-web" ? "grok" : (cfg.provider ?? "grok");
+  return cfg.canonical_provider ?? cfg.provider ?? null;
 }
 
 function modeSendsSelectedSource(mode) {

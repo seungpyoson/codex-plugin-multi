@@ -860,6 +860,7 @@ function providerRecoveryCapabilitiesSnapshot({
   const selectedProvider = provider ?? sourcePacketPolicy?.provider ?? null;
   return Object.freeze({
     provider: selectedProvider,
+    canonical_provider: providerCapabilities?.canonical_provider ?? selectedProvider,
     route_step: selectedRouteStep,
     source_packet_budget_bytes: Number.isSafeInteger(sourcePacketPolicy?.source_packet_budget_bytes)
       ? sourcePacketPolicy.source_packet_budget_bytes
