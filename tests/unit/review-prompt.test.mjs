@@ -2673,6 +2673,34 @@ for (const [name, file] of REVIEW_PROMPT_MODULES) {
     assert.deepEqual(glmFailLike.review_quality.semantic_failure_reasons, []);
     assert.equal(glmFailLike.review_quality.failed_review_slot, false);
 
+    const glmPriorCommentsGapLike = targetBuildReviewAuditManifest({
+      prompt: "rendered prompt",
+      sourceFiles,
+      result: [
+        "# Code Review Verdict — cart.js",
+        "**Scope:** `cart.js`",
+        "## Verdict",
+        "**APPROVE.** The selected source was reviewed and no blocking issue was found.",
+        "### Checklist",
+        "1. **Verify exact base/head refs.** PASS — Base and head match the supplied prompt metadata.",
+        "2. **Review only the declared scope.** PASS — `cart.js` is the only selected source file.",
+        "3. **Correctness, security, regressions, and tests.** PASS — No blocking concerns were found.",
+        "4. **Known review comments.** NOT REVIEWED — I could not inspect prior review comments because they were unavailable.",
+        "5. **Blocking and non-blocking separation.** PASS — Findings are separated below.",
+        "6. **Timeout, truncation, interruption, permission block, or shallow output.** PASS — The review is complete and substantive.",
+        "### Blocking Findings",
+        "None.",
+        "### Non-Blocking Concerns",
+        "None.",
+      ].join("\n"),
+      status: "completed",
+      errorCode: null,
+    });
+    assert.equal(glmPriorCommentsGapLike.review_quality.has_verdict, true);
+    assert.deepEqual(glmPriorCommentsGapLike.review_quality.semantic_failure_reasons, []);
+    assert.equal(glmPriorCommentsGapLike.review_quality.checklist_items_seen, 6);
+    assert.equal(glmPriorCommentsGapLike.review_quality.failed_review_slot, false);
+
     const kimiReviewVerdictForFileLike = targetBuildReviewAuditManifest({
       prompt: "rendered prompt",
       sourceFiles,

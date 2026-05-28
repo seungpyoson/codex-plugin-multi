@@ -272,7 +272,8 @@ function checklistStatus(line) {
   if (startsWithToken(lower, "not applicable")) return "n_a";
   const statusMatch = lower.match(/(?:^|[\u2013\u2014|]|(?:^|\s)-)\s*(pass|fail|not reviewed|n\/a|not applicable)\b/)
     ?? lower.match(/:\s*(not reviewed)\b/)
-    ?? lower.match(/:\s*(pass|fail|n\/a|not applicable)\b(?=\s*(?:$|[().;,\u2013\u2014]))/);
+    ?? lower.match(/:\s*(pass|fail|n\/a|not applicable)\b(?=\s*(?:$|[().;,\u2013\u2014]))/)
+    ?? lower.match(/[.!?]\s*(pass|fail|not reviewed|n\/a|not applicable)\b(?=\s*(?:$|[().;,\u2013\u2014]))/);
   if (!statusMatch) return null;
   return normalizeChecklistStatus(statusMatch[1]);
 }
@@ -1033,6 +1034,39 @@ function isOutOfScopeInspectionGapLine(lower) {
   ]);
 }
 
+function isPriorReviewCommentsGapLine(lower) {
+  if (mentionsSelectedSourceGeneric(lower)) return false;
+  if (!includesAny(lower, [
+    "known comment",
+    "known comments",
+    "known review comment",
+    "known review comments",
+    "prior comment",
+    "prior comments",
+    "prior review comment",
+    "prior review comments",
+    "residual thread",
+    "residual threads",
+    "review comment",
+    "review comments",
+    "review thread",
+    "review threads",
+  ])) return false;
+  return includesAny(lower, [
+    "could not inspect",
+    "none provided",
+    "none supplied",
+    "not available",
+    "not included",
+    "not inspected",
+    "not provided",
+    "not reviewed",
+    "not supplied",
+    "unavailable",
+    "unable to inspect",
+  ]);
+}
+
 function isNegatedTruncationLine(lower) {
   if (lower.includes("did not encounter") && includesAny(lower, ["truncated", "truncation"])) return true;
   return includesAny(lower, [
@@ -1077,7 +1111,10 @@ function semanticFailureReasons(text, looksShallow, selectedSource = null) {
     );
   });
   const semanticText = semanticLines
-    .filter((line) => !isOutOfScopeInspectionGapLine(unmarkReviewText(line).toLowerCase()))
+    .filter((line) => {
+      const lower = unmarkReviewText(line).toLowerCase();
+      return !isOutOfScopeInspectionGapLine(lower) && !isPriorReviewCommentsGapLine(lower);
+    })
     .join("\n")
     .toLowerCase();
   if (hasNotReviewedVerdict || semanticLines.some((line) => lineClaimsFailedReviewSlot(line)) || includesAny(semanticText, [
