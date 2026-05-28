@@ -420,6 +420,11 @@
       "branches": 100.0,
       "functions": 100.0
     },
+    "plugins/grok/scripts/lib/grok-transport-adapters.mjs": {
+      "lines": 98.58,
+      "branches": 68.0,
+      "functions": 100.0
+    },
     "plugins/grok/scripts/lib/jwt.mjs": {
       "lines": 0.0,
       "branches": 0.0,

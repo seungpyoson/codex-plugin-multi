@@ -23,9 +23,9 @@ Grok, GLM, DeepSeek, and Kimi, or explicit operator waivers.
 
 **Independent test**: implementation tasks remain unchecked until all required reviewers approve or the operator records explicit waivers.
 
-- [ ] T009 Run planning-packet review across Claude, Gemini, Grok, GLM, DeepSeek, and Kimi using `specs/159-grok-cli-primary-parity/spec.md`, `plan.md`, `tasks.md`, `evidence-map.md`, `research.md`, `data-model.md`, `contracts/grok-transport-adapter.md`, and `quickstart.md`.
-- [ ] T010 Stop implementation if any required reviewer returns request-changes, failed slot, no verdict, shallow output, timeout, or source-sent failure without explicit operator waiver.
-- [ ] T011 Record usable approvals or explicit waivers in `specs/159-grok-cli-primary-parity/review-results.md`.
+- [x] T009 Run planning-packet review across Claude, Gemini, Grok, GLM, DeepSeek, and Kimi using `specs/159-grok-cli-primary-parity/spec.md`, `plan.md`, `tasks.md`, `evidence-map.md`, `research.md`, `data-model.md`, `contracts/grok-transport-adapter.md`, and `quickstart.md`.
+- [x] T010 Stop implementation if any required reviewer returns request-changes, failed slot, no verdict, shallow output, timeout, or source-sent failure without explicit operator waiver.
+- [x] T011 Record usable approvals or explicit waivers in `specs/159-grok-cli-primary-parity/review-results.md`.
 
 ## Phase 4: User Story 1 - Grok Transport Module Interface
 
@@ -33,11 +33,11 @@ Grok, GLM, DeepSeek, and Kimi, or explicit operator waivers.
 
 **Independent test**: module-level tests prove default CLI, explicit web, legacy alias normalization, auto starts as CLI, prompt-budget cap names, and invalid transport failure.
 
-- [ ] T012 [US1] Add RED focused tests for Grok transport normalization, config, prompt budget env, default model env, timeout env, and legacy alias facts in `tests/unit/grok-transport-adapters.test.mjs`.
-- [ ] T013 [US1] Add RED focused tests for auto fallback eligibility, `source_sent` and `payload_sent` fallback ineligibility, early-error fallback record construction, and CLI diagnostics projection in `tests/unit/grok-transport-adapters.test.mjs`.
-- [ ] T014 [US1] Add RED focused tests proving direct API credential values do not influence default CLI, explicit web, or auto fallback config in `tests/unit/grok-transport-adapters.test.mjs`.
-- [ ] T015 [US1] Implement the Grok transport Adapter Module in `plugins/grok/scripts/lib/grok-transport-adapters.mjs`.
-- [ ] T016 [US1] Export only the Module Interface needed by the Grok runtime from `plugins/grok/scripts/lib/grok-transport-adapters.mjs`.
+- [x] T012 [US1] Add RED focused tests for Grok transport normalization, config, prompt budget env, default model env, timeout env, and legacy alias facts in `tests/unit/grok-transport-adapters.test.mjs`.
+- [x] T013 [US1] Add RED focused tests for auto fallback eligibility, `source_sent` and `payload_sent` fallback ineligibility, early-error fallback record construction, and CLI diagnostics projection in `tests/unit/grok-transport-adapters.test.mjs`.
+- [x] T014 [US1] Add RED focused tests proving direct API credential values do not influence default CLI, explicit web, or auto fallback config in `tests/unit/grok-transport-adapters.test.mjs`.
+- [x] T015 [US1] Implement the Grok transport Adapter Module in `plugins/grok/scripts/lib/grok-transport-adapters.mjs`.
+- [x] T016 [US1] Export only the Module Interface needed by the Grok runtime from `plugins/grok/scripts/lib/grok-transport-adapters.mjs`.
 
 ## Phase 5: User Story 2 - Runtime Uses The Module Without Behavior Drift
 
@@ -45,11 +45,11 @@ Grok, GLM, DeepSeek, and Kimi, or explicit operator waivers.
 
 **Independent test**: existing Grok smoke tests pass without loosening assertions.
 
-- [ ] T017 [US2] Wire `plugins/grok/scripts/grok-web-reviewer.mjs` to use the transport Module for config selection and fallback config, deleting the redundant inlined transport normalization/config/fallback decision logic it replaces.
-- [ ] T018 [US2] Wire prompt-budget error cap names in `plugins/grok/scripts/grok-web-reviewer.mjs` through the transport Module.
-- [ ] T019 [US2] Wire auto fallback eligibility and CLI diagnostics projection in `plugins/grok/scripts/grok-web-reviewer.mjs` through the transport Module.
-- [ ] T020 [US2] Preserve existing `grok-companion.mjs` entrypoint behavior and generated skill/command references.
-- [ ] T021 [US2] Run `npm run smoke:grok`.
+- [x] T017 [US2] Wire `plugins/grok/scripts/grok-web-reviewer.mjs` to use the transport Module for config selection and fallback config, deleting the redundant inlined transport normalization/config/fallback decision logic it replaces.
+- [x] T018 [US2] Wire prompt-budget error cap names in `plugins/grok/scripts/grok-web-reviewer.mjs` through the transport Module.
+- [x] T019 [US2] Wire auto fallback eligibility and CLI diagnostics projection in `plugins/grok/scripts/grok-web-reviewer.mjs` through the transport Module.
+- [x] T020 [US2] Preserve existing `grok-companion.mjs` entrypoint behavior and generated skill/command references.
+- [x] T021 [US2] Run `npm run smoke:grok`.
 
 ## Phase 6: User Story 3 - Reviewability And Guardrails
 
@@ -57,15 +57,15 @@ Grok, GLM, DeepSeek, and Kimi, or explicit operator waivers.
 
 **Independent test**: docs/contracts and sync tests prove the generic entrypoint, no-paid-fallback language, and transport Adapter contract remain in place.
 
-- [ ] T022 [US3] Add or update contract/sync assertions in `tests/unit/plugin-copies-in-sync.test.mjs` so the runtime consumes the Grok transport Module.
-- [ ] T023 [US3] Update docs or generated references only if implementation changes user-visible commands.
-- [ ] T024 [US3] Run `npm run lint:sync`.
+- [x] T022 [US3] Add or update contract/sync assertions in `tests/unit/plugin-copies-in-sync.test.mjs` so the runtime consumes the Grok transport Module.
+- [x] T023 [US3] Update docs or generated references only if implementation changes user-visible commands.
+- [x] T024 [US3] Run `npm run lint:sync`.
 
 ## Phase 7: Final Verification And Review
 
-- [ ] T025 Run `npm test` and compare pass/fail/skip counts against the #159 baseline recorded in `specs/159-grok-cli-primary-parity/evidence-map.md`.
-- [ ] T026 Run `git diff --check`.
-- [ ] T027 Record local verification and implementation notes in `specs/159-grok-cli-primary-parity/review-results.md`.
+- [x] T025 Run `npm test` and compare pass/fail/skip counts against the #159 baseline recorded in `specs/159-grok-cli-primary-parity/evidence-map.md`.
+- [x] T026 Run `git diff --check`.
+- [x] T027 Record local verification and implementation notes in `specs/159-grok-cli-primary-parity/review-results.md`.
 - [ ] T028 Run final latest-head implementation review across Claude, Gemini, Grok, GLM, DeepSeek, and Kimi, or record explicit operator waivers for unavailable slots.
 - [ ] T029 Stop before push, PR, issue closure, merge, browser/session repair, cache sync, or billing/tier action unless separately approved.
 

@@ -608,6 +608,46 @@ test("Grok auto transport stays an adapter capability and uses shared source-tra
   assert.match(source, /requested_transport/);
   assert.match(source, /canAutoFallbackFromCliExecution/);
   assert.match(source, /cliRequestDiagnosticsForFallback/);
+  assert.match(
+    source,
+    /\}\s+from\s+["']\.\/lib\/grok-transport-adapters\.mjs["']/,
+    "Grok runtime must import transport decisions from the shared Grok transport adapter module",
+  );
+  for (const exportedHelper of [
+    "resolveGrokConfig",
+    "resolveGrokFallbackConfig",
+    "webAutoFallbackConfig",
+    "promptBudgetEnvName",
+    "canAutoFallbackFromCliExecution",
+    "cliRequestDiagnosticsForFallback",
+  ]) {
+    assert.match(
+      source,
+      new RegExp(`\\b${exportedHelper}\\b`),
+      `Grok runtime must consume ${exportedHelper} from the transport adapter module`,
+    );
+  }
+  for (const localTransportHelper of [
+    "transportMode",
+    "cliConfig",
+    "webConfig",
+    "config",
+    "fallbackConfig",
+    "webAutoFallbackConfig",
+    "canAutoFallbackFromCliExecution",
+    "cliRequestDiagnosticsForFallback",
+  ]) {
+    assert.doesNotMatch(
+      source,
+      new RegExp(`function\\s+${localTransportHelper}\\s*\\(`),
+      `Grok runtime must not keep local transport helper ${localTransportHelper}`,
+    );
+  }
+  assert.doesNotMatch(
+    source,
+    /const\s+GROK_CLI_AUTO_FALLBACK_CODES\s*=/,
+    "Grok CLI auto fallback code taxonomy must live in the transport adapter module",
+  );
 });
 
 test("subscription rescue modes are source-bearing even though they are not review slots", () => {

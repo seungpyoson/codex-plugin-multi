@@ -13,23 +13,26 @@
 
 - `plugins/grok/scripts/grok-companion.mjs` is the generic entrypoint and imports
   `runCli` from `plugins/grok/scripts/grok-web-reviewer.mjs`.
-- `plugins/grok/scripts/grok-web-reviewer.mjs` currently contains:
+- `plugins/grok/scripts/lib/grok-transport-adapters.mjs` now owns:
   - transport normalization for `cli`, `web`, and `auto`
-  - `cliConfig`, `webConfig`, `config`, `fallbackConfig`
+  - CLI, web, auto, and safe early-error fallback config construction
+  - prompt-budget env selection
+  - auto fallback eligibility
+  - redacted CLI fallback diagnostics projection
+- `plugins/grok/scripts/grok-web-reviewer.mjs` still owns:
   - trusted Grok CLI binary resolution
   - CLI readiness preflight and CLI launch
   - web tunnel readiness preflight and web launch
   - auto-doctor fallback logic
   - run-time auto fallback logic
-  - CLI fallback diagnostics projection
   - JobRecord/runtime diagnostics construction for both transports
-- This proves the remaining problem is locality/depth, not missing transport
-  behavior.
+- This proves the #159 implementation deepened the Grok transport Interface
+  without moving launch mechanics or shared policy into the Adapter Module.
 
 ## Current Behavior Evidence
 
-- `config()` defaults to CLI transport when no option or `GROK_TRANSPORT` is
-  provided.
+- `resolveGrokConfig()` defaults to CLI transport when no option or
+  `GROK_TRANSPORT` is provided.
 - CLI config uses `auth_mode:"subscription_cli"`, provider `grok`, default model
   from `GROK_CLI_MODEL || DEFAULT_CLI_MODEL`, and direct Grok API capability
   facts only as ignored/default policy metadata.
@@ -66,8 +69,11 @@ runtime branches.
 ```bash
 gh issue view 159 --json number,title,state,body,labels,url
 gh issue view 176 --json number,title,state,body,labels,url
-rg -n "transport|subscription_cli|subscription_web|GROK_CLI_AUTO_FALLBACK_CODES" plugins/grok/scripts/grok-web-reviewer.mjs
+rg -n "resolveGrokConfig|canAutoFallbackFromCliExecution|promptBudgetEnvName" plugins/grok/scripts/lib/grok-transport-adapters.mjs plugins/grok/scripts/grok-web-reviewer.mjs
 rg -n "auto transport|explicit web transport|grok-companion" tests/smoke/grok-web.smoke.test.mjs tests/unit/manifests.test.mjs tests/unit/docs-contracts.test.mjs
+node --test tests/unit/grok-transport-adapters.test.mjs
+node --test tests/unit/plugin-copies-in-sync.test.mjs
+npm run smoke:grok
 npm test
 ```
 
@@ -75,3 +81,6 @@ npm test
 
 - Fresh #159 worktree baseline `npm test`: 2218 tests, 2206 pass, 0 fail,
   12 skipped.
+- Implementation verification `npm test`: 2225 tests, 2213 pass, 0 fail,
+  12 skipped. The seven-test increase is the new focused Grok transport adapter
+  unit suite.

@@ -150,9 +150,9 @@ Review packet:
 - `quickstart.md`
 
 Missing, timed-out, shallow, failed, no-verdict, or source-sent failure slots do
-not count as approval. API reviewer source sends are covered by the standing
-approval in the saved goal; non-API reviewer sends need the operator's explicit
-approval unless separately covered.
+not count as approval. Source-send approval handling must stay provider-neutral:
+each reviewer route follows the same shared route/source-send policy, and any
+required approval or waiver must be recorded with the review-slot evidence.
 
 ## Phase 3: TDD Implementation After Approval
 

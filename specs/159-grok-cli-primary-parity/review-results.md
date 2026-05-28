@@ -14,15 +14,17 @@
 
 ## Current Planning Gate Status
 
-Implementation remains blocked. The initial committed planning packet at
+Planning gate passed for implementation. The initial committed planning packet at
 `91e2dac5d898e030a279d7c5d4a69ceb21df547c` received usable approvals from
 DeepSeek, GLM, Claude, Gemini, and Grok, but Kimi returned a blocking contract
 finding. The contract and task list were updated to address that finding, so the
-required six-reviewer gate must be rerun against the next committed head before
-implementation starts.
+required six-reviewer gate was rerun against
+`6921027a8cf07082d6c2cbf635886903e718ac4b` before implementation started.
 
-The prior exact-head JobRecords are useful audit evidence only. They do not
-approve the patched packet because the review surface changed.
+The prior exact-head JobRecords are useful audit evidence only. The patched
+planning packet was approved separately at the new head. Later implementation
+and documentation changes still require final latest-head implementation review
+before any PR/merge-readiness claim.
 
 ## Exact-Head Planning Reviews Before Kimi Fix
 
@@ -124,11 +126,55 @@ approve the patched packet because the review surface changed.
   a local commit existed for the planning packet, so it is useful evidence but
   not the final exact-head planning approval.
 
-## Pending Planning Reviews
+## Exact-Head Planning Reviews After Kimi Fix
 
-- DeepSeek: pending fresh exact-head rerun after local planning commit.
-- GLM: pending fresh exact-head rerun after local planning commit.
-- Claude: pending explicit operator approval to send planning packet.
-- Gemini: pending explicit operator approval to send planning packet.
-- Grok: pending explicit operator approval to send planning packet.
-- Kimi: pending explicit operator approval to send planning packet.
+Head SHA reviewed:
+`6921027a8cf07082d6c2cbf635886903e718ac4b`
+
+- Claude: job `8398fd91-8c9c-44d2-b957-cda549e6d72c`; source sent;
+  subscription OAuth route; verdict APPROVE; no blocking findings.
+- Gemini: job `115c1477-e89b-44a2-af50-34d5f1e05bf0`; source sent;
+  subscription OAuth route; verdict APPROVE; no blocking findings.
+- Grok: job `job_a07757b5-d89d-4268-ae45-08f441241959`; source sent;
+  subscription-backed Grok CLI route; verdict APPROVE; no blocking findings.
+- DeepSeek: job `job_aeaa59f3-ade3-458a-9aa6-9582685590ff`; source sent;
+  direct API route under the existing approval workflow; verdict APPROVE; no
+  blocking findings.
+- GLM: job `job_d1018edb-4d25-427f-a3b2-09c1db9fed9f`; source sent; direct
+  API route under the existing approval workflow; verdict APPROVE; no blocking
+  findings.
+- Kimi: job `70d699db-523f-4fe1-8b66-abafedec41d4`; source sent after
+  explicit large-packet allowance because the packet was 40,699 bytes over
+  Kimi's 32,768 byte budget; verdict APPROVE; no blocking findings.
+
+All reviewer routes must follow the same shared route/source-send policy. Do
+not introduce an API-vs-subscription approval split in the review evidence.
+
+## Implementation Notes
+
+- Added `plugins/grok/scripts/lib/grok-transport-adapters.mjs` as the Grok
+  transport Adapter Module for CLI, web, and auto config facts, prompt budget
+  env names, fallback eligibility, safe early-error fallback config, and
+  redacted CLI fallback diagnostics.
+- Wired `plugins/grok/scripts/grok-web-reviewer.mjs` to consume the Module and
+  removed the duplicated inline transport config/fallback helpers.
+- Preserved behavior drift guards caught during TDD: web tunnel base URLs keep
+  the existing `/api/chat/completions` behavior when `GROK_WEB_BASE_URL` ends in
+  `/api`, and CLI fallback diagnostics still include Grok home provenance fields.
+- Corrected the planning text to describe source-send handling through the
+  shared provider-neutral route/source-send policy, not an API-vs-subscription
+  split.
+
+## Local Verification
+
+- `node --test tests/unit/grok-transport-adapters.test.mjs`: PASS, 7 tests.
+- `node --test tests/unit/plugin-copies-in-sync.test.mjs`: PASS, 59 tests.
+- `npm run smoke:grok`: PASS, 173 tests.
+- `npm run lint:sync`: PASS.
+- `node --test --experimental-test-coverage tests/unit/grok-transport-adapters.test.mjs`:
+  PASS; adapter coverage reported 98.58% lines, 68.00% branches, 100.00%
+  functions.
+- `node --test --test-name-pattern "coverage baseline tracks every discovered plugin lib file" tests/unit/coverage-script.test.mjs`:
+  PASS, 1 test.
+- `npm test`: PASS, 2225 tests; 2213 pass, 0 fail, 12 skipped.
+- `git diff --check`: PASS.

@@ -1622,7 +1622,11 @@ test("doctor reports only canonical XAI_API_KEY as ignored, not Grok CLI login",
 test("Grok runtime reads direct API credential names from provider metadata", () => {
   const entrypointSource = readFileSync(COMPANION, "utf8");
   const runtimeSource = readFileSync(COMPANION_RUNTIME, "utf8");
-  assert.match(runtimeSource, /providerApiCapability\("grok"\)/);
+  const transportAdapterSource = readFileSync(
+    path.join(REPO_ROOT, "plugins/grok/scripts/lib/grok-transport-adapters.mjs"),
+    "utf8",
+  );
+  assert.match(transportAdapterSource, /providerApiCapability\("grok"\)/);
   for (const source of [entrypointSource, runtimeSource]) {
     assert.doesNotMatch(source, /\b(?:GROK_API_KEY|XAI_API_KEY|XAI_KEY)\b/);
   }
