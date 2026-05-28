@@ -328,6 +328,26 @@ for (const [name, file] of REVIEW_PROMPT_MODULES) {
     assert.deepEqual(targetChecklist, REVIEW_PROMPT_CHECKLIST);
     assertReviewPromptContract(targetBuildReviewPrompt, targetChecklist);
   });
+
+  test(`review prompt withholds absolute repository paths from reviewer instructions (${name})`, async () => {
+    const { buildReviewPrompt: targetBuildReviewPrompt } = await import(pathToFileURL(resolve(file)).href);
+    const prompt = targetBuildReviewPrompt({
+      provider: "Claude Code",
+      mode: "review",
+      repository: "/Users/spson/Projects/Claude/codex-plugin-multi",
+      baseRef: "main",
+      baseCommit: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      headRef: "HEAD",
+      headCommit: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      scope: "branch-diff",
+      scopePaths: ["plugins/claude/scripts/claude-companion.mjs"],
+      userPrompt: "Review the supplied packet.",
+    });
+
+    assert.doesNotMatch(prompt, /\/Users\/spson\/Projects\/Claude\/codex-plugin-multi/);
+    assert.match(prompt, /Repository: selected source packet \(original path withheld\)/);
+    assert.match(prompt, /Do not call filesystem, git, search, network, or other tools to inspect original repository paths/);
+  });
 }
 
 function assertReviewPromptContract(targetBuildReviewPrompt = buildReviewPrompt, targetChecklist = REVIEW_PROMPT_CHECKLIST) {

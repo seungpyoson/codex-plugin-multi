@@ -232,7 +232,13 @@ test("run --mode=review --foreground: emits JobRecord with status=completed", ()
   const { stdout, stderr, status, dataDir } = runCompanion(
     ["run", "--mode=review", "--foreground", "--model", "claude-haiku-4-5-20251001",
      "--cwd", cwd, "--", "review: x=1"],
-    { cwd, env: { CLAUDE_MOCK_ASSERT_PROMPT_INCLUDES: "Provider: Claude Code" } }
+    {
+      cwd,
+      env: {
+        CLAUDE_MOCK_ASSERT_PROMPT_INCLUDES: "Provider: Claude Code",
+        CLAUDE_MOCK_ASSERT_PROMPT_EXCLUDES: cwd,
+      },
+    }
   );
   try {
     assert.equal(status, 0, `exit ${status}: stderr=${stderr}`);

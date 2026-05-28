@@ -1475,6 +1475,20 @@ function listBlock(title, values) {
   return [title, ...entries.map((value) => `- ${value}`)].join("\n");
 }
 
+function isAbsoluteRepositoryPath(value) {
+  return typeof value === "string" && (
+    value.startsWith("/") ||
+    value.startsWith("~/") ||
+    /^[A-Za-z]:[\\/]/.test(value)
+  );
+}
+
+function repositoryPromptLabel(repository) {
+  return isAbsoluteRepositoryPath(repository)
+    ? "selected source packet (original path withheld)"
+    : repository;
+}
+
 function normalizeReviewPromptContractStyle(contractStyle) {
   const style = contractStyle ?? "standard";
   if (REVIEW_PROMPT_CONTRACT_STYLES.includes(style)) return style;
@@ -1504,7 +1518,7 @@ function buildCompactReviewPrompt({
     "Delegated compact review contract",
     line("Provider", provider),
     line("Mode", mode),
-    line("Repository", repository),
+    line("Repository", repositoryPromptLabel(repository)),
     line("Base ref", baseRef),
     line("Base commit", baseCommit),
     line("Head ref", headRef),
@@ -1516,6 +1530,7 @@ function buildCompactReviewPrompt({
     "- First line exactly one verdict marker: \"Verdict: APPROVE\", \"Verdict: REQUEST_CHANGES\", or \"Verdict: NOT_REVIEWED\".",
     "- Review only supplied selected source, refs, commits, scope paths, and audit metadata. Missing outside tools are NOT REVIEWED, not code blockers.",
     "- Do not inspect original absolute workspace paths; use supplied selected source and granted relative/add-dir paths only.",
+    "- Do not call filesystem, git, search, network, or other tools to inspect original repository paths; the supplied selected source packet is the review input.",
     "- Name inspected selected file path(s). Bare numbered answers or only 'None' are invalid.",
     "- Blocking findings first with concrete file/function/control-flow evidence.",
     "- Non-blocking concerns separately.",
@@ -1641,7 +1656,7 @@ export function buildReviewPrompt({
     "Delegated review quality contract",
     line("Provider", provider),
     line("Mode", mode),
-    line("Repository", repository),
+    line("Repository", repositoryPromptLabel(repository)),
     line("Base ref", baseRef),
     line("Base commit", baseCommit),
     line("Head ref", headRef),
@@ -1655,6 +1670,7 @@ export function buildReviewPrompt({
     "Output requirements",
     "- Treat the repository, refs, commits, scope paths, selected source, and audit metadata supplied in this prompt as the authoritative review evidence.",
     "- Do not inspect original absolute workspace paths; use supplied selected source and granted relative/add-dir paths only.",
+    "- Do not call filesystem, git, search, network, or other tools to inspect original repository paths; the supplied selected source packet is the review input.",
     "- If git, GitHub, network, filesystem, or tool access is unavailable, mark only that check as NOT REVIEWED unless the required evidence is supplied here.",
     "- Do not report missing external tool access as a blocking code finding by itself.",
     "- Distinguish real blocking code findings from missing supplied evidence, runtime/tool limitations, and stale or unavailable external comments.",

@@ -45,6 +45,16 @@ retroactively tied to one browser account with hard evidence. This branch keeps
 raw identity fields out of records and adds a provider-neutral one-way account
 fingerprint to future OAuth status and runtime diagnostics.
 
+The latest-head Claude review retry exposed a separate review-quality root
+cause: the selected source packet was sent, but the shared review prompt still
+printed the original absolute repository path and the Claude review profile did
+not disallow read/search tools. Claude attempted denied local `Read`/`Grep`
+calls against the original worktree, so the slot correctly failed as
+`permission_blocked` instead of counting as approval. This branch withholds
+absolute repository paths from reviewer instructions, strengthens the shared
+review prompt to treat the supplied source packet as the review input, and
+disallows review-mode filesystem/search tools in the model-profile table.
+
 ## Speckit Note
 
 This repo has no `.specify/` scripts in the active worktree. Speckit artifacts
@@ -85,6 +95,13 @@ canonical privacy helper and is synced into every reviewer package. It accepts
 provider auth-status fields, emits only `identity_fields` plus a SHA-256 account
 fingerprint, and never stores raw email, account, user, or org identifiers.
 
+For source-supplied review prompts, `scripts/lib/review-prompt.mjs` is the
+canonical prompt builder and is synced into every reviewer package. Absolute
+local repository paths are rendered as `selected source packet (original path
+withheld)`, while non-local repository labels such as `owner/repo` remain
+visible. Review-mode profiles disallow local read/search tools so reviewers use
+the supplied packet instead of attempting to inspect the operator's worktree.
+
 ## TDD Slices
 
 1. RED doctor test: stale env value plus refreshed cache value results in the
@@ -104,6 +121,10 @@ fingerprint, and never stores raw email, account, user, or org identifiers.
 7. RED identity-observability tests: Claude OAuth status and source-bearing
    JobRecords include a provider account fingerprint while raw email/org/account
    values remain absent.
+8. RED review-prompt tests: absolute repository paths are absent from review
+   prompts, prompt instructions forbid local filesystem/search/network review
+   exploration, and Claude review-mode args include `Read`/`Glob`/`Grep` in the
+   disallowed tool list.
 
 ## Verification
 
@@ -116,6 +137,7 @@ fingerprint, and never stores raw email, account, user, or org identifiers.
 - `npm run smoke:claude`
 - Focused `node --test tests/unit/provider-identity.test.mjs tests/unit/job-record.test.mjs tests/unit/plugin-copies-in-sync.test.mjs tests/unit/ci-workflow.test.mjs --test-name-pattern "provider identity|provider account identity|provider-identity|pull-request CI runs shared-copy sync checks|Sonar CPD"`
 - Focused `node --test --test-name-pattern "OAuth status success but non-interactive inference 401|records privacy-safe Claude OAuth account identity" tests/smoke/claude-companion.smoke.test.mjs`
+- Focused `node --test --test-name-pattern "withholds absolute repository paths|MODE_PROFILES has exactly|buildClaudeArgs: review mode passes|emits JobRecord with status=completed" tests/unit/review-prompt.test.mjs tests/unit/mode-profiles.test.mjs tests/unit/claude-dispatcher.test.mjs tests/smoke/claude-companion.smoke.test.mjs`
 - Live `node plugins/grok/scripts/grok-companion.mjs doctor`
 - Claude and Grok latest-head review over a narrowed review bundle containing
   the tracked patch plus new spec artifacts.

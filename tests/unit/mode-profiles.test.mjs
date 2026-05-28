@@ -23,7 +23,7 @@ const RESUME_UUID = "11111111-2222-4333-8444-555555555555";
 // spec §4.5 / §10). Rescue must have an empty disallowed-tools array.
 const REVIEW_DISALLOWED = [
   "Write", "Edit", "MultiEdit", "NotebookEdit",
-  "Bash", "WebFetch", "Agent", "Task", "mcp__*",
+  "Read", "Glob", "Grep", "Bash", "WebFetch", "Agent", "Task", "mcp__*",
 ];
 
 // ——————————————————————————————————————————————————————————————

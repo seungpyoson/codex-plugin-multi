@@ -98,7 +98,21 @@ usable external approval or the operator explicitly narrows/waives that gate.
 - [x] T040 Rerun final broad sync, unit, smoke, lint, and diff verification
   after identity telemetry (`npm run lint:sync`, focused unit/smoke slices,
   `npm run lint`, `git diff --check`, `npm test`).
-- [ ] T041 Obtain final latest-head external review after all runtime and spec
+## Phase 9: Source-Supplied Review Permission-Blocked Repair
+
+- [x] T041 Reproduce the latest-head Claude retry failure class: source was
+  supplied, but the prompt exposed the original absolute worktree path and the
+  review profile allowed local read/search tool attempts.
+- [x] T042 Add RED prompt/unit/smoke coverage proving review prompts withhold
+  absolute repository paths, include a supplied-source-only instruction, and
+  Claude review args disallow `Read`, `Glob`, and `Grep`.
+- [x] T043 Implement shared review-prompt path withholding in
+  `scripts/lib/review-prompt.mjs` and sync packaged reviewer copies.
+- [x] T044 Align Claude and Gemini review-mode profile tables so review profiles
+  disallow local read/search tools consistently.
+- [x] T045 Verify focused prompt/profile/dispatcher/smoke tests, `npm run
+  lint:sync`, `npm run smoke:claude`, and `git diff --check`.
+- [ ] T046 Obtain final latest-head external review after all runtime and spec
   changes.
 
 ## Dependencies
@@ -107,5 +121,5 @@ usable external approval or the operator explicitly narrows/waives that gate.
 2. T005-T007 are RED tests and must fail for the intended reason before T008.
 3. T008-T011 are implementation tasks.
 4. T012-T017 are original #160 completion gates.
-5. T040-T041 are current completion gates for the expanded provider-reliability
+5. T040-T046 are current completion gates for the expanded provider-reliability
    branch.

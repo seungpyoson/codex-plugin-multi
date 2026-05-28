@@ -38,7 +38,7 @@ test("buildClaudeArgs: review mode passes --disallowedTools + plan + setting-sou
   assert.equal(args[args.indexOf("--permission-mode") + 1], "plan");
   assert.ok(args.includes("--disallowedTools"));
   const disallowed = args[args.indexOf("--disallowedTools") + 1];
-  for (const t of ["Write", "Edit", "Bash", "mcp__*", "Agent"]) {
+  for (const t of ["Write", "Edit", "Read", "Glob", "Grep", "Bash", "mcp__*", "Agent"]) {
     assert.ok(disallowed.includes(t), `expected "${t}" in disallowed list; got "${disallowed}"`);
   }
   assert.ok(args.includes("--setting-sources"));
