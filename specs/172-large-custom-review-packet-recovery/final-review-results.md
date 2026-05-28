@@ -372,3 +372,32 @@ Results:
 - Full review-prompt unit suite: 280 passed, 0 failed.
 - Focused Direct API/schema regression suite: 3 passed, 0 failed.
 - `npm run lint:sync`: passed.
+
+Combined exact-head review follow-up:
+
+- Grok CLI job `job_1a478574-0f57-4918-9227-115b68f06837` approved the combined
+  `d264e59..dea26f1` delta.
+- Claude job `cee97fc6-1378-42bb-b900-9c9eca4a5472` returned an approving raw
+  review, but the persisted slot failed because review-quality parsing treated
+  a negated classifier-analysis sentence as selected-source non-inspection.
+- Local reparse of that stored Claude result now returns
+  `semantic_failure_reasons:[]` and `failed_review_slot:false` after the
+  negated-analysis parser fix.
+
+Additional verification after the negated-analysis fix:
+
+```sh
+node --test --test-name-pattern "negated selected-source suppression analysis" tests/unit/review-prompt.test.mjs
+node --test tests/unit/review-prompt.test.mjs
+node --test --test-name-pattern "direct API (HTTP provider_unavailable under Codex|fetch failure after source receipt)|packet recovery schema keeps" tests/smoke/api-reviewers.smoke.test.mjs tests/unit/docs-contracts.test.mjs
+npm run lint:sync
+```
+
+Results:
+
+- Negated-analysis RED: failed before the parser fix across all six
+  review-prompt modules.
+- Negated-analysis GREEN: 6 passed, 0 failed.
+- Full review-prompt unit suite: 286 passed, 0 failed.
+- Focused Direct API/schema regression suite: 3 passed, 0 failed.
+- `npm run lint:sync`: passed.

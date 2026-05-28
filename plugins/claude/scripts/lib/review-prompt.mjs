@@ -855,10 +855,17 @@ function isLocalFileScopeBoundaryLine(lower) {
   ]);
 }
 
+function isNegatedSelectedSourceInspectionAnalysisLine(lower) {
+  if (!includesAny(lower, ["did not inspect", "not inspected", "could not inspect", "unable to inspect"])) return false;
+  return includesAny(lower, ["no genuine", "no real"])
+    && includesAny(lower, ["suppressed", "accepted", "missed", "classified"]);
+}
+
 function lineDeniesSelectedSourceInspection(line, selectedSource) {
   const lower = stripLeadingReviewMarkup(line).toLowerCase();
   if (isPermissionMechanicsDiscussionLine(lower)) return false;
   if (isSelectedSourceInspectionMechanicsDiscussionLine(lower)) return false;
+  if (isNegatedSelectedSourceInspectionAnalysisLine(lower)) return false;
   if (isLocalFileScopeBoundaryLine(lower)) return false;
   if (isOutOfScopeInspectionGapLine(lower) && !mentionsSelectedSourceGeneric(lower)) return false;
   if (!includesAny(lower, ["did not inspect", "not inspected", "could not inspect", "unable to inspect"])) {

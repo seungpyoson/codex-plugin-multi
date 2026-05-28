@@ -2279,6 +2279,36 @@ test("review audit manifest does not flag selected-source inspection predicate d
   assert.equal(manifest.review_quality.failed_review_slot, false);
 });
 
+for (const [name, file] of REVIEW_PROMPT_MODULES) {
+  test(`review audit manifest ignores negated selected-source suppression analysis (${name})`, async () => {
+    const { buildReviewAuditManifest: targetBuildReviewAuditManifest } = file === "scripts/lib/review-prompt.mjs"
+      ? { buildReviewAuditManifest }
+      : await import(pathToFileURL(resolve(file)).href);
+    const manifest = targetBuildReviewAuditManifest({
+      prompt: "rendered prompt",
+      sourceFiles: [{ path: "plugins/api-reviewers/scripts/api-reviewer.mjs", text: "export const ok = true;\n" }],
+      result: [
+        "Verdict: APPROVE",
+        "Blocking findings: none.",
+        "Non-blocking concerns:",
+        "- The existing guard still flags any line that names the selected source generically or by path, so no genuine selected source not inspected case is newly suppressed.",
+        "Checklist",
+        "1. PASS exact metadata was supplied.",
+        "2. PASS selected source plugins/api-reviewers/scripts/api-reviewer.mjs was inspected.",
+        "3. PASS no blockers.",
+        "4. PASS no review comments supplied.",
+        "5. PASS blocking and non-blocking sections are separated.",
+        "6. PASS review completed without timeout, truncation, interruption, permission block, or shallow output.",
+      ].join("\n"),
+      status: "completed",
+      errorCode: null,
+    });
+
+    assert.deepEqual(manifest.review_quality.semantic_failure_reasons, []);
+    assert.equal(manifest.review_quality.failed_review_slot, false);
+  });
+}
+
 test("review audit manifest does not flag classifier should-flag permission meta discussion", () => {
   const manifest = buildReviewAuditManifest({
     prompt: "rendered prompt",

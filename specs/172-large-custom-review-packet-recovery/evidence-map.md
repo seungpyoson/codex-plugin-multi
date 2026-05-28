@@ -190,6 +190,13 @@ Post-review quality follow-up on 2026-05-28:
 - Fix: shared review-quality parsing now treats "not in packet" / "outside the
   packet" caveats as out-of-scope inspection gaps when selected source was
   inspected. The test covers the shared module and every packaged provider copy.
+- Claude combined-review job `cee97fc6-1378-42bb-b900-9c9eca4a5472` exposed a
+  second parser false-negative: a reviewer explanation that "no genuine selected
+  source not inspected case is newly suppressed" was itself classified as
+  `not_reviewed`.
+- Fix: shared review-quality parsing now ignores narrowly negated
+  selected-source suppression analysis while preserving the existing tests that
+  real selected-source non-inspection and permission denial still fail the slot.
 
 Verification on 2026-05-26:
 
