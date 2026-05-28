@@ -13,7 +13,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { fixtureBranchDiffRepo, fixtureGitEnv, fixtureSeedRepo } from "../helpers/fixture-git.mjs";
+import { fixtureBranchDiffRepo, fixtureGit, fixtureGitEnv, fixtureSeedRepo } from "../helpers/fixture-git.mjs";
 import { assertJobRecordShape } from "../helpers/job-record-shape.mjs";
 import { badVerdictReviewFixture, requestChangesReviewFixture } from "../helpers/review-fixtures.mjs";
 import { CLAUDE_PROVIDER_API_KEY_ENV } from "../../plugins/claude/scripts/lib/claude-provider-keys.mjs";
@@ -289,6 +289,57 @@ test("custom-review prompt includes selected source content", () => {
     const record = JSON.parse(stdout);
     assert.equal(record.status, "completed");
     assert.equal(record.external_review.source_content_transmission, "sent");
+  } finally {
+    cleanup(dataDir);
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("custom-review prompt uses git repository identity instead of local workspace path", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "claude-repo-identity-cwd-"));
+  fixtureSeedRepo(cwd, {
+    fileName: "seed.txt",
+    fileContents: "claude repository identity sentinel\n",
+  });
+  assert.equal(
+    fixtureGit(cwd, ["remote", "add", "origin", "git@github.com:seungpyoson/provider-prompt-fixture.git"]).status,
+    0,
+  );
+  const { stdout, stderr, status, dataDir } = runCompanion(
+    ["run", "--mode=custom-review", "--foreground", "--model", "claude-haiku-4-5-20251001",
+     "--cwd", cwd, "--scope-paths", "seed.txt", "--", "review selected source"],
+    { cwd, env: {
+      CLAUDE_MOCK_ASSERT_PROMPT_INCLUDES: "Repository: seungpyoson/provider-prompt-fixture",
+      CLAUDE_MOCK_ASSERT_PROMPT_EXCLUDES: cwd,
+    } },
+  );
+  try {
+    assert.equal(status, 0, `exit ${status}: stderr=${stderr}; stdout=${stdout}`);
+    const record = JSON.parse(stdout);
+    assert.equal(record.review_metadata.audit_manifest.git_identity.remote, "seungpyoson/provider-prompt-fixture");
+  } finally {
+    cleanup(dataDir);
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("custom-review prompt avoids local workspace path when no git remote exists", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "claude-local-repo-identity-cwd-"));
+  fixtureSeedRepo(cwd, {
+    fileName: "seed.txt",
+    fileContents: "claude local repository identity sentinel\n",
+  });
+  const expectedRepository = `Repository: local-workspace:${path.basename(cwd)}`;
+  const { stdout, stderr, status, dataDir } = runCompanion(
+    ["run", "--mode=custom-review", "--foreground", "--model", "claude-haiku-4-5-20251001",
+     "--cwd", cwd, "--scope-paths", "seed.txt", "--", "review selected source"],
+    { cwd, env: {
+      CLAUDE_MOCK_ASSERT_PROMPT_INCLUDES: expectedRepository,
+      CLAUDE_MOCK_ASSERT_PROMPT_EXCLUDES: cwd,
+    } },
+  );
+  try {
+    assert.equal(status, 0, `exit ${status}: stderr=${stderr}; stdout=${stdout}`);
   } finally {
     cleanup(dataDir);
     rmSync(cwd, { recursive: true, force: true });

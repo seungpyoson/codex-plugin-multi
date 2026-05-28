@@ -173,9 +173,11 @@ Implementation gate:
 - `npm test` for broad shared runtime changes
 - `npm run doctor:cache` if runtime scripts, generated docs/skills, shared
   synced libs, or packaged plugin copies change
-- final whole-issue reviews from all six reviewers
+- final whole-issue reviews from the operator-approved review gate for the
+  implementation pass
 
 ## Current State
 
-Planning artifacts created. Runtime implementation remains blocked until the
-external plan review gate passes.
+Planning artifacts passed the external plan review gate. Runtime
+implementation is complete for #172, with final review evidence and residual
+risk notes recorded in `final-review-results.md`.

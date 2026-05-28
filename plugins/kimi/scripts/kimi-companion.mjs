@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { fileURLToPath } from "node:url";
-import { dirname, join as joinPath, resolve as resolvePath } from "node:path";
+import { basename as basenamePath, dirname, join as joinPath, resolve as resolvePath } from "node:path";
 import {
   existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, unlinkSync,
   writeFileSync, chmodSync, readdirSync, statSync, lstatSync,
@@ -166,7 +166,7 @@ function targetPromptFor(profile, userPrompt, invocation = {}, sourceFiles = [])
   return buildReviewPrompt({
     provider: "Kimi",
     mode: profile.name,
-    repository: invocation.workspace_root ?? null,
+    repository: reviewPromptRepositoryIdentity(invocation.cwd, invocation.workspace_root),
     baseRef: invocation.scope_base ?? null,
     baseCommit: gitCommitForPrompt(invocation.cwd, invocation.scope_base, invocation.workspace_root),
     headRef: "HEAD",
@@ -218,6 +218,12 @@ function repositoryIdentity(cwd, workspaceRoot) {
   if (!remote) return workspaceRoot;
   const match = /[:/]([^/:]+\/[^/]+?)(?:\.git)?$/.exec(remote);
   return match ? match[1] : remote;
+}
+
+function reviewPromptRepositoryIdentity(cwd, workspaceRoot) {
+  const identity = repositoryIdentity(cwd, workspaceRoot);
+  if (identity && identity !== workspaceRoot) return identity;
+  return `local-workspace:${basenamePath(workspaceRoot ?? cwd ?? "workspace") || "workspace"}`;
 }
 
 function promptMetadata(invocation) {

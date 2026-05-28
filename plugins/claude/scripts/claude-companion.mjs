@@ -26,7 +26,7 @@
 // Subcommands below keep foreground/background lifecycle behavior explicit.
 
 import { fileURLToPath } from "node:url";
-import { dirname, isAbsolute, join as joinPath, relative as relativePath, resolve as resolvePath } from "node:path";
+import { basename as basenamePath, dirname, isAbsolute, join as joinPath, relative as relativePath, resolve as resolvePath } from "node:path";
 import { tmpdir } from "node:os";
 import { writeFileSync, mkdirSync, mkdtempSync, existsSync, chmodSync, renameSync, unlinkSync, readdirSync, rmSync, statSync, lstatSync, readFileSync as _readFileSync } from "node:fs";
 import { execFileSync, spawn } from "node:child_process";
@@ -272,7 +272,7 @@ function targetPromptFor(invocation, userPrompt, sourceFiles = []) {
   return buildReviewPrompt({
     provider: "Claude Code",
     mode: invocation.mode,
-    repository: invocation.workspace_root ?? null,
+    repository: reviewPromptRepositoryIdentity(invocation.cwd, invocation.workspace_root),
     baseRef: invocation.scope_base,
     baseCommit: gitCommitForPrompt(invocation.cwd, invocation.scope_base, invocation.workspace_root),
     headRef: "HEAD",
@@ -317,6 +317,12 @@ function repositoryIdentity(cwd, workspaceRoot) {
   if (!remote) return workspaceRoot;
   const match = /[:/]([^/:]+\/[^/]+?)(?:\.git)?$/.exec(remote);
   return match ? match[1] : remote;
+}
+
+function reviewPromptRepositoryIdentity(cwd, workspaceRoot) {
+  const identity = repositoryIdentity(cwd, workspaceRoot);
+  if (identity && identity !== workspaceRoot) return identity;
+  return `local-workspace:${basenamePath(workspaceRoot ?? cwd ?? "workspace") || "workspace"}`;
 }
 
 function promptMetadata(invocation) {

@@ -401,3 +401,52 @@ Results:
 - Full review-prompt unit suite: 286 passed, 0 failed.
 - Focused Direct API/schema regression suite: 3 passed, 0 failed.
 - `npm run lint:sync`: passed.
+
+## Post-Parser Prompt Routing Follow-up
+
+Claude job `806fb8a7-ecfa-41e7-8e91-fbcdc57dfdaa` returned an approving raw
+review after the negated-analysis fix, but still failed the persisted slot
+because Claude attempted a denied `Read` against the original local worktree
+path. This was not a new code-review finding; it was a review-runner UX gap.
+
+Fix applied:
+
+- Claude, Gemini, and Kimi now render the prompt repository field from
+  provider-facing repository identity instead of the local absolute workspace
+  root. Repos with a remote use git identity; repos without a remote use
+  `local-workspace:<basename>`.
+- This keeps provider-facing review evidence packet-relative while preserving
+  local path diagnostics in the JobRecord for operator audit.
+- Added smoke coverage and mock prompt-exclusion oracles so all three
+  subscription CLI providers reject local workspace paths in generated review
+  prompts.
+
+Verification:
+
+- RED repo-identity smoke failed for Claude, Gemini, and Kimi under the old
+  prompt behavior.
+- GREEN repo-identity smoke passed after the first fix with
+  `{"ok":true,"providers":["claude","gemini","kimi"]}`.
+- Claude approved the first delta in job `bfb867bd-14ce-4de5-9266-19e724c470d4`
+  and noted the no-remote fallback edge. That edge was fixed.
+- GREEN remote plus no-remote smoke passed after the follow-up fix with
+  `{"ok":true,"cases":["remote","local"],"providers":["claude","gemini","kimi"]}`.
+- Fresh post-ledger verification:
+  - `git diff --check`: passed.
+  - `npm run lint`: passed.
+  - `node --test tests/unit/review-prompt.test.mjs`: 286 passed, 0 failed.
+  - `node --test tests/smoke/claude-companion.smoke.test.mjs tests/smoke/gemini-companion.smoke.test.mjs tests/smoke/kimi-companion.smoke.test.mjs`: 319 passed, 0 failed.
+  - `npm test`: 2257 tests, 2245 passed, 0 failed, 12 skipped.
+  - `npm run doctor:cache`: exited 0 with `"ok": false` because installed
+    plugin cache still matches marketplace cache, not this unpublished feature
+    branch.
+
+Final prompt-routing review:
+
+| Reviewer | Job | Source sent | Verdict | Blocking findings |
+| --- | --- | --- | --- | --- |
+| Claude | `14d778b6-3c33-469f-a52d-42626ddd45a3` | yes | APPROVE | none |
+| Grok | `job_eae44931-c910-4176-9308-b03d783fc8e7` | yes | APPROVE | none |
+
+Both final stored review records show completed status, no error, approved
+review slots, clean review-quality audits, and no permission denials.

@@ -97,6 +97,12 @@ and Grok only.
 - [x] T057 Obtain Grok final whole-issue approval for current head
 - [x] T061 Record final review results and residual risks in `specs/172-large-custom-review-packet-recovery/final-review-results.md`
 
+## Phase 8: Post-Review No-Mistakes Follow-Up
+
+- [x] T062 Add RED prompt-routing smoke coverage proving Claude, Gemini, and Kimi review prompts do not expose the local absolute workspace path.
+- [x] T063 Replace Claude, Gemini, and Kimi provider-facing review prompt repository labels with git `owner/repo` identity or `local-workspace:<basename>` when no remote exists.
+- [x] T064 Record prompt-routing root cause, RED/GREEN evidence, and final Claude/Grok follow-up review results in `evidence-map.md` and `final-review-results.md`.
+
 ## Dependencies
 
 1. Phase 2 blocks all runtime implementation.

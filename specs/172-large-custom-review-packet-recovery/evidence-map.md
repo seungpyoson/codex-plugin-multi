@@ -323,3 +323,72 @@ End-to-end gap audit review:
 - Accepted Claude's non-blocking schema finding: the `approvalTuple` JSON
   schema now matches the runtime shard tuple shape and has a docs-contract
   regression test.
+
+## Subscription CLI Prompt Repository-Identity Follow-up
+
+Claude exact-head review job `806fb8a7-ecfa-41e7-8e91-fbcdc57dfdaa` exposed a
+separate no-mistakes gap after the parser fixes. The raw review approved the
+delta and named inspected selected files, but the run still recorded a
+permission-denied `Read` against the original absolute worktree path
+`/Users/spson/.../provider-reliability-172-large-custom-packet-recovery/...`.
+
+Root cause:
+
+- Claude, Gemini, and Kimi review prompts rendered
+  `Repository: <absolute local workspace root>`.
+- Their selected source was already supplied through the prompt/source packet
+  and, for Claude, copied into a contained `--add-dir` worktree.
+- The generated local path was not review evidence; it nudged tool-capable
+  subscription reviewers toward original-path filesystem reads. When that read
+  was denied, the operator saw a provider-specific failed slot instead of a
+  deterministic packet-only review result.
+
+Fix:
+
+- Claude, Gemini, and Kimi prompt builders now use a provider-facing review
+  repository identity for the prompt `Repository` field, matching git
+  `owner/repo` when a remote exists and using `local-workspace:<basename>` when
+  no remote exists. The already-correct Grok and Direct API paths continue to
+  use packet-relative review evidence.
+- Local absolute workspace paths remain in JobRecord/runtime diagnostics for
+  operator audit, but are not emitted as the provider-facing repository label.
+- Smoke mocks now support prompt-exclusion assertions for Claude and Gemini,
+  matching Kimi's existing prompt-exclusion oracle.
+
+TDD evidence:
+
+```sh
+node --input-type=module -e '<repo-identity smoke across Claude, Gemini, Kimi>'
+```
+
+Results:
+
+- RED: with the old prompt behavior restored, the smoke failed for Claude,
+  Gemini, and Kimi because the prompt did not contain
+  `Repository: seungpyoson/provider-prompt-fixture` and still included the
+  temp local repo path.
+- GREEN: after the first fix, the same smoke passed for all three providers:
+  `{"ok":true,"providers":["claude","gemini","kimi"]}`.
+- Claude review job `bfb867bd-14ce-4de5-9266-19e724c470d4` approved the first
+  prompt-routing delta and raised a non-blocking but valid edge: repos without
+  `origin` still fell back to the local path through `repositoryIdentity()`.
+- The no-remote fallback was fixed with the provider-facing
+  `local-workspace:<basename>` label. Updated smoke coverage now checks both
+  remote and no-remote cases across Claude, Gemini, and Kimi.
+- GREEN after the no-remote fix:
+  `{"ok":true,"cases":["remote","local"],"providers":["claude","gemini","kimi"]}`.
+- Fresh verification after the Speckit ledger update:
+  - `git diff --check`: passed.
+  - `npm run lint`: passed.
+  - `node --test tests/unit/review-prompt.test.mjs`: 286 passed, 0 failed.
+  - `node --test tests/smoke/claude-companion.smoke.test.mjs tests/smoke/gemini-companion.smoke.test.mjs tests/smoke/kimi-companion.smoke.test.mjs`: 319 passed, 0 failed.
+  - `npm test`: 2257 tests, 2245 passed, 0 failed, 12 skipped.
+  - `npm run doctor:cache`: exited 0 with `"ok": false` because installed
+    plugin cache still matches the marketplace cache, not this unpublished
+    feature branch; no cache refresh was performed.
+- Final Claude review job `14d778b6-3c33-469f-a52d-42626ddd45a3` approved the
+  remote plus no-remote prompt-routing fix with selected source sent, a clean
+  review-quality audit, and no permission denials.
+- Final Grok review job `job_eae44931-c910-4176-9308-b03d783fc8e7` approved the
+  same final packet with selected source sent, a clean review-quality audit,
+  and no permission denials.

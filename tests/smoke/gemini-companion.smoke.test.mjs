@@ -10,7 +10,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { fixtureBranchDiffRepo, fixtureSeedRepo } from "../helpers/fixture-git.mjs";
+import { fixtureBranchDiffRepo, fixtureGit, fixtureSeedRepo } from "../helpers/fixture-git.mjs";
 import { badVerdictReviewFixture, requestChangesReviewFixture } from "../helpers/review-fixtures.mjs";
 import {
   apiKeyAuthMode as geminiApiKeyAuthMode,
@@ -1693,6 +1693,49 @@ test("gemini run rejects invalid lifecycle event mode as structured bad args", (
     assert.equal(parsed.ok, false);
     assert.equal(parsed.error, "bad_args");
     assert.match(parsed.message, /--lifecycle-events must be jsonl/);
+  } finally {
+    rmTree(dataDir);
+    rmTree(cwd);
+  }
+});
+
+test("gemini review prompt uses git repository identity instead of local workspace path", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "gemini-repo-identity-cwd-"));
+  seedMinimalRepo(cwd);
+  assert.equal(
+    fixtureGit(cwd, ["remote", "add", "origin", "git@github.com:seungpyoson/provider-prompt-fixture.git"]).status,
+    0,
+  );
+  const { stdout, stderr, status, dataDir } = runCompanion(
+    ["run", "--mode=review", "--foreground", "--cwd", cwd, "--", "review selected source"],
+    { cwd, env: {
+      GEMINI_MOCK_ASSERT_PROMPT_INCLUDES: "Repository: seungpyoson/provider-prompt-fixture",
+      GEMINI_MOCK_ASSERT_PROMPT_EXCLUDES: cwd,
+    } },
+  );
+  try {
+    assert.equal(status, 0, `exit ${status}: ${stderr}; stdout=${stdout}`);
+    const record = JSON.parse(stdout);
+    assert.equal(record.review_metadata.audit_manifest.git_identity.remote, "seungpyoson/provider-prompt-fixture");
+  } finally {
+    rmTree(dataDir);
+    rmTree(cwd);
+  }
+});
+
+test("gemini review prompt avoids local workspace path when no git remote exists", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "gemini-local-repo-identity-cwd-"));
+  seedMinimalRepo(cwd);
+  const expectedRepository = `Repository: local-workspace:${path.basename(cwd)}`;
+  const { stdout, stderr, status, dataDir } = runCompanion(
+    ["run", "--mode=review", "--foreground", "--cwd", cwd, "--", "review selected source"],
+    { cwd, env: {
+      GEMINI_MOCK_ASSERT_PROMPT_INCLUDES: expectedRepository,
+      GEMINI_MOCK_ASSERT_PROMPT_EXCLUDES: cwd,
+    } },
+  );
+  try {
+    assert.equal(status, 0, `exit ${status}: ${stderr}; stdout=${stdout}`);
   } finally {
     rmTree(dataDir);
     rmTree(cwd);

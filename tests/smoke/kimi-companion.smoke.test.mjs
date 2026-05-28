@@ -58,6 +58,67 @@ function withRepo(fn) {
   }
 }
 
+test("kimi review prompt uses git repository identity instead of local workspace path", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "kimi-repo-identity-cwd-"));
+  fixtureSeedRepo(cwd);
+  assert.equal(
+    fixtureGit(cwd, ["remote", "add", "origin", "git@github.com:seungpyoson/provider-prompt-fixture.git"]).status,
+    0,
+  );
+  const result = runCompanion([
+    "run",
+    "--mode",
+    "review",
+    "--cwd",
+    cwd,
+    "--foreground",
+    "--",
+    "Review this scope.",
+  ], {
+    cwd,
+    env: {
+      KIMI_MOCK_ASSERT_PROMPT_INCLUDES: "Repository: seungpyoson/provider-prompt-fixture",
+      KIMI_MOCK_ASSERT_PROMPT_EXCLUDES: cwd,
+    },
+  });
+  try {
+    assert.equal(result.status, 0, result.stderr);
+    const record = parseJson(result.stdout);
+    assert.equal(record.review_metadata.audit_manifest.git_identity.remote, "seungpyoson/provider-prompt-fixture");
+  } finally {
+    rmSync(result.dataDir, { recursive: true, force: true });
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("kimi review prompt avoids local workspace path when no git remote exists", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "kimi-local-repo-identity-cwd-"));
+  fixtureSeedRepo(cwd);
+  const expectedRepository = `Repository: local-workspace:${path.basename(cwd)}`;
+  const result = runCompanion([
+    "run",
+    "--mode",
+    "review",
+    "--cwd",
+    cwd,
+    "--foreground",
+    "--",
+    "Review this scope.",
+  ], {
+    cwd,
+    env: {
+      KIMI_MOCK_ASSERT_PROMPT_INCLUDES: expectedRepository,
+      KIMI_MOCK_ASSERT_PROMPT_EXCLUDES: cwd,
+    },
+  });
+  try {
+    assert.equal(result.status, 0, result.stderr);
+  } finally {
+    rmSync(result.dataDir, { recursive: true, force: true });
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
 function readOnlyJobRecord(dataDir) {
   const stateRoot = path.join(dataDir, "state");
   const records = [];
