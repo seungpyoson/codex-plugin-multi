@@ -1,4 +1,4 @@
-import { closeSync, lstatSync, mkdirSync, openSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
+import { linkSync, lstatSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
@@ -82,22 +82,21 @@ function blockResult(provider, file, holder) {
   });
 }
 
-function closeOpenHandle(handle) {
-  if (handle === null) return;
-  try { closeSync(handle); } catch { /* best effort */ }
-}
-
 function tryCreateLeaseFile(file, payload) {
-  let handle = null;
+  const candidate = `${file}.${process.pid}.${payload.token}.tmp`;
   try {
-    handle = openSync(file, "wx", 0o600);
-    writeFileSync(handle, `${JSON.stringify(payload, null, 2)}\n`, "utf8");
-    closeSync(handle);
+    writeFileSync(candidate, `${JSON.stringify(payload, null, 2)}\n`, {
+      encoding: "utf8",
+      flag: "wx",
+      mode: 0o600,
+    });
+    linkSync(candidate, file);
     return true;
   } catch (error) {
-    closeOpenHandle(handle);
     if (error?.code !== "EEXIST") throw error;
     return false;
+  } finally {
+    try { unlinkSync(candidate); } catch { /* best effort */ }
   }
 }
 
@@ -112,8 +111,14 @@ function removeInactiveHolder(file) {
 }
 
 function acquiredResult(file, payload) {
-  const lease = Object.freeze({ file, token: payload.token });
-  process.once("exit", () => releaseProviderWorkloadLease(lease));
+  const lease = { file, token: payload.token };
+  const exitListener = () => releaseProviderWorkloadLease(lease);
+  Object.defineProperty(lease, "exitListener", {
+    value: exitListener,
+    enumerable: false,
+  });
+  Object.freeze(lease);
+  process.once("exit", exitListener);
   return Object.freeze({ ok: true, lease });
 }
 
@@ -153,6 +158,7 @@ export function acquireProviderWorkloadLease({
 
 export function releaseProviderWorkloadLease(lease) {
   if (!lease?.file || !lease?.token) return false;
+  if (typeof lease.exitListener === "function") process.removeListener("exit", lease.exitListener);
   const holder = readHolder(lease.file);
   if (holder?.token !== lease.token) return false;
   try {

@@ -71,6 +71,36 @@ test("provider workload slugging avoids Sonar-flagged boundary alternation regex
   assert.doesNotMatch(source, /replace\(\s*\/\^-\+\|-\+\$\/g/);
 });
 
+test("provider workload lease publishes a complete payload atomically", () => {
+  const source = readFileSync(new URL("../../scripts/lib/review-workload.mjs", import.meta.url), "utf8");
+  assert.doesNotMatch(
+    source,
+    /openSync\(\s*file\s*,\s*"wx"/,
+    "lease publication must not create the final lock path before payload bytes exist",
+  );
+  assert.match(source, /linkSync\(/, "lease publication should atomically link a complete candidate file");
+});
+
+test("provider workload lease release unregisters exit cleanup listener", () => {
+  const { root, env } = tempEnv();
+  const before = process.listenerCount("exit");
+  try {
+    const acquired = acquireProviderWorkloadLease({
+      provider: "claude-listener",
+      jobId: "job-listener",
+      cwd: "/tmp/work-listener",
+      sourceBearing: true,
+      env,
+    });
+    assert.equal(acquired.ok, true);
+    assert.equal(process.listenerCount("exit"), before + 1);
+    assert.equal(releaseProviderWorkloadLease(acquired.lease), true);
+    assert.equal(process.listenerCount("exit"), before);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("provider workload lease is provider-neutral and ignores source-free probes", () => {
   const { root, env } = tempEnv();
   try {

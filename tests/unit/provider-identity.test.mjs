@@ -35,6 +35,20 @@ test("provider identity helper emits stable pseudonymous account fingerprints", 
   assert.doesNotMatch(serialized, /acct-secret-456/);
 });
 
+test("provider identity helper includes numeric account identifiers", () => {
+  const identity = buildProviderAccountIdentity("numeric-provider", {
+    account_id: 123456,
+    user_id: 7890n,
+  });
+
+  assert.deepEqual(identity.identity_fields, ["account_id", "user_id"]);
+  assert.match(identity.account_fingerprint.value, /^[a-f0-9]{64}$/);
+
+  const serialized = JSON.stringify(identity);
+  assert.doesNotMatch(serialized, /123456/);
+  assert.doesNotMatch(serialized, /7890/);
+});
+
 test("provider identity helper returns null without account identifiers", () => {
   assert.equal(buildProviderAccountIdentity("Claude Code", {
     loggedIn: true,

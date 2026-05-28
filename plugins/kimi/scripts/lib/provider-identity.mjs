@@ -25,8 +25,9 @@ function providerSlug(provider) {
 }
 
 function normalizedString(value, fieldName) {
-  if (typeof value !== "string") return null;
-  const trimmed = value.trim();
+  const stringValue = typeof value === "number" || typeof value === "bigint" ? String(value) : value;
+  if (typeof stringValue !== "string") return null;
+  const trimmed = stringValue.trim();
   if (!trimmed) return null;
   return fieldName === "email" ? trimmed.toLowerCase() : trimmed;
 }

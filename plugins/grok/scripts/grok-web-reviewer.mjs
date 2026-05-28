@@ -3535,10 +3535,10 @@ function buildRecord({ cfg, mode, options, scopeInfo, execution, startedAt, ende
       grok_home_linked_files: safeDiagnostics.grok_home_linked_files ?? [],
       grok_home_auth_sync: safeDiagnostics.grok_home_auth_sync ?? null,
       grok_home_cleanup: safeDiagnostics.grok_home_cleanup ?? null,
-	    },
-	    cost_quota: null,
-	    ...(safeDiagnostics.provider_workload ? { provider_workload: safeDiagnostics.provider_workload } : {}),
-	  } : {
+      },
+      cost_quota: null,
+      ...(safeDiagnostics.provider_workload ? { provider_workload: safeDiagnostics.provider_workload } : {}),
+    } : {
     ...(safeDiagnostics.cli_request ? { cli_request: safeDiagnostics.cli_request } : {}),
     tunnel_request: {
       endpoint_class: safeDiagnostics.endpoint_class ?? null,
@@ -3555,10 +3555,10 @@ function buildRecord({ cfg, mode, options, scopeInfo, execution, startedAt, ende
     tunnel_state: safeDiagnostics.tunnel_state ? {
       ...safeDiagnostics.tunnel_state,
       auto_start_attempted: safeDiagnostics.tunnel_start?.attempted ?? safeDiagnostics.tunnel_state.auto_start_attempted ?? false,
-	    } : null,
-	    session_tokens: safeDiagnostics.session_tokens ?? null,
-	    ...(safeDiagnostics.provider_workload ? { provider_workload: safeDiagnostics.provider_workload } : {}),
-	  }) : null;
+      } : null,
+      session_tokens: safeDiagnostics.session_tokens ?? null,
+      ...(safeDiagnostics.provider_workload ? { provider_workload: safeDiagnostics.provider_workload } : {}),
+    }) : null;
   return freezeRecord({
     id: options.jobId,
     job_id: options.jobId,
