@@ -2435,6 +2435,18 @@ function requestSettingsForApproval(cfg, env = process.env) {
   };
 }
 
+function approvalRequestSettingsProjection(cfg, request) {
+  return Object.freeze({
+    provider: cfg.display_name,
+    model: cfg.model,
+    timeout_ms: request.timeout_ms,
+    max_tokens: request.max_tokens,
+    max_steps_per_turn: request.max_steps_per_turn,
+    temperature: request.temperature,
+    stream: request.stream,
+  });
+}
+
 function approvalAuthPathFor(cfg, env = process.env) {
   const credential = selectedCredential(cfg, env);
   return Object.freeze({
@@ -3082,15 +3094,7 @@ function buildApprovalRequest({ provider, cfg, mode, options, scopeInfo }) {
     source_packet_policy: auditManifest.source_packet_policy,
     review_slot_retry_policy: auditManifest.review_slot_retry_policy,
     review_slot: auditManifest.review_slot,
-    request: Object.freeze({
-      provider: cfg.display_name,
-      model: cfg.model,
-      timeout_ms: request.timeout_ms,
-      max_tokens: request.max_tokens,
-      max_steps_per_turn: request.max_steps_per_turn,
-      temperature: request.temperature,
-      stream: request.stream,
-    }),
+    request: approvalRequestSettingsProjection(cfg, request),
     selected_route: routeFields.selected_route,
     route_step: routeFields.route_step,
     route_steps: routeFields.route_steps,
@@ -3183,15 +3187,7 @@ function buildApprovalGrantRequest({ provider, cfg, mode, options, scopeInfo, gr
     source_packet_policy: auditManifest.source_packet_policy,
     review_slot_retry_policy: auditManifest.review_slot_retry_policy,
     review_slot: auditManifest.review_slot,
-    request: Object.freeze({
-      provider: cfg.display_name,
-      model: cfg.model,
-      timeout_ms: request.timeout_ms,
-      max_tokens: request.max_tokens,
-      max_steps_per_turn: request.max_steps_per_turn,
-      temperature: request.temperature,
-      stream: request.stream,
-    }),
+    request: approvalRequestSettingsProjection(cfg, request),
     selected_route: routeFields.selected_route,
     route_step: routeFields.route_step,
     route_steps: routeFields.route_steps,
@@ -3568,32 +3564,70 @@ async function cmdDoctor(options) {
   if (fields.ready !== true) process.exit(1);
 }
 
+function validateApprovalCommandArgs(provider, mode) {
+  if (!provider) throw runBadArgs("bad_args: --provider is required");
+  if (!VALID_MODES.has(mode)) throw runBadArgs(`bad_args: unsupported --mode ${mode}`);
+}
+
+async function loadApprovalProviderConfig(provider) {
+  let providers;
+  try {
+    providers = await loadProviders();
+  } catch (e) {
+    throw runConfigError(`config_error: ${providersConfigErrorMessage(e)}`);
+  }
+  try {
+    const cfg = providerConfig(providers, provider);
+    return Object.freeze({ cfg, configuredSecretNames: cfg.env_keys ?? [] });
+  } catch (e) {
+    throw runBadArgs(e.message);
+  }
+}
+
+async function loadSessionApprovalGrantPolicy() {
+  try {
+    return await loadSessionApprovalPolicy();
+  } catch (e) {
+    throw runConfigError(`config_error: session approval policy unreadable: ${e.message}`);
+  }
+}
+
+async function collectApprovalScopeAndPriorAttempts(options, mode) {
+  const scopeInfo = await collectScope({ ...options, mode });
+  options.reviewSlotPriorAttempts = await collectPriorReviewSlotAttempts(
+    apiReviewerDataRoot(process.env, scopeInfo.workspaceRoot ?? scopeInfo.cwd),
+  );
+  return scopeInfo;
+}
+
+function printApprovalCommandFailure(e, { provider, configuredSecretNames, scopeInfo }) {
+  const reason = isGitBinaryPolicyError(e) ? "git_binary_rejected" : (e.apiReviewersReason ?? "scope_failed");
+  const redact = redactor(process.env, configuredSecretNames);
+  const response = {
+    ok: false,
+    provider,
+    status: reason,
+    error_code: reason,
+    error_message: redact(e?.message ?? String(e)),
+  };
+  const runtimeDiagnostics = buildRuntimeDiagnostics(e?.apiReviewersDiagnostics);
+  if (runtimeDiagnostics) response.runtime_diagnostics = runtimeDiagnostics;
+  printJson(redactRecord(response, process.env, configuredSecretNames, scopeInfo?.files ?? []));
+  process.exit(1);
+}
+
 async function cmdApprovalRequest(options) {
   const provider = options.provider ?? null;
   const mode = options.mode ?? "review";
   let configuredSecretNames = [];
   let scopeInfo = null;
   try {
-    if (!provider) throw runBadArgs("bad_args: --provider is required");
-    if (!VALID_MODES.has(mode)) throw runBadArgs(`bad_args: unsupported --mode ${mode}`);
-    let providers;
-    try {
-      providers = await loadProviders();
-    } catch (e) {
-      throw runConfigError(`config_error: ${providersConfigErrorMessage(e)}`);
-    }
-    let cfg;
-    try {
-      cfg = providerConfig(providers, provider);
-      configuredSecretNames = cfg.env_keys ?? [];
-    } catch (e) {
-      throw runBadArgs(e.message);
-    }
+    validateApprovalCommandArgs(provider, mode);
+    const providerConfigResult = await loadApprovalProviderConfig(provider);
+    const cfg = providerConfigResult.cfg;
+    configuredSecretNames = providerConfigResult.configuredSecretNames;
     if (!hasPromptText(options.prompt)) throw runBadArgs("bad_args: prompt is required (pass --prompt <focus>)");
-    scopeInfo = await collectScope({ ...options, mode });
-    options.reviewSlotPriorAttempts = await collectPriorReviewSlotAttempts(
-      apiReviewerDataRoot(process.env, scopeInfo.workspaceRoot ?? scopeInfo.cwd),
-    );
+    scopeInfo = await collectApprovalScopeAndPriorAttempts(options, mode);
     let approvalRequest;
     try {
       approvalRequest = buildApprovalRequest({ provider, cfg, mode, options, scopeInfo });
@@ -3603,19 +3637,7 @@ async function cmdApprovalRequest(options) {
     }
     printJson(approvalRequest);
   } catch (e) {
-    const reason = isGitBinaryPolicyError(e) ? "git_binary_rejected" : (e.apiReviewersReason ?? "scope_failed");
-    const redact = redactor(process.env, configuredSecretNames);
-    const response = {
-      ok: false,
-      provider,
-      status: reason,
-      error_code: reason,
-      error_message: redact(e?.message ?? String(e)),
-    };
-    const runtimeDiagnostics = buildRuntimeDiagnostics(e?.apiReviewersDiagnostics);
-    if (runtimeDiagnostics) response.runtime_diagnostics = runtimeDiagnostics;
-    printJson(redactRecord(response, process.env, configuredSecretNames, scopeInfo?.files ?? []));
-    process.exit(1);
+    printApprovalCommandFailure(e, { provider, configuredSecretNames, scopeInfo });
   }
 }
 
@@ -3625,32 +3647,13 @@ async function cmdApprovalGrantRequest(options) {
   let configuredSecretNames = [];
   let scopeInfo = null;
   try {
-    if (!provider) throw runBadArgs("bad_args: --provider is required");
-    if (!VALID_MODES.has(mode)) throw runBadArgs(`bad_args: unsupported --mode ${mode}`);
-    let providers;
-    try {
-      providers = await loadProviders();
-    } catch (e) {
-      throw runConfigError(`config_error: ${providersConfigErrorMessage(e)}`);
-    }
-    let cfg;
-    try {
-      cfg = providerConfig(providers, provider);
-      configuredSecretNames = cfg.env_keys ?? [];
-    } catch (e) {
-      throw runBadArgs(e.message);
-    }
+    validateApprovalCommandArgs(provider, mode);
+    const providerConfigResult = await loadApprovalProviderConfig(provider);
+    const cfg = providerConfigResult.cfg;
+    configuredSecretNames = providerConfigResult.configuredSecretNames;
     if (!hasPromptText(options.prompt)) throw runBadArgs("bad_args: prompt is required (pass --prompt <focus>)");
-    let grantPolicy;
-    try {
-      grantPolicy = await loadSessionApprovalPolicy();
-    } catch (e) {
-      throw runConfigError(`config_error: session approval policy unreadable: ${e.message}`);
-    }
-    scopeInfo = await collectScope({ ...options, mode });
-    options.reviewSlotPriorAttempts = await collectPriorReviewSlotAttempts(
-      apiReviewerDataRoot(process.env, scopeInfo.workspaceRoot ?? scopeInfo.cwd),
-    );
+    const grantPolicy = await loadSessionApprovalGrantPolicy();
+    scopeInfo = await collectApprovalScopeAndPriorAttempts(options, mode);
     let approvalRequest;
     try {
       ({ approvalRequest } = buildApprovalGrantRequest({ provider, cfg, mode, options, scopeInfo, grantPolicy }));
@@ -3660,19 +3663,7 @@ async function cmdApprovalGrantRequest(options) {
     }
     printJson(approvalRequest);
   } catch (e) {
-    const reason = isGitBinaryPolicyError(e) ? "git_binary_rejected" : (e.apiReviewersReason ?? "scope_failed");
-    const redact = redactor(process.env, configuredSecretNames);
-    const response = {
-      ok: false,
-      provider,
-      status: reason,
-      error_code: reason,
-      error_message: redact(e?.message ?? String(e)),
-    };
-    const runtimeDiagnostics = buildRuntimeDiagnostics(e?.apiReviewersDiagnostics);
-    if (runtimeDiagnostics) response.runtime_diagnostics = runtimeDiagnostics;
-    printJson(redactRecord(response, process.env, configuredSecretNames, scopeInfo?.files ?? []));
-    process.exit(1);
+    printApprovalCommandFailure(e, { provider, configuredSecretNames, scopeInfo });
   }
 }
 
@@ -3682,33 +3673,14 @@ async function cmdApprovalGrantActivate(options) {
   let configuredSecretNames = [];
   let scopeInfo = null;
   try {
-    if (!provider) throw runBadArgs("bad_args: --provider is required");
-    if (!VALID_MODES.has(mode)) throw runBadArgs(`bad_args: unsupported --mode ${mode}`);
-    let grantPolicy;
-    try {
-      grantPolicy = await loadSessionApprovalPolicy();
-    } catch (e) {
-      throw runConfigError(`config_error: session approval policy unreadable: ${e.message}`);
-    }
+    validateApprovalCommandArgs(provider, mode);
+    const grantPolicy = await loadSessionApprovalGrantPolicy();
     const grantExpiresAt = parseGrantExpiresAt(grantPolicy, options);
-    let providers;
-    try {
-      providers = await loadProviders();
-    } catch (e) {
-      throw runConfigError(`config_error: ${providersConfigErrorMessage(e)}`);
-    }
-    let cfg;
-    try {
-      cfg = providerConfig(providers, provider);
-      configuredSecretNames = cfg.env_keys ?? [];
-    } catch (e) {
-      throw runBadArgs(e.message);
-    }
+    const providerConfigResult = await loadApprovalProviderConfig(provider);
+    const cfg = providerConfigResult.cfg;
+    configuredSecretNames = providerConfigResult.configuredSecretNames;
     if (!hasPromptText(options.prompt)) throw runBadArgs("bad_args: prompt is required (pass --prompt <focus>)");
-    scopeInfo = await collectScope({ ...options, mode });
-    options.reviewSlotPriorAttempts = await collectPriorReviewSlotAttempts(
-      apiReviewerDataRoot(process.env, scopeInfo.workspaceRoot ?? scopeInfo.cwd),
-    );
+    scopeInfo = await collectApprovalScopeAndPriorAttempts(options, mode);
     let approvalRequest;
     let approvalTuple;
     try {
@@ -3739,19 +3711,7 @@ async function cmdApprovalGrantActivate(options) {
     );
     printJson(approvalGrantActivationResponse({ provider, cfg, mode, scopeInfo, grantRecord }));
   } catch (e) {
-    const reason = isGitBinaryPolicyError(e) ? "git_binary_rejected" : (e.apiReviewersReason ?? "scope_failed");
-    const redact = redactor(process.env, configuredSecretNames);
-    const response = {
-      ok: false,
-      provider,
-      status: reason,
-      error_code: reason,
-      error_message: redact(e?.message ?? String(e)),
-    };
-    const runtimeDiagnostics = buildRuntimeDiagnostics(e?.apiReviewersDiagnostics);
-    if (runtimeDiagnostics) response.runtime_diagnostics = runtimeDiagnostics;
-    printJson(redactRecord(response, process.env, configuredSecretNames, scopeInfo?.files ?? []));
-    process.exit(1);
+    printApprovalCommandFailure(e, { provider, configuredSecretNames, scopeInfo });
   }
 }
 
