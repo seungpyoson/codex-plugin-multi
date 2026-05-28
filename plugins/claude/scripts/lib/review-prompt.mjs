@@ -382,6 +382,7 @@ const PERMISSION_FAILURE_EXAMPLE_DETECTORS = Object.freeze([
   isPermissionLiteralListLine,
   isPermissionAllowlistDiscussionLine,
   isProcessLivenessPermissionDiscussionLine,
+  isBenignPermissionDiscussionSummaryLine,
   isPermissionBoundaryExampleLine,
   isPermissionLiteralDiscussionLine,
   isPermissionMechanicsDiscussionLine,
@@ -461,6 +462,22 @@ function isProcessLivenessPermissionDiscussionLine(lower) {
       "process signal",
       "process.kill",
       "kill(pid",
+    ]);
+}
+
+function isBenignPermissionDiscussionSummaryLine(lower) {
+  return includesPermissionFailureLiteral(lower)
+    && !hasConcretePermissionActionPhrase(lower)
+    && includesAny(lower, [
+      "benign-discussion",
+      "benign discussion",
+    ])
+    && includesAny(lower, [
+      "scope inspected",
+      "supplied verbatim",
+      "supplied in the prompt",
+      "including",
+      "included",
     ]);
 }
 

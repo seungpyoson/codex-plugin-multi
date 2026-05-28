@@ -1573,6 +1573,29 @@ for (const [name, file] of REVIEW_PROMPT_MODULES) {
 }
 
 for (const [name, file] of REVIEW_PROMPT_MODULES) {
+  test(`review audit manifest ignores observed EPERM benign-discussion scope summary (${name})`, async () => {
+    const { buildReviewAuditManifest: targetBuildReviewAuditManifest } = file === "scripts/lib/review-prompt.mjs"
+      ? { buildReviewAuditManifest }
+      : await import(pathToFileURL(resolve(file)).href);
+    const manifest = targetBuildReviewAuditManifest({
+      prompt: "rendered prompt",
+      sourceFiles: [{ path: "scripts/lib/review-workload.mjs", text: "export const value = 1;\n" }],
+      result: [
+        "Verdict: APPROVE",
+        "Scope inspected: all 76 files supplied verbatim in the prompt, including the EPERM benign-discussion lines in `scripts/lib/review-prompt.mjs`, the sync scripts, CI surfaces, smoke tests, and unit tests.",
+        "Blocking findings: none.",
+        "Non-blocking concerns:",
+        "- `pidAlive` in `scripts/lib/review-workload.mjs` treats `EPERM` as alive. This is conventional, but PID reuse can produce a false-positive block until the operator unlinks the file.",
+        "Inspection statement: I inspected scripts/lib/review-workload.mjs.",
+      ].join("\n"),
+      status: "completed",
+      errorCode: null,
+    });
+
+    assert.deepEqual(manifest.review_quality.semantic_failure_reasons, []);
+    assert.equal(manifest.review_quality.failed_review_slot, false);
+  });
+
   test(`review audit manifest ignores benign EPERM implementation discussion across packaged copies (${name})`, async () => {
     const { buildReviewAuditManifest: targetBuildReviewAuditManifest } = file === "scripts/lib/review-prompt.mjs"
       ? { buildReviewAuditManifest }
