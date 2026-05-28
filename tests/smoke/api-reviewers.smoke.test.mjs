@@ -3098,7 +3098,7 @@ test("direct API timeout marks selected content as sent", async () => {
     const promptChars = Number(/prompt_chars=(\d+)/.exec(record.error_summary)?.[1]);
     const estimatedTokens = Number(/estimated_tokens=(\d+)/.exec(record.error_summary)?.[1]);
     assert.equal(estimatedTokens, Math.ceil(promptChars / 4));
-    assert.match(record.error_message, /This operation was aborted|aborted/i);
+    assert.match(record.error_message, /This operation was aborted|aborted|request timed out after/i);
     assert.match(record.suggested_action, /timeout/i);
     assert.match(record.suggested_action, /API_REVIEWERS_TIMEOUT_MS/);
     assert.match(record.suggested_action, /Do not automatically resend selected source/i);
@@ -3922,8 +3922,8 @@ test("direct API provider_unavailable under Codex recommends sandbox network acc
   assert.equal(result.status, 1);
   const record = parseJson(result.stdout);
   assert.equal(record.error_code, "provider_unavailable");
-  assert.equal(record.runtime_diagnostics.provider_request.fetch_error.name, "TypeError");
-  assert.equal(record.runtime_diagnostics.provider_request.fetch_error.message, "fetch failed");
+  assert.match(record.runtime_diagnostics.provider_request.fetch_error.name, /^(TypeError|Error)$/);
+  assert.match(record.runtime_diagnostics.provider_request.fetch_error.message, /fetch failed|connect|refused/i);
   assert.match(
     JSON.stringify(record.runtime_diagnostics.provider_request.fetch_error),
     /bad port|ECONNREFUSED|connect|refused/i,
@@ -3933,22 +3933,72 @@ test("direct API provider_unavailable under Codex recommends sandbox network acc
   assert.doesNotMatch(result.stdout, /secret-test-value/);
 });
 
-test("direct API fetch headers timeout is classified as timeout with cause diagnostics", async () => {
+test("direct API request timeout is classified as timeout with cause diagnostics", async () => {
+  const cwd = makeWorkspace();
+  const dataDir = mkdtempSync(path.join(tmpdir(), "api-reviewers-data-"));
+  const pluginRoot = makeInstalledApiReviewersRoot();
+  let reviewRequestCount = 0;
+  const server = createServer((req, res) => {
+    let body = "";
+    req.setEncoding("utf8");
+    req.on("data", (chunk) => { body += chunk; });
+    req.on("end", () => {
+      const parsed = JSON.parse(body);
+      const prompt = String(parsed.messages?.[0]?.content ?? "");
+      if (prompt === "Return exactly: ok") {
+        res.setHeader("content-type", "application/json");
+        res.end(mockResponse("deepseek-v4-flash", "chatcmpl-doctor", "ok"));
+        return;
+      }
+      reviewRequestCount += 1;
+      // Keep the source-bearing request open so the client timeout owns classification.
+    });
+  });
+
+  try {
+    await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const { port } = server.address();
+    writeDeepSeekProviderConfig(pluginRoot, `http://127.0.0.1:${port}`);
+
+    const result = await run([
+      "run",
+      "--provider", "deepseek",
+      "--mode", "custom-review",
+      "--scope", "custom",
+      "--scope-paths", "seed.txt",
+      "--foreground",
+      "--prompt", "Check this file.",
+    ], {
+      cwd,
+      companion: path.join(pluginRoot, "scripts", "api-reviewer.mjs"),
+      env: {
+        API_REVIEWERS_PLUGIN_DATA: dataDir,
+        API_REVIEWERS_TIMEOUT_MS: "50",
+        DEEPSEEK_API_KEY: "secret-test-value",
+      },
+    });
+    assert.equal(result.status, 1);
+    assert.equal(reviewRequestCount, 1);
+    const record = parseJson(result.stdout);
+    assert.equal(record.error_code, "timeout");
+    assert.equal(record.external_review.source_content_transmission, "sent");
+    assert.equal(record.runtime_diagnostics.provider_request.configured_timeout_ms, 50);
+    assert.equal(record.runtime_diagnostics.provider_request.fetch_error.name, "AbortError");
+    assert.equal(record.runtime_diagnostics.provider_request.fetch_error.code, "API_REVIEWERS_REQUEST_TIMEOUT");
+    assert.match(record.suggested_action, /narrow/i);
+    assert.doesNotMatch(result.stdout, /secret-test-value/);
+  } finally {
+    server.close();
+  }
+});
+
+test("direct API provider request does not depend on global fetch transport", async () => {
   const cwd = makeWorkspace();
   const dataDir = mkdtempSync(path.join(tmpdir(), "api-reviewers-data-"));
   const pluginRoot = makeInstalledApiReviewersRoot();
   const fetchMock = path.join(mkdtempSync(path.join(tmpdir(), "api-reviewers-fetch-mock-")), "mock-fetch.mjs");
-  writeDeepSeekProviderConfig(pluginRoot, "http://127.0.0.1:12345");
   writeFileSync(fetchMock, `
-globalThis.fetch = async (_url, options = {}) => {
-  const request = JSON.parse(String(options.body ?? "{}"));
-  const prompt = String(request.messages?.[0]?.content ?? "");
-  if (prompt === "Return exactly: ok") {
-    return new Response(${JSON.stringify(mockResponse("deepseek-v4-flash", "chatcmpl-doctor", "ok"))}, {
-      status: 200,
-      headers: { "content-type": "application/json" },
-    });
-  }
+globalThis.fetch = async () => {
   const cause = new Error("Headers Timeout Error");
   cause.name = "HeadersTimeoutError";
   cause.code = "UND_ERR_HEADERS_TIMEOUT";
@@ -3957,33 +4007,61 @@ globalThis.fetch = async (_url, options = {}) => {
   throw error;
 };
 `, "utf8");
-
-  const result = await run([
-    "run",
-    "--provider", "deepseek",
-    "--mode", "custom-review",
-    "--scope", "custom",
-    "--scope-paths", "seed.txt",
-    "--foreground",
-    "--prompt", "Check this file.",
-  ], {
-    cwd,
-    companion: path.join(pluginRoot, "scripts", "api-reviewer.mjs"),
-    env: {
-      API_REVIEWERS_PLUGIN_DATA: dataDir,
-      API_REVIEWERS_TIMEOUT_MS: "900000",
-      DEEPSEEK_API_KEY: "secret-test-value",
-      NODE_OPTIONS: `--import ${fetchMock}`,
-    },
+  let requestCount = 0;
+  let reviewRequestCount = 0;
+  const server = createServer((req, res) => {
+    requestCount += 1;
+    assert.equal(req.method, "POST");
+    assert.equal(req.url, "/chat/completions");
+    let body = "";
+    req.setEncoding("utf8");
+    req.on("data", (chunk) => { body += chunk; });
+    req.on("end", () => {
+      const parsed = JSON.parse(body);
+      assert.equal(parsed.model, "deepseek-v4-flash");
+      const prompt = parsed.messages?.[0]?.content ?? "";
+      if (prompt !== "Return exactly: ok") {
+        reviewRequestCount += 1;
+        assert.match(prompt, /Check this file/);
+      }
+      res.setHeader("content-type", "application/json");
+      res.end(mockResponse("deepseek-v4-flash", "chatcmpl-http-transport"));
+    });
   });
-  assert.equal(result.status, 1);
-  const record = parseJson(result.stdout);
-  assert.equal(record.error_code, "timeout");
-  assert.equal(record.external_review.source_content_transmission, "sent");
-  assert.equal(record.runtime_diagnostics.provider_request.configured_timeout_ms, 900000);
-  assert.equal(record.runtime_diagnostics.provider_request.fetch_error.cause.code, "UND_ERR_HEADERS_TIMEOUT");
-  assert.match(record.suggested_action, /narrow/i);
-  assert.doesNotMatch(result.stdout, /secret-test-value/);
+
+  try {
+    await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const { port } = server.address();
+    writeDeepSeekProviderConfig(pluginRoot, `http://127.0.0.1:${port}`);
+
+    const result = await run([
+      "run",
+      "--provider", "deepseek",
+      "--mode", "custom-review",
+      "--scope", "custom",
+      "--scope-paths", "seed.txt",
+      "--foreground",
+      "--prompt", "Check this file.",
+    ], {
+      cwd,
+      companion: path.join(pluginRoot, "scripts", "api-reviewer.mjs"),
+      env: {
+        API_REVIEWERS_PLUGIN_DATA: dataDir,
+        API_REVIEWERS_TIMEOUT_MS: "900000",
+        DEEPSEEK_API_KEY: "secret-test-value",
+        NODE_OPTIONS: `--import ${fetchMock}`,
+      },
+    });
+    assert.equal(result.status, 0, result.stdout || result.stderr);
+    assert.equal(requestCount, 2);
+    assert.equal(reviewRequestCount, 1);
+    const record = parseJson(result.stdout);
+    assert.equal(record.status, "completed");
+    assert.equal(record.runtime_diagnostics.provider_request.configured_timeout_ms, 900000);
+    assert.doesNotMatch(result.stdout, /secret-test-value/);
+  } finally {
+    server.close();
+  }
 });
 
 test("direct API provider_unavailable ignores false-like Codex sandbox values", async () => {

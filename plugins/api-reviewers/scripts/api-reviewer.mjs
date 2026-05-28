@@ -2,6 +2,8 @@
 import { spawnSync } from "node:child_process";
 import { lstat, mkdir, open, readFile, readdir, realpath, rename, rm, unlink, writeFile } from "node:fs/promises";
 import { constants as fsConstants, lstatSync, readFileSync } from "node:fs";
+import { request as httpRequest } from "node:http";
+import { request as httpsRequest } from "node:https";
 import { basename, dirname, isAbsolute, resolve, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createHash, randomUUID } from "node:crypto";
@@ -2074,21 +2076,18 @@ async function callProvider(provider, cfg, prompt, env = process.env) {
   if (effectiveEnv.API_REVIEWERS_MOCK_RESPONSE) {
     return mockProviderExecution(cfg, prompt, credential, effectiveEnv, requestBody);
   }
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs.value);
   const redact = redactor(effectiveEnv, cfg.env_keys);
   const started = Date.now();
   try {
-    const response = await fetch(endpoint, {
-      method: "POST",
+    const response = await postProviderJson(endpoint, {
       headers: {
         "content-type": "application/json",
         authorization: `Bearer ${credential.value}`,
       },
       body: JSON.stringify(requestBody),
-      signal: controller.signal,
+      timeoutMs: timeoutMs.value,
     });
-    const text = await response.text();
+    const text = response.text;
     const parsed = parseJson(text);
     if (!response.ok) {
       const errorCode = classifyHttpFailure(response.status, parsed, text);
@@ -2158,9 +2157,66 @@ async function callProvider(provider, cfg, prompt, env = process.env) {
       ),
       ...credentialFields,
     };
-  } finally {
-    clearTimeout(timer);
   }
+}
+
+function postProviderJson(endpoint, { headers, body, timeoutMs }) {
+  return new Promise((resolvePromise, rejectPromise) => {
+    let url;
+    try {
+      url = new URL(endpoint);
+    } catch (e) {
+      rejectPromise(e);
+      return;
+    }
+    const transport = url.protocol === "https:" ? httpsRequest : url.protocol === "http:" ? httpRequest : null;
+    if (!transport) {
+      rejectPromise(new Error(`unsupported provider endpoint protocol: ${url.protocol}`));
+      return;
+    }
+
+    let settled = false;
+    let timeout = null;
+    const finish = (fn, value) => {
+      if (settled) return;
+      settled = true;
+      if (timeout) clearTimeout(timeout);
+      fn(value);
+    };
+
+    const request = transport(url, {
+      method: "POST",
+      headers: {
+        ...headers,
+        "content-length": Buffer.byteLength(body),
+      },
+    }, (response) => {
+      const chunks = [];
+      response.on("data", (chunk) => {
+        chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+      });
+      response.on("end", () => {
+        const text = Buffer.concat(chunks).toString("utf8");
+        const status = response.statusCode ?? 0;
+        finish(resolvePromise, {
+          ok: status >= 200 && status < 300,
+          status,
+          text,
+        });
+      });
+      response.on("error", (error) => finish(rejectPromise, error));
+    });
+
+    timeout = setTimeout(() => {
+      const error = new Error(`request timed out after ${timeoutMs}ms`);
+      error.name = "AbortError";
+      error.code = "API_REVIEWERS_REQUEST_TIMEOUT";
+      request.destroy(error);
+      finish(rejectPromise, error);
+    }, timeoutMs);
+    request.on("error", (error) => finish(rejectPromise, error));
+    request.end(body);
+  });
 }
 
 function summarizeRequestDefaults(defaults = {}) {
