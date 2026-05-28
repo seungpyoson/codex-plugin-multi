@@ -178,3 +178,43 @@ not introduce an API-vs-subscription approval split in the review evidence.
   PASS, 1 test.
 - `npm test`: PASS, 2225 tests; 2213 pass, 0 fail, 12 skipped.
 - `git diff --check`: PASS.
+
+## Final Latest-Head Implementation Review Gate
+
+Head SHA reviewed:
+`43b4828a3a1265e6534536dd09b0c6c5c31d650d`
+
+Scope: full selected #159 branch diff from `main` to `HEAD`.
+
+- Claude: job `77da8326-bf19-460d-9bc1-b68010b5541f`; source sent;
+  subscription route; verdict APPROVE; no blocking findings.
+- Gemini: job `eeaafa52-9852-4f91-b726-fe3927671c36`; source sent;
+  subscription route; verdict APPROVE; no blocking findings.
+- Grok: job `job_2aa11d96-ac76-4ec0-a9cd-25c8e3859cf8`; source sent;
+  subscription-backed Grok CLI route; verdict APPROVE; no blocking findings.
+- DeepSeek: job `job_2d0a674e-e91e-4f24-a673-e4d505aaddca`; source sent;
+  direct API route under the existing approval workflow; verdict APPROVE; no
+  blocking findings.
+- Kimi: job `004bbdf0-a74d-4d6d-80ef-dc8b6fdfa368`; source sent after
+  explicit large-packet allowance; verdict APPROVE; no blocking findings.
+- GLM: job `job_32e52d7f-8a2f-4f74-b41e-25ec617887c7`; source transmission
+  recorded as `unknown`; failed with `provider_unavailable` / `fetch failed`;
+  no usable verdict; explicit operator waiver recorded below.
+
+GLM source-free `ping` succeeded afterward, proving the configured GLM route was
+available for a small live probe. A same-packet GLM review retry was not launched
+because the review-slot retry guard returned `review_slot_disposition_required`:
+the failed source-bearing slot must be split, switched, waived, or explicitly
+overridden before another same-packet attempt. This GLM slot does not count as
+approval.
+
+Operator waiver: on 2026-05-28 KST, the operator explicitly approved skipping
+the failed GLM slot for this #159 final implementation gate. The waiver is only
+for this unavailable GLM review slot. It does not treat GLM as approving, does
+not waive the failed-slot behavior generally, and does not approve push, PR,
+issue closure, merge, browser/session repair, cache sync, billing/tier action,
+or any same-packet GLM retry override.
+
+Final gate status: Claude, Gemini, Grok, DeepSeek, and Kimi approved the exact
+latest-head implementation. GLM is waived as unavailable with the failed-slot
+evidence above.
