@@ -1573,6 +1573,34 @@ for (const [name, file] of REVIEW_PROMPT_MODULES) {
 }
 
 for (const [name, file] of REVIEW_PROMPT_MODULES) {
+  test(`review audit manifest ignores observed EPERM parser-fix approval prose (${name})`, async () => {
+    const { buildReviewAuditManifest: targetBuildReviewAuditManifest } = file === "scripts/lib/review-prompt.mjs"
+      ? { buildReviewAuditManifest }
+      : await import(pathToFileURL(resolve(file)).href);
+    const manifest = targetBuildReviewAuditManifest({
+      prompt: "rendered prompt",
+      sourceFiles: [{ path: "scripts/lib/review-prompt.mjs", text: "export const value = 1;\n" }],
+      result: [
+        "Verdict: APPROVE",
+        "Checklist",
+        "1. Verify exact base/head refs and commits before judging the diff: PASS.",
+        "2. Review only the declared scope and list any scope gaps as NOT REVIEWED: PASS. The entire branch-diff scope was reviewed.",
+        "3. Evaluate correctness bugs, security risks, regressions, and missing tests: PASS. The implementation of the stale env/cache behavior, provider workload gating, usage limit adjustments, account identity abstraction, Grok auth file syncing, and review-prompt EPERM parser fixes are robust.",
+        "4. Check known review comments or residual threads when the prompt includes them: NOT REVIEWED. None provided.",
+        "5. Separate blocking findings from non-blocking concerns: PASS.",
+        "6. Treat timeout, truncation, interruption, permission block, or shallow output as a failed review slot: PASS.",
+        "Blocking findings: none.",
+        "Non-blocking concerns: none.",
+        "Inspection statement: I inspected scripts/lib/review-prompt.mjs.",
+      ].join("\n"),
+      status: "completed",
+      errorCode: null,
+    });
+
+    assert.deepEqual(manifest.review_quality.semantic_failure_reasons, []);
+    assert.equal(manifest.review_quality.failed_review_slot, false);
+  });
+
   test(`review audit manifest ignores observed EPERM benign-discussion scope summary (${name})`, async () => {
     const { buildReviewAuditManifest: targetBuildReviewAuditManifest } = file === "scripts/lib/review-prompt.mjs"
       ? { buildReviewAuditManifest }

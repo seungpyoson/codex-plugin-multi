@@ -383,6 +383,7 @@ const PERMISSION_FAILURE_EXAMPLE_DETECTORS = Object.freeze([
   isPermissionAllowlistDiscussionLine,
   isProcessLivenessPermissionDiscussionLine,
   isBenignPermissionDiscussionSummaryLine,
+  isPermissionParserFixSummaryLine,
   isPermissionBoundaryExampleLine,
   isPermissionLiteralDiscussionLine,
   isPermissionMechanicsDiscussionLine,
@@ -478,6 +479,24 @@ function isBenignPermissionDiscussionSummaryLine(lower) {
       "supplied in the prompt",
       "including",
       "included",
+    ]);
+}
+
+function isPermissionParserFixSummaryLine(lower) {
+  return includesPermissionFailureLiteral(lower)
+    && !hasConcretePermissionActionPhrase(lower)
+    && includesAny(lower, [
+      "parser fix",
+      "parser fixes",
+      "parser regression",
+      "parser regressions",
+    ])
+    && includesAny(lower, [
+      "review-prompt",
+      "review-quality",
+      "implementation",
+      "robust",
+      "covered",
     ]);
 }
 
