@@ -362,6 +362,7 @@ function assertReviewPromptContract(targetBuildReviewPrompt = buildReviewPrompt,
   assert.match(prompt, /bare numbered answers or section bodies such as only 'None' are shallow and invalid/);
   assert.match(prompt, /write a complete sentence that names the relevant selected file or scope/);
   assert.match(prompt, /supplied in this prompt as the authoritative review evidence/);
+  assert.match(prompt, /Do not inspect original absolute workspace paths/);
   assert.match(prompt, /git, GitHub, network, filesystem, or tool access is unavailable/);
   assert.match(prompt, /mark only that check as NOT REVIEWED/);
   assert.match(prompt, /Do not report missing external tool access as a blocking code finding by itself/);
@@ -404,6 +405,7 @@ function assertCompactReviewPromptContract(targetBuildReviewPrompt = buildReview
   assert.match(prompt, /Verdict: REQUEST_CHANGES/);
   assert.match(prompt, /Verdict: NOT_REVIEWED/);
   assert.match(prompt, /Review only supplied selected source/);
+  assert.match(prompt, /Do not inspect original absolute workspace paths/);
   assert.match(prompt, /Name inspected selected file path/);
   assert.match(prompt, /Blocking findings/);
   assert.match(prompt, /Non-blocking concerns/);

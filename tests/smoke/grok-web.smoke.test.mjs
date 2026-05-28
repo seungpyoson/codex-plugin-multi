@@ -991,6 +991,50 @@ test("doctor syncs source-free refreshed Grok CLI auth file back to source auth 
   }
 });
 
+test("doctor uses source-free probe to recover expired Grok CLI auth before declaring login missing", () => {
+  const dataDir = mkdtempSync(path.join(tmpdir(), "grok-cli-expired-auth-recovery-data-"));
+  const authHome = mkdtempSync(path.join(tmpdir(), "grok-cli-expired-auth-recovery-auth-home-"));
+  const { binDir, grokPath, logPath } = makeFakeGrokCli({
+    modelsOutput: GROK_MODELS_READY_LOGGED_OUT,
+    mutateAuthOnSourceFree: true,
+  });
+  writeExpiredGrokCliAuthFixture(authHome);
+
+  try {
+    const result = run(["doctor"], {
+      defaultTransport: false,
+      env: {
+        PATH: `${binDir}${path.delimiter}${process.env.PATH ?? ""}`,
+        GROK_CLI_BINARY: grokPath,
+        GROK_CLI_AUTH_HOME: authHome,
+        GROK_PLUGIN_DATA: dataDir,
+      },
+    });
+
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    const parsed = parseStdout(result);
+    assert.equal(parsed.ready, true);
+    assert.equal(parsed.logged_in, true);
+    assert.equal(parsed.auth_freshness.status, "present_unknown");
+    assert.equal(parsed.readiness_layers.cli_login.status, "ready");
+    assert.equal(parsed.readiness_layers.cli_auth_file.status, "present_unknown");
+    assert.equal(parsed.readiness_layers.source_free_prompt.status, "ready");
+    assert.equal(parsed.readiness_layers.source_free_prompt.grok_home_auth_sync, "updated");
+    assert.equal(readFileSync(path.join(authHome, "auth.json"), "utf8"), "{\"token\":\"mutated\"}\n");
+
+    const logLines = readGrokCliLog(logPath);
+    assert.deepEqual(logLines.filter((line) => Array.isArray(line.args)).map((line) => line.args[0]), [
+      "--version", "models", "--prompt-file",
+    ]);
+    const promptInvocations = logLines.filter((line) => line.promptPath);
+    assert.equal(promptInvocations.length, 1);
+    assert.equal(promptInvocations[0].promptHasSource, false);
+  } finally {
+    rmTree(authHome);
+    rmTree(dataDir);
+  }
+});
+
 test("custom-review fails closed when Grok CLI model is ready but login is false", async () => {
   const cwd = realpathSync(mkdtempSync(path.join(tmpdir(), "grok-cli-login-required-workspace-")));
   const dataDir = mkdtempSync(path.join(tmpdir(), "grok-cli-login-required-data-"));
@@ -1769,7 +1813,9 @@ test("doctor reports expired Grok CLI subscription auth distinctly from API-key 
     assert.doesNotMatch(result.stdout, /xai-direct-api-key-must-not-leak|2000-01-01/);
 
     const logLines = readGrokCliLog(logPath);
-    assert.deepEqual(logLines.map((line) => line.args[0]), ["--version", "models"]);
+    assert.deepEqual(logLines.filter((line) => Array.isArray(line.args)).map((line) => line.args[0]), [
+      "--version", "models", "--prompt-file",
+    ]);
   } finally {
     rmTree(authHome);
     rmTree(dataDir);
@@ -2224,7 +2270,9 @@ test("repair reports expired Grok CLI auth as actionable CLI auth repair", () =>
     assert.equal(parsed.sync_session.source_content_transmission, "not_sent");
     assert.match(parsed.next_action, /grok login/i);
     assert.doesNotMatch(parsed.next_action, /--approve-browser-session-sync|grok2api/i);
-    assert.deepEqual(readGrokCliLog(logPath).map((line) => line.args[0]), ["--version", "models"]);
+    assert.deepEqual(readGrokCliLog(logPath).filter((line) => Array.isArray(line.args)).map((line) => line.args[0]), [
+      "--version", "models", "--prompt-file",
+    ]);
   } finally {
     rmTree(authHome);
     rmTree(dataDir);

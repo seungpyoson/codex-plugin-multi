@@ -1798,6 +1798,10 @@ async function grokCliAuthFreshness(env = process.env, nowMs = Date.now()) {
   };
 }
 
+function isDurableRecoveredGrokCliAuth(authFreshness) {
+  return authFreshness?.status === "fresh" || authFreshness?.status === "present_unknown";
+}
+
 async function copyGrokCliHomeFile(sourceHome, runtimeHome, relPath, copiedFiles) {
   const source = resolve(sourceHome, relPath);
   const destination = resolve(runtimeHome, relPath);
@@ -2001,9 +2005,108 @@ async function grokCliReadinessPreflight(cfg, env = process.env) {
   if (isGrokCliLoginRequired(modelsInfo)) {
     const ignoredEnvCredentials = ignoredGrokDirectApiEnvKeys(cfg, env);
     const expiredAuth = authFreshness.status === "expired";
+    if (expiredAuth) {
+      const sourceFree = await callGrokCli(cfg, REVIEW_READINESS_PREFLIGHT_PROMPT, {
+        sourceBearing: false,
+        env,
+        baseDiagnostics: {
+          grok_version: versionText,
+          default_model: modelsInfo.default_model,
+          logged_in: false,
+          model_ready: modelsInfo.model_ready,
+          configured_timeout_ms: cfg.timeout_ms,
+          ignored_env_credentials: ignoredEnvCredentials,
+          auth_policy: ignoredEnvCredentials.length > 0 ? "api_key_env_ignored" : null,
+          auth_freshness: authFreshness,
+          auth_recovery: {
+            attempted: true,
+            from_status: authFreshness.status,
+            method: "source_free_prompt",
+          },
+        },
+      });
+      const refreshedAuthFreshness = await grokCliAuthFreshness(env);
+      if (sourceFree.exitCode === 0 && sourceFree.parsed?.ok === true) {
+        const sourceFreeDiagnostics = {
+          grok_version: versionText,
+          default_model: modelsInfo.default_model,
+          logged_in: true,
+          model_ready: modelsInfo.model_ready,
+          ignored_env_credentials: ignoredEnvCredentials,
+          auth_policy: ignoredEnvCredentials.length > 0 ? "api_key_env_ignored" : null,
+          source_free_preflight_ok: true,
+          source_free_parse_mode: sourceFree.parsed?.parse_mode ?? null,
+          source_free_prompt_cleanup: sourceFree.diagnostics?.prompt_cleanup ?? null,
+          source_free_grok_home_auth_sync: sourceFree.diagnostics?.grok_home_auth_sync ?? null,
+          source_free_grok_home_cleanup: sourceFree.diagnostics?.grok_home_cleanup ?? null,
+          grok_home_source: sourceFree.diagnostics?.grok_home_source ?? null,
+          grok_home_copied_files: sourceFree.diagnostics?.grok_home_copied_files ?? [],
+          grok_home_linked_files: sourceFree.diagnostics?.grok_home_linked_files ?? [],
+          grok_home_auth_sync: sourceFree.diagnostics?.grok_home_auth_sync ?? null,
+          grok_home_cleanup: sourceFree.diagnostics?.grok_home_cleanup ?? null,
+          auth_freshness: refreshedAuthFreshness,
+        };
+        if (!isDurableRecoveredGrokCliAuth(refreshedAuthFreshness)) {
+          return providerFailureWithDiagnostic(
+            "grok_cli_auth_expired",
+            `${grokCliAuthExpiredMessage(cfg, env)} Source-free auth probe completed, but persistent Grok CLI auth is still expired or unavailable. Ensure the durable auth file is present, then retry.`,
+            null,
+            null,
+            false,
+            {
+              ...sourceFreeDiagnostics,
+              logged_in: false,
+              auth_recovery: {
+                attempted: true,
+                from_status: authFreshness.status,
+                method: "source_free_prompt",
+                status: "not_persisted",
+              },
+            },
+          );
+        }
+        return {
+          ok: true,
+          diagnostics: {
+            ...sourceFreeDiagnostics,
+            auth_recovery: {
+              attempted: true,
+              from_status: authFreshness.status,
+              method: "source_free_prompt",
+              status: "recovered",
+            },
+          },
+        };
+      }
+      return {
+        ...sourceFree,
+        diagnostics: {
+          ...sourceFree.diagnostics,
+          source_free_preflight_ok: false,
+          source_free_parse_mode: sourceFree.parsed?.parse_mode ?? null,
+          source_free_prompt_cleanup: sourceFree.diagnostics?.prompt_cleanup ?? null,
+          source_free_grok_home_auth_sync: sourceFree.diagnostics?.grok_home_auth_sync ?? null,
+          source_free_grok_home_cleanup: sourceFree.diagnostics?.grok_home_cleanup ?? null,
+          prompt_cleanup: null,
+          grok_home_cleanup: null,
+          auth_freshness: refreshedAuthFreshness,
+          auth_recovery: {
+            attempted: true,
+            from_status: authFreshness.status,
+            method: "source_free_prompt",
+            status: "failed",
+          },
+        },
+        parsed: {
+          ...sourceFree.parsed,
+          reason: sourceFree.parsed?.reason ?? "grok_cli_preflight_failed",
+        },
+        payload_sent: false,
+      };
+    }
     return providerFailureWithDiagnostic(
-      expiredAuth ? "grok_cli_auth_expired" : "grok_cli_login_required",
-      expiredAuth ? grokCliAuthExpiredMessage(cfg, env) : grokCliLoginRequiredMessage(cfg, env),
+      "grok_cli_login_required",
+      grokCliLoginRequiredMessage(cfg, env),
       null,
       null,
       false,
@@ -4128,9 +4231,16 @@ async function cliDoctorFields(cfg, env = process.env) {
   const loginStatus = diagnostics.logged_in === true
     ? "ready"
     : (errorCode === "grok_cli_auth_unavailable" ? "unknown" : "failed");
+  const sourceFreeAttempted = diagnostics.source_free_preflight_ok != null
+    || diagnostics.source_free_parse_mode != null
+    || diagnostics.source_free_prompt_cleanup != null
+    || diagnostics.source_free_grok_home_auth_sync != null
+    || diagnostics.source_free_grok_home_cleanup != null;
   const sourceFreeStatus = ready
     ? "ready"
-    : (errorCode === "grok_cli_login_required" || errorCode === "grok_cli_auth_expired" ? "skipped" : "failed");
+    : (sourceFreeAttempted
+      ? (diagnostics.source_free_preflight_ok === true ? "ready" : "failed")
+      : (errorCode === "grok_cli_login_required" || errorCode === "grok_cli_auth_expired" ? "skipped" : "failed"));
   return {
     provider: cfg.provider,
     status: "ok",

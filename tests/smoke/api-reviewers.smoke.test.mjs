@@ -221,7 +221,7 @@ function makeWorkspace() {
 function makeMultiFileScopeWorkspace() {
   const cwd = mkdtempSync(path.join(tmpdir(), "api-reviewers-multifile-"));
   for (let i = 1; i <= 5; i += 1) {
-    const filler = `file ${i} content line ${"x".repeat(40)}\n`.repeat(30);
+    const filler = `file ${i} content line ${"x".repeat(40)}\n`.repeat(26);
     writeFileSync(path.join(cwd, `f${i}.txt`), filler);
   }
   writeFileSync(path.join(cwd, "seed.txt"), "hello from selected scope\n");
