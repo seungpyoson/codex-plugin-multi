@@ -368,12 +368,15 @@
     "auth_path": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["auth_mode", "credential_ref"],
+      "required": ["auth_mode", "credential_ref", "credential_source"],
       "properties": {
         "auth_mode": {
           "type": ["string", "null"]
         },
         "credential_ref": {
+          "type": ["string", "null"]
+        },
+        "credential_source": {
           "type": ["string", "null"]
         }
       }
