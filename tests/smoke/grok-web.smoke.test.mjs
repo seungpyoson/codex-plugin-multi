@@ -991,7 +991,7 @@ test("doctor syncs source-free refreshed Grok CLI auth file back to source auth 
   }
 });
 
-test("doctor uses source-free probe to recover expired Grok CLI auth before declaring login missing", () => {
+test("doctor fails fast on expired Grok CLI auth without starting OAuth preflight", () => {
   const dataDir = mkdtempSync(path.join(tmpdir(), "grok-cli-expired-auth-recovery-data-"));
   const authHome = mkdtempSync(path.join(tmpdir(), "grok-cli-expired-auth-recovery-auth-home-"));
   const { binDir, grokPath, logPath } = makeFakeGrokCli({
@@ -1013,22 +1013,22 @@ test("doctor uses source-free probe to recover expired Grok CLI auth before decl
 
     assert.equal(result.status, 0, result.stderr || result.stdout);
     const parsed = parseStdout(result);
-    assert.equal(parsed.ready, true);
-    assert.equal(parsed.logged_in, true);
-    assert.equal(parsed.auth_freshness.status, "present_unknown");
-    assert.equal(parsed.readiness_layers.cli_login.status, "ready");
-    assert.equal(parsed.readiness_layers.cli_auth_file.status, "present_unknown");
-    assert.equal(parsed.readiness_layers.source_free_prompt.status, "ready");
-    assert.equal(parsed.readiness_layers.source_free_prompt.grok_home_auth_sync, "updated");
-    assert.equal(readFileSync(path.join(authHome, "auth.json"), "utf8"), "{\"token\":\"mutated\"}\n");
+    assert.equal(parsed.ready, false);
+    assert.equal(parsed.error_code, "grok_cli_auth_expired");
+    assert.equal(parsed.logged_in, false);
+    assert.equal(parsed.auth_freshness.status, "expired");
+    assert.equal(parsed.readiness_layers.cli_login.status, "failed");
+    assert.equal(parsed.readiness_layers.cli_auth_file.status, "expired");
+    assert.equal(parsed.readiness_layers.source_free_prompt.status, "skipped");
+    assert.match(parsed.next_action, /grok login/i);
+    assert.doesNotMatch(parsed.next_action, /source-free auth probe/i);
+    assert.notEqual(readFileSync(path.join(authHome, "auth.json"), "utf8"), "{\"token\":\"mutated\"}\n");
 
     const logLines = readGrokCliLog(logPath);
     assert.deepEqual(logLines.filter((line) => Array.isArray(line.args)).map((line) => line.args[0]), [
-      "--version", "models", "--prompt-file",
+      "--version", "models",
     ]);
-    const promptInvocations = logLines.filter((line) => line.promptPath);
-    assert.equal(promptInvocations.length, 1);
-    assert.equal(promptInvocations[0].promptHasSource, false);
+    assert.equal(logLines.some((line) => line.promptPath), false);
   } finally {
     rmTree(authHome);
     rmTree(dataDir);
@@ -1096,6 +1096,64 @@ test("custom-review fails closed when Grok CLI model is ready but login is false
       assert.deepEqual(logLines.map((line) => line.args[0]), ["--version", "models"]);
       assert.equal(logLines.some((line) => line.promptPath), false);
     }, { autoPreflight: false });
+  } finally {
+    rmTree(authHome);
+    rmTree(cwd);
+    rmTree(dataDir);
+  }
+});
+
+test("custom-review fails fast on expired Grok CLI auth without starting OAuth preflight", () => {
+  const cwd = realpathSync(mkdtempSync(path.join(tmpdir(), "grok-cli-expired-auth-workspace-")));
+  const dataDir = mkdtempSync(path.join(tmpdir(), "grok-cli-expired-auth-data-"));
+  const authHome = mkdtempSync(path.join(tmpdir(), "grok-cli-expired-auth-home-"));
+  const { binDir, grokPath, logPath } = makeFakeGrokCli({
+    modelsOutput: GROK_MODELS_READY_LOGGED_OUT,
+    sourceFreeAuthStderr: GROK_SOURCE_FREE_AUTH_TIMEOUT_STDERR,
+  });
+  writeFileSync(path.join(cwd, "review.js"), "export const marker = 'CLI_SOURCE_SECRET';\n");
+  writeExpiredGrokCliAuthFixture(authHome);
+
+  try {
+    const result = run([
+      "run",
+      "--mode", "custom-review",
+      "--scope", "custom",
+      "--scope-paths", "review.js",
+      "--foreground",
+      "--prompt", "Review selected source.",
+    ], {
+      cwd,
+      defaultTransport: false,
+      env: {
+        PATH: `${binDir}${path.delimiter}${process.env.PATH ?? ""}`,
+        GROK_CLI_BINARY: grokPath,
+        GROK_CLI_AUTH_HOME: authHome,
+        GROK_PLUGIN_DATA: dataDir,
+        XAI_API_KEY: "xai-direct-api-key-must-not-leak",
+      },
+    });
+
+    assert.equal(result.status, 1, result.stdout);
+    const record = parseStdout(result);
+    assert.equal(record.status, "failed");
+    assert.equal(record.error_code, "grok_cli_auth_expired");
+    assert.equal(record.error_cause, "grok_cli");
+    assert.equal(record.auth_mode, "subscription_cli");
+    assert.equal(record.external_review.source_content_transmission, "not_sent");
+    assert.equal(record.runtime_diagnostics.cli_request.logged_in, false);
+    assert.equal(record.runtime_diagnostics.cli_request.model_ready, true);
+    assert.equal(record.runtime_diagnostics.cli_request.auth_freshness.status, "expired");
+    assert.deepEqual(record.runtime_diagnostics.cli_request.ignored_env_credentials, ["XAI_API_KEY"]);
+    assert.equal(record.runtime_diagnostics.cli_request.auth_policy, "api_key_env_ignored");
+    assert.match(record.suggested_action, /grok login/i);
+    assert.doesNotMatch(result.stdout, /CLI_SOURCE_SECRET|xai-direct-api-key-must-not-leak/);
+
+    const logLines = readGrokCliLog(logPath);
+    assert.deepEqual(logLines.filter((line) => Array.isArray(line.args)).map((line) => line.args[0]), [
+      "--version", "models",
+    ]);
+    assert.equal(logLines.some((line) => line.promptPath), false);
   } finally {
     rmTree(authHome);
     rmTree(cwd);
@@ -1814,8 +1872,9 @@ test("doctor reports expired Grok CLI subscription auth distinctly from API-key 
 
     const logLines = readGrokCliLog(logPath);
     assert.deepEqual(logLines.filter((line) => Array.isArray(line.args)).map((line) => line.args[0]), [
-      "--version", "models", "--prompt-file",
+      "--version", "models",
     ]);
+    assert.equal(logLines.some((line) => line.promptPath), false);
   } finally {
     rmTree(authHome);
     rmTree(dataDir);
@@ -2271,7 +2330,7 @@ test("repair reports expired Grok CLI auth as actionable CLI auth repair", () =>
     assert.match(parsed.next_action, /grok login/i);
     assert.doesNotMatch(parsed.next_action, /--approve-browser-session-sync|grok2api/i);
     assert.deepEqual(readGrokCliLog(logPath).filter((line) => Array.isArray(line.args)).map((line) => line.args[0]), [
-      "--version", "models", "--prompt-file",
+      "--version", "models",
     ]);
   } finally {
     rmTree(authHome);
