@@ -12,7 +12,13 @@ import { REVIEW_PROMPT_CONTRACT_VERSION, buildReviewAuditManifest, buildReviewPr
 import { USAGE_LIMIT_SAFE_MESSAGE, isUsageLimitDetail } from "./lib/usage-limit.mjs";
 import { elapsedMs } from "./lib/time.mjs";
 import { providerApiCapability, sanitizeTargetEnv } from "./lib/provider-env.mjs";
-import { selectProviderRoute } from "./lib/provider-route-policy.mjs";
+import {
+  buildPacketRecovery,
+  latestSourcePacketPreviousAttempt,
+  selectProviderRoute,
+  sourcePacketPreviousAttemptFromJobRecord,
+  sourceSentPacketRecoveryReason,
+} from "./lib/provider-route-policy.mjs";
 import { diffSourceFiles } from "./lib/diff-source.mjs";
 import { buildExternalModelFailureDiagnostic } from "./lib/external-model-failure-core.mjs";
 import { hasSubstantiveInvalidVerdictReason, reviewQualityFailureState } from "./lib/external-model-review-quality.mjs";
@@ -23,6 +29,11 @@ import {
   sourceContentTransmissionForExecution,
 } from "./lib/external-review.mjs";
 import { isJwtShapedToken } from "./lib/jwt.mjs";
+import {
+  acquireProviderWorkloadLease,
+  providerWorkloadBlockedExecution,
+  releaseProviderWorkloadLease,
+} from "./lib/review-workload.mjs";
 
 const VALID_MODES = new Set(["review", "adversarial-review", "custom-review"]);
 const DEFAULT_BASE_URL = "http://127.0.0.1:8000/v1";
@@ -35,6 +46,7 @@ const DEFAULT_CHAT_DOCTOR_TIMEOUT_MS = 10000;
 const DEFAULT_TUNNEL_START_TIMEOUT_MS = 8000;
 const DEFAULT_TUNNEL_CLEANUP_TIMEOUT_MS = 2000;
 const DEFAULT_GROK2API_REPO_URL = "https://github.com/chenyme/grok2api.git";
+const GROK_CANONICAL_PROVIDER = "grok";
 const DEFAULT_CLI_MODEL = "grok-build";
 const DEFAULT_CLI_MAX_TURNS = 8;
 const GROK_CLI_TIMEOUT_KILL_GRACE_MS = 250;
@@ -223,6 +235,7 @@ function reviewMetadataProjection(obj) {
     "selected_route",
     "fallback_reason",
     "approval_scope",
+    "packet_recovery",
   ]) {
     if (manifest[key] !== undefined) projection[key] = manifest[key];
   }
@@ -427,7 +440,8 @@ function cliConfig(env = process.env, options = {}) {
   const maxPromptChars = parsePositiveIntegerEnv(env, "GROK_CLI_MAX_PROMPT_CHARS", DEFAULT_MAX_PROMPT_CHARS, "character count");
   const maxTurns = parsePositiveIntegerEnv(env, "GROK_CLI_MAX_TURNS", DEFAULT_CLI_MAX_TURNS, "turn count");
   return {
-    provider: "grok",
+    provider: GROK_CANONICAL_PROVIDER,
+    canonical_provider: GROK_CANONICAL_PROVIDER,
     display_name: "Grok CLI",
     auth_mode: "subscription_cli",
     transport: "cli",
@@ -442,7 +456,7 @@ function cliConfig(env = process.env, options = {}) {
     max_turns: maxTurns,
     credential_ref: null,
     credential_value: null,
-    api_capability: providerApiCapability("grok"),
+    api_capability: providerApiCapability(GROK_CANONICAL_PROVIDER),
   };
 }
 
@@ -527,6 +541,7 @@ function webConfig(env = process.env, options = {}) {
   const maxPromptChars = parsePositiveIntegerEnv(env, "GROK_WEB_MAX_PROMPT_CHARS", DEFAULT_MAX_PROMPT_CHARS, "character count");
   return {
     provider: "grok-web",
+    canonical_provider: GROK_CANONICAL_PROVIDER,
     display_name: "Grok Web",
     auth_mode: "subscription_web",
     transport: "web",
@@ -545,7 +560,7 @@ function webConfig(env = process.env, options = {}) {
     credential_value: env.GROK_WEB_TUNNEL_API_KEY || null,
     grok2api_base_url: normalizeGrok2ApiBaseUrl(env.GROK2API_BASE_URL, env.GROK_WEB_BASE_URL),
     grok2api_admin_key: env.GROK2API_ADMIN_KEY || DEFAULT_GROK2API_ADMIN_KEY,
-    api_capability: providerApiCapability("grok"),
+    api_capability: providerApiCapability(GROK_CANONICAL_PROVIDER),
   };
 }
 
@@ -561,6 +576,7 @@ function fallbackConfig(env = process.env, options = {}) {
   if (transport === "cli" || transport === "auto") return cliConfig(env, { requestedTransport: transport });
   return {
     provider: "grok-web",
+    canonical_provider: GROK_CANONICAL_PROVIDER,
     display_name: "Grok Web",
     auth_mode: "subscription_web",
     transport: "web",
@@ -577,7 +593,7 @@ function fallbackConfig(env = process.env, options = {}) {
     max_prompt_chars: DEFAULT_MAX_PROMPT_CHARS,
     credential_ref: env.GROK_WEB_TUNNEL_API_KEY ? "GROK_WEB_TUNNEL_API_KEY" : null,
     credential_value: env.GROK_WEB_TUNNEL_API_KEY || null,
-    api_capability: providerApiCapability("grok"),
+    api_capability: providerApiCapability(GROK_CANONICAL_PROVIDER),
   };
 }
 
@@ -1286,7 +1302,7 @@ async function collectScope(options) {
 
 function repositoryIdentity(cwd, workspaceRoot) {
   const remote = git(["remote", "get-url", "origin"], cwd, { allowFailure: true, workspaceRoot });
-  if (!remote) return workspaceRoot;
+  if (!remote) return `local-workspace:${basename(workspaceRoot ?? cwd ?? "workspace") || "workspace"}`;
   const match = /[:/]([^/:]+\/[^/]+?)(?:\.git)?$/.exec(remote);
   return match ? match[1] : remote;
 }
@@ -1555,16 +1571,28 @@ function grokCliAuthHttpStatus(stderr) {
 
 function isGrokCliAuthRepairCode(errorCode) {
   return errorCode === "grok_cli_login_required"
+    || errorCode === "grok_cli_auth_expired"
     || errorCode === "grok_cli_auth_timeout"
     || errorCode === "grok_cli_auth_unavailable";
 }
 
 function providerCapabilitiesForConfig(cfg) {
   const capabilities = {
-    subscription: { kind: cfg.transport, auth_path: cfg.auth_mode },
+    canonical_provider: cfg.canonical_provider ?? cfg.provider ?? null,
+    subscription: {
+      kind: cfg.transport,
+      auth_path: cfg.auth_mode,
+      source_packet: {
+        resume_without_resend_supported: false,
+      },
+    },
   };
   if (cfg.api_capability) capabilities.api = cfg.api_capability;
   return capabilities;
+}
+
+function recoveryProviderId(cfg) {
+  return cfg.canonical_provider ?? cfg.provider ?? null;
 }
 
 function modeSendsSelectedSource(mode) {
@@ -1578,6 +1606,7 @@ function sourcePacketOverrideRouteFields(options = {}) {
   return {
     sourcePacketOverrideApproved: approved,
     sourcePacketOverrideSource: approved ? LARGE_SOURCE_PACKET_FLAG : null,
+    resendConfirmationApproved: options["resend-confirmation-approved"] === true,
   };
 }
 
@@ -1639,6 +1668,8 @@ function sourcePacketPolicyPreflight({ cfg, mode, prompt, scopeInfo, options = {
       reason: scopeResolutionReason(scopeInfo),
     },
     route: {
+      mode,
+      providerId: recoveryProviderId(cfg),
       selectedRoute: route.selected_route,
       routeStep: route.route_step,
       routeSteps: route.route_steps,
@@ -1651,6 +1682,7 @@ function sourcePacketPolicyPreflight({ cfg, mode, prompt, scopeInfo, options = {
       sourceSendApprovalRequired: route.source_send_approval_required,
       sourceSendApprovalState: route.source_send_approval_state,
       providerCapabilities,
+      previousAttempt: latestSourcePacketPreviousAttempt(options.reviewSlotPriorAttempts),
       reviewSlot: reviewSlotRouteFields(options, {
         priorAttempts: options.reviewSlotPriorAttempts ?? [],
       }),
@@ -1668,10 +1700,90 @@ function sourcePacketPolicyPreflight({ cfg, mode, prompt, scopeInfo, options = {
     null,
     null,
     false,
-    { source_packet_policy: policy },
+    {
+      source_packet_policy: policy,
+      packet_recovery: auditManifest.packet_recovery ?? null,
+    },
   );
   execution.prompt = prompt;
   return execution;
+}
+
+function promptCapPacketRecovery({ cfg, mode, prompt, scopeInfo, options = {} } = {}) {
+  const providerCapabilities = providerCapabilitiesForConfig(cfg);
+  const sourceBearing = modeSendsSelectedSource(mode);
+  const route = selectProviderRoute({
+    requestedRoute: "subscription",
+    providerCapabilities,
+    sourceBearing,
+  });
+  const auditManifest = buildReviewAuditManifest({
+    prompt,
+    sourceFiles: scopeInfo.files ?? [],
+    git: {
+      remote: scopeInfo.repository ?? null,
+      branch: scopeInfo.head_ref ?? null,
+      baseRef: scopeInfo.scope_base ?? null,
+      baseCommit: scopeInfo.base_commit ?? null,
+      headRef: scopeInfo.head_ref ?? null,
+      headCommit: scopeInfo.head_commit ?? null,
+    },
+    promptBuilder: {
+      contractVersion: REVIEW_PROMPT_CONTRACT_VERSION,
+      pluginVersion: "0.1.0",
+      pluginCommit: gitCommitForPrompt(PLUGIN_ROOT, "HEAD"),
+    },
+    request: {
+      provider: cfg.display_name,
+      model: cfg.model,
+      timeoutMs: cfg.timeout_ms ?? null,
+      maxTokens: null,
+      temperature: null,
+      stream: false,
+    },
+    truncation: { prompt: false, source: false, output: false },
+    scope: {
+      name: scopeInfo.scope,
+      base: scopeInfo.scope_base ?? null,
+      paths: scopeInfo.scope_paths ?? null,
+      reason: scopeResolutionReason(scopeInfo),
+    },
+    route: {
+      mode,
+      providerId: recoveryProviderId(cfg),
+      selectedRoute: route.selected_route,
+      routeStep: route.route_step,
+      routeSteps: route.route_steps,
+      fallbackReason: cfg.fallback_reason ?? route.fallback_reason,
+      approvalScope: null,
+      authPath: route.auth_path,
+      billingPath: route.billing_path,
+      sourceBearing,
+      sourceContentTransmission: SOURCE_CONTENT_TRANSMISSION.NOT_SENT,
+      sourceSendApprovalRequired: route.source_send_approval_required,
+      sourceSendApprovalState: route.source_send_approval_state,
+      providerCapabilities,
+      previousAttempt: latestSourcePacketPreviousAttempt(options.reviewSlotPriorAttempts),
+      reviewSlot: reviewSlotRouteFields(options, {
+        priorAttempts: options.reviewSlotPriorAttempts ?? [],
+      }),
+      ...sourcePacketOverrideRouteFields(options),
+    },
+    status: "preflight_failed",
+    errorCode: "prompt_too_large",
+  });
+  return buildPacketRecovery({
+    reason: "prompt_too_large",
+    sourcePacketPolicy: auditManifest.source_packet_policy,
+    providerCapabilities,
+    provider: recoveryProviderId(cfg),
+    mode,
+    routeStep: route.route_step,
+    selectedSource: auditManifest.selected_source,
+    sourceContentTransmission: SOURCE_CONTENT_TRANSMISSION.NOT_SENT,
+    renderedPromptBudgetChars: cfg.max_prompt_chars,
+    requiresSourceSendApproval: route.source_send_approval_required === true,
+  });
 }
 
 function subscriptionRouteForConfig(cfg, env = process.env, sourceBearing = false) {
@@ -1698,8 +1810,98 @@ function grokCliLoginRequiredMessage(cfg, env = process.env) {
   return `Grok CLI model list is reachable, but the CLI is not logged in.${ignored} Run \`grok login --device-auth\` or \`grok login --oauth\` in a normal terminal, ensure \`grok models\` reports a logged-in account and lists the configured model, then retry.`;
 }
 
+function grokCliAuthExpiredMessage(cfg, env = process.env) {
+  const ignoredKeys = ignoredGrokDirectApiEnvKeys(cfg, env);
+  const ignored = ignoredGrokDirectApiEnvMessage(cfg, env, ignoredKeys);
+  return `Grok subscription CLI auth is expired.${ignored} Refresh Grok CLI auth with \`grok login --device-auth\` or \`grok login --oauth\`, ensure \`grok models\` reports a logged-in account and lists the configured model, then retry.`;
+}
+
 function grokCliAuthHome(env = process.env) {
   return resolve(env.GROK_CLI_AUTH_HOME || env.GROK_HOME || join(homedir(), ".grok"));
+}
+
+function parseBase64UrlJson(value) {
+  try {
+    const normalized = String(value).replace(/-/g, "+").replace(/_/g, "/");
+    const padded = normalized.padEnd(Math.ceil(normalized.length / 4) * 4, "=");
+    return JSON.parse(Buffer.from(padded, "base64").toString("utf8"));
+  } catch {
+    return null;
+  }
+}
+
+function epochLikeToMs(value) {
+  if (!Number.isFinite(value) || value <= 0) return null;
+  return value > 100000000000 ? Math.trunc(value) : Math.trunc(value * 1000);
+}
+
+function expiryValueToMs(value) {
+  if (typeof value === "number") return epochLikeToMs(value);
+  if (typeof value !== "string" || !value.trim()) return null;
+  const numeric = Number(value);
+  if (Number.isFinite(numeric)) return epochLikeToMs(numeric);
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function jwtExpiryToMs(token) {
+  if (!isJwtShapedToken(token)) return null;
+  const payload = parseBase64UrlJson(String(token).split(".")[1]);
+  return expiryValueToMs(payload?.exp);
+}
+
+function isExpiryKey(key) {
+  return /^(?:exp|expires|expires_at|expiresAt|expires_on|expiresOn|expiry|expiry_at|expiryAt|expiration|expiration_time|expirationTime)$/u.test(String(key ?? ""));
+}
+
+function collectAuthExpiryCandidates(value, candidates = [], key = null) {
+  if (isExpiryKey(key)) {
+    const explicit = expiryValueToMs(value);
+    if (explicit !== null) candidates.push(explicit);
+  }
+  if (typeof value === "string") {
+    const jwt = jwtExpiryToMs(value);
+    if (jwt !== null) candidates.push(jwt);
+    return candidates;
+  }
+  if (Array.isArray(value)) {
+    for (const item of value) collectAuthExpiryCandidates(item, candidates);
+    return candidates;
+  }
+  if (value && typeof value === "object") {
+    for (const [childKey, childValue] of Object.entries(value)) {
+      collectAuthExpiryCandidates(childValue, candidates, childKey);
+    }
+  }
+  return candidates;
+}
+
+async function grokCliAuthFreshness(env = process.env, nowMs = Date.now()) {
+  const authFile = resolve(grokCliAuthHome(env), "auth.json");
+  let text;
+  try {
+    text = await readFile(authFile, "utf8");
+  } catch (error) {
+    if (error?.code === "ENOENT") {
+      return { status: "missing", expiry_known: false };
+    }
+    return { status: "unreadable", expiry_known: false };
+  }
+  let parsed;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    return { status: "malformed", expiry_known: false };
+  }
+  const expiries = collectAuthExpiryCandidates(parsed);
+  if (expiries.length === 0) {
+    return { status: "present_unknown", expiry_known: false };
+  }
+  const hasFreshCandidate = expiries.some((expiryMs) => expiryMs > nowMs);
+  return {
+    status: hasFreshCandidate ? "fresh" : "expired",
+    expiry_known: true,
+  };
 }
 
 async function copyGrokCliHomeFile(sourceHome, runtimeHome, relPath, copiedFiles) {
@@ -1750,6 +1952,74 @@ async function cleanupGrokCliRuntimeHome(runtimeHome) {
     return "unverified";
   }
   return await pathExists(runtimeHome.dir) ? "unverified" : "deleted";
+}
+
+async function cleanupGrokCliNeutralCwd(neutralCwd) {
+  if (!neutralCwd) return "not_created";
+  const tmpRoot = resolve(tmpdir());
+  if (dirname(neutralCwd) !== tmpRoot || !basename(neutralCwd).startsWith("grok-cli-cwd-")) {
+    return "unverified";
+  }
+  try {
+    await rm(neutralCwd, { recursive: true, force: true });
+  } catch {
+    return "unverified";
+  }
+  return await pathExists(neutralCwd) ? "unverified" : "deleted";
+}
+
+async function fileSha256OrNull(file) {
+  try {
+    return createHash("sha256").update(await readFile(file)).digest("hex");
+  } catch (error) {
+    if (error?.code === "ENOENT") return null;
+    throw error;
+  }
+}
+
+async function syncGrokCliRuntimeAuthFile(runtimeHome) {
+  if (!runtimeHome?.dir || !runtimeHome?.source_home) return "not_created";
+  const sourceAuth = resolve(runtimeHome.source_home, "auth.json");
+  const runtimeAuth = resolve(runtimeHome.dir, "auth.json");
+  let sourceStat;
+  let runtimeStat;
+  try {
+    sourceStat = await lstat(sourceAuth);
+  } catch (error) {
+    if (error?.code === "ENOENT") return "source_missing";
+    return "unverified";
+  }
+  try {
+    runtimeStat = await lstat(runtimeAuth);
+  } catch (error) {
+    if (error?.code === "ENOENT") return "runtime_missing";
+    return "unverified";
+  }
+  if (!sourceStat.isFile() || sourceStat.isSymbolicLink()) return "source_not_regular";
+  if (!runtimeStat.isFile() || runtimeStat.isSymbolicLink()) return "runtime_not_regular";
+  let sourceHash;
+  let runtimeHash;
+  try {
+    sourceHash = await fileSha256OrNull(sourceAuth);
+    runtimeHash = await fileSha256OrNull(runtimeAuth);
+  } catch {
+    return "unverified";
+  }
+  if (!runtimeHash) return "runtime_missing";
+  if (sourceHash === runtimeHash) return "unchanged";
+  const tmpAuth = resolve(runtimeHome.source_home, `.auth.json.codex-sync-${randomUUID()}.tmp`);
+  try {
+    await writeFile(tmpAuth, await readFile(runtimeAuth), { mode: 0o600, flag: "wx" });
+    await rename(tmpAuth, sourceAuth);
+    return "updated";
+  } catch {
+    try {
+      await rm(tmpAuth, { force: true });
+    } catch {
+      // Preserve the sync failure status.
+    }
+    return "unverified";
+  }
 }
 
 async function writePrivatePromptFile(contents) {
@@ -1827,6 +2097,7 @@ async function grokCliReadinessPreflight(cfg, env = process.env) {
     );
   }
   const versionText = firstLine(version.stdout);
+  const authFreshness = await grokCliAuthFreshness(env);
 
   const models = runGrokCliCommand(cfg, ["models"], { timeoutMs: Math.min(cfg.timeout_ms, 15000) });
   if (models.error || models.status !== 0) {
@@ -1841,12 +2112,34 @@ async function grokCliReadinessPreflight(cfg, env = process.env) {
         grok_version: versionText,
         model: cfg.model,
         configured_timeout_ms: cfg.timeout_ms,
+        auth_freshness: authFreshness,
       },
     );
   }
   const modelsInfo = parseGrokCliModels(models.stdout, cfg);
+  const ignoredEnvCredentials = ignoredGrokDirectApiEnvKeys(cfg, env);
+  if (authFreshness.status === "expired") {
+    return providerFailureWithDiagnostic(
+      "grok_cli_auth_expired",
+      grokCliAuthExpiredMessage(cfg, env),
+      null,
+      null,
+      false,
+      {
+        transport: "cli",
+        grok_version: versionText,
+        model: cfg.model,
+        default_model: modelsInfo.default_model,
+        logged_in: modelsInfo.logged_in,
+        model_ready: modelsInfo.model_ready,
+        configured_timeout_ms: cfg.timeout_ms,
+        ignored_env_credentials: ignoredEnvCredentials,
+        auth_policy: ignoredEnvCredentials.length > 0 ? "api_key_env_ignored" : null,
+        auth_freshness: authFreshness,
+      },
+    );
+  }
   if (isGrokCliLoginRequired(modelsInfo)) {
-    const ignoredEnvCredentials = ignoredGrokDirectApiEnvKeys(cfg, env);
     return providerFailureWithDiagnostic(
       "grok_cli_login_required",
       grokCliLoginRequiredMessage(cfg, env),
@@ -1863,6 +2156,7 @@ async function grokCliReadinessPreflight(cfg, env = process.env) {
         configured_timeout_ms: cfg.timeout_ms,
         ignored_env_credentials: ignoredEnvCredentials,
         auth_policy: ignoredEnvCredentials.length > 0 ? "api_key_env_ignored" : null,
+        auth_freshness: authFreshness,
       },
     );
   }
@@ -1881,6 +2175,7 @@ async function grokCliReadinessPreflight(cfg, env = process.env) {
         logged_in: modelsInfo.logged_in,
         model_ready: false,
         configured_timeout_ms: cfg.timeout_ms,
+        auth_freshness: authFreshness,
       },
     );
   }
@@ -1893,6 +2188,7 @@ async function grokCliReadinessPreflight(cfg, env = process.env) {
       default_model: modelsInfo.default_model,
       logged_in: modelsInfo.logged_in,
       model_ready: true,
+      auth_freshness: authFreshness,
     },
   });
   if (sourceFree.exitCode !== 0 || sourceFree.parsed?.ok !== true) {
@@ -1902,9 +2198,11 @@ async function grokCliReadinessPreflight(cfg, env = process.env) {
         ...sourceFree.diagnostics,
         source_free_parse_mode: sourceFree.parsed?.parse_mode ?? null,
         source_free_prompt_cleanup: sourceFree.diagnostics?.prompt_cleanup ?? null,
+        source_free_grok_home_auth_sync: sourceFree.diagnostics?.grok_home_auth_sync ?? null,
         source_free_grok_home_cleanup: sourceFree.diagnostics?.grok_home_cleanup ?? null,
         prompt_cleanup: null,
         grok_home_cleanup: null,
+        auth_freshness: authFreshness,
       },
       parsed: {
         ...sourceFree.parsed,
@@ -1922,11 +2220,14 @@ async function grokCliReadinessPreflight(cfg, env = process.env) {
       model_ready: true,
       source_free_parse_mode: sourceFree.parsed?.parse_mode ?? null,
       source_free_prompt_cleanup: sourceFree.diagnostics?.prompt_cleanup ?? null,
+      source_free_grok_home_auth_sync: sourceFree.diagnostics?.grok_home_auth_sync ?? null,
       source_free_grok_home_cleanup: sourceFree.diagnostics?.grok_home_cleanup ?? null,
       grok_home_source: sourceFree.diagnostics?.grok_home_source ?? null,
       grok_home_copied_files: sourceFree.diagnostics?.grok_home_copied_files ?? [],
       grok_home_linked_files: sourceFree.diagnostics?.grok_home_linked_files ?? [],
+      grok_home_auth_sync: sourceFree.diagnostics?.grok_home_auth_sync ?? null,
       grok_home_cleanup: sourceFree.diagnostics?.grok_home_cleanup ?? null,
+      auth_freshness: authFreshness,
     },
   };
 }
@@ -1940,6 +2241,7 @@ async function callGrokCli(cfg, prompt, { sourceBearing = true, baseDiagnostics 
   let setupError = null;
   let promptCleanup = "not_created";
   let grokHomeCleanup = "not_created";
+  let grokHomeAuthSync = "not_created";
   let neutralCwdCleanup = "not_created";
   try {
     await mkdir(neutralCwd, { mode: 0o700 });
@@ -1970,14 +2272,9 @@ async function callGrokCli(cfg, prompt, { sourceBearing = true, baseDiagnostics 
     setupError = error;
   } finally {
     if (promptFile && promptDir) promptCleanup = await cleanupPromptFile(promptFile, promptDir);
+    grokHomeAuthSync = await syncGrokCliRuntimeAuthFile(runtimeHome);
     grokHomeCleanup = await cleanupGrokCliRuntimeHome(runtimeHome);
-    try {
-      await rmdir(neutralCwd);
-      neutralCwdCleanup = "deleted";
-    } catch (error) {
-      if (error?.code === "ENOENT") neutralCwdCleanup = "deleted";
-      else neutralCwdCleanup = "unverified";
-    }
+    neutralCwdCleanup = await cleanupGrokCliNeutralCwd(neutralCwd);
   }
   const diagnostics = {
     ...baseDiagnostics,
@@ -1995,6 +2292,7 @@ async function callGrokCli(cfg, prompt, { sourceBearing = true, baseDiagnostics 
     grok_home_source: runtimeHome?.source_home ?? grokCliAuthHome(env),
     grok_home_copied_files: runtimeHome?.copied_files ?? [],
     grok_home_linked_files: runtimeHome?.linked_files ?? [],
+    grok_home_auth_sync: grokHomeAuthSync,
     grok_home_cleanup: grokHomeCleanup,
   };
 
@@ -3122,6 +3420,12 @@ function suggestedAction(errorCode, errorMessage = "", tunnelStart = null) {
       : "";
     return `${apiKeyHint}Run \`grok login --device-auth\` or \`grok login --oauth\` in a normal terminal, ensure \`grok models\` reports a logged-in account and lists grok-build, then retry the Grok CLI reviewer. Do not switch provider or transport in default CLI mode.`;
   }
+  if (errorCode === "grok_cli_auth_expired") {
+    const apiKeyHint = /Direct API env variables are present and ignored/i.test(errorMessage)
+      ? "Direct API env vars may make plain `grok models` look usable, but they do not refresh subscription CLI auth. "
+      : "";
+    return `${apiKeyHint}Refresh Grok CLI auth with \`grok login --device-auth\` or \`grok login --oauth\`, ensure \`grok models\` reports a logged-in account and lists grok-build, then retry the Grok CLI reviewer. Do not switch provider or transport in default CLI mode.`;
+  }
   if (errorCode === "grok_cli_auth_timeout") {
     return "Complete `grok login` in a normal terminal or fix default-browser auth handling, ensure `grok models` reports a logged-in account and lists grok-build, then retry the Grok CLI reviewer. Do not switch provider or transport in default CLI mode.";
   }
@@ -3137,6 +3441,9 @@ function errorCauseFor(errorCode) {
   if (errorCode === "scope_failed") return "scope_resolution";
   if (errorCode === "source_packet_too_large" || errorCode === "resend_confirmation_required") {
     return buildExternalModelFailureDiagnostic(errorCode, "Grok")?.error_cause ?? "source_packet_policy";
+  }
+  if (errorCode === "provider_workload_blocked") {
+    return buildExternalModelFailureDiagnostic(errorCode, "Grok")?.error_cause ?? "workload_admission";
   }
   if (errorCode === "git_binary_rejected") return "git_binary_policy";
   if (errorCode === "usage_limited") return "cost_quota_usage_limit";
@@ -3203,6 +3510,7 @@ function buildTerminalExternalReview({ cfg, mode, options, scopeInfo, execution,
 }
 
 function buildReviewMetadata(cfg, scopeInfo, execution = null, startedAt = null, endedAt = null, options = {}) {
+  const mode = options.mode ?? execution?.mode ?? null;
   const sourceBearing = execution?.payload_sent ?? (execution?.exitCode === 0 && execution?.parsed?.ok === true);
   const processCompleted = execution?.exitCode === 0 && execution?.parsed?.ok === true;
   const sourceContentTransmission = sourceContentTransmissionForPayload({
@@ -3255,6 +3563,8 @@ function buildReviewMetadata(cfg, scopeInfo, execution = null, startedAt = null,
       reason: scopeResolutionReason(scopeInfo),
     },
     route: {
+      mode,
+      providerId: recoveryProviderId(cfg),
       selectedRoute: route.selected_route,
       routeStep: route.route_step,
       routeSteps: route.route_steps,
@@ -3267,6 +3577,8 @@ function buildReviewMetadata(cfg, scopeInfo, execution = null, startedAt = null,
       sourceSendApprovalRequired: route.source_send_approval_required,
       sourceSendApprovalState: route.source_send_approval_state,
       providerCapabilities: providerCapabilitiesForConfig(cfg),
+      packetRecovery: execution.diagnostics?.packet_recovery ?? null,
+      previousAttempt: latestSourcePacketPreviousAttempt(options.reviewSlotPriorAttempts),
       reviewSlot: reviewSlotRouteFields(options, {
         priorAttempts: options.reviewSlotPriorAttempts ?? [],
       }),
@@ -3293,8 +3605,43 @@ function buildReviewMetadata(cfg, scopeInfo, execution = null, startedAt = null,
   };
 }
 
+function sourceSentFailurePacketRecovery({ cfg, mode, reviewMetadata, errorCode, transmission }) {
+  const recoveryReason = sourceSentPacketRecoveryReason({
+    status: "failed",
+    errorCode,
+    sourceContentTransmission: transmission,
+  });
+  if (!recoveryReason) return null;
+  const auditManifest = reviewMetadata?.audit_manifest;
+  if (!auditManifest || auditManifest.packet_recovery) return null;
+  const sourcePacketPolicy = Object.freeze({
+    ...(auditManifest.source_packet_policy ?? {}),
+    provider: recoveryProviderId(cfg),
+    mode,
+    route_step: auditManifest.source_packet_policy?.route_step ?? auditManifest.route_step ?? null,
+    source_send_allowed: false,
+    source_content_transmission: transmission,
+    source_packet_action: "resend_confirmation_required",
+    source_packet_policy_error_code: "resend_confirmation_required",
+    suggested_action: "Do not automatically resend selected source after a failed source-sent review slot.",
+  });
+  return buildPacketRecovery({
+    reason: recoveryReason,
+    sourcePacketPolicy,
+    providerCapabilities: providerCapabilitiesForConfig(cfg),
+    provider: recoveryProviderId(cfg),
+    mode,
+    routeStep: sourcePacketPolicy.route_step ?? null,
+    selectedSource: auditManifest.selected_source ?? null,
+    sourceContentTransmission: transmission,
+  });
+}
+
 function buildRecord({ cfg, mode, options, scopeInfo, execution, startedAt, endedAt }) {
-  const reviewMetadata = buildReviewMetadata(cfg, scopeInfo, execution, startedAt, endedAt, options);
+  let reviewMetadata = buildReviewMetadata(cfg, scopeInfo, execution, startedAt, endedAt, {
+    ...options,
+    mode,
+  });
   const processCompleted = execution.exitCode === 0 && execution.parsed?.ok === true;
   const redactSensitiveText = buildPrivacyRedactor({
     env: process.env,
@@ -3332,7 +3679,19 @@ function buildRecord({ cfg, mode, options, scopeInfo, execution, startedAt, ende
     errorCode,
     pidInfo: execution.pidInfo ?? null,
   });
-  const runtimeDiagnostics = safeDiagnostics ? (cfg.transport === "cli" ? {
+  let packetRecovery = safeDiagnostics?.packet_recovery
+    ?? reviewMetadata?.audit_manifest?.packet_recovery
+    ?? sourceSentFailurePacketRecovery({ cfg, mode, reviewMetadata, errorCode, transmission });
+  if (packetRecovery && reviewMetadata?.audit_manifest && !reviewMetadata.audit_manifest.packet_recovery) {
+    reviewMetadata = Object.freeze({
+      ...reviewMetadata,
+      audit_manifest: Object.freeze({
+        ...reviewMetadata.audit_manifest,
+        packet_recovery: packetRecovery,
+      }),
+    });
+  }
+  let runtimeDiagnostics = safeDiagnostics ? (cfg.transport === "cli" ? {
     cli_request: {
       transport: "cli",
       binary: cfg.binary,
@@ -3341,12 +3700,16 @@ function buildRecord({ cfg, mode, options, scopeInfo, execution, startedAt, ende
       default_model: safeDiagnostics.default_model ?? null,
       logged_in: safeDiagnostics.logged_in ?? null,
       model_ready: safeDiagnostics.model_ready ?? null,
+      auth_freshness: safeDiagnostics.auth_freshness ?? null,
+      ignored_env_credentials: safeDiagnostics.ignored_env_credentials ?? [],
+      auth_policy: safeDiagnostics.auth_policy ?? null,
       exit_status: safeDiagnostics.exit_status ?? null,
       exit_signal: safeDiagnostics.exit_signal ?? null,
       stderr_head: safeDiagnostics.stderr_head ?? null,
       parse_mode: safeDiagnostics.parse_mode ?? null,
       source_free_parse_mode: safeDiagnostics.source_free_parse_mode ?? null,
       source_free_prompt_cleanup: safeDiagnostics.source_free_prompt_cleanup ?? null,
+      source_free_grok_home_auth_sync: safeDiagnostics.source_free_grok_home_auth_sync ?? null,
       source_free_grok_home_cleanup: safeDiagnostics.source_free_grok_home_cleanup ?? null,
       prompt_chars: safeDiagnostics.prompt_chars ?? null,
       configured_timeout_ms: safeDiagnostics.configured_timeout_ms ?? null,
@@ -3357,9 +3720,11 @@ function buildRecord({ cfg, mode, options, scopeInfo, execution, startedAt, ende
       grok_home_source: safeDiagnostics.grok_home_source ?? null,
       grok_home_copied_files: safeDiagnostics.grok_home_copied_files ?? [],
       grok_home_linked_files: safeDiagnostics.grok_home_linked_files ?? [],
+      grok_home_auth_sync: safeDiagnostics.grok_home_auth_sync ?? null,
       grok_home_cleanup: safeDiagnostics.grok_home_cleanup ?? null,
     },
     cost_quota: null,
+    ...(safeDiagnostics.provider_workload ? { provider_workload: safeDiagnostics.provider_workload } : {}),
   } : {
     ...(safeDiagnostics.cli_request ? { cli_request: safeDiagnostics.cli_request } : {}),
     tunnel_request: {
@@ -3379,7 +3744,15 @@ function buildRecord({ cfg, mode, options, scopeInfo, execution, startedAt, ende
       auto_start_attempted: safeDiagnostics.tunnel_start?.attempted ?? safeDiagnostics.tunnel_state.auto_start_attempted ?? false,
     } : null,
     session_tokens: safeDiagnostics.session_tokens ?? null,
+    ...(safeDiagnostics.provider_workload ? { provider_workload: safeDiagnostics.provider_workload } : {}),
   }) : null;
+  if (runtimeDiagnostics && safeDiagnostics?.source_packet_policy) {
+    runtimeDiagnostics.source_packet_policy = safeDiagnostics.source_packet_policy;
+  }
+  if (packetRecovery) {
+    runtimeDiagnostics ??= {};
+    runtimeDiagnostics.packet_recovery = packetRecovery;
+  }
   return freezeRecord({
     id: options.jobId,
     job_id: options.jobId,
@@ -3496,7 +3869,12 @@ async function collectPriorReviewSlotAttempts(root, currentJobId = null) {
       const record = JSON.parse(await readFile(resolve(jobsDir, entry.name, "meta.json"), "utf8"));
       if (record?.job_id !== entry.name) continue;
       const slot = reviewSlotFromRecord(record);
-      if (priorSlotCountsTowardRetry(slot)) attempts.push({ review_slot: slot });
+      if (priorSlotCountsTowardRetry(slot)) {
+        const previousAttempt = sourcePacketPreviousAttemptFromJobRecord(record);
+        attempts.push(previousAttempt
+          ? { ...previousAttempt, review_slot: slot }
+          : { review_slot: slot });
+      }
     } catch {
       // Malformed legacy artifacts are not trusted as retry-policy evidence.
     }
@@ -3949,9 +4327,16 @@ async function cliDoctorFields(cfg, env = process.env) {
   const loginStatus = diagnostics.logged_in === true
     ? "ready"
     : (errorCode === "grok_cli_auth_unavailable" ? "unknown" : "failed");
+  const sourceFreeAttempted = diagnostics.source_free_preflight_ok != null
+    || diagnostics.source_free_parse_mode != null
+    || diagnostics.source_free_prompt_cleanup != null
+    || diagnostics.source_free_grok_home_auth_sync != null
+    || diagnostics.source_free_grok_home_cleanup != null;
   const sourceFreeStatus = ready
     ? "ready"
-    : (errorCode === "grok_cli_login_required" ? "skipped" : "failed");
+    : (sourceFreeAttempted
+      ? (diagnostics.source_free_preflight_ok === true ? "ready" : "failed")
+      : (errorCode === "grok_cli_login_required" || errorCode === "grok_cli_auth_expired" ? "skipped" : "failed"));
   return {
     provider: cfg.provider,
     status: "ok",
@@ -3978,6 +4363,7 @@ async function cliDoctorFields(cfg, env = process.env) {
     default_model: diagnostics.default_model ?? null,
     logged_in: diagnostics.logged_in ?? null,
     model_ready: diagnostics.model_ready ?? null,
+    auth_freshness: diagnostics.auth_freshness ?? { status: "unknown", expiry_known: false },
     ignored_env_credentials: diagnostics.ignored_env_credentials ?? [],
     auth_policy: diagnostics.auth_policy ?? null,
     timeout_ms: cfg.timeout_ms,
@@ -3997,10 +4383,15 @@ async function cliDoctorFields(cfg, env = process.env) {
         status: loginStatus,
         logged_in: diagnostics.logged_in ?? null,
       },
+      cli_auth_file: {
+        status: diagnostics.auth_freshness?.status ?? "unknown",
+        expiry_known: diagnostics.auth_freshness?.expiry_known ?? false,
+      },
       source_free_prompt: {
         status: sourceFreeStatus,
         parse_mode: diagnostics.source_free_parse_mode ?? null,
         prompt_cleanup: diagnostics.source_free_prompt_cleanup ?? null,
+        grok_home_auth_sync: diagnostics.source_free_grok_home_auth_sync ?? diagnostics.grok_home_auth_sync ?? null,
         grok_home_cleanup: diagnostics.grok_home_cleanup ?? null,
       },
     },
@@ -4260,6 +4651,7 @@ function safeDoctorForRepair(doctor) {
     summary: doctor.summary ?? null,
     next_action: doctor.next_action ?? null,
     error_code: doctor.error_code ?? null,
+    auth_freshness: doctor.auth_freshness ?? null,
     tunnel_start: {
       error_code: doctor.tunnel_start?.error_code ?? null,
     },
@@ -4462,6 +4854,7 @@ async function repairFields(options = {}, env = process.env) {
 const GROK_CLI_AUTO_FALLBACK_CODES = new Set([
   "grok_cli_unavailable",
   "grok_cli_auth_unavailable",
+  "grok_cli_auth_expired",
   "grok_cli_login_required",
   "grok_cli_auth_timeout",
   "grok_cli_model_unavailable",
@@ -4483,12 +4876,14 @@ function cliRequestDiagnosticsForFallback(execution) {
     default_model: diagnostics.default_model ?? null,
     logged_in: diagnostics.logged_in ?? null,
     model_ready: diagnostics.model_ready ?? null,
+    auth_freshness: diagnostics.auth_freshness ?? null,
     exit_status: diagnostics.exit_status ?? null,
     exit_signal: diagnostics.exit_signal ?? null,
     stderr_head: diagnostics.stderr_head ?? null,
     parse_mode: diagnostics.parse_mode ?? null,
     source_free_parse_mode: diagnostics.source_free_parse_mode ?? null,
     source_free_prompt_cleanup: diagnostics.source_free_prompt_cleanup ?? null,
+    source_free_grok_home_auth_sync: diagnostics.source_free_grok_home_auth_sync ?? null,
     source_free_grok_home_cleanup: diagnostics.source_free_grok_home_cleanup ?? null,
     prompt_chars: diagnostics.prompt_chars ?? null,
     configured_timeout_ms: diagnostics.configured_timeout_ms ?? null,
@@ -4499,6 +4894,7 @@ function cliRequestDiagnosticsForFallback(execution) {
     grok_home_source: diagnostics.grok_home_source ?? null,
     grok_home_copied_files: diagnostics.grok_home_copied_files ?? [],
     grok_home_linked_files: diagnostics.grok_home_linked_files ?? [],
+    grok_home_auth_sync: diagnostics.grok_home_auth_sync ?? null,
     grok_home_cleanup: diagnostics.grok_home_cleanup ?? null,
   };
 }
@@ -4558,6 +4954,7 @@ async function cmdRun(options) {
   const runOptions = { ...options, jobId };
   let scopeInfo;
   let execution;
+  let workloadLease = null;
   try {
     lifecycleEvents = parseLifecycleEventsMode(options["lifecycle-events"]);
     cfg = config(process.env, options);
@@ -4596,7 +4993,24 @@ async function cmdRun(options) {
       if (!execution && prompt.length > cfg.max_prompt_chars) {
         const capName = cfg.transport === "cli" ? "GROK_CLI_MAX_PROMPT_CHARS" : "GROK_WEB_MAX_PROMPT_CHARS";
         execution = providerFailure("prompt_too_large", redactor()(`prompt_too_large:${prompt.length} chars exceeds ${capName}=${cfg.max_prompt_chars}`), null, null, false);
+        execution.diagnostics = {
+          packet_recovery: promptCapPacketRecovery({ cfg, mode, prompt, scopeInfo, options: runOptions }),
+        };
         execution.prompt = prompt;
+      }
+      if (!execution) {
+        const workloadAdmission = acquireProviderWorkloadLease({
+          provider: cfg.provider,
+          jobId,
+          cwd: scopeInfo.cwd,
+          sourceBearing: modeSendsSelectedSource(mode),
+        });
+        if (workloadAdmission.ok) {
+          workloadLease = workloadAdmission.lease;
+        } else {
+          execution = providerWorkloadBlockedExecution(workloadAdmission);
+          execution.prompt = prompt;
+        }
       }
     } catch (e) {
       execution = providerFailure(e.message.startsWith("bad_args:") ? "bad_args" : "scope_failed", redactor()(e.message), null, null, false);
@@ -4661,6 +5075,7 @@ async function cmdRun(options) {
             execution = providerFailure("prompt_too_large", redactor()(`prompt_too_large:${prompt.length} chars exceeds GROK_WEB_MAX_PROMPT_CHARS=${cfg.max_prompt_chars}`), null, null, false);
             execution.diagnostics = {
               cli_request: cliRequestDiagnosticsForFallback(cliFailure),
+              packet_recovery: promptCapPacketRecovery({ cfg, mode, prompt, scopeInfo, options: runOptions }),
               ...(execution.diagnostics ?? {}),
             };
             execution.prompt = prompt;
@@ -4706,6 +5121,8 @@ async function cmdRun(options) {
       if (promptSentToTunnel && prompt) execution.prompt = prompt;
     }
   }
+  releaseProviderWorkloadLease(workloadLease);
+  workloadLease = null;
   const record = redactValue(buildRecord({
     cfg,
     mode,

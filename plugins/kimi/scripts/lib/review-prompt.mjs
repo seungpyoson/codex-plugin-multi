@@ -1,11 +1,15 @@
 import { createHash } from "node:crypto";
 
 import {
+  buildPacketRecovery,
   buildReviewSlotDisposition,
   evaluateReviewSlotRetryPolicy,
   evaluateSourcePacketPolicy,
+  packetRecoveryReviewSurface,
+  reviewQualityPacketRecoveryErrorCode,
   reviewSlotRequestSettingsHash,
   reviewSlotRetryFingerprint,
+  sourceSentPacketRecoveryReason,
 } from "./provider-route-policy.mjs";
 
 export const REVIEW_PROMPT_CHECKLIST = Object.freeze([
@@ -30,6 +34,10 @@ const SELECTED_SOURCE_INSPECTION_VERBS = Object.freeze([
   "inspected",
   "reviewed",
 ]);
+
+function normalizeReviewSearchText(value) {
+  return String(value ?? "").replace(/[\u2010-\u2015\u2212]/g, "-");
+}
 
 function contentBuffer(file) {
   const content = file?.content;
@@ -268,7 +276,8 @@ function checklistStatus(line) {
   if (startsWithToken(lower, "not applicable")) return "n_a";
   const statusMatch = lower.match(/(?:^|[\u2013\u2014|]|(?:^|\s)-)\s*(pass|fail|not reviewed|n\/a|not applicable)\b/)
     ?? lower.match(/:\s*(not reviewed)\b/)
-    ?? lower.match(/:\s*(pass|fail|n\/a|not applicable)\b(?=\s*(?:$|[().;,\u2013\u2014]))/);
+    ?? lower.match(/:\s*(pass|fail|n\/a|not applicable)\b(?=\s*(?:$|[().;,\u2013\u2014]))/)
+    ?? lower.match(/[.!?]\s*(pass|fail|not reviewed|n\/a|not applicable)\b(?=\s*(?:$|[().;,\u2013\u2014]))/);
   if (!statusMatch) return null;
   return normalizeChecklistStatus(statusMatch[1]);
 }
@@ -374,16 +383,33 @@ function lineHasConcretePermissionFailure(line) {
   );
 }
 
+const PERMISSION_FAILURE_EXAMPLE_DETECTORS = Object.freeze([
+  isMockedPermissionLiteralLine,
+  isInjectedPermissionTestProofLine,
+  isPermissionExceptionExampleLine,
+  isOutOfScopePermissionNoteLine,
+  isPermissionLiteralListLine,
+  isPermissionAllowlistDiscussionLine,
+  isPermissionInspectionSummaryLine,
+  isProcessLivenessPermissionDiscussionLine,
+  isBenignPermissionDiscussionSummaryLine,
+  isPermissionParserFixSummaryLine,
+  isCodeUnderReviewPermissionConcernLine,
+  isPermissionBoundaryExampleLine,
+  isPermissionLiteralDiscussionLine,
+  isPermissionMechanicsDiscussionLine,
+  isPermissionParserProofLine,
+  isPermissionClassifierFixtureLine,
+  isPermissionTermExampleLine,
+  isCodePermissionConcernLine,
+]);
+
 function isPermissionFailureExampleLine(lower) {
-  if (isMockedPermissionLiteralLine(lower)) return true;
-  if (isInjectedPermissionTestProofLine(lower)) return true;
-  if (isPermissionExceptionExampleLine(lower)) return true;
-  if (isOutOfScopePermissionNoteLine(lower)) return true;
-  if (isPermissionLiteralListLine(lower)) return true;
-  if (isPermissionBoundaryExampleLine(lower)) return true;
-  if (isPermissionLiteralDiscussionLine(lower)) return true;
-  if (isPermissionMechanicsDiscussionLine(lower)) return true;
-  if (includesAny(lower, [
+  return PERMISSION_FAILURE_EXAMPLE_DETECTORS.some((isExampleLine) => isExampleLine(lower));
+}
+
+function isPermissionParserProofLine(lower) {
+  return includesAny(lower, [
     "linehasconcretepermissionfailure",
     "permission detection requires",
     "test suite",
@@ -392,13 +418,17 @@ function isPermissionFailureExampleLine(lower) {
     "still detected",
     "are still detected",
     "real failures",
+    "detector additions",
+    "concrete-action-phrase",
+    "fails the gate",
   ]) && (includesPermissionFailureLiteral(lower) || includesAny(lower, [
     "permission block",
     "permission_blocked",
-  ])) && !hasConcretePermissionActionPhrase(lower)) {
-    return true;
-  }
-  if (includesAny(lower, [
+  ])) && !hasConcretePermissionActionPhrase(lower);
+}
+
+function isPermissionClassifierFixtureLine(lower) {
+  return includesAny(lower, [
     "classifier should flag",
     "should flag",
     "meta-discussion",
@@ -407,9 +437,10 @@ function isPermissionFailureExampleLine(lower) {
     "read denied",
     "permission block",
     "permission_blocked",
-  ]) && !hasConcretePermissionActionPhrase(lower)) {
-    return true;
-  }
+  ]) && !hasConcretePermissionActionPhrase(lower);
+}
+
+function isPermissionTermExampleLine(lower) {
   return includesAny(lower, [
     "phrases such as",
     "patterns such as",
@@ -426,6 +457,162 @@ function isPermissionFailureExampleLine(lower) {
     "could not inspect",
     "unable to inspect",
   ]);
+}
+
+function isProcessLivenessPermissionDiscussionLine(lower) {
+  return includesPermissionFailureLiteral(lower)
+    && !hasConcretePermissionActionPhrase(lower)
+    && includesAny(lower, [
+      "process",
+      "pid",
+      "signal",
+      "kill",
+      "holderactive",
+      "pidalive",
+    ])
+    && includesAny(lower, [
+      "liveness",
+      "alive",
+      "exists",
+      "unsignalable",
+      "process signal",
+      "process.kill",
+      "kill(pid",
+    ]);
+}
+
+function isBenignPermissionDiscussionSummaryLine(lower) {
+  return includesPermissionFailureLiteral(lower)
+    && !hasConcretePermissionActionPhrase(lower)
+    && includesAny(lower, [
+      "benign-discussion",
+      "benign discussion",
+    ])
+    && includesAny(lower, [
+      "scope inspected",
+      "supplied verbatim",
+      "supplied in the prompt",
+      "including",
+      "included",
+    ]);
+}
+
+function isPermissionParserFixSummaryLine(lower) {
+  return includesPermissionFailureLiteral(lower)
+    && !hasConcretePermissionActionPhrase(lower)
+    && includesAny(lower, [
+      "parser fix",
+      "parser fixes",
+      "parser refactor",
+      "parser refactors",
+      "parser regression",
+      "parser regressions",
+      "parser change",
+      "parser changes",
+      "parser adjustment",
+      "parser adjustments",
+      "false-positive parser",
+      "false positive parser",
+    ])
+    && includesAny(lower, [
+      "review-prompt",
+      "review-quality",
+      "implementation",
+      "robust",
+      "covered",
+      "guarded",
+      "targeted test",
+      "targeted tests",
+      "handle",
+      "handles",
+    ]);
+}
+
+function isCodeUnderReviewPermissionConcernLine(lower) {
+  return includesPermissionFailureLiteral(lower)
+    && !hasConcretePermissionActionPhrase(lower)
+    && includesAny(lower, [
+      "code-under-review",
+      "code under review",
+      "fs-error",
+      "fs error",
+      "opensync",
+      "mkdirsync",
+      "lock dir",
+      "lock-dir",
+      "lock root",
+      "lock file",
+      "lock-file",
+      "lock creation",
+      "workload lock",
+      "shared /tmp",
+      "shared `/tmp",
+      "shared-`/tmp",
+      "system tmpdir",
+    ])
+    && includesAny(lower, [
+      "propagates as a throw",
+      "propagates",
+      "fail-open",
+      "failing open",
+      "fail open",
+      "fail-closed",
+      "fails closed",
+      "implementation",
+      "behavior",
+      "exception",
+      "fallback",
+      "handled",
+      "hardening",
+      "deny lock creation",
+      "preemptively create",
+      "override",
+    ]);
+}
+
+function isPermissionInspectionSummaryLine(lower) {
+  return includesPermissionFailureLiteral(lower)
+    && !hasConcretePermissionActionPhrase(lower)
+    && includesAny(lower, [
+      "i inspected",
+      "inspected the",
+      "reviewed the",
+      "verified the",
+      "checked the",
+      "no blocking findings",
+    ])
+    && includesAny(lower, [
+      "checks out",
+      "control flow",
+      "files listed above",
+      "implementation",
+      "parser",
+      "refactor",
+      "catalog",
+      "workload",
+      "launch paths",
+    ]);
+}
+
+function isPermissionAllowlistDiscussionLine(lower) {
+  return includesPermissionFailureLiteral(lower)
+    && !hasConcretePermissionActionPhrase(lower)
+    && includesAny(lower, [
+      "allowlist",
+      "allow-list",
+      "allow list",
+    ])
+    && includesAny(lower, [
+      "discussion",
+      "literal",
+      "parser",
+      "review-quality",
+      "false positive",
+      "false-positive",
+      "test",
+      "coverage",
+      "fixture",
+    ]);
 }
 
 function isPermissionExceptionExampleLine(lower) {
@@ -470,6 +657,44 @@ function isInjectedPermissionTestProofLine(lower) {
       "rename",
       "mock",
       "proof",
+    ]);
+}
+
+function isCodePermissionConcernLine(lower) {
+  return includesPermissionFailureLiteral(lower)
+    && !hasConcretePermissionActionPhrase(lower)
+    && includesAny(lower, [
+      "fs-error",
+      "fs error",
+      "opensync",
+      "mkdirsync",
+      "lock fs",
+      "lock-dir",
+      "lock dir",
+      "lock root",
+      "lock creation",
+      "workload lock",
+      "fail-open",
+      "failing open",
+      "propagates as a throw",
+      "shared /tmp",
+      "shared `/tmp",
+      "shared-`/tmp",
+      "system tmpdir",
+    ])
+    && includesAny(lower, [
+      "behavior",
+      "concern",
+      "risk",
+      "implementation",
+      "code",
+      "helper",
+      "runtime",
+      "lock",
+      "fail-closed",
+      "fails closed",
+      "deny lock creation",
+      "preemptively create",
     ]);
 }
 
@@ -551,6 +776,12 @@ function isPermissionLiteralDiscussionLine(lower) {
     "pattern discussion",
     "sandbox detection uses",
     "detection uses",
+    "process.kill",
+    "kill(pid",
+    "pidalive",
+    "checking for eperm",
+    "alive-process",
+    "alive process",
     "token-bound",
     "token bound",
     "tokenize",
@@ -628,11 +859,13 @@ function isPermissionMechanicsDiscussionLine(lower) {
     "is flagged",
     "permission detection",
     "review-quality audit",
+    "review-quality",
     "mechanics-discussion",
     "token-bound",
     "token bound",
     "tokenize",
     "false positive",
+    "false-positive",
     "inside words",
     "standalone word",
     "boundary",
@@ -669,6 +902,7 @@ function isPermissionMechanicsDiscussionLine(lower) {
     "detect",
     "detection",
     "parser",
+    "review-quality",
     "fixture",
     "example",
     "counterexample",
@@ -764,10 +998,17 @@ function isLocalFileScopeBoundaryLine(lower) {
   ]);
 }
 
+function isNegatedSelectedSourceInspectionAnalysisLine(lower) {
+  if (!includesAny(lower, ["did not inspect", "not inspected", "could not inspect", "unable to inspect"])) return false;
+  return includesAny(lower, ["no genuine", "no real"])
+    && includesAny(lower, ["suppressed", "accepted", "missed", "classified"]);
+}
+
 function lineDeniesSelectedSourceInspection(line, selectedSource) {
   const lower = stripLeadingReviewMarkup(line).toLowerCase();
   if (isPermissionMechanicsDiscussionLine(lower)) return false;
   if (isSelectedSourceInspectionMechanicsDiscussionLine(lower)) return false;
+  if (isNegatedSelectedSourceInspectionAnalysisLine(lower)) return false;
   if (isLocalFileScopeBoundaryLine(lower)) return false;
   if (isOutOfScopeInspectionGapLine(lower) && !mentionsSelectedSourceGeneric(lower)) return false;
   if (!includesAny(lower, ["did not inspect", "not inspected", "could not inspect", "unable to inspect"])) {
@@ -817,13 +1058,51 @@ function isOutOfScopeInspectionGapLine(lower) {
   if (!includesAny(lower, ["could not inspect", "unable to inspect", "not inspected", "not reviewed"])) return false;
   return includesAny(lower, [
     "out of scope",
+    "outside the packet",
+    "outside of the packet",
+    "outside packet",
     "outside the review packet",
     "outside this packet",
     "outside the supplied packet",
     "outside the supplied source packet",
+    "not in packet",
+    "not in the packet",
     "not part of this packet",
     "not supplied",
     "not included in the prompt",
+  ]);
+}
+
+function isPriorReviewCommentsGapLine(lower) {
+  if (mentionsSelectedSourceGeneric(lower)) return false;
+  if (!includesAny(lower, [
+    "known comment",
+    "known comments",
+    "known review comment",
+    "known review comments",
+    "prior comment",
+    "prior comments",
+    "prior review comment",
+    "prior review comments",
+    "residual thread",
+    "residual threads",
+    "review comment",
+    "review comments",
+    "review thread",
+    "review threads",
+  ])) return false;
+  return includesAny(lower, [
+    "could not inspect",
+    "none provided",
+    "none supplied",
+    "not available",
+    "not included",
+    "not inspected",
+    "not provided",
+    "not reviewed",
+    "not supplied",
+    "unavailable",
+    "unable to inspect",
   ]);
 }
 
@@ -871,7 +1150,10 @@ function semanticFailureReasons(text, looksShallow, selectedSource = null) {
     );
   });
   const semanticText = semanticLines
-    .filter((line) => !isOutOfScopeInspectionGapLine(unmarkReviewText(line).toLowerCase()))
+    .filter((line) => {
+      const lower = unmarkReviewText(line).toLowerCase();
+      return !isOutOfScopeInspectionGapLine(lower) && !isPriorReviewCommentsGapLine(lower);
+    })
     .join("\n")
     .toLowerCase();
   if (hasNotReviewedVerdict || semanticLines.some((line) => lineClaimsFailedReviewSlot(line)) || includesAny(semanticText, [
@@ -998,7 +1280,7 @@ function qualityFlags({
   selectedSource = null,
 } = {}) {
   const text = String(result ?? "");
-  const lowerText = text.toLowerCase();
+  const lowerText = normalizeReviewSearchText(text).toLowerCase();
   const checklistItemsSeen = reviewLines(text).filter((line) => isChecklistVerdict(line)).length;
   const hasVerdictFlag = hasVerdict(text);
   const hasBlockingSection = includesAny(lowerText, [
@@ -1079,7 +1361,7 @@ export function buildReviewAuditManifest({
     selectedSource.totals.files > 0 || selectedSource.totals.bytes > 0
   );
   const sourcePacketPolicy = route.sourcePacketPolicy ?? evaluateSourcePacketPolicy({
-    provider: request.provider ?? null,
+    provider: route.sourcePacketPolicyProvider ?? request.provider ?? route.providerId ?? null,
     mode: route.mode ?? null,
     routeStep,
     providerCapabilities: route.providerCapabilities ?? {},
@@ -1126,13 +1408,13 @@ export function buildReviewAuditManifest({
       source_send_allowed: false,
       source_packet_action: "review_slot_retry_blocked",
       source_content_transmission: "not_sent",
-      source_packet_policy_error_code:
-        retryPolicy.fail_closed_reason ?? "review_slot_retry_blocked",
+      source_packet_policy_error_code: retryPolicy.fail_closed_reason,
       suggested_action:
         "Do not launch another same-packet review until the packet is split, the provider is switched, the slot is waived, or an explicit override artifact is recorded.",
     })
     : sourcePacketPolicy;
   const reviewQuality = qualityFlags({ result, status, errorCode, selectedSource });
+  const effectiveErrorCode = errorCode ?? reviewQualityPacketRecoveryErrorCode(reviewQuality);
   const sourceContentTransmission =
     effectiveSourcePacketPolicy.source_send_allowed === false
       ? (effectiveSourcePacketPolicy.source_content_transmission ?? "not_sent")
@@ -1152,13 +1434,48 @@ export function buildReviewAuditManifest({
     requestSettingsHash,
     sourceState: sourceContentTransmission,
     status,
-    errorCode,
+    errorCode: effectiveErrorCode,
     result,
     reviewQuality,
     disposition: route.reviewSlot?.disposition ?? retryPolicy.disposition,
     waiverArtifact: route.reviewSlot?.waiverArtifact ?? null,
     overrideArtifact: route.reviewSlot?.overrideArtifact ?? null,
   });
+  const changedSurfaceRecoveryReason = effectiveSourcePacketPolicy.review_surface_changed === true
+    ? sourceSentPacketRecoveryReason({
+      status: route.previousAttempt?.status ?? null,
+      errorCode: route.previousAttempt?.error_code ?? null,
+      sourceContentTransmission: route.previousAttempt?.source_content_transmission ?? null,
+      reviewQuality: route.previousAttempt?.review_quality ?? null,
+    })
+    : null;
+  const packetRecoveryReason = effectiveSourcePacketPolicy.source_send_allowed === false
+    ? (effectiveSourcePacketPolicy.source_packet_policy_error_code ?? effectiveErrorCode)
+    : changedSurfaceRecoveryReason
+      ? changedSurfaceRecoveryReason
+    : sourceSentPacketRecoveryReason({
+      status,
+      errorCode: effectiveErrorCode,
+      sourceContentTransmission,
+      reviewQuality,
+    });
+  const packetRecovery = route.packetRecovery ?? (packetRecoveryReason
+    ? buildPacketRecovery({
+      reason: packetRecoveryReason,
+      sourcePacketPolicy: effectiveSourcePacketPolicy,
+      providerCapabilities: route.providerCapabilities ?? {},
+      provider: route.providerId ?? effectiveSourcePacketPolicy.provider ?? request.provider ?? null,
+      mode: route.mode ?? scope.name ?? null,
+      routeStep,
+      reviewSurface: route.packetRecoveryReviewSurface ?? packetRecoveryReviewSurface({
+        selectedSource,
+        previousAttempt: route.previousAttempt ?? null,
+        sourcePacketPolicy: effectiveSourcePacketPolicy,
+      }),
+      sourceContentTransmission,
+      requiresSourceSendApproval: route.sourceSendApprovalRequired === true,
+    })
+    : null);
   return Object.freeze({
     schema_version: REVIEW_AUDIT_MANIFEST_VERSION,
     rendered_prompt_hash: renderedPromptHash,
@@ -1216,9 +1533,10 @@ export function buildReviewAuditManifest({
     source_send_approval_required: route.sourceSendApprovalRequired ?? null,
     source_send_approval_state: route.sourceSendApprovalState ?? null,
     source_packet_policy: Object.freeze({ ...effectiveSourcePacketPolicy }),
+    packet_recovery: packetRecovery,
     review_slot_retry_policy: Object.freeze({ ...retryPolicy }),
     review_slot: reviewSlot,
-    error_code: errorCode,
+    error_code: effectiveErrorCode,
     review_quality: reviewQuality,
   });
 }
@@ -1230,6 +1548,20 @@ function line(name, value) {
 function listBlock(title, values) {
   const entries = Array.isArray(values) && values.length > 0 ? values : ["unknown"];
   return [title, ...entries.map((value) => `- ${value}`)].join("\n");
+}
+
+function isAbsoluteRepositoryPath(value) {
+  return typeof value === "string" && (
+    value.startsWith("/") ||
+    value.startsWith("~/") ||
+    /^[A-Za-z]:[\\/]/.test(value)
+  );
+}
+
+function repositoryPromptLabel(repository) {
+  return isAbsoluteRepositoryPath(repository)
+    ? "selected source packet (original path withheld)"
+    : repository;
 }
 
 function normalizeReviewPromptContractStyle(contractStyle) {
@@ -1261,7 +1593,7 @@ function buildCompactReviewPrompt({
     "Delegated compact review contract",
     line("Provider", provider),
     line("Mode", mode),
-    line("Repository", repository),
+    line("Repository", repositoryPromptLabel(repository)),
     line("Base ref", baseRef),
     line("Base commit", baseCommit),
     line("Head ref", headRef),
@@ -1272,6 +1604,8 @@ function buildCompactReviewPrompt({
     "Output requirements",
     "- First line exactly one verdict marker: \"Verdict: APPROVE\", \"Verdict: REQUEST_CHANGES\", or \"Verdict: NOT_REVIEWED\".",
     "- Review only supplied selected source, refs, commits, scope paths, and audit metadata. Missing outside tools are NOT REVIEWED, not code blockers.",
+    "- Do not inspect original absolute workspace paths; use supplied selected source and granted relative/add-dir paths only.",
+    "- Do not call filesystem, git, search, network, or other tools to inspect original repository paths; the supplied selected source packet is the review input.",
     "- Name inspected selected file path(s). Bare numbered answers or only 'None' are invalid.",
     "- Blocking findings first with concrete file/function/control-flow evidence.",
     "- Non-blocking concerns separately.",
@@ -1397,7 +1731,7 @@ export function buildReviewPrompt({
     "Delegated review quality contract",
     line("Provider", provider),
     line("Mode", mode),
-    line("Repository", repository),
+    line("Repository", repositoryPromptLabel(repository)),
     line("Base ref", baseRef),
     line("Base commit", baseCommit),
     line("Head ref", headRef),
@@ -1410,6 +1744,8 @@ export function buildReviewPrompt({
     "",
     "Output requirements",
     "- Treat the repository, refs, commits, scope paths, selected source, and audit metadata supplied in this prompt as the authoritative review evidence.",
+    "- Do not inspect original absolute workspace paths; use supplied selected source and granted relative/add-dir paths only.",
+    "- Do not call filesystem, git, search, network, or other tools to inspect original repository paths; the supplied selected source packet is the review input.",
     "- If git, GitHub, network, filesystem, or tool access is unavailable, mark only that check as NOT REVIEWED unless the required evidence is supplied here.",
     "- Do not report missing external tool access as a blocking code finding by itself.",
     "- Distinguish real blocking code findings from missing supplied evidence, runtime/tool limitations, and stale or unavailable external comments.",

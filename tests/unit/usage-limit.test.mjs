@@ -18,6 +18,7 @@ test("usage-limit helper detects durable quota and billing markers", () => {
     "Monthly spending limit exceeded.",
     "insufficient credits",
     "Error code: 403\nYou've reached your usage limit.",
+    "You've hit your session limit · resets 2:50am (Asia/Seoul)",
   ]) {
     assert.equal(isUsageLimitDetail(detail), true, detail);
     assert.match(usageLimitMessage(detail), /quota|usage-tier|billing|credit/i);

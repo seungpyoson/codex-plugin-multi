@@ -31,6 +31,7 @@ import {
   classifyCompanionExecution,
 } from "./external-model-failure-core.mjs";
 import { hasSubstantiveInvalidVerdictReason } from "./external-model-review-quality.mjs";
+import { buildPacketRecovery } from "./provider-route-policy.mjs";
 import { buildPrivacyRedactor } from "./privacy-redaction.mjs";
 import { elapsedMs } from "./time.mjs";
 import path from "node:path";
@@ -102,9 +103,57 @@ function stringBytes(value) {
   return Buffer.byteLength(String(value ?? ""), "utf8");
 }
 
-function auditManifestForRecordStatus(manifest, { status, errorCode, pidInfo } = {}) {
-  if (!manifest?.review_quality || typeof status !== "string") return manifest ?? null;
+function sourceStateNeedsPacketRecovery(sourceContentTransmission) {
+  return sourceContentTransmission === SOURCE_CONTENT_TRANSMISSION.SENT
+    || sourceContentTransmission === SOURCE_CONTENT_TRANSMISSION.MAY_BE_SENT
+    || sourceContentTransmission === SOURCE_CONTENT_TRANSMISSION.UNKNOWN;
+}
+
+function packetRecoveryForRecordStatus(manifest, {
+  status = null,
+  errorCode = null,
+  sourceContentTransmission = null,
+  packetRecovery = null,
+} = {}) {
+  if (packetRecovery && typeof packetRecovery === "object") return packetRecovery;
+  if (manifest?.packet_recovery && typeof manifest.packet_recovery === "object") return manifest.packet_recovery;
+  if (status !== "stale" || errorCode !== "stale_active_job") return null;
+  if (!sourceStateNeedsPacketRecovery(sourceContentTransmission)) return null;
+  return buildPacketRecovery({
+    reason: errorCode,
+    sourcePacketPolicy: manifest?.source_packet_policy ?? null,
+    providerCapabilities: {
+      source_packet: { resume_without_resend_supported: false },
+    },
+    provider: manifest?.source_packet_policy?.provider ?? null,
+    mode: manifest?.source_packet_policy?.mode ?? null,
+    routeStep: manifest?.route_step ?? manifest?.source_packet_policy?.route_step ?? null,
+    selectedSource: manifest?.selected_source ?? null,
+    sourceContentTransmission,
+  });
+}
+
+function auditManifestForRecordStatus(manifest, { status, errorCode, pidInfo, packetRecovery } = {}) {
+  if (!manifest) return null;
+  const inputPacketRecovery = packetRecovery
+    && typeof packetRecovery === "object"
+    ? packetRecovery
+    : null;
+  if (!manifest.review_quality || typeof status !== "string") {
+    return inputPacketRecovery && !manifest.packet_recovery
+      ? Object.freeze({ ...manifest, packet_recovery: inputPacketRecovery })
+      : manifest;
+  }
   const sourceContentTransmission = sourceContentTransmissionForExecution({ status, errorCode, pidInfo });
+  const statusPacketRecovery = packetRecoveryForRecordStatus(manifest, {
+    status,
+    errorCode,
+    sourceContentTransmission,
+    packetRecovery: inputPacketRecovery,
+  });
+  const shouldBackfillPacketRecovery = statusPacketRecovery
+    && typeof statusPacketRecovery === "object"
+    && !manifest.packet_recovery;
   const failedReviewSlot = sourceContentTransmission === "sent"
     && !["completed", "queued", "running"].includes(status);
   const reviewSlot = manifest.review_slot && manifest.review_slot.source_state !== sourceContentTransmission
@@ -113,11 +162,13 @@ function auditManifestForRecordStatus(manifest, { status, errorCode, pidInfo } =
   if (
     manifest.review_quality.failed_review_slot === failedReviewSlot
     && manifest.review_slot === reviewSlot
+    && !shouldBackfillPacketRecovery
   ) {
     return manifest;
   }
   return Object.freeze({
     ...manifest,
+    ...(shouldBackfillPacketRecovery ? { packet_recovery: statusPacketRecovery } : {}),
     source_content_transmission: sourceContentTransmission,
     review_quality: Object.freeze({
       ...manifest.review_quality,
@@ -146,6 +197,7 @@ function buildReviewMetadata(invocation, execution = null, parsed = null, endedA
       status,
       errorCode,
       pidInfo: execution?.pidInfo ?? null,
+      packetRecovery: execution?.runtimeDiagnostics?.packet_recovery ?? null,
     }),
   };
   if (Array.isArray(execution?.permissionModeAttempts)) {
@@ -161,6 +213,7 @@ export function externalReviewForInvocation(invocation, execution = null) {
     status,
     errorCode: error_code,
     pidInfo: execution?.pidInfo ?? null,
+    packetRecovery: execution?.runtimeDiagnostics?.packet_recovery ?? null,
   });
   const sourceContentTransmission = invocation.resume_without_source_resend === true
     ? SOURCE_CONTENT_TRANSMISSION.NOT_SENT
@@ -538,6 +591,53 @@ function pathInside(base, target) {
   };
 }
 
+function normalizeProviderAccountIdentity(input) {
+  const identity = input?.provider_account_identity;
+  if (!identity || typeof identity !== "object") return null;
+  const provider = typeof identity.provider === "string" && /^[a-z0-9._-]+$/.test(identity.provider)
+    ? identity.provider
+    : null;
+  const identitySource = typeof identity.identity_source === "string" && /^[a-z0-9._-]+$/.test(identity.identity_source)
+    ? identity.identity_source
+    : null;
+  const identityFields = Array.isArray(identity.identity_fields)
+    ? identity.identity_fields.filter((field) => typeof field === "string" && /^[a-z0-9._-]+$/.test(field))
+    : [];
+  const fingerprintValue = typeof identity.account_fingerprint?.value === "string" &&
+    /^[a-f0-9]{64}$/i.test(identity.account_fingerprint.value)
+    ? identity.account_fingerprint.value.toLowerCase()
+    : null;
+  if (!provider || !identitySource || !fingerprintValue) return null;
+  return {
+    provider,
+    identity_source: identitySource,
+    identity_fields: identityFields,
+    account_fingerprint: {
+      algorithm: "sha256",
+      value: fingerprintValue,
+    },
+  };
+}
+
+function normalizeProviderWorkloadDiagnostic(input, redactText = (value) => value) {
+  if (!input || typeof input !== "object") return null;
+  const holderInput = input.holder && typeof input.holder === "object" ? input.holder : null;
+  const holder = holderInput ? {
+    provider: typeof holderInput.provider === "string" ? redactText(holderInput.provider) : null,
+    job_id: typeof holderInput.job_id === "string" ? redactText(holderInput.job_id) : null,
+    pid: Number.isSafeInteger(holderInput.pid) ? holderInput.pid : null,
+    hostname: typeof holderInput.hostname === "string" ? redactText(holderInput.hostname) : null,
+    cwd: typeof holderInput.cwd === "string" ? redactText(holderInput.cwd) : null,
+    started_at: typeof holderInput.started_at === "string" ? redactText(holderInput.started_at) : null,
+    lock_file: typeof holderInput.lock_file === "string" ? redactText(holderInput.lock_file) : null,
+  } : null;
+
+  return {
+    reason: typeof input.reason === "string" ? redactText(input.reason) : null,
+    holder,
+  };
+}
+
 function normalizeRuntimeDiagnostics(input, denials, redactText = (value) => value) {
   if (!input || typeof input !== "object") return null;
   const redactNullableText = (value) => value == null ? null : redactText(value);
@@ -581,6 +681,16 @@ function normalizeRuntimeDiagnostics(input, denials, redactText = (value) => val
     out.cleanup_warning = cleanupWarning;
     out.cleanup_warning_path = cleanupWarningPath;
   }
+  if (input.source_packet_policy && typeof input.source_packet_policy === "object") {
+    out.source_packet_policy = input.source_packet_policy;
+  }
+  if (input.packet_recovery && typeof input.packet_recovery === "object") {
+    out.packet_recovery = input.packet_recovery;
+  }
+  const providerAccountIdentity = normalizeProviderAccountIdentity(input);
+  if (providerAccountIdentity) out.provider_account_identity = providerAccountIdentity;
+  const providerWorkload = normalizeProviderWorkloadDiagnostic(input.provider_workload, redactText);
+  if (providerWorkload) out.provider_workload = providerWorkload;
   return out;
 }
 
@@ -667,9 +777,17 @@ export function buildJobRecord(invocation, execution, mutations) {
       cleanup_warning_path: invocation.runtime_options_cleanup_path ?? null,
     }
     : null;
+  const reviewMetadata = buildReviewMetadata(invocation, execution, parsed, endedAt, status, error_code);
+  const manifestPacketRecovery = reviewMetadata?.audit_manifest?.packet_recovery ?? null;
+  const runtimeDiagnosticsBase = execution?.runtimeDiagnostics ?? null;
+  const runtimeDiagnosticsWithManifestRecovery = manifestPacketRecovery
+    && typeof manifestPacketRecovery === "object"
+    && !(runtimeDiagnosticsBase?.packet_recovery && typeof runtimeDiagnosticsBase.packet_recovery === "object")
+    ? { ...(runtimeDiagnosticsBase ?? {}), packet_recovery: manifestPacketRecovery }
+    : runtimeDiagnosticsBase;
   const runtimeDiagnosticsInput = cleanupDiagnostics
-    ? { ...(execution?.runtimeDiagnostics ?? {}), ...cleanupDiagnostics }
-    : (execution?.runtimeDiagnostics ?? null);
+    ? { ...(runtimeDiagnosticsWithManifestRecovery ?? {}), ...cleanupDiagnostics }
+    : runtimeDiagnosticsWithManifestRecovery;
   const runtimeDiagnostics = normalizeRuntimeDiagnostics(runtimeDiagnosticsInput, permissionDenials, redactSensitiveText);
   const record = {
     // Identity
@@ -699,7 +817,7 @@ export function buildJobRecord(invocation, execution, mutations) {
     prompt_head: invocation.prompt_head == null
       ? null
       : redactSensitiveText(invocation.prompt_head).slice(0, 200),
-    review_metadata: buildReviewMetadata(invocation, execution, parsed, endedAt, status, error_code),
+    review_metadata: reviewMetadata,
     schema_spec: invocation.schema_spec ?? null,
     binary: invocation.binary,
 
