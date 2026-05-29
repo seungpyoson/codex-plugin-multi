@@ -552,3 +552,32 @@ Verification:
 Claude `7cb169a7-8b86-4784-a88a-93495333f15d` approved the prior delta with
 source sent, but that review is stale after this cleanup. The next external
 review must use the new head SHA.
+
+## Final Delta Test-Hardening Follow-up
+
+The later Grok cleanup-delta retry
+`job_b9314978-ebf6-46f1-a5d1-4f93b8ae4930` sent source but failed as
+`review_not_completed` / `not_reviewed`, so its raw `APPROVE` text is not
+approval evidence. Its raw non-blocking note was valid: the branch covered
+successful recursive cleanup of a non-empty neutral cwd, but did not separately
+cover the new `unverified` cleanup-failure branch.
+
+Follow-up:
+
+- Added a fake Grok CLI option that creates an unreadable `blocked-cleanup`
+  directory under the generated `grok-cli-cwd-*`.
+- Added a smoke test proving that an unverified neutral cwd cleanup fails closed
+  as `privacy_persistence`, records `neutral_cwd_cleanup:"unverified"`, keeps
+  source transmission as `sent`, does not leak `CLI_SOURCE_SECRET`, and leaves
+  the diagnostic cwd for manual cleanup.
+- No production code changed in this follow-up.
+
+Verification:
+
+- RED `node --test --test-name-pattern "neutral cwd cleanup cannot be verified" tests/smoke/grok-web.smoke.test.mjs` failed before fake CLI support existed.
+- `node --test --test-name-pattern "neutral cwd cleanup cannot be verified" tests/smoke/grok-web.smoke.test.mjs`: passed.
+- `node --test --test-name-pattern "Grok CLI neutral cwd" tests/smoke/grok-web.smoke.test.mjs`: 2 passed, 0 failed.
+- `node --test tests/smoke/grok-web.smoke.test.mjs`: 167 passed, 0 failed.
+
+This test-only hardening changes the branch again after the prior final-delta
+review attempts. Any final review must use the resulting head SHA.

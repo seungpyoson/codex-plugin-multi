@@ -365,6 +365,7 @@ function makeFakeGrokCli({
   failSourceBearingHomeCleanup = false,
   failSourceBearingPromptCleanup = false,
   failNeutralCwdCleanup = false,
+  blockNeutralCwdCleanup = false,
   failSourceFreeHomeCleanup = false,
   sourceBearingDelayMs = 0,
   ignoreSourceBearingSigterm = false,
@@ -381,6 +382,7 @@ const failSourceBearing = ${JSON.stringify(failSourceBearing)};
 const failSourceBearingHomeCleanup = ${JSON.stringify(failSourceBearingHomeCleanup)};
 const failSourceBearingPromptCleanup = ${JSON.stringify(failSourceBearingPromptCleanup)};
 const failNeutralCwdCleanup = ${JSON.stringify(failNeutralCwdCleanup)};
+const blockNeutralCwdCleanup = ${JSON.stringify(blockNeutralCwdCleanup)};
 const failSourceFreeHomeCleanup = ${JSON.stringify(failSourceFreeHomeCleanup)};
 const sourceBearingDelayMs = ${JSON.stringify(sourceBearingDelayMs)};
 const ignoreSourceBearingSigterm = ${JSON.stringify(ignoreSourceBearingSigterm)};
@@ -417,6 +419,12 @@ if (failSourceBearingPromptCleanup && prompt.includes("CLI_SOURCE_SECRET")) {
 }
 if (failNeutralCwdCleanup && prompt.includes("CLI_SOURCE_SECRET")) {
   fs.writeFileSync(require("node:path").join(process.cwd(), "source-copy.txt"), prompt.slice(0, 128));
+}
+if (blockNeutralCwdCleanup && prompt.includes("CLI_SOURCE_SECRET")) {
+  const blocked = require("node:path").join(process.cwd(), "blocked-cleanup");
+  fs.mkdirSync(blocked, { recursive: true });
+  fs.writeFileSync(require("node:path").join(blocked, "source.txt"), prompt.slice(0, 128));
+  fs.chmodSync(blocked, 0o000);
 }
 const grokHome = process.env.GROK_HOME || null;
 if (grokHome) {
@@ -2804,6 +2812,63 @@ test("custom-review cleans non-empty Grok CLI neutral cwd after source-bearing r
     assert.equal(existsSync(neutralCwd), false);
   } finally {
     if (neutralCwd) rmTree(neutralCwd);
+    rmTree(authHome);
+    rmTree(cwd);
+    rmTree(dataDir);
+  }
+});
+
+test("custom-review fails closed when Grok CLI neutral cwd cleanup cannot be verified", () => {
+  const cwd = realpathSync(mkdtempSync(path.join(tmpdir(), "grok-cli-neutral-cleanup-blocked-workspace-")));
+  const dataDir = mkdtempSync(path.join(tmpdir(), "grok-cli-neutral-cleanup-blocked-data-"));
+  const authHome = mkdtempSync(path.join(tmpdir(), "grok-cli-neutral-cleanup-blocked-auth-home-"));
+  const { binDir, grokPath } = makeFakeGrokCli({
+    blockNeutralCwdCleanup: true,
+  });
+  writeFileSync(path.join(cwd, "review.js"), "export const marker = 'CLI_SOURCE_SECRET';\n");
+  writeFileSync(path.join(authHome, "auth.json"), "{\"token\":\"fake\"}\n");
+  writeFileSync(path.join(authHome, "config.toml"), "[models]\ndefault = \"grok-build\"\n");
+  let neutralCwd = null;
+
+  try {
+    const result = run([
+      "run",
+      "--mode", "custom-review",
+      "--scope", "custom",
+      "--scope-paths", "review.js",
+      "--foreground",
+      "--prompt", "Review selected source.",
+    ], {
+      cwd,
+      defaultTransport: false,
+      env: {
+        PATH: `${binDir}${path.delimiter}${process.env.PATH ?? ""}`,
+        GROK_CLI_BINARY: grokPath,
+        GROK_CLI_AUTH_HOME: authHome,
+        GROK_PLUGIN_DATA: dataDir,
+        GROK_WEB_BASE_URL: "http://127.0.0.1:9/v1",
+      },
+    });
+
+    const record = parseStdout(result);
+    neutralCwd = record.runtime_diagnostics.cli_request.neutral_cwd;
+    assert.equal(result.status, 1, result.stdout);
+    assert.equal(record.status, "failed");
+    assert.equal(record.error_code, "privacy_persistence");
+    assert.equal(record.error_cause, "privacy_persistence");
+    assert.equal(record.runtime_diagnostics.cli_request.neutral_cwd_cleanup, "unverified");
+    assert.equal(record.external_review.source_content_transmission, "sent");
+    assert.doesNotMatch(JSON.stringify(record), /CLI_SOURCE_SECRET/);
+    assert.equal(existsSync(neutralCwd), true);
+  } finally {
+    if (neutralCwd) {
+      try {
+        chmodSync(path.join(neutralCwd, "blocked-cleanup"), 0o700);
+      } catch {
+        // Cleanup best-effort for failed setup paths.
+      }
+      rmTree(neutralCwd);
+    }
     rmTree(authHome);
     rmTree(cwd);
     rmTree(dataDir);
