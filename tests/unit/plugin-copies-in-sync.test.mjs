@@ -37,9 +37,46 @@ function functionBody(source, name) {
   assert.ok(signature, `missing function ${name}`);
   const bodyStart = signature.index + signature[0].length;
   let depth = 1;
+  let quote = null;
+  let comment = null;
   for (let index = bodyStart; index < source.length; index += 1) {
-    if (source[index] === "{") depth += 1;
-    if (source[index] === "}") depth -= 1;
+    const char = source[index];
+    const next = source[index + 1];
+    if (comment === "line") {
+      if (char === "\n") comment = null;
+      continue;
+    }
+    if (comment === "block") {
+      if (char === "*" && next === "/") {
+        comment = null;
+        index += 1;
+      }
+      continue;
+    }
+    if (quote !== null) {
+      if (char === "\\") {
+        index += 1;
+        continue;
+      }
+      if (char === quote) quote = null;
+      continue;
+    }
+    if (char === "/" && next === "/") {
+      comment = "line";
+      index += 1;
+      continue;
+    }
+    if (char === "/" && next === "*") {
+      comment = "block";
+      index += 1;
+      continue;
+    }
+    if (char === "\"" || char === "'" || char === "`") {
+      quote = char;
+      continue;
+    }
+    if (char === "{") depth += 1;
+    if (char === "}") depth -= 1;
     if (depth === 0) return source.slice(bodyStart, index);
   }
   assert.fail(`unterminated function ${name}`);
@@ -70,6 +107,22 @@ function parseStringSetLiteral(source, name, label) {
 function readRepoJson(relPath) {
   return JSON.parse(readRepoFile(relPath));
 }
+
+test("functionBody ignores braces inside strings and comments", () => {
+  const source = `
+function target() {
+  // }
+  return cliConfig(options, env);
+}
+function next() {
+  return webConfig(options, env);
+}
+`;
+
+  const body = functionBody(source, "target");
+  assert.match(body, /\breturn\s+cliConfig\(/);
+  assert.doesNotMatch(body, /\breturn\s+webConfig\(/);
+});
 
 const PROVIDER_RUNTIME_POLICY_ENTRYPOINTS = Object.freeze([
   Object.freeze({
