@@ -10,7 +10,12 @@ user-invocable: true
 EXTERNAL_MODEL_CONTRACT_VERSION=1
 
 Use skill `api-reviewers:glm-setup`. Command doc: `../../commands/glm-setup.md`.
-Run `api-reviewer doctor --provider glm`.
+## Entrypoint Contract
+Use the global installed entrypoint `node "${CODEX_HOME:-$HOME/.codex}/plugins/cache/codex-plugin-multi/api-reviewers/0.1.0/scripts/api-reviewer.mjs"`.
+Do not run bare `api-reviewer`, do not rely on `PATH`, and do not use repository-relative paths such as `plugins/api-reviewers/scripts/api-reviewer.mjs`.
+If `${CODEX_HOME:-$HOME/.codex}/plugins/cache/codex-plugin-multi/api-reviewers/0.1.0/scripts/api-reviewer.mjs` cannot be resolved, stop and report `api_reviewer_entrypoint_missing` before any source-bearing command.
+
+Run `node "${CODEX_HOME:-$HOME/.codex}/plugins/cache/codex-plugin-multi/api-reviewers/0.1.0/scripts/api-reviewer.mjs" doctor --provider glm`.
 Report readiness without printing API-key values.
 ## Secret Safety
 Do not print raw OAuth tokens, API-key values, session cookies, tunnel API keys, bearer tokens, or raw secret values.

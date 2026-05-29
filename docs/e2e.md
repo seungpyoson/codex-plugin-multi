@@ -148,17 +148,21 @@ npm run smoke:api-reviewers
 Manual live readiness checks:
 
 ```sh
-api-reviewer doctor --provider deepseek
-api-reviewer doctor --provider glm
+API_REVIEWERS_VERSION="$(node -p 'require("./plugins/api-reviewers/.codex-plugin/plugin.json").version')"
+API_REVIEWER="${CODEX_HOME:-$HOME/.codex}/plugins/cache/codex-plugin-multi/api-reviewers/${API_REVIEWERS_VERSION}/scripts/api-reviewer.mjs"
+node "$API_REVIEWER" doctor --provider deepseek
+node "$API_REVIEWER" doctor --provider glm
 ```
 
 Manual live custom review:
 
 ```sh
-api-reviewer approval-request --provider deepseek --mode custom-review --scope custom --scope-paths README.md --prompt "Review README.md and return: 1. Verdict. 2. Blocking findings. 3. Non-blocking concerns. 4. Test gaps. 5. Inspection status."
-api-reviewer run --provider deepseek --mode custom-review --scope custom --scope-paths README.md --approval-token "<approval_token.value>" --foreground --prompt "Review README.md and return: 1. Verdict. 2. Blocking findings. 3. Non-blocking concerns. 4. Test gaps. 5. Inspection status."
-api-reviewer approval-request --provider glm --mode custom-review --scope custom --scope-paths README.md --prompt "Review README.md and return: 1. Verdict. 2. Blocking findings. 3. Non-blocking concerns. 4. Test gaps. 5. Inspection status."
-api-reviewer run --provider glm --mode custom-review --scope custom --scope-paths README.md --approval-token "<approval_token.value>" --foreground --prompt "Review README.md and return: 1. Verdict. 2. Blocking findings. 3. Non-blocking concerns. 4. Test gaps. 5. Inspection status."
+API_REVIEWERS_VERSION="$(node -p 'require("./plugins/api-reviewers/.codex-plugin/plugin.json").version')"
+API_REVIEWER="${CODEX_HOME:-$HOME/.codex}/plugins/cache/codex-plugin-multi/api-reviewers/${API_REVIEWERS_VERSION}/scripts/api-reviewer.mjs"
+node "$API_REVIEWER" approval-request --provider deepseek --mode custom-review --scope custom --scope-paths README.md --prompt "Review README.md and return: 1. Verdict. 2. Blocking findings. 3. Non-blocking concerns. 4. Test gaps. 5. Inspection status."
+node "$API_REVIEWER" run --provider deepseek --mode custom-review --scope custom --scope-paths README.md --approval-token "<approval_token.value>" --foreground --prompt "Review README.md and return: 1. Verdict. 2. Blocking findings. 3. Non-blocking concerns. 4. Test gaps. 5. Inspection status."
+node "$API_REVIEWER" approval-request --provider glm --mode custom-review --scope custom --scope-paths README.md --prompt "Review README.md and return: 1. Verdict. 2. Blocking findings. 3. Non-blocking concerns. 4. Test gaps. 5. Inspection status."
+node "$API_REVIEWER" run --provider glm --mode custom-review --scope custom --scope-paths README.md --approval-token "<approval_token.value>" --foreground --prompt "Review README.md and return: 1. Verdict. 2. Blocking findings. 3. Non-blocking concerns. 4. Test gaps. 5. Inspection status."
 ```
 
 Custom review scope sends the exact `--scope-paths` file contents to the direct
@@ -210,10 +214,10 @@ Latest live verification:
   - `node plugins/kimi/scripts/kimi-companion.mjs ping` passed with Kimi CLI
     `1.41.0`; this verifies `--thinking` on the ping profile without an
     explicit model.
-  - `api-reviewer doctor --provider deepseek`
+  - `node "$API_REVIEWER" doctor --provider deepseek`
     reported `ready: true`, `credential_ref: DEEPSEEK_API_KEY`,
     `endpoint: https://api.deepseek.com`, and `model: deepseek-v4-pro`.
-  - `api-reviewer doctor --provider glm`
+  - `node "$API_REVIEWER" doctor --provider glm`
     reported `ready: true`, `credential_ref: ZAI_API_KEY`,
     `endpoint: https://api.z.ai/api/coding/paas/v4`, and `model: glm-5.1`.
   - A live DeepSeek `custom-review` scoped to `README.md` completed with

@@ -1071,7 +1071,7 @@ function presentCredentialEnvKeys(cfg, env = process.env) {
 
 function missingCredentialAction(cfg) {
   const names = credentialEnvKeys(cfg).join(", ");
-  return `This Codex process cannot see a non-empty credential env var or owner-only ~/.cache/op/env.sh credential cache entry. Restart or launch the session with one of these env vars exported: ${names}, or refresh the 1Password env cache. Then rerun api-reviewer doctor. Do not run source-bearing review until doctor returns ready:true.`;
+  return `This Codex process cannot see a non-empty credential env var or owner-only ~/.cache/op/env.sh credential cache entry. Restart or launch the session with one of these env vars exported: ${names}, or refresh the 1Password env cache. Then rerun the API reviewer doctor command. Do not run source-bearing review until doctor returns ready:true.`;
 }
 
 function envCacheDisabled(env = process.env) {

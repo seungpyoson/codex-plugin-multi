@@ -840,6 +840,48 @@ test("direct API reviewer docs require explicit approval for external source tra
   }
 });
 
+test("direct API reviewer skill and command docs use global installed script entrypoints", () => {
+  const apiPluginVersion = readRepoJson("plugins/api-reviewers/.codex-plugin/plugin.json").version;
+  const escapedVersion = apiPluginVersion.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const installedEntrypoint = new RegExp(
+    `node "\\$\\{CODEX_HOME:-\\$HOME/\\.codex\\}/plugins/cache/codex-plugin-multi/api-reviewers/${escapedVersion}/scripts/api-reviewer\\.mjs"`,
+  );
+  const docPaths = [
+    "plugins/api-reviewers/skills/api-reviewers-delegation/SKILL.md",
+    "plugins/api-reviewers/skills/deepseek-review/SKILL.md",
+    "plugins/api-reviewers/skills/deepseek-adversarial-review/SKILL.md",
+    "plugins/api-reviewers/skills/deepseek-custom-review/SKILL.md",
+    "plugins/api-reviewers/skills/deepseek-setup/SKILL.md",
+    "plugins/api-reviewers/skills/glm-review/SKILL.md",
+    "plugins/api-reviewers/skills/glm-adversarial-review/SKILL.md",
+    "plugins/api-reviewers/skills/glm-custom-review/SKILL.md",
+    "plugins/api-reviewers/skills/glm-setup/SKILL.md",
+    "plugins/api-reviewers/commands/deepseek-review.md",
+    "plugins/api-reviewers/commands/deepseek-adversarial-review.md",
+    "plugins/api-reviewers/commands/deepseek-custom-review.md",
+    "plugins/api-reviewers/commands/deepseek-setup.md",
+    "plugins/api-reviewers/commands/glm-review.md",
+    "plugins/api-reviewers/commands/glm-adversarial-review.md",
+    "plugins/api-reviewers/commands/glm-custom-review.md",
+    "plugins/api-reviewers/commands/glm-setup.md",
+  ];
+
+  for (const docPath of docPaths) {
+    const doc = readRepoFile(docPath);
+    assert.match(doc, /## Entrypoint Contract/, docPath);
+    assert.match(doc, installedEntrypoint, docPath);
+    assert.match(doc, /global installed entrypoint/i, docPath);
+    assert.match(doc, /do not run bare `api-reviewer`/i, docPath);
+    assert.match(doc, /do not rely on `PATH`/i, docPath);
+    assert.match(doc, /do not use repository-relative paths/i, docPath);
+    assert.match(doc, /api_reviewer_entrypoint_missing/, docPath);
+    assert.doesNotMatch(doc, /Run `api-reviewer\b/, docPath);
+    assert.doesNotMatch(doc, /Bash\(api-reviewer:\*\)/, docPath);
+    assert.doesNotMatch(doc, /node "<plugin-root>\/scripts\/api-reviewer\.mjs"/, docPath);
+    assert.doesNotMatch(doc, /node plugins\/api-reviewers\/scripts\/api-reviewer\.mjs/, docPath);
+  }
+});
+
 test("architecture spec documents the full review quality audit shape", () => {
   const spec = readRepoFile("docs/superpowers/specs/2026-04-23-codex-plugin-multi-design.md");
   const requiredFields = [
@@ -911,11 +953,14 @@ test("cost and quota docs require safe diagnostics and explicit billing action",
   assert.match(docs, /full prompts|source bundles|raw provider payloads/i);
 });
 
-test("direct API e2e docs use installed api-reviewer and the canonical GLM key", () => {
+test("direct API e2e docs use the global installed script entrypoint and canonical GLM key", () => {
   const doc = readRepoFile("docs/e2e.md");
 
-  assert.match(doc, /api-reviewer doctor --provider deepseek/);
-  assert.match(doc, /api-reviewer doctor --provider glm/);
+  assert.match(doc, /API_REVIEWERS_VERSION="\$\(node -p 'require\("\.\/plugins\/api-reviewers\/\.codex-plugin\/plugin\.json"\)\.version'\)"/);
+  assert.match(doc, /API_REVIEWER="\$\{CODEX_HOME:-\$HOME\/\.codex\}\/plugins\/cache\/codex-plugin-multi\/api-reviewers\/\$\{API_REVIEWERS_VERSION\}\/scripts\/api-reviewer\.mjs"/);
+  assert.match(doc, /node "\$API_REVIEWER" doctor --provider deepseek/);
+  assert.match(doc, /node "\$API_REVIEWER" doctor --provider glm/);
+  assert.doesNotMatch(doc, /^api-reviewer /m);
   assert.doesNotMatch(doc, /node plugins\/api-reviewers\/scripts\/api-reviewer\.mjs/);
   assert.doesNotMatch(doc, /ZAI_GLM_API_KEY/);
   assert.match(doc, /ZAI_API_KEY/);
