@@ -23,17 +23,30 @@ const GROK_CLI_AUTO_FALLBACK_CODES = new Set([
   "grok_cli_model_unavailable",
 ]);
 
+function trimTrailingSlashes(value) {
+  let normalized = String(value);
+  while (normalized.endsWith("/")) normalized = normalized.slice(0, -1);
+  return normalized;
+}
+
+function stripGrokApiSuffix(value) {
+  let normalized = trimTrailingSlashes(value);
+  for (const suffix of ["/api/v1", "/v1", "/api"]) {
+    if (normalized.endsWith(suffix)) {
+      normalized = normalized.slice(0, -suffix.length);
+      break;
+    }
+  }
+  return normalized;
+}
+
 function normalizeBaseUrl(value) {
-  let url = String(value || DEFAULT_BASE_URL);
-  while (url.endsWith("/")) url = url.slice(0, -1);
-  return url;
+  return trimTrailingSlashes(value || DEFAULT_BASE_URL);
 }
 
 function normalizeGrok2ApiBaseUrl(value, tunnelBaseUrl = DEFAULT_BASE_URL) {
-  const fallback = normalizeBaseUrl(tunnelBaseUrl).replace(/\/(?:(?:api\/)?v1|api)$/u, "");
-  let url = String(value || fallback || DEFAULT_GROK2API_BASE_URL);
-  url = url.replace(/\/+$/, "");
-  return url.replace(/\/(?:(?:api\/)?v1|api)$/u, "");
+  const fallback = stripGrokApiSuffix(normalizeBaseUrl(tunnelBaseUrl));
+  return stripGrokApiSuffix(value || fallback || DEFAULT_GROK2API_BASE_URL);
 }
 
 function parsePositiveIntegerEnv(env, name, fallback, unit = "number of milliseconds") {

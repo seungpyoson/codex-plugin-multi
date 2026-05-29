@@ -157,7 +157,7 @@ test("resolveGrokFallbackConfig uses safe CLI defaults for early error records",
 test("resolveGrokConfig exposes web adapter facts and legacy aliases", () => {
   const web = resolveGrokConfig({ transport: "web" }, {
     GROK_WEB_BASE_URL: "http://127.0.0.1:7654/api/v1/",
-    GROK2API_BASE_URL: "http://127.0.0.1:8765/api",
+    GROK2API_BASE_URL: "http://127.0.0.1:8765/api///",
     GROK_WEB_MODEL: "grok-web-model",
     GROK_WEB_TIMEOUT_MS: "1234",
     GROK_WEB_MAX_PROMPT_CHARS: "5678",
