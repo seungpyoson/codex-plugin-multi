@@ -365,6 +365,7 @@ function makeFakeGrokCli({
   failSourceBearingHomeCleanup = false,
   failSourceBearingPromptCleanup = false,
   failNeutralCwdCleanup = false,
+  blockNeutralCwdCleanup = false,
   failSourceFreeHomeCleanup = false,
   sourceBearingDelayMs = 0,
   ignoreSourceBearingSigterm = false,
@@ -381,6 +382,7 @@ const failSourceBearing = ${JSON.stringify(failSourceBearing)};
 const failSourceBearingHomeCleanup = ${JSON.stringify(failSourceBearingHomeCleanup)};
 const failSourceBearingPromptCleanup = ${JSON.stringify(failSourceBearingPromptCleanup)};
 const failNeutralCwdCleanup = ${JSON.stringify(failNeutralCwdCleanup)};
+const blockNeutralCwdCleanup = ${JSON.stringify(blockNeutralCwdCleanup)};
 const failSourceFreeHomeCleanup = ${JSON.stringify(failSourceFreeHomeCleanup)};
 const sourceBearingDelayMs = ${JSON.stringify(sourceBearingDelayMs)};
 const ignoreSourceBearingSigterm = ${JSON.stringify(ignoreSourceBearingSigterm)};
@@ -417,6 +419,12 @@ if (failSourceBearingPromptCleanup && prompt.includes("CLI_SOURCE_SECRET")) {
 }
 if (failNeutralCwdCleanup && prompt.includes("CLI_SOURCE_SECRET")) {
   fs.writeFileSync(require("node:path").join(process.cwd(), "source-copy.txt"), prompt.slice(0, 128));
+}
+if (blockNeutralCwdCleanup && prompt.includes("CLI_SOURCE_SECRET")) {
+  const blocked = require("node:path").join(process.cwd(), "blocked-cleanup");
+  fs.mkdirSync(blocked, { recursive: true });
+  fs.writeFileSync(require("node:path").join(blocked, "source.txt"), prompt.slice(0, 128));
+  fs.chmodSync(blocked, 0o000);
 }
 const grokHome = process.env.GROK_HOME || null;
 if (grokHome) {
@@ -745,7 +753,7 @@ test("Grok CLI lifecycle markdown streams running card before source-bearing CLI
   const cwd = realpathSync(mkdtempSync(path.join(tmpdir(), "grok-cli-lifecycle-workspace-")));
   const dataDir = mkdtempSync(path.join(tmpdir(), "grok-cli-lifecycle-data-"));
   const authHome = mkdtempSync(path.join(tmpdir(), "grok-cli-lifecycle-auth-home-"));
-  const { binDir, grokPath, logPath } = makeFakeGrokCli({ sourceBearingDelayMs: 1000 });
+  const { binDir, grokPath, logPath } = makeFakeGrokCli({ sourceBearingDelayMs: 3000 });
   writeGrokCliAuthFixture(cwd, authHome);
   let child = null;
   try {
@@ -779,14 +787,14 @@ test("Grok CLI lifecycle markdown streams running card before source-bearing CLI
     child.stderr.on("data", (chunk) => { stderr += chunk; });
 
     await waitForValue(() => readGrokCliLog(logPath).some((line) => line.promptHasSource), {
-      timeoutMs: 2000,
+      timeoutMs: 10000,
       intervalMs: 10,
     });
     assert.equal(child.exitCode, null, "companion must still be running while fake Grok CLI is delayed");
     const streamed = await waitForValue(() => (
       /\| Status \| running \|/.test(stdout) ? stdout : null
     ), {
-      timeoutMs: 400,
+      timeoutMs: 2000,
       intervalMs: 10,
     });
     assert.match(streamed, /^### EXTERNAL REVIEW/m);
@@ -2024,7 +2032,20 @@ test("doctor reports only canonical XAI_API_KEY as ignored, not Grok CLI login",
 test("Grok runtime reads direct API credential names from provider metadata", () => {
   const entrypointSource = readFileSync(COMPANION, "utf8");
   const runtimeSource = readFileSync(COMPANION_RUNTIME, "utf8");
-  assert.match(runtimeSource, /providerApiCapability\("grok"\)/);
+  assert.match(
+    runtimeSource,
+    /function cliConfig[\s\S]{0,1200}provider:\s*GROK_CANONICAL_PROVIDER,\s*canonical_provider:\s*GROK_CANONICAL_PROVIDER/,
+  );
+  assert.match(
+    runtimeSource,
+    /function webConfig[\s\S]{0,1800}provider:\s*["']grok-web["'],\s*canonical_provider:\s*GROK_CANONICAL_PROVIDER/,
+  );
+  assert.match(
+    runtimeSource,
+    /function fallbackConfig[\s\S]{0,1800}provider:\s*["']grok-web["'],\s*canonical_provider:\s*GROK_CANONICAL_PROVIDER/,
+  );
+  assert.match(runtimeSource, /providerApiCapability\(GROK_CANONICAL_PROVIDER\)/);
+  assert.doesNotMatch(runtimeSource, /providerApiCapability\(["']grok["']\)/);
   for (const source of [entrypointSource, runtimeSource]) {
     assert.doesNotMatch(source, /\b(?:GROK_API_KEY|XAI_API_KEY|XAI_KEY)\b/);
   }
@@ -2747,7 +2768,7 @@ test("custom-review fails closed when source-bearing Grok CLI prompt cleanup is 
   }
 });
 
-test("custom-review fails closed when Grok CLI neutral cwd cleanup is not verified", () => {
+test("custom-review cleans non-empty Grok CLI neutral cwd after source-bearing run", () => {
   const cwd = realpathSync(mkdtempSync(path.join(tmpdir(), "grok-cli-neutral-cleanup-workspace-")));
   const dataDir = mkdtempSync(path.join(tmpdir(), "grok-cli-neutral-cleanup-data-"));
   const authHome = mkdtempSync(path.join(tmpdir(), "grok-cli-neutral-cleanup-auth-home-"));
@@ -2779,17 +2800,75 @@ test("custom-review fails closed when Grok CLI neutral cwd cleanup is not verifi
       },
     });
 
-    assert.equal(result.status, 1, result.stdout);
+    assert.equal(result.status, 0, result.stdout);
     const record = parseStdout(result);
     neutralCwd = record.runtime_diagnostics.cli_request.neutral_cwd;
+    assert.equal(record.status, "completed");
+    assert.equal(record.error_code, null);
+    assert.equal(record.error_cause, null);
+    assert.equal(record.runtime_diagnostics.cli_request.neutral_cwd_cleanup, "deleted");
+    assert.equal(record.external_review.source_content_transmission, "sent");
+    assert.doesNotMatch(JSON.stringify(record), /CLI_SOURCE_SECRET/);
+    assert.equal(existsSync(neutralCwd), false);
+  } finally {
+    if (neutralCwd) rmTree(neutralCwd);
+    rmTree(authHome);
+    rmTree(cwd);
+    rmTree(dataDir);
+  }
+});
+
+test("custom-review fails closed when Grok CLI neutral cwd cleanup cannot be verified", () => {
+  const cwd = realpathSync(mkdtempSync(path.join(tmpdir(), "grok-cli-neutral-cleanup-blocked-workspace-")));
+  const dataDir = mkdtempSync(path.join(tmpdir(), "grok-cli-neutral-cleanup-blocked-data-"));
+  const authHome = mkdtempSync(path.join(tmpdir(), "grok-cli-neutral-cleanup-blocked-auth-home-"));
+  const { binDir, grokPath } = makeFakeGrokCli({
+    blockNeutralCwdCleanup: true,
+  });
+  writeFileSync(path.join(cwd, "review.js"), "export const marker = 'CLI_SOURCE_SECRET';\n");
+  writeFileSync(path.join(authHome, "auth.json"), "{\"token\":\"fake\"}\n");
+  writeFileSync(path.join(authHome, "config.toml"), "[models]\ndefault = \"grok-build\"\n");
+  let neutralCwd = null;
+
+  try {
+    const result = run([
+      "run",
+      "--mode", "custom-review",
+      "--scope", "custom",
+      "--scope-paths", "review.js",
+      "--foreground",
+      "--prompt", "Review selected source.",
+    ], {
+      cwd,
+      defaultTransport: false,
+      env: {
+        PATH: `${binDir}${path.delimiter}${process.env.PATH ?? ""}`,
+        GROK_CLI_BINARY: grokPath,
+        GROK_CLI_AUTH_HOME: authHome,
+        GROK_PLUGIN_DATA: dataDir,
+        GROK_WEB_BASE_URL: "http://127.0.0.1:9/v1",
+      },
+    });
+
+    const record = parseStdout(result);
+    neutralCwd = record.runtime_diagnostics.cli_request.neutral_cwd;
+    assert.equal(result.status, 1, result.stdout);
     assert.equal(record.status, "failed");
     assert.equal(record.error_code, "privacy_persistence");
     assert.equal(record.error_cause, "privacy_persistence");
     assert.equal(record.runtime_diagnostics.cli_request.neutral_cwd_cleanup, "unverified");
     assert.equal(record.external_review.source_content_transmission, "sent");
     assert.doesNotMatch(JSON.stringify(record), /CLI_SOURCE_SECRET/);
+    assert.equal(existsSync(neutralCwd), true);
   } finally {
-    if (neutralCwd) rmTree(neutralCwd);
+    if (neutralCwd) {
+      try {
+        chmodSync(path.join(neutralCwd, "blocked-cleanup"), 0o700);
+      } catch {
+        // Cleanup best-effort for failed setup paths.
+      }
+      rmTree(neutralCwd);
+    }
     rmTree(authHome);
     rmTree(cwd);
     rmTree(dataDir);
@@ -4787,6 +4866,22 @@ test("custom-review guides substantive missing-verdict retry without automatic r
       assert.match(record.suggested_action, /narrowing the scope/i);
       assert.match(record.suggested_action, /sharding/i);
       assert.match(record.suggested_action, /relaying/i);
+      const recovery = record.runtime_diagnostics?.packet_recovery;
+      assert.ok(recovery, "Grok no-verdict source-sent failures must include packet_recovery");
+      assert.equal(recovery.provider, "grok");
+      assert.equal(recovery.provider_capabilities.provider, "grok");
+      assert.equal(recovery.provider_capabilities.canonical_provider, "grok");
+      assert.equal(recovery.provider, recovery.provider_capabilities.canonical_provider);
+      assert.equal(recovery.mode, "custom-review");
+      assert.equal(recovery.reason, "review_not_completed");
+      assert.equal(recovery.source_content_transmission, "sent");
+      assert.equal(record.error_code, recovery.reason);
+      assert.equal(recovery.provider_capabilities.supports_no_source_resume, false);
+      assert.deepEqual(
+        recovery.actions.map((action) => action.type),
+        ["resend_with_confirmation", "switch_provider", "waive_slot"],
+      );
+      assert.deepEqual(record.review_metadata.audit_manifest.packet_recovery, recovery);
     });
   } finally {
     rmTree(cwd);
@@ -4857,7 +4952,138 @@ test("custom-review blocks same-packet Grok resend after a failed source-sent sl
   }
 });
 
-test("custom-review allows explicit same-packet Grok retry disposition", async () => {
+test("custom-review records changed review surface when Grok retries with a narrowed packet", async () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "grok-web-changed-surface-workspace-"));
+  const dataDir = mkdtempSync(path.join(tmpdir(), "grok-web-changed-surface-data-"));
+  const badResult = badVerdictReviewFixture("Grok changed-surface initial slot.");
+  writeFileSync(path.join(cwd, "full.js"), "export const full = 'original source body';\n");
+  writeFileSync(path.join(cwd, "narrow.js"), "export const narrow = 'fallback source body';\n");
+
+  try {
+    let requestCount = 0;
+    await withServer(async (req, res) => {
+      requestCount += 1;
+      assert.equal(req.method, "POST");
+      assert.equal(req.url, "/api/chat/completions");
+      const body = await readJsonRequest(req);
+      if (requestCount === 1) {
+        assert.match(body.messages[0].content, /full\.js/);
+        assert.match(body.messages[0].content, /narrow\.js/);
+      } else {
+        assert.doesNotMatch(body.messages[0].content, /full\.js/);
+        assert.match(body.messages[0].content, /narrow\.js/);
+      }
+      res.setHeader("content-type", "application/json");
+      res.end(JSON.stringify({
+        id: `grok-web-changed-surface-session-${requestCount}`,
+        model: "grok-4.20-fast",
+        choices: [{
+          message: {
+            content: requestCount === 1
+              ? badResult
+              : substantiveReviewFixture("Grok changed-surface narrowed packet approved."),
+          },
+        }],
+        usage: { prompt_tokens: 12, completion_tokens: 40, total_tokens: 52 },
+      }));
+    }, async (baseUrl) => {
+      const commonOptions = {
+        cwd,
+        env: {
+          GROK_WEB_BASE_URL: baseUrl,
+          GROK_PLUGIN_DATA: dataDir,
+        },
+      };
+
+      const first = await runAsync([
+        "run",
+        "--mode", "custom-review",
+        "--scope", "custom",
+        "--scope-paths", "full.js,narrow.js",
+        "--foreground",
+        "--prompt", "Check this source packet.",
+      ], commonOptions);
+      assert.equal(first.status, 1, first.stderr || first.stdout);
+      const firstRecord = parseStdout(first);
+      assert.equal(firstRecord.error_code, "review_not_completed");
+      assert.equal(firstRecord.external_review.source_content_transmission, "sent");
+
+      const second = await runAsync([
+        "run",
+        "--mode", "custom-review",
+        "--scope", "custom",
+        "--scope-paths", "narrow.js",
+        "--foreground",
+        "--prompt", "Check this narrowed source packet.",
+      ], commonOptions);
+      assert.equal(second.status, 0, second.stderr || second.stdout);
+      const secondRecord = parseStdout(second);
+      const manifest = secondRecord.review_metadata.audit_manifest;
+      assert.equal(secondRecord.external_review.source_content_transmission, "sent");
+      assert.equal(manifest.source_packet_policy.source_packet_action, "send_narrowed_source_packet");
+      assert.equal(manifest.source_packet_policy.review_surface_changed, true);
+      assert.equal(manifest.packet_recovery?.review_surface?.changed, true);
+      assert.equal(manifest.packet_recovery?.review_surface?.approval_credit, "changed_surface_only");
+      assert.equal(manifest.packet_recovery?.review_surface?.original_files, 2);
+      assert.equal(manifest.packet_recovery?.review_surface?.current_files, 1);
+      assert.notEqual(
+        manifest.packet_recovery?.review_surface?.original_packet_hash,
+        manifest.packet_recovery?.review_surface?.current_packet_hash,
+      );
+      assert.equal(requestCount, 2);
+    });
+  } finally {
+    rmTree(cwd);
+    rmTree(dataDir);
+  }
+});
+
+test("custom-review Grok no-remote audit metadata uses safe local workspace identity", async () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "grok-web-local-repo-identity-"));
+  writeFileSync(path.join(cwd, "review.js"), "export const value = 42;\n");
+  const expectedRepository = `local-workspace:${path.basename(cwd)}`;
+  const reviewText = substantiveReviewFixture("Grok local repository identity marker.");
+
+  try {
+    await withServer(async (req, res) => {
+      assert.equal(req.method, "POST");
+      assert.equal(req.url, "/api/chat/completions");
+      const body = await readJsonRequest(req);
+      assert.match(body.messages[0].content, new RegExp(`Repository: ${expectedRepository}`));
+      assert.doesNotMatch(body.messages[0].content, new RegExp(cwd.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+      res.setHeader("content-type", "application/json");
+      res.end(JSON.stringify({
+        id: "grok-web-local-repo-identity-session",
+        model: "grok-4.20-fast",
+        choices: [{ message: { content: reviewText } }],
+        usage: { prompt_tokens: 12, completion_tokens: 40, total_tokens: 52 },
+      }));
+    }, async (baseUrl) => {
+      const result = await runAsync([
+        "run",
+        "--mode", "custom-review",
+        "--scope", "custom",
+        "--scope-paths", "review.js",
+        "--foreground",
+        "--prompt", "Check this file.",
+      ], {
+        cwd,
+        env: { GROK_WEB_BASE_URL: baseUrl },
+      });
+      assert.equal(result.status, 0, result.stderr || result.stdout);
+      const record = parseStdout(result);
+      assert.equal(record.review_metadata.audit_manifest.git_identity.remote, expectedRepository);
+      assert.doesNotMatch(
+        JSON.stringify(record.review_metadata.audit_manifest.git_identity),
+        new RegExp(cwd.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")),
+      );
+    });
+  } finally {
+    rmTree(cwd);
+  }
+});
+
+test("custom-review requires resend confirmation for explicit same-packet Grok retry disposition", async () => {
   const cwd = mkdtempSync(path.join(tmpdir(), "grok-web-retry-disposition-workspace-"));
   const dataDir = mkdtempSync(path.join(tmpdir(), "grok-web-retry-disposition-data-"));
   const badResult = badVerdictReviewFixture("Grok retry disposition marker.");
@@ -4908,8 +5134,22 @@ test("custom-review allows explicit same-packet Grok retry disposition", async (
       assert.equal(firstRecord.error_code, "review_not_completed");
       assert.equal(firstRecord.external_review.source_content_transmission, "sent");
 
-      const retried = await runAsync(
+      const blocked = await runAsync(
         [...commonArgs, "--review-slot-disposition", "retry"],
+        commonOptions,
+      );
+      assert.equal(blocked.status, 1, blocked.stderr || blocked.stdout);
+      const blockedRecord = parseStdout(blocked);
+      assert.equal(blockedRecord.error_code, "resend_confirmation_required");
+      assert.equal(blockedRecord.external_review.source_content_transmission, "not_sent");
+      assert.equal(blockedRecord.review_metadata.audit_manifest.review_slot.retry_count, 1);
+      assert.equal(blockedRecord.review_metadata.audit_manifest.review_slot.retry_disposition_required, true);
+      assert.equal(blockedRecord.review_metadata.audit_manifest.review_slot.disposition, "retry");
+      assert.equal(blockedRecord.review_metadata.audit_manifest.source_packet_policy.source_packet_action, "resend_confirmation_required");
+      assert.equal(requestCount, 1);
+
+      const retried = await runAsync(
+        [...commonArgs, "--review-slot-disposition", "retry", "--resend-confirmation-approved"],
         commonOptions,
       );
       assert.equal(retried.status, 0, retried.stderr || retried.stdout);
@@ -4918,6 +5158,7 @@ test("custom-review allows explicit same-packet Grok retry disposition", async (
       assert.equal(retriedRecord.review_metadata.audit_manifest.review_slot.retry_count, 1);
       assert.equal(retriedRecord.review_metadata.audit_manifest.review_slot.retry_disposition_required, true);
       assert.equal(retriedRecord.review_metadata.audit_manifest.review_slot.disposition, "retry");
+      assert.equal(retriedRecord.review_metadata.audit_manifest.source_packet_policy.source_packet_action, "send_after_resend_confirmation");
       assert.equal(requestCount, 2);
     });
   } finally {
@@ -5478,6 +5719,15 @@ test("rendered prompt over Grok budget fails before contacting the tunnel", () =
   assert.equal(record.review_metadata.audit_manifest.selected_source.files.length, 1);
   assert.equal(JSON.stringify(record.review_metadata.audit_manifest).includes("Check this file"), false);
   assert.equal(JSON.stringify(record.review_metadata.audit_manifest).includes("export const value"), false);
+  const recovery = record.runtime_diagnostics?.packet_recovery;
+  assert.ok(recovery, "Grok prompt cap failures must include packet_recovery");
+  assert.equal(recovery.provider, "grok");
+  assert.equal(recovery.mode, "custom-review");
+  assert.equal(recovery.reason, "prompt_too_large");
+  assert.equal(recovery.source_content_transmission, "not_sent");
+  assert.equal(recovery.provider_capabilities.rendered_prompt_budget_chars, 100);
+  assert.ok(recovery.actions.some((action) => action.type === "diff_packet"));
+  assert.deepEqual(record.review_metadata.audit_manifest.packet_recovery, recovery);
   assert.equal(record.external_review.source_content_transmission, "not_sent");
   assert.doesNotMatch(result.stdout, /external_review_launched/);
 });
@@ -6924,6 +7174,21 @@ test("custom-review rejects over-budget source packets before Grok transport lau
   assert.equal(record.external_review.source_content_transmission, "not_sent");
   assert.equal(record.review_metadata.audit_manifest.source_packet_policy.source_send_allowed, false);
   assert.equal(record.review_metadata.audit_manifest.source_packet_policy.source_packet_action, "narrow_source_packet");
+  const recovery = record.runtime_diagnostics?.packet_recovery;
+  assert.ok(recovery, "source packet budget failures must include packet_recovery diagnostics");
+  assert.equal(recovery.provider, "grok");
+  assert.equal(recovery.mode, "custom-review");
+  assert.equal(recovery.reason, "source_packet_too_large");
+  assert.equal(recovery.source_content_transmission, "not_sent");
+  assert.equal(record.error_code, recovery.reason);
+  assert.equal(recovery.provider_capabilities.provider, "grok");
+  assert.equal(recovery.provider_capabilities.route_step, "subscription");
+  assert.equal(recovery.provider_capabilities.source_packet_budget_bytes, 512 * 1024);
+  assert.deepEqual(
+    recovery.actions.map((action) => action.type),
+    ["diff_packet", "allow_large_source_packet", "switch_provider", "waive_slot"],
+  );
+  assert.deepEqual(record.review_metadata.audit_manifest.packet_recovery, recovery);
   assert.doesNotMatch(result.stdout, /external_review_launched/);
 });
 

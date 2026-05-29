@@ -19,7 +19,14 @@ import { diffSourceFiles } from "./lib/diff-source.mjs";
 import { buildExternalModelFailureDiagnostic } from "./lib/external-model-failure-core.mjs";
 import { hasSubstantiveInvalidVerdictReason, reviewQualityFailureState } from "./lib/external-model-review-quality.mjs";
 import { buildPrivacyRedactor } from "./lib/privacy-redaction.mjs";
-import { normalizeApprovalScope, selectProviderRoute } from "./lib/provider-route-policy.mjs";
+import {
+  buildPacketRecovery,
+  latestSourcePacketPreviousAttempt,
+  normalizeApprovalScope,
+  selectProviderRoute,
+  sourceSendApprovalTupleFingerprint,
+  sourceSentPacketRecoveryReason,
+} from "./lib/provider-route-policy.mjs";
 import {
   EXTERNAL_REVIEW_KEYS,
   SOURCE_CONTENT_TRANSMISSION,
@@ -215,6 +222,7 @@ function reviewMetadataProjection(obj) {
     "selected_route",
     "fallback_reason",
     "approval_scope",
+    "packet_recovery",
   ]) {
     if (manifest[key] !== undefined) projection[key] = manifest[key];
   }
@@ -244,8 +252,15 @@ function terminalLifecycleProjection(obj) {
     external_review: obj.external_review,
   };
   if (obj.disclosure_note != null) projection.disclosure_note = obj.disclosure_note;
+  const runtimeDiagnostics = {};
   if (obj.runtime_diagnostics?.sharding_plan != null) {
-    projection.runtime_diagnostics = { sharding_plan: obj.runtime_diagnostics.sharding_plan };
+    runtimeDiagnostics.sharding_plan = obj.runtime_diagnostics.sharding_plan;
+  }
+  if (obj.runtime_diagnostics?.packet_recovery != null) {
+    runtimeDiagnostics.packet_recovery = obj.runtime_diagnostics.packet_recovery;
+  }
+  if (Object.keys(runtimeDiagnostics).length > 0) {
+    projection.runtime_diagnostics = runtimeDiagnostics;
   }
   if (obj.review_quality && typeof obj.review_quality === "object") {
     projection.review_quality = {
@@ -591,13 +606,38 @@ async function collectPriorReviewSlotAttempts(root, currentJobId = null) {
     try {
       assertSafeJobId(jobId);
       const parsed = JSON.parse(await readFile(resolve(apiReviewerJobsDir(root), jobId, "meta.json"), "utf8"));
+      const manifest = parsed?.review_metadata?.audit_manifest ?? null;
       const slot = reviewSlotFromRecord(parsed);
-      if (priorSlotCountsTowardRetry(slot)) attempts.push({ review_slot: slot });
+      if (priorSlotCountsTowardRetry(slot)) {
+        const sourceContentTransmission =
+          parsed?.external_review?.source_content_transmission ??
+          manifest?.source_content_transmission ??
+          slot.source_state ??
+          null;
+        attempts.push({
+          job_id: parsed?.job_id ?? jobId,
+          started_at: parsed?.started_at ?? null,
+          review_slot: slot,
+          selected_source: manifest?.selected_source ?? null,
+          source_packet: manifest?.selected_source ?? null,
+          source_content_transmission: sourceContentTransmission,
+          source_sent: sourceContentTransmission === SOURCE_CONTENT_TRANSMISSION.SENT,
+          status: parsed?.status ?? null,
+          error_code: parsed?.error_code ?? null,
+          error_message: parsed?.error_message ?? null,
+          review_quality: manifest?.review_quality ?? null,
+        });
+      }
     } catch {
       // Ignore malformed legacy artifacts; retry guards should be driven by
       // validated review-slot records, not by corrupt state.
     }
   }
+  attempts.sort((left, right) => {
+    const timeOrder = String(left.started_at ?? "").localeCompare(String(right.started_at ?? ""));
+    if (timeOrder !== 0) return timeOrder;
+    return String(left.job_id ?? "").localeCompare(String(right.job_id ?? ""));
+  });
   return attempts;
 }
 
@@ -1243,13 +1283,15 @@ function shardApprovalTuple({
   const billingPath = approvalBillingPathFor(cfg);
   const auditManifest = buildApprovalAuditManifest({
     cfg,
+    provider,
+    mode,
     renderedPrompt,
     request,
     scopeInfo,
     routeFields,
     approvalScope,
   });
-  return Object.freeze({
+  const tuple = {
     provider,
     mode,
     rendered_prompt_hash: auditManifest.rendered_prompt_hash.value,
@@ -1271,6 +1313,24 @@ function shardApprovalTuple({
     route_steps: routeFields.route_steps,
     fallback_reason: routeFields.fallback_reason,
     approval_scope: approvalScope,
+  };
+  return Object.freeze({
+    ...tuple,
+    approval_tuple_fingerprint: sourceSendApprovalTupleFingerprint({
+      provider,
+      mode,
+      selectedSource: tuple.source_packet,
+      renderedPromptHash: tuple.rendered_prompt_hash,
+      scopeResolution: tuple.scope_resolution,
+      requestSettings: tuple.request_settings,
+      authPath: tuple.auth_path,
+      billingPath: tuple.billing_path,
+      selectedRoute: tuple.selected_route,
+      routeStep: tuple.route_step,
+      routeSteps: tuple.route_steps,
+      fallbackReason: tuple.fallback_reason,
+      approvalScope: tuple.approval_scope,
+    }),
   });
 }
 
@@ -1370,6 +1430,7 @@ function buildShardingPlan({
       total,
       scope_paths: Object.freeze(shard.files.map((file) => file.path)),
       rendered_prompt_chars: shard.prompt.length,
+      source_packet: tuple.source_packet,
       approval_tuple: tuple,
     });
   });
@@ -2565,6 +2626,9 @@ function providerCapabilitiesForConfig(cfg) {
       auth_path: "api_key_env",
       credential_env_names: credentialNames,
       billing_path: approvalBillingPathFor(cfg),
+      source_packet: Object.freeze({
+        resume_without_resend_supported: false,
+      }),
     }),
   });
 }
@@ -2607,6 +2671,7 @@ const LARGE_SOURCE_PACKET_FLAG = "--allow-large-source-packet";
 function sourcePacketOverrideRouteFields(options = {}) {
   const approved = options["allow-large-source-packet"] === true;
   return {
+    resendConfirmationApproved: options["resend-confirmation-approved"] === true,
     sourcePacketOverrideApproved: approved,
     sourcePacketOverrideSource: approved ? LARGE_SOURCE_PACKET_FLAG : null,
   };
@@ -2631,28 +2696,30 @@ function approvalScopeForOptions(options = {}) {
 }
 
 function approvalTokenFor({ provider, mode, auditManifest, authPath = null, billingPath = null, routeFields = null, approvalScope = "session" }) {
-  const payload = JSON.stringify({
+  const tupleFingerprint = sourceSendApprovalTupleFingerprint({
     provider,
     mode,
-    selected_source: auditManifest.selected_source,
-    rendered_prompt_hash: auditManifest.rendered_prompt_hash,
-    request: auditManifest.request,
-    scope_resolution: auditManifest.scope_resolution,
-    auth_path: authPath,
-    billing_path: billingPath,
-    selected_route: routeFields?.selected_route ?? null,
-    route_step: routeFields?.route_step ?? null,
-    route_steps: routeFields?.route_steps ?? null,
-    fallback_reason: routeFields?.fallback_reason ?? null,
-    approval_scope: approvalScope,
+    selectedSource: auditManifest.selected_source,
+    renderedPromptHash: auditManifest.rendered_prompt_hash,
+    requestSettings: auditManifest.request,
+    scopeResolution: auditManifest.scope_resolution,
+    authPath,
+    billingPath,
+    selectedRoute: routeFields?.selected_route ?? null,
+    routeStep: routeFields?.route_step ?? null,
+    routeSteps: routeFields?.route_steps ?? null,
+    fallbackReason: routeFields?.fallback_reason ?? null,
+    approvalScope,
   });
   return Object.freeze({
     algorithm: "sha256",
-    value: createHash("sha256").update(payload).digest("hex"),
+    value: createHash("sha256")
+      .update(`source-send-approval-token-v1:${tupleFingerprint.value}`)
+      .digest("hex"),
   });
 }
 
-function buildApprovalAuditManifest({ cfg, renderedPrompt, request, scopeInfo, routeFields = null, approvalScope = "session", options = {} }) {
+function buildApprovalAuditManifest({ cfg, provider = null, mode = null, renderedPrompt, request, scopeInfo, routeFields = null, approvalScope = "session", options = {} }) {
   return buildReviewAuditManifest({
     prompt: renderedPrompt,
     sourceFiles: scopeInfo.files,
@@ -2690,6 +2757,8 @@ function buildApprovalAuditManifest({ cfg, renderedPrompt, request, scopeInfo, r
       reason: scopeResolutionReason(scopeInfo),
     },
     route: {
+      mode,
+      providerId: provider,
       selectedRoute: routeFields?.selected_route ?? null,
       routeStep: routeFields?.route_step ?? null,
       routeSteps: routeFields?.route_steps ?? null,
@@ -2700,6 +2769,7 @@ function buildApprovalAuditManifest({ cfg, renderedPrompt, request, scopeInfo, r
       sourceSendApprovalRequired: routeFields?.source_send_approval_required ?? null,
       sourceSendApprovalState: routeFields?.source_send_approval_state ?? null,
       providerCapabilities: providerCapabilitiesForConfig(cfg),
+      previousAttempt: latestSourcePacketPreviousAttempt(options.reviewSlotPriorAttempts),
       reviewSlot: reviewSlotRouteFields(options, {
         priorAttempts: options.reviewSlotPriorAttempts ?? [],
       }),
@@ -2722,10 +2792,51 @@ function sourcePacketPolicyFailureFromManifest(auditManifest) {
     false,
     {
       source_packet_policy: policy,
+      packet_recovery: auditManifest?.packet_recovery ?? null,
       review_slot_retry_policy: auditManifest?.review_slot_retry_policy ?? null,
       review_slot: auditManifest?.review_slot ?? null,
     },
   );
+}
+
+function packetRecoveryFromShardingPlan({
+  cfg,
+  provider,
+  mode,
+  scopeInfo,
+  renderedPrompt,
+  shardingPlan,
+  approvalScope = "session",
+  options = {},
+  env = process.env,
+} = {}) {
+  if (!shardingPlan || shardingPlan.reason !== "prompt_too_large") return null;
+  const request = requestSettingsForApproval(cfg, env);
+  const routeFields = approvalRouteFields(routeStateForApproval(cfg, env));
+  const auditManifest = buildApprovalAuditManifest({
+    cfg,
+    provider,
+    mode,
+    renderedPrompt,
+    request,
+    scopeInfo,
+    routeFields,
+    approvalScope,
+    options,
+  });
+  return buildPacketRecovery({
+    reason: "prompt_too_large",
+    sourcePacketPolicy: auditManifest.source_packet_policy,
+    providerCapabilities: providerCapabilitiesForConfig(cfg),
+    provider,
+    mode,
+    routeStep: routeFields.route_step,
+    selectedSource: auditManifest.selected_source,
+    sourceContentTransmission: SOURCE_CONTENT_TRANSMISSION.NOT_SENT,
+    renderedPromptBudgetChars: shardingPlan.cap,
+    requiresSourceSendApproval: routeFields.source_send_approval_required === true,
+    shardPlans: Array.isArray(shardingPlan.shards) ? shardingPlan.shards : null,
+  });
 }
 
 function approvalDiagnostics(cfg, request, renderedPrompt, authPath = null, billingPath = null, routeFields = null, approvalScope = "session") {
@@ -2788,19 +2899,31 @@ function buildApprovalRequest({ provider, cfg, mode, options, scopeInfo }) {
   const promptBudget = validateRenderedPromptBudget(renderedPrompt, cfg);
   if (!promptBudget.ok) {
     const approvalScope = approvalScopeForOptions(options);
-    const diagnostics = promptBudget.reason === "prompt_too_large"
-      ? {
-          sharding_plan: buildShardingPlan({
-            cfg,
-            mode,
-            provider,
-            scopeInfo,
-            userPrompt: options.prompt ?? "",
-            renderedPromptChars: renderedPrompt.length,
-            approvalScope,
-          }),
-        }
-      : null;
+    let diagnostics = null;
+    if (promptBudget.reason === "prompt_too_large") {
+      const shardingPlan = buildShardingPlan({
+        cfg,
+        mode,
+        provider,
+        scopeInfo,
+        userPrompt: options.prompt ?? "",
+        renderedPromptChars: renderedPrompt.length,
+        approvalScope,
+      });
+      diagnostics = {
+        sharding_plan: shardingPlan,
+        packet_recovery: packetRecoveryFromShardingPlan({
+          cfg,
+          provider,
+          mode,
+          scopeInfo,
+          renderedPrompt,
+          shardingPlan,
+          approvalScope,
+          options,
+        }),
+      };
+    }
     throw runProviderFailure(promptBudget.reason, promptBudget.error, diagnostics);
   }
   const request = requestSettingsForApproval(cfg);
@@ -2808,7 +2931,7 @@ function buildApprovalRequest({ provider, cfg, mode, options, scopeInfo }) {
   const billingPath = approvalBillingPathFor(cfg);
   const routeFields = approvalRouteFields(routeStateForApproval(cfg, process.env));
   const approvalScope = approvalScopeForOptions(options);
-  const auditManifest = buildApprovalAuditManifest({ cfg, renderedPrompt, request, scopeInfo, routeFields, approvalScope, options });
+  const auditManifest = buildApprovalAuditManifest({ cfg, provider, mode, renderedPrompt, request, scopeInfo, routeFields, approvalScope, options });
   const sourcePacketFailure = sourcePacketPolicyFailureFromManifest(auditManifest);
   if (sourcePacketFailure) {
     throw runProviderFailure(
@@ -2917,7 +3040,7 @@ function diagnosticErrorSummary(errorCode, errorMessage, scopeInfo, execution, s
   ].join(" ");
 }
 
-function buildReviewMetadata(cfg, scopeInfo, execution = null, startedAt = null, endedAt = null, options = {}) {
+function buildReviewMetadata(provider, cfg, mode, scopeInfo, execution = null, startedAt = null, endedAt = null, options = {}) {
   let routeFields;
   try {
     routeFields = approvalRouteFields(routeStateForApproval(cfg, process.env, { sourceSendApproved: !!execution?.approval_scope }));
@@ -2969,6 +3092,8 @@ function buildReviewMetadata(cfg, scopeInfo, execution = null, startedAt = null,
       reason: scopeResolutionReason(scopeInfo),
     },
     route: {
+      mode,
+      providerId: provider,
       selectedRoute: routeFields.selected_route,
       routeStep: routeFields.route_step,
       routeSteps: routeFields.route_steps,
@@ -2980,6 +3105,8 @@ function buildReviewMetadata(cfg, scopeInfo, execution = null, startedAt = null,
       sourceSendApprovalRequired: routeFields.source_send_approval_required,
       sourceSendApprovalState: routeFields.source_send_approval_state,
       providerCapabilities: providerCapabilitiesForConfig(cfg),
+      packetRecovery: execution.diagnostics?.packet_recovery ?? null,
+      previousAttempt: latestSourcePacketPreviousAttempt(options.reviewSlotPriorAttempts),
       reviewSlot: reviewSlotRouteFields(options, {
         priorAttempts: options.reviewSlotPriorAttempts ?? [],
       }),
@@ -3038,6 +3165,9 @@ function buildRuntimeDiagnostics(diagnostics) {
   if (diagnostics.source_packet_policy) {
     out.source_packet_policy = diagnostics.source_packet_policy;
   }
+  if (diagnostics.packet_recovery) {
+    out.packet_recovery = diagnostics.packet_recovery;
+  }
   if (diagnostics.review_slot_retry_policy) {
     out.review_slot_retry_policy = diagnostics.review_slot_retry_policy;
   }
@@ -3050,8 +3180,46 @@ function buildRuntimeDiagnostics(diagnostics) {
   return Object.keys(out).length === 0 ? null : out;
 }
 
+function sourceBearingFailurePacketRecovery({ provider, cfg, mode, reviewMetadata, errorCode, transmission }) {
+  const recoveryReason = sourceSentPacketRecoveryReason({
+    status: "failed",
+    errorCode,
+    sourceContentTransmission: transmission,
+  });
+  if (!recoveryReason) return null;
+  if (
+    transmission !== SOURCE_CONTENT_TRANSMISSION.SENT &&
+    transmission !== SOURCE_CONTENT_TRANSMISSION.MAY_BE_SENT &&
+    transmission !== SOURCE_CONTENT_TRANSMISSION.UNKNOWN
+  ) return null;
+  const auditManifest = reviewMetadata?.audit_manifest;
+  if (!auditManifest || auditManifest.packet_recovery) return null;
+  const sourcePacketPolicy = Object.freeze({
+    ...(auditManifest.source_packet_policy ?? {}),
+    provider,
+    mode,
+    route_step: auditManifest.source_packet_policy?.route_step ?? auditManifest.route_step ?? null,
+    source_send_allowed: false,
+    source_content_transmission: transmission,
+    source_packet_action: "resend_confirmation_required",
+    source_packet_policy_error_code: "resend_confirmation_required",
+    suggested_action: "Do not automatically resend selected source after a failed source-sent review slot.",
+  });
+  return buildPacketRecovery({
+    reason: recoveryReason,
+    sourcePacketPolicy,
+    providerCapabilities: providerCapabilitiesForConfig(cfg),
+    provider,
+    mode,
+    routeStep: sourcePacketPolicy.route_step ?? null,
+    selectedSource: auditManifest.selected_source ?? null,
+    sourceContentTransmission: transmission,
+    requiresSourceSendApproval: true,
+  });
+}
+
 function buildRecord({ provider, cfg, mode, options, scopeInfo, execution, startedAt, endedAt }) {
-  const reviewMetadata = buildReviewMetadata(cfg, scopeInfo, execution, startedAt, endedAt, options);
+  let reviewMetadata = buildReviewMetadata(provider, cfg, mode, scopeInfo, execution, startedAt, endedAt, options);
   const processCompleted = execution.exitCode === 0 && execution.parsed?.ok === true;
   const reviewQualityState = processCompleted
     ? reviewQualityFailureState(reviewMetadata?.audit_manifest?.review_quality, {
@@ -3073,6 +3241,25 @@ function buildRecord({ provider, cfg, mode, options, scopeInfo, execution, start
   const payloadSent = execution.payload_sent ?? (processCompleted ? true : null);
   const sourceContentTransmission = directApiTransmission(completed, payloadSent);
   const disclosure = directApiDisclosure(cfg.display_name, completed, payloadSent);
+  const packetRecovery = execution.diagnostics?.packet_recovery
+    ?? reviewMetadata?.audit_manifest?.packet_recovery
+    ?? sourceBearingFailurePacketRecovery({
+      provider,
+      cfg,
+      mode,
+      reviewMetadata,
+      errorCode,
+      transmission: sourceContentTransmission,
+    });
+  if (packetRecovery && reviewMetadata?.audit_manifest && !reviewMetadata.audit_manifest.packet_recovery) {
+    reviewMetadata = Object.freeze({
+      ...reviewMetadata,
+      audit_manifest: Object.freeze({
+        ...reviewMetadata.audit_manifest,
+        packet_recovery: packetRecovery,
+      }),
+    });
+  }
   const reviewSlot = reviewMetadata?.audit_manifest?.review_slot
     ? Object.freeze({
       ...reviewMetadata.audit_manifest.review_slot,
@@ -3094,7 +3281,9 @@ function buildRecord({ provider, cfg, mode, options, scopeInfo, execution, start
     review_slot: reviewSlot,
     disclosure,
   });
-  const runtimeDiagnostics = buildRuntimeDiagnostics(execution.diagnostics);
+  const runtimeDiagnostics = buildRuntimeDiagnostics(packetRecovery
+    ? { ...(execution.diagnostics ?? {}), packet_recovery: packetRecovery }
+    : execution.diagnostics);
   return freezeRecord({
     id: options.jobId,
     job_id: options.jobId,
@@ -3343,20 +3532,33 @@ async function cmdRun(options) {
       renderedPrompt = promptFor(mode, options.prompt ?? "", scopeInfo, cfg.display_name);
       const promptBudget = validateRenderedPromptBudget(renderedPrompt, cfg, process.env);
       if (!promptBudget.ok) {
-        const diagnostics = promptBudget.reason === "prompt_too_large"
-          ? {
-              sharding_plan: buildShardingPlan({
-                cfg,
-                mode,
-                provider,
-                scopeInfo,
-                userPrompt: options.prompt ?? "",
-                env: process.env,
-                renderedPromptChars: renderedPrompt.length,
-                approvalScope,
-              }),
-            }
-          : null;
+        let diagnostics = null;
+        if (promptBudget.reason === "prompt_too_large") {
+          const shardingPlan = buildShardingPlan({
+            cfg,
+            mode,
+            provider,
+            scopeInfo,
+            userPrompt: options.prompt ?? "",
+            env: process.env,
+            renderedPromptChars: renderedPrompt.length,
+            approvalScope,
+          });
+          diagnostics = {
+            sharding_plan: shardingPlan,
+            packet_recovery: packetRecoveryFromShardingPlan({
+              cfg,
+              provider,
+              mode,
+              scopeInfo,
+              renderedPrompt,
+              shardingPlan,
+              approvalScope,
+              options: runOptions,
+              env: process.env,
+            }),
+          };
+        }
         execution = providerFailureWithDiagnostics(
           promptBudget.reason,
           redactor(process.env)(promptBudget.error),
@@ -3377,7 +3579,7 @@ async function cmdRun(options) {
         authPath = approvalAuthPathFor(cfg, process.env);
         billingPath = approvalBillingPathFor(cfg);
         routeFields = approvalRouteFields(routeStateForApproval(cfg, process.env));
-        auditManifest = buildApprovalAuditManifest({ cfg, renderedPrompt, request, scopeInfo, routeFields, approvalScope, options: runOptions });
+        auditManifest = buildApprovalAuditManifest({ cfg, provider, mode, renderedPrompt, request, scopeInfo, routeFields, approvalScope, options: runOptions });
         execution = sourcePacketPolicyFailureFromManifest(auditManifest);
         if (execution) execution.prompt = renderedPrompt;
       }

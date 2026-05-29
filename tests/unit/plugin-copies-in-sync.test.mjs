@@ -323,13 +323,17 @@ test("provider-facing policy interfaces are inventoried and wired through shared
   const requiredInterfaces = [
     "buildProviderPolicyContract",
     "evaluateSourcePacketPolicy",
+    "latestSourcePacketPreviousAttempt",
+    "packetRecoveryReviewSurface",
     "PROVIDER_POLICY_DOMAINS",
     "PROVIDER_ROUTE_STEPS",
+    "reviewQualityPacketRecoveryErrorCode",
     "selectProviderRoute",
     "sourcePacketCanResumeWithoutResendFromJobRecord",
     "sourcePacketCanResumeWithoutResendFromPreviousAttempt",
     "sourcePacketPreviousAttemptFromJobRecord",
     "sourcePacketPreviousAttemptForContinuation",
+    "sourceSentPacketRecoveryReason",
     "buildReviewAuditManifest",
     "SOURCE_CONTENT_TRANSMISSION",
     "sourceContentTransmissionForExecution",
@@ -608,6 +612,16 @@ test("Grok auto transport stays an adapter capability and uses shared source-tra
   assert.match(source, /requested_transport/);
   assert.match(source, /canAutoFallbackFromCliExecution/);
   assert.match(source, /cliRequestDiagnosticsForFallback/);
+  assert.match(
+    source,
+    /canonical_provider/,
+    "Grok packet recovery must derive the canonical provider from config metadata",
+  );
+  assert.doesNotMatch(
+    source,
+    /cfg\.provider\s*===\s*["']grok-web["']\s*\?\s*["']grok["']/,
+    "Grok packet recovery must not hardcode transport-provider aliases",
+  );
 });
 
 test("subscription rescue modes are source-bearing even though they are not review slots", () => {

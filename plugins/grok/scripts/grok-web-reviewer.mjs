@@ -12,7 +12,13 @@ import { REVIEW_PROMPT_CONTRACT_VERSION, buildReviewAuditManifest, buildReviewPr
 import { USAGE_LIMIT_SAFE_MESSAGE, isUsageLimitDetail } from "./lib/usage-limit.mjs";
 import { elapsedMs } from "./lib/time.mjs";
 import { providerApiCapability, sanitizeTargetEnv } from "./lib/provider-env.mjs";
-import { selectProviderRoute } from "./lib/provider-route-policy.mjs";
+import {
+  buildPacketRecovery,
+  latestSourcePacketPreviousAttempt,
+  selectProviderRoute,
+  sourcePacketPreviousAttemptFromJobRecord,
+  sourceSentPacketRecoveryReason,
+} from "./lib/provider-route-policy.mjs";
 import { diffSourceFiles } from "./lib/diff-source.mjs";
 import { buildExternalModelFailureDiagnostic } from "./lib/external-model-failure-core.mjs";
 import { hasSubstantiveInvalidVerdictReason, reviewQualityFailureState } from "./lib/external-model-review-quality.mjs";
@@ -40,6 +46,7 @@ const DEFAULT_CHAT_DOCTOR_TIMEOUT_MS = 10000;
 const DEFAULT_TUNNEL_START_TIMEOUT_MS = 8000;
 const DEFAULT_TUNNEL_CLEANUP_TIMEOUT_MS = 2000;
 const DEFAULT_GROK2API_REPO_URL = "https://github.com/chenyme/grok2api.git";
+const GROK_CANONICAL_PROVIDER = "grok";
 const DEFAULT_CLI_MODEL = "grok-build";
 const DEFAULT_CLI_MAX_TURNS = 8;
 const GROK_CLI_TIMEOUT_KILL_GRACE_MS = 250;
@@ -228,6 +235,7 @@ function reviewMetadataProjection(obj) {
     "selected_route",
     "fallback_reason",
     "approval_scope",
+    "packet_recovery",
   ]) {
     if (manifest[key] !== undefined) projection[key] = manifest[key];
   }
@@ -432,7 +440,8 @@ function cliConfig(env = process.env, options = {}) {
   const maxPromptChars = parsePositiveIntegerEnv(env, "GROK_CLI_MAX_PROMPT_CHARS", DEFAULT_MAX_PROMPT_CHARS, "character count");
   const maxTurns = parsePositiveIntegerEnv(env, "GROK_CLI_MAX_TURNS", DEFAULT_CLI_MAX_TURNS, "turn count");
   return {
-    provider: "grok",
+    provider: GROK_CANONICAL_PROVIDER,
+    canonical_provider: GROK_CANONICAL_PROVIDER,
     display_name: "Grok CLI",
     auth_mode: "subscription_cli",
     transport: "cli",
@@ -447,7 +456,7 @@ function cliConfig(env = process.env, options = {}) {
     max_turns: maxTurns,
     credential_ref: null,
     credential_value: null,
-    api_capability: providerApiCapability("grok"),
+    api_capability: providerApiCapability(GROK_CANONICAL_PROVIDER),
   };
 }
 
@@ -532,6 +541,7 @@ function webConfig(env = process.env, options = {}) {
   const maxPromptChars = parsePositiveIntegerEnv(env, "GROK_WEB_MAX_PROMPT_CHARS", DEFAULT_MAX_PROMPT_CHARS, "character count");
   return {
     provider: "grok-web",
+    canonical_provider: GROK_CANONICAL_PROVIDER,
     display_name: "Grok Web",
     auth_mode: "subscription_web",
     transport: "web",
@@ -550,7 +560,7 @@ function webConfig(env = process.env, options = {}) {
     credential_value: env.GROK_WEB_TUNNEL_API_KEY || null,
     grok2api_base_url: normalizeGrok2ApiBaseUrl(env.GROK2API_BASE_URL, env.GROK_WEB_BASE_URL),
     grok2api_admin_key: env.GROK2API_ADMIN_KEY || DEFAULT_GROK2API_ADMIN_KEY,
-    api_capability: providerApiCapability("grok"),
+    api_capability: providerApiCapability(GROK_CANONICAL_PROVIDER),
   };
 }
 
@@ -566,6 +576,7 @@ function fallbackConfig(env = process.env, options = {}) {
   if (transport === "cli" || transport === "auto") return cliConfig(env, { requestedTransport: transport });
   return {
     provider: "grok-web",
+    canonical_provider: GROK_CANONICAL_PROVIDER,
     display_name: "Grok Web",
     auth_mode: "subscription_web",
     transport: "web",
@@ -582,7 +593,7 @@ function fallbackConfig(env = process.env, options = {}) {
     max_prompt_chars: DEFAULT_MAX_PROMPT_CHARS,
     credential_ref: env.GROK_WEB_TUNNEL_API_KEY ? "GROK_WEB_TUNNEL_API_KEY" : null,
     credential_value: env.GROK_WEB_TUNNEL_API_KEY || null,
-    api_capability: providerApiCapability("grok"),
+    api_capability: providerApiCapability(GROK_CANONICAL_PROVIDER),
   };
 }
 
@@ -1291,7 +1302,7 @@ async function collectScope(options) {
 
 function repositoryIdentity(cwd, workspaceRoot) {
   const remote = git(["remote", "get-url", "origin"], cwd, { allowFailure: true, workspaceRoot });
-  if (!remote) return workspaceRoot;
+  if (!remote) return `local-workspace:${basename(workspaceRoot ?? cwd ?? "workspace") || "workspace"}`;
   const match = /[:/]([^/:]+\/[^/]+?)(?:\.git)?$/.exec(remote);
   return match ? match[1] : remote;
 }
@@ -1567,10 +1578,21 @@ function isGrokCliAuthRepairCode(errorCode) {
 
 function providerCapabilitiesForConfig(cfg) {
   const capabilities = {
-    subscription: { kind: cfg.transport, auth_path: cfg.auth_mode },
+    canonical_provider: cfg.canonical_provider ?? cfg.provider ?? null,
+    subscription: {
+      kind: cfg.transport,
+      auth_path: cfg.auth_mode,
+      source_packet: {
+        resume_without_resend_supported: false,
+      },
+    },
   };
   if (cfg.api_capability) capabilities.api = cfg.api_capability;
   return capabilities;
+}
+
+function recoveryProviderId(cfg) {
+  return cfg.canonical_provider ?? cfg.provider ?? null;
 }
 
 function modeSendsSelectedSource(mode) {
@@ -1584,6 +1606,7 @@ function sourcePacketOverrideRouteFields(options = {}) {
   return {
     sourcePacketOverrideApproved: approved,
     sourcePacketOverrideSource: approved ? LARGE_SOURCE_PACKET_FLAG : null,
+    resendConfirmationApproved: options["resend-confirmation-approved"] === true,
   };
 }
 
@@ -1645,6 +1668,8 @@ function sourcePacketPolicyPreflight({ cfg, mode, prompt, scopeInfo, options = {
       reason: scopeResolutionReason(scopeInfo),
     },
     route: {
+      mode,
+      providerId: recoveryProviderId(cfg),
       selectedRoute: route.selected_route,
       routeStep: route.route_step,
       routeSteps: route.route_steps,
@@ -1657,6 +1682,7 @@ function sourcePacketPolicyPreflight({ cfg, mode, prompt, scopeInfo, options = {
       sourceSendApprovalRequired: route.source_send_approval_required,
       sourceSendApprovalState: route.source_send_approval_state,
       providerCapabilities,
+      previousAttempt: latestSourcePacketPreviousAttempt(options.reviewSlotPriorAttempts),
       reviewSlot: reviewSlotRouteFields(options, {
         priorAttempts: options.reviewSlotPriorAttempts ?? [],
       }),
@@ -1674,10 +1700,90 @@ function sourcePacketPolicyPreflight({ cfg, mode, prompt, scopeInfo, options = {
     null,
     null,
     false,
-    { source_packet_policy: policy },
+    {
+      source_packet_policy: policy,
+      packet_recovery: auditManifest.packet_recovery ?? null,
+    },
   );
   execution.prompt = prompt;
   return execution;
+}
+
+function promptCapPacketRecovery({ cfg, mode, prompt, scopeInfo, options = {} } = {}) {
+  const providerCapabilities = providerCapabilitiesForConfig(cfg);
+  const sourceBearing = modeSendsSelectedSource(mode);
+  const route = selectProviderRoute({
+    requestedRoute: "subscription",
+    providerCapabilities,
+    sourceBearing,
+  });
+  const auditManifest = buildReviewAuditManifest({
+    prompt,
+    sourceFiles: scopeInfo.files ?? [],
+    git: {
+      remote: scopeInfo.repository ?? null,
+      branch: scopeInfo.head_ref ?? null,
+      baseRef: scopeInfo.scope_base ?? null,
+      baseCommit: scopeInfo.base_commit ?? null,
+      headRef: scopeInfo.head_ref ?? null,
+      headCommit: scopeInfo.head_commit ?? null,
+    },
+    promptBuilder: {
+      contractVersion: REVIEW_PROMPT_CONTRACT_VERSION,
+      pluginVersion: "0.1.0",
+      pluginCommit: gitCommitForPrompt(PLUGIN_ROOT, "HEAD"),
+    },
+    request: {
+      provider: cfg.display_name,
+      model: cfg.model,
+      timeoutMs: cfg.timeout_ms ?? null,
+      maxTokens: null,
+      temperature: null,
+      stream: false,
+    },
+    truncation: { prompt: false, source: false, output: false },
+    scope: {
+      name: scopeInfo.scope,
+      base: scopeInfo.scope_base ?? null,
+      paths: scopeInfo.scope_paths ?? null,
+      reason: scopeResolutionReason(scopeInfo),
+    },
+    route: {
+      mode,
+      providerId: recoveryProviderId(cfg),
+      selectedRoute: route.selected_route,
+      routeStep: route.route_step,
+      routeSteps: route.route_steps,
+      fallbackReason: cfg.fallback_reason ?? route.fallback_reason,
+      approvalScope: null,
+      authPath: route.auth_path,
+      billingPath: route.billing_path,
+      sourceBearing,
+      sourceContentTransmission: SOURCE_CONTENT_TRANSMISSION.NOT_SENT,
+      sourceSendApprovalRequired: route.source_send_approval_required,
+      sourceSendApprovalState: route.source_send_approval_state,
+      providerCapabilities,
+      previousAttempt: latestSourcePacketPreviousAttempt(options.reviewSlotPriorAttempts),
+      reviewSlot: reviewSlotRouteFields(options, {
+        priorAttempts: options.reviewSlotPriorAttempts ?? [],
+      }),
+      ...sourcePacketOverrideRouteFields(options),
+    },
+    status: "preflight_failed",
+    errorCode: "prompt_too_large",
+  });
+  return buildPacketRecovery({
+    reason: "prompt_too_large",
+    sourcePacketPolicy: auditManifest.source_packet_policy,
+    providerCapabilities,
+    provider: recoveryProviderId(cfg),
+    mode,
+    routeStep: route.route_step,
+    selectedSource: auditManifest.selected_source,
+    sourceContentTransmission: SOURCE_CONTENT_TRANSMISSION.NOT_SENT,
+    renderedPromptBudgetChars: cfg.max_prompt_chars,
+    requiresSourceSendApproval: route.source_send_approval_required === true,
+  });
 }
 
 function subscriptionRouteForConfig(cfg, env = process.env, sourceBearing = false) {
@@ -1846,6 +1952,20 @@ async function cleanupGrokCliRuntimeHome(runtimeHome) {
     return "unverified";
   }
   return await pathExists(runtimeHome.dir) ? "unverified" : "deleted";
+}
+
+async function cleanupGrokCliNeutralCwd(neutralCwd) {
+  if (!neutralCwd) return "not_created";
+  const tmpRoot = resolve(tmpdir());
+  if (dirname(neutralCwd) !== tmpRoot || !basename(neutralCwd).startsWith("grok-cli-cwd-")) {
+    return "unverified";
+  }
+  try {
+    await rm(neutralCwd, { recursive: true, force: true });
+  } catch {
+    return "unverified";
+  }
+  return await pathExists(neutralCwd) ? "unverified" : "deleted";
 }
 
 async function fileSha256OrNull(file) {
@@ -2154,13 +2274,7 @@ async function callGrokCli(cfg, prompt, { sourceBearing = true, baseDiagnostics 
     if (promptFile && promptDir) promptCleanup = await cleanupPromptFile(promptFile, promptDir);
     grokHomeAuthSync = await syncGrokCliRuntimeAuthFile(runtimeHome);
     grokHomeCleanup = await cleanupGrokCliRuntimeHome(runtimeHome);
-    try {
-      await rmdir(neutralCwd);
-      neutralCwdCleanup = "deleted";
-    } catch (error) {
-      if (error?.code === "ENOENT") neutralCwdCleanup = "deleted";
-      else neutralCwdCleanup = "unverified";
-    }
+    neutralCwdCleanup = await cleanupGrokCliNeutralCwd(neutralCwd);
   }
   const diagnostics = {
     ...baseDiagnostics,
@@ -3396,6 +3510,7 @@ function buildTerminalExternalReview({ cfg, mode, options, scopeInfo, execution,
 }
 
 function buildReviewMetadata(cfg, scopeInfo, execution = null, startedAt = null, endedAt = null, options = {}) {
+  const mode = options.mode ?? execution?.mode ?? null;
   const sourceBearing = execution?.payload_sent ?? (execution?.exitCode === 0 && execution?.parsed?.ok === true);
   const processCompleted = execution?.exitCode === 0 && execution?.parsed?.ok === true;
   const sourceContentTransmission = sourceContentTransmissionForPayload({
@@ -3448,6 +3563,8 @@ function buildReviewMetadata(cfg, scopeInfo, execution = null, startedAt = null,
       reason: scopeResolutionReason(scopeInfo),
     },
     route: {
+      mode,
+      providerId: recoveryProviderId(cfg),
       selectedRoute: route.selected_route,
       routeStep: route.route_step,
       routeSteps: route.route_steps,
@@ -3460,6 +3577,8 @@ function buildReviewMetadata(cfg, scopeInfo, execution = null, startedAt = null,
       sourceSendApprovalRequired: route.source_send_approval_required,
       sourceSendApprovalState: route.source_send_approval_state,
       providerCapabilities: providerCapabilitiesForConfig(cfg),
+      packetRecovery: execution.diagnostics?.packet_recovery ?? null,
+      previousAttempt: latestSourcePacketPreviousAttempt(options.reviewSlotPriorAttempts),
       reviewSlot: reviewSlotRouteFields(options, {
         priorAttempts: options.reviewSlotPriorAttempts ?? [],
       }),
@@ -3486,8 +3605,43 @@ function buildReviewMetadata(cfg, scopeInfo, execution = null, startedAt = null,
   };
 }
 
+function sourceSentFailurePacketRecovery({ cfg, mode, reviewMetadata, errorCode, transmission }) {
+  const recoveryReason = sourceSentPacketRecoveryReason({
+    status: "failed",
+    errorCode,
+    sourceContentTransmission: transmission,
+  });
+  if (!recoveryReason) return null;
+  const auditManifest = reviewMetadata?.audit_manifest;
+  if (!auditManifest || auditManifest.packet_recovery) return null;
+  const sourcePacketPolicy = Object.freeze({
+    ...(auditManifest.source_packet_policy ?? {}),
+    provider: recoveryProviderId(cfg),
+    mode,
+    route_step: auditManifest.source_packet_policy?.route_step ?? auditManifest.route_step ?? null,
+    source_send_allowed: false,
+    source_content_transmission: transmission,
+    source_packet_action: "resend_confirmation_required",
+    source_packet_policy_error_code: "resend_confirmation_required",
+    suggested_action: "Do not automatically resend selected source after a failed source-sent review slot.",
+  });
+  return buildPacketRecovery({
+    reason: recoveryReason,
+    sourcePacketPolicy,
+    providerCapabilities: providerCapabilitiesForConfig(cfg),
+    provider: recoveryProviderId(cfg),
+    mode,
+    routeStep: sourcePacketPolicy.route_step ?? null,
+    selectedSource: auditManifest.selected_source ?? null,
+    sourceContentTransmission: transmission,
+  });
+}
+
 function buildRecord({ cfg, mode, options, scopeInfo, execution, startedAt, endedAt }) {
-  const reviewMetadata = buildReviewMetadata(cfg, scopeInfo, execution, startedAt, endedAt, options);
+  let reviewMetadata = buildReviewMetadata(cfg, scopeInfo, execution, startedAt, endedAt, {
+    ...options,
+    mode,
+  });
   const processCompleted = execution.exitCode === 0 && execution.parsed?.ok === true;
   const redactSensitiveText = buildPrivacyRedactor({
     env: process.env,
@@ -3525,7 +3679,19 @@ function buildRecord({ cfg, mode, options, scopeInfo, execution, startedAt, ende
     errorCode,
     pidInfo: execution.pidInfo ?? null,
   });
-  const runtimeDiagnostics = safeDiagnostics ? (cfg.transport === "cli" ? {
+  let packetRecovery = safeDiagnostics?.packet_recovery
+    ?? reviewMetadata?.audit_manifest?.packet_recovery
+    ?? sourceSentFailurePacketRecovery({ cfg, mode, reviewMetadata, errorCode, transmission });
+  if (packetRecovery && reviewMetadata?.audit_manifest && !reviewMetadata.audit_manifest.packet_recovery) {
+    reviewMetadata = Object.freeze({
+      ...reviewMetadata,
+      audit_manifest: Object.freeze({
+        ...reviewMetadata.audit_manifest,
+        packet_recovery: packetRecovery,
+      }),
+    });
+  }
+  let runtimeDiagnostics = safeDiagnostics ? (cfg.transport === "cli" ? {
     cli_request: {
       transport: "cli",
       binary: cfg.binary,
@@ -3556,10 +3722,10 @@ function buildRecord({ cfg, mode, options, scopeInfo, execution, startedAt, ende
       grok_home_linked_files: safeDiagnostics.grok_home_linked_files ?? [],
       grok_home_auth_sync: safeDiagnostics.grok_home_auth_sync ?? null,
       grok_home_cleanup: safeDiagnostics.grok_home_cleanup ?? null,
-      },
-      cost_quota: null,
-      ...(safeDiagnostics.provider_workload ? { provider_workload: safeDiagnostics.provider_workload } : {}),
-    } : {
+    },
+    cost_quota: null,
+    ...(safeDiagnostics.provider_workload ? { provider_workload: safeDiagnostics.provider_workload } : {}),
+  } : {
     ...(safeDiagnostics.cli_request ? { cli_request: safeDiagnostics.cli_request } : {}),
     tunnel_request: {
       endpoint_class: safeDiagnostics.endpoint_class ?? null,
@@ -3576,10 +3742,17 @@ function buildRecord({ cfg, mode, options, scopeInfo, execution, startedAt, ende
     tunnel_state: safeDiagnostics.tunnel_state ? {
       ...safeDiagnostics.tunnel_state,
       auto_start_attempted: safeDiagnostics.tunnel_start?.attempted ?? safeDiagnostics.tunnel_state.auto_start_attempted ?? false,
-      } : null,
-      session_tokens: safeDiagnostics.session_tokens ?? null,
-      ...(safeDiagnostics.provider_workload ? { provider_workload: safeDiagnostics.provider_workload } : {}),
-    }) : null;
+    } : null,
+    session_tokens: safeDiagnostics.session_tokens ?? null,
+    ...(safeDiagnostics.provider_workload ? { provider_workload: safeDiagnostics.provider_workload } : {}),
+  }) : null;
+  if (runtimeDiagnostics && safeDiagnostics?.source_packet_policy) {
+    runtimeDiagnostics.source_packet_policy = safeDiagnostics.source_packet_policy;
+  }
+  if (packetRecovery) {
+    runtimeDiagnostics ??= {};
+    runtimeDiagnostics.packet_recovery = packetRecovery;
+  }
   return freezeRecord({
     id: options.jobId,
     job_id: options.jobId,
@@ -3696,7 +3869,12 @@ async function collectPriorReviewSlotAttempts(root, currentJobId = null) {
       const record = JSON.parse(await readFile(resolve(jobsDir, entry.name, "meta.json"), "utf8"));
       if (record?.job_id !== entry.name) continue;
       const slot = reviewSlotFromRecord(record);
-      if (priorSlotCountsTowardRetry(slot)) attempts.push({ review_slot: slot });
+      if (priorSlotCountsTowardRetry(slot)) {
+        const previousAttempt = sourcePacketPreviousAttemptFromJobRecord(record);
+        attempts.push(previousAttempt
+          ? { ...previousAttempt, review_slot: slot }
+          : { review_slot: slot });
+      }
     } catch {
       // Malformed legacy artifacts are not trusted as retry-policy evidence.
     }
@@ -4815,6 +4993,9 @@ async function cmdRun(options) {
       if (!execution && prompt.length > cfg.max_prompt_chars) {
         const capName = cfg.transport === "cli" ? "GROK_CLI_MAX_PROMPT_CHARS" : "GROK_WEB_MAX_PROMPT_CHARS";
         execution = providerFailure("prompt_too_large", redactor()(`prompt_too_large:${prompt.length} chars exceeds ${capName}=${cfg.max_prompt_chars}`), null, null, false);
+        execution.diagnostics = {
+          packet_recovery: promptCapPacketRecovery({ cfg, mode, prompt, scopeInfo, options: runOptions }),
+        };
         execution.prompt = prompt;
       }
       if (!execution) {
@@ -4894,6 +5075,7 @@ async function cmdRun(options) {
             execution = providerFailure("prompt_too_large", redactor()(`prompt_too_large:${prompt.length} chars exceeds GROK_WEB_MAX_PROMPT_CHARS=${cfg.max_prompt_chars}`), null, null, false);
             execution.diagnostics = {
               cli_request: cliRequestDiagnosticsForFallback(cliFailure),
+              packet_recovery: promptCapPacketRecovery({ cfg, mode, prompt, scopeInfo, options: runOptions }),
               ...(execution.diagnostics ?? {}),
             };
             execution.prompt = prompt;

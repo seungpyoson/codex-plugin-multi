@@ -1,11 +1,15 @@
 import { createHash } from "node:crypto";
 
 import {
+  buildPacketRecovery,
   buildReviewSlotDisposition,
   evaluateReviewSlotRetryPolicy,
   evaluateSourcePacketPolicy,
+  packetRecoveryReviewSurface,
+  reviewQualityPacketRecoveryErrorCode,
   reviewSlotRequestSettingsHash,
   reviewSlotRetryFingerprint,
+  sourceSentPacketRecoveryReason,
 } from "./provider-route-policy.mjs";
 
 export const REVIEW_PROMPT_CHECKLIST = Object.freeze([
@@ -994,10 +998,17 @@ function isLocalFileScopeBoundaryLine(lower) {
   ]);
 }
 
+function isNegatedSelectedSourceInspectionAnalysisLine(lower) {
+  if (!includesAny(lower, ["did not inspect", "not inspected", "could not inspect", "unable to inspect"])) return false;
+  return includesAny(lower, ["no genuine", "no real"])
+    && includesAny(lower, ["suppressed", "accepted", "missed", "classified"]);
+}
+
 function lineDeniesSelectedSourceInspection(line, selectedSource) {
   const lower = stripLeadingReviewMarkup(line).toLowerCase();
   if (isPermissionMechanicsDiscussionLine(lower)) return false;
   if (isSelectedSourceInspectionMechanicsDiscussionLine(lower)) return false;
+  if (isNegatedSelectedSourceInspectionAnalysisLine(lower)) return false;
   if (isLocalFileScopeBoundaryLine(lower)) return false;
   if (isOutOfScopeInspectionGapLine(lower) && !mentionsSelectedSourceGeneric(lower)) return false;
   if (!includesAny(lower, ["did not inspect", "not inspected", "could not inspect", "unable to inspect"])) {
@@ -1047,10 +1058,15 @@ function isOutOfScopeInspectionGapLine(lower) {
   if (!includesAny(lower, ["could not inspect", "unable to inspect", "not inspected", "not reviewed"])) return false;
   return includesAny(lower, [
     "out of scope",
+    "outside the packet",
+    "outside of the packet",
+    "outside packet",
     "outside the review packet",
     "outside this packet",
     "outside the supplied packet",
     "outside the supplied source packet",
+    "not in packet",
+    "not in the packet",
     "not part of this packet",
     "not supplied",
     "not included in the prompt",
@@ -1345,7 +1361,7 @@ export function buildReviewAuditManifest({
     selectedSource.totals.files > 0 || selectedSource.totals.bytes > 0
   );
   const sourcePacketPolicy = route.sourcePacketPolicy ?? evaluateSourcePacketPolicy({
-    provider: request.provider ?? null,
+    provider: route.sourcePacketPolicyProvider ?? request.provider ?? route.providerId ?? null,
     mode: route.mode ?? null,
     routeStep,
     providerCapabilities: route.providerCapabilities ?? {},
@@ -1392,13 +1408,13 @@ export function buildReviewAuditManifest({
       source_send_allowed: false,
       source_packet_action: "review_slot_retry_blocked",
       source_content_transmission: "not_sent",
-      source_packet_policy_error_code:
-        retryPolicy.fail_closed_reason ?? "review_slot_retry_blocked",
+      source_packet_policy_error_code: retryPolicy.fail_closed_reason,
       suggested_action:
         "Do not launch another same-packet review until the packet is split, the provider is switched, the slot is waived, or an explicit override artifact is recorded.",
     })
     : sourcePacketPolicy;
   const reviewQuality = qualityFlags({ result, status, errorCode, selectedSource });
+  const effectiveErrorCode = errorCode ?? reviewQualityPacketRecoveryErrorCode(reviewQuality);
   const sourceContentTransmission =
     effectiveSourcePacketPolicy.source_send_allowed === false
       ? (effectiveSourcePacketPolicy.source_content_transmission ?? "not_sent")
@@ -1418,13 +1434,48 @@ export function buildReviewAuditManifest({
     requestSettingsHash,
     sourceState: sourceContentTransmission,
     status,
-    errorCode,
+    errorCode: effectiveErrorCode,
     result,
     reviewQuality,
     disposition: route.reviewSlot?.disposition ?? retryPolicy.disposition,
     waiverArtifact: route.reviewSlot?.waiverArtifact ?? null,
     overrideArtifact: route.reviewSlot?.overrideArtifact ?? null,
   });
+  const changedSurfaceRecoveryReason = effectiveSourcePacketPolicy.review_surface_changed === true
+    ? sourceSentPacketRecoveryReason({
+      status: route.previousAttempt?.status ?? null,
+      errorCode: route.previousAttempt?.error_code ?? null,
+      sourceContentTransmission: route.previousAttempt?.source_content_transmission ?? null,
+      reviewQuality: route.previousAttempt?.review_quality ?? null,
+    })
+    : null;
+  const packetRecoveryReason = effectiveSourcePacketPolicy.source_send_allowed === false
+    ? (effectiveSourcePacketPolicy.source_packet_policy_error_code ?? effectiveErrorCode)
+    : changedSurfaceRecoveryReason
+      ? changedSurfaceRecoveryReason
+    : sourceSentPacketRecoveryReason({
+      status,
+      errorCode: effectiveErrorCode,
+      sourceContentTransmission,
+      reviewQuality,
+    });
+  const packetRecovery = route.packetRecovery ?? (packetRecoveryReason
+    ? buildPacketRecovery({
+      reason: packetRecoveryReason,
+      sourcePacketPolicy: effectiveSourcePacketPolicy,
+      providerCapabilities: route.providerCapabilities ?? {},
+      provider: route.providerId ?? effectiveSourcePacketPolicy.provider ?? request.provider ?? null,
+      mode: route.mode ?? scope.name ?? null,
+      routeStep,
+      reviewSurface: route.packetRecoveryReviewSurface ?? packetRecoveryReviewSurface({
+        selectedSource,
+        previousAttempt: route.previousAttempt ?? null,
+        sourcePacketPolicy: effectiveSourcePacketPolicy,
+      }),
+      sourceContentTransmission,
+      requiresSourceSendApproval: route.sourceSendApprovalRequired === true,
+    })
+    : null);
   return Object.freeze({
     schema_version: REVIEW_AUDIT_MANIFEST_VERSION,
     rendered_prompt_hash: renderedPromptHash,
@@ -1482,9 +1533,10 @@ export function buildReviewAuditManifest({
     source_send_approval_required: route.sourceSendApprovalRequired ?? null,
     source_send_approval_state: route.sourceSendApprovalState ?? null,
     source_packet_policy: Object.freeze({ ...effectiveSourcePacketPolicy }),
+    packet_recovery: packetRecovery,
     review_slot_retry_policy: Object.freeze({ ...retryPolicy }),
     review_slot: reviewSlot,
-    error_code: errorCode,
+    error_code: effectiveErrorCode,
     review_quality: reviewQuality,
   });
 }

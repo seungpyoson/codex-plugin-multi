@@ -930,6 +930,98 @@ test("buildJobRecord: review_metadata persists privacy-safe audit manifests for 
   }
 });
 
+test("buildJobRecord: packet recovery from failed slots is persisted into audit manifest", () => {
+  const packetRecovery = Object.freeze({
+    schema_version: 1,
+    provider: "Kimi",
+    mode: "review",
+    reason: "source_packet_too_large",
+    source_content_transmission: "not_sent",
+    failed_review_slot: true,
+    provider_capabilities: Object.freeze({ provider: "Kimi" }),
+    review_surface: Object.freeze({ selected_files: Object.freeze(["src/large.js"]) }),
+    actions: Object.freeze([
+      Object.freeze({ type: "shard", approval_required: true }),
+    ]),
+  });
+  const auditManifest = Object.freeze({
+    schema_version: 1,
+    rendered_prompt_hash: { algorithm: "sha256", value: "a".repeat(64) },
+    selected_source: { files: [{ path: "src/large.js" }], totals: { files: 1, bytes: 4096, lines: 1 } },
+    source_content_transmission: "not_sent",
+    review_quality: {
+      failed_review_slot: true,
+      semantic_failure_reasons: ["source_packet_too_large"],
+    },
+    review_slot: Object.freeze({
+      slot_id: "slot-1",
+      attempt_id: UUID,
+      parent_attempt_id: null,
+      reviewed_head_sha: "head",
+      retry_fingerprint: "f".repeat(64),
+      retry_count: 0,
+      retry_disposition_required: false,
+      request_settings_hash: "r".repeat(64),
+      source_state: "not_sent",
+      verdict: "not_reviewed",
+      failed_slot_reason: "source_packet_too_large",
+      disposition: "none",
+      not_counted_reason: "source_not_sent",
+      waiver_artifact: null,
+      override_artifact: null,
+    }),
+  });
+  const parsed = { ok: false, reason: "source_packet_too_large", error: "source packet too large", denials: [] };
+  const providers = [
+    [
+      buildJobRecord,
+      makeInvocation(),
+      {
+        exitCode: 1,
+        parsed,
+        pidInfo: null,
+        stdout: "",
+        stderr: "",
+        errorMessage: "source_packet_too_large: source packet too large",
+        runtimeDiagnostics: { packet_recovery: packetRecovery },
+      },
+    ],
+    [
+      buildGeminiJobRecord,
+      makeInvocation({ target: "gemini", binary: "gemini", review_prompt_provider: "Gemini CLI" }),
+      {
+        exitCode: 1,
+        parsed,
+        pidInfo: null,
+        stdout: "",
+        stderr: "",
+        errorMessage: "source_packet_too_large: source packet too large",
+        runtimeDiagnostics: { packet_recovery: packetRecovery },
+      },
+    ],
+    [
+      buildKimiJobRecord,
+      makeInvocation({ target: "kimi", binary: "kimi", review_prompt_provider: "Kimi Code" }),
+      {
+        exitCode: 1,
+        parsed,
+        pidInfo: null,
+        stdout: "",
+        stderr: "",
+        errorMessage: "source_packet_too_large: source packet too large",
+        runtimeDiagnostics: { packet_recovery: packetRecovery },
+      },
+    ],
+  ];
+
+  for (const [providerBuildJobRecord, invocation, execution] of providers) {
+    const rec = providerBuildJobRecord(invocation, { ...execution, reviewAuditManifest: auditManifest }, []);
+    assert.equal(rec.review_metadata.audit_manifest.packet_recovery, packetRecovery);
+    assert.equal(rec.runtime_diagnostics.packet_recovery, packetRecovery);
+    assert.equal(rec.error_code, "source_packet_too_large");
+  }
+});
+
 test("buildJobRecord: projects redacted review slot disposition into external_review", () => {
   const reviewSlot = Object.freeze({
     slot_id: "slot-1",
@@ -1657,6 +1749,175 @@ test("buildJobRecord: preserves privacy-safe provider account identity diagnosti
       },
     });
     assert.doesNotMatch(JSON.stringify(rec), /user@example\.com|org-secret-123/);
+  }
+});
+
+test("buildJobRecord: sanitizes runtime source packet and provider identity diagnostics", () => {
+  const providers = [
+    [buildJobRecord, makeInvocation(), { claudeSessionId: CLAUDE_UUID }],
+    [
+      buildGeminiJobRecord,
+      makeInvocation({ target: "gemini", binary: "gemini" }),
+      { geminiSessionId: GEMINI_UUID },
+    ],
+    [
+      buildKimiJobRecord,
+      makeInvocation({ target: "kimi", binary: "kimi" }),
+      { kimiSessionId: "kimi-session-123" },
+    ],
+  ];
+
+  for (const [providerBuildJobRecord, invocation, sessionFields] of providers) {
+    const sourcePacketPolicy = {
+      provider: invocation.target,
+      mode: "custom",
+      route_step: "packet_render",
+      max_prompt_chars: 12000,
+    };
+    const packetRecovery = {
+      reason: "source_packet_too_large",
+      route_step: "source_packet_send",
+      selected_source_bytes: 16000,
+      max_prompt_chars: 12000,
+      recovery_strategy: "shard",
+    };
+
+    const rec = providerBuildJobRecord(invocation, {
+      exitCode: 0,
+      parsed: { ok: true, result: "done", structured: null, denials: [] },
+      pidInfo: makePidInfo(),
+      runtimeDiagnostics: {
+        add_dir: "/tmp/worktree",
+        child_cwd: "/tmp/worktree",
+        source_packet_policy: sourcePacketPolicy,
+        packet_recovery: packetRecovery,
+        provider_account_identity: {
+          provider: invocation.target,
+          identity_source: "provider_auth_status",
+          identity_fields: ["email", "bad value", 42, "org_id", "unsafe/slash"],
+          account_fingerprint: {
+            algorithm: "sha256",
+            value: "A".repeat(64),
+          },
+          email: "user@example.com",
+          org_id: "org-secret-123",
+        },
+      },
+      ...sessionFields,
+    }, []);
+
+    assert.equal(rec.runtime_diagnostics.source_packet_policy, sourcePacketPolicy);
+    assert.equal(rec.runtime_diagnostics.packet_recovery, packetRecovery);
+    assert.deepEqual(rec.runtime_diagnostics.provider_account_identity, {
+      provider: invocation.target,
+      identity_source: "provider_auth_status",
+      identity_fields: ["email", "org_id"],
+      account_fingerprint: {
+        algorithm: "sha256",
+        value: "a".repeat(64),
+      },
+    });
+    assert.doesNotMatch(JSON.stringify(rec), /user@example\.com|org-secret-123/);
+  }
+});
+
+test("buildJobRecord: drops malformed source packet and provider identity diagnostics", () => {
+  const providers = [
+    [buildJobRecord, makeInvocation(), { claudeSessionId: CLAUDE_UUID }],
+    [
+      buildGeminiJobRecord,
+      makeInvocation({ target: "gemini", binary: "gemini" }),
+      { geminiSessionId: GEMINI_UUID },
+    ],
+    [
+      buildKimiJobRecord,
+      makeInvocation({ target: "kimi", binary: "kimi" }),
+      { kimiSessionId: "kimi-session-123" },
+    ],
+  ];
+  const cases = [
+    {
+      name: "non-object packet diagnostics and identity",
+      runtimeDiagnostics: {
+        add_dir: "/tmp/worktree",
+        child_cwd: "/tmp/worktree",
+        source_packet_policy: "source-policy-secret",
+        packet_recovery: "packet-recovery-secret",
+        provider_account_identity: "identity-secret",
+      },
+    },
+    {
+      name: "invalid provider",
+      runtimeDiagnostics: {
+        add_dir: "/tmp/worktree",
+        child_cwd: "/tmp/worktree",
+        provider_account_identity: {
+          provider: "Claude",
+          identity_source: "provider_auth_status",
+          identity_fields: ["email"],
+          account_fingerprint: { value: "b".repeat(64) },
+        },
+      },
+    },
+    {
+      name: "invalid identity source",
+      runtimeDiagnostics: {
+        add_dir: "/tmp/worktree",
+        child_cwd: "/tmp/worktree",
+        provider_account_identity: {
+          provider: "claude",
+          identity_source: "provider auth status",
+          identity_fields: ["email"],
+          account_fingerprint: { value: "c".repeat(64) },
+        },
+      },
+    },
+    {
+      name: "invalid fingerprint",
+      runtimeDiagnostics: {
+        add_dir: "/tmp/worktree",
+        child_cwd: "/tmp/worktree",
+        provider_account_identity: {
+          provider: "claude",
+          identity_source: "provider_auth_status",
+          identity_fields: "email",
+          account_fingerprint: { value: "not-a-sha256-fingerprint" },
+          email: "user@example.com",
+        },
+      },
+    },
+  ];
+
+  for (const [providerBuildJobRecord, invocation, sessionFields] of providers) {
+    for (const { name, runtimeDiagnostics } of cases) {
+      const rec = providerBuildJobRecord(invocation, {
+        exitCode: 0,
+        parsed: { ok: true, result: name, structured: null, denials: [] },
+        pidInfo: makePidInfo(),
+        runtimeDiagnostics,
+        ...sessionFields,
+      }, []);
+
+      assert.equal(rec.runtime_diagnostics.provider_account_identity, undefined, `${invocation.target}: ${name}`);
+      assert.doesNotMatch(JSON.stringify(rec), /identity-secret|user@example\.com/, `${invocation.target}: ${name}`);
+    }
+  }
+
+  for (const [providerBuildJobRecord, invocation, sessionFields] of providers) {
+    const nonObjectPacketRec = providerBuildJobRecord(invocation, {
+      exitCode: 0,
+      parsed: { ok: true, result: "non-object packet diagnostics", structured: null, denials: [] },
+      pidInfo: makePidInfo(),
+      runtimeDiagnostics: cases[0].runtimeDiagnostics,
+      ...sessionFields,
+    }, []);
+    assert.equal(nonObjectPacketRec.runtime_diagnostics.source_packet_policy, undefined, invocation.target);
+    assert.equal(nonObjectPacketRec.runtime_diagnostics.packet_recovery, undefined, invocation.target);
+    assert.doesNotMatch(
+      JSON.stringify(nonObjectPacketRec),
+      /source-policy-secret|packet-recovery-secret/,
+      invocation.target,
+    );
   }
 });
 

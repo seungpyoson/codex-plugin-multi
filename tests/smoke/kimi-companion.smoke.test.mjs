@@ -65,6 +65,70 @@ function withRepo(fn) {
   }
 }
 
+test("kimi review prompt uses git repository identity instead of local workspace path", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "kimi-repo-identity-cwd-"));
+  fixtureSeedRepo(cwd);
+  assert.equal(
+    fixtureGit(cwd, ["remote", "add", "origin", "git@github.com:seungpyoson/provider-prompt-fixture.git"]).status,
+    0,
+  );
+  const result = runCompanion([
+    "run",
+    "--mode",
+    "review",
+    "--cwd",
+    cwd,
+    "--foreground",
+    "--",
+    "Review this scope.",
+  ], {
+    cwd,
+    env: {
+      KIMI_MOCK_ASSERT_PROMPT_INCLUDES: "Repository: seungpyoson/provider-prompt-fixture",
+      KIMI_MOCK_ASSERT_PROMPT_EXCLUDES: cwd,
+    },
+  });
+  try {
+    assert.equal(result.status, 0, result.stderr);
+    const record = parseJson(result.stdout);
+    assert.equal(record.review_metadata.audit_manifest.git_identity.remote, "seungpyoson/provider-prompt-fixture");
+  } finally {
+    rmSync(result.dataDir, { recursive: true, force: true });
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("kimi review prompt avoids local workspace path when no git remote exists", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "kimi-local-repo-identity-cwd-"));
+  fixtureSeedRepo(cwd);
+  const expectedRepository = `Repository: local-workspace:${path.basename(cwd)}`;
+  const result = runCompanion([
+    "run",
+    "--mode",
+    "review",
+    "--cwd",
+    cwd,
+    "--foreground",
+    "--",
+    "Review this scope.",
+  ], {
+    cwd,
+    env: {
+      KIMI_MOCK_ASSERT_PROMPT_INCLUDES: expectedRepository,
+      KIMI_MOCK_ASSERT_PROMPT_EXCLUDES: cwd,
+    },
+  });
+  try {
+    assert.equal(result.status, 0, result.stderr);
+    const record = parseJson(result.stdout);
+    assert.equal(record.review_metadata.audit_manifest.git_identity.remote, `local-workspace:${path.basename(cwd)}`);
+    assert.doesNotMatch(JSON.stringify(record.review_metadata.audit_manifest.git_identity), new RegExp(cwd.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+  } finally {
+    rmSync(result.dataDir, { recursive: true, force: true });
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
 function readOnlyJobRecord(dataDir) {
   const stateRoot = path.join(dataDir, "state");
   const records = [];
@@ -739,6 +803,15 @@ test("kimi custom-review applies adapter source-packet capacity before Kimi laun
     assert.equal(record.review_metadata.audit_manifest.source_packet_policy.source_send_allowed, false);
     assert.equal(record.review_metadata.audit_manifest.source_packet_policy.source_packet_budget_bytes, 32 * 1024);
     assert.equal(record.review_metadata.audit_manifest.source_packet_policy.source_packet_action, "narrow_source_packet");
+    const recovery = record.runtime_diagnostics?.packet_recovery;
+    assert.ok(recovery, "Kimi packet-cap failures must include packet_recovery");
+    assert.equal(recovery.provider, "kimi");
+    assert.equal(recovery.mode, "custom-review");
+    assert.equal(recovery.reason, "source_packet_too_large");
+    assert.equal(recovery.source_content_transmission, "not_sent");
+    assert.equal(recovery.provider_capabilities.source_packet_budget_bytes, 32 * 1024);
+    assert.equal(recovery.provider_capabilities.supports_no_source_resume, false);
+    assert.deepEqual(record.review_metadata.audit_manifest.packet_recovery, recovery);
     assert.doesNotMatch(result.stdout, /external_review_launched|MUST_NOT_REACH_KIMI/);
   } finally {
     if (dataDir) rmSync(dataDir, { recursive: true, force: true });
@@ -1169,6 +1242,17 @@ test("kimi custom-review fails shallow missing-verdict output as review_not_comp
       record.review_metadata.audit_manifest.review_quality.semantic_failure_reasons,
       ["shallow_output", "missing_verdict"],
     );
+    const firstRecovery = record.runtime_diagnostics?.packet_recovery;
+    assert.ok(firstRecovery, "Kimi source-sent missing-verdict failures must include packet_recovery");
+    assert.equal(firstRecovery.provider, "kimi");
+    assert.equal(firstRecovery.reason, "review_not_completed");
+    assert.equal(firstRecovery.source_content_transmission, "sent");
+    assert.equal(firstRecovery.provider_capabilities.supports_no_source_resume, false);
+    assert.deepEqual(
+      firstRecovery.actions.map((action) => action.type),
+      ["resend_with_confirmation", "switch_provider", "waive_slot"],
+    );
+    assert.deepEqual(record.review_metadata.audit_manifest.packet_recovery, firstRecovery);
 
     const retry = runCompanion([
       "continue",
@@ -1191,6 +1275,18 @@ test("kimi custom-review fails shallow missing-verdict output as review_not_comp
       retryRecord.review_metadata.audit_manifest.source_packet_policy.source_packet_action,
       "resend_confirmation_required",
     );
+    const recovery = retryRecord.runtime_diagnostics?.packet_recovery;
+    assert.ok(recovery, "Kimi source-sent retry failures must include packet_recovery");
+    assert.equal(recovery.provider, "kimi");
+    assert.equal(recovery.reason, "resend_confirmation_required");
+    assert.equal(retryRecord.error_code, recovery.reason);
+    assert.equal(recovery.provider_capabilities.supports_no_source_resume, false);
+    assert.ok(!recovery.actions.some((action) => action.type === "resume_without_source_resend"));
+    assert.deepEqual(
+      recovery.actions.map((action) => action.type),
+      ["resend_with_confirmation", "switch_provider", "waive_slot"],
+    );
+    assert.deepEqual(retryRecord.review_metadata.audit_manifest.packet_recovery, recovery);
   } finally {
     if (dataDir) rmSync(dataDir, { recursive: true, force: true });
     rmSync(cwd, { recursive: true, force: true });
@@ -1370,6 +1466,16 @@ test("kimi foreground review timeout returns actionable JobRecord", () => withRe
   assert.match(record.suggested_action, /retry/i);
   assert.match(record.suggested_action, /Do not automatically resend selected source/);
   assert.match(record.suggested_action, /fresh matching approval token/);
+  const recovery = record.runtime_diagnostics?.packet_recovery;
+  assert.ok(recovery, "Kimi source-sent timeout failures must include packet_recovery");
+  assert.equal(recovery.reason, "timeout");
+  assert.equal(recovery.source_content_transmission, "sent");
+  assert.equal(recovery.provider_capabilities.supports_no_source_resume, false);
+  assert.deepEqual(
+    recovery.actions.map((action) => action.type),
+    ["resend_with_confirmation", "switch_provider", "waive_slot"],
+  );
+  assert.deepEqual(record.review_metadata.audit_manifest.packet_recovery, recovery);
   const { record: persisted } = readOnlyJobRecord(result.dataDir);
   assert.equal(persisted.job_id, record.job_id);
   assert.equal(persisted.error_code, "timeout");
@@ -2184,6 +2290,16 @@ test("kimi foreground review step-limit exhaustion returns actionable JobRecord"
   assert.match(record.error_message, /Max number of steps reached: 1/);
   assert.match(record.suggested_action, /higher step budget/i);
   assert.match(record.suggested_action, /narrower scope/i);
+  const recovery = record.runtime_diagnostics?.packet_recovery;
+  assert.ok(recovery, "Kimi source-sent step-limit failures must include packet_recovery");
+  assert.equal(recovery.reason, "step_limit_exceeded");
+  assert.equal(recovery.source_content_transmission, "sent");
+  assert.equal(recovery.provider_capabilities.supports_no_source_resume, false);
+  assert.deepEqual(
+    recovery.actions.map((action) => action.type),
+    ["resend_with_confirmation", "switch_provider", "waive_slot"],
+  );
+  assert.deepEqual(record.review_metadata.audit_manifest.packet_recovery, recovery);
   const { record: persisted } = readOnlyJobRecord(result.dataDir);
   assert.equal(persisted.job_id, record.job_id);
   assert.equal(persisted.error_code, "step_limit_exceeded");

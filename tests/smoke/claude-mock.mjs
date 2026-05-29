@@ -125,6 +125,12 @@ if (forbiddenPromptText && !readinessPrompt && prompt.includes(forbiddenPromptTe
   process.exit(1);
 }
 
+const excludedPromptText = process.env.CLAUDE_MOCK_ASSERT_PROMPT_EXCLUDES;
+if (excludedPromptText && !readinessPrompt && prompt.includes(excludedPromptText)) {
+  process.stderr.write(`claude-mock: prompt included excluded text: ${excludedPromptText}\n`);
+  process.exit(1);
+}
+
 if (process.env.CLAUDE_MOCK_ENFORCE_PROJECT_SESSIONS === "1" && !readinessPrompt) {
   const store = process.env.CLAUDE_MOCK_PROJECT_SESSION_STORE;
   if (!store) {

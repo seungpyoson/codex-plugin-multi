@@ -22,6 +22,8 @@ const emptyReviewSlotRow = Object.freeze({
   disposition: "",
   waiver_artifact: "",
   override_artifact: "",
+  recovery: "",
+  recovery_actions: "",
 });
 
 test("review panel slug trimming avoids Sonar-flagged boundary alternation regex", () => {
@@ -156,6 +158,40 @@ test("review panel rows expose operational and semantic review state", () => {
       ...emptyReviewSlotRow,
     },
   ]);
+});
+
+test("review panel rows expose packet recovery without changing failed classification", () => {
+  const recovery = Object.freeze({
+    reason: "source_packet_too_large",
+    actions: [
+      { type: "diff_packet" },
+      { type: "allow_large_source_packet" },
+      { type: "waive_slot" },
+    ],
+  });
+  const [row] = buildReviewPanelRows([
+    {
+      provider: "deepseek",
+      status: "failed",
+      error_code: "source_packet_too_large",
+      external_review: { source_content_transmission: "not_sent" },
+      runtime_diagnostics: { packet_recovery: recovery },
+      review_metadata: {
+        audit_manifest: {
+          packet_recovery: recovery,
+          review_quality: {
+            failed_review_slot: true,
+            semantic_failure_reasons: [],
+          },
+        },
+      },
+    },
+  ]);
+
+  assert.equal(row.state, "failed_before_source_send");
+  assert.equal(row.result, "source_packet_too_large");
+  assert.equal(row.recovery, "source_packet_too_large");
+  assert.equal(row.recovery_actions, "diff_packet,allow_large_source_packet,waive_slot");
 });
 
 test("review panel rows expose review slot disposition state", () => {

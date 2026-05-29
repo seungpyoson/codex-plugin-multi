@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { fileURLToPath } from "node:url";
-import { dirname, join as joinPath, resolve as resolvePath } from "node:path";
+import { basename as basenamePath, dirname, join as joinPath, resolve as resolvePath } from "node:path";
 import {
   existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, unlinkSync,
   writeFileSync, chmodSync, readdirSync, statSync, lstatSync,
@@ -17,6 +17,7 @@ import { setupContainment } from "./lib/containment.mjs";
 import { populateScope } from "./lib/scope.mjs";
 import { newJobId, verifyPidInfo } from "./lib/identity.mjs";
 import { buildJobRecord, classifyExecution, externalReviewForInvocation } from "./lib/job-record.mjs";
+import { sourceContentTransmissionForExecution } from "./lib/external-review.mjs";
 import { reconcileActiveJobs } from "./lib/reconcile.mjs";
 import { cleanGitEnv } from "./lib/git-env.mjs";
 import { gitEnv, isGitBinaryPolicyError, resolveGitBinary } from "./lib/git-binary.mjs";
@@ -34,10 +35,12 @@ import {
   subscriptionAuthMode,
 } from "./lib/auth-selection.mjs";
 import {
+  latestSourcePacketPreviousAttempt,
   normalizeApprovalScope,
   sourcePacketCanResumeWithoutResendFromPreviousAttempt,
   sourcePacketCanResumeWithoutResendFromJobRecord,
   sourcePacketPreviousAttemptForContinuation,
+  sourcePacketPreviousAttemptFromJobRecord,
 } from "./lib/provider-route-policy.mjs";
 import {
   PING_PROMPT,
@@ -185,7 +188,7 @@ function targetPromptFor(invocation, userPrompt, sourceFiles = []) {
   return buildReviewPrompt({
     provider: "Gemini CLI",
     mode: invocation.mode,
-    repository: invocation.workspace_root ?? null,
+    repository: reviewPromptRepositoryIdentity(invocation.cwd, invocation.workspace_root),
     baseRef: invocation.scope_base,
     baseCommit: gitCommitForPrompt(invocation.cwd, invocation.scope_base, invocation.workspace_root),
     headRef: "HEAD",
@@ -236,9 +239,15 @@ function repositoryIdentity(cwd, workspaceRoot) {
   return match ? match[1] : remote;
 }
 
+function reviewPromptRepositoryIdentity(cwd, workspaceRoot) {
+  const identity = repositoryIdentity(cwd, workspaceRoot);
+  if (identity && identity !== workspaceRoot) return identity;
+  return `local-workspace:${basenamePath(workspaceRoot ?? cwd ?? "workspace") || "workspace"}`;
+}
+
 function promptMetadata(invocation) {
   return {
-    repository: repositoryIdentity(invocation.cwd, invocation.workspace_root),
+    repository: reviewPromptRepositoryIdentity(invocation.cwd, invocation.workspace_root),
     baseRef: invocation.scope_base ?? null,
     baseCommit: gitCommitForPrompt(invocation.cwd, invocation.scope_base, invocation.workspace_root),
     headRef: gitText(["branch", "--show-current"], invocation.cwd, invocation.workspace_root) ?? "HEAD",
@@ -329,6 +338,11 @@ function reviewAuditManifest(invocation, prompt, containmentPath, execution) {
   const meta = promptMetadata(invocation);
   const auditExecution = executionForAuditClassification(execution);
   const { status: executionStatus, error_code: errorCode } = classifyExecution(auditExecution);
+  const sourceContentTransmission = sourceContentTransmissionForExecution({
+    status: execution?.preflight === true ? "preflight_failed" : executionStatus,
+    errorCode,
+    pidInfo: auditExecution?.pidInfo ?? null,
+  });
   return buildReviewAuditManifest({
     prompt,
     sourceFiles: invocation.resume_without_source_resend === true
@@ -364,6 +378,8 @@ function reviewAuditManifest(invocation, prompt, containmentPath, execution) {
       reason: scopeResolutionReason(invocation),
     },
     route: {
+      mode: invocation.mode,
+      providerId: "gemini",
       selectedRoute: invocation.selected_route ?? null,
       routeStep: invocation.route_step ?? null,
       routeSteps: invocation.route_steps ?? null,
@@ -372,6 +388,7 @@ function reviewAuditManifest(invocation, prompt, containmentPath, execution) {
       authPath: invocation.selected_auth_path ?? null,
       billingPath: invocation.billing_path ?? null,
       sourceBearing: modeSendsSelectedSource(invocation.mode),
+      sourceContentTransmission,
       sourceSendApprovalRequired: invocation.source_send_approval_required ?? null,
       sourceSendApprovalState: invocation.source_send_approval_state ?? null,
       providerCapabilities: providerCapabilitiesForReviewAudit(),
@@ -468,7 +485,12 @@ function collectPriorReviewSlotAttempts(workspaceRoot, currentJobId = null) {
       const record = JSON.parse(readFileSync(joinPath(resolveJobsDir(workspaceRoot), entry.name), "utf8"));
       if (record?.job_id !== jobId) continue;
       const slot = reviewSlotFromRecord(record);
-      if (priorSlotCountsTowardRetry(slot)) attempts.push({ review_slot: slot });
+      if (priorSlotCountsTowardRetry(slot)) {
+        const previousAttempt = sourcePacketPreviousAttemptFromJobRecord(record);
+        attempts.push(previousAttempt
+          ? { ...previousAttempt, review_slot: slot }
+          : { review_slot: slot });
+      }
     } catch {
       // Malformed legacy records are not trusted as retry-policy evidence.
     }
@@ -513,6 +535,8 @@ function approvalAuditManifest(invocation, prompt, containmentPath) {
       reason: scopeResolutionReason(invocation),
     },
     route: {
+      mode: invocation.mode,
+      providerId: "gemini",
       selectedRoute: invocation.selected_route ?? null,
       routeStep: invocation.route_step ?? null,
       routeSteps: invocation.route_steps ?? null,
@@ -1081,6 +1105,7 @@ async function cmdApprovalRequest(rest) {
     started_at: new Date().toISOString(),
     approval_scope: approvalScope,
     approval_token: null,
+    previous_source_attempt: latestSourcePacketPreviousAttempt(reviewSlotPriorAttempts),
     review_slot_prior_attempts: reviewSlotPriorAttempts,
     ...reviewSlotInvocationFields(options),
     ...sourcePacketOverrideInvocationFields(options),
@@ -1227,6 +1252,7 @@ async function cmdRun(rest) {
     auth_mode: authSelection.auth_mode,
     approval_scope: approvalScope,
     approval_token: options["approval-token"] ?? null,
+    previous_source_attempt: latestSourcePacketPreviousAttempt(reviewSlotPriorAttempts),
     review_slot_prior_attempts: reviewSlotPriorAttempts,
     started_at: new Date().toISOString(),
     ...reviewSlotInvocationFields(options),
@@ -1284,6 +1310,7 @@ async function cmdRun(rest) {
         timeout_ms: timeoutMs,
         approval_scope: invocation.approval_scope,
         approval_token: invocation.approval_token,
+        previous_source_attempt: invocation.previous_source_attempt,
         review_slot_prior_attempts: invocation.review_slot_prior_attempts,
         review_slot_disposition: invocation.review_slot_disposition,
         review_slot_waiver_artifact: invocation.review_slot_waiver_artifact,
