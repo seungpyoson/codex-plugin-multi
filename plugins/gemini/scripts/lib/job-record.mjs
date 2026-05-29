@@ -477,6 +477,53 @@ function pathInside(base, target) {
   };
 }
 
+function normalizeProviderAccountIdentity(input) {
+  const identity = input?.provider_account_identity;
+  if (!identity || typeof identity !== "object") return null;
+  const provider = typeof identity.provider === "string" && /^[a-z0-9._-]+$/.test(identity.provider)
+    ? identity.provider
+    : null;
+  const identitySource = typeof identity.identity_source === "string" && /^[a-z0-9._-]+$/.test(identity.identity_source)
+    ? identity.identity_source
+    : null;
+  const identityFields = Array.isArray(identity.identity_fields)
+    ? identity.identity_fields.filter((field) => typeof field === "string" && /^[a-z0-9._-]+$/.test(field))
+    : [];
+  const fingerprintValue = typeof identity.account_fingerprint?.value === "string" &&
+    /^[a-f0-9]{64}$/i.test(identity.account_fingerprint.value)
+    ? identity.account_fingerprint.value.toLowerCase()
+    : null;
+  if (!provider || !identitySource || !fingerprintValue) return null;
+  return {
+    provider,
+    identity_source: identitySource,
+    identity_fields: identityFields,
+    account_fingerprint: {
+      algorithm: "sha256",
+      value: fingerprintValue,
+    },
+  };
+}
+
+function normalizeProviderWorkloadDiagnostic(input, redactText = (value) => value) {
+  if (!input || typeof input !== "object") return null;
+  const holderInput = input.holder && typeof input.holder === "object" ? input.holder : null;
+  const holder = holderInput ? {
+    provider: typeof holderInput.provider === "string" ? redactText(holderInput.provider) : null,
+    job_id: typeof holderInput.job_id === "string" ? redactText(holderInput.job_id) : null,
+    pid: Number.isSafeInteger(holderInput.pid) ? holderInput.pid : null,
+    hostname: typeof holderInput.hostname === "string" ? redactText(holderInput.hostname) : null,
+    cwd: typeof holderInput.cwd === "string" ? redactText(holderInput.cwd) : null,
+    started_at: typeof holderInput.started_at === "string" ? redactText(holderInput.started_at) : null,
+    lock_file: typeof holderInput.lock_file === "string" ? redactText(holderInput.lock_file) : null,
+  } : null;
+
+  return {
+    reason: typeof input.reason === "string" ? redactText(input.reason) : null,
+    holder,
+  };
+}
+
 function normalizeRuntimeDiagnostics(input, denials, redactText = (value) => value) {
   if (!input || typeof input !== "object") return null;
   const redactNullableText = (value) => value == null ? null : redactText(value);
@@ -520,6 +567,10 @@ function normalizeRuntimeDiagnostics(input, denials, redactText = (value) => val
     out.cleanup_warning = cleanupWarning;
     out.cleanup_warning_path = cleanupWarningPath;
   }
+  const providerAccountIdentity = normalizeProviderAccountIdentity(input);
+  if (providerAccountIdentity) out.provider_account_identity = providerAccountIdentity;
+  const providerWorkload = normalizeProviderWorkloadDiagnostic(input.provider_workload, redactText);
+  if (providerWorkload) out.provider_workload = providerWorkload;
   return out;
 }
 

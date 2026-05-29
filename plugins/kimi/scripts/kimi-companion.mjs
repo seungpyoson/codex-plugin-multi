@@ -53,6 +53,11 @@ import {
 } from "./lib/companion-common.mjs";
 import { REVIEW_PROMPT_CONTRACT_VERSION, buildReviewAuditManifest, buildReviewPrompt, buildSelectedSourcePromptBlock, selectedSourceFilesFromPrompt } from "./lib/review-prompt.mjs";
 import { diffSourceFiles } from "./lib/diff-source.mjs";
+import {
+  acquireProviderWorkloadLease,
+  providerWorkloadBlockedExecution,
+  releaseProviderWorkloadLease,
+} from "./lib/review-workload.mjs";
 
 const PLUGIN_ROOT = resolvePath(dirname(fileURLToPath(import.meta.url)), "..");
 const MODELS_CONFIG_PATH = resolvePath(PLUGIN_ROOT, "config/models.json");
@@ -1276,6 +1281,42 @@ async function executeRun(invocation, prompt, { foreground, lifecycleEvents = nu
     process.exit(2);
   }
 
+  const workloadAdmission = acquireProviderWorkloadLease({
+    provider: invocation.target,
+    jobId,
+    cwd,
+    sourceBearing: modeSendsSelectedSource(invocation.mode),
+  });
+  let workloadLease = null;
+  if (workloadAdmission.ok) {
+    workloadLease = workloadAdmission.lease;
+  } else {
+    const workloadPreflight = providerWorkloadBlockedExecution(workloadAdmission);
+    workloadPreflight.reviewAuditManifest = reviewAuditManifest(invocation, prompt, containment.path, workloadPreflight);
+    if (neutralCwd) {
+      try { rmSync(neutralCwd, { recursive: true, force: true }); } catch { /* best-effort */ }
+    }
+    if (launchFiles) launchFiles.cleanup();
+    if (disposeEffective) {
+      try { containment.cleanup(); } catch { /* best-effort */ }
+    }
+    const errorRecord = buildJobRecord(invocation, {
+      exitCode: workloadPreflight.exitCode,
+      endedAt: workloadPreflight.endedAt,
+      parsed: workloadPreflight.parsed,
+      pidInfo: null,
+      kimiSessionId: null,
+      errorMessage: workloadPreflight.errorMessage,
+      reviewAuditManifest: workloadPreflight.reviewAuditManifest,
+      runtimeDiagnostics: workloadPreflight.runtimeDiagnostics,
+      ...redactionFieldsForPrompt(prompt),
+    }, mutations);
+    writeJobFile(workspaceRoot, jobId, errorRecord);
+    upsertJob(workspaceRoot, errorRecord);
+    if (foreground) printLifecycleJson(errorRecord, lifecycleEvents);
+    process.exit(2);
+  }
+
   const preflightExecution = await kimiReadinessPreflight(invocation, profile);
   if (preflightExecution) {
     preflightExecution.reviewAuditManifest = reviewAuditManifest(invocation, prompt, containment.path, preflightExecution);
@@ -1302,6 +1343,8 @@ async function executeRun(invocation, prompt, { foreground, lifecycleEvents = nu
         process.stderr.write(`kimi-companion: warning: sidecar ${name} write failed: ${e.message}\n`);
       }
     }
+    releaseProviderWorkloadLease(workloadLease);
+    workloadLease = null;
     if (neutralCwd) rmSync(neutralCwd, { recursive: true, force: true });
     if (launchFiles) launchFiles.cleanup();
     if (disposeEffective) containment.cleanup();
@@ -1368,6 +1411,8 @@ async function executeRun(invocation, prompt, { foreground, lifecycleEvents = nu
       break;
     }
   } catch (e) {
+    releaseProviderWorkloadLease(workloadLease);
+    workloadLease = null;
     const errorRecord = buildJobRecord(executedInvocation, {
       exitCode: null, parsed: null, pidInfo: null, kimiSessionId: null,
       errorMessage: e.message,
@@ -1383,6 +1428,8 @@ async function executeRun(invocation, prompt, { foreground, lifecycleEvents = nu
     process.exit(2);
   } finally {
     stopHeartbeat();
+    releaseProviderWorkloadLease(workloadLease);
+    workloadLease = null;
   }
 
   // ——— finalization (#16 follow-up 1) ————————————————————————————————
@@ -1431,6 +1478,8 @@ async function executeRun(invocation, prompt, { foreground, lifecycleEvents = nu
     signal: execution.signal ?? null,
     timedOut: execution.timedOut === true,
     reviewAuditManifest: execution.reviewAuditManifest,
+    errorMessage: execution.errorMessage,
+    runtimeDiagnostics: execution.runtimeDiagnostics ?? null,
     ...redactionFieldsForPrompt(prompt),
   }, mutations);
 

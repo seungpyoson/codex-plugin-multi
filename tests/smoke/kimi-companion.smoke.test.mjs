@@ -9,6 +9,10 @@ import { fileURLToPath } from "node:url";
 
 import { fixtureBranchDiffRepo, fixtureGit, fixtureSeedRepo } from "../helpers/fixture-git.mjs";
 import { badVerdictReviewFixture, requestChangesReviewFixture } from "../helpers/review-fixtures.mjs";
+import {
+  acquireProviderWorkloadLease,
+  releaseProviderWorkloadLease,
+} from "../../scripts/lib/review-workload.mjs";
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const COMPANION = path.join(REPO_ROOT, "plugins/kimi/scripts/kimi-companion.mjs");
@@ -22,6 +26,8 @@ function sha256(value) {
 }
 
 function runCompanion(args, { cwd, env = {}, dataDir = mkdtempSync(path.join(tmpdir(), "kimi-smoke-data-")) } = {}) {
+  const workloadLockDir = env.CODEX_PLUGIN_MULTI_PROVIDER_WORKLOAD_LOCK_DIR
+    ?? path.join(dataDir, "provider-workload");
   const res = spawnSync("node", [COMPANION, ...args], {
     cwd,
     encoding: "utf8",
@@ -29,6 +35,7 @@ function runCompanion(args, { cwd, env = {}, dataDir = mkdtempSync(path.join(tmp
       ...process.env,
       KIMI_BINARY: MOCK,
       KIMI_PLUGIN_DATA: dataDir,
+      CODEX_PLUGIN_MULTI_PROVIDER_WORKLOAD_LOCK_DIR: workloadLockDir,
       ...env,
     },
   });
@@ -646,6 +653,56 @@ test("kimi custom-review prompt includes selected source content", () => {
     assert.equal(record.review_metadata.audit_manifest.review_quality.failed_review_slot, false);
     assert.deepEqual(record.review_metadata.audit_manifest.review_quality.semantic_failure_reasons, []);
   } finally {
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("kimi custom-review maps held workload lease to provider_workload_blocked without spawn", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "kimi-workload-block-cwd-"));
+  const dataDir = mkdtempSync(path.join(tmpdir(), "kimi-workload-block-data-"));
+  const workloadLockDir = path.join(dataDir, "provider-workload");
+  fixtureSeedRepo(cwd);
+  const admission = acquireProviderWorkloadLease({
+    provider: "kimi",
+    jobId: "held-kimi-job",
+    cwd,
+    sourceBearing: true,
+    env: { CODEX_PLUGIN_MULTI_PROVIDER_WORKLOAD_LOCK_DIR: workloadLockDir },
+  });
+  assert.equal(admission.ok, true);
+
+  try {
+    const result = runCompanion([
+      "run",
+      "--mode",
+      "custom-review",
+      "--cwd",
+      cwd,
+      "--scope-paths",
+      "seed.txt",
+      "--foreground",
+      "--",
+      "Review this scope.",
+    ], {
+      cwd,
+      dataDir,
+      env: {
+        CODEX_PLUGIN_MULTI_PROVIDER_WORKLOAD_LOCK_DIR: workloadLockDir,
+        KIMI_MOCK_ASSERT_PROMPT_INCLUDES: "MUST_NOT_REACH_KIMI",
+      },
+    });
+
+    assert.equal(result.status, 2, result.stderr || result.stdout);
+    const record = parseJson(result.stdout);
+    assert.equal(record.status, "failed");
+    assert.equal(record.error_code, "provider_workload_blocked");
+    assert.equal(record.external_review.source_content_transmission, "not_sent");
+    assert.equal(record.runtime_diagnostics.provider_workload.reason, "active_same_provider_job");
+    assert.equal(record.runtime_diagnostics.provider_workload.holder.job_id, "held-kimi-job");
+    assert.doesNotMatch(result.stdout, /MUST_NOT_REACH_KIMI|external_review_launched/);
+  } finally {
+    releaseProviderWorkloadLease(admission.lease);
+    rmSync(dataDir, { recursive: true, force: true });
     rmSync(cwd, { recursive: true, force: true });
   }
 });

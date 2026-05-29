@@ -2,6 +2,8 @@
 import { spawnSync } from "node:child_process";
 import { lstat, mkdir, open, readFile, readdir, realpath, rename, rm, unlink, writeFile } from "node:fs/promises";
 import { constants as fsConstants, lstatSync, readFileSync } from "node:fs";
+import { request as httpRequest } from "node:http";
+import { request as httpsRequest } from "node:https";
 import { basename, dirname, isAbsolute, resolve, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createHash, randomUUID } from "node:crypto";
@@ -22,6 +24,11 @@ import {
   EXTERNAL_REVIEW_KEYS,
   SOURCE_CONTENT_TRANSMISSION,
 } from "./lib/external-review.mjs";
+import {
+  acquireProviderWorkloadLease,
+  providerWorkloadBlockedExecution,
+  releaseProviderWorkloadLease,
+} from "./lib/review-workload.mjs";
 
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 const PLUGIN_ROOT = resolve(SCRIPT_DIR, "..");
@@ -89,6 +96,7 @@ const API_REVIEWER_EXPECTED_KEYS = Object.freeze([
   "usage",
   "auth_mode",
   "credential_ref",
+  "credential_source",
   "endpoint",
   "http_status",
   "raw_model",
@@ -96,6 +104,8 @@ const API_REVIEWER_EXPECTED_KEYS = Object.freeze([
 ]);
 const ALLOWED_REQUEST_DEFAULT_KEYS = new Set(["thinking", "reasoning_effort", "max_tokens", "top_p", "stop"]);
 const ACCOUNT_PAYMENT_DIAGNOSTIC_RE = /^(?:stripe-.+|cus_[A-Za-z0-9]{6,}|acct_(?:test_)?[A-Za-z0-9]{5,}|cs_(?:test|live)_[A-Za-z0-9]{6,}|(?:pi|sub|in|ii|ch|seti|setp|price|prod|iv)_(?=[A-Za-z0-9]*\d)[A-Za-z0-9]{5,})$/i;
+const CREDENTIAL_REDACTION_VALUE = Symbol("credential_redaction_value");
+const REDACTION_SECRET_ENV_PREFIX = "API_REVIEWERS_REDACTION_SECRET";
 
 function writableOutput(output) {
   return output && typeof output.write === "function" ? output : process.stdout;
@@ -919,13 +929,13 @@ function providersConfigErrorFields(error, provider = null) {
 }
 
 function selectedCredential(cfg, env = process.env) {
-  const effectiveEnv = credentialEnvWithCache(cfg, env);
+  const resolution = credentialEnvResolution(cfg, env);
   for (const keyName of cfg.env_keys ?? []) {
-    if (typeof effectiveEnv[keyName] === "string" && effectiveEnv[keyName].length > 0) {
-      return { keyName, value: effectiveEnv[keyName] };
+    if (typeof resolution.env[keyName] === "string" && resolution.env[keyName].length > 0) {
+      return { keyName, value: resolution.env[keyName], source: resolution.sources[keyName] ?? null };
     }
   }
-  return { keyName: null, value: null };
+  return { keyName: null, value: null, source: null };
 }
 
 function credentialEnvKeys(cfg) {
@@ -1080,12 +1090,23 @@ function credentialEnvCacheEntries(env, names) {
 }
 
 function credentialEnvWithCache(cfgOrNames, env = process.env) {
+  return credentialEnvResolution(cfgOrNames, env).env;
+}
+
+function credentialEnvResolution(cfgOrNames, env = process.env) {
   const names = Array.isArray(cfgOrNames) ? cfgOrNames : credentialEnvKeys(cfgOrNames);
-  const missingNames = names.filter((name) => !(typeof env[name] === "string" && env[name].length > 0));
-  if (missingNames.length === 0) return env;
-  const entries = credentialEnvCacheEntries(env, missingNames);
-  if (Object.keys(entries).length === 0) return env;
-  return { ...env, ...entries };
+  const entries = credentialEnvCacheEntries(env, names);
+  const hasCacheEntries = Object.keys(entries).length > 0;
+  const effectiveEnv = hasCacheEntries ? { ...env, ...entries } : env;
+  const sources = {};
+  for (const name of names) {
+    if (typeof entries[name] === "string" && entries[name].length > 0) {
+      sources[name] = "env_cache";
+    } else if (typeof env[name] === "string" && env[name].length > 0) {
+      sources[name] = "env";
+    }
+  }
+  return { env: effectiveEnv, sources };
 }
 
 function parsePositiveIntegerEnv(env, name, label) {
@@ -1362,9 +1383,38 @@ function buildShardingPlan({
   });
 }
 
+function redactionContext(configuredSecretNames = [], env = process.env, extraSecretValues = []) {
+  const names = Array.isArray(configuredSecretNames)
+    ? configuredSecretNames.filter((name) => typeof name === "string" && name.length > 0)
+    : [];
+  const effectiveEnv = credentialEnvWithCache(names, env);
+  const redactionEnv = { ...effectiveEnv };
+  const redactionNames = [...names];
+  let syntheticIndex = 0;
+  const addSecret = (value) => {
+    if (typeof value !== "string" || value.length === 0) return;
+    const name = `${REDACTION_SECRET_ENV_PREFIX}_${syntheticIndex}`;
+    syntheticIndex += 1;
+    redactionEnv[name] = value;
+    redactionNames.push(name);
+  };
+  for (const name of names) {
+    if (typeof env[name] === "string" && env[name].length > 0 && env[name] !== effectiveEnv[name]) {
+      addSecret(env[name]);
+    }
+  }
+  for (const value of extraSecretValues) addSecret(value);
+  return { env: redactionEnv, configuredSecretNames: redactionNames };
+}
+
+function credentialRedactionValues(execution = null) {
+  const value = execution?.[CREDENTIAL_REDACTION_VALUE];
+  return typeof value === "string" && value.length > 0 ? [value] : [];
+}
+
 function redactor(env = process.env, configuredSecretNames = []) {
-  const effectiveEnv = credentialEnvWithCache(configuredSecretNames, env);
-  return buildPrivacyRedactor({ env: effectiveEnv, configuredSecretNames }).text;
+  const context = redactionContext(configuredSecretNames, env);
+  return buildPrivacyRedactor(context).text;
 }
 
 function redactValue(value, redact) {
@@ -1378,9 +1428,9 @@ function redactValue(value, redact) {
   return value;
 }
 
-function redactRecord(record, env = process.env, configuredSecretNames = [], sourceFiles = []) {
-  const effectiveEnv = credentialEnvWithCache(configuredSecretNames, env);
-  return buildPrivacyRedactor({ env: effectiveEnv, configuredSecretNames, sourceFiles }).value(record);
+function redactRecord(record, env = process.env, configuredSecretNames = [], sourceFiles = [], extraSecretValues = []) {
+  const context = redactionContext(configuredSecretNames, env, extraSecretValues);
+  return buildPrivacyRedactor({ ...context, sourceFiles }).value(record);
 }
 
 function configuredSecretNamesFromProviders(providers) {
@@ -1445,6 +1495,7 @@ function sourceFreePreSendFailureExecution(execution, cfg, env = process.env) {
       },
     ),
     credential_ref: execution.credential_ref ?? credential.keyName ?? null,
+    credential_source: execution.credential_source ?? credential.source ?? null,
     endpoint: execution.endpoint ?? baseUrlFor(cfg),
   };
 }
@@ -1509,6 +1560,7 @@ async function doctorFields(provider, cfg, env = process.env) {
       next_action: suggestedAction(providerProbe.status, provider, cfg, errorMessage, execution.http_status ?? null, env),
       auth_mode: cfg.auth_mode,
       credential_ref: credential.keyName,
+      credential_source: credential.source,
       endpoint,
       model: cfg.model,
       provider_probe: {
@@ -1526,6 +1578,7 @@ async function doctorFields(provider, cfg, env = process.env) {
     next_action: "Run a direct API review.",
     auth_mode: cfg.auth_mode,
     credential_ref: credential.keyName,
+    credential_source: credential.source,
     endpoint,
     model: cfg.model,
     provider_probe: providerProbe,
@@ -1967,8 +2020,19 @@ function mockProviderExecution(cfg, prompt, credential, env, requestBody) {
     session_id: safeProviderSessionId(parsed.value?.id),
     http_status: 200,
     credential_ref: credential.keyName,
+    credential_source: credential.source,
+    [CREDENTIAL_REDACTION_VALUE]: credential.value,
     endpoint: baseUrlFor(cfg),
     diagnostics: diagnostics(),
+  };
+}
+
+function providerCredentialExecutionFields(cfg, credential) {
+  return {
+    credential_ref: credential.keyName ?? null,
+    credential_source: credential.source ?? null,
+    [CREDENTIAL_REDACTION_VALUE]: credential.value ?? null,
+    endpoint: baseUrlFor(cfg),
   };
 }
 
@@ -1977,6 +2041,7 @@ async function callProvider(provider, cfg, prompt, env = process.env) {
   const preflight = validateDirectApiRunPreflight(cfg, provider, effectiveEnv);
   if (!preflight.ok) return providerFailure(preflight.reason, preflight.error, null, null, false);
   const { credential, maxTokensOverride, timeoutMs } = preflight;
+  const credentialFields = providerCredentialExecutionFields(cfg, credential);
   const endpoint = `${baseUrlFor(cfg)}/chat/completions`;
   const requestBody = {
     model: cfg.model,
@@ -1985,13 +2050,16 @@ async function callProvider(provider, cfg, prompt, env = process.env) {
   };
   const defaultsResult = applyRequestDefaults(requestBody, cfg.request_defaults);
   if (!defaultsResult.ok) {
-    return providerFailureWithDiagnostics("bad_args", defaultsResult.error, null, null, false, {
-      configured_timeout_ms: timeoutMs.value,
-      prompt_chars: prompt.length,
-      request_defaults: summarizeRequestDefaults(cfg.request_defaults),
-      max_tokens: requestBody.max_tokens ?? null,
-      temperature: requestBody.temperature ?? null,
-    });
+    return {
+      ...providerFailureWithDiagnostics("bad_args", defaultsResult.error, null, null, false, {
+        configured_timeout_ms: timeoutMs.value,
+        prompt_chars: prompt.length,
+        request_defaults: summarizeRequestDefaults(cfg.request_defaults),
+        max_tokens: requestBody.max_tokens ?? null,
+        temperature: requestBody.temperature ?? null,
+      }),
+      ...credentialFields,
+    };
   }
   if (maxTokensOverride.value !== null) {
     requestBody.max_tokens = maxTokensOverride.value;
@@ -2008,50 +2076,56 @@ async function callProvider(provider, cfg, prompt, env = process.env) {
   if (effectiveEnv.API_REVIEWERS_MOCK_RESPONSE) {
     return mockProviderExecution(cfg, prompt, credential, effectiveEnv, requestBody);
   }
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs.value);
   const redact = redactor(effectiveEnv, cfg.env_keys);
   const started = Date.now();
   try {
-    const response = await fetch(endpoint, {
-      method: "POST",
+    const response = await postProviderJson(endpoint, {
       headers: {
         "content-type": "application/json",
         authorization: `Bearer ${credential.value}`,
       },
       body: JSON.stringify(requestBody),
-      signal: controller.signal,
+      timeoutMs: timeoutMs.value,
     });
-    const text = await response.text();
+    const text = response.text;
     const parsed = parseJson(text);
     if (!response.ok) {
       const errorCode = classifyHttpFailure(response.status, parsed, text);
-      return providerFailureWithDiagnostics(
-        errorCode,
-        providerErrorMessage(parsed, text, redact, { safeUsageLimit: errorCode === "usage_limited" }),
-        response.status,
-        parsed,
-        true,
-        {
-          ...diagnostics(),
-          elapsed_ms: Date.now() - started,
-          cost_quota: costQuotaDiagnostics(errorCode, response.status, parsed),
-        },
-      );
+      return {
+        ...providerFailureWithDiagnostics(
+          errorCode,
+          providerErrorMessage(parsed, text, redact, { safeUsageLimit: errorCode === "usage_limited" }),
+          response.status,
+          parsed,
+          true,
+          {
+            ...diagnostics(),
+            elapsed_ms: Date.now() - started,
+            cost_quota: costQuotaDiagnostics(errorCode, response.status, parsed),
+          },
+        ),
+        ...credentialFields,
+      };
     }
     if (!parsed.ok) {
-      return providerFailureWithDiagnostics("malformed_response", parsed.error, response.status, null, true, diagnostics());
+      return {
+        ...providerFailureWithDiagnostics("malformed_response", parsed.error, response.status, null, true, diagnostics()),
+        ...credentialFields,
+      };
     }
     const content = parsed.value?.choices?.[0]?.message?.content;
     if (typeof content !== "string") {
-      return providerFailureWithDiagnostics(
-        "malformed_response",
-        "response did not include choices[0].message.content",
-        response.status,
-        parsed.value,
-        true,
-        diagnostics(),
-      );
+      return {
+        ...providerFailureWithDiagnostics(
+          "malformed_response",
+          "response did not include choices[0].message.content",
+          response.status,
+          parsed.value,
+          true,
+          diagnostics(),
+        ),
+        ...credentialFields,
+      };
     }
     return {
       exitCode: 0,
@@ -2063,26 +2137,86 @@ async function callProvider(provider, cfg, prompt, env = process.env) {
       },
       session_id: safeProviderSessionId(parsed.value?.id),
       http_status: response.status,
-      credential_ref: credential.keyName,
-      endpoint: baseUrlFor(cfg),
+      ...credentialFields,
       diagnostics: diagnostics(),
     };
   } catch (e) {
-    const reason = e?.name === "AbortError" ? "timeout" : "provider_unavailable";
-    return providerFailureWithDiagnostics(
-      reason,
-      redact(e?.message ?? String(e)),
-      null,
-      null,
-      payloadSentForProviderException(e),
-      {
-        ...diagnostics(),
-        elapsed_ms: Date.now() - started,
-      },
-    );
-  } finally {
-    clearTimeout(timer);
+    const reason = isProviderTimeoutException(e) ? "timeout" : "provider_unavailable";
+    return {
+      ...providerFailureWithDiagnostics(
+        reason,
+        redact(e?.message ?? String(e)),
+        null,
+        null,
+        payloadSentForProviderException(e),
+        {
+          ...diagnostics(),
+          elapsed_ms: Date.now() - started,
+          fetch_error: fetchExceptionDiagnostics(e, redact),
+        },
+      ),
+      ...credentialFields,
+    };
   }
+}
+
+function postProviderJson(endpoint, { headers, body, timeoutMs }) {
+  return new Promise((resolvePromise, rejectPromise) => {
+    let url;
+    try {
+      url = new URL(endpoint);
+    } catch (e) {
+      rejectPromise(e);
+      return;
+    }
+    const transport = url.protocol === "https:" ? httpsRequest : url.protocol === "http:" ? httpRequest : null;
+    if (!transport) {
+      rejectPromise(new Error(`unsupported provider endpoint protocol: ${url.protocol}`));
+      return;
+    }
+
+    let settled = false;
+    let timeout = null;
+    const finish = (fn, value) => {
+      if (settled) return;
+      settled = true;
+      if (timeout) clearTimeout(timeout);
+      fn(value);
+    };
+
+    const request = transport(url, {
+      method: "POST",
+      headers: {
+        ...headers,
+        "content-length": Buffer.byteLength(body),
+      },
+    }, (response) => {
+      const chunks = [];
+      response.on("data", (chunk) => {
+        chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+      });
+      response.on("end", () => {
+        const text = Buffer.concat(chunks).toString("utf8");
+        const status = response.statusCode ?? 0;
+        finish(resolvePromise, {
+          ok: status >= 200 && status < 300,
+          status,
+          text,
+        });
+      });
+      response.on("error", (error) => finish(rejectPromise, error));
+    });
+
+    timeout = setTimeout(() => {
+      const error = new Error(`request timed out after ${timeoutMs}ms`);
+      error.name = "AbortError";
+      error.code = "API_REVIEWERS_REQUEST_TIMEOUT";
+      request.destroy(error);
+      finish(rejectPromise, error);
+    }, timeoutMs);
+    request.on("error", (error) => finish(rejectPromise, error));
+    request.end(body);
+  });
 }
 
 function summarizeRequestDefaults(defaults = {}) {
@@ -2098,9 +2232,26 @@ function safeProviderSessionId(value) {
   return /^[A-Za-z0-9._:/=+@-]{1,200}$/.test(value) ? value : null;
 }
 
+function providerExceptionCode(error) {
+  return error?.code ?? error?.cause?.code ?? null;
+}
+
+function isProviderTimeoutException(error) {
+  if (error?.name === "AbortError") return true;
+  const code = providerExceptionCode(error);
+  if (code === "UND_ERR_HEADERS_TIMEOUT" || code === "UND_ERR_BODY_TIMEOUT" || code === "UND_ERR_CONNECT_TIMEOUT") {
+    return true;
+  }
+  const causeName = String(error?.cause?.name ?? "");
+  const causeMessage = String(error?.cause?.message ?? "");
+  return /TimeoutError$/u.test(causeName) || /timeout error/i.test(causeMessage);
+}
+
 function payloadSentForProviderException(error) {
   if (error?.name === "AbortError") return true;
-  const code = error?.code ?? error?.cause?.code ?? null;
+  const code = providerExceptionCode(error);
+  if (code === "UND_ERR_HEADERS_TIMEOUT" || code === "UND_ERR_BODY_TIMEOUT") return true;
+  if (code === "UND_ERR_CONNECT_TIMEOUT") return false;
   if (code === "ENOTFOUND" || code === "EAI_AGAIN" || code === "ECONNREFUSED" ||
       code === "EHOSTUNREACH" || code === "ENETUNREACH") {
     return false;
@@ -2196,6 +2347,41 @@ function providerFailureWithDiagnostics(reason, message, httpStatus, raw = null,
     ...providerFailure(reason, message, httpStatus, raw, payloadSent),
     diagnostics,
   };
+}
+
+function boundedDiagnosticString(value, redact) {
+  if (value == null) return null;
+  const text = redact(String(value));
+  return text.length > 500 ? `${text.slice(0, 500)}...` : text;
+}
+
+function errorDiagnosticFields(error, redact) {
+  if (!error || typeof error !== "object") return null;
+  const fields = {
+    name: boundedDiagnosticString(error.name, redact),
+    code: boundedDiagnosticString(error.code, redact),
+    message: boundedDiagnosticString(error.message, redact),
+  };
+  return Object.fromEntries(Object.entries(fields).filter(([, value]) => value != null && value !== ""));
+}
+
+function fetchExceptionDiagnostics(error, redact) {
+  const diagnostics = errorDiagnosticFields(error, redact) ?? {
+    message: boundedDiagnosticString(error, redact),
+  };
+  const causeFields = errorDiagnosticFields(error?.cause, redact);
+  if (causeFields && Object.keys(causeFields).length > 0) {
+    diagnostics.cause = causeFields;
+  }
+  if (Array.isArray(error?.cause?.errors)) {
+    const errors = error.cause.errors
+      .slice(0, 3)
+      .map((entry) => errorDiagnosticFields(entry, redact))
+      .filter((entry) => entry && Object.keys(entry).length > 0);
+    if (errors.length > 0) diagnostics.cause_errors = errors;
+    if (error.cause.errors.length > errors.length) diagnostics.cause_errors_truncated = true;
+  }
+  return diagnostics;
 }
 
 function providerUnavailableSuggestedAction(errorMessage = "", httpStatus = null, env = process.env) {
@@ -2360,6 +2546,7 @@ function approvalAuthPathFor(cfg, env = process.env) {
   return Object.freeze({
     auth_mode: cfg.auth_mode ?? null,
     credential_ref: credential.keyName ?? null,
+    credential_source: credential.source ?? null,
   });
 }
 
@@ -2685,6 +2872,9 @@ function errorCauseFor(errorCode) {
   if (errorCode === "source_packet_too_large" || errorCode === "resend_confirmation_required") {
     return buildExternalModelFailureDiagnostic(errorCode, "external model")?.error_cause ?? "source_packet_policy";
   }
+  if (errorCode === "provider_workload_blocked") {
+    return buildExternalModelFailureDiagnostic(errorCode, "external model")?.error_cause ?? "workload_admission";
+  }
   if (errorCode === "git_binary_rejected") return "git_binary_policy";
   if (errorCode === "sandbox_blocked") return "sandbox_access";
   if (errorCode === "usage_limited") return "cost_quota_usage_limit";
@@ -2824,7 +3014,8 @@ function buildRuntimeDiagnostics(diagnostics) {
     Object.hasOwn(diagnostics, "prompt_chars") ||
     Object.hasOwn(diagnostics, "request_defaults") ||
     Object.hasOwn(diagnostics, "max_tokens") ||
-    Object.hasOwn(diagnostics, "temperature")
+    Object.hasOwn(diagnostics, "temperature") ||
+    Object.hasOwn(diagnostics, "fetch_error")
   );
   const out = {};
   if (hasProviderRequest) {
@@ -2835,6 +3026,7 @@ function buildRuntimeDiagnostics(diagnostics) {
       request_defaults: diagnostics.request_defaults ?? null,
       max_tokens: diagnostics.max_tokens ?? null,
       temperature: diagnostics.temperature ?? null,
+      fetch_error: diagnostics.fetch_error ?? null,
     };
     out.cost_quota = diagnostics.cost_quota ?? null;
   } else if (Object.hasOwn(diagnostics, "cost_quota")) {
@@ -2852,6 +3044,9 @@ function buildRuntimeDiagnostics(diagnostics) {
   if (diagnostics.review_slot) {
     out.review_slot = diagnostics.review_slot;
   }
+  if (diagnostics.provider_workload) {
+    out.provider_workload = diagnostics.provider_workload;
+  }
   return Object.keys(out).length === 0 ? null : out;
 }
 
@@ -2865,9 +3060,9 @@ function buildRecord({ provider, cfg, mode, options, scopeInfo, execution, start
     })
     : null;
   const completed = processCompleted && !reviewQualityState;
+  const redaction = redactionContext(cfg.env_keys, process.env, credentialRedactionValues(execution));
   const redactSensitiveText = buildPrivacyRedactor({
-    env: credentialEnvWithCache(cfg.env_keys, process.env),
-    configuredSecretNames: cfg.env_keys,
+    ...redaction,
     sourceFiles: scopeInfo.files,
   }).text;
   const result = processCompleted ? redactSensitiveText(execution.parsed.result) : null;
@@ -2947,6 +3142,7 @@ function buildRecord({ provider, cfg, mode, options, scopeInfo, execution, start
     usage: execution.parsed?.usage ?? null,
     auth_mode: cfg.auth_mode,
     credential_ref: execution.credential_ref ?? null,
+    credential_source: execution.credential_source ?? null,
     endpoint: execution.endpoint ?? (cfg.base_url ? baseUrlFor(cfg) : null),
     http_status: execution.http_status ?? null,
     raw_model: execution.parsed?.raw_model ?? null,
@@ -3092,6 +3288,7 @@ async function cmdRun(options) {
   let cfg;
   let scopeInfo;
   let execution;
+  let workloadLease = null;
   try {
     lifecycleEvents = parseLifecycleEventsMode(options["lifecycle-events"]);
     if (!provider) throw runBadArgs("bad_args: --provider is required");
@@ -3221,6 +3418,22 @@ async function cmdRun(options) {
     if (execution) {
       // handled below by the terminal JobRecord path without a launch event
     } else {
+      const workloadAdmission = acquireProviderWorkloadLease({
+        provider,
+        jobId,
+        cwd: scopeInfo.cwd,
+        sourceBearing: true,
+      });
+      if (workloadAdmission.ok) {
+        workloadLease = workloadAdmission.lease;
+      } else {
+        execution = providerWorkloadBlockedExecution(workloadAdmission);
+        execution.prompt = renderedPrompt;
+      }
+    }
+    if (execution) {
+      // handled below by the terminal JobRecord path without a launch event
+    } else {
       execution = await sourceFreePreSendFailure(provider, cfg, process.env);
     }
     if (execution) {
@@ -3279,9 +3492,13 @@ async function cmdRun(options) {
         execution.prompt = renderedPrompt;
       } finally {
         stopHeartbeat();
+        releaseProviderWorkloadLease(workloadLease);
+        workloadLease = null;
       }
     }
   }
+  releaseProviderWorkloadLease(workloadLease);
+  workloadLease = null;
   if (execution) execution.approval_scope = approvalScope;
   const record = redactRecord(buildRecord({
     provider: provider ?? "api-reviewers",
@@ -3292,7 +3509,7 @@ async function cmdRun(options) {
     execution,
     startedAt,
     endedAt: new Date().toISOString(),
-  }), process.env, cfg.env_keys, scopeInfo.files);
+  }), process.env, cfg.env_keys, scopeInfo.files, credentialRedactionValues(execution));
   const printableRecord = record.error_code === "sandbox_blocked"
     ? record
     : await persistRecordBestEffort(record, process.env, cfg.env_keys, record.workspace_root ?? record.cwd);

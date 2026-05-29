@@ -245,7 +245,7 @@ export function buildPrivacyRedactor({
     if (typeof input === "object") {
       const out = {};
       for (const [key, sub] of Object.entries(input)) {
-        Object.defineProperty(out, text(key), {
+        Object.defineProperty(out, key, {
           value: value(sub),
           enumerable: true,
           configurable: true,

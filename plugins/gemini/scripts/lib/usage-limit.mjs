@@ -3,6 +3,7 @@ export const USAGE_LIMIT_SAFE_MESSAGE = "Provider reported a quota, usage-tier, 
 const USAGE_LIMIT_DETAIL_RES = [
   /\b(?:insufficient_quota|payment_required)\b/i,
   /\busage limit\b/i,
+  /\bsession limit\b/i,
   /\bquota\b/i,
   /\bbilling[_ -]?(?:cycle|account|limit|hard[_ -]?limit|quota)\b/i,
   /\bcredit limit\b/i,
