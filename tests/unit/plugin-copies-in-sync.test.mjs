@@ -657,6 +657,11 @@ test("Grok auto transport stays an adapter capability and uses shared source-tra
     /cfg\.provider\s*===\s*["']grok-web["']\s*\?\s*["']grok["']/,
     "Grok packet recovery must not hardcode transport-provider aliases",
   );
+  assert.doesNotMatch(
+    source,
+    /chars exceeds GROK_(?:CLI|WEB)_MAX_PROMPT_CHARS=/,
+    "Grok prompt budget diagnostics must use promptBudgetEnvName(cfg), not hardcoded transport env names",
+  );
   const adapterSource = readRepoFile("plugins/grok/scripts/lib/grok-transport-adapters.mjs");
   assert.match(
     adapterSource,

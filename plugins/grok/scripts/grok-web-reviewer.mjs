@@ -4895,7 +4895,8 @@ async function cmdRun(options) {
               ...(execution.diagnostics ?? {}),
             };
           } else if (prompt.length > cfg.max_prompt_chars) {
-            execution = providerFailure("prompt_too_large", redactor()(`prompt_too_large:${prompt.length} chars exceeds GROK_WEB_MAX_PROMPT_CHARS=${cfg.max_prompt_chars}`), null, null, false);
+            const capName = promptBudgetEnvName(cfg);
+            execution = providerFailure("prompt_too_large", redactor()(`prompt_too_large:${prompt.length} chars exceeds ${capName}=${cfg.max_prompt_chars}`), null, null, false);
             execution.diagnostics = {
               cli_request: cliRequestDiagnosticsForFallback(cliFailure),
               packet_recovery: promptCapPacketRecovery({ cfg, mode, prompt, scopeInfo, options: runOptions }),
