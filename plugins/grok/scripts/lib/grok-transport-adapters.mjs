@@ -70,6 +70,32 @@ function cliConfig(options = {}, env = process.env) {
   };
 }
 
+function cliFallbackConfig(options = {}, env = process.env) {
+  return {
+    provider: "grok",
+    display_name: "Grok CLI",
+    auth_mode: "subscription_cli",
+    selected_route: "subscription_cli",
+    transport: "cli",
+    requested_transport: options.requestedTransport ?? "cli",
+    fallback_from: options.fallbackFrom ?? null,
+    fallback_reason: options.fallbackReason ?? null,
+    binary: env.GROK_CLI_BINARY || "grok",
+    base_url: null,
+    model: env.GROK_CLI_MODEL || DEFAULT_CLI_MODEL,
+    timeout_ms: DEFAULT_TIMEOUT_MS,
+    max_prompt_chars: DEFAULT_MAX_PROMPT_CHARS,
+    max_turns: DEFAULT_CLI_MAX_TURNS,
+    prompt_budget_env: "GROK_CLI_MAX_PROMPT_CHARS",
+    default_model_env: "GROK_CLI_MODEL",
+    timeout_env: "GROK_CLI_TIMEOUT_MS",
+    legacy: false,
+    credential_ref: null,
+    credential_value: null,
+    api_capability: providerApiCapability("grok"),
+  };
+}
+
 function webConfig(options = {}, env = process.env) {
   const rawTransport = String(options.transport ?? env.GROK_TRANSPORT ?? "web").trim().toLowerCase();
   return {
@@ -151,7 +177,7 @@ export function resolveGrokConfig(options = {}, env = process.env) {
 export function resolveGrokFallbackConfig(options = {}, env = process.env) {
   const transport = resolveGrokTransportMode(options, env);
   if (transport === "web") return webFallbackConfig(options, env);
-  return cliConfig({ ...options, requestedTransport: transport }, env);
+  return cliFallbackConfig({ ...options, requestedTransport: transport }, env);
 }
 
 export function webAutoFallbackConfig(options = {}, env = process.env, reason = null) {

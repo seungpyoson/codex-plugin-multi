@@ -135,6 +135,20 @@ test("resolveGrokFallbackConfig uses safe web defaults for early error records",
   assert.equal(fallback.max_prompt_chars, 400000);
 });
 
+test("resolveGrokFallbackConfig uses safe CLI defaults for early error records", () => {
+  const fallback = resolveGrokFallbackConfig({ transport: "cli" }, {
+    GROK_CLI_TIMEOUT_MS: "not-a-number",
+    GROK_CLI_MAX_PROMPT_CHARS: "not-a-number",
+    GROK_CLI_MAX_TURNS: "not-a-number",
+  });
+
+  assert.equal(fallback.transport, "cli");
+  assert.equal(fallback.requested_transport, "cli");
+  assert.equal(fallback.timeout_ms, 900000);
+  assert.equal(fallback.max_prompt_chars, 400000);
+  assert.equal(fallback.max_turns, 8);
+});
+
 test("resolveGrokConfig exposes web adapter facts and legacy aliases", () => {
   const web = resolveGrokConfig({ transport: "web" }, {
     GROK_WEB_BASE_URL: "http://127.0.0.1:7654/api/v1/",
