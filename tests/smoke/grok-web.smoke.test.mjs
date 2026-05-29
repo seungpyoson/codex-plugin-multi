@@ -2032,21 +2032,25 @@ test("doctor reports only canonical XAI_API_KEY as ignored, not Grok CLI login",
 test("Grok runtime reads direct API credential names from provider metadata", () => {
   const entrypointSource = readFileSync(COMPANION, "utf8");
   const runtimeSource = readFileSync(COMPANION_RUNTIME, "utf8");
-  assert.match(
-    runtimeSource,
-    /function cliConfig[\s\S]{0,1200}provider:\s*GROK_CANONICAL_PROVIDER,\s*canonical_provider:\s*GROK_CANONICAL_PROVIDER/,
+  const transportAdapterSource = readFileSync(
+    path.join(REPO_ROOT, "plugins/grok/scripts/lib/grok-transport-adapters.mjs"),
+    "utf8",
   );
   assert.match(
-    runtimeSource,
+    transportAdapterSource,
+    /function cliConfig[\s\S]{0,1400}provider:\s*GROK_CANONICAL_PROVIDER,\s*canonical_provider:\s*GROK_CANONICAL_PROVIDER/,
+  );
+  assert.match(
+    transportAdapterSource,
     /function webConfig[\s\S]{0,1800}provider:\s*["']grok-web["'],\s*canonical_provider:\s*GROK_CANONICAL_PROVIDER/,
   );
   assert.match(
-    runtimeSource,
-    /function fallbackConfig[\s\S]{0,1800}provider:\s*["']grok-web["'],\s*canonical_provider:\s*GROK_CANONICAL_PROVIDER/,
+    transportAdapterSource,
+    /function webFallbackConfig[\s\S]{0,1800}provider:\s*["']grok-web["'],\s*canonical_provider:\s*GROK_CANONICAL_PROVIDER/,
   );
-  assert.match(runtimeSource, /providerApiCapability\(GROK_CANONICAL_PROVIDER\)/);
-  assert.doesNotMatch(runtimeSource, /providerApiCapability\(["']grok["']\)/);
-  for (const source of [entrypointSource, runtimeSource]) {
+  assert.match(transportAdapterSource, /providerApiCapability\(GROK_CANONICAL_PROVIDER\)/);
+  assert.doesNotMatch(transportAdapterSource, /providerApiCapability\(["']grok["']\)/);
+  for (const source of [entrypointSource, runtimeSource, transportAdapterSource]) {
     assert.doesNotMatch(source, /\b(?:GROK_API_KEY|XAI_API_KEY|XAI_KEY)\b/);
   }
 });

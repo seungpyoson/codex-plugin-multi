@@ -614,13 +614,69 @@ test("Grok auto transport stays an adapter capability and uses shared source-tra
   assert.match(source, /cliRequestDiagnosticsForFallback/);
   assert.match(
     source,
-    /canonical_provider/,
-    "Grok packet recovery must derive the canonical provider from config metadata",
+    /\}\s+from\s+["']\.\/lib\/grok-transport-adapters\.mjs["']/,
+    "Grok runtime must import transport decisions from the shared Grok transport adapter module",
+  );
+  for (const exportedHelper of [
+    "resolveGrokConfig",
+    "resolveGrokFallbackConfig",
+    "webAutoFallbackConfig",
+    "promptBudgetEnvName",
+    "canAutoFallbackFromCliExecution",
+    "cliRequestDiagnosticsForFallback",
+  ]) {
+    assert.match(
+      source,
+      new RegExp(`\\b${exportedHelper}\\b`),
+      `Grok runtime must consume ${exportedHelper} from the transport adapter module`,
+    );
+  }
+  for (const localTransportHelper of [
+    "transportMode",
+    "cliConfig",
+    "webConfig",
+    "config",
+    "fallbackConfig",
+    "webAutoFallbackConfig",
+    "canAutoFallbackFromCliExecution",
+    "cliRequestDiagnosticsForFallback",
+  ]) {
+    assert.doesNotMatch(
+      source,
+      new RegExp(`function\\s+${localTransportHelper}\\s*\\(`),
+      `Grok runtime must not keep local transport helper ${localTransportHelper}`,
+    );
+  }
+  assert.doesNotMatch(
+    source,
+    /const\s+GROK_CLI_AUTO_FALLBACK_CODES\s*=/,
+    "Grok CLI auto fallback code taxonomy must live in the transport adapter module",
   );
   assert.doesNotMatch(
     source,
     /cfg\.provider\s*===\s*["']grok-web["']\s*\?\s*["']grok["']/,
     "Grok packet recovery must not hardcode transport-provider aliases",
+  );
+  assert.doesNotMatch(
+    source,
+    /chars exceeds GROK_(?:CLI|WEB)_MAX_PROMPT_CHARS=/,
+    "Grok prompt budget diagnostics must use promptBudgetEnvName(cfg), not hardcoded transport env names",
+  );
+  const adapterSource = readRepoFile("plugins/grok/scripts/lib/grok-transport-adapters.mjs");
+  assert.match(
+    adapterSource,
+    /canonical_provider/,
+    "Grok packet recovery must derive the canonical provider from config metadata",
+  );
+  assert.match(
+    adapterSource,
+    /providerApiCapability\(GROK_CANONICAL_PROVIDER\)/,
+    "Grok transport adapter must derive direct API credential names from canonical provider metadata",
+  );
+  assert.doesNotMatch(
+    adapterSource,
+    /providerApiCapability\(["']grok["']\)/,
+    "Grok transport adapter must not hardcode direct API credential aliases",
   );
 });
 
