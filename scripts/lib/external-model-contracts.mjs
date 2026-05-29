@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+
 export const EXTERNAL_MODEL_CONTRACT_VERSION = 1;
 
 const GENERATED_NOTICE =
@@ -771,7 +773,17 @@ function apiArgumentHint(workflow) {
   throw new Error(`unknown api workflow: ${workflow}`);
 }
 
-const API_REVIEWERS_PLUGIN_VERSION = "0.1.0";
+function readApiReviewersPluginVersion() {
+  const pluginJson = JSON.parse(
+    readFileSync(new URL("../../plugins/api-reviewers/.codex-plugin/plugin.json", import.meta.url), "utf8"),
+  );
+  if (typeof pluginJson.version !== "string" || pluginJson.version.trim() === "") {
+    throw new Error("api_reviewers_plugin_version_missing");
+  }
+  return pluginJson.version;
+}
+
+const API_REVIEWERS_PLUGIN_VERSION = readApiReviewersPluginVersion();
 const API_REVIEWER_SCRIPT = `\${CODEX_HOME:-$HOME/.codex}/plugins/cache/codex-plugin-multi/api-reviewers/${API_REVIEWERS_PLUGIN_VERSION}/scripts/api-reviewer.mjs`;
 const API_REVIEWER_ENTRYPOINT = `node "${API_REVIEWER_SCRIPT}"`;
 
