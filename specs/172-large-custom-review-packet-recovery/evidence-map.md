@@ -89,6 +89,9 @@ MVP:
 - Wire through Direct API and Grok first because they expose both pre-send
   failures from #172; keep shared helpers and packaged-copy sync so
   Claude/Gemini/Kimi use the same field meanings when their packet policy blocks.
+- Do not claim full pre-send parity for all companion runtime failures. Local
+  packet-policy gates are wrapper-enforced before source send; provider-runtime
+  failures discovered after launch are represented as source-sent failed slots.
 
 ## Non-Goals
 
@@ -128,6 +131,10 @@ object is emitted for:
   process/session cannot prove whether selected source was already sent.
 - Kimi packet-cap and source-sent retry failures, including
   `supports_no_source_resume:false`.
+- Provider recovery capabilities record
+  `local_source_packet_policy_pre_send:true` and
+  `source_sent_runtime_failures_failed_slot:true`, making the pre-send versus
+  post-launch boundary explicit in every `packet_recovery` object.
 - Review-panel failed rows without changing failed-slot classification.
 
 Post-review fix evidence:
@@ -392,3 +399,36 @@ Results:
 - Final Grok review job `job_eae44931-c910-4176-9308-b03d783fc8e7` approved the
   same final packet with selected source sent, a clean review-quality audit,
   and no permission denials.
+
+## Companion Pre-Send Boundary Follow-up
+
+Post-review triage found that "companion pre-send parity" was a partially valid
+review concern but not a runtime-architecture bug to solve inside #185. The
+correct invariant is:
+
+- Locally knowable source-packet policy failures fail before source send.
+- Provider-runtime failures known only after launch are source-sent failed
+  slots and cannot count as approval.
+
+Fix:
+
+- `ProviderRecoveryCapabilities` now records
+  `local_source_packet_policy_pre_send:true` and
+  `source_sent_runtime_failures_failed_slot:true`.
+- The packet-recovery schema requires both capability facts.
+- `spec.md`, `plan.md`, `data-model.md`, `quickstart.md`, and this evidence
+  map now state that #172 does not promise all companion runtime failures are
+  pre-send.
+
+Verification:
+
+- RED contract/policy tests failed before adding the two capability facts.
+- GREEN focused contract/policy tests passed after implementation.
+- `node --test tests/unit/docs-contracts.test.mjs tests/unit/provider-route-policy.test.mjs tests/unit/plugin-copies-in-sync.test.mjs`: 145 passed, 0 failed.
+- `npm run lint:sync`: passed.
+- `node --test tests/unit/review-prompt.test.mjs tests/unit/job-record.test.mjs`: 509 passed, 0 failed.
+- `node --test tests/smoke/api-reviewers.smoke.test.mjs`: 170 passed, 0 failed.
+- `node --test tests/smoke/grok-web.smoke.test.mjs`: 166 passed, 0 failed.
+
+This follow-up changed the branch after the final Claude/Grok review jobs above;
+the next external review must use the new head SHA.

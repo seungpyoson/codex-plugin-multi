@@ -450,3 +450,26 @@ Final prompt-routing review:
 
 Both final stored review records show completed status, no error, approved
 review slots, clean review-quality audits, and no permission denials.
+
+## Post-Final-Review Follow-up
+
+After the final Claude/Grok review above, the branch added a narrow companion
+pre-send boundary clarification:
+
+- `ProviderRecoveryCapabilities` now records
+  `local_source_packet_policy_pre_send:true` and
+  `source_sent_runtime_failures_failed_slot:true`.
+- #172 spec artifacts now state that local source-packet policy gates are
+  pre-send, while provider-runtime failures discovered after companion launch
+  remain source-sent failed slots.
+
+Verification for this follow-up:
+
+- RED contract/policy tests failed before the capability facts existed.
+- `node --test tests/unit/docs-contracts.test.mjs tests/unit/provider-route-policy.test.mjs tests/unit/plugin-copies-in-sync.test.mjs`: 145 passed, 0 failed.
+- `npm run lint:sync`: passed.
+- `node --test tests/unit/review-prompt.test.mjs tests/unit/job-record.test.mjs`: 509 passed, 0 failed.
+- `node --test tests/smoke/api-reviewers.smoke.test.mjs`: 170 passed, 0 failed.
+- `node --test tests/smoke/grok-web.smoke.test.mjs`: 166 passed, 0 failed.
+
+This follow-up has not yet received a fresh exact-head external review.

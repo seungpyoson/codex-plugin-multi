@@ -144,6 +144,12 @@ Validation rules:
 - `supports_no_source_resume`: boolean
 - `requires_source_send_approval`: boolean
 - `requires_resend_confirmation_after_source_sent_failure`: boolean
+- `local_source_packet_policy_pre_send`: boolean; true means locally knowable
+  source-packet policy failures are evaluated before source-bearing provider
+  launch
+- `source_sent_runtime_failures_failed_slot`: boolean; true means runtime
+  failures discovered after provider launch are represented as source-sent
+  failed slots and cannot count as approval
 - `transport_fallbacks`: ordered fallback names, for example `cli`, `web`, or
   empty array
 
@@ -158,6 +164,10 @@ Validation rules:
   `supports_no_source_resume:false` is the structured proof that
   `resume_without_source_resend` is unavailable; recovery actions must omit that
   action and offer resend-confirmation, provider switch, or waiver paths instead.
+- Provider parity does not require every runtime failure to be knowable before
+  launch. It requires locally knowable source-packet policy failures to fail
+  before source send, and post-launch runtime failures to remain source-sent
+  failed slots with no approval credit.
 - The schema rejects any `packet_recovery` whose
   `provider_capabilities.supports_no_source_resume:false` appears with a
   `resume_without_source_resend` recovery action. The action type remains valid

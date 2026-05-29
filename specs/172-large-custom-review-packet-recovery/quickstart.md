@@ -93,6 +93,11 @@ When Claude, Gemini, or Kimi surface packet-cap, step-limit, timeout, no-verdict
 stale, or runtime failure metadata:
 
 - `packet_recovery` uses the same field names and schema as Direct API/Grok
+- local packet-policy failures remain pre-send; runtime failures known only
+  after provider launch are source-sent failed slots, not pre-send failures
+- `provider_capabilities.local_source_packet_policy_pre_send:true` and
+  `provider_capabilities.source_sent_runtime_failures_failed_slot:true` make
+  that boundary explicit
 - `failed_review_slot:true` is preserved for source-sent missing-verdict,
   timeout, crash, stale, or step-limit failures
 - Kimi lower packet-cap recovery either narrows/shards before send or records

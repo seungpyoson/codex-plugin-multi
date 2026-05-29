@@ -103,6 +103,13 @@ and Grok only.
 - [x] T063 Replace Claude, Gemini, and Kimi provider-facing review prompt repository labels with git `owner/repo` identity or `local-workspace:<basename>` when no remote exists.
 - [x] T064 Record prompt-routing root cause, RED/GREEN evidence, and final Claude/Grok follow-up review results in `evidence-map.md` and `final-review-results.md`.
 
+## Phase 9: Companion Pre-Send Boundary Follow-Up
+
+- [x] T065 Add RED contract and policy tests proving provider capabilities distinguish local pre-send source-packet policy from post-launch runtime failures.
+- [x] T066 Add `local_source_packet_policy_pre_send` and `source_sent_runtime_failures_failed_slot` to `ProviderRecoveryCapabilities` and synced provider policy copies.
+- [x] T067 Update #172 spec artifacts to avoid claiming full pre-send parity for companion runtime failures.
+- [x] T068 Re-run contract, sync, Direct API, and Grok smoke verification for the capability-shape change.
+
 ## Dependencies
 
 1. Phase 2 blocks all runtime implementation.

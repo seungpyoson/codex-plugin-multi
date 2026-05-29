@@ -74,6 +74,9 @@ The adapter capability surface must be defined before provider wiring so each
 provider contributes facts only. Direct API and Grok get first behavior smokes
 because they already expose #172 pre-send failures. Claude, Gemini, and Kimi
 must still get conformance/projection tests so field meanings do not drift.
+This is not a promise that all companion runtime failures are pre-send; local
+packet-policy gates are pre-send, while provider-runtime failures discovered
+after launch are modeled as source-sent failed slots.
 
 ## Phase 0: Evidence And Matrix
 
@@ -153,6 +156,8 @@ TDD order:
    slots remain failed when recovery metadata exists.
 10. Add Claude/Gemini/Kimi companion conformance tests for the same field names,
    including Kimi packet-cap and source-sent step-limit recovery projection.
+   Include capability facts distinguishing local pre-send packet gates from
+   post-launch source-sent runtime failures.
 11. Add companion/shared sync tests for packaged policy copies if shared files
    move.
 12. Update docs/skills only through canonical sources or sync checks.

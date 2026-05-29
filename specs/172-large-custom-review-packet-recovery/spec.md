@@ -29,6 +29,9 @@ returns a structured recovery plan with exact safe next actions.
 **Independent Test**: A fixture with multiple large custom-review files fails
 before provider launch for Direct API and Grok, and the JobRecord contains
 `packet_recovery` with shard and diff-packet actions.
+Companion provider tests assert the same field meanings for locally knowable
+packet-policy blocks, while provider-runtime failures discovered after launch
+remain source-sent failed slots.
 
 **Acceptance Scenarios**:
 
@@ -145,6 +148,11 @@ tests assert `failed_review_slot:true` or source not sent as appropriate.
   explicitly through provider capabilities; for Kimi source-bearing step-limit
   failures, `provider_capabilities.supports_no_source_resume:false` MUST omit
   any `resume_without_source_resend` action.
+- **FR-013**: Provider capabilities MUST distinguish locally knowable
+  source-packet policy gates from provider-runtime failures. Local packet-policy
+  gates MUST fail before source send when enforceable by the wrapper;
+  provider-runtime failures discovered only after launch MUST remain
+  source-sent failed slots and MUST NOT count as approval.
 - **FR-012**: When a JobRecord has both top-level `error_code` and
   `packet_recovery.reason`, the values MUST match for packet recovery failures.
 
@@ -152,7 +160,8 @@ tests assert `failed_review_slot:true` or source not sent as appropriate.
 
 - **SC-001**: Focused source-packet/prompt-cap tests show `packet_recovery` for
   Direct API and Grok pre-send failures, with companion conformance tests for
-  Claude/Gemini/Kimi field projection.
+  Claude/Gemini/Kimi field projection and capability facts documenting
+  post-launch runtime-failure handling.
 - **SC-002**: Shared policy tests prove changed review surfaces are surfaced and
   not counted as original full-source approval.
 - **SC-003**: Existing over-budget and failed-slot tests remain green.

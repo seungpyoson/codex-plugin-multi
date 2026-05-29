@@ -231,6 +231,8 @@
         "supports_no_source_resume",
         "requires_source_send_approval",
         "requires_resend_confirmation_after_source_sent_failure",
+        "local_source_packet_policy_pre_send",
+        "source_sent_runtime_failures_failed_slot",
         "transport_fallbacks"
       ],
       "properties": {
@@ -249,6 +251,8 @@
         "supports_no_source_resume": { "type": "boolean" },
         "requires_source_send_approval": { "type": "boolean" },
         "requires_resend_confirmation_after_source_sent_failure": { "type": "boolean" },
+        "local_source_packet_policy_pre_send": { "type": "boolean" },
+        "source_sent_runtime_failures_failed_slot": { "type": "boolean" },
         "transport_fallbacks": {
           "type": "array",
           "items": { "$ref": "#/$defs/safeText" }

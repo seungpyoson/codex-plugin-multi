@@ -120,6 +120,9 @@ test("kimi review prompt avoids local workspace path when no git remote exists",
   });
   try {
     assert.equal(result.status, 0, result.stderr);
+    const record = parseJson(result.stdout);
+    assert.equal(record.review_metadata.audit_manifest.git_identity.remote, `local-workspace:${path.basename(cwd)}`);
+    assert.doesNotMatch(JSON.stringify(record.review_metadata.audit_manifest.git_identity), new RegExp(cwd.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
   } finally {
     rmSync(result.dataDir, { recursive: true, force: true });
     rmSync(cwd, { recursive: true, force: true });

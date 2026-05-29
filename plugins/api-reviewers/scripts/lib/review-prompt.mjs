@@ -5,8 +5,11 @@ import {
   buildReviewSlotDisposition,
   evaluateReviewSlotRetryPolicy,
   evaluateSourcePacketPolicy,
+  packetRecoveryReviewSurface,
+  reviewQualityPacketRecoveryErrorCode,
   reviewSlotRequestSettingsHash,
   reviewSlotRetryFingerprint,
+  sourceSentPacketRecoveryReason,
 } from "./provider-route-policy.mjs";
 
 export const REVIEW_PROMPT_CHECKLIST = Object.freeze([
@@ -23,11 +26,6 @@ export const REVIEW_PROMPT_CONTRACT_STYLES = Object.freeze(["standard", "compact
 export const REVIEW_AUDIT_MANIFEST_VERSION = 1;
 const MAX_REVIEW_MARKUP_STRIPS = 10;
 const MAX_CHECKLIST_NUMBER_DIGITS = 10;
-const SOURCE_SENT_PACKET_RECOVERY_REASONS = new Set([
-  "review_not_completed",
-  "step_limit_exceeded",
-  "timeout",
-]);
 const SELECTED_SOURCE_INSPECTION_VERBS = Object.freeze([
   "analyzed",
   "checked",
@@ -100,91 +98,6 @@ function sourceManifest(sourceFiles = []) {
       lines: entries.reduce((sum, file) => sum + file.lines, 0),
     }),
   });
-}
-
-function sourceTotalsForReviewSurface(source = null) {
-  const totals = source?.totals ?? {};
-  return {
-    files: Number.isSafeInteger(totals.files) ? totals.files : null,
-    bytes: Number.isSafeInteger(totals.bytes) ? totals.bytes : null,
-  };
-}
-
-function sourceHashForReviewSurface(source = null) {
-  if (!source || typeof source !== "object") return null;
-  const totals = sourceTotalsForReviewSurface(source);
-  if ((totals.files ?? 0) === 0 && (totals.bytes ?? 0) === 0) return null;
-  const files = Array.isArray(source.files) ? source.files : [];
-  const normalized = {
-    files: files.map((file) => ({
-      path: file?.path ?? null,
-      bytes: file?.bytes ?? null,
-      lines: file?.lines ?? null,
-      content_hash: file?.content_hash?.value ?? file?.content_hash ?? null,
-    })),
-    totals,
-  };
-  return hashObject(JSON.stringify(normalized)).value;
-}
-
-function previousSourceForReviewSurface(previousAttempt = null) {
-  return previousAttempt?.selected_source
-    ?? previousAttempt?.source_packet
-    ?? previousAttempt?.review_metadata?.audit_manifest?.selected_source
-    ?? null;
-}
-
-function packetRecoveryReviewSurface({ selectedSource, previousAttempt = null, sourcePacketPolicy = null } = {}) {
-  const previousSource = previousSourceForReviewSurface(previousAttempt);
-  const originalSource = previousSource ?? selectedSource;
-  const originalTotals = sourceTotalsForReviewSurface(originalSource);
-  const currentTotals = sourceTotalsForReviewSurface(selectedSource);
-  const originalHash = sourceHashForReviewSurface(originalSource);
-  const currentHash = sourceHashForReviewSurface(selectedSource);
-  const changed = sourcePacketPolicy?.review_surface_changed ?? (
-    originalHash !== null && currentHash !== null && originalHash !== currentHash
-  );
-  return Object.freeze({
-    original_packet_hash: originalHash,
-    current_packet_hash: currentHash,
-    original_files: originalTotals.files,
-    current_files: currentTotals.files,
-    original_bytes: originalTotals.bytes,
-    current_bytes: currentTotals.bytes,
-    changed,
-    change_reason: changed ? "narrowed_scope" : "none",
-    approval_credit: changed ? "changed_surface_only" : "none",
-    coverage_proof: null,
-  });
-}
-
-function sourceSentPacketRecoveryReason({
-  status = null,
-  errorCode = null,
-  sourceContentTransmission = null,
-  reviewQuality = null,
-} = {}) {
-  const sourceWasSent = sourceContentTransmission === "sent"
-    || sourceContentTransmission === "may_be_sent"
-    || sourceContentTransmission === "sent_after_explicit_approval";
-  if (!sourceWasSent) return null;
-  if (status === "failed" && SOURCE_SENT_PACKET_RECOVERY_REASONS.has(errorCode)) return errorCode;
-  const semanticReasons = Array.isArray(reviewQuality?.semantic_failure_reasons)
-    ? reviewQuality.semantic_failure_reasons
-    : [];
-  if (reviewQuality?.failed_review_slot === true && semanticReasons.length > 0) {
-    return "review_not_completed";
-  }
-  return null;
-}
-
-function reviewQualityErrorCode(reviewQuality = null) {
-  const semanticReasons = Array.isArray(reviewQuality?.semantic_failure_reasons)
-    ? reviewQuality.semantic_failure_reasons
-    : [];
-  return reviewQuality?.failed_review_slot === true && semanticReasons.length > 0
-    ? "review_not_completed"
-    : null;
 }
 
 function isWordBoundary(char) {
@@ -1501,7 +1414,7 @@ export function buildReviewAuditManifest({
     })
     : sourcePacketPolicy;
   const reviewQuality = qualityFlags({ result, status, errorCode, selectedSource });
-  const effectiveErrorCode = errorCode ?? reviewQualityErrorCode(reviewQuality);
+  const effectiveErrorCode = errorCode ?? reviewQualityPacketRecoveryErrorCode(reviewQuality);
   const sourceContentTransmission =
     effectiveSourcePacketPolicy.source_send_allowed === false
       ? (effectiveSourcePacketPolicy.source_content_transmission ?? "not_sent")
@@ -1528,8 +1441,18 @@ export function buildReviewAuditManifest({
     waiverArtifact: route.reviewSlot?.waiverArtifact ?? null,
     overrideArtifact: route.reviewSlot?.overrideArtifact ?? null,
   });
+  const changedSurfaceRecoveryReason = effectiveSourcePacketPolicy.review_surface_changed === true
+    ? sourceSentPacketRecoveryReason({
+      status: route.previousAttempt?.status ?? null,
+      errorCode: route.previousAttempt?.error_code ?? null,
+      sourceContentTransmission: route.previousAttempt?.source_content_transmission ?? null,
+      reviewQuality: route.previousAttempt?.review_quality ?? null,
+    })
+    : null;
   const packetRecoveryReason = effectiveSourcePacketPolicy.source_send_allowed === false
     ? (effectiveSourcePacketPolicy.source_packet_policy_error_code ?? effectiveErrorCode)
+    : changedSurfaceRecoveryReason
+      ? changedSurfaceRecoveryReason
     : sourceSentPacketRecoveryReason({
       status,
       errorCode: effectiveErrorCode,

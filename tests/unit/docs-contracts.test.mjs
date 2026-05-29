@@ -1019,8 +1019,18 @@ test("packet recovery schema keeps the no-source resume capability guard", () =>
       "supports_no_source_resume",
       "requires_source_send_approval",
       "requires_resend_confirmation_after_source_sent_failure",
+      "local_source_packet_policy_pre_send",
+      "source_sent_runtime_failures_failed_slot",
       "transport_fallbacks",
     ],
+  );
+  assert.equal(
+    schema.$defs.providerRecoveryCapabilities.properties.local_source_packet_policy_pre_send.type,
+    "boolean",
+  );
+  assert.equal(
+    schema.$defs.providerRecoveryCapabilities.properties.source_sent_runtime_failures_failed_slot.type,
+    "boolean",
   );
 
   const noSourceResumeGuard = schema.allOf.find((entry) => (

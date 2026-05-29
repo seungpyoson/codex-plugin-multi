@@ -21,9 +21,11 @@ import { hasSubstantiveInvalidVerdictReason, reviewQualityFailureState } from ".
 import { buildPrivacyRedactor } from "./lib/privacy-redaction.mjs";
 import {
   buildPacketRecovery,
+  latestSourcePacketPreviousAttempt,
   normalizeApprovalScope,
   selectProviderRoute,
   sourceSendApprovalTupleFingerprint,
+  sourceSentPacketRecoveryReason,
 } from "./lib/provider-route-policy.mjs";
 import {
   EXTERNAL_REVIEW_KEYS,
@@ -56,11 +58,6 @@ const DEFAULT_MAX_PROMPT_CHARS = 600000;
 const DEFAULT_PROVIDER_TIMEOUT_MS = 900000;
 const DOCTOR_PROBE_PROMPT = "Return exactly: ok";
 const GIT_SHOW_MAX_BUFFER_BYTES = MAX_SCOPE_FILE_BYTES + 1;
-const DIRECT_API_SOURCE_BEARING_PACKET_RECOVERY_FAILURES = new Set([
-  "review_not_completed",
-  "provider_unavailable",
-  "timeout",
-]);
 const API_REVIEWER_EXPECTED_KEYS = Object.freeze([
   "id",
   "job_id",
@@ -642,15 +639,6 @@ async function collectPriorReviewSlotAttempts(root, currentJobId = null) {
     return String(left.job_id ?? "").localeCompare(String(right.job_id ?? ""));
   });
   return attempts;
-}
-
-function previousSourcePacketAttempt(priorAttempts = []) {
-  if (!Array.isArray(priorAttempts)) return null;
-  for (let index = priorAttempts.length - 1; index >= 0; index -= 1) {
-    const attempt = priorAttempts[index];
-    if (attempt?.selected_source || attempt?.source_packet) return attempt;
-  }
-  return null;
 }
 
 async function readApiReviewerLockOwnerRaw(lockOwnerFile) {
@@ -2781,7 +2769,7 @@ function buildApprovalAuditManifest({ cfg, provider = null, mode = null, rendere
       sourceSendApprovalRequired: routeFields?.source_send_approval_required ?? null,
       sourceSendApprovalState: routeFields?.source_send_approval_state ?? null,
       providerCapabilities: providerCapabilitiesForConfig(cfg),
-      previousAttempt: previousSourcePacketAttempt(options.reviewSlotPriorAttempts),
+      previousAttempt: latestSourcePacketPreviousAttempt(options.reviewSlotPriorAttempts),
       reviewSlot: reviewSlotRouteFields(options, {
         priorAttempts: options.reviewSlotPriorAttempts ?? [],
       }),
@@ -3118,7 +3106,7 @@ function buildReviewMetadata(provider, cfg, mode, scopeInfo, execution = null, s
       sourceSendApprovalState: routeFields.source_send_approval_state,
       providerCapabilities: providerCapabilitiesForConfig(cfg),
       packetRecovery: execution.diagnostics?.packet_recovery ?? null,
-      previousAttempt: previousSourcePacketAttempt(options.reviewSlotPriorAttempts),
+      previousAttempt: latestSourcePacketPreviousAttempt(options.reviewSlotPriorAttempts),
       reviewSlot: reviewSlotRouteFields(options, {
         priorAttempts: options.reviewSlotPriorAttempts ?? [],
       }),
@@ -3193,7 +3181,12 @@ function buildRuntimeDiagnostics(diagnostics) {
 }
 
 function sourceBearingFailurePacketRecovery({ provider, cfg, mode, reviewMetadata, errorCode, transmission }) {
-  if (!DIRECT_API_SOURCE_BEARING_PACKET_RECOVERY_FAILURES.has(errorCode)) return null;
+  const recoveryReason = sourceSentPacketRecoveryReason({
+    status: "failed",
+    errorCode,
+    sourceContentTransmission: transmission,
+  });
+  if (!recoveryReason) return null;
   if (
     transmission !== SOURCE_CONTENT_TRANSMISSION.SENT &&
     transmission !== SOURCE_CONTENT_TRANSMISSION.MAY_BE_SENT &&
@@ -3213,7 +3206,7 @@ function sourceBearingFailurePacketRecovery({ provider, cfg, mode, reviewMetadat
     suggested_action: "Do not automatically resend selected source after a failed source-sent review slot.",
   });
   return buildPacketRecovery({
-    reason: errorCode,
+    reason: recoveryReason,
     sourcePacketPolicy,
     providerCapabilities: providerCapabilitiesForConfig(cfg),
     provider,

@@ -4886,7 +4886,138 @@ test("custom-review blocks same-packet Grok resend after a failed source-sent sl
   }
 });
 
-test("custom-review allows explicit same-packet Grok retry disposition", async () => {
+test("custom-review records changed review surface when Grok retries with a narrowed packet", async () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "grok-web-changed-surface-workspace-"));
+  const dataDir = mkdtempSync(path.join(tmpdir(), "grok-web-changed-surface-data-"));
+  const badResult = badVerdictReviewFixture("Grok changed-surface initial slot.");
+  writeFileSync(path.join(cwd, "full.js"), "export const full = 'original source body';\n");
+  writeFileSync(path.join(cwd, "narrow.js"), "export const narrow = 'fallback source body';\n");
+
+  try {
+    let requestCount = 0;
+    await withServer(async (req, res) => {
+      requestCount += 1;
+      assert.equal(req.method, "POST");
+      assert.equal(req.url, "/api/chat/completions");
+      const body = await readJsonRequest(req);
+      if (requestCount === 1) {
+        assert.match(body.messages[0].content, /full\.js/);
+        assert.match(body.messages[0].content, /narrow\.js/);
+      } else {
+        assert.doesNotMatch(body.messages[0].content, /full\.js/);
+        assert.match(body.messages[0].content, /narrow\.js/);
+      }
+      res.setHeader("content-type", "application/json");
+      res.end(JSON.stringify({
+        id: `grok-web-changed-surface-session-${requestCount}`,
+        model: "grok-4.20-fast",
+        choices: [{
+          message: {
+            content: requestCount === 1
+              ? badResult
+              : substantiveReviewFixture("Grok changed-surface narrowed packet approved."),
+          },
+        }],
+        usage: { prompt_tokens: 12, completion_tokens: 40, total_tokens: 52 },
+      }));
+    }, async (baseUrl) => {
+      const commonOptions = {
+        cwd,
+        env: {
+          GROK_WEB_BASE_URL: baseUrl,
+          GROK_PLUGIN_DATA: dataDir,
+        },
+      };
+
+      const first = await runAsync([
+        "run",
+        "--mode", "custom-review",
+        "--scope", "custom",
+        "--scope-paths", "full.js,narrow.js",
+        "--foreground",
+        "--prompt", "Check this source packet.",
+      ], commonOptions);
+      assert.equal(first.status, 1, first.stderr || first.stdout);
+      const firstRecord = parseStdout(first);
+      assert.equal(firstRecord.error_code, "review_not_completed");
+      assert.equal(firstRecord.external_review.source_content_transmission, "sent");
+
+      const second = await runAsync([
+        "run",
+        "--mode", "custom-review",
+        "--scope", "custom",
+        "--scope-paths", "narrow.js",
+        "--foreground",
+        "--prompt", "Check this narrowed source packet.",
+      ], commonOptions);
+      assert.equal(second.status, 0, second.stderr || second.stdout);
+      const secondRecord = parseStdout(second);
+      const manifest = secondRecord.review_metadata.audit_manifest;
+      assert.equal(secondRecord.external_review.source_content_transmission, "sent");
+      assert.equal(manifest.source_packet_policy.source_packet_action, "send_narrowed_source_packet");
+      assert.equal(manifest.source_packet_policy.review_surface_changed, true);
+      assert.equal(manifest.packet_recovery?.review_surface?.changed, true);
+      assert.equal(manifest.packet_recovery?.review_surface?.approval_credit, "changed_surface_only");
+      assert.equal(manifest.packet_recovery?.review_surface?.original_files, 2);
+      assert.equal(manifest.packet_recovery?.review_surface?.current_files, 1);
+      assert.notEqual(
+        manifest.packet_recovery?.review_surface?.original_packet_hash,
+        manifest.packet_recovery?.review_surface?.current_packet_hash,
+      );
+      assert.equal(requestCount, 2);
+    });
+  } finally {
+    rmTree(cwd);
+    rmTree(dataDir);
+  }
+});
+
+test("custom-review Grok no-remote audit metadata uses safe local workspace identity", async () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "grok-web-local-repo-identity-"));
+  writeFileSync(path.join(cwd, "review.js"), "export const value = 42;\n");
+  const expectedRepository = `local-workspace:${path.basename(cwd)}`;
+  const reviewText = substantiveReviewFixture("Grok local repository identity marker.");
+
+  try {
+    await withServer(async (req, res) => {
+      assert.equal(req.method, "POST");
+      assert.equal(req.url, "/api/chat/completions");
+      const body = await readJsonRequest(req);
+      assert.match(body.messages[0].content, new RegExp(`Repository: ${expectedRepository}`));
+      assert.doesNotMatch(body.messages[0].content, new RegExp(cwd.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+      res.setHeader("content-type", "application/json");
+      res.end(JSON.stringify({
+        id: "grok-web-local-repo-identity-session",
+        model: "grok-4.20-fast",
+        choices: [{ message: { content: reviewText } }],
+        usage: { prompt_tokens: 12, completion_tokens: 40, total_tokens: 52 },
+      }));
+    }, async (baseUrl) => {
+      const result = await runAsync([
+        "run",
+        "--mode", "custom-review",
+        "--scope", "custom",
+        "--scope-paths", "review.js",
+        "--foreground",
+        "--prompt", "Check this file.",
+      ], {
+        cwd,
+        env: { GROK_WEB_BASE_URL: baseUrl },
+      });
+      assert.equal(result.status, 0, result.stderr || result.stdout);
+      const record = parseStdout(result);
+      assert.equal(record.review_metadata.audit_manifest.git_identity.remote, expectedRepository);
+      assert.doesNotMatch(
+        JSON.stringify(record.review_metadata.audit_manifest.git_identity),
+        new RegExp(cwd.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")),
+      );
+    });
+  } finally {
+    rmTree(cwd);
+  }
+});
+
+test("custom-review requires resend confirmation for explicit same-packet Grok retry disposition", async () => {
   const cwd = mkdtempSync(path.join(tmpdir(), "grok-web-retry-disposition-workspace-"));
   const dataDir = mkdtempSync(path.join(tmpdir(), "grok-web-retry-disposition-data-"));
   const badResult = badVerdictReviewFixture("Grok retry disposition marker.");
@@ -4937,8 +5068,22 @@ test("custom-review allows explicit same-packet Grok retry disposition", async (
       assert.equal(firstRecord.error_code, "review_not_completed");
       assert.equal(firstRecord.external_review.source_content_transmission, "sent");
 
-      const retried = await runAsync(
+      const blocked = await runAsync(
         [...commonArgs, "--review-slot-disposition", "retry"],
+        commonOptions,
+      );
+      assert.equal(blocked.status, 1, blocked.stderr || blocked.stdout);
+      const blockedRecord = parseStdout(blocked);
+      assert.equal(blockedRecord.error_code, "resend_confirmation_required");
+      assert.equal(blockedRecord.external_review.source_content_transmission, "not_sent");
+      assert.equal(blockedRecord.review_metadata.audit_manifest.review_slot.retry_count, 1);
+      assert.equal(blockedRecord.review_metadata.audit_manifest.review_slot.retry_disposition_required, true);
+      assert.equal(blockedRecord.review_metadata.audit_manifest.review_slot.disposition, "retry");
+      assert.equal(blockedRecord.review_metadata.audit_manifest.source_packet_policy.source_packet_action, "resend_confirmation_required");
+      assert.equal(requestCount, 1);
+
+      const retried = await runAsync(
+        [...commonArgs, "--review-slot-disposition", "retry", "--resend-confirmation-approved"],
         commonOptions,
       );
       assert.equal(retried.status, 0, retried.stderr || retried.stdout);
@@ -4947,6 +5092,7 @@ test("custom-review allows explicit same-packet Grok retry disposition", async (
       assert.equal(retriedRecord.review_metadata.audit_manifest.review_slot.retry_count, 1);
       assert.equal(retriedRecord.review_metadata.audit_manifest.review_slot.retry_disposition_required, true);
       assert.equal(retriedRecord.review_metadata.audit_manifest.review_slot.disposition, "retry");
+      assert.equal(retriedRecord.review_metadata.audit_manifest.source_packet_policy.source_packet_action, "send_after_resend_confirmation");
       assert.equal(requestCount, 2);
     });
   } finally {

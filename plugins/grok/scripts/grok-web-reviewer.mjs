@@ -12,7 +12,13 @@ import { REVIEW_PROMPT_CONTRACT_VERSION, buildReviewAuditManifest, buildReviewPr
 import { USAGE_LIMIT_SAFE_MESSAGE, isUsageLimitDetail } from "./lib/usage-limit.mjs";
 import { elapsedMs } from "./lib/time.mjs";
 import { providerApiCapability, sanitizeTargetEnv } from "./lib/provider-env.mjs";
-import { buildPacketRecovery, selectProviderRoute } from "./lib/provider-route-policy.mjs";
+import {
+  buildPacketRecovery,
+  latestSourcePacketPreviousAttempt,
+  selectProviderRoute,
+  sourcePacketPreviousAttemptFromJobRecord,
+  sourceSentPacketRecoveryReason,
+} from "./lib/provider-route-policy.mjs";
 import { diffSourceFiles } from "./lib/diff-source.mjs";
 import { buildExternalModelFailureDiagnostic } from "./lib/external-model-failure-core.mjs";
 import { hasSubstantiveInvalidVerdictReason, reviewQualityFailureState } from "./lib/external-model-review-quality.mjs";
@@ -1296,7 +1302,7 @@ async function collectScope(options) {
 
 function repositoryIdentity(cwd, workspaceRoot) {
   const remote = git(["remote", "get-url", "origin"], cwd, { allowFailure: true, workspaceRoot });
-  if (!remote) return workspaceRoot;
+  if (!remote) return `local-workspace:${basename(workspaceRoot ?? cwd ?? "workspace") || "workspace"}`;
   const match = /[:/]([^/:]+\/[^/]+?)(?:\.git)?$/.exec(remote);
   return match ? match[1] : remote;
 }
@@ -1600,6 +1606,7 @@ function sourcePacketOverrideRouteFields(options = {}) {
   return {
     sourcePacketOverrideApproved: approved,
     sourcePacketOverrideSource: approved ? LARGE_SOURCE_PACKET_FLAG : null,
+    resendConfirmationApproved: options["resend-confirmation-approved"] === true,
   };
 }
 
@@ -1675,6 +1682,7 @@ function sourcePacketPolicyPreflight({ cfg, mode, prompt, scopeInfo, options = {
       sourceSendApprovalRequired: route.source_send_approval_required,
       sourceSendApprovalState: route.source_send_approval_state,
       providerCapabilities,
+      previousAttempt: latestSourcePacketPreviousAttempt(options.reviewSlotPriorAttempts),
       reviewSlot: reviewSlotRouteFields(options, {
         priorAttempts: options.reviewSlotPriorAttempts ?? [],
       }),
@@ -1755,6 +1763,7 @@ function promptCapPacketRecovery({ cfg, mode, prompt, scopeInfo, options = {} } 
       sourceSendApprovalRequired: route.source_send_approval_required,
       sourceSendApprovalState: route.source_send_approval_state,
       providerCapabilities,
+      previousAttempt: latestSourcePacketPreviousAttempt(options.reviewSlotPriorAttempts),
       reviewSlot: reviewSlotRouteFields(options, {
         priorAttempts: options.reviewSlotPriorAttempts ?? [],
       }),
@@ -3561,6 +3570,7 @@ function buildReviewMetadata(cfg, scopeInfo, execution = null, startedAt = null,
       sourceSendApprovalState: route.source_send_approval_state,
       providerCapabilities: providerCapabilitiesForConfig(cfg),
       packetRecovery: execution.diagnostics?.packet_recovery ?? null,
+      previousAttempt: latestSourcePacketPreviousAttempt(options.reviewSlotPriorAttempts),
       reviewSlot: reviewSlotRouteFields(options, {
         priorAttempts: options.reviewSlotPriorAttempts ?? [],
       }),
@@ -3588,8 +3598,12 @@ function buildReviewMetadata(cfg, scopeInfo, execution = null, startedAt = null,
 }
 
 function sourceSentFailurePacketRecovery({ cfg, mode, reviewMetadata, errorCode, transmission }) {
-  if (errorCode !== "review_not_completed") return null;
-  if (transmission !== SOURCE_CONTENT_TRANSMISSION.SENT) return null;
+  const recoveryReason = sourceSentPacketRecoveryReason({
+    status: "failed",
+    errorCode,
+    sourceContentTransmission: transmission,
+  });
+  if (!recoveryReason) return null;
   const auditManifest = reviewMetadata?.audit_manifest;
   if (!auditManifest || auditManifest.packet_recovery) return null;
   const sourcePacketPolicy = Object.freeze({
@@ -3604,7 +3618,7 @@ function sourceSentFailurePacketRecovery({ cfg, mode, reviewMetadata, errorCode,
     suggested_action: "Do not automatically resend selected source after a failed source-sent review slot.",
   });
   return buildPacketRecovery({
-    reason: "review_not_completed",
+    reason: recoveryReason,
     sourcePacketPolicy,
     providerCapabilities: providerCapabilitiesForConfig(cfg),
     provider: recoveryProviderId(cfg),
@@ -3847,7 +3861,12 @@ async function collectPriorReviewSlotAttempts(root, currentJobId = null) {
       const record = JSON.parse(await readFile(resolve(jobsDir, entry.name, "meta.json"), "utf8"));
       if (record?.job_id !== entry.name) continue;
       const slot = reviewSlotFromRecord(record);
-      if (priorSlotCountsTowardRetry(slot)) attempts.push({ review_slot: slot });
+      if (priorSlotCountsTowardRetry(slot)) {
+        const previousAttempt = sourcePacketPreviousAttemptFromJobRecord(record);
+        attempts.push(previousAttempt
+          ? { ...previousAttempt, review_slot: slot }
+          : { review_slot: slot });
+      }
     } catch {
       // Malformed legacy artifacts are not trusted as retry-policy evidence.
     }

@@ -1786,6 +1786,9 @@ test("gemini review prompt avoids local workspace path when no git remote exists
   );
   try {
     assert.equal(status, 0, `exit ${status}: ${stderr}; stdout=${stdout}`);
+    const record = JSON.parse(stdout);
+    assert.equal(record.review_metadata.audit_manifest.git_identity.remote, `local-workspace:${path.basename(cwd)}`);
+    assert.doesNotMatch(JSON.stringify(record.review_metadata.audit_manifest.git_identity), new RegExp(cwd.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
   } finally {
     rmTree(dataDir);
     rmTree(cwd);

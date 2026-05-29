@@ -151,6 +151,7 @@ const SOURCE_RESUME_WITHOUT_RESEND_FAILURES = new Set([
 ]);
 const SOURCE_SENT_PACKET_RECOVERY_FAILURES = new Set([
   "review_not_completed",
+  "provider_unavailable",
   "stale_active_job",
   "step_limit_exceeded",
   "timeout",
@@ -265,6 +266,15 @@ export function sourcePacketPreviousAttemptFromJobRecord(record = null) {
       null,
     selected_source: selectedSource,
   });
+}
+
+export function latestSourcePacketPreviousAttempt(priorAttempts = []) {
+  if (!Array.isArray(priorAttempts)) return null;
+  for (let index = priorAttempts.length - 1; index >= 0; index -= 1) {
+    const attempt = priorAttempts[index];
+    if (previousSelectedSource(attempt)) return attempt;
+  }
+  return null;
 }
 
 export function sourcePacketCanResumeWithoutResendFromJobRecord(record = null) {
@@ -722,7 +732,10 @@ export function buildReviewSlotDisposition({
 }
 
 function previousSelectedSource(previousAttempt = null) {
-  return previousAttempt?.selected_source ?? previousAttempt?.source_packet ?? null;
+  return previousAttempt?.selected_source
+    ?? previousAttempt?.source_packet
+    ?? previousAttempt?.review_metadata?.audit_manifest?.selected_source
+    ?? null;
 }
 
 function previousSourceWasSent(previousAttempt = null) {
@@ -814,19 +827,28 @@ function sourceTotalsForPacketRecovery(source = null) {
   };
 }
 
-function packetRecoveryReviewSurface({
+function sourceHashForPacketRecovery(source = null) {
+  const totals = sourceTotalsForPacketRecovery(source);
+  if ((totals.files ?? 0) === 0 && (totals.bytes ?? 0) === 0) return null;
+  return sourcePacketHash(source);
+}
+
+export function packetRecoveryReviewSurface({
   selectedSource = null,
-  previousSelectedSource = null,
+  previousAttempt = null,
+  previousSelectedSource: previousSelectedSourceInput = null,
+  sourcePacketPolicy = null,
   changed = null,
   changeReason = null,
   approvalCredit = null,
 } = {}) {
-  const originalSource = previousSelectedSource ?? selectedSource;
+  const previousSourceCandidate = previousSelectedSourceInput ?? previousSelectedSource(previousAttempt);
+  const originalSource = previousSourceCandidate ?? selectedSource;
   const originalTotals = sourceTotalsForPacketRecovery(originalSource);
   const currentTotals = sourceTotalsForPacketRecovery(selectedSource);
-  const originalHash = sourcePacketHash(originalSource);
-  const currentHash = sourcePacketHash(selectedSource);
-  const surfaceChanged = changed ?? (
+  const originalHash = sourceHashForPacketRecovery(originalSource);
+  const currentHash = sourceHashForPacketRecovery(selectedSource);
+  const surfaceChanged = changed ?? sourcePacketPolicy?.review_surface_changed ?? (
     originalHash !== null && currentHash !== null && originalHash !== currentHash
   );
   return Object.freeze({
@@ -843,6 +865,33 @@ function packetRecoveryReviewSurface({
   });
 }
 
+export function reviewQualityPacketRecoveryErrorCode(reviewQuality = null) {
+  const semanticReasons = Array.isArray(reviewQuality?.semantic_failure_reasons)
+    ? reviewQuality.semantic_failure_reasons
+    : [];
+  return reviewQuality?.failed_review_slot === true && semanticReasons.length > 0
+    ? "review_not_completed"
+    : null;
+}
+
+function sourceContentWasPossiblySent(value = null) {
+  return value === "sent"
+    || value === "may_be_sent"
+    || value === "sent_after_explicit_approval"
+    || value === "unknown";
+}
+
+export function sourceSentPacketRecoveryReason({
+  status = null,
+  errorCode = null,
+  sourceContentTransmission = null,
+  reviewQuality = null,
+} = {}) {
+  if (!sourceContentWasPossiblySent(sourceContentTransmission)) return null;
+  if (status === "failed" && SOURCE_SENT_PACKET_RECOVERY_FAILURES.has(errorCode)) return errorCode;
+  return reviewQualityPacketRecoveryErrorCode(reviewQuality);
+}
+
 function providerRecoveryCapabilitiesSnapshot({
   provider = null,
   routeStep = null,
@@ -854,6 +903,8 @@ function providerRecoveryCapabilitiesSnapshot({
   supportsShardPlan = true,
   requiresSourceSendApproval = false,
   requiresResendConfirmationAfterSourceSentFailure = true,
+  localSourcePacketPolicyPreSend = true,
+  sourceSentRuntimeFailuresFailedSlot = true,
   transportFallbacks = [],
 } = {}) {
   const selectedRouteStep = routeStep ?? sourcePacketPolicy?.route_step ?? null;
@@ -877,6 +928,8 @@ function providerRecoveryCapabilitiesSnapshot({
     requires_source_send_approval: requiresSourceSendApproval === true,
     requires_resend_confirmation_after_source_sent_failure:
       requiresResendConfirmationAfterSourceSentFailure !== false,
+    local_source_packet_policy_pre_send: localSourcePacketPolicyPreSend !== false,
+    source_sent_runtime_failures_failed_slot: sourceSentRuntimeFailuresFailedSlot !== false,
     transport_fallbacks: Object.freeze(Array.isArray(transportFallbacks) ? [...transportFallbacks] : []),
   });
 }
@@ -1016,6 +1069,8 @@ export function buildPacketRecovery({
   supportsShardPlan = true,
   requiresSourceSendApproval = false,
   requiresResendConfirmationAfterSourceSentFailure = true,
+  localSourcePacketPolicyPreSend = true,
+  sourceSentRuntimeFailuresFailedSlot = true,
   transportFallbacks = [],
   shardPlans = null,
 } = {}) {
@@ -1030,6 +1085,8 @@ export function buildPacketRecovery({
     supportsShardPlan,
     requiresSourceSendApproval,
     requiresResendConfirmationAfterSourceSentFailure,
+    localSourcePacketPolicyPreSend,
+    sourceSentRuntimeFailuresFailedSlot,
     transportFallbacks,
   });
   const recoveryReason = reason ?? sourcePacketPolicy?.source_packet_policy_error_code ?? null;

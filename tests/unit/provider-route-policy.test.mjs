@@ -105,6 +105,61 @@ function selectedSourceFixture(bytes) {
   });
 }
 
+test("shared source-sent packet recovery policy covers retryable provider failures", () => {
+  assert.equal(typeof providerRoutePolicy.sourceSentPacketRecoveryReason, "function");
+  assert.equal(
+    providerRoutePolicy.sourceSentPacketRecoveryReason({
+      status: "failed",
+      errorCode: "provider_unavailable",
+      sourceContentTransmission: "sent",
+    }),
+    "provider_unavailable",
+  );
+  assert.equal(
+    providerRoutePolicy.sourceSentPacketRecoveryReason({
+      status: "failed",
+      errorCode: "timeout",
+      sourceContentTransmission: "may_be_sent",
+    }),
+    "timeout",
+  );
+  assert.equal(
+    providerRoutePolicy.sourceSentPacketRecoveryReason({
+      status: "failed",
+      errorCode: "provider_unavailable",
+      sourceContentTransmission: "not_sent",
+    }),
+    null,
+  );
+});
+
+test("shared packet recovery review surface marks narrowed packets changed-surface only", () => {
+  assert.equal(typeof providerRoutePolicy.packetRecoveryReviewSurface, "function");
+  const previousAttempt = sourcePacketPreviousAttemptFromJobRecord({
+    job_id: "job_previous",
+    status: "failed",
+    error_code: "review_not_completed",
+    external_review: { source_content_transmission: "sent" },
+    review_metadata: {
+      audit_manifest: {
+        selected_source: selectedSourceFixture(20),
+      },
+    },
+  });
+
+  const surface = providerRoutePolicy.packetRecoveryReviewSurface({
+    selectedSource: selectedSourceFixture(8),
+    previousAttempt,
+  });
+
+  assert.equal(surface.changed, true);
+  assert.equal(surface.change_reason, "narrowed_scope");
+  assert.equal(surface.approval_credit, "changed_surface_only");
+  assert.equal(surface.original_bytes, 20);
+  assert.equal(surface.current_bytes, 8);
+  assert.notEqual(surface.original_packet_hash, surface.current_packet_hash);
+});
+
 test("review slot retry fingerprint ignores request settings and failure codes", () => {
   const base = {
     provider: "kimi",
@@ -802,6 +857,34 @@ test("packet recovery falls back to switch or waiver for unknown packet failures
     );
     assert.equal(recovery.actions[1].approval_required, true, name);
   }
+});
+
+test("packet recovery capabilities distinguish local pre-send policy from post-launch runtime failures", () => {
+  const sourcePacketPolicy = evaluateSourcePacketPolicy({
+    provider: "claude",
+    mode: "custom-review",
+    routeStep: "subscription",
+    providerCapabilities: {
+      subscription: { source_packet: { max_bytes: 1024 } },
+    },
+    selectedSource: selectedSourceFixture(12),
+    sourceBearing: true,
+  });
+
+  const recovery = providerRoutePolicy.buildPacketRecovery({
+    reason: "timeout",
+    sourcePacketPolicy,
+    providerCapabilities: {
+      subscription: { source_packet: { max_bytes: 1024 } },
+    },
+    provider: "claude",
+    mode: "custom-review",
+    routeStep: "subscription",
+    sourceContentTransmission: "sent",
+  });
+
+  assert.equal(recovery.provider_capabilities.local_source_packet_policy_pre_send, true);
+  assert.equal(recovery.provider_capabilities.source_sent_runtime_failures_failed_slot, true);
 });
 
 test("source packet policy permits explicit large packet override for every provider and route step", () => {

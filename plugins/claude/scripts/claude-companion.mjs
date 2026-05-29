@@ -58,10 +58,12 @@ import {
   resolveAuthSelection as resolveAuthSelectionForProvider,
 } from "./lib/auth-selection.mjs";
 import {
+  latestSourcePacketPreviousAttempt,
   normalizeApprovalScope,
   sourcePacketCanResumeWithoutResendFromPreviousAttempt,
   sourcePacketCanResumeWithoutResendFromJobRecord,
   sourcePacketPreviousAttemptForContinuation,
+  sourcePacketPreviousAttemptFromJobRecord,
 } from "./lib/provider-route-policy.mjs";
 import { CLAUDE_PROVIDER_API_KEY_ENV } from "./lib/claude-provider-keys.mjs";
 import {
@@ -333,7 +335,7 @@ function reviewPromptRepositoryIdentity(cwd, workspaceRoot) {
 
 function promptMetadata(invocation) {
   return {
-    repository: repositoryIdentity(invocation.cwd, invocation.workspace_root),
+    repository: reviewPromptRepositoryIdentity(invocation.cwd, invocation.workspace_root),
     baseRef: invocation.scope_base ?? null,
     baseCommit: gitCommitForPrompt(invocation.cwd, invocation.scope_base, invocation.workspace_root),
     headRef: gitText(["branch", "--show-current"], invocation.cwd, invocation.workspace_root) ?? "HEAD",
@@ -567,7 +569,12 @@ function collectPriorReviewSlotAttempts(workspaceRoot, currentJobId = null) {
       const record = JSON.parse(_readFileSync(joinPath(resolveJobsDir(workspaceRoot), entry.name), "utf8"));
       if (record?.job_id !== jobId) continue;
       const slot = reviewSlotFromRecord(record);
-      if (priorSlotCountsTowardRetry(slot)) attempts.push({ review_slot: slot });
+      if (priorSlotCountsTowardRetry(slot)) {
+        const previousAttempt = sourcePacketPreviousAttemptFromJobRecord(record);
+        attempts.push(previousAttempt
+          ? { ...previousAttempt, review_slot: slot }
+          : { review_slot: slot });
+      }
     } catch {
       // Malformed legacy records are not trusted as retry-policy evidence.
     }
@@ -1208,6 +1215,7 @@ async function cmdApprovalRequest(rest) {
     started_at: new Date().toISOString(),
     approval_scope: approvalScope,
     approval_token: null,
+    previous_source_attempt: latestSourcePacketPreviousAttempt(reviewSlotPriorAttempts),
     review_slot_prior_attempts: reviewSlotPriorAttempts,
     ...reviewSlotInvocationFields(options),
     ...sourcePacketOverrideInvocationFields(options),
@@ -1376,6 +1384,7 @@ async function cmdRun(rest) {
     started_at: startedAt,
     approval_scope: approvalScope,
     approval_token: options["approval-token"] ?? null,
+    previous_source_attempt: latestSourcePacketPreviousAttempt(reviewSlotPriorAttempts),
     review_slot_prior_attempts: reviewSlotPriorAttempts,
     ...reviewSlotInvocationFields(options),
     ...sourcePacketOverrideInvocationFields(options),
@@ -1453,6 +1462,7 @@ async function cmdRun(rest) {
         claude_project_cwd: invocation.claude_project_cwd,
         approval_scope: invocation.approval_scope,
         approval_token: invocation.approval_token,
+        previous_source_attempt: invocation.previous_source_attempt,
         review_slot_prior_attempts: invocation.review_slot_prior_attempts,
         review_slot_disposition: invocation.review_slot_disposition,
         review_slot_waiver_artifact: invocation.review_slot_waiver_artifact,
