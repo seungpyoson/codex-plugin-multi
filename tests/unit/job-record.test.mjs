@@ -1753,59 +1753,88 @@ test("buildJobRecord: preserves privacy-safe provider account identity diagnosti
 });
 
 test("buildJobRecord: sanitizes runtime source packet and provider identity diagnostics", () => {
-  const sourcePacketPolicy = {
-    provider: "claude",
-    mode: "custom",
-    route_step: "packet_render",
-    max_prompt_chars: 12000,
-  };
-  const packetRecovery = {
-    reason: "source_packet_too_large",
-    route_step: "source_packet_send",
-    selected_source_bytes: 16000,
-    max_prompt_chars: 12000,
-    recovery_strategy: "shard",
-  };
+  const providers = [
+    [buildJobRecord, makeInvocation(), { claudeSessionId: CLAUDE_UUID }],
+    [
+      buildGeminiJobRecord,
+      makeInvocation({ target: "gemini", binary: "gemini" }),
+      { geminiSessionId: GEMINI_UUID },
+    ],
+    [
+      buildKimiJobRecord,
+      makeInvocation({ target: "kimi", binary: "kimi" }),
+      { kimiSessionId: "kimi-session-123" },
+    ],
+  ];
 
-  const rec = buildJobRecord(makeInvocation(), {
-    exitCode: 0,
-    parsed: { ok: true, result: "done", structured: null, denials: [] },
-    pidInfo: makePidInfo(),
-    runtimeDiagnostics: {
-      add_dir: "/tmp/worktree",
-      child_cwd: "/tmp/worktree",
-      source_packet_policy: sourcePacketPolicy,
-      packet_recovery: packetRecovery,
-      provider_account_identity: {
-        provider: "claude",
-        identity_source: "provider_auth_status",
-        identity_fields: ["email", "bad value", 42, "org_id", "unsafe/slash"],
-        account_fingerprint: {
-          algorithm: "sha256",
-          value: "A".repeat(64),
+  for (const [providerBuildJobRecord, invocation, sessionFields] of providers) {
+    const sourcePacketPolicy = {
+      provider: invocation.target,
+      mode: "custom",
+      route_step: "packet_render",
+      max_prompt_chars: 12000,
+    };
+    const packetRecovery = {
+      reason: "source_packet_too_large",
+      route_step: "source_packet_send",
+      selected_source_bytes: 16000,
+      max_prompt_chars: 12000,
+      recovery_strategy: "shard",
+    };
+
+    const rec = providerBuildJobRecord(invocation, {
+      exitCode: 0,
+      parsed: { ok: true, result: "done", structured: null, denials: [] },
+      pidInfo: makePidInfo(),
+      runtimeDiagnostics: {
+        add_dir: "/tmp/worktree",
+        child_cwd: "/tmp/worktree",
+        source_packet_policy: sourcePacketPolicy,
+        packet_recovery: packetRecovery,
+        provider_account_identity: {
+          provider: invocation.target,
+          identity_source: "provider_auth_status",
+          identity_fields: ["email", "bad value", 42, "org_id", "unsafe/slash"],
+          account_fingerprint: {
+            algorithm: "sha256",
+            value: "A".repeat(64),
+          },
+          email: "user@example.com",
+          org_id: "org-secret-123",
         },
-        email: "user@example.com",
-        org_id: "org-secret-123",
       },
-    },
-    claudeSessionId: CLAUDE_UUID,
-  }, []);
+      ...sessionFields,
+    }, []);
 
-  assert.equal(rec.runtime_diagnostics.source_packet_policy, sourcePacketPolicy);
-  assert.equal(rec.runtime_diagnostics.packet_recovery, packetRecovery);
-  assert.deepEqual(rec.runtime_diagnostics.provider_account_identity, {
-    provider: "claude",
-    identity_source: "provider_auth_status",
-    identity_fields: ["email", "org_id"],
-    account_fingerprint: {
-      algorithm: "sha256",
-      value: "a".repeat(64),
-    },
-  });
-  assert.doesNotMatch(JSON.stringify(rec), /user@example\.com|org-secret-123/);
+    assert.equal(rec.runtime_diagnostics.source_packet_policy, sourcePacketPolicy);
+    assert.equal(rec.runtime_diagnostics.packet_recovery, packetRecovery);
+    assert.deepEqual(rec.runtime_diagnostics.provider_account_identity, {
+      provider: invocation.target,
+      identity_source: "provider_auth_status",
+      identity_fields: ["email", "org_id"],
+      account_fingerprint: {
+        algorithm: "sha256",
+        value: "a".repeat(64),
+      },
+    });
+    assert.doesNotMatch(JSON.stringify(rec), /user@example\.com|org-secret-123/);
+  }
 });
 
 test("buildJobRecord: drops malformed source packet and provider identity diagnostics", () => {
+  const providers = [
+    [buildJobRecord, makeInvocation(), { claudeSessionId: CLAUDE_UUID }],
+    [
+      buildGeminiJobRecord,
+      makeInvocation({ target: "gemini", binary: "gemini" }),
+      { geminiSessionId: GEMINI_UUID },
+    ],
+    [
+      buildKimiJobRecord,
+      makeInvocation({ target: "kimi", binary: "kimi" }),
+      { kimiSessionId: "kimi-session-123" },
+    ],
+  ];
   const cases = [
     {
       name: "non-object packet diagnostics and identity",
@@ -1859,29 +1888,37 @@ test("buildJobRecord: drops malformed source packet and provider identity diagno
     },
   ];
 
-  for (const { name, runtimeDiagnostics } of cases) {
-    const rec = buildJobRecord(makeInvocation(), {
-      exitCode: 0,
-      parsed: { ok: true, result: name, structured: null, denials: [] },
-      pidInfo: makePidInfo(),
-      runtimeDiagnostics,
-      claudeSessionId: CLAUDE_UUID,
-    }, []);
+  for (const [providerBuildJobRecord, invocation, sessionFields] of providers) {
+    for (const { name, runtimeDiagnostics } of cases) {
+      const rec = providerBuildJobRecord(invocation, {
+        exitCode: 0,
+        parsed: { ok: true, result: name, structured: null, denials: [] },
+        pidInfo: makePidInfo(),
+        runtimeDiagnostics,
+        ...sessionFields,
+      }, []);
 
-    assert.equal(rec.runtime_diagnostics.provider_account_identity, undefined, name);
-    assert.doesNotMatch(JSON.stringify(rec), /identity-secret|user@example\.com/, name);
+      assert.equal(rec.runtime_diagnostics.provider_account_identity, undefined, `${invocation.target}: ${name}`);
+      assert.doesNotMatch(JSON.stringify(rec), /identity-secret|user@example\.com/, `${invocation.target}: ${name}`);
+    }
   }
 
-  const nonObjectPacketRec = buildJobRecord(makeInvocation(), {
-    exitCode: 0,
-    parsed: { ok: true, result: "non-object packet diagnostics", structured: null, denials: [] },
-    pidInfo: makePidInfo(),
-    runtimeDiagnostics: cases[0].runtimeDiagnostics,
-    claudeSessionId: CLAUDE_UUID,
-  }, []);
-  assert.equal(nonObjectPacketRec.runtime_diagnostics.source_packet_policy, undefined);
-  assert.equal(nonObjectPacketRec.runtime_diagnostics.packet_recovery, undefined);
-  assert.doesNotMatch(JSON.stringify(nonObjectPacketRec), /source-policy-secret|packet-recovery-secret/);
+  for (const [providerBuildJobRecord, invocation, sessionFields] of providers) {
+    const nonObjectPacketRec = providerBuildJobRecord(invocation, {
+      exitCode: 0,
+      parsed: { ok: true, result: "non-object packet diagnostics", structured: null, denials: [] },
+      pidInfo: makePidInfo(),
+      runtimeDiagnostics: cases[0].runtimeDiagnostics,
+      ...sessionFields,
+    }, []);
+    assert.equal(nonObjectPacketRec.runtime_diagnostics.source_packet_policy, undefined, invocation.target);
+    assert.equal(nonObjectPacketRec.runtime_diagnostics.packet_recovery, undefined, invocation.target);
+    assert.doesNotMatch(
+      JSON.stringify(nonObjectPacketRec),
+      /source-policy-secret|packet-recovery-secret/,
+      invocation.target,
+    );
+  }
 });
 
 test("buildJobRecord: preserves provider workload blocked diagnostics across companion providers", () => {
