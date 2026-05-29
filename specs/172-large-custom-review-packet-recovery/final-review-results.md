@@ -472,4 +472,46 @@ Verification for this follow-up:
 - `node --test tests/smoke/api-reviewers.smoke.test.mjs`: 170 passed, 0 failed.
 - `node --test tests/smoke/grok-web.smoke.test.mjs`: 166 passed, 0 failed.
 
-This follow-up has not yet received a fresh exact-head external review.
+Exact-head review for this follow-up used base
+`32d4018c07906cc09d3d5a5ede8c1042a487a502` and head
+`0a9602c40d2e71fd1c85b2ca9f2b76e77ac8949b`.
+
+| Reviewer | Job | Source sent | Verdict | Blocking findings |
+| --- | --- | --- | --- | --- |
+| Claude | `7859246b-cccc-4ee8-8578-9e54f7eac83f` | yes | APPROVE | none |
+| Grok | `job_ce0df962-84bb-444e-9dd4-c679694b2c5c` | yes | APPROVE | none |
+
+Grok's first default-cap attempt
+`job_562396dc-00d1-404d-84cb-a16540f1ff64` failed before source send with
+`prompt_too_large`; the successful review used explicit large-packet allowance.
+
+Accepted Claude non-blocking findings after the exact-head review:
+
+- `approval_tuple_fingerprint` schema now matches the structured runtime object
+  emitted by `sourceSendApprovalTupleFingerprint`.
+- Packet-recovery `reason` enum now allows retry fail-closed reasons emitted by
+  the same-packet retry guard.
+- `latestSourcePacketPreviousAttempt` now prefers the chronological latest
+  source-bearing attempt when `started_at` is present, and JobRecord-derived
+  previous attempts preserve `started_at`.
+- The `ApprovalTuple` data-model entry now describes the runtime tuple fields
+  (`source_packet`, `scope_resolution`, `scope_paths`, `request_settings`,
+  route audit fields, and structured fingerprint) instead of stale hash-only
+  names.
+
+Verification for the post-review fixes:
+
+- RED `node --test tests/unit/docs-contracts.test.mjs` failed on the stale
+  fingerprint schema and missing retry reasons before the fix.
+- RED `node --test tests/unit/provider-route-policy.test.mjs` failed on
+  chronological latest-attempt selection before the fix.
+- `node --test tests/unit/docs-contracts.test.mjs`: 41 passed, 0 failed.
+- `node --test tests/unit/provider-route-policy.test.mjs`: 42 passed, 0 failed.
+- `npm run lint:sync`: passed.
+- `node --test tests/unit/plugin-copies-in-sync.test.mjs tests/unit/review-prompt.test.mjs tests/unit/job-record.test.mjs`: 573 passed, 0 failed.
+- `node --test tests/smoke/api-reviewers.smoke.test.mjs`: 170 passed, 0 failed.
+- `node --test tests/smoke/grok-web.smoke.test.mjs`: 166 passed, 0 failed.
+- `node --test tests/smoke/claude-companion.smoke.test.mjs tests/smoke/gemini-companion.smoke.test.mjs tests/smoke/kimi-companion.smoke.test.mjs`: 324 passed, 0 failed.
+
+This post-review cleanup changes the branch after the exact-head review above;
+the next external review must use the new head SHA.

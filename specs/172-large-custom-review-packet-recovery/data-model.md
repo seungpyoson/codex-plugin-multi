@@ -114,14 +114,20 @@ Validation rules:
 - `provider`: `deepseek` or `glm`
 - `mode`: review mode
 - `rendered_prompt_hash`: SHA-256 digest
-- `source_packet_hash`: SHA-256 digest
-- `scope_resolution_hash`: SHA-256 digest
-- `request_settings_hash`: SHA-256 digest
+- `source_packet`: selected-source summary for the packet being approved
+- `scope_resolution`: scope name, base, paths, and resolution reason
+- `scope_paths`: explicit source paths included in the approved packet
+- `request_settings`: timeout, max token/step, temperature, stream, and
+  request default summary
 - `auth_path`: auth mode plus credential reference name, not credential value
 - `billing_path`: endpoint/model summary, not secret billing material
 - `selected_route`: selected route
+- `route_step`: selected route step
+- `route_steps`: route-step audit entries
 - `fallback_reason`: fallback reason or null
 - `approval_scope`: `session` or `one_time`
+- `approval_tuple_fingerprint`: structured SHA-256 fingerprint object with
+  `algorithm`, `value`, and hashed/non-secret tuple `ingredients`
 
 Validation rules:
 

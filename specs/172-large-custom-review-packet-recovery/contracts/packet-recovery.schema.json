@@ -32,7 +32,12 @@
         "step_limit_exceeded",
         "timeout",
         "transport_error",
-        "provider_error"
+        "provider_error",
+        "review_slot_waiver_artifact_required",
+        "review_slot_override_artifact_required",
+        "retry_disposition_not_valid_for_third_attempt",
+        "third_same_packet_retry_requires_disposition",
+        "review_slot_disposition_required"
       ]
     },
     "source_content_transmission": {
@@ -400,6 +405,73 @@
       "type": "string",
       "pattern": "^[a-f0-9]{64}$"
     },
+    "approvalTupleFingerprint": {
+      "type": "object",
+      "required": ["algorithm", "value", "ingredients"],
+      "properties": {
+        "algorithm": { "const": "sha256" },
+        "value": { "$ref": "#/$defs/sha256" },
+        "ingredients": {
+          "type": "object",
+          "required": [
+            "provider",
+            "mode",
+            "selected_source_hash",
+            "selected_source_totals",
+            "rendered_prompt_hash",
+            "scope_resolution_hash",
+            "request_settings_hash",
+            "auth_path",
+            "billing_path_hash",
+            "selected_route",
+            "route_step",
+            "route_steps_hash",
+            "fallback_reason",
+            "approval_scope"
+          ],
+          "properties": {
+            "provider": { "$ref": "#/$defs/safeTextOrNull" },
+            "mode": { "$ref": "#/$defs/safeTextOrNull" },
+            "selected_source_hash": { "$ref": "#/$defs/sha256OrNull" },
+            "selected_source_totals": {
+              "type": "object",
+              "required": ["files", "bytes", "lines"],
+              "properties": {
+                "files": { "type": "integer", "minimum": 0 },
+                "bytes": { "type": "integer", "minimum": 0 },
+                "lines": { "type": "integer", "minimum": 0 }
+              },
+              "additionalProperties": false
+            },
+            "rendered_prompt_hash": { "$ref": "#/$defs/sha256OrNull" },
+            "scope_resolution_hash": { "$ref": "#/$defs/sha256" },
+            "request_settings_hash": { "$ref": "#/$defs/sha256" },
+            "auth_path": {
+              "anyOf": [
+                {
+                  "type": "object",
+                  "required": ["auth_mode", "credential_ref"],
+                  "properties": {
+                    "auth_mode": { "$ref": "#/$defs/safeText" },
+                    "credential_ref": { "$ref": "#/$defs/safeTextOrNull" }
+                  },
+                  "additionalProperties": false
+                },
+                { "type": "null" }
+              ]
+            },
+            "billing_path_hash": { "$ref": "#/$defs/sha256OrNull" },
+            "selected_route": { "$ref": "#/$defs/safeTextOrNull" },
+            "route_step": { "$ref": "#/$defs/safeTextOrNull" },
+            "route_steps_hash": { "$ref": "#/$defs/sha256OrNull" },
+            "fallback_reason": { "$ref": "#/$defs/safeTextOrNull" },
+            "approval_scope": { "enum": ["session", "one_time"] }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
     "scopeResolution": {
       "type": "object",
       "required": ["scope", "scope_base", "scope_paths", "reason"],
@@ -517,7 +589,7 @@
         },
         "fallback_reason": { "$ref": "#/$defs/safeTextOrNull" },
         "approval_scope": { "enum": ["session", "one_time"] },
-        "approval_tuple_fingerprint": { "$ref": "#/$defs/sha256" }
+        "approval_tuple_fingerprint": { "$ref": "#/$defs/approvalTupleFingerprint" }
       },
       "additionalProperties": false
     }

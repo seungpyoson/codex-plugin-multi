@@ -430,5 +430,42 @@ Verification:
 - `node --test tests/smoke/api-reviewers.smoke.test.mjs`: 170 passed, 0 failed.
 - `node --test tests/smoke/grok-web.smoke.test.mjs`: 166 passed, 0 failed.
 
-This follow-up changed the branch after the final Claude/Grok review jobs above;
-the next external review must use the new head SHA.
+Exact-head review for the companion pre-send boundary follow-up used base
+`32d4018c07906cc09d3d5a5ede8c1042a487a502` and head
+`0a9602c40d2e71fd1c85b2ca9f2b76e77ac8949b`:
+
+- Claude `7859246b-cccc-4ee8-8578-9e54f7eac83f`: APPROVE, no blocking
+  findings, selected source sent.
+- Grok `job_ce0df962-84bb-444e-9dd4-c679694b2c5c`: APPROVE, no blocking
+  findings, selected source sent. The first Grok attempt
+  `job_562396dc-00d1-404d-84cb-a16540f1ff64` failed before source send with
+  `prompt_too_large`; the successful run used explicit large-packet allowance.
+
+Post-review cleanup after Claude non-blocking findings:
+
+- `approval_tuple_fingerprint` schema now matches the structured runtime object
+  emitted by `sourceSendApprovalTupleFingerprint`.
+- Packet-recovery `reason` enum now includes retry fail-closed reasons emitted
+  by same-packet retry guards.
+- Previous source attempts derived from JobRecords now preserve `started_at`,
+  and `latestSourcePacketPreviousAttempt` prefers the chronological latest
+  source-bearing attempt when timestamps are present.
+- `data-model.md` now documents the runtime `ApprovalTuple` fields instead of
+  stale hash-only names.
+
+Verification for the post-review cleanup:
+
+- RED `node --test tests/unit/docs-contracts.test.mjs` failed on stale schema
+  fields before the fix.
+- RED `node --test tests/unit/provider-route-policy.test.mjs` failed on
+  chronological latest-attempt selection before the fix.
+- `node --test tests/unit/docs-contracts.test.mjs`: 41 passed, 0 failed.
+- `node --test tests/unit/provider-route-policy.test.mjs`: 42 passed, 0 failed.
+- `npm run lint:sync`: passed.
+- `node --test tests/unit/plugin-copies-in-sync.test.mjs tests/unit/review-prompt.test.mjs tests/unit/job-record.test.mjs`: 573 passed, 0 failed.
+- `node --test tests/smoke/api-reviewers.smoke.test.mjs`: 170 passed, 0 failed.
+- `node --test tests/smoke/grok-web.smoke.test.mjs`: 166 passed, 0 failed.
+- `node --test tests/smoke/claude-companion.smoke.test.mjs tests/smoke/gemini-companion.smoke.test.mjs tests/smoke/kimi-companion.smoke.test.mjs`: 324 passed, 0 failed.
+
+This cleanup changed the branch after the exact-head review above; the next
+external review must use the new head SHA.

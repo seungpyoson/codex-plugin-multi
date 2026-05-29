@@ -21,6 +21,7 @@ import {
   sourcePacketCanResumeWithoutResendFromPreviousAttempt,
   sourcePacketPreviousAttemptForContinuation,
   sourcePacketPreviousAttemptFromJobRecord,
+  latestSourcePacketPreviousAttempt,
 } from "../../scripts/lib/provider-route-policy.mjs";
 import * as providerRoutePolicy from "../../scripts/lib/provider-route-policy.mjs";
 import { REVIEW_PROMPT_PLUGIN_TARGETS } from "../../scripts/lib/plugin-targets.mjs";
@@ -158,6 +159,21 @@ test("shared packet recovery review surface marks narrowed packets changed-surfa
   assert.equal(surface.original_bytes, 20);
   assert.equal(surface.current_bytes, 8);
   assert.notEqual(surface.original_packet_hash, surface.current_packet_hash);
+});
+
+test("latest source packet previous attempt prefers chronological latest when timestamps exist", () => {
+  const older = {
+    attempt_id: "job_older",
+    started_at: "2026-05-29T01:00:00.000Z",
+    selected_source: selectedSourceFixture(10),
+  };
+  const newer = {
+    attempt_id: "job_newer",
+    started_at: "2026-05-29T02:00:00.000Z",
+    selected_source: selectedSourceFixture(20),
+  };
+
+  assert.equal(latestSourcePacketPreviousAttempt([newer, older]), newer);
 });
 
 test("review slot retry fingerprint ignores request settings and failure codes", () => {
@@ -1008,6 +1024,7 @@ test("source packet policy prevents automatic resend after source-bearing failur
 
 test("source packet retry policy derives previous attempts from JobRecords", () => {
   const previousAttempt = sourcePacketPreviousAttemptFromJobRecord({
+    started_at: "2026-05-29T01:00:00.000Z",
     status: "failed",
     error_code: "review_not_completed",
     external_review: { source_content_transmission: "sent" },
@@ -1017,6 +1034,7 @@ test("source packet retry policy derives previous attempts from JobRecords", () 
       },
     },
   });
+  assert.equal(previousAttempt.started_at, "2026-05-29T01:00:00.000Z");
 
   const policy = evaluateSourcePacketPolicy({
     provider: "claude",

@@ -258,6 +258,7 @@ export function sourcePacketPreviousAttemptFromJobRecord(record = null) {
     status: record?.status ?? null,
     error_code: record?.error_code ?? manifest?.error_code ?? null,
     error_message: record?.error_message ?? null,
+    started_at: record?.started_at ?? record?.startedAt ?? null,
     review_quality: manifest?.review_quality ?? null,
     review_slot: manifest?.review_slot ?? record?.external_review?.review_slot ?? null,
     source_content_transmission:
@@ -270,11 +271,44 @@ export function sourcePacketPreviousAttemptFromJobRecord(record = null) {
 
 export function latestSourcePacketPreviousAttempt(priorAttempts = []) {
   if (!Array.isArray(priorAttempts)) return null;
-  for (let index = priorAttempts.length - 1; index >= 0; index -= 1) {
+  let latest = null;
+  let latestIndex = -1;
+  for (let index = 0; index < priorAttempts.length; index += 1) {
     const attempt = priorAttempts[index];
-    if (previousSelectedSource(attempt)) return attempt;
+    if (!previousSelectedSource(attempt)) continue;
+    if (!latest) {
+      latest = attempt;
+      latestIndex = index;
+      continue;
+    }
+    const attemptStartedAt = typeof attempt?.started_at === "string" ? attempt.started_at : "";
+    const latestStartedAt = typeof latest?.started_at === "string" ? latest.started_at : "";
+    if (attemptStartedAt && latestStartedAt) {
+      const timeOrder = attemptStartedAt.localeCompare(latestStartedAt);
+      if (timeOrder > 0) {
+        latest = attempt;
+        latestIndex = index;
+      } else if (timeOrder === 0) {
+        const attemptId = String(attempt?.attempt_id ?? attempt?.job_id ?? "");
+        const latestId = String(latest?.attempt_id ?? latest?.job_id ?? "");
+        if (attemptId.localeCompare(latestId) > 0) {
+          latest = attempt;
+          latestIndex = index;
+        }
+      }
+      continue;
+    }
+    if (attemptStartedAt && !latestStartedAt) {
+      latest = attempt;
+      latestIndex = index;
+      continue;
+    }
+    if (!attemptStartedAt && !latestStartedAt && index > latestIndex) {
+      latest = attempt;
+      latestIndex = index;
+    }
   }
-  return null;
+  return latest;
 }
 
 export function sourcePacketCanResumeWithoutResendFromJobRecord(record = null) {

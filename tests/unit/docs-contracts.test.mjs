@@ -1096,10 +1096,30 @@ test("packet recovery schema matches runtime shard approval tuple shape", () => 
   assert.ok(tuple.properties.request_settings, "runtime shard tuples carry request settings");
   assert.ok(tuple.properties.route_step, "runtime shard tuples carry the selected route step");
   assert.ok(tuple.properties.route_steps, "runtime shard tuples carry route-step audit details");
-  assert.ok(tuple.properties.approval_tuple_fingerprint, "runtime shard tuples carry a non-token fingerprint");
+  assert.equal(
+    tuple.properties.approval_tuple_fingerprint.$ref,
+    "#/$defs/approvalTupleFingerprint",
+    "runtime shard tuples carry the structured non-token fingerprint emitted by sourceSendApprovalTupleFingerprint",
+  );
+  assert.deepEqual(schema.$defs.approvalTupleFingerprint.required, ["algorithm", "value", "ingredients"]);
+  assert.equal(schema.$defs.approvalTupleFingerprint.properties.algorithm.const, "sha256");
+  assert.equal(schema.$defs.approvalTupleFingerprint.properties.value.$ref, "#/$defs/sha256");
   assert.equal(
     schema.$defs.sourcePacketSummary.required.includes("packet_hash"),
     false,
     "runtime selected_source summaries do not include a packet_hash field",
   );
+});
+
+test("packet recovery schema allows runtime retry fail-closed reasons", () => {
+  const schema = readRepoJson("specs/172-large-custom-review-packet-recovery/contracts/packet-recovery.schema.json");
+  for (const reason of [
+    "review_slot_waiver_artifact_required",
+    "review_slot_override_artifact_required",
+    "retry_disposition_not_valid_for_third_attempt",
+    "third_same_packet_retry_requires_disposition",
+    "review_slot_disposition_required",
+  ]) {
+    assert.ok(schema.properties.reason.enum.includes(reason), `schema must allow runtime retry guard reason ${reason}`);
+  }
 });
