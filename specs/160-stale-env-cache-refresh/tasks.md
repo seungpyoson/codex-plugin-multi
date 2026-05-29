@@ -115,11 +115,26 @@ usable external approval or the operator explicitly narrows/waives that gate.
 - [ ] T046 Obtain final latest-head external review after all runtime and spec
   changes.
 
+## Phase 10: Review-Quality EACCES Advisory False Positive Repair
+
+- [x] T047 Reproduce the live Claude/Kimi final-review failure class where an
+  approving source-supplied review mentioned workload-lock `EACCES`/`EPERM`
+  behavior and was incorrectly marked `permission_blocked`.
+- [x] T048 Add RED review-prompt regression coverage for workload-lock
+  `EACCES` advisory wording and shared-tmp lock-root findings across all
+  packaged reviewer copies.
+- [x] T049 Tighten review-quality permission failure detection so code-under-
+  review filesystem-error advisories do not count as reviewer permission
+  failures while real selected-source read/inspect denials still fail.
+- [x] T050 Verify focused review-prompt regression and full review-prompt unit
+  coverage.
+- [ ] T051 Rerun final latest-head external review after the classifier repair.
+
 ## Dependencies
 
 1. T004 blocks runtime implementation unless waived by the operator.
 2. T005-T007 are RED tests and must fail for the intended reason before T008.
 3. T008-T011 are implementation tasks.
 4. T012-T017 are original #160 completion gates.
-5. T040-T046 are current completion gates for the expanded provider-reliability
+5. T040-T051 are current completion gates for the expanded provider-reliability
    branch.

@@ -3201,6 +3201,67 @@ for (const [name, file] of REVIEW_PROMPT_MODULES) {
 }
 
 for (const [name, file] of REVIEW_PROMPT_MODULES) {
+  test(`review audit manifest does not flag workload-lock EACCES advisory as reviewer permission blocked (${name})`, async () => {
+    const { buildReviewAuditManifest: targetBuildReviewAuditManifest } = file === "scripts/lib/review-prompt.mjs"
+      ? { buildReviewAuditManifest }
+      : await import(pathToFileURL(resolve(file)).href);
+    const manifest = targetBuildReviewAuditManifest({
+      prompt: "rendered prompt",
+      sourceFiles: [{ path: "scripts/lib/review-workload.mjs", text: "export function acquire() {}\n" }],
+      result: [
+        "Verdict: APPROVE",
+        "**Blocking findings:** None.",
+        "**Non-blocking concerns:**",
+        "- `scripts/lib/review-workload.mjs`: The default workload lock root resides under the system tmpdir. On multi-user systems with shared `/tmp`, an attacker could preemptively create the intermediate directory and deny lock creation (EACCES). Operators can mitigate this by setting `CODEX_PLUGIN_MULTI_PROVIDER_WORKLOAD_LOCK_DIR` to a user-private path.",
+        "**Checklist:**",
+        "- **refs:** PASS.",
+        "- **scope:** PASS - All selected source packet files were reviewed.",
+        "- **correctness:** PASS.",
+        "- **review comments:** PASS.",
+        "- **finding separation:** PASS.",
+        "- **runtime completeness:** PASS.",
+      ].join("\n"),
+      status: "completed",
+      errorCode: null,
+    });
+
+    assert.deepEqual(manifest.review_quality.semantic_failure_reasons, []);
+    assert.equal(manifest.review_quality.failed_review_slot, false);
+  });
+}
+
+for (const [name, file] of REVIEW_PROMPT_MODULES) {
+  test(`review audit manifest does not flag shared-tmp lock-root EACCES finding as reviewer permission blocked (${name})`, async () => {
+    const { buildReviewAuditManifest: targetBuildReviewAuditManifest } = file === "scripts/lib/review-prompt.mjs"
+      ? { buildReviewAuditManifest }
+      : await import(pathToFileURL(resolve(file)).href);
+    const manifest = targetBuildReviewAuditManifest({
+      prompt: "rendered prompt",
+      sourceFiles: [{ path: "scripts/lib/review-workload.mjs", text: "export function acquire() {}\n" }],
+      result: [
+        "Verdict: APPROVE",
+        "## Checklist",
+        "1. Verify exact base/head refs and commits - PASS.",
+        "2. Review only declared scope - PASS.",
+        "3. Correctness / security / regressions / missing tests - PASS.",
+        "4. Known review comments - NOT REVIEWED. None were supplied.",
+        "5. Blocking vs non-blocking - PASS.",
+        "6. Timeout/truncation/permission/shallow - PASS. I inspected file content directly and was not permission-blocked.",
+        "## Blocking findings",
+        "None.",
+        "## Non-blocking concerns",
+        "3. **Lock root in shared tmpdir.** Default `tmpdir()` at `0o700` can `EACCES` for a second uid on a shared-`/tmp` Linux host; it fails closed (no source send) and `CODEX_PLUGIN_MULTI_PROVIDER_WORKLOAD_LOCK_DIR` overrides it, so low impact.",
+      ].join("\n"),
+      status: "completed",
+      errorCode: null,
+    });
+
+    assert.deepEqual(manifest.review_quality.semantic_failure_reasons, []);
+    assert.equal(manifest.review_quality.failed_review_slot, false);
+  });
+}
+
+for (const [name, file] of REVIEW_PROMPT_MODULES) {
   test(`review audit manifest does not flag EPERM parser test-gap prose as reviewer permission blocked (${name})`, async () => {
     const { buildReviewAuditManifest: targetBuildReviewAuditManifest } = file === "scripts/lib/review-prompt.mjs"
       ? { buildReviewAuditManifest }

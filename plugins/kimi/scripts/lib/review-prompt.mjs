@@ -536,8 +536,15 @@ function isCodeUnderReviewPermissionConcernLine(lower) {
       "mkdirsync",
       "lock dir",
       "lock-dir",
+      "lock root",
       "lock file",
       "lock-file",
+      "lock creation",
+      "workload lock",
+      "shared /tmp",
+      "shared `/tmp",
+      "shared-`/tmp",
+      "system tmpdir",
     ])
     && includesAny(lower, [
       "propagates as a throw",
@@ -545,12 +552,17 @@ function isCodeUnderReviewPermissionConcernLine(lower) {
       "fail-open",
       "failing open",
       "fail open",
+      "fail-closed",
+      "fails closed",
       "implementation",
       "behavior",
       "exception",
       "fallback",
       "handled",
       "hardening",
+      "deny lock creation",
+      "preemptively create",
+      "override",
     ]);
 }
 
@@ -655,9 +667,16 @@ function isCodePermissionConcernLine(lower) {
       "lock fs",
       "lock-dir",
       "lock dir",
+      "lock root",
+      "lock creation",
+      "workload lock",
       "fail-open",
       "failing open",
       "propagates as a throw",
+      "shared /tmp",
+      "shared `/tmp",
+      "shared-`/tmp",
+      "system tmpdir",
     ])
     && includesAny(lower, [
       "behavior",
@@ -668,6 +687,10 @@ function isCodePermissionConcernLine(lower) {
       "helper",
       "runtime",
       "lock",
+      "fail-closed",
+      "fails closed",
+      "deny lock creation",
+      "preemptively create",
     ]);
 }
 
