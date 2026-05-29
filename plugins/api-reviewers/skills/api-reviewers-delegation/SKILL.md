@@ -45,6 +45,9 @@ Before launching or retrying, render the `approval-request` output and request e
 If the user has already given explicit current-turn approval for the same provider, mode, source packet, prompt hash, scope resolution, request settings, auth path, billing path, selected route, fallback reason, and approval scope, do not ask again; run `approval-request`, pass its matching `approval_token.value` to `run`, and continue.
 `session` approval can be reused only while the full approval tuple is unchanged in the current session.
 `once` approval authorizes exactly one matching source send and cannot be replayed.
+`approval-grant request` plus `approval-grant activate` creates a short-lived bounded session grant without sending selected source. The operator must pass `--grant-ttl-ms` on request, the max TTL comes from `plugins/api-reviewers/config/session-approval.json`, and activation must reuse the emitted `grant_bounds.expires_at`.
+A session grant may authorize later runs without `--approval-token` only when provider, mode, workspace, selected source hashes, prompt hash, scope resolution, request settings, auth path, billing path, selected route, fallback reason, file/byte bounds, schema, fingerprint, and expiry all still match.
+Grant-scoped tokens must not be passed to normal `run --approval-token`; normal session or once approval tokens cannot activate grants.
 Any change to that tuple requires fresh human approval before source is sent.
 Pass `approval_token.value` to `run` with `--approval-token` only after approval.
 If approval is denied, follow `denial_action` and generate a relay prompt instead of running the external API command.

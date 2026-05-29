@@ -13,6 +13,7 @@ import { badVerdictReviewFixture, requestChangesReviewFixture, substantiveReview
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const COMPANION = path.join(REPO_ROOT, "plugins/api-reviewers/scripts/api-reviewer.mjs");
+const SESSION_APPROVAL_POLICY = JSON.parse(readFileSync(path.join(REPO_ROOT, "plugins/api-reviewers/config/session-approval.json"), "utf8"));
 const API_REVIEWER_EXPECTED_KEYS = Object.freeze([
   "id",
   "job_id",
@@ -140,6 +141,28 @@ function parseJson(stdout) {
   return JSON.parse(stdout);
 }
 
+function canonicalJsonForTest(value) {
+  if (value === null) return "null";
+  if (Array.isArray(value)) return `[${value.map((item) => canonicalJsonForTest(item)).join(",")}]`;
+  const type = typeof value;
+  if (type === "string" || type === "boolean") return JSON.stringify(value);
+  if (type === "number") {
+    if (!Number.isFinite(value)) throw new Error("canonical_json_non_finite_number");
+    return JSON.stringify(value);
+  }
+  if (type === "object") {
+    const fields = Object.keys(value)
+      .sort()
+      .map((key) => `${JSON.stringify(key)}:${canonicalJsonForTest(value[key])}`);
+    return `{${fields.join(",")}}`;
+  }
+  throw new Error(`canonical_json_unsupported:${type}`);
+}
+
+function approvalFingerprintForTest(approvalTuple) {
+  return createHash("sha256").update(canonicalJsonForTest(approvalTuple)).digest("hex");
+}
+
 function parseJsonLines(stdout) {
   return stdout.trim().split(/\n+/).filter(Boolean).map((line) => JSON.parse(line));
 }
@@ -216,6 +239,56 @@ function makeWorkspace() {
   const cwd = mkdtempSync(path.join(tmpdir(), "api-reviewers-smoke-"));
   writeFileSync(path.join(cwd, "seed.txt"), "hello from selected scope\n");
   return cwd;
+}
+
+async function createGlmSessionGrant({ cwd, dataDir, prompt = "Review seed file only.", ttlMs = "900000", env = {} } = {}) {
+  const commonArgs = [
+    "--provider", "glm",
+    "--mode", "custom-review",
+    "--scope", "custom",
+    "--scope-paths", "seed.txt",
+    "--prompt", prompt,
+  ];
+  const commonEnv = {
+    API_REVIEWERS_PLUGIN_DATA: dataDir,
+    ZAI_API_KEY: "secret-test-value",
+    ...env,
+  };
+  const requestResult = await run([
+    "approval-grant",
+    "request",
+    ...commonArgs,
+    "--grant-ttl-ms", ttlMs,
+  ], { cwd, env: commonEnv });
+  assert.equal(requestResult.status, 0, requestResult.stderr || requestResult.stdout);
+  const request = parseJson(requestResult.stdout);
+  const activationResult = await run([
+    "approval-grant",
+    "activate",
+    ...commonArgs,
+    "--grant-expires-at", request.grant_bounds.expires_at,
+    "--approval-token", request.grant_approval_token.value,
+  ], { cwd, env: commonEnv });
+  assert.equal(activationResult.status, 0, activationResult.stderr || activationResult.stdout);
+  return {
+    commonArgs,
+    env: commonEnv,
+    request,
+    activation: parseJson(activationResult.stdout),
+  };
+}
+
+function expireGlmSessionGrantRecord(dataDir, activation, expiresAt = new Date(Date.now() - 1000).toISOString()) {
+  const file = path.join(dataDir, "approval-grants", `${activation.grant_id}.json`);
+  const record = parseJson(readFileSync(file, "utf8"));
+  record.expires_at = expiresAt;
+  record.approval_tuple.grant_bounds.expires_at = expiresAt;
+  const fingerprint = approvalFingerprintForTest(record.approval_tuple);
+  record.approval_fingerprint = fingerprint;
+  record.grant_id = `grant_${fingerprint}`;
+  record.grant_session_id = `session_${fingerprint.slice(0, 32)}`;
+  writeFileSync(file, `${JSON.stringify(record, null, 2)}\n`);
+  return file;
 }
 
 function makeMultiFileScopeWorkspace() {
@@ -723,7 +796,7 @@ test("help malformed providers config returns structured diagnostic", async () =
   const parsed = parseJson(result.stdout);
   assert.equal(parsed.ok, false);
   assert.equal(parsed.status, "config_error");
-  assert.deepEqual(parsed.commands, ["doctor", "ping", "approval-request", "run", "result"]);
+  assert.deepEqual(parsed.commands, ["doctor", "ping", "approval-request", "approval-grant", "run", "result"]);
   assert.deepEqual(parsed.providers, []);
   assert.match(parsed.error_message, /providers config unreadable/);
   assert.doesNotMatch(result.stdout, /secret-test-value/);
@@ -5572,6 +5645,774 @@ test("direct API reviewers approval-request describes external source transmissi
   } finally {
     rmSync(dataDir, { recursive: true, force: true });
     rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("direct API reviewers approval-grant request emits source-free bounded grant proof", async () => {
+  const dataDir = mkdtempSync(path.join(tmpdir(), "api-reviewers-grant-request-"));
+  const cwd = makeWorkspace();
+  try {
+    writeFileSync(path.join(cwd, "seed.txt"), "hello from selected scope\n");
+
+    const result = await run([
+      "approval-grant",
+      "request",
+      "--provider", "glm",
+      "--mode", "custom-review",
+      "--scope", "custom",
+      "--scope-paths", "seed.txt",
+      "--prompt", "Review seed file only.",
+      "--grant-ttl-ms", "900000",
+    ], {
+      cwd,
+      env: {
+        API_REVIEWERS_PLUGIN_DATA: dataDir,
+        ZAI_API_KEY: "secret-test-value",
+      },
+    });
+
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    const request = parseJson(result.stdout);
+    assert.equal(request.event, "external_review_session_approval_request");
+    assert.equal(request.provider, "glm");
+    assert.equal(request.display_name, "GLM");
+    assert.equal(request.mode, "custom-review");
+    assert.equal(request.scope, "custom");
+    assert.deepEqual(request.scope_paths, ["seed.txt"]);
+    assert.equal(request.source_content_transmission, "not_sent");
+    assert.equal(request.approval_scope, "grant");
+    assert.match(request.grant_approval_token.value, /^[a-f0-9]{64}$/);
+    assert.equal(request.grant_approval_token.algorithm, "sha256");
+    assert.equal(Object.hasOwn(request, "approval_token"), false);
+    assert.deepEqual(request.grant_bounds.provider_allowlist, ["glm"]);
+    assert.deepEqual(request.grant_bounds.mode_allowlist, ["custom-review"]);
+    assert.equal(request.grant_bounds.max_files, 1);
+    assert.equal(request.grant_bounds.max_bytes, 26);
+    assert.equal(request.grant_bounds.max_ttl_ms, SESSION_APPROVAL_POLICY.max_ttl_ms);
+    assert.match(request.grant_bounds.expires_at, /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/);
+    assert.match(request.grant_bounds.workspace_root_hash, /^[a-f0-9]{64}$/);
+    assert.deepEqual(request.grant_bounds.path_constraints, {
+      scope: "custom",
+      scope_paths: ["seed.txt"],
+    });
+    assert.equal(request.selected_source.totals.files, 1);
+    assert.equal(request.selected_source.totals.bytes, 26);
+    assert.equal(request.selected_source.totals.lines, 1);
+    assert.deepEqual(request.selected_source.files.map((file) => file.path), ["seed.txt"]);
+    assert.match(request.rendered_prompt_hash.value, /^[a-f0-9]{64}$/);
+    assert.equal(JSON.stringify(request).includes("hello from selected scope"), false);
+    assert.equal(JSON.stringify(request).includes("secret-test-value"), false);
+    assert.equal(JSON.stringify(request).includes(cwd), false);
+  } finally {
+    rmSync(dataDir, { recursive: true, force: true });
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("direct API reviewers approval-grant request requires explicit TTL", async () => {
+  const dataDir = mkdtempSync(path.join(tmpdir(), "api-reviewers-grant-ttl-required-"));
+  const cwd = makeWorkspace();
+  try {
+    const result = await run([
+      "approval-grant",
+      "request",
+      "--provider", "glm",
+      "--mode", "custom-review",
+      "--scope", "custom",
+      "--scope-paths", "seed.txt",
+      "--prompt", "Review seed file only.",
+    ], {
+      cwd,
+      env: {
+        API_REVIEWERS_PLUGIN_DATA: dataDir,
+        ZAI_API_KEY: "secret-test-value",
+      },
+    });
+
+    assert.equal(result.status, 1, result.stderr || result.stdout);
+    const parsed = parseJson(result.stdout);
+    assert.equal(parsed.error_code, "bad_args");
+    assert.match(parsed.error_message, /--grant-ttl-ms is required/);
+    assert.equal(JSON.stringify(parsed).includes("hello from selected scope"), false);
+    assert.equal(JSON.stringify(parsed).includes("secret-test-value"), false);
+  } finally {
+    rmSync(dataDir, { recursive: true, force: true });
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("direct API reviewers approval-grant without subcommand shows command help", async () => {
+  const result = await run(["approval-grant"]);
+
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  const parsed = parseJson(result.stdout);
+  assert.equal(parsed.ok, true);
+  assert.equal(parsed.command, "approval-grant");
+  assert.deepEqual(parsed.subcommands, ["request", "activate"]);
+  assert.equal(parsed.source_content_transmission, "not_sent");
+});
+
+test("direct API reviewers approval-grant activate requires exact request expiry", async () => {
+  const dataDir = mkdtempSync(path.join(tmpdir(), "api-reviewers-grant-expiry-"));
+  const cwd = makeWorkspace();
+  try {
+    const commonArgs = [
+      "--provider", "glm",
+      "--mode", "custom-review",
+      "--scope", "custom",
+      "--scope-paths", "seed.txt",
+      "--prompt", "Review seed file only.",
+    ];
+    const env = {
+      API_REVIEWERS_PLUGIN_DATA: dataDir,
+      ZAI_API_KEY: "secret-test-value",
+    };
+    const requestResult = await run([
+      "approval-grant",
+      "request",
+      ...commonArgs,
+      "--grant-ttl-ms", "900000",
+    ], { cwd, env });
+    assert.equal(requestResult.status, 0, requestResult.stderr || requestResult.stdout);
+    const request = parseJson(requestResult.stdout);
+    const changedExpiry = new Date(Date.parse(request.grant_bounds.expires_at) + 1000).toISOString();
+
+    const activation = await run([
+      "approval-grant",
+      "activate",
+      ...commonArgs,
+      "--grant-expires-at", changedExpiry,
+      "--approval-token", request.grant_approval_token.value,
+    ], { cwd, env });
+
+    assert.equal(activation.status, 1, activation.stderr || activation.stdout);
+    const parsed = parseJson(activation.stdout);
+    assert.equal(parsed.error_code, "approval_required");
+    assert.equal(JSON.stringify(parsed).includes(request.grant_approval_token.value), false);
+    assert.equal(existsSync(path.join(dataDir, "approval-grants")), false);
+  } finally {
+    rmSync(dataDir, { recursive: true, force: true });
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("direct API reviewers activation uses the canonical grant tuple from the request builder", () => {
+  const source = readFileSync(COMPANION, "utf8");
+
+  assert.doesNotMatch(source, /function\s+grantApprovalTupleFromRequest\s*\(/);
+  assert.doesNotMatch(source, /grantApprovalTupleFromRequest\s*\(\s*approvalRequest\s*\)/);
+  assert.match(source, /\(\{\s*approvalRequest,\s*approvalTuple\s*\}\s*=\s*buildApprovalGrantRequest/);
+  assert.match(source, /approvalFingerprintFor\s*\(\s*approvalTuple\s*\)/);
+});
+
+test("direct API reviewers approval-grant activate rejects session and once approval tokens", async () => {
+  const dataDir = mkdtempSync(path.join(tmpdir(), "api-reviewers-grant-token-class-"));
+  const cwd = makeWorkspace();
+  try {
+    const commonArgs = [
+      "--provider", "deepseek",
+      "--mode", "custom-review",
+      "--scope", "custom",
+      "--scope-paths", "seed.txt",
+      "--prompt", "Review seed file only.",
+    ];
+    const env = {
+      API_REVIEWERS_PLUGIN_DATA: dataDir,
+      DEEPSEEK_API_KEY: "secret-test-value",
+    };
+    const expiresAt = new Date(Date.now() + 900000).toISOString();
+    for (const approvalScopeArgs of [[], ["--approval-scope", "once"]]) {
+      const approval = await run(["approval-request", ...commonArgs, ...approvalScopeArgs], { cwd, env });
+      assert.equal(approval.status, 0, approval.stderr || approval.stdout);
+      const approvalRequest = parseJson(approval.stdout);
+
+      const activation = await run([
+        "approval-grant",
+        "activate",
+        ...commonArgs,
+        "--grant-expires-at", expiresAt,
+        "--approval-token", approvalRequest.approval_token.value,
+      ], { cwd, env });
+
+      assert.equal(activation.status, 1, activation.stderr || activation.stdout);
+      const parsed = parseJson(activation.stdout);
+      assert.equal(parsed.error_code, "approval_required");
+      assert.equal(JSON.stringify(parsed).includes(approvalRequest.approval_token.value), false);
+    }
+    assert.equal(existsSync(path.join(dataDir, "approval-grants")), false);
+  } finally {
+    rmSync(dataDir, { recursive: true, force: true });
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("direct API reviewers approval-grant activate persists strict idempotent grant file", async () => {
+  const dataDir = mkdtempSync(path.join(tmpdir(), "api-reviewers-grant-persist-"));
+  const cwd = makeWorkspace();
+  try {
+    const commonArgs = [
+      "--provider", "glm",
+      "--mode", "custom-review",
+      "--scope", "custom",
+      "--scope-paths", "seed.txt",
+      "--prompt", "Review seed file only.",
+    ];
+    const env = {
+      API_REVIEWERS_PLUGIN_DATA: dataDir,
+      ZAI_API_KEY: "secret-test-value",
+    };
+    const requestResult = await run([
+      "approval-grant",
+      "request",
+      ...commonArgs,
+      "--grant-ttl-ms", "900000",
+    ], { cwd, env });
+    assert.equal(requestResult.status, 0, requestResult.stderr || requestResult.stdout);
+    const request = parseJson(requestResult.stdout);
+    const activationArgs = [
+      "approval-grant",
+      "activate",
+      ...commonArgs,
+      "--grant-expires-at", request.grant_bounds.expires_at,
+      "--approval-token", request.grant_approval_token.value,
+    ];
+
+    const first = await run(activationArgs, { cwd, env });
+    assert.equal(first.status, 0, first.stderr || first.stdout);
+    const firstActivation = parseJson(first.stdout);
+    assert.equal(firstActivation.event, "external_review_session_approval_grant");
+    assert.equal(firstActivation.source_content_transmission, "not_sent");
+    assert.match(firstActivation.grant_id, /^grant_[a-f0-9]{64}$/);
+
+    const grantsDir = path.join(dataDir, "approval-grants");
+    const grantFile = path.join(grantsDir, `${firstActivation.grant_id}.json`);
+    const grant = parseJson(readFileSync(grantFile, "utf8"));
+    assert.deepEqual(Object.keys(grant), [
+      "schema_version",
+      "grant_id",
+      "created_at",
+      "expires_at",
+      "grant_session_id",
+      "provider_allowlist",
+      "mode_allowlist",
+      "workspace_root_hash",
+      "path_constraints",
+      "max_files",
+      "max_bytes",
+      "max_ttl_ms",
+      "approval_fingerprint",
+      "approval_tuple",
+      "activation",
+    ]);
+    assert.equal(grant.schema_version, 1);
+    assert.equal(grant.grant_id, firstActivation.grant_id);
+    assert.equal(grant.expires_at, request.grant_bounds.expires_at);
+    assert.equal(grant.approval_fingerprint, firstActivation.approval_fingerprint);
+    assert.equal(grant.provider_allowlist.includes("glm"), true);
+    assert.deepEqual(grant.provider_allowlist, grant.approval_tuple.grant_bounds.provider_allowlist);
+    assert.deepEqual(grant.mode_allowlist, grant.approval_tuple.grant_bounds.mode_allowlist);
+    assert.equal(grant.workspace_root_hash, grant.approval_tuple.grant_bounds.workspace_root_hash);
+    assert.deepEqual(grant.path_constraints, grant.approval_tuple.grant_bounds.path_constraints);
+    assert.equal(grant.max_files, grant.approval_tuple.grant_bounds.max_files);
+    assert.equal(grant.max_bytes, grant.approval_tuple.grant_bounds.max_bytes);
+    assert.equal(grant.max_ttl_ms, grant.approval_tuple.grant_bounds.max_ttl_ms);
+    for (const forbidden of ["provider", "mode", "selected_source", "rendered_prompt_hash", "request", "scope_resolution", "auth_path", "billing_path", "selected_route", "route_step", "route_steps", "fallback_reason", "approval_scope", "grant_bounds"]) {
+      assert.equal(Object.hasOwn(grant, forbidden), false, `grant file must not duplicate tuple field ${forbidden} at top level`);
+    }
+    const grantText = readFileSync(grantFile, "utf8");
+    assert.equal(grantText.includes(request.grant_approval_token.value), false);
+    assert.equal(grantText.includes("hello from selected scope"), false);
+    assert.equal(grantText.includes("secret-test-value"), false);
+    if (process.platform !== "win32") {
+      assert.equal(lstatSync(grantFile).mode & 0o777, 0o600);
+    }
+
+    const second = await run(activationArgs, { cwd, env });
+    assert.equal(second.status, 0, second.stderr || second.stdout);
+    const secondActivation = parseJson(second.stdout);
+    assert.equal(secondActivation.grant_id, firstActivation.grant_id);
+    assert.deepEqual(readdirSync(grantsDir).filter((name) => name.endsWith(".json")), [`${firstActivation.grant_id}.json`]);
+  } finally {
+    rmSync(dataDir, { recursive: true, force: true });
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("direct API reviewers run uses matching session grant without per-run approval token", async () => {
+  const dataDir = mkdtempSync(path.join(tmpdir(), "api-reviewers-grant-run-"));
+  const cwd = makeWorkspace();
+  try {
+    const commonArgs = [
+      "--provider", "glm",
+      "--mode", "custom-review",
+      "--scope", "custom",
+      "--scope-paths", "seed.txt",
+      "--prompt", "Review seed file only.",
+    ];
+    const env = {
+      API_REVIEWERS_PLUGIN_DATA: dataDir,
+      ZAI_API_KEY: "secret-test-value",
+      API_REVIEWERS_TEST_AUTO_APPROVAL: "0",
+      API_REVIEWERS_REQUIRE_APPROVAL_TOKEN_IN_MOCKS: "1",
+      API_REVIEWERS_MOCK_RESPONSE: mockResponse("glm-5.1", "session-grant-run"),
+    };
+    const requestResult = await run([
+      "approval-grant",
+      "request",
+      ...commonArgs,
+      "--grant-ttl-ms", "900000",
+    ], { cwd, env });
+    assert.equal(requestResult.status, 0, requestResult.stderr || requestResult.stdout);
+    const request = parseJson(requestResult.stdout);
+    const activationResult = await run([
+      "approval-grant",
+      "activate",
+      ...commonArgs,
+      "--grant-expires-at", request.grant_bounds.expires_at,
+      "--approval-token", request.grant_approval_token.value,
+    ], { cwd, env });
+    assert.equal(activationResult.status, 0, activationResult.stderr || activationResult.stdout);
+    const activation = parseJson(activationResult.stdout);
+
+    const runResult = await run(["run", ...commonArgs, "--foreground"], { cwd, env });
+
+    assert.equal(runResult.status, 0, runResult.stderr || runResult.stdout);
+    const record = parseJson(runResult.stdout);
+    assert.equal(record.external_review.source_content_transmission, "sent");
+    const auditManifest = record.review_metadata.audit_manifest;
+    assert.equal(auditManifest.approval_scope, "grant");
+    assert.equal(auditManifest.approval_source, "session_grant");
+    assert.equal(auditManifest.approval_grant.grant_id, activation.grant_id);
+    assert.equal(auditManifest.approval_grant.grant_session_id, activation.grant_session_id);
+    assert.equal(auditManifest.approval_grant.max_files, request.grant_bounds.max_files);
+    assert.equal(auditManifest.approval_grant.max_bytes, request.grant_bounds.max_bytes);
+    assert.equal(auditManifest.selected_source.files[0].content_hash.value, request.selected_source.files[0].content_hash.value);
+    assert.equal(auditManifest.rendered_prompt_hash.value, request.rendered_prompt_hash.value);
+    assert.equal(JSON.stringify(record).includes(request.grant_approval_token.value), false);
+    assert.equal(JSON.stringify(record).includes("secret-test-value"), false);
+  } finally {
+    rmSync(dataDir, { recursive: true, force: true });
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("direct API reviewers session grants clean clearly expired grant files during lookup", async () => {
+  const dataDir = mkdtempSync(path.join(tmpdir(), "api-reviewers-grant-expired-cleanup-"));
+  const cwd = makeWorkspace();
+  try {
+    const grant = await createGlmSessionGrant({ cwd, dataDir });
+    const grantFile = expireGlmSessionGrantRecord(dataDir, grant.activation);
+    assert.equal(existsSync(grantFile), true);
+
+    const result = await run(["run", ...grant.commonArgs, "--foreground"], {
+      cwd,
+      env: {
+        ...grant.env,
+        API_REVIEWERS_TEST_AUTO_APPROVAL: "0",
+        API_REVIEWERS_REQUIRE_APPROVAL_TOKEN_IN_MOCKS: "1",
+        API_REVIEWERS_MOCK_RESPONSE: mockResponse("glm-5.1", "grant-expired-cleanup"),
+      },
+    });
+
+    assert.equal(result.status, 1, result.stderr || result.stdout);
+    const record = parseJson(result.stdout);
+    assert.equal(record.error_code, "approval_required");
+    assertDirectApiNotSent(record, "GLM");
+    assert.equal(existsSync(grantFile), false);
+  } finally {
+    rmSync(dataDir, { recursive: true, force: true });
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("direct API reviewers session grants fail closed on provider, mode, source, prompt, request, expiry, and tamper mismatches", async () => {
+  const cases = [
+    {
+      name: "provider",
+      mutateBeforeRun: () => {},
+      runArgs: [
+        "--provider", "deepseek",
+        "--mode", "custom-review",
+        "--scope", "custom",
+        "--scope-paths", "seed.txt",
+        "--prompt", "Review seed file only.",
+      ],
+      runEnv: { DEEPSEEK_API_KEY: "secret-test-value", API_REVIEWERS_MOCK_RESPONSE: mockResponse("deepseek-v4-pro", "grant-provider-mismatch") },
+    },
+    {
+      name: "mode",
+      mutateBeforeRun: () => {},
+      runArgs: [
+        "--provider", "glm",
+        "--mode", "adversarial-review",
+        "--scope", "custom",
+        "--scope-paths", "seed.txt",
+        "--prompt", "Review seed file only.",
+      ],
+    },
+    {
+      name: "source-content",
+      mutateBeforeRun: (cwd) => writeFileSync(path.join(cwd, "seed.txt"), "changed selected scope\n"),
+    },
+    {
+      name: "scope-path",
+      mutateBeforeRun: (cwd) => writeFileSync(path.join(cwd, "other.txt"), "hello from selected scope\n"),
+      runArgs: [
+        "--provider", "glm",
+        "--mode", "custom-review",
+        "--scope", "custom",
+        "--scope-paths", "other.txt",
+        "--prompt", "Review seed file only.",
+      ],
+    },
+    {
+      name: "scope-paths-null-not-wildcard",
+      mutateBeforeRun: (cwd, dataDir, activation) => {
+        const file = path.join(dataDir, "approval-grants", `${activation.grant_id}.json`);
+        const grant = parseJson(readFileSync(file, "utf8"));
+        grant.path_constraints.scope_paths = null;
+        grant.approval_tuple.scope_resolution.scope_paths = null;
+        grant.approval_tuple.grant_bounds.path_constraints.scope_paths = null;
+        const fingerprint = approvalFingerprintForTest(grant.approval_tuple);
+        grant.approval_fingerprint = fingerprint;
+        grant.grant_id = `grant_${fingerprint}`;
+        grant.grant_session_id = `session_${fingerprint.slice(0, 32)}`;
+        writeFileSync(file, `${JSON.stringify(grant, null, 2)}\n`);
+      },
+    },
+    {
+      name: "prompt",
+      mutateBeforeRun: () => {},
+      runArgs: [
+        "--provider", "glm",
+        "--mode", "custom-review",
+        "--scope", "custom",
+        "--scope-paths", "seed.txt",
+        "--prompt", "Review a different focus.",
+      ],
+    },
+    {
+      name: "request-settings",
+      mutateBeforeRun: () => {},
+      runEnv: { API_REVIEWERS_TIMEOUT_MS: "123456" },
+    },
+    {
+      name: "expired",
+      mutateBeforeRun: (cwd, dataDir, activation) => {
+        expireGlmSessionGrantRecord(dataDir, activation);
+      },
+    },
+    {
+      name: "tampered-fingerprint",
+      mutateBeforeRun: (cwd, dataDir, activation) => {
+        const file = path.join(dataDir, "approval-grants", `${activation.grant_id}.json`);
+        const grant = parseJson(readFileSync(file, "utf8"));
+        grant.approval_fingerprint = "0".repeat(64);
+        writeFileSync(file, `${JSON.stringify(grant, null, 2)}\n`);
+      },
+    },
+    {
+      name: "projection-max-bytes-mismatch",
+      mutateBeforeRun: (cwd, dataDir, activation) => {
+        const file = path.join(dataDir, "approval-grants", `${activation.grant_id}.json`);
+        const grant = parseJson(readFileSync(file, "utf8"));
+        grant.max_bytes += 1;
+        writeFileSync(file, `${JSON.stringify(grant, null, 2)}\n`);
+      },
+    },
+    {
+      name: "projection-max-files-mismatch",
+      mutateBeforeRun: (cwd, dataDir, activation) => {
+        const file = path.join(dataDir, "approval-grants", `${activation.grant_id}.json`);
+        const grant = parseJson(readFileSync(file, "utf8"));
+        grant.max_files += 1;
+        writeFileSync(file, `${JSON.stringify(grant, null, 2)}\n`);
+      },
+    },
+    {
+      name: "timestamp-format",
+      mutateBeforeRun: (cwd, dataDir, activation) => {
+        const file = path.join(dataDir, "approval-grants", `${activation.grant_id}.json`);
+        const grant = parseJson(readFileSync(file, "utf8"));
+        grant.created_at = "not-a-timestamp";
+        writeFileSync(file, `${JSON.stringify(grant, null, 2)}\n`);
+      },
+    },
+    {
+      name: "schema-extra-field",
+      mutateBeforeRun: (cwd, dataDir, activation) => {
+        const file = path.join(dataDir, "approval-grants", `${activation.grant_id}.json`);
+        const grant = parseJson(readFileSync(file, "utf8"));
+        grant.unexpected = true;
+        writeFileSync(file, `${JSON.stringify(grant, null, 2)}\n`);
+      },
+    },
+    {
+      name: "malformed-json",
+      mutateBeforeRun: (cwd, dataDir, activation) => {
+        const file = path.join(dataDir, "approval-grants", `${activation.grant_id}.json`);
+        writeFileSync(file, "{not json\n");
+      },
+    },
+  ];
+
+  for (const item of cases) {
+    const dataDir = mkdtempSync(path.join(tmpdir(), `api-reviewers-grant-mismatch-${item.name}-`));
+    const cwd = makeWorkspace();
+    try {
+      const grant = await createGlmSessionGrant({ cwd, dataDir, ttlMs: item.ttlMs ?? "900000" });
+      await item.mutateBeforeRun?.(cwd, dataDir, grant.activation);
+      const env = {
+        ...grant.env,
+        ...item.runEnv,
+        API_REVIEWERS_TEST_AUTO_APPROVAL: "0",
+        API_REVIEWERS_REQUIRE_APPROVAL_TOKEN_IN_MOCKS: "1",
+        API_REVIEWERS_MOCK_RESPONSE: item.runEnv?.API_REVIEWERS_MOCK_RESPONSE ?? mockResponse("glm-5.1", `grant-${item.name}-mismatch`),
+      };
+      const result = await run(["run", ...(item.runArgs ?? grant.commonArgs), "--foreground"], { cwd, env });
+      assert.equal(result.status, 1, `${item.name}: ${result.stderr || result.stdout}`);
+      const record = parseJson(result.stdout);
+      assert.equal(record.error_code, "approval_required", item.name);
+      assertDirectApiNotSent(record, item.name === "provider" ? "DeepSeek" : "GLM");
+      assert.equal(JSON.stringify(record).includes(grant.request.grant_approval_token.value), false, item.name);
+      assert.equal(JSON.stringify(record).includes("secret-test-value"), false, item.name);
+    } finally {
+      rmSync(dataDir, { recursive: true, force: true });
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  }
+});
+
+test("direct API reviewers session grants fail closed on workspace mismatch", async () => {
+  const dataDir = mkdtempSync(path.join(tmpdir(), "api-reviewers-grant-workspace-"));
+  const cwd = makeWorkspace();
+  const otherCwd = makeWorkspace();
+  try {
+    const grant = await createGlmSessionGrant({ cwd, dataDir });
+
+    const result = await run(["run", ...grant.commonArgs, "--foreground"], {
+      cwd: otherCwd,
+      env: {
+        ...grant.env,
+        API_REVIEWERS_TEST_AUTO_APPROVAL: "0",
+        API_REVIEWERS_REQUIRE_APPROVAL_TOKEN_IN_MOCKS: "1",
+        API_REVIEWERS_MOCK_RESPONSE: mockResponse("glm-5.1", "grant-workspace-mismatch"),
+      },
+    });
+
+    assert.equal(result.status, 1, result.stderr || result.stdout);
+    const record = parseJson(result.stdout);
+    assert.equal(record.error_code, "approval_required");
+    assertDirectApiNotSent(record, "GLM");
+  } finally {
+    rmSync(dataDir, { recursive: true, force: true });
+    rmSync(cwd, { recursive: true, force: true });
+    rmSync(otherCwd, { recursive: true, force: true });
+  }
+});
+
+test("direct API reviewers approval-grant request rejects TTL above maximum before activation", async () => {
+  const dataDir = mkdtempSync(path.join(tmpdir(), "api-reviewers-grant-ttl-max-"));
+  const cwd = makeWorkspace();
+  try {
+    const result = await run([
+      "approval-grant",
+      "request",
+      "--provider", "glm",
+      "--mode", "custom-review",
+      "--scope", "custom",
+      "--scope-paths", "seed.txt",
+      "--prompt", "Review seed file only.",
+      "--grant-ttl-ms", String(SESSION_APPROVAL_POLICY.max_ttl_ms + 1),
+    ], {
+      cwd,
+      env: {
+        API_REVIEWERS_PLUGIN_DATA: dataDir,
+        ZAI_API_KEY: "secret-test-value",
+      },
+    });
+
+    assert.equal(result.status, 1, result.stderr || result.stdout);
+    const parsed = parseJson(result.stdout);
+    assert.equal(parsed.error_code, "bad_args");
+    assert.match(parsed.error_message, /exceeds configured maximum/);
+    assert.equal(existsSync(path.join(dataDir, "approval-grants")), false);
+  } finally {
+    rmSync(dataDir, { recursive: true, force: true });
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("direct API reviewers session grants fail closed on multiple active matches", async () => {
+  const dataDir = mkdtempSync(path.join(tmpdir(), "api-reviewers-grant-duplicate-"));
+  const cwd = makeWorkspace();
+  try {
+    const grant = await createGlmSessionGrant({ cwd, dataDir });
+    const grantsDir = path.join(dataDir, "approval-grants");
+    const originalFile = path.join(grantsDir, `${grant.activation.grant_id}.json`);
+    const duplicateFile = path.join(grantsDir, `${grant.activation.grant_id}-duplicate.json`);
+    cpSync(originalFile, duplicateFile);
+
+    const result = await run(["run", ...grant.commonArgs, "--foreground"], {
+      cwd,
+      env: {
+        ...grant.env,
+        API_REVIEWERS_TEST_AUTO_APPROVAL: "0",
+        API_REVIEWERS_REQUIRE_APPROVAL_TOKEN_IN_MOCKS: "1",
+        API_REVIEWERS_MOCK_RESPONSE: mockResponse("glm-5.1", "grant-duplicate"),
+      },
+    });
+
+    assert.equal(result.status, 1, result.stderr || result.stdout);
+    const record = parseJson(result.stdout);
+    assert.equal(record.error_code, "approval_required");
+    assertDirectApiNotSent(record, "GLM");
+  } finally {
+    rmSync(dataDir, { recursive: true, force: true });
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("direct API reviewers run rejects grant approval token as normal per-request token", async () => {
+  const dataDir = mkdtempSync(path.join(tmpdir(), "api-reviewers-grant-token-run-"));
+  const cwd = makeWorkspace();
+  try {
+    const grant = await createGlmSessionGrant({ cwd, dataDir });
+
+    const result = await run([
+      "run",
+      ...grant.commonArgs,
+      "--foreground",
+      "--approval-token", grant.request.grant_approval_token.value,
+    ], {
+      cwd,
+      env: {
+        ...grant.env,
+        API_REVIEWERS_TEST_AUTO_APPROVAL: "0",
+        API_REVIEWERS_REQUIRE_APPROVAL_TOKEN_IN_MOCKS: "1",
+        API_REVIEWERS_MOCK_RESPONSE: mockResponse("glm-5.1", "grant-token-normal-run"),
+      },
+    });
+
+    assert.equal(result.status, 1, result.stderr || result.stdout);
+    const record = parseJson(result.stdout);
+    assert.equal(record.error_code, "approval_required");
+    assertDirectApiNotSent(record, "GLM");
+    assert.equal(JSON.stringify(record).includes(grant.request.grant_approval_token.value), false);
+  } finally {
+    rmSync(dataDir, { recursive: true, force: true });
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("direct API reviewers session grants are bound to auth, billing, and route fallback fields", async () => {
+  const cases = [
+    {
+      name: "auth-path",
+      approvalConfig: {
+        display_name: "Custom Reviewer",
+        auth_mode: "api_key",
+        env_keys: ["PRIMARY_API_KEY", "SECONDARY_API_KEY"],
+        base_url: "https://billing-a.example.invalid",
+        model: "custom-review-model",
+      },
+      approvalEnv: { PRIMARY_API_KEY: "primary-secret-value", SECONDARY_API_KEY: "" },
+      runEnv: { PRIMARY_API_KEY: "", SECONDARY_API_KEY: "secondary-secret-value" },
+      mutateConfig: null,
+    },
+    {
+      name: "billing-path",
+      approvalConfig: {
+        display_name: "Custom Reviewer",
+        auth_mode: "api_key",
+        env_keys: ["CUSTOM_API_KEY"],
+        base_url: "https://billing-a.example.invalid",
+        model: "custom-review-model",
+      },
+      approvalEnv: { CUSTOM_API_KEY: "secret-test-value" },
+      runEnv: { CUSTOM_API_KEY: "secret-test-value" },
+      mutateConfig: {
+        display_name: "Custom Reviewer",
+        auth_mode: "api_key",
+        env_keys: ["CUSTOM_API_KEY"],
+        base_url: "https://billing-b.example.invalid",
+        model: "custom-review-model",
+      },
+    },
+    {
+      name: "fallback-reason",
+      approvalConfig: {
+        display_name: "Custom Reviewer",
+        auth_mode: "api_key",
+        env_keys: ["CUSTOM_API_KEY"],
+        base_url: "https://billing-a.example.invalid",
+        model: "custom-review-model",
+      },
+      approvalEnv: { CUSTOM_API_KEY: "secret-test-value" },
+      runEnv: { CUSTOM_API_KEY: "secret-test-value", API_REVIEWERS_ROUTE_FALLBACK_REASON: "usage_limited" },
+      mutateConfig: null,
+    },
+  ];
+
+  for (const item of cases) {
+    const cwd = makeWorkspace();
+    const dataDir = mkdtempSync(path.join(tmpdir(), `api-reviewers-grant-${item.name}-`));
+    const pluginRoot = makeInstalledApiReviewersRoot();
+    const companion = path.join(pluginRoot, "scripts", "api-reviewer.mjs");
+    try {
+      writeSingleProviderConfig(pluginRoot, "custom", item.approvalConfig);
+      const commonArgs = [
+        "--provider", "custom",
+        "--mode", "custom-review",
+        "--scope", "custom",
+        "--scope-paths", "seed.txt",
+        "--prompt", "Check this file.",
+      ];
+      const approvalEnv = {
+        API_REVIEWERS_PLUGIN_DATA: dataDir,
+        API_REVIEWERS_TEST_AUTO_APPROVAL: "0",
+        ...item.approvalEnv,
+      };
+      const requestResult = await run([
+        "approval-grant",
+        "request",
+        ...commonArgs,
+        "--grant-ttl-ms", "900000",
+      ], { cwd, companion, env: approvalEnv });
+      assert.equal(requestResult.status, 0, `${item.name}: ${requestResult.stderr || requestResult.stdout}`);
+      const request = parseJson(requestResult.stdout);
+      const activationResult = await run([
+        "approval-grant",
+        "activate",
+        ...commonArgs,
+        "--grant-expires-at", request.grant_bounds.expires_at,
+        "--approval-token", request.grant_approval_token.value,
+      ], { cwd, companion, env: approvalEnv });
+      assert.equal(activationResult.status, 0, `${item.name}: ${activationResult.stderr || activationResult.stdout}`);
+
+      if (item.mutateConfig) writeSingleProviderConfig(pluginRoot, "custom", item.mutateConfig);
+
+      const result = await run(["run", ...commonArgs, "--foreground"], {
+        cwd,
+        companion,
+        env: {
+          API_REVIEWERS_PLUGIN_DATA: dataDir,
+          API_REVIEWERS_TEST_AUTO_APPROVAL: "0",
+          API_REVIEWERS_REQUIRE_APPROVAL_TOKEN_IN_MOCKS: "1",
+          API_REVIEWERS_MOCK_RESPONSE: mockResponse("custom-review-model"),
+          ...item.runEnv,
+        },
+      });
+      assert.equal(result.status, 1, `${item.name}: ${result.stderr || result.stdout}`);
+      const record = parseJson(result.stdout);
+      assert.equal(record.error_code, "approval_required", item.name);
+      assertDirectApiNotSent(record, "Custom Reviewer");
+      assert.doesNotMatch(result.stdout, /primary-secret-value|secondary-secret-value|secret-test-value/);
+    } finally {
+      rmSync(dataDir, { recursive: true, force: true });
+      rmSync(cwd, { recursive: true, force: true });
+      rmSync(path.dirname(path.dirname(pluginRoot)), { recursive: true, force: true });
+    }
   }
 });
 

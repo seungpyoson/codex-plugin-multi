@@ -75,4 +75,3 @@ Alternatives considered:
 The worktree has no `.specify/` directory or setup scripts. Speckit commands
 cannot run literally here. Artifacts are maintained manually in the established
 repo format under `specs/172-large-custom-review-packet-recovery/`.
-
