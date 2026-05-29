@@ -94,6 +94,16 @@ test("external model contract docs are generated from one shared source", () => 
     item.family === "api-reviewers" || item.family === "api-reviewers-delegation"
   )) {
     const rendered = renderExternalModelContractDoc(target);
+    const apiPluginVersion = JSON.parse(readRepoFile("plugins/api-reviewers/.codex-plugin/plugin.json")).version;
+    const escapedVersion = escapeRegExp(apiPluginVersion);
+    const globalEntrypoint = new RegExp(
+      `node "\\$\\{CODEX_HOME:-\\$HOME/\\.codex\\}/plugins/cache/codex-plugin-multi/api-reviewers/${escapedVersion}/scripts/api-reviewer\\.mjs"`,
+    );
+    assert.match(
+      rendered,
+      globalEntrypoint,
+      `${target.path} must use the global installed api-reviewer entrypoint`,
+    );
     assert.doesNotMatch(
       rendered,
       /node plugins\/api-reviewers\/scripts\/api-reviewer\.mjs/,
@@ -101,17 +111,17 @@ test("external model contract docs are generated from one shared source", () => 
     );
     assert.doesNotMatch(
       rendered,
-      /api-reviewer\.mjs/,
-      `${target.path} must not expose internal api-reviewer script paths`,
+      /node "<plugin-root>\/scripts\/api-reviewer\.mjs"/,
+      `${target.path} must not use repo-relative plugin-root api-reviewer script paths`,
     );
-    assert.match(
+    assert.doesNotMatch(
       rendered,
-      /\bapi-reviewer\s+(doctor|approval-request|run)\b/,
-      `${target.path} must use the installed api-reviewer executable`,
+      /Run `api-reviewer\b/,
+      `${target.path} must not rely on a bare api-reviewer PATH shim`,
     );
     if (target.kind === "command") {
-      assert.match(rendered, /Bash\(api-reviewer:\*\)/, `${target.path} must allow the api-reviewer executable`);
-      assert.doesNotMatch(rendered, /Bash\(node:\*\)/, `${target.path} must not require node access for api-reviewer docs`);
+      assert.match(rendered, /Bash\(node:\*\)/, `${target.path} must allow node for the global api-reviewer entrypoint`);
+      assert.doesNotMatch(rendered, /Bash\(api-reviewer:\*\)/, `${target.path} must not allow the removed api-reviewer shim`);
     }
   }
 });
