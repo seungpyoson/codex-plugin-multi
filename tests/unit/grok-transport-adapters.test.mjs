@@ -17,6 +17,7 @@ test("resolveGrokConfig defaults to subscription CLI adapter facts", () => {
   assert.equal(cfg.transport, "cli");
   assert.equal(cfg.requested_transport, "cli");
   assert.equal(cfg.provider, "grok");
+  assert.equal(cfg.canonical_provider, "grok");
   assert.equal(cfg.display_name, "Grok CLI");
   assert.equal(cfg.auth_mode, "subscription_cli");
   assert.equal(cfg.selected_route, "subscription_cli");
@@ -95,12 +96,14 @@ test("fallback helpers expose web fallback config and redacted CLI diagnostics",
     default_model: "grok-build",
     logged_in: false,
     model_ready: true,
+    auth_freshness: null,
     exit_status: 1,
     exit_signal: null,
     stderr_head: "redacted stderr",
     parse_mode: null,
     source_free_parse_mode: null,
     source_free_prompt_cleanup: null,
+    source_free_grok_home_auth_sync: null,
     source_free_grok_home_cleanup: null,
     prompt_chars: null,
     configured_timeout_ms: null,
@@ -111,6 +114,7 @@ test("fallback helpers expose web fallback config and redacted CLI diagnostics",
     grok_home_source: "/tmp/grok-cli-auth-home-123",
     grok_home_copied_files: ["config.json"],
     grok_home_linked_files: ["oauth.json"],
+    grok_home_auth_sync: null,
     grok_home_cleanup: null,
   });
 });
@@ -144,6 +148,7 @@ test("resolveGrokFallbackConfig uses safe CLI defaults for early error records",
 
   assert.equal(fallback.transport, "cli");
   assert.equal(fallback.requested_transport, "cli");
+  assert.equal(fallback.canonical_provider, "grok");
   assert.equal(fallback.timeout_ms, 900000);
   assert.equal(fallback.max_prompt_chars, 400000);
   assert.equal(fallback.max_turns, 8);

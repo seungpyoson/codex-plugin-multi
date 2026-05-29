@@ -60,6 +60,16 @@
       "branches": 0.0,
       "functions": 0.0
     },
+    "plugins/api-reviewers/scripts/lib/provider-identity.mjs": {
+      "lines": 0.0,
+      "branches": 0.0,
+      "functions": 0.0
+    },
+    "plugins/api-reviewers/scripts/lib/review-workload.mjs": {
+      "lines": 0.0,
+      "branches": 0.0,
+      "functions": 0.0
+    },
     "plugins/api-reviewers/scripts/lib/git-env.mjs": {
       "lines": 100.0,
       "branches": 100.0,
@@ -196,6 +206,16 @@
       "functions": 100.0
     },
     "plugins/claude/scripts/lib/privacy-redaction.mjs": {
+      "lines": 0.0,
+      "branches": 0.0,
+      "functions": 0.0
+    },
+    "plugins/claude/scripts/lib/provider-identity.mjs": {
+      "lines": 0.0,
+      "branches": 0.0,
+      "functions": 0.0
+    },
+    "plugins/claude/scripts/lib/review-workload.mjs": {
       "lines": 0.0,
       "branches": 0.0,
       "functions": 0.0
@@ -345,6 +365,16 @@
       "branches": 0.0,
       "functions": 0.0
     },
+    "plugins/gemini/scripts/lib/provider-identity.mjs": {
+      "lines": 0.0,
+      "branches": 0.0,
+      "functions": 0.0
+    },
+    "plugins/gemini/scripts/lib/review-workload.mjs": {
+      "lines": 0.0,
+      "branches": 0.0,
+      "functions": 0.0
+    },
     "plugins/gemini/scripts/lib/time.mjs": {
       "lines": 100.0,
       "branches": 100.0,
@@ -431,6 +461,16 @@
       "functions": 0.0
     },
     "plugins/grok/scripts/lib/privacy-redaction.mjs": {
+      "lines": 0.0,
+      "branches": 0.0,
+      "functions": 0.0
+    },
+    "plugins/grok/scripts/lib/provider-identity.mjs": {
+      "lines": 0.0,
+      "branches": 0.0,
+      "functions": 0.0
+    },
+    "plugins/grok/scripts/lib/review-workload.mjs": {
       "lines": 0.0,
       "branches": 0.0,
       "functions": 0.0
@@ -556,6 +596,16 @@
       "functions": 100.0
     },
     "plugins/kimi/scripts/lib/privacy-redaction.mjs": {
+      "lines": 0.0,
+      "branches": 0.0,
+      "functions": 0.0
+    },
+    "plugins/kimi/scripts/lib/provider-identity.mjs": {
+      "lines": 0.0,
+      "branches": 0.0,
+      "functions": 0.0
+    },
+    "plugins/kimi/scripts/lib/review-workload.mjs": {
       "lines": 0.0,
       "branches": 0.0,
       "functions": 0.0

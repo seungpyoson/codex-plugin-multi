@@ -318,7 +318,7 @@ test("api-reviewers bin shim resolves from non-repo cwd", () => {
 
   assert.equal(result.status, 0, result.stderr);
   const parsed = JSON.parse(result.stdout);
-  assert.deepEqual(parsed.commands, ["doctor", "ping", "approval-request", "run", "result"]);
+  assert.deepEqual(parsed.commands, ["doctor", "ping", "approval-request", "approval-grant", "run", "result"]);
   assert.deepEqual(parsed.providers, ["deepseek", "glm"]);
 });
 

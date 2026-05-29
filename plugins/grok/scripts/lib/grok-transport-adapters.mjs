@@ -13,9 +13,11 @@ const DEFAULT_TUNNEL_CLEANUP_TIMEOUT_MS = 2000;
 const DEFAULT_CLI_MAX_TURNS = 8;
 const DEFAULT_MAX_PROMPT_CHARS = 400000;
 const VALID_TRANSPORTS = new Set(["cli", "web", "auto"]);
+const GROK_CANONICAL_PROVIDER = "grok";
 const GROK_CLI_AUTO_FALLBACK_CODES = new Set([
   "grok_cli_unavailable",
   "grok_cli_auth_unavailable",
+  "grok_cli_auth_expired",
   "grok_cli_login_required",
   "grok_cli_auth_timeout",
   "grok_cli_model_unavailable",
@@ -46,7 +48,8 @@ function parsePositiveIntegerEnv(env, name, fallback, unit = "number of millisec
 
 function cliConfig(options = {}, env = process.env) {
   return {
-    provider: "grok",
+    provider: GROK_CANONICAL_PROVIDER,
+    canonical_provider: GROK_CANONICAL_PROVIDER,
     display_name: "Grok CLI",
     auth_mode: "subscription_cli",
     selected_route: "subscription_cli",
@@ -66,13 +69,14 @@ function cliConfig(options = {}, env = process.env) {
     legacy: false,
     credential_ref: null,
     credential_value: null,
-    api_capability: providerApiCapability("grok"),
+    api_capability: providerApiCapability(GROK_CANONICAL_PROVIDER),
   };
 }
 
 function cliFallbackConfig(options = {}, env = process.env) {
   return {
-    provider: "grok",
+    provider: GROK_CANONICAL_PROVIDER,
+    canonical_provider: GROK_CANONICAL_PROVIDER,
     display_name: "Grok CLI",
     auth_mode: "subscription_cli",
     selected_route: "subscription_cli",
@@ -92,7 +96,7 @@ function cliFallbackConfig(options = {}, env = process.env) {
     legacy: false,
     credential_ref: null,
     credential_value: null,
-    api_capability: providerApiCapability("grok"),
+    api_capability: providerApiCapability(GROK_CANONICAL_PROVIDER),
   };
 }
 
@@ -100,6 +104,7 @@ function webConfig(options = {}, env = process.env) {
   const rawTransport = String(options.transport ?? env.GROK_TRANSPORT ?? "web").trim().toLowerCase();
   return {
     provider: "grok-web",
+    canonical_provider: GROK_CANONICAL_PROVIDER,
     display_name: "Grok Web",
     auth_mode: "subscription_web",
     selected_route: "subscription_web",
@@ -123,7 +128,7 @@ function webConfig(options = {}, env = process.env) {
     credential_value: env.GROK_WEB_TUNNEL_API_KEY || null,
     grok2api_base_url: normalizeGrok2ApiBaseUrl(env.GROK2API_BASE_URL, env.GROK_WEB_BASE_URL),
     grok2api_admin_key: env.GROK2API_ADMIN_KEY || DEFAULT_GROK2API_ADMIN_KEY,
-    api_capability: providerApiCapability("grok"),
+    api_capability: providerApiCapability(GROK_CANONICAL_PROVIDER),
   };
 }
 
@@ -131,6 +136,7 @@ function webFallbackConfig(options = {}, env = process.env) {
   const rawTransport = String(options.transport ?? env.GROK_TRANSPORT ?? "web").trim().toLowerCase();
   return {
     provider: "grok-web",
+    canonical_provider: GROK_CANONICAL_PROVIDER,
     display_name: "Grok Web",
     auth_mode: "subscription_web",
     selected_route: "subscription_web",
@@ -154,7 +160,7 @@ function webFallbackConfig(options = {}, env = process.env) {
     credential_value: env.GROK_WEB_TUNNEL_API_KEY || null,
     grok2api_base_url: normalizeGrok2ApiBaseUrl(env.GROK2API_BASE_URL, env.GROK_WEB_BASE_URL),
     grok2api_admin_key: env.GROK2API_ADMIN_KEY || DEFAULT_GROK2API_ADMIN_KEY,
-    api_capability: providerApiCapability("grok"),
+    api_capability: providerApiCapability(GROK_CANONICAL_PROVIDER),
   };
 }
 
@@ -217,12 +223,14 @@ export function cliRequestDiagnosticsForFallback(execution) {
     default_model: diagnostics.default_model ?? null,
     logged_in: diagnostics.logged_in ?? null,
     model_ready: diagnostics.model_ready ?? null,
+    auth_freshness: diagnostics.auth_freshness ?? null,
     exit_status: diagnostics.exit_status ?? null,
     exit_signal: diagnostics.exit_signal ?? null,
     stderr_head: diagnostics.stderr_head ?? null,
     parse_mode: diagnostics.parse_mode ?? null,
     source_free_parse_mode: diagnostics.source_free_parse_mode ?? null,
     source_free_prompt_cleanup: diagnostics.source_free_prompt_cleanup ?? null,
+    source_free_grok_home_auth_sync: diagnostics.source_free_grok_home_auth_sync ?? null,
     source_free_grok_home_cleanup: diagnostics.source_free_grok_home_cleanup ?? null,
     prompt_chars: diagnostics.prompt_chars ?? null,
     configured_timeout_ms: diagnostics.configured_timeout_ms ?? null,
@@ -233,6 +241,7 @@ export function cliRequestDiagnosticsForFallback(execution) {
     grok_home_source: diagnostics.grok_home_source ?? null,
     grok_home_copied_files: diagnostics.grok_home_copied_files ?? [],
     grok_home_linked_files: diagnostics.grok_home_linked_files ?? [],
+    grok_home_auth_sync: diagnostics.grok_home_auth_sync ?? null,
     grok_home_cleanup: diagnostics.grok_home_cleanup ?? null,
   };
 }

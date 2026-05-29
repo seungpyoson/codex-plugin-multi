@@ -13,6 +13,7 @@ import { badVerdictReviewFixture, requestChangesReviewFixture, substantiveReview
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const COMPANION = path.join(REPO_ROOT, "plugins/api-reviewers/scripts/api-reviewer.mjs");
+const SESSION_APPROVAL_POLICY = JSON.parse(readFileSync(path.join(REPO_ROOT, "plugins/api-reviewers/config/session-approval.json"), "utf8"));
 const API_REVIEWER_EXPECTED_KEYS = Object.freeze([
   "id",
   "job_id",
@@ -58,6 +59,7 @@ const API_REVIEWER_EXPECTED_KEYS = Object.freeze([
   "usage",
   "auth_mode",
   "credential_ref",
+  "credential_source",
   "endpoint",
   "http_status",
   "raw_model",
@@ -99,9 +101,16 @@ async function run(args, { cwd = REPO_ROOT, env = {}, companion = COMPANION } = 
     }
   }
   return new Promise((resolve) => {
+    const workloadLockDir = env.CODEX_PLUGIN_MULTI_PROVIDER_WORKLOAD_LOCK_DIR
+      ?? path.join(env.API_REVIEWERS_PLUGIN_DATA ?? cwd, ".provider-workload");
     execFile(process.execPath, [companion, ...finalArgs], {
       cwd,
-      env: { ...process.env, API_REVIEWERS_DISABLE_ENV_CACHE: "1", ...env },
+      env: {
+        ...process.env,
+        API_REVIEWERS_DISABLE_ENV_CACHE: "1",
+        CODEX_PLUGIN_MULTI_PROVIDER_WORKLOAD_LOCK_DIR: workloadLockDir,
+        ...env,
+      },
       timeout: 10000,
     }, (error, stdout, stderr) => {
       resolve({ error, stdout, stderr, status: error?.code ?? 0 });
@@ -111,9 +120,16 @@ async function run(args, { cwd = REPO_ROOT, env = {}, companion = COMPANION } = 
 
 async function runExecutable(args, { cwd = REPO_ROOT, env = {}, executable } = {}) {
   return new Promise((resolve) => {
+    const workloadLockDir = env.CODEX_PLUGIN_MULTI_PROVIDER_WORKLOAD_LOCK_DIR
+      ?? path.join(env.API_REVIEWERS_PLUGIN_DATA ?? cwd, ".provider-workload");
     execFile(executable, args, {
       cwd,
-      env: { ...process.env, API_REVIEWERS_DISABLE_ENV_CACHE: "1", ...env },
+      env: {
+        ...process.env,
+        API_REVIEWERS_DISABLE_ENV_CACHE: "1",
+        CODEX_PLUGIN_MULTI_PROVIDER_WORKLOAD_LOCK_DIR: workloadLockDir,
+        ...env,
+      },
       timeout: 10000,
     }, (error, stdout, stderr) => {
       resolve({ error, stdout, stderr, status: error?.code ?? 0 });
@@ -123,6 +139,28 @@ async function runExecutable(args, { cwd = REPO_ROOT, env = {}, executable } = {
 
 function parseJson(stdout) {
   return JSON.parse(stdout);
+}
+
+function canonicalJsonForTest(value) {
+  if (value === null) return "null";
+  if (Array.isArray(value)) return `[${value.map((item) => canonicalJsonForTest(item)).join(",")}]`;
+  const type = typeof value;
+  if (type === "string" || type === "boolean") return JSON.stringify(value);
+  if (type === "number") {
+    if (!Number.isFinite(value)) throw new Error("canonical_json_non_finite_number");
+    return JSON.stringify(value);
+  }
+  if (type === "object") {
+    const fields = Object.keys(value)
+      .sort()
+      .map((key) => `${JSON.stringify(key)}:${canonicalJsonForTest(value[key])}`);
+    return `{${fields.join(",")}}`;
+  }
+  throw new Error(`canonical_json_unsupported:${type}`);
+}
+
+function approvalFingerprintForTest(approvalTuple) {
+  return createHash("sha256").update(canonicalJsonForTest(approvalTuple)).digest("hex");
 }
 
 function parseJsonLines(stdout) {
@@ -203,10 +241,60 @@ function makeWorkspace() {
   return cwd;
 }
 
+async function createGlmSessionGrant({ cwd, dataDir, prompt = "Review seed file only.", ttlMs = "900000", env = {} } = {}) {
+  const commonArgs = [
+    "--provider", "glm",
+    "--mode", "custom-review",
+    "--scope", "custom",
+    "--scope-paths", "seed.txt",
+    "--prompt", prompt,
+  ];
+  const commonEnv = {
+    API_REVIEWERS_PLUGIN_DATA: dataDir,
+    ZAI_API_KEY: "secret-test-value",
+    ...env,
+  };
+  const requestResult = await run([
+    "approval-grant",
+    "request",
+    ...commonArgs,
+    "--grant-ttl-ms", ttlMs,
+  ], { cwd, env: commonEnv });
+  assert.equal(requestResult.status, 0, requestResult.stderr || requestResult.stdout);
+  const request = parseJson(requestResult.stdout);
+  const activationResult = await run([
+    "approval-grant",
+    "activate",
+    ...commonArgs,
+    "--grant-expires-at", request.grant_bounds.expires_at,
+    "--approval-token", request.grant_approval_token.value,
+  ], { cwd, env: commonEnv });
+  assert.equal(activationResult.status, 0, activationResult.stderr || activationResult.stdout);
+  return {
+    commonArgs,
+    env: commonEnv,
+    request,
+    activation: parseJson(activationResult.stdout),
+  };
+}
+
+function expireGlmSessionGrantRecord(dataDir, activation, expiresAt = new Date(Date.now() - 1000).toISOString()) {
+  const file = path.join(dataDir, "approval-grants", `${activation.grant_id}.json`);
+  const record = parseJson(readFileSync(file, "utf8"));
+  record.expires_at = expiresAt;
+  record.approval_tuple.grant_bounds.expires_at = expiresAt;
+  const fingerprint = approvalFingerprintForTest(record.approval_tuple);
+  record.approval_fingerprint = fingerprint;
+  record.grant_id = `grant_${fingerprint}`;
+  record.grant_session_id = `session_${fingerprint.slice(0, 32)}`;
+  writeFileSync(file, `${JSON.stringify(record, null, 2)}\n`);
+  return file;
+}
+
 function makeMultiFileScopeWorkspace() {
   const cwd = mkdtempSync(path.join(tmpdir(), "api-reviewers-multifile-"));
   for (let i = 1; i <= 5; i += 1) {
-    const filler = `file ${i} content line ${"x".repeat(40)}\n`.repeat(30);
+    const filler = `file ${i} content line ${"x".repeat(40)}\n`.repeat(26);
     writeFileSync(path.join(cwd, `f${i}.txt`), filler);
   }
   writeFileSync(path.join(cwd, "seed.txt"), "hello from selected scope\n");
@@ -453,9 +541,118 @@ test("doctor loads direct API credential from owner-only op env cache when proce
     assert.equal(parsed.provider, "deepseek");
     assert.equal(parsed.ready, true);
     assert.equal(parsed.credential_ref, "DEEPSEEK_API_KEY");
+    assert.equal(parsed.credential_source, "env_cache");
     assert.equal(parsed.provider_probe.status, "ok");
     assert.equal(authorizationHeader, "Bearer cached-deepseek-test-value");
     assert.doesNotMatch(result.stdout, /cached-deepseek-test-value/);
+  } finally {
+    server.close();
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test("doctor prefers refreshed owner-only op env cache over stale process env", async () => {
+  const pluginRoot = makeInstalledApiReviewersRoot();
+  const home = makeOpEnvCacheHome({
+    DEEPSEEK_API_KEY: "rotated-deepseek-test-value",
+    _OP_KEYS_LOADED: "true",
+  });
+  let authorizationHeader = null;
+  const server = await startChatServer((req, res) => {
+    authorizationHeader = req.headers.authorization ?? null;
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end(mockResponse("deepseek-v4-flash", "chatcmpl-doctor", "ok"));
+  });
+  try {
+    const { port } = server.address();
+    writeDeepSeekProviderConfig(pluginRoot, `http://127.0.0.1:${port}`);
+    const result = await run(["doctor", "--provider", "deepseek"], {
+      companion: path.join(pluginRoot, "scripts", "api-reviewer.mjs"),
+      env: {
+        API_REVIEWERS_DISABLE_ENV_CACHE: "0",
+        HOME: home,
+        _OP_KEYS_LOADED: "",
+        DEEPSEEK_API_KEY: "stale-deepseek-test-value",
+      },
+    });
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    const parsed = parseJson(result.stdout);
+    assert.equal(parsed.provider, "deepseek");
+    assert.equal(parsed.ready, true);
+    assert.equal(parsed.credential_ref, "DEEPSEEK_API_KEY");
+    assert.equal(parsed.provider_probe.status, "ok");
+    assert.equal(authorizationHeader, "Bearer rotated-deepseek-test-value");
+    assert.equal(parsed.credential_source, "env_cache");
+    assert.doesNotMatch(result.stdout, /rotated-deepseek-test-value|stale-deepseek-test-value/);
+  } finally {
+    server.close();
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test("doctor reports env credential source when no usable op env cache exists", async () => {
+  const pluginRoot = makeInstalledApiReviewersRoot();
+  const home = mkdtempSync(path.join(tmpdir(), "api-reviewers-no-cache-home-"));
+  let authorizationHeader = null;
+  const server = await startChatServer((req, res) => {
+    authorizationHeader = req.headers.authorization ?? null;
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end(mockResponse("deepseek-v4-flash", "chatcmpl-doctor", "ok"));
+  });
+  try {
+    const { port } = server.address();
+    writeDeepSeekProviderConfig(pluginRoot, `http://127.0.0.1:${port}`);
+    const result = await run(["doctor", "--provider", "deepseek"], {
+      companion: path.join(pluginRoot, "scripts", "api-reviewer.mjs"),
+      env: {
+        HOME: home,
+        DEEPSEEK_API_KEY: "env-deepseek-test-value",
+      },
+    });
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    const parsed = parseJson(result.stdout);
+    assert.equal(parsed.provider, "deepseek");
+    assert.equal(parsed.ready, true);
+    assert.equal(parsed.credential_ref, "DEEPSEEK_API_KEY");
+    assert.equal(parsed.credential_source, "env");
+    assert.equal(authorizationHeader, "Bearer env-deepseek-test-value");
+    assert.doesNotMatch(result.stdout, /env-deepseek-test-value/);
+  } finally {
+    server.close();
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test("doctor keeps process env source when op env cache is disabled", async () => {
+  const pluginRoot = makeInstalledApiReviewersRoot();
+  const home = makeOpEnvCacheHome({
+    DEEPSEEK_API_KEY: "rotated-deepseek-test-value",
+  });
+  let authorizationHeader = null;
+  const server = await startChatServer((req, res) => {
+    authorizationHeader = req.headers.authorization ?? null;
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end(mockResponse("deepseek-v4-flash", "chatcmpl-doctor", "ok"));
+  });
+  try {
+    const { port } = server.address();
+    writeDeepSeekProviderConfig(pluginRoot, `http://127.0.0.1:${port}`);
+    const result = await run(["doctor", "--provider", "deepseek"], {
+      companion: path.join(pluginRoot, "scripts", "api-reviewer.mjs"),
+      env: {
+        API_REVIEWERS_DISABLE_ENV_CACHE: "1",
+        HOME: home,
+        DEEPSEEK_API_KEY: "env-deepseek-test-value",
+      },
+    });
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    const parsed = parseJson(result.stdout);
+    assert.equal(parsed.provider, "deepseek");
+    assert.equal(parsed.ready, true);
+    assert.equal(parsed.credential_ref, "DEEPSEEK_API_KEY");
+    assert.equal(parsed.credential_source, "env");
+    assert.equal(authorizationHeader, "Bearer env-deepseek-test-value");
+    assert.doesNotMatch(result.stdout, /rotated-deepseek-test-value|env-deepseek-test-value/);
   } finally {
     server.close();
     rmSync(home, { recursive: true, force: true });
@@ -599,7 +796,7 @@ test("help malformed providers config returns structured diagnostic", async () =
   const parsed = parseJson(result.stdout);
   assert.equal(parsed.ok, false);
   assert.equal(parsed.status, "config_error");
-  assert.deepEqual(parsed.commands, ["doctor", "ping", "approval-request", "run", "result"]);
+  assert.deepEqual(parsed.commands, ["doctor", "ping", "approval-request", "approval-grant", "run", "result"]);
   assert.deepEqual(parsed.providers, []);
   assert.match(parsed.error_message, /providers config unreadable/);
   assert.doesNotMatch(result.stdout, /secret-test-value/);
@@ -837,10 +1034,10 @@ test("direct API reviewer pruning does not follow symlinked job dirs during tmp 
   assert.equal(existsSync(path.join(jobsDir, symlinkJobId)), false, "pruning should remove only the symlink node");
 });
 
-test("direct API reviewer concurrent runs retain every completed job in state", async () => {
+test("direct API reviewer concurrent cross-provider runs retain every completed job in state", async () => {
   const cwd = makeWorkspace();
   const dataDir = mkdtempSync(path.join(tmpdir(), "api-reviewers-data-"));
-  const runCount = 8;
+  const runCount = 2;
 
   const results = await Promise.all(Array.from({ length: runCount }, (_, index) => run([
     "run",
@@ -1691,6 +1888,7 @@ test("DeepSeek direct API custom-review completes and persists JobRecord", async
   assert.equal(record.provider, "deepseek");
   assert.equal(record.model, "deepseek-v4-pro");
   assert.equal(record.credential_ref, "DEEPSEEK_API_KEY");
+  assert.equal(record.credential_source, "env");
   assert.equal(record.schema_version, 10);
   assert.equal(record.review_metadata.prompt_contract_version, 1);
   assert.equal(record.review_metadata.prompt_provider, "DeepSeek");
@@ -1709,7 +1907,11 @@ test("DeepSeek direct API custom-review completes and persists JobRecord", async
     assert.equal(record.review_metadata.audit_manifest.request.temperature, 0);
     assert.equal(record.review_metadata.audit_manifest.request.stream, false);
     assert.match(record.review_metadata.audit_manifest.prompt_builder.plugin_commit, /^[a-f0-9]{40}$/);
-    assert.deepEqual(record.review_metadata.audit_manifest.auth_path, { auth_mode: "api_key", credential_ref: "DEEPSEEK_API_KEY" });
+    assert.deepEqual(record.review_metadata.audit_manifest.auth_path, {
+      auth_mode: "api_key",
+      credential_ref: "DEEPSEEK_API_KEY",
+      credential_source: "env",
+    });
     assert.deepEqual(record.review_metadata.audit_manifest.billing_path, { endpoint: "https://api.deepseek.com", model: "deepseek-v4-pro" });
     assert.equal(record.review_metadata.audit_manifest.source_send_approval_required, true);
     assert.equal(record.review_metadata.audit_manifest.source_send_approval_state, "approved");
@@ -2332,6 +2534,15 @@ test("direct API reviewers guide substantive missing-verdict retry without autom
       assert.match(record.suggested_action, /narrowing the scope/i, c.provider);
       assert.match(record.suggested_action, /sharding/i, c.provider);
       assert.match(record.suggested_action, /relaying/i, c.provider);
+      const recovery = record.runtime_diagnostics?.packet_recovery;
+      assert.ok(recovery, `${c.provider}: source-sent no-verdict failures must include packet_recovery`);
+      assert.equal(record.error_code, recovery.reason, c.provider);
+      assert.equal(recovery.provider_capabilities.supports_no_source_resume, false, c.provider);
+      assert.deepEqual(
+        recovery.actions.map((action) => action.type),
+        ["resend_with_confirmation", "switch_provider", "waive_slot"],
+        c.provider,
+      );
     } finally {
       rmSync(dataDir, { recursive: true, force: true });
       rmSync(cwd, { recursive: true, force: true });
@@ -2380,6 +2591,78 @@ test("direct API reviewers block same-packet resend after a failed source-sent s
       secondRecord.review_metadata.audit_manifest.source_packet_policy.source_packet_action,
       "review_slot_retry_blocked",
     );
+  } finally {
+    rmSync(dataDir, { recursive: true, force: true });
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("direct API reviewers require resend confirmation even when large source packet override is approved", async () => {
+  const cwd = makeWorkspace();
+  const dataDir = mkdtempSync(path.join(tmpdir(), "api-reviewers-large-resend-confirmation-"));
+  const files = [];
+  for (let index = 0; index < 3; index += 1) {
+    const file = `large-${index}.txt`;
+    files.push(file);
+    writeFileSync(path.join(cwd, file), "x".repeat(180 * 1024));
+  }
+  const badResult = badVerdictReviewFixture("Provider marker: deepseek large resend guard.");
+  const commonArgs = [
+    "run",
+    "--provider", "deepseek",
+    "--mode", "custom-review",
+    "--scope", "custom",
+    "--scope-paths", files.join(","),
+    "--foreground",
+    "--allow-large-source-packet",
+    "--prompt", "Review these files.",
+  ];
+  const commonEnv = {
+    API_REVIEWERS_PLUGIN_DATA: dataDir,
+    API_REVIEWERS_MAX_PROMPT_CHARS: "2000000",
+    API_REVIEWERS_MOCK_RESPONSE: mockResponse("deepseek-v4-pro", "chatcmpl-large-resend-guard", badResult),
+    DEEPSEEK_API_KEY: "secret-test-value",
+  };
+
+  try {
+    const first = await run(commonArgs, { cwd, env: commonEnv });
+    assert.equal(first.status, 1, first.stderr || first.stdout);
+    const firstRecord = parseJson(first.stdout);
+    assert.equal(firstRecord.error_code, "review_not_completed");
+    assert.equal(firstRecord.external_review.source_content_transmission, "sent");
+    assert.equal(firstRecord.review_metadata.audit_manifest.source_packet_policy.source_packet_action, "send_after_source_packet_override");
+
+    const blocked = await run(
+      [...commonArgs, "--review-slot-disposition", "retry"],
+      { cwd, env: commonEnv },
+    );
+    assert.equal(blocked.status, 1, blocked.stderr || blocked.stdout);
+    const blockedRecord = parseJson(blocked.stdout);
+    assert.equal(blockedRecord.error_code, "resend_confirmation_required");
+    assert.equal(blockedRecord.external_review.source_content_transmission, "not_sent");
+    const blockedPolicy = blockedRecord.review_metadata.audit_manifest.source_packet_policy;
+    assert.equal(blockedPolicy.source_packet_action, "resend_confirmation_required");
+    assert.equal(blockedPolicy.source_packet_override_approved, true);
+    assert.equal(blockedPolicy.source_packet_override_source, "--allow-large-source-packet");
+    assert.doesNotMatch(blocked.stdout, /external_review_launched/);
+
+    const confirmed = await run(
+      [...commonArgs, "--review-slot-disposition", "retry", "--resend-confirmation-approved"],
+      {
+        cwd,
+        env: {
+          ...commonEnv,
+          API_REVIEWERS_MOCK_RESPONSE: mockResponse("deepseek-v4-pro", "chatcmpl-large-resend-confirmed"),
+        },
+      },
+    );
+    assert.equal(confirmed.status, 0, confirmed.stderr || confirmed.stdout);
+    const confirmedRecord = parseJson(confirmed.stdout);
+    assert.equal(confirmedRecord.external_review.source_content_transmission, "sent");
+    const confirmedPolicy = confirmedRecord.review_metadata.audit_manifest.source_packet_policy;
+    assert.equal(confirmedPolicy.source_packet_action, "send_after_resend_confirmation");
+    assert.equal(confirmedPolicy.source_packet_override_approved, true);
+    assert.equal(confirmedPolicy.source_packet_override_source, "--allow-large-source-packet");
   } finally {
     rmSync(dataDir, { recursive: true, force: true });
     rmSync(cwd, { recursive: true, force: true });
@@ -2504,7 +2787,7 @@ test("direct API reviewers allow an explicit same-packet retry disposition", asy
     assert.equal(firstRecord.external_review.source_content_transmission, "sent");
 
     const retried = await run(
-      [...commonArgs, "--review-slot-disposition", "retry"],
+      [...commonArgs, "--review-slot-disposition", "retry", "--resend-confirmation-approved"],
       {
         cwd,
         env: {
@@ -2521,6 +2804,10 @@ test("direct API reviewers allow an explicit same-packet retry disposition", asy
     assert.equal(retriedRecord.review_metadata.audit_manifest.review_slot.disposition, "retry");
     assert.equal(retriedRecord.review_metadata.audit_manifest.review_slot.waiver_artifact, null);
     assert.equal(retriedRecord.review_metadata.audit_manifest.review_slot.override_artifact, null);
+    assert.equal(
+      retriedRecord.review_metadata.audit_manifest.source_packet_policy.source_packet_action,
+      "send_after_resend_confirmation",
+    );
   } finally {
     rmSync(dataDir, { recursive: true, force: true });
     rmSync(cwd, { recursive: true, force: true });
@@ -2696,6 +2983,69 @@ test("direct API reviewers redact provider results before printing or persisting
   assert.equal(record.status, "completed");
   assert.match(record.result, /Echoed \[REDACTED\] in provider output/);
   assert.doesNotMatch(result.stdout, /secret-test-value/);
+});
+
+test("direct API reviewers redact cache-sourced provider echoes after cache rotation", async () => {
+  const cwd = makeWorkspace();
+  const dataDir = mkdtempSync(path.join(tmpdir(), "api-reviewers-cache-redaction-"));
+  const pluginRoot = makeInstalledApiReviewersRoot();
+  const home = makeOpEnvCacheHome({
+    DEEPSEEK_API_KEY: "rotated-cache-secret-value",
+  });
+  const envFile = path.join(home, ".cache", "op", "env.sh");
+  let authorizationHeader = null;
+  const server = await startChatServer(async (req, res) => {
+    const body = await readChatRequest(req);
+    if (respondSourceFreePreflight(body, res, "deepseek-v4-flash")) return;
+    authorizationHeader = req.headers.authorization ?? null;
+    writeFileSync(envFile, "export DEEPSEEK_API_KEY='replacement-cache-secret-value'\n", "utf8");
+    chmodSync(envFile, 0o600);
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end(mockResponse(
+      "deepseek-v4-flash",
+      "chatcmpl-cache-rotation",
+      substantiveReviewFixture("Provider echoed rotated-cache-secret-value after cache rotation"),
+    ));
+  });
+  try {
+    const { port } = server.address();
+    writeDeepSeekProviderConfig(pluginRoot, `http://127.0.0.1:${port}`);
+    const result = await run([
+      "run",
+      "--provider", "deepseek",
+      "--mode", "custom-review",
+      "--scope", "custom",
+      "--scope-paths", "seed.txt",
+      "--foreground",
+      "--prompt", "Check this file.",
+    ], {
+      cwd,
+      companion: path.join(pluginRoot, "scripts", "api-reviewer.mjs"),
+      env: {
+        API_REVIEWERS_DISABLE_ENV_CACHE: "0",
+        API_REVIEWERS_PLUGIN_DATA: dataDir,
+        HOME: home,
+        DEEPSEEK_API_KEY: "stale-process-secret-value",
+      },
+    });
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    const record = parseJson(result.stdout);
+    assert.equal(record.status, "completed");
+    assert.equal(record.credential_ref, "DEEPSEEK_API_KEY");
+    assert.equal(record.credential_source, "env_cache");
+    assert.equal(authorizationHeader, "Bearer rotated-cache-secret-value");
+    assert.match(record.result, /Provider echoed \[REDACTED\] after cache rotation/);
+    assert.doesNotMatch(
+      result.stdout,
+      /rotated-cache-secret-value|replacement-cache-secret-value|stale-process-secret-value/,
+    );
+  } finally {
+    server.close();
+    rmSync(dataDir, { recursive: true, force: true });
+    rmSync(cwd, { recursive: true, force: true });
+    rmSync(home, { recursive: true, force: true });
+    rmSync(path.dirname(path.dirname(pluginRoot)), { recursive: true, force: true });
+  }
 });
 
 test("direct API reviewers redact authorization-shaped provider echoes", async () => {
@@ -2906,7 +3256,7 @@ test("direct API timeout marks selected content as sent", async () => {
     const promptChars = Number(/prompt_chars=(\d+)/.exec(record.error_summary)?.[1]);
     const estimatedTokens = Number(/estimated_tokens=(\d+)/.exec(record.error_summary)?.[1]);
     assert.equal(estimatedTokens, Math.ceil(promptChars / 4));
-    assert.match(record.error_message, /This operation was aborted|aborted/i);
+    assert.match(record.error_message, /This operation was aborted|aborted|request timed out after/i);
     assert.match(record.suggested_action, /timeout/i);
     assert.match(record.suggested_action, /API_REVIEWERS_TIMEOUT_MS/);
     assert.match(record.suggested_action, /Do not automatically resend selected source/i);
@@ -3730,9 +4080,146 @@ test("direct API provider_unavailable under Codex recommends sandbox network acc
   assert.equal(result.status, 1);
   const record = parseJson(result.stdout);
   assert.equal(record.error_code, "provider_unavailable");
+  assert.match(record.runtime_diagnostics.provider_request.fetch_error.name, /^(TypeError|Error)$/);
+  assert.match(record.runtime_diagnostics.provider_request.fetch_error.message, /fetch failed|connect|refused/i);
+  assert.match(
+    JSON.stringify(record.runtime_diagnostics.provider_request.fetch_error),
+    /bad port|ECONNREFUSED|connect|refused/i,
+  );
   assert.match(record.suggested_action, /network_access = true/);
   assert.match(record.suggested_action, /outside sandbox/);
   assert.doesNotMatch(result.stdout, /secret-test-value/);
+});
+
+test("direct API request timeout is classified as timeout with cause diagnostics", async () => {
+  const cwd = makeWorkspace();
+  const dataDir = mkdtempSync(path.join(tmpdir(), "api-reviewers-data-"));
+  const pluginRoot = makeInstalledApiReviewersRoot();
+  let reviewRequestCount = 0;
+  const server = createServer((req, res) => {
+    let body = "";
+    req.setEncoding("utf8");
+    req.on("data", (chunk) => { body += chunk; });
+    req.on("end", () => {
+      const parsed = JSON.parse(body);
+      const prompt = String(parsed.messages?.[0]?.content ?? "");
+      if (prompt === "Return exactly: ok") {
+        res.setHeader("content-type", "application/json");
+        res.end(mockResponse("deepseek-v4-flash", "chatcmpl-doctor", "ok"));
+        return;
+      }
+      reviewRequestCount += 1;
+      // Keep the source-bearing request open so the client timeout owns classification.
+    });
+  });
+
+  try {
+    await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const { port } = server.address();
+    writeDeepSeekProviderConfig(pluginRoot, `http://127.0.0.1:${port}`);
+
+    const result = await run([
+      "run",
+      "--provider", "deepseek",
+      "--mode", "custom-review",
+      "--scope", "custom",
+      "--scope-paths", "seed.txt",
+      "--foreground",
+      "--prompt", "Check this file.",
+    ], {
+      cwd,
+      companion: path.join(pluginRoot, "scripts", "api-reviewer.mjs"),
+      env: {
+        API_REVIEWERS_PLUGIN_DATA: dataDir,
+        API_REVIEWERS_TIMEOUT_MS: "50",
+        DEEPSEEK_API_KEY: "secret-test-value",
+      },
+    });
+    assert.equal(result.status, 1);
+    assert.equal(reviewRequestCount, 1);
+    const record = parseJson(result.stdout);
+    assert.equal(record.error_code, "timeout");
+    assert.equal(record.external_review.source_content_transmission, "sent");
+    assert.equal(record.runtime_diagnostics.provider_request.configured_timeout_ms, 50);
+    assert.equal(record.runtime_diagnostics.provider_request.fetch_error.name, "AbortError");
+    assert.equal(record.runtime_diagnostics.provider_request.fetch_error.code, "API_REVIEWERS_REQUEST_TIMEOUT");
+    assert.match(record.suggested_action, /narrow/i);
+    assert.doesNotMatch(result.stdout, /secret-test-value/);
+  } finally {
+    server.close();
+  }
+});
+
+test("direct API provider request does not depend on global fetch transport", async () => {
+  const cwd = makeWorkspace();
+  const dataDir = mkdtempSync(path.join(tmpdir(), "api-reviewers-data-"));
+  const pluginRoot = makeInstalledApiReviewersRoot();
+  const fetchMock = path.join(mkdtempSync(path.join(tmpdir(), "api-reviewers-fetch-mock-")), "mock-fetch.mjs");
+  writeFileSync(fetchMock, `
+globalThis.fetch = async () => {
+  const cause = new Error("Headers Timeout Error");
+  cause.name = "HeadersTimeoutError";
+  cause.code = "UND_ERR_HEADERS_TIMEOUT";
+  const error = new TypeError("fetch failed");
+  error.cause = cause;
+  throw error;
+};
+`, "utf8");
+  let requestCount = 0;
+  let reviewRequestCount = 0;
+  const server = createServer((req, res) => {
+    requestCount += 1;
+    assert.equal(req.method, "POST");
+    assert.equal(req.url, "/chat/completions");
+    let body = "";
+    req.setEncoding("utf8");
+    req.on("data", (chunk) => { body += chunk; });
+    req.on("end", () => {
+      const parsed = JSON.parse(body);
+      assert.equal(parsed.model, "deepseek-v4-flash");
+      const prompt = parsed.messages?.[0]?.content ?? "";
+      if (prompt !== "Return exactly: ok") {
+        reviewRequestCount += 1;
+        assert.match(prompt, /Check this file/);
+      }
+      res.setHeader("content-type", "application/json");
+      res.end(mockResponse("deepseek-v4-flash", "chatcmpl-http-transport"));
+    });
+  });
+
+  try {
+    await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const { port } = server.address();
+    writeDeepSeekProviderConfig(pluginRoot, `http://127.0.0.1:${port}`);
+
+    const result = await run([
+      "run",
+      "--provider", "deepseek",
+      "--mode", "custom-review",
+      "--scope", "custom",
+      "--scope-paths", "seed.txt",
+      "--foreground",
+      "--prompt", "Check this file.",
+    ], {
+      cwd,
+      companion: path.join(pluginRoot, "scripts", "api-reviewer.mjs"),
+      env: {
+        API_REVIEWERS_PLUGIN_DATA: dataDir,
+        API_REVIEWERS_TIMEOUT_MS: "900000",
+        DEEPSEEK_API_KEY: "secret-test-value",
+        NODE_OPTIONS: `--import ${fetchMock}`,
+      },
+    });
+    assert.equal(result.status, 0, result.stdout || result.stderr);
+    assert.equal(requestCount, 2);
+    assert.equal(reviewRequestCount, 1);
+    const record = parseJson(result.stdout);
+    assert.equal(record.status, "completed");
+    assert.equal(record.runtime_diagnostics.provider_request.configured_timeout_ms, 900000);
+    assert.doesNotMatch(result.stdout, /secret-test-value/);
+  } finally {
+    server.close();
+  }
 });
 
 test("direct API provider_unavailable ignores false-like Codex sandbox values", async () => {
@@ -3805,8 +4292,72 @@ test("direct API HTTP provider_unavailable under Codex does not recommend sandbo
     assert.equal(record.http_status, 503);
     assert.equal(record.review_metadata.audit_manifest.request.timeout_ms, 345678);
     assert.equal(record.external_review.source_content_transmission, "sent");
+    const recovery = record.runtime_diagnostics?.packet_recovery;
+    assert.ok(recovery, "source-sent provider_unavailable failures must include packet_recovery");
+    assert.equal(recovery.provider, "deepseek");
+    assert.equal(recovery.reason, "provider_unavailable");
+    assert.equal(record.error_code, recovery.reason);
+    assert.equal(recovery.source_content_transmission, "sent");
+    assert.deepEqual(
+      recovery.actions.map((action) => action.type),
+      ["resend_with_confirmation", "switch_provider", "waive_slot"],
+    );
+    assert.deepEqual(record.review_metadata.audit_manifest.packet_recovery, recovery);
     assert.doesNotMatch(record.suggested_action, /network_access = true/);
     assert.doesNotMatch(record.suggested_action, /outside sandbox/);
+  } finally {
+    server.close();
+  }
+});
+
+test("direct API fetch failure after source receipt emits conservative packet recovery", async () => {
+  const cwd = makeWorkspace();
+  const dataDir = mkdtempSync(path.join(tmpdir(), "api-reviewers-data-"));
+  const pluginRoot = makeInstalledApiReviewersRoot();
+  let sourceBearingRequests = 0;
+  const server = await startChatServer(async (req, res) => {
+    const body = await readChatRequest(req);
+    if (respondSourceFreePreflight(body, res)) return;
+    sourceBearingRequests += 1;
+    assert.match(body.messages?.[0]?.content ?? "", /hello from selected scope/);
+    res.destroy();
+  });
+  try {
+    const { port } = server.address();
+    writeDeepSeekProviderConfig(pluginRoot, `http://127.0.0.1:${port}`);
+
+    const result = await run([
+      "run",
+      "--provider", "deepseek",
+      "--mode", "custom-review",
+      "--scope", "custom",
+      "--scope-paths", "seed.txt",
+      "--foreground",
+      "--prompt", "Check this file.",
+    ], {
+      cwd,
+      companion: path.join(pluginRoot, "scripts", "api-reviewer.mjs"),
+      env: {
+        API_REVIEWERS_PLUGIN_DATA: dataDir,
+        DEEPSEEK_API_KEY: "secret-test-value",
+      },
+    });
+    assert.equal(result.status, 1);
+    assert.equal(sourceBearingRequests, 1);
+    const record = parseJson(result.stdout);
+    assert.equal(record.error_code, "provider_unavailable");
+    assert.equal(record.http_status, null);
+    assert.equal(record.external_review.source_content_transmission, "unknown");
+    const recovery = record.runtime_diagnostics?.packet_recovery;
+    assert.ok(recovery, "unknown source-state provider_unavailable failures must include packet_recovery");
+    assert.equal(recovery.reason, "provider_unavailable");
+    assert.equal(recovery.source_content_transmission, "unknown");
+    assert.deepEqual(
+      recovery.actions.map((action) => action.type),
+      ["resend_with_confirmation", "switch_provider", "waive_slot"],
+    );
+    assert.deepEqual(record.review_metadata.audit_manifest.packet_recovery, recovery);
+    assert.doesNotMatch(result.stdout, /secret-test-value/);
   } finally {
     server.close();
   }
@@ -4015,6 +4566,23 @@ test("custom-review rejects over-budget source packets before direct API approva
   assert.equal(record.external_review.source_content_transmission, "not_sent");
   assert.equal(record.review_metadata.audit_manifest.source_packet_policy.source_send_allowed, false);
   assert.equal(record.review_metadata.audit_manifest.source_packet_policy.source_packet_action, "narrow_source_packet");
+  const recovery = record.runtime_diagnostics?.packet_recovery;
+  assert.ok(recovery, "source packet budget failures must include packet_recovery diagnostics");
+  assert.equal(recovery.schema_version, 1);
+  assert.equal(recovery.provider, "deepseek");
+  assert.equal(recovery.mode, "custom-review");
+  assert.equal(recovery.reason, "source_packet_too_large");
+  assert.equal(recovery.source_content_transmission, "not_sent");
+  assert.equal(record.error_code, recovery.reason);
+  assert.equal(recovery.provider_capabilities.provider, "deepseek");
+  assert.equal(recovery.provider_capabilities.route_step, "direct_api");
+  assert.equal(recovery.provider_capabilities.source_packet_budget_bytes, 512 * 1024);
+  assert.deepEqual(
+    recovery.actions.map((action) => action.type),
+    ["diff_packet", "allow_large_source_packet", "switch_provider", "waive_slot"],
+  );
+  assert.deepEqual(record.review_metadata.audit_manifest.packet_recovery, recovery);
+  assert.doesNotMatch(JSON.stringify(recovery), /secret-test-value|approval_token|approval-token/i);
   assert.doesNotMatch(result.stdout, /external_review_launched|secret-test-value/);
 });
 
@@ -4530,6 +5098,7 @@ test("direct API reviewers lifecycle markdown streams running card before provid
       cwd,
       env: {
         ...process.env,
+        API_REVIEWERS_DISABLE_ENV_CACHE: "1",
         CODEX_PLUGIN_EXTERNAL_REVIEW_HEARTBEAT_MS: "5",
         DEEPSEEK_API_KEY: "secret-test-value",
       },
@@ -4790,6 +5359,7 @@ for (const promptCapProvider of [
     assert.ok(Array.isArray(plan.shards) && plan.shards.length >= 2, "fixture must split into >=2 bounded shards");
 
     const hashes = new Set();
+    const tupleFingerprints = new Set();
     for (const [i, shard] of plan.shards.entries()) {
       assert.equal(shard.index, i + 1);
       assert.equal(shard.total, plan.shards.length);
@@ -4806,6 +5376,10 @@ for (const promptCapProvider of [
       assert.equal(tuple.approval_scope, "session");
       assert.match(tuple.rendered_prompt_hash, /^[a-f0-9]{64}$/);
       hashes.add(tuple.rendered_prompt_hash);
+      assert.ok(tuple.approval_tuple_fingerprint, "recovery shard approval tuple must carry a non-token fingerprint");
+      assert.equal(tuple.approval_tuple_fingerprint.algorithm, "sha256");
+      assert.match(tuple.approval_tuple_fingerprint.value, /^[a-f0-9]{64}$/);
+      tupleFingerprints.add(tuple.approval_tuple_fingerprint.value);
       assert.deepEqual([...tuple.scope_paths].sort(), [...shard.scope_paths].sort());
       assert.ok(tuple.source_packet);
       assert.equal(tuple.source_packet.totals.files, shard.scope_paths.length);
@@ -4826,14 +5400,105 @@ for (const promptCapProvider of [
       assert.ok(tuple.scope_resolution);
     }
     assert.equal(hashes.size, plan.shards.length, "each shard must have a unique rendered_prompt_hash");
+    assert.equal(tupleFingerprints.size, plan.shards.length, "each recovery shard must have a unique approval tuple fingerprint");
+
+    const recovery = record.runtime_diagnostics?.packet_recovery;
+    assert.ok(recovery, "prompt cap failures must include packet_recovery");
+    assert.equal(recovery.reason, "prompt_too_large");
+    assert.equal(recovery.source_content_transmission, "not_sent");
+    assert.equal(recovery.provider, promptCapProvider.provider);
+    assert.equal(recovery.mode, "custom-review");
+    assert.equal(recovery.provider_capabilities.rendered_prompt_budget_chars, 5000);
+    const shardAction = recovery.actions.find((action) => action.type === "shard");
+    assert.ok(shardAction, "prompt cap recovery must expose the existing sharding plan");
+    assert.equal(shardAction.shards.length, plan.shards.length);
+    assert.deepEqual(shardAction.shards, plan.shards);
+    assert.deepEqual(record.review_metadata.audit_manifest.packet_recovery, recovery);
+    assert.doesNotMatch(JSON.stringify(recovery), /secret-test-value|approval_token|approval-token/i);
 
     const planJson = JSON.stringify(plan);
     assert.equal(planJson.includes("hello from selected scope"), false);
     assert.equal(planJson.includes("secret-test-value"), false);
     assert.equal(planJson.includes("Check changed files."), false);
+    assert.doesNotMatch(planJson, /approval_token|approval-token/i);
     assert.equal(planJson.includes("file 1 content"), false);
   });
 }
+
+test("direct API recovery shard requires fresh approval when approval tuple changes", async () => {
+  const cwd = makeMultiFileScopeWorkspace();
+  const dataDir = mkdtempSync(path.join(tmpdir(), "api-reviewers-recovery-shard-approval-"));
+  try {
+    const fullScope = await run([
+      "approval-request",
+      "--provider", "deepseek",
+      "--mode", "custom-review",
+      "--scope", "custom",
+      "--scope-paths", "f1.txt,f2.txt,f3.txt,f4.txt,f5.txt",
+      "--prompt", "Check changed files.",
+    ], {
+      cwd,
+      env: {
+        API_REVIEWERS_PLUGIN_DATA: dataDir,
+        API_REVIEWERS_MAX_PROMPT_CHARS: "5000",
+        DEEPSEEK_API_KEY: "secret-test-value",
+      },
+    });
+    assert.equal(fullScope.status, 1, fullScope.stderr || fullScope.stdout);
+    const plan = parseJson(fullScope.stdout).runtime_diagnostics?.sharding_plan;
+    assert.ok(Array.isArray(plan?.shards) && plan.shards.length >= 2, "fixture must produce at least two recovery shards");
+    const [firstShard, secondShard] = plan.shards;
+
+    const firstApproval = await run([
+      "approval-request",
+      "--provider", "deepseek",
+      "--mode", "custom-review",
+      "--scope", "custom",
+      "--scope-paths", firstShard.scope_paths.join(","),
+      "--prompt", "Check changed files.",
+    ], {
+      cwd,
+      env: {
+        API_REVIEWERS_PLUGIN_DATA: dataDir,
+        API_REVIEWERS_MAX_PROMPT_CHARS: "5000",
+        DEEPSEEK_API_KEY: "secret-test-value",
+      },
+    });
+    assert.equal(firstApproval.status, 0, firstApproval.stderr || firstApproval.stdout);
+    const firstApprovalToken = parseJson(firstApproval.stdout).approval_token.value;
+
+    const secondShardRun = await run([
+      "run",
+      "--provider", "deepseek",
+      "--mode", "custom-review",
+      "--scope", "custom",
+      "--scope-paths", secondShard.scope_paths.join(","),
+      "--foreground",
+      "--lifecycle-events", "jsonl",
+      "--prompt", "Check changed files.",
+      "--approval-token", firstApprovalToken,
+    ], {
+      cwd,
+      env: {
+        API_REVIEWERS_PLUGIN_DATA: dataDir,
+        API_REVIEWERS_MAX_PROMPT_CHARS: "5000",
+        API_REVIEWERS_REQUIRE_APPROVAL_TOKEN_IN_MOCKS: "1",
+        API_REVIEWERS_MOCK_RESPONSE: mockResponse("deepseek-v4-pro"),
+        DEEPSEEK_API_KEY: "secret-test-value",
+      },
+    });
+
+    assert.equal(secondShardRun.status, 1, secondShardRun.stderr || secondShardRun.stdout);
+    const [record] = parseJsonLines(secondShardRun.stdout);
+    assert.equal(record.error_code, "approval_required");
+    assertDirectApiNotSent(record, "DeepSeek");
+    assert.doesNotMatch(secondShardRun.stdout, /external_review_launched/);
+    assert.doesNotMatch(secondShardRun.stdout, /file 1 content|file 2 content|secret-test-value/);
+  } finally {
+    rmSync(dataDir, { recursive: true, force: true });
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
 
 test("direct API reviewers reject blank or valueless prompt flags before launch", async () => {
   for (const promptArgs of [
@@ -4983,6 +5648,774 @@ test("direct API reviewers approval-request describes external source transmissi
   }
 });
 
+test("direct API reviewers approval-grant request emits source-free bounded grant proof", async () => {
+  const dataDir = mkdtempSync(path.join(tmpdir(), "api-reviewers-grant-request-"));
+  const cwd = makeWorkspace();
+  try {
+    writeFileSync(path.join(cwd, "seed.txt"), "hello from selected scope\n");
+
+    const result = await run([
+      "approval-grant",
+      "request",
+      "--provider", "glm",
+      "--mode", "custom-review",
+      "--scope", "custom",
+      "--scope-paths", "seed.txt",
+      "--prompt", "Review seed file only.",
+      "--grant-ttl-ms", "900000",
+    ], {
+      cwd,
+      env: {
+        API_REVIEWERS_PLUGIN_DATA: dataDir,
+        ZAI_API_KEY: "secret-test-value",
+      },
+    });
+
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    const request = parseJson(result.stdout);
+    assert.equal(request.event, "external_review_session_approval_request");
+    assert.equal(request.provider, "glm");
+    assert.equal(request.display_name, "GLM");
+    assert.equal(request.mode, "custom-review");
+    assert.equal(request.scope, "custom");
+    assert.deepEqual(request.scope_paths, ["seed.txt"]);
+    assert.equal(request.source_content_transmission, "not_sent");
+    assert.equal(request.approval_scope, "grant");
+    assert.match(request.grant_approval_token.value, /^[a-f0-9]{64}$/);
+    assert.equal(request.grant_approval_token.algorithm, "sha256");
+    assert.equal(Object.hasOwn(request, "approval_token"), false);
+    assert.deepEqual(request.grant_bounds.provider_allowlist, ["glm"]);
+    assert.deepEqual(request.grant_bounds.mode_allowlist, ["custom-review"]);
+    assert.equal(request.grant_bounds.max_files, 1);
+    assert.equal(request.grant_bounds.max_bytes, 26);
+    assert.equal(request.grant_bounds.max_ttl_ms, SESSION_APPROVAL_POLICY.max_ttl_ms);
+    assert.match(request.grant_bounds.expires_at, /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/);
+    assert.match(request.grant_bounds.workspace_root_hash, /^[a-f0-9]{64}$/);
+    assert.deepEqual(request.grant_bounds.path_constraints, {
+      scope: "custom",
+      scope_paths: ["seed.txt"],
+    });
+    assert.equal(request.selected_source.totals.files, 1);
+    assert.equal(request.selected_source.totals.bytes, 26);
+    assert.equal(request.selected_source.totals.lines, 1);
+    assert.deepEqual(request.selected_source.files.map((file) => file.path), ["seed.txt"]);
+    assert.match(request.rendered_prompt_hash.value, /^[a-f0-9]{64}$/);
+    assert.equal(JSON.stringify(request).includes("hello from selected scope"), false);
+    assert.equal(JSON.stringify(request).includes("secret-test-value"), false);
+    assert.equal(JSON.stringify(request).includes(cwd), false);
+  } finally {
+    rmSync(dataDir, { recursive: true, force: true });
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("direct API reviewers approval-grant request requires explicit TTL", async () => {
+  const dataDir = mkdtempSync(path.join(tmpdir(), "api-reviewers-grant-ttl-required-"));
+  const cwd = makeWorkspace();
+  try {
+    const result = await run([
+      "approval-grant",
+      "request",
+      "--provider", "glm",
+      "--mode", "custom-review",
+      "--scope", "custom",
+      "--scope-paths", "seed.txt",
+      "--prompt", "Review seed file only.",
+    ], {
+      cwd,
+      env: {
+        API_REVIEWERS_PLUGIN_DATA: dataDir,
+        ZAI_API_KEY: "secret-test-value",
+      },
+    });
+
+    assert.equal(result.status, 1, result.stderr || result.stdout);
+    const parsed = parseJson(result.stdout);
+    assert.equal(parsed.error_code, "bad_args");
+    assert.match(parsed.error_message, /--grant-ttl-ms is required/);
+    assert.equal(JSON.stringify(parsed).includes("hello from selected scope"), false);
+    assert.equal(JSON.stringify(parsed).includes("secret-test-value"), false);
+  } finally {
+    rmSync(dataDir, { recursive: true, force: true });
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("direct API reviewers approval-grant without subcommand shows command help", async () => {
+  const result = await run(["approval-grant"]);
+
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  const parsed = parseJson(result.stdout);
+  assert.equal(parsed.ok, true);
+  assert.equal(parsed.command, "approval-grant");
+  assert.deepEqual(parsed.subcommands, ["request", "activate"]);
+  assert.equal(parsed.source_content_transmission, "not_sent");
+});
+
+test("direct API reviewers approval-grant activate requires exact request expiry", async () => {
+  const dataDir = mkdtempSync(path.join(tmpdir(), "api-reviewers-grant-expiry-"));
+  const cwd = makeWorkspace();
+  try {
+    const commonArgs = [
+      "--provider", "glm",
+      "--mode", "custom-review",
+      "--scope", "custom",
+      "--scope-paths", "seed.txt",
+      "--prompt", "Review seed file only.",
+    ];
+    const env = {
+      API_REVIEWERS_PLUGIN_DATA: dataDir,
+      ZAI_API_KEY: "secret-test-value",
+    };
+    const requestResult = await run([
+      "approval-grant",
+      "request",
+      ...commonArgs,
+      "--grant-ttl-ms", "900000",
+    ], { cwd, env });
+    assert.equal(requestResult.status, 0, requestResult.stderr || requestResult.stdout);
+    const request = parseJson(requestResult.stdout);
+    const changedExpiry = new Date(Date.parse(request.grant_bounds.expires_at) + 1000).toISOString();
+
+    const activation = await run([
+      "approval-grant",
+      "activate",
+      ...commonArgs,
+      "--grant-expires-at", changedExpiry,
+      "--approval-token", request.grant_approval_token.value,
+    ], { cwd, env });
+
+    assert.equal(activation.status, 1, activation.stderr || activation.stdout);
+    const parsed = parseJson(activation.stdout);
+    assert.equal(parsed.error_code, "approval_required");
+    assert.equal(JSON.stringify(parsed).includes(request.grant_approval_token.value), false);
+    assert.equal(existsSync(path.join(dataDir, "approval-grants")), false);
+  } finally {
+    rmSync(dataDir, { recursive: true, force: true });
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("direct API reviewers activation uses the canonical grant tuple from the request builder", () => {
+  const source = readFileSync(COMPANION, "utf8");
+
+  assert.doesNotMatch(source, /function\s+grantApprovalTupleFromRequest\s*\(/);
+  assert.doesNotMatch(source, /grantApprovalTupleFromRequest\s*\(\s*approvalRequest\s*\)/);
+  assert.match(source, /\(\{\s*approvalRequest,\s*approvalTuple\s*\}\s*=\s*buildApprovalGrantRequest/);
+  assert.match(source, /approvalFingerprintFor\s*\(\s*approvalTuple\s*\)/);
+});
+
+test("direct API reviewers approval-grant activate rejects session and once approval tokens", async () => {
+  const dataDir = mkdtempSync(path.join(tmpdir(), "api-reviewers-grant-token-class-"));
+  const cwd = makeWorkspace();
+  try {
+    const commonArgs = [
+      "--provider", "deepseek",
+      "--mode", "custom-review",
+      "--scope", "custom",
+      "--scope-paths", "seed.txt",
+      "--prompt", "Review seed file only.",
+    ];
+    const env = {
+      API_REVIEWERS_PLUGIN_DATA: dataDir,
+      DEEPSEEK_API_KEY: "secret-test-value",
+    };
+    const expiresAt = new Date(Date.now() + 900000).toISOString();
+    for (const approvalScopeArgs of [[], ["--approval-scope", "once"]]) {
+      const approval = await run(["approval-request", ...commonArgs, ...approvalScopeArgs], { cwd, env });
+      assert.equal(approval.status, 0, approval.stderr || approval.stdout);
+      const approvalRequest = parseJson(approval.stdout);
+
+      const activation = await run([
+        "approval-grant",
+        "activate",
+        ...commonArgs,
+        "--grant-expires-at", expiresAt,
+        "--approval-token", approvalRequest.approval_token.value,
+      ], { cwd, env });
+
+      assert.equal(activation.status, 1, activation.stderr || activation.stdout);
+      const parsed = parseJson(activation.stdout);
+      assert.equal(parsed.error_code, "approval_required");
+      assert.equal(JSON.stringify(parsed).includes(approvalRequest.approval_token.value), false);
+    }
+    assert.equal(existsSync(path.join(dataDir, "approval-grants")), false);
+  } finally {
+    rmSync(dataDir, { recursive: true, force: true });
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("direct API reviewers approval-grant activate persists strict idempotent grant file", async () => {
+  const dataDir = mkdtempSync(path.join(tmpdir(), "api-reviewers-grant-persist-"));
+  const cwd = makeWorkspace();
+  try {
+    const commonArgs = [
+      "--provider", "glm",
+      "--mode", "custom-review",
+      "--scope", "custom",
+      "--scope-paths", "seed.txt",
+      "--prompt", "Review seed file only.",
+    ];
+    const env = {
+      API_REVIEWERS_PLUGIN_DATA: dataDir,
+      ZAI_API_KEY: "secret-test-value",
+    };
+    const requestResult = await run([
+      "approval-grant",
+      "request",
+      ...commonArgs,
+      "--grant-ttl-ms", "900000",
+    ], { cwd, env });
+    assert.equal(requestResult.status, 0, requestResult.stderr || requestResult.stdout);
+    const request = parseJson(requestResult.stdout);
+    const activationArgs = [
+      "approval-grant",
+      "activate",
+      ...commonArgs,
+      "--grant-expires-at", request.grant_bounds.expires_at,
+      "--approval-token", request.grant_approval_token.value,
+    ];
+
+    const first = await run(activationArgs, { cwd, env });
+    assert.equal(first.status, 0, first.stderr || first.stdout);
+    const firstActivation = parseJson(first.stdout);
+    assert.equal(firstActivation.event, "external_review_session_approval_grant");
+    assert.equal(firstActivation.source_content_transmission, "not_sent");
+    assert.match(firstActivation.grant_id, /^grant_[a-f0-9]{64}$/);
+
+    const grantsDir = path.join(dataDir, "approval-grants");
+    const grantFile = path.join(grantsDir, `${firstActivation.grant_id}.json`);
+    const grant = parseJson(readFileSync(grantFile, "utf8"));
+    assert.deepEqual(Object.keys(grant), [
+      "schema_version",
+      "grant_id",
+      "created_at",
+      "expires_at",
+      "grant_session_id",
+      "provider_allowlist",
+      "mode_allowlist",
+      "workspace_root_hash",
+      "path_constraints",
+      "max_files",
+      "max_bytes",
+      "max_ttl_ms",
+      "approval_fingerprint",
+      "approval_tuple",
+      "activation",
+    ]);
+    assert.equal(grant.schema_version, 1);
+    assert.equal(grant.grant_id, firstActivation.grant_id);
+    assert.equal(grant.expires_at, request.grant_bounds.expires_at);
+    assert.equal(grant.approval_fingerprint, firstActivation.approval_fingerprint);
+    assert.equal(grant.provider_allowlist.includes("glm"), true);
+    assert.deepEqual(grant.provider_allowlist, grant.approval_tuple.grant_bounds.provider_allowlist);
+    assert.deepEqual(grant.mode_allowlist, grant.approval_tuple.grant_bounds.mode_allowlist);
+    assert.equal(grant.workspace_root_hash, grant.approval_tuple.grant_bounds.workspace_root_hash);
+    assert.deepEqual(grant.path_constraints, grant.approval_tuple.grant_bounds.path_constraints);
+    assert.equal(grant.max_files, grant.approval_tuple.grant_bounds.max_files);
+    assert.equal(grant.max_bytes, grant.approval_tuple.grant_bounds.max_bytes);
+    assert.equal(grant.max_ttl_ms, grant.approval_tuple.grant_bounds.max_ttl_ms);
+    for (const forbidden of ["provider", "mode", "selected_source", "rendered_prompt_hash", "request", "scope_resolution", "auth_path", "billing_path", "selected_route", "route_step", "route_steps", "fallback_reason", "approval_scope", "grant_bounds"]) {
+      assert.equal(Object.hasOwn(grant, forbidden), false, `grant file must not duplicate tuple field ${forbidden} at top level`);
+    }
+    const grantText = readFileSync(grantFile, "utf8");
+    assert.equal(grantText.includes(request.grant_approval_token.value), false);
+    assert.equal(grantText.includes("hello from selected scope"), false);
+    assert.equal(grantText.includes("secret-test-value"), false);
+    if (process.platform !== "win32") {
+      assert.equal(lstatSync(grantFile).mode & 0o777, 0o600);
+    }
+
+    const second = await run(activationArgs, { cwd, env });
+    assert.equal(second.status, 0, second.stderr || second.stdout);
+    const secondActivation = parseJson(second.stdout);
+    assert.equal(secondActivation.grant_id, firstActivation.grant_id);
+    assert.deepEqual(readdirSync(grantsDir).filter((name) => name.endsWith(".json")), [`${firstActivation.grant_id}.json`]);
+  } finally {
+    rmSync(dataDir, { recursive: true, force: true });
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("direct API reviewers run uses matching session grant without per-run approval token", async () => {
+  const dataDir = mkdtempSync(path.join(tmpdir(), "api-reviewers-grant-run-"));
+  const cwd = makeWorkspace();
+  try {
+    const commonArgs = [
+      "--provider", "glm",
+      "--mode", "custom-review",
+      "--scope", "custom",
+      "--scope-paths", "seed.txt",
+      "--prompt", "Review seed file only.",
+    ];
+    const env = {
+      API_REVIEWERS_PLUGIN_DATA: dataDir,
+      ZAI_API_KEY: "secret-test-value",
+      API_REVIEWERS_TEST_AUTO_APPROVAL: "0",
+      API_REVIEWERS_REQUIRE_APPROVAL_TOKEN_IN_MOCKS: "1",
+      API_REVIEWERS_MOCK_RESPONSE: mockResponse("glm-5.1", "session-grant-run"),
+    };
+    const requestResult = await run([
+      "approval-grant",
+      "request",
+      ...commonArgs,
+      "--grant-ttl-ms", "900000",
+    ], { cwd, env });
+    assert.equal(requestResult.status, 0, requestResult.stderr || requestResult.stdout);
+    const request = parseJson(requestResult.stdout);
+    const activationResult = await run([
+      "approval-grant",
+      "activate",
+      ...commonArgs,
+      "--grant-expires-at", request.grant_bounds.expires_at,
+      "--approval-token", request.grant_approval_token.value,
+    ], { cwd, env });
+    assert.equal(activationResult.status, 0, activationResult.stderr || activationResult.stdout);
+    const activation = parseJson(activationResult.stdout);
+
+    const runResult = await run(["run", ...commonArgs, "--foreground"], { cwd, env });
+
+    assert.equal(runResult.status, 0, runResult.stderr || runResult.stdout);
+    const record = parseJson(runResult.stdout);
+    assert.equal(record.external_review.source_content_transmission, "sent");
+    const auditManifest = record.review_metadata.audit_manifest;
+    assert.equal(auditManifest.approval_scope, "grant");
+    assert.equal(auditManifest.approval_source, "session_grant");
+    assert.equal(auditManifest.approval_grant.grant_id, activation.grant_id);
+    assert.equal(auditManifest.approval_grant.grant_session_id, activation.grant_session_id);
+    assert.equal(auditManifest.approval_grant.max_files, request.grant_bounds.max_files);
+    assert.equal(auditManifest.approval_grant.max_bytes, request.grant_bounds.max_bytes);
+    assert.equal(auditManifest.selected_source.files[0].content_hash.value, request.selected_source.files[0].content_hash.value);
+    assert.equal(auditManifest.rendered_prompt_hash.value, request.rendered_prompt_hash.value);
+    assert.equal(JSON.stringify(record).includes(request.grant_approval_token.value), false);
+    assert.equal(JSON.stringify(record).includes("secret-test-value"), false);
+  } finally {
+    rmSync(dataDir, { recursive: true, force: true });
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("direct API reviewers session grants clean clearly expired grant files during lookup", async () => {
+  const dataDir = mkdtempSync(path.join(tmpdir(), "api-reviewers-grant-expired-cleanup-"));
+  const cwd = makeWorkspace();
+  try {
+    const grant = await createGlmSessionGrant({ cwd, dataDir });
+    const grantFile = expireGlmSessionGrantRecord(dataDir, grant.activation);
+    assert.equal(existsSync(grantFile), true);
+
+    const result = await run(["run", ...grant.commonArgs, "--foreground"], {
+      cwd,
+      env: {
+        ...grant.env,
+        API_REVIEWERS_TEST_AUTO_APPROVAL: "0",
+        API_REVIEWERS_REQUIRE_APPROVAL_TOKEN_IN_MOCKS: "1",
+        API_REVIEWERS_MOCK_RESPONSE: mockResponse("glm-5.1", "grant-expired-cleanup"),
+      },
+    });
+
+    assert.equal(result.status, 1, result.stderr || result.stdout);
+    const record = parseJson(result.stdout);
+    assert.equal(record.error_code, "approval_required");
+    assertDirectApiNotSent(record, "GLM");
+    assert.equal(existsSync(grantFile), false);
+  } finally {
+    rmSync(dataDir, { recursive: true, force: true });
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("direct API reviewers session grants fail closed on provider, mode, source, prompt, request, expiry, and tamper mismatches", async () => {
+  const cases = [
+    {
+      name: "provider",
+      mutateBeforeRun: () => {},
+      runArgs: [
+        "--provider", "deepseek",
+        "--mode", "custom-review",
+        "--scope", "custom",
+        "--scope-paths", "seed.txt",
+        "--prompt", "Review seed file only.",
+      ],
+      runEnv: { DEEPSEEK_API_KEY: "secret-test-value", API_REVIEWERS_MOCK_RESPONSE: mockResponse("deepseek-v4-pro", "grant-provider-mismatch") },
+    },
+    {
+      name: "mode",
+      mutateBeforeRun: () => {},
+      runArgs: [
+        "--provider", "glm",
+        "--mode", "adversarial-review",
+        "--scope", "custom",
+        "--scope-paths", "seed.txt",
+        "--prompt", "Review seed file only.",
+      ],
+    },
+    {
+      name: "source-content",
+      mutateBeforeRun: (cwd) => writeFileSync(path.join(cwd, "seed.txt"), "changed selected scope\n"),
+    },
+    {
+      name: "scope-path",
+      mutateBeforeRun: (cwd) => writeFileSync(path.join(cwd, "other.txt"), "hello from selected scope\n"),
+      runArgs: [
+        "--provider", "glm",
+        "--mode", "custom-review",
+        "--scope", "custom",
+        "--scope-paths", "other.txt",
+        "--prompt", "Review seed file only.",
+      ],
+    },
+    {
+      name: "scope-paths-null-not-wildcard",
+      mutateBeforeRun: (cwd, dataDir, activation) => {
+        const file = path.join(dataDir, "approval-grants", `${activation.grant_id}.json`);
+        const grant = parseJson(readFileSync(file, "utf8"));
+        grant.path_constraints.scope_paths = null;
+        grant.approval_tuple.scope_resolution.scope_paths = null;
+        grant.approval_tuple.grant_bounds.path_constraints.scope_paths = null;
+        const fingerprint = approvalFingerprintForTest(grant.approval_tuple);
+        grant.approval_fingerprint = fingerprint;
+        grant.grant_id = `grant_${fingerprint}`;
+        grant.grant_session_id = `session_${fingerprint.slice(0, 32)}`;
+        writeFileSync(file, `${JSON.stringify(grant, null, 2)}\n`);
+      },
+    },
+    {
+      name: "prompt",
+      mutateBeforeRun: () => {},
+      runArgs: [
+        "--provider", "glm",
+        "--mode", "custom-review",
+        "--scope", "custom",
+        "--scope-paths", "seed.txt",
+        "--prompt", "Review a different focus.",
+      ],
+    },
+    {
+      name: "request-settings",
+      mutateBeforeRun: () => {},
+      runEnv: { API_REVIEWERS_TIMEOUT_MS: "123456" },
+    },
+    {
+      name: "expired",
+      mutateBeforeRun: (cwd, dataDir, activation) => {
+        expireGlmSessionGrantRecord(dataDir, activation);
+      },
+    },
+    {
+      name: "tampered-fingerprint",
+      mutateBeforeRun: (cwd, dataDir, activation) => {
+        const file = path.join(dataDir, "approval-grants", `${activation.grant_id}.json`);
+        const grant = parseJson(readFileSync(file, "utf8"));
+        grant.approval_fingerprint = "0".repeat(64);
+        writeFileSync(file, `${JSON.stringify(grant, null, 2)}\n`);
+      },
+    },
+    {
+      name: "projection-max-bytes-mismatch",
+      mutateBeforeRun: (cwd, dataDir, activation) => {
+        const file = path.join(dataDir, "approval-grants", `${activation.grant_id}.json`);
+        const grant = parseJson(readFileSync(file, "utf8"));
+        grant.max_bytes += 1;
+        writeFileSync(file, `${JSON.stringify(grant, null, 2)}\n`);
+      },
+    },
+    {
+      name: "projection-max-files-mismatch",
+      mutateBeforeRun: (cwd, dataDir, activation) => {
+        const file = path.join(dataDir, "approval-grants", `${activation.grant_id}.json`);
+        const grant = parseJson(readFileSync(file, "utf8"));
+        grant.max_files += 1;
+        writeFileSync(file, `${JSON.stringify(grant, null, 2)}\n`);
+      },
+    },
+    {
+      name: "timestamp-format",
+      mutateBeforeRun: (cwd, dataDir, activation) => {
+        const file = path.join(dataDir, "approval-grants", `${activation.grant_id}.json`);
+        const grant = parseJson(readFileSync(file, "utf8"));
+        grant.created_at = "not-a-timestamp";
+        writeFileSync(file, `${JSON.stringify(grant, null, 2)}\n`);
+      },
+    },
+    {
+      name: "schema-extra-field",
+      mutateBeforeRun: (cwd, dataDir, activation) => {
+        const file = path.join(dataDir, "approval-grants", `${activation.grant_id}.json`);
+        const grant = parseJson(readFileSync(file, "utf8"));
+        grant.unexpected = true;
+        writeFileSync(file, `${JSON.stringify(grant, null, 2)}\n`);
+      },
+    },
+    {
+      name: "malformed-json",
+      mutateBeforeRun: (cwd, dataDir, activation) => {
+        const file = path.join(dataDir, "approval-grants", `${activation.grant_id}.json`);
+        writeFileSync(file, "{not json\n");
+      },
+    },
+  ];
+
+  for (const item of cases) {
+    const dataDir = mkdtempSync(path.join(tmpdir(), `api-reviewers-grant-mismatch-${item.name}-`));
+    const cwd = makeWorkspace();
+    try {
+      const grant = await createGlmSessionGrant({ cwd, dataDir, ttlMs: item.ttlMs ?? "900000" });
+      await item.mutateBeforeRun?.(cwd, dataDir, grant.activation);
+      const env = {
+        ...grant.env,
+        ...item.runEnv,
+        API_REVIEWERS_TEST_AUTO_APPROVAL: "0",
+        API_REVIEWERS_REQUIRE_APPROVAL_TOKEN_IN_MOCKS: "1",
+        API_REVIEWERS_MOCK_RESPONSE: item.runEnv?.API_REVIEWERS_MOCK_RESPONSE ?? mockResponse("glm-5.1", `grant-${item.name}-mismatch`),
+      };
+      const result = await run(["run", ...(item.runArgs ?? grant.commonArgs), "--foreground"], { cwd, env });
+      assert.equal(result.status, 1, `${item.name}: ${result.stderr || result.stdout}`);
+      const record = parseJson(result.stdout);
+      assert.equal(record.error_code, "approval_required", item.name);
+      assertDirectApiNotSent(record, item.name === "provider" ? "DeepSeek" : "GLM");
+      assert.equal(JSON.stringify(record).includes(grant.request.grant_approval_token.value), false, item.name);
+      assert.equal(JSON.stringify(record).includes("secret-test-value"), false, item.name);
+    } finally {
+      rmSync(dataDir, { recursive: true, force: true });
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  }
+});
+
+test("direct API reviewers session grants fail closed on workspace mismatch", async () => {
+  const dataDir = mkdtempSync(path.join(tmpdir(), "api-reviewers-grant-workspace-"));
+  const cwd = makeWorkspace();
+  const otherCwd = makeWorkspace();
+  try {
+    const grant = await createGlmSessionGrant({ cwd, dataDir });
+
+    const result = await run(["run", ...grant.commonArgs, "--foreground"], {
+      cwd: otherCwd,
+      env: {
+        ...grant.env,
+        API_REVIEWERS_TEST_AUTO_APPROVAL: "0",
+        API_REVIEWERS_REQUIRE_APPROVAL_TOKEN_IN_MOCKS: "1",
+        API_REVIEWERS_MOCK_RESPONSE: mockResponse("glm-5.1", "grant-workspace-mismatch"),
+      },
+    });
+
+    assert.equal(result.status, 1, result.stderr || result.stdout);
+    const record = parseJson(result.stdout);
+    assert.equal(record.error_code, "approval_required");
+    assertDirectApiNotSent(record, "GLM");
+  } finally {
+    rmSync(dataDir, { recursive: true, force: true });
+    rmSync(cwd, { recursive: true, force: true });
+    rmSync(otherCwd, { recursive: true, force: true });
+  }
+});
+
+test("direct API reviewers approval-grant request rejects TTL above maximum before activation", async () => {
+  const dataDir = mkdtempSync(path.join(tmpdir(), "api-reviewers-grant-ttl-max-"));
+  const cwd = makeWorkspace();
+  try {
+    const result = await run([
+      "approval-grant",
+      "request",
+      "--provider", "glm",
+      "--mode", "custom-review",
+      "--scope", "custom",
+      "--scope-paths", "seed.txt",
+      "--prompt", "Review seed file only.",
+      "--grant-ttl-ms", String(SESSION_APPROVAL_POLICY.max_ttl_ms + 1),
+    ], {
+      cwd,
+      env: {
+        API_REVIEWERS_PLUGIN_DATA: dataDir,
+        ZAI_API_KEY: "secret-test-value",
+      },
+    });
+
+    assert.equal(result.status, 1, result.stderr || result.stdout);
+    const parsed = parseJson(result.stdout);
+    assert.equal(parsed.error_code, "bad_args");
+    assert.match(parsed.error_message, /exceeds configured maximum/);
+    assert.equal(existsSync(path.join(dataDir, "approval-grants")), false);
+  } finally {
+    rmSync(dataDir, { recursive: true, force: true });
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("direct API reviewers session grants fail closed on multiple active matches", async () => {
+  const dataDir = mkdtempSync(path.join(tmpdir(), "api-reviewers-grant-duplicate-"));
+  const cwd = makeWorkspace();
+  try {
+    const grant = await createGlmSessionGrant({ cwd, dataDir });
+    const grantsDir = path.join(dataDir, "approval-grants");
+    const originalFile = path.join(grantsDir, `${grant.activation.grant_id}.json`);
+    const duplicateFile = path.join(grantsDir, `${grant.activation.grant_id}-duplicate.json`);
+    cpSync(originalFile, duplicateFile);
+
+    const result = await run(["run", ...grant.commonArgs, "--foreground"], {
+      cwd,
+      env: {
+        ...grant.env,
+        API_REVIEWERS_TEST_AUTO_APPROVAL: "0",
+        API_REVIEWERS_REQUIRE_APPROVAL_TOKEN_IN_MOCKS: "1",
+        API_REVIEWERS_MOCK_RESPONSE: mockResponse("glm-5.1", "grant-duplicate"),
+      },
+    });
+
+    assert.equal(result.status, 1, result.stderr || result.stdout);
+    const record = parseJson(result.stdout);
+    assert.equal(record.error_code, "approval_required");
+    assertDirectApiNotSent(record, "GLM");
+  } finally {
+    rmSync(dataDir, { recursive: true, force: true });
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("direct API reviewers run rejects grant approval token as normal per-request token", async () => {
+  const dataDir = mkdtempSync(path.join(tmpdir(), "api-reviewers-grant-token-run-"));
+  const cwd = makeWorkspace();
+  try {
+    const grant = await createGlmSessionGrant({ cwd, dataDir });
+
+    const result = await run([
+      "run",
+      ...grant.commonArgs,
+      "--foreground",
+      "--approval-token", grant.request.grant_approval_token.value,
+    ], {
+      cwd,
+      env: {
+        ...grant.env,
+        API_REVIEWERS_TEST_AUTO_APPROVAL: "0",
+        API_REVIEWERS_REQUIRE_APPROVAL_TOKEN_IN_MOCKS: "1",
+        API_REVIEWERS_MOCK_RESPONSE: mockResponse("glm-5.1", "grant-token-normal-run"),
+      },
+    });
+
+    assert.equal(result.status, 1, result.stderr || result.stdout);
+    const record = parseJson(result.stdout);
+    assert.equal(record.error_code, "approval_required");
+    assertDirectApiNotSent(record, "GLM");
+    assert.equal(JSON.stringify(record).includes(grant.request.grant_approval_token.value), false);
+  } finally {
+    rmSync(dataDir, { recursive: true, force: true });
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("direct API reviewers session grants are bound to auth, billing, and route fallback fields", async () => {
+  const cases = [
+    {
+      name: "auth-path",
+      approvalConfig: {
+        display_name: "Custom Reviewer",
+        auth_mode: "api_key",
+        env_keys: ["PRIMARY_API_KEY", "SECONDARY_API_KEY"],
+        base_url: "https://billing-a.example.invalid",
+        model: "custom-review-model",
+      },
+      approvalEnv: { PRIMARY_API_KEY: "primary-secret-value", SECONDARY_API_KEY: "" },
+      runEnv: { PRIMARY_API_KEY: "", SECONDARY_API_KEY: "secondary-secret-value" },
+      mutateConfig: null,
+    },
+    {
+      name: "billing-path",
+      approvalConfig: {
+        display_name: "Custom Reviewer",
+        auth_mode: "api_key",
+        env_keys: ["CUSTOM_API_KEY"],
+        base_url: "https://billing-a.example.invalid",
+        model: "custom-review-model",
+      },
+      approvalEnv: { CUSTOM_API_KEY: "secret-test-value" },
+      runEnv: { CUSTOM_API_KEY: "secret-test-value" },
+      mutateConfig: {
+        display_name: "Custom Reviewer",
+        auth_mode: "api_key",
+        env_keys: ["CUSTOM_API_KEY"],
+        base_url: "https://billing-b.example.invalid",
+        model: "custom-review-model",
+      },
+    },
+    {
+      name: "fallback-reason",
+      approvalConfig: {
+        display_name: "Custom Reviewer",
+        auth_mode: "api_key",
+        env_keys: ["CUSTOM_API_KEY"],
+        base_url: "https://billing-a.example.invalid",
+        model: "custom-review-model",
+      },
+      approvalEnv: { CUSTOM_API_KEY: "secret-test-value" },
+      runEnv: { CUSTOM_API_KEY: "secret-test-value", API_REVIEWERS_ROUTE_FALLBACK_REASON: "usage_limited" },
+      mutateConfig: null,
+    },
+  ];
+
+  for (const item of cases) {
+    const cwd = makeWorkspace();
+    const dataDir = mkdtempSync(path.join(tmpdir(), `api-reviewers-grant-${item.name}-`));
+    const pluginRoot = makeInstalledApiReviewersRoot();
+    const companion = path.join(pluginRoot, "scripts", "api-reviewer.mjs");
+    try {
+      writeSingleProviderConfig(pluginRoot, "custom", item.approvalConfig);
+      const commonArgs = [
+        "--provider", "custom",
+        "--mode", "custom-review",
+        "--scope", "custom",
+        "--scope-paths", "seed.txt",
+        "--prompt", "Check this file.",
+      ];
+      const approvalEnv = {
+        API_REVIEWERS_PLUGIN_DATA: dataDir,
+        API_REVIEWERS_TEST_AUTO_APPROVAL: "0",
+        ...item.approvalEnv,
+      };
+      const requestResult = await run([
+        "approval-grant",
+        "request",
+        ...commonArgs,
+        "--grant-ttl-ms", "900000",
+      ], { cwd, companion, env: approvalEnv });
+      assert.equal(requestResult.status, 0, `${item.name}: ${requestResult.stderr || requestResult.stdout}`);
+      const request = parseJson(requestResult.stdout);
+      const activationResult = await run([
+        "approval-grant",
+        "activate",
+        ...commonArgs,
+        "--grant-expires-at", request.grant_bounds.expires_at,
+        "--approval-token", request.grant_approval_token.value,
+      ], { cwd, companion, env: approvalEnv });
+      assert.equal(activationResult.status, 0, `${item.name}: ${activationResult.stderr || activationResult.stdout}`);
+
+      if (item.mutateConfig) writeSingleProviderConfig(pluginRoot, "custom", item.mutateConfig);
+
+      const result = await run(["run", ...commonArgs, "--foreground"], {
+        cwd,
+        companion,
+        env: {
+          API_REVIEWERS_PLUGIN_DATA: dataDir,
+          API_REVIEWERS_TEST_AUTO_APPROVAL: "0",
+          API_REVIEWERS_REQUIRE_APPROVAL_TOKEN_IN_MOCKS: "1",
+          API_REVIEWERS_MOCK_RESPONSE: mockResponse("custom-review-model"),
+          ...item.runEnv,
+        },
+      });
+      assert.equal(result.status, 1, `${item.name}: ${result.stderr || result.stdout}`);
+      const record = parseJson(result.stdout);
+      assert.equal(record.error_code, "approval_required", item.name);
+      assertDirectApiNotSent(record, "Custom Reviewer");
+      assert.doesNotMatch(result.stdout, /primary-secret-value|secondary-secret-value|secret-test-value/);
+    } finally {
+      rmSync(dataDir, { recursive: true, force: true });
+      rmSync(cwd, { recursive: true, force: true });
+      rmSync(path.dirname(path.dirname(pluginRoot)), { recursive: true, force: true });
+    }
+  }
+});
+
 test("direct API reviewers approval-request matches run prompt hash and request settings", async () => {
   const dataDir = mkdtempSync(path.join(tmpdir(), "api-reviewers-data-"));
   const cwd = makeWorkspace();
@@ -5093,7 +6526,11 @@ test("direct API reviewers approval-request matches run prompt hash and request 
     assert.equal(approval.selected_route, "direct_api");
     assert.equal(approval.fallback_reason, "subscription_not_supported");
     assert.equal(approval.approval_scope, "session");
-    assert.deepEqual(approval.auth_path, { auth_mode: "api_key", credential_ref: "CUSTOM_API_KEY" });
+    assert.deepEqual(approval.auth_path, {
+      auth_mode: "api_key",
+      credential_ref: "CUSTOM_API_KEY",
+      credential_source: "env",
+    });
     assert.deepEqual(approval.billing_path, { endpoint: "https://custom.example.invalid", model: "custom-review-model" });
     assert.equal(JSON.stringify(approval).includes(sourceText.trim()), false);
     assert.equal(JSON.stringify(approval).includes("secret-test-value"), false);
@@ -5502,7 +6939,7 @@ test("direct API reviewers approval token is bound to auth and billing paths", a
       approvalEnv: { PRIMARY_API_KEY: "primary-secret-value", SECONDARY_API_KEY: "" },
       runEnv: { PRIMARY_API_KEY: "", SECONDARY_API_KEY: "secondary-secret-value" },
       mutateConfig: null,
-      expectedApprovalAuthPath: { auth_mode: "api_key", credential_ref: "PRIMARY_API_KEY" },
+      expectedApprovalAuthPath: { auth_mode: "api_key", credential_ref: "PRIMARY_API_KEY", credential_source: "env" },
       expectedApprovalBillingPath: { endpoint: "https://billing-a.example.invalid", model: "custom-review-model" },
     },
     {
@@ -5523,7 +6960,7 @@ test("direct API reviewers approval token is bound to auth and billing paths", a
         base_url: "https://billing-b.example.invalid",
         model: "custom-review-model",
       },
-      expectedApprovalAuthPath: { auth_mode: "api_key", credential_ref: "CUSTOM_API_KEY" },
+      expectedApprovalAuthPath: { auth_mode: "api_key", credential_ref: "CUSTOM_API_KEY", credential_source: "env" },
       expectedApprovalBillingPath: { endpoint: "https://billing-a.example.invalid", model: "custom-review-model" },
     },
     {
@@ -5538,7 +6975,7 @@ test("direct API reviewers approval token is bound to auth and billing paths", a
       approvalEnv: { CUSTOM_API_KEY: "secret-test-value" },
       runEnv: { CUSTOM_API_KEY: "secret-test-value", API_REVIEWERS_ROUTE_FALLBACK_REASON: "usage_limited" },
       mutateConfig: null,
-      expectedApprovalAuthPath: { auth_mode: "api_key", credential_ref: "CUSTOM_API_KEY" },
+      expectedApprovalAuthPath: { auth_mode: "api_key", credential_ref: "CUSTOM_API_KEY", credential_source: "env" },
       expectedApprovalBillingPath: { endpoint: "https://billing-a.example.invalid", model: "custom-review-model" },
     },
   ];
@@ -5609,6 +7046,85 @@ test("direct API reviewers approval token is bound to auth and billing paths", a
       rmSync(cwd, { recursive: true, force: true });
       rmSync(path.dirname(path.dirname(pluginRoot)), { recursive: true, force: true });
     }
+  }
+});
+
+test("direct API reviewers approval token is bound to credential source", async () => {
+  const cwd = makeWorkspace();
+  const dataDir = mkdtempSync(path.join(tmpdir(), "api-reviewers-approval-credential-source-"));
+  const pluginRoot = makeInstalledApiReviewersRoot();
+  const companion = path.join(pluginRoot, "scripts", "api-reviewer.mjs");
+  const home = makeOpEnvCacheHome({
+    CUSTOM_API_KEY: "cache-secret-value",
+  });
+  try {
+    writeSingleProviderConfig(pluginRoot, "custom", {
+      display_name: "Custom Reviewer",
+      auth_mode: "api_key",
+      env_keys: ["CUSTOM_API_KEY"],
+      base_url: "https://billing-a.example.invalid",
+      model: "custom-review-model",
+    });
+    const commonArgs = [
+      "--provider", "custom",
+      "--mode", "custom-review",
+      "--scope", "custom",
+      "--scope-paths", "seed.txt",
+      "--prompt", "Check this file.",
+    ];
+
+    const approvalResult = await run(["approval-request", ...commonArgs], {
+      cwd,
+      companion,
+      env: {
+        API_REVIEWERS_DISABLE_ENV_CACHE: "1",
+        API_REVIEWERS_PLUGIN_DATA: dataDir,
+        API_REVIEWERS_TEST_AUTO_APPROVAL: "0",
+        CUSTOM_API_KEY: "env-secret-value",
+      },
+    });
+    assert.equal(approvalResult.status, 0, approvalResult.stderr || approvalResult.stdout);
+    const approval = parseJson(approvalResult.stdout);
+    assert.deepEqual(approval.auth_path, {
+      auth_mode: "api_key",
+      credential_ref: "CUSTOM_API_KEY",
+      credential_source: "env",
+    });
+
+    const result = await run([
+      "run",
+      ...commonArgs,
+      "--foreground",
+      "--lifecycle-events", "jsonl",
+      "--approval-token", approval.approval_token.value,
+    ], {
+      cwd,
+      companion,
+      env: {
+        API_REVIEWERS_DISABLE_ENV_CACHE: "0",
+        API_REVIEWERS_PLUGIN_DATA: dataDir,
+        API_REVIEWERS_REQUIRE_APPROVAL_TOKEN_IN_MOCKS: "1",
+        API_REVIEWERS_MOCK_RESPONSE: mockResponse("custom-review-model"),
+        HOME: home,
+        CUSTOM_API_KEY: "env-secret-value",
+      },
+    });
+
+    assert.equal(result.status, 1, result.stderr || result.stdout);
+    const lines = parseJsonLines(result.stdout);
+    assert.equal(lines.length, 1);
+    const [record] = lines;
+    assert.equal(record.status, "failed");
+    assert.equal(record.error_code, "approval_required");
+    assertDirectApiNotSent(record, "Custom Reviewer");
+    assert.doesNotMatch(result.stdout, /external_review_launched/);
+    assert.doesNotMatch(result.stdout, /hello from selected scope/);
+    assert.doesNotMatch(result.stdout, /env-secret-value|cache-secret-value/);
+  } finally {
+    rmSync(dataDir, { recursive: true, force: true });
+    rmSync(cwd, { recursive: true, force: true });
+    rmSync(home, { recursive: true, force: true });
+    rmSync(path.dirname(path.dirname(pluginRoot)), { recursive: true, force: true });
   }
 });
 
@@ -5745,6 +7261,7 @@ for (const promptCapProvider of [
     assert.ok(Array.isArray(plan.shards) && plan.shards.length >= 2, "fixture must split into >=2 bounded shards");
 
     const hashes = new Set();
+    const tupleFingerprints = new Set();
     for (const [i, shard] of plan.shards.entries()) {
       assert.equal(shard.index, i + 1);
       assert.equal(shard.total, plan.shards.length);
@@ -5760,6 +7277,10 @@ for (const promptCapProvider of [
       assert.equal(tuple.approval_scope, "session");
       assert.match(tuple.rendered_prompt_hash, /^[a-f0-9]{64}$/);
       hashes.add(tuple.rendered_prompt_hash);
+      assert.ok(tuple.approval_tuple_fingerprint);
+      assert.equal(tuple.approval_tuple_fingerprint.algorithm, "sha256");
+      assert.match(tuple.approval_tuple_fingerprint.value, /^[a-f0-9]{64}$/);
+      tupleFingerprints.add(tuple.approval_tuple_fingerprint.value);
       assert.deepEqual([...tuple.scope_paths].sort(), [...shard.scope_paths].sort());
       assert.ok(tuple.source_packet);
       assert.deepEqual(
@@ -5768,11 +7289,24 @@ for (const promptCapProvider of [
       );
     }
     assert.equal(hashes.size, plan.shards.length, "each shard must have a unique rendered_prompt_hash");
+    assert.equal(tupleFingerprints.size, plan.shards.length, "each shard must have a unique approval tuple fingerprint");
+
+    const recovery = parsed.runtime_diagnostics?.packet_recovery;
+    assert.ok(recovery, "approval-request prompt-cap failures must include packet_recovery before any approval token exists");
+    assert.equal(recovery.reason, "prompt_too_large");
+    assert.equal(recovery.source_content_transmission, "not_sent");
+    assert.equal(recovery.provider, promptCapProvider.provider);
+    assert.equal(recovery.mode, "custom-review");
+    const shardAction = recovery.actions.find((action) => action.type === "shard");
+    assert.ok(shardAction, "approval-request recovery must expose shard action");
+    assert.deepEqual(shardAction.shards, plan.shards);
+    assert.equal("approval_token" in parsed, false);
 
     const planJson = JSON.stringify(plan);
     assert.equal(planJson.includes("hello from selected scope"), false);
     assert.equal(planJson.includes("secret-test-value"), false);
     assert.equal(planJson.includes("Check changed files."), false);
+    assert.doesNotMatch(JSON.stringify(recovery), /approval_token|approval-token|secret-test-value/i);
     assert.doesNotMatch(result.stdout, /hello from selected scope/);
     assert.doesNotMatch(result.stdout, /secret-test-value/);
   });

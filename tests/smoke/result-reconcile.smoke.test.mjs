@@ -72,48 +72,62 @@ const PROVIDERS = [
   },
 ];
 
-const RECONCILE_AUDIT_MANIFEST = Object.freeze({
-  schema_version: 1,
-  rendered_prompt_hash: Object.freeze({
-    algorithm: "sha256",
-    value: "b".repeat(64),
-  }),
-  selected_source: Object.freeze({
-    files: Object.freeze([
-      Object.freeze({
-        path: "seed.txt",
+function reconcileAuditManifest(provider) {
+  return Object.freeze({
+    schema_version: 1,
+    rendered_prompt_hash: Object.freeze({
+      algorithm: "sha256",
+      value: "b".repeat(64),
+    }),
+    selected_source: Object.freeze({
+      files: Object.freeze([
+        Object.freeze({
+          path: "seed.txt",
+          bytes: 21,
+          lines: 1,
+          content_hash: Object.freeze({
+            algorithm: "sha256",
+            value: "c".repeat(64),
+          }),
+        }),
+      ]),
+      totals: Object.freeze({
+        files: 1,
         bytes: 21,
         lines: 1,
-        content_hash: Object.freeze({
-          algorithm: "sha256",
-          value: "c".repeat(64),
-        }),
       }),
-    ]),
-    totals: Object.freeze({
-      files: 1,
-      bytes: 21,
-      lines: 1,
     }),
-  }),
-  request: Object.freeze({
-    timeout_ms: 900000,
-  }),
-  selected_route: "subscription_oauth",
-  auth_path: "subscription_oauth",
-  billing_path: null,
-  source_send_approval_state: "not_required",
-  source_send_approval_required: false,
-  review_quality: Object.freeze({
-    has_verdict: false,
-    has_blocking_section: false,
-    has_non_blocking_section: false,
-    checklist_items_seen: 0,
-    looks_shallow: false,
-    semantic_failure_reasons: Object.freeze([]),
-    failed_review_slot: false,
-  }),
-});
+    request: Object.freeze({
+      timeout_ms: 900000,
+    }),
+    selected_route: "subscription_oauth",
+    route_step: "subscription",
+    auth_path: "subscription_oauth",
+    billing_path: null,
+    source_send_approval_state: "not_required",
+    source_send_approval_required: false,
+    source_packet_policy: Object.freeze({
+      provider: provider.target,
+      mode: "review",
+      route_step: "subscription",
+      source_bearing: true,
+      source_send_allowed: true,
+      source_packet_action: "send",
+      source_content_transmission: "may_be_sent",
+      selected_source_bytes: 21,
+      source_packet_budget_bytes: 524288,
+    }),
+    review_quality: Object.freeze({
+      has_verdict: false,
+      has_blocking_section: false,
+      has_non_blocking_section: false,
+      checklist_items_seen: 0,
+      looks_shallow: false,
+      semantic_failure_reasons: Object.freeze([]),
+      failed_review_slot: false,
+    }),
+  });
+}
 
 for (const provider of PROVIDERS) {
   test(`${provider.name} result --job reconciles orphaned active jobs before reading meta`, () => {
@@ -161,7 +175,7 @@ for (const provider of PROVIDERS) {
         ...record,
         review_metadata: {
           ...record.review_metadata,
-          audit_manifest: RECONCILE_AUDIT_MANIFEST,
+          audit_manifest: reconcileAuditManifest(provider),
         },
       };
       provider.writeJobFile(cwd, jobId, recordWithAudit);
@@ -197,6 +211,17 @@ for (const provider of PROVIDERS) {
       assert.equal(meta.review_metadata.audit_manifest.selected_route, "subscription_oauth");
       assert.equal(meta.review_metadata.audit_manifest.auth_path, "subscription_oauth");
       assert.equal(meta.review_metadata.audit_manifest.source_send_approval_state, "not_required");
+      const recovery = meta.runtime_diagnostics?.packet_recovery;
+      assert.ok(recovery, `${provider.name} stale source-bearing jobs must include packet_recovery`);
+      assert.equal(recovery.provider, provider.target);
+      assert.equal(recovery.reason, "stale_active_job");
+      assert.equal(recovery.source_content_transmission, "unknown");
+      assert.equal(recovery.provider_capabilities.supports_no_source_resume, false);
+      assert.deepEqual(
+        recovery.actions.map((action) => action.type),
+        ["resend_with_confirmation", "switch_provider", "waive_slot"],
+      );
+      assert.deepEqual(meta.review_metadata.audit_manifest.packet_recovery, recovery);
       assert.match(meta.error_message, /missing pid_info|never produced pid_info/);
     } finally {
       if (priorDataEnv === undefined) {

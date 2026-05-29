@@ -16,6 +16,7 @@
 //                              Used by #106 replay tests so they can plant
 //                              a tmp fixture without touching FIXTURE_DIR.
 //   CLAUDE_MOCK_ASSERT_PROMPT_INCLUDES
+//   CLAUDE_MOCK_ASSERT_PROMPT_EXCLUDES
 //                              substring required to appear in the prompt;
 //                              mock exits 1 if absent. Use this in replay
 //                              tests to assert request-side payload shape.
@@ -103,6 +104,7 @@ const resumeId = parsed.flags["--resume"] ?? null;
 const promptSha = createHash("sha256").update(prompt).digest("hex").slice(0, 16);
 
 const expectedPromptText = process.env.CLAUDE_MOCK_ASSERT_PROMPT_INCLUDES;
+const forbiddenPromptText = process.env.CLAUDE_MOCK_ASSERT_PROMPT_EXCLUDES;
 const readinessPrompt = prompt.includes("reply with exactly: pong.") && prompt.includes("Do not use any tools");
 const invocationCountPath = process.env.CLAUDE_MOCK_INVOCATION_COUNT_PATH;
 const invocationCountPromptIncludes = process.env.CLAUDE_MOCK_INVOCATION_COUNT_PROMPT_INCLUDES;
@@ -116,6 +118,16 @@ if (
 }
 if (expectedPromptText && !readinessPrompt && !prompt.includes(expectedPromptText)) {
   process.stderr.write(`claude-mock: prompt missing expected text: ${expectedPromptText}\n`);
+  process.exit(1);
+}
+if (forbiddenPromptText && !readinessPrompt && prompt.includes(forbiddenPromptText)) {
+  process.stderr.write(`claude-mock: prompt contains forbidden text: ${forbiddenPromptText}\n`);
+  process.exit(1);
+}
+
+const excludedPromptText = process.env.CLAUDE_MOCK_ASSERT_PROMPT_EXCLUDES;
+if (excludedPromptText && !readinessPrompt && prompt.includes(excludedPromptText)) {
+  process.stderr.write(`claude-mock: prompt included excluded text: ${excludedPromptText}\n`);
   process.exit(1);
 }
 

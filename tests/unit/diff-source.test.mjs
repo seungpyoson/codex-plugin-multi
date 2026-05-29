@@ -1,7 +1,9 @@
 import { describe, test } from "node:test";
 import assert from "node:assert/strict";
+import { resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 import { scrubGitEnv, matchGlob, diffSourceFiles } from "../../scripts/lib/diff-source.mjs";
-import { GIT_SAFE_PATH } from "../../scripts/lib/git-binary.mjs";
+import { GIT_BINARY_ENV, GIT_SAFE_PATH } from "../../scripts/lib/git-binary.mjs";
 
 // ─── Finding #6 (A9): scrubGitEnv must be an allowlist (HOME, PATH only) ───
 
@@ -256,5 +258,111 @@ describe("diffSourceFiles fallback", () => {
     git(["commit", "-m", "init"]);
 
     assert.deepEqual(diffSourceFiles(tmpdir, undefined), []);
+  });
+});
+
+describe("packaged diffSourceFiles coverage", () => {
+  test("packaged copy exercises provider diff branches", async () => {
+    const { chmodSync, mkdirSync, mkdtempSync, writeFileSync } = await import("node:fs");
+    const { join } = await import("node:path");
+    const { execFileSync } = await import("node:child_process");
+    const {
+      scrubGitEnv: packagedScrubGitEnv,
+      matchGlob: packagedMatchGlob,
+      diffSourceFiles: packagedDiffSourceFiles,
+    } = await import(pathToFileURL(resolve("plugins/api-reviewers/scripts/lib/diff-source.mjs")).href);
+
+    assert.deepEqual(Object.keys(packagedScrubGitEnv({ PATH: "/tmp/fake" })).sort(), ["PATH"]);
+    assert.equal(packagedScrubGitEnv({ HOME: "/home/test", PATH: "/tmp/fake" }).HOME, "/home/test");
+    assert.equal(packagedMatchGlob("foo", "**/foo"), true);
+    assert.equal(packagedMatchGlob("src/foo.mjs", "src/**"), true);
+    assert.equal(packagedMatchGlob("src/foo.mjs", "*.mjs"), false);
+    assert.equal(packagedMatchGlob("foo.mjs", "foo?.mjs"), false);
+    assert.equal(packagedMatchGlob("foo(mjs)", "foo(mjs)"), true);
+
+    const initRepo = (prefix) => {
+      const tmpdir = mkdtempSync(prefix);
+      const git = (args) => execFileSync("git", args, {
+        cwd: tmpdir,
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "pipe"],
+        maxBuffer: 64 * 1024 * 1024,
+      });
+      git(["init"]);
+      git(["config", "user.email", "test@test.com"]);
+      git(["config", "user.name", "Test"]);
+      return { tmpdir, git };
+    };
+
+    const seedFeatureBranch = ({ tmpdir, git }, filePath, initialContent, changedContent) => {
+      writeFileSync(join(tmpdir, filePath), initialContent);
+      git(["add", filePath]);
+      git(["commit", "-m", "base"]);
+      git(["branch", "-M", "main"]);
+      git(["checkout", "-b", "feature"]);
+      writeFileSync(join(tmpdir, filePath), changedContent);
+      git(["add", filePath]);
+      git(["commit", "-m", "feature"]);
+    };
+
+    const textRepo = initRepo("/tmp/diff-source-packaged-text-");
+    seedFeatureBranch(textRepo, "review.mjs", "export const value = 1;\n", "export const value = 2;\n");
+
+    const defaultBaseFiles = packagedDiffSourceFiles(textRepo.tmpdir);
+    assert.equal(defaultBaseFiles.length, 1);
+    assert.equal(defaultBaseFiles[0].path, "review.mjs");
+    assert.match(defaultBaseFiles[0].content.toString("utf8"), /export const value = 2/);
+    assert.equal(packagedDiffSourceFiles(textRepo.tmpdir, "main", { scopePaths: [] }).length, 1);
+    assert.equal(packagedDiffSourceFiles(textRepo.tmpdir, "main", { scopePaths: "*.mjs" }).length, 1);
+    assert.equal(packagedDiffSourceFiles(textRepo.tmpdir, "main", { scopePaths: ["*.txt"] }).length, 0);
+    assert.deepEqual(packagedDiffSourceFiles(textRepo.tmpdir, "HEAD"), []);
+    assert.deepEqual(packagedDiffSourceFiles(textRepo.tmpdir, "missing-ref"), []);
+
+    const binaryRepo = initRepo("/tmp/diff-source-packaged-binary-");
+    seedFeatureBranch(binaryRepo, "asset.bin", Buffer.from([0, 1, 2]), Buffer.from([0, 1, 3]));
+    const binaryFiles = packagedDiffSourceFiles(binaryRepo.tmpdir, "main");
+    assert.equal(binaryFiles.length, 1);
+    assert.match(binaryFiles[0].content.toString("utf8"), /Binary file asset\.bin differs \(not shown\)/);
+
+    const largeRepo = initRepo("/tmp/diff-source-packaged-large-");
+    seedFeatureBranch(largeRepo, "large.txt", "initial\n", `${"x".repeat(600 * 1024)}\n`);
+    const largeFiles = packagedDiffSourceFiles(largeRepo.tmpdir, "main");
+    assert.equal(largeFiles.length, 1);
+    assert.match(largeFiles[0].content.toString("utf8"), /\[Diff truncated:/);
+
+    const fakeGitRoot = mkdtempSync("/tmp/diff-source-packaged-fake-git-");
+    const fakeGit = join(fakeGitRoot, "git");
+    writeFileSync(fakeGit, [
+      "#!/bin/sh",
+      "case \" $* \" in",
+      "  *\" rev-parse \"*) exit 0 ;;",
+      "  *\" merge-base \"*) printf 'base\\n'; exit 0 ;;",
+      "  *\" --name-only \"*) printf 'empty.js\\0nostat.js\\0'; exit 0 ;;",
+      "  *\" --numstat \"*\"empty.js\"*) printf '1\\t1\\tempty.js\\n'; exit 0 ;;",
+      "  *\" --numstat \"*\"nostat.js\"*) printf '1\\t1\\tnostat.js\\n'; exit 0 ;;",
+      "  *\" -U\"*\"empty.js\"*) exit 0 ;;",
+      "  *\" -U\"*\"nostat.js\"*) printf 'diff --git a/nostat.js b/nostat.js\\n+changed\\n'; exit 0 ;;",
+      "  *\" --stat \"*\"nostat.js\"*) exit 0 ;;",
+      "esac",
+      "exit 1",
+      "",
+    ].join("\n"));
+    chmodSync(fakeGit, 0o755);
+
+    const fakeWorkspace = mkdtempSync("/tmp/diff-source-packaged-fake-workspace-");
+    mkdirSync(join(fakeWorkspace, ".git"));
+    const previousGitBinary = process.env[GIT_BINARY_ENV];
+    try {
+      process.env[GIT_BINARY_ENV] = fakeGit;
+      const defensiveFiles = packagedDiffSourceFiles(fakeWorkspace, "main", { workspaceRoot: fakeWorkspace });
+      assert.equal(defensiveFiles.length, 1);
+      assert.equal(defensiveFiles[0].path, "nostat.js");
+      const defensiveContent = defensiveFiles[0].content.toString("utf8");
+      assert.match(defensiveContent, /diff --git a\/nostat\.js b\/nostat\.js/);
+      assert.doesNotMatch(defensiveContent, /nostat\.js \|/);
+    } finally {
+      if (previousGitBinary === undefined) delete process.env[GIT_BINARY_ENV];
+      else process.env[GIT_BINARY_ENV] = previousGitBinary;
+    }
   });
 });

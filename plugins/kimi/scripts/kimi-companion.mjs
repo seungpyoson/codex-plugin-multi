@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { fileURLToPath } from "node:url";
-import { dirname, join as joinPath, resolve as resolvePath } from "node:path";
+import { basename as basenamePath, dirname, join as joinPath, resolve as resolvePath } from "node:path";
 import {
   existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, unlinkSync,
   writeFileSync, chmodSync, readdirSync, statSync, lstatSync,
@@ -16,15 +16,18 @@ import { setupContainment } from "./lib/containment.mjs";
 import { populateScope } from "./lib/scope.mjs";
 import { newJobId, verifyPidInfo } from "./lib/identity.mjs";
 import { buildJobRecord, classifyExecution, externalReviewForInvocation } from "./lib/job-record.mjs";
+import { sourceContentTransmissionForExecution } from "./lib/external-review.mjs";
 import { reconcileActiveJobs } from "./lib/reconcile.mjs";
 import { cleanGitEnv } from "./lib/git-env.mjs";
 import { gitEnv, isGitBinaryPolicyError, resolveGitBinary } from "./lib/git-binary.mjs";
 import { spawnKimi } from "./lib/kimi.mjs";
 import {
+  latestSourcePacketPreviousAttempt,
   selectProviderRoute,
   sourcePacketCanResumeWithoutResendFromPreviousAttempt,
   sourcePacketCanResumeWithoutResendFromJobRecord,
   sourcePacketPreviousAttemptForContinuation,
+  sourcePacketPreviousAttemptFromJobRecord,
 } from "./lib/provider-route-policy.mjs";
 import { writeCancelMarker, consumeCancelMarker } from "./lib/cancel-marker.mjs";
 import { isCodexSandbox } from "./lib/codex-env.mjs";
@@ -53,6 +56,11 @@ import {
 } from "./lib/companion-common.mjs";
 import { REVIEW_PROMPT_CONTRACT_VERSION, buildReviewAuditManifest, buildReviewPrompt, buildSelectedSourcePromptBlock, selectedSourceFilesFromPrompt } from "./lib/review-prompt.mjs";
 import { diffSourceFiles } from "./lib/diff-source.mjs";
+import {
+  acquireProviderWorkloadLease,
+  providerWorkloadBlockedExecution,
+  releaseProviderWorkloadLease,
+} from "./lib/review-workload.mjs";
 
 const PLUGIN_ROOT = resolvePath(dirname(fileURLToPath(import.meta.url)), "..");
 const MODELS_CONFIG_PATH = resolvePath(PLUGIN_ROOT, "config/models.json");
@@ -165,7 +173,7 @@ function targetPromptFor(profile, userPrompt, invocation = {}, sourceFiles = [])
   return buildReviewPrompt({
     provider: "Kimi",
     mode: profile.name,
-    repository: invocation.workspace_root ?? null,
+    repository: reviewPromptRepositoryIdentity(invocation.cwd, invocation.workspace_root),
     baseRef: invocation.scope_base ?? null,
     baseCommit: gitCommitForPrompt(invocation.cwd, invocation.scope_base, invocation.workspace_root),
     headRef: "HEAD",
@@ -219,9 +227,15 @@ function repositoryIdentity(cwd, workspaceRoot) {
   return match ? match[1] : remote;
 }
 
+function reviewPromptRepositoryIdentity(cwd, workspaceRoot) {
+  const identity = repositoryIdentity(cwd, workspaceRoot);
+  if (identity && identity !== workspaceRoot) return identity;
+  return `local-workspace:${basenamePath(workspaceRoot ?? cwd ?? "workspace") || "workspace"}`;
+}
+
 function promptMetadata(invocation) {
   return {
-    repository: repositoryIdentity(invocation.cwd, invocation.workspace_root),
+    repository: reviewPromptRepositoryIdentity(invocation.cwd, invocation.workspace_root),
     baseRef: invocation.scope_base ?? null,
     baseCommit: gitCommitForPrompt(invocation.cwd, invocation.scope_base, invocation.workspace_root),
     headRef: gitText(["branch", "--show-current"], invocation.cwd, invocation.workspace_root) ?? "HEAD",
@@ -312,6 +326,11 @@ function reviewAuditManifest(invocation, prompt, containmentPath, execution) {
   const meta = promptMetadata(invocation);
   const auditExecution = executionForAuditClassification(execution);
   const { status: executionStatus, error_code: errorCode } = classifyExecution(auditExecution);
+  const sourceContentTransmission = sourceContentTransmissionForExecution({
+    status: execution?.preflight === true ? "preflight_failed" : executionStatus,
+    errorCode,
+    pidInfo: auditExecution?.pidInfo ?? null,
+  });
   return buildReviewAuditManifest({
     prompt,
     sourceFiles: invocation.resume_without_source_resend === true
@@ -347,6 +366,8 @@ function reviewAuditManifest(invocation, prompt, containmentPath, execution) {
       reason: scopeResolutionReason(invocation),
     },
     route: {
+      mode: invocation.mode,
+      providerId: "kimi",
       selectedRoute: invocation.selected_route ?? null,
       routeStep: invocation.route_step ?? null,
       routeSteps: invocation.route_steps ?? null,
@@ -355,6 +376,7 @@ function reviewAuditManifest(invocation, prompt, containmentPath, execution) {
       authPath: invocation.selected_auth_path ?? null,
       billingPath: invocation.billing_path ?? null,
       sourceBearing: modeSendsSelectedSource(invocation.mode),
+      sourceContentTransmission,
       sourceSendApprovalRequired: invocation.source_send_approval_required ?? null,
       sourceSendApprovalState: invocation.source_send_approval_state ?? null,
       providerCapabilities: ROUTE_CAPABILITIES,
@@ -389,6 +411,10 @@ function sourcePacketPolicyPreflight(invocation, prompt, containmentPath) {
   const execution = {
     ...preflightExecution,
     errorMessage: `${errorCode}: ${policy.suggested_action ?? "source packet policy blocked selected source send"}`,
+    runtimeDiagnostics: {
+      source_packet_policy: policy,
+      packet_recovery: manifest.packet_recovery ?? null,
+    },
   };
   execution.reviewAuditManifest = reviewAuditManifest(invocation, prompt, containmentPath, execution);
   return execution;
@@ -482,7 +508,12 @@ function collectPriorReviewSlotAttempts(workspaceRoot, currentJobId = null) {
       const record = JSON.parse(readFileSync(joinPath(resolveJobsDir(workspaceRoot), entry.name), "utf8"));
       if (record?.job_id !== jobId) continue;
       const slot = reviewSlotFromRecord(record);
-      if (priorSlotCountsTowardRetry(slot)) attempts.push({ review_slot: slot });
+      if (priorSlotCountsTowardRetry(slot)) {
+        const previousAttempt = sourcePacketPreviousAttemptFromJobRecord(record);
+        attempts.push(previousAttempt
+          ? { ...previousAttempt, review_slot: slot }
+          : { review_slot: slot });
+      }
     } catch {
       // Malformed legacy records are not trusted as retry-policy evidence.
     }
@@ -1116,6 +1147,7 @@ async function cmdRun(rest) {
     timeout_ms: timeoutMs,
     max_steps_per_turn: maxStepsPerTurn,
     ...subscriptionRouteFacts({ sourceBearing: modeSendsSelectedSource(mode) }),
+    previous_source_attempt: latestSourcePacketPreviousAttempt(reviewSlotPriorAttempts),
     review_slot_prior_attempts: reviewSlotPriorAttempts,
     ...reviewSlotInvocationFields(options),
     ...sourcePacketOverrideInvocationFields(options),
@@ -1126,6 +1158,7 @@ async function cmdRun(rest) {
   writeRuntimeOptionsSidecar(workspaceRoot, jobId, {
     timeout_ms: timeoutMs,
     max_steps_per_turn: maxStepsPerTurn,
+    previous_source_attempt: invocation.previous_source_attempt,
     review_slot_prior_attempts: invocation.review_slot_prior_attempts,
     review_slot_disposition: invocation.review_slot_disposition,
     review_slot_waiver_artifact: invocation.review_slot_waiver_artifact,
@@ -1148,6 +1181,7 @@ async function cmdRun(rest) {
         kimiSessionId: null,
         errorMessage: sourcePacketPreflight.errorMessage,
         reviewAuditManifest: sourcePacketPreflight.reviewAuditManifest,
+        runtimeDiagnostics: sourcePacketPreflight.runtimeDiagnostics,
         ...redactionFieldsForPrompt(targetPrompt),
       }, []);
       writeJobFile(workspaceRoot, jobId, errorRecord);
@@ -1268,6 +1302,43 @@ async function executeRun(invocation, prompt, { foreground, lifecycleEvents = nu
       kimiSessionId: null,
       errorMessage: sourcePacketPreflight.errorMessage,
       reviewAuditManifest: sourcePacketPreflight.reviewAuditManifest,
+      runtimeDiagnostics: sourcePacketPreflight.runtimeDiagnostics,
+      ...redactionFieldsForPrompt(prompt),
+    }, mutations);
+    writeJobFile(workspaceRoot, jobId, errorRecord);
+    upsertJob(workspaceRoot, errorRecord);
+    if (foreground) printLifecycleJson(errorRecord, lifecycleEvents);
+    process.exit(2);
+  }
+
+  const workloadAdmission = acquireProviderWorkloadLease({
+    provider: invocation.target,
+    jobId,
+    cwd,
+    sourceBearing: modeSendsSelectedSource(invocation.mode),
+  });
+  let workloadLease = null;
+  if (workloadAdmission.ok) {
+    workloadLease = workloadAdmission.lease;
+  } else {
+    const workloadPreflight = providerWorkloadBlockedExecution(workloadAdmission);
+    workloadPreflight.reviewAuditManifest = reviewAuditManifest(invocation, prompt, containment.path, workloadPreflight);
+    if (neutralCwd) {
+      try { rmSync(neutralCwd, { recursive: true, force: true }); } catch { /* best-effort */ }
+    }
+    if (launchFiles) launchFiles.cleanup();
+    if (disposeEffective) {
+      try { containment.cleanup(); } catch { /* best-effort */ }
+    }
+    const errorRecord = buildJobRecord(invocation, {
+      exitCode: workloadPreflight.exitCode,
+      endedAt: workloadPreflight.endedAt,
+      parsed: workloadPreflight.parsed,
+      pidInfo: null,
+      kimiSessionId: null,
+      errorMessage: workloadPreflight.errorMessage,
+      reviewAuditManifest: workloadPreflight.reviewAuditManifest,
+      runtimeDiagnostics: workloadPreflight.runtimeDiagnostics,
       ...redactionFieldsForPrompt(prompt),
     }, mutations);
     writeJobFile(workspaceRoot, jobId, errorRecord);
@@ -1302,6 +1373,8 @@ async function executeRun(invocation, prompt, { foreground, lifecycleEvents = nu
         process.stderr.write(`kimi-companion: warning: sidecar ${name} write failed: ${e.message}\n`);
       }
     }
+    releaseProviderWorkloadLease(workloadLease);
+    workloadLease = null;
     if (neutralCwd) rmSync(neutralCwd, { recursive: true, force: true });
     if (launchFiles) launchFiles.cleanup();
     if (disposeEffective) containment.cleanup();
@@ -1368,6 +1441,8 @@ async function executeRun(invocation, prompt, { foreground, lifecycleEvents = nu
       break;
     }
   } catch (e) {
+    releaseProviderWorkloadLease(workloadLease);
+    workloadLease = null;
     const errorRecord = buildJobRecord(executedInvocation, {
       exitCode: null, parsed: null, pidInfo: null, kimiSessionId: null,
       errorMessage: e.message,
@@ -1383,6 +1458,8 @@ async function executeRun(invocation, prompt, { foreground, lifecycleEvents = nu
     process.exit(2);
   } finally {
     stopHeartbeat();
+    releaseProviderWorkloadLease(workloadLease);
+    workloadLease = null;
   }
 
   // ——— finalization (#16 follow-up 1) ————————————————————————————————
@@ -1431,6 +1508,8 @@ async function executeRun(invocation, prompt, { foreground, lifecycleEvents = nu
     signal: execution.signal ?? null,
     timedOut: execution.timedOut === true,
     reviewAuditManifest: execution.reviewAuditManifest,
+    errorMessage: execution.errorMessage,
+    runtimeDiagnostics: execution.runtimeDiagnostics ?? null,
     ...redactionFieldsForPrompt(prompt),
   }, mutations);
 
@@ -1740,6 +1819,7 @@ async function cmdContinue(rest) {
         kimiSessionId: null,
         errorMessage: sourcePacketPreflight.errorMessage,
         reviewAuditManifest: sourcePacketPreflight.reviewAuditManifest,
+        runtimeDiagnostics: sourcePacketPreflight.runtimeDiagnostics,
         ...redactionFieldsForPrompt(targetPrompt),
       }, []);
       writeJobFile(workspaceRoot, newJobId_, errorRecord);

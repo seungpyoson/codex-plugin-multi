@@ -2,6 +2,8 @@
 import { spawnSync } from "node:child_process";
 import { lstat, mkdir, open, readFile, readdir, realpath, rename, rm, unlink, writeFile } from "node:fs/promises";
 import { constants as fsConstants, lstatSync, readFileSync } from "node:fs";
+import { request as httpRequest } from "node:http";
+import { request as httpsRequest } from "node:https";
 import { basename, dirname, isAbsolute, resolve, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createHash, randomUUID } from "node:crypto";
@@ -17,15 +19,28 @@ import { diffSourceFiles } from "./lib/diff-source.mjs";
 import { buildExternalModelFailureDiagnostic } from "./lib/external-model-failure-core.mjs";
 import { hasSubstantiveInvalidVerdictReason, reviewQualityFailureState } from "./lib/external-model-review-quality.mjs";
 import { buildPrivacyRedactor } from "./lib/privacy-redaction.mjs";
-import { normalizeApprovalScope, selectProviderRoute } from "./lib/provider-route-policy.mjs";
+import {
+  buildPacketRecovery,
+  latestSourcePacketPreviousAttempt,
+  normalizeApprovalScope,
+  selectProviderRoute,
+  sourceSendApprovalTupleFingerprint,
+  sourceSentPacketRecoveryReason,
+} from "./lib/provider-route-policy.mjs";
 import {
   EXTERNAL_REVIEW_KEYS,
   SOURCE_CONTENT_TRANSMISSION,
 } from "./lib/external-review.mjs";
+import {
+  acquireProviderWorkloadLease,
+  providerWorkloadBlockedExecution,
+  releaseProviderWorkloadLease,
+} from "./lib/review-workload.mjs";
 
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 const PLUGIN_ROOT = resolve(SCRIPT_DIR, "..");
 const PROVIDERS_PATH = resolve(PLUGIN_ROOT, "config/providers.json");
+const SESSION_APPROVAL_POLICY_PATH = resolve(PLUGIN_ROOT, "config/session-approval.json");
 const VALID_MODES = new Set(["review", "adversarial-review", "custom-review"]);
 const VALID_AUTH_MODES = new Set(["api_key"]);
 const SCHEMA_VERSION = 10;
@@ -42,6 +57,7 @@ const MAX_SCOPE_FILE_BYTES = 256 * 1024;
 const MAX_SCOPE_TOTAL_BYTES = 1024 * 1024;
 const DEFAULT_MAX_PROMPT_CHARS = 600000;
 const DEFAULT_PROVIDER_TIMEOUT_MS = 900000;
+const SESSION_APPROVAL_GRANT_SCHEMA_VERSION = 1;
 const DOCTOR_PROBE_PROMPT = "Return exactly: ok";
 const GIT_SHOW_MAX_BUFFER_BYTES = MAX_SCOPE_FILE_BYTES + 1;
 const API_REVIEWER_EXPECTED_KEYS = Object.freeze([
@@ -89,13 +105,65 @@ const API_REVIEWER_EXPECTED_KEYS = Object.freeze([
   "usage",
   "auth_mode",
   "credential_ref",
+  "credential_source",
   "endpoint",
   "http_status",
   "raw_model",
   "schema_version",
 ]);
+const APPROVAL_GRANT_RECORD_KEYS = Object.freeze([
+  "schema_version",
+  "grant_id",
+  "created_at",
+  "expires_at",
+  "grant_session_id",
+  "provider_allowlist",
+  "mode_allowlist",
+  "workspace_root_hash",
+  "path_constraints",
+  "max_files",
+  "max_bytes",
+  "max_ttl_ms",
+  "approval_fingerprint",
+  "approval_tuple",
+  "activation",
+]);
+const APPROVAL_GRANT_TUPLE_KEYS = Object.freeze([
+  "provider",
+  "mode",
+  "selected_source",
+  "rendered_prompt_hash",
+  "request",
+  "scope_resolution",
+  "auth_path",
+  "billing_path",
+  "selected_route",
+  "route_step",
+  "route_steps",
+  "fallback_reason",
+  "approval_scope",
+  "grant_bounds",
+]);
+const APPROVAL_GRANT_BOUNDS_KEYS = Object.freeze([
+  "provider_allowlist",
+  "mode_allowlist",
+  "workspace_root_hash",
+  "path_constraints",
+  "max_files",
+  "max_bytes",
+  "expires_at",
+  "max_ttl_ms",
+  "schema_version",
+]);
+const APPROVAL_GRANT_ACTIVATION_KEYS = Object.freeze([
+  "activated_at",
+  "source_content_transmission",
+  "approval_source",
+]);
 const ALLOWED_REQUEST_DEFAULT_KEYS = new Set(["thinking", "reasoning_effort", "max_tokens", "top_p", "stop"]);
 const ACCOUNT_PAYMENT_DIAGNOSTIC_RE = /^(?:stripe-.+|cus_[A-Za-z0-9]{6,}|acct_(?:test_)?[A-Za-z0-9]{5,}|cs_(?:test|live)_[A-Za-z0-9]{6,}|(?:pi|sub|in|ii|ch|seti|setp|price|prod|iv)_(?=[A-Za-z0-9]*\d)[A-Za-z0-9]{5,})$/i;
+const CREDENTIAL_REDACTION_VALUE = Symbol("credential_redaction_value");
+const REDACTION_SECRET_ENV_PREFIX = "API_REVIEWERS_REDACTION_SECRET";
 
 function writableOutput(output) {
   return output && typeof output.write === "function" ? output : process.stdout;
@@ -205,6 +273,7 @@ function reviewMetadataProjection(obj) {
     "selected_route",
     "fallback_reason",
     "approval_scope",
+    "packet_recovery",
   ]) {
     if (manifest[key] !== undefined) projection[key] = manifest[key];
   }
@@ -234,8 +303,15 @@ function terminalLifecycleProjection(obj) {
     external_review: obj.external_review,
   };
   if (obj.disclosure_note != null) projection.disclosure_note = obj.disclosure_note;
+  const runtimeDiagnostics = {};
   if (obj.runtime_diagnostics?.sharding_plan != null) {
-    projection.runtime_diagnostics = { sharding_plan: obj.runtime_diagnostics.sharding_plan };
+    runtimeDiagnostics.sharding_plan = obj.runtime_diagnostics.sharding_plan;
+  }
+  if (obj.runtime_diagnostics?.packet_recovery != null) {
+    runtimeDiagnostics.packet_recovery = obj.runtime_diagnostics.packet_recovery;
+  }
+  if (Object.keys(runtimeDiagnostics).length > 0) {
+    projection.runtime_diagnostics = runtimeDiagnostics;
   }
   if (obj.review_quality && typeof obj.review_quality === "object") {
     projection.review_quality = {
@@ -581,13 +657,38 @@ async function collectPriorReviewSlotAttempts(root, currentJobId = null) {
     try {
       assertSafeJobId(jobId);
       const parsed = JSON.parse(await readFile(resolve(apiReviewerJobsDir(root), jobId, "meta.json"), "utf8"));
+      const manifest = parsed?.review_metadata?.audit_manifest ?? null;
       const slot = reviewSlotFromRecord(parsed);
-      if (priorSlotCountsTowardRetry(slot)) attempts.push({ review_slot: slot });
+      if (priorSlotCountsTowardRetry(slot)) {
+        const sourceContentTransmission =
+          parsed?.external_review?.source_content_transmission ??
+          manifest?.source_content_transmission ??
+          slot.source_state ??
+          null;
+        attempts.push({
+          job_id: parsed?.job_id ?? jobId,
+          started_at: parsed?.started_at ?? null,
+          review_slot: slot,
+          selected_source: manifest?.selected_source ?? null,
+          source_packet: manifest?.selected_source ?? null,
+          source_content_transmission: sourceContentTransmission,
+          source_sent: sourceContentTransmission === SOURCE_CONTENT_TRANSMISSION.SENT,
+          status: parsed?.status ?? null,
+          error_code: parsed?.error_code ?? null,
+          error_message: parsed?.error_message ?? null,
+          review_quality: manifest?.review_quality ?? null,
+        });
+      }
     } catch {
       // Ignore malformed legacy artifacts; retry guards should be driven by
       // validated review-slot records, not by corrupt state.
     }
   }
+  attempts.sort((left, right) => {
+    const timeOrder = String(left.started_at ?? "").localeCompare(String(right.started_at ?? ""));
+    if (timeOrder !== 0) return timeOrder;
+    return String(left.job_id ?? "").localeCompare(String(right.job_id ?? ""));
+  });
   return attempts;
 }
 
@@ -864,6 +965,35 @@ async function loadProviders() {
   return JSON.parse(await readFile(PROVIDERS_PATH, "utf8"));
 }
 
+function validateSessionApprovalPolicy(policy) {
+  if (!policy || typeof policy !== "object" || Array.isArray(policy)) {
+    throw new Error("session approval policy must be an object");
+  }
+  const expectedKeys = ["schema_version", "max_ttl_ms"];
+  const keys = Object.keys(policy);
+  if (
+    keys.length !== expectedKeys.length ||
+    !expectedKeys.every((key) => Object.hasOwn(policy, key)) ||
+    !keys.every((key) => expectedKeys.includes(key))
+  ) {
+    throw new Error("session approval policy has unexpected keys");
+  }
+  if (policy.schema_version !== SESSION_APPROVAL_GRANT_SCHEMA_VERSION) {
+    throw new Error(`session approval policy schema_version must be ${SESSION_APPROVAL_GRANT_SCHEMA_VERSION}`);
+  }
+  if (!Number.isSafeInteger(policy.max_ttl_ms) || policy.max_ttl_ms <= 0) {
+    throw new Error("session approval policy max_ttl_ms must be a positive integer");
+  }
+  return Object.freeze({
+    schema_version: policy.schema_version,
+    max_ttl_ms: policy.max_ttl_ms,
+  });
+}
+
+async function loadSessionApprovalPolicy() {
+  return validateSessionApprovalPolicy(JSON.parse(await readFile(SESSION_APPROVAL_POLICY_PATH, "utf8")));
+}
+
 function providerConfig(providers, name) {
   const cfg = providers[name];
   if (!cfg) throw new Error(`unknown_provider:${name}`);
@@ -919,13 +1049,13 @@ function providersConfigErrorFields(error, provider = null) {
 }
 
 function selectedCredential(cfg, env = process.env) {
-  const effectiveEnv = credentialEnvWithCache(cfg, env);
+  const resolution = credentialEnvResolution(cfg, env);
   for (const keyName of cfg.env_keys ?? []) {
-    if (typeof effectiveEnv[keyName] === "string" && effectiveEnv[keyName].length > 0) {
-      return { keyName, value: effectiveEnv[keyName] };
+    if (typeof resolution.env[keyName] === "string" && resolution.env[keyName].length > 0) {
+      return { keyName, value: resolution.env[keyName], source: resolution.sources[keyName] ?? null };
     }
   }
-  return { keyName: null, value: null };
+  return { keyName: null, value: null, source: null };
 }
 
 function credentialEnvKeys(cfg) {
@@ -1080,12 +1210,23 @@ function credentialEnvCacheEntries(env, names) {
 }
 
 function credentialEnvWithCache(cfgOrNames, env = process.env) {
+  return credentialEnvResolution(cfgOrNames, env).env;
+}
+
+function credentialEnvResolution(cfgOrNames, env = process.env) {
   const names = Array.isArray(cfgOrNames) ? cfgOrNames : credentialEnvKeys(cfgOrNames);
-  const missingNames = names.filter((name) => !(typeof env[name] === "string" && env[name].length > 0));
-  if (missingNames.length === 0) return env;
-  const entries = credentialEnvCacheEntries(env, missingNames);
-  if (Object.keys(entries).length === 0) return env;
-  return { ...env, ...entries };
+  const entries = credentialEnvCacheEntries(env, names);
+  const hasCacheEntries = Object.keys(entries).length > 0;
+  const effectiveEnv = hasCacheEntries ? { ...env, ...entries } : env;
+  const sources = {};
+  for (const name of names) {
+    if (typeof entries[name] === "string" && entries[name].length > 0) {
+      sources[name] = "env_cache";
+    } else if (typeof env[name] === "string" && env[name].length > 0) {
+      sources[name] = "env";
+    }
+  }
+  return { env: effectiveEnv, sources };
 }
 
 function parsePositiveIntegerEnv(env, name, label) {
@@ -1222,13 +1363,15 @@ function shardApprovalTuple({
   const billingPath = approvalBillingPathFor(cfg);
   const auditManifest = buildApprovalAuditManifest({
     cfg,
+    provider,
+    mode,
     renderedPrompt,
     request,
     scopeInfo,
     routeFields,
     approvalScope,
   });
-  return Object.freeze({
+  const tuple = {
     provider,
     mode,
     rendered_prompt_hash: auditManifest.rendered_prompt_hash.value,
@@ -1250,6 +1393,24 @@ function shardApprovalTuple({
     route_steps: routeFields.route_steps,
     fallback_reason: routeFields.fallback_reason,
     approval_scope: approvalScope,
+  };
+  return Object.freeze({
+    ...tuple,
+    approval_tuple_fingerprint: sourceSendApprovalTupleFingerprint({
+      provider,
+      mode,
+      selectedSource: tuple.source_packet,
+      renderedPromptHash: tuple.rendered_prompt_hash,
+      scopeResolution: tuple.scope_resolution,
+      requestSettings: tuple.request_settings,
+      authPath: tuple.auth_path,
+      billingPath: tuple.billing_path,
+      selectedRoute: tuple.selected_route,
+      routeStep: tuple.route_step,
+      routeSteps: tuple.route_steps,
+      fallbackReason: tuple.fallback_reason,
+      approvalScope: tuple.approval_scope,
+    }),
   });
 }
 
@@ -1349,6 +1510,7 @@ function buildShardingPlan({
       total,
       scope_paths: Object.freeze(shard.files.map((file) => file.path)),
       rendered_prompt_chars: shard.prompt.length,
+      source_packet: tuple.source_packet,
       approval_tuple: tuple,
     });
   });
@@ -1362,9 +1524,38 @@ function buildShardingPlan({
   });
 }
 
+function redactionContext(configuredSecretNames = [], env = process.env, extraSecretValues = []) {
+  const names = Array.isArray(configuredSecretNames)
+    ? configuredSecretNames.filter((name) => typeof name === "string" && name.length > 0)
+    : [];
+  const effectiveEnv = credentialEnvWithCache(names, env);
+  const redactionEnv = { ...effectiveEnv };
+  const redactionNames = [...names];
+  let syntheticIndex = 0;
+  const addSecret = (value) => {
+    if (typeof value !== "string" || value.length === 0) return;
+    const name = `${REDACTION_SECRET_ENV_PREFIX}_${syntheticIndex}`;
+    syntheticIndex += 1;
+    redactionEnv[name] = value;
+    redactionNames.push(name);
+  };
+  for (const name of names) {
+    if (typeof env[name] === "string" && env[name].length > 0 && env[name] !== effectiveEnv[name]) {
+      addSecret(env[name]);
+    }
+  }
+  for (const value of extraSecretValues) addSecret(value);
+  return { env: redactionEnv, configuredSecretNames: redactionNames };
+}
+
+function credentialRedactionValues(execution = null) {
+  const value = execution?.[CREDENTIAL_REDACTION_VALUE];
+  return typeof value === "string" && value.length > 0 ? [value] : [];
+}
+
 function redactor(env = process.env, configuredSecretNames = []) {
-  const effectiveEnv = credentialEnvWithCache(configuredSecretNames, env);
-  return buildPrivacyRedactor({ env: effectiveEnv, configuredSecretNames }).text;
+  const context = redactionContext(configuredSecretNames, env);
+  return buildPrivacyRedactor(context).text;
 }
 
 function redactValue(value, redact) {
@@ -1378,9 +1569,9 @@ function redactValue(value, redact) {
   return value;
 }
 
-function redactRecord(record, env = process.env, configuredSecretNames = [], sourceFiles = []) {
-  const effectiveEnv = credentialEnvWithCache(configuredSecretNames, env);
-  return buildPrivacyRedactor({ env: effectiveEnv, configuredSecretNames, sourceFiles }).value(record);
+function redactRecord(record, env = process.env, configuredSecretNames = [], sourceFiles = [], extraSecretValues = []) {
+  const context = redactionContext(configuredSecretNames, env, extraSecretValues);
+  return buildPrivacyRedactor({ ...context, sourceFiles }).value(record);
 }
 
 function configuredSecretNamesFromProviders(providers) {
@@ -1445,6 +1636,7 @@ function sourceFreePreSendFailureExecution(execution, cfg, env = process.env) {
       },
     ),
     credential_ref: execution.credential_ref ?? credential.keyName ?? null,
+    credential_source: execution.credential_source ?? credential.source ?? null,
     endpoint: execution.endpoint ?? baseUrlFor(cfg),
   };
 }
@@ -1509,6 +1701,7 @@ async function doctorFields(provider, cfg, env = process.env) {
       next_action: suggestedAction(providerProbe.status, provider, cfg, errorMessage, execution.http_status ?? null, env),
       auth_mode: cfg.auth_mode,
       credential_ref: credential.keyName,
+      credential_source: credential.source,
       endpoint,
       model: cfg.model,
       provider_probe: {
@@ -1526,6 +1719,7 @@ async function doctorFields(provider, cfg, env = process.env) {
     next_action: "Run a direct API review.",
     auth_mode: cfg.auth_mode,
     credential_ref: credential.keyName,
+    credential_source: credential.source,
     endpoint,
     model: cfg.model,
     provider_probe: providerProbe,
@@ -1967,8 +2161,19 @@ function mockProviderExecution(cfg, prompt, credential, env, requestBody) {
     session_id: safeProviderSessionId(parsed.value?.id),
     http_status: 200,
     credential_ref: credential.keyName,
+    credential_source: credential.source,
+    [CREDENTIAL_REDACTION_VALUE]: credential.value,
     endpoint: baseUrlFor(cfg),
     diagnostics: diagnostics(),
+  };
+}
+
+function providerCredentialExecutionFields(cfg, credential) {
+  return {
+    credential_ref: credential.keyName ?? null,
+    credential_source: credential.source ?? null,
+    [CREDENTIAL_REDACTION_VALUE]: credential.value ?? null,
+    endpoint: baseUrlFor(cfg),
   };
 }
 
@@ -1977,6 +2182,7 @@ async function callProvider(provider, cfg, prompt, env = process.env) {
   const preflight = validateDirectApiRunPreflight(cfg, provider, effectiveEnv);
   if (!preflight.ok) return providerFailure(preflight.reason, preflight.error, null, null, false);
   const { credential, maxTokensOverride, timeoutMs } = preflight;
+  const credentialFields = providerCredentialExecutionFields(cfg, credential);
   const endpoint = `${baseUrlFor(cfg)}/chat/completions`;
   const requestBody = {
     model: cfg.model,
@@ -1985,13 +2191,16 @@ async function callProvider(provider, cfg, prompt, env = process.env) {
   };
   const defaultsResult = applyRequestDefaults(requestBody, cfg.request_defaults);
   if (!defaultsResult.ok) {
-    return providerFailureWithDiagnostics("bad_args", defaultsResult.error, null, null, false, {
-      configured_timeout_ms: timeoutMs.value,
-      prompt_chars: prompt.length,
-      request_defaults: summarizeRequestDefaults(cfg.request_defaults),
-      max_tokens: requestBody.max_tokens ?? null,
-      temperature: requestBody.temperature ?? null,
-    });
+    return {
+      ...providerFailureWithDiagnostics("bad_args", defaultsResult.error, null, null, false, {
+        configured_timeout_ms: timeoutMs.value,
+        prompt_chars: prompt.length,
+        request_defaults: summarizeRequestDefaults(cfg.request_defaults),
+        max_tokens: requestBody.max_tokens ?? null,
+        temperature: requestBody.temperature ?? null,
+      }),
+      ...credentialFields,
+    };
   }
   if (maxTokensOverride.value !== null) {
     requestBody.max_tokens = maxTokensOverride.value;
@@ -2008,50 +2217,56 @@ async function callProvider(provider, cfg, prompt, env = process.env) {
   if (effectiveEnv.API_REVIEWERS_MOCK_RESPONSE) {
     return mockProviderExecution(cfg, prompt, credential, effectiveEnv, requestBody);
   }
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs.value);
   const redact = redactor(effectiveEnv, cfg.env_keys);
   const started = Date.now();
   try {
-    const response = await fetch(endpoint, {
-      method: "POST",
+    const response = await postProviderJson(endpoint, {
       headers: {
         "content-type": "application/json",
         authorization: `Bearer ${credential.value}`,
       },
       body: JSON.stringify(requestBody),
-      signal: controller.signal,
+      timeoutMs: timeoutMs.value,
     });
-    const text = await response.text();
+    const text = response.text;
     const parsed = parseJson(text);
     if (!response.ok) {
       const errorCode = classifyHttpFailure(response.status, parsed, text);
-      return providerFailureWithDiagnostics(
-        errorCode,
-        providerErrorMessage(parsed, text, redact, { safeUsageLimit: errorCode === "usage_limited" }),
-        response.status,
-        parsed,
-        true,
-        {
-          ...diagnostics(),
-          elapsed_ms: Date.now() - started,
-          cost_quota: costQuotaDiagnostics(errorCode, response.status, parsed),
-        },
-      );
+      return {
+        ...providerFailureWithDiagnostics(
+          errorCode,
+          providerErrorMessage(parsed, text, redact, { safeUsageLimit: errorCode === "usage_limited" }),
+          response.status,
+          parsed,
+          true,
+          {
+            ...diagnostics(),
+            elapsed_ms: Date.now() - started,
+            cost_quota: costQuotaDiagnostics(errorCode, response.status, parsed),
+          },
+        ),
+        ...credentialFields,
+      };
     }
     if (!parsed.ok) {
-      return providerFailureWithDiagnostics("malformed_response", parsed.error, response.status, null, true, diagnostics());
+      return {
+        ...providerFailureWithDiagnostics("malformed_response", parsed.error, response.status, null, true, diagnostics()),
+        ...credentialFields,
+      };
     }
     const content = parsed.value?.choices?.[0]?.message?.content;
     if (typeof content !== "string") {
-      return providerFailureWithDiagnostics(
-        "malformed_response",
-        "response did not include choices[0].message.content",
-        response.status,
-        parsed.value,
-        true,
-        diagnostics(),
-      );
+      return {
+        ...providerFailureWithDiagnostics(
+          "malformed_response",
+          "response did not include choices[0].message.content",
+          response.status,
+          parsed.value,
+          true,
+          diagnostics(),
+        ),
+        ...credentialFields,
+      };
     }
     return {
       exitCode: 0,
@@ -2063,26 +2278,86 @@ async function callProvider(provider, cfg, prompt, env = process.env) {
       },
       session_id: safeProviderSessionId(parsed.value?.id),
       http_status: response.status,
-      credential_ref: credential.keyName,
-      endpoint: baseUrlFor(cfg),
+      ...credentialFields,
       diagnostics: diagnostics(),
     };
   } catch (e) {
-    const reason = e?.name === "AbortError" ? "timeout" : "provider_unavailable";
-    return providerFailureWithDiagnostics(
-      reason,
-      redact(e?.message ?? String(e)),
-      null,
-      null,
-      payloadSentForProviderException(e),
-      {
-        ...diagnostics(),
-        elapsed_ms: Date.now() - started,
-      },
-    );
-  } finally {
-    clearTimeout(timer);
+    const reason = isProviderTimeoutException(e) ? "timeout" : "provider_unavailable";
+    return {
+      ...providerFailureWithDiagnostics(
+        reason,
+        redact(e?.message ?? String(e)),
+        null,
+        null,
+        payloadSentForProviderException(e),
+        {
+          ...diagnostics(),
+          elapsed_ms: Date.now() - started,
+          fetch_error: fetchExceptionDiagnostics(e, redact),
+        },
+      ),
+      ...credentialFields,
+    };
   }
+}
+
+function postProviderJson(endpoint, { headers, body, timeoutMs }) {
+  return new Promise((resolvePromise, rejectPromise) => {
+    let url;
+    try {
+      url = new URL(endpoint);
+    } catch (e) {
+      rejectPromise(e);
+      return;
+    }
+    const transport = url.protocol === "https:" ? httpsRequest : url.protocol === "http:" ? httpRequest : null;
+    if (!transport) {
+      rejectPromise(new Error(`unsupported provider endpoint protocol: ${url.protocol}`));
+      return;
+    }
+
+    let settled = false;
+    let timeout = null;
+    const finish = (fn, value) => {
+      if (settled) return;
+      settled = true;
+      if (timeout) clearTimeout(timeout);
+      fn(value);
+    };
+
+    const request = transport(url, {
+      method: "POST",
+      headers: {
+        ...headers,
+        "content-length": Buffer.byteLength(body),
+      },
+    }, (response) => {
+      const chunks = [];
+      response.on("data", (chunk) => {
+        chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+      });
+      response.on("end", () => {
+        const text = Buffer.concat(chunks).toString("utf8");
+        const status = response.statusCode ?? 0;
+        finish(resolvePromise, {
+          ok: status >= 200 && status < 300,
+          status,
+          text,
+        });
+      });
+      response.on("error", (error) => finish(rejectPromise, error));
+    });
+
+    timeout = setTimeout(() => {
+      const error = new Error(`request timed out after ${timeoutMs}ms`);
+      error.name = "AbortError";
+      error.code = "API_REVIEWERS_REQUEST_TIMEOUT";
+      request.destroy(error);
+      finish(rejectPromise, error);
+    }, timeoutMs);
+    request.on("error", (error) => finish(rejectPromise, error));
+    request.end(body);
+  });
 }
 
 function summarizeRequestDefaults(defaults = {}) {
@@ -2098,9 +2373,26 @@ function safeProviderSessionId(value) {
   return /^[A-Za-z0-9._:/=+@-]{1,200}$/.test(value) ? value : null;
 }
 
+function providerExceptionCode(error) {
+  return error?.code ?? error?.cause?.code ?? null;
+}
+
+function isProviderTimeoutException(error) {
+  if (error?.name === "AbortError") return true;
+  const code = providerExceptionCode(error);
+  if (code === "UND_ERR_HEADERS_TIMEOUT" || code === "UND_ERR_BODY_TIMEOUT" || code === "UND_ERR_CONNECT_TIMEOUT") {
+    return true;
+  }
+  const causeName = String(error?.cause?.name ?? "");
+  const causeMessage = String(error?.cause?.message ?? "");
+  return /TimeoutError$/u.test(causeName) || /timeout error/i.test(causeMessage);
+}
+
 function payloadSentForProviderException(error) {
   if (error?.name === "AbortError") return true;
-  const code = error?.code ?? error?.cause?.code ?? null;
+  const code = providerExceptionCode(error);
+  if (code === "UND_ERR_HEADERS_TIMEOUT" || code === "UND_ERR_BODY_TIMEOUT") return true;
+  if (code === "UND_ERR_CONNECT_TIMEOUT") return false;
   if (code === "ENOTFOUND" || code === "EAI_AGAIN" || code === "ECONNREFUSED" ||
       code === "EHOSTUNREACH" || code === "ENETUNREACH") {
     return false;
@@ -2196,6 +2488,41 @@ function providerFailureWithDiagnostics(reason, message, httpStatus, raw = null,
     ...providerFailure(reason, message, httpStatus, raw, payloadSent),
     diagnostics,
   };
+}
+
+function boundedDiagnosticString(value, redact) {
+  if (value == null) return null;
+  const text = redact(String(value));
+  return text.length > 500 ? `${text.slice(0, 500)}...` : text;
+}
+
+function errorDiagnosticFields(error, redact) {
+  if (!error || typeof error !== "object") return null;
+  const fields = {
+    name: boundedDiagnosticString(error.name, redact),
+    code: boundedDiagnosticString(error.code, redact),
+    message: boundedDiagnosticString(error.message, redact),
+  };
+  return Object.fromEntries(Object.entries(fields).filter(([, value]) => value != null && value !== ""));
+}
+
+function fetchExceptionDiagnostics(error, redact) {
+  const diagnostics = errorDiagnosticFields(error, redact) ?? {
+    message: boundedDiagnosticString(error, redact),
+  };
+  const causeFields = errorDiagnosticFields(error?.cause, redact);
+  if (causeFields && Object.keys(causeFields).length > 0) {
+    diagnostics.cause = causeFields;
+  }
+  if (Array.isArray(error?.cause?.errors)) {
+    const errors = error.cause.errors
+      .slice(0, 3)
+      .map((entry) => errorDiagnosticFields(entry, redact))
+      .filter((entry) => entry && Object.keys(entry).length > 0);
+    if (errors.length > 0) diagnostics.cause_errors = errors;
+    if (error.cause.errors.length > errors.length) diagnostics.cause_errors_truncated = true;
+  }
+  return diagnostics;
 }
 
 function providerUnavailableSuggestedAction(errorMessage = "", httpStatus = null, env = process.env) {
@@ -2355,11 +2682,24 @@ function requestSettingsForApproval(cfg, env = process.env) {
   };
 }
 
+function approvalRequestSettingsProjection(cfg, request) {
+  return Object.freeze({
+    provider: cfg.display_name,
+    model: cfg.model,
+    timeout_ms: request.timeout_ms,
+    max_tokens: request.max_tokens,
+    max_steps_per_turn: request.max_steps_per_turn,
+    temperature: request.temperature,
+    stream: request.stream,
+  });
+}
+
 function approvalAuthPathFor(cfg, env = process.env) {
   const credential = selectedCredential(cfg, env);
   return Object.freeze({
     auth_mode: cfg.auth_mode ?? null,
     credential_ref: credential.keyName ?? null,
+    credential_source: credential.source ?? null,
   });
 }
 
@@ -2378,6 +2718,9 @@ function providerCapabilitiesForConfig(cfg) {
       auth_path: "api_key_env",
       credential_env_names: credentialNames,
       billing_path: approvalBillingPathFor(cfg),
+      source_packet: Object.freeze({
+        resume_without_resend_supported: false,
+      }),
     }),
   });
 }
@@ -2420,6 +2763,7 @@ const LARGE_SOURCE_PACKET_FLAG = "--allow-large-source-packet";
 function sourcePacketOverrideRouteFields(options = {}) {
   const approved = options["allow-large-source-packet"] === true;
   return {
+    resendConfirmationApproved: options["resend-confirmation-approved"] === true,
     sourcePacketOverrideApproved: approved,
     sourcePacketOverrideSource: approved ? LARGE_SOURCE_PACKET_FLAG : null,
   };
@@ -2444,28 +2788,172 @@ function approvalScopeForOptions(options = {}) {
 }
 
 function approvalTokenFor({ provider, mode, auditManifest, authPath = null, billingPath = null, routeFields = null, approvalScope = "session" }) {
-  const payload = JSON.stringify({
+  const tupleFingerprint = sourceSendApprovalTupleFingerprint({
     provider,
     mode,
-    selected_source: auditManifest.selected_source,
+    selectedSource: auditManifest.selected_source,
+    renderedPromptHash: auditManifest.rendered_prompt_hash,
+    requestSettings: auditManifest.request,
+    scopeResolution: auditManifest.scope_resolution,
+    authPath,
+    billingPath,
+    selectedRoute: routeFields?.selected_route ?? null,
+    routeStep: routeFields?.route_step ?? null,
+    routeSteps: routeFields?.route_steps ?? null,
+    fallbackReason: routeFields?.fallback_reason ?? null,
+    approvalScope,
+  });
+  return Object.freeze({
+    algorithm: "sha256",
+    value: createHash("sha256")
+      .update(`source-send-approval-token-v1:${tupleFingerprint.value}`)
+      .digest("hex"),
+  });
+}
+
+function canonicalJson(value) {
+  if (value === null) return "null";
+  if (Array.isArray(value)) return `[${value.map((item) => canonicalJson(item)).join(",")}]`;
+  const type = typeof value;
+  if (type === "string" || type === "boolean") return JSON.stringify(value);
+  if (type === "number") {
+    if (!Number.isFinite(value)) throw new Error("canonical_json_non_finite_number");
+    return JSON.stringify(value);
+  }
+  if (type === "object") {
+    const keys = Object.keys(value).sort((left, right) => left.localeCompare(right));
+    const fields = keys.map((key) => `${JSON.stringify(key)}:${canonicalJson(value[key])}`);
+    return `{${fields.join(",")}}`;
+  }
+  throw new Error(`canonical_json_unsupported_type:${type}`);
+}
+
+function sha256Hex(value) {
+  return createHash("sha256").update(value).digest("hex");
+}
+
+function sortedStringArrayOrNull(value) {
+  if (value == null) return null;
+  return Object.freeze([...value].map(String).sort((left, right) => left.localeCompare(right)));
+}
+
+function sortedSelectedSource(selectedSource) {
+  const files = [...(selectedSource?.files ?? [])]
+    .map((file) => Object.freeze({
+      path: file.path,
+      bytes: file.bytes,
+      lines: file.lines,
+      content_hash: file.content_hash,
+    }))
+    .sort((left, right) => left.path.localeCompare(right.path));
+  return Object.freeze({
+    files: Object.freeze(files),
+    totals: Object.freeze({
+      files: selectedSource?.totals?.files ?? files.length,
+      bytes: selectedSource?.totals?.bytes ?? 0,
+      lines: selectedSource?.totals?.lines ?? 0,
+    }),
+  });
+}
+
+function sortedScopeResolution(scopeResolution) {
+  return Object.freeze({
+    scope: scopeResolution.scope,
+    scope_base: scopeResolution.scope_base ?? null,
+    scope_paths: sortedStringArrayOrNull(scopeResolution.scope_paths),
+    reason: scopeResolution.reason,
+  });
+}
+
+function parseGrantTtlMs(grantPolicy, options = {}) {
+  const raw = options["grant-ttl-ms"];
+  if (raw === undefined || raw === null || raw === "") {
+    throw runBadArgs("bad_args: --grant-ttl-ms is required");
+  }
+  const parsed = Number(raw);
+  if (!Number.isSafeInteger(parsed) || parsed <= 0) {
+    throw runBadArgs(`bad_args: --grant-ttl-ms must be a positive integer number of milliseconds; got ${JSON.stringify(raw)}`);
+  }
+  if (parsed > grantPolicy.max_ttl_ms) {
+    throw runBadArgs(`bad_args: --grant-ttl-ms ${parsed} exceeds configured maximum ${grantPolicy.max_ttl_ms}`);
+  }
+  return parsed;
+}
+
+function parseGrantExpiresAt(grantPolicy, options = {}) {
+  const raw = options["grant-expires-at"];
+  if (typeof raw !== "string" || raw.trim() === "") {
+    throw runBadArgs("bad_args: --grant-expires-at is required");
+  }
+  const value = raw.trim();
+  if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(value)) {
+    throw runBadArgs("bad_args: --grant-expires-at must be an ISO-8601 UTC timestamp with milliseconds");
+  }
+  const millis = Date.parse(value);
+  if (!Number.isFinite(millis) || new Date(millis).toISOString() !== value) {
+    throw runBadArgs("bad_args: --grant-expires-at must be a valid UTC timestamp");
+  }
+  if (millis <= Date.now()) {
+    throw runProviderFailure("approval_required", "approval_required: grant expiry is not in the future");
+  }
+  if (millis - Date.now() > grantPolicy.max_ttl_ms) {
+    throw runBadArgs(`bad_args: --grant-expires-at exceeds configured maximum ${grantPolicy.max_ttl_ms}ms grant window`);
+  }
+  return value;
+}
+
+function grantBoundsFor({ provider, mode, scopeInfo, selectedSource, expiresAt, grantPolicy }) {
+  return Object.freeze({
+    provider_allowlist: Object.freeze([provider]),
+    mode_allowlist: Object.freeze([mode]),
+    workspace_root_hash: sha256Hex(resolve(scopeInfo.workspaceRoot ?? scopeInfo.cwd ?? process.cwd())),
+    path_constraints: Object.freeze({
+      scope: scopeInfo.scope,
+      scope_paths: sortedStringArrayOrNull(scopeInfo.scope_paths),
+    }),
+    max_files: selectedSource.totals.files,
+    max_bytes: selectedSource.totals.bytes,
+    expires_at: expiresAt,
+    max_ttl_ms: grantPolicy.max_ttl_ms,
+    schema_version: SESSION_APPROVAL_GRANT_SCHEMA_VERSION,
+  });
+}
+
+function grantApprovalTupleFor({ provider, mode, auditManifest, authPath = null, billingPath = null, routeFields = null, grantBounds }) {
+  return Object.freeze({
+    provider,
+    mode,
+    selected_source: sortedSelectedSource(auditManifest.selected_source),
     rendered_prompt_hash: auditManifest.rendered_prompt_hash,
     request: auditManifest.request,
-    scope_resolution: auditManifest.scope_resolution,
+    scope_resolution: sortedScopeResolution(auditManifest.scope_resolution),
     auth_path: authPath,
     billing_path: billingPath,
     selected_route: routeFields?.selected_route ?? null,
     route_step: routeFields?.route_step ?? null,
     route_steps: routeFields?.route_steps ?? null,
     fallback_reason: routeFields?.fallback_reason ?? null,
-    approval_scope: approvalScope,
-  });
-  return Object.freeze({
-    algorithm: "sha256",
-    value: createHash("sha256").update(payload).digest("hex"),
+    approval_scope: "grant",
+    grant_bounds: grantBounds,
   });
 }
 
-function buildApprovalAuditManifest({ cfg, renderedPrompt, request, scopeInfo, routeFields = null, approvalScope = "session", options = {} }) {
+function approvalFingerprintFor(approvalTuple) {
+  return sha256Hex(canonicalJson(approvalTuple));
+}
+
+function grantApprovalTokenFor(approvalTuple) {
+  const approvalFingerprint = approvalFingerprintFor(approvalTuple);
+  return Object.freeze({
+    algorithm: "sha256",
+    value: sha256Hex(canonicalJson({
+      token_type: "grant_approval_token",
+      approval_fingerprint: approvalFingerprint,
+    })),
+  });
+}
+
+function buildApprovalAuditManifest({ cfg, provider = null, mode = null, renderedPrompt, request, scopeInfo, routeFields = null, approvalScope = "session", options = {} }) {
   return buildReviewAuditManifest({
     prompt: renderedPrompt,
     sourceFiles: scopeInfo.files,
@@ -2503,6 +2991,8 @@ function buildApprovalAuditManifest({ cfg, renderedPrompt, request, scopeInfo, r
       reason: scopeResolutionReason(scopeInfo),
     },
     route: {
+      mode,
+      providerId: provider,
       selectedRoute: routeFields?.selected_route ?? null,
       routeStep: routeFields?.route_step ?? null,
       routeSteps: routeFields?.route_steps ?? null,
@@ -2513,6 +3003,7 @@ function buildApprovalAuditManifest({ cfg, renderedPrompt, request, scopeInfo, r
       sourceSendApprovalRequired: routeFields?.source_send_approval_required ?? null,
       sourceSendApprovalState: routeFields?.source_send_approval_state ?? null,
       providerCapabilities: providerCapabilitiesForConfig(cfg),
+      previousAttempt: latestSourcePacketPreviousAttempt(options.reviewSlotPriorAttempts),
       reviewSlot: reviewSlotRouteFields(options, {
         priorAttempts: options.reviewSlotPriorAttempts ?? [],
       }),
@@ -2535,10 +3026,51 @@ function sourcePacketPolicyFailureFromManifest(auditManifest) {
     false,
     {
       source_packet_policy: policy,
+      packet_recovery: auditManifest?.packet_recovery ?? null,
       review_slot_retry_policy: auditManifest?.review_slot_retry_policy ?? null,
       review_slot: auditManifest?.review_slot ?? null,
     },
   );
+}
+
+function packetRecoveryFromShardingPlan({
+  cfg,
+  provider,
+  mode,
+  scopeInfo,
+  renderedPrompt,
+  shardingPlan,
+  approvalScope = "session",
+  options = {},
+  env = process.env,
+} = {}) {
+  if (!shardingPlan || shardingPlan.reason !== "prompt_too_large") return null;
+  const request = requestSettingsForApproval(cfg, env);
+  const routeFields = approvalRouteFields(routeStateForApproval(cfg, env));
+  const auditManifest = buildApprovalAuditManifest({
+    cfg,
+    provider,
+    mode,
+    renderedPrompt,
+    request,
+    scopeInfo,
+    routeFields,
+    approvalScope,
+    options,
+  });
+  return buildPacketRecovery({
+    reason: "prompt_too_large",
+    sourcePacketPolicy: auditManifest.source_packet_policy,
+    providerCapabilities: providerCapabilitiesForConfig(cfg),
+    provider,
+    mode,
+    routeStep: routeFields.route_step,
+    selectedSource: auditManifest.selected_source,
+    sourceContentTransmission: SOURCE_CONTENT_TRANSMISSION.NOT_SENT,
+    renderedPromptBudgetChars: shardingPlan.cap,
+    requiresSourceSendApproval: routeFields.source_send_approval_required === true,
+    shardPlans: Array.isArray(shardingPlan.shards) ? shardingPlan.shards : null,
+  });
 }
 
 function approvalDiagnostics(cfg, request, renderedPrompt, authPath = null, billingPath = null, routeFields = null, approvalScope = "session") {
@@ -2570,6 +3102,14 @@ function oneTimeApprovalUseFile(root, token) {
   return resolve(root, "approval-tokens", "once", `${digest}.json`);
 }
 
+function approvalGrantsDir(root) {
+  return resolve(root, "approval-grants");
+}
+
+function approvalGrantFile(root, grantId) {
+  return resolve(approvalGrantsDir(root), `${grantId}.json`);
+}
+
 async function oneTimeApprovalAlreadyUsed(root, token) {
   try {
     await lstat(oneTimeApprovalUseFile(root, token));
@@ -2578,6 +3118,206 @@ async function oneTimeApprovalAlreadyUsed(root, token) {
     if (e?.code === "ENOENT") return false;
     throw e;
   }
+}
+
+function buildApprovalGrantRecord({ approvalTuple, approvalFingerprint, activatedAt }) {
+  const bounds = approvalTuple.grant_bounds;
+  return Object.freeze({
+    schema_version: SESSION_APPROVAL_GRANT_SCHEMA_VERSION,
+    grant_id: `grant_${approvalFingerprint}`,
+    created_at: activatedAt,
+    expires_at: bounds.expires_at,
+    grant_session_id: `session_${approvalFingerprint.slice(0, 32)}`,
+    provider_allowlist: bounds.provider_allowlist,
+    mode_allowlist: bounds.mode_allowlist,
+    workspace_root_hash: bounds.workspace_root_hash,
+    path_constraints: bounds.path_constraints,
+    max_files: bounds.max_files,
+    max_bytes: bounds.max_bytes,
+    max_ttl_ms: bounds.max_ttl_ms,
+    approval_fingerprint: approvalFingerprint,
+    approval_tuple: approvalTuple,
+    activation: Object.freeze({
+      activated_at: activatedAt,
+      source_content_transmission: SOURCE_CONTENT_TRANSMISSION.NOT_SENT,
+      approval_source: "grant_approval_token",
+    }),
+  });
+}
+
+function approvalGrantRecordMatches(record, approvalTuple, approvalFingerprint) {
+  return record?.schema_version === SESSION_APPROVAL_GRANT_SCHEMA_VERSION
+    && record?.approval_fingerprint === approvalFingerprint
+    && requestFieldMatches(record?.approval_tuple, approvalTuple);
+}
+
+function hasExactKeys(value, expectedKeys) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const keys = Object.keys(value);
+  return keys.length === expectedKeys.length
+    && expectedKeys.every((key) => Object.hasOwn(value, key))
+    && keys.every((key) => expectedKeys.includes(key));
+}
+
+function isIsoUtcMillis(value) {
+  if (typeof value !== "string") return false;
+  if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(value)) return false;
+  const millis = Date.parse(value);
+  return Number.isFinite(millis) && new Date(millis).toISOString() === value;
+}
+
+function approvalGrantProjectionMatches(record) {
+  const bounds = record?.approval_tuple?.grant_bounds;
+  return hasExactKeys(record, APPROVAL_GRANT_RECORD_KEYS)
+    && hasExactKeys(record.approval_tuple, APPROVAL_GRANT_TUPLE_KEYS)
+    && hasExactKeys(bounds, APPROVAL_GRANT_BOUNDS_KEYS)
+    && hasExactKeys(record.activation, APPROVAL_GRANT_ACTIVATION_KEYS)
+    && /^grant_[a-f0-9]{64}$/.test(record.grant_id)
+    && /^[A-Za-z0-9_-]+$/.test(record.grant_session_id)
+    && isIsoUtcMillis(record.created_at)
+    && isIsoUtcMillis(record.expires_at)
+    && isIsoUtcMillis(record.activation.activated_at)
+    && record.activation.source_content_transmission === SOURCE_CONTENT_TRANSMISSION.NOT_SENT
+    && record.activation.approval_source === "grant_approval_token"
+    && record.provider_allowlist && requestFieldMatches(record.provider_allowlist, bounds.provider_allowlist)
+    && record.mode_allowlist && requestFieldMatches(record.mode_allowlist, bounds.mode_allowlist)
+    && record.workspace_root_hash === bounds.workspace_root_hash
+    && requestFieldMatches(record.path_constraints, bounds.path_constraints)
+    && record.max_files === bounds.max_files
+    && record.max_bytes === bounds.max_bytes
+    && record.max_ttl_ms === bounds.max_ttl_ms
+    && record.expires_at === bounds.expires_at
+    && record.approval_fingerprint === approvalFingerprintFor(record.approval_tuple);
+}
+
+function approvalGrantMatchesRun(record, { provider, mode, scopeInfo, auditManifest, authPath, billingPath, routeFields, grantPolicy, now = Date.now() }) {
+  if (!approvalGrantProjectionMatches(record)) return false;
+  if (!Array.isArray(record.provider_allowlist) || !record.provider_allowlist.includes(provider)) return false;
+  if (!Array.isArray(record.mode_allowlist) || !record.mode_allowlist.includes(mode)) return false;
+  if (record.max_ttl_ms !== grantPolicy.max_ttl_ms) return false;
+  if (Date.parse(record.expires_at) <= now) return false;
+  const selectedSource = sortedSelectedSource(auditManifest.selected_source);
+  if (selectedSource.totals.files > record.max_files) return false;
+  if (selectedSource.totals.bytes > record.max_bytes) return false;
+  const workspaceHash = sha256Hex(resolve(scopeInfo.workspaceRoot ?? scopeInfo.cwd ?? process.cwd()));
+  if (workspaceHash !== record.workspace_root_hash) return false;
+  const currentPathConstraints = {
+    scope: scopeInfo.scope,
+    scope_paths: sortedStringArrayOrNull(scopeInfo.scope_paths),
+  };
+  if (!requestFieldMatches(record.path_constraints, currentPathConstraints)) return false;
+  const currentTuple = grantApprovalTupleFor({
+    provider,
+    mode,
+    auditManifest,
+    authPath,
+    billingPath,
+    routeFields,
+    grantBounds: record.approval_tuple.grant_bounds,
+  });
+  return requestFieldMatches(currentTuple, record.approval_tuple);
+}
+
+function isClearlyExpiredApprovalGrant(record, now = Date.now()) {
+  const millis = Date.parse(record?.expires_at);
+  return Number.isFinite(millis) && millis <= now;
+}
+
+async function cleanupExpiredApprovalGrantFile(file, record, now = Date.now()) {
+  if (!isClearlyExpiredApprovalGrant(record, now)) return false;
+  try {
+    await unlink(file);
+  } catch {
+    // Opportunistic cleanup must not turn a source-send approval check into an I/O failure.
+  }
+  return true;
+}
+
+function approvalGrantAuditFields(record) {
+  return Object.freeze({
+    grant_id: record.grant_id,
+    grant_session_id: record.grant_session_id,
+    created_at: record.created_at,
+    expires_at: record.expires_at,
+    matched_at: new Date().toISOString(),
+    max_files: record.max_files,
+    max_bytes: record.max_bytes,
+  });
+}
+
+async function findMatchingApprovalGrant(root, context) {
+  let names;
+  try {
+    names = await readdir(approvalGrantsDir(root));
+  } catch (e) {
+    if (e?.code === "ENOENT") return null;
+    throw runProviderFailure("approval_required", "approval_required: approval grant store is unreadable");
+  }
+  const matches = [];
+  const now = context.now ?? Date.now();
+  for (const name of names) {
+    if (!name.endsWith(".json")) continue;
+    const file = resolve(approvalGrantsDir(root), name);
+    let record;
+    try {
+      record = JSON.parse(await readFile(file, "utf8"));
+    } catch {
+      continue;
+    }
+    if (await cleanupExpiredApprovalGrantFile(file, record, now)) continue;
+    if (approvalGrantMatchesRun(record, context)) matches.push(record);
+  }
+  if (matches.length === 0) return null;
+  if (matches.length > 1) {
+    throw runProviderFailure("approval_required", "approval_required: multiple matching approval grants found; run approval-request for this source send");
+  }
+  return matches[0];
+}
+
+async function persistApprovalGrant(root, approvalTuple, approvalFingerprint) {
+  const activatedAt = new Date().toISOString();
+  const record = buildApprovalGrantRecord({ approvalTuple, approvalFingerprint, activatedAt });
+  await mkdir(approvalGrantsDir(root), { recursive: true });
+  const file = approvalGrantFile(root, record.grant_id);
+  let handle = null;
+  try {
+    handle = await open(file, "wx", 0o600);
+    await handle.writeFile(`${JSON.stringify(record, null, 2)}\n`, "utf8");
+    return record;
+  } catch (e) {
+    if (e?.code !== "EEXIST") throw e;
+    const existing = JSON.parse(await readFile(file, "utf8"));
+    if (!approvalGrantRecordMatches(existing, approvalTuple, approvalFingerprint)) {
+      throw runProviderFailure("approval_required", "approval_required: existing approval grant file does not match requested grant proof");
+    }
+    return Object.freeze(existing);
+  } finally {
+    if (handle) await handle.close();
+  }
+}
+
+function approvalGrantActivationResponse({ provider, cfg, mode, scopeInfo, grantRecord }) {
+  return Object.freeze({
+    event: "external_review_session_approval_grant",
+    provider,
+    display_name: cfg.display_name,
+    mode,
+    scope: scopeInfo.scope,
+    scope_base: scopeInfo.scope_base ?? null,
+    scope_paths: sortedStringArrayOrNull(scopeInfo.scope_paths),
+    source_content_transmission: SOURCE_CONTENT_TRANSMISSION.NOT_SENT,
+    approval_source: "grant_approval_token",
+    grant_id: grantRecord.grant_id,
+    grant_session_id: grantRecord.grant_session_id,
+    created_at: grantRecord.created_at,
+    expires_at: grantRecord.expires_at,
+    provider_allowlist: grantRecord.provider_allowlist,
+    mode_allowlist: grantRecord.mode_allowlist,
+    max_files: grantRecord.max_files,
+    max_bytes: grantRecord.max_bytes,
+    max_ttl_ms: grantRecord.max_ttl_ms,
+    approval_fingerprint: grantRecord.approval_fingerprint,
+  });
 }
 
 async function consumeOneTimeApproval(root, token, payload) {
@@ -2601,19 +3341,31 @@ function buildApprovalRequest({ provider, cfg, mode, options, scopeInfo }) {
   const promptBudget = validateRenderedPromptBudget(renderedPrompt, cfg);
   if (!promptBudget.ok) {
     const approvalScope = approvalScopeForOptions(options);
-    const diagnostics = promptBudget.reason === "prompt_too_large"
-      ? {
-          sharding_plan: buildShardingPlan({
-            cfg,
-            mode,
-            provider,
-            scopeInfo,
-            userPrompt: options.prompt ?? "",
-            renderedPromptChars: renderedPrompt.length,
-            approvalScope,
-          }),
-        }
-      : null;
+    let diagnostics = null;
+    if (promptBudget.reason === "prompt_too_large") {
+      const shardingPlan = buildShardingPlan({
+        cfg,
+        mode,
+        provider,
+        scopeInfo,
+        userPrompt: options.prompt ?? "",
+        renderedPromptChars: renderedPrompt.length,
+        approvalScope,
+      });
+      diagnostics = {
+        sharding_plan: shardingPlan,
+        packet_recovery: packetRecoveryFromShardingPlan({
+          cfg,
+          provider,
+          mode,
+          scopeInfo,
+          renderedPrompt,
+          shardingPlan,
+          approvalScope,
+          options,
+        }),
+      };
+    }
     throw runProviderFailure(promptBudget.reason, promptBudget.error, diagnostics);
   }
   const request = requestSettingsForApproval(cfg);
@@ -2621,7 +3373,7 @@ function buildApprovalRequest({ provider, cfg, mode, options, scopeInfo }) {
   const billingPath = approvalBillingPathFor(cfg);
   const routeFields = approvalRouteFields(routeStateForApproval(cfg, process.env));
   const approvalScope = approvalScopeForOptions(options);
-  const auditManifest = buildApprovalAuditManifest({ cfg, renderedPrompt, request, scopeInfo, routeFields, approvalScope, options });
+  const auditManifest = buildApprovalAuditManifest({ cfg, provider, mode, renderedPrompt, request, scopeInfo, routeFields, approvalScope, options });
   const sourcePacketFailure = sourcePacketPolicyFailureFromManifest(auditManifest);
   if (sourcePacketFailure) {
     throw runProviderFailure(
@@ -2652,15 +3404,7 @@ function buildApprovalRequest({ provider, cfg, mode, options, scopeInfo }) {
     source_packet_policy: auditManifest.source_packet_policy,
     review_slot_retry_policy: auditManifest.review_slot_retry_policy,
     review_slot: auditManifest.review_slot,
-    request: Object.freeze({
-      provider: cfg.display_name,
-      model: cfg.model,
-      timeout_ms: request.timeout_ms,
-      max_tokens: request.max_tokens,
-      max_steps_per_turn: request.max_steps_per_turn,
-      temperature: request.temperature,
-      stream: request.stream,
-    }),
+    request: approvalRequestSettingsProjection(cfg, request),
     selected_route: routeFields.selected_route,
     route_step: routeFields.route_step,
     route_steps: routeFields.route_steps,
@@ -2677,6 +3421,102 @@ function buildApprovalRequest({ provider, cfg, mode, options, scopeInfo }) {
   });
 }
 
+function buildApprovalGrantRequest({ provider, cfg, mode, options, scopeInfo, grantPolicy, grantExpiresAt = null }) {
+  const grantTtlMs = grantExpiresAt ? null : parseGrantTtlMs(grantPolicy, options);
+  const renderedPrompt = promptFor(mode, options.prompt ?? "", scopeInfo, cfg.display_name);
+  const promptBudget = validateRenderedPromptBudget(renderedPrompt, cfg);
+  if (!promptBudget.ok) {
+    const diagnostics = promptBudget.reason === "prompt_too_large"
+      ? {
+          sharding_plan: buildShardingPlan({
+            cfg,
+            mode,
+            provider,
+            scopeInfo,
+            userPrompt: options.prompt ?? "",
+            renderedPromptChars: renderedPrompt.length,
+            approvalScope: "grant",
+          }),
+        }
+      : null;
+    throw runProviderFailure(promptBudget.reason, promptBudget.error, diagnostics);
+  }
+  const request = requestSettingsForApproval(cfg);
+  const authPath = approvalAuthPathFor(cfg, process.env);
+  const billingPath = approvalBillingPathFor(cfg);
+  const routeFields = approvalRouteFields(routeStateForApproval(cfg, process.env));
+  const auditManifest = buildApprovalAuditManifest({
+    cfg,
+    provider,
+    mode,
+    renderedPrompt,
+    request,
+    scopeInfo,
+    routeFields,
+    approvalScope: "grant",
+    options,
+  });
+  const sourcePacketFailure = sourcePacketPolicyFailureFromManifest(auditManifest);
+  if (sourcePacketFailure) {
+    throw runProviderFailure(
+      sourcePacketFailure.parsed.reason,
+      sourcePacketFailure.parsed.error,
+      sourcePacketFailure.diagnostics,
+    );
+  }
+  const selectedSource = sortedSelectedSource(auditManifest.selected_source);
+  const expiresAt = grantExpiresAt ?? new Date(Date.now() + grantTtlMs).toISOString();
+  const grantBounds = grantBoundsFor({ provider, mode, scopeInfo, selectedSource, expiresAt, grantPolicy });
+  const approvalTuple = grantApprovalTupleFor({
+    provider,
+    mode,
+    auditManifest,
+    authPath,
+    billingPath,
+    routeFields,
+    grantBounds,
+  });
+  const grantApprovalToken = grantApprovalTokenFor(approvalTuple);
+  const totals = selectedSource.totals;
+  const approvalQuestion = `Allow a bounded session grant for sending ${totals.files} selected ${plural(totals.files, "file")} (${totals.bytes} ${plural(totals.bytes, "byte")}, ${totals.lines} ${plural(totals.lines, "line")}) to ${cfg.display_name} until ${expiresAt}?`;
+  const disclosure = `Selected source content has not been sent to ${cfg.display_name}. Activating this grant will not send selected source; later matching runs may send selected source to ${cfg.display_name} through direct API auth.`;
+  const approvalRequest = Object.freeze({
+    event: "external_review_session_approval_request",
+    provider,
+    display_name: cfg.display_name,
+    mode,
+    scope: scopeInfo.scope,
+    scope_base: scopeInfo.scope_base ?? null,
+    scope_paths: sortedStringArrayOrNull(scopeInfo.scope_paths),
+    source_content_transmission: SOURCE_CONTENT_TRANSMISSION.NOT_SENT,
+    disclosure,
+    approval_question: approvalQuestion,
+    recommended_tool_justification: `${disclosure} ${approvalQuestion} If approved, pass grant_approval_token.value to approval-grant activate with grant_bounds.expires_at before any grant-approved source send.`,
+    grant_approval_token: grantApprovalToken,
+    grant_bounds: grantBounds,
+    selected_source: selectedSource,
+    rendered_prompt_hash: auditManifest.rendered_prompt_hash,
+    source_packet_policy: auditManifest.source_packet_policy,
+    review_slot_retry_policy: auditManifest.review_slot_retry_policy,
+    review_slot: auditManifest.review_slot,
+    request: approvalRequestSettingsProjection(cfg, request),
+    selected_route: routeFields.selected_route,
+    route_step: routeFields.route_step,
+    route_steps: routeFields.route_steps,
+    fallback_reason: routeFields.fallback_reason,
+    approval_scope: "grant",
+    auth_path: authPath,
+    billing_path: billingPath,
+    scope_resolution: sortedScopeResolution(auditManifest.scope_resolution),
+    denial_action: Object.freeze({
+      action: "skip_session_grant",
+      source_content_transmission: SOURCE_CONTENT_TRANSMISSION.NOT_SENT,
+    }),
+    denial_fallback: "If approval is denied, do not activate a session grant. Use the existing approval-request flow for any later source send.",
+  });
+  return Object.freeze({ approvalRequest, approvalTuple });
+}
+
 function errorCauseFor(errorCode) {
   if (errorCode === "bad_args") return "caller";
   if (errorCode === "approval_required") return "approval_gate";
@@ -2684,6 +3524,9 @@ function errorCauseFor(errorCode) {
   if (errorCode === "scope_failed") return "scope_resolution";
   if (errorCode === "source_packet_too_large" || errorCode === "resend_confirmation_required") {
     return buildExternalModelFailureDiagnostic(errorCode, "external model")?.error_cause ?? "source_packet_policy";
+  }
+  if (errorCode === "provider_workload_blocked") {
+    return buildExternalModelFailureDiagnostic(errorCode, "external model")?.error_cause ?? "workload_admission";
   }
   if (errorCode === "git_binary_rejected") return "git_binary_policy";
   if (errorCode === "sandbox_blocked") return "sandbox_access";
@@ -2727,7 +3570,7 @@ function diagnosticErrorSummary(errorCode, errorMessage, scopeInfo, execution, s
   ].join(" ");
 }
 
-function buildReviewMetadata(cfg, scopeInfo, execution = null, startedAt = null, endedAt = null, options = {}) {
+function buildReviewMetadata(provider, cfg, mode, scopeInfo, execution = null, startedAt = null, endedAt = null, options = {}) {
   let routeFields;
   try {
     routeFields = approvalRouteFields(routeStateForApproval(cfg, process.env, { sourceSendApproved: !!execution?.approval_scope }));
@@ -2740,7 +3583,7 @@ function buildReviewMetadata(cfg, scopeInfo, execution = null, startedAt = null,
     processCompleted,
     execution?.payload_sent ?? (processCompleted ? true : null),
   );
-  const auditManifest = execution?.prompt ? buildReviewAuditManifest({
+  let auditManifest = execution?.prompt ? buildReviewAuditManifest({
     prompt: execution.prompt,
     sourceFiles: scopeInfo.files,
     git: {
@@ -2779,6 +3622,8 @@ function buildReviewMetadata(cfg, scopeInfo, execution = null, startedAt = null,
       reason: scopeResolutionReason(scopeInfo),
     },
     route: {
+      mode,
+      providerId: provider,
       selectedRoute: routeFields.selected_route,
       routeStep: routeFields.route_step,
       routeSteps: routeFields.route_steps,
@@ -2790,6 +3635,8 @@ function buildReviewMetadata(cfg, scopeInfo, execution = null, startedAt = null,
       sourceSendApprovalRequired: routeFields.source_send_approval_required,
       sourceSendApprovalState: routeFields.source_send_approval_state,
       providerCapabilities: providerCapabilitiesForConfig(cfg),
+      packetRecovery: execution.diagnostics?.packet_recovery ?? null,
+      previousAttempt: latestSourcePacketPreviousAttempt(options.reviewSlotPriorAttempts),
       reviewSlot: reviewSlotRouteFields(options, {
         priorAttempts: options.reviewSlotPriorAttempts ?? [],
       }),
@@ -2799,6 +3646,13 @@ function buildReviewMetadata(cfg, scopeInfo, execution = null, startedAt = null,
     status: execution.exitCode === 0 && execution.parsed?.ok === true ? "completed" : "failed",
     errorCode: execution.parsed?.reason ?? null,
   }) : null;
+  if (auditManifest && execution?.approval_source === "session_grant") {
+    auditManifest = Object.freeze({
+      ...auditManifest,
+      approval_source: "session_grant",
+      approval_grant: execution.approval_grant ?? null,
+    });
+  }
   return {
     prompt_contract_version: REVIEW_PROMPT_CONTRACT_VERSION,
     prompt_provider: cfg.display_name,
@@ -2824,7 +3678,8 @@ function buildRuntimeDiagnostics(diagnostics) {
     Object.hasOwn(diagnostics, "prompt_chars") ||
     Object.hasOwn(diagnostics, "request_defaults") ||
     Object.hasOwn(diagnostics, "max_tokens") ||
-    Object.hasOwn(diagnostics, "temperature")
+    Object.hasOwn(diagnostics, "temperature") ||
+    Object.hasOwn(diagnostics, "fetch_error")
   );
   const out = {};
   if (hasProviderRequest) {
@@ -2835,6 +3690,7 @@ function buildRuntimeDiagnostics(diagnostics) {
       request_defaults: diagnostics.request_defaults ?? null,
       max_tokens: diagnostics.max_tokens ?? null,
       temperature: diagnostics.temperature ?? null,
+      fetch_error: diagnostics.fetch_error ?? null,
     };
     out.cost_quota = diagnostics.cost_quota ?? null;
   } else if (Object.hasOwn(diagnostics, "cost_quota")) {
@@ -2846,17 +3702,61 @@ function buildRuntimeDiagnostics(diagnostics) {
   if (diagnostics.source_packet_policy) {
     out.source_packet_policy = diagnostics.source_packet_policy;
   }
+  if (diagnostics.packet_recovery) {
+    out.packet_recovery = diagnostics.packet_recovery;
+  }
   if (diagnostics.review_slot_retry_policy) {
     out.review_slot_retry_policy = diagnostics.review_slot_retry_policy;
   }
   if (diagnostics.review_slot) {
     out.review_slot = diagnostics.review_slot;
   }
+  if (diagnostics.provider_workload) {
+    out.provider_workload = diagnostics.provider_workload;
+  }
   return Object.keys(out).length === 0 ? null : out;
 }
 
+function sourceBearingFailurePacketRecovery({ provider, cfg, mode, reviewMetadata, errorCode, transmission }) {
+  const recoveryReason = sourceSentPacketRecoveryReason({
+    status: "failed",
+    errorCode,
+    sourceContentTransmission: transmission,
+  });
+  if (!recoveryReason) return null;
+  if (
+    transmission !== SOURCE_CONTENT_TRANSMISSION.SENT &&
+    transmission !== SOURCE_CONTENT_TRANSMISSION.MAY_BE_SENT &&
+    transmission !== SOURCE_CONTENT_TRANSMISSION.UNKNOWN
+  ) return null;
+  const auditManifest = reviewMetadata?.audit_manifest;
+  if (!auditManifest || auditManifest.packet_recovery) return null;
+  const sourcePacketPolicy = Object.freeze({
+    ...(auditManifest.source_packet_policy ?? {}),
+    provider,
+    mode,
+    route_step: auditManifest.source_packet_policy?.route_step ?? auditManifest.route_step ?? null,
+    source_send_allowed: false,
+    source_content_transmission: transmission,
+    source_packet_action: "resend_confirmation_required",
+    source_packet_policy_error_code: "resend_confirmation_required",
+    suggested_action: "Do not automatically resend selected source after a failed source-sent review slot.",
+  });
+  return buildPacketRecovery({
+    reason: recoveryReason,
+    sourcePacketPolicy,
+    providerCapabilities: providerCapabilitiesForConfig(cfg),
+    provider,
+    mode,
+    routeStep: sourcePacketPolicy.route_step ?? null,
+    selectedSource: auditManifest.selected_source ?? null,
+    sourceContentTransmission: transmission,
+    requiresSourceSendApproval: true,
+  });
+}
+
 function buildRecord({ provider, cfg, mode, options, scopeInfo, execution, startedAt, endedAt }) {
-  const reviewMetadata = buildReviewMetadata(cfg, scopeInfo, execution, startedAt, endedAt, options);
+  let reviewMetadata = buildReviewMetadata(provider, cfg, mode, scopeInfo, execution, startedAt, endedAt, options);
   const processCompleted = execution.exitCode === 0 && execution.parsed?.ok === true;
   const reviewQualityState = processCompleted
     ? reviewQualityFailureState(reviewMetadata?.audit_manifest?.review_quality, {
@@ -2865,9 +3765,9 @@ function buildRecord({ provider, cfg, mode, options, scopeInfo, execution, start
     })
     : null;
   const completed = processCompleted && !reviewQualityState;
+  const redaction = redactionContext(cfg.env_keys, process.env, credentialRedactionValues(execution));
   const redactSensitiveText = buildPrivacyRedactor({
-    env: credentialEnvWithCache(cfg.env_keys, process.env),
-    configuredSecretNames: cfg.env_keys,
+    ...redaction,
     sourceFiles: scopeInfo.files,
   }).text;
   const result = processCompleted ? redactSensitiveText(execution.parsed.result) : null;
@@ -2878,6 +3778,25 @@ function buildRecord({ provider, cfg, mode, options, scopeInfo, execution, start
   const payloadSent = execution.payload_sent ?? (processCompleted ? true : null);
   const sourceContentTransmission = directApiTransmission(completed, payloadSent);
   const disclosure = directApiDisclosure(cfg.display_name, completed, payloadSent);
+  const packetRecovery = execution.diagnostics?.packet_recovery
+    ?? reviewMetadata?.audit_manifest?.packet_recovery
+    ?? sourceBearingFailurePacketRecovery({
+      provider,
+      cfg,
+      mode,
+      reviewMetadata,
+      errorCode,
+      transmission: sourceContentTransmission,
+    });
+  if (packetRecovery && reviewMetadata?.audit_manifest && !reviewMetadata.audit_manifest.packet_recovery) {
+    reviewMetadata = Object.freeze({
+      ...reviewMetadata,
+      audit_manifest: Object.freeze({
+        ...reviewMetadata.audit_manifest,
+        packet_recovery: packetRecovery,
+      }),
+    });
+  }
   const reviewSlot = reviewMetadata?.audit_manifest?.review_slot
     ? Object.freeze({
       ...reviewMetadata.audit_manifest.review_slot,
@@ -2899,7 +3818,9 @@ function buildRecord({ provider, cfg, mode, options, scopeInfo, execution, start
     review_slot: reviewSlot,
     disclosure,
   });
-  const runtimeDiagnostics = buildRuntimeDiagnostics(execution.diagnostics);
+  const runtimeDiagnostics = buildRuntimeDiagnostics(packetRecovery
+    ? { ...(execution.diagnostics ?? {}), packet_recovery: packetRecovery }
+    : execution.diagnostics);
   return freezeRecord({
     id: options.jobId,
     job_id: options.jobId,
@@ -2947,6 +3868,7 @@ function buildRecord({ provider, cfg, mode, options, scopeInfo, execution, start
     usage: execution.parsed?.usage ?? null,
     auth_mode: cfg.auth_mode,
     credential_ref: execution.credential_ref ?? null,
+    credential_source: execution.credential_source ?? null,
     endpoint: execution.endpoint ?? (cfg.base_url ? baseUrlFor(cfg) : null),
     http_status: execution.http_status ?? null,
     raw_model: execution.parsed?.raw_model ?? null,
@@ -3029,32 +3951,70 @@ async function cmdDoctor(options) {
   if (fields.ready !== true) process.exit(1);
 }
 
+function validateApprovalCommandArgs(provider, mode) {
+  if (!provider) throw runBadArgs("bad_args: --provider is required");
+  if (!VALID_MODES.has(mode)) throw runBadArgs(`bad_args: unsupported --mode ${mode}`);
+}
+
+async function loadApprovalProviderConfig(provider) {
+  let providers;
+  try {
+    providers = await loadProviders();
+  } catch (e) {
+    throw runConfigError(`config_error: ${providersConfigErrorMessage(e)}`);
+  }
+  try {
+    const cfg = providerConfig(providers, provider);
+    return Object.freeze({ cfg, configuredSecretNames: cfg.env_keys ?? [] });
+  } catch (e) {
+    throw runBadArgs(e.message);
+  }
+}
+
+async function loadSessionApprovalGrantPolicy() {
+  try {
+    return await loadSessionApprovalPolicy();
+  } catch (e) {
+    throw runConfigError(`config_error: session approval policy unreadable: ${e.message}`);
+  }
+}
+
+async function collectApprovalScopeAndPriorAttempts(options, mode) {
+  const scopeInfo = await collectScope({ ...options, mode });
+  options.reviewSlotPriorAttempts = await collectPriorReviewSlotAttempts(
+    apiReviewerDataRoot(process.env, scopeInfo.workspaceRoot ?? scopeInfo.cwd),
+  );
+  return scopeInfo;
+}
+
+function printApprovalCommandFailure(e, { provider, configuredSecretNames, scopeInfo }) {
+  const reason = isGitBinaryPolicyError(e) ? "git_binary_rejected" : (e.apiReviewersReason ?? "scope_failed");
+  const redact = redactor(process.env, configuredSecretNames);
+  const response = {
+    ok: false,
+    provider,
+    status: reason,
+    error_code: reason,
+    error_message: redact(e?.message ?? String(e)),
+  };
+  const runtimeDiagnostics = buildRuntimeDiagnostics(e?.apiReviewersDiagnostics);
+  if (runtimeDiagnostics) response.runtime_diagnostics = runtimeDiagnostics;
+  printJson(redactRecord(response, process.env, configuredSecretNames, scopeInfo?.files ?? []));
+  process.exit(1);
+}
+
 async function cmdApprovalRequest(options) {
   const provider = options.provider ?? null;
   const mode = options.mode ?? "review";
   let configuredSecretNames = [];
   let scopeInfo = null;
   try {
-    if (!provider) throw runBadArgs("bad_args: --provider is required");
-    if (!VALID_MODES.has(mode)) throw runBadArgs(`bad_args: unsupported --mode ${mode}`);
-    let providers;
-    try {
-      providers = await loadProviders();
-    } catch (e) {
-      throw runConfigError(`config_error: ${providersConfigErrorMessage(e)}`);
-    }
-    let cfg;
-    try {
-      cfg = providerConfig(providers, provider);
-      configuredSecretNames = cfg.env_keys ?? [];
-    } catch (e) {
-      throw runBadArgs(e.message);
-    }
+    validateApprovalCommandArgs(provider, mode);
+    const providerConfigResult = await loadApprovalProviderConfig(provider);
+    const cfg = providerConfigResult.cfg;
+    configuredSecretNames = providerConfigResult.configuredSecretNames;
     if (!hasPromptText(options.prompt)) throw runBadArgs("bad_args: prompt is required (pass --prompt <focus>)");
-    scopeInfo = await collectScope({ ...options, mode });
-    options.reviewSlotPriorAttempts = await collectPriorReviewSlotAttempts(
-      apiReviewerDataRoot(process.env, scopeInfo.workspaceRoot ?? scopeInfo.cwd),
-    );
+    scopeInfo = await collectApprovalScopeAndPriorAttempts(options, mode);
     let approvalRequest;
     try {
       approvalRequest = buildApprovalRequest({ provider, cfg, mode, options, scopeInfo });
@@ -3064,20 +4024,99 @@ async function cmdApprovalRequest(options) {
     }
     printJson(approvalRequest);
   } catch (e) {
-    const reason = isGitBinaryPolicyError(e) ? "git_binary_rejected" : (e.apiReviewersReason ?? "scope_failed");
-    const redact = redactor(process.env, configuredSecretNames);
-    const response = {
-      ok: false,
-      provider,
-      status: reason,
-      error_code: reason,
-      error_message: redact(e?.message ?? String(e)),
-    };
-    const runtimeDiagnostics = buildRuntimeDiagnostics(e?.apiReviewersDiagnostics);
-    if (runtimeDiagnostics) response.runtime_diagnostics = runtimeDiagnostics;
-    printJson(redactRecord(response, process.env, configuredSecretNames, scopeInfo?.files ?? []));
-    process.exit(1);
+    printApprovalCommandFailure(e, { provider, configuredSecretNames, scopeInfo });
   }
+}
+
+async function cmdApprovalGrantRequest(options) {
+  const provider = options.provider ?? null;
+  const mode = options.mode ?? "review";
+  let configuredSecretNames = [];
+  let scopeInfo = null;
+  try {
+    validateApprovalCommandArgs(provider, mode);
+    const providerConfigResult = await loadApprovalProviderConfig(provider);
+    const cfg = providerConfigResult.cfg;
+    configuredSecretNames = providerConfigResult.configuredSecretNames;
+    if (!hasPromptText(options.prompt)) throw runBadArgs("bad_args: prompt is required (pass --prompt <focus>)");
+    const grantPolicy = await loadSessionApprovalGrantPolicy();
+    scopeInfo = await collectApprovalScopeAndPriorAttempts(options, mode);
+    let approvalRequest;
+    try {
+      ({ approvalRequest } = buildApprovalGrantRequest({ provider, cfg, mode, options, scopeInfo, grantPolicy }));
+    } catch (e) {
+      if (e?.apiReviewersReason) throw e;
+      throw runProviderFailure("approval_grant_request_failed", e?.message ?? String(e));
+    }
+    printJson(approvalRequest);
+  } catch (e) {
+    printApprovalCommandFailure(e, { provider, configuredSecretNames, scopeInfo });
+  }
+}
+
+async function cmdApprovalGrantActivate(options) {
+  const provider = options.provider ?? null;
+  const mode = options.mode ?? "review";
+  let configuredSecretNames = [];
+  let scopeInfo = null;
+  try {
+    validateApprovalCommandArgs(provider, mode);
+    const grantPolicy = await loadSessionApprovalGrantPolicy();
+    const grantExpiresAt = parseGrantExpiresAt(grantPolicy, options);
+    const providerConfigResult = await loadApprovalProviderConfig(provider);
+    const cfg = providerConfigResult.cfg;
+    configuredSecretNames = providerConfigResult.configuredSecretNames;
+    if (!hasPromptText(options.prompt)) throw runBadArgs("bad_args: prompt is required (pass --prompt <focus>)");
+    scopeInfo = await collectApprovalScopeAndPriorAttempts(options, mode);
+    let approvalRequest;
+    let approvalTuple;
+    try {
+      ({ approvalRequest, approvalTuple } = buildApprovalGrantRequest({
+        provider,
+        cfg,
+        mode,
+        options,
+        scopeInfo,
+        grantPolicy,
+        grantExpiresAt,
+      }));
+    } catch (e) {
+      if (e?.apiReviewersReason) throw e;
+      throw runProviderFailure("approval_grant_activation_failed", e?.message ?? String(e));
+    }
+    if (!validateApprovalToken(options, approvalRequest.grant_approval_token)) {
+      throw runProviderFailure(
+        "approval_required",
+        "approval_required: run approval-grant request, show the source-free grant summary to the user, and pass the matching grant_approval_token.value with --approval-token and grant_bounds.expires_at",
+      );
+    }
+    const approvalFingerprint = approvalFingerprintFor(approvalTuple);
+    const grantRecord = await persistApprovalGrant(
+      apiReviewerDataRoot(process.env, scopeInfo.workspaceRoot ?? scopeInfo.cwd),
+      approvalTuple,
+      approvalFingerprint,
+    );
+    printJson(approvalGrantActivationResponse({ provider, cfg, mode, scopeInfo, grantRecord }));
+  } catch (e) {
+    printApprovalCommandFailure(e, { provider, configuredSecretNames, scopeInfo });
+  }
+}
+
+async function cmdApprovalGrant(argv) {
+  const [subcommand = "help", ...rest] = argv;
+  const options = parseArgs(rest);
+  if (subcommand === "help" || subcommand === "--help" || subcommand === "-h") {
+    printJson({
+      ok: true,
+      command: "approval-grant",
+      subcommands: ["request", "activate"],
+      source_content_transmission: SOURCE_CONTENT_TRANSMISSION.NOT_SENT,
+    });
+    return;
+  }
+  if (subcommand === "request") return cmdApprovalGrantRequest(options);
+  if (subcommand === "activate") return cmdApprovalGrantActivate(options);
+  throw new Error(`unknown_approval_grant_command:${subcommand}`);
 }
 
 async function cmdRun(options) {
@@ -3092,6 +4131,7 @@ async function cmdRun(options) {
   let cfg;
   let scopeInfo;
   let execution;
+  let workloadLease = null;
   try {
     lifecycleEvents = parseLifecycleEventsMode(options["lifecycle-events"]);
     if (!provider) throw runBadArgs("bad_args: --provider is required");
@@ -3146,20 +4186,33 @@ async function cmdRun(options) {
       renderedPrompt = promptFor(mode, options.prompt ?? "", scopeInfo, cfg.display_name);
       const promptBudget = validateRenderedPromptBudget(renderedPrompt, cfg, process.env);
       if (!promptBudget.ok) {
-        const diagnostics = promptBudget.reason === "prompt_too_large"
-          ? {
-              sharding_plan: buildShardingPlan({
-                cfg,
-                mode,
-                provider,
-                scopeInfo,
-                userPrompt: options.prompt ?? "",
-                env: process.env,
-                renderedPromptChars: renderedPrompt.length,
-                approvalScope,
-              }),
-            }
-          : null;
+        let diagnostics = null;
+        if (promptBudget.reason === "prompt_too_large") {
+          const shardingPlan = buildShardingPlan({
+            cfg,
+            mode,
+            provider,
+            scopeInfo,
+            userPrompt: options.prompt ?? "",
+            env: process.env,
+            renderedPromptChars: renderedPrompt.length,
+            approvalScope,
+          });
+          diagnostics = {
+            sharding_plan: shardingPlan,
+            packet_recovery: packetRecoveryFromShardingPlan({
+              cfg,
+              provider,
+              mode,
+              scopeInfo,
+              renderedPrompt,
+              shardingPlan,
+              approvalScope,
+              options: runOptions,
+              env: process.env,
+            }),
+          };
+        }
         execution = providerFailureWithDiagnostics(
           promptBudget.reason,
           redactor(process.env)(promptBudget.error),
@@ -3180,13 +4233,32 @@ async function cmdRun(options) {
         authPath = approvalAuthPathFor(cfg, process.env);
         billingPath = approvalBillingPathFor(cfg);
         routeFields = approvalRouteFields(routeStateForApproval(cfg, process.env));
-        auditManifest = buildApprovalAuditManifest({ cfg, renderedPrompt, request, scopeInfo, routeFields, approvalScope, options: runOptions });
+        auditManifest = buildApprovalAuditManifest({ cfg, provider, mode, renderedPrompt, request, scopeInfo, routeFields, approvalScope, options: runOptions });
         execution = sourcePacketPolicyFailureFromManifest(auditManifest);
         if (execution) execution.prompt = renderedPrompt;
       }
       if (!execution && shouldRequireApprovalToken(process.env)) {
         const expectedToken = approvalTokenFor({ provider, mode, auditManifest, authPath, billingPath, routeFields, approvalScope });
-        if (!validateApprovalToken(options, expectedToken)) {
+        const providedApprovalToken = typeof options["approval-token"] === "string" && options["approval-token"].trim().length > 0;
+        let matchedGrant = null;
+        if (!providedApprovalToken) {
+          let grantPolicy;
+          try {
+            grantPolicy = await loadSessionApprovalPolicy();
+          } catch (e) {
+            throw runConfigError(`config_error: session approval policy unreadable: ${e.message}`);
+          }
+          matchedGrant = await findMatchingApprovalGrant(
+            apiReviewerDataRoot(process.env, scopeInfo.workspaceRoot ?? scopeInfo.cwd),
+            { provider, mode, scopeInfo, auditManifest, authPath, billingPath, routeFields, grantPolicy },
+          );
+          if (matchedGrant) {
+            approvalScope = "grant";
+            runOptions.approval_source = "session_grant";
+            runOptions.approval_grant = approvalGrantAuditFields(matchedGrant);
+          }
+        }
+        if (!matchedGrant && !validateApprovalToken(options, expectedToken)) {
           execution = providerFailureWithDiagnostics(
             "approval_required",
             "approval_required: run approval-request, show the approval summary to the user, and pass the returned approval_token.value with --approval-token after explicit approval",
@@ -3217,6 +4289,22 @@ async function cmdRun(options) {
     } catch (e) {
       const reason = e?.apiReviewersReason ?? "scope_failed";
       execution = providerFailure(reason, redactor(process.env)(e?.message ?? String(e)), null, null, false);
+    }
+    if (execution) {
+      // handled below by the terminal JobRecord path without a launch event
+    } else {
+      const workloadAdmission = acquireProviderWorkloadLease({
+        provider,
+        jobId,
+        cwd: scopeInfo.cwd,
+        sourceBearing: true,
+      });
+      if (workloadAdmission.ok) {
+        workloadLease = workloadAdmission.lease;
+      } else {
+        execution = providerWorkloadBlockedExecution(workloadAdmission);
+        execution.prompt = renderedPrompt;
+      }
     }
     if (execution) {
       // handled below by the terminal JobRecord path without a launch event
@@ -3279,10 +4367,20 @@ async function cmdRun(options) {
         execution.prompt = renderedPrompt;
       } finally {
         stopHeartbeat();
+        releaseProviderWorkloadLease(workloadLease);
+        workloadLease = null;
       }
     }
   }
-  if (execution) execution.approval_scope = approvalScope;
+  releaseProviderWorkloadLease(workloadLease);
+  workloadLease = null;
+  if (execution) {
+    execution.approval_scope = approvalScope;
+    if (runOptions.approval_source === "session_grant") {
+      execution.approval_source = "session_grant";
+      execution.approval_grant = runOptions.approval_grant;
+    }
+  }
   const record = redactRecord(buildRecord({
     provider: provider ?? "api-reviewers",
     cfg,
@@ -3292,7 +4390,7 @@ async function cmdRun(options) {
     execution,
     startedAt,
     endedAt: new Date().toISOString(),
-  }), process.env, cfg.env_keys, scopeInfo.files);
+  }), process.env, cfg.env_keys, scopeInfo.files, credentialRedactionValues(execution));
   const printableRecord = record.error_code === "sandbox_blocked"
     ? record
     : await persistRecordBestEffort(record, process.env, cfg.env_keys, record.workspace_root ?? record.cwd);
@@ -3302,6 +4400,7 @@ async function cmdRun(options) {
 
 async function main() {
   const [cmd = "help", ...rest] = process.argv.slice(2);
+  if (cmd === "approval-grant") return cmdApprovalGrant(rest);
   const options = parseArgs(rest);
   if (cmd === "doctor" || cmd === "ping") return cmdDoctor(options);
   if (cmd === "approval-request") return cmdApprovalRequest(options);
@@ -3314,13 +4413,13 @@ async function main() {
     } catch (e) {
       printJson({
         ok: false,
-        commands: ["doctor", "ping", "approval-request", "run", "result"],
+        commands: ["doctor", "ping", "approval-request", "approval-grant", "run", "result"],
         providers: [],
         ...providersConfigErrorFields(e),
       });
       process.exit(1);
     }
-    printJson({ ok: true, commands: ["doctor", "ping", "approval-request", "run", "result"], providers: Object.keys(providers) });
+    printJson({ ok: true, commands: ["doctor", "ping", "approval-request", "approval-grant", "run", "result"], providers: Object.keys(providers) });
     return;
   }
   throw new Error(`unknown_command:${cmd}`);

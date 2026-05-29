@@ -38,7 +38,7 @@ test("buildClaudeArgs: review mode passes --disallowedTools + plan + setting-sou
   assert.equal(args[args.indexOf("--permission-mode") + 1], "plan");
   assert.ok(args.includes("--disallowedTools"));
   const disallowed = args[args.indexOf("--disallowedTools") + 1];
-  for (const t of ["Write", "Edit", "Bash", "mcp__*", "Agent"]) {
+  for (const t of ["Write", "Edit", "Read", "Glob", "Grep", "Bash", "mcp__*", "Agent"]) {
     assert.ok(disallowed.includes(t), `expected "${t}" in disallowed list; got "${disallowed}"`);
   }
   assert.ok(args.includes("--setting-sources"));
@@ -229,6 +229,20 @@ test("parseClaudeResult: classifies subscription usage limit errors", () => {
     type: "result",
     is_error: true,
     result: "Error: usage limit reached for this billing cycle.",
+    session_id: UUID,
+    permission_denials: [],
+  }));
+
+  assert.equal(r.ok, false);
+  assert.equal(r.reason, "usage_limited");
+  assert.match(r.error, /quota|usage-tier|billing|credit/i);
+});
+
+test("parseClaudeResult: classifies subscription session limit errors", () => {
+  const r = parseClaudeResult(JSON.stringify({
+    type: "result",
+    is_error: true,
+    result: "You've hit your session limit · resets 2:50am (Asia/Seoul)",
     session_id: UUID,
     permission_denials: [],
   }));

@@ -14,7 +14,7 @@
 // constant so the three profiles that need it share the same array identity.
 const REVIEW_DISALLOWED = Object.freeze([
   "Write", "Edit", "MultiEdit", "NotebookEdit",
-  "Bash", "WebFetch", "Agent", "Task", "mcp__*",
+  "Read", "Glob", "Grep", "Bash", "WebFetch", "Agent", "Task", "mcp__*",
 ]);
 
 const EMPTY_TOOLS = Object.freeze([]);

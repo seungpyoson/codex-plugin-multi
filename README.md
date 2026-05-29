@@ -127,6 +127,16 @@ sent:
 network_access = true
 ```
 
+Direct API source sends are approval-gated. Use `approval-request` for a
+single tuple-bound send, or `approval-grant request` followed by
+`approval-grant activate` for a short-lived bounded session grant. Grant
+requests and activation do not send selected source; matching later runs may
+proceed without a per-run token only when provider, mode, workspace, selected
+source hashes, prompt hash, scope, request settings, route, auth, billing,
+file/byte bounds, and expiry still match. Grant files persist hashes, counts,
+relative paths, and safe metadata only; they do not persist approval token
+values, source bodies, prompts, or secrets.
+
 Claude, Gemini, and Kimi use first-party CLIs that read or write local OAuth,
 session, config, or log state. If setup or review returns `sandbox_blocked`
 with a `.claude`, `.gemini`, or `.kimi` path, add the provider state directory
@@ -460,6 +470,12 @@ inspect the terminal record.
   DeepSeek and GLM direct API reviewers use
   `auth_mode: "api_key"` in `plugins/api-reviewers/config/providers.json`.
   Diagnostics report key names only and never print secret values.
+  Session grants for those reviewers are deliberately narrow: request and
+  activation stay source-free, the operator must choose `--grant-ttl-ms`, the
+  max TTL comes from `plugins/api-reviewers/config/session-approval.json`, and
+  any provider, mode, workspace, selected source, prompt, request, route, auth,
+  billing, file/byte bound, expiry, schema, fingerprint, or duplicate-match
+  change falls back to `approval_required` before source is sent.
 - **Grok subscription is the default Grok path.** Grok uses
   `auth_mode: "subscription_cli"` through Grok CLI and does not silently fall
   back to paid xAI API billing or the legacy web tunnel. `--transport auto` /

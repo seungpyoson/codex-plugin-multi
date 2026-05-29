@@ -75,6 +75,12 @@ if (expectedPromptText && !readinessPrompt && !prompt.includes(expectedPromptTex
   process.exit(1);
 }
 
+const excludedPromptText = process.env.GEMINI_MOCK_ASSERT_PROMPT_EXCLUDES;
+if (excludedPromptText && !readinessPrompt && prompt.includes(excludedPromptText)) {
+  process.stderr.write(`gemini-mock: prompt included excluded text: ${excludedPromptText}\n`);
+  process.exit(1);
+}
+
 const assertCwdNot = process.env.GEMINI_MOCK_ASSERT_CWD_NOT;
 if (assertCwdNot && process.cwd() === assertCwdNot) {
   process.stderr.write(`gemini-mock: cwd must not be ${assertCwdNot}\n`);

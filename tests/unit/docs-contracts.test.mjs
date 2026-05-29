@@ -26,6 +26,178 @@ function assertOnlyKeys(value, allowed, label) {
   assert.deepEqual(extra, [], `${label} has unsupported keys`);
 }
 
+function resolveSchemaRef(root, ref) {
+  assert.equal(ref.startsWith("#/"), true, `unsupported local schema ref ${ref}`);
+  return ref.slice(2).split("/").reduce((value, part) => value?.[part], root);
+}
+
+function schemaTypeMatches(schema, value) {
+  if (!schema.type) return true;
+  const types = Array.isArray(schema.type) ? schema.type : [schema.type];
+  return types.some((type) => {
+    if (type === "array") return Array.isArray(value);
+    if (type === "integer") return Number.isInteger(value);
+    if (type === "number") return typeof value === "number" && Number.isFinite(value);
+    if (type === "object") return value !== null && typeof value === "object" && !Array.isArray(value);
+    if (type === "null") return value === null;
+    return typeof value === type;
+  });
+}
+
+function assertSchemaAllowsValue(root, schema, value, label) {
+  const resolved = schema.$ref ? resolveSchemaRef(root, schema.$ref) : schema;
+  if (resolved.oneOf || resolved.anyOf) {
+    const branches = resolved.oneOf ?? resolved.anyOf;
+    const errors = [];
+    for (const branch of branches) {
+      try {
+        assertSchemaAllowsValue(root, branch, value, label);
+        return;
+      } catch (error) {
+        errors.push(error.message);
+      }
+    }
+    assert.fail(`${label} did not match any schema branch: ${errors.join("; ")}`);
+  }
+
+  assert.equal(schemaTypeMatches(resolved, value), true, `${label} has unsupported type`);
+  if (Object.hasOwn(resolved, "const")) {
+    assert.deepEqual(value, resolved.const, `${label} const mismatch`);
+  }
+  if (resolved.enum) {
+    assert.equal(resolved.enum.includes(value), true, `${label} enum mismatch`);
+  }
+  if (resolved.additionalProperties === false && value && typeof value === "object" && !Array.isArray(value)) {
+    assertOnlyKeys(value, Object.keys(resolved.properties ?? {}), label);
+  }
+  if (Array.isArray(resolved.required) && value && typeof value === "object" && !Array.isArray(value)) {
+    for (const key of resolved.required) {
+      assert.equal(Object.hasOwn(value, key), true, `${label} missing required key ${key}`);
+    }
+  }
+  if (resolved.properties && value && typeof value === "object" && !Array.isArray(value)) {
+    for (const [key, propertySchema] of Object.entries(resolved.properties)) {
+      if (Object.hasOwn(value, key)) {
+        assertSchemaAllowsValue(root, propertySchema, value[key], `${label}.${key}`);
+      }
+    }
+  }
+  if (resolved.items && Array.isArray(value)) {
+    value.forEach((item, index) => {
+      assertSchemaAllowsValue(root, resolved.items, item, `${label}[${index}]`);
+    });
+  }
+}
+
+function sampleSessionApprovalGrantRecord() {
+  const approvalHash = "a".repeat(64);
+  const workspaceHash = "b".repeat(64);
+  const promptHash = "c".repeat(64);
+  const contentHash = "d".repeat(64);
+  const expiresAt = "2026-05-29T12:05:00.000Z";
+  return {
+    schema_version: 1,
+    grant_id: `grant_${approvalHash}`,
+    created_at: "2026-05-29T12:00:00.000Z",
+    expires_at: expiresAt,
+    grant_session_id: `session_${approvalHash.slice(0, 32)}`,
+    provider_allowlist: ["glm"],
+    mode_allowlist: ["review"],
+    workspace_root_hash: workspaceHash,
+    path_constraints: {
+      scope: "custom",
+      scope_paths: ["README.md"],
+    },
+    max_files: 1,
+    max_bytes: 42,
+    max_ttl_ms: 600000,
+    approval_fingerprint: approvalHash,
+    approval_tuple: {
+      provider: "GLM",
+      mode: "review",
+      selected_source: {
+        files: [
+          {
+            path: "README.md",
+            bytes: 42,
+            lines: 1,
+            content_hash: {
+              algorithm: "sha256",
+              value: contentHash,
+            },
+          },
+        ],
+        totals: {
+          files: 1,
+          bytes: 42,
+          lines: 1,
+        },
+      },
+      rendered_prompt_hash: {
+        algorithm: "sha256",
+        value: promptHash,
+      },
+      request: {
+        provider: "GLM",
+        model: "glm-4.5",
+        timeout_ms: 900000,
+        max_tokens: 4096,
+        max_steps_per_turn: null,
+        temperature: 0,
+        stream: false,
+      },
+      scope_resolution: {
+        scope: "custom",
+        scope_base: null,
+        scope_paths: ["README.md"],
+        reason: "explicit_scope_paths",
+      },
+      auth_path: {
+        auth_mode: "api_key",
+        credential_ref: "ZAI_API_KEY",
+        credential_source: "env",
+      },
+      billing_path: {
+        endpoint: "https://api.example.test/v1",
+        model: "glm-4.5",
+      },
+      selected_route: "direct_api",
+      route_step: "glm",
+      route_steps: [
+        {
+          route: "glm",
+          supported: true,
+          attempted: true,
+          selected: true,
+          skipped_reason: null,
+          fallback_reason: null,
+        },
+      ],
+      fallback_reason: null,
+      approval_scope: "grant",
+      grant_bounds: {
+        provider_allowlist: ["glm"],
+        mode_allowlist: ["review"],
+        workspace_root_hash: workspaceHash,
+        path_constraints: {
+          scope: "custom",
+          scope_paths: ["README.md"],
+        },
+        max_files: 1,
+        max_bytes: 42,
+        expires_at: expiresAt,
+        max_ttl_ms: 600000,
+        schema_version: 1,
+      },
+    },
+    activation: {
+      activated_at: "2026-05-29T12:00:01.000Z",
+      source_content_transmission: "not_sent",
+      approval_source: "grant_approval_token",
+    },
+  };
+}
+
 const CANCEL_STATUSES = [
   "signaled",
   "already_terminal",
@@ -262,6 +434,62 @@ test("T080 Kimi waiver artifact records failed slots and residual risk", () => {
   assert.equal(waiver.residual_risk.api.remains, false);
   assert.equal(waiver.residual_risk.auth.remains, false);
   assert.equal(waiver.residual_risk.local_state.remains, true);
+});
+
+test("bounded session approval grant schema is strict and token-free", () => {
+  const schema = readRepoJson("specs/147-bounded-session-approval/contracts/session-approval-grant.schema.json");
+  const policy = readRepoJson("plugins/api-reviewers/config/session-approval.json");
+
+  assert.deepEqual(Object.keys(policy), ["schema_version", "max_ttl_ms"]);
+  assert.equal(policy.schema_version, 1);
+  assert.equal(Number.isSafeInteger(policy.max_ttl_ms), true);
+  assert.equal(policy.max_ttl_ms > 0, true);
+  assert.equal(schema.additionalProperties, false);
+  assert.deepEqual(schema.required, [
+    "schema_version",
+    "grant_id",
+    "created_at",
+    "expires_at",
+    "grant_session_id",
+    "provider_allowlist",
+    "mode_allowlist",
+    "workspace_root_hash",
+    "path_constraints",
+    "max_files",
+    "max_bytes",
+    "max_ttl_ms",
+    "approval_fingerprint",
+    "approval_tuple",
+    "activation",
+  ]);
+  assert.equal(schema.properties.approval_token, undefined);
+  assert.equal(schema.properties.grant_approval_token, undefined);
+  assert.equal(schema.properties.approval_tuple.additionalProperties, false);
+  assert.equal(schema.$defs.grant_bounds.additionalProperties, false);
+  assert.equal(schema.properties.max_ttl_ms.maximum, undefined);
+  assert.equal(schema.$defs.grant_bounds.properties.max_ttl_ms.maximum, undefined);
+  assert.match(schema.properties.approval_fingerprint.description, /canonicalJson/);
+});
+
+test("bounded session approval grant schema accepts runtime persisted record shape", () => {
+  const schema = readRepoJson("specs/147-bounded-session-approval/contracts/session-approval-grant.schema.json");
+
+  assertSchemaAllowsValue(schema, schema, sampleSessionApprovalGrantRecord(), "$");
+});
+
+test("direct API docs describe bounded session grants without blanket bypass", () => {
+  const readme = readRepoFile("README.md");
+  const contracts = readRepoFile("scripts/lib/external-model-contracts.mjs");
+
+  for (const doc of [readme, contracts]) {
+    assert.match(doc, /approval-grant request/);
+    assert.match(doc, /approval-grant activate/);
+    assert.match(doc, /grant_bounds\.expires_at|expiry/);
+    assert.match(doc, /source-free|do not send selected source|without sending selected source/i);
+    assert.match(doc, /provider, mode, workspace/);
+    assert.match(doc, /approval_required/);
+    assert.doesNotMatch(doc, /always allow DeepSeek|always allow GLM|blanket/i);
+  }
 });
 
 test("T074 review summary records current closure and cache proof", () => {
@@ -996,4 +1224,135 @@ test("provider architecture parity table is machine-validatable and complete", (
   assert.equal(claudeAuth.difference_type, "adapter_capability_fact");
   assert.match(claudeAuth.capability_fact, /claude auth login/i);
   assert.match(claudeAuth.current_behavior, /oauth_inference_rejected/i);
+});
+
+test("packet recovery schema keeps the no-source resume capability guard", () => {
+  const schema = readRepoJson("specs/172-large-custom-review-packet-recovery/contracts/packet-recovery.schema.json");
+
+  assert.equal(schema.title, "PacketRecovery");
+  assert.ok(schema.required.includes("provider_capabilities"));
+  assert.ok(schema.required.includes("review_surface"));
+  assert.ok(schema.required.includes("actions"));
+  assert.deepEqual(
+    schema.$defs.providerRecoveryCapabilities.required,
+    [
+      "provider",
+      "canonical_provider",
+      "route_step",
+      "source_packet_budget_bytes",
+      "rendered_prompt_budget_chars",
+      "per_file_secure_read_cap_bytes",
+      "supports_diff_packet",
+      "supports_shard_plan",
+      "supports_no_source_resume",
+      "requires_source_send_approval",
+      "requires_resend_confirmation_after_source_sent_failure",
+      "local_source_packet_policy_pre_send",
+      "source_sent_runtime_failures_failed_slot",
+      "transport_fallbacks",
+    ],
+  );
+  assert.equal(
+    schema.$defs.providerRecoveryCapabilities.properties.local_source_packet_policy_pre_send.type,
+    "boolean",
+  );
+  assert.equal(
+    schema.$defs.providerRecoveryCapabilities.properties.source_sent_runtime_failures_failed_slot.type,
+    "boolean",
+  );
+
+  const noSourceResumeGuard = schema.allOf.find((entry) => (
+    entry?.if?.properties?.provider_capabilities?.properties?.supports_no_source_resume?.const === false
+  ));
+  assert.ok(noSourceResumeGuard, "schema must guard supports_no_source_resume:false");
+  assert.equal(
+    noSourceResumeGuard.then.properties.actions.not.contains.properties.type.const,
+    "resume_without_source_resend",
+  );
+  assert.ok(
+    schema.$defs.recoveryAction.properties.type.enum.includes("resume_without_source_resend"),
+    "resume_without_source_resend remains valid only when provider capabilities allow it",
+  );
+  assert.ok(
+    schema.properties.reason.enum.includes("resend_confirmation_required"),
+    "schema must allow resend-confirmation recovery reasons emitted by runtime policy",
+  );
+  assert.ok(
+    schema.properties.reason.enum.includes("stale_active_job"),
+    "schema must allow reconciled stale-job recovery reasons emitted by runtime policy",
+  );
+  assert.ok(
+    schema.properties.reason.enum.includes("provider_unavailable"),
+    "schema must allow source-bearing provider-unavailable recovery reasons emitted by direct API runtime policy",
+  );
+  assert.ok(
+    schema.properties.source_content_transmission.enum.includes("unknown"),
+    "schema must allow stale-job recovery when source transmission is conservative unknown",
+  );
+});
+
+test("packet recovery schema matches runtime shard approval tuple shape", () => {
+  const schema = readRepoJson("specs/172-large-custom-review-packet-recovery/contracts/packet-recovery.schema.json");
+  const tuple = schema.$defs.approvalTuple;
+
+  assert.deepEqual(
+    tuple.required,
+    [
+      "provider",
+      "mode",
+      "rendered_prompt_hash",
+      "source_packet",
+      "scope_resolution",
+      "scope_paths",
+      "request_settings",
+      "auth_path",
+      "billing_path",
+      "selected_route",
+      "route_step",
+      "route_steps",
+      "fallback_reason",
+      "approval_scope",
+      "approval_tuple_fingerprint",
+    ],
+  );
+  assert.equal(tuple.properties.rendered_prompt_hash.$ref, "#/$defs/hexSha256");
+  assert.equal(schema.$defs.hexSha256.type, "string");
+  assert.equal(schema.$defs.hexSha256.pattern, "^[a-f0-9]{64}$");
+  assert.ok(tuple.properties.source_packet, "runtime shard tuples carry the selected source packet summary");
+  assert.ok(tuple.properties.scope_resolution, "runtime shard tuples carry scope resolution details");
+  assert.ok(tuple.properties.scope_paths, "runtime shard tuples carry explicit scope paths");
+  assert.ok(tuple.properties.request_settings, "runtime shard tuples carry request settings");
+  assert.ok(tuple.properties.route_step, "runtime shard tuples carry the selected route step");
+  assert.ok(tuple.properties.route_steps, "runtime shard tuples carry route-step audit details");
+  assert.equal(
+    tuple.properties.approval_tuple_fingerprint.$ref,
+    "#/$defs/approvalTupleFingerprint",
+    "runtime shard tuples carry the structured non-token fingerprint emitted by sourceSendApprovalTupleFingerprint",
+  );
+  assert.deepEqual(schema.$defs.approvalTupleFingerprint.required, ["algorithm", "value", "ingredients"]);
+  assert.equal(schema.$defs.approvalTupleFingerprint.properties.algorithm.const, "sha256");
+  assert.equal(schema.$defs.approvalTupleFingerprint.properties.value.$ref, "#/$defs/sha256");
+  assert.ok(
+    schema.$defs.approvalTupleFingerprint.properties.ingredients.properties.auth_path.anyOf
+      .some((entry) => entry.$ref === "#/$defs/safeText"),
+    "fingerprint ingredients must allow string auth paths accepted by sourceSendApprovalTupleFingerprint",
+  );
+  assert.equal(
+    schema.$defs.sourcePacketSummary.required.includes("packet_hash"),
+    false,
+    "runtime selected_source summaries do not include a packet_hash field",
+  );
+});
+
+test("packet recovery schema allows runtime retry fail-closed reasons", () => {
+  const schema = readRepoJson("specs/172-large-custom-review-packet-recovery/contracts/packet-recovery.schema.json");
+  for (const reason of [
+    "review_slot_waiver_artifact_required",
+    "review_slot_override_artifact_required",
+    "retry_disposition_not_valid_for_third_attempt",
+    "third_same_packet_retry_requires_disposition",
+    "review_slot_disposition_required",
+  ]) {
+    assert.ok(schema.properties.reason.enum.includes(reason), `schema must allow runtime retry guard reason ${reason}`);
+  }
 });

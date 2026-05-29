@@ -62,6 +62,7 @@ const PRE_TARGET_NOT_SENT_ERROR_CODES = Object.freeze(new Set([
   "scope_failed",
   "source_packet_too_large",
   "resend_confirmation_required",
+  "provider_workload_blocked",
   "review_slot_disposition_required",
   "review_slot_override_artifact_required",
   "review_slot_waiver_artifact_required",

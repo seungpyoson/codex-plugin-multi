@@ -10,12 +10,16 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { fixtureBranchDiffRepo, fixtureSeedRepo } from "../helpers/fixture-git.mjs";
+import { fixtureBranchDiffRepo, fixtureGit, fixtureSeedRepo } from "../helpers/fixture-git.mjs";
 import { badVerdictReviewFixture, requestChangesReviewFixture } from "../helpers/review-fixtures.mjs";
 import {
   apiKeyAuthMode as geminiApiKeyAuthMode,
   subscriptionAuthMode as geminiSubscriptionAuthMode,
 } from "../../plugins/gemini/scripts/lib/auth-selection.mjs";
+import {
+  acquireProviderWorkloadLease,
+  releaseProviderWorkloadLease,
+} from "../../scripts/lib/review-workload.mjs";
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const COMPANION = path.join(REPO_ROOT, "plugins/gemini/scripts/gemini-companion.mjs");
@@ -36,6 +40,8 @@ function sha256(value) {
 }
 
 function runCompanion(args, { cwd, env = {}, dataDir = mkdtempSync(path.join(tmpdir(), "gemini-smoke-data-")) } = {}) {
+  const workloadLockDir = env.CODEX_PLUGIN_MULTI_PROVIDER_WORKLOAD_LOCK_DIR
+    ?? path.join(dataDir, "provider-workload");
   const res = spawnSync("node", [COMPANION, ...args], {
     cwd,
     encoding: "utf8",
@@ -43,6 +49,7 @@ function runCompanion(args, { cwd, env = {}, dataDir = mkdtempSync(path.join(tmp
       ...process.env,
       GEMINI_BINARY: MOCK,
       GEMINI_PLUGIN_DATA: dataDir,
+      CODEX_PLUGIN_MULTI_PROVIDER_WORKLOAD_LOCK_DIR: workloadLockDir,
       ...env,
     },
   });
@@ -228,6 +235,49 @@ test("gemini custom-review background: launched event and terminal JobRecord", a
   }
 });
 
+test("gemini custom-review maps held workload lease to provider_workload_blocked without spawn", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "gemini-workload-block-cwd-"));
+  const dataDir = mkdtempSync(path.join(tmpdir(), "gemini-workload-block-data-"));
+  const workloadLockDir = path.join(dataDir, "provider-workload");
+  seedMinimalRepo(cwd);
+  const admission = acquireProviderWorkloadLease({
+    provider: "gemini",
+    jobId: "held-gemini-job",
+    cwd,
+    sourceBearing: true,
+    env: { CODEX_PLUGIN_MULTI_PROVIDER_WORKLOAD_LOCK_DIR: workloadLockDir },
+  });
+  assert.equal(admission.ok, true);
+
+  try {
+    const { stdout, stderr, status } = runCompanion(
+      ["run", "--mode=custom-review", "--foreground", "--model", "gemini-3-flash-preview",
+       "--cwd", cwd, "--scope-paths", "seed.txt", "--", "review selected source"],
+      {
+        cwd,
+        dataDir,
+        env: {
+          CODEX_PLUGIN_MULTI_PROVIDER_WORKLOAD_LOCK_DIR: workloadLockDir,
+          GEMINI_MOCK_ASSERT_PROMPT_INCLUDES: "MUST_NOT_REACH_GEMINI",
+        },
+      },
+    );
+
+    assert.equal(status, 2, `exit ${status}: stderr=${stderr}; stdout=${stdout}`);
+    const record = JSON.parse(stdout);
+    assert.equal(record.status, "failed");
+    assert.equal(record.error_code, "provider_workload_blocked");
+    assert.equal(record.external_review.source_content_transmission, "not_sent");
+    assert.equal(record.runtime_diagnostics.provider_workload.reason, "active_same_provider_job");
+    assert.equal(record.runtime_diagnostics.provider_workload.holder.job_id, "held-gemini-job");
+    assert.doesNotMatch(stdout, /MUST_NOT_REACH_GEMINI|external_review_launched/);
+  } finally {
+    releaseProviderWorkloadLease(admission.lease);
+    rmTree(dataDir);
+    rmTree(cwd);
+  }
+});
+
 test("gemini result --job-id aliases --job for a finished job", () => {
   const cwd = mkdtempSync(path.join(tmpdir(), "gemini-result-job-id-cwd-"));
   seedMinimalRepo(cwd);
@@ -281,6 +331,17 @@ test("gemini custom-review guides substantive missing-verdict retry without auto
     assert.match(record.suggested_action, /sharding/i);
     assert.match(record.suggested_action, /relaying/i);
     assert.match(record.suggested_action, /interactive Gemini/i);
+    const recovery = record.runtime_diagnostics?.packet_recovery;
+    assert.ok(recovery, "Gemini source-sent missing-verdict failures must include packet_recovery");
+    assert.equal(recovery.provider, "gemini");
+    assert.equal(recovery.reason, "review_not_completed");
+    assert.equal(recovery.source_content_transmission, "sent");
+    assert.equal(recovery.provider_capabilities.supports_no_source_resume, true);
+    assert.deepEqual(
+      recovery.actions.map((action) => action.type),
+      ["resend_with_confirmation", "resume_without_source_resend", "switch_provider", "waive_slot"],
+    );
+    assert.deepEqual(record.review_metadata.audit_manifest.packet_recovery, recovery);
 
     const retry = runCompanion(
       ["continue", "--job", record.job_id, "--foreground", "--cwd", cwd, "--", "retry selected source"],
@@ -1688,6 +1749,52 @@ test("gemini run rejects invalid lifecycle event mode as structured bad args", (
   }
 });
 
+test("gemini review prompt uses git repository identity instead of local workspace path", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "gemini-repo-identity-cwd-"));
+  seedMinimalRepo(cwd);
+  assert.equal(
+    fixtureGit(cwd, ["remote", "add", "origin", "git@github.com:seungpyoson/provider-prompt-fixture.git"]).status,
+    0,
+  );
+  const { stdout, stderr, status, dataDir } = runCompanion(
+    ["run", "--mode=review", "--foreground", "--cwd", cwd, "--", "review selected source"],
+    { cwd, env: {
+      GEMINI_MOCK_ASSERT_PROMPT_INCLUDES: "Repository: seungpyoson/provider-prompt-fixture",
+      GEMINI_MOCK_ASSERT_PROMPT_EXCLUDES: cwd,
+    } },
+  );
+  try {
+    assert.equal(status, 0, `exit ${status}: ${stderr}; stdout=${stdout}`);
+    const record = JSON.parse(stdout);
+    assert.equal(record.review_metadata.audit_manifest.git_identity.remote, "seungpyoson/provider-prompt-fixture");
+  } finally {
+    rmTree(dataDir);
+    rmTree(cwd);
+  }
+});
+
+test("gemini review prompt avoids local workspace path when no git remote exists", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "gemini-local-repo-identity-cwd-"));
+  seedMinimalRepo(cwd);
+  const expectedRepository = `Repository: local-workspace:${path.basename(cwd)}`;
+  const { stdout, stderr, status, dataDir } = runCompanion(
+    ["run", "--mode=review", "--foreground", "--cwd", cwd, "--", "review selected source"],
+    { cwd, env: {
+      GEMINI_MOCK_ASSERT_PROMPT_INCLUDES: expectedRepository,
+      GEMINI_MOCK_ASSERT_PROMPT_EXCLUDES: cwd,
+    } },
+  );
+  try {
+    assert.equal(status, 0, `exit ${status}: ${stderr}; stdout=${stdout}`);
+    const record = JSON.parse(stdout);
+    assert.equal(record.review_metadata.audit_manifest.git_identity.remote, `local-workspace:${path.basename(cwd)}`);
+    assert.doesNotMatch(JSON.stringify(record.review_metadata.audit_manifest.git_identity), new RegExp(cwd.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+  } finally {
+    rmTree(dataDir);
+    rmTree(cwd);
+  }
+});
+
 test("gemini review foreground: omits native Gemini sandbox inside Codex sandbox", () => {
   const cwd = mkdtempSync(path.join(tmpdir(), "gemini-review-codex-cwd-"));
   seedMinimalRepo(cwd);
@@ -1786,6 +1893,12 @@ test("gemini custom-review rejects over-budget source packets before Gemini laun
     assert.equal(record.external_review.source_content_transmission, "not_sent");
     assert.equal(record.review_metadata.audit_manifest.source_packet_policy.source_send_allowed, false);
     assert.equal(record.review_metadata.audit_manifest.source_packet_policy.source_packet_action, "narrow_source_packet");
+    const recovery = record.review_metadata.audit_manifest.packet_recovery;
+    assert.ok(recovery, "Gemini source-packet failures must include packet_recovery");
+    assert.equal(recovery.provider, "gemini");
+    assert.equal(recovery.mode, "custom-review");
+    assert.equal(recovery.reason, "source_packet_too_large");
+    assert.equal(recovery.source_content_transmission, "not_sent");
     assert.doesNotMatch(stdout, /external_review_launched|MUST_NOT_REACH_GEMINI/);
   } finally {
     rmTree(dataDir);
