@@ -1752,6 +1752,138 @@ test("buildJobRecord: preserves privacy-safe provider account identity diagnosti
   }
 });
 
+test("buildJobRecord: sanitizes runtime source packet and provider identity diagnostics", () => {
+  const sourcePacketPolicy = {
+    provider: "claude",
+    mode: "custom",
+    route_step: "packet_render",
+    max_prompt_chars: 12000,
+  };
+  const packetRecovery = {
+    reason: "source_packet_too_large",
+    route_step: "source_packet_send",
+    selected_source_bytes: 16000,
+    max_prompt_chars: 12000,
+    recovery_strategy: "shard",
+  };
+
+  const rec = buildJobRecord(makeInvocation(), {
+    exitCode: 0,
+    parsed: { ok: true, result: "done", structured: null, denials: [] },
+    pidInfo: makePidInfo(),
+    runtimeDiagnostics: {
+      add_dir: "/tmp/worktree",
+      child_cwd: "/tmp/worktree",
+      source_packet_policy: sourcePacketPolicy,
+      packet_recovery: packetRecovery,
+      provider_account_identity: {
+        provider: "claude",
+        identity_source: "provider_auth_status",
+        identity_fields: ["email", "bad value", 42, "org_id", "unsafe/slash"],
+        account_fingerprint: {
+          algorithm: "sha256",
+          value: "A".repeat(64),
+        },
+        email: "user@example.com",
+        org_id: "org-secret-123",
+      },
+    },
+    claudeSessionId: CLAUDE_UUID,
+  }, []);
+
+  assert.equal(rec.runtime_diagnostics.source_packet_policy, sourcePacketPolicy);
+  assert.equal(rec.runtime_diagnostics.packet_recovery, packetRecovery);
+  assert.deepEqual(rec.runtime_diagnostics.provider_account_identity, {
+    provider: "claude",
+    identity_source: "provider_auth_status",
+    identity_fields: ["email", "org_id"],
+    account_fingerprint: {
+      algorithm: "sha256",
+      value: "a".repeat(64),
+    },
+  });
+  assert.doesNotMatch(JSON.stringify(rec), /user@example\.com|org-secret-123/);
+});
+
+test("buildJobRecord: drops malformed source packet and provider identity diagnostics", () => {
+  const cases = [
+    {
+      name: "non-object packet diagnostics and identity",
+      runtimeDiagnostics: {
+        add_dir: "/tmp/worktree",
+        child_cwd: "/tmp/worktree",
+        source_packet_policy: "source-policy-secret",
+        packet_recovery: "packet-recovery-secret",
+        provider_account_identity: "identity-secret",
+      },
+    },
+    {
+      name: "invalid provider",
+      runtimeDiagnostics: {
+        add_dir: "/tmp/worktree",
+        child_cwd: "/tmp/worktree",
+        provider_account_identity: {
+          provider: "Claude",
+          identity_source: "provider_auth_status",
+          identity_fields: ["email"],
+          account_fingerprint: { value: "b".repeat(64) },
+        },
+      },
+    },
+    {
+      name: "invalid identity source",
+      runtimeDiagnostics: {
+        add_dir: "/tmp/worktree",
+        child_cwd: "/tmp/worktree",
+        provider_account_identity: {
+          provider: "claude",
+          identity_source: "provider auth status",
+          identity_fields: ["email"],
+          account_fingerprint: { value: "c".repeat(64) },
+        },
+      },
+    },
+    {
+      name: "invalid fingerprint",
+      runtimeDiagnostics: {
+        add_dir: "/tmp/worktree",
+        child_cwd: "/tmp/worktree",
+        provider_account_identity: {
+          provider: "claude",
+          identity_source: "provider_auth_status",
+          identity_fields: "email",
+          account_fingerprint: { value: "not-a-sha256-fingerprint" },
+          email: "user@example.com",
+        },
+      },
+    },
+  ];
+
+  for (const { name, runtimeDiagnostics } of cases) {
+    const rec = buildJobRecord(makeInvocation(), {
+      exitCode: 0,
+      parsed: { ok: true, result: name, structured: null, denials: [] },
+      pidInfo: makePidInfo(),
+      runtimeDiagnostics,
+      claudeSessionId: CLAUDE_UUID,
+    }, []);
+
+    assert.equal(rec.runtime_diagnostics.provider_account_identity, undefined, name);
+    assert.doesNotMatch(JSON.stringify(rec), /identity-secret|user@example\.com/, name);
+  }
+
+  const nonObjectPacketRec = buildJobRecord(makeInvocation(), {
+    exitCode: 0,
+    parsed: { ok: true, result: "non-object packet diagnostics", structured: null, denials: [] },
+    pidInfo: makePidInfo(),
+    runtimeDiagnostics: cases[0].runtimeDiagnostics,
+    claudeSessionId: CLAUDE_UUID,
+  }, []);
+  assert.equal(nonObjectPacketRec.runtime_diagnostics.source_packet_policy, undefined);
+  assert.equal(nonObjectPacketRec.runtime_diagnostics.packet_recovery, undefined);
+  assert.doesNotMatch(JSON.stringify(nonObjectPacketRec), /source-policy-secret|packet-recovery-secret/);
+});
+
 test("buildJobRecord: preserves provider workload blocked diagnostics across companion providers", () => {
   const providers = [
     [buildJobRecord, makeInvocation(), { claudeSessionId: CLAUDE_UUID }],
