@@ -32,6 +32,56 @@ function readRepoFile(relPath) {
   return readFileSync(path.join(REPO_ROOT, relPath), "utf8");
 }
 
+function functionBody(source, name) {
+  const signature = source.match(new RegExp(`function\\s+${name}\\s*\\([^)]*\\)\\s*\\{`));
+  assert.ok(signature, `missing function ${name}`);
+  const bodyStart = signature.index + signature[0].length;
+  let depth = 1;
+  let quote = null;
+  let comment = null;
+  for (let index = bodyStart; index < source.length; index += 1) {
+    const char = source[index];
+    const next = source[index + 1];
+    if (comment === "line") {
+      if (char === "\n") comment = null;
+      continue;
+    }
+    if (comment === "block") {
+      if (char === "*" && next === "/") {
+        comment = null;
+        index += 1;
+      }
+      continue;
+    }
+    if (quote !== null) {
+      if (char === "\\") {
+        index += 1;
+        continue;
+      }
+      if (char === quote) quote = null;
+      continue;
+    }
+    if (char === "/" && next === "/") {
+      comment = "line";
+      index += 1;
+      continue;
+    }
+    if (char === "/" && next === "*") {
+      comment = "block";
+      index += 1;
+      continue;
+    }
+    if (char === "\"" || char === "'" || char === "`") {
+      quote = char;
+      continue;
+    }
+    if (char === "{") depth += 1;
+    if (char === "}") depth -= 1;
+    if (depth === 0) return source.slice(bodyStart, index);
+  }
+  assert.fail(`unterminated function ${name}`);
+}
+
 function indexOfRequired(source, needle, label) {
   const index = source.indexOf(needle);
   assert.notEqual(index, -1, `${label} missing ${needle}`);
@@ -48,6 +98,27 @@ function allIndicesOf(source, needle) {
   return indices;
 }
 
+function uniqueSortedStrings(values) {
+  return [...new Set(values)].sort();
+}
+
+function numericEnvKeysParsedByFunction(source, name) {
+  const body = functionBody(source, name);
+  const keys = uniqueSortedStrings([...body.matchAll(/parsePositiveIntegerEnv\s*\(\s*env\s*,\s*"([^"]+)"/g)]
+    .map((entry) => entry[1]));
+  assert.ok(keys.length > 0, `${name} must parse at least one numeric env key`);
+  return keys;
+}
+
+function envKeysStrippedByFallbackFunction(source, name) {
+  const body = functionBody(source, name);
+  const match = body.match(/envWithoutKeys\s*\(\s*env\s*,\s*\[([\s\S]*?)\]\s*\)/);
+  assert.ok(match, `${name} must strip numeric env keys through envWithoutKeys(env, [...])`);
+  const keys = uniqueSortedStrings([...match[1].matchAll(/"([^"]+)"/g)].map((entry) => entry[1]));
+  assert.ok(keys.length > 0, `${name} must strip at least one numeric env key`);
+  return keys;
+}
+
 function parseStringSetLiteral(source, name, label) {
   const match = source.match(new RegExp(`const ${name} = new Set\\(\\[([\\s\\S]*?)\\]\\);`));
   assert.ok(match, `${label} missing ${name}`);
@@ -57,6 +128,36 @@ function parseStringSetLiteral(source, name, label) {
 function readRepoJson(relPath) {
   return JSON.parse(readRepoFile(relPath));
 }
+
+test("functionBody ignores braces inside strings and comments", () => {
+  const source = `
+function target() {
+  // }
+  return cliConfig(options, env);
+}
+function next() {
+  return webConfig(options, env);
+}
+`;
+
+  const body = functionBody(source, "target");
+  assert.match(body, /\breturn\s+cliConfig\(/);
+  assert.doesNotMatch(body, /\breturn\s+webConfig\(/);
+});
+
+test("Grok fallback configs strip every numeric env key parsed by their delegate", () => {
+  const adapterSource = readRepoFile("plugins/grok/scripts/lib/grok-transport-adapters.mjs");
+  assert.deepEqual(
+    numericEnvKeysParsedByFunction(adapterSource, "cliConfig"),
+    envKeysStrippedByFallbackFunction(adapterSource, "cliFallbackConfig"),
+    "cliFallbackConfig must strip every numeric env key parsed by cliConfig",
+  );
+  assert.deepEqual(
+    numericEnvKeysParsedByFunction(adapterSource, "webConfig"),
+    envKeysStrippedByFallbackFunction(adapterSource, "webFallbackConfig"),
+    "webFallbackConfig must strip every numeric env key parsed by webConfig",
+  );
+});
 
 const PROVIDER_RUNTIME_POLICY_ENTRYPOINTS = Object.freeze([
   Object.freeze({
@@ -672,6 +773,18 @@ test("Grok auto transport stays an adapter capability and uses shared source-tra
     adapterSource,
     /providerApiCapability\(GROK_CANONICAL_PROVIDER\)/,
     "Grok transport adapter must derive direct API credential names from canonical provider metadata",
+  );
+  const cliFallbackBody = functionBody(adapterSource, "cliFallbackConfig");
+  const webFallbackBody = functionBody(adapterSource, "webFallbackConfig");
+  assert.match(
+    cliFallbackBody,
+    /\breturn\s+cliConfig\(/,
+    "Grok CLI fallback config must delegate to cliConfig instead of copying transport facts",
+  );
+  assert.match(
+    webFallbackBody,
+    /\breturn\s+webConfig\(/,
+    "Grok web fallback config must delegate to webConfig instead of copying transport facts",
   );
   assert.doesNotMatch(
     adapterSource,

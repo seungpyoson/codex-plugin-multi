@@ -2046,7 +2046,7 @@ test("Grok runtime reads direct API credential names from provider metadata", ()
   );
   assert.match(
     transportAdapterSource,
-    /function webFallbackConfig[\s\S]{0,1800}provider:\s*["']grok-web["'],\s*canonical_provider:\s*GROK_CANONICAL_PROVIDER/,
+    /function webFallbackConfig[\s\S]{0,500}\breturn\s+webConfig\(/,
   );
   assert.match(transportAdapterSource, /providerApiCapability\(GROK_CANONICAL_PROVIDER\)/);
   assert.doesNotMatch(transportAdapterSource, /providerApiCapability\(["']grok["']\)/);

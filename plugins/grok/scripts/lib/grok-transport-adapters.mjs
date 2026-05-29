@@ -59,6 +59,12 @@ function parsePositiveIntegerEnv(env, name, fallback, unit = "number of millisec
   return parsed;
 }
 
+function envWithoutKeys(env, keys) {
+  const safeEnv = { ...env };
+  for (const key of keys) delete safeEnv[key];
+  return safeEnv;
+}
+
 function cliConfig(options = {}, env = process.env) {
   return {
     provider: GROK_CANONICAL_PROVIDER,
@@ -87,30 +93,11 @@ function cliConfig(options = {}, env = process.env) {
 }
 
 function cliFallbackConfig(options = {}, env = process.env) {
-  return {
-    provider: GROK_CANONICAL_PROVIDER,
-    canonical_provider: GROK_CANONICAL_PROVIDER,
-    display_name: "Grok CLI",
-    auth_mode: "subscription_cli",
-    selected_route: "subscription_cli",
-    transport: "cli",
-    requested_transport: options.requestedTransport ?? "cli",
-    fallback_from: options.fallbackFrom ?? null,
-    fallback_reason: options.fallbackReason ?? null,
-    binary: env.GROK_CLI_BINARY || "grok",
-    base_url: null,
-    model: env.GROK_CLI_MODEL || DEFAULT_CLI_MODEL,
-    timeout_ms: DEFAULT_TIMEOUT_MS,
-    max_prompt_chars: DEFAULT_MAX_PROMPT_CHARS,
-    max_turns: DEFAULT_CLI_MAX_TURNS,
-    prompt_budget_env: "GROK_CLI_MAX_PROMPT_CHARS",
-    default_model_env: "GROK_CLI_MODEL",
-    timeout_env: "GROK_CLI_TIMEOUT_MS",
-    legacy: false,
-    credential_ref: null,
-    credential_value: null,
-    api_capability: providerApiCapability(GROK_CANONICAL_PROVIDER),
-  };
+  return cliConfig(options, envWithoutKeys(env, [
+    "GROK_CLI_TIMEOUT_MS",
+    "GROK_CLI_MAX_PROMPT_CHARS",
+    "GROK_CLI_MAX_TURNS",
+  ]));
 }
 
 function webConfig(options = {}, env = process.env) {
@@ -146,35 +133,14 @@ function webConfig(options = {}, env = process.env) {
 }
 
 function webFallbackConfig(options = {}, env = process.env) {
-  const rawTransport = String(options.transport ?? env.GROK_TRANSPORT ?? "web").trim().toLowerCase();
-  return {
-    provider: "grok-web",
-    canonical_provider: GROK_CANONICAL_PROVIDER,
-    display_name: "Grok Web",
-    auth_mode: "subscription_web",
-    selected_route: "subscription_web",
-    transport: "web",
-    requested_transport: options.requestedTransport ?? "web",
-    fallback_from: options.fallbackFrom ?? null,
-    fallback_reason: options.fallbackReason ?? null,
-    base_url: normalizeBaseUrl(env.GROK_WEB_BASE_URL),
-    model: env.GROK_WEB_MODEL || DEFAULT_WEB_MODEL,
-    timeout_ms: DEFAULT_TIMEOUT_MS,
-    doctor_timeout_ms: DEFAULT_DOCTOR_TIMEOUT_MS,
-    chat_doctor_timeout_ms: DEFAULT_CHAT_DOCTOR_TIMEOUT_MS,
-    tunnel_start_timeout_ms: DEFAULT_TUNNEL_START_TIMEOUT_MS,
-    tunnel_cleanup_timeout_ms: DEFAULT_TUNNEL_CLEANUP_TIMEOUT_MS,
-    max_prompt_chars: DEFAULT_MAX_PROMPT_CHARS,
-    prompt_budget_env: "GROK_WEB_MAX_PROMPT_CHARS",
-    default_model_env: "GROK_WEB_MODEL",
-    timeout_env: "GROK_WEB_TIMEOUT_MS",
-    legacy: rawTransport === "legacy" || rawTransport === "tunnel" || rawTransport === "grok-web",
-    credential_ref: env.GROK_WEB_TUNNEL_API_KEY ? "GROK_WEB_TUNNEL_API_KEY" : null,
-    credential_value: env.GROK_WEB_TUNNEL_API_KEY || null,
-    grok2api_base_url: normalizeGrok2ApiBaseUrl(env.GROK2API_BASE_URL, env.GROK_WEB_BASE_URL),
-    grok2api_admin_key: env.GROK2API_ADMIN_KEY || DEFAULT_GROK2API_ADMIN_KEY,
-    api_capability: providerApiCapability(GROK_CANONICAL_PROVIDER),
-  };
+  return webConfig(options, envWithoutKeys(env, [
+    "GROK_WEB_TIMEOUT_MS",
+    "GROK_WEB_DOCTOR_TIMEOUT_MS",
+    "GROK_WEB_CHAT_DOCTOR_TIMEOUT_MS",
+    "GROK_WEB_TUNNEL_START_TIMEOUT_MS",
+    "GROK_WEB_TUNNEL_CLEANUP_TIMEOUT_MS",
+    "GROK_WEB_MAX_PROMPT_CHARS",
+  ]));
 }
 
 export function resolveGrokTransportMode(options = {}, env = process.env) {
