@@ -10,21 +10,26 @@ user-invocable: true
 EXTERNAL_MODEL_CONTRACT_VERSION=1
 
 Use skill `api-reviewers:api-reviewers-delegation`.
+## Entrypoint Contract
+Use the global installed entrypoint `node "${CODEX_HOME:-$HOME/.codex}/plugins/cache/codex-plugin-multi/api-reviewers/0.1.0/scripts/api-reviewer.mjs"`.
+Do not run bare `api-reviewer`, do not rely on `PATH`, and do not use repository-relative paths such as `plugins/api-reviewers/scripts/api-reviewer.mjs`.
+If `${CODEX_HOME:-$HOME/.codex}/plugins/cache/codex-plugin-multi/api-reviewers/0.1.0/scripts/api-reviewer.mjs` cannot be resolved, stop and report `api_reviewer_entrypoint_missing` before any source-bearing command.
+
 Run setup:
-- `api-reviewer doctor --provider deepseek`
-- `api-reviewer doctor --provider glm`
+- `node "${CODEX_HOME:-$HOME/.codex}/plugins/cache/codex-plugin-multi/api-reviewers/0.1.0/scripts/api-reviewer.mjs" doctor --provider deepseek`
+- `node "${CODEX_HOME:-$HOME/.codex}/plugins/cache/codex-plugin-multi/api-reviewers/0.1.0/scripts/api-reviewer.mjs" doctor --provider glm`
 
 Run review:
-- `api-reviewer run --provider deepseek --mode review --scope branch-diff --scope-base REF --approval-token "<approval_token.value>" --lifecycle-events markdown --prompt "<focus>"`
-- `api-reviewer run --provider glm --mode review --scope branch-diff --scope-base REF --approval-token "<approval_token.value>" --lifecycle-events markdown --prompt "<focus>"`
+- `node "${CODEX_HOME:-$HOME/.codex}/plugins/cache/codex-plugin-multi/api-reviewers/0.1.0/scripts/api-reviewer.mjs" run --provider deepseek --mode review --scope branch-diff --scope-base REF --approval-token "<approval_token.value>" --lifecycle-events markdown --prompt "<focus>"`
+- `node "${CODEX_HOME:-$HOME/.codex}/plugins/cache/codex-plugin-multi/api-reviewers/0.1.0/scripts/api-reviewer.mjs" run --provider glm --mode review --scope branch-diff --scope-base REF --approval-token "<approval_token.value>" --lifecycle-events markdown --prompt "<focus>"`
 
 Run adversarial review:
-- `api-reviewer run --provider deepseek --mode adversarial-review --scope branch-diff --scope-base REF --approval-token "<approval_token.value>" --lifecycle-events markdown --prompt "<focus>"`
-- `api-reviewer run --provider glm --mode adversarial-review --scope branch-diff --scope-base REF --approval-token "<approval_token.value>" --lifecycle-events markdown --prompt "<focus>"`
+- `node "${CODEX_HOME:-$HOME/.codex}/plugins/cache/codex-plugin-multi/api-reviewers/0.1.0/scripts/api-reviewer.mjs" run --provider deepseek --mode adversarial-review --scope branch-diff --scope-base REF --approval-token "<approval_token.value>" --lifecycle-events markdown --prompt "<focus>"`
+- `node "${CODEX_HOME:-$HOME/.codex}/plugins/cache/codex-plugin-multi/api-reviewers/0.1.0/scripts/api-reviewer.mjs" run --provider glm --mode adversarial-review --scope branch-diff --scope-base REF --approval-token "<approval_token.value>" --lifecycle-events markdown --prompt "<focus>"`
 
 Run custom-review:
-- `api-reviewer run --provider deepseek --mode custom-review --scope custom --scope-paths "<file1>,<file2>" --approval-token "<approval_token.value>" --lifecycle-events markdown --prompt "<focus>"`
-- `api-reviewer run --provider glm --mode custom-review --scope custom --scope-paths "<file1>,<file2>" --approval-token "<approval_token.value>" --lifecycle-events markdown --prompt "<focus>"`
+- `node "${CODEX_HOME:-$HOME/.codex}/plugins/cache/codex-plugin-multi/api-reviewers/0.1.0/scripts/api-reviewer.mjs" run --provider deepseek --mode custom-review --scope custom --scope-paths "<file1>,<file2>" --approval-token "<approval_token.value>" --lifecycle-events markdown --prompt "<focus>"`
+- `node "${CODEX_HOME:-$HOME/.codex}/plugins/cache/codex-plugin-multi/api-reviewers/0.1.0/scripts/api-reviewer.mjs" run --provider glm --mode custom-review --scope custom --scope-paths "<file1>,<file2>" --approval-token "<approval_token.value>" --lifecycle-events markdown --prompt "<focus>"`
 
 `<focus>` is the user's review prompt or focus area.
 Replace `<file1>,<file2>` with comma- or newline-separated concrete relative paths. Use comma- or newline-separated concrete relative `--scope-paths`; expand globs before running.

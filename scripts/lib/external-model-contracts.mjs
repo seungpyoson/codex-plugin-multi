@@ -771,7 +771,18 @@ function apiArgumentHint(workflow) {
   throw new Error(`unknown api workflow: ${workflow}`);
 }
 
-const API_REVIEWER_ENTRYPOINT = "api-reviewer";
+const API_REVIEWERS_PLUGIN_VERSION = "0.1.0";
+const API_REVIEWER_SCRIPT = `\${CODEX_HOME:-$HOME/.codex}/plugins/cache/codex-plugin-multi/api-reviewers/${API_REVIEWERS_PLUGIN_VERSION}/scripts/api-reviewer.mjs`;
+const API_REVIEWER_ENTRYPOINT = `node "${API_REVIEWER_SCRIPT}"`;
+
+function apiEntrypointContract() {
+  return lines(
+    "## Entrypoint Contract",
+    `Use the global installed entrypoint \`${API_REVIEWER_ENTRYPOINT}\`.`,
+    "Do not run bare `api-reviewer`, do not rely on `PATH`, and do not use repository-relative paths such as `plugins/api-reviewers/scripts/api-reviewer.mjs`.",
+    `If \`${API_REVIEWER_SCRIPT}\` cannot be resolved, stop and report \`api_reviewer_entrypoint_missing\` before any source-bearing command.`,
+  );
+}
 
 function apiApprovalContract() {
   return lines(
@@ -811,13 +822,14 @@ function apiCommandDoc(target) {
     description: apiCommandDescription(provider, workflow),
     "argument-hint": apiArgumentHint(workflow),
     "disable-model-invocation": "true",
-    "allowed-tools": workflow === "setup" ? "Bash(api-reviewer:*)" : "Read, Glob, Grep, Bash(api-reviewer:*), Bash(git:*), AskUserQuestion",
+    "allowed-tools": workflow === "setup" ? "Bash(node:*)" : "Read, Glob, Grep, Bash(node:*), Bash(git:*), AskUserQuestion",
   });
   const setup = workflow === "setup";
   const title = `${provider.display} ${titleForWorkflow(workflow)}`;
   if (setup) {
     return fm + lines(
       sharedHeader(title),
+      apiEntrypointContract(),
       `Run \`${API_REVIEWER_ENTRYPOINT} doctor --provider ${provider.provider}\`.`,
       "Report readiness without printing API-key values.",
       secretSafetyContract(),
@@ -843,6 +855,7 @@ function apiCommandDoc(target) {
     ];
   return fm + lines(
     sharedHeader(title),
+    apiEntrypointContract(),
     `Scope: \`${scope}\`. Preserve raw \`$ARGUMENTS\` except for documented routing.`,
     scopeClause,
     reviewOnlyContract(),
@@ -868,6 +881,7 @@ function apiSkillDoc(target) {
     return fm + lines(
       sharedHeader(title),
       `Use skill \`api-reviewers:${skillName}\`. Command doc: \`../../commands/${skillName}.md\`.`,
+      apiEntrypointContract(),
       `Run \`${API_REVIEWER_ENTRYPOINT} doctor --provider ${provider.provider}\`.`,
       "Report readiness without printing API-key values.",
       secretSafetyContract(),
@@ -887,6 +901,7 @@ function apiSkillDoc(target) {
   return fm + lines(
     sharedHeader(title),
     `Use skill \`api-reviewers:${skillName}\`. Command doc: \`../../commands/${skillName}.md\`.`,
+    apiEntrypointContract(),
     `Scope: \`${scope}\`.`,
     "`<focus>` is the user's review prompt or focus area.",
     scopeLines,
@@ -910,6 +925,7 @@ function apiDelegationSkillDoc() {
   return fm + lines(
     sharedHeader("API Reviewers Delegation"),
     "Use skill `api-reviewers:api-reviewers-delegation`.",
+    apiEntrypointContract(),
     "Run setup:",
     providerLines((provider) => `- \`${API_REVIEWER_ENTRYPOINT} doctor --provider ${provider.provider}\``),
     "",

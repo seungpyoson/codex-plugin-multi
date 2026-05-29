@@ -10,9 +10,14 @@ user-invocable: true
 EXTERNAL_MODEL_CONTRACT_VERSION=1
 
 Use skill `api-reviewers:deepseek-custom-review`. Command doc: `../../commands/deepseek-custom-review.md`.
+## Entrypoint Contract
+Use the global installed entrypoint `node "${CODEX_HOME:-$HOME/.codex}/plugins/cache/codex-plugin-multi/api-reviewers/0.1.0/scripts/api-reviewer.mjs"`.
+Do not run bare `api-reviewer`, do not rely on `PATH`, and do not use repository-relative paths such as `plugins/api-reviewers/scripts/api-reviewer.mjs`.
+If `${CODEX_HOME:-$HOME/.codex}/plugins/cache/codex-plugin-multi/api-reviewers/0.1.0/scripts/api-reviewer.mjs` cannot be resolved, stop and report `api_reviewer_entrypoint_missing` before any source-bearing command.
+
 Scope: `custom`.
 `<focus>` is the user's review prompt or focus area.
-Run `api-reviewer run --provider deepseek --mode custom-review --scope custom --scope-paths "<file1>,<file2>" --approval-token "<approval_token.value>" --lifecycle-events markdown --prompt "<focus>"`.
+Run `node "${CODEX_HOME:-$HOME/.codex}/plugins/cache/codex-plugin-multi/api-reviewers/0.1.0/scripts/api-reviewer.mjs" run --provider deepseek --mode custom-review --scope custom --scope-paths "<file1>,<file2>" --approval-token "<approval_token.value>" --lifecycle-events markdown --prompt "<focus>"`.
 Replace `<file1>,<file2>` with comma- or newline-separated concrete relative `--scope-paths`.
 Expand globs before running; do not pass glob characters or space-separated paths.
 ## Review Contract
