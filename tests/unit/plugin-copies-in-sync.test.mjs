@@ -98,6 +98,27 @@ function allIndicesOf(source, needle) {
   return indices;
 }
 
+function uniqueSortedStrings(values) {
+  return [...new Set(values)].sort();
+}
+
+function numericEnvKeysParsedByFunction(source, name) {
+  const body = functionBody(source, name);
+  const keys = uniqueSortedStrings([...body.matchAll(/parsePositiveIntegerEnv\s*\(\s*env\s*,\s*"([^"]+)"/g)]
+    .map((entry) => entry[1]));
+  assert.ok(keys.length > 0, `${name} must parse at least one numeric env key`);
+  return keys;
+}
+
+function envKeysStrippedByFallbackFunction(source, name) {
+  const body = functionBody(source, name);
+  const match = body.match(/envWithoutKeys\s*\(\s*env\s*,\s*\[([\s\S]*?)\]\s*\)/);
+  assert.ok(match, `${name} must strip numeric env keys through envWithoutKeys(env, [...])`);
+  const keys = uniqueSortedStrings([...match[1].matchAll(/"([^"]+)"/g)].map((entry) => entry[1]));
+  assert.ok(keys.length > 0, `${name} must strip at least one numeric env key`);
+  return keys;
+}
+
 function parseStringSetLiteral(source, name, label) {
   const match = source.match(new RegExp(`const ${name} = new Set\\(\\[([\\s\\S]*?)\\]\\);`));
   assert.ok(match, `${label} missing ${name}`);
@@ -122,6 +143,20 @@ function next() {
   const body = functionBody(source, "target");
   assert.match(body, /\breturn\s+cliConfig\(/);
   assert.doesNotMatch(body, /\breturn\s+webConfig\(/);
+});
+
+test("Grok fallback configs strip every numeric env key parsed by their delegate", () => {
+  const adapterSource = readRepoFile("plugins/grok/scripts/lib/grok-transport-adapters.mjs");
+  assert.deepEqual(
+    numericEnvKeysParsedByFunction(adapterSource, "cliConfig"),
+    envKeysStrippedByFallbackFunction(adapterSource, "cliFallbackConfig"),
+    "cliFallbackConfig must strip every numeric env key parsed by cliConfig",
+  );
+  assert.deepEqual(
+    numericEnvKeysParsedByFunction(adapterSource, "webConfig"),
+    envKeysStrippedByFallbackFunction(adapterSource, "webFallbackConfig"),
+    "webFallbackConfig must strip every numeric env key parsed by webConfig",
+  );
 });
 
 const PROVIDER_RUNTIME_POLICY_ENTRYPOINTS = Object.freeze([
