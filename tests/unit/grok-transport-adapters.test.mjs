@@ -121,6 +121,10 @@ test("fallback helpers expose web fallback config and redacted CLI diagnostics",
 
 test("resolveGrokFallbackConfig uses safe web defaults for early error records", () => {
   const fallback = resolveGrokFallbackConfig({ transport: "web" }, {
+    GROK_WEB_BASE_URL: "http://127.0.0.1:7654/v1",
+    GROK2API_BASE_URL: "http://127.0.0.1:8765/api",
+    GROK_WEB_MODEL: "grok-web-fallback",
+    GROK_WEB_TUNNEL_API_KEY: "tunnel-token",
     GROK_WEB_TIMEOUT_MS: "not-a-number",
     GROK_WEB_DOCTOR_TIMEOUT_MS: "not-a-number",
     GROK_WEB_CHAT_DOCTOR_TIMEOUT_MS: "not-a-number",
@@ -137,10 +141,17 @@ test("resolveGrokFallbackConfig uses safe web defaults for early error records",
   assert.equal(fallback.tunnel_start_timeout_ms, 8000);
   assert.equal(fallback.tunnel_cleanup_timeout_ms, 2000);
   assert.equal(fallback.max_prompt_chars, 400000);
+  assert.equal(fallback.base_url, "http://127.0.0.1:7654/v1");
+  assert.equal(fallback.grok2api_base_url, "http://127.0.0.1:8765");
+  assert.equal(fallback.model, "grok-web-fallback");
+  assert.equal(fallback.credential_ref, "GROK_WEB_TUNNEL_API_KEY");
+  assert.equal(fallback.credential_value, "tunnel-token");
 });
 
 test("resolveGrokFallbackConfig uses safe CLI defaults for early error records", () => {
   const fallback = resolveGrokFallbackConfig({ transport: "cli" }, {
+    GROK_CLI_BINARY: "grok-dev",
+    GROK_CLI_MODEL: "grok-cli-fallback",
     GROK_CLI_TIMEOUT_MS: "not-a-number",
     GROK_CLI_MAX_PROMPT_CHARS: "not-a-number",
     GROK_CLI_MAX_TURNS: "not-a-number",
@@ -152,6 +163,8 @@ test("resolveGrokFallbackConfig uses safe CLI defaults for early error records",
   assert.equal(fallback.timeout_ms, 900000);
   assert.equal(fallback.max_prompt_chars, 400000);
   assert.equal(fallback.max_turns, 8);
+  assert.equal(fallback.binary, "grok-dev");
+  assert.equal(fallback.model, "grok-cli-fallback");
 });
 
 test("resolveGrokConfig exposes web adapter facts and legacy aliases", () => {

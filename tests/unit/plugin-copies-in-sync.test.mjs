@@ -32,6 +32,19 @@ function readRepoFile(relPath) {
   return readFileSync(path.join(REPO_ROOT, relPath), "utf8");
 }
 
+function functionBody(source, name) {
+  const signature = source.match(new RegExp(`function\\s+${name}\\s*\\([^)]*\\)\\s*\\{`));
+  assert.ok(signature, `missing function ${name}`);
+  const bodyStart = signature.index + signature[0].length;
+  let depth = 1;
+  for (let index = bodyStart; index < source.length; index += 1) {
+    if (source[index] === "{") depth += 1;
+    if (source[index] === "}") depth -= 1;
+    if (depth === 0) return source.slice(bodyStart, index);
+  }
+  assert.fail(`unterminated function ${name}`);
+}
+
 function indexOfRequired(source, needle, label) {
   const index = source.indexOf(needle);
   assert.notEqual(index, -1, `${label} missing ${needle}`);
@@ -672,6 +685,18 @@ test("Grok auto transport stays an adapter capability and uses shared source-tra
     adapterSource,
     /providerApiCapability\(GROK_CANONICAL_PROVIDER\)/,
     "Grok transport adapter must derive direct API credential names from canonical provider metadata",
+  );
+  const cliFallbackBody = functionBody(adapterSource, "cliFallbackConfig");
+  const webFallbackBody = functionBody(adapterSource, "webFallbackConfig");
+  assert.match(
+    cliFallbackBody,
+    /\breturn\s+cliConfig\(/,
+    "Grok CLI fallback config must delegate to cliConfig instead of copying transport facts",
+  );
+  assert.match(
+    webFallbackBody,
+    /\breturn\s+webConfig\(/,
+    "Grok web fallback config must delegate to webConfig instead of copying transport facts",
   );
   assert.doesNotMatch(
     adapterSource,
