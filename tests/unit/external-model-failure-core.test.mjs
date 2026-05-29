@@ -55,6 +55,11 @@ test("classifyCompanionErrorMessage centralizes shared pre-spawn failures", () =
     error_code: "resend_confirmation_required",
     error_message: "retry needs approval",
   });
+  assert.deepEqual(classifyCompanionErrorMessage("provider_workload_blocked: claude job job-1 is already running"), {
+    status: "failed",
+    error_code: "provider_workload_blocked",
+    error_message: "claude job job-1 is already running",
+  });
   assert.deepEqual(classifyCompanionErrorMessage("unsafe_symlink:/tmp/source"), {
     status: "failed",
     error_code: "scope_failed",

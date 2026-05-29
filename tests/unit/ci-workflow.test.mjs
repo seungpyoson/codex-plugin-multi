@@ -17,6 +17,10 @@ const noMistakesConfig = readFileSync(resolve(".no-mistakes.yaml"), "utf8");
 const claudeProjectNotes = readFileSync(resolve("CLAUDE.md"), "utf8");
 const runTests = readFileSync(resolve("scripts/ci/run-tests.mjs"), "utf8");
 const coverageBaseline = JSON.parse(readFileSync(resolve("scripts/ci/coverage-baseline.json"), "utf8"));
+const credentialResolutionSchema = JSON.parse(readFileSync(
+  resolve("specs/160-stale-env-cache-refresh/contracts/credential-resolution.schema.json"),
+  "utf8",
+));
 
 const DIFF_SOURCE_PACKAGE_COPY_PATHS = [
   "plugins/api-reviewers/scripts/lib/diff-source.mjs",
@@ -80,6 +84,8 @@ test("pull-request CI runs shared-copy sync checks", () => {
   assert.match(pkg.scripts["lint:sync"] ?? "", /sync-auth-selection\.mjs --check/);
   assert.match(pkg.scripts["lint:sync"] ?? "", /sync-provider-env\.mjs --check/);
   assert.match(pkg.scripts["lint:sync"] ?? "", /sync-usage-limit\.mjs --check/);
+  assert.match(pkg.scripts["lint:sync"] ?? "", /sync-review-workload\.mjs --check/);
+  assert.match(pkg.scripts["lint:sync"] ?? "", /sync-provider-identity\.mjs --check/);
   assert.match(workflow, /npm run lint:sync/);
 });
 
@@ -227,6 +233,18 @@ test("Sonar CPD excludes intentional packaging and entrypoint copies", () => {
     "plugins/gemini/scripts/lib/privacy-redaction.mjs",
     "plugins/grok/scripts/lib/privacy-redaction.mjs",
     "plugins/kimi/scripts/lib/privacy-redaction.mjs",
+    "scripts/lib/provider-identity.mjs",
+    "plugins/api-reviewers/scripts/lib/provider-identity.mjs",
+    "plugins/claude/scripts/lib/provider-identity.mjs",
+    "plugins/gemini/scripts/lib/provider-identity.mjs",
+    "plugins/grok/scripts/lib/provider-identity.mjs",
+    "plugins/kimi/scripts/lib/provider-identity.mjs",
+    "scripts/lib/review-workload.mjs",
+    "plugins/api-reviewers/scripts/lib/review-workload.mjs",
+    "plugins/claude/scripts/lib/review-workload.mjs",
+    "plugins/gemini/scripts/lib/review-workload.mjs",
+    "plugins/grok/scripts/lib/review-workload.mjs",
+    "plugins/kimi/scripts/lib/review-workload.mjs",
     "scripts/ci/sync-review-panel.mjs",
     "scripts/review-panel.mjs",
     "scripts/lib/review-panel.mjs",
@@ -249,6 +267,14 @@ test("Sonar CPD excludes intentional packaging and entrypoint copies", () => {
   ]) {
     assert.match(sonarConfig, new RegExp(path.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
   }
+});
+
+test("credential resolution schema declares nullable credential source type", () => {
+  assert.deepEqual(credentialResolutionSchema.properties.credential_source.type, ["string", "null"]);
+  assert.deepEqual(
+    credentialResolutionSchema.properties.auth_path.properties.credential_source.type,
+    ["string", "null"],
+  );
 });
 
 test("coverage baseline records generated diff-source package copies", () => {

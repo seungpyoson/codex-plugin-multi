@@ -1,11 +1,13 @@
 import { externalModelFailureClass } from "./external-model-failure-catalog.mjs";
 import { reviewQualityFailureState } from "./external-model-review-quality.mjs";
+import { PROVIDER_WORKLOAD_BLOCKED_CODE } from "./review-workload.mjs";
 
 const CANCEL_SIGNALS = new Set(["SIGTERM", "SIGKILL", "SIGINT", "SIGHUP"]);
 const FINALIZATION_FAILED_PREFIX = "finalization_failed:";
 const APPROVAL_REQUIRED_PREFIX = "approval_required:";
 const SOURCE_PACKET_TOO_LARGE_PREFIX = "source_packet_too_large:";
 const RESEND_CONFIRMATION_REQUIRED_PREFIX = "resend_confirmation_required:";
+const PROVIDER_WORKLOAD_BLOCKED_PREFIX = `${PROVIDER_WORKLOAD_BLOCKED_CODE}:`;
 const GIT_BINARY_POLICY_PREFIX = "CODEX_PLUGIN_MULTI_GIT_BINARY ";
 const NOT_AUTHED_PREFIX = "not_authed:";
 const SANDBOX_BLOCKED_PREFIX = "sandbox_blocked:";
@@ -133,6 +135,13 @@ export function classifyCompanionErrorMessage(message, options = {}) {
       error_message: text.slice(RESEND_CONFIRMATION_REQUIRED_PREFIX.length).trim(),
     };
   }
+  if (text.startsWith(PROVIDER_WORKLOAD_BLOCKED_PREFIX)) {
+    return {
+      status: "failed",
+      error_code: PROVIDER_WORKLOAD_BLOCKED_CODE,
+      error_message: text.slice(PROVIDER_WORKLOAD_BLOCKED_PREFIX.length).trim(),
+    };
+  }
   for (const errorCode of REVIEW_SLOT_POLICY_ERROR_CODES) {
     const prefix = `${errorCode}:`;
     if (text.startsWith(prefix)) {
@@ -179,6 +188,13 @@ export function classifyCommonParsedFailure(parsed) {
     return {
       status: "failed",
       error_code: "usage_limited",
+      error_message: parsed.error ?? reason,
+    };
+  }
+  if (reason === PROVIDER_WORKLOAD_BLOCKED_CODE) {
+    return {
+      status: "failed",
+      error_code: PROVIDER_WORKLOAD_BLOCKED_CODE,
       error_message: parsed.error ?? reason,
     };
   }

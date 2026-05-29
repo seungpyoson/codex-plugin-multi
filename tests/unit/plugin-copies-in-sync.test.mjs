@@ -758,6 +758,70 @@ test("lib/usage-limit.mjs: companion packaging copies match the top-level shared
   }
 });
 
+test("lib/review-workload.mjs: reviewer packaging copies match the canonical shared source", () => {
+  const canonical = readFileSync(path.join(REPO_ROOT, "scripts/lib/review-workload.mjs"), "utf8");
+  for (const plugin of REVIEW_PROMPT_PLUGIN_TARGETS) {
+    const copy = readFileSync(
+      path.join(REPO_ROOT, `plugins/${plugin}/scripts/lib/review-workload.mjs`),
+      "utf8"
+    );
+    assert.equal(copy, canonical, `review-workload.mjs packaging copy drifted in ${plugin}`);
+  }
+});
+
+test("lib/provider-identity.mjs: reviewer packaging copies match the canonical shared source", () => {
+  const canonical = readFileSync(path.join(REPO_ROOT, "scripts/lib/provider-identity.mjs"), "utf8");
+  for (const plugin of REVIEW_PROMPT_PLUGIN_TARGETS) {
+    const copy = readFileSync(
+      path.join(REPO_ROOT, `plugins/${plugin}/scripts/lib/provider-identity.mjs`),
+      "utf8"
+    );
+    assert.equal(copy, canonical, `provider-identity.mjs packaging copy drifted in ${plugin}`);
+  }
+});
+
+test("lint:sync includes fixers for provider reliability shared files", () => {
+  const packageJson = JSON.parse(readFileSync(path.join(REPO_ROOT, "package.json"), "utf8"));
+  assert.match(packageJson.scripts["lint:sync"], /sync-review-workload\.mjs --check/);
+  assert.match(packageJson.scripts["lint:sync"], /sync-provider-identity\.mjs --check/);
+});
+
+test("source-bearing launch paths enforce provider workload admission before provider launch", () => {
+  for (const runtimePath of [
+    "plugins/api-reviewers/scripts/api-reviewer.mjs",
+    "plugins/claude/scripts/claude-companion.mjs",
+    "plugins/gemini/scripts/gemini-companion.mjs",
+    "plugins/grok/scripts/grok-web-reviewer.mjs",
+    "plugins/kimi/scripts/kimi-companion.mjs",
+  ]) {
+    const source = readFileSync(path.join(REPO_ROOT, runtimePath), "utf8");
+    assert.match(
+      source,
+      /acquireProviderWorkloadLease/,
+      `${runtimePath} must acquire the provider workload lease before source-bearing launch`,
+    );
+    assert.match(
+      source,
+      /releaseProviderWorkloadLease/,
+      `${runtimePath} must release the provider workload lease after launch completion`,
+    );
+  }
+});
+
+test("claude OAuth preflight releases provider workload lease before exit-capable finalization", () => {
+  const source = readFileSync(path.join(REPO_ROOT, "plugins/claude/scripts/claude-companion.mjs"), "utf8");
+  const branch = source.match(/if \(preflightExecution\) \{(?<body>[\s\S]*?)\n  \}\n\n  exitIfCancelledBeforeSpawn/u);
+  assert.ok(branch?.groups?.body, "Claude OAuth preflight branch not found");
+  const releaseIndex = branch.groups.body.indexOf("releaseProviderWorkloadLease(workloadLease)");
+  const finalizeIndex = branch.groups.body.indexOf("exitIfFinalizationFailed(invocation, preflightExecution");
+  assert.notEqual(releaseIndex, -1, "Claude OAuth preflight branch must release provider workload lease");
+  assert.notEqual(finalizeIndex, -1, "Claude OAuth preflight branch must finalize the preflight JobRecord");
+  assert.ok(
+    releaseIndex < finalizeIndex,
+    "Claude OAuth preflight branch must release provider workload lease before exitIfFinalizationFailed can process.exit",
+  );
+});
+
 test("lib/git-env.mjs: kimi stripped key list matches the companion shared source", () => {
   const sortKeys = (keys) => [...keys].sort((a, b) => a.localeCompare(b));
   assert.deepEqual(
