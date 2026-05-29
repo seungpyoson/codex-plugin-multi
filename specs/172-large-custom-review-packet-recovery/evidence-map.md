@@ -469,3 +469,39 @@ Verification for the post-review cleanup:
 
 This cleanup changed the branch after the exact-head review above; the next
 external review must use the new head SHA.
+
+## Grok CLI Neutral Cwd Cleanup Follow-up
+
+The first final-delta Grok review after the contract cleanup surfaced another
+real runner reliability gap:
+
+- Grok `job_d638a729-eb98-49af-a89f-438d6c38194b` sent source, then failed as a
+  review slot with `privacy_persistence`.
+- Diagnostics showed `neutral_cwd_cleanup:"unverified"`.
+- The reported `/var/folders/.../grok-cli-cwd-*` still existed and contained a
+  copied repo snapshot, including `.git`, so the failure was valid and the slot
+  was not counted.
+
+Fix:
+
+- The Grok CLI runner no longer uses non-recursive `rmdir(neutralCwd)` for the
+  generated neutral cwd.
+- It now recursively removes only directories whose parent is `tmpdir()` and
+  whose basename starts with `grok-cli-cwd-`, then verifies the directory no
+  longer exists.
+- The final schema cleanup also relaxes fingerprint `ingredients.auth_path` to
+  accept string auth paths because the shared fingerprint helper accepts string
+  callers.
+
+Verification:
+
+- RED `node --test --test-name-pattern "non-empty Grok CLI neutral cwd" tests/smoke/grok-web.smoke.test.mjs` failed before the cleanup fix.
+- RED `node --test --test-name-pattern "runtime shard approval tuple shape" tests/unit/docs-contracts.test.mjs` failed before the auth-path schema fix.
+- `node --test --test-name-pattern "non-empty Grok CLI neutral cwd" tests/smoke/grok-web.smoke.test.mjs`: passed.
+- `node --test tests/unit/provider-route-policy.test.mjs`: 42 passed, 0 failed.
+- `node --test tests/unit/docs-contracts.test.mjs tests/smoke/grok-web.smoke.test.mjs`: 207 passed, 0 failed.
+- `npm run lint:sync`: passed.
+
+Claude `7cb169a7-8b86-4784-a88a-93495333f15d` approved the previous delta with
+source sent, but that approval is stale after this cleanup. The next external
+review must use the new head SHA.

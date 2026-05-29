@@ -515,3 +515,40 @@ Verification for the post-review fixes:
 
 This post-review cleanup changes the branch after the exact-head review above;
 the next external review must use the new head SHA.
+
+## Final Delta Review Cleanup Follow-up
+
+The first final-delta Grok review against head
+`075beef7f80cb82dcfa27aeeb792eaf9395e2691` did not produce a usable approval:
+
+- Grok `job_d638a729-eb98-49af-a89f-438d6c38194b`: source sent, failed slot,
+  `privacy_persistence`.
+- Runtime diagnostics showed `neutral_cwd_cleanup:"unverified"` and the reported
+  `/var/folders/.../grok-cli-cwd-*` directory still existed with a copied repo
+  snapshot, including `.git`.
+- The leftover temp directory was removed after inspection and was not counted
+  as approval evidence.
+
+Root cause and fix:
+
+- The Grok CLI runner used `rmdir(neutralCwd)`, which only succeeds for an empty
+  directory. A source-bearing Grok CLI run can write files under the generated
+  neutral cwd, so cleanup failed closed.
+- `cleanupGrokCliNeutralCwd` now recursively removes only generated
+  `grok-cli-cwd-*` directories directly under `tmpdir()`, then verifies the path
+  no longer exists.
+- The fingerprint schema also now allows string `auth_path` ingredients because
+  `sourceSendApprovalTupleFingerprint` accepts string auth-path callers.
+
+Verification:
+
+- RED `node --test --test-name-pattern "non-empty Grok CLI neutral cwd" tests/smoke/grok-web.smoke.test.mjs` failed before the recursive cleanup fix.
+- RED `node --test --test-name-pattern "runtime shard approval tuple shape" tests/unit/docs-contracts.test.mjs` failed before the auth-path schema relaxation.
+- `node --test --test-name-pattern "non-empty Grok CLI neutral cwd" tests/smoke/grok-web.smoke.test.mjs`: passed.
+- `node --test tests/unit/provider-route-policy.test.mjs`: 42 passed, 0 failed.
+- `node --test tests/unit/docs-contracts.test.mjs tests/smoke/grok-web.smoke.test.mjs`: 207 passed, 0 failed.
+- `npm run lint:sync`: passed.
+
+Claude `7cb169a7-8b86-4784-a88a-93495333f15d` approved the prior delta with
+source sent, but that review is stale after this cleanup. The next external
+review must use the new head SHA.

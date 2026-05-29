@@ -1954,6 +1954,20 @@ async function cleanupGrokCliRuntimeHome(runtimeHome) {
   return await pathExists(runtimeHome.dir) ? "unverified" : "deleted";
 }
 
+async function cleanupGrokCliNeutralCwd(neutralCwd) {
+  if (!neutralCwd) return "not_created";
+  const tmpRoot = resolve(tmpdir());
+  if (dirname(neutralCwd) !== tmpRoot || !basename(neutralCwd).startsWith("grok-cli-cwd-")) {
+    return "unverified";
+  }
+  try {
+    await rm(neutralCwd, { recursive: true, force: true });
+  } catch {
+    return "unverified";
+  }
+  return await pathExists(neutralCwd) ? "unverified" : "deleted";
+}
+
 async function fileSha256OrNull(file) {
   try {
     return createHash("sha256").update(await readFile(file)).digest("hex");
@@ -2260,13 +2274,7 @@ async function callGrokCli(cfg, prompt, { sourceBearing = true, baseDiagnostics 
     if (promptFile && promptDir) promptCleanup = await cleanupPromptFile(promptFile, promptDir);
     grokHomeAuthSync = await syncGrokCliRuntimeAuthFile(runtimeHome);
     grokHomeCleanup = await cleanupGrokCliRuntimeHome(runtimeHome);
-    try {
-      await rmdir(neutralCwd);
-      neutralCwdCleanup = "deleted";
-    } catch (error) {
-      if (error?.code === "ENOENT") neutralCwdCleanup = "deleted";
-      else neutralCwdCleanup = "unverified";
-    }
+    neutralCwdCleanup = await cleanupGrokCliNeutralCwd(neutralCwd);
   }
   const diagnostics = {
     ...baseDiagnostics,

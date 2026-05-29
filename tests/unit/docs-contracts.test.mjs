@@ -1104,6 +1104,11 @@ test("packet recovery schema matches runtime shard approval tuple shape", () => 
   assert.deepEqual(schema.$defs.approvalTupleFingerprint.required, ["algorithm", "value", "ingredients"]);
   assert.equal(schema.$defs.approvalTupleFingerprint.properties.algorithm.const, "sha256");
   assert.equal(schema.$defs.approvalTupleFingerprint.properties.value.$ref, "#/$defs/sha256");
+  assert.ok(
+    schema.$defs.approvalTupleFingerprint.properties.ingredients.properties.auth_path.anyOf
+      .some((entry) => entry.$ref === "#/$defs/safeText"),
+    "fingerprint ingredients must allow string auth paths accepted by sourceSendApprovalTupleFingerprint",
+  );
   assert.equal(
     schema.$defs.sourcePacketSummary.required.includes("packet_hash"),
     false,

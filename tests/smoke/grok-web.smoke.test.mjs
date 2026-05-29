@@ -2760,7 +2760,7 @@ test("custom-review fails closed when source-bearing Grok CLI prompt cleanup is 
   }
 });
 
-test("custom-review fails closed when Grok CLI neutral cwd cleanup is not verified", () => {
+test("custom-review cleans non-empty Grok CLI neutral cwd after source-bearing run", () => {
   const cwd = realpathSync(mkdtempSync(path.join(tmpdir(), "grok-cli-neutral-cleanup-workspace-")));
   const dataDir = mkdtempSync(path.join(tmpdir(), "grok-cli-neutral-cleanup-data-"));
   const authHome = mkdtempSync(path.join(tmpdir(), "grok-cli-neutral-cleanup-auth-home-"));
@@ -2792,15 +2792,16 @@ test("custom-review fails closed when Grok CLI neutral cwd cleanup is not verifi
       },
     });
 
-    assert.equal(result.status, 1, result.stdout);
+    assert.equal(result.status, 0, result.stdout);
     const record = parseStdout(result);
     neutralCwd = record.runtime_diagnostics.cli_request.neutral_cwd;
-    assert.equal(record.status, "failed");
-    assert.equal(record.error_code, "privacy_persistence");
-    assert.equal(record.error_cause, "privacy_persistence");
-    assert.equal(record.runtime_diagnostics.cli_request.neutral_cwd_cleanup, "unverified");
+    assert.equal(record.status, "completed");
+    assert.equal(record.error_code, null);
+    assert.equal(record.error_cause, null);
+    assert.equal(record.runtime_diagnostics.cli_request.neutral_cwd_cleanup, "deleted");
     assert.equal(record.external_review.source_content_transmission, "sent");
     assert.doesNotMatch(JSON.stringify(record), /CLI_SOURCE_SECRET/);
+    assert.equal(existsSync(neutralCwd), false);
   } finally {
     if (neutralCwd) rmTree(neutralCwd);
     rmTree(authHome);
