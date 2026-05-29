@@ -2,7 +2,7 @@
 import { spawn, spawnSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { accessSync, constants as fsConstants, realpathSync } from "node:fs";
-import { chmod, copyFile, lstat, mkdir, open, readFile, readdir, realpath, rename, rm, rmdir, stat, unlink, writeFile } from "node:fs/promises";
+import { copyFile, lstat, mkdir, open, readFile, readdir, realpath, rename, rm, rmdir, stat, unlink, writeFile } from "node:fs/promises";
 import { homedir, hostname, tmpdir } from "node:os";
 import { basename, delimiter, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -1889,8 +1889,7 @@ async function syncGrokCliRuntimeAuthFile(runtimeHome) {
   if (sourceHash === runtimeHash) return "unchanged";
   const tmpAuth = resolve(runtimeHome.source_home, `.auth.json.codex-sync-${randomUUID()}.tmp`);
   try {
-    await copyFile(runtimeAuth, tmpAuth);
-    await chmod(tmpAuth, 0o600);
+    await writeFile(tmpAuth, await readFile(runtimeAuth), { mode: 0o600, flag: "wx" });
     await rename(tmpAuth, sourceAuth);
     return "updated";
   } catch {
@@ -1998,30 +1997,29 @@ async function grokCliReadinessPreflight(cfg, env = process.env) {
     );
   }
   const modelsInfo = parseGrokCliModels(models.stdout, cfg);
+  const ignoredEnvCredentials = ignoredGrokDirectApiEnvKeys(cfg, env);
+  if (authFreshness.status === "expired") {
+    return providerFailureWithDiagnostic(
+      "grok_cli_auth_expired",
+      grokCliAuthExpiredMessage(cfg, env),
+      null,
+      null,
+      false,
+      {
+        transport: "cli",
+        grok_version: versionText,
+        model: cfg.model,
+        default_model: modelsInfo.default_model,
+        logged_in: modelsInfo.logged_in,
+        model_ready: modelsInfo.model_ready,
+        configured_timeout_ms: cfg.timeout_ms,
+        ignored_env_credentials: ignoredEnvCredentials,
+        auth_policy: ignoredEnvCredentials.length > 0 ? "api_key_env_ignored" : null,
+        auth_freshness: authFreshness,
+      },
+    );
+  }
   if (isGrokCliLoginRequired(modelsInfo)) {
-    const ignoredEnvCredentials = ignoredGrokDirectApiEnvKeys(cfg, env);
-    const expiredAuth = authFreshness.status === "expired";
-    if (expiredAuth) {
-      return providerFailureWithDiagnostic(
-        "grok_cli_auth_expired",
-        grokCliAuthExpiredMessage(cfg, env),
-        null,
-        null,
-        false,
-        {
-          transport: "cli",
-          grok_version: versionText,
-          model: cfg.model,
-          default_model: modelsInfo.default_model,
-          logged_in: false,
-          model_ready: modelsInfo.model_ready,
-          configured_timeout_ms: cfg.timeout_ms,
-          ignored_env_credentials: ignoredEnvCredentials,
-          auth_policy: ignoredEnvCredentials.length > 0 ? "api_key_env_ignored" : null,
-          auth_freshness: authFreshness,
-        },
-      );
-    }
     return providerFailureWithDiagnostic(
       "grok_cli_login_required",
       grokCliLoginRequiredMessage(cfg, env),

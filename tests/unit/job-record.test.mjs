@@ -1833,6 +1833,67 @@ test("buildJobRecord: malformed provider workload holder fields are nulled acros
   }
 });
 
+test("buildJobRecord: provider workload reason and holder started_at are redacted across companion providers", () => {
+  const secretName = "CODEX_PLUGIN_MULTI_WORKLOAD_SECRET";
+  const oldSecret = process.env[secretName];
+  process.env[secretName] = "secret-workload-value";
+  const providers = [
+    [buildJobRecord, makeInvocation(), { claudeSessionId: CLAUDE_UUID }],
+    [
+      buildGeminiJobRecord,
+      makeInvocation({ target: "gemini", binary: "gemini", review_prompt_provider: "Gemini CLI" }),
+      { geminiSessionId: GEMINI_UUID },
+    ],
+    [
+      buildKimiJobRecord,
+      makeInvocation({ target: "kimi", binary: "kimi", review_prompt_provider: "Kimi Code" }),
+      { kimiSessionId: "kimi-session-123" },
+    ],
+  ];
+
+  try {
+    for (const [providerBuildJobRecord, invocation, sessionFields] of providers) {
+      const rec = providerBuildJobRecord(invocation, {
+        exitCode: null,
+        parsed: {
+          ok: false,
+          reason: "provider_workload_blocked",
+          error: "provider workload blocked by secret-workload-value",
+          structured: null,
+          denials: [],
+        },
+        pidInfo: null,
+        runtimeDiagnostics: {
+          provider_workload: {
+            reason: "secret-workload-value-active",
+            holder: {
+              provider: invocation.target,
+              job_id: "held-job",
+              pid: 12345,
+              hostname: "host",
+              cwd: "/tmp/src",
+              started_at: "2026-05-29T00:00:00.000Z-secret-workload-value",
+              lock_file: "/tmp/provider.json",
+            },
+          },
+        },
+        errorMessage: "provider_workload_blocked: source-bearing review is already active",
+        ...sessionFields,
+      }, []);
+
+      assert.equal(rec.runtime_diagnostics.provider_workload.reason, "[REDACTED]-active");
+      assert.equal(
+        rec.runtime_diagnostics.provider_workload.holder.started_at,
+        "2026-05-29T00:00:00.000Z-[REDACTED]",
+      );
+      assert.doesNotMatch(JSON.stringify(rec), /secret-workload-value/);
+    }
+  } finally {
+    if (oldSecret == null) delete process.env[secretName];
+    else process.env[secretName] = oldSecret;
+  }
+});
+
 test("buildJobRecord: provider workload diagnostics without holder preserve the reason only", () => {
   const rec = buildJobRecord(makeInvocation(), {
     exitCode: null,

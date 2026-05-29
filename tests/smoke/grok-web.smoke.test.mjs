@@ -991,6 +991,14 @@ test("doctor syncs source-free refreshed Grok CLI auth file back to source auth 
   }
 });
 
+test("Grok auth sync writes refreshed auth temp file privately before rename", () => {
+  const source = readFileSync(COMPANION_RUNTIME, "utf8");
+  const body = source.match(/async function syncGrokCliRuntimeAuthFile\(runtimeHome\) \{(?<body>[\s\S]*?)\n\}/u)?.groups?.body;
+  assert.ok(body, "syncGrokCliRuntimeAuthFile body not found");
+  assert.doesNotMatch(body, /copyFile\(runtimeAuth, tmpAuth\)/);
+  assert.match(body, /writeFile\(tmpAuth, await readFile\(runtimeAuth\), \{[\s\S]*mode: 0o600,[\s\S]*flag: "wx"/u);
+});
+
 test("doctor fails fast on expired Grok CLI auth without starting OAuth preflight", () => {
   const dataDir = mkdtempSync(path.join(tmpdir(), "grok-cli-expired-auth-recovery-data-"));
   const authHome = mkdtempSync(path.join(tmpdir(), "grok-cli-expired-auth-recovery-auth-home-"));
@@ -1148,6 +1156,61 @@ test("custom-review fails fast on expired Grok CLI auth without starting OAuth p
     assert.equal(record.runtime_diagnostics.cli_request.auth_policy, "api_key_env_ignored");
     assert.match(record.suggested_action, /grok login/i);
     assert.doesNotMatch(result.stdout, /CLI_SOURCE_SECRET|xai-direct-api-key-must-not-leak/);
+
+    const logLines = readGrokCliLog(logPath);
+    assert.deepEqual(logLines.filter((line) => Array.isArray(line.args)).map((line) => line.args[0]), [
+      "--version", "models",
+    ]);
+    assert.equal(logLines.some((line) => line.promptPath), false);
+  } finally {
+    rmTree(authHome);
+    rmTree(cwd);
+    rmTree(dataDir);
+  }
+});
+
+test("custom-review fails fast when Grok CLI reports logged in but persisted auth is expired", () => {
+  const cwd = realpathSync(mkdtempSync(path.join(tmpdir(), "grok-cli-logged-in-expired-auth-workspace-")));
+  const dataDir = mkdtempSync(path.join(tmpdir(), "grok-cli-logged-in-expired-auth-data-"));
+  const authHome = mkdtempSync(path.join(tmpdir(), "grok-cli-logged-in-expired-auth-home-"));
+  const { binDir, grokPath, logPath } = makeFakeGrokCli({
+    sourceFreeAuthStderr: GROK_SOURCE_FREE_AUTH_TIMEOUT_STDERR,
+  });
+  writeFileSync(path.join(cwd, "review.js"), "export const marker = 'CLI_SOURCE_SECRET';\n");
+  writeExpiredGrokCliAuthFixture(authHome);
+
+  try {
+    const result = run([
+      "run",
+      "--mode", "custom-review",
+      "--scope", "custom",
+      "--scope-paths", "review.js",
+      "--foreground",
+      "--prompt", "Review selected source.",
+    ], {
+      cwd,
+      defaultTransport: false,
+      env: {
+        PATH: `${binDir}${path.delimiter}${process.env.PATH ?? ""}`,
+        GROK_CLI_BINARY: grokPath,
+        GROK_CLI_AUTH_HOME: authHome,
+        GROK_PLUGIN_DATA: dataDir,
+      },
+    });
+
+    assert.equal(result.status, 1, result.stdout);
+    const record = parseStdout(result);
+    assert.equal(record.status, "failed");
+    assert.equal(record.error_code, "grok_cli_auth_expired");
+    assert.equal(record.error_cause, "grok_cli");
+    assert.equal(record.external_review.source_content_transmission, "not_sent");
+    assert.equal(record.runtime_diagnostics.cli_request.logged_in, true);
+    assert.equal(record.runtime_diagnostics.cli_request.model_ready, true);
+    assert.equal(record.runtime_diagnostics.cli_request.auth_freshness.status, "expired");
+    assert.equal(record.runtime_diagnostics.cli_request.prompt_cleanup, null);
+    assert.equal(record.runtime_diagnostics.cli_request.grok_home_cleanup, null);
+    assert.match(record.suggested_action, /grok login/i);
+    assert.doesNotMatch(JSON.stringify(record), /CLI_SOURCE_SECRET|OSStatus error -10661|Login timed out/);
 
     const logLines = readGrokCliLog(logPath);
     assert.deepEqual(logLines.filter((line) => Array.isArray(line.args)).map((line) => line.args[0]), [

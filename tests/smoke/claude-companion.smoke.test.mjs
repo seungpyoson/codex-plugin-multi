@@ -21,6 +21,10 @@ import {
   apiKeyAuthMode as claudeApiKeyAuthMode,
   subscriptionAuthMode as claudeSubscriptionAuthMode,
 } from "../../plugins/claude/scripts/lib/auth-selection.mjs";
+import {
+  acquireProviderWorkloadLease,
+  releaseProviderWorkloadLease,
+} from "../../scripts/lib/review-workload.mjs";
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const COMPANION = path.join(REPO_ROOT, "plugins/claude/scripts/claude-companion.mjs");
@@ -302,6 +306,49 @@ test("custom-review prompt includes selected source content", () => {
     assert.equal(record.status, "completed");
     assert.equal(record.external_review.source_content_transmission, "sent");
   } finally {
+    cleanup(dataDir);
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("custom-review maps held Claude workload lease to provider_workload_blocked without spawn", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "claude-workload-block-cwd-"));
+  const dataDir = mkdtempSync(path.join(tmpdir(), "claude-workload-block-data-"));
+  const workloadLockDir = path.join(dataDir, "provider-workload");
+  seedMinimalRepo(cwd);
+  const admission = acquireProviderWorkloadLease({
+    provider: "claude",
+    jobId: "held-claude-job",
+    cwd,
+    sourceBearing: true,
+    env: { CODEX_PLUGIN_MULTI_PROVIDER_WORKLOAD_LOCK_DIR: workloadLockDir },
+  });
+  assert.equal(admission.ok, true);
+
+  try {
+    const { stdout, stderr, status } = runCompanion(
+      ["run", "--mode=custom-review", "--foreground", "--model", "claude-haiku-4-5-20251001",
+       "--cwd", cwd, "--scope-paths", "seed.txt", "--", "review selected source"],
+      {
+        cwd,
+        dataDir,
+        env: {
+          CODEX_PLUGIN_MULTI_PROVIDER_WORKLOAD_LOCK_DIR: workloadLockDir,
+          CLAUDE_MOCK_ASSERT_PROMPT_INCLUDES: "MUST_NOT_REACH_CLAUDE",
+        },
+      },
+    );
+
+    assert.equal(status, 2, `exit ${status}: stderr=${stderr}; stdout=${stdout}`);
+    const record = JSON.parse(stdout);
+    assert.equal(record.status, "failed");
+    assert.equal(record.error_code, "provider_workload_blocked");
+    assert.equal(record.external_review.source_content_transmission, "not_sent");
+    assert.equal(record.runtime_diagnostics.provider_workload.reason, "active_same_provider_job");
+    assert.equal(record.runtime_diagnostics.provider_workload.holder.job_id, "held-claude-job");
+    assert.doesNotMatch(stdout, /MUST_NOT_REACH_CLAUDE|external_review_launched/);
+  } finally {
+    releaseProviderWorkloadLease(admission.lease);
     cleanup(dataDir);
     rmSync(cwd, { recursive: true, force: true });
   }

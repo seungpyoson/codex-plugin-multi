@@ -1573,9 +1573,9 @@ async function executeRun(invocation, prompt, { foreground, lifecycleEvents = nu
     );
     const { metaError, stateError } = commitJobRecord(workspaceRoot, jobId, finalRecord);
     writeExecutionSidecars(workspaceRoot, jobId, preflightExecution);
-    exitIfFinalizationFailed(invocation, preflightExecution, finalRecord, mutationContext, executionScope, { metaError, stateError });
     releaseProviderWorkloadLease(workloadLease);
     workloadLease = null;
+    exitIfFinalizationFailed(invocation, preflightExecution, finalRecord, mutationContext, executionScope, { metaError, stateError });
     cleanupExecutionResources(executionScope, mutationContext);
     if (foreground) printLifecycleJson(finalRecord, lifecycleEvents);
     process.exit(2);

@@ -518,12 +518,12 @@ function normalizeProviderWorkloadDiagnostic(input, redactText = (value) => valu
     pid: Number.isSafeInteger(holderInput.pid) ? holderInput.pid : null,
     hostname: typeof holderInput.hostname === "string" ? redactText(holderInput.hostname) : null,
     cwd: typeof holderInput.cwd === "string" ? redactText(holderInput.cwd) : null,
-    started_at: typeof holderInput.started_at === "string" ? holderInput.started_at : null,
+    started_at: typeof holderInput.started_at === "string" ? redactText(holderInput.started_at) : null,
     lock_file: typeof holderInput.lock_file === "string" ? redactText(holderInput.lock_file) : null,
   } : null;
 
   return {
-    reason: typeof input.reason === "string" ? input.reason : null,
+    reason: typeof input.reason === "string" ? redactText(input.reason) : null,
     holder,
   };
 }

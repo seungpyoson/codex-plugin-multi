@@ -798,6 +798,20 @@ test("source-bearing launch paths enforce provider workload admission before pro
   }
 });
 
+test("claude OAuth preflight releases provider workload lease before exit-capable finalization", () => {
+  const source = readFileSync(path.join(REPO_ROOT, "plugins/claude/scripts/claude-companion.mjs"), "utf8");
+  const branch = source.match(/if \(preflightExecution\) \{(?<body>[\s\S]*?)\n  \}\n\n  exitIfCancelledBeforeSpawn/u);
+  assert.ok(branch?.groups?.body, "Claude OAuth preflight branch not found");
+  const releaseIndex = branch.groups.body.indexOf("releaseProviderWorkloadLease(workloadLease)");
+  const finalizeIndex = branch.groups.body.indexOf("exitIfFinalizationFailed(invocation, preflightExecution");
+  assert.notEqual(releaseIndex, -1, "Claude OAuth preflight branch must release provider workload lease");
+  assert.notEqual(finalizeIndex, -1, "Claude OAuth preflight branch must finalize the preflight JobRecord");
+  assert.ok(
+    releaseIndex < finalizeIndex,
+    "Claude OAuth preflight branch must release provider workload lease before exitIfFinalizationFailed can process.exit",
+  );
+});
+
 test("lib/git-env.mjs: kimi stripped key list matches the companion shared source", () => {
   const sortKeys = (keys) => [...keys].sort((a, b) => a.localeCompare(b));
   assert.deepEqual(
