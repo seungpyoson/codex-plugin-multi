@@ -955,10 +955,9 @@ test("cost and quota docs require safe diagnostics and explicit billing action",
 
 test("direct API e2e docs use the global installed script entrypoint and canonical GLM key", () => {
   const doc = readRepoFile("docs/e2e.md");
-  const apiPluginVersion = readRepoJson("plugins/api-reviewers/.codex-plugin/plugin.json").version;
-  const escapedVersion = apiPluginVersion.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
-  assert.match(doc, new RegExp(`API_REVIEWER="\\$\\{CODEX_HOME:-\\$HOME/\\.codex\\}/plugins/cache/codex-plugin-multi/api-reviewers/${escapedVersion}/scripts/api-reviewer\\.mjs"`));
+  assert.match(doc, /API_REVIEWERS_VERSION="\$\(node -p 'require\("\.\/plugins\/api-reviewers\/\.codex-plugin\/plugin\.json"\)\.version'\)"/);
+  assert.match(doc, /API_REVIEWER="\$\{CODEX_HOME:-\$HOME\/\.codex\}\/plugins\/cache\/codex-plugin-multi\/api-reviewers\/\$\{API_REVIEWERS_VERSION\}\/scripts\/api-reviewer\.mjs"/);
   assert.match(doc, /node "\$API_REVIEWER" doctor --provider deepseek/);
   assert.match(doc, /node "\$API_REVIEWER" doctor --provider glm/);
   assert.doesNotMatch(doc, /^api-reviewer /m);
