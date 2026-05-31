@@ -189,6 +189,48 @@ describe("diffSourceFiles truncation", () => {
     assert.ok(content.includes("[Diff truncated"), "should have truncation marker");
     assert.ok(content.includes("@@"), "should keep at least the first hunk header");
   });
+
+  test("large diff truncation does not emit a partial UTF-8 character", async () => {
+    const { mkdtempSync, writeFileSync } = await import("node:fs");
+    const { join } = await import("node:path");
+    const { execFileSync } = await import("node:child_process");
+
+    const tmpdir = mkdtempSync("/tmp/diff-source-utf8-trunc-");
+    const git = (args) => execFileSync("git", args, { cwd: tmpdir, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], maxBuffer: 64 * 1024 * 1024 });
+    git(["init"]);
+    git(["config", "user.email", "test@test.com"]);
+    git(["config", "user.name", "Test"]);
+
+    writeFileSync(join(tmpdir, "big.txt"), "initial\n");
+    git(["add", "big.txt"]);
+    git(["commit", "-m", "initial"]);
+
+    const keepBytes = 256 * 1024;
+    const euroBytes = Buffer.from("€", "utf8");
+    writeFileSync(join(tmpdir, "big.txt"), `€${"y".repeat(600 * 1024)}\n`);
+    const stat = git(["diff", "--stat", "HEAD", "--", "big.txt"]).trim().split("\n")[0] ?? "";
+    const diff = git(["diff", "-U5", "HEAD", "--", "big.txt"]);
+    const prefixBytes = Buffer.from(`${stat}\n\n${diff}`, "utf8").indexOf(euroBytes);
+    assert.ok(prefixBytes > 0, "test setup should find the multibyte sentinel in the diff");
+
+    const fillerBytes = keepBytes - prefixBytes - 1;
+    assert.ok(fillerBytes > 0, "test setup should place sentinel inside truncation boundary");
+    writeFileSync(join(tmpdir, "big.txt"), `${"x".repeat(fillerBytes)}€${"y".repeat(600 * 1024)}\n`);
+    const finalStat = git(["diff", "--stat", "HEAD", "--", "big.txt"]).trim().split("\n")[0] ?? "";
+    const finalDiff = git(["diff", "-U5", "HEAD", "--", "big.txt"]);
+    const finalBytes = Buffer.from(`${finalStat}\n\n${finalDiff}`, "utf8");
+    const euroIndex = finalBytes.indexOf(euroBytes);
+    assert.ok(euroIndex < keepBytes && keepBytes < euroIndex + euroBytes.length, "test setup should split the sentinel at truncation boundary");
+
+    git(["add", "big.txt"]);
+    git(["commit", "-m", "huge utf8 change"]);
+
+    const files = diffSourceFiles(tmpdir, "HEAD~1");
+    assert.equal(files.length, 1);
+    const content = files[0].content.toString("utf8");
+    assert.ok(content.includes("[Diff truncated"), "should have truncation marker");
+    assert.doesNotMatch(content.split("\n\n[Diff truncated")[0], /\uFFFD$/, "truncated content should not end with replacement character");
+  });
 });
 
 // ─── Integration: non-git dir, scope filter ───

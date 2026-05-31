@@ -145,3 +145,41 @@ MVP is the shared Provider Policy Interface plus route-ladder and packet-policy
 tests proving exact policy parity across all six providers. Grok and Kimi
 symptom fixes are separate only after evidence satisfies the Clear Reason
 Standard.
+
+## Phase 9: Relay Claude-Host Walking Skeleton
+
+**Goal**: Add the smallest Claude-Code-host `relay-gemini` vertical slice while preserving the existing Codex suite unchanged.
+
+**Independent test**: host-env unit tests, generated-artifact contract tests, Codex sync checks, and eventually a real Claude Code install/command-registration smoke.
+
+- [x] T054 [US5] Add RED host-env tests for Claude Code detection, Claude plugin data root, and Claude session id mapping in `tests/unit/claude-env.test.mjs`. Evidence: RED failed with missing `scripts/lib/claude-env.mjs`.
+- [x] T055 [US5] Implement `scripts/lib/claude-env.mjs` with `isClaudeCodeHost`, Claude plugin data root, and Claude session id helpers.
+- [x] T056 [US5] Add relay build-plan contract tests for Claude `relay-gemini` manifest and command-token rendering in `tests/unit/relay-build-contracts.test.mjs`. Evidence: RED failed with missing `scripts/lib/relay-build.mjs`.
+- [x] T057 [US5] Implement first relay build helper for Claude `relay-gemini` artifacts without modifying Codex `plugins/gemini/` output.
+- [x] T058 [US5] Add containment/protected-mode contract test proving Claude command invocation carries prompt/source payload outside inline shell argv. Evidence: RED failed on inline `-- "<focus text>"`; GREEN passes with `--prompt-file "$RELAY_PROMPT_FILE"` and Gemini prompt-file smoke.
+- [x] T059 [US5] Run focused verification: `node --test tests/unit/claude-env.test.mjs tests/unit/relay-build-contracts.test.mjs`; `node --test --test-name-pattern "gemini review foreground" tests/smoke/gemini-companion.smoke.test.mjs`. Evidence: 8/8 unit passed; 9/9 focused Gemini smoke passed.
+- [x] T060 [US5] Run regression gates for touched shared sources: `npm run lint:sync` and `git diff --check`. Evidence: both passed; `npm test` passed 2474 tests (2462 passed, 12 skipped).
+
+## Phase 10: Relay Gemini Artifact Emission
+
+**Goal**: Materialize the first Claude-Code-host artifact so `relay-gemini` can be validated as a real plugin tree, not only a renderer helper.
+
+**Independent test**: artifact-emission unit test, generated `relay/relay-gemini` tree inspection, `claude plugin validate`, Codex sync checks, and default tests.
+
+- [x] T061 [US5] Add RED artifact-emission test proving `relay/relay-gemini` contains `.claude-plugin/plugin.json`, Claude command filenames, Gemini runtime scripts/config/policies, and no `.codex-plugin`. Evidence: RED failed with missing `buildRelayPlugin` export.
+- [x] T062 [US5] Implement relay artifact builder and CLI script for `relay-gemini`.
+- [x] T063 [US5] Generate `relay/relay-gemini` and validate it with `claude plugin validate relay/relay-gemini`. Evidence: `npm run build:relay -- gemini`; `claude plugin validate --strict relay/relay-gemini` passed; `claude --plugin-dir relay/relay-gemini plugin details relay-gemini` listed 7 components.
+- [x] T064 [US5] Re-run focused tests, `npm run lint:sync`, `git diff --check`, and `npm test`. Evidence: 9/9 focused unit passed, 9/9 focused Gemini smoke passed, lint/diff passed, `npm test` passed 2475 tests (2463 passed, 12 skipped).
+
+## Phase 11: Relay Suite Fan-Out
+
+**Goal**: Emit the complete Claude relay provider suite after the `relay-gemini` skeleton proves the pattern.
+
+**Independent test**: suite-emission unit tests, provider-specific command rewrite checks, Claude plugin validation/details for all emitted relay plugins, Codex sync checks, and default tests.
+
+- [x] T065 [US5] Add RED suite-emission tests proving `relay-gemini`, `relay-grok`, `relay-kimi`, `relay-glm`, and `relay-deepseek` emit, while no `relay-claude` emits. Evidence: RED failed with missing `buildRelaySuite` export; GREEN emits exactly the five relay providers.
+- [x] T066 [US5] Add RED command rewrite checks for Grok/Kimi/direct-API relay commands: no `CODEX_HOME`, no repo-relative `plugins/.../scripts`, no inline prompt argv, and direct APIs split by provider. Evidence: GREEN asserts no Codex-root, repo-relative runtime path, or inline prompt argv remains in rendered relay command docs.
+- [x] T067 [US5] Implement suite builder fan-out and provider-specific command filtering. Evidence: `buildRelaySuite` emits `relay-gemini`, `relay-grok`, `relay-kimi`, `relay-glm`, and `relay-deepseek`; GLM/DeepSeek command filters split the shared direct-API source plugin by provider prefix.
+- [x] T068 [US5] Add prompt-file CLI support for relay-used Grok, Kimi, and direct API reviewer launch paths. Evidence: Grok, Kimi, and API reviewer launch paths accept `--prompt-file`; focused companion and relay-build contract tests pass.
+- [x] T069 [US5] Generate all relay plugins and validate/details each with Claude Code. Evidence: `npm run build:relay`; `claude plugin validate --strict relay/relay-{gemini,grok,kimi,glm,deepseek}` passed; `claude --plugin-dir relay/relay-<provider> plugin details relay-<provider>` listed components for all five.
+- [x] T070 [US5] Re-run focused tests, `npm run lint:sync`, `git diff --check`, and `npm test`. Evidence: focused unit/companion tests passed; generated command scan found no forbidden strings; lint/diff passed; `npm test` passed 2478 tests (2466 passed, 12 skipped).

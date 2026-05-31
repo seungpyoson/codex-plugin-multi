@@ -107,7 +107,7 @@ export function diffSourceFiles(sourceCwd, baseRef = DEFAULT_BASE_REF, opts = {}
     const content = Buffer.from(header + diff, "utf8");
     const TRUNCATION_KEEP_BYTES = 256 * 1024;
     if (content.length > MAX_DIFF_BYTES) {
-      const kept = content.subarray(0, TRUNCATION_KEEP_BYTES).toString("utf8");
+      const kept = content.subarray(0, TRUNCATION_KEEP_BYTES).toString("utf8").replace(/\uFFFD$/, "");
       const marker = `\n\n[Diff truncated: ${content.length} bytes exceeds ${MAX_DIFF_BYTES} byte cap. Showing first ${TRUNCATION_KEEP_BYTES} bytes. Review this file separately.]`;
       files.push({ path: filePath, content: Buffer.from(kept + marker, "utf8") });
       continue;

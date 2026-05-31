@@ -1118,6 +1118,44 @@ test("review panel companion fallback finds records from git root when workspace
   rmSync(jobsRoot, { recursive: true, force: true });
 });
 
+test("review panel companion fallback accepts git root with .git symlink directory", () => {
+  const repo = mkdtempSync(join(tmpdir(), "review-panel-repo-symlink-git-"));
+  const actualGitDir = mkdtempSync(join(tmpdir(), "review-panel-actual-git-"));
+  writeFileSync(join(actualGitDir, "HEAD"), "ref: refs/heads/main\n");
+  symlinkSync(actualGitDir, join(repo, ".git"), "dir");
+  const subdir = join(repo, "packages", "tool");
+  mkdirSync(subdir, { recursive: true });
+  const stateId = companionStateIdForWorkspaceRoot(repo);
+  const fallbackRoot = join(tmpdir(), "claude-companion");
+  const jobsRoot = join(fallbackRoot, stateId);
+
+  writeCompanionFallbackRecord(fallbackRoot, {
+    job_id: "job_claude-symlink-git-4000-8000-000000000000",
+    provider: "claude",
+    status: "completed",
+    workspace_root: repo,
+    result: "Verdict: APPROVE",
+  }, stateId);
+
+  const records = collectReviewPanelRecords({
+    cwd: subdir,
+    env: {
+      ...process.env,
+      GEMINI_PLUGIN_DATA: mkdtempSync(join(tmpdir(), "review-panel-empty-gemini-")),
+      KIMI_PLUGIN_DATA: mkdtempSync(join(tmpdir(), "review-panel-empty-kimi-")),
+      GROK_PLUGIN_DATA: mkdtempSync(join(tmpdir(), "review-panel-empty-grok-")),
+      API_REVIEWERS_PLUGIN_DATA: mkdtempSync(join(tmpdir(), "review-panel-empty-api-")),
+      CLAUDE_PLUGIN_DATA: "",
+    },
+  });
+
+  assert.deepEqual(records.map((record) => record.job_id), [
+    "job_claude-symlink-git-4000-8000-000000000000",
+  ]);
+
+  rmSync(jobsRoot, { recursive: true, force: true });
+});
+
 test("review panel direct providers honor explicit empty plugin data paths", () => {
   const workspace = mkdtempSync(join(tmpdir(), "review-panel-workspace-"));
   writeRecord(workspace, {

@@ -198,6 +198,43 @@ blocker and one Kimi combined-packet timeout. The Grok blocker was applied to
 APPROVE verdicts. Runtime implementation may start, constrained to the approved
 #171 shared-policy scope and TDD task order.
 
+## Relay Claude-Host Build Slice
+
+The relay build brief extends #171 from provider-policy parity into dual-host
+emission. The implementation must keep the existing Codex suite unchanged while
+adding a Claude-Code-host suite generated from shared sources.
+
+Locked scope for this slice:
+
+- New suite name: `relay`, with Claude plugins `relay-gemini`, `relay-grok`,
+  `relay-kimi`, `relay-glm`, and `relay-deepseek`.
+- Codex emission remains independent and must not require Claude Code.
+- Claude emission must not require Codex, `CODEX_HOME`, or `~/.codex`.
+- The Claude suite drops the Claude provider plugin to avoid self-delegation.
+- The consolidated `api-reviewers` plugin must split into peer Claude plugins
+  for GLM and DeepSeek before the Claude suite is considered complete.
+- Host-forced command separator divergence is allowed: Claude uses
+  `/relay-gemini:review`; Codex uses `/relay-gemini-review`.
+
+Milestone 1 is a walking skeleton for `relay-gemini` in the Claude host. It
+must prove the remaining host unknowns before broad generator fan-out:
+
+1. Add host-environment detection for Claude Code (`CLAUDECODE=1`) and Claude
+   plugin data/session env selection.
+2. Generate a Claude-compatible `relay-gemini` plugin manifest and command
+   surface from the existing Gemini source without changing the Codex Gemini
+   output.
+3. Pass prompt/source data through stdin, temp file, or env-mediated payloads,
+   not inline shell argv, so protected-mode hooks cannot reject command strings
+   containing user prompt tokens.
+4. Verify command registration, source-send approval, containment, and one
+   explicit fallback-funnel path in a real Claude Code install before fanning
+   out to the other providers.
+
+This slice inherits #171 policy constraints: no silent fallback, no automatic
+paid billing, provider differences only through adapter capability facts, and
+TDD vertical slices only.
+
 ## #180 Follow-Up Slice
 
 #180 reopens the planning gate only for review-slot disposition and

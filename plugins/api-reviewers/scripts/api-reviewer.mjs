@@ -955,6 +955,24 @@ function parseArgs(argv) {
   return out;
 }
 
+async function optionsWithPromptFile(options) {
+  const promptFile = options["prompt-file"];
+  if (promptFile === undefined) return options;
+  if (hasPromptText(options.prompt)) {
+    throw runBadArgs("bad_args: pass prompt either with --prompt-file or --prompt, not both");
+  }
+  let promptText;
+  try {
+    promptText = (await readFile(promptFile, "utf8")).trim();
+  } catch (e) {
+    throw runBadArgs(`bad_args: could not read --prompt-file: ${e.message}`);
+  }
+  if (!hasPromptText(promptText)) {
+    throw runBadArgs("bad_args: --prompt-file must contain a non-empty prompt");
+  }
+  return { ...options, prompt: promptText };
+}
+
 function assertSafeOptionKey(key, token) {
   if (!key || key === "__proto__" || key === "prototype" || key === "constructor") {
     throw new Error(`unsupported option ${token}`);
@@ -4013,6 +4031,7 @@ async function cmdApprovalRequest(options) {
     const providerConfigResult = await loadApprovalProviderConfig(provider);
     const cfg = providerConfigResult.cfg;
     configuredSecretNames = providerConfigResult.configuredSecretNames;
+    options = await optionsWithPromptFile(options);
     if (!hasPromptText(options.prompt)) throw runBadArgs("bad_args: prompt is required (pass --prompt <focus>)");
     scopeInfo = await collectApprovalScopeAndPriorAttempts(options, mode);
     let approvalRequest;
@@ -4038,6 +4057,7 @@ async function cmdApprovalGrantRequest(options) {
     const providerConfigResult = await loadApprovalProviderConfig(provider);
     const cfg = providerConfigResult.cfg;
     configuredSecretNames = providerConfigResult.configuredSecretNames;
+    options = await optionsWithPromptFile(options);
     if (!hasPromptText(options.prompt)) throw runBadArgs("bad_args: prompt is required (pass --prompt <focus>)");
     const grantPolicy = await loadSessionApprovalGrantPolicy();
     scopeInfo = await collectApprovalScopeAndPriorAttempts(options, mode);
@@ -4066,6 +4086,7 @@ async function cmdApprovalGrantActivate(options) {
     const providerConfigResult = await loadApprovalProviderConfig(provider);
     const cfg = providerConfigResult.cfg;
     configuredSecretNames = providerConfigResult.configuredSecretNames;
+    options = await optionsWithPromptFile(options);
     if (!hasPromptText(options.prompt)) throw runBadArgs("bad_args: prompt is required (pass --prompt <focus>)");
     scopeInfo = await collectApprovalScopeAndPriorAttempts(options, mode);
     let approvalRequest;
@@ -4147,6 +4168,8 @@ async function cmdRun(options) {
     } catch (e) {
       throw runBadArgs(e.message);
     }
+    options = await optionsWithPromptFile(options);
+    Object.assign(runOptions, options);
     const preflight = validateDirectApiRunPreflight(cfg, provider, process.env);
     if (!preflight.ok && preflight.reason === "bad_args") throw runBadArgs(preflight.error);
     if (!preflight.ok) throw runProviderFailure(preflight.reason, preflight.error);

@@ -1,0 +1,37 @@
+---
+description: Ask Gemini to review explicit files.
+argument-hint: "--scope-paths <files> [--timeout-ms MS] [review prompt]"
+disable-model-invocation: true
+allowed-tools: Read, Glob, Grep, Bash(node:*), Bash(git:*), AskUserQuestion
+---
+
+# Gemini Custom Review
+
+EXTERNAL_MODEL_CONTRACT_VERSION=1
+
+`$ARGUMENTS` is required `--scope-paths <files>`, optional `--timeout-ms MS`, and review prompt text.
+Route `--scope-paths <files>` before `--prompt-file` and write the remaining prompt text to the private prompt file referenced by `RELAY_PROMPT_FILE`.
+Review timeout defaults to 900000 ms. Use `--timeout-ms <ms>` or `GEMINI_REVIEW_TIMEOUT_MS`; the effective value is persisted in `review_metadata.audit_manifest.request.timeout_ms`.
+
+Prompt payload:
+Write the routed focus text to a private temp file (mode 0600), set `RELAY_PROMPT_FILE` to that path, and delete it after the command exits.
+
+Run:
+
+- `node "${CLAUDE_PLUGIN_ROOT}/scripts/relay-run.mjs" gemini-companion.mjs run --mode=custom-review --scope custom --scope-paths "<file1>,<file2>" --foreground --lifecycle-events markdown --prompt-file "$RELAY_PROMPT_FILE"`
+
+## Review Contract
+This is a review-only contract.
+Do not fix findings, apply patches, edit files, or start rescue work from a review result.
+Preserve the caller's review text verbatim after routing documented flags.
+Return the runtime output verbatim; do not summarize or rewrite findings.
+If there is no substantive result or structured output, report review blocked / no findings produced.
+Render lifecycle markdown cards directly.
+
+## Scope Safety
+Use custom-review only for explicit file bundles. Scope validation must complete before selected source is sent.
+If concrete files or --scope-paths are already known, do not run branch-diff first; use custom-review with those paths and the original prompt.
+
+## Secret Safety
+Do not print raw OAuth tokens, API-key values, session cookies, tunnel API keys, bearer tokens, or raw secret values.
+Credential diagnostics may show key names only.

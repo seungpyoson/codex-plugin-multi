@@ -73,8 +73,12 @@ function claudeAuthModeArgs(mode) {
   return ["--auth-mode", mode];
 }
 
+function cleanupDir(dir) {
+  rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+}
+
 function cleanup(dataDir) {
-  rmSync(dataDir, { recursive: true, force: true, maxRetries: 3, retryDelay: 50 });
+  cleanupDir(dataDir);
 }
 
 function assertPreflightSafetyFields(result) {
@@ -171,6 +175,21 @@ async function waitForOnlyJobRecord(dataDir, predicate, label, timeoutMs = CLAUD
     await new Promise((resolve) => setTimeout(resolve, 100));
   }
   assert.fail(`${label}; last record=${JSON.stringify(lastRecord)}`);
+}
+
+async function waitForProcessExit(pid, timeoutMs = 5000) {
+  if (!Number.isInteger(pid)) return;
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    try {
+      process.kill(pid, 0);
+    } catch (error) {
+      if (error?.code === "ESRCH") return;
+      throw error;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  assert.fail(`worker process ${pid} did not exit`);
 }
 
 // T7.2: review mode's profile has scope=working-tree, which populates via
@@ -792,8 +811,8 @@ process.exit(9);
     assert.deepEqual(modesSeen, ["dontAsk"]);
   } finally {
     cleanup(dataDir);
-    rmSync(cwd, { recursive: true, force: true });
-    rmSync(tmp, { recursive: true, force: true });
+    cleanupDir(cwd);
+    cleanupDir(tmp);
   }
 });
 
@@ -4459,6 +4478,7 @@ process.exit(1);
       (candidate) => candidate.id === launched.job_id && candidate.status === "failed",
       "background OAuth preflight rejection did not finalize",
     );
+    await waitForProcessExit(launched.pid);
     assert.equal(record.error_code, "oauth_inference_rejected");
     assert.equal(record.pid_info ?? null, null);
     assert.equal(record.external_review.source_content_transmission, "not_sent");
@@ -4467,8 +4487,8 @@ process.exit(1);
     assert.equal(readFileSync(countPath, "utf8"), "1", "target review must not launch after preflight rejection");
   } finally {
     cleanup(dataDir);
-    rmSync(cwd, { recursive: true, force: true });
-    rmSync(tmp, { recursive: true, force: true });
+    cleanupDir(cwd);
+    cleanupDir(tmp);
   }
 });
 

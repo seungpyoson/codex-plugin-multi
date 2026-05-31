@@ -1,4 +1,4 @@
-import { existsSync, lstatSync, readdirSync, readFileSync, realpathSync } from "node:fs";
+import { existsSync, lstatSync, readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { isAbsolute, join, parse, relative, resolve } from "node:path";
 
@@ -339,7 +339,7 @@ function isGitRepositoryRoot(workspace) {
   const gitPath = join(workspace, ".git");
   let gitStat;
   try {
-    gitStat = lstatSync(gitPath);
+    gitStat = statSync(gitPath);
   } catch {
     return false;
   }
@@ -357,7 +357,7 @@ function isGitRepositoryRoot(workspace) {
   if (!rawGitDir) return false;
   const gitDir = isAbsolute(rawGitDir) ? rawGitDir : resolve(workspace, rawGitDir);
   try {
-    return lstatSync(gitDir).isDirectory() && existsSync(join(gitDir, "HEAD"));
+    return statSync(gitDir).isDirectory() && existsSync(join(gitDir, "HEAD"));
   } catch {
     return false;
   }

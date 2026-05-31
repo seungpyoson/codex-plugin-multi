@@ -143,6 +143,38 @@ definition and plan/tasks packet with usable verdicts.
 2. **Given** all six approve, **When** implementation starts, **Then** work is
    scoped to one approved issue at a time.
 
+---
+
+### User Story 5 - Relay Claude-Host Suite Preserves The Codex Suite (Priority: P1)
+
+A maintainer can emit a Claude-Code-host `relay-gemini` walking skeleton from
+shared provider sources while the existing Codex-host Gemini plugin remains
+unchanged and installable.
+
+**Why this priority**: Provider parity now has a dual-host delivery surface.
+Claude-host relay plugins must not depend on Codex runtime paths, and Codex
+plugins must not depend on Claude Code.
+
+**Independent Test**: Host-environment unit tests, relay manifest/command
+contract tests, Gemini prompt-file smoke, Codex sync checks, and a later real
+Claude Code install/command-registration smoke prove the suites stay isolated.
+
+**Acceptance Scenarios**:
+
+1. **Given** a Codex Gemini manifest and command, **When** relay emission renders
+   the Claude host artifact, **Then** the plugin is named `relay-gemini`, uses
+   Claude host paths, and does not carry Codex-only interface/skill metadata.
+2. **Given** a relay Claude review command receives caller focus text, **When**
+   it launches the Gemini companion, **Then** prompt/source payload is carried
+   via stdin, private temp file, or env-mediated payload, not inline shell argv.
+3. **Given** Codex Gemini artifacts are generated or checked, **When** relay
+   emission exists, **Then** existing Codex sync checks and commands keep their
+   current command namespace and plugin contract.
+4. **Given** the relay suite expands beyond Gemini, **When** the Claude suite is
+   considered complete, **Then** it includes `relay-gemini`, `relay-grok`,
+   `relay-kimi`, `relay-glm`, and `relay-deepseek`, excludes a Claude provider
+   self-delegation plugin, and splits GLM/DeepSeek into peer plugins.
+
 ## Edge Cases
 
 - A provider can lack a subscription Adapter today. That is a capability fact,
@@ -158,6 +190,9 @@ definition and plan/tasks packet with usable verdicts.
   timeouts are not approvals.
 - `.specify/` scripts are absent in this worktree, so Speckit artifacts are
   maintained manually in the existing `specs/*` shape.
+- Host-forced command naming can differ between Codex (`/relay-gemini-review`)
+  and Claude Code (`/relay-gemini:review`) when both map to the same provider
+  capability and audit semantics.
 - No GitHub issue creation/closure, push, merge, deploy, destructive cleanup,
   browser/session repair, or billing/tier action is allowed without explicit
   operator approval.
@@ -219,6 +254,20 @@ definition and plan/tasks packet with usable verdicts.
   audit manifests, JobRecord metadata, external review summaries,
   lifecycle/status events, review-panel rows, and direct API/OpenRouter
   approval, waiver, or override artifacts.
+- **FR-017**: Relay Claude-host emission MUST be independent from Codex-host
+  emission: Codex artifacts must not require Claude Code, and Claude artifacts
+  must not require Codex, `CODEX_HOME`, or `~/.codex`.
+- **FR-018**: The Claude relay suite MUST omit the Claude provider plugin to
+  avoid self-delegation and MUST split GLM and DeepSeek into peer Claude
+  plugins instead of a consolidated `api-reviewers` plugin before suite
+  completion.
+- **FR-019**: Claude relay commands MUST carry user prompt and selected-source
+  payloads through stdin, private temp files, or env-mediated payloads, not
+  inline shell argv.
+- **FR-020**: `relay-gemini` MUST be the first walking skeleton and MUST prove
+  host-env detection, manifest rendering, command rendering, prompt transport,
+  Codex sync preservation, and real Claude Code command registration before the
+  pattern fans out to other providers.
 
 ### Key Entities
 
@@ -236,6 +285,8 @@ definition and plan/tasks packet with usable verdicts.
   surface contract.
 - **External Review Gate**: Six-reviewer approval state for root problems,
   plan/tasks, and final implementation.
+- **Relay Plugin Suite**: Claude-Code-host plugin suite generated from shared
+  provider sources with host-specific manifests and command namespaces.
 
 ## Success Criteria
 
@@ -253,6 +304,9 @@ definition and plan/tasks packet with usable verdicts.
   plan/tasks before implementation.
 - **SC-007**: Final latest-head review receives all six approvals before
   merge-readiness is claimed.
+- **SC-008**: `relay-gemini` host-env, manifest, command rendering, prompt
+  transport, and Codex sync checks pass before any other relay provider is
+  fanned out.
 
 ## Assumptions
 

@@ -1,0 +1,16 @@
+{
+  "name": "relay-grok",
+  "version": "0.1.0",
+  "author": {
+    "name": "seungpyoson"
+  },
+  "license": "AGPL-3.0-only",
+  "keywords": [
+    "grok",
+    "subscription",
+    "review"
+  ],
+  "description": "Delegate reviews to a subscription-backed Grok web session through a local tunnel.",
+  "homepage": "https://github.com/seungpyoson/relay",
+  "repository": "https://github.com/seungpyoson/relay"
+}
