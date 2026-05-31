@@ -1,0 +1,18 @@
+{
+  "glm": {
+    "display_name": "GLM",
+    "auth_mode": "api_key",
+    "env_keys": [
+      "ZAI_API_KEY"
+    ],
+    "base_url": "https://api.z.ai/api/coding/paas/v4",
+    "model": "glm-5.1",
+    "max_prompt_chars": 600000,
+    "request_defaults": {
+      "thinking": {
+        "type": "enabled"
+      },
+      "max_tokens": 131072
+    }
+  }
+}

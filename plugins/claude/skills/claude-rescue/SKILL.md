@@ -9,7 +9,7 @@ user-invocable: true
 
 EXTERNAL_MODEL_CONTRACT_VERSION=1
 
-`<plugin-root>` is `plugins/claude` or an absolute path to that plugin directory. Use skill `claude:claude-rescue`. Command doc: `plugins/claude/commands/claude-rescue.md`.
+`<plugin-root>` is `plugins/claude` or an absolute path to that plugin directory. Use skill `relay-claude:claude-rescue`. Command doc: `plugins/claude/commands/claude-rescue.md`.
 `<workspace>` is the repository where the rescue task should run.
 `<task>` is the user's investigation, implementation, or follow-up rescue request.
 

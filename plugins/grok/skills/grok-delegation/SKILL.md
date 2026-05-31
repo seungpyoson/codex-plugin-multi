@@ -9,7 +9,7 @@ user-invocable: true
 
 EXTERNAL_MODEL_CONTRACT_VERSION=1
 
-Use skill `grok:grok-delegation`.
+Use skill `relay-grok:grok-delegation`.
 Run setup:
 - `node plugins/grok/scripts/grok-companion.mjs doctor`
 

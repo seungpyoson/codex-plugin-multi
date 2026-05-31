@@ -48,6 +48,10 @@ function countOccurrences(text, needle) {
   return text.split(needle).length - 1;
 }
 
+function relayPluginName(provider) {
+  return `relay-${provider}`;
+}
+
 test("Claude/Gemini/Kimi docs route explicit file scopes to custom-review before branch-diff", () => {
   const required = /If concrete files or --scope-paths are already known, do not run branch-diff first; use custom-review with those paths and the original prompt/i;
   for (const target of EXTERNAL_MODEL_CONTRACT_DOC_TARGETS.filter((item) =>
@@ -64,7 +68,7 @@ test("Claude/Gemini/Kimi docs route explicit file scopes to custom-review before
 });
 
 test("external model contract docs are generated from one shared source", () => {
-  assert.equal(EXTERNAL_MODEL_CONTRACT_DOC_TARGETS.length, 75);
+  assert.equal(EXTERNAL_MODEL_CONTRACT_DOC_TARGETS.length, 74);
 
   const targetPaths = new Set();
   for (const target of EXTERNAL_MODEL_CONTRACT_DOC_TARGETS) {
@@ -91,13 +95,14 @@ test("external model contract docs are generated from one shared source", () => 
   }
 
   for (const target of EXTERNAL_MODEL_CONTRACT_DOC_TARGETS.filter((item) =>
-    item.family === "api-reviewers" || item.family === "api-reviewers-delegation"
+    item.family === "api-reviewers"
   )) {
     const rendered = renderExternalModelContractDoc(target);
-    const apiPluginVersion = JSON.parse(readRepoFile("plugins/api-reviewers/.codex-plugin/plugin.json")).version;
+    const pluginName = relayPluginName(target.provider.provider);
+    const apiPluginVersion = JSON.parse(readRepoFile(`plugins/${pluginName}/.codex-plugin/plugin.json`)).version;
     const escapedVersion = escapeRegExp(apiPluginVersion);
     const globalEntrypoint = new RegExp(
-      `node "\\$\\{CODEX_HOME:-\\$HOME/\\.codex\\}/plugins/cache/codex-plugin-multi/api-reviewers/${escapedVersion}/scripts/api-reviewer\\.mjs"`,
+      `node "\\$\\{CODEX_HOME:-\\$HOME/\\.codex\\}/plugins/cache/relay/${pluginName}/${escapedVersion}/scripts/api-reviewer\\.mjs"`,
     );
     assert.match(
       rendered,
@@ -111,7 +116,7 @@ test("external model contract docs are generated from one shared source", () => 
     );
     assert.doesNotMatch(
       rendered,
-      /node "<plugin-root>\/scripts\/api-reviewer\.mjs"/,
+      new RegExp(`node plugins/${pluginName}/scripts/api-reviewer\\.mjs`),
       `${target.path} must not use repo-relative plugin-root api-reviewer script paths`,
     );
     assert.doesNotMatch(
@@ -268,19 +273,30 @@ test("provider-specific external model contracts keep mechanical safety clauses"
   assert.match(docs, /--lifecycle-events markdown/);
   assert.doesNotMatch(docs, /--lifecycle-events jsonl/);
 
-  const apiDelegation = renderedByPath.get("plugins/api-reviewers/skills/api-reviewers-delegation/SKILL.md");
-  assert.ok(apiDelegation, "missing API reviewers delegation target");
-  const apiProviders = new Set(
+  assert.deepEqual(
     EXTERNAL_MODEL_CONTRACT_DOC_TARGETS
       .filter((target) => target.family === "api-reviewers")
-      .map((target) => target.provider.provider),
+      .map((target) => target.path)
+      .sort(),
+    [
+      "plugins/relay-deepseek/commands/deepseek-adversarial-review.md",
+      "plugins/relay-deepseek/commands/deepseek-custom-review.md",
+      "plugins/relay-deepseek/commands/deepseek-review.md",
+      "plugins/relay-deepseek/commands/deepseek-setup.md",
+      "plugins/relay-deepseek/skills/deepseek-adversarial-review/SKILL.md",
+      "plugins/relay-deepseek/skills/deepseek-custom-review/SKILL.md",
+      "plugins/relay-deepseek/skills/deepseek-review/SKILL.md",
+      "plugins/relay-deepseek/skills/deepseek-setup/SKILL.md",
+      "plugins/relay-glm/commands/glm-adversarial-review.md",
+      "plugins/relay-glm/commands/glm-custom-review.md",
+      "plugins/relay-glm/commands/glm-review.md",
+      "plugins/relay-glm/commands/glm-setup.md",
+      "plugins/relay-glm/skills/glm-adversarial-review/SKILL.md",
+      "plugins/relay-glm/skills/glm-custom-review/SKILL.md",
+      "plugins/relay-glm/skills/glm-review/SKILL.md",
+      "plugins/relay-glm/skills/glm-setup/SKILL.md",
+    ],
   );
-  for (const provider of apiProviders) {
-    assert.match(apiDelegation, new RegExp(`doctor --provider ${provider}`));
-    assert.match(apiDelegation, new RegExp(`run --provider ${provider} --mode review`));
-    assert.match(apiDelegation, new RegExp(`run --provider ${provider} --mode adversarial-review`));
-    assert.match(apiDelegation, new RegExp(`run --provider ${provider} --mode custom-review`));
-  }
 });
 
 test("shared lifecycle and result handling contracts are provider-neutral", () => {

@@ -1,17 +1,17 @@
-# codex-plugin-multi
+# relay
 
-Codex plugins that let Codex delegate work to **Claude Code**, **Gemini CLI**,
-**Kimi Code CLI**, **Grok**, and direct API-backed reviewers like **DeepSeek**
-and **GLM**. This repository is the Codex-side counterpart to
-[`openai/codex-plugin-cc`](https://github.com/openai/codex-plugin-cc), which
-lets Claude Code delegate to Codex.
+Relay packages external-model delegation plugins for Codex and Claude Code.
+The Codex marketplace suite is `relay-for-codex` and exposes peer plugins for
+**Claude Code**, **Gemini CLI**, **Kimi Code CLI**, **Grok**, **DeepSeek**, and
+**GLM**. The generated Claude Code suite is `relay-for-claude` and exposes the
+non-self providers **Gemini**, **Kimi**, **Grok**, **DeepSeek**, and **GLM**.
 
 - **License:** AGPL-3.0-only. Commercial use is permitted under the AGPL, but
   modified versions distributed or offered over a network must provide
   corresponding source under the same license. Portions are ported from
   MIT-licensed upstream code; see `NOTICE`.
-- **State:** active development. Claude, Gemini, Kimi, Grok, and API-backed
-  reviewer flows are implemented and covered by mock smoke tests. Fresh-install
+- **State:** active development. Claude, Gemini, Kimi, Grok, DeepSeek, and GLM
+  flows are implemented and covered by mock smoke tests. Fresh-install
   verification on Codex CLI
   0.125.0 found that the marketplace installs successfully, but the TUI does
   not register plugin command files as slash commands.
@@ -264,7 +264,7 @@ background terminal counts or prose.
 From Codex:
 
 ```bash
-codex plugin marketplace add seungpyoson/codex-plugin-multi
+codex plugin marketplace add seungpyoson/relay
 ```
 
 Then enable the plugins you want:
@@ -273,22 +273,34 @@ Then enable the plugins you want:
 /plugins
 ```
 
-In the plugin picker, enable `claude`, `gemini`, `kimi`, `grok`, and/or
-`api-reviewers`. You can enable
-one without the others.
+In the plugin picker, enable `relay-claude`, `relay-gemini`, `relay-kimi`,
+`relay-grok`, `relay-glm`, and/or `relay-deepseek`. You can enable one without
+the others. DeepSeek and GLM use a hidden shared direct-API runtime package, so
+their provider plugins stay split without copying the same reviewer code twice.
+
+From Claude Code, the generated marketplace suite lives under `relay/`. Its
+marketplace name is `relay-for-claude`, and provider plugin sources stay under
+`relay/relay-*`. The suite/plugin pair is therefore
+`relay-for-claude:relay-gemini` conceptually; Claude Code's install ref syntax
+is `relay-gemini@relay-for-claude`, `relay-grok@relay-for-claude`,
+`relay-kimi@relay-for-claude`, `relay-glm@relay-for-claude`, and
+`relay-deepseek@relay-for-claude`. Claude Code command namespaces are still
+plugin-scoped, such as `/relay-gemini:review`.
 
 ## Verify skill discovery after installation
 
 After enabling the plugins, open Codex's skill picker or ask Codex what plugin
 skills are available. Current Codex builds expose plugin skills with their
 plugin namespace. The discoverable UX is `<plugin>:<provider-workflow>` through
-workflow-specific skills such as `claude:claude-review`,
-`gemini:gemini-rescue`, `kimi:kimi-status`, `grok:grok-review`,
-`api-reviewers:deepseek-review`, and `api-reviewers:glm-setup`. The installed
-skill list should also include the broad fallback skills
-`claude:claude-delegation`, `gemini:gemini-delegation`,
-`kimi:kimi-delegation`, `grok:grok-delegation`, and
-`api-reviewers:api-reviewers-delegation`.
+workflow-specific skills such as `relay-claude:claude-review`,
+`relay-gemini:gemini-rescue`, `relay-kimi:kimi-status`,
+`relay-grok:grok-review`, `relay-deepseek:deepseek-review`, and
+`relay-glm:glm-setup`. The installed skill list should also include the broad
+fallback skills `relay-claude:claude-delegation`,
+`relay-gemini:gemini-delegation`, `relay-kimi:kimi-delegation`, and
+`relay-grok:grok-delegation`. DeepSeek and GLM are intentionally split into
+provider-specific workflow skills instead of a shared `api-reviewers`
+namespace.
 
 For a non-interactive check against the current Codex profile, run:
 
@@ -320,16 +332,20 @@ npm run doctor:cache -- --second-codex-home "$HOME/.codex-second"
 ```
 
 The report compares both marketplace/plugin files and this repo's `plugins/`
-tree against `plugins/cache/codex-plugin-multi/<plugin>/0.1.0`, including
+tree against `plugins/cache/relay/<plugin>/0.1.0`, including
 SHA-256 checks for bundled `commands/`, `skills/`, `scripts/`, and `config/`
-files. It reports `missing_files`, `extra_files`, `changed_files`, and
+files. `relay-for-codex` is the marketplace identifier; `relay` is the Codex
+cache namespace used by installed plugin paths. The doctor also checks the
+hidden `api-reviewers` runtime required by `relay-glm` and `relay-deepseek`,
+without requiring that hidden runtime to be enabled in `config.toml`.
+It reports `missing_files`, `extra_files`, `changed_files`, and
 `repo_changed_files`, checks whether each plugin is enabled in `config.toml`,
 and prints next actions. `cache_in_sync: true` with
 `repo_cache_in_sync: false` means new Codex sessions will still run stale
 installed plugin code. For Git marketplace installs, start with:
 
 ```bash
-codex plugin marketplace upgrade codex-plugin-multi
+codex plugin marketplace upgrade relay-for-codex
 ```
 
 If Codex reports that the marketplace is not configured as Git, remove and
@@ -360,46 +376,46 @@ as a user-invocable skill. Current Codex builds list these skills with plugin
 namespaces. These are thin wrappers around the existing companion/API reviewer
 contracts:
 
-- **Claude:** `claude:claude-review`,
-  `claude:claude-adversarial-review`, `claude:claude-rescue`,
-  `claude:claude-setup`, `claude:claude-status`, `claude:claude-result`,
-  `claude:claude-cancel`.
-- **Gemini:** `gemini:gemini-review`,
-  `gemini:gemini-adversarial-review`, `gemini:gemini-rescue`,
-  `gemini:gemini-setup`, `gemini:gemini-status`, `gemini:gemini-result`,
-  `gemini:gemini-cancel`.
-- **Kimi:** `kimi:kimi-review`, `kimi:kimi-adversarial-review`,
-  `kimi:kimi-rescue`, `kimi:kimi-setup`, `kimi:kimi-status`,
-  `kimi:kimi-result`, `kimi:kimi-cancel`.
-- **Grok:** `grok:grok-review`, `grok:grok-adversarial-review`,
-  `grok:grok-custom-review`, `grok:grok-setup`.
-- **DeepSeek:** `api-reviewers:deepseek-review`,
-  `api-reviewers:deepseek-adversarial-review`,
-  `api-reviewers:deepseek-custom-review`, `api-reviewers:deepseek-setup`.
-- **GLM:** `api-reviewers:glm-review`,
-  `api-reviewers:glm-adversarial-review`,
-  `api-reviewers:glm-custom-review`, `api-reviewers:glm-setup`.
+- **Claude:** `relay-claude:claude-review`,
+  `relay-claude:claude-adversarial-review`, `relay-claude:claude-rescue`,
+  `relay-claude:claude-setup`, `relay-claude:claude-status`,
+  `relay-claude:claude-result`, `relay-claude:claude-cancel`.
+- **Gemini:** `relay-gemini:gemini-review`,
+  `relay-gemini:gemini-adversarial-review`, `relay-gemini:gemini-rescue`,
+  `relay-gemini:gemini-setup`, `relay-gemini:gemini-status`,
+  `relay-gemini:gemini-result`, `relay-gemini:gemini-cancel`.
+- **Kimi:** `relay-kimi:kimi-review`, `relay-kimi:kimi-adversarial-review`,
+  `relay-kimi:kimi-rescue`, `relay-kimi:kimi-setup`,
+  `relay-kimi:kimi-status`, `relay-kimi:kimi-result`,
+  `relay-kimi:kimi-cancel`.
+- **Grok:** `relay-grok:grok-review`,
+  `relay-grok:grok-adversarial-review`, `relay-grok:grok-custom-review`,
+  `relay-grok:grok-setup`.
+- **DeepSeek:** `relay-deepseek:deepseek-review`,
+  `relay-deepseek:deepseek-adversarial-review`,
+  `relay-deepseek:deepseek-custom-review`,
+  `relay-deepseek:deepseek-setup`.
+- **GLM:** `relay-glm:glm-review`, `relay-glm:glm-adversarial-review`,
+  `relay-glm:glm-custom-review`, `relay-glm:glm-setup`.
 
 The broad delegation skills remain available as fallback/overview entries:
-`claude:claude-delegation`, `gemini:gemini-delegation`,
-`kimi:kimi-delegation`, `grok:grok-delegation`, and
-`api-reviewers:api-reviewers-delegation`.
+`relay-claude:claude-delegation`, `relay-gemini:gemini-delegation`,
+`relay-kimi:kimi-delegation`, and `relay-grok:grok-delegation`.
 
 The original user-invocable skill fallback remains available for users who
-prefer one overview entry per plugin. The Claude, Gemini, Kimi, Grok, and API
-reviewers delegation skills still route to their companion/API reviewer scripts
-as broad overview entries.
-For Claude, Gemini, and Kimi, advanced `custom-review` and `preflight` flows
+prefer one overview entry per companion plugin. The Claude, Gemini, Kimi, and
+Grok delegation skills still route to their companion scripts as broad overview
+entries. For Claude, Gemini, and Kimi, advanced `custom-review` and `preflight` flows
 remain available through those broad delegation skills.
 
 Example prompts:
 
 ```text
-Use claude:claude-review to review the current diff for regressions.
-Use gemini:gemini-adversarial-review for an adversarial review of this design.
-Use kimi:kimi-rescue to investigate this failing test in the background, then use kimi:kimi-status and kimi:kimi-result.
-Use grok:grok-review to review the current diff using my subscription.
-Use api-reviewers:deepseek-custom-review to review selected files.
+Use relay-claude:claude-review to review the current diff for regressions.
+Use relay-gemini:gemini-adversarial-review for an adversarial review of this design.
+Use relay-kimi:kimi-rescue to investigate this failing test in the background, then use relay-kimi:kimi-status and relay-kimi:kimi-result.
+Use relay-grok:grok-review to review the current diff using my subscription.
+Use relay-deepseek:deepseek-custom-review to review selected files.
 ```
 
 ## Deferred command docs
@@ -407,7 +423,7 @@ Use api-reviewers:deepseek-custom-review to review selected files.
 The slash-command files remain packaged for the intended future slash-command
 surface, except diagnostic ping command docs are deferred until upstream Codex
 registers plugin command files. The ping follow-up is tracked in
-https://github.com/seungpyoson/codex-plugin-multi/issues/13. Example future
+https://github.com/seungpyoson/relay/issues/13. Example future
 command docs:
 
 ```text
@@ -468,11 +484,12 @@ inspect the terminal record.
   auth selector is rejected on operator-facing paths; choose subscription or
   api_key explicitly.
   DeepSeek and GLM direct API reviewers use
-  `auth_mode: "api_key"` in `plugins/api-reviewers/config/providers.json`.
+  `auth_mode: "api_key"` in `plugins/relay-deepseek/config/providers.json` and
+  `plugins/relay-glm/config/providers.json`.
   Diagnostics report key names only and never print secret values.
   Session grants for those reviewers are deliberately narrow: request and
   activation stay source-free, the operator must choose `--grant-ttl-ms`, the
-  max TTL comes from `plugins/api-reviewers/config/session-approval.json`, and
+  max TTL comes from each relay plugin's `config/session-approval.json`, and
   any provider, mode, workspace, selected source, prompt, request, route, auth,
   billing, file/byte bound, expiry, schema, fingerprint, or duplicate-match
   change falls back to `approval_required` before source is sent.
@@ -498,7 +515,7 @@ inspect the terminal record.
 - **Host-owned pre-launch denials stay outside companion control.** If Codex
   blocks an external provider review before launching the companion process, the
   plugin cannot emit a JobRecord. That host-owned gap is tracked in
-  https://github.com/seungpyoson/codex-plugin-multi/issues/13. Choose
+  https://github.com/seungpyoson/relay/issues/13. Choose
   an approved provider, run local/Codex-only review, or use `preflight` to
   inspect disclosure before requesting an external review.
 - **Rescue is write-capable.** Rescue modes are intended for investigation and
@@ -562,12 +579,22 @@ review/fix-loop issue is resolved.
 Repository layout:
 
 ```text
-codex-plugin-multi/
+relay/
   .agents/plugins/marketplace.json
   plugins/claude/
   plugins/gemini/
   plugins/kimi/
-  plugins/api-reviewers/
+  plugins/grok/
+  plugins/api-reviewers/          # hidden shared direct-API runtime
+  plugins/relay-deepseek/
+  plugins/relay-glm/
+  relay/                         # generated Claude Code marketplace suite
+    .claude-plugin/marketplace.json
+    relay-deepseek/
+    relay-gemini/
+    relay-glm/
+    relay-grok/
+    relay-kimi/
   docs/architecture-record.md
   docs/e2e.md
   docs/release-verification.md

@@ -1,12 +1,12 @@
 {
-  "name": "kimi",
+  "name": "relay-kimi",
   "version": "0.1.0",
   "description": "Delegate investigation, review, and adversarial review to Kimi Code CLI from within Codex.",
   "author": {
     "name": "seungpyoson"
   },
-  "homepage": "https://github.com/seungpyoson/codex-plugin-multi",
-  "repository": "https://github.com/seungpyoson/codex-plugin-multi",
+  "homepage": "https://github.com/seungpyoson/relay",
+  "repository": "https://github.com/seungpyoson/relay",
   "license": "AGPL-3.0-only",
   "skills": "./skills",
   "keywords": [
@@ -17,7 +17,7 @@
     "review"
   ],
   "interface": {
-    "displayName": "Kimi",
+    "displayName": "Relay Kimi",
     "shortDescription": "Delegate to Kimi Code CLI from Codex.",
     "longDescription": "Invoke Kimi Code CLI headlessly from Codex for investigation, rescue, review, and adversarial-review workflows. Uses OAuth subscription (no API keys).",
     "developerName": "seungpyoson",

@@ -7,9 +7,15 @@ import {
   rmSync,
   writeFileSync,
 } from "node:fs";
-import { join } from "node:path";
+import { join, relative } from "node:path";
 
 const RELAY_REPOSITORY = "https://github.com/seungpyoson/relay";
+const RELAY_FOR_CLAUDE_MARKETPLACE = "relay-for-claude";
+const RELAY_SHARED_DIRECT_API_RUNTIME = "relay-api-reviewers";
+const CODEX_DIRECT_API_RELAY_ENTRYPOINT_COMMAND_RE =
+  /node "\$\{CODEX_HOME:-\$HOME\/\.codex\}\/plugins\/cache\/relay\/relay-(?:deepseek|glm)\/[^/]+\/scripts\/api-reviewer\.mjs"/g;
+const CODEX_DIRECT_API_RELAY_ENTRYPOINT_PATH_RE =
+  /\$\{CODEX_HOME:-\$HOME\/\.codex\}\/plugins\/cache\/relay\/relay-(?:deepseek|glm)\/[^/]+\/scripts\/api-reviewer\.mjs/g;
 const RELAY_PROVIDER_ORDER = Object.freeze(["gemini", "grok", "kimi", "glm", "deepseek"]);
 const RELAY_PROVIDER_DEFINITIONS = Object.freeze({
   gemini: {
@@ -28,13 +34,13 @@ const RELAY_PROVIDER_DEFINITIONS = Object.freeze({
     synthesizeCustomReview: true,
   },
   glm: {
-    sourceProvider: "api-reviewers",
+    sourceProvider: "relay-glm",
     commandPrefix: "glm",
     pluginDataEnv: "API_REVIEWERS_PLUGIN_DATA",
     description: "Delegate code reviews to GLM direct API from within Claude Code.",
   },
   deepseek: {
-    sourceProvider: "api-reviewers",
+    sourceProvider: "relay-deepseek",
     commandPrefix: "deepseek",
     pluginDataEnv: "API_REVIEWERS_PLUGIN_DATA",
     description: "Delegate code reviews to DeepSeek direct API from within Claude Code.",
@@ -71,7 +77,6 @@ export function buildRelayPlugin({ provider, repoRoot = process.cwd(), outRoot =
   copyIfExists(join(sourceRoot, "LICENSE"), join(pluginRoot, "LICENSE"));
   writeRelayRunner({ pluginRoot, repoRoot, definition });
   filterRelayConfig({ pluginRoot, provider });
-  rewriteRelayRuntimeHostStrings({ pluginRoot, provider });
 
   const commandsRoot = join(pluginRoot, "commands");
   mkdirSync(commandsRoot, { recursive: true });
@@ -98,7 +103,77 @@ export function buildRelayPlugin({ provider, repoRoot = process.cwd(), outRoot =
 }
 
 export function buildRelaySuite({ repoRoot = process.cwd(), outRoot = join(repoRoot, "relay") } = {}) {
-  return RELAY_PROVIDER_ORDER.map((provider) => buildRelayPlugin({ provider, repoRoot, outRoot }));
+  rmSync(outRoot, { recursive: true, force: true });
+  const pluginRoots = RELAY_PROVIDER_ORDER.map((provider) => buildRelayPlugin({ provider, repoRoot, outRoot }));
+  const sharedDirectApiRuntimeRoot = buildRelayDirectApiRuntimePlugin({ repoRoot });
+  writeClaudeRelayMarketplace({ outRoot, pluginRoots, sharedDirectApiRuntimeRoot });
+  return pluginRoots;
+}
+
+export function renderClaudeRelayMarketplace(
+  pluginManifests,
+  { hiddenPluginNames = new Set(), sourceOverrides = new Map() } = {},
+) {
+  return {
+    name: RELAY_FOR_CLAUDE_MARKETPLACE,
+    description: "Relay for Claude Code: external-model delegation plugins.",
+    owner: { name: "seungpyoson" },
+    plugins: pluginManifests.map((manifest) => {
+      const plugin = {
+        name: manifest.name,
+        description: manifest.description,
+        version: manifest.version,
+        source: sourceOverrides.get(manifest.name) ?? `./${manifest.name}`,
+        author: manifest.author,
+      };
+      if (hiddenPluginNames.has(manifest.name)) {
+        plugin.policy = { installation: "HIDDEN" };
+      }
+      return plugin;
+    }),
+  };
+}
+
+function writeClaudeRelayMarketplace({ outRoot, pluginRoots, sharedDirectApiRuntimeRoot }) {
+  const visibleManifests = pluginRoots.map((pluginRoot) =>
+    readJson(join(pluginRoot, ".claude-plugin", "plugin.json"))
+  );
+  const hiddenManifests = [readJson(join(sharedDirectApiRuntimeRoot, ".claude-plugin", "plugin.json"))];
+  mkdirSync(join(outRoot, ".claude-plugin"), { recursive: true });
+  writeJson(
+    join(outRoot, ".claude-plugin", "marketplace.json"),
+    renderClaudeRelayMarketplace([...visibleManifests, ...hiddenManifests], {
+      hiddenPluginNames: new Set(hiddenManifests.map((manifest) => manifest.name)),
+      sourceOverrides: new Map([
+        [RELAY_SHARED_DIRECT_API_RUNTIME, marketplaceSource({ fromRoot: outRoot, toRoot: sharedDirectApiRuntimeRoot })],
+      ]),
+    }),
+  );
+}
+
+function buildRelayDirectApiRuntimePlugin({ repoRoot }) {
+  const sourceRoot = join(repoRoot, "plugins", "api-reviewers");
+  const pluginRoot = sourceRoot;
+  mkdirSync(join(pluginRoot, ".claude-plugin"), { recursive: true });
+
+  const sourceManifest = readJson(join(sourceRoot, ".codex-plugin", "plugin.json"));
+  writeJson(join(pluginRoot, ".claude-plugin", "plugin.json"), {
+    name: RELAY_SHARED_DIRECT_API_RUNTIME,
+    version: sourceManifest.version,
+    description: "Shared hidden direct API runtime for Relay Claude Code plugins.",
+    author: sourceManifest.author,
+    license: sourceManifest.license,
+    homepage: RELAY_REPOSITORY,
+    repository: RELAY_REPOSITORY,
+  });
+
+  return pluginRoot;
+}
+
+function marketplaceSource({ fromRoot, toRoot }) {
+  const relativePath = relative(fromRoot, toRoot).replaceAll("\\", "/");
+  if (relativePath.startsWith(".")) return relativePath;
+  return `./${relativePath}`;
 }
 
 export function renderClaudePluginManifest(codexManifest, { provider, description: descriptionOverride } = {}) {
@@ -135,8 +210,8 @@ export function renderClaudeCommandDoc(codexDoc) {
   let rendered = codexDoc
     .replaceAll("<plugin-root>", "${CLAUDE_PLUGIN_ROOT}")
     .replaceAll("node plugins/grok/scripts/grok-companion.mjs", 'node "${CLAUDE_PLUGIN_ROOT}/scripts/grok-companion.mjs"')
-    .replaceAll('node "${CODEX_HOME:-$HOME/.codex}/plugins/cache/codex-plugin-multi/api-reviewers/0.1.0/scripts/api-reviewer.mjs"', 'node "${CLAUDE_PLUGIN_ROOT}/scripts/api-reviewer.mjs"')
-    .replaceAll("${CODEX_HOME:-$HOME/.codex}/plugins/cache/codex-plugin-multi/api-reviewers/0.1.0/scripts/api-reviewer.mjs", "${CLAUDE_PLUGIN_ROOT}/scripts/api-reviewer.mjs")
+    .replace(CODEX_DIRECT_API_RELAY_ENTRYPOINT_COMMAND_RE, 'node "${CLAUDE_PLUGIN_ROOT}/scripts/api-reviewer.mjs"')
+    .replace(CODEX_DIRECT_API_RELAY_ENTRYPOINT_PATH_RE, "${CLAUDE_PLUGIN_ROOT}/scripts/api-reviewer.mjs")
     .replaceAll('-- "<focus text>"', '--prompt-file "$RELAY_PROMPT_FILE"')
     .replaceAll('-- "<prompt text>"', '--prompt-file "$RELAY_PROMPT_FILE"')
     .replaceAll('-- "$ARGUMENTS"', '--prompt-file "$RELAY_PROMPT_FILE"')
@@ -165,12 +240,8 @@ export function renderClaudeCommandDoc(codexDoc) {
       "Use the global installed entrypoint `node \"${CLAUDE_PLUGIN_ROOT}/scripts/api-reviewer.mjs\"`.",
       "Use the relay-local entrypoint `node \"${CLAUDE_PLUGIN_ROOT}/scripts/api-reviewer.mjs\"`.",
     )
-    .replaceAll(
-      "plugins/api-reviewers/config/session-approval.json",
-      "${CLAUDE_PLUGIN_ROOT}/config/session-approval.json",
-    )
-    .replaceAll(
-      "Do not run bare `api-reviewer`, do not rely on `PATH`, and do not use repository-relative paths such as `plugins/api-reviewers/scripts/api-reviewer.mjs`.",
+    .replace(
+      /Do not run bare `api-reviewer`, do not rely on `PATH`, and do not use repository-relative paths such as `plugins\/relay-(?:deepseek|glm)\/scripts\/api-reviewer\.mjs`\./g,
       "Do not run bare `api-reviewer`, do not rely on `PATH`, and do not use repository-relative paths.",
     )
     .replaceAll("CODEX_PLUGIN_MULTI_RUNTIME_DIR", "CLAUDE_PLUGIN_DATA")
@@ -219,24 +290,6 @@ function filterRelayConfig({ pluginRoot, provider }) {
     throw new Error(`provider config missing ${provider}`);
   }
   writeJson(providersPath, { [provider]: providers[provider] });
-}
-
-function rewriteRelayRuntimeHostStrings({ pluginRoot, provider }) {
-  if (!["deepseek", "glm"].includes(provider)) return;
-
-  const runtimePath = join(pluginRoot, "scripts", "api-reviewer.mjs");
-  if (!existsSync(runtimePath)) return;
-
-  const runtime = readFileSync(runtimePath, "utf8")
-    .replaceAll(
-      "API Reviewers providers config is unreadable.",
-      "Direct API relay providers config is unreadable.",
-    )
-    .replaceAll(
-      "Reinstall or repair plugins/api-reviewers/config/providers.json and retry.",
-      "Reinstall or repair this relay plugin's config/providers.json and retry.",
-    );
-  writeFileSync(runtimePath, runtime, "utf8");
 }
 
 function writeRelayRunner({ pluginRoot, repoRoot, definition }) {

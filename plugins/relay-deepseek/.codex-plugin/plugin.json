@@ -1,0 +1,32 @@
+{
+  "name": "relay-deepseek",
+  "version": "0.1.0",
+  "description": "Delegate code reviews to DeepSeek direct API from within Codex.",
+  "author": {
+    "name": "seungpyoson"
+  },
+  "homepage": "https://github.com/seungpyoson/relay",
+  "repository": "https://github.com/seungpyoson/relay",
+  "license": "AGPL-3.0-only",
+  "keywords": [
+    "deepseek",
+    "api",
+    "review"
+  ],
+  "interface": {
+    "displayName": "Relay DeepSeek",
+    "shortDescription": "Delegate to DeepSeek direct API from Codex.",
+    "longDescription": "Invoke DeepSeek directly through explicit API-key auth for review, adversarial-review, and custom-review workflows.",
+    "developerName": "seungpyoson",
+    "category": "Coding",
+    "capabilities": [
+      "Read"
+    ],
+    "defaultPrompt": [
+      "Ask DeepSeek to review the current diff",
+      "Ask DeepSeek to review selected files",
+      "Run an adversarial review through DeepSeek"
+    ]
+  },
+  "skills": "./skills"
+}

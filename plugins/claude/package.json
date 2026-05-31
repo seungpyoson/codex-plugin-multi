@@ -1,7 +1,7 @@
 {
-  "name": "codex-plugin-multi-claude",
+  "name": "@relay/relay-claude-plugin",
   "version": "0.1.0",
   "private": true,
   "license": "AGPL-3.0-only",
-  "description": "Codex plugin that delegates to Claude Code (sub-workspace of codex-plugin-multi)."
+  "description": "Relay for Codex plugin that delegates to Claude Code."
 }

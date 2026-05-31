@@ -31,64 +31,64 @@
   ],
   "files": {
     "plugins/api-reviewers/scripts/lib/codex-env.mjs": {
-      "lines": 100.0,
-      "branches": 100.0,
-      "functions": 100.0
+      "lines": 100,
+      "branches": 100,
+      "functions": 100
     },
     "plugins/api-reviewers/scripts/lib/external-review.mjs": {
       "lines": 85.98,
       "branches": 94.29,
-      "functions": 100.0
+      "functions": 100
     },
     "plugins/api-reviewers/scripts/lib/external-model-failure-catalog.mjs": {
-      "lines": 75.0,
-      "branches": 100.0,
-      "functions": 100.0
+      "lines": 75,
+      "branches": 100,
+      "functions": 100
     },
     "plugins/api-reviewers/scripts/lib/external-model-failure-core.mjs": {
       "lines": 91.18,
       "branches": 86.57,
-      "functions": 100.0
+      "functions": 100
     },
     "plugins/api-reviewers/scripts/lib/external-model-review-quality.mjs": {
-      "lines": 92.0,
+      "lines": 92,
       "branches": 88.89,
-      "functions": 100.0
+      "functions": 100
     },
     "plugins/api-reviewers/scripts/lib/privacy-redaction.mjs": {
-      "lines": 0.0,
-      "branches": 0.0,
-      "functions": 0.0
+      "lines": 0,
+      "branches": 0,
+      "functions": 0
     },
     "plugins/api-reviewers/scripts/lib/provider-identity.mjs": {
-      "lines": 0.0,
-      "branches": 0.0,
-      "functions": 0.0
+      "lines": 0,
+      "branches": 0,
+      "functions": 0
     },
     "plugins/api-reviewers/scripts/lib/review-workload.mjs": {
-      "lines": 0.0,
-      "branches": 0.0,
-      "functions": 0.0
+      "lines": 0,
+      "branches": 0,
+      "functions": 0
     },
     "plugins/api-reviewers/scripts/lib/git-env.mjs": {
-      "lines": 100.0,
-      "branches": 100.0,
-      "functions": 100.0
+      "lines": 100,
+      "branches": 100,
+      "functions": 100
     },
     "plugins/api-reviewers/scripts/lib/git-binary.mjs": {
       "lines": 88.24,
       "branches": 92.86,
-      "functions": 100.0
+      "functions": 100
     },
     "plugins/api-reviewers/scripts/lib/time.mjs": {
-      "lines": 100.0,
-      "branches": 100.0,
-      "functions": 100.0
+      "lines": 100,
+      "branches": 100,
+      "functions": 100
     },
     "plugins/api-reviewers/scripts/lib/usage-limit.mjs": {
-      "lines": 100.0,
-      "branches": 100.0,
-      "functions": 100.0
+      "lines": 100,
+      "branches": 100,
+      "functions": 100
     },
     "plugins/api-reviewers/scripts/lib/provider-route-policy.mjs": {
       "lines": 78.79,
@@ -107,23 +107,23 @@
     },
     "plugins/claude/scripts/lib/args.mjs": {
       "lines": 91.43,
-      "branches": 86.0,
-      "functions": 100.0
+      "branches": 86,
+      "functions": 100
     },
     "plugins/claude/scripts/lib/auth-selection.mjs": {
-      "lines": 100.0,
+      "lines": 100,
       "branches": 88.24,
-      "functions": 100.0
+      "functions": 100
     },
     "plugins/claude/scripts/lib/cancel-marker.mjs": {
-      "lines": 100.0,
-      "branches": 100.0,
-      "functions": 100.0
+      "lines": 100,
+      "branches": 100,
+      "functions": 100
     },
     "plugins/claude/scripts/lib/claude-provider-keys.mjs": {
-      "lines": 100.0,
-      "branches": 100.0,
-      "functions": 100.0
+      "lines": 100,
+      "branches": 100,
+      "functions": 100
     },
     "plugins/claude/scripts/lib/claude.mjs": {
       "lines": 96.48,
@@ -131,9 +131,9 @@
       "functions": 91.67
     },
     "plugins/claude/scripts/lib/codex-env.mjs": {
-      "lines": 100.0,
-      "branches": 100.0,
-      "functions": 100.0
+      "lines": 100,
+      "branches": 100,
+      "functions": 100
     },
     "plugins/claude/scripts/lib/companion-common.mjs": {
       "lines": 73.89,
@@ -143,42 +143,42 @@
     "plugins/claude/scripts/lib/containment.mjs": {
       "lines": 96.55,
       "branches": 88.89,
-      "functions": 100.0
+      "functions": 100
     },
     "plugins/claude/scripts/lib/external-review.mjs": {
       "lines": 85.98,
       "branches": 94.29,
-      "functions": 100.0
+      "functions": 100
     },
     "plugins/claude/scripts/lib/external-model-failure-catalog.mjs": {
-      "lines": 75.0,
-      "branches": 100.0,
-      "functions": 100.0
+      "lines": 75,
+      "branches": 100,
+      "functions": 100
     },
     "plugins/claude/scripts/lib/external-model-failure-core.mjs": {
       "lines": 91.18,
       "branches": 86.57,
-      "functions": 100.0
+      "functions": 100
     },
     "plugins/claude/scripts/lib/external-model-review-quality.mjs": {
-      "lines": 92.0,
+      "lines": 92,
       "branches": 88.89,
-      "functions": 100.0
+      "functions": 100
     },
     "plugins/claude/scripts/lib/git-env.mjs": {
-      "lines": 100.0,
-      "branches": 100.0,
-      "functions": 100.0
+      "lines": 100,
+      "branches": 100,
+      "functions": 100
     },
     "plugins/claude/scripts/lib/git.mjs": {
-      "lines": 100.0,
-      "branches": 100.0,
-      "functions": 100.0
+      "lines": 100,
+      "branches": 100,
+      "functions": 100
     },
     "plugins/claude/scripts/lib/git-binary.mjs": {
       "lines": 88.24,
       "branches": 92.86,
-      "functions": 100.0
+      "functions": 100
     },
     "plugins/claude/scripts/lib/identity.mjs": {
       "lines": 48.45,
@@ -186,49 +186,49 @@
       "functions": 83.33
     },
     "plugins/claude/scripts/lib/job-record.mjs": {
-      "lines": 90.0,
+      "lines": 90,
       "branches": 86.36,
-      "functions": 60.0
+      "functions": 60
     },
     "plugins/claude/scripts/lib/mode-profiles.mjs": {
       "lines": 86.67,
-      "branches": 100.0,
-      "functions": 100.0
+      "branches": 100,
+      "functions": 100
     },
     "plugins/claude/scripts/lib/process.mjs": {
       "lines": 84.62,
       "branches": 77.08,
-      "functions": 100.0
+      "functions": 100
     },
     "plugins/claude/scripts/lib/provider-env.mjs": {
-      "lines": 100.0,
+      "lines": 100,
       "branches": 90.91,
-      "functions": 100.0
+      "functions": 100
     },
     "plugins/claude/scripts/lib/privacy-redaction.mjs": {
-      "lines": 0.0,
-      "branches": 0.0,
-      "functions": 0.0
+      "lines": 0,
+      "branches": 0,
+      "functions": 0
     },
     "plugins/claude/scripts/lib/provider-identity.mjs": {
-      "lines": 0.0,
-      "branches": 0.0,
-      "functions": 0.0
+      "lines": 0,
+      "branches": 0,
+      "functions": 0
     },
     "plugins/claude/scripts/lib/review-workload.mjs": {
-      "lines": 0.0,
-      "branches": 0.0,
-      "functions": 0.0
+      "lines": 0,
+      "branches": 0,
+      "functions": 0
     },
     "plugins/claude/scripts/lib/time.mjs": {
-      "lines": 100.0,
-      "branches": 100.0,
-      "functions": 100.0
+      "lines": 100,
+      "branches": 100,
+      "functions": 100
     },
     "plugins/claude/scripts/lib/usage-limit.mjs": {
-      "lines": 100.0,
-      "branches": 100.0,
-      "functions": 100.0
+      "lines": 100,
+      "branches": 100,
+      "functions": 100
     },
     "plugins/claude/scripts/lib/provider-route-policy.mjs": {
       "lines": 78.79,
@@ -237,8 +237,8 @@
     },
     "plugins/claude/scripts/lib/reconcile.mjs": {
       "lines": 95.79,
-      "branches": 81.0,
-      "functions": 100.0
+      "branches": 81,
+      "functions": 100
     },
     "plugins/claude/scripts/lib/review-prompt.mjs": {
       "lines": 95.73,
@@ -256,34 +256,34 @@
       "functions": 98.61
     },
     "plugins/claude/scripts/lib/state.mjs": {
-      "lines": 94.0,
-      "branches": 86.0,
-      "functions": 100.0
+      "lines": 94,
+      "branches": 86,
+      "functions": 100
     },
     "plugins/claude/scripts/lib/workspace.mjs": {
       "lines": 85.71,
-      "branches": 100.0,
-      "functions": 100.0
+      "branches": 100,
+      "functions": 100
     },
     "plugins/gemini/scripts/lib/args.mjs": {
       "lines": 91.43,
-      "branches": 86.0,
-      "functions": 100.0
+      "branches": 86,
+      "functions": 100
     },
     "plugins/gemini/scripts/lib/auth-selection.mjs": {
-      "lines": 100.0,
+      "lines": 100,
       "branches": 88.24,
-      "functions": 100.0
+      "functions": 100
     },
     "plugins/gemini/scripts/lib/cancel-marker.mjs": {
-      "lines": 100.0,
-      "branches": 100.0,
-      "functions": 100.0
+      "lines": 100,
+      "branches": 100,
+      "functions": 100
     },
     "plugins/gemini/scripts/lib/codex-env.mjs": {
-      "lines": 100.0,
-      "branches": 100.0,
-      "functions": 100.0
+      "lines": 100,
+      "branches": 100,
+      "functions": 100
     },
     "plugins/gemini/scripts/lib/companion-common.mjs": {
       "lines": 73.89,
@@ -293,97 +293,97 @@
     "plugins/gemini/scripts/lib/containment.mjs": {
       "lines": 55.17,
       "branches": 66.67,
-      "functions": 100.0
+      "functions": 100
     },
     "plugins/gemini/scripts/lib/external-review.mjs": {
       "lines": 85.98,
       "branches": 94.29,
-      "functions": 100.0
+      "functions": 100
     },
     "plugins/gemini/scripts/lib/external-model-failure-catalog.mjs": {
-      "lines": 75.0,
-      "branches": 100.0,
-      "functions": 100.0
+      "lines": 75,
+      "branches": 100,
+      "functions": 100
     },
     "plugins/gemini/scripts/lib/external-model-failure-core.mjs": {
       "lines": 91.18,
       "branches": 86.57,
-      "functions": 100.0
+      "functions": 100
     },
     "plugins/gemini/scripts/lib/external-model-review-quality.mjs": {
-      "lines": 92.0,
+      "lines": 92,
       "branches": 88.89,
-      "functions": 100.0
+      "functions": 100
     },
     "plugins/gemini/scripts/lib/gemini.mjs": {
       "lines": 96.32,
-      "branches": 88.0,
+      "branches": 88,
       "functions": 81.82
     },
     "plugins/gemini/scripts/lib/git-env.mjs": {
-      "lines": 100.0,
-      "branches": 100.0,
-      "functions": 100.0
+      "lines": 100,
+      "branches": 100,
+      "functions": 100
     },
     "plugins/gemini/scripts/lib/git.mjs": {
-      "lines": 100.0,
-      "branches": 100.0,
-      "functions": 100.0
+      "lines": 100,
+      "branches": 100,
+      "functions": 100
     },
     "plugins/gemini/scripts/lib/git-binary.mjs": {
       "lines": 88.24,
       "branches": 92.86,
-      "functions": 100.0
+      "functions": 100
     },
     "plugins/gemini/scripts/lib/identity.mjs": {
       "lines": 25.77,
-      "branches": 0.0,
+      "branches": 0,
       "functions": 83.33
     },
     "plugins/gemini/scripts/lib/job-record.mjs": {
       "lines": 82.76,
       "branches": 78.33,
-      "functions": 60.0
+      "functions": 60
     },
     "plugins/gemini/scripts/lib/mode-profiles.mjs": {
       "lines": 66.67,
       "branches": 88.89,
-      "functions": 100.0
+      "functions": 100
     },
     "plugins/gemini/scripts/lib/process.mjs": {
       "lines": 84.62,
       "branches": 77.08,
-      "functions": 100.0
+      "functions": 100
     },
     "plugins/gemini/scripts/lib/provider-env.mjs": {
-      "lines": 100.0,
+      "lines": 100,
       "branches": 90.91,
-      "functions": 100.0
+      "functions": 100
     },
     "plugins/gemini/scripts/lib/privacy-redaction.mjs": {
-      "lines": 0.0,
-      "branches": 0.0,
-      "functions": 0.0
+      "lines": 0,
+      "branches": 0,
+      "functions": 0
     },
     "plugins/gemini/scripts/lib/provider-identity.mjs": {
-      "lines": 0.0,
-      "branches": 0.0,
-      "functions": 0.0
+      "lines": 0,
+      "branches": 0,
+      "functions": 0
     },
     "plugins/gemini/scripts/lib/review-workload.mjs": {
-      "lines": 0.0,
-      "branches": 0.0,
-      "functions": 0.0
+      "lines": 0,
+      "branches": 0,
+      "functions": 0
     },
     "plugins/gemini/scripts/lib/time.mjs": {
-      "lines": 100.0,
-      "branches": 100.0,
-      "functions": 100.0
+      "lines": 100,
+      "branches": 100,
+      "functions": 100
     },
     "plugins/gemini/scripts/lib/usage-limit.mjs": {
-      "lines": 100.0,
-      "branches": 100.0,
-      "functions": 100.0
+      "lines": 100,
+      "branches": 100,
+      "functions": 100
     },
     "plugins/gemini/scripts/lib/provider-route-policy.mjs": {
       "lines": 78.79,
@@ -392,8 +392,8 @@
     },
     "plugins/gemini/scripts/lib/reconcile.mjs": {
       "lines": 95.79,
-      "branches": 81.0,
-      "functions": 100.0
+      "branches": 81,
+      "functions": 100
     },
     "plugins/gemini/scripts/lib/review-prompt.mjs": {
       "lines": 95.73,
@@ -411,74 +411,74 @@
       "functions": 98.61
     },
     "plugins/gemini/scripts/lib/state.mjs": {
-      "lines": 94.0,
-      "branches": 86.0,
-      "functions": 100.0
+      "lines": 94,
+      "branches": 86,
+      "functions": 100
     },
     "plugins/gemini/scripts/lib/workspace.mjs": {
       "lines": 85.71,
-      "branches": 100.0,
-      "functions": 100.0
+      "branches": 100,
+      "functions": 100
     },
     "plugins/grok/scripts/lib/external-review.mjs": {
       "lines": 85.98,
       "branches": 94.29,
-      "functions": 100.0
+      "functions": 100
     },
     "plugins/grok/scripts/lib/external-model-failure-catalog.mjs": {
-      "lines": 75.0,
-      "branches": 100.0,
-      "functions": 100.0
+      "lines": 75,
+      "branches": 100,
+      "functions": 100
     },
     "plugins/grok/scripts/lib/external-model-failure-core.mjs": {
       "lines": 91.18,
       "branches": 86.57,
-      "functions": 100.0
+      "functions": 100
     },
     "plugins/grok/scripts/lib/external-model-review-quality.mjs": {
-      "lines": 92.0,
+      "lines": 92,
       "branches": 88.89,
-      "functions": 100.0
+      "functions": 100
     },
     "plugins/grok/scripts/lib/git-binary.mjs": {
       "lines": 97.83,
-      "branches": 100.0,
-      "functions": 100.0
+      "branches": 100,
+      "functions": 100
     },
     "plugins/grok/scripts/lib/git-env.mjs": {
-      "lines": 100.0,
-      "branches": 100.0,
-      "functions": 100.0
+      "lines": 100,
+      "branches": 100,
+      "functions": 100
     },
     "plugins/grok/scripts/lib/grok-transport-adapters.mjs": {
       "lines": 98.58,
-      "branches": 68.0,
-      "functions": 100.0
+      "branches": 68,
+      "functions": 100
     },
     "plugins/grok/scripts/lib/jwt.mjs": {
-      "lines": 0.0,
-      "branches": 0.0,
-      "functions": 0.0
+      "lines": 0,
+      "branches": 0,
+      "functions": 0
     },
     "plugins/grok/scripts/lib/privacy-redaction.mjs": {
-      "lines": 0.0,
-      "branches": 0.0,
-      "functions": 0.0
+      "lines": 0,
+      "branches": 0,
+      "functions": 0
     },
     "plugins/grok/scripts/lib/provider-identity.mjs": {
-      "lines": 0.0,
-      "branches": 0.0,
-      "functions": 0.0
+      "lines": 0,
+      "branches": 0,
+      "functions": 0
     },
     "plugins/grok/scripts/lib/review-workload.mjs": {
-      "lines": 0.0,
-      "branches": 0.0,
-      "functions": 0.0
+      "lines": 0,
+      "branches": 0,
+      "functions": 0
     },
     "plugins/grok/scripts/lib/provider-env.mjs": {
-      "lines": 100.0,
+      "lines": 100,
       "branches": 90.91,
-      "functions": 100.0
+      "functions": 100
     },
     "plugins/grok/scripts/lib/provider-route-policy.mjs": {
       "lines": 78.79,
@@ -496,29 +496,29 @@
       "functions": 98.61
     },
     "plugins/grok/scripts/lib/time.mjs": {
-      "lines": 100.0,
-      "branches": 100.0,
-      "functions": 100.0
+      "lines": 100,
+      "branches": 100,
+      "functions": 100
     },
     "plugins/grok/scripts/lib/usage-limit.mjs": {
-      "lines": 100.0,
-      "branches": 100.0,
-      "functions": 100.0
+      "lines": 100,
+      "branches": 100,
+      "functions": 100
     },
     "plugins/kimi/scripts/lib/args.mjs": {
       "lines": 93.33,
       "branches": 91.67,
-      "functions": 100.0
+      "functions": 100
     },
     "plugins/kimi/scripts/lib/cancel-marker.mjs": {
-      "lines": 100.0,
-      "branches": 100.0,
-      "functions": 100.0
+      "lines": 100,
+      "branches": 100,
+      "functions": 100
     },
     "plugins/kimi/scripts/lib/codex-env.mjs": {
-      "lines": 100.0,
-      "branches": 100.0,
-      "functions": 100.0
+      "lines": 100,
+      "branches": 100,
+      "functions": 100
     },
     "plugins/kimi/scripts/lib/companion-common.mjs": {
       "lines": 73.89,
@@ -526,49 +526,49 @@
       "functions": 92.86
     },
     "plugins/kimi/scripts/lib/containment.mjs": {
-      "lines": 0.0,
-      "branches": 100.0,
-      "functions": 0.0
+      "lines": 0,
+      "branches": 100,
+      "functions": 0
     },
     "plugins/kimi/scripts/lib/external-review.mjs": {
       "lines": 85.98,
       "branches": 94.29,
-      "functions": 100.0
+      "functions": 100
     },
     "plugins/kimi/scripts/lib/external-model-failure-catalog.mjs": {
-      "lines": 75.0,
-      "branches": 100.0,
-      "functions": 100.0
+      "lines": 75,
+      "branches": 100,
+      "functions": 100
     },
     "plugins/kimi/scripts/lib/external-model-failure-core.mjs": {
       "lines": 91.18,
       "branches": 86.57,
-      "functions": 100.0
+      "functions": 100
     },
     "plugins/kimi/scripts/lib/external-model-review-quality.mjs": {
-      "lines": 92.0,
+      "lines": 92,
       "branches": 88.89,
-      "functions": 100.0
+      "functions": 100
     },
     "plugins/kimi/scripts/lib/git-env.mjs": {
-      "lines": 0.0,
+      "lines": 0,
       "branches": 66.67,
-      "functions": 0.0
+      "functions": 0
     },
     "plugins/kimi/scripts/lib/git-binary.mjs": {
       "lines": 88.24,
       "branches": 92.86,
-      "functions": 100.0
+      "functions": 100
     },
     "plugins/kimi/scripts/lib/git.mjs": {
-      "lines": 100.0,
-      "branches": 100.0,
-      "functions": 100.0
+      "lines": 100,
+      "branches": 100,
+      "functions": 100
     },
     "plugins/kimi/scripts/lib/identity.mjs": {
       "lines": 92.03,
       "branches": 89.13,
-      "functions": 100.0
+      "functions": 100
     },
     "plugins/kimi/scripts/lib/job-record.mjs": {
       "lines": 44.97,
@@ -582,43 +582,43 @@
     },
     "plugins/kimi/scripts/lib/mode-profiles.mjs": {
       "lines": 12.9,
-      "branches": 0.0,
+      "branches": 0,
       "functions": 33.33
     },
     "plugins/kimi/scripts/lib/process.mjs": {
       "lines": 98.29,
       "branches": 96.55,
-      "functions": 100.0
+      "functions": 100
     },
     "plugins/kimi/scripts/lib/provider-env.mjs": {
-      "lines": 100.0,
+      "lines": 100,
       "branches": 92.86,
-      "functions": 100.0
+      "functions": 100
     },
     "plugins/kimi/scripts/lib/privacy-redaction.mjs": {
-      "lines": 0.0,
-      "branches": 0.0,
-      "functions": 0.0
+      "lines": 0,
+      "branches": 0,
+      "functions": 0
     },
     "plugins/kimi/scripts/lib/provider-identity.mjs": {
-      "lines": 0.0,
-      "branches": 0.0,
-      "functions": 0.0
+      "lines": 0,
+      "branches": 0,
+      "functions": 0
     },
     "plugins/kimi/scripts/lib/review-workload.mjs": {
-      "lines": 0.0,
-      "branches": 0.0,
-      "functions": 0.0
+      "lines": 0,
+      "branches": 0,
+      "functions": 0
     },
     "plugins/kimi/scripts/lib/time.mjs": {
-      "lines": 100.0,
-      "branches": 100.0,
-      "functions": 100.0
+      "lines": 100,
+      "branches": 100,
+      "functions": 100
     },
     "plugins/kimi/scripts/lib/usage-limit.mjs": {
-      "lines": 100.0,
-      "branches": 100.0,
-      "functions": 100.0
+      "lines": 100,
+      "branches": 100,
+      "functions": 100
     },
     "plugins/kimi/scripts/lib/provider-route-policy.mjs": {
       "lines": 78.79,
@@ -641,44 +641,44 @@
       "functions": 52.94
     },
     "plugins/kimi/scripts/lib/scope.mjs": {
-      "lines": 92.0,
+      "lines": 92,
       "branches": 86.53,
       "functions": 98.25
     },
     "plugins/kimi/scripts/lib/state.mjs": {
-      "lines": 0.0,
+      "lines": 0,
       "branches": 77.65,
-      "functions": 0.0
+      "functions": 0
     },
     "plugins/kimi/scripts/lib/workspace.mjs": {
-      "lines": 100.0,
-      "branches": 100.0,
-      "functions": 100.0
+      "lines": 100,
+      "branches": 100,
+      "functions": 100
     },
     "plugins/claude/scripts/lib/diff-source.mjs": {
-      "lines": 0.0,
-      "branches": 100.0,
-      "functions": 0.0
+      "lines": 0,
+      "branches": 100,
+      "functions": 0
     },
     "plugins/gemini/scripts/lib/diff-source.mjs": {
-      "lines": 0.0,
-      "branches": 100.0,
-      "functions": 0.0
+      "lines": 0,
+      "branches": 100,
+      "functions": 0
     },
     "plugins/grok/scripts/lib/diff-source.mjs": {
-      "lines": 0.0,
-      "branches": 100.0,
-      "functions": 0.0
+      "lines": 0,
+      "branches": 100,
+      "functions": 0
     },
     "plugins/kimi/scripts/lib/diff-source.mjs": {
-      "lines": 0.0,
-      "branches": 100.0,
-      "functions": 0.0
+      "lines": 0,
+      "branches": 100,
+      "functions": 0
     },
     "plugins/api-reviewers/scripts/lib/diff-source.mjs": {
-      "lines": 0.0,
-      "branches": 100.0,
-      "functions": 0.0
+      "lines": 0,
+      "branches": 100,
+      "functions": 0
     }
   }
 }

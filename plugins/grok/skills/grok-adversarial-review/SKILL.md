@@ -9,7 +9,7 @@ user-invocable: true
 
 EXTERNAL_MODEL_CONTRACT_VERSION=1
 
-Use skill `grok:grok-adversarial-review`. Command doc: `plugins/grok/commands/grok-adversarial-review.md`.
+Use skill `relay-grok:grok-adversarial-review`. Command doc: `plugins/grok/commands/grok-adversarial-review.md`.
 `<focus>` is the user's review prompt or focus area.
 Run `node plugins/grok/scripts/grok-companion.mjs run --mode adversarial-review --scope branch-diff --scope-base REF --foreground --lifecycle-events markdown --prompt "<focus>"`.
 ## Review Contract

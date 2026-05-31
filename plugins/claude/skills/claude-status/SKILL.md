@@ -9,7 +9,7 @@ user-invocable: true
 
 EXTERNAL_MODEL_CONTRACT_VERSION=1
 
-`<plugin-root>` is `plugins/claude` or an absolute path to that plugin directory. Use skill `claude:claude-status`. Command doc: `plugins/claude/commands/claude-status.md`.
+`<plugin-root>` is `plugins/claude` or an absolute path to that plugin directory. Use skill `relay-claude:claude-status`. Command doc: `plugins/claude/commands/claude-status.md`.
 `<workspace>` is the workspace where the job was launched.
 Run `node "<plugin-root>/scripts/claude-companion.mjs" status --cwd "<workspace>"`.
 Read-only status: do not rerun, continue, or cancel jobs unless the user asks.

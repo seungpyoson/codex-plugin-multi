@@ -1,0 +1,66 @@
+{
+  "name": "relay-for-claude",
+  "description": "Relay for Claude Code: external-model delegation plugins.",
+  "owner": {
+    "name": "seungpyoson"
+  },
+  "plugins": [
+    {
+      "name": "relay-gemini",
+      "description": "Delegate investigation, review, and adversarial review to Gemini CLI from within Claude Code.",
+      "version": "0.1.0",
+      "source": "./relay-gemini",
+      "author": {
+        "name": "seungpyoson"
+      }
+    },
+    {
+      "name": "relay-grok",
+      "description": "Delegate reviews to a subscription-backed Grok web session through a local tunnel.",
+      "version": "0.1.0",
+      "source": "./relay-grok",
+      "author": {
+        "name": "seungpyoson"
+      }
+    },
+    {
+      "name": "relay-kimi",
+      "description": "Delegate investigation, review, and adversarial review to Kimi Code CLI from within Claude Code.",
+      "version": "0.1.0",
+      "source": "./relay-kimi",
+      "author": {
+        "name": "seungpyoson"
+      }
+    },
+    {
+      "name": "relay-glm",
+      "description": "Delegate code reviews to GLM direct API from within Claude Code.",
+      "version": "0.1.0",
+      "source": "./relay-glm",
+      "author": {
+        "name": "seungpyoson"
+      }
+    },
+    {
+      "name": "relay-deepseek",
+      "description": "Delegate code reviews to DeepSeek direct API from within Claude Code.",
+      "version": "0.1.0",
+      "source": "./relay-deepseek",
+      "author": {
+        "name": "seungpyoson"
+      }
+    },
+    {
+      "name": "relay-api-reviewers",
+      "description": "Shared hidden direct API runtime for Relay Claude Code plugins.",
+      "version": "0.1.0",
+      "source": "../plugins/api-reviewers",
+      "author": {
+        "name": "seungpyoson"
+      },
+      "policy": {
+        "installation": "HIDDEN"
+      }
+    }
+  ]
+}

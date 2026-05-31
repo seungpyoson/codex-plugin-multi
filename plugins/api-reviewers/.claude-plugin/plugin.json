@@ -1,0 +1,11 @@
+{
+  "name": "relay-api-reviewers",
+  "version": "0.1.0",
+  "description": "Shared hidden direct API runtime for Relay Claude Code plugins.",
+  "author": {
+    "name": "seungpyoson"
+  },
+  "license": "AGPL-3.0-only",
+  "homepage": "https://github.com/seungpyoson/relay",
+  "repository": "https://github.com/seungpyoson/relay"
+}

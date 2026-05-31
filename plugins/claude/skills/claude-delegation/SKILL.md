@@ -9,7 +9,7 @@ user-invocable: true
 
 EXTERNAL_MODEL_CONTRACT_VERSION=1
 
-`<plugin-root>` is `plugins/claude` or an absolute path to that plugin directory. Use skill `claude:claude-delegation`.
+`<plugin-root>` is `plugins/claude` or an absolute path to that plugin directory. Use skill `relay-claude:claude-delegation`.
 
 Run review:
 - `node "<plugin-root>/scripts/claude-companion.mjs" run --mode=review --auth-mode subscription --foreground --lifecycle-events markdown --cwd "<workspace>" --scope-base REF -- "<review focus>"`

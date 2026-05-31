@@ -1,5 +1,5 @@
 {
-  "name": "@codex-plugin-multi/api-reviewers-plugin",
+  "name": "@relay/api-reviewers-runtime",
   "version": "0.1.0",
   "private": true,
   "type": "module",

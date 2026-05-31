@@ -86,6 +86,7 @@ test("pull-request CI runs shared-copy sync checks", () => {
   assert.match(pkg.scripts["lint:sync"] ?? "", /sync-usage-limit\.mjs --check/);
   assert.match(pkg.scripts["lint:sync"] ?? "", /sync-review-workload\.mjs --check/);
   assert.match(pkg.scripts["lint:sync"] ?? "", /sync-provider-identity\.mjs --check/);
+  assert.match(pkg.scripts["lint:sync"] ?? "", /sync-relay-build\.mjs --check/);
   assert.match(workflow, /npm run lint:sync/);
 });
 
@@ -201,6 +202,7 @@ test("smoke-rerecord workflow plugin choices match live RECIPES plugins", () => 
 test("Sonar CPD excludes intentional packaging and entrypoint copies", () => {
   for (const path of [
     "scripts/ci/sync-*.mjs",
+    "plugins/**/LICENSE",
     "scripts/lib/external-review.mjs",
     "plugins/claude/scripts/lib/external-review.mjs",
     "plugins/gemini/scripts/lib/external-review.mjs",
