@@ -11,17 +11,17 @@ allowed-tools: Read, Glob, Grep, Bash(node:*), Bash(git:*), AskUserQuestion
 EXTERNAL_MODEL_CONTRACT_VERSION=1
 
 ## Entrypoint Contract
-Use the global installed entrypoint `node "${CODEX_HOME:-$HOME/.codex}/plugins/cache/relay/relay-glm/0.1.0/scripts/api-reviewer.mjs"`.
+Use the global installed entrypoint `node "${CODEX_HOME:-$HOME/.codex}/plugins/cache/relay-for-codex/relay-glm/0.1.0/scripts/api-reviewer.mjs"`.
 Do not run bare `api-reviewer`, do not rely on `PATH`, and do not use repository-relative paths such as `plugins/relay-glm/scripts/api-reviewer.mjs`.
-If `${CODEX_HOME:-$HOME/.codex}/plugins/cache/relay/relay-glm/0.1.0/scripts/api-reviewer.mjs` cannot be resolved, stop and report `api_reviewer_entrypoint_missing` before any source-bearing command.
+If `${CODEX_HOME:-$HOME/.codex}/plugins/cache/relay-for-codex/relay-glm/0.1.0/scripts/api-reviewer.mjs` cannot be resolved, stop and report `api_reviewer_entrypoint_missing` before any source-bearing command.
 
 Scope: `custom`. Preserve raw `$ARGUMENTS` except for documented routing.
 `$ARGUMENTS` starts with `--scope-paths <files>` followed by review prompt text.
 Route `--scope-paths <files>` before `--prompt` and pass the remaining prompt text to `--prompt`.
 Replace `<file1>,<file2>` with comma- or newline-separated concrete relative paths.
 Expand globs before running; do not pass glob characters as `--scope-paths`.
-Run `node "${CODEX_HOME:-$HOME/.codex}/plugins/cache/relay/relay-glm/0.1.0/scripts/api-reviewer.mjs" approval-request --provider glm --mode custom-review --scope custom --scope-paths "<file1>,<file2>" --prompt "<prompt text>"`.
-Run `node "${CODEX_HOME:-$HOME/.codex}/plugins/cache/relay/relay-glm/0.1.0/scripts/api-reviewer.mjs" run --provider glm --mode custom-review --scope custom --scope-paths "<file1>,<file2>" --approval-token "<approval_token.value>" --lifecycle-events markdown --prompt "<prompt text>"`.
+Run `node "${CODEX_HOME:-$HOME/.codex}/plugins/cache/relay-for-codex/relay-glm/0.1.0/scripts/api-reviewer.mjs" approval-request --provider glm --mode custom-review --scope custom --scope-paths "<file1>,<file2>" --prompt "<prompt text>"`.
+Run `node "${CODEX_HOME:-$HOME/.codex}/plugins/cache/relay-for-codex/relay-glm/0.1.0/scripts/api-reviewer.mjs" run --provider glm --mode custom-review --scope custom --scope-paths "<file1>,<file2>" --approval-token "<approval_token.value>" --lifecycle-events markdown --prompt "<prompt text>"`.
 ## Review Contract
 This is a review-only contract.
 Do not fix findings, apply patches, edit files, or start rescue work from a review result.
