@@ -10,7 +10,7 @@ allowed-tools: Bash(node:*)
 
 EXTERNAL_MODEL_CONTRACT_VERSION=1
 
-Run `node "${CLAUDE_PLUGIN_ROOT}/scripts/kimi-companion.mjs" cancel --job "$ARGUMENTS" --cwd "<workspace>"`.
+Run `node "${CLAUDE_PLUGIN_ROOT}/scripts/relay-run.mjs" kimi-companion.mjs cancel --job "$ARGUMENTS" --cwd "<workspace>"`.
 This command is for background jobs only. Foreground runs are owned by the active terminal; interrupt them with Ctrl+C.
 The companion does not signal attached foreground processes.
 For no_pid_info or unverifiable, render `suggested_action` when present and do not invent a PID kill command without an ownership check.

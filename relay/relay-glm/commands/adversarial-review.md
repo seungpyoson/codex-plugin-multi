@@ -11,15 +11,19 @@ allowed-tools: Read, Glob, Grep, Bash(node:*), Bash(git:*), AskUserQuestion
 EXTERNAL_MODEL_CONTRACT_VERSION=1
 
 ## Entrypoint Contract
-Use the relay-local entrypoint `node "${CLAUDE_PLUGIN_ROOT}/scripts/api-reviewer.mjs"`.
+Use the relay-local entrypoint `node "${CLAUDE_PLUGIN_ROOT}/scripts/relay-run.mjs" api-reviewer.mjs`.
 Do not run bare `api-reviewer`, do not rely on `PATH`, and do not use repository-relative paths.
 If `${CLAUDE_PLUGIN_ROOT}/scripts/api-reviewer.mjs` cannot be resolved, stop and report `api_reviewer_entrypoint_missing` before any source-bearing command.
 
 Scope: `branch-diff`. Preserve raw `$ARGUMENTS` except for documented routing.
 `$ARGUMENTS` is optional `--scope-base REF` followed by review prompt text.
 Route `--scope-base REF` before `--prompt-file` and write the remaining prompt text to the private prompt file referenced by `RELAY_PROMPT_FILE`.
-Run `node "${CLAUDE_PLUGIN_ROOT}/scripts/api-reviewer.mjs" approval-request --provider glm --mode adversarial-review --scope branch-diff --scope-base REF --prompt-file "$RELAY_PROMPT_FILE"`.
-Run `node "${CLAUDE_PLUGIN_ROOT}/scripts/api-reviewer.mjs" run --provider glm --mode adversarial-review --scope branch-diff --scope-base REF --approval-token "<approval_token.value>" --lifecycle-events markdown --prompt-file "$RELAY_PROMPT_FILE"`.
+Prompt payload:
+Write the routed focus text to a private temp file (mode 0600), set `RELAY_PROMPT_FILE` to that path, and delete it after the command exits.
+
+
+Run `node "${CLAUDE_PLUGIN_ROOT}/scripts/relay-run.mjs" api-reviewer.mjs approval-request --provider glm --mode adversarial-review --scope branch-diff --scope-base REF --prompt-file "$RELAY_PROMPT_FILE"`.
+Run `node "${CLAUDE_PLUGIN_ROOT}/scripts/relay-run.mjs" api-reviewer.mjs run --provider glm --mode adversarial-review --scope branch-diff --scope-base REF --approval-token "<approval_token.value>" --lifecycle-events markdown --prompt-file "$RELAY_PROMPT_FILE"`.
 ## Review Contract
 This is a review-only contract.
 Do not fix findings, apply patches, edit files, or start rescue work from a review result.
@@ -98,4 +102,4 @@ Preflight scope failures such as `scope_base_missing`, `scope_base_invalid`, `sc
 Do not print raw OAuth tokens, API-key values, session cookies, tunnel API keys, bearer tokens, or raw secret values.
 Credential diagnostics may show key names only.
 
-This command backs `../skills/glm-adversarial-review/SKILL.md`.
+This command is emitted for the Claude relay plugin.

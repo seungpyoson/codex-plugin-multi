@@ -14,11 +14,15 @@ EXTERNAL_MODEL_CONTRACT_VERSION=1
 
 For long-running work, launch a background job:
 
-- `node "${CLAUDE_PLUGIN_ROOT}/scripts/gemini-companion.mjs" run --mode=rescue --background --lifecycle-events markdown --prompt-file "$RELAY_PROMPT_FILE"`
+Prompt payload:
+Write the routed focus text to a private temp file (mode 0600), set `RELAY_PROMPT_FILE` to that path, and delete it after the command exits.
+
+
+- `node "${CLAUDE_PLUGIN_ROOT}/scripts/relay-run.mjs" gemini-companion.mjs run --mode=rescue --background --lifecycle-events markdown --prompt-file "$RELAY_PROMPT_FILE"`
 
 For quick attached work, run in the foreground:
 
-- `node "${CLAUDE_PLUGIN_ROOT}/scripts/gemini-companion.mjs" run --mode=rescue --foreground --lifecycle-events markdown --prompt-file "$RELAY_PROMPT_FILE"`
+- `node "${CLAUDE_PLUGIN_ROOT}/scripts/relay-run.mjs" gemini-companion.mjs run --mode=rescue --foreground --lifecycle-events markdown --prompt-file "$RELAY_PROMPT_FILE"`
 
 
 ## Rescue Contract

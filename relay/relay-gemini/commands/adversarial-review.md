@@ -20,7 +20,7 @@ Write the routed focus text to a private temp file (mode 0600), set `RELAY_PROMP
 
 Run:
 
-- `node "${CLAUDE_PLUGIN_ROOT}/scripts/gemini-companion.mjs" run --mode=adversarial-review --foreground --lifecycle-events markdown --prompt-file "$RELAY_PROMPT_FILE"`
+- `node "${CLAUDE_PLUGIN_ROOT}/scripts/relay-run.mjs" gemini-companion.mjs run --mode=adversarial-review --foreground --lifecycle-events markdown --prompt-file "$RELAY_PROMPT_FILE"`
 
 ## Review Contract
 This is a review-only contract.

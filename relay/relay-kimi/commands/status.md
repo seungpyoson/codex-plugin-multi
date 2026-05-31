@@ -10,7 +10,7 @@ allowed-tools: Bash(node:*)
 
 EXTERNAL_MODEL_CONTRACT_VERSION=1
 
-Run `node "${CLAUDE_PLUGIN_ROOT}/scripts/kimi-companion.mjs" status --cwd "<workspace>"`.
+Run `node "${CLAUDE_PLUGIN_ROOT}/scripts/relay-run.mjs" kimi-companion.mjs status --cwd "<workspace>"`.
 Status rendering is read-only. Do not rerun, continue, cancel, or summarize jobs from status output.
 Show active and recent jobs for the current workspace.
 ## Secret Safety

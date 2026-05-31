@@ -7,8 +7,6 @@
   "license": "AGPL-3.0-only",
   "keywords": [
     "deepseek",
-    "glm",
-    "zai",
     "api",
     "review"
   ],

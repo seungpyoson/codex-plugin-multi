@@ -14,14 +14,14 @@ EXTERNAL_MODEL_CONTRACT_VERSION=1
 If present, pass `--scope-base REF` as a CLI flag; write the remaining focus text to the private prompt file referenced by `RELAY_PROMPT_FILE`.
 Preserve raw `$ARGUMENTS` exactly except for routing documented flags.
 Review timeout defaults to 900000 ms. Use `--timeout-ms <ms>` or `KIMI_REVIEW_TIMEOUT_MS`; the effective value is persisted in `review_metadata.audit_manifest.request.timeout_ms`.
-Route `--max-steps-per-turn N` before `--`; `N` must be a positive integer.
+Route `--max-steps-per-turn N` as a CLI flag before `--prompt-file`; `N` must be a positive integer.
 
 Prompt payload:
 Write the routed focus text to a private temp file (mode 0600), set `RELAY_PROMPT_FILE` to that path, and delete it after the command exits.
 
 Run:
 
-- `node "${CLAUDE_PLUGIN_ROOT}/scripts/kimi-companion.mjs" run --mode=adversarial-review --foreground --lifecycle-events markdown --prompt-file "$RELAY_PROMPT_FILE"`
+- `node "${CLAUDE_PLUGIN_ROOT}/scripts/relay-run.mjs" kimi-companion.mjs run --mode=adversarial-review --foreground --lifecycle-events markdown --prompt-file "$RELAY_PROMPT_FILE"`
 
 ## Review Contract
 This is a review-only contract.

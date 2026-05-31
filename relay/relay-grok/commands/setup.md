@@ -10,18 +10,18 @@ allowed-tools: Bash(node:*)
 
 EXTERNAL_MODEL_CONTRACT_VERSION=1
 
-Run `node "${CLAUDE_PLUGIN_ROOT}/scripts/grok-companion.mjs" doctor`.
+Run `node "${CLAUDE_PLUGIN_ROOT}/scripts/relay-run.mjs" grok-companion.mjs doctor`.
 Render the returned JSON. Show key names only. Do not print session cookies, tunnel API keys, or bearer token values.
 Default doctor checks `grok --version`, `grok models`, and a source-free Grok CLI prompt for `grok-build` readiness.
 Treat `ready: true`, `transport: "cli"`, `grok_version`, `default_model`, `model_ready: true`, and `readiness_layers.source_free_prompt.status: "ready"` as evidence that the subscription-backed CLI is usable.
-To diagnose the legacy local web tunnel, run `node "${CLAUDE_PLUGIN_ROOT}/scripts/grok-companion.mjs" doctor --transport web`.
+To diagnose the legacy local web tunnel, run `node "${CLAUDE_PLUGIN_ROOT}/scripts/relay-run.mjs" grok-companion.mjs doctor --transport web`.
 With explicit `--transport web`, doctor performs live `/models`, chat readiness, and redacted session-pool probes against the configured local tunnel.
 With explicit `--transport web`, if a loopback grok2api `/v1` endpoint is unavailable, doctor tries to use an existing checkout or bootstrap `https://github.com/chenyme/grok2api.git` into the durable managed runtime directory.
 The bootstrap start command is `uv run granian --interface asgi --host 127.0.0.1 --port 8000 --workers 1 app.main:app`; Docker is not required.
 If bootstrap/start cannot run, surface `tunnel_start.error_code` and do not suggest direct xAI API keys.
 When `UV_CACHE_DIR` is unset, the plugin provides `uv` a sandbox-writable default; `UV_CACHE_DIR=""` is treated as unset, and an explicit non-empty `UV_CACHE_DIR` is preserved.
 Explicit `GROK2API_HOME` and `GROK2API_BOOTSTRAP_DIR` are authoritative; stale explicit paths should be fixed rather than silently ignored.
-If `durability_warnings` reports `grok2api_ephemeral_bootstrap_home`, configure a durable `GROK2API_HOME` or `CODEX_PLUGIN_MULTI_RUNTIME_DIR` before syncing browser session state, even when the temporary path came from explicit `GROK2API_HOME`.
+If `durability_warnings` reports `grok2api_ephemeral_bootstrap_home`, configure a durable `GROK2API_HOME` or `CLAUDE_PLUGIN_DATA` before syncing browser session state, even when the temporary path came from explicit `GROK2API_HOME`.
 If `session_diagnostics.error_code` is `grok_session_no_runtime_tokens` or `grok_session_malformed_active_token`, the tunnel process is up but its account/session pool needs browser-backed session repair; use `npm run grok:repair-session`, which pins explicit `--transport web`, and run browser-session sync only after explicit operator approval.
 Do not import browser cookies unless the user explicitly requests that session sync step.
 When the user approves session repair, run `npm run grok:repair-session -- --approve-browser-session-sync`; the command reruns doctor after sync and prints redacted readiness fields.

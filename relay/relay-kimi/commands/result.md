@@ -10,7 +10,7 @@ allowed-tools: Bash(node:*)
 
 EXTERNAL_MODEL_CONTRACT_VERSION=1
 
-Run `node "${CLAUDE_PLUGIN_ROOT}/scripts/kimi-companion.mjs" result --job "$ARGUMENTS" --cwd "<workspace>"`.
+Run `node "${CLAUDE_PLUGIN_ROOT}/scripts/relay-run.mjs" kimi-companion.mjs result --job "$ARGUMENTS" --cwd "<workspace>"`.
 Do not rerun a job from result rendering.
 Return the stored JobRecord JSON output verbatim; do not summarize or rewrite findings.
 Use External Model Result Handling for rendering.

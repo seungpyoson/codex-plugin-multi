@@ -10,9 +10,9 @@ allowed-tools: Bash(node:*)
 
 EXTERNAL_MODEL_CONTRACT_VERSION=1
 
-Run `node "${CLAUDE_PLUGIN_ROOT}/scripts/gemini-companion.mjs" doctor`.
+Run `node "${CLAUDE_PLUGIN_ROOT}/scripts/relay-run.mjs" gemini-companion.mjs doctor`.
 If access to ~/.gemini is denied, report `sandbox_blocked` and ask for a one-off escalation rather than weakening the default sandbox.
-After installation or cache refresh, start a fresh Codex session so plugin skills are discoverable.
+After installation or cache refresh, start a fresh Claude Code session so plugin commands are discoverable.
 Do not claim unimplemented target version-floor checks.
 ## Secret Safety
 Do not print raw OAuth tokens, API-key values, session cookies, tunnel API keys, bearer tokens, or raw secret values.

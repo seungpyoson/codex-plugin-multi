@@ -14,7 +14,11 @@ EXTERNAL_MODEL_CONTRACT_VERSION=1
 Route `--scope-paths <files>` before `--prompt-file` and write the remaining prompt text to the private prompt file referenced by `RELAY_PROMPT_FILE`.
 Replace `<file1>,<file2>` with comma- or newline-separated concrete relative paths.
 Expand globs before running; do not pass glob characters as `--scope-paths`.
-Run `node "${CLAUDE_PLUGIN_ROOT}/scripts/grok-companion.mjs" run --mode custom-review --scope custom --scope-paths "<file1>,<file2>" --foreground --lifecycle-events markdown --prompt-file "$RELAY_PROMPT_FILE"`.
+Prompt payload:
+Write the routed focus text to a private temp file (mode 0600), set `RELAY_PROMPT_FILE` to that path, and delete it after the command exits.
+
+
+Run `node "${CLAUDE_PLUGIN_ROOT}/scripts/relay-run.mjs" grok-companion.mjs run --mode custom-review --scope custom --scope-paths "<file1>,<file2>" --foreground --lifecycle-events markdown --prompt-file "$RELAY_PROMPT_FILE"`.
 ## Review Contract
 This is a review-only contract.
 Do not fix findings, apply patches, edit files, or start rescue work from a review result.

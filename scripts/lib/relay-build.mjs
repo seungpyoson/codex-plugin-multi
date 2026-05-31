@@ -12,17 +12,31 @@ import { join } from "node:path";
 const RELAY_REPOSITORY = "https://github.com/seungpyoson/relay";
 const RELAY_PROVIDER_ORDER = Object.freeze(["gemini", "grok", "kimi", "glm", "deepseek"]);
 const RELAY_PROVIDER_DEFINITIONS = Object.freeze({
-  gemini: { sourceProvider: "gemini", commandPrefix: "gemini" },
-  grok: { sourceProvider: "grok", commandPrefix: "grok" },
-  kimi: { sourceProvider: "kimi", commandPrefix: "kimi" },
+  gemini: {
+    sourceProvider: "gemini",
+    commandPrefix: "gemini",
+    pluginDataEnv: "GEMINI_PLUGIN_DATA",
+    sessionIdEnv: "GEMINI_COMPANION_SESSION_ID",
+    synthesizeCustomReview: true,
+  },
+  grok: { sourceProvider: "grok", commandPrefix: "grok", pluginDataEnv: "GROK_PLUGIN_DATA" },
+  kimi: {
+    sourceProvider: "kimi",
+    commandPrefix: "kimi",
+    pluginDataEnv: "KIMI_PLUGIN_DATA",
+    sessionIdEnv: "KIMI_COMPANION_SESSION_ID",
+    synthesizeCustomReview: true,
+  },
   glm: {
     sourceProvider: "api-reviewers",
     commandPrefix: "glm",
+    pluginDataEnv: "API_REVIEWERS_PLUGIN_DATA",
     description: "Delegate code reviews to GLM direct API from within Claude Code.",
   },
   deepseek: {
     sourceProvider: "api-reviewers",
     commandPrefix: "deepseek",
+    pluginDataEnv: "API_REVIEWERS_PLUGIN_DATA",
     description: "Delegate code reviews to DeepSeek direct API from within Claude Code.",
   },
 });
@@ -55,6 +69,8 @@ export function buildRelayPlugin({ provider, repoRoot = process.cwd(), outRoot =
   copyIfExists(join(sourceRoot, "policies"), join(pluginRoot, "policies"));
   copyIfExists(join(sourceRoot, "bin"), join(pluginRoot, "bin"));
   copyIfExists(join(sourceRoot, "LICENSE"), join(pluginRoot, "LICENSE"));
+  writeRelayRunner({ pluginRoot, repoRoot, definition });
+  filterRelayConfig({ pluginRoot, provider });
 
   const commandsRoot = join(pluginRoot, "commands");
   mkdirSync(commandsRoot, { recursive: true });
@@ -66,6 +82,13 @@ export function buildRelayPlugin({ provider, repoRoot = process.cwd(), outRoot =
     writeFileSync(
       join(commandsRoot, claudeCommandFileName(fileName, definition.commandPrefix)),
       renderClaudeCommandDoc(sourceDoc),
+      "utf8",
+    );
+  }
+  if (definition.synthesizeCustomReview) {
+    writeFileSync(
+      join(commandsRoot, "custom-review.md"),
+      renderClaudeCommandDoc(renderSynthesizedCustomReviewDoc(provider, definition)),
       "utf8",
     );
   }
@@ -88,10 +111,14 @@ export function renderClaudePluginManifest(codexManifest, { provider, descriptio
     repository: _repository,
     ...rest
   } = codexManifest;
+  const relayRest = { ...rest };
+  if (Array.isArray(relayRest.keywords)) {
+    relayRest.keywords = filterRelayKeywords(relayRest.keywords, provider);
+  }
 
   return {
     name: relayPluginName(provider),
-    ...rest,
+    ...relayRest,
     description: descriptionOverride ?? rewriteCodexHostDescription(description),
     homepage: RELAY_REPOSITORY,
     repository: RELAY_REPOSITORY,
@@ -110,6 +137,7 @@ export function renderClaudeCommandDoc(codexDoc) {
     .replaceAll('node "${CODEX_HOME:-$HOME/.codex}/plugins/cache/codex-plugin-multi/api-reviewers/0.1.0/scripts/api-reviewer.mjs"', 'node "${CLAUDE_PLUGIN_ROOT}/scripts/api-reviewer.mjs"')
     .replaceAll("${CODEX_HOME:-$HOME/.codex}/plugins/cache/codex-plugin-multi/api-reviewers/0.1.0/scripts/api-reviewer.mjs", "${CLAUDE_PLUGIN_ROOT}/scripts/api-reviewer.mjs")
     .replaceAll('-- "<focus text>"', '--prompt-file "$RELAY_PROMPT_FILE"')
+    .replaceAll('-- "<prompt text>"', '--prompt-file "$RELAY_PROMPT_FILE"')
     .replaceAll('-- "$ARGUMENTS"', '--prompt-file "$RELAY_PROMPT_FILE"')
     .replaceAll('--prompt "<prompt text>"', '--prompt-file "$RELAY_PROMPT_FILE"')
     .replaceAll(
@@ -125,6 +153,14 @@ export function renderClaudeCommandDoc(codexDoc) {
       "Route `--scope-paths <files>` before `--prompt-file` and write the remaining prompt text to the private prompt file referenced by `RELAY_PROMPT_FILE`.",
     )
     .replaceAll(
+      "Route `--max-steps-per-turn N` before `--`; `N` must be a positive integer.",
+      "Route `--max-steps-per-turn N` as a CLI flag before `--prompt-file`; `N` must be a positive integer.",
+    )
+    .replaceAll(
+      "If the user provides a step budget, add `--max-steps-per-turn N` before `--`; `N` must be a positive integer.",
+      "If the user provides a step budget, add `--max-steps-per-turn N` as a CLI flag before `--prompt-file`; `N` must be a positive integer.",
+    )
+    .replaceAll(
       "Use the global installed entrypoint `node \"${CLAUDE_PLUGIN_ROOT}/scripts/api-reviewer.mjs\"`.",
       "Use the relay-local entrypoint `node \"${CLAUDE_PLUGIN_ROOT}/scripts/api-reviewer.mjs\"`.",
     )
@@ -132,19 +168,16 @@ export function renderClaudeCommandDoc(codexDoc) {
       "Do not run bare `api-reviewer`, do not rely on `PATH`, and do not use repository-relative paths such as `plugins/api-reviewers/scripts/api-reviewer.mjs`.",
       "Do not run bare `api-reviewer`, do not rely on `PATH`, and do not use repository-relative paths.",
     )
-    .replace(/This command backs `plugins\/[^`]+`\./g, "This command is emitted for the Claude relay plugin.");
+    .replaceAll("CODEX_PLUGIN_MULTI_RUNTIME_DIR", "CLAUDE_PLUGIN_DATA")
+    .replaceAll(
+      "After installation or cache refresh, start a fresh Codex session so plugin skills are discoverable.",
+      "After installation or cache refresh, start a fresh Claude Code session so plugin commands are discoverable.",
+    )
+    .replace(/node "\$\{CLAUDE_PLUGIN_ROOT\}\/scripts\/([^"`\s]+\.mjs)"/g, 'node "${CLAUDE_PLUGIN_ROOT}/scripts/relay-run.mjs" $1')
+    .replace(/This command backs `[^`]+`\./g, "This command is emitted for the Claude relay plugin.");
 
   if (rendered.includes('--prompt-file "$RELAY_PROMPT_FILE"')) {
-    rendered = rendered.replace(
-      "\nRun:\n",
-      [
-        "\nPrompt payload:",
-        "Write the routed focus text to a private temp file (mode 0600), set `RELAY_PROMPT_FILE` to that path, and delete it after the command exits.",
-        "",
-        "Run:",
-        "",
-      ].join("\n"),
-    );
+    rendered = insertPromptPayloadGuidance(rendered);
   }
 
   return rendered;
@@ -154,17 +187,152 @@ function rewriteCodexHostDescription(description) {
   return String(description).replaceAll("from within Codex", "from within Claude Code");
 }
 
+function filterRelayKeywords(keywords, provider) {
+  const allowed = {
+    deepseek: new Set(["deepseek", "api", "review"]),
+    glm: new Set(["glm", "zai", "api", "review"]),
+  }[provider];
+  return allowed ? keywords.filter((keyword) => allowed.has(keyword)) : keywords;
+}
+
+function filterRelayConfig({ pluginRoot, provider }) {
+  if (!["deepseek", "glm"].includes(provider)) return;
+
+  const providersPath = join(pluginRoot, "config", "providers.json");
+  if (!existsSync(providersPath)) return;
+
+  const providers = readJson(providersPath);
+  if (!providers[provider]) {
+    throw new Error(`provider config missing ${provider}`);
+  }
+  writeJson(providersPath, { [provider]: providers[provider] });
+}
+
+function writeRelayRunner({ pluginRoot, repoRoot, definition }) {
+  const scriptsRoot = join(pluginRoot, "scripts");
+  const scriptsLibRoot = join(scriptsRoot, "lib");
+  mkdirSync(scriptsLibRoot, { recursive: true });
+  copyIfExists(join(repoRoot, "scripts", "lib", "claude-env.mjs"), join(scriptsLibRoot, "claude-env.mjs"));
+  writeFileSync(join(scriptsRoot, "relay-run.mjs"), renderRelayRunner(definition), "utf8");
+}
+
+function renderRelayRunner(definition) {
+  return `#!/usr/bin/env node
+import { spawnSync } from "node:child_process";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+
+import { claudePluginDataRoot, claudeSessionId } from "./lib/claude-env.mjs";
+
+const PLUGIN_DATA_ENV = ${JSON.stringify(definition.pluginDataEnv)};
+const SESSION_ID_ENV = ${JSON.stringify(definition.sessionIdEnv ?? null)};
+const pluginRoot = dirname(dirname(fileURLToPath(import.meta.url)));
+const [scriptName, ...args] = process.argv.slice(2);
+
+if (!scriptName || scriptName.includes("/") || scriptName.includes("\\\\")) {
+  console.error("Usage: relay-run.mjs <script-name.mjs> [...args]");
+  process.exit(64);
+}
+
+const env = { ...process.env };
+const pluginDataRoot = claudePluginDataRoot(env);
+if (!env[PLUGIN_DATA_ENV] && pluginDataRoot) {
+  env[PLUGIN_DATA_ENV] = pluginDataRoot;
+}
+
+const sessionId = claudeSessionId(env);
+if (SESSION_ID_ENV && !env[SESSION_ID_ENV] && sessionId) {
+  env[SESSION_ID_ENV] = sessionId;
+}
+
+const result = spawnSync(process.execPath, [join(pluginRoot, "scripts", scriptName), ...args], {
+  stdio: "inherit",
+  env,
+});
+
+if (result.error) {
+  console.error(result.error.message);
+  process.exit(1);
+}
+if (result.signal) {
+  process.kill(process.pid, result.signal);
+}
+process.exit(result.status ?? 1);
+`;
+}
+
+function renderSynthesizedCustomReviewDoc(provider, definition) {
+  const displayName = providerDisplayName(provider);
+  const timeoutEnv = `${provider.toUpperCase()}_REVIEW_TIMEOUT_MS`;
+  return `---
+description: Ask ${displayName} to review explicit files.
+argument-hint: "--scope-paths <files> [--timeout-ms MS] [review prompt]"
+disable-model-invocation: true
+allowed-tools: Read, Glob, Grep, Bash(node:*), Bash(git:*), AskUserQuestion
+---
+
+# ${displayName} Custom Review
+
+EXTERNAL_MODEL_CONTRACT_VERSION=1
+
+\`$ARGUMENTS\` is required \`--scope-paths <files>\`, optional \`--timeout-ms MS\`, and review prompt text.
+Route \`--scope-paths <files>\` before \`--prompt-file\` and write the remaining prompt text to the private prompt file referenced by \`RELAY_PROMPT_FILE\`.
+Review timeout defaults to 900000 ms. Use \`--timeout-ms <ms>\` or \`${timeoutEnv}\`; the effective value is persisted in \`review_metadata.audit_manifest.request.timeout_ms\`.
+
+Run:
+
+- \`node "<plugin-root>/scripts/${definition.commandPrefix}-companion.mjs" run --mode=custom-review --scope custom --scope-paths "<file1>,<file2>" --foreground --lifecycle-events markdown -- "<prompt text>"\`
+
+## Review Contract
+This is a review-only contract.
+Do not fix findings, apply patches, edit files, or start rescue work from a review result.
+Preserve the caller's review text verbatim after routing documented flags.
+Return the runtime output verbatim; do not summarize or rewrite findings.
+If there is no substantive result or structured output, report review blocked / no findings produced.
+Render lifecycle markdown cards directly.
+
+## Scope Safety
+Use custom-review only for explicit file bundles. Scope validation must complete before selected source is sent.
+If concrete files or --scope-paths are already known, do not run branch-diff first; use custom-review with those paths and the original prompt.
+
+## Secret Safety
+Do not print raw OAuth tokens, API-key values, session cookies, tunnel API keys, bearer tokens, or raw secret values.
+Credential diagnostics may show key names only.
+`;
+}
+
+function insertPromptPayloadGuidance(rendered) {
+  if (rendered.includes("Prompt payload:")) return rendered;
+
+  const block = "\nPrompt payload:\nWrite the routed focus text to a private temp file (mode 0600), set `RELAY_PROMPT_FILE` to that path, and delete it after the command exits.\n\n";
+  if (rendered.includes("\nRun:\n")) {
+    return rendered.replace("\nRun:\n", `${block}Run:\n`);
+  }
+
+  const inlineRunIndex = rendered.indexOf("\nRun `node ");
+  if (inlineRunIndex !== -1) {
+    return `${rendered.slice(0, inlineRunIndex)}${block}${rendered.slice(inlineRunIndex)}`;
+  }
+
+  const commandBulletIndex = rendered.indexOf("\n- `node ");
+  if (commandBulletIndex !== -1) {
+    return `${rendered.slice(0, commandBulletIndex)}${block}${rendered.slice(commandBulletIndex)}`;
+  }
+
+  return `${rendered.trimEnd()}${block}\n`;
+}
+
+function providerDisplayName(provider) {
+  if (provider === "glm") return "GLM";
+  return `${provider.charAt(0).toUpperCase()}${provider.slice(1)}`;
+}
+
 function readJson(filePath) {
   return JSON.parse(readFileSync(filePath, "utf8"));
 }
 
 function writeJson(filePath, value) {
   writeFileSync(filePath, `${JSON.stringify(value, null, 2)}\n`, "utf8");
-}
-
-function copyTree(source, destination) {
-  mkdirSync(destination, { recursive: true });
-  cpSync(source, destination, { recursive: true, force: true });
 }
 
 function copyIfExists(source, destination) {
