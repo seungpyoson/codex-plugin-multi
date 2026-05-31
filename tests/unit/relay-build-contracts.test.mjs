@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -13,6 +13,16 @@ import {
   renderClaudePluginManifest,
   relayPluginName,
 } from "../../scripts/lib/relay-build.mjs";
+
+function writeStubDirectApiRuntime(pluginRoot) {
+  const scriptsRoot = path.join(pluginRoot, "scripts");
+  mkdirSync(scriptsRoot, { recursive: true });
+  writeFileSync(
+    path.join(scriptsRoot, "relay-entrypoint.mjs"),
+    "export function runRelayDirectApiEntrypoint({ provider }) { console.log(JSON.stringify({ ok: true, providers: [provider] })); }\n",
+    "utf8",
+  );
+}
 
 test("relayPluginName: prefixes provider plugins for relay", () => {
   assert.equal(relayPluginName("gemini"), "relay-gemini");
@@ -164,6 +174,24 @@ test("buildRelayPlugin: direct API wrapper reports contracted missing entrypoint
     assert.equal(result.status, 1, result.stderr);
     assert.match(result.stderr, /api_reviewer_entrypoint_missing/);
     assert.doesNotMatch(result.stderr, /ERR_MODULE_NOT_FOUND|Cannot find module/);
+  } finally {
+    rmSync(outRoot, { recursive: true, force: true });
+  }
+});
+
+test("buildRelayPlugin: direct API wrapper resolves sibling relay-api-reviewers runtime", () => {
+  const outRoot = mkdtempSync(path.join(tmpdir(), "relay-api-sibling-"));
+  try {
+    const pluginRoot = buildRelayPlugin({ provider: "glm", repoRoot: process.cwd(), outRoot });
+    writeStubDirectApiRuntime(path.join(outRoot, "relay-api-reviewers"));
+
+    const result = spawnSync(process.execPath, [path.join(pluginRoot, "scripts", "api-reviewer.mjs"), "--help"], {
+      encoding: "utf8",
+    });
+
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, /"ok":true/);
+    assert.match(result.stdout, /"providers":\["glm"\]/);
   } finally {
     rmSync(outRoot, { recursive: true, force: true });
   }

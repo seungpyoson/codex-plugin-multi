@@ -67,6 +67,33 @@ function listSkills(root, plugin) {
     .sort(comparePathStrings);
 }
 
+function normalizeSourcePath(sourcePath) {
+  let normalized = sourcePath.replaceAll("\\", "/");
+  if (normalized.startsWith("./")) normalized = normalized.slice(2);
+  while (normalized.endsWith("/")) normalized = normalized.slice(0, -1);
+  return normalized || ".";
+}
+
+function readMarketplaceSourcePaths(root) {
+  const file = join(root, ".agents", "plugins", "marketplace.json");
+  const paths = new Map();
+  if (!existsSync(file)) return paths;
+
+  const marketplace = JSON.parse(readFileSync(file, "utf8"));
+  if (!Array.isArray(marketplace.plugins)) return paths;
+  for (const plugin of marketplace.plugins) {
+    if (typeof plugin?.name !== "string") continue;
+    const sourcePath = plugin.source?.path;
+    if (typeof sourcePath !== "string") continue;
+    paths.set(plugin.name, normalizeSourcePath(sourcePath));
+  }
+  return paths;
+}
+
+function pluginSourcePath(paths, plugin) {
+  return paths.get(plugin) ?? join("plugins", plugin);
+}
+
 function comparablePluginFile(rel) {
   if (rel === "package.json" || rel === ".codex-plugin/plugin.json") return true;
   return rel.startsWith("bin/")
@@ -122,13 +149,15 @@ function enabledInConfig(home, plugin) {
   return match ? /\benabled\s*=\s*true\b/.test(match[1]) : false;
 }
 
-function profileReport(name, home, plugins, sourceRoot, repoPlugins) {
+function profileReport(name, home, plugins, { sourceBaseRoot, sourcePaths, repoBaseRoot, repoSourcePaths }) {
   const pluginReports = {};
   let ok = true;
   for (const plugin of plugins) {
-    const expected = listSkills(sourceRoot, plugin);
-    const sourcePluginRoot = join(sourceRoot, plugin);
-    const repoPluginRoot = join(repoPlugins, plugin);
+    const sourcePath = pluginSourcePath(sourcePaths, plugin);
+    const repoSourcePath = pluginSourcePath(repoSourcePaths, plugin);
+    const sourcePluginRoot = join(sourceBaseRoot, sourcePath);
+    const repoPluginRoot = join(repoBaseRoot, repoSourcePath);
+    const expected = listSkills(sourcePluginRoot, ".");
     const repoPluginPresent = existsSync(repoPluginRoot);
     const cacheRoot = join(home, "plugins", "cache", CACHE_NAMESPACE, plugin, "0.1.0");
     const cached = listSkills(cacheRoot, ".");
@@ -153,6 +182,8 @@ function profileReport(name, home, plugins, sourceRoot, repoPlugins) {
     pluginReports[plugin] = {
       hidden,
       enabled,
+      source_path: sourcePath,
+      repo_source_path: repoSourcePath,
       cache_path: cacheRoot,
       cache_in_sync: inSync,
       repo_present: repoPluginPresent,
@@ -195,15 +226,18 @@ function main() {
   const primaryHome = resolve(args["codex-home"] ?? process.env.CODEX_HOME ?? join(homedir(), ".codex"));
   const secondHome = args["second-codex-home"] ? resolve(args["second-codex-home"]) : null;
   const plugins = args.plugins.length > 0 ? args.plugins : DEFAULT_PLUGINS;
-  const repoPlugins = join(repo, "plugins");
   const marketplaceRoot = join(primaryHome, ".tmp", "marketplaces", MARKETPLACE);
-  const marketplacePlugins = join(marketplaceRoot, "plugins");
-  const sourceRoot = existsSync(marketplacePlugins) ? marketplacePlugins : repoPlugins;
+  const marketplacePresent = existsSync(marketplaceRoot);
+  const repoSourcePaths = readMarketplaceSourcePaths(repo);
+  const marketplaceSourcePaths = marketplacePresent ? readMarketplaceSourcePaths(marketplaceRoot) : new Map();
+  const sourceBaseRoot = marketplacePresent ? marketplaceRoot : repo;
+  const sourcePaths = marketplacePresent ? marketplaceSourcePaths : repoSourcePaths;
+  const profileOptions = { sourceBaseRoot, sourcePaths, repoBaseRoot: repo, repoSourcePaths };
 
   const profiles = {
-    primary: profileReport("primary", primaryHome, plugins, sourceRoot, repoPlugins),
+    primary: profileReport("primary", primaryHome, plugins, profileOptions),
   };
-  if (secondHome) profiles.second = profileReport("second", secondHome, plugins, sourceRoot, repoPlugins);
+  if (secondHome) profiles.second = profileReport("second", secondHome, plugins, profileOptions);
 
   const ok = Object.values(profiles).every((profile) => profile.ok);
   const nextActions = [];
@@ -225,8 +259,8 @@ function main() {
       name: MARKETPLACE,
       cache_namespace: CACHE_NAMESPACE,
       root: marketplaceRoot,
-      present: existsSync(marketplaceRoot),
-      source_root: sourceRoot,
+      present: marketplacePresent,
+      source_root: sourceBaseRoot,
     },
     profiles,
     next_actions: nextActions,

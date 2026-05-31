@@ -44,6 +44,56 @@ function writeConfig(home, plugin, enabled = true) {
   );
 }
 
+function writeMarketplaceManifest(root, plugins) {
+  const file = path.join(root, ".agents", "plugins", "marketplace.json");
+  mkdirSync(path.dirname(file), { recursive: true });
+  writeFileSync(
+    file,
+    `${JSON.stringify({
+      name: MARKETPLACE,
+      plugins: plugins.map(([name, sourcePath]) => ({
+        name,
+        source: { source: "local", path: sourcePath },
+        policy: { installation: "AVAILABLE", authentication: "ON_USE" },
+      })),
+    }, null, 2)}\n`,
+    "utf8",
+  );
+}
+
+test("codex plugin cache doctor follows marketplace source.path for public plugin names", () => {
+  const repo = mkdtempSync(path.join(tmpdir(), "plugin-cache-doctor-mapped-repo-"));
+  const primary = mkdtempSync(path.join(tmpdir(), "plugin-cache-doctor-mapped-home-"));
+  const marketplaceRoot = path.join(primary, ".tmp", "marketplaces", MARKETPLACE);
+
+  writeMarketplaceManifest(repo, [["relay-grok", "./plugins/grok"]]);
+  writeMarketplaceManifest(marketplaceRoot, [["relay-grok", "./plugins/grok"]]);
+  writeSkill(path.join(repo, "plugins"), "grok", "grok-review");
+  writeSkill(path.join(marketplaceRoot, "plugins"), "grok", "grok-review");
+  writePluginFile(path.join(repo, "plugins"), "grok", "scripts/grok-web-reviewer.mjs", "export const version = 'source';\n");
+  writePluginFile(path.join(marketplaceRoot, "plugins"), "grok", "scripts/grok-web-reviewer.mjs", "export const version = 'source';\n");
+  writeCachedSkill(primary, "relay-grok", "grok-review");
+  writeCachedPluginFile(primary, "relay-grok", "scripts/grok-web-reviewer.mjs", "export const version = 'source';\n");
+  writeConfig(primary, "relay-grok", true);
+
+  const stdout = execFileSync(process.execPath, [
+    DOCTOR,
+    "--repo", repo,
+    "--codex-home", primary,
+    "--plugin", "relay-grok",
+  ], { encoding: "utf8" });
+  const report = JSON.parse(stdout);
+  const profile = report.profiles.primary;
+
+  assert.equal(report.ok, true);
+  assert.equal(profile.cache_in_sync, true);
+  assert.equal(profile.repo_present, true);
+  assert.equal(profile.repo_cache_in_sync, true);
+  assert.deepEqual(profile.plugins["relay-grok"].expected_skills, ["grok-review"]);
+  assert.deepEqual(profile.changed_files, []);
+  assert.deepEqual(profile.repo_changed_files, []);
+});
+
 test("codex plugin cache doctor reports stale cache, enablement, and restart guidance", () => {
   const repo = mkdtempSync(path.join(tmpdir(), "plugin-cache-doctor-repo-"));
   const primary = mkdtempSync(path.join(tmpdir(), "plugin-cache-doctor-primary-"));
