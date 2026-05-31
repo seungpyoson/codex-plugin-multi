@@ -71,6 +71,7 @@ export function buildRelayPlugin({ provider, repoRoot = process.cwd(), outRoot =
   copyIfExists(join(sourceRoot, "LICENSE"), join(pluginRoot, "LICENSE"));
   writeRelayRunner({ pluginRoot, repoRoot, definition });
   filterRelayConfig({ pluginRoot, provider });
+  rewriteRelayRuntimeHostStrings({ pluginRoot, provider });
 
   const commandsRoot = join(pluginRoot, "commands");
   mkdirSync(commandsRoot, { recursive: true });
@@ -165,6 +166,10 @@ export function renderClaudeCommandDoc(codexDoc) {
       "Use the relay-local entrypoint `node \"${CLAUDE_PLUGIN_ROOT}/scripts/api-reviewer.mjs\"`.",
     )
     .replaceAll(
+      "plugins/api-reviewers/config/session-approval.json",
+      "${CLAUDE_PLUGIN_ROOT}/config/session-approval.json",
+    )
+    .replaceAll(
       "Do not run bare `api-reviewer`, do not rely on `PATH`, and do not use repository-relative paths such as `plugins/api-reviewers/scripts/api-reviewer.mjs`.",
       "Do not run bare `api-reviewer`, do not rely on `PATH`, and do not use repository-relative paths.",
     )
@@ -174,7 +179,15 @@ export function renderClaudeCommandDoc(codexDoc) {
       "After installation or cache refresh, start a fresh Claude Code session so plugin commands are discoverable.",
     )
     .replace(/node "\$\{CLAUDE_PLUGIN_ROOT\}\/scripts\/([^"`\s]+\.mjs)"/g, 'node "${CLAUDE_PLUGIN_ROOT}/scripts/relay-run.mjs" $1')
-    .replace(/This command backs `[^`]+`\./g, "This command is emitted for the Claude relay plugin.");
+    .replace(/This command backs `[^`]+`\./g, "This command is emitted for the Claude relay plugin.")
+    .replaceAll(
+      "use `npm run grok:repair-session`, which pins explicit `--transport web`",
+      "use `node \"${CLAUDE_PLUGIN_ROOT}/scripts/relay-run.mjs\" grok-web-reviewer.mjs repair --transport web`, which pins explicit `--transport web`",
+    )
+    .replaceAll(
+      "run `npm run grok:repair-session -- --approve-browser-session-sync`",
+      "run `node \"${CLAUDE_PLUGIN_ROOT}/scripts/relay-run.mjs\" grok-web-reviewer.mjs repair --transport web --approve-browser-session-sync`",
+    );
 
   if (rendered.includes('--prompt-file "$RELAY_PROMPT_FILE"')) {
     rendered = insertPromptPayloadGuidance(rendered);
@@ -206,6 +219,24 @@ function filterRelayConfig({ pluginRoot, provider }) {
     throw new Error(`provider config missing ${provider}`);
   }
   writeJson(providersPath, { [provider]: providers[provider] });
+}
+
+function rewriteRelayRuntimeHostStrings({ pluginRoot, provider }) {
+  if (!["deepseek", "glm"].includes(provider)) return;
+
+  const runtimePath = join(pluginRoot, "scripts", "api-reviewer.mjs");
+  if (!existsSync(runtimePath)) return;
+
+  const runtime = readFileSync(runtimePath, "utf8")
+    .replaceAll(
+      "API Reviewers providers config is unreadable.",
+      "Direct API relay providers config is unreadable.",
+    )
+    .replaceAll(
+      "Reinstall or repair plugins/api-reviewers/config/providers.json and retry.",
+      "Reinstall or repair this relay plugin's config/providers.json and retry.",
+    );
+  writeFileSync(runtimePath, runtime, "utf8");
 }
 
 function writeRelayRunner({ pluginRoot, repoRoot, definition }) {

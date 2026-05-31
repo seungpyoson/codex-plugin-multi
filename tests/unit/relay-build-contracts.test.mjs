@@ -184,10 +184,24 @@ test("buildRelaySuite: generated relay commands do not leak Codex host contracts
         const commandDoc = readFileSync(path.join(pluginRoot, "commands", fileName), "utf8");
         assert.doesNotMatch(
           commandDoc,
-          /\bCodex\b|CODEX_HOME|CODEX_PLUGIN_MULTI_RUNTIME_DIR|\.codex|This command backs|before `--`/,
+          /\bCodex\b|CODEX_HOME|CODEX_PLUGIN_MULTI_RUNTIME_DIR|\.codex|plugins\/(?:api-reviewers|grok)|npm run|This command backs|before `--`/,
           `${path.basename(pluginRoot)}/commands/${fileName}`,
         );
       }
+    }
+  } finally {
+    rmSync(outRoot, { recursive: true, force: true });
+  }
+});
+
+test("buildRelaySuite: generated direct API relay runtimes do not leak Codex package paths", () => {
+  const outRoot = mkdtempSync(path.join(tmpdir(), "relay-runtime-host-"));
+  try {
+    for (const provider of ["glm", "deepseek"]) {
+      const pluginRoot = buildRelayPlugin({ provider, repoRoot: process.cwd(), outRoot });
+      const runtime = readFileSync(path.join(pluginRoot, "scripts", "api-reviewer.mjs"), "utf8");
+      assert.doesNotMatch(runtime, /plugins\/api-reviewers\/config\/providers\.json/, provider);
+      assert.match(runtime, /this relay plugin's config\/providers\.json/, provider);
     }
   } finally {
     rmSync(outRoot, { recursive: true, force: true });

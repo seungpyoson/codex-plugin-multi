@@ -22,9 +22,9 @@ If bootstrap/start cannot run, surface `tunnel_start.error_code` and do not sugg
 When `UV_CACHE_DIR` is unset, the plugin provides `uv` a sandbox-writable default; `UV_CACHE_DIR=""` is treated as unset, and an explicit non-empty `UV_CACHE_DIR` is preserved.
 Explicit `GROK2API_HOME` and `GROK2API_BOOTSTRAP_DIR` are authoritative; stale explicit paths should be fixed rather than silently ignored.
 If `durability_warnings` reports `grok2api_ephemeral_bootstrap_home`, configure a durable `GROK2API_HOME` or `CLAUDE_PLUGIN_DATA` before syncing browser session state, even when the temporary path came from explicit `GROK2API_HOME`.
-If `session_diagnostics.error_code` is `grok_session_no_runtime_tokens` or `grok_session_malformed_active_token`, the tunnel process is up but its account/session pool needs browser-backed session repair; use `npm run grok:repair-session`, which pins explicit `--transport web`, and run browser-session sync only after explicit operator approval.
+If `session_diagnostics.error_code` is `grok_session_no_runtime_tokens` or `grok_session_malformed_active_token`, the tunnel process is up but its account/session pool needs browser-backed session repair; use `node "${CLAUDE_PLUGIN_ROOT}/scripts/relay-run.mjs" grok-web-reviewer.mjs repair --transport web`, which pins explicit `--transport web`, and run browser-session sync only after explicit operator approval.
 Do not import browser cookies unless the user explicitly requests that session sync step.
-When the user approves session repair, run `npm run grok:repair-session -- --approve-browser-session-sync`; the command reruns doctor after sync and prints redacted readiness fields.
+When the user approves session repair, run `node "${CLAUDE_PLUGIN_ROOT}/scripts/relay-run.mjs" grok-web-reviewer.mjs repair --transport web --approve-browser-session-sync`; the command reruns doctor after sync and prints redacted readiness fields.
 
 ## Grok Transport Contract
 Grok defaults to the subscription-backed Grok CLI and must not silently fall back to paid xAI API billing.

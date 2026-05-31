@@ -1060,8 +1060,8 @@ function providersConfigErrorFields(error, provider = null) {
     provider,
     status: "config_error",
     ready: false,
-    summary: "API Reviewers providers config is unreadable.",
-    next_action: "Reinstall or repair plugins/api-reviewers/config/providers.json and retry.",
+    summary: "Direct API relay providers config is unreadable.",
+    next_action: "Reinstall or repair this relay plugin's config/providers.json and retry.",
     error_message: providersConfigErrorMessage(error),
   };
 }
@@ -2580,7 +2580,7 @@ function suggestedAction(errorCode, provider, cfg, errorMessage = "", httpStatus
   if (errorCode === "bad_args") return "Correct the api-reviewer command arguments and retry.";
   if (errorCode === "approval_required") return "Run approval-request, render the approval summary to the user, and pass the returned approval_token.value with --approval-token only after explicit approval.";
   if (errorCode === "prompt_too_large") return promptTooLargeSuggestedAction();
-  if (errorCode === "config_error") return "Reinstall or repair plugins/api-reviewers/config/providers.json and retry.";
+  if (errorCode === "config_error") return "Reinstall or repair this relay plugin's config/providers.json and retry.";
   if (errorCode === "missing_key") return missingCredentialAction(cfg);
   if (errorCode === "auth_rejected") return `Check the ${cfg.display_name} API key and billing/plan for ${cfg.model}.`;
   if (errorCode === "usage_limited") {
