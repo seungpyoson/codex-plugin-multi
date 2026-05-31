@@ -215,6 +215,18 @@ test("buildRelaySuite: generated direct API relay runtimes do not leak Codex pac
   }
 });
 
+test("Codex split direct API relay plugins delegate to one shared runtime copy", () => {
+  for (const provider of ["glm", "deepseek"]) {
+    const pluginRoot = path.join("plugins", `relay-${provider}`);
+    const runtime = readFileSync(path.join(pluginRoot, "scripts", "api-reviewer.mjs"), "utf8");
+
+    assert.match(runtime, /RELAY_API_REVIEWERS_RUNTIME/, provider);
+    assert.match(runtime, /API_REVIEWERS_PROVIDERS_PATH/, provider);
+    assert.doesNotMatch(runtime, /async function runCommand|function buildRecord|async function loadProviders/, provider);
+    assert.equal(existsSync(path.join(pluginRoot, "scripts", "lib")), false, provider);
+  }
+});
+
 test("buildRelaySuite: prompt-file commands document private prompt lifecycle", () => {
   const outRoot = mkdtempSync(path.join(tmpdir(), "relay-prompt-"));
   try {

@@ -75,6 +75,18 @@
         "authentication": "ON_USE"
       },
       "category": "Coding"
+    },
+    {
+      "name": "api-reviewers",
+      "source": {
+        "source": "local",
+        "path": "./plugins/api-reviewers"
+      },
+      "policy": {
+        "installation": "HIDDEN",
+        "authentication": "ON_USE"
+      },
+      "category": "Coding"
     }
   ]
 }

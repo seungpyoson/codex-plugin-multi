@@ -275,7 +275,8 @@ Then enable the plugins you want:
 
 In the plugin picker, enable `relay-claude`, `relay-gemini`, `relay-kimi`,
 `relay-grok`, `relay-deepseek`, and/or `relay-glm`. You can enable one without
-the others.
+the others. DeepSeek and GLM use a hidden shared direct-API runtime package, so
+their provider plugins stay split without copying the same reviewer code twice.
 
 From Claude Code, the generated marketplace suite lives under `relay/`. Its
 marketplace name is `relay-for-claude`, and provider plugin sources stay under

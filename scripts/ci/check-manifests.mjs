@@ -137,7 +137,10 @@ async function checkMarketplace() {
 }
 
 function normalizeSourcePath(sourcePath) {
-  return sourcePath.replace(/^\.\//, "").replace(/\/+$/, "");
+  let normalized = sourcePath;
+  if (normalized.startsWith("./")) normalized = normalized.slice(2);
+  while (normalized.endsWith("/")) normalized = normalized.slice(0, -1);
+  return normalized;
 }
 
 async function checkPluginManifest({ name, sourcePath }) {

@@ -107,8 +107,11 @@ copied instead of imported from a cross-plugin runtime package. That duplication
 is intentional only when it is either byte-identical and guarded by
 `tests/unit/plugin-copies-in-sync.test.mjs`, or provider-specific enough that
 centralizing it would hide auth, process, or output-contract differences. Direct
-API-backed reviewers use a separate, smaller runtime because their failure
-surface is HTTP/auth-policy based rather than CLI/process based.
+API-backed reviewers use one hidden shared runtime because their failure surface
+is HTTP/auth-policy based rather than CLI/process based. `relay-deepseek` and
+`relay-glm` are thin provider-specific launchers around that runtime; they keep
+separate manifests, commands, provider configs, and approval policy without
+copying the reviewer implementation.
 
 ### Grok Web Is Subscription-Backed And Separate From Direct API
 

@@ -39,8 +39,11 @@ import {
 
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 const PLUGIN_ROOT = resolve(SCRIPT_DIR, "..");
-const PROVIDERS_PATH = resolve(PLUGIN_ROOT, "config/providers.json");
-const SESSION_APPROVAL_POLICY_PATH = resolve(PLUGIN_ROOT, "config/session-approval.json");
+const PROVIDERS_PATH = configuredPath("API_REVIEWERS_PROVIDERS_PATH", resolve(PLUGIN_ROOT, "config/providers.json"));
+const SESSION_APPROVAL_POLICY_PATH = configuredPath(
+  "API_REVIEWERS_SESSION_APPROVAL_POLICY_PATH",
+  resolve(PLUGIN_ROOT, "config/session-approval.json"),
+);
 const VALID_MODES = new Set(["review", "adversarial-review", "custom-review"]);
 const VALID_AUTH_MODES = new Set(["api_key"]);
 const SCHEMA_VERSION = 10;
@@ -164,6 +167,12 @@ const ALLOWED_REQUEST_DEFAULT_KEYS = new Set(["thinking", "reasoning_effort", "m
 const ACCOUNT_PAYMENT_DIAGNOSTIC_RE = /^(?:stripe-.+|cus_[A-Za-z0-9]{6,}|acct_(?:test_)?[A-Za-z0-9]{5,}|cs_(?:test|live)_[A-Za-z0-9]{6,}|(?:pi|sub|in|ii|ch|seti|setp|price|prod|iv)_(?=[A-Za-z0-9]*\d)[A-Za-z0-9]{5,})$/i;
 const CREDENTIAL_REDACTION_VALUE = Symbol("credential_redaction_value");
 const REDACTION_SECRET_ENV_PREFIX = "API_REVIEWERS_REDACTION_SECRET";
+
+function configuredPath(envKey, fallbackPath) {
+  const value = process.env[envKey];
+  if (typeof value !== "string" || value.trim() === "") return fallbackPath;
+  return resolve(value);
+}
 
 function writableOutput(output) {
   return output && typeof output.write === "function" ? output : process.stdout;
