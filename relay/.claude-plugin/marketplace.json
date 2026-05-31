@@ -49,6 +49,18 @@
       "author": {
         "name": "seungpyoson"
       }
+    },
+    {
+      "name": "relay-api-reviewers",
+      "description": "Shared hidden direct API runtime for Relay Claude Code plugins.",
+      "version": "0.1.0",
+      "source": "../plugins/api-reviewers",
+      "author": {
+        "name": "seungpyoson"
+      },
+      "policy": {
+        "installation": "HIDDEN"
+      }
     }
   ]
 }

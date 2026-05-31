@@ -1,4 +1,5 @@
 import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
+import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
@@ -133,13 +134,52 @@ test("buildRelaySuite: emits the full Claude relay provider suite without relay-
     assert.equal(existsSync(path.join(outRoot, "relay-claude")), false);
 
     const marketplace = JSON.parse(readFileSync(path.join(outRoot, ".claude-plugin", "marketplace.json"), "utf8"));
+    const publicPlugins = marketplace.plugins.filter((plugin) => plugin.policy?.installation !== "HIDDEN");
+    const hiddenPlugins = marketplace.plugins.filter((plugin) => plugin.policy?.installation === "HIDDEN");
     assert.equal(marketplace.name, "relay-for-claude");
-    assert.deepEqual(marketplace.plugins.map((plugin) => plugin.name).sort(), pluginNames);
-    for (const plugin of marketplace.plugins) {
+    assert.deepEqual(publicPlugins.map((plugin) => plugin.name).sort(), pluginNames);
+    assert.deepEqual(hiddenPlugins.map((plugin) => plugin.name), ["relay-api-reviewers"]);
+    assert.notEqual(hiddenPlugins[0].source, "./relay-api-reviewers");
+    assert.equal(
+      existsSync(path.resolve(outRoot, hiddenPlugins[0].source, ".claude-plugin", "plugin.json")),
+      true,
+    );
+    assert.equal(existsSync(path.join(outRoot, "relay-api-reviewers")), false);
+    for (const plugin of publicPlugins) {
       assert.equal(plugin.source, `./${plugin.name}`);
     }
   } finally {
     rmSync(outRoot, { recursive: true, force: true });
+  }
+});
+
+test("buildRelayPlugin: direct API wrapper reports contracted missing entrypoint", () => {
+  const outRoot = mkdtempSync(path.join(tmpdir(), "relay-api-missing-"));
+  try {
+    const pluginRoot = buildRelayPlugin({ provider: "glm", repoRoot: process.cwd(), outRoot });
+    const result = spawnSync(process.execPath, [path.join(pluginRoot, "scripts", "api-reviewer.mjs"), "--help"], {
+      encoding: "utf8",
+    });
+
+    assert.equal(result.status, 1, result.stderr);
+    assert.match(result.stderr, /api_reviewer_entrypoint_missing/);
+    assert.doesNotMatch(result.stderr, /ERR_MODULE_NOT_FOUND|Cannot find module/);
+  } finally {
+    rmSync(outRoot, { recursive: true, force: true });
+  }
+});
+
+test("generated direct API relay wrappers run against the shared source runtime", () => {
+  for (const provider of ["glm", "deepseek"]) {
+    const result = spawnSync(
+      process.execPath,
+      [path.join("relay", `relay-${provider}`, "scripts", "api-reviewer.mjs"), "--help"],
+      { encoding: "utf8" },
+    );
+
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, /"ok": true/);
+    assert.match(result.stdout, new RegExp(`"providers": \\[\\s*"${provider}"\\s*\\]`));
   }
 });
 
@@ -239,7 +279,8 @@ test("Codex split direct API relay plugins delegate to one shared runtime copy",
     const runtime = readFileSync(path.join(pluginRoot, "scripts", "api-reviewer.mjs"), "utf8");
 
     assert.match(runtime, /relay-entrypoint\.mjs/, provider);
-    assert.ok(runtime.split("\n").length <= 10, provider);
+    assert.ok(runtime.split("\n").length <= 30, provider);
+    assert.match(runtime, /api_reviewer_entrypoint_missing/, provider);
     assert.doesNotMatch(runtime, /async function runCommand|function buildRecord|async function loadProviders/, provider);
     assert.doesNotMatch(runtime, /spawnSync|runtimeCandidates|function argProvider/, provider);
     assert.equal(existsSync(path.join(pluginRoot, "scripts", "lib")), false, provider);

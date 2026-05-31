@@ -1,5 +1,10 @@
 import { cpSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+
+import {
+  EXTERNAL_MODEL_CONTRACT_DOC_TARGETS,
+  renderExternalModelContractDoc,
+} from "./external-model-contracts.mjs";
 
 const DIRECT_API_PROVIDERS = Object.freeze(["glm", "deepseek"]);
 const REPOSITORY = "https://github.com/seungpyoson/relay";
@@ -71,6 +76,7 @@ export function buildCodexDirectApiPlugin({ provider, repoRoot = process.cwd() }
   rmSync(pluginRoot, { recursive: true, force: true });
   mkdirSync(pluginRoot, { recursive: true });
   cpSync(join(sourceRoot, "bin"), join(pluginRoot, "bin"), { recursive: true });
+  cpSync(join(repoRoot, "LICENSE"), join(pluginRoot, "LICENSE"));
   mkdirSync(join(pluginRoot, "scripts"), { recursive: true });
   writeFileSync(
     join(pluginRoot, "scripts", "api-reviewer.mjs"),
@@ -90,19 +96,49 @@ export function buildCodexDirectApiPlugin({ provider, repoRoot = process.cwd() }
   writeJson(join(pluginRoot, "config", "providers.json"), { [provider]: providerConfig });
   cpSync(join(sourceRoot, "config", "session-approval.json"), join(pluginRoot, "config", "session-approval.json"));
   writeJson(join(pluginRoot, "package.json"), directApiPackage(provider));
+  writeDirectApiContractDocs({ provider, repoRoot });
 
   return pluginRoot;
 }
 
 function renderDirectApiRuntimeEntrypoint(provider) {
   return `#!/usr/bin/env node
-const helper = await import(process.env.RELAY_API_REVIEWERS_ENTRYPOINT || new URL("../../api-reviewers/scripts/relay-entrypoint.mjs", import.meta.url).href)
-  .catch(() => import(new URL("../../../plugins/api-reviewers/scripts/relay-entrypoint.mjs", import.meta.url).href))
-  .catch(() => import(new URL("../../../api-reviewers/0.1.0/scripts/relay-entrypoint.mjs", import.meta.url).href))
-  .catch(() => import(new URL("../../../../codex-plugin-multi/api-reviewers/0.1.0/scripts/relay-entrypoint.mjs", import.meta.url).href));
+async function importRelayEntrypoint() {
+  const candidates = [
+    process.env.RELAY_API_REVIEWERS_ENTRYPOINT,
+    new URL("../../api-reviewers/scripts/relay-entrypoint.mjs", import.meta.url).href,
+    new URL("../../relay-api-reviewers/scripts/relay-entrypoint.mjs", import.meta.url).href,
+    new URL("../../../plugins/api-reviewers/scripts/relay-entrypoint.mjs", import.meta.url).href,
+    new URL("../../../api-reviewers/0.1.0/scripts/relay-entrypoint.mjs", import.meta.url).href,
+    new URL("../../../../codex-plugin-multi/api-reviewers/0.1.0/scripts/relay-entrypoint.mjs", import.meta.url).href,
+  ].filter(Boolean);
+  for (const candidate of candidates) {
+    try {
+      return await import(candidate);
+    } catch {
+      // Try the next known install layout.
+    }
+  }
+  console.error("api_reviewer_entrypoint_missing: install the shared api-reviewers runtime");
+  process.exit(1);
+}
+
+const helper = await importRelayEntrypoint();
 
 helper.runRelayDirectApiEntrypoint({ provider: ${JSON.stringify(provider)}, scriptUrl: import.meta.url });
 `;
+}
+
+function writeDirectApiContractDocs({ provider, repoRoot }) {
+  const pluginName = codexRelayPluginName(provider);
+  const targets = EXTERNAL_MODEL_CONTRACT_DOC_TARGETS.filter((target) =>
+    target.family === "api-reviewers" && target.path.startsWith(`plugins/${pluginName}/`)
+  );
+  for (const target of targets) {
+    const targetPath = join(repoRoot, target.path);
+    mkdirSync(dirname(targetPath), { recursive: true });
+    writeFileSync(targetPath, renderExternalModelContractDoc(target), "utf8");
+  }
 }
 
 export function buildCodexDirectApiSuite({ repoRoot = process.cwd() } = {}) {

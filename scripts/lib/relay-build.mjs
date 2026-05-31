@@ -7,10 +7,11 @@ import {
   rmSync,
   writeFileSync,
 } from "node:fs";
-import { join } from "node:path";
+import { join, relative } from "node:path";
 
 const RELAY_REPOSITORY = "https://github.com/seungpyoson/relay";
 const RELAY_FOR_CLAUDE_MARKETPLACE = "relay-for-claude";
+const RELAY_SHARED_DIRECT_API_RUNTIME = "relay-api-reviewers";
 const CODEX_DIRECT_API_RELAY_ENTRYPOINT_COMMAND_RE =
   /node "\$\{CODEX_HOME:-\$HOME\/\.codex\}\/plugins\/cache\/relay\/relay-(?:deepseek|glm)\/[^/]+\/scripts\/api-reviewer\.mjs"/g;
 const CODEX_DIRECT_API_RELAY_ENTRYPOINT_PATH_RE =
@@ -104,34 +105,75 @@ export function buildRelayPlugin({ provider, repoRoot = process.cwd(), outRoot =
 
 export function buildRelaySuite({ repoRoot = process.cwd(), outRoot = join(repoRoot, "relay") } = {}) {
   const pluginRoots = RELAY_PROVIDER_ORDER.map((provider) => buildRelayPlugin({ provider, repoRoot, outRoot }));
-  writeClaudeRelayMarketplace({ outRoot, pluginRoots });
+  const sharedDirectApiRuntimeRoot = buildRelayDirectApiRuntimePlugin({ repoRoot });
+  writeClaudeRelayMarketplace({ outRoot, pluginRoots, sharedDirectApiRuntimeRoot });
   return pluginRoots;
 }
 
-export function renderClaudeRelayMarketplace(pluginManifests) {
+export function renderClaudeRelayMarketplace(
+  pluginManifests,
+  { hiddenPluginNames = new Set(), sourceOverrides = new Map() } = {},
+) {
   return {
     name: RELAY_FOR_CLAUDE_MARKETPLACE,
     description: "Relay for Claude Code: external-model delegation plugins.",
     owner: { name: "seungpyoson" },
-    plugins: pluginManifests.map((manifest) => ({
-      name: manifest.name,
-      description: manifest.description,
-      version: manifest.version,
-      source: `./${manifest.name}`,
-      author: manifest.author,
-    })),
+    plugins: pluginManifests.map((manifest) => {
+      const plugin = {
+        name: manifest.name,
+        description: manifest.description,
+        version: manifest.version,
+        source: sourceOverrides.get(manifest.name) ?? `./${manifest.name}`,
+        author: manifest.author,
+      };
+      if (hiddenPluginNames.has(manifest.name)) {
+        plugin.policy = { installation: "HIDDEN" };
+      }
+      return plugin;
+    }),
   };
 }
 
-function writeClaudeRelayMarketplace({ outRoot, pluginRoots }) {
-  const pluginManifests = pluginRoots.map((pluginRoot) =>
+function writeClaudeRelayMarketplace({ outRoot, pluginRoots, sharedDirectApiRuntimeRoot }) {
+  const visibleManifests = pluginRoots.map((pluginRoot) =>
     readJson(join(pluginRoot, ".claude-plugin", "plugin.json"))
   );
+  const hiddenManifests = [readJson(join(sharedDirectApiRuntimeRoot, ".claude-plugin", "plugin.json"))];
   mkdirSync(join(outRoot, ".claude-plugin"), { recursive: true });
   writeJson(
     join(outRoot, ".claude-plugin", "marketplace.json"),
-    renderClaudeRelayMarketplace(pluginManifests),
+    renderClaudeRelayMarketplace([...visibleManifests, ...hiddenManifests], {
+      hiddenPluginNames: new Set(hiddenManifests.map((manifest) => manifest.name)),
+      sourceOverrides: new Map([
+        [RELAY_SHARED_DIRECT_API_RUNTIME, marketplaceSource({ fromRoot: outRoot, toRoot: sharedDirectApiRuntimeRoot })],
+      ]),
+    }),
   );
+}
+
+function buildRelayDirectApiRuntimePlugin({ repoRoot }) {
+  const sourceRoot = join(repoRoot, "plugins", "api-reviewers");
+  const pluginRoot = sourceRoot;
+  mkdirSync(join(pluginRoot, ".claude-plugin"), { recursive: true });
+
+  const sourceManifest = readJson(join(sourceRoot, ".codex-plugin", "plugin.json"));
+  writeJson(join(pluginRoot, ".claude-plugin", "plugin.json"), {
+    name: RELAY_SHARED_DIRECT_API_RUNTIME,
+    version: sourceManifest.version,
+    description: "Shared hidden direct API runtime for Relay Claude Code plugins.",
+    author: sourceManifest.author,
+    license: sourceManifest.license,
+    homepage: RELAY_REPOSITORY,
+    repository: RELAY_REPOSITORY,
+  });
+
+  return pluginRoot;
+}
+
+function marketplaceSource({ fromRoot, toRoot }) {
+  const relativePath = relative(fromRoot, toRoot).replaceAll("\\", "/");
+  if (relativePath.startsWith(".")) return relativePath;
+  return `./${relativePath}`;
 }
 
 export function renderClaudePluginManifest(codexManifest, { provider, description: descriptionOverride } = {}) {

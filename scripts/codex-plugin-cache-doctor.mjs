@@ -4,8 +4,19 @@ import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join, relative, resolve } from "node:path";
 import { homedir } from "node:os";
 
-const MARKETPLACE = "codex-plugin-multi";
-const DEFAULT_PLUGINS = ["api-reviewers", "claude", "gemini", "grok", "kimi"];
+const MARKETPLACE = "relay-for-codex";
+const MARKETPLACE_REPOSITORY = "seungpyoson/relay";
+const CACHE_NAMESPACE = "relay";
+const HIDDEN_PLUGINS = new Set(["api-reviewers"]);
+const DEFAULT_PLUGINS = [
+  "relay-claude",
+  "relay-gemini",
+  "relay-kimi",
+  "relay-grok",
+  "relay-glm",
+  "relay-deepseek",
+  "api-reviewers",
+];
 
 function usage() {
   return `Usage: codex-plugin-cache-doctor [options]
@@ -119,7 +130,7 @@ function profileReport(name, home, plugins, sourceRoot, repoPlugins) {
     const sourcePluginRoot = join(sourceRoot, plugin);
     const repoPluginRoot = join(repoPlugins, plugin);
     const repoPluginPresent = existsSync(repoPluginRoot);
-    const cacheRoot = join(home, "plugins", "cache", MARKETPLACE, plugin, "0.1.0");
+    const cacheRoot = join(home, "plugins", "cache", CACHE_NAMESPACE, plugin, "0.1.0");
     const cached = listSkills(cacheRoot, ".");
     const missing = expected.filter((skill) => !cached.includes(skill));
     const extra = cached.filter((skill) => !expected.includes(skill));
@@ -133,11 +144,14 @@ function profileReport(name, home, plugins, sourceRoot, repoPlugins) {
       && repoFileComparison.extra_files.length === 0
       && repoFileComparison.changed_files.length === 0
       && repoFileComparison.expected_files.length > 0;
-    const inSync = missing.length === 0 && extra.length === 0 && expected.length > 0 && filesInSync;
+    const hasExpectedSurface = expected.length > 0 || fileComparison.expected_files.length > 0;
+    const inSync = missing.length === 0 && extra.length === 0 && hasExpectedSurface && filesInSync;
     const repoInSync = repoPluginPresent ? repoFilesInSync : null;
-    const enabled = enabledInConfig(home, plugin);
-    if (!inSync || repoInSync === false || !enabled) ok = false;
+    const hidden = HIDDEN_PLUGINS.has(plugin);
+    const enabled = hidden ? true : enabledInConfig(home, plugin);
+    if (!inSync || repoInSync === false || (!hidden && !enabled)) ok = false;
     pluginReports[plugin] = {
+      hidden,
       enabled,
       cache_path: cacheRoot,
       cache_in_sync: inSync,
@@ -194,9 +208,9 @@ function main() {
   const ok = Object.values(profiles).every((profile) => profile.ok);
   const nextActions = [];
   if (!existsSync(marketplaceRoot)) {
-    nextActions.push("Add the marketplace with `codex plugin marketplace add seungpyoson/codex-plugin-multi`.");
+    nextActions.push(`Add the marketplace with \`codex plugin marketplace add ${MARKETPLACE_REPOSITORY}\`.`);
   } else {
-    nextActions.push("Refresh Git marketplace installs with `codex plugin marketplace upgrade codex-plugin-multi`.");
+    nextActions.push(`Refresh Git marketplace installs with \`codex plugin marketplace upgrade ${MARKETPLACE}\`.`);
   }
   nextActions.push("If repo working tree differs from installed plugin cache, commit/publish or refresh marketplace/cache before opening new Codex sessions.");
   nextActions.push("If upgrade reports `not configured as a Git marketplace`, remove and re-add the marketplace from GitHub.");
@@ -209,6 +223,7 @@ function main() {
     repo,
     marketplace: {
       name: MARKETPLACE,
+      cache_namespace: CACHE_NAMESPACE,
       root: marketplaceRoot,
       present: existsSync(marketplaceRoot),
       source_root: sourceRoot,
