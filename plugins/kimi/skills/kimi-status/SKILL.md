@@ -9,7 +9,7 @@ user-invocable: true
 
 EXTERNAL_MODEL_CONTRACT_VERSION=1
 
-`<plugin-root>` is `plugins/kimi` or an absolute path to that plugin directory. Use skill `kimi:kimi-status`. Command doc: `plugins/kimi/commands/kimi-status.md`.
+`<plugin-root>` is `plugins/kimi` or an absolute path to that plugin directory. Use skill `relay-kimi:kimi-status`. Command doc: `plugins/kimi/commands/kimi-status.md`.
 `<workspace>` is the workspace where the job was launched.
 Run `node "<plugin-root>/scripts/kimi-companion.mjs" status --cwd "<workspace>"`.
 Read-only status: do not rerun, continue, or cancel jobs unless the user asks.

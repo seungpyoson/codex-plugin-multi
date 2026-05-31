@@ -1,11 +1,11 @@
 {
-  "name": "codex-plugin-multi",
+  "name": "relay-for-codex",
   "interface": {
-    "displayName": "Codex ↔ Claude/Gemini/Kimi/API"
+    "displayName": "Relay for Codex"
   },
   "plugins": [
     {
-      "name": "claude",
+      "name": "relay-claude",
       "source": {
         "source": "local",
         "path": "./plugins/claude"
@@ -17,7 +17,7 @@
       "category": "Coding"
     },
     {
-      "name": "gemini",
+      "name": "relay-gemini",
       "source": {
         "source": "local",
         "path": "./plugins/gemini"
@@ -29,7 +29,7 @@
       "category": "Coding"
     },
     {
-      "name": "kimi",
+      "name": "relay-kimi",
       "source": {
         "source": "local",
         "path": "./plugins/kimi"
@@ -41,7 +41,7 @@
       "category": "Coding"
     },
     {
-      "name": "grok",
+      "name": "relay-grok",
       "source": {
         "source": "local",
         "path": "./plugins/grok"
@@ -53,10 +53,22 @@
       "category": "Coding"
     },
     {
-      "name": "api-reviewers",
+      "name": "relay-glm",
       "source": {
         "source": "local",
-        "path": "./plugins/api-reviewers"
+        "path": "./plugins/relay-glm"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_USE"
+      },
+      "category": "Coding"
+    },
+    {
+      "name": "relay-deepseek",
+      "source": {
+        "source": "local",
+        "path": "./plugins/relay-deepseek"
       },
       "policy": {
         "installation": "AVAILABLE",

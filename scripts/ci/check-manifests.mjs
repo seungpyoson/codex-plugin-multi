@@ -117,25 +117,32 @@ async function checkMarketplace() {
     const pp = `${path}:plugins[${i}]`;
     if (checkType(p, "name", "string", pp) && p.name) {
       checkBareName(p.name, pp, "plugin name");
-      declared.push(p.name);
     }
     checkType(p, "source", "object", pp);
+    let sourcePath = null;
     if (p.source) {
       checkType(p.source, "source", "string", pp);
       oneOf(p.source, "source", ["local", "git"], pp, { required: true });
       checkType(p.source, "path", "string", pp);
+      sourcePath = p.source.path;
     }
     checkType(p, "policy", "object", pp);
     if (p.policy) {
       oneOf(p.policy, "installation", INSTALLATION_ENUM, pp, { required: true });
       oneOf(p.policy, "authentication", AUTHENTICATION_ENUM, pp, { required: true });
     }
+    if (p.name && sourcePath) declared.push({ name: p.name, sourcePath });
   }
   return declared;
 }
 
-async function checkPluginManifest(name) {
-  const path = `plugins/${name}/.codex-plugin/plugin.json`;
+function normalizeSourcePath(sourcePath) {
+  return sourcePath.replace(/^\.\//, "").replace(/\/+$/, "");
+}
+
+async function checkPluginManifest({ name, sourcePath }) {
+  const pluginRoot = normalizeSourcePath(sourcePath);
+  const path = `${pluginRoot}/.codex-plugin/plugin.json`;
   const m = await readJson(path);
   if (!m) return null;
   for (const [key, reason] of FORBIDDEN_PLUGIN_MANIFEST_KEYS) {
@@ -145,7 +152,7 @@ async function checkPluginManifest(name) {
   }
   if (checkType(m, "name", "string", path)) {
     checkBareName(m.name, path, "plugin name");
-    if (m.name !== name) err(path, `name "${m.name}" does not match directory "${name}"`);
+    if (m.name !== name) err(path, `name "${m.name}" does not match marketplace plugin "${name}"`);
   }
   if (checkType(m, "version", "string", path)) {
     if (!SEMVER.test(m.version)) err(path, `version "${m.version}" is not valid semver (MAJOR.MINOR.PATCH)`);
@@ -215,7 +222,7 @@ function parseFrontmatter(text, path) {
 }
 
 async function checkCommandFile(plugin, filename) {
-  const rel = `plugins/${plugin}/commands/${filename}`;
+  const rel = `${plugin}/commands/${filename}`;
   const path = resolve(REPO_ROOT, rel);
   // Filename: bare name + .md
   if (!filename.endsWith(".md")) {
@@ -262,8 +269,8 @@ async function checkMarkdownFrontmatterFile(rel, allowedKeys) {
   return parsed;
 }
 
-async function checkCommandsDir(plugin) {
-  const dir = resolve(REPO_ROOT, `plugins/${plugin}/commands`);
+async function checkCommandsDir(pluginRoot) {
+  const dir = resolve(REPO_ROOT, pluginRoot, "commands");
   let entries;
   try {
     entries = await readdir(dir);
@@ -273,12 +280,12 @@ async function checkCommandsDir(plugin) {
   }
   for (const e of entries) {
     if (e.startsWith(".")) continue;
-    await checkCommandFile(plugin, e);
+    await checkCommandFile(pluginRoot, e);
   }
 }
 
-async function checkAgentsDir(plugin) {
-  const dir = resolve(REPO_ROOT, `plugins/${plugin}/agents`);
+async function checkAgentsDir(pluginRoot) {
+  const dir = resolve(REPO_ROOT, pluginRoot, "agents");
   let entries;
   try {
     entries = await readdir(dir);
@@ -287,7 +294,7 @@ async function checkAgentsDir(plugin) {
   }
   for (const e of entries) {
     if (e.startsWith(".")) continue;
-    const rel = `plugins/${plugin}/agents/${e}`;
+    const rel = `${pluginRoot}/agents/${e}`;
     if (!e.endsWith(".md")) {
       err(rel, `agent file extension must be .md`);
       continue;
@@ -298,8 +305,8 @@ async function checkAgentsDir(plugin) {
   }
 }
 
-async function checkSkillsDir(plugin) {
-  const dir = resolve(REPO_ROOT, `plugins/${plugin}/skills`);
+async function checkSkillsDir(pluginRoot) {
+  const dir = resolve(REPO_ROOT, pluginRoot, "skills");
   let entries;
   try {
     entries = await readdir(dir, { withFileTypes: true });
@@ -310,12 +317,12 @@ async function checkSkillsDir(plugin) {
   for (const e of entries) {
     if (e.name.startsWith(".")) continue;
     if (!e.isDirectory()) {
-      err(`plugins/${plugin}/skills/${e.name}`, "skill entry must be a directory containing SKILL.md");
+      err(`${pluginRoot}/skills/${e.name}`, "skill entry must be a directory containing SKILL.md");
       continue;
     }
-    checkBareName(e.name, `plugins/${plugin}/skills/${e.name}`, "skill directory name");
+    checkBareName(e.name, `${pluginRoot}/skills/${e.name}`, "skill directory name");
     const parsed = await checkMarkdownFrontmatterFile(
-      `plugins/${plugin}/skills/${e.name}/SKILL.md`,
+      `${pluginRoot}/skills/${e.name}/SKILL.md`,
       SKILL_FRONTMATTER_KEYS
     );
     if (parsed?.fm?.["user-invocable"] === "true") {
@@ -329,14 +336,15 @@ async function checkSkillsDir(plugin) {
 // This way, adding a new plugin to the marketplace automatically subjects
 // it to manifest + command-file validation without touching the linter.
 const declaredPlugins = await checkMarketplace();
-for (const name of declaredPlugins) {
-  const manifest = await checkPluginManifest(name);
-  await checkCommandsDir(name);
-  const hasUserInvocableSkills = await checkSkillsDir(name);
+for (const plugin of declaredPlugins) {
+  const pluginRoot = normalizeSourcePath(plugin.sourcePath);
+  const manifest = await checkPluginManifest(plugin);
+  await checkCommandsDir(pluginRoot);
+  const hasUserInvocableSkills = await checkSkillsDir(pluginRoot);
   if (hasUserInvocableSkills && manifest?.skills !== "./skills") {
-    err(`plugins/${name}/.codex-plugin/plugin.json`, `missing field "skills": "./skills" for user-invocable plugin skills`);
+    err(`${pluginRoot}/.codex-plugin/plugin.json`, `missing field "skills": "./skills" for user-invocable plugin skills`);
   }
-  await checkAgentsDir(name);
+  await checkAgentsDir(pluginRoot);
 }
 
 if (errors.length > 0) {

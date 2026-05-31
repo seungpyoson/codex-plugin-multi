@@ -148,21 +148,25 @@ npm run smoke:api-reviewers
 Manual live readiness checks:
 
 ```sh
-API_REVIEWERS_VERSION="$(node -p 'require("./plugins/api-reviewers/.codex-plugin/plugin.json").version')"
-API_REVIEWER="${CODEX_HOME:-$HOME/.codex}/plugins/cache/codex-plugin-multi/api-reviewers/${API_REVIEWERS_VERSION}/scripts/api-reviewer.mjs"
-node "$API_REVIEWER" doctor --provider deepseek
-node "$API_REVIEWER" doctor --provider glm
+DEEPSEEK_RELAY_VERSION="$(node -p 'require("./plugins/relay-deepseek/.codex-plugin/plugin.json").version')"
+DEEPSEEK_REVIEWER="${CODEX_HOME:-$HOME/.codex}/plugins/cache/relay/relay-deepseek/${DEEPSEEK_RELAY_VERSION}/scripts/api-reviewer.mjs"
+GLM_RELAY_VERSION="$(node -p 'require("./plugins/relay-glm/.codex-plugin/plugin.json").version')"
+GLM_REVIEWER="${CODEX_HOME:-$HOME/.codex}/plugins/cache/relay/relay-glm/${GLM_RELAY_VERSION}/scripts/api-reviewer.mjs"
+node "$DEEPSEEK_REVIEWER" doctor --provider deepseek
+node "$GLM_REVIEWER" doctor --provider glm
 ```
 
 Manual live custom review:
 
 ```sh
-API_REVIEWERS_VERSION="$(node -p 'require("./plugins/api-reviewers/.codex-plugin/plugin.json").version')"
-API_REVIEWER="${CODEX_HOME:-$HOME/.codex}/plugins/cache/codex-plugin-multi/api-reviewers/${API_REVIEWERS_VERSION}/scripts/api-reviewer.mjs"
-node "$API_REVIEWER" approval-request --provider deepseek --mode custom-review --scope custom --scope-paths README.md --prompt "Review README.md and return: 1. Verdict. 2. Blocking findings. 3. Non-blocking concerns. 4. Test gaps. 5. Inspection status."
-node "$API_REVIEWER" run --provider deepseek --mode custom-review --scope custom --scope-paths README.md --approval-token "<approval_token.value>" --foreground --prompt "Review README.md and return: 1. Verdict. 2. Blocking findings. 3. Non-blocking concerns. 4. Test gaps. 5. Inspection status."
-node "$API_REVIEWER" approval-request --provider glm --mode custom-review --scope custom --scope-paths README.md --prompt "Review README.md and return: 1. Verdict. 2. Blocking findings. 3. Non-blocking concerns. 4. Test gaps. 5. Inspection status."
-node "$API_REVIEWER" run --provider glm --mode custom-review --scope custom --scope-paths README.md --approval-token "<approval_token.value>" --foreground --prompt "Review README.md and return: 1. Verdict. 2. Blocking findings. 3. Non-blocking concerns. 4. Test gaps. 5. Inspection status."
+DEEPSEEK_RELAY_VERSION="$(node -p 'require("./plugins/relay-deepseek/.codex-plugin/plugin.json").version')"
+DEEPSEEK_REVIEWER="${CODEX_HOME:-$HOME/.codex}/plugins/cache/relay/relay-deepseek/${DEEPSEEK_RELAY_VERSION}/scripts/api-reviewer.mjs"
+GLM_RELAY_VERSION="$(node -p 'require("./plugins/relay-glm/.codex-plugin/plugin.json").version')"
+GLM_REVIEWER="${CODEX_HOME:-$HOME/.codex}/plugins/cache/relay/relay-glm/${GLM_RELAY_VERSION}/scripts/api-reviewer.mjs"
+node "$DEEPSEEK_REVIEWER" approval-request --provider deepseek --mode custom-review --scope custom --scope-paths README.md --prompt "Review README.md and return: 1. Verdict. 2. Blocking findings. 3. Non-blocking concerns. 4. Test gaps. 5. Inspection status."
+node "$DEEPSEEK_REVIEWER" run --provider deepseek --mode custom-review --scope custom --scope-paths README.md --approval-token "<approval_token.value>" --foreground --prompt "Review README.md and return: 1. Verdict. 2. Blocking findings. 3. Non-blocking concerns. 4. Test gaps. 5. Inspection status."
+node "$GLM_REVIEWER" approval-request --provider glm --mode custom-review --scope custom --scope-paths README.md --prompt "Review README.md and return: 1. Verdict. 2. Blocking findings. 3. Non-blocking concerns. 4. Test gaps. 5. Inspection status."
+node "$GLM_REVIEWER" run --provider glm --mode custom-review --scope custom --scope-paths README.md --approval-token "<approval_token.value>" --foreground --prompt "Review README.md and return: 1. Verdict. 2. Blocking findings. 3. Non-blocking concerns. 4. Test gaps. 5. Inspection status."
 ```
 
 Custom review scope sends the exact `--scope-paths` file contents to the direct

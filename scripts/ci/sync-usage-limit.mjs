@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { COMPANION_PLUGIN_TARGETS } from "../lib/plugin-targets.mjs";
+import { COMPANION_PLUGIN_TARGETS, DIRECT_API_PLUGIN_TARGETS } from "../lib/plugin-targets.mjs";
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const SOURCE = path.join(REPO_ROOT, "scripts/lib/usage-limit.mjs");
@@ -11,7 +11,9 @@ const COPIES = [
   ...COMPANION_PLUGIN_TARGETS.map((plugin) =>
     path.join(REPO_ROOT, `plugins/${plugin}/scripts/lib/usage-limit.mjs`)
   ),
-  path.join(REPO_ROOT, "plugins/api-reviewers/scripts/lib/usage-limit.mjs"),
+  ...DIRECT_API_PLUGIN_TARGETS.map((plugin) =>
+    path.join(REPO_ROOT, `plugins/${plugin}/scripts/lib/usage-limit.mjs`)
+  ),
   path.join(REPO_ROOT, "plugins/grok/scripts/lib/usage-limit.mjs"),
 ];
 

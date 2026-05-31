@@ -174,6 +174,10 @@ function titleForWorkflow(workflow) {
   return workflow.split("-").map((part) => part[0].toUpperCase() + part.slice(1)).join(" ");
 }
 
+function codexPluginName(provider) {
+  return `relay-${provider.plugin}`;
+}
+
 function companionWorkflowDescription(provider, workflow) {
   if (workflow === "review") return provider.reviewDescription;
   if (workflow === "adversarial-review") return provider.adversarialDescription;
@@ -484,13 +488,14 @@ function renderCompanionSkillBody(provider, workflow, skillName) {
   const title = `${provider.shortDisplay} ${titleForWorkflow(workflow)}`;
   const commandRel = `plugins/${provider.plugin}/commands/${skillName}.md`;
   const rootLine = `\`<plugin-root>\` is \`plugins/${provider.plugin}\` or an absolute path to that plugin directory.`;
+  const skillRef = `${codexPluginName(provider)}:${skillName}`;
   if (workflow === "review" || workflow === "adversarial-review") {
     const maxSteps = provider.hasMaxSteps
       ? "If the user provides a step budget, add `--max-steps-per-turn N` before `--`; `N` must be a positive integer."
       : "";
     return lines(
       sharedHeader(title),
-      `${rootLine} Use skill \`${provider.plugin}:${skillName}\`. Command doc: \`${commandRel}\`.`,
+      `${rootLine} Use skill \`${skillRef}\`. Command doc: \`${commandRel}\`.`,
       "`<workspace>` is the repository or bundle directory to review.",
       "`<focus>` is the user's review prompt or focus area.",
       companionTimeoutContract(provider),
@@ -513,7 +518,7 @@ function renderCompanionSkillBody(provider, workflow, skillName) {
       : "";
     return lines(
       sharedHeader(title),
-      `${rootLine} Use skill \`${provider.plugin}:${skillName}\`. Command doc: \`${commandRel}\`.`,
+      `${rootLine} Use skill \`${skillRef}\`. Command doc: \`${commandRel}\`.`,
       "`<workspace>` is the repository where the rescue task should run.",
       "`<task>` is the user's investigation, implementation, or follow-up rescue request.",
       "",
@@ -529,7 +534,7 @@ function renderCompanionSkillBody(provider, workflow, skillName) {
   if (workflow === "setup") {
     return lines(
       sharedHeader(title),
-      `${rootLine} Use skill \`${provider.plugin}:${skillName}\`. Command doc: \`${commandRel}\`.`,
+      `${rootLine} Use skill \`${skillRef}\`. Command doc: \`${commandRel}\`.`,
       "`<workspace>` is the repository or bundle directory to review.",
       `Run \`${companionDoctorCommand(provider, "--cwd \"<workspace>\"")}\`.`,
       `If access to ${provider.homeDir} is denied, report \`sandbox_blocked\` and keep raw secrets hidden.`,
@@ -541,7 +546,7 @@ function renderCompanionSkillBody(provider, workflow, skillName) {
   if (workflow === "status") {
     return lines(
       sharedHeader(title),
-      `${rootLine} Use skill \`${provider.plugin}:${skillName}\`. Command doc: \`${commandRel}\`.`,
+      `${rootLine} Use skill \`${skillRef}\`. Command doc: \`${commandRel}\`.`,
       "`<workspace>` is the workspace where the job was launched.",
       `Run \`node "<plugin-root>/scripts/${provider.binary}" status --cwd "<workspace>"\`.`,
       "Read-only status: do not rerun, continue, or cancel jobs unless the user asks.",
@@ -552,7 +557,7 @@ function renderCompanionSkillBody(provider, workflow, skillName) {
   if (workflow === "result") {
     return lines(
       sharedHeader(title),
-      `${rootLine} Use skill \`${provider.plugin}:${skillName}\`. Command doc: \`${commandRel}\`.`,
+      `${rootLine} Use skill \`${skillRef}\`. Command doc: \`${commandRel}\`.`,
       "`<workspace>` is the workspace where the job was launched.",
       "`<job-id>` is the identifier returned by a background launch or listed by the status workflow.",
       `Run \`node "<plugin-root>/scripts/${provider.binary}" result --job "<job-id>" --cwd "<workspace>"\`.`,
@@ -566,7 +571,7 @@ function renderCompanionSkillBody(provider, workflow, skillName) {
   if (workflow === "cancel") {
     return lines(
       sharedHeader(title),
-      `${rootLine} Use skill \`${provider.plugin}:${skillName}\`. Command doc: \`${commandRel}\`.`,
+      `${rootLine} Use skill \`${skillRef}\`. Command doc: \`${commandRel}\`.`,
       "`<workspace>` is the workspace where the job was launched.",
       "`<job-id>` is the identifier returned by a background launch or listed by the status workflow.",
       `Run \`node "<plugin-root>/scripts/${provider.binary}" cancel --job "<job-id>" --cwd "<workspace>"\`.`,
@@ -593,7 +598,7 @@ function companionDelegationSkillDoc(target) {
     : "";
   return fm + lines(
     sharedHeader(`${provider.shortDisplay} Delegation`),
-    `\`<plugin-root>\` is \`plugins/${provider.plugin}\` or an absolute path to that plugin directory. Use skill \`${provider.plugin}:${skillName}\`.`,
+    `\`<plugin-root>\` is \`plugins/${provider.plugin}\` or an absolute path to that plugin directory. Use skill \`${codexPluginName(provider)}:${skillName}\`.`,
     "",
     "Run review:",
     `- \`${companionRunCommand(provider, "review", "--foreground --lifecycle-events markdown --cwd \"<workspace>\" --scope-base REF -- \"<review focus>\"")}\``,
@@ -735,7 +740,7 @@ function claudeRescueAgentDoc(target) {
     description: "Use when forwarding rescue work to Claude Code.",
     model: "inherit",
     tools: "Bash(node:*), AskUserQuestion",
-    skills: "claude:claude-rescue, claude:claude-cli-runtime, claude:claude-result-handling",
+    skills: "relay-claude:claude-rescue, relay-claude:claude-cli-runtime, relay-claude:claude-result-handling",
   });
   return fm + lines(
     sharedHeader("Claude Rescue Agent"),
@@ -773,26 +778,36 @@ function apiArgumentHint(workflow) {
   throw new Error(`unknown api workflow: ${workflow}`);
 }
 
-function readApiReviewersPluginVersion() {
+function apiPluginName(provider) {
+  return `relay-${provider.provider}`;
+}
+
+function readApiRelayPluginVersion(provider) {
   const pluginJson = JSON.parse(
-    readFileSync(new URL("../../plugins/api-reviewers/.codex-plugin/plugin.json", import.meta.url), "utf8"),
+    readFileSync(new URL(`../../plugins/${apiPluginName(provider)}/.codex-plugin/plugin.json`, import.meta.url), "utf8"),
   );
   if (typeof pluginJson.version !== "string" || pluginJson.version.trim() === "") {
-    throw new Error("api_reviewers_plugin_version_missing");
+    throw new Error(`${apiPluginName(provider)}_plugin_version_missing`);
   }
   return pluginJson.version;
 }
 
-const API_REVIEWERS_PLUGIN_VERSION = readApiReviewersPluginVersion();
-const API_REVIEWER_SCRIPT = `\${CODEX_HOME:-$HOME/.codex}/plugins/cache/codex-plugin-multi/api-reviewers/${API_REVIEWERS_PLUGIN_VERSION}/scripts/api-reviewer.mjs`;
-const API_REVIEWER_ENTRYPOINT = `node "${API_REVIEWER_SCRIPT}"`;
+function apiReviewerScript(provider) {
+  return `\${CODEX_HOME:-$HOME/.codex}/plugins/cache/relay/${apiPluginName(provider)}/${readApiRelayPluginVersion(provider)}/scripts/api-reviewer.mjs`;
+}
 
-function apiEntrypointContract() {
+function apiReviewerEntrypoint(provider) {
+  return `node "${apiReviewerScript(provider)}"`;
+}
+
+function apiEntrypointContract(provider) {
+  const script = apiReviewerScript(provider);
+  const entrypoint = apiReviewerEntrypoint(provider);
   return lines(
     "## Entrypoint Contract",
-    `Use the global installed entrypoint \`${API_REVIEWER_ENTRYPOINT}\`.`,
-    "Do not run bare `api-reviewer`, do not rely on `PATH`, and do not use repository-relative paths such as `plugins/api-reviewers/scripts/api-reviewer.mjs`.",
-    `If \`${API_REVIEWER_SCRIPT}\` cannot be resolved, stop and report \`api_reviewer_entrypoint_missing\` before any source-bearing command.`,
+    `Use the global installed entrypoint \`${entrypoint}\`.`,
+    `Do not run bare \`api-reviewer\`, do not rely on \`PATH\`, and do not use repository-relative paths such as \`plugins/${apiPluginName(provider)}/scripts/api-reviewer.mjs\`.`,
+    `If \`${script}\` cannot be resolved, stop and report \`api_reviewer_entrypoint_missing\` before any source-bearing command.`,
   );
 }
 
@@ -804,7 +819,7 @@ function apiApprovalContract() {
     "If the user has already given explicit current-turn approval for the same provider, mode, source packet, prompt hash, scope resolution, request settings, auth path, billing path, selected route, fallback reason, and approval scope, do not ask again; run `approval-request`, pass its matching `approval_token.value` to `run`, and continue.",
     "`session` approval can be reused only while the full approval tuple is unchanged in the current session.",
     "`once` approval authorizes exactly one matching source send and cannot be replayed.",
-    "`approval-grant request` plus `approval-grant activate` creates a short-lived bounded session grant without sending selected source. The operator must pass `--grant-ttl-ms` on request, the max TTL comes from `plugins/api-reviewers/config/session-approval.json`, and activation must reuse the emitted `grant_bounds.expires_at`.",
+    "`approval-grant request` plus `approval-grant activate` creates a short-lived bounded session grant without sending selected source. The operator must pass `--grant-ttl-ms` on request, the max TTL comes from this plugin's `config/session-approval.json`, and activation must reuse the emitted `grant_bounds.expires_at`.",
     "A session grant may authorize later runs without `--approval-token` only when provider, mode, workspace, selected source hashes, prompt hash, scope resolution, request settings, auth path, billing path, selected route, fallback reason, file/byte bounds, schema, fingerprint, and expiry all still match.",
     "Grant-scoped tokens must not be passed to normal `run --approval-token`; normal session or once approval tokens cannot activate grants.",
     "Any change to that tuple requires fresh human approval before source is sent.",
@@ -841,8 +856,8 @@ function apiCommandDoc(target) {
   if (setup) {
     return fm + lines(
       sharedHeader(title),
-      apiEntrypointContract(),
-      `Run \`${API_REVIEWER_ENTRYPOINT} doctor --provider ${provider.provider}\`.`,
+      apiEntrypointContract(provider),
+      `Run \`${apiReviewerEntrypoint(provider)} doctor --provider ${provider.provider}\`.`,
       "Report readiness without printing API-key values.",
       secretSafetyContract(),
     );
@@ -856,18 +871,18 @@ function apiCommandDoc(target) {
       "Route `--scope-paths <files>` before `--prompt` and pass the remaining prompt text to `--prompt`.",
       "Replace `<file1>,<file2>` with comma- or newline-separated concrete relative paths.",
       "Expand globs before running; do not pass glob characters as `--scope-paths`.",
-      `Run \`${API_REVIEWER_ENTRYPOINT} approval-request --provider ${provider.provider} --mode ${mode} --scope custom --scope-paths "<file1>,<file2>" --prompt "<prompt text>"\`.`,
-      `Run \`${API_REVIEWER_ENTRYPOINT} run --provider ${provider.provider} --mode ${mode} --scope custom --scope-paths "<file1>,<file2>" --approval-token "<approval_token.value>" --lifecycle-events markdown --prompt "<prompt text>"\`.`,
+      `Run \`${apiReviewerEntrypoint(provider)} approval-request --provider ${provider.provider} --mode ${mode} --scope custom --scope-paths "<file1>,<file2>" --prompt "<prompt text>"\`.`,
+      `Run \`${apiReviewerEntrypoint(provider)} run --provider ${provider.provider} --mode ${mode} --scope custom --scope-paths "<file1>,<file2>" --approval-token "<approval_token.value>" --lifecycle-events markdown --prompt "<prompt text>"\`.`,
     ]
     : [
       "`$ARGUMENTS` is optional `--scope-base REF` followed by review prompt text.",
       "Route `--scope-base REF` before `--prompt` and pass the remaining prompt text to `--prompt`.",
-      `Run \`${API_REVIEWER_ENTRYPOINT} approval-request --provider ${provider.provider} --mode ${mode} --scope branch-diff --scope-base REF --prompt "<prompt text>"\`.`,
-      `Run \`${API_REVIEWER_ENTRYPOINT} run --provider ${provider.provider} --mode ${mode} --scope branch-diff --scope-base REF --approval-token "<approval_token.value>" --lifecycle-events markdown --prompt "<prompt text>"\`.`,
+      `Run \`${apiReviewerEntrypoint(provider)} approval-request --provider ${provider.provider} --mode ${mode} --scope branch-diff --scope-base REF --prompt "<prompt text>"\`.`,
+      `Run \`${apiReviewerEntrypoint(provider)} run --provider ${provider.provider} --mode ${mode} --scope branch-diff --scope-base REF --approval-token "<approval_token.value>" --lifecycle-events markdown --prompt "<prompt text>"\`.`,
     ];
   return fm + lines(
     sharedHeader(title),
-    apiEntrypointContract(),
+    apiEntrypointContract(provider),
     `Scope: \`${scope}\`. Preserve raw \`$ARGUMENTS\` except for documented routing.`,
     scopeClause,
     reviewOnlyContract(),
@@ -892,9 +907,9 @@ function apiSkillDoc(target) {
   if (workflow === "setup") {
     return fm + lines(
       sharedHeader(title),
-      `Use skill \`api-reviewers:${skillName}\`. Command doc: \`../../commands/${skillName}.md\`.`,
-      apiEntrypointContract(),
-      `Run \`${API_REVIEWER_ENTRYPOINT} doctor --provider ${provider.provider}\`.`,
+      `Use skill \`${apiPluginName(provider)}:${skillName}\`. Command doc: \`../../commands/${skillName}.md\`.`,
+      apiEntrypointContract(provider),
+      `Run \`${apiReviewerEntrypoint(provider)} doctor --provider ${provider.provider}\`.`,
       "Report readiness without printing API-key values.",
       secretSafetyContract(),
     );
@@ -903,55 +918,20 @@ function apiSkillDoc(target) {
   const scope = workflow === "custom-review" ? "custom" : "branch-diff";
   const scopeLines = workflow === "custom-review"
     ? [
-      `Run \`${API_REVIEWER_ENTRYPOINT} run --provider ${provider.provider} --mode ${workflow} --scope custom --scope-paths "<file1>,<file2>" --approval-token "<approval_token.value>" --lifecycle-events markdown --prompt "<focus>"\`.`,
+      `Run \`${apiReviewerEntrypoint(provider)} run --provider ${provider.provider} --mode ${workflow} --scope custom --scope-paths "<file1>,<file2>" --approval-token "<approval_token.value>" --lifecycle-events markdown --prompt "<focus>"\`.`,
       "Replace `<file1>,<file2>` with comma- or newline-separated concrete relative `--scope-paths`.",
       "Expand globs before running; do not pass glob characters or space-separated paths.",
     ]
     : [
-      `Run \`${API_REVIEWER_ENTRYPOINT} run --provider ${provider.provider} --mode ${workflow} --scope branch-diff --scope-base REF --approval-token "<approval_token.value>" --lifecycle-events markdown --prompt "<focus>"\`.`,
+      `Run \`${apiReviewerEntrypoint(provider)} run --provider ${provider.provider} --mode ${workflow} --scope branch-diff --scope-base REF --approval-token "<approval_token.value>" --lifecycle-events markdown --prompt "<focus>"\`.`,
     ];
   return fm + lines(
     sharedHeader(title),
-    `Use skill \`api-reviewers:${skillName}\`. Command doc: \`../../commands/${skillName}.md\`.`,
-    apiEntrypointContract(),
+    `Use skill \`${apiPluginName(provider)}:${skillName}\`. Command doc: \`../../commands/${skillName}.md\`.`,
+    apiEntrypointContract(provider),
     `Scope: \`${scope}\`.`,
     "`<focus>` is the user's review prompt or focus area.",
     scopeLines,
-    reviewOnlyContract(),
-    apiApprovalContract(),
-    apiFailureRenderingContract(),
-    lifecycleRenderingContract(),
-    scopeSafetyContract(),
-    secretSafetyContract(),
-  );
-}
-
-function apiDelegationSkillDoc() {
-  const providerDisplayList = API_PROVIDERS.map((provider) => provider.display).join("/");
-  const fm = frontmatter({
-    name: "api-reviewers-delegation",
-    description: `Delegate review, adversarial review, custom review, and setup to ${providerDisplayList}.`,
-    "user-invocable": "true",
-  });
-  const providerLines = (render) => API_PROVIDERS.map((provider) => render(provider));
-  return fm + lines(
-    sharedHeader("API Reviewers Delegation"),
-    "Use skill `api-reviewers:api-reviewers-delegation`.",
-    apiEntrypointContract(),
-    "Run setup:",
-    providerLines((provider) => `- \`${API_REVIEWER_ENTRYPOINT} doctor --provider ${provider.provider}\``),
-    "",
-    "Run review:",
-    providerLines((provider) => `- \`${API_REVIEWER_ENTRYPOINT} run --provider ${provider.provider} --mode review --scope branch-diff --scope-base REF --approval-token "<approval_token.value>" --lifecycle-events markdown --prompt "<focus>"\``),
-    "",
-    "Run adversarial review:",
-    providerLines((provider) => `- \`${API_REVIEWER_ENTRYPOINT} run --provider ${provider.provider} --mode adversarial-review --scope branch-diff --scope-base REF --approval-token "<approval_token.value>" --lifecycle-events markdown --prompt "<focus>"\``),
-    "",
-    "Run custom-review:",
-    providerLines((provider) => `- \`${API_REVIEWER_ENTRYPOINT} run --provider ${provider.provider} --mode custom-review --scope custom --scope-paths "<file1>,<file2>" --approval-token "<approval_token.value>" --lifecycle-events markdown --prompt "<focus>"\``),
-    "",
-    "`<focus>` is the user's review prompt or focus area.",
-    "Replace `<file1>,<file2>` with comma- or newline-separated concrete relative paths. Use comma- or newline-separated concrete relative `--scope-paths`; expand globs before running.",
     reviewOnlyContract(),
     apiApprovalContract(),
     apiFailureRenderingContract(),
@@ -1079,7 +1059,7 @@ function grokSkillDoc(target) {
   if (workflow === "setup") {
     return fm + lines(
       sharedHeader(title),
-      `Use skill \`grok:${skillName}\`. Command doc: \`plugins/grok/commands/${skillName}.md\`.`,
+      `Use skill \`relay-grok:${skillName}\`. Command doc: \`plugins/grok/commands/${skillName}.md\`.`,
       "Run `node plugins/grok/scripts/grok-companion.mjs doctor`.",
       "Show `summary`, `ready`, `transport`, `next_action`, `grok_version`, `default_model`, and `model_ready`.",
       "Use `node plugins/grok/scripts/grok-companion.mjs doctor --transport web` only for explicit legacy tunnel diagnosis.",
@@ -1111,7 +1091,7 @@ function grokSkillDoc(target) {
     ];
   return fm + lines(
     sharedHeader(title),
-    `Use skill \`grok:${skillName}\`. Command doc: \`plugins/grok/commands/${skillName}.md\`.`,
+    `Use skill \`relay-grok:${skillName}\`. Command doc: \`plugins/grok/commands/${skillName}.md\`.`,
     "`<focus>` is the user's review prompt or focus area.",
     scopeLines,
     reviewOnlyContract(),
@@ -1130,7 +1110,7 @@ function grokDelegationSkillDoc() {
   });
   return fm + lines(
     sharedHeader("Grok Delegation"),
-    "Use skill `grok:grok-delegation`.",
+    "Use skill `relay-grok:grok-delegation`.",
     "Run setup:",
     "- `node plugins/grok/scripts/grok-companion.mjs doctor`",
     "",
@@ -1219,22 +1199,16 @@ function apiReviewerTargets() {
         family: "api-reviewers",
         provider,
         workflow,
-        path: `plugins/api-reviewers/commands/${provider.provider}-${workflow}.md`,
+        path: `plugins/${apiPluginName(provider)}/commands/${provider.provider}-${workflow}.md`,
       },
       {
         kind: "skill",
         family: "api-reviewers",
         provider,
         workflow,
-        path: `plugins/api-reviewers/skills/${provider.provider}-${workflow}/SKILL.md`,
+        path: `plugins/${apiPluginName(provider)}/skills/${provider.provider}-${workflow}/SKILL.md`,
       },
     ])),
-    {
-      kind: "skill",
-      family: "api-reviewers-delegation",
-      workflow: "delegation",
-      path: "plugins/api-reviewers/skills/api-reviewers-delegation/SKILL.md",
-    },
   ];
 }
 
@@ -1296,7 +1270,6 @@ function normalizeGeneratedDoc(text) {
 const DOC_RENDERERS = Object.freeze({
   "api-reviewers:command": apiCommandDoc,
   "api-reviewers:skill": apiSkillDoc,
-  "api-reviewers-delegation:skill": () => apiDelegationSkillDoc(),
   "claude-internal:skill": claudeInternalSkillDoc,
   "claude-rescue-agent:agent": claudeRescueAgentDoc,
   "companion:command": companionCommandDoc,

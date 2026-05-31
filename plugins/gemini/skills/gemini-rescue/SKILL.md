@@ -9,7 +9,7 @@ user-invocable: true
 
 EXTERNAL_MODEL_CONTRACT_VERSION=1
 
-`<plugin-root>` is `plugins/gemini` or an absolute path to that plugin directory. Use skill `gemini:gemini-rescue`. Command doc: `plugins/gemini/commands/gemini-rescue.md`.
+`<plugin-root>` is `plugins/gemini` or an absolute path to that plugin directory. Use skill `relay-gemini:gemini-rescue`. Command doc: `plugins/gemini/commands/gemini-rescue.md`.
 `<workspace>` is the repository where the rescue task should run.
 `<task>` is the user's investigation, implementation, or follow-up rescue request.
 

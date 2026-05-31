@@ -1,5 +1,5 @@
 {
-  "name": "@codex-plugin-multi/grok-plugin",
+  "name": "@relay/relay-grok-plugin",
   "version": "0.1.0",
   "private": true,
   "type": "module",

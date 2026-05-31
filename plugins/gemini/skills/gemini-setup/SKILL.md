@@ -9,7 +9,7 @@ user-invocable: true
 
 EXTERNAL_MODEL_CONTRACT_VERSION=1
 
-`<plugin-root>` is `plugins/gemini` or an absolute path to that plugin directory. Use skill `gemini:gemini-setup`. Command doc: `plugins/gemini/commands/gemini-setup.md`.
+`<plugin-root>` is `plugins/gemini` or an absolute path to that plugin directory. Use skill `relay-gemini:gemini-setup`. Command doc: `plugins/gemini/commands/gemini-setup.md`.
 `<workspace>` is the repository or bundle directory to review.
 Run `node "<plugin-root>/scripts/gemini-companion.mjs" doctor --cwd "<workspace>"`.
 If access to ~/.gemini is denied, report `sandbox_blocked` and keep raw secrets hidden.

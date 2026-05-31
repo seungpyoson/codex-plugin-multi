@@ -42,7 +42,8 @@ const EXTERNAL_REVIEW_SKILL_MDS = [
   resolvePath(HERE, "..", "..", "plugins/claude/skills/claude-delegation/SKILL.md"),
   resolvePath(HERE, "..", "..", "plugins/gemini/skills/gemini-delegation/SKILL.md"),
   resolvePath(HERE, "..", "..", "plugins/kimi/skills/kimi-delegation/SKILL.md"),
-  resolvePath(HERE, "..", "..", "plugins/api-reviewers/skills/api-reviewers-delegation/SKILL.md"),
+  resolvePath(HERE, "..", "..", "plugins/relay-deepseek/skills/deepseek-review/SKILL.md"),
+  resolvePath(HERE, "..", "..", "plugins/relay-glm/skills/glm-review/SKILL.md"),
 ];
 
 const UUID = "550e8400-e29b-41d4-a716-446655440000";

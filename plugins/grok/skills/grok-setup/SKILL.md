@@ -9,7 +9,7 @@ user-invocable: true
 
 EXTERNAL_MODEL_CONTRACT_VERSION=1
 
-Use skill `grok:grok-setup`. Command doc: `plugins/grok/commands/grok-setup.md`.
+Use skill `relay-grok:grok-setup`. Command doc: `plugins/grok/commands/grok-setup.md`.
 Run `node plugins/grok/scripts/grok-companion.mjs doctor`.
 Show `summary`, `ready`, `transport`, `next_action`, `grok_version`, `default_model`, and `model_ready`.
 Use `node plugins/grok/scripts/grok-companion.mjs doctor --transport web` only for explicit legacy tunnel diagnosis.

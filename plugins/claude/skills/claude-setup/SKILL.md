@@ -9,7 +9,7 @@ user-invocable: true
 
 EXTERNAL_MODEL_CONTRACT_VERSION=1
 
-`<plugin-root>` is `plugins/claude` or an absolute path to that plugin directory. Use skill `claude:claude-setup`. Command doc: `plugins/claude/commands/claude-setup.md`.
+`<plugin-root>` is `plugins/claude` or an absolute path to that plugin directory. Use skill `relay-claude:claude-setup`. Command doc: `plugins/claude/commands/claude-setup.md`.
 `<workspace>` is the repository or bundle directory to review.
 Run `node "<plugin-root>/scripts/claude-companion.mjs" doctor --auth-mode subscription --cwd "<workspace>"`.
 If access to ~/.claude is denied, report `sandbox_blocked` and keep raw secrets hidden.

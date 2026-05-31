@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 import { buildProviderPolicyContract } from "../../scripts/lib/provider-route-policy.mjs";
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
+const DIRECT_API_RELAY_PROVIDERS = ["deepseek", "glm"];
 
 function readRepoFile(rel) {
   return readFileSync(path.join(REPO_ROOT, rel), "utf8");
@@ -14,6 +15,26 @@ function readRepoFile(rel) {
 
 function readRepoJson(rel) {
   return JSON.parse(readRepoFile(rel));
+}
+
+function relayPluginName(provider) {
+  return `relay-${provider}`;
+}
+
+function directApiRelayDocPaths({ includeSetup = false } = {}) {
+  const workflows = includeSetup
+    ? ["review", "adversarial-review", "custom-review", "setup"]
+    : ["review", "adversarial-review", "custom-review"];
+  return DIRECT_API_RELAY_PROVIDERS.flatMap((provider) =>
+    workflows.flatMap((workflow) => {
+      const skillName = `${provider}-${workflow}`;
+      const root = `plugins/${relayPluginName(provider)}`;
+      return [
+        `${root}/skills/${skillName}/SKILL.md`,
+        `${root}/commands/${skillName}.md`,
+      ];
+    })
+  );
 }
 
 function assertRepoPathExists(rel, label) {
@@ -302,7 +323,7 @@ test("README documents cache doctor automation for stale plugin skill discovery"
 
   assert.match(pkg.scripts["doctor:cache"] ?? "", /codex-plugin-cache-doctor\.mjs/);
   assert.match(readme, /npm run doctor:cache/);
-  assert.match(readme, /codex plugin marketplace upgrade codex-plugin-multi/);
+  assert.match(readme, /codex plugin marketplace upgrade relay-for-codex/);
   assert.match(readme, /second-codex/i);
   assert.match(readme, /restart/i);
   assert.match(readme, /codex debug prompt-input 'list skills'/);
@@ -438,7 +459,7 @@ test("T080 Kimi waiver artifact records failed slots and residual risk", () => {
 
 test("bounded session approval grant schema is strict and token-free", () => {
   const schema = readRepoJson("specs/147-bounded-session-approval/contracts/session-approval-grant.schema.json");
-  const policy = readRepoJson("plugins/api-reviewers/config/session-approval.json");
+  const policy = readRepoJson("plugins/relay-deepseek/config/session-approval.json");
 
   assert.deepEqual(Object.keys(policy), ["schema_version", "max_ttl_ms"]);
   assert.equal(policy.schema_version, 1);
@@ -778,10 +799,14 @@ test("README documents shipped install path, first commands, and safety posture"
   const readme = readRepoFile("README.md");
 
   assert.doesNotMatch(readme, /M0|M2\+|Planned surface/i);
-  assert.match(readme, /codex plugin marketplace add seungpyoson\/codex-plugin-multi/);
+  assert.match(readme, /codex plugin marketplace add seungpyoson\/relay/);
+  assert.match(readme, /relay-for-claude:relay-gemini/);
+  assert.match(readme, /relay-gemini@relay-for-claude/);
+  assert.match(readme, /\/relay-gemini:review/);
   assert.match(readme, /\/plugins/);
   assert.match(readme, /user-invocable skill fallback/);
-  assert.match(readme, /Claude, Gemini, Kimi, Grok, and API\s+reviewers delegation skills/);
+  assert.match(readme, /Claude, Gemini, Kimi, and\s+Grok delegation skills/);
+  assert.match(readme, /DeepSeek and GLM are intentionally split/);
   assert.doesNotMatch(readme, /Diagnostic plugin dispatch check/);
   assert.doesNotMatch(readme, /\/claude-ping/);
   assert.doesNotMatch(readme, /\/gemini-ping/);
@@ -805,27 +830,11 @@ test("README documents host-owned pre-launch provider denials as outside compani
   assert.match(readme, /cannot emit a JobRecord/i);
   assert.match(readme, /approved provider/i);
   assert.match(readme, /local\/Codex-only review/i);
-  assert.match(readme, /https:\/\/github\.com\/seungpyoson\/codex-plugin-multi\/issues\/13/);
+  assert.match(readme, /https:\/\/github\.com\/seungpyoson\/relay\/issues\/13/);
 });
 
 test("direct API reviewer docs require explicit approval for external source transmission", () => {
-  const docPaths = [
-    "plugins/api-reviewers/skills/api-reviewers-delegation/SKILL.md",
-    "plugins/api-reviewers/skills/deepseek-review/SKILL.md",
-    "plugins/api-reviewers/skills/deepseek-adversarial-review/SKILL.md",
-    "plugins/api-reviewers/skills/deepseek-custom-review/SKILL.md",
-    "plugins/api-reviewers/skills/glm-review/SKILL.md",
-    "plugins/api-reviewers/skills/glm-adversarial-review/SKILL.md",
-    "plugins/api-reviewers/skills/glm-custom-review/SKILL.md",
-    "plugins/api-reviewers/commands/deepseek-review.md",
-    "plugins/api-reviewers/commands/deepseek-adversarial-review.md",
-    "plugins/api-reviewers/commands/deepseek-custom-review.md",
-    "plugins/api-reviewers/commands/glm-review.md",
-    "plugins/api-reviewers/commands/glm-adversarial-review.md",
-    "plugins/api-reviewers/commands/glm-custom-review.md",
-  ];
-
-  for (const docPath of docPaths) {
+  for (const docPath of directApiRelayDocPaths()) {
     const doc = readRepoFile(docPath);
     assert.match(doc, /approval-request/, docPath);
     assert.match(doc, /explicit approval/i, docPath);
@@ -841,33 +850,16 @@ test("direct API reviewer docs require explicit approval for external source tra
 });
 
 test("direct API reviewer skill and command docs use global installed script entrypoints", () => {
-  const apiPluginVersion = readRepoJson("plugins/api-reviewers/.codex-plugin/plugin.json").version;
-  const escapedVersion = apiPluginVersion.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const installedEntrypoint = new RegExp(
-    `node "\\$\\{CODEX_HOME:-\\$HOME/\\.codex\\}/plugins/cache/codex-plugin-multi/api-reviewers/${escapedVersion}/scripts/api-reviewer\\.mjs"`,
-  );
-  const docPaths = [
-    "plugins/api-reviewers/skills/api-reviewers-delegation/SKILL.md",
-    "plugins/api-reviewers/skills/deepseek-review/SKILL.md",
-    "plugins/api-reviewers/skills/deepseek-adversarial-review/SKILL.md",
-    "plugins/api-reviewers/skills/deepseek-custom-review/SKILL.md",
-    "plugins/api-reviewers/skills/deepseek-setup/SKILL.md",
-    "plugins/api-reviewers/skills/glm-review/SKILL.md",
-    "plugins/api-reviewers/skills/glm-adversarial-review/SKILL.md",
-    "plugins/api-reviewers/skills/glm-custom-review/SKILL.md",
-    "plugins/api-reviewers/skills/glm-setup/SKILL.md",
-    "plugins/api-reviewers/commands/deepseek-review.md",
-    "plugins/api-reviewers/commands/deepseek-adversarial-review.md",
-    "plugins/api-reviewers/commands/deepseek-custom-review.md",
-    "plugins/api-reviewers/commands/deepseek-setup.md",
-    "plugins/api-reviewers/commands/glm-review.md",
-    "plugins/api-reviewers/commands/glm-adversarial-review.md",
-    "plugins/api-reviewers/commands/glm-custom-review.md",
-    "plugins/api-reviewers/commands/glm-setup.md",
-  ];
-
-  for (const docPath of docPaths) {
+  for (const docPath of directApiRelayDocPaths({ includeSetup: true })) {
     const doc = readRepoFile(docPath);
+    const provider = DIRECT_API_RELAY_PROVIDERS.find((item) => docPath.includes(`relay-${item}`));
+    assert.ok(provider, `provider missing from ${docPath}`);
+    const pluginName = relayPluginName(provider);
+    const apiPluginVersion = readRepoJson(`plugins/${pluginName}/.codex-plugin/plugin.json`).version;
+    const escapedVersion = apiPluginVersion.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const installedEntrypoint = new RegExp(
+      `node "\\$\\{CODEX_HOME:-\\$HOME/\\.codex\\}/plugins/cache/relay/${pluginName}/${escapedVersion}/scripts/api-reviewer\\.mjs"`,
+    );
     assert.match(doc, /## Entrypoint Contract/, docPath);
     assert.match(doc, installedEntrypoint, docPath);
     assert.match(doc, /global installed entrypoint/i, docPath);
@@ -878,7 +870,7 @@ test("direct API reviewer skill and command docs use global installed script ent
     assert.doesNotMatch(doc, /Run `api-reviewer\b/, docPath);
     assert.doesNotMatch(doc, /Bash\(api-reviewer:\*\)/, docPath);
     assert.doesNotMatch(doc, /node "<plugin-root>\/scripts\/api-reviewer\.mjs"/, docPath);
-    assert.doesNotMatch(doc, /node plugins\/api-reviewers\/scripts\/api-reviewer\.mjs/, docPath);
+    assert.doesNotMatch(doc, /node plugins\/(?:api-reviewers|relay-(?:deepseek|glm))\/scripts\/api-reviewer\.mjs/, docPath);
   }
 });
 
@@ -956,12 +948,14 @@ test("cost and quota docs require safe diagnostics and explicit billing action",
 test("direct API e2e docs use the global installed script entrypoint and canonical GLM key", () => {
   const doc = readRepoFile("docs/e2e.md");
 
-  assert.match(doc, /API_REVIEWERS_VERSION="\$\(node -p 'require\("\.\/plugins\/api-reviewers\/\.codex-plugin\/plugin\.json"\)\.version'\)"/);
-  assert.match(doc, /API_REVIEWER="\$\{CODEX_HOME:-\$HOME\/\.codex\}\/plugins\/cache\/codex-plugin-multi\/api-reviewers\/\$\{API_REVIEWERS_VERSION\}\/scripts\/api-reviewer\.mjs"/);
-  assert.match(doc, /node "\$API_REVIEWER" doctor --provider deepseek/);
-  assert.match(doc, /node "\$API_REVIEWER" doctor --provider glm/);
+  assert.match(doc, /DEEPSEEK_RELAY_VERSION="\$\(node -p 'require\("\.\/plugins\/relay-deepseek\/\.codex-plugin\/plugin\.json"\)\.version'\)"/);
+  assert.match(doc, /DEEPSEEK_REVIEWER="\$\{CODEX_HOME:-\$HOME\/\.codex\}\/plugins\/cache\/relay\/relay-deepseek\/\$\{DEEPSEEK_RELAY_VERSION\}\/scripts\/api-reviewer\.mjs"/);
+  assert.match(doc, /GLM_RELAY_VERSION="\$\(node -p 'require\("\.\/plugins\/relay-glm\/\.codex-plugin\/plugin\.json"\)\.version'\)"/);
+  assert.match(doc, /GLM_REVIEWER="\$\{CODEX_HOME:-\$HOME\/\.codex\}\/plugins\/cache\/relay\/relay-glm\/\$\{GLM_RELAY_VERSION\}\/scripts\/api-reviewer\.mjs"/);
+  assert.match(doc, /node "\$DEEPSEEK_REVIEWER" doctor --provider deepseek/);
+  assert.match(doc, /node "\$GLM_REVIEWER" doctor --provider glm/);
   assert.doesNotMatch(doc, /^api-reviewer /m);
-  assert.doesNotMatch(doc, /node plugins\/api-reviewers\/scripts\/api-reviewer\.mjs/);
+  assert.doesNotMatch(doc, /node plugins\/(?:api-reviewers|relay-(?:deepseek|glm))\/scripts\/api-reviewer\.mjs/);
   assert.doesNotMatch(doc, /ZAI_GLM_API_KEY/);
   assert.match(doc, /ZAI_API_KEY/);
 });
@@ -1007,7 +1001,7 @@ test("architecture record treats Grok web as separate from direct API reviewers"
   assert.match(doc, /Grok Web/i);
   assert.match(doc, /subscription-backed/i);
   assert.match(doc, /local tunnel/i);
-  assert.match(doc, /separate from `api-reviewers`/i);
+  assert.match(doc, /separate from `relay-deepseek` and `relay-glm`/i);
   assert.match(doc, /session cookies/i);
 });
 

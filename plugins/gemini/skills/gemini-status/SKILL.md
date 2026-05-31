@@ -9,7 +9,7 @@ user-invocable: true
 
 EXTERNAL_MODEL_CONTRACT_VERSION=1
 
-`<plugin-root>` is `plugins/gemini` or an absolute path to that plugin directory. Use skill `gemini:gemini-status`. Command doc: `plugins/gemini/commands/gemini-status.md`.
+`<plugin-root>` is `plugins/gemini` or an absolute path to that plugin directory. Use skill `relay-gemini:gemini-status`. Command doc: `plugins/gemini/commands/gemini-status.md`.
 `<workspace>` is the workspace where the job was launched.
 Run `node "<plugin-root>/scripts/gemini-companion.mjs" status --cwd "<workspace>"`.
 Read-only status: do not rerun, continue, or cancel jobs unless the user asks.

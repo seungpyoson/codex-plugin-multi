@@ -9,7 +9,7 @@ user-invocable: true
 
 EXTERNAL_MODEL_CONTRACT_VERSION=1
 
-`<plugin-root>` is `plugins/claude` or an absolute path to that plugin directory. Use skill `claude:claude-adversarial-review`. Command doc: `plugins/claude/commands/claude-adversarial-review.md`.
+`<plugin-root>` is `plugins/claude` or an absolute path to that plugin directory. Use skill `relay-claude:claude-adversarial-review`. Command doc: `plugins/claude/commands/claude-adversarial-review.md`.
 `<workspace>` is the repository or bundle directory to review.
 `<focus>` is the user's review prompt or focus area.
 Review timeout defaults to 900000 ms. Use `--timeout-ms <ms>` or `CLAUDE_REVIEW_TIMEOUT_MS`; the effective value is persisted in `review_metadata.audit_manifest.request.timeout_ms`.

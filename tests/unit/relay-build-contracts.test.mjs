@@ -119,6 +119,13 @@ test("buildRelaySuite: emits the full Claude relay provider suite without relay-
       "relay-kimi",
     ]);
     assert.equal(existsSync(path.join(outRoot, "relay-claude")), false);
+
+    const marketplace = JSON.parse(readFileSync(path.join(outRoot, ".claude-plugin", "marketplace.json"), "utf8"));
+    assert.equal(marketplace.name, "relay-for-claude");
+    assert.deepEqual(marketplace.plugins.map((plugin) => plugin.name).sort(), pluginNames);
+    for (const plugin of marketplace.plugins) {
+      assert.equal(plugin.source, `./${plugin.name}`);
+    }
   } finally {
     rmSync(outRoot, { recursive: true, force: true });
   }
@@ -166,7 +173,7 @@ test("renderClaudeCommandDoc: rewrites relay command paths and prompt transport 
     "plugins/grok/commands/grok-review.md",
     "plugins/kimi/commands/kimi-review.md",
     "plugins/kimi/commands/kimi-rescue.md",
-    "plugins/api-reviewers/commands/glm-review.md",
+    "plugins/relay-glm/commands/glm-review.md",
   ].map((file) => renderClaudeCommandDoc(readFileSync(file, "utf8")));
 
   for (const rendered of docs) {

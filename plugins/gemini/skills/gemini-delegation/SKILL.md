@@ -9,7 +9,7 @@ user-invocable: true
 
 EXTERNAL_MODEL_CONTRACT_VERSION=1
 
-`<plugin-root>` is `plugins/gemini` or an absolute path to that plugin directory. Use skill `gemini:gemini-delegation`.
+`<plugin-root>` is `plugins/gemini` or an absolute path to that plugin directory. Use skill `relay-gemini:gemini-delegation`.
 
 Run review:
 - `node "<plugin-root>/scripts/gemini-companion.mjs" run --mode=review --foreground --lifecycle-events markdown --cwd "<workspace>" --scope-base REF -- "<review focus>"`

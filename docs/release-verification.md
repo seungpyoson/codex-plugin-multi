@@ -7,9 +7,9 @@ machine or account state that has not previously installed this marketplace.
 
 ## Scope
 
-Verify that a new user can install the marketplace, enable both plugins, and see
-the supported user-invocable delegation skills from Codex. Native plugin slash
-commands remain blocked by Codex CLI 0.125.0.
+Verify that a new user can install the Relay for Codex marketplace, enable the
+provider relay plugins, and see the supported user-invocable delegation skills
+from Codex. Native plugin slash commands remain blocked by Codex CLI 0.125.0.
 
 ## Preconditions
 
@@ -19,6 +19,11 @@ commands remain blocked by Codex CLI 0.125.0.
   workflow.
 - Gemini CLI is installed and authenticated if verifying the Gemini setup
   workflow.
+- Kimi Code CLI is installed and authenticated if verifying the Kimi setup
+  workflow.
+- Grok CLI is installed and authenticated if verifying the Grok setup workflow.
+- DeepSeek and GLM API credentials are configured if verifying direct API setup
+  workflows.
 - The release branch has been merged to the repository location being installed.
 
 ## Fresh-install steps
@@ -26,7 +31,7 @@ commands remain blocked by Codex CLI 0.125.0.
 1. Remove any prior marketplace install if present:
 
 ```bash
-codex plugin marketplace remove codex-plugin-multi
+codex plugin marketplace remove relay-for-codex
 ```
 
 It is acceptable if this reports that the marketplace is not installed.
@@ -34,16 +39,16 @@ It is acceptable if this reports that the marketplace is not installed.
 2. Install from GitHub:
 
 ```bash
-codex plugin marketplace add seungpyoson/codex-plugin-multi
+codex plugin marketplace add seungpyoson/relay
 ```
 
-Expected: Codex reports marketplace `codex-plugin-multi` was added.
+Expected: Codex reports marketplace `relay-for-codex` was added.
 
 3. Start Codex in a disposable test workspace:
 
 ```bash
-mkdir -p /tmp/codex-plugin-multi-release-smoke
-cd /tmp/codex-plugin-multi-release-smoke
+mkdir -p /tmp/relay-release-smoke
+cd /tmp/relay-release-smoke
 git init
 printf '%s\n' '# release smoke' > README.md
 git add README.md
@@ -57,22 +62,29 @@ codex
 /plugins
 ```
 
-Expected: both `claude` and `gemini` are listed. Enable both.
+Expected: `relay-claude`, `relay-gemini`, `relay-kimi`, `relay-grok`,
+`relay-deepseek`, and `relay-glm` are listed. Enable the plugins being
+verified.
 
 5. Confirm supported fallback skills are model-visible.
 
 ```text
-Ask Codex what Claude and Gemini plugin skills are available.
+Ask Codex what Relay plugin skills are available.
 ```
 
-Expected: `claude-delegation` and `gemini-delegation` are available after both
-plugins are enabled.
+Expected: enabled relay plugins expose their matching skills, such as
+`claude-delegation`, `gemini-delegation`, `kimi-delegation`,
+`grok-delegation`, `deepseek-review`, and `glm-review`.
 
 6. Run setup checks if the target CLIs are installed and authenticated:
 
 ```text
 Use the Claude delegation skill to run the setup check.
 Use the Gemini delegation skill to run the setup check.
+Use the Kimi delegation skill to run the setup check.
+Use the Grok setup skill to run the setup check.
+Use the DeepSeek setup skill to run the setup check.
+Use the GLM setup skill to run the setup check.
 ```
 
 Expected: each reports target CLI readiness. If a target CLI is intentionally
@@ -83,6 +95,10 @@ missing on the verification machine, record that as skipped with the reason.
 ```text
 Use the Claude delegation skill to review the seeded repository.
 Use the Gemini delegation skill to review the seeded repository.
+Use the Kimi delegation skill to review the seeded repository.
+Use the Grok delegation skill to review the seeded repository.
+Use the DeepSeek review skill to review the seeded repository.
+Use the GLM review skill to review the seeded repository.
 ```
 
 Expected: each workflow returns a completed result or a clear target-CLI error.
@@ -92,8 +108,8 @@ packaging failures, and must be recorded explicitly.
 8. Clean up:
 
 ```bash
-codex plugin marketplace remove codex-plugin-multi
-rm -rf /tmp/codex-plugin-multi-release-smoke
+codex plugin marketplace remove relay-for-codex
+rm -rf /tmp/relay-release-smoke
 ```
 
 ## Evidence log

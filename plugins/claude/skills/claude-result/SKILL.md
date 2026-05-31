@@ -9,7 +9,7 @@ user-invocable: true
 
 EXTERNAL_MODEL_CONTRACT_VERSION=1
 
-`<plugin-root>` is `plugins/claude` or an absolute path to that plugin directory. Use skill `claude:claude-result`. Command doc: `plugins/claude/commands/claude-result.md`.
+`<plugin-root>` is `plugins/claude` or an absolute path to that plugin directory. Use skill `relay-claude:claude-result`. Command doc: `plugins/claude/commands/claude-result.md`.
 `<workspace>` is the workspace where the job was launched.
 `<job-id>` is the identifier returned by a background launch or listed by the status workflow.
 Run `node "<plugin-root>/scripts/claude-companion.mjs" result --job "<job-id>" --cwd "<workspace>"`.

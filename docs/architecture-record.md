@@ -112,7 +112,7 @@ surface is HTTP/auth-policy based rather than CLI/process based.
 
 ### Grok Web Is Subscription-Backed And Separate From Direct API
 
-Grok Web is intentionally separate from `api-reviewers`. Its default mode is a
+Grok Web is intentionally separate from `relay-deepseek` and `relay-glm`. Its default mode is a
 subscription-backed local tunnel that talks to a Grok web session managed by the
 user. It is not a paid direct API provider, and it must not silently fall back
 to xAI API billing when the tunnel is unavailable.

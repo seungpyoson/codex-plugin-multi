@@ -10,6 +10,7 @@ import {
 import { join } from "node:path";
 
 const RELAY_REPOSITORY = "https://github.com/seungpyoson/relay";
+const RELAY_FOR_CLAUDE_MARKETPLACE = "relay-for-claude";
 const RELAY_PROVIDER_ORDER = Object.freeze(["gemini", "grok", "kimi", "glm", "deepseek"]);
 const RELAY_PROVIDER_DEFINITIONS = Object.freeze({
   gemini: {
@@ -28,13 +29,13 @@ const RELAY_PROVIDER_DEFINITIONS = Object.freeze({
     synthesizeCustomReview: true,
   },
   glm: {
-    sourceProvider: "api-reviewers",
+    sourceProvider: "relay-glm",
     commandPrefix: "glm",
     pluginDataEnv: "API_REVIEWERS_PLUGIN_DATA",
     description: "Delegate code reviews to GLM direct API from within Claude Code.",
   },
   deepseek: {
-    sourceProvider: "api-reviewers",
+    sourceProvider: "relay-deepseek",
     commandPrefix: "deepseek",
     pluginDataEnv: "API_REVIEWERS_PLUGIN_DATA",
     description: "Delegate code reviews to DeepSeek direct API from within Claude Code.",
@@ -98,7 +99,35 @@ export function buildRelayPlugin({ provider, repoRoot = process.cwd(), outRoot =
 }
 
 export function buildRelaySuite({ repoRoot = process.cwd(), outRoot = join(repoRoot, "relay") } = {}) {
-  return RELAY_PROVIDER_ORDER.map((provider) => buildRelayPlugin({ provider, repoRoot, outRoot }));
+  const pluginRoots = RELAY_PROVIDER_ORDER.map((provider) => buildRelayPlugin({ provider, repoRoot, outRoot }));
+  writeClaudeRelayMarketplace({ outRoot, pluginRoots });
+  return pluginRoots;
+}
+
+export function renderClaudeRelayMarketplace(pluginManifests) {
+  return {
+    name: RELAY_FOR_CLAUDE_MARKETPLACE,
+    description: "Relay for Claude Code: external-model delegation plugins.",
+    owner: { name: "seungpyoson" },
+    plugins: pluginManifests.map((manifest) => ({
+      name: manifest.name,
+      description: manifest.description,
+      version: manifest.version,
+      source: `./${manifest.name}`,
+      author: manifest.author,
+    })),
+  };
+}
+
+function writeClaudeRelayMarketplace({ outRoot, pluginRoots }) {
+  const pluginManifests = pluginRoots.map((pluginRoot) =>
+    readJson(join(pluginRoot, ".claude-plugin", "plugin.json"))
+  );
+  mkdirSync(join(outRoot, ".claude-plugin"), { recursive: true });
+  writeJson(
+    join(outRoot, ".claude-plugin", "marketplace.json"),
+    renderClaudeRelayMarketplace(pluginManifests),
+  );
 }
 
 export function renderClaudePluginManifest(codexManifest, { provider, description: descriptionOverride } = {}) {
@@ -135,8 +164,8 @@ export function renderClaudeCommandDoc(codexDoc) {
   let rendered = codexDoc
     .replaceAll("<plugin-root>", "${CLAUDE_PLUGIN_ROOT}")
     .replaceAll("node plugins/grok/scripts/grok-companion.mjs", 'node "${CLAUDE_PLUGIN_ROOT}/scripts/grok-companion.mjs"')
-    .replaceAll('node "${CODEX_HOME:-$HOME/.codex}/plugins/cache/codex-plugin-multi/api-reviewers/0.1.0/scripts/api-reviewer.mjs"', 'node "${CLAUDE_PLUGIN_ROOT}/scripts/api-reviewer.mjs"')
-    .replaceAll("${CODEX_HOME:-$HOME/.codex}/plugins/cache/codex-plugin-multi/api-reviewers/0.1.0/scripts/api-reviewer.mjs", "${CLAUDE_PLUGIN_ROOT}/scripts/api-reviewer.mjs")
+    .replace(/node "\$\{CODEX_HOME:-\$HOME\/\.codex\}\/plugins\/cache\/relay\/relay-(?:deepseek|glm)\/0\.1\.0\/scripts\/api-reviewer\.mjs"/g, 'node "${CLAUDE_PLUGIN_ROOT}/scripts/api-reviewer.mjs"')
+    .replace(/\$\{CODEX_HOME:-\$HOME\/\.codex\}\/plugins\/cache\/relay\/relay-(?:deepseek|glm)\/0\.1\.0\/scripts\/api-reviewer\.mjs/g, "${CLAUDE_PLUGIN_ROOT}/scripts/api-reviewer.mjs")
     .replaceAll('-- "<focus text>"', '--prompt-file "$RELAY_PROMPT_FILE"')
     .replaceAll('-- "<prompt text>"', '--prompt-file "$RELAY_PROMPT_FILE"')
     .replaceAll('-- "$ARGUMENTS"', '--prompt-file "$RELAY_PROMPT_FILE"')
@@ -165,12 +194,8 @@ export function renderClaudeCommandDoc(codexDoc) {
       "Use the global installed entrypoint `node \"${CLAUDE_PLUGIN_ROOT}/scripts/api-reviewer.mjs\"`.",
       "Use the relay-local entrypoint `node \"${CLAUDE_PLUGIN_ROOT}/scripts/api-reviewer.mjs\"`.",
     )
-    .replaceAll(
-      "plugins/api-reviewers/config/session-approval.json",
-      "${CLAUDE_PLUGIN_ROOT}/config/session-approval.json",
-    )
-    .replaceAll(
-      "Do not run bare `api-reviewer`, do not rely on `PATH`, and do not use repository-relative paths such as `plugins/api-reviewers/scripts/api-reviewer.mjs`.",
+    .replace(
+      /Do not run bare `api-reviewer`, do not rely on `PATH`, and do not use repository-relative paths such as `plugins\/relay-(?:deepseek|glm)\/scripts\/api-reviewer\.mjs`\./g,
       "Do not run bare `api-reviewer`, do not rely on `PATH`, and do not use repository-relative paths.",
     )
     .replaceAll("CODEX_PLUGIN_MULTI_RUNTIME_DIR", "CLAUDE_PLUGIN_DATA")

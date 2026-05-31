@@ -20,6 +20,14 @@ function escapeRegExp(text) {
   return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
+function relayPluginName(provider) {
+  return `relay-${provider}`;
+}
+
+function marketplaceSourcePath(plugin) {
+  return plugin.source.path.replace(/^\.\//, "");
+}
+
 function assertPickerDescription(skill, rel) {
   const description = skill.match(/^description:\s*(.+)$/m)?.[1] ?? "";
   assert.ok(description.length > 0, `${rel} missing description`);
@@ -259,7 +267,7 @@ test("marketplace.json: valid schema", () => {
 
 test("claude plugin.json: valid schema", () => {
   const m = readJson("plugins/claude/.codex-plugin/plugin.json");
-  assert.equal(m.name, "claude");
+  assert.equal(m.name, "relay-claude");
   assert.ok(/^\d+\.\d+\.\d+/.test(m.version));
   assert.equal(m.license, "AGPL-3.0-only");
   assert.equal(m.skills, "./skills");
@@ -268,7 +276,7 @@ test("claude plugin.json: valid schema", () => {
 
 test("gemini plugin.json: valid schema", () => {
   const m = readJson("plugins/gemini/.codex-plugin/plugin.json");
-  assert.equal(m.name, "gemini");
+  assert.equal(m.name, "relay-gemini");
   assert.ok(/^\d+\.\d+\.\d+/.test(m.version));
   assert.equal(m.license, "AGPL-3.0-only");
   assert.equal(m.skills, "./skills");
@@ -276,7 +284,7 @@ test("gemini plugin.json: valid schema", () => {
 
 test("kimi plugin.json: valid schema", () => {
   const m = readJson("plugins/kimi/.codex-plugin/plugin.json");
-  assert.equal(m.name, "kimi");
+  assert.equal(m.name, "relay-kimi");
   assert.ok(/^\d+\.\d+\.\d+/.test(m.version));
   assert.equal(m.license, "AGPL-3.0-only");
   assert.equal(m.skills, "./skills");
@@ -284,7 +292,7 @@ test("kimi plugin.json: valid schema", () => {
 
 test("grok plugin.json: valid schema", () => {
   const m = readJson("plugins/grok/.codex-plugin/plugin.json");
-  assert.equal(m.name, "grok");
+  assert.equal(m.name, "relay-grok");
   assert.ok(/^\d+\.\d+\.\d+/.test(m.version));
   assert.equal(m.license, "AGPL-3.0-only");
   assert.equal(m.skills, "./skills");
@@ -292,44 +300,54 @@ test("grok plugin.json: valid schema", () => {
   assert.doesNotMatch(m.interface.longDescription, /api\.x\.ai/i);
 });
 
-test("api-reviewers plugin.json: valid schema", () => {
-  const m = readJson("plugins/api-reviewers/.codex-plugin/plugin.json");
-  assert.equal(m.name, "api-reviewers");
-  assert.ok(/^\d+\.\d+\.\d+/.test(m.version));
-  assert.equal(m.license, "AGPL-3.0-only");
-  assert.equal(m.skills, "./skills");
+test("direct API relay plugin.json files are split by provider", () => {
+  for (const provider of API_REVIEWER_PROVIDERS) {
+    const root = `plugins/${relayPluginName(provider)}`;
+    const m = readJson(`${root}/.codex-plugin/plugin.json`);
+    const providers = readJson(`${root}/config/providers.json`);
+    assert.equal(m.name, relayPluginName(provider));
+    assert.ok(/^\d+\.\d+\.\d+/.test(m.version));
+    assert.equal(m.license, "AGPL-3.0-only");
+    assert.equal(m.skills, "./skills");
+    assert.deepEqual(Object.keys(providers), [provider]);
+  }
 });
 
-test("api-reviewers package exposes api-reviewer bin shim", () => {
-  const pkg = readJson("plugins/api-reviewers/package.json");
-  assert.deepEqual(pkg.bin, { "api-reviewer": "./bin/api-reviewer" });
+test("direct API relay packages expose api-reviewer bin shims", () => {
+  for (const provider of API_REVIEWER_PROVIDERS) {
+    const root = `plugins/${relayPluginName(provider)}`;
+    const pkg = readJson(`${root}/package.json`);
+    assert.deepEqual(pkg.bin, { "api-reviewer": "./bin/api-reviewer" });
 
-  const shimRel = "plugins/api-reviewers/bin/api-reviewer";
-  const shimPath = path.join(REPO_ROOT, shimRel);
-  assert.equal(existsSync(shimPath), true, `${shimRel} missing`);
-  assert.ok((statSync(shimPath).mode & 0o111) !== 0, `${shimRel} must be executable`);
-  const shim = readFileSync(shimPath, "utf8");
-  assert.match(shim, /^#!\/usr\/bin\/env node/);
-  assert.match(shim, /\.\.\/scripts\/api-reviewer\.mjs/);
+    const shimRel = `${root}/bin/api-reviewer`;
+    const shimPath = path.join(REPO_ROOT, shimRel);
+    assert.equal(existsSync(shimPath), true, `${shimRel} missing`);
+    assert.ok((statSync(shimPath).mode & 0o111) !== 0, `${shimRel} must be executable`);
+    const shim = readFileSync(shimPath, "utf8");
+    assert.match(shim, /^#!\/usr\/bin\/env node/);
+    assert.match(shim, /\.\.\/scripts\/api-reviewer\.mjs/);
+  }
 });
 
-test("api-reviewers bin shim resolves from non-repo cwd", () => {
-  const shimPath = path.join(REPO_ROOT, "plugins/api-reviewers/bin/api-reviewer");
-  const result = spawnSync(process.execPath, [shimPath, "--help"], {
-    cwd: tmpdir(),
-    encoding: "utf8",
-  });
+test("direct API relay bin shims resolve from non-repo cwd", () => {
+  for (const provider of API_REVIEWER_PROVIDERS) {
+    const shimPath = path.join(REPO_ROOT, `plugins/${relayPluginName(provider)}/bin/api-reviewer`);
+    const result = spawnSync(process.execPath, [shimPath, "--help"], {
+      cwd: tmpdir(),
+      encoding: "utf8",
+    });
 
-  assert.equal(result.status, 0, result.stderr);
-  const parsed = JSON.parse(result.stdout);
-  assert.deepEqual(parsed.commands, ["doctor", "ping", "approval-request", "approval-grant", "run", "result"]);
-  assert.deepEqual(parsed.providers, ["deepseek", "glm"]);
+    assert.equal(result.status, 0, result.stderr);
+    const parsed = JSON.parse(result.stdout);
+    assert.deepEqual(parsed.commands, ["doctor", "ping", "approval-request", "approval-grant", "run", "result"]);
+    assert.deepEqual(parsed.providers, [provider]);
+  }
 });
 
-test("both plugins declared in marketplace match filesystem layout", () => {
+test("plugins declared in marketplace match filesystem layout", () => {
   const m = readJson(".agents/plugins/marketplace.json");
   for (const p of m.plugins) {
-    const manifest = readJson(`plugins/${p.name}/.codex-plugin/plugin.json`);
+    const manifest = readJson(`${marketplaceSourcePath(p)}/.codex-plugin/plugin.json`);
     assert.equal(manifest.name, p.name, `${p.name} directory plugin.json name mismatch`);
   }
 });
@@ -405,34 +423,6 @@ test("grok exposes a user-invocable skill fallback", () => {
   assertPickerDescription(skill, rel);
 });
 
-test("api-reviewers exposes a user-invocable skill fallback", () => {
-  const rel = "plugins/api-reviewers/skills/api-reviewers-delegation/SKILL.md";
-  const skill = readFileSync(path.join(REPO_ROOT, rel), "utf8");
-
-  assert.match(skill, /^name:\s*api-reviewers-delegation$/m);
-  assert.match(skill, /^user-invocable:\s*true$/m);
-  assert.match(skill, /api-reviewer/);
-  assert.match(skill, /--provider\s+deepseek\b/);
-  assert.match(skill, /--provider\s+glm\b/);
-  assert.match(skill.match(/^description:\s*(.+)$/m)?.[1] ?? "", /adversarial review/);
-  assertNoBracketedCliFlagsInShellFences(skill, rel);
-  assert.doesNotMatch(skill, /--foreground\b/, `${rel} must not document ignored --foreground flag`);
-  assert.match(skill, /api-reviewer\.mjs"\s+doctor\b/);
-  assert.match(skill, /api-reviewer\.mjs"\s+run\b/);
-  assert.match(skill, /--mode\s+review\b/);
-  assert.match(skill, /--mode\s+adversarial-review\b/);
-  assert.match(skill, /--mode\s+custom-review\b/);
-  assert.match(skill, /--scope-base REF/);
-  assert.match(skill, /Replace `<file1>,<file2>`/, `${rel} must tell agents to replace scope-path placeholders`);
-  assert.match(skill, /comma- or newline-separated concrete relative paths/, `${rel} missing scope-path separator guidance`);
-  assert.match(skill, /`error_code`/, `${rel} missing failed JobRecord error_code rendering guidance`);
-  assert.match(skill, /`error_message`/, `${rel} missing failed JobRecord error_message rendering guidance`);
-  assert.match(skill, /`http_status`/, `${rel} missing failed JobRecord http_status rendering guidance`);
-  assert.match(skill, /`suggested_action`/, `${rel} missing failed JobRecord suggested_action rendering guidance`);
-  assert.match(skill, /external_review.*before the review result/);
-  assertPickerDescription(skill, rel);
-});
-
 test("provider workflow skills are user-invocable and command-backed", () => {
   for (const plugin of DELEGATION_PLUGINS) {
     for (const workflow of DELEGATION_WORKFLOWS) {
@@ -446,7 +436,7 @@ test("provider workflow skills are user-invocable and command-backed", () => {
       assert.match(skill, /^user-invocable:\s*true$/m);
       assertPickerDescription(skill, rel);
       assert.match(skill, new RegExp(`${plugin}-companion\\.mjs`));
-      assert.match(skill, new RegExp(`${plugin}:${skillName}`));
+      assert.match(skill, new RegExp(`${relayPluginName(plugin)}:${skillName}`));
       assert.match(skill, new RegExp("`<plugin-root>` is `plugins/" + plugin + "`"));
       if (skill.includes("--cwd")) {
         assert.match(skill, /`<workspace>` is /);
@@ -478,7 +468,8 @@ test("provider workflow skills are user-invocable and command-backed", () => {
   for (const provider of API_REVIEWER_PROVIDERS) {
     for (const workflow of API_REVIEWER_WORKFLOWS) {
       const skillName = `${provider}-${workflow}`;
-      const rel = `plugins/api-reviewers/skills/${skillName}/SKILL.md`;
+      const pluginRoot = `plugins/${relayPluginName(provider)}`;
+      const rel = `${pluginRoot}/skills/${skillName}/SKILL.md`;
       const skillPath = path.join(REPO_ROOT, rel);
       assert.equal(existsSync(skillPath), true, `${rel} missing`);
       const skill = readFileSync(skillPath, "utf8");
@@ -487,9 +478,9 @@ test("provider workflow skills are user-invocable and command-backed", () => {
       assert.match(skill, /^user-invocable:\s*true$/m);
       assertPickerDescription(skill, rel);
       assert.match(skill, /api-reviewer/);
-      assert.match(skill, new RegExp(`api-reviewers:${skillName}`));
+      assert.match(skill, new RegExp(`${relayPluginName(provider)}:${skillName}`));
       assertApiReviewerWorkflowInvocation(skill, provider, workflow, rel);
-      const commandRel = `plugins/api-reviewers/commands/${skillName}.md`;
+      const commandRel = `${pluginRoot}/commands/${skillName}.md`;
       assert.equal(existsSync(path.join(REPO_ROOT, commandRel)), true, `${commandRel} missing`);
       const command = readFileSync(path.join(REPO_ROOT, commandRel), "utf8");
       assertApiReviewerCommandDoc(command, workflow, commandRel);
@@ -509,7 +500,7 @@ test("provider workflow skills are user-invocable and command-backed", () => {
     assertPickerDescription(skill, rel);
     assert.match(skill, /grok-companion\.mjs/);
     assert.doesNotMatch(skill, /grok-web-reviewer\.mjs/);
-    assert.match(skill, new RegExp(`grok:${skillName}`));
+    assert.match(skill, new RegExp(`relay-grok:${skillName}`));
     assertGrokWorkflowInvocation(skill, workflow, rel);
     const commandRel = `plugins/grok/commands/${skillName}.md`;
     assert.equal(existsSync(path.join(REPO_ROOT, commandRel)), true, `${commandRel} missing`);
@@ -523,11 +514,12 @@ test("README documents install verification for discoverable delegation skills",
   const readme = readFileSync(path.join(REPO_ROOT, "README.md"), "utf8");
   assert.match(readme, /Verify skill discovery after installation/);
   assert.match(readme, /codex debug prompt-input 'list skills'/);
-  assert.match(readme, /claude:claude-delegation/);
-  assert.match(readme, /gemini:gemini-delegation/);
-  assert.match(readme, /kimi:kimi-delegation/);
-  assert.match(readme, /grok:grok-delegation/);
-  assert.match(readme, /api-reviewers:api-reviewers-delegation/);
+  assert.match(readme, /relay-claude:claude-delegation/);
+  assert.match(readme, /relay-gemini:gemini-delegation/);
+  assert.match(readme, /relay-kimi:kimi-delegation/);
+  assert.match(readme, /relay-grok:grok-delegation/);
+  assert.match(readme, /relay-deepseek:deepseek-review/);
+  assert.match(readme, /relay-glm:glm-review/);
   assert.match(readme, /CODEX_HOME/);
 });
 
@@ -541,18 +533,18 @@ test("README documents workflow-specific skill picker UX", () => {
   assert.match(readme, /remain available through those broad delegation skills/);
   for (const plugin of DELEGATION_PLUGINS) {
     for (const workflow of DELEGATION_WORKFLOWS) {
-      const skill = `${plugin}:${plugin}-${workflow}`;
+      const skill = `${relayPluginName(plugin)}:${plugin}-${workflow}`;
       assert.match(readme, new RegExp(`\\b${skill}\\b`), `README missing ${skill}`);
     }
   }
   for (const provider of API_REVIEWER_PROVIDERS) {
     for (const workflow of API_REVIEWER_WORKFLOWS) {
-      const skill = `api-reviewers:${provider}-${workflow}`;
+      const skill = `${relayPluginName(provider)}:${provider}-${workflow}`;
       assert.match(readme, new RegExp(`\\b${skill}\\b`), `README missing ${skill}`);
     }
   }
   for (const workflow of GROK_WORKFLOWS) {
-    const skill = `grok:grok-${workflow}`;
+    const skill = `relay-grok:grok-${workflow}`;
     assert.match(readme, new RegExp(`\\b${skill}\\b`), `README missing ${skill}`);
   }
 });
@@ -585,13 +577,16 @@ test("release docs disclose current Codex slash-command limitation", () => {
   assert.match(releaseVerification, /find_builtin_command/);
 });
 
-test("release metadata documents v0.1.0 for both plugins", () => {
+test("release metadata documents v0.1.0 for marketplace plugins", () => {
   const changelog = readFileSync(path.join(REPO_ROOT, "CHANGELOG.md"), "utf8");
   const rootPackage = readJson("package.json");
+  const marketplace = readJson(".agents/plugins/marketplace.json");
   assert.equal(rootPackage.version, "0.1.0");
-  for (const plugin of ["claude", "gemini", "kimi", "grok", "api-reviewers"]) {
-    const manifest = readJson(`plugins/${plugin}/.codex-plugin/plugin.json`);
-    const workspacePackage = readJson(`plugins/${plugin}/package.json`);
+  for (const plugin of marketplace.plugins) {
+    const sourcePath = marketplaceSourcePath(plugin);
+    const manifest = readJson(`${sourcePath}/.codex-plugin/plugin.json`);
+    const workspacePackage = readJson(`${sourcePath}/package.json`);
+    assert.equal(manifest.name, plugin.name);
     assert.equal(manifest.version, "0.1.0");
     assert.equal(workspacePackage.version, manifest.version);
   }
