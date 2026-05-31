@@ -13,7 +13,7 @@ test("repo package and marketplace expose Relay public names", () => {
   assert.equal(pkg.repository.url, "https://github.com/seungpyoson/relay.git");
 
   const marketplace = readJson(".agents/plugins/marketplace.json");
-  const publicPlugins = marketplace.plugins.filter((plugin) => plugin.policy.installation !== "HIDDEN");
+  const publicPlugins = marketplace.plugins.filter((plugin) => plugin.policy.installation === "AVAILABLE");
   assert.equal(marketplace.name, "relay-for-codex");
   assert.equal(marketplace.interface.displayName, "Relay for Codex");
   assert.deepEqual(
@@ -30,7 +30,7 @@ test("repo package and marketplace expose Relay public names", () => {
   assert.equal(publicPlugins.some((plugin) => plugin.name === "api-reviewers"), false);
   assert.equal(
     marketplace.plugins.some((plugin) =>
-      plugin.name === "api-reviewers" && plugin.policy.installation === "HIDDEN"
+      plugin.name === "api-reviewers" && plugin.policy.installation === "NOT_AVAILABLE"
     ),
     true,
   );

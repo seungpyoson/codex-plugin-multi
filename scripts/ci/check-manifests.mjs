@@ -45,9 +45,9 @@ const AGENT_FRONTMATTER_KEYS = new Set([
 ]);
 
 // Allowed installation / authentication values per marketplace schema
-// (verified 2026-04-23: "NEVER" is rejected; ON_INSTALL|ON_USE are the only
+// (verified 2026-05-31: Codex rejects "HIDDEN"; ON_INSTALL|ON_USE are the only
 // accepted authentication values).
-const INSTALLATION_ENUM = ["AVAILABLE", "DEFAULT", "HIDDEN"];
+const INSTALLATION_ENUM = ["AVAILABLE", "NOT_AVAILABLE", "INSTALLED_BY_DEFAULT"];
 const AUTHENTICATION_ENUM = ["ON_INSTALL", "ON_USE"];
 
 // Semver (simplified): MAJOR.MINOR.PATCH with optional prerelease.

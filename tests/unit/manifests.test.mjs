@@ -259,7 +259,10 @@ test("marketplace.json: valid schema", () => {
   for (const p of m.plugins) {
     assert.equal(typeof p.name, "string");
     assert.ok(/^[a-z0-9]+(-[a-z0-9]+)*$/.test(p.name), `${p.name} not bare`);
-    assert.ok(["AVAILABLE", "DEFAULT", "HIDDEN"].includes(p.policy.installation));
+    assert.ok(
+      ["AVAILABLE", "NOT_AVAILABLE", "INSTALLED_BY_DEFAULT"].includes(p.policy.installation),
+      `${p.name} has Codex-unsupported installation policy ${p.policy.installation}`,
+    );
     assert.ok(["ON_INSTALL", "ON_USE"].includes(p.policy.authentication));
     assert.ok(["local", "git"].includes(p.source.source));
   }
