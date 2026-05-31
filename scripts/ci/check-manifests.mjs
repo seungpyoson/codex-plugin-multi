@@ -106,34 +106,55 @@ async function checkMarketplace() {
   const path = ".agents/plugins/marketplace.json";
   const m = await readJson(path);
   if (!m) return [];
+  if (!checkMarketplaceRoot(m, path)) return [];
+
+  const declared = [];
+  for (const [i, plugin] of m.plugins.entries()) {
+    const declaration = checkMarketplacePlugin(plugin, path, i);
+    if (declaration) declared.push(declaration);
+  }
+  return declared;
+}
+
+function checkMarketplaceRoot(m, path) {
   checkType(m, "name", "string", path);
   if (m.name) checkBareName(m.name, path, "marketplace name");
   checkType(m, "interface", "object", path);
   if (m.interface) checkType(m.interface, "displayName", "string", path);
-  if (!checkType(m, "plugins", "array", path)) return [];
+  if (!checkType(m, "plugins", "array", path)) return false;
   if (m.plugins.length === 0) err(path, "plugins array is empty");
-  const declared = [];
-  for (const [i, p] of m.plugins.entries()) {
-    const pp = `${path}:plugins[${i}]`;
-    if (checkType(p, "name", "string", pp) && p.name) {
-      checkBareName(p.name, pp, "plugin name");
-    }
-    checkType(p, "source", "object", pp);
-    let sourcePath = null;
-    if (p.source) {
-      checkType(p.source, "source", "string", pp);
-      oneOf(p.source, "source", ["local", "git"], pp, { required: true });
-      checkType(p.source, "path", "string", pp);
-      sourcePath = p.source.path;
-    }
-    checkType(p, "policy", "object", pp);
-    if (p.policy) {
-      oneOf(p.policy, "installation", INSTALLATION_ENUM, pp, { required: true });
-      oneOf(p.policy, "authentication", AUTHENTICATION_ENUM, pp, { required: true });
-    }
-    if (p.name && sourcePath) declared.push({ name: p.name, sourcePath });
-  }
-  return declared;
+  return true;
+}
+
+function checkMarketplacePlugin(plugin, marketplacePath, index) {
+  const path = `${marketplacePath}:plugins[${index}]`;
+  const name = readMarketplacePluginName(plugin, path);
+  const sourcePath = readMarketplacePluginSourcePath(plugin, path);
+  checkMarketplacePluginPolicy(plugin, path);
+  if (!name || !sourcePath) return null;
+  return { name, sourcePath };
+}
+
+function readMarketplacePluginName(plugin, path) {
+  if (!checkType(plugin, "name", "string", path)) return null;
+  checkBareName(plugin.name, path, "plugin name");
+  return plugin.name;
+}
+
+function readMarketplacePluginSourcePath(plugin, path) {
+  checkType(plugin, "source", "object", path);
+  if (!plugin.source) return null;
+  checkType(plugin.source, "source", "string", path);
+  oneOf(plugin.source, "source", ["local", "git"], path, { required: true });
+  if (!checkType(plugin.source, "path", "string", path)) return null;
+  return plugin.source.path;
+}
+
+function checkMarketplacePluginPolicy(plugin, path) {
+  checkType(plugin, "policy", "object", path);
+  if (!plugin.policy) return;
+  oneOf(plugin.policy, "installation", INSTALLATION_ENUM, path, { required: true });
+  oneOf(plugin.policy, "authentication", AUTHENTICATION_ENUM, path, { required: true });
 }
 
 function normalizeSourcePath(sourcePath) {
@@ -146,40 +167,59 @@ function normalizeSourcePath(sourcePath) {
 async function checkPluginManifest({ name, sourcePath }) {
   const pluginRoot = normalizeSourcePath(sourcePath);
   const path = `${pluginRoot}/.codex-plugin/plugin.json`;
-  const m = await readJson(path);
-  if (!m) return null;
+  const manifest = await readJson(path);
+  if (!manifest) return null;
+  checkForbiddenPluginManifestKeys(manifest, path);
+  checkPluginManifestIdentity(manifest, name, path);
+  checkPluginManifestVersion(manifest, path);
+  checkType(manifest, "description", "string", path);
+  checkType(manifest, "license", "string", path);
+  checkType(manifest, "author", "object", path);
+  if (manifest.author) checkType(manifest.author, "name", "string", path);
+  checkPluginManifestSkills(manifest, path);
+  checkPluginManifestInterface(manifest, path);
+  return manifest;
+}
+
+function checkForbiddenPluginManifestKeys(manifest, path) {
   for (const [key, reason] of FORBIDDEN_PLUGIN_MANIFEST_KEYS) {
-    if (key in m) {
+    if (key in manifest) {
       err(path, `field "${key}" is forbidden until ${reason}`);
     }
   }
-  if (checkType(m, "name", "string", path)) {
-    checkBareName(m.name, path, "plugin name");
-    if (m.name !== name) err(path, `name "${m.name}" does not match marketplace plugin "${name}"`);
+}
+
+function checkPluginManifestIdentity(manifest, name, path) {
+  if (!checkType(manifest, "name", "string", path)) return;
+  checkBareName(manifest.name, path, "plugin name");
+  if (manifest.name !== name) {
+    err(path, `name "${manifest.name}" does not match marketplace plugin "${name}"`);
   }
-  if (checkType(m, "version", "string", path)) {
-    if (!SEMVER.test(m.version)) err(path, `version "${m.version}" is not valid semver (MAJOR.MINOR.PATCH)`);
+}
+
+function checkPluginManifestVersion(manifest, path) {
+  if (!checkType(manifest, "version", "string", path)) return;
+  if (!SEMVER.test(manifest.version)) {
+    err(path, `version "${manifest.version}" is not valid semver (MAJOR.MINOR.PATCH)`);
   }
-  checkType(m, "description", "string", path);
-  checkType(m, "license", "string", path);
-  checkType(m, "author", "object", path);
-  if (m.author) checkType(m.author, "name", "string", path);
-  if (m.skills !== undefined) {
-    if (checkType(m, "skills", "string", path) && m.skills !== "./skills") {
-      err(path, `field "skills" must be "./skills" when plugin skills are packaged`);
+}
+
+function checkPluginManifestSkills(manifest, path) {
+  if (manifest.skills === undefined) return;
+  if (checkType(manifest, "skills", "string", path) && manifest.skills !== "./skills") {
+    err(path, `field "skills" must be "./skills" when plugin skills are packaged`);
+  }
+}
+
+function checkPluginManifestInterface(manifest, path) {
+  if (!manifest.interface) return;
+  checkType(manifest.interface, "displayName", "string", path);
+  if (!Array.isArray(manifest.interface.capabilities)) return;
+  for (const capability of manifest.interface.capabilities) {
+    if (!CAPABILITY_ENUM.includes(capability)) {
+      err(path, `capabilities contains unknown value "${capability}"; allowed: ${CAPABILITY_ENUM.join("|")}`);
     }
   }
-  if (m.interface) {
-    checkType(m.interface, "displayName", "string", path);
-    if (Array.isArray(m.interface.capabilities)) {
-      for (const cap of m.interface.capabilities) {
-        if (!CAPABILITY_ENUM.includes(cap)) {
-          err(path, `capabilities contains unknown value "${cap}"; allowed: ${CAPABILITY_ENUM.join("|")}`);
-        }
-      }
-    }
-  }
-  return m;
 }
 
 function parseFrontmatter(text, path) {
