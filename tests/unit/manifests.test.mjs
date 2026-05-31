@@ -5,6 +5,10 @@ import { existsSync, readFileSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import {
+  CODEX_MARKETPLACE_AUTHENTICATION_POLICIES,
+  CODEX_MARKETPLACE_INSTALLATION_POLICIES,
+} from "../../scripts/lib/codex-marketplace-schema.mjs";
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const DESCRIPTION_MAX_LENGTH = 88;
@@ -260,12 +264,27 @@ test("marketplace.json: valid schema", () => {
     assert.equal(typeof p.name, "string");
     assert.ok(/^[a-z0-9]+(-[a-z0-9]+)*$/.test(p.name), `${p.name} not bare`);
     assert.ok(
-      ["AVAILABLE", "NOT_AVAILABLE", "INSTALLED_BY_DEFAULT"].includes(p.policy.installation),
+      CODEX_MARKETPLACE_INSTALLATION_POLICIES.includes(p.policy.installation),
       `${p.name} has Codex-unsupported installation policy ${p.policy.installation}`,
     );
-    assert.ok(["ON_INSTALL", "ON_USE"].includes(p.policy.authentication));
+    assert.ok(CODEX_MARKETPLACE_AUTHENTICATION_POLICIES.includes(p.policy.authentication));
     assert.ok(["local", "git"].includes(p.source.source));
   }
+});
+
+test("Codex marketplace policy enums come from one shared schema source", () => {
+  assert.deepEqual(CODEX_MARKETPLACE_INSTALLATION_POLICIES, [
+    "AVAILABLE",
+    "NOT_AVAILABLE",
+    "INSTALLED_BY_DEFAULT",
+  ]);
+  assert.deepEqual(CODEX_MARKETPLACE_AUTHENTICATION_POLICIES, ["ON_INSTALL", "ON_USE"]);
+
+  const linter = readFileSync(path.join(REPO_ROOT, "scripts/ci/check-manifests.mjs"), "utf8");
+  assert.match(linter, /CODEX_MARKETPLACE_INSTALLATION_POLICIES/);
+  assert.match(linter, /CODEX_MARKETPLACE_AUTHENTICATION_POLICIES/);
+  assert.doesNotMatch(linter, /const INSTALLATION_ENUM = \[/);
+  assert.doesNotMatch(linter, /const AUTHENTICATION_ENUM = \[/);
 });
 
 test("claude plugin.json: valid schema", () => {
