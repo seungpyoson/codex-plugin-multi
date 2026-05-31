@@ -114,7 +114,7 @@ test("Claude relay marketplace exposes relay-for-claude suite over relay provide
     ],
   );
   assert.deepEqual(hiddenPlugins.map((plugin) => plugin.name), ["relay-api-reviewers"]);
-  assert.equal(hiddenPlugins[0].source, "../plugins/api-reviewers");
+  assert.equal(hiddenPlugins[0].source, "./relay-api-reviewers");
   assert.equal(publicPlugins.some((plugin) => plugin.name === "relay-claude"), false);
   for (const plugin of marketplace.plugins) {
     if (plugin.policy?.installation !== "HIDDEN") {
