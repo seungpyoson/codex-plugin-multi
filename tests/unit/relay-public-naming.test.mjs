@@ -7,13 +7,17 @@ function readJson(relPath) {
   return JSON.parse(readFileSync(relPath, "utf8"));
 }
 
+function codexPublicPlugins(plugins) {
+  return plugins.filter((plugin) => plugin.policy.installation !== "NOT_AVAILABLE");
+}
+
 test("repo package and marketplace expose Relay public names", () => {
   const pkg = readJson("package.json");
   assert.equal(pkg.name, "relay");
   assert.equal(pkg.repository.url, "https://github.com/seungpyoson/relay.git");
 
   const marketplace = readJson(".agents/plugins/marketplace.json");
-  const publicPlugins = marketplace.plugins.filter((plugin) => plugin.policy.installation === "AVAILABLE");
+  const publicPlugins = codexPublicPlugins(marketplace.plugins);
   assert.equal(marketplace.name, "relay-for-codex");
   assert.equal(marketplace.interface.displayName, "Relay for Codex");
   assert.deepEqual(
@@ -33,6 +37,19 @@ test("repo package and marketplace expose Relay public names", () => {
       plugin.name === "api-reviewers" && plugin.policy.installation === "NOT_AVAILABLE"
     ),
     true,
+  );
+});
+
+test("Codex public plugin predicate includes installed-by-default plugins", () => {
+  const publicPlugins = codexPublicPlugins([
+    { name: "available", policy: { installation: "AVAILABLE" } },
+    { name: "default", policy: { installation: "INSTALLED_BY_DEFAULT" } },
+    { name: "not-available", policy: { installation: "NOT_AVAILABLE" } },
+  ]);
+
+  assert.deepEqual(
+    publicPlugins.map((plugin) => plugin.name),
+    ["available", "default"],
   );
 });
 
