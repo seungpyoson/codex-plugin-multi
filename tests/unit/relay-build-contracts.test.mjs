@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -149,12 +149,13 @@ test("buildRelaySuite: emits the full Claude relay provider suite without relay-
     assert.equal(marketplace.name, "relay-for-claude");
     assert.deepEqual(publicPlugins.map((plugin) => plugin.name).sort(), pluginNames);
     assert.deepEqual(hiddenPlugins.map((plugin) => plugin.name), ["relay-api-reviewers"]);
-    assert.notEqual(hiddenPlugins[0].source, "./relay-api-reviewers");
+    assert.equal(hiddenPlugins[0].source, "./relay-api-reviewers");
     assert.equal(
       existsSync(path.resolve(outRoot, hiddenPlugins[0].source, ".claude-plugin", "plugin.json")),
       true,
     );
-    assert.equal(existsSync(path.join(outRoot, "relay-api-reviewers")), false);
+    assert.equal(existsSync(path.join(outRoot, "relay-api-reviewers")), true);
+    assert.equal(lstatSync(path.join(outRoot, "relay-api-reviewers")).isSymbolicLink(), true);
     for (const plugin of publicPlugins) {
       assert.equal(plugin.source, `./${plugin.name}`);
     }
@@ -207,6 +208,28 @@ test("buildRelayPlugin: direct API wrapper resolves sibling relay-api-reviewers 
     assert.match(result.stdout, /"providers":\["glm"\]/);
   } finally {
     rmSync(outRoot, { recursive: true, force: true });
+  }
+});
+
+test("buildRelayPlugin: direct API wrapper resolves installed relay-api-reviewers cache runtime", () => {
+  const outRoot = mkdtempSync(path.join(tmpdir(), "relay-api-cache-source-"));
+  const cacheRoot = mkdtempSync(path.join(tmpdir(), "relay-api-cache-"));
+  try {
+    const pluginRoot = buildRelayPlugin({ provider: "glm", repoRoot: process.cwd(), outRoot });
+    const installedPluginRoot = path.join(cacheRoot, "relay-for-claude", "relay-glm", "0.1.0");
+    cpSync(pluginRoot, installedPluginRoot, { recursive: true });
+    writeStubDirectApiRuntime(path.join(cacheRoot, "relay-for-claude", "relay-api-reviewers", "0.1.0"));
+
+    const result = spawnSync(process.execPath, [path.join(installedPluginRoot, "scripts", "api-reviewer.mjs"), "--help"], {
+      encoding: "utf8",
+    });
+
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, /"ok":true/);
+    assert.match(result.stdout, /"providers":\["glm"\]/);
+  } finally {
+    rmSync(outRoot, { recursive: true, force: true });
+    rmSync(cacheRoot, { recursive: true, force: true });
   }
 });
 
