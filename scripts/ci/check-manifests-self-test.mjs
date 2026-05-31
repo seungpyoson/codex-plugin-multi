@@ -10,6 +10,7 @@ import { fileURLToPath } from "node:url";
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const LINTER = resolve(REPO_ROOT, "scripts/ci/check-manifests.mjs");
+const MARKETPLACE_SCHEMA = resolve(REPO_ROOT, "scripts/lib/codex-marketplace-schema.mjs");
 
 let failed = 0;
 
@@ -33,6 +34,8 @@ async function fixture(name, setup) {
     // Copy linter script to a discoverable relative path.
     await mkdir(join(dir, "scripts/ci"), { recursive: true });
     await cp(LINTER, join(dir, "scripts/ci/check-manifests.mjs"));
+    await mkdir(join(dir, "scripts/lib"), { recursive: true });
+    await cp(MARKETPLACE_SCHEMA, join(dir, "scripts/lib/codex-marketplace-schema.mjs"));
     await setup(dir);
     const res = spawnSync("node", ["scripts/ci/check-manifests.mjs"], {
       cwd: dir,
