@@ -83,7 +83,7 @@
         "path": "./plugins/api-reviewers"
       },
       "policy": {
-        "installation": "HIDDEN",
+        "installation": "NOT_AVAILABLE",
         "authentication": "ON_USE"
       },
       "category": "Coding"

@@ -6,6 +6,10 @@
 import { readFile, readdir } from "node:fs/promises";
 import { resolve, dirname, basename } from "node:path";
 import { fileURLToPath } from "node:url";
+import {
+  CODEX_MARKETPLACE_AUTHENTICATION_POLICIES,
+  CODEX_MARKETPLACE_INSTALLATION_POLICIES,
+} from "../lib/codex-marketplace-schema.mjs";
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
 
@@ -43,12 +47,6 @@ const AGENT_FRONTMATTER_KEYS = new Set([
   "tools",
   "skills",
 ]);
-
-// Allowed installation / authentication values per marketplace schema
-// (verified 2026-04-23: "NEVER" is rejected; ON_INSTALL|ON_USE are the only
-// accepted authentication values).
-const INSTALLATION_ENUM = ["AVAILABLE", "DEFAULT", "HIDDEN"];
-const AUTHENTICATION_ENUM = ["ON_INSTALL", "ON_USE"];
 
 // Semver (simplified): MAJOR.MINOR.PATCH with optional prerelease.
 const SEMVER = /^\d+\.\d+\.\d+(-[a-z0-9.-]+)?$/;
@@ -153,8 +151,12 @@ function readMarketplacePluginSourcePath(plugin, path) {
 function checkMarketplacePluginPolicy(plugin, path) {
   checkType(plugin, "policy", "object", path);
   if (!plugin.policy) return;
-  oneOf(plugin.policy, "installation", INSTALLATION_ENUM, path, { required: true });
-  oneOf(plugin.policy, "authentication", AUTHENTICATION_ENUM, path, { required: true });
+  oneOf(plugin.policy, "installation", CODEX_MARKETPLACE_INSTALLATION_POLICIES, path, {
+    required: true,
+  });
+  oneOf(plugin.policy, "authentication", CODEX_MARKETPLACE_AUTHENTICATION_POLICIES, path, {
+    required: true,
+  });
 }
 
 function normalizeSourcePath(sourcePath) {
