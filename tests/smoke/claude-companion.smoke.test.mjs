@@ -73,8 +73,12 @@ function claudeAuthModeArgs(mode) {
   return ["--auth-mode", mode];
 }
 
+function cleanupDir(dir) {
+  rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+}
+
 function cleanup(dataDir) {
-  rmSync(dataDir, { recursive: true, force: true, maxRetries: 3, retryDelay: 50 });
+  cleanupDir(dataDir);
 }
 
 function assertPreflightSafetyFields(result) {
@@ -792,8 +796,8 @@ process.exit(9);
     assert.deepEqual(modesSeen, ["dontAsk"]);
   } finally {
     cleanup(dataDir);
-    rmSync(cwd, { recursive: true, force: true });
-    rmSync(tmp, { recursive: true, force: true });
+    cleanupDir(cwd);
+    cleanupDir(tmp);
   }
 });
 
@@ -4467,8 +4471,8 @@ process.exit(1);
     assert.equal(readFileSync(countPath, "utf8"), "1", "target review must not launch after preflight rejection");
   } finally {
     cleanup(dataDir);
-    rmSync(cwd, { recursive: true, force: true });
-    rmSync(tmp, { recursive: true, force: true });
+    cleanupDir(cwd);
+    cleanupDir(tmp);
   }
 });
 
