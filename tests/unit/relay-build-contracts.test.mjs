@@ -24,6 +24,10 @@ function writeStubDirectApiRuntime(pluginRoot) {
   );
 }
 
+function readManifestVersion(manifestPath) {
+  return JSON.parse(readFileSync(manifestPath, "utf8")).version;
+}
+
 test("relayPluginName: prefixes provider plugins for relay", () => {
   assert.equal(relayPluginName("gemini"), "relay-gemini");
   assert.equal(relayPluginName("deepseek"), "relay-deepseek");
@@ -216,9 +220,11 @@ test("buildRelayPlugin: direct API wrapper resolves installed relay-api-reviewer
   const cacheRoot = mkdtempSync(path.join(tmpdir(), "relay-api-cache-"));
   try {
     const pluginRoot = buildRelayPlugin({ provider: "glm", repoRoot: process.cwd(), outRoot });
-    const installedPluginRoot = path.join(cacheRoot, "relay-for-claude", "relay-glm", "0.1.0");
+    const pluginVersion = readManifestVersion(path.join(pluginRoot, ".claude-plugin", "plugin.json"));
+    const sharedRuntimeVersion = readManifestVersion("plugins/api-reviewers/.claude-plugin/plugin.json");
+    const installedPluginRoot = path.join(cacheRoot, "relay-for-claude", "relay-glm", pluginVersion);
     cpSync(pluginRoot, installedPluginRoot, { recursive: true });
-    writeStubDirectApiRuntime(path.join(cacheRoot, "relay-for-claude", "relay-api-reviewers", "0.1.0"));
+    writeStubDirectApiRuntime(path.join(cacheRoot, "relay-for-claude", "relay-api-reviewers", sharedRuntimeVersion));
 
     const result = spawnSync(process.execPath, [path.join(installedPluginRoot, "scripts", "api-reviewer.mjs"), "--help"], {
       encoding: "utf8",
