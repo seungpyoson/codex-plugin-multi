@@ -1,4 +1,4 @@
-import { cpSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 
 import {
@@ -122,6 +122,18 @@ function writeDirectApiContractDocs({ provider, repoRoot }) {
   }
 }
 
+function pruneStaleCodexDirectApiPlugins(repoRoot) {
+  const pluginsRoot = join(repoRoot, "plugins");
+  const activePlugins = new Set(DIRECT_API_PROVIDERS.map(codexRelayPluginName));
+  for (const entry of readdirSync(pluginsRoot, { withFileTypes: true })) {
+    if (!entry.isDirectory()) continue;
+    if (!entry.name.startsWith("relay-")) continue;
+    if (activePlugins.has(entry.name)) continue;
+    rmSync(join(pluginsRoot, entry.name), { recursive: true, force: true });
+  }
+}
+
 export function buildCodexDirectApiSuite({ repoRoot = process.cwd() } = {}) {
+  pruneStaleCodexDirectApiPlugins(repoRoot);
   return DIRECT_API_PROVIDERS.map((provider) => buildCodexDirectApiPlugin({ provider, repoRoot }));
 }

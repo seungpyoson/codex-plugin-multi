@@ -90,8 +90,8 @@ function readMarketplaceSourcePaths(root) {
   return paths;
 }
 
-function pluginSourcePath(paths, plugin) {
-  return paths.get(plugin) ?? join("plugins", plugin);
+function pluginSourcePath(paths, plugin, fallbackPaths = new Map()) {
+  return paths.get(plugin) ?? fallbackPaths.get(plugin) ?? join("plugins", plugin);
 }
 
 function comparablePluginFile(rel) {
@@ -153,7 +153,7 @@ function profileReport(name, home, plugins, { sourceBaseRoot, sourcePaths, repoB
   const pluginReports = {};
   let ok = true;
   for (const plugin of plugins) {
-    const sourcePath = pluginSourcePath(sourcePaths, plugin);
+    const sourcePath = pluginSourcePath(sourcePaths, plugin, repoSourcePaths);
     const repoSourcePath = pluginSourcePath(repoSourcePaths, plugin);
     const sourcePluginRoot = join(sourceBaseRoot, sourcePath);
     const repoPluginRoot = join(repoBaseRoot, repoSourcePath);

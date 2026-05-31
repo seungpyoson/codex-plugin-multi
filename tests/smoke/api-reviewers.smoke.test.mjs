@@ -778,7 +778,8 @@ test("doctor malformed providers config returns structured diagnostic", async ()
   assert.equal(parsed.status, "config_error");
   assert.equal(parsed.ready, false);
   assert.match(parsed.error_message, /providers config unreadable/);
-  assert.match(parsed.next_action, /providers\.json/);
+  assert.match(parsed.next_action, /configured providers file/);
+  assert.doesNotMatch(parsed.next_action, /plugins\/api-reviewers/);
   assert.doesNotMatch(result.stdout, /secret-test-value/);
   assert.doesNotMatch(result.stdout, /^\{\s*"ok": false,\s*"error"/m);
 });
@@ -1512,7 +1513,8 @@ test("run malformed providers config returns structured JobRecord", async () => 
   assert.equal(record.provider, "glm");
   assert.equal(record.error_code, "config_error");
   assert.equal(record.error_cause, "provider_config");
-  assert.match(record.suggested_action, /providers\.json/);
+  assert.match(record.suggested_action, /configured providers file/);
+  assert.doesNotMatch(record.suggested_action, /plugins\/api-reviewers/);
   assert.match(record.error_message, /providers config unreadable/);
   assert.doesNotMatch(result.stdout, /secret-test-value/);
   assert.doesNotMatch(result.stdout, /^\{\s*"ok": false/m);

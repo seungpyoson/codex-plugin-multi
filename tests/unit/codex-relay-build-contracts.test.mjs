@@ -4,7 +4,7 @@ import path from "node:path";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
-import { buildCodexDirectApiPlugin } from "../../scripts/lib/codex-relay-build.mjs";
+import { buildCodexDirectApiPlugin, buildCodexDirectApiSuite } from "../../scripts/lib/codex-relay-build.mjs";
 
 function writeJson(file, value) {
   mkdirSync(path.dirname(file), { recursive: true });
@@ -61,6 +61,21 @@ test("buildCodexDirectApiPlugin regenerates provider docs and license", () => {
 
     assert.equal(existsSync(path.join(pluginRoot, "LICENSE")), true);
     assert.equal(existsSync(path.join(pluginRoot, "commands", "deepseek-review.md")), false);
+  } finally {
+    rmSync(repoRoot, { recursive: true, force: true });
+  }
+});
+
+test("buildCodexDirectApiSuite removes stale generated direct API relay plugin directories", () => {
+  const repoRoot = mkdtempSync(path.join(tmpdir(), "codex-relay-suite-stale-"));
+  try {
+    writeApiReviewersSource(repoRoot);
+    writeFile(path.join(repoRoot, "plugins", "relay-old-provider", "stale.txt"), "stale\n");
+
+    const pluginRoots = buildCodexDirectApiSuite({ repoRoot }).map((root) => path.basename(root)).sort();
+
+    assert.deepEqual(pluginRoots, ["relay-deepseek", "relay-glm"]);
+    assert.equal(existsSync(path.join(repoRoot, "plugins", "relay-old-provider")), false);
   } finally {
     rmSync(repoRoot, { recursive: true, force: true });
   }

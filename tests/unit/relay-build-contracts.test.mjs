@@ -163,6 +163,19 @@ test("buildRelaySuite: emits the full Claude relay provider suite without relay-
   }
 });
 
+test("buildRelaySuite: removes stale generated relay provider directories", () => {
+  const outRoot = mkdtempSync(path.join(tmpdir(), "relay-suite-stale-"));
+  try {
+    writeStubDirectApiRuntime(path.join(outRoot, "relay-old-provider"));
+
+    buildRelaySuite({ repoRoot: process.cwd(), outRoot });
+
+    assert.equal(existsSync(path.join(outRoot, "relay-old-provider")), false);
+  } finally {
+    rmSync(outRoot, { recursive: true, force: true });
+  }
+});
+
 test("buildRelayPlugin: direct API wrapper reports contracted missing entrypoint", () => {
   const outRoot = mkdtempSync(path.join(tmpdir(), "relay-api-missing-"));
   try {

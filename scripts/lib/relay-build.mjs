@@ -77,7 +77,6 @@ export function buildRelayPlugin({ provider, repoRoot = process.cwd(), outRoot =
   copyIfExists(join(sourceRoot, "LICENSE"), join(pluginRoot, "LICENSE"));
   writeRelayRunner({ pluginRoot, repoRoot, definition });
   filterRelayConfig({ pluginRoot, provider });
-  rewriteRelayRuntimeHostStrings({ pluginRoot, provider });
 
   const commandsRoot = join(pluginRoot, "commands");
   mkdirSync(commandsRoot, { recursive: true });
@@ -104,6 +103,7 @@ export function buildRelayPlugin({ provider, repoRoot = process.cwd(), outRoot =
 }
 
 export function buildRelaySuite({ repoRoot = process.cwd(), outRoot = join(repoRoot, "relay") } = {}) {
+  rmSync(outRoot, { recursive: true, force: true });
   const pluginRoots = RELAY_PROVIDER_ORDER.map((provider) => buildRelayPlugin({ provider, repoRoot, outRoot }));
   const sharedDirectApiRuntimeRoot = buildRelayDirectApiRuntimePlugin({ repoRoot });
   writeClaudeRelayMarketplace({ outRoot, pluginRoots, sharedDirectApiRuntimeRoot });
@@ -290,24 +290,6 @@ function filterRelayConfig({ pluginRoot, provider }) {
     throw new Error(`provider config missing ${provider}`);
   }
   writeJson(providersPath, { [provider]: providers[provider] });
-}
-
-function rewriteRelayRuntimeHostStrings({ pluginRoot, provider }) {
-  if (!["deepseek", "glm"].includes(provider)) return;
-
-  const runtimePath = join(pluginRoot, "scripts", "api-reviewer.mjs");
-  if (!existsSync(runtimePath)) return;
-
-  const runtime = readFileSync(runtimePath, "utf8")
-    .replaceAll(
-      "API Reviewers providers config is unreadable.",
-      "Direct API relay providers config is unreadable.",
-    )
-    .replaceAll(
-      "Reinstall or repair plugins/api-reviewers/config/providers.json and retry.",
-      "Reinstall or repair this relay plugin's config/providers.json and retry.",
-    );
-  writeFileSync(runtimePath, runtime, "utf8");
 }
 
 function writeRelayRunner({ pluginRoot, repoRoot, definition }) {
