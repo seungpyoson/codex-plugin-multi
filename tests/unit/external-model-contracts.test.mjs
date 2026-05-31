@@ -102,7 +102,7 @@ test("external model contract docs are generated from one shared source", () => 
     const apiPluginVersion = JSON.parse(readRepoFile(`plugins/${pluginName}/.codex-plugin/plugin.json`)).version;
     const escapedVersion = escapeRegExp(apiPluginVersion);
     const globalEntrypoint = new RegExp(
-      `node "\\$\\{CODEX_HOME:-\\$HOME/\\.codex\\}/plugins/cache/relay/${pluginName}/${escapedVersion}/scripts/api-reviewer\\.mjs"`,
+      `node "\\$\\{CODEX_HOME:-\\$HOME/\\.codex\\}/plugins/cache/relay-for-codex/${pluginName}/${escapedVersion}/scripts/api-reviewer\\.mjs"`,
     );
     assert.match(
       rendered,

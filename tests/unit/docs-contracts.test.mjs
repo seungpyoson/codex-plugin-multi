@@ -858,7 +858,7 @@ test("direct API reviewer skill and command docs use global installed script ent
     const apiPluginVersion = readRepoJson(`plugins/${pluginName}/.codex-plugin/plugin.json`).version;
     const escapedVersion = apiPluginVersion.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
     const installedEntrypoint = new RegExp(
-      `node "\\$\\{CODEX_HOME:-\\$HOME/\\.codex\\}/plugins/cache/relay/${pluginName}/${escapedVersion}/scripts/api-reviewer\\.mjs"`,
+      `node "\\$\\{CODEX_HOME:-\\$HOME/\\.codex\\}/plugins/cache/relay-for-codex/${pluginName}/${escapedVersion}/scripts/api-reviewer\\.mjs"`,
     );
     assert.match(doc, /## Entrypoint Contract/, docPath);
     assert.match(doc, installedEntrypoint, docPath);
@@ -949,9 +949,9 @@ test("direct API e2e docs use the global installed script entrypoint and canonic
   const doc = readRepoFile("docs/e2e.md");
 
   assert.match(doc, /DEEPSEEK_RELAY_VERSION="\$\(node -p 'require\("\.\/plugins\/relay-deepseek\/\.codex-plugin\/plugin\.json"\)\.version'\)"/);
-  assert.match(doc, /DEEPSEEK_REVIEWER="\$\{CODEX_HOME:-\$HOME\/\.codex\}\/plugins\/cache\/relay\/relay-deepseek\/\$\{DEEPSEEK_RELAY_VERSION\}\/scripts\/api-reviewer\.mjs"/);
+  assert.match(doc, /DEEPSEEK_REVIEWER="\$\{CODEX_HOME:-\$HOME\/\.codex\}\/plugins\/cache\/relay-for-codex\/relay-deepseek\/\$\{DEEPSEEK_RELAY_VERSION\}\/scripts\/api-reviewer\.mjs"/);
   assert.match(doc, /GLM_RELAY_VERSION="\$\(node -p 'require\("\.\/plugins\/relay-glm\/\.codex-plugin\/plugin\.json"\)\.version'\)"/);
-  assert.match(doc, /GLM_REVIEWER="\$\{CODEX_HOME:-\$HOME\/\.codex\}\/plugins\/cache\/relay\/relay-glm\/\$\{GLM_RELAY_VERSION\}\/scripts\/api-reviewer\.mjs"/);
+  assert.match(doc, /GLM_REVIEWER="\$\{CODEX_HOME:-\$HOME\/\.codex\}\/plugins\/cache\/relay-for-codex\/relay-glm\/\$\{GLM_RELAY_VERSION\}\/scripts\/api-reviewer\.mjs"/);
   assert.match(doc, /node "\$DEEPSEEK_REVIEWER" doctor --provider deepseek/);
   assert.match(doc, /node "\$GLM_REVIEWER" doctor --provider glm/);
   assert.doesNotMatch(doc, /^api-reviewer /m);

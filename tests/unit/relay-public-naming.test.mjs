@@ -7,8 +7,12 @@ function readJson(relPath) {
   return JSON.parse(readFileSync(relPath, "utf8"));
 }
 
-function codexPublicPlugins(plugins) {
+function codexInstallablePlugins(plugins) {
   return plugins.filter((plugin) => plugin.policy.installation !== "NOT_AVAILABLE");
+}
+
+function codexUserSelectablePlugins(plugins) {
+  return plugins.filter((plugin) => plugin.policy.installation === "AVAILABLE");
 }
 
 test("repo package and marketplace expose Relay public names", () => {
@@ -17,11 +21,11 @@ test("repo package and marketplace expose Relay public names", () => {
   assert.equal(pkg.repository.url, "https://github.com/seungpyoson/relay.git");
 
   const marketplace = readJson(".agents/plugins/marketplace.json");
-  const publicPlugins = codexPublicPlugins(marketplace.plugins);
+  const userSelectablePlugins = codexUserSelectablePlugins(marketplace.plugins);
   assert.equal(marketplace.name, "relay-for-codex");
   assert.equal(marketplace.interface.displayName, "Relay for Codex");
   assert.deepEqual(
-    publicPlugins.map((plugin) => plugin.name),
+    userSelectablePlugins.map((plugin) => plugin.name),
     [
       "relay-claude",
       "relay-gemini",
@@ -31,24 +35,30 @@ test("repo package and marketplace expose Relay public names", () => {
       "relay-deepseek",
     ],
   );
-  assert.equal(publicPlugins.some((plugin) => plugin.name === "api-reviewers"), false);
+  assert.equal(userSelectablePlugins.some((plugin) => plugin.name === "api-reviewers"), false);
+});
+
+test("Codex installs shared direct API runtime by default", () => {
+  const marketplace = readJson(".agents/plugins/marketplace.json");
+  const installablePlugins = codexInstallablePlugins(marketplace.plugins);
+
   assert.equal(
-    marketplace.plugins.some((plugin) =>
-      plugin.name === "api-reviewers" && plugin.policy.installation === "NOT_AVAILABLE"
+    installablePlugins.some((plugin) =>
+      plugin.name === "api-reviewers" && plugin.policy.installation === "INSTALLED_BY_DEFAULT"
     ),
     true,
   );
 });
 
-test("Codex public plugin predicate includes installed-by-default plugins", () => {
-  const publicPlugins = codexPublicPlugins([
+test("Codex installable plugin predicate includes installed-by-default plugins", () => {
+  const installablePlugins = codexInstallablePlugins([
     { name: "available", policy: { installation: "AVAILABLE" } },
     { name: "default", policy: { installation: "INSTALLED_BY_DEFAULT" } },
     { name: "not-available", policy: { installation: "NOT_AVAILABLE" } },
   ]);
 
   assert.deepEqual(
-    publicPlugins.map((plugin) => plugin.name),
+    installablePlugins.map((plugin) => plugin.name),
     ["available", "default"],
   );
 });

@@ -8,8 +8,8 @@ import { fileURLToPath } from "node:url";
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const DOCTOR = path.join(REPO_ROOT, "scripts", "codex-plugin-cache-doctor.mjs");
-const CACHE_NAMESPACE = "relay";
 const MARKETPLACE = "relay-for-codex";
+const CACHE_NAMESPACE = MARKETPLACE;
 
 function writeSkill(root, plugin, skill) {
   const dir = path.join(root, plugin, "skills", skill);
@@ -239,9 +239,9 @@ test("codex plugin cache doctor flags repo changes even when marketplace cache i
   assert.match(report.next_actions.join("\n"), /repo working tree differs from installed plugin cache/i);
 });
 
-test("codex plugin cache doctor checks hidden shared api-reviewers runtime without requiring enablement", () => {
-  const repo = mkdtempSync(path.join(tmpdir(), "plugin-cache-doctor-hidden-repo-"));
-  const primary = mkdtempSync(path.join(tmpdir(), "plugin-cache-doctor-hidden-home-"));
+test("codex plugin cache doctor checks internal api-reviewers runtime without requiring enablement", () => {
+  const repo = mkdtempSync(path.join(tmpdir(), "plugin-cache-doctor-runtime-repo-"));
+  const primary = mkdtempSync(path.join(tmpdir(), "plugin-cache-doctor-runtime-home-"));
   const marketplace = path.join(primary, ".tmp", "marketplaces", MARKETPLACE, "plugins");
 
   writePluginFile(path.join(repo, "plugins"), "api-reviewers", "scripts/api-reviewer.mjs", "source runtime\n");
@@ -259,7 +259,7 @@ test("codex plugin cache doctor checks hidden shared api-reviewers runtime witho
 
   assert.equal(report.ok, true);
   assert.equal(profile.enabled, true);
-  assert.equal(profile.plugins["api-reviewers"].hidden, true);
+  assert.equal(profile.plugins["api-reviewers"].internal_runtime, true);
   assert.equal(profile.cache_in_sync, true);
   assert.deepEqual(profile.plugins["api-reviewers"].expected_skills, []);
   assert.deepEqual(profile.changed_files, []);

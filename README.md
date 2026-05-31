@@ -275,8 +275,9 @@ Then enable the plugins you want:
 
 In the plugin picker, enable `relay-claude`, `relay-gemini`, `relay-kimi`,
 `relay-grok`, `relay-glm`, and/or `relay-deepseek`. You can enable one without
-the others. DeepSeek and GLM use a hidden shared direct-API runtime package, so
-their provider plugins stay split without copying the same reviewer code twice.
+the others. DeepSeek and GLM use a default-installed shared direct-API runtime
+package, so their provider plugins stay split without copying the same reviewer
+code twice.
 
 From Claude Code, the generated marketplace suite lives under `relay/`. Its
 marketplace name is `relay-for-claude`, and provider plugin sources stay under
@@ -332,12 +333,13 @@ npm run doctor:cache -- --second-codex-home "$HOME/.codex-second"
 ```
 
 The report compares both marketplace/plugin files and this repo's `plugins/`
-tree against `plugins/cache/relay/<plugin>/0.1.0`, including
+tree against `plugins/cache/relay-for-codex/<plugin>/0.1.0`, including
 SHA-256 checks for bundled `commands/`, `skills/`, `scripts/`, and `config/`
-files. `relay-for-codex` is the marketplace identifier; `relay` is the Codex
-cache namespace used by installed plugin paths. The doctor also checks the
-hidden `api-reviewers` runtime required by `relay-glm` and `relay-deepseek`,
-without requiring that hidden runtime to be enabled in `config.toml`.
+files. `relay-for-codex` is both the marketplace identifier and the Codex cache
+namespace used by installed plugin paths. The doctor also checks the
+default-installed `api-reviewers` runtime required by `relay-glm` and
+`relay-deepseek`, without requiring that internal runtime to be enabled in
+`config.toml`.
 It reports `missing_files`, `extra_files`, `changed_files`, and
 `repo_changed_files`, checks whether each plugin is enabled in `config.toml`,
 and prints next actions. `cache_in_sync: true` with
@@ -585,7 +587,7 @@ relay/
   plugins/gemini/
   plugins/kimi/
   plugins/grok/
-  plugins/api-reviewers/          # hidden shared direct-API runtime
+  plugins/api-reviewers/          # shared direct-API runtime
   plugins/relay-deepseek/
   plugins/relay-glm/
   relay/                         # generated Claude Code marketplace suite

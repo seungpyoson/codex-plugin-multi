@@ -6,8 +6,8 @@ import { homedir } from "node:os";
 
 const MARKETPLACE = "relay-for-codex";
 const MARKETPLACE_REPOSITORY = "seungpyoson/relay";
-const CACHE_NAMESPACE = "relay";
-const HIDDEN_PLUGINS = new Set(["api-reviewers"]);
+const CACHE_NAMESPACE = MARKETPLACE;
+const INTERNAL_RUNTIME_PLUGINS = new Set(["api-reviewers"]);
 const DEFAULT_PLUGINS = [
   "relay-claude",
   "relay-gemini",
@@ -176,11 +176,11 @@ function profileReport(name, home, plugins, { sourceBaseRoot, sourcePaths, repoB
     const hasExpectedSurface = expected.length > 0 || fileComparison.expected_files.length > 0;
     const inSync = missing.length === 0 && extra.length === 0 && hasExpectedSurface && filesInSync;
     const repoInSync = repoPluginPresent ? repoFilesInSync : null;
-    const hidden = HIDDEN_PLUGINS.has(plugin);
-    const enabled = hidden ? true : enabledInConfig(home, plugin);
-    if (!inSync || repoInSync === false || (!hidden && !enabled)) ok = false;
+    const internalRuntime = INTERNAL_RUNTIME_PLUGINS.has(plugin);
+    const enabled = internalRuntime ? true : enabledInConfig(home, plugin);
+    if (!inSync || repoInSync === false || (!internalRuntime && !enabled)) ok = false;
     pluginReports[plugin] = {
-      hidden,
+      internal_runtime: internalRuntime,
       enabled,
       source_path: sourcePath,
       repo_source_path: repoSourcePath,

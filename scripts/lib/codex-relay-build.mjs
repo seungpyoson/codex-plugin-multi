@@ -102,12 +102,17 @@ export function buildCodexDirectApiPlugin({ provider, repoRoot = process.cwd() }
 }
 
 function renderDirectApiRuntimeEntrypoint(provider) {
-  return `#!/usr/bin/env node
-const candidates = [process.env.RELAY_API_REVIEWERS_ENTRYPOINT, new URL("../../relay-api-reviewers/scripts/relay-entrypoint.mjs", import.meta.url).href, new URL("../../api-reviewers/scripts/relay-entrypoint.mjs", import.meta.url).href, new URL("../../../plugins/api-reviewers/scripts/relay-entrypoint.mjs", import.meta.url).href, new URL("../../../relay-api-reviewers/0.1.0/scripts/relay-entrypoint.mjs", import.meta.url).href, new URL("../../../api-reviewers/0.1.0/scripts/relay-entrypoint.mjs", import.meta.url).href].filter(Boolean);
-const helper = await Promise.any(candidates.map((candidate) => import(candidate))).catch(() => null);
-if (!helper) { console.error("api_reviewer_entrypoint_missing: install the shared api-reviewers runtime"); process.exit(1); }
-helper.runRelayDirectApiEntrypoint({ provider: ${JSON.stringify(provider)}, scriptUrl: import.meta.url });
-`;
+  return [
+    "#!/usr/bin/env node",
+    'import { existsSync, readFileSync } from "node:fs"; import { homedir } from "node:os"; import { isAbsolute, join } from "node:path"; import { pathToFileURL } from "node:url";',
+    'const M = "relay-for-codex", H = process.env.CODEX_HOME || join(homedir(), ".codex"), C = join(H, "config.toml");',
+    'const S = existsSync(C) ? /^source\\s*=\\s*"([^"]+)"/m.exec(new RegExp("\\\\[marketplaces\\\\." + M.replace(/[\\\\^$.*+?()[\\]{}|]/g, "\\\\$&") + "\\\\]([\\\\s\\\\S]*?)(?:\\\\n\\\\[|$)").exec(readFileSync(C, "utf8"))?.[1] ?? "")?.[1] : null;',
+    'const candidates = [process.env.RELAY_API_REVIEWERS_ENTRYPOINT, pathToFileURL(join(H, "plugins", "cache", M, "api-reviewers", "0.1.0", "scripts", "relay-entrypoint.mjs")).href, pathToFileURL(join(H, ".tmp", "marketplaces", M, "plugins", "api-reviewers", "scripts", "relay-entrypoint.mjs")).href, S && isAbsolute(S) ? pathToFileURL(join(S, "plugins", "api-reviewers", "scripts", "relay-entrypoint.mjs")).href : null, new URL("../../relay-api-reviewers/scripts/relay-entrypoint.mjs", import.meta.url).href, new URL("../../api-reviewers/scripts/relay-entrypoint.mjs", import.meta.url).href, new URL("../../../plugins/api-reviewers/scripts/relay-entrypoint.mjs", import.meta.url).href, new URL("../../../relay-api-reviewers/0.1.0/scripts/relay-entrypoint.mjs", import.meta.url).href, new URL("../../../api-reviewers/0.1.0/scripts/relay-entrypoint.mjs", import.meta.url).href].filter(Boolean);',
+    "const helper = await Promise.any(candidates.map((candidate) => import(candidate))).catch(() => null);",
+    'if (!helper) { console.error("api_reviewer_entrypoint_missing: install the shared api-reviewers runtime"); process.exit(1); }',
+    `helper.runRelayDirectApiEntrypoint({ provider: ${JSON.stringify(provider)}, scriptUrl: import.meta.url });`,
+    "",
+  ].join("\n");
 }
 
 function writeDirectApiContractDocs({ provider, repoRoot }) {

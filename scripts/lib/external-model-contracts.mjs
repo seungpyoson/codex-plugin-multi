@@ -793,7 +793,7 @@ function readApiRelayPluginVersion(provider) {
 }
 
 function apiReviewerScript(provider) {
-  return `\${CODEX_HOME:-$HOME/.codex}/plugins/cache/relay/${apiPluginName(provider)}/${readApiRelayPluginVersion(provider)}/scripts/api-reviewer.mjs`;
+  return `\${CODEX_HOME:-$HOME/.codex}/plugins/cache/relay-for-codex/${apiPluginName(provider)}/${readApiRelayPluginVersion(provider)}/scripts/api-reviewer.mjs`;
 }
 
 function apiReviewerEntrypoint(provider) {

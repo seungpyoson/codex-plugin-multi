@@ -69,8 +69,8 @@ test("renderClaudeCommandDoc: routes focus payload outside inline shell argv", (
 
 test("renderClaudeCommandDoc: rewrites direct API relay cache paths for any package version", () => {
   const codexDoc = [
-    "Run `node \"${CODEX_HOME:-$HOME/.codex}/plugins/cache/relay/relay-glm/2.3.4/scripts/api-reviewer.mjs\" doctor --provider glm`.",
-    "Use `${CODEX_HOME:-$HOME/.codex}/plugins/cache/relay/relay-deepseek/2.3.4-beta.1/scripts/api-reviewer.mjs` locally.",
+    "Run `node \"${CODEX_HOME:-$HOME/.codex}/plugins/cache/relay-for-codex/relay-glm/2.3.4/scripts/api-reviewer.mjs\" doctor --provider glm`.",
+    "Use `${CODEX_HOME:-$HOME/.codex}/plugins/cache/relay-for-codex/relay-deepseek/2.3.4-beta.1/scripts/api-reviewer.mjs` locally.",
   ].join("\n");
   const rendered = renderClaudeCommandDoc(codexDoc);
 
@@ -210,6 +210,19 @@ test("buildRelayPlugin: direct API wrapper resolves sibling relay-api-reviewers 
   }
 });
 
+test("buildRelayPlugin: Claude direct API wrapper stays relay-local", () => {
+  const outRoot = mkdtempSync(path.join(tmpdir(), "relay-api-local-wrapper-"));
+  try {
+    const pluginRoot = buildRelayPlugin({ provider: "glm", repoRoot: process.cwd(), outRoot });
+    const wrapper = readFileSync(path.join(pluginRoot, "scripts", "api-reviewer.mjs"), "utf8");
+
+    assert.match(wrapper, /relay-api-reviewers/);
+    assert.doesNotMatch(wrapper, /relay-for-codex|CODEX_HOME|\.codex/);
+  } finally {
+    rmSync(outRoot, { recursive: true, force: true });
+  }
+});
+
 test("generated direct API relay wrappers run against the shared source runtime", () => {
   for (const provider of ["glm", "deepseek"]) {
     const result = spawnSync(
@@ -320,7 +333,7 @@ test("Codex split direct API relay plugins delegate to one shared runtime copy",
     const runtime = readFileSync(path.join(pluginRoot, "scripts", "api-reviewer.mjs"), "utf8");
 
     assert.match(runtime, /relay-entrypoint\.mjs/, provider);
-    assert.ok(runtime.split("\n").length <= 8, provider);
+    assert.ok(runtime.split("\n").length <= 60, provider);
     assert.match(runtime, /api_reviewer_entrypoint_missing/, provider);
     assert.doesNotMatch(runtime, /async function runCommand|function buildRecord|async function loadProviders/, provider);
     assert.doesNotMatch(runtime, /spawnSync|runtimeCandidates|function argProvider/, provider);

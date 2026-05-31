@@ -1,4 +1,5 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
@@ -76,6 +77,51 @@ test("buildCodexDirectApiSuite removes stale generated direct API relay plugin d
 
     assert.deepEqual(pluginRoots, ["relay-deepseek", "relay-glm"]);
     assert.equal(existsSync(path.join(repoRoot, "plugins", "relay-old-provider")), false);
+  } finally {
+    rmSync(repoRoot, { recursive: true, force: true });
+  }
+});
+
+test("direct API relay wrapper resolves shared runtime from Codex marketplace source", () => {
+  const repoRoot = mkdtempSync(path.join(tmpdir(), "codex-relay-marketplace-runtime-"));
+  const home = mkdtempSync(path.join(tmpdir(), "codex-relay-marketplace-home-"));
+  try {
+    writeApiReviewersSource(repoRoot);
+    writeFile(
+      path.join(repoRoot, "plugins", "api-reviewers", "scripts", "relay-entrypoint.mjs"),
+      "export function runRelayDirectApiEntrypoint(options) { console.log(JSON.stringify(options)); }\n",
+    );
+
+    const pluginRoot = buildCodexDirectApiPlugin({ provider: "glm", repoRoot });
+    const cacheRoot = path.join(home, "plugins", "cache", "relay-for-codex", "relay-glm", "0.1.0");
+    cpSync(pluginRoot, cacheRoot, { recursive: true });
+    writeFile(
+      path.join(home, "config.toml"),
+      `[marketplaces.relay-for-codex]\nsource_type = "local"\nsource = "${repoRoot}"\n`,
+    );
+
+    const stdout = execFileSync(process.execPath, [path.join(cacheRoot, "scripts", "api-reviewer.mjs")], {
+      env: { ...process.env, CODEX_HOME: home },
+      encoding: "utf8",
+    });
+
+    assert.match(stdout, /"provider":"glm"/);
+  } finally {
+    rmSync(repoRoot, { recursive: true, force: true });
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test("direct API relay wrapper uses cross-platform absolute path checks", () => {
+  const repoRoot = mkdtempSync(path.join(tmpdir(), "codex-relay-path-check-"));
+  try {
+    writeApiReviewersSource(repoRoot);
+
+    const pluginRoot = buildCodexDirectApiPlugin({ provider: "glm", repoRoot });
+    const wrapper = readFileSync(path.join(pluginRoot, "scripts", "api-reviewer.mjs"), "utf8");
+
+    assert.match(wrapper, /isAbsolute/);
+    assert.doesNotMatch(wrapper, /startsWith\("\/"\)/);
   } finally {
     rmSync(repoRoot, { recursive: true, force: true });
   }

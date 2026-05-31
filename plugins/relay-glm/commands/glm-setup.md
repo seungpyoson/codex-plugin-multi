@@ -11,11 +11,11 @@ allowed-tools: Bash(node:*)
 EXTERNAL_MODEL_CONTRACT_VERSION=1
 
 ## Entrypoint Contract
-Use the global installed entrypoint `node "${CODEX_HOME:-$HOME/.codex}/plugins/cache/relay/relay-glm/0.1.0/scripts/api-reviewer.mjs"`.
+Use the global installed entrypoint `node "${CODEX_HOME:-$HOME/.codex}/plugins/cache/relay-for-codex/relay-glm/0.1.0/scripts/api-reviewer.mjs"`.
 Do not run bare `api-reviewer`, do not rely on `PATH`, and do not use repository-relative paths such as `plugins/relay-glm/scripts/api-reviewer.mjs`.
-If `${CODEX_HOME:-$HOME/.codex}/plugins/cache/relay/relay-glm/0.1.0/scripts/api-reviewer.mjs` cannot be resolved, stop and report `api_reviewer_entrypoint_missing` before any source-bearing command.
+If `${CODEX_HOME:-$HOME/.codex}/plugins/cache/relay-for-codex/relay-glm/0.1.0/scripts/api-reviewer.mjs` cannot be resolved, stop and report `api_reviewer_entrypoint_missing` before any source-bearing command.
 
-Run `node "${CODEX_HOME:-$HOME/.codex}/plugins/cache/relay/relay-glm/0.1.0/scripts/api-reviewer.mjs" doctor --provider glm`.
+Run `node "${CODEX_HOME:-$HOME/.codex}/plugins/cache/relay-for-codex/relay-glm/0.1.0/scripts/api-reviewer.mjs" doctor --provider glm`.
 Report readiness without printing API-key values.
 ## Secret Safety
 Do not print raw OAuth tokens, API-key values, session cookies, tunnel API keys, bearer tokens, or raw secret values.

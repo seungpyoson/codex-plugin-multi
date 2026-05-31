@@ -11,13 +11,13 @@ EXTERNAL_MODEL_CONTRACT_VERSION=1
 
 Use skill `relay-glm:glm-review`. Command doc: `../../commands/glm-review.md`.
 ## Entrypoint Contract
-Use the global installed entrypoint `node "${CODEX_HOME:-$HOME/.codex}/plugins/cache/relay/relay-glm/0.1.0/scripts/api-reviewer.mjs"`.
+Use the global installed entrypoint `node "${CODEX_HOME:-$HOME/.codex}/plugins/cache/relay-for-codex/relay-glm/0.1.0/scripts/api-reviewer.mjs"`.
 Do not run bare `api-reviewer`, do not rely on `PATH`, and do not use repository-relative paths such as `plugins/relay-glm/scripts/api-reviewer.mjs`.
-If `${CODEX_HOME:-$HOME/.codex}/plugins/cache/relay/relay-glm/0.1.0/scripts/api-reviewer.mjs` cannot be resolved, stop and report `api_reviewer_entrypoint_missing` before any source-bearing command.
+If `${CODEX_HOME:-$HOME/.codex}/plugins/cache/relay-for-codex/relay-glm/0.1.0/scripts/api-reviewer.mjs` cannot be resolved, stop and report `api_reviewer_entrypoint_missing` before any source-bearing command.
 
 Scope: `branch-diff`.
 `<focus>` is the user's review prompt or focus area.
-Run `node "${CODEX_HOME:-$HOME/.codex}/plugins/cache/relay/relay-glm/0.1.0/scripts/api-reviewer.mjs" run --provider glm --mode review --scope branch-diff --scope-base REF --approval-token "<approval_token.value>" --lifecycle-events markdown --prompt "<focus>"`.
+Run `node "${CODEX_HOME:-$HOME/.codex}/plugins/cache/relay-for-codex/relay-glm/0.1.0/scripts/api-reviewer.mjs" run --provider glm --mode review --scope branch-diff --scope-base REF --approval-token "<approval_token.value>" --lifecycle-events markdown --prompt "<focus>"`.
 ## Review Contract
 This is a review-only contract.
 Do not fix findings, apply patches, edit files, or start rescue work from a review result.

@@ -13,9 +13,9 @@ const RELAY_REPOSITORY = "https://github.com/seungpyoson/relay";
 const RELAY_FOR_CLAUDE_MARKETPLACE = "relay-for-claude";
 const RELAY_SHARED_DIRECT_API_RUNTIME = "relay-api-reviewers";
 const CODEX_DIRECT_API_RELAY_ENTRYPOINT_COMMAND_RE =
-  /node "\$\{CODEX_HOME:-\$HOME\/\.codex\}\/plugins\/cache\/relay\/relay-(?:deepseek|glm)\/[^/]+\/scripts\/api-reviewer\.mjs"/g;
+  /node "\$\{CODEX_HOME:-\$HOME\/\.codex\}\/plugins\/cache\/relay-for-codex\/relay-(?:deepseek|glm)\/[^/]+\/scripts\/api-reviewer\.mjs"/g;
 const CODEX_DIRECT_API_RELAY_ENTRYPOINT_PATH_RE =
-  /\$\{CODEX_HOME:-\$HOME\/\.codex\}\/plugins\/cache\/relay\/relay-(?:deepseek|glm)\/[^/]+\/scripts\/api-reviewer\.mjs/g;
+  /\$\{CODEX_HOME:-\$HOME\/\.codex\}\/plugins\/cache\/relay-for-codex\/relay-(?:deepseek|glm)\/[^/]+\/scripts\/api-reviewer\.mjs/g;
 const RELAY_PROVIDER_ORDER = Object.freeze(["gemini", "grok", "kimi", "glm", "deepseek"]);
 const RELAY_PROVIDER_DEFINITIONS = Object.freeze({
   gemini: {
@@ -75,6 +75,9 @@ export function buildRelayPlugin({ provider, repoRoot = process.cwd(), outRoot =
   copyIfExists(join(sourceRoot, "policies"), join(pluginRoot, "policies"));
   copyIfExists(join(sourceRoot, "bin"), join(pluginRoot, "bin"));
   copyIfExists(join(sourceRoot, "LICENSE"), join(pluginRoot, "LICENSE"));
+  if (definition.pluginDataEnv === "API_REVIEWERS_PLUGIN_DATA") {
+    writeFileSync(join(pluginRoot, "scripts", "api-reviewer.mjs"), renderClaudeDirectApiRuntimeEntrypoint(provider), "utf8");
+  }
   writeRelayRunner({ pluginRoot, repoRoot, definition });
   filterRelayConfig({ pluginRoot, provider });
 
@@ -168,6 +171,20 @@ function buildRelayDirectApiRuntimePlugin({ repoRoot }) {
   });
 
   return pluginRoot;
+}
+
+function renderClaudeDirectApiRuntimeEntrypoint(provider) {
+  return `#!/usr/bin/env node
+const candidates = [
+  process.env.RELAY_API_REVIEWERS_ENTRYPOINT,
+  new URL("../../relay-api-reviewers/scripts/relay-entrypoint.mjs", import.meta.url).href,
+  new URL("../../api-reviewers/scripts/relay-entrypoint.mjs", import.meta.url).href,
+  new URL("../../../plugins/api-reviewers/scripts/relay-entrypoint.mjs", import.meta.url).href,
+].filter(Boolean);
+const helper = await Promise.any(candidates.map((candidate) => import(candidate))).catch(() => null);
+if (!helper) { console.error("api_reviewer_entrypoint_missing: install the shared api-reviewers runtime"); process.exit(1); }
+helper.runRelayDirectApiEntrypoint({ provider: ${JSON.stringify(provider)}, scriptUrl: import.meta.url });
+`;
 }
 
 function marketplaceSource({ fromRoot, toRoot }) {
