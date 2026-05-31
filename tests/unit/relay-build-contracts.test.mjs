@@ -279,7 +279,7 @@ test("Codex split direct API relay plugins delegate to one shared runtime copy",
     const runtime = readFileSync(path.join(pluginRoot, "scripts", "api-reviewer.mjs"), "utf8");
 
     assert.match(runtime, /relay-entrypoint\.mjs/, provider);
-    assert.ok(runtime.split("\n").length <= 30, provider);
+    assert.ok(runtime.split("\n").length <= 8, provider);
     assert.match(runtime, /api_reviewer_entrypoint_missing/, provider);
     assert.doesNotMatch(runtime, /async function runCommand|function buildRecord|async function loadProviders/, provider);
     assert.doesNotMatch(runtime, /spawnSync|runtimeCandidates|function argProvider/, provider);
