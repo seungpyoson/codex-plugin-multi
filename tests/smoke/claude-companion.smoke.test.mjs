@@ -177,6 +177,21 @@ async function waitForOnlyJobRecord(dataDir, predicate, label, timeoutMs = CLAUD
   assert.fail(`${label}; last record=${JSON.stringify(lastRecord)}`);
 }
 
+async function waitForProcessExit(pid, timeoutMs = 5000) {
+  if (!Number.isInteger(pid)) return;
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    try {
+      process.kill(pid, 0);
+    } catch (error) {
+      if (error?.code === "ESRCH") return;
+      throw error;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  assert.fail(`worker process ${pid} did not exit`);
+}
+
 // T7.2: review mode's profile has scope=working-tree, which populates via
 // `git ls-files` + copy. Non-git cwds can no longer run review (spec §21.4).
 // Uses fixtureSeedRepo (#16 follow-up 9) so a stale GIT_DIR /
@@ -4463,6 +4478,7 @@ process.exit(1);
       (candidate) => candidate.id === launched.job_id && candidate.status === "failed",
       "background OAuth preflight rejection did not finalize",
     );
+    await waitForProcessExit(launched.pid);
     assert.equal(record.error_code, "oauth_inference_rejected");
     assert.equal(record.pid_info ?? null, null);
     assert.equal(record.external_review.source_content_transmission, "not_sent");
