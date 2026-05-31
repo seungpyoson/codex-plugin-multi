@@ -204,11 +204,13 @@ test("buildRelaySuite: generated relay commands do not leak Codex host contracts
 test("buildRelaySuite: generated direct API relay runtimes do not leak Codex package paths", () => {
   const outRoot = mkdtempSync(path.join(tmpdir(), "relay-runtime-host-"));
   try {
+    const sharedEntrypoint = readFileSync("plugins/api-reviewers/scripts/relay-entrypoint.mjs", "utf8");
+    assert.match(sharedEntrypoint, /this relay plugin's config\/providers\.json/);
+
     for (const provider of ["glm", "deepseek"]) {
       const pluginRoot = buildRelayPlugin({ provider, repoRoot: process.cwd(), outRoot });
       const runtime = readFileSync(path.join(pluginRoot, "scripts", "api-reviewer.mjs"), "utf8");
       assert.doesNotMatch(runtime, /plugins\/api-reviewers\/config\/providers\.json/, provider);
-      assert.match(runtime, /this relay plugin's config\/providers\.json/, provider);
     }
   } finally {
     rmSync(outRoot, { recursive: true, force: true });
@@ -216,13 +218,18 @@ test("buildRelaySuite: generated direct API relay runtimes do not leak Codex pac
 });
 
 test("Codex split direct API relay plugins delegate to one shared runtime copy", () => {
+  const sharedEntrypoint = readFileSync("plugins/api-reviewers/scripts/relay-entrypoint.mjs", "utf8");
+  assert.match(sharedEntrypoint, /RELAY_API_REVIEWERS_RUNTIME/);
+  assert.match(sharedEntrypoint, /API_REVIEWERS_PROVIDERS_PATH/);
+
   for (const provider of ["glm", "deepseek"]) {
     const pluginRoot = path.join("plugins", `relay-${provider}`);
     const runtime = readFileSync(path.join(pluginRoot, "scripts", "api-reviewer.mjs"), "utf8");
 
-    assert.match(runtime, /RELAY_API_REVIEWERS_RUNTIME/, provider);
-    assert.match(runtime, /API_REVIEWERS_PROVIDERS_PATH/, provider);
+    assert.match(runtime, /relay-entrypoint\.mjs/, provider);
+    assert.ok(runtime.split("\n").length <= 10, provider);
     assert.doesNotMatch(runtime, /async function runCommand|function buildRecord|async function loadProviders/, provider);
+    assert.doesNotMatch(runtime, /spawnSync|runtimeCandidates|function argProvider/, provider);
     assert.equal(existsSync(path.join(pluginRoot, "scripts", "lib")), false, provider);
   }
 });

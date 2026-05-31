@@ -54,6 +54,7 @@ test("Codex direct API reviewers are split into relay-glm and relay-deepseek plu
     const pluginName = `relay-${provider}`;
     const pluginRoot = path.join("plugins", pluginName);
     assert.equal(existsSync(pluginRoot), true, `${pluginName} plugin root exists`);
+    assert.equal(readJson(path.join(pluginRoot, ".codex-plugin", "plugin.json")).skills, "./skills");
 
     const providers = readJson(path.join(pluginRoot, "config", "providers.json"));
     assert.deepEqual(Object.keys(providers), [provider], `${pluginName} config contains only ${provider}`);

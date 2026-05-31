@@ -8,7 +8,6 @@
   "homepage": "https://github.com/seungpyoson/relay",
   "repository": "https://github.com/seungpyoson/relay",
   "license": "AGPL-3.0-only",
-  "skills": "./skills",
   "keywords": [
     "glm",
     "zai",
@@ -29,5 +28,6 @@
       "Ask GLM to review selected files",
       "Run an adversarial review through GLM"
     ]
-  }
+  },
+  "skills": "./skills"
 }
