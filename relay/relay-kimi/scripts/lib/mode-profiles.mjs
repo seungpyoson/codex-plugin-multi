@@ -1,0 +1,152 @@
+// ModeProfile table — the ONLY source of mode-specific defaults (spec §21.2).
+//
+// Every knob whose correct value is determined by mode lives here in exactly
+// one place. Dispatcher libraries (`kimi.mjs`) accept a profile object; they
+// do NOT take individual flag knobs with defaults. Adding a new mode is adding
+// one row to this table — nothing else changes.
+//
+// Mutating these objects is a bug: all rows (and their nested arrays) are
+// deep-frozen. The table is read by value identity, not by deep-copy — if a
+// downstream caller needs a scratch copy, it should clone explicitly.
+
+// Kimi-native tool ids permitted by prompt-contained review modes.
+// Kimi Code 1.43 repeatedly stalled or step-exhausted source-bearing review
+// when the adapter granted workspace file tools. The shared selected-source
+// prompt is already authoritative, so review/ping runs launch a no-tool agent.
+const REVIEW_ALLOWED_TOOLS = Object.freeze([]);
+
+/**
+ * MODE_PROFILES — verbatim copy of the spec §21.2 canonical table.
+ *
+ * Each profile row has exactly these fields:
+ *   name             — the mode key (kept in the value for self-description)
+ *   model_tier       — "review_quality" | "rescue" | "native" (§8)
+ *   permission_mode  — "plan" | "acceptEdits" (§4.5)
+ *   strip_context    — emit `--setting-sources ""`? (§4.6)
+ *   allowed_tools    — Kimi-native tool allowlist for review modes.
+ *   containment      — "none" | "worktree" (§21.4) — OWNED BY T7.2; this task
+ *                      fixes the field's presence, not its use in companion.
+ *   scope            — "working-tree" | "staged" | "branch-diff" | "head" |
+ *                      "custom" (§21.4) — same caveat.
+ *   dispose_default  — worktree cleanup default (§10)
+ *   add_dir          — pass `--add-dir <path>` at all? Kimi review modes keep
+ *                      this false because source is embedded in the prompt.
+ *   schema_allowed   — is `--json-schema` meaningful for this mode? When
+ *                      false, jsonSchema runtime input is silently dropped.
+ *   max_steps_per_turn — Kimi CLI step budget. Larger review scopes need a
+ *                      higher default than ping/rescue probes.
+ */
+export const MODE_PROFILES = Object.freeze({
+  review: Object.freeze({
+    name: "review",
+    model_tier: "review_quality",
+    permission_mode: "plan",
+    strip_context: true,
+    allowed_tools: REVIEW_ALLOWED_TOOLS,
+    containment: "worktree",
+    scope: "working-tree",
+    dispose_default: true,
+    add_dir: false,
+    schema_allowed: true,
+    max_steps_per_turn: 16,
+  }),
+  "adversarial-review": Object.freeze({
+    name: "adversarial-review",
+    model_tier: "review_quality",
+    permission_mode: "plan",
+    strip_context: true,
+    allowed_tools: REVIEW_ALLOWED_TOOLS,
+    containment: "worktree",
+    scope: "branch-diff",
+    dispose_default: true,
+    add_dir: false,
+    schema_allowed: true,
+    max_steps_per_turn: 32,
+  }),
+  "custom-review": Object.freeze({
+    name: "custom-review",
+    model_tier: "review_quality",
+    permission_mode: "plan",
+    strip_context: true,
+    allowed_tools: REVIEW_ALLOWED_TOOLS,
+    containment: "worktree",
+    scope: "custom",
+    dispose_default: true,
+    add_dir: false,
+    schema_allowed: true,
+    max_steps_per_turn: 32,
+  }),
+  rescue: Object.freeze({
+    name: "rescue",
+    model_tier: "rescue",
+    permission_mode: "acceptEdits",
+    strip_context: false, // §9: rescue keeps project context on purpose
+    containment: "none",
+    scope: "working-tree",
+    dispose_default: false,
+    add_dir: true,
+    schema_allowed: false,
+    max_steps_per_turn: 8,
+  }),
+  ping: Object.freeze({
+    name: "ping",
+    model_tier: "native",
+    permission_mode: "plan",
+    strip_context: true,
+    allowed_tools: REVIEW_ALLOWED_TOOLS,
+    containment: "none",
+    scope: "head",
+    dispose_default: false,
+    add_dir: false, // ping is a bare OAuth probe — no directory is granted
+    schema_allowed: false,
+    max_steps_per_turn: 8,
+  }),
+});
+
+/** Tier names used across the table. Exported so UI/tests can enumerate. */
+export const MODEL_TIERS = Object.freeze(["review_quality", "rescue", "native"]);
+
+/**
+ * Look up a profile by mode name. Throws loudly on unknown names — silent
+ * fall-throughs would be exactly the defects §21.2 aims to eliminate.
+ */
+export function resolveProfile(name) {
+  if (!Object.prototype.hasOwnProperty.call(MODE_PROFILES, name)) {
+    const known = Object.keys(MODE_PROFILES).join(", ");
+    throw new Error(`unknown mode ${JSON.stringify(name)}; expected one of: ${known}`);
+  }
+  return MODE_PROFILES[name];
+}
+
+/**
+ * Resolve a model ID for a profile given the parsed models config
+ * (`plugins/kimi/config/models.json` at runtime). Returns null when the
+ * tier is not present in the config — callers decide how to fail. Model IDs
+ * are intentionally NOT stored in this file; the config is the single source
+ * of truth for "which model is the review_quality tier today".
+ */
+export function resolveModelForProfile(profile, modelsConfig) {
+  if (!profile || typeof profile.model_tier !== "string") {
+    throw new Error("resolveModelForProfile: profile.model_tier is required");
+  }
+  if (profile.model_tier === "native") return null;
+  if (!modelsConfig || typeof modelsConfig !== "object") return null;
+  return modelsConfig[profile.model_tier] ?? null;
+}
+
+export function resolveModelCandidatesForProfile(profile, modelsConfig) {
+  if (!profile || typeof profile.model_tier !== "string") {
+    throw new Error("resolveModelCandidatesForProfile: profile.model_tier is required");
+  }
+  if (!modelsConfig || typeof modelsConfig !== "object") return [];
+  const primary = profile.model_tier === "native" ? null : modelsConfig[profile.model_tier] ?? null;
+  const fallbackTier = profile.model_tier === "native" ? "native" : profile.model_tier;
+  const configuredFallbacks = modelsConfig.fallbacks?.[fallbackTier];
+  const fallbacks = Array.isArray(configuredFallbacks)
+    ? configuredFallbacks.filter((model) => typeof model === "string" && model.length > 0)
+    : [];
+  const candidates = profile.model_tier === "native" ? [null, ...fallbacks] : [primary, ...fallbacks];
+  return [...new Set(candidates)].filter((model) => (
+    model === null ? profile.model_tier === "native" : typeof model === "string" && model.length > 0
+  ));
+}

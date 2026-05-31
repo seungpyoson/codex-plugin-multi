@@ -1,0 +1,19 @@
+[[rule]]
+toolName = "write_file"
+decision = "deny"
+priority = 100
+
+[[rule]]
+toolName = "replace"
+decision = "deny"
+priority = 100
+
+[[rule]]
+toolName = "edit"
+decision = "deny"
+priority = 100
+
+[[rule]]
+toolName = "run_shell_command"
+decision = "deny"
+priority = 100

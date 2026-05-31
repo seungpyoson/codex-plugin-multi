@@ -1587,6 +1587,36 @@ test("gemini review foreground: policy-first, stdin transport, /tmp cwd, scoped 
   }
 });
 
+test("gemini review foreground: accepts prompt payload from prompt file", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "gemini-review-prompt-file-cwd-"));
+  seedMinimalRepo(cwd);
+  const promptFile = path.join(cwd, "prompt.txt");
+  writeFileSync(promptFile, "review: prompt-file-payload\n", { mode: 0o600 });
+  const neutralCwd = realpathSync(tmpdir());
+  const { stdout, stderr, status, dataDir } = runCompanion(
+    ["run", "--mode=review", "--foreground", "--cwd", cwd, "--prompt-file", promptFile],
+    {
+      cwd,
+      env: {
+        CODEX_SANDBOX: "",
+        GEMINI_MOCK_ASSERT_FILE: "seed.txt",
+        GEMINI_MOCK_ASSERT_CWD: neutralCwd,
+        GEMINI_MOCK_ASSERT_PROMPT_INCLUDES: "prompt-file-payload",
+        GEMINI_MOCK_ASSERT_PROMPT_EXCLUDES: promptFile,
+      },
+    },
+  );
+  try {
+    assert.equal(status, 0, `exit ${status}: ${stderr}`);
+    const record = JSON.parse(stdout);
+    const fx = readStdoutLog(dataDir, record.job_id);
+    assert.equal(fx.t7_prompt_from_stdin, true, "Gemini prompt-file payload must still reach target CLI over stdin");
+  } finally {
+    rmTree(dataDir);
+    rmTree(cwd);
+  }
+});
+
 test("gemini review --scope-base preserves branch-diff scope through target execution", () => {
   const cwd = mkdtempSync(path.join(tmpdir(), "gemini-review-scope-base-"));
   const { base } = fixtureBranchDiffRepo(cwd);

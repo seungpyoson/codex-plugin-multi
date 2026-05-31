@@ -1,0 +1,18 @@
+{
+  "name": "relay-deepseek",
+  "version": "0.1.0",
+  "author": {
+    "name": "seungpyoson"
+  },
+  "license": "AGPL-3.0-only",
+  "keywords": [
+    "deepseek",
+    "glm",
+    "zai",
+    "api",
+    "review"
+  ],
+  "description": "Delegate code reviews to DeepSeek direct API from within Claude Code.",
+  "homepage": "https://github.com/seungpyoson/relay",
+  "repository": "https://github.com/seungpyoson/relay"
+}

@@ -1,0 +1,9 @@
+{
+  "review_quality": "kimi-code/kimi-for-coding",
+  "rescue": "kimi-code/kimi-for-coding",
+  "fallbacks": {
+    "review_quality": [],
+    "rescue": [],
+    "native": []
+  }
+}
