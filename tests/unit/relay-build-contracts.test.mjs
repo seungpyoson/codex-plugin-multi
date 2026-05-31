@@ -56,6 +56,18 @@ test("renderClaudeCommandDoc: routes focus payload outside inline shell argv", (
   assert.doesNotMatch(rendered, /plugins\/gemini\/skills/);
 });
 
+test("renderClaudeCommandDoc: rewrites direct API relay cache paths for any package version", () => {
+  const codexDoc = [
+    "Run `node \"${CODEX_HOME:-$HOME/.codex}/plugins/cache/relay/relay-glm/2.3.4/scripts/api-reviewer.mjs\" doctor --provider glm`.",
+    "Use `${CODEX_HOME:-$HOME/.codex}/plugins/cache/relay/relay-deepseek/2.3.4-beta.1/scripts/api-reviewer.mjs` locally.",
+  ].join("\n");
+  const rendered = renderClaudeCommandDoc(codexDoc);
+
+  assert.match(rendered, /node "\$\{CLAUDE_PLUGIN_ROOT\}\/scripts\/relay-run\.mjs" api-reviewer\.mjs doctor --provider glm/);
+  assert.match(rendered, /`\$\{CLAUDE_PLUGIN_ROOT\}\/scripts\/api-reviewer\.mjs` locally/);
+  assert.doesNotMatch(rendered, /CODEX_HOME|plugins\/cache\/relay|2\.3\.4/);
+});
+
 test("buildRelayPlugin: emits relay-gemini Claude plugin tree", () => {
   const outRoot = mkdtempSync(path.join(tmpdir(), "relay-build-"));
   try {

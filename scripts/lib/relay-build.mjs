@@ -11,6 +11,10 @@ import { join } from "node:path";
 
 const RELAY_REPOSITORY = "https://github.com/seungpyoson/relay";
 const RELAY_FOR_CLAUDE_MARKETPLACE = "relay-for-claude";
+const CODEX_DIRECT_API_RELAY_ENTRYPOINT_COMMAND_RE =
+  /node "\$\{CODEX_HOME:-\$HOME\/\.codex\}\/plugins\/cache\/relay\/relay-(?:deepseek|glm)\/[^/]+\/scripts\/api-reviewer\.mjs"/g;
+const CODEX_DIRECT_API_RELAY_ENTRYPOINT_PATH_RE =
+  /\$\{CODEX_HOME:-\$HOME\/\.codex\}\/plugins\/cache\/relay\/relay-(?:deepseek|glm)\/[^/]+\/scripts\/api-reviewer\.mjs/g;
 const RELAY_PROVIDER_ORDER = Object.freeze(["gemini", "grok", "kimi", "glm", "deepseek"]);
 const RELAY_PROVIDER_DEFINITIONS = Object.freeze({
   gemini: {
@@ -164,8 +168,8 @@ export function renderClaudeCommandDoc(codexDoc) {
   let rendered = codexDoc
     .replaceAll("<plugin-root>", "${CLAUDE_PLUGIN_ROOT}")
     .replaceAll("node plugins/grok/scripts/grok-companion.mjs", 'node "${CLAUDE_PLUGIN_ROOT}/scripts/grok-companion.mjs"')
-    .replace(/node "\$\{CODEX_HOME:-\$HOME\/\.codex\}\/plugins\/cache\/relay\/relay-(?:deepseek|glm)\/0\.1\.0\/scripts\/api-reviewer\.mjs"/g, 'node "${CLAUDE_PLUGIN_ROOT}/scripts/api-reviewer.mjs"')
-    .replace(/\$\{CODEX_HOME:-\$HOME\/\.codex\}\/plugins\/cache\/relay\/relay-(?:deepseek|glm)\/0\.1\.0\/scripts\/api-reviewer\.mjs/g, "${CLAUDE_PLUGIN_ROOT}/scripts/api-reviewer.mjs")
+    .replace(CODEX_DIRECT_API_RELAY_ENTRYPOINT_COMMAND_RE, 'node "${CLAUDE_PLUGIN_ROOT}/scripts/api-reviewer.mjs"')
+    .replace(CODEX_DIRECT_API_RELAY_ENTRYPOINT_PATH_RE, "${CLAUDE_PLUGIN_ROOT}/scripts/api-reviewer.mjs")
     .replaceAll('-- "<focus text>"', '--prompt-file "$RELAY_PROMPT_FILE"')
     .replaceAll('-- "<prompt text>"', '--prompt-file "$RELAY_PROMPT_FILE"')
     .replaceAll('-- "$ARGUMENTS"', '--prompt-file "$RELAY_PROMPT_FILE"')
