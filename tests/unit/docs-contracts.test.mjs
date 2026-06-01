@@ -1116,4 +1116,13 @@ test("session-approval-grant schema is strict and token-free", () => {
   assert.equal(schema.properties.grant_approval_token, undefined);
   assert.equal(schema.properties.approval_tuple.additionalProperties, false);
   assert.equal(schema.$defs.grant_bounds.additionalProperties, false);
+  assert.equal(schema.properties.max_ttl_ms.maximum, undefined);
+  assert.equal(schema.$defs.grant_bounds.properties.max_ttl_ms.maximum, undefined);
+  assert.match(schema.properties.approval_fingerprint.description, /canonicalJson/);
+});
+
+test("session-approval-grant schema accepts runtime persisted record shape", () => {
+  const schema = readRepoJson("docs/contracts/session-approval-grant.schema.json");
+
+  assertSchemaAllowsValue(schema, schema, sampleSessionApprovalGrantRecord(), "$");
 });
