@@ -301,7 +301,7 @@
     },
     {
       "name": "docs",
-      "module": "README.md, docs/*.md, docs/*.md",
+      "module": "README.md, docs/*.md",
       "interface": "operator runbooks and issue-fit evidence",
       "implementation": "Docs define #171 scope, use #170 as evidence only, and preserve no paid Grok API fallback language.",
       "adapters": [
