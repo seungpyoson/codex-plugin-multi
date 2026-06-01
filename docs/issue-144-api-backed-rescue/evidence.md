@@ -49,3 +49,18 @@ Live state verified on 2026-06-01 KST.
    **Benefits:** Keeps proposed edits and applied edits distinguishable without overloading review records.
 
 Selected design uses candidates 1, 2, and 3. No implementation code may start until external plan/task review approves this design.
+
+## External Plan Review Round 1
+
+Round 1 reviewed the pre-implementation plan/tasks commit `95bd8a1289a98295e62a1ef635bbdb92963ea5b9`.
+
+| Reviewer | Verdict | Required Follow-up |
+| --- | --- | --- |
+| Gemini | APPROVE | Add explicit path traversal/out-of-workspace safety tests and consider clean-worktree apply-request validation. |
+| DeepSeek | APPROVE | Add path traversal and binary patch rejection tests; specify atomic/rollback-safe apply behavior. |
+| GLM | APPROVE | Add disclosure assertions, rollback behavior, path traversal coverage, unsafe job ID definition, and operator next-step clarity. |
+| Kimi | BLOCK | Add RED/GREEN acceptance tests for outside-workspace paths and source-send disclosure that says rescue proposal, not review. |
+| Claude | BLOCK | Add RED slices for traversal, `.git`, symlink, binary, token reuse, HEAD drift, and runtime/policy path protection. |
+| Grok | NO USABLE VERDICT | Grok failed before source send because the local subscription-backed session was unavailable. Per the goal gate, this is not approval and must be resolved or explicitly redirected by the operator before implementation. |
+
+The revised plan/tasks convert the blocking findings into explicit required behavior before any implementation starts.
