@@ -59,6 +59,7 @@ const REVIEW_READINESS_PREFLIGHT_HEADER = "x-codex-grok-readiness-preflight";
 const REVIEW_READINESS_PREFLIGHT_PROMPT = "Return exactly: ok";
 const MAX_SCOPE_FILE_BYTES = 256 * 1024;
 const MAX_SCOPE_TOTAL_BYTES = 1024 * 1024;
+const SCOPE_TOTAL_MANIFEST_LIMIT = 5;
 const GIT_SHOW_MAX_BUFFER_BYTES = 16 * 1024 * 1024;
 const MAX_STATE_JOBS = 50;
 const STATE_LOCK_STALE_MS = 60 * 1000;
@@ -1046,10 +1047,23 @@ function addScopeFile(files, normalizedRel, text, totalBytes) {
     throw new Error(`scope_file_too_large:${normalizedRel}: ${bytes} bytes exceeds ${MAX_SCOPE_FILE_BYTES} byte limit`);
   }
   totalBytes.value += bytes;
+  const file = { path: normalizedRel, text, bytes };
   if (totalBytes.value > MAX_SCOPE_TOTAL_BYTES) {
-    throw new Error(`scope_total_too_large:${totalBytes.value} bytes exceeds ${MAX_SCOPE_TOTAL_BYTES} byte limit`);
+    throw new Error(
+      `scope_total_too_large:${totalBytes.value} bytes exceeds ${MAX_SCOPE_TOTAL_BYTES} byte limit`
+      + scopeSizeManifest([...files, file]),
+    );
   }
-  files.push({ path: normalizedRel, text });
+  files.push(file);
+}
+
+function scopeSizeManifest(files) {
+  const limit = SCOPE_TOTAL_MANIFEST_LIMIT;
+  const lines = files
+    .sort((a, b) => b.bytes - a.bytes || (a.path < b.path ? -1 : a.path > b.path ? 1 : 0))
+    .slice(0, limit)
+    .map((file) => `${file.bytes} ${file.path}`);
+  return lines.length > 0 ? `\nfiles:\n${lines.join("\n")}\n` : "";
 }
 
 async function readUtf8ScopeFileWithinLimit(filePath, normalizedRel, beforeOpen = null) {

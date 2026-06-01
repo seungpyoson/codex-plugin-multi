@@ -5601,14 +5601,21 @@ test("run rejects blank or valueless prompt flags before launch", () => {
 
 test("custom-review rejects aggregate selected source that exceeds the prompt cap before contacting the tunnel", () => {
   const cwd = mkdtempSync(path.join(tmpdir(), "grok-web-workspace-"));
-  const files = [];
-  for (let i = 0; i < 5; i += 1) {
-    const file = `large-${i}.js`;
-    files.push(file);
-    writeFileSync(path.join(cwd, file), `export const value${i} = "${"x".repeat(220 * 1024)}";\n`);
-  }
+  const fileSpecs = [
+    ["third.js", 220],
+    ["largest.js", 250],
+    ["second.js", 230],
+    ["fifth.js", 190],
+    ["smaller.js", 100],
+    ["smallest.js", 60],
+  ].map(([file, kib], index) => {
+    const text = `export const value${index} = "${"x".repeat(kib * 1024)}";\n`;
+    writeFileSync(path.join(cwd, file), text);
+    return { file, bytes: Buffer.byteLength(text, "utf8") };
+  });
+  const files = fileSpecs.map((item) => item.file);
 
-  const result = run([
+  const runOversizedScope = () => run([
     "run",
     "--mode", "custom-review",
     "--scope", "custom",
@@ -5621,12 +5628,27 @@ test("custom-review rejects aggregate selected source that exceeds the prompt ca
       GROK_WEB_BASE_URL: "http://127.0.0.1:9/api",
     },
   });
+  const result = runOversizedScope();
   const record = parseStdout(result);
 
   assert.equal(result.status, 1);
   assert.equal(record.status, "failed");
   assert.equal(record.error_code, "scope_failed");
   assert.match(record.error_message, /scope_total_too_large/);
+  assert.match(record.error_message, /\nfiles:\n/);
+  const manifest = record.error_message
+    .split("\nfiles:\n")[1]
+    .trim()
+    .split("\n")
+    .filter(Boolean);
+  const expectedManifest = [...fileSpecs]
+    .sort((a, b) => b.bytes - a.bytes || (a.file < b.file ? -1 : a.file > b.file ? 1 : 0))
+    .slice(0, 5)
+    .map((item) => `${item.bytes} ${item.file}`);
+  assert.deepEqual(manifest, expectedManifest);
+  assert.equal(manifest.length, 5);
+  assert.equal(manifest.some((line) => line.includes("smallest.js")), false);
+  assert.equal(parseStdout(runOversizedScope()).error_message.split("\nfiles:\n")[1], `${manifest.join("\n")}\n`);
   assert.equal(record.external_review.source_content_transmission, "not_sent");
   assert.match(record.external_review.disclosure, /not sent/i);
 });
