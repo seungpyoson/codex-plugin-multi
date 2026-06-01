@@ -1,8 +1,8 @@
-# codex-plugin-multi — Design
+# relay — Design
 
 - **Date:** 2026-04-23 (v3) / 2026-04-24 (v4 — full empirical re-verification) / **2026-04-24 (v5 — architectural invariants)**
 - **Status:** Draft v5, post-M6 cross-model review; corrected after 2026-04-27 fresh-install verification
-- **Repo:** [`seungpyoson/codex-plugin-multi`](https://github.com/seungpyoson/codex-plugin-multi)
+- **Repo:** [`relay-org/relay`](https://github.com/relay-org/relay)
 - **License:** AGPL-3.0-only. Commercial use is permitted under the AGPL, but
   modified versions distributed or offered over a network must provide
   corresponding source under the same license. Upstream MIT attribution is
@@ -69,7 +69,7 @@ Upstream `openai/codex-plugin-cc` is a **Claude Code plugin** that lets Claude C
 |---|----------|--------|
 | 1 | Packaging | Two plugins (`plugins/claude/`, `plugins/gemini/`) in one monorepo. Each is standalone. Registered via a single `.agents/plugins/marketplace.json` at repo root. |
 | 2 | Slash-command naming | Intended surface uses **bare names, not namespaced:** `/claude-rescue`, `/gemini-review`, etc. Codex CLI 0.125.0 does not currently register plugin command files. |
-| 3 | Repo | `seungpyoson/codex-plugin-multi`, AGPL-3.0-only, public GitHub. |
+| 3 | Repo | `relay-org/relay`, AGPL-3.0-only, public GitHub. |
 | 4 | Prompting skills | One per plugin: `plugins/<target>/skills/<target>-prompting/`. Mirrors upstream's `gpt-5-4-prompting` structure. |
 | 5 | Auth | OAuth / subscription only. Plugin never reads or writes `*_API_KEY` env vars. |
 | 6 | Primary user-facing surface | User-invocable delegation skills and companion scripts in v0.1.0. Native `commands/*.md` slash commands are blocked on Codex TUI support in CLI 0.125.0; non-ping command docs are packaged for the intended future surface. |
@@ -220,7 +220,7 @@ through built-ins only.
 
 **`authentication` accepts only `"ON_INSTALL"` or `"ON_USE"`.** `"NEVER"` rejected at install. Use `ON_USE` for plugins that require no auth.
 
-**Install:** `codex plugin marketplace add seungpyoson/codex-plugin-multi` (owner/repo shorthand resolves to `https://github.com/owner/repo.git`). Registered name comes from the `name` field of the marketplace.json, NOT the URL — important for scripting `remove`. Verified live 2026-04-24.
+**Install:** `codex plugin marketplace add relay-org/relay` (owner/repo shorthand resolves to `https://github.com/owner/repo.git`). Registered name comes from the `name` field of the marketplace.json, NOT the URL — important for scripting `remove`. Verified live 2026-04-24.
 
 `--sparse <path>` flag **only works for git sources**, not local paths. Users install the whole marketplace and enable individual plugins via Codex TUI (`/plugins` command — Space to toggle, Enter for details). Config-based enable also works: `-c 'plugins."name@marketplace".enabled=true'`.
 
@@ -361,7 +361,7 @@ Review and adversarial-review run single-turn in the calling Codex session (no s
 ## 6. File layout
 
 ```
-codex-plugin-multi/
+relay/
   README.md
   LICENSE                                        # AGPL-3.0-only
   NOTICE                                         # attribution to upstream (MIT)
@@ -807,7 +807,7 @@ Adversarial-review gate between milestones where risk warrants.
 
 ## 20. Success criteria
 
-- `codex plugin marketplace add seungpyoson/codex-plugin-multi` installs the marketplace. User enables each plugin via TUI. In Codex CLI 0.125.0, packaged command docs do not appear as slash commands in the palette; native slash invocation remains an upstream-support criterion.
+- `codex plugin marketplace add relay-org/relay` installs the marketplace. User enables each plugin via TUI. In Codex CLI 0.125.0, packaged command docs do not appear as slash commands in the palette; native slash invocation remains an upstream-support criterion.
 - `/claude-rescue <task>` launches a background Claude job, returns job ID, `/claude-result <id>` renders usable output. User never sees companion internals.
 - `/gemini-review` returns a review under `--policy` + disposable containment. Any file mutation in the user's working tree is reported as WARNING, never auto-reverted.
 - All 7 actions × 2 targets work.

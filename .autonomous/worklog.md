@@ -1,4 +1,4 @@
-# Autonomous worklog — codex-plugin-multi
+# Autonomous worklog — relay
 
 Overnight autonomous execution 2026-04-24.
 
@@ -16,7 +16,7 @@ All via `safe_git.py`. No force-push, no `--no-verify`, no `git reset --hard`, n
 
 - **M0 — scaffold + install-path smoke:** ✅ complete (6 tasks + gate-0 adversarial review). 15 findings (10 fixed, 5 accepted with rationale; see sibling file `findings-m0.md` in this directory). Local install smoke passed (`codex plugin marketplace add <local>` → both plugins registered cleanly; verbatim output in `docs/m0-smoke.md`). GitHub install + TUI dispatch are documented as deferred (runbook in `docs/m0-smoke.md`).
 - **M1 — shared-lib port + parametrization:** ✅ complete (6 tasks + gate-1 adversarial review). **13 total findings**: 10 from adversarial review (2 HIGH / 4 MEDIUM / 4 LOW) + 3 additional CRITICAL security findings surfaced during `audit.py` runs (path traversal in `jobId`, arbitrary file deletion via `logFile`, arbitrary file read in `readJobFile`). All security-critical findings FIXED (mapping: one hardening item per root-cause fix — UUID/slug jobId allowlist addresses traversal; path-containment + realpath `isPathWithin` addresses deletion; `readJobFile` path validation + `readJobFileById` entry point addresses arbitrary read; atomic rename addresses torn-write race; null-title guard + TOCTOU-free `safeReadFile` + async-mutate rejection in `updateState` resolve secondary audit findings). 48 unit tests pass (`npm test`). Upstream design limitations accepted for v1 — see sibling file `findings-m1.md` (summarized under "Upstream design limitations" below).
-- **M2–M10 — not attempted.** The milestone scope (per `docs/superpowers/plans/2026-04-24-codex-plugin-multi-plan.md`, committed at `5233dac`):
+- **M2–M10 — not attempted.** The milestone scope (per `docs/superpowers/plans/2026-04-24-relay-plan.md`, committed at `5233dac`):
   - M2: Claude foreground dispatcher + `claude-companion.mjs` entry + mock-CLI smoke tests.
   - M3: Claude commands + rescue subagent (port 7 `commands/*.md` + `agents/claude-rescue.md`).
   - M4: Claude background + session continuation.
@@ -58,14 +58,14 @@ Documented in `.autonomous/findings-m1.md`. Match upstream `openai/codex-plugin-
 
 1. **(2 min, optional) TUI dispatch smoke.** Inline steps:
    ```
-   codex plugin marketplace add /Users/spson/Projects/Claude/codex-plugin-multi
+   codex plugin marketplace add ~/projects/relay
    # Launch Codex TUI:
    codex
    # In TUI: type /plugins, press Space to enable both 'claude' and 'gemini', then:
    #   /claude-ping   → should reply "ok"
    #   /gemini-ping   → should reply "ok"
    # Exit TUI, then clean up:
-   codex plugin marketplace remove codex-plugin-multi
+   codex plugin marketplace remove relay
    ```
 2. **Review commits** `5f2b592` and `4c49870` on `feat/m0-scaffold` / `feat/m1-libs`. If happy, merge both to `docs/1-design-spec` (via `safe_git.py merge`).
 3. **Decide on M2–M10**: keep the audit-every-file cadence (slow + expensive) or relax it for the remaining implementation work. I'd recommend: for M2+ dispatcher work, still audit security-critical files but drop audit on commentary-only test files; otherwise we'll hit the same thrash on every milestone.

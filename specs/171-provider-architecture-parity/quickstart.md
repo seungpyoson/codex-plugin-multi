@@ -3,7 +3,7 @@
 ## Current Worktree
 
 ```sh
-cd /Users/spson/Projects/Claude/codex-plugin-multi/.worktrees/provider-architecture-parity-171
+cd ~/projects/relay/.worktrees/provider-architecture-parity-171
 git status --short --branch
 ```
 

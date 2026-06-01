@@ -1,4 +1,4 @@
-# codex-plugin-multi — Claude Code project notes
+# relay — Claude Code project notes
 
 <!-- SPECKIT START -->
 Active spec-kit feature: **provider architecture parity** (spec 171).

@@ -5,7 +5,7 @@
 Verified on 2026-05-26 from `origin/main` at `119183e`.
 
 Saved goal prompt source:
-`/Users/spson/Downloads/prompts/codex-plugin-multi/2-provider-reliability-architecture-goal.md`.
+`~/Downloads/prompts/relay/2-provider-reliability-architecture-goal.md`.
 Preserved gates: issue/worktree isolation, #172 target selection, manual
 Speckit artifacts, no runtime implementation before unanimous provider planning
 approval, TDD implementation, local verification, final external reviews, and
@@ -337,7 +337,7 @@ Claude exact-head review job `806fb8a7-ecfa-41e7-8e91-fbcdc57dfdaa` exposed a
 separate no-mistakes gap after the parser fixes. The raw review approved the
 delta and named inspected selected files, but the run still recorded a
 permission-denied `Read` against the original absolute worktree path
-`/Users/spson/.../provider-reliability-172-large-custom-packet-recovery/...`.
+`~/.../provider-reliability-172-large-custom-packet-recovery/...`.
 
 Root cause:
 
@@ -372,7 +372,7 @@ Results:
 
 - RED: with the old prompt behavior restored, the smoke failed for Claude,
   Gemini, and Kimi because the prompt did not contain
-  `Repository: seungpyoson/provider-prompt-fixture` and still included the
+  `Repository: relay-org/provider-prompt-fixture` and still included the
   temp local repo path.
 - GREEN: after the first fix, the same smoke passed for all three providers:
   `{"ok":true,"providers":["claude","gemini","kimi"]}`.

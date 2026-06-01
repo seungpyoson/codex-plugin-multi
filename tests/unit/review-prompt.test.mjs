@@ -712,7 +712,7 @@ for (const [name, file] of REVIEW_PROMPT_MODULES) {
     const prompt = targetBuildReviewPrompt({
       provider: "Claude Code",
       mode: "review",
-      repository: "/Users/spson/Projects/Claude/codex-plugin-multi",
+      repository: "/home/user/projects/relay",
       baseRef: "main",
       baseCommit: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
       headRef: "HEAD",
@@ -722,7 +722,7 @@ for (const [name, file] of REVIEW_PROMPT_MODULES) {
       userPrompt: "Review the supplied packet.",
     });
 
-    assert.doesNotMatch(prompt, /\/Users\/spson\/Projects\/Claude\/codex-plugin-multi/);
+    assert.doesNotMatch(prompt, /\/home\/user\/projects\/relay/);
     assert.match(prompt, /Repository: selected source packet \(original path withheld\)/);
     assert.match(prompt, /Do not call filesystem, git, search, network, or other tools to inspect original repository paths/);
   });
@@ -732,7 +732,7 @@ function assertReviewPromptContract(targetBuildReviewPrompt = buildReviewPrompt,
   const prompt = targetBuildReviewPrompt({
     provider: "Gemini CLI",
     mode: "adversarial-review",
-    repository: "seungpyoson/codex-plugin-multi",
+    repository: "relay-org/relay",
     baseRef: "origin/main",
     baseCommit: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
     headRef: "feature/review-quality",
@@ -744,7 +744,7 @@ function assertReviewPromptContract(targetBuildReviewPrompt = buildReviewPrompt,
 
   assert.match(prompt, /Provider: Gemini CLI/);
   assert.match(prompt, /Mode: adversarial-review/);
-  assert.match(prompt, /Repository: seungpyoson\/codex-plugin-multi/);
+  assert.match(prompt, /Repository: relay-org\/relay/);
   assert.match(prompt, /Base ref: origin\/main/);
   assert.match(prompt, /Base commit: a{40}/);
   assert.match(prompt, /Head ref: feature\/review-quality/);
@@ -781,7 +781,7 @@ function assertCompactReviewPromptContract(targetBuildReviewPrompt = buildReview
   const prompt = targetBuildReviewPrompt({
     provider: "Kimi",
     mode: "custom-review",
-    repository: "seungpyoson/codex-plugin-multi",
+    repository: "relay-org/relay",
     baseRef: "origin/main",
     baseCommit: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
     headRef: "feature/kimi-compact-contract",
@@ -1304,7 +1304,7 @@ function assertReviewAuditManifest(
       { path: "src/b.js", text: "" },
     ],
     git: {
-      remote: "git@github.com:seungpyoson/codex-plugin-multi.git",
+      remote: "git@github.com:relay-org/relay.git",
       branch: "fix/issues-76-77-reviewer-ux",
       baseRef: "origin/main",
       baseCommit: "a".repeat(40),

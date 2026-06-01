@@ -39,11 +39,11 @@ test("renderClaudePluginManifest: converts Codex manifest to Claude relay plugin
 
   assert.equal(manifest.name, "relay-gemini");
   assert.equal(manifest.description, "Delegate investigation, review, and adversarial review to Gemini CLI from within Claude Code.");
-  assert.equal(manifest.repository, "https://github.com/seungpyoson/relay");
-  assert.equal(manifest.homepage, "https://github.com/seungpyoson/relay");
+  assert.equal(manifest.repository, "https://github.com/relay-org/relay");
+  assert.equal(manifest.homepage, "https://github.com/relay-org/relay");
   assert.equal(manifest.interface, undefined);
   assert.equal(manifest.skills, undefined);
-  assert.deepEqual(manifest.author, { name: "seungpyoson" });
+  assert.deepEqual(manifest.author, { name: "relay-maintainer" });
 });
 
 test("claudeCommandFileName: strips provider prefix for Claude plugin command namespace", () => {
@@ -326,7 +326,7 @@ test("buildRelaySuite: generated relay commands do not leak Codex host contracts
         const commandDoc = readFileSync(path.join(pluginRoot, "commands", fileName), "utf8");
         assert.doesNotMatch(
           commandDoc,
-          /\bCodex\b|CODEX_HOME|CODEX_PLUGIN_MULTI_RUNTIME_DIR|\.codex|plugins\/(?:api-reviewers|grok)|npm run|This command backs|before `--`/,
+          /\bCodex\b|CODEX_HOME|RELAY_RUNTIME_DIR|\.codex|plugins\/(?:api-reviewers|grok)|npm run|This command backs|before `--`/,
           `${path.basename(pluginRoot)}/commands/${fileName}`,
         );
       }

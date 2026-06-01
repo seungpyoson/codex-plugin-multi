@@ -34,7 +34,7 @@ const FIXTURE_DIR = resolve(HERE, "fixtures/claude");
 
 // Support --version so setup probes don't need a fixture.
 if (process.argv.includes("--version") || process.argv.includes("-v")) {
-  process.stdout.write("claude-mock 0.0.1 (codex-plugin-multi test fixture)\n");
+  process.stdout.write("claude-mock 0.0.1 (relay test fixture)\n");
   process.exit(0);
 }
 

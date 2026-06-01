@@ -1,8 +1,8 @@
-# codex-plugin-multi — Implementation Plan
+# relay — Implementation Plan
 
 - **Date:** 2026-04-24 (v1) / 2026-04-24 (v2 — invariants refactor inserted as M7)
 - **Status:** Draft v2, post-M6 cross-model review
-- **Tracks spec:** `docs/superpowers/specs/2026-04-23-codex-plugin-multi-design.md` (v5)
+- **Tracks spec:** `docs/superpowers/specs/2026-04-23-relay-design.md` (v5)
 - **Branch:** `docs/006-spec-v5-invariants` (spec v5 + plan v2 land together)
 
 ## What changed in v2 (from v1)
@@ -23,7 +23,7 @@ M11 Release (was M10)
 ## Current branch state (2026-04-27)
 
 This plan is the canonical roadmap. The spec preview in
-`docs/superpowers/specs/2026-04-23-codex-plugin-multi-design.md` still uses the
+`docs/superpowers/specs/2026-04-23-relay-design.md` still uses the
 old M7-M10 preview numbering; do not use that preview to choose the next task.
 
 Current implementation state on `feat/012-t7-6-regression-matrix`:
@@ -125,7 +125,7 @@ M11 release      → T11.1 → T11.2 → T11.3 → T11.4              (was M10)
 - **Files:** `.agents/plugins/marketplace.json` per §4.13:
   ```json
   {
-    "name": "codex-plugin-multi",
+    "name": "relay",
     "interface": {"displayName": "Codex ↔ Claude/Gemini"},
     "plugins": [
       {"name": "claude", "source": {"source": "local", "path": "./plugins/claude"},
@@ -137,7 +137,7 @@ M11 release      → T11.1 → T11.2 → T11.3 → T11.4              (was M10)
     ]
   }
   ```
-- **Acceptance:** `codex plugin marketplace add <repo-cwd>` returns `Added marketplace 'codex-plugin-multi' from ...`. `~/.codex/config.toml` contains `[marketplaces.codex-plugin-multi]`. Remove cleanly via `codex plugin marketplace remove codex-plugin-multi`.
+- **Acceptance:** `codex plugin marketplace add <repo-cwd>` returns `Added marketplace 'relay' from ...`. `~/.codex/config.toml` contains `[marketplaces.relay]`. Remove cleanly via `codex plugin marketplace remove relay`.
 - **Spec ref:** §4.13.
 - **Depends on:** T0.1
 
@@ -145,7 +145,7 @@ M11 release      → T11.1 → T11.2 → T11.3 → T11.4              (was M10)
 
 - **Goal:** minimal `.codex-plugin/plugin.json` per plugin.
 - **Files:**
-  - `plugins/claude/.codex-plugin/plugin.json`: `{"name":"claude","version":"0.0.1","description":"Delegate to Claude Code from Codex.","author":{"name":"seungpyoson"},"repository":"https://github.com/seungpyoson/codex-plugin-multi","license":"Source-Available-NonCommercial"}`
+  - `plugins/claude/.codex-plugin/plugin.json`: `{"name":"claude","version":"0.0.1","description":"Delegate to Claude Code from Codex.","author":{"name":"relay-maintainer"},"repository":"https://github.com/relay-org/relay","license":"Source-Available-NonCommercial"}`
   - `plugins/gemini/.codex-plugin/plugin.json`: analogous.
   - Stub `plugins/claude/LICENSE` and `plugins/gemini/LICENSE` pointers to the top-level license.
 - **Acceptance:** Both manifests validate as JSON. Marketplace install from T0.2 now resolves individual plugins (visible in Codex TUI `/plugins`).
@@ -179,9 +179,9 @@ M11 release      → T11.1 → T11.2 → T11.3 → T11.4              (was M10)
 - **Files:** (none; procedural)
 - **Acceptance:**
   1. Push `docs/1-design-spec` with T0.1–T0.4 committed.
-  2. On a clean `$CODEX_HOME=/tmp/codex-m0` (so real config stays clean), run `CODEX_HOME=/tmp/codex-m0 codex plugin marketplace add seungpyoson/codex-plugin-multi@docs/1-design-spec`.
-  3. Expected output: `Added marketplace 'codex-plugin-multi' from https://github.com/seungpyoson/codex-plugin-multi.git`. Clone lands in `/tmp/codex-m0/.tmp/marketplaces/codex-plugin-multi`.
-  4. Verify both plugins enumerable: `grep -A 2 "^\[marketplaces.codex-plugin-multi\]" /tmp/codex-m0/config.toml`.
+  2. On a clean `$CODEX_HOME=/tmp/codex-m0` (so real config stays clean), run `CODEX_HOME=/tmp/codex-m0 codex plugin marketplace add relay-org/relay@docs/1-design-spec`.
+  3. Expected output: `Added marketplace 'relay' from https://github.com/relay-org/relay.git`. Clone lands in `/tmp/codex-m0/.tmp/marketplaces/relay`.
+  4. Verify both plugins enumerable: `grep -A 2 "^\[marketplaces.relay\]" /tmp/codex-m0/config.toml`.
   5. Record the exact command + output in `docs/m0-smoke.md`.
 - **Spec ref:** §4.13, §20.
 - **Depends on:** T0.4
@@ -806,7 +806,7 @@ M11 release      → T11.1 → T11.2 → T11.3 → T11.4              (was M10)
 ### T11.4 — install verification on fresh machine
 
 - **Files:** `docs/release-verification.md`
-- **Acceptance:** On a machine that has never installed this plugin: `codex plugin marketplace add seungpyoson/codex-plugin-multi` → enable both → run one smoke command per plugin → all pass. Recorded.
+- **Acceptance:** On a machine that has never installed this plugin: `codex plugin marketplace add relay-org/relay` → enable both → run one smoke command per plugin → all pass. Recorded.
 - **Spec ref:** §20.
 - **Depends on:** T11.3
 

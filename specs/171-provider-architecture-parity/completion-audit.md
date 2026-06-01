@@ -1,8 +1,8 @@
 # Completion Audit
 
 Date: 2026-05-25
-Repo: `/Users/spson/Projects/Claude/codex-plugin-multi`
-Worktree: `/Users/spson/Projects/Claude/codex-plugin-multi/.worktrees/provider-architecture-parity-171`
+Repo: `~/projects/relay`
+Worktree: `~/projects/relay/.worktrees/provider-architecture-parity-171`
 Branch: `goal/provider-architecture-parity-171`
 
 ## Current Status
@@ -30,7 +30,7 @@ Implementation has an additional Kimi prompt-only adapter compatibility change a
 | `node --test --test-name-pattern "explicit sent source transmission|source packet policy transmission|no-source resume progress" tests/unit/companion-common.test.mjs` | Passed after lifecycle source-state coverage. |
 | `node --test --test-name-pattern "plugin packaging copies expose|explicit sent source transmission|source packet policy transmission" tests/unit/companion-common.test.mjs` | Passed after plugin-copy lifecycle coverage. |
 | `CODEX_PLUGIN_SKIP_SMOKE=1 CODEX_PLUGIN_FULL_TESTS=1 npm run test:coverage` | Passed; copied `companion-common` branch coverage rose above baseline. |
-| `gh pr checks 175 --repo seungpyoson/codex-plugin-multi` | Pending on the current PR head. Historical head `d13ffdf44918ff12bcd54b6caa94e0b4375b1778` had passed SonarCloud, lint, smoke api-reviewers, smoke claude, smoke gemini, smoke grok, smoke kimi, and test. |
+| `gh pr checks 175 --repo relay-org/relay` | Pending on the current PR head. Historical head `d13ffdf44918ff12bcd54b6caa94e0b4375b1778` had passed SonarCloud, lint, smoke api-reviewers, smoke claude, smoke gemini, smoke grok, smoke kimi, and test. |
 | `node --test tests/unit/kimi-dispatcher.test.mjs` | Passed after Kimi prompt-only launch change, 29 tests. |
 | `node --test tests/smoke/kimi-companion.smoke.test.mjs` | Passed after Kimi prompt-only launch change, 81 tests. |
 | `node --check plugins/grok/scripts/grok-web-reviewer.mjs` | Passed after mode-derived Grok source-bearing change. |

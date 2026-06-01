@@ -5,10 +5,10 @@
   "private": true,
   "type": "module",
   "license": "AGPL-3.0-only",
-  "author": "Seungpyo Son",
+  "author": "relay-maintainer",
   "repository": {
     "type": "git",
-    "url": "https://github.com/seungpyoson/relay.git"
+    "url": "https://github.com/relay-org/relay.git"
   },
   "engines": {
     "node": ">=20.0.0"

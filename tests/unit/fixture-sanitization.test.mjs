@@ -324,7 +324,7 @@ test("sanitize: companion architecture redacts session-id fields", () => {
     gemini_session_id: null,
     kimi_session_id: null,
     result: "review verdict approved",
-    cwd: "/Users/spson/Projects/foo",
+    cwd: "/home/user/projects/foo",
   };
   const out = sanitize(record, { architecture: "companion", env: {} });
   assert.equal(out.claude_session_id, REDACTED,
@@ -334,7 +334,7 @@ test("sanitize: companion architecture redacts session-id fields", () => {
   assert.equal(out.kimi_session_id, null);
   assert.equal(out.result, "review verdict approved",
     "non-secret content survives");
-  assert.equal(out.cwd, "/Users/<user>/Projects/foo",
+  assert.equal(out.cwd, "/home/<user>/projects/foo",
     "absolute home path scrubbed");
   assert.equal(out.job_id, "11111111-2222-4333-8444-555555555555",
     "non-secret job_id survives");

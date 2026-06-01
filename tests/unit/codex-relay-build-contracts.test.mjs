@@ -23,10 +23,10 @@ function writeApiReviewersSource(repoRoot) {
     name: "api-reviewers",
     version: "0.1.0",
     description: "Delegate code reviews to direct API providers from within Codex.",
-    author: { name: "seungpyoson" },
+    author: { name: "relay-maintainer" },
     license: "AGPL-3.0-only",
-    homepage: "https://github.com/seungpyoson/relay",
-    repository: "https://github.com/seungpyoson/relay",
+    homepage: "https://github.com/relay-org/relay",
+    repository: "https://github.com/relay-org/relay",
     interface: {},
   });
   writeJson(path.join(sourceRoot, "config", "providers.json"), {

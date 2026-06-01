@@ -3,7 +3,7 @@
 **Feature Branch**: `goal/provider-architecture-parity-171`
 **Created**: 2026-05-24
 **Status**: Revised after operator correction
-**Input**: `/Users/spson/Downloads/prompts/1-provider-neutral-shared-policy-audit-goal.md`
+**Input**: `~/Downloads/prompts/1-provider-neutral-shared-policy-audit-goal.md`
 **Root Problems**: `specs/171-provider-architecture-parity/root-problems.md`
 
 ## Clarified Requirement

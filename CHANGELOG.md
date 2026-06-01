@@ -110,7 +110,7 @@
   current TUI slash-command registry only dispatches built-ins.
 - Diagnostic ping command docs are deferred until upstream Codex exposes plugin
   command files through the TUI. Tracked in
-  https://github.com/seungpyoson/codex-plugin-multi/issues/13.
+  https://github.com/relay-org/relay/issues/13.
 - Live Claude/Gemini/Kimi E2E tests require local OAuth state and are opt-in,
   not CI defaults.
 - Scope tests include intentionally broad object-pure safety coverage and remain

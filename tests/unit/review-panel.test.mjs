@@ -681,7 +681,7 @@ function writerDefaultDataRoot(pluginName, cwd) {
   const workspace = resolve(cwd);
   const slug = basename(workspace).replace(/[^A-Za-z0-9._-]/g, "_").slice(0, 48) || "workspace";
   const hash = createHash("sha256").update(workspace).digest("hex").slice(0, 16);
-  return resolve(tmpdir(), "codex-plugin-multi", pluginName, `${slug}-${hash}`);
+  return resolve(tmpdir(), "relay", pluginName, `${slug}-${hash}`);
 }
 
 function companionStateIdForWorkspaceRoot(workspaceRoot) {

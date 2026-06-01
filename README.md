@@ -43,11 +43,11 @@ direct-API implementation remains a hidden runtime package named
   `GROK_TRANSPORT=auto`. The web path targets grok2api at
   `GROK_WEB_BASE_URL=http://127.0.0.1:8000/v1`; the plugin can bootstrap a
   local grok2api checkout into its durable managed runtime directory,
-  defaulting to `~/.codex-plugin-multi/runtime/grok2api`, and auto-start the
+  defaulting to `~/.relay/runtime/grok2api`, and auto-start the
   non-Docker `uv run granian ... app.main:app` tunnel when it is down.
   Successfully auto-started tunnels are left running for reuse; failed starts
   are cleaned up with SIGTERM/verify/SIGKILL diagnostics. Set `GROK2API_HOME`,
-  `GROK2API_BOOTSTRAP_DIR`, or `CODEX_PLUGIN_MULTI_RUNTIME_DIR` only when you
+  `GROK2API_BOOTSTRAP_DIR`, or `RELAY_RUNTIME_DIR` only when you
   want a specific checkout or runtime directory. `GROK2API_HOME` and
   `GROK2API_BOOTSTRAP_DIR` are authoritative: if either points at a stale or
   invalid location, doctor reports that path instead of silently falling back.
@@ -268,7 +268,7 @@ background terminal counts or prose.
 From Codex:
 
 ```bash
-codex plugin marketplace add seungpyoson/relay
+codex plugin marketplace add relay-org/relay
 ```
 
 Then enable the plugins you want:
@@ -471,7 +471,7 @@ Use relay-deepseek:deepseek-custom-review to review selected files.
 The slash-command files remain packaged for the intended future slash-command
 surface, except diagnostic ping command docs are deferred until upstream Codex
 registers plugin command files. The ping follow-up is tracked in
-https://github.com/seungpyoson/relay/issues/13. Example future
+https://github.com/relay-org/relay/issues/13. Example future
 command docs:
 
 ```text
@@ -563,7 +563,7 @@ inspect the terminal record.
 - **Host-owned pre-launch denials stay outside companion control.** If Codex
   blocks an external provider review before launching the companion process, the
   plugin cannot emit a JobRecord. That host-owned gap is tracked in
-  https://github.com/seungpyoson/relay/issues/13. Choose
+  https://github.com/relay-org/relay/issues/13. Choose
   an approved provider, run local/Codex-only review, or use `preflight` to
   inspect disclosure before requesting an external review.
 - **Rescue is write-capable.** Rescue modes are intended for investigation and
@@ -645,7 +645,7 @@ For Grok, nested `session_diagnostics`, `chat_probe`, and
 HTTP 429 text so an empty grok2api account pool maps to `session_tokens`.
 
 `no-mistakes` remains configured, but it is not authoritative merge evidence
-while https://github.com/seungpyoson/claude-config/issues/780 is open. Use
+while https://github.com/claude-code-oss/claude-config/issues/780 is open. Use
 direct local verification and GitHub CI as the readiness evidence until that
 review/fix-loop issue is resolved.
 
@@ -672,7 +672,7 @@ Repository layout:
   docs/architecture-record.md
   docs/e2e.md
   docs/release-verification.md
-  docs/superpowers/specs/2026-04-23-codex-plugin-multi-design.md
+  docs/superpowers/specs/2026-04-23-relay-design.md
   docs/archive/
   scripts/ci/check-manifests.mjs
   scripts/provider-readiness-manifest.mjs

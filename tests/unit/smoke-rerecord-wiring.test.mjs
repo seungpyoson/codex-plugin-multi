@@ -321,7 +321,7 @@ describe("derivePromptForHash — explicit-anchor-only detection", () => {
     const args = [
       "run",
       "--mode=custom-review",
-      "--scope-paths", "/Users/dev/src/codex-plugin-multi/scripts/lib/plugin-targets.mjs",
+      "--scope-paths", "/Users/dev/src/relay/scripts/lib/plugin-targets.mjs",
     ];
     assert.equal(derivePromptForHash(args), "");
   });

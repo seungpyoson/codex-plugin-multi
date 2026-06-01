@@ -309,7 +309,7 @@ function recordsFromCompanionProvider({ env, fallback }, processEnv) {
 }
 
 function directFallbackStateRoot(plugin) {
-  return resolve(tmpdir(), "codex-plugin-multi", plugin);
+  return resolve(tmpdir(), "relay", plugin);
 }
 
 function recordsFromDirectProvider({ env, plugin }, processEnv) {

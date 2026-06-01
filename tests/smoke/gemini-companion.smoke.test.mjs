@@ -1783,20 +1783,20 @@ test("gemini review prompt uses git repository identity instead of local workspa
   const cwd = mkdtempSync(path.join(tmpdir(), "gemini-repo-identity-cwd-"));
   seedMinimalRepo(cwd);
   assert.equal(
-    fixtureGit(cwd, ["remote", "add", "origin", "git@github.com:seungpyoson/provider-prompt-fixture.git"]).status,
+    fixtureGit(cwd, ["remote", "add", "origin", "git@github.com:relay-org/provider-prompt-fixture.git"]).status,
     0,
   );
   const { stdout, stderr, status, dataDir } = runCompanion(
     ["run", "--mode=review", "--foreground", "--cwd", cwd, "--", "review selected source"],
     { cwd, env: {
-      GEMINI_MOCK_ASSERT_PROMPT_INCLUDES: "Repository: seungpyoson/provider-prompt-fixture",
+      GEMINI_MOCK_ASSERT_PROMPT_INCLUDES: "Repository: relay-org/provider-prompt-fixture",
       GEMINI_MOCK_ASSERT_PROMPT_EXCLUDES: cwd,
     } },
   );
   try {
     assert.equal(status, 0, `exit ${status}: ${stderr}; stdout=${stdout}`);
     const record = JSON.parse(stdout);
-    assert.equal(record.review_metadata.audit_manifest.git_identity.remote, "seungpyoson/provider-prompt-fixture");
+    assert.equal(record.review_metadata.audit_manifest.git_identity.remote, "relay-org/provider-prompt-fixture");
   } finally {
     rmTree(dataDir);
     rmTree(cwd);

@@ -7,12 +7,12 @@ Initial readiness/root-cause proof was source-free. A later T077 follow-up sent 
 - `api-reviewer doctor --provider deepseek` / `glm` can fail as `command not found` when the installed package does not expose an `api-reviewer` bin shim.
 - Repo-root-relative docs such as `node plugins/api-reviewers/scripts/api-reviewer.mjs ...` fail outside the repo root. Direct proof from `/private/tmp`: Node resolved `/private/tmp/plugins/api-reviewers/scripts/api-reviewer.mjs` and exited `MODULE_NOT_FOUND`.
 - `missing_key` means the current process cannot see any non-empty configured credential env var. It is not evidence of provider outage by itself.
-- Follow-up root cause: direct API key visibility was cwd/session-env dependent. In this session, `node -e` showed `DEEPSEEK_API_KEY` and `ZAI_API_KEY` present from `/Users/spson/Projects/Claude/codex-plugin-multi`, but absent from `/private/tmp`, `/private/tmp/bolt-v2-433-review-fix`, `/Users/spson/Projects/Claude/bolt-v2`, and `/Users/spson/Projects/Claude/bolt-v2/.worktrees/023-plan-whole-review`. The prior failed session launched installed-cache doctors from `/private/tmp/bolt-v2-433-review-fix`, matching the reproduced absent-env surface. GLM has one supported credential path: `ZAI_API_KEY`.
+- Follow-up root cause: direct API key visibility was cwd/session-env dependent. In this session, `node -e` showed `DEEPSEEK_API_KEY` and `ZAI_API_KEY` present from `~/projects/relay`, but absent from `/private/tmp`, `/private/tmp/bolt-v2-433-review-fix`, `~/projects/bolt-v2`, and `~/projects/bolt-v2/.worktrees/023-plan-whole-review`. The prior failed session launched installed-cache doctors from `/private/tmp/bolt-v2-433-review-fix`, matching the reproduced absent-env surface. GLM has one supported credential path: `ZAI_API_KEY`.
 - The documented owner-only 1Password env cache exists at `~/.cache/op/env.sh`, mode `600`, and contains the required key names. Values were not printed.
 
 ## Local RED/GREEN proof
 
-- RED `node --test --test-name-pattern "external model contract docs are generated" tests/unit/external-model-contracts.test.mjs` failed because generated API reviewer docs still required caller cwd to be the `codex-plugin-multi` repo root.
+- RED `node --test --test-name-pattern "external model contract docs are generated" tests/unit/external-model-contracts.test.mjs` failed because generated API reviewer docs still required caller cwd to be the `relay` repo root.
 - GREEN generated command docs now use `../scripts/api-reviewer.mjs`; generated skill docs now use `../../scripts/api-reviewer.mjs`.
 - RED `node --test --test-name-pattern "api-reviewers package exposes" tests/unit/manifests.test.mjs` failed because `plugins/api-reviewers/package.json` had no `bin`.
 - GREEN `plugins/api-reviewers/package.json` exposes `api-reviewer`, with executable shim `plugins/api-reviewers/bin/api-reviewer`.
@@ -64,11 +64,11 @@ Post one-path GLM proof:
 
 Patched cwd-independent proof:
 
-- Command from `/private/tmp`: `node /Users/spson/Projects/Claude/codex-plugin-multi/plugins/api-reviewers/scripts/api-reviewer.mjs doctor --provider deepseek`
+- Command from `/private/tmp`: `node ~/projects/relay/plugins/api-reviewers/scripts/api-reviewer.mjs doctor --provider deepseek`
 - Result: `ready:true`, HTTP `200`, `credential_ref:"DEEPSEEK_API_KEY"`, `source_content_transmission:"not_sent"`.
-- Command from `/private/tmp`: `node /Users/spson/Projects/Claude/codex-plugin-multi/plugins/api-reviewers/scripts/api-reviewer.mjs doctor --provider glm`
+- Command from `/private/tmp`: `node ~/projects/relay/plugins/api-reviewers/scripts/api-reviewer.mjs doctor --provider glm`
 - Result: `ready:true`, HTTP `200`, `credential_ref:"ZAI_API_KEY"`, `source_content_transmission:"not_sent"`.
-- Commands from `/Users/spson/Projects/Claude/bolt-v2/.worktrees/023-plan-whole-review` using the patched repo script also returned DeepSeek and GLM `ready:true`, HTTP `200`, and `source_content_transmission:"not_sent"`.
+- Commands from `~/projects/bolt-v2/.worktrees/023-plan-whole-review` using the patched repo script also returned DeepSeek and GLM `ready:true`, HTTP `200`, and `source_content_transmission:"not_sent"`.
 
 ## T077 source-bearing review proof
 

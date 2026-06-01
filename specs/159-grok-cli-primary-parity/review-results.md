@@ -209,7 +209,7 @@ the failed source-bearing slot must be split, switched, waived, or explicitly
 overridden before another same-packet attempt. This GLM slot does not count as
 approval.
 
-Operator waiver: on 2026-05-28 KST, the operator explicitly approved skipping
+Operator waiver: on 2026-05-28 local time, the operator explicitly approved skipping
 the failed GLM slot for this #159 final implementation gate. The waiver is only
 for this unavailable GLM review slot. It does not treat GLM as approving, does
 not waive the failed-slot behavior generally, and does not approve push, PR,

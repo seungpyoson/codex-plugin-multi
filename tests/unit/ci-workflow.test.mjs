@@ -10,7 +10,7 @@ const workflow = readFileSync(resolve(".github/workflows/pull-request-ci.yml"), 
 const smokeRerecordWorkflow = readFileSync(resolve(".github/workflows/smoke-rerecord.yml"), "utf8");
 const e2eDocs = readFileSync(resolve("docs/e2e.md"), "utf8");
 const reviewEnforcementDocs = readFileSync(resolve("docs/review-enforcement.md"), "utf8");
-const designSpec = readFileSync(resolve("docs/superpowers/specs/2026-04-23-codex-plugin-multi-design.md"), "utf8");
+const designSpec = readFileSync(resolve("docs/superpowers/specs/2026-04-23-relay-design.md"), "utf8");
 const architectureRecord = readFileSync(resolve("docs/architecture-record.md"), "utf8");
 const sonarConfig = readFileSync(resolve(".sonarcloud.properties"), "utf8");
 const noMistakesConfig = readFileSync(resolve(".no-mistakes.yaml"), "utf8");
@@ -106,7 +106,7 @@ test("aggregate test runner serializes files to isolate smoke provider resources
 test("manual external review relays are not merge gates", () => {
   assert.equal(existsSync(resolve(".github/workflows/manual-review-gate.yml")), false);
   assert.doesNotMatch(reviewEnforcementDocs, /manual-review-gate/);
-  assert.doesNotMatch(reviewEnforcementDocs, /codex-plugin-multi:manual-external-adversarial-review/);
+  assert.doesNotMatch(reviewEnforcementDocs, /relay:manual-external-adversarial-review/);
   assert.doesNotMatch(reviewEnforcementDocs, /manual relay/i);
 });
 

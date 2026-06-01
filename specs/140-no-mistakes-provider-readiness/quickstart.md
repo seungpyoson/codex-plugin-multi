@@ -200,7 +200,7 @@ npm ci && npm run lint && npm run test:full
 ```
 
 Keep the gate configured, but do not use no-mistakes as authoritative readiness
-evidence while `seungpyoson/claude-config#780` is open. That bug can leave the
+evidence while `claude-code-oss/claude-config#780` is open. That bug can leave the
 review/fix loop non-deterministic after partial fixes. Use direct local
 verification plus GitHub CI for merge readiness until the shared tooling issue
 is fixed.

@@ -12,7 +12,7 @@ const GATE_POLL_MS = 25;
 const GATE_OWNER_FILE = "owner.json";
 
 function lockRoot(env = process.env) {
-  return env[LOCK_ENV] || join(tmpdir(), "codex-plugin-multi", "provider-workload");
+  return env[LOCK_ENV] || join(tmpdir(), "relay", "provider-workload");
 }
 
 function trimEdgeHyphens(value) {

@@ -7,10 +7,10 @@ Scope: source-free readiness only. No selected source was sent by any command in
 Command:
 
 ```sh
-node plugins/claude/scripts/claude-companion.mjs doctor --auth-mode subscription --cwd /Users/spson/Projects/Claude/codex-plugin-multi
+node plugins/claude/scripts/claude-companion.mjs doctor --auth-mode subscription --cwd ~/projects/relay
 ```
 
-Observed at `2026-05-22 05:19:01 KST`.
+Observed at `2026-05-22 05:19:01 local time`.
 
 Result:
 
@@ -24,7 +24,7 @@ Result:
 - `auth_policy:"api_key_env_ignored"`
 - `source_send_approval_required:false`
 - `source_send_approval_state:"not_required"`
-- `detail:"You've hit your session limit · resets 6:10am (Asia/Seoul)"`
+- `detail:"You've hit your session limit · resets operator timezone reset time (operator timezone)"`
 
 Interpretation: current Claude readiness is blocked by subscription session limit before any source send. This supersedes older same-session ready notes until a fresh source-free doctor succeeds.
 
@@ -32,11 +32,11 @@ Interpretation: current Claude readiness is blocked by subscription session limi
 
 Same command, no selected source provided.
 
-- `2026-05-22 06:11 KST`: `ready:true`, `status:"ok"`, `selected_route:"subscription_oauth"`, `source_send_approval_state:"not_required"`, ignored `ANTHROPIC_API_KEY`, model `claude-opus-4-7`.
+- `2026-05-22 06:11 local time`: `ready:true`, `status:"ok"`, `selected_route:"subscription_oauth"`, `source_send_approval_state:"not_required"`, ignored `ANTHROPIC_API_KEY`, model `claude-opus-4-7`.
 - T078 source-bearing Claude C2 then sent the approved 5-file source packet and completed as job `98c59d7b-60fe-4cc9-ad09-cbb67fff2ea1` with `review_quality.failed_review_slot:false`.
-- `2026-05-22 06:23 KST`: immediate fresh pre-send doctor for the next Claude source-bearing packet returned `status:"oauth_inference_rejected"`, `ready:false`, `selected_route:"subscription_oauth"`, `fallback_reason:null`, ignored `ANTHROPIC_API_KEY`, `auth_policy:"api_key_env_ignored"`, `source_send_approval_required:false`, `source_send_approval_state:"not_required"`, OAuth `logged_in:true`, `auth_method:"claude.ai"`, `api_provider:"firstParty"`, `subscription_type:"max"`, and `detail:"Failed to authenticate. API Error: 401 Invalid authentication credentials"`.
-- `2026-05-22 06:27 KST`: source-free T080 pre-check returned the same `status:"oauth_inference_rejected"`, `ready:false`, `selected_route:"subscription_oauth"`, `fallback_reason:null`, ignored `ANTHROPIC_API_KEY`, `auth_policy:"api_key_env_ignored"`, `source_send_approval_required:false`, `source_send_approval_state:"not_required"`, OAuth `logged_in:true`, `auth_method:"claude.ai"`, `api_provider:"firstParty"`, `subscription_type:"max"`, and `detail:"Failed to authenticate. API Error: 401 Invalid authentication credentials"`.
-- `2026-05-22 06:46 KST`: source-free recheck returned the same `status:"oauth_inference_rejected"`, `ready:false`, `selected_route:"subscription_oauth"`, `fallback_reason:null`, ignored `ANTHROPIC_API_KEY`, `auth_policy:"api_key_env_ignored"`, `source_send_approval_required:false`, `source_send_approval_state:"not_required"`, OAuth `logged_in:true`, `auth_method:"claude.ai"`, `api_provider:"firstParty"`, `subscription_type:"max"`, and `detail:"Failed to authenticate. API Error: 401 Invalid authentication credentials"`.
+- `2026-05-22 06:23 local time`: immediate fresh pre-send doctor for the next Claude source-bearing packet returned `status:"oauth_inference_rejected"`, `ready:false`, `selected_route:"subscription_oauth"`, `fallback_reason:null`, ignored `ANTHROPIC_API_KEY`, `auth_policy:"api_key_env_ignored"`, `source_send_approval_required:false`, `source_send_approval_state:"not_required"`, OAuth `logged_in:true`, `auth_method:"oauth"`, `api_provider:"firstParty"`, `subscription_type:"subscription"`, and `detail:"Failed to authenticate. API Error: 401 Invalid authentication credentials"`.
+- `2026-05-22 06:27 local time`: source-free T080 pre-check returned the same `status:"oauth_inference_rejected"`, `ready:false`, `selected_route:"subscription_oauth"`, `fallback_reason:null`, ignored `ANTHROPIC_API_KEY`, `auth_policy:"api_key_env_ignored"`, `source_send_approval_required:false`, `source_send_approval_state:"not_required"`, OAuth `logged_in:true`, `auth_method:"oauth"`, `api_provider:"firstParty"`, `subscription_type:"subscription"`, and `detail:"Failed to authenticate. API Error: 401 Invalid authentication credentials"`.
+- `2026-05-22 06:46 local time`: source-free recheck returned the same `status:"oauth_inference_rejected"`, `ready:false`, `selected_route:"subscription_oauth"`, `fallback_reason:null`, ignored `ANTHROPIC_API_KEY`, `auth_policy:"api_key_env_ignored"`, `source_send_approval_required:false`, `source_send_approval_state:"not_required"`, OAuth `logged_in:true`, `auth_method:"oauth"`, `api_provider:"firstParty"`, `subscription_type:"subscription"`, and `detail:"Failed to authenticate. API Error: 401 Invalid authentication credentials"`.
 - No source was sent by any source-free doctor in this section.
 
 Interpretation: Claude readiness is route-correct and non-API-fallback, but current live readiness can still flip from ready to OAuth 401 before the next source send. Latest proof is OAuth non-interactive inference rejection, not session-limit text. Every source-bearing Claude run still needs immediate source-free proof.
@@ -46,10 +46,10 @@ Interpretation: Claude readiness is route-correct and non-API-fallback, but curr
 Command:
 
 ```sh
-node plugins/claude/scripts/claude-companion.mjs doctor --auth-mode api_key --cwd /Users/spson/Projects/Claude/codex-plugin-multi
+node plugins/claude/scripts/claude-companion.mjs doctor --auth-mode api_key --cwd ~/projects/relay
 ```
 
-Observed at `2026-05-22 06:27 KST`.
+Observed at `2026-05-22 06:27 local time`.
 
 Result:
 
@@ -70,7 +70,7 @@ Interpretation: Claude API-key auth is still available when explicitly selected.
 
 ## Claude Explicit API Source-Send Approval Gate
 
-Observed at `2026-05-22 06:45 KST`.
+Observed at `2026-05-22 06:45 local time`.
 
 Local RED/GREEN proof:
 
@@ -95,7 +95,7 @@ Interpretation: Claude API is available only through explicit route selection an
 
 ## Claude Approval Runtime A2 Adjudication
 
-Observed at `2026-05-22 11:30 KST`.
+Observed at `2026-05-22 11:30 local time`.
 
 Gemini A2 `REQUEST_CHANGES` was partially valid:
 
@@ -115,11 +115,11 @@ Interpretation: the A2 sidecar cleanup blocker is fixed locally. The JobRecord t
 
 ## Claude Approval Runtime A3 Review And B1 Fix
 
-Observed at `2026-05-22 11:48 KST`.
+Observed at `2026-05-22 11:48 local time`.
 
 Source-free pre-send proof:
 
-- `node plugins/claude/scripts/claude-companion.mjs doctor --auth-mode subscription --cwd /Users/spson/Projects/Claude/codex-plugin-multi` returned `status:"ok"`, `ready:true`, `selected_route:"subscription_oauth"`, `fallback_reason:null`, `source_send_approval_state:"not_required"`, ignored `ANTHROPIC_API_KEY`, model `claude-opus-4-7`, and session `a6681887-2d40-4399-9352-bb93632d5d41`. No selected source was provided.
+- `node plugins/claude/scripts/claude-companion.mjs doctor --auth-mode subscription --cwd ~/projects/relay` returned `status:"ok"`, `ready:true`, `selected_route:"subscription_oauth"`, `fallback_reason:null`, `source_send_approval_state:"not_required"`, ignored `ANTHROPIC_API_KEY`, model `claude-opus-4-7`, and session `a6681887-2d40-4399-9352-bb93632d5d41`. No selected source was provided.
 
 A3 review scope was 5 files / 487147 bytes / 8601 lines:
 
@@ -236,7 +236,7 @@ Interpretation: T079's Claude OAuth/API route decision is closed by live source-
 
 ## Source-Free Provider Matrix
 
-Observed at `2026-05-22 05:29:19 KST`.
+Observed at `2026-05-22 05:29:19 local time`.
 
 | Provider | Command | Result | Route/auth facts | Source |
 | --- | --- | --- | --- | --- |
@@ -249,11 +249,11 @@ Observed at `2026-05-22 05:29:19 KST`.
 
 ## Current Source-Free Provider Matrix
 
-Observed at `2026-05-22 06:46-06:48 KST`. No selected source was provided to any command.
+Observed at `2026-05-22 06:46-06:48 local time`. No selected source was provided to any command.
 
 | Provider | Command | Result | Route/auth facts | Source |
 | --- | --- | --- | --- | --- |
-| Claude | `node plugins/claude/scripts/claude-companion.mjs doctor --auth-mode subscription --cwd /Users/spson/Projects/Claude/codex-plugin-multi` | `ready:false`, `status:"oauth_inference_rejected"` | `selected_route:"subscription_oauth"`, `fallback_reason:null`, ignored `ANTHROPIC_API_KEY`, OAuth `logged_in:true`, `subscription_type:"max"`, detail `API Error: 401 Invalid authentication credentials` | not sent |
+| Claude | `node plugins/claude/scripts/claude-companion.mjs doctor --auth-mode subscription --cwd ~/projects/relay` | `ready:false`, `status:"oauth_inference_rejected"` | `selected_route:"subscription_oauth"`, `fallback_reason:null`, ignored `ANTHROPIC_API_KEY`, OAuth `logged_in:true`, `subscription_type:"subscription"`, detail `API Error: 401 Invalid authentication credentials` | not sent |
 | Gemini | `node plugins/gemini/scripts/gemini-companion.mjs doctor` | `ready:true` | `selected_route:"subscription_oauth"`, ignored `GEMINI_API_KEY`, model `gemini-3.1-pro-preview` | not sent |
 | Kimi | `node plugins/kimi/scripts/kimi-companion.mjs doctor` | `ready:true` | `selected_route:"subscription_oauth"`, ignored `KIMI_CODE_API_KEY` and `MOONSHOT_API_KEY`, model `kimi-code/kimi-for-coding` | not sent |
 | Grok CLI | `node plugins/grok/scripts/grok-web-reviewer.mjs doctor` | `ready:false` | `auth_mode:"subscription_cli"`, `logged_in:false`, `model_ready:true`, `error_code:"grok_cli_login_required"`, ignored `XAI_API_KEY` | not sent |
@@ -269,23 +269,23 @@ Interpretation:
 
 ## T081 current Claude source-free blocker
 
-Observed at `2026-05-22 13:29 KST`. No selected source was provided or sent.
+Observed at `2026-05-22 13:29 local time`. No selected source was provided or sent.
 
 Subscription route probe:
 
-- Command: `node plugins/claude/scripts/claude-companion.mjs doctor --auth-mode subscription --cwd /Users/spson/Projects/Claude/codex-plugin-multi --timeout-ms 20000`
+- Command: `node plugins/claude/scripts/claude-companion.mjs doctor --auth-mode subscription --cwd ~/projects/relay --timeout-ms 20000`
 - Result: `ready:false`, `status:"error"`, `selected_route:"subscription_oauth"`, `fallback_reason:null`, `selected_auth_path:"subscription_oauth"`, `ignored_env_credentials:["ANTHROPIC_API_KEY"]`, `auth_policy:"api_key_env_ignored"`, `source_send_approval_state:"not_required"`, `exit_code:143`, and `detail:"target CLI exceeded the configured timeoutMs\nexit 143"`.
 - Interpretation: subscription readiness is not clean enough for a T081 source-bearing Claude send.
 
 Explicit API route probe:
 
-- Command: `node plugins/claude/scripts/claude-companion.mjs doctor --auth-mode api_key --cwd /Users/spson/Projects/Claude/codex-plugin-multi --timeout-ms 20000`
+- Command: `node plugins/claude/scripts/claude-companion.mjs doctor --auth-mode api_key --cwd ~/projects/relay --timeout-ms 20000`
 - Result: `ready:false`, `selected_route:"direct_api"`, `fallback_reason:"explicit_api"`, `status:"rate_limited"`, `selected_auth_path:"api_key_env"`, `allowed_env_credentials:["ANTHROPIC_API_KEY"]`, `auth_policy:"api_key_env_allowed"`, `source_send_approval_state:"not_required"`, and `detail:"API Error: Repeated 529 Overloaded errors. The API is at capacity -- this is usually temporary. Try again in a moment. If it persists, check status.claude.com."`
 - Interpretation: Claude API still exists and is explicit-route only, but current source-free readiness is blocked by provider overload. Source-bearing API review remains approval-gated and was not launched.
 
 ## T081 closure follow-up
 
-Observed at `2026-05-22 14:12 KST`.
+Observed at `2026-05-22 14:12 local time`.
 
 Claude/Opus availability investigation:
 

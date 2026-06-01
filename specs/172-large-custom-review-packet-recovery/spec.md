@@ -3,7 +3,7 @@
 **Feature Branch**: `goal/provider-reliability-172-large-custom-packet-recovery`
 **Created**: 2026-05-26
 **Status**: Implemented; final review evidence recorded
-**Input**: `/Users/spson/Downloads/prompts/codex-plugin-multi/2-provider-reliability-architecture-goal.md`
+**Input**: `~/Downloads/prompts/relay/2-provider-reliability-architecture-goal.md`
 **Issue**: #172
 
 ## Clarified Requirement

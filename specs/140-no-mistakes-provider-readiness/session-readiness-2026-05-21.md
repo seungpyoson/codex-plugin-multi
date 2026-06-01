@@ -6,10 +6,10 @@ Scope: source-free readiness only. No selected source was sent.
 
 | Provider | Probe | Result | Route/auth facts | Source |
 | --- | --- | --- | --- | --- |
-| Claude | `node plugins/claude/scripts/claude-companion.mjs doctor --auth-mode subscription --cwd /Users/spson/Projects/Claude/codex-plugin-multi` | ready | `status:"ok"`, `auth_mode:"subscription"`, `selected_auth_path:"subscription_oauth"`, `selected_route:"subscription_oauth"`, `fallback_reason:null`, ignored `ANTHROPIC_API_KEY`, `auth_policy:"api_key_env_ignored"`, model `claude-opus-4-7`, session `38d1af6d-e921-4370-bf73-ab81fae51aaf` | not sent |
+| Claude | `node plugins/claude/scripts/claude-companion.mjs doctor --auth-mode subscription --cwd ~/projects/relay` | ready | `status:"ok"`, `auth_mode:"subscription"`, `selected_auth_path:"subscription_oauth"`, `selected_route:"subscription_oauth"`, `fallback_reason:null`, ignored `ANTHROPIC_API_KEY`, `auth_policy:"api_key_env_ignored"`, model `claude-opus-4-7`, session `38d1af6d-e921-4370-bf73-ab81fae51aaf` | not sent |
 | Gemini | `node plugins/gemini/scripts/gemini-companion.mjs doctor` | ready | `auth_mode:"subscription"`, `selected_auth_path:"subscription_oauth"`, `selected_route:"subscription_oauth"`, `fallback_reason:null`, ignored `GEMINI_API_KEY`, model `gemini-3.1-pro-preview` | not sent |
 | Kimi | `node plugins/kimi/scripts/kimi-companion.mjs doctor` | ready | `selected_auth_path:"subscription_oauth"`, `selected_route:"subscription_oauth"`, `fallback_reason:null`, ignored `KIMI_CODE_API_KEY` and `MOONSHOT_API_KEY`, model `kimi-code/kimi-for-coding` | not sent |
-| Grok | `node plugins/grok/scripts/grok-web-reviewer.mjs doctor` | ready | `auth_mode:"subscription_cli"`, `transport:"cli"`, binary `/Users/spson/.grok/downloads/grok-0.1.212-macos-aarch64`, version `grok 0.1.212 (b7b8204a484)`, `logged_in:true`, `model_ready:true`, `source_free_prompt.status:"ready"`, `prompt_cleanup:"deleted"`, `grok_home_cleanup:"deleted"` | not sent |
+| Grok | `node plugins/grok/scripts/grok-web-reviewer.mjs doctor` | ready | `auth_mode:"subscription_cli"`, `transport:"cli"`, binary `~/.grok/downloads/grok-0.1.212-$ARCH`, version `grok 0.1.212 (b7b8204a484)`, `logged_in:true`, `model_ready:true`, `source_free_prompt.status:"ready"`, `prompt_cleanup:"deleted"`, `grok_home_cleanup:"deleted"` | not sent |
 | DeepSeek | `node plugins/api-reviewers/scripts/api-reviewer.mjs doctor --provider deepseek` | ready | `credential_ref:"DEEPSEEK_API_KEY"`, HTTP `200`, model `deepseek-v4-pro` | not sent |
 | GLM | `node plugins/api-reviewers/scripts/api-reviewer.mjs doctor --provider glm` | ready | `credential_ref:"ZAI_API_KEY"`, HTTP `200`, model `glm-5.1` | not sent |
 
@@ -23,7 +23,7 @@ The marketplace cache matches the installed cache, but the repo working tree doe
 
 - `cache_in_sync:true`
 - `repo_cache_in_sync:false`
-- Installed cache: `/Users/spson/.codex/plugins/cache/codex-plugin-multi/api-reviewers/0.1.0`
+- Installed cache: `~/.codex/plugins/cache/relay/api-reviewers/0.1.0`
 - Missing from the installed repo-cache comparison: `bin/api-reviewer`, `scripts/lib/external-model-failure-catalog.mjs`, `scripts/lib/external-model-failure-core.mjs`, `scripts/lib/external-model-review-quality.mjs`, `scripts/lib/provider-route-policy.mjs`
 
 This is installed-cache/consumer-UX drift only. It is not current-session provider readiness proof and does not change the current DeepSeek/GLM source-free ready state.

@@ -336,21 +336,21 @@ test("custom-review prompt uses git repository identity instead of local workspa
     fileContents: "claude repository identity sentinel\n",
   });
   assert.equal(
-    fixtureGit(cwd, ["remote", "add", "origin", "git@github.com:seungpyoson/provider-prompt-fixture.git"]).status,
+    fixtureGit(cwd, ["remote", "add", "origin", "git@github.com:relay-org/provider-prompt-fixture.git"]).status,
     0,
   );
   const { stdout, stderr, status, dataDir } = runCompanion(
     ["run", "--mode=custom-review", "--foreground", "--model", "claude-haiku-4-5-20251001",
      "--cwd", cwd, "--scope-paths", "seed.txt", "--", "review selected source"],
     { cwd, env: {
-      CLAUDE_MOCK_ASSERT_PROMPT_INCLUDES: "Repository: seungpyoson/provider-prompt-fixture",
+      CLAUDE_MOCK_ASSERT_PROMPT_INCLUDES: "Repository: relay-org/provider-prompt-fixture",
       CLAUDE_MOCK_ASSERT_PROMPT_EXCLUDES: cwd,
     } },
   );
   try {
     assert.equal(status, 0, `exit ${status}: stderr=${stderr}; stdout=${stdout}`);
     const record = JSON.parse(stdout);
-    assert.equal(record.review_metadata.audit_manifest.git_identity.remote, "seungpyoson/provider-prompt-fixture");
+    assert.equal(record.review_metadata.audit_manifest.git_identity.remote, "relay-org/provider-prompt-fixture");
   } finally {
     cleanup(dataDir);
     rmSync(cwd, { recursive: true, force: true });

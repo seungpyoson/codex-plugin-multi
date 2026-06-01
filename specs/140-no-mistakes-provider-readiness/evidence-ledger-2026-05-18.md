@@ -1,6 +1,6 @@
 # Evidence Ledger: 2026-05-18 Provider Review Failures
 
-Repo: `/Users/spson/Projects/Claude/codex-plugin-multi`
+Repo: `~/projects/relay`
 Head: `59e4c5d61e1d716cdf254ee6a06a3b985c0bd0b8`
 Mode: evidence first; no implementation from this ledger alone.
 

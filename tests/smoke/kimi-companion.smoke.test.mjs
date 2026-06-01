@@ -69,7 +69,7 @@ test("kimi review prompt uses git repository identity instead of local workspace
   const cwd = mkdtempSync(path.join(tmpdir(), "kimi-repo-identity-cwd-"));
   fixtureSeedRepo(cwd);
   assert.equal(
-    fixtureGit(cwd, ["remote", "add", "origin", "git@github.com:seungpyoson/provider-prompt-fixture.git"]).status,
+    fixtureGit(cwd, ["remote", "add", "origin", "git@github.com:relay-org/provider-prompt-fixture.git"]).status,
     0,
   );
   const result = runCompanion([
@@ -84,14 +84,14 @@ test("kimi review prompt uses git repository identity instead of local workspace
   ], {
     cwd,
     env: {
-      KIMI_MOCK_ASSERT_PROMPT_INCLUDES: "Repository: seungpyoson/provider-prompt-fixture",
+      KIMI_MOCK_ASSERT_PROMPT_INCLUDES: "Repository: relay-org/provider-prompt-fixture",
       KIMI_MOCK_ASSERT_PROMPT_EXCLUDES: cwd,
     },
   });
   try {
     assert.equal(result.status, 0, result.stderr);
     const record = parseJson(result.stdout);
-    assert.equal(record.review_metadata.audit_manifest.git_identity.remote, "seungpyoson/provider-prompt-fixture");
+    assert.equal(record.review_metadata.audit_manifest.git_identity.remote, "relay-org/provider-prompt-fixture");
   } finally {
     rmSync(result.dataDir, { recursive: true, force: true });
     rmSync(cwd, { recursive: true, force: true });

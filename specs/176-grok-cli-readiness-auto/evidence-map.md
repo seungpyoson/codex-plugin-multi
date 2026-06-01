@@ -8,7 +8,7 @@
   ready:
   - `doctor --transport cli`: `ready:true`, `auth_mode:"subscription_cli"`,
     `logged_in:true`, `model_ready:true`, selected CLI binary
-    `/Users/spson/.grok/downloads/grok-0.1.219-macos-aarch64`.
+    `~/.grok/downloads/grok-0.1.219-$ARCH`.
   - `doctor --transport web`: `ready:true`, `auth_mode:"subscription_web"`,
     chat probe HTTP 200 through `http://127.0.0.1:8000/v1`.
   - `doctor --transport auto`: `ready:true`, `requested_transport:"auto"`,

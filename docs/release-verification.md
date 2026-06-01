@@ -39,7 +39,7 @@ It is acceptable if this reports that the marketplace is not installed.
 2. Install from GitHub:
 
 ```bash
-codex plugin marketplace add seungpyoson/relay
+codex plugin marketplace add relay-org/relay
 ```
 
 Expected: Codex reports marketplace `relay-for-codex` was added.
@@ -125,17 +125,17 @@ Environment:
 Observed:
 
 - Clean `CODEX_HOME` CLI-only probe:
-  `CODEX_HOME=/private/tmp/codex-home-pr21-31423 codex plugin marketplace add /Users/spson/Projects/Claude/codex-plugin-multi`
+  `CODEX_HOME=/private/tmp/codex-home-pr21-31423 codex plugin marketplace add ~/projects/relay`
   succeeded, but `codex debug prompt-input 'list skills'` did not include
   `claude-delegation` or `gemini-delegation` after manually enabling
-  `[plugins."claude@codex-plugin-multi"]` and
-  `[plugins."gemini@codex-plugin-multi"]` in that temp config. This CLI-only
+  `[plugins."claude@relay"]` and
+  `[plugins."gemini@relay"]` in that temp config. This CLI-only
   path does not exercise the interactive plugin picker enablement flow from the
   fresh-install steps above, so it is not accepted as final release evidence.
 - Current installed user environment probe:
   `codex debug prompt-input 'list skills'` did include
   `claude:claude-delegation` and `gemini:gemini-delegation` from the installed
-  `codex-plugin-multi` cache. This proves the skill surface can be model-visible
+  `relay` cache. This proves the skill surface can be model-visible
   in an enabled install, but it is not a clean post-fix install against the PR
   head.
 
@@ -148,10 +148,10 @@ against the PR head or merged release ref.
 Environment:
 
 - Branch/head: `feat/012-t7-6-regression-matrix` at `2338a07`.
-- OS: macOS 26.4.1 (25E253), arm64.
-- Codex: `codex-cli 0.125.0` at `/Users/spson/.npm-global/bin/codex`.
-- Claude Code: `2.1.119 (Claude Code)` at `/Users/spson/.local/bin/claude`.
-- Gemini CLI: `0.39.1` at `/Users/spson/.npm-global/bin/gemini`.
+- OS: macOS (version and build redacted).
+- Codex: `codex-cli 0.125.0` at `~/.npm-global/bin/codex`.
+- Claude Code: `2.1.119 (Claude Code)` at `~/.local/bin/claude`.
+- Gemini CLI: `0.39.1` at `~/.npm-global/bin/gemini`.
 
 Live E2E:
 
@@ -167,11 +167,11 @@ Fresh-install packaging check:
 
 - Isolated home: `CODEX_HOME=/tmp/codex-release-home-hDIDkd`.
 - Install command:
-  `codex plugin marketplace add seungpyoson/codex-plugin-multi@feat/012-t7-6-regression-matrix`.
+  `codex plugin marketplace add relay-org/relay@feat/012-t7-6-regression-matrix`.
 - Result: PASS. Codex reported the marketplace was added from
-  `https://github.com/seungpyoson/codex-plugin-multi.git#feat/012-t7-6-regression-matrix`.
+  `https://github.com/relay-org/relay.git#feat/012-t7-6-regression-matrix`.
 - Installed config recorded `source_type = "git"`,
-  `source = "https://github.com/seungpyoson/codex-plugin-multi.git"`, and
+  `source = "https://github.com/relay-org/relay.git"`, and
   `ref = "feat/012-t7-6-regression-matrix"`.
 - Installed marketplace contained `.agents/plugins/marketplace.json` with both
   `claude` and `gemini`, both plugin manifests at version `0.1.0`, and the
@@ -180,15 +180,15 @@ Fresh-install packaging check:
 Fresh-install TUI check:
 
 - Disposable workspace creation succeeded at
-  `/tmp/codex-plugin-multi-release-smoke`.
+  `/tmp/relay-release-smoke`.
 - ChatGPT device auth for the isolated `CODEX_HOME` succeeded after the initial
   API-key login proved insufficient for remote plugin sync.
 - `/plugins` opened the plugin picker. The custom `Codex ↔ Claude/Gemini`
   marketplace listed both `Claude` and `Gemini`.
 - Installing both plugins from the picker succeeded. The picker reported
   `Installed Claude plugin` and `Installed Gemini plugin`, and
-  `config.toml` recorded both `claude@codex-plugin-multi` and
-  `gemini@codex-plugin-multi` as enabled.
+  `config.toml` recorded both `claude@relay` and
+  `gemini@relay` as enabled.
 - After restarting Codex from the same isolated home, `/claude-ping` was still
   rejected as `Unrecognized command '/claude-ping'`. The fresh-install
   slash-command smoke is therefore not complete.

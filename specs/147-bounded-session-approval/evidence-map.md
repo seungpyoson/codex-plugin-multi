@@ -59,7 +59,7 @@
   - Grok custom-review job `job_f1cca318-f2b3-40cb-a90c-66b1c340565b`: completed, APPROVE, no blocking findings.
   - Non-blocking notes are recorded in `specs/147-bounded-session-approval/final-review-results.md`.
 - PR opened:
-  - #186: `https://github.com/seungpyoson/codex-plugin-multi/pull/186`
+  - #186: `https://github.com/relay-org/relay/pull/186`
 
 ## Existing Evidence on Main
 

@@ -4,7 +4,7 @@
 **Created**: 2026-05-28
 **Status**: Planning gate
 **Issue**: #159
-**Input**: `/Users/spson/Downloads/prompts/codex-plugin-multi/2-provider-reliability-architecture-goal.md`
+**Input**: `~/Downloads/prompts/relay/2-provider-reliability-architecture-goal.md`
 
 ## Clarified Requirement
 

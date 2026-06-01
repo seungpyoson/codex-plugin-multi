@@ -339,7 +339,7 @@ test("provider readiness spec avoids user-local uv cache paths", () => {
     "specs/140-no-mistakes-provider-readiness/tasks.md",
   ].map(readRepoFile).join("\n");
 
-  assert.doesNotMatch(docs, /\/Users\/spson\/\.cache\/uv/);
+  assert.doesNotMatch(docs, /\/(?:Users|home)\/[^/]+\/\.cache\/uv/);
 });
 
 test("provider readiness docs keep operator-facing auth-mode auto rejected", () => {
@@ -551,8 +551,8 @@ test("2026-05-22 readiness artifact records source-free provider matrix", () => 
   assert.match(readiness, /Grok CLI[\s\S]*ready:false[\s\S]*grok_cli_login_required/i);
   assert.match(readiness, /Grok web[\s\S]*ready:true/i);
   assert.match(readiness, /Claude[\s\S]*ready:false[\s\S]*session limit/i);
-  assert.match(readiness, /06:23 KST[\s\S]*oauth_inference_rejected[\s\S]*API Error: 401 Invalid authentication credentials/i);
-  assert.match(readiness, /06:27 KST[\s\S]*oauth_inference_rejected[\s\S]*API Error: 401 Invalid authentication credentials/i);
+  assert.match(readiness, /06:23 local time[\s\S]*oauth_inference_rejected[\s\S]*API Error: 401 Invalid authentication credentials/i);
+  assert.match(readiness, /06:27 local time[\s\S]*oauth_inference_rejected[\s\S]*API Error: 401 Invalid authentication credentials/i);
   assert.match(readiness, /Claude API-Key Source-Free Probe[\s\S]*ready:true[\s\S]*selected_route:"direct_api"[\s\S]*fallback_reason:"explicit_api"/i);
   assert.match(readiness, /Claude Explicit API Source-Send Approval Gate[\s\S]*approval-request[\s\S]*approval_token\.value[\s\S]*source_content_transmission:"not_sent"/i);
   assert.match(readiness, /Normal subscription source-bearing runs keep `approval_scope:null`/i);
@@ -771,7 +771,7 @@ test("companion preflight file sorting uses an explicit comparator", () => {
 });
 
 test("spec does not reference an unshipped Gemini result-handling skill", () => {
-  const spec = readRepoFile("docs/superpowers/specs/2026-04-23-codex-plugin-multi-design.md");
+  const spec = readRepoFile("docs/superpowers/specs/2026-04-23-relay-design.md");
 
   assert.doesNotMatch(spec, /gemini-result-handling/);
   assert.match(spec, /Gemini result command docs/);
@@ -799,7 +799,7 @@ test("README documents shipped install path, first commands, and safety posture"
   const readme = readRepoFile("README.md");
 
   assert.doesNotMatch(readme, /M0|M2\+|Planned surface/i);
-  assert.match(readme, /codex plugin marketplace add seungpyoson\/relay/);
+  assert.match(readme, /codex plugin marketplace add relay-org\/relay/);
   assert.match(readme, /relay-for-claude:relay-gemini/);
   assert.match(readme, /relay-gemini@relay-for-claude/);
   assert.match(readme, /\/relay-gemini:review/);
@@ -830,7 +830,7 @@ test("README documents host-owned pre-launch provider denials as outside compani
   assert.match(readme, /cannot emit a JobRecord/i);
   assert.match(readme, /approved provider/i);
   assert.match(readme, /local\/Codex-only review/i);
-  assert.match(readme, /https:\/\/github\.com\/seungpyoson\/relay\/issues\/13/);
+  assert.match(readme, /https:\/\/github\.com\/relay-org\/relay\/issues\/13/);
 });
 
 test("direct API reviewer docs require explicit approval for external source transmission", () => {
@@ -875,7 +875,7 @@ test("direct API reviewer skill and command docs use global installed script ent
 });
 
 test("architecture spec documents the full review quality audit shape", () => {
-  const spec = readRepoFile("docs/superpowers/specs/2026-04-23-codex-plugin-multi-design.md");
+  const spec = readRepoFile("docs/superpowers/specs/2026-04-23-relay-design.md");
   const requiredFields = [
     "has_verdict",
     "has_blocking_section",

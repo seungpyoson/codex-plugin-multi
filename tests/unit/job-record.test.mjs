@@ -1958,7 +1958,7 @@ test("buildJobRecord: preserves provider workload blocked diagnostics across com
             hostname: "dev-host",
             cwd: "/tmp/src",
             started_at: "2026-05-28T02:45:52.446Z",
-            lock_file: "/tmp/codex-plugin-multi/provider-workload/provider.json",
+            lock_file: "/tmp/relay/provider-workload/provider.json",
             token: "must-not-persist",
           },
         },
@@ -1976,7 +1976,7 @@ test("buildJobRecord: preserves provider workload blocked diagnostics across com
         hostname: "dev-host",
         cwd: "/tmp/src",
         started_at: "2026-05-28T02:45:52.446Z",
-        lock_file: "/tmp/codex-plugin-multi/provider-workload/provider.json",
+        lock_file: "/tmp/relay/provider-workload/provider.json",
       },
     });
     assert.doesNotMatch(JSON.stringify(rec), /must-not-persist/);

@@ -169,7 +169,7 @@
 - Modify: `plugins/gemini/commands/gemini-result.md`
 - Modify: `plugins/claude/skills/claude-result-handling/SKILL.md`
 - Create: `plugins/gemini/skills/gemini-result-handling/SKILL.md`
-- Modify: `docs/superpowers/specs/2026-04-23-codex-plugin-multi-design.md`
+- Modify: `docs/superpowers/specs/2026-04-23-relay-design.md`
 - Modify: `tests/unit/docs-contracts.test.mjs`
 - Modify: `tests/unit/job-record.test.mjs`
 - Modify: `tests/unit/manifests.test.mjs`

@@ -1,5 +1,5 @@
 codex-plugin-multi
-Copyright 2026 seungpyoson
+Copyright 2026 relay contributors
 
 This product ports portions of openai/codex-plugin-cc (MIT) with
 modifications. See the original at https://github.com/openai/codex-plugin-cc.
