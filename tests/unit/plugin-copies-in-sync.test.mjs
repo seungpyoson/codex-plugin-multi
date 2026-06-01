@@ -417,7 +417,7 @@ test("Grok and API reviewer runtimes use the shared failure diagnostic builder",
 });
 
 test("provider-facing policy interfaces are inventoried and wired through shared sources", () => {
-  const table = readRepoJson("specs/171-provider-architecture-parity/provider-parity-table.json");
+  const table = readRepoJson("docs/provider-parity-table.json");
   const guardrail = table.guardrail_tests.find((entry) => entry.name === "shared policy interface usage");
   assert.ok(guardrail, "provider parity table must define shared policy interface usage guardrail");
 
@@ -467,7 +467,7 @@ test("provider-facing policy interfaces are inventoried and wired through shared
 });
 
 test("provider runtime policy wiring is checked per adapter", () => {
-  const table = readRepoJson("specs/171-provider-architecture-parity/provider-parity-table.json");
+  const table = readRepoJson("docs/provider-parity-table.json");
   const guardrail = table.guardrail_tests.find((entry) => entry.name === "provider runtime policy wiring");
   assert.ok(guardrail, "provider parity table must define provider runtime policy wiring guardrail");
   assert.deepEqual(

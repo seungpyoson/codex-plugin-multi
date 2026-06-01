@@ -18,7 +18,7 @@ const claudeProjectNotes = readFileSync(resolve("CLAUDE.md"), "utf8");
 const runTests = readFileSync(resolve("scripts/ci/run-tests.mjs"), "utf8");
 const coverageBaseline = JSON.parse(readFileSync(resolve("scripts/ci/coverage-baseline.json"), "utf8"));
 const credentialResolutionSchema = JSON.parse(readFileSync(
-  resolve("specs/160-stale-env-cache-refresh/contracts/credential-resolution.schema.json"),
+  resolve("docs/contracts/credential-resolution.schema.json"),
   "utf8",
 ));
 
