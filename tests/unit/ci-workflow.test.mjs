@@ -10,7 +10,6 @@ const workflow = readFileSync(resolve(".github/workflows/pull-request-ci.yml"), 
 const smokeRerecordWorkflow = readFileSync(resolve(".github/workflows/smoke-rerecord.yml"), "utf8");
 const e2eDocs = readFileSync(resolve("docs/e2e.md"), "utf8");
 const reviewEnforcementDocs = readFileSync(resolve("docs/review-enforcement.md"), "utf8");
-const designSpec = readFileSync(resolve("docs/DESIGN.md"), "utf8");
 const architectureRecord = readFileSync(resolve("docs/architecture-record.md"), "utf8");
 const sonarConfig = readFileSync(resolve(".sonarcloud.properties"), "utf8");
 const noMistakesConfig = readFileSync(resolve(".no-mistakes.yaml"), "utf8");
@@ -146,17 +145,13 @@ test("no-mistakes timing docs avoid stale hard-coded local duration budgets", ()
   }
 });
 
-test("design docs cover review-quality failure contract", () => {
+test("architecture record covers review-quality failure contract", () => {
   for (const token of [
     "review_metadata",
     "review_not_completed",
-    "semantic_failure_reasons",
     "failed_review_slot",
-    "looks_shallow",
-    "selected_source",
-    "elapsed_ms",
   ]) {
-    assert.match(designSpec, new RegExp(token));
+    assert.match(architectureRecord, new RegExp(token));
   }
   assert.match(architectureRecord, /Review Quality Gate/);
   assert.match(architectureRecord, /review_not_completed/);

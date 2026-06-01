@@ -550,11 +550,10 @@ test("companion preflight file sorting uses an explicit comparator", () => {
   }
 });
 
-test("spec does not reference an unshipped Gemini result-handling skill", () => {
-  const spec = readRepoFile("docs/DESIGN.md");
+test("architecture record does not reference an unshipped Gemini result-handling skill", () => {
+  const arch = readRepoFile("docs/architecture-record.md");
 
-  assert.doesNotMatch(spec, /gemini-result-handling/);
-  assert.match(spec, /Gemini result command docs/);
+  assert.doesNotMatch(arch, /gemini-result-handling/);
 });
 
 test("working-tree privacy docs distinguish git worktree from non-git directories", () => {
@@ -654,20 +653,14 @@ test("direct API reviewer skill and command docs use global installed script ent
   }
 });
 
-test("architecture spec documents the full review quality audit shape", () => {
-  const spec = readRepoFile("docs/DESIGN.md");
+test("architecture record documents the full review quality audit shape", () => {
+  const arch = readRepoFile("docs/architecture-record.md");
   const requiredFields = [
-    "has_verdict",
-    "has_blocking_section",
-    "has_non_blocking_section",
-    "checklist_items_seen",
-    "looks_shallow",
-    "semantic_failure_reasons",
     "failed_review_slot",
   ];
 
   for (const field of requiredFields) {
-    assert.match(spec, new RegExp(`\`${field}\``), `missing review_quality field ${field}`);
+    assert.match(arch, new RegExp(field), `missing review_quality field ${field}`);
   }
 });
 

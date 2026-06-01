@@ -672,7 +672,6 @@ Repository layout:
   docs/architecture-record.md
   docs/e2e.md
   docs/release-verification.md
-  docs/DESIGN.md
   docs/archive/
   scripts/ci/check-manifests.mjs
   scripts/provider-readiness-manifest.mjs
