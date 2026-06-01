@@ -11,7 +11,7 @@ import {
 } from "node:fs";
 import { join, relative } from "node:path";
 
-const RELAY_REPOSITORY = "https://github.com/seungpyoson/relay";
+const RELAY_REPOSITORY = "https://github.com/relay-org/relay";
 const RELAY_FOR_CLAUDE_MARKETPLACE = "relay-for-claude";
 const RELAY_SHARED_DIRECT_API_RUNTIME = "relay-api-reviewers";
 const CODEX_DIRECT_API_RELAY_ENTRYPOINT_COMMAND_RE =
@@ -122,7 +122,7 @@ export function renderClaudeRelayMarketplace(
   return {
     name: RELAY_FOR_CLAUDE_MARKETPLACE,
     description: "Relay for Claude Code: external-model delegation plugins.",
-    owner: { name: "seungpyoson" },
+    owner: { name: "relay-maintainer" },
     plugins: pluginManifests.map((manifest) => {
       const plugin = {
         name: manifest.name,
@@ -257,7 +257,7 @@ export function renderClaudeCommandDoc(codexDoc) {
       /Do not run bare `api-reviewer`, do not rely on `PATH`, and do not use repository-relative paths such as `plugins\/relay-(?:deepseek|glm)\/scripts\/api-reviewer\.mjs`\./g,
       "Do not run bare `api-reviewer`, do not rely on `PATH`, and do not use repository-relative paths.",
     )
-    .replaceAll("CODEX_PLUGIN_MULTI_RUNTIME_DIR", "CLAUDE_PLUGIN_DATA")
+    .replaceAll("RELAY_RUNTIME_DIR", "CLAUDE_PLUGIN_DATA")
     .replaceAll(
       "After installation or cache refresh, start a fresh Codex session so plugin skills are discoverable.",
       "After installation or cache refresh, start a fresh Claude Code session so plugin commands are discoverable.",

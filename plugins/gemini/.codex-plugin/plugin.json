@@ -3,10 +3,10 @@
   "version": "0.1.0",
   "description": "Delegate investigation, review, and adversarial review to Gemini CLI from within Codex.",
   "author": {
-    "name": "seungpyoson"
+    "name": "relay-maintainer"
   },
-  "homepage": "https://github.com/seungpyoson/relay",
-  "repository": "https://github.com/seungpyoson/relay",
+  "homepage": "https://github.com/relay-org/relay",
+  "repository": "https://github.com/relay-org/relay",
   "license": "AGPL-3.0-only",
   "skills": "./skills",
   "keywords": [
@@ -20,7 +20,7 @@
     "displayName": "Relay Gemini",
     "shortDescription": "Delegate to Gemini CLI from Codex.",
     "longDescription": "Invoke Gemini CLI headlessly from Codex for investigation, rescue, review, and adversarial-review workflows. Uses OAuth subscription (no API keys).",
-    "developerName": "seungpyoson",
+    "developerName": "relay-maintainer",
     "category": "Coding",
     "capabilities": [
       "Interactive",

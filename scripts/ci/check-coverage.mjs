@@ -387,7 +387,7 @@ async function main() {
     return;
   }
 
-  const coverageDir = resolve(tmpdir(), `codex-plugin-multi-v8-coverage-${process.pid}`);
+  const coverageDir = resolve(tmpdir(), `relay-v8-coverage-${process.pid}`);
   await rm(coverageDir, { recursive: true, force: true });
   await mkdir(coverageDir, { recursive: true });
   try {

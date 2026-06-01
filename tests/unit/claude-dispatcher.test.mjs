@@ -242,7 +242,7 @@ test("parseClaudeResult: classifies subscription session limit errors", () => {
   const r = parseClaudeResult(JSON.stringify({
     type: "result",
     is_error: true,
-    result: "You've hit your session limit · resets 2:50am (Asia/Seoul)",
+    result: "You've hit your session limit · resets 2:50am (operator timezone)",
     session_id: UUID,
     permission_denials: [],
   }));

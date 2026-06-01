@@ -239,7 +239,7 @@ export function externalReviewForInvocation(invocation, execution = null) {
  *
  * error_code classification:
  *   null            — completed or cancelled.
- *   git_binary_rejected — CODEX_PLUGIN_MULTI_GIT_BINARY policy rejected an override.
+ *   git_binary_rejected — RELAY_GIT_BINARY policy rejected an override.
  *   scope_failed    — execution.errorMessage describes scope preparation refusal.
  *   spawn_failed    — execution.errorMessage set (spawn threw before Kimi ran).
  *   not_authed      — same-process auth/readiness preflight found no usable

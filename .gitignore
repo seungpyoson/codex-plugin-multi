@@ -25,3 +25,11 @@ GEMINI.md
 .aider.chat.history.md
 .aider.input.history
 .aider.tags.cache.v4/
+
+# Speckit artifacts (generated locally, not for public repo)
+specs/
+
+# Development session artifacts
+.autonomous/
+
+CLAUDE.md

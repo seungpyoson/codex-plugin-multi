@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://example.invalid/codex-plugin-multi/provider-parity-table.schema.json",
+  "$id": "https://example.invalid/relay/provider-parity-table.schema.json",
   "title": "Provider Architecture Parity Table",
   "type": "object",
   "required": ["schema_version", "feature", "providers", "policy_areas", "semantic_drift_policy", "issue_fit", "guardrail_tests"],

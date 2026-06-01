@@ -353,7 +353,7 @@ test("buildJobRecord: companion records redact selected source bodies from struc
 });
 
 test("buildJobRecord: companion records redact source and secret text from structured output keys", () => {
-  const secretName = "CODEX_PLUGIN_MULTI_TEST_API_KEY";
+  const secretName = "RELAY_TEST_API_KEY";
   const oldSecret = process.env[secretName];
   const sourceText = "SOURCE_BODY_SENTINEL_DO_NOT_PERSIST\n";
   process.env[secretName] = "secret-test-value";
@@ -395,7 +395,7 @@ test("buildJobRecord: companion records redact source and secret text from struc
 });
 
 test("buildJobRecord: companion records redact source and secret text from permission denials", () => {
-  const secretName = "CODEX_PLUGIN_MULTI_TEST_API_KEY";
+  const secretName = "RELAY_TEST_API_KEY";
   const oldSecret = process.env[secretName];
   const sourceText = "SOURCE_BODY_SENTINEL_DO_NOT_PERSIST\n";
   process.env[secretName] = "secret-test-value";
@@ -642,7 +642,7 @@ test("buildJobRecord: companion aggregate source quote cap spans persisted field
 });
 
 test("buildJobRecord: companion records redact env-named secret values", () => {
-  const secretName = "CODEX_PLUGIN_MULTI_TEST_API_KEY";
+  const secretName = "RELAY_TEST_API_KEY";
   const oldSecret = process.env[secretName];
   process.env[secretName] = "secret-test-value";
   const providers = [
@@ -678,7 +678,7 @@ test("buildJobRecord: companion records redact env-named secret values", () => {
 });
 
 test("buildJobRecord: companion records redact source and secret text from error messages", () => {
-  const secretName = "CODEX_PLUGIN_MULTI_TEST_API_KEY";
+  const secretName = "RELAY_TEST_API_KEY";
   const oldSecret = process.env[secretName];
   const sourceText = "SOURCE_BODY_SENTINEL_DO_NOT_PERSIST\n";
   process.env[secretName] = "secret-test-value";
@@ -714,7 +714,7 @@ test("buildJobRecord: companion records redact source and secret text from error
 });
 
 test("buildJobRecord: companion records redact and bound prompt_head", () => {
-  const secretName = "CODEX_PLUGIN_MULTI_TEST_API_KEY";
+  const secretName = "RELAY_TEST_API_KEY";
   const oldSecret = process.env[secretName];
   const sourceText = "SOURCE_BODY_SENTINEL_DO_NOT_PERSIST\n";
   process.env[secretName] = "secret-test-value";
@@ -1958,7 +1958,7 @@ test("buildJobRecord: preserves provider workload blocked diagnostics across com
             hostname: "dev-host",
             cwd: "/tmp/src",
             started_at: "2026-05-28T02:45:52.446Z",
-            lock_file: "/tmp/codex-plugin-multi/provider-workload/provider.json",
+            lock_file: "/tmp/relay/provider-workload/provider.json",
             token: "must-not-persist",
           },
         },
@@ -1976,7 +1976,7 @@ test("buildJobRecord: preserves provider workload blocked diagnostics across com
         hostname: "dev-host",
         cwd: "/tmp/src",
         started_at: "2026-05-28T02:45:52.446Z",
-        lock_file: "/tmp/codex-plugin-multi/provider-workload/provider.json",
+        lock_file: "/tmp/relay/provider-workload/provider.json",
       },
     });
     assert.doesNotMatch(JSON.stringify(rec), /must-not-persist/);
@@ -1984,7 +1984,7 @@ test("buildJobRecord: preserves provider workload blocked diagnostics across com
 });
 
 test("buildJobRecord: malformed provider workload diagnostics stay bounded and redacted", () => {
-  const secretName = "CODEX_PLUGIN_MULTI_TEST_API_KEY";
+  const secretName = "RELAY_TEST_API_KEY";
   const oldSecret = process.env[secretName];
   process.env[secretName] = "secret-test-value";
 
@@ -2096,7 +2096,7 @@ test("buildJobRecord: malformed provider workload holder fields are nulled acros
 });
 
 test("buildJobRecord: provider workload reason and holder started_at are redacted across companion providers", () => {
-  const secretName = "CODEX_PLUGIN_MULTI_WORKLOAD_SECRET";
+  const secretName = "RELAY_WORKLOAD_SECRET";
   const oldSecret = process.env[secretName];
   process.env[secretName] = "secret-workload-value";
   const providers = [
@@ -2754,7 +2754,7 @@ test("gemini buildJobRecord: preflight auth and sandbox failures are actionable 
 
 test("buildJobRecord: Git binary policy errors are distinct from spawn failures", () => {
   const policyMessage =
-    "CODEX_PLUGIN_MULTI_GIT_BINARY must not point inside the current workspace: /tmp/src/malicious-git";
+    "RELAY_GIT_BINARY must not point inside the current workspace: /tmp/src/malicious-git";
   const cases = [
     [buildJobRecord, makeInvocation()],
     [buildGeminiJobRecord, makeInvocation({ target: "gemini", model: "gemini-3-flash-preview" })],

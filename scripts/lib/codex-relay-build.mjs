@@ -7,7 +7,7 @@ import {
 } from "./external-model-contracts.mjs";
 
 const DIRECT_API_PROVIDERS = Object.freeze(["glm", "deepseek"]);
-const REPOSITORY = "https://github.com/seungpyoson/relay";
+const REPOSITORY = "https://github.com/relay-org/relay";
 
 function readJson(path) {
   return JSON.parse(readFileSync(path, "utf8"));

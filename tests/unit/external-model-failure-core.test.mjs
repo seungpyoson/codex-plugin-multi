@@ -422,10 +422,10 @@ test("external-model failure core plugin copies cover shared classifier branches
       error_code: "resend_confirmation_required",
       error_message: "retry needs approval",
     });
-    assert.deepEqual(mod.classifyCompanionErrorMessage("CODEX_PLUGIN_MULTI_GIT_BINARY rejected"), {
+    assert.deepEqual(mod.classifyCompanionErrorMessage("RELAY_GIT_BINARY rejected"), {
       status: "failed",
       error_code: "git_binary_rejected",
-      error_message: "CODEX_PLUGIN_MULTI_GIT_BINARY rejected",
+      error_message: "RELAY_GIT_BINARY rejected",
     });
     assert.deepEqual(mod.classifyCompanionErrorMessage("provider override", {
       classifyProviderErrorMessage(message) {

@@ -63,7 +63,7 @@
         }
       },
       "git_identity": {
-        "remote": "seungpyoson/codex-plugin-multi",
+        "remote": "relay-org/relay",
         "branch": "HEAD",
         "base_ref": null,
         "base_sha": null,

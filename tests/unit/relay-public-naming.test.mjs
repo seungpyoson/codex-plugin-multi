@@ -18,7 +18,7 @@ function codexUserSelectablePlugins(plugins) {
 test("repo package and marketplace expose Relay public names", () => {
   const pkg = readJson("package.json");
   assert.equal(pkg.name, "relay");
-  assert.equal(pkg.repository.url, "https://github.com/seungpyoson/relay.git");
+  assert.equal(pkg.repository.url, "https://github.com/relay-org/relay.git");
 
   const marketplace = readJson(".agents/plugins/marketplace.json");
   const userSelectablePlugins = codexUserSelectablePlugins(marketplace.plugins);
@@ -71,8 +71,8 @@ test("marketplace plugin IDs match their source manifests", () => {
     assert.equal(existsSync(manifestPath), true, `${plugin.name} manifest exists`);
     const manifest = readJson(manifestPath);
     assert.equal(manifest.name, plugin.name, `${plugin.name} manifest name matches marketplace ID`);
-    assert.equal(manifest.repository, "https://github.com/seungpyoson/relay", plugin.name);
-    assert.equal(manifest.homepage, "https://github.com/seungpyoson/relay", plugin.name);
+    assert.equal(manifest.repository, "https://github.com/relay-org/relay", plugin.name);
+    assert.equal(manifest.homepage, "https://github.com/relay-org/relay", plugin.name);
   }
 });
 
@@ -131,7 +131,7 @@ test("release verification guide uses Relay marketplace commands in active instr
   const activeInstructions = releaseGuide.split("## Evidence log")[0];
 
   assert.match(activeInstructions, /codex plugin marketplace remove relay-for-codex/);
-  assert.match(activeInstructions, /codex plugin marketplace add seungpyoson\/relay/);
+  assert.match(activeInstructions, /codex plugin marketplace add relay-org\/relay/);
   assert.match(activeInstructions, /marketplace `relay-for-codex` was added/);
   assert.doesNotMatch(activeInstructions, /codex-plugin-multi/);
 });

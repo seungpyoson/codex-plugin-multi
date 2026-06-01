@@ -2,7 +2,7 @@
   "name": "relay-gemini",
   "version": "0.1.0",
   "author": {
-    "name": "seungpyoson"
+    "name": "relay-maintainer"
   },
   "license": "AGPL-3.0-only",
   "keywords": [
@@ -13,6 +13,6 @@
     "review"
   ],
   "description": "Delegate investigation, review, and adversarial review to Gemini CLI from within Claude Code.",
-  "homepage": "https://github.com/seungpyoson/relay",
-  "repository": "https://github.com/seungpyoson/relay"
+  "homepage": "https://github.com/relay-org/relay",
+  "repository": "https://github.com/relay-org/relay"
 }

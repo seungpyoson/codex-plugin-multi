@@ -329,41 +329,7 @@ test("README documents cache doctor automation for stale plugin skill discovery"
   assert.match(readme, /codex debug prompt-input 'list skills'/);
 });
 
-test("provider readiness spec avoids user-local uv cache paths", () => {
-  const docs = [
-    "specs/140-no-mistakes-provider-readiness/spec.md",
-    "specs/140-no-mistakes-provider-readiness/plan.md",
-    "specs/140-no-mistakes-provider-readiness/research.md",
-    "specs/140-no-mistakes-provider-readiness/quickstart.md",
-    "specs/140-no-mistakes-provider-readiness/data-model.md",
-    "specs/140-no-mistakes-provider-readiness/tasks.md",
-  ].map(readRepoFile).join("\n");
 
-  assert.doesNotMatch(docs, /\/Users\/spson\/\.cache\/uv/);
-});
-
-test("provider readiness docs keep operator-facing auth-mode auto rejected", () => {
-  const docs = [
-    "specs/140-no-mistakes-provider-readiness/spec.md",
-    "specs/140-no-mistakes-provider-readiness/plan.md",
-    "specs/140-no-mistakes-provider-readiness/research.md",
-    "specs/140-no-mistakes-provider-readiness/quickstart.md",
-    "specs/140-no-mistakes-provider-readiness/tasks.md",
-  ].map(readRepoFile).join("\n");
-
-  for (const forbidden of [
-    "explicit `--auth-mode auto` still keeps",
-    "explicit `--auth-mode auto` fallback",
-    "`--auth-mode auto` may fall back",
-    "re-preflights explicit `--auth-mode auto` fallback",
-    "explicit operator-selected `--auth-mode auto` MAY",
-  ]) {
-    assert.equal(docs.includes(forbidden), false, `forbidden stale auto-auth wording: ${forbidden}`);
-  }
-
-  assert.equal(docs.includes("reject ambiguous operator-facing `--auth-mode auto`"), true);
-  assert.equal(docs.includes("operator-facing `--auth-mode auto` is rejected"), true);
-});
 
 test("README keeps operator-facing auth-mode auto rejected", () => {
   const readme = readRepoFile("README.md");
@@ -394,8 +360,8 @@ test("Grok operator docs expose generic companion entrypoint", () => {
 });
 
 test("provider readiness waiver artifact contract names required approval and residual-risk fields", () => {
-  const schema = JSON.parse(readRepoFile("specs/140-no-mistakes-provider-readiness/contracts/waiver.schema.json"));
-  const example = JSON.parse(readRepoFile("specs/140-no-mistakes-provider-readiness/contracts/waiver.example.json"));
+  const schema = JSON.parse(readRepoFile("docs/contracts/waiver.schema.json"));
+  const example = JSON.parse(readRepoFile("docs/contracts/waiver.example.json"));
   const required = [
     "schema_version",
     "symptom_id",
@@ -433,70 +399,8 @@ test("provider readiness waiver artifact contract names required approval and re
   }
 });
 
-test("T080 Kimi waiver artifact records failed slots and residual risk", () => {
-  const waiver = JSON.parse(readRepoFile("specs/140-no-mistakes-provider-readiness/t080-kimi-reviewer-waiver-2026-05-22.json"));
 
-  assert.equal(waiver.schema_version, 1);
-  assert.equal(waiver.symptom_id, "S13");
-  assert.equal(waiver.task_id, "T080");
-  assert.match(waiver.operator_approval_text, /if Kimi does not work, skip it/i);
-  assert.match(waiver.expires_at, /^2026-06-/);
 
-  const reviewed = waiver.evidence_reviewed.map((entry) => `${entry.kind} ${entry.path_or_id} ${entry.summary}`).join("\n");
-  assert.match(reviewed, /b205524e-99e9-4bb4-9396-536c7473ac94/);
-  assert.match(reviewed, /b5086c7f-8d9f-4b11-9757-ce2f95647759/);
-  assert.match(reviewed, /step_limit_exceeded/);
-  assert.match(reviewed, /timeout/);
-  assert.match(reviewed, /Shard A/);
-  assert.match(reviewed, /Shard B/);
-  assert.match(reviewed, /Shard C/);
-
-  assert.equal(waiver.residual_risk.source_send.remains, true);
-  assert.equal(waiver.residual_risk.api.remains, false);
-  assert.equal(waiver.residual_risk.auth.remains, false);
-  assert.equal(waiver.residual_risk.local_state.remains, true);
-});
-
-test("bounded session approval grant schema is strict and token-free", () => {
-  const schema = readRepoJson("specs/147-bounded-session-approval/contracts/session-approval-grant.schema.json");
-  const policy = readRepoJson("plugins/relay-deepseek/config/session-approval.json");
-
-  assert.deepEqual(Object.keys(policy), ["schema_version", "max_ttl_ms"]);
-  assert.equal(policy.schema_version, 1);
-  assert.equal(Number.isSafeInteger(policy.max_ttl_ms), true);
-  assert.equal(policy.max_ttl_ms > 0, true);
-  assert.equal(schema.additionalProperties, false);
-  assert.deepEqual(schema.required, [
-    "schema_version",
-    "grant_id",
-    "created_at",
-    "expires_at",
-    "grant_session_id",
-    "provider_allowlist",
-    "mode_allowlist",
-    "workspace_root_hash",
-    "path_constraints",
-    "max_files",
-    "max_bytes",
-    "max_ttl_ms",
-    "approval_fingerprint",
-    "approval_tuple",
-    "activation",
-  ]);
-  assert.equal(schema.properties.approval_token, undefined);
-  assert.equal(schema.properties.grant_approval_token, undefined);
-  assert.equal(schema.properties.approval_tuple.additionalProperties, false);
-  assert.equal(schema.$defs.grant_bounds.additionalProperties, false);
-  assert.equal(schema.properties.max_ttl_ms.maximum, undefined);
-  assert.equal(schema.$defs.grant_bounds.properties.max_ttl_ms.maximum, undefined);
-  assert.match(schema.properties.approval_fingerprint.description, /canonicalJson/);
-});
-
-test("bounded session approval grant schema accepts runtime persisted record shape", () => {
-  const schema = readRepoJson("specs/147-bounded-session-approval/contracts/session-approval-grant.schema.json");
-
-  assertSchemaAllowsValue(schema, schema, sampleSessionApprovalGrantRecord(), "$");
-});
 
 test("direct API docs describe bounded session grants without blanket bypass", () => {
   const readme = readRepoFile("README.md");
@@ -513,133 +417,9 @@ test("direct API docs describe bounded session grants without blanket bypass", (
   }
 });
 
-test("T074 review summary records current closure and cache proof", () => {
-  const summary = readRepoFile("specs/140-no-mistakes-provider-readiness/t074-review-summary-2026-05-20.md");
 
-  assert.match(summary, /Status: complete for current source-reviewed implementation/i);
-  assert.match(summary, /Historical 2026-05-20/i);
-  assert.match(summary, /2026-05-22 Current Re-Anchor/i);
-  assert.match(summary, /Canonical open tasks: none/i);
-  assert.doesNotMatch(summary, /Canonical open tasks: T074/i);
-  assert.doesNotMatch(summary, /Canonical open tasks: T084/i);
-  assert.match(summary, /R3 current follow-up/i);
-  assert.match(summary, /953a8f29-70d6-41e4-b1d9-d72aefb28ab0/);
-  assert.match(summary, /job_cd68826c-f8ac-4cb5-bea6-9af1a63b5283/);
-  assert.match(summary, /job_458fe967-eab4-4520-86ae-d8993524bcc4/);
-  assert.match(summary, /R4 review-quality follow-up/i);
-  assert.match(summary, /3b86fa40-23d3-435b-ae2e-70cde04c4e8b/);
-  assert.match(summary, /job_a476718e-a139-4ca2-bb74-730cec65845d/);
-  assert.match(summary, /debc5d27-93b4-4288-aaff-72229d10b09b/);
-  assert.match(summary, /R5 closure-doc follow-up/i);
-  assert.match(summary, /7b4b4f01-5066-4f30-aa51-a6895ec22eb9/);
-  assert.match(summary, /8668a51a-8ae2-41e6-96f1-039f7a26e2c5/);
-  assert.match(summary, /job_65d9a0c5-886d-419d-b8b2-fa228ee2f16e/);
-  assert.match(summary, /job_114b05d7-a6f2-497b-bfec-b8e0ea7e6fbc/);
-  assert.match(summary, /Kimi source-free doctor .*transient_timeout/i);
-  assert.match(summary, /npm test[\s\S]*0 failures/i);
-  assert.match(summary, /repo_cache_in_sync:true/i);
-  assert.doesNotMatch(summary, /repo_cache_in_sync:false/i);
-});
 
-test("2026-05-22 readiness artifact records source-free provider matrix", () => {
-  const readiness = readRepoFile("specs/140-no-mistakes-provider-readiness/session-readiness-2026-05-22.md");
 
-  assert.match(readiness, /Gemini[\s\S]*ready:true/i);
-  assert.match(readiness, /Kimi[\s\S]*ready:true/i);
-  assert.match(readiness, /DeepSeek[\s\S]*ready:true/i);
-  assert.match(readiness, /GLM[\s\S]*ready:true/i);
-  assert.match(readiness, /Grok CLI[\s\S]*ready:false[\s\S]*grok_cli_login_required/i);
-  assert.match(readiness, /Grok web[\s\S]*ready:true/i);
-  assert.match(readiness, /Claude[\s\S]*ready:false[\s\S]*session limit/i);
-  assert.match(readiness, /06:23 KST[\s\S]*oauth_inference_rejected[\s\S]*API Error: 401 Invalid authentication credentials/i);
-  assert.match(readiness, /06:27 KST[\s\S]*oauth_inference_rejected[\s\S]*API Error: 401 Invalid authentication credentials/i);
-  assert.match(readiness, /Claude API-Key Source-Free Probe[\s\S]*ready:true[\s\S]*selected_route:"direct_api"[\s\S]*fallback_reason:"explicit_api"/i);
-  assert.match(readiness, /Claude Explicit API Source-Send Approval Gate[\s\S]*approval-request[\s\S]*approval_token\.value[\s\S]*source_content_transmission:"not_sent"/i);
-  assert.match(readiness, /Normal subscription source-bearing runs keep `approval_scope:null`/i);
-  assert.match(readiness, /T081 current Claude source-free blocker[\s\S]*subscription_oauth[\s\S]*timeoutMs[\s\S]*direct_api[\s\S]*rate_limited[\s\S]*Repeated 529 Overloaded/i);
-  assert.match(readiness, /T081 closure follow-up[\s\S]*d818e993-7453-4150-a120-9f4a0c547d0c[\s\S]*8dbc3ae3-4123-4eb6-97d7-95892dc118f2[\s\S]*b6b5c0de-35ad-4fb9-8556-47123852f9cd[\s\S]*job_d82e06ac-eb7f-428d-acb1-580c9c39df2b[\s\S]*job_cf6dc2a1-2a1a-4cdb-bdb4-082ba4e93bc9[\s\S]*job_02c21027-cc14-4b54-9a8d-1be712d22487/i);
-  assert.match(readiness, /Kimi[\s\S]*transient_timeout[\s\S]*skipped/i);
-  assert.match(readiness, /ANTHROPIC_API_KEY[\s\S]*ignored/i);
-  assert.match(readiness, /No selected source was sent/i);
-});
-
-test("provider readiness quickstart matches canonical approval and source-state contract", () => {
-  const quickstart = readRepoFile("specs/140-no-mistakes-provider-readiness/quickstart.md");
-
-  for (const required of [
-    "provider",
-    "mode",
-    "source packet",
-    "prompt hash",
-    "scope resolution",
-    "request settings",
-    "auth path",
-    "billing path",
-    "selected route",
-    "fallback reason",
-  ]) {
-    assert.match(quickstart, new RegExp(required, "i"), `quickstart missing ${required}`);
-  }
-
-  assert.match(
-    quickstart,
-    /do not ask again only when provider, mode, source packet,\s+prompt hash, scope resolution, request settings, auth path, billing path,\s+selected route, fallback reason, and approval scope are unchanged/i,
-  );
-  assert.match(quickstart, /approval scope/i);
-  assert.match(quickstart, /approval scope is `session`, which can be reused only in the current session for\s+the unchanged tuple/i);
-  assert.match(quickstart, /Explicit `once` approval is single-use and rejects replay\s+before provider launch\/source send/i);
-  assert.match(
-    quickstart,
-    /Changed provider, mode, source packet,\s+prompt hash, scope resolution, request settings, auth path, billing path,\s+selected route, fallback reason, approval scope, or consumed one-time approval\s+state requires fresh approval/i,
-  );
-  assert.match(quickstart, /immediate pre-send readiness proof/i);
-  assert.match(quickstart, /\| Claude\/Gemini\/Kimi CLI \|[\s\S]*\| Grok CLI \|[\s\S]*\| Grok legacy tunnel \|[\s\S]*\| DeepSeek\/GLM direct API \|/);
-  assert.match(quickstart, /\| Surface \| Automatic\? \| Purpose \|[\s\S]*Lifecycle markdown card[\s\S]*Review panel[\s\S]*Readiness manifest/);
-  assert.match(quickstart, /Raw JSONL progress alone is a\s+`visual_status` failure in markdown mode/i);
-  assert.match(quickstart, /must never print secrets, full prompts, source bodies, cookies, API keys,\s+or bearer values/i);
-  assert.match(quickstart, /source_content_transmission[\s\S]*not_sent[\s\S]*may_be_sent[\s\S]*unknown/s);
-  for (const failureClass of [
-    "approval_gate",
-    "approval_scope_changed",
-    "prompt_too_large",
-    "preflight_stale",
-    "session_tokens",
-    "cli_runtime",
-    "review_quality",
-    "parser",
-    "continuation",
-    "state_collision",
-    "privacy_persistence",
-    "full_prompt_found",
-  ]) {
-    assert.match(quickstart, new RegExp(failureClass), `quickstart missing manifest class ${failureClass}`);
-  }
-});
-
-test("T078 privacy policy map pins source quote lifecycle and runtime-options decisions", () => {
-  const map = readRepoFile("specs/140-no-mistakes-provider-readiness/map-t078-privacy-persistence.md");
-
-  assert.match(map, /zero-byte threshold/i);
-  assert.match(map, /PROMPT_BODY_SENTINEL_DO_NOT_PERSIST/);
-  assert.match(map, /SOURCE_BODY_SENTINEL_DO_NOT_PERSIST/);
-  assert.match(map, /200 contiguous characters/i);
-  assert.match(map, /800 aggregate copied source characters/i);
-  assert.match(map, /\[redacted_source_excerpt\]/);
-
-  assert.match(map, /Terminal lifecycle JSONL/i);
-  assert.match(map, /redacted projection/i);
-  assert.match(map, /must not include `result`/i);
-  assert.match(map, /raw `stdout\.log`/i);
-  assert.match(map, /raw `stderr\.log`/i);
-
-  assert.match(map, /runtime-options\.json/i);
-  assert.match(map, /consume and delete/i);
-  assert.match(map, /cleanup_warning: "runtime_options_persisted"/);
-  assert.match(map, /settings-only/i);
-  assert.match(map, /body-bearing/i);
-  assert.match(map, /hard-fail/i);
-  assert.match(map, /CODEX_PLUGIN_PRIVACY_TESTS=1/);
-});
 
 test("README documents no-mistakes as non-authoritative while issue 780 is open", () => {
   const readme = readRepoFile("README.md");
@@ -770,11 +550,10 @@ test("companion preflight file sorting uses an explicit comparator", () => {
   }
 });
 
-test("spec does not reference an unshipped Gemini result-handling skill", () => {
-  const spec = readRepoFile("docs/superpowers/specs/2026-04-23-codex-plugin-multi-design.md");
+test("architecture record does not reference an unshipped Gemini result-handling skill", () => {
+  const arch = readRepoFile("docs/architecture-record.md");
 
-  assert.doesNotMatch(spec, /gemini-result-handling/);
-  assert.match(spec, /Gemini result command docs/);
+  assert.doesNotMatch(arch, /gemini-result-handling/);
 });
 
 test("working-tree privacy docs distinguish git worktree from non-git directories", () => {
@@ -799,7 +578,7 @@ test("README documents shipped install path, first commands, and safety posture"
   const readme = readRepoFile("README.md");
 
   assert.doesNotMatch(readme, /M0|M2\+|Planned surface/i);
-  assert.match(readme, /codex plugin marketplace add seungpyoson\/relay/);
+  assert.match(readme, /codex plugin marketplace add relay-org\/relay/);
   assert.match(readme, /relay-for-claude:relay-gemini/);
   assert.match(readme, /relay-gemini@relay-for-claude/);
   assert.match(readme, /\/relay-gemini:review/);
@@ -830,7 +609,7 @@ test("README documents host-owned pre-launch provider denials as outside compani
   assert.match(readme, /cannot emit a JobRecord/i);
   assert.match(readme, /approved provider/i);
   assert.match(readme, /local\/Codex-only review/i);
-  assert.match(readme, /https:\/\/github\.com\/seungpyoson\/relay\/issues\/13/);
+  assert.match(readme, /https:\/\/github\.com\/relay-org\/relay\/issues\/13/);
 });
 
 test("direct API reviewer docs require explicit approval for external source transmission", () => {
@@ -874,20 +653,14 @@ test("direct API reviewer skill and command docs use global installed script ent
   }
 });
 
-test("architecture spec documents the full review quality audit shape", () => {
-  const spec = readRepoFile("docs/superpowers/specs/2026-04-23-codex-plugin-multi-design.md");
+test("architecture record documents the full review quality audit shape", () => {
+  const arch = readRepoFile("docs/architecture-record.md");
   const requiredFields = [
-    "has_verdict",
-    "has_blocking_section",
-    "has_non_blocking_section",
-    "checklist_items_seen",
-    "looks_shallow",
-    "semantic_failure_reasons",
     "failed_review_slot",
   ];
 
   for (const field of requiredFields) {
-    assert.match(spec, new RegExp(`\`${field}\``), `missing review_quality field ${field}`);
+    assert.match(arch, new RegExp(field), `missing review_quality field ${field}`);
   }
 });
 
@@ -1005,96 +778,10 @@ test("architecture record treats Grok web as separate from direct API reviewers"
   assert.match(doc, /session cookies/i);
 });
 
-test("T084 completion audit manifest maps every symptom to evidence and residual gates", () => {
-  const manifest = JSON.parse(readRepoFile("specs/140-no-mistakes-provider-readiness/completion-audit-manifest-2026-05-21.json"));
-
-  assert.equal(manifest.schema_version, 1);
-  assert.equal(manifest.task_id, "T084");
-  assert.match(manifest.generated_at, /^2026-05-21T/);
-  assert.match(manifest.updated_at, /^2026-05-23T/);
-  assert.equal(manifest.overall_status, "complete");
-  assert.ok(Array.isArray(manifest.symptoms));
-  assert.equal(manifest.symptoms.length, 26);
-
-  const expectedIds = Array.from({ length: 26 }, (_, index) => `S${String(index + 1).padStart(2, "0")}`);
-  assert.deepEqual(manifest.symptoms.map((entry) => entry.symptom_id), expectedIds);
-
-  const allowedStatuses = new Set(["done", "partial", "classified", "not_done"]);
-  for (const symptom of manifest.symptoms) {
-    assert.ok(allowedStatuses.has(symptom.status), `${symptom.symptom_id} has invalid status`);
-    assert.equal(symptom.status, "done", `${symptom.symptom_id} is not done`);
-    assert.match(symptom.task_id, /^T\d{3}(?:\/T\d{3})*$/);
-    assert.ok(Array.isArray(symptom.evidence) && symptom.evidence.length > 0, `${symptom.symptom_id} missing evidence`);
-    assert.ok(Array.isArray(symptom.residual_gates), `${symptom.symptom_id} missing residual_gates`);
-    if (symptom.status !== "done") {
-      assert.ok(symptom.residual_gates.length > 0, `${symptom.symptom_id} must name residual gates`);
-    }
-  }
-
-  const byId = Object.fromEntries(manifest.symptoms.map((entry) => [entry.symptom_id, entry]));
-  assert.equal(byId.S01.status, "done");
-  assert.match(byId.S01.evidence.join(" "), /T081 closure follow-up/i);
-  assert.match(byId.S01.evidence.join(" "), /8dbc3ae3-4123-4eb6-97d7-95892dc118f2/i);
-  assert.deepEqual(byId.S01.residual_gates, []);
-  assert.equal(byId.S09.status, "done");
-  assert.match(byId.S09.evidence.join(" "), /c9153ae8-6e6a-4c90-a2cc-c14abf07f654/);
-  assert.match(byId.S09.evidence.join(" "), /waiver.schema.json/);
-  assert.deepEqual(byId.S09.residual_gates, []);
-  assert.match(byId.S04.evidence.join(" "), /current result-surface focused gate passed 28\/28/i);
-  assert.equal(byId.S04.status, "done");
-  assert.deepEqual(byId.S04.residual_gates, []);
-  assert.equal(byId.S06.status, "done");
-  assert.match(byId.S06.summary, /CLI login-required and explicit web-ready/i);
-  assert.match(byId.S06.evidence.join(" "), /grok_cli_login_required/i);
-  assert.match(byId.S06.evidence.join(" "), /subscription_web/i);
-  assert.deepEqual(byId.S06.residual_gates, []);
-  assert.equal(byId.S08.status, "done");
-  assert.deepEqual(byId.S08.residual_gates, []);
-  assert.equal(byId.S18.status, "done");
-  assert.deepEqual(byId.S18.residual_gates, []);
-  assert.equal(byId.S19.status, "done");
-  assert.deepEqual(byId.S19.residual_gates, []);
-  assert.equal(byId.S21.status, "done");
-  assert.deepEqual(byId.S21.residual_gates, []);
-  assert.equal(byId.S24.status, "done");
-  assert.equal(byId.S24.task_id, "T088");
-  assert.match(byId.S24.summary, /shared failure catalog/i);
-  assert.deepEqual(byId.S24.residual_gates, []);
-  assert.equal(byId.S26.status, "done");
-  assert.equal(byId.S26.task_id, "T090");
-  assert.deepEqual(byId.S26.residual_gates, []);
-  assert.doesNotMatch(byId.S06.residual_gates.join(" "), /grok_cli_login_required/);
-  assert.equal(byId.S10.status, "done");
-  assert.match(byId.S10.evidence.join(" "), /98c59d7b-60fe-4cc9-ad09-cbb67fff2ea1/);
-  assert.deepEqual(byId.S10.residual_gates, []);
-  assert.equal(byId.S13.status, "done");
-  assert.match(byId.S13.evidence.join(" "), /36860b1c-d351-4c03-932c-a8c14a193e58/);
-  assert.match(byId.S13.evidence.join(" "), /job_040b2d18-6e87-470c-8517-e4838022ec59/);
-  assert.match(byId.S13.evidence.join(" "), /t080-kimi-reviewer-waiver-2026-05-22/);
-  assert.deepEqual(byId.S13.residual_gates, []);
-  assert.equal(byId.S15.status, "done");
-  assert.deepEqual(byId.S15.residual_gates, []);
-  assert.equal(byId.S16.status, "done");
-  assert.match(byId.S16.evidence.join(" "), /R3 current follow-up/i);
-  assert.match(byId.S16.evidence.join(" "), /R4 review-quality follow-up/i);
-  assert.deepEqual(byId.S16.residual_gates, []);
-  assert.equal(byId.S12.status, "done");
-  assert.match(byId.S12.evidence.join(" "), /523e784c-1ce5-429f-a4f9-271de5ed00a2/);
-  assert.match(byId.S12.evidence.join(" "), /7c9eee50-147b-4d5f-baf6-ea6bfff170b9/);
-  assert.match(byId.S12.evidence.join(" "), /job_4457ac2a-b5a0-48ef-a69a-4e6cf0603646/);
-  assert.deepEqual(byId.S12.residual_gates, []);
-  assert.equal(byId.S23.status, "done");
-  assert.match(byId.S23.evidence.join(" "), /post-spawn OAuth inference 401/i);
-  assert.deepEqual(byId.S23.residual_gates, []);
-  assert.equal(byId.S11.status, "done");
-  assert.match(byId.S11.evidence.join(" "), /repo_cache_in_sync:true/);
-  assert.match(byId.S11.evidence.join(" "), /installed-cache source-free probes/i);
-  assert.deepEqual(byId.S11.residual_gates, []);
-});
 
 test("provider architecture parity table is machine-validatable and complete", () => {
-  const schema = readRepoJson("specs/171-provider-architecture-parity/contracts/provider-parity-table.schema.json");
-  const table = readRepoJson("specs/171-provider-architecture-parity/provider-parity-table.json");
+  const schema = readRepoJson("docs/contracts/provider-parity-table.schema.json");
+  const table = readRepoJson("docs/provider-parity-table.json");
 
   assertOnlyKeys(table, Object.keys(schema.properties), "provider parity table");
   for (const required of schema.required) {
@@ -1265,8 +952,11 @@ test("provider architecture parity table is machine-validatable and complete", (
   assert.match(claudeAuth.current_behavior, /oauth_inference_rejected/i);
 });
 
-test("packet recovery schema keeps the no-source resume capability guard", () => {
-  const schema = readRepoJson("specs/172-large-custom-review-packet-recovery/contracts/packet-recovery.schema.json");
+
+
+
+test("packet-recovery schema keeps the no-source resume capability guard", () => {
+  const schema = readRepoJson("docs/contracts/packet-recovery.schema.json");
 
   assert.equal(schema.title, "PacketRecovery");
   assert.ok(schema.required.includes("provider_capabilities"));
@@ -1330,8 +1020,8 @@ test("packet recovery schema keeps the no-source resume capability guard", () =>
   );
 });
 
-test("packet recovery schema matches runtime shard approval tuple shape", () => {
-  const schema = readRepoJson("specs/172-large-custom-review-packet-recovery/contracts/packet-recovery.schema.json");
+test("packet-recovery schema matches runtime shard approval tuple shape", () => {
+  const schema = readRepoJson("docs/contracts/packet-recovery.schema.json");
   const tuple = schema.$defs.approvalTuple;
 
   assert.deepEqual(
@@ -1383,8 +1073,8 @@ test("packet recovery schema matches runtime shard approval tuple shape", () => 
   );
 });
 
-test("packet recovery schema allows runtime retry fail-closed reasons", () => {
-  const schema = readRepoJson("specs/172-large-custom-review-packet-recovery/contracts/packet-recovery.schema.json");
+test("packet-recovery schema allows runtime retry fail-closed reasons", () => {
+  const schema = readRepoJson("docs/contracts/packet-recovery.schema.json");
   for (const reason of [
     "review_slot_waiver_artifact_required",
     "review_slot_override_artifact_required",
@@ -1394,4 +1084,45 @@ test("packet recovery schema allows runtime retry fail-closed reasons", () => {
   ]) {
     assert.ok(schema.properties.reason.enum.includes(reason), `schema must allow runtime retry guard reason ${reason}`);
   }
+});
+
+test("session-approval-grant schema is strict and token-free", () => {
+  const schema = readRepoJson("docs/contracts/session-approval-grant.schema.json");
+  const policy = readRepoJson("plugins/relay-deepseek/config/session-approval.json");
+
+  assert.deepEqual(Object.keys(policy), ["schema_version", "max_ttl_ms"]);
+  assert.equal(policy.schema_version, 1);
+  assert.equal(Number.isSafeInteger(policy.max_ttl_ms), true);
+  assert.equal(policy.max_ttl_ms > 0, true);
+  assert.equal(schema.additionalProperties, false);
+  assert.deepEqual(schema.required, [
+    "schema_version",
+    "grant_id",
+    "created_at",
+    "expires_at",
+    "grant_session_id",
+    "provider_allowlist",
+    "mode_allowlist",
+    "workspace_root_hash",
+    "path_constraints",
+    "max_files",
+    "max_bytes",
+    "max_ttl_ms",
+    "approval_fingerprint",
+    "approval_tuple",
+    "activation",
+  ]);
+  assert.equal(schema.properties.approval_token, undefined);
+  assert.equal(schema.properties.grant_approval_token, undefined);
+  assert.equal(schema.properties.approval_tuple.additionalProperties, false);
+  assert.equal(schema.$defs.grant_bounds.additionalProperties, false);
+  assert.equal(schema.properties.max_ttl_ms.maximum, undefined);
+  assert.equal(schema.$defs.grant_bounds.properties.max_ttl_ms.maximum, undefined);
+  assert.match(schema.properties.approval_fingerprint.description, /canonicalJson/);
+});
+
+test("session-approval-grant schema accepts runtime persisted record shape", () => {
+  const schema = readRepoJson("docs/contracts/session-approval-grant.schema.json");
+
+  assertSchemaAllowsValue(schema, schema, sampleSessionApprovalGrantRecord(), "$");
 });

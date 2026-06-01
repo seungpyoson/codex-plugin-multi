@@ -12,8 +12,8 @@
   "mode": "custom-review",
   "mode_profile_name": "custom-review",
   "model": "deepseek-v4-pro",
-  "cwd": "/Users/<user>/Projects/Claude/codex-plugin-multi-103-spec",
-  "workspace_root": "/Users/<user>/Projects/Claude/codex-plugin-multi-103-spec",
+  "cwd": "/Users/<user>/Projects/Claude/relay-103-spec",
+  "workspace_root": "/Users/<user>/Projects/Claude/relay-103-spec",
   "containment": "none",
   "scope": "custom",
   "dispose_effective": false,
@@ -61,7 +61,7 @@
         }
       },
       "git_identity": {
-        "remote": "seungpyoson/codex-plugin-multi",
+        "remote": "relay-org/relay",
         "branch": "feat/106-fixture-recording-mvp",
         "base_ref": null,
         "base_sha": null,

@@ -32,13 +32,13 @@ const MOCK = path.join(REPO_ROOT, "tests/smoke/claude-mock.mjs");
 const CLAUDE_SMOKE_POLL_TIMEOUT_MS = Number(process.env.CLAUDE_SMOKE_POLL_TIMEOUT_MS ?? 30000);
 
 function smokeEnv(dataDir, env = {}) {
-  const workloadLockDir = env.CODEX_PLUGIN_MULTI_PROVIDER_WORKLOAD_LOCK_DIR
+  const workloadLockDir = env.RELAY_PROVIDER_WORKLOAD_LOCK_DIR
     ?? path.join(dataDir, "provider-workload");
   return {
     ...process.env,
     CLAUDE_BINARY: MOCK,
     CLAUDE_PLUGIN_DATA: dataDir,
-    CODEX_PLUGIN_MULTI_PROVIDER_WORKLOAD_LOCK_DIR: workloadLockDir,
+    RELAY_PROVIDER_WORKLOAD_LOCK_DIR: workloadLockDir,
     ...env,
   };
 }
@@ -234,13 +234,13 @@ test("run rejects Git binary policy errors distinctly before Claude spawn", () =
     ], {
       cwd,
       dataDir,
-      env: { CODEX_PLUGIN_MULTI_GIT_BINARY: maliciousGit },
+      env: { RELAY_GIT_BINARY: maliciousGit },
     });
     assert.equal(res.status, 1, `exit ${res.status}: ${res.stderr}`);
     const parsed = JSON.parse(res.stdout);
     assert.equal(parsed.ok, false);
     assert.equal(parsed.error, "git_binary_rejected");
-    assert.match(parsed.message, /CODEX_PLUGIN_MULTI_GIT_BINARY/);
+    assert.match(parsed.message, /RELAY_GIT_BINARY/);
     assert.equal(existsSync(marker), false, "rejected git override must not execute");
   } finally {
     rmSync(dataDir, { recursive: true, force: true });
@@ -336,21 +336,21 @@ test("custom-review prompt uses git repository identity instead of local workspa
     fileContents: "claude repository identity sentinel\n",
   });
   assert.equal(
-    fixtureGit(cwd, ["remote", "add", "origin", "git@github.com:seungpyoson/provider-prompt-fixture.git"]).status,
+    fixtureGit(cwd, ["remote", "add", "origin", "git@github.com:relay-org/provider-prompt-fixture.git"]).status,
     0,
   );
   const { stdout, stderr, status, dataDir } = runCompanion(
     ["run", "--mode=custom-review", "--foreground", "--model", "claude-haiku-4-5-20251001",
      "--cwd", cwd, "--scope-paths", "seed.txt", "--", "review selected source"],
     { cwd, env: {
-      CLAUDE_MOCK_ASSERT_PROMPT_INCLUDES: "Repository: seungpyoson/provider-prompt-fixture",
+      CLAUDE_MOCK_ASSERT_PROMPT_INCLUDES: "Repository: relay-org/provider-prompt-fixture",
       CLAUDE_MOCK_ASSERT_PROMPT_EXCLUDES: cwd,
     } },
   );
   try {
     assert.equal(status, 0, `exit ${status}: stderr=${stderr}; stdout=${stdout}`);
     const record = JSON.parse(stdout);
-    assert.equal(record.review_metadata.audit_manifest.git_identity.remote, "seungpyoson/provider-prompt-fixture");
+    assert.equal(record.review_metadata.audit_manifest.git_identity.remote, "relay-org/provider-prompt-fixture");
   } finally {
     cleanup(dataDir);
     rmSync(cwd, { recursive: true, force: true });
@@ -393,7 +393,7 @@ test("custom-review maps held Claude workload lease to provider_workload_blocked
     jobId: "held-claude-job",
     cwd,
     sourceBearing: true,
-    env: { CODEX_PLUGIN_MULTI_PROVIDER_WORKLOAD_LOCK_DIR: workloadLockDir },
+    env: { RELAY_PROVIDER_WORKLOAD_LOCK_DIR: workloadLockDir },
   });
   assert.equal(admission.ok, true);
 
@@ -405,7 +405,7 @@ test("custom-review maps held Claude workload lease to provider_workload_blocked
         cwd,
         dataDir,
         env: {
-          CODEX_PLUGIN_MULTI_PROVIDER_WORKLOAD_LOCK_DIR: workloadLockDir,
+          RELAY_PROVIDER_WORKLOAD_LOCK_DIR: workloadLockDir,
           CLAUDE_MOCK_ASSERT_PROMPT_INCLUDES: "MUST_NOT_REACH_CLAUDE",
         },
       },
@@ -1043,7 +1043,7 @@ if (mode === "dontAsk") {
   process.stdout.write(JSON.stringify({
     type: "result",
     is_error: true,
-    result: "You've hit your session limit · resets 2:50am (Asia/Seoul)",
+    result: "You've hit your session limit · resets 2:50am (operator timezone)",
     session_id: sessionId,
     usage: { input_tokens: 1, output_tokens: 1 },
     permission_denials: []
@@ -3093,14 +3093,14 @@ test("preflight rejects Git binary policy errors before executing the override",
     const maliciousGit = writeExecutable(cwd, "malicious-git", `#!/bin/sh\necho executed > ${JSON.stringify(marker)}\nexit 0\n`);
     const { stdout, status, dataDir } = runCompanion(
       ["preflight", "--mode=custom-review", "--cwd", cwd, "--scope-paths", "seed.txt"],
-      { cwd, env: { CODEX_PLUGIN_MULTI_GIT_BINARY: maliciousGit } },
+      { cwd, env: { RELAY_GIT_BINARY: maliciousGit } },
     );
     try {
       assert.equal(status, 1);
       const result = JSON.parse(stdout);
       assert.equal(result.ok, false);
       assert.equal(result.error, "git_binary_rejected");
-      assert.match(result.message, /CODEX_PLUGIN_MULTI_GIT_BINARY/);
+      assert.match(result.message, /RELAY_GIT_BINARY/);
       assert.equal(existsSync(marker), false, "rejected git override must not execute");
     } finally {
       cleanup(dataDir);

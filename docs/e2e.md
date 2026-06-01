@@ -192,7 +192,7 @@ When a maintainer runs live E2E, record:
 
 Latest live verification:
 
-- 2026-05-02 on `SP-MB-Pro.local`, branch `issue-38-kimi-provider`:
+- 2026-05-02 on `dev-host.local`, branch `issue-38-kimi-provider`:
   - `CLAUDE_LIVE_E2E=1 npm run e2e:claude` passed.
   - `GEMINI_LIVE_E2E=1 npm run e2e:gemini` passed.
   - `KIMI_LIVE_E2E=1 npm run e2e:kimi` passed.
@@ -207,7 +207,7 @@ Latest live verification:
     chrome --profile Default --pool super` imported the local SuperGrok web
     session without printing secret values.
 
-- 2026-05-03 03:18 KST on `SP-MB-Pro.local`, branch
+- 2026-05-03 03:18 local time on `dev-host.local`, branch
   `fix/49-api-reviewers-installed-layout`, head
   `921f83609d26c95830f468bca6216681ce5f6e36`:
   - `CLAUDE_LIVE_E2E=1 npm run e2e:claude` passed with Claude Code

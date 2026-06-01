@@ -3,10 +3,10 @@
   "version": "0.1.0",
   "description": "Delegate code reviews to GLM direct API from within Codex.",
   "author": {
-    "name": "seungpyoson"
+    "name": "relay-maintainer"
   },
-  "homepage": "https://github.com/seungpyoson/relay",
-  "repository": "https://github.com/seungpyoson/relay",
+  "homepage": "https://github.com/relay-org/relay",
+  "repository": "https://github.com/relay-org/relay",
   "license": "AGPL-3.0-only",
   "keywords": [
     "glm",
@@ -18,7 +18,7 @@
     "displayName": "Relay GLM",
     "shortDescription": "Delegate to GLM direct API from Codex.",
     "longDescription": "Invoke GLM directly through explicit API-key auth for review, adversarial-review, and custom-review workflows.",
-    "developerName": "seungpyoson",
+    "developerName": "relay-maintainer",
     "category": "Coding",
     "capabilities": [
       "Read"

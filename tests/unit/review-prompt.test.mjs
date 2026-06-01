@@ -712,7 +712,7 @@ for (const [name, file] of REVIEW_PROMPT_MODULES) {
     const prompt = targetBuildReviewPrompt({
       provider: "Claude Code",
       mode: "review",
-      repository: "/Users/spson/Projects/Claude/codex-plugin-multi",
+      repository: "/home/user/projects/relay",
       baseRef: "main",
       baseCommit: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
       headRef: "HEAD",
@@ -722,7 +722,7 @@ for (const [name, file] of REVIEW_PROMPT_MODULES) {
       userPrompt: "Review the supplied packet.",
     });
 
-    assert.doesNotMatch(prompt, /\/Users\/spson\/Projects\/Claude\/codex-plugin-multi/);
+    assert.doesNotMatch(prompt, /\/home\/user\/projects\/relay/);
     assert.match(prompt, /Repository: selected source packet \(original path withheld\)/);
     assert.match(prompt, /Do not call filesystem, git, search, network, or other tools to inspect original repository paths/);
   });
@@ -732,7 +732,7 @@ function assertReviewPromptContract(targetBuildReviewPrompt = buildReviewPrompt,
   const prompt = targetBuildReviewPrompt({
     provider: "Gemini CLI",
     mode: "adversarial-review",
-    repository: "seungpyoson/codex-plugin-multi",
+    repository: "relay-org/relay",
     baseRef: "origin/main",
     baseCommit: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
     headRef: "feature/review-quality",
@@ -744,7 +744,7 @@ function assertReviewPromptContract(targetBuildReviewPrompt = buildReviewPrompt,
 
   assert.match(prompt, /Provider: Gemini CLI/);
   assert.match(prompt, /Mode: adversarial-review/);
-  assert.match(prompt, /Repository: seungpyoson\/codex-plugin-multi/);
+  assert.match(prompt, /Repository: relay-org\/relay/);
   assert.match(prompt, /Base ref: origin\/main/);
   assert.match(prompt, /Base commit: a{40}/);
   assert.match(prompt, /Head ref: feature\/review-quality/);
@@ -781,7 +781,7 @@ function assertCompactReviewPromptContract(targetBuildReviewPrompt = buildReview
   const prompt = targetBuildReviewPrompt({
     provider: "Kimi",
     mode: "custom-review",
-    repository: "seungpyoson/codex-plugin-multi",
+    repository: "relay-org/relay",
     baseRef: "origin/main",
     baseCommit: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
     headRef: "feature/kimi-compact-contract",
@@ -1304,7 +1304,7 @@ function assertReviewAuditManifest(
       { path: "src/b.js", text: "" },
     ],
     git: {
-      remote: "git@github.com:seungpyoson/codex-plugin-multi.git",
+      remote: "git@github.com:relay-org/relay.git",
       branch: "fix/issues-76-77-reviewer-ux",
       baseRef: "origin/main",
       baseCommit: "a".repeat(40),
@@ -3652,7 +3652,7 @@ for (const [name, file] of REVIEW_PROMPT_MODULES) {
         "Verdict: APPROVE",
         "**Blocking findings:** None.",
         "**Non-blocking concerns:**",
-        "- `scripts/lib/review-workload.mjs`: The default workload lock root resides under the system tmpdir. On multi-user systems with shared `/tmp`, an attacker could preemptively create the intermediate directory and deny lock creation (EACCES). Operators can mitigate this by setting `CODEX_PLUGIN_MULTI_PROVIDER_WORKLOAD_LOCK_DIR` to a user-private path.",
+        "- `scripts/lib/review-workload.mjs`: The default workload lock root resides under the system tmpdir. On multi-user systems with shared `/tmp`, an attacker could preemptively create the intermediate directory and deny lock creation (EACCES). Operators can mitigate this by setting `RELAY_PROVIDER_WORKLOAD_LOCK_DIR` to a user-private path.",
         "**Checklist:**",
         "- **refs:** PASS.",
         "- **scope:** PASS - All selected source packet files were reviewed.",
@@ -3690,7 +3690,7 @@ for (const [name, file] of REVIEW_PROMPT_MODULES) {
         "## Blocking findings",
         "None.",
         "## Non-blocking concerns",
-        "3. **Lock root in shared tmpdir.** Default `tmpdir()` at `0o700` can `EACCES` for a second uid on a shared-`/tmp` Linux host; it fails closed (no source send) and `CODEX_PLUGIN_MULTI_PROVIDER_WORKLOAD_LOCK_DIR` overrides it, so low impact.",
+        "3. **Lock root in shared tmpdir.** Default `tmpdir()` at `0o700` can `EACCES` for a second uid on a shared-`/tmp` Linux host; it fails closed (no source send) and `RELAY_PROVIDER_WORKLOAD_LOCK_DIR` overrides it, so low impact.",
       ].join("\n"),
       status: "completed",
       errorCode: null,

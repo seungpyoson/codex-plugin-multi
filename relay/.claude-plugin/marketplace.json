@@ -2,7 +2,7 @@
   "name": "relay-for-claude",
   "description": "Relay for Claude Code: external-model delegation plugins.",
   "owner": {
-    "name": "seungpyoson"
+    "name": "relay-maintainer"
   },
   "plugins": [
     {
@@ -11,7 +11,7 @@
       "version": "0.1.0",
       "source": "./relay-gemini",
       "author": {
-        "name": "seungpyoson"
+        "name": "relay-maintainer"
       }
     },
     {
@@ -20,7 +20,7 @@
       "version": "0.1.0",
       "source": "./relay-grok",
       "author": {
-        "name": "seungpyoson"
+        "name": "relay-maintainer"
       }
     },
     {
@@ -29,7 +29,7 @@
       "version": "0.1.0",
       "source": "./relay-kimi",
       "author": {
-        "name": "seungpyoson"
+        "name": "relay-maintainer"
       }
     },
     {
@@ -38,7 +38,7 @@
       "version": "0.1.0",
       "source": "./relay-glm",
       "author": {
-        "name": "seungpyoson"
+        "name": "relay-maintainer"
       }
     },
     {
@@ -47,7 +47,7 @@
       "version": "0.1.0",
       "source": "./relay-deepseek",
       "author": {
-        "name": "seungpyoson"
+        "name": "relay-maintainer"
       }
     },
     {
@@ -56,7 +56,7 @@
       "version": "0.1.0",
       "source": "./relay-api-reviewers",
       "author": {
-        "name": "seungpyoson"
+        "name": "relay-maintainer"
       },
       "policy": {
         "installation": "HIDDEN"

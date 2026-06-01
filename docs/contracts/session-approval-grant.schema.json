@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://github.com/seungpyoson/codex-plugin-multi/specs/147-bounded-session-approval/session-approval-grant.schema.json",
+  "$id": "https://github.com/relay-org/relay/docs/contracts/session-approval-grant.schema.json",
   "title": "Direct API Session Approval Grant",
   "type": "object",
   "additionalProperties": false,

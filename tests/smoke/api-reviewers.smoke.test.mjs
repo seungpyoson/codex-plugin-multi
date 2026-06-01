@@ -101,14 +101,14 @@ async function run(args, { cwd = REPO_ROOT, env = {}, companion = COMPANION } = 
     }
   }
   return new Promise((resolve) => {
-    const workloadLockDir = env.CODEX_PLUGIN_MULTI_PROVIDER_WORKLOAD_LOCK_DIR
+    const workloadLockDir = env.RELAY_PROVIDER_WORKLOAD_LOCK_DIR
       ?? path.join(env.API_REVIEWERS_PLUGIN_DATA ?? cwd, ".provider-workload");
     execFile(process.execPath, [companion, ...finalArgs], {
       cwd,
       env: {
         ...process.env,
         API_REVIEWERS_DISABLE_ENV_CACHE: "1",
-        CODEX_PLUGIN_MULTI_PROVIDER_WORKLOAD_LOCK_DIR: workloadLockDir,
+        RELAY_PROVIDER_WORKLOAD_LOCK_DIR: workloadLockDir,
         ...env,
       },
       timeout: 10000,
@@ -120,14 +120,14 @@ async function run(args, { cwd = REPO_ROOT, env = {}, companion = COMPANION } = 
 
 async function runExecutable(args, { cwd = REPO_ROOT, env = {}, executable } = {}) {
   return new Promise((resolve) => {
-    const workloadLockDir = env.CODEX_PLUGIN_MULTI_PROVIDER_WORKLOAD_LOCK_DIR
+    const workloadLockDir = env.RELAY_PROVIDER_WORKLOAD_LOCK_DIR
       ?? path.join(env.API_REVIEWERS_PLUGIN_DATA ?? cwd, ".provider-workload");
     execFile(executable, args, {
       cwd,
       env: {
         ...process.env,
         API_REVIEWERS_DISABLE_ENV_CACHE: "1",
-        CODEX_PLUGIN_MULTI_PROVIDER_WORKLOAD_LOCK_DIR: workloadLockDir,
+        RELAY_PROVIDER_WORKLOAD_LOCK_DIR: workloadLockDir,
         ...env,
       },
       timeout: 10000,
@@ -311,7 +311,7 @@ function defaultApiReviewerDataRoot(cwd) {
   const workspace = path.resolve(cwd);
   const slug = path.basename(workspace).replace(/[^A-Za-z0-9._-]/g, "_").slice(0, 48) || "workspace";
   const hash = createHash("sha256").update(workspace).digest("hex").slice(0, 16);
-  return path.resolve(tmpdir(), "codex-plugin-multi", "api-reviewers", `${slug}-${hash}`);
+  return path.resolve(tmpdir(), "relay", "api-reviewers", `${slug}-${hash}`);
 }
 
 function makeInstalledApiReviewersRoot() {
@@ -1572,7 +1572,7 @@ test("run rejects Git binary policy errors distinctly before direct API scope co
       API_REVIEWERS_PLUGIN_DATA: dataDir,
       API_REVIEWERS_MOCK_RESPONSE: mockResponse("deepseek-v4-pro"),
       DEEPSEEK_API_KEY: "secret-test-value",
-      CODEX_PLUGIN_MULTI_GIT_BINARY: maliciousGit,
+      RELAY_GIT_BINARY: maliciousGit,
     },
   });
 
@@ -1581,8 +1581,8 @@ test("run rejects Git binary policy errors distinctly before direct API scope co
   assert.equal(record.status, "failed");
   assert.equal(record.error_code, "git_binary_rejected");
   assert.equal(record.error_cause, "git_binary_policy");
-  assert.match(record.error_message, /CODEX_PLUGIN_MULTI_GIT_BINARY/);
-  assert.match(record.suggested_action, /CODEX_PLUGIN_MULTI_GIT_BINARY|trusted Git/i);
+  assert.match(record.error_message, /RELAY_GIT_BINARY/);
+  assert.match(record.suggested_action, /RELAY_GIT_BINARY|trusted Git/i);
   assert.equal(record.external_review.source_content_transmission, "not_sent");
   assert.equal(existsSync(marker), false, "rejected git override must not execute");
   assert.doesNotMatch(result.stdout, /secret-test-value/);
@@ -1607,7 +1607,7 @@ test("approval-request rejects Git binary policy errors distinctly before source
     cwd,
     env: {
       DEEPSEEK_API_KEY: "secret-test-value",
-      CODEX_PLUGIN_MULTI_GIT_BINARY: maliciousGit,
+      RELAY_GIT_BINARY: maliciousGit,
     },
   });
 
@@ -1616,7 +1616,7 @@ test("approval-request rejects Git binary policy errors distinctly before source
   assert.equal(record.ok, false);
   assert.equal(record.provider, "deepseek");
   assert.equal(record.error_code, "git_binary_rejected");
-  assert.match(record.error_message, /CODEX_PLUGIN_MULTI_GIT_BINARY/);
+  assert.match(record.error_message, /RELAY_GIT_BINARY/);
   assert.doesNotMatch(result.stdout, /external_review_approval_request/);
   assert.equal(existsSync(marker), false, "rejected git override must not execute");
   assert.doesNotMatch(result.stdout, /secret-test-value/);

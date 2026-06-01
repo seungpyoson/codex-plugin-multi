@@ -2652,7 +2652,7 @@ async function main() {
     case "--help":
     case "-h":
     case undefined:
-      process.stdout.write("gemini-companion: see docs/superpowers/specs/ §7 for subcommand surface.\n");
+      process.stdout.write("gemini-companion: see docs/architecture-record.md §7 for subcommand surface.\n");
       process.exit(0);
     default:
       fail("bad_args", `unknown subcommand ${JSON.stringify(sub)}`);

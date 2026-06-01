@@ -26,7 +26,7 @@ function sha256(value) {
 }
 
 function runCompanion(args, { cwd, env = {}, dataDir = mkdtempSync(path.join(tmpdir(), "kimi-smoke-data-")) } = {}) {
-  const workloadLockDir = env.CODEX_PLUGIN_MULTI_PROVIDER_WORKLOAD_LOCK_DIR
+  const workloadLockDir = env.RELAY_PROVIDER_WORKLOAD_LOCK_DIR
     ?? path.join(dataDir, "provider-workload");
   const res = spawnSync("node", [COMPANION, ...args], {
     cwd,
@@ -35,7 +35,7 @@ function runCompanion(args, { cwd, env = {}, dataDir = mkdtempSync(path.join(tmp
       ...process.env,
       KIMI_BINARY: MOCK,
       KIMI_PLUGIN_DATA: dataDir,
-      CODEX_PLUGIN_MULTI_PROVIDER_WORKLOAD_LOCK_DIR: workloadLockDir,
+      RELAY_PROVIDER_WORKLOAD_LOCK_DIR: workloadLockDir,
       ...env,
     },
   });
@@ -69,7 +69,7 @@ test("kimi review prompt uses git repository identity instead of local workspace
   const cwd = mkdtempSync(path.join(tmpdir(), "kimi-repo-identity-cwd-"));
   fixtureSeedRepo(cwd);
   assert.equal(
-    fixtureGit(cwd, ["remote", "add", "origin", "git@github.com:seungpyoson/provider-prompt-fixture.git"]).status,
+    fixtureGit(cwd, ["remote", "add", "origin", "git@github.com:relay-org/provider-prompt-fixture.git"]).status,
     0,
   );
   const result = runCompanion([
@@ -84,14 +84,14 @@ test("kimi review prompt uses git repository identity instead of local workspace
   ], {
     cwd,
     env: {
-      KIMI_MOCK_ASSERT_PROMPT_INCLUDES: "Repository: seungpyoson/provider-prompt-fixture",
+      KIMI_MOCK_ASSERT_PROMPT_INCLUDES: "Repository: relay-org/provider-prompt-fixture",
       KIMI_MOCK_ASSERT_PROMPT_EXCLUDES: cwd,
     },
   });
   try {
     assert.equal(result.status, 0, result.stderr);
     const record = parseJson(result.stdout);
-    assert.equal(record.review_metadata.audit_manifest.git_identity.remote, "seungpyoson/provider-prompt-fixture");
+    assert.equal(record.review_metadata.audit_manifest.git_identity.remote, "relay-org/provider-prompt-fixture");
   } finally {
     rmSync(result.dataDir, { recursive: true, force: true });
     rmSync(cwd, { recursive: true, force: true });
@@ -771,7 +771,7 @@ test("kimi custom-review maps held workload lease to provider_workload_blocked w
     jobId: "held-kimi-job",
     cwd,
     sourceBearing: true,
-    env: { CODEX_PLUGIN_MULTI_PROVIDER_WORKLOAD_LOCK_DIR: workloadLockDir },
+    env: { RELAY_PROVIDER_WORKLOAD_LOCK_DIR: workloadLockDir },
   });
   assert.equal(admission.ok, true);
 
@@ -791,7 +791,7 @@ test("kimi custom-review maps held workload lease to provider_workload_blocked w
       cwd,
       dataDir,
       env: {
-        CODEX_PLUGIN_MULTI_PROVIDER_WORKLOAD_LOCK_DIR: workloadLockDir,
+        RELAY_PROVIDER_WORKLOAD_LOCK_DIR: workloadLockDir,
         KIMI_MOCK_ASSERT_PROMPT_INCLUDES: "MUST_NOT_REACH_KIMI",
       },
     });
@@ -1777,12 +1777,12 @@ test("kimi run rejects Git binary policy errors distinctly before target spawn",
     "--foreground",
     "--",
     "Review this scope.",
-  ], { cwd, env: { CODEX_PLUGIN_MULTI_GIT_BINARY: maliciousGit } });
+  ], { cwd, env: { RELAY_GIT_BINARY: maliciousGit } });
   assert.equal(result.status, 1, result.stderr);
   const parsed = parseJson(result.stdout);
   assert.equal(parsed.ok, false);
   assert.equal(parsed.error, "git_binary_rejected");
-  assert.match(parsed.message, /CODEX_PLUGIN_MULTI_GIT_BINARY/);
+  assert.match(parsed.message, /RELAY_GIT_BINARY/);
   assert.equal(existsSync(marker), false, "rejected git override must not execute");
 }));
 
@@ -2904,12 +2904,12 @@ test("kimi preflight rejects Git binary policy errors before executing the overr
     cwd,
     "--scope-paths",
     "seed.txt",
-  ], { cwd, env: { CODEX_PLUGIN_MULTI_GIT_BINARY: maliciousGit } });
+  ], { cwd, env: { RELAY_GIT_BINARY: maliciousGit } });
   assert.equal(result.status, 1, result.stderr);
   const parsed = parseJson(result.stdout);
   assert.equal(parsed.ok, false);
   assert.equal(parsed.error, "git_binary_rejected");
-  assert.match(parsed.message, /CODEX_PLUGIN_MULTI_GIT_BINARY/);
+  assert.match(parsed.message, /RELAY_GIT_BINARY/);
   assert.equal(existsSync(marker), false, "rejected git override must not execute");
 }));
 

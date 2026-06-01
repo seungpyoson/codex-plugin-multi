@@ -5,7 +5,7 @@ import { join, relative, resolve } from "node:path";
 import { homedir } from "node:os";
 
 const MARKETPLACE = "relay-for-codex";
-const MARKETPLACE_REPOSITORY = "seungpyoson/relay";
+const MARKETPLACE_REPOSITORY = "relay-org/relay";
 const CACHE_NAMESPACE = MARKETPLACE;
 const INTERNAL_RUNTIME_PLUGINS = new Set(["api-reviewers"]);
 const DEFAULT_PLUGINS = [

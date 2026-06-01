@@ -70,7 +70,7 @@ function addDirtyWorkingTreeAndIgnoredClaudeSymlink(cwd) {
   writeFileSync(path.join(embeddedWorktree, "README.md"), "nested ignored repo\n");
   git(embeddedWorktree, "add", "README.md");
   git(embeddedWorktree, "commit", "-qm", "nested ignored repo");
-  const ignoredDir = path.join(embeddedWorktree, "node_modules/@codex-plugin-multi");
+  const ignoredDir = path.join(embeddedWorktree, "node_modules/@relay");
   mkdirSync(ignoredDir, { recursive: true });
   symlinkSync(cwd, path.join(ignoredDir, "api-reviewers-plugin"), "dir");
 }

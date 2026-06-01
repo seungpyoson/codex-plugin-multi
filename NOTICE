@@ -1,10 +1,10 @@
-codex-plugin-multi
-Copyright 2026 seungpyoson
+relay
+Copyright 2026 relay contributors
 
 This product ports portions of openai/codex-plugin-cc (MIT) with
 modifications. See the original at https://github.com/openai/codex-plugin-cc.
 
-The codex-plugin-multi repository is distributed under the top-level
+The relay repository is distributed under the top-level
 AGPL-3.0-only LICENSE. The upstream MIT notice below is preserved for
 upstream-derived portions.
 

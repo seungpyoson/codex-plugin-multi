@@ -45,8 +45,8 @@ uv run granian --interface asgi --host 127.0.0.1 --port 8000 --workers 1 app.mai
 
 The manual clone is no longer required for the default path. The Grok plugin
 doctor/run path first checks `GROK2API_HOME`, `GROK2API_BOOTSTRAP_DIR`, the
-durable managed runtime directory (`~/.codex-plugin-multi/runtime/grok2api` by
-default, or `CODEX_PLUGIN_MULTI_RUNTIME_DIR/grok2api` when set), and common
+durable managed runtime directory (`~/.relay/runtime/grok2api` by
+default, or `RELAY_RUNTIME_DIR/grok2api` when set), and common
 local checkout locations such as `~/grok2api`, `~/Projects/grok2api`, and
 `~/Projects/Claude/grok2api`. Explicit `GROK2API_HOME` and
 `GROK2API_BOOTSTRAP_DIR` are authoritative; when either is set, doctor reports
@@ -229,7 +229,7 @@ admin key.
 If doctor reports `durability_warnings[].code:
 grok2api_ephemeral_bootstrap_home`, the grok2api checkout is using the default
 or configured home under `$TMPDIR`, including an explicit `GROK2API_HOME`.
-Configure a durable `GROK2API_HOME` or `CODEX_PLUGIN_MULTI_RUNTIME_DIR` before
+Configure a durable `GROK2API_HOME` or `RELAY_RUNTIME_DIR` before
 syncing browser session state. Run
 `npm run grok:repair-session -- --approve-browser-session-sync` or
 `npm run grok:sync-browser-session` only after explicit operator approval in the
@@ -273,7 +273,7 @@ reachable before `GROK_WEB_TUNNEL_START_TIMEOUT_MS`.
 
 Review runs persist a redacted JobRecord under
 `GROK_PLUGIN_DATA` or the workspace-scoped default under
-`$TMPDIR/codex-plugin-multi/grok/<workspace-slug>-<hash>`. The helper can
+`$TMPDIR/relay/grok/<workspace-slug>-<hash>`. The helper can
 inspect that local state without contacting Grok. `list` returns the recent
 local index, with the newest job first; `result` reads a specific per-job
 record:

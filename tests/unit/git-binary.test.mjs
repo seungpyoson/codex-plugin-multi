@@ -40,7 +40,7 @@ test("isGitBinaryPolicyError identifies resolver policy errors", () => {
   assert.equal(isGitBinaryPolicyError(new Error(`${GIT_BINARY_ENV} must not point inside the current workspace.`)), true);
   assert.equal(isGitBinaryPolicyError(new Error("git_failed: not a git repository")), false);
   assert.equal(isGitBinaryPolicyError(new Error(`git_failed: stderr mentioned ${GIT_BINARY_ENV} but this was not resolver policy`)), false);
-  assert.equal(isGitBinaryPolicyError("CODEX_PLUGIN_MULTI_GIT_BINARY"), false);
+  assert.equal(isGitBinaryPolicyError("RELAY_GIT_BINARY"), false);
 });
 
 test("resolveGitBinary rejects relative overrides", () => {

@@ -570,15 +570,15 @@ function defaultGrok2ApiBootstrapDir(env = process.env) {
 }
 
 function defaultManagedRuntimeDir(env = process.env) {
-  return resolve(env.CODEX_PLUGIN_MULTI_RUNTIME_DIR || join(homedir(), ".codex-plugin-multi", "runtime"));
+  return resolve(env.RELAY_RUNTIME_DIR || join(homedir(), ".relay", "runtime"));
 }
 
 function legacyTmpGrok2ApiBootstrapDir(env = process.env) {
-  return resolve(join(env.TMPDIR || tmpdir(), "codex-plugin-multi", "runtime", "grok2api"));
+  return resolve(join(env.TMPDIR || tmpdir(), "relay", "runtime", "grok2api"));
 }
 
 function defaultGrok2ApiUvCacheDir() {
-  return resolve(join(tmpdir(), "codex-plugin-multi", "runtime", "uv-cache"));
+  return resolve(join(tmpdir(), "relay", "runtime", "uv-cache"));
 }
 
 async function isDirectory(pathValue) {
@@ -3245,7 +3245,7 @@ function suggestedAction(errorCode, errorMessage = "", tunnelStart = null) {
     return "Automatic grok2api bootstrap failed. Inspect tunnel_start.detail, fix Git/network access or set GROK2API_HOME to an existing checkout, then retry. Docker is not required.";
   }
   if (tunnelStart?.error_code === "grok2api_git_unavailable") {
-    return "Install Git or set CODEX_PLUGIN_MULTI_GIT_BINARY to an approved absolute Git path, then rerun setup. Docker is not required.";
+    return "Install Git or set RELAY_GIT_BINARY to an approved absolute Git path, then rerun setup. Docker is not required.";
   }
   if (tunnelStart?.error_code === "grok2api_bootstrap_dir_invalid") {
     return "Point GROK2API_BOOTSTRAP_DIR or GROK2API_HOME at an empty path or a valid grok2api checkout, then rerun setup.";
@@ -3725,7 +3725,7 @@ function defaultDataRoot(pluginName, cwd = process.cwd()) {
   const workspace = resolve(cwd);
   const slug = basename(workspace).replace(/[^A-Za-z0-9._-]/g, "_").slice(0, 48) || "workspace";
   const hash = createHash("sha256").update(workspace).digest("hex").slice(0, 16);
-  return resolve(tmpdir(), "codex-plugin-multi", pluginName, `${slug}-${hash}`);
+  return resolve(tmpdir(), "relay", pluginName, `${slug}-${hash}`);
 }
 
 function dataRoot(env = process.env, cwd = process.cwd()) {
@@ -4104,7 +4104,7 @@ function grok2ApiDurabilityWarning(homeSource, homePath) {
     code: "grok2api_ephemeral_bootstrap_home",
     home_source: homeSource ?? null,
     message: "grok2api is using a home under TMPDIR, so synced runtime account/session state can disappear after OS cleanup or reboot.",
-    recommendation: "Set GROK2API_HOME or CODEX_PLUGIN_MULTI_RUNTIME_DIR to a durable location before syncing browser session state.",
+    recommendation: "Set GROK2API_HOME or RELAY_RUNTIME_DIR to a durable location before syncing browser session state.",
   };
 }
 

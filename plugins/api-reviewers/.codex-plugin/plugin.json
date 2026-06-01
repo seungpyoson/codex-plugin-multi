@@ -3,10 +3,10 @@
   "version": "0.1.0",
   "description": "Hidden shared runtime for Relay direct API reviewers.",
   "author": {
-    "name": "seungpyoson"
+    "name": "relay-maintainer"
   },
-  "homepage": "https://github.com/seungpyoson/relay",
-  "repository": "https://github.com/seungpyoson/relay",
+  "homepage": "https://github.com/relay-org/relay",
+  "repository": "https://github.com/relay-org/relay",
   "license": "AGPL-3.0-only",
   "keywords": [
     "deepseek",
@@ -19,7 +19,7 @@
     "displayName": "Relay Direct API Runtime",
     "shortDescription": "Shared runtime for Relay direct API reviewers.",
     "longDescription": "Hidden shared runtime used by relay-deepseek and relay-glm. User-facing workflows live in the provider-specific relay plugins.",
-    "developerName": "seungpyoson",
+    "developerName": "relay-maintainer",
     "category": "Coding",
     "capabilities": [
       "Read"

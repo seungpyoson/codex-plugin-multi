@@ -112,7 +112,7 @@ test("external model contract docs are generated from one shared source", () => 
     assert.doesNotMatch(
       rendered,
       /node plugins\/api-reviewers\/scripts\/api-reviewer\.mjs/,
-      `${target.path} must not require caller cwd to be the codex-plugin-multi repo root`,
+      `${target.path} must not require caller cwd to be the relay repo root`,
     );
     assert.doesNotMatch(
       rendered,

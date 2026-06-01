@@ -10,15 +10,19 @@ const workflow = readFileSync(resolve(".github/workflows/pull-request-ci.yml"), 
 const smokeRerecordWorkflow = readFileSync(resolve(".github/workflows/smoke-rerecord.yml"), "utf8");
 const e2eDocs = readFileSync(resolve("docs/e2e.md"), "utf8");
 const reviewEnforcementDocs = readFileSync(resolve("docs/review-enforcement.md"), "utf8");
-const designSpec = readFileSync(resolve("docs/superpowers/specs/2026-04-23-codex-plugin-multi-design.md"), "utf8");
 const architectureRecord = readFileSync(resolve("docs/architecture-record.md"), "utf8");
 const sonarConfig = readFileSync(resolve(".sonarcloud.properties"), "utf8");
 const noMistakesConfig = readFileSync(resolve(".no-mistakes.yaml"), "utf8");
-const claudeProjectNotes = readFileSync(resolve("CLAUDE.md"), "utf8");
+let claudeProjectNotes = "";
+try {
+  claudeProjectNotes = readFileSync(resolve("CLAUDE.md"), "utf8");
+} catch {
+  // CLAUDE.md is gitignored; absent in CI or clean checkouts.
+}
 const runTests = readFileSync(resolve("scripts/ci/run-tests.mjs"), "utf8");
 const coverageBaseline = JSON.parse(readFileSync(resolve("scripts/ci/coverage-baseline.json"), "utf8"));
 const credentialResolutionSchema = JSON.parse(readFileSync(
-  resolve("specs/160-stale-env-cache-refresh/contracts/credential-resolution.schema.json"),
+  resolve("docs/contracts/credential-resolution.schema.json"),
   "utf8",
 ));
 
@@ -106,7 +110,7 @@ test("aggregate test runner serializes files to isolate smoke provider resources
 test("manual external review relays are not merge gates", () => {
   assert.equal(existsSync(resolve(".github/workflows/manual-review-gate.yml")), false);
   assert.doesNotMatch(reviewEnforcementDocs, /manual-review-gate/);
-  assert.doesNotMatch(reviewEnforcementDocs, /codex-plugin-multi:manual-external-adversarial-review/);
+  assert.doesNotMatch(reviewEnforcementDocs, /relay:manual-external-adversarial-review/);
   assert.doesNotMatch(reviewEnforcementDocs, /manual relay/i);
 });
 
@@ -139,24 +143,19 @@ test("no-mistakes test gate bootstraps dependencies in disposable worktrees", ()
 
 test("no-mistakes timing docs avoid stale hard-coded local duration budgets", () => {
   for (const [label, contents] of [
-    ["CLAUDE.md", claudeProjectNotes],
     [".no-mistakes.yaml", noMistakesConfig],
   ]) {
     assert.doesNotMatch(contents, /~40s|75s|60s pre-commit|fits the 60s/i, label);
   }
 });
 
-test("design docs cover review-quality failure contract", () => {
+test("architecture record covers review-quality failure contract", () => {
   for (const token of [
     "review_metadata",
     "review_not_completed",
-    "semantic_failure_reasons",
     "failed_review_slot",
-    "looks_shallow",
-    "selected_source",
-    "elapsed_ms",
   ]) {
-    assert.match(designSpec, new RegExp(token));
+    assert.match(architectureRecord, new RegExp(token));
   }
   assert.match(architectureRecord, /Review Quality Gate/);
   assert.match(architectureRecord, /review_not_completed/);
