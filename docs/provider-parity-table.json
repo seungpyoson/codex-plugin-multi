@@ -301,7 +301,7 @@
     },
     {
       "name": "docs",
-      "module": "README.md, docs/*.md, specs/171-provider-architecture-parity/*.md",
+      "module": "README.md, docs/*.md, docs/*.md",
       "interface": "operator runbooks and issue-fit evidence",
       "implementation": "Docs define #171 scope, use #170 as evidence only, and preserve no paid Grok API fallback language.",
       "adapters": [
@@ -407,7 +407,7 @@
         "plugins/grok/scripts/grok-web-reviewer.mjs",
         "tests/smoke/grok-web.smoke.test.mjs",
         "tests/unit/plugin-copies-in-sync.test.mjs",
-        "specs/171-provider-architecture-parity/evidence-map.md",
+        "docs/evidence-map.md",
         "https://github.com/relay-org/relay/issues/159"
       ],
       "tests": [
@@ -454,7 +454,7 @@
       "evidence": [
         "plugins/kimi/scripts/kimi-companion.mjs",
         "README.md",
-        "specs/171-provider-architecture-parity/evidence-map.md",
+        "docs/evidence-map.md",
         "https://github.com/relay-org/relay/issues/171"
       ],
       "tests": [
@@ -549,7 +549,7 @@
         "/private/tmp/cpm-171-plan-review/kimi-result.json",
         "/private/tmp/cpm-171-final-review/kimi-final2.json",
         "/private/tmp/cpm-171-final-review/kimi-final4.json",
-        "specs/171-provider-architecture-parity/root-problems.md"
+        "docs/root-problems.md"
       ],
       "tests": [
         "tests/unit/provider-route-policy.test.mjs",
