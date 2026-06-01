@@ -14,7 +14,8 @@ This plan is intentionally write-conservative: provider output is data, not auth
 - No direct provider workspace mutation.
 - No hand-edited generated command/skill files when the generator owns them.
 - No rescue patch may modify relay's API reviewer runtime, generated-surface contracts, provider config, plugin/session approval storage, CI configuration, package manager files, build scripts, hidden tool directories, or Git metadata. Changes to those paths require ordinary human-authored code edits in a separate workflow.
-- No binary patch, symlink-creating patch, submodule/gitlink patch, file mode-only patch, absolute path, parent traversal, or `.git/` path support in this issue.
+- No binary patch, symlink-creating patch, submodule/gitlink patch, file mode change, absolute path, parent traversal, or `.git/` path support in this issue.
+- No patch may target an existing symlink or any path whose nearest existing parent resolves outside the workspace.
 - No execution of provider-suggested verification commands. Commands are persisted for operator inspection only.
 - No issue closure or merge without explicit operator approval.
 
@@ -46,10 +47,10 @@ api-reviewer run --provider deepseek|glm --mode rescue --scope branch-diff --sco
 
 - `schema_version: 1`
 - `summary`
-- `unified_diff`
+- `unified_diff`, limited to 512 KiB, non-empty, and text-only
 - `verification` as an array of suggested commands
 
-The runtime parses that proposal, persists it in `structured_output`, records a stable patch hash, records parsed proposed files, and keeps `mutations: []`. `verification` commands are retained as inert text and never executed by relay. The provider never edits files.
+The runtime parses that proposal, persists it in `structured_output`, records a stable SHA-256 patch hash, records parsed proposed files, and keeps `mutations: []`. `verification` commands are retained as inert text and never executed by relay. The provider never edits files.
 
 If provider capability metadata does not declare `capabilities.rescue === true`, both `approval-request --mode rescue` and `run --mode rescue` reject before source selection or source transmission.
 
@@ -71,12 +72,12 @@ api-reviewer apply --job-id <rescue_job_id> --approval-token "<apply_token.value
 - patch hash
 - proposed files
 - apply policy version
-- random nonce
-- expiration timestamp
+- CSPRNG random nonce with at least 128 bits of entropy
+- expiration timestamp with a 10-minute default and 15-minute maximum TTL
 
 `apply-request` fails without emitting a token for missing, failed, non-rescue, malformed, unsafe, stale, or dirty-worktree jobs.
 
-`apply` validates that token, rejects reused tokens, re-reads HEAD and rejects drift from the token-bound HEAD, rejects dirty worktrees before applying, repeats patch safety validation, runs `git apply --check`, snapshots every target path, applies the patch, captures `git status --short` before and after, and persists a source-free apply JobRecord with:
+`apply` performs gates in this order: validate the source-free apply token, atomically consume the token before mutation, reject reused or expired tokens, re-read HEAD and reject drift from the token-bound HEAD, compare the actual proposal SHA-256 patch hash to the token-bound hash, reject dirty worktrees, repeat patch safety validation, run `git apply --check`, snapshot every target path, apply the patch, capture `git status --short` before and after, and persist a source-free apply JobRecord with:
 
 - `parent_job_id` set to the rescue proposal job
 - `mode: rescue-apply`
@@ -85,20 +86,24 @@ api-reviewer apply --job-id <rescue_job_id> --approval-token "<apply_token.value
 - patch hash and applied files
 - `mutations` populated from after-apply status
 
-Apply tokens are one-time use. A second `apply` with the same token is rejected after either a successful apply or a failed apply attempt.
+Apply tokens are opaque, signed or stored server-side outside the workspace, and one-time use. A second `apply` with the same token is rejected after either a successful apply or a failed apply attempt. Token storage is outside provider-selected source and is covered by the runtime/policy denylist.
 
-Invalid token, reused token, expired token, HEAD mismatch, parse failure, failed patch preflight, failed apply, dirty workspace, missing job, unsafe job ID, or missing proposal all fail closed. If `git apply` returns nonzero after the final check, relay restores the pre-apply path snapshots and records `failed_rolled_back`; if rollback itself cannot restore the original state, it records `failed_dirty` with before/after status and does not claim a no-mutation failure.
+Invalid token, reused token, expired token, HEAD mismatch, patch-hash mismatch, parse failure, failed patch preflight, failed apply, dirty workspace, missing job, unsafe job ID, or missing proposal all fail closed. If `git apply` returns nonzero after the final check, relay restores the pre-apply path snapshots and records `failed_rolled_back`; if rollback itself cannot restore the original state, it records `failed_dirty` with error code `rescue_apply_rollback_failed`, before/after status, and no claim of a clean no-mutation failure. Snapshots record file existence, content, and type so rollback can restore modified or deleted files and remove newly created files.
 
 ### Patch Safety Policy
 
 Patch safety is validated before token issuance and again immediately before apply. The validation must not rely on `git apply --check` alone. It rejects:
 
 - absolute paths, parent traversal, empty paths, Windows drive or UNC paths, paths containing `.git`, and unsafe job IDs containing path separators or traversal
-- binary patches, symlink-creating diffs, gitlink/submodule entries, mode-only changes, and unsupported rename/copy forms
-- any proposed file outside the workspace
-- any proposed file matching the runtime/policy denylist: `plugins/api-reviewers/**`, `plugins/relay-deepseek/**`, `plugins/relay-glm/**`, `scripts/lib/external-model-contracts.mjs`, generated command/skill files, provider config/session/approval stores, `.github/**`, package manager manifests or lockfiles, build scripts, hidden tool directories, and Git metadata
+- NUL bytes, control characters, overlong or invalid UTF-8, and malformed path encodings
+- binary patches, empty/no-op patches, symlink-creating diffs, patches targeting existing symlinks, gitlink/submodule entries, any file mode change, and unsupported rename/copy forms
+- any proposed file outside the workspace after resolving the realpath of an existing target or the nearest existing parent directory
+- new-file creation when the destination already exists as an untracked file
+- any proposed file matching the runtime/policy denylist: `plugins/api-reviewers/**`, `plugins/relay-deepseek/**`, `plugins/relay-glm/**`, `scripts/lib/external-model-contracts.mjs`, generated command/skill files, provider config/session/approval stores, `.github/**`, `.gitignore`, `.gitattributes`, `.gitmodules`, package manager manifests or lockfiles, build scripts, hidden tool directories, and Git metadata
 
-The narrow allowlist is ordinary tracked workspace files outside the denylist that can be represented by a text unified diff.
+The narrow allowlist is ordinary tracked workspace files and new text files under existing tracked directories, outside the denylist, that can be represented by a text unified diff. New files are allowed only when their nearest existing parent realpath stays inside the workspace and the destination does not already exist.
+
+Patch safety uses filesystem metadata, not string checks alone: `lstat` rejects existing symlink targets, realpath validation rejects parent symlink escapes, and path normalization must complete before any filesystem path construction beyond the workspace root.
 
 ### Error Taxonomy
 
@@ -108,6 +113,10 @@ Use stable error codes for operator-facing and test assertions:
 - `rescue_patch_unsafe_path`
 - `rescue_patch_binary_unsupported`
 - `rescue_patch_unsupported_file_change`
+- `rescue_patch_empty`
+- `rescue_patch_too_large`
+- `rescue_patch_hash_mismatch`
+- `rescue_capability_denied`
 - `rescue_apply_approval_required`
 - `rescue_apply_token_invalid`
 - `rescue_apply_token_reused`
@@ -123,8 +132,8 @@ Use stable error codes for operator-facing and test assertions:
 ## Data Model
 
 - `ProviderCapability`: existing provider config plus `capabilities.rescue === true`.
-- `RescuePatchProposal`: schema version, summary, unified diff, verification commands, patch hash, proposed files.
-- `ApplyApproval`: source-free one-time token with bound job/provider/workspace/head/patch/file/policy/nonce/expiry tuple.
+- `RescuePatchProposal`: schema version, summary, unified diff, inert verification commands, SHA-256 patch hash, proposed files, and proposal-size metadata.
+- `ApplyApproval`: opaque source-free one-time token with bound job/provider/workspace/head/patch/file/policy/nonce/expiry tuple.
 - `ApplyJobRecord`: retained JobRecord representing local apply outcome, not provider output.
 - `RescueApplyPolicy`: parser/preflight policy describing supported patch forms, denied paths, safe job ID rules, and apply-state/error enums.
 
@@ -137,10 +146,10 @@ Use TDD vertical slices:
 3. RED: provider without `capabilities.rescue` rejects rescue before source selection/send. GREEN: capability gate.
 4. RED: review modes cannot apply patch-looking output. GREEN: keep parser active only for `mode === "rescue"`.
 5. RED: malformed rescue provider output fails closed after source send with no mutations. GREEN: parse failure path.
-6. RED: unsafe proposals are rejected by `apply-request` without token emission for traversal, absolute paths, `.git`, symlink, binary, gitlink, mode-only, unsupported rename/copy, and denylisted runtime/policy paths. GREEN: patch safety policy module.
+6. RED: unsafe proposals are rejected by `apply-request` without token emission for traversal, absolute paths, `.git`, existing symlink targets, parent symlink escapes, binary, empty, oversized, gitlink, any mode change, unsupported rename/copy, malformed path encodings, untracked-file clobber, and denylisted runtime/policy paths. GREEN: patch safety policy module.
 7. RED: `apply-request` emits source-free approval only for completed safe rescue proposals and rejects dirty worktrees. GREEN: apply approval token generation and patch preflight.
-8. RED: `apply` rejects missing/invalid/reused/expired approval, dirty workspace, and HEAD drift without mutation. GREEN: token/worktree/HEAD guards and token consumption.
-9. RED: failed patch apply reports a failed state and leaves files unchanged or explicitly reports failed rollback. GREEN: snapshot and rollback handling.
+8. RED: `apply` rejects missing/invalid/reused/expired approval, dirty workspace, HEAD drift, cross-mode source-send tokens, and proposal patch-hash drift without mutation. GREEN: token/worktree/HEAD guards and token consumption.
+9. RED: failed patch apply reports a failed state and leaves modified, deleted, and newly created files unchanged or explicitly reports `failed_dirty` with `rescue_apply_rollback_failed`. GREEN: snapshot and rollback handling.
 10. RED: successful apply records before/after mutation metadata, including untracked files. GREEN: apply command and apply JobRecord persistence.
 11. RED: generated DeepSeek/GLM surfaces expose rescue only when support is declared and hide it when capability is false. GREEN: generator update plus sync.
 12. RED: README/docs describe API-backed review, API-backed rescue proposal, approved local apply, and manual relay. GREEN: docs update.

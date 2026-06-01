@@ -64,3 +64,18 @@ Round 1 reviewed the pre-implementation plan/tasks commit `95bd8a1289a98295e62a1
 | Grok | NO USABLE VERDICT | Grok failed before source send because the local subscription-backed session was unavailable. Per the goal gate, this is not approval and must be resolved or explicitly redirected by the operator before implementation. |
 
 The revised plan/tasks convert the blocking findings into explicit required behavior before any implementation starts.
+
+## External Plan Review Round 2
+
+Round 2 reviewed revised commit `5736b55e4d47140b0c233c8f3ff7de51b88e31dc`.
+
+| Reviewer | Verdict | Required Follow-up |
+| --- | --- | --- |
+| Claude | APPROVE | Non-blocking: make symlink realpath handling explicit, specify token signing/storage, patch hash algorithm, TTL, concurrent apply handling, and rollback state assertions. |
+| Gemini | APPROVE | Non-blocking: clarify consumed-token storage, diff parser edge cases, and snapshot size risk. |
+| Grok | APPROVE | Non-blocking: clarify apply-request state, new-file policy, safe job ID definition, and focused unit coverage. |
+| GLM | APPROVE | Non-blocking: reject empty/oversized patches, malformed path encodings, add capability-denied error code, clarify new-file creation and token TTL. |
+| Kimi | APPROVE | Non-blocking: require CSPRNG token entropy, realpath validation for existing symlink targets, clarify Git metadata files, and snapshot create/delete rollback. |
+| DeepSeek | BLOCK | Add an explicit plan/task requirement to resolve realpaths for existing targets or nearest existing parent directories, reject existing symlink targets, and test symlink escape patches before token emission. |
+
+The second revision makes the symlink realpath blocker and related hardening points explicit before the next review round.
