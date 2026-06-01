@@ -5604,9 +5604,10 @@ test("custom-review rejects aggregate selected source that exceeds the prompt ca
   const fileSpecs = [
     ["third.js", 220],
     ["largest.js", 250],
-    ["fifth.js", 190],
     ["second.js", 230],
-    ["fourth.js", 210],
+    ["fifth.js", 190],
+    ["smaller.js", 100],
+    ["smallest.js", 60],
   ].map(([file, kib], index) => {
     const text = `export const value${index} = "${"x".repeat(kib * 1024)}";\n`;
     writeFileSync(path.join(cwd, file), text);
@@ -5640,11 +5641,13 @@ test("custom-review rejects aggregate selected source that exceeds the prompt ca
     .trim()
     .split("\n")
     .filter(Boolean);
-  const expectedManifest = fileSpecs
-    .toSorted((a, b) => b.bytes - a.bytes || a.file.localeCompare(b.file))
+  const expectedManifest = [...fileSpecs]
+    .sort((a, b) => b.bytes - a.bytes || (a.file < b.file ? -1 : a.file > b.file ? 1 : 0))
     .slice(0, 5)
     .map((item) => `${item.bytes} ${item.file}`);
   assert.deepEqual(manifest, expectedManifest);
+  assert.equal(manifest.length, 5);
+  assert.equal(manifest.some((line) => line.includes("smallest.js")), false);
   assert.equal(parseStdout(runOversizedScope()).error_message.split("\nfiles:\n")[1], `${manifest.join("\n")}\n`);
   assert.equal(record.external_review.source_content_transmission, "not_sent");
   assert.match(record.external_review.disclosure, /not sent/i);

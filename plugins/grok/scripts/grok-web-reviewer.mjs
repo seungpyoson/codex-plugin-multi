@@ -1047,21 +1047,19 @@ function addScopeFile(files, normalizedRel, text, totalBytes) {
     throw new Error(`scope_file_too_large:${normalizedRel}: ${bytes} bytes exceeds ${MAX_SCOPE_FILE_BYTES} byte limit`);
   }
   totalBytes.value += bytes;
+  const file = { path: normalizedRel, text, bytes };
   if (totalBytes.value > MAX_SCOPE_TOTAL_BYTES) {
     throw new Error(
       `scope_total_too_large:${totalBytes.value} bytes exceeds ${MAX_SCOPE_TOTAL_BYTES} byte limit`
-      + scopeSizeManifest([...files, { path: normalizedRel, text }]),
+      + scopeSizeManifest([...files, file]),
     );
   }
-  files.push({ path: normalizedRel, text });
+  files.push(file);
 }
 
-function scopeSizeManifest(files, limit = SCOPE_TOTAL_MANIFEST_LIMIT) {
+function scopeSizeManifest(files) {
+  const limit = SCOPE_TOTAL_MANIFEST_LIMIT;
   const lines = files
-    .map((file) => ({
-      path: file.path,
-      bytes: Buffer.byteLength(file.text, "utf8"),
-    }))
     .sort((a, b) => b.bytes - a.bytes || (a.path < b.path ? -1 : a.path > b.path ? 1 : 0))
     .slice(0, limit)
     .map((file) => `${file.bytes} ${file.path}`);
