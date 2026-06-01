@@ -99,6 +99,10 @@ test("full test runner has an explicit opt-in privacy matrix lane", () => {
   assert.match(pkg.scripts["test:privacy"] ?? "", /run-tests\.mjs/);
 });
 
+test("aggregate test runner serializes files to isolate smoke provider resources", () => {
+  assert.match(runTests, /"--test-concurrency",\s*"1"/);
+});
+
 test("manual external review relays are not merge gates", () => {
   assert.equal(existsSync(resolve(".github/workflows/manual-review-gate.yml")), false);
   assert.doesNotMatch(reviewEnforcementDocs, /manual-review-gate/);

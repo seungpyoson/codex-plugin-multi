@@ -31,35 +31,34 @@ const COMPANION = path.join(REPO_ROOT, "plugins/claude/scripts/claude-companion.
 const MOCK = path.join(REPO_ROOT, "tests/smoke/claude-mock.mjs");
 const CLAUDE_SMOKE_POLL_TIMEOUT_MS = Number(process.env.CLAUDE_SMOKE_POLL_TIMEOUT_MS ?? 30000);
 
+function smokeEnv(dataDir, env = {}) {
+  const workloadLockDir = env.CODEX_PLUGIN_MULTI_PROVIDER_WORKLOAD_LOCK_DIR
+    ?? path.join(dataDir, "provider-workload");
+  return {
+    ...process.env,
+    CLAUDE_BINARY: MOCK,
+    CLAUDE_PLUGIN_DATA: dataDir,
+    CODEX_PLUGIN_MULTI_PROVIDER_WORKLOAD_LOCK_DIR: workloadLockDir,
+    ...env,
+  };
+}
+
 function runCompanion(args, { cwd, env = {}, dataDir = mkdtempSync(path.join(tmpdir(), "companion-smoke-")) } = {}) {
   // Point the companion at a fresh PLUGIN_DATA dir so tests don't step on
   // each other's state or on the user's real ~/.cache.
-  const workloadLockDir = env.CODEX_PLUGIN_MULTI_PROVIDER_WORKLOAD_LOCK_DIR
-    ?? path.join(dataDir, "provider-workload");
   const res = spawnSync("node", [COMPANION, ...args], {
     cwd,
-    env: {
-      ...process.env,
-      CLAUDE_BINARY: MOCK,
-      CLAUDE_PLUGIN_DATA: dataDir,
-      CODEX_PLUGIN_MULTI_PROVIDER_WORKLOAD_LOCK_DIR: workloadLockDir,
-      ...env,
-    },
+    env: smokeEnv(dataDir, env),
     encoding: "utf8",
   });
   return { ...res, dataDir };
 }
 
 function runCompanionWithPathBinary(args, { cwd, binDir, env = {}, dataDir = mkdtempSync(path.join(tmpdir(), "companion-smoke-")) } = {}) {
-  const workloadLockDir = env.CODEX_PLUGIN_MULTI_PROVIDER_WORKLOAD_LOCK_DIR
-    ?? path.join(dataDir, "provider-workload");
-  const childEnv = {
-    ...process.env,
-    CLAUDE_PLUGIN_DATA: dataDir,
-    CODEX_PLUGIN_MULTI_PROVIDER_WORKLOAD_LOCK_DIR: workloadLockDir,
+  const childEnv = smokeEnv(dataDir, {
     PATH: `${binDir}${path.delimiter}${process.env.PATH ?? ""}`,
     ...env,
-  };
+  });
   delete childEnv.CLAUDE_BINARY;
   const res = spawnSync("node", [COMPANION, ...args], {
     cwd,
@@ -2121,14 +2120,11 @@ test("continue --job: resumes a prior session via --resume", () => {
   const dataDir = mkdtempSync(path.join(tmpdir(), "continue-data-"));
   const sessionStore = path.join(dataDir, "mock-project-sessions");
   const priorTimeoutMs = 777777;
-  const env = {
-    ...process.env,
-    CLAUDE_BINARY: MOCK,
-    CLAUDE_PLUGIN_DATA: dataDir,
+  const env = smokeEnv(dataDir, {
     CLAUDE_REVIEW_TIMEOUT_MS: "",
     CLAUDE_MOCK_ENFORCE_PROJECT_SESSIONS: "1",
     CLAUDE_MOCK_PROJECT_SESSION_STORE: sessionStore,
-  };
+  });
   try {
     const runRes = spawnSync("node", [
       path.join(REPO_ROOT, "plugins/claude/scripts/claude-companion.mjs"),
@@ -2187,11 +2183,7 @@ test("continue --job from wrong cwd returns workspace retrieval guidance", () =>
   const wrongCwd = realpathSync(mkdtempSync(path.join(tmpdir(), "smoke-continue-wrong-cwd-")));
   writeFileSync(path.join(cwd, "seed.txt"), "continue wrong cwd seed\n");
   const dataDir = mkdtempSync(path.join(tmpdir(), "continue-wrong-cwd-data-"));
-  const env = {
-    ...process.env,
-    CLAUDE_BINARY: MOCK,
-    CLAUDE_PLUGIN_DATA: dataDir,
-  };
+  const env = smokeEnv(dataDir);
   try {
     const runRes = spawnSync("node", [
       path.join(REPO_ROOT, "plugins/claude/scripts/claude-companion.mjs"),
@@ -2364,7 +2356,7 @@ test("continue --job: --timeout-ms overrides prior timeout and env", () => {
       "--timeout-ms", "777777",
       "--cwd", cwd, "--", "seed",
     ], { cwd, encoding: "utf8",
-        env: { ...process.env, CLAUDE_BINARY: MOCK, CLAUDE_PLUGIN_DATA: dataDir, CLAUDE_REVIEW_TIMEOUT_MS: "" } });
+        env: smokeEnv(dataDir, { CLAUDE_REVIEW_TIMEOUT_MS: "" }) });
     assert.equal(runRes.status, 0, runRes.stderr);
     const { job_id } = JSON.parse(runRes.stdout);
     const contRes = spawnSync("node", [
@@ -2373,7 +2365,7 @@ test("continue --job: --timeout-ms overrides prior timeout and env", () => {
       "--timeout-ms", "555555",
       "--cwd", cwd, "--", "follow-up",
     ], { cwd, encoding: "utf8",
-        env: { ...process.env, CLAUDE_BINARY: MOCK, CLAUDE_PLUGIN_DATA: dataDir, CLAUDE_REVIEW_TIMEOUT_MS: "999999" } });
+        env: smokeEnv(dataDir, { CLAUDE_REVIEW_TIMEOUT_MS: "999999" }) });
     assert.equal(contRes.status, 0, contRes.stderr);
     const out = JSON.parse(contRes.stdout);
     assert.equal(out.review_metadata.audit_manifest.request.timeout_ms, 555555);

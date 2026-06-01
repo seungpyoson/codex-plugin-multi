@@ -2,7 +2,7 @@
 // Unit-test runner. Discovers tests/unit/**/*.test.mjs and runs them via
 // `node --test`. Returns exit 0 with a notice when no tests exist yet.
 
-import { readdir, stat } from "node:fs/promises";
+import { readdir } from "node:fs/promises";
 import { spawnSync } from "node:child_process";
 import { resolve, dirname, relative } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -89,7 +89,7 @@ const cleanEnv = cleanGitEnv(process.env);
 
 const res = spawnSync(
   "node",
-  ["--test", "--test-reporter=spec", ...rel],
+  ["--test", "--test-concurrency", "1", "--test-reporter=spec", ...rel],
   { cwd: REPO_ROOT, stdio: "inherit", env: cleanEnv }
 );
 process.exit(res.status ?? 1);
