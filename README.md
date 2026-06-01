@@ -5,16 +5,20 @@ The Codex marketplace suite is `relay-for-codex` and exposes peer plugins for
 **Claude Code**, **Gemini CLI**, **Kimi Code CLI**, **Grok**, **DeepSeek**, and
 **GLM**. The generated Claude Code suite is `relay-for-claude` and exposes the
 non-self providers **Gemini**, **Kimi**, **Grok**, **DeepSeek**, and **GLM**.
+DeepSeek and GLM are provider-specific surfaces in both hosts; their shared
+direct-API implementation remains a hidden runtime package named
+`api-reviewers` in Codex and `relay-api-reviewers` in Claude Code.
 
 - **License:** AGPL-3.0-only. Commercial use is permitted under the AGPL, but
   modified versions distributed or offered over a network must provide
   corresponding source under the same license. Portions are ported from
   MIT-licensed upstream code; see `NOTICE`.
 - **State:** active development. Claude, Gemini, Kimi, Grok, DeepSeek, and GLM
-  flows are implemented and covered by mock smoke tests. Fresh-install
-  verification on Codex CLI
-  0.125.0 found that the marketplace installs successfully, but the TUI does
-  not register plugin command files as slash commands.
+  flows are implemented and covered by mock smoke tests. Current Codex
+  verification uses workflow skills or companion scripts because Codex CLI
+  0.125.0 installs the marketplace but does not register plugin command files
+  as TUI slash commands. Claude Code uses the generated `relay/` marketplace
+  directly and does expose its plugin command files.
 
 ## Requirements
 
@@ -279,14 +283,33 @@ the others. DeepSeek and GLM use a default-installed shared direct-API runtime
 package, so their provider plugins stay split without copying the same reviewer
 code twice.
 
-From Claude Code, the generated marketplace suite lives under `relay/`. Its
-marketplace name is `relay-for-claude`, and provider plugin sources stay under
-`relay/relay-*`. The suite/plugin pair is therefore
+From Claude Code, the generated marketplace suite lives under `relay/`. Add the
+local generated marketplace from the repo root:
+
+```bash
+claude plugin marketplace add ./relay
+```
+
+Its marketplace name is `relay-for-claude`, and provider plugin sources stay
+under `relay/relay-*`. The suite/plugin pair is therefore
 `relay-for-claude:relay-gemini` conceptually; Claude Code's install ref syntax
-is `relay-gemini@relay-for-claude`, `relay-grok@relay-for-claude`,
-`relay-kimi@relay-for-claude`, `relay-glm@relay-for-claude`, and
-`relay-deepseek@relay-for-claude`. Claude Code command namespaces are still
-plugin-scoped, such as `/relay-gemini:review`.
+is:
+
+```bash
+claude plugin install relay-gemini@relay-for-claude
+claude plugin install relay-grok@relay-for-claude
+claude plugin install relay-kimi@relay-for-claude
+claude plugin install relay-glm@relay-for-claude
+claude plugin install relay-deepseek@relay-for-claude
+```
+
+`relay-api-reviewers@relay-for-claude` is the hidden shared runtime for the
+DeepSeek and GLM Claude plugins. It is not a user-facing review surface. If it
+appears in `claude plugin list`, that is expected; review workflows should still
+use `relay-deepseek` or `relay-glm`.
+
+Claude Code command namespaces are plugin-scoped, such as
+`/relay-gemini:review`.
 
 ## Verify skill discovery after installation
 
@@ -358,6 +381,29 @@ reliably hot-reload plugin skill inventory. Verify the target profile with:
 ```bash
 codex debug prompt-input 'list skills'
 ```
+
+## Refresh Claude Code generated plugins
+
+For local `relay/` marketplace installs, update the marketplace first:
+
+```bash
+claude plugin marketplace update relay-for-claude
+```
+
+Claude Code plugin versions are currently `0.1.0`. If `claude plugin update
+<plugin>@relay-for-claude` reports "already at the latest version" after a
+same-version local code change, refresh the installed cache by reinstalling the
+affected plugin while preserving its data:
+
+```bash
+claude plugin uninstall --keep-data -y relay-gemini@relay-for-claude
+claude plugin install relay-gemini@relay-for-claude
+```
+
+Use the same uninstall/install shape for `relay-kimi`, `relay-grok`,
+`relay-glm`, `relay-deepseek`, and `relay-api-reviewers` when their generated
+files changed. Restart already-open Claude Code sessions after marketplace or
+plugin-cache changes.
 
 ## Current Codex 0.125.0 TUI limitation
 
@@ -562,6 +608,25 @@ npm run readiness:manifest -- --fixture-root <git-fixture> --evidence-dir <dir> 
 COVERAGE_ENFORCE_TARGET=1 npm run test:coverage
 ```
 
+For installed-host live error-case smoke tests, exercise the installed cache
+paths, not only repo source. The deterministic scope-error cases are:
+
+- `custom-review --scope custom` without `--scope-paths` -> `scope_paths_required`
+- `branch-diff --scope-base refs/heads/does-not-exist` -> `scope_base_missing`
+- `branch-diff --scope-base ../bad` -> `scope_base_invalid`
+- branch-diff with no selected files -> `scope_empty`
+- valid `custom-review --scope custom --scope-paths <file>` -> parser accepts
+  `--scope`, `--scope-paths`, and `--prompt-file`; auth/provider failures after
+  scope acceptance are classified separately
+
+Each pre-source scope failure must report
+`source_content_transmission: "not_sent"`. For Codex, use scripts under
+`~/.codex/plugins/cache/relay-for-codex/relay-*/0.1.0/scripts/` and verify
+cache freshness with `npm run doctor:cache`. For Claude Code, use scripts under
+`~/.claude/plugins/cache/relay-for-claude/relay-*/0.1.0/scripts/` after
+refreshing the generated marketplace and reinstalling same-version changed
+plugins when needed.
+
 `readiness:manifest` normalizes Claude, Gemini, Kimi, Grok, DeepSeek, and GLM
 doctor/review/approval artifacts into one readiness manifest. It classifies
 failures as `sandbox`, `auth`, `provider`, `tunnel`, `session_tokens`,
@@ -581,17 +646,18 @@ review/fix-loop issue is resolved.
 Repository layout:
 
 ```text
-relay/
-  .agents/plugins/marketplace.json
+.
+  .agents/plugins/marketplace.json  # Codex marketplace: relay-for-codex
   plugins/claude/
   plugins/gemini/
   plugins/kimi/
   plugins/grok/
-  plugins/api-reviewers/          # shared direct-API runtime
+  plugins/api-reviewers/           # hidden Codex direct-API runtime
   plugins/relay-deepseek/
   plugins/relay-glm/
-  relay/                         # generated Claude Code marketplace suite
+  relay/                           # generated Claude Code marketplace suite
     .claude-plugin/marketplace.json
+    relay-api-reviewers/           # hidden Claude direct-API runtime
     relay-deepseek/
     relay-gemini/
     relay-glm/
