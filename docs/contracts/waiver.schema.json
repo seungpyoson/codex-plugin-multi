@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://github.com/relay-org/relay/specs/140-no-mistakes-provider-readiness/contracts/waiver.schema.json",
+  "$id": "https://github.com/relay-org/relay/docs/contracts/waiver.schema.json",
   "title": "Provider Readiness Waiver",
   "type": "object",
   "additionalProperties": false,
