@@ -28,3 +28,6 @@ GEMINI.md
 
 # Speckit artifacts (generated locally, not for public repo)
 specs/
+
+# Development session artifacts
+.autonomous/

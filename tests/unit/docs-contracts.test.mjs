@@ -551,7 +551,7 @@ test("companion preflight file sorting uses an explicit comparator", () => {
 });
 
 test("spec does not reference an unshipped Gemini result-handling skill", () => {
-  const spec = readRepoFile("docs/superpowers/specs/2026-04-23-relay-design.md");
+  const spec = readRepoFile("docs/DESIGN.md");
 
   assert.doesNotMatch(spec, /gemini-result-handling/);
   assert.match(spec, /Gemini result command docs/);
@@ -655,7 +655,7 @@ test("direct API reviewer skill and command docs use global installed script ent
 });
 
 test("architecture spec documents the full review quality audit shape", () => {
-  const spec = readRepoFile("docs/superpowers/specs/2026-04-23-relay-design.md");
+  const spec = readRepoFile("docs/DESIGN.md");
   const requiredFields = [
     "has_verdict",
     "has_blocking_section",
