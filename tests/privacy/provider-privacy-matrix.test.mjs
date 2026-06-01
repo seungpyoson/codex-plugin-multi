@@ -127,7 +127,7 @@ function withServer(handler) {
 }
 
 test("provider privacy matrix redacts selected source body sentinel across provider families", async () => {
-  const companionSecretName = "CODEX_PLUGIN_MULTI_TEST_API_KEY";
+  const companionSecretName = "RELAY_TEST_API_KEY";
   const oldCompanionSecret = process.env[companionSecretName];
   process.env[companionSecretName] = PROMPT_SECRET;
   const companionProviders = [

@@ -614,8 +614,8 @@ test("plugin packaging copies expose the canonical helper behavior", async () =>
       credentialNameDiagnostics(["PROVIDER_API_KEY"], { PROVIDER_API_KEY: "secret-test-value" }),
     );
     assert.deepEqual(
-      mod.credentialNameDiagnostics(["__CODEX_PLUGIN_MULTI_MISSING_TEST_KEY__"]),
-      credentialNameDiagnostics(["__CODEX_PLUGIN_MULTI_MISSING_TEST_KEY__"]),
+      mod.credentialNameDiagnostics(["__RELAY_MISSING_TEST_KEY__"]),
+      credentialNameDiagnostics(["__RELAY_MISSING_TEST_KEY__"]),
     );
     assert.deepEqual(mod.parseScopePathsOption("one,two"), ["one", "two"]);
     assert.deepEqual(mod.gitStatusLines(" M x\n"), [" M x"]);

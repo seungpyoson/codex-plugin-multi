@@ -26,7 +26,7 @@ direct-API implementation remains a hidden runtime package named
 - Node.js available on `PATH`.
 - Git 2.x or newer on macOS/Linux. Reviewer scope collection defaults to the
   hardened `/usr/bin/git` path and does not resolve `git` from the caller's
-  ambient `PATH`; set `CODEX_PLUGIN_MULTI_GIT_BINARY` to an absolute executable
+  ambient `PATH`; set `RELAY_GIT_BINARY` to an absolute executable
   Git path when your supported environment installs Git elsewhere. Relative,
   workspace-local, and `node_modules/.bin` overrides are rejected. The configured
   override is trusted for the current process after first validation, so point it
