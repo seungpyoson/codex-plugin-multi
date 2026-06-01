@@ -79,3 +79,18 @@ Round 2 reviewed revised commit `5736b55e4d47140b0c233c8f3ff7de51b88e31dc`.
 | DeepSeek | BLOCK | Add an explicit plan/task requirement to resolve realpaths for existing targets or nearest existing parent directories, reject existing symlink targets, and test symlink escape patches before token emission. |
 
 The second revision makes the symlink realpath blocker and related hardening points explicit before the next review round.
+
+## External Plan Review Round 3
+
+Round 3 reviewed revised commit `af5560e45663136ff7c691f32bd6681aadd5834b`.
+
+| Reviewer | Verdict | Job | Source | Slot |
+| --- | --- | --- | --- | --- |
+| Claude | APPROVE | `7e57f727-2c1a-4344-b7d4-60ec5343d8b0` | sent | approved |
+| Gemini | APPROVE | `472b0fa9-950e-4b7e-95e0-63c65b618360` | sent | approved |
+| Grok | APPROVE | `job_92affe51-9987-4c80-a370-24fcf4990a2c` | sent | approved |
+| DeepSeek | APPROVE | `job_9d088978-3c61-4d08-8fb8-7dbec76a8ab3` | sent | approved |
+| GLM | APPROVE | `job_735283be-43f2-4ef4-a173-ef0cbcbc3312` | sent | approved |
+| Kimi | APPROVE | `47b952fb-6450-4df9-a239-280e2a910b76` | sent | approved |
+
+All six Round 3 review slots had non-failed review quality and approved the latest pre-implementation plan. Implementation may now begin with TDD vertical slices.
