@@ -613,7 +613,10 @@ paths, not only repo source. The deterministic scope-error cases are:
 
 - `custom-review --scope custom` without `--scope-paths` -> `scope_paths_required`
 - `branch-diff --scope-base refs/heads/does-not-exist` -> `scope_base_missing`
-- `branch-diff --scope-base ../bad` -> `scope_base_invalid`
+- `branch-diff --scope-base ../bad` -> `scope_base_missing` when the value is
+  path-like but not a valid ref
+- `branch-diff --scope-base=-x` -> `scope_base_invalid` for option-shaped unsafe
+  ref values
 - branch-diff with no selected files -> `scope_empty`
 - valid `custom-review --scope custom --scope-paths <file>` -> parser accepts
   `--scope`, `--scope-paths`, and `--prompt-file`; auth/provider failures after
