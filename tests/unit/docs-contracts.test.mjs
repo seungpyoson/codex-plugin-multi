@@ -955,18 +955,165 @@ test("provider architecture parity table is machine-validatable and complete", (
 
 
 
-test("packet-recovery schema is valid JSON with required fields", () => {
+test("packet-recovery schema keeps the no-source resume capability guard", () => {
   const schema = readRepoJson("docs/contracts/packet-recovery.schema.json");
+
   assert.equal(schema.title, "PacketRecovery");
-  assert.ok(schema.properties.provider, "must define provider");
-  assert.ok(schema.properties.actions, "must define actions");
-  assert.ok(schema.properties.source_content_transmission, "must define source_content_transmission");
+  assert.ok(schema.required.includes("provider_capabilities"));
+  assert.ok(schema.required.includes("review_surface"));
+  assert.ok(schema.required.includes("actions"));
+  assert.deepEqual(
+    schema.$defs.providerRecoveryCapabilities.required,
+    [
+      "provider",
+      "canonical_provider",
+      "route_step",
+      "source_packet_budget_bytes",
+      "rendered_prompt_budget_chars",
+      "per_file_secure_read_cap_bytes",
+      "supports_diff_packet",
+      "supports_shard_plan",
+      "supports_no_source_resume",
+      "requires_source_send_approval",
+      "requires_resend_confirmation_after_source_sent_failure",
+      "local_source_packet_policy_pre_send",
+      "source_sent_runtime_failures_failed_slot",
+      "transport_fallbacks",
+    ],
+  );
+  assert.equal(
+    schema.$defs.providerRecoveryCapabilities.properties.local_source_packet_policy_pre_send.type,
+    "boolean",
+  );
+  assert.equal(
+    schema.$defs.providerRecoveryCapabilities.properties.source_sent_runtime_failures_failed_slot.type,
+    "boolean",
+  );
+
+  const noSourceResumeGuard = schema.allOf.find((entry) => (
+    entry?.if?.properties?.provider_capabilities?.properties?.supports_no_source_resume?.const === false
+  ));
+  assert.ok(noSourceResumeGuard, "schema must guard supports_no_source_resume:false");
+  assert.equal(
+    noSourceResumeGuard.then.properties.actions.not.contains.properties.type.const,
+    "resume_without_source_resend",
+  );
+  assert.ok(
+    schema.$defs.recoveryAction.properties.type.enum.includes("resume_without_source_resend"),
+    "resume_without_source_resend remains valid only when provider capabilities allow it",
+  );
+  assert.ok(
+    schema.properties.reason.enum.includes("resend_confirmation_required"),
+    "schema must allow resend-confirmation recovery reasons emitted by runtime policy",
+  );
+  assert.ok(
+    schema.properties.reason.enum.includes("stale_active_job"),
+    "schema must allow reconciled stale-job recovery reasons emitted by runtime policy",
+  );
+  assert.ok(
+    schema.properties.reason.enum.includes("provider_unavailable"),
+    "schema must allow source-bearing provider-unavailable recovery reasons emitted by direct API runtime policy",
+  );
+  assert.ok(
+    schema.properties.source_content_transmission.enum.includes("unknown"),
+    "schema must allow stale-job recovery when source transmission is conservative unknown",
+  );
 });
 
-test("session-approval-grant schema is valid JSON with required fields", () => {
+test("packet-recovery schema matches runtime shard approval tuple shape", () => {
+  const schema = readRepoJson("docs/contracts/packet-recovery.schema.json");
+  const tuple = schema.$defs.approvalTuple;
+
+  assert.deepEqual(
+    tuple.required,
+    [
+      "provider",
+      "mode",
+      "rendered_prompt_hash",
+      "source_packet",
+      "scope_resolution",
+      "scope_paths",
+      "request_settings",
+      "auth_path",
+      "billing_path",
+      "selected_route",
+      "route_step",
+      "route_steps",
+      "fallback_reason",
+      "approval_scope",
+      "approval_tuple_fingerprint",
+    ],
+  );
+  assert.equal(tuple.properties.rendered_prompt_hash.$ref, "#/$defs/hexSha256");
+  assert.equal(schema.$defs.hexSha256.type, "string");
+  assert.equal(schema.$defs.hexSha256.pattern, "^[a-f0-9]{64}$");
+  assert.ok(tuple.properties.source_packet, "runtime shard tuples carry the selected source packet summary");
+  assert.ok(tuple.properties.scope_resolution, "runtime shard tuples carry scope resolution details");
+  assert.ok(tuple.properties.scope_paths, "runtime shard tuples carry explicit scope paths");
+  assert.ok(tuple.properties.request_settings, "runtime shard tuples carry request settings");
+  assert.ok(tuple.properties.route_step, "runtime shard tuples carry the selected route step");
+  assert.ok(tuple.properties.route_steps, "runtime shard tuples carry route-step audit details");
+  assert.equal(
+    tuple.properties.approval_tuple_fingerprint.$ref,
+    "#/$defs/approvalTupleFingerprint",
+    "runtime shard tuples carry the structured non-token fingerprint emitted by sourceSendApprovalTupleFingerprint",
+  );
+  assert.deepEqual(schema.$defs.approvalTupleFingerprint.required, ["algorithm", "value", "ingredients"]);
+  assert.equal(schema.$defs.approvalTupleFingerprint.properties.algorithm.const, "sha256");
+  assert.equal(schema.$defs.approvalTupleFingerprint.properties.value.$ref, "#/$defs/sha256");
+  assert.ok(
+    schema.$defs.approvalTupleFingerprint.properties.ingredients.properties.auth_path.anyOf
+      .some((entry) => entry.$ref === "#/$defs/safeText"),
+    "fingerprint ingredients must allow string auth paths accepted by sourceSendApprovalTupleFingerprint",
+  );
+  assert.equal(
+    schema.$defs.sourcePacketSummary.required.includes("packet_hash"),
+    false,
+    "runtime selected_source summaries do not include a packet_hash field",
+  );
+});
+
+test("packet-recovery schema allows runtime retry fail-closed reasons", () => {
+  const schema = readRepoJson("docs/contracts/packet-recovery.schema.json");
+  for (const reason of [
+    "review_slot_waiver_artifact_required",
+    "review_slot_override_artifact_required",
+    "retry_disposition_not_valid_for_third_attempt",
+    "third_same_packet_retry_requires_disposition",
+    "review_slot_disposition_required",
+  ]) {
+    assert.ok(schema.properties.reason.enum.includes(reason), `schema must allow runtime retry guard reason ${reason}`);
+  }
+});
+
+test("session-approval-grant schema is strict and token-free", () => {
   const schema = readRepoJson("docs/contracts/session-approval-grant.schema.json");
-  assert.equal(schema.title, "Direct API Session Approval Grant");
-  assert.ok(schema.required.includes("grant_id"), "must require grant_id");
-  assert.ok(schema.required.includes("expires_at"), "must require expires_at");
-  assert.ok(schema.required.includes("approval_fingerprint"), "must require approval_fingerprint");
+  const policy = readRepoJson("plugins/relay-deepseek/config/session-approval.json");
+
+  assert.deepEqual(Object.keys(policy), ["schema_version", "max_ttl_ms"]);
+  assert.equal(policy.schema_version, 1);
+  assert.equal(Number.isSafeInteger(policy.max_ttl_ms), true);
+  assert.equal(policy.max_ttl_ms > 0, true);
+  assert.equal(schema.additionalProperties, false);
+  assert.deepEqual(schema.required, [
+    "schema_version",
+    "grant_id",
+    "created_at",
+    "expires_at",
+    "grant_session_id",
+    "provider_allowlist",
+    "mode_allowlist",
+    "workspace_root_hash",
+    "path_constraints",
+    "max_files",
+    "max_bytes",
+    "max_ttl_ms",
+    "approval_fingerprint",
+    "approval_tuple",
+    "activation",
+  ]);
+  assert.equal(schema.properties.approval_token, undefined);
+  assert.equal(schema.properties.grant_approval_token, undefined);
+  assert.equal(schema.properties.approval_tuple.additionalProperties, false);
+  assert.equal(schema.$defs.grant_bounds.additionalProperties, false);
 });
