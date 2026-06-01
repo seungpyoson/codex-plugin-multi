@@ -721,6 +721,46 @@ test("kimi custom-review prompt includes selected source content", () => {
   }
 });
 
+test("kimi custom-review accepts documented --scope custom with prompt file", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "kimi-custom-review-prompt-file-cwd-"));
+  let dataDir = null;
+  try {
+    fixtureSeedRepo(cwd, {
+      fileName: "seed.txt",
+      fileContents: "kimi documented custom source sentinel\n",
+    });
+    const promptFile = path.join(cwd, "prompt.txt");
+    writeFileSync(promptFile, "review: documented custom prompt\n", { mode: 0o600 });
+    const result = runCompanion([
+      "run",
+      "--mode",
+      "custom-review",
+      "--scope",
+      "custom",
+      "--cwd",
+      cwd,
+      "--scope-paths",
+      "seed.txt",
+      "--foreground",
+      "--prompt-file",
+      promptFile,
+    ], {
+      cwd,
+      env: {
+        KIMI_MOCK_ASSERT_PROMPT_INCLUDES: "kimi documented custom source sentinel",
+      },
+    });
+    dataDir = result.dataDir;
+    assert.equal(result.status, 0, result.stderr);
+    const record = parseJson(result.stdout);
+    assert.equal(record.status, "completed");
+    assert.equal(record.external_review.source_content_transmission, "sent");
+  } finally {
+    if (dataDir) rmSync(dataDir, { recursive: true, force: true });
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
 test("kimi custom-review maps held workload lease to provider_workload_blocked without spawn", () => {
   const cwd = mkdtempSync(path.join(tmpdir(), "kimi-workload-block-cwd-"));
   const dataDir = mkdtempSync(path.join(tmpdir(), "kimi-workload-block-data-"));

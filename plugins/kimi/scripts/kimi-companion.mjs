@@ -1096,7 +1096,7 @@ function cmdPreflight(rest) {
 async function cmdRun(rest) {
   const { options, positionals } = parseArgs(rest, {
     valueOptions: [
-      "mode", "model", "cwd", "binary", "scope-base", "scope-paths",
+      "mode", "model", "cwd", "binary", "scope", "scope-base", "scope-paths",
       "override-dispose", "timeout-ms", "max-steps-per-turn", "lifecycle-events", "auth-mode",
       "review-slot-disposition", "review-slot-waiver-artifact", "review-slot-override-artifact",
       "prompt-file",

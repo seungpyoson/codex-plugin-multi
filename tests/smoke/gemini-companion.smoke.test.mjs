@@ -1899,6 +1899,37 @@ test("gemini custom-review prompt includes selected source content", () => {
   }
 });
 
+test("gemini custom-review accepts documented --scope custom with prompt file", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "gemini-custom-review-prompt-file-cwd-"));
+  let dataDir = null;
+  try {
+    fixtureSeedRepo(cwd, {
+      fileName: "seed.txt",
+      fileContents: "gemini documented custom source sentinel\n",
+    });
+    const promptFile = path.join(cwd, "prompt.txt");
+    writeFileSync(promptFile, "review: documented custom prompt\n", { mode: 0o600 });
+    const result = runCompanion(
+      [
+        "run", "--mode=custom-review", "--scope", "custom", "--foreground", "--cwd", cwd,
+        "--scope-paths", "seed.txt", "--prompt-file", promptFile,
+      ],
+      { cwd, env: {
+        CODEX_SANDBOX: "seatbelt",
+        GEMINI_MOCK_ASSERT_PROMPT_INCLUDES: "gemini documented custom source sentinel",
+      } },
+    );
+    dataDir = result.dataDir;
+    assert.equal(result.status, 0, `exit ${result.status}: ${result.stderr}; stdout=${result.stdout}`);
+    const record = JSON.parse(result.stdout);
+    assert.equal(record.status, "completed");
+    assert.equal(record.external_review.source_content_transmission, "sent");
+  } finally {
+    if (dataDir) rmTree(dataDir);
+    rmTree(cwd);
+  }
+});
+
 test("gemini custom-review rejects over-budget source packets before Gemini launch", () => {
   const cwd = mkdtempSync(path.join(tmpdir(), "gemini-source-packet-cwd-"));
   seedMinimalRepo(cwd);

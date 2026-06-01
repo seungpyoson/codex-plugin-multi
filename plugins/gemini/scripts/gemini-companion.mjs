@@ -1197,7 +1197,7 @@ async function cmdApprovalRequest(rest) {
 async function cmdRun(rest) {
   const { options, positionals } = parseArgs(rest, {
     valueOptions: [
-      "mode", "model", "cwd", "binary", "scope-base", "scope-paths",
+      "mode", "model", "cwd", "binary", "scope", "scope-base", "scope-paths",
       "override-dispose", "auth-mode", "timeout-ms", "lifecycle-events",
       "approval-token", "approval-scope",
       "review-slot-disposition", "review-slot-waiver-artifact", "review-slot-override-artifact",
