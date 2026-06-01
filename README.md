@@ -356,7 +356,7 @@ npm run doctor:cache -- --second-codex-home "$HOME/.codex-second"
 ```
 
 The report compares both marketplace/plugin files and this repo's `plugins/`
-tree against `plugins/cache/relay-for-codex/<plugin>/0.1.0`, including
+tree against `plugins/cache/relay-for-codex/<plugin>/<version>`, including
 SHA-256 checks for bundled `commands/`, `skills/`, `scripts/`, and `config/`
 files. `relay-for-codex` is both the marketplace identifier and the Codex cache
 namespace used by installed plugin paths. The doctor also checks the
@@ -390,10 +390,10 @@ For local `relay/` marketplace installs, update the marketplace first:
 claude plugin marketplace update relay-for-claude
 ```
 
-Claude Code plugin versions are currently `0.1.0`. If `claude plugin update
-<plugin>@relay-for-claude` reports "already at the latest version" after a
-same-version local code change, refresh the installed cache by reinstalling the
-affected plugin while preserving its data:
+If `claude plugin update <plugin>@relay-for-claude` reports "already at the
+latest version" after a local code change that did not bump the plugin version,
+refresh the installed cache by reinstalling the affected plugin while
+preserving its data:
 
 ```bash
 claude plugin uninstall --keep-data -y relay-gemini@relay-for-claude
@@ -609,7 +609,10 @@ COVERAGE_ENFORCE_TARGET=1 npm run test:coverage
 ```
 
 For installed-host live error-case smoke tests, exercise the installed cache
-paths, not only repo source. The deterministic scope-error cases are:
+paths, not only repo source. The deterministic pre-source scope failures should
+remain distinguishable by these scope detail markers; direct API JobRecords may
+carry them under a generic `error_code: "scope_failed"` rather than as the
+top-level error code:
 
 - `custom-review --scope custom` without `--scope-paths` -> `scope_paths_required`
 - `branch-diff --scope-base refs/heads/does-not-exist` -> `scope_base_missing`
@@ -624,9 +627,9 @@ paths, not only repo source. The deterministic scope-error cases are:
 
 Each pre-source scope failure must report
 `source_content_transmission: "not_sent"`. For Codex, use scripts under
-`~/.codex/plugins/cache/relay-for-codex/relay-*/0.1.0/scripts/` and verify
+`~/.codex/plugins/cache/relay-for-codex/relay-*/*/scripts/` and verify
 cache freshness with `npm run doctor:cache`. For Claude Code, use scripts under
-`~/.claude/plugins/cache/relay-for-claude/relay-*/0.1.0/scripts/` after
+`~/.claude/plugins/cache/relay-for-claude/relay-*/*/scripts/` after
 refreshing the generated marketplace and reinstalling same-version changed
 plugins when needed.
 
