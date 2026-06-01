@@ -40,7 +40,7 @@ function sha256(value) {
 }
 
 function runCompanion(args, { cwd, env = {}, dataDir = mkdtempSync(path.join(tmpdir(), "gemini-smoke-data-")) } = {}) {
-  const workloadLockDir = env.CODEX_PLUGIN_MULTI_PROVIDER_WORKLOAD_LOCK_DIR
+  const workloadLockDir = env.RELAY_PROVIDER_WORKLOAD_LOCK_DIR
     ?? path.join(dataDir, "provider-workload");
   const res = spawnSync("node", [COMPANION, ...args], {
     cwd,
@@ -49,7 +49,7 @@ function runCompanion(args, { cwd, env = {}, dataDir = mkdtempSync(path.join(tmp
       ...process.env,
       GEMINI_BINARY: MOCK,
       GEMINI_PLUGIN_DATA: dataDir,
-      CODEX_PLUGIN_MULTI_PROVIDER_WORKLOAD_LOCK_DIR: workloadLockDir,
+      RELAY_PROVIDER_WORKLOAD_LOCK_DIR: workloadLockDir,
       ...env,
     },
   });
@@ -245,7 +245,7 @@ test("gemini custom-review maps held workload lease to provider_workload_blocked
     jobId: "held-gemini-job",
     cwd,
     sourceBearing: true,
-    env: { CODEX_PLUGIN_MULTI_PROVIDER_WORKLOAD_LOCK_DIR: workloadLockDir },
+    env: { RELAY_PROVIDER_WORKLOAD_LOCK_DIR: workloadLockDir },
   });
   assert.equal(admission.ok, true);
 
@@ -257,7 +257,7 @@ test("gemini custom-review maps held workload lease to provider_workload_blocked
         cwd,
         dataDir,
         env: {
-          CODEX_PLUGIN_MULTI_PROVIDER_WORKLOAD_LOCK_DIR: workloadLockDir,
+          RELAY_PROVIDER_WORKLOAD_LOCK_DIR: workloadLockDir,
           GEMINI_MOCK_ASSERT_PROMPT_INCLUDES: "MUST_NOT_REACH_GEMINI",
         },
       },
@@ -2402,13 +2402,13 @@ test("gemini preflight rejects Git binary policy errors before executing the ove
     chmodSync(maliciousGit, 0o700);
     const res = runCompanion(
       ["preflight", "--mode=custom-review", "--cwd", cwd, "--scope-paths", "seed.txt"],
-      { cwd, dataDir, env: { CODEX_PLUGIN_MULTI_GIT_BINARY: maliciousGit } },
+      { cwd, dataDir, env: { RELAY_GIT_BINARY: maliciousGit } },
     );
     assert.equal(res.status, 1, `exit ${res.status}: ${res.stderr}`);
     const parsed = JSON.parse(res.stdout);
     assert.equal(parsed.ok, false);
     assert.equal(parsed.error, "git_binary_rejected");
-    assert.match(parsed.message, /CODEX_PLUGIN_MULTI_GIT_BINARY/);
+    assert.match(parsed.message, /RELAY_GIT_BINARY/);
     assert.equal(existsSync(marker), false, "rejected git override must not execute");
   } finally {
     rmTree(dataDir);
@@ -2564,13 +2564,13 @@ test("gemini run rejects Git binary policy errors distinctly before target spawn
     ], {
       cwd,
       dataDir,
-      env: { CODEX_PLUGIN_MULTI_GIT_BINARY: maliciousGit },
+      env: { RELAY_GIT_BINARY: maliciousGit },
     });
     assert.equal(res.status, 1, `exit ${res.status}: ${res.stderr}`);
     const parsed = JSON.parse(res.stdout);
     assert.equal(parsed.ok, false);
     assert.equal(parsed.error, "git_binary_rejected");
-    assert.match(parsed.message, /CODEX_PLUGIN_MULTI_GIT_BINARY/);
+    assert.match(parsed.message, /RELAY_GIT_BINARY/);
     assert.equal(existsSync(marker), false, "rejected git override must not execute");
   } finally {
     rmTree(dataDir);

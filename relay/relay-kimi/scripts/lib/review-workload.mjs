@@ -4,8 +4,8 @@ import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
 
 export const PROVIDER_WORKLOAD_BLOCKED_CODE = "provider_workload_blocked";
-const LOCK_ENV = "CODEX_PLUGIN_MULTI_PROVIDER_WORKLOAD_LOCK_DIR";
-const GATE_TIMEOUT_ENV = "CODEX_PLUGIN_MULTI_PROVIDER_WORKLOAD_GATE_TIMEOUT_MS";
+const LOCK_ENV = "RELAY_PROVIDER_WORKLOAD_LOCK_DIR";
+const GATE_TIMEOUT_ENV = "RELAY_PROVIDER_WORKLOAD_GATE_TIMEOUT_MS";
 const SCHEMA_VERSION = 1;
 const DEFAULT_GATE_TIMEOUT_MS = 5_000;
 const GATE_POLL_MS = 25;

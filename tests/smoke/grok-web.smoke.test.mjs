@@ -72,14 +72,14 @@ const GROK_EXPECTED_KEYS = Object.freeze([
 function run(args, options = {}) {
   const defaultTransportEnv = options.defaultTransport === false ? {} : { GROK_TRANSPORT: "web" };
   const cwd = options.cwd ?? REPO_ROOT;
-  const workloadLockDir = options.env?.CODEX_PLUGIN_MULTI_PROVIDER_WORKLOAD_LOCK_DIR
+  const workloadLockDir = options.env?.RELAY_PROVIDER_WORKLOAD_LOCK_DIR
     ?? path.join(options.env?.GROK_PLUGIN_DATA ?? cwd, ".provider-workload");
   return spawnSync(process.execPath, [COMPANION, ...args], {
     cwd,
     env: {
       ...process.env,
       ...defaultTransportEnv,
-      CODEX_PLUGIN_MULTI_PROVIDER_WORKLOAD_LOCK_DIR: workloadLockDir,
+      RELAY_PROVIDER_WORKLOAD_LOCK_DIR: workloadLockDir,
       ...options.env,
     },
     encoding: "utf8",
@@ -89,7 +89,7 @@ function run(args, options = {}) {
 function runAsync(args, options = {}) {
   const defaultTransportEnv = options.defaultTransport === false ? {} : { GROK_TRANSPORT: "web" };
   const cwd = options.cwd ?? REPO_ROOT;
-  const workloadLockDir = options.env?.CODEX_PLUGIN_MULTI_PROVIDER_WORKLOAD_LOCK_DIR
+  const workloadLockDir = options.env?.RELAY_PROVIDER_WORKLOAD_LOCK_DIR
     ?? path.join(options.env?.GROK_PLUGIN_DATA ?? cwd, ".provider-workload");
   return new Promise((resolve) => {
     const child = spawn(process.execPath, [COMPANION, ...args], {
@@ -97,7 +97,7 @@ function runAsync(args, options = {}) {
       env: {
         ...process.env,
         ...defaultTransportEnv,
-        CODEX_PLUGIN_MULTI_PROVIDER_WORKLOAD_LOCK_DIR: workloadLockDir,
+        RELAY_PROVIDER_WORKLOAD_LOCK_DIR: workloadLockDir,
         ...options.env,
       },
       stdio: ["ignore", "pipe", "pipe"],
@@ -3289,7 +3289,7 @@ test("doctor bootstraps a missing grok2api checkout and starts it without Docker
       env: {
         GROK_WEB_BASE_URL: `http://127.0.0.1:${port}/v1`,
         GROK2API_BOOTSTRAP_DIR: bootstrapDir,
-        CODEX_PLUGIN_MULTI_GIT_BINARY: fakeGit.gitPath,
+        RELAY_GIT_BINARY: fakeGit.gitPath,
         GROK2API_UV_BINARY: path.join(binDir, "uv"),
         GROK_WEB_DOCTOR_TIMEOUT_MS: "500",
         GROK_WEB_CHAT_DOCTOR_TIMEOUT_MS: "1000",
@@ -3334,7 +3334,7 @@ test("doctor defaults grok2api bootstrap to a durable managed home", async () =>
         RELAY_RUNTIME_DIR: runtimeRoot,
         TMPDIR: `${tmpRoot}${path.sep}`,
         GROK_WEB_BASE_URL: `http://127.0.0.1:${port}/v1`,
-        CODEX_PLUGIN_MULTI_GIT_BINARY: fakeGit.gitPath,
+        RELAY_GIT_BINARY: fakeGit.gitPath,
         GROK2API_UV_BINARY: path.join(binDir, "uv"),
         GROK_WEB_DOCTOR_TIMEOUT_MS: "500",
         GROK_WEB_CHAT_DOCTOR_TIMEOUT_MS: "1000",
@@ -3380,7 +3380,7 @@ test("doctor bootstraps the durable managed home instead of reusing a legacy TMP
         RELAY_RUNTIME_DIR: runtimeRoot,
         TMPDIR: `${tmpRoot}${path.sep}`,
         GROK_WEB_BASE_URL: `http://127.0.0.1:${port}/v1`,
-        CODEX_PLUGIN_MULTI_GIT_BINARY: fakeGit.gitPath,
+        RELAY_GIT_BINARY: fakeGit.gitPath,
         GROK2API_UV_BINARY: path.join(binDir, "uv"),
         GROK_WEB_DOCTOR_TIMEOUT_MS: "500",
         GROK_WEB_CHAT_DOCTOR_TIMEOUT_MS: "1000",
@@ -3419,7 +3419,7 @@ test("doctor warns when the configured grok2api bootstrap home is under TMPDIR",
         TMPDIR: `${tmpRoot}${path.sep}`,
         GROK_WEB_BASE_URL: `http://127.0.0.1:${port}/v1`,
         GROK2API_BOOTSTRAP_DIR: bootstrapDir,
-        CODEX_PLUGIN_MULTI_GIT_BINARY: fakeGit.gitPath,
+        RELAY_GIT_BINARY: fakeGit.gitPath,
         GROK2API_UV_BINARY: path.join(binDir, "uv"),
         GROK_WEB_DOCTOR_TIMEOUT_MS: "500",
         GROK_WEB_CHAT_DOCTOR_TIMEOUT_MS: "1000",
@@ -3504,7 +3504,7 @@ test("doctor failed auto-bootstrap does not leave a partial checkout at the targ
       env: {
         GROK_WEB_BASE_URL: `http://127.0.0.1:${port}/v1`,
         GROK2API_BOOTSTRAP_DIR: bootstrapDir,
-        CODEX_PLUGIN_MULTI_GIT_BINARY: fakeGit.gitPath,
+        RELAY_GIT_BINARY: fakeGit.gitPath,
         GROK_WEB_DOCTOR_TIMEOUT_MS: "100",
         GROK_WEB_CHAT_DOCTOR_TIMEOUT_MS: "100",
         GROK_WEB_TUNNEL_START_TIMEOUT_MS: "100",
@@ -7275,7 +7275,7 @@ test("run rejects Git binary policy errors distinctly before Grok scope collecti
     env: {
       GROK_WEB_BASE_URL: "http://127.0.0.1:9/api",
       GROK_WEB_TUNNEL_API_KEY: "secret-cookie-like-token",
-      CODEX_PLUGIN_MULTI_GIT_BINARY: maliciousGit,
+      RELAY_GIT_BINARY: maliciousGit,
     },
   });
   const record = parseStdout(result);
@@ -7284,8 +7284,8 @@ test("run rejects Git binary policy errors distinctly before Grok scope collecti
   assert.equal(record.status, "failed");
   assert.equal(record.error_code, "git_binary_rejected");
   assert.equal(record.error_cause, "git_binary_policy");
-  assert.match(record.error_message, /CODEX_PLUGIN_MULTI_GIT_BINARY/);
-  assert.match(record.suggested_action, /CODEX_PLUGIN_MULTI_GIT_BINARY|trusted Git/i);
+  assert.match(record.error_message, /RELAY_GIT_BINARY/);
+  assert.match(record.suggested_action, /RELAY_GIT_BINARY|trusted Git/i);
   assert.equal(record.external_review.source_content_transmission, "not_sent");
   assert.equal(existsSync(marker), false, "rejected git override must not execute");
 });

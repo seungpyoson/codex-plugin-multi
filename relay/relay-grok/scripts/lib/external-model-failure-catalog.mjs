@@ -52,7 +52,7 @@ export const EXTERNAL_MODEL_FAILURE_CLASSES = Object.freeze([
     error_cause: "untrusted_git_binary",
     error_summary: "The external model review was blocked by an unsafe git binary override before launch.",
     suggested_action:
-      "Unset CODEX_PLUGIN_MULTI_GIT_BINARY or point it to a trusted git executable, then retry the same review scope.",
+      "Unset RELAY_GIT_BINARY or point it to a trusted git executable, then retry the same review scope.",
   }),
   Object.freeze({
     error_code: "finalization_failed",

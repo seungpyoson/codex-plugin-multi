@@ -67,7 +67,7 @@ test("ensureGitRepository reports invalid explicit git overrides", () => {
   const originalOverride = process.env[GIT_BINARY_ENV];
   try {
     process.env[GIT_BINARY_ENV] = path.join(dir, "missing-git");
-    assert.throws(() => ensureGitRepository(dir), /CODEX_PLUGIN_MULTI_GIT_BINARY/);
+    assert.throws(() => ensureGitRepository(dir), /RELAY_GIT_BINARY/);
   } finally {
     if (originalOverride === undefined) delete process.env[GIT_BINARY_ENV];
     else process.env[GIT_BINARY_ENV] = originalOverride;

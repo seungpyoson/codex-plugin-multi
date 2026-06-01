@@ -16,7 +16,7 @@ function tempEnv() {
   return {
     root,
     env: {
-      CODEX_PLUGIN_MULTI_PROVIDER_WORKLOAD_LOCK_DIR: root,
+      RELAY_PROVIDER_WORKLOAD_LOCK_DIR: root,
     },
   };
 }

@@ -1,7 +1,7 @@
 import { constants, accessSync, existsSync, realpathSync, statSync } from "node:fs";
 import path from "node:path";
 
-export const GIT_BINARY_ENV = "CODEX_PLUGIN_MULTI_GIT_BINARY";
+export const GIT_BINARY_ENV = "RELAY_GIT_BINARY";
 export const DEFAULT_GIT_BINARY = "/usr/bin/git";
 export const GIT_SAFE_PATH = "/usr/bin:/bin";
 

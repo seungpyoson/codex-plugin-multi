@@ -3245,7 +3245,7 @@ function suggestedAction(errorCode, errorMessage = "", tunnelStart = null) {
     return "Automatic grok2api bootstrap failed. Inspect tunnel_start.detail, fix Git/network access or set GROK2API_HOME to an existing checkout, then retry. Docker is not required.";
   }
   if (tunnelStart?.error_code === "grok2api_git_unavailable") {
-    return "Install Git or set CODEX_PLUGIN_MULTI_GIT_BINARY to an approved absolute Git path, then rerun setup. Docker is not required.";
+    return "Install Git or set RELAY_GIT_BINARY to an approved absolute Git path, then rerun setup. Docker is not required.";
   }
   if (tunnelStart?.error_code === "grok2api_bootstrap_dir_invalid") {
     return "Point GROK2API_BOOTSTRAP_DIR or GROK2API_HOME at an empty path or a valid grok2api checkout, then rerun setup.";

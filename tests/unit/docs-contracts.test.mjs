@@ -954,3 +954,19 @@ test("provider architecture parity table is machine-validatable and complete", (
 
 
 
+
+test("packet-recovery schema is valid JSON with required fields", () => {
+  const schema = readRepoJson("docs/contracts/packet-recovery.schema.json");
+  assert.equal(schema.title, "PacketRecovery");
+  assert.ok(schema.properties.provider, "must define provider");
+  assert.ok(schema.properties.actions, "must define actions");
+  assert.ok(schema.properties.source_content_transmission, "must define source_content_transmission");
+});
+
+test("session-approval-grant schema is valid JSON with required fields", () => {
+  const schema = readRepoJson("docs/contracts/session-approval-grant.schema.json");
+  assert.equal(schema.title, "Direct API Session Approval Grant");
+  assert.ok(schema.required.includes("grant_id"), "must require grant_id");
+  assert.ok(schema.required.includes("expires_at"), "must require expires_at");
+  assert.ok(schema.required.includes("approval_fingerprint"), "must require approval_fingerprint");
+});

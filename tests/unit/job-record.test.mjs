@@ -2754,7 +2754,7 @@ test("gemini buildJobRecord: preflight auth and sandbox failures are actionable 
 
 test("buildJobRecord: Git binary policy errors are distinct from spawn failures", () => {
   const policyMessage =
-    "CODEX_PLUGIN_MULTI_GIT_BINARY must not point inside the current workspace: /tmp/src/malicious-git";
+    "RELAY_GIT_BINARY must not point inside the current workspace: /tmp/src/malicious-git";
   const cases = [
     [buildJobRecord, makeInvocation()],
     [buildGeminiJobRecord, makeInvocation({ target: "gemini", model: "gemini-3-flash-preview" })],

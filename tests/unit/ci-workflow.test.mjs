@@ -13,7 +13,12 @@ const reviewEnforcementDocs = readFileSync(resolve("docs/review-enforcement.md")
 const architectureRecord = readFileSync(resolve("docs/architecture-record.md"), "utf8");
 const sonarConfig = readFileSync(resolve(".sonarcloud.properties"), "utf8");
 const noMistakesConfig = readFileSync(resolve(".no-mistakes.yaml"), "utf8");
-const claudeProjectNotes = readFileSync(resolve("CLAUDE.md"), "utf8");
+let claudeProjectNotes = "";
+try {
+  claudeProjectNotes = readFileSync(resolve("CLAUDE.md"), "utf8");
+} catch {
+  // CLAUDE.md is gitignored; absent in CI or clean checkouts.
+}
 const runTests = readFileSync(resolve("scripts/ci/run-tests.mjs"), "utf8");
 const coverageBaseline = JSON.parse(readFileSync(resolve("scripts/ci/coverage-baseline.json"), "utf8"));
 const credentialResolutionSchema = JSON.parse(readFileSync(
@@ -138,7 +143,6 @@ test("no-mistakes test gate bootstraps dependencies in disposable worktrees", ()
 
 test("no-mistakes timing docs avoid stale hard-coded local duration budgets", () => {
   for (const [label, contents] of [
-    ["CLAUDE.md", claudeProjectNotes],
     [".no-mistakes.yaml", noMistakesConfig],
   ]) {
     assert.doesNotMatch(contents, /~40s|75s|60s pre-commit|fits the 60s/i, label);

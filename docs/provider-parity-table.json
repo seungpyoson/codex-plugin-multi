@@ -407,7 +407,7 @@
         "plugins/grok/scripts/grok-web-reviewer.mjs",
         "tests/smoke/grok-web.smoke.test.mjs",
         "tests/unit/plugin-copies-in-sync.test.mjs",
-        "docs/evidence-map.md",
+        "docs/architecture-record.md",
         "https://github.com/relay-org/relay/issues/159"
       ],
       "tests": [
@@ -454,7 +454,7 @@
       "evidence": [
         "plugins/kimi/scripts/kimi-companion.mjs",
         "README.md",
-        "docs/evidence-map.md",
+        "docs/architecture-record.md",
         "https://github.com/relay-org/relay/issues/171"
       ],
       "tests": [
@@ -546,10 +546,10 @@
         "Kimi job 08d2f957-bb06-4222-a15c-651691be8655: same 63197-byte packet blocked before launch with source_packet_too_large and source_content_transmission:not_sent after the adapter capacity fact",
         "external PR Kimi job b465418e-913a-42c2-9c84-6befb9c789bb: cached installed plugin sent 44870 bytes and failed with step_limit_exceeded at 128 steps",
         "PR #175 Kimi shard 6cecf19f-2145-48d2-84b5-cd77bc09c835: under-cap 13062-byte source packet became stale_active_job with no verdict",
-        "/private/tmp/cpm-171-plan-review/kimi-result.json",
-        "/private/tmp/cpm-171-final-review/kimi-final2.json",
-        "/private/tmp/cpm-171-final-review/kimi-final4.json",
-        "docs/root-problems.md"
+        "local-temp-path",
+        "local-temp-path",
+        "local-temp-path",
+        "docs/architecture-record.md"
       ],
       "tests": [
         "tests/unit/provider-route-policy.test.mjs",

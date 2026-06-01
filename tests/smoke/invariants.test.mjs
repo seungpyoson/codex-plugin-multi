@@ -70,7 +70,7 @@ const MOCK = path.join(REPO_ROOT, "tests/smoke/claude-mock.mjs");
 
 function runCompanion(args, { cwd, env = {}, dataDir } = {}) {
   const dd = dataDir ?? mkdtempSync(path.join(tmpdir(), "inv-data-"));
-  const workloadLockDir = env.CODEX_PLUGIN_MULTI_PROVIDER_WORKLOAD_LOCK_DIR
+  const workloadLockDir = env.RELAY_PROVIDER_WORKLOAD_LOCK_DIR
     ?? path.join(dd, "provider-workload");
   const res = spawnSync("node", [COMPANION, ...args], {
     cwd,
@@ -79,7 +79,7 @@ function runCompanion(args, { cwd, env = {}, dataDir } = {}) {
       ...process.env,
       CLAUDE_BINARY: MOCK,
       CLAUDE_PLUGIN_DATA: dd,
-      CODEX_PLUGIN_MULTI_PROVIDER_WORKLOAD_LOCK_DIR: workloadLockDir,
+      RELAY_PROVIDER_WORKLOAD_LOCK_DIR: workloadLockDir,
       ...env,
     },
   });
