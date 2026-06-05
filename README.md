@@ -283,15 +283,18 @@ the others. DeepSeek and GLM use a default-installed shared direct-API runtime
 package, so their provider plugins stay split without copying the same reviewer
 code twice.
 
-From Claude Code, the generated marketplace suite lives under `relay/`. Add the
-local generated marketplace from the repo root:
+From Claude Code, the generated marketplace manifest lives at the repo-root
+`.claude-plugin/marketplace.json`, while provider plugin sources stay under
+`relay/relay-*`. Add the local generated marketplace from the repo root:
 
 ```bash
-claude plugin marketplace add ./relay
+claude plugin marketplace add .
 ```
 
-Its marketplace name is `relay-for-claude`, and provider plugin sources stay
-under `relay/relay-*`. The suite/plugin pair is therefore
+Because the manifest is at the repo root, the same marketplace also resolves as
+a remote `github` source (pointing at `relay-org/relay`) without a local
+checkout. Its marketplace name is `relay-for-claude`, and provider plugin
+sources stay under `relay/relay-*`. The suite/plugin pair is therefore
 `relay-for-claude:relay-gemini` conceptually; Claude Code's install ref syntax
 is:
 
@@ -661,8 +664,8 @@ Repository layout:
   plugins/api-reviewers/           # hidden Codex direct-API runtime
   plugins/relay-deepseek/
   plugins/relay-glm/
-  relay/                           # generated Claude Code marketplace suite
-    .claude-plugin/marketplace.json
+  .claude-plugin/marketplace.json  # generated Claude marketplace (relay-for-claude)
+  relay/                           # generated Claude Code marketplace plugin dirs
     relay-api-reviewers/           # hidden Claude direct-API runtime
     relay-deepseek/
     relay-gemini/

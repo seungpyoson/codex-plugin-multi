@@ -99,7 +99,7 @@ test("Codex direct API reviewers are split into relay-glm and relay-deepseek plu
 });
 
 test("Claude relay marketplace exposes relay-for-claude suite over relay provider plugins", () => {
-  const marketplace = readJson("relay/.claude-plugin/marketplace.json");
+  const marketplace = readJson(".claude-plugin/marketplace.json");
   const publicPlugins = marketplace.plugins.filter((plugin) => plugin.policy?.installation !== "HIDDEN");
   const hiddenPlugins = marketplace.plugins.filter((plugin) => plugin.policy?.installation === "HIDDEN");
   assert.equal(marketplace.name, "relay-for-claude");
@@ -114,13 +114,13 @@ test("Claude relay marketplace exposes relay-for-claude suite over relay provide
     ],
   );
   assert.deepEqual(hiddenPlugins.map((plugin) => plugin.name), ["relay-api-reviewers"]);
-  assert.equal(hiddenPlugins[0].source, "./relay-api-reviewers");
+  assert.equal(hiddenPlugins[0].source, "./relay/relay-api-reviewers");
   assert.equal(publicPlugins.some((plugin) => plugin.name === "relay-claude"), false);
   for (const plugin of marketplace.plugins) {
     if (plugin.policy?.installation !== "HIDDEN") {
-      assert.equal(plugin.source, `./${plugin.name}`);
+      assert.equal(plugin.source, `./relay/${plugin.name}`);
     }
-    const manifestPath = path.join("relay", plugin.source, ".claude-plugin", "plugin.json");
+    const manifestPath = path.join(plugin.source, ".claude-plugin", "plugin.json");
     assert.equal(existsSync(manifestPath), true);
     assert.equal(readJson(manifestPath).name, plugin.name);
   }

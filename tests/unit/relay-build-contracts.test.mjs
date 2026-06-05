@@ -133,7 +133,8 @@ test("buildRelayPlugin: emits relay-gemini Claude plugin tree", () => {
 });
 
 test("buildRelaySuite: emits the full Claude relay provider suite without relay-claude", () => {
-  const outRoot = mkdtempSync(path.join(tmpdir(), "relay-suite-"));
+  const tmpRoot = mkdtempSync(path.join(tmpdir(), "relay-suite-"));
+  const outRoot = path.join(tmpRoot, "relay");
   try {
     const pluginRoots = buildRelaySuite({ repoRoot: process.cwd(), outRoot });
     const pluginNames = pluginRoots.map((root) => path.basename(root)).sort();
@@ -147,24 +148,24 @@ test("buildRelaySuite: emits the full Claude relay provider suite without relay-
     ]);
     assert.equal(existsSync(path.join(outRoot, "relay-claude")), false);
 
-    const marketplace = JSON.parse(readFileSync(path.join(outRoot, ".claude-plugin", "marketplace.json"), "utf8"));
+    const marketplace = JSON.parse(readFileSync(path.join(tmpRoot, ".claude-plugin", "marketplace.json"), "utf8"));
     const publicPlugins = marketplace.plugins.filter((plugin) => plugin.policy?.installation !== "HIDDEN");
     const hiddenPlugins = marketplace.plugins.filter((plugin) => plugin.policy?.installation === "HIDDEN");
     assert.equal(marketplace.name, "relay-for-claude");
     assert.deepEqual(publicPlugins.map((plugin) => plugin.name).sort(), pluginNames);
     assert.deepEqual(hiddenPlugins.map((plugin) => plugin.name), ["relay-api-reviewers"]);
-    assert.equal(hiddenPlugins[0].source, "./relay-api-reviewers");
+    assert.equal(hiddenPlugins[0].source, "./relay/relay-api-reviewers");
     assert.equal(
-      existsSync(path.resolve(outRoot, hiddenPlugins[0].source, ".claude-plugin", "plugin.json")),
+      existsSync(path.resolve(tmpRoot, hiddenPlugins[0].source, ".claude-plugin", "plugin.json")),
       true,
     );
     assert.equal(existsSync(path.join(outRoot, "relay-api-reviewers")), true);
     assert.equal(lstatSync(path.join(outRoot, "relay-api-reviewers")).isSymbolicLink(), true);
     for (const plugin of publicPlugins) {
-      assert.equal(plugin.source, `./${plugin.name}`);
+      assert.equal(plugin.source, `./relay/${plugin.name}`);
     }
   } finally {
-    rmSync(outRoot, { recursive: true, force: true });
+    rmSync(tmpRoot, { recursive: true, force: true });
   }
 });
 

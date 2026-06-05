@@ -9,7 +9,7 @@ import {
   symlinkSync,
   writeFileSync,
 } from "node:fs";
-import { join, relative } from "node:path";
+import { basename, dirname, join, relative } from "node:path";
 
 const RELAY_REPOSITORY = "https://github.com/relay-org/relay";
 const RELAY_FOR_CLAUDE_MARKETPLACE = "relay-for-claude";
@@ -117,7 +117,7 @@ export function buildRelaySuite({ repoRoot = process.cwd(), outRoot = join(repoR
 
 export function renderClaudeRelayMarketplace(
   pluginManifests,
-  { hiddenPluginNames = new Set() } = {},
+  { hiddenPluginNames = new Set(), sourcePrefix = "." } = {},
 ) {
   return {
     name: RELAY_FOR_CLAUDE_MARKETPLACE,
@@ -128,7 +128,7 @@ export function renderClaudeRelayMarketplace(
         name: manifest.name,
         description: manifest.description,
         version: manifest.version,
-        source: `./${manifest.name}`,
+        source: `${sourcePrefix}/${manifest.name}`,
         author: manifest.author,
       };
       if (hiddenPluginNames.has(manifest.name)) {
@@ -144,11 +144,17 @@ function writeClaudeRelayMarketplace({ outRoot, pluginRoots, sharedDirectApiRunt
     readJson(join(pluginRoot, ".claude-plugin", "plugin.json"))
   );
   const hiddenManifests = [readJson(join(sharedDirectApiRuntimeRoot, ".claude-plugin", "plugin.json"))];
-  mkdirSync(join(outRoot, ".claude-plugin"), { recursive: true });
+  // Marketplace root is the parent of the generated plugin dirs (outRoot), so a github/local
+  // marketplace source resolves `.claude-plugin/marketplace.json` at the repo root; plugin
+  // sources are root-relative `./<outRoot-basename>/<plugin>` (e.g. ./relay/relay-gemini).
+  const marketplaceRoot = dirname(outRoot);
+  const sourcePrefix = `./${basename(outRoot)}`;
+  mkdirSync(join(marketplaceRoot, ".claude-plugin"), { recursive: true });
   writeJson(
-    join(outRoot, ".claude-plugin", "marketplace.json"),
+    join(marketplaceRoot, ".claude-plugin", "marketplace.json"),
     renderClaudeRelayMarketplace([...visibleManifests, ...hiddenManifests], {
       hiddenPluginNames: new Set(hiddenManifests.map((manifest) => manifest.name)),
+      sourcePrefix,
     }),
   );
 }
