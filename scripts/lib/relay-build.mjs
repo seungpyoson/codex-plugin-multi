@@ -6,6 +6,7 @@ import {
   readFileSync,
   realpathSync,
   rmSync,
+  statSync,
   symlinkSync,
   writeFileSync,
 } from "node:fs";
@@ -77,26 +78,52 @@ function canonicalizeExistingPrefix(absPath) {
   }
 }
 
+// realpathSync resolves symlinks but not letter case. A case-insensitive filesystem (APFS, NTFS)
+// treats case-variant paths as the same directory, so the containment checks below must fold case
+// when — and only when — the repo lives on such a filesystem. Probe it directly via inode identity
+// of the lower/upper-cased path rather than guessing from process.platform: macOS can mount
+// case-sensitive volumes and Linux can mount case-insensitive ones.
+function isCaseInsensitiveFs(existingDir) {
+  try {
+    const original = statSync(existingDir);
+    const lowered = statSync(existingDir.toLowerCase());
+    const uppered = statSync(existingDir.toUpperCase());
+    return (
+      lowered.dev === original.dev &&
+      lowered.ino === original.ino &&
+      uppered.dev === original.dev &&
+      uppered.ino === original.ino
+    );
+  } catch {
+    return false;
+  }
+}
+
 // The build wipes outRoot and join(outRoot, "relay-<provider>") via rmSync, then writes the
 // marketplace manifest to outRoot's parent. outRoot must therefore be a dedicated build directory:
 // never the repo root or an ancestor of it, and — when inside the repo — only the generated build
 // dir, never another in-repo path. plugins/ in particular holds tracked relay-<provider> source
 // trees (plugins/relay-glm, plugins/relay-deepseek) that share the wiped name, so a stray
-// `--out-root plugins` would delete source. Paths are canonicalized first so a symlinked outRoot
-// cannot slip past these checks.
+// `--out-root plugins` would delete source. Paths are canonicalized (symlinks resolved, case folded
+// on case-insensitive filesystems) first so neither a symlinked nor a case-variant outRoot can slip
+// past these checks.
 export function assertBuildableOutRoot(repoRoot, outRoot) {
   const resolvedRepo = canonicalizeExistingPrefix(resolve(repoRoot));
   const resolvedOut = canonicalizeExistingPrefix(resolve(outRoot));
+  const fold = isCaseInsensitiveFs(resolvedRepo) ? (value) => value.toLowerCase() : (value) => value;
+  const repoKey = fold(resolvedRepo);
+  const outKey = fold(resolvedOut);
+  const buildKey = fold(join(resolvedRepo, RELAY_BUILD_DIRNAME));
   const refuse = (reason) => {
     throw new Error(
       `relay build: outRoot must be a dedicated build directory — ${reason} ` +
         `(outRoot=${resolvedOut}, repoRoot=${resolvedRepo}). rmSync would destroy the source tree.`,
     );
   };
-  if (resolvedOut === resolvedRepo || resolvedRepo.startsWith(resolvedOut + sep)) {
+  if (outKey === repoKey || repoKey.startsWith(outKey + sep)) {
     refuse("it is the repo root or an ancestor of it");
   }
-  if (resolvedOut.startsWith(resolvedRepo + sep) && resolvedOut !== join(resolvedRepo, RELAY_BUILD_DIRNAME)) {
+  if (outKey.startsWith(repoKey + sep) && outKey !== buildKey) {
     refuse(`the only in-repo build dir is ${RELAY_BUILD_DIRNAME}/`);
   }
 }

@@ -1,4 +1,4 @@
-import { cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -78,6 +78,33 @@ test("assertBuildableOutRoot: canonicalizes symlinks (lexical resolve is not eno
     const linkExternal = path.join(tmpRoot, "link-external");
     symlinkSync(external, linkExternal);
     assert.doesNotThrow(() => assertBuildableOutRoot(repoRoot, linkExternal));
+  } finally {
+    rmSync(tmpRoot, { recursive: true, force: true });
+  }
+});
+
+test("assertBuildableOutRoot: refuses a case-variant of the repo on case-insensitive filesystems", () => {
+  const tmpRoot = mkdtempSync(path.join(tmpdir(), "relay-guard-case-"));
+  try {
+    const repoRoot = path.join(tmpRoot, "MixedCaseRepo");
+    mkdirSync(repoRoot, { recursive: true });
+    const variant = path.join(tmpRoot, "mixedcaserepo");
+    // Whether the variant denotes the SAME directory is a filesystem property: APFS/NTFS fold case,
+    // ext4 does not. realpathSync resolves symlinks but not case, so the guard must match the
+    // filesystem's own truth — refuse when the FS treats the variant as the repo, allow otherwise.
+    let sameDir = false;
+    try {
+      const original = statSync(repoRoot);
+      const swapped = statSync(variant);
+      sameDir = original.dev === swapped.dev && original.ino === swapped.ino;
+    } catch {
+      sameDir = false;
+    }
+    if (sameDir) {
+      assert.throws(() => assertBuildableOutRoot(repoRoot, variant), /dedicated build directory/);
+    } else {
+      assert.doesNotThrow(() => assertBuildableOutRoot(repoRoot, variant));
+    }
   } finally {
     rmSync(tmpRoot, { recursive: true, force: true });
   }
