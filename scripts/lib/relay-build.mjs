@@ -6,10 +6,11 @@ import {
   readFileSync,
   realpathSync,
   rmSync,
+  statSync,
   symlinkSync,
   writeFileSync,
 } from "node:fs";
-import { join, relative } from "node:path";
+import { basename, dirname, join, relative, resolve, sep } from "node:path";
 
 const RELAY_REPOSITORY = "https://github.com/relay-org/relay";
 const RELAY_FOR_CLAUDE_MARKETPLACE = "relay-for-claude";
@@ -53,12 +54,158 @@ export function relayPluginName(provider) {
   return `relay-${provider}`;
 }
 
-export function buildRelayPlugin({ provider, repoRoot = process.cwd(), outRoot = join(repoRoot, "relay") }) {
+// The single in-repo directory the build owns and wipes. Everything else under the repo is source.
+const RELAY_BUILD_DIRNAME = "relay";
+
+// Canonicalize a path by resolving symlinks in its longest existing prefix, then re-appending the
+// not-yet-created trailing segments. Lexical resolve() alone is unsafe for the guard below: a
+// symlinked outRoot (or a symlinked path component) compares as its link path, so the guard would
+// pass while rmSync follows the link into a real source tree.
+function canonicalizeExistingPrefix(absPath) {
+  const pending = [];
+  let current = absPath;
+  for (;;) {
+    try {
+      const real = realpathSync(current);
+      return pending.length ? join(real, ...pending.reverse()) : real;
+    } catch (error) {
+      if (error.code !== "ENOENT") throw error;
+      const parent = dirname(current);
+      if (parent === current) return absPath; // reached the filesystem root with nothing existing
+      pending.push(basename(current));
+      current = parent;
+    }
+  }
+}
+
+// realpathSync resolves symlinks but not letter case. A case-insensitive filesystem (APFS, NTFS)
+// treats case-variant paths as the same directory, so the containment checks below must fold case
+// when — and only when — the repo lives on such a filesystem. Probe it directly via inode identity
+// of the lower/upper-cased path rather than guessing from process.platform: macOS can mount
+// case-sensitive volumes and Linux can mount case-insensitive ones.
+function isCaseInsensitiveFs(existingDir) {
+  try {
+    const original = statSync(existingDir);
+    const lowered = statSync(existingDir.toLowerCase());
+    const uppered = statSync(existingDir.toUpperCase());
+    return (
+      lowered.dev === original.dev &&
+      lowered.ino === original.ino &&
+      uppered.dev === original.dev &&
+      uppered.ino === original.ino
+    );
+  } catch {
+    return false;
+  }
+}
+
+// Collapse the portable string path-equivalences that realpathSync does not surface into a single
+// comparison key. Case: only when the FS folds it (caseInsensitive, probed via isCaseInsensitiveFs).
+// Unicode form: always — APFS is normalization-insensitive regardless of case-sensitivity, so an
+// NFC/NFD-variant path aliases the repo even on a case-sensitive APFS volume where the case fold is
+// identity. Pure and FS-independent so the fold contract is unit-testable on every platform; existing
+// prefixes get an additional inode check below so the guard follows the filesystem's own equivalence
+// table instead of trying to model every APFS-specific Unicode fold in JavaScript.
+export function foldComparisonKey(value, { caseInsensitive }) {
+  const cased = caseInsensitive ? value.toLowerCase() : value;
+  return cased.normalize("NFC");
+}
+
+function sameIdentity(left, right) {
+  return left.dev === right.dev && left.ino === right.ino;
+}
+
+function existingPathIdentityChain(absPath) {
+  const pending = [];
+  let current = absPath;
+  for (;;) {
+    try {
+      statSync(current);
+      break;
+    } catch (error) {
+      if (error.code !== "ENOENT") throw error;
+      const parent = dirname(current);
+      if (parent === current) return [];
+      pending.unshift(basename(current));
+      current = parent;
+    }
+  }
+
+  const chain = [];
+  let segments = pending;
+  for (;;) {
+    const { dev, ino } = statSync(current);
+    chain.push({ identity: { dev, ino }, segments });
+    const parent = dirname(current);
+    if (parent === current) return chain;
+    segments = [basename(current), ...segments];
+    current = parent;
+  }
+}
+
+function isRelayBuildDirSegments(segments, { caseInsensitive }) {
+  return (
+    segments.length === 1 &&
+    foldComparisonKey(segments[0], { caseInsensitive }) === foldComparisonKey(RELAY_BUILD_DIRNAME, { caseInsensitive })
+  );
+}
+
+// The build wipes outRoot and join(outRoot, "relay-<provider>") via rmSync, then writes the
+// marketplace manifest to outRoot's parent. outRoot must therefore be a dedicated build directory:
+// never the repo root or an ancestor of it, and — when inside the repo — only the generated build
+// dir, never another in-repo path. plugins/ in particular holds tracked relay-<provider> source
+// trees (plugins/relay-glm, plugins/relay-deepseek) that share the wiped name, so a stray
+// `--out-root plugins` would delete source. Paths are canonicalized (symlinks resolved, case folded
+// on case-insensitive filesystems, Unicode-normalized to NFC) and checked by inode for existing
+// prefixes first so neither a symlinked, case-variant, nor normalization-variant outRoot can slip
+// past these checks.
+export function assertBuildableOutRoot(repoRoot, outRoot) {
+  const resolvedRepo = canonicalizeExistingPrefix(resolve(repoRoot));
+  const resolvedOut = canonicalizeExistingPrefix(resolve(outRoot));
+  // Fold case (only when the FS folds it) and Unicode form into the comparison keys — see
+  // foldComparisonKey. The case-insensitivity probe is the one FS-dependent input; the fold itself
+  // is pure, so all three keys run the identical transform and compare consistently.
+  const caseInsensitive = isCaseInsensitiveFs(resolvedRepo);
+  const fold = (value) => foldComparisonKey(value, { caseInsensitive });
+  const repoKey = fold(resolvedRepo);
+  const outKey = fold(resolvedOut);
+  const buildKey = fold(join(resolvedRepo, RELAY_BUILD_DIRNAME));
+  const refuse = (reason) => {
+    throw new Error(
+      `relay build: outRoot must be a dedicated build directory — ${reason} ` +
+        `(outRoot=${resolvedOut}, repoRoot=${resolvedRepo}). rmSync would destroy the source tree.`,
+    );
+  };
+
+  const repoChain = existingPathIdentityChain(resolvedRepo);
+  const repoNode = repoChain.find((node) => node.segments.length === 0);
+  if (repoNode) {
+    const outChain = existingPathIdentityChain(resolvedOut);
+    const existingOutNode = outChain[0];
+    if (existingOutNode?.segments.length === 0 && repoChain.some((node) => sameIdentity(node.identity, existingOutNode.identity))) {
+      refuse("it is the repo root or an ancestor of it");
+    }
+    const inRepoNode = outChain.find((node) => sameIdentity(node.identity, repoNode.identity));
+    if (inRepoNode && !isRelayBuildDirSegments(inRepoNode.segments, { caseInsensitive })) {
+      refuse(`the only in-repo build dir is ${RELAY_BUILD_DIRNAME}/`);
+    }
+  }
+
+  if (outKey === repoKey || repoKey.startsWith(outKey + sep)) {
+    refuse("it is the repo root or an ancestor of it");
+  }
+  if (outKey.startsWith(repoKey + sep) && outKey !== buildKey) {
+    refuse(`the only in-repo build dir is ${RELAY_BUILD_DIRNAME}/`);
+  }
+}
+
+export function buildRelayPlugin({ provider, repoRoot = process.cwd(), outRoot = join(repoRoot, RELAY_BUILD_DIRNAME) }) {
   const definition = RELAY_PROVIDER_DEFINITIONS[provider];
   if (!definition) {
     throw new Error(`unsupported relay provider: ${provider}`);
   }
 
+  assertBuildableOutRoot(repoRoot, outRoot);
   const sourceRoot = join(repoRoot, "plugins", definition.sourceProvider);
   const pluginRoot = join(outRoot, relayPluginName(provider));
   rmSync(pluginRoot, { recursive: true, force: true });
@@ -107,7 +254,8 @@ export function buildRelayPlugin({ provider, repoRoot = process.cwd(), outRoot =
   return pluginRoot;
 }
 
-export function buildRelaySuite({ repoRoot = process.cwd(), outRoot = join(repoRoot, "relay") } = {}) {
+export function buildRelaySuite({ repoRoot = process.cwd(), outRoot = join(repoRoot, RELAY_BUILD_DIRNAME) } = {}) {
+  assertBuildableOutRoot(repoRoot, outRoot);
   rmSync(outRoot, { recursive: true, force: true });
   const pluginRoots = RELAY_PROVIDER_ORDER.map((provider) => buildRelayPlugin({ provider, repoRoot, outRoot }));
   const sharedDirectApiRuntimeRoot = buildRelayDirectApiRuntimePlugin({ repoRoot, outRoot });
@@ -117,7 +265,7 @@ export function buildRelaySuite({ repoRoot = process.cwd(), outRoot = join(repoR
 
 export function renderClaudeRelayMarketplace(
   pluginManifests,
-  { hiddenPluginNames = new Set() } = {},
+  { hiddenPluginNames = new Set(), sourcePrefix = "." } = {},
 ) {
   return {
     name: RELAY_FOR_CLAUDE_MARKETPLACE,
@@ -128,7 +276,7 @@ export function renderClaudeRelayMarketplace(
         name: manifest.name,
         description: manifest.description,
         version: manifest.version,
-        source: `./${manifest.name}`,
+        source: `${sourcePrefix}/${manifest.name}`,
         author: manifest.author,
       };
       if (hiddenPluginNames.has(manifest.name)) {
@@ -144,11 +292,20 @@ function writeClaudeRelayMarketplace({ outRoot, pluginRoots, sharedDirectApiRunt
     readJson(join(pluginRoot, ".claude-plugin", "plugin.json"))
   );
   const hiddenManifests = [readJson(join(sharedDirectApiRuntimeRoot, ".claude-plugin", "plugin.json"))];
-  mkdirSync(join(outRoot, ".claude-plugin"), { recursive: true });
+  // Marketplace root is the parent of the generated plugin dirs (outRoot), so a github/local
+  // marketplace source resolves `.claude-plugin/marketplace.json` at the repo root; plugin
+  // sources are root-relative `./<outRoot-basename>/<plugin>` (e.g. ./relay/relay-gemini).
+  // Contract: https://code.claude.com/docs/en/plugin-marketplaces — "Create
+  // .claude-plugin/marketplace.json in your repository root"; relative source paths are
+  // "Resolved relative to the marketplace root, not the .claude-plugin/ directory".
+  const marketplaceRoot = dirname(outRoot);
+  const sourcePrefix = `./${basename(outRoot)}`;
+  mkdirSync(join(marketplaceRoot, ".claude-plugin"), { recursive: true });
   writeJson(
-    join(outRoot, ".claude-plugin", "marketplace.json"),
+    join(marketplaceRoot, ".claude-plugin", "marketplace.json"),
     renderClaudeRelayMarketplace([...visibleManifests, ...hiddenManifests], {
       hiddenPluginNames: new Set(hiddenManifests.map((manifest) => manifest.name)),
+      sourcePrefix,
     }),
   );
 }

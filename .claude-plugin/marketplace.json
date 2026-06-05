@@ -9,7 +9,7 @@
       "name": "relay-gemini",
       "description": "Delegate investigation, review, and adversarial review to Gemini CLI from within Claude Code.",
       "version": "0.1.0",
-      "source": "./relay-gemini",
+      "source": "./relay/relay-gemini",
       "author": {
         "name": "relay-maintainer"
       }
@@ -18,7 +18,7 @@
       "name": "relay-grok",
       "description": "Delegate reviews to a subscription-backed Grok web session through a local tunnel.",
       "version": "0.1.0",
-      "source": "./relay-grok",
+      "source": "./relay/relay-grok",
       "author": {
         "name": "relay-maintainer"
       }
@@ -27,7 +27,7 @@
       "name": "relay-kimi",
       "description": "Delegate investigation, review, and adversarial review to Kimi Code CLI from within Claude Code.",
       "version": "0.1.0",
-      "source": "./relay-kimi",
+      "source": "./relay/relay-kimi",
       "author": {
         "name": "relay-maintainer"
       }
@@ -36,7 +36,7 @@
       "name": "relay-glm",
       "description": "Delegate code reviews to GLM direct API from within Claude Code.",
       "version": "0.1.0",
-      "source": "./relay-glm",
+      "source": "./relay/relay-glm",
       "author": {
         "name": "relay-maintainer"
       }
@@ -45,7 +45,7 @@
       "name": "relay-deepseek",
       "description": "Delegate code reviews to DeepSeek direct API from within Claude Code.",
       "version": "0.1.0",
-      "source": "./relay-deepseek",
+      "source": "./relay/relay-deepseek",
       "author": {
         "name": "relay-maintainer"
       }
@@ -54,7 +54,7 @@
       "name": "relay-api-reviewers",
       "description": "Shared hidden direct API runtime for Relay Claude Code plugins.",
       "version": "0.1.0",
-      "source": "./relay-api-reviewers",
+      "source": "./relay/relay-api-reviewers",
       "author": {
         "name": "relay-maintainer"
       },

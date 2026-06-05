@@ -22,6 +22,7 @@ const GENERATED_PATHS = [
   "plugins/relay-glm",
   "plugins/relay-deepseek",
   "plugins/api-reviewers/.claude-plugin/plugin.json",
+  ".claude-plugin/marketplace.json",
   "relay",
 ];
 

@@ -1,4 +1,4 @@
-import { cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -6,6 +6,8 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 
 import {
+  assertBuildableOutRoot,
+  foldComparisonKey,
   buildRelayPlugin,
   buildRelaySuite,
   claudeCommandFileName,
@@ -31,6 +33,196 @@ function readManifestVersion(manifestPath) {
 test("relayPluginName: prefixes provider plugins for relay", () => {
   assert.equal(relayPluginName("gemini"), "relay-gemini");
   assert.equal(relayPluginName("deepseek"), "relay-deepseek");
+});
+
+test("assertBuildableOutRoot: refuses outRoot shapes that would rmSync the source tree", () => {
+  // outRoot === repoRoot: rmSync(outRoot) would wipe the repo itself.
+  assert.throws(() => assertBuildableOutRoot("/repo", "/repo"), /dedicated build directory/);
+  // outRoot === "." resolves to cwd; with repoRoot at cwd it is the same destructive case.
+  assert.throws(() => assertBuildableOutRoot(process.cwd(), "."), /dedicated build directory/);
+  // outRoot is an ancestor of repoRoot: rmSync(outRoot) would take the repo down with it.
+  assert.throws(() => assertBuildableOutRoot("/repo/nested", "/repo"), /dedicated build directory/);
+  // path-normalized ancestor (trailing-segment traversal) is rejected just the same.
+  assert.throws(() => assertBuildableOutRoot("/repo/nested", "/repo/nested/build/.."), /dedicated build directory/);
+  // An in-repo outRoot other than the generated build dir is refused: the build wipes
+  // join(outRoot, "relay-<provider>"), and tracked source trees (plugins/relay-glm,
+  // plugins/relay-deepseek) share that name — so wiping under, e.g., plugins/ destroys source.
+  assert.throws(() => assertBuildableOutRoot("/repo", "/repo/plugins"), /dedicated build directory/);
+  assert.throws(() => assertBuildableOutRoot("/repo", "/repo/build"), /dedicated build directory/);
+  // The one in-repo location the build owns, and any out-of-tree dir, are allowed.
+  assert.doesNotThrow(() => assertBuildableOutRoot("/repo", "/repo/relay"));
+  assert.doesNotThrow(() => assertBuildableOutRoot("/repo", "/tmp/relay-out"));
+});
+
+test("assertBuildableOutRoot: canonicalizes symlinks (lexical resolve is not enough)", () => {
+  const tmpRoot = mkdtempSync(path.join(tmpdir(), "relay-guard-symlink-"));
+  try {
+    const repoRoot = path.join(tmpRoot, "repo");
+    mkdirSync(repoRoot, { recursive: true });
+    // Lexically unrelated to repoRoot, but resolves to it — rmSync through it would hit the repo.
+    const linkToRepo = path.join(tmpRoot, "link-to-repo");
+    symlinkSync(repoRoot, linkToRepo);
+    assert.throws(() => assertBuildableOutRoot(repoRoot, linkToRepo), /dedicated build directory/);
+    // Symlink resolving to an ancestor of the repo is refused too.
+    const linkToAncestor = path.join(tmpRoot, "link-to-ancestor");
+    symlinkSync(tmpRoot, linkToAncestor);
+    assert.throws(() => assertBuildableOutRoot(repoRoot, linkToAncestor), /dedicated build directory/);
+    // A symlink resolving to an in-repo source dir (plugins) is refused.
+    const pluginsDir = path.join(repoRoot, "plugins");
+    mkdirSync(pluginsDir, { recursive: true });
+    const linkToPlugins = path.join(tmpRoot, "link-to-plugins");
+    symlinkSync(pluginsDir, linkToPlugins);
+    assert.throws(() => assertBuildableOutRoot(repoRoot, linkToPlugins), /dedicated build directory/);
+    // A symlink to a dir outside the repo stays allowed.
+    const external = path.join(tmpRoot, "external-out");
+    mkdirSync(external, { recursive: true });
+    const linkExternal = path.join(tmpRoot, "link-external");
+    symlinkSync(external, linkExternal);
+    assert.doesNotThrow(() => assertBuildableOutRoot(repoRoot, linkExternal));
+  } finally {
+    rmSync(tmpRoot, { recursive: true, force: true });
+  }
+});
+
+test("assertBuildableOutRoot: refuses a case-variant of the repo on case-insensitive filesystems", () => {
+  const tmpRoot = mkdtempSync(path.join(tmpdir(), "relay-guard-case-"));
+  try {
+    const repoRoot = path.join(tmpRoot, "MixedCaseRepo");
+    mkdirSync(repoRoot, { recursive: true });
+    const variant = path.join(tmpRoot, "mixedcaserepo");
+    // Whether the variant denotes the SAME directory is a filesystem property: APFS/NTFS fold case,
+    // ext4 does not. realpathSync resolves symlinks but not case, so the guard must match the
+    // filesystem's own truth — refuse when the FS treats the variant as the repo, allow otherwise.
+    let sameDir = false;
+    try {
+      const original = statSync(repoRoot);
+      const swapped = statSync(variant);
+      sameDir = original.dev === swapped.dev && original.ino === swapped.ino;
+    } catch {
+      sameDir = false;
+    }
+    if (sameDir) {
+      assert.throws(() => assertBuildableOutRoot(repoRoot, variant), /dedicated build directory/);
+    } else {
+      assert.doesNotThrow(() => assertBuildableOutRoot(repoRoot, variant));
+    }
+  } finally {
+    rmSync(tmpRoot, { recursive: true, force: true });
+  }
+});
+
+test("assertBuildableOutRoot: refuses a Unicode-normalization variant of the repo on normalization-insensitive filesystems", () => {
+  const tmpRoot = mkdtempSync(path.join(tmpdir(), "relay-guard-nfc-"));
+  try {
+    const nfc = "caf\u00e9-repo"; // \u00e9 precomposed (NFC, one codepoint)
+    const nfd = "cafe\u0301-repo"; // e + combining acute (NFD, two codepoints)
+    const repoRoot = path.join(tmpRoot, nfc);
+    mkdirSync(repoRoot, { recursive: true });
+    const variant = path.join(tmpRoot, nfd);
+    // APFS hashes the normalized name, so NFC and NFD spellings denote the SAME directory there,
+    // independent of case-sensitivity. On normalization-sensitive filesystems (ext4) they can be
+    // genuinely distinct, but the unconditional NFC fold intentionally turns that rare edge into a
+    // safe refusal rather than risking a destructive allow on APFS.
+    assert.throws(() => assertBuildableOutRoot(repoRoot, variant), /dedicated build directory/);
+    assert.throws(() => assertBuildableOutRoot(repoRoot, path.join(variant, "plugins")), /dedicated build directory/);
+  } finally {
+    rmSync(tmpRoot, { recursive: true, force: true });
+  }
+});
+
+test("assertBuildableOutRoot: refuses filesystem-equivalent Unicode variants beyond NFC", () => {
+  const candidates = [
+    { canonical: "file-repo", variant: "\uFB01le-repo" }, // U+FB01 LATIN SMALL LIGATURE FI
+    { canonical: "\u03C3-repo", variant: "\u03C2-repo" }, // sigma vs final sigma
+  ];
+
+  for (const { canonical, variant } of candidates) {
+    const tmpRoot = mkdtempSync(path.join(tmpdir(), "relay-guard-unicode-alias-"));
+    try {
+      const repoRoot = path.join(tmpRoot, canonical);
+      mkdirSync(repoRoot, { recursive: true });
+      const aliasRoot = path.join(tmpRoot, variant);
+
+      let sameDir = false;
+      try {
+        const original = statSync(repoRoot);
+        const alias = statSync(aliasRoot);
+        sameDir = original.dev === alias.dev && original.ino === alias.ino;
+      } catch {
+        sameDir = false;
+      }
+
+      if (sameDir) {
+        assert.throws(() => assertBuildableOutRoot(repoRoot, aliasRoot), /dedicated build directory/);
+        assert.throws(() => assertBuildableOutRoot(repoRoot, path.join(aliasRoot, "plugins")), /dedicated build directory/);
+      } else {
+        assert.doesNotThrow(() => assertBuildableOutRoot(repoRoot, aliasRoot));
+        assert.doesNotThrow(() => assertBuildableOutRoot(repoRoot, path.join(aliasRoot, "plugins")));
+      }
+    } finally {
+      rmSync(tmpRoot, { recursive: true, force: true });
+    }
+  }
+});
+
+// Deterministic coverage of the fold contract, independent of the host filesystem. The integration
+// tests above only exercise the *refuse* branch on a case/normalization-insensitive dev machine; on
+// case- and normalization-sensitive CI (ext4) they take the allow branch, so without these a future
+// change that drops the fold would stay green on CI. These pin the fold's two equivalences directly.
+test("foldComparisonKey: NFC and NFD spellings collapse to one key in either case mode", () => {
+  const nfc = "caf\u00e9"; // \u00e9 precomposed
+  const nfd = "cafe\u0301"; // e + combining acute
+  assert.notEqual(nfc, nfd);
+  for (const caseInsensitive of [true, false]) {
+    assert.equal(foldComparisonKey(nfc, { caseInsensitive }), foldComparisonKey(nfd, { caseInsensitive }));
+  }
+});
+
+test("foldComparisonKey: case folds only when the filesystem is case-insensitive", () => {
+  assert.equal(foldComparisonKey("MixedCase", { caseInsensitive: true }), "mixedcase");
+  assert.equal(foldComparisonKey("MixedCase", { caseInsensitive: false }), "MixedCase");
+});
+
+test("assertBuildableOutRoot: tolerates a not-yet-created outRoot without ENOENT", () => {
+  const tmpRoot = mkdtempSync(path.join(tmpdir(), "relay-guard-enoent-"));
+  try {
+    const repoRoot = path.join(tmpRoot, "repo");
+    mkdirSync(repoRoot, { recursive: true });
+    // Designated build dir, not yet created (the common first-build case).
+    assert.doesNotThrow(() => assertBuildableOutRoot(repoRoot, path.join(repoRoot, "relay")));
+    // External nested path where no component exists yet.
+    assert.doesNotThrow(() => assertBuildableOutRoot(repoRoot, path.join(tmpRoot, "ext", "nested", "out")));
+  } finally {
+    rmSync(tmpRoot, { recursive: true, force: true });
+  }
+});
+
+test("buildRelaySuite: guard fires at the call site before any rmSync", () => {
+  const tmpRoot = mkdtempSync(path.join(tmpdir(), "relay-callsite-suite-"));
+  try {
+    assert.throws(() => buildRelaySuite({ repoRoot: tmpRoot, outRoot: tmpRoot }), /dedicated build directory/);
+  } finally {
+    rmSync(tmpRoot, { recursive: true, force: true });
+  }
+});
+
+test("buildRelayPlugin: refuses to wipe a tracked source tree reached through outRoot", () => {
+  const tmpRoot = mkdtempSync(path.join(tmpdir(), "relay-callsite-plugin-"));
+  try {
+    const repoRoot = path.join(tmpRoot, "repo");
+    const sourceTree = path.join(repoRoot, "plugins", "relay-glm");
+    mkdirSync(sourceTree, { recursive: true });
+    const sentinel = path.join(sourceTree, "SOURCE_SENTINEL");
+    writeFileSync(sentinel, "tracked source\n", "utf8");
+    // --out-root plugins makes pluginRoot = plugins/relay-glm; the guard must fire before rmSync.
+    assert.throws(
+      () => buildRelayPlugin({ provider: "glm", repoRoot, outRoot: path.join(repoRoot, "plugins") }),
+      /dedicated build directory/,
+    );
+    assert.equal(existsSync(sentinel), true, "source tree must survive — guard runs before rmSync(pluginRoot)");
+  } finally {
+    rmSync(tmpRoot, { recursive: true, force: true });
+  }
 });
 
 test("renderClaudePluginManifest: converts Codex manifest to Claude relay plugin manifest", () => {
@@ -133,7 +325,8 @@ test("buildRelayPlugin: emits relay-gemini Claude plugin tree", () => {
 });
 
 test("buildRelaySuite: emits the full Claude relay provider suite without relay-claude", () => {
-  const outRoot = mkdtempSync(path.join(tmpdir(), "relay-suite-"));
+  const tmpRoot = mkdtempSync(path.join(tmpdir(), "relay-suite-"));
+  const outRoot = path.join(tmpRoot, "relay");
   try {
     const pluginRoots = buildRelaySuite({ repoRoot: process.cwd(), outRoot });
     const pluginNames = pluginRoots.map((root) => path.basename(root)).sort();
@@ -147,29 +340,33 @@ test("buildRelaySuite: emits the full Claude relay provider suite without relay-
     ]);
     assert.equal(existsSync(path.join(outRoot, "relay-claude")), false);
 
-    const marketplace = JSON.parse(readFileSync(path.join(outRoot, ".claude-plugin", "marketplace.json"), "utf8"));
+    const marketplace = JSON.parse(readFileSync(path.join(tmpRoot, ".claude-plugin", "marketplace.json"), "utf8"));
+    // The manifest lives at the marketplace root (dirname(outRoot)); the pre-relocation location
+    // under outRoot must be absent so a github source never resolves a stale subdir manifest.
+    assert.equal(existsSync(path.join(outRoot, ".claude-plugin", "marketplace.json")), false);
     const publicPlugins = marketplace.plugins.filter((plugin) => plugin.policy?.installation !== "HIDDEN");
     const hiddenPlugins = marketplace.plugins.filter((plugin) => plugin.policy?.installation === "HIDDEN");
     assert.equal(marketplace.name, "relay-for-claude");
     assert.deepEqual(publicPlugins.map((plugin) => plugin.name).sort(), pluginNames);
     assert.deepEqual(hiddenPlugins.map((plugin) => plugin.name), ["relay-api-reviewers"]);
-    assert.equal(hiddenPlugins[0].source, "./relay-api-reviewers");
+    assert.equal(hiddenPlugins[0].source, "./relay/relay-api-reviewers");
     assert.equal(
-      existsSync(path.resolve(outRoot, hiddenPlugins[0].source, ".claude-plugin", "plugin.json")),
+      existsSync(path.resolve(tmpRoot, hiddenPlugins[0].source, ".claude-plugin", "plugin.json")),
       true,
     );
     assert.equal(existsSync(path.join(outRoot, "relay-api-reviewers")), true);
     assert.equal(lstatSync(path.join(outRoot, "relay-api-reviewers")).isSymbolicLink(), true);
     for (const plugin of publicPlugins) {
-      assert.equal(plugin.source, `./${plugin.name}`);
+      assert.equal(plugin.source, `./relay/${plugin.name}`);
     }
   } finally {
-    rmSync(outRoot, { recursive: true, force: true });
+    rmSync(tmpRoot, { recursive: true, force: true });
   }
 });
 
 test("buildRelaySuite: removes stale generated relay provider directories", () => {
-  const outRoot = mkdtempSync(path.join(tmpdir(), "relay-suite-stale-"));
+  const tmpRoot = mkdtempSync(path.join(tmpdir(), "relay-suite-stale-"));
+  const outRoot = path.join(tmpRoot, "relay");
   try {
     writeStubDirectApiRuntime(path.join(outRoot, "relay-old-provider"));
 
@@ -177,7 +374,7 @@ test("buildRelaySuite: removes stale generated relay provider directories", () =
 
     assert.equal(existsSync(path.join(outRoot, "relay-old-provider")), false);
   } finally {
-    rmSync(outRoot, { recursive: true, force: true });
+    rmSync(tmpRoot, { recursive: true, force: true });
   }
 });
 
@@ -319,7 +516,8 @@ test("renderClaudeCommandDoc: rewrites relay command paths and prompt transport 
 });
 
 test("buildRelaySuite: generated relay commands do not leak Codex host contracts", () => {
-  const outRoot = mkdtempSync(path.join(tmpdir(), "relay-host-"));
+  const tmpRoot = mkdtempSync(path.join(tmpdir(), "relay-host-"));
+  const outRoot = path.join(tmpRoot, "relay");
   try {
     for (const pluginRoot of buildRelaySuite({ repoRoot: process.cwd(), outRoot })) {
       for (const fileName of readdirSync(path.join(pluginRoot, "commands"))) {
@@ -332,7 +530,7 @@ test("buildRelaySuite: generated relay commands do not leak Codex host contracts
       }
     }
   } finally {
-    rmSync(outRoot, { recursive: true, force: true });
+    rmSync(tmpRoot, { recursive: true, force: true });
   }
 });
 
@@ -371,7 +569,8 @@ test("Codex split direct API relay plugins delegate to one shared runtime copy",
 });
 
 test("buildRelaySuite: prompt-file commands document private prompt lifecycle", () => {
-  const outRoot = mkdtempSync(path.join(tmpdir(), "relay-prompt-"));
+  const tmpRoot = mkdtempSync(path.join(tmpdir(), "relay-prompt-"));
+  const outRoot = path.join(tmpRoot, "relay");
   try {
     for (const pluginRoot of buildRelaySuite({ repoRoot: process.cwd(), outRoot })) {
       for (const fileName of readdirSync(path.join(pluginRoot, "commands"))) {
@@ -385,7 +584,7 @@ test("buildRelaySuite: prompt-file commands document private prompt lifecycle", 
       }
     }
   } finally {
-    rmSync(outRoot, { recursive: true, force: true });
+    rmSync(tmpRoot, { recursive: true, force: true });
   }
 });
 

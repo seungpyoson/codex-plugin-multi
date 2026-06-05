@@ -283,17 +283,26 @@ the others. DeepSeek and GLM use a default-installed shared direct-API runtime
 package, so their provider plugins stay split without copying the same reviewer
 code twice.
 
-From Claude Code, the generated marketplace suite lives under `relay/`. Add the
-local generated marketplace from the repo root:
+From Claude Code, the generated marketplace manifest lives at the repo-root
+`.claude-plugin/marketplace.json`, while provider plugin sources stay under
+`relay/relay-*`. Add the local generated marketplace from the repo root:
 
 ```bash
-claude plugin marketplace add ./relay
+claude plugin marketplace add .
 ```
 
-Its marketplace name is `relay-for-claude`, and provider plugin sources stay
-under `relay/relay-*`. The suite/plugin pair is therefore
-`relay-for-claude:relay-gemini` conceptually; Claude Code's install ref syntax
-is:
+Because the manifest is at the repo root, the same marketplace also resolves as
+a remote `github` source (pointing at `relay-org/relay`) without a local
+checkout. This follows from Claude Code's documented marketplace contract — a
+`github` source reads `.claude-plugin/marketplace.json` at the repo root and
+resolves each plugin's `./`-relative `source` from that marketplace root (see
+https://code.claude.com/docs/en/plugin-marketplaces). The repo's CI verifies the
+generated manifest's location and `./relay/*` source paths; it does not exercise
+a live `github` install, so the remote-source claim rests on that documented
+contract rather than an integration test. Its marketplace name is
+`relay-for-claude`, and provider plugin sources stay under `relay/relay-*`. The
+suite/plugin pair is therefore `relay-for-claude:relay-gemini` conceptually;
+Claude Code's install ref syntax is:
 
 ```bash
 claude plugin install relay-gemini@relay-for-claude
@@ -384,7 +393,15 @@ codex debug prompt-input 'list skills'
 
 ## Refresh Claude Code generated plugins
 
-For local `relay/` marketplace installs, update the marketplace first:
+If you previously added this marketplace with `claude plugin marketplace add
+./relay`, the manifest now lives at the repo root — remove and re-add it:
+
+```bash
+claude plugin marketplace remove relay-for-claude
+claude plugin marketplace add .
+```
+
+To pick up generated changes afterward, update the marketplace:
 
 ```bash
 claude plugin marketplace update relay-for-claude
@@ -661,8 +678,8 @@ Repository layout:
   plugins/api-reviewers/           # hidden Codex direct-API runtime
   plugins/relay-deepseek/
   plugins/relay-glm/
-  relay/                           # generated Claude Code marketplace suite
-    .claude-plugin/marketplace.json
+  .claude-plugin/marketplace.json  # generated Claude marketplace (relay-for-claude)
+  relay/                           # generated Claude Code marketplace plugin dirs
     relay-api-reviewers/           # hidden Claude direct-API runtime
     relay-deepseek/
     relay-gemini/
