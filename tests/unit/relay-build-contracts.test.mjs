@@ -119,24 +119,12 @@ test("assertBuildableOutRoot: refuses a Unicode-normalization variant of the rep
     const repoRoot = path.join(tmpRoot, nfc);
     mkdirSync(repoRoot, { recursive: true });
     const variant = path.join(tmpRoot, nfd);
-    // APFS hashes the normalized name, so NFC and NFD spellings denote the SAME directory there —
-    // and it does so independent of case-sensitivity. ext4 keeps them distinct. realpathSync resolves
-    // neither case nor normalization, so — exactly like the case-variant guard — match the filesystem's
-    // own truth: refuse when the FS treats the variant as the repo, allow when it is a distinct dir.
-    let sameDir = false;
-    try {
-      const original = statSync(repoRoot);
-      const swapped = statSync(variant);
-      sameDir = original.dev === swapped.dev && original.ino === swapped.ino;
-    } catch {
-      sameDir = false;
-    }
-    if (sameDir) {
-      assert.throws(() => assertBuildableOutRoot(repoRoot, variant), /dedicated build directory/);
-      assert.throws(() => assertBuildableOutRoot(repoRoot, path.join(variant, "plugins")), /dedicated build directory/);
-    } else {
-      assert.doesNotThrow(() => assertBuildableOutRoot(repoRoot, variant));
-    }
+    // APFS hashes the normalized name, so NFC and NFD spellings denote the SAME directory there,
+    // independent of case-sensitivity. On normalization-sensitive filesystems (ext4) they can be
+    // genuinely distinct, but the unconditional NFC fold intentionally turns that rare edge into a
+    // safe refusal rather than risking a destructive allow on APFS.
+    assert.throws(() => assertBuildableOutRoot(repoRoot, variant), /dedicated build directory/);
+    assert.throws(() => assertBuildableOutRoot(repoRoot, path.join(variant, "plugins")), /dedicated build directory/);
   } finally {
     rmSync(tmpRoot, { recursive: true, force: true });
   }
