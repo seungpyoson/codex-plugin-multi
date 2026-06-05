@@ -7,6 +7,7 @@ import assert from "node:assert/strict";
 
 import {
   assertBuildableOutRoot,
+  foldComparisonKey,
   buildRelayPlugin,
   buildRelaySuite,
   claudeCommandFileName,
@@ -108,6 +109,90 @@ test("assertBuildableOutRoot: refuses a case-variant of the repo on case-insensi
   } finally {
     rmSync(tmpRoot, { recursive: true, force: true });
   }
+});
+
+test("assertBuildableOutRoot: refuses a Unicode-normalization variant of the repo on normalization-insensitive filesystems", () => {
+  const tmpRoot = mkdtempSync(path.join(tmpdir(), "relay-guard-nfc-"));
+  try {
+    const nfc = "caf\u00e9-repo"; // \u00e9 precomposed (NFC, one codepoint)
+    const nfd = "cafe\u0301-repo"; // e + combining acute (NFD, two codepoints)
+    const repoRoot = path.join(tmpRoot, nfc);
+    mkdirSync(repoRoot, { recursive: true });
+    const variant = path.join(tmpRoot, nfd);
+    // APFS hashes the normalized name, so NFC and NFD spellings denote the SAME directory there —
+    // and it does so independent of case-sensitivity. ext4 keeps them distinct. realpathSync resolves
+    // neither case nor normalization, so — exactly like the case-variant guard — match the filesystem's
+    // own truth: refuse when the FS treats the variant as the repo, allow when it is a distinct dir.
+    let sameDir = false;
+    try {
+      const original = statSync(repoRoot);
+      const swapped = statSync(variant);
+      sameDir = original.dev === swapped.dev && original.ino === swapped.ino;
+    } catch {
+      sameDir = false;
+    }
+    if (sameDir) {
+      assert.throws(() => assertBuildableOutRoot(repoRoot, variant), /dedicated build directory/);
+      assert.throws(() => assertBuildableOutRoot(repoRoot, path.join(variant, "plugins")), /dedicated build directory/);
+    } else {
+      assert.doesNotThrow(() => assertBuildableOutRoot(repoRoot, variant));
+    }
+  } finally {
+    rmSync(tmpRoot, { recursive: true, force: true });
+  }
+});
+
+test("assertBuildableOutRoot: refuses filesystem-equivalent Unicode variants beyond NFC", () => {
+  const candidates = [
+    { canonical: "file-repo", variant: "\uFB01le-repo" }, // U+FB01 LATIN SMALL LIGATURE FI
+    { canonical: "\u03C3-repo", variant: "\u03C2-repo" }, // sigma vs final sigma
+  ];
+
+  for (const { canonical, variant } of candidates) {
+    const tmpRoot = mkdtempSync(path.join(tmpdir(), "relay-guard-unicode-alias-"));
+    try {
+      const repoRoot = path.join(tmpRoot, canonical);
+      mkdirSync(repoRoot, { recursive: true });
+      const aliasRoot = path.join(tmpRoot, variant);
+
+      let sameDir = false;
+      try {
+        const original = statSync(repoRoot);
+        const alias = statSync(aliasRoot);
+        sameDir = original.dev === alias.dev && original.ino === alias.ino;
+      } catch {
+        sameDir = false;
+      }
+
+      if (sameDir) {
+        assert.throws(() => assertBuildableOutRoot(repoRoot, aliasRoot), /dedicated build directory/);
+        assert.throws(() => assertBuildableOutRoot(repoRoot, path.join(aliasRoot, "plugins")), /dedicated build directory/);
+      } else {
+        assert.doesNotThrow(() => assertBuildableOutRoot(repoRoot, aliasRoot));
+        assert.doesNotThrow(() => assertBuildableOutRoot(repoRoot, path.join(aliasRoot, "plugins")));
+      }
+    } finally {
+      rmSync(tmpRoot, { recursive: true, force: true });
+    }
+  }
+});
+
+// Deterministic coverage of the fold contract, independent of the host filesystem. The integration
+// tests above only exercise the *refuse* branch on a case/normalization-insensitive dev machine; on
+// case- and normalization-sensitive CI (ext4) they take the allow branch, so without these a future
+// change that drops the fold would stay green on CI. These pin the fold's two equivalences directly.
+test("foldComparisonKey: NFC and NFD spellings collapse to one key in either case mode", () => {
+  const nfc = "caf\u00e9"; // \u00e9 precomposed
+  const nfd = "cafe\u0301"; // e + combining acute
+  assert.notEqual(nfc, nfd);
+  for (const caseInsensitive of [true, false]) {
+    assert.equal(foldComparisonKey(nfc, { caseInsensitive }), foldComparisonKey(nfd, { caseInsensitive }));
+  }
+});
+
+test("foldComparisonKey: case folds only when the filesystem is case-insensitive", () => {
+  assert.equal(foldComparisonKey("MixedCase", { caseInsensitive: true }), "mixedcase");
+  assert.equal(foldComparisonKey("MixedCase", { caseInsensitive: false }), "MixedCase");
 });
 
 test("assertBuildableOutRoot: tolerates a not-yet-created outRoot without ENOENT", () => {

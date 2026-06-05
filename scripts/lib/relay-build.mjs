@@ -99,18 +99,74 @@ function isCaseInsensitiveFs(existingDir) {
   }
 }
 
+// Collapse the portable string path-equivalences that realpathSync does not surface into a single
+// comparison key. Case: only when the FS folds it (caseInsensitive, probed via isCaseInsensitiveFs).
+// Unicode form: always — APFS is normalization-insensitive regardless of case-sensitivity, so an
+// NFC/NFD-variant path aliases the repo even on a case-sensitive APFS volume where the case fold is
+// identity. Pure and FS-independent so the fold contract is unit-testable on every platform; existing
+// prefixes get an additional inode check below so the guard follows the filesystem's own equivalence
+// table instead of trying to model every APFS-specific Unicode fold in JavaScript.
+export function foldComparisonKey(value, { caseInsensitive }) {
+  const cased = caseInsensitive ? value.toLowerCase() : value;
+  return cased.normalize("NFC");
+}
+
+function sameIdentity(left, right) {
+  return left.dev === right.dev && left.ino === right.ino;
+}
+
+function existingPathIdentityChain(absPath) {
+  const pending = [];
+  let current = absPath;
+  for (;;) {
+    try {
+      statSync(current);
+      break;
+    } catch (error) {
+      if (error.code !== "ENOENT") throw error;
+      const parent = dirname(current);
+      if (parent === current) return [];
+      pending.unshift(basename(current));
+      current = parent;
+    }
+  }
+
+  const chain = [];
+  let segments = pending;
+  for (;;) {
+    const { dev, ino } = statSync(current);
+    chain.push({ identity: { dev, ino }, segments });
+    const parent = dirname(current);
+    if (parent === current) return chain;
+    segments = [basename(current), ...segments];
+    current = parent;
+  }
+}
+
+function isRelayBuildDirSegments(segments, { caseInsensitive }) {
+  return (
+    segments.length === 1 &&
+    foldComparisonKey(segments[0], { caseInsensitive }) === foldComparisonKey(RELAY_BUILD_DIRNAME, { caseInsensitive })
+  );
+}
+
 // The build wipes outRoot and join(outRoot, "relay-<provider>") via rmSync, then writes the
 // marketplace manifest to outRoot's parent. outRoot must therefore be a dedicated build directory:
 // never the repo root or an ancestor of it, and — when inside the repo — only the generated build
 // dir, never another in-repo path. plugins/ in particular holds tracked relay-<provider> source
 // trees (plugins/relay-glm, plugins/relay-deepseek) that share the wiped name, so a stray
 // `--out-root plugins` would delete source. Paths are canonicalized (symlinks resolved, case folded
-// on case-insensitive filesystems) first so neither a symlinked nor a case-variant outRoot can slip
+// on case-insensitive filesystems, Unicode-normalized to NFC) and checked by inode for existing
+// prefixes first so neither a symlinked, case-variant, nor normalization-variant outRoot can slip
 // past these checks.
 export function assertBuildableOutRoot(repoRoot, outRoot) {
   const resolvedRepo = canonicalizeExistingPrefix(resolve(repoRoot));
   const resolvedOut = canonicalizeExistingPrefix(resolve(outRoot));
-  const fold = isCaseInsensitiveFs(resolvedRepo) ? (value) => value.toLowerCase() : (value) => value;
+  // Fold case (only when the FS folds it) and Unicode form into the comparison keys — see
+  // foldComparisonKey. The case-insensitivity probe is the one FS-dependent input; the fold itself
+  // is pure, so all three keys run the identical transform and compare consistently.
+  const caseInsensitive = isCaseInsensitiveFs(resolvedRepo);
+  const fold = (value) => foldComparisonKey(value, { caseInsensitive });
   const repoKey = fold(resolvedRepo);
   const outKey = fold(resolvedOut);
   const buildKey = fold(join(resolvedRepo, RELAY_BUILD_DIRNAME));
@@ -120,6 +176,21 @@ export function assertBuildableOutRoot(repoRoot, outRoot) {
         `(outRoot=${resolvedOut}, repoRoot=${resolvedRepo}). rmSync would destroy the source tree.`,
     );
   };
+
+  const repoChain = existingPathIdentityChain(resolvedRepo);
+  const repoNode = repoChain.find((node) => node.segments.length === 0);
+  if (repoNode) {
+    const outChain = existingPathIdentityChain(resolvedOut);
+    const existingOutNode = outChain[0];
+    if (existingOutNode?.segments.length === 0 && repoChain.some((node) => sameIdentity(node.identity, existingOutNode.identity))) {
+      refuse("it is the repo root or an ancestor of it");
+    }
+    const inRepoNode = outChain.find((node) => sameIdentity(node.identity, repoNode.identity));
+    if (inRepoNode && !isRelayBuildDirSegments(inRepoNode.segments, { caseInsensitive })) {
+      refuse(`the only in-repo build dir is ${RELAY_BUILD_DIRNAME}/`);
+    }
+  }
+
   if (outKey === repoKey || repoKey.startsWith(outKey + sep)) {
     refuse("it is the repo root or an ancestor of it");
   }
