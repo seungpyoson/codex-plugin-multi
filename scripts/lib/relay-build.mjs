@@ -53,22 +53,55 @@ export function relayPluginName(provider) {
   return `relay-${provider}`;
 }
 
-// The build wipes outRoot (rmSync) and writes the marketplace manifest to its parent. Refuse to
-// run if outRoot is the repo root or an ancestor of it — otherwise a stray `--out-root .` (or an
-// out-of-tree caller) would delete the source tree and write the manifest outside the repo.
-export function assertBuildableOutRoot(repoRoot, outRoot) {
-  const resolvedOut = resolve(outRoot);
-  const resolvedRepo = resolve(repoRoot);
-  if (resolvedOut === resolvedRepo || resolvedRepo.startsWith(resolvedOut + sep)) {
-    throw new Error(
-      `relay build: outRoot must be a dedicated build directory, not the repo root or an ` +
-        `ancestor of it (outRoot=${resolvedOut}, repoRoot=${resolvedRepo}) — rmSync(outRoot) ` +
-        `would destroy the source tree.`,
-    );
+// The single in-repo directory the build owns and wipes. Everything else under the repo is source.
+const RELAY_BUILD_DIRNAME = "relay";
+
+// Canonicalize a path by resolving symlinks in its longest existing prefix, then re-appending the
+// not-yet-created trailing segments. Lexical resolve() alone is unsafe for the guard below: a
+// symlinked outRoot (or a symlinked path component) compares as its link path, so the guard would
+// pass while rmSync follows the link into a real source tree.
+function canonicalizeExistingPrefix(absPath) {
+  const pending = [];
+  let current = absPath;
+  for (;;) {
+    try {
+      const real = realpathSync(current);
+      return pending.length ? join(real, ...pending.reverse()) : real;
+    } catch (error) {
+      if (error.code !== "ENOENT") throw error;
+      const parent = dirname(current);
+      if (parent === current) return absPath; // reached the filesystem root with nothing existing
+      pending.push(basename(current));
+      current = parent;
+    }
   }
 }
 
-export function buildRelayPlugin({ provider, repoRoot = process.cwd(), outRoot = join(repoRoot, "relay") }) {
+// The build wipes outRoot and join(outRoot, "relay-<provider>") via rmSync, then writes the
+// marketplace manifest to outRoot's parent. outRoot must therefore be a dedicated build directory:
+// never the repo root or an ancestor of it, and — when inside the repo — only the generated build
+// dir, never another in-repo path. plugins/ in particular holds tracked relay-<provider> source
+// trees (plugins/relay-glm, plugins/relay-deepseek) that share the wiped name, so a stray
+// `--out-root plugins` would delete source. Paths are canonicalized first so a symlinked outRoot
+// cannot slip past these checks.
+export function assertBuildableOutRoot(repoRoot, outRoot) {
+  const resolvedRepo = canonicalizeExistingPrefix(resolve(repoRoot));
+  const resolvedOut = canonicalizeExistingPrefix(resolve(outRoot));
+  const refuse = (reason) => {
+    throw new Error(
+      `relay build: outRoot must be a dedicated build directory — ${reason} ` +
+        `(outRoot=${resolvedOut}, repoRoot=${resolvedRepo}). rmSync would destroy the source tree.`,
+    );
+  };
+  if (resolvedOut === resolvedRepo || resolvedRepo.startsWith(resolvedOut + sep)) {
+    refuse("it is the repo root or an ancestor of it");
+  }
+  if (resolvedOut.startsWith(resolvedRepo + sep) && resolvedOut !== join(resolvedRepo, RELAY_BUILD_DIRNAME)) {
+    refuse(`the only in-repo build dir is ${RELAY_BUILD_DIRNAME}/`);
+  }
+}
+
+export function buildRelayPlugin({ provider, repoRoot = process.cwd(), outRoot = join(repoRoot, RELAY_BUILD_DIRNAME) }) {
   const definition = RELAY_PROVIDER_DEFINITIONS[provider];
   if (!definition) {
     throw new Error(`unsupported relay provider: ${provider}`);
@@ -123,7 +156,7 @@ export function buildRelayPlugin({ provider, repoRoot = process.cwd(), outRoot =
   return pluginRoot;
 }
 
-export function buildRelaySuite({ repoRoot = process.cwd(), outRoot = join(repoRoot, "relay") } = {}) {
+export function buildRelaySuite({ repoRoot = process.cwd(), outRoot = join(repoRoot, RELAY_BUILD_DIRNAME) } = {}) {
   assertBuildableOutRoot(repoRoot, outRoot);
   rmSync(outRoot, { recursive: true, force: true });
   const pluginRoots = RELAY_PROVIDER_ORDER.map((provider) => buildRelayPlugin({ provider, repoRoot, outRoot }));

@@ -1,4 +1,4 @@
-import { cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -43,9 +43,86 @@ test("assertBuildableOutRoot: refuses outRoot shapes that would rmSync the sourc
   assert.throws(() => assertBuildableOutRoot("/repo/nested", "/repo"), /dedicated build directory/);
   // path-normalized ancestor (trailing-segment traversal) is rejected just the same.
   assert.throws(() => assertBuildableOutRoot("/repo/nested", "/repo/nested/build/.."), /dedicated build directory/);
-  // A dedicated build dir inside the repo, and an out-of-tree sibling, are both allowed.
-  assert.doesNotThrow(() => assertBuildableOutRoot("/repo", "/repo/build"));
+  // An in-repo outRoot other than the generated build dir is refused: the build wipes
+  // join(outRoot, "relay-<provider>"), and tracked source trees (plugins/relay-glm,
+  // plugins/relay-deepseek) share that name — so wiping under, e.g., plugins/ destroys source.
+  assert.throws(() => assertBuildableOutRoot("/repo", "/repo/plugins"), /dedicated build directory/);
+  assert.throws(() => assertBuildableOutRoot("/repo", "/repo/build"), /dedicated build directory/);
+  // The one in-repo location the build owns, and any out-of-tree dir, are allowed.
+  assert.doesNotThrow(() => assertBuildableOutRoot("/repo", "/repo/relay"));
   assert.doesNotThrow(() => assertBuildableOutRoot("/repo", "/tmp/relay-out"));
+});
+
+test("assertBuildableOutRoot: canonicalizes symlinks (lexical resolve is not enough)", () => {
+  const tmpRoot = mkdtempSync(path.join(tmpdir(), "relay-guard-symlink-"));
+  try {
+    const repoRoot = path.join(tmpRoot, "repo");
+    mkdirSync(repoRoot, { recursive: true });
+    // Lexically unrelated to repoRoot, but resolves to it — rmSync through it would hit the repo.
+    const linkToRepo = path.join(tmpRoot, "link-to-repo");
+    symlinkSync(repoRoot, linkToRepo);
+    assert.throws(() => assertBuildableOutRoot(repoRoot, linkToRepo), /dedicated build directory/);
+    // Symlink resolving to an ancestor of the repo is refused too.
+    const linkToAncestor = path.join(tmpRoot, "link-to-ancestor");
+    symlinkSync(tmpRoot, linkToAncestor);
+    assert.throws(() => assertBuildableOutRoot(repoRoot, linkToAncestor), /dedicated build directory/);
+    // A symlink resolving to an in-repo source dir (plugins) is refused.
+    const pluginsDir = path.join(repoRoot, "plugins");
+    mkdirSync(pluginsDir, { recursive: true });
+    const linkToPlugins = path.join(tmpRoot, "link-to-plugins");
+    symlinkSync(pluginsDir, linkToPlugins);
+    assert.throws(() => assertBuildableOutRoot(repoRoot, linkToPlugins), /dedicated build directory/);
+    // A symlink to a dir outside the repo stays allowed.
+    const external = path.join(tmpRoot, "external-out");
+    mkdirSync(external, { recursive: true });
+    const linkExternal = path.join(tmpRoot, "link-external");
+    symlinkSync(external, linkExternal);
+    assert.doesNotThrow(() => assertBuildableOutRoot(repoRoot, linkExternal));
+  } finally {
+    rmSync(tmpRoot, { recursive: true, force: true });
+  }
+});
+
+test("assertBuildableOutRoot: tolerates a not-yet-created outRoot without ENOENT", () => {
+  const tmpRoot = mkdtempSync(path.join(tmpdir(), "relay-guard-enoent-"));
+  try {
+    const repoRoot = path.join(tmpRoot, "repo");
+    mkdirSync(repoRoot, { recursive: true });
+    // Designated build dir, not yet created (the common first-build case).
+    assert.doesNotThrow(() => assertBuildableOutRoot(repoRoot, path.join(repoRoot, "relay")));
+    // External nested path where no component exists yet.
+    assert.doesNotThrow(() => assertBuildableOutRoot(repoRoot, path.join(tmpRoot, "ext", "nested", "out")));
+  } finally {
+    rmSync(tmpRoot, { recursive: true, force: true });
+  }
+});
+
+test("buildRelaySuite: guard fires at the call site before any rmSync", () => {
+  const tmpRoot = mkdtempSync(path.join(tmpdir(), "relay-callsite-suite-"));
+  try {
+    assert.throws(() => buildRelaySuite({ repoRoot: tmpRoot, outRoot: tmpRoot }), /dedicated build directory/);
+  } finally {
+    rmSync(tmpRoot, { recursive: true, force: true });
+  }
+});
+
+test("buildRelayPlugin: refuses to wipe a tracked source tree reached through outRoot", () => {
+  const tmpRoot = mkdtempSync(path.join(tmpdir(), "relay-callsite-plugin-"));
+  try {
+    const repoRoot = path.join(tmpRoot, "repo");
+    const sourceTree = path.join(repoRoot, "plugins", "relay-glm");
+    mkdirSync(sourceTree, { recursive: true });
+    const sentinel = path.join(sourceTree, "SOURCE_SENTINEL");
+    writeFileSync(sentinel, "tracked source\n", "utf8");
+    // --out-root plugins makes pluginRoot = plugins/relay-glm; the guard must fire before rmSync.
+    assert.throws(
+      () => buildRelayPlugin({ provider: "glm", repoRoot, outRoot: path.join(repoRoot, "plugins") }),
+      /dedicated build directory/,
+    );
+    assert.equal(existsSync(sentinel), true, "source tree must survive — guard runs before rmSync(pluginRoot)");
+  } finally {
+    rmSync(tmpRoot, { recursive: true, force: true });
+  }
 });
 
 test("renderClaudePluginManifest: converts Codex manifest to Claude relay plugin manifest", () => {
