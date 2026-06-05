@@ -387,7 +387,15 @@ codex debug prompt-input 'list skills'
 
 ## Refresh Claude Code generated plugins
 
-For local `relay/` marketplace installs, update the marketplace first:
+If you previously added this marketplace with `claude plugin marketplace add
+./relay`, the manifest now lives at the repo root — remove and re-add it:
+
+```bash
+claude plugin marketplace remove relay-for-claude
+claude plugin marketplace add .
+```
+
+To pick up generated changes afterward, update the marketplace:
 
 ```bash
 claude plugin marketplace update relay-for-claude

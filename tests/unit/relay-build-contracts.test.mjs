@@ -170,7 +170,8 @@ test("buildRelaySuite: emits the full Claude relay provider suite without relay-
 });
 
 test("buildRelaySuite: removes stale generated relay provider directories", () => {
-  const outRoot = mkdtempSync(path.join(tmpdir(), "relay-suite-stale-"));
+  const tmpRoot = mkdtempSync(path.join(tmpdir(), "relay-suite-stale-"));
+  const outRoot = path.join(tmpRoot, "relay");
   try {
     writeStubDirectApiRuntime(path.join(outRoot, "relay-old-provider"));
 
@@ -178,7 +179,7 @@ test("buildRelaySuite: removes stale generated relay provider directories", () =
 
     assert.equal(existsSync(path.join(outRoot, "relay-old-provider")), false);
   } finally {
-    rmSync(outRoot, { recursive: true, force: true });
+    rmSync(tmpRoot, { recursive: true, force: true });
   }
 });
 
@@ -320,7 +321,8 @@ test("renderClaudeCommandDoc: rewrites relay command paths and prompt transport 
 });
 
 test("buildRelaySuite: generated relay commands do not leak Codex host contracts", () => {
-  const outRoot = mkdtempSync(path.join(tmpdir(), "relay-host-"));
+  const tmpRoot = mkdtempSync(path.join(tmpdir(), "relay-host-"));
+  const outRoot = path.join(tmpRoot, "relay");
   try {
     for (const pluginRoot of buildRelaySuite({ repoRoot: process.cwd(), outRoot })) {
       for (const fileName of readdirSync(path.join(pluginRoot, "commands"))) {
@@ -333,7 +335,7 @@ test("buildRelaySuite: generated relay commands do not leak Codex host contracts
       }
     }
   } finally {
-    rmSync(outRoot, { recursive: true, force: true });
+    rmSync(tmpRoot, { recursive: true, force: true });
   }
 });
 
@@ -372,7 +374,8 @@ test("Codex split direct API relay plugins delegate to one shared runtime copy",
 });
 
 test("buildRelaySuite: prompt-file commands document private prompt lifecycle", () => {
-  const outRoot = mkdtempSync(path.join(tmpdir(), "relay-prompt-"));
+  const tmpRoot = mkdtempSync(path.join(tmpdir(), "relay-prompt-"));
+  const outRoot = path.join(tmpRoot, "relay");
   try {
     for (const pluginRoot of buildRelaySuite({ repoRoot: process.cwd(), outRoot })) {
       for (const fileName of readdirSync(path.join(pluginRoot, "commands"))) {
@@ -386,7 +389,7 @@ test("buildRelaySuite: prompt-file commands document private prompt lifecycle", 
       }
     }
   } finally {
-    rmSync(outRoot, { recursive: true, force: true });
+    rmSync(tmpRoot, { recursive: true, force: true });
   }
 });
 

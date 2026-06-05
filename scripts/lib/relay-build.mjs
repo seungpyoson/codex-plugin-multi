@@ -9,7 +9,7 @@ import {
   symlinkSync,
   writeFileSync,
 } from "node:fs";
-import { basename, dirname, join, relative } from "node:path";
+import { basename, dirname, join, relative, resolve, sep } from "node:path";
 
 const RELAY_REPOSITORY = "https://github.com/relay-org/relay";
 const RELAY_FOR_CLAUDE_MARKETPLACE = "relay-for-claude";
@@ -53,12 +53,28 @@ export function relayPluginName(provider) {
   return `relay-${provider}`;
 }
 
+// The build wipes outRoot (rmSync) and writes the marketplace manifest to its parent. Refuse to
+// run if outRoot is the repo root or an ancestor of it — otherwise a stray `--out-root .` (or an
+// out-of-tree caller) would delete the source tree and write the manifest outside the repo.
+function assertBuildableOutRoot(repoRoot, outRoot) {
+  const resolvedOut = resolve(outRoot);
+  const resolvedRepo = resolve(repoRoot);
+  if (resolvedOut === resolvedRepo || resolvedRepo.startsWith(resolvedOut + sep)) {
+    throw new Error(
+      `relay build: outRoot must be a dedicated build directory, not the repo root or an ` +
+        `ancestor of it (outRoot=${resolvedOut}, repoRoot=${resolvedRepo}) — rmSync(outRoot) ` +
+        `would destroy the source tree.`,
+    );
+  }
+}
+
 export function buildRelayPlugin({ provider, repoRoot = process.cwd(), outRoot = join(repoRoot, "relay") }) {
   const definition = RELAY_PROVIDER_DEFINITIONS[provider];
   if (!definition) {
     throw new Error(`unsupported relay provider: ${provider}`);
   }
 
+  assertBuildableOutRoot(repoRoot, outRoot);
   const sourceRoot = join(repoRoot, "plugins", definition.sourceProvider);
   const pluginRoot = join(outRoot, relayPluginName(provider));
   rmSync(pluginRoot, { recursive: true, force: true });
@@ -108,6 +124,7 @@ export function buildRelayPlugin({ provider, repoRoot = process.cwd(), outRoot =
 }
 
 export function buildRelaySuite({ repoRoot = process.cwd(), outRoot = join(repoRoot, "relay") } = {}) {
+  assertBuildableOutRoot(repoRoot, outRoot);
   rmSync(outRoot, { recursive: true, force: true });
   const pluginRoots = RELAY_PROVIDER_ORDER.map((provider) => buildRelayPlugin({ provider, repoRoot, outRoot }));
   const sharedDirectApiRuntimeRoot = buildRelayDirectApiRuntimePlugin({ repoRoot, outRoot });
@@ -147,6 +164,9 @@ function writeClaudeRelayMarketplace({ outRoot, pluginRoots, sharedDirectApiRunt
   // Marketplace root is the parent of the generated plugin dirs (outRoot), so a github/local
   // marketplace source resolves `.claude-plugin/marketplace.json` at the repo root; plugin
   // sources are root-relative `./<outRoot-basename>/<plugin>` (e.g. ./relay/relay-gemini).
+  // Contract: https://code.claude.com/docs/en/plugin-marketplaces — "Create
+  // .claude-plugin/marketplace.json in your repository root"; relative source paths are
+  // "Resolved relative to the marketplace root, not the .claude-plugin/ directory".
   const marketplaceRoot = dirname(outRoot);
   const sourcePrefix = `./${basename(outRoot)}`;
   mkdirSync(join(marketplaceRoot, ".claude-plugin"), { recursive: true });
