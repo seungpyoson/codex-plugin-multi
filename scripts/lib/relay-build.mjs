@@ -56,7 +56,7 @@ export function relayPluginName(provider) {
 // The build wipes outRoot (rmSync) and writes the marketplace manifest to its parent. Refuse to
 // run if outRoot is the repo root or an ancestor of it — otherwise a stray `--out-root .` (or an
 // out-of-tree caller) would delete the source tree and write the manifest outside the repo.
-function assertBuildableOutRoot(repoRoot, outRoot) {
+export function assertBuildableOutRoot(repoRoot, outRoot) {
   const resolvedOut = resolve(outRoot);
   const resolvedRepo = resolve(repoRoot);
   if (resolvedOut === resolvedRepo || resolvedRepo.startsWith(resolvedOut + sep)) {

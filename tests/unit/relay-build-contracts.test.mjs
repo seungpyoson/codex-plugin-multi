@@ -6,6 +6,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 
 import {
+  assertBuildableOutRoot,
   buildRelayPlugin,
   buildRelaySuite,
   claudeCommandFileName,
@@ -31,6 +32,20 @@ function readManifestVersion(manifestPath) {
 test("relayPluginName: prefixes provider plugins for relay", () => {
   assert.equal(relayPluginName("gemini"), "relay-gemini");
   assert.equal(relayPluginName("deepseek"), "relay-deepseek");
+});
+
+test("assertBuildableOutRoot: refuses outRoot shapes that would rmSync the source tree", () => {
+  // outRoot === repoRoot: rmSync(outRoot) would wipe the repo itself.
+  assert.throws(() => assertBuildableOutRoot("/repo", "/repo"), /dedicated build directory/);
+  // outRoot === "." resolves to cwd; with repoRoot at cwd it is the same destructive case.
+  assert.throws(() => assertBuildableOutRoot(process.cwd(), "."), /dedicated build directory/);
+  // outRoot is an ancestor of repoRoot: rmSync(outRoot) would take the repo down with it.
+  assert.throws(() => assertBuildableOutRoot("/repo/nested", "/repo"), /dedicated build directory/);
+  // path-normalized ancestor (trailing-segment traversal) is rejected just the same.
+  assert.throws(() => assertBuildableOutRoot("/repo/nested", "/repo/nested/build/.."), /dedicated build directory/);
+  // A dedicated build dir inside the repo, and an out-of-tree sibling, are both allowed.
+  assert.doesNotThrow(() => assertBuildableOutRoot("/repo", "/repo/build"));
+  assert.doesNotThrow(() => assertBuildableOutRoot("/repo", "/tmp/relay-out"));
 });
 
 test("renderClaudePluginManifest: converts Codex manifest to Claude relay plugin manifest", () => {
@@ -149,6 +164,9 @@ test("buildRelaySuite: emits the full Claude relay provider suite without relay-
     assert.equal(existsSync(path.join(outRoot, "relay-claude")), false);
 
     const marketplace = JSON.parse(readFileSync(path.join(tmpRoot, ".claude-plugin", "marketplace.json"), "utf8"));
+    // The manifest lives at the marketplace root (dirname(outRoot)); the pre-relocation location
+    // under outRoot must be absent so a github source never resolves a stale subdir manifest.
+    assert.equal(existsSync(path.join(outRoot, ".claude-plugin", "marketplace.json")), false);
     const publicPlugins = marketplace.plugins.filter((plugin) => plugin.policy?.installation !== "HIDDEN");
     const hiddenPlugins = marketplace.plugins.filter((plugin) => plugin.policy?.installation === "HIDDEN");
     assert.equal(marketplace.name, "relay-for-claude");

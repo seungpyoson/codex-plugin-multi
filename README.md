@@ -293,10 +293,16 @@ claude plugin marketplace add .
 
 Because the manifest is at the repo root, the same marketplace also resolves as
 a remote `github` source (pointing at `relay-org/relay`) without a local
-checkout. Its marketplace name is `relay-for-claude`, and provider plugin
-sources stay under `relay/relay-*`. The suite/plugin pair is therefore
-`relay-for-claude:relay-gemini` conceptually; Claude Code's install ref syntax
-is:
+checkout. This follows from Claude Code's documented marketplace contract — a
+`github` source reads `.claude-plugin/marketplace.json` at the repo root and
+resolves each plugin's `./`-relative `source` from that marketplace root (see
+https://code.claude.com/docs/en/plugin-marketplaces). The repo's CI verifies the
+generated manifest's location and `./relay/*` source paths; it does not exercise
+a live `github` install, so the remote-source claim rests on that documented
+contract rather than an integration test. Its marketplace name is
+`relay-for-claude`, and provider plugin sources stay under `relay/relay-*`. The
+suite/plugin pair is therefore `relay-for-claude:relay-gemini` conceptually;
+Claude Code's install ref syntax is:
 
 ```bash
 claude plugin install relay-gemini@relay-for-claude
