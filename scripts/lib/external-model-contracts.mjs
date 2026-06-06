@@ -1149,6 +1149,7 @@ function grokDelegationSkillDoc() {
     "Show credential key names only for setup.",
     reviewOnlyContract(),
     sandboxFirstSourceSendContract(),
+    "",
     grokFailureRenderingContract(),
     lifecycleRenderingContract(),
     grokTransportContract(),

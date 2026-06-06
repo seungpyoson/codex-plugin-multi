@@ -5629,6 +5629,8 @@ test("direct API reviewers approval-request describes external source transmissi
     assert.match(request.recommended_tool_justification, /Selected source content has not been sent to GLM/);
     assert.match(request.recommended_tool_justification, /current execution environment/);
     assert.match(request.recommended_tool_justification, /Do not broaden local execution access for a normal source send/);
+    assert.match(request.recommended_tool_justification, /sandbox_blocked[\s\S]*source_content_transmission: "not_sent"/);
+    assert.doesNotMatch(request.recommended_tool_justification, /retry with broader access|broader access until|until the source send succeeds/i);
     assert.doesNotMatch(request.recommended_tool_justification, /\bCodex\b|sandbox_permissions|require_escalated/);
     assert.match(request.recommended_tool_justification, /approval_token/);
     assert.match(request.approval_token.value, /^[a-f0-9]{64}$/);
@@ -5680,6 +5682,8 @@ test("direct API reviewers approval-request emits Codex sandbox guidance inside 
     const request = parseJson(result.stdout);
     assert.match(request.recommended_tool_justification, /default Codex sandbox/);
     assert.match(request.recommended_tool_justification, /Do not request `sandbox_permissions: "require_escalated"` for a normal source send/);
+    assert.match(request.recommended_tool_justification, /sandbox_blocked[\s\S]*source_content_transmission: "not_sent"/);
+    assert.doesNotMatch(request.recommended_tool_justification, /retry with broader access|broader access until|until the source send succeeds/i);
   } finally {
     rmSync(dataDir, { recursive: true, force: true });
     rmSync(cwd, { recursive: true, force: true });
@@ -5722,6 +5726,8 @@ test("direct API reviewers approval-grant request emits source-free bounded gran
     assert.equal(request.approval_scope, "grant");
     assert.match(request.recommended_tool_justification, /current execution environment/);
     assert.match(request.recommended_tool_justification, /Do not broaden local execution access for a normal source send/);
+    assert.match(request.recommended_tool_justification, /sandbox_blocked[\s\S]*source_content_transmission: "not_sent"/);
+    assert.doesNotMatch(request.recommended_tool_justification, /retry with broader access|broader access until|until the source send succeeds/i);
     assert.doesNotMatch(request.recommended_tool_justification, /\bCodex\b|sandbox_permissions|require_escalated/);
     assert.match(request.grant_approval_token.value, /^[a-f0-9]{64}$/);
     assert.equal(request.grant_approval_token.algorithm, "sha256");
