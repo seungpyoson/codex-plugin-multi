@@ -28,6 +28,9 @@ Render `external_review` before findings, status prose, or the review result.
 Render findings first, ordered by severity. Keep blocking and non-blocking findings distinct.
 Surface `mutations` prominently and do not auto-revert them.
 
+Use the current Claude Code execution environment for each source-bearing `run` command after approval.
+Do not broaden local execution access for a normal source send; use broader access only for source-free setup or access repair after a `sandbox_blocked` result.
+If local execution blocks provider auth, job state, temp files, or network access, stop and report `sandbox_blocked` with `source_content_transmission: "not_sent"` instead of retrying the same source send with broader local access.
 ## Failure Rendering
 Render the returned JobRecord.
 Render `external_review_launched` as soon as it appears.

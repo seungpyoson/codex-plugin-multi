@@ -32,6 +32,9 @@ Surface `mutations` prominently and do not auto-revert them.
 
 Use custom-review for explicit file bundles. Scope validation must complete before selected source is sent.
 If concrete files or --scope-paths are already known, do not run branch-diff first; use custom-review with those paths and the original prompt.
+Use the default Codex sandbox for each source-bearing `run` command when current sandbox permissions already cover workspace reads, plugin state writes, credentials, and network.
+Do not request `sandbox_permissions: "require_escalated"` for a normal source send; use escalation only for source-free setup/access repair after a `sandbox_blocked` result.
+If the default sandbox blocks provider auth, job state, temp files, or network access, stop and report `sandbox_blocked` with `source_content_transmission: "not_sent"` instead of retrying the same source send with broad escalation.
 
 ## Rendering Contract
 Request `--lifecycle-events markdown` for foreground and background review flows.

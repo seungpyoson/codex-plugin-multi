@@ -62,6 +62,7 @@ const DEFAULT_MAX_PROMPT_CHARS = 600000;
 const DEFAULT_PROVIDER_TIMEOUT_MS = 900000;
 const SESSION_APPROVAL_GRANT_SCHEMA_VERSION = 1;
 const DOCTOR_PROBE_PROMPT = "Return exactly: ok";
+const SOURCE_SEND_SANDBOX_GUIDANCE = "Use the default Codex sandbox for the matching source-bearing run. Do not request `sandbox_permissions: \"require_escalated\"` for a normal source send; if the default sandbox blocks provider auth, job state, temp files, or network, stop and report `sandbox_blocked` with `source_content_transmission: \"not_sent\"`.";
 const GIT_SHOW_MAX_BUFFER_BYTES = MAX_SCOPE_FILE_BYTES + 1;
 const API_REVIEWER_EXPECTED_KEYS = Object.freeze([
   "id",
@@ -3424,7 +3425,7 @@ function buildApprovalRequest({ provider, cfg, mode, options, scopeInfo }) {
     source_content_transmission: SOURCE_CONTENT_TRANSMISSION.NOT_SENT,
     disclosure,
     approval_question: approvalQuestion,
-    recommended_tool_justification: `${disclosure} ${approvalQuestion} If approved, pass approval_token.value with --approval-token before running the external API command.`,
+    recommended_tool_justification: `${disclosure} ${approvalQuestion} If approved, pass approval_token.value with --approval-token before running the external API command. ${SOURCE_SEND_SANDBOX_GUIDANCE}`,
     approval_token: approvalToken,
     selected_source: auditManifest.selected_source,
     rendered_prompt_hash: auditManifest.rendered_prompt_hash,
@@ -3518,7 +3519,7 @@ function buildApprovalGrantRequest({ provider, cfg, mode, options, scopeInfo, gr
     source_content_transmission: SOURCE_CONTENT_TRANSMISSION.NOT_SENT,
     disclosure,
     approval_question: approvalQuestion,
-    recommended_tool_justification: `${disclosure} ${approvalQuestion} If approved, pass grant_approval_token.value to approval-grant activate with grant_bounds.expires_at before any grant-approved source send.`,
+    recommended_tool_justification: `${disclosure} ${approvalQuestion} If approved, pass grant_approval_token.value to approval-grant activate with grant_bounds.expires_at before any grant-approved source send. ${SOURCE_SEND_SANDBOX_GUIDANCE}`,
     grant_approval_token: grantApprovalToken,
     grant_bounds: grantBounds,
     selected_source: selectedSource,

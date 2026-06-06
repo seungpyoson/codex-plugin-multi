@@ -38,6 +38,9 @@ Surface `mutations` prominently and do not auto-revert them.
 ## Approval Contract
 Direct API reviews send selected source content to an external provider.
 Before launching or retrying, render the `approval-request` output and request explicit approval with `recommended_tool_justification`.
+Use the current Claude Code execution environment for each source-bearing `run` command after approval.
+Do not broaden local execution access for a normal source send; use broader access only for source-free setup or access repair after a `sandbox_blocked` result.
+If local execution blocks provider auth, job state, temp files, or network access, stop and report `sandbox_blocked` with `source_content_transmission: "not_sent"` instead of retrying the same source send with broader local access.
 If the user has already given explicit current-turn approval for the same provider, mode, source packet, prompt hash, scope resolution, request settings, auth path, billing path, selected route, fallback reason, and approval scope, do not ask again; run `approval-request`, pass its matching `approval_token.value` to `run`, and continue.
 `session` approval can be reused only while the full approval tuple is unchanged in the current session.
 `once` approval authorizes exactly one matching source send and cannot be replayed.
