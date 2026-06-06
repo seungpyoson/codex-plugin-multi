@@ -419,6 +419,18 @@ export function renderClaudeCommandDoc(codexDoc) {
       "After installation or cache refresh, start a fresh Codex session so plugin skills are discoverable.",
       "After installation or cache refresh, start a fresh Claude Code session so plugin commands are discoverable.",
     )
+    .replaceAll(
+      "Use the default Codex sandbox for each source-bearing `run` command when current sandbox permissions already cover workspace reads, plugin state writes, credentials, and network.",
+      "Use the current Claude Code execution environment for each source-bearing `run` command after approval.",
+    )
+    .replaceAll(
+      "Do not request `sandbox_permissions: \"require_escalated\"` for a normal source send; use escalation only for source-free setup/access repair after a `sandbox_blocked` result.",
+      "Do not broaden local execution access for a normal source send; use broader access only for source-free setup or access repair after a `sandbox_blocked` result.",
+    )
+    .replaceAll(
+      "If the default sandbox blocks provider auth, job state, temp files, or network access, stop and report `sandbox_blocked` with `source_content_transmission: \"not_sent\"` instead of retrying the same source send with broad escalation.",
+      "If local execution blocks provider auth, job state, temp files, or network access, stop and report `sandbox_blocked` with `source_content_transmission: \"not_sent\"` instead of retrying the same source send with broader local access.",
+    )
     .replace(/node "\$\{CLAUDE_PLUGIN_ROOT\}\/scripts\/([^"`\s]+\.mjs)"/g, 'node "${CLAUDE_PLUGIN_ROOT}/scripts/relay-run.mjs" $1')
     .replace(/This command backs `[^`]+`\./g, "This command is emitted for the Claude relay plugin.")
     .replaceAll(
@@ -544,6 +556,10 @@ Preserve the caller's review text verbatim after routing documented flags.
 Return the runtime output verbatim; do not summarize or rewrite findings.
 If there is no substantive result or structured output, report review blocked / no findings produced.
 Render lifecycle markdown cards directly.
+
+Use the current Claude Code execution environment for each source-bearing \`run\` command after approval.
+Do not broaden local execution access for a normal source send; use broader access only for source-free setup or access repair after a \`sandbox_blocked\` result.
+If local execution blocks provider auth, job state, temp files, or network access, stop and report \`sandbox_blocked\` with \`source_content_transmission: "not_sent"\` instead of retrying the same source send with broader local access.
 
 ## Scope Safety
 Use custom-review only for explicit file bundles. Scope validation must complete before selected source is sent.

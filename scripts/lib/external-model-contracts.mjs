@@ -302,6 +302,14 @@ function scopeSafetyContract() {
   );
 }
 
+function sandboxFirstSourceSendContract() {
+  return [
+    "Use the default Codex sandbox for each source-bearing `run` command when current sandbox permissions already cover workspace reads, plugin state writes, credentials, and network.",
+    "Do not request `sandbox_permissions: \"require_escalated\"` for a normal source send; use escalation only for source-free setup/access repair after a `sandbox_blocked` result.",
+    "If the default sandbox blocks provider auth, job state, temp files, or network access, stop and report `sandbox_blocked` with `source_content_transmission: \"not_sent\"` instead of retrying the same source send with broad escalation.",
+  ];
+}
+
 function explicitScopeRoutingContract() {
   return "If concrete files or --scope-paths are already known, do not run branch-diff first; use custom-review with those paths and the original prompt.";
 }
@@ -380,6 +388,7 @@ function renderCompanionCommandBody(provider, workflow, commandName) {
       reviewOnlyContract(),
       "Use custom-review for explicit file bundles. Scope validation must complete before selected source is sent.",
       explicitScopeRoutingContract(),
+      sandboxFirstSourceSendContract(),
       "",
       lifecycleRenderingContract(),
       scopeSafetyContract(),
@@ -408,6 +417,8 @@ function renderCompanionCommandBody(provider, workflow, commandName) {
       "",
       maxSteps,
       rescueContract(),
+      sandboxFirstSourceSendContract(),
+      "",
       lifecycleRenderingContract(),
       secretSafetyContract(),
       `This command backs \`plugins/${provider.plugin}/skills/${commandName}/SKILL.md\`.`,
@@ -505,6 +516,7 @@ function renderCompanionSkillBody(provider, workflow, skillName) {
       reviewOnlyContract(),
       "custom-review uses explicit relative paths. Scope validation must complete before selected source is transmitted.",
       explicitScopeRoutingContract(),
+      sandboxFirstSourceSendContract(),
       "",
       lifecycleRenderingContract(),
       scopeSafetyContract(),
@@ -526,6 +538,8 @@ function renderCompanionSkillBody(provider, workflow, skillName) {
       `Run background: \`${companionRunCommand(provider, "rescue", "--background --lifecycle-events markdown --cwd \"<workspace>\" -- \"<task>\"")}\`.`,
       maxSteps,
       rescueContract(),
+      sandboxFirstSourceSendContract(),
+      "",
       lifecycleRenderingContract(),
       secretSafetyContract(),
     );
@@ -630,6 +644,8 @@ function companionDelegationSkillDoc(target) {
     "",
     reviewOnlyContract(),
     rescueContract(),
+    sandboxFirstSourceSendContract(),
+    "",
     lifecycleRenderingContract(),
     "Do not claim commands are available in Codex builds that do not register plugin command files.",
     secretSafetyContract(),
@@ -816,6 +832,7 @@ function apiApprovalContract() {
     "## Approval Contract",
     "Direct API reviews send selected source content to an external provider.",
     "Before launching or retrying, render the `approval-request` output and request explicit approval with `recommended_tool_justification`.",
+    sandboxFirstSourceSendContract(),
     "If the user has already given explicit current-turn approval for the same provider, mode, source packet, prompt hash, scope resolution, request settings, auth path, billing path, selected route, fallback reason, and approval scope, do not ask again; run `approval-request`, pass its matching `approval_token.value` to `run`, and continue.",
     "`session` approval can be reused only while the full approval tuple is unchanged in the current session.",
     "`once` approval authorizes exactly one matching source send and cannot be replayed.",
@@ -1039,6 +1056,8 @@ function grokCommandDoc(target) {
     sharedHeader(title),
     scopeLines,
     reviewOnlyContract(),
+    sandboxFirstSourceSendContract(),
+    "",
     grokFailureRenderingContract(),
     lifecycleRenderingContract(),
     grokTransportContract(),
@@ -1095,6 +1114,8 @@ function grokSkillDoc(target) {
     "`<focus>` is the user's review prompt or focus area.",
     scopeLines,
     reviewOnlyContract(),
+    sandboxFirstSourceSendContract(),
+    "",
     grokFailureRenderingContract(),
     lifecycleRenderingContract(),
     grokTransportContract(),
@@ -1127,6 +1148,8 @@ function grokDelegationSkillDoc() {
     "Replace `<file1>,<file2>` with comma- or newline-separated concrete relative paths. Use comma- or newline-separated concrete relative `--scope-paths`; expand globs before running.",
     "Show credential key names only for setup.",
     reviewOnlyContract(),
+    sandboxFirstSourceSendContract(),
+    "",
     grokFailureRenderingContract(),
     lifecycleRenderingContract(),
     grokTransportContract(),

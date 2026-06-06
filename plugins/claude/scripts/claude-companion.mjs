@@ -114,6 +114,7 @@ const CONTINUABLE_STATUSES = new Set(["completed", "failed", "cancelled", "stale
 const RUN_MODES = Object.freeze(["review", "adversarial-review", "custom-review", "rescue"]);
 const PREFLIGHT_MODES = Object.freeze(["review", "adversarial-review", "custom-review"]);
 const REVIEW_MODE_SET = new Set(PREFLIGHT_MODES);
+const HOST_NEUTRAL_SOURCE_SEND_SANDBOX_GUIDANCE = "Use the current execution environment for the matching source-bearing run. Do not broaden local execution access for a normal source send; if local execution blocks provider auth, job state, temp files, or network, stop and report `sandbox_blocked` with `source_content_transmission: \"not_sent\"`.";
 const DEFAULT_REVIEW_PERMISSION_MODE_LADDER = Object.freeze(["dontAsk", "auto", "acceptEdits"]);
 const ALLOWED_REVIEW_PERMISSION_MODES = new Set(["default", "plan", "acceptEdits", "dontAsk", "auto", "bypassPermissions"]);
 const PERMISSION_MODE_RETRYABLE_ERROR_CODES = new Set(["parse_error", "claude_error"]);
@@ -1253,7 +1254,7 @@ async function cmdApprovalRequest(rest) {
       source_content_transmission: "not_sent",
       disclosure: "Selected source content has not been sent to Claude Code. Running the review with this explicit API route will send selected source content through Claude API-key auth.",
       approval_question: `Allow sending ${totals.files} selected ${totals.files === 1 ? "file" : "files"} (${totals.bytes} ${totals.bytes === 1 ? "byte" : "bytes"}, ${totals.lines} ${totals.lines === 1 ? "line" : "lines"}) to Claude Code through explicit API-key auth for external review?`,
-      recommended_tool_justification: "Selected source content has not been sent to Claude Code. If approved, pass approval_token.value with --approval-token before running the source-bearing explicit API command.",
+      recommended_tool_justification: `Selected source content has not been sent to Claude Code. If approved, pass approval_token.value with --approval-token before running the source-bearing explicit API command. ${HOST_NEUTRAL_SOURCE_SEND_SANDBOX_GUIDANCE}`,
       approval_token: token,
       selected_source: auditManifest.selected_source,
       rendered_prompt_hash: auditManifest.rendered_prompt_hash,

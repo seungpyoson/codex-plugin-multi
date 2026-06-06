@@ -3323,7 +3323,7 @@ process.stdout.write(JSON.stringify({
   ];
   const approval = runCompanion(
     ["approval-request", ...commonOptions, "--", "review selected source"],
-    { cwd, env: { GEMINI_API_KEY: "secret-test-value", GOOGLE_API_KEY: "" } },
+    { cwd, env: { GEMINI_API_KEY: "secret-test-value", GOOGLE_API_KEY: "", CODEX_SANDBOX: "" } },
   );
   try {
     assert.equal(approval.status, 0, approval.stderr || approval.stdout);
@@ -3336,6 +3336,11 @@ process.stdout.write(JSON.stringify({
     assert.equal(request.source_send_approval_required, true);
     assert.equal(request.source_send_approval_state, "required");
     assert.equal(request.approval_scope, "session");
+    assert.match(request.recommended_tool_justification, /current execution environment/);
+    assert.match(request.recommended_tool_justification, /Do not broaden local execution access for a normal source send/);
+    assert.match(request.recommended_tool_justification, /sandbox_blocked[\s\S]*source_content_transmission: "not_sent"/);
+    assert.doesNotMatch(request.recommended_tool_justification, /retry with broader access|broader access until|until the source send succeeds/i);
+    assert.doesNotMatch(request.recommended_tool_justification, /\bCodex\b|sandbox_permissions|require_escalated/);
     assert.match(request.approval_token.value, /^[a-f0-9]{64}$/);
     assert.equal(existsSync(leakMarker), false, "approval-request must not launch Gemini or send selected source");
 

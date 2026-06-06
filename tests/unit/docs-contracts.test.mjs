@@ -8,6 +8,7 @@ import { buildProviderPolicyContract } from "../../scripts/lib/provider-route-po
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const DIRECT_API_RELAY_PROVIDERS = ["deepseek", "glm"];
+const COMPANION_RELAY_PROVIDERS = ["claude", "gemini", "kimi"];
 
 function readRepoFile(rel) {
   return readFileSync(path.join(REPO_ROOT, rel), "utf8");
@@ -35,6 +36,33 @@ function directApiRelayDocPaths({ includeSetup = false } = {}) {
       ];
     })
   );
+}
+
+function companionSourceReviewDocPaths() {
+  return COMPANION_RELAY_PROVIDERS.flatMap((provider) => {
+    const root = `plugins/${provider}`;
+    return [
+      `${root}/commands/${provider}-review.md`,
+      `${root}/commands/${provider}-adversarial-review.md`,
+      `${root}/commands/${provider}-rescue.md`,
+      `${root}/skills/${provider}-review/SKILL.md`,
+      `${root}/skills/${provider}-adversarial-review/SKILL.md`,
+      `${root}/skills/${provider}-rescue/SKILL.md`,
+      `${root}/skills/${provider}-delegation/SKILL.md`,
+    ];
+  });
+}
+
+function grokSourceReviewDocPaths() {
+  return [
+    "plugins/grok/commands/grok-review.md",
+    "plugins/grok/commands/grok-adversarial-review.md",
+    "plugins/grok/commands/grok-custom-review.md",
+    "plugins/grok/skills/grok-review/SKILL.md",
+    "plugins/grok/skills/grok-adversarial-review/SKILL.md",
+    "plugins/grok/skills/grok-custom-review/SKILL.md",
+    "plugins/grok/skills/grok-delegation/SKILL.md",
+  ];
 }
 
 function assertRepoPathExists(rel, label) {
@@ -484,6 +512,48 @@ test("review docs expose custom-review, preflight, and blocked-review wording", 
   assert.doesNotMatch(docs, /policy decision rather than a plugin\/runtime failure/i);
 });
 
+test("companion reviewer docs require sandbox-first source-send execution", () => {
+  for (const docPath of companionSourceReviewDocPaths()) {
+    const doc = readRepoFile(docPath);
+    assert.match(
+      doc,
+      /default Codex sandbox[\s\S]*source-bearing `run`/i,
+      `${docPath} must tell agents to use the default sandbox for normal source sends`,
+    );
+    assert.match(
+      doc,
+      /do not request `sandbox_permissions: "require_escalated"`[\s\S]*normal source send/i,
+      `${docPath} must forbid broad escalation for normal source sends`,
+    );
+    assert.match(
+      doc,
+      /sandbox_blocked[\s\S]*source_content_transmission: "not_sent"/i,
+      `${docPath} must fail closed with sandbox_blocked/not_sent when default sandbox is insufficient`,
+    );
+  }
+});
+
+test("grok reviewer docs require sandbox-first source-send execution", () => {
+  for (const docPath of grokSourceReviewDocPaths()) {
+    const doc = readRepoFile(docPath);
+    assert.match(
+      doc,
+      /default Codex sandbox[\s\S]*source-bearing `run`/i,
+      `${docPath} must tell agents to use the default sandbox for normal source sends`,
+    );
+    assert.match(
+      doc,
+      /do not request `sandbox_permissions: "require_escalated"`[\s\S]*normal source send/i,
+      `${docPath} must forbid broad escalation for normal source sends`,
+    );
+    assert.match(
+      doc,
+      /sandbox_blocked[\s\S]*source_content_transmission: "not_sent"/i,
+      `${docPath} must fail closed with sandbox_blocked/not_sent when default sandbox is insufficient`,
+    );
+  }
+});
+
 test("setup docs do not claim unimplemented target version-floor checks", () => {
   const docs = [
     readRepoFile("plugins/claude/commands/claude-setup.md"),
@@ -625,6 +695,27 @@ test("direct API reviewer docs require explicit approval for external source tra
     assert.match(doc, /denial_action/, docPath);
     assert.match(doc, /relay prompt/i, docPath);
     assert.match(doc, /approval is denied/i, docPath);
+  }
+});
+
+test("direct API reviewer docs require sandbox-first source-send execution", () => {
+  for (const docPath of directApiRelayDocPaths()) {
+    const doc = readRepoFile(docPath);
+    assert.match(
+      doc,
+      /default Codex sandbox[\s\S]*source-bearing `run`/i,
+      `${docPath} must tell agents to use the default sandbox for normal source sends`,
+    );
+    assert.match(
+      doc,
+      /do not request `sandbox_permissions: "require_escalated"`[\s\S]*normal source send/i,
+      `${docPath} must forbid broad escalation for normal source sends`,
+    );
+    assert.match(
+      doc,
+      /sandbox_blocked[\s\S]*source_content_transmission: "not_sent"/i,
+      `${docPath} must fail closed with sandbox_blocked/not_sent when default sandbox is insufficient`,
+    );
   }
 });
 
