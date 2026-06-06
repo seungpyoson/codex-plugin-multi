@@ -512,7 +512,7 @@ claim.
 
 | ID | Source | What It Proves | Verification Method |
 | --- | --- | --- | --- |
-| S1 | `/Users/spson/.codex/sessions/2026/06/06/rollout-2026-06-06T02-22-22-019e98ce-ade3-79e3-8586-919135671a46.jsonl` | Original session symptom: provider split, policy denial class, source not sent for blocked providers | `jq` extraction of user/assistant messages matching relay/policy terms |
+| S1 | `~/.codex/sessions/2026/06/06/rollout-2026-06-06T02-22-22-019e98ce-ade3-79e3-8586-919135671a46.jsonl` | Original session symptom: provider split, policy denial class, source not sent for blocked providers | `jq` extraction of user/assistant messages matching relay/policy terms |
 | S2 | PR #214 body | Intended fix, validation commands, mutation check, final merged head | GitHub PR fetch for `seungpyoson/relay#214` |
 | S3 | PR #214 diff/current `main` | Actual code-level fix in direct API and companion approval packets | `sed` / `rg` on current files at `main` |
 | S4 | PR #214 tests/current `main` | Regression coverage for host-neutrality and fail-closed tails | `sed` / `rg` on tests |
