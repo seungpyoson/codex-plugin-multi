@@ -28,6 +28,10 @@ Return the runtime output verbatim; do not summarize or rewrite findings.
 If there is no substantive result or structured output, report review blocked / no findings produced.
 Render lifecycle markdown cards directly.
 
+Use the current Claude Code execution environment for each source-bearing `run` command after approval.
+Do not broaden local execution access for a normal source send; use broader access only for source-free setup or access repair after a `sandbox_blocked` result.
+If local execution blocks provider auth, job state, temp files, or network access, stop and report `sandbox_blocked` with `source_content_transmission: "not_sent"` instead of retrying the same source send with broader local access.
+
 ## Scope Safety
 Use custom-review only for explicit file bundles. Scope validation must complete before selected source is sent.
 If concrete files or --scope-paths are already known, do not run branch-diff first; use custom-review with those paths and the original prompt.

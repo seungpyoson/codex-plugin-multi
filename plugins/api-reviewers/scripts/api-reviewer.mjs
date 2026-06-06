@@ -62,7 +62,8 @@ const DEFAULT_MAX_PROMPT_CHARS = 600000;
 const DEFAULT_PROVIDER_TIMEOUT_MS = 900000;
 const SESSION_APPROVAL_GRANT_SCHEMA_VERSION = 1;
 const DOCTOR_PROBE_PROMPT = "Return exactly: ok";
-const SOURCE_SEND_SANDBOX_GUIDANCE = "Use the default Codex sandbox for the matching source-bearing run. Do not request `sandbox_permissions: \"require_escalated\"` for a normal source send; if the default sandbox blocks provider auth, job state, temp files, or network, stop and report `sandbox_blocked` with `source_content_transmission: \"not_sent\"`.";
+const CODEX_SOURCE_SEND_SANDBOX_GUIDANCE = "Use the default Codex sandbox for the matching source-bearing run. Do not request `sandbox_permissions: \"require_escalated\"` for a normal source send; if the default sandbox blocks provider auth, job state, temp files, or network, stop and report `sandbox_blocked` with `source_content_transmission: \"not_sent\"`.";
+const HOST_NEUTRAL_SOURCE_SEND_SANDBOX_GUIDANCE = "Use the current execution environment for the matching source-bearing run. Do not broaden local execution access for a normal source send; if local execution blocks provider auth, job state, temp files, or network, stop and report `sandbox_blocked` with `source_content_transmission: \"not_sent\"`.";
 const GIT_SHOW_MAX_BUFFER_BYTES = MAX_SCOPE_FILE_BYTES + 1;
 const API_REVIEWER_EXPECTED_KEYS = Object.freeze([
   "id",
@@ -2564,6 +2565,12 @@ function providerUnavailableSuggestedAction(errorMessage = "", httpStatus = null
   return `Retry later or switch reviewer provider.`;
 }
 
+function sourceSendSandboxGuidance(env = process.env) {
+  return isCodexSandbox(env)
+    ? CODEX_SOURCE_SEND_SANDBOX_GUIDANCE
+    : HOST_NEUTRAL_SOURCE_SEND_SANDBOX_GUIDANCE;
+}
+
 function scopeFailedSuggestedAction(errorMessage = "") {
   if (/scope_empty:\s*branch-diff selected no files/i.test(errorMessage)) {
     return "Branch-diff selected no files before provider launch. Branch-diff reviews committed HEAD-vs-base changes only; it does not include dirty working-tree edits. Choose a different --scope-base <ref> if this branch should have committed changes, use --scope-base HEAD~1 to review the last commit, or use custom-review with explicit --scope-paths for uncommitted, already-merged, or no-diff branches.";
@@ -3425,7 +3432,7 @@ function buildApprovalRequest({ provider, cfg, mode, options, scopeInfo }) {
     source_content_transmission: SOURCE_CONTENT_TRANSMISSION.NOT_SENT,
     disclosure,
     approval_question: approvalQuestion,
-    recommended_tool_justification: `${disclosure} ${approvalQuestion} If approved, pass approval_token.value with --approval-token before running the external API command. ${SOURCE_SEND_SANDBOX_GUIDANCE}`,
+    recommended_tool_justification: `${disclosure} ${approvalQuestion} If approved, pass approval_token.value with --approval-token before running the external API command. ${sourceSendSandboxGuidance()}`,
     approval_token: approvalToken,
     selected_source: auditManifest.selected_source,
     rendered_prompt_hash: auditManifest.rendered_prompt_hash,
@@ -3519,7 +3526,7 @@ function buildApprovalGrantRequest({ provider, cfg, mode, options, scopeInfo, gr
     source_content_transmission: SOURCE_CONTENT_TRANSMISSION.NOT_SENT,
     disclosure,
     approval_question: approvalQuestion,
-    recommended_tool_justification: `${disclosure} ${approvalQuestion} If approved, pass grant_approval_token.value to approval-grant activate with grant_bounds.expires_at before any grant-approved source send. ${SOURCE_SEND_SANDBOX_GUIDANCE}`,
+    recommended_tool_justification: `${disclosure} ${approvalQuestion} If approved, pass grant_approval_token.value to approval-grant activate with grant_bounds.expires_at before any grant-approved source send. ${sourceSendSandboxGuidance()}`,
     grant_approval_token: grantApprovalToken,
     grant_bounds: grantBounds,
     selected_source: selectedSource,

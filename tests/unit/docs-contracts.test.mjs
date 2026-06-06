@@ -44,8 +44,10 @@ function companionSourceReviewDocPaths() {
     return [
       `${root}/commands/${provider}-review.md`,
       `${root}/commands/${provider}-adversarial-review.md`,
+      `${root}/commands/${provider}-rescue.md`,
       `${root}/skills/${provider}-review/SKILL.md`,
       `${root}/skills/${provider}-adversarial-review/SKILL.md`,
+      `${root}/skills/${provider}-rescue/SKILL.md`,
       `${root}/skills/${provider}-delegation/SKILL.md`,
     ];
   });

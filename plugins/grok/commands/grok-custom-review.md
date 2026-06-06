@@ -29,6 +29,7 @@ Surface `mutations` prominently and do not auto-revert them.
 Use the default Codex sandbox for each source-bearing `run` command when current sandbox permissions already cover workspace reads, plugin state writes, credentials, and network.
 Do not request `sandbox_permissions: "require_escalated"` for a normal source send; use escalation only for source-free setup/access repair after a `sandbox_blocked` result.
 If the default sandbox blocks provider auth, job state, temp files, or network access, stop and report `sandbox_blocked` with `source_content_transmission: "not_sent"` instead of retrying the same source send with broad escalation.
+
 ## Failure Rendering
 Render the returned JobRecord.
 Render `external_review_launched` as soon as it appears.

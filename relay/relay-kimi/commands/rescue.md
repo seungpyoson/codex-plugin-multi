@@ -32,6 +32,10 @@ Forward the user's task text after routing documented flags; do not replace it w
 Return the runtime output verbatim; do not hide failed or incomplete rescue work.
 Failed or incomplete rescue is not success. Report the failed state and the next safe action.
 
+Use the current Claude Code execution environment for each source-bearing `run` command after approval.
+Do not broaden local execution access for a normal source send; use broader access only for source-free setup or access repair after a `sandbox_blocked` result.
+If local execution blocks provider auth, job state, temp files, or network access, stop and report `sandbox_blocked` with `source_content_transmission: "not_sent"` instead of retrying the same source send with broader local access.
+
 ## Rendering Contract
 Request `--lifecycle-events markdown` for foreground and background review flows.
 Render lifecycle markdown cards directly.

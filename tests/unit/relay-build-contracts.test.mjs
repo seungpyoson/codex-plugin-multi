@@ -524,9 +524,30 @@ test("buildRelaySuite: generated relay commands do not leak Codex host contracts
         const commandDoc = readFileSync(path.join(pluginRoot, "commands", fileName), "utf8");
         assert.doesNotMatch(
           commandDoc,
-          /\bCodex\b|CODEX_HOME|RELAY_RUNTIME_DIR|\.codex|plugins\/(?:api-reviewers|grok)|npm run|This command backs|before `--`/,
+          /\bCodex\b|CODEX_HOME|RELAY_RUNTIME_DIR|\.codex|plugins\/(?:api-reviewers|grok)|npm run|This command backs|before `--`|sandbox_permissions|require_escalated/,
           `${path.basename(pluginRoot)}/commands/${fileName}`,
         );
+      }
+    }
+  } finally {
+    rmSync(tmpRoot, { recursive: true, force: true });
+  }
+});
+
+test("buildRelaySuite: source-bearing relay commands keep host-neutral sandbox guidance", () => {
+  const tmpRoot = mkdtempSync(path.join(tmpdir(), "relay-source-guidance-"));
+  const outRoot = path.join(tmpRoot, "relay");
+  const sourceBearingCommands = new Set(["review.md", "adversarial-review.md", "custom-review.md", "rescue.md"]);
+  try {
+    for (const pluginRoot of buildRelaySuite({ repoRoot: process.cwd(), outRoot })) {
+      for (const fileName of readdirSync(path.join(pluginRoot, "commands"))) {
+        if (!sourceBearingCommands.has(fileName)) continue;
+        const commandDoc = readFileSync(path.join(pluginRoot, "commands", fileName), "utf8");
+        const label = `${path.basename(pluginRoot)}/commands/${fileName}`;
+        assert.match(commandDoc, /current Claude Code execution environment/, label);
+        assert.match(commandDoc, /Do not broaden local execution access for a normal source send/, label);
+        assert.match(commandDoc, /sandbox_blocked[\s\S]*source_content_transmission: "not_sent"/, label);
+        assert.doesNotMatch(commandDoc, /\bCodex\b|sandbox_permissions|require_escalated/, label);
       }
     }
   } finally {
