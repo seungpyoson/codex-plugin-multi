@@ -6,7 +6,7 @@ import { request as httpRequest } from "node:http";
 import { request as httpsRequest } from "node:https";
 import { basename, dirname, isAbsolute, resolve, relative } from "node:path";
 import { fileURLToPath } from "node:url";
-import { createHash, randomUUID } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { hostname, tmpdir } from "node:os";
 
 import { cleanGitEnv } from "./lib/git-env.mjs";
@@ -36,6 +36,7 @@ import {
   providerWorkloadBlockedExecution,
   releaseProviderWorkloadLease,
 } from "./lib/review-workload.mjs";
+import { API_RESCUE_PATCH_SCHEMA_VERSION, parseRescuePatchProposal, validateRescuePatchSafety } from "./lib/api-rescue-patch.mjs";
 
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 const PLUGIN_ROOT = resolve(SCRIPT_DIR, "..");
@@ -44,7 +45,7 @@ const SESSION_APPROVAL_POLICY_PATH = configuredPath(
   "API_REVIEWERS_SESSION_APPROVAL_POLICY_PATH",
   resolve(PLUGIN_ROOT, "config/session-approval.json"),
 );
-const VALID_MODES = new Set(["review", "adversarial-review", "custom-review"]);
+const VALID_MODES = new Set(["review", "adversarial-review", "custom-review", "rescue"]);
 const VALID_AUTH_MODES = new Set(["api_key"]);
 const SCHEMA_VERSION = 10;
 const API_REVIEWER_STATE_VERSION = 1;
@@ -61,6 +62,9 @@ const MAX_SCOPE_TOTAL_BYTES = 1024 * 1024;
 const DEFAULT_MAX_PROMPT_CHARS = 600000;
 const DEFAULT_PROVIDER_TIMEOUT_MS = 900000;
 const SESSION_APPROVAL_GRANT_SCHEMA_VERSION = 1;
+const RESCUE_APPLY_APPROVAL_SCHEMA_VERSION = 1;
+const RESCUE_APPLY_POLICY_VERSION = 1;
+const RESCUE_APPLY_TOKEN_TTL_MS = 10 * 60 * 1000;
 const DOCTOR_PROBE_PROMPT = "Return exactly: ok";
 const GIT_SHOW_MAX_BUFFER_BYTES = MAX_SCOPE_FILE_BYTES + 1;
 const API_REVIEWER_EXPECTED_KEYS = Object.freeze([
@@ -634,6 +638,69 @@ async function readApiReviewerMetaRecord(root, jobId) {
   return JSON.parse(await readFile(resolve(apiReviewerJobsDir(root), jobId, "meta.json"), "utf8"));
 }
 
+function rescuePatchArtifactFile(root, jobId) {
+  assertSafeJobId(jobId);
+  return resolve(apiReviewerJobsDir(root), jobId, "rescue-patch.json");
+}
+
+async function writeRescuePatchArtifact(root, record) {
+  const patch = record?.structured_output?.rescue_patch ?? null;
+  if (record?.mode !== "rescue" || record?.status !== "completed" || !patch) return;
+  const artifactFile = rescuePatchArtifactFile(root, record.job_id);
+  await mkdir(dirname(artifactFile), { recursive: true });
+  const tmpFile = `${artifactFile}.${process.pid}.${Date.now()}.${randomUUID()}.tmp`;
+  const artifact = {
+    schema_version: API_RESCUE_PATCH_SCHEMA_VERSION,
+    job_id: record.job_id,
+    provider: record.provider,
+    workspace_root: record.workspace_root,
+    patch_hash: patch.patch_hash,
+    proposed_files: patch.proposed_files,
+    patch_bytes: patch.patch_bytes,
+    unified_diff: patch.unified_diff,
+    created_at: new Date().toISOString(),
+  };
+  try {
+    await writeFile(tmpFile, `${JSON.stringify(artifact, null, 2)}\n`, { mode: 0o600 });
+    await rename(tmpFile, artifactFile);
+  } catch (e) {
+    try { await unlink(tmpFile); } catch { /* already gone */ }
+    throw e;
+  }
+}
+
+async function readRescuePatchArtifact(root, jobId) {
+  let artifact;
+  try {
+    artifact = JSON.parse(await readFile(rescuePatchArtifactFile(root, jobId), "utf8"));
+  } catch (error) {
+    if (error?.code === "ENOENT") {
+      throw Object.assign(new Error("rescue patch artifact is missing"), { code: "rescue_patch_artifact_missing" });
+    }
+    throw error;
+  }
+  if (!artifact || artifact.schema_version !== API_RESCUE_PATCH_SCHEMA_VERSION) {
+    throw Object.assign(new Error("rescue patch artifact schema is invalid"), { code: "rescue_patch_artifact_invalid" });
+  }
+  if (artifact.job_id !== jobId || typeof artifact.unified_diff !== "string") {
+    throw Object.assign(new Error("rescue patch artifact does not match this job"), { code: "rescue_patch_artifact_invalid" });
+  }
+  const patch = parseRescuePatchProposal(JSON.stringify({
+    schema_version: API_RESCUE_PATCH_SCHEMA_VERSION,
+    summary: "Stored rescue patch artifact.",
+    unified_diff: artifact.unified_diff,
+    verification: [],
+  }));
+  const artifactFiles = Array.isArray(artifact.proposed_files) ? artifact.proposed_files : [];
+  if (artifact.patch_hash !== patch.patch_hash || JSON.stringify(artifactFiles) !== JSON.stringify(patch.proposed_files)) {
+    throw Object.assign(new Error("rescue patch artifact integrity check failed"), { code: "rescue_patch_artifact_invalid" });
+  }
+  return Object.freeze({
+    ...patch,
+    patch_bytes: artifact.patch_bytes,
+  });
+}
+
 function reviewSlotFromRecord(record) {
   const slot = record?.review_metadata?.audit_manifest?.review_slot
     ?? record?.external_review?.review_slot
@@ -1028,6 +1095,10 @@ function providerConfig(providers, name) {
     throw new Error(`unsupported_auth_mode:${cfg.auth_mode}`);
   }
   return cfg;
+}
+
+function providerSupportsRescue(cfg) {
+  return cfg?.capabilities?.rescue === true;
 }
 
 function fallbackProviderConfig(provider) {
@@ -1794,6 +1865,7 @@ function gitRaw(args, cwd, options = {}) {
     cwd,
     env: gitEnv(cleanGitEnv()),
     maxBuffer: options.maxBuffer,
+    input: options.input,
   });
   if (res.error) throw new Error(`git_failed:${res.error.message}`);
   if (res.signal) throw new Error(`git_failed:signal:${res.signal}`);
@@ -1803,6 +1875,20 @@ function gitRaw(args, cwd, options = {}) {
     throw new Error(`git_failed:${detail}`);
   }
   return res.stdout;
+}
+
+function gitApplyResult(args, cwd, workspaceRoot, input) {
+  return runCommand(resolveGitBinary({ cwd, workspaceRoot }), args, {
+    cwd,
+    env: gitEnv(cleanGitEnv()),
+    input,
+  });
+}
+
+function gitFailureDetail(result, fallback) {
+  if (result.error) return result.error.message;
+  if (result.signal) return `signal:${result.signal}`;
+  return String(result.stderr || result.stdout || fallback).trim();
 }
 
 function bestEffortWorkspaceRoot(cwd) {
@@ -2080,9 +2166,14 @@ function promptFileBlock(file, index) {
 }
 
 function promptFor(mode, userPrompt, scopeInfo, providerName = "Direct API reviewer") {
-  const modeLine = mode === "adversarial-review"
-    ? "You are performing an adversarial code review. Prioritize correctness bugs, security risks, regressions, and missing tests."
-    : "You are performing a code review. Prioritize bugs, behavioral regressions, and missing tests.";
+  const modeLine = mode === "rescue"
+    ? [
+      "You are preparing an external rescue patch proposal. Do not claim approval and do not claim files were edited.",
+      "Return only a JSON object with schema_version: 1, summary, unified_diff, and verification string array.",
+    ].join("\n")
+    : mode === "adversarial-review"
+      ? "You are performing an adversarial code review. Prioritize correctness bugs, security risks, regressions, and missing tests."
+      : "You are performing a code review. Prioritize bugs, behavioral regressions, and missing tests.";
   const liveContext = [
     "Live verification context:",
     "- This repository has verified the configured DeepSeek and GLM direct API endpoints/models from Codex-managed runs.",
@@ -3411,8 +3502,10 @@ function buildApprovalRequest({ provider, cfg, mode, options, scopeInfo }) {
   }
   const approvalToken = approvalTokenFor({ provider, mode, auditManifest, authPath, billingPath, routeFields, approvalScope });
   const totals = auditManifest.selected_source.totals;
-  const approvalQuestion = `Allow sending ${totals.files} selected ${plural(totals.files, "file")} (${totals.bytes} ${plural(totals.bytes, "byte")}, ${totals.lines} ${plural(totals.lines, "line")}) to ${cfg.display_name} for external review?`;
-  const disclosure = `Selected source content has not been sent to ${cfg.display_name}. Running the review will send the selected source content to ${cfg.display_name} through direct API auth.`;
+  const purpose = mode === "rescue" ? "external rescue patch proposal" : "external review";
+  const action = mode === "rescue" ? "rescue proposal request" : "review";
+  const approvalQuestion = `Allow sending ${totals.files} selected ${plural(totals.files, "file")} (${totals.bytes} ${plural(totals.bytes, "byte")}, ${totals.lines} ${plural(totals.lines, "line")}) to ${cfg.display_name} for ${purpose}?`;
+  const disclosure = `Selected source content has not been sent to ${cfg.display_name}. Running the ${action} will send the selected source content to ${cfg.display_name} through direct API auth for an ${purpose}.`;
   return Object.freeze({
     event: "external_review_approval_request",
     provider,
@@ -3785,22 +3878,35 @@ function sourceBearingFailurePacketRecovery({ provider, cfg, mode, reviewMetadat
 function buildRecord({ provider, cfg, mode, options, scopeInfo, execution, startedAt, endedAt }) {
   let reviewMetadata = buildReviewMetadata(provider, cfg, mode, scopeInfo, execution, startedAt, endedAt, options);
   const processCompleted = execution.exitCode === 0 && execution.parsed?.ok === true;
-  const reviewQualityState = processCompleted
+  const reviewQualityState = processCompleted && mode !== "rescue"
     ? reviewQualityFailureState(reviewMetadata?.audit_manifest?.review_quality, {
       missingReasonsMessage: "review_quality_failed",
       emptyReasonsMessage: "review_quality_failed",
     })
     : null;
-  const completed = processCompleted && !reviewQualityState;
   const redaction = redactionContext(cfg.env_keys, process.env, credentialRedactionValues(execution));
   const redactSensitiveText = buildPrivacyRedactor({
     ...redaction,
     sourceFiles: scopeInfo.files,
   }).text;
+  let rescuePatch = null;
+  let rescuePatchError = null;
+  if (mode === "rescue" && processCompleted) {
+    try {
+      rescuePatch = parseRescuePatchProposal(execution.parsed.result);
+    } catch (error) {
+      rescuePatchError = error;
+    }
+  }
+  const completed = processCompleted && !reviewQualityState && !rescuePatchError;
   const result = processCompleted ? redactSensitiveText(execution.parsed.result) : null;
   const semanticReasons = reviewMetadata?.audit_manifest?.review_quality?.semantic_failure_reasons ?? null;
-  const errorMessage = completed ? null : redactSensitiveText(reviewQualityState ? reviewQualityState.error_message : (execution.parsed?.error ?? ""));
-  const errorCode = completed ? null : (reviewQualityState ? reviewQualityState.error_code : (execution.parsed?.reason ?? "provider_error"));
+  const errorMessage = completed ? null : redactSensitiveText(
+    rescuePatchError ? rescuePatchError.message : (reviewQualityState ? reviewQualityState.error_message : (execution.parsed?.error ?? "")),
+  );
+  const errorCode = completed ? null : (
+    rescuePatchError?.code ?? (reviewQualityState ? reviewQualityState.error_code : (execution.parsed?.reason ?? "provider_error"))
+  );
   const target = provider;
   const payloadSent = execution.payload_sent ?? (processCompleted ? true : null);
   const sourceContentTransmission = directApiTransmission(completed, payloadSent);
@@ -3888,7 +3994,7 @@ function buildRecord({ provider, cfg, mode, options, scopeInfo, execution, start
     disclosure_note: disclosure,
     runtime_diagnostics: runtimeDiagnostics,
     result,
-    structured_output: null,
+    structured_output: rescuePatch ? { rescue_patch: rescuePatch } : null,
     permission_denials: [],
     mutations: [],
     cost_usd: null,
@@ -3962,6 +4068,335 @@ async function cmdResult(options) {
   }
 }
 
+function rescueApplyTokenFile(root, token) {
+  const digest = sha256Hex(String(token ?? ""));
+  return resolve(root, "approval-tokens", "rescue-apply", `${digest}.json`);
+}
+
+function rescueApplyTokenValue() {
+  return `rescue_apply_${randomBytes(32).toString("base64url")}`;
+}
+
+function currentWorkspaceHead(cwd, workspaceRoot) {
+  return git(["rev-parse", "--verify", "HEAD"], cwd, { allowFailure: true, workspaceRoot }) || null;
+}
+
+async function persistRescueApplyApproval(root, token, approvalTuple) {
+  const file = rescueApplyTokenFile(root, token);
+  await mkdir(dirname(file), { recursive: true });
+  await writeFile(file, `${JSON.stringify({
+    schema_version: RESCUE_APPLY_APPROVAL_SCHEMA_VERSION,
+    token_hash: sha256Hex(token),
+    approval_tuple: approvalTuple,
+    consumed_at: null,
+  }, null, 2)}\n`, { mode: 0o600 });
+}
+
+function rescueApplyRequestFailure(errorCode, message, provider = null, jobId = null) {
+  return {
+    ok: false,
+    event: "external_rescue_apply_approval_request",
+    provider,
+    parent_job_id: jobId,
+    source_content_transmission: SOURCE_CONTENT_TRANSMISSION.NOT_SENT,
+    status: errorCode,
+    error_code: errorCode,
+    error_message: message,
+  };
+}
+
+function rescueApplyFailure(errorCode, message, provider = null, jobId = null) {
+  return {
+    ok: false,
+    event: "external_rescue_apply",
+    provider,
+    parent_job_id: jobId,
+    source_content_transmission: SOURCE_CONTENT_TRANSMISSION.NOT_SENT,
+    status: "failed",
+    error_code: errorCode,
+    error_message: message,
+    mutations: [],
+  };
+}
+
+async function readRescueApplyApproval(root, token) {
+  if (typeof token !== "string" || token.length === 0) {
+    throw Object.assign(new Error("rescue apply approval token is required"), { code: "rescue_apply_approval_required" });
+  }
+  if (!token.startsWith("rescue_apply_")) {
+    throw Object.assign(new Error("invalid rescue apply token"), { code: "rescue_apply_token_invalid" });
+  }
+  const file = rescueApplyTokenFile(root, token);
+  let record;
+  try {
+    record = JSON.parse(await readFile(file, "utf8"));
+  } catch (error) {
+    if (error?.code === "ENOENT") {
+      throw Object.assign(new Error("invalid rescue apply token"), { code: "rescue_apply_token_invalid" });
+    }
+    throw error;
+  }
+  if (record?.token_hash !== sha256Hex(token) || record?.approval_tuple?.token_type !== "rescue_apply_token") {
+    throw Object.assign(new Error("invalid rescue apply token"), { code: "rescue_apply_token_invalid" });
+  }
+  if (record.consumed_at) {
+    throw Object.assign(new Error("rescue apply token has already been used"), { code: "rescue_apply_token_reused" });
+  }
+  if (Date.parse(record.approval_tuple.expires_at) <= Date.now()) {
+    throw Object.assign(new Error("rescue apply token has expired"), { code: "rescue_apply_token_expired" });
+  }
+  return { record, file };
+}
+
+async function consumeRescueApplyApproval(file, record) {
+  const consumed = {
+    ...record,
+    consumed_at: new Date().toISOString(),
+  };
+  await writeFile(file, `${JSON.stringify(consumed, null, 2)}\n`, { mode: 0o600 });
+  return consumed;
+}
+
+function gitStatusShort(cwd, workspaceRoot) {
+  const status = gitRaw(["status", "--short"], cwd, { allowFailure: true, workspaceRoot });
+  return status === null ? [] : status.split(/\r?\n/).filter(Boolean);
+}
+
+function buildRescueApplyRecord({
+  provider,
+  parentJobId,
+  cwd,
+  workspaceRoot,
+  status,
+  errorCode = null,
+  errorMessage = null,
+  patchHash = null,
+  appliedFiles = [],
+  mutations = [],
+}) {
+  const now = new Date().toISOString();
+  const completed = status === "completed";
+  const jobId = `job_${randomUUID()}`;
+  return freezeRecord({
+    id: jobId,
+    job_id: jobId,
+    target: provider ?? "api-reviewers",
+    provider: provider ?? "api-reviewers",
+    parent_job_id: parentJobId,
+    claude_session_id: null,
+    gemini_session_id: null,
+    kimi_session_id: null,
+    resume_chain: [],
+    pid_info: null,
+    mode: "rescue-apply",
+    mode_profile_name: "rescue-apply",
+    model: null,
+    cwd,
+    workspace_root: workspaceRoot,
+    containment: "none",
+    scope: "local-apply",
+    dispose_effective: false,
+    scope_base: null,
+    scope_paths: appliedFiles,
+    prompt_head: "",
+    review_metadata: null,
+    schema_spec: null,
+    binary: "git",
+    status,
+    started_at: now,
+    ended_at: now,
+    exit_code: completed ? 0 : 1,
+    error_code: completed ? null : errorCode,
+    error_message: completed ? null : errorMessage,
+    error_summary: completed ? null : errorMessage,
+    error_cause: completed ? null : "caller",
+    suggested_action: completed ? null : "Inspect the rescue apply failure and rerun apply-request if appropriate.",
+    external_review: freezeExternalReview({
+      marker: "EXTERNAL REVIEW",
+      provider: provider ?? "api-reviewers",
+      run_kind: "foreground",
+      job_id: parentJobId,
+      session_id: null,
+      parent_job_id: parentJobId,
+      mode: "rescue-apply",
+      scope: "local-apply",
+      scope_base: null,
+      scope_paths: appliedFiles,
+      source_content_transmission: SOURCE_CONTENT_TRANSMISSION.NOT_SENT,
+      review_slot: null,
+      disclosure: "Selected source content was not sent to an external provider; this was a local rescue apply.",
+    }),
+    disclosure_note: "Selected source content was not sent to an external provider; this was a local rescue apply.",
+    runtime_diagnostics: null,
+    result: null,
+    structured_output: {
+      apply: {
+        state: completed ? "applied" : "rejected",
+        patch_hash: patchHash,
+        applied_files: appliedFiles,
+      },
+    },
+    permission_denials: [],
+    mutations,
+    cost_usd: null,
+    usage: null,
+    auth_mode: null,
+    credential_ref: null,
+    credential_source: null,
+    endpoint: null,
+    http_status: null,
+    raw_model: null,
+    schema_version: SCHEMA_VERSION,
+  });
+}
+
+async function cmdApplyRequest(options) {
+  const jobId = options["job-id"] ?? options.job ?? null;
+  const cwd = resolve(options.cwd ?? process.cwd());
+  const workspaceRoot = bestEffortWorkspaceRoot(cwd);
+  const root = apiReviewerDataRoot(process.env, workspaceRoot);
+  try {
+    assertSafeJobId(jobId);
+    const record = await readApiReviewerMetaRecord(root, jobId);
+    if (record.mode !== "rescue" || record.status !== "completed") {
+      printJson(rescueApplyRequestFailure("rescue_apply_not_rescue_job", "rescue apply approval requires a completed rescue proposal job", record.provider ?? null, jobId));
+      process.exit(1);
+    }
+    const publicPatch = record.structured_output?.rescue_patch;
+    if (!publicPatch || typeof publicPatch.patch_hash !== "string" || !Array.isArray(publicPatch.proposed_files)) {
+      printJson(rescueApplyRequestFailure("rescue_patch_parse_failed", "rescue proposal job does not contain a parseable patch proposal", record.provider ?? null, jobId));
+      process.exit(1);
+    }
+    const patch = await readRescuePatchArtifact(root, jobId);
+    if (patch.patch_hash !== publicPatch.patch_hash) {
+      printJson(rescueApplyRequestFailure("rescue_patch_hash_mismatch", "rescue patch artifact does not match the proposal job", record.provider ?? null, jobId));
+      process.exit(1);
+    }
+    if (gitStatusShort(cwd, workspaceRoot).length > 0) {
+      printJson(rescueApplyRequestFailure("rescue_apply_dirty_worktree", "rescue apply approval requires a clean worktree", record.provider ?? null, jobId));
+      process.exit(1);
+    }
+    await validateRescuePatchSafety(patch, { workspaceRoot });
+    const check = gitApplyResult(["apply", "--check"], cwd, workspaceRoot, patch.unified_diff);
+    if (check.status !== 0 || check.error || check.signal) {
+      printJson(rescueApplyRequestFailure(
+        "rescue_apply_check_failed",
+        `git apply --check failed: ${gitFailureDetail(check, `git exited with status ${check.status}`)}`,
+        record.provider ?? null,
+        jobId,
+      ));
+      process.exit(1);
+    }
+    const issuedAt = new Date();
+    const expiresAt = new Date(issuedAt.getTime() + RESCUE_APPLY_TOKEN_TTL_MS).toISOString();
+    const token = rescueApplyTokenValue();
+    const approvalTuple = Object.freeze({
+      token_type: "rescue_apply_token",
+      provider: record.provider,
+      parent_job_id: jobId,
+      workspace_root: workspaceRoot,
+      head: currentWorkspaceHead(cwd, workspaceRoot),
+      patch_hash: patch.patch_hash,
+      proposed_files: patch.proposed_files,
+      apply_policy_version: RESCUE_APPLY_POLICY_VERSION,
+      issued_at: issuedAt.toISOString(),
+      expires_at: expiresAt,
+    });
+    await persistRescueApplyApproval(root, token, approvalTuple);
+    printJson({
+      event: "external_rescue_apply_approval_request",
+      provider: record.provider,
+      parent_job_id: jobId,
+      source_content_transmission: SOURCE_CONTENT_TRANSMISSION.NOT_SENT,
+      patch_hash: patch.patch_hash,
+      proposed_files: patch.proposed_files,
+      approval_question: `Allow applying the rescue patch proposal from ${record.provider} to this local workspace?`,
+      recommended_tool_justification: "This is source-free local apply approval. It does not send selected source to an external provider.",
+      approval_token: {
+        token_type: "rescue_apply_token",
+        value: token,
+        expires_at: expiresAt,
+      },
+    });
+  } catch (error) {
+    if (isUnsafeJobIdError(error)) {
+      printJson(rescueApplyRequestFailure("bad_args", "unsafe_job_id", null, jobId));
+      process.exit(1);
+    }
+    if (error?.code === "ENOENT") {
+      printJson(rescueApplyRequestFailure("rescue_apply_job_not_found", "rescue apply job not found", null, jobId));
+      process.exit(1);
+    }
+    printJson(rescueApplyRequestFailure(error?.code ?? "rescue_apply_failed", error?.message ?? String(error), null, jobId));
+    process.exit(1);
+  }
+}
+
+async function cmdApply(options) {
+  const jobId = options["job-id"] ?? options.job ?? null;
+  const token = options["approval-token"] ?? null;
+  const cwd = resolve(options.cwd ?? process.cwd());
+  const workspaceRoot = bestEffortWorkspaceRoot(cwd);
+  const root = apiReviewerDataRoot(process.env, workspaceRoot);
+  try {
+    assertSafeJobId(jobId);
+    const { record: tokenRecord, file: tokenFile } = await readRescueApplyApproval(root, token);
+    const proposalRecord = await readApiReviewerMetaRecord(root, jobId);
+    const tuple = tokenRecord.approval_tuple;
+    const publicPatch = proposalRecord.structured_output?.rescue_patch;
+    if (proposalRecord.mode !== "rescue" || proposalRecord.status !== "completed" || !publicPatch) {
+      throw Object.assign(new Error("rescue apply requires a completed rescue proposal job"), { code: "rescue_apply_not_rescue_job" });
+    }
+    const patch = await readRescuePatchArtifact(root, jobId);
+    if (tuple.parent_job_id !== jobId || tuple.provider !== proposalRecord.provider || tuple.workspace_root !== workspaceRoot) {
+      throw Object.assign(new Error("rescue apply token does not match this proposal"), { code: "rescue_apply_token_invalid" });
+    }
+    if (tuple.head !== currentWorkspaceHead(cwd, workspaceRoot)) {
+      throw Object.assign(new Error("rescue apply token head does not match current HEAD"), { code: "rescue_apply_head_mismatch" });
+    }
+    if (patch.patch_hash !== publicPatch.patch_hash || tuple.patch_hash !== patch.patch_hash) {
+      throw Object.assign(new Error("rescue proposal patch hash changed"), { code: "rescue_patch_hash_mismatch" });
+    }
+    const beforeStatus = gitStatusShort(cwd, workspaceRoot);
+    if (beforeStatus.length > 0) {
+      throw Object.assign(new Error("rescue apply requires a clean worktree"), { code: "rescue_apply_dirty_worktree" });
+    }
+    await validateRescuePatchSafety(patch, { workspaceRoot });
+    const check = gitApplyResult(["apply", "--check"], cwd, workspaceRoot, patch.unified_diff);
+    if (check.status !== 0 || check.error || check.signal) {
+      throw Object.assign(
+        new Error(`git apply --check failed: ${gitFailureDetail(check, `git exited with status ${check.status}`)}`),
+        { code: "rescue_apply_check_failed" },
+      );
+    }
+    await consumeRescueApplyApproval(tokenFile, tokenRecord);
+    const applied = gitApplyResult(["apply"], cwd, workspaceRoot, patch.unified_diff);
+    if (applied.status !== 0 || applied.error || applied.signal) {
+      throw Object.assign(
+        new Error(`git apply failed: ${gitFailureDetail(applied, `git exited with status ${applied.status}`)}`),
+        { code: "rescue_apply_failed" },
+      );
+    }
+    const mutations = gitStatusShort(cwd, workspaceRoot);
+    const applyRecord = buildRescueApplyRecord({
+      provider: proposalRecord.provider,
+      parentJobId: jobId,
+      cwd,
+      workspaceRoot,
+      status: "completed",
+      patchHash: patch.patch_hash,
+      appliedFiles: patch.proposed_files,
+      mutations,
+    });
+    const printableRecord = await persistRecordBestEffort(applyRecord, process.env, [], workspaceRoot);
+    printJson(printableRecord);
+  } catch (error) {
+    const code = isUnsafeJobIdError(error) ? "bad_args" : (error?.code ?? "rescue_apply_failed");
+    printJson(rescueApplyFailure(code, error?.message ?? String(error), null, jobId));
+    process.exit(1);
+  }
+}
+
 async function cmdDoctor(options) {
   const provider = options.provider;
   let providers;
@@ -4023,6 +4458,7 @@ function printApprovalCommandFailure(e, { provider, configuredSecretNames, scope
     status: reason,
     error_code: reason,
     error_message: redact(e?.message ?? String(e)),
+    source_content_transmission: SOURCE_CONTENT_TRANSMISSION.NOT_SENT,
   };
   const runtimeDiagnostics = buildRuntimeDiagnostics(e?.apiReviewersDiagnostics);
   if (runtimeDiagnostics) response.runtime_diagnostics = runtimeDiagnostics;
@@ -4040,6 +4476,9 @@ async function cmdApprovalRequest(options) {
     const providerConfigResult = await loadApprovalProviderConfig(provider);
     const cfg = providerConfigResult.cfg;
     configuredSecretNames = providerConfigResult.configuredSecretNames;
+    if (mode === "rescue" && !providerSupportsRescue(cfg)) {
+      throw runProviderFailure("rescue_capability_denied", "rescue_capability_denied: provider does not support API-backed rescue");
+    }
     options = await optionsWithPromptFile(options);
     if (!hasPromptText(options.prompt)) throw runBadArgs("bad_args: prompt is required (pass --prompt <focus>)");
     scopeInfo = await collectApprovalScopeAndPriorAttempts(options, mode);
@@ -4176,6 +4615,9 @@ async function cmdRun(options) {
       cfg = providerConfig(providers, provider);
     } catch (e) {
       throw runBadArgs(e.message);
+    }
+    if (mode === "rescue" && !providerSupportsRescue(cfg)) {
+      throw runProviderFailure("rescue_capability_denied", "rescue_capability_denied: provider does not support API-backed rescue");
     }
     options = await optionsWithPromptFile(options);
     Object.assign(runOptions, options);
@@ -4413,7 +4855,7 @@ async function cmdRun(options) {
       execution.approval_grant = runOptions.approval_grant;
     }
   }
-  const record = redactRecord(buildRecord({
+  const unredactedRecord = buildRecord({
     provider: provider ?? "api-reviewers",
     cfg,
     mode,
@@ -4422,7 +4864,18 @@ async function cmdRun(options) {
     execution,
     startedAt,
     endedAt: new Date().toISOString(),
-  }), process.env, cfg.env_keys, scopeInfo.files, credentialRedactionValues(execution));
+  });
+  await writeRescuePatchArtifact(
+    apiReviewerDataRoot(process.env, unredactedRecord.workspace_root ?? unredactedRecord.cwd),
+    unredactedRecord,
+  );
+  const record = redactRecord(
+    unredactedRecord,
+    process.env,
+    cfg.env_keys,
+    scopeInfo.files,
+    credentialRedactionValues(execution),
+  );
   const printableRecord = record.error_code === "sandbox_blocked"
     ? record
     : await persistRecordBestEffort(record, process.env, cfg.env_keys, record.workspace_root ?? record.cwd);
@@ -4436,6 +4889,8 @@ async function main() {
   const options = parseArgs(rest);
   if (cmd === "doctor" || cmd === "ping") return cmdDoctor(options);
   if (cmd === "approval-request") return cmdApprovalRequest(options);
+  if (cmd === "apply-request") return cmdApplyRequest(options);
+  if (cmd === "apply") return cmdApply(options);
   if (cmd === "run") return cmdRun(options);
   if (cmd === "result") return cmdResult(options);
   if (cmd === "help" || cmd === "--help" || cmd === "-h") {
@@ -4445,13 +4900,13 @@ async function main() {
     } catch (e) {
       printJson({
         ok: false,
-        commands: ["doctor", "ping", "approval-request", "approval-grant", "run", "result"],
+        commands: ["doctor", "ping", "approval-request", "approval-grant", "run", "result", "apply-request", "apply"],
         providers: [],
         ...providersConfigErrorFields(e),
       });
       process.exit(1);
     }
-    printJson({ ok: true, commands: ["doctor", "ping", "approval-request", "approval-grant", "run", "result"], providers: Object.keys(providers) });
+    printJson({ ok: true, commands: ["doctor", "ping", "approval-request", "approval-grant", "run", "result", "apply-request", "apply"], providers: Object.keys(providers) });
     return;
   }
   throw new Error(`unknown_command:${cmd}`);

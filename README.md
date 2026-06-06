@@ -441,10 +441,11 @@ contracts:
   `relay-grok:grok-setup`.
 - **DeepSeek:** `relay-deepseek:deepseek-review`,
   `relay-deepseek:deepseek-adversarial-review`,
-  `relay-deepseek:deepseek-custom-review`,
+  `relay-deepseek:deepseek-custom-review`, `relay-deepseek:deepseek-rescue`,
   `relay-deepseek:deepseek-setup`.
 - **GLM:** `relay-glm:glm-review`, `relay-glm:glm-adversarial-review`,
-  `relay-glm:glm-custom-review`, `relay-glm:glm-setup`.
+  `relay-glm:glm-custom-review`, `relay-glm:glm-rescue`,
+  `relay-glm:glm-setup`.
 
 The broad delegation skills remain available as fallback/overview entries:
 `relay-claude:claude-delegation`, `relay-gemini:gemini-delegation`,
@@ -464,6 +465,7 @@ Use relay-gemini:gemini-adversarial-review for an adversarial review of this des
 Use relay-kimi:kimi-rescue to investigate this failing test in the background, then use relay-kimi:kimi-status and relay-kimi:kimi-result.
 Use relay-grok:grok-review to review the current diff using my subscription.
 Use relay-deepseek:deepseek-custom-review to review selected files.
+Use relay-glm:glm-rescue to propose a patch for this branch; ask me before local apply.
 ```
 
 ## Deferred command docs
@@ -498,6 +500,7 @@ command docs:
 | `/deepseek-adversarial-review [focus]` / `/glm-adversarial-review [focus]` | Packaged | Direct API-backed forced-dissent review. |
 | `/grok-custom-review --scope-paths <files>` | Packaged | Subscription-backed Grok CLI review of explicit files. |
 | `/deepseek-custom-review --scope-paths <files>` / `/glm-custom-review --scope-paths <files>` | Packaged | Direct API-backed review of explicit files. |
+| `/deepseek-rescue [task]` / `/glm-rescue [task]` | Packaged | Direct API-backed patch proposal over selected source, followed by a separate source-free local `apply-request` / `apply` approval flow. |
 | `/claude-rescue <task>` / `/gemini-rescue <task>` / `/kimi-rescue <task>` | Packaged | Background investigation or fix by the target CLI. |
 | `/claude-status` / `/gemini-status` / `/kimi-status` | Packaged | List active and recent jobs for the current workspace. |
 | `/claude-result <job-id>` / `/gemini-result <job-id>` / `/kimi-result <job-id>` | Packaged | Show the persisted result for a job. |
@@ -569,6 +572,12 @@ inspect the terminal record.
 - **Rescue is write-capable.** Rescue modes are intended for investigation and
   fixes. Review and adversarial-review are the safer choices when you only want
   critique.
+- **Direct API rescue is proposal-first.** DeepSeek/GLM rescue sends selected
+  source only for an external patch proposal. Applying the returned diff is a
+  separate local step using `apply-request --job-id <rescue_job_id>` and
+  `apply --job-id <rescue_job_id> --approval-token <approval_token.value>`.
+  The apply approval is source-free and reports
+  `source_content_transmission: "not_sent"`.
 - **Foreground cancellation is terminal-owned.** Use Ctrl+C for foreground
   target runs. Companion cancellation is for background jobs.
 

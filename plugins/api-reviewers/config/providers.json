@@ -5,6 +5,9 @@
     "env_keys": ["DEEPSEEK_API_KEY"],
     "base_url": "https://api.deepseek.com",
     "model": "deepseek-v4-pro",
+    "capabilities": {
+      "rescue": true
+    },
     "max_prompt_chars": 600000,
     "request_defaults": {
       "thinking": {
@@ -20,6 +23,9 @@
     "env_keys": ["ZAI_API_KEY"],
     "base_url": "https://api.z.ai/api/coding/paas/v4",
     "model": "glm-5.1",
+    "capabilities": {
+      "rescue": true
+    },
     "max_prompt_chars": 600000,
     "request_defaults": {
       "thinking": {

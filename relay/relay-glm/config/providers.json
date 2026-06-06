@@ -7,6 +7,9 @@
     ],
     "base_url": "https://api.z.ai/api/coding/paas/v4",
     "model": "glm-5.1",
+    "capabilities": {
+      "rescue": true
+    },
     "max_prompt_chars": 600000,
     "request_defaults": {
       "thinking": {

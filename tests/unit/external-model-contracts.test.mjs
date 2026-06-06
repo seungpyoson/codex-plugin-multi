@@ -68,7 +68,7 @@ test("Claude/Gemini/Kimi docs route explicit file scopes to custom-review before
 });
 
 test("external model contract docs are generated from one shared source", () => {
-  assert.equal(EXTERNAL_MODEL_CONTRACT_DOC_TARGETS.length, 74);
+  assert.equal(EXTERNAL_MODEL_CONTRACT_DOC_TARGETS.length, 78);
 
   const targetPaths = new Set();
   for (const target of EXTERNAL_MODEL_CONTRACT_DOC_TARGETS) {
@@ -161,8 +161,12 @@ test("shared review contracts keep upstream-parity review-only guarantees", () =
 });
 
 test("shared rescue contracts are write-capable forwarders, separate from review", () => {
-  const rescueDocs = EXTERNAL_MODEL_CONTRACT_DOC_TARGETS
-    .filter((target) => target.workflow === "rescue" || target.path.endsWith("claude-rescue.md"))
+  const companionRescueDocs = EXTERNAL_MODEL_CONTRACT_DOC_TARGETS
+    .filter((target) => target.workflow === "rescue" && target.family !== "api-reviewers" || target.path.endsWith("claude-rescue.md"))
+    .map((target) => renderExternalModelContractDoc(target))
+    .join("\n");
+  const apiRescueDocs = EXTERNAL_MODEL_CONTRACT_DOC_TARGETS
+    .filter((target) => target.family === "api-reviewers" && target.workflow === "rescue")
     .map((target) => renderExternalModelContractDoc(target))
     .join("\n");
 
@@ -172,12 +176,17 @@ test("shared rescue contracts are write-capable forwarders, separate from review
     "Forward the user's task text after routing documented flags; do not replace it with a new plan.",
     "Return the runtime output verbatim; do not hide failed or incomplete rescue work.",
   ]) {
-    assert.match(rescueDocs, new RegExp(escapeRegExp(required)));
+    assert.match(companionRescueDocs, new RegExp(escapeRegExp(required)));
   }
 
-  assert.match(rescueDocs, /--background/);
-  assert.match(rescueDocs, /--foreground/);
-  assert.doesNotMatch(rescueDocs, /api-reviewer\.mjs[\s\S]*--mode\s+rescue/);
+  assert.match(companionRescueDocs, /--background/);
+  assert.match(companionRescueDocs, /--foreground/);
+  assert.doesNotMatch(companionRescueDocs, /api-reviewer\.mjs[\s\S]*--mode\s+rescue/);
+  assert.match(apiRescueDocs, /API-backed rescue proposal contract/);
+  assert.match(apiRescueDocs, /--mode rescue/);
+  assert.match(apiRescueDocs, /apply-request --job-id/);
+  assert.match(apiRescueDocs, /apply --job-id/);
+  assert.match(apiRescueDocs, /source_content_transmission:\s*"not_sent"/);
 });
 
 test("provider-specific external model contracts keep mechanical safety clauses", () => {
@@ -281,18 +290,22 @@ test("provider-specific external model contracts keep mechanical safety clauses"
     [
       "plugins/relay-deepseek/commands/deepseek-adversarial-review.md",
       "plugins/relay-deepseek/commands/deepseek-custom-review.md",
+      "plugins/relay-deepseek/commands/deepseek-rescue.md",
       "plugins/relay-deepseek/commands/deepseek-review.md",
       "plugins/relay-deepseek/commands/deepseek-setup.md",
       "plugins/relay-deepseek/skills/deepseek-adversarial-review/SKILL.md",
       "plugins/relay-deepseek/skills/deepseek-custom-review/SKILL.md",
+      "plugins/relay-deepseek/skills/deepseek-rescue/SKILL.md",
       "plugins/relay-deepseek/skills/deepseek-review/SKILL.md",
       "plugins/relay-deepseek/skills/deepseek-setup/SKILL.md",
       "plugins/relay-glm/commands/glm-adversarial-review.md",
       "plugins/relay-glm/commands/glm-custom-review.md",
+      "plugins/relay-glm/commands/glm-rescue.md",
       "plugins/relay-glm/commands/glm-review.md",
       "plugins/relay-glm/commands/glm-setup.md",
       "plugins/relay-glm/skills/glm-adversarial-review/SKILL.md",
       "plugins/relay-glm/skills/glm-custom-review/SKILL.md",
+      "plugins/relay-glm/skills/glm-rescue/SKILL.md",
       "plugins/relay-glm/skills/glm-review/SKILL.md",
       "plugins/relay-glm/skills/glm-setup/SKILL.md",
     ],

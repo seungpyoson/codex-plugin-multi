@@ -147,7 +147,8 @@ const API_PROVIDERS = [
   },
 ];
 
-const REVIEWER_WORKFLOWS = ["review", "adversarial-review", "custom-review", "setup"];
+const API_REVIEWER_WORKFLOWS = ["review", "adversarial-review", "custom-review", "rescue", "setup"];
+const GROK_REVIEWER_WORKFLOWS = ["review", "adversarial-review", "custom-review", "setup"];
 
 const GROK_PROVIDER = {
   plugin: "grok",
@@ -759,6 +760,7 @@ function apiWorkflowDescription(provider, workflow) {
   if (workflow === "review") return `Use when asking ${provider.display} direct API to review the current branch diff.`;
   if (workflow === "adversarial-review") return `Use when asking ${provider.display} direct API for an adversarial review.`;
   if (workflow === "custom-review") return `Use when asking ${provider.display} direct API to review explicit files.`;
+  if (workflow === "rescue") return `Use when asking ${provider.display} direct API to propose a patch, followed by approved local apply.`;
   if (workflow === "setup") return `Use when checking ${provider.display} direct API reviewer readiness.`;
   throw new Error(`unknown api workflow: ${workflow}`);
 }
@@ -767,6 +769,7 @@ function apiCommandDescription(provider, workflow) {
   if (workflow === "review") return `Ask ${provider.display} API to review the current branch diff.`;
   if (workflow === "adversarial-review") return `Ask ${provider.display} API to challenge the current branch diff adversarially.`;
   if (workflow === "custom-review") return `Ask ${provider.display} API to review explicit files.`;
+  if (workflow === "rescue") return `Ask ${provider.display} API to propose a patch for the current branch diff.`;
   if (workflow === "setup") return `Check ${provider.display} API reviewer readiness.`;
   throw new Error(`unknown api workflow: ${workflow}`);
 }
@@ -774,6 +777,7 @@ function apiCommandDescription(provider, workflow) {
 function apiArgumentHint(workflow) {
   if (workflow === "review" || workflow === "adversarial-review") return "\"[--scope-base REF] [review prompt]\"";
   if (workflow === "custom-review") return "\"--scope-paths <files> [review prompt]\"";
+  if (workflow === "rescue") return "\"[--scope-base REF] [rescue task]\"";
   if (workflow === "setup") return "\"\"";
   throw new Error(`unknown api workflow: ${workflow}`);
 }
@@ -831,6 +835,29 @@ function apiApprovalContract() {
   );
 }
 
+function apiRescueProposalContract() {
+  return lines(
+    "## API Rescue Proposal Contract",
+    "This is an API-backed rescue proposal contract, not a review approval and not direct provider editing.",
+    "The provider may only return an `API_RESCUE_PATCH_PROPOSAL_V1` JSON patch proposal with inert verification commands.",
+    "The rescue `run` command must leave `mutations: []`; provider-suggested verification commands are displayed only and must not be executed by this contract.",
+    "Render the completed rescue proposal JobRecord before any local apply step.",
+    "Do not treat source-send approval for the rescue proposal as approval to apply the patch.",
+  );
+}
+
+function apiApplyApprovalContract(provider) {
+  return lines(
+    "## Source-Free Apply Contract",
+    "Applying a rescue proposal is a separate local action.",
+    `After a completed ${provider.display} rescue proposal, run \`${apiReviewerEntrypoint(provider)} apply-request --job-id "<rescue_job_id>"\`.`,
+    "Render the apply-request output and request explicit approval with its `recommended_tool_justification`.",
+    `Only after approval, run \`${apiReviewerEntrypoint(provider)} apply --job-id "<rescue_job_id>" --approval-token "<approval_token.value>"\`.`,
+    "`apply-request` and `apply` are source-free local commands and should report `source_content_transmission: \"not_sent\"`.",
+    "If apply approval is denied or apply fails, do not retry with stale tokens; report `error_code`, `error_message`, `mutations`, and `structured_output.apply` when present.",
+  );
+}
+
 function apiFailureRenderingContract() {
   return lines(
     "## Failure Rendering",
@@ -865,6 +892,7 @@ function apiCommandDoc(target) {
 
   const mode = workflow;
   const scope = workflow === "custom-review" ? "custom" : "branch-diff";
+  const promptKind = workflow === "rescue" ? "rescue task text" : "review prompt text";
   const scopeClause = workflow === "custom-review"
     ? [
       "`$ARGUMENTS` starts with `--scope-paths <files>` followed by review prompt text.",
@@ -875,17 +903,20 @@ function apiCommandDoc(target) {
       `Run \`${apiReviewerEntrypoint(provider)} run --provider ${provider.provider} --mode ${mode} --scope custom --scope-paths "<file1>,<file2>" --approval-token "<approval_token.value>" --lifecycle-events markdown --prompt "<prompt text>"\`.`,
     ]
     : [
-      "`$ARGUMENTS` is optional `--scope-base REF` followed by review prompt text.",
+      `\`$ARGUMENTS\` is optional \`--scope-base REF\` followed by ${promptKind}.`,
       "Route `--scope-base REF` before `--prompt` and pass the remaining prompt text to `--prompt`.",
       `Run \`${apiReviewerEntrypoint(provider)} approval-request --provider ${provider.provider} --mode ${mode} --scope branch-diff --scope-base REF --prompt "<prompt text>"\`.`,
       `Run \`${apiReviewerEntrypoint(provider)} run --provider ${provider.provider} --mode ${mode} --scope branch-diff --scope-base REF --approval-token "<approval_token.value>" --lifecycle-events markdown --prompt "<prompt text>"\`.`,
     ];
+  const apiModeContract = workflow === "rescue"
+    ? [apiRescueProposalContract(), apiApplyApprovalContract(provider)]
+    : [reviewOnlyContract()];
   return fm + lines(
     sharedHeader(title),
     apiEntrypointContract(provider),
     `Scope: \`${scope}\`. Preserve raw \`$ARGUMENTS\` except for documented routing.`,
     scopeClause,
-    reviewOnlyContract(),
+    apiModeContract,
     apiApprovalContract(),
     apiFailureRenderingContract(),
     lifecycleRenderingContract(),
@@ -922,9 +953,17 @@ function apiSkillDoc(target) {
       "Replace `<file1>,<file2>` with comma- or newline-separated concrete relative `--scope-paths`.",
       "Expand globs before running; do not pass glob characters or space-separated paths.",
     ]
+    : workflow === "rescue"
+      ? [
+        `Run \`${apiReviewerEntrypoint(provider)} approval-request --provider ${provider.provider} --mode rescue --scope branch-diff --scope-base REF --prompt "<focus>"\`.`,
+        `Run \`${apiReviewerEntrypoint(provider)} run --provider ${provider.provider} --mode rescue --scope branch-diff --scope-base REF --approval-token "<approval_token.value>" --lifecycle-events markdown --prompt "<focus>"\`.`,
+      ]
     : [
       `Run \`${apiReviewerEntrypoint(provider)} run --provider ${provider.provider} --mode ${workflow} --scope branch-diff --scope-base REF --approval-token "<approval_token.value>" --lifecycle-events markdown --prompt "<focus>"\`.`,
     ];
+  const apiModeContract = workflow === "rescue"
+    ? [apiRescueProposalContract(), apiApplyApprovalContract(provider)]
+    : [reviewOnlyContract()];
   return fm + lines(
     sharedHeader(title),
     `Use skill \`${apiPluginName(provider)}:${skillName}\`. Command doc: \`../../commands/${skillName}.md\`.`,
@@ -932,7 +971,7 @@ function apiSkillDoc(target) {
     `Scope: \`${scope}\`.`,
     "`<focus>` is the user's review prompt or focus area.",
     scopeLines,
-    reviewOnlyContract(),
+    apiModeContract,
     apiApprovalContract(),
     apiFailureRenderingContract(),
     lifecycleRenderingContract(),
@@ -1193,7 +1232,7 @@ function claudeCompatibilityTargets() {
 
 function apiReviewerTargets() {
   return [
-    ...API_PROVIDERS.flatMap((provider) => REVIEWER_WORKFLOWS.flatMap((workflow) => [
+    ...API_PROVIDERS.flatMap((provider) => API_REVIEWER_WORKFLOWS.flatMap((workflow) => [
       {
         kind: "command",
         family: "api-reviewers",
@@ -1214,7 +1253,7 @@ function apiReviewerTargets() {
 
 function grokTargets() {
   return [
-    ...REVIEWER_WORKFLOWS.flatMap((workflow) => [
+    ...GROK_REVIEWER_WORKFLOWS.flatMap((workflow) => [
       {
         kind: "command",
         family: "grok",

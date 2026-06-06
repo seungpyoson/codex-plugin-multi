@@ -202,6 +202,23 @@ function mockResponse(model, id = "chatcmpl-test", content = substantiveReviewFi
   });
 }
 
+function rescueProposalFixture({ nextText = "hello from rescue proposal\n", unifiedDiff = null } = {}) {
+  return JSON.stringify({
+    schema_version: 1,
+    summary: "Update the selected seed file.",
+    unified_diff: unifiedDiff ?? [
+      "diff --git a/seed.txt b/seed.txt",
+      "--- a/seed.txt",
+      "+++ b/seed.txt",
+      "@@ -1,1 +1,1 @@",
+      "-hello from selected scope",
+      `+${nextText.trimEnd()}`,
+      "",
+    ].join("\n"),
+    verification: ["npm test"],
+  });
+}
+
 function assertDirectApiNotSent(record, displayName) {
   assert.equal(record.external_review.source_content_transmission, "not_sent");
   assert.equal(
@@ -453,6 +470,38 @@ function makeEmptyBranchDiffWorkspace() {
   git(cwd, ["commit", "-m", "seed"]);
   git(cwd, ["checkout", "-b", "feature"]);
   return cwd;
+}
+
+async function createRescueApplyApproval({ cwd = makeEmptyBranchDiffWorkspace(), dataDir = mkdtempSync(path.join(tmpdir(), "api-reviewers-rescue-apply-")), mockId = "chatcmpl-rescue-apply", proposal = rescueProposalFixture() } = {}) {
+  const rescueRun = await run([
+    "run",
+    "--provider", "deepseek",
+    "--mode", "rescue",
+    "--scope", "custom",
+    "--scope-paths", "seed.txt",
+    "--foreground",
+    "--prompt", "Propose a patch for seed.txt.",
+  ], {
+    cwd,
+    env: {
+      API_REVIEWERS_PLUGIN_DATA: dataDir,
+      API_REVIEWERS_MOCK_RESPONSE: mockResponse("deepseek-v4-pro", mockId, proposal),
+      DEEPSEEK_API_KEY: "secret-test-value",
+    },
+  });
+  assert.equal(rescueRun.status, 0, rescueRun.stderr || rescueRun.stdout);
+  const rescueRecord = parseJson(rescueRun.stdout);
+
+  const applyRequest = await run(["apply-request", "--job-id", rescueRecord.job_id], {
+    cwd,
+    env: {
+      API_REVIEWERS_PLUGIN_DATA: dataDir,
+      API_REVIEWERS_TEST_AUTO_APPROVAL: "0",
+    },
+  });
+  assert.equal(applyRequest.status, 0, applyRequest.stderr || applyRequest.stdout);
+  const approval = parseJson(applyRequest.stdout);
+  return { cwd, dataDir, rescueRecord, approval };
 }
 
 test("doctor reports DeepSeek API-key readiness by key name only", async () => {
@@ -797,7 +846,7 @@ test("help malformed providers config returns structured diagnostic", async () =
   const parsed = parseJson(result.stdout);
   assert.equal(parsed.ok, false);
   assert.equal(parsed.status, "config_error");
-  assert.deepEqual(parsed.commands, ["doctor", "ping", "approval-request", "approval-grant", "run", "result"]);
+  assert.deepEqual(parsed.commands, ["doctor", "ping", "approval-request", "approval-grant", "run", "result", "apply-request", "apply"]);
   assert.deepEqual(parsed.providers, []);
   assert.match(parsed.error_message, /providers config unreadable/);
   assert.doesNotMatch(result.stdout, /secret-test-value/);
@@ -1458,9 +1507,9 @@ for (const scenario of [
   },
   {
     name: "invalid mode",
-    args: ["run", "--provider", "glm", "--mode", "rescue", "--foreground", "--prompt", "Check this."],
+    args: ["run", "--provider", "glm", "--mode", "unsupported-mode", "--foreground", "--prompt", "Check this."],
     provider: "glm",
-    message: /unsupported --mode rescue/,
+    message: /unsupported --mode unsupported-mode/,
   },
 ]) {
   test(`run ${scenario.name} returns structured JobRecord`, async () => {
@@ -1483,6 +1532,838 @@ for (const scenario of [
     assert.doesNotMatch(result.stdout, /secret-test-value/);
   });
 }
+
+test("direct API rescue run records patch proposal without mutating workspace", async () => {
+  const cwd = makeWorkspace();
+  const dataDir = mkdtempSync(path.join(tmpdir(), "api-reviewers-rescue-proposal-"));
+  const seedPath = path.join(cwd, "seed.txt");
+  const before = readFileSync(seedPath, "utf8");
+  const result = await run([
+    "run",
+    "--provider", "deepseek",
+    "--mode", "rescue",
+    "--scope", "custom",
+    "--scope-paths", "seed.txt",
+    "--foreground",
+    "--prompt", "Propose a patch for seed.txt.",
+  ], {
+    cwd,
+    env: {
+      API_REVIEWERS_PLUGIN_DATA: dataDir,
+      API_REVIEWERS_MOCK_RESPONSE: mockResponse("deepseek-v4-pro", "chatcmpl-rescue-proposal", rescueProposalFixture()),
+      DEEPSEEK_API_KEY: "secret-test-value",
+    },
+  });
+
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  const record = parseJson(result.stdout);
+  assert.equal(record.status, "completed");
+  assert.equal(record.mode, "rescue");
+  assert.equal(record.provider, "deepseek");
+  assert.equal(record.external_review.source_content_transmission, "sent");
+  assert.deepEqual(record.mutations, []);
+  assert.equal(readFileSync(seedPath, "utf8"), before);
+  assert.equal(record.structured_output?.rescue_patch?.schema_version, 1);
+  assert.equal(record.structured_output.rescue_patch.summary, "Update the selected seed file.");
+  assert.match(record.structured_output.rescue_patch.patch_hash, /^[a-f0-9]{64}$/);
+  assert.deepEqual(record.structured_output.rescue_patch.proposed_files, ["seed.txt"]);
+  assert.deepEqual(record.structured_output.rescue_patch.verification, ["npm test"]);
+  assert.doesNotMatch(result.stdout, /secret-test-value/);
+});
+
+test("direct API rescue approval-request discloses patch proposal source send", async () => {
+  const cwd = makeWorkspace();
+  const dataDir = mkdtempSync(path.join(tmpdir(), "api-reviewers-rescue-approval-"));
+  const result = await run([
+    "approval-request",
+    "--provider", "deepseek",
+    "--mode", "rescue",
+    "--scope", "custom",
+    "--scope-paths", "seed.txt",
+    "--prompt", "Propose a patch for seed.txt.",
+  ], {
+    cwd,
+    env: {
+      API_REVIEWERS_PLUGIN_DATA: dataDir,
+      DEEPSEEK_API_KEY: "secret-test-value",
+    },
+  });
+
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  const approval = parseJson(result.stdout);
+  assert.equal(approval.source_content_transmission, "not_sent");
+  assert.match(approval.disclosure, /external rescue patch proposal/);
+  assert.match(approval.approval_question, /external rescue patch proposal/);
+  assert.doesNotMatch(approval.disclosure, /external review/);
+  assert.doesNotMatch(approval.approval_question, /external review/);
+  assert.doesNotMatch(result.stdout, /secret-test-value/);
+});
+
+test("direct API rescue rejects capability-disabled providers before source send", async () => {
+  const pluginRoot = makeInstalledApiReviewersRoot();
+  const companion = path.join(pluginRoot, "scripts", "api-reviewer.mjs");
+  writeFileSync(path.join(pluginRoot, "config", "providers.json"), JSON.stringify({
+    deepseek: {
+      display_name: "DeepSeek",
+      auth_mode: "api_key",
+      env_keys: ["DEEPSEEK_API_KEY"],
+      base_url: "https://api.deepseek.com",
+      model: "deepseek-v4-pro",
+      max_prompt_chars: 600000,
+    },
+  }, null, 2));
+  const cwd = makeWorkspace();
+  const dataDir = mkdtempSync(path.join(tmpdir(), "api-reviewers-rescue-capability-"));
+  const common = [
+    "--provider", "deepseek",
+    "--mode", "rescue",
+    "--scope", "custom",
+    "--scope-paths", "seed.txt",
+    "--prompt", "Propose a patch for seed.txt.",
+  ];
+  const env = {
+    API_REVIEWERS_PLUGIN_DATA: dataDir,
+    API_REVIEWERS_MOCK_RESPONSE: mockResponse("deepseek-v4-pro", "chatcmpl-rescue-disabled", rescueProposalFixture()),
+    DEEPSEEK_API_KEY: "secret-test-value",
+  };
+
+  const approval = await run(["approval-request", ...common], { cwd, companion, env });
+  assert.equal(approval.status, 1);
+  const approvalRecord = parseJson(approval.stdout);
+  assert.equal(approvalRecord.error_code, "rescue_capability_denied");
+  assert.equal(approvalRecord.source_content_transmission, "not_sent");
+
+  const result = await run(["run", ...common, "--foreground"], {
+    cwd,
+    companion,
+    env: {
+      ...env,
+      API_REVIEWERS_TEST_AUTO_APPROVAL: "0",
+    },
+  });
+  assert.equal(result.status, 1);
+  const record = parseJson(result.stdout);
+  assert.equal(record.error_code, "rescue_capability_denied");
+  assert.equal(record.external_review.source_content_transmission, "not_sent");
+  assert.equal(readFileSync(path.join(cwd, "seed.txt"), "utf8"), "hello from selected scope\n");
+  assert.doesNotMatch(result.stdout, /secret-test-value/);
+});
+
+test("direct API review modes ignore patch-looking provider output", async () => {
+  for (const mode of ["review", "adversarial-review", "custom-review"]) {
+    const cwd = makeWorkspace();
+    const dataDir = mkdtempSync(path.join(tmpdir(), `api-reviewers-rescue-readonly-${mode}-`));
+    const result = await run([
+      "run",
+      "--provider", "deepseek",
+      "--mode", mode,
+      "--scope", "custom",
+      "--scope-paths", "seed.txt",
+      "--foreground",
+      "--prompt", "Review seed.txt.",
+    ], {
+      cwd,
+      env: {
+        API_REVIEWERS_PLUGIN_DATA: dataDir,
+        API_REVIEWERS_MOCK_RESPONSE: mockResponse("deepseek-v4-pro", `chatcmpl-${mode}-patch-looking`, rescueProposalFixture()),
+        DEEPSEEK_API_KEY: "secret-test-value",
+      },
+    });
+
+    assert.equal(result.status, 1);
+    const record = parseJson(result.stdout);
+    assert.equal(record.mode, mode);
+    assert.equal(record.structured_output, null);
+    assert.deepEqual(record.mutations, []);
+    assert.equal(readFileSync(path.join(cwd, "seed.txt"), "utf8"), "hello from selected scope\n");
+  }
+});
+
+test("direct API rescue malformed proposal fails closed without mutation", async () => {
+  const cwd = makeWorkspace();
+  const dataDir = mkdtempSync(path.join(tmpdir(), "api-reviewers-rescue-malformed-"));
+  const result = await run([
+    "run",
+    "--provider", "deepseek",
+    "--mode", "rescue",
+    "--scope", "custom",
+    "--scope-paths", "seed.txt",
+    "--foreground",
+    "--prompt", "Propose a patch for seed.txt.",
+  ], {
+    cwd,
+    env: {
+      API_REVIEWERS_PLUGIN_DATA: dataDir,
+      API_REVIEWERS_MOCK_RESPONSE: mockResponse("deepseek-v4-pro", "chatcmpl-rescue-malformed", "not-json"),
+      DEEPSEEK_API_KEY: "secret-test-value",
+    },
+  });
+
+  assert.equal(result.status, 1);
+  const record = parseJson(result.stdout);
+  assert.equal(record.status, "failed");
+  assert.equal(record.error_code, "rescue_patch_parse_failed");
+  assert.equal(record.external_review.source_content_transmission, "sent");
+  assert.equal(record.structured_output, null);
+  assert.deepEqual(record.mutations, []);
+  assert.equal(readFileSync(path.join(cwd, "seed.txt"), "utf8"), "hello from selected scope\n");
+  assert.doesNotMatch(result.stdout, /secret-test-value/);
+});
+
+test("direct API rescue rejects unsupported patch payload shapes without mutation", async () => {
+  for (const scenario of [
+    {
+      name: "binary",
+      diff: [
+        "diff --git a/seed.txt b/seed.txt",
+        "GIT binary patch",
+        "literal 0",
+        "",
+      ].join("\n"),
+      errorCode: "rescue_patch_binary_unsupported",
+    },
+    {
+      name: "mode change",
+      diff: [
+        "diff --git a/seed.txt b/seed.txt",
+        "old mode 100644",
+        "new mode 100755",
+        "--- a/seed.txt",
+        "+++ b/seed.txt",
+        "@@ -1 +1 @@",
+        "-old",
+        "+new",
+        "",
+      ].join("\n"),
+      errorCode: "rescue_patch_unsupported_file_change",
+    },
+    {
+      name: "rename",
+      diff: [
+        "diff --git a/seed.txt b/renamed.txt",
+        "similarity index 100%",
+        "rename from seed.txt",
+        "rename to renamed.txt",
+        "",
+      ].join("\n"),
+      errorCode: "rescue_patch_unsupported_file_change",
+    },
+    {
+      name: "symlink file mode",
+      diff: [
+        "diff --git a/link.txt b/link.txt",
+        "new file mode 120000",
+        "--- /dev/null",
+        "+++ b/link.txt",
+        "@@ -0,0 +1 @@",
+        "+target",
+        "",
+      ].join("\n"),
+      errorCode: "rescue_patch_unsupported_file_change",
+    },
+  ]) {
+    const cwd = makeWorkspace();
+    const dataDir = mkdtempSync(path.join(tmpdir(), `api-reviewers-rescue-unsupported-${scenario.name.replace(/\W+/g, "-")}-`));
+    const result = await run([
+      "run",
+      "--provider", "deepseek",
+      "--mode", "rescue",
+      "--scope", "custom",
+      "--scope-paths", "seed.txt",
+      "--foreground",
+      "--prompt", "Propose a patch for seed.txt.",
+    ], {
+      cwd,
+      env: {
+        API_REVIEWERS_PLUGIN_DATA: dataDir,
+        API_REVIEWERS_MOCK_RESPONSE: mockResponse("deepseek-v4-pro", `chatcmpl-rescue-unsupported-${scenario.name}`, rescueProposalFixture({ unifiedDiff: scenario.diff })),
+        DEEPSEEK_API_KEY: "secret-test-value",
+      },
+    });
+
+    assert.equal(result.status, 1, scenario.name);
+    const record = parseJson(result.stdout);
+    assert.equal(record.error_code, scenario.errorCode, scenario.name);
+    assert.equal(record.external_review.source_content_transmission, "sent");
+    assert.deepEqual(record.mutations, []);
+    assert.equal(readFileSync(path.join(cwd, "seed.txt"), "utf8"), "hello from selected scope\n");
+  }
+});
+
+test("direct API rescue apply-request emits source-free apply approval", async () => {
+  const cwd = makeWorkspace();
+  const dataDir = mkdtempSync(path.join(tmpdir(), "api-reviewers-rescue-apply-request-"));
+  const rescueRun = await run([
+    "run",
+    "--provider", "deepseek",
+    "--mode", "rescue",
+    "--scope", "custom",
+    "--scope-paths", "seed.txt",
+    "--foreground",
+    "--prompt", "Propose a patch for seed.txt.",
+  ], {
+    cwd,
+    env: {
+      API_REVIEWERS_PLUGIN_DATA: dataDir,
+      API_REVIEWERS_MOCK_RESPONSE: mockResponse("deepseek-v4-pro", "chatcmpl-rescue-apply-request", rescueProposalFixture()),
+      DEEPSEEK_API_KEY: "secret-test-value",
+    },
+  });
+  assert.equal(rescueRun.status, 0, rescueRun.stderr || rescueRun.stdout);
+  const rescueRecord = parseJson(rescueRun.stdout);
+
+  const applyRequest = await run([
+    "apply-request",
+    "--job-id", rescueRecord.job_id,
+  ], {
+    cwd,
+    env: {
+      API_REVIEWERS_PLUGIN_DATA: dataDir,
+      API_REVIEWERS_TEST_AUTO_APPROVAL: "0",
+    },
+  });
+
+  assert.equal(applyRequest.status, 0, applyRequest.stderr || applyRequest.stdout);
+  const approval = parseJson(applyRequest.stdout);
+  assert.equal(approval.event, "external_rescue_apply_approval_request");
+  assert.equal(approval.source_content_transmission, "not_sent");
+  assert.equal(approval.provider, "deepseek");
+  assert.equal(approval.parent_job_id, rescueRecord.job_id);
+  assert.equal(approval.patch_hash, rescueRecord.structured_output.rescue_patch.patch_hash);
+  assert.deepEqual(approval.proposed_files, ["seed.txt"]);
+  assert.match(approval.approval_token.value, /^rescue_apply_/);
+  assert.doesNotMatch(applyRequest.stdout, /secret-test-value/);
+});
+
+test("direct API rescue apply-request rejects dirty worktree before token emission", async () => {
+  const cwd = makeEmptyBranchDiffWorkspace();
+  const dataDir = mkdtempSync(path.join(tmpdir(), "api-reviewers-rescue-apply-request-dirty-"));
+  const rescueRun = await run([
+    "run",
+    "--provider", "deepseek",
+    "--mode", "rescue",
+    "--scope", "custom",
+    "--scope-paths", "seed.txt",
+    "--foreground",
+    "--prompt", "Propose a patch for seed.txt.",
+  ], {
+    cwd,
+    env: {
+      API_REVIEWERS_PLUGIN_DATA: dataDir,
+      API_REVIEWERS_MOCK_RESPONSE: mockResponse("deepseek-v4-pro", "chatcmpl-rescue-apply-request-dirty", rescueProposalFixture()),
+      DEEPSEEK_API_KEY: "secret-test-value",
+    },
+  });
+  assert.equal(rescueRun.status, 0, rescueRun.stderr || rescueRun.stdout);
+  const rescueRecord = parseJson(rescueRun.stdout);
+
+  writeFileSync(path.join(cwd, "seed.txt"), "dirty local change\n");
+  const applyRequest = await run(["apply-request", "--job-id", rescueRecord.job_id], {
+    cwd,
+    env: {
+      API_REVIEWERS_PLUGIN_DATA: dataDir,
+      API_REVIEWERS_TEST_AUTO_APPROVAL: "0",
+    },
+  });
+
+  assert.equal(applyRequest.status, 1);
+  const failure = parseJson(applyRequest.stdout);
+  assert.equal(failure.error_code, "rescue_apply_dirty_worktree");
+  assert.equal(failure.source_content_transmission, "not_sent");
+  assert.equal(failure.approval_token, undefined);
+});
+
+test("direct API rescue apply-request rejects non-applicable patch before token emission", async () => {
+  const cwd = makeEmptyBranchDiffWorkspace();
+  const dataDir = mkdtempSync(path.join(tmpdir(), "api-reviewers-rescue-apply-request-check-"));
+  const badDiff = [
+    "diff --git a/seed.txt b/seed.txt",
+    "--- a/seed.txt",
+    "+++ b/seed.txt",
+    "@@ -1,1 +1,1 @@",
+    "-not the current file",
+    "+hello from rescue proposal",
+    "",
+  ].join("\n");
+  const rescueRun = await run([
+    "run",
+    "--provider", "deepseek",
+    "--mode", "rescue",
+    "--scope", "custom",
+    "--scope-paths", "seed.txt",
+    "--foreground",
+    "--prompt", "Propose a patch for seed.txt.",
+  ], {
+    cwd,
+    env: {
+      API_REVIEWERS_PLUGIN_DATA: dataDir,
+      API_REVIEWERS_MOCK_RESPONSE: mockResponse("deepseek-v4-pro", "chatcmpl-rescue-apply-request-check", rescueProposalFixture({ unifiedDiff: badDiff })),
+      DEEPSEEK_API_KEY: "secret-test-value",
+    },
+  });
+  assert.equal(rescueRun.status, 0, rescueRun.stderr || rescueRun.stdout);
+  const rescueRecord = parseJson(rescueRun.stdout);
+
+  const applyRequest = await run(["apply-request", "--job-id", rescueRecord.job_id], {
+    cwd,
+    env: {
+      API_REVIEWERS_PLUGIN_DATA: dataDir,
+      API_REVIEWERS_TEST_AUTO_APPROVAL: "0",
+    },
+  });
+
+  assert.equal(applyRequest.status, 1);
+  const failure = parseJson(applyRequest.stdout);
+  assert.equal(failure.error_code, "rescue_apply_check_failed");
+  assert.equal(failure.source_content_transmission, "not_sent");
+  assert.equal(failure.approval_token, undefined);
+  assert.equal(readFileSync(path.join(cwd, "seed.txt"), "utf8"), "hello from selected scope\n");
+});
+
+test("direct API rescue apply-request rejects unsafe patch paths before token emission", async () => {
+  const cases = [
+    {
+      name: "parent traversal",
+      diff: [
+        "diff --git a/../outside.txt b/../outside.txt",
+        "--- a/../outside.txt",
+        "+++ b/../outside.txt",
+        "@@ -1 +1 @@",
+        "-old",
+        "+new",
+        "",
+      ].join("\n"),
+    },
+    {
+      name: ".git path",
+      diff: [
+        "diff --git a/.git/config b/.git/config",
+        "--- a/.git/config",
+        "+++ b/.git/config",
+        "@@ -1 +1 @@",
+        "-old",
+        "+new",
+        "",
+      ].join("\n"),
+    },
+    {
+      name: "absolute path",
+      diff: [
+        "diff --git a/seed.txt b//tmp/outside.txt",
+        "--- a/seed.txt",
+        "+++ b//tmp/outside.txt",
+        "@@ -1 +1 @@",
+        "-old",
+        "+new",
+        "",
+      ].join("\n"),
+    },
+    {
+      name: "windows drive path",
+      diff: [
+        "diff --git a/seed.txt b/C:/outside.txt",
+        "--- a/seed.txt",
+        "+++ b/C:/outside.txt",
+        "@@ -1 +1 @@",
+        "-old",
+        "+new",
+        "",
+      ].join("\n"),
+    },
+    {
+      name: "runtime denylist",
+      diff: [
+        "diff --git a/plugins/api-reviewers/scripts/api-reviewer.mjs b/plugins/api-reviewers/scripts/api-reviewer.mjs",
+        "--- a/plugins/api-reviewers/scripts/api-reviewer.mjs",
+        "+++ b/plugins/api-reviewers/scripts/api-reviewer.mjs",
+        "@@ -1 +1 @@",
+        "-old",
+        "+new",
+        "",
+      ].join("\n"),
+    },
+  ];
+  for (const scenario of cases) {
+    const cwd = makeWorkspace();
+    const dataDir = mkdtempSync(path.join(tmpdir(), `api-reviewers-rescue-unsafe-${scenario.name.replace(/\W+/g, "-")}-`));
+    const rescueRun = await run([
+      "run",
+      "--provider", "deepseek",
+      "--mode", "rescue",
+      "--scope", "custom",
+      "--scope-paths", "seed.txt",
+      "--foreground",
+      "--prompt", "Propose a patch for seed.txt.",
+    ], {
+      cwd,
+      env: {
+        API_REVIEWERS_PLUGIN_DATA: dataDir,
+        API_REVIEWERS_MOCK_RESPONSE: mockResponse("deepseek-v4-pro", `chatcmpl-rescue-${scenario.name}`, rescueProposalFixture({ unifiedDiff: scenario.diff })),
+        DEEPSEEK_API_KEY: "secret-test-value",
+      },
+    });
+    assert.equal(rescueRun.status, 0, rescueRun.stderr || rescueRun.stdout);
+    const rescueRecord = parseJson(rescueRun.stdout);
+
+    const applyRequest = await run(["apply-request", "--job-id", rescueRecord.job_id], {
+      cwd,
+      env: {
+        API_REVIEWERS_PLUGIN_DATA: dataDir,
+        API_REVIEWERS_TEST_AUTO_APPROVAL: "0",
+      },
+    });
+
+    assert.equal(applyRequest.status, 1, `${scenario.name}: ${applyRequest.stdout}`);
+    const approval = parseJson(applyRequest.stdout);
+    assert.equal(approval.error_code, "rescue_patch_unsafe_path", scenario.name);
+    assert.equal(approval.source_content_transmission, "not_sent");
+    assert.equal(approval.approval_token, undefined);
+  }
+});
+
+test("direct API rescue apply-request rejects existing symlink and parent symlink escape", async () => {
+  const outside = mkdtempSync(path.join(tmpdir(), "api-reviewers-rescue-outside-"));
+  for (const scenario of [
+    {
+      name: "existing symlink",
+      setup(cwd) {
+        symlinkSync(path.join(outside, "target.txt"), path.join(cwd, "linked.txt"));
+      },
+      diff: [
+        "diff --git a/linked.txt b/linked.txt",
+        "--- a/linked.txt",
+        "+++ b/linked.txt",
+        "@@ -1 +1 @@",
+        "-old",
+        "+new",
+        "",
+      ].join("\n"),
+    },
+    {
+      name: "parent symlink escape",
+      setup(cwd) {
+        symlinkSync(outside, path.join(cwd, "escape"));
+      },
+      diff: [
+        "diff --git a/escape/new.txt b/escape/new.txt",
+        "--- a/escape/new.txt",
+        "+++ b/escape/new.txt",
+        "@@ -1 +1 @@",
+        "-old",
+        "+new",
+        "",
+      ].join("\n"),
+    },
+  ]) {
+    const cwd = makeWorkspace();
+    scenario.setup(cwd);
+    const dataDir = mkdtempSync(path.join(tmpdir(), `api-reviewers-rescue-symlink-${scenario.name.replace(/\W+/g, "-")}-`));
+    const rescueRun = await run([
+      "run",
+      "--provider", "deepseek",
+      "--mode", "rescue",
+      "--scope", "custom",
+      "--scope-paths", "seed.txt",
+      "--foreground",
+      "--prompt", "Propose a patch for seed.txt.",
+    ], {
+      cwd,
+      env: {
+        API_REVIEWERS_PLUGIN_DATA: dataDir,
+        API_REVIEWERS_MOCK_RESPONSE: mockResponse("deepseek-v4-pro", `chatcmpl-rescue-${scenario.name}`, rescueProposalFixture({ unifiedDiff: scenario.diff })),
+        DEEPSEEK_API_KEY: "secret-test-value",
+      },
+    });
+    assert.equal(rescueRun.status, 0, rescueRun.stderr || rescueRun.stdout);
+    const rescueRecord = parseJson(rescueRun.stdout);
+    const applyRequest = await run(["apply-request", "--job-id", rescueRecord.job_id], {
+      cwd,
+      env: {
+        API_REVIEWERS_PLUGIN_DATA: dataDir,
+        API_REVIEWERS_TEST_AUTO_APPROVAL: "0",
+      },
+    });
+
+    assert.equal(applyRequest.status, 1, `${scenario.name}: ${applyRequest.stdout}`);
+    const approval = parseJson(applyRequest.stdout);
+    assert.equal(approval.error_code, "rescue_patch_unsafe_path");
+    assert.equal(approval.approval_token, undefined);
+  }
+});
+
+test("direct API rescue apply rejects invalid approval without mutation", async () => {
+  const cwd = makeWorkspace();
+  const dataDir = mkdtempSync(path.join(tmpdir(), "api-reviewers-rescue-apply-invalid-"));
+  const rescueRun = await run([
+    "run",
+    "--provider", "deepseek",
+    "--mode", "rescue",
+    "--scope", "custom",
+    "--scope-paths", "seed.txt",
+    "--foreground",
+    "--prompt", "Propose a patch for seed.txt.",
+  ], {
+    cwd,
+    env: {
+      API_REVIEWERS_PLUGIN_DATA: dataDir,
+      API_REVIEWERS_MOCK_RESPONSE: mockResponse("deepseek-v4-pro", "chatcmpl-rescue-apply-invalid", rescueProposalFixture()),
+      DEEPSEEK_API_KEY: "secret-test-value",
+    },
+  });
+  assert.equal(rescueRun.status, 0, rescueRun.stderr || rescueRun.stdout);
+  const rescueRecord = parseJson(rescueRun.stdout);
+
+  const apply = await run([
+    "apply",
+    "--job-id", rescueRecord.job_id,
+    "--approval-token", "rescue_apply_invalid",
+  ], {
+    cwd,
+    env: {
+      API_REVIEWERS_PLUGIN_DATA: dataDir,
+      API_REVIEWERS_TEST_AUTO_APPROVAL: "0",
+    },
+  });
+
+  assert.equal(apply.status, 1);
+  const record = parseJson(apply.stdout);
+  assert.equal(record.error_code, "rescue_apply_token_invalid");
+  assert.equal(record.source_content_transmission, "not_sent");
+  assert.equal(readFileSync(path.join(cwd, "seed.txt"), "utf8"), "hello from selected scope\n");
+});
+
+test("direct API rescue apply requires approval token without mutation", async () => {
+  const { cwd, dataDir, rescueRecord } = await createRescueApplyApproval({
+    mockId: "chatcmpl-rescue-apply-missing-token",
+  });
+
+  const apply = await run([
+    "apply",
+    "--job-id", rescueRecord.job_id,
+  ], {
+    cwd,
+    env: {
+      API_REVIEWERS_PLUGIN_DATA: dataDir,
+      API_REVIEWERS_TEST_AUTO_APPROVAL: "0",
+    },
+  });
+
+  assert.equal(apply.status, 1);
+  const failure = parseJson(apply.stdout);
+  assert.equal(failure.error_code, "rescue_apply_approval_required");
+  assert.equal(failure.source_content_transmission, "not_sent");
+  assert.equal(readFileSync(path.join(cwd, "seed.txt"), "utf8"), "hello from selected scope\n");
+});
+
+test("direct API rescue apply rejects dirty worktree without mutation", async () => {
+  const { cwd, dataDir, rescueRecord, approval } = await createRescueApplyApproval({
+    mockId: "chatcmpl-rescue-apply-dirty",
+  });
+  writeFileSync(path.join(cwd, "seed.txt"), "dirty local change\n");
+
+  const apply = await run([
+    "apply",
+    "--job-id", rescueRecord.job_id,
+    "--approval-token", approval.approval_token.value,
+  ], {
+    cwd,
+    env: {
+      API_REVIEWERS_PLUGIN_DATA: dataDir,
+      API_REVIEWERS_TEST_AUTO_APPROVAL: "0",
+    },
+  });
+
+  assert.equal(apply.status, 1);
+  const failure = parseJson(apply.stdout);
+  assert.equal(failure.error_code, "rescue_apply_dirty_worktree");
+  assert.equal(failure.source_content_transmission, "not_sent");
+  assert.equal(readFileSync(path.join(cwd, "seed.txt"), "utf8"), "dirty local change\n");
+});
+
+test("direct API rescue apply changes file and records source-free apply JobRecord", async () => {
+  const { cwd, dataDir, rescueRecord, approval } = await createRescueApplyApproval({
+    mockId: "chatcmpl-rescue-apply-success",
+  });
+
+  const apply = await run([
+    "apply",
+    "--job-id", rescueRecord.job_id,
+    "--approval-token", approval.approval_token.value,
+  ], {
+    cwd,
+    env: {
+      API_REVIEWERS_PLUGIN_DATA: dataDir,
+      API_REVIEWERS_TEST_AUTO_APPROVAL: "0",
+    },
+  });
+
+  assert.equal(apply.status, 0, apply.stderr || apply.stdout);
+  const record = parseJson(apply.stdout);
+  assert.equal(record.status, "completed");
+  assert.equal(record.parent_job_id, rescueRecord.job_id);
+  assert.equal(record.mode, "rescue-apply");
+  assert.equal(record.external_review.source_content_transmission, "not_sent");
+  assert.equal(record.structured_output.apply.state, "applied");
+  assert.equal(record.structured_output.apply.patch_hash, rescueRecord.structured_output.rescue_patch.patch_hash);
+  assert.deepEqual(record.structured_output.apply.applied_files, ["seed.txt"]);
+  assert.ok(record.mutations.includes(" M seed.txt"), JSON.stringify(record.mutations));
+  assert.equal(readFileSync(path.join(cwd, "seed.txt"), "utf8"), "hello from rescue proposal\n");
+});
+
+test("direct API rescue apply can create a new regular file and records it as untracked", async () => {
+  const newFileDiff = [
+    "diff --git a/rescue-created.txt b/rescue-created.txt",
+    "new file mode 100644",
+    "--- /dev/null",
+    "+++ b/rescue-created.txt",
+    "@@ -0,0 +1 @@",
+    "+created by rescue",
+    "",
+  ].join("\n");
+  const { cwd, dataDir, rescueRecord, approval } = await createRescueApplyApproval({
+    mockId: "chatcmpl-rescue-apply-new-file",
+    proposal: rescueProposalFixture({ unifiedDiff: newFileDiff }),
+  });
+
+  const apply = await run([
+    "apply",
+    "--job-id", rescueRecord.job_id,
+    "--approval-token", approval.approval_token.value,
+  ], {
+    cwd,
+    env: {
+      API_REVIEWERS_PLUGIN_DATA: dataDir,
+      API_REVIEWERS_TEST_AUTO_APPROVAL: "0",
+    },
+  });
+
+  assert.equal(apply.status, 0, apply.stderr || apply.stdout);
+  const record = parseJson(apply.stdout);
+  assert.deepEqual(record.structured_output.apply.applied_files, ["rescue-created.txt"]);
+  assert.ok(record.mutations.includes("?? rescue-created.txt"), JSON.stringify(record.mutations));
+  assert.equal(readFileSync(path.join(cwd, "rescue-created.txt"), "utf8"), "created by rescue\n");
+});
+
+test("direct API rescue apply rejects reused approval token after success", async () => {
+  const { cwd, dataDir, rescueRecord, approval } = await createRescueApplyApproval({
+    mockId: "chatcmpl-rescue-apply-reuse",
+  });
+
+  const firstApply = await run([
+    "apply",
+    "--job-id", rescueRecord.job_id,
+    "--approval-token", approval.approval_token.value,
+  ], {
+    cwd,
+    env: {
+      API_REVIEWERS_PLUGIN_DATA: dataDir,
+      API_REVIEWERS_TEST_AUTO_APPROVAL: "0",
+    },
+  });
+  assert.equal(firstApply.status, 0, firstApply.stderr || firstApply.stdout);
+
+  const secondApply = await run([
+    "apply",
+    "--job-id", rescueRecord.job_id,
+    "--approval-token", approval.approval_token.value,
+  ], {
+    cwd,
+    env: {
+      API_REVIEWERS_PLUGIN_DATA: dataDir,
+      API_REVIEWERS_TEST_AUTO_APPROVAL: "0",
+    },
+  });
+
+  assert.equal(secondApply.status, 1);
+  const failure = parseJson(secondApply.stdout);
+  assert.equal(failure.error_code, "rescue_apply_token_reused");
+  assert.equal(failure.source_content_transmission, "not_sent");
+  assert.equal(readFileSync(path.join(cwd, "seed.txt"), "utf8"), "hello from rescue proposal\n");
+});
+
+test("direct API rescue apply rejects HEAD drift without mutation", async () => {
+  const { cwd, dataDir, rescueRecord, approval } = await createRescueApplyApproval({
+    mockId: "chatcmpl-rescue-apply-head-drift",
+  });
+  git(cwd, ["commit", "--allow-empty", "-m", "drift"]);
+
+  const apply = await run([
+    "apply",
+    "--job-id", rescueRecord.job_id,
+    "--approval-token", approval.approval_token.value,
+  ], {
+    cwd,
+    env: {
+      API_REVIEWERS_PLUGIN_DATA: dataDir,
+      API_REVIEWERS_TEST_AUTO_APPROVAL: "0",
+    },
+  });
+
+  assert.equal(apply.status, 1);
+  const failure = parseJson(apply.stdout);
+  assert.equal(failure.error_code, "rescue_apply_head_mismatch");
+  assert.equal(failure.source_content_transmission, "not_sent");
+  assert.equal(readFileSync(path.join(cwd, "seed.txt"), "utf8"), "hello from selected scope\n");
+});
+
+test("direct API rescue apply rejects expired approval token without mutation", async () => {
+  const { cwd, dataDir, rescueRecord, approval } = await createRescueApplyApproval({
+    mockId: "chatcmpl-rescue-apply-expired",
+  });
+  const tokenDir = path.join(dataDir, "approval-tokens", "rescue-apply");
+  const tokenFiles = readdirSync(tokenDir).filter((name) => name.endsWith(".json"));
+  assert.equal(tokenFiles.length, 1);
+  const tokenPath = path.join(tokenDir, tokenFiles[0]);
+  const tokenRecord = JSON.parse(readFileSync(tokenPath, "utf8"));
+  tokenRecord.approval_tuple.expires_at = new Date(Date.now() - 1000).toISOString();
+  writeFileSync(tokenPath, `${JSON.stringify(tokenRecord, null, 2)}\n`);
+
+  const apply = await run([
+    "apply",
+    "--job-id", rescueRecord.job_id,
+    "--approval-token", approval.approval_token.value,
+  ], {
+    cwd,
+    env: {
+      API_REVIEWERS_PLUGIN_DATA: dataDir,
+      API_REVIEWERS_TEST_AUTO_APPROVAL: "0",
+    },
+  });
+
+  assert.equal(apply.status, 1);
+  const failure = parseJson(apply.stdout);
+  assert.equal(failure.error_code, "rescue_apply_token_expired");
+  assert.equal(failure.source_content_transmission, "not_sent");
+  assert.equal(readFileSync(path.join(cwd, "seed.txt"), "utf8"), "hello from selected scope\n");
+});
+
+test("direct API rescue apply rejects proposal patch-hash drift without mutation", async () => {
+  const { cwd, dataDir, rescueRecord, approval } = await createRescueApplyApproval({
+    mockId: "chatcmpl-rescue-apply-hash-drift",
+  });
+  const metaPath = apiReviewerMetaPath(dataDir, rescueRecord.job_id);
+  const meta = JSON.parse(readFileSync(metaPath, "utf8"));
+  meta.structured_output.rescue_patch.patch_hash = "0".repeat(64);
+  writeFileSync(metaPath, `${JSON.stringify(meta, null, 2)}\n`);
+
+  const apply = await run([
+    "apply",
+    "--job-id", rescueRecord.job_id,
+    "--approval-token", approval.approval_token.value,
+  ], {
+    cwd,
+    env: {
+      API_REVIEWERS_PLUGIN_DATA: dataDir,
+      API_REVIEWERS_TEST_AUTO_APPROVAL: "0",
+    },
+  });
+
+  assert.equal(apply.status, 1);
+  const failure = parseJson(apply.stdout);
+  assert.equal(failure.error_code, "rescue_patch_hash_mismatch");
+  assert.equal(failure.source_content_transmission, "not_sent");
+  assert.equal(readFileSync(path.join(cwd, "seed.txt"), "utf8"), "hello from selected scope\n");
+});
 
 test("run malformed providers config returns structured JobRecord", async () => {
   const pluginRoot = makeInstalledApiReviewersRoot();

@@ -7,6 +7,9 @@
     ],
     "base_url": "https://api.deepseek.com",
     "model": "deepseek-v4-pro",
+    "capabilities": {
+      "rescue": true
+    },
     "max_prompt_chars": 600000,
     "request_defaults": {
       "thinking": {
