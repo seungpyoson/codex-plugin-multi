@@ -168,6 +168,15 @@ test("review-quality exports carry maintainer-facing JSDoc", () => {
   assert.match(evaluator, /\/\*\*[\s\S]*seeded review packet[\s\S]*export function evaluateSeededReviewPacket/);
 });
 
+test("Sonar source exclusions cover synced provider script packages", () => {
+  for (const path of [
+    "plugins/kimi/scripts/**",
+    "plugins/agy/scripts/**",
+  ]) {
+    assert.match(sonarConfig, new RegExp(path.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+  }
+});
+
 test("pull-request CI runs the enforced coverage gate", () => {
   assert.match(workflow, /COVERAGE_ENFORCE_TARGET:\s*"1"/);
   assert.match(workflow, /Run coverage gate[\s\S]*CODEX_PLUGIN_SKIP_SMOKE:\s*"1"/);
