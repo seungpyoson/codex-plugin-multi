@@ -1,13 +1,14 @@
 #!/usr/bin/env node
-import { createHash, randomUUID } from "node:crypto";
-import { existsSync, readFileSync, realpathSync } from "node:fs";
+import { randomUUID } from "node:crypto";
+import { existsSync, lstatSync, readFileSync, readdirSync } from "node:fs";
 import { spawnSync } from "node:child_process";
-import { isAbsolute, relative, resolve as resolvePath } from "node:path";
+import { resolve as resolvePath } from "node:path";
 import { tmpdir } from "node:os";
 
 import { parseArgs } from "./lib/args.mjs";
 import { spawnAgy } from "./lib/agy.mjs";
 import { writeCancelMarker, consumeCancelMarker } from "./lib/cancel-marker.mjs";
+import { setupContainment } from "./lib/containment.mjs";
 import {
   cancelNoPidInfoSuggestedAction,
   cancelUnverifiableSuggestedAction,
@@ -20,8 +21,7 @@ import {
   scopeBaseForOptions,
   writePromptSidecar,
 } from "./lib/companion-common.mjs";
-import { gitEnv, resolveGitBinary } from "./lib/git-binary.mjs";
-import { cleanGitEnv } from "./lib/git-env.mjs";
+import { diffSourceFiles } from "./lib/diff-source.mjs";
 import { verifyPidInfo } from "./lib/identity.mjs";
 import { buildJobRecord, externalReviewForInvocation } from "./lib/job-record.mjs";
 import { sanitizeTargetEnv } from "./lib/provider-env.mjs";
@@ -40,6 +40,7 @@ import {
   upsertJob,
   writeJobFile,
 } from "./lib/state.mjs";
+import { populateScope } from "./lib/scope.mjs";
 import { resolveWorkspaceRoot } from "./lib/workspace.mjs";
 
 const PROVIDER_DISPLAY = "Google Antigravity CLI";
@@ -57,6 +58,19 @@ function commandBinary(options) {
 
 function commandCwd(options) {
   return resolvePath(typeof options.cwd === "string" && options.cwd ? options.cwd : process.cwd());
+}
+
+function parseReviewTimeoutMs(cliValue, fallback = DEFAULT_TIMEOUT_MS) {
+  const raw = cliValue ?? null;
+  if (raw === null || raw === "") return fallback;
+  if (typeof raw !== "string") {
+    fail("bad_args", `--timeout-ms must be a positive integer number of milliseconds; got ${JSON.stringify(raw)}`);
+  }
+  const parsed = Number(raw);
+  if (!Number.isSafeInteger(parsed) || parsed <= 0) {
+    fail("bad_args", `--timeout-ms must be a positive integer number of milliseconds; got ${JSON.stringify(raw)}`);
+  }
+  return parsed;
 }
 
 function doctor(rest) {
@@ -95,106 +109,53 @@ function doctor(rest) {
   });
 }
 
-function git(cwd, workspaceRoot, args) {
-  const result = spawnSync(resolveGitBinary({ cwd, workspaceRoot }), ["-C", cwd, ...args], {
-    encoding: "utf8",
-    env: gitEnv(cleanGitEnv()),
-  });
-  if (result.status !== 0) {
-    throw new Error(String(result.stderr ?? "").trim() || `git ${args.join(" ")} failed`);
+function listContainedFiles(root, dir = root, prefix = "") {
+  const out = [];
+  for (const name of readdirSync(dir)) {
+    if (name === ".git") continue;
+    const full = resolvePath(dir, name);
+    const rel = prefix ? `${prefix}/${name}` : name;
+    const lst = lstatSync(full);
+    if (lst.isSymbolicLink()) continue;
+    if (lst.isDirectory()) out.push(...listContainedFiles(root, full, rel));
+    else out.push(rel);
   }
-  return String(result.stdout ?? "");
+  return out.sort((a, b) => a.localeCompare(b));
 }
 
-function realpathOrResolved(filePath) {
-  try {
-    return realpathSync.native(filePath);
-  } catch {
-    return resolvePath(filePath);
-  }
+function auditSourceFiles(containmentPath) {
+  if (!containmentPath || !existsSync(containmentPath)) return [];
+  return listContainedFiles(containmentPath).map((path) => ({
+    path,
+    content: readFileSync(resolvePath(containmentPath, path)),
+  }));
 }
 
-function assertInsideWorkspace(rootReal, candidateReal, originalPath) {
-  const relPath = relative(rootReal, candidateReal);
-  if (!relPath || relPath === ".." || relPath.startsWith("../") || relPath.startsWith("..\\") || isAbsolute(relPath)) {
-    throw new Error(`scope_base_invalid: custom scope path escapes workspace: ${originalPath}`);
-  }
-  return relPath.replace(/\\/g, "/");
-}
-
-function resolveScopedReadPath(cwd, filePath, { mustExist }) {
-  if (typeof filePath !== "string" || !filePath.trim()) {
-    throw new Error("scope_paths_required: custom-review requires explicit --scope-paths");
-  }
-  if (isAbsolute(filePath)) {
-    throw new Error(`scope_base_invalid: custom scope path must be relative: ${filePath}`);
-  }
-  const rootReal = realpathOrResolved(cwd);
-  const lexicalPath = resolvePath(rootReal, filePath);
-  assertInsideWorkspace(rootReal, lexicalPath, filePath);
-  if (!existsSync(lexicalPath)) {
-    if (mustExist) throw new Error(`scope_empty: custom scope path does not exist: ${filePath}`);
-    return null;
-  }
-  const realPath = realpathSync.native(lexicalPath);
-  assertInsideWorkspace(rootReal, realPath, filePath);
-  return realPath;
-}
-
-function selectedFilesForBranchDiff(cwd, workspaceRoot, base) {
-  const diffBase = typeof base === "string" && base ? base : "HEAD";
-  const names = git(cwd, workspaceRoot, ["diff", "--name-only", diffBase, "HEAD"])
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter(Boolean);
-  return names.map((filePath) => {
-    const absPath = resolveScopedReadPath(cwd, filePath, { mustExist: false });
-    const content = absPath ? readFileSync(absPath, "utf8") : "";
-    return {
-      path: filePath,
-      bytes: Buffer.byteLength(content),
-      content_hash: createHash("sha256").update(content).digest("hex"),
-      text: content,
-    };
-  });
-}
-
-function assertScopedRelativePath(cwd, filePath) {
-  return resolveScopedReadPath(cwd, filePath, { mustExist: true });
-}
-
-function selectedFilesForCustomScope(cwd, scopePaths) {
-  if (!Array.isArray(scopePaths) || scopePaths.length === 0) {
-    throw new Error("scope_paths_required: custom-review requires explicit --scope-paths");
-  }
-  return scopePaths.map((filePath) => {
-    const absPath = assertScopedRelativePath(cwd, filePath);
-    const content = readFileSync(absPath, "utf8");
-    return {
-      path: filePath,
-      bytes: Buffer.byteLength(content),
-      content_hash: createHash("sha256").update(content).digest("hex"),
-      text: content,
-    };
-  });
-}
-
-function resolveReviewScope({ mode, requestedScope, scopeBase, scopePaths, cwd, workspaceRoot }) {
+function resolveReviewScope({ mode, requestedScope, scopeBase, scopePaths }) {
   const scope = mode === "custom-review" || requestedScope === "custom" ? "custom" : "branch-diff";
   if (scope === "custom") {
     return {
       scope,
       scopeBase: null,
       scopePaths,
-      selectedFiles: selectedFilesForCustomScope(cwd, scopePaths),
     };
   }
   return {
     scope,
     scopeBase,
-    scopePaths: null,
-    selectedFiles: selectedFilesForBranchDiff(cwd, workspaceRoot, scopeBase),
+    scopePaths,
   };
+}
+
+function selectedFilesForPrompt({ cwd, workspaceRoot, scope, scopeBase, scopePaths, containmentPath }) {
+  if (scope === "branch-diff") {
+    const diffFiles = diffSourceFiles(cwd, scopeBase, {
+      scopePaths,
+      workspaceRoot,
+    });
+    if (diffFiles.length > 0) return diffFiles;
+  }
+  return auditSourceFiles(containmentPath);
 }
 
 function promptFor({ userPrompt, selectedFiles, mode, cwd, scope, scopeBase, scopePaths }) {
@@ -220,7 +181,12 @@ function hasSubstantiveReview(text) {
 }
 
 function sourceFilesForRedaction(selectedFiles) {
-  return selectedFiles.map(({ path, text }) => ({ path, text }));
+  return selectedFiles.map(({ path, text, content }) => ({
+    path,
+    text: typeof text === "string"
+      ? text
+      : Buffer.from(content ?? "").toString("utf8"),
+  }));
 }
 
 function jobsDir(cwd) {
@@ -325,6 +291,33 @@ function writeRunningRecord(invocation, pidInfo, { promptText, selectedFiles, ti
   persistRecord(invocation.workspace_root, record);
 }
 
+function profileForScope(mode, scope) {
+  return {
+    name: mode,
+    sandbox: true,
+    add_dir: true,
+    containment: "worktree",
+    scope,
+  };
+}
+
+function persistAndPrintScopeFailure(invocation, lifecycleEvents, error) {
+  const record = buildJobRecord(
+    invocation,
+    {
+      exitCode: null,
+      parsed: null,
+      pidInfo: null,
+      agySessionId: null,
+      errorMessage: error?.message ?? String(error),
+    },
+    [],
+  );
+  persistRecord(invocation.workspace_root, record);
+  printLifecycleJson(record, lifecycleEvents);
+  process.exit(2);
+}
+
 async function run(rest) {
   const { options, positionals } = parseArgs(rest, {
     valueOptions: [
@@ -341,7 +334,7 @@ async function run(rest) {
   const cwd = commandCwd(options);
   const workspaceRoot = resolveWorkspaceRoot(cwd);
   const binary = commandBinary(options);
-  const timeoutMs = options["timeout-ms"] ? Number(options["timeout-ms"]) : DEFAULT_TIMEOUT_MS;
+  const timeoutMs = parseReviewTimeoutMs(options["timeout-ms"]);
   const scopeBase = scopeBaseForOptions(options);
   const scopePaths = parseScopePathsOption(options["scope-paths"]);
   const lifecycleEvents = parseLifecycleEventsMode(options["lifecycle-events"]);
@@ -350,14 +343,13 @@ async function run(rest) {
   const userPrompt = positionals.join(" ").trim();
   const {
     scope,
-    selectedFiles,
+    scopeBase: resolvedScopeBase,
+    scopePaths: resolvedScopePaths,
   } = resolveReviewScope({
     mode,
     requestedScope: options.scope ?? null,
     scopeBase,
     scopePaths,
-    cwd,
-    workspaceRoot,
   });
   const invocation = buildInvocation({
     jobId,
@@ -367,20 +359,43 @@ async function run(rest) {
     binary,
     model: options.model ?? null,
     scope,
-    scopeBase,
-    scopePaths,
+    scopeBase: resolvedScopeBase,
+    scopePaths: resolvedScopePaths,
     userPrompt,
     startedAt,
   });
-  const promptText = promptFor({
-    userPrompt,
-    selectedFiles,
-    mode,
-    cwd,
-    scope,
-    scopeBase,
-    scopePaths,
-  });
+  const profile = profileForScope(mode, scope);
+  let containment = null;
+  let selectedFiles = [];
+  let promptText;
+  try {
+    containment = setupContainment(profile, cwd);
+    populateScope(profile, cwd, containment.path, {
+      scopeBase: invocation.scope_base,
+      scopePaths: invocation.scope_paths,
+      workspaceRoot,
+    }, containment);
+    selectedFiles = selectedFilesForPrompt({
+      cwd,
+      workspaceRoot,
+      scope,
+      scopeBase: invocation.scope_base,
+      scopePaths: invocation.scope_paths,
+      containmentPath: containment.path,
+    });
+    promptText = promptFor({
+      userPrompt,
+      selectedFiles,
+      mode,
+      cwd,
+      scope,
+      scopeBase: invocation.scope_base,
+      scopePaths: invocation.scope_paths,
+    });
+  } catch (error) {
+    if (containment) { try { containment.cleanup(); } catch { /* best-effort */ } }
+    persistAndPrintScopeFailure(invocation, lifecycleEvents, error);
+  }
   writePromptSidecar(jobsDir(workspaceRoot), jobId, promptText);
   const sidecarPrompt = consumePromptSidecar(jobsDir(workspaceRoot), jobId) ?? promptText;
   printLifecycleJson(
@@ -391,12 +406,12 @@ async function run(rest) {
   let execution;
   try {
     execution = await spawnAgy(
-      { name: mode, sandbox: true, add_dir: true },
+      profile,
       {
         binary,
-        cwd,
+        cwd: containment.path,
         env: process.env,
-        includeDirPath: cwd,
+        includeDirPath: containment.path,
         model: options.model ?? null,
         promptText: sidecarPrompt,
         timeoutMs,
@@ -447,6 +462,7 @@ async function run(rest) {
       [],
     );
     persistRecord(invocation.workspace_root, cancelledRecord);
+    if (containment) { try { containment.cleanup(); } catch { /* best-effort */ } }
     printLifecycleJson(cancelledRecord, lifecycleEvents);
     process.exit(0);
   }
@@ -503,6 +519,7 @@ async function run(rest) {
     sourceRedactionRequired: true,
   }, []);
   persistRecord(invocation.workspace_root, record);
+  if (containment) { try { containment.cleanup(); } catch { /* best-effort */ } }
   printLifecycleJson(record, lifecycleEvents);
   process.exit(record.status === "completed" ? 0 : 1);
 }
@@ -514,6 +531,7 @@ function fail(code, message, details = {}) {
     error_code: code,
     message,
     error_message: message,
+    source_content_transmission: "not_sent",
     ...details,
   });
   process.exit(1);

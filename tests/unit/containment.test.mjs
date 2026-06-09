@@ -15,6 +15,7 @@ import path from "node:path";
 import { setupContainment } from "../../plugins/claude/scripts/lib/containment.mjs";
 import { setupContainment as setupGeminiContainment } from "../../plugins/gemini/scripts/lib/containment.mjs";
 import { setupContainment as setupKimiContainment } from "../../plugins/kimi/scripts/lib/containment.mjs";
+import { setupContainment as setupAgyContainment } from "../../plugins/agy/scripts/lib/containment.mjs";
 
 const profile = (containment, scope = "head") => Object.freeze({
   name: "test", containment, scope, dispose_default: true,
@@ -225,4 +226,57 @@ test("kimi setupContainment rejects invalid profiles", () => {
   assert.throws(() => setupKimiContainment({}, tmpdir()), /profile\.containment/);
   assert.throws(() => setupKimiContainment({ containment: 42 }, tmpdir()), /profile\.containment/);
   assert.throws(() => setupKimiContainment({ containment: "bad" }, tmpdir()), /unknown containment/);
+});
+
+test("agy setupContainment mirrors behavior with agy worktree prefix", () => {
+  const src = mkdtempSync(path.join(tmpdir(), "agy-contain-src-"));
+  try {
+    const none = setupAgyContainment(profile("none"), src);
+    assert.equal(none.path, src);
+    assert.equal(none.disposed, false);
+    none.cleanup();
+    assert.ok(existsSync(src));
+
+    const worktree = setupAgyContainment(profile("worktree"), src);
+    try {
+      assert.notEqual(worktree.path, src);
+      assert.ok(path.basename(worktree.path).startsWith("agy-worktree-"));
+      assert.ok(existsSync(worktree.path));
+      assert.equal(worktree.disposed, true);
+    } finally {
+      worktree.cleanup();
+      worktree.cleanup();
+    }
+    assert.equal(existsSync(worktree.path), false);
+  } finally {
+    rmSync(src, { recursive: true, force: true });
+  }
+});
+
+test("agy setupContainment containment=worktree returns empty tempdir and cleans idempotently", () => {
+  const src = mkdtempSync(path.join(tmpdir(), "agy-contain-empty-src-"));
+  try {
+    const result = setupAgyContainment(profile("worktree"), src);
+    try {
+      assert.notEqual(result.path, src);
+      assert.ok(result.path.startsWith(tmpdir()));
+      assert.ok(path.basename(result.path).startsWith("agy-worktree-"));
+      assert.ok(statSync(result.path).isDirectory());
+      assert.deepEqual(readdirSync(result.path), []);
+      assert.equal(result.disposed, true);
+    } finally {
+      result.cleanup();
+    }
+    assert.equal(existsSync(result.path), false);
+    result.cleanup();
+  } finally {
+    rmSync(src, { recursive: true, force: true });
+  }
+});
+
+test("agy setupContainment rejects invalid profiles", () => {
+  assert.throws(() => setupAgyContainment(undefined, tmpdir()), /profile\.containment/);
+  assert.throws(() => setupAgyContainment({}, tmpdir()), /profile\.containment/);
+  assert.throws(() => setupAgyContainment({ containment: 42 }, tmpdir()), /profile\.containment/);
+  assert.throws(() => setupAgyContainment({ containment: "bad" }, tmpdir()), /unknown containment/);
 });

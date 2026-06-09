@@ -705,6 +705,11 @@
       "branches": 0,
       "functions": 0
     },
+    "plugins/agy/scripts/lib/containment.mjs": {
+      "lines": 0,
+      "branches": 0,
+      "functions": 0
+    },
     "plugins/agy/scripts/lib/diff-source.mjs": {
       "lines": 0,
       "branches": 0,

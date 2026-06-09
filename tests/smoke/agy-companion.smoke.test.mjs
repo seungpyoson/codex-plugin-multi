@@ -34,9 +34,35 @@ function writeAgyMock(dir) {
     "console.log('Verdict: APPROVE');",
     "console.log('Blocking findings');",
     "console.log('- None. I inspected ' + file + ' and found no blocking issues.');",
+    "console.log('- Scope inspected: I reviewed the supplied selected source packet for ' + file + ', including the diff context, file path, and review prompt scope. I checked for source-routing leaks, behavioral regressions, missing tests, and security-sensitive changes. The reviewed evidence was the selected AGY source packet rather than an unrestricted workspace walk.');",
     "console.log('Non-blocking concerns');",
     "console.log('- None. The selected source file ' + file + ' was reviewed for this scope.');",
+    "console.log('- Residual risk: no additional concern was found after checking the selected source packet against the requested mode, scope base, and expected external-review contract.');",
     "console.log('Prompt hash input length: ' + prompt.length);",
+    "",
+  ].join("\n"));
+}
+
+function writeAgyCaptureMock(dir) {
+  return writeExecutable(dir, "agy-capture-mock", [
+    "#!/usr/bin/env node",
+    "const { realpathSync, writeFileSync } = require('node:fs');",
+    "const args = process.argv.slice(2);",
+    "if (args[0] === 'models') { console.log('verified-local-model'); process.exit(0); }",
+    "const addDirIndex = args.indexOf('--add-dir');",
+    "const addDir = addDirIndex >= 0 ? args[addDirIndex + 1] : null;",
+    "const addDirReal = addDir ? realpathSync.native(addDir) : null;",
+    "const promptIndex = args.indexOf('--print');",
+    "const prompt = promptIndex >= 0 ? args[promptIndex + 1] : '';",
+    "if (process.env.AGY_CAPTURE_OUT) writeFileSync(process.env.AGY_CAPTURE_OUT, JSON.stringify({ cwd: process.cwd(), addDir, addDirReal, args }) + '\\n');",
+    "const file = /BEGIN AGY FILE \\d+: ([^\\n]+)/.exec(prompt)?.[1] || 'selected source';",
+    "console.log('Verdict: APPROVE');",
+    "console.log('Blocking findings');",
+    "console.log('- None. I inspected ' + file + ' and found no blocking issues.');",
+    "console.log('- Scope inspected: I reviewed the supplied selected source packet for ' + file + ', including the diff context, file path, and review prompt scope. I checked for source-routing leaks, behavioral regressions, missing tests, and security-sensitive changes. The reviewed evidence was the selected AGY source packet rather than an unrestricted workspace walk.');",
+    "console.log('Non-blocking concerns');",
+    "console.log('- None. The selected source file ' + file + ' was reviewed for this scope.');",
+    "console.log('- Residual risk: no additional concern was found after checking the selected source packet against the requested mode, scope base, and expected external-review contract.');",
     "",
   ].join("\n"));
 }
@@ -181,6 +207,32 @@ test("agy custom-review uses explicit scope paths without branch-diff fallback",
   }
 });
 
+test("agy source-bearing review points target at scoped containment, not source cwd", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "agy-containment-cwd-"));
+  const binary = writeAgyCaptureMock(cwd);
+  const capturePath = path.join(cwd, "capture.json");
+  const { base } = fixtureBranchDiffRepo(cwd);
+  const { stdout, stderr, status, dataDir } = runCompanion(
+    ["run", "--mode", "review", "--foreground", "--lifecycle-events", "jsonl",
+     "--binary", binary, "--cwd", cwd, "--scope-base", base, "--", "review scoped add-dir"],
+    { cwd, env: { AGY_CAPTURE_OUT: capturePath } },
+  );
+  try {
+    assert.equal(status, 0, `exit ${status}: ${stderr}`);
+    const record = stdout.trim().split("\n").map((line) => JSON.parse(line)).at(-1);
+    assert.equal(record.status, "completed");
+    const capture = JSON.parse(readFileSync(capturePath, "utf8"));
+    assert.notEqual(capture.cwd, cwd);
+    assert.notEqual(capture.addDir, cwd);
+    assert.equal(capture.cwd, capture.addDirReal);
+    assert.match(path.basename(capture.addDir), /^agy-worktree-/);
+    assert.equal(existsSync(capture.addDir), false, "scoped containment should be cleaned after foreground run");
+  } finally {
+    rmTree(dataDir);
+    rmTree(cwd);
+  }
+});
+
 test("agy custom-review rejects symlink scope paths that escape the workspace", { skip: process.platform === "win32" }, () => {
   const cwd = mkdtempSync(path.join(tmpdir(), "agy-custom-symlink-cwd-"));
   const escapeDir = mkdtempSync(path.join(tmpdir(), "agy-custom-symlink-escape-"));
@@ -193,15 +245,38 @@ test("agy custom-review rejects symlink scope paths that escape the workspace", 
     { cwd },
   );
   try {
-    assert.equal(status, 1);
+    assert.equal(status, 2);
     const record = JSON.parse(stdout);
-    assert.equal(record.source_content_transmission, "not_sent");
-    assert.match(record.error_message, /escapes workspace/);
+    assert.equal(record.status, "failed");
+    assert.equal(record.error_code, "scope_failed");
+    assert.equal(record.external_review.source_content_transmission, "not_sent");
+    assert.match(record.error_message, /escapes workspace|outside source root/);
     assert.doesNotMatch(stdout + stderr, /outside workspace secret body/i);
   } finally {
     rmTree(dataDir);
     rmTree(cwd);
     rmTree(escapeDir);
+  }
+});
+
+test("agy run rejects invalid --timeout-ms before source transmission", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "agy-timeout-bad-cwd-"));
+  const binary = writeAgyMock(cwd);
+  const { stdout, stderr, status, dataDir } = runCompanion(
+    ["run", "--mode", "review", "--foreground", "--timeout-ms", "0.5",
+     "--binary", binary, "--cwd", cwd, "--", "review invalid timeout"],
+    { cwd },
+  );
+  try {
+    assert.equal(status, 1);
+    const record = JSON.parse(stdout);
+    assert.equal(record.error_code, "bad_args");
+    assert.equal(record.source_content_transmission, "not_sent");
+    assert.match(record.error_message, /--timeout-ms must be a positive integer number of milliseconds/);
+    assert.doesNotMatch(stdout + stderr, /selected source body/i);
+  } finally {
+    rmTree(dataDir);
+    rmTree(cwd);
   }
 });
 
