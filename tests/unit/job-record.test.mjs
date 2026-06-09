@@ -28,6 +28,11 @@ import {
   SCHEMA_VERSION as KIMI_SCHEMA_VERSION,
 } from "../../plugins/kimi/scripts/lib/job-record.mjs";
 import {
+  buildJobRecord as buildAgyJobRecord,
+  EXPECTED_KEYS as AGY_EXPECTED_KEYS,
+  SCHEMA_VERSION as AGY_SCHEMA_VERSION,
+} from "../../plugins/agy/scripts/lib/job-record.mjs";
+import {
   buildExternalReview,
   EXTERNAL_REVIEW_KEYS,
   SOURCE_CONTENT_TRANSMISSION,
@@ -49,6 +54,7 @@ const EXTERNAL_REVIEW_SKILL_MDS = [
 const UUID = "550e8400-e29b-41d4-a716-446655440000";
 const CLAUDE_UUID = "11111111-2222-4333-8444-555555555555";
 const GEMINI_UUID = "22222222-3333-4444-9555-666666666666";
+const AGY_SESSION_ID = "agy-conversation-123";
 
 function sentButNoCleanResult(provider) {
   return `Selected source content was sent to ${provider} for external review, but the run ended before a clean result was produced.`;
@@ -82,6 +88,7 @@ test("JobRecord schema_version is bumped for delegated review metadata and runti
   assert.equal(SCHEMA_VERSION, 10);
   assert.equal(GEMINI_SCHEMA_VERSION, 10);
   assert.equal(KIMI_SCHEMA_VERSION, 10);
+  assert.equal(AGY_SCHEMA_VERSION, 10);
 });
 
 // Helper — minimal valid invocation captured at cmdRun entry.
@@ -151,7 +158,7 @@ test("external_review treats Git binary policy rejection as not sent", () => {
 
 test("EXPECTED_KEYS is the spec §21.3 canonical list", () => {
   const required = [
-    "id", "job_id", "target", "parent_job_id", "claude_session_id", "gemini_session_id", "kimi_session_id",
+    "id", "job_id", "target", "parent_job_id", "claude_session_id", "gemini_session_id", "kimi_session_id", "agy_session_id",
     "resume_chain", "pid_info",
     "mode", "mode_profile_name", "model", "cwd", "workspace_root",
     "containment", "scope", "dispose_effective", "scope_base", "scope_paths",
@@ -169,6 +176,34 @@ test("EXPECTED_KEYS is the spec §21.3 canonical list", () => {
 test("provider EXPECTED_KEYS stay byte-for-byte aligned", () => {
   assert.deepEqual([...GEMINI_EXPECTED_KEYS], [...EXPECTED_KEYS]);
   assert.deepEqual([...KIMI_EXPECTED_KEYS], [...EXPECTED_KEYS]);
+  assert.deepEqual([...AGY_EXPECTED_KEYS], [...EXPECTED_KEYS]);
+});
+
+test("agy buildJobRecord: success path stores agy_session_id and review-only external_review", () => {
+  const invocation = makeInvocation({
+    target: "agy",
+    binary: "agy",
+    model: null,
+    review_prompt_provider: "Google Antigravity CLI",
+  });
+  const rec = buildAgyJobRecord(invocation, {
+    exitCode: 0,
+    parsed: { ok: true, result: "Verdict: APPROVE", structured: null, denials: [] },
+    pidInfo: { ...makePidInfo(), argv0: "agy" },
+    agySessionId: AGY_SESSION_ID,
+    stdout: "Verdict: APPROVE",
+    stderr: "",
+  }, []);
+
+  assert.deepEqual(Object.keys(rec).sort(), [...EXPECTED_KEYS].sort());
+  assert.equal(rec.claude_session_id, null);
+  assert.equal(rec.gemini_session_id, null);
+  assert.equal(rec.kimi_session_id, null);
+  assert.equal(rec.agy_session_id, AGY_SESSION_ID);
+  assert.equal(rec.external_review.provider, "Google Antigravity CLI");
+  assert.equal(rec.external_review.session_id, AGY_SESSION_ID);
+  assert.equal(rec.external_review.source_content_transmission, "sent");
+  assert.equal("prompt" in rec, false);
 });
 
 test("Kimi JobRecord does not persist private runtime-only options", () => {

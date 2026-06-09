@@ -73,3 +73,13 @@ test("gemini background approval preflight audits prompt source without walking 
     "background approval-required audit manifest must not use cwd as containment fallback",
   );
 });
+
+test("agy companion uses prompt sidecars, source hashes, and no raw-source diagnostics", () => {
+  const source = readFileSync(resolvePath("plugins/agy/scripts/agy-companion.mjs"), "utf8");
+
+  assert.match(source, /writePromptSidecar|consumePromptSidecar|prompt sidecar/i);
+  assert.match(source, /rendered_prompt_hash/);
+  assert.match(source, /content_hash/);
+  assert.doesNotMatch(source, /selected_source[\s\S]*content\s*:/);
+  assert.doesNotMatch(source, /error_message:\s*[^,\n]*content/i);
+});

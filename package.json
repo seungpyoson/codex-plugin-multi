@@ -17,6 +17,7 @@
     "plugins/claude",
     "plugins/gemini",
     "plugins/kimi",
+    "plugins/agy",
     "plugins/grok",
     "plugins/api-reviewers",
     "plugins/relay-glm",

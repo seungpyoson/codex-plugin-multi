@@ -1,0 +1,34 @@
+{
+  "name": "relay-agy",
+  "version": "0.1.0",
+  "description": "Delegate review and adversarial review to Google Antigravity CLI from within Codex.",
+  "author": {
+    "name": "relay-maintainer"
+  },
+  "homepage": "https://github.com/relay-org/relay",
+  "repository": "https://github.com/relay-org/relay",
+  "license": "AGPL-3.0-only",
+  "skills": "./skills",
+  "keywords": [
+    "agy",
+    "antigravity",
+    "google-antigravity",
+    "review"
+  ],
+  "interface": {
+    "displayName": "Relay AGY",
+    "shortDescription": "Delegate reviews to Google Antigravity CLI from Codex.",
+    "longDescription": "Invoke Google Antigravity CLI headlessly from Codex for review, adversarial-review, and explicit-file custom-review workflows. Uses local CLI authentication.",
+    "developerName": "relay-maintainer",
+    "category": "Coding",
+    "capabilities": [
+      "Interactive",
+      "Read"
+    ],
+    "defaultPrompt": [
+      "Ask AGY to review the current diff",
+      "Ask AGY to review selected files",
+      "Get an adversarial review from AGY"
+    ]
+  }
+}

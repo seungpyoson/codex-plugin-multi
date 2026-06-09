@@ -679,6 +679,136 @@
       "lines": 0,
       "branches": 100,
       "functions": 0
+    },
+    "plugins/agy/scripts/lib/agy.mjs": {
+      "lines": 0,
+      "branches": 0,
+      "functions": 0
+    },
+    "plugins/agy/scripts/lib/args.mjs": {
+      "lines": 0,
+      "branches": 0,
+      "functions": 0
+    },
+    "plugins/agy/scripts/lib/cancel-marker.mjs": {
+      "lines": 0,
+      "branches": 0,
+      "functions": 0
+    },
+    "plugins/agy/scripts/lib/codex-env.mjs": {
+      "lines": 0,
+      "branches": 0,
+      "functions": 0
+    },
+    "plugins/agy/scripts/lib/companion-common.mjs": {
+      "lines": 0,
+      "branches": 0,
+      "functions": 0
+    },
+    "plugins/agy/scripts/lib/diff-source.mjs": {
+      "lines": 0,
+      "branches": 0,
+      "functions": 0
+    },
+    "plugins/agy/scripts/lib/external-model-failure-catalog.mjs": {
+      "lines": 0,
+      "branches": 0,
+      "functions": 0
+    },
+    "plugins/agy/scripts/lib/external-model-failure-core.mjs": {
+      "lines": 0,
+      "branches": 0,
+      "functions": 0
+    },
+    "plugins/agy/scripts/lib/external-model-review-quality.mjs": {
+      "lines": 0,
+      "branches": 0,
+      "functions": 0
+    },
+    "plugins/agy/scripts/lib/external-review.mjs": {
+      "lines": 0,
+      "branches": 0,
+      "functions": 0
+    },
+    "plugins/agy/scripts/lib/git-binary.mjs": {
+      "lines": 0,
+      "branches": 0,
+      "functions": 0
+    },
+    "plugins/agy/scripts/lib/git.mjs": {
+      "lines": 0,
+      "branches": 0,
+      "functions": 0
+    },
+    "plugins/agy/scripts/lib/identity.mjs": {
+      "lines": 0,
+      "branches": 0,
+      "functions": 0
+    },
+    "plugins/agy/scripts/lib/job-record.mjs": {
+      "lines": 0,
+      "branches": 0,
+      "functions": 0
+    },
+    "plugins/agy/scripts/lib/privacy-redaction.mjs": {
+      "lines": 0,
+      "branches": 0,
+      "functions": 0
+    },
+    "plugins/agy/scripts/lib/process.mjs": {
+      "lines": 0,
+      "branches": 0,
+      "functions": 0
+    },
+    "plugins/agy/scripts/lib/provider-env.mjs": {
+      "lines": 0,
+      "branches": 0,
+      "functions": 0
+    },
+    "plugins/agy/scripts/lib/provider-identity.mjs": {
+      "lines": 0,
+      "branches": 0,
+      "functions": 0
+    },
+    "plugins/agy/scripts/lib/provider-route-policy.mjs": {
+      "lines": 0,
+      "branches": 0,
+      "functions": 0
+    },
+    "plugins/agy/scripts/lib/review-panel.mjs": {
+      "lines": 0,
+      "branches": 0,
+      "functions": 0
+    },
+    "plugins/agy/scripts/lib/review-prompt.mjs": {
+      "lines": 0,
+      "branches": 0,
+      "functions": 0
+    },
+    "plugins/agy/scripts/lib/review-workload.mjs": {
+      "lines": 0,
+      "branches": 0,
+      "functions": 0
+    },
+    "plugins/agy/scripts/lib/scope.mjs": {
+      "lines": 0,
+      "branches": 0,
+      "functions": 0
+    },
+    "plugins/agy/scripts/lib/time.mjs": {
+      "lines": 0,
+      "branches": 0,
+      "functions": 0
+    },
+    "plugins/agy/scripts/lib/usage-limit.mjs": {
+      "lines": 0,
+      "branches": 0,
+      "functions": 0
+    },
+    "plugins/agy/scripts/lib/workspace.mjs": {
+      "lines": 0,
+      "branches": 0,
+      "functions": 0
     }
   }
 }

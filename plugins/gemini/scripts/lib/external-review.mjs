@@ -1,4 +1,5 @@
 export const PROVIDER_NAMES = Object.freeze({
+  agy: "Google Antigravity CLI",
   claude: "Claude Code",
   deepseek: "DeepSeek",
   gemini: "Gemini CLI",
@@ -40,6 +41,7 @@ const CONTENT_RECEIVED_ERROR_CODES = Object.freeze(new Set([
   "claude_error",
   "gemini_error",
   "kimi_error",
+  "agy_error",
   "grok_error",
   "deepseek_error",
   "glm_error",

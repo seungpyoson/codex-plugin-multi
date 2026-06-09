@@ -53,7 +53,7 @@ function reviewRecord({
   };
 }
 
-test("provider readiness manifest normalizes six provider evidence rows", () => {
+test("provider readiness manifest normalizes seven provider evidence rows", () => {
   const fixtureRoot = mkdtempSync(path.join(tmpdir(), "provider-readiness-fixture-"));
   const evidenceDir = mkdtempSync(path.join(tmpdir(), "provider-readiness-evidence-"));
   const outPath = path.join(evidenceDir, "manifest.json");
@@ -77,6 +77,8 @@ test("provider readiness manifest normalizes six provider evidence rows", () => 
     errorCode: "review_not_completed",
     failedReviewSlot: true,
   }));
+  writeJson(path.join(evidenceDir, "agy-doctor.json"), { provider: "agy", ready: true, status: "ok", models: ["verified-local-model"] });
+  writeJson(path.join(evidenceDir, "agy-review.json"), reviewRecord({ provider: "agy" }));
   writeJson(path.join(evidenceDir, "grok-doctor.json"), {
     provider: "grok-web",
     ready: false,
@@ -112,8 +114,8 @@ test("provider readiness manifest normalizes six provider evidence rows", () => 
   assert.equal(manifest.schema_version, 1);
   assert.equal(manifest.fixture.path, fixtureRoot);
   assert.equal(manifest.fixture.head_sha, fixtureHead);
-  assert.equal(manifest.providers.length, 6);
-  assert.deepEqual(manifest.providers.map((row) => row.provider), ["claude", "gemini", "kimi", "grok", "deepseek", "glm"]);
+  assert.equal(manifest.providers.length, 7);
+  assert.deepEqual(manifest.providers.map((row) => row.provider), ["claude", "gemini", "kimi", "agy", "grok", "deepseek", "glm"]);
 
   const rows = Object.fromEntries(manifest.providers.map((row) => [row.provider, row]));
   assert.equal(rows.claude.failure_class, "none");
@@ -125,6 +127,10 @@ test("provider readiness manifest normalizes six provider evidence rows", () => 
   assert.equal(rows.gemini.mutation_status, "dirty");
   assert.equal(rows.kimi.failure_class, "review_quality");
   assert.equal(rows.kimi.failed_review_slot, true);
+  assert.equal(rows.agy.failure_class, "none");
+  assert.equal(rows.agy.review_status, "completed");
+  assert.equal(rows.agy.source_content_transmission, "sent");
+  assert.equal(rows.agy.prompt_persistence_status, "hash_only");
   assert.equal(rows.grok.failure_class, "session_tokens");
   assert.equal(rows.grok.review_status, "not_run");
   assert.equal(rows.deepseek.approval_status, "not_sent");
@@ -134,7 +140,7 @@ test("provider readiness manifest normalizes six provider evidence rows", () => 
   assert.equal(rows.glm.failure_class, "approval_gate");
   assert.equal(rows.glm.prompt_persistence_status, "hash_only");
 
-  assert.equal(manifest.summary.providers_total, 6);
+  assert.equal(manifest.summary.providers_total, 7);
   assert.equal(manifest.summary.prompt_persistence_failures, 0);
   assert.equal(manifest.summary.review_quality_failures, 1);
   assert.equal(JSON.stringify(manifest).includes("export function add"), false);
@@ -702,11 +708,11 @@ test("provider readiness manifest classifies absent evidence as missing evidence
   const manifest = JSON.parse(stdout);
   assert.deepEqual(
     manifest.providers.map((row) => row.failure_class),
-    ["missing_evidence", "missing_evidence", "missing_evidence", "missing_evidence", "missing_evidence", "missing_evidence"],
+    ["missing_evidence", "missing_evidence", "missing_evidence", "missing_evidence", "missing_evidence", "missing_evidence", "missing_evidence"],
   );
   assert.deepEqual(
     manifest.providers.map((row) => row.source_content_transmission),
-    ["may_be_sent", "may_be_sent", "may_be_sent", "may_be_sent", "may_be_sent", "may_be_sent"],
+    ["may_be_sent", "may_be_sent", "may_be_sent", "may_be_sent", "may_be_sent", "may_be_sent", "may_be_sent"],
   );
   assert.match(manifest.providers[0].next_action, /Run the provider doctor/i);
 });

@@ -322,6 +322,29 @@ test("grok plugin.json: valid schema", () => {
   assert.doesNotMatch(m.interface.longDescription, /api\.x\.ai/i);
 });
 
+test("agy plugin metadata is registered in the Codex marketplace", () => {
+  const manifest = readJson("plugins/agy/.codex-plugin/plugin.json");
+  const pkg = readJson("plugins/agy/package.json");
+  const rootPackage = readJson("package.json");
+  const marketplace = readJson(".agents/plugins/marketplace.json");
+  const entry = marketplace.plugins.find((plugin) => plugin.name === "relay-agy");
+
+  assert.ok(entry, "relay-agy missing from Codex marketplace");
+  assert.equal(marketplaceSourcePath(entry), "plugins/agy");
+  assert.equal(entry.policy.installation, "AVAILABLE");
+  assert.equal(entry.policy.authentication, "ON_USE");
+  assert.equal(manifest.name, "relay-agy");
+  assert.equal(manifest.version, "0.1.0");
+  assert.equal(manifest.license, "AGPL-3.0-only");
+  assert.equal(manifest.skills, "./skills");
+  assert.deepEqual(manifest.interface.capabilities, ["Interactive", "Read"]);
+  assert.doesNotMatch(manifest.interface.longDescription, /rescue/i);
+  assert.equal(pkg.name, "@relay/relay-agy-plugin");
+  assert.equal(pkg.version, manifest.version);
+  assert.equal(pkg.private, true);
+  assert.ok(rootPackage.workspaces.includes("plugins/agy"));
+});
+
 test("direct API relay plugin.json files are split by provider", () => {
   for (const provider of API_REVIEWER_PROVIDERS) {
     const root = `plugins/${relayPluginName(provider)}`;

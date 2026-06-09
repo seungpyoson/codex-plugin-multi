@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Builds a six-provider readiness manifest from doctor, review, and approval
+// Builds a seven-provider readiness manifest from doctor, review, and approval
 // evidence JSON files. See `npm run readiness:manifest -- --help`.
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
@@ -9,7 +9,7 @@ import { DEFAULT_GIT_BINARY, gitEnv } from "../plugins/api-reviewers/scripts/lib
 import { cleanGitEnv } from "../plugins/api-reviewers/scripts/lib/git-env.mjs";
 
 const SCHEMA_VERSION = 1;
-const PROVIDERS = Object.freeze(["claude", "gemini", "kimi", "grok", "deepseek", "glm"]);
+const PROVIDERS = Object.freeze(["claude", "gemini", "kimi", "agy", "grok", "deepseek", "glm"]);
 const DIRECT_API_PROVIDERS = new Set(["deepseek", "glm"]);
 const TRANSMISSION_VALUES = new Set(["not_sent", "may_be_sent", "sent"]);
 const FULL_PROMPT_KEYS = new Set([
@@ -55,7 +55,7 @@ const NEXT_ACTION_BY_FAILURE_CLASS = Object.freeze({
 const TRUSTED_GIT_ENV = gitEnv(cleanGitEnv());
 const USAGE = `Usage: npm run readiness:manifest -- --fixture-root <git-fixture> --evidence-dir <dir> [--out <manifest.json>]
 
-Builds a six-provider readiness manifest for claude, gemini, kimi, grok, deepseek, and glm.
+Builds a seven-provider readiness manifest for claude, gemini, kimi, agy, grok, deepseek, and glm.
 Evidence files are named <provider>-doctor.json, <provider>-review.json, and <provider>-approval.json.
 Direct API approval evidence must prove source_content_transmission="not_sent" before source-bearing reviews count as valid.
 `;

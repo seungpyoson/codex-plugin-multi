@@ -5,8 +5,9 @@ import {
   EXTERNAL_MODEL_CONTRACT_DOC_TARGETS,
   renderExternalModelContractDoc,
 } from "./external-model-contracts.mjs";
+import { directApiProviderDefinitions } from "./provider-plugin-definitions.mjs";
 
-const DIRECT_API_PROVIDERS = Object.freeze(["glm", "deepseek"]);
+const DIRECT_API_PROVIDERS = Object.freeze(directApiProviderDefinitions().map((provider) => provider.id));
 const REPOSITORY = "https://github.com/relay-org/relay";
 
 function readJson(path) {

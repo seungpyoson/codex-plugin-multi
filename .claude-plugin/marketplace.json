@@ -33,6 +33,15 @@
       }
     },
     {
+      "name": "relay-agy",
+      "description": "Delegate review and adversarial review to Google Antigravity CLI from within Claude Code.",
+      "version": "0.1.0",
+      "source": "./relay/relay-agy",
+      "author": {
+        "name": "relay-maintainer"
+      }
+    },
+    {
       "name": "relay-glm",
       "description": "Delegate code reviews to GLM direct API from within Claude Code.",
       "version": "0.1.0",

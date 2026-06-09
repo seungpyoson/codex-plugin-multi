@@ -1,5 +1,11 @@
 import { readFileSync } from "node:fs";
 
+import {
+  companionProviderDefinitions,
+  directApiProviderDefinitions,
+  providerDefinition,
+} from "./provider-plugin-definitions.mjs";
+
 export const EXTERNAL_MODEL_CONTRACT_VERSION = 1;
 
 const GENERATED_NOTICE =
@@ -31,6 +37,7 @@ const JOB_RECORD_KEYS = [
   "claude_session_id",
   "gemini_session_id",
   "kimi_session_id",
+  "agy_session_id",
   "resume_chain",
   "pid_info",
   "mode",
@@ -68,91 +75,12 @@ const JOB_RECORD_KEYS = [
   "schema_version",
 ];
 
-const COMPANION_PROVIDERS = [
-  {
-    plugin: "claude",
-    display: "Claude Code",
-    shortDisplay: "Claude",
-    binary: "claude-companion.mjs",
-    authFlag: "--auth-mode subscription",
-    homeDir: "~/.claude",
-    reviewTimeoutEnv: "CLAUDE_REVIEW_TIMEOUT_MS",
-    reviewTimeoutDefaultMs: 900000,
-    reviewDescription: "Use when asking Claude Code to review the current diff, files, or focus area.",
-    adversarialDescription: "Use when asking Claude Code to challenge a design or diff adversarially.",
-    rescueDescription: "Use when delegating investigation, fixes, or follow-up rescue work to Claude Code.",
-    setupDescription: "Use when checking Claude Code installation and OAuth readiness.",
-    statusDescription: "Use when listing active or recent Claude-plugin jobs.",
-    resultDescription: "Use when showing the stored result of a finished Claude-plugin job.",
-    cancelDescription: "Use when cancelling a running Claude-plugin background job.",
-    delegationDescription: "Use when delegating review, adversarial review, rescue, and setup to Claude Code.",
-  },
-  {
-    plugin: "gemini",
-    display: "Gemini CLI",
-    shortDisplay: "Gemini",
-    binary: "gemini-companion.mjs",
-    authFlag: "",
-    homeDir: "~/.gemini",
-    reviewTimeoutEnv: "GEMINI_REVIEW_TIMEOUT_MS",
-    reviewTimeoutDefaultMs: 900000,
-    reviewDescription: "Use when asking Gemini CLI to review the current diff, files, or focus area.",
-    adversarialDescription: "Use when asking Gemini CLI to challenge a design or diff adversarially.",
-    rescueDescription: "Use when delegating investigation, fixes, or follow-up rescue work to Gemini CLI.",
-    setupDescription: "Use when checking Gemini CLI availability and OAuth readiness.",
-    statusDescription: "Use when listing active or recent Gemini-plugin jobs.",
-    resultDescription: "Use when showing the persisted result for a Gemini-plugin job.",
-    cancelDescription: "Use when cancelling a running Gemini-plugin background job.",
-    delegationDescription: "Use when delegating review, adversarial review, rescue, and setup to Gemini CLI.",
-  },
-  {
-    plugin: "kimi",
-    display: "Kimi Code CLI",
-    shortDisplay: "Kimi",
-    binary: "kimi-companion.mjs",
-    authFlag: "",
-    homeDir: "~/.kimi",
-    hasMaxSteps: true,
-    reviewTimeoutEnv: "KIMI_REVIEW_TIMEOUT_MS",
-    reviewTimeoutDefaultMs: 900000,
-    reviewDescription: "Use when asking Kimi Code CLI to review the current diff, files, or focus area.",
-    adversarialDescription: "Use when asking Kimi Code CLI to challenge a design or diff adversarially.",
-    rescueDescription: "Use when delegating investigation, fixes, or follow-up rescue work to Kimi Code CLI.",
-    setupDescription: "Use when checking Kimi Code CLI availability and OAuth readiness.",
-    statusDescription: "Use when listing active or recent Kimi-plugin jobs.",
-    resultDescription: "Use when showing the persisted result for a Kimi-plugin job.",
-    cancelDescription: "Use when cancelling a running Kimi-plugin background job.",
-    delegationDescription: "Use when delegating review, adversarial review, rescue, and setup to Kimi Code CLI.",
-  },
-];
-
-const COMPANION_WORKFLOWS = [
-  "review",
-  "adversarial-review",
-  "rescue",
-  "setup",
-  "status",
-  "result",
-  "cancel",
-];
-
-const API_PROVIDERS = [
-  {
-    provider: "deepseek",
-    display: "DeepSeek",
-  },
-  {
-    provider: "glm",
-    display: "GLM",
-  },
-];
+const COMPANION_PROVIDERS = companionProviderDefinitions();
+const API_PROVIDERS = directApiProviderDefinitions();
 
 const REVIEWER_WORKFLOWS = ["review", "adversarial-review", "custom-review", "setup"];
 
-const GROK_PROVIDER = {
-  plugin: "grok",
-  display: "Grok",
-};
+const GROK_PROVIDER = providerDefinition("grok");
 
 function lines(...items) {
   return `${items.flat().join("\n")}\n`;
@@ -181,6 +109,7 @@ function codexPluginName(provider) {
 function companionWorkflowDescription(provider, workflow) {
   if (workflow === "review") return provider.reviewDescription;
   if (workflow === "adversarial-review") return provider.adversarialDescription;
+  if (workflow === "custom-review") return provider.customReviewDescription;
   if (workflow === "rescue") return provider.rescueDescription;
   if (workflow === "setup") return provider.setupDescription;
   if (workflow === "status") return provider.statusDescription;
@@ -202,6 +131,7 @@ function companionArgumentHint(provider, workflow) {
   if (workflow === "review" || workflow === "adversarial-review") {
     return `"[--scope-base REF] [--timeout-ms MS]${maxSteps} [focus area]"`;
   }
+  if (workflow === "custom-review") return "\"--scope-paths <files> [--timeout-ms MS] [focus area]\"";
   if (workflow === "rescue") return `"[--foreground|--background] [--model <id>]${maxSteps} [task]"`;
   if (workflow === "setup") return "\"\"";
   if (workflow === "status") return "\"[--job <id>] [--all]\"";
@@ -246,7 +176,19 @@ function rescueContract() {
   );
 }
 
-function lifecycleRenderingContract() {
+function lifecycleRenderingContract({ routeFields = true } = {}) {
+  const auditRows = routeFields
+    ? [
+      "| Route | <selected_route> |",
+      "| Fallback | <fallback_reason> |",
+      "| Auth | <auth_path> |",
+      "| Billing | <billing_path> |",
+      "| Approval | <source_send_approval_state / approval_scope> |",
+    ]
+    : [];
+  const auditInventory = routeFields
+    ? "Lifecycle cards should include provider, job, session, run kind, mode, scope, source transmission, source bearing, selected route, fallback reason, auth path, billing path, source-send approval state, approval scope, review quality, status, error code, error message, HTTP status, and suggested action when those fields are present."
+    : "Lifecycle cards should include provider, job, session, run kind, mode, scope, source transmission, source bearing, review quality, status, error code, error message, HTTP status, and suggested action when those fields are present.";
   return lines(
     "## Rendering Contract",
     "Request `--lifecycle-events markdown` for foreground and background review flows.",
@@ -255,7 +197,7 @@ function lifecycleRenderingContract() {
     "`external_review_progress` is a heartbeat for long foreground runs; keep the existing launch card visible and do not render it as a terminal result.",
     "If a background launch envelope has `event: \"launched\"` with an `external_review` field, render the same launch card immediately with session pending.",
     "If a legacy JSON `external_review` field appears, render it before normal prose.",
-    "Lifecycle cards should include provider, job, session, run kind, mode, scope, source transmission, source bearing, selected route, fallback reason, auth path, billing path, source-send approval state, approval scope, review quality, status, error code, error message, HTTP status, and suggested action when those fields are present.",
+    auditInventory,
     "",
     "```md",
     "### EXTERNAL REVIEW",
@@ -270,11 +212,7 @@ function lifecycleRenderingContract() {
     "| Scope | <scope and scope_base/scope_paths> |",
     "| Source | <source_content_transmission> |",
     "| Source Bearing | <source_bearing> |",
-    "| Route | <selected_route> |",
-    "| Fallback | <fallback_reason> |",
-    "| Auth | <auth_path> |",
-    "| Billing | <billing_path> |",
-    "| Approval | <source_send_approval_state / approval_scope> |",
+    auditRows,
     "| Review Quality | <review_quality.failed_review_slot / review_quality.semantic_failure_reasons> |",
     "| Status | <status> |",
     "| Error | <error_code> |",
@@ -340,6 +278,7 @@ function companionCommandDoc(target) {
 function companionCommandDescription(provider, workflow) {
   if (workflow === "review") return `Ask ${provider.display} to review the current diff.`;
   if (workflow === "adversarial-review") return `Ask ${provider.display} to challenge the current diff adversarially.`;
+  if (workflow === "custom-review") return `Ask ${provider.display} to review explicit files.`;
   if (workflow === "rescue") return `Delegate investigation or a fix to ${provider.display}. Supports foreground or background runs.`;
   if (workflow === "setup") return `Check ${provider.display} installation and authentication readiness.`;
   if (workflow === "status") return `List active or recent ${provider.shortDisplay}-plugin jobs.`;
@@ -390,7 +329,37 @@ function renderCompanionCommandBody(provider, workflow, commandName) {
       explicitScopeRoutingContract(),
       sandboxFirstSourceSendContract(),
       "",
-      lifecycleRenderingContract(),
+      lifecycleRenderingContract({ routeFields: provider.plugin !== "agy" }),
+      scopeSafetyContract(),
+      secretSafetyContract(),
+      `This command backs \`plugins/${provider.plugin}/skills/${commandName}/SKILL.md\`.`,
+    );
+  }
+
+  if (workflow === "custom-review") {
+    const runLine = companionRunCommand(
+      provider,
+      workflow,
+      "--foreground --lifecycle-events markdown --scope-paths \"<file1>,<file2>\" -- \"<focus text>\"",
+    );
+    return lines(
+      sharedHeader(title),
+      "`$ARGUMENTS` starts with `--scope-paths <files>` followed by optional `--timeout-ms MS` and focus text.",
+      "Place `--scope-paths <files>` with the command options; pass the remaining focus text through the prompt payload.",
+      "Replace `<file1>,<file2>` with comma- or newline-separated concrete relative paths.",
+      "Expand globs before running; do not pass glob characters as `--scope-paths`.",
+      "Preserve raw `$ARGUMENTS` exactly except for routing documented flags.",
+      companionTimeoutContract(provider),
+      "",
+      "Run:",
+      "",
+      `- \`${runLine}\``,
+      "",
+      reviewOnlyContract(),
+      explicitScopeRoutingContract(),
+      sandboxFirstSourceSendContract(),
+      "",
+      lifecycleRenderingContract({ routeFields: provider.plugin !== "agy" }),
       scopeSafetyContract(),
       secretSafetyContract(),
       `This command backs \`plugins/${provider.plugin}/skills/${commandName}/SKILL.md\`.`,
@@ -419,7 +388,7 @@ function renderCompanionCommandBody(provider, workflow, commandName) {
       rescueContract(),
       sandboxFirstSourceSendContract(),
       "",
-      lifecycleRenderingContract(),
+      lifecycleRenderingContract({ routeFields: provider.plugin !== "agy" }),
       secretSafetyContract(),
       `This command backs \`plugins/${provider.plugin}/skills/${commandName}/SKILL.md\`.`,
     );
@@ -518,7 +487,28 @@ function renderCompanionSkillBody(provider, workflow, skillName) {
       explicitScopeRoutingContract(),
       sandboxFirstSourceSendContract(),
       "",
-      lifecycleRenderingContract(),
+      lifecycleRenderingContract({ routeFields: provider.plugin !== "agy" }),
+      scopeSafetyContract(),
+      secretSafetyContract(),
+    );
+  }
+
+  if (workflow === "custom-review") {
+    return lines(
+      sharedHeader(title),
+      `${rootLine} Use skill \`${skillRef}\`. Command doc: \`${commandRel}\`.`,
+      "`<workspace>` is the repository or bundle directory to review.",
+      "`<focus>` is the user's review prompt or focus area.",
+      "`<file1>,<file2>` are concrete relative paths; expand globs before running.",
+      companionTimeoutContract(provider),
+      "",
+      `Run \`${companionRunCommand(provider, workflow, "--foreground --lifecycle-events markdown --cwd \"<workspace>\" --scope-paths \"<file1>,<file2>\" -- \"<focus>\"")}\`.`,
+      reviewOnlyContract(),
+      "custom-review uses explicit relative paths. Scope validation must complete before selected source is transmitted.",
+      explicitScopeRoutingContract(),
+      sandboxFirstSourceSendContract(),
+      "",
+      lifecycleRenderingContract({ routeFields: provider.plugin !== "agy" }),
       scopeSafetyContract(),
       secretSafetyContract(),
     );
@@ -540,7 +530,7 @@ function renderCompanionSkillBody(provider, workflow, skillName) {
       rescueContract(),
       sandboxFirstSourceSendContract(),
       "",
-      lifecycleRenderingContract(),
+      lifecycleRenderingContract({ routeFields: provider.plugin !== "agy" }),
       secretSafetyContract(),
     );
   }
@@ -601,6 +591,7 @@ function renderCompanionSkillBody(provider, workflow, skillName) {
 
 function companionDelegationSkillDoc(target) {
   const { provider } = target;
+  const workflowSet = new Set(provider.workflows);
   const skillName = `${provider.plugin}-delegation`;
   const fm = frontmatter({
     name: skillName,
@@ -610,24 +601,33 @@ function companionDelegationSkillDoc(target) {
   const maxSteps = provider.hasMaxSteps
     ? `For ${provider.shortDisplay} review, adversarial-review, custom-review, or rescue, add \`--max-steps-per-turn N\` before \`--\` when the user provides a positive integer step budget.`
     : "";
-  return fm + lines(
-    sharedHeader(`${provider.shortDisplay} Delegation`),
-    `\`<plugin-root>\` is \`plugins/${provider.plugin}\` or an absolute path to that plugin directory. Use skill \`${codexPluginName(provider)}:${skillName}\`.`,
-    "",
+  const runLines = [
     "Run review:",
     `- \`${companionRunCommand(provider, "review", "--foreground --lifecycle-events markdown --cwd \"<workspace>\" --scope-base REF -- \"<review focus>\"")}\``,
     "",
     "Run adversarial review:",
     `- \`${companionRunCommand(provider, "adversarial-review", "--foreground --lifecycle-events markdown --cwd \"<workspace>\" --scope-base REF -- \"<design or diff to challenge>\"")}\``,
     "",
+  ];
+  runLines.push(
     "Run custom-review:",
     `- \`${companionRunCommand(provider, "custom-review", "--foreground --lifecycle-events markdown --cwd \"<bundle-or-workspace>\" --scope-paths \"PR.diff,docs/*.md\" -- \"<review focus using relative paths>\"")}\``,
     explicitScopeRoutingContract(),
     "",
-    "Run rescue:",
-    `- \`${companionRunCommand(provider, "rescue", "--foreground --lifecycle-events markdown --cwd \"<workspace>\" -- \"<task>\"")}\``,
-    `- \`${companionRunCommand(provider, "rescue", "--background --lifecycle-events markdown --cwd \"<workspace>\" -- \"<task>\"")}\``,
+  );
+  if (workflowSet.has("rescue")) {
+    runLines.push(
+      "Run rescue:",
+      `- \`${companionRunCommand(provider, "rescue", "--foreground --lifecycle-events markdown --cwd \"<workspace>\" -- \"<task>\"")}\``,
+      `- \`${companionRunCommand(provider, "rescue", "--background --lifecycle-events markdown --cwd \"<workspace>\" -- \"<task>\"")}\``,
+      "",
+    );
+  }
+  return fm + lines(
+    sharedHeader(`${provider.shortDisplay} Delegation`),
+    `\`<plugin-root>\` is \`plugins/${provider.plugin}\` or an absolute path to that plugin directory. Use skill \`${codexPluginName(provider)}:${skillName}\`.`,
     "",
+    runLines,
     "Continue a job:",
     `- \`${companionContinueCommand(provider, "--job \"<job-id>\" --foreground --lifecycle-events markdown --cwd \"<workspace>\" -- \"<follow-up>\"")}\``,
     "- If a continue attempt returns `resend_confirmation_required`, do not retry automatically. Rerun with `--resend-confirmation-approved` only after explicit operator confirmation, or narrow the source packet.",
@@ -643,10 +643,10 @@ function companionDelegationSkillDoc(target) {
     "`<job-id>` is the identifier returned by a background launch or listed by the status workflow.",
     "",
     reviewOnlyContract(),
-    rescueContract(),
+    workflowSet.has("rescue") ? rescueContract() : "",
     sandboxFirstSourceSendContract(),
     "",
-    lifecycleRenderingContract(),
+    lifecycleRenderingContract({ routeFields: provider.plugin !== "agy" }),
     "Do not claim commands are available in Codex builds that do not register plugin command files.",
     secretSafetyContract(),
     scopeSafetyContract(),
@@ -1159,7 +1159,7 @@ function grokDelegationSkillDoc() {
 
 function companionTargets() {
   return COMPANION_PROVIDERS.flatMap((provider) => [
-    ...COMPANION_WORKFLOWS.flatMap((workflow) => [
+    ...provider.workflows.flatMap((workflow) => [
       {
         kind: "command",
         family: "companion",

@@ -182,6 +182,14 @@ export const EXTERNAL_MODEL_FAILURE_CLASSES = Object.freeze([
     suggested_action:
       "Treat this Kimi slot as failed. Inspect the raw result and runtime diagnostics, then retry after Kimi Code CLI is responsive.",
   }),
+  Object.freeze({
+    error_code: "agy_error",
+    category: "target_runtime",
+    error_cause: "provider_runtime_failure",
+    error_summary: "The external model provider failed before returning a clean review result.",
+    suggested_action:
+      "Treat this AGY slot as failed. Inspect the raw result and runtime diagnostics, then retry after Google Antigravity CLI is responsive.",
+  }),
 ]);
 
 const FAILURE_CLASS_BY_CODE = new Map(
