@@ -6,7 +6,7 @@ import { resolve as resolvePath } from "node:path";
 import { tmpdir } from "node:os";
 
 import { parseArgs } from "./lib/args.mjs";
-import { spawnAgy } from "./lib/agy.mjs";
+import { buildAgyArgs, parseAgyResult, spawnAgy } from "./lib/agy.mjs";
 import { writeCancelMarker, consumeCancelMarker } from "./lib/cancel-marker.mjs";
 import { setupContainment } from "./lib/containment.mjs";
 import {
@@ -52,6 +52,8 @@ import { resolveWorkspaceRoot } from "./lib/workspace.mjs";
 
 const PROVIDER_DISPLAY = "Google Antigravity CLI";
 const DEFAULT_TIMEOUT_MS = 900000;
+const READINESS_PREFLIGHT_TIMEOUT_MS = 30000;
+const READINESS_PREFLIGHT_PROMPT = "Reply with exactly: relay-agy-readiness";
 const PREFLIGHT_MODES = Object.freeze(["review", "adversarial-review", "custom-review"]);
 
 configureState({
@@ -458,6 +460,46 @@ function persistAndPrintPreSpawnFailure(
   process.exit(exitCode);
 }
 
+function agyReadinessPreflight({ binary, model }) {
+  const preflightTimeoutMs = READINESS_PREFLIGHT_TIMEOUT_MS;
+  const args = buildAgyArgs(
+    { name: "ping", sandbox: false, add_dir: false },
+    {
+      model,
+      promptText: READINESS_PREFLIGHT_PROMPT,
+      timeoutMs: preflightTimeoutMs,
+    },
+  );
+  const result = spawnSync(binary, args, {
+    cwd: tmpdir(),
+    env: sanitizeTargetEnv(process.env),
+    encoding: "utf8",
+    timeout: preflightTimeoutMs + 1000,
+  });
+  if (result.error) {
+    const message = result.error.code === "ETIMEDOUT"
+      ? "AGY readiness check timed out before source transmission"
+      : `AGY readiness check failed before source transmission: ${result.error.message}`;
+    return {
+      code: result.error.code === "ETIMEDOUT" ? "preflight_stale" : "spawn_failed",
+      error: new Error(message),
+    };
+  }
+  const parsed = parseAgyResult(result.stdout ?? "", result.stderr ?? "");
+  if (result.status === 0 && parsed.ok === true) return null;
+  if (parsed.reason === "not_authed") {
+    return { code: "not_authed", error: new Error(parsed.error ?? "AGY authentication is required") };
+  }
+  if (parsed.reason === "sandbox_blocked") {
+    return { code: "sandbox_blocked", error: new Error(parsed.error ?? "AGY sandbox access is blocked") };
+  }
+  const detail = parsed.error ?? parsed.stderr ?? `exit ${result.status}`;
+  return {
+    code: "preflight_stale",
+    error: new Error(`AGY readiness check failed before source transmission: ${detail}`),
+  };
+}
+
 function cmdPreflight(rest) {
   const { options } = parseArgs(rest, {
     valueOptions: ["mode", "cwd", "binary", "scope", "scope-base", "scope-paths"],
@@ -642,6 +684,18 @@ async function run(rest) {
   } catch (error) {
     if (containment) { try { containment.cleanup(); } catch { /* best-effort */ } }
     persistAndPrintPreSpawnFailure(invocation, lifecycleEvents, "git_binary_rejected", error, {
+      promptText: sidecarPrompt,
+      selectedFiles,
+      timeoutMs,
+    });
+  }
+  const readinessFailure = agyReadinessPreflight({
+    binary,
+    model: options.model ?? null,
+  });
+  if (readinessFailure) {
+    if (containment) { try { containment.cleanup(); } catch { /* best-effort */ } }
+    persistAndPrintPreSpawnFailure(invocation, lifecycleEvents, readinessFailure.code, readinessFailure.error, {
       promptText: sidecarPrompt,
       selectedFiles,
       timeoutMs,

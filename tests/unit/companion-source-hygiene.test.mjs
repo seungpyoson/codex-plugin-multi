@@ -113,8 +113,12 @@ test("agy foreground lifecycle keeps cancel, sidecar, and stale-job parity hooks
   const setupIndex = runBlock.indexOf("containment = setupContainment");
   const queuedIndex = runBlock.indexOf("const queuedRecord = buildJobRecord(invocation, null, []);");
   const spawnIndex = runBlock.indexOf("execution = await spawnAgy");
+  const readinessIndex = runBlock.indexOf("const readinessFailure = agyReadinessPreflight");
+  const launchIndex = runBlock.indexOf("externalReviewLaunchedEvent");
   const preSpawnCancelIndex = runBlock.indexOf("if (consumeCancelMarker(workspaceRoot, jobId))");
   assert.ok(queuedIndex !== -1 && queuedIndex < setupIndex, "queued record must be persisted before scope setup");
+  assert.ok(readinessIndex !== -1 && readinessIndex < launchIndex, "readiness preflight must run before launch event");
+  assert.ok(readinessIndex !== -1 && readinessIndex < spawnIndex, "readiness preflight must run before source-bearing spawn");
   assert.ok(preSpawnCancelIndex !== -1 && preSpawnCancelIndex < spawnIndex, "cancel marker must be consumed before spawn");
   const afterQueuedBlock = runBlock.slice(queuedIndex);
   assert.doesNotMatch(afterQueuedBlock, /fail\("(?:prompt_sidecar_failed|git_binary_rejected)"/);

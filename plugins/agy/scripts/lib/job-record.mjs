@@ -270,15 +270,20 @@ export function classifyExecution(execution) {
   });
 }
 
-function classifyProviderParsedFailure({ parsed }) {
-  if (parsed?.reason === "prompt_sidecar_failed" || parsed?.reason === "git_binary_rejected") {
+function classifyProviderParsedFailure({ execution, parsed }) {
+  if (
+    parsed?.reason === "prompt_sidecar_failed"
+    || parsed?.reason === "git_binary_rejected"
+    || parsed?.reason === "spawn_failed"
+    || parsed?.reason === "preflight_stale"
+  ) {
     return {
       status: "failed",
       error_code: parsed.reason,
       error_message: parsed.error ?? parsed.reason,
     };
   }
-  if (parsed?.reason === "not_authed") {
+  if (parsed?.reason === "not_authed" && !execution?.pidInfo) {
     return {
       status: "failed",
       error_code: "not_authed",

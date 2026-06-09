@@ -2819,6 +2819,8 @@ test("buildJobRecord: AGY pre-spawn parsed failures preserve specific error code
   for (const [reason, message] of [
     ["prompt_sidecar_failed", "failed to consume prompt sidecar"],
     ["git_binary_rejected", "RELAY_GIT_BINARY must not point inside the current workspace."],
+    ["spawn_failed", "AGY readiness check failed before source transmission: spawn agy ENOENT"],
+    ["preflight_stale", "AGY readiness check failed before source transmission"],
   ]) {
     const rec = buildAgyJobRecord(invocation, {
       exitCode: 1,
@@ -2831,6 +2833,25 @@ test("buildJobRecord: AGY pre-spawn parsed failures preserve specific error code
     assert.equal(rec.error_message, message);
     assert.equal(rec.external_review.source_content_transmission, "not_sent");
   }
+});
+
+test("buildJobRecord: AGY post-spawn auth parse does not claim source was not sent", () => {
+  const invocation = makeInvocation({
+    target: "agy",
+    binary: "agy",
+    model: null,
+    review_prompt_provider: "Google Antigravity CLI",
+  });
+  const rec = buildAgyJobRecord(invocation, {
+    exitCode: 1,
+    parsed: { ok: false, reason: "not_authed", error: "AGY authentication is required", result: null },
+    pidInfo: makePidInfo(),
+    agySessionId: null,
+  }, []);
+  assert.equal(rec.status, "failed");
+  assert.equal(rec.error_code, "agy_error");
+  assert.equal(rec.error_message, "AGY authentication is required");
+  assert.equal(rec.external_review.source_content_transmission, "sent");
 });
 
 test("buildJobRecord: finalization_failed errorMessage classifies as finalization_failed (PR #21 review HIGH 1)", () => {

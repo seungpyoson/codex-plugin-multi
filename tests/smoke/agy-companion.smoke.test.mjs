@@ -70,8 +70,12 @@ function writeAgyCaptureMock(dir) {
 function writeAgyAuthFailureMock(dir) {
   return writeExecutable(dir, "agy-auth-mock", [
     "#!/usr/bin/env node",
+    "const { appendFileSync } = require('node:fs');",
     "const args = process.argv.slice(2);",
     "if (args[0] === 'models') { console.log('verified-local-model'); process.exit(0); }",
+    "const promptIndex = args.indexOf('--print');",
+    "const prompt = promptIndex >= 0 ? args[promptIndex + 1] : '';",
+    "if (process.env.AGY_CAPTURE_OUT) appendFileSync(process.env.AGY_CAPTURE_OUT, JSON.stringify({ args, prompt }) + '\\n');",
     "console.error('login required');",
     "process.exit(1);",
     "",
@@ -83,6 +87,9 @@ function writeAgyTimeoutMock(dir) {
     "#!/usr/bin/env node",
     "const args = process.argv.slice(2);",
     "if (args[0] === 'models') { console.log('verified-local-model'); process.exit(0); }",
+    "const promptIndex = args.indexOf('--print');",
+    "const prompt = promptIndex >= 0 ? args[promptIndex + 1] : '';",
+    "if (/relay-agy-readiness/.test(prompt)) { console.log('relay-agy-readiness'); process.exit(0); }",
     "setTimeout(() => {}, 60000);",
     "",
   ].join("\n"));
@@ -469,17 +476,23 @@ test("agy doctor missing binary reports structured not_found without source tran
 test("agy source-bearing auth failure fails before source transmission", () => {
   const cwd = mkdtempSync(path.join(tmpdir(), "agy-auth-cwd-"));
   const binary = writeAgyAuthFailureMock(cwd);
+  const capturePath = path.join(cwd, "agy-auth-capture.jsonl");
   const { base } = fixtureBranchDiffRepo(cwd);
   const { stdout, stderr, status, dataDir } = runCompanion(
     ["run", "--mode", "review", "--foreground", "--lifecycle-events", "jsonl",
      "--binary", binary, "--cwd", cwd, "--scope-base", base, "--", "review auth failure handling"],
-    { cwd },
+    { cwd, env: { AGY_CAPTURE_OUT: capturePath } },
   );
   try {
     assert.equal(status, 1);
-    const record = stdout.trim().split("\n").map((line) => JSON.parse(line)).at(-1);
+    const events = stdout.trim().split("\n").filter(Boolean).map((line) => JSON.parse(line));
+    assert.equal(events.some((event) => event.event === "external_review_launched"), false);
+    const record = events.at(-1);
     assert.equal(record.error_code, "not_authed");
     assert.equal(record.external_review.source_content_transmission, "not_sent");
+    const invocations = readFileSync(capturePath, "utf8").trim().split("\n").map((line) => JSON.parse(line));
+    assert.equal(invocations.length, 1);
+    assert.doesNotMatch(invocations[0].prompt, /BEGIN AGY FILE|foo\n|\+foo|selected source body/i);
     assert.doesNotMatch(stdout + stderr, /login required.*selected source/i);
   } finally {
     rmTree(dataDir);
