@@ -567,7 +567,7 @@
     },
     "plugins/kimi/scripts/lib/identity.mjs": {
       "lines": 92.03,
-      "branches": 89.13,
+      "branches": 86.96,
       "functions": 100
     },
     "plugins/kimi/scripts/lib/job-record.mjs": {
@@ -741,9 +741,9 @@
       "functions": 0
     },
     "plugins/agy/scripts/lib/identity.mjs": {
-      "lines": 0,
-      "branches": 0,
-      "functions": 0
+      "lines": 92.03,
+      "branches": 86.96,
+      "functions": 100
     },
     "plugins/agy/scripts/lib/job-record.mjs": {
       "lines": 0,

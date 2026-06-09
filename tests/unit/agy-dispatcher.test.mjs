@@ -135,8 +135,7 @@ test("spawnAgy: timeout is terminal and does not retry the source-bearing prompt
     const binary = writeExecutable(dir, "agy-slow", [
       "#!/bin/sh",
       "printf 'spawned\\n' >> \"$AGY_COUNT_OUT\"",
-      "sleep 2",
-      "printf late",
+      "exec sleep 5",
       "",
     ].join("\n"));
 
@@ -145,7 +144,7 @@ test("spawnAgy: timeout is terminal and does not retry the source-bearing prompt
       cwd: dir,
       env: { ...process.env, AGY_COUNT_OUT: countPath },
       promptText: "source-bearing prompt",
-      timeoutMs: 500,
+      timeoutMs: process.env.CODEX_PLUGIN_COVERAGE === "1" ? 2000 : 500,
     });
 
     assert.equal(execution.timedOut, true);
