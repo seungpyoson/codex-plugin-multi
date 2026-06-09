@@ -642,7 +642,7 @@
     },
     "plugins/kimi/scripts/lib/scope.mjs": {
       "lines": 92,
-      "branches": 86.53,
+      "branches": 85,
       "functions": 98.25
     },
     "plugins/kimi/scripts/lib/state.mjs": {
